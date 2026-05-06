@@ -1,0 +1,223 @@
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+rust_library {
+    name: "libmaleicacid_tuner_hal_common",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal_common",
+    srcs: ["common/src/lib.rs"],
+    edition: "2021",
+}
+
+rust_library {
+    name: "libmaleicacid_tuner_hal_frontend_dvb",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal_frontend_dvb",
+    srcs: ["frontend_dvb/src/lib.rs"],
+    edition: "2021",
+    rustlibs: ["libmaleicacid_tuner_hal_common"],
+}
+
+rust_library {
+    name: "libmaleicacid_tuner_hal_frontend_px4",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal_frontend_px4",
+    srcs: ["frontend_px4/src/lib.rs"],
+    edition: "2021",
+    rustlibs: ["libmaleicacid_tuner_hal_common"],
+}
+
+rust_library {
+    name: "libmaleicacid_tuner_hal_dvr",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal_dvr",
+    srcs: ["dvr/src/lib.rs"],
+    edition: "2021",
+    rustlibs: ["libmaleicacid_tuner_hal_common"],
+}
+
+rust_library {
+    name: "libmaleicacid_tuner_hal_descrambler",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal_descrambler",
+    srcs: ["descrambler/src/lib.rs"],
+    edition: "2021",
+    rustlibs: ["libmaleicacid_tuner_hal_common"],
+}
+
+rust_library {
+    name: "libmaleicacid_tuner_hal_soft_demux",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal_soft_demux",
+    srcs: ["soft_demux/src/lib.rs"],
+    edition: "2021",
+    rustlibs: [
+        "libmaleicacid_tuner_hal_common",
+        "libmaleicacid_tuner_hal_dvr",
+    ],
+}
+
+prebuilt_etc {
+    name: "maleicacid_tuner_hal_vts_config_aidl_v2",
+    vendor: true,
+    src: "config/tuner_vts_config_aidl_V2.xml",
+    filename: "tuner_vts_config_aidl_V2.xml",
+}
+
+
+filegroup {
+    name: "maleicacid_tuner_hal_lab_profiles",
+    srcs: ["profiles/*.yaml"],
+}
+
+
+cc_library_shared {
+    name: "libmaleicacid_tuner_hal_fmq_shim",
+    vendor: true,
+    srcs: ["fmq_shim/src/tuner_fmq_shim.cpp"],
+    export_include_dirs: ["fmq_shim/include"],
+    shared_libs: [
+        "libfmq",
+        "libutils",
+        "libcutils",
+        "libbase",
+        "libc++",
+        "libdmabufheap",
+        "libhardware",
+        "android.hardware.common.fmq-V1-ndk",
+        "android.hardware.common-V2-ndk",
+    ],
+    cflags: ["-std=c++20"],
+}
+
+rust_binary {
+    name: "maleicacid.tv.tuner_hal-service",
+    relative_install_path: "hw",
+    vendor: true,
+    crate_root: "binder_service/src/main.rs",
+    srcs: ["binder_service/src/*.rs"],
+    edition: "2021",
+    init_rc: ["tuner-hal-service.rc"],
+    vintf_fragments: ["tuner-hal-service.xml"],
+    shared_libs: [
+        "libmaleicacid_tuner_hal_fmq_shim",
+    ],
+    rustlibs: [
+        "android.hardware.tv.tuner-V2-rust",
+        "android.hardware.common-V2-rust",
+        "android.hardware.common.fmq-V1-rust",
+        "libbinder_rs",
+        "libmaleicacid_tuner_hal_common",
+        "libmaleicacid_tuner_hal_frontend_dvb",
+        "libmaleicacid_tuner_hal_frontend_px4",
+        "libmaleicacid_tuner_hal_soft_demux",
+        "libmaleicacid_tuner_hal_descrambler",
+        "libmaleicacid_tuner_hal_dvr",
+    ],
+}
+
+rust_test {
+    name: "maleicacid_tuner_hal_frontend_dvb_test",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal_frontend_dvb_test",
+    srcs: ["frontend_dvb/src/lib.rs"],
+    edition: "2021",
+    rustlibs: ["libmaleicacid_tuner_hal_common"],
+    auto_gen_config: true,
+    test_suites: ["general-tests"],
+}
+
+rust_test {
+    name: "maleicacid_tuner_hal_frontend_px4_test",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal_frontend_px4_test",
+    srcs: ["frontend_px4/src/lib.rs"],
+    edition: "2021",
+    rustlibs: [
+        "libmaleicacid_tuner_hal_common",
+        "libmaleicacid_tuner_hal_soft_demux",
+    ],
+    auto_gen_config: true,
+    test_suites: ["general-tests"],
+}
+
+rust_test {
+    name: "maleicacid_tuner_hal_dvr_test",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal_dvr_test",
+    srcs: ["dvr/src/lib.rs"],
+    edition: "2021",
+    rustlibs: ["libmaleicacid_tuner_hal_common"],
+    auto_gen_config: true,
+    test_suites: ["general-tests"],
+}
+
+rust_test {
+    name: "maleicacid_tuner_hal_soft_demux_test",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal_soft_demux_test",
+    srcs: ["soft_demux/src/lib.rs"],
+    edition: "2021",
+    rustlibs: [
+        "libmaleicacid_tuner_hal_common",
+        "libmaleicacid_tuner_hal_dvr",
+    ],
+    auto_gen_config: true,
+    test_suites: ["general-tests"],
+}
+
+rust_test {
+    name: "maleicacid_tuner_hal_descrambler_test",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal_descrambler_test",
+    srcs: ["descrambler/src/lib.rs"],
+    edition: "2021",
+    rustlibs: ["libmaleicacid_tuner_hal_common"],
+    auto_gen_config: true,
+    test_suites: ["general-tests"],
+}
+
+rust_test {
+    name: "maleicacid_tuner_hal_binder_service_test",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal_binder_service_test",
+    crate_root: "binder_service/src/main.rs",
+    srcs: ["binder_service/src/*.rs"],
+    edition: "2021",
+    shared_libs: [
+        "libmaleicacid_tuner_hal_fmq_shim",
+    ],
+    rustlibs: [
+        "android.hardware.tv.tuner-V2-rust",
+        "android.hardware.common-V2-rust",
+        "android.hardware.common.fmq-V1-rust",
+        "libbinder_rs",
+        "libmaleicacid_tuner_hal_common",
+        "libmaleicacid_tuner_hal_frontend_dvb",
+        "libmaleicacid_tuner_hal_frontend_px4",
+        "libmaleicacid_tuner_hal_soft_demux",
+        "libmaleicacid_tuner_hal_descrambler",
+        "libmaleicacid_tuner_hal_dvr",
+    ],
+    auto_gen_config: true,
+    test_suites: ["general-tests"],
+}
+
+
+prebuilt_etc {
+    name: "maleicacid_tuner_hal_ueventd_rc",
+    vendor: true,
+    src: "config/ueventd.tuner_hal.rc",
+    filename: "ueventd.tuner_hal.rc",
+}
+
+filegroup {
+    name: "maleicacid_tuner_hal_sepolicy_files",
+    srcs: [
+        "sepolicy/file_contexts",
+        "sepolicy/device.te",
+        "sepolicy/tuner_hal.te",
+    ],
+}
+

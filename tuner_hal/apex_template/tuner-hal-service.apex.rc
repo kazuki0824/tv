@@ -1,0 +1,6 @@
+service vendor.maleicacid-tuner-default /apex/com.maleicacid.tv.tuner_hal/bin/hw/maleicacid.tv.tuner_hal-service
+    interface aidl android.hardware.tv.tuner.ITuner/default
+    class hal
+    user media
+    group media system
+    seclabel u:r:hal_tv_tuner_maleicacid:s0

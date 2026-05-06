@@ -1,0 +1,2 @@
+(/.*)?                                          u:object_r:vendor_file:s0
+/bin/hw/maleicacid\.tv\.tuner_hal-service      u:object_r:hal_tv_tuner_maleicacid_exec:s0

@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Maleicacid TV 入力</string>
+    <string name="input_label">Maleicacid 内蔵チューナー</string>
+    <string name="setup_label">チャンネル設定</string>
+</resources>

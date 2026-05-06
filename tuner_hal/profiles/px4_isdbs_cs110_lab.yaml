@@ -1,0 +1,20 @@
+profile_name: px4_isdbs_cs110_lab
+frontend:
+  id: FE_ISDBS_CS110
+  type: ISDBS
+  satellite_band: CS110
+  is_software_frontend: false
+  frequency: 1613000000
+  symbol_rate: 0
+live:
+  audio_filter_id: FILTER_AUDIO_CS110
+  audio_pid: 273
+  video_filter_id: FILTER_VIDEO_CS110
+  video_pid: 272
+record:
+  filter_id: FILTER_RECORD_CS110
+  pid: 272
+  dvr_id: DVR_RECORD_CS110
+scan:
+  support_blind_scan: false
+  notes: "CS110 は TIS SSOT が explicit frequency のみを渡す。TSID は service identity であり frontend selector ではない。HAL は scan 表を生成しない。"

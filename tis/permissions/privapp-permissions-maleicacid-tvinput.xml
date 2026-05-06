@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<permissions>
+    <privapp-permissions package="com.maleicacid.tvinput">
+        <permission name="android.permission.ACCESS_TV_TUNER" />
+        <permission name="android.permission.ACCESS_TV_DESCRAMBLER" />
+        <permission name="android.permission.MODIFY_AUDIO_ROUTING" />
+        <permission name="com.android.providers.tv.permission.READ_EPG_DATA" />
+        <permission name="com.android.providers.tv.permission.WRITE_EPG_DATA" />
+    </privapp-permissions>
+</permissions>

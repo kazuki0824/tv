@@ -1,0 +1,85 @@
+package com.maleicacid.tvinput.tis
+
+import com.maleicacid.tvinput.common.StreamSelector
+import com.maleicacid.tvinput.common.StreamSelectorType
+import com.maleicacid.tvinput.db.ChannelRecord
+
+enum class ScanCandidateKind { ISDB_T_UHF, ISDB_T_CATV, ISDB_S_BS, ISDB_S_110CS }
+
+data class ScanCandidate(
+    val deliverySystem: String,
+    val frequencyHz: Long,
+    val streamSelector: StreamSelector = StreamSelector.NONE,
+    val displayChannel: String,
+    val physicalChannel: Int? = null,
+    val backendHint: String? = null,
+    val satelliteBand: String? = null,
+    val kind: ScanCandidateKind = when (deliverySystem) {
+        ChannelRecord.DELIVERY_SYSTEM_ISDB_T -> ScanCandidateKind.ISDB_T_UHF
+        else -> if (satelliteBand == "110CS") ScanCandidateKind.ISDB_S_110CS else ScanCandidateKind.ISDB_S_BS
+    },
+) {
+    init {
+        require(deliverySystem == ChannelRecord.DELIVERY_SYSTEM_ISDB_T || deliverySystem == ChannelRecord.DELIVERY_SYSTEM_ISDB_S) { "対象外 deliverySystem=$deliverySystem" }
+        require(frequencyHz > 0) { "frequencyHz は正数でなければなりません" }
+        if (deliverySystem == ChannelRecord.DELIVERY_SYSTEM_ISDB_T) require(streamSelector.type == StreamSelectorType.NONE) { "ISDB-T は stream selector を持てません" }
+        if (kind == ScanCandidateKind.ISDB_S_110CS) require(streamSelector.type == StreamSelectorType.NONE) { "CS110 は TSID/relative stream selector による frontend 選局を行いません" }
+        if (kind == ScanCandidateKind.ISDB_S_BS) {
+            val validBsSelector = streamSelector.type == StreamSelectorType.TSID || (backendHint == "px4" && streamSelector.type == StreamSelectorType.RELATIVE)
+            require(validBsSelector) { "BS はTSIDを基本とし、相対TS番号はpx4向け候補だけで許可します" }
+        }
+    }
+}
+
+object JapanIsdbScanPlan {
+    private data class BsTsidEntry(val frequencyHz: Long, val tsid: Int, val label: String, val physical: Int)
+
+    fun isdbtUhf13To62(): List<ScanCandidate> = (13..62).map { ch ->
+        ScanCandidate(ChannelRecord.DELIVERY_SYSTEM_ISDB_T, 473_142_857L + (ch - 13) * 6_000_000L, displayChannel = ch.toString(), physicalChannel = ch, backendHint = "jp-uhf", kind = ScanCandidateKind.ISDB_T_UHF)
+    }
+
+    /**
+     * 日本CATV C13〜C63をTIS側SSOTとして固定する。
+     * VHF 1〜12chは開発規則により恒久スコープ外であり、この候補表には含めない。
+     */
+    fun isdbtCatvC13ToC63(): List<ScanCandidate> {
+        val mid = (13..22).map { ch ->
+            val frequency = if (ch == 22) 167_142_857L else 111_142_857L + (ch - 13) * 6_000_000L
+            ScanCandidate(ChannelRecord.DELIVERY_SYSTEM_ISDB_T, frequency, displayChannel = "C$ch", physicalChannel = ch, backendHint = "jp-catv", kind = ScanCandidateKind.ISDB_T_CATV)
+        }
+        val shb = (23..63).map { ch ->
+            ScanCandidate(ChannelRecord.DELIVERY_SYSTEM_ISDB_T, 225_142_857L + (ch - 23) * 6_000_000L, displayChannel = "C$ch", physicalChannel = ch, backendHint = "jp-catv", kind = ScanCandidateKind.ISDB_T_CATV)
+        }
+        return mid + shb
+    }
+
+    fun isdbsBsTsidStreams(backendHint: String = "earth_pt1"): List<ScanCandidate> = bsTsidEntries.map { entry ->
+        ScanCandidate(ChannelRecord.DELIVERY_SYSTEM_ISDB_S, entry.frequencyHz, streamSelector = StreamSelector.tsid(entry.tsid), displayChannel = entry.label, physicalChannel = entry.physical, backendHint = backendHint, satelliteBand = "BS", kind = ScanCandidateKind.ISDB_S_BS)
+    }
+
+    fun isdbs110CsBands(): List<ScanCandidate> {
+        val baseIf = (0 until 12).map { index -> 1_613_000_000L + index * 40_000_000L }
+        return baseIf.mapIndexed { index, frequency ->
+            ScanCandidate(ChannelRecord.DELIVERY_SYSTEM_ISDB_S, frequency, displayChannel = "CS${index + 1}", physicalChannel = index + 13, backendHint = "jp-110cs-band", satelliteBand = "110CS", kind = ScanCandidateKind.ISDB_S_110CS)
+        }
+    }
+
+    fun isdbs110CsServiceIdentityCandidate(frequencyHz: Long, tsid: Int, label: String, physical: Int): ScanCandidate {
+        require(tsid in 0..0xffff) { "CS110 TSID は service identity としてのみ保持します: $tsid" }
+        return ScanCandidate(ChannelRecord.DELIVERY_SYSTEM_ISDB_S, frequencyHz, displayChannel = label, physicalChannel = physical, backendHint = "jp-110cs-band", satelliteBand = "110CS", kind = ScanCandidateKind.ISDB_S_110CS)
+    }
+
+    fun defaultInitialScan(): List<ScanCandidate> = isdbtUhf13To62() + isdbtCatvC13ToC63() + isdbsBsTsidStreams() + isdbs110CsBands()
+
+    private val bsTsidEntries = listOf(
+        BsTsidEntry(1_049_480_000L, 16400, "BS01-16400", 1), BsTsidEntry(1_049_480_000L, 16401, "BS01-16401", 1), BsTsidEntry(1_049_480_000L, 16402, "BS01-16402", 1),
+        BsTsidEntry(1_087_840_000L, 16432, "BS03-16432", 3), BsTsidEntry(1_087_840_000L, 17969, "BS03-17969", 3), BsTsidEntry(1_087_840_000L, 17970, "BS03-17970", 3),
+        BsTsidEntry(1_126_200_000L, 17488, "BS05-17488", 5), BsTsidEntry(1_126_200_000L, 17489, "BS05-17489", 5),
+        BsTsidEntry(1_202_920_000L, 16528, "BS09-16528", 9), BsTsidEntry(1_202_920_000L, 16530, "BS09-16530", 9),
+        BsTsidEntry(1_279_640_000L, 16592, "BS13-16592", 13), BsTsidEntry(1_279_640_000L, 16593, "BS13-16593", 13), BsTsidEntry(1_279_640_000L, 18130, "BS13-18130", 13),
+        BsTsidEntry(1_318_000_000L, 16625, "BS15-16625", 15), BsTsidEntry(1_318_000_000L, 16626, "BS15-16626", 15), BsTsidEntry(1_318_000_000L, 18675, "BS15-18675", 15),
+        BsTsidEntry(1_394_720_000L, 18224, "BS19-18224", 19), BsTsidEntry(1_394_720_000L, 18225, "BS19-18225", 19), BsTsidEntry(1_394_720_000L, 18226, "BS19-18226", 19), BsTsidEntry(1_394_720_000L, 18227, "BS19-18227", 19),
+        BsTsidEntry(1_433_080_000L, 18256, "BS21-18256", 21), BsTsidEntry(1_433_080_000L, 18257, "BS21-18257", 21), BsTsidEntry(1_433_080_000L, 18258, "BS21-18258", 21),
+        BsTsidEntry(1_471_440_000L, 18288, "BS23-18288", 23), BsTsidEntry(1_471_440_000L, 18801, "BS23-18801", 23), BsTsidEntry(1_471_440_000L, 18802, "BS23-18802", 23),
+    )
+}

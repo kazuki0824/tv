@@ -1,0 +1,14 @@
+# Tuner HAL サービス実行ファイルとチューナーデバイスノード。
+/vendor/bin/hw/maleicacid\.tv\.tuner_hal-service          u:object_r:hal_tv_tuner_maleicacid_exec:s0
+/dev/dvb/adapter[0-9]+/frontend[0-9]+                      u:object_r:dvb_frontend_device:s0
+/dev/dvb/adapter[0-9]+/demux[0-9]+                         u:object_r:dvb_demux_device:s0
+/dev/dvb/adapter[0-9]+/dvr[0-9]+                           u:object_r:dvb_dvr_device:s0
+/dev/dvb/adapter[0-9]+/net[0-9]+                           u:object_r:dvb_net_device:s0
+/dev/px4video[0-9]+                                        u:object_r:px4_tuner_device:s0
+/dev/pxmlt5video[0-9]+                                     u:object_r:px4_tuner_device:s0
+/dev/pxmlt8video[0-9]+                                     u:object_r:px4_tuner_device:s0
+/dev/isdb6014video[0-9]+                                   u:object_r:px4_tuner_device:s0
+/dev/isdb2056video[0-9]+                                   u:object_r:px4_tuner_device:s0
+/dev/pxm1urvideo[0-9]+                                     u:object_r:px4_tuner_device:s0
+/dev/pxs1urvideo[0-9]+                                     u:object_r:px4_tuner_device:s0
+/dev/isdbt2071video[0-9]+                                  u:object_r:px4_tuner_device:s0

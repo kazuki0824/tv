@@ -1,0 +1,18 @@
+profile_name: earth_pt1_isdbt_lab
+frontend:
+  id: FE_ISDBT_UHF
+  type: ISDBT
+  is_software_frontend: false
+  frequency: 557142857
+  bandwidth: BANDWIDTH_6MHZ
+live:
+  audio_filter_id: FILTER_AUDIO_ISDBT
+  audio_pid: 273
+  video_filter_id: FILTER_VIDEO_ISDBT
+  video_pid: 272
+record:
+  filter_id: FILTER_RECORD_ISDBT
+  pid: 272
+  dvr_id: DVR_RECORD_ISDBT
+scan:
+  support_blind_scan: false

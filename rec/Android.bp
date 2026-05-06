@@ -1,0 +1,26 @@
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+filegroup {
+    name: "maleicacid_rec_sources",
+    srcs: ["src/**/*.kt"],
+}
+
+
+android_test {
+    name: "MaleicacidRecScopeTests",
+    srcs: [
+        "tests/src/**/*.kt",
+        "src/com/maleicacid/tvinput/db/TvInputDatabase.kt",
+        "src/com/maleicacid/tvinput/reservation/ReservationPolicy.kt",
+        "../tis/src/com/maleicacid/tvinput/common/ChannelKeys.kt",
+    ],
+    manifest: "tests/AndroidManifest.xml",
+    sdk_version: "system_current",
+    static_libs: [
+        "androidx.test.ext.junit",
+        "androidx.test.runner",
+    ],
+    test_suites: ["device-tests"],
+}

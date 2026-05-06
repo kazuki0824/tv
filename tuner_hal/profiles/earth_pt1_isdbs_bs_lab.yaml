@@ -1,0 +1,22 @@
+profile_name: earth_pt1_isdbs_bs_lab
+frontend:
+  id: FE_ISDBS_BS
+  type: ISDBS
+  satellite_band: BS
+  is_software_frontend: false
+  frequency: 1049480000
+  stream_id_type: TS_ID
+  stream_id: 16400
+  symbol_rate: 0
+live:
+  audio_filter_id: FILTER_AUDIO_BS
+  audio_pid: 273
+  video_filter_id: FILTER_VIDEO_BS
+  video_pid: 272
+record:
+  filter_id: FILTER_RECORD_BS
+  pid: 272
+  dvr_id: DVR_RECORD_BS
+scan:
+  support_blind_scan: false
+  notes: "earth_pt1/DVB の BS は IF frequency + TSID で選局し、相対 TS 番号は受け付けない。"

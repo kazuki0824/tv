@@ -1,0 +1,7 @@
+service vendor.maleicacid-cas-stub-default /vendor/bin/hw/maleicacid.tv.cas_hal-stub-service
+    interface aidl android.hardware.cas.IMediaCasService/default
+    class hal
+    user media
+    group media mediadrm drmrpc system
+    disabled
+    oneshot

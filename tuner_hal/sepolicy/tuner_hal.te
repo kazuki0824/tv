@@ -1,0 +1,18 @@
+# vendor デバイスノードへの最小アクセス許可。
+# 製品ツリーでは標準の hal_tv_tuner ドメイン policy と統合する。
+type hal_tv_tuner_maleicacid, domain;
+type hal_tv_tuner_maleicacid_exec, exec_type, vendor_file_type, file_type;
+
+init_daemon_domain(hal_tv_tuner_maleicacid)
+hal_server_domain(hal_tv_tuner_maleicacid, hal_tv_tuner)
+
+allow hal_tv_tuner_maleicacid dvb_frontend_device:chr_file rw_file_perms;
+allow hal_tv_tuner_maleicacid dvb_demux_device:chr_file rw_file_perms;
+allow hal_tv_tuner_maleicacid dvb_dvr_device:chr_file rw_file_perms;
+allow hal_tv_tuner_maleicacid dvb_net_device:chr_file rw_file_perms;
+allow hal_tv_tuner_maleicacid px4_tuner_device:chr_file rw_file_perms;
+
+# AV MediaEvent shared-handle path uses /dev/dma_heap/system only for configured AV filters.
+# Non-AV filters must not depend on this allocator at openFilter() time.
+allow hal_tv_tuner_maleicacid dmabuf_heap_device:dir r_dir_perms;
+allow hal_tv_tuner_maleicacid dmabuf_system_heap_device:chr_file rw_file_perms;
