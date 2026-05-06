@@ -1180,10 +1180,14 @@ impl DemuxHandle {
             .and_then(|filter| filter.config.as_ref().map(|config| config.tpid));
         if let Some(filter) = self.filters.get_mut(&filter_id) {
             filter.started = false;
+            filter.queued_bytes = 0;
             filter.pending_start_event = false;
             filter.pending_overflow = false;
             filter.delivery_not_before = None;
             filter.delivery_generation = filter.delivery_generation.saturating_add(1);
+            self.filter_queues.insert(filter_id, VecDeque::new());
+            self.section_filter_runtime
+                .insert(filter_id, SectionFilterRuntime::default());
             if let Some(pid) = pid {
                 self.prune_assemblers_for_pid(pid);
             }
@@ -1831,6 +1835,13 @@ impl DemuxHandle {
     }
 
     pub fn drain_filter_payloads_for_delivery(&mut self, filter_id: i32) -> Vec<FilterPayload> {
+        if self
+            .filters
+            .get(&filter_id)
+            .map_or(true, |filter| !filter.started)
+        {
+            return Vec::new();
+        }
         if self.filter_delivery_readiness(filter_id) != FilterDeliveryReadiness::Ready {
             return Vec::new();
         }
@@ -3990,6 +4001,36 @@ mod start_event_delay_tests {
             demux.filter_start_event_pending(reset.filter_id),
             Some(false)
         );
+    }
+
+    #[test]
+    fn stop_filter_clears_queued_payload_and_blocks_delivery_drain() {
+        let mut demux = DemuxHandle::new(0);
+        let filter = demux.register_filter(1, FilterOpenType::TsSection, 4096);
+        assert!(demux.configure_filter_with_summary(filter.filter_id, section_config()));
+        assert!(demux.start_filter(filter.filter_id));
+        demux.push_filter_payload(filter.filter_id, FilterPayload::Bytes(vec![1, 2, 3]));
+        assert_eq!(
+            demux
+                .filter_record(filter.filter_id)
+                .map(|record| record.queued_bytes),
+            Some(3)
+        );
+
+        assert!(demux.stop_filter(filter.filter_id));
+
+        assert_eq!(
+            demux.filter_record(filter.filter_id).map(|record| (
+                record.started,
+                record.queued_bytes,
+                record.pending_overflow
+            )),
+            Some((false, 0, false))
+        );
+        assert!(demux
+            .drain_filter_payloads_for_delivery(filter.filter_id)
+            .is_empty());
+        assert!(demux.drain_filter_payloads(filter.filter_id).is_empty());
     }
 }
 

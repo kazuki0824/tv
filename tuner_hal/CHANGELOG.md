@@ -1,6 +1,7 @@
 ## r50ap6
 
 - `r51_tuner_hal_bugfix_execution_plan.md` の Phase 0〜7 を対象に、既存 Phase 0〜4 実装を再確認したうえで R09 / R17 / R14 の未達を補正した。
+- Phase 4 / R06: `stop_filter()` が pending payload queue、queued bytes、delay runtime を clear し、stopped filter から delivery drain しないよう補正した。
 - Phase 5 / R09: soft demux の continuity tracker、section assembler、PES assembler、assembly generation を frontend / playback origin 別に分離し、playback 起源 TS が frontend 起源 state を汚染しない regression test を追加した。
 - Phase 6 / R17: descramble failure / scrambled pass-through は `push_ts_packet_record_only()` に限定され、section / PES / AV assembly に入らないことを record-only regression test で固定した。
 - Phase 7 / R14: 同一 demux generation の同一 PID を複数 active descrambler に登録する経路を拒否し、設計資料と regression test を更新した。
