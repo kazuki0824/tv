@@ -237,20 +237,54 @@ fn japan_bs_tsid_matches(if_frequency_hz: u64, tsid: u16) -> bool {
 
 const JAPAN_ISDBT_UHF_FIRST_HZ: u64 = 473_142_857;
 const JAPAN_ISDBT_UHF_LAST_HZ: u64 = 767_142_857;
-const JAPAN_ISDBT_UHF_STEP_HZ: u64 = 6_000_000;
+const JAPAN_ISDBT_STEP_HZ: u64 = 6_000_000;
 const JAPAN_ISDBT_TOLERANCE_HZ: u64 = 500_000;
+const JAPAN_ISDBT_CATV_BASE_HZ: u64 = 93_142_857;
+const JAPAN_ISDBT_CATV_CH12_EXTRA_HZ: u64 = 2_000_000;
+const JAPAN_ISDBT_CATV_RANGES: &[(u64, u64)] = &[(3, 12), (22, 62)];
 
-fn is_japan_isdbt_uhf_frequency_hz(frequency_hz: u64) -> bool {
-    if frequency_hz < JAPAN_ISDBT_UHF_FIRST_HZ.saturating_sub(JAPAN_ISDBT_TOLERANCE_HZ)
-        || frequency_hz > JAPAN_ISDBT_UHF_LAST_HZ.saturating_add(JAPAN_ISDBT_TOLERANCE_HZ)
+fn is_near_japan_isdbt_grid_frequency_hz(
+    frequency_hz: u64,
+    first_hz: u64,
+    last_hz: u64,
+) -> bool {
+    if frequency_hz < first_hz.saturating_sub(JAPAN_ISDBT_TOLERANCE_HZ)
+        || frequency_hz > last_hz.saturating_add(JAPAN_ISDBT_TOLERANCE_HZ)
     {
         return false;
     }
-    let delta = frequency_hz.saturating_sub(JAPAN_ISDBT_UHF_FIRST_HZ);
-    let nearest = JAPAN_ISDBT_UHF_FIRST_HZ
-        + ((delta + JAPAN_ISDBT_UHF_STEP_HZ / 2) / JAPAN_ISDBT_UHF_STEP_HZ)
-            * JAPAN_ISDBT_UHF_STEP_HZ;
-    nearest <= JAPAN_ISDBT_UHF_LAST_HZ && frequency_hz.abs_diff(nearest) <= JAPAN_ISDBT_TOLERANCE_HZ
+    let delta = frequency_hz.saturating_sub(first_hz);
+    let nearest = first_hz
+        + ((delta + JAPAN_ISDBT_STEP_HZ / 2) / JAPAN_ISDBT_STEP_HZ) * JAPAN_ISDBT_STEP_HZ;
+    nearest <= last_hz && frequency_hz.abs_diff(nearest) <= JAPAN_ISDBT_TOLERANCE_HZ
+}
+
+fn is_japan_isdbt_uhf_frequency_hz(frequency_hz: u64) -> bool {
+    is_near_japan_isdbt_grid_frequency_hz(
+        frequency_hz,
+        JAPAN_ISDBT_UHF_FIRST_HZ,
+        JAPAN_ISDBT_UHF_LAST_HZ,
+    )
+}
+
+fn is_japan_isdbt_catv_frequency_hz(frequency_hz: u64) -> bool {
+    for &(first, last) in JAPAN_ISDBT_CATV_RANGES {
+        for freq_no in first..=last {
+            let mut canonical = JAPAN_ISDBT_CATV_BASE_HZ + freq_no * JAPAN_ISDBT_STEP_HZ;
+            if freq_no == 12 {
+                canonical = canonical.saturating_add(JAPAN_ISDBT_CATV_CH12_EXTRA_HZ);
+            }
+            if frequency_hz.abs_diff(canonical) <= JAPAN_ISDBT_TOLERANCE_HZ {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn is_japan_isdbt_frequency_hz(frequency_hz: u64) -> bool {
+    is_japan_isdbt_uhf_frequency_hz(frequency_hz)
+        || is_japan_isdbt_catv_frequency_hz(frequency_hz)
 }
 
 const SEC_TONE_OFF: u32 = 0;
@@ -1134,10 +1168,10 @@ impl DvbFrontendBackend {
         })?;
         match request.system {
             FrontendSystem::IsdbT => {
-                if is_japan_isdbt_uhf_frequency_hz(request.frequency) {
+                if is_japan_isdbt_frequency_hz(request.frequency) {
                     Ok(driver_frequency)
                 } else {
-                    Err(HalError::InvalidArgument(format!("earth_pt1 ISDB-T frequency is outside the fixed Japanese UHF candidate table: {}", request.frequency)))
+                    Err(HalError::InvalidArgument(format!("earth_pt1 ISDB-T frequency is outside the fixed Japanese UHF/CATV C13-C63 candidate tables: {}", request.frequency)))
                 }
             }
             FrontendSystem::IsdbS => {
@@ -1626,6 +1660,18 @@ mod tests {
             probe.normalized_frequency_range_hz(FrontendSystem::IsdbS),
             (950_000_000_i64, 2_150_000_000_i64)
         );
+    }
+
+    #[test]
+    fn japan_isdbt_validation_accepts_tis_catv_c13_to_c63_and_uhf() {
+        assert!(super::is_japan_isdbt_frequency_hz(111_142_857));
+        assert!(super::is_japan_isdbt_frequency_hz(167_142_857));
+        assert!(super::is_japan_isdbt_frequency_hz(225_142_857));
+        assert!(super::is_japan_isdbt_frequency_hz(465_142_857));
+        assert!(super::is_japan_isdbt_frequency_hz(473_142_857));
+        assert!(super::is_japan_isdbt_frequency_hz(767_142_857));
+        assert!(!super::is_japan_isdbt_frequency_hz(105_142_857));
+        assert!(!super::is_japan_isdbt_frequency_hz(219_142_857));
     }
 
     #[test]

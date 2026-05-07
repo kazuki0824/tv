@@ -1126,7 +1126,7 @@ mod tests {
     fn reader_pump_routes_section_to_filter_but_not_to_record_dvr() {
         let core = DemuxCore::new();
         let mut demux = core.new_handle(0);
-        let filter = demux.register_filter(1, FilterOpenType::TsSection, 1024);
+        let filter = demux.register_filter_result(1, FilterOpenType::TsSection, 1024).expect("test setup should register filter");
         let dvr = demux
             .register_dvr(DemuxPathDirection::Record, 4096)
             .unwrap();
@@ -1185,7 +1185,7 @@ mod tests {
     fn reader_pump_mirrors_record_ts_packets_to_dvr() {
         let core = DemuxCore::new();
         let mut demux = core.new_handle(0);
-        let filter = demux.register_filter(1, FilterOpenType::TsRecord, 2048);
+        let filter = demux.register_filter_result(1, FilterOpenType::TsRecord, 2048).expect("test setup should register filter");
         let dvr = demux
             .register_dvr(DemuxPathDirection::Record, 4096)
             .unwrap();

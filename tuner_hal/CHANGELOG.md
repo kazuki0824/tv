@@ -1,3 +1,36 @@
+## r50aq4
+
+- Applied the Issue 5 minimal fix plan A: removed the panic-based `DemuxHandle::register_filter()` helper from the non-test `soft_demux` public API.
+- Updated Tuner HAL unit-test call sites to use `register_filter_result(...).expect("test setup should register filter")`, keeping the panic boundary inside test setup rather than release runtime API.
+- Applied the Issue 6 minimal fix: replaced the AV MediaEvent builder `debug_assert!(!secure_memory)` with a runtime fail-closed guard that logs a diagnostic and drops the event without panic if the unsupported secure-memory state reaches the builder.
+- Added regression coverage for the secure-memory AV event-builder fail-closed path.
+- Soong build, Rust unit test execution, VTS, and real-device confirmation remain out of scope for this pre-build archive update.
+
+## r50aq3
+
+- Completed the r50aq2 follow-up fixes for items 6 and 8 only.
+- Item 6: factored AV shared-memory errno mapping into `av_shared_file_error_result()` and added regression coverage for ENOMEM, ENOENT, EACCES, EIO, EINVAL, and unknown errno mapping.
+- Item 8: changed DVR close cleanup to attempt all cleanup steps after the first failure, preserving the first returned error while still stopping callback worker state, clearing queue state, stopping queue backing, and unregistering the DVR from the parent demux.
+- Added DVR close regression coverage for successful idempotent double close and for queue stop failure still removing the parent demux DVR record.
+- Soong build, Rust unit test execution, VTS, and real-device confirmation remain out of scope for this pre-build archive update.
+
+## r50aq2
+
+- Applied the r51 pre-build Tuner HAL fixes for items 1, 2, 5, 6, and 8 in that order.
+- Item 1: DVB / earth_pt1 ISDB-T validation and advertised frontend frequency contract now cover the fixed Japanese CATV C13-C63 range in addition to UHF 13-62, matching the px4 backend and r51 explicit tune contract.
+- Item 2: VTS config generation now emits DVR playback data flows whenever playback DVR entries are emitted, and the generated AIDL V2 VTS XML connects each playback DVR to its audio/video playback filters.
+- Item 5: managed diagnostic workers now use `WorkerSignal::wait_timeout_or_stop()` for periodic stop-wake waits; the runtime `sleep_with_stop()` polling helper was removed.
+- Item 6: AV shared-memory allocation errno mapping now reports ENOMEM as `OUT_OF_MEMORY`, device absence / permission errors as `UNAVAILABLE`, and EINVAL / EIO / unknown runtime failures as `UNKNOWN_ERROR`.
+- Item 8: DVR close is idempotent through `closed.swap(true, Ordering::SeqCst)` for both normal and best-effort close paths.
+- Soong build, Rust unit test execution, VTS, and real-device confirmation remain out of scope for this pre-build archive update.
+
+## r50aq
+
+- Removed test cases that used `include_str!("tuner_hal.rs")` or `include_str!("main.rs")` to inspect production source text with string matching.
+- Kept `include_str!()` uses that only check static config / sepolicy / VTS XML / design-document / cross-module SSOT consistency.
+- Added project and Tuner HAL rules forbidding self-referential source-string tests as completion evidence; logic contracts must be verified through real API/helper/state/diagnostic/queue/callback/worker behavior.
+- No production Tuner HAL runtime logic was intentionally changed. Soong build, Rust unit test execution, VTS, and device confirmation remain out of scope for this static pre-build step.
+
 ## r50ap11
 
 - Phase 10 / R13 only: completed filter condition / metadata argument validation without advancing to Phase 11.

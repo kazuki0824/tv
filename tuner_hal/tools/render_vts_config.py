@@ -121,7 +121,9 @@ def data_flow_xml(profile):
         f'''    <clearLiveBroadcast frontendConnection="{fe['id']}" audioFilterConnection="{audio_id}" videoFilterConnection="{video_id}"/>''',
     ]
     if rec:
+        playback_id = rec.get('playback_dvr_id', playback_dvr_id_for_record(rec['dvr_id']))
         values.append(f'''    <dvrRecord hasFrontendConnection="true" frontendConnection="{fe['id']}" recordFilterConnection="{rec['filter_id']}" dvrRecordConnection="{rec['dvr_id']}"/>''')
+        values.append(f'''    <dvrPlayback dvrConnection="{playback_id}" audioFilterConnection="{audio_id}" videoFilterConnection="{video_id}"/>''')
     return values
 
 

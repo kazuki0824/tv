@@ -22,9 +22,12 @@
   <dataFlowConfiguration>
     <clearLiveBroadcast frontendConnection="FE_ISDBS_BS" audioFilterConnection="FILTER_AUDIO_BS" videoFilterConnection="FILTER_VIDEO_BS"/>
     <dvrRecord hasFrontendConnection="true" frontendConnection="FE_ISDBS_BS" recordFilterConnection="FILTER_RECORD_BS" dvrRecordConnection="DVR_RECORD_BS"/>
+    <dvrPlayback dvrConnection="DVR_PLAYBACK_BS" audioFilterConnection="FILTER_AUDIO_BS" videoFilterConnection="FILTER_VIDEO_BS"/>
     <clearLiveBroadcast frontendConnection="FE_ISDBS_CS110" audioFilterConnection="FILTER_AUDIO_CS110" videoFilterConnection="FILTER_VIDEO_CS110"/>
     <dvrRecord hasFrontendConnection="true" frontendConnection="FE_ISDBS_CS110" recordFilterConnection="FILTER_RECORD_CS110" dvrRecordConnection="DVR_RECORD_CS110"/>
+    <dvrPlayback dvrConnection="DVR_PLAYBACK_CS110" audioFilterConnection="FILTER_AUDIO_CS110" videoFilterConnection="FILTER_VIDEO_CS110"/>
     <clearLiveBroadcast frontendConnection="FE_ISDBT_UHF" audioFilterConnection="FILTER_AUDIO_ISDBT" videoFilterConnection="FILTER_VIDEO_ISDBT"/>
     <dvrRecord hasFrontendConnection="true" frontendConnection="FE_ISDBT_UHF" recordFilterConnection="FILTER_RECORD_ISDBT" dvrRecordConnection="DVR_RECORD_ISDBT"/>
+    <dvrPlayback dvrConnection="DVR_PLAYBACK_ISDBT" audioFilterConnection="FILTER_AUDIO_ISDBT" videoFilterConnection="FILTER_VIDEO_ISDBT"/>
   </dataFlowConfiguration>
 </TunerConfiguration>

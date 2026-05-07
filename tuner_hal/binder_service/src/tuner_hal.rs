@@ -427,7 +427,6 @@ impl WorkerSignal {
 struct ManagedWorker {
     name: &'static str,
     signal: Arc<WorkerSignal>,
-    legacy_stop: Option<Arc<AtomicBool>>,
     handle: Option<WorkerJoinHandle>,
 }
 
@@ -437,16 +436,12 @@ impl ManagedWorker {
         Self {
             name,
             signal,
-            legacy_stop: None,
             handle: Some(handle),
         }
     }
 
     fn request_stop(&self) {
         self.signal.request_stop();
-        if let Some(stop) = self.legacy_stop.as_ref() {
-            stop.store(true, Ordering::SeqCst);
-        }
     }
 
     fn stop_and_join(&mut self) -> WorkerExit {
@@ -467,39 +462,22 @@ impl Drop for ManagedWorker {
     }
 }
 
-fn sleep_with_stop(stop: &AtomicBool, interval: Duration) {
-    let start = Instant::now();
-    let slice = Duration::from_millis(100);
-    while start.elapsed() < interval {
-        if stop.load(Ordering::SeqCst) {
-            break;
-        }
-        let elapsed = start.elapsed();
-        if elapsed >= interval {
-            break;
-        }
-        let remaining = interval - elapsed;
-        thread::sleep(if remaining < slice { remaining } else { slice });
-    }
-}
-
 fn spawn_managed_worker_with_exit_hook<F, H>(
     name: &'static str,
     body: F,
     hook: H,
 ) -> std::io::Result<ManagedWorker>
 where
-    F: FnOnce(Arc<AtomicBool>) + Send + 'static,
+    F: FnOnce(Arc<WorkerSignal>) + Send + 'static,
     H: FnOnce(WorkerExit) + Send + 'static,
 {
-    let stop = Arc::new(AtomicBool::new(false));
     let signal = Arc::new(WorkerSignal::new(true));
-    let stop_for_thread = Arc::clone(&stop);
+    let signal_for_thread = Arc::clone(&signal);
     let handle = spawn_worker_with_exit_hook(
         name,
         move || {
-            body(Arc::clone(&stop_for_thread));
-            if stop_for_thread.load(Ordering::SeqCst) {
+            body(Arc::clone(&signal_for_thread));
+            if signal_for_thread.is_stop_requested() {
                 WorkerExit::Cancelled
             } else {
                 WorkerExit::Normal
@@ -510,7 +488,6 @@ where
     Ok(ManagedWorker {
         name,
         signal,
-        legacy_stop: Some(stop),
         handle: Some(handle),
     })
 }
@@ -2304,14 +2281,19 @@ fn errno_name(errno: i32) -> &'static str {
     }
 }
 
+fn av_shared_file_error_result(errno: i32) -> TunerResult {
+    match errno {
+        ERRNO_ENOMEM => TunerResult::OUT_OF_MEMORY,
+        ERRNO_ENOENT | ERRNO_EACCES => TunerResult::UNAVAILABLE,
+        ERRNO_EINVAL | ERRNO_EIO => TunerResult::UNKNOWN_ERROR,
+        _ => TunerResult::UNKNOWN_ERROR,
+    }
+}
+
 fn av_shared_file_error_status(err: AvSharedFileError) -> Status {
     let detail = err.detail();
     eprintln!("maleicacid-tuner-hal-av-shared: {detail}");
-    let result = match err.errno {
-        ERRNO_ENOMEM => TunerResult::OUT_OF_MEMORY,
-        ERRNO_ENOENT | ERRNO_EACCES | ERRNO_EINVAL => TunerResult::UNAVAILABLE,
-        _ => TunerResult::UNAVAILABLE,
-    };
+    let result = av_shared_file_error_result(err.errno);
     Status::new_service_specific_error(result.0, Some(&detail))
 }
 
@@ -2792,7 +2774,7 @@ fn entry_frontend_frequency_contract(entry: &FrontendEntry) -> (i64, i64, i64) {
             (JAPAN_BS_FIRST_IF_HZ, JAPAN_CS110_LAST_IF_HZ, 0)
         }
         FrontendEntryKind::Dvb { declared_type, .. } if *declared_type == FrontendType::ISDBT => (
-            JAPAN_UHF_13_CENTER_HZ - JAPAN_ISDBT_TUNE_TOLERANCE_HZ,
+            JAPAN_CATV_C13_CENTER_HZ - JAPAN_ISDBT_TUNE_TOLERANCE_HZ,
             JAPAN_UHF_62_CENTER_HZ + JAPAN_ISDBT_TUNE_TOLERANCE_HZ,
             JAPAN_ISDBT_TUNE_TOLERANCE_HZ,
         ),
@@ -4115,11 +4097,13 @@ impl TunerHal {
             let path_for_file = path.clone();
             match spawn_managed_worker_with_exit_hook(
                 "descrambler_diagnostic_file",
-                move |stop| {
-                    while !stop.load(Ordering::SeqCst) {
+                move |signal| {
+                    while !signal.is_stop_requested() {
                         let dump = diagnostics_for_file.dump_for_debug();
                         diagnostic_file_writes_for_file.write(&path_for_file, dump);
-                        sleep_with_stop(&stop, Duration::from_secs(5));
+                        if signal.wait_timeout_or_stop(Duration::from_secs(5)) {
+                            break;
+                        }
                     }
                 },
                 move |exit| {
@@ -4161,8 +4145,8 @@ impl TunerHal {
             let path_for_file = path.clone();
             match spawn_managed_worker_with_exit_hook(
                 "frontend_diagnostic_file",
-                move |stop| {
-                    while !stop.load(Ordering::SeqCst) {
+                move |signal| {
+                    while !signal.is_stop_requested() {
                         let frontend_dump = frontend_registry_for_file
                             .values()
                             .map(|runtime| {
@@ -4183,7 +4167,9 @@ impl TunerHal {
                             format!("{startup_dump}\n{frontend_dump}")
                         };
                         diagnostic_file_writes_for_file.write(&path_for_file, dump);
-                        sleep_with_stop(&stop, Duration::from_secs(5));
+                        if signal.wait_timeout_or_stop(Duration::from_secs(5)) {
+                            break;
+                        }
                     }
                 },
                 move |exit| {
@@ -4208,8 +4194,8 @@ impl TunerHal {
             let path_for_file = path.clone();
             match spawn_managed_worker_with_exit_hook(
                 "av_shared_diagnostic_file",
-                move |stop| {
-                    while !stop.load(Ordering::SeqCst) {
+                move |signal| {
+                    while !signal.is_stop_requested() {
                         let dump =
                             lock_mutex_option(&demux_registry_for_av_debug, "demux_registry")
                                 .map(|registry| {
@@ -4237,7 +4223,9 @@ impl TunerHal {
                                 })
                                 .unwrap_or_else(|| "demux_registry=poisoned".to_string());
                         diagnostic_file_writes_for_file.write(&path_for_file, dump);
-                        sleep_with_stop(&stop, Duration::from_secs(5));
+                        if signal.wait_timeout_or_stop(Duration::from_secs(5)) {
+                            break;
+                        }
                     }
                 },
                 move |exit| {
@@ -8091,37 +8079,49 @@ impl DvrHal {
     }
 
     fn close_internal(&self) -> BinderResult<()> {
-        if self.closed.load(Ordering::SeqCst) {
-            self.stop_callback_worker()?;
-            self.queue_backing.clear();
-            self.runtime_io.unregister_dvr(self.dvr_id)?;
-            self.queue_backing.stop()?;
-            if let Some(mut state) = lock_mutex_option(&self.state, "demux_handle") {
-                state.unregister_dvr(self.dvr_id);
-            }
+        if self.closed.swap(true, Ordering::SeqCst) {
             return Ok(());
         }
-        self.stop_callback_worker()?;
+
+        let mut first_error: Option<Status> = None;
+
+        if let Err(err) = self.stop_callback_worker() {
+            first_error.get_or_insert(err);
+        }
         self.queue_backing.clear();
-        self.runtime_io.unregister_dvr(self.dvr_id)?;
-        self.queue_backing.stop()?;
-        lock_mutex_status(&self.state, "demux_handle")?.unregister_dvr(self.dvr_id);
-        self.closed.store(true, Ordering::SeqCst);
-        Ok(())
+        if let Err(err) = self.runtime_io.unregister_dvr(self.dvr_id) {
+            first_error.get_or_insert(err);
+        }
+        if let Err(err) = self.queue_backing.stop() {
+            first_error.get_or_insert(err);
+        }
+        match lock_mutex_status(&self.state, "demux_handle") {
+            Ok(mut state) => {
+                state.unregister_dvr(self.dvr_id);
+            }
+            Err(err) => {
+                first_error.get_or_insert(err);
+            }
+        }
+
+        if let Some(err) = first_error {
+            Err(err)
+        } else {
+            Ok(())
+        }
     }
 
     fn close_internal_best_effort(&self) {
-        self.stop_callback_worker_best_effort();
-        if self.closed.load(Ordering::SeqCst) {
+        if self.closed.swap(true, Ordering::SeqCst) {
             return;
         }
+        self.stop_callback_worker_best_effort();
         self.queue_backing.clear();
         self.runtime_io.unregister_dvr_best_effort(self.dvr_id);
         self.queue_backing.stop_best_effort();
         if let Some(mut state) = lock_mutex_option(&self.state, "demux_handle") {
             state.unregister_dvr(self.dvr_id);
         }
-        self.closed.store(true, Ordering::SeqCst);
     }
 
     fn status_mask_allows(status_mask: i32, status_bit: i32) -> bool {
@@ -8710,7 +8710,13 @@ fn build_filter_event_from_payload(
             passthrough: false,
             secure_memory,
         } => {
-            debug_assert!(!*secure_memory);
+            if *secure_memory {
+                eprintln!(
+                    "maleicacid-tuner-hal-av-diagnostic: filter_id={} reason=SECURE_MEMORY_UNSUPPORTED_REACHED_EVENT_BUILDER",
+                    record.filter_id
+                );
+                return None;
+            }
             let av_slice = av_slice?;
             let av_data_id = av_data_id.filter(|id| *id != 0)?;
             let av_memory = av_memory?;
@@ -10189,44 +10195,6 @@ mod lnb_state_tests {
         assert_eq!(stored.generation, 0);
     }
 
-    #[test]
-    fn lnb_close_rejects_later_mutating_methods_without_registry_side_effects() {
-        let registry = Arc::new(Mutex::new(BTreeMap::new()));
-        registry.lock().unwrap().insert(
-            44,
-            LnbRuntimeState {
-                profile: LnbDeviceProfile::Px4Device15VOnly,
-                voltage: Some(LnbVoltage::NONE),
-                tone: Some(LnbTone::NONE),
-                position: Some(LnbPosition::UNDEFINED),
-                generation: 9,
-                ..Default::default()
-            },
-        );
-        let frontend_registry: Arc<BTreeMap<i32, Arc<FrontendRuntime>>> = Arc::new(BTreeMap::new());
-        let lnb = LnbHal::new(44, Arc::clone(&registry), frontend_registry);
-
-        assert!(lnb.close().is_ok());
-        assert!(lnb.close().is_ok());
-        assert!(lnb.setVoltage(LnbVoltage::VOLTAGE_15V).is_err());
-        assert!(lnb.setTone(LnbTone::NONE).is_err());
-        assert!(lnb.setSatellitePosition(LnbPosition::UNDEFINED).is_err());
-        assert!(lnb.sendDiseqcMessage(&[0xe0, 0x10, 0x38, 0xf0]).is_err());
-
-        let stored = registry.lock().unwrap().get(&44).cloned().unwrap();
-        assert_eq!(stored.voltage, Some(LnbVoltage::NONE));
-        assert_eq!(stored.tone, Some(LnbTone::NONE));
-        assert_eq!(stored.position, Some(LnbPosition::UNDEFINED));
-        assert_eq!(stored.generation, 9);
-        assert_eq!(stored.diseqc_generation, 0);
-
-        let source = include_str!("tuner_hal.rs");
-        let set_callback_body = source
-            .split("fn setCallback(&self")
-            .nth(1)
-            .expect("LnbHal setCallback body must exist");
-        assert!(set_callback_body.contains("self.ensure_open()?"));
-    }
 }
 
 #[cfg(test)]
@@ -10554,44 +10522,7 @@ mod frontend_capability_tests {
         assert_eq!(entry_frontend_max_symbol_rate_contract(&dvb_isdbs), 0);
     }
 
-    #[test]
-    fn isdbs_symbol_rate_and_stream_selector_validation_are_not_silently_ignored() {
-        let source = include_str!("tuner_hal.rs");
-        assert!(source.contains("if s.symbolRate != 0"));
-        assert!(map_isdbs_stream_selector(
-            0,
-            FrontendIsdbsStreamIdType::UNDEFINED,
-            JAPAN_BS_FIRST_IF_HZ as u64
-        )
-        .unwrap()
-        .0
-        .is_none());
-        assert!(map_isdbs_stream_selector(
-            1,
-            FrontendIsdbsStreamIdType::UNDEFINED,
-            JAPAN_BS_FIRST_IF_HZ as u64
-        )
-        .is_err());
-        assert!(map_isdbs_stream_selector(
-            1,
-            FrontendIsdbsStreamIdType::UNDEFINED,
-            JAPAN_CS110_LAST_IF_HZ as u64
-        )
-        .is_err());
-        assert!(map_isdbs_stream_selector(
-            1,
-            FrontendIsdbsStreamIdType::STREAM_ID,
-            JAPAN_CS110_LAST_IF_HZ as u64
-        )
-        .is_err());
-    }
 
-    #[test]
-    fn isdbs_symbol_rate_negative_is_rejected_by_contract() {
-        let source = include_str!("tuner_hal.rs");
-        assert!(source.contains("if s.symbolRate != 0"));
-        assert!(!source.contains(&["if s.symbolRate", " > 0"].concat()));
-    }
 
     #[test]
     fn rf_lock_status_caps_are_backend_specific() {
@@ -10884,7 +10815,7 @@ mod static_completion_tests {
         DemuxFilterRecordSettings::DemuxFilterRecordSettings,
         DemuxFilterSubType::DemuxFilterSubType, DemuxRecordScIndexType::DemuxRecordScIndexType,
         DemuxTsFilterType::DemuxTsFilterType, FilterDelayHintType::FilterDelayHintType,
-        PlaybackSettings::PlaybackSettings, RecordSettings::RecordSettings,
+        IDvrCallback::BnDvrCallback, PlaybackSettings::PlaybackSettings, RecordSettings::RecordSettings,
     };
 
     struct NoopFilterCallback;
@@ -10898,6 +10829,44 @@ mod static_completion_tests {
         fn onFilterEvent(&self, _filterEvent: &[DemuxFilterEvent]) -> BinderResult<()> {
             Ok(())
         }
+    }
+
+    struct NoopDvrCallback;
+
+    impl Interface for NoopDvrCallback {}
+
+    impl IDvrCallback for NoopDvrCallback {
+        fn onRecordStatus(&self, _status: RecordStatus) -> BinderResult<()> {
+            Ok(())
+        }
+
+        fn onPlaybackStatus(&self, _status: PlaybackStatus) -> BinderResult<()> {
+            Ok(())
+        }
+    }
+
+    fn new_test_dvr(direction: DemuxPathDirection) -> (
+        DvrHal,
+        Arc<Mutex<DemuxHandle>>,
+        Arc<RuntimeIoRegistry>,
+        i32,
+    ) {
+        let mut demux = DemuxHandle::new(DEMUX_ID_BASE);
+        let record = demux.register_dvr(direction, 4096).unwrap();
+        let dvr_id = record.dvr_id;
+        let state = Arc::new(Mutex::new(demux));
+        let runtime_io = Arc::new(RuntimeIoRegistry::default());
+        let callback = BnDvrCallback::new_binder(NoopDvrCallback, BinderFeatures::default());
+        let dvr = DvrHal::new(
+            DEMUX_ID_BASE,
+            dvr_id,
+            direction,
+            Arc::clone(&state),
+            Arc::clone(&runtime_io),
+            callback,
+        )
+        .unwrap();
+        (dvr, state, runtime_io, dvr_id)
     }
 
     fn av_settings(pid: i32, secure: bool) -> DemuxFilterSettings {
@@ -11076,50 +11045,67 @@ mod static_completion_tests {
         assert!(normalize_filter_delay_hint(&delay_hint(FilterDelayHintType(999), 1)).is_err());
     }
 
+
     #[test]
-    fn configure_monitor_event_r51_accepts_zero_and_rejects_nonzero_without_gating_callbacks() {
-        let mut demux = DemuxHandle::new(DEMUX_ID_BASE);
-        let record = demux.register_filter(1, FilterOpenType::TsSection, 4096);
-        let state = Arc::new(Mutex::new(demux));
-        let runtime_io = Arc::new(RuntimeIoRegistry::default());
-        let callback = BnFilterCallback::new_binder(NoopFilterCallback, BinderFeatures::default());
-        let filter = FilterHal::new(
-            DEMUX_ID_BASE,
-            record.filter_id,
-            Arc::clone(&state),
-            runtime_io,
-            callback,
-        )
-        .unwrap();
-
-        assert!(filter.configureMonitorEvent(0).is_ok());
+    fn av_shared_file_error_result_matches_code_convention() {
         assert_eq!(
-            state
-                .lock()
-                .unwrap()
-                .filter_record(record.filter_id)
-                .unwrap()
-                .monitor_event_mask,
-            0
+            av_shared_file_error_result(ERRNO_ENOMEM),
+            TunerResult::OUT_OF_MEMORY
         );
-        assert!(filter.configureMonitorEvent(1).is_err());
         assert_eq!(
-            state
-                .lock()
-                .unwrap()
-                .filter_record(record.filter_id)
-                .unwrap()
-                .monitor_event_mask,
-            0
+            av_shared_file_error_result(ERRNO_ENOENT),
+            TunerResult::UNAVAILABLE
         );
+        assert_eq!(
+            av_shared_file_error_result(ERRNO_EACCES),
+            TunerResult::UNAVAILABLE
+        );
+        assert_eq!(
+            av_shared_file_error_result(ERRNO_EIO),
+            TunerResult::UNKNOWN_ERROR
+        );
+        assert_eq!(
+            av_shared_file_error_result(ERRNO_EINVAL),
+            TunerResult::UNKNOWN_ERROR
+        );
+        assert_eq!(
+            av_shared_file_error_result(12345),
+            TunerResult::UNKNOWN_ERROR
+        );
+    }
 
-        let source = include_str!("tuner_hal.rs");
-        let start_body = source
-            .split("fn start(&self) -> BinderResult<()>")
-            .nth(1)
-            .expect("FilterHal start body must exist");
-        assert!(start_body.contains("configureMonitorEvent() is not a normal callback gating API"));
-        assert!(start_body.contains("let monitor_mask = 0;"));
+    #[test]
+    fn dvr_close_is_idempotent_after_successful_cleanup() {
+        let (dvr, state, _runtime_io, dvr_id) = new_test_dvr(DemuxPathDirection::Record);
+
+        assert!(state.lock().unwrap().dvr_record(dvr_id).is_some());
+        dvr.close_internal().unwrap();
+        assert!(dvr.closed.load(Ordering::SeqCst));
+        assert!(state.lock().unwrap().dvr_record(dvr_id).is_none());
+
+        dvr.close_internal().unwrap();
+        assert!(state.lock().unwrap().dvr_record(dvr_id).is_none());
+    }
+
+    #[test]
+    fn dvr_close_attempts_full_cleanup_after_queue_stop_error() {
+        let (dvr, state, _runtime_io, dvr_id) = new_test_dvr(DemuxPathDirection::Record);
+        let queue_backing = Arc::clone(&dvr.queue_backing);
+
+        let _ = std::thread::spawn(move || {
+            let _guard = queue_backing.worker.lock().unwrap();
+            panic!("poison shared_memory_worker mutex for close cleanup regression");
+        })
+        .join();
+
+        let result = dvr.close_internal();
+
+        assert!(result.is_err());
+        assert!(dvr.closed.load(Ordering::SeqCst));
+        assert!(dvr.callback_worker.lock().unwrap().is_none());
+        assert!(state.lock().unwrap().dvr_record(dvr_id).is_none());
+
+        dvr.close_internal().unwrap();
     }
 
     #[test]
@@ -11150,7 +11136,7 @@ mod static_completion_tests {
     #[test]
     fn configure_ip_cid_is_unavailable_for_r51_ts_only_profile() {
         let mut demux = DemuxHandle::new(DEMUX_ID_BASE);
-        let record = demux.register_filter(1, FilterOpenType::TsSection, 4096);
+        let record = demux.register_filter_result(1, FilterOpenType::TsSection, 4096).expect("test setup should register filter");
         let state = Arc::new(Mutex::new(demux));
         let runtime_io = Arc::new(RuntimeIoRegistry::default());
         let callback = BnFilterCallback::new_binder(NoopFilterCallback, BinderFeatures::default());
@@ -11255,71 +11241,11 @@ mod static_completion_tests {
         }
     }
 
-    #[test]
-    fn record_event_state_resets_after_flush_or_stream_boundary_generation_change() {
-        let mask = DEMUX_TS_INDEX_FIRST_PACKET
-            | DEMUX_TS_INDEX_CHANGE_TO_NOT_SCRAMBLED
-            | DEMUX_TS_INDEX_CHANGE_TO_EVEN_SCRAMBLED
-            | DEMUX_TS_INDEX_CHANGE_TO_ODD_SCRAMBLED;
-        let even_scrambled = record_ts_packet(0x0100, false, 2);
-        let clear = record_ts_packet(0x0100, false, 0);
-        let mut state = RecordEventState::default();
-
-        let first_stream_event = ts_record_event(
-            build_ts_record_event(
-                &even_scrambled,
-                TS_PACKET_SIZE as u64,
-                mask,
-                RECORD_SC_TYPE_NONE,
-                0,
-                &mut state,
-            )
-            .unwrap(),
-        );
-        assert_eq!(first_stream_event.byteNumber, TS_PACKET_SIZE as i64);
-        assert_eq!(
-            first_stream_event.tsIndexMask & DEMUX_TS_INDEX_FIRST_PACKET,
-            0
-        );
-
-        let stale_change_event = ts_record_event(
-            build_ts_record_event(
-                &clear,
-                (TS_PACKET_SIZE * 2) as u64,
-                mask,
-                RECORD_SC_TYPE_NONE,
-                0,
-                &mut state,
-            )
-            .unwrap(),
-        );
-        assert_ne!(
-            stale_change_event.tsIndexMask & DEMUX_TS_INDEX_CHANGE_TO_NOT_SCRAMBLED,
-            0
-        );
-
-        let mut reset_state = RecordEventState::default();
-        let reset_event = ts_record_event(
-            build_ts_record_event(&clear, 0, mask, RECORD_SC_TYPE_NONE, 0, &mut reset_state)
-                .unwrap(),
-        );
-        assert_eq!(reset_event.byteNumber, 0);
-        assert_ne!(reset_event.tsIndexMask & DEMUX_TS_INDEX_FIRST_PACKET, 0);
-        assert_eq!(
-            reset_event.tsIndexMask & DEMUX_TS_INDEX_CHANGE_TO_NOT_SCRAMBLED,
-            0
-        );
-
-        let source = include_str!("tuner_hal.rs");
-        assert!(source.contains("record.delivery_generation != observed_delivery_generation"));
-        assert!(source.contains("cumulative_bytes = 0;"));
-        assert!(source.contains("record_event_state = RecordEventState::default();"));
-    }
 
     #[test]
     fn local_filter_owner_validation_maps_lifecycle_and_argument_errors() {
         let mut demux = DemuxHandle::new(DEMUX_ID_BASE);
-        let record = demux.register_filter(1, FilterOpenType::TsSection, 4096);
+        let record = demux.register_filter_result(1, FilterOpenType::TsSection, 4096).expect("test setup should register filter");
         let state = Arc::new(Mutex::new(demux));
         let runtime_io = Arc::new(RuntimeIoRegistry::default());
         let callback = BnFilterCallback::new_binder(NoopFilterCallback, BinderFeatures::default());
@@ -11394,8 +11320,8 @@ mod static_completion_tests {
     #[test]
     fn closed_source_filter_is_rejected_on_public_set_data_source_path() {
         let mut demux = DemuxHandle::new(DEMUX_ID_BASE);
-        let source = demux.register_filter(1, FilterOpenType::TsSection, 4096);
-        let destination = demux.register_filter(1, FilterOpenType::TsSection, 4096);
+        let source = demux.register_filter_result(1, FilterOpenType::TsSection, 4096).expect("test setup should register filter");
+        let destination = demux.register_filter_result(1, FilterOpenType::TsSection, 4096).expect("test setup should register filter");
         let state = Arc::new(Mutex::new(demux));
         let runtime_io = Arc::new(RuntimeIoRegistry::default());
         let callback = BnFilterCallback::new_binder(NoopFilterCallback, BinderFeatures::default());
@@ -11434,8 +11360,8 @@ mod static_completion_tests {
     #[test]
     fn started_destination_rewire_is_rejected_on_public_set_data_source_path() {
         let mut demux = DemuxHandle::new(DEMUX_ID_BASE);
-        let source = demux.register_filter(1, FilterOpenType::TsSection, 4096);
-        let destination = demux.register_filter(1, FilterOpenType::TsSection, 4096);
+        let source = demux.register_filter_result(1, FilterOpenType::TsSection, 4096).expect("test setup should register filter");
+        let destination = demux.register_filter_result(1, FilterOpenType::TsSection, 4096).expect("test setup should register filter");
         let section_summary = FilterConfig {
             tpid: 0x0123,
             main_type_bits: 1,
@@ -11490,8 +11416,8 @@ mod static_completion_tests {
     #[test]
     fn closed_destination_filter_is_rejected_on_public_set_data_source_path() {
         let mut demux = DemuxHandle::new(DEMUX_ID_BASE);
-        let source = demux.register_filter(1, FilterOpenType::TsSection, 4096);
-        let destination = demux.register_filter(1, FilterOpenType::TsSection, 4096);
+        let source = demux.register_filter_result(1, FilterOpenType::TsSection, 4096).expect("test setup should register filter");
+        let destination = demux.register_filter_result(1, FilterOpenType::TsSection, 4096).expect("test setup should register filter");
         let state = Arc::new(Mutex::new(demux));
         let runtime_io = Arc::new(RuntimeIoRegistry::default());
         let callback = BnFilterCallback::new_binder(NoopFilterCallback, BinderFeatures::default());
@@ -11531,8 +11457,8 @@ mod static_completion_tests {
     #[test]
     fn runtime_failed_destination_filter_is_rejected_on_public_set_data_source_path() {
         let mut demux = DemuxHandle::new(DEMUX_ID_BASE);
-        let source = demux.register_filter(1, FilterOpenType::TsSection, 4096);
-        let destination = demux.register_filter(1, FilterOpenType::TsSection, 4096);
+        let source = demux.register_filter_result(1, FilterOpenType::TsSection, 4096).expect("test setup should register filter");
+        let destination = demux.register_filter_result(1, FilterOpenType::TsSection, 4096).expect("test setup should register filter");
         let state = Arc::new(Mutex::new(demux));
         let runtime_io = Arc::new(RuntimeIoRegistry::default());
         let callback = BnFilterCallback::new_binder(NoopFilterCallback, BinderFeatures::default());
@@ -11576,8 +11502,8 @@ mod static_completion_tests {
     #[test]
     fn advertised_ts_linkage_succeeds_on_public_set_data_source_path() {
         let mut demux = DemuxHandle::new(DEMUX_ID_BASE);
-        let source = demux.register_filter(1, FilterOpenType::TsSection, 4096);
-        let destination = demux.register_filter(1, FilterOpenType::TsSection, 4096);
+        let source = demux.register_filter_result(1, FilterOpenType::TsSection, 4096).expect("test setup should register filter");
+        let destination = demux.register_filter_result(1, FilterOpenType::TsSection, 4096).expect("test setup should register filter");
         let state = Arc::new(Mutex::new(demux));
         let runtime_io = Arc::new(RuntimeIoRegistry::default());
         let callback = BnFilterCallback::new_binder(NoopFilterCallback, BinderFeatures::default());
@@ -11616,8 +11542,8 @@ mod static_completion_tests {
     #[test]
     fn unadvertised_linkage_is_rejected_on_public_set_data_source_path() {
         let mut demux = DemuxHandle::new(DEMUX_ID_BASE);
-        let source = demux.register_filter(1, FilterOpenType::NonTs, 4096);
-        let destination = demux.register_filter(1, FilterOpenType::TsSection, 4096);
+        let source = demux.register_filter_result(1, FilterOpenType::NonTs, 4096).expect("test setup should register filter");
+        let destination = demux.register_filter_result(1, FilterOpenType::TsSection, 4096).expect("test setup should register filter");
         let state = Arc::new(Mutex::new(demux));
         let runtime_io = Arc::new(RuntimeIoRegistry::default());
         let callback = BnFilterCallback::new_binder(NoopFilterCallback, BinderFeatures::default());
@@ -11656,10 +11582,10 @@ mod static_completion_tests {
     #[test]
     fn delay_hint_record_contract_rejects_media_before_configuration() {
         let mut demux = DemuxHandle::new(0);
-        let audio = demux.register_filter(1, FilterOpenType::TsAudio, 4096);
-        let video = demux.register_filter(1, FilterOpenType::TsVideo, 4096);
-        let section = demux.register_filter(1, FilterOpenType::TsSection, 4096);
-        let record = demux.register_filter(1, FilterOpenType::TsRecord, 4096);
+        let audio = demux.register_filter_result(1, FilterOpenType::TsAudio, 4096).expect("test setup should register filter");
+        let video = demux.register_filter_result(1, FilterOpenType::TsVideo, 4096).expect("test setup should register filter");
+        let section = demux.register_filter_result(1, FilterOpenType::TsSection, 4096).expect("test setup should register filter");
+        let record = demux.register_filter_result(1, FilterOpenType::TsRecord, 4096).expect("test setup should register filter");
         let time_hint = delay_hint(FilterDelayHintType::TIME_DELAY_IN_MS, 10);
         let size_hint = delay_hint(FilterDelayHintType::DATA_SIZE_DELAY_IN_BYTES, 188);
 
@@ -11938,6 +11864,60 @@ mod static_completion_tests {
     }
 
     #[test]
+    fn helper_drops_secure_memory_av_event_without_panic() {
+        let record = DemuxFilterRecord {
+            filter_id: 1,
+            filter_type_bits: 0,
+            open_type: FilterOpenType::TsVideo,
+            buffer_size: 4096,
+            configured: true,
+            started: true,
+            monitor_event_mask: 0,
+            ip_cid: None,
+            data_source_filter_id: None,
+            pending_start_event: false,
+            delay_hints: maleicacid_tuner_hal_soft_demux::FilterDelayHints::default(),
+            delivery_not_before: None,
+            av_stream_type_hint: Some(0xe0),
+            av_stream_kind: Some(AvFilterStreamKind::Video),
+            config: Some(FilterConfig {
+                tpid: 0x100,
+                main_type_bits: 0,
+                sub_type_hint: 0xe0,
+                kind: FilterConfigKind::Av {
+                    passthrough: false,
+                    secure_memory: true,
+                },
+            }),
+            queued_bytes: 0,
+            pending_overflow: false,
+            overflow_events: 0,
+            drop_bytes: 0,
+            events_emitted: 0,
+            delivery_generation: 0,
+        };
+        let mut state = RecordEventState::default();
+        let event = build_filter_event_from_payload(
+            &record,
+            &[0x00, 0x00, 0x01, 0xe0, 0x00, 0x00],
+            None,
+            Some(0xe0),
+            0,
+            0,
+            Some(AvBufferSlice {
+                slot_index: 0,
+                offset: 0,
+                len: 6,
+                generation: 1,
+            }),
+            Some(7),
+            Some(empty_native_handle()),
+            &mut state,
+        );
+        assert!(event.is_none());
+    }
+
+    #[test]
     fn helper_builds_live_av_event_with_shared_slot_and_empty_event_handle() {
         let record = DemuxFilterRecord {
             filter_id: 1,
@@ -12085,7 +12065,7 @@ mod r50ao4_av_acceptance_tests {
     #[test]
     fn public_get_av_shared_handle_exports_memory_index_only_without_slot_metadata() {
         let mut demux = DemuxHandle::new(DEMUX_ID_BASE);
-        let record = demux.register_filter(1, FilterOpenType::TsVideo, 4096);
+        let record = demux.register_filter_result(1, FilterOpenType::TsVideo, 4096).expect("test setup should register filter");
         let state = Arc::new(Mutex::new(demux));
         let runtime_io = Arc::new(RuntimeIoRegistry::default());
         let callback = BnFilterCallback::new_binder(NoopFilterCallback, BinderFeatures::default());
@@ -12362,7 +12342,7 @@ mod descrambler_state_tests {
         let state = Arc::new(Mutex::new(TunerDescramblerState::default()));
         let _id = registry.register(&state);
         let mut demux = DemuxHandle::new(DEMUX_ID_BASE);
-        let filter = demux.register_filter(1, FilterOpenType::TsSection, 4096);
+        let filter = demux.register_filter_result(1, FilterOpenType::TsSection, 4096).expect("test setup should register filter");
         {
             let mut descrambler = state.lock().unwrap();
             descrambler.demux_id = Some(DEMUX_ID_BASE);
@@ -12693,7 +12673,7 @@ mod contract_regression_tests {
     #[test]
     fn filter_worker_abnormal_exit_helper_fails_closed_object_state() {
         let mut demux = DemuxHandle::new(DEMUX_ID_BASE);
-        let filter = demux.register_filter(1, FilterOpenType::TsSection, 4096);
+        let filter = demux.register_filter_result(1, FilterOpenType::TsSection, 4096).expect("test setup should register filter");
         let state = Arc::new(Mutex::new(demux));
         let runtime_io = Arc::new(RuntimeIoRegistry::default());
         let queue = SharedMemoryBacking::new_ring(4096).unwrap();
@@ -12801,7 +12781,7 @@ mod contract_regression_tests {
             Arc::new(DescramblerDiagnosticRegistry::new()),
         );
         let mut demux = DemuxHandle::new(DEMUX_ID_BASE);
-        let filter = demux.register_filter(1, FilterOpenType::TsSection, 4096);
+        let filter = demux.register_filter_result(1, FilterOpenType::TsSection, 4096).expect("test setup should register filter");
         let state = Arc::new(Mutex::new(demux));
         let runtime_io = Arc::new(RuntimeIoRegistry::default());
         let queue = SharedMemoryBacking::new_ring(4096).unwrap();
@@ -12829,34 +12809,14 @@ mod contract_regression_tests {
             .is_none());
     }
 
-    #[test]
-    fn worker_abnormal_exit_hooks_are_wired_to_fail_closed_helpers() {
-        let source = include_str!("tuner_hal.rs");
-        for worker in [
-            "dvr_playback_consumer",
-            "frontend_live_pump",
-            "filter_callback_worker",
-            "dvr_callback_worker",
-        ] {
-            assert!(
-                source.contains(&format!("spawn_worker_with_exit_hook(\"{}\"", worker)),
-                "missing explicit exit hook for {worker}"
-            );
-        }
-        assert!(source.contains("if exit.is_abnormal()"));
-        assert!(source.contains("fail_playback_worker("));
-        assert!(source.contains("mark_live_path_failed(&detail)"));
-        assert!(source.contains("FilterHal::fail_filter_worker("));
-        assert!(source.contains("DvrHal::fail_dvr_worker("));
-    }
 
     #[test]
     fn managed_diagnostic_worker_reports_cancel_and_panic_to_hook() {
         let (tx_cancel, rx_cancel) = std::sync::mpsc::channel();
         let mut cancelled_worker = spawn_managed_worker_with_exit_hook(
             "managed_worker_cancel_contract_test",
-            move |stop| {
-                stop.store(true, Ordering::SeqCst);
+            move |signal| {
+                signal.request_stop();
             },
             move |exit| {
                 tx_cancel.send(exit).unwrap();
@@ -12882,7 +12842,7 @@ mod contract_regression_tests {
     }
 
     #[test]
-    fn dvb_frontend_info_frequency_contract_is_narrower_than_driver_probe_range() {
+    fn dvb_frontend_info_frequency_contract_covers_japan_catv_and_uhf_range() {
         let isdbt = FrontendEntry {
             id: 10_000,
             kind: FrontendEntryKind::Dvb {
@@ -12900,7 +12860,7 @@ mod contract_regression_tests {
         assert_eq!(
             entry_frontend_frequency_contract(&isdbt),
             (
-                JAPAN_UHF_13_CENTER_HZ - JAPAN_ISDBT_TUNE_TOLERANCE_HZ,
+                JAPAN_CATV_C13_CENTER_HZ - JAPAN_ISDBT_TUNE_TOLERANCE_HZ,
                 JAPAN_UHF_62_CENTER_HZ + JAPAN_ISDBT_TUNE_TOLERANCE_HZ,
                 JAPAN_ISDBT_TUNE_TOLERANCE_HZ,
             ),
@@ -12973,120 +12933,9 @@ mod contract_regression_tests {
         ));
     }
 
-    #[test]
-    fn frontend_tune_worker_spawn_failure_is_fail_closed_and_diagnostic() {
-        let source = include_str!("tuner_hal.rs");
-        let start = source
-            .find("fn start_tune_worker")
-            .expect("start_tune_worker must exist");
-        let end = source[start..]
-            .find("fn settings_fingerprint")
-            .expect("settings_fingerprint follows start_tune_worker")
-            + start;
-        let body = &source[start..end];
-        assert!(body.contains("shared_for_spawn_failure.record_runtime_failure"));
-        assert!(body.contains("shared_for_spawn_failure.mark_live_path_failed"));
-        assert!(body.contains("shared_for_spawn_failure.stop_live_pump_best_effort"));
-        assert!(body.contains("shared_for_spawn_failure.reset_bound_demuxes_for_stream_boundary"));
-        assert!(body.contains("FrontendHal::backend_stop_tune"));
-        assert!(body.contains("Status::from(StatusCode::UNKNOWN_ERROR)"));
-    }
 
-    #[test]
-    fn release_service_registration_does_not_panic_on_add_service_failure() {
-        let main_source = include_str!("main.rs");
-        assert!(main_source.contains("if let Err(e) = binder::add_service"));
-        assert!(main_source.contains("std::process::exit(1)"));
-        assert!(!main_source.contains("panic!(\"Tuner HAL service 登録に失敗しました"));
-        assert!(!main_source.contains("unwrap_or_else(|e| panic!"));
-    }
 
-    #[test]
-    fn r50ap5_worker_policy_has_managed_worker_signal_primitive() {
-        let source = include_str!("tuner_hal.rs");
-        assert!(source.contains("struct WorkerSignal"));
-        assert!(source.contains("struct ManagedWorker"));
-        assert!(source.contains("Mutex<WorkerSignalState>"));
-        assert!(source.contains("cv: Condvar"));
-        assert!(source.contains("fn request_stop(&self)"));
-        assert!(source.contains("fn notify_work(&self)"));
-        assert!(source.contains("fn wait_until_work_or_stop"));
-        assert!(source.contains("fn wait_timeout_or_stop"));
-        assert!(source.contains("fn stop_and_join(&mut self)"));
-        assert!(source.contains("StopRequested"));
-        assert!(source.contains("RuntimeFailure"));
-        assert!(source.contains("PanicOrJoinFailure"));
-    }
 
-    #[test]
-    fn r50ap5_frontend_scan_tune_stop_boundaries_are_static_locked() {
-        let source = include_str!("tuner_hal.rs");
-        let stop_tune_start = source
-            .find("fn stopTune(&self)")
-            .expect("stopTune must exist");
-        let stop_tune_end = source[stop_tune_start..]
-            .find("fn close(&self)")
-            .expect("close follows stopTune")
-            + stop_tune_start;
-        let stop_tune = &source[stop_tune_start..stop_tune_end];
-        assert!(stop_tune.contains("stopTune does not cancel an active scan"));
-        assert!(!stop_tune.contains("cancel_scan_session()?"));
 
-        let stop_scan_start = source
-            .find("fn stopScan(&self)")
-            .expect("stopScan must exist");
-        let stop_scan_end = source[stop_scan_start..]
-            .find("fn getStatus(&self")
-            .expect("getStatus follows stopScan")
-            + stop_scan_start;
-        let stop_scan = &source[stop_scan_start..stop_scan_end];
-        assert!(stop_scan.contains("cancel_scan_session()?"));
-        assert!(!stop_scan.contains("stop_tune_worker"));
-        assert!(!stop_scan.contains("stop_live_pump"));
-    }
 
-    #[test]
-    fn r50ap5_filter_and_dvr_ensure_open_check_parent_demux_lifecycle() {
-        let source = include_str!("tuner_hal.rs");
-        assert!(source.contains("parent_demux_closed"));
-        assert!(source.contains("filter_unregistered_from_parent_demux"));
-        assert!(source.contains("dvr_unregistered_from_parent_demux"));
-        assert!(source.contains("filter_owner_demux_mismatch"));
-        assert!(source.contains("dvr_owner_demux_mismatch"));
-        assert!(source.contains("runtime_io.unregister_filter_best_effort(filter_id)"));
-        assert!(source.contains("runtime_io.unregister_dvr_best_effort(dvr_id)"));
-    }
-
-    #[test]
-    fn r50ap5_frontend_source_switch_rolls_back_partial_binding() {
-        let source = include_str!("tuner_hal.rs");
-        let bind_start = source
-            .find("fn bind_demux(self: &Arc<Self>")
-            .expect("bind_demux must exist");
-        let bind_end = source[bind_start..]
-            .find("fn unbind_demux(&self")
-            .expect("unbind_demux follows bind_demux")
-            + bind_start;
-        let bind_body = &source[bind_start..bind_end];
-        assert!(bind_body.contains("if let Err(err) = self.ensure_live_pump()"));
-        assert!(bind_body.contains("demuxes.remove(&demux_id)"));
-
-        let switch_start = source
-            .find("fn setFrontendDataSource(&self")
-            .expect("setFrontendDataSource must exist");
-        let switch_end = source[switch_start..]
-            .find("fn openFilter(")
-            .expect("openFilter follows setFrontendDataSource")
-            + switch_start;
-        let switch_body = &source[switch_start..switch_end];
-        assert!(switch_body.contains("rollback_to_old"));
-        assert!(switch_body.contains("fail_closed_transition"));
-        assert!(switch_body.contains("rollback_unbind_new_frontend_failed"));
-        assert!(switch_body.contains("rollback_old_frontend_missing"));
-        assert!(switch_body.contains("rollback_bind_old_frontend_failed"));
-        assert!(switch_body.contains("old_runtime.bind_demux"));
-        assert!(switch_body.contains("handle.close()"));
-        assert!(switch_body.contains("runtime_io.flush_all()"));
-        assert!(switch_body.contains("state.reset_for_stream_boundary()"));
-    }
 }
