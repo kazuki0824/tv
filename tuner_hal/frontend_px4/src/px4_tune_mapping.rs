@@ -46,32 +46,136 @@ const PX4_CS_FREQ_NO_MAX: i32 = 23;
 
 // BS 専用。CS110 は TSID による frontend 選局を行わない。
 const PX4_BS_TSID_TABLE: &[Px4BsTsidEntry] = &[
-    Px4BsTsidEntry { if_frequency_hz: 1_049_480_000, relative_stream_number: 0, tsid: 0x4010 },
-    Px4BsTsidEntry { if_frequency_hz: 1_049_480_000, relative_stream_number: 1, tsid: 0x4011 },
-    Px4BsTsidEntry { if_frequency_hz: 1_049_480_000, relative_stream_number: 2, tsid: 0x4012 },
-    Px4BsTsidEntry { if_frequency_hz: 1_087_840_000, relative_stream_number: 0, tsid: 0x4030 },
-    Px4BsTsidEntry { if_frequency_hz: 1_087_840_000, relative_stream_number: 1, tsid: 0x4631 },
-    Px4BsTsidEntry { if_frequency_hz: 1_087_840_000, relative_stream_number: 2, tsid: 0x4632 },
-    Px4BsTsidEntry { if_frequency_hz: 1_126_200_000, relative_stream_number: 0, tsid: 0x4450 },
-    Px4BsTsidEntry { if_frequency_hz: 1_126_200_000, relative_stream_number: 1, tsid: 0x4451 },
-    Px4BsTsidEntry { if_frequency_hz: 1_202_920_000, relative_stream_number: 0, tsid: 0x4090 },
-    Px4BsTsidEntry { if_frequency_hz: 1_202_920_000, relative_stream_number: 1, tsid: 0x4092 },
-    Px4BsTsidEntry { if_frequency_hz: 1_279_640_000, relative_stream_number: 0, tsid: 0x40d0 },
-    Px4BsTsidEntry { if_frequency_hz: 1_279_640_000, relative_stream_number: 1, tsid: 0x40d1 },
-    Px4BsTsidEntry { if_frequency_hz: 1_279_640_000, relative_stream_number: 2, tsid: 0x46d2 },
-    Px4BsTsidEntry { if_frequency_hz: 1_318_000_000, relative_stream_number: 0, tsid: 0x40f1 },
-    Px4BsTsidEntry { if_frequency_hz: 1_318_000_000, relative_stream_number: 1, tsid: 0x40f2 },
-    Px4BsTsidEntry { if_frequency_hz: 1_318_000_000, relative_stream_number: 2, tsid: 0x48f3 },
-    Px4BsTsidEntry { if_frequency_hz: 1_394_720_000, relative_stream_number: 0, tsid: 0x4730 },
-    Px4BsTsidEntry { if_frequency_hz: 1_394_720_000, relative_stream_number: 1, tsid: 0x4731 },
-    Px4BsTsidEntry { if_frequency_hz: 1_394_720_000, relative_stream_number: 2, tsid: 0x4732 },
-    Px4BsTsidEntry { if_frequency_hz: 1_394_720_000, relative_stream_number: 3, tsid: 0x4733 },
-    Px4BsTsidEntry { if_frequency_hz: 1_433_080_000, relative_stream_number: 0, tsid: 0x4750 },
-    Px4BsTsidEntry { if_frequency_hz: 1_433_080_000, relative_stream_number: 1, tsid: 0x4751 },
-    Px4BsTsidEntry { if_frequency_hz: 1_433_080_000, relative_stream_number: 2, tsid: 0x4752 },
-    Px4BsTsidEntry { if_frequency_hz: 1_471_440_000, relative_stream_number: 0, tsid: 0x4770 },
-    Px4BsTsidEntry { if_frequency_hz: 1_471_440_000, relative_stream_number: 1, tsid: 0x4971 },
-    Px4BsTsidEntry { if_frequency_hz: 1_471_440_000, relative_stream_number: 2, tsid: 0x4972 },
+    Px4BsTsidEntry {
+        if_frequency_hz: 1_049_480_000,
+        relative_stream_number: 0,
+        tsid: 0x4010,
+    },
+    Px4BsTsidEntry {
+        if_frequency_hz: 1_049_480_000,
+        relative_stream_number: 1,
+        tsid: 0x4011,
+    },
+    Px4BsTsidEntry {
+        if_frequency_hz: 1_049_480_000,
+        relative_stream_number: 2,
+        tsid: 0x4012,
+    },
+    Px4BsTsidEntry {
+        if_frequency_hz: 1_087_840_000,
+        relative_stream_number: 0,
+        tsid: 0x4030,
+    },
+    Px4BsTsidEntry {
+        if_frequency_hz: 1_087_840_000,
+        relative_stream_number: 1,
+        tsid: 0x4631,
+    },
+    Px4BsTsidEntry {
+        if_frequency_hz: 1_087_840_000,
+        relative_stream_number: 2,
+        tsid: 0x4632,
+    },
+    Px4BsTsidEntry {
+        if_frequency_hz: 1_126_200_000,
+        relative_stream_number: 0,
+        tsid: 0x4450,
+    },
+    Px4BsTsidEntry {
+        if_frequency_hz: 1_126_200_000,
+        relative_stream_number: 1,
+        tsid: 0x4451,
+    },
+    Px4BsTsidEntry {
+        if_frequency_hz: 1_202_920_000,
+        relative_stream_number: 0,
+        tsid: 0x4090,
+    },
+    Px4BsTsidEntry {
+        if_frequency_hz: 1_202_920_000,
+        relative_stream_number: 1,
+        tsid: 0x4092,
+    },
+    Px4BsTsidEntry {
+        if_frequency_hz: 1_279_640_000,
+        relative_stream_number: 0,
+        tsid: 0x40d0,
+    },
+    Px4BsTsidEntry {
+        if_frequency_hz: 1_279_640_000,
+        relative_stream_number: 1,
+        tsid: 0x40d1,
+    },
+    Px4BsTsidEntry {
+        if_frequency_hz: 1_279_640_000,
+        relative_stream_number: 2,
+        tsid: 0x46d2,
+    },
+    Px4BsTsidEntry {
+        if_frequency_hz: 1_318_000_000,
+        relative_stream_number: 0,
+        tsid: 0x40f1,
+    },
+    Px4BsTsidEntry {
+        if_frequency_hz: 1_318_000_000,
+        relative_stream_number: 1,
+        tsid: 0x40f2,
+    },
+    Px4BsTsidEntry {
+        if_frequency_hz: 1_318_000_000,
+        relative_stream_number: 2,
+        tsid: 0x48f3,
+    },
+    Px4BsTsidEntry {
+        if_frequency_hz: 1_394_720_000,
+        relative_stream_number: 0,
+        tsid: 0x4730,
+    },
+    Px4BsTsidEntry {
+        if_frequency_hz: 1_394_720_000,
+        relative_stream_number: 1,
+        tsid: 0x4731,
+    },
+    Px4BsTsidEntry {
+        if_frequency_hz: 1_394_720_000,
+        relative_stream_number: 2,
+        tsid: 0x4732,
+    },
+    Px4BsTsidEntry {
+        if_frequency_hz: 1_394_720_000,
+        relative_stream_number: 3,
+        tsid: 0x4733,
+    },
+    Px4BsTsidEntry {
+        if_frequency_hz: 1_433_080_000,
+        relative_stream_number: 0,
+        tsid: 0x4750,
+    },
+    Px4BsTsidEntry {
+        if_frequency_hz: 1_433_080_000,
+        relative_stream_number: 1,
+        tsid: 0x4751,
+    },
+    Px4BsTsidEntry {
+        if_frequency_hz: 1_433_080_000,
+        relative_stream_number: 2,
+        tsid: 0x4752,
+    },
+    Px4BsTsidEntry {
+        if_frequency_hz: 1_471_440_000,
+        relative_stream_number: 0,
+        tsid: 0x4770,
+    },
+    Px4BsTsidEntry {
+        if_frequency_hz: 1_471_440_000,
+        relative_stream_number: 1,
+        tsid: 0x4971,
+    },
+    Px4BsTsidEntry {
+        if_frequency_hz: 1_471_440_000,
+        relative_stream_number: 2,
+        tsid: 0x4972,
+    },
 ];
 
 /// px4 ローカル対応表は TIS の BS TSID 単一情報源と一致しなければならない。
