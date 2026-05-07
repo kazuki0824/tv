@@ -284,6 +284,8 @@ pub struct DemuxFilterRecord {
     pub pending_overflow: bool,
     pub overflow_events: u64,
     pub drop_bytes: u64,
+    pub section_drop_events: u64,
+    pub stale_partial_discards: u64,
     pub events_emitted: u64,
     pub delivery_generation: u64,
 }
@@ -315,6 +317,8 @@ impl DemuxFilterRecord {
             pending_overflow: false,
             overflow_events: 0,
             drop_bytes: 0,
+            section_drop_events: 0,
+            stale_partial_discards: 0,
             events_emitted: 0,
             delivery_generation: 0,
         }
@@ -335,6 +339,8 @@ pub struct DemuxDvrRecord {
     pub pending_overflow: bool,
     pub overflow_events: u64,
     pub drop_bytes: u64,
+    pub section_drop_events: u64,
+    pub stale_partial_discards: u64,
     pub playback_injected_packets: u64,
     pub playback_injected_bytes: u64,
     pub playback_malformed_bytes: u64,
@@ -355,6 +361,8 @@ impl DemuxDvrRecord {
             pending_overflow: false,
             overflow_events: 0,
             drop_bytes: 0,
+            section_drop_events: 0,
+            stale_partial_discards: 0,
             playback_injected_packets: 0,
             playback_injected_bytes: 0,
             playback_malformed_bytes: 0,
@@ -785,6 +793,14 @@ impl DemuxHandle {
             .values()
             .map(|assembler| assembler.stale_partial_section_discards())
             .sum()
+    }
+
+    pub fn filter_section_drop_event_count(&self, filter_id: i32) -> Option<u64> {
+        self.filters.get(&filter_id).map(|filter| filter.section_drop_events)
+    }
+
+    pub fn filter_stale_partial_discard_count(&self, filter_id: i32) -> Option<u64> {
+        self.filters.get(&filter_id).map(|filter| filter.stale_partial_discards)
     }
 
     fn configured_filter_counts_against(
@@ -1380,12 +1396,28 @@ impl DemuxHandle {
                     })
                     .collect();
                 for filter_id in section_filter_ids {
-                    let sections = self
+                    let section_outcome = self
                         .section_assemblers
                         .entry((origin, filter_id))
                         .or_default()
-                        .push_payload(parsed.payload_unit_start, payload);
-                    for section in sections {
+                        .push_payload_with_outcome(parsed.payload_unit_start, payload);
+                    if section_outcome.has_drop_or_discard() {
+                        if let Some(filter) = self.filters.get_mut(&filter_id) {
+                            filter.pending_overflow = true;
+                            filter.overflow_events = filter.overflow_events.saturating_add(
+                                section_outcome
+                                    .oversized_section_drop_delta
+                                    .saturating_add(section_outcome.stale_partial_discard_delta),
+                            );
+                            filter.section_drop_events = filter.section_drop_events.saturating_add(
+                                section_outcome.oversized_section_drop_delta,
+                            );
+                            filter.stale_partial_discards = filter.stale_partial_discards.saturating_add(
+                                section_outcome.stale_partial_discard_delta,
+                            );
+                        }
+                    }
+                    for section in section_outcome.sections {
                         if !self.section_generation_allows_delivery(
                             origin,
                             filter_id,
@@ -3597,6 +3629,73 @@ mod av_sync_tests {
 #[cfg(test)]
 mod section_payload_cap_tests {
     use super::*;
+
+
+    fn section_config_for_pid(pid: i32) -> FilterConfig {
+        FilterConfig {
+            tpid: pid,
+            main_type_bits: DEMUX_FILTER_MAIN_TYPE_TS_BITS,
+            sub_type_hint: 0,
+            kind: FilterConfigKind::Section {
+                check_crc: false,
+                repeat: true,
+                raw: false,
+                length_field_bits: 12,
+                condition_kind: SectionConditionKind::SectionBits,
+                condition: SectionCondition::default(),
+            },
+        }
+    }
+
+    fn section_packet(pid: u16, continuity_counter: u8, payload: &[u8]) -> [u8; TS_PACKET_SIZE] {
+        let mut packet = [0xffu8; TS_PACKET_SIZE];
+        packet[0] = 0x47;
+        packet[1] = 0x40 | (((pid >> 8) as u8) & 0x1f);
+        packet[2] = (pid & 0xff) as u8;
+        packet[3] = 0x10 | (continuity_counter & 0x0f);
+        let copy_len = payload.len().min(TS_PACKET_SIZE - 4);
+        packet[4..4 + copy_len].copy_from_slice(&payload[..copy_len]);
+        packet
+    }
+
+    fn started_section_filter(demux: &mut DemuxHandle, pid: u16) -> DemuxFilterRecord {
+        let filter = demux
+            .register_filter_result(1, FilterOpenType::TsSection, 4096)
+            .expect("section filter registration should succeed");
+        assert!(demux.configure_filter_with_summary(
+            filter.filter_id,
+            section_config_for_pid(pid as i32),
+        ));
+        assert!(demux.start_filter(filter.filter_id));
+        filter
+    }
+
+    #[test]
+    fn section_assembler_oversized_drop_reports_outcome() {
+        let mut assembler = SectionAssembler::default();
+        assert!(!assembler.set_expected_len_or_drop(MAX_SECTION_PAYLOAD_BYTES + 1));
+        let outcome = assembler.push_payload_with_outcome(false, &[]);
+        assert!(outcome.sections.is_empty());
+        assert_eq!(assembler.oversized_section_drops(), 1);
+    }
+
+    #[test]
+    fn stale_partial_discard_sets_filter_pending_overflow() {
+        let mut demux = DemuxHandle::new(9);
+        let pid = 0x0123;
+        let filter = started_section_filter(&mut demux, pid);
+        let stale = [0x00, 0xb0, 0x0d, 0x00, 0x01, 0xc1];
+        let replacement = [0x42, 0xf0, 0x05, 0x00, 0x01, 0xc1, 0x00, 0x00];
+        let mut first = vec![0x00];
+        first.extend_from_slice(&stale);
+        assert!(demux.push_ts_packet(&section_packet(pid, 0, &first)));
+        let mut second = vec![0x00];
+        second.extend_from_slice(&replacement);
+        assert!(demux.push_ts_packet(&section_packet(pid, 1, &second)));
+        assert_eq!(demux.filter_stale_partial_discard_count(filter.filter_id), Some(1));
+        assert!(demux.take_filter_pending_overflow(filter.filter_id));
+        assert!(!demux.take_filter_pending_overflow(filter.filter_id));
+    }
 
     #[test]
     fn demux_exposes_oversized_section_drop_counter() {

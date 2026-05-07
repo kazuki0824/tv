@@ -84,6 +84,19 @@ pub fn crc32_mpeg(bytes: &[u8]) -> u32 {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SectionPushOutcome {
+    pub sections: Vec<Vec<u8>>,
+    pub oversized_section_drop_delta: u64,
+    pub stale_partial_discard_delta: u64,
+}
+
+impl SectionPushOutcome {
+    pub fn has_drop_or_discard(&self) -> bool {
+        self.oversized_section_drop_delta > 0 || self.stale_partial_discard_delta > 0
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SectionAssembler {
     expected_len: Option<usize>,
     buf: Vec<u8>,
@@ -113,6 +126,25 @@ impl SectionAssembler {
         }
         self.expected_len = Some(expected_len);
         true
+    }
+
+    pub fn push_payload_with_outcome(
+        &mut self,
+        payload_unit_start: bool,
+        payload: &[u8],
+    ) -> SectionPushOutcome {
+        let oversized_before = self.oversized_section_drops;
+        let stale_before = self.stale_partial_section_discards;
+        let sections = self.push_payload(payload_unit_start, payload);
+        SectionPushOutcome {
+            sections,
+            oversized_section_drop_delta: self
+                .oversized_section_drops
+                .saturating_sub(oversized_before),
+            stale_partial_discard_delta: self
+                .stale_partial_section_discards
+                .saturating_sub(stale_before),
+        }
     }
 
     pub fn push_payload(&mut self, payload_unit_start: bool, payload: &[u8]) -> Vec<Vec<u8>> {

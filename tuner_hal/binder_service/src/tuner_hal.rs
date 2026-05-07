@@ -3796,7 +3796,7 @@ impl TunerDescrambler {
     fn add_pid_for_test(&self, pid: u16) -> BinderResult<()> {
         if pid > 0x1ffe {
             return Err(Status::new_service_specific_error(
-                TunerResult::UNAVAILABLE.0,
+                TunerResult::INVALID_ARGUMENT.0,
                 None,
             ));
         }
@@ -3806,13 +3806,13 @@ impl TunerDescrambler {
             let (Some(demux_id), Some(demux_generation)) = (state.demux_id, state.demux_generation)
             else {
                 return Err(Status::new_service_specific_error(
-                    TunerResult::UNAVAILABLE.0,
+                    TunerResult::INVALID_STATE.0,
                     None,
                 ));
             };
             if state.key_token.is_none() {
                 return Err(Status::new_service_specific_error(
-                    TunerResult::UNAVAILABLE.0,
+                    TunerResult::INVALID_STATE.0,
                     None,
                 ));
             }
@@ -3832,7 +3832,7 @@ impl TunerDescrambler {
             || state.key_token.is_none()
         {
             return Err(Status::new_service_specific_error(
-                TunerResult::UNAVAILABLE.0,
+                TunerResult::INVALID_STATE.0,
                 None,
             ));
         }
@@ -3850,7 +3850,7 @@ impl TunerDescrambler {
     fn remove_pid_for_test(&self, pid: u16) -> BinderResult<()> {
         if pid > 0x1ffe {
             return Err(Status::new_service_specific_error(
-                TunerResult::UNAVAILABLE.0,
+                TunerResult::INVALID_ARGUMENT.0,
                 None,
             ));
         }
@@ -3929,19 +3929,19 @@ impl IDescrambler for TunerDescrambler {
             Self::ensure_open_locked(&state)?;
             let Some(demux_id) = state.demux_id else {
                 return Err(Status::new_service_specific_error(
-                    TunerResult::UNAVAILABLE.0,
+                    TunerResult::INVALID_STATE.0,
                     None,
                 ));
             };
             if state.key_token.is_none() {
                 return Err(Status::new_service_specific_error(
-                    TunerResult::UNAVAILABLE.0,
+                    TunerResult::INVALID_STATE.0,
                     None,
                 ));
             }
             let Some(demux_generation) = state.demux_generation else {
                 return Err(Status::new_service_specific_error(
-                    TunerResult::UNAVAILABLE.0,
+                    TunerResult::INVALID_STATE.0,
                     None,
                 ));
             };
@@ -3962,7 +3962,7 @@ impl IDescrambler for TunerDescrambler {
             || state.key_token.is_none()
         {
             return Err(Status::new_service_specific_error(
-                TunerResult::UNAVAILABLE.0,
+                TunerResult::INVALID_STATE.0,
                 None,
             ));
         }
@@ -3986,7 +3986,7 @@ impl IDescrambler for TunerDescrambler {
         Self::ensure_open_locked(&state)?;
         let Some(demux_id) = state.demux_id else {
             return Err(Status::new_service_specific_error(
-                TunerResult::UNAVAILABLE.0,
+                TunerResult::INVALID_STATE.0,
                 None,
             ));
         };
@@ -5464,6 +5464,27 @@ impl FrontendHal {
         terminal
     }
 
+    fn publish_scan_terminal_debug_and_clear(
+        shared: &Arc<FrontendRuntime>,
+        scan_session: &Arc<Mutex<Option<ScanSessionState>>>,
+        session_id: i64,
+    ) -> Option<ScanSessionState> {
+        let terminal = lock_mutex_option(scan_session, "frontend_scan_session").and_then(|mut session| {
+            let terminal = session
+                .as_ref()
+                .filter(|state| state.session_id == session_id && state.phase != ScanPhase::Running)
+                .cloned();
+            if terminal.is_some() {
+                *session = None;
+            }
+            terminal
+        });
+        if let Some(state) = terminal.as_ref() {
+            Self::publish_scan_terminal_state(shared, state);
+        }
+        terminal
+    }
+
     fn remember_scan_terminal_from_current(&self) {
         let Some(session_id) = lock_mutex_option(&self.scan_session, "frontend_scan_session")
             .and_then(|session| session.as_ref().map(|state| state.session_id))
@@ -6395,6 +6416,18 @@ impl IFrontend for FrontendHal {
                         ) {
                             *last = Some(state);
                         }
+                    }
+                }
+                if let Some(state) = FrontendHal::publish_scan_terminal_debug_and_clear(
+                    &shared_for_hook,
+                    &scan_session_for_hook,
+                    session_id,
+                ) {
+                    if let Some(mut last) = lock_mutex_option(
+                        &scan_last_terminal_for_hook,
+                        "frontend_scan_last_terminal",
+                    ) {
+                        *last = Some(state);
                     }
                 }
             },
@@ -7792,6 +7825,7 @@ pub struct DvrHal {
     callback_wake: Arc<(Mutex<bool>, Condvar)>,
     callback_worker: Mutex<Option<WorkerJoinHandle>>,
     closed: Arc<AtomicBool>,
+    cleanup_complete: Arc<AtomicBool>,
 }
 
 impl DvrHal {
@@ -7820,29 +7854,32 @@ impl DvrHal {
         let callback_stop = Arc::new(AtomicBool::new(false));
         let callback_wake = Arc::new((Mutex::new(false), Condvar::new()));
         let closed = Arc::new(AtomicBool::new(false));
+        let cleanup_complete = Arc::new(AtomicBool::new(false));
         let callback_worker = {
             let state = Arc::clone(&state);
             let callback = callback.clone();
             let callback_stop = Arc::clone(&callback_stop);
             let callback_wake_clone = Arc::clone(&callback_wake);
             let closed_clone = Arc::clone(&closed);
+            let cleanup_complete_clone = Arc::clone(&cleanup_complete);
             let runtime_io_clone = Arc::clone(&runtime_io);
             let queue_backing_clone = Arc::clone(&queue_backing);
             let state_hook = Arc::clone(&state);
             let runtime_io_hook = Arc::clone(&runtime_io);
             let queue_backing_hook = Arc::clone(&queue_backing);
             let closed_hook = Arc::clone(&closed);
+            let cleanup_complete_hook = Arc::clone(&cleanup_complete);
             let callback_stop_hook = Arc::clone(&callback_stop);
             let callback_wake_hook = Arc::clone(&callback_wake);
             spawn_worker_with_exit_hook("dvr_callback_worker", move || {
                 while !callback_stop.load(Ordering::SeqCst) && !closed_clone.load(Ordering::SeqCst) {
                     let (thresholds, status_mask, interval_hint_ms, running, pending_overflow, payloads) = {
                         let Some(mut demux) = lock_mutex_option(&state, "demux_handle") else {
-                            DvrHal::fail_dvr_worker(&state, &runtime_io_clone, &queue_backing_clone, &closed_clone, &callback_stop, &callback_wake_clone, dvr_id, "dvr_callback_worker lost demux state");
+                            DvrHal::fail_dvr_worker(&state, &runtime_io_clone, &queue_backing_clone, &closed_clone, &cleanup_complete_clone, &callback_stop, &callback_wake_clone, dvr_id, "dvr_callback_worker lost demux state");
                             return WorkerExit::Error;
                         };
                         let Some(record) = demux.dvr_record(dvr_id).cloned() else {
-                            DvrHal::fail_dvr_worker(&state, &runtime_io_clone, &queue_backing_clone, &closed_clone, &callback_stop, &callback_wake_clone, dvr_id, "dvr_callback_worker missing dvr record");
+                            DvrHal::fail_dvr_worker(&state, &runtime_io_clone, &queue_backing_clone, &closed_clone, &cleanup_complete_clone, &callback_stop, &callback_wake_clone, dvr_id, "dvr_callback_worker missing dvr record");
                             return WorkerExit::Error;
                         };
                         let running = record.started;
@@ -7863,14 +7900,14 @@ impl DvrHal {
                         if any && Self::status_mask_allows(status_mask, RecordStatus::DATA_READY.0) {
                             if let Err(err) = callback.onRecordStatus(RecordStatus::DATA_READY) {
                                 eprintln!("maleicacid-tuner-hal-callback: dvr_id={} api=onRecordStatus(DATA_READY) binder_status={:?}", dvr_id, err);
-                                DvrHal::fail_dvr_worker(&state, &runtime_io_clone, &queue_backing_clone, &closed_clone, &callback_stop, &callback_wake_clone, dvr_id, "dvr callback failure on DATA_READY");
+                                DvrHal::fail_dvr_worker(&state, &runtime_io_clone, &queue_backing_clone, &closed_clone, &cleanup_complete_clone, &callback_stop, &callback_wake_clone, dvr_id, "dvr callback failure on DATA_READY");
                                 return WorkerExit::Error;
                             }
                         }
                         if overflow && Self::status_mask_allows(status_mask, RecordStatus::OVERFLOW.0) {
                             if let Err(err) = callback.onRecordStatus(RecordStatus::OVERFLOW) {
                                 eprintln!("maleicacid-tuner-hal-callback: dvr_id={} api=onRecordStatus(OVERFLOW) binder_status={:?}", dvr_id, err);
-                                DvrHal::fail_dvr_worker(&state, &runtime_io_clone, &queue_backing_clone, &closed_clone, &callback_stop, &callback_wake_clone, dvr_id, "dvr callback failure on OVERFLOW");
+                                DvrHal::fail_dvr_worker(&state, &runtime_io_clone, &queue_backing_clone, &closed_clone, &cleanup_complete_clone, &callback_stop, &callback_wake_clone, dvr_id, "dvr callback failure on OVERFLOW");
                                 return WorkerExit::Error;
                             }
                         }
@@ -7883,7 +7920,7 @@ impl DvrHal {
                                 if Self::status_mask_allows(status_mask, status.0) {
                                     if let Err(err) = callback.onRecordStatus(status) {
                                     eprintln!("maleicacid-tuner-hal-callback: dvr_id={} api=onRecordStatus(threshold) binder_status={:?}", dvr_id, err);
-                                    DvrHal::fail_dvr_worker(&state, &runtime_io_clone, &queue_backing_clone, &closed_clone, &callback_stop, &callback_wake_clone, dvr_id, "dvr callback failure on record threshold");
+                                    DvrHal::fail_dvr_worker(&state, &runtime_io_clone, &queue_backing_clone, &closed_clone, &cleanup_complete_clone, &callback_stop, &callback_wake_clone, dvr_id, "dvr callback failure on record threshold");
                                     return WorkerExit::Error;
                                 }
                                 }
@@ -7894,7 +7931,7 @@ impl DvrHal {
                                     if Self::status_mask_allows(status_mask, status.0) {
                                         if let Err(err) = callback.onPlaybackStatus(status) {
                                         eprintln!("maleicacid-tuner-hal-callback: dvr_id={} api=onPlaybackStatus(threshold) binder_status={:?}", dvr_id, err);
-                                        DvrHal::fail_dvr_worker(&state, &runtime_io_clone, &queue_backing_clone, &closed_clone, &callback_stop, &callback_wake_clone, dvr_id, "dvr callback failure on playback threshold");
+                                        DvrHal::fail_dvr_worker(&state, &runtime_io_clone, &queue_backing_clone, &closed_clone, &cleanup_complete_clone, &callback_stop, &callback_wake_clone, dvr_id, "dvr callback failure on playback threshold");
                                         return WorkerExit::Error;
                                     }
                                     }
@@ -7914,6 +7951,7 @@ impl DvrHal {
                         &runtime_io_hook,
                         &queue_backing_hook,
                         &closed_hook,
+                        &cleanup_complete_hook,
                         &callback_stop_hook,
                         &callback_wake_hook,
                         dvr_id,
@@ -7934,6 +7972,7 @@ impl DvrHal {
             callback_wake,
             callback_worker: Mutex::new(Some(callback_worker)),
             closed,
+            cleanup_complete,
         })
     }
 
@@ -7984,12 +8023,14 @@ impl DvrHal {
         runtime_io: &Arc<RuntimeIoRegistry>,
         queue_backing: &Arc<SharedMemoryBacking>,
         closed: &Arc<AtomicBool>,
+        cleanup_complete: &Arc<AtomicBool>,
         callback_stop: &Arc<AtomicBool>,
         callback_wake: &Arc<(Mutex<bool>, Condvar)>,
         dvr_id: i32,
         reason: &str,
     ) {
-        if closed.swap(true, Ordering::SeqCst) {
+        closed.store(true, Ordering::SeqCst);
+        if cleanup_complete.load(Ordering::SeqCst) {
             return;
         }
         eprintln!(
@@ -8000,9 +8041,15 @@ impl DvrHal {
         DvrHal::wake_callback_wait(callback_wake);
         runtime_io.mark_failed(RuntimeIoKind::Dvr, dvr_id, reason);
         queue_backing.clear();
+        runtime_io.unregister_dvr_best_effort(dvr_id);
         queue_backing.stop_best_effort();
+        let mut demux_unregistered = false;
         if let Some(mut demux) = lock_mutex_option(state, "demux_handle") {
             demux.unregister_dvr(dvr_id);
+            demux_unregistered = true;
+        }
+        if demux_unregistered {
+            cleanup_complete.store(true, Ordering::SeqCst);
         }
     }
 
@@ -8078,32 +8125,68 @@ impl DvrHal {
         }
     }
 
-    fn close_internal(&self) -> BinderResult<()> {
-        if self.closed.swap(true, Ordering::SeqCst) {
-            return Ok(());
+    fn remember_first_error(first_error: &mut Option<Status>, result: BinderResult<()>) {
+        if let Err(err) = result {
+            first_error.get_or_insert(err);
         }
+    }
 
+    fn cleanup_dvr_resources(&self, best_effort: bool) -> (Option<Status>, bool) {
         let mut first_error: Option<Status> = None;
+        let mut callback_stopped = true;
+        let mut runtime_unregistered = true;
+        let mut queue_stopped = true;
+        let mut demux_unregistered = true;
 
-        if let Err(err) = self.stop_callback_worker() {
-            first_error.get_or_insert(err);
+        if best_effort {
+            self.stop_callback_worker_best_effort();
+        } else {
+            let result = self.stop_callback_worker();
+            callback_stopped = result.is_ok();
+            Self::remember_first_error(&mut first_error, result);
         }
+
         self.queue_backing.clear();
-        if let Err(err) = self.runtime_io.unregister_dvr(self.dvr_id) {
-            first_error.get_or_insert(err);
+
+        if best_effort {
+            self.runtime_io.unregister_dvr_best_effort(self.dvr_id);
+        } else {
+            let result = self.runtime_io.unregister_dvr(self.dvr_id);
+            runtime_unregistered = result.is_ok();
+            Self::remember_first_error(&mut first_error, result);
         }
-        if let Err(err) = self.queue_backing.stop() {
-            first_error.get_or_insert(err);
+
+        if best_effort {
+            self.queue_backing.stop_best_effort();
+        } else {
+            let result = self.queue_backing.stop();
+            queue_stopped = result.is_ok();
+            Self::remember_first_error(&mut first_error, result);
         }
+
         match lock_mutex_status(&self.state, "demux_handle") {
             Ok(mut state) => {
                 state.unregister_dvr(self.dvr_id);
             }
             Err(err) => {
+                demux_unregistered = false;
                 first_error.get_or_insert(err);
             }
         }
 
+        let complete = callback_stopped && runtime_unregistered && queue_stopped && demux_unregistered;
+        (first_error, complete)
+    }
+
+    fn close_internal(&self) -> BinderResult<()> {
+        if self.cleanup_complete.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        self.closed.store(true, Ordering::SeqCst);
+        let (first_error, complete) = self.cleanup_dvr_resources(false);
+        if complete {
+            self.cleanup_complete.store(true, Ordering::SeqCst);
+        }
         if let Some(err) = first_error {
             Err(err)
         } else {
@@ -8112,15 +8195,13 @@ impl DvrHal {
     }
 
     fn close_internal_best_effort(&self) {
-        if self.closed.swap(true, Ordering::SeqCst) {
+        if self.cleanup_complete.load(Ordering::SeqCst) {
             return;
         }
-        self.stop_callback_worker_best_effort();
-        self.queue_backing.clear();
-        self.runtime_io.unregister_dvr_best_effort(self.dvr_id);
-        self.queue_backing.stop_best_effort();
-        if let Some(mut state) = lock_mutex_option(&self.state, "demux_handle") {
-            state.unregister_dvr(self.dvr_id);
+        self.closed.store(true, Ordering::SeqCst);
+        let (_first_error, complete) = self.cleanup_dvr_resources(true);
+        if complete {
+            self.cleanup_complete.store(true, Ordering::SeqCst);
         }
     }
 
@@ -12716,6 +12797,7 @@ mod contract_regression_tests {
         let runtime_io = Arc::new(RuntimeIoRegistry::default());
         let queue = SharedMemoryBacking::new_ring(4096).unwrap();
         let closed = Arc::new(AtomicBool::new(false));
+        let cleanup_complete = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
         let wake = Arc::new((Mutex::new(false), Condvar::new()));
 
@@ -12724,6 +12806,7 @@ mod contract_regression_tests {
             &runtime_io,
             &queue,
             &closed,
+            &cleanup_complete,
             &stop,
             &wake,
             dvr.dvr_id,
@@ -12731,6 +12814,7 @@ mod contract_regression_tests {
         );
 
         assert!(closed.load(Ordering::SeqCst));
+        assert!(cleanup_complete.load(Ordering::SeqCst));
         assert!(stop.load(Ordering::SeqCst));
         assert!(runtime_io
             .ensure_not_failed(RuntimeIoKind::Dvr, dvr.dvr_id)
@@ -12909,8 +12993,9 @@ mod contract_regression_tests {
             fingerprint: "contract-scan".to_string(),
             phase: ScanPhase::FailedBackend,
         })));
-        let terminal = FrontendHal::publish_scan_terminal_debug(&runtime, &session, 7).unwrap();
+        let terminal = FrontendHal::publish_scan_terminal_debug_and_clear(&runtime, &session, 7).unwrap();
         assert_eq!(terminal.phase, ScanPhase::FailedBackend);
+        assert!(session.lock().unwrap().is_none());
         let dump = runtime.debug_dump_runtime_failures();
         assert!(dump.contains(
             "scan_last_terminal session_id=7 phase=FailedBackend fingerprint=contract-scan"

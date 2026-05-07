@@ -22,6 +22,19 @@ r51 は TS-only HAL profile とする。IP / MMTP / TLV / ALP filter は claim �
 
 DVR playback は claim 対象とする。DVR playback の水位通知は AIDL `PlaybackSettings.lowThreshold` / `highThreshold` の説明に合わせ、playback input FMQ の unused space size in bytes を基準に判定する。`SPACE_EMPTY`、`SPACE_ALMOST_EMPTY`、`SPACE_ALMOST_FULL` は threshold 到達時だけ通知し、中間水位では新規status通知を行わない。used bytes を threshold として直接比較してはならない。標準閾値は buffer 容量比で low 25%、high 75% とし、VTS lab profile では XML 生成時に明示値へ展開する。
 
+
+## r50aq5 修正契約: error mapping / scan lifecycle / section overflow / DVR close
+
+`IDescrambler.addPid()` / `removePid()` では、descrambler closed、demux 未設定、key token 未設定、demux generation 消失、再検査時の demux / generation / key state 不整合、closed / runtime-failed source filter を `INVALID_STATE` とする。PID 値不正、foreign / dangling / 別 demux source filter、source filter identity mismatch は `INVALID_ARGUMENT` とする。未対応 `DemuxPid` variant や product capability 未完成は `UNAVAILABLE` に限定する。呼び出し順序や object lifecycle の不整合を `UNAVAILABLE` に写像しない。
+
+Android 14 の Tuner HAL AIDL Rust backend では `IDescrambler.addPid()` / `removePid()` の `optionalSourceFilter` が Rust generated trait 上 non-null `Strong<dyn IFilter>` として現れるため、AOSP Java/JNI/VTS に存在する null filter / PID-only 経路は r50aq5 の Rust-only 実装対象に含めない。この構造課題は `android14_aidl_rust_descrambler_pid_only_boundary_report.md` で別管理する。r50aq5 は non-null source filter 経路の state/error mapping だけを修正対象とする。
+
+frontend scan lifecycle では、`scan_session` は active `Running` scan だけを表す。`Completed` / `Cancelled` / `FailedBackend` / `FailedCallback` / `FailedPanic` は terminal diagnostic として `scan_last_terminal` / `scan_terminal_debug` に保存し、保存後は `scan_session` を `None` にする。`stopTune()` は `scan_session.is_some()` を active scan 判定として使い続けるため、terminal scan が残存して `stopTune()` を `INVALID_STATE` にしてはならない。
+
+section assembler が stale partial discard を検出した場合、該当 section filter の diagnostics counter を増やし、`pending_overflow` を立てる。callback worker は既存 `pending_overflow` 経路を使い、payload が空でも `DemuxFilterStatus::OVERFLOW` を通知する。CRC mismatch と malformed section syntax は filter 条件不成立または section event 不成立として非 delivery を維持し、overflow status へ写像しない。
+
+`DvrHal` の `closed` は外部操作を止める gate であり、cleanup 完了状態ではない。DVR cleanup 完了は `cleanup_complete` で別管理する。`close_internal()` / `close_internal_best_effort()` / `fail_dvr_worker()` は、`closed=true` だけを理由に未完了 cleanup の再試行を止めてはならない。callback worker stop、runtime unregister、queue stop、demux unregister は可能な限り全 step を試行し、明示 close では最初に観測した error を返しつつ後続 cleanup を続行する。全 step が成功または安全 no-op と確認できた場合だけ `cleanup_complete=true` とする。
+
 ## lab profile のサービス対応
 
 代表ゲートは次の service 対応で固定する。
@@ -228,17 +241,18 @@ VTS/lab config には descrambling flow を置かない。VTS 用 XML に ECM fi
 
 ## IDescrambler optionalSourceFilter 境界
 
-AOSP Tuner SDK の `Descrambler.addPid()` / `removePid()` は `filter` を optional / nullable として扱う。したがって Tuner HAL は、`optionalSourceFilter == null` を PID-only descrambling request として受け入れる。
+AOSP Tuner SDK / JNI / VTS には `IDescrambler.addPid()` / `removePid()` の source filter を null として扱う PID-only 経路が存在する。一方、開発規則が対象とする Android 14 / LineageOS 21 系の Tuner HAL AIDL Rust backend では、`optionalSourceFilter` が `@nullable` 付きではないため、Rust generated trait 上は non-null `Strong<dyn IFilter>` として現れる。
 
-`optionalSourceFilter != null` の場合だけ、source filter が自 HAL 内の local `IFilter` であり、同じ demux に属し、closed / runtime-failed ではなく、demux registry 上の open filter record として実在することを検証する。PID 登録は PID だけで保持してはならず、`demux_id`、demux open generation、source filter id、source filter delivery generation を同時に保存する。demux close / reopen、source filter close / unregister、filter reconfigure / flush により世代が変わった登録は descrambler snapshot 生成時に prune し、古い key/PID 登録を新しい demux または新しい source filter に適用しない。
+r50aq5 では、AOSP stable AIDL を変更しない。vendor 独自 `@nullable` 追加、AOSP frozen AIDL の改変、C++/NDK wrapper 追加、Rust raw Binder transaction parser 追加は行わない。したがって、PID-only / null source filter 経路は r50aq5 の Rust-only 実装修正対象から除外し、`android14_aidl_rust_descrambler_pid_only_boundary_report.md` で構造課題として別管理する。
 
-`optionalSourceFilter == null` の場合は、事前に `setDemuxSource(demuxId)` で確定済みの demux を source とし、指定 PID を demux 全体の packet path に対する descramble 対象として登録する。null source filter は client 引数不正ではない。ただし demux close / reopen 後は demux generation mismatch として無効化し、旧 demux の登録を再利用しない。
+r50aq5 の `IDescrambler.addPid()` / `removePid()` 修正対象は、Android 14 Rust generated trait で受け取れる non-null source filter 経路の state / argument / unavailable mapping に限定する。
 
-r51 では、同一 demux generation 上の同一 PID を複数の active descrambler に同時登録しない。後続で service 単位の複数 session 併用が必要になった場合は、PID 所有権と source filter generation の競合解決を設計してから capability / test を更新する。
+`optionalSourceFilter != null` の場合、source filter が自 HAL 内の local `IFilter` であり、同じ demux に属し、closed / runtime-failed ではなく、demux registry 上の open filter record として実在することを検証する。PID 登録は `demux_id`、demux open generation、source filter id、source filter delivery generation を保存する。demux close / reopen、source filter close / unregister、filter reconfigure / flush により世代が変わった登録は descrambler snapshot 生成時に prune し、古い key/PID 登録を新しい demux または新しい source filter に適用しない。
 
 error mapping:
-- `INVALID_STATE`: descrambler closed、demux 未設定、key token 未設定、source filter closed / runtime-failed。
+- `INVALID_STATE`: descrambler closed、demux 未設定、key token 未設定、source filter closed / runtime-failed、demux generation 消失または再検査時 state 不整合。
 - `INVALID_ARGUMENT`: invalid PID、foreign filter、別 demux filter、not-open / dangling local filter handle。
+- `UNAVAILABLE`: unsupported `DemuxPid` variant、または product capability 未完成に限定する。
 
 ## DVB backend の対応表
 

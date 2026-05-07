@@ -1,3 +1,13 @@
+## r50aq5
+
+- r50aq4 に対して、問題点1を Android 14 AIDL/Rust backend 境界の構造課題として実装対象外へ退避し、Tuner HAL 内で実装可能な Issue 2 / Issue 3 / Issue 4 / 項目8 の4件をこの順で補正した。
+- Issue 2: `IDescrambler.addPid()` / `removePid()` の呼び出し順序・object lifecycle 不整合を `INVALID_STATE` に寄せ、test helper も public path と同じ state mapping に近づけた。
+- Issue 3: scan terminal diagnostic と active scan slot を分離し、terminal phase を記録後に `scan_session` を clear する helper を追加した。これにより completed/failed/cancelled scan が `stopTune()` の active scan 判定に残らない。
+- Issue 4: `SectionAssembler` に outcome 付き API を追加し、stale partial discard を filter-local diagnostics / `pending_overflow` に接続した。callback worker は既存 `pending_overflow` 経路で `DemuxFilterStatus::OVERFLOW` を送る。
+- 項目8: `DvrHal` に `cleanup_complete` を追加し、`closed` gate と cleanup 完了状態を分離した。`close_internal()` / `close_internal_best_effort()` は cleanup 未完了なら再試行し、`fail_dvr_worker()` も cleanup 完了状態を記録する。
+- `DESIGN_JA.md` に r50aq5 の error mapping、scan lifecycle、section overflow、DVR close cleanup の契約を追記した。
+- Soong build、Rust unit test実行、VTS、実機確認はこのアーカイブ生成環境では未実施。
+
 ## r50aq4
 
 - Applied the Issue 5 minimal fix plan A: removed the panic-based `DemuxHandle::register_filter()` helper from the non-test `soft_demux` public API.
