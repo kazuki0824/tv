@@ -1,16 +1,16 @@
 mod explicit_scan;
 
-use maleicacid_tuner_hal_common::{
-    FrontendBackendKind,
-    FrontendDevicePath, FrontendRuntimeState, FrontendScanMode, FrontendSelection,
-    FrontendStreamIdKind, FrontendSystem, FrontendTelemetry, FrontendTuneRequest, HalError, TS_PACKET_SIZE, TsPacketCompletionBuffer,
-};
 use explicit_scan::dvb_scan_requests;
+use maleicacid_tuner_hal_common::{
+    FrontendBackendKind, FrontendDevicePath, FrontendRuntimeState, FrontendScanMode,
+    FrontendSelection, FrontendStreamIdKind, FrontendSystem, FrontendTelemetry,
+    FrontendTuneRequest, HalError, TsPacketCompletionBuffer, TS_PACKET_SIZE,
+};
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Read};
-use std::os::unix::fs::OpenOptionsExt;
 use std::mem::size_of;
 use std::os::fd::AsRawFd;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -48,11 +48,18 @@ const IOC_WRITE: u32 = 1;
 const IOC_READ: u32 = 2;
 
 const fn ioc(dir: u32, typ: u32, nr: u32, size: u32) -> u64 {
-    ((dir << IOC_DIRSHIFT) | (typ << IOC_TYPESHIFT) | (nr << IOC_NRSHIFT) | (size << IOC_SIZESHIFT)) as u64
+    ((dir << IOC_DIRSHIFT) | (typ << IOC_TYPESHIFT) | (nr << IOC_NRSHIFT) | (size << IOC_SIZESHIFT))
+        as u64
 }
-const fn io(typ: u32, nr: u32) -> u64 { ioc(IOC_NONE, typ, nr, 0) }
-const fn ior<T>(typ: u32, nr: u32) -> u64 { ioc(IOC_READ, typ, nr, size_of::<T>() as u32) }
-const fn iow<T>(typ: u32, nr: u32) -> u64 { ioc(IOC_WRITE, typ, nr, size_of::<T>() as u32) }
+const fn io(typ: u32, nr: u32) -> u64 {
+    ioc(IOC_NONE, typ, nr, 0)
+}
+const fn ior<T>(typ: u32, nr: u32) -> u64 {
+    ioc(IOC_READ, typ, nr, size_of::<T>() as u32)
+}
+const fn iow<T>(typ: u32, nr: u32) -> u64 {
+    ioc(IOC_WRITE, typ, nr, size_of::<T>() as u32)
+}
 
 const FE_IOCTL_TYPE: u32 = b'o' as u32;
 const FE_SET_PROPERTY: u64 = iow::<DtvProperties>(FE_IOCTL_TYPE, 82);
@@ -102,32 +109,110 @@ struct JapanBsTsidEntry {
 }
 
 const JAPAN_BS_ISDBS_TSID_TABLE: &[JapanBsTsidEntry] = &[
-    JapanBsTsidEntry { if_frequency_hz: 1_049_480_000, tsid: 0x4010 },
-    JapanBsTsidEntry { if_frequency_hz: 1_049_480_000, tsid: 0x4011 },
-    JapanBsTsidEntry { if_frequency_hz: 1_049_480_000, tsid: 0x4012 },
-    JapanBsTsidEntry { if_frequency_hz: 1_087_840_000, tsid: 0x4030 },
-    JapanBsTsidEntry { if_frequency_hz: 1_087_840_000, tsid: 0x4631 },
-    JapanBsTsidEntry { if_frequency_hz: 1_087_840_000, tsid: 0x4632 },
-    JapanBsTsidEntry { if_frequency_hz: 1_126_200_000, tsid: 0x4450 },
-    JapanBsTsidEntry { if_frequency_hz: 1_126_200_000, tsid: 0x4451 },
-    JapanBsTsidEntry { if_frequency_hz: 1_202_920_000, tsid: 0x4090 },
-    JapanBsTsidEntry { if_frequency_hz: 1_202_920_000, tsid: 0x4092 },
-    JapanBsTsidEntry { if_frequency_hz: 1_279_640_000, tsid: 0x40d0 },
-    JapanBsTsidEntry { if_frequency_hz: 1_279_640_000, tsid: 0x40d1 },
-    JapanBsTsidEntry { if_frequency_hz: 1_279_640_000, tsid: 0x46d2 },
-    JapanBsTsidEntry { if_frequency_hz: 1_318_000_000, tsid: 0x40f1 },
-    JapanBsTsidEntry { if_frequency_hz: 1_318_000_000, tsid: 0x40f2 },
-    JapanBsTsidEntry { if_frequency_hz: 1_318_000_000, tsid: 0x48f3 },
-    JapanBsTsidEntry { if_frequency_hz: 1_394_720_000, tsid: 0x4730 },
-    JapanBsTsidEntry { if_frequency_hz: 1_394_720_000, tsid: 0x4731 },
-    JapanBsTsidEntry { if_frequency_hz: 1_394_720_000, tsid: 0x4732 },
-    JapanBsTsidEntry { if_frequency_hz: 1_394_720_000, tsid: 0x4733 },
-    JapanBsTsidEntry { if_frequency_hz: 1_433_080_000, tsid: 0x4750 },
-    JapanBsTsidEntry { if_frequency_hz: 1_433_080_000, tsid: 0x4751 },
-    JapanBsTsidEntry { if_frequency_hz: 1_433_080_000, tsid: 0x4752 },
-    JapanBsTsidEntry { if_frequency_hz: 1_471_440_000, tsid: 0x4770 },
-    JapanBsTsidEntry { if_frequency_hz: 1_471_440_000, tsid: 0x4971 },
-    JapanBsTsidEntry { if_frequency_hz: 1_471_440_000, tsid: 0x4972 },
+    JapanBsTsidEntry {
+        if_frequency_hz: 1_049_480_000,
+        tsid: 0x4010,
+    },
+    JapanBsTsidEntry {
+        if_frequency_hz: 1_049_480_000,
+        tsid: 0x4011,
+    },
+    JapanBsTsidEntry {
+        if_frequency_hz: 1_049_480_000,
+        tsid: 0x4012,
+    },
+    JapanBsTsidEntry {
+        if_frequency_hz: 1_087_840_000,
+        tsid: 0x4030,
+    },
+    JapanBsTsidEntry {
+        if_frequency_hz: 1_087_840_000,
+        tsid: 0x4631,
+    },
+    JapanBsTsidEntry {
+        if_frequency_hz: 1_087_840_000,
+        tsid: 0x4632,
+    },
+    JapanBsTsidEntry {
+        if_frequency_hz: 1_126_200_000,
+        tsid: 0x4450,
+    },
+    JapanBsTsidEntry {
+        if_frequency_hz: 1_126_200_000,
+        tsid: 0x4451,
+    },
+    JapanBsTsidEntry {
+        if_frequency_hz: 1_202_920_000,
+        tsid: 0x4090,
+    },
+    JapanBsTsidEntry {
+        if_frequency_hz: 1_202_920_000,
+        tsid: 0x4092,
+    },
+    JapanBsTsidEntry {
+        if_frequency_hz: 1_279_640_000,
+        tsid: 0x40d0,
+    },
+    JapanBsTsidEntry {
+        if_frequency_hz: 1_279_640_000,
+        tsid: 0x40d1,
+    },
+    JapanBsTsidEntry {
+        if_frequency_hz: 1_279_640_000,
+        tsid: 0x46d2,
+    },
+    JapanBsTsidEntry {
+        if_frequency_hz: 1_318_000_000,
+        tsid: 0x40f1,
+    },
+    JapanBsTsidEntry {
+        if_frequency_hz: 1_318_000_000,
+        tsid: 0x40f2,
+    },
+    JapanBsTsidEntry {
+        if_frequency_hz: 1_318_000_000,
+        tsid: 0x48f3,
+    },
+    JapanBsTsidEntry {
+        if_frequency_hz: 1_394_720_000,
+        tsid: 0x4730,
+    },
+    JapanBsTsidEntry {
+        if_frequency_hz: 1_394_720_000,
+        tsid: 0x4731,
+    },
+    JapanBsTsidEntry {
+        if_frequency_hz: 1_394_720_000,
+        tsid: 0x4732,
+    },
+    JapanBsTsidEntry {
+        if_frequency_hz: 1_394_720_000,
+        tsid: 0x4733,
+    },
+    JapanBsTsidEntry {
+        if_frequency_hz: 1_433_080_000,
+        tsid: 0x4750,
+    },
+    JapanBsTsidEntry {
+        if_frequency_hz: 1_433_080_000,
+        tsid: 0x4751,
+    },
+    JapanBsTsidEntry {
+        if_frequency_hz: 1_433_080_000,
+        tsid: 0x4752,
+    },
+    JapanBsTsidEntry {
+        if_frequency_hz: 1_471_440_000,
+        tsid: 0x4770,
+    },
+    JapanBsTsidEntry {
+        if_frequency_hz: 1_471_440_000,
+        tsid: 0x4971,
+    },
+    JapanBsTsidEntry {
+        if_frequency_hz: 1_471_440_000,
+        tsid: 0x4972,
+    },
 ];
 
 fn is_japan_bs_if_frequency_hz(if_frequency_hz: u64) -> bool {
@@ -145,7 +230,9 @@ fn is_japan_cs110_if_frequency_hz(if_frequency_hz: u64) -> bool {
 }
 
 fn japan_bs_tsid_matches(if_frequency_hz: u64, tsid: u16) -> bool {
-    JAPAN_BS_ISDBS_TSID_TABLE.iter().any(|entry| entry.if_frequency_hz == if_frequency_hz && entry.tsid == tsid)
+    JAPAN_BS_ISDBS_TSID_TABLE
+        .iter()
+        .any(|entry| entry.if_frequency_hz == if_frequency_hz && entry.tsid == tsid)
 }
 
 const JAPAN_ISDBT_UHF_FIRST_HZ: u64 = 473_142_857;
@@ -155,12 +242,14 @@ const JAPAN_ISDBT_TOLERANCE_HZ: u64 = 500_000;
 
 fn is_japan_isdbt_uhf_frequency_hz(frequency_hz: u64) -> bool {
     if frequency_hz < JAPAN_ISDBT_UHF_FIRST_HZ.saturating_sub(JAPAN_ISDBT_TOLERANCE_HZ)
-        || frequency_hz > JAPAN_ISDBT_UHF_LAST_HZ.saturating_add(JAPAN_ISDBT_TOLERANCE_HZ) {
+        || frequency_hz > JAPAN_ISDBT_UHF_LAST_HZ.saturating_add(JAPAN_ISDBT_TOLERANCE_HZ)
+    {
         return false;
     }
     let delta = frequency_hz.saturating_sub(JAPAN_ISDBT_UHF_FIRST_HZ);
     let nearest = JAPAN_ISDBT_UHF_FIRST_HZ
-        + ((delta + JAPAN_ISDBT_UHF_STEP_HZ / 2) / JAPAN_ISDBT_UHF_STEP_HZ) * JAPAN_ISDBT_UHF_STEP_HZ;
+        + ((delta + JAPAN_ISDBT_UHF_STEP_HZ / 2) / JAPAN_ISDBT_UHF_STEP_HZ)
+            * JAPAN_ISDBT_UHF_STEP_HZ;
     nearest <= JAPAN_ISDBT_UHF_LAST_HZ && frequency_hz.abs_diff(nearest) <= JAPAN_ISDBT_TOLERANCE_HZ
 }
 
@@ -207,7 +296,6 @@ impl DtvProperty {
             result: 0,
         }
     }
-
 }
 
 #[repr(C)]
@@ -251,18 +339,30 @@ struct DvbFrontendInfo {
 }
 
 fn dvb_frontend_name(info: &DvbFrontendInfo) -> String {
-    let nul = info.name.iter().position(|b| *b == 0).unwrap_or(info.name.len());
-    String::from_utf8_lossy(&info.name[..nul]).trim().to_string()
+    let nul = info
+        .name
+        .iter()
+        .position(|b| *b == 0)
+        .unwrap_or(info.name.len());
+    String::from_utf8_lossy(&info.name[..nul])
+        .trim()
+        .to_string()
 }
 
 fn sysfs_driver_basename(adapter_id: i32, frontend_index: i32) -> Option<String> {
-    let link = PathBuf::from(format!("/sys/class/dvb/dvb{adapter_id}.frontend{frontend_index}/device/driver"));
-    std::fs::read_link(link)
-        .ok()
-        .and_then(|path| path.file_name().map(|name| name.to_string_lossy().to_string()))
+    let link = PathBuf::from(format!(
+        "/sys/class/dvb/dvb{adapter_id}.frontend{frontend_index}/device/driver"
+    ));
+    std::fs::read_link(link).ok().and_then(|path| {
+        path.file_name()
+            .map(|name| name.to_string_lossy().to_string())
+    })
 }
 
-fn is_supported_earth_pt1_frontend_identity(_info: &DvbFrontendInfo, driver_basename: Option<&str>) -> bool {
+fn is_supported_earth_pt1_frontend_identity(
+    _info: &DvbFrontendInfo,
+    driver_basename: Option<&str>,
+) -> bool {
     matches!(driver_basename, Some("earth-pt1"))
 }
 
@@ -296,7 +396,6 @@ impl DvbFrontendProbe {
     }
 }
 
-
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DvbTuneRequest {
     pub frequency_hz: Option<u32>,
@@ -327,9 +426,22 @@ pub struct DvbLiveStreamReader {
 }
 
 impl DvbLiveStreamReader {
-    pub fn sample_ts_packets(&self, max_packets: usize, stop_fd: Option<i32>) -> Result<Vec<[u8; TS_PACKET_SIZE]>, HalError> {
-        let mut inner = self.inner.lock().map_err(|_| HalError::Internal("dvb live stream reader mutex poisoned".into()))?;
-        let DvbLiveStreamReaderState { dvr, dvr_path, residual, malformed_bytes_total, stopped } = &mut *inner;
+    pub fn sample_ts_packets(
+        &self,
+        max_packets: usize,
+        stop_fd: Option<i32>,
+    ) -> Result<Vec<[u8; TS_PACKET_SIZE]>, HalError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| HalError::Internal("dvb live stream reader mutex poisoned".into()))?;
+        let DvbLiveStreamReaderState {
+            dvr,
+            dvr_path,
+            residual,
+            malformed_bytes_total,
+            stopped,
+        } = &mut *inner;
         if *stopped {
             return Ok(Vec::new());
         }
@@ -339,11 +451,17 @@ impl DvbLiveStreamReader {
         let mut packets = Vec::new();
         let malformed_before = residual.malformed_bytes();
         let path = dvr_path.clone();
-        DvbFrontendBackend::pump_reader_packets(dvr, Some(path.as_path()), max_packets, residual, |pkt| {
-            let mut packet = [0u8; TS_PACKET_SIZE];
-            packet.copy_from_slice(pkt);
-            packets.push(packet);
-        })?;
+        DvbFrontendBackend::pump_reader_packets(
+            dvr,
+            Some(path.as_path()),
+            max_packets,
+            residual,
+            |pkt| {
+                let mut packet = [0u8; TS_PACKET_SIZE];
+                packet.copy_from_slice(pkt);
+                packets.push(packet);
+            },
+        )?;
         let malformed_delta = residual.malformed_bytes().saturating_sub(malformed_before);
         if malformed_delta > 0 {
             *malformed_bytes_total = malformed_bytes_total.saturating_add(malformed_delta);
@@ -440,8 +558,12 @@ impl DvbFrontendBackend {
         self.state.lnb_id = Some(lnb_id);
     }
 
-    pub fn runtime_state(&self) -> &FrontendRuntimeState { &self.state }
-    pub fn supported_systems(&self) -> &[FrontendSystem] { &self.supported_systems }
+    pub fn runtime_state(&self) -> &FrontendRuntimeState {
+        &self.state
+    }
+    pub fn supported_systems(&self) -> &[FrontendSystem] {
+        &self.supported_systems
+    }
 
     fn validate_stream_id(request: &DvbTuneRequest) -> Result<Option<u16>, HalError> {
         match (request.stream_id, request.stream_id_kind) {
@@ -494,23 +616,29 @@ impl DvbFrontendBackend {
         }
     }
 
-    fn normalize_stream_id_from_common(request: &FrontendTuneRequest) -> Result<(Option<u16>, Option<FrontendStreamIdKind>), HalError> {
+    fn normalize_stream_id_from_common(
+        request: &FrontendTuneRequest,
+    ) -> Result<(Option<u16>, Option<FrontendStreamIdKind>), HalError> {
         let Some(raw_stream_id) = request.stream_id else {
             if matches!(request.system, FrontendSystem::IsdbS) {
                 if is_japan_bs_if_frequency_hz(request.frequency) {
                     return Err(HalError::InvalidArgument(
-                        "BS frequency-only tune is intentionally rejected; specify absolute TSID".into(),
+                        "BS frequency-only tune is intentionally rejected; specify absolute TSID"
+                            .into(),
                     ));
                 }
-                if is_japan_cs110_if_frequency_hz(request.frequency) { return Ok((None, None)); }
+                if is_japan_cs110_if_frequency_hz(request.frequency) {
+                    return Ok((None, None));
+                }
                 return Err(HalError::InvalidArgument(
                     "ISDB-S 周波数のみの選局は日本 BS では禁止し、CS110 でのみ許可します".into(),
                 ));
             }
             return Ok((None, None));
         };
-        let stream_id = u16::try_from(raw_stream_id)
-            .map_err(|_| HalError::InvalidArgument(format!("stream_id out of range: {raw_stream_id}")))?;
+        let stream_id = u16::try_from(raw_stream_id).map_err(|_| {
+            HalError::InvalidArgument(format!("stream_id out of range: {raw_stream_id}"))
+        })?;
         match request.stream_id_kind {
             Some(FrontendStreamIdKind::RelativeStreamNumber) => Err(HalError::InvalidArgument(
                 "DVB backend rejects relative stream numbers; use TSID for BS and frequency-only for CS110".into(),
@@ -611,7 +739,9 @@ impl DvbFrontendBackend {
         Ok(())
     }
 
-    fn normalize_bandwidth_from_common(request: &FrontendTuneRequest) -> Result<Option<u32>, HalError> {
+    fn normalize_bandwidth_from_common(
+        request: &FrontendTuneRequest,
+    ) -> Result<Option<u32>, HalError> {
         match request.system {
             FrontendSystem::IsdbT => match request.bandwidth_hz {
                 None | Some(6_000_000) => Ok(Some(6_000_000)),
@@ -638,7 +768,10 @@ impl DvbFrontendBackend {
         Ok(())
     }
 
-    pub fn tune_from_common(&mut self, request: FrontendTuneRequest) -> Result<DvbFrontendStatus, HalError> {
+    pub fn tune_from_common(
+        &mut self,
+        request: FrontendTuneRequest,
+    ) -> Result<DvbFrontendStatus, HalError> {
         self.validate_tune_request(&request)?;
         let requested_frequency = request.frequency;
         let normalized_bandwidth = Self::normalize_bandwidth_from_common(&request)?;
@@ -664,7 +797,11 @@ impl DvbFrontendBackend {
 
         let mut signal_strength: u16 = 0;
         let mut snr: u16 = 0;
-        let _ = self.ioctl_ptr(FE_READ_SIGNAL_STRENGTH, &mut signal_strength, "FE_READ_SIGNAL_STRENGTH");
+        let _ = self.ioctl_ptr(
+            FE_READ_SIGNAL_STRENGTH,
+            &mut signal_strength,
+            "FE_READ_SIGNAL_STRENGTH",
+        );
         let _ = self.ioctl_ptr(FE_READ_SNR, &mut snr, "FE_READ_SNR");
 
         self.apply_status_word(status, signal_strength, snr);
@@ -696,27 +833,40 @@ impl DvbFrontendBackend {
             v if v <= 0 => SEC_VOLTAGE_OFF,
             11 => SEC_VOLTAGE_13,
             15 => SEC_VOLTAGE_18,
-            other => return Err(HalError::InvalidArgument(format!("earth_pt1 fixed LNB profile accepts only NONE, 11V, or 15V; got {other}V"))),
+            other => {
+                return Err(HalError::InvalidArgument(format!(
+                    "earth_pt1 fixed LNB profile accepts only NONE, 11V, or 15V; got {other}V"
+                )))
+            }
         };
         self.ioctl_word(FE_SET_VOLTAGE, mode, "FE_SET_VOLTAGE")?;
-        self.telemetry.lnb_voltage = if mode == SEC_VOLTAGE_OFF { None } else { Some(voltage_mv) };
+        self.telemetry.lnb_voltage = if mode == SEC_VOLTAGE_OFF {
+            None
+        } else {
+            Some(voltage_mv)
+        };
         Ok(())
     }
 
     pub fn set_lnb_tone(&mut self, _on: bool) -> Result<(), HalError> {
-        Err(HalError::Unsupported("LNB tone is permanently unsupported by the fixed Japanese tuner profiles"))
+        Err(HalError::Unsupported(
+            "LNB tone is permanently unsupported by the fixed Japanese tuner profiles",
+        ))
     }
 
     pub fn send_diseqc_message(&mut self, _message: &[u8]) -> Result<(), HalError> {
-        Err(HalError::Unsupported("DiSEqC is permanently unsupported by the fixed Japanese tuner profiles"))
+        Err(HalError::Unsupported(
+            "DiSEqC is permanently unsupported by the fixed Japanese tuner profiles",
+        ))
     }
 
     pub fn live_stream_reader(&mut self) -> Result<Option<DvbLiveStreamReader>, HalError> {
         self.ensure_control_open()?;
         self.ensure_stream_open()?;
-        Ok(self.ts_reader.as_ref().map(|inner| DvbLiveStreamReader { inner: Arc::clone(inner) }))
+        Ok(self.ts_reader.as_ref().map(|inner| DvbLiveStreamReader {
+            inner: Arc::clone(inner),
+        }))
     }
-
 
     fn pump_reader_packets<R, F>(
         reader: &mut R,
@@ -732,10 +882,21 @@ impl DvbFrontendBackend {
         let mut pushed = 0usize;
         let mut scratch = [0u8; TS_PACKET_SIZE * 128];
         while pushed < max_packets {
+            for packet in residual
+                .drain_completed(max_packets.saturating_sub(pushed))
+                .into_iter()
+            {
+                on_packet(&packet);
+                pushed += 1;
+            }
+            if pushed >= max_packets {
+                break;
+            }
             match reader.read(&mut scratch) {
                 Ok(0) => break,
                 Ok(read) => {
-                    let drain = residual.push_limited(&scratch[..read], max_packets.saturating_sub(pushed));
+                    let drain =
+                        residual.push_limited(&scratch[..read], max_packets.saturating_sub(pushed));
                     for packet in drain.packets.into_iter() {
                         on_packet(&packet);
                         pushed += 1;
@@ -744,14 +905,22 @@ impl DvbFrontendBackend {
                         break;
                     }
                 }
-                Err(err) if err.kind() == ErrorKind::WouldBlock || err.kind() == ErrorKind::UnexpectedEof || err.kind() == ErrorKind::Interrupted => break,
-                Err(err) => return Err(HalError::Io {
-                    backend: "dvb",
-                    operation: "dvr_read",
-                    path: reader_path.map(Path::to_path_buf),
-                    errno: err.raw_os_error(),
-                    message: format!("dvb dvr read failed: {}", err),
-                }),
+                Err(err)
+                    if err.kind() == ErrorKind::WouldBlock
+                        || err.kind() == ErrorKind::UnexpectedEof
+                        || err.kind() == ErrorKind::Interrupted =>
+                {
+                    break
+                }
+                Err(err) => {
+                    return Err(HalError::Io {
+                        backend: "dvb",
+                        operation: "dvr_read",
+                        path: reader_path.map(Path::to_path_buf),
+                        errno: err.raw_os_error(),
+                        message: format!("dvb dvr read failed: {}", err),
+                    })
+                }
             }
         }
         Ok(pushed)
@@ -782,9 +951,17 @@ impl DvbFrontendBackend {
 
     fn poll_reader_ready(fd: i32, path: &Path, stop_fd: Option<i32>) -> Result<bool, HalError> {
         let mut pollfds = Vec::with_capacity(if stop_fd.is_some() { 2 } else { 1 });
-        pollfds.push(PollFd { fd, events: POLLIN, revents: 0 });
+        pollfds.push(PollFd {
+            fd,
+            events: POLLIN,
+            revents: 0,
+        });
         if let Some(stop_fd) = stop_fd {
-            pollfds.push(PollFd { fd: stop_fd, events: POLLIN, revents: 0 });
+            pollfds.push(PollFd {
+                fd: stop_fd,
+                events: POLLIN,
+                revents: 0,
+            });
         }
         let rc = unsafe { poll(pollfds.as_mut_ptr(), pollfds.len(), 1_000) };
         if rc < 0 {
@@ -829,7 +1006,11 @@ impl DvbFrontendBackend {
         self.telemetry.rf_locked = None;
     }
 
-    pub fn scan_requests(&self, base: &FrontendTuneRequest, scan_mode: FrontendScanMode) -> Result<Vec<FrontendTuneRequest>, HalError> {
+    pub fn scan_requests(
+        &self,
+        base: &FrontendTuneRequest,
+        scan_mode: FrontendScanMode,
+    ) -> Result<Vec<FrontendTuneRequest>, HalError> {
         let requests = dvb_scan_requests(base, scan_mode)?;
         for request in &requests {
             self.validate_tune_request(request)?;
@@ -847,11 +1028,15 @@ impl DvbFrontendBackend {
             self.state.last_error = Some(err.to_string());
             return Err(err);
         }
-        let file = OpenOptions::new().read(true).write(true).open(&path).map_err(|e| {
-            let err = classify_open_error(&path, &e);
-            self.state.last_error = Some(err.to_string());
-            err
-        })?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .map_err(|e| {
+                let err = classify_open_error(&path, &e);
+                self.state.last_error = Some(err.to_string());
+                err
+            })?;
         self.control = Some(file);
         Ok(())
     }
@@ -862,15 +1047,48 @@ impl DvbFrontendBackend {
         }
         let demux_path = self.demux_path();
         let dvr_path = self.dvr_path();
-        let demux = OpenOptions::new().read(true).write(true).open(&demux_path).map_err(|e| classify_open_error(&demux_path, &e))?;
-        let dvr = OpenOptions::new().read(true).custom_flags(O_NONBLOCK).open(&dvr_path).map_err(|e| classify_open_error(&dvr_path, &e))?;
+        let demux = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&demux_path)
+            .map_err(|e| classify_open_error(&demux_path, &e))?;
+        let dvr = OpenOptions::new()
+            .read(true)
+            .custom_flags(O_NONBLOCK)
+            .open(&dvr_path)
+            .map_err(|e| classify_open_error(&dvr_path, &e))?;
         let mut source = self.frontend_index as u32;
-        let source_rc = unsafe { ioctl(demux.as_raw_fd(), DMX_SET_SOURCE, &mut source as *mut u32) };
-        if source_rc != 0 { return Err(HalError::IoctlFailed { backend: "dvb", path: Some(demux_path.clone()), op: "DMX_SET_SOURCE", errno: last_errno() }); }
-        let mut params = DmxPesFilterParams { pid: 0x2000, input: DMX_IN_FRONTEND, output: DMX_OUT_TS_TAP, pes_type: DMX_PES_OTHER, flags: DMX_IMMEDIATE_START };
-        let rc = unsafe { ioctl(demux.as_raw_fd(), DMX_SET_PES_FILTER, &mut params as *mut DmxPesFilterParams) };
+        let source_rc =
+            unsafe { ioctl(demux.as_raw_fd(), DMX_SET_SOURCE, &mut source as *mut u32) };
+        if source_rc != 0 {
+            return Err(HalError::IoctlFailed {
+                backend: "dvb",
+                path: Some(demux_path.clone()),
+                op: "DMX_SET_SOURCE",
+                errno: last_errno(),
+            });
+        }
+        let mut params = DmxPesFilterParams {
+            pid: 0x2000,
+            input: DMX_IN_FRONTEND,
+            output: DMX_OUT_TS_TAP,
+            pes_type: DMX_PES_OTHER,
+            flags: DMX_IMMEDIATE_START,
+        };
+        let rc = unsafe {
+            ioctl(
+                demux.as_raw_fd(),
+                DMX_SET_PES_FILTER,
+                &mut params as *mut DmxPesFilterParams,
+            )
+        };
         if rc != 0 {
-            return Err(HalError::IoctlFailed { backend: "dvb", path: Some(demux_path.clone()), op: "DMX_SET_PES_FILTER", errno: last_errno() });
+            return Err(HalError::IoctlFailed {
+                backend: "dvb",
+                path: Some(demux_path.clone()),
+                op: "DMX_SET_PES_FILTER",
+                errno: last_errno(),
+            });
         }
         self.ts_demux = Some(demux);
         self.ts_reader = Some(Arc::new(Mutex::new(DvbLiveStreamReaderState {
@@ -905,9 +1123,14 @@ impl DvbFrontendBackend {
         u32::try_from(raw).ok()
     }
 
-    fn validate_driver_frequency_from_common(request: &FrontendTuneRequest) -> Result<u32, HalError> {
+    fn validate_driver_frequency_from_common(
+        request: &FrontendTuneRequest,
+    ) -> Result<u32, HalError> {
         let driver_frequency = Self::driver_frequency_from_common(request).ok_or_else(|| {
-            HalError::InvalidArgument(format!("DVB frequency cannot be represented for {:?}: {}", request.system, request.frequency))
+            HalError::InvalidArgument(format!(
+                "DVB frequency cannot be represented for {:?}: {}",
+                request.system, request.frequency
+            ))
         })?;
         match request.system {
             FrontendSystem::IsdbT => {
@@ -918,13 +1141,17 @@ impl DvbFrontendBackend {
                 }
             }
             FrontendSystem::IsdbS => {
-                if is_japan_bs_if_frequency_hz(request.frequency) || is_japan_cs110_if_frequency_hz(request.frequency) {
+                if is_japan_bs_if_frequency_hz(request.frequency)
+                    || is_japan_cs110_if_frequency_hz(request.frequency)
+                {
                     Ok(driver_frequency)
                 } else {
                     Err(HalError::InvalidArgument(format!("earth_pt1 ISDB-S frequency is outside the fixed Japan BS/CS110 IF tables: {}", request.frequency)))
                 }
             }
-            FrontendSystem::IsdbS3 | FrontendSystem::DvbS => Err(HalError::Unsupported("earth_pt1 backend targets ISDB-T/ISDB-S only")),
+            FrontendSystem::IsdbS3 | FrontendSystem::DvbS => Err(HalError::Unsupported(
+                "earth_pt1 backend targets ISDB-T/ISDB-S only",
+            )),
         }
     }
 
@@ -933,23 +1160,47 @@ impl DvbFrontendBackend {
         self.ioctl_props(FE_SET_PROPERTY, &mut props, "FE_SET_PROPERTY")
     }
 
-    fn ioctl_props(&mut self, request: u64, props: &mut [DtvProperty], op: &'static str) -> Result<(), HalError> {
+    fn ioctl_props(
+        &mut self,
+        request: u64,
+        props: &mut [DtvProperty],
+        op: &'static str,
+    ) -> Result<(), HalError> {
         let mut property_set = DtvProperties {
             num: props.len() as u32,
             props: props.as_mut_ptr(),
         };
         let rc = unsafe { ioctl(self.fd()?, request, &mut property_set as *mut DtvProperties) };
-        if rc == 0 { Ok(()) } else {
-            let err = HalError::IoctlFailed { backend: "dvb", path: Some(self.selection.control_path.as_path().to_path_buf()), op, errno: last_errno() };
+        if rc == 0 {
+            Ok(())
+        } else {
+            let err = HalError::IoctlFailed {
+                backend: "dvb",
+                path: Some(self.selection.control_path.as_path().to_path_buf()),
+                op,
+                errno: last_errno(),
+            };
             self.state.last_error = Some(err.to_string());
             Err(err)
         }
     }
 
-    fn ioctl_ptr<T>(&mut self, request: u64, data: &mut T, op: &'static str) -> Result<(), HalError> {
+    fn ioctl_ptr<T>(
+        &mut self,
+        request: u64,
+        data: &mut T,
+        op: &'static str,
+    ) -> Result<(), HalError> {
         let rc = unsafe { ioctl(self.fd()?, request, data as *mut T) };
-        if rc == 0 { Ok(()) } else {
-            let err = HalError::IoctlFailed { backend: "dvb", path: Some(self.selection.control_path.as_path().to_path_buf()), op, errno: last_errno() };
+        if rc == 0 {
+            Ok(())
+        } else {
+            let err = HalError::IoctlFailed {
+                backend: "dvb",
+                path: Some(self.selection.control_path.as_path().to_path_buf()),
+                op,
+                errno: last_errno(),
+            };
             self.state.last_error = Some(err.to_string());
             Err(err)
         }
@@ -957,8 +1208,15 @@ impl DvbFrontendBackend {
 
     fn ioctl_word(&mut self, request: u64, data: u32, op: &'static str) -> Result<(), HalError> {
         let rc = unsafe { ioctl(self.fd()?, request, data) };
-        if rc == 0 { Ok(()) } else {
-            let err = HalError::IoctlFailed { backend: "dvb", path: Some(self.selection.control_path.as_path().to_path_buf()), op, errno: last_errno() };
+        if rc == 0 {
+            Ok(())
+        } else {
+            let err = HalError::IoctlFailed {
+                backend: "dvb",
+                path: Some(self.selection.control_path.as_path().to_path_buf()),
+                op,
+                errno: last_errno(),
+            };
             self.state.last_error = Some(err.to_string());
             Err(err)
         }
@@ -977,32 +1235,53 @@ impl DvbFrontendBackend {
             Some(FrontendSystem::IsdbS) => SYS_ISDBS,
             Some(FrontendSystem::IsdbS3) | Some(FrontendSystem::DvbS) => {
                 return Err(HalError::Unsupported("ISDB-S3/DVB-S は製品対象外です"));
-            },
-            None => return Err(HalError::InvalidArgument("dvb delivery system not provided".into())),
+            }
+            None => {
+                return Err(HalError::InvalidArgument(
+                    "dvb delivery system not provided".into(),
+                ))
+            }
         })
     }
 
     fn quality_from_status(status: u32) -> u32 {
         let mut score = 0u32;
-        if (status & FE_HAS_SIGNAL) != 0 { score += 20; }
-        if (status & FE_HAS_CARRIER) != 0 { score += 20; }
-        if (status & FE_HAS_VITERBI) != 0 { score += 20; }
-        if (status & FE_HAS_SYNC) != 0 { score += 20; }
-        if (status & FE_HAS_LOCK) != 0 { score += 20; }
+        if (status & FE_HAS_SIGNAL) != 0 {
+            score += 20;
+        }
+        if (status & FE_HAS_CARRIER) != 0 {
+            score += 20;
+        }
+        if (status & FE_HAS_VITERBI) != 0 {
+            score += 20;
+        }
+        if (status & FE_HAS_SYNC) != 0 {
+            score += 20;
+        }
+        if (status & FE_HAS_LOCK) != 0 {
+            score += 20;
+        }
         score.min(100)
     }
 
     fn demux_path(&self) -> PathBuf {
-        PathBuf::from(format!("/dev/dvb/adapter{}/demux{}", self.adapter_id, self.demux_index))
+        PathBuf::from(format!(
+            "/dev/dvb/adapter{}/demux{}",
+            self.adapter_id, self.demux_index
+        ))
     }
 
     fn dvr_path(&self) -> PathBuf {
-        PathBuf::from(format!("/dev/dvb/adapter{}/dvr{}", self.adapter_id, self.dvr_index))
+        PathBuf::from(format!(
+            "/dev/dvb/adapter{}/dvr{}",
+            self.adapter_id, self.dvr_index
+        ))
     }
 
-
     fn control_path(adapter_id: i32, frontend_index: i32) -> PathBuf {
-        PathBuf::from(format!("/dev/dvb/adapter{adapter_id}/frontend{frontend_index}"))
+        PathBuf::from(format!(
+            "/dev/dvb/adapter{adapter_id}/frontend{frontend_index}"
+        ))
     }
 
     fn fallback_systems_from_fe_type(fe_type: u32) -> Vec<FrontendSystem> {
@@ -1019,9 +1298,15 @@ impl DvbFrontendBackend {
         let mut indexes = Vec::new();
         for entry in entries.flatten() {
             let file_name = entry.file_name();
-            let Some(file_name) = file_name.to_str() else { continue; };
-            let Some(suffix) = file_name.strip_prefix(prefix) else { continue; };
-            let Ok(index) = suffix.parse::<i32>() else { continue; };
+            let Some(file_name) = file_name.to_str() else {
+                continue;
+            };
+            let Some(suffix) = file_name.strip_prefix(prefix) else {
+                continue;
+            };
+            let Ok(index) = suffix.parse::<i32>() else {
+                continue;
+            };
             indexes.push(index);
         }
         indexes.sort_unstable();
@@ -1059,9 +1344,15 @@ impl DvbFrontendBackend {
                 continue;
             }
             let file_name = entry.file_name();
-            let Some(file_name) = file_name.to_str() else { continue; };
-            let Some(adapter_suffix) = file_name.strip_prefix("adapter") else { continue; };
-            let Ok(adapter_id) = adapter_suffix.parse::<i32>() else { continue; };
+            let Some(file_name) = file_name.to_str() else {
+                continue;
+            };
+            let Some(adapter_suffix) = file_name.strip_prefix("adapter") else {
+                continue;
+            };
+            let Ok(adapter_id) = adapter_suffix.parse::<i32>() else {
+                continue;
+            };
             adapters.push((adapter_id, entry.path()));
         }
         adapters.sort_by_key(|(adapter_id, _)| *adapter_id);
@@ -1084,10 +1375,22 @@ impl DvbFrontendBackend {
                     continue;
                 };
                 let path = Self::control_path(adapter_id, frontend_index);
-                let Ok(file) = OpenOptions::new().read(true).write(true).open(&path) else { continue; };
+                let Ok(file) = OpenOptions::new().read(true).write(true).open(&path) else {
+                    continue;
+                };
                 let fd = file.as_raw_fd();
                 let mut info = DvbFrontendInfo {
-                    name: [0;128], fe_type: 0, frequency_min: 0, frequency_max: 0, frequency_stepsize: 0, frequency_tolerance:0, symbol_rate_min:0, symbol_rate_max:0, symbol_rate_tolerance:0, notifier_delay:0, caps:0,
+                    name: [0; 128],
+                    fe_type: 0,
+                    frequency_min: 0,
+                    frequency_max: 0,
+                    frequency_stepsize: 0,
+                    frequency_tolerance: 0,
+                    symbol_rate_min: 0,
+                    symbol_rate_max: 0,
+                    symbol_rate_tolerance: 0,
+                    notifier_delay: 0,
+                    caps: 0,
                 };
                 let _ = unsafe { ioctl(fd, FE_GET_INFO, &mut info) };
                 let driver_basename = sysfs_driver_basename(adapter_id, frontend_index);
@@ -1103,21 +1406,33 @@ impl DvbFrontendBackend {
                 }
                 let mut prop = DtvProperty {
                     cmd: DTV_ENUM_DELSYS,
-                    reserved: [0;3],
-                    u: DtvPropertyUnion { buffer: DtvPropertyBuffer { data: [0;32], len: 0, reserved1: [0;3], reserved2: std::ptr::null_mut() } },
+                    reserved: [0; 3],
+                    u: DtvPropertyUnion {
+                        buffer: DtvPropertyBuffer {
+                            data: [0; 32],
+                            len: 0,
+                            reserved1: [0; 3],
+                            reserved2: std::ptr::null_mut(),
+                        },
+                    },
                     result: 0,
                 };
-                let mut props = DtvProperties { num: 1, props: &mut prop };
+                let mut props = DtvProperties {
+                    num: 1,
+                    props: &mut prop,
+                };
                 let mut systems = Vec::new();
                 let rc = unsafe { ioctl(fd, FE_GET_PROPERTY, &mut props) };
                 if rc == 0 {
                     let buffer = unsafe { prop.u.buffer };
-                    let count = usize::try_from(buffer.len).unwrap_or(0).min(buffer.data.len());
+                    let count = usize::try_from(buffer.len)
+                        .unwrap_or(0)
+                        .min(buffer.data.len());
                     for delsys in &buffer.data[..count] {
                         match u32::from(*delsys) {
                             SYS_ISDBT => systems.push(FrontendSystem::IsdbT),
                             SYS_ISDBS => systems.push(FrontendSystem::IsdbS),
-                            SYS_DVBS2 => {},
+                            SYS_DVBS2 => {}
                             _ => {}
                         }
                     }
@@ -1126,7 +1441,12 @@ impl DvbFrontendBackend {
                     systems = Self::fallback_systems_from_fe_type(info.fe_type);
                 }
                 systems.retain(|s| matches!(s, FrontendSystem::IsdbT | FrontendSystem::IsdbS));
-                systems.sort_by_key(|s| match s { FrontendSystem::IsdbT => 0, FrontendSystem::IsdbS => 1, FrontendSystem::IsdbS3 => 2, FrontendSystem::DvbS => 3 });
+                systems.sort_by_key(|s| match s {
+                    FrontendSystem::IsdbT => 0,
+                    FrontendSystem::IsdbS => 1,
+                    FrontendSystem::IsdbS3 => 2,
+                    FrontendSystem::DvbS => 3,
+                });
                 systems.dedup();
                 if systems.is_empty() {
                     continue;
@@ -1145,18 +1465,22 @@ impl DvbFrontendBackend {
         }
         out
     }
-
 }
 
 #[cfg(test)]
 mod tests {
 
-    use super::{DvbFrontendBackend, DvbFrontendProbe, DvbTuneRequest, DTV_BANDWIDTH_HZ, DTV_DELIVERY_SYSTEM, DTV_FREQUENCY, DTV_SYMBOL_RATE, DTV_STREAM_ID, SYS_ISDBS, SYS_ISDBT};
-    use maleicacid_tuner_hal_common::{FrontendScanMode, FrontendStreamIdKind, FrontendSystem, FrontendTuneRequest, HalError, TsPacketCompletionBuffer, TS_PACKET_SIZE};
+    use super::{
+        DvbFrontendBackend, DvbFrontendProbe, DvbTuneRequest, DTV_BANDWIDTH_HZ,
+        DTV_DELIVERY_SYSTEM, DTV_FREQUENCY, DTV_STREAM_ID, DTV_SYMBOL_RATE, SYS_ISDBS, SYS_ISDBT,
+    };
+    use maleicacid_tuner_hal_common::{
+        FrontendScanMode, FrontendStreamIdKind, FrontendSystem, FrontendTuneRequest, HalError,
+        TsPacketCompletionBuffer, TS_PACKET_SIZE,
+    };
     use std::io::{self, Cursor, Read, Write};
     use std::os::fd::AsRawFd;
     use std::os::unix::net::UnixStream;
-
 
     #[test]
     fn strict_stream_pair_requires_unambiguous_mapping() {
@@ -1178,13 +1502,22 @@ mod tests {
     fn selection_uses_linux_dvb_path() {
         let selection = DvbFrontendBackend::selection(2);
         assert_eq!(selection.frontend_id, 2);
-        assert_eq!(selection.control_path.display(), "/dev/dvb/adapter2/frontend0");
+        assert_eq!(
+            selection.control_path.display(),
+            "/dev/dvb/adapter2/frontend0"
+        );
     }
 
     #[test]
     fn delivery_system_maps_supported_frontends() {
-        assert_eq!(DvbFrontendBackend::delivery_system(Some(FrontendSystem::IsdbT)).unwrap(), SYS_ISDBT);
-        assert_eq!(DvbFrontendBackend::delivery_system(Some(FrontendSystem::IsdbS)).unwrap(), SYS_ISDBS);
+        assert_eq!(
+            DvbFrontendBackend::delivery_system(Some(FrontendSystem::IsdbT)).unwrap(),
+            SYS_ISDBT
+        );
+        assert_eq!(
+            DvbFrontendBackend::delivery_system(Some(FrontendSystem::IsdbS)).unwrap(),
+            SYS_ISDBS
+        );
         assert!(DvbFrontendBackend::delivery_system(Some(FrontendSystem::IsdbS3)).is_err());
         assert!(DvbFrontendBackend::delivery_system(Some(FrontendSystem::DvbS)).is_err());
     }
@@ -1201,7 +1534,10 @@ mod tests {
         };
         assert_eq!(req.frequency_hz, Some(473_142_857));
         assert_eq!(req.stream_id, Some(31));
-        assert_eq!(req.stream_id_kind, Some(FrontendStreamIdKind::AbsoluteStreamId));
+        assert_eq!(
+            req.stream_id_kind,
+            Some(FrontendStreamIdKind::AbsoluteStreamId)
+        );
         assert_eq!(req.symbol_rate, None);
     }
 
@@ -1254,12 +1590,23 @@ mod tests {
             symbol_rate: None,
             system: Some(FrontendSystem::IsdbS),
         };
-        assert_eq!(DvbFrontendBackend::validate_stream_id(&frequency_only).unwrap(), None);
+        assert_eq!(
+            DvbFrontendBackend::validate_stream_id(&frequency_only).unwrap(),
+            None
+        );
 
-        let relative = DvbTuneRequest { stream_id: Some(0), stream_id_kind: Some(FrontendStreamIdKind::RelativeStreamNumber), ..frequency_only.clone() };
+        let relative = DvbTuneRequest {
+            stream_id: Some(0),
+            stream_id_kind: Some(FrontendStreamIdKind::RelativeStreamNumber),
+            ..frequency_only.clone()
+        };
         assert!(DvbFrontendBackend::validate_stream_id(&relative).is_err());
 
-        let absolute = DvbTuneRequest { stream_id: Some(0x6020), stream_id_kind: Some(FrontendStreamIdKind::AbsoluteStreamId), ..frequency_only };
+        let absolute = DvbTuneRequest {
+            stream_id: Some(0x6020),
+            stream_id_kind: Some(FrontendStreamIdKind::AbsoluteStreamId),
+            ..frequency_only
+        };
         assert!(DvbFrontendBackend::validate_stream_id(&absolute).is_err());
     }
 
@@ -1275,12 +1622,21 @@ mod tests {
             max_frequency_raw: 2_150_000,
             max_symbol_rate: 45_000_000,
         };
-        assert_eq!(probe.normalized_frequency_range_hz(FrontendSystem::IsdbS), (950_000_000_i64, 2_150_000_000_i64));
+        assert_eq!(
+            probe.normalized_frequency_range_hz(FrontendSystem::IsdbS),
+            (950_000_000_i64, 2_150_000_000_i64)
+        );
     }
 
     #[test]
     fn explicit_vts_profile_requests_expand_to_one_dvb_scan_candidate() {
-        let backend = DvbFrontendBackend::new(0, 0, 0, 0, vec![FrontendSystem::IsdbT, FrontendSystem::IsdbS]);
+        let backend = DvbFrontendBackend::new(
+            0,
+            0,
+            0,
+            0,
+            vec![FrontendSystem::IsdbT, FrontendSystem::IsdbS],
+        );
         let isdbt = FrontendTuneRequest {
             system: FrontendSystem::IsdbT,
             frequency: 557_142_857,
@@ -1308,9 +1664,22 @@ mod tests {
             bandwidth_hz: None,
             symbol_rate: None,
         };
-        assert_eq!(backend.scan_requests(&isdbt, FrontendScanMode::Auto).unwrap(), vec![isdbt]);
-        assert_eq!(backend.scan_requests(&bs, FrontendScanMode::Auto).unwrap(), vec![bs]);
-        assert_eq!(backend.scan_requests(&cs110, FrontendScanMode::Auto).unwrap(), vec![cs110]);
+        assert_eq!(
+            backend
+                .scan_requests(&isdbt, FrontendScanMode::Auto)
+                .unwrap(),
+            vec![isdbt]
+        );
+        assert_eq!(
+            backend.scan_requests(&bs, FrontendScanMode::Auto).unwrap(),
+            vec![bs]
+        );
+        assert_eq!(
+            backend
+                .scan_requests(&cs110, FrontendScanMode::Auto)
+                .unwrap(),
+            vec![cs110]
+        );
     }
 
     #[test]
@@ -1325,8 +1694,12 @@ mod tests {
             bandwidth_hz: None,
             symbol_rate: None,
         };
-        assert!(backend.scan_requests(&request, FrontendScanMode::Auto).is_err());
-        assert!(backend.scan_requests(&request, FrontendScanMode::Blind).is_err());
+        assert!(backend
+            .scan_requests(&request, FrontendScanMode::Auto)
+            .is_err());
+        assert!(backend
+            .scan_requests(&request, FrontendScanMode::Blind)
+            .is_err());
     }
 
     #[test]
@@ -1341,13 +1714,18 @@ mod tests {
             bandwidth_hz: Some(7_000_000),
             symbol_rate: None,
         };
-        assert!(backend.scan_requests(&request, FrontendScanMode::Auto).is_err());
+        assert!(backend
+            .scan_requests(&request, FrontendScanMode::Auto)
+            .is_err());
     }
 
     #[test]
     fn ambiguous_satellite_without_enum_delsys_is_not_advertised() {
         assert!(DvbFrontendBackend::fallback_systems_from_fe_type(0).is_empty());
-        assert_eq!(DvbFrontendBackend::fallback_systems_from_fe_type(2), vec![FrontendSystem::IsdbT]);
+        assert_eq!(
+            DvbFrontendBackend::fallback_systems_from_fe_type(2),
+            vec![FrontendSystem::IsdbT]
+        );
     }
 
     #[test]
@@ -1359,14 +1737,37 @@ mod tests {
 
     #[test]
     fn dvb_frontend_driver_gate_accepts_only_earth_pt1_driver() {
-        let mut info = DvbFrontendInfo { name: [0; 128], fe_type: 0, frequency_min: 0, frequency_max: 0, frequency_stepsize: 0, frequency_tolerance: 0, symbol_rate_min: 0, symbol_rate_max: 0, symbol_rate_tolerance: 0, notifier_delay: 0, caps: 0 };
+        let mut info = DvbFrontendInfo {
+            name: [0; 128],
+            fe_type: 0,
+            frequency_min: 0,
+            frequency_max: 0,
+            frequency_stepsize: 0,
+            frequency_tolerance: 0,
+            symbol_rate_min: 0,
+            symbol_rate_max: 0,
+            symbol_rate_tolerance: 0,
+            notifier_delay: 0,
+            caps: 0,
+        };
         info.name[.."tc90522 isdb-s".len()].copy_from_slice(b"tc90522 isdb-s");
-        assert!(super::is_supported_earth_pt1_frontend_identity(&info, Some("earth-pt1")));
-        assert!(!super::is_supported_earth_pt1_frontend_identity(&info, Some("generic-dvb")));
-        assert!(!super::is_supported_earth_pt1_frontend_identity(&info, None));
+        assert!(super::is_supported_earth_pt1_frontend_identity(
+            &info,
+            Some("earth-pt1")
+        ));
+        assert!(!super::is_supported_earth_pt1_frontend_identity(
+            &info,
+            Some("generic-dvb")
+        ));
+        assert!(!super::is_supported_earth_pt1_frontend_identity(
+            &info, None
+        ));
         info.name = [0; 128];
         info.name[.."generic dvb-s2 frontend".len()].copy_from_slice(b"generic dvb-s2 frontend");
-        assert!(super::is_supported_earth_pt1_frontend_identity(&info, Some("earth-pt1")));
+        assert!(super::is_supported_earth_pt1_frontend_identity(
+            &info,
+            Some("earth-pt1")
+        ));
     }
 
     #[test]
@@ -1385,15 +1786,30 @@ mod tests {
             system: Some(FrontendSystem::IsdbT),
             ..Default::default()
         };
-        assert_eq!(DvbFrontendBackend::normalize_dvb_tune_bandwidth(&isdbt).unwrap(), Some(6_000_000));
+        assert_eq!(
+            DvbFrontendBackend::normalize_dvb_tune_bandwidth(&isdbt).unwrap(),
+            Some(6_000_000)
+        );
 
-        let isdbt_auto = DvbTuneRequest { bandwidth_hz: None, ..isdbt.clone() };
-        assert_eq!(DvbFrontendBackend::normalize_dvb_tune_bandwidth(&isdbt_auto).unwrap(), Some(6_000_000));
+        let isdbt_auto = DvbTuneRequest {
+            bandwidth_hz: None,
+            ..isdbt.clone()
+        };
+        assert_eq!(
+            DvbFrontendBackend::normalize_dvb_tune_bandwidth(&isdbt_auto).unwrap(),
+            Some(6_000_000)
+        );
 
-        let isdbt_7mhz = DvbTuneRequest { bandwidth_hz: Some(7_000_000), ..isdbt.clone() };
+        let isdbt_7mhz = DvbTuneRequest {
+            bandwidth_hz: Some(7_000_000),
+            ..isdbt.clone()
+        };
         assert!(DvbFrontendBackend::normalize_dvb_tune_bandwidth(&isdbt_7mhz).is_err());
 
-        let isdbt_8mhz = DvbTuneRequest { bandwidth_hz: Some(8_000_000), ..isdbt };
+        let isdbt_8mhz = DvbTuneRequest {
+            bandwidth_hz: Some(8_000_000),
+            ..isdbt
+        };
         assert!(DvbFrontendBackend::normalize_dvb_tune_bandwidth(&isdbt_8mhz).is_err());
 
         let isdbs_with_bandwidth = DvbTuneRequest {
@@ -1414,7 +1830,8 @@ mod tests {
             bandwidth_hz: Some(6_000_000),
             system: Some(FrontendSystem::IsdbT),
             ..Default::default()
-        }).unwrap();
+        })
+        .unwrap();
         assert!(pairs.contains(&(DTV_DELIVERY_SYSTEM, SYS_ISDBT)));
         assert!(pairs.contains(&(DTV_FREQUENCY, 473_142_857)));
         assert!(pairs.contains(&(DTV_BANDWIDTH_HZ, 6_000_000)));
@@ -1424,30 +1841,33 @@ mod tests {
     #[test]
     fn dvb_tune_from_common_rejects_symbol_rate_before_device_access() {
         let mut backend = DvbFrontendBackend::new(-9997, 0, 0, 0, vec![FrontendSystem::IsdbS]);
-        let err = backend.tune_from_common(FrontendTuneRequest {
-            system: FrontendSystem::IsdbS,
-            frequency: 1_049_480_000,
-            end_frequency: None,
-            stream_id: Some(0x4010),
-            stream_id_kind: Some(FrontendStreamIdKind::AbsoluteStreamId),
-            bandwidth_hz: None,
-            symbol_rate: Some(28_860_000),
-        }).expect_err("symbol_rate contract violation must fail before opening the device");
+        let err = backend
+            .tune_from_common(FrontendTuneRequest {
+                system: FrontendSystem::IsdbS,
+                frequency: 1_049_480_000,
+                end_frequency: None,
+                stream_id: Some(0x4010),
+                stream_id_kind: Some(FrontendStreamIdKind::AbsoluteStreamId),
+                bandwidth_hz: None,
+                symbol_rate: Some(28_860_000),
+            })
+            .expect_err("symbol_rate contract violation must fail before opening the device");
         assert!(matches!(err, HalError::InvalidArgument(_)));
     }
 
     #[test]
     fn dvb_tune_rejects_invalid_bandwidth_before_device_access() {
         let mut backend = DvbFrontendBackend::new(-9996, 0, 0, 0, vec![FrontendSystem::IsdbT]);
-        let err = backend.tune(DvbTuneRequest {
-            frequency_hz: Some(473_142_857),
-            bandwidth_hz: Some(7_000_000),
-            system: Some(FrontendSystem::IsdbT),
-            ..Default::default()
-        }).expect_err("bandwidth contract violation must fail before opening the device");
+        let err = backend
+            .tune(DvbTuneRequest {
+                frequency_hz: Some(473_142_857),
+                bandwidth_hz: Some(7_000_000),
+                system: Some(FrontendSystem::IsdbT),
+                ..Default::default()
+            })
+            .expect_err("bandwidth contract violation must fail before opening the device");
         assert!(matches!(err, HalError::InvalidArgument(_)));
     }
-
 }
 
 #[cfg(test)]
@@ -1472,37 +1892,50 @@ mod device_missing_tests {
     #[test]
     fn missing_dvb_device_returns_error_without_panic() {
         let mut backend = DvbFrontendBackend::new(-9999, 0, 0, 0, vec![FrontendSystem::IsdbT]);
-        let err = backend.read_status().expect_err("missing device should be an error");
+        let err = backend
+            .read_status()
+            .expect_err("missing device should be an error");
         assert!(matches!(err, HalError::DeviceMissing(_)));
     }
 
     #[test]
     fn missing_dvb_device_tune_returns_error_without_panic() {
         let mut backend = DvbFrontendBackend::new(-9998, 0, 0, 0, vec![FrontendSystem::IsdbT]);
-        let err = backend.tune(super::DvbTuneRequest {
-            frequency_hz: Some(473_142_857),
-            system: Some(FrontendSystem::IsdbT),
-            ..Default::default()
-        }).expect_err("missing device tune should be an error");
+        let err = backend
+            .tune(super::DvbTuneRequest {
+                frequency_hz: Some(473_142_857),
+                system: Some(FrontendSystem::IsdbT),
+                ..Default::default()
+            })
+            .expect_err("missing device tune should be an error");
         assert!(matches!(err, HalError::DeviceMissing(_)));
     }
 }
 
-
 fn classify_open_error(path: &std::path::Path, err: &std::io::Error) -> HalError {
     match err.kind() {
         ErrorKind::NotFound => HalError::DeviceMissing(path.to_path_buf()),
-        ErrorKind::PermissionDenied => HalError::PermissionDenied { path: path.to_path_buf(), message: err.to_string() },
-        _ if err.raw_os_error() == Some(16) => HalError::Busy { path: Some(path.to_path_buf()), message: err.to_string() },
-        _ => HalError::OpenFailed { path: path.to_path_buf(), message: err.to_string() },
+        ErrorKind::PermissionDenied => HalError::PermissionDenied {
+            path: path.to_path_buf(),
+            message: err.to_string(),
+        },
+        _ if err.raw_os_error() == Some(16) => HalError::Busy {
+            path: Some(path.to_path_buf()),
+            message: err.to_string(),
+        },
+        _ => HalError::OpenFailed {
+            path: path.to_path_buf(),
+            message: err.to_string(),
+        },
     }
 }
 
 #[cfg(test)]
 mod bs_cs_contract_tests {
     use super::*;
-    use maleicacid_tuner_hal_common::{FrontendStreamIdKind, FrontendSystem, FrontendTuneRequest, HalError};
-
+    use maleicacid_tuner_hal_common::{
+        FrontendStreamIdKind, FrontendSystem, FrontendTuneRequest, HalError,
+    };
 
     fn parse_tis_bs_tsid_entries_from_scan_plan() -> Vec<(u64, u16)> {
         let source = include_str!("../../../tis/src/com/maleicacid/tvinput/tis/ScanPlan.kt");
@@ -1511,8 +1944,13 @@ mod bs_cs_contract_tests {
         let mut rest = source;
         while let Some(marker_index) = rest.find(marker) {
             let tail = &rest[marker_index + marker.len()..];
-            let Some(end_index) = tail.find(')') else { break; };
-            let fields = tail[..end_index].split(',').map(|field| field.trim()).collect::<Vec<_>>();
+            let Some(end_index) = tail.find(')') else {
+                break;
+            };
+            let fields = tail[..end_index]
+                .split(',')
+                .map(|field| field.trim())
+                .collect::<Vec<_>>();
             if fields.len() >= 2 && !fields[0].starts_with("val ") {
                 let frequency = fields[0]
                     .trim_end_matches('L')
@@ -1533,12 +1971,21 @@ mod bs_cs_contract_tests {
     #[test]
     fn dvb_bs_tsid_table_matches_tis_bs_ssot_source() {
         let tis_entries = parse_tis_bs_tsid_entries_from_scan_plan();
-        let dvb_entries = JAPAN_BS_ISDBS_TSID_TABLE.iter().map(|entry| (entry.if_frequency_hz, entry.tsid)).collect::<Vec<_>>();
-        assert!(!tis_entries.is_empty(), "TIS ScanPlan.kt の BS TSID 表を読めませんでした");
+        let dvb_entries = JAPAN_BS_ISDBS_TSID_TABLE
+            .iter()
+            .map(|entry| (entry.if_frequency_hz, entry.tsid))
+            .collect::<Vec<_>>();
+        assert!(
+            !tis_entries.is_empty(),
+            "TIS ScanPlan.kt の BS TSID 表を読めませんでした"
+        );
         assert_eq!(dvb_entries, tis_entries);
     }
 
-    fn bs_base_request(stream_id: Option<u32>, kind: Option<FrontendStreamIdKind>) -> FrontendTuneRequest {
+    fn bs_base_request(
+        stream_id: Option<u32>,
+        kind: Option<FrontendStreamIdKind>,
+    ) -> FrontendTuneRequest {
         FrontendTuneRequest {
             system: FrontendSystem::IsdbS,
             frequency: 1_049_480_000,
@@ -1550,7 +1997,10 @@ mod bs_cs_contract_tests {
         }
     }
 
-    fn cs_base_request(stream_id: Option<u32>, kind: Option<FrontendStreamIdKind>) -> FrontendTuneRequest {
+    fn cs_base_request(
+        stream_id: Option<u32>,
+        kind: Option<FrontendStreamIdKind>,
+    ) -> FrontendTuneRequest {
         FrontendTuneRequest {
             system: FrontendSystem::IsdbS,
             frequency: 1_613_000_000,
@@ -1571,10 +2021,13 @@ mod bs_cs_contract_tests {
 
     #[test]
     fn dvb_bs_rejects_relative_stream_id_and_accepts_exact_frequency_tsid_pair() {
-        assert!(DvbFrontendBackend::normalize_stream_id_from_common(&bs_base_request(
-            Some(0),
-            Some(FrontendStreamIdKind::RelativeStreamNumber),
-        )).is_err());
+        assert!(
+            DvbFrontendBackend::normalize_stream_id_from_common(&bs_base_request(
+                Some(0),
+                Some(FrontendStreamIdKind::RelativeStreamNumber),
+            ))
+            .is_err()
+        );
         assert_eq!(
             DvbFrontendBackend::normalize_stream_id_from_common(&bs_base_request(
                 Some(0x4010),
@@ -1583,15 +2036,24 @@ mod bs_cs_contract_tests {
             .unwrap(),
             (Some(0x4010), Some(FrontendStreamIdKind::AbsoluteStreamId)),
         );
-        assert!(DvbFrontendBackend::normalize_stream_id_from_common(&bs_base_request(
-            Some(0),
-            Some(FrontendStreamIdKind::AbsoluteStreamId),
-        )).is_err());
-        assert!(DvbFrontendBackend::normalize_stream_id_from_common(&bs_base_request(
-            Some(0x4999),
-            Some(FrontendStreamIdKind::AbsoluteStreamId),
-        )).is_err());
-        let wrong_if = FrontendTuneRequest { frequency: 1_087_840_000, ..bs_base_request(Some(0x4010), Some(FrontendStreamIdKind::AbsoluteStreamId)) };
+        assert!(
+            DvbFrontendBackend::normalize_stream_id_from_common(&bs_base_request(
+                Some(0),
+                Some(FrontendStreamIdKind::AbsoluteStreamId),
+            ))
+            .is_err()
+        );
+        assert!(
+            DvbFrontendBackend::normalize_stream_id_from_common(&bs_base_request(
+                Some(0x4999),
+                Some(FrontendStreamIdKind::AbsoluteStreamId),
+            ))
+            .is_err()
+        );
+        let wrong_if = FrontendTuneRequest {
+            frequency: 1_087_840_000,
+            ..bs_base_request(Some(0x4010), Some(FrontendStreamIdKind::AbsoluteStreamId))
+        };
         assert!(DvbFrontendBackend::normalize_stream_id_from_common(&wrong_if).is_err());
     }
 
@@ -1599,11 +2061,11 @@ mod bs_cs_contract_tests {
     fn dvb_single_explicit_scan_returns_only_the_given_candidate() {
         let backend = DvbFrontendBackend::new(0, 0, 0, 0, vec![FrontendSystem::IsdbS]);
         let request = bs_base_request(Some(0x4010), Some(FrontendStreamIdKind::AbsoluteStreamId));
-        let requests = backend.scan_requests(&request, FrontendScanMode::Auto).unwrap();
+        let requests = backend
+            .scan_requests(&request, FrontendScanMode::Auto)
+            .unwrap();
         assert_eq!(requests, vec![request]);
     }
-
-
 
     #[test]
     fn dvb_backend_rejects_internal_symbol_rate_contract_violation() {
@@ -1620,14 +2082,20 @@ mod bs_cs_contract_tests {
     fn dvb_bs_tsid_last_entry_matches_ssot_and_rejects_removed_value() {
         assert!(japan_bs_tsid_matches(1_471_440_000, 0x4972));
         assert!(!japan_bs_tsid_matches(1_471_440_000, 0x4973));
-        assert!(DvbFrontendBackend::normalize_stream_id_from_common(&FrontendTuneRequest {
-            frequency: 1_471_440_000,
-            ..bs_base_request(Some(0x4972), Some(FrontendStreamIdKind::AbsoluteStreamId))
-        }).is_ok());
-        assert!(DvbFrontendBackend::normalize_stream_id_from_common(&FrontendTuneRequest {
-            frequency: 1_471_440_000,
-            ..bs_base_request(Some(0x4973), Some(FrontendStreamIdKind::AbsoluteStreamId))
-        }).is_err());
+        assert!(
+            DvbFrontendBackend::normalize_stream_id_from_common(&FrontendTuneRequest {
+                frequency: 1_471_440_000,
+                ..bs_base_request(Some(0x4972), Some(FrontendStreamIdKind::AbsoluteStreamId))
+            })
+            .is_ok()
+        );
+        assert!(
+            DvbFrontendBackend::normalize_stream_id_from_common(&FrontendTuneRequest {
+                frequency: 1_471_440_000,
+                ..bs_base_request(Some(0x4973), Some(FrontendStreamIdKind::AbsoluteStreamId))
+            })
+            .is_err()
+        );
     }
 
     #[test]
@@ -1643,39 +2111,72 @@ mod bs_cs_contract_tests {
         };
         assert!(DvbFrontendBackend::validate_driver_frequency_from_common(&valid_isdbt).is_ok());
 
-        let invalid_isdbt = FrontendTuneRequest { frequency: 90_000_000, ..valid_isdbt.clone() };
+        let invalid_isdbt = FrontendTuneRequest {
+            frequency: 90_000_000,
+            ..valid_isdbt.clone()
+        };
         assert!(DvbFrontendBackend::validate_driver_frequency_from_common(&invalid_isdbt).is_err());
 
-        let unrepresentable = FrontendTuneRequest { frequency: u64::from(u32::MAX) + 1, ..valid_isdbt };
-        assert!(DvbFrontendBackend::validate_driver_frequency_from_common(&unrepresentable).is_err());
+        let unrepresentable = FrontendTuneRequest {
+            frequency: u64::from(u32::MAX) + 1,
+            ..valid_isdbt
+        };
+        assert!(
+            DvbFrontendBackend::validate_driver_frequency_from_common(&unrepresentable).is_err()
+        );
     }
 
     #[test]
     fn dvb_common_validation_accepts_only_fixed_isdbs_tables() {
-        assert!(DvbFrontendBackend::validate_driver_frequency_from_common(&bs_base_request(
-            Some(0x4010),
-            Some(FrontendStreamIdKind::AbsoluteStreamId),
-        )).is_ok());
-        assert!(DvbFrontendBackend::validate_driver_frequency_from_common(&cs_base_request(None, None)).is_ok());
-        let invalid = FrontendTuneRequest { frequency: 1_500_000_000, ..cs_base_request(None, None) };
+        assert!(
+            DvbFrontendBackend::validate_driver_frequency_from_common(&bs_base_request(
+                Some(0x4010),
+                Some(FrontendStreamIdKind::AbsoluteStreamId),
+            ))
+            .is_ok()
+        );
+        assert!(
+            DvbFrontendBackend::validate_driver_frequency_from_common(&cs_base_request(None, None))
+                .is_ok()
+        );
+        let invalid = FrontendTuneRequest {
+            frequency: 1_500_000_000,
+            ..cs_base_request(None, None)
+        };
         assert!(DvbFrontendBackend::validate_driver_frequency_from_common(&invalid).is_err());
-        let near_bs = FrontendTuneRequest { frequency: 1_049_480_001, ..bs_base_request(Some(0x4010), Some(FrontendStreamIdKind::AbsoluteStreamId)) };
+        let near_bs = FrontendTuneRequest {
+            frequency: 1_049_480_001,
+            ..bs_base_request(Some(0x4010), Some(FrontendStreamIdKind::AbsoluteStreamId))
+        };
         assert!(DvbFrontendBackend::validate_driver_frequency_from_common(&near_bs).is_err());
-        let near_cs = FrontendTuneRequest { frequency: 1_613_000_001, ..cs_base_request(None, None) };
+        let near_cs = FrontendTuneRequest {
+            frequency: 1_613_000_001,
+            ..cs_base_request(None, None)
+        };
         assert!(DvbFrontendBackend::validate_driver_frequency_from_common(&near_cs).is_err());
     }
 
     #[test]
     fn dvb_cs110_uses_frequency_only() {
-        assert_eq!(DvbFrontendBackend::normalize_stream_id_from_common(&cs_base_request(None, None)).unwrap(), (None, None));
-        assert!(DvbFrontendBackend::normalize_stream_id_from_common(&cs_base_request(
-            Some(1),
-            Some(FrontendStreamIdKind::RelativeStreamNumber),
-        )).is_err());
-        assert!(DvbFrontendBackend::normalize_stream_id_from_common(&cs_base_request(
-            Some(0x5001),
-            Some(FrontendStreamIdKind::AbsoluteStreamId),
-        )).is_err());
+        assert_eq!(
+            DvbFrontendBackend::normalize_stream_id_from_common(&cs_base_request(None, None))
+                .unwrap(),
+            (None, None)
+        );
+        assert!(
+            DvbFrontendBackend::normalize_stream_id_from_common(&cs_base_request(
+                Some(1),
+                Some(FrontendStreamIdKind::RelativeStreamNumber),
+            ))
+            .is_err()
+        );
+        assert!(
+            DvbFrontendBackend::normalize_stream_id_from_common(&cs_base_request(
+                Some(0x5001),
+                Some(FrontendStreamIdKind::AbsoluteStreamId),
+            ))
+            .is_err()
+        );
     }
 }
 
@@ -1734,10 +2235,20 @@ mod status_word_tests {
         stop_reader.set_nonblocking(true).unwrap();
 
         stop_writer.write_all(&[1]).unwrap();
-        assert!(!DvbFrontendBackend::poll_reader_ready(device_reader.as_raw_fd(), std::path::Path::new("/dev/dvb/test"), Some(stop_reader.as_raw_fd())).unwrap());
+        assert!(!DvbFrontendBackend::poll_reader_ready(
+            device_reader.as_raw_fd(),
+            std::path::Path::new("/dev/dvb/test"),
+            Some(stop_reader.as_raw_fd())
+        )
+        .unwrap());
 
         device_writer.write_all(&[0x47]).unwrap();
-        assert!(DvbFrontendBackend::poll_reader_ready(device_reader.as_raw_fd(), std::path::Path::new("/dev/dvb/test"), None).unwrap());
+        assert!(DvbFrontendBackend::poll_reader_ready(
+            device_reader.as_raw_fd(),
+            std::path::Path::new("/dev/dvb/test"),
+            None
+        )
+        .unwrap());
     }
 
     #[test]
@@ -1746,8 +2257,14 @@ mod status_word_tests {
         assert!(DvbFrontendBackend::classify_device_revents(path, POLLERR).is_err());
         assert!(DvbFrontendBackend::classify_device_revents(path, POLLHUP).is_err());
         assert!(DvbFrontendBackend::classify_device_revents(path, POLLNVAL).is_err());
-        assert_eq!(DvbFrontendBackend::classify_device_revents(path, 0).unwrap(), false);
-        assert_eq!(DvbFrontendBackend::classify_device_revents(path, POLLIN).unwrap(), true);
+        assert_eq!(
+            DvbFrontendBackend::classify_device_revents(path, 0).unwrap(),
+            false
+        );
+        assert_eq!(
+            DvbFrontendBackend::classify_device_revents(path, POLLIN).unwrap(),
+            true
+        );
     }
 
     #[test]
@@ -1772,7 +2289,9 @@ mod status_word_tests {
 
         let mut first = Cursor::new(packet[..1].to_vec());
         assert_eq!(
-            DvbFrontendBackend::pump_reader_packets(&mut first, None, 1, &mut residual, |pkt| out.push(pkt.to_vec())).unwrap(),
+            DvbFrontendBackend::pump_reader_packets(&mut first, None, 1, &mut residual, |pkt| out
+                .push(pkt.to_vec()))
+            .unwrap(),
             0
         );
         assert!(out.is_empty());
@@ -1780,12 +2299,43 @@ mod status_word_tests {
 
         let mut second = Cursor::new(packet[1..].to_vec());
         assert_eq!(
-            DvbFrontendBackend::pump_reader_packets(&mut second, None, 1, &mut residual, |pkt| out.push(pkt.to_vec())).unwrap(),
+            DvbFrontendBackend::pump_reader_packets(&mut second, None, 1, &mut residual, |pkt| out
+                .push(pkt.to_vec()))
+            .unwrap(),
             1
         );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0], packet);
         assert_eq!(residual.tail_len(), 0);
+    }
+
+    #[test]
+    fn dvb_reader_pump_keeps_over_budget_completed_packets_for_next_call() {
+        let first = make_test_ts_packet(0x0126, 0x88);
+        let second = make_test_ts_packet(0x0127, 0x99);
+        let mut input = Vec::new();
+        input.extend_from_slice(&first);
+        input.extend_from_slice(&second);
+        let mut residual = TsPacketCompletionBuffer::default();
+        let mut out = Vec::new();
+
+        let mut reader = Cursor::new(input);
+        assert_eq!(
+            DvbFrontendBackend::pump_reader_packets(&mut reader, None, 1, &mut residual, |pkt| out
+                .push(*pkt))
+            .unwrap(),
+            1
+        );
+        assert_eq!(out, vec![first]);
+
+        let mut empty = Cursor::new(Vec::<u8>::new());
+        assert_eq!(
+            DvbFrontendBackend::pump_reader_packets(&mut empty, None, 1, &mut residual, |pkt| out
+                .push(*pkt))
+            .unwrap(),
+            1
+        );
+        assert_eq!(out, vec![first, second]);
     }
 
     #[test]
@@ -1796,7 +2346,10 @@ mod status_word_tests {
 
         let mut partial = Cursor::new(packet[..100].to_vec());
         assert_eq!(
-            DvbFrontendBackend::pump_reader_packets(&mut partial, None, 1, &mut residual, |pkt| out.push(pkt.to_vec())).unwrap(),
+            DvbFrontendBackend::pump_reader_packets(&mut partial, None, 1, &mut residual, |pkt| {
+                out.push(pkt.to_vec())
+            })
+            .unwrap(),
             0
         );
         assert!(out.is_empty());
@@ -1804,7 +2357,10 @@ mod status_word_tests {
 
         let mut blocked = WouldBlockReader;
         assert_eq!(
-            DvbFrontendBackend::pump_reader_packets(&mut blocked, None, 1, &mut residual, |pkt| out.push(pkt.to_vec())).unwrap(),
+            DvbFrontendBackend::pump_reader_packets(&mut blocked, None, 1, &mut residual, |pkt| {
+                out.push(pkt.to_vec())
+            })
+            .unwrap(),
             0
         );
         assert!(out.is_empty());
@@ -1812,7 +2368,9 @@ mod status_word_tests {
 
         let mut rest = Cursor::new(packet[100..].to_vec());
         assert_eq!(
-            DvbFrontendBackend::pump_reader_packets(&mut rest, None, 1, &mut residual, |pkt| out.push(pkt.to_vec())).unwrap(),
+            DvbFrontendBackend::pump_reader_packets(&mut rest, None, 1, &mut residual, |pkt| out
+                .push(pkt.to_vec()))
+            .unwrap(),
             1
         );
         assert_eq!(out.len(), 1);
@@ -1828,12 +2386,13 @@ mod status_word_tests {
 
         let mut reader = Cursor::new(malformed.to_vec());
         assert_eq!(
-            DvbFrontendBackend::pump_reader_packets(&mut reader, None, 1, &mut residual, |pkt| out.push(pkt.to_vec())).unwrap(),
+            DvbFrontendBackend::pump_reader_packets(&mut reader, None, 1, &mut residual, |pkt| out
+                .push(pkt.to_vec()))
+            .unwrap(),
             0
         );
         assert!(out.is_empty());
         assert_eq!(residual.tail_len(), 0);
         assert!(residual.malformed_bytes() >= TS_PACKET_SIZE as u64);
     }
-
 }

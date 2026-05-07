@@ -76,12 +76,16 @@ const PX4_BS_TSID_TABLE: &[Px4BsTsidEntry] = &[
 
 /// px4 ローカル対応表は TIS の BS TSID 単一情報源と一致しなければならない。
 pub fn px4_bs_tsid_contract_entries() -> Vec<(u32, u16)> {
-    PX4_BS_TSID_TABLE.iter().map(|entry| (entry.if_frequency_hz, entry.tsid)).collect()
+    PX4_BS_TSID_TABLE
+        .iter()
+        .map(|entry| (entry.if_frequency_hz, entry.tsid))
+        .collect()
 }
 
 fn hz_to_nearest_khz(hz: u64) -> Result<i32, HalError> {
     let rounded = (hz + 500) / 1_000;
-    i32::try_from(rounded).map_err(|_| HalError::InvalidArgument(format!("frequency too large: {hz}")))
+    i32::try_from(rounded)
+        .map_err(|_| HalError::InvalidArgument(format!("frequency too large: {hz}")))
 }
 
 fn inverse_linear_index(freq_khz: i32, base_khz: i32, step_khz: i32) -> (i32, i32) {
@@ -95,7 +99,14 @@ fn inverse_linear_index(freq_khz: i32, base_khz: i32, step_khz: i32) -> (i32, i3
     (index, freq_khz - canonical)
 }
 
-fn checked_direct_freq_no_with_tolerance(freq_khz: i32, base_khz: i32, step_khz: i32, first_freq_no: i32, last_freq_no: i32, tolerance_khz: i32) -> Option<(i32, i32)> {
+fn checked_direct_freq_no_with_tolerance(
+    freq_khz: i32,
+    base_khz: i32,
+    step_khz: i32,
+    first_freq_no: i32,
+    last_freq_no: i32,
+    tolerance_khz: i32,
+) -> Option<(i32, i32)> {
     let (freq_no, residual) = inverse_linear_index(freq_khz, base_khz, step_khz);
     if !(first_freq_no..=last_freq_no).contains(&freq_no) {
         return None;
@@ -103,10 +114,22 @@ fn checked_direct_freq_no_with_tolerance(freq_khz: i32, base_khz: i32, step_khz:
     (residual.abs() <= tolerance_khz).then_some((freq_no, residual))
 }
 
-fn checked_direct_freq_no(freq_khz: i32, base_khz: i32, step_khz: i32, first_freq_no: i32, last_freq_no: i32) -> Option<(i32, i32)> {
-    checked_direct_freq_no_with_tolerance(freq_khz, base_khz, step_khz, first_freq_no, last_freq_no, PX4_FREQ_TOLERANCE_KHZ)
+fn checked_direct_freq_no(
+    freq_khz: i32,
+    base_khz: i32,
+    step_khz: i32,
+    first_freq_no: i32,
+    last_freq_no: i32,
+) -> Option<(i32, i32)> {
+    checked_direct_freq_no_with_tolerance(
+        freq_khz,
+        base_khz,
+        step_khz,
+        first_freq_no,
+        last_freq_no,
+        PX4_FREQ_TOLERANCE_KHZ,
+    )
 }
-
 
 fn is_exact_japan_cs110_if_frequency_hz(if_hz: u64) -> bool {
     if if_hz < PX4_CS_BASE_IF_HZ {
@@ -129,7 +152,11 @@ pub fn map_isdbt_frequency_to_px4(freq_hz: u64) -> Result<Px4TuneRequest, HalErr
         PX4_ISDBT_UHF_FREQ_NO_MIN,
         PX4_ISDBT_UHF_FREQ_NO_MAX,
     ) {
-        return Ok(Px4TuneRequest { system_code: PTX_ISDB_T_SYSTEM, freq_no, slot: addfreq_khz });
+        return Ok(Px4TuneRequest {
+            system_code: PTX_ISDB_T_SYSTEM,
+            freq_no,
+            slot: addfreq_khz,
+        });
     }
 
     for &(first, last) in PX4_ISDBT_CATV_RANGES {
@@ -140,52 +167,83 @@ pub fn map_isdbt_frequency_to_px4(freq_hz: u64) -> Result<Px4TuneRequest, HalErr
             }
             let residual = freq_khz - canonical;
             if residual.abs() <= PX4_FREQ_TOLERANCE_KHZ {
-                return Ok(Px4TuneRequest { system_code: PTX_ISDB_T_SYSTEM, freq_no, slot: residual });
+                return Ok(Px4TuneRequest {
+                    system_code: PTX_ISDB_T_SYSTEM,
+                    freq_no,
+                    slot: residual,
+                });
             }
         }
     }
-    Err(HalError::InvalidArgument(format!("px4 ISDB-T frequency is not in the Japanese UHF/CATV mapping tolerance: {freq_hz}")))
+    Err(HalError::InvalidArgument(format!(
+        "px4 ISDB-T frequency is not in the Japanese UHF/CATV mapping tolerance: {freq_hz}"
+    )))
 }
 
 pub fn map_bs_if_frequency_to_px4_freq_no(if_hz: u64) -> Result<i32, HalError> {
     if if_hz < PX4_BS_BASE_IF_HZ {
-        return Err(HalError::InvalidArgument(format!("px4 BS IF frequency is not supported: {if_hz}")));
+        return Err(HalError::InvalidArgument(format!(
+            "px4 BS IF frequency is not supported: {if_hz}"
+        )));
     }
     let delta = if_hz - PX4_BS_BASE_IF_HZ;
     if delta % PX4_BS_STEP_HZ != 0 {
-        return Err(HalError::InvalidArgument(format!("px4 BS IF frequency is not supported: {if_hz}")));
+        return Err(HalError::InvalidArgument(format!(
+            "px4 BS IF frequency is not supported: {if_hz}"
+        )));
     }
-    let freq_no = PX4_BS_FREQ_NO_MIN + i32::try_from(delta / PX4_BS_STEP_HZ)
-        .map_err(|_| HalError::InvalidArgument(format!("px4 BS IF frequency is not supported: {if_hz}")))?;
+    let freq_no = PX4_BS_FREQ_NO_MIN
+        + i32::try_from(delta / PX4_BS_STEP_HZ).map_err(|_| {
+            HalError::InvalidArgument(format!("px4 BS IF frequency is not supported: {if_hz}"))
+        })?;
     if (PX4_BS_FREQ_NO_MIN..=PX4_BS_FREQ_NO_MAX).contains(&freq_no) {
         Ok(freq_no)
     } else {
-        Err(HalError::InvalidArgument(format!("px4 BS IF frequency is not supported: {if_hz}")))
+        Err(HalError::InvalidArgument(format!(
+            "px4 BS IF frequency is not supported: {if_hz}"
+        )))
     }
 }
 
 pub fn map_cs110_if_frequency_to_px4_freq_no(if_hz: u64) -> Result<i32, HalError> {
     if if_hz < PX4_CS_BASE_IF_HZ {
-        return Err(HalError::InvalidArgument(format!("px4 110CS IF frequency is not supported: {if_hz}")));
+        return Err(HalError::InvalidArgument(format!(
+            "px4 110CS IF frequency is not supported: {if_hz}"
+        )));
     }
     let delta = if_hz - PX4_CS_BASE_IF_HZ;
     if delta % PX4_CS_STEP_HZ != 0 {
-        return Err(HalError::InvalidArgument(format!("px4 110CS IF frequency is not supported: {if_hz}")));
+        return Err(HalError::InvalidArgument(format!(
+            "px4 110CS IF frequency is not supported: {if_hz}"
+        )));
     }
-    let freq_no = PX4_CS_FREQ_NO_MIN + i32::try_from(delta / PX4_CS_STEP_HZ)
-        .map_err(|_| HalError::InvalidArgument(format!("px4 110CS IF frequency is not supported: {if_hz}")))?;
+    let freq_no = PX4_CS_FREQ_NO_MIN
+        + i32::try_from(delta / PX4_CS_STEP_HZ).map_err(|_| {
+            HalError::InvalidArgument(format!("px4 110CS IF frequency is not supported: {if_hz}"))
+        })?;
     if (PX4_CS_FREQ_NO_MIN..=PX4_CS_FREQ_NO_MAX).contains(&freq_no) {
         Ok(freq_no)
     } else {
-        Err(HalError::InvalidArgument(format!("px4 110CS IF frequency is not supported: {if_hz}")))
+        Err(HalError::InvalidArgument(format!(
+            "px4 110CS IF frequency is not supported: {if_hz}"
+        )))
     }
 }
 
-pub fn map_relative_stream_number_to_px4_slot(relative_stream_number: u16, band: Px4SatBand) -> Result<i32, HalError> {
+pub fn map_relative_stream_number_to_px4_slot(
+    relative_stream_number: u16,
+    band: Px4SatBand,
+) -> Result<i32, HalError> {
     match band {
-        Px4SatBand::Bs if (PX4_BS_SLOT_MIN..=PX4_BS_SLOT_MAX).contains(&relative_stream_number) => Ok(i32::from(relative_stream_number)),
-        Px4SatBand::Bs => Err(HalError::InvalidArgument(format!("px4 BS relative stream number out of range: {relative_stream_number}"))),
-        Px4SatBand::Cs110 => Err(HalError::InvalidArgument("CS110 does not use TSID or relative stream-number frontend selection".to_string())),
+        Px4SatBand::Bs if (PX4_BS_SLOT_MIN..=PX4_BS_SLOT_MAX).contains(&relative_stream_number) => {
+            Ok(i32::from(relative_stream_number))
+        }
+        Px4SatBand::Bs => Err(HalError::InvalidArgument(format!(
+            "px4 BS relative stream number out of range: {relative_stream_number}"
+        ))),
+        Px4SatBand::Cs110 => Err(HalError::InvalidArgument(
+            "CS110 does not use TSID or relative stream-number frontend selection".to_string(),
+        )),
     }
 }
 
@@ -200,17 +258,29 @@ pub fn map_tsid_to_px4_relative_stream_number(if_hz: u64, tsid: u16) -> Option<u
         .map(|entry| entry.relative_stream_number)
 }
 
-pub fn map_bs_relative_stream_number_to_tsid(if_hz: u64, relative_stream_number: u16) -> Option<u16> {
+pub fn map_bs_relative_stream_number_to_tsid(
+    if_hz: u64,
+    relative_stream_number: u16,
+) -> Option<u16> {
     PX4_BS_TSID_TABLE
         .iter()
-        .find(|entry| entry.relative_stream_number == relative_stream_number && frequency_matches(if_hz, entry.if_frequency_hz))
+        .find(|entry| {
+            entry.relative_stream_number == relative_stream_number
+                && frequency_matches(if_hz, entry.if_frequency_hz)
+        })
         .map(|entry| entry.tsid)
 }
 
-pub fn reportable_bs_tsid_for_scan(if_hz: u64, raw_stream_id: u32, stream_id_kind: Option<FrontendStreamIdKind>) -> Option<u16> {
+pub fn reportable_bs_tsid_for_scan(
+    if_hz: u64,
+    raw_stream_id: u32,
+    stream_id_kind: Option<FrontendStreamIdKind>,
+) -> Option<u16> {
     let value = u16::try_from(raw_stream_id).ok()?;
     match stream_id_kind {
-        Some(FrontendStreamIdKind::RelativeStreamNumber) => map_bs_relative_stream_number_to_tsid(if_hz, value),
+        Some(FrontendStreamIdKind::RelativeStreamNumber) => {
+            map_bs_relative_stream_number_to_tsid(if_hz, value)
+        }
         Some(FrontendStreamIdKind::AbsoluteStreamId) | None => PX4_BS_TSID_TABLE
             .iter()
             .find(|entry| entry.tsid == value && frequency_matches(if_hz, entry.if_frequency_hz))
@@ -218,15 +288,23 @@ pub fn reportable_bs_tsid_for_scan(if_hz: u64, raw_stream_id: u32, stream_id_kin
     }
 }
 
-fn map_absolute_stream_id_to_px4_slot(if_hz: u64, stream_id: u16, band: Px4SatBand) -> Result<i32, HalError> {
+fn map_absolute_stream_id_to_px4_slot(
+    if_hz: u64,
+    stream_id: u16,
+    band: Px4SatBand,
+) -> Result<i32, HalError> {
     match band {
         Px4SatBand::Bs => {
             let Some(relative) = map_tsid_to_px4_relative_stream_number(if_hz, stream_id) else {
-                return Err(HalError::InvalidArgument(format!("px4 BS TSID is not in the backend-local TSID table: 0x{stream_id:04x}")));
+                return Err(HalError::InvalidArgument(format!(
+                    "px4 BS TSID is not in the backend-local TSID table: 0x{stream_id:04x}"
+                )));
             };
             map_relative_stream_number_to_px4_slot(relative, band)
         }
-        Px4SatBand::Cs110 => Err(HalError::InvalidArgument(format!("CS110 TSID frontend selection is not supported by policy: 0x{stream_id:04x}"))),
+        Px4SatBand::Cs110 => Err(HalError::InvalidArgument(format!(
+            "CS110 TSID frontend selection is not supported by policy: 0x{stream_id:04x}"
+        ))),
     }
 }
 
@@ -258,7 +336,11 @@ pub fn map_tune_request_to_px4(request: &FrontendTuneRequest) -> Result<Px4TuneR
     match request.system {
         FrontendSystem::IsdbT => map_isdbt_frequency_to_px4(request.frequency),
         FrontendSystem::IsdbS => {
-            let band = if is_exact_japan_cs110_if_frequency_hz(request.frequency) { Px4SatBand::Cs110 } else { Px4SatBand::Bs };
+            let band = if is_exact_japan_cs110_if_frequency_hz(request.frequency) {
+                Px4SatBand::Cs110
+            } else {
+                Px4SatBand::Bs
+            };
             let freq_no = match band {
                 Px4SatBand::Bs => map_bs_if_frequency_to_px4_freq_no(request.frequency)?,
                 Px4SatBand::Cs110 => map_cs110_if_frequency_to_px4_freq_no(request.frequency)?,
@@ -274,16 +356,30 @@ pub fn map_tune_request_to_px4(request: &FrontendTuneRequest) -> Result<Px4TuneR
                     let raw_stream_id = request.stream_id.ok_or_else(|| {
                         HalError::InvalidArgument("px4 BS tune requires TSID or relative stream number; HAL scan expansion is not provided".to_string())
                     })?;
-                    let stream_id = u16::try_from(raw_stream_id).map_err(|_| HalError::InvalidArgument(format!("stream_id out of range: {raw_stream_id}")))?;
+                    let stream_id = u16::try_from(raw_stream_id).map_err(|_| {
+                        HalError::InvalidArgument(format!(
+                            "stream_id out of range: {raw_stream_id}"
+                        ))
+                    })?;
                     match request.stream_id_kind {
-                        Some(FrontendStreamIdKind::RelativeStreamNumber) => map_relative_stream_number_to_px4_slot(stream_id, band)?,
-                        Some(FrontendStreamIdKind::AbsoluteStreamId) | None => map_absolute_stream_id_to_px4_slot(request.frequency, stream_id, band)?,
+                        Some(FrontendStreamIdKind::RelativeStreamNumber) => {
+                            map_relative_stream_number_to_px4_slot(stream_id, band)?
+                        }
+                        Some(FrontendStreamIdKind::AbsoluteStreamId) | None => {
+                            map_absolute_stream_id_to_px4_slot(request.frequency, stream_id, band)?
+                        }
                     }
                 }
             };
-            Ok(Px4TuneRequest { system_code: PTX_ISDB_S_SYSTEM, freq_no, slot })
+            Ok(Px4TuneRequest {
+                system_code: PTX_ISDB_S_SYSTEM,
+                freq_no,
+                slot,
+            })
         }
-        FrontendSystem::IsdbS3 | FrontendSystem::DvbS => Err(HalError::Unsupported("px4 backend は ISDB-T/ISDB-S のみ対象です")),
+        FrontendSystem::IsdbS3 | FrontendSystem::DvbS => Err(HalError::Unsupported(
+            "px4 backend は ISDB-T/ISDB-S のみ対象です",
+        )),
     }
 }
 
@@ -313,7 +409,10 @@ mod tests {
 
     #[test]
     fn rejects_internal_symbol_rate_contract_violation() {
-        let request = FrontendTuneRequest { symbol_rate: Some(28_860_000), ..bs_request(0x4010) };
+        let request = FrontendTuneRequest {
+            symbol_rate: Some(28_860_000),
+            ..bs_request(0x4010)
+        };
         let err = map_tune_request_to_px4(&request).unwrap_err().to_string();
         assert!(err.contains("symbol_rate"), "{err}");
     }
@@ -339,10 +438,22 @@ mod tests {
 
     #[test]
     fn maps_bs_and_cs110_carrier_edges_with_direct_formula() {
-        assert_eq!(map_bs_if_frequency_to_px4_freq_no(1_049_480_000).unwrap(), 0);
-        assert_eq!(map_bs_if_frequency_to_px4_freq_no(1_471_440_000).unwrap(), 11);
-        assert_eq!(map_cs110_if_frequency_to_px4_freq_no(1_613_000_000).unwrap(), 12);
-        assert_eq!(map_cs110_if_frequency_to_px4_freq_no(2_053_000_000).unwrap(), 23);
+        assert_eq!(
+            map_bs_if_frequency_to_px4_freq_no(1_049_480_000).unwrap(),
+            0
+        );
+        assert_eq!(
+            map_bs_if_frequency_to_px4_freq_no(1_471_440_000).unwrap(),
+            11
+        );
+        assert_eq!(
+            map_cs110_if_frequency_to_px4_freq_no(1_613_000_000).unwrap(),
+            12
+        );
+        assert_eq!(
+            map_cs110_if_frequency_to_px4_freq_no(2_053_000_000).unwrap(),
+            23
+        );
     }
 
     fn parse_tis_bs_tsid_entries_from_scan_plan() -> Vec<(u32, u16)> {
@@ -352,9 +463,18 @@ mod tests {
         let mut rest = source;
         while let Some(marker_index) = rest.find(marker) {
             let tail = &rest[marker_index + marker.len()..];
-            let Some(end_index) = tail.find(')') else { break; };
-            let fields = tail[..end_index].split(',').map(|field| field.trim()).collect::<Vec<_>>();
-            assert!(fields.len() >= 2, "TIS ScanPlan.kt の BsTsidEntry field 数が不足しています: {}", &tail[..end_index]);
+            let Some(end_index) = tail.find(')') else {
+                break;
+            };
+            let fields = tail[..end_index]
+                .split(',')
+                .map(|field| field.trim())
+                .collect::<Vec<_>>();
+            assert!(
+                fields.len() >= 2,
+                "TIS ScanPlan.kt の BsTsidEntry field 数が不足しています: {}",
+                &tail[..end_index]
+            );
             if fields[0].starts_with("val ") {
                 rest = &tail[end_index + 1..];
                 continue;
@@ -377,7 +497,10 @@ mod tests {
     #[test]
     fn px4_bs_tsid_table_matches_tis_bs_ssot_source() {
         let tis_entries = parse_tis_bs_tsid_entries_from_scan_plan();
-        assert!(!tis_entries.is_empty(), "TIS ScanPlan.kt の BS TSID 表を読めませんでした");
+        assert!(
+            !tis_entries.is_empty(),
+            "TIS ScanPlan.kt の BS TSID 表を読めませんでした"
+        );
         assert_eq!(px4_bs_tsid_contract_entries(), tis_entries);
     }
 
@@ -391,7 +514,11 @@ mod tests {
 
     #[test]
     fn accepts_px4_bs_relative_stream_number_candidates() {
-        let request = FrontendTuneRequest { stream_id: Some(2), stream_id_kind: Some(FrontendStreamIdKind::RelativeStreamNumber), ..bs_request(0x4010) };
+        let request = FrontendTuneRequest {
+            stream_id: Some(2),
+            stream_id_kind: Some(FrontendStreamIdKind::RelativeStreamNumber),
+            ..bs_request(0x4010)
+        };
         let mapped = map_tune_request_to_px4(&request).unwrap();
         assert_eq!(mapped.system_code, PTX_ISDB_S_SYSTEM);
         assert_eq!(mapped.freq_no, 0);
@@ -400,13 +527,31 @@ mod tests {
 
     #[test]
     fn maps_bs_relative_stream_number_to_reportable_tsid() {
-        assert_eq!(reportable_bs_tsid_for_scan(1_049_480_000, 0, Some(FrontendStreamIdKind::RelativeStreamNumber)), Some(0x4010));
-        assert_eq!(reportable_bs_tsid_for_scan(1_049_480_000, 3, Some(FrontendStreamIdKind::AbsoluteStreamId)), None);
+        assert_eq!(
+            reportable_bs_tsid_for_scan(
+                1_049_480_000,
+                0,
+                Some(FrontendStreamIdKind::RelativeStreamNumber)
+            ),
+            Some(0x4010)
+        );
+        assert_eq!(
+            reportable_bs_tsid_for_scan(
+                1_049_480_000,
+                3,
+                Some(FrontendStreamIdKind::AbsoluteStreamId)
+            ),
+            None
+        );
     }
 
     #[test]
     fn rejects_bs_frequency_without_stream_selector() {
-        let request = FrontendTuneRequest { stream_id: None, stream_id_kind: None, ..bs_request(0x4010) };
+        let request = FrontendTuneRequest {
+            stream_id: None,
+            stream_id_kind: None,
+            ..bs_request(0x4010)
+        };
         assert!(map_tune_request_to_px4(&request).is_err());
     }
 
@@ -439,7 +584,10 @@ mod tests {
             symbol_rate: None,
         };
         let err = map_tune_request_to_px4(&request).unwrap_err().to_string();
-        assert!(err.contains("CS110 frontend tune must not carry TSID"), "{err}");
+        assert!(
+            err.contains("CS110 frontend tune must not carry TSID"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -454,7 +602,10 @@ mod tests {
             symbol_rate: None,
         };
         let err = map_tune_request_to_px4(&request).unwrap_err().to_string();
-        assert!(err.contains("CS110 frontend tune must not carry TSID"), "{err}");
+        assert!(
+            err.contains("CS110 frontend tune must not carry TSID"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -468,7 +619,10 @@ mod tests {
             bandwidth_hz: Some(6_000_000),
             symbol_rate: None,
         };
-        let bs = FrontendTuneRequest { end_frequency: Some(1_049_480_000), ..bs_request(0x4010) };
+        let bs = FrontendTuneRequest {
+            end_frequency: Some(1_049_480_000),
+            ..bs_request(0x4010)
+        };
         let cs110 = FrontendTuneRequest {
             system: FrontendSystem::IsdbS,
             frequency: 1_613_000_000,
@@ -495,14 +649,26 @@ mod tests {
 
     #[test]
     fn bs_tsid_frequency_pair_is_exact() {
-        assert_eq!(map_tsid_to_px4_relative_stream_number(1_471_440_000, 0x4972), Some(2));
-        assert_eq!(map_tsid_to_px4_relative_stream_number(1_471_440_000, 0x4973), None);
-        assert_eq!(map_tsid_to_px4_relative_stream_number(1_471_440_001, 0x4972), None);
+        assert_eq!(
+            map_tsid_to_px4_relative_stream_number(1_471_440_000, 0x4972),
+            Some(2)
+        );
+        assert_eq!(
+            map_tsid_to_px4_relative_stream_number(1_471_440_000, 0x4973),
+            None
+        );
+        assert_eq!(
+            map_tsid_to_px4_relative_stream_number(1_471_440_001, 0x4972),
+            None
+        );
     }
 
     #[test]
     fn range_scan_generation_is_not_supported() {
-        let request = FrontendTuneRequest { end_frequency: Some(2_053_000_000), ..bs_request(0x4010) };
+        let request = FrontendTuneRequest {
+            end_frequency: Some(2_053_000_000),
+            ..bs_request(0x4010)
+        };
         assert!(px4_scan_requests(&request).is_err());
     }
 }

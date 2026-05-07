@@ -30,7 +30,10 @@ impl TsPacketCompletionBuffer {
             }
             if self.buf[0] != 0x47 {
                 let search_limit = self.buf.len().min(TS_PACKET_SIZE);
-                if let Some(offset) = self.buf[..search_limit].iter().position(|byte| *byte == 0x47) {
+                if let Some(offset) = self.buf[..search_limit]
+                    .iter()
+                    .position(|byte| *byte == 0x47)
+                {
                     if offset == 0 {
                         // unreachable because buf[0] was checked above.
                     } else {
@@ -52,7 +55,10 @@ impl TsPacketCompletionBuffer {
             self.malformed_bytes = self.malformed_bytes.saturating_add(malformed_bytes as u64);
         }
         let packets = self.drain_completed(usize::MAX);
-        TsPacketBufferDrain { packets, malformed_bytes }
+        TsPacketBufferDrain {
+            packets,
+            malformed_bytes,
+        }
     }
 
     pub fn push_limited(&mut self, data: &[u8], max_packets: usize) -> TsPacketBufferDrain {
@@ -65,13 +71,18 @@ impl TsPacketCompletionBuffer {
         for packet in pending.into_iter().rev() {
             self.completed.push_front(packet);
         }
-        TsPacketBufferDrain { packets, malformed_bytes: drain.malformed_bytes }
+        TsPacketBufferDrain {
+            packets,
+            malformed_bytes: drain.malformed_bytes,
+        }
     }
 
     pub fn drain_completed(&mut self, max_packets: usize) -> Vec<[u8; TS_PACKET_SIZE]> {
         let mut packets = Vec::new();
         while packets.len() < max_packets {
-            let Some(packet) = self.completed.pop_front() else { break; };
+            let Some(packet) = self.completed.pop_front() else {
+                break;
+            };
             packets.push(packet);
         }
         packets
@@ -128,6 +139,21 @@ mod ts_packet_completion_buffer_tests {
     }
 
     #[test]
+    fn completion_buffer_keeps_over_budget_completed_packets_for_next_drain() {
+        let p0 = packet(0x44);
+        let p1 = packet(0x55);
+        let mut input = Vec::new();
+        input.extend_from_slice(&p0);
+        input.extend_from_slice(&p1);
+        let mut buffer = TsPacketCompletionBuffer::default();
+
+        let first = buffer.push_limited(&input, 1);
+        assert_eq!(first.packets, vec![p0]);
+        assert_eq!(buffer.drain_completed(1), vec![p1]);
+        assert!(buffer.drain_completed(1).is_empty());
+    }
+
+    #[test]
     fn completion_buffer_drops_malformed_packet_without_panicking() {
         let mut buffer = TsPacketCompletionBuffer::default();
         let malformed = [0u8; TS_PACKET_SIZE];
@@ -137,7 +163,6 @@ mod ts_packet_completion_buffer_tests {
         assert_eq!(buffer.malformed_bytes(), TS_PACKET_SIZE as u64);
     }
 }
-
 
 pub const DEMUX_MAX_FILTERS_PER_DEMUX: usize = 32;
 pub const DEMUX_MAX_TS_FILTERS: i32 = DEMUX_MAX_FILTERS_PER_DEMUX as i32;
@@ -158,7 +183,9 @@ pub struct IdAllocator {
 
 impl IdAllocator {
     pub const fn new(start: i32) -> Self {
-        Self { next: AtomicI32::new(start) }
+        Self {
+            next: AtomicI32::new(start),
+        }
     }
 
     pub fn allocate(&self) -> i32 {
@@ -290,13 +317,33 @@ pub struct FrontendTelemetry {
 #[derive(Clone, Debug)]
 pub enum HalError {
     DeviceMissing(PathBuf),
-    OpenFailed { path: PathBuf, message: String },
-    PermissionDenied { path: PathBuf, message: String },
-    Busy { path: Option<PathBuf>, message: String },
-    IoctlFailed { backend: &'static str, path: Option<PathBuf>, op: &'static str, errno: i32 },
+    OpenFailed {
+        path: PathBuf,
+        message: String,
+    },
+    PermissionDenied {
+        path: PathBuf,
+        message: String,
+    },
+    Busy {
+        path: Option<PathBuf>,
+        message: String,
+    },
+    IoctlFailed {
+        backend: &'static str,
+        path: Option<PathBuf>,
+        op: &'static str,
+        errno: i32,
+    },
     InvalidArgument(String),
     InvalidState(String),
-    Io { backend: &'static str, operation: &'static str, path: Option<PathBuf>, errno: Option<i32>, message: String },
+    Io {
+        backend: &'static str,
+        operation: &'static str,
+        path: Option<PathBuf>,
+        errno: Option<i32>,
+        message: String,
+    },
     Internal(String),
     Unsupported(&'static str),
 }
@@ -397,7 +444,6 @@ impl ServiceConfig {
         }
     }
 }
-
 
 #[cfg(test)]
 mod r51_isdbs_frequency_contract_tests {

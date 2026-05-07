@@ -1331,7 +1331,9 @@ impl SharedMemoryBacking {
                     match backing_clone.consume_playback_ring(&state, dvr_id) {
                         Ok(PlaybackConsumeState::Consumed) => {}
                         Ok(PlaybackConsumeState::Empty) => {
-                            if worker_signal_for_thread.wait_timeout_or_stop(Duration::from_millis(10)) {
+                            if worker_signal_for_thread
+                                .wait_timeout_or_stop(Duration::from_millis(10))
+                            {
                                 break;
                             }
                         }
@@ -9508,7 +9510,9 @@ fn normalize_section_table_id(table_id: i32) -> BinderResult<u8> {
     if (0..=255).contains(&table_id) {
         Ok(table_id as u8)
     } else {
-        Err(invalid_argument_status("section tableId must be in 0..=255"))
+        Err(invalid_argument_status(
+            "section tableId must be in 0..=255",
+        ))
     }
 }
 
@@ -9806,6 +9810,30 @@ mod av_shared_backing_tests {
         assert_eq!(second.len, payload.len());
         assert!(second.offset + second.len < backing.total_size());
         assert_eq!(backing.stats().allocated_slots, 1);
+    }
+
+    #[test]
+    fn av_shared_backing_accepts_exact_slot_size_and_rejects_out_of_bounds_payloads() {
+        let backing = AvSharedBacking::new(188).unwrap();
+        let exact = vec![0x47; backing.slot_size];
+        let too_large = vec![0x47; backing.slot_size + 1];
+
+        let delivered = backing
+            .allocate(200, &exact)
+            .expect("payload exactly filling one slot must be accepted");
+        assert_eq!(delivered.len, backing.slot_size);
+        assert!(matches!(
+            backing.allocate(201, &too_large),
+            Err(AvPayloadAllocateError::Delivery(
+                AvPayloadDeliveryResult::DroppedInvalidPayload
+            ))
+        ));
+        assert!(matches!(
+            backing.allocate(202, &[]),
+            Err(AvPayloadAllocateError::Delivery(
+                AvPayloadDeliveryResult::DroppedInvalidPayload
+            ))
+        ));
     }
 
     #[test]
@@ -10159,6 +10187,45 @@ mod lnb_state_tests {
         let stored = registry.lock().unwrap().get(&43).cloned().unwrap();
         assert_eq!(stored.tone, None);
         assert_eq!(stored.generation, 0);
+    }
+
+    #[test]
+    fn lnb_close_rejects_later_mutating_methods_without_registry_side_effects() {
+        let registry = Arc::new(Mutex::new(BTreeMap::new()));
+        registry.lock().unwrap().insert(
+            44,
+            LnbRuntimeState {
+                profile: LnbDeviceProfile::Px4Device15VOnly,
+                voltage: Some(LnbVoltage::NONE),
+                tone: Some(LnbTone::NONE),
+                position: Some(LnbPosition::UNDEFINED),
+                generation: 9,
+                ..Default::default()
+            },
+        );
+        let frontend_registry: Arc<BTreeMap<i32, Arc<FrontendRuntime>>> = Arc::new(BTreeMap::new());
+        let lnb = LnbHal::new(44, Arc::clone(&registry), frontend_registry);
+
+        assert!(lnb.close().is_ok());
+        assert!(lnb.close().is_ok());
+        assert!(lnb.setVoltage(LnbVoltage::VOLTAGE_15V).is_err());
+        assert!(lnb.setTone(LnbTone::NONE).is_err());
+        assert!(lnb.setSatellitePosition(LnbPosition::UNDEFINED).is_err());
+        assert!(lnb.sendDiseqcMessage(&[0xe0, 0x10, 0x38, 0xf0]).is_err());
+
+        let stored = registry.lock().unwrap().get(&44).cloned().unwrap();
+        assert_eq!(stored.voltage, Some(LnbVoltage::NONE));
+        assert_eq!(stored.tone, Some(LnbTone::NONE));
+        assert_eq!(stored.position, Some(LnbPosition::UNDEFINED));
+        assert_eq!(stored.generation, 9);
+        assert_eq!(stored.diseqc_generation, 0);
+
+        let source = include_str!("tuner_hal.rs");
+        let set_callback_body = source
+            .split("fn setCallback(&self")
+            .nth(1)
+            .expect("LnbHal setCallback body must exist");
+        assert!(set_callback_body.contains("self.ensure_open()?"));
     }
 }
 
@@ -10834,10 +10901,18 @@ mod static_completion_tests {
     }
 
     fn av_settings(pid: i32, secure: bool) -> DemuxFilterSettings {
+        av_settings_with_passthrough(pid, secure, false)
+    }
+
+    fn av_settings_with_passthrough(
+        pid: i32,
+        secure: bool,
+        passthrough: bool,
+    ) -> DemuxFilterSettings {
         DemuxFilterSettings::Ts(android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::DemuxTsFilterSettings::DemuxTsFilterSettings {
             tpid: pid,
             filterSettings: DemuxTsFilterSettingsFilterSettings::Av(DemuxFilterAvSettings {
-                isPassthrough: false,
+                isPassthrough: passthrough,
                 isSecureMemory: secure,
             }),
         })
@@ -10899,6 +10974,25 @@ mod static_completion_tests {
         FilterDelayHint {
             hintType: hint_type,
             hintValue: value,
+        }
+    }
+
+    fn record_ts_packet(pid: u16, payload_unit_start: bool, scrambling_control: u8) -> Vec<u8> {
+        let mut packet = vec![0xff; TS_PACKET_SIZE];
+        packet[0] = 0x47;
+        packet[1] = ((pid >> 8) as u8) & 0x1f;
+        if payload_unit_start {
+            packet[1] |= 0x40;
+        }
+        packet[2] = pid as u8;
+        packet[3] = ((scrambling_control & 0x03) << 6) | 0x10;
+        packet
+    }
+
+    fn ts_record_event(event: DemuxFilterEvent) -> DemuxFilterTsRecordEvent {
+        match event {
+            DemuxFilterEvent::TsRecord(record) => record,
+            other => panic!("unexpected record event: {:?}", other),
         }
     }
 
@@ -10983,6 +11077,110 @@ mod static_completion_tests {
     }
 
     #[test]
+    fn configure_monitor_event_r51_accepts_zero_and_rejects_nonzero_without_gating_callbacks() {
+        let mut demux = DemuxHandle::new(DEMUX_ID_BASE);
+        let record = demux.register_filter(1, FilterOpenType::TsSection, 4096);
+        let state = Arc::new(Mutex::new(demux));
+        let runtime_io = Arc::new(RuntimeIoRegistry::default());
+        let callback = BnFilterCallback::new_binder(NoopFilterCallback, BinderFeatures::default());
+        let filter = FilterHal::new(
+            DEMUX_ID_BASE,
+            record.filter_id,
+            Arc::clone(&state),
+            runtime_io,
+            callback,
+        )
+        .unwrap();
+
+        assert!(filter.configureMonitorEvent(0).is_ok());
+        assert_eq!(
+            state
+                .lock()
+                .unwrap()
+                .filter_record(record.filter_id)
+                .unwrap()
+                .monitor_event_mask,
+            0
+        );
+        assert!(filter.configureMonitorEvent(1).is_err());
+        assert_eq!(
+            state
+                .lock()
+                .unwrap()
+                .filter_record(record.filter_id)
+                .unwrap()
+                .monitor_event_mask,
+            0
+        );
+
+        let source = include_str!("tuner_hal.rs");
+        let start_body = source
+            .split("fn start(&self) -> BinderResult<()>")
+            .nth(1)
+            .expect("FilterHal start body must exist");
+        assert!(start_body.contains("configureMonitorEvent() is not a normal callback gating API"));
+        assert!(start_body.contains("let monitor_mask = 0;"));
+    }
+
+    #[test]
+    fn vts_profile_does_not_claim_filter_monitor_events() {
+        let vts = include_str!("../../config/tuner_vts_config_aidl_V2.xml");
+        assert!(vts.contains("monitorEventTypes=\"0\""));
+        assert!(!vts.contains("monitorEventTypes=\"1\""));
+        assert!(!vts.contains("monitorEventTypes=\"2\""));
+        assert!(!vts.contains("monitorEventTypes=\"3\""));
+        assert!(!vts.contains("configureMonitorEvent"));
+    }
+
+    #[test]
+    fn av_passthrough_is_rejected_at_configure_boundary() {
+        assert!(build_filter_summary(&av_settings_with_passthrough(0x0100, false, false)).is_ok());
+        assert!(build_filter_summary(&av_settings_with_passthrough(0x0100, false, true)).is_err());
+
+        let design = include_str!("../../DESIGN_JA.md");
+        assert!(design.contains("AV passthrough"));
+        assert!(design.contains("isPassthrough=true"));
+        assert!(design.contains("UNAVAILABLE"));
+
+        let vts = include_str!("../../config/tuner_vts_config_aidl_V2.xml");
+        assert!(vts.contains("isPassthrough=\"false\""));
+        assert!(!vts.contains("isPassthrough=\"true\""));
+    }
+
+    #[test]
+    fn configure_ip_cid_is_unavailable_for_r51_ts_only_profile() {
+        let mut demux = DemuxHandle::new(DEMUX_ID_BASE);
+        let record = demux.register_filter(1, FilterOpenType::TsSection, 4096);
+        let state = Arc::new(Mutex::new(demux));
+        let runtime_io = Arc::new(RuntimeIoRegistry::default());
+        let callback = BnFilterCallback::new_binder(NoopFilterCallback, BinderFeatures::default());
+        let filter = FilterHal::new(
+            DEMUX_ID_BASE,
+            record.filter_id,
+            Arc::clone(&state),
+            runtime_io,
+            callback,
+        )
+        .unwrap();
+
+        assert!(filter.configureIpCid(7).is_err());
+        assert_eq!(
+            state
+                .lock()
+                .unwrap()
+                .filter_record(record.filter_id)
+                .unwrap()
+                .ip_cid,
+            None
+        );
+
+        let design = include_str!("../../DESIGN_JA.md");
+        assert!(design.contains("TS-only HAL profile"));
+        assert!(design.contains("IFilter.configureIpCid()"));
+        assert!(design.contains("UNAVAILABLE"));
+    }
+
+    #[test]
     fn table_info_version_contract_is_minus_one_or_zero_to_thirty_one() {
         assert_eq!(normalize_table_info_version(-1).unwrap(), None);
         assert_eq!(normalize_table_info_version(0).unwrap(), Some(0));
@@ -11032,12 +11230,10 @@ mod static_completion_tests {
             &DemuxFilterScIndexMask::ScIndex(1),
         )
         .is_err());
-        assert!(validate_record_index_settings(
-            valid_ts,
-            999,
-            &DemuxFilterScIndexMask::ScIndex(1),
-        )
-        .is_err());
+        assert!(
+            validate_record_index_settings(valid_ts, 999, &DemuxFilterScIndexMask::ScIndex(1),)
+                .is_err()
+        );
         assert!(validate_record_index_settings(
             valid_ts,
             RECORD_SC_TYPE_SC_HEVC,
@@ -11057,6 +11253,67 @@ mod static_completion_tests {
         ] {
             assert!(validate_record_index_settings(valid_ts, sc_type, &mask).is_ok());
         }
+    }
+
+    #[test]
+    fn record_event_state_resets_after_flush_or_stream_boundary_generation_change() {
+        let mask = DEMUX_TS_INDEX_FIRST_PACKET
+            | DEMUX_TS_INDEX_CHANGE_TO_NOT_SCRAMBLED
+            | DEMUX_TS_INDEX_CHANGE_TO_EVEN_SCRAMBLED
+            | DEMUX_TS_INDEX_CHANGE_TO_ODD_SCRAMBLED;
+        let even_scrambled = record_ts_packet(0x0100, false, 2);
+        let clear = record_ts_packet(0x0100, false, 0);
+        let mut state = RecordEventState::default();
+
+        let first_stream_event = ts_record_event(
+            build_ts_record_event(
+                &even_scrambled,
+                TS_PACKET_SIZE as u64,
+                mask,
+                RECORD_SC_TYPE_NONE,
+                0,
+                &mut state,
+            )
+            .unwrap(),
+        );
+        assert_eq!(first_stream_event.byteNumber, TS_PACKET_SIZE as i64);
+        assert_eq!(
+            first_stream_event.tsIndexMask & DEMUX_TS_INDEX_FIRST_PACKET,
+            0
+        );
+
+        let stale_change_event = ts_record_event(
+            build_ts_record_event(
+                &clear,
+                (TS_PACKET_SIZE * 2) as u64,
+                mask,
+                RECORD_SC_TYPE_NONE,
+                0,
+                &mut state,
+            )
+            .unwrap(),
+        );
+        assert_ne!(
+            stale_change_event.tsIndexMask & DEMUX_TS_INDEX_CHANGE_TO_NOT_SCRAMBLED,
+            0
+        );
+
+        let mut reset_state = RecordEventState::default();
+        let reset_event = ts_record_event(
+            build_ts_record_event(&clear, 0, mask, RECORD_SC_TYPE_NONE, 0, &mut reset_state)
+                .unwrap(),
+        );
+        assert_eq!(reset_event.byteNumber, 0);
+        assert_ne!(reset_event.tsIndexMask & DEMUX_TS_INDEX_FIRST_PACKET, 0);
+        assert_eq!(
+            reset_event.tsIndexMask & DEMUX_TS_INDEX_CHANGE_TO_NOT_SCRAMBLED,
+            0
+        );
+
+        let source = include_str!("tuner_hal.rs");
+        assert!(source.contains("record.delivery_generation != observed_delivery_generation"));
+        assert!(source.contains("cumulative_bytes = 0;"));
+        assert!(source.contains("record_event_state = RecordEventState::default();"));
     }
 
     #[test]

@@ -7,6 +7,8 @@ ISDB-T、BS、CS110 の explicit tune と clear live / DVR path をゲート対�
 
 `config/tuner_vts_config_aidl_V2.xml` は explicit tune point、AV filter、record DVR path の接続確認に限定する。descrambler object は Tuner HAL AIDL 面として実装するが、CAS HAL placeholder のまま production descrambling success は claim しない。
 
+r51 は TS-only HAL profile とする。IP / MMTP / TLV / ALP filter は claim せず、`IFilter.configureIpCid()` は filter 種別にかかわらず `UNAVAILABLE` とする。CID を保存だけして matching / routing / delivery に使わない成功 no-op を残してはならない。
+
 
 ## AIDL 契約境界
 
@@ -162,6 +164,8 @@ ISDB-T / ISDB-S の frontend capability bitmask は Android 14 AIDL enum 名に�
 ## live AV filter / FMQ 方針
 
 live AV filter を正式スコープに含める。AV filter は non-passthrough の `MediaEvent` 経路を実装し、`MediaEvent` から framework が取得できる shared handle / linear block 相当の実体を返す。FMQ / EventFlag もスコープに含め、section、PES、record、DVR では custom ring ではなく official FMQ shim を使う。AV payload は FMQ / EventFlag へ載せず、shared memory + MediaEvent に一本化する。
+
+r51 では AV passthrough を claim しない。`DemuxFilterAvSettings.isPassthrough=true` は configure 時点で `UNAVAILABLE` とし、成功 no-op または無配送の AV filter として受け入れてはならない。r51 が claim する AV 経路は non-passthrough `MediaEvent` + shared memory 経路だけである。
 
 ここで「FMQ / EventFlag もスコープに含める」とは、section、PES、record、DVR の official FMQ 接続を完了条件に含めることと、live AV filter の正式 delivery を完了条件に含めることの両方を意味する。前者は custom ring を残さず official FMQ/EventFlag に接続する責務であり、後者は `MediaEvent` + shared handle によって framework が live AV payload を正式に受け取れるようにする責務である。
 
