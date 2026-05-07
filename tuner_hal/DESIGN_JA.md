@@ -31,9 +31,9 @@ Android 14 の Tuner HAL AIDL Rust backend では `IDescrambler.addPid()` / `rem
 
 frontend scan lifecycle では、`scan_session` は active `Running` scan だけを表す。`Completed` / `Cancelled` / `FailedBackend` / `FailedCallback` / `FailedPanic` は terminal diagnostic として `scan_last_terminal` / `scan_terminal_debug` に保存し、保存後は `scan_session` を `None` にする。`stopTune()` は `scan_session.is_some()` を active scan 判定として使い続けるため、terminal scan が残存して `stopTune()` を `INVALID_STATE` にしてはならない。
 
-section assembler が stale partial discard を検出した場合、該当 section filter の diagnostics counter を増やし、`pending_overflow` を立てる。callback worker は既存 `pending_overflow` 経路を使い、payload が空でも `DemuxFilterStatus::OVERFLOW` を通知する。CRC mismatch と malformed section syntax は filter 条件不成立または section event 不成立として非 delivery を維持し、overflow status へ写像しない。
+section assembler が 8192 bytes 超 section drop または stale partial discard を検出した場合、該当 section filter の diagnostics counter を増やし、`pending_overflow` を立てる。callback worker は既存 `pending_overflow` 経路を使い、payload が空でも `DemuxFilterStatus::OVERFLOW` を通知する。CRC mismatch と malformed section syntax は filter 条件不成立または section event 不成立として非 delivery を維持し、overflow status へ写像しない。
 
-`DvrHal` の `closed` は外部操作を止める gate であり、cleanup 完了状態ではない。DVR cleanup 完了は `cleanup_complete` で別管理する。`close_internal()` / `close_internal_best_effort()` / `fail_dvr_worker()` は、`closed=true` だけを理由に未完了 cleanup の再試行を止めてはならない。callback worker stop、runtime unregister、queue stop、demux unregister は可能な限り全 step を試行し、明示 close では最初に観測した error を返しつつ後続 cleanup を続行する。全 step が成功または安全 no-op と確認できた場合だけ `cleanup_complete=true` とする。
+`DvrHal` の `closed` は外部操作を止める gate であり、cleanup 完了状態ではない。DVR cleanup 完了は `cleanup_complete` で別管理する。`close_internal()` / `close_internal_best_effort()` / `fail_dvr_worker()` は、`closed=true` だけを理由に未完了 cleanup の再試行を止めてはならない。3経路は `ExternalClose` / `BestEffortDrop` / `WorkerFailure` の呼び出し元種別を共通 cleanup helper に渡す。cleanup helper は step runner を介して callback worker stop、runtime unregister、queue stop、demux unregister を実行し、通常実装・failure injection・loom などの状態遷移検証を同じ完了判定へ通す。明示 close では最初に観測した error を返しつつ後続 cleanup を続行する。`WorkerFailure` 経路は callback worker 自身から呼ばれ得るため self-join を行わず、worker handle 回収が未完了なら `cleanup_complete=false` を維持して後続の明示 close または Drop best-effort で再試行可能にする。全 step が成功または安全 no-op と確認できた場合だけ `cleanup_complete=true` とする。
 
 ## lab profile のサービス対応
 

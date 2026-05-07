@@ -170,9 +170,8 @@ impl SectionAssembler {
                 // complete it (including pointer == 0), the stale partial section
                 // must not be concatenated with the new section body.
                 if !self.buf.is_empty() || self.expected_len.is_some() {
-                    self.stale_partial_section_discards = self
-                        .stale_partial_section_discards
-                        .saturating_add(1);
+                    self.stale_partial_section_discards =
+                        self.stale_partial_section_discards.saturating_add(1);
                     self.reset();
                 }
             }
