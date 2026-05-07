@@ -739,8 +739,15 @@ impl DemuxHandle {
             .retain(|(_, id, _), _| *id != filter_id);
         self.filter_pes_flush_generations
             .retain(|(_, id, _), _| *id != filter_id);
-        for downstream in self.filters.values_mut() {
-            if downstream.data_source_filter_id == Some(filter_id) {
+        let downstream_ids: Vec<i32> = self
+            .filters
+            .iter()
+            .filter_map(|(id, downstream)| {
+                (downstream.data_source_filter_id == Some(filter_id)).then_some(*id)
+            })
+            .collect();
+        for downstream_id in downstream_ids {
+            if let Some(downstream) = self.filters.get_mut(&downstream_id) {
                 downstream.data_source_filter_id = None;
                 downstream.started = false;
                 downstream.queued_bytes = 0;
@@ -749,6 +756,17 @@ impl DemuxHandle {
                 downstream.delivery_not_before = None;
                 downstream.delivery_generation = downstream.delivery_generation.saturating_add(1);
             }
+            self.filter_queues.insert(downstream_id, VecDeque::new());
+            self.section_filter_runtime
+                .insert(downstream_id, SectionFilterRuntime::default());
+            self.section_assemblers
+                .retain(|(_, stored_filter_id), _| *stored_filter_id != downstream_id);
+            self.pes_assemblers
+                .retain(|(_, stored_filter_id), _| *stored_filter_id != downstream_id);
+            self.filter_section_flush_generations
+                .retain(|(_, id, _), _| *id != downstream_id);
+            self.filter_pes_flush_generations
+                .retain(|(_, id, _), _| *id != downstream_id);
         }
         let removed = self.filters.remove(&filter_id);
         if let Some(pid) = pid {
@@ -768,6 +786,13 @@ impl DemuxHandle {
         self.section_assemblers
             .values()
             .map(|assembler| assembler.oversized_section_drops())
+            .sum()
+    }
+
+    pub fn stale_partial_section_discard_count(&self) -> u64 {
+        self.section_assemblers
+            .values()
+            .map(|assembler| assembler.stale_partial_section_discards())
             .sum()
     }
 
@@ -877,6 +902,9 @@ impl DemuxHandle {
             // AV filter は start() 前に configureAvStreamType() を再度受け取る必要がある。
             filter.av_stream_type_hint = None;
             filter.av_stream_kind = None;
+            // Phase 4 clean boundary: reconfigure invalidates any previous upstream linkage.
+            // A downstream filter must be explicitly re-linked after its condition/PID changes.
+            filter.data_source_filter_id = None;
             filter.queued_bytes = 0;
             filter.pending_overflow = false;
             filter.pending_start_event = false;
@@ -2363,7 +2391,7 @@ impl DemuxHandle {
         }
         match &config.kind {
             FilterConfigKind::PesData { stream_id, .. } => {
-                *stream_id <= 0 || *stream_id == pes.stream_id as i32
+                *stream_id == -1 || *stream_id == pes.stream_id as i32
             }
             FilterConfigKind::Av { .. } => true,
             _ => false,
@@ -2491,10 +2519,22 @@ impl DemuxHandle {
                 return outcome;
             }
         }
+        let queue_was_empty = self
+            .filter_queues
+            .get(&filter_id)
+            .map(|queue| queue.is_empty())
+            .unwrap_or(true);
         let queue = self.filter_queues.entry(filter_id).or_default();
         queue.push_back(payload);
         outcome.accepted_bytes = payload_len;
         if let Some(filter) = self.filters.get_mut(&filter_id) {
+            if queue_was_empty && filter.started {
+                filter.delivery_not_before = filter
+                    .delay_hints
+                    .time_delay_ms
+                    .filter(|ms| *ms > 0)
+                    .map(|ms| Instant::now() + Duration::from_millis(ms));
+            }
             filter.queued_bytes = filter.queued_bytes.saturating_add(payload_len);
             if max_bytes > 0 && drop_old_policy {
                 while filter.queued_bytes > max_bytes {
@@ -3340,6 +3380,49 @@ mod parser_policy_pes_av_tests {
     }
 
     #[test]
+    fn pes_stream_id_minus_one_is_wildcard_but_zero_is_exact() {
+        let pid = 0x0100;
+        let pes = PesPacket {
+            pid,
+            stream_id: 0xe0,
+            pts_90khz: None,
+            dts_90khz: None,
+            data_alignment_indicator: false,
+            raw_bytes: vec![0x00, 0x00, 0x01, 0xe0],
+            payload: vec![0xaa],
+        };
+        let mut wildcard = DemuxHandle::new(0);
+        let wildcard_filter = wildcard.register_filter(1, FilterOpenType::TsPes, 4096);
+        assert!(wildcard.configure_filter_with_summary(
+            wildcard_filter.filter_id,
+            FilterConfig {
+                kind: FilterConfigKind::PesData { stream_id: -1, raw: true },
+                ..pes_config(pid)
+            },
+        ));
+        assert!(wildcard.filter_accepts_pes(
+            wildcard.filter_record(wildcard_filter.filter_id).unwrap(),
+            pid as i32,
+            &pes,
+        ));
+
+        let mut zero_exact = DemuxHandle::new(0);
+        let zero_filter = zero_exact.register_filter(1, FilterOpenType::TsPes, 4096);
+        assert!(zero_exact.configure_filter_with_summary(
+            zero_filter.filter_id,
+            FilterConfig {
+                kind: FilterConfigKind::PesData { stream_id: 0, raw: true },
+                ..pes_config(pid)
+            },
+        ));
+        assert!(!zero_exact.filter_accepts_pes(
+            zero_exact.filter_record(zero_filter.filter_id).unwrap(),
+            pid as i32,
+            &pes,
+        ));
+    }
+
+    #[test]
     fn tei_packet_does_not_enter_pes_or_av_assembly() {
         let pid = 0x0100;
         let mut demux = DemuxHandle::new(0);
@@ -3534,6 +3617,27 @@ mod section_payload_cap_tests {
             .or_default();
         assert!(!assembler.set_expected_len_or_drop(MAX_SECTION_PAYLOAD_BYTES + 1));
         assert_eq!(demux.oversized_section_drop_count(), 1);
+    }
+
+    #[test]
+    fn demux_exposes_stale_partial_section_discard_counter() {
+        let mut demux = DemuxHandle::new(9);
+        let pid = 0x0123;
+        let assembler = demux
+            .section_assemblers
+            .entry((TsInputOrigin::Frontend, pid))
+            .or_default();
+        let stale = [0x00, 0xb0, 0x0d, 0x00, 0x01, 0xc1];
+        let replacement = [
+            0x42, 0xf0, 0x05, 0x00, 0x01, 0xc1, 0x00, 0x00,
+        ];
+        let mut first = vec![0x00];
+        first.extend_from_slice(&stale);
+        assert!(assembler.push_payload(true, &first).is_empty());
+        let mut second = vec![0x00];
+        second.extend_from_slice(&replacement);
+        assert_eq!(assembler.push_payload(true, &second), vec![replacement.to_vec()]);
+        assert_eq!(demux.stale_partial_section_discard_count(), 1);
     }
 }
 
@@ -3737,6 +3841,39 @@ mod delay_hint_delivery_tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].bytes(), &[1]);
     }
+
+    #[test]
+    fn time_delay_rearms_for_each_queue_burst() {
+        let mut demux = DemuxHandle::new(0);
+        let filter = demux.register_filter(1, FilterOpenType::TsSection, 4096);
+        assert!(demux.configure_filter_with_summary(filter.filter_id, section_config(0x100)));
+        assert!(
+            demux.set_filter_delay_hint(filter.filter_id, FilterDelayHintState::TimeDelayMs(20))
+        );
+        assert!(demux.start_filter(filter.filter_id));
+
+        demux.push_filter_payload(filter.filter_id, FilterPayload::Bytes(vec![1]));
+        assert_eq!(
+            demux.filter_delivery_readiness(filter.filter_id),
+            FilterDeliveryReadiness::WaitingForTime
+        );
+        thread::sleep(Duration::from_millis(25));
+        assert_eq!(demux.drain_filter_payloads_for_delivery(filter.filter_id).len(), 1);
+
+        demux.push_filter_payload(filter.filter_id, FilterPayload::Bytes(vec![2]));
+        assert_eq!(
+            demux.filter_delivery_readiness(filter.filter_id),
+            FilterDeliveryReadiness::WaitingForTime
+        );
+        assert!(demux
+            .drain_filter_payloads_for_delivery(filter.filter_id)
+            .is_empty());
+        thread::sleep(Duration::from_millis(25));
+        let out = demux.drain_filter_payloads_for_delivery(filter.filter_id);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].bytes(), &[2]);
+    }
+
 }
 
 #[cfg(test)]
@@ -4031,6 +4168,104 @@ mod start_event_delay_tests {
             .drain_filter_payloads_for_delivery(filter.filter_id)
             .is_empty());
         assert!(demux.drain_filter_payloads(filter.filter_id).is_empty());
+    }
+
+    #[test]
+    fn stop_filter_clears_queue_for_all_claimed_filter_types() {
+        let mut cases = vec![
+            (FilterOpenType::TsSection, section_config(), None),
+            (FilterOpenType::TsPes, pes_config(), None),
+            (FilterOpenType::TsRecord, record_config(), None),
+            (
+                FilterOpenType::TsAudio,
+                av_config(),
+                Some((2, AvFilterStreamKind::Audio)),
+            ),
+            (
+                FilterOpenType::TsVideo,
+                av_config(),
+                Some((2, AvFilterStreamKind::Video)),
+            ),
+        ];
+        for (open_type, config, av_hint) in cases.drain(..) {
+            let mut demux = DemuxHandle::new(open_type as i32);
+            let filter = demux.register_filter(1, open_type, 4096);
+            assert!(demux.configure_filter_with_summary(filter.filter_id, config));
+            if let Some((stream_type, stream_kind)) = av_hint {
+                assert!(demux.set_filter_av_stream_type_hint(
+                    filter.filter_id,
+                    stream_type,
+                    stream_kind
+                ));
+            }
+            assert!(demux.start_filter(filter.filter_id));
+            demux.push_filter_payload(filter.filter_id, FilterPayload::Bytes(vec![9, 8, 7]));
+            assert!(demux.stop_filter(filter.filter_id));
+            assert_eq!(
+                demux
+                    .filter_record(filter.filter_id)
+                    .map(|record| (record.started, record.queued_bytes, record.pending_overflow)),
+                Some((false, 0, false))
+            );
+            assert!(demux.drain_filter_payloads(filter.filter_id).is_empty());
+        }
+    }
+
+    #[test]
+    fn reconfigure_clears_old_linkage_and_queued_payload() {
+        let mut demux = DemuxHandle::new(0);
+        let source = demux.register_filter(1, FilterOpenType::TsSection, 4096);
+        let downstream = demux.register_filter(1, FilterOpenType::TsSection, 4096);
+        assert!(demux.configure_filter_with_summary(source.filter_id, section_config()));
+        assert!(demux.configure_filter_with_summary(downstream.filter_id, section_config()));
+        assert!(demux.set_filter_data_source(downstream.filter_id, source.filter_id));
+        demux.push_filter_payload(downstream.filter_id, FilterPayload::Bytes(vec![1, 2, 3]));
+        assert_eq!(
+            demux
+                .filter_record(downstream.filter_id)
+                .map(|record| (record.data_source_filter_id, record.queued_bytes)),
+            Some((Some(source.filter_id), 3))
+        );
+
+        assert!(demux.configure_filter_with_summary(downstream.filter_id, section_config()));
+
+        assert_eq!(
+            demux
+                .filter_record(downstream.filter_id)
+                .map(|record| (record.data_source_filter_id, record.queued_bytes)),
+            Some((None, 0))
+        );
+        assert!(demux.drain_filter_payloads(downstream.filter_id).is_empty());
+    }
+
+    #[test]
+    fn upstream_unregister_stops_downstream_and_clears_queue() {
+        let mut demux = DemuxHandle::new(0);
+        let source = demux.register_filter(1, FilterOpenType::TsSection, 4096);
+        let downstream = demux.register_filter(1, FilterOpenType::TsSection, 4096);
+        assert!(demux.configure_filter_with_summary(source.filter_id, section_config()));
+        assert!(demux.configure_filter_with_summary(downstream.filter_id, section_config()));
+        assert!(demux.set_filter_data_source(downstream.filter_id, source.filter_id));
+        assert!(demux.start_filter(downstream.filter_id));
+        demux.push_filter_payload(downstream.filter_id, FilterPayload::Bytes(vec![4, 5, 6]));
+
+        assert!(demux.unregister_filter(source.filter_id).is_some());
+
+        assert_eq!(
+            demux
+                .filter_record(downstream.filter_id)
+                .map(|record| (
+                    record.data_source_filter_id,
+                    record.started,
+                    record.queued_bytes,
+                    record.pending_overflow
+                )),
+            Some((None, false, 0, false))
+        );
+        assert!(demux
+            .drain_filter_payloads_for_delivery(downstream.filter_id)
+            .is_empty());
+        assert!(demux.drain_filter_payloads(downstream.filter_id).is_empty());
     }
 }
 

@@ -553,12 +553,12 @@ extern "C" {
 
 struct SharedMemoryBacking {
     queue: *mut TunerFmqQueue,
-    stop: AtomicBool,
-    wake: Arc<(Mutex<bool>, Condvar)>,
-    worker: Mutex<Option<WorkerJoinHandle>>,
+    worker_signal: Arc<WorkerSignal>,
+    worker: Mutex<Option<ManagedWorker>>,
     playback_worker_failed: AtomicBool,
     playback_residual: Mutex<TsPacketCompletionBuffer>,
     playback_malformed_bytes: AtomicU64,
+    playback_dropped_bytes: AtomicU64,
 }
 
 unsafe impl Send for SharedMemoryBacking {}
@@ -1300,12 +1300,12 @@ impl SharedMemoryBacking {
         }
         Ok(Arc::new(Self {
             queue,
-            stop: AtomicBool::new(false),
-            wake: Arc::new((Mutex::new(false), Condvar::new())),
+            worker_signal: Arc::new(WorkerSignal::new(false)),
             worker: Mutex::new(None),
             playback_worker_failed: AtomicBool::new(false),
             playback_residual: Mutex::new(TsPacketCompletionBuffer::default()),
             playback_malformed_bytes: AtomicU64::new(0),
+            playback_dropped_bytes: AtomicU64::new(0),
         }))
     }
 
@@ -1321,14 +1321,19 @@ impl SharedMemoryBacking {
         let backing_hook = Arc::clone(&backing);
         let runtime_io_hook = Arc::clone(&runtime_io);
         let state_hook = Arc::clone(&state);
+        let worker_signal = Arc::clone(&backing.worker_signal);
+        worker_signal.clear_for_start();
+        let worker_signal_for_thread = Arc::clone(&worker_signal);
         let handle = spawn_worker_with_exit_hook(
             "dvr_playback_consumer",
             move || {
-                while !backing_clone.stop.load(Ordering::SeqCst) {
+                while !worker_signal_for_thread.is_stop_requested() {
                     match backing_clone.consume_playback_ring(&state, dvr_id) {
                         Ok(PlaybackConsumeState::Consumed) => {}
                         Ok(PlaybackConsumeState::Empty) => {
-                            backing_clone.wait_for_stop_or_timeout(Duration::from_millis(10))
+                            if worker_signal_for_thread.wait_timeout_or_stop(Duration::from_millis(10)) {
+                                break;
+                            }
                         }
                         Err(err) => {
                             backing_clone.fail_playback_worker(
@@ -1358,7 +1363,11 @@ impl SharedMemoryBacking {
             eprintln!("maleicacid-tuner-hal-worker: failed to spawn dvr_playback_consumer: {err}");
             Status::from(StatusCode::UNKNOWN_ERROR)
         })?;
-        *worker_slot = Some(handle);
+        *worker_slot = Some(ManagedWorker::new(
+            "dvr_playback_consumer",
+            worker_signal,
+            handle,
+        ));
         drop(worker_slot);
         Ok(backing)
     }
@@ -1393,41 +1402,11 @@ impl SharedMemoryBacking {
     }
 
     fn wake_waiters(&self) {
-        let (lock, cv) = &*self.wake;
-        if let Ok(mut guard) = lock.lock() {
-            *guard = true;
-        }
-        cv.notify_all();
+        self.worker_signal.notify_work();
     }
 
     fn wait_for_stop_or_timeout(&self, interval: Duration) {
-        if self.stop.load(Ordering::SeqCst) {
-            return;
-        }
-        let (lock, cv) = &*self.wake;
-        let Ok(mut guard) = lock.lock() else {
-            return;
-        };
-        if *guard {
-            *guard = false;
-            return;
-        }
-        loop {
-            if self.stop.load(Ordering::SeqCst) {
-                return;
-            }
-            let Ok((next_guard, wait_result)) = cv.wait_timeout(guard, interval) else {
-                return;
-            };
-            guard = next_guard;
-            if *guard {
-                *guard = false;
-                return;
-            }
-            if wait_result.timed_out() {
-                return;
-            }
-        }
+        let _ = self.worker_signal.wait_timeout_or_stop(interval);
     }
 
     fn consume_playback_ring(
@@ -1513,7 +1492,7 @@ impl SharedMemoryBacking {
     ) {
         self.playback_worker_failed.store(true, Ordering::SeqCst);
         runtime_io.mark_failed(RuntimeIoKind::Dvr, dvr_id, reason);
-        self.stop_best_effort();
+        self.worker_signal.request_stop();
         eprintln!(
             "maleicacid-tuner-hal-worker: dvr_playback_consumer abnormal stop dvr_id={} reason={}",
             dvr_id, reason
@@ -1577,7 +1556,37 @@ impl SharedMemoryBacking {
         if let Ok(mut residual) = self.playback_residual.lock() {
             residual.clear();
         }
-        self.playback_malformed_bytes.store(0, Ordering::SeqCst);
+    }
+
+    fn discard_playback_input_for_boundary(&self, dvr_id: i32, boundary: &str) -> usize {
+        let available = unsafe { tuner_fmq_queue_available_to_read(self.queue) };
+        let mut dropped = 0usize;
+        if available > 0 {
+            let mut sink = vec![0u8; available];
+            dropped = unsafe { tuner_fmq_queue_read(self.queue, sink.as_mut_ptr(), sink.len()) };
+        }
+        if let Ok(mut residual) = self.playback_residual.lock() {
+            let tail_len = residual.tail_len();
+            if tail_len > 0 {
+                // The residual buffer contains a partial, non-deliverable TS packet at the stream boundary.
+                dropped = dropped.saturating_add(tail_len);
+                residual.clear();
+            }
+        }
+        if dropped > 0 {
+            let total = self
+                .playback_dropped_bytes
+                .fetch_add(dropped as u64, Ordering::SeqCst)
+                .saturating_add(dropped as u64);
+            eprintln!(
+                "maleicacid-tuner-hal-dvr-playback-diagnostic: dvr_id={} boundary={} dropped_bytes={} total_dropped_bytes={}",
+                dvr_id,
+                boundary,
+                dropped,
+                total
+            );
+        }
+        dropped
     }
 
     fn current_fill_bytes(&self) -> usize {
@@ -1585,21 +1594,19 @@ impl SharedMemoryBacking {
     }
 
     fn stop(&self) -> BinderResult<()> {
-        self.stop.store(true, Ordering::SeqCst);
-        self.wake_waiters();
-        if let Some(handle) = lock_mutex_status(&self.worker, "shared_memory_worker")?.take() {
-            join_worker_with_diagnostics(handle, "shared_memory_worker");
+        if let Some(mut worker) = lock_mutex_status(&self.worker, "shared_memory_worker")?.take() {
+            let _ = worker.stop_and_join();
         }
         Ok(())
     }
 
     fn stop_best_effort(&self) {
-        self.stop.store(true, Ordering::SeqCst);
-        self.wake_waiters();
-        if let Some(handle) = lock_mutex_option(&self.worker, "shared_memory_worker")
+        if let Some(mut worker) = lock_mutex_option(&self.worker, "shared_memory_worker")
             .and_then(|mut worker| worker.take())
         {
-            join_worker_with_diagnostics(handle, "shared_memory_worker");
+            let _ = worker.stop_and_join();
+        } else {
+            self.worker_signal.request_stop();
         }
     }
 }
@@ -7891,7 +7898,8 @@ impl DvrHal {
                                 }
                                 }
                             }
-                            (DemuxPathDirection::Playback, Some((fill, low, high, capacity))) => {
+                            (DemuxPathDirection::Playback, Some((_fill, low, high, capacity))) => {
+                                let fill = queue_backing_clone.current_fill_bytes();
                                 if let Some(status) = Self::playback_status_from_thresholds(fill, low, high, capacity) {
                                     if Self::status_mask_allows(status_mask, status.0) {
                                         if let Err(err) = callback.onPlaybackStatus(status) {
@@ -8259,6 +8267,10 @@ impl IDvr for DvrHal {
             self.queue_backing.ensure_playback_worker_healthy()?;
         }
         if lock_mutex_status(&self.state, "demux_handle")?.stop_dvr(self.dvr_id) {
+            if matches!(self.direction, DemuxPathDirection::Playback) {
+                self.queue_backing
+                    .discard_playback_input_for_boundary(self.dvr_id, "stop");
+            }
             return Ok(());
         }
         Err(StatusCode::NAME_NOT_FOUND.into())
@@ -8270,7 +8282,12 @@ impl IDvr for DvrHal {
             self.queue_backing.ensure_playback_worker_healthy()?;
         }
         if lock_mutex_status(&self.state, "demux_handle")?.flush_dvr(self.dvr_id) {
-            self.queue_backing.clear();
+            if matches!(self.direction, DemuxPathDirection::Playback) {
+                self.queue_backing
+                    .discard_playback_input_for_boundary(self.dvr_id, "flush");
+            } else {
+                self.queue_backing.clear();
+            }
             return Ok(());
         }
         Err(StatusCode::NAME_NOT_FOUND.into())
@@ -9317,6 +9334,75 @@ fn validate_ts_pid(pid: i32) -> BinderResult<i32> {
     }
 }
 
+const PES_STREAM_ID_WILDCARD: i32 = -1;
+
+fn normalize_pes_stream_id(stream_id: i32) -> BinderResult<i32> {
+    if stream_id == PES_STREAM_ID_WILDCARD || (0..=255).contains(&stream_id) {
+        Ok(stream_id)
+    } else if stream_id < 0 {
+        Err(invalid_argument_status(
+            "PES streamId must be -1 wildcard or 0..=255",
+        ))
+    } else {
+        Err(invalid_argument_status("PES streamId must be <=255"))
+    }
+}
+
+fn supported_record_ts_index_mask() -> i32 {
+    DEMUX_TS_INDEX_FIRST_PACKET
+        | DEMUX_TS_INDEX_PAYLOAD_UNIT_START
+        | DEMUX_TS_INDEX_CHANGE_TO_NOT_SCRAMBLED
+        | DEMUX_TS_INDEX_CHANGE_TO_EVEN_SCRAMBLED
+        | DEMUX_TS_INDEX_CHANGE_TO_ODD_SCRAMBLED
+        | DEMUX_TS_INDEX_DISCONTINUITY
+        | DEMUX_TS_INDEX_RANDOM_ACCESS
+        | DEMUX_TS_INDEX_PRIORITY
+        | DEMUX_TS_INDEX_PCR
+        | DEMUX_TS_INDEX_OPCR
+        | DEMUX_TS_INDEX_SPLICING_POINT
+        | DEMUX_TS_INDEX_PRIVATE_DATA
+        | DEMUX_TS_INDEX_ADAPTATION_EXTENSION
+}
+
+fn record_sc_mask_variant_type(mask: &DemuxFilterScIndexMask) -> (i32, i32) {
+    match mask {
+        DemuxFilterScIndexMask::ScIndex(v) => (RECORD_SC_TYPE_SC, *v),
+        DemuxFilterScIndexMask::ScAvc(v) => (RECORD_SC_TYPE_SC_AVC, *v),
+        DemuxFilterScIndexMask::ScHevc(v) => (RECORD_SC_TYPE_SC_HEVC, *v),
+        DemuxFilterScIndexMask::ScVvc(v) => (RECORD_SC_TYPE_SC_VVC, *v),
+    }
+}
+
+fn validate_record_index_settings(
+    ts_index_mask: i32,
+    sc_index_type: i32,
+    sc_index_mask: &DemuxFilterScIndexMask,
+) -> BinderResult<i32> {
+    if (ts_index_mask & !supported_record_ts_index_mask()) != 0 {
+        return Err(invalid_argument_status(
+            "record tsIndexMask contains unsupported bits",
+        ));
+    }
+    let (expected_type, sc_index_mask_bits) = record_sc_mask_variant_type(sc_index_mask);
+    if sc_index_type == RECORD_SC_TYPE_NONE {
+        if sc_index_mask_bits != 0 {
+            return Err(invalid_argument_status(
+                "record SC index NONE requires zero mask",
+            ));
+        }
+    } else if !matches!(
+        sc_index_type,
+        RECORD_SC_TYPE_SC | RECORD_SC_TYPE_SC_AVC | RECORD_SC_TYPE_SC_HEVC | RECORD_SC_TYPE_SC_VVC
+    ) {
+        return Err(invalid_argument_status("unsupported record SC index type"));
+    } else if sc_index_type != expected_type {
+        return Err(invalid_argument_status(
+            "record SC index type and mask union variant mismatch",
+        ));
+    }
+    Ok(sc_index_mask_bits)
+}
+
 fn build_filter_summary(settings: &DemuxFilterSettings) -> BinderResult<FilterConfig> {
     let config = match settings {
         DemuxFilterSettings::Ts(ts) => {
@@ -9366,63 +9452,18 @@ fn build_filter_summary(settings: &DemuxFilterSettings) -> BinderResult<FilterCo
                         }
                     }
                     DemuxTsFilterSettingsFilterSettings::PesData(pes) => {
-                        if pes.streamId > 255 {
-                            return Err(invalid_argument_status(
-                                "PES streamId must be <=255, with <=0 reserved for wildcard",
-                            ));
-                        }
                         FilterConfigKind::PesData {
-                            stream_id: pes.streamId,
+                            stream_id: normalize_pes_stream_id(pes.streamId)?,
                             raw: pes.isRaw,
                         }
                     }
                     DemuxTsFilterSettingsFilterSettings::Record(record) => {
-                        let ts_supported_mask = DEMUX_TS_INDEX_FIRST_PACKET
-                            | DEMUX_TS_INDEX_PAYLOAD_UNIT_START
-                            | DEMUX_TS_INDEX_CHANGE_TO_NOT_SCRAMBLED
-                            | DEMUX_TS_INDEX_CHANGE_TO_EVEN_SCRAMBLED
-                            | DEMUX_TS_INDEX_CHANGE_TO_ODD_SCRAMBLED
-                            | DEMUX_TS_INDEX_DISCONTINUITY
-                            | DEMUX_TS_INDEX_RANDOM_ACCESS
-                            | DEMUX_TS_INDEX_PRIORITY
-                            | DEMUX_TS_INDEX_PCR
-                            | DEMUX_TS_INDEX_OPCR
-                            | DEMUX_TS_INDEX_SPLICING_POINT
-                            | DEMUX_TS_INDEX_PRIVATE_DATA
-                            | DEMUX_TS_INDEX_ADAPTATION_EXTENSION;
-                        if (record.tsIndexMask & !ts_supported_mask) != 0 {
-                            return Err(invalid_argument_status(
-                                "record tsIndexMask contains unsupported bits",
-                            ));
-                        }
-                        let (expected_type, sc_index_mask_bits) = match &record.scIndexMask {
-                            DemuxFilterScIndexMask::ScIndex(v) => (RECORD_SC_TYPE_SC, *v),
-                            DemuxFilterScIndexMask::ScAvc(v) => (RECORD_SC_TYPE_SC_AVC, *v),
-                            DemuxFilterScIndexMask::ScHevc(v) => (RECORD_SC_TYPE_SC_HEVC, *v),
-                            DemuxFilterScIndexMask::ScVvc(v) => (RECORD_SC_TYPE_SC_VVC, *v),
-                        };
                         let sc_index_type = record.scIndexType.0;
-                        if sc_index_type == RECORD_SC_TYPE_NONE {
-                            if sc_index_mask_bits != 0 {
-                                return Err(invalid_argument_status(
-                                    "record SC index NONE requires zero mask",
-                                ));
-                            }
-                        } else if !matches!(
+                        let sc_index_mask_bits = validate_record_index_settings(
+                            record.tsIndexMask,
                             sc_index_type,
-                            RECORD_SC_TYPE_SC
-                                | RECORD_SC_TYPE_SC_AVC
-                                | RECORD_SC_TYPE_SC_HEVC
-                                | RECORD_SC_TYPE_SC_VVC
-                        ) {
-                            return Err(invalid_argument_status(
-                                "unsupported record SC index type",
-                            ));
-                        } else if sc_index_type != expected_type {
-                            return Err(invalid_argument_status(
-                                "record SC index type and mask union variant mismatch",
-                            ));
-                        }
+                            &record.scIndexMask,
+                        )?;
                         FilterConfigKind::Record {
                             ts_index_mask: record.tsIndexMask,
                             sc_index_type,
@@ -9463,6 +9504,14 @@ fn normalize_table_info_version(version: i32) -> BinderResult<Option<i32>> {
     Ok((version >= 0).then_some(version))
 }
 
+fn normalize_section_table_id(table_id: i32) -> BinderResult<u8> {
+    if (0..=255).contains(&table_id) {
+        Ok(table_id as u8)
+    } else {
+        Err(invalid_argument_status("section tableId must be in 0..=255"))
+    }
+}
+
 fn build_section_condition(
     condition: &DemuxFilterSectionSettingsCondition,
 ) -> BinderResult<SectionCondition> {
@@ -9483,14 +9532,10 @@ fn build_section_condition(
             })
         }
         DemuxFilterSectionSettingsCondition::TableInfo(table) => {
-            if !(0..=255).contains(&table.tableId) {
-                return Err(invalid_argument_status(
-                    "section tableId must be in 0..=255",
-                ));
-            }
+            let table_id = normalize_section_table_id(table.tableId)?;
             let version = normalize_table_info_version(table.version)?;
             Ok(SectionCondition {
-                filter_bytes: vec![table.tableId as u8],
+                filter_bytes: vec![table_id],
                 mask_bytes: vec![0xff],
                 mode_bytes: vec![0],
                 table_id: Some(table.tableId),
@@ -10799,10 +10844,14 @@ mod static_completion_tests {
     }
 
     fn pes_settings(pid: i32) -> DemuxFilterSettings {
+        pes_settings_with_stream_id(pid, 0xbd)
+    }
+
+    fn pes_settings_with_stream_id(pid: i32, stream_id: i32) -> DemuxFilterSettings {
         DemuxFilterSettings::Ts(android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::DemuxTsFilterSettings::DemuxTsFilterSettings {
             tpid: pid,
             filterSettings: DemuxTsFilterSettingsFilterSettings::PesData(DemuxFilterPesDataSettings {
-                streamId: 0xbd,
+                streamId: stream_id,
                 isRaw: false,
             }),
         })
@@ -10940,6 +10989,74 @@ mod static_completion_tests {
         assert_eq!(normalize_table_info_version(31).unwrap(), Some(31));
         assert!(normalize_table_info_version(-2).is_err());
         assert!(normalize_table_info_version(32).is_err());
+    }
+
+    #[test]
+    fn section_table_id_contract_is_zero_to_255_only() {
+        assert_eq!(normalize_section_table_id(0).unwrap(), 0);
+        assert_eq!(normalize_section_table_id(255).unwrap(), 255);
+        assert!(normalize_section_table_id(-1).is_err());
+        assert!(normalize_section_table_id(256).is_err());
+    }
+
+    #[test]
+    fn pes_stream_id_contract_allows_minus_one_wildcard_and_8bit_values() {
+        assert_eq!(normalize_pes_stream_id(-1).unwrap(), -1);
+        assert_eq!(normalize_pes_stream_id(0).unwrap(), 0);
+        assert_eq!(normalize_pes_stream_id(255).unwrap(), 255);
+        assert!(normalize_pes_stream_id(-2).is_err());
+        assert!(normalize_pes_stream_id(256).is_err());
+        assert!(build_filter_summary(&pes_settings_with_stream_id(0x0100, -1)).is_ok());
+        assert!(build_filter_summary(&pes_settings_with_stream_id(0x0100, -2)).is_err());
+        assert!(build_filter_summary(&pes_settings_with_stream_id(0x0100, 256)).is_err());
+    }
+
+    #[test]
+    fn record_index_config_rejects_unsupported_and_mismatched_values() {
+        let valid_ts = DEMUX_TS_INDEX_FIRST_PACKET | DEMUX_TS_INDEX_PAYLOAD_UNIT_START;
+        assert!(validate_record_index_settings(
+            valid_ts,
+            RECORD_SC_TYPE_NONE,
+            &DemuxFilterScIndexMask::ScIndex(0),
+        )
+        .is_ok());
+        assert!(validate_record_index_settings(
+            supported_record_ts_index_mask() << 1,
+            RECORD_SC_TYPE_NONE,
+            &DemuxFilterScIndexMask::ScIndex(0),
+        )
+        .is_err());
+        assert!(validate_record_index_settings(
+            valid_ts,
+            RECORD_SC_TYPE_NONE,
+            &DemuxFilterScIndexMask::ScIndex(1),
+        )
+        .is_err());
+        assert!(validate_record_index_settings(
+            valid_ts,
+            999,
+            &DemuxFilterScIndexMask::ScIndex(1),
+        )
+        .is_err());
+        assert!(validate_record_index_settings(
+            valid_ts,
+            RECORD_SC_TYPE_SC_HEVC,
+            &DemuxFilterScIndexMask::ScAvc(1),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn record_index_config_accepts_each_supported_sc_variant() {
+        let valid_ts = DEMUX_TS_INDEX_FIRST_PACKET;
+        for (sc_type, mask) in [
+            (RECORD_SC_TYPE_SC, DemuxFilterScIndexMask::ScIndex(1)),
+            (RECORD_SC_TYPE_SC_AVC, DemuxFilterScIndexMask::ScAvc(1)),
+            (RECORD_SC_TYPE_SC_HEVC, DemuxFilterScIndexMask::ScHevc(1)),
+            (RECORD_SC_TYPE_SC_VVC, DemuxFilterScIndexMask::ScVvc(1)),
+        ] {
+            assert!(validate_record_index_settings(valid_ts, sc_type, &mask).is_ok());
+        }
     }
 
     #[test]

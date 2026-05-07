@@ -88,6 +88,7 @@ pub struct SectionAssembler {
     expected_len: Option<usize>,
     buf: Vec<u8>,
     oversized_section_drops: u64,
+    stale_partial_section_discards: u64,
 }
 
 impl SectionAssembler {
@@ -98,6 +99,10 @@ impl SectionAssembler {
 
     pub fn oversized_section_drops(&self) -> u64 {
         self.oversized_section_drops
+    }
+
+    pub fn stale_partial_section_discards(&self) -> u64 {
+        self.stale_partial_section_discards
     }
 
     pub(crate) fn set_expected_len_or_drop(&mut self, expected_len: usize) -> bool {
@@ -133,6 +138,9 @@ impl SectionAssembler {
                 // complete it (including pointer == 0), the stale partial section
                 // must not be concatenated with the new section body.
                 if !self.buf.is_empty() || self.expected_len.is_some() {
+                    self.stale_partial_section_discards = self
+                        .stale_partial_section_discards
+                        .saturating_add(1);
                     self.reset();
                 }
             }
@@ -350,6 +358,31 @@ mod tests {
         second.extend_from_slice(&replacement);
         let out = assembler.push_payload(true, &second);
         assert_eq!(out, vec![replacement]);
+        assert_eq!(assembler.stale_partial_section_discards(), 1);
+    }
+
+    #[test]
+    fn assembler_counts_pointer_tail_that_does_not_finish_stale_partial() {
+        let mut assembler = SectionAssembler::default();
+        let stale = section_with_crc(vec![
+            0x00, 0xb0, 0x0d, 0x00, 0x01, 0xc1, 0x00, 0x00, 0x00, 0x01, 0xe1, 0x00,
+        ]);
+        let replacement = section_with_crc(vec![
+            0x42, 0xf0, 0x0d, 0x00, 0x01, 0xc1, 0x00, 0x00, 0x48, 0x00,
+        ]);
+        let mut first = vec![0x00];
+        first.extend_from_slice(&stale[..6]);
+        assert!(assembler.push_payload(true, &first).is_empty());
+
+        // Pointer bytes are too short to complete the pending section.  They
+        // must be treated as the legal tail attempt, then the old partial must
+        // be discarded before the new section body starts.
+        let mut second = vec![0x02];
+        second.extend_from_slice(&stale[6..8]);
+        second.extend_from_slice(&replacement);
+        let out = assembler.push_payload(true, &second);
+        assert_eq!(out, vec![replacement]);
+        assert_eq!(assembler.stale_partial_section_discards(), 1);
     }
 
     #[test]

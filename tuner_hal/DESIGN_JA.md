@@ -77,6 +77,8 @@ VTS / lab profile は代表点だけでよく、全 CATV 候補の実波存在�
 
 EIT schedule を扱うため、section assembler と section filter delivery が受け入れる assembled section payload の製品上限は8192 bytesに固定する。8192 bytesは filter condition 幅とは別定数にし、PMT/CAT/SDT/NIT/EIT/ECM の section delivery、FMQ書き込み、`SectionEvent.dataLength`、buffer overflow判定で一貫して使う。8192 bytesを超えるsectionは破損または対象外としてdropし、診断counterへ記録する。
 
+PUSI到達時の `pointer_field` は、直前の未完了sectionに対して pointer bytes の範囲だけを合法なtailとして扱う。pointer bytesで直前sectionが完了しない場合、または `pointer_field == 0` で未完了sectionが残っている場合は、旧partial sectionを新section本文へ連結してはならない。旧partial sectionは破棄し、stale partial discard 診断counterへ記録してから `1 + pointer_field` の位置を新section開始として扱う。
+
 ## queue overflow / drop 通知方針
 
 internal queue overflow を first-class event として扱う。soft demux 内部 queue、filter delivery queue、DVR record output queue、AV shared buffer、FMQ write のいずれで payload drop または write failure が起きても、silent drop にしてはならない。queue push API は成功、drop-old、drop-new、full/backpressure、closed を区別できる結果型を返し、drop bytes / drop packets を診断 counter に必ず反映する。
@@ -96,6 +98,14 @@ queue 容量は profile 依存にできる構造にする。VTS/lab profile の�
 
 
 `QueuePushOutcome` は accepted bytes、drop bytes、drop entries、drop-old/drop-new、overflow を区別する。filter queue で overflow した場合は runtime state の `pending_overflow` を立て、callback worker が payload 有無にかかわらず次周期で `DemuxFilterStatus::OVERFLOW` を通知する。record DVR output queue は 1 service TS recording 用に drop-new 方針を採り、full 時に新規 TS packet を silent drop せず `RecordStatus::OVERFLOW` へ伝播する。
+
+## Filter clean boundary / delay hint 方針
+
+filter の `stop()`、`flush()`、`configure()`、upstream filter unregister は clean boundary として扱う。`stop()` / `flush()` は queue、queued bytes、pending overflow、pending start event、delay runtime、filter-local section/PES runtime を破棄し、stopped filter から payload drain / `DATA_READY` / data event を出さない。`configure()` は旧 condition、旧 PID、旧 AV stream type binding、旧 upstream linkage を無効化し、`data_source_filter_id` を必ず clear する。downstream filter が必要な場合は reconfigure 後に `setDataSource()` で明示的に再接続する。
+
+upstream filter unregister 時は、その filter を `data_source_filter_id` として保持している downstream filter を stopped / unlinked 状態にし、downstream の queue、queued bytes、pending overflow、pending start event、delay runtime、filter-local assembler / flush generation を clear する。これにより、旧 upstream 由来の payload が後続 start / re-link 後に配送されないことを保証する。
+
+`FilterDelayHint::timeDelayHint` は queue-empty → non-empty の各 burst ごとに再armする。start/configure直後の1回限りdelayではない。payload queue が空の filter に新規 payload が入った時点で deadline を再設定し、最初の burst delivery 後に queue が空になった場合、次 burst は再び time delay を受ける。
 
 ## CAS と descrambler の境界
 
@@ -136,7 +146,9 @@ record DVR / raw TS filter path は受信した 188-byte TS packet を製品の�
 
 DVR playback は claim 対象とする。playback は client から HAL へ TS を入れる入力方向であり、playback injection payload を record/output DVR queue に積んではならない。`inject_playback_payload()` は playback 専用 stats を更新し、playback 起源の TS として demux/filter 入力へ渡すだけにする。frontend/live 起源 TS と playback 起源 TS は routing origin を分離し、playback 起源 TS では direct record filter delivery でも downstream filter propagation でも record DVR mirror を行わない。record/output queue への mirror、record DVR stats の更新、record callback の wake は行わない。
 
-playback 専用 stats は少なくとも injected bytes、injected packets、malformed packets、dropped bytes を持つ。malformed TS は drop + diagnostic を標準方針とし、1 packet の malformed input で playback stream 全体を fail させない。playback flush は playback input FMQ、packet assembler、playback stats だけを reset し、record/output queue を破壊しない。record DVR flush は record output queue と record stats だけを reset し、playback input queue と playback stats を破壊しない。
+playback 専用 stats は少なくとも injected bytes、injected packets、malformed packets、dropped bytes を持つ。malformed TS は drop + diagnostic を標準方針とし、1 packet の malformed input で playback stream 全体を fail させない。playback input FMQ の `PlaybackStatus` は start 直後・周期 callback ともに playback input FMQ の実 fill / unused write space を唯一の水位 source とし、record/output queue の `queued_bytes` を流用しない。playback consumer worker は `ManagedWorker` / `WorkerSignal` に接続し、close / Drop / fail-closed で stop request → wake → join の順に停止する。
+
+playback input FMQ の stream boundary 方針は次のとおり固定する。start 前に client が prefill した bytes は保持し、start 後に playback TS として読む。started=false 中は worker が FMQ を読まない。stop / flush 時は playback input FMQ と packet assembler residual を drain/discard し、dropped bytes diagnostic counter と log に記録する。stop / flush 後に client が新たに書いた bytes は started=false 中には読まず、直前の stop / flush で旧 stream 境界が drain 済みであることを前提に、次 start の prefill として扱う。playback flush は playback input FMQ、packet assembler、playback stats だけを reset し、record/output queue を破壊しない。record DVR flush は record output queue と record stats だけを reset し、playback input queue と playback stats を破壊しない。
 
 ## Frontend capability / status 方針
 
@@ -313,6 +325,7 @@ Tuner HAL runtime の修正対象を以下の契約として固定する。
 - px4 の CNR 取得は optional telemetry であり、`PTX_GET_CNR` 失敗だけで lock/status query を fatal error にしない。
 - section filter は condition の必要 byte 幅が payload 長を超える場合に match しない。prefix だけ一致した短い payload を match としない。
 - `TableInfo.version` は `-1` または `0..31` だけを受け付ける。`-1` は wildcard、範囲外は `INVALID_ARGUMENT` とする。
+- PES `streamId` は `0..=255` を明示 `stream_id` として照合し、`-1` だけを wildcard として扱う。その他の負値と `256` 以上は `INVALID_ARGUMENT` とする。`streamId=0` は wildcard ではなく、8-bit 値 `0x00` の明示照合である。
 - 入力値不正は `INVALID_ARGUMENT`、未対応 capability は `UNAVAILABLE`、object state 不整合は `INVALID_STATE`、mutex poison や内部整合性崩壊は `UNKNOWN_ERROR` / `HalError::Internal` に写像する。
 - CHANGELOG と log message を除き、source comment は日本語に統一する。
 - AV filter の `start()` は `getAvSharedHandle()` 未実行だけを理由に失敗しない。shared handle 未 export 中の AV payload は `MediaEvent`、callback status の `DATA_READY`、FMQ / EventFlag の `TUNER_EVENT_DATA_READY` を出さず、通常 queue / AV補助queue に payload を書き込まず、`av_drop_unexported` 診断 counter と `OVERFLOW` status に反映する。slot allocation 失敗時は active slot を eviction せず、`av_overflow_no_slot` 診断 counter と `OVERFLOW` status に反映する。payload サイズ不正 / shared memory 範囲外では `av_invalid_payload` 診断 counter と `OVERFLOW` status に反映する。shared backing mutex poison、shared handle export/backing 不整合、active slot collision、slot registry inconsistency、mapping failure、counter failure は drop/overflow に偽装せず、internal error variant 名を診断に残して filter worker を fail-closed にする.

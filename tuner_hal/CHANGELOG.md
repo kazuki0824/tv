@@ -1,3 +1,37 @@
+## r50ap11
+
+- Phase 10 / R13 only: completed filter condition / metadata argument validation without advancing to Phase 11.
+- `DESIGN_JA.md` now fixes the PES `streamId` contract: `0..=255` are explicit stream_id matches, `-1` is the only wildcard, all other negative values and `256+` are `INVALID_ARGUMENT`.
+- Binder filter configuration now normalizes PES `streamId` through the fixed contract, and soft demux matching treats only `-1` as wildcard; `0` is no longer a wildcard.
+- Section `tableId`, PES `streamId`, and record TS/SC index validation are factored into dedicated helpers with regression tests for boundary values, unsupported bits, union-variant mismatch, and supported SC variants.
+- Phase 11 and later are intentionally not advanced in this release. Soong build, Rust unit test execution, VTS, and device confirmation remain out of scope for this static pre-build step.
+
+## r50ap10
+
+- Phase 9 / R05 only: completed SectionAssembler PUSI / pointer-field stale partial discard diagnostics without advancing to Phase 10.
+- `DESIGN_JA.md` now fixes the PUSI pointer boundary policy: pointer bytes are the only legal previous-section tail, and incomplete stale partial sections must be discarded with a diagnostic counter before parsing the new section body.
+- `SectionAssembler` now exposes `stale_partial_section_discards()` and increments it when pointer bytes do not complete the previous partial section, including pointer_field == 0 with stale state.
+- `DemuxHandle::stale_partial_section_discard_count()` aggregates the diagnostic counter across active section assemblers.
+- Added regression tests for pointer-zero stale partial discard, pointer-tail incomplete stale partial discard, and demux-level diagnostic aggregation.
+- Phase 10 and later are intentionally not advanced in this release. Soong build, Rust unit test execution, VTS, and device confirmation remain out of scope for this static pre-build step.
+
+## r50ap9
+
+- Phase 8 / R04 only: adopted and fixed the DVR playback input FMQ policy without advancing to Phase 9.
+- `DESIGN_JA.md` now fixes playback prefill / stop / flush boundary behavior: start-before prefill is retained, stop/flush drains playback input FMQ and packet residual with dropped-byte diagnostics, and stopped playback does not consume input.
+- Playback `PlaybackStatus` periodic callbacks now use the playback input FMQ fill / unused-space source, matching start-time status calculation rather than record/output queue `queued_bytes`.
+- The playback consumer worker now uses `ManagedWorker` / `WorkerSignal` stop-wake-join lifecycle instead of the prior ad-hoc `AtomicBool` + `Condvar` tuple.
+- Phase 9 and later are intentionally not advanced in this release. Soong build, Rust unit test execution, VTS, and device confirmation remain out of scope for this static pre-build step.
+
+## r50ap8
+
+- Phase 4 / R06 only: adopted the user-approved clean-boundary policy without advancing to Phase 5.
+- `configure_filter_with_summary_result()` now clears stale `data_source_filter_id` so reconfigure cannot retain old upstream linkage.
+- `unregister_filter()` now fully clears downstream queue / queued bytes / pending overflow / pending start event / delay runtime / filter-local assembler state for filters linked to the removed upstream.
+- `FilterDelayHint::timeDelayHint` is fixed as queue-empty -> non-empty per-burst rearm rather than first-drain-only behavior.
+- Added regression tests for per-burst time delay rearm, reconfigure clearing old linkage/queued payload, and upstream unregister clearing downstream queue.
+- Phase 5 and later are intentionally not advanced in this release. Soong build, Rust unit test execution, VTS, and device confirmation remain out of scope for this static pre-build step.
+
 ## r50ap6
 
 - `r51_tuner_hal_bugfix_execution_plan.md` の Phase 0〜7 を対象に、既存 Phase 0〜4 実装を再確認したうえで R09 / R17 / R14 の未達を補正した。
