@@ -1,3 +1,11 @@
+## r50ba2
+
+- r50ba に対して、リリース物整理のみを行った。
+- `DESIGN_JA.md` の過去版名ベースの見出しと本文表現を、現行設計名・現行実装対象の表現へ置換した。
+- Rust test module / test function 名に含まれていた過去版名を、意味ベースの名前へ改名した。
+- Tuner HAL ロジック、VTS XML、future_work、TIS/rec 実装コードは変更していない。
+- この環境では Android/Soong build、Rust unit test実行、VTS、実機確認は未実施。
+
 ## r50aq21
 
 - r50aq20 に対して、Tuner HAL の frontend 異常系で `frontend_backend` lock を保持したまま `mark_live_path_failed()` へ入る自己 deadlock だけをロジック修正した。

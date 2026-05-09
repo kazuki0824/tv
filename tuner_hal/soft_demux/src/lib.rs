@@ -5450,7 +5450,7 @@ mod filter_dvr_state_contract_tests {
     }
 
     #[test]
-    fn r50ap4_closed_demux_rejects_new_filter_and_dvr_registration() {
+    fn closed_demux_rejects_new_filter_and_dvr_registration() {
         let mut demux = DemuxHandle::new(0);
         demux.close();
         assert_eq!(

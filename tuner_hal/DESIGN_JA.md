@@ -30,11 +30,11 @@ DVB / earth_pt1 backend では、`DTV_CLEAR` は明示的な tune 停止操作�
 DVR playback は claim 対象とする。DVR playback の水位通知は AIDL `PlaybackSettings.lowThreshold` / `highThreshold` の説明に合わせ、playback input FMQ の unused space size in bytes を基準に判定する。`SPACE_EMPTY`、`SPACE_ALMOST_EMPTY`、`SPACE_ALMOST_FULL` は threshold 到達時だけ通知し、中間水位では新規status通知を行わない。used bytes を threshold として直接比較してはならない。標準閾値は buffer 容量比で low 25%、high 75% とし、VTS lab profile では XML 生成時に明示値へ展開する。
 
 
-## r50aq8 修正契約: error mapping / scan lifecycle / section overflow / DVR close
+## error mapping / scan lifecycle / section overflow / DVR close の契約
 
 `IDescrambler.addPid()` / `removePid()` では、descrambler closed、demux 未設定、key token 未設定、demux generation 消失、再検査時の demux / generation / key state 不整合、closed / runtime-failed source filter を `INVALID_STATE` とする。PID 値不正、foreign / dangling / 別 demux source filter、source filter identity mismatch は `INVALID_ARGUMENT` とする。未対応 `DemuxPid` variant や product capability 未完成は `UNAVAILABLE` に限定する。呼び出し順序や object lifecycle の不整合を `UNAVAILABLE` に写像しない。
 
-Android 14 の Tuner HAL AIDL Rust backend では `IDescrambler.addPid()` / `removePid()` の `optionalSourceFilter` が Rust generated trait 上 non-null `Strong<dyn IFilter>` として現れるため、AOSP Java/JNI/VTS に存在する null filter / PID-only 経路は r50aq5以降の Rust-only 実装対象に含めない。この構造課題は `IFilter.setDataSource(null)` と同根の Android 14 AIDL/Rust nullable filter 境界として、`future_work/not_planned/android14_aidl_rust_descrambler_pid_only_boundary_report.md` の1ファイル内で管理する。r50aq9 以降は non-null source filter 経路の state/error mapping と、同一 descrambler 内の同一PID置換、および別 descrambler 間の同一 demux/generation/PID 排他の Result 契約を修正対象とする。
+Android 14 の Tuner HAL AIDL Rust backend では `IDescrambler.addPid()` / `removePid()` の `optionalSourceFilter` が Rust generated trait 上 non-null `Strong<dyn IFilter>` として現れるため、AOSP Java/JNI/VTS に存在する null filter / PID-only 経路は Android 14 Rust backend で直接受け取れる Rust-only 実装対象に含めない。この構造課題は `IFilter.setDataSource(null)` と同根の Android 14 AIDL/Rust nullable filter 境界として、`future_work/not_planned/android14_aidl_rust_descrambler_pid_only_boundary_report.md` の1ファイル内で管理する。現行実装では non-null source filter 経路の state/error mapping と、同一 descrambler 内の同一PID置換、および別 descrambler 間の同一 demux/generation/PID 排他の Result 契約を対象とする。
 
 frontend scan lifecycle では、`scan_session` は active `Running` scan だけを表す。`Completed` / `Cancelled` / `FailedBackend` / `FailedCallback` / `FailedPanic` は terminal diagnostic として `scan_last_terminal` / `scan_terminal_debug` に保存し、保存後は `scan_session` を `None` にする。`stopTune()` は `scan_session.is_some()` を active scan 判定として使い続けるため、terminal scan が残存して `stopTune()` を `INVALID_STATE` にしてはならない。
 
@@ -257,9 +257,9 @@ VTS/lab config には descrambling flow を置かない。VTS 用 XML に ECM fi
 
 AOSP Tuner SDK / JNI / VTS には `IDescrambler.addPid()` / `removePid()` の source filter を null として扱う PID-only 経路が存在する。一方、開発規則が対象とする Android 14 / LineageOS 21 系の Tuner HAL AIDL Rust backend では、`optionalSourceFilter` が `@nullable` 付きではないため、Rust generated trait 上は non-null `Strong<dyn IFilter>` として現れる。
 
-r50aq5以降では、AOSP stable AIDL を変更しない。vendor 独自 `@nullable` 追加、AOSP frozen AIDL の改変、C++/NDK wrapper 追加、Rust raw Binder transaction parser 追加は行わない。したがって、PID-only / null source filter 経路は r50aq8 の Rust-only 実装修正対象から除外し、`android14_aidl_rust_descrambler_pid_only_boundary_report.md` で構造課題として別管理する。
+Android 14 Rust backend 方針では、AOSP stable AIDL を変更しない。vendor 独自 `@nullable` 追加、AOSP frozen AIDL の改変、C++/NDK wrapper 追加、Rust raw Binder transaction parser 追加は行わない。したがって、PID-only / null source filter 経路は Rust-only 実装対象から除外し、`android14_aidl_rust_descrambler_pid_only_boundary_report.md` で構造課題として別管理する。
 
-r50aq8 の `IDescrambler.addPid()` / `removePid()` 修正対象は、Android 14 Rust generated trait で受け取れる non-null source filter 経路の state / argument / unavailable mapping に限定する。
+`IDescrambler.addPid()` / `removePid()` の Rust backend 実装対象は、Android 14 Rust generated trait で受け取れる non-null source filter 経路の state / argument / unavailable mapping に限定する。
 
 `optionalSourceFilter != null` の場合、source filter が自 HAL 内の local `IFilter` であり、同じ demux に属し、closed / runtime-failed ではなく、demux registry 上の open filter record として実在することを検証する。PID 登録は `demux_id`、demux open generation、source filter id、source filter delivery generation を保存する。demux close / reopen、source filter close / unregister、filter reconfigure / flush により世代が変わった登録は descrambler snapshot 生成時に prune し、古い key/PID 登録を新しい demux または新しい source filter に適用しない。
 
@@ -319,7 +319,7 @@ LNB profile は sysfs `DEVNAME` または `/dev` basename と earth_pt1 の sysf
 | `isdbt2071video*` | `NoPower` | `NONE` |
 
 
-`pxmlt5video*` は対応デバイス仕様で LNB 電源非対応のため `15V` を advertise しない。`pxmlt8video*` と `isdb6014video*` は LNB 電源仕様が未確定のため、r50aq7 では product profile による明示 opt-in を作らず `NoPower` に固定する。未確認デバイスを 15V 成功扱いにする silent overclaim は禁止する。
+`pxmlt5video*` は対応デバイス仕様で LNB 電源非対応のため `15V` を advertise しない。`pxmlt8video*` と `isdb6014video*` は LNB 電源仕様が未確定のため、現行設計では product profile による明示 opt-in を作らず `NoPower` に固定する。未確認デバイスを 15V 成功扱いにする silent overclaim は禁止する。
 
 DVB frontend は sysfs driver basename が `earth-pt1` の場合だけ `EarthPt1FixedLnb` として採用する。frontend name に `tc90522` が含まれるだけでは採用しない。
 

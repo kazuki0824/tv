@@ -13168,7 +13168,7 @@ mod static_completion_tests {
 }
 
 #[cfg(test)]
-mod r50ao4_av_acceptance_tests {
+mod av_delivery_acceptance_tests {
     use super::*;
 
     #[test]
