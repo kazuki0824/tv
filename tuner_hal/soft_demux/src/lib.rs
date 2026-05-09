@@ -184,8 +184,8 @@ impl SectionCondition {
             && self.mode_bytes.len() <= max
     }
 
-    pub fn matches(&self, payload: &[u8]) -> bool {
-        let Some(header) = parse_section_header(payload, 12) else {
+    pub fn matches(&self, payload: &[u8], length_field_bits: i32) -> bool {
+        let Some(header) = parse_section_header(payload, length_field_bits) else {
             return false;
         };
         let payload = &payload[..header.total_length];
@@ -2180,7 +2180,7 @@ impl DemuxHandle {
                 if *check_crc && !section_crc_valid(payload, *length_field_bits) {
                     return false;
                 }
-                condition.matches(payload)
+                condition.matches(payload, *length_field_bits)
             }
         }
     }
@@ -2462,7 +2462,7 @@ impl DemuxHandle {
         if *check_crc && !section_crc_valid(payload, *length_field_bits) {
             return false;
         }
-        if !condition.matches(payload) {
+        if !condition.matches(payload, *length_field_bits) {
             return false;
         }
         if *repeat {

@@ -5,6 +5,9 @@ use std::sync::atomic::{AtomicI32, Ordering};
 
 pub const TUNER_SERVICE_NAME: &str = "android.hardware.tv.tuner.ITuner/default";
 pub const TS_PACKET_SIZE: usize = 188;
+const TS_RESYNC_CONFIRM_PACKETS: usize = 3;
+const TS_RESYNC_TAIL_BYTES: usize = TS_PACKET_SIZE * (TS_RESYNC_CONFIRM_PACKETS - 1);
+const TS_RESYNC_CONFIRM_BYTES: usize = TS_RESYNC_TAIL_BYTES + 1;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TsPacketBufferDrain {
@@ -17,33 +20,47 @@ pub struct TsPacketCompletionBuffer {
     buf: Vec<u8>,
     completed: VecDeque<[u8; TS_PACKET_SIZE]>,
     malformed_bytes: u64,
+    resync_required: bool,
 }
 
 impl TsPacketCompletionBuffer {
+    fn confirmed_sync_offset(buf: &[u8]) -> Option<usize> {
+        if buf.len() < TS_RESYNC_CONFIRM_BYTES {
+            return None;
+        }
+        let last_start = buf.len() - TS_RESYNC_CONFIRM_BYTES;
+        (0..=last_start).find(|&offset| {
+            (0..TS_RESYNC_CONFIRM_PACKETS)
+                .all(|packet_index| buf[offset + packet_index * TS_PACKET_SIZE] == 0x47)
+        })
+    }
+
     pub fn push(&mut self, data: &[u8]) -> TsPacketBufferDrain {
         self.buf.extend_from_slice(data);
-        let mut packets = Vec::new();
         let mut malformed_bytes = 0usize;
         loop {
+            if self.resync_required {
+                let Some(offset) = Self::confirmed_sync_offset(&self.buf) else {
+                    if self.buf.len() > TS_RESYNC_TAIL_BYTES {
+                        let discard = self.buf.len() - TS_RESYNC_TAIL_BYTES;
+                        self.buf.drain(..discard);
+                        malformed_bytes = malformed_bytes.saturating_add(discard);
+                    }
+                    break;
+                };
+                if offset > 0 {
+                    self.buf.drain(..offset);
+                    malformed_bytes = malformed_bytes.saturating_add(offset);
+                }
+                self.resync_required = false;
+                continue;
+            }
+
             if self.buf.len() < TS_PACKET_SIZE {
                 break;
             }
             if self.buf[0] != 0x47 {
-                let search_limit = self.buf.len().min(TS_PACKET_SIZE);
-                if let Some(offset) = self.buf[..search_limit]
-                    .iter()
-                    .position(|byte| *byte == 0x47)
-                {
-                    if offset == 0 {
-                        // unreachable because buf[0] was checked above.
-                    } else {
-                        self.buf.drain(..offset);
-                        malformed_bytes = malformed_bytes.saturating_add(offset);
-                    }
-                    continue;
-                }
-                self.buf.drain(..TS_PACKET_SIZE);
-                malformed_bytes = malformed_bytes.saturating_add(TS_PACKET_SIZE);
+                self.resync_required = true;
                 continue;
             }
             let mut packet = [0u8; TS_PACKET_SIZE];
@@ -91,6 +108,7 @@ impl TsPacketCompletionBuffer {
     pub fn clear(&mut self) {
         self.buf.clear();
         self.completed.clear();
+        self.resync_required = false;
     }
 
     pub fn tail_len(&self) -> usize {
@@ -154,13 +172,53 @@ mod ts_packet_completion_buffer_tests {
     }
 
     #[test]
-    fn completion_buffer_drops_malformed_packet_without_panicking() {
+    fn completion_buffer_keeps_resync_tail_without_panicking() {
         let mut buffer = TsPacketCompletionBuffer::default();
         let malformed = [0u8; TS_PACKET_SIZE];
         let out = buffer.push(&malformed);
         assert!(out.packets.is_empty());
-        assert_eq!(out.malformed_bytes, TS_PACKET_SIZE);
-        assert_eq!(buffer.malformed_bytes(), TS_PACKET_SIZE as u64);
+        assert_eq!(out.malformed_bytes, 0);
+        assert_eq!(buffer.tail_len(), TS_PACKET_SIZE);
+        assert_eq!(buffer.malformed_bytes(), 0);
+    }
+
+
+    #[test]
+    fn completion_buffer_does_not_resync_on_single_payload_sync_byte() {
+        let p0 = packet(0x66);
+        let p1 = packet(0x77);
+        let mut malformed = vec![0x00; TS_PACKET_SIZE + 16];
+        malformed[9] = 0x47;
+        let mut buffer = TsPacketCompletionBuffer::default();
+        let out = buffer.push(&malformed);
+        assert!(out.packets.is_empty());
+        assert_eq!(out.malformed_bytes, 0);
+
+        let mut tail = Vec::new();
+        tail.extend_from_slice(&p0);
+        tail.extend_from_slice(&p1[..TS_PACKET_SIZE - 1]);
+        let out = buffer.push(&tail);
+        assert!(out.packets.is_empty());
+        assert!(out.malformed_bytes > 0);
+        assert!(buffer.tail_len() >= TS_RESYNC_TAIL_BYTES);
+    }
+
+    #[test]
+    fn completion_buffer_resyncs_after_three_consecutive_sync_words() {
+        let p0 = packet(0x88);
+        let p1 = packet(0x99);
+        let p2 = packet(0xaa);
+        let mut input = vec![0x00, 0x47, 0x01, 0x02, 0x03];
+        input.extend_from_slice(&p0);
+        input.extend_from_slice(&p1);
+        input.extend_from_slice(&p2);
+
+        let mut buffer = TsPacketCompletionBuffer::default();
+        let out = buffer.push(&input);
+        assert_eq!(out.packets, vec![p0, p1, p2]);
+        assert_eq!(out.malformed_bytes, 5);
+        assert_eq!(buffer.malformed_bytes(), 5);
+        assert_eq!(buffer.tail_len(), 0);
     }
 }
 

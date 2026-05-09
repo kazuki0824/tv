@@ -8,6 +8,8 @@ TIS は `TvInputService` として system TV app から呼ばれ、Tuner HAL に
 
 BS は IF 周波数と typed stream selector を保持し、selector は TSID または px4 専用の相対 TS 番号として保存する。earth_pt1 は TSID のみ許容し、px4 は TSID と相対 TS 番号を許容する。CS110 は周波数帯のみで scan candidate と tune selector を作り、stream selector を保存しない。
 
+CS110 tune request 生成時、TIS は Android Tuner API builder の default `streamId` / `streamIdType` に依存しない。CS110 では frontend stream selector を明示的に none / `UNDEFINED` 相当に設定する。CS110 の ONID / TSID / service_id は channel identity / service identity として保持してよいが、HAL frontend selector へ転用してはならない。BS は IF 周波数 + TSID、または px4 backend 限定の relative stream number を使う。
+
 TvProvider の channel internal provider data には `streamSelectorType` と `streamSelectorValue` を分けて保存する。`NONE` は値なし、`TSID` は 0..0xffff、`RELATIVE` は 0..7 とする。
 
 

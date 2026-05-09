@@ -44,7 +44,9 @@ const PX4_CS_STEP_HZ: u64 = 40_000_000;
 const PX4_CS_FREQ_NO_MIN: i32 = 12;
 const PX4_CS_FREQ_NO_MAX: i32 = 23;
 
-// BS 専用。CS110 は TSID による frontend 選局を行わない。
+// px4 chardev backend-local mapping。product scan SSOT ではなく、
+// absolute TSID を px4 の relative slot ioctl 値へ落とすためだけに使う。
+// CS110 は TSID による frontend 選局を行わない。
 const PX4_BS_TSID_TABLE: &[Px4BsTsidEntry] = &[
     Px4BsTsidEntry {
         if_frequency_hz: 1_049_480_000,
@@ -95,6 +97,26 @@ const PX4_BS_TSID_TABLE: &[Px4BsTsidEntry] = &[
         if_frequency_hz: 1_202_920_000,
         relative_stream_number: 1,
         tsid: 0x4092,
+    },
+    Px4BsTsidEntry {
+        if_frequency_hz: 1_241_280_000,
+        relative_stream_number: 0,
+        tsid: 0x46b0,
+    },
+    Px4BsTsidEntry {
+        if_frequency_hz: 1_241_280_000,
+        relative_stream_number: 1,
+        tsid: 0x46b1,
+    },
+    Px4BsTsidEntry {
+        if_frequency_hz: 1_241_280_000,
+        relative_stream_number: 2,
+        tsid: 0x46b2,
+    },
+    Px4BsTsidEntry {
+        if_frequency_hz: 1_241_280_000,
+        relative_stream_number: 3,
+        tsid: 0x46b3,
     },
     Px4BsTsidEntry {
         if_frequency_hz: 1_279_640_000,
@@ -178,13 +200,6 @@ const PX4_BS_TSID_TABLE: &[Px4BsTsidEntry] = &[
     },
 ];
 
-/// px4 ローカル対応表は TIS の BS TSID 単一情報源と一致しなければならない。
-pub fn px4_bs_tsid_contract_entries() -> Vec<(u32, u16)> {
-    PX4_BS_TSID_TABLE
-        .iter()
-        .map(|entry| (entry.if_frequency_hz, entry.tsid))
-        .collect()
-}
 
 fn hz_to_nearest_khz(hz: u64) -> Result<i32, HalError> {
     let rounded = (hz + 500) / 1_000;
@@ -558,54 +573,6 @@ mod tests {
             map_cs110_if_frequency_to_px4_freq_no(2_053_000_000).unwrap(),
             23
         );
-    }
-
-    fn parse_tis_bs_tsid_entries_from_scan_plan() -> Vec<(u32, u16)> {
-        let source = include_str!("../../../tis/src/com/maleicacid/tvinput/tis/ScanPlan.kt");
-        let marker = "BsTsidEntry(";
-        let mut entries = Vec::new();
-        let mut rest = source;
-        while let Some(marker_index) = rest.find(marker) {
-            let tail = &rest[marker_index + marker.len()..];
-            let Some(end_index) = tail.find(')') else {
-                break;
-            };
-            let fields = tail[..end_index]
-                .split(',')
-                .map(|field| field.trim())
-                .collect::<Vec<_>>();
-            assert!(
-                fields.len() >= 2,
-                "TIS ScanPlan.kt の BsTsidEntry field 数が不足しています: {}",
-                &tail[..end_index]
-            );
-            if fields[0].starts_with("val ") {
-                rest = &tail[end_index + 1..];
-                continue;
-            }
-            let frequency = fields[0]
-                .trim_end_matches('L')
-                .replace('_', "")
-                .parse::<u32>()
-                .expect("TIS ScanPlan.kt の BS frequency を解釈できません");
-            let tsid = fields[1]
-                .replace('_', "")
-                .parse::<u16>()
-                .expect("TIS ScanPlan.kt の BS TSID を解釈できません");
-            entries.push((frequency, tsid));
-            rest = &tail[end_index + 1..];
-        }
-        entries
-    }
-
-    #[test]
-    fn px4_bs_tsid_table_matches_tis_bs_ssot_source() {
-        let tis_entries = parse_tis_bs_tsid_entries_from_scan_plan();
-        assert!(
-            !tis_entries.is_empty(),
-            "TIS ScanPlan.kt の BS TSID 表を読めませんでした"
-        );
-        assert_eq!(px4_bs_tsid_contract_entries(), tis_entries);
     }
 
     #[test]

@@ -3,18 +3,10 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-pub const DESCRAMBLER_TEST_TOKEN_PREFIX: &[u8] = b"maleicacid-test-desc-token-";
-pub const DESCRAMBLER_CAS_TOKEN_PREFIX: &[u8] = b"maleicacid-cas-desc-token-";
-pub const DESCRAMBLER_EXPIRED_TOKEN_PREFIX: &[u8] = b"maleicacid-expired-desc-token-";
-pub const DESCRAMBLER_PLACEHOLDER_TOKEN_PREFIX: &[u8] = b"maleicacid-placeholder-desc-token";
-pub const DESCRAMBLER_LEGACY_PLACEHOLDER_TOKEN_PREFIX: &[u8] = b"placeholder";
-pub const DESCRAMBLER_LEGACY_TIS_PLACEHOLDER_TOKEN_PREFIX: &[u8] = b"maleicacid-kari-token-";
+const DESCRAMBLER_TOKEN_MAX_LEN: usize = 16;
 
-fn is_placeholder_or_unconnected_cas_token(token: &[u8]) -> bool {
-    token.starts_with(DESCRAMBLER_PLACEHOLDER_TOKEN_PREFIX)
-        || token.starts_with(DESCRAMBLER_LEGACY_PLACEHOLDER_TOKEN_PREFIX)
-        || token.starts_with(DESCRAMBLER_LEGACY_TIS_PLACEHOLDER_TOKEN_PREFIX)
-        || token.starts_with(DESCRAMBLER_CAS_TOKEN_PREFIX)
+fn is_legacy_placeholder_token(token: &[u8]) -> bool {
+    token == b"placeholder"
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -61,18 +53,17 @@ impl DescramblerKeyTable {
         if token.is_empty() {
             return Err(DescramblerKeyResolveError::EmptyToken);
         }
+        if token.len() > DESCRAMBLER_TOKEN_MAX_LEN {
+            return Err(DescramblerKeyResolveError::MalformedToken);
+        }
         let slots = self.slots.lock().map_err(|_| DescramblerKeyResolveError::RegistryUnavailable)?;
         if let Some(slot) = slots.get(token).cloned() {
             return Ok(slot);
         }
-        if is_placeholder_or_unconnected_cas_token(token) {
+        if is_legacy_placeholder_token(token) {
             Err(DescramblerKeyResolveError::CasBridgeUnconnected)
-        } else if token.starts_with(DESCRAMBLER_EXPIRED_TOKEN_PREFIX) {
-            Err(DescramblerKeyResolveError::ExpiredKeySlot)
-        } else if token.starts_with(DESCRAMBLER_TEST_TOKEN_PREFIX) {
-            Err(DescramblerKeyResolveError::UnknownToken)
         } else {
-            Err(DescramblerKeyResolveError::MalformedToken)
+            Err(DescramblerKeyResolveError::UnknownToken)
         }
     }
 
@@ -86,11 +77,7 @@ impl DescramblerKeyTable {
             return Err(DescramblerKeyRegistrationError::EmptySlot);
         }
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        let prefix = match origin {
-            DescramblerTokenOrigin::VtsOrUnitTest => "maleicacid-test-desc-token",
-            DescramblerTokenOrigin::CasBridge => "maleicacid-cas-desc-token",
-        };
-        let token = format!("{prefix}-{id:016x}").into_bytes();
+        let token = id.to_be_bytes().to_vec();
         self.slots
             .lock()
             .map_err(|_| DescramblerKeyRegistrationError::RegistryUnavailable)?
@@ -112,5 +99,46 @@ impl DescramblerKeyTable {
     #[cfg(test)]
     pub fn register_for_test(&self, slot: DescramblerKeySlot) -> Vec<u8> {
         self.insert_slot(slot, DescramblerTokenOrigin::VtsOrUnitTest).expect("テスト用の復号鍵スロットが不正です")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maleicacid_tuner_hal_descrambler::Multi2KeyMaterial;
+
+    fn key_slot() -> DescramblerKeySlot {
+        DescramblerKeySlot::empty()
+            .with_even(Multi2KeyMaterial::new([0x10; 32], [0x20; 8], [0x30; 8]))
+    }
+
+    #[test]
+    fn registered_tokens_are_short_opaque_binary_ids() {
+        let table = DescramblerKeyTable::new();
+        let token = table.register_for_test(key_slot());
+        assert_eq!(token.len(), 8);
+        assert!(table.resolve_with_diagnostic(&token).is_ok());
+    }
+
+    #[test]
+    fn invalid_token_lengths_are_rejected_before_registry_resolution() {
+        let table = DescramblerKeyTable::new();
+        assert_eq!(
+            table.resolve_with_diagnostic(&[]).unwrap_err(),
+            DescramblerKeyResolveError::EmptyToken
+        );
+        assert_eq!(
+            table.resolve_with_diagnostic(&[0x55; DESCRAMBLER_TOKEN_MAX_LEN + 1]).unwrap_err(),
+            DescramblerKeyResolveError::MalformedToken
+        );
+    }
+
+    #[test]
+    fn unknown_length_valid_token_is_rejected() {
+        let table = DescramblerKeyTable::new();
+        assert_eq!(
+            table.resolve_with_diagnostic(&[0x42; 8]).unwrap_err(),
+            DescramblerKeyResolveError::UnknownToken
+        );
     }
 }

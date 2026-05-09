@@ -147,7 +147,7 @@ impl SectionAssembler {
         }
     }
 
-    pub fn push_payload(&mut self, payload_unit_start: bool, payload: &[u8]) -> Vec<Vec<u8>> {
+    pub(crate) fn push_payload(&mut self, payload_unit_start: bool, payload: &[u8]) -> Vec<Vec<u8>> {
         let mut out = Vec::new();
         if payload.is_empty() {
             return out;

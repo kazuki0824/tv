@@ -14,26 +14,33 @@ r51 は TS-only HAL profile とする。IP / MMTP / TLV / ALP filter は claim �
 
 `IFilter`、`IDvr`、`IFrontend`、`IDemux` の public method は、AIDL HAL の契約面として close 後状態を必ず検査する。`close()` 自体は idempotent とし、二重 close は成功してよい。ただし close 済み object に対する `getQueueDesc()`、`configure()`、`start()`、`stop()`、`flush()`、`read()`、`write()`、`getAvSharedHandle()`、`releaseAvHandle()`、`setDataSource()`、DVR の `configure()` / `start()` / `stop()` / `flush()` / `setFileDescriptor()` などは成功扱いにしない。close 後の失敗は、Tuner HAL service-specific error の `INVALID_STATE` を基本とする。`getId()` のような識別子取得だけを例外にする場合は、その例外を実装・単体テスト・VTS期待値で明示する。
 
-`IFrontend.getStatus(statusTypes)` は、要求された `statusTypes` の各要素に対して、同じ順序で1つの `FrontendStatus` を返す。未対応 status type を黙ってdropして短い配列を返してはならない。未対応 status type が要求された場合は、その要素に対応する安全な値を返せると設計固定したものだけ返し、それ以外は呼び出し全体を `INVALID_ARGUMENT` として失敗させる。`getFrontendStatusReadiness(statusTypes)` も同じ status support 判定を使い、`statusCaps`、readiness、`getStatus()` の3者を必ず一致させる。
+`IFrontend.getStatus(statusTypes)` は、要求された `statusTypes` の各要素に対して、同じ順序で1つの `FrontendStatus` を返す。未対応 status type を黙ってdropして短い配列を返してはならない。未対応 status type が要求された場合、`getStatus()` は呼び出し全体を `INVALID_ARGUMENT` として失敗させる。`getFrontendStatusReadiness(statusTypes)` は AOSP VTS 期待に合わせ、要求された全 status type と同じ長さの readiness 配列を返す。`statusCaps` 外の type は要素ごとに `UNSUPPORTED`、`statusCaps` 内で backend が現在利用不可または status word / telemetry を現在取得できない場合は `UNAVAILABLE`、tune/probe 中なら `UNSTABLE`、有効値を返せる状態なら `STABLE` とする。`statusCaps`、`getStatus()`、`getFrontendStatusReadiness()` は同一の status support 判定 SSOT を使うが、戻り方は API ごとの AOSP 契約に従って分ける。`statusCaps` には起動時列挙時点で値の取得根拠を固定できる status type だけを含め、read 時に失敗し得る optional ioctl 由来の status type は含めない。telemetry 未取得値を `0` として成功返却してはならない。
+
+
+Android 14 の Tuner HAL AIDL Rust backend では、`IFilter.setDataSource()` の source filter が Rust generated trait 上 non-null `Strong<dyn IFilter>` として現れるため、AOSP Java / JNI / HIDL に存在する `setDataSource(null)` による demux source 復帰経路は r51 の Rust-only 実装対象に含めない。この構造課題は `future_work/not_planned/android14_aidl_rust_descrambler_pid_only_boundary_report.md` に、`IDescrambler.addPid()` / `removePid()` の null source filter / PID-only 境界と同根の Android 14 AIDL/Rust nullable filter 境界として同一ファイル内で管理する。r51 は non-null source filter linkage、demux default source、`configure()` による旧 upstream linkage clear、close / runtime-failed / invalid linkage の error mapping を修正・確認対象にする。AOSP frozen/stable AIDL の vendor 独自改変、C++/NDK wrapper、raw Binder transaction parser による generated trait 迂回は採用しない。
 
 `IFrontend.tune()` は binder thread 上で lock 完了まで待ち続けない。前回 tune / scan の worker を generation で無効化し、backend へ tune request を投入し、非同期 worker が lock timeout と event 通知を行う。`stopTune()`、`close()`、次回 `tune()`、`scan()` は該当 generation を cancel し、古い worker からの `LOCKED` / `NO_SIGNAL` 通知を捨てる。
+
+`IFrontend.close()` は frontend backend の critical cleanup を成功扱いで握り潰さない。public close では、scan cancel、tune worker stop、live pump stop、backend close、callback clear、demux unbind、frontend lease release を step runner として扱い、途中 step が失敗しても後続 cleanup を継続し、最初に観測した critical error を AIDL status として返す。cleanup failure 後の frontend object は通常操作へ戻さず、close retry または Drop best-effort cleanup だけを許可する。best-effort 経路では失敗を返せないため、失敗を成功扱いにせず runtime diagnostic に残す。
+
+DVB / earth_pt1 backend では、`DTV_CLEAR` は明示的な tune 停止操作である `stop_tune()` の責務とする。DVB backend の `close()` は reader stop と fd release を行うが、`DTV_CLEAR` の実行を close の必須条件とはしない。したがって、DVB `close()` が `DTV_CLEAR` を発行しないことを release blocker または bug と扱わない。
 
 `IFrontend.removeOutputPid(pid)` は、frontend 出力段で PID を除去できる実装が存在しない限り `UNAVAILABLE` とする。soft demux 後段の block list だけで PID を捨てる実装は、frontend-level output PID removal を実装したことにしない。
 
 DVR playback は claim 対象とする。DVR playback の水位通知は AIDL `PlaybackSettings.lowThreshold` / `highThreshold` の説明に合わせ、playback input FMQ の unused space size in bytes を基準に判定する。`SPACE_EMPTY`、`SPACE_ALMOST_EMPTY`、`SPACE_ALMOST_FULL` は threshold 到達時だけ通知し、中間水位では新規status通知を行わない。used bytes を threshold として直接比較してはならない。標準閾値は buffer 容量比で low 25%、high 75% とし、VTS lab profile では XML 生成時に明示値へ展開する。
 
 
-## r50aq5 修正契約: error mapping / scan lifecycle / section overflow / DVR close
+## r50aq8 修正契約: error mapping / scan lifecycle / section overflow / DVR close
 
 `IDescrambler.addPid()` / `removePid()` では、descrambler closed、demux 未設定、key token 未設定、demux generation 消失、再検査時の demux / generation / key state 不整合、closed / runtime-failed source filter を `INVALID_STATE` とする。PID 値不正、foreign / dangling / 別 demux source filter、source filter identity mismatch は `INVALID_ARGUMENT` とする。未対応 `DemuxPid` variant や product capability 未完成は `UNAVAILABLE` に限定する。呼び出し順序や object lifecycle の不整合を `UNAVAILABLE` に写像しない。
 
-Android 14 の Tuner HAL AIDL Rust backend では `IDescrambler.addPid()` / `removePid()` の `optionalSourceFilter` が Rust generated trait 上 non-null `Strong<dyn IFilter>` として現れるため、AOSP Java/JNI/VTS に存在する null filter / PID-only 経路は r50aq5 の Rust-only 実装対象に含めない。この構造課題は `android14_aidl_rust_descrambler_pid_only_boundary_report.md` で別管理する。r50aq5 は non-null source filter 経路の state/error mapping だけを修正対象とする。
+Android 14 の Tuner HAL AIDL Rust backend では `IDescrambler.addPid()` / `removePid()` の `optionalSourceFilter` が Rust generated trait 上 non-null `Strong<dyn IFilter>` として現れるため、AOSP Java/JNI/VTS に存在する null filter / PID-only 経路は r50aq5以降の Rust-only 実装対象に含めない。この構造課題は `IFilter.setDataSource(null)` と同根の Android 14 AIDL/Rust nullable filter 境界として、`future_work/not_planned/android14_aidl_rust_descrambler_pid_only_boundary_report.md` の1ファイル内で管理する。r50aq9 以降は non-null source filter 経路の state/error mapping と、同一 descrambler 内の同一PID置換、および別 descrambler 間の同一 demux/generation/PID 排他の Result 契約を修正対象とする。
 
 frontend scan lifecycle では、`scan_session` は active `Running` scan だけを表す。`Completed` / `Cancelled` / `FailedBackend` / `FailedCallback` / `FailedPanic` は terminal diagnostic として `scan_last_terminal` / `scan_terminal_debug` に保存し、保存後は `scan_session` を `None` にする。`stopTune()` は `scan_session.is_some()` を active scan 判定として使い続けるため、terminal scan が残存して `stopTune()` を `INVALID_STATE` にしてはならない。
 
 section assembler が 8192 bytes 超 section drop または stale partial discard を検出した場合、該当 section filter の diagnostics counter を増やし、`pending_overflow` を立てる。callback worker は既存 `pending_overflow` 経路を使い、payload が空でも `DemuxFilterStatus::OVERFLOW` を通知する。CRC mismatch と malformed section syntax は filter 条件不成立または section event 不成立として非 delivery を維持し、overflow status へ写像しない。
 
-`DvrHal` の `closed` は外部操作を止める gate であり、cleanup 完了状態ではない。DVR cleanup 完了は `cleanup_complete` で別管理する。`close_internal()` / `close_internal_best_effort()` / `fail_dvr_worker()` は、`closed=true` だけを理由に未完了 cleanup の再試行を止めてはならない。3経路は `ExternalClose` / `BestEffortDrop` / `WorkerFailure` の呼び出し元種別を共通 cleanup helper に渡す。cleanup helper は step runner を介して callback worker stop、runtime unregister、queue stop、demux unregister を実行し、通常実装・failure injection・loom などの状態遷移検証を同じ完了判定へ通す。明示 close では最初に観測した error を返しつつ後続 cleanup を続行する。`WorkerFailure` 経路は callback worker 自身から呼ばれ得るため self-join を行わず、worker handle 回収が未完了なら `cleanup_complete=false` を維持して後続の明示 close または Drop best-effort で再試行可能にする。全 step が成功または安全 no-op と確認できた場合だけ `cleanup_complete=true` とする。
+`DvrHal` の `closed` は外部操作を止める gate であり、cleanup 完了状態ではない。DVR cleanup 完了は `cleanup_complete` で別管理する。`close_internal()` / `close_internal_best_effort()` / `fail_dvr_worker()` は、`closed=true` だけを理由に未完了 cleanup の再試行を止めてはならない。3経路は `ExternalClose` / `BestEffortDrop` / `WorkerFailure` の呼び出し元種別を共通 cleanup helper に渡す。cleanup helper は step runner を介して callback worker stop、runtime unregister、queue stop、demux unregister を実行し、各 step の結果を `Success` / `SafeNoOp` / `Failed` / `Unknown` / `SkippedDueToWorkerFailureContext` に分類する。明示 close では最初に観測した error を返しつつ後続 cleanup を続行する。best-effort 系 API は失敗有無を返せないため、その step は成功扱いにせず `Unknown` として残し、`cleanup_complete=true` の根拠にしない。`WorkerFailure` 経路は callback worker 自身から呼ばれ得るため self-join を行わず、worker handle 回収未完了を `SkippedDueToWorkerFailureContext` として扱い、後続の明示 close または Drop best-effort で再試行可能にする。全 step が `Success` または `SafeNoOp` と確認できた場合だけ `cleanup_complete=true` とする。
 
 ## lab profile のサービス対応
 
@@ -62,7 +69,7 @@ Tuner HAL は、TIS が生成した explicit tune candidate を検証・変換�
 
 TIS が持つ候補範囲は、地上波UHF、CATV、BS、CS110を含める。地上波UHFとCATVは周波数候補をそのまま試す。CS110は周波数帯だけで試し、frontend stream id / relative stream number を要求しない。BSだけは同一周波数に複数TSが存在するため、TIS が持つBS TSID表に含まれる同一IF周波数上のTSID候補をすべて試す。px4 backend はTSIDまたは相対TS番号をlegacy slotへ落とし、earth_pt1/DVB backend はTSIDをそのまま `DTV_STREAM_ID` に渡す。
 
-実行時候補生成では、TIS が持つ BS TSID 表だけを正とする。px4 backend 側に TSID から legacy slot への同等表・変換表を持つ場合でも、TIS の BS TSID 表と不一致になってはならない。px4 側の表は source-of-truth ではなく、TIS 表から渡された TSID、および px4 専用の相対TS番号を px4 legacy API へ落とすための backend-local mapping として扱う。
+実行時候補生成では、TIS が持つ BS TSID 表だけを正とする。px4 backend 側に TSID から legacy slot への backend-local mapping を持つ場合でも、これは product scan SSOT ではなく、TIS から渡された absolute TSID または px4 専用の相対TS番号を px4 legacy API へ落とすためだけに使う。TIS 候補表と px4 backend-local mapping の一致確認は r51 修正完了条件に含めない。
 
 CATV も TIS の製品 scan 候補表に実装データとして追加する。CATV候補表は C13〜C63 に固定する。MID band は C13〜C22、SHB band は C23〜C63 とし、中心周波数は ARIB STD-B21 Appendix 10 の `+1/7 MHz` オフセット込みで保持する。C22 は `167 + 1/7 MHz`、C23 は `225 + 1/7 MHz` であり、C21からC22、C22からC23は単純な6MHz連続として計算しない。地上UHF候補表とCATV候補表はどちらもTIS側が正であり、Tuner HAL はCATV scan planを自前生成しない。TIS はCATV候補を explicit tune candidate としてHALへ渡し、px4 backend は渡されたCATV frequencyをlegacy `freq_no/addfreq` へ変換するだけにする。
 
@@ -89,6 +96,9 @@ VTS / lab profile は代表点だけでよく、全 CATV 候補の実波存在�
 ## section filter / EIT schedule 上限
 
 `numBytesInSectionFilter` は section payload の最大長ではなく、section filter condition の byte幅として扱う。mask / filter byte 幅は16 bytesを維持する。
+
+`bitWidthOfLengthField` は r51 TS-only profile では `0` と `12` だけを受理し、内部的に `12` へ正規化する。その他の値は `INVALID_ARGUMENT` として configure 時点で拒否する。section assembly、CRC、section condition 判定は同じ正規化済み length field width を使い、condition 判定だけが隠れ 12bit 固定になる実装を残してはならない。
+
 
 EIT schedule を扱うため、section assembler と section filter delivery が受け入れる assembled section payload の製品上限は8192 bytesに固定する。8192 bytesは filter condition 幅とは別定数にし、PMT/CAT/SDT/NIT/EIT/ECM の section delivery、FMQ書き込み、`SectionEvent.dataLength`、buffer overflow判定で一貫して使う。8192 bytesを超えるsectionは破損または対象外としてdropし、診断counterへ記録する。
 
@@ -169,9 +179,11 @@ playback input FMQ の stream boundary 方針は次のとおり固定する。st
 
 ISDB-T / ISDB-S の frontend capability bitmask は Android 14 AIDL enum 名に基づく固定値とする。ISDB-T は `AUTO | MODE_3`、`AUTO | BANDWIDTH_6MHZ`、`AUTO | MOD_DQPSK | MOD_QPSK | MOD_16QAM | MOD_64QAM`、`AUTO | CODERATE_1_2 | CODERATE_2_3 | CODERATE_3_4 | CODERATE_5_6 | CODERATE_7_8`、`AUTO | INTERVAL_1_32 | INTERVAL_1_16 | INTERVAL_1_8 | INTERVAL_1_4`、`AUTO | INTERLEAVE_3_0 | INTERLEAVE_3_1 | INTERLEAVE_3_2 | INTERLEAVE_3_4` を advertise する。ISDB-S は `AUTO | MOD_BPSK | MOD_QPSK | MOD_TC8PSK` と `AUTO | CODERATE_1_2 | CODERATE_2_3 | CODERATE_3_4 | CODERATE_5_6 | CODERATE_7_8` を advertise する。
 
-`RF_LOCK` は backend が RF/carrier acquisition を別途取得できる場合だけ advertise する。DVB / earth_pt1 backend は Linux DVB `FE_HAS_CARRIER` を `RF_LOCK`、`FE_HAS_LOCK` を `DEMOD_LOCK` に対応させる。px4_drv backend は RF/carrier lock を返す API を持たないため、px4 の擬似 lock は `DEMOD_LOCK` のみに使い、`RF_LOCK` には使わない。
+`RF_LOCK` は backend が RF/carrier acquisition を別途取得できる場合だけ advertise する。DVB / earth_pt1 backend は Linux DVB `FE_READ_STATUS` が返す `FE_HAS_CARRIER` を `RF_LOCK`、`FE_HAS_LOCK` を `DEMOD_LOCK` に対応させる。px4_drv backend は RF/carrier lock を返す API を持たないため、px4 の擬似 lock は `DEMOD_LOCK` のみに使い、`RF_LOCK` には使わない。
 
-`SIGNAL_QUALITY` は `statusCaps` に残す。ただし driver が返す標準化済み品質値ではなく、Tuner HAL 定義の合成 quality として扱う。DVB / earth_pt1 backend の `SIGNAL_QUALITY` は Linux DVB frontend status bit の lock 進捗を 0〜100 に正規化した値とする。px4 backend の `SIGNAL_QUALITY` は `PTX_GET_CNR` 由来の CNR を 0〜100 に正規化した値とする。いずれも `DEMOD_LOCK` や `RF_LOCK` の代替ではなく、UI/diagnostic 用の合成指標であることを明示する。
+`SNR` と `SIGNAL_STRENGTH` は、r51 では `statusCaps` に含めない。DVB / earth_pt1 の `FE_READ_SNR` と `FE_READ_SIGNAL_STRENGTH`、px4 の `PTX_GET_CNR` は target driver / device 状態によって read 時に失敗し得る optional telemetry であり、起動時列挙時点で frontend entry の固定 capability として証明できないためである。これらの optional telemetry は diagnostic 内部値として保持してよいが、AOSP statusCaps 上の supported status として advertise してはならない。
+
+`SIGNAL_QUALITY` は、backend ごとに根拠ある合成値を返せる場合だけ `statusCaps` に含める。DVB / earth_pt1 backend の `SIGNAL_QUALITY` は Linux DVB `FE_READ_STATUS` status bit の lock 進捗を 0〜100 に正規化した値とする。px4 backend は `PTX_GET_CNR` を安定取得できることを frontend entry の capability として固定できない限り、`SNR` と `SIGNAL_QUALITY` を advertise しない。いずれも `DEMOD_LOCK` や `RF_LOCK` の代替ではなく、UI/diagnostic 用の合成指標である。未取得 telemetry を `SIGNAL_QUALITY=0` として成功返却してはならない。
 
 
 ## live AV filter / FMQ 方針
@@ -226,9 +238,11 @@ r51 リリース後の後続 future_work として、以下は今回の実装範
 
 ## LNB 固定 profile
 
-対象ハード構成は px4_drv 系と earth_pt1 系に限定する。px4 系は `NONE` と `15V`、earth_pt1 系は `NONE`、`11V`、`15V` だけを受け付ける。tone、DiSEqC、satellite position switching は恒久的に未対応であり、`POSITION_UNDEFINED` 以外の satellite position、tone ON、自動 tone、DiSEqC message は `UNAVAILABLE` とする。汎用 DVB profile は作らない。
+対象ハード構成は px4_drv 系と earth_pt1 系に限定する。px4_drv 系で LNB 電源を成功扱いにするのは、対応デバイス仕様で 15V 出力が確認できる `px4video*` family のみとし、`pxmlt5video*`、`pxmlt8video*`、`isdb6014video*` は安全側に倒して `NONE` のみ成功にする。earth_pt1 系は `NONE`、`11V`、`15V` だけを受け付ける。tone、DiSEqC、satellite position switching は恒久的に未対応であり、`POSITION_UNDEFINED` 以外の satellite position、tone ON、自動 tone、DiSEqC message は `UNAVAILABLE` とする。汎用 DVB profile は作らない。
 
 LNB は satellite frontend の所有物として扱い、shared LNB の余地は置かない。`setLnb(lnb_id)` は当該 satellite frontend に紐付いた LNB ID だけを受け付け、別 frontend の LNB ID、地上波 frontend への LNB attach、不明な LNB ID は失敗させる。
+
+`ILnb.close()` は reset-on-close として扱う。public `close()` は callback を消すだけでは成功扱いにせず、LNB registry の voltage を `NONE`、tone を `NONE`、satellite position を `UNDEFINED` に戻し、generation を進め、当該 LNB を選択中の frontend backend へ reset state を反映してから closed state を確定する。reset 反映に失敗した場合は `close()` を成功扱いにせず、Drop 経路の best-effort cleanup と public Binder close の完了条件を分離する。
 
 ## 復号鍵台帳
 
@@ -243,14 +257,16 @@ VTS/lab config には descrambling flow を置かない。VTS 用 XML に ECM fi
 
 AOSP Tuner SDK / JNI / VTS には `IDescrambler.addPid()` / `removePid()` の source filter を null として扱う PID-only 経路が存在する。一方、開発規則が対象とする Android 14 / LineageOS 21 系の Tuner HAL AIDL Rust backend では、`optionalSourceFilter` が `@nullable` 付きではないため、Rust generated trait 上は non-null `Strong<dyn IFilter>` として現れる。
 
-r50aq5 では、AOSP stable AIDL を変更しない。vendor 独自 `@nullable` 追加、AOSP frozen AIDL の改変、C++/NDK wrapper 追加、Rust raw Binder transaction parser 追加は行わない。したがって、PID-only / null source filter 経路は r50aq5 の Rust-only 実装修正対象から除外し、`android14_aidl_rust_descrambler_pid_only_boundary_report.md` で構造課題として別管理する。
+r50aq5以降では、AOSP stable AIDL を変更しない。vendor 独自 `@nullable` 追加、AOSP frozen AIDL の改変、C++/NDK wrapper 追加、Rust raw Binder transaction parser 追加は行わない。したがって、PID-only / null source filter 経路は r50aq8 の Rust-only 実装修正対象から除外し、`android14_aidl_rust_descrambler_pid_only_boundary_report.md` で構造課題として別管理する。
 
-r50aq5 の `IDescrambler.addPid()` / `removePid()` 修正対象は、Android 14 Rust generated trait で受け取れる non-null source filter 経路の state / argument / unavailable mapping に限定する。
+r50aq8 の `IDescrambler.addPid()` / `removePid()` 修正対象は、Android 14 Rust generated trait で受け取れる non-null source filter 経路の state / argument / unavailable mapping に限定する。
 
 `optionalSourceFilter != null` の場合、source filter が自 HAL 内の local `IFilter` であり、同じ demux に属し、closed / runtime-failed ではなく、demux registry 上の open filter record として実在することを検証する。PID 登録は `demux_id`、demux open generation、source filter id、source filter delivery generation を保存する。demux close / reopen、source filter close / unregister、filter reconfigure / flush により世代が変わった登録は descrambler snapshot 生成時に prune し、古い key/PID 登録を新しい demux または新しい source filter に適用しない。
 
+同一 descrambler 内では PID 登録表の主キーを PID とし、同一PIDに対する `addPid(pid, sourceFilter)` は既存登録を新しい source filter generation で置換する。これは AOSP Java API の同一PID置換 semantics に合わせる。別 descrambler 間では、同一 demux / demux generation / PID を二重に復号対象へ登録しないため、既に他の active descrambler が同一PIDを保持している場合は `INVALID_STATE` とする。この別 descrambler 排他は同一 descrambler 内の置換 semantics とは別契約であり、PID値・source filter object 自体の不正ではなく、active descrambler registry 上の所有状態が当該 `addPid()` 操作を許さない状態衝突として扱う。後段 packet path の二重復号と key slot競合を避けるための HAL 内部資源管理である。
+
 error mapping:
-- `INVALID_STATE`: descrambler closed、demux 未設定、key token 未設定、source filter closed / runtime-failed、demux generation 消失または再検査時 state 不整合。
+- `INVALID_STATE`: descrambler closed、demux 未設定、key token 未設定、source filter closed / runtime-failed、demux generation 消失または再検査時 state 不整合、別 active descrambler による同一 demux / demux generation / PID 所有衝突。
 - `INVALID_ARGUMENT`: invalid PID、foreign filter、別 demux filter、not-open / dangling local filter handle。
 - `UNAVAILABLE`: unsupported `DemuxPid` variant、または product capability 未完成に限定する。
 
@@ -294,13 +310,16 @@ LNB profile は sysfs `DEVNAME` または `/dev` basename と earth_pt1 の sysf
 | device node prefix | LNB profile | 成功する voltage |
 |---|---|---|
 | `px4video*` | `Px4Device15VOnly` | `NONE`, `15V` |
-| `pxmlt5video*` | `PxMltDevice15VOnly` | `NONE`, `15V` |
-| `pxmlt8video*` | `PxMltDevice15VOnly` | `NONE`, `15V` |
-| `isdb6014video*` | `PxMltDevice15VOnly` | `NONE`, `15V` |
-| `isdb2056video*` | `NoLnbPower` | `NONE` |
-| `pxm1urvideo*` | `NoLnbPower` | `NONE` |
-| `pxs1urvideo*` | `NoLnbPower` | `NONE` |
-| `isdbt2071video*` | `NoLnbPower` | `NONE` |
+| `pxmlt5video*` | `NoPower` | `NONE` |
+| `pxmlt8video*` | `NoPower` | `NONE` |
+| `isdb6014video*` | `NoPower` | `NONE` |
+| `isdb2056video*` | `NoPower` | `NONE` |
+| `pxm1urvideo*` | `NoPower` | `NONE` |
+| `pxs1urvideo*` | `NoPower` | `NONE` |
+| `isdbt2071video*` | `NoPower` | `NONE` |
+
+
+`pxmlt5video*` は対応デバイス仕様で LNB 電源非対応のため `15V` を advertise しない。`pxmlt8video*` と `isdb6014video*` は LNB 電源仕様が未確定のため、r50aq7 では product profile による明示 opt-in を作らず `NoPower` に固定する。未確認デバイスを 15V 成功扱いにする silent overclaim は禁止する。
 
 DVB frontend は sysfs driver basename が `earth-pt1` の場合だけ `EarthPt1FixedLnb` として採用する。frontend name に `tc90522` が含まれるだけでは採用しない。
 

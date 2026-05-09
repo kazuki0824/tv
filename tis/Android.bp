@@ -2,6 +2,12 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
+filegroup {
+    name: "maleicacid_tvinput_channel_keys_sources",
+    srcs: ["src/com/maleicacid/tvinput/common/ChannelKeys.kt"],
+    visibility: ["//vendor/maleicacid/tv/rec:__pkg__"],
+}
+
 android_app {
     name: "MaleicacidTvInput",
     product_specific: true,

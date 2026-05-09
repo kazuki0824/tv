@@ -2579,24 +2579,58 @@ fn declared_type_to_system(declared_type: FrontendType) -> Option<FrontendSystem
     }
 }
 
-fn entry_supports_signal_strength(entry: &FrontendEntry) -> bool {
-    matches!(&entry.kind, FrontendEntryKind::Dvb { .. })
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct FrontendStatusSupport {
+    snr: bool,
+    signal_strength: bool,
+    signal_quality: bool,
+    rf_lock: bool,
+    satellite: bool,
 }
 
-fn entry_supports_rf_lock(entry: &FrontendEntry) -> bool {
-    matches!(&entry.kind, FrontendEntryKind::Dvb { .. })
+impl FrontendStatusSupport {
+    fn for_entry(entry: &FrontendEntry) -> Self {
+        let is_dvb = matches!(&entry.kind, FrontendEntryKind::Dvb { .. });
+        Self {
+            // r51 only advertises frontend status values whose availability is
+            // fixed by the backend contract at enumeration time.  DVB FE status
+            // word values are mandatory for this HAL path; optional SNR/strength
+            // ioctls are deliberately not advertised because their support can
+            // only be discovered at read time on target drivers.
+            snr: false,
+            signal_strength: false,
+            signal_quality: is_dvb,
+            rf_lock: is_dvb,
+            satellite: entry_supports_satellite(entry),
+        }
+    }
+
+    fn for_backend(backend: &FrontendBackendState, satellite: bool) -> Self {
+        let is_dvb = matches!(backend, FrontendBackendState::Dvb(_));
+        Self {
+            snr: false,
+            signal_strength: false,
+            signal_quality: is_dvb,
+            rf_lock: is_dvb,
+            satellite,
+        }
+    }
+
+    fn supports(self, status_type: FrontendStatusType) -> bool {
+        match status_type {
+            FrontendStatusType::DEMOD_LOCK => true,
+            FrontendStatusType::RF_LOCK => self.rf_lock,
+            FrontendStatusType::SNR => self.snr,
+            FrontendStatusType::SIGNAL_STRENGTH => self.signal_strength,
+            FrontendStatusType::SIGNAL_QUALITY => self.signal_quality,
+            FrontendStatusType::LNB_VOLTAGE => self.satellite,
+            _ => false,
+        }
+    }
 }
 
 fn entry_status_supported(entry: &FrontendEntry, status_type: FrontendStatusType) -> bool {
-    match status_type {
-        FrontendStatusType::DEMOD_LOCK
-        | FrontendStatusType::SNR
-        | FrontendStatusType::SIGNAL_QUALITY => true,
-        FrontendStatusType::RF_LOCK => entry_supports_rf_lock(entry),
-        FrontendStatusType::SIGNAL_STRENGTH => entry_supports_signal_strength(entry),
-        FrontendStatusType::LNB_VOLTAGE => entry_supports_satellite(entry),
-        _ => false,
-    }
+    FrontendStatusSupport::for_entry(entry).supports(status_type)
 }
 
 fn entry_status_caps(entry: &FrontendEntry) -> Vec<FrontendStatusType> {
@@ -2638,6 +2672,11 @@ fn local_filter_identity(filter: &Strong<dyn IFilter>) -> BinderResult<(i32, i32
 struct LocalFilterGenerationIdentity {
     filter_id: i32,
     generation: u64,
+}
+
+struct LocalFilterGenerationClaimTarget {
+    identity: LocalFilterGenerationIdentity,
+    demux_state: Arc<Mutex<DemuxHandle>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2729,6 +2768,21 @@ fn local_filter_identity_for_owner(
     })?;
     validate_local_filter_identity_for_owner(&local_filter, expected_owner_demux_id)
         .map_err(local_filter_owner_error_status)
+}
+
+fn local_filter_claim_target_for_owner(
+    filter: &Strong<dyn IFilter>,
+    expected_owner_demux_id: i32,
+) -> BinderResult<LocalFilterGenerationClaimTarget> {
+    let local_filter = Binder::<FilterHal>::try_from(filter.as_binder()).map_err(|_| {
+        local_filter_owner_error_status(LocalFilterOwnerValidationError::NotLocalFilter)
+    })?;
+    let identity = validate_local_filter_identity_for_owner(&local_filter, expected_owner_demux_id)
+        .map_err(local_filter_owner_error_status)?;
+    Ok(LocalFilterGenerationClaimTarget {
+        identity,
+        demux_state: Arc::clone(&local_filter.state),
+    })
 }
 
 fn isdbt_mode_caps() -> i32 {
@@ -2912,7 +2966,6 @@ fn enumerate_frontend_entries() -> Vec<FrontendEntry> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LnbDeviceProfile {
     Px4Device15VOnly,
-    PxMltDevice15VOnly,
     EarthPt1FixedLnb,
     NoPower,
 }
@@ -2927,10 +2980,7 @@ fn px4_lnb_profile_from_devname(devname: Option<&str>) -> LnbDeviceProfile {
     if name.starts_with("pxmlt5video")
         || name.starts_with("pxmlt8video")
         || name.starts_with("isdb6014video")
-    {
-        return LnbDeviceProfile::PxMltDevice15VOnly;
-    }
-    if name.starts_with("isdb2056video")
+        || name.starts_with("isdb2056video")
         || name.starts_with("pxm1urvideo")
         || name.starts_with("pxs1urvideo")
         || name.starts_with("isdbt2071video")
@@ -3363,36 +3413,39 @@ impl FrontendRuntime {
     fn live_pump_loop(self: Arc<Self>) -> WorkerExit {
         while !self.pump_stop.load(Ordering::SeqCst) {
             let reader = {
-                let Some(mut backend) = lock_mutex_option(&self.backend, "frontend_backend") else {
-                    self.record_runtime_failure(
-                        "worker=frontend_live_pump reason=frontend_backend_lock_failed",
-                    );
-                    self.mark_live_path_failed("frontend_backend_lock_failed");
-                    return WorkerExit::Error;
+                let reader_result = {
+                    let Some(mut backend) = lock_mutex_option(&self.backend, "frontend_backend") else {
+                        self.record_runtime_failure(
+                            "worker=frontend_live_pump reason=frontend_backend_lock_failed",
+                        );
+                        self.mark_live_path_failed("frontend_backend_lock_failed");
+                        return WorkerExit::Error;
+                    };
+                    if !FrontendHal::backend_tuning_active(&backend) {
+                        Ok(None)
+                    } else {
+                        FrontendHal::apply_selected_lnb_from_registry(
+                            &self.lnb_registry,
+                            &mut backend,
+                        )
+                        .map_err(|err| {
+                            format!("worker=frontend_live_pump operation=apply_lnb error={err}")
+                        })
+                        .and_then(|()| {
+                            FrontendHal::backend_live_stream_reader(&mut backend).map_err(|err| {
+                                format!(
+                                    "worker=frontend_live_pump operation=stream_reader error={err}"
+                                )
+                            })
+                        })
+                    }
                 };
-                if !FrontendHal::backend_tuning_active(&backend) {
-                    None
-                } else {
-                    if let Err(err) = FrontendHal::apply_selected_lnb_from_registry(
-                        &self.lnb_registry,
-                        &mut backend,
-                    ) {
-                        let detail =
-                            format!("worker=frontend_live_pump operation=apply_lnb error={err}");
+                match reader_result {
+                    Ok(reader) => reader,
+                    Err(detail) => {
                         self.record_runtime_failure(detail.clone());
                         self.mark_live_path_failed(&detail);
                         return WorkerExit::Error;
-                    }
-                    match FrontendHal::backend_live_stream_reader(&mut backend) {
-                        Ok(reader) => reader,
-                        Err(err) => {
-                            let detail = format!(
-                                "worker=frontend_live_pump operation=stream_reader error={err}"
-                            );
-                            self.record_runtime_failure(detail.clone());
-                            self.mark_live_path_failed(&detail);
-                            return WorkerExit::Error;
-                        }
                     }
                 }
             };
@@ -3528,6 +3581,7 @@ struct DemuxRecord {
     state: Arc<Mutex<DemuxHandle>>,
     runtime_io: Arc<RuntimeIoRegistry>,
     ref_count: usize,
+    closing: bool,
     bound_frontend_id: Option<i32>,
     bound_frontend_generation: Option<u64>,
     ci_cam_diagnostics: Vec<String>,
@@ -3650,19 +3704,22 @@ impl DescramblerRuntimeRegistry {
         }
     }
 
-    fn pid_registered_by_other_descrambler(
+    fn try_claim_pid_for_descrambler(
         &self,
         current_id: i64,
         demux_id: i32,
         demux_generation: u64,
         pid: u16,
-    ) -> bool {
-        let Some(mut entries) = lock_mutex_option(&self.entries, "descrambler_runtime_entries")
-        else {
-            return true;
-        };
+        source_filter: LocalFilterGenerationIdentity,
+    ) -> BinderResult<()> {
+        let mut entries = lock_mutex_status(&self.entries, "descrambler_runtime_entries")?;
+        let current_state_arc = entries
+            .get(&current_id)
+            .and_then(Weak::upgrade)
+            .ok_or_else(|| invalid_state_status("descrambler runtime entry is closed"))?;
+
         let mut dead = Vec::new();
-        let mut found = false;
+        let mut owned_by_other = false;
         for (id, weak) in entries.iter() {
             if *id == current_id {
                 continue;
@@ -3671,23 +3728,45 @@ impl DescramblerRuntimeRegistry {
                 dead.push(*id);
                 continue;
             };
-            let Some(state) = lock_mutex_option(&state_arc, "descrambler_state") else {
-                found = true;
-                break;
-            };
-            if !state.closed
-                && state.demux_id == Some(demux_id)
+            let state = lock_mutex_status(&state_arc, "descrambler_state")?;
+            if state.closed {
+                dead.push(*id);
+                continue;
+            }
+            if state.demux_id == Some(demux_id)
                 && state.demux_generation == Some(demux_generation)
                 && state.pids.contains_key(&pid)
             {
-                found = true;
+                owned_by_other = true;
                 break;
             }
         }
         for id in dead {
             entries.remove(&id);
         }
-        found
+        if owned_by_other {
+            return Err(Status::new_service_specific_error(TunerResult::INVALID_STATE.0, Some("PID is already registered by another active descrambler on this demux generation")));
+        }
+
+        let mut state = lock_mutex_status(&current_state_arc, "descrambler_state")?;
+        TunerDescrambler::ensure_open_locked(&state)?;
+        if state.demux_id != Some(demux_id)
+            || state.demux_generation != Some(demux_generation)
+            || state.key_token.is_none()
+        {
+            return Err(Status::new_service_specific_error(
+                TunerResult::INVALID_STATE.0,
+                None,
+            ));
+        }
+        state.pids.insert(
+            pid,
+            DescramblerPidRegistration {
+                source_filter_id: source_filter.filter_id,
+                source_filter_generation: source_filter.generation,
+            },
+        );
+        Ok(())
     }
 }
 
@@ -3827,7 +3906,7 @@ impl TunerDescrambler {
                 None,
             ));
         }
-        let (demux_id, demux_generation, already_registered) = {
+        let (demux_id, demux_generation) = {
             let state = lock_mutex_status(&self.state, "descrambler_state")?;
             Self::ensure_open_locked(&state)?;
             let (Some(demux_id), Some(demux_generation)) = (state.demux_id, state.demux_generation)
@@ -3843,34 +3922,18 @@ impl TunerDescrambler {
                     None,
                 ));
             }
-            (demux_id, demux_generation, state.pids.contains_key(&pid))
+            (demux_id, demux_generation)
         };
-        if !already_registered
-            && self
-                .descrambler_registry
-                .pid_registered_by_other_descrambler(self.id, demux_id, demux_generation, pid)
-        {
-            return Err(Status::new_service_specific_error(TunerResult::INVALID_STATE.0, Some("PID is already registered by another active descrambler on this demux generation")));
-        }
-        let mut state = lock_mutex_status(&self.state, "descrambler_state")?;
-        Self::ensure_open_locked(&state)?;
-        if state.demux_id != Some(demux_id)
-            || state.demux_generation != Some(demux_generation)
-            || state.key_token.is_none()
-        {
-            return Err(Status::new_service_specific_error(
-                TunerResult::INVALID_STATE.0,
-                None,
-            ));
-        }
-        state.pids.insert(
+        self.descrambler_registry.try_claim_pid_for_descrambler(
+            self.id,
+            demux_id,
+            demux_generation,
             pid,
-            DescramblerPidRegistration {
-                source_filter_id: -1,
-                source_filter_generation: 0,
+            LocalFilterGenerationIdentity {
+                filter_id: -1,
+                generation: 0,
             },
-        );
-        Ok(())
+        )
     }
 
     #[cfg(test)]
@@ -3917,10 +3980,7 @@ impl IDescrambler for TunerDescrambler {
         let mut state = lock_mutex_status(&self.state, "descrambler_state")?;
         Self::ensure_open_locked(&state)?;
         if state.demux_id.is_some() {
-            return Err(Status::new_service_specific_error(
-                TunerResult::UNAVAILABLE.0,
-                None,
-            ));
+            return Err(invalid_state_status("descrambler demux source is already set"));
         }
         state.demux_id = Some(demux_id);
         state.demux_generation = Some(demux_generation);
@@ -3951,7 +4011,7 @@ impl IDescrambler for TunerDescrambler {
         optional_source_filter: &Strong<dyn IFilter>,
     ) -> BinderResult<()> {
         let pid = Self::pid_from_demux_pid(pid)?;
-        let (demux_id, demux_generation, already_registered) = {
+        let (demux_id, demux_generation) = {
             let state = lock_mutex_status(&self.state, "descrambler_state")?;
             Self::ensure_open_locked(&state)?;
             let Some(demux_id) = state.demux_id else {
@@ -3972,17 +4032,69 @@ impl IDescrambler for TunerDescrambler {
                     None,
                 ));
             };
-            (demux_id, demux_generation, state.pids.contains_key(&pid))
+            (demux_id, demux_generation)
+        };
+        self.ensure_bound_demux_generation_current(demux_id, demux_generation)?;
+        let source_filter = local_filter_claim_target_for_owner(optional_source_filter, demux_id)?;
+        let demux = lock_mutex_status(&source_filter.demux_state, "demux_handle")?;
+        if demux.demux_id() != demux_id {
+            return Err(invalid_argument_status("source filter belongs to another demux"));
+        }
+        match demux.filter_generation(source_filter.identity.filter_id) {
+            Some(generation) if generation == source_filter.identity.generation => {}
+            Some(_) => {
+                return Err(invalid_state_status(
+                    "source filter generation changed before PID claim",
+                ))
+            }
+            None => return Err(invalid_argument_status("source filter is not an open demux filter")),
+        }
+        self.descrambler_registry.try_claim_pid_for_descrambler(
+            self.id,
+            demux_id,
+            demux_generation,
+            pid,
+            source_filter.identity,
+        )
+    }
+
+    fn removePid(
+        &self,
+        pid: &DemuxPid,
+        optional_source_filter: &Strong<dyn IFilter>,
+    ) -> BinderResult<()> {
+        let pid = Self::pid_from_demux_pid(pid)?;
+        let (demux_id, demux_generation) = {
+            let state = lock_mutex_status(&self.state, "descrambler_state")?;
+            Self::ensure_open_locked(&state)?;
+            let Some(demux_id) = state.demux_id else {
+                return Err(Status::new_service_specific_error(
+                    TunerResult::INVALID_STATE.0,
+                    None,
+                ));
+            };
+            if state.key_token.is_none() {
+                return Err(Status::new_service_specific_error(
+                    TunerResult::INVALID_STATE.0,
+                    None,
+                ));
+            }
+            let Some(demux_generation) = state.demux_generation else {
+                return Err(Status::new_service_specific_error(
+                    TunerResult::INVALID_STATE.0,
+                    None,
+                ));
+            };
+            if !state.pids.contains_key(&pid) {
+                return Err(Status::new_service_specific_error(
+                    TunerResult::INVALID_ARGUMENT.0,
+                    Some("PID is not registered in this descrambler"),
+                ));
+            }
+            (demux_id, demux_generation)
         };
         self.ensure_bound_demux_generation_current(demux_id, demux_generation)?;
         let source_filter = local_filter_identity_for_owner(optional_source_filter, demux_id)?;
-        if !already_registered
-            && self
-                .descrambler_registry
-                .pid_registered_by_other_descrambler(self.id, demux_id, demux_generation, pid)
-        {
-            return Err(Status::new_service_specific_error(TunerResult::INVALID_STATE.0, Some("PID is already registered by another active descrambler on this demux generation")));
-        }
         let mut state = lock_mutex_status(&self.state, "descrambler_state")?;
         Self::ensure_open_locked(&state)?;
         if state.demux_id != Some(demux_id)
@@ -3994,44 +4106,6 @@ impl IDescrambler for TunerDescrambler {
                 None,
             ));
         }
-        state.pids.insert(
-            pid,
-            DescramblerPidRegistration {
-                source_filter_id: source_filter.filter_id,
-                source_filter_generation: source_filter.generation,
-            },
-        );
-        Ok(())
-    }
-
-    fn removePid(
-        &self,
-        pid: &DemuxPid,
-        optional_source_filter: &Strong<dyn IFilter>,
-    ) -> BinderResult<()> {
-        let pid = Self::pid_from_demux_pid(pid)?;
-        let mut state = lock_mutex_status(&self.state, "descrambler_state")?;
-        Self::ensure_open_locked(&state)?;
-        let Some(demux_id) = state.demux_id else {
-            return Err(Status::new_service_specific_error(
-                TunerResult::INVALID_STATE.0,
-                None,
-            ));
-        };
-        if state.key_token.is_none() {
-            return Err(Status::new_service_specific_error(
-                TunerResult::INVALID_STATE.0,
-                None,
-            ));
-        }
-        let Some(demux_generation) = state.demux_generation else {
-            return Err(Status::new_service_specific_error(
-                TunerResult::INVALID_STATE.0,
-                None,
-            ));
-        };
-        self.ensure_bound_demux_generation_current(demux_id, demux_generation)?;
-        let source_filter = local_filter_identity_for_owner(optional_source_filter, demux_id)?;
         match state.pids.get(&pid).copied() {
             Some(stored_source)
                 if stored_source.source_filter_id == source_filter.filter_id
@@ -4479,6 +4553,7 @@ impl TunerHal {
             state,
             runtime_io: Arc::new(RuntimeIoRegistry::default()),
             ref_count: 1,
+            closing: false,
             bound_frontend_id: None,
             bound_frontend_generation: None,
             ci_cam_diagnostics: Vec::new(),
@@ -4521,6 +4596,12 @@ impl TunerHal {
             .ok_or_else(|| Status::new_service_specific_error(TunerResult::UNAVAILABLE.0, None))?;
             {
                 let mut entry = lock_mutex_status(&record, "demux_record")?;
+                if entry.closing || entry.ref_count == 0 {
+                    return Err(Status::new_service_specific_error(
+                        TunerResult::UNAVAILABLE.0,
+                        None,
+                    ));
+                }
                 entry.ref_count = entry.ref_count.saturating_add(1);
             }
             return Ok(record);
@@ -4833,6 +4914,7 @@ pub struct FrontendHal {
     tune_signal: Arc<WorkerSignal>,
     tune_worker: Mutex<Option<ManagedWorker>>,
     closed: AtomicBool,
+    cleanup_failed: AtomicBool,
 }
 
 impl FrontendHal {
@@ -4860,6 +4942,7 @@ impl FrontendHal {
             tune_signal: Arc::new(WorkerSignal::new(false)),
             tune_worker: Mutex::new(None),
             closed: AtomicBool::new(false),
+            cleanup_failed: AtomicBool::new(false),
         }
     }
 
@@ -5036,11 +5119,11 @@ impl FrontendHal {
         }
     }
 
-    fn backend_close(backend: &mut FrontendBackendState) {
+    fn backend_close(backend: &mut FrontendBackendState) -> Result<(), HalError> {
         match backend {
             FrontendBackendState::Px4(inner) => inner.close(),
             FrontendBackendState::Dvb(inner) => inner.close(),
-            FrontendBackendState::Unavailable { .. } => {}
+            FrontendBackendState::Unavailable { .. } => Ok(()),
         }
     }
 
@@ -5486,26 +5569,6 @@ impl FrontendHal {
         }
     }
 
-    fn publish_scan_terminal_debug(
-        shared: &Arc<FrontendRuntime>,
-        scan_session: &Arc<Mutex<Option<ScanSessionState>>>,
-        session_id: i64,
-    ) -> Option<ScanSessionState> {
-        let terminal =
-            lock_mutex_option(scan_session, "frontend_scan_session").and_then(|session| {
-                session
-                    .as_ref()
-                    .filter(|state| {
-                        state.session_id == session_id && state.phase != ScanPhase::Running
-                    })
-                    .cloned()
-            });
-        if let Some(state) = terminal.as_ref() {
-            Self::publish_scan_terminal_state(shared, state);
-        }
-        terminal
-    }
-
     fn publish_scan_terminal_debug_and_clear(
         shared: &Arc<FrontendRuntime>,
         scan_session: &Arc<Mutex<Option<ScanSessionState>>>,
@@ -5579,9 +5642,11 @@ impl FrontendHal {
         else {
             return;
         };
-        if let Some(state) =
-            FrontendHal::publish_scan_terminal_debug(&self.shared, &self.scan_session, session_id)
-        {
+        if let Some(state) = FrontendHal::publish_scan_terminal_debug_and_clear(
+            &self.shared,
+            &self.scan_session,
+            session_id,
+        ) {
             if let Some(mut last) =
                 lock_mutex_option(&self.scan_last_terminal, "frontend_scan_last_terminal")
             {
@@ -5727,6 +5792,11 @@ impl FrontendHal {
     }
 
     fn ensure_open(&self) -> BinderResult<()> {
+        if self.cleanup_failed.load(Ordering::SeqCst) {
+            return Err(invalid_state_status(
+                "frontend cleanup failed; only close retry is allowed",
+            ));
+        }
         if self.closed.load(Ordering::SeqCst) {
             return Err(invalid_state_status("frontend is closed"));
         }
@@ -5734,26 +5804,54 @@ impl FrontendHal {
     }
 
     fn close_internal(&self) -> BinderResult<()> {
-        if self.closed.load(Ordering::SeqCst) {
+        if self.closed.load(Ordering::SeqCst)
+            && !self.cleanup_failed.load(Ordering::SeqCst)
+        {
             return Ok(());
         }
-        self.cancel_scan_session()?;
-        self.stop_tune_worker()?;
-        self.shared.stop_live_pump()?;
-        {
+
+        let mut first_error: Option<Status> = None;
+        let mut record_step = |step: &'static str, result: BinderResult<()>| {
+            if let Err(err) = result {
+                self.shared.record_runtime_failure(format!(
+                    "frontend_close step={} error={:?}",
+                    step, err
+                ));
+                if first_error.is_none() {
+                    first_error = Some(err);
+                }
+            }
+        };
+
+        record_step("cancel_scan_session", self.cancel_scan_session());
+        record_step("stop_tune_worker", self.stop_tune_worker());
+        record_step("stop_live_pump", self.shared.stop_live_pump());
+        record_step("backend_close", (|| {
             let mut backend = lock_mutex_status(&self.shared.backend, "frontend_backend")?;
             Self::backend_set_callback_registered(&mut backend, false);
-            Self::backend_close(&mut backend);
-        }
-        *lock_mutex_status(&self.callback, "frontend_callback")? = None;
-        self.unbind_frontend_demuxes()?;
-        self.release_frontend_lease()?;
+            Self::backend_close(&mut backend).map_err(hal_error_status)
+        })());
+        record_step("callback_clear", (|| {
+            *lock_mutex_status(&self.callback, "frontend_callback")? = None;
+            Ok(())
+        })());
+        record_step("unbind_frontend_demuxes", self.unbind_frontend_demuxes());
+        record_step("release_frontend_lease", self.release_frontend_lease());
+
         self.closed.store(true, Ordering::SeqCst);
-        Ok(())
+        if let Some(err) = first_error {
+            self.cleanup_failed.store(true, Ordering::SeqCst);
+            Err(err)
+        } else {
+            self.cleanup_failed.store(false, Ordering::SeqCst);
+            Ok(())
+        }
     }
 
     fn close_internal_best_effort(&self) {
-        if self.closed.load(Ordering::SeqCst) {
+        if self.closed.load(Ordering::SeqCst)
+            && !self.cleanup_failed.load(Ordering::SeqCst)
+        {
             return;
         }
         self.cancel_scan_session_best_effort();
@@ -5761,7 +5859,18 @@ impl FrontendHal {
         self.shared.stop_live_pump_best_effort();
         if let Some(mut backend) = lock_mutex_option(&self.shared.backend, "frontend_backend") {
             Self::backend_set_callback_registered(&mut backend, false);
-            Self::backend_close(&mut backend);
+            if let Err(err) = Self::backend_close(&mut backend) {
+                self.shared.record_runtime_failure(format!(
+                    "frontend_close_best_effort step=backend_close error={err}"
+                ));
+                self.cleanup_failed.store(true, Ordering::SeqCst);
+            }
+        } else {
+            self.shared.record_runtime_failure(
+                "frontend_close_best_effort step=backend_close error=frontend_backend_lock_failed"
+                    .to_string(),
+            );
+            self.cleanup_failed.store(true, Ordering::SeqCst);
         }
         if let Some(mut callback) = lock_mutex_option(&self.callback, "frontend_callback") {
             *callback = None;
@@ -5979,37 +6088,11 @@ impl FrontendHal {
         }
     }
 
-    fn status_type_supported_by_flags(
-        supports_signal_strength: bool,
-        supports_rf_lock: bool,
-        supports_satellite: bool,
-        ty: FrontendStatusType,
-    ) -> bool {
-        match ty {
-            FrontendStatusType::DEMOD_LOCK
-            | FrontendStatusType::SNR
-            | FrontendStatusType::SIGNAL_QUALITY => true,
-            FrontendStatusType::RF_LOCK => supports_rf_lock,
-            FrontendStatusType::SIGNAL_STRENGTH => supports_signal_strength,
-            FrontendStatusType::LNB_VOLTAGE => supports_satellite,
-            _ => false,
-        }
-    }
-
     fn validate_status_types(
-        supports_signal_strength: bool,
-        supports_rf_lock: bool,
-        supports_satellite: bool,
+        support: FrontendStatusSupport,
         status_types: &[FrontendStatusType],
     ) -> BinderResult<()> {
-        if status_types.iter().any(|ty| {
-            !Self::status_type_supported_by_flags(
-                supports_signal_strength,
-                supports_rf_lock,
-                supports_satellite,
-                *ty,
-            )
-        }) {
+        if status_types.iter().any(|ty| !support.supports(*ty)) {
             return Err(invalid_argument_status(
                 "unsupported frontend status type requested",
             ));
@@ -6017,19 +6100,41 @@ impl FrontendHal {
         Ok(())
     }
 
+    fn require_status_value<T: Copy>(value: Option<T>, name: &'static str) -> BinderResult<T> {
+        value.ok_or_else(|| {
+            Status::new_service_specific_error(
+                TunerResult::INVALID_STATE.0,
+                Some(&format!("frontend status {name} is supported but not currently available")),
+            )
+        })
+    }
+
+    fn status_value_available(
+        support: FrontendStatusSupport,
+        status: &FrontendTelemetry,
+        status_type: FrontendStatusType,
+    ) -> bool {
+        if !support.supports(status_type) {
+            return false;
+        }
+        match status_type {
+            FrontendStatusType::DEMOD_LOCK => true,
+            FrontendStatusType::RF_LOCK => status.rf_locked.is_some(),
+            FrontendStatusType::SNR => status.cnr.is_some(),
+            FrontendStatusType::SIGNAL_STRENGTH => status.signal_strength.is_some(),
+            FrontendStatusType::SIGNAL_QUALITY => status.signal_quality.is_some(),
+            // LNB voltage has a well-defined NONE state when no voltage has been selected.
+            FrontendStatusType::LNB_VOLTAGE => support.satellite,
+            _ => false,
+        }
+    }
+
     fn status_for_types(
-        supports_signal_strength: bool,
-        supports_rf_lock: bool,
-        supports_satellite: bool,
+        support: FrontendStatusSupport,
         status: &FrontendTelemetry,
         status_types: &[FrontendStatusType],
     ) -> BinderResult<Vec<FrontendStatus>> {
-        Self::validate_status_types(
-            supports_signal_strength,
-            supports_rf_lock,
-            supports_satellite,
-            status_types,
-        )?;
+        Self::validate_status_types(support, status_types)?;
         let mut out = Vec::with_capacity(status_types.len());
         for ty in status_types {
             match *ty {
@@ -6037,21 +6142,30 @@ impl FrontendHal {
                     out.push(FrontendStatus::IsDemodLocked(status.locked))
                 }
                 FrontendStatusType::RF_LOCK => out.push(FrontendStatus::IsRfLocked(
-                    status.rf_locked.unwrap_or(false),
+                    Self::require_status_value(status.rf_locked, "RF_LOCK")?,
                 )),
                 FrontendStatusType::SNR => out.push(FrontendStatus::Snr(
-                    i32::try_from(status.cnr.unwrap_or(0)).unwrap_or(i32::MAX),
+                    i32::try_from(Self::require_status_value(status.cnr, "SNR")?)
+                        .unwrap_or(i32::MAX),
                 )),
                 FrontendStatusType::SIGNAL_STRENGTH => out.push(FrontendStatus::SignalStrength(
-                    i32::try_from(status.signal_strength.unwrap_or(0)).unwrap_or(i32::MAX),
+                    i32::try_from(Self::require_status_value(
+                        status.signal_strength,
+                        "SIGNAL_STRENGTH",
+                    )?)
+                    .unwrap_or(i32::MAX),
                 )),
                 FrontendStatusType::SIGNAL_QUALITY => out.push(FrontendStatus::SignalQuality(
-                    i32::try_from(status.signal_quality.unwrap_or(0)).unwrap_or(i32::MAX),
+                    i32::try_from(Self::require_status_value(
+                        status.signal_quality,
+                        "SIGNAL_QUALITY",
+                    )?)
+                    .unwrap_or(i32::MAX),
                 )),
                 FrontendStatusType::LNB_VOLTAGE => out.push(FrontendStatus::LnbVoltage(
-                    match status.lnb_voltage.unwrap_or(0) {
-                        11 => LnbVoltage::VOLTAGE_11V,
-                        15 => LnbVoltage::VOLTAGE_15V,
+                    match status.lnb_voltage {
+                        Some(11) => LnbVoltage::VOLTAGE_11V,
+                        Some(15) => LnbVoltage::VOLTAGE_15V,
                         _ => LnbVoltage::NONE,
                     },
                 )),
@@ -6066,20 +6180,31 @@ impl FrontendHal {
     }
 
     fn readiness_for_types(
-        supports_signal_strength: bool,
-        supports_rf_lock: bool,
-        supports_satellite: bool,
+        support: FrontendStatusSupport,
+        backend_available: bool,
+        tuning_active: bool,
+        status: Option<&FrontendTelemetry>,
         status_types: &[FrontendStatusType],
     ) -> BinderResult<Vec<FrontendStatusReadiness>> {
-        Self::validate_status_types(
-            supports_signal_strength,
-            supports_rf_lock,
-            supports_satellite,
-            status_types,
-        )?;
         Ok(status_types
             .iter()
-            .map(|_| FrontendStatusReadiness::STABLE)
+            .map(|ty| {
+                if !support.supports(*ty) {
+                    FrontendStatusReadiness::UNSUPPORTED
+                } else if !backend_available {
+                    FrontendStatusReadiness::UNAVAILABLE
+                } else if tuning_active {
+                    FrontendStatusReadiness::UNSTABLE
+                } else if let Some(status) = status {
+                    if Self::status_value_available(support, status, *ty) {
+                        FrontendStatusReadiness::STABLE
+                    } else {
+                        FrontendStatusReadiness::UNAVAILABLE
+                    }
+                } else {
+                    FrontendStatusReadiness::UNAVAILABLE
+                }
+            })
             .collect())
     }
 
@@ -6381,45 +6506,39 @@ impl IFrontend for FrontendHal {
                         FrontendEventType::NO_SIGNAL,
                     );
                 }
-                match lock_mutex_hal(&shared.backend, "frontend_backend") {
-                    Ok(mut backend) => {
-                        if let Err(err) = FrontendHal::backend_stop_tune(&mut backend) {
-                            shared.record_runtime_failure(format!(
-                                "worker=frontend_scan_worker cleanup=backend_stop_tune error={err}"
-                            ));
-                            FrontendHal::mark_scan_session_phase(
-                                &scan_session,
-                                session_id,
-                                ScanPhase::FailedBackend,
-                            );
-                            shared.mark_live_path_failed("scan_cleanup_backend_stop_tune_failed");
-                            FrontendHal::notify_scan_end_with_callback(
-                                &callback_registry,
-                                &shared,
-                                &scan_session,
-                                session_id,
-                            );
-                            scan_failed = true;
-                        }
-                    }
-                    Err(err) => {
-                        shared.record_runtime_failure(format!(
+                let scan_cleanup_error = match lock_mutex_hal(&shared.backend, "frontend_backend") {
+                    Ok(mut backend) => FrontendHal::backend_stop_tune(&mut backend)
+                        .err()
+                        .map(|err| {
+                            (
+                                format!(
+                                    "worker=frontend_scan_worker cleanup=backend_stop_tune error={err}"
+                                ),
+                                "scan_cleanup_backend_stop_tune_failed",
+                            )
+                        }),
+                    Err(err) => Some((
+                        format!(
                             "worker=frontend_scan_worker cleanup=frontend_backend_lock error={err}"
-                        ));
-                        FrontendHal::mark_scan_session_phase(
-                            &scan_session,
-                            session_id,
-                            ScanPhase::FailedBackend,
-                        );
-                        shared.mark_live_path_failed("scan_cleanup_frontend_backend_lock_failed");
-                        FrontendHal::notify_scan_end_with_callback(
-                            &callback_registry,
-                            &shared,
-                            &scan_session,
-                            session_id,
-                        );
-                        scan_failed = true;
-                    }
+                        ),
+                        "scan_cleanup_frontend_backend_lock_failed",
+                    )),
+                };
+                if let Some((detail, failure_reason)) = scan_cleanup_error {
+                    shared.record_runtime_failure(detail);
+                    FrontendHal::mark_scan_session_phase(
+                        &scan_session,
+                        session_id,
+                        ScanPhase::FailedBackend,
+                    );
+                    shared.mark_live_path_failed(failure_reason);
+                    FrontendHal::notify_scan_end_with_callback(
+                        &callback_registry,
+                        &shared,
+                        &scan_session,
+                        session_id,
+                    );
+                    scan_failed = true;
                 }
                 if !scan_signal.is_stop_requested()
                     && !scan_failed
@@ -6451,18 +6570,6 @@ impl IFrontend for FrontendHal {
                 }
             },
             move |exit| {
-                if let Some(state) = FrontendHal::publish_scan_terminal_debug(
-                    &shared_for_hook,
-                    &scan_session_for_hook,
-                    session_id,
-                ) {
-                    if let Some(mut last) = lock_mutex_option(
-                        &scan_last_terminal_for_hook,
-                        "frontend_scan_last_terminal",
-                    ) {
-                        *last = Some(state);
-                    }
-                }
                 if exit.is_abnormal() {
                     let detail = format!("worker=frontend_scan_worker exit={:?}", exit);
                     shared_for_hook.record_runtime_failure(detail.clone());
@@ -6493,18 +6600,6 @@ impl IFrontend for FrontendHal {
                         &scan_session_for_hook,
                         session_id,
                     );
-                    if let Some(state) = FrontendHal::publish_scan_terminal_debug(
-                        &shared_for_hook,
-                        &scan_session_for_hook,
-                        session_id,
-                    ) {
-                        if let Some(mut last) = lock_mutex_option(
-                            &scan_last_terminal_for_hook,
-                            "frontend_scan_last_terminal",
-                        ) {
-                            *last = Some(state);
-                        }
-                    }
                 }
                 if let Some(state) = FrontendHal::publish_scan_terminal_debug_and_clear(
                     &shared_for_hook,
@@ -6526,25 +6621,9 @@ impl IFrontend for FrontendHal {
                 eprintln!("maleicacid-tuner-hal-worker: {detail}");
                 self.shared.record_runtime_failure(detail.clone());
                 self.shared.mark_live_path_failed(&detail);
-                let terminal = if let Some(state) = scan_session_guard.as_mut() {
-                    if state.session_id == session_id {
-                        state.phase = ScanPhase::FailedBackend;
-                        Some(state.clone())
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
-                if let Some(terminal) = terminal {
-                    FrontendHal::publish_scan_terminal_state(&self.shared, &terminal);
-                    if let Some(mut last) =
-                        lock_mutex_option(&self.scan_last_terminal, "frontend_scan_last_terminal")
-                    {
-                        *last = Some(terminal);
-                    }
-                    *scan_session_guard = None;
-                }
+                drop(scan_session_guard);
+                drop(scan_worker_slot);
+                self.finish_current_scan_session_as_best_effort(ScanPhase::FailedBackend);
                 return Err(Status::from(StatusCode::UNKNOWN_ERROR));
             }
         };
@@ -6569,35 +6648,23 @@ impl IFrontend for FrontendHal {
 
     fn getStatus(&self, status_types: &[FrontendStatusType]) -> BinderResult<Vec<FrontendStatus>> {
         self.ensure_open()?;
-        let (supports_signal_strength, supports_rf_lock) = {
-            let backend = lock_mutex_status(&self.shared.backend, "frontend_backend")?;
-            let is_dvb = matches!(&*backend, FrontendBackendState::Dvb(_));
-            (is_dvb, is_dvb)
-        };
         let supports_satellite = self
             .shared
             .allowed_systems
             .iter()
             .any(|system| matches!(system, FrontendSystem::IsdbS));
-        Self::validate_status_types(
-            supports_signal_strength,
-            supports_rf_lock,
-            supports_satellite,
-            status_types,
-        )?;
+        let support = {
+            let backend = lock_mutex_status(&self.shared.backend, "frontend_backend")?;
+            FrontendStatusSupport::for_backend(&backend, supports_satellite)
+        };
+        Self::validate_status_types(support, status_types)?;
         let telemetry = {
             let mut backend = lock_mutex_status(&self.shared.backend, "frontend_backend")?;
             self.apply_selected_lnb(&mut backend)
                 .and_then(|_| Self::backend_read_status(&mut backend))
         }
         .map_err(hal_error_status)?;
-        Self::status_for_types(
-            supports_signal_strength,
-            supports_rf_lock,
-            supports_satellite,
-            &telemetry,
-            status_types,
-        )
+        Self::status_for_types(support, &telemetry, status_types)
     }
 
     fn setLnb(&self, lnb_id: i32) -> BinderResult<()> {
@@ -6661,19 +6728,31 @@ impl IFrontend for FrontendHal {
         status_types: &[FrontendStatusType],
     ) -> BinderResult<Vec<FrontendStatusReadiness>> {
         self.ensure_open()?;
-        let supports_signal_strength = lock_mutex_status(&self.shared.backend, "frontend_backend")
-            .map(|backend| matches!(&*backend, FrontendBackendState::Dvb(_)))?;
-        let supports_rf_lock = lock_mutex_status(&self.shared.backend, "frontend_backend")
-            .map(|backend| matches!(&*backend, FrontendBackendState::Dvb(_)))?;
         let supports_satellite = self
             .shared
             .allowed_systems
             .iter()
             .any(|system| matches!(system, FrontendSystem::IsdbS));
+        let (support, backend_available, tuning_active, telemetry) = {
+            let mut backend = lock_mutex_status(&self.shared.backend, "frontend_backend")?;
+            let support = FrontendStatusSupport::for_backend(&backend, supports_satellite);
+            let backend_available = !matches!(&*backend, FrontendBackendState::Unavailable { .. });
+            let tuning_active = Self::backend_tuning_active(&backend);
+            let telemetry = if backend_available && !tuning_active {
+                match self.apply_selected_lnb(&mut backend) {
+                    Ok(()) => Self::backend_read_status(&mut backend).ok(),
+                    Err(_) => None,
+                }
+            } else {
+                None
+            };
+            (support, backend_available, tuning_active, telemetry)
+        };
         Self::readiness_for_types(
-            supports_signal_strength,
-            supports_rf_lock,
-            supports_satellite,
+            support,
+            backend_available,
+            tuning_active,
+            telemetry.as_ref(),
             status_types,
         )
     }
@@ -6736,9 +6815,13 @@ impl DemuxHal {
         if self.closed.load(Ordering::SeqCst) {
             return Err(invalid_state_status("demux is closed"));
         }
-        let state = lock_mutex_status(&self.record, "demux_record")?
-            .state
-            .clone();
+        let state = {
+            let record = lock_mutex_status(&self.record, "demux_record")?;
+            if record.closing || record.ref_count == 0 {
+                return Err(invalid_state_status("demux record is closing"));
+            }
+            record.state.clone()
+        };
         if lock_mutex_status(&state, "demux_handle")?.is_closed() {
             return Err(invalid_state_status("demux handle is closed"));
         }
@@ -6751,72 +6834,114 @@ impl DemuxHal {
             return Ok(());
         }
 
-        let (ref_count, bound_frontend_id, state, demux_generation) = {
-            let record = lock_mutex_status(&self.record, "demux_record")?;
-            (
-                record.ref_count,
-                record.bound_frontend_id,
-                record.state.clone(),
-                record.generation,
-            )
+        let (should_cleanup, bound_frontend_id, state, demux_generation) = {
+            let mut record = lock_mutex_status(&self.record, "demux_record")?;
+            if record.ref_count > 0 {
+                record.ref_count -= 1;
+            }
+            if record.ref_count > 0 {
+                (false, None, None, None)
+            } else {
+                record.closing = true;
+                (
+                    true,
+                    record.bound_frontend_id,
+                    Some(record.state.clone()),
+                    Some(record.generation),
+                )
+            }
         };
 
-        if ref_count > 1 {
-            let mut record = lock_mutex_status(&self.record, "demux_record")?;
-            record.ref_count -= 1;
+        if !should_cleanup {
             self.closed.store(true, Ordering::SeqCst);
             return Ok(());
         }
 
+        let mut first_error: Option<Status> = None;
+
         if let Some(frontend_id) = bound_frontend_id {
             if let Some(runtime) = self.frontend_registry.get(&frontend_id) {
-                runtime.unbind_demux(self.demux_id).map_err(|status| {
+                if let Err(status) = runtime.unbind_demux(self.demux_id) {
                     eprintln!(
                         "maleicacid-tuner-hal-demux-close: demux={} step=unbind_demux frontend={} status={:?}",
                         self.demux_id, frontend_id, status
                     );
-                    status
-                })?;
+                    if first_error.is_none() {
+                        first_error = Some(status);
+                    }
+                }
             }
         }
-        lock_mutex_status(&state, "demux_handle")
-            .map_err(|status| {
+        if let Some(state) = state {
+            match lock_mutex_status(&state, "demux_handle") {
+                Ok(mut handle) => handle.close(),
+                Err(status) => {
+                    eprintln!(
+                        "maleicacid-tuner-hal-demux-close: demux={} step=lock_demux_handle status={:?}",
+                        self.demux_id, status
+                    );
+                    if first_error.is_none() {
+                        first_error = Some(status);
+                    }
+                }
+            }
+        }
+        if let Some(demux_generation) = demux_generation {
+            self.descrambler_registry
+                .invalidate_demux(self.demux_id, demux_generation);
+        }
+        match lock_mutex_status(&self.demux_registry, "demux_registry") {
+            Ok(mut registry) => {
+                registry.remove(&self.demux_id);
+            }
+            Err(status) => {
                 eprintln!(
-                    "maleicacid-tuner-hal-demux-close: demux={} step=lock_demux_handle status={:?}",
+                    "maleicacid-tuner-hal-demux-close: demux={} step=lock_demux_registry status={:?}",
                     self.demux_id, status
                 );
-                status
-            })?
-            .close();
-        self.descrambler_registry
-            .invalidate_demux(self.demux_id, demux_generation);
-        lock_mutex_status(&self.demux_live_ids, "demux_live_ids")
-            .map_err(|status| {
+                if first_error.is_none() {
+                    first_error = Some(status);
+                }
+            }
+        }
+        match lock_mutex_status(&self.demux_live_ids, "demux_live_ids") {
+            Ok(mut live_ids) => {
+                live_ids.remove(&self.demux_id);
+            }
+            Err(status) => {
                 eprintln!(
-                "maleicacid-tuner-hal-demux-close: demux={} step=lock_demux_live_ids status={:?}",
-                self.demux_id, status
-            );
-                status
-            })?
-            .remove(&self.demux_id);
-        lock_mutex_status(&self.demux_registry, "demux_registry")
-            .map_err(|status| {
-                eprintln!(
-                "maleicacid-tuner-hal-demux-close: demux={} step=lock_demux_registry status={:?}",
-                self.demux_id, status
-            );
-                status
-            })?
-            .remove(&self.demux_id);
+                    "maleicacid-tuner-hal-demux-close: demux={} step=lock_demux_live_ids status={:?}",
+                    self.demux_id, status
+                );
+                if first_error.is_none() {
+                    first_error = Some(status);
+                }
+            }
+        }
 
-        {
-            let mut record = lock_mutex_status(&self.record, "demux_record")?;
-            record.ref_count = 0;
-            record.bound_frontend_id = None;
-            record.bound_frontend_generation = None;
+        match lock_mutex_status(&self.record, "demux_record") {
+            Ok(mut record) => {
+                record.ref_count = 0;
+                record.closing = false;
+                record.bound_frontend_id = None;
+                record.bound_frontend_generation = None;
+            }
+            Err(status) => {
+                eprintln!(
+                    "maleicacid-tuner-hal-demux-close: demux={} step=final_demux_record_cleanup status={:?}",
+                    self.demux_id, status
+                );
+                if first_error.is_none() {
+                    first_error = Some(status);
+                }
+            }
         }
         self.closed.store(true, Ordering::SeqCst);
-        Ok(())
+        if let Some(status) = first_error {
+            Err(status)
+        } else {
+            Ok(())
+        }
     }
 
     fn release_registration_best_effort(&self) {
@@ -6831,10 +6956,10 @@ impl DemuxHal {
                 record.ref_count -= 1;
             }
             if record.ref_count == 0 {
-                record.bound_frontend_generation = None;
+                record.closing = true;
                 (
                     true,
-                    record.bound_frontend_id.take(),
+                    record.bound_frontend_id,
                     Some(record.state.clone()),
                     Some(record.generation),
                 )
@@ -6859,11 +6984,17 @@ impl DemuxHal {
             self.descrambler_registry
                 .invalidate_demux(self.demux_id, demux_generation);
         }
+        if let Some(mut registry) = lock_mutex_option(&self.demux_registry, "demux_registry") {
+            registry.remove(&self.demux_id);
+        }
         if let Some(mut live_ids) = lock_mutex_option(&self.demux_live_ids, "demux_live_ids") {
             live_ids.remove(&self.demux_id);
         }
-        if let Some(mut registry) = lock_mutex_option(&self.demux_registry, "demux_registry") {
-            registry.remove(&self.demux_id);
+        if let Some(mut record) = lock_mutex_option(&self.record, "demux_record") {
+            record.ref_count = 0;
+            record.closing = false;
+            record.bound_frontend_id = None;
+            record.bound_frontend_generation = None;
         }
     }
 }
@@ -7535,6 +7666,47 @@ impl FilterHal {
         Ok(())
     }
 
+    fn remember_cleanup_error(
+        first_error: &mut Option<Status>,
+        filter_id: i32,
+        step: &str,
+        result: BinderResult<()>,
+    ) {
+        if let Err(status) = result {
+            eprintln!(
+                "maleicacid-tuner-hal-filter-close: filter={} step={} status={:?}",
+                filter_id, step, status
+            );
+            if first_error.is_none() {
+                *first_error = Some(status);
+            }
+        }
+    }
+
+    fn drop_av_shared_backing_for_close(&self) -> BinderResult<()> {
+        let mut first_error: Option<Status> = None;
+        match lock_mutex_status(&self.av_shared_backing, "filter_av_shared_backing") {
+            Ok(mut backing_slot) => {
+                if let Some(backing) = backing_slot.take() {
+                    backing.clear();
+                }
+            }
+            Err(status) => {
+                first_error = Some(status);
+            }
+        }
+        if let Err(status) = self.runtime_io.clear_filter_av_shared(self.filter_id) {
+            if first_error.is_none() {
+                first_error = Some(status);
+            }
+        }
+        if let Some(status) = first_error {
+            Err(status)
+        } else {
+            Ok(())
+        }
+    }
+
     fn av_filter_state(&self) -> (bool, bool) {
         let Some(demux) = lock_mutex_option(&self.state, "demux_handle") else {
             return (false, false);
@@ -7653,27 +7825,59 @@ impl FilterHal {
     }
 
     fn close_internal(&self) -> BinderResult<()> {
-        if self.closed.load(Ordering::SeqCst) {
-            self.stop_callback_worker()?;
-            reset_av_shared_handle_export_epoch(&self.av_shared_handle_exported);
-            self.drop_av_shared_backing()?;
-            self.runtime_io.unregister_filter(self.filter_id)?;
-            self.queue_backing.stop()?;
-            self.av_queue_backing.stop()?;
-            if let Some(mut state) = lock_mutex_option(&self.state, "demux_handle") {
-                state.unregister_filter(self.filter_id);
-            }
-            return Ok(());
-        }
-        self.stop_callback_worker()?;
-        reset_av_shared_handle_export_epoch(&self.av_shared_handle_exported);
-        self.drop_av_shared_backing()?;
-        self.runtime_io.unregister_filter(self.filter_id)?;
-        self.queue_backing.stop()?;
-        self.av_queue_backing.stop()?;
-        lock_mutex_status(&self.state, "demux_handle")?.unregister_filter(self.filter_id);
         self.closed.store(true, Ordering::SeqCst);
-        Ok(())
+        let mut first_error: Option<Status> = None;
+
+        Self::remember_cleanup_error(
+            &mut first_error,
+            self.filter_id,
+            "stop_callback_worker",
+            self.stop_callback_worker(),
+        );
+        reset_av_shared_handle_export_epoch(&self.av_shared_handle_exported);
+        Self::remember_cleanup_error(
+            &mut first_error,
+            self.filter_id,
+            "drop_av_shared_backing",
+            self.drop_av_shared_backing_for_close(),
+        );
+        Self::remember_cleanup_error(
+            &mut first_error,
+            self.filter_id,
+            "runtime_unregister_filter",
+            self.runtime_io.unregister_filter(self.filter_id),
+        );
+        Self::remember_cleanup_error(
+            &mut first_error,
+            self.filter_id,
+            "queue_stop",
+            self.queue_backing.stop(),
+        );
+        Self::remember_cleanup_error(
+            &mut first_error,
+            self.filter_id,
+            "av_queue_stop",
+            self.av_queue_backing.stop(),
+        );
+        let demux_unregister = match lock_mutex_status(&self.state, "demux_handle") {
+            Ok(mut state) => {
+                state.unregister_filter(self.filter_id);
+                Ok(())
+            }
+            Err(status) => Err(status),
+        };
+        Self::remember_cleanup_error(
+            &mut first_error,
+            self.filter_id,
+            "demux_unregister_filter",
+            demux_unregister,
+        );
+
+        if let Some(status) = first_error {
+            Err(status)
+        } else {
+            Ok(())
+        }
     }
 
     fn close_internal_best_effort(&self) {
@@ -7924,12 +8128,33 @@ enum DvrCleanupCaller {
     WorkerFailure,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DvrCleanupStepResult {
+    Success,
+    SafeNoOp,
+    Failed,
+    Unknown,
+    SkippedDueToWorkerFailureContext,
+}
+
+impl DvrCleanupStepResult {
+    fn is_complete(self) -> bool {
+        matches!(self, DvrCleanupStepResult::Success | DvrCleanupStepResult::SafeNoOp)
+    }
+}
+
+impl Default for DvrCleanupStepResult {
+    fn default() -> Self {
+        DvrCleanupStepResult::Unknown
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct DvrCleanupStepResults {
-    callback_worker_stopped: bool,
-    runtime_unregistered: bool,
-    queue_stopped: bool,
-    demux_unregistered: bool,
+    callback_worker: DvrCleanupStepResult,
+    runtime_unregister: DvrCleanupStepResult,
+    queue_stop: DvrCleanupStepResult,
+    demux_unregister: DvrCleanupStepResult,
 }
 
 struct DvrCleanupOutcome {
@@ -7939,11 +8164,11 @@ struct DvrCleanupOutcome {
 }
 
 trait DvrCleanupStepRunner {
-    fn stop_callback_worker(&mut self, caller: DvrCleanupCaller) -> BinderResult<bool>;
+    fn stop_callback_worker(&mut self, caller: DvrCleanupCaller) -> BinderResult<DvrCleanupStepResult>;
     fn clear_queue(&mut self);
-    fn unregister_runtime(&mut self, caller: DvrCleanupCaller) -> BinderResult<()>;
-    fn stop_queue(&mut self, caller: DvrCleanupCaller) -> BinderResult<()>;
-    fn unregister_demux(&mut self) -> BinderResult<()>;
+    fn unregister_runtime(&mut self, caller: DvrCleanupCaller) -> BinderResult<DvrCleanupStepResult>;
+    fn stop_queue(&mut self, caller: DvrCleanupCaller) -> BinderResult<DvrCleanupStepResult>;
+    fn unregister_demux(&mut self) -> BinderResult<DvrCleanupStepResult>;
 }
 
 struct RealDvrCleanupRunner<'a> {
@@ -7957,19 +8182,21 @@ struct RealDvrCleanupRunner<'a> {
 }
 
 impl DvrCleanupStepRunner for RealDvrCleanupRunner<'_> {
-    fn stop_callback_worker(&mut self, caller: DvrCleanupCaller) -> BinderResult<bool> {
+    fn stop_callback_worker(&mut self, caller: DvrCleanupCaller) -> BinderResult<DvrCleanupStepResult> {
         self.callback_stop.store(true, Ordering::SeqCst);
         DvrHal::wake_callback_wait(self.callback_wake);
         match caller {
             DvrCleanupCaller::ExternalClose => {
                 let Some(worker) = self.callback_worker else {
-                    return Ok(false);
+                    return Ok(DvrCleanupStepResult::SafeNoOp);
                 };
                 let handle = lock_mutex_status(worker, "dvr_callback_worker")?.take();
                 if let Some(handle) = handle {
                     join_worker_with_diagnostics(handle, "dvr_callback_worker");
+                    Ok(DvrCleanupStepResult::Success)
+                } else {
+                    Ok(DvrCleanupStepResult::SafeNoOp)
                 }
-                Ok(true)
             }
             DvrCleanupCaller::BestEffortDrop => {
                 if let Some(worker) = self.callback_worker {
@@ -7977,13 +8204,15 @@ impl DvrCleanupStepRunner for RealDvrCleanupRunner<'_> {
                         .and_then(|mut slot| slot.take())
                     {
                         join_worker_with_diagnostics(handle, "dvr_callback_worker");
+                        Ok(DvrCleanupStepResult::Success)
+                    } else {
+                        Ok(DvrCleanupStepResult::SafeNoOp)
                     }
-                    Ok(true)
                 } else {
-                    Ok(false)
+                    Ok(DvrCleanupStepResult::SafeNoOp)
                 }
             }
-            DvrCleanupCaller::WorkerFailure => Ok(false),
+            DvrCleanupCaller::WorkerFailure => Ok(DvrCleanupStepResult::SkippedDueToWorkerFailureContext),
         }
     }
 
@@ -7991,29 +8220,35 @@ impl DvrCleanupStepRunner for RealDvrCleanupRunner<'_> {
         self.queue_backing.clear();
     }
 
-    fn unregister_runtime(&mut self, caller: DvrCleanupCaller) -> BinderResult<()> {
+    fn unregister_runtime(&mut self, caller: DvrCleanupCaller) -> BinderResult<DvrCleanupStepResult> {
         match caller {
-            DvrCleanupCaller::ExternalClose => self.runtime_io.unregister_dvr(self.dvr_id),
+            DvrCleanupCaller::ExternalClose => self
+                .runtime_io
+                .unregister_dvr(self.dvr_id)
+                .map(|_| DvrCleanupStepResult::Success),
             DvrCleanupCaller::BestEffortDrop | DvrCleanupCaller::WorkerFailure => {
                 self.runtime_io.unregister_dvr_best_effort(self.dvr_id);
-                Ok(())
+                Ok(DvrCleanupStepResult::Unknown)
             }
         }
     }
 
-    fn stop_queue(&mut self, caller: DvrCleanupCaller) -> BinderResult<()> {
+    fn stop_queue(&mut self, caller: DvrCleanupCaller) -> BinderResult<DvrCleanupStepResult> {
         match caller {
-            DvrCleanupCaller::ExternalClose => self.queue_backing.stop(),
+            DvrCleanupCaller::ExternalClose => self
+                .queue_backing
+                .stop()
+                .map(|_| DvrCleanupStepResult::Success),
             DvrCleanupCaller::BestEffortDrop | DvrCleanupCaller::WorkerFailure => {
                 self.queue_backing.stop_best_effort();
-                Ok(())
+                Ok(DvrCleanupStepResult::Unknown)
             }
         }
     }
 
-    fn unregister_demux(&mut self) -> BinderResult<()> {
+    fn unregister_demux(&mut self) -> BinderResult<DvrCleanupStepResult> {
         lock_mutex_status(self.state, "demux_handle")?.unregister_dvr(self.dvr_id);
-        Ok(())
+        Ok(DvrCleanupStepResult::Success)
     }
 }
 
@@ -8363,32 +8598,43 @@ impl DvrHal {
         let mut step_results = DvrCleanupStepResults::default();
 
         match runner.stop_callback_worker(caller) {
-            Ok(stopped) => step_results.callback_worker_stopped = stopped,
-            Err(err) => Self::remember_first_error(&mut first_error, Err(err)),
+            Ok(result) => step_results.callback_worker = result,
+            Err(err) => {
+                step_results.callback_worker = DvrCleanupStepResult::Failed;
+                Self::remember_first_error(&mut first_error, Err(err));
+            }
         }
 
         runner.clear_queue();
 
-        let result = runner.unregister_runtime(caller);
-        step_results.runtime_unregistered = result.is_ok();
-        Self::remember_first_error(&mut first_error, result);
-
-        let result = runner.stop_queue(caller);
-        step_results.queue_stopped = result.is_ok();
-        Self::remember_first_error(&mut first_error, result);
-
-        let result = runner.unregister_demux();
-        step_results.demux_unregistered = result.is_ok();
-        Self::remember_first_error(&mut first_error, result);
-
-        if matches!(caller, DvrCleanupCaller::WorkerFailure) {
-            step_results.callback_worker_stopped = false;
+        match runner.unregister_runtime(caller) {
+            Ok(result) => step_results.runtime_unregister = result,
+            Err(err) => {
+                step_results.runtime_unregister = DvrCleanupStepResult::Failed;
+                Self::remember_first_error(&mut first_error, Err(err));
+            }
         }
 
-        let all_cleanup_complete = step_results.callback_worker_stopped
-            && step_results.runtime_unregistered
-            && step_results.queue_stopped
-            && step_results.demux_unregistered;
+        match runner.stop_queue(caller) {
+            Ok(result) => step_results.queue_stop = result,
+            Err(err) => {
+                step_results.queue_stop = DvrCleanupStepResult::Failed;
+                Self::remember_first_error(&mut first_error, Err(err));
+            }
+        }
+
+        match runner.unregister_demux() {
+            Ok(result) => step_results.demux_unregister = result,
+            Err(err) => {
+                step_results.demux_unregister = DvrCleanupStepResult::Failed;
+                Self::remember_first_error(&mut first_error, Err(err));
+            }
+        }
+
+        let all_cleanup_complete = step_results.callback_worker.is_complete()
+            && step_results.runtime_unregister.is_complete()
+            && step_results.queue_stop.is_complete()
+            && step_results.demux_unregister.is_complete();
         DvrCleanupOutcome {
             first_error,
             all_cleanup_complete,
@@ -8716,6 +8962,28 @@ impl LnbHal {
         }
     }
 
+
+    fn reset_state_for_close(&self) -> BinderResult<()> {
+        let (old_state, new_state) = {
+            let mut registry = lock_mutex_status(&self.registry, "lnb_registry")?;
+            let old = registry.get(&self.lnb_id).cloned();
+            let state = registry.entry(self.lnb_id).or_default();
+            state.voltage = Some(LnbVoltage::NONE);
+            state.tone = Some(LnbTone::NONE);
+            state.position = Some(LnbPosition::UNDEFINED);
+            state.generation = state.generation.saturating_add(1);
+            (old, state.clone())
+        };
+        if let Err(err) = self.apply_to_matching_frontends(&new_state) {
+            self.restore_state(old_state.clone());
+            if let Some(old) = old_state.as_ref() {
+                let _ = self.apply_to_matching_frontends(old);
+            }
+            return Err(hal_error_status(err));
+        }
+        Ok(())
+    }
+
     fn ensure_open(&self) -> BinderResult<()> {
         if self.closed.load(Ordering::SeqCst) {
             return Err(invalid_state_status("LNB is closed"));
@@ -8725,7 +8993,7 @@ impl LnbHal {
 
     fn voltage_supported(profile: LnbDeviceProfile, voltage: LnbVoltage) -> bool {
         match profile {
-            LnbDeviceProfile::Px4Device15VOnly | LnbDeviceProfile::PxMltDevice15VOnly => {
+            LnbDeviceProfile::Px4Device15VOnly => {
                 matches!(voltage, LnbVoltage::NONE | LnbVoltage::VOLTAGE_15V)
             }
             LnbDeviceProfile::EarthPt1FixedLnb => matches!(
@@ -8817,8 +9085,13 @@ impl ILnb for LnbHal {
     }
 
     fn close(&self) -> BinderResult<()> {
-        self.closed.store(true, Ordering::SeqCst);
+        if self.closed.load(Ordering::SeqCst) {
+            *lock_mutex_status(&self.callback_set, "lnb_callback_set")? = false;
+            return Ok(());
+        }
+        self.reset_state_for_close()?;
         *lock_mutex_status(&self.callback_set, "lnb_callback_set")? = false;
+        self.closed.store(true, Ordering::SeqCst);
         Ok(())
     }
 }
@@ -9146,14 +9419,19 @@ fn build_ts_record_event(
     let first_mb_in_slice = start_code
         .map(|info| info.first_mb_in_slice)
         .unwrap_or(INVALID_FIRST_MB_IN_SLICE);
+    let ts_index_mask = observed_ts_index & configured_ts_index_mask;
     let sc_index_mask = build_sc_index_mask(
         sc_index_type,
         start_code.map(|info| info.mask).unwrap_or(0),
         configured_sc_index_mask_bits,
     );
+    let (_, sc_index_mask_bits) = record_sc_mask_variant_type(&sc_index_mask);
+    if ts_index_mask == 0 && sc_index_mask_bits == 0 {
+        return None;
+    }
     Some(DemuxFilterEvent::TsRecord(DemuxFilterTsRecordEvent {
         pid: DemuxPid::TPid(packet_view.pid),
-        tsIndexMask: observed_ts_index & configured_ts_index_mask,
+        tsIndexMask: ts_index_mask,
         scIndexMask: sc_index_mask,
         byteNumber: cumulative_bytes as i64,
         pts,
@@ -9751,8 +10029,8 @@ fn build_filter_summary(settings: &DemuxFilterSettings) -> BinderResult<FilterCo
                             normalize_length_field_bits(section.bitWidthOfLengthField)
                         else {
                             return Err(Status::new_service_specific_error(
-                                TunerResult::UNAVAILABLE.0,
-                                None,
+                                TunerResult::INVALID_ARGUMENT.0,
+                                Some("r51 TS section filters support only bitWidthOfLengthField 0 or 12"),
                             ));
                         };
                         FilterConfigKind::Section {
@@ -10514,6 +10792,61 @@ mod lnb_state_tests {
         assert_eq!(stored.tone, None);
         assert_eq!(stored.generation, 0);
     }
+
+
+    #[test]
+    fn lnb_close_resets_px4_no_power_profile_to_safe_state() {
+        let registry = Arc::new(Mutex::new(BTreeMap::new()));
+        registry.lock().unwrap().insert(
+            44,
+            LnbRuntimeState {
+                profile: LnbDeviceProfile::NoPower,
+                owner_frontend_id: 44,
+                voltage: Some(LnbVoltage::NONE),
+                tone: Some(LnbTone::NONE),
+                position: Some(LnbPosition::UNDEFINED),
+                generation: 7,
+                ..Default::default()
+            },
+        );
+        let frontend_registry: Arc<BTreeMap<i32, Arc<FrontendRuntime>>> = Arc::new(BTreeMap::new());
+        let lnb = LnbHal::new(44, Arc::clone(&registry), frontend_registry);
+
+        lnb.close().unwrap();
+        let stored = registry.lock().unwrap().get(&44).cloned().unwrap();
+        assert_eq!(stored.voltage, Some(LnbVoltage::NONE));
+        assert_eq!(stored.tone, Some(LnbTone::NONE));
+        assert_eq!(stored.position, Some(LnbPosition::UNDEFINED));
+        assert_eq!(stored.generation, 8);
+        assert!(lnb.setVoltage(LnbVoltage::NONE).is_err());
+    }
+
+    #[test]
+    fn lnb_close_resets_earth_pt1_fixed_profile_to_safe_state() {
+        let registry = Arc::new(Mutex::new(BTreeMap::new()));
+        registry.lock().unwrap().insert(
+            45,
+            LnbRuntimeState {
+                profile: LnbDeviceProfile::EarthPt1FixedLnb,
+                owner_frontend_id: 45,
+                voltage: Some(LnbVoltage::VOLTAGE_15V),
+                tone: Some(LnbTone::NONE),
+                position: Some(LnbPosition::UNDEFINED),
+                generation: 3,
+                ..Default::default()
+            },
+        );
+        let frontend_registry: Arc<BTreeMap<i32, Arc<FrontendRuntime>>> = Arc::new(BTreeMap::new());
+        let lnb = LnbHal::new(45, Arc::clone(&registry), frontend_registry);
+
+        lnb.close().unwrap();
+        let stored = registry.lock().unwrap().get(&45).cloned().unwrap();
+        assert_eq!(stored.voltage, Some(LnbVoltage::NONE));
+        assert_eq!(stored.tone, Some(LnbTone::NONE));
+        assert_eq!(stored.position, Some(LnbPosition::UNDEFINED));
+        assert_eq!(stored.generation, 4);
+        assert!(lnb.close().is_ok());
+    }
 }
 
 #[cfg(test)]
@@ -10528,15 +10861,15 @@ mod lnb_profile_detection_tests {
         );
         assert_eq!(
             px4_lnb_profile_from_devname(Some("pxmlt5video0")),
-            LnbDeviceProfile::PxMltDevice15VOnly
+            LnbDeviceProfile::NoPower
         );
         assert_eq!(
             px4_lnb_profile_from_devname(Some("pxmlt8video7")),
-            LnbDeviceProfile::PxMltDevice15VOnly
+            LnbDeviceProfile::NoPower
         );
         assert_eq!(
             px4_lnb_profile_from_devname(Some("isdb6014video0")),
-            LnbDeviceProfile::PxMltDevice15VOnly
+            LnbDeviceProfile::NoPower
         );
         assert_eq!(
             px4_lnb_profile_from_devname(Some("isdb2056video0")),
@@ -10568,7 +10901,7 @@ mod lnb_profile_detection_tests {
     fn px4_lnb_profile_identity_prefers_sysfs_devname_over_dev_basename() {
         assert_eq!(
             px4_lnb_profile_from_identity(Some("pxmlt8video0"), Some("px4video0")),
-            LnbDeviceProfile::PxMltDevice15VOnly
+            LnbDeviceProfile::NoPower
         );
         assert_eq!(
             px4_lnb_profile_from_identity(None, Some("px4video0")),
@@ -10652,11 +10985,15 @@ mod lnb_profile_detection_tests {
             LnbVoltage::VOLTAGE_11V
         ));
         assert!(LnbHal::voltage_supported(
-            LnbDeviceProfile::PxMltDevice15VOnly,
+            LnbDeviceProfile::NoPower,
+            LnbVoltage::NONE
+        ));
+        assert!(!LnbHal::voltage_supported(
+            LnbDeviceProfile::NoPower,
             LnbVoltage::VOLTAGE_15V
         ));
         assert!(!LnbHal::voltage_supported(
-            LnbDeviceProfile::PxMltDevice15VOnly,
+            LnbDeviceProfile::NoPower,
             LnbVoltage::VOLTAGE_11V
         ));
         assert!(LnbHal::voltage_supported(
@@ -10854,6 +11191,16 @@ mod frontend_capability_tests {
     }
 
     #[test]
+    fn optional_snr_and_strength_are_not_advertised_without_probe_fixed_capability() {
+        let caps = entry_status_caps(&dvb_entry(3, FrontendType::ISDBT, FrontendSystem::IsdbT));
+        assert!(caps.contains(&FrontendStatusType::DEMOD_LOCK));
+        assert!(caps.contains(&FrontendStatusType::RF_LOCK));
+        assert!(caps.contains(&FrontendStatusType::SIGNAL_QUALITY));
+        assert!(!caps.contains(&FrontendStatusType::SNR));
+        assert!(!caps.contains(&FrontendStatusType::SIGNAL_STRENGTH));
+    }
+
+    #[test]
     fn rf_lock_status_uses_dvb_carrier_only_when_supported() {
         let telemetry = FrontendTelemetry {
             locked: false,
@@ -10861,9 +11208,7 @@ mod frontend_capability_tests {
             ..Default::default()
         };
         let with_rf = FrontendHal::status_for_types(
-            false,
-            true,
-            false,
+            FrontendStatusSupport { rf_lock: true, ..Default::default() },
             &telemetry,
             &[FrontendStatusType::RF_LOCK, FrontendStatusType::DEMOD_LOCK],
         )
@@ -10872,9 +11217,7 @@ mod frontend_capability_tests {
         assert!(matches!(with_rf[1], FrontendStatus::IsDemodLocked(false)));
 
         let without_rf = FrontendHal::status_for_types(
-            false,
-            false,
-            false,
+            FrontendStatusSupport::default(),
             &telemetry,
             &[FrontendStatusType::RF_LOCK, FrontendStatusType::DEMOD_LOCK],
         );
@@ -10882,18 +11225,39 @@ mod frontend_capability_tests {
     }
 
     #[test]
-    fn rf_lock_readiness_is_unsupported_for_px4_and_stable_for_dvb() {
-        assert!(FrontendHal::readiness_for_types(
-            false,
-            false,
-            false,
-            &[FrontendStatusType::RF_LOCK]
-        )
-        .is_err());
+    fn rf_lock_readiness_is_unsupported_for_px4_and_stable_for_dvb_with_value() {
         assert_eq!(
-            FrontendHal::readiness_for_types(false, true, false, &[FrontendStatusType::RF_LOCK])
-                .unwrap(),
+            FrontendHal::readiness_for_types(
+                FrontendStatusSupport::default(),
+                true,
+                false,
+                Some(&FrontendTelemetry::default()),
+                &[FrontendStatusType::RF_LOCK]
+            )
+            .unwrap(),
+            vec![FrontendStatusReadiness::UNSUPPORTED]
+        );
+        assert_eq!(
+            FrontendHal::readiness_for_types(
+                FrontendStatusSupport { rf_lock: true, ..Default::default() },
+                true,
+                false,
+                Some(&FrontendTelemetry { rf_locked: Some(true), ..Default::default() }),
+                &[FrontendStatusType::RF_LOCK]
+            )
+            .unwrap(),
             vec![FrontendStatusReadiness::STABLE]
+        );
+        assert_eq!(
+            FrontendHal::readiness_for_types(
+                FrontendStatusSupport { rf_lock: true, ..Default::default() },
+                true,
+                false,
+                Some(&FrontendTelemetry::default()),
+                &[FrontendStatusType::RF_LOCK]
+            )
+            .unwrap(),
+            vec![FrontendStatusReadiness::UNAVAILABLE]
         );
     }
 }
@@ -11468,36 +11832,51 @@ mod static_completion_tests {
             }
         }
 
-        fn injected_failure(&self, failure: InjectedDvrCleanupFailure) -> BinderResult<()> {
+        fn injected_failure(&self, failure: InjectedDvrCleanupFailure) -> BinderResult<DvrCleanupStepResult> {
             if self.failure == Some(failure) {
                 Err(Status::from(StatusCode::UNKNOWN_ERROR))
             } else {
-                Ok(())
+                Ok(DvrCleanupStepResult::Success)
             }
         }
     }
 
     impl DvrCleanupStepRunner for InjectedDvrCleanupRunner {
-        fn stop_callback_worker(&mut self, caller: DvrCleanupCaller) -> BinderResult<bool> {
+        fn stop_callback_worker(&mut self, caller: DvrCleanupCaller) -> BinderResult<DvrCleanupStepResult> {
             self.calls.push("callback");
-            Ok(!matches!(caller, DvrCleanupCaller::WorkerFailure) && self.callback_stoppable)
+            if matches!(caller, DvrCleanupCaller::WorkerFailure) {
+                return Ok(DvrCleanupStepResult::SkippedDueToWorkerFailureContext);
+            }
+            if self.callback_stoppable {
+                Ok(DvrCleanupStepResult::Success)
+            } else {
+                Ok(DvrCleanupStepResult::SafeNoOp)
+            }
         }
 
         fn clear_queue(&mut self) {
             self.calls.push("clear");
         }
 
-        fn unregister_runtime(&mut self, _caller: DvrCleanupCaller) -> BinderResult<()> {
+        fn unregister_runtime(&mut self, caller: DvrCleanupCaller) -> BinderResult<DvrCleanupStepResult> {
             self.calls.push("runtime");
-            self.injected_failure(InjectedDvrCleanupFailure::RuntimeUnregister)
+            if matches!(caller, DvrCleanupCaller::ExternalClose) {
+                self.injected_failure(InjectedDvrCleanupFailure::RuntimeUnregister)
+            } else {
+                Ok(DvrCleanupStepResult::Unknown)
+            }
         }
 
-        fn stop_queue(&mut self, _caller: DvrCleanupCaller) -> BinderResult<()> {
+        fn stop_queue(&mut self, caller: DvrCleanupCaller) -> BinderResult<DvrCleanupStepResult> {
             self.calls.push("queue");
-            self.injected_failure(InjectedDvrCleanupFailure::QueueStop)
+            if matches!(caller, DvrCleanupCaller::ExternalClose) {
+                self.injected_failure(InjectedDvrCleanupFailure::QueueStop)
+            } else {
+                Ok(DvrCleanupStepResult::Unknown)
+            }
         }
 
-        fn unregister_demux(&mut self) -> BinderResult<()> {
+        fn unregister_demux(&mut self) -> BinderResult<DvrCleanupStepResult> {
             self.calls.push("demux");
             self.injected_failure(InjectedDvrCleanupFailure::DemuxUnregister)
         }
@@ -11524,16 +11903,28 @@ mod static_completion_tests {
                 vec!["callback", "clear", "runtime", "queue", "demux"]
             );
             assert_eq!(
-                outcome.step_results.runtime_unregistered,
-                failure != InjectedDvrCleanupFailure::RuntimeUnregister
+                outcome.step_results.runtime_unregister,
+                if failure == InjectedDvrCleanupFailure::RuntimeUnregister {
+                    DvrCleanupStepResult::Failed
+                } else {
+                    DvrCleanupStepResult::Success
+                }
             );
             assert_eq!(
-                outcome.step_results.queue_stopped,
-                failure != InjectedDvrCleanupFailure::QueueStop
+                outcome.step_results.queue_stop,
+                if failure == InjectedDvrCleanupFailure::QueueStop {
+                    DvrCleanupStepResult::Failed
+                } else {
+                    DvrCleanupStepResult::Success
+                }
             );
             assert_eq!(
-                outcome.step_results.demux_unregistered,
-                failure != InjectedDvrCleanupFailure::DemuxUnregister
+                outcome.step_results.demux_unregister,
+                if failure == InjectedDvrCleanupFailure::DemuxUnregister {
+                    DvrCleanupStepResult::Failed
+                } else {
+                    DvrCleanupStepResult::Success
+                }
             );
 
             let mut retry_runner = InjectedDvrCleanupRunner::new(None, true);
@@ -11560,7 +11951,15 @@ mod static_completion_tests {
             DvrCleanupCaller::BestEffortDrop,
             &mut best_effort,
         );
-        assert!(best_effort_outcome.all_cleanup_complete);
+        assert!(!best_effort_outcome.all_cleanup_complete);
+        assert_eq!(
+            best_effort_outcome.step_results.runtime_unregister,
+            DvrCleanupStepResult::Unknown
+        );
+        assert_eq!(
+            best_effort_outcome.step_results.queue_stop,
+            DvrCleanupStepResult::Unknown
+        );
 
         let mut worker_failure = InjectedDvrCleanupRunner::new(None, true);
         let worker_failure_outcome = DvrHal::cleanup_dvr_resources_with_runner(
@@ -11569,10 +11968,22 @@ mod static_completion_tests {
         );
         assert!(worker_failure_outcome.first_error.is_none());
         assert!(!worker_failure_outcome.all_cleanup_complete);
-        assert!(!worker_failure_outcome.step_results.callback_worker_stopped);
-        assert!(worker_failure_outcome.step_results.runtime_unregistered);
-        assert!(worker_failure_outcome.step_results.queue_stopped);
-        assert!(worker_failure_outcome.step_results.demux_unregistered);
+        assert_eq!(
+            worker_failure_outcome.step_results.callback_worker,
+            DvrCleanupStepResult::SkippedDueToWorkerFailureContext
+        );
+        assert_eq!(
+            worker_failure_outcome.step_results.runtime_unregister,
+            DvrCleanupStepResult::Unknown
+        );
+        assert_eq!(
+            worker_failure_outcome.step_results.queue_stop,
+            DvrCleanupStepResult::Unknown
+        );
+        assert_eq!(
+            worker_failure_outcome.step_results.demux_unregister,
+            DvrCleanupStepResult::Success
+        );
     }
 
     #[test]
@@ -11629,20 +12040,23 @@ mod static_completion_tests {
         assert!(dvr.closed.load(Ordering::SeqCst));
         assert!(!dvr.cleanup_complete.load(Ordering::SeqCst));
         let worker_failure_steps = dvr.last_cleanup_steps.lock().unwrap().clone().unwrap();
-        assert!(!worker_failure_steps.callback_worker_stopped);
-        assert!(worker_failure_steps.runtime_unregistered);
-        assert!(worker_failure_steps.queue_stopped);
-        assert!(worker_failure_steps.demux_unregistered);
+        assert_eq!(
+            worker_failure_steps.callback_worker,
+            DvrCleanupStepResult::SkippedDueToWorkerFailureContext
+        );
+        assert_eq!(worker_failure_steps.runtime_unregister, DvrCleanupStepResult::Unknown);
+        assert_eq!(worker_failure_steps.queue_stop, DvrCleanupStepResult::Unknown);
+        assert_eq!(worker_failure_steps.demux_unregister, DvrCleanupStepResult::Success);
         assert!(state.lock().unwrap().dvr_record(dvr_id).is_none());
 
         dvr.close_internal().unwrap();
         assert!(dvr.cleanup_complete.load(Ordering::SeqCst));
         assert!(dvr.callback_worker.lock().unwrap().is_none());
         let external_close_steps = dvr.last_cleanup_steps.lock().unwrap().clone().unwrap();
-        assert!(external_close_steps.callback_worker_stopped);
-        assert!(external_close_steps.runtime_unregistered);
-        assert!(external_close_steps.queue_stopped);
-        assert!(external_close_steps.demux_unregistered);
+        assert!(external_close_steps.callback_worker.is_complete());
+        assert_eq!(external_close_steps.runtime_unregister, DvrCleanupStepResult::Success);
+        assert_eq!(external_close_steps.queue_stop, DvrCleanupStepResult::Success);
+        assert_eq!(external_close_steps.demux_unregister, DvrCleanupStepResult::Success);
     }
 
     #[test]
@@ -11911,6 +12325,72 @@ mod static_completion_tests {
         ] {
             assert!(validate_record_index_settings(valid_ts, sc_type, &mask).is_ok());
         }
+    }
+
+    #[test]
+    fn ts_record_event_is_suppressed_without_configured_index_hit() {
+        let packet = record_ts_packet(0x0100, false, 0);
+        let mut state = RecordEventState::default();
+        assert!(build_ts_record_event(
+            &packet,
+            0,
+            0,
+            RECORD_SC_TYPE_NONE,
+            0,
+            &mut state,
+        )
+        .is_none());
+
+        let mut state = RecordEventState::default();
+        assert!(build_ts_record_event(
+            &packet,
+            TS_PACKET_SIZE as u64,
+            DEMUX_TS_INDEX_FIRST_PACKET,
+            RECORD_SC_TYPE_NONE,
+            0,
+            &mut state,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn ts_record_event_is_emitted_for_configured_ts_index_hit() {
+        let packet = record_ts_packet(0x0100, false, 0);
+        let mut state = RecordEventState::default();
+        let event = ts_record_event(
+            build_ts_record_event(
+                &packet,
+                0,
+                DEMUX_TS_INDEX_FIRST_PACKET,
+                RECORD_SC_TYPE_NONE,
+                0,
+                &mut state,
+            )
+            .expect("FIRST_PACKET mask hit should emit record event"),
+        );
+        assert_eq!(event.tsIndexMask, DEMUX_TS_INDEX_FIRST_PACKET);
+        assert_eq!(event.byteNumber, 0);
+        assert!(matches!(event.scIndexMask, DemuxFilterScIndexMask::ScIndex(0)));
+    }
+
+    #[test]
+    fn ts_record_event_is_emitted_for_configured_sc_index_hit() {
+        let mut packet = record_ts_packet(0x0100, false, 0);
+        packet[4..8].copy_from_slice(&[0x00, 0x00, 0x01, 0xb3]);
+        let mut state = RecordEventState::default();
+        let event = ts_record_event(
+            build_ts_record_event(
+                &packet,
+                TS_PACKET_SIZE as u64,
+                0,
+                RECORD_SC_TYPE_SC,
+                1 << 3,
+                &mut state,
+            )
+            .expect("SC mask hit should emit record event"),
+        );
+        assert_eq!(event.tsIndexMask, 0);
+        assert!(matches!(event.scIndexMask, DemuxFilterScIndexMask::ScIndex(v) if v == (1 << 3)));
     }
 
     #[test]
@@ -12954,7 +13434,10 @@ mod descrambler_state_tests {
             .setDemuxSource(DEMUX_ID_BASE + MAX_LIVE_DEMUXES as i32)
             .is_err());
         assert!(descrambler.setDemuxSource(demux_id).is_ok());
-        assert!(descrambler.setDemuxSource(demux_id).is_err());
+        assert_tuner_result(
+            descrambler.setDemuxSource(demux_id),
+            TunerResult::INVALID_STATE,
+        );
         assert!(descrambler.setKeyToken(&[0x01]).is_err());
         let key_slot = DescramblerKeySlot::empty()
             .with_even(Multi2KeyMaterial::new([0x11; 32], [0x22; 8], [0x33; 8]));
@@ -12990,6 +13473,10 @@ mod descrambler_state_tests {
         );
 
         descrambler.setDemuxSource(demux_id).unwrap();
+        assert_tuner_result(
+            descrambler.setDemuxSource(demux_id),
+            TunerResult::INVALID_STATE,
+        );
         assert_tuner_result(
             descrambler.addPid(&pid, &source),
             TunerResult::INVALID_STATE,
@@ -13311,6 +13798,17 @@ mod descrambler_state_tests {
         assert!(table.resolve_with_diagnostic(&token).is_ok());
     }
 
+    fn legacy_long_descrambler_diagnostic_token_for_test() -> [u8; 48] {
+        [
+            0x6d, 0x61, 0x6c, 0x65, 0x69, 0x63, 0x61, 0x63,
+            0x69, 0x64, 0x2d, 0x74, 0x65, 0x73, 0x74, 0x2d,
+            0x64, 0x65, 0x73, 0x63, 0x2d, 0x74, 0x6f, 0x6b,
+            0x65, 0x6e, 0x2d, 0x66, 0x66, 0x66, 0x66, 0x66,
+            0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
+            0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
+        ]
+    }
+
     #[test]
     fn set_key_token_records_distinct_failure_diagnostics() {
         let hal = TunerHal::new();
@@ -13323,48 +13821,50 @@ mod descrambler_state_tests {
         );
         assert!(descrambler.setDemuxSource(demux_id).is_ok());
 
-        assert!(descrambler.setKeyToken(b"malformed-token").is_err());
-        let bad = hal.descrambler_diagnostics.snapshot(demux_id, 0x1fff);
-        assert_eq!(bad.bad_token, 1);
+        assert_tuner_result(descrambler.setKeyToken(&[]), TunerResult::INVALID_ARGUMENT);
+        let after_empty = hal.descrambler_diagnostics.snapshot(demux_id, 0x1fff);
+        assert_eq!(after_empty.bad_token, 1);
 
-        assert!(descrambler
-            .setKeyToken(b"maleicacid-placeholder-desc-token")
-            .is_err());
+        assert_tuner_result(
+            descrambler.setKeyToken(&[0x55; 17]),
+            TunerResult::INVALID_ARGUMENT,
+        );
+        let after_too_long = hal.descrambler_diagnostics.snapshot(demux_id, 0x1fff);
+        assert_eq!(after_too_long.bad_token, 2);
+
+        assert_tuner_result(
+            descrambler.setKeyToken(&legacy_long_descrambler_diagnostic_token_for_test()),
+            TunerResult::INVALID_ARGUMENT,
+        );
+        let after_legacy_ascii = hal.descrambler_diagnostics.snapshot(demux_id, 0x1fff);
+        assert_eq!(after_legacy_ascii.bad_token, 3);
+
+        assert_tuner_result(
+            descrambler.setKeyToken(&[0x42; 8]),
+            TunerResult::INVALID_ARGUMENT,
+        );
+        let after_unknown = hal.descrambler_diagnostics.snapshot(demux_id, 0x1fff);
+        assert_eq!(after_unknown.bad_token, 4);
+
+        assert_tuner_result(
+            descrambler.setKeyToken(b"placeholder"),
+            TunerResult::UNAVAILABLE,
+        );
         let after_placeholder = hal.descrambler_diagnostics.snapshot(demux_id, 0x1fff);
         assert_eq!(after_placeholder.cas_bridge_unconnected, 1);
-
-        assert!(descrambler
-            .setKeyToken(b"maleicacid-cas-desc-token-0000000000000001")
-            .is_err());
-        let after_cas_unconnected = hal.descrambler_diagnostics.snapshot(demux_id, 0x1fff);
-        assert_eq!(after_cas_unconnected.cas_bridge_unconnected, 2);
-
-        assert!(descrambler
-            .setKeyToken(b"maleicacid-expired-desc-token-0000000000000001")
-            .is_err());
-        let after_expired = hal.descrambler_diagnostics.snapshot(demux_id, 0x1fff);
-        assert_eq!(after_expired.expired_key_slot, 1);
-
-        assert!(descrambler
-            .setKeyToken(b"maleicacid-test-desc-token-ffffffffffffffff")
-            .is_err());
-        let after_unknown = hal.descrambler_diagnostics.snapshot(demux_id, 0x1fff);
-        assert_eq!(after_unknown.bad_token, 2);
 
         let key_slot = DescramblerKeySlot::empty()
             .with_even(Multi2KeyMaterial::new([0x11; 32], [0x22; 8], [0x33; 8]));
         let ok_token = hal.descrambler_key_table.register_for_test(key_slot);
+        assert_eq!(ok_token.len(), 8);
         assert!(descrambler.setKeyToken(&ok_token).is_ok());
 
         assert!(hal
             .dump_descrambler_diagnostics_for_debug()
-            .contains("BAD_TOKEN=2"));
+            .contains("BAD_TOKEN=4"));
         assert!(hal
             .dump_descrambler_diagnostics_for_debug()
-            .contains("CAS_BRIDGE_UNCONNECTED=2"));
-        assert!(hal
-            .dump_descrambler_diagnostics_for_debug()
-            .contains("EXPIRED_KEY_SLOT=1"));
+            .contains("CAS_BRIDGE_UNCONNECTED=1"));
     }
 
     #[test]
@@ -13470,26 +13970,22 @@ mod contract_regression_tests {
     #[test]
     fn get_status_rejects_unsupported_type_before_backend_status_read() {
         assert!(FrontendHal::validate_status_types(
-            false,
-            false,
-            false,
-            &[
-                FrontendStatusType::DEMOD_LOCK,
-                FrontendStatusType::SIGNAL_QUALITY
-            ]
+            FrontendStatusSupport::default(),
+            &[FrontendStatusType::DEMOD_LOCK]
         )
         .is_ok());
         assert!(FrontendHal::validate_status_types(
-            false,
-            false,
-            false,
+            FrontendStatusSupport::default(),
+            &[FrontendStatusType::SIGNAL_QUALITY]
+        )
+        .is_err());
+        assert!(FrontendHal::validate_status_types(
+            FrontendStatusSupport::default(),
             &[FrontendStatusType::RF_LOCK]
         )
         .is_err());
         assert!(FrontendHal::validate_status_types(
-            false,
-            false,
-            false,
+            FrontendStatusSupport::default(),
             &[FrontendStatusType::BER]
         )
         .is_err());

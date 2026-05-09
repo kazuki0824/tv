@@ -102,119 +102,6 @@ const JAPAN_CS110_FIRST_IF_HZ: u64 = 1_613_000_000;
 const JAPAN_CS110_LAST_IF_HZ: u64 = 2_053_000_000;
 const JAPAN_CS110_STEP_HZ: u64 = 40_000_000;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct JapanBsTsidEntry {
-    if_frequency_hz: u64,
-    tsid: u16,
-}
-
-const JAPAN_BS_ISDBS_TSID_TABLE: &[JapanBsTsidEntry] = &[
-    JapanBsTsidEntry {
-        if_frequency_hz: 1_049_480_000,
-        tsid: 0x4010,
-    },
-    JapanBsTsidEntry {
-        if_frequency_hz: 1_049_480_000,
-        tsid: 0x4011,
-    },
-    JapanBsTsidEntry {
-        if_frequency_hz: 1_049_480_000,
-        tsid: 0x4012,
-    },
-    JapanBsTsidEntry {
-        if_frequency_hz: 1_087_840_000,
-        tsid: 0x4030,
-    },
-    JapanBsTsidEntry {
-        if_frequency_hz: 1_087_840_000,
-        tsid: 0x4631,
-    },
-    JapanBsTsidEntry {
-        if_frequency_hz: 1_087_840_000,
-        tsid: 0x4632,
-    },
-    JapanBsTsidEntry {
-        if_frequency_hz: 1_126_200_000,
-        tsid: 0x4450,
-    },
-    JapanBsTsidEntry {
-        if_frequency_hz: 1_126_200_000,
-        tsid: 0x4451,
-    },
-    JapanBsTsidEntry {
-        if_frequency_hz: 1_202_920_000,
-        tsid: 0x4090,
-    },
-    JapanBsTsidEntry {
-        if_frequency_hz: 1_202_920_000,
-        tsid: 0x4092,
-    },
-    JapanBsTsidEntry {
-        if_frequency_hz: 1_279_640_000,
-        tsid: 0x40d0,
-    },
-    JapanBsTsidEntry {
-        if_frequency_hz: 1_279_640_000,
-        tsid: 0x40d1,
-    },
-    JapanBsTsidEntry {
-        if_frequency_hz: 1_279_640_000,
-        tsid: 0x46d2,
-    },
-    JapanBsTsidEntry {
-        if_frequency_hz: 1_318_000_000,
-        tsid: 0x40f1,
-    },
-    JapanBsTsidEntry {
-        if_frequency_hz: 1_318_000_000,
-        tsid: 0x40f2,
-    },
-    JapanBsTsidEntry {
-        if_frequency_hz: 1_318_000_000,
-        tsid: 0x48f3,
-    },
-    JapanBsTsidEntry {
-        if_frequency_hz: 1_394_720_000,
-        tsid: 0x4730,
-    },
-    JapanBsTsidEntry {
-        if_frequency_hz: 1_394_720_000,
-        tsid: 0x4731,
-    },
-    JapanBsTsidEntry {
-        if_frequency_hz: 1_394_720_000,
-        tsid: 0x4732,
-    },
-    JapanBsTsidEntry {
-        if_frequency_hz: 1_394_720_000,
-        tsid: 0x4733,
-    },
-    JapanBsTsidEntry {
-        if_frequency_hz: 1_433_080_000,
-        tsid: 0x4750,
-    },
-    JapanBsTsidEntry {
-        if_frequency_hz: 1_433_080_000,
-        tsid: 0x4751,
-    },
-    JapanBsTsidEntry {
-        if_frequency_hz: 1_433_080_000,
-        tsid: 0x4752,
-    },
-    JapanBsTsidEntry {
-        if_frequency_hz: 1_471_440_000,
-        tsid: 0x4770,
-    },
-    JapanBsTsidEntry {
-        if_frequency_hz: 1_471_440_000,
-        tsid: 0x4971,
-    },
-    JapanBsTsidEntry {
-        if_frequency_hz: 1_471_440_000,
-        tsid: 0x4972,
-    },
-];
-
 fn is_japan_bs_if_frequency_hz(if_frequency_hz: u64) -> bool {
     if if_frequency_hz < JAPAN_BS_FIRST_IF_HZ || if_frequency_hz > JAPAN_BS_LAST_IF_HZ {
         return false;
@@ -229,69 +116,12 @@ fn is_japan_cs110_if_frequency_hz(if_frequency_hz: u64) -> bool {
     (if_frequency_hz - JAPAN_CS110_FIRST_IF_HZ) % JAPAN_CS110_STEP_HZ == 0
 }
 
-fn japan_bs_tsid_matches(if_frequency_hz: u64, tsid: u16) -> bool {
-    JAPAN_BS_ISDBS_TSID_TABLE
-        .iter()
-        .any(|entry| entry.if_frequency_hz == if_frequency_hz && entry.tsid == tsid)
-}
 
-const JAPAN_ISDBT_UHF_FIRST_HZ: u64 = 473_142_857;
-const JAPAN_ISDBT_UHF_LAST_HZ: u64 = 767_142_857;
-const JAPAN_ISDBT_STEP_HZ: u64 = 6_000_000;
-const JAPAN_ISDBT_TOLERANCE_HZ: u64 = 500_000;
-const JAPAN_ISDBT_CATV_BASE_HZ: u64 = 93_142_857;
-const JAPAN_ISDBT_CATV_CH12_EXTRA_HZ: u64 = 2_000_000;
-const JAPAN_ISDBT_CATV_RANGES: &[(u64, u64)] = &[(3, 12), (22, 62)];
-
-fn is_near_japan_isdbt_grid_frequency_hz(
-    frequency_hz: u64,
-    first_hz: u64,
-    last_hz: u64,
-) -> bool {
-    if frequency_hz < first_hz.saturating_sub(JAPAN_ISDBT_TOLERANCE_HZ)
-        || frequency_hz > last_hz.saturating_add(JAPAN_ISDBT_TOLERANCE_HZ)
-    {
-        return false;
-    }
-    let delta = frequency_hz.saturating_sub(first_hz);
-    let nearest = first_hz
-        + ((delta + JAPAN_ISDBT_STEP_HZ / 2) / JAPAN_ISDBT_STEP_HZ) * JAPAN_ISDBT_STEP_HZ;
-    nearest <= last_hz && frequency_hz.abs_diff(nearest) <= JAPAN_ISDBT_TOLERANCE_HZ
-}
-
-fn is_japan_isdbt_uhf_frequency_hz(frequency_hz: u64) -> bool {
-    is_near_japan_isdbt_grid_frequency_hz(
-        frequency_hz,
-        JAPAN_ISDBT_UHF_FIRST_HZ,
-        JAPAN_ISDBT_UHF_LAST_HZ,
-    )
-}
-
-fn is_japan_isdbt_catv_frequency_hz(frequency_hz: u64) -> bool {
-    for &(first, last) in JAPAN_ISDBT_CATV_RANGES {
-        for freq_no in first..=last {
-            let mut canonical = JAPAN_ISDBT_CATV_BASE_HZ + freq_no * JAPAN_ISDBT_STEP_HZ;
-            if freq_no == 12 {
-                canonical = canonical.saturating_add(JAPAN_ISDBT_CATV_CH12_EXTRA_HZ);
-            }
-            if frequency_hz.abs_diff(canonical) <= JAPAN_ISDBT_TOLERANCE_HZ {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-fn is_japan_isdbt_frequency_hz(frequency_hz: u64) -> bool {
-    is_japan_isdbt_uhf_frequency_hz(frequency_hz)
-        || is_japan_isdbt_catv_frequency_hz(frequency_hz)
-}
-
-const SEC_TONE_OFF: u32 = 0;
-const SEC_TONE_ON: u32 = 1;
-const SEC_VOLTAGE_OFF: u32 = 0;
-const SEC_VOLTAGE_13: u32 = 1;
-const SEC_VOLTAGE_18: u32 = 2;
+const SEC_TONE_ON: u32 = 0;
+const SEC_TONE_OFF: u32 = 1;
+const SEC_VOLTAGE_13: u32 = 0;
+const SEC_VOLTAGE_18: u32 = 1;
+const SEC_VOLTAGE_OFF: u32 = 2;
 const O_NONBLOCK: i32 = 0x800;
 const DMX_IN_FRONTEND: u32 = 0;
 const DMX_OUT_TS_TAP: u32 = 2;
@@ -641,9 +471,6 @@ impl DvbFrontendBackend {
                     if !is_japan_bs_if_frequency_hz(if_frequency_hz) {
                         return Err(HalError::InvalidArgument("ISDB-S TSID selection is valid only for exact Japan BS IF frequencies".into()));
                     }
-                    if !japan_bs_tsid_matches(if_frequency_hz, stream_id) {
-                        return Err(HalError::InvalidArgument(format!("BS TSID 0x{stream_id:04x} is not valid for IF frequency {if_frequency_hz}")));
-                    }
                 }
                 Ok(Some(stream_id))
             },
@@ -684,9 +511,6 @@ impl DvbFrontendBackend {
                     }
                     if !is_japan_bs_if_frequency_hz(request.frequency) {
                         return Err(HalError::InvalidArgument("ISDB-S TSID selection is valid only for exact Japan BS IF frequencies".into()));
-                    }
-                    if !japan_bs_tsid_matches(request.frequency, stream_id) {
-                        return Err(HalError::InvalidArgument(format!("BS TSID 0x{stream_id:04x} is not valid for IF frequency {}", request.frequency)));
                     }
                 }
                 Ok((Some(stream_id), Some(FrontendStreamIdKind::AbsoluteStreamId)))
@@ -830,13 +654,19 @@ impl DvbFrontendBackend {
         self.ioctl_ptr(FE_READ_STATUS, &mut status, "FE_READ_STATUS")?;
 
         let mut signal_strength: u16 = 0;
+        let signal_strength = self
+            .ioctl_ptr(
+                FE_READ_SIGNAL_STRENGTH,
+                &mut signal_strength,
+                "FE_READ_SIGNAL_STRENGTH",
+            )
+            .map(|()| u32::from(signal_strength))
+            .ok();
         let mut snr: u16 = 0;
-        let _ = self.ioctl_ptr(
-            FE_READ_SIGNAL_STRENGTH,
-            &mut signal_strength,
-            "FE_READ_SIGNAL_STRENGTH",
-        );
-        let _ = self.ioctl_ptr(FE_READ_SNR, &mut snr, "FE_READ_SNR");
+        let snr = self
+            .ioctl_ptr(FE_READ_SNR, &mut snr, "FE_READ_SNR")
+            .map(|()| u32::from(snr))
+            .ok();
 
         self.apply_status_word(status, signal_strength, snr);
         Ok(DvbFrontendStatus {
@@ -844,11 +674,11 @@ impl DvbFrontendBackend {
         })
     }
 
-    fn apply_status_word(&mut self, status: u32, signal_strength: u16, snr: u16) {
+    fn apply_status_word(&mut self, status: u32, signal_strength: Option<u32>, snr: Option<u32>) {
         self.telemetry.rf_locked = Some((status & FE_HAS_CARRIER) != 0);
         self.telemetry.locked = (status & FE_HAS_LOCK) != 0;
-        self.telemetry.signal_strength = Some(u32::from(signal_strength));
-        self.telemetry.cnr = Some(u32::from(snr));
+        self.telemetry.signal_strength = signal_strength;
+        self.telemetry.cnr = snr;
         self.telemetry.signal_quality = Some(Self::quality_from_status(status));
     }
 
@@ -1032,12 +862,13 @@ impl DvbFrontendBackend {
         Self::classify_device_revents(path, pollfds[0].revents)
     }
 
-    pub fn close(&mut self) {
+    pub fn close(&mut self) -> Result<(), HalError> {
         self.stop_stream_reader();
         self.control = None;
         self.state.tuning_active = false;
         self.telemetry.locked = false;
         self.telemetry.rf_locked = None;
+        Ok(())
     }
 
     pub fn scan_requests(
@@ -1167,20 +998,14 @@ impl DvbFrontendBackend {
             ))
         })?;
         match request.system {
-            FrontendSystem::IsdbT => {
-                if is_japan_isdbt_frequency_hz(request.frequency) {
-                    Ok(driver_frequency)
-                } else {
-                    Err(HalError::InvalidArgument(format!("earth_pt1 ISDB-T frequency is outside the fixed Japanese UHF/CATV C13-C63 candidate tables: {}", request.frequency)))
-                }
-            }
+            FrontendSystem::IsdbT => Ok(driver_frequency),
             FrontendSystem::IsdbS => {
                 if is_japan_bs_if_frequency_hz(request.frequency)
                     || is_japan_cs110_if_frequency_hz(request.frequency)
                 {
                     Ok(driver_frequency)
                 } else {
-                    Err(HalError::InvalidArgument(format!("earth_pt1 ISDB-S frequency is outside the fixed Japan BS/CS110 IF tables: {}", request.frequency)))
+                    Err(HalError::InvalidArgument(format!("earth_pt1 ISDB-S frequency is outside the supported BS/CS110 IF frequency classes: {}", request.frequency)))
                 }
             }
             FrontendSystem::IsdbS3 | FrontendSystem::DvbS => Err(HalError::Unsupported(
@@ -1663,18 +1488,6 @@ mod tests {
     }
 
     #[test]
-    fn japan_isdbt_validation_accepts_tis_catv_c13_to_c63_and_uhf() {
-        assert!(super::is_japan_isdbt_frequency_hz(111_142_857));
-        assert!(super::is_japan_isdbt_frequency_hz(167_142_857));
-        assert!(super::is_japan_isdbt_frequency_hz(225_142_857));
-        assert!(super::is_japan_isdbt_frequency_hz(465_142_857));
-        assert!(super::is_japan_isdbt_frequency_hz(473_142_857));
-        assert!(super::is_japan_isdbt_frequency_hz(767_142_857));
-        assert!(!super::is_japan_isdbt_frequency_hz(105_142_857));
-        assert!(!super::is_japan_isdbt_frequency_hz(219_142_857));
-    }
-
-    #[test]
     fn explicit_vts_profile_requests_expand_to_one_dvb_scan_candidate() {
         let backend = DvbFrontendBackend::new(
             0,
@@ -1983,51 +1796,6 @@ mod bs_cs_contract_tests {
         FrontendStreamIdKind, FrontendSystem, FrontendTuneRequest, HalError,
     };
 
-    fn parse_tis_bs_tsid_entries_from_scan_plan() -> Vec<(u64, u16)> {
-        let source = include_str!("../../../tis/src/com/maleicacid/tvinput/tis/ScanPlan.kt");
-        let marker = "BsTsidEntry(";
-        let mut entries = Vec::new();
-        let mut rest = source;
-        while let Some(marker_index) = rest.find(marker) {
-            let tail = &rest[marker_index + marker.len()..];
-            let Some(end_index) = tail.find(')') else {
-                break;
-            };
-            let fields = tail[..end_index]
-                .split(',')
-                .map(|field| field.trim())
-                .collect::<Vec<_>>();
-            if fields.len() >= 2 && !fields[0].starts_with("val ") {
-                let frequency = fields[0]
-                    .trim_end_matches('L')
-                    .replace('_', "")
-                    .parse::<u64>()
-                    .expect("TIS ScanPlan.kt の BS frequency を解釈できません");
-                let tsid = fields[1]
-                    .replace('_', "")
-                    .parse::<u16>()
-                    .expect("TIS ScanPlan.kt の BS TSID を解釈できません");
-                entries.push((frequency, tsid));
-            }
-            rest = &tail[end_index + 1..];
-        }
-        entries
-    }
-
-    #[test]
-    fn dvb_bs_tsid_table_matches_tis_bs_ssot_source() {
-        let tis_entries = parse_tis_bs_tsid_entries_from_scan_plan();
-        let dvb_entries = JAPAN_BS_ISDBS_TSID_TABLE
-            .iter()
-            .map(|entry| (entry.if_frequency_hz, entry.tsid))
-            .collect::<Vec<_>>();
-        assert!(
-            !tis_entries.is_empty(),
-            "TIS ScanPlan.kt の BS TSID 表を読めませんでした"
-        );
-        assert_eq!(dvb_entries, tis_entries);
-    }
-
     fn bs_base_request(
         stream_id: Option<u32>,
         kind: Option<FrontendStreamIdKind>,
@@ -2066,7 +1834,7 @@ mod bs_cs_contract_tests {
     }
 
     #[test]
-    fn dvb_bs_rejects_relative_stream_id_and_accepts_exact_frequency_tsid_pair() {
+    fn dvb_bs_rejects_relative_stream_id_and_accepts_absolute_tsid_without_table_match() {
         assert!(
             DvbFrontendBackend::normalize_stream_id_from_common(&bs_base_request(
                 Some(0),
@@ -2082,25 +1850,19 @@ mod bs_cs_contract_tests {
             .unwrap(),
             (Some(0x4010), Some(FrontendStreamIdKind::AbsoluteStreamId)),
         );
-        assert!(
-            DvbFrontendBackend::normalize_stream_id_from_common(&bs_base_request(
-                Some(0),
-                Some(FrontendStreamIdKind::AbsoluteStreamId),
-            ))
-            .is_err()
-        );
-        assert!(
+        assert_eq!(
             DvbFrontendBackend::normalize_stream_id_from_common(&bs_base_request(
                 Some(0x4999),
                 Some(FrontendStreamIdKind::AbsoluteStreamId),
             ))
-            .is_err()
+            .unwrap(),
+            (Some(0x4999), Some(FrontendStreamIdKind::AbsoluteStreamId)),
         );
-        let wrong_if = FrontendTuneRequest {
+        let different_bs_if = FrontendTuneRequest {
             frequency: 1_087_840_000,
             ..bs_base_request(Some(0x4010), Some(FrontendStreamIdKind::AbsoluteStreamId))
         };
-        assert!(DvbFrontendBackend::normalize_stream_id_from_common(&wrong_if).is_err());
+        assert!(DvbFrontendBackend::normalize_stream_id_from_common(&different_bs_if).is_ok());
     }
 
     #[test]
@@ -2125,27 +1887,7 @@ mod bs_cs_contract_tests {
     }
 
     #[test]
-    fn dvb_bs_tsid_last_entry_matches_ssot_and_rejects_removed_value() {
-        assert!(japan_bs_tsid_matches(1_471_440_000, 0x4972));
-        assert!(!japan_bs_tsid_matches(1_471_440_000, 0x4973));
-        assert!(
-            DvbFrontendBackend::normalize_stream_id_from_common(&FrontendTuneRequest {
-                frequency: 1_471_440_000,
-                ..bs_base_request(Some(0x4972), Some(FrontendStreamIdKind::AbsoluteStreamId))
-            })
-            .is_ok()
-        );
-        assert!(
-            DvbFrontendBackend::normalize_stream_id_from_common(&FrontendTuneRequest {
-                frequency: 1_471_440_000,
-                ..bs_base_request(Some(0x4973), Some(FrontendStreamIdKind::AbsoluteStreamId))
-            })
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn dvb_common_validation_rejects_unrepresentable_or_non_table_frequency() {
+    fn dvb_common_validation_accepts_representable_isdbt_frequency_without_scan_table() {
         let valid_isdbt = FrontendTuneRequest {
             system: FrontendSystem::IsdbT,
             frequency: 473_142_857,
@@ -2157,11 +1899,11 @@ mod bs_cs_contract_tests {
         };
         assert!(DvbFrontendBackend::validate_driver_frequency_from_common(&valid_isdbt).is_ok());
 
-        let invalid_isdbt = FrontendTuneRequest {
+        let arbitrary_representable_isdbt = FrontendTuneRequest {
             frequency: 90_000_000,
             ..valid_isdbt.clone()
         };
-        assert!(DvbFrontendBackend::validate_driver_frequency_from_common(&invalid_isdbt).is_err());
+        assert!(DvbFrontendBackend::validate_driver_frequency_from_common(&arbitrary_representable_isdbt).is_ok());
 
         let unrepresentable = FrontendTuneRequest {
             frequency: u64::from(u32::MAX) + 1,
@@ -2173,7 +1915,7 @@ mod bs_cs_contract_tests {
     }
 
     #[test]
-    fn dvb_common_validation_accepts_only_fixed_isdbs_tables() {
+    fn dvb_common_validation_keeps_isdbs_frequency_class_boundary() {
         assert!(
             DvbFrontendBackend::validate_driver_frequency_from_common(&bs_base_request(
                 Some(0x4010),
@@ -2236,13 +1978,13 @@ mod status_word_tests {
     #[test]
     fn status_word_maps_carrier_to_rf_lock_and_lock_to_demod_lock() {
         let mut backend = DvbFrontendBackend::new(0, 0, 0, 0, vec![FrontendSystem::IsdbS]);
-        backend.apply_status_word(FE_HAS_CARRIER, 123, 45);
+        backend.apply_status_word(FE_HAS_CARRIER, Some(123), Some(45));
         assert_eq!(backend.telemetry.rf_locked, Some(true));
         assert!(!backend.telemetry.locked);
         assert_eq!(backend.telemetry.signal_strength, Some(123));
         assert_eq!(backend.telemetry.cnr, Some(45));
 
-        backend.apply_status_word(FE_HAS_CARRIER | FE_HAS_LOCK, 321, 54);
+        backend.apply_status_word(FE_HAS_CARRIER | FE_HAS_LOCK, Some(321), Some(54));
         assert_eq!(backend.telemetry.rf_locked, Some(true));
         assert!(backend.telemetry.locked);
     }
@@ -2425,12 +2167,12 @@ mod status_word_tests {
 
     #[test]
     fn dvb_reader_pump_drops_malformed_full_packet_with_diagnostic_state() {
-        let mut malformed = [0x11u8; TS_PACKET_SIZE];
+        let mut malformed = vec![0x11u8; TS_PACKET_SIZE * 3];
         malformed[1] = 0x22;
         let mut residual = TsPacketCompletionBuffer::default();
         let mut out = Vec::new();
 
-        let mut reader = Cursor::new(malformed.to_vec());
+        let mut reader = Cursor::new(malformed);
         assert_eq!(
             DvbFrontendBackend::pump_reader_packets(&mut reader, None, 1, &mut residual, |pkt| out
                 .push(pkt.to_vec()))
@@ -2438,7 +2180,7 @@ mod status_word_tests {
             0
         );
         assert!(out.is_empty());
-        assert_eq!(residual.tail_len(), 0);
+        assert_eq!(residual.tail_len(), TS_PACKET_SIZE * 2);
         assert!(residual.malformed_bytes() >= TS_PACKET_SIZE as u64);
     }
 }

@@ -399,9 +399,8 @@ impl Px4FrontendBackend {
     pub fn tune(&mut self, request: FrontendTuneRequest) -> Result<Px4FrontendStatus, HalError> {
         self.ensure_control_open()?;
         let mapped = map_tune_request_to_px4(&request)?;
-        if self.state.tuning_active || self.ts_reader.is_some() {
-            self.clear_driver_lock_state();
-            self.ioctl_noarg(PTX_STOP_STREAMING, "PTX_STOP_STREAMING")?;
+        if self.streaming_active() {
+            self.stop_streaming_if_active("retune_stop")?;
         }
         self.clear_driver_lock_state();
         let mut system_mode = mapped.system_code;
@@ -431,11 +430,9 @@ impl Px4FrontendBackend {
     }
 
     pub fn stop_tune(&mut self) -> Result<(), HalError> {
-        if self.control.is_some() {
-            let _ = self.ioctl_noarg(PTX_STOP_STREAMING, "PTX_STOP_STREAMING");
-        }
+        let stop_result = self.stop_streaming_if_active("stop_tune");
         self.clear_driver_lock_state();
-        Ok(())
+        stop_result
     }
 
     pub fn set_lnb_voltage(&mut self, voltage: i32) -> Result<(), HalError> {
@@ -651,16 +648,36 @@ impl Px4FrontendBackend {
         }))
     }
 
-    pub fn close(&mut self) {
-        if let Some(reader) = self.ts_reader.as_ref() {
-            if let Ok(mut reader) = reader.lock() {
-                reader.stopped = true;
-            }
-        }
-        self.ts_reader = None;
-        self.last_packet_seen = None;
-        self.control = None;
+    pub fn close(&mut self) -> Result<(), HalError> {
+        self.stop_streaming_if_active("close")?;
         self.clear_driver_lock_state();
+        self.control = None;
+        Ok(())
+    }
+
+    fn streaming_active(&self) -> bool {
+        self.state.tuning_active || self.ts_reader.is_some() || self.driver_tune_locked
+    }
+
+    fn stop_streaming_if_active(&mut self, operation: &'static str) -> Result<(), HalError> {
+        if !self.streaming_active() {
+            return Ok(());
+        }
+        if self.control.is_none() {
+            return Err(HalError::InvalidState(format!(
+                "px4 {} requires PTX_STOP_STREAMING but control fd is not open",
+                operation
+            )));
+        }
+        self.ioctl_noarg(PTX_STOP_STREAMING, "PTX_STOP_STREAMING")
+            .map_err(|err| {
+                eprintln!(
+                    "maleicacid-tuner-hal-px4-diagnostic: operation={} stop_streaming_failed error={}",
+                    operation, err
+                );
+                err
+            })?;
+        Ok(())
     }
 
     fn ensure_control_open(&mut self) -> Result<(), HalError> {
@@ -1345,11 +1362,11 @@ mod tests {
 
     #[test]
     fn reader_pump_drops_malformed_full_packet_with_diagnostic_state() {
-        let malformed = [0x22u8; TS_PACKET_SIZE];
+        let malformed = vec![0x22u8; TS_PACKET_SIZE * 3];
         let mut residual = TsPacketCompletionBuffer::default();
         let mut out = Vec::new();
 
-        let mut reader = Cursor::new(malformed.to_vec());
+        let mut reader = Cursor::new(malformed);
         assert_eq!(
             Px4FrontendBackend::pump_reader_packets(&mut reader, None, 1, &mut residual, |pkt| out
                 .push(pkt.to_vec()))
@@ -1357,7 +1374,7 @@ mod tests {
             0
         );
         assert!(out.is_empty());
-        assert_eq!(residual.tail_len(), 0);
+        assert_eq!(residual.tail_len(), TS_PACKET_SIZE * 2);
         assert!(residual.malformed_bytes() >= TS_PACKET_SIZE as u64);
     }
 

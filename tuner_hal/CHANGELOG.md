@@ -1,3 +1,138 @@
+## r50aq21
+
+- r50aq20 に対して、Tuner HAL の frontend 異常系で `frontend_backend` lock を保持したまま `mark_live_path_failed()` へ入る自己 deadlock だけをロジック修正した。
+- live pump の LNB apply / stream reader 生成失敗時は、backend lock 区間内では error detail だけを生成し、lock を抜けてから runtime failure 記録と `mark_live_path_failed()` を実行するようにした。
+- scan worker cleanup の `backend_stop_tune()` 失敗時も、backend lock を抜けた後に scan phase 更新、runtime failure 記録、`mark_live_path_failed()`、scan end 通知を行うようにした。
+- 既存の runtime failure 記録、bound demux fail-close、backend callback_failed marking は維持した。
+- TIS、px4/DVB backend、generic scan、future_work、VTS XML、CAS HAL は変更しない。
+- この環境では Android/Soong build、Rust unit test実行、VTS、実機確認は未実施。
+
+## r50aq20
+
+- r50aq19 に対して、Tuner HAL の `IDescrambler.addPid()` source filter generation 最終再検証不足だけをロジック修正した。
+- `addPid()` は source filter identity 取得後、最終 PID claim 直前に source filter の `DemuxHandle` を再ロックし、同一 filter generation がまだ存在することを確認する。
+- source filter が stop / flush / reconfigure / close 等で generation 変更または unregister 済みになっていた場合は、PID claim を行わず error を返す。
+- `DescramblerRuntimeRegistry` の同一 demux generation / PID ownership atomic claim は維持し、claim 時の lock order は live pump と同じ `demux_handle -> descrambler_registry -> descrambler_state` に揃えた。
+- `removePid()` の lock order 修正、nullable filter / PID-only future_work の仕様、TIS、px4/DVB backend、generic scan、VTS XML は変更しない。
+- この環境では Android/Soong build、Rust unit test実行、VTS、実機確認は未実施。
+
+## r50aq19
+
+- r50aq18 に対して、Tuner HAL の `IDescrambler.addPid()` PID ownership claim 原子性不足だけをロジック修正した。
+- `DescramblerRuntimeRegistry` に atomic claim helper を追加し、他 descrambler の同一 demux generation / PID 所有確認と自 descrambler state への PID 登録を同一 registry critical section 内で行うようにした。
+- `addPid()` は従来どおり state snapshot、demux generation 確認、source filter identity 確認を行った後、最終登録を atomic claim helper に集約する。
+- `removePid()` の lock order 修正、nullable filter / PID-only future_work の仕様、TIS、px4/DVB backend、generic scan、VTS XML は変更しない。
+- この環境では Android/Soong build、Rust unit test実行、VTS、実機確認は未実施。
+
+## r50aq18
+
+- r50aq17 に対して、Tuner HAL の `IDescrambler.removePid()` lock order と `FilterHal::close_internal()` cleanup 完遂性だけをロジック修正した。
+- `removePid()` は `descrambler_state` lock を保持したまま demux registry / demux handle / source filter identity へ入らないよう、state snapshot → demux/filter 確認 → state 再取得・再検証の順に変更した。これにより live pump の `demux_handle -> descrambler_state` lock order と逆順になる path をなくした。
+- `FilterHal::close_internal()` は途中 error で早期 return せず、callback worker 停止、AV shared backing 破棄、runtime unregister、queue stop、AV queue stop、demux unregister をすべて試行し、最初の error status だけを最後に返す形にした。
+- nullable filter / PID-only future_work の仕様変更、TIS、px4/DVB backend、generic scan、VTS XML は変更しない。
+- この環境では Android/Soong build、Rust unit test実行、VTS、実機確認は未実施。
+
+## r50aq17
+
+- r50aq16 に対して、DVB backend の Linux DVB UAPI LNB voltage/tone enum 値だけを修正した。
+- `frontend_dvb` の `SEC_VOLTAGE_13` / `SEC_VOLTAGE_18` / `SEC_VOLTAGE_OFF` を Linux DVB UAPI の `0` / `1` / `2` に合わせ、`set_lnb_voltage(NONE/11V/15V)` が kernel へ OFF/13V/18V を正しく送るようにした。
+- 同じ enum block の `SEC_TONE_ON` / `SEC_TONE_OFF` も Linux DVB UAPI に合わせた。tone は引き続き固定日本向け tuner profile では unsupported のままで、動作対象を拡大しない。
+- 変更範囲は Tuner HAL DVB backend ロジックと CHANGELOG のみ。px4 backend、TIS、generic scan、future_work、VTS XML は変更しない。
+- この環境では Android/Soong build、Rust unit test実行、VTS、実機確認は未実施。
+
+## r50aq16
+
+- r50aq15 の demux close cleanup 未達を修正した。
+- `DemuxHal::close_internal()` で最後の参照の cleanup に入った後、`unbind_demux()`、demux handle lock、registry lock、live id lock、final record cleanup のいずれかが失敗しても後続 cleanup step を継続するようにした。
+- cleanup 中に複数の error が発生した場合は最初の error status を保持し、cleanup 試行後に返すようにした。
+- 変更範囲は Tuner HAL demux lifecycle ロジックと CHANGELOG のみ。future_work、VTS XML、TIS、px4 mapping は変更しない。
+
+## r50aq15
+
+- r50aq14 に対して、Tuner HAL の demux lifecycle/refcount race のロジックのみを修正した。
+- `openDemuxById()` が既存 demux record を再利用する際、close 中または ref_count 0 の record を再取得しないようにした。
+- `DemuxHal::close_internal()` は record lock 下で ref_count を減算し、減算後の値で最後の参照かを判定するようにした。stale read による cleanup skip を避ける。
+- 最後の参照になった demux record には close-in-progress 状態を設定し、registry/live id から削除されるまで新規 wrapper が掴めないようにした。
+- `release_registration_best_effort()` も同じ refcount/closing 方針に合わせた。
+- この環境では Android/Soong build、Rust unit test実行、VTS、実機確認は未実施。
+
+## r50aq14
+
+- r50aq13 に対して、px4 backend-local mapping の不足だけを対象に修正した。
+- `frontend_px4` の BS absolute TSID → px4 legacy `freq_no/slot` 変換表に、BS11/freq_no=5/IF 1_241_280_000 Hz の 0x46b0〜0x46b3 を追加した。
+- この表は product scan SSOT ではなく、TIS から渡された explicit tune request を px4 ioctl 値へ落とすための backend-local mapping として維持する。TIS 候補表、TvProvider channel key、display number 生成、generic scan 層には触れていない。
+- 開発規則.md の SSOT 原則に従い、TIS 候補表との全件一致テストは追加していない。今回の完了判定は静的確認で行った。
+- この環境では Android/Soong build、Rust unit test実行、VTS、実機確認は未実施。
+
+## r50aq13
+
+- r50aq12 の固定計画 No.1/2/3/5 に沿って、Frontend public close を step runner 型の fallible cleanup に変更した。backend close 失敗を成功扱いにせず、後続 cleanup は継続し、通常操作は cleanup failure 後に拒否する。
+- px4 backend の active streaming close / stopTune / retune 前 stop で `PTX_STOP_STREAMING` を明示実行し、stop ioctl 失敗を public 経路で握り潰さないようにした。best-effort 経路では runtime diagnostic に記録する。
+- DVB backend の `close()` では `DTV_CLEAR` を必須化せず、`DTV_CLEAR` は明示 `stop_tune()` の責務であることを `DESIGN_JA.md` に固定した。
+- TIS の `DESIGN_JA.md` に、CS110 tune request は Android builder default に依存せず stream selector none / `UNDEFINED` 相当を明示し、ONID / TSID / service_id を HAL frontend selector へ転用しない設計境界を追記した。
+- この環境では `rustfmt`、Android/Soong build、Rust unit test実行、VTS、実機確認は未実施。
+
+## r50aq12
+
+- r50aq11 の Tuner HAL-only 修正計画 1/2/3/5/8/9 に沿って、DVB backend から BS TSID 表・日本向け scan 候補表相当の実装データと周波数+TSID semantic 照合を削除した。DVB backend は BS absolute TSID 必須、relative stream number 拒否、CS110 selector 拒否、frequency class 境界だけを検証する。
+- HAL unit test から TIS `ScanPlan.kt` の `include_str!` 文字列 parse と TIS 候補表・px4 backend-local mapping の一致確認を削除した。px4 側の TSID mapping は product scan SSOT ではなく legacy chardev ioctl 変換用の backend-local mapping として固定した。
+- `TsPacketCompletionBuffer` の resync を単発 `0x47` 復帰から 188-byte 間隔の 3 packet 連続 sync 確認へ変更し、false sync / resync tail の regression test を追加した。
+- `IDescrambler.setDemuxSource()` の二重設定を `UNAVAILABLE` ではなく `INVALID_STATE` に変更し、状態衝突として test に固定した。
+- `ILnb.close()` を reset-on-close として固定し、close 時に LNB registry の voltage/tone/position を安全側へ戻して matching frontend へ反映する。cleanup 失敗は成功扱いしない。
+- この環境では Android/Soong build、Rust unit test実行、VTS、実機確認は未実施。
+
+## r50aq11
+
+- r50aq10 の未達だった frontend status / readiness 完了条件を対象に修正した。
+- status support SSOT を保守的に固定し、r51 では起動時列挙時点で取得根拠を固定できる status type だけを `statusCaps` に出すようにした。DVB / earth_pt1 は `DEMOD_LOCK`、`RF_LOCK`、`SIGNAL_QUALITY`、satellite frontend の `LNB_VOLTAGE` に限定し、px4 は `DEMOD_LOCK` と satellite frontend の `LNB_VOLTAGE` に限定した。
+- `FE_READ_SNR` / `FE_READ_SIGNAL_STRENGTH` / `PTX_GET_CNR` は read 時に失敗し得る optional telemetry として扱い、r51 では `SNR` / `SIGNAL_STRENGTH` を `statusCaps` に advertise しないことを `DESIGN_JA.md` と実装に固定した。
+- `getFrontendStatusReadiness()` は caps外を `UNSUPPORTED` として同長返却し、caps内についても backend availability、tuning active、現在 telemetry の有無を見て `UNAVAILABLE` / `UNSTABLE` / `STABLE` を返すようにした。一律 `STABLE` を残さない。
+- `getStatus()` は caps外を `INVALID_ARGUMENT` とし、caps内でも optional telemetry 欠落を 0 として成功返却しない。LNB voltage の未選択状態は仕様上の `NONE` として明示的に扱う。
+- この環境では Android/Soong build、Rust unit test実行、VTS、実機確認は未実施。
+
+## r50aq10
+
+- r50aq9 に対して、Tuner HAL-only Issue 1 / 3 / 4 / 5 の固定計画に沿って、DESIGN_JA.md、実装、future_work を更新した。
+- Issue 1: `IFilter.setDataSource(null)` は Android 14 AIDL/Rust nullable filter 境界の構造課題として、既存の `IDescrambler.addPid/removePid` null source filter 課題と同一 future_work ファイル内に集約した。r51 実装対象は non-null source linkage、demux default source、`configure()` clear、error mapping の確認に限定した。
+- Issue 3 / 4: frontend status support 判定を `statusCaps`、`getStatus()`、`getFrontendStatusReadiness()` の共通 SSOT に寄せ、`getStatus()` は caps外 type を `INVALID_ARGUMENT`、readiness は caps外 type を `UNSUPPORTED` 要素返却に固定した。未測定 `SNR` / `SIGNAL_STRENGTH` / `SIGNAL_QUALITY` を 0 値で成功返却する経路を削除した。
+- Issue 4: readiness 一律 `STABLE` を廃止し、backend unavailable は `UNAVAILABLE`、tune/probe 中は `UNSTABLE`、有効状態のみ `STABLE` にした。
+- Issue 5: `bitWidthOfLengthField` は r51 TS-only profile として `0/12` のみ受理し、その他を `INVALID_ARGUMENT` に変更した。`SectionCondition::matches()` は正規化済み `length_field_bits` を受け取るようにし、隠れ 12bit 固定を除去した。
+- この環境では Android/Soong build、Rust unit test実行、VTS、実機確認は未実施。
+
+## r50aq9
+
+- r50aq8 に対して、Issue 2 の別 descrambler 間同一 demux/generation/PID 排他の Result 契約を AOSP Result semantics に合わせて `INVALID_STATE` に固定した。
+- 実装は既に `INVALID_STATE` を返していたため、`DESIGN_JA.md` の `INVALID_ARGUMENT` 表記を `INVALID_STATE` へ修正し、実装と設計文書の不一致を解消した。
+- PID値・source filter object 自体の不正ではなく、active descrambler registry 上の所有状態衝突として扱うことを明記した。
+- 今回は設計文書の契約固定のみであり、テスト不足、Soong build、Rust unit test、VTS、実機確認は未実施。
+
+## r50aq8
+
+- r50aq7 に対して、revised3照合で残った未達のうち、テスト不足以外の実装・設計文書未達だけを対象に修正した。問題点1の Android 14 AIDL/Rust backend 境界課題は引き続き実装対象外として別管理する。
+- Issue 2: 同一 descrambler 内の同一PIDは置換 semantics、別 descrambler 間の同一 demux/generation/PID は排他という契約を `DESIGN_JA.md` に明記した。これにより、AOSP同一PID置換とHAL内部の二重復号防止を分離した。
+- Issue 3: scan terminal state 保存は clear付き helper に統一し、worker normal/abnormal exit hook と spawn failure 経路で terminal state を active `scan_session` に残さない実装へ整理した。
+- Issue 4: runtime path は outcome付き `SectionAssembler::push_payload_with_outcome()` のみを使う方針を維持し、単純 `push_payload()` を crate-internal API に下げて release runtime の public API境界から外した。
+- 項目8: DVR cleanup step result を `Success` / `SafeNoOp` / `Failed` / `Unknown` / `SkippedDueToWorkerFailureContext` に分類し、best-effort の未確認stepを成功扱いしないようにした。`cleanup_complete=true` は全stepが成功または安全no-opと確認できた場合だけに限定した。
+- `DESIGN_JA.md` の r50aq5 固有表記を r50aq8 / r50aq5以降の契約表現へ更新した。
+- テスト不足として前回列挙された callback-level / failure-injection / peer lifecycle 追加テストは、今回の指示範囲外として未追加。Android/Soong build、Rust unit test実行、VTS、実機確認も未実施。
+
+## r50aq7
+
+- r50aq6 に対して、Tuner HAL-only 問題点6の LNB profile 不整合のみを対象に修正した。問題点1・2の r50aq6 修正は維持し、それ以外の実装範囲には触れていない。
+- `DESIGN_JA.md` の LNB 固定 profile と判定表を更新し、px4_drv 系で LNB 15V 成功扱いにする対象を `px4video*` family のみに限定した。
+- `pxmlt5video*` は対応デバイス仕様上 LNB 電源非対応、`pxmlt8video*` と `isdb6014video*` は仕様未確定として、r50aq7 では `NoPower` / `NONE` のみ成功に固定した。
+- 実装の `LnbDeviceProfile` から `PxMltDevice15VOnly` を削除し、`pxmlt5video*` / `pxmlt8video*` / `isdb6014video*` を `NoPower` に割り当てるよう変更した。
+- LNB profile detection と voltage policy の regression test を更新し、MLT/DTV02A 系が 15V を成功扱いしないことを固定した。
+- この環境では Android/Soong build、Rust unit test実行、VTS、実機確認は未実施。
+
+## r50aq6
+
+- r50aq5 のビルド前レビューで残した Tuner HAL-only 問題点1・2のみを対象に修正した。LNB profile / DESIGN_JA.md の問題点6は今回スコープ外として未変更。
+- 問題点1: descrambler key token の実 token を 8-byte opaque binary ID に変更し、`setKeyToken()` 入口の registry 解決前に 0 byte と 17 byte以上を拒否するようにした。長い診断用 token 名は成功経路から排除した。
+- 問題点2: record filter の `TsRecord` callback event は configured TS/SC index mask に一致する observed index がある場合だけ生成し、index hit がない packet では event を抑制するようにした。
+- それぞれ token 長・unknown token・旧診断 token 拒否、record event の抑制/TS index hit/SC index hit の regression test を追加した。
+- この環境では Android/Soong build、Rust unit test実行、VTS、実機確認は未実施。
+
 ## r50aq5
 
 - r50aq4 に対して、問題点1を Android 14 AIDL/Rust backend 境界の構造課題として実装対象外へ退避し、Tuner HAL 内で実装可能な Issue 2 / Issue 3 / Issue 4 / 項目8 の4件をこの順で補正した。

@@ -14,7 +14,7 @@ android_test {
         "tests/src/**/*.kt",
         "src/com/maleicacid/tvinput/db/TvInputDatabase.kt",
         "src/com/maleicacid/tvinput/reservation/ReservationPolicy.kt",
-        "../tis/src/com/maleicacid/tvinput/common/ChannelKeys.kt",
+        "//vendor/maleicacid/tv/tis:maleicacid_tvinput_channel_keys_sources",
     ],
     manifest: "tests/AndroidManifest.xml",
     sdk_version: "system_current",
