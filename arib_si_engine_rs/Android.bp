@@ -20,7 +20,6 @@ rust_test {
     crate_name: "maleicacid_arib_si_engine_rs_test",
     srcs: ["src/lib.rs"],
     edition: "2021",
-    product_available: true,
     rustlibs: [
         "libjni",
     ],
