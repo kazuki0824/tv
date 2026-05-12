@@ -102,7 +102,7 @@ class SetupActivity : Activity(), ChannelScanManager.Listener {
                     val diagnostics = state.result.diagnostics.joinToString("\n") { "${it.candidate.displayChannel}: ${it.message}" }
                     statusView.text = "${state.purpose} complete\nscanned=${state.result.scanned} published=${state.result.published}" +
                         if (diagnostics.isNotBlank()) "\n$diagnostics" else ""
-                    if (state.purpose == ScanPurpose.SETUP_SCAN && state.generation == setupGeneration && state.result.published > 0) {
+                    if (shouldFinishSetupForStateForTest(state, setupGeneration, invalidInputId)) {
                         setResult(RESULT_OK)
                         finish()
                     }
@@ -134,6 +134,27 @@ class SetupActivity : Activity(), ChannelScanManager.Listener {
         }
     }
 
+    companion object {
+        fun scanStartAllowedForTest(candidateInputId: String?, isOwnInputId: Boolean): Boolean =
+            !candidateInputId.isNullOrBlank() && isOwnInputId
+
+        fun shouldFinishSetupForStateForTest(
+            state: ScanState,
+            activeSetupGeneration: Int?,
+            invalidInputId: Boolean,
+        ): Boolean = shouldFinishSetupForState(state, activeSetupGeneration, invalidInputId)
+
+        private fun shouldFinishSetupForState(
+            state: ScanState,
+            activeSetupGeneration: Int?,
+            invalidInputId: Boolean,
+        ): Boolean = state is ScanState.Completed &&
+            !invalidInputId &&
+            activeSetupGeneration != null &&
+            state.purpose == ScanPurpose.SETUP_SCAN &&
+            state.generation == activeSetupGeneration &&
+            state.result.published > 0
+    }
 
     override fun onDestroy() {
         ChannelScanManager.removeListener(this)

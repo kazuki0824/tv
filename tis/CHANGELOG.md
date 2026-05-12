@@ -1,3 +1,11 @@
+## r50bk10
+
+- r50bk8 completion 版で残っていた完了条件未達を仕掛かり範囲に限定して再固定した。
+- SetupActivity の generation / purpose / published 件数判定を pure helper 化し、stale setup Completed、boot/background Completed、invalid inputId では成功終了しないことを test で固定した。
+- Program publish の required query failure、insert failure、obsolete delete failure、retry failureClass、backoff / attempts / retention を testable boundary として固定した。
+- publish 失敗時に signature cache を commit せず、同一入力の retry が unchanged skip されないことを test で固定した。
+- Android/Soong build、Kotlin compile、instrumentation test 実行、atest、VTS、CTS、実機確認はこの環境では未実施。
+
 ## r50bk8-rerelease
 
 - r50bk8 TIS / arib_si_engine_rs 追加修正計画の7セクションに対応した。

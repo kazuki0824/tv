@@ -256,23 +256,35 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
         )
     }
 
-    private fun retryBackoffMs(attempt: Int, serviceKey: ServiceKey, windowStartMs: Long, failureClass: String): Long {
-        val base = when (attempt.coerceAtLeast(1)) {
-            1 -> 60_000L
-            2 -> 5 * 60_000L
-            3 -> 15 * 60_000L
-            else -> 60 * 60_000L
-        }
-        val hash = (serviceKey.hashCode() * 31 + windowStartMs.hashCode() * 17 + failureClass.hashCode()).let { if (it == Int.MIN_VALUE) 0 else kotlin.math.abs(it) }
-        val jitterPercent = (hash % 41) - 20 // deterministic ±20%
-        return base + (base * jitterPercent / 100)
-    }
+    private fun retryBackoffMs(attempt: Int, serviceKey: ServiceKey, windowStartMs: Long, failureClass: String): Long =
+        retryBackoffMsForTest(attempt, serviceKey, windowStartMs, failureClass)
+
+    fun retryWindowCountForTest(): Int = retryWindows.size
+
+    fun retryFailureClassesForTest(): Set<String> = retryWindows.keys.map { it.failureClass }.toSet()
+
+    fun droppedRetryWindowCountForTest(serviceKey: ServiceKey): Int = droppedRetryWindowCountByService[serviceKey] ?: 0
 
     companion object {
         private const val MAX_RETRY_WINDOWS_PER_SERVICE = 16
         private const val MAX_RETRY_WINDOWS_TOTAL = 128
-        private const val MAX_RETRY_ATTEMPTS = 10
-        private const val RETRY_RETENTION_MS = 24 * 60 * 60 * 1000L
+        private const val MAX_RETRY_ATTEMPTS = MAX_RETRY_ATTEMPTS_FOR_TEST
+        const val RETRY_RETENTION_MS_FOR_TEST: Long = 24 * 60 * 60 * 1000L
+        const val MAX_RETRY_ATTEMPTS_FOR_TEST: Int = 10
+
+        private const val RETRY_RETENTION_MS = RETRY_RETENTION_MS_FOR_TEST
+
+        fun retryBackoffMsForTest(attempt: Int, serviceKey: ServiceKey, windowStartMs: Long, failureClass: String): Long {
+            val base = when (attempt.coerceAtLeast(1)) {
+                1 -> 60_000L
+                2 -> 5 * 60_000L
+                3 -> 15 * 60_000L
+                else -> 60 * 60_000L
+            }
+            val hash = (serviceKey.hashCode() * 31 + windowStartMs.hashCode() * 17 + failureClass.hashCode()).let { if (it == Int.MIN_VALUE) 0 else kotlin.math.abs(it) }
+            val jitterPercent = (hash % 41) - 20 // deterministic ±20%
+            return base + (base * jitterPercent / 100)
+        }
 
         fun filterServiceKeysForMode(
             mode: ChannelScanController.PublishMode,

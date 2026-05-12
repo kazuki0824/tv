@@ -1,3 +1,8 @@
+## r50bk10
+
+- r50bk8 completion 版からの追加として、provider-data JSON v1 の golden / deterministic signature / hard-limit fallback の Rust unit test を保持し、TIS 側完了条件の testable boundary と整合する形にした。
+- Rust provider-data API の Android/Soong build、Rust unit test 実行、atest、VTS、CTS、実機確認はこの環境では未実施。
+
 ## r50bk8-rerelease
 
 - r50bk8 TIS / arib_si_engine_rs 追加修正計画の provider-data / EIT authoritative delete / malformed descriptor 境界に対応した。
