@@ -686,17 +686,21 @@ pub fn event_descriptors_to_json(desc: &EventDescriptors) -> String {
 }
 
 fn descriptor_diagnostic_to_json(d: &DescriptorDiagnostic) -> String {
+    let raw_prefix_hex = hex_prefix(&d.raw_prefix, 16);
     format!(
-        "{{\"parseStatus\":\"{}\",\"tag\":{},\"offset\":{},\"declaredLength\":{},\"remainingLength\":{},\"rawPrefix\":\"{}\",\"message\":\"{}\",\"serviceKey\":null,\"eventId\":null,\"pid\":null,\"tableId\":null,\"sectionNumber\":null}}",
+        "{{\"parseStatus\":\"{}\",\"tag\":{},\"offset\":{},\"declaredLength\":{},\"actualRemainingLength\":{},\"remainingLength\":{},\"rawPrefixHex\":\"{}\",\"rawPrefix\":\"{}\",\"message\":\"{}\",\"serviceKey\":null,\"eventId\":null,\"pid\":null,\"tableId\":null,\"sectionNumber\":null}}",
         d.parse_status.as_str(),
         d.descriptor_tag,
         d.offset,
         d.declared_length,
         d.remaining_length,
-        hex_prefix(&d.raw_prefix, 16),
+        d.remaining_length,
+        raw_prefix_hex,
+        raw_prefix_hex,
         json_escape(&d.message)
     )
 }
+
 
 fn event_group_to_json(group: &EventGroupDescriptor) -> String {
     let events = group.events.iter().map(event_group_reference_to_json).collect::<Vec<_>>().join(",");
@@ -1054,7 +1058,8 @@ mod r51_descriptor_coverage_tests {
         assert!(json.contains("\"diagnostics\":["));
         assert!(json.contains("\"parseStatus\":\"MalformedLength\""));
         assert!(json.contains("\"tag\":77"));
-        assert!(json.contains("\"rawPrefix\":\"4d06"));
+        assert!(json.contains("\"rawPrefixHex\":\"4d06"));
+        assert!(json.contains("\"actualRemainingLength\":"));
         assert!(json.contains("\"serviceKey\":null"));
         assert!(!json.contains("diagnosticCode"));
         assert!(!json.contains("descriptorOffset"));

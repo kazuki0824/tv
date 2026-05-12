@@ -10,12 +10,14 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["parseStatus", "tag", "offset", "declaredLength", "remainingLength", "rawPrefix", "message"],
+        "required": ["parseStatus", "tag", "offset", "declaredLength", "actualRemainingLength", "rawPrefixHex", "message"],
         "properties": {
           "parseStatus": { "type": "string" },
           "tag": { "type": "integer", "minimum": 0, "maximum": 255 },
           "offset": { "type": "integer", "minimum": 0 },
           "declaredLength": { "type": "integer", "minimum": 0 },
+          "actualRemainingLength": { "type": "integer", "minimum": 0 },
+          "rawPrefixHex": { "type": "string" },
           "remainingLength": { "type": "integer", "minimum": 0 },
           "rawPrefix": { "type": "string" },
           "message": { "type": "string" },

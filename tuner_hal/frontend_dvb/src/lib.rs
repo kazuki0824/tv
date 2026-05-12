@@ -471,6 +471,9 @@ impl DvbFrontendBackend {
                     if !is_japan_bs_if_frequency_hz(if_frequency_hz) {
                         return Err(HalError::InvalidArgument("ISDB-S TSID selection is valid only for exact Japan BS IF frequencies".into()));
                     }
+                    if stream_id < 12 {
+                        return Err(HalError::InvalidArgument("BS STREAM_ID must be an absolute TSID; values 0..11 are relative stream numbers".into()));
+                    }
                 }
                 Ok(Some(stream_id))
             },
@@ -511,6 +514,9 @@ impl DvbFrontendBackend {
                     }
                     if !is_japan_bs_if_frequency_hz(request.frequency) {
                         return Err(HalError::InvalidArgument("ISDB-S TSID selection is valid only for exact Japan BS IF frequencies".into()));
+                    }
+                    if stream_id < 12 {
+                        return Err(HalError::InvalidArgument("BS STREAM_ID must be an absolute TSID; values 0..11 are relative stream numbers".into()));
                     }
                 }
                 Ok((Some(stream_id), Some(FrontendStreamIdKind::AbsoluteStreamId)))
@@ -1411,6 +1417,13 @@ mod tests {
             system: Some(FrontendSystem::IsdbS),
         };
         assert!(DvbFrontendBackend::validate_stream_id(&req).is_err());
+
+        let relative_range_absolute = DvbTuneRequest {
+            stream_id: Some(11),
+            stream_id_kind: Some(FrontendStreamIdKind::AbsoluteStreamId),
+            ..req
+        };
+        assert!(DvbFrontendBackend::validate_stream_id(&relative_range_absolute).is_err());
     }
 
     #[test]
@@ -1839,6 +1852,13 @@ mod bs_cs_contract_tests {
             DvbFrontendBackend::normalize_stream_id_from_common(&bs_base_request(
                 Some(0),
                 Some(FrontendStreamIdKind::RelativeStreamNumber),
+            ))
+            .is_err()
+        );
+        assert!(
+            DvbFrontendBackend::normalize_stream_id_from_common(&bs_base_request(
+                Some(11),
+                Some(FrontendStreamIdKind::AbsoluteStreamId),
             ))
             .is_err()
         );

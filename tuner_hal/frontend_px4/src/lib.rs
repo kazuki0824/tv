@@ -693,6 +693,7 @@ impl Px4FrontendBackend {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
+            .custom_flags(O_NONBLOCK)
             .open(&path)
             .map_err(|e| {
                 let err = classify_open_error(&path, &e);
@@ -707,12 +708,24 @@ impl Px4FrontendBackend {
         if self.ts_reader.is_some() {
             return Ok(());
         }
+        self.ensure_control_open()?;
         let path = self.selection.control_path.as_path().to_path_buf();
-        let file = OpenOptions::new()
-            .read(true)
-            .custom_flags(O_NONBLOCK)
-            .open(&path)
-            .map_err(|e| classify_open_error(&path, &e))?;
+        let file = self
+            .control
+            .as_ref()
+            .ok_or_else(|| HalError::InvalidState("px4 control device is not open".into()))?
+            .try_clone()
+            .map_err(|e| {
+                let err = HalError::Io {
+                    backend: "px4",
+                    operation: "ts_reader_dup",
+                    path: Some(path.clone()),
+                    errno: e.raw_os_error(),
+                    message: format!("px4 ts reader fd clone failed: {}", e),
+                };
+                self.state.last_error = Some(err.to_string());
+                err
+            })?;
         self.ts_reader = Some(Arc::new(Mutex::new(Px4LiveStreamReaderState {
             reader: file,
             reader_path: path,
@@ -925,6 +938,31 @@ mod tests {
     }
 
     #[test]
+    fn live_stream_reader_clones_control_fd_instead_of_reopening_device() {
+        let mut backend = Px4FrontendBackend::new_with_control_path(
+            0,
+            std::path::PathBuf::from("/dev/null"),
+        );
+        backend.ensure_control_open().unwrap();
+        let control_fd = backend.control.as_ref().unwrap().as_raw_fd();
+
+        let reader = backend.live_stream_reader().unwrap().unwrap();
+        let reader_fd = reader.inner.lock().unwrap().reader.as_raw_fd();
+        assert_ne!(control_fd, reader_fd);
+        assert_eq!(
+            reader.inner.lock().unwrap().reader_path.as_path(),
+            std::path::Path::new("/dev/null")
+        );
+
+        let first_reader_state = backend.ts_reader.as_ref().unwrap().clone();
+        let second_reader = backend.live_stream_reader().unwrap().unwrap();
+        assert!(std::sync::Arc::ptr_eq(
+            &first_reader_state,
+            &second_reader.inner
+        ));
+    }
+
+    #[test]
     fn terrestrial_frequency_maps_to_px4_legacy_channel_and_addfreq() {
         let request = FrontendTuneRequest {
             system: FrontendSystem::IsdbT,
@@ -1003,7 +1041,7 @@ mod tests {
     }
 
     #[test]
-    fn satellite_tsid_maps_to_px4_bs_legacy_carrier_and_slot() {
+    fn satellite_tsid_is_passed_to_px4_bs_legacy_slot_directly() {
         let request = FrontendTuneRequest {
             system: FrontendSystem::IsdbS,
             frequency: 1_049_480_000,
@@ -1016,7 +1054,7 @@ mod tests {
         let mapped = map_tune_request_to_px4(&request).unwrap();
         assert_eq!(mapped.system_code, super::PTX_ISDB_S_SYSTEM);
         assert_eq!(mapped.freq_no, 0);
-        assert_eq!(mapped.slot, 0);
+        assert_eq!(mapped.slot, 0x4010);
     }
 
     #[test]

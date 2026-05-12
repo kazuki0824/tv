@@ -1,3 +1,11 @@
+## r50bl
+
+- `px4_stream_selector_direct_slot_v5.patch` を適用し、px4 backend の BS `STREAM_ID` を TSID→relative slot 変換せず absolute TSID 値のまま legacy `slot` へ渡す方針に更新した。
+- AOSP SDK default の `streamIdType=STREAM_ID` / `streamId=-1` は selector なしとして扱い、CS110 では selector 付き request を拒否する境界を固定した。
+- px4 legacy chardev の二重 open を避けるため、live TS reader は control fd の `try_clone()` で作成する方針に変更した。
+- `DESIGN_JA.md`、`INTEGRATION.md`、`開発規則.md` に、px4 BS absolute TSID direct-slot は px4_drv `feat/android-ddk` 系のように BS `slot >= 8` reject が無効な driver を前提にすること、公開 develop 相当では使用不可であること、TSID→relative slot 変換表を互換 fallback として復活させないことを明記した。
+- この環境では Android/Soong build、Rust unit test、atest、VTS、CTS、実機確認は未実施。静的差分確認のみ実施した。
+
 ## r50bc
 
 - `tuner_hal_multi2_error_api_independence_fixed_plan_acceptance_revised.md` の固定方針に従い、Tuner HAL descrambler の改善候補10/13だけを修正した。

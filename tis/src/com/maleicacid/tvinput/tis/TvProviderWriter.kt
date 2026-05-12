@@ -239,7 +239,6 @@ class TvProviderWriter private constructor(
         put(TvContract.Programs.COLUMN_LONG_DESCRIPTION, program.description)
         if (program.audioLanguage.isNullOrBlank()) putNull(TvContract.Programs.COLUMN_AUDIO_LANGUAGE) else put(TvContract.Programs.COLUMN_AUDIO_LANGUAGE, program.audioLanguage)
         if (program.broadcastGenre.isNullOrBlank()) putNull(TvContract.Programs.COLUMN_BROADCAST_GENRE) else put(TvContract.Programs.COLUMN_BROADCAST_GENRE, TvContract.Programs.Genres.encode(program.broadcastGenre))
-        putNull(TvContract.Programs.COLUMN_CANONICAL_GENRE)
         if (program.contentRatings.isEmpty()) putNull(TvContract.Programs.COLUMN_CONTENT_RATING) else put(TvContract.Programs.COLUMN_CONTENT_RATING, program.contentRatings.distinct().sorted().joinToString(","))
         put(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_FLAG1, if (program.requiresCas) 1 else 0)
         put(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_FLAG2, if (program.unsupportedCas) 1 else 0)
@@ -267,7 +266,6 @@ class TvProviderWriter private constructor(
             TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS,
             TvContract.Programs.COLUMN_AUDIO_LANGUAGE,
             TvContract.Programs.COLUMN_BROADCAST_GENRE,
-            TvContract.Programs.COLUMN_CANONICAL_GENRE,
             TvContract.Programs.COLUMN_CONTENT_RATING,
             TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA,
             TvContract.Programs.COLUMN_INTERNAL_PROVIDER_FLAG1,

@@ -16,13 +16,6 @@ pub enum Px4SatBand {
     Cs110,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Px4BsTsidEntry {
-    if_frequency_hz: u32,
-    relative_stream_number: u16,
-    tsid: u16,
-}
-
 const PX4_ISDBT_UHF_FREQ_NO_MIN: i32 = 63;
 const PX4_ISDBT_UHF_FREQ_NO_MAX: i32 = 112;
 const PX4_ISDBT_UHF_BASE_KHZ: i32 = 95_143;
@@ -43,163 +36,6 @@ const PX4_CS_BASE_IF_HZ: u64 = 1_613_000_000;
 const PX4_CS_STEP_HZ: u64 = 40_000_000;
 const PX4_CS_FREQ_NO_MIN: i32 = 12;
 const PX4_CS_FREQ_NO_MAX: i32 = 23;
-
-// px4 chardev backend-local mapping。product scan SSOT ではなく、
-// absolute TSID を px4 の relative slot ioctl 値へ落とすためだけに使う。
-// CS110 は TSID による frontend 選局を行わない。
-const PX4_BS_TSID_TABLE: &[Px4BsTsidEntry] = &[
-    Px4BsTsidEntry {
-        if_frequency_hz: 1_049_480_000,
-        relative_stream_number: 0,
-        tsid: 0x4010,
-    },
-    Px4BsTsidEntry {
-        if_frequency_hz: 1_049_480_000,
-        relative_stream_number: 1,
-        tsid: 0x4011,
-    },
-    Px4BsTsidEntry {
-        if_frequency_hz: 1_049_480_000,
-        relative_stream_number: 2,
-        tsid: 0x4012,
-    },
-    Px4BsTsidEntry {
-        if_frequency_hz: 1_087_840_000,
-        relative_stream_number: 0,
-        tsid: 0x4030,
-    },
-    Px4BsTsidEntry {
-        if_frequency_hz: 1_087_840_000,
-        relative_stream_number: 1,
-        tsid: 0x4631,
-    },
-    Px4BsTsidEntry {
-        if_frequency_hz: 1_087_840_000,
-        relative_stream_number: 2,
-        tsid: 0x4632,
-    },
-    Px4BsTsidEntry {
-        if_frequency_hz: 1_126_200_000,
-        relative_stream_number: 0,
-        tsid: 0x4450,
-    },
-    Px4BsTsidEntry {
-        if_frequency_hz: 1_126_200_000,
-        relative_stream_number: 1,
-        tsid: 0x4451,
-    },
-    Px4BsTsidEntry {
-        if_frequency_hz: 1_202_920_000,
-        relative_stream_number: 0,
-        tsid: 0x4090,
-    },
-    Px4BsTsidEntry {
-        if_frequency_hz: 1_202_920_000,
-        relative_stream_number: 1,
-        tsid: 0x4092,
-    },
-    Px4BsTsidEntry {
-        if_frequency_hz: 1_241_280_000,
-        relative_stream_number: 0,
-        tsid: 0x46b0,
-    },
-    Px4BsTsidEntry {
-        if_frequency_hz: 1_241_280_000,
-        relative_stream_number: 1,
-        tsid: 0x46b1,
-    },
-    Px4BsTsidEntry {
-        if_frequency_hz: 1_241_280_000,
-        relative_stream_number: 2,
-        tsid: 0x46b2,
-    },
-    Px4BsTsidEntry {
-        if_frequency_hz: 1_241_280_000,
-        relative_stream_number: 3,
-        tsid: 0x46b3,
-    },
-    Px4BsTsidEntry {
-        if_frequency_hz: 1_279_640_000,
-        relative_stream_number: 0,
-        tsid: 0x40d0,
-    },
-    Px4BsTsidEntry {
-        if_frequency_hz: 1_279_640_000,
-        relative_stream_number: 1,
-        tsid: 0x40d1,
-    },
-    Px4BsTsidEntry {
-        if_frequency_hz: 1_279_640_000,
-        relative_stream_number: 2,
-        tsid: 0x46d2,
-    },
-    Px4BsTsidEntry {
-        if_frequency_hz: 1_318_000_000,
-        relative_stream_number: 0,
-        tsid: 0x40f1,
-    },
-    Px4BsTsidEntry {
-        if_frequency_hz: 1_318_000_000,
-        relative_stream_number: 1,
-        tsid: 0x40f2,
-    },
-    Px4BsTsidEntry {
-        if_frequency_hz: 1_318_000_000,
-        relative_stream_number: 2,
-        tsid: 0x48f3,
-    },
-    Px4BsTsidEntry {
-        if_frequency_hz: 1_394_720_000,
-        relative_stream_number: 0,
-        tsid: 0x4730,
-    },
-    Px4BsTsidEntry {
-        if_frequency_hz: 1_394_720_000,
-        relative_stream_number: 1,
-        tsid: 0x4731,
-    },
-    Px4BsTsidEntry {
-        if_frequency_hz: 1_394_720_000,
-        relative_stream_number: 2,
-        tsid: 0x4732,
-    },
-    Px4BsTsidEntry {
-        if_frequency_hz: 1_394_720_000,
-        relative_stream_number: 3,
-        tsid: 0x4733,
-    },
-    Px4BsTsidEntry {
-        if_frequency_hz: 1_433_080_000,
-        relative_stream_number: 0,
-        tsid: 0x4750,
-    },
-    Px4BsTsidEntry {
-        if_frequency_hz: 1_433_080_000,
-        relative_stream_number: 1,
-        tsid: 0x4751,
-    },
-    Px4BsTsidEntry {
-        if_frequency_hz: 1_433_080_000,
-        relative_stream_number: 2,
-        tsid: 0x4752,
-    },
-    Px4BsTsidEntry {
-        if_frequency_hz: 1_471_440_000,
-        relative_stream_number: 0,
-        tsid: 0x4770,
-    },
-    Px4BsTsidEntry {
-        if_frequency_hz: 1_471_440_000,
-        relative_stream_number: 1,
-        tsid: 0x4971,
-    },
-    Px4BsTsidEntry {
-        if_frequency_hz: 1_471_440_000,
-        relative_stream_number: 2,
-        tsid: 0x4972,
-    },
-];
-
 
 fn hz_to_nearest_khz(hz: u64) -> Result<i32, HalError> {
     let rounded = (hz + 500) / 1_000;
@@ -366,61 +202,30 @@ pub fn map_relative_stream_number_to_px4_slot(
     }
 }
 
-fn frequency_matches(a_hz: u64, b_hz: u32) -> bool {
-    a_hz == u64::from(b_hz)
-}
-
-pub fn map_tsid_to_px4_relative_stream_number(if_hz: u64, tsid: u16) -> Option<u16> {
-    PX4_BS_TSID_TABLE
-        .iter()
-        .find(|entry| entry.tsid == tsid && frequency_matches(if_hz, entry.if_frequency_hz))
-        .map(|entry| entry.relative_stream_number)
-}
-
-pub fn map_bs_relative_stream_number_to_tsid(
-    if_hz: u64,
-    relative_stream_number: u16,
-) -> Option<u16> {
-    PX4_BS_TSID_TABLE
-        .iter()
-        .find(|entry| {
-            entry.relative_stream_number == relative_stream_number
-                && frequency_matches(if_hz, entry.if_frequency_hz)
-        })
-        .map(|entry| entry.tsid)
-}
-
 pub fn reportable_bs_tsid_for_scan(
-    if_hz: u64,
+    _if_hz: u64,
     raw_stream_id: u32,
     stream_id_kind: Option<FrontendStreamIdKind>,
 ) -> Option<u16> {
-    let value = u16::try_from(raw_stream_id).ok()?;
     match stream_id_kind {
-        Some(FrontendStreamIdKind::RelativeStreamNumber) => {
-            map_bs_relative_stream_number_to_tsid(if_hz, value)
+        Some(FrontendStreamIdKind::RelativeStreamNumber) => None,
+        Some(FrontendStreamIdKind::AbsoluteStreamId) | None if raw_stream_id >= 12 => {
+            u16::try_from(raw_stream_id).ok()
         }
-        Some(FrontendStreamIdKind::AbsoluteStreamId) | None => PX4_BS_TSID_TABLE
-            .iter()
-            .find(|entry| entry.tsid == value && frequency_matches(if_hz, entry.if_frequency_hz))
-            .map(|entry| entry.tsid),
+        Some(FrontendStreamIdKind::AbsoluteStreamId) | None => None,
     }
 }
 
-fn map_absolute_stream_id_to_px4_slot(
-    if_hz: u64,
-    stream_id: u16,
-    band: Px4SatBand,
-) -> Result<i32, HalError> {
+// This direct-slot path intentionally targets the project px4_drv feat/android-ddk
+// contract where BS slot >= 8 is not rejected and PTX_SET_CHANNEL.slot is
+// forwarded as the demod stream_id. Do not reintroduce a TSID -> relative slot
+// table here as a compatibility fallback for public develop-style drivers.
+fn map_absolute_stream_id_to_px4_slot(stream_id: u16, band: Px4SatBand) -> Result<i32, HalError> {
     match band {
-        Px4SatBand::Bs => {
-            let Some(relative) = map_tsid_to_px4_relative_stream_number(if_hz, stream_id) else {
-                return Err(HalError::InvalidArgument(format!(
-                    "px4 BS TSID is not in the backend-local TSID table: 0x{stream_id:04x}"
-                )));
-            };
-            map_relative_stream_number_to_px4_slot(relative, band)
-        }
+        Px4SatBand::Bs if stream_id >= 12 => Ok(i32::from(stream_id)),
+        Px4SatBand::Bs => Err(HalError::InvalidArgument(format!(
+            "px4 BS STREAM_ID must be an absolute TSID, not a relative stream number: {stream_id}"
+        ))),
         Px4SatBand::Cs110 => Err(HalError::InvalidArgument(format!(
             "CS110 TSID frontend selection is not supported by policy: 0x{stream_id:04x}"
         ))),
@@ -485,7 +290,7 @@ pub fn map_tune_request_to_px4(request: &FrontendTuneRequest) -> Result<Px4TuneR
                             map_relative_stream_number_to_px4_slot(stream_id, band)?
                         }
                         Some(FrontendStreamIdKind::AbsoluteStreamId) | None => {
-                            map_absolute_stream_id_to_px4_slot(request.frequency, stream_id, band)?
+                            map_absolute_stream_id_to_px4_slot(stream_id, band)?
                         }
                     }
                 }
@@ -576,11 +381,11 @@ mod tests {
     }
 
     #[test]
-    fn maps_bs_tsid_to_relative_slot_inside_px4_backend() {
+    fn maps_bs_tsid_to_direct_slot_inside_px4_backend() {
         let mapped = map_tune_request_to_px4(&bs_request(0x4011)).unwrap();
         assert_eq!(mapped.system_code, PTX_ISDB_S_SYSTEM);
         assert_eq!(mapped.freq_no, 0);
-        assert_eq!(mapped.slot, 1);
+        assert_eq!(mapped.slot, 0x4011);
     }
 
     #[test]
@@ -597,14 +402,14 @@ mod tests {
     }
 
     #[test]
-    fn maps_bs_relative_stream_number_to_reportable_tsid() {
+    fn reports_only_absolute_tsid_for_scan() {
         assert_eq!(
             reportable_bs_tsid_for_scan(
                 1_049_480_000,
                 0,
                 Some(FrontendStreamIdKind::RelativeStreamNumber)
             ),
-            Some(0x4010)
+            None
         );
         assert_eq!(
             reportable_bs_tsid_for_scan(
@@ -614,6 +419,25 @@ mod tests {
             ),
             None
         );
+        assert_eq!(
+            reportable_bs_tsid_for_scan(
+                1_049_480_000,
+                0x4011,
+                Some(FrontendStreamIdKind::AbsoluteStreamId)
+            ),
+            Some(0x4011)
+        );
+    }
+
+    #[test]
+    fn rejects_relative_like_value_in_absolute_stream_id_path() {
+        let request = FrontendTuneRequest {
+            stream_id: Some(3),
+            stream_id_kind: Some(FrontendStreamIdKind::AbsoluteStreamId),
+            ..bs_request(0x4010)
+        };
+        let err = map_tune_request_to_px4(&request).unwrap_err().to_string();
+        assert!(err.contains("absolute TSID"), "{err}");
     }
 
     #[test]
@@ -719,19 +543,14 @@ mod tests {
     }
 
     #[test]
-    fn bs_tsid_frequency_pair_is_exact() {
-        assert_eq!(
-            map_tsid_to_px4_relative_stream_number(1_471_440_000, 0x4972),
-            Some(2)
-        );
-        assert_eq!(
-            map_tsid_to_px4_relative_stream_number(1_471_440_000, 0x4973),
-            None
-        );
-        assert_eq!(
-            map_tsid_to_px4_relative_stream_number(1_471_440_001, 0x4972),
-            None
-        );
+    fn bs_tsid_is_not_validated_against_backend_local_table() {
+        let request = FrontendTuneRequest {
+            stream_id: Some(0x4973),
+            stream_id_kind: Some(FrontendStreamIdKind::AbsoluteStreamId),
+            ..bs_request(0x4010)
+        };
+        let mapped = map_tune_request_to_px4(&request).unwrap();
+        assert_eq!(mapped.slot, 0x4973);
     }
 
     #[test]

@@ -6,6 +6,8 @@
       "tag": 77,
       "offset": 0,
       "declaredLength": 6,
+      "actualRemainingLength": 3,
+      "rawPrefixHex": "4d06ffffff",
       "remainingLength": 3,
       "rawPrefix": "4d06ffffff",
       "message": "short_event_descriptor event_name length exceeds body",

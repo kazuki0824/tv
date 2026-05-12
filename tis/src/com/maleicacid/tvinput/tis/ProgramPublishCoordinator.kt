@@ -145,6 +145,7 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
      */
     private fun drainRetryWindowsFor(allowed: Set<ServiceKey>): List<EpgUpdateWindow> {
         val now = System.currentTimeMillis()
+        discardExpiredRetryWindows(now)
         return retryWindows
             .filterKeys { it.serviceKey in allowed }
             .values
@@ -189,6 +190,10 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
                 }
                 val attempt = window.attempt + 1
                 val firstFailureAt = if (window.firstFailureAtMillis > 0L) window.firstFailureAtMillis else now
+                if (now - firstFailureAt > RETRY_RETENTION_MS) {
+                    droppedRetryWindowCountByService[window.serviceKey] = (droppedRetryWindowCountByService[window.serviceKey] ?: 0) + 1
+                    return@forEach
+                }
                 val retry = window.copy(
                     failureClass = failureClass,
                     attempt = attempt,
@@ -259,19 +264,27 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
     private fun retryBackoffMs(attempt: Int, serviceKey: ServiceKey, windowStartMs: Long, failureClass: String): Long =
         retryBackoffMsForTest(attempt, serviceKey, windowStartMs, failureClass)
 
-    fun retryWindowCountForTest(): Int = retryWindows.size
+    fun retryWindowCountForTest(): Int {
+        discardExpiredRetryWindows(System.currentTimeMillis())
+        return retryWindows.size
+    }
 
-    fun retryFailureClassesForTest(): Set<String> = retryWindows.keys.map { it.failureClass }.toSet()
+    fun retryFailureClassesForTest(): Set<String> {
+        discardExpiredRetryWindows(System.currentTimeMillis())
+        return retryWindows.keys.map { it.failureClass }.toSet()
+    }
 
     fun droppedRetryWindowCountForTest(serviceKey: ServiceKey): Int = droppedRetryWindowCountByService[serviceKey] ?: 0
 
     companion object {
-        private const val MAX_RETRY_WINDOWS_PER_SERVICE = 16
-        private const val MAX_RETRY_WINDOWS_TOTAL = 128
-        private const val MAX_RETRY_ATTEMPTS = MAX_RETRY_ATTEMPTS_FOR_TEST
         const val RETRY_RETENTION_MS_FOR_TEST: Long = 24 * 60 * 60 * 1000L
         const val MAX_RETRY_ATTEMPTS_FOR_TEST: Int = 10
+        const val MAX_RETRY_WINDOWS_PER_SERVICE_FOR_TEST: Int = 32
+        const val MAX_RETRY_WINDOWS_TOTAL_FOR_TEST: Int = 512
 
+        private const val MAX_RETRY_WINDOWS_PER_SERVICE = MAX_RETRY_WINDOWS_PER_SERVICE_FOR_TEST
+        private const val MAX_RETRY_WINDOWS_TOTAL = MAX_RETRY_WINDOWS_TOTAL_FOR_TEST
+        private const val MAX_RETRY_ATTEMPTS = MAX_RETRY_ATTEMPTS_FOR_TEST
         private const val RETRY_RETENTION_MS = RETRY_RETENTION_MS_FOR_TEST
 
         fun retryBackoffMsForTest(attempt: Int, serviceKey: ServiceKey, windowStartMs: Long, failureClass: String): Long {

@@ -35,8 +35,19 @@ class MaleicacidTvInputService : TvInputService() {
         return createLiveSession(inputId, sessionId, tvAppAttributionSource)
     }
 
-    private fun createLiveSession(inputId: String, tvInputSessionId: String, attributionSource: AttributionSource?): Session =
-        MaleicacidLiveSession(this, inputId, tvInputSessionId, attributionSource)
+    private fun createLiveSession(inputId: String, tvInputSessionId: String, attributionSource: AttributionSource?): Session {
+        // r50bk12: boot/background maintenance must not start in the small window
+        // between TvInputService.onCreateSession() entry and MaleicacidLiveSession
+        // constructor registering an active live session. Mark this boundary explicitly
+        // so ChannelScanManager can defer tuner-consuming work until session creation
+        // either finishes or fails.
+        ChannelScanManager.beginLiveSessionCreation()
+        return try {
+            MaleicacidLiveSession(this, inputId, tvInputSessionId, attributionSource)
+        } finally {
+            ChannelScanManager.finishLiveSessionCreation()
+        }
+    }
 
     private fun fallbackSessionId(inputId: String): String = legacyFallbackSessionIdForTest(inputId)
 

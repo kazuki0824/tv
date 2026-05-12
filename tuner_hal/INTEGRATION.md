@@ -14,6 +14,18 @@
 - VTS config の SSOT は config/tuner_vts_config_aidl_V2.xml と profiles/*.yaml + tools/render_vts_config.py である。
 ```
 
+### 0.1 px4_drv direct-slot 前提の確認
+
+px4 backend で BS `STREAM_ID` を使う product は、対象 kernel driver が px4_drv `feat/android-ddk` 系であり、BS legacy `slot >= 8` reject が無効で、`PTX_SET_CHANNEL.slot` に absolute TSID を渡せることを事前確認する。確認対象は次である。
+
+```text
+- driver/ptx_chrdev.c の BS path で slot >= 8 reject が有効ではないこと
+- PTX_SET_CHANNEL の slot が PTX_ISDB_S_SYSTEM で stream_id として set_stream_id() へ渡ること
+- HAL 側で TSID -> relative slot 変換表を持たず、absolute TSID をそのまま slot に渡すこと
+```
+
+公開 `nns779/px4_drv` develop 相当など、BS `slot >= 8` reject が有効な driver では px4 BS absolute TSID 経路は使用不可である。その構成では px4 BS `STREAM_ID` 対応を product capability、VTS profile、integration note で claim してはならない。
+
 ## 1. 通常 vendor binary 統合
 
 ### 1.1 product makefile

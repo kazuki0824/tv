@@ -1,3 +1,14 @@
+## r50bk12
+
+- TIS 側の r51 設計契約未達修正のみで、arib_si_engine_rs の実装変更はない。
+- Android/Soong build、Rust unit test 実行、atest、VTS、CTS、実機確認はこの環境では未実施。
+
+## r50bk11
+
+- DescriptorDiagnosticV1 の canonical schema を計画どおり `actualRemainingLength` / `rawPrefixHex` を持つ形に更新し、互換用に `remainingLength` / `rawPrefix` も保持するようにした。
+- JSON schema、golden fixture、Rust unit test の期待値を新 schema に合わせた。
+- Android/Soong build、Rust unit test 実行、atest、VTS、CTS、実機確認はこの環境では未実施。
+
 ## r50bk10
 
 - r50bk8 completion 版からの追加として、provider-data JSON v1 の golden / deterministic signature / hard-limit fallback の Rust unit test を保持し、TIS 側完了条件の testable boundary と整合する形にした。

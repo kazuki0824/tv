@@ -587,7 +587,11 @@ class TisR51FixedPlanAcceptanceTest {
     @Test fun bootEpgSyncStartRequiresIdleScanAndNoLiveSession() {
         val active = ChannelScanManager.bootEpgSyncStartDecisionForTest(activeLiveSessionCount = 1, scanRunning = false)
         check(!active.allowed)
-        check(active.reason == "ACTIVE_LIVE_SESSION")
+        check(active.reason == "LIVE_SESSION_STARTING_OR_ACTIVE")
+
+        val creating = ChannelScanManager.bootEpgSyncStartDecisionForTest(activeLiveSessionCount = 0, scanRunning = false, sessionCreationInProgress = true)
+        check(!creating.allowed)
+        check(creating.reason == "LIVE_SESSION_STARTING_OR_ACTIVE")
 
         val scanRunning = ChannelScanManager.bootEpgSyncStartDecisionForTest(activeLiveSessionCount = 0, scanRunning = true)
         check(!scanRunning.allowed)
@@ -601,7 +605,11 @@ class TisR51FixedPlanAcceptanceTest {
     @Test fun backgroundMaintenanceStartRequiresIdleScanAndNoLiveSession() {
         val active = ChannelScanManager.backgroundMaintenanceStartDecisionForTest(activeLiveSessionCount = 1, scanRunning = false)
         check(!active.allowed)
-        check(active.reason == "ACTIVE_LIVE_SESSION")
+        check(active.reason == "LIVE_SESSION_STARTING_OR_ACTIVE")
+
+        val creating = ChannelScanManager.backgroundMaintenanceStartDecisionForTest(activeLiveSessionCount = 0, scanRunning = false, sessionCreationInProgress = true)
+        check(!creating.allowed)
+        check(creating.reason == "LIVE_SESSION_STARTING_OR_ACTIVE")
 
         val scanRunning = ChannelScanManager.backgroundMaintenanceStartDecisionForTest(activeLiveSessionCount = 0, scanRunning = true)
         check(!scanRunning.allowed)

@@ -9930,6 +9930,8 @@ fn nonnegative_i32_to_u32(value: i32) -> Option<u32> {
     u32::try_from(value).ok()
 }
 
+const AOSP_TUNER_INVALID_STREAM_ID: i32 = -1;
+
 fn map_isdbs_stream_selector(
     stream_id: i32,
     stream_id_type: FrontendIsdbsStreamIdType,
@@ -9944,8 +9946,10 @@ fn map_isdbs_stream_selector(
             }
             Ok((None, None))
         }
-        FrontendIsdbsStreamIdType::STREAM_ID
-        | FrontendIsdbsStreamIdType::RELATIVE_STREAM_NUMBER => {
+        FrontendIsdbsStreamIdType::STREAM_ID => {
+            if stream_id == AOSP_TUNER_INVALID_STREAM_ID {
+                return Ok((None, None));
+            }
             if stream_id < 0 {
                 return Err(HalError::InvalidArgument(
                     "ISDB-S stream selector must be non-negative when streamIdType is specified"
@@ -9963,12 +9967,26 @@ fn map_isdbs_stream_selector(
                     "ISDB-S stream selector out of range: {stream_id}"
                 ))
             })?;
-            let kind = if matches!(stream_id_type, FrontendIsdbsStreamIdType::STREAM_ID) {
-                FrontendStreamIdKind::AbsoluteStreamId
-            } else {
-                FrontendStreamIdKind::RelativeStreamNumber
-            };
-            Ok((Some(value), Some(kind)))
+            Ok((Some(value), Some(FrontendStreamIdKind::AbsoluteStreamId)))
+        }
+        FrontendIsdbsStreamIdType::RELATIVE_STREAM_NUMBER => {
+            if stream_id < 0 {
+                return Err(HalError::InvalidArgument(
+                    "ISDB-S relative stream selector must be non-negative".into(),
+                ));
+            }
+            if is_japan_cs110_if_frequency_hz(frequency_hz) {
+                return Err(HalError::InvalidArgument(
+                    "CS110 frontend tune must not carry TSID or relative stream-number selector"
+                        .into(),
+                ));
+            }
+            let value = u32::try_from(stream_id).map_err(|_| {
+                HalError::InvalidArgument(format!(
+                    "ISDB-S relative stream selector out of range: {stream_id}"
+                ))
+            })?;
+            Ok((Some(value), Some(FrontendStreamIdKind::RelativeStreamNumber)))
         }
         _ => Err(HalError::InvalidArgument(format!(
             "unsupported ISDB-S streamIdType: {:?}",
@@ -10471,7 +10489,40 @@ mod discovery_stage_tests {
     use super::*;
 
     #[test]
-    fn relative_scan_stream_id_is_reported_as_tsid_not_slot() {
+    fn aosp_invalid_stream_id_default_is_selector_none() {
+        assert_eq!(
+            map_isdbs_stream_selector(
+                AOSP_TUNER_INVALID_STREAM_ID,
+                FrontendIsdbsStreamIdType::STREAM_ID,
+                1_613_000_000,
+            )
+            .unwrap(),
+            (None, None)
+        );
+    }
+
+    #[test]
+    fn relative_negative_stream_id_is_rejected() {
+        assert!(map_isdbs_stream_selector(
+            AOSP_TUNER_INVALID_STREAM_ID,
+            FrontendIsdbsStreamIdType::RELATIVE_STREAM_NUMBER,
+            1_049_480_000,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn undefined_negative_stream_id_is_rejected() {
+        assert!(map_isdbs_stream_selector(
+            AOSP_TUNER_INVALID_STREAM_ID,
+            FrontendIsdbsStreamIdType::UNDEFINED,
+            1_613_000_000,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn relative_scan_stream_id_is_not_reported_as_tsid() {
         let request = FrontendTuneRequest {
             system: FrontendSystem::IsdbS,
             frequency: 1_049_480_000,
@@ -10481,10 +10532,7 @@ mod discovery_stage_tests {
             bandwidth_hz: None,
             symbol_rate: None,
         };
-        assert_eq!(
-            FrontendHal::reported_scan_input_stream_id(&request),
-            Some(0x4010)
-        );
+        assert_eq!(FrontendHal::reported_scan_input_stream_id(&request), None);
     }
 
     #[test]

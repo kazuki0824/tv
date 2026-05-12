@@ -23,6 +23,7 @@ object ChannelScanManager {
     private val running = AtomicBoolean(false)
     private val cancelRequested = AtomicBoolean(false)
     private val activeLiveSessions = AtomicInteger(0)
+    private val sessionCreationsInProgress = AtomicInteger(0)
     private val nextGeneration = AtomicInteger(0)
     @Volatile private var state: ScanState = ScanState.Idle
     @Volatile private var controller: ChannelScanController? = null
@@ -60,9 +61,25 @@ object ChannelScanManager {
     }
 
     fun activeLiveSessionCountForTest(): Int = activeLiveSessions.get()
+    fun sessionCreationInProgressCountForTest(): Int = sessionCreationsInProgress.get()
 
-    fun bootEpgSyncStartDecisionForTest(activeLiveSessionCount: Int, scanRunning: Boolean): BootEpgSyncStartDecision =
-        bootEpgSyncStartDecision(activeLiveSessionCount, scanRunning)
+    fun beginLiveSessionCreation() {
+        sessionCreationsInProgress.incrementAndGet()
+    }
+
+    fun finishLiveSessionCreation() {
+        while (true) {
+            val current = sessionCreationsInProgress.get()
+            if (current <= 0) return
+            if (sessionCreationsInProgress.compareAndSet(current, current - 1)) {
+                if (current - 1 == 0) drainPendingBootEpgSyncIfIdle("LIVE_SESSION_CREATION_FINISHED")
+                return
+            }
+        }
+    }
+
+    fun bootEpgSyncStartDecisionForTest(activeLiveSessionCount: Int, scanRunning: Boolean, sessionCreationInProgress: Boolean = false): BootEpgSyncStartDecision =
+        bootEpgSyncStartDecision(activeLiveSessionCount, scanRunning, sessionCreationInProgress)
 
     fun startIfIdle(context: Context, inputId: String): Int? {
         val generation = beginScan(ScanPurpose.SETUP_SCAN) ?: return null
@@ -105,7 +122,7 @@ object ChannelScanManager {
 
     fun startBootEpgSyncIfIdle(context: Context, inputId: String): Boolean {
         val appContext = context.applicationContext
-        val precheck = bootEpgSyncStartDecision(activeLiveSessions.get(), running.get())
+        val precheck = bootEpgSyncStartDecision(activeLiveSessions.get(), running.get(), sessionCreationsInProgress.get() > 0)
         if (!precheck.allowed) {
             markBootEpgSyncDeferred(appContext, inputId, precheck.reason ?: "UNKNOWN")
             return false
@@ -115,17 +132,17 @@ object ChannelScanManager {
             markBootEpgSyncDeferred(appContext, inputId, "SCAN_RUNNING")
             return false
         }
-        if (activeLiveSessions.get() > 0) {
+        if (activeLiveSessions.get() > 0 || sessionCreationsInProgress.get() > 0) {
             setTerminalStateIfCurrent(generation, ScanState.Idle)
             finishScanIfCurrent(generation)
-            markBootEpgSyncDeferred(appContext, inputId, "ACTIVE_LIVE_SESSION")
+            markBootEpgSyncDeferred(appContext, inputId, "LIVE_SESSION_STARTING_OR_ACTIVE")
             return false
         }
         executor.execute {
-            if (activeLiveSessions.get() > 0) {
+            if (activeLiveSessions.get() > 0 || sessionCreationsInProgress.get() > 0) {
                 setTerminalStateIfCurrent(generation, ScanState.Idle)
                 finishScanIfCurrent(generation)
-                markBootEpgSyncDeferred(appContext, inputId, "ACTIVE_LIVE_SESSION")
+                markBootEpgSyncDeferred(appContext, inputId, "LIVE_SESSION_STARTING_OR_ACTIVE")
                 return@execute
             }
             var shouldScheduleBackgroundMaintenance = false
@@ -181,7 +198,7 @@ object ChannelScanManager {
         inputId: String,
         source: String = "MANUAL",
     ): Boolean {
-        val precheck = backgroundMaintenanceStartDecision(activeLiveSessions.get(), running.get())
+        val precheck = backgroundMaintenanceStartDecision(activeLiveSessions.get(), running.get(), sessionCreationsInProgress.get() > 0)
         if (!precheck.allowed) {
             markBackgroundMaintenanceSkipped(precheck.reason ?: "UNKNOWN", source)
             return false
@@ -191,18 +208,18 @@ object ChannelScanManager {
             markBackgroundMaintenanceSkipped("SCAN_RUNNING", source)
             return false
         }
-        if (activeLiveSessions.get() > 0) {
+        if (activeLiveSessions.get() > 0 || sessionCreationsInProgress.get() > 0) {
             setTerminalStateIfCurrent(generation, ScanState.Idle)
             finishScanIfCurrent(generation)
-            markBackgroundMaintenanceSkipped("ACTIVE_LIVE_SESSION", source)
+            markBackgroundMaintenanceSkipped("LIVE_SESSION_STARTING_OR_ACTIVE", source)
             return false
         }
         val appContext = context.applicationContext
         executor.execute {
-            if (activeLiveSessions.get() > 0) {
+            if (activeLiveSessions.get() > 0 || sessionCreationsInProgress.get() > 0) {
                 setTerminalStateIfCurrent(generation, ScanState.Idle)
                 finishScanIfCurrent(generation)
-                markBackgroundMaintenanceSkipped("ACTIVE_LIVE_SESSION", source)
+                markBackgroundMaintenanceSkipped("LIVE_SESSION_STARTING_OR_ACTIVE", source)
                 return@execute
             }
             BackgroundChannelMaintenanceDiagnostics.startedCount.incrementAndGet()
@@ -284,8 +301,8 @@ object ChannelScanManager {
         running.set(false)
     }
 
-    private fun bootEpgSyncStartDecision(activeLiveSessionCount: Int, scanRunning: Boolean): BootEpgSyncStartDecision = when {
-        activeLiveSessionCount > 0 -> BootEpgSyncStartDecision(false, "ACTIVE_LIVE_SESSION")
+    private fun bootEpgSyncStartDecision(activeLiveSessionCount: Int, scanRunning: Boolean, sessionCreationInProgress: Boolean): BootEpgSyncStartDecision = when {
+        activeLiveSessionCount > 0 || sessionCreationInProgress -> BootEpgSyncStartDecision(false, "LIVE_SESSION_STARTING_OR_ACTIVE")
         scanRunning -> BootEpgSyncStartDecision(false, "SCAN_RUNNING")
         else -> BootEpgSyncStartDecision(true, null)
     }
@@ -294,7 +311,7 @@ object ChannelScanManager {
         pendingBootEpgContext = context.applicationContext
         pendingBootEpgInputId = inputId
         DirectBootGuard.deferPending(context.applicationContext, reason)
-        Log.i(LogTags.TIS, "boot EPG 同期を開始しません reason=$reason activeLiveSessions=${activeLiveSessions.get()} scanRunning=${running.get()}")
+        Log.i(LogTags.TIS, "boot EPG 同期を開始しません reason=$reason activeLiveSessions=${activeLiveSessions.get()} sessionCreationsInProgress=${sessionCreationsInProgress.get()} scanRunning=${running.get()}")
     }
 
     private fun drainPendingBootEpgSyncAfterLiveSessionRelease() {
@@ -304,7 +321,7 @@ object ChannelScanManager {
     private fun drainPendingBootEpgSyncIfIdle(source: String) {
         val context = pendingBootEpgContext ?: return
         val inputId = pendingBootEpgInputId ?: return
-        if (activeLiveSessions.get() > 0 || running.get()) return
+        if (activeLiveSessions.get() > 0 || sessionCreationsInProgress.get() > 0 || running.get()) return
         pendingBootEpgContext = null
         pendingBootEpgInputId = null
         Log.i(LogTags.TIS, "pending boot EPG 同期を再試行します source=$source")
@@ -314,11 +331,11 @@ object ChannelScanManager {
     private fun markBackgroundMaintenanceSkipped(reason: String, source: String) {
         BackgroundChannelMaintenanceDiagnostics.lastSkippedReason = reason
         when (reason) {
-            "ACTIVE_LIVE_SESSION" -> BackgroundChannelMaintenanceDiagnostics.skippedActiveLiveSessionCount.incrementAndGet()
+            "ACTIVE_LIVE_SESSION", "LIVE_SESSION_STARTING_OR_ACTIVE" -> BackgroundChannelMaintenanceDiagnostics.skippedActiveLiveSessionCount.incrementAndGet()
             "SCAN_RUNNING" -> BackgroundChannelMaintenanceDiagnostics.skippedScanRunningCount.incrementAndGet()
             else -> BackgroundChannelMaintenanceDiagnostics.skippedOtherCount.incrementAndGet()
         }
-        Log.i(LogTags.TIS, "background channel maintenance を開始しません source=$source reason=$reason activeLiveSessions=${activeLiveSessions.get()} scanRunning=${running.get()}")
+        Log.i(LogTags.TIS, "background channel maintenance を開始しません source=$source reason=$reason activeLiveSessions=${activeLiveSessions.get()} sessionCreationsInProgress=${sessionCreationsInProgress.get()} scanRunning=${running.get()}")
     }
 
     private fun closeController() {
@@ -333,12 +350,12 @@ object ChannelScanManager {
         listeners.forEach { listener -> runCatching { listener.onScanStateChanged(newState) } }
     }
 
-    private fun backgroundMaintenanceStartDecision(activeLiveSessionCount: Int, scanRunning: Boolean): BackgroundMaintenanceStartDecision = when {
-        activeLiveSessionCount > 0 -> BackgroundMaintenanceStartDecision(false, "ACTIVE_LIVE_SESSION")
+    private fun backgroundMaintenanceStartDecision(activeLiveSessionCount: Int, scanRunning: Boolean, sessionCreationInProgress: Boolean): BackgroundMaintenanceStartDecision = when {
+        activeLiveSessionCount > 0 || sessionCreationInProgress -> BackgroundMaintenanceStartDecision(false, "LIVE_SESSION_STARTING_OR_ACTIVE")
         scanRunning -> BackgroundMaintenanceStartDecision(false, "SCAN_RUNNING")
         else -> BackgroundMaintenanceStartDecision(true, null)
     }
 
-    fun backgroundMaintenanceStartDecisionForTest(activeLiveSessionCount: Int, scanRunning: Boolean): BackgroundMaintenanceStartDecision =
-        backgroundMaintenanceStartDecision(activeLiveSessionCount, scanRunning)
+    fun backgroundMaintenanceStartDecisionForTest(activeLiveSessionCount: Int, scanRunning: Boolean, sessionCreationInProgress: Boolean = false): BackgroundMaintenanceStartDecision =
+        backgroundMaintenanceStartDecision(activeLiveSessionCount, scanRunning, sessionCreationInProgress)
 }

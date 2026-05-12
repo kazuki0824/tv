@@ -1,3 +1,17 @@
+## r50bk12
+
+- 仕掛かり修正とは別に残っていた r51 設計契約の未達として、`Programs.COLUMN_CANONICAL_GENRE` を `ContentValues` に直接設定していた経路を削除した。
+- boot EPG sync / background maintenance の開始判定に live session creation in progress を追加し、`TvInputService.onCreateSession()` 入口から `MaleicacidLiveSession` が active session 登録を終えるまでの tuner 資源 race を塞いだ。
+- `TisR51FixedPlanAcceptanceTest` に live session 作成中は boot/background task を開始しないことを固定した。
+- Android/Soong build、Kotlin compile、instrumentation test 実行、atest、VTS、CTS、実機確認はこの環境では未実施。
+
+## r50bk11
+
+- r50bk10 後に残った仕掛かり未達として、retry queue の service/global cap が DESIGN_JA.md の 32 / 512 と実装の 16 / 128 で不一致だった点を修正した。
+- retry retention を enqueue 時と drain/test accessor 時の両方で適用し、期限切れ retry window を保持しないようにした。
+- `ProgramPublishCoordinator` の retry backoff helper に残っていた重複式を除去し、completion test に per-service cap / global cap 定数 / retention drop の固定を追加した。
+- Android/Soong build、Kotlin compile、instrumentation test 実行、atest、VTS、CTS、実機確認はこの環境では未実施。
+
 ## r50bk10
 
 - r50bk8 completion 版で残っていた完了条件未達を仕掛かり範囲に限定して再固定した。

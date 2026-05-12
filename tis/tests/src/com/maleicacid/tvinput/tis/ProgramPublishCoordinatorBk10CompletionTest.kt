@@ -95,6 +95,64 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         check(ProgramPublishCoordinator.RETRY_RETENTION_MS_FOR_TEST == 24L * 60 * 60 * 1000)
     }
 
+
+
+    @Test fun retryWindowLimitsMatchDesignAndTrimPerService() {
+        val store = FakeStore(failDelete = true)
+        val writer = TvProviderWriter("input.test", store, testOnly = true)
+        val coordinator = ProgramPublishCoordinator(writer)
+        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", 473_142_857L)))
+
+        val windows = (0 until (ProgramPublishCoordinator.MAX_RETRY_WINDOWS_PER_SERVICE_FOR_TEST + 1)).map { i ->
+            ProgramPublishCoordinator.EpgUpdateWindow(
+                serviceKey = key,
+                windowStartMs = program.startTimeMillis + i * 60_000L,
+                windowEndMs = program.startTimeMillis + i * 60_000L + 30_000L,
+                validProgramKeys = emptySet(),
+                deletionAuthoritative = true,
+            )
+        }
+        coordinator.publishWithUpdates(
+            mode = ChannelScanController.PublishMode.SETUP_SCAN,
+            allPrograms = emptyList(),
+            updateWindows = windows,
+            allowedServiceKeys = null,
+        )
+        check(coordinator.retryWindowCountForTest() == ProgramPublishCoordinator.MAX_RETRY_WINDOWS_PER_SERVICE_FOR_TEST) {
+            "per-service retry window cap must be fixed at design value"
+        }
+        check(coordinator.droppedRetryWindowCountForTest(key) == 1)
+        check(ProgramPublishCoordinator.MAX_RETRY_WINDOWS_PER_SERVICE_FOR_TEST == 32)
+        check(ProgramPublishCoordinator.MAX_RETRY_WINDOWS_TOTAL_FOR_TEST == 512)
+    }
+
+    @Test fun expiredRetryWindowIsDroppedInsteadOfKept() {
+        val store = FakeStore(failDelete = true)
+        val writer = TvProviderWriter("input.test", store, testOnly = true)
+        val coordinator = ProgramPublishCoordinator(writer)
+        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", 473_142_857L)))
+
+        val expiredFirstFailure = System.currentTimeMillis() - ProgramPublishCoordinator.RETRY_RETENTION_MS_FOR_TEST - 60_000L
+        val window = ProgramPublishCoordinator.EpgUpdateWindow(
+            serviceKey = key,
+            windowStartMs = program.startTimeMillis,
+            windowEndMs = program.startTimeMillis + program.durationMillis,
+            validProgramKeys = emptySet(),
+            deletionAuthoritative = true,
+            attempt = 1,
+            firstFailureAtMillis = expiredFirstFailure,
+            lastFailureAtMillis = expiredFirstFailure,
+        )
+        coordinator.publishWithUpdates(
+            mode = ChannelScanController.PublishMode.SETUP_SCAN,
+            allPrograms = emptyList(),
+            updateWindows = listOf(window),
+            allowedServiceKeys = null,
+        )
+        check(coordinator.retryWindowCountForTest() == 0) { "expired retry windows must not be retained" }
+        check(coordinator.droppedRetryWindowCountForTest(key) == 1)
+    }
+
     private class FakeStore(
         private var failServiceIndexOnce: Boolean = false,
         private var failInsertOnce: Boolean = false,
