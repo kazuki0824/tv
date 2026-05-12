@@ -14,9 +14,9 @@ class MaleicacidTvInputService : TvInputService() {
     override fun onCreate() {
         super.onCreate()
         registerUserUnlockDrainReceiver()
-        if (DirectBootGuard.drainIfUserUnlocked(applicationContext, "MaleicacidTvInputService.onCreate", System.currentTimeMillis()) == DirectBootGuard.DrainDecision.START_BOOT_EPG_SYNC) {
-            ChannelScanManager.startBootEpgSyncIfIdle(applicationContext, com.maleicacid.tvinput.common.AppIds.TV_INPUT_SERVICE)
-        }
+        // Boot EPG sync is intentionally not started from service onCreate().
+        // Live-session creation may follow immediately after service creation; boot drain is
+        // handled by boot/unlock receivers and after live-session release to avoid tuner races.
     }
 
     override fun onCreateSession(inputId: String): Session {

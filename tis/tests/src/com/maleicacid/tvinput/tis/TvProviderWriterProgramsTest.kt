@@ -25,10 +25,35 @@ class TvProviderWriterProgramsTest {
         check(store.programs.values.single().getAsString(TvContract.Programs.COLUMN_LONG_DESCRIPTION) == "updated")
         check(store.programs.values.single().getAsInteger(TvContract.Programs.COLUMN_EVENT_ID) == 10)
         val providerData = store.programs.values.single().getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).toString(Charsets.UTF_8)
-        check(TvProviderWriter.parseProgramKey(providerData) == p.stableIdentity)
+        check(TvProviderWriter.parseProgramKey(providerData) == TvProviderWriter.programKeyForTest(p))
         check(providerData.contains(TvProviderWriter.PROGRAM_KEY_FIELD))
     }
 
+
+    @Test fun sameEventWithMovedTimeUpdatesExistingRowOutsideNewWindow() {
+        val store = FakeStore()
+        val writer = TvProviderWriter("input.test", store, testOnly = true)
+        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", 473_142_857L)))
+        val original = ProgramRecord(key, 10, "onid=4;tsid=16625;sid=101;event=10", 1_700_000_000_000L, 1_800_000L, "News", "desc")
+        val first = writer.upsertPrograms(listOf(original))
+        check(first.inserted == 1) { first.toString() }
+
+        val moved = original.copy(
+            startTimeMillis = 1_700_007_200_000L,
+            durationMillis = 1_800_000L,
+            shortDescription = "moved",
+            description = "moved",
+        )
+        val second = writer.upsertPrograms(listOf(moved))
+        check(second.inserted == 0) { second.toString() }
+        check(second.updated == 1) { second.toString() }
+        check(store.programs.size == 1)
+        val row = store.programs.values.single()
+        check(row.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS) == moved.startTimeMillis)
+        check(row.getAsString(TvContract.Programs.COLUMN_LONG_DESCRIPTION) == "moved")
+        val providerData = row.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).toString(Charsets.UTF_8)
+        check(TvProviderWriter.parseProgramKey(providerData) == TvProviderWriter.programKeyForTest(moved))
+    }
 
     @Test fun programProviderDataContainsCasAndReadinessState() {
         val store = FakeStore()
@@ -50,11 +75,11 @@ class TvProviderWriterProgramsTest {
         )
         writer.upsertPrograms(listOf(p))
         val providerData = store.programs.values.single().getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).toString(Charsets.UTF_8)
-        check(providerData.contains("requiresCas=true"))
-        check(providerData.contains("unsupportedCas=true"))
-        check(providerData.contains("clearLivePlaybackSupported=false"))
-        check(providerData.contains("channelRegistrationReady=true"))
-        check(providerData.contains("epgPublishable=true"))
+        check(providerData.contains("\"requiresCas\":true"))
+        check(providerData.contains("\"unsupportedCas\":true"))
+        check(providerData.contains("\"clearLivePlaybackSupported\":false"))
+        check(providerData.contains("\"channelRegistrationReady\":true"))
+        check(providerData.contains("\"epgPublishable\":true"))
     }
 
     @Test fun descriptorDetailsStayInInternalProviderData() {
@@ -68,15 +93,15 @@ class TvProviderWriterProgramsTest {
         )
         writer.upsertPrograms(listOf(p))
         val providerData = store.programs.values.single().getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).toString(Charsets.UTF_8)
-        check(providerData.contains("extendedItemsB64"))
-        check(providerData.contains("componentTextB64"))
-        check(providerData.contains("audioComponentTextB64"))
-        check(providerData.contains("audioLanguageB64"))
-        check(providerData.contains("broadcastGenreB64"))
-        check(providerData.contains("genreSupplementTextB64"))
-        check(providerData.contains("eventGroupTextB64"))
-        check(providerData.contains("freeCaTextB64"))
-        check(providerData.contains("seriesNameB64"))
+        check(providerData.contains("extendedItems"))
+        check(providerData.contains("componentText"))
+        check(providerData.contains("audioComponentText"))
+        check(providerData.contains("audioLanguage"))
+        check(providerData.contains("broadcastGenre"))
+        check(providerData.contains("genreSupplementText"))
+        check(providerData.contains("eventGroupText"))
+        check(providerData.contains("freeCaText"))
+        check(providerData.contains("seriesName"))
         check(store.programs.values.single().getAsString(TvContract.Programs.COLUMN_AUDIO_LANGUAGE) == "jpn")
         check(!store.programs.values.single().containsKey(TvContract.Programs.COLUMN_CANONICAL_GENRE))
         check(store.programs.values.single().getAsString(TvContract.Programs.COLUMN_BROADCAST_GENRE) == TvContract.Programs.Genres.encode("ARIB(0x0/0x0):ニュース/報道/定時・総合"))
@@ -112,8 +137,8 @@ class TvProviderWriterProgramsTest {
         )
         check(changedProjectedDetails.updated == 1)
         val providerData = store.programs.values.single().getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).toString(Charsets.UTF_8)
-        check(providerData.contains("unsupportedDescriptorJsonB64"))
-        check(providerData.contains("videoFormatB64"))
+        check(providerData.contains("unsupportedDescriptorDiagnostics"))
+        check(providerData.contains("videoFormat"))
         check(store.programs.values.single().getAsString(TvContract.Programs.COLUMN_CONTENT_RATING) == rating18)
     }
 
@@ -130,14 +155,14 @@ class TvProviderWriterProgramsTest {
         val first = coordinator.publish(ChannelScanController.PublishMode.LIVE_TUNE_REFRESH, withVideoMetadata, allowedServiceKeys = null)
         check(first.inserted == 1)
         var providerData = store.programs.values.single().getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).toString(Charsets.UTF_8)
-        check(providerData.contains("videoFormatB64"))
+        check(providerData.contains("videoFormat"))
 
         val laterEitRecord = p.copy(durationMillis = 2_400_000L, description = "EIT更新", shortDescription = "EIT更新")
         val mergedLaterEit = MaleicacidLiveSession.mergeVideoMetadataForTest(listOf(laterEitRecord), metadata)
         val updated = coordinator.publish(ChannelScanController.PublishMode.LIVE_TUNE_REFRESH, mergedLaterEit, allowedServiceKeys = null)
         check(updated.updated == 1)
         providerData = store.programs.values.single().getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).toString(Charsets.UTF_8)
-        check(providerData.contains("videoFormatB64"))
+        check(providerData.contains("videoFormat"))
         check(store.programs.values.single().getAsString(TvContract.Programs.COLUMN_LONG_DESCRIPTION) == "EIT更新")
     }
 
@@ -154,7 +179,7 @@ class TvProviderWriterProgramsTest {
         check(second.deleted == 1)
         check(store.programs.size == 2)
         check(store.programs.values.none { value ->
-            TvProviderWriter.parseProgramKey(value.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).toString(Charsets.UTF_8)) == p2.stableIdentity
+            TvProviderWriter.parseProgramKey(value.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).toString(Charsets.UTF_8)) == TvProviderWriter.programKeyForTest(p2)
         })
     }
 
@@ -178,14 +203,26 @@ class TvProviderWriterProgramsTest {
                 v.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) == channelId && TvProviderWriter.parseProgramKey(v.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).toString(Charsets.UTF_8)) == programKey
             }?.key,
         )
+        override fun indexExistingProgramsForWindow(channelId: Long, windowStartMs: Long, windowEndMs: Long): Result<Map<String, Long>> = Result.success(
+            programs.entries.mapNotNull { (id, v) ->
+                if (v.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) != channelId) return@mapNotNull null
+                val end = v.getAsLong(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS)
+                val start = v.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS)
+                if (end <= windowStartMs || start >= windowEndMs) return@mapNotNull null
+                val key = TvProviderWriter.parseProgramKey(v.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).toString(Charsets.UTF_8)) ?: return@mapNotNull null
+                key to id
+            }.toMap(),
+        )
         override fun insertProgram(values: ContentValues): Result<Long?> { val id = nextProgramId++; programs[id] = ContentValues(values); return Result.success(id) }
         override fun updateProgram(programId: Long, values: ContentValues): Result<Int> { programs[programId] = ContentValues(values); return Result.success(1) }
         override fun deleteObsoletePrograms(channelId: Long, validProgramKeys: Set<String>, windowStartMs: Long, windowEndMs: Long): Result<Int> {
             val obsolete = programs.filter { (_, v) ->
-                v.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) == channelId &&
-                    v.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS) >= windowStartMs &&
-                    v.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS) < windowEndMs &&
-                    TvProviderWriter.parseProgramKey(v.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).toString(Charsets.UTF_8)) !in validProgramKeys
+                if (v.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) != channelId) return@filter false
+                val start = v.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS)
+                val end = v.getAsLong(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS)
+                if (end <= windowStartMs || start >= windowEndMs) return@filter false
+                val key = TvProviderWriter.parseProgramKey(v.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).toString(Charsets.UTF_8))
+                key == null || key !in validProgramKeys
             }.keys.toList()
             obsolete.forEach { programs.remove(it) }
             return Result.success(obsolete.size)

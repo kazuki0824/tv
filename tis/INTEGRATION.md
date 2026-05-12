@@ -36,7 +36,9 @@ CAS HAL placeholder は r51 の TIS 初回 build gate へ含めない。
 
 TIS は `directBootAware=true` を維持する。`LOCKED_BOOT_COMPLETED` では device protected storage に pending flag だけを記録し、TvProvider、Tuner、JNI parser は user unlock 後にだけ起動する。
 
-`ACTION_USER_UNLOCKED` は manifest receiver へ登録しない。実行中 component がある場合だけ、`MaleicacidTvInputService` または `SetupActivity` が context-registered receiver を使って unlock 後 drain を行う。
+`ACTION_USER_UNLOCKED` は manifest receiver へ登録しない。Boot EPG sync / background maintenance は BootReceiver、UserUnlockReceiver、または明示的な maintenance scheduler からのみ起動する。`MaleicacidTvInputService.onCreate()` は Direct Boot pending drain、boot EPG sync、background maintenance を開始してはならない。
+
+Boot EPG sync / background maintenance の開始条件は、active live session、session creation in progress、setup scan、playback pipeline、scan manager running がすべて存在しないこととする。live session 作成要求が来た時点で boot/background task が未開始なら defer する。boot/background task が既に running の場合、r51 では boot/background task を cancel/defer し live tune を優先する。
 
 ## flash 後の確認
 
@@ -58,5 +60,5 @@ system TV app から setup activity を起動でき、setup 後に少なくと�
 - `TvProvider.Programs.COLUMN_CONTENT_RATING` に `com.android.tv/ISDB/ISDB_<age>` 相当の `TvContentRating.flattenToString()` が入ることを確認する。
 - `Programs.COLUMN_INTERNAL_PROVIDER_DATA` に CAS 状態、`publishStateSource`、raw parental rating 診断JSONが残ることを確認する。
 - parental controls enabled + blocked rating で `notifyContentBlocked()` が発生し、parental block を理由に `notifyVideoUnavailable()` を呼ばずに AV再生が停止または開始抑止されることを確認する。
-- `onUnblockContent()` 後は同一 `channelUri + serviceKey + eventId + start/end + ratingString` の current program / rating に限って playback retry が許可されることを確認する。
+- `onUnblockContent()` 後は同一 `channelUri + serviceKey + eventId + ratingString` の current program / rating に限って playback retry が許可されることを確認する。start/end は現在表示中の Program row 照合用の補助条件であり、stable identity や provider-data `programKey` の構成要素ではないことを確認する。
 - scrambled unsupported service は parental allowed でも playback success にせず、`notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN)` を使うことを確認する。

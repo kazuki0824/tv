@@ -283,7 +283,7 @@ impl ServiceDiscoveryEngine {
     }
 
     pub fn events(&self) -> Vec<EitEvent> { self.eit_store.snapshot_r51() }
-    pub fn epg_update_windows(&self) -> Vec<EitUpdateWindow> { self.eit_store.snapshot_update_windows_r51() }
+    pub fn take_epg_update_windows(&mut self) -> Vec<EitUpdateWindow> { self.eit_store.take_update_windows_r51() }
     pub fn clear_epg_update_windows(&mut self) { self.eit_store.clear_update_windows(); }
 
     pub fn is_known_pmt_pid(&self, pid: u16) -> bool {
@@ -750,9 +750,10 @@ impl ServiceDiscoveryCollector {
         self.engine.events()
     }
 
-    pub fn epg_update_windows(&self) -> Vec<EitUpdateWindow> {
-        self.engine.epg_update_windows()
+    pub fn take_epg_update_windows(&mut self) -> Vec<EitUpdateWindow> {
+        self.engine.take_epg_update_windows()
     }
+
 
     pub fn clear_epg_update_windows(&mut self) {
         self.engine.clear_epg_update_windows()
@@ -963,6 +964,10 @@ impl ServiceDiscoveryCollector {
 
     pub fn is_complete(&self) -> bool {
         self.state().is_complete()
+    }
+
+    pub fn sdt_actual_transport_keys(&self) -> Vec<(u16, u16)> {
+        self.sdt_actual_transport_scopes.iter().cloned().collect()
     }
 
     fn invalidate_changed_table(&mut self, pid: u16, section: &[u8]) {

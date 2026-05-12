@@ -21,10 +21,15 @@ object ChannelScanManager {
     }
     private val listeners = CopyOnWriteArrayList<Listener>()
     private val running = AtomicBoolean(false)
+    private val cancelRequested = AtomicBoolean(false)
     private val activeLiveSessions = AtomicInteger(0)
+    private val nextGeneration = AtomicInteger(0)
     @Volatile private var state: ScanState = ScanState.Idle
     @Volatile private var controller: ChannelScanController? = null
     @Volatile private var engine: AribSiEngine? = null
+    @Volatile private var activeGeneration: Int = 0
+    @Volatile private var activePurpose: ScanPurpose? = null
+    @Volatile private var cancelledGeneration: Int = 0
     @Volatile private var pendingBootEpgContext: Context? = null
     @Volatile private var pendingBootEpgInputId: String? = null
 
@@ -59,28 +64,43 @@ object ChannelScanManager {
     fun bootEpgSyncStartDecisionForTest(activeLiveSessionCount: Int, scanRunning: Boolean): BootEpgSyncStartDecision =
         bootEpgSyncStartDecision(activeLiveSessionCount, scanRunning)
 
-    fun startIfIdle(context: Context, inputId: String) {
-        if (!running.compareAndSet(false, true)) return
+    fun startIfIdle(context: Context, inputId: String): Int? {
+        val generation = beginScan(ScanPurpose.SETUP_SCAN) ?: return null
         val appContext = context.applicationContext
-        setState(ScanState.Running(System.currentTimeMillis()))
         executor.execute {
             val result = runCatching {
                 val createdEngine = AribSiEngine(appContext)
-                val createdController = ChannelScanController(appContext, inputId, createdEngine)
+                val createdController = ChannelScanController(appContext, inputId, createdEngine, cancelRequested)
+                if (!isCurrentGeneration(generation)) {
+                    createdController.close()
+                    createdEngine.close()
+                    return@runCatching null
+                }
                 engine = createdEngine
                 controller = createdController
+                if (isCancelledGeneration(generation)) createdController.cancelScan()
                 createdController.startInitialScan()
             }
             result.onSuccess { scanResult ->
-                setState(ScanState.Completed(scanResult))
+                if (scanResult != null) {
+                    if (scanResult.terminalCancelObserved || isCancelledGeneration(generation)) {
+                        setTerminalStateIfCurrent(generation, ScanState.Cancelled(generation, ScanPurpose.SETUP_SCAN))
+                    } else {
+                        setTerminalStateIfCurrent(generation, ScanState.Completed(scanResult, generation, ScanPurpose.SETUP_SCAN))
+                    }
+                }
             }.onFailure { e ->
                 Log.w(LogTags.TIS, "チャンネル scan に失敗しました inputId=$inputId", e)
-                setState(ScanState.Failed(e.message ?: "不明な例外"))
+                if (isCancelledGeneration(generation)) {
+                    setTerminalStateIfCurrent(generation, ScanState.Cancelled(generation, ScanPurpose.SETUP_SCAN))
+                } else {
+                    setTerminalStateIfCurrent(generation, ScanState.Failed(e.message ?: "不明な例外", generation, ScanPurpose.SETUP_SCAN))
+                }
             }
-            closeController()
-            running.set(false)
+            finishScanIfCurrent(generation)
             drainPendingBootEpgSyncIfIdle("SCAN_FINISHED")
         }
+        return generation
     }
 
     fun startBootEpgSyncIfIdle(context: Context, inputId: String): Boolean {
@@ -90,49 +110,64 @@ object ChannelScanManager {
             markBootEpgSyncDeferred(appContext, inputId, precheck.reason ?: "UNKNOWN")
             return false
         }
-        if (!running.compareAndSet(false, true)) {
+        val generation = beginScan(ScanPurpose.BOOT_EPG_SYNC)
+        if (generation == null) {
             markBootEpgSyncDeferred(appContext, inputId, "SCAN_RUNNING")
             return false
         }
         if (activeLiveSessions.get() > 0) {
-            running.set(false)
+            setTerminalStateIfCurrent(generation, ScanState.Idle)
+            finishScanIfCurrent(generation)
             markBootEpgSyncDeferred(appContext, inputId, "ACTIVE_LIVE_SESSION")
             return false
         }
-        setState(ScanState.Running(System.currentTimeMillis()))
         executor.execute {
             if (activeLiveSessions.get() > 0) {
-                closeController()
-                running.set(false)
-                setState(ScanState.Idle)
+                setTerminalStateIfCurrent(generation, ScanState.Idle)
+                finishScanIfCurrent(generation)
                 markBootEpgSyncDeferred(appContext, inputId, "ACTIVE_LIVE_SESSION")
                 return@execute
             }
             var shouldScheduleBackgroundMaintenance = false
             val result = runCatching {
                 val createdEngine = AribSiEngine(appContext)
-                val createdController = ChannelScanController(appContext, inputId, createdEngine)
+                val createdController = ChannelScanController(appContext, inputId, createdEngine, cancelRequested)
+                if (!isCurrentGeneration(generation)) {
+                    createdController.close()
+                    createdEngine.close()
+                    return@runCatching null
+                }
                 engine = createdEngine
                 controller = createdController
+                if (isCancelledGeneration(generation)) createdController.cancelScan()
                 createdController.startBootEpgSync()
             }
             result.onSuccess { scanResult ->
-                val terminalCancel = scanResult.terminalCancelObserved
-                val successCandidateObserved = scanResult.successfulCandidates > 0 && !terminalCancel
-                if (successCandidateObserved) {
-                    DirectBootGuard.clearPending(appContext)
-                    shouldScheduleBackgroundMaintenance = true
-                } else {
-                    DirectBootGuard.deferPending(appContext, if (terminalCancel) "BOOT_EPG_CANCELLED" else "BOOT_EPG_NO_SUCCESSFUL_CANDIDATE")
+                if (scanResult != null) {
+                    val terminalCancel = scanResult.terminalCancelObserved || isCancelledGeneration(generation)
+                    val successCandidateObserved = scanResult.successfulCandidates > 0 && !terminalCancel
+                    if (successCandidateObserved) {
+                        DirectBootGuard.clearPending(appContext)
+                        shouldScheduleBackgroundMaintenance = true
+                    } else {
+                        DirectBootGuard.deferPending(appContext, if (terminalCancel) "BOOT_EPG_CANCELLED" else "BOOT_EPG_NO_SUCCESSFUL_CANDIDATE")
+                    }
+                    if (terminalCancel) {
+                        setTerminalStateIfCurrent(generation, ScanState.Cancelled(generation, ScanPurpose.BOOT_EPG_SYNC))
+                    } else {
+                        setTerminalStateIfCurrent(generation, ScanState.Completed(scanResult, generation, ScanPurpose.BOOT_EPG_SYNC))
+                    }
                 }
-                setState(ScanState.Completed(scanResult))
             }.onFailure { e ->
                 DirectBootGuard.markTunerUnavailable(appContext)
                 Log.w(LogTags.TIS, "boot後EPG同期に失敗しました inputId=$inputId", e)
-                setState(ScanState.Failed(e.message ?: "不明な例外"))
+                if (isCancelledGeneration(generation)) {
+                    setTerminalStateIfCurrent(generation, ScanState.Cancelled(generation, ScanPurpose.BOOT_EPG_SYNC))
+                } else {
+                    setTerminalStateIfCurrent(generation, ScanState.Failed(e.message ?: "不明な例外", generation, ScanPurpose.BOOT_EPG_SYNC))
+                }
             }
-            closeController()
-            running.set(false)
+            finishScanIfCurrent(generation)
             if (shouldScheduleBackgroundMaintenance) {
                 BackgroundChannelMaintenanceDiagnostics.scheduledAfterBootSyncCount.incrementAndGet()
                 startBackgroundChannelMaintenanceIfIdle(appContext, inputId, source = "BOOT_EPG_SYNC_COMPLETED")
@@ -151,57 +186,103 @@ object ChannelScanManager {
             markBackgroundMaintenanceSkipped(precheck.reason ?: "UNKNOWN", source)
             return false
         }
-        if (!running.compareAndSet(false, true)) {
+        val generation = beginScan(ScanPurpose.BACKGROUND_MAINTENANCE)
+        if (generation == null) {
             markBackgroundMaintenanceSkipped("SCAN_RUNNING", source)
             return false
         }
         if (activeLiveSessions.get() > 0) {
-            running.set(false)
+            setTerminalStateIfCurrent(generation, ScanState.Idle)
+            finishScanIfCurrent(generation)
             markBackgroundMaintenanceSkipped("ACTIVE_LIVE_SESSION", source)
             return false
         }
         val appContext = context.applicationContext
-        setState(ScanState.Running(System.currentTimeMillis()))
         executor.execute {
             if (activeLiveSessions.get() > 0) {
-                closeController()
-                running.set(false)
-                setState(ScanState.Idle)
+                setTerminalStateIfCurrent(generation, ScanState.Idle)
+                finishScanIfCurrent(generation)
                 markBackgroundMaintenanceSkipped("ACTIVE_LIVE_SESSION", source)
                 return@execute
             }
             BackgroundChannelMaintenanceDiagnostics.startedCount.incrementAndGet()
             val result = runCatching {
                 val createdEngine = AribSiEngine(appContext)
-                val createdController = ChannelScanController(appContext, inputId, createdEngine)
+                val createdController = ChannelScanController(appContext, inputId, createdEngine, cancelRequested)
+                if (!isCurrentGeneration(generation)) {
+                    createdController.close()
+                    createdEngine.close()
+                    return@runCatching null
+                }
                 engine = createdEngine
                 controller = createdController
+                if (isCancelledGeneration(generation)) createdController.cancelScan()
                 createdController.startBackgroundChannelMaintenance()
             }
             result.onSuccess { scanResult ->
-                setState(ScanState.Completed(scanResult))
+                if (scanResult != null) {
+                    if (scanResult.terminalCancelObserved || isCancelledGeneration(generation)) {
+                        setTerminalStateIfCurrent(generation, ScanState.Cancelled(generation, ScanPurpose.BACKGROUND_MAINTENANCE))
+                    } else {
+                        setTerminalStateIfCurrent(generation, ScanState.Completed(scanResult, generation, ScanPurpose.BACKGROUND_MAINTENANCE))
+                    }
+                }
             }.onFailure { e ->
                 Log.w(LogTags.TIS, "background channel maintenance に失敗しました inputId=$inputId source=$source", e)
-                setState(ScanState.Failed(e.message ?: "不明な例外"))
+                if (isCancelledGeneration(generation)) {
+                    setTerminalStateIfCurrent(generation, ScanState.Cancelled(generation, ScanPurpose.BACKGROUND_MAINTENANCE))
+                } else {
+                    setTerminalStateIfCurrent(generation, ScanState.Failed(e.message ?: "不明な例外", generation, ScanPurpose.BACKGROUND_MAINTENANCE))
+                }
             }
-            closeController()
-            running.set(false)
+            finishScanIfCurrent(generation)
             drainPendingBootEpgSyncIfIdle("BACKGROUND_MAINTENANCE_FINISHED")
         }
         return true
     }
 
     fun cancel() {
-        // B-14: executor 外から controller / engine を close しない。cancel request も scan executor 上で順序化する。
-        setState(ScanState.Cancelled)
-        executor.execute {
-            controller?.cancelScan()
-            closeController()
-            running.set(false)
-            drainPendingBootEpgSyncIfIdle("SCAN_CANCELLED")
+        val generation = activeGeneration
+        val purpose = activePurpose
+        if (!running.get() || generation == 0 || purpose == null) {
+            return
+        }
+        cancelledGeneration = generation
+        cancelRequested.set(true)
+        setTerminalStateIfCurrent(generation, ScanState.Cancelled(generation, purpose))
+    }
+
+    private fun beginScan(purpose: ScanPurpose): Int? {
+        if (!running.compareAndSet(false, true)) return null
+        val generation = nextGeneration.incrementAndGet()
+        activeGeneration = generation
+        activePurpose = purpose
+        cancelledGeneration = 0
+        cancelRequested.set(false)
+        setState(ScanState.Running(System.currentTimeMillis(), generation, purpose))
+        return generation
+    }
+
+    private fun isCurrentGeneration(generation: Int): Boolean = activeGeneration == generation
+
+    private fun isCancelledGeneration(generation: Int): Boolean =
+        cancelRequested.get() && cancelledGeneration == generation
+
+    private fun setTerminalStateIfCurrent(generation: Int, terminalState: ScanState) {
+        if (isCurrentGeneration(generation)) {
+            setState(terminalState)
         }
     }
 
+    private fun finishScanIfCurrent(generation: Int) {
+        if (!isCurrentGeneration(generation)) return
+        closeController()
+        activeGeneration = 0
+        activePurpose = null
+        cancelRequested.set(false)
+        cancelledGeneration = 0
+        running.set(false)
+    }
 
     private fun bootEpgSyncStartDecision(activeLiveSessionCount: Int, scanRunning: Boolean): BootEpgSyncStartDecision = when {
         activeLiveSessionCount > 0 -> BootEpgSyncStartDecision(false, "ACTIVE_LIVE_SESSION")

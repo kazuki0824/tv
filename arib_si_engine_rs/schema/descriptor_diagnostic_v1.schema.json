@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maleicacid.local/arib_si_engine_rs/descriptor_diagnostic_v1.schema.json",
+  "title": "Maleicacid descriptor diagnostic v1",
+  "type": "object",
+  "required": ["schemaVersion", "diagnostics"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["parseStatus", "tag", "offset", "declaredLength", "remainingLength", "rawPrefix", "message"],
+        "properties": {
+          "parseStatus": { "type": "string" },
+          "tag": { "type": "integer", "minimum": 0, "maximum": 255 },
+          "offset": { "type": "integer", "minimum": 0 },
+          "declaredLength": { "type": "integer", "minimum": 0 },
+          "remainingLength": { "type": "integer", "minimum": 0 },
+          "rawPrefix": { "type": "string" },
+          "message": { "type": "string" },
+          "serviceKey": {
+            "type": ["object", "null"],
+            "properties": {
+              "originalNetworkId": { "type": "integer" },
+              "transportStreamId": { "type": "integer" },
+              "serviceId": { "type": "integer" }
+            }
+          },
+          "eventId": { "type": ["integer", "null"] },
+          "pid": { "type": ["integer", "null"] },
+          "tableId": { "type": ["integer", "null"] },
+          "sectionNumber": { "type": ["integer", "null"] }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

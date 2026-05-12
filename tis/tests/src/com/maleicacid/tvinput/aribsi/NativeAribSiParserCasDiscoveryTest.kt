@@ -28,7 +28,7 @@ class NativeAribSiParserCasDiscoveryTest {
                 "CAT EMM PID must be visible independent of service row publication"
             }
 
-            val diagnostics = parser.snapshotPublishabilityDiagnostics()
+            val diagnostics = parser.publishabilityDiagnosticsForTestOnly()
             val diagnostic = diagnostics.single { it.serviceKey.serviceId == SERVICE_ID }
             check(!diagnostic.clearLivePlaybackSupported)
             check(diagnostic.reasons.any { it == "SCRAMBLED_OR_UNKNOWN_SDT_FREE_CA_MODE" || it == "PMT_PROGRAM_CA_DESCRIPTOR" || it == "VIDEO_ES_CA_DESCRIPTOR" }) {

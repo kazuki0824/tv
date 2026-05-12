@@ -319,19 +319,21 @@ class DirectTunerDescramblerBridge(private val tuner: Tuner?) : CasController.Tu
     }
 
     override fun addPid(elementaryPid: Int): Result<Unit> = runCatching {
+        require(elementaryPid in 0..0x1fff) { "Descrambler.addPid invalid TS PID=$elementaryPid" }
         val d = requireNotNull(descrambler) { "Tuner descrambler を利用できません" }
-        val result = d.addPid(PID_TYPE_TS_PACKET, elementaryPid, null)
+        val result = d.addPid(DESCRAMBLER_PID_TYPE_T, elementaryPid, null)
         require(result == Tuner.RESULT_SUCCESS) { "Descrambler.addPid failed pid=$elementaryPid result=$result" }
     }
 
     override fun removePid(elementaryPid: Int): Result<Unit> = runCatching {
+        require(elementaryPid in 0..0x1fff) { "Descrambler.removePid invalid TS PID=$elementaryPid" }
         val d = requireNotNull(descrambler) { "Tuner descrambler を利用できません" }
-        val result = d.removePid(PID_TYPE_TS_PACKET, elementaryPid, null)
+        val result = d.removePid(DESCRAMBLER_PID_TYPE_T, elementaryPid, null)
         require(result == Tuner.RESULT_SUCCESS) { "Descrambler.removePid failed pid=$elementaryPid result=$result" }
     }
 
     @Synchronized
     override fun close() { runCatching { descrambler?.close() } }
 
-    companion object { private const val PID_TYPE_TS_PACKET = 0 }
+    companion object { private const val DESCRAMBLER_PID_TYPE_T = 1 // AOSP Descrambler.PID_TYPE_T }
 }

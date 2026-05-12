@@ -21,7 +21,7 @@ r51 は EIT p/f を中心に扱う。scan/setup 後に `TvProvider.Programs` へ
 
 ## descriptor 変換
 
-今後表示できる必要がある EIT descriptor は r51 で構造化変換する。TvProvider 標準列と `internal_provider_data` への投影は tv 直下の `ARIB_SI_EPG_TvProvider投影方針.md` をSSOTとする。同文書で `Programs.COLUMN_LONG_DESCRIPTION` への補足表示が固定されている component、audio component、content genre、event group、freeCA / isFree は provider 用 field として出せる。series、linkage、unknown、diagnostic JSON など同文書で標準列投影が未固定の項目は、構造化した内部データとして `internal_provider_data` に保存し、同時に診断 API でも観測できるようにする。
+今後表示できる必要がある EIT descriptor は r51 で構造化変換する。TvProvider 標準列への投影は tv 直下の `ARIB_SI_EPG_TvProvider投影方針.md` を正とし、`internal_provider_data` の具体 schema / canonical encode / signature は本 crate の Rust provider-data serde model を SSOT とする。同文書で `Programs.COLUMN_LONG_DESCRIPTION` への補足表示が固定されている component、audio component、content genre、event group、freeCA / isFree は provider 用 field として出せる。series、linkage、unknown、diagnostic JSON など同文書で r51 標準列投影対象外とした項目は、JSON v1 `internal_provider_data` に構造化保存し、同時に診断 API でも観測できるようにする。
 
 `arib_si_engine_rs` は Android canonical genre の写像表をSSOTとして所有しない。content_descriptor 由来のARIB分類と表示文字列を構造化して出力するが、`Programs.COLUMN_CANONICAL_GENRE` へ直接入れる値を決定する責務は持たない。
 
@@ -55,7 +55,9 @@ partial snapshot は service-local registration-ready 判定に使ってよい�
 
 PAT/PMT/SDT/NIT/BAT/EIT の version 更新では collector 全体を捨てない。table 単位、section 単位、service 単位で差分更新する。
 
-EIT は section version 更新で消えた event を削除し、TvProvider / TIS 側へ stable identity として `original_network_id / transport_stream_id / service_id / event_id` を提供する。section 更新後の event set が空になった場合も no-op として破棄せず、service key、update window、空の valid event identity set を JNI/TIS へ返す。TIS はこれを obsolete Programs delete に使う。
+EIT は section version 更新で消えた event を削除候補として扱い、TvProvider / TIS 側へ stable identity として `original_network_id / transport_stream_id / service_id / event_id` を提供する。section 更新後の event set が空になった場合も no-op として破棄せず、service key、update window、空の valid event identity set を JNI/TIS へ返す。TIS は、Rust parser が `deletionAuthoritative=true` と判定した snapshot だけを obsolete Programs delete に使う。
+
+EIT event fixed field、start_time BCD、duration BCD、descriptor_loop_length が malformed の event を含む section は、旧 event 削除用の authoritative valid-event-set として扱わない。malformed event は Programs から消すのではなく、旧正常 event を保持したまま diagnostics に記録する。
 
 開始時刻、終了時刻、duration、番組名、説明文の変更は、同一 stable identity の event 更新として扱う。開始時刻は stable identity に含めない。
 
@@ -68,6 +70,8 @@ TvProvider に自然に入らない descriptor は構造化した内部データ
 ## r51 descriptor 対象
 
 short_event、extended_event、content、component、audio_component、parental_rating、series、event_group、linkage を r51 で構造化変換する。未知 descriptor は破棄せず diagnostic に保持する。
+
+ARIB descriptor は `descriptor_length`、descriptor 内部 length、loop 単位、fragment sequence が妥当な場合だけ正常 field として採用する。length 不整合、trailing byte、fragment 欠落、`descriptor_number` 重複、`last_descriptor_number` 不一致、必須 field 不足は malformed descriptor とし、event name、short text、extended_event text、content genre、component、audio component、series、event_group、linkage の正常 field には採用しない。malformed descriptor は parser を停止させず、`DescriptorDiagnosticV1` に tag、offset、declaredLength、actualRemainingLength、parseStatus、rawPrefixHex、section scope を保持する。
 
 ## API 境界の固定
 
@@ -93,7 +97,7 @@ EIT event の stable key は `original_network_id / transport_stream_id / servic
 
 自前 decoder は mirakc-arib が EPG / service model 構築で文字列化している範囲に限定する。対象は SDT service descriptor の service name、EIT short_event の event name / text、EIT extended_event の item description / item text / text、component descriptor、audio component descriptor、series descriptor の text/name である。
 
-extended_event は descriptor_number 順に fragment を連結してから ARIB 文字列として復号する。字幕 PES、字幕管理データ、字幕本文、DRCS/外字レンダリング、組版制御、BML は対象外であり、`libaribcaption` 側の責務とする。
+extended_event は、全 fragment の `last_descriptor_number` が一致し、`descriptor_number` が 0 から `last_descriptor_number` まで重複なく連続して揃う場合だけ、`descriptor_number` 順に fragment を連結して ARIB 文字列として復号する。欠番、重複、`last_descriptor_number` 不一致がある場合は extended description / extended items を正常 field に採用せず、diagnostic に記録する。字幕 PES、字幕管理データ、字幕本文、DRCS/外字レンダリング、組版制御、BML は対象外であり、`libaribcaption` 側の責務とする。
 
 ## unit test と TvProvider 境界の固定
 
@@ -109,3 +113,86 @@ Rust descriptor model から Kotlin/TvProvider へ渡す構造化データ境界
 `arib_si_engine_rs` は ARIB `parental_rating_descriptor` の構造化解析結果だけをSSOTとする。Android `TvContentRating` の `domain` / `ratingSystem` / `rating` 文字列、`flattenToString()`、`Programs.COLUMN_CONTENT_RATING` への投影、`TvInputManager.isRatingBlocked()` に渡す値は TIS 側の責務である。
 
 Rust 側に `com.android.tv` や `ISDB_<age>` の Android domain 決定文字列を持ち込んではならない。Rust は `country_code`, `rating_value`, `raw_rating_byte`, `parse_status`, `raw_descriptor_bytes` を保持し、未対応値を推測変換しない。
+
+## r50bj provider-data / diagnostics Rust SSOT
+
+r50bj 以降、`arib_si_engine_rs` は SI/EIT semantic parse に加えて、TvProvider `internal_provider_data` JSON v1 の構造 SSOT を持つ。実装上は `provider_data` module に Rust `serde` struct を置き、JSON canonical encode、normalize、signature、stable key extraction をこの module に閉じる。
+
+### Rust struct SSOT
+
+少なくとも以下の struct を Rust 側で定義し、Kotlin 側に同名 schema を二重定義しない。
+
+```rust
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProgramProviderDataV1 {
+    pub schema: String,
+    pub schema_version: u32,
+    pub program_key: ProgramKeyV1,
+    pub service_key: ServiceKeyV1,
+    pub timing: ProgramTimingV1,
+    pub source: ProgramSourceV1,
+    pub cas: CasStateV1,
+    pub ratings: Vec<RatingV1>,
+    pub genres: Vec<GenreV1>,
+    pub audio: Option<AudioMetadataV1>,
+    pub video: Option<VideoMetadataV1>,
+    pub diagnostics: DiagnosticsV1,
+}
+
+#[derive(Serialize, Deserialize, Eq, PartialEq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub struct ProgramKeyV1 {
+    pub kind: String,
+    pub original_network_id: u16,
+    pub transport_stream_id: u16,
+    pub service_id: u16,
+    pub event_id: u16,
+}
+```
+
+`ProgramKeyV1.kind` は `arib-event-v1` とする。`ProgramKeyV1` に start/end/duration を入れてはならない。
+
+### DescriptorDiagnosticV1
+
+Descriptor diagnostic は Rust が生成し、Kotlin はその JSON object を別 schema に変換してはならない。
+
+```rust
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DescriptorDiagnosticV1 {
+    pub schema: String,
+    pub schema_version: u32,
+    pub severity: DiagnosticSeverity,
+    pub code: String,
+    pub scope: SectionScopeV1,
+    pub descriptor: DescriptorScopeV1,
+    pub message: String,
+}
+```
+
+`SectionScopeV1` は PID、table_id、table_id_extension、version、section_number、ONID、TSID、service_id、event_id を持てる構造とする。unknown numeric を `-1` へ潰さず、`Option` または key omission とする。
+
+`DescriptorScopeV1` は tag、name、offset、declared_length、actual_remaining_length、raw_prefix_hex を持つ。`raw_prefix_hex` は最大64 bytes相当までとする。
+
+### canonical JSON / signature
+
+canonical JSON は Rust `serde_json` で生成し、struct field order と `BTreeMap` により出力順序を固定する。provider-data signature は TvProvider に実際に書く UTF-8 JSON bytes の SHA-256 lowercase hex とする。
+
+### JNI boundary
+
+Rust は少なくとも以下の JNI API 相当を提供する。
+
+```text
+buildProgramProviderData(inputJson) -> ProviderDataResult
+normalizeProgramProviderData(rawBytes) -> ProviderDataResult
+programProviderDataSignature(rawBytes) -> String
+extractProgramKey(rawBytes) -> ProgramKeyResult?
+```
+
+`inputJson` は Rust builder への入力 DTO であり、TvProvider 保存 schema ではない。最終 provider-data bytes と signature は Rust が返す。
+
+### JSON Schema / golden fixture
+
+r51 では Rust serde struct を SSOT としつつ、`schema/program_provider_data_v1.schema.json`、`schema/descriptor_diagnostic_v1.schema.json`、golden fixture を置く。Rust test と Kotlin test は同じ fixture を読み、Rust JSON -> Kotlin round-trip と Kotlin input -> Rust build -> fixture match を確認する。
+

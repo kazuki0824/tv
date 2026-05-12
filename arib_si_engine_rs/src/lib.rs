@@ -5,16 +5,18 @@ mod ca_descriptor;
 mod descriptors;
 mod discovery_requirements;
 mod eit;
+mod provider_data;
 mod sections;
 mod service_discovery;
 
 use ca_descriptor::CaDescriptor;
-use jni::objects::{JByteArray, JObject};
+use jni::objects::{JByteArray, JObject, JString};
 use jni::sys::{jbyteArray, jint, jlong, jstring};
 use jni::JNIEnv;
 use sections::{parse_section_header, section_crc_valid};
 use eit::{EitEvent, EitUpdateWindow};
-use descriptors::{event_descriptor_diagnostic, event_provider_fields};
+use descriptors::{event_descriptor_diagnostic, event_provider_fields, json_escape};
+use provider_data as provider_data_api;
 use service_discovery::{
     DiscoveredElementaryStream, DiscoveredService, DiscoveredTransport, EsCaMetadata,
     DiscoveryPublishStage,
@@ -81,13 +83,13 @@ impl ParserState {
                 self.last_status = STATUS_INVALID_SECTION;
                 return STATUS_INVALID_SECTION;
             }
-            if section_has_malformed_descriptor_loop(pid, table_id, section, self.collector.is_known_pmt_pid(pid)) {
-                self.last_status = STATUS_MALFORMED_DESCRIPTOR;
-                return STATUS_MALFORMED_DESCRIPTOR;
-            }
+            let malformed_descriptor_loop = section_has_malformed_descriptor_loop(pid, table_id, section, self.collector.is_known_pmt_pid(pid));
+            // r50bk8: malformed descriptor loops are diagnostics-bearing input, not
+            // a reason to drop the entire SI/EIT section before semantic parsing.
+            // Non-recoverable section length/CRC errors are still rejected above.
             self.collector.push_section(pid, section);
-            self.last_status = STATUS_OK;
-            STATUS_OK
+            self.last_status = if malformed_descriptor_loop { STATUS_MALFORMED_DESCRIPTOR } else { STATUS_OK };
+            self.last_status
         } else {
             self.retain_private_section(PrivateSectionRecord {
                 pid,
@@ -150,13 +152,314 @@ impl ParserState {
         self.collector.events()
     }
 
-    fn epg_update_windows(&self) -> Vec<EitUpdateWindow> {
-        self.collector.epg_update_windows()
+    fn take_epg_update_windows(&mut self) -> Vec<EitUpdateWindow> {
+        self.collector.take_epg_update_windows()
+    }
+
+
+    fn sdt_actual_transport_keys(&self) -> Vec<(u16, u16)> {
+        self.collector.sdt_actual_transport_keys()
     }
 
     fn clear_epg_update_windows(&mut self) {
         self.collector.clear_epg_update_windows()
     }
+}
+
+
+fn hex_lower(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push_str(&format!("{:02x}", b));
+    }
+    out
+}
+
+fn json_string(value: &str) -> String {
+    format!("\"{}\"", json_escape(value))
+}
+
+fn json_opt_string(value: Option<&str>) -> String {
+    match value {
+        Some(v) if !v.is_empty() => json_string(v),
+        _ => "null".to_string(),
+    }
+}
+
+fn json_opt_u16(value: Option<u16>) -> String {
+    value.map(|v| v.to_string()).unwrap_or_else(|| "null".to_string())
+}
+
+fn json_opt_u8(value: Option<u8>) -> String {
+    value.map(|v| v.to_string()).unwrap_or_else(|| "null".to_string())
+}
+
+fn json_bool(value: bool) -> &'static str { if value { "true" } else { "false" } }
+
+fn json_array(items: Vec<String>) -> String { format!("[{}]", items.join(",")) }
+
+fn string_array_json(items: &[String]) -> String {
+    json_array(items.iter().map(|v| json_string(v)).collect())
+}
+
+fn str_array_json(items: &[&'static str]) -> String {
+    json_array(items.iter().map(|v| json_string(v)).collect())
+}
+
+fn ca_descriptor_json(ca: &CaDescriptor, scope: &str, es_pid: Option<u16>) -> String {
+    format!(
+        "{{\"caSystemId\":{},\"caPid\":{},\"scope\":{},\"esPid\":{},\"rawDescriptorHex\":{},\"privateDataHex\":{}}}",
+        ca.ca_system_id,
+        ca.ca_pid,
+        json_string(scope),
+        json_opt_u16(es_pid),
+        json_string(&hex_lower(&ca.raw_descriptor)),
+        json_string(&hex_lower(&ca.private_data)),
+    )
+}
+
+fn elementary_stream_json(stream: &DiscoveredElementaryStream) -> String {
+    format!(
+        "{{\"elementaryPid\":{},\"streamType\":{},\"componentTag\":{},\"componentType\":{},\"streamContent\":{},\"languageCodes\":{}}}",
+        stream.elementary_pid,
+        stream.stream_type,
+        json_opt_u8(stream.component_tag),
+        json_opt_u8(stream.component_type),
+        json_opt_u8(stream.stream_content),
+        string_array_json(&stream.language_codes),
+    )
+}
+
+fn service_json(service: &DiscoveredService) -> String {
+    let mut ca = Vec::new();
+    ca.extend(service.program_ca_descriptors.iter().map(|d| ca_descriptor_json(d, "PROGRAM", None)));
+    for group in &service.es_ca_descriptors {
+        ca.extend(group.descriptors.iter().map(|d| ca_descriptor_json(d, "ES", Some(group.elementary_pid))));
+    }
+    format!(
+        "{{\"originalNetworkId\":{},\"transportStreamId\":{},\"serviceId\":{},\"name\":{},\"providerName\":{},\"serviceType\":{},\"pmtPid\":{},\"pcrPid\":{},\"freeCaMode\":{},\"streams\":{},\"hasProgramCaDescriptor\":{},\"hasEsCaDescriptor\":{},\"serviceScopedCaDescriptors\":{}}}",
+        service.original_network_id,
+        service.transport_stream_id,
+        service.service_id,
+        json_string(service.service_name.as_deref().unwrap_or("")),
+        json_string(service.provider_name.as_deref().unwrap_or("")),
+        json_opt_u8(service.service_type),
+        json_opt_u16(service.pmt_pid),
+        json_opt_u16(service.pcr_pid),
+        service.free_ca_mode.map(json_bool).unwrap_or("null"),
+        json_array(service.streams.iter().map(elementary_stream_json).collect()),
+        json_bool(!service.program_ca_descriptors.is_empty()),
+        json_bool(!service.es_ca_descriptors.is_empty()),
+        json_array(ca),
+    )
+}
+
+fn transport_json(transport: &DiscoveredTransport) -> String {
+    format!(
+        "{{\"originalNetworkId\":{},\"transportStreamId\":{},\"networkName\":{},\"transportStreamName\":{},\"remoteControlKeyId\":{}}}",
+        transport.original_network_id,
+        transport.transport_stream_id,
+        json_string(transport.network_name.as_deref().unwrap_or("")),
+        json_string(transport.ts_name.as_deref().unwrap_or("")),
+        json_opt_u8(transport.remote_control_key_id),
+    )
+}
+
+fn transport_key_json(onid: u16, tsid: u16) -> String {
+    format!("{{\"originalNetworkId\":{},\"transportStreamId\":{}}}", onid, tsid)
+}
+
+fn pmt_mapping_json(mapping: &crate::service_discovery::PmtPidMapping) -> String {
+    format!(
+        "{{\"originalNetworkId\":{},\"transportStreamId\":{},\"serviceId\":{},\"pmtPid\":{}}}",
+        mapping.original_network_id, mapping.transport_stream_id, mapping.service_id, mapping.pmt_pid,
+    )
+}
+
+fn ca_metadata_json(service_key: Option<(u16, u16, u16)>, ca: &CaDescriptor, ecm_pid: Option<u16>, emm_pid: Option<u16>, elementary_pid: Option<u16>, source: &str) -> String {
+    let service_key_json = match service_key {
+        Some((onid, tsid, sid)) => format!("{{\"originalNetworkId\":{},\"transportStreamId\":{},\"serviceId\":{}}}", onid, tsid, sid),
+        None => "null".to_string(),
+    };
+    format!(
+        "{{\"serviceKey\":{},\"caSystemId\":{},\"ecmPid\":{},\"emmPid\":{},\"elementaryPid\":{},\"privateDataHex\":{},\"source\":{}}}",
+        service_key_json,
+        ca.ca_system_id,
+        json_opt_u16(ecm_pid),
+        json_opt_u16(emm_pid),
+        json_opt_u16(elementary_pid),
+        json_string(&hex_lower(&ca.private_data)),
+        json_string(source),
+    )
+}
+
+fn ca_metadata_from_services_json(services: &[DiscoveredService], cat: &[CaDescriptor]) -> String {
+    let mut out = Vec::new();
+    for service in services {
+        let key = Some((service.original_network_id, service.transport_stream_id, service.service_id));
+        out.extend(service.program_ca_descriptors.iter().map(|ca| ca_metadata_json(key, ca, Some(ca.ca_pid), None, None, "PROGRAM")));
+        for group in &service.es_ca_descriptors {
+            out.extend(group.descriptors.iter().map(|ca| ca_metadata_json(key, ca, Some(ca.ca_pid), None, Some(group.elementary_pid), "ELEMENTARY_STREAM")));
+        }
+    }
+    out.extend(cat.iter().map(|ca| ca_metadata_json(None, ca, None, Some(ca.ca_pid), None, "CAT")));
+    json_array(out)
+}
+
+fn private_section_json(section: &PrivateSectionRecord) -> String {
+    format!("{{\"pid\":{},\"tableId\":{},\"bytesHex\":{}}}", section.pid, section.table_id, json_string(&hex_lower(&section.bytes)))
+}
+
+fn extended_items_json(event: &EitEvent) -> String {
+    json_array(event.descriptors.extended_items.iter().map(|item| format!("{{\"description\":{},\"text\":{}}}", json_string(&item.item_description), json_string(&item.item_text))).collect())
+}
+
+fn event_component_text(event: &EitEvent) -> String {
+    event.descriptors.components.iter().map(|c| c.text.clone()).filter(|v| !v.is_empty()).collect::<Vec<_>>().join("\n")
+}
+
+fn event_audio_component_text(event: &EitEvent) -> String {
+    event.descriptors.audio_components.iter().map(|a| a.text.clone()).filter(|v| !v.is_empty()).collect::<Vec<_>>().join("\n")
+}
+
+fn event_audio_language(event: &EitEvent) -> String {
+    let mut langs = Vec::new();
+    for audio in &event.descriptors.audio_components {
+        if !audio.language_code.is_empty() && !langs.contains(&audio.language_code) { langs.push(audio.language_code.clone()); }
+        if let Some(second) = &audio.language_code_2 { if !second.is_empty() && !langs.contains(second) { langs.push(second.clone()); } }
+    }
+    langs.join(",")
+}
+
+fn event_broadcast_genre(event: &EitEvent) -> String {
+    event.descriptors.contents.iter().map(|c| format!("ARIB(0x{:x}/0x{:x}):{}", c.content_nibble_level_1, c.content_nibble_level_2, c.arib_display_name)).collect::<Vec<_>>().join("、")
+}
+
+fn event_genre_supplement_text(event: &EitEvent) -> String {
+    event.descriptors.contents.iter().map(|c| arib_content_to_ui_text(c.content_nibble_level_1, c.content_nibble_level_2)).collect::<Vec<_>>().join("、")
+}
+
+fn event_group_text(event: &EitEvent) -> String {
+    let mut parts = Vec::new();
+    for group in &event.descriptors.event_groups {
+        for related in &group.events { parts.push(format!("sid={} event={}", related.service_id, related.event_id)); }
+        for related in &group.other_network_events { parts.push(format!("onid={} tsid={} sid={} event={}", related.original_network_id.unwrap_or(0), related.transport_stream_id.unwrap_or(0), related.service_id, related.event_id)); }
+    }
+    parts.join("、")
+}
+
+fn event_series_name(event: &EitEvent) -> String {
+    event.descriptors.series.iter().map(|s| s.series_name.clone()).filter(|v| !v.is_empty()).collect::<Vec<_>>().join("\n")
+}
+
+fn event_diagnostic_text(event: &EitEvent) -> String {
+    let d = event.descriptors.clone();
+    let diagnostic = event_descriptor_diagnostic(&d);
+    format!(
+        "content={:?} component={:?} audio={:?} parental={:?} series={:?} eventGroupCount={} linkageCount={} unknownCount={} json={}",
+        d.contents.iter().map(|c| (c.content_nibble_level_1, c.content_nibble_level_2)).collect::<Vec<_>>(),
+        d.components.iter().map(|c| (c.stream_content, c.component_type, c.component_tag, c.language_code.clone())).collect::<Vec<_>>(),
+        d.audio_components.iter().map(|a| (a.stream_content, a.component_type, a.component_tag, a.stream_type, a.language_code.clone(), a.language_code_2.clone())).collect::<Vec<_>>(),
+        d.parental_ratings.iter().map(|r| (r.country_code.clone(), r.rating_value, r.raw_rating_byte)).collect::<Vec<_>>(),
+        d.series.iter().map(|s| (s.series_id, s.episode_number, s.last_episode_number, s.series_name.clone())).collect::<Vec<_>>(),
+        diagnostic.event_group_count,
+        diagnostic.linkage_count,
+        diagnostic.unknown_count,
+        diagnostic.descriptor_json,
+    )
+}
+
+fn parental_ratings_json(event: &EitEvent) -> String {
+    json_array(event.descriptors.parental_ratings.iter().map(|r| format!(
+        "{{\"countryCode\":{},\"rating\":{},\"rawRating\":{},\"supported\":{}}}",
+        json_string(&r.country_code), r.rating_value, r.raw_rating_byte, json_bool(r.country_code == "JPN" && r.rating_value <= 20)
+    )).collect())
+}
+
+fn event_json(event: &EitEvent) -> String {
+    let provider = event_provider_fields(&event.descriptors);
+    let descriptor_diagnostic = event_descriptor_diagnostic(&event.descriptors);
+    format!(
+        "{{\"originalNetworkId\":{},\"transportStreamId\":{},\"serviceId\":{},\"stableIdentity\":{},\"eventId\":{},\"startTimeMillis\":{},\"durationMillis\":{},\"title\":{},\"description\":{},\"extendedDescription\":{},\"eventScope\":{},\"extendedItems\":{},\"componentText\":{},\"audioComponentText\":{},\"audioLanguage\":{},\"canonicalGenre\":{},\"broadcastGenre\":{},\"genreSupplementText\":{},\"eventGroupText\":{},\"freeCaText\":{},\"seriesName\":{},\"diagnosticText\":{},\"diagnosticDescriptorJson\":{},\"parentalRatings\":{}}}",
+        event.original_network_id,
+        event.transport_stream_id,
+        event.service_id,
+        json_string(&stable_identity_string(event.stable_identity())),
+        event.event_id,
+        event.start_time_millis,
+        event.duration_millis,
+        json_string(&provider.title),
+        json_string(&provider.description),
+        json_string(&provider.extended_description),
+        json_string(event.scope.as_str()),
+        extended_items_json(event),
+        json_opt_string(Some(&event_component_text(event))),
+        json_opt_string(Some(&event_audio_component_text(event))),
+        json_opt_string(Some(&event_audio_language(event))),
+        json_string(""),
+        json_opt_string(Some(&event_broadcast_genre(event))),
+        json_opt_string(Some(&event_genre_supplement_text(event))),
+        json_opt_string(Some(&event_group_text(event))),
+        json_string(if event.free_ca_mode { "有料放送" } else { "無料放送" }),
+        json_opt_string(Some(&event_series_name(event))),
+        json_string(&event_diagnostic_text(event)),
+        json_string(&descriptor_diagnostic.descriptor_json),
+        parental_ratings_json(event),
+    )
+}
+
+fn epg_update_window_json(window: &EitUpdateWindow) -> String {
+    format!(
+        "{{\"originalNetworkId\":{},\"transportStreamId\":{},\"serviceId\":{},\"windowStartMillis\":{},\"windowEndMillis\":{},\"validProgramStableIdentities\":{}}}",
+        window.original_network_id,
+        window.transport_stream_id,
+        window.service_id,
+        window.window_start_millis,
+        window.window_end_millis,
+        json_array(window.valid_event_identities.iter().map(|id| json_string(&stable_identity_string(*id))).collect()),
+    )
+}
+
+fn publishability_json(p: &ServicePublishability) -> String {
+    format!(
+        "{{\"originalNetworkId\":{},\"transportStreamId\":{},\"serviceId\":{},\"publishable\":{},\"channelRegistrationReady\":{},\"epgPublishable\":{},\"clearLivePlaybackSupported\":{},\"requiresCas\":{},\"unsupportedCas\":{},\"pmtPidResolved\":{},\"pmtParsed\":{},\"caStateResolved\":{},\"freeCaModeResolved\":{},\"missingComponents\":{},\"reasons\":{},\"registrationReasons\":{},\"epgReasons\":{}}}",
+        p.original_network_id, p.transport_stream_id, p.service_id,
+        json_bool(p.publishable), json_bool(p.channel_registration_ready), json_bool(p.epg_publishable), json_bool(p.clear_live_playback_supported), json_bool(p.requires_cas), json_bool(p.unsupported_cas), json_bool(p.pmt_pid_resolved), json_bool(p.pmt_parsed), json_bool(p.ca_state_resolved), json_bool(p.free_ca_mode_resolved),
+        str_array_json(&p.missing_components), str_array_json(&p.reasons), str_array_json(&p.registration_reasons), str_array_json(&p.epg_reasons),
+    )
+}
+
+fn bulk_snapshot_json(state: &mut ParserState, take_update_windows: bool) -> String {
+    let snapshot = state.snapshot();
+    let services = snapshot.services;
+    let transports = snapshot.transports;
+    let pmt_mappings = snapshot.pmt_pids_by_service;
+    let cas_services = state.cas_discovery_services();
+    let cat_ca = snapshot.cat_ca.descriptors;
+    let cas_cat_ca = state.raw_cat_ca_descriptors();
+    // Phase C/B-07: update windows are exposed only through the draining bulk API.
+    // Non-draining bulk snapshots intentionally return no EPG update windows so production
+    // callers cannot accidentally re-publish the same obsolete-delete window.
+    let epg_windows = if take_update_windows {
+        state.take_epg_update_windows()
+    } else {
+        Vec::new()
+    };
+    format!(
+        "{{\"services\":{},\"servicesForCasDiscovery\":{},\"caMetadata\":{},\"caMetadataForCasDiscovery\":{},\"pmtPidMappings\":{},\"pmtPidsForSectionFilters\":{},\"transports\":{},\"sdtActualTransports\":{},\"privateSections\":{},\"events\":{},\"epgUpdateWindows\":{},\"publishabilityDiagnostics\":{}}}",
+        json_array(services.iter().map(service_json).collect()),
+        json_array(cas_services.iter().map(service_json).collect()),
+        ca_metadata_from_services_json(&services, &cat_ca),
+        ca_metadata_from_services_json(&cas_services, &cas_cat_ca),
+        json_array(pmt_mappings.iter().map(pmt_mapping_json).collect()),
+        json_array(state.pmt_pids_for_section_filters().iter().map(|pid| pid.to_string()).collect()),
+        json_array(transports.iter().map(transport_json).collect()),
+        json_array(state.sdt_actual_transport_keys().iter().map(|(tsid, onid)| transport_key_json(*onid, *tsid)).collect()),
+        json_array(state.private_sections.iter().map(private_section_json).collect()),
+        json_array(state.events().iter().map(event_json).collect()),
+        json_array(epg_windows.iter().map(epg_update_window_json).collect()),
+        json_array(state.publishability().iter().map(publishability_json).collect()),
+    )
 }
 
 
@@ -439,6 +742,108 @@ fn discovery_stage_to_jint(stage: DiscoveryPublishStage) -> jint {
         DiscoveryPublishStage::Partial => DISCOVERY_STAGE_PARTIAL,
         DiscoveryPublishStage::Complete => DISCOVERY_STAGE_COMPLETE,
     }
+}
+
+
+#[no_mangle]
+pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeSnapshotBulkJson(
+    mut env: JNIEnv<'_>,
+    _this: JObject<'_>,
+    handle: jlong,
+    take_update_windows: jint,
+) -> jstring {
+    let parser = match registry().lock() {
+        Ok(guard) => guard.get(handle),
+        Err(_) => return java_string(&mut env, Some("{}".to_string())),
+    };
+    let Some(parser) = parser else { return java_string(&mut env, Some("{}".to_string())); };
+    let json = match parser.lock() {
+        Ok(mut guard) => bulk_snapshot_json(&mut guard, take_update_windows != 0),
+        Err(_) => "{}".to_string(),
+    };
+    java_string(&mut env, Some(json))
+}
+
+
+fn jstring_to_string(env: &mut JNIEnv<'_>, value: JString<'_>) -> Option<String> {
+    env.get_string(&value).ok().map(|s| s.into())
+}
+
+fn provider_result_json(result: provider_data_api::ProviderDataResult) -> String {
+    format!(
+        "{{\"json\":{},\"signature\":{},\"extractedKey\":{}}}",
+        json_string(&result.json),
+        json_string(&result.signature),
+        json_string(&result.extracted_key),
+    )
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeBuildChannelProviderData(
+    mut env: JNIEnv<'_>,
+    _this: JObject<'_>,
+    request_json: JString<'_>,
+) -> jstring {
+    let request = jstring_to_string(&mut env, request_json).unwrap_or_default();
+    let result = provider_data_api::build_channel_provider_data(&request);
+    java_string(&mut env, Some(provider_result_json(result)))
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeBuildProgramProviderData(
+    mut env: JNIEnv<'_>,
+    _this: JObject<'_>,
+    request_json: JString<'_>,
+) -> jstring {
+    let request = jstring_to_string(&mut env, request_json).unwrap_or_default();
+    let result = provider_data_api::build_program_provider_data(&request);
+    java_string(&mut env, Some(provider_result_json(result)))
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeNormalizeProgramProviderData(
+    mut env: JNIEnv<'_>,
+    _this: JObject<'_>,
+    provider_data: JString<'_>,
+) -> jstring {
+    let data = jstring_to_string(&mut env, provider_data).unwrap_or_default();
+    let result = provider_data_api::normalize_program_provider_data(&data);
+    java_string(&mut env, Some(provider_result_json(result)))
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeExtractProgramKey(
+    mut env: JNIEnv<'_>,
+    _this: JObject<'_>,
+    provider_data: JString<'_>,
+) -> jstring {
+    let data = jstring_to_string(&mut env, provider_data).unwrap_or_default();
+    java_string(&mut env, provider_data_api::extract_program_key(&data))
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeExtractChannelTuneKey(
+    mut env: JNIEnv<'_>,
+    _this: JObject<'_>,
+    provider_data: JString<'_>,
+) -> jstring {
+    let data = jstring_to_string(&mut env, provider_data).unwrap_or_default();
+    java_string(&mut env, Some(provider_data_api::extract_channel_tune_key(&data)))
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeAppendCurrentProgramDiagnostics(
+    mut env: JNIEnv<'_>,
+    _this: JObject<'_>,
+    provider_data: JString<'_>,
+    overlap_count: jlong,
+    selected_program_id: jlong,
+    selection_rule: JString<'_>,
+) -> jstring {
+    let data = jstring_to_string(&mut env, provider_data).unwrap_or_default();
+    let rule = jstring_to_string(&mut env, selection_rule).unwrap_or_default();
+    let result = provider_data_api::append_current_program_diagnostics(&data, overlap_count, selected_program_id, &rule);
+    java_string(&mut env, Some(provider_result_json(result)))
 }
 
 #[no_mangle]
@@ -1416,11 +1821,6 @@ fn event_at(state: &ParserState, index: jint) -> Option<EitEvent> {
     state.events().get(index as usize).cloned()
 }
 
-fn epg_update_window_at(state: &ParserState, index: jint) -> Option<EitUpdateWindow> {
-    if index < 0 { return None; }
-    state.epg_update_windows().get(index as usize).cloned()
-}
-
 fn stable_identity_string(stable: eit::EitStableEventIdentity) -> String {
     format!(
         "onid={};tsid={};sid={};event={}",
@@ -1428,98 +1828,6 @@ fn stable_identity_string(stable: eit::EitStableEventIdentity) -> String {
     )
 }
 
-
-#[no_mangle]
-pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeGetEpgUpdateWindowCount(
-    _env: JNIEnv<'_>,
-    _this: JObject<'_>,
-    handle: jlong,
-) -> jint {
-    with_state(handle, 0, |state| state.epg_update_windows().len() as jint)
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeClearEpgUpdateWindows(
-    _env: JNIEnv<'_>,
-    _this: JObject<'_>,
-    handle: jlong,
-) -> jint {
-    with_state_mut(handle, STATUS_INVALID_HANDLE, |state| { state.clear_epg_update_windows(); STATUS_OK })
-}
-
-macro_rules! epg_update_window_int_getter {
-    ($name:ident, $field:expr) => {
-        #[no_mangle]
-        pub extern "system" fn $name(
-            _env: JNIEnv<'_>,
-            _this: JObject<'_>,
-            handle: jlong,
-            index: jint,
-        ) -> jint {
-            with_state(handle, STATUS_INVALID_HANDLE, |state| epg_update_window_at(state, index).map($field).unwrap_or(STATUS_INDEX_OUT_OF_RANGE))
-        }
-    };
-}
-
-epg_update_window_int_getter!(Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeGetEpgUpdateWindowOriginalNetworkId, |w: EitUpdateWindow| w.original_network_id as jint);
-epg_update_window_int_getter!(Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeGetEpgUpdateWindowTransportStreamId, |w: EitUpdateWindow| w.transport_stream_id as jint);
-epg_update_window_int_getter!(Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeGetEpgUpdateWindowServiceId, |w: EitUpdateWindow| w.service_id as jint);
-
-#[no_mangle]
-pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeGetEpgUpdateWindowStartMillis(
-    _env: JNIEnv<'_>,
-    _this: JObject<'_>,
-    handle: jlong,
-    index: jint,
-) -> jlong {
-    with_state(handle, STATUS_INVALID_HANDLE as jlong, |state| epg_update_window_at(state, index).map(|w| w.window_start_millis as jlong).unwrap_or(STATUS_INDEX_OUT_OF_RANGE as jlong))
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeGetEpgUpdateWindowEndMillis(
-    _env: JNIEnv<'_>,
-    _this: JObject<'_>,
-    handle: jlong,
-    index: jint,
-) -> jlong {
-    with_state(handle, STATUS_INVALID_HANDLE as jlong, |state| epg_update_window_at(state, index).map(|w| w.window_end_millis as jlong).unwrap_or(STATUS_INDEX_OUT_OF_RANGE as jlong))
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeGetEpgUpdateWindowValidProgramKeyCount(
-    _env: JNIEnv<'_>,
-    _this: JObject<'_>,
-    handle: jlong,
-    index: jint,
-) -> jint {
-    with_state(handle, 0, |state| epg_update_window_at(state, index).map(|w| w.valid_event_identities.len() as jint).unwrap_or(0))
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeGetEpgUpdateWindowValidProgramKey(
-    mut env: JNIEnv<'_>,
-    _this: JObject<'_>,
-    handle: jlong,
-    index: jint,
-    key_index: jint,
-) -> jstring {
-    let value = with_state(handle, None, |state| {
-        if key_index < 0 { return None; }
-        epg_update_window_at(state, index)
-            .and_then(|w| w.valid_event_identities.get(key_index as usize).copied())
-            .map(stable_identity_string)
-    });
-    java_string(&mut env, value)
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeGetEventCount(
-    _env: JNIEnv<'_>,
-    _this: JObject<'_>,
-    handle: jlong,
-) -> jint {
-    with_state(handle, STATUS_INVALID_HANDLE, |state| state.events().len() as jint)
-}
 
 macro_rules! event_int_getter {
     ($name:ident, $field:expr) => {

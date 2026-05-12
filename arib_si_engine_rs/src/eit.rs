@@ -55,6 +55,7 @@ pub struct EitUpdateWindow {
     pub window_start_millis: i64,
     pub window_end_millis: i64,
     pub valid_event_identities: Vec<EitStableEventIdentity>,
+    pub deletion_authoritative: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -117,7 +118,15 @@ impl EitStore {
         let service_id = u16_at(section, 3);
         let transport_stream_id = u16_at(section, 8);
         let original_network_id = u16_at(section, 10);
+        let malformed_event_keys = malformed_eit_event_keys(section);
         let parsed = parse_eit_section(section);
+        let deletion_authoritative = malformed_event_keys.is_empty() && parsed.iter().all(|event| event.diagnostics.is_empty());
+        if parsed.is_empty() && !malformed_event_keys.is_empty() {
+            // Phase 6/N-23: a malformed-only EIT section must not be interpreted as
+            // a deletion of all previously valid events in the same section. Keep
+            // the previous VersionedEventSet and stored events intact.
+            return;
+        }
         let section_key = EitSectionKey {
             table_id: header.table_id,
             service_id,
@@ -146,8 +155,16 @@ impl EitStore {
             previous_keys = self.section_events.get(&section_key).map(|old| old.event_keys.clone()).unwrap_or_default();
         }
         let new_keys: BTreeSet<_> = parsed.iter().map(EitEventKey::from).collect();
+        let removable_previous_keys: BTreeSet<_> = if deletion_authoritative {
+            previous_keys.difference(&new_keys)
+                .filter(|old_key| !malformed_event_keys.contains(old_key))
+                .copied()
+                .collect()
+        } else {
+            BTreeSet::new()
+        };
         let mut window_events: Vec<EitEvent> = parsed.clone();
-        for old_key in previous_keys.difference(&new_keys) {
+        for old_key in &removable_previous_keys {
             if let Some(old_event) = self.events.get(old_key) {
                 window_events.push(old_event.clone());
             }
@@ -155,7 +172,7 @@ impl EitStore {
         if !previous_keys.is_empty() || !new_keys.is_empty() {
             let r51_window_events: Vec<_> = window_events.iter().filter(|event| event.scope != EitScope::R53LongSchedule).cloned().collect();
             let r51_current_events: Vec<_> = parsed.iter().filter(|event| event.scope != EitScope::R53LongSchedule).cloned().collect();
-            if let Some(window) = build_update_window(original_network_id, transport_stream_id, service_id, &r51_window_events, &r51_current_events) {
+            if let Some(window) = build_update_window(original_network_id, transport_stream_id, service_id, &r51_window_events, &r51_current_events, deletion_authoritative) {
                 self.last_update_windows.retain(|existing| {
                     !(existing.original_network_id == window.original_network_id
                         && existing.transport_stream_id == window.transport_stream_id
@@ -166,7 +183,7 @@ impl EitStore {
                 self.last_update_windows.push(window);
             }
         }
-        for old_key in previous_keys.difference(&new_keys) {
+        for old_key in &removable_previous_keys {
             self.events.remove(old_key);
         }
         for event in parsed {
@@ -183,12 +200,6 @@ impl EitStore {
         out
     }
 
-    pub fn snapshot_update_windows_r51(&self) -> Vec<EitUpdateWindow> {
-        self.last_update_windows.iter()
-            .filter(|window| window.window_end_millis > window.window_start_millis)
-            .cloned()
-            .collect()
-    }
 
     pub fn snapshot_r51(&self) -> Vec<EitEvent> {
         let mut out: Vec<_> = self.events.values().filter(|e| e.scope != EitScope::R53LongSchedule).cloned().collect();
@@ -203,7 +214,34 @@ impl EitStore {
     pub fn section_count_for_diagnostic(&self) -> usize { self.section_events.len() }
 }
 
-fn build_update_window(onid: u16, tsid: u16, sid: u16, window_events: &[EitEvent], current_events: &[EitEvent]) -> Option<EitUpdateWindow> {
+
+fn malformed_eit_event_keys(section: &[u8]) -> BTreeSet<EitEventKey> {
+    let mut malformed = BTreeSet::new();
+    let Some(header) = parse_section_header(section, 12) else { return malformed; };
+    if !(0x4e..=0x6f).contains(&header.table_id) || header.total_length > section.len() || header.section_length < 4 { return malformed; }
+    let body_end = 3 + header.section_length - 4;
+    if section.len() < 14 || body_end <= 14 { return malformed; }
+    let service_id = u16_at(section, 3);
+    let tsid = u16_at(section, 8);
+    let onid = u16_at(section, 10);
+    let mut cursor = 14usize;
+    while cursor + 12 <= body_end {
+        let event_id = u16_at(section, cursor);
+        let start = decode_mjd_bcd_millis(section, cursor + 2);
+        let duration = decode_duration_millis(section, cursor + 7);
+        let desc_len = (((section[cursor + 10] & 0x0f) as usize) << 8) | section[cursor + 11] as usize;
+        let desc_start = cursor + 12;
+        let Some(desc_end) = desc_start.checked_add(desc_len) else { break; };
+        if start.is_none() || duration.is_none() || start.unwrap_or(0) <= 0 || duration.unwrap_or(0) <= 0 {
+            malformed.insert(EitEventKey { original_network_id: onid, transport_stream_id: tsid, service_id, event_id });
+        }
+        if desc_end > body_end { break; }
+        cursor = desc_end;
+    }
+    malformed
+}
+
+fn build_update_window(onid: u16, tsid: u16, sid: u16, window_events: &[EitEvent], current_events: &[EitEvent], deletion_authoritative: bool) -> Option<EitUpdateWindow> {
     if window_events.is_empty() {
         return None;
     }
@@ -222,6 +260,7 @@ fn build_update_window(onid: u16, tsid: u16, sid: u16, window_events: &[EitEvent
         window_start_millis: start,
         window_end_millis: end,
         valid_event_identities,
+        deletion_authoritative,
     })
 }
 
@@ -485,6 +524,38 @@ mod tests {
         assert_eq!(events[0].diagnostics.len(), 1);
         assert_eq!(events[0].diagnostics[0].parse_status, DescriptorParseStatus::TruncatedDescriptor);
         assert_eq!(events[0].diagnostics[0].malformed_descriptor_count, 1);
+    }
+
+
+    #[test]
+    fn malformed_only_section_does_not_delete_previous_valid_event() {
+        let mut store = EitStore::default();
+        let valid = [0xee, 0x00, 0x12, 0x00, 0x00];
+        store.upsert_section(&section_with_crc(eit_body(1, &[(1, valid)])));
+        assert_eq!(store.snapshot_r51().len(), 1);
+        let invalid = [0xee, 0x00, 0x7a, 0x00, 0x00];
+        store.upsert_section(&section_with_crc(eit_body(2, &[(1, invalid)])));
+        let events = store.snapshot_r51();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_id, 1);
+        assert_eq!(events[0].start_time_millis, parse_eit_section(&section_with_crc(eit_body(1, &[(1, valid)])))[0].start_time_millis);
+    }
+
+    #[test]
+    fn mixed_valid_and_malformed_section_is_not_deletion_authoritative() {
+        let mut store = EitStore::default();
+        let start1 = [0xee, 0x00, 0x12, 0x00, 0x00];
+        let start2 = [0xee, 0x01, 0x13, 0x00, 0x00];
+        store.upsert_section(&section_with_crc(eit_body(1, &[(1, start1), (2, start2)])));
+        assert_eq!(store.snapshot_r51().len(), 2);
+
+        let invalid = [0xee, 0x01, 0x7a, 0x00, 0x00];
+        store.upsert_section(&section_with_crc(eit_body(2, &[(1, start1), (2, invalid)])));
+
+        let events = store.snapshot_r51();
+        assert_eq!(events.len(), 2, "malformed mixed section must not remove previous normal event");
+        let windows = store.take_update_windows_r51();
+        assert!(windows.iter().any(|w| !w.deletion_authoritative));
     }
 
 }

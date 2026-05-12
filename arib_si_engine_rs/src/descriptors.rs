@@ -68,15 +68,17 @@ pub enum DescriptorParseStatus {
     MalformedLength,
     TruncatedDescriptor,
     UnsupportedValue,
+    InvalidSequence,
 }
 
 impl DescriptorParseStatus {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Ok => "ok",
-            Self::MalformedLength => "malformed_length",
-            Self::TruncatedDescriptor => "truncated_descriptor",
-            Self::UnsupportedValue => "unsupported_value",
+            Self::Ok => "Ok",
+            Self::MalformedLength => "MalformedLength",
+            Self::TruncatedDescriptor => "TruncatedDescriptor",
+            Self::UnsupportedValue => "UnsupportedValue",
+            Self::InvalidSequence => "InvalidSequence",
         }
     }
 }
@@ -90,6 +92,14 @@ pub struct DescriptorDiagnostic {
     pub remaining_length: usize,
     pub raw_prefix: Vec<u8>,
     pub message: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RawExtendedEventDescriptor {
+    body: Vec<u8>,
+    tag: u8,
+    offset: usize,
+    declared_length: usize,
 }
 
 fn descriptor_diagnostic(status: DescriptorParseStatus, tag: u8, offset: usize, declared_length: usize, remaining_length: usize, raw_prefix: &[u8], message: &str) -> DescriptorDiagnostic {
@@ -207,7 +217,7 @@ pub struct LinkageDescriptor {
 
 pub fn parse_event_descriptors(bytes: &[u8]) -> EventDescriptors {
     let mut out = EventDescriptors::default();
-    let mut extended_event_bodies: Vec<Vec<u8>> = Vec::new();
+    let mut extended_event_bodies: Vec<RawExtendedEventDescriptor> = Vec::new();
     let mut cursor = 0usize;
     while cursor < bytes.len() {
         if cursor + 2 > bytes.len() {
@@ -235,11 +245,11 @@ pub fn parse_event_descriptors(bytes: &[u8]) -> EventDescriptors {
         }
         let body = &bytes[body_start..body_end];
         match tag {
-            0x4d => parse_short_event(body, &mut out),
-            0x4e => extended_event_bodies.push(body.to_vec()),
-            0x54 => out.contents.extend(parse_content_descriptor(body)),
+            0x4d => parse_short_event(body, &mut out, tag, cursor, len),
+            0x4e => extended_event_bodies.push(RawExtendedEventDescriptor { body: body.to_vec(), tag, offset: cursor, declared_length: len }),
+            0x54 => parse_content_descriptor(body, &mut out, tag, cursor, len),
             0x50 => match parse_component_descriptor(body) { Some(v) => out.components.push(v), None => out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, cursor, len, body.len(), body, "component_descriptor is shorter than its fixed fields")), },
-            0xc4 => match parse_audio_component_descriptor(body) { Some(v) => out.audio_components.push(v), None => out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, cursor, len, body.len(), body, "audio_component_descriptor is shorter than its fixed fields")), },
+            0xc4 => match parse_audio_component_descriptor(body) { Some(v) => out.audio_components.push(v), None => out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, cursor, len, body.len(), body, "audio_component_descriptor is shorter than its fixed fields or second language is truncated")), },
             0x55 => {
                 let descriptor = parse_parental_rating_descriptor(body, &mut out, tag, cursor, len);
                 out.parental_ratings.extend(descriptor.entries.clone());
@@ -256,33 +266,69 @@ pub fn parse_event_descriptors(bytes: &[u8]) -> EventDescriptors {
     out
 }
 
-fn parse_short_event(body: &[u8], out: &mut EventDescriptors) {
-    if body.len() < 4 { return; }
+fn parse_short_event(body: &[u8], out: &mut EventDescriptors, tag: u8, offset: usize, declared_length: usize) {
+    if body.len() < 4 {
+        out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, offset, declared_length, body.len(), body, "short_event_descriptor is shorter than fixed fields"));
+        return;
+    }
     let name_len = body[3] as usize;
     let name_start = 4usize;
-    let name_end = name_start.saturating_add(name_len).min(body.len());
-    if out.title.is_empty() && name_start <= name_end {
+    let Some(name_end) = name_start.checked_add(name_len) else {
+        out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, offset, declared_length, body.len(), body, "short_event_descriptor event_name length overflows"));
+        return;
+    };
+    if name_end > body.len() {
+        out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, offset, declared_length, body.len().saturating_sub(name_start), body, "short_event_descriptor event_name length exceeds body"));
+        return;
+    }
+    if name_end >= body.len() {
+        out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, offset, declared_length, 0, body, "short_event_descriptor text length byte is missing"));
+        return;
+    }
+    let text_len = body[name_end] as usize;
+    let text_start = name_end + 1;
+    let Some(text_end) = text_start.checked_add(text_len) else {
+        out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, offset, declared_length, body.len(), body, "short_event_descriptor text length overflows"));
+        return;
+    };
+    if text_end != body.len() {
+        out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, offset, declared_length, body.len().saturating_sub(text_start), body, "short_event_descriptor text length does not match body"));
+        return;
+    }
+    if out.title.is_empty() {
         out.title = decode_arib_string_lossy(&body[name_start..name_end]).trim().to_string();
     }
-    if name_end < body.len() {
-        let text_len = body[name_end] as usize;
-        let text_start = name_end + 1;
-        let text_end = text_start.saturating_add(text_len).min(body.len());
-        let text = decode_arib_string_lossy(&body[text_start..text_end]).trim().to_string();
-        if !text.is_empty() { out.description = join_description(&out.description, &text); }
-    }
+    let text = decode_arib_string_lossy(&body[text_start..text_end]).trim().to_string();
+    if !text.is_empty() { out.description = join_description(&out.description, &text); }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct ExtendedEventFragment {
     descriptor_number: u8,
+    last_descriptor_number: u8,
     items: Vec<(Vec<u8>, Vec<u8>)>,
     text: Vec<u8>,
 }
 
-fn parse_extended_event_fragments(bodies: &[Vec<u8>], out: &mut EventDescriptors) {
-    let mut fragments = bodies.iter().filter_map(|body| parse_extended_event_fragment(body)).collect::<Vec<_>>();
+fn parse_extended_event_fragments(bodies: &[RawExtendedEventDescriptor], out: &mut EventDescriptors) {
+    let mut fragments = Vec::new();
+    for raw in bodies {
+        if let Some(fragment) = parse_extended_event_fragment(&raw.body, out, raw.tag, raw.offset, raw.declared_length) {
+            fragments.push(fragment);
+        }
+    }
+    if fragments.is_empty() { return; }
     fragments.sort_by_key(|fragment| fragment.descriptor_number);
+    let expected_last = fragments[0].last_descriptor_number;
+    let mut seen = std::collections::BTreeSet::new();
+    let sequence_ok = fragments.iter().all(|fragment| fragment.last_descriptor_number == expected_last)
+        && expected_last as usize + 1 == fragments.len()
+        && fragments.iter().all(|fragment| seen.insert(fragment.descriptor_number))
+        && (0..=expected_last).all(|number| seen.contains(&number));
+    if !sequence_ok {
+        out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::InvalidSequence, 0x4e, 0, bodies.len(), fragments.len(), bodies.first().map(|b| b.body.as_slice()).unwrap_or(&[]), "extended_event_descriptor fragment sequence has duplicate, missing, or inconsistent last_descriptor_number"));
+        return;
+    }
 
     let mut text_bytes = Vec::new();
     let mut current_item_description = Vec::new();
@@ -315,43 +361,63 @@ fn parse_extended_event_fragments(bodies: &[Vec<u8>], out: &mut EventDescriptors
     }
 }
 
-fn parse_extended_event_fragment(body: &[u8]) -> Option<ExtendedEventFragment> {
-    if body.len() < 6 { return None; }
+fn parse_extended_event_fragment(body: &[u8], out: &mut EventDescriptors, tag: u8, offset: usize, declared_length: usize) -> Option<ExtendedEventFragment> {
+    if body.len() < 6 {
+        out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, offset, declared_length, body.len(), body, "extended_event_descriptor is shorter than fixed fields"));
+        return None;
+    }
     let descriptor_number = (body[0] >> 4) & 0x0f;
+    let last_descriptor_number = body[0] & 0x0f;
     let items_len = body[4] as usize;
     let mut cursor = 5usize;
-    let items_end = cursor.checked_add(items_len)?.min(body.len());
+    let Some(items_end) = cursor.checked_add(items_len) else {
+        out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, offset, declared_length, body.len(), body, "extended_event_descriptor items length overflows"));
+        return None;
+    };
+    if items_end >= body.len() {
+        out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, offset, declared_length, body.len().saturating_sub(cursor), body, "extended_event_descriptor items length exceeds body or text length byte is missing"));
+        return None;
+    }
     let mut items = Vec::new();
-    while cursor + 2 <= items_end {
+    while cursor < items_end {
+        if cursor + 1 > items_end {
+            out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, offset, declared_length, items_end.saturating_sub(cursor), body, "extended_event_descriptor item description length is truncated"));
+            return None;
+        }
         let desc_len = body[cursor] as usize;
         let desc_start = cursor + 1;
-        let desc_end = desc_start.checked_add(desc_len)?.min(items_end);
-        if desc_end > items_end { break; }
-        let item_len_index = desc_end;
-        if item_len_index >= items_end { break; }
-        let item_len = body[item_len_index] as usize;
-        let item_start = item_len_index + 1;
-        let item_end = item_start.checked_add(item_len)?.min(items_end);
-        if item_end > items_end { break; }
+        let Some(desc_end) = desc_start.checked_add(desc_len) else { return None; };
+        if desc_end >= items_end {
+            out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, offset, declared_length, items_end.saturating_sub(desc_start), body, "extended_event_descriptor item description length exceeds items area"));
+            return None;
+        }
+        let item_len = body[desc_end] as usize;
+        let item_start = desc_end + 1;
+        let Some(item_end) = item_start.checked_add(item_len) else { return None; };
+        if item_end > items_end {
+            out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, offset, declared_length, items_end.saturating_sub(item_start), body, "extended_event_descriptor item text length exceeds items area"));
+            return None;
+        }
         items.push((body[desc_start..desc_end].to_vec(), body[item_start..item_end].to_vec()));
         cursor = item_end;
     }
-    let text_len_index = 5usize.checked_add(items_len)?;
-    if text_len_index >= body.len() {
-        return Some(ExtendedEventFragment { descriptor_number, items, text: Vec::new() });
-    }
+    let text_len_index = items_end;
     let text_len = body[text_len_index] as usize;
     let text_start = text_len_index + 1;
-    let text_end = text_start.checked_add(text_len)?.min(body.len());
-    Some(ExtendedEventFragment {
-        descriptor_number,
-        items,
-        text: body[text_start..text_end].to_vec(),
-    })
+    let Some(text_end) = text_start.checked_add(text_len) else { return None; };
+    if text_end != body.len() {
+        out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, offset, declared_length, body.len().saturating_sub(text_start), body, "extended_event_descriptor text length does not match body"));
+        return None;
+    }
+    Some(ExtendedEventFragment { descriptor_number, last_descriptor_number, items, text: body[text_start..text_end].to_vec() })
 }
 
-fn parse_content_descriptor(body: &[u8]) -> Vec<ContentDescriptorItem> {
-    body.chunks_exact(2).map(|chunk| {
+fn parse_content_descriptor(body: &[u8], out: &mut EventDescriptors, tag: u8, offset: usize, declared_length: usize) {
+    if body.len() % 2 != 0 {
+        out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, offset, declared_length, body.len(), body, "content_descriptor has trailing byte"));
+        return;
+    }
+    out.contents.extend(body.chunks_exact(2).map(|chunk| {
         let level1 = chunk[0] >> 4;
         let level2 = chunk[0] & 0x0f;
         ContentDescriptorItem {
@@ -361,7 +427,7 @@ fn parse_content_descriptor(body: &[u8]) -> Vec<ContentDescriptorItem> {
             user_nibble_2: chunk[1] & 0x0f,
             arib_display_name: arib_content_to_display_name(level1, level2),
         }
-    }).collect()
+    }));
 }
 
 fn arib_content_major_name(level1: u8) -> &'static str {
@@ -500,7 +566,8 @@ fn parse_audio_component_descriptor(body: &[u8]) -> Option<AudioComponentDescrip
     let flags = body[5];
     let second_language = (flags & 0x80) != 0;
     let mut cursor = 9usize;
-    let lang2 = if second_language && body.len() >= 12 {
+    if second_language && body.len() < 12 { return None; }
+    let lang2 = if second_language {
         cursor = 12;
         Some(language(&body[9..12]))
     } else { None };
@@ -532,7 +599,11 @@ fn parse_parental_rating_descriptor(body: &[u8], out: &mut EventDescriptors, tag
         rating_value: chunk[3],
         raw_rating_byte: chunk[3],
     }).collect();
-    ParentalRatingDescriptor { entries, raw_descriptor_bytes: body.to_vec(), parse_status }
+    let mut raw_descriptor_bytes = Vec::with_capacity(body.len() + 2);
+    raw_descriptor_bytes.push(tag);
+    raw_descriptor_bytes.push(declared_length as u8);
+    raw_descriptor_bytes.extend_from_slice(body);
+    ParentalRatingDescriptor { entries, raw_descriptor_bytes, parse_status }
 }
 
 fn parse_series_descriptor(body: &[u8]) -> Option<SeriesDescriptor> {
@@ -569,6 +640,7 @@ fn parse_event_group_descriptor(body: &[u8]) -> Option<EventGroupDescriptor> {
         });
         cursor += 8;
     }
+    if cursor != body.len() { return None; }
     Some(EventGroupDescriptor { group_type, events, other_network_events })
 }
 
@@ -594,6 +666,7 @@ fn join_description(current: &str, next: &str) -> String { if current.is_empty()
 /// TvProvider 向けのタイトルと説明は event_provider_fields() を使う。
 pub fn event_descriptors_to_json(desc: &EventDescriptors) -> String {
     let mut fields = Vec::new();
+    fields.push("\"schemaVersion\":1".to_string());
     fields.push(format!("\"title\":\"{}\"", json_escape(&desc.title)));
     fields.push(format!("\"description\":\"{}\"", json_escape(&desc.description)));
     fields.push(format!("\"contents\":[{}]", desc.contents.iter().map(|c| format!("{{\"level1\":{},\"level2\":{},\"user1\":{},\"user2\":{},\"aribDisplayName\":\"{}\"}}", c.content_nibble_level_1, c.content_nibble_level_2, c.user_nibble_1, c.user_nibble_2, json_escape(&c.arib_display_name))).collect::<Vec<_>>().join(",")));
@@ -614,7 +687,7 @@ pub fn event_descriptors_to_json(desc: &EventDescriptors) -> String {
 
 fn descriptor_diagnostic_to_json(d: &DescriptorDiagnostic) -> String {
     format!(
-        "{{\"parseStatus\":\"{}\",\"tag\":{},\"offset\":{},\"declaredLength\":{},\"remainingLength\":{},\"rawPrefix\":\"{}\",\"message\":\"{}\"}}",
+        "{{\"parseStatus\":\"{}\",\"tag\":{},\"offset\":{},\"declaredLength\":{},\"remainingLength\":{},\"rawPrefix\":\"{}\",\"message\":\"{}\",\"serviceKey\":null,\"eventId\":null,\"pid\":null,\"tableId\":null,\"sectionNumber\":null}}",
         d.parse_status.as_str(),
         d.descriptor_tag,
         d.offset,
@@ -737,9 +810,9 @@ mod mirakc_scope_extended_event_tests {
     fn extended_event_text_fragments_are_decoded_after_descriptor_order_concatenation() {
         let first_text = [0x1b, b'(', b'B', b'A', b'B'];
         let second_text = [0x1b, b'(', b'B', b'C', b'D'];
-        let mut first = vec![0x10, b'j', b'p', b'n', 0x00, first_text.len() as u8];
+        let mut first = vec![0x11, b'j', b'p', b'n', 0x00, first_text.len() as u8];
         first.extend_from_slice(&first_text);
-        let mut second = vec![0x00, b'j', b'p', b'n', 0x00, second_text.len() as u8];
+        let mut second = vec![0x01, b'j', b'p', b'n', 0x00, second_text.len() as u8];
         second.extend_from_slice(&second_text);
         let mut bytes = descriptor(0x4e, &first);
         bytes.extend_from_slice(&descriptor(0x4e, &second));
@@ -753,12 +826,12 @@ mod mirakc_scope_extended_event_tests {
         let desc = [0x1b, b'(', b'B', b'A', b'B', b'C'];
         let first_text = [0x1b, b'(', b'B', b'D'];
         let second_text = [0x1b, b'(', b'B', b'E', b'F'];
-        let mut first = vec![0x00, b'j', b'p', b'n', (1 + desc.len() + 1 + first_text.len()) as u8, desc.len() as u8];
+        let mut first = vec![0x01, b'j', b'p', b'n', (1 + desc.len() + 1 + first_text.len()) as u8, desc.len() as u8];
         first.extend_from_slice(&desc);
         first.push(first_text.len() as u8);
         first.extend_from_slice(&first_text);
         first.push(0x00);
-        let mut second = vec![0x10, b'j', b'p', b'n', (1 + 0 + 1 + second_text.len()) as u8, 0x00, second_text.len() as u8];
+        let mut second = vec![0x11, b'j', b'p', b'n', (1 + 0 + 1 + second_text.len()) as u8, 0x00, second_text.len() as u8];
         second.extend_from_slice(&second_text);
         second.push(0x00);
         let mut bytes = descriptor(0x4e, &first);
@@ -906,7 +979,7 @@ mod r51_descriptor_coverage_tests {
         let malformed = parse_event_descriptors(&descriptor(0x55, &[b'J', b'P', b'N', 12, 0xaa]));
         assert!(malformed.diagnostics.iter().any(|d| d.parse_status == DescriptorParseStatus::MalformedLength));
         let malformed_json = event_descriptors_to_json(&malformed);
-        assert!(malformed_json.contains("malformed_length"));
+        assert!(malformed_json.contains("MalformedLength"));
         let android_domain = format!("{}.{}", "com.android", "tv");
         let isdb_rating = format!("{}{}", "IS", "DB_12");
         assert!(!malformed_json.contains(android_domain.as_str()));
@@ -915,10 +988,76 @@ mod r51_descriptor_coverage_tests {
         let truncated = parse_event_descriptors(&[0x55, 0x04, b'J', b'P']);
         assert!(truncated.diagnostics.iter().any(|d| d.parse_status == DescriptorParseStatus::TruncatedDescriptor));
         let truncated_json = event_descriptors_to_json(&truncated);
-        assert!(truncated_json.contains("truncated_descriptor"));
+        assert!(truncated_json.contains("TruncatedDescriptor"));
         let isdb_prefix = format!("{}{}", "IS", "DB_");
         assert!(!truncated_json.contains(android_domain.as_str()));
         assert!(!truncated_json.contains(isdb_prefix.as_str()));
+    }
+
+
+    #[test]
+    fn malformed_short_event_does_not_project_title_or_description() {
+        let mut body = b"jpn".to_vec();
+        body.push(10);
+        body.extend_from_slice(&arib_alnum(b"A"));
+        let parsed = parse_event_descriptors(&descriptor(0x4d, &body));
+        assert!(parsed.title.is_empty());
+        assert!(parsed.description.is_empty());
+        assert!(parsed.diagnostics.iter().any(|d| d.parse_status == DescriptorParseStatus::MalformedLength && d.descriptor_tag == 0x4d));
+    }
+
+    #[test]
+    fn malformed_extended_event_sequence_does_not_project_text_or_items() {
+        let text = arib_alnum(b"AB");
+        let mut first = vec![0x00, b'j', b'p', b'n', 0x00, text.len() as u8];
+        first.extend_from_slice(&text);
+        let mut second = vec![0x20, b'j', b'p', b'n', 0x00, text.len() as u8];
+        second.extend_from_slice(&text);
+        let mut bytes = descriptor(0x4e, &first);
+        bytes.extend_from_slice(&descriptor(0x4e, &second));
+        let parsed = parse_event_descriptors(&bytes);
+        assert!(parsed.extended_description.is_empty());
+        assert!(parsed.extended_items.is_empty());
+        assert!(parsed.diagnostics.iter().any(|d| d.parse_status == DescriptorParseStatus::InvalidSequence));
+    }
+
+    #[test]
+    fn malformed_content_audio_and_event_group_are_not_partially_projected() {
+        let parsed = parse_event_descriptors(&descriptor(0x54, &[0x12]));
+        assert!(parsed.contents.is_empty());
+        assert!(parsed.diagnostics.iter().any(|d| d.descriptor_tag == 0x54 && d.parse_status == DescriptorParseStatus::MalformedLength));
+
+        let parsed = parse_event_descriptors(&descriptor(0xc4, &[0x20, 0x03, 0x08, 0x0f, 0x00, 0x80, b'j', b'p', b'n']));
+        assert!(parsed.audio_components.is_empty());
+        assert!(parsed.diagnostics.iter().any(|d| d.descriptor_tag == 0xc4 && d.parse_status == DescriptorParseStatus::MalformedLength));
+
+        let parsed = parse_event_descriptors(&descriptor(0xd6, &[0x10, 0x00]));
+        assert!(parsed.event_groups.is_empty());
+        assert!(parsed.diagnostics.iter().any(|d| d.descriptor_tag == 0xd6 && d.parse_status == DescriptorParseStatus::MalformedLength));
+    }
+
+    #[test]
+    fn parental_rating_raw_descriptor_hex_includes_tag_and_declared_length() {
+        let parsed = parse_event_descriptors(&descriptor(0x55, &[b'J', b'P', b'N', 12]));
+        let json = event_descriptors_to_json(&parsed);
+        assert!(json.contains("\"rawDescriptorHex\":\"55044a504e0c\""));
+    }
+
+    #[test]
+    fn descriptor_diagnostic_json_uses_v1_schema_shape() {
+        let mut body = b"jpn".to_vec();
+        body.push(10);
+        body.extend_from_slice(&arib_alnum(b"A"));
+        let parsed = parse_event_descriptors(&descriptor(0x4d, &body));
+        let json = event_descriptors_to_json(&parsed);
+        assert!(json.contains("\"schemaVersion\":1"));
+        assert!(json.contains("\"diagnostics\":["));
+        assert!(json.contains("\"parseStatus\":\"MalformedLength\""));
+        assert!(json.contains("\"tag\":77"));
+        assert!(json.contains("\"rawPrefix\":\"4d06"));
+        assert!(json.contains("\"serviceKey\":null"));
+        assert!(!json.contains("diagnosticCode"));
+        assert!(!json.contains("descriptorOffset"));
     }
 
 }

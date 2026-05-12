@@ -1,3 +1,69 @@
+## r50bk8-rerelease
+
+- r50bk8 TIS / arib_si_engine_rs 追加修正計画の7セクションに対応した。
+- provider-data 新規 write を Rust/JNI bridge 経由の JSON v1 へ寄せ、Channel/Program の key 抽出・signature 生成・current-program overlap diagnostics 追記を native 側 API で扱う経路を追加した。
+- EIT update window の `deletionAuthoritative` を TIS publish transaction へ伝播し、authoritative でない window では obsolete Program delete を実行しないようにした。
+- Program publish retry に failureClass / attempt / nextAttemptAtMs / backoff / 上限 trim を追加した。ただし pending retry は引き続き process-local であり、永続化 store への移行は未実施。
+- production path の snapshot 利用を `snapshotTransaction()` に寄せ、旧 snapshot API を deprecated として明示した。
+- SetupActivity を `BIND_TV_INPUT` permission で保護し、自 TIS inputId 検証と scan generation 照合により外部起動・過去 Completed state による成功終了を抑止した。
+- CAS descrambler PID type を AOSP `Descrambler.PID_TYPE_T` に修正した。
+- AudioTrack 生成時に Android 14 の AttributionSource を可能な範囲で伝播する処理を追加した。
+- Android/Soong build、Kotlin compile、instrumentation test、atest、VTS、CTS、実機確認はこの環境では未実施。
+
+## r50bk8
+
+- r50bk7 のフェーズ1〜6静的再監査で、unsupported parental rating 由来の `unsupportedDescriptorJson` を `EventModelMapper` が旧 `diagnosticCode` / `descriptorOffset` 形で新規生成しており、フェーズ6の「新規 provider-data write は schemaVersion=1 の canonical descriptor diagnostics shape だけにする」完了条件に未達であることを確認した。
+- `unsupportedDescriptorJson` の生成を `schemaVersion=1` / `diagnostics[]` / `parseStatus=UnsupportedValue` / `tag=0x55` / `serviceKey` / `eventId` を持つ canonical shape に変更し、`TvProviderWriter` の migration-read 経路に依存しない新規 write へ固定した。
+- r50bk8 は改訂2版 Markdown のフェーズ1〜6完了版として扱う。Android/Soong build、Kotlin compile、Rust unit test、instrumentation test、atest、VTS、CTS、実機確認はこの環境では未実施。
+
+## r50bk5
+
+- r50bk4 のフェーズ3・4A・4B・4C静的再監査で、PlaybackPipeline の MediaCodec first-frame callback が main handler から playbackGeneration / surface / videoAvailableNotified を直接参照・更新し得る点を4C未達として確認した。
+- first-frame callback は playback executor へ enqueue し、playbackGeneration / surface / first-frame state の確認と onVideoAvailable 通知を playback executor 上で実行するよう修正した。
+- フェーズ5・6には進まず、r50bk5 は改訂2版 Markdown のフェーズ1〜4C完了版として扱う。
+- Android/Soong build、Kotlin compile、instrumentation test、atest、VTS、CTS、実機確認はこの環境では未実施。
+
+## r50bk4
+
+- r50bk3 のフェーズ3・4A・4B・4C静的再監査で、SetupActivity が user-unlock receiver 経由で boot EPG sync を開始し得る点と、ChannelScanController の SI collection 判定が ServiceListBuilder 経由で services / publishability を別 snapshot から合成し得る点を未達として確認した。
+- SetupActivity から user-unlock drain receiver 登録を削除し、setup activity 起動中は Direct Boot pending を表示するだけで boot EPG sync を開始しないよう固定した。
+- ChannelScanController の registration-ready 判定を、同一 snapshotTransaction 由来の serviceCounts に一本化し、serviceListBuilder.registrationReadySnapshot() の別 snapshot 合成を production path から除去した。
+- フェーズ5・6には進まず、r50bk4 は改訂2版 Markdown のフェーズ1〜4C完了版として扱う。
+- Android/Soong build、Kotlin compile、instrumentation test、atest、VTS、CTS、実機確認はこの環境では未実施。
+
+## r50bk2
+
+- r50bk のフェーズ1・2静的再監査で、同一 event の start/end が update window 外へ移動した場合に旧 Program row を stable key で発見できず duplicate insert し得る未達を確認した。
+- Program upsert の既存 Program index を window 限定から service/channel 全体の stable programKey index へ変更し、ONID/TSID/SID/event identity が同じ Program は start/end 変更後も既存 row update になるよう修正した。
+- フェーズ3以降には進まず、r50bk2 は改訂2版 Markdown のフェーズ1・2完了版として扱う。
+- Android/Soong build、instrumentation test、atest、VTS、CTS、実機確認はこの環境では未実施。
+
+## r50bk
+
+- 改訂2版 Markdown のフェーズ1・2に従い、Program identity / current program / provider-data signature と TvProvider query failure / null cursor / Program upsert safety の実装を修正した。
+- `programKey` を ONID/TSID/SID/event の安定キーに固定し、start/end と row id dependent diagnostics を signature 対象から外した。
+- TvProvider null cursor を failure として扱い、`existingChannels()` の空 fallback を production path から除去し、service 単位 failure 時の obsolete delete を禁止した。
+- Android/Soong build、instrumentation test、atest、VTS、CTS、実機確認はこの環境では未実施。
+
+
+## r50bj3
+
+- r50bj2 後に残っていた設計未固定事項として、malformed descriptor / malformed SI の fail-closed 方針、malformed EIT event を obsolete delete 根拠にしない条件、SectionEvent / MediaEvent 入力上限、Direct Boot drain と live session 優先、TvProvider required query の null cursor failure 扱いを固定した。
+- `ARIB_SI_EPG_TvProvider投影方針.md` に、malformed descriptor / malformed EIT event 由来値を TvProvider 標準列へ正常投影しないことを明記した。
+- 実装コードは変更していない。Android/Soong build、instrumentation test、atest、VTS、CTS、実機確認はこの環境では未実施。
+
+## r50bj2
+
+- r50bj の設計固定後に残っていた旧未固定記述を整理し、`ARIB_SI_EPG_TvProvider投影方針.md` の `internal_provider_data` schema/key/サイズ上限/LONG_DESCRIPTION 最大長を未固定扱いしないようにした。
+- `onUnblockContent()` の start/end は stable identity ではなく current Program row 照合用の補助条件であることを `DESIGN_JA.md` / `INTEGRATION.md` に明記した。
+- 実装コードは変更していない。Android/Soong build、instrumentation test、atest、VTS、CTS、実機確認はこの環境では未実施。
+
+## r50bj
+
+- 設計文書上で provider-data JSON v1、Rust serde SSOT、descriptor diagnostics schema、transaction DTO、session/playback/scan executor 境界、SetupActivity 保護、retry/backoff を固定した。
+- `programKey` を ONID/TSID/SID/event_id のみに固定し、start/end を stable identity から外した。
+- 実装コードは変更していない。Android/Soong build、instrumentation test、atest、VTS、CTS、実機確認はこの環境では未実施。
+
 ## r50bi6
 
 - Phase A の lifecycle / generation / executor / cancel / CAS state 未達を是正した。`TunerController` の section callback を controller serial executor + generation + filter token で隔離し、`onTune()` 解決失敗時も旧 live state を先に破棄するようにした。

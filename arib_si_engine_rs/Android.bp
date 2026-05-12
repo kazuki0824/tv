@@ -23,6 +23,10 @@ rust_test {
     rustlibs: [
         "libjni",
     ],
+    data: [
+        "schema/descriptor_diagnostic_v1.schema.json",
+        "testdata/descriptor_diagnostic_v1/malformed_length.json",
+    ],
     auto_gen_config: true,
     test_suites: ["general-tests"],
 }

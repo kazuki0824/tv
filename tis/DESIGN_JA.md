@@ -43,7 +43,7 @@ r51 では MediaCodec block model の reflection fallback を禁止する。対�
 
 ## EIT と TvProvider
 
-r51 は EIT p/f を中心に使う。scan/setup 後に `TvProvider.Programs` へ出す最低限の Programs だけ schedule から拾う。Programs の `internal_provider_data` には Base64 化した安定 `programKey` に加え、extended item、component/audio/series text、診断 JSON を TIS 内部データとして保存する。TvProvider の標準 column には title / short description / long description として自然に入る範囲だけ反映する。
+r51 は EIT p/f を中心に使う。scan/setup 後に `TvProvider.Programs` へ出す最低限の Programs だけ schedule から拾う。Programs の `internal_provider_data` には JSON v1 の stable `programKey`、timing、CAS state、extended item、component/audio/series text、診断 JSON を TIS 内部データとして保存する。TvProvider の標準 column には title / short description / long description として自然に入る範囲だけ反映する。
 
 ## 字幕表示の責務
 
@@ -67,15 +67,17 @@ r51 対応 video ES が存在し、audio ES が存在しない、または audio
 
 decoder は PMT の stream_type だけでは構成せず、MediaEvent payload から MPEG-2 sequence header、H.264 SPS/PPS、AAC ADTS/AudioSpecificConfig、MPEG audio header を検出してから MediaFormat を構成する。
 
+MediaEvent payload は、`offset >= 0`、`dataLength > 0`、`offset + dataLength <= mapped buffer capacity`、`dataLength <= MAX_MEDIA_SAMPLE_BYTES` を満たす場合だけ decoder queue に渡す。`MAX_MEDIA_SAMPLE_BYTES` は r51 では 4 MiB hard limit とする。範囲不正は playback pipeline 例外ではなく sample drop と diagnostic counter として扱う。
+
 A/V同期方式は r51 で non-tunneled clear playback に固定する。tunneled playback と avSyncHwId は r51 範囲外であり、TIS の non-tunneled playback では avSyncHwId を使わないが、Tuner HAL API としては r51 で実装・AOSP準拠に仕様を固定する。video/audio は MediaCodec と AudioTrack の PTS により同期する。audio が存在する場合は AudioTrack を master clock とする。video-only service は視聴可能として扱い、audio が存在しない場合は `audio absent`、audio codec だけが未対応の場合は `unsupported audio codec` を診断に残す。
 
 TvProvider公開モードは `PublishMode` で channel row 追加を setup scan / explicit rescan に限定する。live tune refresh、boot EPG sync、background channel maintenance では既存 channel の番組・診断更新だけを許可し、新規 channel row は追加しない。
 
 ## ARIB SI/EPG のTvProvider投影
 
-ARIB SI/EPG の標準列投影と `internal_provider_data` への保存方針は、tv直下の `ARIB_SI_EPG_TvProvider投影方針.md` をSSOTとする。TISは、同文書で標準列投影が固定された項目だけを `Programs.COLUMN_LONG_DESCRIPTION` 等へ出し、未固定項目は当面 `internal_provider_data` のみに保存する。
+ARIB SI/EPG の標準列投影は tv直下の `ARIB_SI_EPG_TvProvider投影方針.md` を正とし、`internal_provider_data` の具体 schema / canonical encode / signature は `arib_si_engine_rs` の Rust provider-data serde model を SSOT とする。TISは、同文書で標準列投影が固定された項目だけを `Programs.COLUMN_LONG_DESCRIPTION` 等へ出し、r51 標準列投影対象外の項目は JSON v1 `internal_provider_data` のみに構造化保存する。
 
-`Programs.COLUMN_CANONICAL_GENRE` については、TIS が直接設定する値と、Android TvProvider が `Programs.COLUMN_BROADCAST_GENRE` から内部補完した読み出し結果を区別する。r51 では ARIB→Android canonical genre 写像表を固定しないため、TIS は `Programs.COLUMN_CANONICAL_GENRE` を `ContentValues` に直接設定しない。ただし TvProvider 読み出し後に canonical genre が非空になることは、AOSP 標準の内部補完として許容する。
+`Programs.COLUMN_CANONICAL_GENRE` については、TIS が直接設定する値と、Android TvProvider が `Programs.COLUMN_BROADCAST_GENRE` から内部補完した読み出し結果を区別する。r51 では ARIB→Android canonical genre 写像表を採用対象外とするため、TIS は `Programs.COLUMN_CANONICAL_GENRE` を `ContentValues` に直接設定しない。ただし TvProvider 読み出し後に canonical genre が非空になることは、AOSP 標準の内部補完として許容する。
 
 `Programs.COLUMN_BROADCAST_GENRE` には、`arib_si_engine_rs` から受け取った ARIB content_descriptor の分類値とARIB表示名を、TIS が `TvContract.Programs.Genres.encode(...)` 形式で格納する。TIS は ARIB分類を Android canonical genre に変換しない。
 
@@ -110,7 +112,7 @@ TIS は `TvInputManager.ACTION_BLOCKED_RATINGS_CHANGED` と `TvInputManager.ACTI
 - TIS は custom rating-system XML / receiver を追加しない。product 統合時は system TV app / rating definitions に `com.android.tv / ISDB / ISDB_4..20` が存在することを確認する。
 - Live session は current program rating を `TvProvider current Program -> latest EIT cache -> TvContentRating.UNRATED` の順で解決する。
 - parental blocked の通知は `notifyContentBlocked(rating)` と AV停止を主とし、parental block の通知手段として `notifyVideoUnavailable()` を呼ばない。
-- `onUnblockContent()` の解除範囲は `channelUri + serviceKey + eventId + start/end + ratingString` の同一 current program / rating に限定する。
+- `onUnblockContent()` の解除範囲は同一 `channelUri + serviceKey + eventId + ratingString` の current program / rating に限定する。start/end は stable identity ではなく、解除対象が現在表示中の同一 Program row であることを確認する補助条件としてのみ使ってよい。start/end/duration を provider-data `programKey`、unblock stable identity、または Program identity の SSOT にしてはならない。
 - CAS 未完成 / scrambled unsupported で playback success にしない場合は `TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN` を使う。具体的な CAS 状態 reason は CAS HAL 本実装まで使わない。
 - Programs CAS 状態は current complete diagnostic を優先し、不完全または欠落 diagnostic では既存 channel `internal_provider_data` の `requiresCas` / `unsupportedCas` / `clearLivePlaybackSupported` / `channelRegistrationReady` / `epgPublishable` を fallback する。
 
@@ -121,6 +123,8 @@ r51 の EIT publish/delete 対象は、TvProvider に channel が存在する `S
 r51 の EIT 対象 table は、present/following actual `0x4E`、present/following other `0x4F`、schedule actual `0x50..0x5F` のうち、上記対象 service に属する event とする。schedule other `0x60..0x6F` は r51 Programs publish/delete 対象外であり、update window を発生させない。
 
 EIT 更新時の update/delete window は、追加・変更・削除された event の旧 `[start,end)` と新 `[start,end)` の union とする。長期固定 lookahead window は導入しない。EIT table scope の version 変更で旧 section が消えた場合は、消えた event の旧 window も obsolete delete 対象に含める。
+
+ただし、obsolete delete の根拠にできる EIT section / table snapshot は Rust parser が `deletionAuthoritative=true` と判定したものに限る。start_time BCD、duration BCD、event descriptor_loop_length、event fixed field が malformed の event を含む section は、旧 event 削除用の authoritative valid-event-set として扱わない。malformed event は旧正常 Program を消す根拠にせず、DescriptorDiagnosticV1 / ParserDiagnosticV1 に記録する。
 
 boot EPG sync の pending clear は boot EPG sync task 単位で判定する。task 中に cancel request を観測した場合は、成功 candidate があっても pending を clear しない。成功 candidate は `collectSiForCandidate()` が `COMPLETE` で、かつ registration-ready service が1件以上存在する candidate とする。background maintenance は pending clear を扱わない。
 
@@ -138,38 +142,244 @@ Descrambler API の `setKeyToken()`、`addPid()`、`removePid()` は戻り値が
 
 TvProvider query failure と channel なしは別状態として扱う。既存 channel query が失敗した場合は `skippedNoChannel` として扱わず、failure diagnostic とし、signature 更新・pending clear の根拠に使わない。
 
-Programs publish/delete が provider failure になった場合は、`ProgramPublishCoordinator` の process-local retry queue に `(ServiceKey, windowStart, windowEnd, tableScope)` を enqueue する。次回 `publishLiveProgramsForCurrentService()`、boot EPG sync、background maintenance の publish entrypoint 先頭で retry queue を drain する。成功した key は削除し、失敗した key は保持する。process restart では retry queue を破棄し、boot/background sync による再収集を正とする。
+TvProvider query は required query と optional query を区別する。channel / program upsert、obsolete delete、existing channel/program lookup、provider-data fallback、Direct Boot ready 判定に使う query は required query とする。required query で `ContentResolver.query()` が null cursor を返した場合は `TvProviderQueryFailure` とし、empty result とみなさない。`TvProviderQueryFailure` が発生した service/window では channel insert、program insert/update、obsolete delete、signature cache update、Direct Boot pending clear に進まず、retry window を保持する。
+
+Programs publish/delete が provider failure になった場合は、`ProgramPublishCoordinator` の process-local retry queue に `ServiceKey + updateWindow + failureClass` を key として enqueue する。backoff は 1分、5分、15分、60分、以後最大60分、jitter ±20%、最大10回、保持期間24時間または次回正常 snapshot までとする。次回 `publishLiveProgramsForCurrentService()`、boot EPG sync、background maintenance の publish entrypoint 先頭で retry queue を drain する。成功した key は削除し、失敗した key は保持する。process restart では retry queue を破棄し、boot/background sync による再収集を正とする。provider failure 時は obsolete delete、signature update、pending clear に進まない。
 
 retry queue は全体上限 512 windows、ServiceKey ごと上限 32 windows とする。超過時は古い順に破棄し、ServiceKey 別 `droppedRetryWindowCount` を加算する。process restart 後は counter を 0 に戻す。
 
 SDT-other / NIT-other / BAT 由来で現在 candidate の actual transport に解決できない service は、現在 candidate の物理情報で channel insert しない。未登録で Program row が存在しない unresolved transport は scan/maintenance diagnostics に `skippedUnresolvedTransportCount` として記録し、Program provider-data には書かない。publish 済み Program には自 service の `skippedUnresolvedTransport=false` を入れる。
 
-## r50bi5 provider-data schema / signature
+## r50bj provider-data schema / signature
 
-`Programs.COLUMN_INTERNAL_PROVIDER_DATA` は UTF-8 JSON bytes とする。top-level object は `schemaVersion`, `programKeyB64`, `requiresCas`, `unsupportedCas`, `clearLivePlaybackSupported`, `channelRegistrationReady`, `epgPublishable`, `publishStateSource`, `extendedItems`, `componentText`, `audioComponentText`, `audioLanguage`, `broadcastGenre`, `genreSupplementText`, `eventGroupText`, `freeCaText`, `seriesName`, `diagnosticText`, `descriptorDiagnostics`, `contentRatings`, `parentalRatingDiagnostics`, `unsupportedDescriptorDiagnostics`, `videoFormat`, `diagnostics` の順に `JSONObject.put()` で生成する。canonical JSON serializer は導入しない。signature は TvProvider に実際に書く JSON 文字列をそのまま入力に含める。
+r50bj 以降、`Programs.COLUMN_INTERNAL_PROVIDER_DATA` の新規書き込み正形式は UTF-8 JSON v1 bytes のみとする。旧 `programKeyB64` や `;` 区切り key-value 形式は legacy input として読み取り移行に限り許可し、新規書き込みは禁止する。
 
-`schemaVersion` 初版は `1` とする。既存 key の意味・型・必須性を壊す非互換変更時だけ increment する。r50bi5 の通常修正では increment しない。
+provider-data JSON v1 の構造、canonical encode、normalize、signature、stable key extraction は `arib_si_engine_rs` の Rust `provider_data` module の `serde` struct を SSOT とする。TIS Kotlin は provider-data JSON を `JSONObject.put()` や手書き string concatenation で直接構築してはならない。TIS Kotlin は Rust JNI の build / normalize / signature / key extraction API で得た bytes と signature を TvProvider に書く。
 
-`programKeyB64` は UTF-8 文字列 `onid=<u16-dec>;tsid=<u16-dec>;sid=<u16-dec>;eventId=<int-dec>;startUtcMillis=<long-dec>;endUtcMillis=<long-dec>` を Android `Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)` で encode する。改行入り Base64 は禁止する。eventId 不明時は `-1` とする。
+Program provider-data の top-level envelope は次を必須とする。
 
-`publishStateSource` は `current`, `fallback`, `none` のみを許可する。`extendedItems` は ARIB descriptor 出現順の array とし、各要素は `JSONObject().put("key", key).put("value", value)` の順で生成する。未取得値は empty string とする。
+```json
+{
+  "schema": "maleicacid.tv.program",
+  "schemaVersion": 1,
+  "programKey": {
+    "kind": "arib-event-v1",
+    "originalNetworkId": 4,
+    "transportStreamId": 16400,
+    "serviceId": 101,
+    "eventId": 12345
+  },
+  "serviceKey": {
+    "originalNetworkId": 4,
+    "transportStreamId": 16400,
+    "serviceId": 101
+  },
+  "timing": {
+    "startUtcMillis": 1730000000000,
+    "endUtcMillis": 1730001800000,
+    "durationMillis": 1800000
+  },
+  "source": {
+    "tableId": 78,
+    "version": 12,
+    "sectionNumber": 0,
+    "lastSectionNumber": 1
+  },
+  "cas": {
+    "requiresCas": false,
+    "unsupportedCas": false,
+    "clearLivePlaybackSupported": true,
+    "source": "CURRENT_DIAGNOSTIC"
+  },
+  "ratings": [],
+  "genres": [],
+  "audio": {},
+  "video": {},
+  "diagnostics": {
+    "descriptorDiagnostics": [],
+    "publishDiagnostics": [],
+    "parserDiagnostics": []
+  }
+}
+```
 
-`descriptorDiagnostics` と `unsupportedDescriptorDiagnostics` の要素は `tableId=<u8-dec>;pid=<u16-dec>;sectionNumber=<u8-dec>;descriptorOffset=<u16-dec>;diagnosticCode=<UPPER_SNAKE>` とする。不明数値は `-1` とする。並び順は `(tableId,pid,sectionNumber,descriptorOffset,diagnosticCode)` 昇順とする。
+`programKey` は `originalNetworkId / transportStreamId / serviceId / eventId` のみで構成する。`startUtcMillis`、`endUtcMillis`、`durationMillis` は `timing` に置き、stable key に含めない。event_id 不明の event を stable ARIB event として扱ってはならない。
 
-`contentRatings` は `TvContentRating.flattenToString()` の文字列だけを入れ、重複排除後に文字列昇順とする。`Programs.COLUMN_CONTENT_RATING` に書く comma-separated string も同じ集合から生成する。`parentalRatingDiagnostics` の要素は `programKeyB64=<value>;rating=<flattened-or-empty>;diagnosticCode=<UPPER_SNAKE>` とし、重複排除後に文字列昇順とする。
+Channel provider-data の top-level envelope は `schema="maleicacid.tv.channel"`, `schemaVersion=1`, `serviceKey`, `tune`, `cas`, `diagnostics` を持つ JSON v1 とする。`tune` は `deliverySystem`, `frequencyHz`, `streamId`, `streamIdType` を持ち、CS110 は `streamIdType="NONE"` とし selector value を持たない。
 
-初期 `diagnosticCode` enum は `MALFORMED_CA_DESCRIPTOR`, `UNSUPPORTED_DESCRIPTOR`, `INVALID_PARENTAL_RATING`, `MISSING_PARENTAL_RATING`, `UNRESOLVED_TRANSPORT`, `RETRY_WINDOW_DROPPED` とする。追加時はこの節へ追記する。
+Program signature は TvProvider に実際に書く `ContentValues` と Rust JNI が返した provider-data bytes から生成する。signature 入力は固定 column list 順に `<columnName>\0<byteLength>\0<bytes>
+` で連結し、その byte列の SHA-256 lowercase hex とする。`ContentValues` の iteration order には依存しない。insert 後に provider-data を再生成した場合、cache する signature は再生成後に実際に書いた bytes の signature とする。
 
-Program signature は固定 column list 順に生成する。対象は `CHANNEL_ID`, `TITLE`, `EPISODE_TITLE`, `EVENT_ID`, `SHORT_DESCRIPTION`, `LONG_DESCRIPTION`, `START_TIME_UTC_MILLIS`, `END_TIME_UTC_MILLIS`, `AUDIO_LANGUAGE`, `BROADCAST_GENRE`, `CANONICAL_GENRE`, `CONTENT_RATING`, `INTERNAL_PROVIDER_DATA`, `INTERNAL_PROVIDER_FLAG1`, `INTERNAL_PROVIDER_FLAG2`, `INTERNAL_PROVIDER_FLAG3`, `INTERNAL_PROVIDER_FLAG4` とする。TvProvider へは Android 14 `TvContract.Programs` 定義済み列だけを書く。r50bi5 が書かない列は signature 内部では empty value とし、TvProvider へは書かない。
-
-signature 入力は各列を固定順に `<columnName>\0<byteLength>\0<UTF-8 bytes>\n` で連結し、その byte列の SHA-256 lowercase hex とする。未取得値は empty bytes、数値は decimal ASCII、BLOB はその byte列を使う。`ContentValues` の iteration order には依存しない。
+`selectedProgramId` のような TvProvider row id 依存値は stable provider-data signature の構成要素にしてはならない。必要な場合は best-effort diagnostic として扱い、signature skip 判定を壊さない。
 
 ## r50bi5 current program selection
 
 current program resolver は TvProvider query 時点で `START_TIME_UTC_MILLIS <= now AND END_TIME_UTC_MILLIS > now` に絞る。sort order は `START_TIME_UTC_MILLIS DESC, END_TIME_UTC_MILLIS ASC, _ID DESC` に固定する。overlap がある場合も cursor 返却順には依存せず、この selection rule で1件を選ぶ。
 
-provider-data diagnostics の `selectionRule` は `START_DESC_END_ASC_ID_DESC` とする。対象なしの場合は empty string とする。`selectedProgramId` は `TvContract.Programs` row `_ID` とし、対象なしは `-1` とする。ARIB `event_id` は `COLUMN_EVENT_ID` と `programKeyB64` で扱う。
+provider-data diagnostics の `selectionRule` は `START_DESC_END_ASC_ID_DESC` とする。対象なしの場合は empty string とする。`selectedProgramId` は best-effort diagnostic として扱い、stable signature の構成要素にしない。ARIB `event_id` は `COLUMN_EVENT_ID` と JSON v1 `programKey.eventId` で扱う。
 
 ## r50bi5 CA descriptor / provider-data serialization
 
 CA_descriptor の raw bytes は Rust parser が元 section から保持し、JNI snapshot DTO に raw bytes として渡す。Kotlin production code で CA_descriptor を再構築しない。malformed CA_descriptor は raw descriptor / CAS metadata から除外し、service 自体は保持する。diagnostics には `malformedCaDescriptorCount` と table/PID/service context を残す。Kotlin 側で修復して provider-data や CAS metadata に不正 raw descriptor を入れてはならない。
+
+## r50bj transaction DTO / provider-data SSOT / executor / setup / retry 固定
+
+### Rust JNI provider-data API
+
+TIS Kotlin は provider-data JSON を解釈せず、以下の Rust JNI API 相当だけを使う。
+
+```kotlin
+object NativeProviderData {
+    external fun buildProgramProviderData(inputJson: String): ProviderDataResult
+    external fun normalizeProgramProviderData(rawBytes: ByteArray): ProviderDataResult
+    external fun programProviderDataSignature(rawBytes: ByteArray): String
+    external fun extractProgramKey(rawBytes: ByteArray): ProgramKeyResult?
+}
+
+data class ProviderDataResult(
+    val bytes: ByteArray,
+    val signature: String,
+    val schemaVersion: Int,
+    val truncated: Boolean,
+    val diagnosticsDroppedCount: Int,
+)
+```
+
+`inputJson` は Rust builder への入力 DTO であり、TvProvider に保存する provider-data schema ではない。最終 JSON bytes、signature、normalization、stable key extraction は Rust が行う。
+
+### diagnostics schema
+
+Descriptor diagnostic は次の JSON object schema に統一する。Kotlin はこの object を別 schema に変換してはならない。
+
+```json
+{
+  "schema": "maleicacid.tv.descriptorDiagnostic",
+  "schemaVersion": 1,
+  "severity": "ERROR",
+  "code": "MALFORMED_DESCRIPTOR_LENGTH",
+  "scope": {
+    "pid": 18,
+    "tableId": 78,
+    "tableIdExtension": 101,
+    "version": 12,
+    "sectionNumber": 0,
+    "originalNetworkId": 4,
+    "transportStreamId": 16400,
+    "serviceId": 101,
+    "eventId": 12345
+  },
+  "descriptor": {
+    "tag": 77,
+    "name": "short_event_descriptor",
+    "offset": 42,
+    "declaredLength": 25,
+    "actualRemainingLength": 10,
+    "rawPrefixHex": "4d19"
+  },
+  "message": "descriptor length exceeds remaining section bytes"
+}
+```
+
+必須 key は `schema`, `schemaVersion`, `severity`, `code`, `scope`, `descriptor`, `message` とする。`scope` の不明数値は `null` または key omission とし、`-1` に潰して semantic loss させない。`descriptor.rawPrefixHex` は最大 64 bytes 相当までとする。
+
+### provider-data 保存上限
+
+provider-data 全体は 16 KiB soft limit、32 KiB hard limit とする。hard limit 超過時は identity / timing / CAS state / ratings を保持し、diagnostics と長文補助情報を truncate する。descriptor diagnostics / publish diagnostics はそれぞれ program あたり最大16件、diagnostic message は最大256 chars、extendedItems は最大32件、long description は最大4096 chars、一般文字列 field は最大1024 chars とする。truncate 時は `DIAGNOSTICS_TRUNCATED` または `PROVIDER_DATA_TRUNCATED` を保存する。
+
+
+### SectionEvent 入力上限
+
+TIS の PSI/SI section path は allocation 前に `SectionEvent.dataLength` を検証する。`MAX_SECTION_BYTES` は 4096 bytes とし、`dataLength` が 1..4096 の範囲にある場合だけ ByteArray 確保と `AribSiEngine` / CAS / Program publish への投入を許可する。section read size 不一致、0 length、負値相当、4096 bytes 超過は parser に渡さず diagnostic counter に記録する。
+
+### transaction DTO API
+
+`AribSiEngine` call-site は複数 snapshot を合成してはならない。production path は以下の用途別 bulk DTO を使う。
+
+```kotlin
+data class ProgramPublishSnapshot(
+    val snapshotGeneration: Long,
+    val ingestSequence: Long,
+    val events: List<AribEvent>,
+    val updateWindows: List<EpgUpdateWindow>,
+    val publishabilityByServiceKey: Map<ServiceKey, ProgramPublishability>,
+    val descriptorDiagnostics: List<DescriptorDiagnostic>,
+    val parserDiagnostics: List<ParserDiagnostic>,
+)
+
+fun takeProgramPublishSnapshot(): ProgramPublishSnapshot
+```
+
+```kotlin
+data class ServiceRegistrationSnapshot(
+    val snapshotGeneration: Long,
+    val services: List<AribService>,
+    val actualTransports: Set<TransportKey>,
+    val publishabilityByServiceKey: Map<ServiceKey, ProgramPublishability>,
+    val diagnostics: List<ParserDiagnostic>,
+)
+
+fun serviceRegistrationSnapshot(): ServiceRegistrationSnapshot
+```
+
+```kotlin
+data class CasDiscoverySnapshot(
+    val snapshotGeneration: Long,
+    val services: List<AribService>,
+    val caMetadata: List<CaMetadata>,
+    val pmtPids: Map<ServiceKey, Int>,
+    val catEmmPids: List<Int>,
+    val diagnostics: List<DescriptorDiagnostic>,
+)
+
+fun casDiscoverySnapshot(): CasDiscoverySnapshot
+```
+
+`takeProgramPublishSnapshot()` は events / updateWindows / publishability / diagnostics を同一 lock / 同一 native state から取得し、updateWindows の drain もこの API 内だけで行う。`snapshotEvents()` と `takeEpgUpdateWindows()` を production call-site で別々に呼ぶことは禁止する。
+
+### LiveSession / PlaybackPipeline / Scan の直列化
+
+`MaleicacidLiveSession` は session-level serial executor を持ち、current service、generation、playback signature、track state、unblock state、latest video metadata、`ProgramPublishCoordinator` へのアクセスを同一 executor に閉じる。TunerController、PlaybackPipeline、parental receiver の callback は直接 state mutation せず、session executor に enqueue する。
+
+`PlaybackPipeline` は playback-level serial executor を持ち、`setSurface()`、`setVolume()`、`start()`、`switchAudio()`、`stop()`、`release()` の state mutation を同一 executor に閉じる。filter / decoder / generation / surface / token の変更を呼び出し元スレッドで直接行わない。release 後の queued task は released flag と generation で破棄する。
+
+`ChannelScanManager` は scan generation と purpose を持つ。cancel / cleanup task は対象 generation にだけ作用し、stale cleanup が後続 scan の `running`、controller、engine を変更してはならない。
+
+### SetupActivity 保護
+
+`SetupActivity.onCreate()` は scan を自動開始しない。scan 開始前に正規 setup flow の inputId が自 TIS の inputId と一致することを検証する。inputId 欠落または不一致時に fallback inputId で scan へ進まない。scan は検証済みユーザー操作または検証済み setup request の後に開始する。
+
+product 側で system TV app に grant 可能な場合、SetupActivity は signature / privileged permission で保護する。permission grant が成立しない target でも、自動 scan 禁止、inputId 検証、ユーザー操作開始は必須とする。
+
+SetupActivity は自分が開始した `SETUP_SCAN` purpose かつ同一 scan generation の Completed だけで `RESULT_OK` にする。過去の Completed、boot EPG sync、background maintenance の Completed で finish してはならない。
+
+### Direct Boot drain / live session 優先
+
+`MaleicacidTvInputService.onCreate()` は Direct Boot pending drain、boot EPG sync、background maintenance を開始しない。Boot EPG sync / background maintenance は BootReceiver、UserUnlockReceiver、または明示的な maintenance scheduler からのみ起動する。
+
+Boot EPG sync / background maintenance の開始条件は、`activeLiveSessionCount == 0`、`sessionCreationInProgress == false`、`setupScanRunning == false`、`playbackPipelineRunning == false`、`scanManager running == false` をすべて満たすこととする。live session 作成要求が来た時点で boot/background task が未開始なら defer する。boot/background task が既に running の場合、r51 では boot/background task を cancel/defer し live tune を優先する。
+
+
+## r50bk6: TIS callback input bounds and backpressure
+
+- `SectionEvent.dataLength` is treated as the exact section byte length to read from the Tuner callback.
+- TIS accepts only `1..4096` bytes for a section event. `dataLength <= 0` is malformed and `dataLength > 4096` is oversized. Both are dropped before `ByteArray` allocation and counted in PID-scoped diagnostics.
+- `MediaEvent` samples are bounded to `1 MiB`. Negative offset, non-positive length, offset+length overflow, and LinearBlock capacity overrun are dropped without sample allocation and counted as diagnostics.
+- Decoder input-buffer backpressure is not a silent drop. Samples are held in a bounded pending queue and retried on later callback/drain. A sample is dropped only when the bounded queue is full, and the drop counter is incremented.
+
+## r50bk8 completion: provider-data / retry / attribution boundary
+
+### Provider-data SSOT
+
+`TvContract.Channels/Programs.COLUMN_INTERNAL_PROVIDER_DATA` の新規書き込みは `arib_si_engine_rs` の provider-data JNI API が返す JSON v1 bytes をそのまま保存する。TIS Kotlin は TvProvider 標準列を詰める接着層であり、provider-data 本体、program stable key、descriptor diagnostics schema、provider-data signature を独自 JSON schema として再構築してはならない。
+
+Channel provider-data の旧 `key=value;...` 形式は read-only legacy fallback である。新規 channel row は JSON v1 のみを書き込む。
+
+### Program publish retry
+
+Program publish retry queue は r51 では process-local とする。process death 後の retry 永続化は行わず、boot/background scan による再収集を正とする。ただし、process-local queue であっても retry key は `ServiceKey + updateWindow + failureClass`、entry は `attempt / nextAttemptAtMillis / firstFailureAtMillis / lastFailureAtMillis` を持ち、1/5/15/60分 backoff、決定的 jitter ±20%、最大10回、24時間 retention を適用する。
+
+Provider required query failure、Program insert/update failure、obsolete delete failure、signature build failure では signature cache 更新と Direct Boot pending clear に進まない。obsolete delete は `deletionAuthoritative=true` の update window でのみ実行する。
+
+### AttributionSource
+
+`AttributionSource?` は `TvInputService.onCreateSession(..., AttributionSource)` から `MaleicacidLiveSession`、`TunerController`、`PlaybackPipeline` へ保持して渡す。Android target の `AudioTrack.Builder` が `setAttributionSource(AttributionSource)` を公開している場合は reflection-free 直接呼び出しへ移行する。r50bk8 の Android 14 system SDK 境界では compile visibility 差があるため、`PlaybackPipeline` は reflection による best-effort 設定を行い、失敗時は warning log に残して audio usage/content type/session 設定を継続する。

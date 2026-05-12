@@ -46,6 +46,7 @@ android_test {
     name: "MaleicacidTvInputAcceptanceTests",
     product_specific: true,
     srcs: ["tests/src/**/*.kt"],
+    asset_dirs: ["tests/assets"],
     manifest: "tests/AndroidManifest.xml",
     sdk_version: "system_current",
     min_sdk_version: "31",

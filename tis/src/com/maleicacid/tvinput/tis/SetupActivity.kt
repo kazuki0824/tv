@@ -1,24 +1,26 @@
 package com.maleicacid.tvinput.tis
 
 import android.app.Activity
-import android.content.Intent
-import android.content.IntentFilter
+import android.content.ComponentName
+import android.media.tv.TvInputManager
 import android.os.Bundle
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
-import com.maleicacid.tvinput.common.AppIds
 
 class SetupActivity : Activity(), ChannelScanManager.Listener {
     private lateinit var statusView: TextView
     private lateinit var scanButton: Button
     private lateinit var cancelButton: Button
-    private var userUnlockDrainReceiver: UserUnlockDrainReceiver? = null
-    private var userUnlockDrainRegistered: Boolean = false
+    private var inputId: String? = null
+    private var invalidInputId: Boolean = false
+    private var setupGeneration: Int? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        inputId = resolveInputId()
+        invalidInputId = inputId.isNullOrBlank() || !isOwnInputId(inputId)
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(32, 32, 32, 32)
@@ -26,14 +28,28 @@ class SetupActivity : Activity(), ChannelScanManager.Listener {
         }
         statusView = TextView(this).apply {
             textSize = 18f
-            text = "Maleicacid TV Input setup\nReady to scan channels."
+            text = if (invalidInputId) {
+                "Maleicacid TV Input setup\nInvalid setup intent: inputId is missing or does not belong to this TvInputService."
+            } else {
+                "Maleicacid TV Input setup\nReady to scan channels."
+            }
         }
         scanButton = Button(this).apply {
             text = "Start channel scan"
-            setOnClickListener { ChannelScanManager.startIfIdle(this@SetupActivity, resolveInputId()) }
+            isEnabled = !invalidInputId
+            setOnClickListener {
+                val resolved = inputId
+                if (resolved.isNullOrBlank() || !isOwnInputId(resolved)) {
+                    statusView.text = "Invalid setup intent: inputId is missing or does not belong to this TvInputService."
+                    setResult(RESULT_CANCELED)
+                } else {
+                    setupGeneration = ChannelScanManager.startIfIdle(this@SetupActivity, resolved)
+                }
+            }
         }
         cancelButton = Button(this).apply {
             text = "Cancel scan"
+            isEnabled = false
             setOnClickListener { ChannelScanManager.cancel() }
         }
         layout.addView(statusView)
@@ -41,82 +57,85 @@ class SetupActivity : Activity(), ChannelScanManager.Listener {
         layout.addView(cancelButton)
         setContentView(layout)
         ChannelScanManager.addListener(this)
-        registerUserUnlockDrainReceiver()
         drainDirectBootPending("SetupActivity.onCreate")
-        ChannelScanManager.startIfIdle(this, resolveInputId())
+        if (invalidInputId) {
+            setResult(RESULT_CANCELED)
+        }
     }
 
-    private fun resolveInputId(): String {
+    private fun resolveInputId(): String? {
         val extras = intent?.extras
         return extras?.getString("android.media.tv.extra.INPUT_ID")
             ?: extras?.getString("android.media.tv.extra.input_id")
             ?: intent?.getStringExtra("inputId")
-            ?: AppIds.TV_INPUT_SERVICE
+    }
+
+    private fun isOwnInputId(candidate: String?): Boolean {
+        val id = candidate?.takeIf { it.isNotBlank() } ?: return false
+        val tvInputManager = getSystemService(TvInputManager::class.java) ?: return false
+        val ownComponent = ComponentName(this, MaleicacidTvInputService::class.java)
+        return tvInputManager.tvInputList.any { info ->
+            info.id == id && info.serviceInfo.packageName == ownComponent.packageName && info.serviceInfo.name == ownComponent.className
+        }
     }
 
     override fun onScanStateChanged(state: ScanState) {
         runOnUiThread {
             when (state) {
                 is ScanState.Idle -> {
-                    scanButton.isEnabled = true
+                    scanButton.isEnabled = !invalidInputId
                     cancelButton.isEnabled = false
-                    statusView.text = "Ready to scan channels."
+                    statusView.text = if (invalidInputId) "Invalid setup intent: inputId is missing or does not belong to this TvInputService." else "Ready to scan channels."
                 }
                 is ScanState.Running -> {
                     scanButton.isEnabled = false
                     cancelButton.isEnabled = true
-                    statusView.text = "Scanning channels..."
+                    statusView.text = when (state.purpose) {
+                        ScanPurpose.SETUP_SCAN -> "Scanning channels..."
+                        ScanPurpose.BOOT_EPG_SYNC -> "Boot EPG sync is running in the background."
+                        ScanPurpose.BACKGROUND_MAINTENANCE -> "Background channel maintenance is running."
+                    }
                 }
                 is ScanState.Completed -> {
-                    scanButton.isEnabled = true
+                    scanButton.isEnabled = !invalidInputId
                     cancelButton.isEnabled = false
                     val diagnostics = state.result.diagnostics.joinToString("\n") { "${it.candidate.displayChannel}: ${it.message}" }
-                    statusView.text = "Scan complete\nscanned=${state.result.scanned} published=${state.result.published}" +
+                    statusView.text = "${state.purpose} complete\nscanned=${state.result.scanned} published=${state.result.published}" +
                         if (diagnostics.isNotBlank()) "\n$diagnostics" else ""
-                    if (state.result.published > 0) {
+                    if (state.purpose == ScanPurpose.SETUP_SCAN && state.generation == setupGeneration && state.result.published > 0) {
                         setResult(RESULT_OK)
                         finish()
                     }
                 }
                 is ScanState.Failed -> {
-                    scanButton.isEnabled = true
+                    scanButton.isEnabled = !invalidInputId
                     cancelButton.isEnabled = false
-                    statusView.text = "Scan failed: ${state.message}"
-                    setResult(RESULT_CANCELED)
+                    statusView.text = "${state.purpose} failed: ${state.message}"
+                    if (state.purpose == ScanPurpose.SETUP_SCAN && state.generation == setupGeneration) {
+                        setResult(RESULT_CANCELED)
+                    }
                 }
                 is ScanState.Cancelled -> {
-                    scanButton.isEnabled = true
+                    scanButton.isEnabled = !invalidInputId
                     cancelButton.isEnabled = false
-                    statusView.text = "Scan cancelled"
-                    setResult(RESULT_CANCELED)
+                    statusView.text = "${state.purpose} cancelled"
+                    if (state.purpose == ScanPurpose.SETUP_SCAN && state.generation == setupGeneration) {
+                        setResult(RESULT_CANCELED)
+                    }
                 }
             }
         }
     }
 
     private fun drainDirectBootPending(source: String) {
-        if (DirectBootGuard.drainIfUserUnlocked(applicationContext, source, System.currentTimeMillis()) == DirectBootGuard.DrainDecision.START_BOOT_EPG_SYNC) {
-            ChannelScanManager.startBootEpgSyncIfIdle(applicationContext, resolveInputId())
+        val state = DirectBootGuard.pendingStateForTest(applicationContext)
+        if (state.pending) {
+            statusView.text = "${statusView.text}\nBoot EPG sync is pending and will be drained outside setup. source=$source"
         }
     }
 
-    private fun registerUserUnlockDrainReceiver() {
-        if (userUnlockDrainRegistered) return
-        val receiver = UserUnlockDrainReceiver(source = "SetupActivity.ACTION_USER_UNLOCKED")
-        ReceiverRegistration.registerNotExported(this, receiver, IntentFilter(Intent.ACTION_USER_UNLOCKED))
-        userUnlockDrainReceiver = receiver
-        userUnlockDrainRegistered = true
-    }
-
-    private fun unregisterUserUnlockDrainReceiver() {
-        if (!userUnlockDrainRegistered) return
-        userUnlockDrainReceiver?.let { runCatching { unregisterReceiver(it) } }
-        userUnlockDrainReceiver = null
-        userUnlockDrainRegistered = false
-    }
 
     override fun onDestroy() {
-        unregisterUserUnlockDrainReceiver()
         ChannelScanManager.removeListener(this)
         super.onDestroy()
     }

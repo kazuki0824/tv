@@ -1,3 +1,27 @@
+## r50bk8-rerelease
+
+- r50bk8 TIS / arib_si_engine_rs 追加修正計画の provider-data / EIT authoritative delete / malformed descriptor 境界に対応した。
+- `provider_data.rs` を追加し、Channel/Program provider-data JSON v1 の生成、program/channel key 抽出、SHA-256 signature、current-program diagnostics 追記を native API として公開した。
+- `NativeAribSiParser` JNI に provider-data build / normalize / extract / diagnostics append 用 entry point を追加した。
+- EIT update window に `deletion_authoritative` を追加し、malformed EIT event または descriptor diagnostics を含む update window を obsolete delete 根拠にしない情報を TIS へ返すようにした。
+- malformed descriptor loop を検出した section を parser 全体で即破棄せず、collector へ投入したうえで malformed status を返すように変更した。
+- Android/Soong build、Rust unit test、atest、VTS、CTS、実機確認はこの環境では未実施。
+
+## r50bj3
+
+- r50bj2 後に残っていた設計未固定事項として、ARIB descriptor の length / loop / fragment sequence 不整合を正常 field に採用しないこと、extended_event fragment の欠番・重複・last_descriptor_number 不一致を diagnostic 扱いにすること、malformed EIT event を旧 event 削除根拠にしないことを DESIGN_JA.md に固定した。
+- 実装コードは変更していない。Android/Soong build、Rust unit test、atest、VTS、CTS、実機確認はこの環境では未実施。
+
+## r50bj2
+
+- r50bj の Rust provider-data / diagnostics SSOT 方針と矛盾しないよう、TvProvider 投影方針文書側の旧未固定記述を整理した。
+- 実装コードは変更していない。Android/Soong build、Rust unit test、atest、VTS、CTS、実機確認はこの環境では未実施。
+
+## r50bj
+
+- 設計文書上で provider-data / descriptor diagnostics の Rust serde SSOT、canonical JSON、signature、JNI boundary、JSON Schema / golden fixture 方針を固定した。
+- 実装コードは変更していない。Android/Soong build、Rust unit test、atest、VTS、CTS、実機確認はこの環境では未実施。
+
 ## r50bi6
 
 - Phase B 完了証跡として、既存の SDT / NIT / BAT scope 実装が ONID+TSID / table-specific scope に閉じていることを静的確認した。

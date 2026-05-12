@@ -95,13 +95,14 @@ object DirectBootGuard {
     }
 
     private fun isTvProviderReady(context: Context): Boolean = try {
-        context.contentResolver.query(
+        val cursor = context.contentResolver.query(
             TvContract.Channels.CONTENT_URI,
             arrayOf(TvContract.Channels._ID),
             null,
             null,
             null,
-        )?.close()
+        ) ?: return false
+        cursor.close()
         true
     } catch (e: SecurityException) {
         false

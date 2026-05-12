@@ -22,25 +22,34 @@ data class ProgramPublishState(
             fallback: ChannelRecord?,
         ): ProgramPublishState {
             val diagnosticComplete = diagnostic?.isCurrentDiagnosticComplete() == true
+            val diagnosticCasResolved = diagnostic?.caStateResolved == true
             return when {
-                diagnosticComplete -> ProgramPublishState(
-                    requiresCas = diagnostic!!.requiresCas,
-                    unsupportedCas = diagnostic.unsupportedCas,
-                    clearLivePlaybackSupported = diagnostic.clearLivePlaybackSupported,
-                    channelRegistrationReady = diagnostic.channelRegistrationReady,
-                    epgPublishable = diagnostic.epgPublishable,
-                    source = ProgramPublishStateSource.CURRENT_DIAGNOSTIC,
-                )
-                diagnostic != null && fallback != null -> {
-                    val requiresCas = fallback.requiresCas || diagnostic.requiresCas
-                    val unsupportedCas = fallback.unsupportedCas || diagnostic.unsupportedCas || requiresCas
+                diagnosticCasResolved -> {
+                    // Phase D/B-29: CAS field adoption is intentionally separated from
+                    // full publishability completeness. PMT CA_descriptor can resolve
+                    // requiresCas/unsupportedCas even when freeCaMode is absent or the
+                    // remaining service diagnostics are not yet complete.
+                    val requiresCas = diagnostic!!.requiresCas
+                    val unsupportedCas = diagnostic.unsupportedCas
                     ProgramPublishState(
                         requiresCas = requiresCas,
                         unsupportedCas = unsupportedCas,
                         clearLivePlaybackSupported = if (requiresCas || unsupportedCas) false else diagnostic.clearLivePlaybackSupported,
+                        channelRegistrationReady = if (diagnosticComplete) diagnostic.channelRegistrationReady else fallback?.channelRegistrationReady ?: diagnostic.channelRegistrationReady,
+                        epgPublishable = if (diagnosticComplete) diagnostic.epgPublishable else fallback?.epgPublishable ?: diagnostic.epgPublishable,
+                        source = ProgramPublishStateSource.CURRENT_DIAGNOSTIC,
+                    )
+                }
+                diagnostic != null && fallback != null -> {
+                    val requiresCas = fallback.requiresCas
+                    val unsupportedCas = fallback.unsupportedCas
+                    ProgramPublishState(
+                        requiresCas = requiresCas,
+                        unsupportedCas = unsupportedCas,
+                        clearLivePlaybackSupported = if (requiresCas || unsupportedCas) false else fallback.clearLivePlaybackSupported,
                         channelRegistrationReady = fallback.channelRegistrationReady || diagnostic.channelRegistrationReady,
                         epgPublishable = fallback.epgPublishable || diagnostic.epgPublishable,
-                        source = ProgramPublishStateSource.MERGED_CHANNEL_CAS_STATE,
+                        source = ProgramPublishStateSource.CHANNEL_FALLBACK,
                     )
                 }
                 fallback != null -> ProgramPublishState(
@@ -145,6 +154,7 @@ class EventModelMapper {
                     contentRatings = event.parentalRatings.mapNotNull { AribRatingMapper.toTvContentRatingString(it) },
                     parentalRatingDiagnosticsJson = parentalRatingDiagnosticsJson(event),
                     unsupportedDescriptorJson = unsupportedDescriptorJson(event),
+                    malformedCaDescriptorCount = descriptorDiagnosticCount(event.diagnosticDescriptorJson),
                 )
             }
         }
@@ -174,38 +184,56 @@ class EventModelMapper {
         val arr = JSONArray()
         unsupportedRatings.forEach { rating ->
             arr.put(JSONObject()
-                .put("tableId", -1)
-                .put("pid", -1)
-                .put("sectionNumber", -1)
-                .put("descriptorOffset", -1)
-                .put("diagnosticCode", "INVALID_PARENTAL_RATING")
-                .put("country", rating.countryCode)
-                .put("rating", rating.rating)
-                .put("raw", rating.rawRating)
-                .put("supported", rating.supported))
+                .put("parseStatus", "UnsupportedValue")
+                .put("tag", 0x55)
+                .put("offset", -1)
+                .put("declaredLength", -1)
+                .put("remainingLength", -1)
+                .put("rawPrefix", "")
+                .put("message", "unsupported parental rating country=${rating.countryCode} rating=${rating.rating} raw=${rating.rawRating} supported=${rating.supported}")
+                .put("serviceKey", JSONObject()
+                    .put("originalNetworkId", event.serviceKey.originalNetworkId)
+                    .put("transportStreamId", event.serviceKey.transportStreamId)
+                    .put("serviceId", event.serviceKey.serviceId))
+                .put("eventId", event.eventId)
+                .put("pid", 18)
+                .put("tableId", JSONObject.NULL)
+                .put("sectionNumber", JSONObject.NULL))
         }
-        return JSONObject().put("diagnostics", arr).toString()
+        return JSONObject()
+            .put("schemaVersion", 1)
+            .put("diagnostics", arr)
+            .toString()
     }
+
+
+
+
+    private fun descriptorDiagnosticCount(json: String): Int = runCatching {
+        JSONObject(json).optJSONArray("diagnostics")?.length() ?: 0
+    }.getOrDefault(0)
+
 
     private fun parentalRatingDiagnosticsJson(event: AribEvent): String {
         val arr = JSONArray()
         event.parentalRatings.forEach { rating ->
             val mapped = AribRatingMapper.toTvContentRatingString(rating)
-            val parseStatus = when {
-                !rating.supported -> "unsupported"
-                rating.countryCode != "JPN" -> "unsupported_country"
-                rating.rating !in 4..20 -> "unsupported_rating"
-                mapped == null -> "unmapped"
-                else -> "mapped"
+            if (mapped == null) {
+                val parseStatus = when {
+                    !rating.supported -> "unsupported"
+                    rating.countryCode != "JPN" -> "unsupported_country"
+                    rating.rating !in 4..20 -> "unsupported_rating"
+                    else -> "unmapped"
+                }
+                arr.put(JSONObject()
+                    .put("countryCode", rating.countryCode)
+                    .put("ratingValue", rating.rating)
+                    .put("rawRatingByte", rating.rawRating)
+                    .put("supported", rating.supported)
+                    .put("parseStatus", parseStatus)
+                    .put("mappedTvContentRating", "")
+                    .put("diagnosticCode", "INVALID_PARENTAL_RATING"))
             }
-            arr.put(JSONObject()
-                .put("countryCode", rating.countryCode)
-                .put("ratingValue", rating.rating)
-                .put("rawRatingByte", rating.rawRating)
-                .put("supported", rating.supported)
-                .put("parseStatus", parseStatus)
-                .put("mappedTvContentRating", mapped.orEmpty())
-                .put("diagnosticCode", if (mapped == null) "INVALID_PARENTAL_RATING" else "MISSING_PARENTAL_RATING"))
         }
         return JSONObject().put("parentalRatings", arr).toString()
     }
@@ -213,7 +241,7 @@ class EventModelMapper {
     private fun extendedItemsJson(items: List<AribExtendedItem>): String {
         val arr = JSONArray()
         items.forEach { item ->
-            arr.put(JSONObject().put("key", item.itemDescription).put("value", item.itemText))
+            arr.put(JSONObject().put("description", item.itemDescription).put("text", item.itemText))
         }
         return arr.toString()
     }

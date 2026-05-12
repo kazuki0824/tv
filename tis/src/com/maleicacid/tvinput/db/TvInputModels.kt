@@ -60,6 +60,10 @@ data class ProgramRecord(
     val videoHeight: Int? = null,
     val videoFormat: String? = null,
     val unsupportedDescriptorJson: String = "{}",
+    val malformedCaDescriptorCount: Int = 0,
+    // Phase C/B-07: Program provider-data diagnostics. This is process-local
+    // retry state owned by ProgramPublishCoordinator and resets on process restart.
+    val droppedRetryWindowCount: Int = 0,
     val tvProviderProgramId: Long? = null,
 )
 

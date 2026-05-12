@@ -72,11 +72,23 @@ class TisR51FixedPlanAcceptanceTest {
         val event = aribEvent(parentalRatings = listOf(AribParentalRating("USA", 15, 15, supported = false)))
         val record = EventModelMapper().toProgramRecords(listOf(event)).single()
         check(record.contentRatings.isEmpty())
-        check(record.unsupportedDescriptorJson.contains("unsupportedParentalRatings"))
-        check(record.unsupportedDescriptorJson.contains("USA"))
-        val providerData = TvProviderWriter.programProviderData(record.stableIdentity, record)
-        check(providerData.contains("unsupportedDescriptorJsonB64"))
-        check(providerData.contains("parentalRatingDiagnosticsJsonB64"))
+        val unsupported = org.json.JSONObject(record.unsupportedDescriptorJson)
+        check(unsupported.getInt("schemaVersion") == 1)
+        val unsupportedEntry = unsupported.getJSONArray("diagnostics").getJSONObject(0)
+        check(unsupportedEntry.getString("parseStatus") == "UnsupportedValue")
+        check(unsupportedEntry.getInt("tag") == 0x55)
+        check(unsupportedEntry.getJSONObject("serviceKey").getInt("serviceId") == key.serviceId)
+        check(unsupportedEntry.getInt("eventId") == event.eventId)
+        check(unsupportedEntry.getString("message").contains("USA"))
+        check(!record.unsupportedDescriptorJson.contains("diagnosticCode"))
+        check(!record.unsupportedDescriptorJson.contains("descriptorOffset"))
+        val providerData = org.json.JSONObject(TvProviderWriter.programProviderDataForTest(record))
+        val normalizedUnsupported = providerData.getJSONObject("unsupportedDescriptorDiagnostics")
+        check(normalizedUnsupported.getInt("schemaVersion") == 1)
+        val normalizedEntry = normalizedUnsupported.getJSONArray("diagnostics").getJSONObject(0)
+        check(normalizedEntry.getString("parseStatus") == "UnsupportedValue")
+        check(normalizedEntry.getJSONObject("serviceKey").getInt("serviceId") == key.serviceId)
+        check(providerData.has("parentalRatingDiagnostics"))
     }
 
 
@@ -85,20 +97,20 @@ class TisR51FixedPlanAcceptanceTest {
         val malformed = aribEvent(
             parentalRatings = listOf(AribParentalRating("JPN", 12, 12, supported = false)),
         ).copy(
-            diagnosticDescriptorJson = """{"parentalRatingDescriptors":[{"parseStatus":"malformed_length"}]}""",
+            diagnosticDescriptorJson = """{"parentalRatingDescriptors":[{"parseStatus":"MalformedLength"}]}""",
         )
         val truncated = aribEvent(
             parentalRatings = listOf(AribParentalRating("JPN", 15, 15, supported = false)),
         ).copy(
-            diagnosticDescriptorJson = """{"diagnostics":[{"parseStatus":"truncated_descriptor","tag":85}]}""",
+            diagnosticDescriptorJson = """{"diagnostics":[{"parseStatus":"TruncatedDescriptor","tag":85}]}""",
         )
         val records = EventModelMapper().toProgramRecords(listOf(malformed, truncated))
         check(records.size == 2)
         records.forEach { record ->
             check(record.contentRatings.isEmpty())
-            val providerData = TvProviderWriter.programProviderData(record.stableIdentity, record)
-            check(providerData.contains("unsupportedDescriptorJsonB64"))
-            check(providerData.contains("parentalRatingDiagnosticsJsonB64"))
+            val providerData = TvProviderWriter.programProviderDataForTest(record)
+            check(providerData.contains("unsupportedDescriptorDiagnostics"))
+            check(providerData.contains("parentalRatingDiagnostics"))
         }
     }
 
@@ -117,8 +129,8 @@ class TisR51FixedPlanAcceptanceTest {
         val values = store.programs.values.single()
         check(values.getAsString(TvContract.Programs.COLUMN_CONTENT_RATING) == null)
         val providerData = values.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).toString(Charsets.UTF_8)
-        check(providerData.contains("unsupportedDescriptorJsonB64"))
-        check(providerData.contains("parentalRatingDiagnosticsJsonB64"))
+        check(providerData.contains("unsupportedDescriptorDiagnostics"))
+        check(providerData.contains("parentalRatingDiagnostics"))
     }
 
     @Test fun oldCustomAribRatingDomainIsNotGeneratedOnProductPath() {
@@ -166,11 +178,11 @@ class TisR51FixedPlanAcceptanceTest {
             publishabilityByServiceKey = mapOf(key to incompleteDiagnostic),
             channelFallbackByServiceKey = mapOf(key to fallbackChannel),
         ).single()
-        val providerData = TvProviderWriter.programProviderData(record.stableIdentity, record)
-        check(providerData.contains("requiresCas=true"))
-        check(providerData.contains("unsupportedCas=true"))
-        check(providerData.contains("clearLivePlaybackSupported=false"))
-        check(providerData.contains("publishStateSource=MERGED_CHANNEL_CAS_STATE"))
+        val providerData = TvProviderWriter.programProviderDataForTest(record)
+        check(providerData.contains("\"requiresCas\":true"))
+        check(providerData.contains("\"unsupportedCas\":true"))
+        check(providerData.contains("\"clearLivePlaybackSupported\":false"))
+        check(providerData.contains("\"publishStateSource\":\"fallback\""))
     }
 
     @Test fun contentRatingWrittenToPrograms() {
@@ -253,13 +265,13 @@ class TisR51FixedPlanAcceptanceTest {
         check(!record.clearLivePlaybackSupported)
         check(record.channelRegistrationReady)
         check(record.epgPublishable)
-        val providerData = TvProviderWriter.programProviderData(record.stableIdentity, record)
-        check(providerData.contains("requiresCas=true"))
-        check(providerData.contains("unsupportedCas=true"))
-        check(providerData.contains("clearLivePlaybackSupported=false"))
-        check(providerData.contains("channelRegistrationReady=true"))
-        check(providerData.contains("epgPublishable=true"))
-        check(providerData.contains("publishStateSource=CURRENT_DIAGNOSTIC"))
+        val providerData = TvProviderWriter.programProviderDataForTest(record)
+        check(providerData.contains("\"requiresCas\":true"))
+        check(providerData.contains("\"unsupportedCas\":true"))
+        check(providerData.contains("\"clearLivePlaybackSupported\":false"))
+        check(providerData.contains("\"channelRegistrationReady\":true"))
+        check(providerData.contains("\"epgPublishable\":true"))
+        check(providerData.contains("\"publishStateSource\":\"current\""))
     }
 
     @Test fun programCasStateFallsBackToExistingScrambledChannelWhenDiagnosticMissing() {
@@ -434,8 +446,8 @@ class TisR51FixedPlanAcceptanceTest {
         check(TunerController.trackIdForVideoStream(video) == "video:257")
         check(TunerController.trackIdForAudioStream(audio) == "audio:272:7")
         val tracks = listOf(
-            TunerController.TisTrack("video:257", TvTrackInfo.TYPE_VIDEO, 0x101, 0x1b, null, null),
-            TunerController.TisTrack("audio:272:7", TvTrackInfo.TYPE_AUDIO, 0x110, 0x0f, 7, "jpn"),
+            TunerController.TisTrack("video:257", TvTrackInfo.TYPE_VIDEO, 0x101, 0x1b, null, -1, null),
+            TunerController.TisTrack("audio:272:7", TvTrackInfo.TYPE_AUDIO, 0x110, 0x0f, 7, -1, "jpn"),
         )
         check(TunerController.isSelectableTrackForTest(TvTrackInfo.TYPE_AUDIO, "audio:272:7", tracks))
         check(!TunerController.isSelectableTrackForTest(TvTrackInfo.TYPE_AUDIO, "audio:999", tracks))
@@ -445,7 +457,7 @@ class TisR51FixedPlanAcceptanceTest {
 
     @Test fun audioSelectTrackCommitsOnlyWhenAudioSwitchSucceeds() {
         val tracks = listOf(
-            TunerController.TisTrack("audio:272:7", TvTrackInfo.TYPE_AUDIO, 0x110, 0x0f, 7, "jpn"),
+            TunerController.TisTrack("audio:272:7", TvTrackInfo.TYPE_AUDIO, 0x110, 0x0f, 7, -1, "jpn"),
         )
         check(MaleicacidLiveSession.audioTrackSelectionAcceptedForTest("audio:272:7", tracks, audioSwitchSucceeded = true))
         check(!MaleicacidLiveSession.audioTrackSelectionAcceptedForTest("audio:272:7", tracks, audioSwitchSucceeded = false))
@@ -486,16 +498,11 @@ class TisR51FixedPlanAcceptanceTest {
     @Test fun unblockKeyIncludesCurrentProgramIdentityAndRating() {
         val rating = requireNotNull(AribRatingMapper.parseFlattened(requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 12, 12, true)))))
         val keyString = CurrentProgramRatingResolver.unblockKey(
-            channelUriString = "content://android.media.tv/channel/1",
             serviceKey = key,
             eventId = 10,
-            startTimeMillis = 1_700_000_000_000L,
-            endTimeMillis = 1_700_001_800_000L,
             ratingString = rating.flattenToString(),
         )
-        check(keyString.contains("content://android.media.tv/channel/1"))
-        check(keyString.contains("4|16400|101"))
-        check(keyString.contains("10"))
+        check(keyString.contains("onid=4;tsid=16400;sid=101;event=10"))
         check(keyString.contains("ISDB_12"))
     }
 
@@ -538,7 +545,7 @@ class TisR51FixedPlanAcceptanceTest {
         check(record.videoWidth == 1280)
         check(record.videoHeight == 720)
         check(record.videoFormat == "video/avc")
-        check(TvProviderWriter.programProviderData(record.stableIdentity, record).contains("videoFormatB64"))
+        check(TvProviderWriter.programProviderDataForTest(record).contains("videoFormat"))
     }
 
     @Test fun videoHeaderMetadataIgnoresNonCurrentEvent() {
@@ -849,6 +856,16 @@ class TisR51FixedPlanAcceptanceTest {
             programs.entries.firstOrNull { (_, v) ->
                 v.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) == channelId && TvProviderWriter.parseProgramKey(v.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).toString(Charsets.UTF_8)) == programKey
             }?.key,
+        )
+        override fun indexExistingProgramsForWindow(channelId: Long, windowStartMs: Long, windowEndMs: Long): Result<Map<String, Long>> = Result.success(
+            programs.entries.mapNotNull { (id, v) ->
+                if (v.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) != channelId) return@mapNotNull null
+                val end = v.getAsLong(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS)
+                val start = v.getAsLong(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS)
+                if (end <= windowStartMs || start >= windowEndMs) return@mapNotNull null
+                val key = TvProviderWriter.parseProgramKey(v.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).toString(Charsets.UTF_8)) ?: return@mapNotNull null
+                key to id
+            }.toMap(),
         )
         override fun insertProgram(values: ContentValues): Result<Long?> { val id = nextProgramId++; programs[id] = ContentValues(values); return Result.success(id) }
         override fun updateProgram(programId: Long, values: ContentValues): Result<Int> { programs[programId] = ContentValues(values); return Result.success(1) }

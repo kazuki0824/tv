@@ -21,6 +21,8 @@ import com.maleicacid.tvinput.aribsi.AribElementaryStream
 import com.maleicacid.tvinput.common.LogTags
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
+import java.util.concurrent.Callable
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -28,10 +30,14 @@ import java.util.concurrent.atomic.AtomicBoolean
 class PlaybackPipeline(
     private val inputId: String,
     private val sessionId: String,
-    @Suppress("UNUSED_PARAMETER") private val attributionSource: AttributionSource? = null,
+    private val attributionSource: AttributionSource? = null,
 ) : AutoCloseable {
+    @Volatile private var playbackExecutorThread: Thread? = null
     private val executor: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "maleicacid-playback-$inputId").apply { isDaemon = true }
+        Thread(runnable, "maleicacid-playback-$inputId").also { thread ->
+            thread.isDaemon = true
+            playbackExecutorThread = thread
+        }
     }
     private val mainHandler = Handler(Looper.getMainLooper())
     private var surface: Surface? = null
@@ -42,6 +48,9 @@ class PlaybackPipeline(
     private var onVideoFormatDiscovered: (VideoFormatInfo) -> Unit = {}
     private var videoFilter: Filter? = null
     private var audioFilter: Filter? = null
+    private var nextAvFilterToken: Long = 1L
+    private var currentVideoFilterToken: Long = -1L
+    private var currentAudioFilterToken: Long = -1L
     private var videoDecoder: VideoDecoderPipeline? = null
     private var audioDecoder: AudioDecoderPipeline? = null
     private val videoAvailableNotified = AtomicBoolean(false)
@@ -49,8 +58,11 @@ class PlaybackPipeline(
     private var audioWriteErrors: Int = 0
     private var audioPartialWrites: Int = 0
     private var oversizedSamplesDropped: Int = 0
+    private var malformedSamplesDropped: Int = 0
+    private var decoderBackpressureDrops: Int = 0
     private var audioPtsFallbackSamples: Int = 0
     private var videoPtsFallbackSamples: Int = 0
+    private val released = AtomicBoolean(false)
 
     enum class PlaybackUnavailableReason {
         SURFACE_DETACHED, SURFACE_NOT_SET, VIDEO_FILTER_NOT_STARTED, AUDIO_FILTER_NOT_STARTED,
@@ -105,25 +117,66 @@ class PlaybackPipeline(
 
     private data class MediaSample(val bytes: ByteArray, val presentationTimeUs: Long, val timestampFallbackUsed: Boolean, val isAudio: Boolean)
 
+    private fun <T> runOnPlaybackExecutorBlocking(action: () -> T): T {
+        if (Thread.currentThread() == playbackExecutorThread) return action()
+        val future = executor.submit(Callable<T> { action() })
+        return try {
+            future.get()
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw RuntimeException("playback executor interrupted", e)
+        } catch (e: ExecutionException) {
+            val cause = e.cause ?: e
+            when (cause) {
+                is RuntimeException -> throw cause
+                is Error -> throw cause
+                else -> throw RuntimeException(cause)
+            }
+        }
+    }
+
+    private fun enqueuePlaybackAction(action: () -> Unit) {
+        if (released.get()) return
+        if (Thread.currentThread() == playbackExecutorThread) {
+            action()
+            return
+        }
+        runCatching {
+            executor.execute {
+                if (!released.get()) action()
+            }
+        }
+    }
+
     fun setCallbacks(onAvailable: () -> Unit, onUnavailable: (PlaybackUnavailable) -> Unit) {
-        onVideoAvailable = onAvailable
-        onVideoUnavailable = onUnavailable
+        runOnPlaybackExecutorBlocking {
+            onVideoAvailable = onAvailable
+            onVideoUnavailable = onUnavailable
+        }
     }
 
     fun setOnVideoFormatDiscoveredCallback(callback: (VideoFormatInfo) -> Unit) {
-        onVideoFormatDiscovered = callback
+        runOnPlaybackExecutorBlocking { onVideoFormatDiscovered = callback }
     }
 
     fun reportUnavailable(reason: PlaybackUnavailableReason, detail: String = "") {
-        emitUnavailable(reason, detail)
+        enqueuePlaybackAction { emitUnavailable(reason, detail) }
     }
 
     fun setVolume(volume: Float) {
+        enqueuePlaybackAction { setVolumeOnPlaybackExecutor(volume) }
+    }
+
+    private fun setVolumeOnPlaybackExecutor(volume: Float) {
         streamVolume = volume.coerceIn(0.0f, 1.0f)
         audioDecoder?.setVolume(streamVolume)
     }
 
     fun setSurface(newSurface: Surface?) {
+        enqueuePlaybackAction { setSurfaceOnPlaybackExecutor(newSurface) }
+    }
+
+    private fun setSurfaceOnPlaybackExecutor(newSurface: Surface?) {
         surface = newSurface
         if (newSurface == null) emitUnavailable(PlaybackUnavailableReason.SURFACE_DETACHED)
     }
@@ -132,8 +185,16 @@ class PlaybackPipeline(
         tuner: Tuner,
         channel: TunerController.ResolvedChannel,
         selection: TunerController.AvStreamSelection,
+    ): StartResult = runOnPlaybackExecutorBlocking {
+        startOnPlaybackExecutor(tuner, channel, selection)
+    }
+
+    private fun startOnPlaybackExecutor(
+        tuner: Tuner,
+        channel: TunerController.ResolvedChannel,
+        selection: TunerController.AvStreamSelection,
     ): StartResult {
-        stop()
+        stopOnPlaybackExecutor()
         val startGeneration = ++playbackGeneration
         val currentSurface = surface
         if (currentSurface == null || !currentSurface.isValid) {
@@ -166,7 +227,7 @@ class PlaybackPipeline(
         val openedVideo = createAndStartAvFilter(tuner, video, isAudio = false).getOrElse { error ->
             emitUnavailable(PlaybackUnavailableReason.VIDEO_FILTER_NOT_STARTED, error.message.orEmpty())
             diagnostics += "video filter start failed: ${error.message}"
-            stop()
+            stopOnPlaybackExecutor()
             return StartResult(false, false, diagnostics)
         }
         videoFilter = openedVideo
@@ -206,6 +267,13 @@ class PlaybackPipeline(
     fun switchAudio(
         tuner: Tuner,
         selection: TunerController.AvStreamSelection,
+    ): AudioSwitchResult = runOnPlaybackExecutorBlocking {
+        switchAudioOnPlaybackExecutor(tuner, selection)
+    }
+
+    private fun switchAudioOnPlaybackExecutor(
+        tuner: Tuner,
+        selection: TunerController.AvStreamSelection,
     ): AudioSwitchResult {
         val audio = selection.audio ?: return AudioSwitchResult(false, listOf("audio PID 未検出"))
         val audioKind = AudioCodecKind.fromStreamType(audio.streamType) ?: run {
@@ -215,10 +283,12 @@ class PlaybackPipeline(
 
         val previousFilter = audioFilter
         val previousDecoder = audioDecoder
+        val previousAudioToken = currentAudioFilterToken
         val newDecoder = AudioDecoderPipeline(audioKind, streamVolume, syncClock) { reason, detail -> logAudioUnavailable(reason, detail) }
         audioDecoder = newDecoder
 
         val openedAudio = createAndStartAvFilter(tuner, audio, isAudio = true).getOrElse { error ->
+            currentAudioFilterToken = previousAudioToken
             audioDecoder = previousDecoder
             newDecoder.close()
             logAudioUnavailable(PlaybackUnavailableReason.AUDIO_FILTER_NOT_STARTED, error.message.orEmpty())
@@ -243,14 +313,17 @@ class PlaybackPipeline(
         require(pid in 0..0x1fff) { "PID が範囲外です: $pid" }
         val subtype = if (isAudio) Filter.SUBTYPE_AUDIO else Filter.SUBTYPE_VIDEO
         val filterGeneration = playbackGeneration
+        val filterToken = nextAvFilterToken++
+        if (isAudio) currentAudioFilterToken = filterToken else currentVideoFilterToken = filterToken
         val targetAudioDecoder = audioDecoder
         val targetVideoDecoder = videoDecoder
+        fun tokenMatches(): Boolean = if (isAudio) currentAudioFilterToken == filterToken else currentVideoFilterToken == filterToken
         val filter = tuner.openFilter(Filter.TYPE_TS, subtype, AV_FILTER_BUFFER_BYTES, executor, object : FilterCallback {
             override fun onFilterEvent(filter: Filter, events: Array<FilterEvent>) {
                 runCatching {
-                    if (filterGeneration != playbackGeneration) return
+                    if (filterGeneration != playbackGeneration || !tokenMatches()) return
                     for (event in events.filterIsInstance<MediaEvent>()) {
-                        if (filterGeneration != playbackGeneration) {
+                        if (filterGeneration != playbackGeneration || !tokenMatches()) {
                             releaseMediaEvent(event)
                             continue
                         }
@@ -259,7 +332,7 @@ class PlaybackPipeline(
                         } finally {
                             releaseMediaEvent(event)
                         } ?: continue
-                        if (filterGeneration != playbackGeneration) continue
+                        if (filterGeneration != playbackGeneration || !tokenMatches()) continue
                         if (isAudio) targetAudioDecoder?.queue(sample) else targetVideoDecoder?.queue(sample)
                     }
                 }.onFailure { error ->
@@ -284,11 +357,15 @@ class PlaybackPipeline(
         val config = TsFilterConfiguration.builder().setTpid(pid).setSettings(settingsBuilder.build()).build()
         val configureResult = filter.configure(config)
         if (configureResult != Tuner.RESULT_SUCCESS) {
+            if (isAudio && currentAudioFilterToken == filterToken) currentAudioFilterToken = -1L
+            if (!isAudio && currentVideoFilterToken == filterToken) currentVideoFilterToken = -1L
             closeFilter(filter)
             error("AV filter configure failed result=$configureResult pid=$pid isAudio=$isAudio")
         }
         val startResult = filter.start()
         if (startResult != Tuner.RESULT_SUCCESS) {
+            if (isAudio && currentAudioFilterToken == filterToken) currentAudioFilterToken = -1L
+            if (!isAudio && currentVideoFilterToken == filterToken) currentVideoFilterToken = -1L
             closeFilter(filter)
             error("AV filter start failed result=$startResult pid=$pid isAudio=$isAudio")
         }
@@ -296,15 +373,25 @@ class PlaybackPipeline(
     }
 
     private fun markFirstFrameRendered(generation: Long) {
+        // 4C: MediaCodec frame-rendered callbacks are delivered on mainHandler, not
+        // on the playback executor. Do not read playbackGeneration/surface or mutate
+        // first-frame state from that callback thread; serialize it onto the playback
+        // executor so old-generation frame notifications cannot advance current state.
+        enqueuePlaybackAction { markFirstFrameRenderedOnPlaybackExecutor(generation) }
+    }
+
+    private fun markFirstFrameRenderedOnPlaybackExecutor(generation: Long) {
         if (generation != playbackGeneration) return
         if (surface?.isValid == true && videoAvailableNotified.compareAndSet(false, true)) onVideoAvailable()
     }
 
     private fun scheduleFirstFrameTimeout(generation: Long) {
         mainHandler.postDelayed({
-            if (shouldTriggerFirstFrameTimeoutForTest(generation, playbackGeneration, videoAvailableNotified.get())) {
-                emitUnavailable(PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT, "first frame timeout ${FIRST_FRAME_TIMEOUT_MS}ms")
-                stop()
+            enqueuePlaybackAction {
+                if (shouldTriggerFirstFrameTimeoutForTest(generation, playbackGeneration, videoAvailableNotified.get())) {
+                    emitUnavailable(PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT, "first frame timeout ${FIRST_FRAME_TIMEOUT_MS}ms")
+                    stopOnPlaybackExecutor()
+                }
             }
         }, FIRST_FRAME_TIMEOUT_MS)
     }
@@ -319,6 +406,8 @@ class PlaybackPipeline(
     fun audioWriteErrorsForDiagnostic(): Int = audioWriteErrors
     fun audioPartialWritesForDiagnostic(): Int = audioPartialWrites
     fun oversizedSamplesDroppedForDiagnostic(): Int = oversizedSamplesDropped
+    fun malformedSamplesDroppedForDiagnostic(): Int = malformedSamplesDropped
+    fun decoderBackpressureDropsForDiagnostic(): Int = decoderBackpressureDrops
     fun audioPtsFallbackSamplesForDiagnostic(): Int = audioPtsFallbackSamples
     fun videoPtsFallbackSamplesForDiagnostic(): Int = videoPtsFallbackSamples
 
@@ -332,7 +421,24 @@ class PlaybackPipeline(
     }
 
     private fun sampleFromEvent(event: MediaEvent, isAudio: Boolean): MediaSample? {
-        if (event.dataLength <= 0L) return null
+        val offset = event.offset
+        val length = event.dataLength
+        if (offset < 0L || length <= 0L) {
+            malformedSamplesDropped++
+            Log.w(LogTags.TIS, "MediaEvent の offset/length が不正なため破棄します offset=$offset length=$length malformed=$malformedSamplesDropped")
+            return null
+        }
+        val end = offset + length
+        if (end < offset) {
+            malformedSamplesDropped++
+            Log.w(LogTags.TIS, "MediaEvent の offset+length が overflow したため破棄します offset=$offset length=$length malformed=$malformedSamplesDropped")
+            return null
+        }
+        if (length > MEDIA_EVENT_SAMPLE_MAX_BYTES) {
+            oversizedSamplesDropped++
+            Log.w(LogTags.TIS, "MediaEvent sample が上限を超えたため allocation 前に破棄します length=$length max=$MEDIA_EVENT_SAMPLE_MAX_BYTES oversized=$oversizedSamplesDropped")
+            return null
+        }
         if (event.isSecureMemory) {
             if (isAudio) {
                 logAudioUnavailable(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, "audio secure MediaEvent は clear playback 対象外です")
@@ -345,11 +451,17 @@ class PlaybackPipeline(
         val block = event.linearBlock ?: return null
         val bytes = runCatching {
             val mapped = block.map().duplicate()
-            val start = event.offset.toInt()
-            val length = event.dataLength.toInt()
+            val capacity = mapped.capacity().toLong()
+            if (end > capacity) {
+                malformedSamplesDropped++
+                Log.w(LogTags.TIS, "MediaEvent が LinearBlock 範囲外のため破棄します offset=$offset length=$length capacity=$capacity malformed=$malformedSamplesDropped")
+                return null
+            }
+            val start = offset.toInt()
+            val sampleLength = length.toInt()
             mapped.position(start)
-            mapped.limit(start + length)
-            ByteArray(length).also { mapped.get(it) }
+            mapped.limit(start + sampleLength)
+            ByteArray(sampleLength).also { mapped.get(it) }
         }.onFailure { Log.w(LogTags.TIS, "MediaEvent LinearBlock の map に失敗しました", it) }.getOrNull() ?: return null
         val normalized = PesTimestampNormalizer.toPresentationUs(if (event.isPtsPresent) event.pts else null)
         return MediaSample(bytes, normalized.presentationUs, normalized.fallbackUsed, isAudio)
@@ -359,6 +471,7 @@ class PlaybackPipeline(
         protected var codec: MediaCodec? = null
         private val configBytes = ByteArrayOutputStream()
         private val bufferInfo = MediaCodec.BufferInfo()
+        private val pendingSamples = java.util.ArrayDeque<MediaSample>()
 
         fun queue(sample: MediaSample) {
             try {
@@ -371,9 +484,6 @@ class PlaybackPipeline(
         }
 
         private fun queueInternal(sample: MediaSample) {
-            if (sample.timestampFallbackUsed) {
-                if (sample.isAudio) audioPtsFallbackSamples++ else videoPtsFallbackSamples++
-            }
             var decoder = codec
             if (decoder == null) {
                 configBytes.write(sample.bytes)
@@ -387,25 +497,43 @@ class PlaybackPipeline(
                 }
                 codec = decoder
             }
-            val inputIndex = decoder.dequeueInputBuffer(CODEC_DEQUEUE_TIMEOUT_US)
-            if (inputIndex >= 0) {
+            enqueuePendingSample(sample)
+            drainPendingInput(decoder)
+            drain(decoder)
+        }
+
+        private fun enqueuePendingSample(sample: MediaSample) {
+            if (pendingSamples.size >= DECODER_PENDING_SAMPLE_LIMIT) {
+                pendingSamples.removeFirst()
+                decoderBackpressureDrops++
+                Log.w(LogTags.TIS, "decoder pending queue が満杯のため最古 sample を破棄します limit=$DECODER_PENDING_SAMPLE_LIMIT drops=$decoderBackpressureDrops isAudio=${sample.isAudio}")
+            }
+            pendingSamples.addLast(sample)
+        }
+
+        private fun drainPendingInput(decoder: MediaCodec) {
+            while (!pendingSamples.isEmpty()) {
+                val inputIndex = decoder.dequeueInputBuffer(CODEC_DEQUEUE_TIMEOUT_US)
+                if (inputIndex < 0) return
+                val sample = pendingSamples.removeFirst()
+                if (sample.timestampFallbackUsed) {
+                    if (sample.isAudio) audioPtsFallbackSamples++ else videoPtsFallbackSamples++
+                }
                 val input = decoder.getInputBuffer(inputIndex)
                 if (input == null) {
                     decoder.queueInputBuffer(inputIndex, 0, 0, sample.presentationTimeUs, 0)
-                    return
+                    continue
                 }
                 input.clear()
                 if (shouldDropOversizedSampleForTest(sample.bytes.size, input.remaining())) {
                     oversizedSamplesDropped++
                     Log.w(LogTags.TIS, "decoder input buffer に収まらない sample を破棄します sampleBytes=${sample.bytes.size} capacity=${input.remaining()} isAudio=${sample.isAudio} dropped=$oversizedSamplesDropped")
                     decoder.queueInputBuffer(inputIndex, 0, 0, sample.presentationTimeUs, 0)
-                    drain(decoder)
-                    return
+                    continue
                 }
                 input.put(sample.bytes)
                 decoder.queueInputBuffer(inputIndex, 0, sample.bytes.size, sample.presentationTimeUs, 0)
             }
-            drain(decoder)
         }
 
         protected abstract fun configureFromBufferedHeader(bytes: ByteArray): MediaCodec?
@@ -426,6 +554,7 @@ class PlaybackPipeline(
         }
 
         override fun close() {
+            pendingSamples.clear()
             val decoder = codec
             codec = null
             if (decoder != null) {
@@ -605,12 +734,22 @@ class PlaybackPipeline(
             sink?.let { runCatching { it.release() } }
             val channelMask = if (outputChannels <= 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO
             val minBuffer = AudioTrack.getMinBufferSize(outputSampleRate, channelMask, AudioFormat.ENCODING_PCM_16BIT).coerceAtLeast(32 * 1024)
-            val created = AudioTrack.Builder()
+            val builder = AudioTrack.Builder()
                 .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MOVIE).build())
                 .setAudioFormat(AudioFormat.Builder().setSampleRate(outputSampleRate).setChannelMask(channelMask).setEncoding(AudioFormat.ENCODING_PCM_16BIT).build())
                 .setBufferSizeInBytes(minBuffer)
                 .setTransferMode(AudioTrack.MODE_STREAM)
-                .build()
+            // Android 14 system SDK trees differ in whether AudioTrack.Builder exposes
+            // setAttributionSource at compile time. Keep the AttributionSource live and
+            // apply it best-effort via reflection; DESIGN_JA.md fixes this boundary.
+            attributionSource?.let { source ->
+                runCatching {
+                    AudioTrack.Builder::class.java
+                        .getMethod("setAttributionSource", AttributionSource::class.java)
+                        .invoke(builder, source)
+                }.onFailure { Log.w(LogTags.TIS, "AudioTrack attributionSource 設定に失敗しました", it) }
+            }
+            val created = builder.build()
             created.setVolume(volume)
             val newSink = AndroidAudioSink(created)
             newSink.play()
@@ -691,6 +830,7 @@ class PlaybackPipeline(
     }
 
     data class NormalizedPresentationTime(val presentationUs: Long, val fallbackUsed: Boolean)
+    enum class MediaEventBoundsDecision { ACCEPT, MALFORMED, OVERSIZED, OUT_OF_BOUNDS }
 
     private object PesTimestampNormalizer {
         fun toPresentationUs(pts90k: Long?): NormalizedPresentationTime {
@@ -929,7 +1069,13 @@ class PlaybackPipeline(
     }
 
     fun stop() {
+        runOnPlaybackExecutorBlocking { stopOnPlaybackExecutor() }
+    }
+
+    private fun stopOnPlaybackExecutor() {
         playbackGeneration++
+        currentVideoFilterToken = -1L
+        currentAudioFilterToken = -1L
         videoAvailableNotified.set(false)
         closeFilter(videoFilter)
         closeFilter(audioFilter)
@@ -954,7 +1100,8 @@ class PlaybackPipeline(
     }
 
     fun release() {
-        stop()
+        if (!released.compareAndSet(false, true)) return
+        runOnPlaybackExecutorBlocking { stopOnPlaybackExecutor() }
         executor.shutdownNow()
     }
 
@@ -993,6 +1140,15 @@ class PlaybackPipeline(
         fun isAudioWriteErrorForTest(writeResult: Int): Boolean = writeResult < 0
 
         fun shouldDropOversizedSampleForTest(sampleSize: Int, inputRemaining: Int): Boolean = sampleSize > inputRemaining
+
+        fun mediaEventBoundsDecisionForTest(offset: Long, dataLength: Long, mappedCapacity: Long): MediaEventBoundsDecision {
+            if (offset < 0L || dataLength <= 0L) return MediaEventBoundsDecision.MALFORMED
+            val end = offset + dataLength
+            if (end < offset) return MediaEventBoundsDecision.MALFORMED
+            if (dataLength > MEDIA_EVENT_SAMPLE_MAX_BYTES) return MediaEventBoundsDecision.OVERSIZED
+            if (end > mappedCapacity) return MediaEventBoundsDecision.OUT_OF_BOUNDS
+            return MediaEventBoundsDecision.ACCEPT
+        }
 
         fun queuedInputSizeForSampleForTest(sampleSize: Int, inputRemaining: Int): Int =
             if (shouldDropOversizedSampleForTest(sampleSize, inputRemaining)) 0 else sampleSize
@@ -1041,6 +1197,8 @@ class PlaybackPipeline(
         private const val AV_FILTER_BUFFER_BYTES = 16 * 1024 * 1024L
         private const val CODEC_DEQUEUE_TIMEOUT_US = 0L
         private const val CODEC_CONFIG_MAX_BYTES = 512 * 1024
+        private const val MEDIA_EVENT_SAMPLE_MAX_BYTES = 1024L * 1024L
+        private const val DECODER_PENDING_SAMPLE_LIMIT = 32
         private const val DEFAULT_VIDEO_WIDTH = 1920
         private const val DEFAULT_VIDEO_HEIGHT = 1080
         private const val DEFAULT_AUDIO_SAMPLE_RATE = 48_000
