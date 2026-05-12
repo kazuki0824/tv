@@ -12,6 +12,8 @@
 未対応の SI/EPG 文字・escape は panic させず、置換文字または diagnostic によって安定動作させる。字幕 payload を `decode_arib_string_lossy()` に渡す経路は r51 の対象外とする。
 `arib_si_engine_rs` は libaribcaption wrapper を所有しない。libaribcaption は TIS 側の字幕 path から Rust JNI boundary と safe Rust wrapper 経由で呼ぶ。
 
+ARIB文字列decoderの初期状態は ARIB STD-B24 の SI/EPG 前提に合わせ、G0=Kanji、G1=Alphanumeric、G2=Hiragana、G3=Macro、GL=LS0(G0)、GR=LS2R(G2) とする。ESCによるdesignation/invocation、LS0/LS1/LS2/LS3、LS1R/LS2R/LS3R、SS2/SS3 は、字幕ではなくSI/EPG文字列の安定復号に必要な範囲で扱う。
+
 
 ## EIT 範囲
 
@@ -30,11 +32,13 @@ r51 は EIT p/f を中心に扱う。scan/setup 後に `TvProvider.Programs` へ
 出力する最小フィールドは次とする。
 
 ```text
-parental_rating:
-  country_code
-  rating_value
+parental_rating_descriptor:
+  entries[]:
+    country_code
+    rating_value        # ARIB B10 Rating 8 uimsbf を8bit値のまま保持する
+    raw_rating_byte     # raw 8bit Rating 値
   raw_descriptor_bytes
-  parse_status
+  parse_status          # ok / malformed_length / truncated_descriptor / unsupported_value
 ```
 
 `arib_si_engine_rs` は Android `TvContentRating` の domain 名や flattened string をSSOTとして決めない。Android TvProvider列への投影と `TvContentRating` 生成は TIS 側の責務とし、投影方針は tv 直下の `ARIB_SI_EPG_TvProvider投影方針.md` をSSOTとする。
@@ -45,13 +49,13 @@ parental_rating:
 
 BS と CS110 の complete 判定には BAT、SDT other、NIT other を含める。これらは table_id だけの global 完了ではなく、table_extension と NIT/BAT transport loop から得た ONID/TSID scope を使って transport 単位で判定する。リモコンキー が得られない場合は service_id を表示番号の代替値 とする。
 
-部分 snapshot の channel 登録は許す。ただし global complete 判定だけで publish 可否を決めない。service / transport 単位の `publishability_by_service` で、service_id、TSID、ONID、PMT、PCR、必要 table の欠落理由を分離し、publishable な service だけを partial snapshot に含める。視聴可能、すなわち TIF live playback で `notifyVideoAvailable()` へ到達し得る service は、PMT と対応可能な video ES を持つ service に限定する。audio は必須ではない。video-only service は視聴可能として扱い、audio absent / unsupported を診断に残す。audio-only service は AOSP/TIF 上は `VIDEO_UNAVAILABLE_REASON_AUDIO_ONLY` に該当するため、viewable snapshot には含めない。
+partial snapshot は service-local registration-ready 判定に使ってよい。ただし partial snapshot を無条件に channel 登録へ出してはならない。global complete 判定だけで publish 可否を決めず、service / transport 単位の `publishability_by_service` と registration-ready 判定で、service_id、TSID、ONID、PMT、PCR、必要 table、r51対応 video ES の欠落理由を分離する。registration-ready service は、ONID / TSID / SID、PMT PID と PMT、有効 PCR、r51対応 video ES、後続更新可能な internal key を持つ service に限定する。audio は必須ではなく、video-only service は登録可能として扱い、audio absent / unsupported を診断に残す。audio-only service は AOSP/TIF 上は `VIDEO_UNAVAILABLE_REASON_AUDIO_ONLY` に該当するため、registration-ready snapshot には含めない。scrambled service は registration-ready として channel 登録してよいが、r51 の clear live 視聴成功 claim 対象にはしない。registration-ready 未満の partial snapshot は diagnostics / live refresh / debug に限定し、channel insert に使わない。
 
 ## section 更新
 
 PAT/PMT/SDT/NIT/BAT/EIT の version 更新では collector 全体を捨てない。table 単位、section 単位、service 単位で差分更新する。
 
-EIT は section version 更新で消えた event を削除し、TvProvider / TIS 側へ stable identity として `original_network_id / transport_stream_id / service_id / event_id` を提供する。
+EIT は section version 更新で消えた event を削除し、TvProvider / TIS 側へ stable identity として `original_network_id / transport_stream_id / service_id / event_id` を提供する。section 更新後の event set が空になった場合も no-op として破棄せず、service key、update window、空の valid event identity set を JNI/TIS へ返す。TIS はこれを obsolete Programs delete に使う。
 
 開始時刻、終了時刻、duration、番組名、説明文の変更は、同一 stable identity の event 更新として扱う。開始時刻は stable identity に含めない。
 
@@ -67,7 +71,7 @@ short_event、extended_event、content、component、audio_component、parental_
 
 ## API 境界の固定
 
-Kotlin/JNI の通常 service snapshot は `publishable_snapshot()` を使う。raw snapshot は診断・test 用であり、通常の channel 登録経路に出さない。publishable でない service については `publishability_by_service` を JNI 診断として公開し、ONID、TSID、service_id、publishable 可否、欠落 component を分けて観測する。
+Kotlin/JNI の通常 service snapshot は channel registration 用の `registration_ready_snapshot()` 相当を使う。これは r51 の clear live 視聴 claim 対象だけでなく、service-local registration-ready 条件を満たす scrambled unsupported service も含み得る。clear live 視聴 claim 対象は別途 `clear_live_playback_supported_snapshot()` / `clear_live_playback_supported` で判定する。`publishable_snapshot()` は診断・test 用であり、registration-ready 未満の service を通常 channel 登録経路に出さない。publishable だが r51 live 視聴対象外の service については `publishability_by_service` を JNI 診断として公開し、ONID、TSID、service_id、publishable / channel_registration_ready / epg_publishable / clear_live_playback_supported / requires_cas / unsupported_cas 可否、欠落 component、除外理由を分けて観測する。
 
 PAT は ONID を持たないため、`(transport_stream_id, service_id) -> pmt_pid` をそのまま publishable service identity として扱わない。SDT/NIT/BAT 等で ONID が一意に解決できた場合だけ `(original_network_id, transport_stream_id, service_id, pmt_pid)` へ昇格し、ONID が曖昧な場合は publish 抑止または欠落診断に留める。
 
@@ -98,3 +102,10 @@ ARIB SI/EPG文字デコードの受け入れ判定は、単体テストのみで
 Rust descriptor model から Kotlin/TvProvider へ渡す構造化データ境界では、Rust の EventDescriptors から JNI getter を通して Kotlin `AribEvent` へ extendedItems、componentText、audioComponentText、contentGenreText、eventGroupText、freeCaText、seriesName、diagnosticDescriptorJson を渡す。TvProvider の title / description / long description への投影は `ARIB_SI_EPG_TvProvider投影方針.md` をSSOTとし、同文書で固定済みの component/audio/content/event_group/freeCA 補足は `Programs.COLUMN_LONG_DESCRIPTION` へ出す。series と diagnostic JSON は `internal_provider_data` の TIS 内部データとして保存する。
 
 設計書は現行仕様中心にし、過去の経緯は CHANGELOG.md に分離する。
+
+
+## r50bi Android rating domain 境界
+
+`arib_si_engine_rs` は ARIB `parental_rating_descriptor` の構造化解析結果だけをSSOTとする。Android `TvContentRating` の `domain` / `ratingSystem` / `rating` 文字列、`flattenToString()`、`Programs.COLUMN_CONTENT_RATING` への投影、`TvInputManager.isRatingBlocked()` に渡す値は TIS 側の責務である。
+
+Rust 側に `com.android.tv` や `ISDB_<age>` の Android domain 決定文字列を持ち込んではならない。Rust は `country_code`, `rating_value`, `raw_rating_byte`, `parse_status`, `raw_descriptor_bytes` を保持し、未対応値を推測変換しない。

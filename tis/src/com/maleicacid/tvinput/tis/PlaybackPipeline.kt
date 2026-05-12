@@ -39,16 +39,22 @@ class PlaybackPipeline(
     private var playbackGeneration: Long = 0L
     private var onVideoAvailable: () -> Unit = {}
     private var onVideoUnavailable: (PlaybackUnavailable) -> Unit = {}
+    private var onVideoFormatDiscovered: (VideoFormatInfo) -> Unit = {}
     private var videoFilter: Filter? = null
     private var audioFilter: Filter? = null
     private var videoDecoder: VideoDecoderPipeline? = null
     private var audioDecoder: AudioDecoderPipeline? = null
     private val videoAvailableNotified = AtomicBoolean(false)
     private val syncClock = PlaybackSyncClock()
+    private var audioWriteErrors: Int = 0
+    private var audioPartialWrites: Int = 0
+    private var oversizedSamplesDropped: Int = 0
+    private var audioPtsFallbackSamples: Int = 0
+    private var videoPtsFallbackSamples: Int = 0
 
     enum class PlaybackUnavailableReason {
         SURFACE_DETACHED, SURFACE_NOT_SET, VIDEO_FILTER_NOT_STARTED, AUDIO_FILTER_NOT_STARTED,
-        VIDEO_OUTPUT_RENDER_FAILED, VIDEO_CODEC_ERROR, CODEC_CONFIG_TIMEOUT, UNSUPPORTED_VIDEO_STREAM,
+        VIDEO_OUTPUT_RENDER_FAILED, VIDEO_CODEC_ERROR, CODEC_CONFIG_TIMEOUT, FIRST_FRAME_TIMEOUT, UNSUPPORTED_VIDEO_STREAM,
         UNSUPPORTED_AUDIO_STREAM, AUDIO_UNAVAILABLE, CAS_NO_KEY, UNKNOWN,
     }
 
@@ -59,9 +65,23 @@ class PlaybackPipeline(
     )
 
     data class StartResult(
+        /** 現行世代の初回フレーム描画後だけ真になる。filter start だけでは映像開始扱いにしない。 */
         val startedVideo: Boolean,
         val startedAudio: Boolean,
         val diagnostics: List<String> = emptyList(),
+        val firstFramePending: Boolean = false,
+    )
+
+    data class AudioSwitchResult(
+        val switchedAudio: Boolean,
+        val diagnostics: List<String> = emptyList(),
+    )
+
+    data class VideoFormatInfo(
+        val streamType: Int,
+        val mime: String,
+        val width: Int,
+        val height: Int,
     )
 
     private enum class VideoCodecKind(val streamType: Int, val mime: String) {
@@ -76,19 +96,22 @@ class PlaybackPipeline(
     private enum class AudioCodecKind(val streamType: Int, val mime: String) {
         MPEG1(0x03, MediaFormat.MIMETYPE_AUDIO_MPEG),
         MPEG2(0x04, MediaFormat.MIMETYPE_AUDIO_MPEG),
-        AAC_ADTS(0x0f, MediaFormat.MIMETYPE_AUDIO_AAC),
-        AAC_LATM(0x11, MediaFormat.MIMETYPE_AUDIO_AAC);
+        AAC_ADTS(0x0f, MediaFormat.MIMETYPE_AUDIO_AAC);
 
         companion object {
             fun fromStreamType(streamType: Int): AudioCodecKind? = values().firstOrNull { it.streamType == streamType }
         }
     }
 
-    private data class MediaSample(val bytes: ByteArray, val presentationTimeUs: Long)
+    private data class MediaSample(val bytes: ByteArray, val presentationTimeUs: Long, val timestampFallbackUsed: Boolean, val isAudio: Boolean)
 
     fun setCallbacks(onAvailable: () -> Unit, onUnavailable: (PlaybackUnavailable) -> Unit) {
         onVideoAvailable = onAvailable
         onVideoUnavailable = onUnavailable
+    }
+
+    fun setOnVideoFormatDiscoveredCallback(callback: (VideoFormatInfo) -> Unit) {
+        onVideoFormatDiscovered = callback
     }
 
     fun reportUnavailable(reason: PlaybackUnavailableReason, detail: String = "") {
@@ -111,6 +134,7 @@ class PlaybackPipeline(
         selection: TunerController.AvStreamSelection,
     ): StartResult {
         stop()
+        val startGeneration = ++playbackGeneration
         val currentSurface = surface
         if (currentSurface == null || !currentSurface.isValid) {
             emitUnavailable(PlaybackUnavailableReason.SURFACE_NOT_SET, "有効な Surface がありません")
@@ -131,10 +155,12 @@ class PlaybackPipeline(
         }
 
         val diagnostics = mutableListOf<String>()
-        val videoDecoderLocal = VideoDecoderPipeline(videoKind, currentSurface, syncClock, ::markFirstFrameRendered) { reason, detail -> emitUnavailable(reason, detail) }
+        val audioExpected = audio != null && audioKind != null
+        syncClock.reset(if (audioExpected) PlaybackSyncClock.Mode.AUDIO_MASTER else PlaybackSyncClock.Mode.VIDEO_MASTER)
+        val videoDecoderLocal = VideoDecoderPipeline(videoKind, currentSurface, syncClock, startGeneration, ::markFirstFrameRendered) { reason, detail -> emitUnavailable(reason, detail) }
         videoDecoder = videoDecoderLocal
-        if (audio != null && audioKind != null) {
-            audioDecoder = AudioDecoderPipeline(audioKind, streamVolume, syncClock) { reason, detail -> emitUnavailable(reason, detail) }
+        if (audioExpected) {
+            audioDecoder = AudioDecoderPipeline(audioKind!!, streamVolume, syncClock) { reason, detail -> logAudioUnavailable(reason, detail) }
         }
 
         val openedVideo = createAndStartAvFilter(tuner, video, isAudio = false).getOrElse { error ->
@@ -149,18 +175,22 @@ class PlaybackPipeline(
 
         var audioStarted = false
         if (audio != null && audioKind != null) {
-            val openedAudio = createAndStartAvFilter(tuner, audio, isAudio = true).getOrElse { error ->
-                emitUnavailable(PlaybackUnavailableReason.AUDIO_FILTER_NOT_STARTED, error.message.orEmpty())
-                diagnostics += "audio filter start failed: ${error.message}"
-                closeFilter(openedVideo)
-                videoFilter = null
-                stop()
-                return StartResult(false, false, diagnostics)
+            val openedAudio = createAndStartAvFilter(tuner, audio, isAudio = true)
+                .onFailure { error ->
+                    logAudioUnavailable(PlaybackUnavailableReason.AUDIO_FILTER_NOT_STARTED, error.message.orEmpty())
+                    diagnostics += "audio filter start failed; continuing video-only: ${error.message}"
+                    syncClock.fallbackToVideoMaster("audio filter start failed")
+                }
+                .getOrNull()
+            if (openedAudio != null) {
+                audioFilter = openedAudio
+                audioStarted = true
+                diagnostics += "audioPid=${audio.elementaryPid}"
+                diagnostics += "audioCodec=$audioKind"
+            } else {
+                audioDecoder?.close()
+                audioDecoder = null
             }
-            audioFilter = openedAudio
-            audioStarted = true
-            diagnostics += "audioPid=${audio.elementaryPid}"
-            diagnostics += "audioCodec=$audioKind"
         } else {
             diagnostics += "audio=absent-or-unsupported-video-only"
         }
@@ -168,23 +198,77 @@ class PlaybackPipeline(
         diagnostics += "channel=${channel.displayNumber}"
         diagnostics += "volume=$streamVolume"
         diagnostics += "surfaceAttached=${currentSurface.isValid}"
-        Log.i(LogTags.TIS, "AV filter と遅延 decoder を開始しました inputId=$inputId sessionId=$sessionId ${diagnostics.joinToString(" ")}")
-        return StartResult(startedVideo = true, startedAudio = audioStarted, diagnostics = diagnostics)
+        scheduleFirstFrameTimeout(startGeneration)
+        Log.i(LogTags.TIS, "AV filter と遅延 decoder を開始しました inputId=$inputId sessionId=$sessionId firstFramePending=true ${diagnostics.joinToString(" ")}")
+        return StartResult(startedVideo = false, startedAudio = audioStarted, diagnostics = diagnostics, firstFramePending = true)
+    }
+
+    fun switchAudio(
+        tuner: Tuner,
+        selection: TunerController.AvStreamSelection,
+    ): AudioSwitchResult {
+        val audio = selection.audio ?: return AudioSwitchResult(false, listOf("audio PID 未検出"))
+        val audioKind = AudioCodecKind.fromStreamType(audio.streamType) ?: run {
+            emitUnavailable(PlaybackUnavailableReason.UNSUPPORTED_AUDIO_STREAM, "未対応 audio stream_type=0x${audio.streamType.toString(16)}")
+            return AudioSwitchResult(false, listOf("audio stream_type 未対応"))
+        }
+
+        val previousFilter = audioFilter
+        val previousDecoder = audioDecoder
+        val newDecoder = AudioDecoderPipeline(audioKind, streamVolume, syncClock) { reason, detail -> logAudioUnavailable(reason, detail) }
+        audioDecoder = newDecoder
+
+        val openedAudio = createAndStartAvFilter(tuner, audio, isAudio = true).getOrElse { error ->
+            audioDecoder = previousDecoder
+            newDecoder.close()
+            logAudioUnavailable(PlaybackUnavailableReason.AUDIO_FILTER_NOT_STARTED, error.message.orEmpty())
+            return AudioSwitchResult(false, listOf("audio filter start failed: ${error.message}"))
+        }
+
+        audioFilter = openedAudio
+        closeFilter(previousFilter)
+        previousDecoder?.close()
+        val diagnostics = listOf(
+            "audioPid=${audio.elementaryPid}",
+            "audioCodec=$audioKind",
+            "service=${selection.serviceKey}",
+        )
+        syncClock.reset(PlaybackSyncClock.Mode.AUDIO_MASTER)
+        Log.i(LogTags.TIS, "audio track を切り替えました inputId=$inputId sessionId=$sessionId ${diagnostics.joinToString(" ")}")
+        return AudioSwitchResult(true, diagnostics)
     }
 
     private fun createAndStartAvFilter(tuner: Tuner, stream: AribElementaryStream, isAudio: Boolean): Result<Filter> = runCatching {
         val pid = stream.elementaryPid
         require(pid in 0..0x1fff) { "PID が範囲外です: $pid" }
         val subtype = if (isAudio) Filter.SUBTYPE_AUDIO else Filter.SUBTYPE_VIDEO
+        val filterGeneration = playbackGeneration
+        val targetAudioDecoder = audioDecoder
+        val targetVideoDecoder = videoDecoder
         val filter = tuner.openFilter(Filter.TYPE_TS, subtype, AV_FILTER_BUFFER_BYTES, executor, object : FilterCallback {
             override fun onFilterEvent(filter: Filter, events: Array<FilterEvent>) {
-                for (event in events.filterIsInstance<MediaEvent>()) {
-                    val sample = try {
-                        sampleFromEvent(event)
-                    } finally {
-                        releaseMediaEvent(event)
-                    } ?: continue
-                    if (isAudio) audioDecoder?.queue(sample) else videoDecoder?.queue(sample)
+                runCatching {
+                    if (filterGeneration != playbackGeneration) return
+                    for (event in events.filterIsInstance<MediaEvent>()) {
+                        if (filterGeneration != playbackGeneration) {
+                            releaseMediaEvent(event)
+                            continue
+                        }
+                        val sample = try {
+                            sampleFromEvent(event, isAudio)
+                        } finally {
+                            releaseMediaEvent(event)
+                        } ?: continue
+                        if (filterGeneration != playbackGeneration) continue
+                        if (isAudio) targetAudioDecoder?.queue(sample) else targetVideoDecoder?.queue(sample)
+                    }
+                }.onFailure { error ->
+                    if (isAudio) {
+                        logAudioUnavailable(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, error.message.orEmpty())
+                        syncClock.fallbackToVideoMaster("audio MediaEvent callback failure")
+                    } else {
+                        emitUnavailable(PlaybackUnavailableReason.VIDEO_CODEC_ERROR, error.message.orEmpty())
+                    }
                 }
             }
             override fun onFilterStatusChanged(filter: Filter, status: Int) {
@@ -211,8 +295,35 @@ class PlaybackPipeline(
         filter
     }
 
-    private fun markFirstFrameRendered() {
+    private fun markFirstFrameRendered(generation: Long) {
+        if (generation != playbackGeneration) return
         if (surface?.isValid == true && videoAvailableNotified.compareAndSet(false, true)) onVideoAvailable()
+    }
+
+    private fun scheduleFirstFrameTimeout(generation: Long) {
+        mainHandler.postDelayed({
+            if (shouldTriggerFirstFrameTimeoutForTest(generation, playbackGeneration, videoAvailableNotified.get())) {
+                emitUnavailable(PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT, "first frame timeout ${FIRST_FRAME_TIMEOUT_MS}ms")
+                stop()
+            }
+        }, FIRST_FRAME_TIMEOUT_MS)
+    }
+
+    private fun logAudioUnavailable(reason: PlaybackUnavailableReason, detail: String) {
+        Log.w(LogTags.TIS, "audio を利用できませんが video は継続します inputId=$inputId sessionId=$sessionId reason=$reason detail=$detail generation=$playbackGeneration")
+    }
+
+    fun currentPlaybackGenerationForTest(): Long = playbackGeneration
+
+    fun audioMasterFallbackCountForDiagnostic(): Int = syncClock.audioFallbackCountForDiagnostic()
+    fun audioWriteErrorsForDiagnostic(): Int = audioWriteErrors
+    fun audioPartialWritesForDiagnostic(): Int = audioPartialWrites
+    fun oversizedSamplesDroppedForDiagnostic(): Int = oversizedSamplesDropped
+    fun audioPtsFallbackSamplesForDiagnostic(): Int = audioPtsFallbackSamples
+    fun videoPtsFallbackSamplesForDiagnostic(): Int = videoPtsFallbackSamples
+
+    fun simulateFirstFrameRenderedForTest(generation: Long) {
+        markFirstFrameRendered(generation)
     }
 
 
@@ -220,10 +331,15 @@ class PlaybackPipeline(
         runCatching { event.release() }.onFailure { Log.w(LogTags.TIS, "MediaEvent の release に失敗しました", it) }
     }
 
-    private fun sampleFromEvent(event: MediaEvent): MediaSample? {
+    private fun sampleFromEvent(event: MediaEvent, isAudio: Boolean): MediaSample? {
         if (event.dataLength <= 0L) return null
         if (event.isSecureMemory) {
-            emitUnavailable(PlaybackUnavailableReason.VIDEO_CODEC_ERROR, "secure MediaEvent は clear playback 対象外です")
+            if (isAudio) {
+                logAudioUnavailable(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, "audio secure MediaEvent は clear playback 対象外です")
+                syncClock.fallbackToVideoMaster("audio secure MediaEvent")
+            } else {
+                emitUnavailable(PlaybackUnavailableReason.VIDEO_CODEC_ERROR, "video secure MediaEvent は clear playback 対象外です")
+            }
             return null
         }
         val block = event.linearBlock ?: return null
@@ -235,8 +351,8 @@ class PlaybackPipeline(
             mapped.limit(start + length)
             ByteArray(length).also { mapped.get(it) }
         }.onFailure { Log.w(LogTags.TIS, "MediaEvent LinearBlock の map に失敗しました", it) }.getOrNull() ?: return null
-        val ptsUs = PesTimestampNormalizer.toPresentationUs(if (event.isPtsPresent) event.pts else null)
-        return MediaSample(bytes, ptsUs)
+        val normalized = PesTimestampNormalizer.toPresentationUs(if (event.isPtsPresent) event.pts else null)
+        return MediaSample(bytes, normalized.presentationUs, normalized.fallbackUsed, isAudio)
     }
 
     private abstract inner class DecoderPipeline : AutoCloseable {
@@ -245,13 +361,26 @@ class PlaybackPipeline(
         private val bufferInfo = MediaCodec.BufferInfo()
 
         fun queue(sample: MediaSample) {
+            try {
+                queueInternal(sample)
+            } catch (e: RuntimeException) {
+                Log.w(LogTags.TIS, "decoder queue/drain に失敗しました", e)
+                onDecoderFailure(e)
+                close()
+            }
+        }
+
+        private fun queueInternal(sample: MediaSample) {
+            if (sample.timestampFallbackUsed) {
+                if (sample.isAudio) audioPtsFallbackSamples++ else videoPtsFallbackSamples++
+            }
             var decoder = codec
             if (decoder == null) {
                 configBytes.write(sample.bytes)
                 decoder = configureFromBufferedHeader(configBytes.toByteArray())
                 if (decoder == null) {
                     if (configBytes.size() > CODEC_CONFIG_MAX_BYTES) {
-                        emitUnavailable(PlaybackUnavailableReason.CODEC_CONFIG_TIMEOUT, "decoder 構成に必要な ES header が見つかりません")
+                        onCodecConfigTimeout()
                         configBytes.reset()
                     }
                     return
@@ -260,11 +389,21 @@ class PlaybackPipeline(
             }
             val inputIndex = decoder.dequeueInputBuffer(CODEC_DEQUEUE_TIMEOUT_US)
             if (inputIndex >= 0) {
-                val input = decoder.getInputBuffer(inputIndex) ?: return
+                val input = decoder.getInputBuffer(inputIndex)
+                if (input == null) {
+                    decoder.queueInputBuffer(inputIndex, 0, 0, sample.presentationTimeUs, 0)
+                    return
+                }
                 input.clear()
-                val size = sample.bytes.size.coerceAtMost(input.remaining())
-                input.put(sample.bytes, 0, size)
-                decoder.queueInputBuffer(inputIndex, 0, size, sample.presentationTimeUs, 0)
+                if (shouldDropOversizedSampleForTest(sample.bytes.size, input.remaining())) {
+                    oversizedSamplesDropped++
+                    Log.w(LogTags.TIS, "decoder input buffer に収まらない sample を破棄します sampleBytes=${sample.bytes.size} capacity=${input.remaining()} isAudio=${sample.isAudio} dropped=$oversizedSamplesDropped")
+                    decoder.queueInputBuffer(inputIndex, 0, 0, sample.presentationTimeUs, 0)
+                    drain(decoder)
+                    return
+                }
+                input.put(sample.bytes)
+                decoder.queueInputBuffer(inputIndex, 0, sample.bytes.size, sample.presentationTimeUs, 0)
             }
             drain(decoder)
         }
@@ -272,6 +411,8 @@ class PlaybackPipeline(
         protected abstract fun configureFromBufferedHeader(bytes: ByteArray): MediaCodec?
         protected open fun onOutputFormatChanged(format: MediaFormat) = Unit
         protected abstract fun releaseOutput(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo)
+        protected abstract fun onDecoderFailure(error: RuntimeException)
+        protected abstract fun onCodecConfigTimeout()
 
         private fun drain(decoder: MediaCodec) {
             while (true) {
@@ -298,7 +439,8 @@ class PlaybackPipeline(
         private val kind: VideoCodecKind,
         private val outputSurface: Surface,
         private val syncClock: PlaybackSyncClock,
-        private val firstFrameRendered: () -> Unit,
+        private val generation: Long,
+        private val firstFrameRendered: (Long) -> Unit,
         private val errorSink: (PlaybackUnavailableReason, String) -> Unit,
     ) : DecoderPipeline() {
         override fun configureFromBufferedHeader(bytes: ByteArray): MediaCodec? {
@@ -306,26 +448,50 @@ class PlaybackPipeline(
                 VideoCodecKind.MPEG2 -> EsHeaderParser.mpeg2VideoFormat(bytes)
                 VideoCodecKind.AVC -> EsHeaderParser.avcVideoFormat(bytes)
             } ?: return null
+            onVideoFormatDiscovered(
+                VideoFormatInfo(
+                    streamType = kind.streamType,
+                    mime = kind.mime,
+                    width = getIntegerOrDefault(format, MediaFormat.KEY_WIDTH, 0),
+                    height = getIntegerOrDefault(format, MediaFormat.KEY_HEIGHT, 0),
+                ),
+            )
             val decoder = MediaCodec.createDecoderByType(kind.mime)
-            decoder.configure(format, outputSurface, null, 0)
-            decoder.setOnFrameRenderedListener({ _, _, _ -> firstFrameRendered() }, mainHandler)
-            decoder.start()
-            return decoder
+            try {
+                decoder.configure(format, outputSurface, null, 0)
+                decoder.setOnFrameRenderedListener({ _, _, _ -> firstFrameRendered(generation) }, mainHandler)
+                decoder.start()
+                return decoder
+            } catch (e: RuntimeException) {
+                runCatching { decoder.release() }
+                throw e
+            }
+        }
+
+        override fun onDecoderFailure(error: RuntimeException) {
+            errorSink(PlaybackUnavailableReason.VIDEO_CODEC_ERROR, error.message.orEmpty())
+        }
+
+        override fun onCodecConfigTimeout() {
+            errorSink(PlaybackUnavailableReason.CODEC_CONFIG_TIMEOUT, "video decoder 構成に必要な ES header が見つかりません")
         }
 
         override fun releaseOutput(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
-            val render = info.size > 0 && outputSurface.isValid
-            if (render) {
-                val renderAtNs = syncClock.renderTimeNs(info.presentationTimeUs)
-                val lateNs = System.nanoTime() - renderAtNs
-                if (lateNs > VIDEO_DROP_LATE_NS) {
-                    codec.releaseOutputBuffer(index, false)
-                } else {
-                    codec.releaseOutputBuffer(index, renderAtNs)
-                }
-            } else {
+            if (info.size <= 0) {
                 codec.releaseOutputBuffer(index, false)
-                errorSink(PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED, "video output buffer を render できません")
+                return
+            }
+            if (!outputSurface.isValid) {
+                codec.releaseOutputBuffer(index, false)
+                errorSink(PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED, "video output Surface が無効です")
+                return
+            }
+            val renderAtNs = syncClock.renderTimeNs(info.presentationTimeUs)
+            val lateNs = System.nanoTime() - renderAtNs
+            if (lateNs > VIDEO_DROP_LATE_NS) {
+                codec.releaseOutputBuffer(index, false)
+            } else {
+                codec.releaseOutputBuffer(index, renderAtNs)
             }
         }
     }
@@ -336,28 +502,46 @@ class PlaybackPipeline(
         private val syncClock: PlaybackSyncClock,
         private val errorSink: (PlaybackUnavailableReason, String) -> Unit,
     ) : DecoderPipeline() {
-        private var track: AudioTrack? = null
+        private var sink: AudioSink? = null
         private var volume: Float = initialVolume
         private var outputSampleRate: Int = DEFAULT_AUDIO_SAMPLE_RATE
         private var outputChannels: Int = DEFAULT_AUDIO_CHANNEL_COUNT
 
         fun setVolume(value: Float) {
             volume = value
-            track?.setVolume(volume)
+            sink?.let { audioSink ->
+                runCatching { audioSink.setVolume(value) }
+                    .onFailure { Log.w(LogTags.TIS, "AudioTrack volume 設定に失敗しました", it) }
+            }
         }
 
         override fun configureFromBufferedHeader(bytes: ByteArray): MediaCodec? {
             val format = when (kind) {
-                AudioCodecKind.AAC_ADTS, AudioCodecKind.AAC_LATM -> EsHeaderParser.aacFormat(bytes)
+                AudioCodecKind.AAC_ADTS -> EsHeaderParser.adtsAacFormat(bytes)
                 AudioCodecKind.MPEG1, AudioCodecKind.MPEG2 -> EsHeaderParser.mpegAudioFormat(bytes)
             } ?: return null
             outputSampleRate = getIntegerOrDefault(format, MediaFormat.KEY_SAMPLE_RATE, DEFAULT_AUDIO_SAMPLE_RATE)
             outputChannels = getIntegerOrDefault(format, MediaFormat.KEY_CHANNEL_COUNT, DEFAULT_AUDIO_CHANNEL_COUNT)
             val decoder = MediaCodec.createDecoderByType(kind.mime)
-            decoder.configure(format, null, null, 0)
-            decoder.start()
-            recreateTrack()
-            return decoder
+            try {
+                decoder.configure(format, null, null, 0)
+                decoder.start()
+                recreateTrack()
+                return decoder
+            } catch (e: RuntimeException) {
+                runCatching { decoder.release() }
+                throw e
+            }
+        }
+
+        override fun onDecoderFailure(error: RuntimeException) {
+            errorSink(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, error.message.orEmpty())
+            syncClock.fallbackToVideoMaster("audio decoder failure")
+        }
+
+        override fun onCodecConfigTimeout() {
+            errorSink(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, "audio decoder 構成に必要な ES header が見つかりません")
+            syncClock.fallbackToVideoMaster("audio codec config timeout")
         }
 
         override fun onOutputFormatChanged(format: MediaFormat) {
@@ -372,8 +556,11 @@ class PlaybackPipeline(
                 if (output != null) {
                     output.position(info.offset)
                     output.limit(info.offset + info.size)
-                    syncClock.anchorIfNeeded(info.presentationTimeUs)
-                    ensureTrack().write(output, info.size, AudioTrack.WRITE_NON_BLOCKING)
+                    syncClock.anchorAudio(info.presentationTimeUs)
+                    val writeResult = writeFully(ensureSink(), output, info.size)
+                    if (writeResult < 0) {
+                        onAudioWriteError(writeResult)
+                    }
                 } else {
                     errorSink(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, "audio output buffer が null です")
                 }
@@ -381,10 +568,41 @@ class PlaybackPipeline(
             codec.releaseOutputBuffer(index, false)
         }
 
-        private fun ensureTrack(): AudioTrack = track ?: recreateTrack()
+        private fun ensureSink(): AudioSink = sink ?: recreateTrack()
 
-        private fun recreateTrack(): AudioTrack {
-            track?.let { runCatching { it.release() } }
+        private fun writeFully(audioSink: AudioSink, output: ByteBuffer, size: Int): Int {
+            var remaining = size
+            var lastResult = 0
+            var consecutiveZeroWrites = 0
+            while (remaining > 0) {
+                val written = audioSink.write(output, remaining)
+                lastResult = written
+                when {
+                    written < 0 -> return written
+                    written == 0 -> {
+                        audioPartialWrites++
+                        consecutiveZeroWrites++
+                        if (consecutiveZeroWrites > MAX_ZERO_AUDIO_WRITE_RETRIES) {
+                            return AUDIO_WRITE_STALLED
+                        }
+                        Thread.yield()
+                    }
+                    written > remaining -> {
+                        audioPartialWrites++
+                        return AUDIO_WRITE_INVALID_COUNT
+                    }
+                    else -> {
+                        consecutiveZeroWrites = 0
+                        if (written < remaining) audioPartialWrites++
+                        remaining -= written
+                    }
+                }
+            }
+            return lastResult
+        }
+
+        private fun recreateTrack(): AudioSink {
+            sink?.let { runCatching { it.release() } }
             val channelMask = if (outputChannels <= 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO
             val minBuffer = AudioTrack.getMinBufferSize(outputSampleRate, channelMask, AudioFormat.ENCODING_PCM_16BIT).coerceAtLeast(32 * 1024)
             val created = AudioTrack.Builder()
@@ -394,23 +612,63 @@ class PlaybackPipeline(
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
             created.setVolume(volume)
-            created.play()
-            track = created
-            return created
+            val newSink = AndroidAudioSink(created)
+            newSink.play()
+            sink = newSink
+            return newSink
+        }
+
+        private fun onAudioWriteError(errorCode: Int) {
+            audioWriteErrors++
+            errorSink(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, "AudioTrack.write error=$errorCode")
+            syncClock.fallbackToVideoMaster("audio write error=$errorCode")
+            sink?.let { runCatching { it.release() } }
+            sink = null
         }
 
         override fun close() {
             super.close()
-            track?.let { runCatching { it.stop() }; runCatching { it.release() } }
-            track = null
+            sink?.let { runCatching { it.release() } }
+            sink = null
         }
     }
 
     private class PlaybackSyncClock {
+        enum class Mode { AUDIO_MASTER, VIDEO_MASTER }
+        private var mode: Mode = Mode.VIDEO_MASTER
         private var basePresentationUs: Long? = null
         private var baseSystemNs: Long? = null
+        private var audioFallbackDeadlineNs: Long = 0L
+        private var audioFallbackCount: Int = 0
 
-        fun anchorIfNeeded(presentationUs: Long) {
+        fun reset(nextMode: Mode = Mode.VIDEO_MASTER) {
+            mode = nextMode
+            basePresentationUs = null
+            baseSystemNs = null
+            audioFallbackDeadlineNs = if (nextMode == Mode.AUDIO_MASTER) System.nanoTime() + AUDIO_MASTER_WAIT_NS else 0L
+        }
+
+        fun anchorAudio(presentationUs: Long) {
+            if (mode == Mode.AUDIO_MASTER && (basePresentationUs == null || baseSystemNs == null)) {
+                basePresentationUs = presentationUs
+                baseSystemNs = System.nanoTime()
+            }
+        }
+
+        fun fallbackToVideoMaster(reason: String) {
+            if (mode == Mode.AUDIO_MASTER) {
+                Log.w(LogTags.TIS, "audio master から video master へ fallback します reason=$reason")
+                mode = Mode.VIDEO_MASTER
+                basePresentationUs = null
+                baseSystemNs = null
+                audioFallbackDeadlineNs = 0L
+                audioFallbackCount++
+            }
+        }
+
+        fun audioFallbackCountForDiagnostic(): Int = audioFallbackCount
+
+        private fun anchorVideoIfNeeded(presentationUs: Long) {
             if (basePresentationUs == null || baseSystemNs == null) {
                 basePresentationUs = presentationUs
                 baseSystemNs = System.nanoTime()
@@ -418,22 +676,26 @@ class PlaybackPipeline(
         }
 
         fun renderTimeNs(presentationUs: Long): Long {
-            anchorIfNeeded(presentationUs)
+            if (mode == Mode.AUDIO_MASTER && (basePresentationUs == null || baseSystemNs == null)) {
+                if (audioFallbackDeadlineNs != 0L && System.nanoTime() >= audioFallbackDeadlineNs) {
+                    fallbackToVideoMaster("audio anchor timeout")
+                } else {
+                    return System.nanoTime() + VIDEO_HOLD_BEFORE_AUDIO_NS
+                }
+            }
+            if (mode == Mode.VIDEO_MASTER) anchorVideoIfNeeded(presentationUs)
             val baseUs = basePresentationUs ?: presentationUs
             val baseNs = baseSystemNs ?: System.nanoTime()
             return baseNs + (presentationUs - baseUs) * 1_000L
         }
-
-        fun reset() {
-            basePresentationUs = null
-            baseSystemNs = null
-        }
     }
 
+    data class NormalizedPresentationTime(val presentationUs: Long, val fallbackUsed: Boolean)
+
     private object PesTimestampNormalizer {
-        fun toPresentationUs(pts90k: Long?): Long {
-            if (pts90k == null || pts90k < 0) return System.nanoTime() / 1000L
-            return (pts90k * 1_000_000L) / 90_000L
+        fun toPresentationUs(pts90k: Long?): NormalizedPresentationTime {
+            if (pts90k == null || pts90k < 0) return NormalizedPresentationTime(System.nanoTime() / 1000L, true)
+            return NormalizedPresentationTime((pts90k * 1_000_000L) / 90_000L, false)
         }
     }
 
@@ -451,13 +713,138 @@ class PlaybackPipeline(
         fun avcVideoFormat(bytes: ByteArray): MediaFormat? {
             val sps = findNal(bytes, 7) ?: return null
             val pps = findNal(bytes, 8) ?: return null
-            return MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, DEFAULT_VIDEO_WIDTH, DEFAULT_VIDEO_HEIGHT).apply {
+            val dimensions = parseAvcSpsDimensions(sps) ?: return null
+            return MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, dimensions.width, dimensions.height).apply {
                 setByteBuffer("csd-0", ByteBuffer.wrap(sps))
                 setByteBuffer("csd-1", ByteBuffer.wrap(pps))
             }
         }
 
-        fun aacFormat(bytes: ByteArray): MediaFormat? {
+
+        data class VideoDimensions(val width: Int, val height: Int)
+
+        fun parseAvcSpsDimensionsForTest(spsWithStartCode: ByteArray): VideoDimensions? = parseAvcSpsDimensions(spsWithStartCode)
+
+        private fun parseAvcSpsDimensions(spsWithStartCode: ByteArray): VideoDimensions? = runCatching {
+            val rbsp = nalRbspPayload(spsWithStartCode)
+            val bits = BitReader(rbsp)
+            val profileIdc = bits.readBits(8)
+            bits.readBits(8) // 制約フラグと予約ビット
+            bits.readBits(8) // レベル識別子
+            bits.readUE() // SPS 識別子
+            var chromaFormatIdc = 1
+            if (profileIdc in setOf(100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135)) {
+                chromaFormatIdc = bits.readUE()
+                if (chromaFormatIdc == 3) bits.readBit()
+                bits.readUE() // 輝度ビット深度補正値
+                bits.readUE() // 色差ビット深度補正値
+                bits.readBit() // 量子化 bypass フラグ
+                val scalingMatrixPresent = bits.readBit() == 1
+                if (scalingMatrixPresent) {
+                    val count = if (chromaFormatIdc == 3) 12 else 8
+                    repeat(count) { index ->
+                        if (bits.readBit() == 1) skipScalingList(bits, if (index < 6) 16 else 64)
+                    }
+                }
+            }
+            bits.readUE() // frame_num 上限補正値
+            val picOrderCntType = bits.readUE()
+            if (picOrderCntType == 0) {
+                bits.readUE()
+            } else if (picOrderCntType == 1) {
+                bits.readBit()
+                bits.readSE()
+                bits.readSE()
+                repeat(bits.readUE()) { bits.readSE() }
+            }
+            bits.readUE() // 参照フレーム数上限
+            bits.readBit() // frame_num 欠落許可フラグ
+            val picWidthInMbsMinus1 = bits.readUE()
+            val picHeightInMapUnitsMinus1 = bits.readUE()
+            val frameMbsOnlyFlag = bits.readBit()
+            if (frameMbsOnlyFlag == 0) bits.readBit()
+            bits.readBit() // 8x8 直接推定フラグ
+            var cropLeft = 0
+            var cropRight = 0
+            var cropTop = 0
+            var cropBottom = 0
+            if (bits.readBit() == 1) {
+                cropLeft = bits.readUE()
+                cropRight = bits.readUE()
+                cropTop = bits.readUE()
+                cropBottom = bits.readUE()
+            }
+            val frameMbsFactor = 2 - frameMbsOnlyFlag
+            val cropUnitX = if (chromaFormatIdc == 0) 1 else if (chromaFormatIdc == 3) 1 else 2
+            val cropUnitY = when (chromaFormatIdc) {
+                0 -> frameMbsFactor
+                1 -> 2 * frameMbsFactor
+                2 -> frameMbsFactor
+                else -> frameMbsFactor
+            }
+            val width = ((picWidthInMbsMinus1 + 1) * 16) - (cropLeft + cropRight) * cropUnitX
+            val height = ((picHeightInMapUnitsMinus1 + 1) * 16 * frameMbsFactor) - (cropTop + cropBottom) * cropUnitY
+            VideoDimensions(width.coerceAtLeast(1), height.coerceAtLeast(1))
+        }.getOrNull()
+
+        private fun nalRbspPayload(nalWithStartCode: ByteArray): ByteArray {
+            val start = when {
+                nalWithStartCode.size >= 5 && nalWithStartCode[0] == 0.toByte() && nalWithStartCode[1] == 0.toByte() && nalWithStartCode[2] == 0.toByte() && nalWithStartCode[3] == 1.toByte() -> 5
+                nalWithStartCode.size >= 4 && nalWithStartCode[0] == 0.toByte() && nalWithStartCode[1] == 0.toByte() && nalWithStartCode[2] == 1.toByte() -> 4
+                else -> 1
+            }
+            val out = ArrayList<Byte>(nalWithStartCode.size)
+            var zeros = 0
+            for (i in start until nalWithStartCode.size) {
+                val b = nalWithStartCode[i]
+                if (zeros >= 2 && b == 0x03.toByte()) {
+                    zeros = 0
+                    continue
+                }
+                out += b
+                zeros = if (b == 0.toByte()) zeros + 1 else 0
+            }
+            return out.toByteArray()
+        }
+
+        private fun skipScalingList(bits: BitReader, size: Int) {
+            var lastScale = 8
+            var nextScale = 8
+            repeat(size) {
+                if (nextScale != 0) {
+                    val delta = bits.readSE()
+                    nextScale = (lastScale + delta + 256) % 256
+                }
+                lastScale = if (nextScale == 0) lastScale else nextScale
+            }
+        }
+
+        private class BitReader(private val bytes: ByteArray) {
+            private var bitOffset = 0
+            fun readBit(): Int = readBits(1)
+            fun readBits(count: Int): Int {
+                var value = 0
+                repeat(count) {
+                    val byteIndex = bitOffset / 8
+                    require(byteIndex < bytes.size) { "SPS bitstream ended" }
+                    val bitIndex = 7 - (bitOffset % 8)
+                    value = (value shl 1) or ((bytes[byteIndex].toInt() ushr bitIndex) and 1)
+                    bitOffset++
+                }
+                return value
+            }
+            fun readUE(): Int {
+                var zeros = 0
+                while (readBit() == 0) zeros++
+                return if (zeros == 0) 0 else ((1 shl zeros) - 1) + readBits(zeros)
+            }
+            fun readSE(): Int {
+                val codeNum = readUE()
+                val value = (codeNum + 1) / 2
+                return if (codeNum % 2 == 0) -value else value
+            }
+        }
+        fun adtsAacFormat(bytes: ByteArray): MediaFormat? {
             val header = findAdtsHeader(bytes) ?: return null
             val sampleRate = sampleRates.getOrNull(header.frequencyIndex) ?: return null
             val asc0 = ((2 shl 3) or (header.frequencyIndex ushr 1)).toByte()
@@ -538,7 +925,6 @@ class PlaybackPipeline(
         0x03 -> AvSettings.AUDIO_STREAM_TYPE_MPEG1
         0x04 -> AvSettings.AUDIO_STREAM_TYPE_MPEG2
         0x0f -> AvSettings.AUDIO_STREAM_TYPE_AAC_ADTS
-        0x11 -> AvSettings.AUDIO_STREAM_TYPE_AAC_LATM
         else -> AvSettings.AUDIO_STREAM_TYPE_UNDEFINED
     }
 
@@ -575,6 +961,83 @@ class PlaybackPipeline(
     override fun close() = release()
 
     companion object {
+        fun h264DimensionsForTest(spsWithStartCode: ByteArray): Pair<Int, Int>? =
+            EsHeaderParser.parseAvcSpsDimensionsForTest(spsWithStartCode)?.let { it.width to it.height }
+
+        fun acceptsFirstFrameForTest(
+            callbackGeneration: Long,
+            currentGeneration: Long,
+            surfaceValid: Boolean,
+            alreadyNotified: Boolean,
+        ): Boolean = callbackGeneration == currentGeneration && surfaceValid && !alreadyNotified
+
+        fun shouldTriggerFirstFrameTimeoutForTest(
+            timeoutGeneration: Long,
+            currentGeneration: Long,
+            alreadyNotified: Boolean,
+        ): Boolean = timeoutGeneration == currentGeneration && !alreadyNotified
+
+        fun syncModeForTest(audioExpected: Boolean): String = if (audioExpected) "AUDIO_MASTER" else "VIDEO_MASTER"
+
+        fun shouldHoldVideoBeforeAudioAnchorForTest(
+            audioExpected: Boolean,
+            audioAnchored: Boolean,
+            fallbackDeadlineReached: Boolean,
+        ): Boolean = audioExpected && !audioAnchored && !fallbackDeadlineReached
+
+        fun unavailableReasonForMediaEventCallbackFailureForTest(isAudio: Boolean): PlaybackUnavailableReason =
+            if (isAudio) PlaybackUnavailableReason.AUDIO_UNAVAILABLE else PlaybackUnavailableReason.VIDEO_CODEC_ERROR
+
+        fun normalizedPresentationTimeForTest(pts90k: Long?): NormalizedPresentationTime = PesTimestampNormalizer.toPresentationUs(pts90k)
+
+        fun isAudioWriteErrorForTest(writeResult: Int): Boolean = writeResult < 0
+
+        fun shouldDropOversizedSampleForTest(sampleSize: Int, inputRemaining: Int): Boolean = sampleSize > inputRemaining
+
+        fun queuedInputSizeForSampleForTest(sampleSize: Int, inputRemaining: Int): Int =
+            if (shouldDropOversizedSampleForTest(sampleSize, inputRemaining)) 0 else sampleSize
+
+        fun simulateAudioWriteFullyForTest(writeResults: IntArray, size: Int): Pair<Int, Int> {
+            var remaining = size
+            var consecutiveZeroWrites = 0
+            var partialWrites = 0
+            var index = 0
+            var lastResult = 0
+            while (remaining > 0) {
+                val written = if (index < writeResults.size) writeResults[index++] else 0
+                lastResult = written
+                when {
+                    written < 0 -> return written to partialWrites
+                    written == 0 -> {
+                        partialWrites++
+                        consecutiveZeroWrites++
+                        if (consecutiveZeroWrites > MAX_ZERO_AUDIO_WRITE_RETRIES) {
+                            return AUDIO_WRITE_STALLED to partialWrites
+                        }
+                    }
+                    written > remaining -> {
+                        partialWrites++
+                        return AUDIO_WRITE_INVALID_COUNT to partialWrites
+                    }
+                    else -> {
+                        consecutiveZeroWrites = 0
+                        if (written < remaining) partialWrites++
+                        remaining -= written
+                    }
+                }
+            }
+            return lastResult to partialWrites
+        }
+
+        fun normalizedAudioStreamTypeForTest(streamType: Int): Int = mapAudioStreamType(streamType)
+
+        fun isSupportedAudioStreamTypeForTest(streamType: Int): Boolean = AudioCodecKind.fromStreamType(streamType) != null
+
+        fun videoFormatInfoForTest(streamType: Int, spsWithStartCode: ByteArray): VideoFormatInfo? {
+            val dimensions = h264DimensionsForTest(spsWithStartCode) ?: return null
+            return VideoFormatInfo(streamType, MediaFormat.MIMETYPE_VIDEO_AVC, dimensions.first, dimensions.second)
+        }
+
         private const val AV_FILTER_BUFFER_BYTES = 16 * 1024 * 1024L
         private const val CODEC_DEQUEUE_TIMEOUT_US = 0L
         private const val CODEC_CONFIG_MAX_BYTES = 512 * 1024
@@ -583,5 +1046,11 @@ class PlaybackPipeline(
         private const val DEFAULT_AUDIO_SAMPLE_RATE = 48_000
         private const val DEFAULT_AUDIO_CHANNEL_COUNT = 2
         private const val VIDEO_DROP_LATE_NS = 500_000_000L
+        private const val MAX_ZERO_AUDIO_WRITE_RETRIES = 8
+        private const val AUDIO_WRITE_STALLED = -11
+        private const val AUDIO_WRITE_INVALID_COUNT = -12
+        private const val FIRST_FRAME_TIMEOUT_MS = 10_000L
+        private const val AUDIO_MASTER_WAIT_NS = 2_000_000_000L
+        private const val VIDEO_HOLD_BEFORE_AUDIO_NS = 50_000_000L
     }
 }

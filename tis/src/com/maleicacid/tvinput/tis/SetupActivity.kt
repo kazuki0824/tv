@@ -1,6 +1,8 @@
 package com.maleicacid.tvinput.tis
 
 import android.app.Activity
+import android.content.Intent
+import android.content.IntentFilter
 import android.os.Bundle
 import android.view.ViewGroup
 import android.widget.Button
@@ -12,6 +14,8 @@ class SetupActivity : Activity(), ChannelScanManager.Listener {
     private lateinit var statusView: TextView
     private lateinit var scanButton: Button
     private lateinit var cancelButton: Button
+    private var userUnlockDrainReceiver: UserUnlockDrainReceiver? = null
+    private var userUnlockDrainRegistered: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -37,6 +41,8 @@ class SetupActivity : Activity(), ChannelScanManager.Listener {
         layout.addView(cancelButton)
         setContentView(layout)
         ChannelScanManager.addListener(this)
+        registerUserUnlockDrainReceiver()
+        drainDirectBootPending("SetupActivity.onCreate")
         ChannelScanManager.startIfIdle(this, resolveInputId())
     }
 
@@ -88,7 +94,29 @@ class SetupActivity : Activity(), ChannelScanManager.Listener {
         }
     }
 
+    private fun drainDirectBootPending(source: String) {
+        if (DirectBootGuard.drainIfUserUnlocked(applicationContext, source, System.currentTimeMillis()) == DirectBootGuard.DrainDecision.START_BOOT_EPG_SYNC) {
+            ChannelScanManager.startBootEpgSyncIfIdle(applicationContext, resolveInputId())
+        }
+    }
+
+    private fun registerUserUnlockDrainReceiver() {
+        if (userUnlockDrainRegistered) return
+        val receiver = UserUnlockDrainReceiver(source = "SetupActivity.ACTION_USER_UNLOCKED")
+        ReceiverRegistration.registerNotExported(this, receiver, IntentFilter(Intent.ACTION_USER_UNLOCKED))
+        userUnlockDrainReceiver = receiver
+        userUnlockDrainRegistered = true
+    }
+
+    private fun unregisterUserUnlockDrainReceiver() {
+        if (!userUnlockDrainRegistered) return
+        userUnlockDrainReceiver?.let { runCatching { unregisterReceiver(it) } }
+        userUnlockDrainReceiver = null
+        userUnlockDrainRegistered = false
+    }
+
     override fun onDestroy() {
+        unregisterUserUnlockDrainReceiver()
         ChannelScanManager.removeListener(this)
         super.onDestroy()
     }

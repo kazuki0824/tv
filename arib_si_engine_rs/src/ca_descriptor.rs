@@ -3,6 +3,7 @@ pub struct CaDescriptor {
     pub ca_system_id: u16,
     pub ca_pid: u16,
     pub private_data: Vec<u8>,
+    pub raw_descriptor: Vec<u8>,
 }
 
 pub fn parse_ca_descriptors(descriptors: &[u8]) -> Vec<CaDescriptor> {
@@ -20,7 +21,8 @@ pub fn parse_ca_descriptors(descriptors: &[u8]) -> Vec<CaDescriptor> {
             let ca_system_id = u16::from_be_bytes([descriptors[body_start], descriptors[body_start + 1]]);
             let ca_pid = (((descriptors[body_start + 2] & 0x1f) as u16) << 8) | descriptors[body_start + 3] as u16;
             let private_data = descriptors[body_start + 4..body_end].to_vec();
-            out.push(CaDescriptor { ca_system_id, ca_pid, private_data });
+            let raw_descriptor = descriptors[cursor..body_end].to_vec();
+            out.push(CaDescriptor { ca_system_id, ca_pid, private_data, raw_descriptor });
         }
         cursor = body_end;
     }
@@ -39,5 +41,6 @@ mod tests {
         assert_eq!(ca[0].ca_system_id, 0x0005);
         assert_eq!(ca[0].ca_pid, 0x0123);
         assert_eq!(ca[0].private_data, vec![0xaa, 0xbb]);
+        assert_eq!(ca[0].raw_descriptor, descriptors.to_vec());
     }
 }

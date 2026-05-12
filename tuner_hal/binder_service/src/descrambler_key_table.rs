@@ -12,6 +12,7 @@ fn is_legacy_placeholder_token(token: &[u8]) -> bool {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DescramblerKeyRegistrationError {
     EmptySlot,
+    IncompleteKeyPair,
     RegistryUnavailable,
     CasBridgeUnconnected,
 }
@@ -28,7 +29,7 @@ pub enum DescramblerKeyResolveError {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DescramblerTokenOrigin {
-    VtsOrUnitTest,
+    UnitTestOnly,
     CasBridge,
 }
 
@@ -93,29 +94,62 @@ impl DescramblerKeyTable {
         if !cas_bridge_connected {
             return Err(DescramblerKeyRegistrationError::CasBridgeUnconnected);
         }
+        if !slot.has_even_and_odd_keys() {
+            return Err(DescramblerKeyRegistrationError::IncompleteKeyPair);
+        }
         self.insert_slot(slot, DescramblerTokenOrigin::CasBridge)
     }
 
     #[cfg(test)]
     pub fn register_for_test(&self, slot: DescramblerKeySlot) -> Vec<u8> {
-        self.insert_slot(slot, DescramblerTokenOrigin::VtsOrUnitTest).expect("テスト用の復号鍵スロットが不正です")
+        self.insert_slot(slot, DescramblerTokenOrigin::UnitTestOnly).expect("テスト用の復号鍵スロットが不正です")
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maleicacid_tuner_hal_descrambler::Multi2KeyMaterial;
+    use maleicacid_tuner_hal_descrambler::{Multi2KeyMaterial, Multi2PrepareError};
 
-    fn key_slot() -> DescramblerKeySlot {
+    fn even_key_slot() -> DescramblerKeySlot {
         DescramblerKeySlot::empty()
-            .with_even(Multi2KeyMaterial::new([0x10; 32], [0x20; 8], [0x30; 8]))
+            .try_with_even(Multi2KeyMaterial::new([0x10; 32], [0x20; 8], [0x30; 8])).unwrap()
+    }
+
+    fn odd_key_slot() -> DescramblerKeySlot {
+        DescramblerKeySlot::empty()
+            .try_with_odd(Multi2KeyMaterial::new([0x11; 32], [0x21; 8], [0x31; 8])).unwrap()
+    }
+
+    fn paired_key_slot() -> DescramblerKeySlot {
+        even_key_slot()
+            .try_with_odd(Multi2KeyMaterial::new([0x12; 32], [0x22; 8], [0x32; 8])).unwrap()
+    }
+
+    #[test]
+    fn cas_bridge_registration_fails_if_even_prepare_returns_invalid_rounds_zero() {
+        let mut invalid_even = Multi2KeyMaterial::new([0x10; 32], [0x20; 8], [0x30; 8]);
+        invalid_even.rounds = 0;
+        assert_eq!(
+            DescramblerKeySlot::empty().try_with_even(invalid_even),
+            Err(Multi2PrepareError::InvalidRoundsZero)
+        );
+    }
+
+    #[test]
+    fn cas_bridge_registration_fails_if_odd_prepare_returns_invalid_rounds_zero() {
+        let mut invalid_odd = Multi2KeyMaterial::new([0x11; 32], [0x21; 8], [0x31; 8]);
+        invalid_odd.rounds = 0;
+        assert_eq!(
+            DescramblerKeySlot::empty().try_with_odd(invalid_odd),
+            Err(Multi2PrepareError::InvalidRoundsZero)
+        );
     }
 
     #[test]
     fn registered_tokens_are_short_opaque_binary_ids() {
         let table = DescramblerKeyTable::new();
-        let token = table.register_for_test(key_slot());
+        let token = table.register_for_test(even_key_slot());
         assert_eq!(token.len(), 8);
         assert!(table.resolve_with_diagnostic(&token).is_ok());
     }
@@ -141,4 +175,33 @@ mod tests {
             DescramblerKeyResolveError::UnknownToken
         );
     }
+    #[test]
+    fn cas_bridge_requires_even_and_odd_key_pair() {
+        let table = DescramblerKeyTable::new();
+        assert_eq!(
+            table.register_from_cas_bridge(even_key_slot(), false).unwrap_err(),
+            DescramblerKeyRegistrationError::CasBridgeUnconnected
+        );
+        assert_eq!(
+            table.register_from_cas_bridge(odd_key_slot(), false).unwrap_err(),
+            DescramblerKeyRegistrationError::CasBridgeUnconnected
+        );
+        assert_eq!(
+            table.register_from_cas_bridge(paired_key_slot(), false).unwrap_err(),
+            DescramblerKeyRegistrationError::CasBridgeUnconnected
+        );
+        assert_eq!(
+            table.register_from_cas_bridge(even_key_slot(), true).unwrap_err(),
+            DescramblerKeyRegistrationError::IncompleteKeyPair
+        );
+        assert_eq!(
+            table.register_from_cas_bridge(odd_key_slot(), true).unwrap_err(),
+            DescramblerKeyRegistrationError::IncompleteKeyPair
+        );
+        let token = table.register_from_cas_bridge(paired_key_slot(), true).unwrap();
+        assert!(table.resolve_with_diagnostic(&token).is_ok());
+        assert!(table.register_for_test(even_key_slot()).len() == 8);
+        assert!(table.register_for_test(odd_key_slot()).len() == 8);
+    }
+
 }

@@ -136,7 +136,7 @@ upstream filter unregister 時は、その filter を `data_source_filter_id` �
 
 CAS HAL 本体はプレースホルダーのままにする。`IDescrambler` は AOSP Tuner HAL 面として実装するが、実 CAS token 連携と実波スクランブル解除成功は後続の確認項目とする。
 
-復号鍵台帳には、VTS/単体テスト用の deterministic token と、将来 CAS bridge が接続された場合の token を別 origin として登録する。product 経路では CAS bridge 未接続を fail-closed とし、未登録 token、不正 token、空 token、失効 key slot を復号成功として扱わない。
+復号鍵台帳には、Rust unit test 専用の deterministic token と、将来 CAS bridge が接続された場合の token を別 origin として登録する。product 経路では CAS bridge 未接続を fail-closed とし、未登録 token、不正 token、空 token、失効 key slot を復号成功として扱わない。Rust unit test 専用 token 登録 API は `#[cfg(test)]` に閉じ、VTS helper や production binary から到達できる設計にしない。
 
 ## descramble 失敗時 packet policy
 
@@ -278,15 +278,15 @@ DVB backend は frontend index と同じ demux index / dvr index を使う。`ad
 
 現行設計では CAS bridge はまだ production 接続しない。`register_from_cas_bridge()` は将来接続用の登録口だが、現時点の非 test product 経路からは呼ばれない。production TIS は placeholder token または診断専用tokenを `setKeyToken()` へ渡してはならない。
 
-`IDescrambler.setKeyToken()` に到達する token は、Tuner SDK API の制約に合わせて、長さ 1〜16 byte の opaque byte array のみにする。空 token は `Tuner.VOID_KEYTOKEN` 相当の解除操作を除き使わない。16 byte を超える文字列 token を `setKeyToken()` に渡してはならない。
+`IDescrambler.setKeyToken()` に到達する token は、Tuner SDK API の制約に合わせて、長さ 1〜16 byte の opaque byte array のみにする。ただし Android 14 系の `Tuner.VOID_KEYTOKEN` は 1 byte token `[0x00]` として扱い、current key removal 用の有効 token とする。空 token `[]` は VOID token ではなく、常に `INVALID_ARGUMENT` と内部診断 `BAD_TOKEN` に落とす。16 byte を超える文字列 token を `setKeyToken()` に渡してはならない。
 
 `maleicacid-cas-desc-token-*`、`maleicacid-placeholder-desc-token*`、既存 TIS 側の `maleicacid-kari-token-*` は、設計文書上の診断名またはログ上のラベルであり、Tuner SDK API 経由で渡す実 token ではない。単体テスト、fake CAS、診断注入で同等のケースを表現する場合も、`setKeyToken()` に渡す byte array は 16 byte 以下の fixed test token とし、長い診断名は test case 名、lookup table の説明、diagnostic dump の表示名に限定する。
 
 これらの診断 token origin を受け取った場合は、復号成功ではなく `CAS_BRIDGE_UNCONNECTED`、`BAD_TOKEN`、`EXPIRED_KEY_SLOT` など該当する診断へ落とす。
 
-`IDescrambler.setKeyToken()` は空 token、形式不正 token、未登録 test token、CAS bridge 未接続 token を同一の内部 lookup で解決し、診断 counter を必ず更新する。診断を迂回する token 解決 API は production 経路へ公開しない。
+`IDescrambler.setKeyToken()` は、最初に `[0x00]` を `Tuner.VOID_KEYTOKEN` として処理し、registry lookup に流さず current key slot のみ解除する。PID 登録は維持する。次に空 token `[]` と形式不正 token を registry lookup 前に拒否し、空 token は `INVALID_ARGUMENT` と内部診断 `BAD_TOKEN` に固定する。未登録 token と CAS bridge 未接続 token は通常 token として registry lookup 後に区別して診断する。診断を迂回する token 解決 API は production 経路へ公開しない。
 
-デスクランブル診断は、`dump_descrambler_diagnostics_for_debug()` の dump 文字列と `maleicacid-tuner-hal-descrambler-diagnostic` ログで観測する。dump には demux、PID、`NO_KEY`、`BAD_TOKEN`、`CAS_BRIDGE_UNCONNECTED`、`EXPIRED_KEY_SLOT`、`INVALID_TSC`、`MULTI2_FAIL`、`SCRAMBLED_PASSTHROUGH_FOR_RECORDING`、`SCRAMBLED_WITHOUT_DESCRAMBLER` を含める。`SCRAMBLED_PASSTHROUGH_FOR_RECORDING` は後段デスクランブル可能な録画 TS を残すための pass-through であり、clear 成功を意味しない。
+デスクランブル診断は、`dump_descrambler_diagnostics_for_debug()` の dump 文字列と `maleicacid-tuner-hal-descrambler-diagnostic` ログで観測する。dump には demux、PID、`CLEAR_PACKET`、`DESCRAMBLED`、`SCRAMBLED_PASSTHROUGH_FOR_RECORDING`、`MALFORMED_PACKET_FOR_RECORDING`、`DESCRAMBLE_FAILED`、`INVALID_PACKET_SIZE`、`BAD_SYNC_BYTE`、`INVALID_AFC`、`INVALID_ADAPTATION_FIELD`、`INVALID_TSC`、`SCRAMBLED_WITHOUT_PAYLOAD`、`NO_KEY`、`BAD_TOKEN`、`CAS_BRIDGE_UNCONNECTED`、`EXPIRED_KEY_SLOT`、`MULTI2_FAIL`、`SCRAMBLED_WITHOUT_DESCRAMBLER` を含める。`SCRAMBLED_PASSTHROUGH_FOR_RECORDING` は後段デスクランブル可能な録画 TS を残すための pass-through であり、clear 成功を意味しない。malformed / undefined な TS-frame-like packet の録画保存は `MALFORMED_PACKET_FOR_RECORDING` で別管理し、`InvalidPacketSize` / `BadSyncByte` は record-DVR raw TS に保存しない。
 
 `MALEICACID_TUNER_HAL_DESCRAMBLER_DIAGNOSTIC_FILE` を設定した デバッグビルドまたは立ち上げ検証環境では、Tuner HAL service が 5 秒間隔で同じ descrambler diagnostic dump を指定ファイルへ書き出す。Stable AIDL には vendor 独自メソッドを追加しない。
 
@@ -295,7 +295,7 @@ DVB backend は frontend index と同じ demux index / dvr index を使う。`ad
 
 `maleicacid-expired-desc-token-*` は診断名であり、`setKeyToken()` に渡す実 token ではない。失効 token の単体テストでは、16 byte 以下の fixed test token を key registry に登録し、その registry entry を expired state にすることで `EXPIRED_KEY_SLOT` を発生させる。
 
-`setKeyToken()` は、空 token、16 byte 超 token、未登録 token、失効済み token、CAS bridge 未接続 token を区別して診断 counter に記録する。ただし Tuner SDK API 経由の production / integration 経路では、16 byte 超 token は Java層で invalid argument になり得るため、HAL 内部診断へ到達することを前提にしてはならない。
+`setKeyToken()` は、空 token、16 byte 超 token、未登録 token、失効済み token、CAS bridge 未接続 token を区別して診断 counter に記録する。`[0x00]` は `BAD_TOKEN`、unknown token、CAS bridge 未接続には混ぜず、key 未設定状態でも success no-op とする。空 token `[]` は registry lookup、current key slot 変更、PID 登録変更を行わない。ただし Tuner SDK API 経由の production / integration 経路では、16 byte 超 token は Java層で invalid argument になり得るため、HAL 内部診断へ到達することを前提にしてはならない。
 
 ## B25 packet デスクランブル中核の範囲
 

@@ -83,8 +83,8 @@ use maleicacid_tuner_hal_common::{
     MAX_SECTION_FILTER_BYTES, MAX_SECTION_PAYLOAD_BYTES, TS_PACKET_SIZE,
 };
 use maleicacid_tuner_hal_descrambler::{
-    descramble_ts_packet_in_place, DescrambleFailure, DescrambleOutcome, DescramblerKeySlot,
-    Multi2KeyMaterial,
+    descramble_ts_packet_in_place, parse_ts_packet_header, DescrambleFailure, DescrambleOutcome,
+    DescramblerKeySlot, Multi2KeyMaterial,
 };
 use maleicacid_tuner_hal_frontend_dvb::{DvbFrontendBackend, DvbLiveStreamReader};
 use maleicacid_tuner_hal_frontend_px4::{
@@ -1914,12 +1914,20 @@ enum DescramblerDiagnosticKind {
     ClearPacket,
     Descrambled,
     ScrambledPassthroughForRecording,
+    TransportErrorRecord,
+    ScrambledNullPid,
+    MalformedPacketForRecording,
     DescrambleFailed,
+    InvalidPacketSize,
+    BadSyncByte,
+    InvalidAfc,
+    InvalidAdaptationField,
+    InvalidTsc,
+    ScrambledWithoutPayload,
     NoKey,
     BadToken,
     CasBridgeUnconnected,
     ExpiredKeySlot,
-    InvalidTsc,
     Multi2Fail,
     ScrambledWithoutDescrambler,
 }
@@ -1929,12 +1937,20 @@ struct DescramblerDiagnosticCounters {
     clear_packets: u64,
     descrambled_packets: u64,
     scrambled_passthrough_for_recording_packets: u64,
+    transport_error_record: u64,
+    scrambled_null_pid: u64,
+    malformed_packet_for_recording: u64,
     descramble_failed_packets: u64,
+    invalid_packet_size: u64,
+    bad_sync_byte: u64,
+    invalid_afc: u64,
+    invalid_adaptation_field: u64,
+    invalid_tsc: u64,
+    scrambled_without_payload: u64,
     no_key: u64,
     bad_token: u64,
     cas_bridge_unconnected: u64,
     expired_key_slot: u64,
-    invalid_tsc: u64,
     multi2_fail: u64,
     scrambled_without_descrambler: u64,
 }
@@ -1953,8 +1969,36 @@ impl DescramblerDiagnosticCounters {
                     .scrambled_passthrough_for_recording_packets
                     .saturating_add(1)
             }
+            DescramblerDiagnosticKind::TransportErrorRecord => {
+                self.transport_error_record = self.transport_error_record.saturating_add(1)
+            }
+            DescramblerDiagnosticKind::ScrambledNullPid => {
+                self.scrambled_null_pid = self.scrambled_null_pid.saturating_add(1)
+            }
+            DescramblerDiagnosticKind::MalformedPacketForRecording => {
+                self.malformed_packet_for_recording =
+                    self.malformed_packet_for_recording.saturating_add(1)
+            }
             DescramblerDiagnosticKind::DescrambleFailed => {
                 self.descramble_failed_packets = self.descramble_failed_packets.saturating_add(1)
+            }
+            DescramblerDiagnosticKind::InvalidPacketSize => {
+                self.invalid_packet_size = self.invalid_packet_size.saturating_add(1)
+            }
+            DescramblerDiagnosticKind::BadSyncByte => {
+                self.bad_sync_byte = self.bad_sync_byte.saturating_add(1)
+            }
+            DescramblerDiagnosticKind::InvalidAfc => {
+                self.invalid_afc = self.invalid_afc.saturating_add(1)
+            }
+            DescramblerDiagnosticKind::InvalidAdaptationField => {
+                self.invalid_adaptation_field = self.invalid_adaptation_field.saturating_add(1)
+            }
+            DescramblerDiagnosticKind::InvalidTsc => {
+                self.invalid_tsc = self.invalid_tsc.saturating_add(1)
+            }
+            DescramblerDiagnosticKind::ScrambledWithoutPayload => {
+                self.scrambled_without_payload = self.scrambled_without_payload.saturating_add(1)
             }
             DescramblerDiagnosticKind::NoKey => self.no_key = self.no_key.saturating_add(1),
             DescramblerDiagnosticKind::BadToken => {
@@ -1965,9 +2009,6 @@ impl DescramblerDiagnosticCounters {
             }
             DescramblerDiagnosticKind::ExpiredKeySlot => {
                 self.expired_key_slot = self.expired_key_slot.saturating_add(1)
-            }
-            DescramblerDiagnosticKind::InvalidTsc => {
-                self.invalid_tsc = self.invalid_tsc.saturating_add(1)
             }
             DescramblerDiagnosticKind::Multi2Fail => {
                 self.multi2_fail = self.multi2_fail.saturating_add(1)
@@ -1981,16 +2022,24 @@ impl DescramblerDiagnosticCounters {
 
     fn summary(&self) -> String {
         format!(
-            "CLEAR_PACKET={} DESCRAMBLED={} SCRAMBLED_PASSTHROUGH_FOR_RECORDING={} DESCRAMBLE_FAILED={} NO_KEY={} BAD_TOKEN={} CAS_BRIDGE_UNCONNECTED={} EXPIRED_KEY_SLOT={} INVALID_TSC={} MULTI2_FAIL={} SCRAMBLED_WITHOUT_DESCRAMBLER={}",
+            "CLEAR_PACKET={} DESCRAMBLED={} SCRAMBLED_PASSTHROUGH_FOR_RECORDING={} TRANSPORT_ERROR_RECORD={} SCRAMBLED_NULL_PID={} MALFORMED_PACKET_FOR_RECORDING={} DESCRAMBLE_FAILED={} INVALID_PACKET_SIZE={} BAD_SYNC_BYTE={} INVALID_AFC={} INVALID_ADAPTATION_FIELD={} INVALID_TSC={} SCRAMBLED_WITHOUT_PAYLOAD={} NO_KEY={} BAD_TOKEN={} CAS_BRIDGE_UNCONNECTED={} EXPIRED_KEY_SLOT={} MULTI2_FAIL={} SCRAMBLED_WITHOUT_DESCRAMBLER={}",
             self.clear_packets,
             self.descrambled_packets,
             self.scrambled_passthrough_for_recording_packets,
+            self.transport_error_record,
+            self.scrambled_null_pid,
+            self.malformed_packet_for_recording,
             self.descramble_failed_packets,
+            self.invalid_packet_size,
+            self.bad_sync_byte,
+            self.invalid_afc,
+            self.invalid_adaptation_field,
+            self.invalid_tsc,
+            self.scrambled_without_payload,
             self.no_key,
             self.bad_token,
             self.cas_bridge_unconnected,
             self.expired_key_slot,
-            self.invalid_tsc,
             self.multi2_fail,
             self.scrambled_without_descrambler,
         )
@@ -2062,6 +2111,10 @@ enum PacketDescrambleFlow {
     Clear,
     Descrambled,
     ScrambledPassthrough,
+    TransportErrorRecord,
+    ScrambledNullPid,
+    MalformedRecord,
+    Drop,
     DescrambleFailed,
 }
 
@@ -2088,7 +2141,7 @@ impl DescramblerRuntimeRegistry {
 #[derive(Clone, Debug)]
 struct ActiveDescramblerSnapshot {
     pids: BTreeSet<u16>,
-    key_slot: DescramblerKeySlot,
+    key_slot: Option<DescramblerKeySlot>,
 }
 
 impl ActiveDescramblerSnapshot {
@@ -2097,25 +2150,46 @@ impl ActiveDescramblerSnapshot {
     }
 
     fn descramble_packet_in_place(&self, packet: &mut [u8]) -> Result<(), DescrambleFailure> {
-        descramble_ts_packet_in_place(packet, &self.pids, &self.key_slot).map(|_| ())
+        let Some(key_slot) = self.key_slot.as_ref() else {
+            return Err(DescrambleFailure::NoKey);
+        };
+        descramble_ts_packet_in_place(packet, &self.pids, key_slot).map(|_| ())
     }
-}
-
-fn packet_scrambling_control(packet: &[u8; 188]) -> u8 {
-    (packet[3] >> 6) & 0x03
 }
 
 fn diagnostic_kind_for_failure(failure: DescrambleFailure) -> DescramblerDiagnosticKind {
     match failure {
+        DescrambleFailure::InvalidPacketSize => DescramblerDiagnosticKind::InvalidPacketSize,
+        DescrambleFailure::BadSyncByte => DescramblerDiagnosticKind::BadSyncByte,
+        DescrambleFailure::InvalidAfc => DescramblerDiagnosticKind::InvalidAfc,
+        DescrambleFailure::InvalidAdaptationField => {
+            DescramblerDiagnosticKind::InvalidAdaptationField
+        }
+        DescrambleFailure::InvalidTsc => DescramblerDiagnosticKind::InvalidTsc,
+        DescrambleFailure::TransportErrorRecord => {
+            DescramblerDiagnosticKind::TransportErrorRecord
+        }
+        DescrambleFailure::ScrambledNullPid => DescramblerDiagnosticKind::ScrambledNullPid,
+        DescrambleFailure::ScrambledWithoutPayload => {
+            DescramblerDiagnosticKind::ScrambledWithoutPayload
+        }
         DescrambleFailure::NoKey => DescramblerDiagnosticKind::NoKey,
         DescrambleFailure::BadToken => DescramblerDiagnosticKind::BadToken,
-        DescrambleFailure::InvalidScramblingControl => DescramblerDiagnosticKind::InvalidTsc,
         DescrambleFailure::Multi2Fail => DescramblerDiagnosticKind::Multi2Fail,
         DescrambleFailure::ScrambledPidNotRegistered => {
             DescramblerDiagnosticKind::ScrambledWithoutDescrambler
         }
-        _ => DescramblerDiagnosticKind::DescrambleFailed,
     }
+}
+
+fn is_ts_frame_like_malformed(failure: DescrambleFailure) -> bool {
+    matches!(
+        failure,
+        DescrambleFailure::InvalidAfc
+            | DescrambleFailure::InvalidAdaptationField
+            | DescrambleFailure::InvalidTsc
+            | DescrambleFailure::ScrambledWithoutPayload
+    )
 }
 
 fn descramble_packet_for_pid_with_diagnostics(
@@ -2125,7 +2199,58 @@ fn descramble_packet_for_pid_with_diagnostics(
     active_descramblers: &[ActiveDescramblerSnapshot],
     diagnostics: &DescramblerDiagnosticRegistry,
 ) -> DescramblePacketDecision {
-    if packet_scrambling_control(packet) == 0 {
+    let header = match parse_ts_packet_header(packet) {
+        Ok(header) => header,
+        Err(failure) => {
+            diagnostics.record(demux_id, pid, diagnostic_kind_for_failure(failure));
+            if is_ts_frame_like_malformed(failure) {
+                diagnostics.record(
+                    demux_id,
+                    pid,
+                    DescramblerDiagnosticKind::MalformedPacketForRecording,
+                );
+                return DescramblePacketDecision {
+                    packet: *packet,
+                    flow: PacketDescrambleFlow::MalformedRecord,
+                };
+            }
+            return DescramblePacketDecision {
+                packet: *packet,
+                flow: PacketDescrambleFlow::Drop,
+            };
+        }
+    };
+
+    if header.transport_error_indicator {
+        diagnostics.record(demux_id, pid, DescramblerDiagnosticKind::TransportErrorRecord);
+        return DescramblePacketDecision {
+            packet: *packet,
+            flow: PacketDescrambleFlow::TransportErrorRecord,
+        };
+    }
+
+    if header.transport_scrambling_control == 1 {
+        diagnostics.record(demux_id, pid, DescramblerDiagnosticKind::InvalidTsc);
+        diagnostics.record(
+            demux_id,
+            pid,
+            DescramblerDiagnosticKind::MalformedPacketForRecording,
+        );
+        return DescramblePacketDecision {
+            packet: *packet,
+            flow: PacketDescrambleFlow::MalformedRecord,
+        };
+    }
+
+    if header.pid == maleicacid_tuner_hal_descrambler::NULL_PID && header.transport_scrambling_control >= 2 {
+        diagnostics.record(demux_id, pid, DescramblerDiagnosticKind::ScrambledNullPid);
+        return DescramblePacketDecision {
+            packet: *packet,
+            flow: PacketDescrambleFlow::ScrambledNullPid,
+        };
+    }
+
+    if header.transport_scrambling_control == 0 {
         diagnostics.record(demux_id, pid, DescramblerDiagnosticKind::ClearPacket);
         return DescramblePacketDecision {
             packet: *packet,
@@ -2133,15 +2258,32 @@ fn descramble_packet_for_pid_with_diagnostics(
         };
     }
 
+    if header.payload_offset.is_none() {
+        diagnostics.record(
+            demux_id,
+            pid,
+            DescramblerDiagnosticKind::ScrambledWithoutPayload,
+        );
+        diagnostics.record(
+            demux_id,
+            pid,
+            DescramblerDiagnosticKind::MalformedPacketForRecording,
+        );
+        return DescramblePacketDecision {
+            packet: *packet,
+            flow: PacketDescrambleFlow::MalformedRecord,
+        };
+    }
+
     let mut saw_target_descrambler = false;
-    for descrambler in active_descramblers.iter().filter(|d| d.targets_pid(pid)) {
+    for descrambler in active_descramblers.iter().filter(|d| d.targets_pid(header.pid)) {
         saw_target_descrambler = true;
+        let Some(key_slot) = descrambler.key_slot.as_ref() else {
+            diagnostics.record(demux_id, pid, DescramblerDiagnosticKind::NoKey);
+            continue;
+        };
         let mut candidate = *packet;
-        match descramble_ts_packet_in_place(
-            &mut candidate,
-            &descrambler.pids,
-            &descrambler.key_slot,
-        ) {
+        match descramble_ts_packet_in_place(&mut candidate, &descrambler.pids, key_slot) {
             Ok(DescrambleOutcome::Descrambled { .. }) => {
                 diagnostics.record(demux_id, pid, DescramblerDiagnosticKind::Descrambled);
                 return DescramblePacketDecision {
@@ -2150,14 +2292,10 @@ fn descramble_packet_for_pid_with_diagnostics(
                 };
             }
             Ok(DescrambleOutcome::PassedThrough { .. }) => {
-                diagnostics.record(
-                    demux_id,
-                    pid,
-                    DescramblerDiagnosticKind::ScrambledPassthroughForRecording,
-                );
+                diagnostics.record(demux_id, pid, DescramblerDiagnosticKind::ClearPacket);
                 return DescramblePacketDecision {
                     packet: *packet,
-                    flow: PacketDescrambleFlow::ScrambledPassthrough,
+                    flow: PacketDescrambleFlow::Clear,
                 };
             }
             Err(DescrambleFailure::NoKey) => {
@@ -2167,6 +2305,32 @@ fn descramble_packet_for_pid_with_diagnostics(
             Err(DescrambleFailure::BadToken) => {
                 diagnostics.record(demux_id, pid, DescramblerDiagnosticKind::BadToken);
                 continue;
+            }
+            Err(DescrambleFailure::TransportErrorRecord) => {
+                diagnostics.record(demux_id, pid, DescramblerDiagnosticKind::TransportErrorRecord);
+                return DescramblePacketDecision {
+                    packet: *packet,
+                    flow: PacketDescrambleFlow::TransportErrorRecord,
+                };
+            }
+            Err(DescrambleFailure::ScrambledNullPid) => {
+                diagnostics.record(demux_id, pid, DescramblerDiagnosticKind::ScrambledNullPid);
+                return DescramblePacketDecision {
+                    packet: *packet,
+                    flow: PacketDescrambleFlow::ScrambledNullPid,
+                };
+            }
+            Err(failure) if is_ts_frame_like_malformed(failure) => {
+                diagnostics.record(demux_id, pid, diagnostic_kind_for_failure(failure));
+                diagnostics.record(
+                    demux_id,
+                    pid,
+                    DescramblerDiagnosticKind::MalformedPacketForRecording,
+                );
+                return DescramblePacketDecision {
+                    packet: *packet,
+                    flow: PacketDescrambleFlow::MalformedRecord,
+                };
             }
             Err(failure) => {
                 diagnostics.record(demux_id, pid, diagnostic_kind_for_failure(failure));
@@ -2194,6 +2358,29 @@ fn descramble_packet_for_pid_with_diagnostics(
         packet: *packet,
         flow: PacketDescrambleFlow::ScrambledPassthrough,
     }
+}
+
+#[cfg(test)]
+fn descramble_packet_bytes_for_pid_with_diagnostics(
+    packet: &[u8],
+    demux_id: i32,
+    pid: u16,
+    active_descramblers: &[ActiveDescramblerSnapshot],
+    diagnostics: &DescramblerDiagnosticRegistry,
+) -> Option<DescramblePacketDecision> {
+    if packet.len() != 188 {
+        diagnostics.record(demux_id, pid, DescramblerDiagnosticKind::InvalidPacketSize);
+        return None;
+    }
+    let mut ts_packet = [0u8; 188];
+    ts_packet.copy_from_slice(packet);
+    Some(descramble_packet_for_pid_with_diagnostics(
+        &ts_packet,
+        demux_id,
+        pid,
+        active_descramblers,
+        diagnostics,
+    ))
 }
 
 fn maybe_descramble_packet_for_pid(
@@ -3511,9 +3698,13 @@ impl FrontendRuntime {
                                     handle.push_ts_packet(&decision.packet);
                                 }
                                 PacketDescrambleFlow::ScrambledPassthrough
+                                | PacketDescrambleFlow::TransportErrorRecord
+                                | PacketDescrambleFlow::ScrambledNullPid
+                                | PacketDescrambleFlow::MalformedRecord
                                 | PacketDescrambleFlow::DescrambleFailed => {
                                     handle.push_ts_packet_record_only(&decision.packet);
                                 }
+                                PacketDescrambleFlow::Drop => {}
                             }
                         } else {
                             handle.push_ts_packet(packet);
@@ -3648,10 +3839,7 @@ impl DescramblerRuntimeRegistry {
                 state.pids.clear();
                 continue;
             }
-            let key_slot = match state.key_slot.clone() {
-                Some(key_slot) if state.key_token.is_some() => key_slot,
-                _ => continue,
-            };
+            let key_slot = state.key_slot.clone();
             state.pids.retain(|_, registration| {
                 registration.source_filter_id < 0
                     || demux_handle
@@ -3990,6 +4178,14 @@ impl IDescrambler for TunerDescrambler {
     fn setKeyToken(&self, key_token: &[u8]) -> BinderResult<()> {
         let mut state = lock_mutex_status(&self.state, "descrambler_state")?;
         Self::ensure_open_locked(&state)?;
+        if key_token == [0x00].as_slice() {
+            // Android Tuner.VOID_KEYTOKEN removes only the current key.
+            // PID registrations remain active so subsequent scrambled packets
+            // for those PIDs diagnose NO_KEY, not SCRAMBLED_WITHOUT_DESCRAMBLER.
+            state.key_token = None;
+            state.key_slot = None;
+            return Ok(());
+        }
         match self
             .descrambler_key_table
             .resolve_with_diagnostic(key_token)
@@ -13364,7 +13560,7 @@ mod descrambler_state_tests {
 
     fn register_test_key(hal: &TunerHal) -> Vec<u8> {
         let key_slot = DescramblerKeySlot::empty()
-            .with_even(Multi2KeyMaterial::new([0x10; 32], [0x20; 8], [0x30; 8]));
+            .try_with_even(Multi2KeyMaterial::new([0x10; 32], [0x20; 8], [0x30; 8])).unwrap();
         hal.descrambler_key_table.register_for_test(key_slot)
     }
 
@@ -13381,7 +13577,7 @@ mod descrambler_state_tests {
 
         assert!(descrambler.setDemuxSource(demux_id).is_ok());
         let key_slot = DescramblerKeySlot::empty()
-            .with_even(Multi2KeyMaterial::new([0x10; 32], [0x20; 8], [0x30; 8]));
+            .try_with_even(Multi2KeyMaterial::new([0x10; 32], [0x20; 8], [0x30; 8])).unwrap();
         let key_token = hal.descrambler_key_table.register_for_test(key_slot);
         assert!(descrambler.setKeyToken(&key_token).is_ok());
         assert!(descrambler.add_pid_for_test(0x0123).is_ok());
@@ -13440,7 +13636,7 @@ mod descrambler_state_tests {
         );
         assert!(descrambler.setKeyToken(&[0x01]).is_err());
         let key_slot = DescramblerKeySlot::empty()
-            .with_even(Multi2KeyMaterial::new([0x11; 32], [0x22; 8], [0x33; 8]));
+            .try_with_even(Multi2KeyMaterial::new([0x11; 32], [0x22; 8], [0x33; 8])).unwrap();
         let key_token = hal.descrambler_key_table.register_for_test(key_slot);
         assert!(descrambler.setKeyToken(&key_token).is_ok());
         assert!(descrambler.add_pid_for_test(0x1fff).is_err());
@@ -13581,7 +13777,7 @@ mod descrambler_state_tests {
 
         assert!(descrambler.setDemuxSource(demux_id).is_ok());
         let key_slot = DescramblerKeySlot::empty()
-            .with_even(Multi2KeyMaterial::new([0x10; 32], [0x20; 8], [0x30; 8]));
+            .try_with_even(Multi2KeyMaterial::new([0x10; 32], [0x20; 8], [0x30; 8])).unwrap();
         let key_token = hal.descrambler_key_table.register_for_test(key_slot);
         assert!(descrambler.setKeyToken(&key_token).is_ok());
         assert!(descrambler.add_pid_for_test(0x0123).is_ok());
@@ -13627,7 +13823,7 @@ mod descrambler_state_tests {
         );
         assert!(descrambler.setDemuxSource(demux_id).is_ok());
         let key_slot = DescramblerKeySlot::empty()
-            .with_even(Multi2KeyMaterial::new([0x55; 32], [0x66; 8], [0x77; 8]));
+            .try_with_even(Multi2KeyMaterial::new([0x55; 32], [0x66; 8], [0x77; 8])).unwrap();
         let key_token = hal.descrambler_key_table.register_for_test(key_slot);
         assert!(descrambler.setKeyToken(&key_token).is_ok());
         assert!(descrambler.add_pid_for_test(0x0200).is_ok());
@@ -13673,7 +13869,7 @@ mod descrambler_state_tests {
             Arc::clone(&hal.descrambler_key_table),
         );
         let key_slot = DescramblerKeySlot::empty()
-            .with_even(Multi2KeyMaterial::new([0x01; 32], [0x02; 8], [0x03; 8]));
+            .try_with_even(Multi2KeyMaterial::new([0x01; 32], [0x02; 8], [0x03; 8])).unwrap();
         let key_token = hal.descrambler_key_table.register_for_test(key_slot);
 
         assert!(first.setDemuxSource(demux_id).is_ok());
@@ -13738,6 +13934,18 @@ mod descrambler_state_tests {
         assert!(state.lock().unwrap().pids.is_empty());
     }
 
+    fn descrambler_test_packet(pid: u16, tsc: u8, afc: u8) -> [u8; 188] {
+        let mut packet = [0u8; 188];
+        packet[0] = 0x47;
+        packet[1] = ((pid >> 8) as u8) & 0x1f;
+        packet[2] = (pid & 0xff) as u8;
+        packet[3] = (tsc << 6) | (afc << 4) | 0x05;
+        for i in 4..188 {
+            packet[i] = (i as u8).wrapping_mul(3).wrapping_add(1);
+        }
+        packet
+    }
+
     #[test]
     fn scrambled_packet_passthrough_is_diagnosed_without_clear_success() {
         let diagnostics = DescramblerDiagnosticRegistry::new();
@@ -13752,7 +13960,7 @@ mod descrambler_state_tests {
 
         let unresolved = ActiveDescramblerSnapshot {
             pids: BTreeSet::from([0x0123]),
-            key_slot: DescramblerKeySlot::empty(),
+            key_slot: Some(DescramblerKeySlot::empty()),
         };
         let decision = descramble_packet_for_pid_with_diagnostics(
             &scrambled,
@@ -13787,14 +13995,241 @@ mod descrambler_state_tests {
     }
 
     #[test]
+    fn tei_packet_increments_transport_error_record_counter() {
+        let diagnostics = DescramblerDiagnosticRegistry::new();
+        let mut packet = descrambler_test_packet(0x0129, 2, 1);
+        packet[1] |= 0x80;
+        let decision = descramble_packet_for_pid_with_diagnostics(
+            &packet,
+            13,
+            0x0129,
+            &[],
+            &diagnostics,
+        );
+        assert_eq!(decision.flow, PacketDescrambleFlow::TransportErrorRecord);
+        assert_eq!(decision.packet, packet);
+        let counters = diagnostics.snapshot(13, 0x0129);
+        assert_eq!(counters.transport_error_record, 1);
+        assert_eq!(counters.clear_packets, 0);
+        assert_eq!(counters.descrambled_packets, 0);
+        assert_eq!(counters.scrambled_passthrough_for_recording_packets, 0);
+    }
+
+    #[test]
+    fn tei_packet_does_not_increment_clear_or_descrambled_counters() {
+        let diagnostics = DescramblerDiagnosticRegistry::new();
+        let mut packet = descrambler_test_packet(0x012c, 2, 1);
+        packet[1] |= 0x80;
+        let decision = descramble_packet_for_pid_with_diagnostics(
+            &packet,
+            17,
+            0x012c,
+            &[],
+            &diagnostics,
+        );
+        assert_eq!(decision.flow, PacketDescrambleFlow::TransportErrorRecord);
+        let counters = diagnostics.snapshot(17, 0x012c);
+        assert_eq!(counters.transport_error_record, 1);
+        assert_eq!(counters.clear_packets, 0);
+        assert_eq!(counters.descrambled_packets, 0);
+    }
+
+    #[test]
+    fn tei_invalid_tsc_prefers_transport_error_record_flow() {
+        let diagnostics = DescramblerDiagnosticRegistry::new();
+        let mut packet = descrambler_test_packet(0x012a, 1, 1);
+        packet[1] |= 0x80;
+        let decision = descramble_packet_for_pid_with_diagnostics(
+            &packet,
+            14,
+            0x012a,
+            &[],
+            &diagnostics,
+        );
+        assert_eq!(decision.flow, PacketDescrambleFlow::TransportErrorRecord);
+        let counters = diagnostics.snapshot(14, 0x012a);
+        assert_eq!(counters.transport_error_record, 1);
+        assert_eq!(counters.invalid_tsc, 0);
+    }
+
+    #[test]
+    fn null_pid_scrambled_is_record_only_passthrough_in_production_flow() {
+        let diagnostics = DescramblerDiagnosticRegistry::new();
+        let packet = descrambler_test_packet(maleicacid_tuner_hal_descrambler::NULL_PID, 2, 1);
+        let decision = descramble_packet_for_pid_with_diagnostics(
+            &packet,
+            19,
+            maleicacid_tuner_hal_descrambler::NULL_PID,
+            &[],
+            &diagnostics,
+        );
+        assert_eq!(decision.flow, PacketDescrambleFlow::ScrambledNullPid);
+        assert_eq!(decision.packet, packet);
+        let counters = diagnostics.snapshot(19, maleicacid_tuner_hal_descrambler::NULL_PID);
+        assert_eq!(counters.scrambled_null_pid, 1);
+        assert_eq!(counters.clear_packets, 0);
+    }
+
+    #[test]
+    fn null_pid_scrambled_increments_scrambled_null_pid_counter() {
+        let diagnostics = DescramblerDiagnosticRegistry::new();
+        let packet = descrambler_test_packet(maleicacid_tuner_hal_descrambler::NULL_PID, 2, 1);
+        let decision = descramble_packet_for_pid_with_diagnostics(
+            &packet,
+            15,
+            maleicacid_tuner_hal_descrambler::NULL_PID,
+            &[],
+            &diagnostics,
+        );
+        assert_eq!(decision.flow, PacketDescrambleFlow::ScrambledNullPid);
+        assert_eq!(decision.packet, packet);
+        let counters = diagnostics.snapshot(15, maleicacid_tuner_hal_descrambler::NULL_PID);
+        assert_eq!(counters.scrambled_null_pid, 1);
+        assert_eq!(counters.clear_packets, 0);
+        assert_eq!(counters.scrambled_passthrough_for_recording_packets, 0);
+    }
+
+    #[test]
+    fn null_pid_scrambled_does_not_increment_clear_counter() {
+        let diagnostics = DescramblerDiagnosticRegistry::new();
+        let packet = descrambler_test_packet(maleicacid_tuner_hal_descrambler::NULL_PID, 3, 1);
+        let decision = descramble_packet_for_pid_with_diagnostics(
+            &packet,
+            18,
+            maleicacid_tuner_hal_descrambler::NULL_PID,
+            &[],
+            &diagnostics,
+        );
+        assert_eq!(decision.flow, PacketDescrambleFlow::ScrambledNullPid);
+        let counters = diagnostics.snapshot(18, maleicacid_tuner_hal_descrambler::NULL_PID);
+        assert_eq!(counters.scrambled_null_pid, 1);
+        assert_eq!(counters.clear_packets, 0);
+    }
+
+    #[test]
+    fn afc11_payload_zero_increments_malformed_packet_for_recording() {
+        let diagnostics = DescramblerDiagnosticRegistry::new();
+        let mut packet = descrambler_test_packet(0x012b, 0, 3);
+        packet[4] = 183;
+        let decision = descramble_packet_for_pid_with_diagnostics(
+            &packet,
+            16,
+            0x012b,
+            &[],
+            &diagnostics,
+        );
+        assert_eq!(decision.flow, PacketDescrambleFlow::MalformedRecord);
+        assert_eq!(decision.packet, packet);
+        let counters = diagnostics.snapshot(16, 0x012b);
+        assert_eq!(counters.invalid_adaptation_field, 1);
+        assert_eq!(counters.malformed_packet_for_recording, 1);
+        assert_eq!(counters.clear_packets, 0);
+        assert_eq!(counters.descrambled_packets, 0);
+    }
+
+    #[test]
+    fn malformed_header_matrix_is_record_only_not_av_clear() {
+        for tsc in 0..=3 {
+            let packet = descrambler_test_packet(0x0125, tsc, 0);
+            let diagnostics = DescramblerDiagnosticRegistry::new();
+            let decision = descramble_packet_for_pid_with_diagnostics(
+                &packet,
+                9,
+                0x0125,
+                &[],
+                &diagnostics,
+            );
+            assert_eq!(decision.flow, PacketDescrambleFlow::MalformedRecord);
+            assert_eq!(decision.packet, packet);
+            let counters = diagnostics.snapshot(9, 0x0125);
+            assert_eq!(counters.invalid_afc, 1);
+            assert_eq!(counters.malformed_packet_for_recording, 1);
+            assert_eq!(counters.clear_packets, 0);
+        }
+
+        let invalid_tsc = descrambler_test_packet(0x0126, 1, 1);
+        let diagnostics = DescramblerDiagnosticRegistry::new();
+        let decision = descramble_packet_for_pid_with_diagnostics(
+            &invalid_tsc,
+            10,
+            0x0126,
+            &[],
+            &diagnostics,
+        );
+        assert_eq!(decision.flow, PacketDescrambleFlow::MalformedRecord);
+        let counters = diagnostics.snapshot(10, 0x0126);
+        assert_eq!(counters.invalid_tsc, 1);
+        assert_eq!(counters.malformed_packet_for_recording, 1);
+
+        let mut scrambled_adaptation_only = descrambler_test_packet(0x0127, 2, 2);
+        scrambled_adaptation_only[4] = 183;
+        let diagnostics = DescramblerDiagnosticRegistry::new();
+        let decision = descramble_packet_for_pid_with_diagnostics(
+            &scrambled_adaptation_only,
+            11,
+            0x0127,
+            &[],
+            &diagnostics,
+        );
+        assert_eq!(decision.flow, PacketDescrambleFlow::MalformedRecord);
+        let counters = diagnostics.snapshot(11, 0x0127);
+        assert_eq!(counters.scrambled_without_payload, 1);
+        assert_eq!(counters.malformed_packet_for_recording, 1);
+    }
+
+    #[test]
+    fn non_ts_frame_inputs_are_dropped_not_recorded() {
+        let diagnostics = DescramblerDiagnosticRegistry::new();
+        let short_packet = vec![0u8; 187];
+        let short_decision = descramble_packet_bytes_for_pid_with_diagnostics(
+            &short_packet,
+            12,
+            0x0128,
+            &[],
+            &diagnostics,
+        );
+        assert_eq!(short_decision, None);
+        let counters = diagnostics.snapshot(12, 0x0128);
+        assert_eq!(counters.invalid_packet_size, 1);
+        assert_eq!(counters.malformed_packet_for_recording, 0);
+        assert_eq!(counters.clear_packets, 0);
+        assert_eq!(counters.descrambled_packets, 0);
+        assert_eq!(counters.scrambled_passthrough_for_recording_packets, 0);
+
+        let mut packet = descrambler_test_packet(0x0128, 0, 1);
+        packet[0] = 0x00;
+        let decision = descramble_packet_bytes_for_pid_with_diagnostics(
+            &packet,
+            12,
+            0x0128,
+            &[],
+            &diagnostics,
+        )
+        .expect("188 byte non-sync input should still return an explicit drop decision");
+        assert_eq!(decision.flow, PacketDescrambleFlow::Drop);
+        let counters = diagnostics.snapshot(12, 0x0128);
+        assert_eq!(counters.bad_sync_byte, 1);
+        assert_eq!(counters.malformed_packet_for_recording, 0);
+        assert_eq!(counters.clear_packets, 0);
+        assert_eq!(counters.descrambled_packets, 0);
+        assert_eq!(counters.scrambled_passthrough_for_recording_packets, 0);
+    }
+
+    #[test]
     fn cas_bridge_registration_is_fail_closed_until_connected() {
         let table = DescramblerKeyTable::new();
-        let key_slot = DescramblerKeySlot::empty()
-            .with_even(Multi2KeyMaterial::new([0x10; 32], [0x20; 8], [0x30; 8]));
-        assert!(table
-            .register_from_cas_bridge(key_slot.clone(), false)
-            .is_err());
-        let token = table.register_from_cas_bridge(key_slot, true).unwrap();
+        let even_only = DescramblerKeySlot::empty()
+            .try_with_even(Multi2KeyMaterial::new([0x10; 32], [0x20; 8], [0x30; 8])).unwrap();
+        let odd_only = DescramblerKeySlot::empty()
+            .try_with_odd(Multi2KeyMaterial::new([0x11; 32], [0x21; 8], [0x31; 8])).unwrap();
+        let paired = even_only.clone()
+            .try_with_odd(Multi2KeyMaterial::new([0x12; 32], [0x22; 8], [0x32; 8])).unwrap();
+        assert!(table.register_from_cas_bridge(even_only.clone(), false).is_err());
+        assert!(table.register_from_cas_bridge(odd_only.clone(), false).is_err());
+        assert!(table.register_from_cas_bridge(paired.clone(), false).is_err());
+        assert!(table.register_from_cas_bridge(even_only, true).is_err());
+        assert!(table.register_from_cas_bridge(odd_only, true).is_err());
+        let token = table.register_from_cas_bridge(paired, true).unwrap();
         assert!(table.resolve_with_diagnostic(&token).is_ok());
     }
 
@@ -13854,7 +14289,7 @@ mod descrambler_state_tests {
         assert_eq!(after_placeholder.cas_bridge_unconnected, 1);
 
         let key_slot = DescramblerKeySlot::empty()
-            .with_even(Multi2KeyMaterial::new([0x11; 32], [0x22; 8], [0x33; 8]));
+            .try_with_even(Multi2KeyMaterial::new([0x11; 32], [0x22; 8], [0x33; 8])).unwrap();
         let ok_token = hal.descrambler_key_table.register_for_test(key_slot);
         assert_eq!(ok_token.len(), 8);
         assert!(descrambler.setKeyToken(&ok_token).is_ok());
@@ -13865,6 +14300,68 @@ mod descrambler_state_tests {
         assert!(hal
             .dump_descrambler_diagnostics_for_debug()
             .contains("CAS_BRIDGE_UNCONNECTED=1"));
+    }
+
+    #[test]
+    fn void_key_token_clears_key_only_and_keeps_pid_registration() {
+        let hal = TunerHal::new();
+        let (demux_id, record) = hal.allocate_demux_record().unwrap();
+        let descrambler = TunerDescrambler::new(
+            Arc::clone(&hal.demux_registry),
+            Arc::clone(&hal.descrambler_registry),
+            Arc::clone(&hal.descrambler_diagnostics),
+            Arc::clone(&hal.descrambler_key_table),
+        );
+        assert!(descrambler.setDemuxSource(demux_id).is_ok());
+        let key_token = register_test_key(&hal);
+        assert!(descrambler.setKeyToken(&key_token).is_ok());
+        assert!(descrambler.add_pid_for_test(0x0123).is_ok());
+
+        assert!(descrambler.setKeyToken(&[0x00]).is_ok());
+        let (_, _, _, token_after_void, pids_after_void) = descrambler.debug_snapshot();
+        assert_eq!(token_after_void, None);
+        assert!(pids_after_void.contains(&0x0123));
+        let counters = hal.descrambler_diagnostics.snapshot(demux_id, 0x1fff);
+        assert_eq!(counters.bad_token, 0);
+        assert_eq!(counters.cas_bridge_unconnected, 0);
+
+        assert!(descrambler.setKeyToken(&[0x00]).is_ok());
+        let (_, _, _, token_after_second_void, pids_after_second_void) = descrambler.debug_snapshot();
+        assert_eq!(token_after_second_void, None);
+        assert!(pids_after_second_void.contains(&0x0123));
+
+        let (demux_generation, demux_state) = {
+            let record = record.lock().unwrap();
+            (record.generation, record.state.clone())
+        };
+        let snapshots_after_void = {
+            let handle = demux_state.lock().unwrap();
+            hal.descrambler_registry
+                .snapshots_for_demux(demux_id, demux_generation, &handle)
+        };
+        assert_eq!(snapshots_after_void.len(), 1);
+        assert!(snapshots_after_void[0].targets_pid(0x0123));
+
+        let mut scrambled = [0u8; 188];
+        scrambled[0] = 0x47;
+        scrambled[1] = 0x01;
+        scrambled[2] = 0x23;
+        scrambled[3] = 0x80 | 0x10;
+        for i in 4..188 {
+            scrambled[i] = (i as u8).wrapping_mul(3).wrapping_add(1);
+        }
+        let decision = descramble_packet_for_pid_with_diagnostics(
+            &scrambled,
+            demux_id,
+            0x0123,
+            &snapshots_after_void,
+            &hal.descrambler_diagnostics,
+        );
+        assert_eq!(decision.flow, PacketDescrambleFlow::ScrambledPassthrough);
+        let pid_counters = hal.descrambler_diagnostics.snapshot(demux_id, 0x0123);
+        assert_eq!(pid_counters.no_key, 1);
+        assert_eq!(pid_counters.scrambled_without_descrambler, 0);
+        assert_eq!(pid_counters.scrambled_passthrough_for_recording_packets, 1);
     }
 
     #[test]
@@ -13895,16 +14392,17 @@ mod descrambler_state_tests {
         }
 
         let mut scrambled = clear;
-        multi2_encrypt_payload(&mut scrambled[4..], &even).unwrap();
+        let even_prepared = even.prepare().unwrap();
+        multi2_encrypt_payload(&mut scrambled[4..], &even_prepared).unwrap();
         scrambled[3] = (scrambled[3] & 0x3f) | 0x80;
 
         let unresolved = ActiveDescramblerSnapshot {
             pids: BTreeSet::from([0x0123]),
-            key_slot: DescramblerKeySlot::empty(),
+            key_slot: Some(DescramblerKeySlot::empty()),
         };
         let resolved = ActiveDescramblerSnapshot {
             pids: BTreeSet::from([0x0123]),
-            key_slot: DescramblerKeySlot::empty().with_even(even),
+            key_slot: Some(DescramblerKeySlot::empty().try_with_even(even).unwrap()),
         };
         let output =
             maybe_descramble_packet_for_pid(&scrambled, 0x0123, &[unresolved, resolved]).unwrap();

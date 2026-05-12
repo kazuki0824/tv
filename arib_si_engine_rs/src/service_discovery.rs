@@ -1,7 +1,7 @@
 use crate::arib_string::decode_arib_string_lossy;
 use crate::sections::{parse_section_header, section_crc_valid};
 use crate::discovery_requirements::requirement_for_original_network_id;
-use crate::eit::{EitEvent, EitStore};
+use crate::eit::{EitEvent, EitStore, EitUpdateWindow};
 use crate::ca_descriptor::{parse_ca_descriptors, CaDescriptor};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -105,7 +105,19 @@ pub struct ServicePublishability {
     pub transport_stream_id: u16,
     pub service_id: u16,
     pub publishable: bool,
+    pub channel_registration_ready: bool,
+    pub epg_publishable: bool,
+    pub clear_live_playback_supported: bool,
+    pub requires_cas: bool,
+    pub unsupported_cas: bool,
+    pub pmt_pid_resolved: bool,
+    pub pmt_parsed: bool,
+    pub ca_state_resolved: bool,
+    pub free_ca_mode_resolved: bool,
     pub missing_components: Vec<&'static str>,
+    pub reasons: Vec<&'static str>,
+    pub registration_reasons: Vec<&'static str>,
+    pub epg_reasons: Vec<&'static str>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -130,7 +142,7 @@ impl DiscoveryCollectionState {
     }
 
     pub fn is_partially_complete(&self) -> bool {
-        self.publishability_by_service.iter().any(|service| service.publishable)
+        self.publishability_by_service.iter().any(|service| service.channel_registration_ready)
     }
 
     pub fn publish_stage(&self) -> DiscoveryPublishStage {
@@ -144,21 +156,33 @@ impl DiscoveryCollectionState {
     }
 
     pub fn partial_snapshot(&self) -> Option<DiscoverySnapshot> {
-        self.publishable_snapshot()
+        self.registration_ready_snapshot()
     }
 
     pub fn publishable_snapshot(&self) -> Option<DiscoverySnapshot> {
-        let publishable_keys: BTreeSet<(u16, u16, u16)> = self.publishability_by_service
+        self.snapshot_for_publishability(|service| service.publishable)
+    }
+
+    pub fn registration_ready_snapshot(&self) -> Option<DiscoverySnapshot> {
+        self.snapshot_for_publishability(|service| service.channel_registration_ready)
+    }
+
+    pub fn clear_live_playback_supported_snapshot(&self) -> Option<DiscoverySnapshot> {
+        self.snapshot_for_publishability(|service| service.clear_live_playback_supported)
+    }
+
+    fn snapshot_for_publishability(&self, predicate: impl Fn(&ServicePublishability) -> bool) -> Option<DiscoverySnapshot> {
+        let keys: BTreeSet<(u16, u16, u16)> = self.publishability_by_service
             .iter()
-            .filter(|service| service.publishable)
+            .filter(|service| predicate(service))
             .map(|service| (service.transport_stream_id, service.original_network_id, service.service_id))
             .collect();
-        if publishable_keys.is_empty() {
+        if keys.is_empty() {
             return None;
         }
         let services: Vec<DiscoveredService> = self.snapshot.services
             .iter()
-            .filter(|service| publishable_keys.contains(&(service.transport_stream_id, service.original_network_id, service.service_id)))
+            .filter(|service| keys.contains(&(service.transport_stream_id, service.original_network_id, service.service_id)))
             .cloned()
             .collect();
         let transport_keys: BTreeSet<(u16, u16)> = services.iter().map(|service| (service.transport_stream_id, service.original_network_id)).collect();
@@ -169,7 +193,7 @@ impl DiscoveryCollectionState {
             .collect();
         let pmt_pids_by_service: Vec<PmtPidMapping> = self.snapshot.pmt_pids_by_service
             .iter()
-            .filter(|mapping| publishable_keys.contains(&(mapping.transport_stream_id, mapping.original_network_id, mapping.service_id)))
+            .filter(|mapping| keys.contains(&(mapping.transport_stream_id, mapping.original_network_id, mapping.service_id)))
             .cloned()
             .collect();
         Some(DiscoverySnapshot { services, transports, pmt_pids_by_service, cat_ca: self.snapshot.cat_ca.clone() })
@@ -179,7 +203,7 @@ impl DiscoveryCollectionState {
         if let Some(snapshot) = self.complete_snapshot() {
             return Some(DiscoverySnapshotEnvelope { stage: DiscoveryPublishStage::Complete, snapshot });
         }
-        self.publishable_snapshot().map(|snapshot| DiscoverySnapshotEnvelope { stage: DiscoveryPublishStage::Partial, snapshot })
+        self.registration_ready_snapshot().map(|snapshot| DiscoverySnapshotEnvelope { stage: DiscoveryPublishStage::Partial, snapshot })
     }
 
     pub fn complete_snapshot(&self) -> Option<DiscoverySnapshot> {
@@ -190,7 +214,7 @@ impl DiscoveryCollectionState {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct PendingPmtInfo {
     pmt_pid: u16,
-    pcr_pid: u16,
+    pcr_pid: Option<u16>,
     streams: Vec<DiscoveredElementaryStream>,
     program_ca_descriptors: Vec<CaDescriptor>,
     es_ca_descriptors: Vec<EsCaMetadata>,
@@ -223,7 +247,7 @@ impl SectionTracker {
 #[derive(Default)]
 pub struct ServiceDiscoveryCollector {
     engine: ServiceDiscoveryEngine,
-    section_trackers: BTreeMap<(u16, u8, u16), SectionTracker>,
+    section_trackers: BTreeMap<(u16, u8, u16, u16), SectionTracker>,
     nit_transport_scopes: BTreeMap<(u8, u16), BTreeSet<(u16, u16)>>,
     bat_transport_scopes: BTreeMap<u16, BTreeSet<(u16, u16)>>,
     sdt_actual_transport_scopes: BTreeSet<(u16, u16)>,
@@ -259,6 +283,12 @@ impl ServiceDiscoveryEngine {
     }
 
     pub fn events(&self) -> Vec<EitEvent> { self.eit_store.snapshot_r51() }
+    pub fn epg_update_windows(&self) -> Vec<EitUpdateWindow> { self.eit_store.snapshot_update_windows_r51() }
+    pub fn clear_epg_update_windows(&mut self) { self.eit_store.clear_update_windows(); }
+
+    pub fn is_known_pmt_pid(&self, pid: u16) -> bool {
+        self.pat_programs.values().any(|pmt_pid| *pmt_pid == pid)
+    }
 
     pub fn snapshot(&self) -> DiscoverySnapshot {
         let mut transports: Vec<DiscoveredTransport> = self.transports.values().cloned().collect();
@@ -288,6 +318,9 @@ impl ServiceDiscoveryEngine {
 
     fn invalidate_table(&mut self, pid: u16, table_id: u8, table_extension: u16) {
         match (pid, table_id) {
+            (0x0001, 0x01) => {
+                self.cat_ca.descriptors.clear();
+            }
             (0x0000, 0x00) => {
                 self.pat_programs.clear();
                 self.unresolved_pmts_by_pat.clear();
@@ -319,31 +352,42 @@ impl ServiceDiscoveryEngine {
                     Self::clear_pmt_state(service);
                 }
             }
-            (0x0010, 0x40 | 0x41) => {
-                for transport in self.transports.values_mut() {
-                    if transport.original_network_id == table_extension {
-                        transport.network_name = None;
-                        transport.ts_name = None;
-                        transport.remote_control_key_id = None;
-                    }
-                }
-            }
-            (0x0011, 0x42 | 0x46) => {
-                for service in self.services.values_mut() {
-                    if service.transport_stream_id == table_extension {
-                        service.provider_name = None;
-                        service.service_name = None;
-                        service.running_status = None;
-                        service.free_ca_mode = None;
-                    }
-                }
-            }
-            (0x0011, 0x4a) => {
-                for service in self.services.values_mut() {
-                    service.bouquet_name = None;
-                }
-            }
+            (0x0010, 0x40 | 0x41) => {}
+            (0x0011, 0x42 | 0x46) => {}
+            (0x0011, 0x4a) => {}
             _ => {}
+        }
+    }
+
+    fn invalidate_nit_transport_metadata(&mut self, scopes: &BTreeSet<(u16, u16)>) {
+        for (tsid, onid) in scopes {
+            if let Some(transport) = self.transports.get_mut(&(*tsid, *onid)) {
+                transport.network_name = None;
+                transport.ts_name = None;
+                transport.remote_control_key_id = None;
+            }
+            for service in self.services.values_mut().filter(|service| service.transport_stream_id == *tsid && service.original_network_id == *onid) {
+                service.network_name = None;
+                service.ts_name = None;
+                service.remote_control_key_id = None;
+            }
+        }
+    }
+
+    fn invalidate_sdt_service_metadata(&mut self, tsid: u16, onid: u16) {
+        for service in self.services.values_mut().filter(|service| service.transport_stream_id == tsid && service.original_network_id == onid) {
+            service.provider_name = None;
+            service.service_name = None;
+            service.running_status = None;
+            service.free_ca_mode = None;
+        }
+    }
+
+    fn invalidate_bat_transport_membership(&mut self, scopes: &BTreeSet<(u16, u16)>) {
+        for (tsid, onid) in scopes {
+            for service in self.services.values_mut().filter(|service| service.transport_stream_id == *tsid && service.original_network_id == *onid) {
+                service.bouquet_name = None;
+            }
         }
     }
 
@@ -407,7 +451,7 @@ impl ServiceDiscoveryEngine {
         let Some(pending) = self.pending_pmts.get(&full_key).cloned() else { return; };
         let entry = self.service_entry_mut(tsid, onid, service_id);
         entry.pmt_pid = Some(pending.pmt_pid);
-        entry.pcr_pid = Some(pending.pcr_pid);
+        entry.pcr_pid = pending.pcr_pid;
         entry.streams = pending.streams;
         entry.program_ca_descriptors = pending.program_ca_descriptors;
         entry.es_ca_descriptors = pending.es_ca_descriptors;
@@ -480,7 +524,8 @@ impl ServiceDiscoveryEngine {
         }
         let service_id = u16::from_be_bytes([section[3], section[4]]);
         let body_end = 3 + section_len(section) - 4;
-        let pcr_pid = (((section[8] & 0x1f) as u16) << 8) | section[9] as u16;
+        let raw_pcr_pid = (((section[8] & 0x1f) as u16) << 8) | section[9] as u16;
+        let pcr_pid = (raw_pcr_pid != 0x1fff).then_some(raw_pcr_pid);
         let program_info_length = (((section[10] & 0x0f) as usize) << 8) | section[11] as usize;
         let program_info_start = 12usize;
         let Some(program_info_end) = checked_end(program_info_start, program_info_length, body_end) else { return; };
@@ -677,6 +722,18 @@ impl ServiceDiscoveryEngine {
 
 
 impl ServiceDiscoveryCollector {
+    /// service が r51 視聴可能になる前に PMT section filter を開く必要がある。
+    /// service の公開可否や視聴可否に依存せず、PAT 由来の PMT PID を返す。
+    pub fn pmt_pids_for_section_filters(&self) -> Vec<u16> {
+        let mut pids: Vec<u16> = self.engine.pat_programs.values().copied().collect();
+        pids.extend(self.engine.snapshot().pmt_pids_by_service.iter().map(|mapping| mapping.pmt_pid));
+        pids.sort_unstable();
+        pids.dedup();
+        pids
+    }
+}
+
+impl ServiceDiscoveryCollector {
     pub fn push_section(&mut self, pid: u16, section: &[u8]) {
         if !valid_current_section(section) {
             return;
@@ -691,6 +748,18 @@ impl ServiceDiscoveryCollector {
 
     pub fn events(&self) -> Vec<EitEvent> {
         self.engine.events()
+    }
+
+    pub fn epg_update_windows(&self) -> Vec<EitUpdateWindow> {
+        self.engine.epg_update_windows()
+    }
+
+    pub fn clear_epg_update_windows(&mut self) {
+        self.engine.clear_epg_update_windows()
+    }
+
+    pub fn is_known_pmt_pid(&self, pid: u16) -> bool {
+        self.engine.is_known_pmt_pid(pid)
     }
 
     pub fn state(&self) -> DiscoveryCollectionState {
@@ -815,12 +884,64 @@ impl ServiceDiscoveryCollector {
             if req.require_nit_other && !self.nit_complete_for_transport(0x41, service.original_network_id, service.transport_stream_id) { missing_for_service.push("NIT-other"); }
             missing_for_service.sort_unstable();
             missing_for_service.dedup();
+            let publishable = missing_for_service.is_empty();
+            let video_pids: BTreeSet<u16> = service.streams.iter()
+                .filter(|stream| matches!(stream.stream_type, 0x02 | 0x1b))
+                .map(|stream| stream.elementary_pid)
+                .collect();
+            let has_program_ca_descriptor = !service.program_ca_descriptors.is_empty();
+            let has_video_es_ca_descriptor = service.es_ca_descriptors.iter().any(|ca| video_pids.contains(&ca.elementary_pid));
+            let pmt_pid_resolved = service.pmt_pid.is_some();
+            let pmt_parsed = service.pmt_pid.is_some() && service.pcr_pid.is_some();
+            let free_ca_mode_resolved = service.free_ca_mode.is_some();
+            let requires_cas = service.free_ca_mode == Some(true) || has_program_ca_descriptor || has_video_es_ca_descriptor;
+            let unsupported_cas = requires_cas;
+            let ca_state_resolved = free_ca_mode_resolved || has_program_ca_descriptor || has_video_es_ca_descriptor;
+
+            let mut registration_reasons = Vec::new();
+            if !publishable { registration_reasons.push("NOT_PUBLISHABLE"); }
+            if service.pcr_pid.is_none() { registration_reasons.push("NO_PCR_PID"); }
+            if video_pids.is_empty() { registration_reasons.push("NO_SUPPORTED_VIDEO_ES"); }
+            if service.free_ca_mode.is_none() && !requires_cas { registration_reasons.push("UNRESOLVED_CA_STATE"); }
+            registration_reasons.sort_unstable();
+            registration_reasons.dedup();
+
+            let channel_registration_ready = registration_reasons.is_empty();
+            let epg_publishable = channel_registration_ready;
+            let mut epg_reasons = Vec::new();
+            if !epg_publishable { epg_reasons.extend(registration_reasons.iter().copied()); }
+            epg_reasons.sort_unstable();
+            epg_reasons.dedup();
+
+            let mut reasons = Vec::new();
+            if !publishable { reasons.push("NOT_PUBLISHABLE"); }
+            if !channel_registration_ready { reasons.push("NOT_CHANNEL_REGISTRATION_READY"); }
+            if service.pcr_pid.is_none() { reasons.push("NO_PCR_PID"); }
+            if video_pids.is_empty() { reasons.push("NO_SUPPORTED_VIDEO_ES"); }
+            if service.free_ca_mode != Some(false) { reasons.push("SCRAMBLED_OR_UNKNOWN_SDT_FREE_CA_MODE"); }
+            if has_program_ca_descriptor { reasons.push("PMT_PROGRAM_CA_DESCRIPTOR"); }
+            if has_video_es_ca_descriptor { reasons.push("VIDEO_ES_CA_DESCRIPTOR"); }
+            reasons.sort_unstable();
+            reasons.dedup();
+            let clear_live_playback_supported = reasons.is_empty();
             publishability_by_service.push(ServicePublishability {
                 original_network_id: service.original_network_id,
                 transport_stream_id: service.transport_stream_id,
                 service_id: service.service_id,
-                publishable: missing_for_service.is_empty(),
+                publishable,
+                channel_registration_ready,
+                epg_publishable,
+                clear_live_playback_supported,
+                requires_cas,
+                unsupported_cas,
+                pmt_pid_resolved,
+                pmt_parsed,
+                ca_state_resolved,
+                free_ca_mode_resolved,
                 missing_components: missing_for_service,
+                reasons,
+                registration_reasons,
+                epg_reasons,
             });
         }
 
@@ -847,10 +968,27 @@ impl ServiceDiscoveryCollector {
     fn invalidate_changed_table(&mut self, pid: u16, section: &[u8]) {
         let Some(header) = parse_section_header(section, 12) else { return; };
         let Some(table_extension) = header.table_id_extension else { return; };
-        self.section_trackers.remove(&(pid, header.table_id, table_extension));
+        let scope_extension = tracker_scope_extension(section).unwrap_or(TRACKER_GLOBAL_SCOPE);
+        self.section_trackers.remove(&(pid, header.table_id, table_extension, scope_extension));
         match (pid, header.table_id) {
-            (0x0010, 0x40 | 0x41) => { self.nit_transport_scopes.remove(&(header.table_id, table_extension)); }
-            (0x0011, 0x4a) => { self.bat_transport_scopes.remove(&table_extension); }
+            (0x0010, 0x40 | 0x41) => {
+                if let Some(scopes) = self.nit_transport_scopes.get(&(header.table_id, table_extension)).cloned() {
+                    self.engine.invalidate_nit_transport_metadata(&scopes);
+                }
+                self.nit_transport_scopes.remove(&(header.table_id, table_extension));
+            }
+            (0x0011, 0x42 | 0x46) => {
+                if let Some((tsid, onid)) = sdt_transport_scope_from_section(section) {
+                    self.engine.invalidate_sdt_service_metadata(tsid, onid);
+                    if header.table_id == 0x42 { self.sdt_actual_transport_scopes.remove(&(tsid, onid)); } else { self.sdt_other_transport_scopes.remove(&(tsid, onid)); }
+                }
+            }
+            (0x0011, 0x4a) => {
+                if let Some(scopes) = self.bat_transport_scopes.get(&table_extension).cloned() {
+                    self.engine.invalidate_bat_transport_membership(&scopes);
+                }
+                self.bat_transport_scopes.remove(&table_extension);
+            }
             _ => {}
         }
         self.engine.invalidate_table(pid, header.table_id, table_extension);
@@ -861,8 +999,9 @@ impl ServiceDiscoveryCollector {
         if header.current_next_indicator != Some(true) { return false; }
         let Some(table_extension) = header.table_id_extension else { return false; };
         let Some(version) = header.version else { return false; };
+        let scope_extension = tracker_scope_extension(section).unwrap_or(TRACKER_GLOBAL_SCOPE);
         self.section_trackers
-            .get(&(pid, header.table_id, table_extension))
+            .get(&(pid, header.table_id, table_extension, scope_extension))
             .and_then(|tracker| tracker.version)
             .is_some_and(|old_version| old_version != version)
     }
@@ -874,8 +1013,9 @@ impl ServiceDiscoveryCollector {
         let Some(version) = header.version else { return; };
         let Some(section_number) = header.section_number else { return; };
         let Some(last_section_number) = header.last_section_number else { return; };
+        let scope_extension = tracker_scope_extension(section).unwrap_or(TRACKER_GLOBAL_SCOPE);
         self.section_trackers
-            .entry((pid, header.table_id, table_extension))
+            .entry((pid, header.table_id, table_extension, scope_extension))
             .or_default()
             .mark_seen(version, section_number, last_section_number);
     }
@@ -909,18 +1049,22 @@ impl ServiceDiscoveryCollector {
     }
 
     fn table_complete_for_extension(&self, pid: u16, table_id: u8, table_extension: u16) -> bool {
+        self.table_complete_for_extension_scope(pid, table_id, table_extension, TRACKER_GLOBAL_SCOPE)
+    }
+
+    fn table_complete_for_extension_scope(&self, pid: u16, table_id: u8, table_extension: u16, scope_extension: u16) -> bool {
         self.section_trackers
-            .get(&(pid, table_id, table_extension))
+            .get(&(pid, table_id, table_extension, scope_extension))
             .is_some_and(|tracker| tracker.is_complete())
     }
 
     fn sdt_actual_complete_for_transport(&self, original_network_id: u16, transport_stream_id: u16) -> bool {
-        self.table_complete_for_extension(0x0011, 0x42, transport_stream_id)
+        self.table_complete_for_extension_scope(0x0011, 0x42, transport_stream_id, original_network_id)
             && self.sdt_actual_transport_scopes.contains(&(transport_stream_id, original_network_id))
     }
 
     fn sdt_other_complete_for_transport(&self, original_network_id: u16, transport_stream_id: u16) -> bool {
-        self.table_complete_for_extension(0x0011, 0x46, transport_stream_id)
+        self.table_complete_for_extension_scope(0x0011, 0x46, transport_stream_id, original_network_id)
             && self.sdt_other_transport_scopes.contains(&(transport_stream_id, original_network_id))
     }
 
@@ -942,7 +1086,7 @@ impl ServiceDiscoveryCollector {
     fn table_complete(&self, pid: u16, table_id: u8) -> bool {
         self.section_trackers
             .iter()
-            .any(|((tracked_pid, tracked_table_id, _), tracker)| *tracked_pid == pid && *tracked_table_id == table_id && tracker.is_complete())
+            .any(|((tracked_pid, tracked_table_id, _, _), tracker)| *tracked_pid == pid && *tracked_table_id == table_id && tracker.is_complete())
     }
 
 }
@@ -961,6 +1105,16 @@ fn valid_current_section(section: &[u8]) -> bool {
     section_crc_valid(section, 12)
 }
 
+
+const TRACKER_GLOBAL_SCOPE: u16 = 0xffff;
+
+fn tracker_scope_extension(section: &[u8]) -> Option<u16> {
+    let header = parse_section_header(section, 12)?;
+    match header.table_id {
+        0x42 | 0x46 => sdt_transport_scope_from_section(section).map(|(_, onid)| onid),
+        _ => Some(TRACKER_GLOBAL_SCOPE),
+    }
+}
 
 fn sdt_transport_scope_from_section(section: &[u8]) -> Option<(u16, u16)> {
     let header = parse_section_header(section, 12)?;
@@ -1189,14 +1343,14 @@ mod tests {
         let mut collector = ServiceDiscoveryCollector::default();
         let mut nit_tracker = super::SectionTracker::default();
         nit_tracker.mark_seen(1, 0, 0);
-        collector.section_trackers.insert((0x0010, 0x41, 0x1000), nit_tracker);
+        collector.section_trackers.insert((0x0010, 0x41, 0x1000, super::TRACKER_GLOBAL_SCOPE), nit_tracker);
         collector.nit_transport_scopes.insert((0x41, 0x1000), std::collections::BTreeSet::from([(0x4010, 0x0004)]));
         assert!(collector.nit_complete_for_transport(0x41, 0x0004, 0x4010));
         assert!(!collector.nit_complete_for_transport(0x41, 0x0004, 0x4020));
 
         let mut bat_tracker = super::SectionTracker::default();
         bat_tracker.mark_seen(1, 0, 0);
-        collector.section_trackers.insert((0x0011, 0x4a, 0x0004), bat_tracker);
+        collector.section_trackers.insert((0x0011, 0x4a, 0x0004, super::TRACKER_GLOBAL_SCOPE), bat_tracker);
         collector.bat_transport_scopes.insert(0x0004, std::collections::BTreeSet::from([(0x4010, 0x0004)]));
         assert!(collector.bat_complete_for_transport(0x0004, 0x4010));
         assert!(!collector.bat_complete_for_transport(0x0004, 0x4020));
@@ -1207,7 +1361,7 @@ mod tests {
         let mut collector = ServiceDiscoveryCollector::default();
         let mut sdt_tracker = super::SectionTracker::default();
         sdt_tracker.mark_seen(1, 0, 0);
-        collector.section_trackers.insert((0x0011, 0x42, 0x4010), sdt_tracker);
+        collector.section_trackers.insert((0x0011, 0x42, 0x4010, 0x0004), sdt_tracker);
         collector.sdt_actual_transport_scopes.insert((0x4010, 0x0004));
         assert!(collector.sdt_actual_complete_for_transport(0x0004, 0x4010));
         assert!(!collector.sdt_actual_complete_for_transport(0x7fe0, 0x4010));
@@ -1235,8 +1389,8 @@ mod tests {
             0x0f, 0xe1, 0x02, 0xf0, 0x00,
         ]);
         let sdt = section_with_crc(vec![
-            0x42, 0xf0, 0x16, 0x00, 0x11, 0xc1, 0x00, 0x00, 0x00, 0x22, 0x00,
-            0x00, 0x01, 0xfc, 0x77,
+            0x42, 0xf0, 0x18, 0x00, 0x11, 0xc1, 0x00, 0x00, 0x00, 0x22, 0x00,
+            0x00, 0x01, 0xfc, 0xe0, 0x07,
             0x48, 0x05, 0x01, 0x00, 0x02, b'T', b'1',
         ]);
         let mut eng = ServiceDiscoveryEngine::default();
@@ -1247,6 +1401,35 @@ mod tests {
         assert_eq!(snap.services.len(), 1);
         assert_eq!(snap.services[0].pcr_pid, Some(0x0101));
         assert_eq!(snap.services[0].streams.len(), 2);
+    }
+
+    #[test]
+    fn pmt_with_null_packet_pcr_pid_is_not_claimable() {
+        let pat = section_with_crc(vec![
+            0x00, 0xb0, 0x0d, 0x00, 0x11, 0xc1, 0x00, 0x00,
+            0x00, 0x01, 0xe1, 0x00,
+        ]);
+        let pmt = section_with_crc(vec![
+            0x02, 0xb0, 0x17, 0x00, 0x01, 0xc1, 0x00, 0x00,
+            0xff, 0xff, 0xf0, 0x00,
+            0x1b, 0xe1, 0x01, 0xf0, 0x00,
+            0x0f, 0xe1, 0x02, 0xf0, 0x00,
+        ]);
+        let sdt = section_with_crc(vec![
+            0x42, 0xf0, 0x18, 0x00, 0x11, 0xc1, 0x00, 0x00, 0x00, 0x22, 0x00,
+            0x00, 0x01, 0xfc, 0xe0, 0x07,
+            0x48, 0x05, 0x01, 0x00, 0x02, b'T', b'1',
+        ]);
+        let mut collector = ServiceDiscoveryCollector::default();
+        collector.push_section(0x0000, &pat);
+        collector.push_section(0x0100, &pmt);
+        collector.push_section(0x0011, &sdt);
+        let state = collector.state();
+        let service = state.services.iter().find(|s| s.service_id == 1).expect("service");
+        assert_eq!(service.pcr_pid, None);
+        let publishability = state.publishability_by_service.iter().find(|p| p.service_id == 1).expect("publishability");
+        assert!(!publishability.clear_live_playback_supported);
+        assert!(publishability.reasons.contains(&"NO_PCR_PID"));
     }
 
     #[test]
@@ -1315,8 +1498,8 @@ mod tests {
             0x0f, 0xe1, 0x02, 0xf0, 0x00,
         ]);
         let sdt = section_with_crc(vec![
-            0x42, 0xf0, 0x16, 0x00, 0x11, 0xc1, 0x00, 0x00, 0x00, 0x22, 0x00,
-            0x00, 0x01, 0xfc, 0x77,
+            0x42, 0xf0, 0x18, 0x00, 0x11, 0xc1, 0x00, 0x00, 0x00, 0x22, 0x00,
+            0x00, 0x01, 0xfc, 0xe0, 0x07,
             0x48, 0x05, 0x01, 0x00, 0x02, b'T', b'1',
         ]);
         let mut collector = ServiceDiscoveryCollector::default();
@@ -1342,8 +1525,8 @@ mod tests {
             0x41, 0x03, 0x00, 0x01, 0x01,
         ]);
         let sdt = section_with_crc(vec![
-            0x42, 0xf0, 0x16, 0x00, 0x11, 0xc1, 0x00, 0x00, 0x00, 0x22, 0x00,
-            0x00, 0x01, 0xfc, 0x77,
+            0x42, 0xf0, 0x18, 0x00, 0x11, 0xc1, 0x00, 0x00, 0x00, 0x22, 0x00,
+            0x00, 0x01, 0xfc, 0xe0, 0x07,
             0x48, 0x05, 0x01, 0x00, 0x02, b'T', b'1',
         ]);
         let pmt = section_with_crc(vec![
@@ -1369,8 +1552,8 @@ mod tests {
             0x00, 0x01, 0xe1, 0x00,
         ]);
         let sdt = section_with_crc(vec![
-            0x42, 0xf0, 0x16, 0x00, 0x11, 0xc1, 0x00, 0x00, 0x00, 0x22, 0x00,
-            0x00, 0x01, 0xfc, 0x77,
+            0x42, 0xf0, 0x18, 0x00, 0x11, 0xc1, 0x00, 0x00, 0x00, 0x22, 0x00,
+            0x00, 0x01, 0xfc, 0xe0, 0x07,
             0x48, 0x05, 0x01, 0x00, 0x02, b'T', b'1',
         ]);
         let mut collector = ServiceDiscoveryCollector::default();
@@ -1397,8 +1580,8 @@ mod tests {
             0x41, 0x03, 0x00, 0x01, 0x01,
         ]);
         let sdt = section_with_crc(vec![
-            0x42, 0xf0, 0x16, 0x00, 0x11, 0xc1, 0x00, 0x00, 0x00, 0x22, 0x00,
-            0x00, 0x01, 0xfc, 0x77,
+            0x42, 0xf0, 0x18, 0x00, 0x11, 0xc1, 0x00, 0x00, 0x00, 0x22, 0x00,
+            0x00, 0x01, 0xfc, 0xe0, 0x07,
             0x48, 0x05, 0x01, 0x00, 0x02, b'T', b'1',
         ]);
         let pmt = section_with_crc(vec![
@@ -1433,8 +1616,8 @@ mod tests {
             0x41, 0x03, 0x00, 0x01, 0x01,
         ]);
         let sdt = section_with_crc(vec![
-            0x42, 0xf0, 0x16, 0x00, 0x11, 0xc1, 0x00, 0x00, 0x00, 0x22, 0x00,
-            0x00, 0x01, 0xfc, 0x77,
+            0x42, 0xf0, 0x18, 0x00, 0x11, 0xc1, 0x00, 0x00, 0x00, 0x22, 0x00,
+            0x00, 0x01, 0xfc, 0xe0, 0x07,
             0x48, 0x05, 0x01, 0x00, 0x02, b'T', b'1',
         ]);
         let pmt = section_with_crc(vec![
@@ -1504,7 +1687,19 @@ mod staged_tests {
             transport_stream_id: 0x0011,
             service_id: 1,
             publishable: true,
+            channel_registration_ready: true,
+            epg_publishable: true,
+            clear_live_playback_supported: true,
+            requires_cas: false,
+            unsupported_cas: false,
+            pmt_pid_resolved: true,
+            pmt_parsed: true,
+            ca_state_resolved: true,
+            free_ca_mode_resolved: true,
             missing_components: Vec::new(),
+            reasons: Vec::new(),
+            registration_reasons: Vec::new(),
+            epg_reasons: Vec::new(),
         });
         state.pat_complete = true;
         state.required_pmts_complete = true;
@@ -1544,14 +1739,38 @@ mod staged_tests {
             transport_stream_id: 0x0011,
             service_id: 1,
             publishable: true,
+            channel_registration_ready: true,
+            epg_publishable: true,
+            clear_live_playback_supported: true,
+            requires_cas: false,
+            unsupported_cas: false,
+            pmt_pid_resolved: true,
+            pmt_parsed: true,
+            ca_state_resolved: true,
+            free_ca_mode_resolved: true,
             missing_components: Vec::new(),
+            reasons: Vec::new(),
+            registration_reasons: Vec::new(),
+            epg_reasons: Vec::new(),
         });
         state.publishability_by_service.push(ServicePublishability {
             original_network_id: 0x0022,
             transport_stream_id: 0x0011,
             service_id: 2,
             publishable: false,
+            channel_registration_ready: false,
+            epg_publishable: false,
+            clear_live_playback_supported: false,
+            requires_cas: false,
+            unsupported_cas: false,
+            pmt_pid_resolved: true,
+            pmt_parsed: true,
+            ca_state_resolved: true,
+            free_ca_mode_resolved: true,
             missing_components: vec!["PMT"],
+            reasons: vec!["PMT"],
+            registration_reasons: vec!["NOT_PUBLISHABLE"],
+            epg_reasons: vec!["NOT_PUBLISHABLE"],
         });
         let snapshot = state.publishable_snapshot().expect("publishable snapshot");
         assert_eq!(snapshot.services.len(), 1);
@@ -1578,7 +1797,19 @@ mod staged_tests {
             transport_stream_id: 0x0011,
             service_id: 1,
             publishable: true,
+            channel_registration_ready: true,
+            epg_publishable: true,
+            clear_live_playback_supported: true,
+            requires_cas: false,
+            unsupported_cas: false,
+            pmt_pid_resolved: true,
+            pmt_parsed: true,
+            ca_state_resolved: true,
+            free_ca_mode_resolved: true,
             missing_components: Vec::new(),
+            reasons: Vec::new(),
+            registration_reasons: Vec::new(),
+            epg_reasons: Vec::new(),
         });
         state.pat_complete = true;
         state.required_pmts_complete = true;
@@ -1589,6 +1820,197 @@ mod staged_tests {
     }
 }
 
+
+
+#[cfg(test)]
+mod clear_live_playback_coverage_tests {
+    use super::*;
+    use crate::ca_descriptor::CaDescriptor;
+
+    fn complete_tracker() -> SectionTracker {
+        let mut tracker = SectionTracker::default();
+        tracker.mark_seen(1, 0, 0);
+        tracker
+    }
+
+    fn base_service(streams: Vec<DiscoveredElementaryStream>) -> DiscoveredService {
+        DiscoveredService {
+            original_network_id: 0x0022,
+            transport_stream_id: 0x0011,
+            service_id: 1,
+            service_type: Some(0x01),
+            free_ca_mode: Some(false),
+            pmt_pid: Some(0x0100),
+            pcr_pid: Some(0x0101),
+            streams,
+            ..DiscoveredService::default()
+        }
+    }
+
+    fn stream(pid: u16, stream_type: u8) -> DiscoveredElementaryStream {
+        DiscoveredElementaryStream { elementary_pid: pid, stream_type, ..DiscoveredElementaryStream::default() }
+    }
+
+    fn publishability_for(service: DiscoveredService) -> ServicePublishability {
+        let mut collector = ServiceDiscoveryCollector::default();
+        let key = (service.transport_stream_id, service.original_network_id, service.service_id);
+        collector.engine.transports.insert((key.0, key.1), DiscoveredTransport {
+            transport_stream_id: key.0,
+            original_network_id: key.1,
+            services: BTreeSet::from([key.2]),
+            ..DiscoveredTransport::default()
+        });
+        collector.engine.services.insert(key, service);
+        collector.section_trackers.insert((0x0000, 0x00, 0x0011, super::TRACKER_GLOBAL_SCOPE), complete_tracker());
+        collector.section_trackers.insert((0x0011, 0x42, 0x0011, 0x0022), complete_tracker());
+        collector.sdt_actual_transport_scopes.insert((0x0011, 0x0022));
+        collector.section_trackers.insert((0x0010, 0x40, 0x0001, super::TRACKER_GLOBAL_SCOPE), complete_tracker());
+        collector.nit_transport_scopes.insert((0x40, 0x0001), BTreeSet::from([(0x0011, 0x0022)]));
+        collector.state().publishability_by_service.into_iter().next().expect("service publishability")
+    }
+
+    #[test]
+    fn clear_live_playback_accepts_clear_mpeg2_video_without_audio() {
+        let publishability = publishability_for(base_service(vec![stream(0x0101, 0x02)]));
+        assert!(publishability.publishable);
+        assert!(publishability.clear_live_playback_supported);
+        assert!(publishability.clear_live_playback_supported);
+        assert!(publishability.reasons.is_empty());
+    }
+
+    #[test]
+    fn clear_live_playback_accepts_clear_avc_video_without_audio() {
+        let publishability = publishability_for(base_service(vec![stream(0x0101, 0x1b)]));
+        assert!(publishability.clear_live_playback_supported);
+        assert!(publishability.reasons.is_empty());
+    }
+
+    #[test]
+    fn clear_live_playback_supported_requires_transport_level_nit_completion() {
+        let mut collector = ServiceDiscoveryCollector::default();
+        let service = base_service(vec![stream(0x0101, 0x1b)]);
+        let key = (service.transport_stream_id, service.original_network_id, service.service_id);
+        collector.engine.transports.insert((key.0, key.1), DiscoveredTransport {
+            transport_stream_id: key.0,
+            original_network_id: key.1,
+            services: BTreeSet::from([key.2]),
+            ..DiscoveredTransport::default()
+        });
+        collector.engine.services.insert(key, service);
+        collector.section_trackers.insert((0x0000, 0x00, 0x0011, super::TRACKER_GLOBAL_SCOPE), complete_tracker());
+        collector.section_trackers.insert((0x0011, 0x42, 0x0011, 0x0022), complete_tracker());
+        collector.sdt_actual_transport_scopes.insert((0x0011, 0x0022));
+
+        let state = collector.state();
+        let publishability = state.publishability_by_service.first().expect("service publishability");
+
+        assert!(!publishability.publishable);
+        assert!(publishability.missing_components.contains(&"NIT"));
+        assert!(!publishability.channel_registration_ready);
+        assert!(!publishability.epg_publishable);
+        assert!(!publishability.clear_live_playback_supported);
+        assert!(publishability.reasons.contains(&"NOT_PUBLISHABLE"));
+        assert_eq!(state.publish_stage(), DiscoveryPublishStage::Incomplete);
+        assert!(state.clear_live_playback_supported_snapshot().is_none());
+    }
+
+    #[test]
+    fn clear_live_playback_rejects_audio_only_data_only_and_hevc_only_services() {
+        for stream_type in [0x0f, 0x0d, 0x24] {
+            let publishability = publishability_for(base_service(vec![stream(0x0101, stream_type)]));
+            assert!(publishability.publishable);
+            assert!(!publishability.clear_live_playback_supported);
+            assert!(!publishability.clear_live_playback_supported);
+            assert!(publishability.reasons.contains(&"NO_SUPPORTED_VIDEO_ES"));
+        }
+    }
+
+    #[test]
+    fn clear_live_playback_rejects_sdt_scrambled_program_ca_and_video_es_ca() {
+        let mut sdt_scrambled = base_service(vec![stream(0x0101, 0x1b)]);
+        sdt_scrambled.free_ca_mode = Some(true);
+        let publishability = publishability_for(sdt_scrambled);
+        assert!(publishability.channel_registration_ready);
+        assert!(publishability.epg_publishable);
+        assert!(publishability.requires_cas);
+        assert!(publishability.unsupported_cas);
+        assert!(!publishability.clear_live_playback_supported);
+        assert!(publishability.reasons.contains(&"SCRAMBLED_OR_UNKNOWN_SDT_FREE_CA_MODE"));
+
+        let mut program_ca = base_service(vec![stream(0x0101, 0x1b)]);
+        program_ca.program_ca_descriptors.push(CaDescriptor { ca_system_id: 0x0005, ca_pid: 0x0123, private_data: Vec::new(), raw_descriptor: vec![0x09, 0x04, 0x00, 0x05, 0xe1, 0x23] });
+        let publishability = publishability_for(program_ca);
+        assert!(publishability.channel_registration_ready);
+        assert!(publishability.epg_publishable);
+        assert!(publishability.requires_cas);
+        assert!(publishability.unsupported_cas);
+        assert!(!publishability.clear_live_playback_supported);
+        assert!(publishability.reasons.contains(&"PMT_PROGRAM_CA_DESCRIPTOR"));
+
+        let mut es_ca = base_service(vec![stream(0x0101, 0x1b)]);
+        es_ca.es_ca_descriptors.push(EsCaMetadata {
+            elementary_pid: 0x0101,
+            descriptors: vec![CaDescriptor { ca_system_id: 0x0005, ca_pid: 0x0124, private_data: Vec::new(), raw_descriptor: vec![0x09, 0x04, 0x00, 0x05, 0xe1, 0x24] }],
+        });
+        let publishability = publishability_for(es_ca);
+        assert!(!publishability.clear_live_playback_supported);
+        assert!(publishability.reasons.contains(&"VIDEO_ES_CA_DESCRIPTOR"));
+    }
+
+    #[test]
+    fn clear_live_playback_supported_snapshot_filters_non_claimable_services() {
+        let mut state = DiscoveryCollectionState::default();
+        state.snapshot.services.push(base_service(vec![stream(0x0101, 0x1b)]));
+        state.snapshot.services.push(DiscoveredService { service_id: 2, ..base_service(vec![stream(0x0201, 0x0f)]) });
+        state.snapshot.transports.push(DiscoveredTransport {
+            original_network_id: 0x0022,
+            transport_stream_id: 0x0011,
+            services: BTreeSet::from([1, 2]),
+            ..DiscoveredTransport::default()
+        });
+        state.publishability_by_service.push(ServicePublishability {
+            original_network_id: 0x0022,
+            transport_stream_id: 0x0011,
+            service_id: 1,
+            publishable: true,
+            channel_registration_ready: true,
+            epg_publishable: true,
+            clear_live_playback_supported: true,
+            requires_cas: false,
+            unsupported_cas: false,
+            pmt_pid_resolved: true,
+            pmt_parsed: true,
+            ca_state_resolved: true,
+            free_ca_mode_resolved: true,
+            missing_components: Vec::new(),
+            reasons: Vec::new(),
+            registration_reasons: Vec::new(),
+            epg_reasons: Vec::new(),
+        });
+        state.publishability_by_service.push(ServicePublishability {
+            original_network_id: 0x0022,
+            transport_stream_id: 0x0011,
+            service_id: 2,
+            publishable: true,
+            channel_registration_ready: false,
+            epg_publishable: false,
+            clear_live_playback_supported: false,
+            requires_cas: false,
+            unsupported_cas: false,
+            pmt_pid_resolved: true,
+            pmt_parsed: true,
+            ca_state_resolved: true,
+            free_ca_mode_resolved: true,
+            missing_components: Vec::new(),
+            reasons: vec!["NO_SUPPORTED_VIDEO_ES"],
+            registration_reasons: vec!["NO_SUPPORTED_VIDEO_ES"],
+            epg_reasons: vec!["NO_SUPPORTED_VIDEO_ES"],
+        });
+        let snapshot = state.clear_live_playback_supported_snapshot().expect("clear live snapshot");
+        assert_eq!(snapshot.services.len(), 1);
+        assert_eq!(snapshot.services[0].service_id, 1);
+    }
+}
 
 #[cfg(test)]
 mod current_version_tests {
@@ -1607,6 +2029,16 @@ mod current_version_tests {
         let mut collector = ServiceDiscoveryCollector::default();
         collector.push_section(0x0000, &pat_next);
         assert!(!collector.state().pat_complete);
+    }
+
+    #[test]
+    fn section_filter_pmt_pids_are_available_from_pat_before_viewable_snapshot() {
+        let pat = section_with_crc(vec![0x00, 0xb0, 0x0d, 0x00, 0x11, 0xc1, 0x00, 0x00, 0x00, 0x01, 0xe1, 0x00]);
+        let mut collector = ServiceDiscoveryCollector::default();
+        collector.push_section(0x0000, &pat);
+        assert_eq!(collector.pmt_pids_for_section_filters(), vec![0x0100]);
+        assert!(collector.state().snapshot.pmt_pids_by_service.is_empty());
+        assert!(collector.state().clear_live_playback_supported_snapshot().is_none());
     }
 
     #[test]
@@ -1664,5 +2096,119 @@ mod ca_metadata_tests {
         let state = collector.state();
         assert_eq!(state.snapshot.cat_ca.descriptors.len(), 1);
         assert_eq!(state.snapshot.cat_ca.descriptors[0].ca_pid, 0x0123);
+    }
+
+    #[test]
+    fn cat_version_change_replaces_removed_ca_descriptor() {
+        let cat_v1 = section_with_crc(vec![
+            0x01, 0xb0, 0x0f, 0x00, 0x01, 0xc3, 0x00, 0x00,
+            0x09, 0x04, 0x00, 0x05, 0xe1, 0x23,
+        ]);
+        let cat_v2 = section_with_crc(vec![
+            0x01, 0xb0, 0x0f, 0x00, 0x01, 0xc5, 0x00, 0x00,
+            0x09, 0x04, 0x00, 0x05, 0xe1, 0x24,
+        ]);
+        let mut collector = ServiceDiscoveryCollector::default();
+        collector.push_section(0x0001, &cat_v1);
+        assert_eq!(collector.state().snapshot.cat_ca.descriptors[0].ca_pid, 0x0123);
+        collector.push_section(0x0001, &cat_v2);
+        let descriptors = &collector.state().snapshot.cat_ca.descriptors;
+        assert_eq!(descriptors.len(), 1);
+        assert_eq!(descriptors[0].ca_pid, 0x0124);
+    }
+
+    #[test]
+    fn cat_multiple_sections_are_merged_for_same_version() {
+        let cat_sec0 = section_with_crc(vec![
+            0x01, 0xb0, 0x0f, 0x00, 0x01, 0xc3, 0x00, 0x01,
+            0x09, 0x04, 0x00, 0x05, 0xe1, 0x23,
+        ]);
+        let cat_sec1 = section_with_crc(vec![
+            0x01, 0xb0, 0x0f, 0x00, 0x01, 0xc3, 0x01, 0x01,
+            0x09, 0x04, 0x00, 0x05, 0xe1, 0x24,
+        ]);
+        let mut collector = ServiceDiscoveryCollector::default();
+        collector.push_section(0x0001, &cat_sec0);
+        collector.push_section(0x0001, &cat_sec1);
+        let descriptors = &collector.state().snapshot.cat_ca.descriptors;
+        assert_eq!(descriptors.len(), 2);
+        assert!(descriptors.iter().any(|d| d.ca_pid == 0x0123));
+        assert!(descriptors.iter().any(|d| d.ca_pid == 0x0124));
+    }
+
+    #[test]
+    fn ca_metadata_is_available_from_raw_discovery_when_r51_snapshot_filters_service() {
+        let pat = section_with_crc(vec![
+            0x00, 0xb0, 0x0d, 0x00, 0x11, 0xc1, 0x00, 0x00,
+            0x00, 0x01, 0xe1, 0x00,
+        ]);
+        let sdt_scrambled = section_with_crc(vec![
+            0x42, 0xf0, 0x18, 0x00, 0x11, 0xc1, 0x00, 0x00, 0x00, 0x22, 0x00,
+            0x00, 0x01, 0xfc, 0xf0, 0x07,
+            0x48, 0x05, 0x01, 0x00, 0x02, b'T', b'1',
+        ]);
+        let pmt_with_ca = section_with_crc(vec![
+            0x02, 0xb0, 0x23, 0x00, 0x01, 0xc1, 0x00, 0x00,
+            0xe1, 0x01, 0xf0, 0x06,
+            0x09, 0x04, 0x00, 0x05, 0xe1, 0x23,
+            0x1b, 0xe1, 0x01, 0xf0, 0x06,
+            0x09, 0x04, 0x00, 0x05, 0xe1, 0x24,
+            0x0f, 0xe1, 0x02, 0xf0, 0x00,
+        ]);
+        let cat = section_with_crc(vec![
+            0x01, 0xb0, 0x0f, 0x00, 0x01, 0xc1, 0x00, 0x00,
+            0x09, 0x04, 0x00, 0x05, 0xe1, 0x00,
+        ]);
+
+        let mut collector = ServiceDiscoveryCollector::default();
+        collector.push_section(0x0000, &pat);
+        collector.push_section(0x0011, &sdt_scrambled);
+        collector.push_section(0x0100, &pmt_with_ca);
+        collector.push_section(0x0001, &cat);
+
+        let state = collector.state();
+        assert!(state.clear_live_playback_supported_snapshot().is_none());
+        let service = state.snapshot.services.iter().find(|s| s.service_id == 1).expect("raw service");
+        assert_eq!(service.program_ca_descriptors.len(), 1);
+        assert_eq!(service.program_ca_descriptors[0].ca_pid, 0x0123);
+        let video_ca = service.es_ca_descriptors.iter().find(|m| m.elementary_pid == 0x0101).expect("video ES CA metadata");
+        assert_eq!(video_ca.descriptors[0].ca_pid, 0x0124);
+        assert_eq!(state.snapshot.cat_ca.descriptors[0].ca_pid, 0x0100);
+
+        let publishability = state.publishability_by_service.iter().find(|p| p.service_id == 1).expect("diagnostic");
+        assert!(!publishability.clear_live_playback_supported);
+        assert!(publishability.reasons.contains(&"SCRAMBLED_OR_UNKNOWN_SDT_FREE_CA_MODE"));
+        assert!(publishability.reasons.contains(&"PMT_PROGRAM_CA_DESCRIPTOR"));
+        assert!(publishability.reasons.contains(&"VIDEO_ES_CA_DESCRIPTOR"));
+    }
+
+}
+
+#[cfg(test)]
+mod r50bd_service_scoped_ca_metadata_tests {
+    use super::*;
+    use crate::ca_descriptor::CaDescriptor;
+
+    #[test]
+    fn cat_only_does_not_make_service_scoped_ca() {
+        let service = DiscoveredService { service_id: 101, transport_stream_id: 16625, original_network_id: 4, ..Default::default() };
+        assert!(service.program_ca_descriptors.is_empty());
+        assert!(service.es_ca_descriptors.is_empty());
+    }
+
+    #[test]
+    fn pmt_program_or_es_ca_is_service_scoped() {
+        let ca = CaDescriptor { ca_system_id: 0x0005, ca_pid: 0x0100, private_data: vec![1, 2, 3], raw_descriptor: vec![0x09, 0x07, 0x00, 0x05, 0xe1, 0x00, 1, 2, 3] };
+        let service = DiscoveredService {
+            service_id: 101,
+            transport_stream_id: 16625,
+            original_network_id: 4,
+            program_ca_descriptors: vec![ca.clone()],
+            es_ca_descriptors: vec![EsCaMetadata { elementary_pid: 0x0200, descriptors: vec![ca] }],
+            ..Default::default()
+        };
+        assert!(!service.program_ca_descriptors.is_empty());
+        assert!(!service.es_ca_descriptors.is_empty());
+        assert_eq!(service.es_ca_descriptors[0].elementary_pid, 0x0200);
     }
 }

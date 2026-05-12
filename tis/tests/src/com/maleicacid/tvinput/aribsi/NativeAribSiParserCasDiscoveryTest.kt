@@ -1,0 +1,103 @@
+package com.maleicacid.tvinput.aribsi
+
+import org.junit.Test
+
+class NativeAribSiParserCasDiscoveryTest {
+    @Test fun caDiscoveryDoesNotDependOnClearLivePlaybackSnapshot() {
+        val parser = NativeAribSiParser()
+        try {
+            check(parser.ingestSection(PID_PAT, section(PAT_BODY)) == SiStatus.OK)
+            check(parser.ingestSection(PID_SDT, section(SDT_SCRAMBLED_SERVICE_BODY)) == SiStatus.OK)
+            check(parser.ingestSection(PID_PMT, section(PMT_WITH_PROGRAM_AND_ES_CA_BODY)) == SiStatus.OK)
+            check(parser.ingestSection(PID_CAT, section(CAT_BODY)) == SiStatus.OK)
+
+            // snapshotServices() is reserved for channel registration readiness.
+            // CAS discovery must not depend on that snapshot being empty or non-empty.
+
+            val discoveryServices = parser.snapshotServicesForCasDiscovery()
+            check(discoveryServices.single().serviceKey.serviceId == SERVICE_ID)
+
+            val metadata = parser.snapshotCaMetadataForCasDiscovery()
+            check(metadata.any { it.source == CaMetadataSource.PROGRAM && it.ecmPid == ECM_PID_PROGRAM }) {
+                "program CA_descriptor must be visible to CAS discovery"
+            }
+            check(metadata.any { it.source == CaMetadataSource.ELEMENTARY_STREAM && it.elementaryPid == VIDEO_PID && it.ecmPid == ECM_PID_ES }) {
+                "ES CA_descriptor must be visible to CAS discovery"
+            }
+            check(metadata.any { it.source == CaMetadataSource.CAT && it.serviceKey == null && it.emmPid == EMM_PID }) {
+                "CAT EMM PID must be visible independent of service row publication"
+            }
+
+            val diagnostics = parser.snapshotPublishabilityDiagnostics()
+            val diagnostic = diagnostics.single { it.serviceKey.serviceId == SERVICE_ID }
+            check(!diagnostic.clearLivePlaybackSupported)
+            check(diagnostic.reasons.any { it == "SCRAMBLED_OR_UNKNOWN_SDT_FREE_CA_MODE" || it == "PMT_PROGRAM_CA_DESCRIPTOR" || it == "VIDEO_ES_CA_DESCRIPTOR" }) {
+                "CAS-discovery service must retain clear-live-unsupported diagnostics: ${diagnostic.reasons}"
+            }
+        } finally {
+            parser.close()
+        }
+    }
+
+    companion object {
+        private const val SERVICE_ID = 0x0001
+        private const val PID_PAT = 0x0000
+        private const val PID_CAT = 0x0001
+        private const val PID_SDT = 0x0011
+        private const val PID_PMT = 0x0100
+        private const val VIDEO_PID = 0x0101
+        private const val ECM_PID_PROGRAM = 0x0123
+        private const val ECM_PID_ES = 0x0124
+        private const val EMM_PID = 0x0100
+
+        private val PAT_BODY = intArrayOf(
+            0x00, 0xb0, 0x0d, 0x00, 0x11, 0xc1, 0x00, 0x00,
+            0x00, 0x01, 0xe1, 0x00,
+        )
+
+        private val SDT_SCRAMBLED_SERVICE_BODY = intArrayOf(
+            0x42, 0xf0, 0x18, 0x00, 0x11, 0xc1, 0x00, 0x00, 0x00, 0x22, 0x00,
+            0x00, 0x01, 0xfc, 0xf0, 0x07,
+            0x48, 0x05, 0x01, 0x00, 0x02, 'T'.code, '1'.code,
+        )
+
+        private val PMT_WITH_PROGRAM_AND_ES_CA_BODY = intArrayOf(
+            0x02, 0xb0, 0x23, 0x00, 0x01, 0xc1, 0x00, 0x00,
+            0xe1, 0x01, 0xf0, 0x06,
+            0x09, 0x04, 0x00, 0x05, 0xe1, 0x23,
+            0x1b, 0xe1, 0x01, 0xf0, 0x06,
+            0x09, 0x04, 0x00, 0x05, 0xe1, 0x24,
+            0x0f, 0xe1, 0x02, 0xf0, 0x00,
+        )
+
+        private val CAT_BODY = intArrayOf(
+            0x01, 0xb0, 0x0f, 0x00, 0x01, 0xc1, 0x00, 0x00,
+            0x09, 0x04, 0x00, 0x05, 0xe1, 0x00,
+        )
+
+        private fun section(body: IntArray): ByteArray {
+            val bytes = body.map { it.toByte() }.toMutableList()
+            val crc = crc32Mpeg(bytes.map { it.toInt() and 0xff })
+            bytes += ((crc ushr 24) and 0xff).toByte()
+            bytes += ((crc ushr 16) and 0xff).toByte()
+            bytes += ((crc ushr 8) and 0xff).toByte()
+            bytes += (crc and 0xff).toByte()
+            return bytes.toByteArray()
+        }
+
+        private fun crc32Mpeg(bytes: List<Int>): Long {
+            var crc = 0xffffffffL
+            for (b in bytes) {
+                crc = crc xor ((b.toLong() and 0xffL) shl 24)
+                repeat(8) {
+                    crc = if ((crc and 0x80000000L) != 0L) {
+                        ((crc shl 1) xor 0x04c11db7L) and 0xffffffffL
+                    } else {
+                        (crc shl 1) and 0xffffffffL
+                    }
+                }
+            }
+            return crc and 0xffffffffL
+        }
+    }
+}

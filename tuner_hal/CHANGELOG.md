@@ -1,3 +1,53 @@
+## r50bc
+
+- `tuner_hal_multi2_error_api_independence_fixed_plan_acceptance_revised.md` の固定方針に従い、Tuner HAL descrambler の改善候補10/13だけを修正した。
+- MULTI2 preparation error を `Multi2PrepareError::InvalidRoundsZero` へ具体化し、runtime path 用に placeholder variant なしの `Multi2RuntimeError` を導入した。
+- `Multi2KeyMaterial::prepare()` は `Result<PreparedMulti2Key, Multi2PrepareError>` を返し、`rounds == 0` を preparation 時点で拒否する。
+- `multi2_decrypt_payload()` / `multi2_encrypt_payload()` は `&PreparedMulti2Key` と `Result<(), Multi2RuntimeError>` を使い、復号/暗号 hot path に key schedule を戻さない。
+- `descrambler/src/multi2.rs` と `descrambler/src/packet.rs` へ同一 crate 内で分離し、`lib.rs` は module 宣言と crate-level re-export 中心へ整理した。Android.bp / Soong module 名は変更していない。
+- binder_service の invalid rounds expectation を `InvalidRoundsZero` に更新した。
+- この環境では Android/Soong build、Rust unit test実行、atest、VTS、CTS、実機確認は未実施。静的 grep と構造確認のみ実施した。
+
+## r50bb6
+
+- `tuner_hal_descramble_improvements_1_2_3_5_plan_acceptance_revised_fixed2.md` の固定方針に従い、Tuner HAL descrambler の TEI / AFC=11 payload 0 / scrambled NULL PID / MULTI2 key preparation を修正した。
+- `parse_ts_packet_header()` は `TSC=01` を即時 error にせず、TEI 判定前の header 情報を返す責務へ整理した。TEI は `TransportErrorRecord` として TSC 判定より前に record-only byte-identical へ逃がす。
+- `AFC=11` かつ payload 0 byte は `InvalidAdaptationField` とし、clear packet / scrambled-without-payload 扱いにしない。
+- `NULL_PID + TSC=10/11` は `ScrambledNullPid` とし、clear `NullPid` pass-through へ落とさず record-only byte-identical とする。
+- `PreparedMulti2Key` と `Multi2KeyMaterial::prepare()` を追加し、`DescramblerKeySlot` 内部を prepared key 保持へ変更した。`multi2_decrypt_payload()` / test encrypt helper は `&PreparedMulti2Key` を受け取り、復号 hot path で key schedule を生成しない。
+- 旧 raw-key infallible even/odd slot helpers は削除し、`try_with_even` / `try_with_odd` / `with_even_prepared` / `with_odd_prepared` に置換した。
+- descrambler crate と binder_service に固定方針の必須テスト名を追加した。
+- この環境では Android/Soong build、Rust unit test実行、atest、VTS、CTS、実機確認は未実施。静的 grep と brace balance のみ実施した。
+
+## r50bb3
+
+- r50bb2 の Tuner HAL descrambler 修正完了条件のうち、build / test 実行以外で残っていた文書・テストカバレッジ未達を修正した。
+- `DESIGN_JA.md` の空 token / `Tuner.VOID_KEYTOKEN` / test-only key registration の旧期待値を、r51 descrambler 固定方針に合わせて更新した。
+- `DescramblerTokenOrigin::VtsOrUnitTest` を `UnitTestOnly` に改名し、片側 key 登録が Rust unit test 専用であることを明確化した。
+- `descrambler` crate に TSC/AFC 16 行 matrix test を追加し、AFC=00、TSC=01、scrambled adaptation-only、clear adaptation-only、even/odd payload descramble の期待値を固定した。
+- binder service test に non-TS-frame ingress helper を追加し、`InvalidPacketSize` / `BadSyncByte` が record-DVR raw TS に残らないことを delivery path 条件として固定した。
+- Android/Soong build、Rust unit tests、atest、VTS、CTS、実機確認は未実施。
+
+## r50bb2
+
+- r50bb の Tuner HAL descrambler 修正完了条件のうち、ロジック未達だった VOID key removal 後の診断経路だけを修正した。
+- `Tuner.VOID_KEYTOKEN` (`[0x00]`) による current key removal 後も、PID 登録済み descrambler を active snapshot に残すようにした。
+- key slot 未設定 snapshot は対象 PID の scrambled packet で `NO_KEY` を記録し、`SCRAMBLED_WITHOUT_DESCRAMBLER` に落とさない。
+- PID 登録維持、record-DVR raw TS への scrambled passthrough、既存の malformed/non-TS-frame 分岐は維持した。
+- 回帰テスト `void_key_token_clears_key_only_and_keeps_pid_registration` に、VOID後の scrambled packet が `NO_KEY` へ落ち、`SCRAMBLED_WITHOUT_DESCRAMBLER` を増やさない確認を追加した。
+- この環境では Android/Soong build、Rust unit test実行、VTS、実機確認は未実施。
+
+## r50bb
+
+- Applied the descrambler packet validation plan for r51: AFC=00 is invalid, TSC=01 is invalid after AFC validation, and scrambled adaptation-only packets are diagnosed as `ScrambledWithoutPayload`.
+- Removed clear-packet fast-path bypass before TS header validation.
+- Split non-TS-frame drop from TS-frame-like malformed record-only delivery.
+- Added fixed descrambler diagnostics for invalid packet size, bad sync byte, invalid AFC, invalid adaptation field, invalid TSC, scrambled-without-payload, and malformed-packet-for-recording.
+- Made CAS bridge production key registration require both Odd and Even key material while keeping one-sided key registration test-only.
+- Treated `[0x00]` as `Tuner.VOID_KEYTOKEN` current-key removal and kept empty token `[]` as invalid argument / bad token.
+- Updated descrambler regression tests for the corrected packet matrix, delivery decisions, CAS bridge key-pair rule, and VOID key token behavior.
+- Android/Soong build, Rust unit tests, atest, VTS, CTS, and real-device checks were not run in this environment.
+
 ## r50ba2
 
 - r50ba に対して、リリース物整理のみを行った。

@@ -30,6 +30,33 @@ data class PmtPidMapping(
     val pmtPid: Int,
 )
 
+
+
+enum class CaDescriptorScope { PROGRAM, ES }
+
+data class CaDescriptor(
+    val caSystemId: Int,
+    val caPid: Int?,
+    val scope: CaDescriptorScope,
+    val esPid: Int?,
+    val rawDescriptor: ByteArray,
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is CaDescriptor) return false
+        return caSystemId == other.caSystemId && caPid == other.caPid && scope == other.scope && esPid == other.esPid && rawDescriptor.contentEquals(other.rawDescriptor)
+    }
+
+    override fun hashCode(): Int {
+        var result = caSystemId
+        result = 31 * result + (caPid ?: 0)
+        result = 31 * result + scope.hashCode()
+        result = 31 * result + (esPid ?: 0)
+        result = 31 * result + rawDescriptor.contentHashCode()
+        return result
+    }
+}
+
 data class AribElementaryStream(
     val elementaryPid: Int,
     val streamType: Int,
@@ -48,7 +75,12 @@ data class AribService(
     val pcrPid: Int? = null,
     val freeCaMode: Boolean? = null,
     val streams: List<AribElementaryStream> = emptyList(),
-)
+    val hasProgramCaDescriptor: Boolean = false,
+    val hasEsCaDescriptor: Boolean = false,
+    val serviceScopedCaDescriptors: List<CaDescriptor> = emptyList(),
+) {
+    val requiresCas: Boolean get() = hasProgramCaDescriptor || hasEsCaDescriptor
+}
 
 data class AribTransport(
     val originalNetworkId: Int,
@@ -61,6 +93,13 @@ data class AribTransport(
 data class AribExtendedItem(
     val itemDescription: String,
     val itemText: String,
+)
+
+data class AribParentalRating(
+    val countryCode: String,
+    val rating: Int,
+    val rawRating: Int,
+    val supported: Boolean,
 )
 
 data class AribEvent(
@@ -77,7 +116,8 @@ data class AribEvent(
     val componentText: String? = null,
     val audioComponentText: String? = null,
     val audioLanguage: String? = null,
-    val canonicalGenre: String? = null,
+    val canonicalGenre: String? = null, // 非推奨互換フィールド。r51 通常経路では設定しない
+    val broadcastGenre: String? = null,
     val genreSupplementText: String? = null,
     val eventGroupText: String? = null,
     val freeCaText: String? = null,
@@ -85,6 +125,7 @@ data class AribEvent(
     val diagnosticText: String = "",
     val diagnosticDescriptorJson: String = "{}",
     val textDiagnostics: List<String> = emptyList(),
+    val parentalRatings: List<AribParentalRating> = emptyList(),
 )
 
 data class AribEventDiagnostic(
@@ -95,10 +136,30 @@ data class AribEventDiagnostic(
     val diagnosticDescriptorJson: String,
 )
 
+
+data class AribEpgUpdateWindow(
+    val serviceKey: ServiceKey,
+    val windowStartMillis: Long,
+    val windowEndMillis: Long,
+    val validProgramStableIdentities: List<String>,
+)
+
 data class ServicePublishabilityDiagnostic(
     val serviceKey: ServiceKey,
     val publishable: Boolean,
+    val channelRegistrationReady: Boolean,
+    val epgPublishable: Boolean,
+    val clearLivePlaybackSupported: Boolean,
+    val requiresCas: Boolean,
+    val unsupportedCas: Boolean,
+    val pmtPidResolved: Boolean = false,
+    val pmtParsed: Boolean = false,
+    val caStateResolved: Boolean = false,
+    val freeCaModeResolved: Boolean = false,
     val missingComponents: List<String>,
+    val reasons: List<String>,
+    val registrationReasons: List<String>,
+    val epgReasons: List<String>,
 )
 
 enum class CaMetadataSource { PROGRAM, ELEMENTARY_STREAM, CAT }

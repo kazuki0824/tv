@@ -8,9 +8,13 @@ import android.net.Uri
 import android.util.Log
 import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.common.ServiceKey
+import com.maleicacid.tvinput.common.StreamSelector
 import com.maleicacid.tvinput.db.ChannelRecord
 import com.maleicacid.tvinput.db.ProgramRecord
-import java.util.Base64
+import android.util.Base64
+import org.json.JSONArray
+import org.json.JSONObject
+import java.security.MessageDigest
 
 class TvProviderWriter private constructor(
     private val inputId: String,
@@ -21,7 +25,7 @@ class TvProviderWriter private constructor(
     constructor(inputId: String, channelStore: ChannelStore, @Suppress("UNUSED_PARAMETER") testOnly: Boolean) : this(inputId, channelStore)
 
     data class Diagnostic(val serviceKey: ServiceKey?, val operation: String, val message: String)
-    data class UpsertResult(val inserted: Int, val updated: Int, val failures: List<Diagnostic>)
+    data class UpsertResult(val inserted: Int, val updated: Int, val failures: List<Diagnostic>, val deleted: Int = 0)
 
     interface ChannelStore {
         fun findExistingChannelId(key: ServiceKey): Result<Long?>
@@ -31,6 +35,7 @@ class TvProviderWriter private constructor(
         fun insertProgram(values: ContentValues): Result<Long?> = Result.failure(UnsupportedOperationException("この store は program insert に対応しません"))
         fun updateProgram(programId: Long, values: ContentValues): Result<Int> = Result.failure(UnsupportedOperationException("この store は program update に対応しません"))
         fun deleteObsoletePrograms(channelId: Long, validProgramKeys: Set<String>, windowStartMs: Long, windowEndMs: Long): Result<Int> = Result.success(0)
+        fun listExistingChannels(): Result<List<ChannelRecord>> = Result.success(emptyList())
     }
 
     fun upsertChannels(channels: List<ChannelRecord>): UpsertResult {
@@ -58,18 +63,32 @@ class TvProviderWriter private constructor(
         return UpsertResult(inserted, updated, failures)
     }
 
-    fun upsertPrograms(programs: List<ProgramRecord>): UpsertResult {
+    fun upsertPrograms(programs: List<ProgramRecord>): UpsertResult = upsertProgramsForWindows(
+        programs = programs,
+        windows = programs.groupBy { it.serviceKey }.map { (key, values) ->
+            ProgramPublishCoordinator.EpgUpdateWindow(
+                serviceKey = key,
+                windowStartMs = values.minOf { it.startTimeMillis },
+                windowEndMs = values.maxOf { it.startTimeMillis + it.durationMillis },
+                validProgramKeys = values.map { programIdentity(it) }.toSet(),
+            )
+        },
+    )
+
+    fun upsertProgramsForWindows(programs: List<ProgramRecord>, windows: List<ProgramPublishCoordinator.EpgUpdateWindow>): UpsertResult {
         var inserted = 0
         var updated = 0
+        var deleted = 0
         val failures = mutableListOf<Diagnostic>()
-        val byChannel = programs.groupBy { it.serviceKey }
-        byChannel.forEach { (serviceKey, channelPrograms) ->
+        val programsByChannel = programs.groupBy { it.serviceKey }
+        val windowsByChannel = windows.groupBy { it.serviceKey }
+        (programsByChannel.keys + windowsByChannel.keys).forEach { serviceKey ->
             val channelIdResult = channelStore.findExistingChannelId(serviceKey)
             if (channelIdResult.isFailure) { failures += Diagnostic(serviceKey, "program-channel-query", channelIdResult.exceptionOrNull()?.message.orEmpty()); return@forEach }
             val channelId = channelIdResult.getOrNull()
             if (channelId == null) { failures += Diagnostic(serviceKey, "program-channel-query", "program 登録対象 channel がありません"); return@forEach }
             val validKeys = mutableSetOf<String>()
-            channelPrograms.sortedBy { it.startTimeMillis }.forEach { program ->
+            programsByChannel[serviceKey].orEmpty().sortedBy { it.startTimeMillis }.forEach { program ->
                 val validation = validate(program)
                 if (validation != null) { failures += validation; return@forEach }
                 val key = programIdentity(program)
@@ -88,17 +107,52 @@ class TvProviderWriter private constructor(
                     if ((updateResult.getOrNull() ?: 0) <= 0) failures += Diagnostic(serviceKey, "program-update", "provider 更新対象行なし id=$existingId") else updated++
                 }
             }
-            val start = channelPrograms.minOfOrNull { it.startTimeMillis } ?: return@forEach
-            val end = channelPrograms.maxOfOrNull { it.startTimeMillis + it.durationMillis } ?: return@forEach
-            channelStore.deleteObsoletePrograms(channelId, validKeys, start, end).onFailure { failures += Diagnostic(serviceKey, "program-cleanup", it.message.orEmpty()) }
+            windowsByChannel[serviceKey].orEmpty().forEach { window ->
+                val keysForWindow = validKeys.filter { it in window.validProgramKeys }.toSet().ifEmpty { window.validProgramKeys }
+                val deleteResult = channelStore.deleteObsoletePrograms(channelId, keysForWindow, window.windowStartMs, window.windowEndMs)
+                if (deleteResult.isFailure) {
+                    failures += Diagnostic(serviceKey, "program-delete-obsolete", deleteResult.exceptionOrNull()?.message.orEmpty())
+                } else {
+                    deleted += deleteResult.getOrNull() ?: 0
+                }
+            }
         }
-        Log.i(LogTags.TIS, "program 登録結果 inputId=$inputId inserted=$inserted updated=$updated failures=${failures.size}")
-        return UpsertResult(inserted, updated, failures)
+        Log.i(LogTags.TIS, "program 登録結果 inputId=$inputId inserted=$inserted updated=$updated deleted=$deleted failures=${failures.size}")
+        return UpsertResult(inserted, updated, failures, deleted = deleted)
     }
 
-    internal fun validateForTest(channel: ChannelRecord): Diagnostic? = validate(channel)
-    internal fun channelValuesForTest(channel: ChannelRecord): ContentValues = channelValues(channel)
-    internal fun programValuesForTest(channelId: Long, program: ProgramRecord): ContentValues = programValues(channelId, program, programIdentity(program))
+    sealed class ExistingServiceKeysResult {
+        data class Success(val keys: Set<ServiceKey>) : ExistingServiceKeysResult()
+        data class Failure(val diagnostics: List<Diagnostic>) : ExistingServiceKeysResult()
+    }
+
+    fun existingServiceKeysResult(keys: Iterable<ServiceKey>): ExistingServiceKeysResult {
+        val out = linkedSetOf<ServiceKey>()
+        val failures = mutableListOf<Diagnostic>()
+        keys.forEach { key ->
+            val result = channelStore.findExistingChannelId(key)
+            if (result.isFailure) {
+                failures += Diagnostic(key, "channel-query", result.exceptionOrNull()?.message.orEmpty())
+            } else if (result.getOrNull() != null) {
+                out += key
+            }
+        }
+        return if (failures.isEmpty()) ExistingServiceKeysResult.Success(out) else ExistingServiceKeysResult.Failure(failures)
+    }
+
+    fun existingServiceKeys(keys: Iterable<ServiceKey>): Set<ServiceKey> = when (val result = existingServiceKeysResult(keys)) {
+        is ExistingServiceKeysResult.Success -> result.keys
+        is ExistingServiceKeysResult.Failure -> emptySet()
+    }
+
+    fun existingChannels(): List<ChannelRecord> = channelStore.listExistingChannels().getOrElse { error ->
+        Log.w(LogTags.TIS, "既存 channel 復元に失敗しました inputId=$inputId", error)
+        emptyList()
+    }
+
+    fun validateForTest(channel: ChannelRecord): Diagnostic? = validate(channel)
+    fun channelValuesForTest(channel: ChannelRecord): ContentValues = channelValues(channel)
+    fun programValuesForTest(channelId: Long, program: ProgramRecord): ContentValues = programValues(channelId, program, programIdentity(program))
 
     private fun validate(channel: ChannelRecord): Diagnostic? {
         val key = channel.serviceKey
@@ -143,52 +197,189 @@ class TvProviderWriter private constructor(
         put(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS, program.startTimeMillis + program.durationMillis)
         put(TvContract.Programs.COLUMN_SHORT_DESCRIPTION, program.shortDescription)
         put(TvContract.Programs.COLUMN_LONG_DESCRIPTION, program.description)
-        program.audioLanguage?.takeIf { it.isNotBlank() }?.let { put(TvContract.Programs.COLUMN_AUDIO_LANGUAGE, it) }
-        program.canonicalGenre?.takeIf { it.isNotBlank() }?.let { put(TvContract.Programs.COLUMN_CANONICAL_GENRE, it) }
+        if (program.audioLanguage.isNullOrBlank()) putNull(TvContract.Programs.COLUMN_AUDIO_LANGUAGE) else put(TvContract.Programs.COLUMN_AUDIO_LANGUAGE, program.audioLanguage)
+        if (program.broadcastGenre.isNullOrBlank()) putNull(TvContract.Programs.COLUMN_BROADCAST_GENRE) else put(TvContract.Programs.COLUMN_BROADCAST_GENRE, TvContract.Programs.Genres.encode(program.broadcastGenre))
+        putNull(TvContract.Programs.COLUMN_CANONICAL_GENRE)
+        if (program.contentRatings.isEmpty()) putNull(TvContract.Programs.COLUMN_CONTENT_RATING) else put(TvContract.Programs.COLUMN_CONTENT_RATING, program.contentRatings.distinct().sorted().joinToString(","))
+        put(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_FLAG1, if (program.requiresCas) 1 else 0)
+        put(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_FLAG2, if (program.unsupportedCas) 1 else 0)
+        put(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_FLAG3, if (program.clearLivePlaybackSupported) 1 else 0)
+        put(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_FLAG4, if (program.epgPublishable) 1 else 0)
         put(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA, programProviderData(identity, program).toByteArray(Charsets.UTF_8))
     }
 
-    private fun programIdentity(program: ProgramRecord): String {
-        val key = program.serviceKey
-        return program.stableIdentity.ifBlank { "onid=${key.originalNetworkId};tsid=${key.transportStreamId};sid=${key.serviceId};event=${program.eventId}" }
-    }
+    private fun programIdentity(program: ProgramRecord): String = canonicalProgramKey(program)
 
-    internal fun programProviderDataForTest(programKey: String): String = programProviderData(programKey)
+    fun programProviderDataForTest(programKey: String): String = programProviderData(programKey)
 
     companion object {
         const val PROGRAM_KEY_FIELD = "programKeyB64"
+        private const val PROVIDER_DATA_SCHEMA_VERSION = 1
+        private const val BASE64_FLAGS = Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP
+        private val SIGNATURE_COLUMNS = listOf(
+            TvContract.Programs.COLUMN_CHANNEL_ID,
+            TvContract.Programs.COLUMN_TITLE,
+            TvContract.Programs.COLUMN_EPISODE_TITLE,
+            TvContract.Programs.COLUMN_EVENT_ID,
+            TvContract.Programs.COLUMN_SHORT_DESCRIPTION,
+            TvContract.Programs.COLUMN_LONG_DESCRIPTION,
+            TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS,
+            TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS,
+            TvContract.Programs.COLUMN_AUDIO_LANGUAGE,
+            TvContract.Programs.COLUMN_BROADCAST_GENRE,
+            TvContract.Programs.COLUMN_CANONICAL_GENRE,
+            TvContract.Programs.COLUMN_CONTENT_RATING,
+            TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA,
+            TvContract.Programs.COLUMN_INTERNAL_PROVIDER_FLAG1,
+            TvContract.Programs.COLUMN_INTERNAL_PROVIDER_FLAG2,
+            TvContract.Programs.COLUMN_INTERNAL_PROVIDER_FLAG3,
+            TvContract.Programs.COLUMN_INTERNAL_PROVIDER_FLAG4,
+        )
+
+        fun canonicalProgramKey(program: ProgramRecord): String {
+            val key = program.serviceKey
+            val eventId = program.eventId.takeIf { it >= 0 } ?: -1
+            val end = program.startTimeMillis + program.durationMillis
+            return "onid=${key.originalNetworkId};tsid=${key.transportStreamId};sid=${key.serviceId};eventId=$eventId;startUtcMillis=${program.startTimeMillis};endUtcMillis=$end"
+        }
+
         fun programProviderData(programKey: String): String {
-            val encoded = Base64.getUrlEncoder().withoutPadding().encodeToString(programKey.toByteArray(Charsets.UTF_8))
-            return "$PROGRAM_KEY_FIELD=$encoded"
+            val obj = JSONObject()
+                .put("schemaVersion", PROVIDER_DATA_SCHEMA_VERSION)
+                .put(PROGRAM_KEY_FIELD, encodeProgramKey(programKey))
+            return obj.toString()
         }
+
         fun programProviderData(programKey: String, program: ProgramRecord): String {
-            val base = programProviderData(programKey)
-            val details = listOf(
-                "extendedItemsB64" to program.extendedItemsJson,
-                "componentTextB64" to program.componentText.orEmpty(),
-                "audioComponentTextB64" to program.audioComponentText.orEmpty(),
-                "audioLanguageB64" to program.audioLanguage.orEmpty(),
-                "canonicalGenreB64" to program.canonicalGenre.orEmpty(),
-                "genreSupplementTextB64" to program.genreSupplementText.orEmpty(),
-                "eventGroupTextB64" to program.eventGroupText.orEmpty(),
-                "freeCaTextB64" to program.freeCaText.orEmpty(),
-                "seriesNameB64" to program.seriesName.orEmpty(),
-                "diagnosticTextB64" to program.diagnosticText,
-                "descriptorJsonB64" to program.diagnosticDescriptorJson,
-            ).filter { it.second.isNotBlank() && it.second != "[]" && it.second != "{}" }
-                .joinToString(";") { (key, value) -> "$key=${Base64.getUrlEncoder().withoutPadding().encodeToString(value.toByteArray(Charsets.UTF_8))}" }
-            return if (details.isBlank()) base else "$base;$details"
+            val diagnostics = JSONObject()
+                .put("currentProgramOverlapCount", 0)
+                .put("selectedProgramId", program.tvProviderProgramId ?: -1L)
+                .put("selectionRule", "")
+                .put("skippedUnresolvedTransport", false)
+                .put("malformedCaDescriptorCount", 0)
+                .put("droppedRetryWindowCount", 0)
+            val obj = JSONObject()
+                .put("schemaVersion", PROVIDER_DATA_SCHEMA_VERSION)
+                .put(PROGRAM_KEY_FIELD, encodeProgramKey(programKey))
+                .put("requiresCas", program.requiresCas)
+                .put("unsupportedCas", program.unsupportedCas)
+                .put("clearLivePlaybackSupported", program.clearLivePlaybackSupported)
+                .put("channelRegistrationReady", program.channelRegistrationReady)
+                .put("epgPublishable", program.epgPublishable)
+                .put("publishStateSource", normalizePublishStateSource(program.publishStateSource))
+                .put("extendedItems", normalizeExtendedItems(program.extendedItemsJson))
+                .put("componentText", program.componentText.orEmpty())
+                .put("audioComponentText", program.audioComponentText.orEmpty())
+                .put("audioLanguage", program.audioLanguage.orEmpty())
+                .put("broadcastGenre", program.broadcastGenre.orEmpty())
+                .put("genreSupplementText", program.genreSupplementText.orEmpty())
+                .put("eventGroupText", program.eventGroupText.orEmpty())
+                .put("freeCaText", program.freeCaText.orEmpty())
+                .put("seriesName", program.seriesName.orEmpty())
+                .put("diagnosticText", program.diagnosticText)
+                .put("descriptorDiagnostics", normalizeDescriptorDiagnostics(program.diagnosticDescriptorJson))
+                .put("contentRatings", JSONArray(program.contentRatings.distinct().sorted()))
+                .put("parentalRatingDiagnostics", normalizeParentalRatingDiagnostics(program.parentalRatingDiagnosticsJson, programKey))
+                .put("unsupportedDescriptorDiagnostics", normalizeDescriptorDiagnostics(program.unsupportedDescriptorJson))
+                .put("videoFormat", listOfNotNull(program.videoFormat, program.videoWidth?.toString(), program.videoHeight?.toString()).joinToString("/"))
+                .put("diagnostics", diagnostics)
+            return obj.toString()
         }
+
         fun parseProgramKey(providerData: String?): String? {
             val raw = providerData?.takeIf { it.isNotBlank() } ?: return null
+            if (raw.trimStart().startsWith("{")) {
+                return runCatching {
+                    decodeProgramKey(JSONObject(raw).optString(PROGRAM_KEY_FIELD).takeIf { it.isNotBlank() } ?: return null)
+                }.getOrNull()
+            }
             if (!raw.contains("=")) return raw
-            val encoded = raw.split(';')
-                .mapNotNull { part ->
-                    val i = part.indexOf('=')
-                    if (i <= 0) null else part.substring(0, i) to part.substring(i + 1)
+            val encoded = raw.split(';').mapNotNull { part ->
+                val i = part.indexOf('=')
+                if (i <= 0) null else part.substring(0, i) to part.substring(i + 1)
+            }.toMap()[PROGRAM_KEY_FIELD] ?: return null
+            return runCatching { decodeProgramKey(encoded) }.getOrNull()
+        }
+
+        fun signatureForContentValues(values: ContentValues): String {
+            val bytes = buildString {
+                SIGNATURE_COLUMNS.forEach { column ->
+                    val value = values.get(column)
+                    val valueBytes = when (value) {
+                        null -> ByteArray(0)
+                        is ByteArray -> value
+                        is Number, is Boolean -> value.toString().toByteArray(Charsets.UTF_8)
+                        else -> value.toString().toByteArray(Charsets.UTF_8)
+                    }
+                    append(column).append('\u0000').append(valueBytes.size).append('\u0000')
+                    append(String(valueBytes, Charsets.ISO_8859_1)).append('\n')
                 }
-                .toMap()[PROGRAM_KEY_FIELD] ?: return null
-            return runCatching { String(Base64.getUrlDecoder().decode(encoded), Charsets.UTF_8) }.getOrNull()
+            }.toByteArray(Charsets.ISO_8859_1)
+            return MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+        }
+
+        fun signatureForProgramForTest(channelId: Long, program: ProgramRecord): String {
+            val writer = TvProviderWriter("test", object : ChannelStore {
+                override fun findExistingChannelId(key: ServiceKey): Result<Long?> = Result.success(channelId)
+                override fun insertChannel(values: ContentValues): Result<Long?> = Result.success(channelId)
+                override fun updateChannel(channelId: Long, values: ContentValues): Result<Int> = Result.success(1)
+            }, testOnly = true)
+            return signatureForContentValues(writer.programValues(channelId, program, canonicalProgramKey(program)))
+        }
+
+        fun parseChannelProviderData(providerData: String?): Map<String, String> {
+            val raw = providerData?.takeIf { it.isNotBlank() } ?: return emptyMap()
+            return raw.split(';').mapNotNull { part ->
+                val i = part.indexOf('=')
+                if (i <= 0) null else part.substring(0, i) to part.substring(i + 1)
+            }.toMap()
+        }
+
+        private fun encodeProgramKey(programKey: String): String = Base64.encodeToString(programKey.toByteArray(Charsets.UTF_8), BASE64_FLAGS)
+        private fun decodeProgramKey(encoded: String): String = String(Base64.decode(encoded, BASE64_FLAGS), Charsets.UTF_8)
+        private fun normalizePublishStateSource(value: String): String = when (value.lowercase()) {
+            "current" -> "current"
+            "fallback" -> "fallback"
+            else -> "none"
+        }
+        private fun normalizeExtendedItems(json: String): JSONArray {
+            val input = runCatching { JSONArray(json) }.getOrElse { JSONArray() }
+            val out = JSONArray()
+            for (i in 0 until input.length()) {
+                val item = input.optJSONObject(i)
+                if (item != null) {
+                    out.put(JSONObject().put("key", item.optString("key", item.optString("itemDescription", ""))).put("value", item.optString("value", item.optString("itemText", ""))))
+                }
+            }
+            return out
+        }
+        private fun normalizeDescriptorDiagnostics(json: String): JSONArray {
+            val raw = runCatching { JSONObject(json) }.getOrNull()
+            val arr = raw?.optJSONArray("diagnostics") ?: runCatching { JSONArray(json) }.getOrElse { JSONArray() }
+            val values = mutableListOf<String>()
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i)
+                if (obj != null) {
+                    values += "tableId=${obj.optInt("tableId", -1)};pid=${obj.optInt("pid", -1)};sectionNumber=${obj.optInt("sectionNumber", -1)};descriptorOffset=${obj.optInt("descriptorOffset", -1)};diagnosticCode=${obj.optString("diagnosticCode", "UNSUPPORTED_DESCRIPTOR").uppercase()}"
+                } else {
+                    val s = arr.optString(i)
+                    if (s.isNotBlank()) values += s
+                }
+            }
+            return JSONArray(values.distinct().sorted())
+        }
+        private fun normalizeParentalRatingDiagnostics(json: String, programKey: String): JSONArray {
+            val arr = runCatching { JSONObject(json).optJSONArray("parentalRatings") ?: JSONArray(json) }.getOrElse { JSONArray() }
+            val values = mutableListOf<String>()
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i)
+                if (obj != null) {
+                    val rating = obj.optString("mappedTvContentRating", obj.optString("rating", ""))
+                    val code = obj.optString("diagnosticCode", if (rating.isBlank()) "MISSING_PARENTAL_RATING" else "INVALID_PARENTAL_RATING").uppercase()
+                    values += "programKeyB64=${encodeProgramKey(programKey)};rating=$rating;diagnosticCode=$code"
+                }
+            }
+            return JSONArray(values.distinct().sorted())
         }
     }
 
@@ -206,6 +397,8 @@ class TvProviderWriter private constructor(
             "onid=${key.originalNetworkId}", "tsid=${key.transportStreamId}", "sid=${key.serviceId}", "input=$inputId",
             "system=${channel.deliverySystem}", "frequencyHz=${channel.frequencyHz}", "streamSelectorType=${channel.streamSelector.type.name}", "streamSelectorValue=${channel.streamSelector.value ?: ""}",
             "physicalChannel=${channel.physicalChannel ?: ""}", "backendHint=${channel.backendHint ?: ""}", "satelliteBand=${channel.satelliteBand ?: ""}", "remoteControlKeyId=${channel.remoteControlKeyId ?: ""}",
+            "requiresCas=${channel.requiresCas}", "unsupportedCas=${channel.unsupportedCas}", "clearLivePlaybackSupported=${channel.clearLivePlaybackSupported}",
+            "channelRegistrationReady=${channel.channelRegistrationReady}", "epgPublishable=${channel.epgPublishable}",
         ).joinToString(";").toByteArray(Charsets.UTF_8)
     }
 
@@ -224,6 +417,57 @@ class TvProviderWriter private constructor(
 
         override fun updateChannel(channelId: Long, values: ContentValues): Result<Int> = runCatching {
             context.contentResolver.update(ContentUris.withAppendedId(TvContract.Channels.CONTENT_URI, channelId), values, null, null)
+        }
+
+        override fun listExistingChannels(): Result<List<ChannelRecord>> = runCatching {
+            val projection = arrayOf(
+                TvContract.Channels._ID,
+                TvContract.Channels.COLUMN_ORIGINAL_NETWORK_ID,
+                TvContract.Channels.COLUMN_TRANSPORT_STREAM_ID,
+                TvContract.Channels.COLUMN_SERVICE_ID,
+                TvContract.Channels.COLUMN_DISPLAY_NUMBER,
+                TvContract.Channels.COLUMN_DISPLAY_NAME,
+                TvContract.Channels.COLUMN_INTERNAL_PROVIDER_DATA,
+            )
+            val selection = "${TvContract.Channels.COLUMN_INPUT_ID}=?"
+            val args = arrayOf(inputId)
+            val out = mutableListOf<ChannelRecord>()
+            context.contentResolver.query(TvContract.Channels.CONTENT_URI, projection, selection, args, null)?.use { cursor ->
+                while (cursor.moveToNext()) {
+                    val providerData = cursor.getBlob(6)?.toString(Charsets.UTF_8)
+                    val stored = TvProviderWriter.parseChannelProviderData(providerData)
+                    val frequencyHz = stored["frequencyHz"]?.toLongOrNull()
+                    val system = stored["system"]
+                    if (frequencyHz == null || system == null) {
+                        Log.w(LogTags.TIS, "既存 channel の物理選局情報を復元できないため boot/background sync から除外します id=${cursor.getLong(0)}")
+                    } else {
+                        val onid = cursor.getInt(1)
+                        val tsid = cursor.getInt(2)
+                        val sid = cursor.getInt(3)
+                        val serviceKey = ServiceKey(onid, tsid, sid)
+                        val streamSelector = runCatching { StreamSelector.fromStored(stored["streamSelectorType"], stored["streamSelectorValue"]?.takeIf { it.isNotBlank() }) }.getOrDefault(StreamSelector.NONE)
+                        out += ChannelRecord(
+                            serviceKey = serviceKey,
+                            displayNumber = cursor.getString(4).orEmpty(),
+                            displayName = cursor.getString(5).orEmpty().ifBlank { fallbackName(serviceKey) },
+                            frequencyHz = frequencyHz,
+                            tvProviderChannelId = cursor.getLong(0),
+                            deliverySystem = system,
+                            streamSelector = streamSelector,
+                            physicalChannel = stored["physicalChannel"]?.toIntOrNull(),
+                            backendHint = stored["backendHint"]?.takeIf { it.isNotBlank() },
+                            satelliteBand = stored["satelliteBand"]?.takeIf { it.isNotBlank() },
+                            remoteControlKeyId = stored["remoteControlKeyId"]?.toIntOrNull(),
+                            requiresCas = stored["requiresCas"] == "true",
+                            unsupportedCas = stored["unsupportedCas"] == "true",
+                            clearLivePlaybackSupported = stored["clearLivePlaybackSupported"] == "true",
+                            channelRegistrationReady = stored["channelRegistrationReady"] == "true",
+                            epgPublishable = stored["epgPublishable"] == "true",
+                        )
+                    }
+                }
+            }
+            out
         }
 
         override fun findExistingProgramId(channelId: Long, programKey: String): Result<Long?> = runCatching {
@@ -250,7 +494,7 @@ class TvProviderWriter private constructor(
         override fun deleteObsoletePrograms(channelId: Long, validProgramKeys: Set<String>, windowStartMs: Long, windowEndMs: Long): Result<Int> = runCatching {
             var deleted = 0
             val projection = arrayOf(TvContract.Programs._ID, TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA)
-            val selection = "${TvContract.Programs.COLUMN_CHANNEL_ID}=? AND ${TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS}>=? AND ${TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS}<=?"
+            val selection = "${TvContract.Programs.COLUMN_CHANNEL_ID}=? AND ${TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS}>? AND ${TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS}<?"
             val args = arrayOf(channelId.toString(), windowStartMs.toString(), windowEndMs.toString())
             context.contentResolver.query(TvContract.Programs.CONTENT_URI, projection, selection, args, null)?.use { cursor ->
                 while (cursor.moveToNext()) {

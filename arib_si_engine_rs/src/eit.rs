@@ -1,4 +1,4 @@
-use crate::descriptors::{parse_event_descriptors, EventDescriptors};
+use crate::descriptors::{event_descriptor_loop_truncated_diagnostic, parse_event_descriptors, DescriptorParseStatus, EventDescriptors, DescriptorDiagnostic};
 use crate::sections::parse_section_header;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -17,6 +17,7 @@ impl EitScope {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EitEvent {
+    pub diagnostics: Vec<EitEventDiagnostic>,
     pub table_id: u8,
     pub scope: EitScope,
     pub service_id: u16,
@@ -37,13 +38,31 @@ pub struct EitStableEventIdentity {
     pub event_id: u16,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EitEventDiagnostic {
+    pub event_identity: EitStableEventIdentity,
+    pub parse_status: DescriptorParseStatus,
+    pub reason: String,
+    pub descriptor_diagnostics: Vec<DescriptorDiagnostic>,
+    pub malformed_descriptor_count: usize,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EitUpdateWindow {
+    pub original_network_id: u16,
+    pub transport_stream_id: u16,
+    pub service_id: u16,
+    pub window_start_millis: i64,
+    pub window_end_millis: i64,
+    pub valid_event_identities: Vec<EitStableEventIdentity>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct EitEventKey {
     original_network_id: u16,
     transport_stream_id: u16,
     service_id: u16,
     event_id: u16,
-    start_time_millis: i64,
 }
 
 impl EitEvent {
@@ -64,7 +83,6 @@ impl From<&EitEvent> for EitEventKey {
             transport_stream_id: event.transport_stream_id,
             service_id: event.service_id,
             event_id: event.event_id,
-            start_time_millis: event.start_time_millis,
         }
     }
 }
@@ -88,6 +106,7 @@ struct VersionedEventSet {
 pub struct EitStore {
     events: BTreeMap<EitEventKey, EitEvent>,
     section_events: BTreeMap<EitSectionKey, VersionedEventSet>,
+    last_update_windows: Vec<EitUpdateWindow>,
 }
 
 impl EitStore {
@@ -106,18 +125,69 @@ impl EitStore {
             original_network_id,
             section_number,
         };
-        let new_keys: BTreeSet<_> = parsed.iter().map(EitEventKey::from).collect();
-        if let Some(old) = self.section_events.get(&section_key) {
-            if old.version != version {
-                for old_key in old.event_keys.difference(&new_keys) {
-                    self.events.remove(old_key);
+        let scope_section_keys: Vec<EitSectionKey> = self.section_events.keys()
+            .filter(|key| key.table_id == header.table_id
+                && key.service_id == service_id
+                && key.transport_stream_id == transport_stream_id
+                && key.original_network_id == original_network_id)
+            .cloned()
+            .collect();
+        let scope_version_changed = scope_section_keys.iter().any(|key| {
+            self.section_events.get(key).map(|old| old.version != version).unwrap_or(false)
+        });
+        let mut previous_keys: BTreeSet<EitEventKey> = BTreeSet::new();
+        if scope_version_changed {
+            for key in scope_section_keys {
+                if let Some(old) = self.section_events.remove(&key) {
+                    previous_keys.extend(old.event_keys);
                 }
             }
+        } else {
+            previous_keys = self.section_events.get(&section_key).map(|old| old.event_keys.clone()).unwrap_or_default();
+        }
+        let new_keys: BTreeSet<_> = parsed.iter().map(EitEventKey::from).collect();
+        let mut window_events: Vec<EitEvent> = parsed.clone();
+        for old_key in previous_keys.difference(&new_keys) {
+            if let Some(old_event) = self.events.get(old_key) {
+                window_events.push(old_event.clone());
+            }
+        }
+        if !previous_keys.is_empty() || !new_keys.is_empty() {
+            let r51_window_events: Vec<_> = window_events.iter().filter(|event| event.scope != EitScope::R53LongSchedule).cloned().collect();
+            let r51_current_events: Vec<_> = parsed.iter().filter(|event| event.scope != EitScope::R53LongSchedule).cloned().collect();
+            if let Some(window) = build_update_window(original_network_id, transport_stream_id, service_id, &r51_window_events, &r51_current_events) {
+                self.last_update_windows.retain(|existing| {
+                    !(existing.original_network_id == window.original_network_id
+                        && existing.transport_stream_id == window.transport_stream_id
+                        && existing.service_id == window.service_id
+                        && existing.window_start_millis == window.window_start_millis
+                        && existing.window_end_millis == window.window_end_millis)
+                });
+                self.last_update_windows.push(window);
+            }
+        }
+        for old_key in previous_keys.difference(&new_keys) {
+            self.events.remove(old_key);
         }
         for event in parsed {
             self.events.insert(EitEventKey::from(&event), event);
         }
         self.section_events.insert(section_key, VersionedEventSet { version, event_keys: new_keys });
+    }
+
+    pub fn take_update_windows_r51(&mut self) -> Vec<EitUpdateWindow> {
+        let mut out: Vec<_> = self.last_update_windows.drain(..)
+            .filter(|window| window.window_end_millis > window.window_start_millis)
+            .collect();
+        out.sort_by_key(|w| (w.original_network_id, w.transport_stream_id, w.service_id, w.window_start_millis, w.window_end_millis));
+        out
+    }
+
+    pub fn snapshot_update_windows_r51(&self) -> Vec<EitUpdateWindow> {
+        self.last_update_windows.iter()
+            .filter(|window| window.window_end_millis > window.window_start_millis)
+            .cloned()
+            .collect()
     }
 
     pub fn snapshot_r51(&self) -> Vec<EitEvent> {
@@ -126,9 +196,33 @@ impl EitStore {
         out
     }
 
+    pub fn clear_update_windows(&mut self) { self.last_update_windows.clear(); }
+
     pub fn snapshot_all_for_diagnostic(&self) -> Vec<EitEvent> { self.events.values().cloned().collect() }
 
     pub fn section_count_for_diagnostic(&self) -> usize { self.section_events.len() }
+}
+
+fn build_update_window(onid: u16, tsid: u16, sid: u16, window_events: &[EitEvent], current_events: &[EitEvent]) -> Option<EitUpdateWindow> {
+    if window_events.is_empty() {
+        return None;
+    }
+    let start = window_events.iter().map(|event| event.start_time_millis).min()?;
+    let end = window_events.iter().map(|event| event.start_time_millis + event.duration_millis).max()?;
+    if end <= start {
+        return None;
+    }
+    let mut valid_event_identities: Vec<_> = current_events.iter().map(|event| event.stable_identity()).collect();
+    valid_event_identities.sort_by_key(|identity| (identity.original_network_id, identity.transport_stream_id, identity.service_id, identity.event_id));
+    valid_event_identities.dedup();
+    Some(EitUpdateWindow {
+        original_network_id: onid,
+        transport_stream_id: tsid,
+        service_id: sid,
+        window_start_millis: start,
+        window_end_millis: end,
+        valid_event_identities,
+    })
 }
 
 pub fn classify_table_id(table_id: u8) -> EitScope {
@@ -154,9 +248,46 @@ pub fn parse_eit_section(section: &[u8]) -> Vec<EitEvent> {
         let desc_len = (((section[cursor + 10] & 0x0f) as usize) << 8) | section[cursor + 11] as usize;
         let desc_start = cursor + 12;
         let Some(desc_end) = desc_start.checked_add(desc_len) else { break; };
-        if desc_end > body_end { break; }
-        if start > 0 && duration > 0 {
-            out.push(EitEvent { table_id: header.table_id, scope, service_id, transport_stream_id: tsid, original_network_id: onid, event_id, start_time_millis: start, duration_millis: duration, free_ca_mode, descriptors: parse_event_descriptors(&section[desc_start..desc_end]) });
+        if desc_end > body_end {
+            if let (Some(start), Some(duration)) = (start, duration) {
+                if start > 0 && duration > 0 {
+                    let identity = EitStableEventIdentity { original_network_id: onid, transport_stream_id: tsid, service_id, event_id };
+                    let mut descriptors = EventDescriptors::default();
+                    descriptors.diagnostics.push(event_descriptor_loop_truncated_diagnostic(
+                        desc_start,
+                        desc_len,
+                        body_end.saturating_sub(desc_start),
+                        &section[desc_start..body_end],
+                    ));
+                    let diagnostics = vec![EitEventDiagnostic {
+                        event_identity: identity,
+                        parse_status: DescriptorParseStatus::TruncatedDescriptor,
+                        reason: "event descriptors_loop_length exceeds EIT section body".to_string(),
+                        malformed_descriptor_count: descriptors.diagnostics.len(),
+                        descriptor_diagnostics: descriptors.diagnostics.clone(),
+                    }];
+                    out.push(EitEvent { diagnostics, table_id: header.table_id, scope, service_id, transport_stream_id: tsid, original_network_id: onid, event_id, start_time_millis: start, duration_millis: duration, free_ca_mode, descriptors });
+                }
+            }
+            break;
+        }
+        if let (Some(start), Some(duration)) = (start, duration) {
+            if start > 0 && duration > 0 {
+                let descriptors = parse_event_descriptors(&section[desc_start..desc_end]);
+                let identity = EitStableEventIdentity { original_network_id: onid, transport_stream_id: tsid, service_id, event_id };
+                let diagnostics = if descriptors.diagnostics.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![EitEventDiagnostic {
+                        event_identity: identity,
+                        parse_status: DescriptorParseStatus::TruncatedDescriptor,
+                        reason: "event descriptor loop contains malformed descriptor".to_string(),
+                        malformed_descriptor_count: descriptors.diagnostics.len(),
+                        descriptor_diagnostics: descriptors.diagnostics.clone(),
+                    }]
+                };
+                out.push(EitEvent { diagnostics, table_id: header.table_id, scope, service_id, transport_stream_id: tsid, original_network_id: onid, event_id, start_time_millis: start, duration_millis: duration, free_ca_mode, descriptors });
+            }
         }
         cursor = desc_end;
     }
@@ -164,14 +295,27 @@ pub fn parse_eit_section(section: &[u8]) -> Vec<EitEvent> {
 }
 
 fn u16_at(bytes: &[u8], offset: usize) -> u16 { u16::from_be_bytes([bytes[offset], bytes[offset + 1]]) }
-fn bcd(v: u8) -> i32 { (((v >> 4) & 0x0f) as i32) * 10 + ((v & 0x0f) as i32) }
-fn decode_duration_millis(bytes: &[u8], offset: usize) -> i64 { ((bcd(bytes[offset]) * 3600 + bcd(bytes[offset+1]) * 60 + bcd(bytes[offset+2])) as i64) * 1000 }
-fn decode_mjd_bcd_millis(bytes: &[u8], offset: usize) -> i64 {
+fn decode_bcd2(v: u8) -> Option<i32> {
+    let hi = (v >> 4) & 0x0f;
+    let lo = v & 0x0f;
+    (hi <= 9 && lo <= 9).then_some((hi as i32) * 10 + lo as i32)
+}
+fn decode_duration_millis(bytes: &[u8], offset: usize) -> Option<i64> {
+    let h = decode_bcd2(bytes[offset])?;
+    let m = decode_bcd2(bytes[offset + 1])?;
+    let s = decode_bcd2(bytes[offset + 2])?;
+    if m > 59 || s > 59 { return None; }
+    Some(((h * 3600 + m * 60 + s) as i64) * 1000)
+}
+fn decode_mjd_bcd_millis(bytes: &[u8], offset: usize) -> Option<i64> {
     let mjd = u16_at(bytes, offset) as i32;
-    if mjd == 0xffff { return 0; }
+    if mjd == 0xffff { return None; }
     let (year, month, day) = mjd_to_ymd(mjd);
-    let h = bcd(bytes[offset+2]); let m = bcd(bytes[offset+3]); let s = bcd(bytes[offset+4]);
-    civil_to_unix_millis(year, month, day, h, m, s) - 9 * 60 * 60 * 1000
+    let h = decode_bcd2(bytes[offset+2])?;
+    let m = decode_bcd2(bytes[offset+3])?;
+    let s = decode_bcd2(bytes[offset+4])?;
+    if h > 23 || m > 59 || s > 59 { return None; }
+    Some(civil_to_unix_millis(year, month, day, h, m, s) - 9 * 60 * 60 * 1000)
 }
 fn mjd_to_ymd(mjd: i32) -> (i32, i32, i32) {
     let jd = mjd + 2400001;
@@ -222,6 +366,20 @@ mod tests {
         body
     }
 
+
+    #[test]
+    fn same_version_update_removes_events_absent_from_new_section() {
+        let mut store = EitStore::default();
+        let start1 = [0xee, 0x00, 0x12, 0x00, 0x00];
+        let start2 = [0xee, 0x01, 0x13, 0x00, 0x00];
+        store.upsert_section(&section_with_crc(eit_body(1, &[(1, start1), (2, start2)])));
+        assert_eq!(store.snapshot_r51().len(), 2);
+        store.upsert_section(&section_with_crc(eit_body(1, &[(1, start1)])));
+        let events = store.snapshot_r51();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_id, 1);
+    }
+
     #[test]
     fn version_update_removes_events_absent_from_new_section() {
         let mut store = EitStore::default();
@@ -236,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn start_time_change_is_old_key_delete_plus_new_key_upsert() {
+    fn start_time_change_updates_existing_stable_event_identity() {
         let mut store = EitStore::default();
         let start1 = [0xee, 0x00, 0x12, 0x00, 0x00];
         let start2 = [0xee, 0x02, 0x14, 0x00, 0x00];
@@ -250,6 +408,7 @@ mod tests {
     #[test]
     fn stable_identity_is_independent_from_start_time_for_tvprovider_keying() {
         let event = EitEvent {
+            diagnostics: Vec::new(),
             table_id: 0x50,
             scope: EitScope::R51MinimumSchedule,
             service_id: 1,
@@ -276,4 +435,56 @@ mod tests {
         store.upsert_section(&section_with_crc(eit_body(1, &[(1, start1)])));
         assert_eq!(store.section_count_for_diagnostic(), 1);
     }
+
+    #[test]
+    fn invalid_bcd_start_time_is_rejected() {
+        let mut store = EitStore::default();
+        let invalid = [0xee, 0x00, 0x7a, 0x00, 0x00];
+        store.upsert_section(&section_with_crc(eit_body(1, &[(1, invalid)])));
+        assert!(store.snapshot_r51().is_empty());
+    }
+
+    #[test]
+    fn invalid_duration_bcd_is_rejected() {
+        let mut body = eit_body(1, &[(1, [0xee, 0x00, 0x12, 0x00, 0x00])]);
+        // duration は 14 バイトの EIT header、event_id 2 バイト、start_time 5 バイトの後に始まる。
+        body[21] = 0x00;
+        body[22] = 0x7a;
+        body[23] = 0x00;
+        let mut store = EitStore::default();
+        store.upsert_section(&section_with_crc(body));
+        assert!(store.snapshot_r51().is_empty());
+    }
+
+
+    #[test]
+    fn invalid_hour_minute_second_ranges_are_rejected() {
+        let mut store = EitStore::default();
+        store.upsert_section(&section_with_crc(eit_body(1, &[(1, [0xee, 0x00, 0x24, 0x00, 0x00])])));
+        store.upsert_section(&section_with_crc(eit_body(1, &[(2, [0xee, 0x00, 0x12, 0x60, 0x00])])));
+        store.upsert_section(&section_with_crc(eit_body(1, &[(3, [0xee, 0x00, 0x12, 0x00, 0x60])])));
+        assert!(store.snapshot_r51().is_empty());
+    }
+
+    #[test]
+    fn undefined_mjd_is_rejected() {
+        let mut store = EitStore::default();
+        store.upsert_section(&section_with_crc(eit_body(1, &[(1, [0xff, 0xff, 0x12, 0x00, 0x00])])));
+        assert!(store.snapshot_r51().is_empty());
+    }
+
+    #[test]
+    fn descriptor_loop_overflow_is_kept_as_event_diagnostic() {
+        let mut body = eit_body(1, &[(1, [0xee, 0x00, 0x12, 0x00, 0x00])]);
+        body[24] = 0xf0;
+        body[25] = 0x05;
+        let mut store = EitStore::default();
+        store.upsert_section(&section_with_crc(body));
+        let events = store.snapshot_r51();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].diagnostics.len(), 1);
+        assert_eq!(events[0].diagnostics[0].parse_status, DescriptorParseStatus::TruncatedDescriptor);
+        assert_eq!(events[0].diagnostics[0].malformed_descriptor_count, 1);
+    }
+
 }

@@ -20,8 +20,8 @@ class EventModelMapperDescriptorTest {
             componentText = "映像",
             audioComponentText = "音声",
             audioLanguage = "jpn",
-            canonicalGenre = "NEWS",
-            genreSupplementText = "ニュース/報道(0/0)",
+            broadcastGenre = "ARIB(0x0/0x0):ニュース/報道/定時・総合",
+            genreSupplementText = "ニュース/報道/定時・総合",
             eventGroupText = "sid=101 event=202",
             freeCaText = "無料放送",
             seriesName = "シリーズ",
@@ -35,7 +35,7 @@ class EventModelMapperDescriptorTest {
         check(record.description.contains("【出演】A"))
         check(record.description.contains("映像: 映像"))
         check(record.description.contains("音声: 音声"))
-        check(record.description.contains("ジャンル: ニュース/報道(0/0)"))
+        check(record.description.contains("ジャンル: ニュース/報道/定時・総合"))
         check(record.description.contains("関連番組: sid=101 event=202"))
         check(record.description.contains("放送種別: 無料放送"))
         check(!record.description.contains("シリーズ: シリーズ"))
@@ -43,8 +43,9 @@ class EventModelMapperDescriptorTest {
         check(record.componentText == "映像")
         check(record.audioComponentText == "音声")
         check(record.audioLanguage == "jpn")
-        check(record.canonicalGenre == "NEWS")
-        check(record.genreSupplementText == "ニュース/報道(0/0)")
+        check(record.canonicalGenre == null)
+        check(record.broadcastGenre == "ARIB(0x0/0x0):ニュース/報道/定時・総合")
+        check(record.genreSupplementText == "ニュース/報道/定時・総合")
         check(record.eventGroupText == "sid=101 event=202")
         check(record.freeCaText == "無料放送")
         check(record.seriesName == "シリーズ")

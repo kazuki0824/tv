@@ -39,7 +39,7 @@ EDCBとEPGStationの参照から補完できたため、次を設計として固
 | component_descriptor text | `Programs.COLUMN_LONG_DESCRIPTION` に `映像: ...` として補足 | component構造を保持 | EDCB系UIでは映像情報として表示される |
 | audio_component_descriptor text | `Programs.COLUMN_LONG_DESCRIPTION` に `音声: ...` として補足 | audio component構造を保持 | EDCB系UIでは音声情報として表示される |
 | audio language | `Programs.COLUMN_AUDIO_LANGUAGE` | audio component構造を保持 | Android標準列がある |
-| content genre 大分類 / 中分類 | ARIB `content_descriptor` 由来の放送規格ジャンル文字列を `Programs.COLUMN_BROADCAST_GENRE` へ `TvContract.Programs.Genres.encode(...)` 形式で格納する | 元ARIB分類、大分類、中分類、表示文字列を保持 | Android TvProvider には放送規格由来ジャンル用の `COLUMN_BROADCAST_GENRE` があり、ARIB分類を直接 canonical genre と混同しないため |
+| content genre 大分類 / 中分類 | `arib_si_engine_rs` がARIB分類値とARIB表示名を出力し、TIS がその表示名を `Programs.COLUMN_BROADCAST_GENRE` へ `TvContract.Programs.Genres.encode(...)` 形式で格納する | 元ARIB分類、大分類、中分類、表示文字列を保持 | Android TvProvider には放送規格由来ジャンル用の `COLUMN_BROADCAST_GENRE` があり、ARIB分類を直接 canonical genre と混同しないため |
 | Android canonical genre | r51 では TIS の primary projection として直接書き込まない。ARIB分類から `TvContract.Programs.Genres` の定義済み値へ写像する表を別途固定するまでは、TIS実装は `Programs.COLUMN_CANONICAL_GENRE` を `ContentValues` に設定しない。ただし Android TvProvider は `Programs.COLUMN_BROADCAST_GENRE` から `Programs.COLUMN_CANONICAL_GENRE` を内部補完する場合があるため、TvProvider 読み出し後に canonical genre が非空になることは AOSP 標準動作として許容する。 | 写像元のARIB分類、TISが直接設定したcanonical genreの有無、TvProvider読み出し後のcanonical genreを診断用に区別して保持する | canonical genre は Android 定義済み値の列であり、ARIB分類のSSOTにしないため。また、TISの直接投影責務とTvProviderの内部補完結果を混同しないため |
 | content genre UI補足 | `Programs.COLUMN_LONG_DESCRIPTION` に `ジャンル: ...` として補足 | 元ARIB分類を保持 | 準正式案でUI向け補足として固定 |
 | event_group_descriptor | `Programs.COLUMN_LONG_DESCRIPTION` に `関連番組: ...` として補足 | event group構造を保持 | EDCBで関連/リレー番組として表示対象 |
@@ -150,7 +150,7 @@ Programs.COLUMN_CANONICAL_GENRE:
   ただし Android TvProvider は、`Programs.COLUMN_CANONICAL_GENRE` が未設定の場合でも `Programs.COLUMN_BROADCAST_GENRE` から canonical genre を内部補完する場合がある。したがって TvProvider 読み出し後の `Programs.COLUMN_CANONICAL_GENRE` が非空になることは、TIS の直接投影違反とはみなさない。
 
 Programs.COLUMN_CONTENT_RATING:
-  parental_rating_descriptor から TIS が定義するARIB rating domainの `TvContentRating` を作り、`TvContentRating.flattenToString()` の結果を格納する。
+  parental_rating_descriptor から TIS が AOSP system-defined ISDB rating domain（`com.android.tv / ISDB / ISDB_<age>`）の `TvContentRating` を作り、`TvContentRating.flattenToString()` の結果を格納する。
   複数 rating を持つ場合は、Android TvProvider の content rating 形式に従って複数の flattened rating を保持する。
   変換できない値、未対応 country_code、未取得 rating は推測で標準列へ入れず、`internal_provider_data` と診断に保持する。
   live session 側で現在番組の rating が未取得または未対応の場合は、parental control 判定では `TvContentRating.UNRATED` として扱う。
@@ -198,3 +198,38 @@ Programs.COLUMN_INTERNAL_PROVIDER_DATA:
 4. unit testで標準列とinternal_provider_dataの両方を確認する。
 5. この文書を更新し、開発規則.mdのリリース物ルールに反しないことを確認する。
 ```
+
+## r50bb7 追加: internal_provider_data schema
+
+`Programs.COLUMN_INTERNAL_PROVIDER_DATA` は `;` 区切りの key-value 形式を維持する。r50bb7 以降、標準列へ推測投影しないARIB固有情報は以下の key に格納する。
+
+- `programKeyB64`: ONID / TSID / SID / event_id 由来の安定ID。
+- `extendedItemsB64`: extended_event_descriptor の item 配列JSON。
+- `componentTextB64`: component_descriptor の表示用補足。
+- `audioComponentTextB64`: audio_component_descriptor の表示用補足。
+- `audioLanguageB64`: audio language code。
+- `broadcastGenreB64`: TvProvider 標準列へ投影した broadcast genre の元情報。
+- `genreSupplementTextB64`: ARIB content_descriptor の補足文字列。
+- `eventGroupTextB64`: event_group_descriptor の補足文字列。
+- `freeCaTextB64`: free_CA_mode の補足文字列。
+- `seriesNameB64`: series_descriptor のシリーズ名。
+- `diagnosticTextB64`: 変換診断。
+- `descriptorJsonB64`: descriptor 診断JSON。
+- `contentRatingsB64`: `TvContentRating.flattenToString()` のカンマ区切り。
+- `unsupportedDescriptorJsonB64`: 未対応 country/rating 等、標準列へ推測投影しない情報。
+- `videoFormatB64`: codec header から確定した video format / width / height。
+
+
+## r50bi parental rating / CAS fallback 投影固定
+
+### Programs.COLUMN_CONTENT_RATING
+
+- `parental_rating_descriptor` の `country_code=JPN` かつ `rating_value=4..20` は、TIS が Android `TvContentRating.createRating("com.android.tv", "ISDB", "ISDB_<age>")` で作成し、`flattenToString()` 形式で `Programs.COLUMN_CONTENT_RATING` に保存する。
+- JPN 以外、rating 4..20 以外、malformed / truncated descriptor、推測変換が必要な値は `COLUMN_CONTENT_RATING` に投影しない。
+- rating 未取得または未対応の番組も EPG から除外しない。Live session の parental control 判定では `TvContentRating.UNRATED` として扱う。
+
+### Programs.COLUMN_INTERNAL_PROVIDER_DATA
+
+Programs の `internal_provider_data` には、`requiresCas`, `unsupportedCas`, `clearLivePlaybackSupported`, `channelRegistrationReady`, `epgPublishable`, `publishStateSource` を保存する。parental rating については `countryCode`, `ratingValue`, `rawRatingByte`, `supported`, `parseStatus`, `mappedTvContentRating` を含む診断JSONを保存する。
+
+current diagnostic が complete であればその値を Programs CAS 状態の正とする。diagnostic が欠落または不完全な場合、既存 channel の `internal_provider_data` から CAS / readiness 状態を fallback して Programs 側に保存する。channel 側だけに保存して Programs 側を false に落としてはならない。

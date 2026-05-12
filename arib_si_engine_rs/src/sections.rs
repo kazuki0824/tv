@@ -81,12 +81,14 @@ pub fn crc32_mpeg(bytes: &[u8]) -> u32 {
     crc
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SectionAssembler {
     expected_len: Option<usize>,
     buf: Vec<u8>,
 }
 
+#[cfg(test)]
 impl SectionAssembler {
     pub fn reset(&mut self) {
         self.expected_len = None;
