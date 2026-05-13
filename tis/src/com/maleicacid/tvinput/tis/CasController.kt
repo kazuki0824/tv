@@ -9,7 +9,7 @@ import java.util.concurrent.Executors
 
 /**
  * B25/B1 向け CAS 制御。
- * PMT/CAT の CA metadata は arib_si_engine_rs の snapshot から受ける。
+ * PMT/CAT の CA情報 は arib_si_engine_rs の snapshot から受ける。
  * ECM/EMM は完全な section として扱い、生 TS packet は扱わない。
  * カード I/O、CW 生成、鍵発行は MediaCas/CAS HAL 側の責務とする。
  * Tuner HAL には 不透明 token と ES PID 登録だけを渡す。
@@ -315,21 +315,21 @@ class DirectTunerDescramblerBridge(private val tuner: Tuner?) : CasController.Tu
     override fun setKeyToken(keyToken: ByteArray): Result<Unit> = runCatching {
         val d = requireNotNull(descrambler) { "Tuner descrambler を利用できません" }
         val result = d.setKeyToken(keyToken)
-        require(result == Tuner.RESULT_SUCCESS) { "Descrambler.setKeyToken failed result=$result" }
+        require(result == Tuner.RESULT_SUCCESS) { "Descrambler.setKeyToken が失敗しました result=$result" }
     }
 
     override fun addPid(elementaryPid: Int): Result<Unit> = runCatching {
-        require(elementaryPid in 0..0x1fff) { "Descrambler.addPid invalid TS PID=$elementaryPid" }
+        require(elementaryPid in 0..0x1fff) { "Descrambler.addPid のTS PIDが不正です pid=$elementaryPid" }
         val d = requireNotNull(descrambler) { "Tuner descrambler を利用できません" }
         val result = d.addPid(DESCRAMBLER_PID_TYPE_T, elementaryPid, null)
-        require(result == Tuner.RESULT_SUCCESS) { "Descrambler.addPid failed pid=$elementaryPid result=$result" }
+        require(result == Tuner.RESULT_SUCCESS) { "Descrambler.addPid が失敗しました pid=$elementaryPid result=$result" }
     }
 
     override fun removePid(elementaryPid: Int): Result<Unit> = runCatching {
-        require(elementaryPid in 0..0x1fff) { "Descrambler.removePid invalid TS PID=$elementaryPid" }
+        require(elementaryPid in 0..0x1fff) { "Descrambler.removePid のTS PIDが不正です pid=$elementaryPid" }
         val d = requireNotNull(descrambler) { "Tuner descrambler を利用できません" }
         val result = d.removePid(DESCRAMBLER_PID_TYPE_T, elementaryPid, null)
-        require(result == Tuner.RESULT_SUCCESS) { "Descrambler.removePid failed pid=$elementaryPid result=$result" }
+        require(result == Tuner.RESULT_SUCCESS) { "Descrambler.removePid が失敗しました pid=$elementaryPid result=$result" }
     }
 
     @Synchronized

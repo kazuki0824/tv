@@ -54,7 +54,7 @@ adb shell dumpsys tv_input | grep -i Maleicacid
 system TV app から setup activity を起動でき、setup 後に少なくとも 1 つの clear-viewable channel が `TvContract.Channels` に登録されることを確認する。TIS は Tuner HAL binder を直接呼ばず、Tuner SDK API 経由で Tuner HAL にアクセスする。
 
 
-## r50bi parental rating / CAS fallback integration check
+## parental rating / CAS fallback 統合確認
 
 - product の system TV app / rating definitions に `domain=com.android.tv`, `ratingSystem=ISDB`, `rating=ISDB_4..ISDB_20` が存在することを確認する。
 - `TvProvider.Programs.COLUMN_CONTENT_RATING` に `com.android.tv/ISDB/ISDB_<age>` 相当の `TvContentRating.flattenToString()` が入ることを確認する。

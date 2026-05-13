@@ -55,48 +55,48 @@ class AribSiEngine(private val context: Context) : AutoCloseable {
     fun snapshotTransaction(takeUpdateWindows: Boolean = false): SnapshotTransaction =
         takeProgramPublishSnapshot(takeUpdateWindows)
 
-    @Deprecated("production code must use takeProgramPublishSnapshot() so all values come from one native snapshot", level = DeprecationLevel.ERROR)
+    @Deprecated("製品コードは全値を単一native snapshotから取得するため takeProgramPublishSnapshot() を使う必要があります", level = DeprecationLevel.ERROR)
     fun snapshotServices(): List<AribService> = synchronized(lock) { nativeParser.snapshotServicesBulk() }
 
-    @Deprecated("production code must use takeProgramPublishSnapshot() so all values come from one native snapshot", level = DeprecationLevel.ERROR)
+    @Deprecated("製品コードは全値を単一native snapshotから取得するため takeProgramPublishSnapshot() を使う必要があります", level = DeprecationLevel.ERROR)
     fun publishabilityDiagnosticsForTestOnly(): List<ServicePublishabilityDiagnostic> = synchronized(lock) { nativeParser.publishabilityDiagnosticsForTestOnly() }
 
-    @Deprecated("production code must use takeProgramPublishSnapshot() so all values come from one native snapshot", level = DeprecationLevel.ERROR)
+    @Deprecated("製品コードは全値を単一native snapshotから取得するため takeProgramPublishSnapshot() を使う必要があります", level = DeprecationLevel.ERROR)
     fun snapshotPmtPids(): List<PmtPidMapping> = synchronized(lock) { nativeParser.snapshotPmtPidsBulk() }
 
-    @Deprecated("production code must use takeProgramPublishSnapshot() so all values come from one native snapshot", level = DeprecationLevel.ERROR)
+    @Deprecated("製品コードは全値を単一native snapshotから取得するため takeProgramPublishSnapshot() を使う必要があります", level = DeprecationLevel.ERROR)
     fun snapshotPmtPidsForSectionFilters(): List<Int> = synchronized(lock) { nativeParser.snapshotPmtPidsForSectionFiltersBulk() }
 
-    @Deprecated("production code must use takeProgramPublishSnapshot() so all values come from one native snapshot", level = DeprecationLevel.ERROR)
+    @Deprecated("製品コードは全値を単一native snapshotから取得するため takeProgramPublishSnapshot() を使う必要があります", level = DeprecationLevel.ERROR)
     fun snapshotTransports(): List<AribTransport> = synchronized(lock) { nativeParser.snapshotTransportsBulk() }
 
-    @Deprecated("production code must use takeProgramPublishSnapshot() so all values come from one native snapshot", level = DeprecationLevel.ERROR)
+    @Deprecated("製品コードは全値を単一native snapshotから取得するため takeProgramPublishSnapshot() を使う必要があります", level = DeprecationLevel.ERROR)
     fun snapshotSdtActualTransports(): List<AribTransport> = synchronized(lock) { nativeParser.snapshotSdtActualTransportsBulk() }
 
-    @Deprecated("production code must use takeProgramPublishSnapshot() so all values come from one native snapshot", level = DeprecationLevel.ERROR)
+    @Deprecated("製品コードは全値を単一native snapshotから取得するため takeProgramPublishSnapshot() を使う必要があります", level = DeprecationLevel.ERROR)
     fun snapshotServicesForCasDiscovery(): List<AribService> = synchronized(lock) { nativeParser.snapshotServicesForCasDiscoveryBulk() }
 
-    @Deprecated("production code must use takeProgramPublishSnapshot() so all values come from one native snapshot", level = DeprecationLevel.ERROR)
+    @Deprecated("製品コードは全値を単一native snapshotから取得するため takeProgramPublishSnapshot() を使う必要があります", level = DeprecationLevel.ERROR)
     fun snapshotCaMetadata(): List<CaMetadata> = synchronized(lock) { nativeParser.snapshotCaMetadataBulk() }
 
-    @Deprecated("production code must use takeProgramPublishSnapshot() so all values come from one native snapshot", level = DeprecationLevel.ERROR)
+    @Deprecated("製品コードは全値を単一native snapshotから取得するため takeProgramPublishSnapshot() を使う必要があります", level = DeprecationLevel.ERROR)
     fun snapshotCaMetadataForCasDiscovery(): List<CaMetadata> = synchronized(lock) { nativeParser.snapshotCaMetadataForCasDiscoveryBulk() }
 
-    @Deprecated("production code must use takeProgramPublishSnapshot() so all values come from one native snapshot", level = DeprecationLevel.ERROR)
+    @Deprecated("製品コードは全値を単一native snapshotから取得するため takeProgramPublishSnapshot() を使う必要があります", level = DeprecationLevel.ERROR)
     fun snapshotPrivateSections(): List<PrivateSection> = synchronized(lock) { nativeParser.snapshotPrivateSectionsBulk() }
 
     fun decodeAribString(bytes: ByteArray): String = synchronized(lock) { nativeParser.decodeAribString(bytes) }
 
     fun decodeAribStringDiagnosticSummary(bytes: ByteArray): String = synchronized(lock) { nativeParser.decodeAribStringDiagnosticSummary(bytes) }
 
-    @Deprecated("production code must use takeProgramPublishSnapshot() so all values come from one native snapshot", level = DeprecationLevel.ERROR)
+    @Deprecated("製品コードは全値を単一native snapshotから取得するため takeProgramPublishSnapshot() を使う必要があります", level = DeprecationLevel.ERROR)
     fun eventsForTestOnly(): List<AribEvent> = synchronized(lock) { nativeParser.eventsForTestOnly() }
 
     /**
-     * Phase C/B-07: this is a drain API, not a stable snapshot.
-     * Each returned window is removed from the native parser state exactly once.
+     * これは排出APIであり、安定snapshotではない。
+     * 返却した各区間はnative parser状態から一度だけ除去される。
      */
-    @Deprecated("production code must use takeProgramPublishSnapshot() so all values come from one native snapshot", level = DeprecationLevel.ERROR)
+    @Deprecated("製品コードは全値を単一native snapshotから取得するため takeProgramPublishSnapshot() を使う必要があります", level = DeprecationLevel.ERROR)
     fun drainEpgWindowsForTestOnly(): List<AribEpgUpdateWindow> = synchronized(lock) { nativeParser.drainEpgWindowsForTestOnly() }
 
     fun snapshotEventDiagnostics(): List<AribEventDiagnostic> = synchronized(lock) {

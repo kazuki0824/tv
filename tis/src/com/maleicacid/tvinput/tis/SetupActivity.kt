@@ -29,18 +29,18 @@ class SetupActivity : Activity(), ChannelScanManager.Listener {
         statusView = TextView(this).apply {
             textSize = 18f
             text = if (invalidInputId) {
-                "Maleicacid TV Input setup\nInvalid setup intent: inputId is missing or does not belong to this TvInputService."
+                "Maleicacid TV Input setup\n不正なsetup intentです。inputIdがないか、このTvInputServiceに属していません。"
             } else {
-                "Maleicacid TV Input setup\nReady to scan channels."
+                "Maleicacid TV Input setup\nチャンネルスキャンを開始できます。"
             }
         }
         scanButton = Button(this).apply {
-            text = "Start channel scan"
+            text = "チャンネルスキャン開始"
             isEnabled = !invalidInputId
             setOnClickListener {
                 val resolved = inputId
                 if (resolved.isNullOrBlank() || !isOwnInputId(resolved)) {
-                    statusView.text = "Invalid setup intent: inputId is missing or does not belong to this TvInputService."
+                    statusView.text = "不正なsetup intentです。inputIdがないか、このTvInputServiceに属していません。"
                     setResult(RESULT_CANCELED)
                 } else {
                     setupGeneration = ChannelScanManager.startIfIdle(this@SetupActivity, resolved)
@@ -85,7 +85,7 @@ class SetupActivity : Activity(), ChannelScanManager.Listener {
                 is ScanState.Idle -> {
                     scanButton.isEnabled = !invalidInputId
                     cancelButton.isEnabled = false
-                    statusView.text = if (invalidInputId) "Invalid setup intent: inputId is missing or does not belong to this TvInputService." else "Ready to scan channels."
+                    statusView.text = if (invalidInputId) "不正なsetup intentです。inputIdがないか、このTvInputServiceに属していません。" else "チャンネルスキャンを開始できます。"
                 }
                 is ScanState.Running -> {
                     scanButton.isEnabled = false

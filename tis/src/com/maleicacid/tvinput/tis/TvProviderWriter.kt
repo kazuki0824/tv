@@ -38,10 +38,9 @@ class TvProviderWriter private constructor(
         fun findExistingProgramId(channelId: Long, programKey: String): Result<Long?> = Result.success(null)
         fun indexExistingProgramsForWindow(channelId: Long, windowStartMs: Long, windowEndMs: Long): Result<Map<String, Long>> = Result.success(emptyMap())
         /**
-         * Returns existing Program rows for the whole channel keyed by stable programKey.
-         * This is intentionally wider than an EPG update window so that an event whose
-         * start/end time moves outside the current window is still updated by stable
-         * ONID/TSID/SID/event identity instead of being inserted as a duplicate.
+         * channel 全体の既存 Program row を stable programKey で引ける形で返す。
+         * EPG update window より意図的に広く取得し、start / end time が現在 window の外へ
+         * 移動した event も、duplicate insert ではなく stable ONID / TSID / SID / event identity で更新する。
          */
         fun indexExistingProgramsForService(channelId: Long): Result<Map<String, Long>> =
             indexExistingProgramsForWindow(channelId, Long.MIN_VALUE, Long.MAX_VALUE)
@@ -72,7 +71,7 @@ class TvProviderWriter private constructor(
                 if (updateResult.getOrNull() == null || updateResult.getOrNull()!! <= 0) failures += Diagnostic(channel.serviceKey, "update", "provider 更新対象行なし id=$existingId") else updated++
             }
         }
-        Log.i(LogTags.TIS, "channel 登録結果 inputId=$inputId inserted=$inserted updated=$updated failures=${failures.size}")
+        Log.i(LogTags.TIS, "channel登録結果 inputId=$inputId inserted=$inserted updated=$updated failures=${failures.size}")
         return UpsertResult(inserted, updated, failures)
     }
 
@@ -154,7 +153,7 @@ class TvProviderWriter private constructor(
                 succeededServiceKeys += serviceKey
             }
         }
-        Log.i(LogTags.TIS, "program 登録結果 inputId=$inputId inserted=$inserted updated=$updated deleted=$deleted failures=${failures.size}")
+        Log.i(LogTags.TIS, "program登録結果 inputId=$inputId inserted=$inserted updated=$updated deleted=$deleted failures=${failures.size}")
         return UpsertResult(inserted, updated, failures, deleted = deleted, succeededServiceKeys = succeededServiceKeys)
     }
 
@@ -184,9 +183,9 @@ class TvProviderWriter private constructor(
     }
 
     fun existingChannelsResult(): Result<List<ChannelRecord>> = channelStore.listExistingChannels()
-        .onFailure { error -> Log.w(LogTags.TIS, "既存 channel 復元に失敗しました inputId=$inputId", error) }
+        .onFailure { error -> Log.w(LogTags.TIS, "既存channel復元に失敗しました inputId=$inputId", error) }
 
-    @Deprecated("production code must not collapse TvProvider query failure to an empty channel list", level = DeprecationLevel.ERROR)
+    @Deprecated("TvProvider問い合わせ失敗を空のチャンネル一覧へ潰してはなりません", level = DeprecationLevel.ERROR)
     fun existingChannelsForTestOnly(): List<ChannelRecord> = existingChannelsResult().getOrElse { emptyList() }
 
     fun validateForTest(channel: ChannelRecord): Diagnostic? = validate(channel)
@@ -251,8 +250,8 @@ class TvProviderWriter private constructor(
 
     companion object {
         /**
-         * Test-only field name kept for legacy assertions. Production provider-data
-         * is generated and normalized only by ProviderDataBridge / Rust.
+         * test-only assertion 用に維持する field 名。本番 provider-data は
+         * ProviderDataBridge / Rust だけが生成・正規化する。
          */
         const val PROGRAM_KEY_FIELD = "programKeyB64"
         private val SIGNATURE_COLUMNS = listOf(

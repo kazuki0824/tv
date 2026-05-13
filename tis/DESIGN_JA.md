@@ -31,7 +31,7 @@ BSの通常実行時候補生成はTISが持つBS TSID表だけを正とする�
 
 ## CAS / descrambler の r51 境界
 
-r51 では CAS HAL 本体はプレースホルダーのままにする。TIS は Tuner SDK API の filter 経由で PMT/CAT/SDT/ECM/EMM section payload を取得し、PMT/CAT から得た CA_descriptor と SDT 等から得た free_CA_mode / service identity 補助情報を arib_si_engine_rs / TIS 側で CA metadata / service metadata semantic model に変換する。TIS はその CA metadata に基づいて ECM/EMM section filter と MediaCas/CAS bridge を型付き API で制御し、実 key token が得られた場合だけ Tuner descrambler へ不透明な参照値を渡す。placeholder や診断専用結果は復号成功を意味しないため、`setKeyToken()` へ渡さない。Tuner HAL が未接続診断を返した場合も成功扱いにしない。
+r51 では CAS HAL 本体はプレースホルダーのままにする。TIS は Tuner SDK API の filter 経由で PMT/CAT/SDT/ECM/EMM section payload を取得し、PMT/CAT から得た CA_descriptor と SDT 等から得た free_CA_mode / service identity 補助情報を arib_si_engine_rs / TIS 側で CA情報 / service metadata semantic model に変換する。TIS はその CA情報 に基づいて ECM/EMM section filter と MediaCas/CAS bridge を型付き API で制御し、実 key token が得られた場合だけ Tuner descrambler へ不透明な参照値を渡す。placeholder や診断専用結果は復号成功を意味しないため、`setKeyToken()` へ渡さない。Tuner HAL が未接続診断を返した場合も成功扱いにしない。
 
 ## Tuner SDK API 呼び出し
 
@@ -43,11 +43,11 @@ r51 では MediaCodec block model の reflection fallback を禁止する。対�
 
 ## EIT と TvProvider
 
-r51 は EIT p/f を中心に使う。scan/setup 後に `TvProvider.Programs` へ出す最低限の Programs だけ schedule から拾う。Programs の `internal_provider_data` には JSON v1 の stable `programKey`、timing、CAS state、extended item、component/audio/series text、診断 JSON を TIS 内部データとして保存する。TvProvider の標準 column には title / short description / long description として自然に入る範囲だけ反映する。
+r51 は EIT p/f を主経路として使う。scan/setup 後に `TvProvider.Programs` へ出す最低限の Programs だけ EIT schedule actual `0x50..0x5F` から短期補完として拾う。schedule actual を常時・長期 EPG 収集として扱わず、EIT schedule other `0x60..0x6F`、長期 schedule window、サービス横断更新は r53 対象とする。Programs の `internal_provider_data` には JSON v1 の stable `programKey`、timing、CAS state、extended item、component/audio metadata、series 完全構造、event group `relatedItems`、linkage、free_CA_mode、音声言語、rating、診断 JSON を TIS 内部データとして保存する。TvProvider の標準 column には title / short description / long description、broadcast genre、明示写像できる canonical genre、series id、episode display number、item count、scrambled、audio language、content rating など自然対応できる範囲だけ反映する。
 
 ## 字幕表示の責務
 
-ARIB 字幕は TIS 側の字幕 path で `libaribcaption` を使用する。`arib_si_engine_rs` の自前 ARIB 文字列 decoder はサービス名・番組名・番組説明など字幕以外の SI/EPG 文字列に限定し、字幕 PES や字幕本文をその decoder に渡さない。libaribcaption は C API のみを使用し、独自 C/C++ shim は書かない。Kotlin から直接 C API を呼ばず、TIS Kotlin → Rust JNI boundary → safe Rust wrapper → libaribcaption C API の順に接続する。
+ARIB 字幕は TIS 側の字幕 path で `libaribcaption` を使用する。r51 では PMT から字幕 track を検出し、`TvTrackInfo.TYPE_SUBTITLE` として通知し、`onSetCaptionEnabled()` と字幕表示経路を接続する。字幕 track を advertise する場合は、ARIB 字幕 PES を libaribcaption C API 経路で処理し、実際に表示できることを完了条件に含める。`arib_si_engine_rs` の自前 ARIB 文字列 decoder はサービス名・番組名・番組説明など字幕以外の SI/EPG 文字列に限定し、字幕 PES や字幕本文をその decoder に渡さない。libaribcaption は C API のみを使用し、独自 C/C++ shim は書かない。Kotlin から直接 C API を呼ばず、TIS Kotlin → Rust JNI boundary → safe Rust wrapper → libaribcaption C API の順に接続する。BML / data broadcast 実行環境、双方向データ放送 UI、データ放送 UI は恒久対象外である。
 
 ## r51 live playback 実装方式
 
@@ -59,11 +59,11 @@ setup scan の channel registration は global discovery complete を必須条�
 
 ## codec header / A-V sync / publish mode の固定
 
-live playback の codec 構成は、video は MPEG-2 video と H.264/AVC、audio は AAC と MPEG audio を r51 対象 codec とする。
+live playback の codec 構成は、r51 では video は MPEG-2 video と H.264/AVC、audio は AAC と MPEG audio を対象 codec とする。r52 では ARIB資料ベースで国内放送全般であり得る codec を固定表として認識し、対応可能な codec を MediaFormat / decoder 起動 / AudioTrack / first-frame gate / unsupported diagnostics に接続する。
 
-r51 対応 video ES が存在しない service は viewable としない。HEVC など r51 未対応 video codec のみを持つ service は、再生不能として `notifyVideoUnavailable()` へ落とす。
+r51 対応 video ES が存在しない service は viewable としない。HEVC など r51 未対応 video codec のみを持つ service は、再生不能として `notifyVideoUnavailable()` へ落とす。r52 では HEVC を codec metadata として認識するが、ISDB-S3 / MMT / TLV 等の恒久対象外 transport profile 由来の場合は live viewable capability として claim しない。
 
-r51 対応 video ES が存在し、audio ES が存在しない、または audio codec だけが r51 未対応の場合は、video-only service として視聴可能にする。この場合、`notifyVideoUnavailable()` には落とさず、`audio absent` または `unsupported audio codec` を診断に残す。AC-3 等の未対応 audio codec は、対応 video が存在する限り video-only 診断の対象であり、video unavailable の直接理由にしてはならない。
+r51 対応 video ES が存在し、audio ES が存在しない、または audio codec だけが r51 未対応の場合は、video-only service として視聴可能にする。この場合、`notifyVideoUnavailable()` には落とさず、`audio absent` または `unsupported audio codec` を診断に残す。未対応 audio codec は、対応 video が存在する限り video-only 診断の対象であり、video unavailable の直接理由にしてはならない。AC-3 / Enhanced AC-3 / MPEG-H 3D Audio は、今回確認した ARIB 資料群では国内放送全般の対象 codec として固定する根拠を持たないため、r52 codec 固定表には含めない。
 
 decoder は PMT の stream_type だけでは構成せず、MediaEvent payload から MPEG-2 sequence header、H.264 SPS/PPS、AAC ADTS/AudioSpecificConfig、MPEG audio header を検出してから MediaFormat を構成する。
 
@@ -75,11 +75,11 @@ TvProvider公開モードは `PublishMode` で channel row 追加を setup scan 
 
 ## ARIB SI/EPG のTvProvider投影
 
-ARIB SI/EPG の標準列投影は tv直下の `ARIB_SI_EPG_TvProvider投影方針.md` を正とし、`internal_provider_data` の具体 schema / canonical encode / signature は `arib_si_engine_rs` の Rust provider-data serde model を SSOT とする。TISは、同文書で標準列投影が固定された項目だけを `Programs.COLUMN_LONG_DESCRIPTION` 等へ出し、r51 標準列投影対象外の項目は JSON v1 `internal_provider_data` のみに構造化保存する。
+ARIB SI/EPG の標準列投影は tv直下の `ARIB_SI_EPG_TvProvider投影方針.md` を正とし、`internal_provider_data` の具体 schema / canonical encode / signature は `arib_si_engine_rs` の Rust provider-data serde model を SSOT とする。TISは、同文書で標準列投影が固定された項目だけを TvProvider 標準列へ出し、標準列へ自然対応しない項目は JSON v1 `internal_provider_data` のみに構造化保存する。
 
-`Programs.COLUMN_CANONICAL_GENRE` については、TIS が直接設定する値と、Android TvProvider が `Programs.COLUMN_BROADCAST_GENRE` から内部補完した読み出し結果を区別する。r51 では ARIB→Android canonical genre 写像表を採用対象外とするため、TIS は `Programs.COLUMN_CANONICAL_GENRE` を `ContentValues` に直接設定しない。ただし TvProvider 読み出し後に canonical genre が非空になることは、AOSP 標準の内部補完として許容する。
+`Programs.COLUMN_CANONICAL_GENRE` については、TIS が直接設定する値と、Android TvProvider が `Programs.COLUMN_BROADCAST_GENRE` から内部補完した読み出し結果を区別する。r51 では `ARIB_SI_EPG_TvProvider投影方針.md` の明示写像表に一致する分類だけを `ContentValues` に直接設定する。写像不能分類、reserved、extension、others、user_nibble 由来分類は直接設定しない。
 
-`Programs.COLUMN_BROADCAST_GENRE` には、`arib_si_engine_rs` から受け取った ARIB content_descriptor の分類値とARIB表示名を、TIS が `TvContract.Programs.Genres.encode(...)` 形式で格納する。TIS は ARIB分類を Android canonical genre に変換しない。
+`Programs.COLUMN_BROADCAST_GENRE` には、`arib_si_engine_rs` から受け取った ARIB content_descriptor の分類値とARIB表示名を、TIS が `TvContract.Programs.Genres.encode(...)` 形式で格納する。TIS は ARIB分類を Android canonical genre に推測変換しない。
 
 ## parental control / content rating 契約
 
@@ -91,54 +91,54 @@ live session は、現在番組の rating と system parental control 設定を�
 
 TIS は `TvInputManager.ACTION_BLOCKED_RATINGS_CHANGED` と `TvInputManager.ACTION_PARENTAL_CONTROLS_ENABLED_CHANGED` を監視し、設定変更時に現在番組の parental control 判定を即時再評価する。
 
-## r50bb7 r51 TIS/arib_si_engine_rs 固定事項
+## r51 TIS/arib_si_engine_rs 固定事項
 
-- Android 14 系の通常 live session 生成では `onCreateSession(inputId, sessionId)` を実装し、framework 由来 `sessionId` を `Tuner(context, sessionId, useCase)` へ渡す。旧1引数 overload の fallback sessionId は互換経路専用とする。
-- r51 の video claim 対象は MPEG-2 video `0x02` と H.264/AVC `0x1b` に限定する。HEVC `0x24` は r51 clear live playback / playback selection 対象外であり、診断上は `NO_SUPPORTED_VIDEO_ES` 相当として扱う。
+- Android 14 系の通常 live session 生成では `onCreateSession(inputId, sessionId)` を実装し、framework 由来 `sessionId` を `Tuner(context, sessionId, useCase)` へ渡す。1引数 overload の fallback sessionId は互換経路専用とする。
+- r51 の video claim 対象は MPEG-2 video `0x02` と H.264/AVC `0x1b` に限定する。HEVC `0x24` は r51 clear live playback / playback selection 対象外であり、診断上は `NO_SUPPORTED_VIDEO_ES` 相当として扱う。r52 では MPEG-2 Video、H.264/AVC、HEVC を国内放送全般であり得る video codec として認識する。
 - ARIB parental rating は Android `TvContentRating` へ `domain=com.android.tv`, `ratingSystem=ISDB`, `rating=ISDB_<age>` として写像する。対応範囲は JPN かつ rating 4..20 のみとし、未対応 country / rating は推測変換せず `internal_provider_data` / 診断に残す。rating 未取得時は `TvContentRating.UNRATED` として parental control 判定する。
-- `notifyVideoAvailable()` は decoder の first frame callback が現行 playback generation と一致し、かつ parental control で block されていない場合だけ呼ぶ。旧 decoder callback は無視する。
+- `notifyVideoAvailable()` は decoder の first frame callback が現行 playback generation と一致し、かつ parental control で block されていない場合だけ呼ぶ。現行世代と一致しない decoder callback は無視する。
 - live tune refresh では新規 channel row を作らず、既存 channel の program 更新だけを行う。setup/rescan のみ channel row を作成できる。
 - H.264 は SPS/PPS 検出だけでなく SPS 由来の width / height を MediaFormat へ反映する。SPS 解析不能時は固定 1920x1080 fallback で成功扱いしない。
-- PMT 由来の video/audio track は `TvTrackInfo` として通知し、`onSelectTrack(TYPE_AUDIO, trackId)` で audio track 切替を受ける。r51 では別 video track / subtitle / data track 選択は false を返す。
+- PMT 由来の video/audio/subtitle track は `TvTrackInfo` として通知し、`onSelectTrack(TYPE_AUDIO, trackId)` と `onSetCaptionEnabled()` を受ける。r51 では字幕 track と libaribcaption 表示経路を実装対象に含める。別 video track と data track 選択は、対応 codec / 実行環境がない限り claim しない。
 - CS110 は stream selector `NONE` のみ許可し、TSID / relative selector を HAL tune request へ渡さない。Android Tuner builder では NONE 時に selector setter を呼ばない。
 - boot 後 EPG 再同期は既存 channel の p/f 最小更新に限定し、新規 channel row は作成しない。`JapanIsdbScanPlan.defaultInitialScan()` は setup scan / explicit rescan 専用であり、boot EPG sync の既定候補に使わない。
 - background channel maintenance は r51 スコープ内の必須実装とする。ただし boot critical path から分離し、boot EPG sync 完了後または明示的保守タイミングで実行開始を試行する。実行開始は scan/maintenance が未実行で、かつ live session が存在しない場合に限る。active live session または scan 実行中の場合は開始せず、skip 理由を diagnostics に残す。対象は既存 channel と既存 transport metadata refresh までに限定し、新規 channel insert は行わない。
 - section filter は CRC protected section で `setCrcEnabled(true)` を使用し、Rust 側 CRC 検査を defense-in-depth として維持する。TIS 側には PID / table / status 別 counter を持つ。
 
 
-## r50bi parental rating / CAS fallback 固定
+## parental rating / CAS 代替参照の固定
 
 - `Programs.COLUMN_CONTENT_RATING` と Live session の parental control 判定は同じ `AribRatingMapper` を使い、`com.android.tv / ISDB / ISDB_4..20` の AOSP system-defined rating に統一する。
 - TIS は custom rating-system XML / receiver を追加しない。product 統合時は system TV app / rating definitions に `com.android.tv / ISDB / ISDB_4..20` が存在することを確認する。
 - Live session は current program rating を `TvProvider current Program -> latest EIT cache -> TvContentRating.UNRATED` の順で解決する。
 - parental blocked の通知は `notifyContentBlocked(rating)` と AV停止を主とし、parental block の通知手段として `notifyVideoUnavailable()` を呼ばない。
 - `onUnblockContent()` の解除範囲は同一 `channelUri + serviceKey + eventId + ratingString` の current program / rating に限定する。start/end は stable identity ではなく、解除対象が現在表示中の同一 Program row であることを確認する補助条件としてのみ使ってよい。start/end/duration を provider-data `programKey`、unblock stable identity、または Program identity の SSOT にしてはならない。
-- CAS 未完成 / scrambled unsupported で playback success にしない場合は `TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN` を使う。具体的な CAS 状態 reason は CAS HAL 本実装まで使わない。
+- CAS 未完成 / scrambled unsupported で 再生成功 にしない場合は `TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN` を使う。具体的な CAS 状態 reason は CAS HAL 本実装まで使わない。
 - Programs CAS 状態は current complete diagnostic を優先し、不完全または欠落 diagnostic では既存 channel `internal_provider_data` の `requiresCas` / `unsupportedCas` / `clearLivePlaybackSupported` / `channelRegistrationReady` / `epgPublishable` を fallback する。
 
-## r50bi5 TIS / EPG publish boundary
+## TIS / EPG 公開境界
 
 r51 の EIT publish/delete 対象は、TvProvider に channel が存在する `ServiceKey`、または同一 setup/rescan transaction で channel insert が成功して channelId が確定した `ServiceKey` に限定する。live session の `currentService` だけには限定しない。Program row を持たない service へ Programs を publish/delete してはならない。
 
-r51 の EIT 対象 table は、present/following actual `0x4E`、present/following other `0x4F`、schedule actual `0x50..0x5F` のうち、上記対象 service に属する event とする。schedule other `0x60..0x6F` は r51 Programs publish/delete 対象外であり、update window を発生させない。
+r51 の EIT 対象 table は、present/following actual `0x4E`、present/following other `0x4F`、および scan/setup 後の初期登録・短期補完に使う schedule actual `0x50..0x5F` のうち、上記対象 service に属する event とする。schedule actual を常時・長期収集として扱わない。schedule other `0x60..0x6F` は r51 Programs publish/delete 対象外であり、update window を発生させない。
 
-EIT 更新時の update/delete window は、追加・変更・削除された event の旧 `[start,end)` と新 `[start,end)` の union とする。長期固定 lookahead window は導入しない。EIT table scope の version 変更で旧 section が消えた場合は、消えた event の旧 window も obsolete delete 対象に含める。
+EIT 更新時の update/delete window は、追加・変更・削除された event の既存 `[start,end)` と新 `[start,end)` の union とする。r51 では長期固定 lookahead window を導入しない。r53 で長期 EPG lookahead window を扱う場合は、EIT scope / version / event identity / authoritative 条件と併用する。EIT table scope の version 変更で既存 section が消えた場合は、消えた event の既存 window も obsolete delete 対象に含める。
 
-ただし、obsolete delete の根拠にできる EIT section / table snapshot は Rust parser が `deletionAuthoritative=true` と判定したものに限る。start_time BCD、duration BCD、event descriptor_loop_length、event fixed field が malformed の event を含む section は、旧 event 削除用の authoritative valid-event-set として扱わない。malformed event は旧正常 Program を消す根拠にせず、DescriptorDiagnosticV1 / ParserDiagnosticV1 に記録する。
+ただし、obsolete delete の根拠にできる EIT section / table snapshot は Rust parser が `deletionAuthoritative=true` と判定したものに限る。start_time BCD、duration BCD、event descriptor_loop_length、event fixed field が malformed の event を含む section は、既存 event 削除用の authoritative valid-event-set として扱わない。malformed event は既存正常 Program を消す根拠にせず、DescriptorDiagnosticV1 / ParserDiagnosticV1 に記録する。
 
 boot EPG sync の pending clear は boot EPG sync task 単位で判定する。task 中に cancel request を観測した場合は、成功 candidate があっても pending を clear しない。成功 candidate は `collectSiForCandidate()` が `COMPLETE` で、かつ registration-ready service が1件以上存在する candidate とする。background maintenance は pending clear を扱わない。
 
 registration-ready service は、`ServiceKey`、物理選局情報、inputId へ戻せる channel provider data、display name が揃い、TvProvider channel insert/update に進める service とする。display name は `ChannelRecord.displayName` が nonblank ならそれを使い、なければ SDT service_name、さらに無ければ `service-<onid>-<tsid>-<sid>` を使う。この fallback 名は registration-ready 判定上の有効な display name と扱う。
 
-## r50bi5 CAS placeholder boundary
+## CAS placeholder 境界
 
-CAS HAL placeholder のまま scrambled service を clear live playback success として扱ってはならない。scrambled unsupported service でも、PMT/CAT/CA metadata と診断を使って EPG / Programs / rating / provider-data は更新する。ただし CAS key token を提供できない状態では playback success にせず、CAS 起因の unavailable のみ `VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN` へ map する。first-frame timeout、filter start failure、unsupported stream、codec failure、audio failure は CAS unknown に map しない。
+CAS HAL placeholder のまま scrambled service を clear live 再生成功 として扱ってはならない。scrambled unsupported service でも、PMT/CAT/CA情報 と診断を使って EPG / Programs / rating / provider-data は更新する。ただし CAS key token を提供できない状態では 再生成功 にせず、CAS 起因の unavailable のみ `VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN` へ map する。初回映像到達timeout、filter start failure、非対応stream、codec失敗、audio失敗 は CAS unknown に map しない。
 
-CAS provider-data は current diagnostic を優先する。`caStateResolved=true` で CAS required / unsupported / clearLivePlaybackSupported が判断できる場合は、`freeCaModeResolved=false` でも current diagnostic を採用する。fallback diagnostic を使った場合は `publishStateSource=fallback` とし、採用可能な状態がない場合は `publishStateSource=none` とする。
+CAS provider-data は current diagnostic を優先する。`caStateResolved=true` で CAS required / unsupported / clearLivePlaybackSupported が判断できる場合は、`freeCaModeResolved=false` でも current diagnostic を採用する。代替参照した診断情報 を使った場合は `publishStateSource=fallback` とし、採用可能な状態がない場合は `publishStateSource=none` とする。
 
 Descrambler API の `setKeyToken()`、`addPid()`、`removePid()` は戻り値が `Tuner.RESULT_SUCCESS` の場合だけ成功とする。非 SUCCESS result は CAS diagnostic failure として扱い、成功扱いで握り潰してはならない。
 
-## r50bi5 TvProvider failure semantics
+## TvProvider failure semantics
 
 TvProvider query failure と channel なしは別状態として扱う。既存 channel query が失敗した場合は `skippedNoChannel` として扱わず、failure diagnostic とし、signature 更新・pending clear の根拠に使わない。
 
@@ -150,13 +150,13 @@ retry queue は全体上限 512 windows、ServiceKey ごと上限 32 windows と
 
 SDT-other / NIT-other / BAT 由来で現在 candidate の actual transport に解決できない service は、現在 candidate の物理情報で channel insert しない。未登録で Program row が存在しない unresolved transport は scan/maintenance diagnostics に `skippedUnresolvedTransportCount` として記録し、Program provider-data には書かない。publish 済み Program には自 service の `skippedUnresolvedTransport=false` を入れる。
 
-## r50bj provider-data schema / signature
+## provider-data schema / signature
 
-r50bj 以降、`Programs.COLUMN_INTERNAL_PROVIDER_DATA` の新規書き込み正形式は UTF-8 JSON v1 bytes のみとする。旧 `programKeyB64` や `;` 区切り key-value 形式は legacy input として読み取り移行に限り許可し、新規書き込みは禁止する。
+`Programs.COLUMN_INTERNAL_PROVIDER_DATA` の新規書き込み正形式は UTF-8 JSON v1 bytes のみとする。`programKeyB64` や `;` 区切り key-value 形式は読み取り互換入力として移行用に限り許可し、新規書き込みは禁止する。
 
 provider-data JSON v1 の構造、canonical encode、normalize、signature、stable key extraction は `arib_si_engine_rs` の Rust `provider_data` module の `serde` struct を SSOT とする。TIS Kotlin は provider-data JSON を `JSONObject.put()` や手書き string concatenation で直接構築してはならない。TIS Kotlin は Rust JNI の build / normalize / signature / key extraction API で得た bytes と signature を TvProvider に書く。
 
-Program provider-data の top-level envelope は次を必須とする。
+Program provider-data の top-level envelope は次を必須とする。この schema は TIS ではなく `arib_si_engine_rs/DESIGN_JA.md` の `ProgramProviderDataV1` を正とし、ここに置く JSON は同じ field を持つ完全例である。TIS instrumentation test 用 fixture は `tis/tests/assets/program_provider_data_v1/minimal_clear_program.json` に置き、Rust 側 fixture `arib_si_engine_rs/testdata/program_provider_data_v1/minimal_clear_program.json` と byte-identical に保つ。
 
 ```json
 {
@@ -180,6 +180,7 @@ Program provider-data の top-level envelope は次を必須とする。
     "durationMillis": 1800000
   },
   "source": {
+    "pid": 18,
     "tableId": 78,
     "version": 12,
     "sectionNumber": 0,
@@ -193,8 +194,24 @@ Program provider-data の top-level envelope は次を必須とする。
   },
   "ratings": [],
   "genres": [],
-  "audio": {},
-  "video": {},
+  "series": null,
+  "relatedItems": [],
+  "linkage": [],
+  "freeCaMode": {
+    "raw": 0,
+    "scrambled": false,
+    "parseStatus": "OK"
+  },
+  "audioLanguages": [],
+  "audio": null,
+  "video": null,
+  "extendedItems": [],
+  "components": {
+    "video": [],
+    "audio": [],
+    "subtitle": [],
+    "data": []
+  },
   "diagnostics": {
     "descriptorDiagnostics": [],
     "publishDiagnostics": [],
@@ -205,24 +222,26 @@ Program provider-data の top-level envelope は次を必須とする。
 
 `programKey` は `originalNetworkId / transportStreamId / serviceId / eventId` のみで構成する。`startUtcMillis`、`endUtcMillis`、`durationMillis` は `timing` に置き、stable key に含めない。event_id 不明の event を stable ARIB event として扱ってはならない。
 
+TIS は `components.video[]`、`components.audio[]`、`components.subtitle[]`、`components.data[]` を provider-data schema として再定義しない。映像・音声 codec metadata、字幕 track metadata、非対応 codec 診断は Rust JNI が返す JSON v1 bytes の中に保存される。TIS は TvProvider 標準列、`TvTrackInfo`、MediaFormat / AudioTrack / 字幕表示経路へ接続する接着層に限定する。`audio` / `video` が `null` の場合は主 track 未選択または未確定を意味し、空 object と同義に扱ってはならない。
+
 Channel provider-data の top-level envelope は `schema="maleicacid.tv.channel"`, `schemaVersion=1`, `serviceKey`, `tune`, `cas`, `diagnostics` を持つ JSON v1 とする。`tune` は `deliverySystem`, `frequencyHz`, `streamId`, `streamIdType` を持ち、CS110 は `streamIdType="NONE"` とし selector value を持たない。
 
 Program signature は TvProvider に実際に書く `ContentValues` と Rust JNI が返した provider-data bytes から生成する。signature 入力は固定 column list 順に `<columnName>\0<byteLength>\0<bytes>
 ` で連結し、その byte列の SHA-256 lowercase hex とする。`ContentValues` の iteration order には依存しない。insert 後に provider-data を再生成した場合、cache する signature は再生成後に実際に書いた bytes の signature とする。
 
-`selectedProgramId` のような TvProvider row id 依存値は stable provider-data signature の構成要素にしてはならない。必要な場合は best-effort diagnostic として扱い、signature skip 判定を壊さない。
+`selectedProgramId` のような TvProvider row id 依存値は stable provider-data signature の構成要素にしてはならない。必要な場合は 補助診断 として扱い、signature skip 判定を壊さない。
 
-## r50bi5 current program selection
+## current program 選択
 
 current program resolver は TvProvider query 時点で `START_TIME_UTC_MILLIS <= now AND END_TIME_UTC_MILLIS > now` に絞る。sort order は `START_TIME_UTC_MILLIS DESC, END_TIME_UTC_MILLIS ASC, _ID DESC` に固定する。overlap がある場合も cursor 返却順には依存せず、この selection rule で1件を選ぶ。
 
-provider-data diagnostics の `selectionRule` は `START_DESC_END_ASC_ID_DESC` とする。対象なしの場合は empty string とする。`selectedProgramId` は best-effort diagnostic として扱い、stable signature の構成要素にしない。ARIB `event_id` は `COLUMN_EVENT_ID` と JSON v1 `programKey.eventId` で扱う。
+provider-data diagnostics の `selectionRule` は `START_DESC_END_ASC_ID_DESC` とする。対象なしの場合は empty string とする。`selectedProgramId` は 補助診断 として扱い、stable signature の構成要素にしない。ARIB `event_id` は `COLUMN_EVENT_ID` と JSON v1 `programKey.eventId` で扱う。
 
-## r50bi5 CA descriptor / provider-data serialization
+## CA descriptor / provider-data 直列化
 
 CA_descriptor の raw bytes は Rust parser が元 section から保持し、JNI snapshot DTO に raw bytes として渡す。Kotlin production code で CA_descriptor を再構築しない。malformed CA_descriptor は raw descriptor / CAS metadata から除外し、service 自体は保持する。diagnostics には `malformedCaDescriptorCount` と table/PID/service context を残す。Kotlin 側で修復して provider-data や CAS metadata に不正 raw descriptor を入れてはならない。
 
-## r50bj transaction DTO / provider-data SSOT / executor / setup / retry 固定
+## transaction DTO / provider-data SSOT / executor / setup / retry の固定
 
 ### Rust JNI provider-data API
 
@@ -359,20 +378,20 @@ SetupActivity は自分が開始した `SETUP_SCAN` purpose かつ同一 scan ge
 Boot EPG sync / background maintenance の開始条件は、`activeLiveSessionCount == 0`、`sessionCreationInProgress == false`、`setupScanRunning == false`、`playbackPipelineRunning == false`、`scanManager running == false` をすべて満たすこととする。live session 作成要求が来た時点で boot/background task が未開始なら defer する。boot/background task が既に running の場合、r51 では boot/background task を cancel/defer し live tune を優先する。
 
 
-## r50bk6: TIS callback input bounds and backpressure
+## TIS callback 入力境界と逆圧
 
-- `SectionEvent.dataLength` is treated as the exact section byte length to read from the Tuner callback.
-- TIS accepts only `1..4096` bytes for a section event. `dataLength <= 0` is malformed and `dataLength > 4096` is oversized. Both are dropped before `ByteArray` allocation and counted in PID-scoped diagnostics.
-- `MediaEvent` samples are bounded to `1 MiB`. Negative offset, non-positive length, offset+length overflow, and LinearBlock capacity overrun are dropped without sample allocation and counted as diagnostics.
-- Decoder input-buffer backpressure is not a silent drop. Samples are held in a bounded pending queue and retried on later callback/drain. A sample is dropped only when the bounded queue is full, and the drop counter is incremented.
+- `SectionEvent.dataLength` は、Tuner callback から読み取る section の正確な byte 長として扱う。
+- TIS が section event として受け付ける長さは `1..4096` byte だけとする。`dataLength <= 0` は不正、`dataLength > 4096` は過大として、どちらも `ByteArray` 確保前に破棄し、PID 別診断に計上する。
+- `MediaEvent` sample は `1 MiB` を上限とする。負の offset、0 以下の length、offset + length の overflow、LinearBlock 容量超過は sample 確保なしで破棄し、診断に計上する。
+- decoder input-buffer の逆圧は無通知破棄ではない。sample は上限付き pending queue に保持し、後続 callback / drain で再試行する。sample を破棄するのは上限付き queue が満杯の場合だけとし、破棄 counter を加算する。
 
-## r50bk8 completion: provider-data / retry / attribution boundary
+## provider-data / retry / attribution 境界の完了条件
 
 ### Provider-data SSOT
 
 `TvContract.Channels/Programs.COLUMN_INTERNAL_PROVIDER_DATA` の新規書き込みは `arib_si_engine_rs` の provider-data JNI API が返す JSON v1 bytes をそのまま保存する。TIS Kotlin は TvProvider 標準列を詰める接着層であり、provider-data 本体、program stable key、descriptor diagnostics schema、provider-data signature を独自 JSON schema として再構築してはならない。
 
-Channel provider-data の旧 `key=value;...` 形式は read-only legacy fallback である。新規 channel row は JSON v1 のみを書き込む。
+Channel provider-data の`key=value;...` 形式は読み取り専用の互換入力である。新規 channel row は JSON v1 のみを書き込む。
 
 ### Program publish retry
 
@@ -382,4 +401,40 @@ Provider required query failure、Program insert/update failure、obsolete delet
 
 ### AttributionSource
 
-`AttributionSource?` は `TvInputService.onCreateSession(..., AttributionSource)` から `MaleicacidLiveSession`、`TunerController`、`PlaybackPipeline` へ保持して渡す。Android target の `AudioTrack.Builder` が `setAttributionSource(AttributionSource)` を公開している場合は reflection-free 直接呼び出しへ移行する。r50bk8 の Android 14 system SDK 境界では compile visibility 差があるため、`PlaybackPipeline` は reflection による best-effort 設定を行い、失敗時は warning log に残して audio usage/content type/session 設定を継続する。
+`AttributionSource?` は `TvInputService.onCreateSession(..., AttributionSource)` から `MaleicacidLiveSession`、`TunerController`、`PlaybackPipeline` へ保持して渡す。対象 Android の `AudioTrack.Builder` が `setAttributionSource(AttributionSource)` を公開している場合は reflection を使わない直接呼び出しへ移行する。Android 14 system SDK 境界では compile visibility 差があるため、`PlaybackPipeline` は reflection による補助設定を行い、失敗時は警告 log に残して audio usage/content type/session 設定を継続する。
+
+
+## 国内放送全般であり得る codec 固定表
+
+r52 では、ARIB 資料上の国内放送全般であり得る codec を次の固定表として扱う。ここでの「扱う」は、PMT / component descriptor / audio component descriptor / stream type / MMT asset metadata / codec metadata を認識し、TvProvider / track metadata / diagnostics へ正しく反映することを含む。transport profile や受信方式が本プロダクトの恒久対象外である場合は、codec を認識しても live viewable / playable capability として claim しない。
+
+### 参照した ARIB 資料と根拠
+
+| 根拠資料 | 本改訂で固定する内容 |
+|---|---|
+| `ARIB/doc/2-STD-B32v3_7.pdf` 第1部 第3章 | 国内デジタル放送の映像符号化方式は MPEG-2 Video、MPEG-4 AVC、HEVC の3系統として扱う。 |
+| `ARIB/doc/2-STD-B32v3_7.pdf` 第2部 第3章 | 国内デジタル放送の音声符号化方式は MPEG-2 AAC、MPEG-2 BC、MPEG-4 AAC、MPEG-4 ALS の4系統として扱う。 |
+| `ARIB/doc/2-STD-B10v5_8.pdf` 第2部 表 6-5 / 6.2.26 / 付録 E | MPEG-2 系映像、H.264/AVC、H.265/HEVC、MPEG-2 Audio、AAC ADTS、MPEG-4 Audio LATM の signaling を認識対象にする。 |
+| `ARIB/doc/2-STD-B60v1_7.pdf` MMT / asset signaling | ISDB-S3 / MMT 側では HEVC 映像、ISO/IEC 14496-3 音声、MPEG-4 AAC / MPEG-4 ALS を codec metadata として認識対象にする。ただし本プロダクトが ISDB-S3 / MMT / TLV を恒久対象外とする場合、live viewable / playable capability には入れない。 |
+| `ARIB/doc/2-STD-B59v2_0.pdf` | 22.2 ch 等の音響チャンネル構成の参照資料であり、放送 bitstream codec としては B32 / B60 の MPEG-4 AAC / MPEG-4 ALS 側で扱う。MPEG-H 3D Audio codec を本表へ追加する根拠にはしない。 |
+
+### video codec
+
+| codec | r52 の扱い |
+|---|---|
+| MPEG-2 Video | 必須対応。PMT / component descriptor から codec、解像度、走査方式、aspect を認識し、MediaFormat、decoder 起動、first-frame gate、unsupported diagnostics を固定する。 |
+| H.264 / MPEG-4 AVC | 必須対応。profile / level は AVC video descriptor と実 MediaCodec capability を照合し、未対応時は codec unsupported 診断に落とす。 |
+| H.265 / HEVC | codec として認識対象。対象 transport profile を本プロダクトが claim しない場合は live viewable capability に入れない。対応する場合は MediaFormat / decoder / first-frame gate まで必須。 |
+
+ISO/IEC 14496-2 Visual、JPEG 2000、auxiliary video、SVC、MVC、3D additional view は、今回の ISDB-T/S product scope の live viewable codec として claim しない。必要なら provider-data / diagnostics に保持する。
+
+### audio codec
+
+| codec | r52 の扱い |
+|---|---|
+| MPEG-2 AAC | 必須対応。ADTS / MPEG-2 AAC LC、channel count、sample rate、ISO639 language、main/sub、dual mono、音声モード、音質表示を保持する。 |
+| MPEG-2 BC Audio | 認識対象。decoder が利用できる場合だけ再生対応を claim し、未対応時は video-only 診断に落とす。 |
+| MPEG-4 AAC / HE-AAC | 必須認識。AAC LC / HE-AAC profile、LATM/LOAS / ADTS、AudioSpecificConfig、channel count、sample rate を保持する。decoder が利用できる場合だけ再生対応を claim する。 |
+| MPEG-4 ALS | codec として認識対象。対象 transport profile を本プロダクトが claim しない場合は playable capability に入れない。対応する場合は decoder / AudioTrack / metadata / unsupported diagnostics まで必須。 |
+
+AC-3、Enhanced AC-3、MPEG-H 3D Audio、DTS、DTS-HD、Dolby TrueHD は、今回確認した ARIB 資料群では国内デジタル放送の対象 codec として固定する根拠を確認できないため、r52 codec 固定表には含めない。

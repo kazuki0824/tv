@@ -91,7 +91,7 @@ r51 では、Android 14 Rust generated trait で受け取れる non-null filter 
 
 - non-null upstream source filter linkage を実装・確認する。
 - demux default source を使う通常 filter path を維持する。
-- `configure()` は旧 upstream linkage を必ず clear する。
+- `configure()` は既存 上流接続 を必ず clear する。
 - closed / runtime-failed source または destination は `INVALID_STATE` とする。
 - foreign / dangling / unsupported linkage は `INVALID_ARGUMENT` とする。
 - `setDataSource(null)` を r51 実装済みとして記述しない。

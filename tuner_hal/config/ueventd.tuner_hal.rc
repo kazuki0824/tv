@@ -10,5 +10,5 @@
 /dev/pxm1urvideo[0-9]*                0660 media system
 /dev/pxs1urvideo[0-9]*                0660 media system
 /dev/isdbt2071video[0-9]*             0660 media system
-# AV shared handle allocation for MediaEvent path. Platform file_contexts labels this as dmabuf_system_heap_device.
+# MediaEvent 経路用の AV shared handle 確保先。Platform file_contexts はこれを dmabuf_system_heap_device として label する。
 /dev/dma_heap/system                 0660 media system

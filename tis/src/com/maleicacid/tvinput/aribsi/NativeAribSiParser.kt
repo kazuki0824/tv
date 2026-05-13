@@ -50,7 +50,7 @@ class NativeAribSiParser : AutoCloseable {
     @Synchronized
     fun snapshotBulk(takeUpdateWindows: Boolean): BulkSnapshot {
         check(handle != 0L) { "ネイティブ解析器は終了済みです" }
-        // B-10/N-10: production snapshot は nativeSnapshotBulkJson() 1回に限定する。
+        // 本番 snapshot は nativeSnapshotBulkJson() 1回に限定する。
         // update windows を同一 transaction で drain する call-site では
         // nativeSnapshotBulkJson(handle, 1) をこの wrapper から使う。
         return parseBulkSnapshotJson(nativeSnapshotBulkJson(handle, if (takeUpdateWindows) 1 else 0))

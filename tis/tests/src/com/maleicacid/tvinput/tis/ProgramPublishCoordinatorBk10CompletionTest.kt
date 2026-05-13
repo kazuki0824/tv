@@ -31,8 +31,8 @@ class ProgramPublishCoordinatorBk10CompletionTest {
             allowedServiceKeys = null,
         )
         check(first.failures.isNotEmpty()) { first.toString() }
-        check(store.insertedPrograms == 0) { "required query failure must stop insert" }
-        check(store.deleteCalls == 0) { "required query failure must not delete obsolete rows" }
+        check(store.insertedPrograms == 0) { "必須問い合わせ失敗時は挿入を止める必要があります" }
+        check(store.deleteCalls == 0) { "必須問い合わせ失敗時は廃止行を削除してはなりません" }
         check(coordinator.retryFailureClassesForTest().contains(ProgramPublishCoordinator.FailureClass.REQUIRED_QUERY_FAILED))
 
         val second = coordinator.publish(
@@ -41,7 +41,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
             allowedServiceKeys = null,
         )
         check(second.inserted == 1) { second.toString() }
-        check(coordinator.retryWindowCountForTest() == 0) { "successful publish must clear retry windows" }
+        check(coordinator.retryWindowCountForTest() == 0) { "公開成功時は再試行区間を消去する必要があります" }
     }
 
     @Test fun failedInsertDoesNotCommitSignatureSoRetryCanPublishSameInput() {
@@ -55,7 +55,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         check(coordinator.retryFailureClassesForTest().contains(ProgramPublishCoordinator.FailureClass.PROGRAM_INSERT_FAILED))
 
         val retried = coordinator.publish(ChannelScanController.PublishMode.SETUP_SCAN, listOf(program), allowedServiceKeys = null)
-        check(retried.inserted == 1) { "failed publish must not mark the same input as unchanged: $retried" }
+        check(retried.inserted == 1) { "公開失敗時は同じ入力を未変更扱いしてはなりません: $retried" }
     }
 
     @Test fun authoritativeDeleteFailureIsRetriedWithObsoleteDeleteClass() {
@@ -119,7 +119,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
             allowedServiceKeys = null,
         )
         check(coordinator.retryWindowCountForTest() == ProgramPublishCoordinator.MAX_RETRY_WINDOWS_PER_SERVICE_FOR_TEST) {
-            "per-service retry window cap must be fixed at design value"
+            "service単位の再試行区間上限は設計値に固定する必要があります"
         }
         check(coordinator.droppedRetryWindowCountForTest(key) == 1)
         check(ProgramPublishCoordinator.MAX_RETRY_WINDOWS_PER_SERVICE_FOR_TEST == 32)
@@ -149,7 +149,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
             updateWindows = listOf(window),
             allowedServiceKeys = null,
         )
-        check(coordinator.retryWindowCountForTest() == 0) { "expired retry windows must not be retained" }
+        check(coordinator.retryWindowCountForTest() == 0) { "期限切れの再試行区間を保持してはなりません" }
         check(coordinator.droppedRetryWindowCountForTest(key) == 1)
     }
 
@@ -192,7 +192,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         override fun insertProgram(values: ContentValues): Result<Long?> {
             if (failInsertOnce) {
                 failInsertOnce = false
-                return Result.failure(IllegalStateException("insert failed"))
+                return Result.failure(IllegalStateException("挿入失敗"))
             }
             val id = nextProgramId++
             programs[id] = ContentValues(values)
@@ -207,7 +207,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
 
         override fun deleteObsoletePrograms(channelId: Long, validProgramKeys: Set<String>, windowStartMs: Long, windowEndMs: Long): Result<Int> {
             deleteCalls++
-            if (failDelete) return Result.failure(IllegalStateException("delete failed"))
+            if (failDelete) return Result.failure(IllegalStateException("削除失敗"))
             val before = programs.size
             val removeIds = programs.mapNotNull { (id, values) ->
                 val key = TvProviderWriter.parseProgramKey(values.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).toString(Charsets.UTF_8))

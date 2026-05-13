@@ -199,7 +199,7 @@ impl Px4LiveStreamReader {
         let mut inner = self
             .inner
             .lock()
-            .map_err(|_| HalError::Internal("px4 live stream reader mutex poisoned".into()))?;
+            .map_err(|_| HalError::Internal("px4ライブストリーム読み取り器のmutexが破損しています".into()))?;
         let Px4LiveStreamReaderState {
             reader,
             reader_path,
@@ -451,7 +451,7 @@ impl Px4FrontendBackend {
     ) -> Result<Option<i32>, HalError> {
         if voltage != 0 && voltage != 15 {
             return Err(HalError::InvalidArgument(format!(
-                "px4 fixed LNB profile accepts only NONE or 15V; got {voltage}V"
+                "px4固定LNB profile は NONE または15Vだけを受け付けます。指定値: {voltage}V"
             )));
         }
         let extended = ops.set_extended_lnb_voltage(voltage);
@@ -494,7 +494,7 @@ impl Px4FrontendBackend {
             Ok(()) => Some(raw_cnr),
             Err(err) => {
                 self.state.last_error =
-                    Some(format!("PTX_GET_CNR optional telemetry failed: {err}"));
+                    Some(format!("PTX_GET_CNR任意telemetry取得に失敗しました: {err}"));
                 None
             }
         };
@@ -560,7 +560,7 @@ impl Px4FrontendBackend {
                         operation: "ts_reader_read",
                         path: reader_path.map(|p| p.to_path_buf()),
                         errno: err.raw_os_error(),
-                        message: format!("px4 ts reader failed: {}", err),
+                        message: format!("px4 TS読み取りに失敗しました: {}", err),
                     })
                 }
             }
@@ -585,7 +585,7 @@ impl Px4FrontendBackend {
                 operation: "dvr_poll",
                 path: Some(path.to_path_buf()),
                 errno: None,
-                message: format!("px4 dvr poll reported device fd error revents=0x{revents:x}"),
+                message: format!("px4 DVR pollがデバイスfdエラーを報告しました revents=0x{revents:x}"),
             });
         }
         Ok((revents & POLLIN) != 0)
@@ -613,7 +613,7 @@ impl Px4FrontendBackend {
                 operation: "dvr_poll",
                 path: Some(path.to_path_buf()),
                 errno: err.raw_os_error(),
-                message: format!("px4 dvr poll failed: {}", err),
+                message: format!("px4 DVR pollに失敗しました: {}", err),
             });
         }
         if rc == 0 {
@@ -633,7 +633,7 @@ impl Px4FrontendBackend {
                     operation: "dvr_poll_stop_fd",
                     path: Some(path.to_path_buf()),
                     errno: None,
-                    message: "px4 dvr stop fd poll reported error".into(),
+                    message: "px4 DVR停止fdのpollがエラーを報告しました".into(),
                 });
             }
         }
@@ -665,14 +665,14 @@ impl Px4FrontendBackend {
         }
         if self.control.is_none() {
             return Err(HalError::InvalidState(format!(
-                "px4 {} requires PTX_STOP_STREAMING but control fd is not open",
+                "px4 {} は PTX_STOP_STREAMING を必要としますが、制御fdが開かれていません",
                 operation
             )));
         }
         self.ioctl_noarg(PTX_STOP_STREAMING, "PTX_STOP_STREAMING")
             .map_err(|err| {
                 eprintln!(
-                    "maleicacid-tuner-hal-px4-diagnostic: operation={} stop_streaming_failed error={}",
+                    "maleicacid-tuner-hal-px4-diagnostic: operation={} stop_streaming失敗 error={}",
                     operation, err
                 );
                 err
@@ -713,7 +713,7 @@ impl Px4FrontendBackend {
         let file = self
             .control
             .as_ref()
-            .ok_or_else(|| HalError::InvalidState("px4 control device is not open".into()))?
+            .ok_or_else(|| HalError::InvalidState("px4制御デバイスが開かれていません".into()))?
             .try_clone()
             .map_err(|e| {
                 let err = HalError::Io {
@@ -721,7 +721,7 @@ impl Px4FrontendBackend {
                     operation: "ts_reader_dup",
                     path: Some(path.clone()),
                     errno: e.raw_os_error(),
-                    message: format!("px4 ts reader fd clone failed: {}", e),
+                    message: format!("px4 TS読み取りfdの複製に失敗しました: {}", e),
                 };
                 self.state.last_error = Some(err.to_string());
                 err
@@ -741,7 +741,7 @@ impl Px4FrontendBackend {
         self.control
             .as_ref()
             .map(|control| control.as_raw_fd())
-            .ok_or_else(|| HalError::InvalidState("px4 control device is not open".into()))
+            .ok_or_else(|| HalError::InvalidState("px4制御デバイスが開かれていません".into()))
     }
 
     fn ioctl_noarg(&mut self, request: u64, op: &'static str) -> Result<(), HalError> {
@@ -793,7 +793,7 @@ impl Px4FrontendBackend {
     ) -> Result<Vec<FrontendTuneRequest>, HalError> {
         if matches!(scan_mode, FrontendScanMode::Blind) {
             return Err(HalError::Unsupported(
-                "px4 backend does not provide BLIND_SCAN; TIS owns the Japanese scan SSOT",
+                "px4 backend は BLIND_SCAN を提供しません。日本向けscanのSSOTはTISが持ちます",
             ));
         }
         px4_scan_requests(base)
@@ -822,7 +822,7 @@ impl Px4FrontendBackend {
     fn lock_from_driver_tune_result(tuning_active: bool, driver_tune_locked: bool) -> bool {
         // px4_drv legacy PTX_SET_CHANNEL は driver 内部で ops->check_lock() を待ち、
         // lock 失敗時は ioctl error になる。HAL の疑似 DEMOD_LOCK は TS 到着ではなく、
-        // その ioctl 成功結果を source of truth とする。
+        // そのioctl成功結果を真値として扱う。
         tuning_active && driver_tune_locked
     }
 
@@ -841,7 +841,7 @@ impl Px4FrontendBackend {
             .file_name()
             .and_then(|v| v.to_str())
             .map(|v| v.to_string())
-            .ok_or_else(|| HalError::InvalidArgument("px4 device path has no basename".to_string()))
+            .ok_or_else(|| HalError::InvalidArgument("px4デバイスpathにbasenameがありません".to_string()))
     }
 
     fn default_control_path(frontend_id: i32) -> PathBuf {
@@ -1070,7 +1070,7 @@ mod tests {
         };
         let err = map_tune_request_to_px4(&request).unwrap_err().to_string();
         assert!(
-            err.contains("requires TSID or relative stream number"),
+            err.contains("TSIDまたは相対ストリーム番号が必要"),
             "{err}"
         );
     }
@@ -1707,7 +1707,7 @@ mod px4_device_missing_tests {
         let mut backend = Px4FrontendBackend::new(99_999);
         let err = backend
             .read_status()
-            .expect_err("missing px4 device should be an error");
+            .expect_err("px4デバイス欠落はエラーである必要があります");
         assert!(matches!(err, HalError::DeviceMissing(_)));
     }
 
@@ -1716,7 +1716,7 @@ mod px4_device_missing_tests {
         let mut backend = Px4FrontendBackend::new(99_998);
         let err = backend
             .set_lnb_voltage(15)
-            .expect_err("missing px4 device should be an error");
+            .expect_err("px4デバイス欠落はエラーである必要があります");
         assert!(matches!(err, HalError::DeviceMissing(_)));
     }
 }

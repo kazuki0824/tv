@@ -164,9 +164,9 @@ fn enforce_program_provider_data_limit(
     duration_millis: i64,
 ) {
     if json.len() <= HARD_LIMIT_BYTES { return; }
-    // Hard-limit fallback keeps identity/timing and marks the loss explicitly.
-    // It never truncates in the middle of JSON because TvProvider rows must
-    // remain parseable for stable key extraction and obsolete-delete safety.
+    // 上限到達時も識別情報と時刻情報は残し、欠落を明示する。
+    // TvProvider row は stable key extraction と obsolete delete の安全性のため、
+    // JSONとして解析可能な形を維持する。
     *json = format!(
         "{{\"schemaVersion\":{},\"programKeyB64\":{},\"programKey\":{},\"serviceKey\":{{\"originalNetworkId\":{},\"transportStreamId\":{},\"serviceId\":{}}},\"eventId\":{},\"timing\":{{\"startUtcMillis\":{},\"durationMillis\":{}}},\"providerDataTruncated\":true,\"diagnostics\":{{\"providerDataHardLimitBytes\":{},\"providerDataSoftLimitBytes\":{}}}}}",
         PROVIDER_SCHEMA_VERSION,

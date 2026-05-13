@@ -654,9 +654,9 @@ impl DemuxHandle {
     pub fn frontend_id(&self) -> Option<i32> {
         self.frontend_id
     }
-    pub fn connect_ci_cam(&mut self, _ci_cam_id: i32) { /* CI CAM is unsupported in product HAL; state is intentionally not saved. */
+    pub fn connect_ci_cam(&mut self, _ci_cam_id: i32) { /* product HAL では CI CAM を support しないため、state は保存しない。 */
     }
-    pub fn disconnect_ci_cam(&mut self) { /* CI CAM is unsupported in product HAL; state is intentionally not saved. */
+    pub fn disconnect_ci_cam(&mut self) { /* product HAL では CI CAM を support しないため、state は保存しない。 */
     }
     pub fn clear_output_pid_blocks(&mut self) {
         self.drop_all_pes_assemblers();
@@ -934,8 +934,8 @@ impl DemuxHandle {
             // AV filter は start() 前に configureAvStreamType() を再度受け取る必要がある。
             filter.av_stream_type_hint = None;
             filter.av_stream_kind = None;
-            // Phase 4 clean boundary: reconfigure invalidates any previous upstream linkage.
-            // A downstream filter must be explicitly re-linked after its condition/PID changes.
+            // 再設定 は以前の 上流接続 を無効化する 状態破棄境界 である。
+            // 下流フィルタ は condition / PID 変更後に明示的に再接続する必要がある。
             filter.data_source_filter_id = None;
             filter.queued_bytes = 0;
             filter.pending_overflow = false;
@@ -1591,14 +1591,14 @@ impl DemuxHandle {
     fn dvr_record_mut_for_test(&mut self, dvr_id: i32) -> &mut DemuxDvrRecord {
         self.dvrs
             .get_mut(&dvr_id)
-            .expect("test DVR record must exist")
+            .expect("test用DVR recordが存在する必要があります")
     }
 
     #[cfg(test)]
     fn filter_record_mut_for_test(&mut self, filter_id: i32) -> &mut DemuxFilterRecord {
         self.filters
             .get_mut(&filter_id)
-            .expect("test filter record must exist")
+            .expect("test用filter recordが存在する必要があります")
     }
 
     pub fn configure_dvr(&mut self, dvr_id: i32) -> bool {
@@ -1880,7 +1880,7 @@ impl DemuxHandle {
         let time_ready = has_time_delay
             && filter
                 .delivery_not_before
-                .map(|deadline| Instant::now() >= deadline)
+                .map(|期限| Instant::now() >= 期限)
                 .unwrap_or(true);
         let data_ready = has_data_size_delay
             && filter.queued_bytes >= filter.delay_hints.data_size_delay_bytes.unwrap_or(0);
@@ -2981,7 +2981,7 @@ mod filter_capacity_tests {
     }
 
     #[test]
-    fn av_reconfigure_requires_configure_av_stream_type_again() {
+    fn av_再設定_requires_configure_av_stream_type_again() {
         let mut demux = DemuxHandle::new(0);
         let filter = demux
             .register_filter_result(1, FilterOpenType::TsVideo, 4096)
@@ -4002,7 +4002,7 @@ mod delay_hint_delivery_tests {
     }
 
     #[test]
-    fn time_delay_holds_payload_until_deadline() {
+    fn time_delay_holds_payload_until_期限() {
         let mut demux = DemuxHandle::new(0);
         let filter = demux
             .register_filter_result(1, FilterOpenType::TsSection, 4096)
@@ -4031,7 +4031,7 @@ mod delay_hint_delivery_tests {
     }
 
     #[test]
-    fn time_delay_rearms_for_each_queue_burst() {
+    fn time_delay_rearms_for_each_queue_まとまり() {
         let mut demux = DemuxHandle::new(0);
         let filter = demux
             .register_filter_result(1, FilterOpenType::TsSection, 4096)
@@ -4444,7 +4444,7 @@ mod start_event_delay_tests {
     }
 
     #[test]
-    fn reconfigure_clears_old_linkage_and_queued_payload() {
+    fn 再設定_clears_old_linkage_and_queued_payload() {
         let mut demux = DemuxHandle::new(0);
         let source = demux
             .register_filter_result(1, FilterOpenType::TsSection, 4096)

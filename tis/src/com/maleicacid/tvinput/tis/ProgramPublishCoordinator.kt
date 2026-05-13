@@ -5,8 +5,8 @@ import com.maleicacid.tvinput.db.ProgramRecord
 import com.maleicacid.tvinput.aribsi.ProviderDataBridge
 
 /**
- * TvProvider Programs への反映を publish mode ごとに制御する。
- * live refresh では既存 channel だけを対象にし、同一内容の連続 EIT は過剰 upsert しない。
+ * TvProvider Programs への反映を公開modeごとに制御する。
+ * live更新では既存channelだけを対象にし、同一内容の連続EITは過剰upsertしない。
  */
 class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) {
     data class EpgUpdateWindow(
@@ -80,9 +80,9 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
         if (mode == ChannelScanController.PublishMode.DIAGNOSTIC_ONLY) {
             return ProgramPublishResult(0, 0, skippedUnchanged = allPrograms.size)
         }
-        // Phase C/B-07: retry windows are part of the publish entrypoint input.
-        // Do not return early before checking them; otherwise a provider failure after
-        // legacy EPG-window drain API would permanently lose the drained window.
+        // 再試行区間は公開入口入力の一部である。
+        // これを確認する前に早期returnしてはならない。EPG区間排出API後の
+        // provider失敗で、排出済み区間を失うことを防ぐ。
         val retryServiceKeys = retryWindows.keys.map { it.serviceKey }
         val allServiceKeys = (allPrograms.map { it.serviceKey } + updateWindows.map { it.serviceKey } + retryServiceKeys).toSet()
         if (allPrograms.isEmpty() && updateWindows.isEmpty() && retryWindows.isEmpty()) {
@@ -139,9 +139,9 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
     }
 
     /**
-     * Returns process-local retry windows for the next publish entrypoint.
-     * The queue is intentionally not removed here: success removes the key, and
-     * provider failure keeps it for the next entrypoint, as fixed by Phase C.
+     * 次の公開入口用にprocess内再試行区間を返す。
+     * ここではqueueを削除しない。成功時にkeyを削除し、provider失敗時は
+     * 次の入口へ残す。
      */
     private fun drainRetryWindowsFor(allowed: Set<ServiceKey>): List<EpgUpdateWindow> {
         val now = System.currentTimeMillis()
@@ -295,7 +295,7 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
                 else -> 60 * 60_000L
             }
             val hash = (serviceKey.hashCode() * 31 + windowStartMs.hashCode() * 17 + failureClass.hashCode()).let { if (it == Int.MIN_VALUE) 0 else kotlin.math.abs(it) }
-            val jitterPercent = (hash % 41) - 20 // deterministic ±20%
+            val jitterPercent = (hash % 41) - 20 // 決定的な±20%
             return base + (base * jitterPercent / 100)
         }
 

@@ -25,10 +25,9 @@ data class ProgramPublishState(
             val diagnosticCasResolved = diagnostic?.caStateResolved == true
             return when {
                 diagnosticCasResolved -> {
-                    // Phase D/B-29: CAS field adoption is intentionally separated from
-                    // full publishability completeness. PMT CA_descriptor can resolve
-                    // requiresCas/unsupportedCas even when freeCaMode is absent or the
-                    // remaining service diagnostics are not yet complete.
+                    // CAS field の採用は、publishability 全体の完全性とは分離する。
+                    // freeCaMode がない場合や残りの service diagnostics が未完了の場合でも、
+                    // PMT CA_descriptor により requiresCas / unsupportedCas を確定できる。
                     val requiresCas = diagnostic!!.requiresCas
                     val unsupportedCas = diagnostic.unsupportedCas
                     ProgramPublishState(

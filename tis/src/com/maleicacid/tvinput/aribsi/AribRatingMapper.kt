@@ -3,11 +3,11 @@ package com.maleicacid.tvinput.aribsi
 import android.media.tv.TvContentRating
 
 /**
- * Maps ARIB parental_rating_descriptor values to Android TvContentRating.
+ * ARIB parental_rating_descriptor の値を Android TvContentRating へ写像する。
  *
- * Rust owns only the ARIB descriptor parsing result. The Android rating domain is
- * fixed at the TIS boundary so Programs projection and live-session enforcement
- * use the same AOSP system-defined ISDB rating strings.
+ * Rust は ARIB descriptor の解析結果だけを持つ。Android rating領域は
+ * TIS 境界で固定し、Programs 投影とlive sessionの制御で同じAOSP system定義
+ * ISDB rating 文字列を使う。
  */
 object AribRatingMapper {
     const val DOMAIN = "com.android.tv"

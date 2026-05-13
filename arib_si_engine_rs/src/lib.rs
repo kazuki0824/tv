@@ -84,9 +84,8 @@ impl ParserState {
                 return STATUS_INVALID_SECTION;
             }
             let malformed_descriptor_loop = section_has_malformed_descriptor_loop(pid, table_id, section, self.collector.is_known_pmt_pid(pid));
-            // r50bk8: malformed descriptor loops are diagnostics-bearing input, not
-            // a reason to drop the entire SI/EIT section before semantic parsing.
-            // Non-recoverable section length/CRC errors are still rejected above.
+            // 不正descriptor loopは診断付き入力として扱い、意味解析前に
+            // section全体を破棄する理由にはしない。復旧不能なsection length / CRC errorは上で拒否する。
             self.collector.push_section(pid, section);
             self.last_status = if malformed_descriptor_loop { STATUS_MALFORMED_DESCRIPTOR } else { STATUS_OK };
             self.last_status
@@ -437,9 +436,9 @@ fn bulk_snapshot_json(state: &mut ParserState, take_update_windows: bool) -> Str
     let cas_services = state.cas_discovery_services();
     let cat_ca = snapshot.cat_ca.descriptors;
     let cas_cat_ca = state.raw_cat_ca_descriptors();
-    // Phase C/B-07: update windows are exposed only through the draining bulk API.
-    // Non-draining bulk snapshots intentionally return no EPG update windows so production
-    // callers cannot accidentally re-publish the same obsolete-delete window.
+    // 更新区間は排出型一括APIだけで公開する。
+    // 非排出型一括snapshotはEPG更新区間を返さない。これにより本番呼び出し側が
+    // 同じ廃止削除区間を誤って再公開することを防ぐ。
     let epg_windows = if take_update_windows {
         state.take_epg_update_windows()
     } else {

@@ -11,7 +11,7 @@
 
 ## 統合手順の SSOT
 
-product makefile、BoardConfig、ueventd import、SELinux、VINTF/init、VTS config、通常 vendor binary 統合と APEX 統合の二重登録禁止は、すべて次を SSOT とする。
+product makefile、BoardConfig、ueventd import、SELinux、VINTF/init、VTS設定、通常 vendor binary 統合と APEX 統合の二重登録禁止は、すべて次を SSOT とする。
 
 ```text
 tuner_hal/INTEGRATION.md

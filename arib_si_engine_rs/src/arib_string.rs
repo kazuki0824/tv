@@ -249,7 +249,7 @@ pub fn decode_arib_string_lossy_with_diagnostic(bytes: &[u8]) -> (String, AribSt
                     };
                     if !(0x21..=0x7e).contains(&next) {
                         diagnostic.replacement_count = diagnostic.replacement_count.saturating_add(1);
-                        diagnostic.record_entry(index, "GL/Kanji", "invalid_second_byte", true);
+                        diagnostic.record_entry(index, "GL/Kanji", "不正な2バイト目", true);
                         out.push('�');
                     } else {
                         out.push_str(map_kanji(byte, next));
@@ -279,7 +279,7 @@ pub fn decode_arib_string_lossy_with_diagnostic(bytes: &[u8]) -> (String, AribSt
                         };
                         if !(0xa1..=0xfe).contains(&next) && !(0x21..=0x7e).contains(&next) {
                             diagnostic.replacement_count = diagnostic.replacement_count.saturating_add(1);
-                            diagnostic.record_entry(index, "GR/Kanji", "invalid_second_byte", true);
+                            diagnostic.record_entry(index, "GR/Kanji", "不正な2バイト目", true);
                             out.push('�');
                         } else {
                             out.push_str(map_kanji(normalized, next & 0x7f));

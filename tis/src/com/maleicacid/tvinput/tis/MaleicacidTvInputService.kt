@@ -14,9 +14,9 @@ class MaleicacidTvInputService : TvInputService() {
     override fun onCreate() {
         super.onCreate()
         registerUserUnlockDrainReceiver()
-        // Boot EPG sync is intentionally not started from service onCreate().
-        // Live-session creation may follow immediately after service creation; boot drain is
-        // handled by boot/unlock receivers and after live-session release to avoid tuner races.
+        // service onCreate() からboot EPG同期は開始しない。
+        // service作成直後にlive session作成が続く場合があるため、boot排出は
+        // boot/unlock receiverとlive session解放後に処理し、tuner競合を避ける。
     }
 
     override fun onCreateSession(inputId: String): Session {
@@ -36,11 +36,10 @@ class MaleicacidTvInputService : TvInputService() {
     }
 
     private fun createLiveSession(inputId: String, tvInputSessionId: String, attributionSource: AttributionSource?): Session {
-        // r50bk12: boot/background maintenance must not start in the small window
-        // between TvInputService.onCreateSession() entry and MaleicacidLiveSession
-        // constructor registering an active live session. Mark this boundary explicitly
-        // so ChannelScanManager can defer tuner-consuming work until session creation
-        // either finishes or fails.
+        // TvInputService.onCreateSession()入口から MaleicacidLiveSession constructor が
+        // active live session を登録するまでの短い区間で、boot / background maintenance を
+        // 開始してはならない。この境界を明示し、session creation が完了または失敗するまで
+        // ChannelScanManager が tuner-consuming work を延期できるようにする。
         ChannelScanManager.beginLiveSessionCreation()
         return try {
             MaleicacidLiveSession(this, inputId, tvInputSessionId, attributionSource)

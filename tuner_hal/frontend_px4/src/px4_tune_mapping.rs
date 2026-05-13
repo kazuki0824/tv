@@ -131,31 +131,31 @@ pub fn map_isdbt_frequency_to_px4(freq_hz: u64) -> Result<Px4TuneRequest, HalErr
         }
     }
     Err(HalError::InvalidArgument(format!(
-        "px4 ISDB-T frequency is not in the Japanese UHF/CATV mapping tolerance: {freq_hz}"
+        "px4 ISDB-T周波数が日本向けUHF/CATV写像許容範囲内にありません: {freq_hz}"
     )))
 }
 
 pub fn map_bs_if_frequency_to_px4_freq_no(if_hz: u64) -> Result<i32, HalError> {
     if if_hz < PX4_BS_BASE_IF_HZ {
         return Err(HalError::InvalidArgument(format!(
-            "px4 BS IF frequency is not supported: {if_hz}"
+            "px4 BS IF周波数は非対応です: {if_hz}"
         )));
     }
     let delta = if_hz - PX4_BS_BASE_IF_HZ;
     if delta % PX4_BS_STEP_HZ != 0 {
         return Err(HalError::InvalidArgument(format!(
-            "px4 BS IF frequency is not supported: {if_hz}"
+            "px4 BS IF周波数は非対応です: {if_hz}"
         )));
     }
     let freq_no = PX4_BS_FREQ_NO_MIN
         + i32::try_from(delta / PX4_BS_STEP_HZ).map_err(|_| {
-            HalError::InvalidArgument(format!("px4 BS IF frequency is not supported: {if_hz}"))
+            HalError::InvalidArgument(format!("px4 BS IF周波数は非対応です: {if_hz}"))
         })?;
     if (PX4_BS_FREQ_NO_MIN..=PX4_BS_FREQ_NO_MAX).contains(&freq_no) {
         Ok(freq_no)
     } else {
         Err(HalError::InvalidArgument(format!(
-            "px4 BS IF frequency is not supported: {if_hz}"
+            "px4 BS IF周波数は非対応です: {if_hz}"
         )))
     }
 }
@@ -163,24 +163,24 @@ pub fn map_bs_if_frequency_to_px4_freq_no(if_hz: u64) -> Result<i32, HalError> {
 pub fn map_cs110_if_frequency_to_px4_freq_no(if_hz: u64) -> Result<i32, HalError> {
     if if_hz < PX4_CS_BASE_IF_HZ {
         return Err(HalError::InvalidArgument(format!(
-            "px4 110CS IF frequency is not supported: {if_hz}"
+            "px4 110CS IF周波数は非対応です: {if_hz}"
         )));
     }
     let delta = if_hz - PX4_CS_BASE_IF_HZ;
     if delta % PX4_CS_STEP_HZ != 0 {
         return Err(HalError::InvalidArgument(format!(
-            "px4 110CS IF frequency is not supported: {if_hz}"
+            "px4 110CS IF周波数は非対応です: {if_hz}"
         )));
     }
     let freq_no = PX4_CS_FREQ_NO_MIN
         + i32::try_from(delta / PX4_CS_STEP_HZ).map_err(|_| {
-            HalError::InvalidArgument(format!("px4 110CS IF frequency is not supported: {if_hz}"))
+            HalError::InvalidArgument(format!("px4 110CS IF周波数は非対応です: {if_hz}"))
         })?;
     if (PX4_CS_FREQ_NO_MIN..=PX4_CS_FREQ_NO_MAX).contains(&freq_no) {
         Ok(freq_no)
     } else {
         Err(HalError::InvalidArgument(format!(
-            "px4 110CS IF frequency is not supported: {if_hz}"
+            "px4 110CS IF周波数は非対応です: {if_hz}"
         )))
     }
 }
@@ -194,10 +194,10 @@ pub fn map_relative_stream_number_to_px4_slot(
             Ok(i32::from(relative_stream_number))
         }
         Px4SatBand::Bs => Err(HalError::InvalidArgument(format!(
-            "px4 BS relative stream number out of range: {relative_stream_number}"
+            "px4 BS相対ストリーム番号が範囲外です: {relative_stream_number}"
         ))),
         Px4SatBand::Cs110 => Err(HalError::InvalidArgument(
-            "CS110 does not use TSID or relative stream-number frontend selection".to_string(),
+            "CS110はTSIDまたは相対ストリーム番号によるフロントエンド選択を使いません".to_string(),
         )),
     }
 }
@@ -216,18 +216,17 @@ pub fn reportable_bs_tsid_for_scan(
     }
 }
 
-// This direct-slot path intentionally targets the project px4_drv feat/android-ddk
-// contract where BS slot >= 8 is not rejected and PTX_SET_CHANNEL.slot is
-// forwarded as the demod stream_id. Do not reintroduce a TSID -> relative slot
-// table here as a compatibility fallback for public develop-style drivers.
+// この直渡し経路は、本プロジェクトで採用する px4_drv feat/android-ddk 系を対象にする。
+// 同系ではBS slot >= 8が拒否されず、PTX_SET_CHANNEL.slotがdemod stream_idとして渡される。
+// 公開develop相当driverとの互換目的で、TSIDから相対スロットへの変換表をここへ戻してはならない。
 fn map_absolute_stream_id_to_px4_slot(stream_id: u16, band: Px4SatBand) -> Result<i32, HalError> {
     match band {
         Px4SatBand::Bs if stream_id >= 12 => Ok(i32::from(stream_id)),
         Px4SatBand::Bs => Err(HalError::InvalidArgument(format!(
-            "px4 BS STREAM_ID must be an absolute TSID, not a relative stream number: {stream_id}"
+            "px4 BS STREAM_ID は絶対TSIDでなければならず、相対ストリーム番号は使えません: {stream_id}"
         ))),
         Px4SatBand::Cs110 => Err(HalError::InvalidArgument(format!(
-            "CS110 TSID frontend selection is not supported by policy: 0x{stream_id:04x}"
+            "CS110のTSIDフロントエンド選択は方針上非対応です: 0x{stream_id:04x}"
         ))),
     }
 }
@@ -237,13 +236,13 @@ fn validate_backend_bandwidth(request: &FrontendTuneRequest) -> Result<(), HalEr
         FrontendSystem::IsdbT => match request.bandwidth_hz {
             None | Some(6_000_000) => Ok(()),
             Some(other) => Err(HalError::InvalidArgument(format!(
-                "r51 px4 ISDB-T accepts only 6MHz bandwidth; got {other}Hz"
+                "r51のpx4 ISDB-Tは6MHz帯域幅だけを受け付けます。指定値: {other}Hz"
             ))),
         },
         FrontendSystem::IsdbS => match request.bandwidth_hz {
             None => Ok(()),
             Some(other) => Err(HalError::InvalidArgument(format!(
-                "r51 px4 ISDB-S does not accept bandwidth_hz; got {other}Hz"
+                "r51のpx4 ISDB-Sはbandwidth_hzを受け付けません。指定値: {other}Hz"
             ))),
         },
         FrontendSystem::IsdbS3 | FrontendSystem::DvbS => Ok(()),
@@ -253,7 +252,7 @@ fn validate_backend_bandwidth(request: &FrontendTuneRequest) -> Result<(), HalEr
 pub fn map_tune_request_to_px4(request: &FrontendTuneRequest) -> Result<Px4TuneRequest, HalError> {
     if request.symbol_rate.is_some() {
         return Err(HalError::InvalidArgument(
-            "r51 px4 backend contract does not accept explicit symbol_rate".to_string(),
+            "r51のpx4バックエンド契約では明示symbol_rateを受け付けません".to_string(),
         ));
     }
     validate_backend_bandwidth(request)?;
@@ -272,17 +271,17 @@ pub fn map_tune_request_to_px4(request: &FrontendTuneRequest) -> Result<Px4TuneR
             let slot = match band {
                 Px4SatBand::Cs110 => {
                     if request.stream_id.is_some() {
-                        return Err(HalError::InvalidArgument("CS110 frontend tune must not carry TSID or relative stream-number selector".to_string()));
+                        return Err(HalError::InvalidArgument("CS110フロントエンド選局にTSIDまたは相対ストリーム番号セレクタを載せてはなりません".to_string()));
                     }
                     0
                 }
                 Px4SatBand::Bs => {
                     let raw_stream_id = request.stream_id.ok_or_else(|| {
-                        HalError::InvalidArgument("px4 BS tune requires TSID or relative stream number; HAL scan expansion is not provided".to_string())
+                        HalError::InvalidArgument("px4 BS選局にはTSIDまたは相対ストリーム番号が必要です。HAL側のscan展開は提供しません".to_string())
                     })?;
                     let stream_id = u16::try_from(raw_stream_id).map_err(|_| {
                         HalError::InvalidArgument(format!(
-                            "stream_id out of range: {raw_stream_id}"
+                            "stream_id が範囲外です: {raw_stream_id}"
                         ))
                     })?;
                     match request.stream_id_kind {
@@ -302,14 +301,14 @@ pub fn map_tune_request_to_px4(request: &FrontendTuneRequest) -> Result<Px4TuneR
             })
         }
         FrontendSystem::IsdbS3 | FrontendSystem::DvbS => Err(HalError::Unsupported(
-            "px4 backend は ISDB-T/ISDB-S のみ対象です",
+            "px4バックエンドはISDB-T/ISDB-Sのみ対象です",
         )),
     }
 }
 
 pub fn px4_scan_requests(base: &FrontendTuneRequest) -> Result<Vec<FrontendTuneRequest>, HalError> {
     if base.end_frequency.unwrap_or(base.frequency) != base.frequency {
-        return Err(HalError::Unsupported("px4 backend no longer generates Japanese scan tables; TIS must submit explicit tune candidates"));
+        return Err(HalError::Unsupported("px4バックエンドは日本向けscan表を生成しません。TISが明示選局候補を渡す必要があります"));
     }
     let _ = map_tune_request_to_px4(base)?;
     Ok(vec![base.clone()])
@@ -480,7 +479,7 @@ mod tests {
         };
         let err = map_tune_request_to_px4(&request).unwrap_err().to_string();
         assert!(
-            err.contains("CS110 frontend tune must not carry TSID"),
+            err.contains("CS110のTSIDフロントエンド選択は方針上非対応です"),
             "{err}"
         );
     }
@@ -498,7 +497,7 @@ mod tests {
         };
         let err = map_tune_request_to_px4(&request).unwrap_err().to_string();
         assert!(
-            err.contains("CS110 frontend tune must not carry TSID"),
+            err.contains("CS110のTSIDフロントエンド選択は方針上非対応です"),
             "{err}"
         );
     }

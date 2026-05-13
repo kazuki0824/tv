@@ -2,7 +2,7 @@
 
 このディレクトリは TIS が使う TS/SI/EIT 解析ライブラリを Rust で実装する。Kotlin 側には バイナリ section 解析器 を置かない。
 
-主な責務は PAT、PMT、CAT、SDT、NIT、BAT、EIT の解析、ARIB 文字列変換、PMT/CAT の CA_descriptor と SDT 等の free_CA_mode / service identity 補助情報を含む CA metadata / service metadata semantic model の生成、TvProvider 反映に必要な snapshot 提供である。raw TS packet demux、PID filter、section assembly、section payload delivery は Tuner HAL の責務であり、arib_si_engine_rs の責務ではない。
+主な責務は PAT、PMT、CAT、SDT、NIT、BAT、EIT の解析、ARIB 文字列変換、PMT/CAT の CA_descriptor と SDT 等の free_CA_mode / service identity 補助情報を含む CA情報 / service metadata semantic model の生成、TvProvider 反映に必要な snapshot 提供である。raw TS packet demux、PID filter、section assembly、section payload delivery は Tuner HAL の責務であり、arib_si_engine_rs の責務ではない。
 
 
 ## 文字列 decoder の範囲

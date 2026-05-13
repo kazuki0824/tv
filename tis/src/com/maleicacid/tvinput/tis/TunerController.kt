@@ -189,7 +189,7 @@ class TunerController(
     fun tuneForLive(channelUri: Uri): TuneOutcome = callOnController { tuneForLiveOnController(channelUri) }
 
     private fun tuneForLiveOnController(channelUri: Uri): TuneOutcome {
-        // B-03: channel 解決に失敗する場合も旧 live state を先に破棄する。
+        // channel 解決に失敗する場合も既存 live state を先に破棄する。
         resetBeforeTune()
         val resolved = resolveChannel(channelUri).getOrElse { e ->
             Log.w(LogTags.TIS, "channel 解決に失敗しました inputId=$inputId uri=$channelUri", e)

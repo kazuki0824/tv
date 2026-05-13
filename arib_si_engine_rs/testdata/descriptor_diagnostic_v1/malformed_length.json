@@ -1,19 +1,27 @@
 {
+  "schema": "maleicacid.tv.descriptorDiagnostic",
   "schemaVersion": 1,
-  "diagnostics": [
-    {
-      "parseStatus": "MalformedLength",
-      "tag": 77,
-      "offset": 0,
-      "declaredLength": 6,
-      "remainingLength": 3,
-      "rawPrefix": "4d06ffffff",
-      "message": "short_event_descriptor event_name length exceeds body",
-      "serviceKey": null,
-      "eventId": null,
-      "pid": null,
-      "tableId": null,
-      "sectionNumber": null
-    }
-  ]
+  "severity": "error",
+  "code": "MalformedLength",
+  "scope": {
+    "pid": 18,
+    "tableId": 78,
+    "tableIdExtension": null,
+    "version": null,
+    "sectionNumber": 0,
+    "originalNetworkId": null,
+    "transportStreamId": null,
+    "serviceId": null,
+    "eventId": null
+  },
+  "descriptor": {
+    "tag": 77,
+    "name": "short_event_descriptor",
+    "offset": 0,
+    "declaredLength": 6,
+    "actualRemainingLength": 3,
+    "parseStatus": "MalformedLength",
+    "rawPrefixHex": "4d06ffffff"
+  },
+  "message": "short_event_descriptor event_name length exceeds body"
 }

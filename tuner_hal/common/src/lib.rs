@@ -231,7 +231,7 @@ pub const DEMUX_MAX_PES_FILTERS: i32 = 8;
 pub const DEMUX_MAX_RECORD_FILTERS: i32 = 32;
 pub const MAX_SECTION_FILTER_BYTES: i32 = 16;
 /// section filter 経由で配送する組立済み PSI/SI section payload の上限。
-/// `MAX_SECTION_FILTER_BYTES` は mask/filter の byte 幅だけを表すため、payload 上限とは分離する。
+/// `MAX_SECTION_FILTER_BYTES` は mask/filter のbyte幅だけを表すため、payload上限とは分離する。
 pub const MAX_SECTION_PAYLOAD_BYTES: usize = 8192;
 
 #[derive(Debug)]
@@ -450,20 +450,20 @@ impl fmt::Display for HalError {
             }
             HalError::IoctlFailed { backend, path, op, errno } => write!(
                 f,
-                "runtime ioctl failure: backend={} operation={} device_path={} errno={} errno_name={}",
+                "実行時ioctl失敗: backend={} operation={} device_path={} errno={} errno_name={}",
                 backend,
                 op,
                 display_path(path),
                 errno,
                 errno_name(*errno)
             ),
-            HalError::InvalidArgument(message) => write!(f, "invalid argument: {message}"),
-            HalError::InvalidState(message) => write!(f, "invalid state: {message}"),
+            HalError::InvalidArgument(message) => write!(f, "不正な引数: {message}"),
+            HalError::InvalidState(message) => write!(f, "不正な状態: {message}"),
             HalError::Io { backend, operation, path, errno, message } => {
                 if let Some(errno) = errno {
                     write!(
                         f,
-                        "runtime io failure: backend={} operation={} device_path={} errno={} errno_name={} message={}",
+                        "実行時I/O失敗: backend={} operation={} device_path={} errno={} errno_name={} message={}",
                         backend,
                         operation,
                         display_path(path),
@@ -474,7 +474,7 @@ impl fmt::Display for HalError {
                 } else {
                     write!(
                         f,
-                        "runtime io failure: backend={} operation={} device_path={} errno=<none> errno_name=<none> message={}",
+                        "実行時I/O失敗: backend={} operation={} device_path={} errno=<none> errno_name=<none> message={}",
                         backend,
                         operation,
                         display_path(path),

@@ -1,42 +1,170 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://maleicacid.local/arib_si_engine_rs/descriptor_diagnostic_v1.schema.json",
-  "title": "Maleicacid descriptor diagnostic v1",
+  "title": "Maleicacid DescriptorDiagnosticV1",
   "type": "object",
-  "required": ["schemaVersion", "diagnostics"],
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "schemaVersion",
+    "severity",
+    "code",
+    "scope",
+    "descriptor",
+    "message"
+  ],
   "properties": {
-    "schemaVersion": { "const": 1 },
-    "diagnostics": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["parseStatus", "tag", "offset", "declaredLength", "actualRemainingLength", "rawPrefixHex", "message"],
-        "properties": {
-          "parseStatus": { "type": "string" },
-          "tag": { "type": "integer", "minimum": 0, "maximum": 255 },
-          "offset": { "type": "integer", "minimum": 0 },
-          "declaredLength": { "type": "integer", "minimum": 0 },
-          "actualRemainingLength": { "type": "integer", "minimum": 0 },
-          "rawPrefixHex": { "type": "string" },
-          "remainingLength": { "type": "integer", "minimum": 0 },
-          "rawPrefix": { "type": "string" },
-          "message": { "type": "string" },
-          "serviceKey": {
-            "type": ["object", "null"],
-            "properties": {
-              "originalNetworkId": { "type": "integer" },
-              "transportStreamId": { "type": "integer" },
-              "serviceId": { "type": "integer" }
-            }
-          },
-          "eventId": { "type": ["integer", "null"] },
-          "pid": { "type": ["integer", "null"] },
-          "tableId": { "type": ["integer", "null"] },
-          "sectionNumber": { "type": ["integer", "null"] }
-        },
-        "additionalProperties": true
-      }
+    "schema": {
+      "const": "maleicacid.tv.descriptorDiagnostic"
+    },
+    "schemaVersion": {
+      "const": 1
+    },
+    "severity": {
+      "type": "string",
+      "minLength": 1
+    },
+    "code": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scope": {
+      "$ref": "#/$defs/sectionScope"
+    },
+    "descriptor": {
+      "$ref": "#/$defs/descriptorScope"
+    },
+    "message": {
+      "type": "string",
+      "maxLength": 256
     }
   },
-  "additionalProperties": true
+  "$defs": {
+    "sectionScope": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "pid": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 8191
+        },
+        "tableId": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 255
+        },
+        "tableIdExtension": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "version": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 31
+        },
+        "sectionNumber": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 255
+        },
+        "originalNetworkId": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "transportStreamId": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "serviceId": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "eventId": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 65535
+        }
+      }
+    },
+    "descriptorScope": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "tag",
+        "offset",
+        "declaredLength",
+        "actualRemainingLength",
+        "rawPrefixHex"
+      ],
+      "properties": {
+        "tag": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "declaredLength": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "actualRemainingLength": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "parseStatus": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rawPrefixHex": {
+          "type": "string",
+          "pattern": "^([0-9A-Fa-f]{2})*$",
+          "maxLength": 128
+        }
+      }
+    }
+  }
 }

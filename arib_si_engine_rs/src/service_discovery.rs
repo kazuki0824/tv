@@ -2176,7 +2176,7 @@ mod ca_metadata_tests {
         let service = state.snapshot.services.iter().find(|s| s.service_id == 1).expect("raw service");
         assert_eq!(service.program_ca_descriptors.len(), 1);
         assert_eq!(service.program_ca_descriptors[0].ca_pid, 0x0123);
-        let video_ca = service.es_ca_descriptors.iter().find(|m| m.elementary_pid == 0x0101).expect("video ES CA metadata");
+        let video_ca = service.es_ca_descriptors.iter().find(|m| m.elementary_pid == 0x0101).expect("video ES CA情報");
         assert_eq!(video_ca.descriptors[0].ca_pid, 0x0124);
         assert_eq!(state.snapshot.cat_ca.descriptors[0].ca_pid, 0x0100);
 
@@ -2190,7 +2190,7 @@ mod ca_metadata_tests {
 }
 
 #[cfg(test)]
-mod r50bd_service_scoped_ca_metadata_tests {
+mod service_scoped_ca_metadata_tests {
     use super::*;
     use crate::ca_descriptor::CaDescriptor;
 

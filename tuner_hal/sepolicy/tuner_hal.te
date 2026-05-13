@@ -12,7 +12,7 @@ allow hal_tv_tuner_maleicacid dvb_dvr_device:chr_file rw_file_perms;
 allow hal_tv_tuner_maleicacid dvb_net_device:chr_file rw_file_perms;
 allow hal_tv_tuner_maleicacid px4_tuner_device:chr_file rw_file_perms;
 
-# AV MediaEvent shared-handle path uses /dev/dma_heap/system only for configured AV filters.
-# Non-AV filters must not depend on this allocator at openFilter() time.
+# AV MediaEvent shared-handle 経路では、設定済み AV filter だけが /dev/dma_heap/system を使う。
+# 非 AV filter は openFilter() 時点でこの allocator に依存してはならない。
 allow hal_tv_tuner_maleicacid dmabuf_heap_device:dir r_dir_perms;
 allow hal_tv_tuner_maleicacid dmabuf_system_heap_device:chr_file rw_file_perms;

@@ -42,7 +42,7 @@ def require_explicit_tune_point(fe):
     end = fe.get('end_frequency')
     if end is not None and end != fe['frequency']:
         raise ValueError(
-            f"r51 VTS/lab profile must be an explicit tune point: "
+            f"r51 VTS/検査用プロファイルは明示選局点でなければなりません: "
             f"{fe.get('id')} has end_frequency={end}"
         )
 
@@ -58,10 +58,10 @@ def frontend_xml(fe):
             stream_attrs = ''
         else:
             if 'stream_id' not in fe:
-                raise ValueError(f"BS profile {fe.get('id')} must declare stream_id")
+                raise ValueError(f"BSプロファイル {fe.get('id')} は stream_id を宣言する必要があります")
             stream_type = STREAM_ID_TYPE_XML.get(fe.get('stream_id_type', 'TS_ID'))
             if stream_type is None:
-                raise ValueError(f"unknown stream_id_type {fe.get('stream_id_type')}")
+                raise ValueError(f"未知の stream_id_type です: {fe.get('stream_id_type')}")
             stream_attrs = f' streamId="{fe["stream_id"]}" streamIdType="{stream_type}"'
         return f'''      <frontend id="{fe['id']}" type="ISDBS" isSoftwareFrontend="{bool_xml(fe['is_software_frontend'])}" frequency="{fe['frequency']}"><isdbsFrontendSettings{stream_attrs} modulation="1" coderate="1" symbolRate="{symbol_rate}"/></frontend>'''
     raise ValueError(f"対象外 frontend type {fe_type}")
@@ -134,7 +134,7 @@ def render(profiles):
     flows = []
     for profile in profiles:
         if 'descramble' in profile:
-            raise ValueError('VTS lab profile では production descrambling を claim しない')
+            raise ValueError('VTS検査用プロファイル では production descrambling を claim しない')
         frontends.append(frontend_xml(profile['frontend']))
         filters.extend(filters_xml(profile))
         dvrs.extend(dvr_xml(profile))

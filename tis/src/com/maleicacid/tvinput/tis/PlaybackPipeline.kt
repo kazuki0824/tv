@@ -373,10 +373,10 @@ class PlaybackPipeline(
     }
 
     private fun markFirstFrameRendered(generation: Long) {
-        // 4C: MediaCodec frame-rendered callbacks are delivered on mainHandler, not
-        // on the playback executor. Do not read playbackGeneration/surface or mutate
-        // first-frame state from that callback thread; serialize it onto the playback
-        // executor so old-generation frame notifications cannot advance current state.
+        // MediaCodec frame-rendered callback は playback executor ではなく mainHandler へ届く。
+        // callback thread から playbackGeneration / surface を読んだり first-frame state を変更したりせず、
+        // playback executor へ直列化する。これにより既存 generation の frame notification が
+        // current state を進めることを防ぐ。
         enqueuePlaybackAction { markFirstFrameRenderedOnPlaybackExecutor(generation) }
     }
 
@@ -739,9 +739,9 @@ class PlaybackPipeline(
                 .setAudioFormat(AudioFormat.Builder().setSampleRate(outputSampleRate).setChannelMask(channelMask).setEncoding(AudioFormat.ENCODING_PCM_16BIT).build())
                 .setBufferSizeInBytes(minBuffer)
                 .setTransferMode(AudioTrack.MODE_STREAM)
-            // Android 14 system SDK trees differ in whether AudioTrack.Builder exposes
-            // setAttributionSource at compile time. Keep the AttributionSource live and
-            // apply it best-effort via reflection; DESIGN_JA.md fixes this boundary.
+            // Android 14 system SDK tree によって、AudioTrack.Builder が compile time に
+            // setAttributionSource を公開しているかが異なる。AttributionSource は保持し、
+            // reflection による補助適用を行う。この境界は DESIGN_JA.md で固定する。
             attributionSource?.let { source ->
                 runCatching {
                     AudioTrack.Builder::class.java

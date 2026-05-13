@@ -11,28 +11,28 @@ class NativeAribSiParserCasDiscoveryTest {
             check(parser.ingestSection(PID_PMT, section(PMT_WITH_PROGRAM_AND_ES_CA_BODY)) == SiStatus.OK)
             check(parser.ingestSection(PID_CAT, section(CAT_BODY)) == SiStatus.OK)
 
-            // snapshotServices() is reserved for channel registration readiness.
-            // CAS discovery must not depend on that snapshot being empty or non-empty.
+            // snapshotServices() はチャンネル登録可否判定用に予約する。
+            // CAS検出は、そのsnapshotが空かどうかに依存してはならない。
 
             val discoveryServices = parser.snapshotServicesForCasDiscovery()
             check(discoveryServices.single().serviceKey.serviceId == SERVICE_ID)
 
             val metadata = parser.snapshotCaMetadataForCasDiscovery()
             check(metadata.any { it.source == CaMetadataSource.PROGRAM && it.ecmPid == ECM_PID_PROGRAM }) {
-                "program CA_descriptor must be visible to CAS discovery"
+                "番組単位CA_descriptorはCAS検出から見える必要があります"
             }
             check(metadata.any { it.source == CaMetadataSource.ELEMENTARY_STREAM && it.elementaryPid == VIDEO_PID && it.ecmPid == ECM_PID_ES }) {
-                "ES CA_descriptor must be visible to CAS discovery"
+                "ES単位CA_descriptorはCAS検出から見える必要があります"
             }
             check(metadata.any { it.source == CaMetadataSource.CAT && it.serviceKey == null && it.emmPid == EMM_PID }) {
-                "CAT EMM PID must be visible independent of service row publication"
+                "CAT EMM PIDはサービス行公開と独立して見える必要があります"
             }
 
             val diagnostics = parser.publishabilityDiagnosticsForTestOnly()
             val diagnostic = diagnostics.single { it.serviceKey.serviceId == SERVICE_ID }
             check(!diagnostic.clearLivePlaybackSupported)
             check(diagnostic.reasons.any { it == "SCRAMBLED_OR_UNKNOWN_SDT_FREE_CA_MODE" || it == "PMT_PROGRAM_CA_DESCRIPTOR" || it == "VIDEO_ES_CA_DESCRIPTOR" }) {
-                "CAS-discovery service must retain clear-live-unsupported diagnostics: ${diagnostic.reasons}"
+                "CAS検出対象サービスは非スクランブルlive未対応診断を保持する必要があります: ${diagnostic.reasons}"
             }
         } finally {
             parser.close()

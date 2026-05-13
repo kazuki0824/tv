@@ -1547,7 +1547,7 @@ impl SharedMemoryBacking {
         if let Ok(mut residual) = self.playback_residual.lock() {
             let tail_len = residual.tail_len();
             if tail_len > 0 {
-                // The residual buffer contains a partial, non-deliverable TS packet at the stream boundary.
+                // residual buffer には stream boundary 上の配送不能な部分 TS packet が残っている。
                 dropped = dropped.saturating_add(tail_len);
                 residual.clear();
             }
@@ -2779,11 +2779,10 @@ impl FrontendStatusSupport {
     fn for_entry(entry: &FrontendEntry) -> Self {
         let is_dvb = matches!(&entry.kind, FrontendEntryKind::Dvb { .. });
         Self {
-            // r51 only advertises frontend status values whose availability is
-            // fixed by the backend contract at enumeration time.  DVB FE status
-            // word values are mandatory for this HAL path; optional SNR/strength
-            // ioctls are deliberately not advertised because their support can
-            // only be discovered at read time on target drivers.
+            // frontend status は、enumeration 時点の backend contract で取得可能性を
+            // 固定できる値だけを advertise する。DVB FE status word はこの HAL path で
+            // 必須だが、optional SNR / strength ioctl は対象 driver で read 時にしか
+            // support を確認できないため advertise しない。
             snr: false,
             signal_strength: false,
             signal_quality: is_dvb,
@@ -4179,9 +4178,9 @@ impl IDescrambler for TunerDescrambler {
         let mut state = lock_mutex_status(&self.state, "descrambler_state")?;
         Self::ensure_open_locked(&state)?;
         if key_token == [0x00].as_slice() {
-            // Android Tuner.VOID_KEYTOKEN removes only the current key.
-            // PID registrations remain active so subsequent scrambled packets
-            // for those PIDs diagnose NO_KEY, not SCRAMBLED_WITHOUT_DESCRAMBLER.
+            // Android Tuner.VOID_KEYTOKEN は現在 key だけを削除する。
+            // PID registration は維持し、以後の同 PID scrambled packet は
+            // SCRAMBLED_WITHOUT_DESCRAMBLER ではなく NO_KEY として診断する。
             state.key_token = None;
             state.key_slot = None;
             return Ok(());
@@ -5245,7 +5244,7 @@ impl FrontendHal {
         _message: &[u8],
     ) -> Result<(), HalError> {
         Err(HalError::Unsupported(
-            "DiSEqC is permanently unsupported by the fixed Japanese tuner profiles",
+            "固定日本向けチューナープロファイルではDiSEqCを恒久的に非対応とします",
         ))
     }
 
@@ -5675,7 +5674,7 @@ impl FrontendHal {
                 cancelled: true,
             });
         }
-        let deadline = Instant::now() + Duration::from_millis(config.timeout_ms);
+        let 期限 = Instant::now() + Duration::from_millis(config.timeout_ms);
         let mut consecutive_lock_samples = 0u32;
         let mut last_telemetry = FrontendTelemetry::default();
         loop {
@@ -5704,7 +5703,7 @@ impl FrontendHal {
                 consecutive_lock_samples = 0;
             }
             let now = Instant::now();
-            if now >= deadline {
+            if now >= 期限 {
                 return Ok(LockWaitOutcome {
                     telemetry: last_telemetry,
                     locked: false,
@@ -5712,7 +5711,7 @@ impl FrontendHal {
                 });
             }
             let sleep_for = Duration::from_millis(config.poll_interval_ms)
-                .min(deadline.saturating_duration_since(now));
+                .min(期限.saturating_duration_since(now));
             if Self::wait_interruptibly(stop_signal, sleep_for) {
                 return Ok(LockWaitOutcome {
                     telemetry: last_telemetry,
@@ -6118,33 +6117,33 @@ impl FrontendHal {
             FrontendIsdbtBandwidth::AUTO | FrontendIsdbtBandwidth::BANDWIDTH_6MHZ
         ) {
             return Err(HalError::InvalidArgument(
-                "r51 ISDB-T accepts only AUTO or 6MHz bandwidth".into(),
+                "r51のISDB-TはAUTOまたは6MHz帯域幅だけを受け付けます".into(),
             ));
         }
         if !matches!(s.mode, FrontendIsdbtMode::AUTO | FrontendIsdbtMode::MODE_3) {
             return Err(HalError::InvalidArgument(
-                "r51 ISDB-T accepts only AUTO or MODE_3 transmission mode".into(),
+                "r51のISDB-TはAUTOまたはMODE_3伝送モードだけを受け付けます".into(),
             ));
         }
         if !matches!(s.guardInterval, FrontendIsdbtGuardInterval::AUTO) {
             return Err(HalError::InvalidArgument(
-                "r51 ISDB-T guard interval capability is AUTO only".into(),
+                "r51のISDB-Tガードインターバル能力はAUTOだけです".into(),
             ));
         }
         for layer in &s.layerSettings {
             if !matches!(layer.modulation, FrontendIsdbtModulation::AUTO) {
                 return Err(HalError::InvalidArgument(
-                    "r51 ISDB-T layer modulation capability is AUTO only".into(),
+                    "r51のISDB-T階層変調能力はAUTOだけです".into(),
                 ));
             }
             if !matches!(layer.coderate, FrontendIsdbtCoderate::AUTO) {
                 return Err(HalError::InvalidArgument(
-                    "r51 ISDB-T layer coderate capability is AUTO only".into(),
+                    "r51のISDB-T階層符号率能力はAUTOだけです".into(),
                 ));
             }
             if !matches!(layer.timeInterleave, FrontendIsdbtTimeInterleaveMode::AUTO) {
                 return Err(HalError::InvalidArgument(
-                    "r51 ISDB-T layer time interleave capability is AUTO only".into(),
+                    "r51のISDB-T階層時間インタリーブ能力はAUTOだけです".into(),
                 ));
             }
         }
@@ -6156,17 +6155,17 @@ impl FrontendHal {
     ) -> Result<(), HalError> {
         if !matches!(s.modulation, FrontendIsdbsModulation::AUTO) {
             return Err(HalError::InvalidArgument(
-                "r51 ISDB-S modulation capability is AUTO only".into(),
+                "r51のISDB-S変調能力はAUTOだけです".into(),
             ));
         }
         if !matches!(s.coderate, FrontendIsdbsCoderate::AUTO) {
             return Err(HalError::InvalidArgument(
-                "r51 ISDB-S coderate capability is AUTO only".into(),
+                "r51のISDB-S符号率能力はAUTOだけです".into(),
             ));
         }
         if s.symbolRate != 0 {
             return Err(HalError::InvalidArgument(
-                "r51 ISDB-S public settings do not use explicit symbolRate; use 0/unspecified"
+                "r51のISDB-S公開設定では明示symbolRateを使いません。0または未指定にしてください"
                     .into(),
             ));
         }
@@ -6319,7 +6318,7 @@ impl FrontendHal {
             FrontendStatusType::SNR => status.cnr.is_some(),
             FrontendStatusType::SIGNAL_STRENGTH => status.signal_strength.is_some(),
             FrontendStatusType::SIGNAL_QUALITY => status.signal_quality.is_some(),
-            // LNB voltage has a well-defined NONE state when no voltage has been selected.
+            // LNB voltage は未選択時の NONE state が明確に定義されている。
             FrontendStatusType::LNB_VOLTAGE => support.satellite,
             _ => false,
         }
@@ -6836,9 +6835,9 @@ impl IFrontend for FrontendHal {
     fn stopScan(&self) -> BinderResult<()> {
         self.ensure_open()?;
         self.cancel_scan_session()?;
-        // stopScan owns only the scan operation.  The scan worker performs its own
-        // backend stop during cancellation; when no scan is active this must not
-        // stop a normal tune/live pump.
+        // stopScan が所有するのは scan operation だけである。scan worker は cancel 中に
+        // 自身の backend stop を実行する。scan が動作していない場合、通常の tune / live pump を
+        // stop してはならない。
         Ok(())
     }
 
@@ -7350,7 +7349,7 @@ impl IDemux for DemuxHal {
         self.ensure_open()?;
         if buffer_size <= 0 {
             return Err(invalid_argument_status(
-                "openFilter bufferSize must be positive",
+                "openFilter bufferSize は正値である必要があります",
             ));
         }
         if !filter_main_type_supported(filter_type.mainType) {
@@ -7439,7 +7438,7 @@ impl IDemux for DemuxHal {
         self.ensure_open()?;
         if buffer_size <= 0 {
             return Err(invalid_argument_status(
-                "openDvr bufferSize must be positive",
+                "openDvr bufferSize は正値である必要があります",
             ));
         }
         let direction = normalize_dvr_type(dvr_type)?;
@@ -7732,7 +7731,7 @@ impl FilterHal {
                                 if let Some(event) = build_filter_event_from_entry(&record, &payload, event_offset, cumulative_bytes, av_slice, av_data_id, av_memory, &mut record_event_state) {
                                     if let Err(err) = callback_clone.onFilterEvent(&[event]) {
                                         eprintln!("maleicacid-tuner-hal-callback: filter_id={} api=onFilterEvent(data) binder_status={:?}", filter_id, err);
-                                        FilterHal::fail_filter_worker(&state_clone, &runtime_io_clone, &queue_backing_clone, &av_queue_backing_clone, &av_shared_backing_clone, &closed_clone, &stop_clone, filter_id, "filter callback failure on data event");
+                                        FilterHal::fail_filter_worker(&state_clone, &runtime_io_clone, &queue_backing_clone, &av_queue_backing_clone, &av_shared_backing_clone, &closed_clone, &stop_clone, filter_id, "filter callback failure on データイベント");
                                         return WorkerExit::Error;
                                     }
                                 }
@@ -8149,14 +8148,14 @@ impl IFilter for FilterHal {
         self.ensure_open()?;
         Err(Status::new_service_specific_error(
             TunerResult::UNAVAILABLE.0,
-            Some("IP CID monitor/filter is unsupported in the r51 TS-only HAL profile"),
+            Some("r51のTS-only HAL profileではIP CID monitor/filterは未対応です"),
         ))
     }
 
     fn configureMonitorEvent(&self, monitor_event_types: i32) -> BinderResult<()> {
         self.ensure_open()?;
         if monitor_event_types != 0 {
-            return Err(Status::new_service_specific_error(TunerResult::UNAVAILABLE.0, Some("filter monitor events are unsupported in r51; normal callbacks are always delivered")));
+            return Err(Status::new_service_specific_error(TunerResult::UNAVAILABLE.0, Some("r51ではfilter monitor eventは未対応です。通常callbackは常に配送されます")));
         }
         if lock_mutex_status(&self.state, "demux_handle")?
             .set_filter_monitor_event_mask(self.filter_id, 0)
@@ -8172,7 +8171,7 @@ impl IFilter for FilterHal {
         if is_av {
             if !stream_type_configured {
                 return Err(invalid_state_status(
-                    "AV filter start requires configureAvStreamType",
+                    "AVフィルタ開始にはconfigureAvStreamTypeが必要です",
                 ));
             }
         }
@@ -8189,8 +8188,8 @@ impl IFilter for FilterHal {
                 );
             let start_event_ready = filter_start_event_ready(readiness);
             let record = state.filter_record(self.filter_id).cloned();
-            // configureMonitorEvent() is not a normal callback gating API.
-            // r51 supports no monitor-event bits, so DATA_READY / OVERFLOW / data events remain always enabled.
+            // configureMonitorEvent() は通常 callback の gating API ではない。
+            // r51 は monitor-event bit を support しないため、DATA_READY / OVERFLOW / データイベント は常に有効のままにする。
             let monitor_mask = 0;
             let is_media = matches!(
                 record
@@ -8272,7 +8271,7 @@ impl IFilter for FilterHal {
             return Ok(());
         }
         if av_data_id < 0 {
-            return Err(invalid_argument_status("invalid AV data id"));
+            return Err(invalid_argument_status("不正なAV data idです"));
         }
         self.release_av_shared_handle(av_data_id)
     }
@@ -9068,7 +9067,7 @@ impl IDvr for DvrHal {
         }
         if milliseconds < 0 {
             return Err(invalid_argument_status(
-                "DVR statusCheckIntervalHint must be non-negative",
+                "DVR statusCheckIntervalHint は負値にできません",
             ));
         }
         let normalized_ms = if milliseconds == 0 {
@@ -9941,7 +9940,7 @@ fn map_isdbs_stream_selector(
         FrontendIsdbsStreamIdType::UNDEFINED => {
             if stream_id != 0 {
                 return Err(HalError::InvalidArgument(
-                    "ISDB-S streamId must be zero when streamIdType is UNDEFINED".into(),
+                    "streamIdType が UNDEFINED の場合、ISDB-S streamId は0である必要があります".into(),
                 ));
             }
             Ok((None, None))
@@ -9952,19 +9951,19 @@ fn map_isdbs_stream_selector(
             }
             if stream_id < 0 {
                 return Err(HalError::InvalidArgument(
-                    "ISDB-S stream selector must be non-negative when streamIdType is specified"
+                    "streamIdType 指定時のISDB-S stream selector は負値にできません"
                         .into(),
                 ));
             }
             if is_japan_cs110_if_frequency_hz(frequency_hz) {
                 return Err(HalError::InvalidArgument(
-                    "CS110 frontend tune must not carry TSID or relative stream-number selector"
+                    "CS110フロントエンド選局にTSIDまたは相対ストリーム番号セレクタを載せてはなりません"
                         .into(),
                 ));
             }
             let value = u32::try_from(stream_id).map_err(|_| {
                 HalError::InvalidArgument(format!(
-                    "ISDB-S stream selector out of range: {stream_id}"
+                    "ISDB-S stream selector が範囲外です: {stream_id}"
                 ))
             })?;
             Ok((Some(value), Some(FrontendStreamIdKind::AbsoluteStreamId)))
@@ -9972,24 +9971,24 @@ fn map_isdbs_stream_selector(
         FrontendIsdbsStreamIdType::RELATIVE_STREAM_NUMBER => {
             if stream_id < 0 {
                 return Err(HalError::InvalidArgument(
-                    "ISDB-S relative stream selector must be non-negative".into(),
+                    "ISDB-S relative stream selector は負値にできません".into(),
                 ));
             }
             if is_japan_cs110_if_frequency_hz(frequency_hz) {
                 return Err(HalError::InvalidArgument(
-                    "CS110 frontend tune must not carry TSID or relative stream-number selector"
+                    "CS110フロントエンド選局にTSIDまたは相対ストリーム番号セレクタを載せてはなりません"
                         .into(),
                 ));
             }
             let value = u32::try_from(stream_id).map_err(|_| {
                 HalError::InvalidArgument(format!(
-                    "ISDB-S relative stream selector out of range: {stream_id}"
+                    "ISDB-S relative stream selector が範囲外です: {stream_id}"
                 ))
             })?;
             Ok((Some(value), Some(FrontendStreamIdKind::RelativeStreamNumber)))
         }
         _ => Err(HalError::InvalidArgument(format!(
-            "unsupported ISDB-S streamIdType: {:?}",
+            "未対応の ISDB-S streamIdType です: {:?}",
             stream_id_type
         ))),
     }
@@ -10031,17 +10030,17 @@ fn hal_error_tuner_result(err: &HalError) -> i32 {
 }
 
 fn hal_error_status(err: HalError) -> Status {
-    eprintln!("maleicacid-tuner-hal: backend error: {err}");
+    eprintln!("maleicacid-tuner-hal: backendエラー: {err}");
     Status::new_service_specific_error(hal_error_tuner_result(&err), None)
 }
 
 fn invalid_argument_status(message: &str) -> Status {
-    eprintln!("maleicacid-tuner-hal: invalid argument: {message}");
+    eprintln!("maleicacid-tuner-hal: 不正な引数: {message}");
     Status::new_service_specific_error(TunerResult::INVALID_ARGUMENT.0, None)
 }
 
 fn invalid_state_status(message: &str) -> Status {
-    eprintln!("maleicacid-tuner-hal: invalid state: {message}");
+    eprintln!("maleicacid-tuner-hal: 不正な状態: {message}");
     Status::new_service_specific_error(TunerResult::INVALID_STATE.0, None)
 }
 
@@ -10129,7 +10128,7 @@ fn normalize_filter_delay_hint_for_record(
 fn normalize_filter_delay_hint(hint: &FilterDelayHint) -> BinderResult<FilterDelayHintState> {
     if hint.hintValue < 0 {
         return Err(invalid_argument_status(
-            "filter delay hint must be non-negative",
+            "フィルタ遅延指定は0以上である必要があります",
         ));
     }
     match hint.hintType {
@@ -10150,7 +10149,7 @@ fn validate_ts_pid(pid: i32) -> BinderResult<i32> {
     if (0..=0x1fff).contains(&pid) {
         Ok(pid)
     } else {
-        Err(invalid_argument_status("TS PID out of range"))
+        Err(invalid_argument_status("TS PID が範囲外です"))
     }
 }
 
@@ -10161,10 +10160,10 @@ fn normalize_pes_stream_id(stream_id: i32) -> BinderResult<i32> {
         Ok(stream_id)
     } else if stream_id < 0 {
         Err(invalid_argument_status(
-            "PES streamId must be -1 wildcard or 0..=255",
+            "PES streamId は -1 のワイルドカードまたは 0..=255 である必要があります",
         ))
     } else {
-        Err(invalid_argument_status("PES streamId must be <=255"))
+        Err(invalid_argument_status("PES streamId は255以下である必要があります"))
     }
 }
 
@@ -10200,14 +10199,14 @@ fn validate_record_index_settings(
 ) -> BinderResult<i32> {
     if (ts_index_mask & !supported_record_ts_index_mask()) != 0 {
         return Err(invalid_argument_status(
-            "record tsIndexMask contains unsupported bits",
+            "record tsIndexMask に未対応bitが含まれます",
         ));
     }
     let (expected_type, sc_index_mask_bits) = record_sc_mask_variant_type(sc_index_mask);
     if sc_index_type == RECORD_SC_TYPE_NONE {
         if sc_index_mask_bits != 0 {
             return Err(invalid_argument_status(
-                "record SC index NONE requires zero mask",
+                "record SC index NONE ではmaskが0である必要があります",
             ));
         }
     } else if !matches!(
@@ -10244,7 +10243,7 @@ fn build_filter_summary(settings: &DemuxFilterSettings) -> BinderResult<FilterCo
                         else {
                             return Err(Status::new_service_specific_error(
                                 TunerResult::INVALID_ARGUMENT.0,
-                                Some("r51 TS section filters support only bitWidthOfLengthField 0 or 12"),
+                                Some("r51のTS section filterは bitWidthOfLengthField 0 または12だけをサポートします"),
                             ));
                         };
                         FilterConfigKind::Section {
@@ -10258,7 +10257,7 @@ fn build_filter_summary(settings: &DemuxFilterSettings) -> BinderResult<FilterCo
                     }
                     DemuxTsFilterSettingsFilterSettings::Av(av) => {
                         if av.isPassthrough {
-                            return Err(Status::new_service_specific_error(TunerResult::UNAVAILABLE.0, Some("AV passthrough is unsupported in r51; use MediaEvent/shared-memory delivery")));
+                            return Err(Status::new_service_specific_error(TunerResult::UNAVAILABLE.0, Some("r51ではAV passthroughは未対応です。MediaEvent/共有メモリ配送を使ってください")));
                         }
                         if av.isSecureMemory {
                             return Err(Status::new_service_specific_error(
@@ -10318,7 +10317,7 @@ fn build_section_condition_kind(
 fn normalize_table_info_version(version: i32) -> BinderResult<Option<i32>> {
     if version < -1 || version > 31 {
         return Err(invalid_argument_status(
-            "section table version must be -1 or 0..31",
+            "section table version は -1 または 0..31 である必要があります",
         ));
     }
     Ok((version >= 0).then_some(version))
@@ -10329,7 +10328,7 @@ fn normalize_section_table_id(table_id: i32) -> BinderResult<u8> {
         Ok(table_id as u8)
     } else {
         Err(invalid_argument_status(
-            "section tableId must be in 0..=255",
+            "section tableId は 0..=255 である必要があります",
         ))
     }
 }
@@ -10377,10 +10376,10 @@ fn normalize_dvr_type(dvr_type: DvrType) -> BinderResult<DemuxPathDirection> {
 
 fn validate_dvr_ts_188(data_format: DataFormat, packet_size: i64) -> BinderResult<()> {
     if data_format != DataFormat::TS {
-        return Err(invalid_argument_status("DVR dataFormat must be TS"));
+        return Err(invalid_argument_status("DVR dataFormat はTSである必要があります"));
     }
     if packet_size != 188 {
-        return Err(invalid_argument_status("DVR packetSize must be 188"));
+        return Err(invalid_argument_status("DVR packetSize は188である必要があります"));
     }
     Ok(())
 }
@@ -10407,32 +10406,32 @@ fn validate_dvr_thresholds_and_mask(
     supported_status_mask: i32,
 ) -> BinderResult<()> {
     if buffer_size <= 0 {
-        return Err(invalid_argument_status("DVR bufferSize must be positive"));
+        return Err(invalid_argument_status("DVR bufferSize は正値である必要があります"));
     }
     let capacity = i64::from(buffer_size);
     if low_threshold < 0 {
         return Err(invalid_argument_status(
-            "DVR lowThreshold must be non-negative",
+            "DVR lowThreshold は負値にできません",
         ));
     }
     if high_threshold < 0 {
         return Err(invalid_argument_status(
-            "DVR highThreshold must be non-negative",
+            "DVR highThreshold は負値にできません",
         ));
     }
     if low_threshold > high_threshold {
         return Err(invalid_argument_status(
-            "DVR lowThreshold must be <= highThreshold",
+            "DVR lowThreshold は highThreshold 以下である必要があります",
         ));
     }
     if low_threshold > capacity || high_threshold > capacity {
         return Err(invalid_argument_status(
-            "DVR thresholds must be <= bufferSize",
+            "DVR threshold は bufferSize 以下である必要があります",
         ));
     }
     if (status_mask & !supported_status_mask) != 0 {
         return Err(invalid_argument_status(
-            "DVR statusMask contains unsupported bits",
+            "DVR statusMask に未対応bitが含まれます",
         ));
     }
     Ok(())
@@ -10668,7 +10667,7 @@ mod av_shared_backing_tests {
 
         let delivered = backing
             .allocate(200, &exact)
-            .expect("payload exactly filling one slot must be accepted");
+            .expect("1 slotをちょうど満たすpayloadは受け付ける必要があります");
         assert_eq!(delivered.len, backing.slot_size);
         assert!(matches!(
             backing.allocate(201, &too_large),
@@ -11347,7 +11346,7 @@ mod frontend_capability_tests {
                 assert!(caps.isSegmentAuto);
                 assert!(caps.isFullSegment);
             }
-            _ => panic!("ISDB-T entry must report ISDB-T capabilities"),
+            _ => panic!("ISDB-T項目はISDB-T能力を報告する必要があります"),
         }
     }
 
@@ -11359,7 +11358,7 @@ mod frontend_capability_tests {
                 assert_eq!(caps.modulationCap, FrontendIsdbsModulation::AUTO.0);
                 assert_eq!(caps.coderateCap, FrontendIsdbsCoderate::AUTO.0);
             }
-            _ => panic!("ISDB-S entry must report ISDB-S capabilities"),
+            _ => panic!("ISDB-S項目はISDB-S能力を報告する必要があります"),
         }
     }
 
@@ -11368,7 +11367,7 @@ mod frontend_capability_tests {
         let t = match entry_frontend_caps(&px4_entry(1, FrontendType::ISDBT, FrontendSystem::IsdbT))
         {
             FrontendCapabilities::IsdbtCaps(caps) => caps,
-            _ => panic!("ISDB-T caps expected"),
+            _ => panic!("ISDB-T能力が期待されます"),
         };
         assert_ne!(t.bandwidthCap & FrontendIsdbtBandwidth::BANDWIDTH_6MHZ.0, 0);
         assert_ne!(t.modeCap & FrontendIsdbtMode::AUTO.0, 0);
@@ -11383,7 +11382,7 @@ mod frontend_capability_tests {
         let s = match entry_frontend_caps(&px4_entry(2, FrontendType::ISDBS, FrontendSystem::IsdbS))
         {
             FrontendCapabilities::IsdbsCaps(caps) => caps,
-            _ => panic!("ISDB-S caps expected"),
+            _ => panic!("ISDB-S能力が期待されます"),
         };
         assert_ne!(s.modulationCap & FrontendIsdbsModulation::AUTO.0, 0);
         assert_ne!(s.coderateCap & FrontendIsdbsCoderate::AUTO.0, 0);
@@ -11607,7 +11606,7 @@ mod hal_error_mapping_tests {
                 operation: "read",
                 path: None,
                 errno: None,
-                message: "runtime read failed".into()
+                message: "実行時読み取り失敗".into()
             }),
             TunerResult::UNKNOWN_ERROR.0
         );
@@ -11941,7 +11940,7 @@ mod static_completion_tests {
     fn ts_record_event(event: DemuxFilterEvent) -> DemuxFilterTsRecordEvent {
         match event {
             DemuxFilterEvent::TsRecord(record) => record,
-            other => panic!("unexpected record event: {:?}", other),
+            other => panic!("想定外のrecord eventです: {:?}", other),
         }
     }
 
@@ -12897,7 +12896,7 @@ mod static_completion_tests {
         runtime_io.mark_failed(
             RuntimeIoKind::Filter,
             destination.filter_id,
-            "destination failed for test",
+            "test用の出力先失敗",
         );
 
         assert!(destination_hal.setDataSource(&source_binder).is_err());
@@ -13406,7 +13405,7 @@ mod static_completion_tests {
                 assert!(media.avMemory.fds.is_empty());
                 assert!(media.avMemory.ints.is_empty());
             }
-            other => panic!("unexpected AV event: {:?}", other),
+            other => panic!("想定外のAV eventです: {:?}", other),
         }
     }
 }
@@ -14740,7 +14739,7 @@ mod contract_regression_tests {
         let mut panic_worker = spawn_managed_worker_with_exit_hook(
             "managed_worker_panic_contract_test",
             |_stop| {
-                panic!("intentional managed worker panic contract test");
+                panic!("管理worker panic契約の意図的test");
             },
             move |exit| {
                 tx_panic.send(exit).unwrap();

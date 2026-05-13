@@ -1,6 +1,6 @@
-# Tuner HAL product integration / VTS config 手順書
+# Tuner HAL product integration / VTS設定 手順書
 
-この文書は、`vendor/maleicacid/tv/tuner_hal` を Android TV 14 系 product image に組み込むための SSOT である。README_JA.md にはこの文書への導線だけを置き、product makefile、BoardConfig、ueventd、SELinux、VINTF/init、VTS config の詳細を重複記載しない。
+この文書は、`vendor/maleicacid/tv/tuner_hal` を Android TV 14 系 product image に組み込むための SSOT である。README_JA.md にはこの文書への導線だけを置き、product makefile、BoardConfig、ueventd、SELinux、VINTF/init、VTS設定 の詳細を重複記載しない。
 
 ## 0. 固定方針
 
@@ -11,7 +11,7 @@
 - service 名は vendor.maleicacid-tuner-default に固定する。
 - ueventd node pattern の SSOT は config/ueventd.tuner_hal.rc である。
 - SELinux vendor policy の SSOT は sepolicy/ 配下である。
-- VTS config の SSOT は config/tuner_vts_config_aidl_V2.xml と profiles/*.yaml + tools/render_vts_config.py である。
+- VTS設定 の SSOT は config/tuner_vts_config_aidl_V2.xml と profiles/*.yaml + tools/render_vts_config.py である。
 ```
 
 ### 0.1 px4_drv direct-slot 前提の確認
@@ -157,9 +157,9 @@ maleicacid_tuner_hal_ueventd_rc
 BOARD_VENDOR_SEPOLICY_DIRS include
 ```
 
-理由: VTS config と ueventd node permission は APEX payload ではなく product/vendor image の統合対象である。
+理由: VTS設定 と ueventd node permission は APEX payload ではなく product/vendor image の統合対象である。
 
-## 3. VTS config 設定
+## 3. VTS設定 設定
 
 `config/tuner_vts_config_aidl_V2.xml` は汎用製品設定ではなく、VTS が実際に受信・filter・DVR 確認できる試験用プロファイルである。
 
@@ -251,6 +251,6 @@ git diff -- tuner_hal/config/tuner_vts_config_aidl_V2.xml
 - config/ueventd.tuner_hal.rc が唯一の device node pattern 定義元である。
 - config/ueventd.vendor.direct.example.rc が存在しない。
 - VINTF/init は Android.bp module property から install され、device 側に重複しない。
-- VTS config は実TSの PMT 由来 PID と一致する。
+- VTS設定 は実TSの PMT 由来 PID と一致する。
 - README_JA.md に integration 詳細が重複していない。
 ```

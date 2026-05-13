@@ -3,7 +3,7 @@
 ## VTS / 実機ゲート対象
 
 ISDB-T、BS、CS110 の explicit tune と clear live / DVR path をゲート対象とする。HAL は BLIND_SCAN や HAL-generated Japanese scan plan を claim しない。Tuner HAL は渡された tune request を処理する。  
-日本向け scan 候補、service discovery、channel key の実装データ保持者は TIS とし、設計契約は tv 直下の開発規則.mdに従う。
+日本向け scan 候補、サービス検出、channel key の実装データ保持者は TIS とし、設計契約は tv 直下の開発規則.mdに従う。
 
 `config/tuner_vts_config_aidl_V2.xml` は explicit tune point、AV filter、record DVR path の接続確認に限定する。descrambler object は Tuner HAL AIDL 面として実装するが、CAS HAL placeholder のまま production descrambling success は claim しない。
 
@@ -17,17 +17,17 @@ r51 は TS-only HAL profile とする。IP / MMTP / TLV / ALP filter は claim �
 `IFrontend.getStatus(statusTypes)` は、要求された `statusTypes` の各要素に対して、同じ順序で1つの `FrontendStatus` を返す。未対応 status type を黙ってdropして短い配列を返してはならない。未対応 status type が要求された場合、`getStatus()` は呼び出し全体を `INVALID_ARGUMENT` として失敗させる。`getFrontendStatusReadiness(statusTypes)` は AOSP VTS 期待に合わせ、要求された全 status type と同じ長さの readiness 配列を返す。`statusCaps` 外の type は要素ごとに `UNSUPPORTED`、`statusCaps` 内で backend が現在利用不可または status word / telemetry を現在取得できない場合は `UNAVAILABLE`、tune/probe 中なら `UNSTABLE`、有効値を返せる状態なら `STABLE` とする。`statusCaps`、`getStatus()`、`getFrontendStatusReadiness()` は同一の status support 判定 SSOT を使うが、戻り方は API ごとの AOSP 契約に従って分ける。`statusCaps` には起動時列挙時点で値の取得根拠を固定できる status type だけを含め、read 時に失敗し得る optional ioctl 由来の status type は含めない。telemetry 未取得値を `0` として成功返却してはならない。
 
 
-Android 14 の Tuner HAL AIDL Rust backend では、`IFilter.setDataSource()` の source filter が Rust generated trait 上 non-null `Strong<dyn IFilter>` として現れるため、AOSP Java / JNI / HIDL に存在する `setDataSource(null)` による demux source 復帰経路は r51 の Rust-only 実装対象に含めない。この構造課題は `future_work/not_planned/android14_aidl_rust_descrambler_pid_only_boundary_report.md` に、`IDescrambler.addPid()` / `removePid()` の null source filter / PID-only 境界と同根の Android 14 AIDL/Rust nullable filter 境界として同一ファイル内で管理する。r51 は non-null source filter linkage、demux default source、`configure()` による旧 upstream linkage clear、close / runtime-failed / invalid linkage の error mapping を修正・確認対象にする。AOSP frozen/stable AIDL の vendor 独自改変、C++/NDK wrapper、raw Binder transaction parser による generated trait 迂回は採用しない。
+Android 14 の Tuner HAL AIDL Rust backend では、`IFilter.setDataSource()` の source filter が Rust generated trait 上 non-null `Strong<dyn IFilter>` として現れるため、AOSP Java / JNI / HIDL に存在する `setDataSource(null)` による demux source 復帰経路は r51 の Rust-only 実装対象に含めない。この構造課題は `future_work/not_planned/android14_aidl_rust_descrambler_pid_only_boundary_report.md` に、`IDescrambler.addPid()` / `removePid()` の null source filter / PID-only 境界と同根の Android 14 AIDL/Rust nullable filter 境界として同一ファイル内で管理する。r51 は non-null source filter linkage、demux default source、`configure()` による既存 上流接続 clear、close / runtime-failed / invalid linkage の error mapping を修正・確認対象にする。AOSP frozen/stable AIDL の vendor 独自改変、C++/NDK wrapper、raw Binder transaction parser による generated trait 迂回は採用しない。
 
 `IFrontend.tune()` は binder thread 上で lock 完了まで待ち続けない。前回 tune / scan の worker を generation で無効化し、backend へ tune request を投入し、非同期 worker が lock timeout と event 通知を行う。`stopTune()`、`close()`、次回 `tune()`、`scan()` は該当 generation を cancel し、古い worker からの `LOCKED` / `NO_SIGNAL` 通知を捨てる。
 
-`IFrontend.close()` は frontend backend の critical cleanup を成功扱いで握り潰さない。public close では、scan cancel、tune worker stop、live pump stop、backend close、callback clear、demux unbind、frontend lease release を step runner として扱い、途中 step が失敗しても後続 cleanup を継続し、最初に観測した critical error を AIDL status として返す。cleanup failure 後の frontend object は通常操作へ戻さず、close retry または Drop best-effort cleanup だけを許可する。best-effort 経路では失敗を返せないため、失敗を成功扱いにせず runtime diagnostic に残す。
+`IFrontend.close()` は frontend backend の critical cleanup を成功扱いで握り潰さない。public close では、scan cancel、tune worker stop、live pump stop、backend close、callback clear、demux unbind、frontend lease release を step runner として扱い、途中 step が失敗しても後続 cleanup を継続し、最初に観測した critical error を AIDL status として返す。cleanup failure 後の frontend object は通常操作へ戻さず、close retry または Drop 補助 cleanup だけを許可する。補助経路では失敗を返せないため、失敗を成功扱いにせず runtime diagnostic に残す。
 
 DVB / earth_pt1 backend では、`DTV_CLEAR` は明示的な tune 停止操作である `stop_tune()` の責務とする。DVB backend の `close()` は reader stop と fd release を行うが、`DTV_CLEAR` の実行を close の必須条件とはしない。したがって、DVB `close()` が `DTV_CLEAR` を発行しないことを release blocker または bug と扱わない。
 
 `IFrontend.removeOutputPid(pid)` は、frontend 出力段で PID を除去できる実装が存在しない限り `UNAVAILABLE` とする。soft demux 後段の block list だけで PID を捨てる実装は、frontend-level output PID removal を実装したことにしない。
 
-DVR playback は claim 対象とする。DVR playback の水位通知は AIDL `PlaybackSettings.lowThreshold` / `highThreshold` の説明に合わせ、playback input FMQ の unused space size in bytes を基準に判定する。`SPACE_EMPTY`、`SPACE_ALMOST_EMPTY`、`SPACE_ALMOST_FULL` は threshold 到達時だけ通知し、中間水位では新規status通知を行わない。used bytes を threshold として直接比較してはならない。標準閾値は buffer 容量比で low 25%、high 75% とし、VTS lab profile では XML 生成時に明示値へ展開する。
+DVR playback は claim 対象とする。DVR playback の水位通知は AIDL `PlaybackSettings.lowThreshold` / `highThreshold` の説明に合わせ、playback input FMQ の unused space size in bytes を基準に判定する。`SPACE_EMPTY`、`SPACE_ALMOST_EMPTY`、`SPACE_ALMOST_FULL` は threshold 到達時だけ通知し、中間水位では新規status通知を行わない。used bytes を threshold として直接比較してはならない。標準閾値は buffer 容量比で low 25%、high 75% とし、VTS検査用プロファイル では XML 生成時に明示値へ展開する。
 
 
 ## error mapping / scan lifecycle / section overflow / DVR close の契約
@@ -40,7 +40,7 @@ frontend scan lifecycle では、`scan_session` は active `Running` scan だけ
 
 section assembler が 8192 bytes 超 section drop または stale partial discard を検出した場合、該当 section filter の diagnostics counter を増やし、`pending_overflow` を立てる。callback worker は既存 `pending_overflow` 経路を使い、payload が空でも `DemuxFilterStatus::OVERFLOW` を通知する。CRC mismatch と malformed section syntax は filter 条件不成立または section event 不成立として非 delivery を維持し、overflow status へ写像しない。
 
-`DvrHal` の `closed` は外部操作を止める gate であり、cleanup 完了状態ではない。DVR cleanup 完了は `cleanup_complete` で別管理する。`close_internal()` / `close_internal_best_effort()` / `fail_dvr_worker()` は、`closed=true` だけを理由に未完了 cleanup の再試行を止めてはならない。3経路は `ExternalClose` / `BestEffortDrop` / `WorkerFailure` の呼び出し元種別を共通 cleanup helper に渡す。cleanup helper は step runner を介して callback worker stop、runtime unregister、queue stop、demux unregister を実行し、各 step の結果を `Success` / `SafeNoOp` / `Failed` / `Unknown` / `SkippedDueToWorkerFailureContext` に分類する。明示 close では最初に観測した error を返しつつ後続 cleanup を続行する。best-effort 系 API は失敗有無を返せないため、その step は成功扱いにせず `Unknown` として残し、`cleanup_complete=true` の根拠にしない。`WorkerFailure` 経路は callback worker 自身から呼ばれ得るため self-join を行わず、worker handle 回収未完了を `SkippedDueToWorkerFailureContext` として扱い、後続の明示 close または Drop best-effort で再試行可能にする。全 step が `Success` または `SafeNoOp` と確認できた場合だけ `cleanup_complete=true` とする。
+`DvrHal` の `closed` は外部操作を止める gate であり、cleanup 完了状態ではない。DVR cleanup 完了は `cleanup_complete` で別管理する。`close_internal()` / `close_internal_best_effort()` / `fail_dvr_worker()` は、`closed=true` だけを理由に未完了 cleanup の再試行を止めてはならない。3経路は `ExternalClose` / `BestEffortDrop` / `WorkerFailure` の呼び出し元種別を共通 cleanup helper に渡す。cleanup helper は step runner を介して callback worker stop、runtime unregister、queue stop、demux unregister を実行し、各 step の結果を `Success` / `SafeNoOp` / `Failed` / `Unknown` / `SkippedDueToWorkerFailureContext` に分類する。明示 close では最初に観測した error を返しつつ後続 cleanup を続行する。補助系 API は失敗有無を返せないため、その step は成功扱いにせず `Unknown` として残し、`cleanup_complete=true` の根拠にしない。`WorkerFailure` 経路は callback worker 自身から呼ばれ得るため self-join を行わず、worker handle 回収未完了を `SkippedDueToWorkerFailureContext` として扱い、後続の明示 close または Drop 補助 で再試行可能にする。全 step が `Success` または `SafeNoOp` と確認できた場合だけ `cleanup_complete=true` とする。
 
 ## lab profile のサービス対応
 
@@ -56,7 +56,7 @@ section assembler が 8192 bytes 超 section drop または stale partial discar
 
 ## BS と CS110 の選局契約
 
-BS は IF 周波数と stream selector を併用する。HAL外部契約では、earth_pt1/DVB backend と px4 backend のいずれも TIS の BS TSID 表から渡された TSID を受け付ける。px4 backend に限り、周波数帯と相対TS番号の併用も受け付ける。px4 backend は BS `STREAM_ID` の TSID 値をそのまま legacy `slot` へ渡し、BS `RELATIVE_STREAM_NUMBER` の相対TS番号値をそのまま legacy `slot` へ渡す。ただし、BS `STREAM_ID` の 0..11 は px4_drv で相対TS番号として解釈されるため受け付けない。earth_pt1/DVB backend は相対TS番号を受け付けず、BS `STREAM_ID` の 0..11 も absolute TSID ではなく相対TS番号レンジとして拒否する。CS110 は周波数のみで選局し、profile、VTS config、scan message、backend 変換のいずれでも streamId/relative stream number を claim しない。
+BS は IF 周波数と stream selector を併用する。HAL外部契約では、earth_pt1/DVB backend と px4 backend のいずれも TIS の BS TSID 表から渡された TSID を受け付ける。px4 backend に限り、周波数帯と相対TS番号の併用も受け付ける。px4 backend は BS `STREAM_ID` の TSID 値をそのまま legacy `slot` へ渡し、BS `RELATIVE_STREAM_NUMBER` の相対TS番号値をそのまま legacy `slot` へ渡す。ただし、BS `STREAM_ID` の 0..11 は px4_drv で相対TS番号として解釈されるため受け付けない。earth_pt1/DVB backend は相対TS番号を受け付けず、BS `STREAM_ID` の 0..11 も absolute TSID ではなく相対TS番号レンジとして拒否する。CS110 は周波数のみで選局し、profile、VTS設定、scan message、backend 変換のいずれでも streamId/relative stream number を claim しない。
 
 
 ## scan / tune の責務分担
@@ -65,7 +65,7 @@ BS は IF 周波数と stream selector を併用する。HAL外部契約では�
 
 Tuner HAL は、TIS が生成した explicit tune candidate を検証・変換・実行するだけであり、日本向け候補表、BS TSID 表、CATV周波数表、service candidate table を独自に生成せず保持しない。
 
-日本向け周波数表、CATV周波数表、BS/CS110のTSID表、channel key、service discovery の実装データ保持者は TIS とする。選局対象、周波数帯、BS/CS110 selector 境界、CATV 候補範囲の設計契約は tv 直下の開発規則.mdを正とする。Tuner HAL は HAL-generated Japanese scan plan を持たず、TIS が作った explicit candidate を `Tuner.tune()` で受ける。HAL の `scan()` は AOSP/VTS互換の最小実装に限定し、製品の通常 channel scan は TIS の周波数表 + `tune()` ループに寄せる。
+日本向け周波数表、CATV周波数表、BS/CS110のTSID表、channel key、サービス検出 の実装データ保持者は TIS とする。選局対象、周波数帯、BS/CS110 selector 境界、CATV 候補範囲の設計契約は tv 直下の開発規則.mdを正とする。Tuner HAL は HAL-generated Japanese scan plan を持たず、TIS が作った explicit candidate を `Tuner.tune()` で受ける。HAL の `scan()` は AOSP/VTS互換の最小実装に限定し、製品の通常 channel scan は TIS の周波数表 + `tune()` ループに寄せる。
 
 TIS が持つ候補範囲は、地上波UHF、CATV、BS、CS110を含める。地上波UHFとCATVは周波数候補をそのまま試す。CS110は周波数帯だけで試し、frontend stream id / relative stream number を要求しない。BSだけは同一周波数に複数TSが存在するため、TIS が持つBS TSID表に含まれる同一IF周波数上のTSID候補をすべて試す。px4 backend は BS `STREAM_ID` の TSID 値と BS `RELATIVE_STREAM_NUMBER` の相対TS番号値をそのまま legacy `slot` へ渡し、BS `STREAM_ID` の 0..11 は拒否する。earth_pt1/DVB backend はTSIDをそのまま `DTV_STREAM_ID` に渡すが、BS `STREAM_ID` の 0..11 は absolute TSID ではないため拒否する。
 
@@ -88,7 +88,7 @@ Tuner HAL 側に置いてよい周波数・サービス関連データは、次�
 - px4 legacy API 用の `freq_no / slot / addfreq` 変換
 - explicit tune request の validation に必要な最小境界値
 
-これらは product scan candidate table、service discovery SSOT、channel display number、BS/CS110 TSID table、TvProvider metadata の SSOT ではない。製品 scan 候補表、BS/CS110 TSID 表、CATV 中心周波数表、display number、channel key、TvProvider 登録用 metadata は TIS 側を正とする。
+これらは product scan candidate table、サービス検出 SSOT、channel display number、BS/CS110 TSID table、TvProvider metadata の SSOT ではない。製品 scan 候補表、BS/CS110 TSID 表、CATV 中心周波数表、display number、channel key、TvProvider 登録用 metadata は TIS 側を正とする。
 
 VTS / lab profile は代表点だけでよく、全 CATV 候補の実波存在を VTS pass 条件にはしない。
 
@@ -108,7 +108,7 @@ PUSI到達時の `pointer_field` は、直前の未完了sectionに対して poi
 
 ## queue overflow / drop 通知方針
 
-internal queue overflow を first-class event として扱う。soft demux 内部 queue、filter delivery queue、DVR record output queue、AV shared buffer、FMQ write のいずれで payload drop または write failure が起きても、silent drop にしてはならない。queue push API は成功、drop-old、drop-new、full/backpressure、closed を区別できる結果型を返し、drop bytes / drop packets を診断 counter に必ず反映する。
+internal queue overflow を first-class event として扱う。soft demux 内部 queue、filter delivery queue、DVR record output queue、AV shared buffer、FMQ write のいずれで payload drop または write failure が起きても、無通知破棄 にしてはならない。queue push API は成功、旧データ破棄、新データ破棄、full/backpressure、closed を区別できる結果型を返し、破棄バイト数 / drop packets を診断 counter に必ず反映する。
 
 filter runtime state と DVR runtime state は pending overflow を持つ。callback worker は FMQ write failure だけでなく internal queue drop も overflow 通知対象にし、次回 callback 周期で `OVERFLOW` / overflow status を必ず上位へ通知する。section / PES / record / DVR raw TS で payload が欠落した場合、上位から欠落を観測できない正常短縮として扱ってはならない。
 
@@ -116,23 +116,23 @@ filter runtime state と DVR runtime state は pending overflow を持つ。call
 
 | path | 方針 |
 |---|---|
-| live AV | 低遅延優先。古い AV payload の drop-old を許容する。ただし overflow event と drop counter は必須。 |
+| live AV | 低遅延優先。古い AV payload の 旧データ破棄 を許容する。ただし overflow event と drop counter は必須。 |
 | section | overflow event と drop counter を必須にする。EIT / PMT / CAT 等の欠落を上位が検知可能にする。 |
 | PES | overflow event と診断 counter を必須にする。 |
 | record / DVR raw TS | 大容量化して極力 drop を避ける。drop した場合は record status / diagnostics に必ず出す。 |
 
-queue 容量は profile 依存にできる構造にする。VTS/lab profile の小容量で overflow test を行えることと、product profile で record / DVR raw TS を大容量化できることの両方を満たす。overflow 時に古いデータを捨てるか新しいデータを捨てるかは用途別に固定し、live AV の drop-old 方針を section / record path に流用してはならない。
+queue 容量は profile 依存にできる構造にする。VTS/lab profile の小容量で overflow test を行えることと、product profile で record / DVR raw TS を大容量化できることの両方を満たす。overflow 時に古いデータを捨てるか新しいデータを捨てるかは用途別に固定し、live AV の 旧データ破棄 方針を section / record path に流用してはならない。
 
 
-`QueuePushOutcome` は accepted bytes、drop bytes、drop entries、drop-old/drop-new、overflow を区別する。filter queue で overflow した場合は runtime state の `pending_overflow` を立て、callback worker が payload 有無にかかわらず次周期で `DemuxFilterStatus::OVERFLOW` を通知する。record DVR output queue は 1 service TS recording 用に drop-new 方針を採り、full 時に新規 TS packet を silent drop せず `RecordStatus::OVERFLOW` へ伝播する。
+`QueuePushOutcome` は 受理バイト数、破棄バイト数、破棄要素数、旧データ破棄/新データ破棄、overflow を区別する。filter queue で overflow した場合は runtime state の `pending_overflow` を立て、callback worker が payload 有無にかかわらず次周期で `DemuxFilterStatus::OVERFLOW` を通知する。record DVR output queue は 1サービスTS録画 用に 新データ破棄 方針を採り、full 時に新規 TS packet を 無通知破棄 せず `RecordStatus::OVERFLOW` へ伝播する。
 
-## Filter clean boundary / delay hint 方針
+## フィルタ状態破棄境界と遅延通知方針
 
-filter の `stop()`、`flush()`、`configure()`、upstream filter unregister は clean boundary として扱う。`stop()` / `flush()` は queue、queued bytes、pending overflow、pending start event、delay runtime、filter-local section/PES runtime を破棄し、stopped filter から payload drain / `DATA_READY` / data event を出さない。`configure()` は旧 condition、旧 PID、旧 AV stream type binding、旧 upstream linkage を無効化し、`data_source_filter_id` を必ず clear する。downstream filter が必要な場合は reconfigure 後に `setDataSource()` で明示的に再接続する。
+filter の `stop()`、`flush()`、`configure()`、上流フィルタ登録解除 は 状態破棄境界 として扱う。`stop()` / `flush()` は queue、queued bytes、pending overflow、pending start event、delay runtime、filter-local section/PES runtime を破棄し、stopped filter から ペイロード排出 / `DATA_READY` / データイベント を出さない。`configure()` は既存 condition、既存 PID、既存 AV stream type binding、既存 上流接続 を無効化し、`data_source_filter_id` を必ず clear する。下流フィルタ が必要な場合は 再設定 後に `setDataSource()` で明示的に再接続する。
 
-upstream filter unregister 時は、その filter を `data_source_filter_id` として保持している downstream filter を stopped / unlinked 状態にし、downstream の queue、queued bytes、pending overflow、pending start event、delay runtime、filter-local assembler / flush generation を clear する。これにより、旧 upstream 由来の payload が後続 start / re-link 後に配送されないことを保証する。
+上流フィルタ登録解除 時は、その filter を `data_source_filter_id` として保持している 下流フィルタ を stopped / unlinked 状態にし、下流の queue、queued bytes、pending overflow、pending start event、delay runtime、filter-local assembler / flush generation を clear する。これにより、既存 upstream 由来の payload が後続 start / re-link 後に配送されないことを保証する。
 
-`FilterDelayHint::timeDelayHint` は queue-empty → non-empty の各 burst ごとに再armする。start/configure直後の1回限りdelayではない。payload queue が空の filter に新規 payload が入った時点で deadline を再設定し、最初の burst delivery 後に queue が空になった場合、次 burst は再び time delay を受ける。
+`FilterDelayHint::時間遅延指定` は queue-empty → non-empty の各 まとまり ごとに再armする。start/configure直後の1回限りdelayではない。payload queue が空の filter に新規 payload が入った時点で 期限 を再設定し、最初の まとまり delivery 後に queue が空になった場合、次 まとまり は再び time delay を受ける。
 
 ## CAS と descrambler の境界
 
@@ -155,7 +155,7 @@ Live/AV path、diagnostic、recording metadata、VTS 判定では、scrambled pa
 
 ## px4_drv lock 方針
 
-px4_drv は userspace から RF/carrier lock や demod lock を個別取得できる API を持たない。開発規則.md の既存方針どおり、px4 backend の `DEMOD_LOCK` は `PTX_SET_SYSTEM_MODE`、`PTX_SET_CHANNEL`、`PTX_START_STREAMING` の tune ioctl 系がすべて成功したことだけを source of truth とする。TS packet 到着、PAT/PMT 到着、AV 到着は px4 frontend の `DEMOD_LOCK` 条件に含めない。
+px4_drv は userspace から RF/carrier lock や demod lock を個別取得できる API を持たない。開発規則.md の既存方針どおり、px4 backend の `DEMOD_LOCK` は `PTX_SET_SYSTEM_MODE`、`PTX_SET_CHANNEL`、`PTX_START_STREAMING` の tune ioctl 系がすべて成功したことだけを 真値 とする。TS packet 到着、PAT/PMT 到着、AV 到着は px4 frontend の `DEMOD_LOCK` 条件に含めない。
 
 この方針は px4 の frontend status だけの設計であり、視聴可能状態の判定ではない。TIS は `notifyVideoAvailable()` を出す前に、section 到達、PMT/ES PID 解決、AV filter data、decoder/surface の成立を別途確認する。px4 backend は `RF_LOCK` を advertise しない。
 
@@ -171,17 +171,17 @@ tune / scan lock timeout は、backend 種別、ISDB-T、BS、CS110 を問わず
 
 Tuner HAL は `IDvr` を claim 対象とする。DVR は 188-byte MPEG-TS のみを受け入れ、192-byte / 204-byte TS、MMT、TLV は扱わない。DVR record gate は ISDB-T、BS、CS110 のすべてに掛ける。TIS の予約 UI と予約スケジューラは 後続対象だが、HAL の `IDvr` record / playback 面は完成状態に固定する。
 
-claim する録画範囲は**1 service TS recording** とする。service PID set の SSOT は TIS に置く。TIS は PMT と service discovery 結果から、PAT、PMT、PCR、video、audio、caption、data、必要な CA 関連 PID を record filter として attach する。Tuner HAL は service_id を理解して record 対象を自動生成しない。HAL は attach された複数 record filter の 188-byte TS packet を、受信 TS order に近い順序を保って record DVR へ multiplex する。
+表明する録画範囲は**1サービスTS録画** とする。サービスPID集合 の SSOT は TIS に置く。TIS は PMT と サービス検出 結果から、PAT、PMT、PCR、video、audio、caption、data、必要な CA 関連 PID を record filter として 接続する。Tuner HAL は service_id を理解して record 対象を自動生成しない。HAL は attach された複数 record filter の 188-byte TS packet を、受信 TS順序 に近い順序を保って record DVR へ multiplex する。
 
 record filter capacity は32を標準値とする。8 PID 前提の VTS/lab PID-record だけに最適化してはならない。PMT 変更時の PID attach/detach は TIS が行い、HAL は started 中の合法的な attach/detach、重複 attach、detach 後 packet delivery 停止、overflow 通知を state machine として扱う。full transport recording mode は claim 対象外とし、将来の診断または full TS dump feature として扱う。
 
 record DVR / raw TS filter path は受信した 188-byte TS packet を製品の録画品質方針として保持する。TEI が立った packet、duplicate continuity counter の packet、scrambled pass-through packet は、録画・診断・後段デスクランブルのために record path へ到達させる。一方で、section / PES / AV assembly は破損 packet や duplicate packet による二重組み立てを避けるため、TEI packet と duplicate continuity packet を assembly 入力から除外する。これは AOSP が TEI / duplicate の drop/keep policy を明示しているためではなく、日本向け製品の録画品質と parser 安定性を両立するための固定設計である。
 
-DVR playback は claim 対象とする。playback は client から HAL へ TS を入れる入力方向であり、playback injection payload を record/output DVR queue に積んではならない。`inject_playback_payload()` は playback 専用 stats を更新し、playback 起源の TS として demux/filter 入力へ渡すだけにする。frontend/live 起源 TS と playback 起源 TS は routing origin を分離し、playback 起源 TS では direct record filter delivery でも downstream filter propagation でも record DVR mirror を行わない。record/output queue への mirror、record DVR stats の更新、record callback の wake は行わない。
+DVR playback は claim 対象とする。playback は client から HAL へ TS を入れる入力方向であり、playback injection payload を record/output DVR queue に積んではならない。`inject_playback_payload()` は playback 専用 stats を更新し、playback 起源の TS として demux/filter 入力へ渡すだけにする。frontend/live 起源 TS と playback 起源 TS は routing origin を分離し、playback 起源 TS では direct record filter delivery でも 下流フィルタ propagation でも record DVR mirror を行わない。record/output queue への mirror、record DVR stats の更新、record callback の wake は行わない。
 
 playback 専用 stats は少なくとも injected bytes、injected packets、malformed packets、dropped bytes を持つ。malformed TS は drop + diagnostic を標準方針とし、1 packet の malformed input で playback stream 全体を fail させない。playback input FMQ の `PlaybackStatus` は start 直後・周期 callback ともに playback input FMQ の実 fill / unused write space を唯一の水位 source とし、record/output queue の `queued_bytes` を流用しない。playback consumer worker は `ManagedWorker` / `WorkerSignal` に接続し、close / Drop / fail-closed で stop request → wake → join の順に停止する。
 
-playback input FMQ の stream boundary 方針は次のとおり固定する。start 前に client が prefill した bytes は保持し、start 後に playback TS として読む。started=false 中は worker が FMQ を読まない。stop / flush 時は playback input FMQ と packet assembler residual を drain/discard し、dropped bytes diagnostic counter と log に記録する。stop / flush 後に client が新たに書いた bytes は started=false 中には読まず、直前の stop / flush で旧 stream 境界が drain 済みであることを前提に、次 start の prefill として扱う。playback flush は playback input FMQ、packet assembler、playback stats だけを reset し、record/output queue を破壊しない。record DVR flush は record output queue と record stats だけを reset し、playback input queue と playback stats を破壊しない。
+playback input FMQ の stream boundary 方針は次のとおり固定する。start 前に client が prefill した bytes は保持し、start 後に playback TS として読む。started=false 中は worker が FMQ を読まない。stop / flush 時は playback input FMQ と packet assembler residual を drain/discard し、dropped bytes diagnostic counter と log に記録する。stop / flush 後に client が新たに書いた bytes は started=false 中には読まず、直前の stop / flush で既存 stream 境界が drain 済みであることを前提に、次 start の prefill として扱う。playback flush は playback input FMQ、packet assembler、playback stats だけを reset し、record/output queue を破壊しない。record DVR flush は record output queue と record stats だけを reset し、playback input queue と playback stats を破壊しない。
 
 ## Frontend capability / status 方針
 
@@ -204,7 +204,7 @@ r51 では AV passthrough を claim しない。`DemuxFilterAvSettings.isPassthr
 
 AV filter の正式経路は `MediaEvent` + shared handle とし、FMQ だけにESを流す経路を live AV filter の完成条件にしない。AV payload は通常 queue / AV補助queue を含む FMQ / EventFlag 経路に載せない。診断は shared memory delivery 結果、`MediaEvent`、callback status、AV shared diagnostics で行う。
 
-`openFilter()` は section / PES / record / PCR / AV の種別にかかわらず AV shared memory を確保しない。`/dev/dma_heap/system` への依存は、AV filter が `getAvSharedHandle()` に到達した時点の lazy allocation に限定する。非 AV filter の `openFilter()`、`configure()`、`start()`、`getQueueDesc()` は dma heap の存在・権限・SELinux 許可に依存してはならない。AV filter の `start()` は AV stream type が確定済みであれば成功可能とし、`getAvSharedHandle()` 未実行だけを理由に失敗させない。ただし shared handle 未 export 中は framework/JNI が消費できない成功風 `MediaEvent` を出さず、drop/overflow 診断へ落とす。binder 公開経路と soft_demux core の `start_filter_result()` は、AV stream type 未設定の AV filter start を `InvalidState` として拒否し、reconfigure は既存の AV stream type binding を必ず破棄する。
+`openFilter()` は section / PES / record / PCR / AV の種別にかかわらず AV shared memory を確保しない。`/dev/dma_heap/system` への依存は、AV filter が `getAvSharedHandle()` に到達した時点の lazy allocation に限定する。非 AV filter の `openFilter()`、`configure()`、`start()`、`getQueueDesc()` は dma heap の存在・権限・SELinux 許可に依存してはならない。AV filter の `start()` は AV stream type が確定済みであれば成功可能とし、`getAvSharedHandle()` 未実行だけを理由に失敗させない。ただし shared handle 未 export 中は framework/JNI が消費できない成功風 `MediaEvent` を出さず、drop/overflow 診断へ落とす。binder 公開経路と soft_demux core の `start_filter_result()` は、AV stream type 未設定の AV filter start を `InvalidState` として拒否し、再設定 は既存の AV stream type binding を必ず破棄する。
 
 AV shared memory allocator は Rust から `/dev/dma_heap/system` に直接 ioctl せず、既存 FMQ shim と同じ native shim 境界を通じて AOSP `libdmabufheap` の `BufferAllocator::Alloc("system", ...)` を使う。unit test では allocator failure 時に memfd fallback を許容するが、production AV 経路では dma-buf allocation failure を AV filter error として返す。確保済み dma-buf への payload 書き込みは fd への `write` / `pwrite` ではなく、`mmap(MAP_SHARED)` した CPU mapping へのコピーで行う。
 
@@ -250,7 +250,7 @@ r51 リリース後の後続 future_work として、以下は今回の実装範
 
 LNB は satellite frontend の所有物として扱い、shared LNB の余地は置かない。`setLnb(lnb_id)` は当該 satellite frontend に紐付いた LNB ID だけを受け付け、別 frontend の LNB ID、地上波 frontend への LNB attach、不明な LNB ID は失敗させる。
 
-`ILnb.close()` は reset-on-close として扱う。public `close()` は callback を消すだけでは成功扱いにせず、LNB registry の voltage を `NONE`、tone を `NONE`、satellite position を `UNDEFINED` に戻し、generation を進め、当該 LNB を選択中の frontend backend へ reset state を反映してから closed state を確定する。reset 反映に失敗した場合は `close()` を成功扱いにせず、Drop 経路の best-effort cleanup と public Binder close の完了条件を分離する。
+`ILnb.close()` は reset-on-close として扱う。public `close()` は callback を消すだけでは成功扱いにせず、LNB registry の voltage を `NONE`、tone を `NONE`、satellite position を `UNDEFINED` に戻し、generation を進め、当該 LNB を選択中の frontend backend へ reset state を反映してから closed state を確定する。reset 反映に失敗した場合は `close()` を成功扱いにせず、Drop 経路の 補助 cleanup と public Binder close の完了条件を分離する。
 
 ## 復号鍵台帳
 
@@ -258,7 +258,7 @@ LNB は satellite frontend の所有物として扱い、shared LNB の余地は
 
 ## デスクランブル gate
 
-VTS/lab config には descrambling flow を置かない。VTS 用 XML に ECM filter や `<descramblers>` を生成せず、clear live / DVR / explicit tune の接続確認に限定する。Tuner HAL は PMT/CAT/SDT/ECM/EMM 等の section payload delivery、`IDescrambler`、`setKeyToken()`、`addPid()` / `removePid()`、token lookup 境界、未接続・bad token・expired token 診断までを確認対象とする。CA metadata / service metadata の semantic extraction、ECM/EMM filter 開始方針、MediaCas/CAS bridge 呼び出し、不透明な参照値の取得試行、Tuner descrambler への接続判断、未接続診断の上位制御は TIS / arib_si_engine_rs / fake CAS テストまたは実機診断で確認する。CAS HAL 本体はプレースホルダーのため、実波スクランブル解除成功は後続の確認項目とする。Tuner HAL の packet 単位のデスクランブル中核は、単体テスト内で復号鍵台帳へ既知鍵を登録して確認する。
+VTS/lab config には descrambling flow を置かない。VTS 用 XML に ECM filter や `<descramblers>` を生成せず、clear live / DVR / explicit tune の接続確認に限定する。Tuner HAL は PMT/CAT/SDT/ECM/EMM 等の section payload delivery、`IDescrambler`、`setKeyToken()`、`addPid()` / `removePid()`、token lookup 境界、未接続・bad token・expired token 診断までを確認対象とする。CA情報 / service metadata の semantic extraction、ECM/EMM filter 開始方針、MediaCas/CAS bridge 呼び出し、不透明な参照値の取得試行、Tuner descrambler への接続判断、未接続診断の上位制御は TIS / arib_si_engine_rs / fake CAS テストまたは実機診断で確認する。CAS HAL 本体はプレースホルダーのため、実波スクランブル解除成功は後続の確認項目とする。Tuner HAL の packet 単位のデスクランブル中核は、単体テスト内で復号鍵台帳へ既知鍵を登録して確認する。
 
 
 ## IDescrambler optionalSourceFilter 境界
@@ -269,7 +269,7 @@ Android 14 Rust backend 方針では、AOSP stable AIDL を変更しない。ven
 
 `IDescrambler.addPid()` / `removePid()` の Rust backend 実装対象は、Android 14 Rust generated trait で受け取れる non-null source filter 経路の state / argument / unavailable mapping に限定する。
 
-`optionalSourceFilter != null` の場合、source filter が自 HAL 内の local `IFilter` であり、同じ demux に属し、closed / runtime-failed ではなく、demux registry 上の open filter record として実在することを検証する。PID 登録は `demux_id`、demux open generation、source filter id、source filter delivery generation を保存する。demux close / reopen、source filter close / unregister、filter reconfigure / flush により世代が変わった登録は descrambler snapshot 生成時に prune し、古い key/PID 登録を新しい demux または新しい source filter に適用しない。
+`optionalSourceFilter != null` の場合、source filter が自 HAL 内の local `IFilter` であり、同じ demux に属し、closed / runtime-failed ではなく、demux registry 上の open filter record として実在することを検証する。PID 登録は `demux_id`、demux open generation、source filter id、source filter delivery generation を保存する。demux close / reopen、source filter close / unregister、filter 再設定 / flush により世代が変わった登録は descrambler snapshot 生成時に prune し、古い key/PID 登録を新しい demux または新しい source filter に適用しない。
 
 同一 descrambler 内では PID 登録表の主キーを PID とし、同一PIDに対する `addPid(pid, sourceFilter)` は既存登録を新しい source filter generation で置換する。これは AOSP Java API の同一PID置換 semantics に合わせる。別 descrambler 間では、同一 demux / demux generation / PID を二重に復号対象へ登録しないため、既に他の active descrambler が同一PIDを保持している場合は `INVALID_STATE` とする。この別 descrambler 排他は同一 descrambler 内の置換 semantics とは別契約であり、PID値・source filter object 自体の不正ではなく、active descrambler registry 上の所有状態が当該 `addPid()` 操作を許さない状態衝突として扱う。後段 packet path の二重復号と key slot競合を避けるための HAL 内部資源管理である。
 
@@ -284,7 +284,7 @@ DVB backend は frontend index と同じ demux index / dvr index を使う。`ad
 
 ## 診断可観測性の固定
 
-現行設計では CAS bridge はまだ production 接続しない。`register_from_cas_bridge()` は将来接続用の登録口だが、現時点の非 test product 経路からは呼ばれない。production TIS は placeholder token または診断専用tokenを `setKeyToken()` へ渡してはならない。
+現行設計では CAS bridge はまだ production 接続しない。`register_from_cas_bridge()` は将来接続用の登録口だが、現時点の非 test product 経路からは呼ばれない。production TIS は placeholder token または診断専用tokenを `setKeyToken()` へ渡してはならない。 `production token` は r52 以降に CAS HAL 本体が発行する復号用の不透明参照値だけを指す。`fake token`、`diagnostic token`、`placeholder token` は production 経路で復号成功に使ってはならない。
 
 `IDescrambler.setKeyToken()` に到達する token は、Tuner SDK API の制約に合わせて、長さ 1〜16 byte の opaque byte array のみにする。ただし Android 14 系の `Tuner.VOID_KEYTOKEN` は 1 byte token `[0x00]` として扱い、current key removal 用の有効 token とする。空 token `[]` は VOID token ではなく、常に `INVALID_ARGUMENT` と内部診断 `BAD_TOKEN` に落とす。16 byte を超える文字列 token を `setKeyToken()` に渡してはならない。
 
@@ -337,7 +337,7 @@ DVB frontend は sysfs driver basename が `earth-pt1` の場合だけ `EarthPt1
 
 Tuner HAL が framework へ export する frontend ID は px4_drv の numeric index だけに依存しない。`px4video0` と `pxmlt5video0` のように異なる device family が同じ unit index を持つ場合でも、HAL の frontend ID と physical group ID は衝突してはならない。device family code と unit index を組み合わせ、1,000,000 番台の px4 frontend ID として export する。px4 frontend の `exclusiveGroupId` は unit index 単独値ではなく、device family code と unit index を含む packed physical group id として返す。
 
-VTS config は `profiles/*.yaml` から `tools/render_vts_config.py` で生成する。LabProfile は ISDB-T、BS、CS110 をすべて持ち、ProductProfile や DiagnosticProfile と混ぜない。VTS lab profile は代表 PID による 188-byte TS record / playback path 接続確認に使うが、設計 claim は 1 service TS recording であり、8 PID 前提の lab-only 実装に縮退させてはならない。TIS 録画 UI や予約スケジューラとは結びつけない。production descrambling flow は VTS lab profile で claim せず、ECM filter と `<descramblers>` は生成しない。
+VTS設定 は `profiles/*.yaml` から `tools/render_vts_config.py` で生成する。LabProfile は ISDB-T、BS、CS110 をすべて持ち、ProductProfile や DiagnosticProfile と混ぜない。VTS検査用プロファイル は代表 PID による 188-byte TS 録画/再生経路 接続確認に使うが、設計 claim は 1サービスTS録画 であり、8 PID 前提の 検査専用 実装に縮退させてはならない。TIS 録画 UI や予約スケジューラとは結びつけない。製品向け復号フロー は VTS検査用プロファイル で claim せず、ECM filter と `<descramblers>` は生成しない。
 
 ## product 統合手順
 
@@ -354,16 +354,16 @@ px4 probe prefix を変更する場合は、`frontend_px4/src/lib.rs` の `PX4_P
 
 Tuner HAL runtime の修正対象を以下の契約として固定する。
 
-- target tuner device が見つからない場合も HAL service は起動する。probe 結果が空の場合、存在しない frontend を registry に登録せず、`getFrontendIds()` と `getFrontendInfo()` で device absent の frontend を advertise しない。service 起動自体は継続し、device missing の degraded reason を診断に残す。対象 resource への操作要求が来た場合は `UNAVAILABLE` と診断へ fail-closed する。
+- 対象 tuner device が見つからない場合も HAL service は起動する。probe 結果が空の場合、存在しない frontend を registry に登録せず、`getFrontendIds()` と `getFrontendInfo()` で device absent の frontend を advertise しない。service 起動自体は継続し、device missing の縮退理由 を診断に残す。対象 resource への操作要求が来た場合は `UNAVAILABLE` と診断へ fail-closed する。
 - filter ID は HAL 外部へ返す値を demux-local ID のまま維持する。DVR attach/detach、filter data source、AV sync ID 取得では、渡された filter object の内部 owner demux を検証し、owner demux が一致しない filter を `INVALID_ARGUMENT` で拒否する。
 - worker は handle 保存先の mutex を確保してから spawn する。保存先を確保できない場合は spawn しない。worker panic は `join_worker_with_diagnostics()` で診断へ残し、detached worker を作らない。
 - 長寿命 worker の待機は `Mutex` + `Condvar` を基本とし、stop request → wake → join の順で停止する。`AtomicBool` は close済み / stop要求 / export済みなどの単純 flag に限定し、複合状態同期の代替にしない。`loom` は test-only 候補であり、通常 unit test と静的ロジック確認の代替にはしない。
 
-- r51 Phase 0 以降で touch する長寿命 worker は、`ManagedWorker` が `JoinHandle` と `WorkerSignal` を所有し、`WorkerSignal` の `Mutex<WorkerSignalState> + Condvar` で stop/work generation を wake する。`WorkerExit` は `Normal` / `StopRequested` / `RuntimeFailure` / `PanicOrJoinFailure` を正式名とする。
+- r51 で管理対象となる長寿命 worker は、`ManagedWorker` が `JoinHandle` と `WorkerSignal` を所有し、`WorkerSignal` の `Mutex<WorkerSignalState> + Condvar` で stop/work generation を wake する。`WorkerExit` は `Normal` / `StopRequested` / `RuntimeFailure` / `PanicOrJoinFailure` を正式名とする。
 - `frontend_tune_worker` / `frontend_scan_worker` の停止は、`AtomicBool + thread::sleep()` polling ではなく、`WorkerSignal::request_stop()` → Condvar wake → `ManagedWorker::stop_and_join()` の順に行う。
 - Demux close / live pump failure / worker spawn failure は子 Filter / DVR / runtime I/O を fail-closed にし、close後の既存 child object の `configure()` / `start()` / `getQueueDesc()` などを成功扱いしない。
 - frontend source transition は transactional に扱い、new bind / old unbind / record更新 / stream boundary reset の途中失敗時には新 binding をrollbackし、rollback不能なら demux を fail-closed にする。
-- public close は critical cleanup の失敗を成功扱いしない。Drop 経路だけ best-effort cleanup とし、public Binder close は cleanup 完了後に closed state を確定する。
+- public close は critical cleanup の失敗を成功扱いしない。Drop 経路だけ補助 cleanup とし、public Binder close は cleanup 完了後に closed state を確定する。
 - DVR start は status interval 分だけ Binder thread を sleep しない。status interval は callback worker の周期だけに使う。
 - playback consumer は no data と fatal error を分離する。FMQ read error、demux mutex poison、fatal demux error は worker fatal stop として diagnostics と object state に反映し、後続操作を成功扱いしない。
 - px4 close は control FD だけでなく TS reader FD と reader state も解放する。
@@ -412,13 +412,14 @@ Tuner HAL が advertise する frontend capability は、Android 14 AIDL enum �
 
 public `FrontendSettings` validation は、advertised capability と矛盾してはならない。`AUTO` だけを受け付け、advertise 済みの具体 enum 値を拒否する実装は禁止する。
 
+explicit range scan は ISDB-T / ISDB-S 共通で claim しない。`endFrequency` が `frequency` と異なる場合は、共通 validation で `UNAVAILABLE` とする。
+
 ### ISDB-T validation
 
 - `bandwidth` は `AUTO` または `BANDWIDTH_6MHZ` だけを受け付ける。
 - `mode` は `AUTO` または `MODE_3` だけを受け付ける。
 - `modulation` / `coderate` / `guardInterval` / `timeInterleave` は、advertised capability に含まれる値だけを受け付ける。
 - `timeInterleave` は mode 3 用の `INTERLEAVE_3_0`、`INTERLEAVE_3_1`、`INTERLEAVE_3_2`、`INTERLEAVE_3_4` だけを受け付け、mode 1 / mode 2 用の値は拒否する。
-- explicit range scan は claim しない。`endFrequency` が `frequency` と異なる場合は `UNAVAILABLE` とする。
 - blind scan は `UNAVAILABLE` とする。
 
 対象 driver は modulation / coderate / guard interval / time interleave を userspace から細かく強制設定するモデルではない。したがって、これらの具体値は「driverへ個別プログラムする knob」ではなく、Android 14 AIDL 上 advertise した運用可能値として検証する。backend は frequency / bandwidth / stream selector を主入力として tune し、demod の自動検出に委ねる。
@@ -430,7 +431,6 @@ public `FrontendSettings` validation は、advertised capability と矛盾して
 - public settings の `symbolRate` は `0` / 未指定相当のみ成功とする。
 - BS は `streamId` を必須とする。
 - CS110 は stream selector を指定してはならない。
-- explicit range scan は claim しない。`endFrequency` が `frequency` と異なる場合は `UNAVAILABLE` とする。
 - blind scan は `UNAVAILABLE` とする。
 
 共通 validation は binder 層の `settings_to_request()` に集約し、backend 固有 validation は `Px4FrontendBackend::validate_tune_request()` / `DvbFrontendBackend::validate_tune_request()` を通す。public `tune()` / `scan()` は validation 済み request だけを backend へ渡す。

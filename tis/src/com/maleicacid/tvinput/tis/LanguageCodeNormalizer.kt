@@ -4,8 +4,8 @@ import java.util.Locale
 
 /**
  * TvTrackInfo.Builder.setLanguage() に渡す ISO 639-1 / ISO 639-2/T code を正規化する。
- * ISO 表をフルスクラッチせず、java.util.Locale の ISO language data と
- * 旧 ISO 639-2/B alias の最小差分だけを使う。
+ * ISO表を再実装せず、java.util.Locale の ISO language data と
+ * ISO 639-2/B alias の最小差分だけを使う。
  */
 object LanguageCodeNormalizer {
     private val iso2ToIso3T: Map<String, String> = Locale.getISOLanguages().mapNotNull { iso2 ->

@@ -122,9 +122,8 @@ impl EitStore {
         let parsed = parse_eit_section(section);
         let deletion_authoritative = malformed_event_keys.is_empty() && parsed.iter().all(|event| event.diagnostics.is_empty());
         if parsed.is_empty() && !malformed_event_keys.is_empty() {
-            // Phase 6/N-23: a malformed-only EIT section must not be interpreted as
-            // a deletion of all previously valid events in the same section. Keep
-            // the previous VersionedEventSet and stored events intact.
+            // 不正 event だけの EIT section は、同じ section 内の既存有効 event を
+            // すべて削除する根拠として扱わない。既存の VersionedEventSet と保存済み event を維持する。
             return;
         }
         let section_key = EitSectionKey {
@@ -553,7 +552,7 @@ mod tests {
         store.upsert_section(&section_with_crc(eit_body(2, &[(1, start1), (2, invalid)])));
 
         let events = store.snapshot_r51();
-        assert_eq!(events.len(), 2, "malformed mixed section must not remove previous normal event");
+        assert_eq!(events.len(), 2, "不正要素を含む混在sectionは前回の正常eventを削除してはなりません");
         let windows = store.take_update_windows_r51();
         assert!(windows.iter().any(|w| !w.deletion_authoritative));
     }

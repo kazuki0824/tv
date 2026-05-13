@@ -1,0 +1,1056 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maleicacid.local/schema/program_provider_data_v1.schema.json",
+  "title": "Maleicacid ProgramProviderDataV1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "schemaVersion",
+    "programKey",
+    "serviceKey",
+    "timing",
+    "source",
+    "cas",
+    "ratings",
+    "genres",
+    "series",
+    "relatedItems",
+    "linkage",
+    "freeCaMode",
+    "audioLanguages",
+    "audio",
+    "video",
+    "extendedItems",
+    "components",
+    "diagnostics"
+  ],
+  "properties": {
+    "schema": {
+      "const": "maleicacid.tv.program"
+    },
+    "schemaVersion": {
+      "const": 1
+    },
+    "programKey": {
+      "$ref": "#/$defs/programKey"
+    },
+    "serviceKey": {
+      "$ref": "#/$defs/serviceKey"
+    },
+    "timing": {
+      "$ref": "#/$defs/timing"
+    },
+    "source": {
+      "$ref": "#/$defs/source"
+    },
+    "cas": {
+      "$ref": "#/$defs/cas"
+    },
+    "ratings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/rating"
+      }
+    },
+    "genres": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/genre"
+      }
+    },
+    "series": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/series"
+        }
+      ]
+    },
+    "relatedItems": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/relatedItem"
+      }
+    },
+    "linkage": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/linkage"
+      }
+    },
+    "freeCaMode": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/freeCaMode"
+        }
+      ]
+    },
+    "audioLanguages": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/audioLanguage"
+      }
+    },
+    "audio": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/audioMetadata"
+        }
+      ]
+    },
+    "video": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/videoMetadata"
+        }
+      ]
+    },
+    "extendedItems": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/extendedItem"
+      }
+    },
+    "components": {
+      "$ref": "#/$defs/components"
+    },
+    "diagnostics": {
+      "$ref": "#/$defs/diagnostics"
+    }
+  },
+  "$defs": {
+    "uint16": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 65535
+    },
+    "uint13": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 8191
+    },
+    "uint8": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 255
+    },
+    "hex": {
+      "type": "string",
+      "pattern": "^([0-9A-Fa-f]{2})*$"
+    },
+    "iso639": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 3,
+      "pattern": "^[A-Za-z]{3}$"
+    },
+    "parseStatus": {
+      "type": "string",
+      "minLength": 1
+    },
+    "programKey": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "kind",
+        "originalNetworkId",
+        "transportStreamId",
+        "serviceId",
+        "eventId"
+      ],
+      "properties": {
+        "kind": {
+          "const": "arib-event-v1"
+        },
+        "originalNetworkId": {
+          "$ref": "#/$defs/uint16"
+        },
+        "transportStreamId": {
+          "$ref": "#/$defs/uint16"
+        },
+        "serviceId": {
+          "$ref": "#/$defs/uint16"
+        },
+        "eventId": {
+          "$ref": "#/$defs/uint16"
+        }
+      }
+    },
+    "serviceKey": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "originalNetworkId",
+        "transportStreamId",
+        "serviceId"
+      ],
+      "properties": {
+        "originalNetworkId": {
+          "$ref": "#/$defs/uint16"
+        },
+        "transportStreamId": {
+          "$ref": "#/$defs/uint16"
+        },
+        "serviceId": {
+          "$ref": "#/$defs/uint16"
+        }
+      }
+    },
+    "timing": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "startUtcMillis",
+        "endUtcMillis",
+        "durationMillis"
+      ],
+      "properties": {
+        "startUtcMillis": {
+          "type": "integer"
+        },
+        "endUtcMillis": {
+          "type": "integer"
+        },
+        "durationMillis": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "pid",
+        "tableId",
+        "version",
+        "sectionNumber",
+        "lastSectionNumber"
+      ],
+      "properties": {
+        "pid": {
+          "$ref": "#/$defs/uint13"
+        },
+        "tableId": {
+          "$ref": "#/$defs/uint8"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 31
+        },
+        "sectionNumber": {
+          "$ref": "#/$defs/uint8"
+        },
+        "lastSectionNumber": {
+          "$ref": "#/$defs/uint8"
+        }
+      }
+    },
+    "cas": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "requiresCas",
+        "unsupportedCas",
+        "clearLivePlaybackSupported",
+        "source"
+      ],
+      "properties": {
+        "requiresCas": {
+          "type": "boolean"
+        },
+        "unsupportedCas": {
+          "type": "boolean"
+        },
+        "clearLivePlaybackSupported": {
+          "type": "boolean"
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "rating": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "countryCode",
+        "ratingValue",
+        "rawRatingByte",
+        "supported",
+        "parseStatus"
+      ],
+      "properties": {
+        "countryCode": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 3
+        },
+        "ratingValue": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "rawRatingByte": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "supported": {
+          "type": "boolean"
+        },
+        "mappedTvContentRating": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parseStatus": {
+          "$ref": "#/$defs/parseStatus"
+        }
+      }
+    },
+    "genre": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "level1",
+        "level2",
+        "userNibble",
+        "aribName",
+        "canonicalGenres",
+        "unmappedReason",
+        "parseStatus"
+      ],
+      "properties": {
+        "level1": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 15
+        },
+        "level2": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 15
+        },
+        "userNibble": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 15
+        },
+        "aribName": {
+          "type": "string"
+        },
+        "canonicalGenres": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "unmappedReason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parseStatus": {
+          "$ref": "#/$defs/parseStatus"
+        }
+      }
+    },
+    "series": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "seriesId",
+        "repeatLabel",
+        "programPattern",
+        "expireDateValid",
+        "expireDate",
+        "episodeNumber",
+        "lastEpisodeNumber",
+        "seriesName",
+        "parseStatus"
+      ],
+      "properties": {
+        "seriesId": {
+          "$ref": "#/$defs/uint16"
+        },
+        "repeatLabel": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 15
+        },
+        "programPattern": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 7
+        },
+        "expireDateValid": {
+          "type": "boolean"
+        },
+        "expireDate": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "episodeNumber": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4095
+        },
+        "lastEpisodeNumber": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4095
+        },
+        "seriesName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parseStatus": {
+          "$ref": "#/$defs/parseStatus"
+        }
+      }
+    },
+    "relatedItem": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "kind",
+        "groupType",
+        "originalNetworkId",
+        "transportStreamId",
+        "serviceId",
+        "eventId",
+        "parseStatus"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "shared",
+            "relay",
+            "movement"
+          ]
+        },
+        "groupType": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 15
+        },
+        "originalNetworkId": {
+          "$ref": "#/$defs/uint16"
+        },
+        "transportStreamId": {
+          "$ref": "#/$defs/uint16"
+        },
+        "serviceId": {
+          "$ref": "#/$defs/uint16"
+        },
+        "eventId": {
+          "$ref": "#/$defs/uint16"
+        },
+        "parseStatus": {
+          "$ref": "#/$defs/parseStatus"
+        }
+      }
+    },
+    "linkage": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "transportStreamId",
+        "originalNetworkId",
+        "serviceId",
+        "linkageType",
+        "privateDataPrefixHex",
+        "parseStatus"
+      ],
+      "properties": {
+        "transportStreamId": {
+          "$ref": "#/$defs/uint16"
+        },
+        "originalNetworkId": {
+          "$ref": "#/$defs/uint16"
+        },
+        "serviceId": {
+          "$ref": "#/$defs/uint16"
+        },
+        "linkageType": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "privateDataPrefixHex": {
+          "$ref": "#/$defs/hex"
+        },
+        "parseStatus": {
+          "$ref": "#/$defs/parseStatus"
+        }
+      }
+    },
+    "freeCaMode": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "raw",
+        "scrambled",
+        "parseStatus"
+      ],
+      "properties": {
+        "raw": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "scrambled": {
+          "type": "boolean"
+        },
+        "parseStatus": {
+          "$ref": "#/$defs/parseStatus"
+        }
+      }
+    },
+    "audioLanguage": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "language",
+        "source",
+        "parseStatus"
+      ],
+      "properties": {
+        "language": {
+          "$ref": "#/$defs/iso639"
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "parseStatus": {
+          "$ref": "#/$defs/parseStatus"
+        }
+      }
+    },
+    "audioMetadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "codec",
+        "parseStatus"
+      ],
+      "properties": {
+        "esPid": {
+          "$ref": "#/$defs/uint13"
+        },
+        "componentTag": {
+          "$ref": "#/$defs/uint8"
+        },
+        "codec": {
+          "type": "string",
+          "minLength": 1
+        },
+        "language": {
+          "$ref": "#/$defs/iso639"
+        },
+        "parseStatus": {
+          "$ref": "#/$defs/parseStatus"
+        }
+      }
+    },
+    "videoMetadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "codec",
+        "parseStatus"
+      ],
+      "properties": {
+        "esPid": {
+          "$ref": "#/$defs/uint13"
+        },
+        "componentTag": {
+          "$ref": "#/$defs/uint8"
+        },
+        "codec": {
+          "type": "string",
+          "minLength": 1
+        },
+        "parseStatus": {
+          "$ref": "#/$defs/parseStatus"
+        }
+      }
+    },
+    "extendedItem": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "itemDescription",
+        "itemText",
+        "parseStatus"
+      ],
+      "properties": {
+        "itemDescription": {
+          "type": "string"
+        },
+        "itemText": {
+          "type": "string"
+        },
+        "parseStatus": {
+          "$ref": "#/$defs/parseStatus"
+        }
+      }
+    },
+    "videoComponent": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "esPid",
+        "streamType",
+        "componentTag",
+        "componentType",
+        "codec",
+        "parseStatus"
+      ],
+      "properties": {
+        "esPid": {
+          "$ref": "#/$defs/uint13"
+        },
+        "streamType": {
+          "$ref": "#/$defs/uint8"
+        },
+        "componentTag": {
+          "$ref": "#/$defs/uint8"
+        },
+        "componentType": {
+          "$ref": "#/$defs/uint8"
+        },
+        "codec": {
+          "type": "string",
+          "minLength": 1
+        },
+        "resolution": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scan": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "aspect": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "profileLevel": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sourceDescriptor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parseStatus": {
+          "$ref": "#/$defs/parseStatus"
+        }
+      }
+    },
+    "audioComponent": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "esPid",
+        "streamType",
+        "componentTag",
+        "componentType",
+        "codec",
+        "language",
+        "parseStatus"
+      ],
+      "properties": {
+        "esPid": {
+          "$ref": "#/$defs/uint13"
+        },
+        "streamType": {
+          "$ref": "#/$defs/uint8"
+        },
+        "componentTag": {
+          "$ref": "#/$defs/uint8"
+        },
+        "componentType": {
+          "$ref": "#/$defs/uint8"
+        },
+        "codec": {
+          "type": "string",
+          "minLength": 1
+        },
+        "language": {
+          "$ref": "#/$defs/iso639"
+        },
+        "channelConfiguration": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "samplingInfo": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sourceDescriptor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parseStatus": {
+          "$ref": "#/$defs/parseStatus"
+        }
+      }
+    },
+    "subtitleComponent": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "esPid",
+        "componentTag",
+        "dataComponentId",
+        "language",
+        "trackId",
+        "captionServiceKind",
+        "parseStatus"
+      ],
+      "properties": {
+        "esPid": {
+          "$ref": "#/$defs/uint13"
+        },
+        "componentTag": {
+          "$ref": "#/$defs/uint8"
+        },
+        "dataComponentId": {
+          "$ref": "#/$defs/uint16"
+        },
+        "language": {
+          "$ref": "#/$defs/iso639"
+        },
+        "trackId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "captionServiceKind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "parseStatus": {
+          "$ref": "#/$defs/parseStatus"
+        }
+      }
+    },
+    "dataComponent": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "esPid",
+        "componentTag",
+        "dataComponentId",
+        "componentType",
+        "parseStatus"
+      ],
+      "properties": {
+        "esPid": {
+          "$ref": "#/$defs/uint13"
+        },
+        "componentTag": {
+          "$ref": "#/$defs/uint8"
+        },
+        "dataComponentId": {
+          "$ref": "#/$defs/uint16"
+        },
+        "componentType": {
+          "$ref": "#/$defs/uint8"
+        },
+        "parseStatus": {
+          "$ref": "#/$defs/parseStatus"
+        }
+      }
+    },
+    "components": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "video",
+        "audio",
+        "subtitle",
+        "data"
+      ],
+      "properties": {
+        "video": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/videoComponent"
+          }
+        },
+        "audio": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/audioComponent"
+          }
+        },
+        "subtitle": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/subtitleComponent"
+          }
+        },
+        "data": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/dataComponent"
+          }
+        }
+      }
+    },
+    "descriptorDiagnostic": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "schema",
+        "schemaVersion",
+        "severity",
+        "code",
+        "scope",
+        "descriptor",
+        "message"
+      ],
+      "properties": {
+        "schema": {
+          "const": "maleicacid.tv.descriptorDiagnostic"
+        },
+        "schemaVersion": {
+          "const": 1
+        },
+        "severity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scope": {
+          "$ref": "#/$defs/sectionScope"
+        },
+        "descriptor": {
+          "$ref": "#/$defs/descriptorScope"
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 256
+        }
+      }
+    },
+    "diagnosticItem": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "code",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string"
+        },
+        "severity": {
+          "type": "string"
+        }
+      }
+    },
+    "diagnostics": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "descriptorDiagnostics",
+        "publishDiagnostics",
+        "parserDiagnostics"
+      ],
+      "properties": {
+        "descriptorDiagnostics": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/descriptorDiagnostic"
+          }
+        },
+        "publishDiagnostics": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/diagnosticItem"
+          }
+        },
+        "parserDiagnostics": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/diagnosticItem"
+          }
+        }
+      }
+    },
+    "sectionScope": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "pid": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 8191
+        },
+        "tableId": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 255
+        },
+        "tableIdExtension": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "version": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 31
+        },
+        "sectionNumber": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 255
+        },
+        "originalNetworkId": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "transportStreamId": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "serviceId": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "eventId": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 65535
+        }
+      }
+    },
+    "descriptorScope": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "tag",
+        "offset",
+        "declaredLength",
+        "actualRemainingLength",
+        "rawPrefixHex"
+      ],
+      "properties": {
+        "tag": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "declaredLength": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "actualRemainingLength": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "parseStatus": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rawPrefixHex": {
+          "type": "string",
+          "pattern": "^([0-9A-Fa-f]{2})*$",
+          "maxLength": 128
+        }
+      }
+    }
+  }
+}

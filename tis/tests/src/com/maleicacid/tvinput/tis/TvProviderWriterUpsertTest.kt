@@ -63,7 +63,7 @@ class TvProviderWriterUpsertTest {
         )
 
         override fun insertChannel(values: ContentValues): Result<Long?> {
-            if (failInsert) return Result.failure(IllegalStateException("insert failed"))
+            if (failInsert) return Result.failure(IllegalStateException("挿入失敗"))
             val id = nextId++
             rows[id] = ContentValues(values)
             return Result.success(id)

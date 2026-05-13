@@ -165,10 +165,9 @@ impl SectionAssembler {
                     self.buf.extend_from_slice(&payload[1..1 + pointer]);
                     self.try_take_pending(&mut out);
                 }
-                // PUSI marks a new section boundary.  Pointer bytes are the only
-                // legal continuation of the previous section; if they do not
-                // complete it (including pointer == 0), the stale partial section
-                // must not be concatenated with the new section body.
+                // PUSI は新しいsection境界を示す。pointer byte列だけが直前sectionの
+                // 合法な継続である。pointer == 0 を含め、完了できない場合は古い未完了sectionを
+                // 新しいsection本体へ連結してはならない。
                 if !self.buf.is_empty() || self.expected_len.is_some() {
                     self.stale_partial_section_discards =
                         self.stale_partial_section_discards.saturating_add(1);
@@ -324,8 +323,8 @@ mod tests {
 
     #[test]
     fn assembler_delivers_largest_mpeg_section_under_8192_cap() {
-        // MPEG/ARIB の section_length は 12 bit なので、表現可能な最大 section は 3 + 4095 bytes。
-        // 8192 bytes の製品 guard が有効な大きめ EIT 系 section を拒否しないことを確認する。
+        // MPEG/ARIB の section_length は12bitなので、表現可能な最大sectionは 3 + 4095 byte。
+        // 8192 byte の製品guardが、有効な大きめEIT系sectionを拒否しないことを確認する。
         let mut assembler = SectionAssembler::default();
         let total_len = 3 + 4095;
         let mut section = vec![0x4e, 0xbf, 0xff];
@@ -405,9 +404,8 @@ mod tests {
         first.extend_from_slice(&stale[..6]);
         assert!(assembler.push_payload(true, &first).is_empty());
 
-        // Pointer bytes are too short to complete the pending section.  They
-        // must be treated as the legal tail attempt, then the old partial must
-        // be discarded before the new section body starts.
+        // pointer byte列は未完了sectionを完了するには短すぎる。
+        // 合法な末尾試行として扱った後、新しいsection本体の開始前に古い未完了sectionを破棄する。
         let mut second = vec![0x02];
         second.extend_from_slice(&stale[6..8]);
         second.extend_from_slice(&replacement);

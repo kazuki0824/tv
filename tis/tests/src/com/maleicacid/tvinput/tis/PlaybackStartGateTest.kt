@@ -15,7 +15,7 @@ class PlaybackStartGateTest {
         gate.recordResult(signature, startedVideo = false)
 
         check(!gate.shouldAttempt(signature)) {
-            "same AV signature must not invoke PlaybackPipeline.start() again after a failed attempt"
+            "失敗後に同一AV署名でPlaybackPipeline.start()を再実行してはなりません"
         }
     }
 
@@ -29,7 +29,7 @@ class PlaybackStartGateTest {
 
         repeat(5) {
             check(!gate.shouldAttempt(signature)) {
-                "metadata-only section refresh must not restart playback"
+                "metadataだけのsection更新で再生を再起動してはなりません"
             }
         }
     }
@@ -58,7 +58,7 @@ class PlaybackStartGateTest {
 
         gate.allowRetry()
         check(gate.shouldAttempt(signature)) {
-            "new Surface / external condition change must permit one retry"
+            "新しいSurfaceまたは外部条件変更では1回の再試行を許可する必要があります"
         }
     }
 

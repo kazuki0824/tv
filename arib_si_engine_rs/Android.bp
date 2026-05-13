@@ -25,7 +25,9 @@ rust_test {
     ],
     data: [
         "schema/descriptor_diagnostic_v1.schema.json",
+        "schema/program_provider_data_v1.schema.json",
         "testdata/descriptor_diagnostic_v1/malformed_length.json",
+        "testdata/program_provider_data_v1/minimal_clear_program.json",
     ],
     auto_gen_config: true,
     test_suites: ["general-tests"],

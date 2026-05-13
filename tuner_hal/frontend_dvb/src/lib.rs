@@ -298,7 +298,7 @@ impl DvbLiveStreamReader {
         let mut inner = self
             .inner
             .lock()
-            .map_err(|_| HalError::Internal("dvb live stream reader mutex poisoned".into()))?;
+            .map_err(|_| HalError::Internal("DVBライブストリーム読み取り器のmutexが破損しています".into()))?;
         let DvbLiveStreamReaderState {
             dvr,
             dvr_path,
@@ -435,13 +435,13 @@ impl DvbFrontendBackend {
                 if matches!(request.system, Some(FrontendSystem::IsdbS)) {
                     let Some(driver_frequency) = request.frequency_hz else {
                         return Err(HalError::InvalidArgument(
-                            "ISDB-S tune requires a Japan BS/CS110 IF frequency".into(),
+                            "ISDB-S選局には日本向けBS/CS110のIF周波数が必要です".into(),
                         ));
                     };
                     let if_frequency_hz = u64::from(driver_frequency).saturating_mul(1_000);
                     if is_japan_bs_if_frequency_hz(if_frequency_hz) {
                         return Err(HalError::InvalidArgument(
-                            "BS frequency-only tune is intentionally rejected; specify absolute TSID".into(),
+                            "BSの周波数のみ選局は受け付けません。絶対TSIDを指定してください".into(),
                         ));
                     }
                     if is_japan_cs110_if_frequency_hz(if_frequency_hz) { return Ok(None); }
@@ -452,27 +452,27 @@ impl DvbFrontendBackend {
                 Ok(None)
             },
             (Some(_stream_id), Some(FrontendStreamIdKind::RelativeStreamNumber)) => Err(HalError::InvalidArgument(
-                "DVB backend rejects relative stream numbers; use TSID for BS and frequency-only for CS110".into(),
+                "DVBバックエンドは相対ストリーム番号を受け付けません。BSではTSID、CS110では周波数のみを使ってください".into(),
             )),
             (Some(stream_id), Some(FrontendStreamIdKind::AbsoluteStreamId) | None) => {
                 if matches!(request.system, Some(FrontendSystem::IsdbS)) {
                     if let Some(driver_frequency) = request.frequency_hz {
                         let if_frequency_hz = u64::from(driver_frequency).saturating_mul(1_000);
                         if is_japan_cs110_if_frequency_hz(if_frequency_hz) {
-                            return Err(HalError::InvalidArgument("CS110 does not use TSID frontend selection; tune by frequency only".into()));
+                            return Err(HalError::InvalidArgument("CS110はフロントエンドTSID選択を使いません。周波数のみで選局してください".into()));
                         }
                     }
                 }
                 if matches!(request.system, Some(FrontendSystem::IsdbS)) {
                     let Some(driver_frequency) = request.frequency_hz else {
-                        return Err(HalError::InvalidArgument("ISDB-S tune requires a Japan BS/CS110 IF frequency".into()));
+                        return Err(HalError::InvalidArgument("ISDB-S選局には日本向けBS/CS110のIF周波数が必要です".into()));
                     };
                     let if_frequency_hz = u64::from(driver_frequency).saturating_mul(1_000);
                     if !is_japan_bs_if_frequency_hz(if_frequency_hz) {
-                        return Err(HalError::InvalidArgument("ISDB-S TSID selection is valid only for exact Japan BS IF frequencies".into()));
+                        return Err(HalError::InvalidArgument("ISDB-S TSID選択は日本BSの正確なIF周波数でだけ有効です".into()));
                     }
                     if stream_id < 12 {
-                        return Err(HalError::InvalidArgument("BS STREAM_ID must be an absolute TSID; values 0..11 are relative stream numbers".into()));
+                        return Err(HalError::InvalidArgument("BS STREAM_ID は絶対TSIDでなければなりません。0..11 は相対ストリーム番号です".into()));
                     }
                 }
                 Ok(Some(stream_id))
@@ -487,7 +487,7 @@ impl DvbFrontendBackend {
             if matches!(request.system, FrontendSystem::IsdbS) {
                 if is_japan_bs_if_frequency_hz(request.frequency) {
                     return Err(HalError::InvalidArgument(
-                        "BS frequency-only tune is intentionally rejected; specify absolute TSID"
+                        "BSの周波数のみ選局は受け付けません。絶対TSIDを指定してください"
                             .into(),
                     ));
                 }
@@ -501,22 +501,22 @@ impl DvbFrontendBackend {
             return Ok((None, None));
         };
         let stream_id = u16::try_from(raw_stream_id).map_err(|_| {
-            HalError::InvalidArgument(format!("stream_id out of range: {raw_stream_id}"))
+            HalError::InvalidArgument(format!("stream_id が範囲外です: {raw_stream_id}"))
         })?;
         match request.stream_id_kind {
             Some(FrontendStreamIdKind::RelativeStreamNumber) => Err(HalError::InvalidArgument(
-                "DVB backend rejects relative stream numbers; use TSID for BS and frequency-only for CS110".into(),
+                "DVBバックエンドは相対ストリーム番号を受け付けません。BSではTSID、CS110では周波数のみを使ってください".into(),
             )),
             Some(FrontendStreamIdKind::AbsoluteStreamId) | None => {
                 if matches!(request.system, FrontendSystem::IsdbS) {
                     if is_japan_cs110_if_frequency_hz(request.frequency) {
-                        return Err(HalError::InvalidArgument("CS110 does not use TSID frontend selection; tune by frequency only".into()));
+                        return Err(HalError::InvalidArgument("CS110はフロントエンドTSID選択を使いません。周波数のみで選局してください".into()));
                     }
                     if !is_japan_bs_if_frequency_hz(request.frequency) {
-                        return Err(HalError::InvalidArgument("ISDB-S TSID selection is valid only for exact Japan BS IF frequencies".into()));
+                        return Err(HalError::InvalidArgument("ISDB-S TSID選択は日本BSの正確なIF周波数でだけ有効です".into()));
                     }
                     if stream_id < 12 {
-                        return Err(HalError::InvalidArgument("BS STREAM_ID must be an absolute TSID; values 0..11 are relative stream numbers".into()));
+                        return Err(HalError::InvalidArgument("BS STREAM_ID は絶対TSIDでなければなりません。0..11 は相対ストリーム番号です".into()));
                     }
                 }
                 Ok((Some(stream_id), Some(FrontendStreamIdKind::AbsoluteStreamId)))
@@ -527,7 +527,7 @@ impl DvbFrontendBackend {
     fn validate_dvb_tune_symbol_rate(request: &DvbTuneRequest) -> Result<(), HalError> {
         if request.symbol_rate.is_some() {
             return Err(HalError::InvalidArgument(
-                "r51 DVB backend contract does not accept explicit symbol_rate".into(),
+                "r51のDVBバックエンド契約では明示symbol_rateを受け付けません".into(),
             ));
         }
         Ok(())
@@ -538,13 +538,13 @@ impl DvbFrontendBackend {
             Some(FrontendSystem::IsdbT) => match request.bandwidth_hz {
                 None | Some(6_000_000) => Ok(Some(6_000_000)),
                 Some(other) => Err(HalError::InvalidArgument(format!(
-                    "r51 DVB ISDB-T accepts only 6MHz bandwidth; got {other}Hz"
+                    "r51のDVB ISDB-Tは6MHz帯域幅だけを受け付けます。指定値: {other}Hz"
                 ))),
             },
             Some(FrontendSystem::IsdbS) => match request.bandwidth_hz {
                 None => Ok(None),
                 Some(other) => Err(HalError::InvalidArgument(format!(
-                    "r51 DVB ISDB-S does not accept bandwidth_hz; got {other}Hz"
+                    "r51のDVB ISDB-Sはbandwidth_hzを受け付けません。指定値: {other}Hz"
                 ))),
             },
             Some(FrontendSystem::IsdbS3 | FrontendSystem::DvbS) | None => Ok(None),
@@ -563,7 +563,7 @@ impl DvbFrontendBackend {
         if let Some(bandwidth_hz) = normalized_bandwidth {
             pairs.push((DTV_BANDWIDTH_HZ, bandwidth_hz));
         }
-        // r51 の ISDB-T/ISDB-S backend contract は explicit symbol_rate を扱わない。
+        // r51 の ISDB-T/ISDB-S バックエンド契約は明示symbol_rateを扱わない。
         // DTV_SYMBOL_RATE は設定しない。
         if let Some(stream_id) = Self::validate_stream_id(request)? {
             pairs.push((DTV_STREAM_ID, u32::from(stream_id)));
@@ -597,7 +597,7 @@ impl DvbFrontendBackend {
     fn validate_symbol_rate_from_common(request: &FrontendTuneRequest) -> Result<(), HalError> {
         if request.symbol_rate.is_some() {
             return Err(HalError::InvalidArgument(
-                "r51 ISDB-T/ISDB-S backend contract does not accept explicit symbol_rate".into(),
+                "r51のISDB-T/ISDB-Sバックエンド契約では明示symbol_rateを受け付けません".into(),
             ));
         }
         Ok(())
@@ -610,13 +610,13 @@ impl DvbFrontendBackend {
             FrontendSystem::IsdbT => match request.bandwidth_hz {
                 None | Some(6_000_000) => Ok(Some(6_000_000)),
                 Some(other) => Err(HalError::InvalidArgument(format!(
-                    "r51 DVB ISDB-T accepts only 6MHz bandwidth; got {other}Hz"
+                    "r51のDVB ISDB-Tは6MHz帯域幅だけを受け付けます。指定値: {other}Hz"
                 ))),
             },
             FrontendSystem::IsdbS => match request.bandwidth_hz {
                 None => Ok(None),
                 Some(other) => Err(HalError::InvalidArgument(format!(
-                    "r51 DVB ISDB-S does not accept bandwidth_hz; got {other}Hz"
+                    "r51のDVB ISDB-Sはbandwidth_hzを受け付けません。指定値: {other}Hz"
                 ))),
             },
             FrontendSystem::IsdbS3 | FrontendSystem::DvbS => Ok(None),
@@ -705,7 +705,7 @@ impl DvbFrontendBackend {
             15 => SEC_VOLTAGE_18,
             other => {
                 return Err(HalError::InvalidArgument(format!(
-                    "earth_pt1 fixed LNB profile accepts only NONE, 11V, or 15V; got {other}V"
+                    "earth_pt1固定LNB profile は NONE、11V、15Vだけを受け付けます。指定値: {other}V"
                 )))
             }
         };
@@ -720,13 +720,13 @@ impl DvbFrontendBackend {
 
     pub fn set_lnb_tone(&mut self, _on: bool) -> Result<(), HalError> {
         Err(HalError::Unsupported(
-            "LNB tone is permanently unsupported by the fixed Japanese tuner profiles",
+            "固定日本向けチューナープロファイルではLNBトーンを恒久的に非対応とします",
         ))
     }
 
     pub fn send_diseqc_message(&mut self, _message: &[u8]) -> Result<(), HalError> {
         Err(HalError::Unsupported(
-            "DiSEqC is permanently unsupported by the fixed Japanese tuner profiles",
+            "固定日本向けチューナープロファイルではDiSEqCを恒久的に非対応とします",
         ))
     }
 
@@ -788,7 +788,7 @@ impl DvbFrontendBackend {
                         operation: "dvr_read",
                         path: reader_path.map(Path::to_path_buf),
                         errno: err.raw_os_error(),
-                        message: format!("dvb dvr read failed: {}", err),
+                        message: format!("DVB DVR読み取りに失敗しました: {}", err),
                     })
                 }
             }
@@ -813,7 +813,7 @@ impl DvbFrontendBackend {
                 operation: "dvr_poll",
                 path: Some(path.to_path_buf()),
                 errno: None,
-                message: format!("dvb dvr poll reported device fd error revents=0x{revents:x}"),
+                message: format!("DVB DVR pollがデバイスfdエラーを報告しました revents=0x{revents:x}"),
             });
         }
         Ok((revents & POLLIN) != 0)
@@ -841,7 +841,7 @@ impl DvbFrontendBackend {
                 operation: "dvr_poll",
                 path: Some(path.to_path_buf()),
                 errno: err.raw_os_error(),
-                message: format!("dvb dvr poll failed: {}", err),
+                message: format!("DVB DVR pollに失敗しました: {}", err),
             });
         }
         if rc == 0 {
@@ -861,7 +861,7 @@ impl DvbFrontendBackend {
                     operation: "dvr_poll_stop_fd",
                     path: Some(path.to_path_buf()),
                     errno: None,
-                    message: "dvb dvr stop fd poll reported error".into(),
+                    message: "DVB DVR停止fdのpollがエラーを報告しました".into(),
                 });
             }
         }
@@ -999,7 +999,7 @@ impl DvbFrontendBackend {
     ) -> Result<u32, HalError> {
         let driver_frequency = Self::driver_frequency_from_common(request).ok_or_else(|| {
             HalError::InvalidArgument(format!(
-                "DVB frequency cannot be represented for {:?}: {}",
+                "DVB周波数を表現できません {:?}: {}",
                 request.system, request.frequency
             ))
         })?;
@@ -1011,11 +1011,11 @@ impl DvbFrontendBackend {
                 {
                     Ok(driver_frequency)
                 } else {
-                    Err(HalError::InvalidArgument(format!("earth_pt1 ISDB-S frequency is outside the supported BS/CS110 IF frequency classes: {}", request.frequency)))
+                    Err(HalError::InvalidArgument(format!("earth_pt1 ISDB-S周波数が対応BS/CS110 IF周波数分類の範囲外です: {}", request.frequency)))
                 }
             }
             FrontendSystem::IsdbS3 | FrontendSystem::DvbS => Err(HalError::Unsupported(
-                "earth_pt1 backend targets ISDB-T/ISDB-S only",
+                "earth_pt1バックエンドはISDB-T/ISDB-Sだけを対象にします",
             )),
         }
     }
@@ -1091,7 +1091,7 @@ impl DvbFrontendBackend {
         self.control
             .as_ref()
             .map(|control| control.as_raw_fd())
-            .ok_or_else(|| HalError::InvalidState("dvb control device is not open".into()))
+            .ok_or_else(|| HalError::InvalidState("DVB制御デバイスが開かれていません".into()))
     }
 
     fn delivery_system(system: Option<FrontendSystem>) -> Result<u32, HalError> {
@@ -1723,7 +1723,7 @@ mod tests {
                 bandwidth_hz: None,
                 symbol_rate: Some(28_860_000),
             })
-            .expect_err("symbol_rate contract violation must fail before opening the device");
+            .expect_err("symbol_rate契約違反はデバイスを開く前に失敗する必要があります");
         assert!(matches!(err, HalError::InvalidArgument(_)));
     }
 
@@ -1737,7 +1737,7 @@ mod tests {
                 system: Some(FrontendSystem::IsdbT),
                 ..Default::default()
             })
-            .expect_err("bandwidth contract violation must fail before opening the device");
+            .expect_err("帯域幅契約違反はデバイスを開く前に失敗する必要があります");
         assert!(matches!(err, HalError::InvalidArgument(_)));
     }
 }
@@ -1766,7 +1766,7 @@ mod device_missing_tests {
         let mut backend = DvbFrontendBackend::new(-9999, 0, 0, 0, vec![FrontendSystem::IsdbT]);
         let err = backend
             .read_status()
-            .expect_err("missing device should be an error");
+            .expect_err("デバイス欠落はエラーである必要があります");
         assert!(matches!(err, HalError::DeviceMissing(_)));
     }
 
@@ -1779,7 +1779,7 @@ mod device_missing_tests {
                 system: Some(FrontendSystem::IsdbT),
                 ..Default::default()
             })
-            .expect_err("missing device tune should be an error");
+            .expect_err("デバイス欠落時の選局はエラーである必要があります");
         assert!(matches!(err, HalError::DeviceMissing(_)));
     }
 }
@@ -1842,7 +1842,7 @@ mod bs_cs_contract_tests {
     #[test]
     fn dvb_bs_frequency_only_is_rejected() {
         let err = DvbFrontendBackend::normalize_stream_id_from_common(&bs_base_request(None, None))
-            .expect_err("BS must not accept frequency-only tune");
+            .expect_err("BSは周波数のみ選局を受け付けてはなりません");
         assert!(matches!(err, HalError::InvalidArgument(_)));
     }
 
