@@ -332,7 +332,6 @@
         "level2",
         "userNibble",
         "aribName",
-        "canonicalGenres",
         "unmappedReason",
         "parseStatus"
       ],
@@ -354,12 +353,6 @@
         },
         "aribName": {
           "type": "string"
-        },
-        "canonicalGenres": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
         },
         "unmappedReason": {
           "type": [
@@ -383,7 +376,7 @@
         "expireDate",
         "episodeNumber",
         "lastEpisodeNumber",
-        "seriesName",
+        "name",
         "parseStatus"
       ],
       "properties": {
@@ -419,7 +412,7 @@
           "minimum": 0,
           "maximum": 4095
         },
-        "seriesName": {
+        "name": {
           "type": [
             "string",
             "null"
@@ -602,19 +595,19 @@
       "type": "object",
       "additionalProperties": true,
       "required": [
-        "itemDescription",
-        "itemText",
+        "description",
+        "text",
         "parseStatus"
       ],
       "properties": {
-        "itemDescription": {
-          "type": "string"
-        },
-        "itemText": {
-          "type": "string"
-        },
         "parseStatus": {
           "$ref": "#/$defs/parseStatus"
+        },
+        "description": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
         }
       }
     },
@@ -838,45 +831,6 @@
         }
       }
     },
-    "descriptorDiagnostic": {
-      "type": "object",
-      "additionalProperties": true,
-      "required": [
-        "schema",
-        "schemaVersion",
-        "severity",
-        "code",
-        "scope",
-        "descriptor",
-        "message"
-      ],
-      "properties": {
-        "schema": {
-          "const": "maleicacid.tv.descriptorDiagnostic"
-        },
-        "schemaVersion": {
-          "const": 1
-        },
-        "severity": {
-          "type": "string",
-          "minLength": 1
-        },
-        "code": {
-          "type": "string",
-          "minLength": 1
-        },
-        "scope": {
-          "$ref": "#/$defs/sectionScope"
-        },
-        "descriptor": {
-          "$ref": "#/$defs/descriptorScope"
-        },
-        "message": {
-          "type": "string",
-          "maxLength": 256
-        }
-      }
-    },
     "diagnosticItem": {
       "type": "object",
       "additionalProperties": true,
@@ -909,7 +863,7 @@
         "descriptorDiagnostics": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/descriptorDiagnostic"
+            "$ref": "descriptor_diagnostic_v1.schema.json"
           }
         },
         "publishDiagnostics": {
@@ -923,132 +877,45 @@
           "items": {
             "$ref": "#/$defs/diagnosticItem"
           }
-        }
-      }
-    },
-    "sectionScope": {
-      "type": "object",
-      "additionalProperties": true,
-      "properties": {
-        "pid": {
-          "type": [
-            "integer",
-            "null"
+        },
+        "currentProgram": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "overlapCount",
+            "selectedProgramId",
+            "selectionRule"
           ],
-          "minimum": 0,
-          "maximum": 8191
+          "properties": {
+            "overlapCount": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "selectedProgramId": {
+              "type": "integer"
+            },
+            "selectionRule": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
         },
-        "tableId": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 0,
-          "maximum": 255
-        },
-        "tableIdExtension": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 0,
-          "maximum": 65535
-        },
-        "version": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 0,
-          "maximum": 31
-        },
-        "sectionNumber": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 0,
-          "maximum": 255
-        },
-        "originalNetworkId": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 0,
-          "maximum": 65535
-        },
-        "transportStreamId": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 0,
-          "maximum": 65535
-        },
-        "serviceId": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 0,
-          "maximum": 65535
-        },
-        "eventId": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 0,
-          "maximum": 65535
-        }
-      }
-    },
-    "descriptorScope": {
-      "type": "object",
-      "additionalProperties": true,
-      "required": [
-        "tag",
-        "offset",
-        "declaredLength",
-        "actualRemainingLength",
-        "rawPrefixHex"
-      ],
-      "properties": {
-        "tag": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 255
-        },
-        "name": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "offset": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "declaredLength": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 255
-        },
-        "actualRemainingLength": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "parseStatus": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "rawPrefixHex": {
-          "type": "string",
-          "pattern": "^([0-9A-Fa-f]{2})*$",
-          "maxLength": 128
+        "rawProviderDataExtensions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "key",
+              "value"
+            ],
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "value": {}
+            }
+          }
         }
       }
     }

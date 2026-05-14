@@ -101,6 +101,14 @@ const JAPAN_BS_STEP_HZ: u64 = 38_360_000;
 const JAPAN_CS110_FIRST_IF_HZ: u64 = 1_613_000_000;
 const JAPAN_CS110_LAST_IF_HZ: u64 = 2_053_000_000;
 const JAPAN_CS110_STEP_HZ: u64 = 40_000_000;
+const JAPAN_CATV_C13_CENTER_HZ: u64 = 111_142_857;
+const JAPAN_UHF_62_CENTER_HZ: u64 = 767_142_857;
+const JAPAN_ISDBT_TUNE_TOLERANCE_HZ: u64 = 500_000;
+
+fn is_japan_isdbt_frequency_contract_hz(frequency_hz: u64) -> bool {
+    frequency_hz >= JAPAN_CATV_C13_CENTER_HZ.saturating_sub(JAPAN_ISDBT_TUNE_TOLERANCE_HZ)
+        && frequency_hz <= JAPAN_UHF_62_CENTER_HZ.saturating_add(JAPAN_ISDBT_TUNE_TOLERANCE_HZ)
+}
 
 fn is_japan_bs_if_frequency_hz(if_frequency_hz: u64) -> bool {
     if if_frequency_hz < JAPAN_BS_FIRST_IF_HZ || if_frequency_hz > JAPAN_BS_LAST_IF_HZ {
@@ -1004,7 +1012,16 @@ impl DvbFrontendBackend {
             ))
         })?;
         match request.system {
-            FrontendSystem::IsdbT => Ok(driver_frequency),
+            FrontendSystem::IsdbT => {
+                if is_japan_isdbt_frequency_contract_hz(request.frequency) {
+                    Ok(driver_frequency)
+                } else {
+                    Err(HalError::InvalidArgument(format!(
+                        "DVB ISDB-T周波数が日本向け広告範囲外です: {}",
+                        request.frequency
+                    )))
+                }
+            }
             FrontendSystem::IsdbS => {
                 if is_japan_bs_if_frequency_hz(request.frequency)
                     || is_japan_cs110_if_frequency_hz(request.frequency)

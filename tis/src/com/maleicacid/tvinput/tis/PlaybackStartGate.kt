@@ -18,6 +18,8 @@ data class AvPlaybackSignature(
     val audioStreamType: Int?,
     val clear: Boolean,
     val keyTokenAvailable: Boolean,
+    val subtitlePid: Int? = null,
+    val subtitleDataComponentId: Int? = null,
 )
 
 class PlaybackStartGate {

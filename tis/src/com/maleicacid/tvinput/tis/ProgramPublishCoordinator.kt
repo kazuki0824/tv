@@ -6,7 +6,7 @@ import com.maleicacid.tvinput.aribsi.ProviderDataBridge
 
 /**
  * TvProvider Programs への反映を公開modeごとに制御する。
- * live更新では既存channelだけを対象にし、同一内容の連続EITは過剰upsertしない。
+ * ライブ更新では既存channelだけを対象にし、同一内容の連続EITは過剰upsertしない。
  */
 class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) {
     data class EpgUpdateWindow(

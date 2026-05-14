@@ -1,3 +1,4 @@
+# r51合格判定に使う前に、対象実機・対象地点のPAT/PMT由来値へ更新するlab placeholder。
 profile_name: earth_pt1_isdbt_lab
 frontend:
   id: FE_ISDBT_UHF

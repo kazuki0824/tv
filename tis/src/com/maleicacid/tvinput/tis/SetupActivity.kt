@@ -1,8 +1,6 @@
 package com.maleicacid.tvinput.tis
 
 import android.app.Activity
-import android.content.ComponentName
-import android.media.tv.TvInputManager
 import android.os.Bundle
 import android.view.ViewGroup
 import android.widget.Button
@@ -70,14 +68,7 @@ class SetupActivity : Activity(), ChannelScanManager.Listener {
             ?: intent?.getStringExtra("inputId")
     }
 
-    private fun isOwnInputId(candidate: String?): Boolean {
-        val id = candidate?.takeIf { it.isNotBlank() } ?: return false
-        val tvInputManager = getSystemService(TvInputManager::class.java) ?: return false
-        val ownComponent = ComponentName(this, MaleicacidTvInputService::class.java)
-        return tvInputManager.tvInputList.any { info ->
-            info.id == id && info.serviceInfo.packageName == ownComponent.packageName && info.serviceInfo.name == ownComponent.className
-        }
-    }
+    private fun isOwnInputId(candidate: String?): Boolean = TisInputIdResolver.isOwnInputId(this, candidate)
 
     override fun onScanStateChanged(state: ScanState) {
         runOnUiThread {

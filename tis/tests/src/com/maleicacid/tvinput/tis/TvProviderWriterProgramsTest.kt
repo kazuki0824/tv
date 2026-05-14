@@ -26,7 +26,9 @@ class TvProviderWriterProgramsTest {
         check(store.programs.values.single().getAsInteger(TvContract.Programs.COLUMN_EVENT_ID) == 10)
         val providerData = store.programs.values.single().getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).toString(Charsets.UTF_8)
         check(TvProviderWriter.parseProgramKey(providerData) == TvProviderWriter.programKeyForTest(p))
+        check(providerData.contains("\"schema\":\"maleicacid.tv.program\""))
         check(providerData.contains(TvProviderWriter.PROGRAM_KEY_FIELD))
+        check(!providerData.contains("programKeyB64"))
     }
 
 
@@ -89,22 +91,28 @@ class TvProviderWriterProgramsTest {
         val p = ProgramRecord(
             key, 11, "onid=4;tsid=16625;sid=101;event=11", 1_700_000_000_000L, 1_800_000L,
             "News", "desc", extendedItemsJson = "[{\"description\":\"出演\",\"text\":\"A\"}]",
-            componentText = "映像", audioComponentText = "音声", audioLanguage = "jpn", broadcastGenre = "ARIB(0x0/0x0):ニュース/報道/定時・総合", genreSupplementText = "ニュース/報道/定時・総合", eventGroupText = "sid=101 event=202", freeCaText = "無料放送", seriesName = "シリーズ", diagnosticText = "unknownCount=0", diagnosticDescriptorJson = "{}",
+            componentText = "映像", audioComponentText = "音声", audioLanguage = "jpn", canonicalGenres = listOf("NEWS"), broadcastGenre = "ARIB(0x0/0x0):ニュース/報道/定時・総合", genreSupplementText = "ニュース/報道/定時・総合", relatedItemsJson = """[{"kind":"shared","groupType":1,"originalNetworkId":4,"transportStreamId":16625,"serviceId":101,"eventId":202,"parseStatus":"OK"}]""", scrambled = false, freeCaModeJson = """{"raw":0,"scrambled":false,"text":"無料放送","parseStatus":"OK"}""", seriesId = 100, episodeNumber = 3, lastEpisodeNumber = 12, seriesJson = """{"seriesId":100,"repeatLabel":0,"programPattern":0,"expireDateValid":false,"expireDate":null,"episodeNumber":3,"lastEpisodeNumber":12,"name":"シリーズ","parseStatus":"OK"}""", diagnosticText = "unknownCount=0", diagnosticDescriptorJson = "{}",
         )
         writer.upsertPrograms(listOf(p))
         val providerData = store.programs.values.single().getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).toString(Charsets.UTF_8)
         check(providerData.contains("extendedItems"))
-        check(providerData.contains("componentText"))
-        check(providerData.contains("audioComponentText"))
-        check(providerData.contains("audioLanguage"))
-        check(providerData.contains("broadcastGenre"))
-        check(providerData.contains("genreSupplementText"))
-        check(providerData.contains("eventGroupText"))
-        check(providerData.contains("freeCaText"))
-        check(providerData.contains("seriesName"))
+        check(providerData.contains("audioLanguages"))
+        check(providerData.contains("genres"))
+        check(providerData.contains("diagnostics"))
+        check(!providerData.contains("componentText"))
+        check(!providerData.contains("audioComponentText"))
+        check(!providerData.contains("genreSupplementText"))
+        check(!providerData.contains("eventGroupText"))
+        check(providerData.contains("relatedItems"))
+        check(providerData.contains("freeCaMode"))
+        check(providerData.contains("seriesId"))
         check(store.programs.values.single().getAsString(TvContract.Programs.COLUMN_AUDIO_LANGUAGE) == "jpn")
-        check(!store.programs.values.single().containsKey(TvContract.Programs.COLUMN_CANONICAL_GENRE))
+        check(store.programs.values.single().getAsString(TvContract.Programs.COLUMN_CANONICAL_GENRE) == TvContract.Programs.Genres.encode("NEWS"))
         check(store.programs.values.single().getAsString(TvContract.Programs.COLUMN_BROADCAST_GENRE) == TvContract.Programs.Genres.encode("ARIB(0x0/0x0):ニュース/報道/定時・総合"))
+        check(store.programs.values.single().getAsInteger(TvProviderWriter.COLUMN_SCRAMBLED) == 0)
+        check(store.programs.values.single().getAsInteger(TvProviderWriter.COLUMN_SERIES_ID) == 100)
+        check(store.programs.values.single().getAsString(TvProviderWriter.COLUMN_EPISODE_DISPLAY_NUMBER) == "3")
+        check(store.programs.values.single().getAsInteger(TvProviderWriter.COLUMN_ITEM_COUNT) == 12)
         check(store.programs.values.single().getAsString(TvContract.Programs.COLUMN_SHORT_DESCRIPTION) == "desc")
     }
 
@@ -132,13 +140,15 @@ class TvProviderWriterProgramsTest {
         val rating18 = requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 18, 18, true)))
         val changedProjectedDetails = coordinator.publish(
             ChannelScanController.PublishMode.LIVE_TUNE_REFRESH,
-            listOf(p.copy(unsupportedDescriptorJson = "{\"tag\":255}", contentRatings = listOf(rating18), videoFormat = "video/avc", videoWidth = 1920, videoHeight = 1080)),
+            listOf(p.copy(contentRatings = listOf(rating18), videoFormat = "video/avc", videoWidth = 1920, videoHeight = 1080)),
             allowedServiceKeys = null,
         )
         check(changedProjectedDetails.updated == 1)
         val providerData = store.programs.values.single().getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).toString(Charsets.UTF_8)
-        check(providerData.contains("unsupportedDescriptorDiagnostics"))
-        check(providerData.contains("videoFormat"))
+        check(providerData.contains("descriptorDiagnostics"))
+        check(providerData.contains("video/avc"))
+        check(!providerData.contains("unsupportedDescriptorDiagnostics"))
+        check(!providerData.contains("videoFormat"))
         check(store.programs.values.single().getAsString(TvContract.Programs.COLUMN_CONTENT_RATING) == rating18)
     }
 
@@ -155,18 +165,20 @@ class TvProviderWriterProgramsTest {
         val first = coordinator.publish(ChannelScanController.PublishMode.LIVE_TUNE_REFRESH, withVideoMetadata, allowedServiceKeys = null)
         check(first.inserted == 1)
         var providerData = store.programs.values.single().getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).toString(Charsets.UTF_8)
-        check(providerData.contains("videoFormat"))
+        check(providerData.contains("video/avc"))
+        check(!providerData.contains("videoFormat"))
 
         val laterEitRecord = p.copy(durationMillis = 2_400_000L, description = "EIT更新", shortDescription = "EIT更新")
         val mergedLaterEit = MaleicacidLiveSession.mergeVideoMetadataForTest(listOf(laterEitRecord), metadata)
         val updated = coordinator.publish(ChannelScanController.PublishMode.LIVE_TUNE_REFRESH, mergedLaterEit, allowedServiceKeys = null)
         check(updated.updated == 1)
         providerData = store.programs.values.single().getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).toString(Charsets.UTF_8)
-        check(providerData.contains("videoFormat"))
+        check(providerData.contains("video/avc"))
+        check(!providerData.contains("videoFormat"))
         check(store.programs.values.single().getAsString(TvContract.Programs.COLUMN_LONG_DESCRIPTION) == "EIT更新")
     }
 
-    @Test fun obsoleteProgramsInsideCurrentUpdateWindowAreDeleted() {
+    @Test fun obsoleteProgramsInsideCurrentUpdateWindowAreDeletedOnlyWhenAuthoritative() {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", 473_142_857L)))
@@ -175,8 +187,35 @@ class TvProviderWriterProgramsTest {
         val p3 = ProgramRecord(key, 23, "onid=4;tsid=16625;sid=101;event=23", 1_700_001_200_000L, 600_000L, "P3", "desc")
         val first = writer.upsertPrograms(listOf(p1, p2, p3))
         check(first.inserted == 3)
-        val second = writer.upsertPrograms(listOf(p1, p3))
-        check(second.deleted == 1)
+
+        val nonAuthoritative = writer.upsertProgramsForWindows(
+            programs = listOf(p1, p3),
+            windows = listOf(
+                ProgramPublishCoordinator.EpgUpdateWindow(
+                    serviceKey = key,
+                    windowStartMs = p1.startTimeMillis,
+                    windowEndMs = p3.startTimeMillis + p3.durationMillis,
+                    validProgramKeys = setOf(TvProviderWriter.programKeyForTest(p1), TvProviderWriter.programKeyForTest(p3)),
+                    deletionAuthoritative = false,
+                ),
+            ),
+        )
+        check(nonAuthoritative.deleted == 0)
+        check(store.programs.size == 3)
+
+        val authoritative = writer.upsertProgramsForWindows(
+            programs = listOf(p1, p3),
+            windows = listOf(
+                ProgramPublishCoordinator.EpgUpdateWindow(
+                    serviceKey = key,
+                    windowStartMs = p1.startTimeMillis,
+                    windowEndMs = p3.startTimeMillis + p3.durationMillis,
+                    validProgramKeys = setOf(TvProviderWriter.programKeyForTest(p1), TvProviderWriter.programKeyForTest(p3)),
+                    deletionAuthoritative = true,
+                ),
+            ),
+        )
+        check(authoritative.deleted == 1)
         check(store.programs.size == 2)
         check(store.programs.values.none { value ->
             TvProviderWriter.parseProgramKey(value.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).toString(Charsets.UTF_8)) == TvProviderWriter.programKeyForTest(p2)

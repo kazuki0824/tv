@@ -22,5 +22,6 @@ android_test {
         "androidx.test.ext.junit",
         "androidx.test.runner",
     ],
-    test_suites: ["device-tests"],
+    // r51 のリリース確認条件へ混入させないため、test_suites には登録しない。
+    // r53 の録画・予約作業で明示指定して実行する。
 }

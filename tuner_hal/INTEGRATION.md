@@ -8,7 +8,7 @@
 - 通常 vendor binary 統合を primary path とする。
 - APEX 統合は template として残すが、同一 product で通常方式と同時に有効化しない。
 - Tuner HAL instance は android.hardware.tv.tuner.ITuner/default に固定する。
-- service 名は vendor.maleicacid-tuner-default に固定する。
+- サービス 名は vendor.maleicacid-tuner-default に固定する。
 - ueventd node pattern の SSOT は config/ueventd.tuner_hal.rc である。
 - SELinux vendor policy の SSOT は sepolicy/ 配下である。
 - VTS設定 の SSOT は config/tuner_vts_config_aidl_V2.xml と profiles/*.yaml + tools/render_vts_config.py である。
@@ -24,7 +24,7 @@ px4 backend で BS `STREAM_ID` を使う product は、対象 kernel driver が 
 - HAL 側で TSID -> relative slot 変換表を持たず、absolute TSID をそのまま slot に渡すこと
 ```
 
-公開 `nns779/px4_drv` develop 相当など、BS `slot >= 8` reject が有効な driver では px4 BS absolute TSID 経路は使用不可である。その構成では px4 BS `STREAM_ID` 対応を product capability、VTS profile、integration note で claim してはならない。
+公開 `nns779/px4_drv` develop 相当など、BS `slot >= 8` reject が有効な driver では px4 BS absolute TSID 経路は使用不可である。その構成では px4 BS `STREAM_ID` 対応を product capability、VTS profile、integration note で 対応宣言 してはならない。
 
 ## 1. 通常 vendor binary 統合
 
@@ -71,13 +71,13 @@ sepolicy/device.te
 sepolicy/tuner_hal.te
 ```
 
-release gate:
+合格条件:
 
 ```text
 - hal_tv_tuner_maleicacid domain が policy build に含まれる。
-- HAL service binary file context が含まれる。
+- HAL サービス binary file context が含まれる。
 - DVB / px4 device node label が含まれる。
-- /dev/dma_heap/system access が AV MediaEvent shared handle 用に許可される。
+- /dev/dma_heap/system access が AV MediaEvent 共有ハンドル 用に許可される。
 ```
 
 ### 1.3 ueventd
@@ -107,7 +107,7 @@ config/ueventd.vendor.import.example.rc
 - config/ueventd.vendor.direct.example.rc のような直接 node pattern 複製ファイルを使わない。
 ```
 
-release gate:
+合格条件:
 
 ```text
 - config/ueventd.tuner_hal.rc が唯一の node pattern 定義元である。
@@ -124,21 +124,21 @@ init_rc: ["tuner-hal-service.rc"]
 vintf_fragments: ["tuner-hal-service.xml"]
 ```
 
-製品の manifest、device manifest、device rc に同じ HAL 宣言や service 定義を重複して書かない。
+製品の manifest、device manifest、device rc に同じ HAL 宣言や サービス 定義を重複して書かない。
 
-release gate:
+合格条件:
 
 ```text
 - VINTF instance が android.hardware.tv.tuner.ITuner/default である。
-- init service 名が vendor.maleicacid-tuner-default である。
-- 通常方式では /vendor/bin/hw/maleicacid.tv.tuner_hal-service を使う。
+- init サービス 名が vendor.maleicacid-tuner-default である。
+- 通常方式では /vendor/bin/hw/maleicacid.tv.tuner_hal-サービスを使う。
 ```
 
 ## 2. APEX 統合 template
 
 APEX 統合は将来または別 product 用の template であり、primary path ではない。
 
-APEX 方式を採る場合は、通常方式の `maleicacid.tv.tuner_hal-service` package を同じ product に入れない。APEX payload の service binary と APEX init rc だけを有効化する。
+APEX 方式を採る場合は、通常方式の `maleicacid.tv.tuner_hal-service` package を同じ product に入れない。APEX payload の サービス binary と APEX init rc だけを有効化する。
 
 APEX template:
 
@@ -146,7 +146,7 @@ APEX template:
 apex_template/Android.bp.fragment
 apex_template/apex_manifest.json
 apex_template/file_contexts
-apex_template/tuner-hal-service.apex.rc
+apex_template/tuner-hal-サービス.apex.rc
 ```
 
 APEX 方式でも次は vendor 側に残す。
@@ -159,15 +159,15 @@ BOARD_VENDOR_SEPOLICY_DIRS include
 
 理由: VTS設定 と ueventd node permission は APEX payload ではなく product/vendor image の統合対象である。
 
-## 3. VTS設定 設定
+## 3. VTS設定
 
 `config/tuner_vts_config_aidl_V2.xml` は汎用製品設定ではなく、VTS が実際に受信・filter・DVR 確認できる試験用プロファイルである。
 
 固定方針:
 
 ```text
-- CAS HAL placeholder のため descramble 前提 flow を含めない。
-- HAL-generated range scan / blind scan は claim しない。
+- CAS HAL 仮実装 のため descramble 前提 flow を含めない。
+- HAL-generated 範囲スキャン / ブラインドスキャン は 対応宣言しない。
 - frequency は explicit tune point に固定する。
 - ISDB-T bandwidth は 6MHz または AUTO 相当だけを使う。
 - ISDB-S modulation / coderate / symbolRate は r51 HAL validation と一致させる。
@@ -185,7 +185,9 @@ profiles/px4_isdbs_cs110_lab.yaml
 profiles/earth_pt1_isdbt_lab.yaml
 ```
 
-PID は必ず対象 service の PMT から決める。
+上記 `*_lab.yaml` は検査手順確認用の lab 用仮profile であり、r51 合格判定に使う前に、対象実機・対象地点で取得した PAT/PMT 由来の service_id、PMT PID、video ES PID、audio ES PID、record PID へ更新する。
+
+PID は必ず対象 サービスの PMT から決める。
 
 ```text
 1. 対象 frontend / frequency へ tune する。
@@ -211,7 +213,7 @@ python3 tuner_hal/tools/render_vts_config.py \
   tuner_hal/profiles/earth_pt1_isdbs_bs_lab.yaml \
   tuner_hal/profiles/px4_isdbs_cs110_lab.yaml \
   tuner_hal/profiles/earth_pt1_isdbt_lab.yaml \
-  > tuner_hal/config/tuner_vts_config_aidl_V2.xml
+  tuner_hal/config/tuner_vts_config_aidl_V2.xml
 ```
 
 生成後に必ず差分確認する。
@@ -223,7 +225,7 @@ git diff -- tuner_hal/config/tuner_vts_config_aidl_V2.xml
 ### 3.3 VTS 前 sanity check
 
 ```text
-1. frontend tune で LOCKED callback が来る。
+1. frontend tune で LOCKEDコールバック が来る。
 2. audio/video filter の指定 PID で DATA_READY または MediaEvent が来る。
 3. record filter の指定 PID で TS packet が流れる。
 4. IDvr.start() 後、DVR queue から data を読める。
@@ -236,8 +238,8 @@ git diff -- tuner_hal/config/tuner_vts_config_aidl_V2.xml
 
 ```text
 - 通常 vendor binary と APEX を同時に product package へ入れる。
-- product/device manifest に tuner-hal-service.xml と同じ VINTF 宣言を重複追加する。
-- device rc に tuner-hal-service.rc と同じ service を重複定義する。
+- product/device manifest に tuner-hal-サービス.xml と同じ VINTF 宣言を重複追加する。
+- device rc に tuner-hal-サービス.rc と同じ サービスを重複定義する。
 - ueventd node pattern を config/ueventd.tuner_hal.rc 以外に重複定義する。
 - BoardConfig と product makefile の両方へ sepolicy path を二重定義する。
 ```
@@ -253,4 +255,84 @@ git diff -- tuner_hal/config/tuner_vts_config_aidl_V2.xml
 - VINTF/init は Android.bp module property から install され、device 側に重複しない。
 - VTS設定 は実TSの PMT 由来 PID と一致する。
 - README_JA.md に integration 詳細が重複していない。
+```
+
+## 6. r51 ビルド・試験確認ゲート
+
+この章は、tv 直下に作業メモを置かずに r51 確認対象を固定するための統合手順である。Tuner HAL 単体の合否判定は、Tuner HAL モジュールビルド、Rust 試験、atest、Tuner VTS モジュール、実機簡易確認 の順で行う。full VTS / full CTS はこの章の合格条件に含めない。
+
+### 6.1 Soong モジュールビルド
+
+AOSP root で次を実行する。
+
+```bash
+source build/envsetup.sh
+lunch <your_android_tv_14_product>-userdebug
+m nothing
+m \
+  libmaleicacid_tuner_hal_common \
+  libmaleicacid_tuner_hal_frontend_dvb \
+  libmaleicacid_tuner_hal_frontend_px4 \
+  libmaleicacid_tuner_hal_dvr \
+  libmaleicacid_tuner_hal_descrambler \
+  libmaleicacid_tuner_hal_soft_demux \
+  libmaleicacid_tuner_hal_fmq_shim \
+  maleicacid.tv.tuner_hal-service \
+  maleicacid_tuner_hal_vts_config_aidl_v2 \
+  maleicacid_tuner_hal_ueventd_rc
+```
+
+### 6.2 Rust 試験モジュール
+
+```bash
+m \
+  maleicacid_tuner_hal_frontend_dvb_test \
+  maleicacid_tuner_hal_frontend_px4_test \
+  maleicacid_tuner_hal_dvr_test \
+  maleicacid_tuner_hal_soft_demux_test \
+  maleicacid_tuner_hal_descrambler_test \
+  maleicacid_tuner_hal_binder_service_test
+
+atest \
+  maleicacid_tuner_hal_frontend_dvb_test \
+  maleicacid_tuner_hal_frontend_px4_test \
+  maleicacid_tuner_hal_dvr_test \
+  maleicacid_tuner_hal_soft_demux_test \
+  maleicacid_tuner_hal_descrambler_test \
+  maleicacid_tuner_hal_binder_service_test
+```
+
+`maleicacid_tuner_hal_binder_service_test` は `tuner_hal/binder_service/src/main.rs` と同ディレクトリの Rust source を試験用 crate として使う。`tests/` ディレクトリの有無ではなく、Android.bp の `rust_test` module と `#[cfg(test)]` を含む source を確認対象とする。
+
+### 6.3 Tuner VTS モジュール
+
+VTS 設定は、3章の手順で対象実機の PAT/PMT 由来 PID に更新してから使う。更新後に次を実行する。
+
+```bash
+m maleicacid_tuner_hal_vts_config_aidl_v2 vendorimage
+m vts -j
+out/host/linux-x86/vts/android-vts/tools/vts-tradefed
+# vts-tradefed 内
+run vts --module VtsHalTvTunerTargetTest
+```
+
+`VtsHalTvTunerTargetTest` より前に `run vts-hal` または `run vts` の結果を r51 の Tuner HAL 合否判定に使ってはならない。
+
+### 6.4 flash 後の確認
+
+```bash
+adb root
+adb shell service list | grep -i tuner
+adb shell ps -A | grep maleicacid
+adb shell ls -l /dev/dvb /dev/px4video* /dev/px4stream* 2>/dev/null
+adb shell dmesg | grep -i -E 'dvb|px4|tuner|maleicacid'
+```
+
+合格条件:
+
+```text
+- HAL サービスが android.hardware.tv.tuner.ITuner/default として見える。
+- /dev/dvb または /dev/px4* の権限が config/ueventd.tuner_hal.rc と一致する。
+- 対象 profile の frontend tune が LOCKED へ到達する。
+- 指定 PID の filter / DVR 経路で data が取得できる。
 ```

@@ -39,7 +39,7 @@ class TvProviderWriter private constructor(
         fun indexExistingProgramsForWindow(channelId: Long, windowStartMs: Long, windowEndMs: Long): Result<Map<String, Long>> = Result.success(emptyMap())
         /**
          * channel 全体の既存 Program row を stable programKey で引ける形で返す。
-         * EPG update window より意図的に広く取得し、start / end time が現在 window の外へ
+         * EPG 更新区間 より意図的に広く取得し、start / end time が現在 window の外へ
          * 移動した event も、duplicate insert ではなく stable ONID / TSID / SID / event identity で更新する。
          */
         fun indexExistingProgramsForService(channelId: Long): Result<Map<String, Long>> =
@@ -236,9 +236,21 @@ class TvProviderWriter private constructor(
         put(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS, program.startTimeMillis + program.durationMillis)
         put(TvContract.Programs.COLUMN_SHORT_DESCRIPTION, program.shortDescription)
         put(TvContract.Programs.COLUMN_LONG_DESCRIPTION, program.description)
-        if (program.audioLanguage.isNullOrBlank()) putNull(TvContract.Programs.COLUMN_AUDIO_LANGUAGE) else put(TvContract.Programs.COLUMN_AUDIO_LANGUAGE, program.audioLanguage)
-        if (program.broadcastGenre.isNullOrBlank()) putNull(TvContract.Programs.COLUMN_BROADCAST_GENRE) else put(TvContract.Programs.COLUMN_BROADCAST_GENRE, TvContract.Programs.Genres.encode(program.broadcastGenre))
+        if (program.descriptors.audioLanguage.isNullOrBlank()) putNull(TvContract.Programs.COLUMN_AUDIO_LANGUAGE) else put(TvContract.Programs.COLUMN_AUDIO_LANGUAGE, program.descriptors.audioLanguage)
+        if (program.descriptors.broadcastGenre.isNullOrBlank()) putNull(TvContract.Programs.COLUMN_BROADCAST_GENRE) else put(TvContract.Programs.COLUMN_BROADCAST_GENRE, TvContract.Programs.Genres.encode(program.descriptors.broadcastGenre))
+        val canonicalGenres = program.canonicalGenres.distinct().sorted()
+        if (canonicalGenres.isEmpty()) putNull(TvContract.Programs.COLUMN_CANONICAL_GENRE) else put(TvContract.Programs.COLUMN_CANONICAL_GENRE, TvContract.Programs.Genres.encode(*canonicalGenres.toTypedArray()))
         if (program.contentRatings.isEmpty()) putNull(TvContract.Programs.COLUMN_CONTENT_RATING) else put(TvContract.Programs.COLUMN_CONTENT_RATING, program.contentRatings.distinct().sorted().joinToString(","))
+        when (val scrambled = program.descriptors.scrambled) {
+            null -> putNull(COLUMN_SCRAMBLED)
+            else -> put(COLUMN_SCRAMBLED, if (scrambled) 1 else 0)
+        }
+        if (program.descriptors.seriesId == null) putNull(COLUMN_SERIES_ID) else put(COLUMN_SERIES_ID, program.descriptors.seriesId)
+        if (program.descriptors.seriesId == null) putNull(COLUMN_MULTI_SERIES_ID) else put(COLUMN_MULTI_SERIES_ID, program.descriptors.seriesId.toString())
+        val episodeNumber = program.descriptors.episodeNumber
+        if (episodeNumber == null || episodeNumber <= 0) putNull(COLUMN_EPISODE_DISPLAY_NUMBER) else put(COLUMN_EPISODE_DISPLAY_NUMBER, episodeNumber.toString())
+        val lastEpisodeNumber = program.descriptors.lastEpisodeNumber
+        if (lastEpisodeNumber == null || lastEpisodeNumber <= 0) putNull(COLUMN_ITEM_COUNT) else put(COLUMN_ITEM_COUNT, lastEpisodeNumber)
         put(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_FLAG1, if (program.requiresCas) 1 else 0)
         put(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_FLAG2, if (program.unsupportedCas) 1 else 0)
         put(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_FLAG3, if (program.clearLivePlaybackSupported) 1 else 0)
@@ -250,10 +262,15 @@ class TvProviderWriter private constructor(
 
     companion object {
         /**
-         * test-only assertion 用に維持する field 名。本番 provider-data は
+         * テスト専用 assertion 用に維持する フィールド 名。本番 provider-data は
          * ProviderDataBridge / Rust だけが生成・正規化する。
          */
-        const val PROGRAM_KEY_FIELD = "programKeyB64"
+        const val PROGRAM_KEY_FIELD = "programKey"
+        const val COLUMN_SCRAMBLED = "scrambled"
+        const val COLUMN_SERIES_ID = "series_id"
+        const val COLUMN_MULTI_SERIES_ID = "multi_series_id"
+        const val COLUMN_EPISODE_DISPLAY_NUMBER = "episode_display_number"
+        const val COLUMN_ITEM_COUNT = "item_count"
         private val SIGNATURE_COLUMNS = listOf(
             TvContract.Programs.COLUMN_CHANNEL_ID,
             TvContract.Programs.COLUMN_TITLE,
@@ -265,7 +282,13 @@ class TvProviderWriter private constructor(
             TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS,
             TvContract.Programs.COLUMN_AUDIO_LANGUAGE,
             TvContract.Programs.COLUMN_BROADCAST_GENRE,
+            TvContract.Programs.COLUMN_CANONICAL_GENRE,
             TvContract.Programs.COLUMN_CONTENT_RATING,
+            COLUMN_SCRAMBLED,
+            COLUMN_SERIES_ID,
+            COLUMN_MULTI_SERIES_ID,
+            COLUMN_EPISODE_DISPLAY_NUMBER,
+            COLUMN_ITEM_COUNT,
             TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA,
             TvContract.Programs.COLUMN_INTERNAL_PROVIDER_FLAG1,
             TvContract.Programs.COLUMN_INTERNAL_PROVIDER_FLAG2,
@@ -362,7 +385,7 @@ class TvProviderWriter private constructor(
     }
 
     private fun channelProviderDataBytes(channel: ChannelRecord): ByteArray =
-        ProviderDataBridge.buildChannelProviderData(channel).json.toByteArray(Charsets.UTF_8)
+        ProviderDataBridge.buildChannelProviderData(channel.copy(inputId = inputId)).json.toByteArray(Charsets.UTF_8)
 
     private class AndroidTvProviderChannelStore(private val context: Context, private val inputId: String) : ChannelStore {
         override fun findExistingChannelId(key: ServiceKey): Result<Long?> = runCatching {

@@ -1,3 +1,12 @@
+# r50cb
+- WP-13対応として、`MaleicacidRecScopeTests` が r51確認対象外であり r53で明示実行する試験モジュールであることは、`tis/INTEGRATION.md` の録画・予約除外および r51 ビルド・試験確認ゲートを正とする。
+- rec 実装コードは変更していない。Android/Soong build、Kotlin compile、instrumentationテスト、atest、CTS、実機確認は未実施。
+
+# r50bz
+- WP-11対応として、`rec/` 配下は r53 準備領域であり r51 product package / release確認条件へ含めないことを明記した。
+- `MaleicacidRecScopeTests` を device-tests suite から外し、r53作業で明示指定する test module とした。
+- Android/Soong build、Kotlin compile、instrumentationテスト、atest、CTS、実機確認は未実施。
+
 # CHANGELOG
 
 ## r50ba2

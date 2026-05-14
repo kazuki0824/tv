@@ -258,7 +258,18 @@ pub fn parse_event_descriptors(bytes: &[u8]) -> EventDescriptors {
             0xd5 => match parse_series_descriptor(body) { Some(v) => out.series.push(v), None => out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, cursor, len, body.len(), body, "series_descriptor is shorter than 9-byte fixed fields")), },
             0xd6 => if let Some(v) = parse_event_group_descriptor(body) { out.event_groups.push(v); } else { out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, cursor, len, body.len(), body, "event_group_descriptor is malformed")); },
             0x4a => if let Some(v) = parse_linkage_descriptor(body) { out.linkages.push(v); } else { out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, cursor, len, body.len(), body, "linkage_descriptor is shorter than fixed fields")); },
-            _ => out.unknown.push((tag, body.to_vec())),
+            _ => {
+                out.unknown.push((tag, body.to_vec()));
+                out.diagnostics.push(descriptor_diagnostic(
+                    DescriptorParseStatus::UnsupportedValue,
+                    tag,
+                    cursor,
+                    len,
+                    body.len(),
+                    body,
+                    "unknown descriptor is preserved for diagnostics only",
+                ));
+            },
         }
         cursor = body_end;
     }
@@ -674,7 +685,7 @@ pub fn event_descriptors_to_json(desc: &EventDescriptors) -> String {
     fields.push(format!("\"parentalRatingDescriptors\":[{}]", desc.parental_rating_descriptors.iter().map(|p| format!("{{\"parseStatus\":\"{}\",\"rawDescriptorHex\":\"{}\",\"entryCount\":{}}}", p.parse_status.as_str(), hex(&p.raw_descriptor_bytes), p.entries.len())).collect::<Vec<_>>().join(",")));
     fields.push(format!("\"components\":[{}]", desc.components.iter().map(|c| format!("{{\"streamContent\":{},\"componentType\":{},\"componentTag\":{},\"language\":\"{}\",\"text\":\"{}\"}}", c.stream_content, c.component_type, c.component_tag, json_escape(&c.language_code), json_escape(&c.text))).collect::<Vec<_>>().join(",")));
     fields.push(format!("\"audioComponents\":[{}]", desc.audio_components.iter().map(|a| format!("{{\"streamContent\":{},\"componentType\":{},\"componentTag\":{},\"streamType\":{},\"simulcastGroupTag\":{},\"multiLingual\":{},\"main\":{},\"quality\":{},\"samplingRate\":{},\"language\":\"{}\",\"secondLanguage\":\"{}\",\"text\":\"{}\"}}", a.stream_content, a.component_type, a.component_tag, a.stream_type, a.simulcast_group_tag, a.es_multi_lingual_flag, a.main_component_flag, a.quality_indicator, a.sampling_rate, json_escape(&a.language_code), json_escape(a.language_code_2.as_deref().unwrap_or("")), json_escape(&a.text))).collect::<Vec<_>>().join(",")));
-    fields.push(format!("\"series\":[{}]", desc.series.iter().map(|v| format!("{{\"seriesId\":{},\"repeatLabel\":{},\"programPattern\":{},\"expireDate\":{},\"episodeNumber\":{},\"lastEpisodeNumber\":{},\"seriesName\":\"{}\"}}", v.series_id, v.repeat_label, v.program_pattern, v.expire_date, v.episode_number, v.last_episode_number, json_escape(&v.series_name))).collect::<Vec<_>>().join(",")));
+    fields.push(format!("\"series\":[{}]", desc.series.iter().map(|v| format!("{{\"seriesId\":{},\"repeatLabel\":{},\"programPattern\":{},\"expireDate\":{},\"episodeNumber\":{},\"lastEpisodeNumber\":{},\"name\":\"{}\"}}", v.series_id, v.repeat_label, v.program_pattern, v.expire_date, v.episode_number, v.last_episode_number, json_escape(&v.series_name))).collect::<Vec<_>>().join(",")));
     fields.push(format!("\"eventGroups\":[{}]", desc.event_groups.iter().map(event_group_to_json).collect::<Vec<_>>().join(",")));
     fields.push(format!("\"linkages\":[{}]", desc.linkages.iter().map(|l| format!("{{\"transportStreamId\":{},\"originalNetworkId\":{},\"serviceId\":{},\"linkageType\":{},\"privateDataHex\":\"{}\"}}", l.transport_stream_id, l.original_network_id, l.service_id, l.linkage_type, hex_prefix(&l.private_data, 32))).collect::<Vec<_>>().join(",")));
     fields.push(format!("\"extendedItems\":[{}]", desc.extended_items.iter().map(|i| format!("{{\"description\":\"{}\",\"text\":\"{}\"}}", json_escape(&i.item_description), json_escape(&i.item_text))).collect::<Vec<_>>().join(",")));
@@ -688,17 +699,34 @@ pub fn event_descriptors_to_json(desc: &EventDescriptors) -> String {
 fn descriptor_diagnostic_to_json(d: &DescriptorDiagnostic) -> String {
     let raw_prefix_hex = hex_prefix(&d.raw_prefix, 16);
     format!(
-        "{{\"parseStatus\":\"{}\",\"tag\":{},\"offset\":{},\"declaredLength\":{},\"actualRemainingLength\":{},\"remainingLength\":{},\"rawPrefixHex\":\"{}\",\"rawPrefix\":\"{}\",\"message\":\"{}\",\"serviceKey\":null,\"eventId\":null,\"pid\":null,\"tableId\":null,\"sectionNumber\":null}}",
-        d.parse_status.as_str(),
+        r#"{{"schema":"maleicacid.tv.descriptorDiagnostic","schemaVersion":1,"severity":"{}","code":"{}","scope":{{"pid":null,"tableId":null,"tableIdExtension":null,"version":null,"sectionNumber":null,"originalNetworkId":null,"transportStreamId":null,"serviceId":null,"eventId":null}},"descriptor":{{"tag":{},"name":null,"offset":{},"declaredLength":{},"actualRemainingLength":{},"parseStatus":"{}","rawPrefixHex":"{}"}},"message":"{}"}}"#,
+        descriptor_diagnostic_severity(d.parse_status),
+        descriptor_diagnostic_code(d.parse_status),
         d.descriptor_tag,
         d.offset,
         d.declared_length,
         d.remaining_length,
-        d.remaining_length,
-        raw_prefix_hex,
+        d.parse_status.as_str(),
         raw_prefix_hex,
         json_escape(&d.message)
     )
+}
+
+fn descriptor_diagnostic_severity(status: DescriptorParseStatus) -> &'static str {
+    match status {
+        DescriptorParseStatus::Ok | DescriptorParseStatus::UnsupportedValue => "info",
+        DescriptorParseStatus::MalformedLength | DescriptorParseStatus::TruncatedDescriptor | DescriptorParseStatus::InvalidSequence => "warning",
+    }
+}
+
+fn descriptor_diagnostic_code(status: DescriptorParseStatus) -> &'static str {
+    match status {
+        DescriptorParseStatus::Ok => "OK",
+        DescriptorParseStatus::MalformedLength => "MALFORMED_LENGTH",
+        DescriptorParseStatus::TruncatedDescriptor => "TRUNCATED_DESCRIPTOR",
+        DescriptorParseStatus::UnsupportedValue => "UNKNOWN_DESCRIPTOR",
+        DescriptorParseStatus::InvalidSequence => "INVALID_SEQUENCE",
+    }
 }
 
 
@@ -957,7 +985,11 @@ mod r51_descriptor_coverage_tests {
     fn unknown_descriptor_is_preserved_for_diagnostics() {
         let parsed = parse_event_descriptors(&descriptor(0xfe, &[0x12, 0x34, 0x56]));
         assert_eq!(parsed.unknown, vec![(0xfe, vec![0x12, 0x34, 0x56])]);
-        assert!(event_descriptors_to_json(&parsed).contains("unknownDescriptors"));
+        assert!(parsed.diagnostics.iter().any(|d| d.descriptor_tag == 0xfe && d.parse_status == DescriptorParseStatus::UnsupportedValue));
+        let json = event_descriptors_to_json(&parsed);
+        assert!(json.contains("unknownDescriptors"));
+        assert!(json.contains("\"schema\":\"maleicacid.tv.descriptorDiagnostic\""));
+        assert!(json.contains("\"code\":\"UNKNOWN_DESCRIPTOR\""));
     }
 
 
@@ -1056,11 +1088,15 @@ mod r51_descriptor_coverage_tests {
         let json = event_descriptors_to_json(&parsed);
         assert!(json.contains("\"schemaVersion\":1"));
         assert!(json.contains("\"diagnostics\":["));
+        assert!(json.contains("\"schema\":\"maleicacid.tv.descriptorDiagnostic\""));
+        assert!(json.contains("\"schemaVersion\":1"));
+        assert!(json.contains("\"severity\":\"warning\""));
+        assert!(json.contains("\"code\":\"MALFORMED_LENGTH\""));
+        assert!(json.contains("\"descriptor\":{"));
         assert!(json.contains("\"parseStatus\":\"MalformedLength\""));
         assert!(json.contains("\"tag\":77"));
         assert!(json.contains("\"rawPrefixHex\":\"4d06"));
         assert!(json.contains("\"actualRemainingLength\":"));
-        assert!(json.contains("\"serviceKey\":null"));
         assert!(!json.contains("diagnosticCode"));
         assert!(!json.contains("descriptorOffset"));
     }

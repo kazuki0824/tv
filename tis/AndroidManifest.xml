@@ -38,7 +38,6 @@
         <activity
             android:name=".tis.SetupActivity"
             android:exported="true"
-            android:permission="android.permission.BIND_TV_INPUT"
             android:label="@string/setup_label" />
 
         <receiver

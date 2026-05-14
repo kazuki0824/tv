@@ -48,12 +48,12 @@ AIDL の `@nullable` 仕様では、Rust backend において `@nullable T` が 
 次の対応は採用しない。
 
 - AOSP stable / frozen AIDL に vendor 独自 `@nullable` を追加する。
-- AOSP Tuner HAL AIDL の method signature を変更する。
+- AOSP Tuner HAL AIDL の method 署名 を変更する。
 - vendor 独自 AIDL method を追加して framework 経路を迂回する。
-- C++ / NDK wrapper を追加して null Binder を受け、Rust 実装へ橋渡しする。
+- C++ / NDK ラッパー を追加して null Binder を受け、Rust 実装へ橋渡しする。
 - Rust raw Binder transaction parser を手書きして official generated trait を迂回する。
 
-C++ / native shim を認める例外は、FMQ / EventFlag / dma-buf など official native library への最小接続や、既存 C/C++ SDK への薄い FFI に限定される。Tuner HAL API 実装そのものの null Binder 受け口を追加することは、その例外には含めない。
+C++ / ネイティブ薄層 を認める例外は、FMQ / EventFlag / dma-buf など official native library への最小接続や、既存 C/C++ SDK への薄い FFI に限定される。Tuner HAL API 実装そのものの null Binder 受け口を追加することは、その例外には含めない。
 
 ## 6. 判定
 
@@ -65,7 +65,7 @@ C++ / native shim を認める例外は、FMQ / EventFlag / dma-buf など offic
 
 ```text
 1. AOSP stable / frozen AIDL を変更しない。
-2. C++ / NDK wrapper を追加しない。
+2. C++ / NDK ラッパー を追加しない。
 3. Rust raw Binder transaction parser を追加しない。
 4. null filter を public Rust Binder method で受ける。
 ```
@@ -78,11 +78,11 @@ r51 では、Android 14 Rust generated trait で受け取れる non-null filter 
 
 ### 7.1 `IDescrambler.addPid()` / `removePid()`
 
-- descrambler closed: `INVALID_STATE`
+- descrambler 閉鎖済み: `INVALID_STATE`
 - demux 未設定: `INVALID_STATE`
-- key token 未設定: `INVALID_STATE`
+- key トークン 未設定: `INVALID_STATE`
 - demux generation 消失 / 再検査時 state 不整合: `INVALID_STATE`
-- source filter closed / runtime-failed: `INVALID_STATE`
+- source filter 閉鎖済み / runtime-失敗: `INVALID_STATE`
 - invalid PID: `INVALID_ARGUMENT`
 - foreign filter / 別 demux filter / dangling filter: `INVALID_ARGUMENT`
 - unsupported `DemuxPid` variant: `UNAVAILABLE`
@@ -91,8 +91,8 @@ r51 では、Android 14 Rust generated trait で受け取れる non-null filter 
 
 - non-null upstream source filter linkage を実装・確認する。
 - demux default source を使う通常 filter path を維持する。
-- `configure()` は既存 上流接続 を必ず clear する。
-- closed / runtime-failed source または destination は `INVALID_STATE` とする。
+- `configure()` は既存 上流接続 を必ず 平文 する。
+- 閉鎖済み / runtime-失敗 source または destination は `INVALID_STATE` とする。
 - foreign / dangling / unsupported linkage は `INVALID_ARGUMENT` とする。
 - `setDataSource(null)` を r51 実装済みとして記述しない。
 
@@ -104,7 +104,7 @@ r51 では、次を実施しない。
 - `IFilter.setDataSource(null)` を demux source 復帰として受ける実装。
 - AOSP AIDL への `@nullable` 追加。
 - vendor 独自 AIDL 追加。
-- C++ / NDK wrapper 追加。
+- C++ / NDK ラッパー 追加。
 - Rust raw Binder transaction parser 追加。
 - generated trait を迂回した nullable Binder 受け口追加。
 
@@ -113,7 +113,7 @@ r51 では、次を実施しない。
 本件を将来実装対象に戻すには、次のいずれかが必要である。
 
 1. 対象 Android / official Tuner HAL AIDL が、Rust backend で null filter を `Option<Strong<dyn IFilter>>` として受けられる形に更新される。
-2. 開発規則を明示的に改訂し、対象API境界に限って C++ / NDK wrapper を例外許可する。
+2. 開発規則を明示的に改訂し、対象API境界に限って C++ / NDK ラッパー を例外許可する。
 3. 開発規則を明示的に改訂し、Rust raw Binder transaction parser による generated trait 迂回を例外許可する。
 
 現時点では、いずれも採用しない。

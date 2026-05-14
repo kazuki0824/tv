@@ -4,7 +4,7 @@ import com.maleicacid.tvinput.aribsi.AribService
 import com.maleicacid.tvinput.db.ChannelRecord
 
 /**
- * 日本向け ISDB service の安定した表示番号方針。
+ * 日本向け ISDB サービス の安定した表示番号方針。
  * 地上波は リモコンキー を優先し、得られない場合は service_id 由来の安定値を使う。
  * BS/110CS は地上波と同じ リモコンキー 意味論を持たないため、scan 候補ラベルと service_id を使う。
  */

@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.db
 
+import com.maleicacid.tvinput.aribsi.AribParentalRating
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.StreamSelector
 
@@ -20,12 +21,33 @@ data class ChannelRecord(
     val clearLivePlaybackSupported: Boolean = false,
     val channelRegistrationReady: Boolean = false,
     val epgPublishable: Boolean = false,
+    val inputId: String? = null,
 ) {
     companion object {
         const val DELIVERY_SYSTEM_ISDB_T = "ISDB_T"
         const val DELIVERY_SYSTEM_ISDB_S = "ISDB_S"
     }
 }
+
+data class ProgramDescriptors(
+    val extendedItemsJson: String = "[]",
+    val componentText: String? = null,
+    val audioComponentText: String? = null,
+    val audioLanguage: String? = null,
+    val broadcastGenre: String? = null,
+    val genreSupplementText: String? = null,
+    val relatedItemsJson: String = "[]",
+    val linkageJson: String = "[]",
+    val scrambled: Boolean? = null,
+    val freeCaModeJson: String = "null",
+    val seriesId: Int? = null,
+    val episodeNumber: Int? = null,
+    val lastEpisodeNumber: Int? = null,
+    val seriesJson: String = "null",
+    val descriptorDiagnosticsJson: String = "{}",
+    val parentalRatings: List<AribParentalRating> = emptyList(),
+    val componentsJson: String = "{\"video\":[],\"audio\":[],\"subtitle\":[],\"data\":[]}",
+)
 
 data class ProgramRecord(
     val serviceKey: ServiceKey,
@@ -36,16 +58,8 @@ data class ProgramRecord(
     val title: String,
     val description: String,
     val shortDescription: String = description.lineSequence().firstOrNull()?.take(256).orEmpty(),
-    val extendedItemsJson: String = "[]",
-    val componentText: String? = null,
-    val audioComponentText: String? = null,
-    val audioLanguage: String? = null,
-    val canonicalGenre: String? = null, // 非推奨。r51 では COLUMN_CANONICAL_GENRE を書かない
-    val broadcastGenre: String? = null,
-    val genreSupplementText: String? = null,
-    val eventGroupText: String? = null,
-    val freeCaText: String? = null,
-    val seriesName: String? = null,
+    val canonicalGenres: List<String> = emptyList(),
+    val descriptors: ProgramDescriptors = ProgramDescriptors(),
     val requiresCas: Boolean = false,
     val unsupportedCas: Boolean = false,
     val clearLivePlaybackSupported: Boolean = false,
@@ -53,24 +67,13 @@ data class ProgramRecord(
     val epgPublishable: Boolean = false,
     val publishStateSource: String = "NONE",
     val diagnosticText: String = "",
-    val diagnosticDescriptorJson: String = "{}",
     val contentRatings: List<String> = emptyList(),
-    val parentalRatingDiagnosticsJson: String = "{\"parentalRatings\":[]}",
     val videoWidth: Int? = null,
     val videoHeight: Int? = null,
     val videoFormat: String? = null,
-    val unsupportedDescriptorJson: String = "{}",
     val malformedCaDescriptorCount: Int = 0,
     // Program provider-data 診断。ProgramPublishCoordinator が所有する
     // process内だけの再試行状態であり、process再起動時にresetされる。
     val droppedRetryWindowCount: Int = 0,
     val tvProviderProgramId: Long? = null,
-)
-
-data class CaMetadataRecord(
-    val serviceKey: ServiceKey,
-    val caSystemId: Int,
-    val ecmPid: Int?,
-    val emmPid: Int?,
-    val elementaryPid: Int?,
 )

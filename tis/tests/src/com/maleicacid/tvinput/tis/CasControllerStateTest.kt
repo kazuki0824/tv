@@ -61,6 +61,27 @@ class CasControllerStateTest {
         check(0x102 in descrambler.addedPids)
     }
 
+    @Test fun diagnosticOnlyEcmDoesNotSetKeyTokenOrAddPid() {
+        val controller = CasController(mediaCasFactory = DiagnosticOnlyMediaCasBridgeFactory())
+        val descrambler = FakeTunerDescramblerBridge()
+        val update = controller.updateFromCaMetadata(b25Metadata(esPid = 0x101, ecmPid = 0x123, emmPid = 0x010), descrambler)
+        check(update.diagnostics.isEmpty()) { update.diagnostics.toString() }
+
+        val ecmDiagnostics = controller.onEcmSection(0x123, byteArrayOf(0x80.toByte()))
+        check(ecmDiagnostics.any { it.errorCode == CasController.ErrorCode.KEY_TOKEN_MISSING }) { ecmDiagnostics.toString() }
+        check(descrambler.keyTokens.isEmpty())
+        check(descrambler.addedPids.isEmpty())
+    }
+
+    @Test fun pluginUnavailableDoesNotAttachDescramblerToken() {
+        val controller = CasController(mediaCasFactory = UnavailableMediaCasBridgeFactory())
+        val descrambler = FakeTunerDescramblerBridge()
+        val update = controller.updateFromCaMetadata(b25Metadata(esPid = 0x101, ecmPid = 0x123, emmPid = 0x010), descrambler)
+        check(update.diagnostics.any { it.errorCode == CasController.ErrorCode.SESSION_OPEN_FAILED }) { update.diagnostics.toString() }
+        check(descrambler.keyTokens.isEmpty())
+        check(descrambler.addedPids.isEmpty())
+    }
+
     @Test fun closeReleasesDescrambler() {
         val controller = CasController(mediaCasFactory = FakeMediaCasBridgeFactory())
         val descrambler = FakeTunerDescramblerBridge()
@@ -75,6 +96,31 @@ class CasControllerStateTest {
         CaMetadata(serviceKey, CasController.SupportedCasSystemIds.ARIB_STD_B25, ecmPid = ecmPid, emmPid = null, elementaryPid = esPid, privateData = byteArrayOf(0x02), source = CaMetadataSource.ELEMENTARY_STREAM),
         CaMetadata(null, CasController.SupportedCasSystemIds.ARIB_STD_B25, ecmPid = null, emmPid = emmPid, elementaryPid = null, privateData = byteArrayOf(0x03), source = CaMetadataSource.CAT),
     )
+
+    private class DiagnosticOnlyMediaCasBridgeFactory : CasController.MediaCasBridgeFactory {
+        override fun create(caSystemId: Int): Result<CasController.MediaCasBridge> =
+            Result.success(DiagnosticOnlyMediaCasBridge())
+    }
+
+    private class DiagnosticOnlyMediaCasBridge : CasController.MediaCasBridge {
+        override fun setPrivateData(privateData: ByteArray): Result<Unit> = Result.success(Unit)
+        override fun openSession(): Result<CasController.MediaCasSessionBridge> =
+            Result.success(DiagnosticOnlyMediaCasSessionBridge())
+        override fun processEmm(section: ByteArray): Result<Unit> = Result.success(Unit)
+        override fun close() = Unit
+    }
+
+    private class DiagnosticOnlyMediaCasSessionBridge : CasController.MediaCasSessionBridge {
+        override fun setPrivateData(privateData: ByteArray): Result<Unit> = Result.success(Unit)
+        override fun processEcm(section: ByteArray): Result<EcmProcessResult> =
+            Result.success(EcmProcessResult.DiagnosticOnly("placeholder CAS は実 key token を返しません"))
+        override fun close() = Unit
+    }
+
+    private class UnavailableMediaCasBridgeFactory : CasController.MediaCasBridgeFactory {
+        override fun create(caSystemId: Int): Result<CasController.MediaCasBridge> =
+            Result.failure(IllegalStateException("placeholder CAS plugin は利用できません"))
+    }
 
     private class FakeMediaCasBridgeFactory : CasController.MediaCasBridgeFactory {
         val created = LinkedHashMap<Int, FakeMediaCasBridge>()

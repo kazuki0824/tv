@@ -1137,55 +1137,31 @@ impl AvSharedBacking {
         self.slot_size.saturating_mul(self.slot_count)
     }
 
-    fn release_all(&self) {
+    fn release_all(&self) -> BinderResult<()> {
         let released_count = {
-            let Some(mut active) = lock_mutex_option(&self.active, "av_shared_active") else {
-                return;
-            };
+            let mut active = lock_mutex_status(&self.active, "av_shared_active")?;
             let released_count = active.len() as u64;
             active.clear();
             released_count
         };
-        let Some(mut free_slots) = lock_mutex_option(&self.free_slots, "av_shared_free_slots")
-        else {
-            return;
-        };
+        let mut free_slots = lock_mutex_status(&self.free_slots, "av_shared_free_slots")?;
         free_slots.clear();
         free_slots.extend(0..self.slot_count);
         if released_count > 0 {
-            if let Some(mut released) =
-                lock_mutex_option(&self.released_slots, "av_shared_released_slots")
-            {
-                *released += released_count;
-            }
+            *lock_mutex_status(&self.released_slots, "av_shared_released_slots")? += released_count;
         }
+        Ok(())
     }
 
-    fn release(&self, av_data_id: i64) -> bool {
-        let Some(removed) = lock_mutex_option(&self.active, "av_shared_active")
-            .map(|mut active| active.remove(&av_data_id))
-        else {
-            return false;
-        };
+    fn release(&self, av_data_id: i64) -> BinderResult<bool> {
+        let removed = lock_mutex_status(&self.active, "av_shared_active")?.remove(&av_data_id);
         if let Some(slice) = removed {
-            if let Some(mut free_slots) =
-                lock_mutex_option(&self.free_slots, "av_shared_free_slots")
-            {
-                free_slots.insert(slice.slot_index);
-            }
-            if let Some(mut released) =
-                lock_mutex_option(&self.released_slots, "av_shared_released_slots")
-            {
-                *released += 1;
-            }
-            true
+            lock_mutex_status(&self.free_slots, "av_shared_free_slots")?.insert(slice.slot_index);
+            *lock_mutex_status(&self.released_slots, "av_shared_released_slots")? += 1;
+            Ok(true)
         } else {
             let stale_total = {
-                let Some(mut stale) =
-                    lock_mutex_option(&self.stale_releases, "av_shared_stale_releases")
-                else {
-                    return false;
-                };
+                let mut stale = lock_mutex_status(&self.stale_releases, "av_shared_stale_releases")?;
                 *stale += 1;
                 *stale
             };
@@ -1197,7 +1173,7 @@ impl AvSharedBacking {
                     stale_total
                 );
             }
-            false
+            Ok(false)
         }
     }
 
@@ -1631,10 +1607,8 @@ impl RuntimeIoRegistry {
         av_queue: &Arc<SharedMemoryBacking>,
         av_shared: Option<&Arc<AvSharedBacking>>,
         av_drop_unexported: &Arc<AtomicU64>,
-    ) {
-        let Some(mut entries) = lock_mutex_option(&self.entries, "runtime_io_entries") else {
-            return;
-        };
+    ) -> BinderResult<()> {
+        let mut entries = lock_mutex_status(&self.entries, "runtime_io_entries")?;
         entries.insert(
             RuntimeIoKey {
                 kind: RuntimeIoKind::Filter,
@@ -1649,19 +1623,19 @@ impl RuntimeIoRegistry {
                 failed_reason: None,
             },
         );
+        Ok(())
     }
 
-    fn set_filter_av_shared(&self, filter_id: i32, av_shared: &Arc<AvSharedBacking>) {
-        let Some(mut entries) = lock_mutex_option(&self.entries, "runtime_io_entries") else {
-            return;
+    fn set_filter_av_shared(&self, filter_id: i32, av_shared: &Arc<AvSharedBacking>) -> BinderResult<()> {
+        let mut entries = lock_mutex_status(&self.entries, "runtime_io_entries")?;
+        let Some(entry) = entries.get_mut(&RuntimeIoKey {
+            kind: RuntimeIoKind::Filter,
+            id: filter_id,
+        }) else {
+            return Err(Status::from(StatusCode::UNKNOWN_ERROR));
         };
-        let entry = entries
-            .entry(RuntimeIoKey {
-                kind: RuntimeIoKind::Filter,
-                id: filter_id,
-            })
-            .or_insert_with(RuntimeIoBackings::default);
         entry.filter_av_shared = Some(Arc::downgrade(av_shared));
+        Ok(())
     }
 
     fn clear_filter_av_shared(&self, filter_id: i32) -> BinderResult<()> {
@@ -1686,10 +1660,8 @@ impl RuntimeIoRegistry {
         }
     }
 
-    fn register_dvr(&self, dvr_id: i32, queue: &Arc<SharedMemoryBacking>) {
-        let Some(mut entries) = lock_mutex_option(&self.entries, "runtime_io_entries") else {
-            return;
-        };
+    fn register_dvr(&self, dvr_id: i32, queue: &Arc<SharedMemoryBacking>) -> BinderResult<()> {
+        let mut entries = lock_mutex_status(&self.entries, "runtime_io_entries")?;
         entries.insert(
             RuntimeIoKey {
                 kind: RuntimeIoKind::Dvr,
@@ -1704,6 +1676,7 @@ impl RuntimeIoRegistry {
                 failed_reason: None,
             },
         );
+        Ok(())
     }
 
     fn unregister_filter(&self, filter_id: i32) -> BinderResult<()> {
@@ -1756,14 +1729,12 @@ impl RuntimeIoRegistry {
         }
     }
 
-    fn is_failed_for_owner_validation(&self, kind: RuntimeIoKind, id: i32) -> bool {
-        let Some(entries) = lock_mutex_option(&self.entries, "runtime_io_entries") else {
-            return true;
-        };
-        entries
+    fn is_failed_for_owner_validation(&self, kind: RuntimeIoKind, id: i32) -> BinderResult<bool> {
+        let entries = lock_mutex_status(&self.entries, "runtime_io_entries")?;
+        Ok(entries
             .get(&RuntimeIoKey { kind, id })
             .and_then(|entry| entry.failed_reason.as_ref())
-            .is_some()
+            .is_some())
     }
 
     fn ensure_not_failed(&self, kind: RuntimeIoKind, id: i32) -> BinderResult<()> {
@@ -1797,10 +1768,8 @@ impl RuntimeIoRegistry {
             .collect()
     }
 
-    fn flush_all(&self) {
-        let Some(mut entries) = lock_mutex_option(&self.entries, "runtime_io_entries") else {
-            return;
-        };
+    fn flush_all(&self) -> BinderResult<()> {
+        let mut entries = lock_mutex_status(&self.entries, "runtime_io_entries")?;
         entries.retain(|_, backings| {
             let mut alive = false;
             if let Some(backing) = backings.filter_queue.as_ref().and_then(Weak::upgrade) {
@@ -1821,6 +1790,7 @@ impl RuntimeIoRegistry {
             }
             alive
         });
+        Ok(())
     }
 
     fn dump_av_shared_for_debug(&self) -> Vec<String> {
@@ -1927,6 +1897,7 @@ enum DescramblerDiagnosticKind {
     NoKey,
     BadToken,
     CasBridgeUnconnected,
+    RuntimeFailure,
     ExpiredKeySlot,
     Multi2Fail,
     ScrambledWithoutDescrambler,
@@ -1950,6 +1921,7 @@ struct DescramblerDiagnosticCounters {
     no_key: u64,
     bad_token: u64,
     cas_bridge_unconnected: u64,
+    runtime_failure: u64,
     expired_key_slot: u64,
     multi2_fail: u64,
     scrambled_without_descrambler: u64,
@@ -2007,6 +1979,9 @@ impl DescramblerDiagnosticCounters {
             DescramblerDiagnosticKind::CasBridgeUnconnected => {
                 self.cas_bridge_unconnected = self.cas_bridge_unconnected.saturating_add(1)
             }
+            DescramblerDiagnosticKind::RuntimeFailure => {
+                self.runtime_failure = self.runtime_failure.saturating_add(1)
+            }
             DescramblerDiagnosticKind::ExpiredKeySlot => {
                 self.expired_key_slot = self.expired_key_slot.saturating_add(1)
             }
@@ -2022,7 +1997,7 @@ impl DescramblerDiagnosticCounters {
 
     fn summary(&self) -> String {
         format!(
-            "CLEAR_PACKET={} DESCRAMBLED={} SCRAMBLED_PASSTHROUGH_FOR_RECORDING={} TRANSPORT_ERROR_RECORD={} SCRAMBLED_NULL_PID={} MALFORMED_PACKET_FOR_RECORDING={} DESCRAMBLE_FAILED={} INVALID_PACKET_SIZE={} BAD_SYNC_BYTE={} INVALID_AFC={} INVALID_ADAPTATION_FIELD={} INVALID_TSC={} SCRAMBLED_WITHOUT_PAYLOAD={} NO_KEY={} BAD_TOKEN={} CAS_BRIDGE_UNCONNECTED={} EXPIRED_KEY_SLOT={} MULTI2_FAIL={} SCRAMBLED_WITHOUT_DESCRAMBLER={}",
+            "CLEAR_PACKET={} DESCRAMBLED={} SCRAMBLED_PASSTHROUGH_FOR_RECORDING={} TRANSPORT_ERROR_RECORD={} SCRAMBLED_NULL_PID={} MALFORMED_PACKET_FOR_RECORDING={} DESCRAMBLE_FAILED={} INVALID_PACKET_SIZE={} BAD_SYNC_BYTE={} INVALID_AFC={} INVALID_ADAPTATION_FIELD={} INVALID_TSC={} SCRAMBLED_WITHOUT_PAYLOAD={} NO_KEY={} BAD_TOKEN={} CAS_BRIDGE_UNCONNECTED={} RUNTIME_FAILURE={} EXPIRED_KEY_SLOT={} MULTI2_FAIL={} SCRAMBLED_WITHOUT_DESCRAMBLER={}",
             self.clear_packets,
             self.descrambled_packets,
             self.scrambled_passthrough_for_recording_packets,
@@ -2039,6 +2014,7 @@ impl DescramblerDiagnosticCounters {
             self.no_key,
             self.bad_token,
             self.cas_bridge_unconnected,
+            self.runtime_failure,
             self.expired_key_slot,
             self.multi2_fail,
             self.scrambled_without_descrambler,
@@ -2779,8 +2755,8 @@ impl FrontendStatusSupport {
     fn for_entry(entry: &FrontendEntry) -> Self {
         let is_dvb = matches!(&entry.kind, FrontendEntryKind::Dvb { .. });
         Self {
-            // frontend status は、enumeration 時点の backend contract で取得可能性を
-            // 固定できる値だけを advertise する。DVB FE status word はこの HAL path で
+            // frontend 状態 は、enumeration 時点の backend contract で取得可能性を
+            // 固定できる値だけを advertise する。DVB FE 状態 word はこの HAL path で
             // 必須だが、optional SNR / strength ioctl は対象 driver で read 時にしか
             // support を確認できないため advertise しない。
             snr: false,
@@ -2871,6 +2847,7 @@ enum LocalFilterOwnerValidationError {
     ForeignDemux,
     Closed,
     RuntimeFailed,
+    RuntimeRegistryFailed,
     NotOpenDemuxFilter,
 }
 
@@ -2878,6 +2855,7 @@ fn local_filter_owner_error_tuner_result(err: LocalFilterOwnerValidationError) -
     match err {
         LocalFilterOwnerValidationError::Closed
         | LocalFilterOwnerValidationError::RuntimeFailed => TunerResult::INVALID_STATE.0,
+        LocalFilterOwnerValidationError::RuntimeRegistryFailed => TunerResult::UNKNOWN_ERROR.0,
         LocalFilterOwnerValidationError::NotLocalFilter
         | LocalFilterOwnerValidationError::ForeignDemux
         | LocalFilterOwnerValidationError::NotOpenDemuxFilter => TunerResult::INVALID_ARGUMENT.0,
@@ -2892,11 +2870,13 @@ fn local_filter_owner_error_status(err: LocalFilterOwnerValidationError) -> Stat
         LocalFilterOwnerValidationError::ForeignDemux => "foreign filter belongs to another demux",
         LocalFilterOwnerValidationError::Closed => "source filter is closed",
         LocalFilterOwnerValidationError::RuntimeFailed => "source filter runtime data path failed",
+        LocalFilterOwnerValidationError::RuntimeRegistryFailed => "runtime I/O registry failure",
         LocalFilterOwnerValidationError::NotOpenDemuxFilter => {
             "source filter is not an open demux filter"
         }
     };
     match local_filter_owner_error_tuner_result(err) {
+        code if code == TunerResult::UNKNOWN_ERROR.0 => Status::from(StatusCode::UNKNOWN_ERROR),
         code if code == TunerResult::INVALID_STATE.0 => invalid_state_status(message),
         _ => invalid_argument_status(message),
     }
@@ -2912,15 +2892,16 @@ fn validate_local_filter_identity_for_owner(
     if local_filter.closed.load(Ordering::SeqCst) {
         return Err(LocalFilterOwnerValidationError::Closed);
     }
-    if local_filter
+    match local_filter
         .runtime_io
         .is_failed_for_owner_validation(RuntimeIoKind::Filter, local_filter.filter_id)
     {
-        return Err(LocalFilterOwnerValidationError::RuntimeFailed);
+        Ok(true) => return Err(LocalFilterOwnerValidationError::RuntimeFailed),
+        Ok(false) => {}
+        Err(_) => return Err(LocalFilterOwnerValidationError::RuntimeRegistryFailed),
     }
-    let Some(demux) = lock_mutex_option(&local_filter.state, "demux_handle") else {
-        return Err(LocalFilterOwnerValidationError::RuntimeFailed);
-    };
+    let demux = lock_mutex_status(&local_filter.state, "demux_handle")
+        .map_err(|_| LocalFilterOwnerValidationError::RuntimeRegistryFailed)?;
     if demux.demux_id() != expected_owner_demux_id {
         return Err(LocalFilterOwnerValidationError::NotOpenDemuxFilter);
     }
@@ -2981,26 +2962,51 @@ fn isdbt_bandwidth_caps() -> i32 {
 
 fn isdbt_modulation_caps() -> i32 {
     FrontendIsdbtModulation::AUTO.0
+        | FrontendIsdbtModulation::MOD_DQPSK.0
+        | FrontendIsdbtModulation::MOD_QPSK.0
+        | FrontendIsdbtModulation::MOD_16QAM.0
+        | FrontendIsdbtModulation::MOD_64QAM.0
 }
 
 fn isdbt_coderate_caps() -> i32 {
     FrontendIsdbtCoderate::AUTO.0
+        | FrontendIsdbtCoderate::CODERATE_1_2.0
+        | FrontendIsdbtCoderate::CODERATE_2_3.0
+        | FrontendIsdbtCoderate::CODERATE_3_4.0
+        | FrontendIsdbtCoderate::CODERATE_5_6.0
+        | FrontendIsdbtCoderate::CODERATE_7_8.0
 }
 
 fn isdbt_guard_interval_caps() -> i32 {
     FrontendIsdbtGuardInterval::AUTO.0
+        | FrontendIsdbtGuardInterval::INTERVAL_1_32.0
+        | FrontendIsdbtGuardInterval::INTERVAL_1_16.0
+        | FrontendIsdbtGuardInterval::INTERVAL_1_8.0
+        | FrontendIsdbtGuardInterval::INTERVAL_1_4.0
 }
 
 fn isdbt_time_interleave_caps() -> i32 {
     FrontendIsdbtTimeInterleaveMode::AUTO.0
+        | FrontendIsdbtTimeInterleaveMode::INTERLEAVE_3_0.0
+        | FrontendIsdbtTimeInterleaveMode::INTERLEAVE_3_1.0
+        | FrontendIsdbtTimeInterleaveMode::INTERLEAVE_3_2.0
+        | FrontendIsdbtTimeInterleaveMode::INTERLEAVE_3_4.0
 }
 
 fn isdbs_modulation_caps() -> i32 {
     FrontendIsdbsModulation::AUTO.0
+        | FrontendIsdbsModulation::MOD_BPSK.0
+        | FrontendIsdbsModulation::MOD_QPSK.0
+        | FrontendIsdbsModulation::MOD_TC8PSK.0
 }
 
 fn isdbs_coderate_caps() -> i32 {
     FrontendIsdbsCoderate::AUTO.0
+        | FrontendIsdbsCoderate::CODERATE_1_2.0
+        | FrontendIsdbsCoderate::CODERATE_2_3.0
+        | FrontendIsdbsCoderate::CODERATE_3_4.0
+        | FrontendIsdbsCoderate::CODERATE_5_6.0
+        | FrontendIsdbsCoderate::CODERATE_7_8.0
 }
 
 fn entry_frontend_frequency_contract(entry: &FrontendEntry) -> (i64, i64, i64) {
@@ -3395,20 +3401,19 @@ impl FrontendRuntime {
             .unwrap_or(false)
     }
 
-    fn reset_bound_demuxes_for_stream_boundary(&self) {
-        if self.is_px4_backend() {
+    fn reset_bound_demuxes_for_stream_boundary(&self) -> BinderResult<()> {
+        if matches!(&*lock_mutex_status(&self.backend, "frontend_backend")?, FrontendBackendState::Px4(_)) {
             self.px4_path_diagnostics.reset_for_stream_boundary();
         }
-        let demuxes: Vec<BoundDemuxRuntime> =
-            lock_mutex_option(&self.bound_demuxes, "frontend_bound_demuxes")
-                .map(|demuxes| demuxes.values().cloned().collect())
-                .unwrap_or_default();
+        let demuxes: Vec<BoundDemuxRuntime> = lock_mutex_status(&self.bound_demuxes, "frontend_bound_demuxes")?
+            .values()
+            .cloned()
+            .collect();
         for bound in demuxes {
-            if let Some(mut handle) = lock_mutex_option(&bound.state, "demux_handle") {
-                handle.reset_for_stream_boundary();
-            }
-            bound.runtime_io.flush_all();
+            lock_mutex_status(&bound.state, "demux_handle")?.reset_for_stream_boundary();
+            bound.runtime_io.flush_all()?;
         }
+        Ok(())
     }
 
     fn record_runtime_failure(&self, message: impl Into<String>) {
@@ -3441,7 +3446,7 @@ impl FrontendRuntime {
             if let Some(mut demux) = lock_mutex_option(&bound.state, "demux_handle") {
                 demux.close();
             }
-            bound.runtime_io.flush_all();
+            let _ = bound.runtime_io.flush_all();
         }
     }
 
@@ -3677,11 +3682,20 @@ impl FrontendRuntime {
                         self.mark_live_path_failed("demux_handle_lock_failed");
                         return WorkerExit::Error;
                     };
-                    let active_descramblers = self.descrambler_registry.snapshots_for_demux(
+                    let active_descramblers = match self.descrambler_registry.snapshots_for_demux(
                         handle.demux_id(),
                         demux.demux_generation,
                         &handle,
-                    );
+                    ) {
+                        Ok(snapshots) => snapshots,
+                        Err(_) => {
+                            self.record_runtime_failure(
+                                "worker=frontend_live_pump reason=descrambler_registry_lock_failed",
+                            );
+                            self.mark_live_path_failed("descrambler_registry_lock_failed");
+                            return WorkerExit::Error;
+                        }
+                    };
                     for packet in &packets {
                         let pid = (((packet[1] & 0x1f) as i32) << 8) | packet[2] as i32;
                         if let Ok(pid_u16) = u16::try_from(pid) {
@@ -3794,18 +3808,16 @@ struct TunerDescramblerState {
 }
 
 impl DescramblerRuntimeRegistry {
-    fn register(&self, state: &Arc<Mutex<TunerDescramblerState>>) -> i64 {
+    fn register(&self, state: &Arc<Mutex<TunerDescramblerState>>) -> BinderResult<i64> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        if let Some(mut entries) = lock_mutex_option(&self.entries, "descrambler_runtime_entries") {
-            entries.insert(id, Arc::downgrade(state));
-        }
-        id
+        lock_mutex_status(&self.entries, "descrambler_runtime_entries")?
+            .insert(id, Arc::downgrade(state));
+        Ok(id)
     }
 
-    fn unregister(&self, id: i64) {
-        if let Some(mut entries) = lock_mutex_option(&self.entries, "descrambler_runtime_entries") {
-            entries.remove(&id);
-        }
+    fn unregister(&self, id: i64) -> BinderResult<()> {
+        lock_mutex_status(&self.entries, "descrambler_runtime_entries")?.remove(&id);
+        Ok(())
     }
 
     fn snapshots_for_demux(
@@ -3813,11 +3825,8 @@ impl DescramblerRuntimeRegistry {
         demux_id: i32,
         demux_generation: u64,
         demux_handle: &DemuxHandle,
-    ) -> Vec<ActiveDescramblerSnapshot> {
-        let Some(mut entries) = lock_mutex_option(&self.entries, "descrambler_runtime_entries")
-        else {
-            return Vec::new();
-        };
+    ) -> BinderResult<Vec<ActiveDescramblerSnapshot>> {
+        let mut entries = lock_mutex_status(&self.entries, "descrambler_runtime_entries")?;
         let mut dead = Vec::new();
         let mut snapshots = Vec::new();
         for (id, weak) in entries.iter() {
@@ -3825,10 +3834,7 @@ impl DescramblerRuntimeRegistry {
                 dead.push(*id);
                 continue;
             };
-            let Some(mut state) = lock_mutex_option(&state_arc, "descrambler_state") else {
-                dead.push(*id);
-                continue;
-            };
+            let mut state = lock_mutex_status(&state_arc, "descrambler_state")?;
             if state.closed {
                 dead.push(*id);
                 continue;
@@ -3857,24 +3863,18 @@ impl DescramblerRuntimeRegistry {
         for id in dead {
             entries.remove(&id);
         }
-        snapshots
+        Ok(snapshots)
     }
 
-    fn invalidate_demux(&self, demux_id: i32, demux_generation: u64) {
-        let Some(mut entries) = lock_mutex_option(&self.entries, "descrambler_runtime_entries")
-        else {
-            return;
-        };
+    fn invalidate_demux(&self, demux_id: i32, demux_generation: u64) -> BinderResult<()> {
+        let mut entries = lock_mutex_status(&self.entries, "descrambler_runtime_entries")?;
         let mut dead = Vec::new();
         for (id, weak) in entries.iter() {
             let Some(state_arc) = weak.upgrade() else {
                 dead.push(*id);
                 continue;
             };
-            let Some(mut state) = lock_mutex_option(&state_arc, "descrambler_state") else {
-                dead.push(*id);
-                continue;
-            };
+            let mut state = lock_mutex_status(&state_arc, "descrambler_state")?;
             if state.closed {
                 dead.push(*id);
                 continue;
@@ -3889,6 +3889,7 @@ impl DescramblerRuntimeRegistry {
         for id in dead {
             entries.remove(&id);
         }
+        Ok(())
     }
 
     fn try_claim_pid_for_descrambler(
@@ -3939,7 +3940,6 @@ impl DescramblerRuntimeRegistry {
         TunerDescrambler::ensure_open_locked(&state)?;
         if state.demux_id != Some(demux_id)
             || state.demux_generation != Some(demux_generation)
-            || state.key_token.is_none()
         {
             return Err(Status::new_service_specific_error(
                 TunerResult::INVALID_STATE.0,
@@ -3972,17 +3972,17 @@ impl TunerDescrambler {
         descrambler_registry: Arc<DescramblerRuntimeRegistry>,
         descrambler_diagnostics: Arc<DescramblerDiagnosticRegistry>,
         descrambler_key_table: Arc<DescramblerKeyTable>,
-    ) -> Self {
+    ) -> BinderResult<Self> {
         let state = Arc::new(Mutex::new(TunerDescramblerState::default()));
-        let id = descrambler_registry.register(&state);
-        Self {
+        let id = descrambler_registry.register(&state)?;
+        Ok(Self {
             id,
             state,
             demux_registry,
             descrambler_registry,
             descrambler_diagnostics,
             descrambler_key_table,
-        }
+        })
     }
 
     fn ensure_open_locked(state: &TunerDescramblerState) -> BinderResult<()> {
@@ -4008,10 +4008,10 @@ impl TunerDescrambler {
 
     fn record_key_token_error(&self, demux_id: Option<i32>, error: DescramblerKeyResolveError) {
         let diagnostic = match error {
-            DescramblerKeyResolveError::CasBridgeUnconnected
-            | DescramblerKeyResolveError::RegistryUnavailable => {
+            DescramblerKeyResolveError::CasBridgeUnconnected => {
                 DescramblerDiagnosticKind::CasBridgeUnconnected
             }
+            DescramblerKeyResolveError::RegistryUnavailable => DescramblerDiagnosticKind::RuntimeFailure,
             DescramblerKeyResolveError::ExpiredKeySlot => DescramblerDiagnosticKind::ExpiredKeySlot,
             DescramblerKeyResolveError::EmptyToken
             | DescramblerKeyResolveError::MalformedToken
@@ -4023,10 +4023,10 @@ impl TunerDescrambler {
 
     fn status_for_key_token_error(error: DescramblerKeyResolveError) -> Status {
         match error {
-            DescramblerKeyResolveError::CasBridgeUnconnected
-            | DescramblerKeyResolveError::RegistryUnavailable => {
+            DescramblerKeyResolveError::CasBridgeUnconnected => {
                 Status::new_service_specific_error(TunerResult::UNAVAILABLE.0, None)
             }
+            DescramblerKeyResolveError::RegistryUnavailable => Status::from(StatusCode::UNKNOWN_ERROR),
             DescramblerKeyResolveError::ExpiredKeySlot => {
                 Status::new_service_specific_error(TunerResult::INVALID_ARGUMENT.0, None)
             }
@@ -4140,7 +4140,7 @@ impl TunerDescrambler {
 
 impl Drop for TunerDescrambler {
     fn drop(&mut self) {
-        self.descrambler_registry.unregister(self.id);
+        let _ = self.descrambler_registry.unregister(self.id);
     }
 }
 
@@ -4215,12 +4215,6 @@ impl IDescrambler for TunerDescrambler {
                     None,
                 ));
             };
-            if state.key_token.is_none() {
-                return Err(Status::new_service_specific_error(
-                    TunerResult::INVALID_STATE.0,
-                    None,
-                ));
-            }
             let Some(demux_generation) = state.demux_generation else {
                 return Err(Status::new_service_specific_error(
                     TunerResult::INVALID_STATE.0,
@@ -4268,12 +4262,6 @@ impl IDescrambler for TunerDescrambler {
                     None,
                 ));
             };
-            if state.key_token.is_none() {
-                return Err(Status::new_service_specific_error(
-                    TunerResult::INVALID_STATE.0,
-                    None,
-                ));
-            }
             let Some(demux_generation) = state.demux_generation else {
                 return Err(Status::new_service_specific_error(
                     TunerResult::INVALID_STATE.0,
@@ -4294,7 +4282,6 @@ impl IDescrambler for TunerDescrambler {
         Self::ensure_open_locked(&state)?;
         if state.demux_id != Some(demux_id)
             || state.demux_generation != Some(demux_generation)
-            || state.key_token.is_none()
         {
             return Err(Status::new_service_specific_error(
                 TunerResult::INVALID_STATE.0,
@@ -4336,8 +4323,7 @@ impl IDescrambler for TunerDescrambler {
         state.key_slot = None;
         state.pids.clear();
         drop(state);
-        self.descrambler_registry.unregister(self.id);
-        Ok(())
+        self.descrambler_registry.unregister(self.id)
     }
 }
 pub struct TunerHal {
@@ -4653,16 +4639,19 @@ impl TunerHal {
             .count() as i32
     }
 
-    fn configured_max_frontends(&self, frontend_type: FrontendType) -> i32 {
-        lock_mutex_option(&self.max_frontend_overrides, "max_frontend_overrides")
-            .and_then(|overrides| overrides.get(&frontend_type.0).copied())
-            .unwrap_or_else(|| self.default_max_frontends(frontend_type))
+    fn configured_max_frontends(&self, frontend_type: FrontendType) -> BinderResult<i32> {
+        Ok(lock_mutex_status(&self.max_frontend_overrides, "max_frontend_overrides")?
+            .get(&frontend_type.0)
+            .copied()
+            .unwrap_or_else(|| self.default_max_frontends(frontend_type)))
     }
 
-    fn current_open_frontends(&self, frontend_type: FrontendType) -> i32 {
-        lock_mutex_option(&self.frontend_leases, "frontend_leases")
-            .and_then(|leases| leases.open_counts_by_type.get(&frontend_type.0).copied())
-            .unwrap_or(0)
+    fn current_open_frontends(&self, frontend_type: FrontendType) -> BinderResult<i32> {
+        Ok(lock_mutex_status(&self.frontend_leases, "frontend_leases")?
+            .open_counts_by_type
+            .get(&frontend_type.0)
+            .copied()
+            .unwrap_or(0))
     }
 
     fn try_acquire_frontend(
@@ -4671,7 +4660,7 @@ impl TunerHal {
         frontend_type: FrontendType,
         physical_group_id: i32,
     ) -> BinderResult<u64> {
-        let max_allowed = self.configured_max_frontends(frontend_type);
+        let max_allowed = self.configured_max_frontends(frontend_type)?;
         let mut leases = lock_mutex_status(&self.frontend_leases, "frontend_leases")?;
         if leases.open_frontends.contains(&frontend_id) {
             return Err(Status::new_service_specific_error(
@@ -4723,16 +4712,16 @@ impl TunerHal {
         )
     }
 
-    fn new_descrambler_binder(&self) -> Strong<dyn IDescrambler> {
-        BnDescrambler::new_binder(
+    fn new_descrambler_binder(&self) -> BinderResult<Strong<dyn IDescrambler>> {
+        Ok(BnDescrambler::new_binder(
             TunerDescrambler::new(
                 Arc::clone(&self.demux_registry),
                 Arc::clone(&self.descrambler_registry),
                 Arc::clone(&self.descrambler_diagnostics),
                 Arc::clone(&self.descrambler_key_table),
-            ),
+            )?,
             BinderFeatures::default(),
-        )
+        ))
     }
 
     fn create_demux_record_for_id_locked(
@@ -4890,7 +4879,7 @@ impl ITuner for TunerHal {
     }
 
     fn openDescrambler(&self) -> BinderResult<Strong<dyn IDescrambler>> {
-        Ok(self.new_descrambler_binder())
+        self.new_descrambler_binder()
     }
 
     fn getFrontendInfo(&self, frontend_id: i32) -> BinderResult<FrontendInfo> {
@@ -4973,7 +4962,7 @@ impl ITuner for TunerHal {
                 "max_number must be in 0..=default_max for the requested frontend type",
             ));
         }
-        if self.current_open_frontends(frontend_type) > max_number {
+        if self.current_open_frontends(frontend_type)? > max_number {
             return Err(Status::new_service_specific_error(
                 TunerResult::UNAVAILABLE.0,
                 None,
@@ -4985,7 +4974,7 @@ impl ITuner for TunerHal {
     }
 
     fn getMaxNumberOfFrontends(&self, frontend_type: FrontendType) -> BinderResult<i32> {
-        Ok(self.configured_max_frontends(frontend_type))
+        self.configured_max_frontends(frontend_type)
     }
 
     fn isLnaSupported(&self) -> BinderResult<bool> {
@@ -5569,7 +5558,7 @@ impl FrontendHal {
             shared_for_spawn_failure.record_runtime_failure(detail.clone());
             shared_for_spawn_failure.mark_live_path_failed(&detail);
             shared_for_spawn_failure.stop_live_pump_best_effort();
-            shared_for_spawn_failure.reset_bound_demuxes_for_stream_boundary();
+            let _ = shared_for_spawn_failure.reset_bound_demuxes_for_stream_boundary();
             if let Some(mut backend) = lock_mutex_option(&shared_for_spawn_failure.backend, "frontend_backend") {
                 if let Err(stop_err) = FrontendHal::backend_stop_tune(&mut backend) {
                     shared_for_spawn_failure.record_runtime_failure(format!("worker=frontend_tune_worker spawn_failure_cleanup=backend_stop_tune error={stop_err}"));
@@ -6125,25 +6114,54 @@ impl FrontendHal {
                 "r51のISDB-TはAUTOまたはMODE_3伝送モードだけを受け付けます".into(),
             ));
         }
-        if !matches!(s.guardInterval, FrontendIsdbtGuardInterval::AUTO) {
+        if !matches!(
+            s.guardInterval,
+            FrontendIsdbtGuardInterval::AUTO
+                | FrontendIsdbtGuardInterval::INTERVAL_1_32
+                | FrontendIsdbtGuardInterval::INTERVAL_1_16
+                | FrontendIsdbtGuardInterval::INTERVAL_1_8
+                | FrontendIsdbtGuardInterval::INTERVAL_1_4
+        ) {
             return Err(HalError::InvalidArgument(
-                "r51のISDB-Tガードインターバル能力はAUTOだけです".into(),
+                "r51のISDB-TガードインターバルはAUTOまたは1/32,1/16,1/8,1/4だけを受け付けます".into(),
             ));
         }
         for layer in &s.layerSettings {
-            if !matches!(layer.modulation, FrontendIsdbtModulation::AUTO) {
+            if !matches!(
+                layer.modulation,
+                FrontendIsdbtModulation::AUTO
+                    | FrontendIsdbtModulation::MOD_DQPSK
+                    | FrontendIsdbtModulation::MOD_QPSK
+                    | FrontendIsdbtModulation::MOD_16QAM
+                    | FrontendIsdbtModulation::MOD_64QAM
+            ) {
                 return Err(HalError::InvalidArgument(
-                    "r51のISDB-T階層変調能力はAUTOだけです".into(),
+                    "r51のISDB-T階層変調はAUTO,DQPSK,QPSK,16QAM,64QAMだけを受け付けます".into(),
                 ));
             }
-            if !matches!(layer.coderate, FrontendIsdbtCoderate::AUTO) {
+            if !matches!(
+                layer.coderate,
+                FrontendIsdbtCoderate::AUTO
+                    | FrontendIsdbtCoderate::CODERATE_1_2
+                    | FrontendIsdbtCoderate::CODERATE_2_3
+                    | FrontendIsdbtCoderate::CODERATE_3_4
+                    | FrontendIsdbtCoderate::CODERATE_5_6
+                    | FrontendIsdbtCoderate::CODERATE_7_8
+            ) {
                 return Err(HalError::InvalidArgument(
-                    "r51のISDB-T階層符号率能力はAUTOだけです".into(),
+                    "r51のISDB-T階層符号率はAUTOまたは1/2,2/3,3/4,5/6,7/8だけを受け付けます".into(),
                 ));
             }
-            if !matches!(layer.timeInterleave, FrontendIsdbtTimeInterleaveMode::AUTO) {
+            if !matches!(
+                layer.timeInterleave,
+                FrontendIsdbtTimeInterleaveMode::AUTO
+                    | FrontendIsdbtTimeInterleaveMode::INTERLEAVE_3_0
+                    | FrontendIsdbtTimeInterleaveMode::INTERLEAVE_3_1
+                    | FrontendIsdbtTimeInterleaveMode::INTERLEAVE_3_2
+                    | FrontendIsdbtTimeInterleaveMode::INTERLEAVE_3_4
+            ) {
                 return Err(HalError::InvalidArgument(
-                    "r51のISDB-T階層時間インタリーブ能力はAUTOだけです".into(),
+                    "r51のISDB-T階層時間インタリーブはAUTOまたはMODE_3用の0,1,2,4だけを受け付けます".into(),
                 ));
             }
         }
@@ -6153,14 +6171,28 @@ impl FrontendHal {
     fn validate_isdbs_fixed_settings(
         s: &android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::FrontendIsdbsSettings::FrontendIsdbsSettings,
     ) -> Result<(), HalError> {
-        if !matches!(s.modulation, FrontendIsdbsModulation::AUTO) {
+        if !matches!(
+            s.modulation,
+            FrontendIsdbsModulation::AUTO
+                | FrontendIsdbsModulation::MOD_BPSK
+                | FrontendIsdbsModulation::MOD_QPSK
+                | FrontendIsdbsModulation::MOD_TC8PSK
+        ) {
             return Err(HalError::InvalidArgument(
-                "r51のISDB-S変調能力はAUTOだけです".into(),
+                "r51のISDB-S変調はAUTO,BPSK,QPSK,TC8PSKだけを受け付けます".into(),
             ));
         }
-        if !matches!(s.coderate, FrontendIsdbsCoderate::AUTO) {
+        if !matches!(
+            s.coderate,
+            FrontendIsdbsCoderate::AUTO
+                | FrontendIsdbsCoderate::CODERATE_1_2
+                | FrontendIsdbsCoderate::CODERATE_2_3
+                | FrontendIsdbsCoderate::CODERATE_3_4
+                | FrontendIsdbsCoderate::CODERATE_5_6
+                | FrontendIsdbsCoderate::CODERATE_7_8
+        ) {
             return Err(HalError::InvalidArgument(
-                "r51のISDB-S符号率能力はAUTOだけです".into(),
+                "r51のISDB-S符号率はAUTOまたは1/2,2/3,3/4,5/6,7/8だけを受け付けます".into(),
             ));
         }
         if s.symbolRate != 0 {
@@ -6413,14 +6445,14 @@ impl FrontendHal {
             .iter()
             .any(|system| matches!(system, FrontendSystem::IsdbS))
         {
-            return Err(StatusCode::INVALID_OPERATION.into());
+            return Err(Status::new_service_specific_error(TunerResult::UNAVAILABLE.0, None));
         }
         let lnb = lock_mutex_status(lnb_registry, "lnb_registry")?
             .get(&lnb_id)
             .cloned()
             .ok_or(StatusCode::NAME_NOT_FOUND)?;
         if lnb.owner_frontend_id != frontend_id {
-            return Err(StatusCode::BAD_VALUE.into());
+            return Err(invalid_argument_status("LNB belongs to another frontend"));
         }
         Ok(lnb)
     }
@@ -6468,7 +6500,7 @@ impl IFrontend for FrontendHal {
                 .map_err(hal_error_status)?;
             Self::backend_submit_tune(&mut backend, request.clone()).map_err(hal_error_status)?;
         }
-        self.shared.reset_bound_demuxes_for_stream_boundary();
+        self.shared.reset_bound_demuxes_for_stream_boundary()?;
         self.start_tune_worker(request)?;
         Ok(())
     }
@@ -6488,7 +6520,7 @@ impl IFrontend for FrontendHal {
             Self::backend_stop_tune(&mut backend)
         }
         .map_err(hal_error_status)?;
-        self.shared.reset_bound_demuxes_for_stream_boundary();
+        self.shared.reset_bound_demuxes_for_stream_boundary()?;
         Ok(())
     }
 
@@ -6590,7 +6622,8 @@ impl IFrontend for FrontendHal {
                         Err(err) => Err(err),
                     };
                     let tune_result = stop_result.and_then(|_| {
-                        shared.reset_bound_demuxes_for_stream_boundary();
+                        shared.reset_bound_demuxes_for_stream_boundary()
+                            .map_err(|_| HalError::Internal("stream boundary reset failed".into()))?;
                         let mut backend = lock_mutex_hal(&shared.backend, "frontend_backend")?;
                         FrontendHal::backend_validate_tune_request(&mut backend, &request)
                             .and_then(|_| {
@@ -6835,8 +6868,8 @@ impl IFrontend for FrontendHal {
     fn stopScan(&self) -> BinderResult<()> {
         self.ensure_open()?;
         self.cancel_scan_session()?;
-        // stopScan が所有するのは scan operation だけである。scan worker は cancel 中に
-        // 自身の backend stop を実行する。scan が動作していない場合、通常の tune / live pump を
+        // stopScan が所有するのは scan operation だけである。scan ワーカー は cancel 中に
+        // 自身の backend stop を実行する。scan が動作していない場合、通常の tune / ライブ pump を
         // stop してはならない。
         Ok(())
     }
@@ -6934,10 +6967,11 @@ impl IFrontend for FrontendHal {
             let backend_available = !matches!(&*backend, FrontendBackendState::Unavailable { .. });
             let tuning_active = Self::backend_tuning_active(&backend);
             let telemetry = if backend_available && !tuning_active {
-                match self.apply_selected_lnb(&mut backend) {
-                    Ok(()) => Self::backend_read_status(&mut backend).ok(),
-                    Err(_) => None,
-                }
+                Some(
+                    self.apply_selected_lnb(&mut backend)
+                        .and_then(|_| Self::backend_read_status(&mut backend))
+                        .map_err(hal_error_status)?,
+                )
             } else {
                 None
             };
@@ -7082,8 +7116,14 @@ impl DemuxHal {
             }
         }
         if let Some(demux_generation) = demux_generation {
-            self.descrambler_registry
-                .invalidate_demux(self.demux_id, demux_generation);
+            if let Err(status) = self
+                .descrambler_registry
+                .invalidate_demux(self.demux_id, demux_generation)
+            {
+                if first_error.is_none() {
+                    first_error = Some(status);
+                }
+            }
         }
         match lock_mutex_status(&self.demux_registry, "demux_registry") {
             Ok(mut registry) => {
@@ -7176,7 +7216,8 @@ impl DemuxHal {
             }
         }
         if let Some(demux_generation) = demux_generation {
-            self.descrambler_registry
+            let _ = self
+                .descrambler_registry
                 .invalidate_demux(self.demux_id, demux_generation);
         }
         if let Some(mut registry) = lock_mutex_option(&self.demux_registry, "demux_registry") {
@@ -7247,7 +7288,8 @@ impl IDemux for DemuxHal {
                 record.bound_frontend_id = None;
                 record.bound_frontend_generation = None;
             }
-            self.descrambler_registry
+            let _ = self
+                .descrambler_registry
                 .invalidate_demux(self.demux_id, demux_generation);
             runtime_io.mark_all_failed("setFrontendDataSource rollback failed; demux fail-closed");
             Err(Status::new_service_specific_error(
@@ -7308,7 +7350,7 @@ impl IDemux for DemuxHal {
         if let Some(old_frontend_id) = old_frontend_id.filter(|old| *old != frontend_id) {
             let Some(old_runtime) = self.frontend_registry.get(&old_frontend_id) else {
                 rollback_to_old("old_frontend_missing")?;
-                return Err(StatusCode::NAME_NOT_FOUND.into());
+                return Err(Status::from(StatusCode::UNKNOWN_ERROR));
             };
             if let Err(err) = old_runtime.unbind_demux(self.demux_id) {
                 rollback_to_old("old_unbind_failed")?;
@@ -7331,7 +7373,7 @@ impl IDemux for DemuxHal {
                 state.bind_frontend(frontend_id);
                 state.reset_for_stream_boundary();
             }
-            runtime_io.flush_all();
+            runtime_io.flush_all()?;
             Ok(())
         })() {
             rollback_to_old("state_update_failed")?;
@@ -7385,7 +7427,7 @@ impl IDemux for DemuxHal {
             Ok(filter_hal) => filter_hal,
             Err(err) => {
                 runtime_io.unregister_filter_best_effort(filter_id);
-                if let Some(mut state) = lock_mutex_option(&state, "demux_handle") {
+                if let Ok(mut state) = lock_mutex_status(&state, "demux_handle") {
                     state.unregister_filter(filter_id);
                 }
                 return Err(err);
@@ -7461,7 +7503,7 @@ impl IDemux for DemuxHal {
             Ok(dvr_hal) => dvr_hal,
             Err(err) => {
                 runtime_io.unregister_dvr_best_effort(dvr_id);
-                if let Some(mut state) = lock_mutex_option(&state, "demux_handle") {
+                if let Ok(mut state) = lock_mutex_status(&state, "demux_handle") {
                     state.unregister_dvr(dvr_id);
                 }
                 return Err(err);
@@ -7532,7 +7574,7 @@ impl FilterHal {
             &av_queue_backing,
             None,
             &av_drop_unexported,
-        );
+        )?;
         let callback_stop = Arc::new(AtomicBool::new(false));
         let closed = Arc::new(AtomicBool::new(false));
         let next_av_data_id = Arc::new(AtomicI64::new(1));
@@ -7722,10 +7764,10 @@ impl FilterHal {
                             }
                         }
                         if send_event {
-                            // AV filter の正式deliveryは MediaEvent + shared handle である。
+                            // AV filter の正式deliveryは MediaEvent + 共有ハンドル である。
                             // shared slot を確保できなかった AV payload は OVERFLOW として扱い、
-                            // avDataId=0 / shared handleなしの MediaEvent を出して FMQ-only delivery を
-                            // live AV 成功経路にしてはならない。
+                            // avDataId=0 / 共有ハンドルなしの MediaEvent を出して FMQ-only delivery を
+                            // ライブ AV 成功経路にしてはならない。
                             if av_payload_should_emit_data_event(is_media, av_slice) {
                                 let event_offset = av_slice.map(|slice| slice.offset as i64).unwrap_or(queue_ring.start_offset as i64);
                                 if let Some(event) = build_filter_event_from_entry(&record, &payload, event_offset, cumulative_bytes, av_slice, av_data_id, av_memory, &mut record_event_state) {
@@ -7920,11 +7962,7 @@ impl FilterHal {
     }
 
     fn ensure_configured_av_filter(&self) -> BinderResult<()> {
-        let Some(demux) = lock_mutex_option(&self.state, "demux_handle") else {
-            return Err(invalid_state_status(
-                "AV shared handle requested after demux state failure",
-            ));
-        };
+        let demux = lock_mutex_status(&self.state, "demux_handle")?;
         let Some(record) = demux.filter_record(self.filter_id) else {
             return Err(StatusCode::NAME_NOT_FOUND.into());
         };
@@ -7963,7 +8001,7 @@ impl FilterHal {
             .unwrap_or(4096);
         let backing = AvSharedBacking::new(buffer_size)?;
         self.runtime_io
-            .set_filter_av_shared(self.filter_id, &backing);
+            .set_filter_av_shared(self.filter_id, &backing)?;
         *lock_mutex_status(&self.av_shared_backing, "filter_av_shared_backing")? =
             Some(Arc::clone(&backing));
         Ok(backing)
@@ -7998,13 +8036,13 @@ impl FilterHal {
             .clear_filter_av_shared_best_effort(self.filter_id);
     }
 
-    fn release_all_av_shared_handles(&self) {
+    fn release_all_av_shared_handles(&self) -> BinderResult<()> {
         if let Some(backing) =
-            lock_mutex_option(&self.av_shared_backing, "filter_av_shared_backing")
-                .and_then(|backing| backing.as_ref().cloned())
+            lock_mutex_status(&self.av_shared_backing, "filter_av_shared_backing")?.as_ref().cloned()
         {
-            backing.release_all();
+            backing.release_all()?;
         }
+        Ok(())
     }
 
     fn release_av_shared_handle(&self, av_data_id: i64) -> BinderResult<()> {
@@ -8013,7 +8051,7 @@ impl FilterHal {
         else {
             return Err(StatusCode::NAME_NOT_FOUND.into());
         };
-        if !backing.release(av_data_id) {
+        if !backing.release(av_data_id)? {
             return Err(StatusCode::NAME_NOT_FOUND.into());
         }
         Ok(())
@@ -8142,7 +8180,9 @@ impl IFilter for FilterHal {
                 av_stream_type_hint,
                 av_stream_kind,
             )
-            .map_err(demux_config_error_status)
+            .map_err(demux_config_error_status)?;
+        reset_av_shared_handle_export_epoch(&self.av_shared_handle_exported);
+        self.drop_av_shared_backing()
     }
     fn configureIpCid(&self, _ip_cid: i32) -> BinderResult<()> {
         self.ensure_open()?;
@@ -8188,7 +8228,7 @@ impl IFilter for FilterHal {
                 );
             let start_event_ready = filter_start_event_ready(readiness);
             let record = state.filter_record(self.filter_id).cloned();
-            // configureMonitorEvent() は通常 callback の gating API ではない。
+            // configureMonitorEvent() は通常 コールバック の gating API ではない。
             // r51 は monitor-event bit を support しないため、DATA_READY / OVERFLOW / データイベント は常に有効のままにする。
             let monitor_mask = 0;
             let is_media = matches!(
@@ -8265,12 +8305,7 @@ impl IFilter for FilterHal {
 
     fn releaseAvHandle(&self, _av_memory: &TunerNativeHandle, av_data_id: i64) -> BinderResult<()> {
         self.ensure_open()?;
-        if av_data_id == 0 {
-            reset_av_shared_handle_export_epoch(&self.av_shared_handle_exported);
-            self.release_all_av_shared_handles();
-            return Ok(());
-        }
-        if av_data_id < 0 {
+        if av_data_id <= 0 {
             return Err(invalid_argument_status("不正なAV data idです"));
         }
         self.release_av_shared_handle(av_data_id)
@@ -8469,7 +8504,7 @@ impl DvrHal {
             ),
             DemuxPathDirection::Record => SharedMemoryBacking::new_ring(buffer_size),
         }?;
-        runtime_io.register_dvr(dvr_id, &queue_backing);
+        runtime_io.register_dvr(dvr_id, &queue_backing)?;
         let callback_stop = Arc::new(AtomicBool::new(false));
         let callback_wake = Arc::new((Mutex::new(false), Condvar::new()));
         let closed = Arc::new(AtomicBool::new(false));
@@ -8911,8 +8946,8 @@ impl DvrHal {
         high: Option<usize>,
         capacity: usize,
     ) -> Option<PlaybackStatus> {
-        // playback status は queued data bytes ではなく未使用 write space で定義する。
-        // 呼び出し側は playback TS を FMQ へ書くため、callback は追加入力可能な空き容量を表す。
+        // playback 状態 は queued data bytes ではなく未使用 write space で定義する。
+        // 呼び出し側は playback TS を FMQ へ書くため、コールバック は追加入力可能な空き容量を表す。
         let available_space = capacity.saturating_sub(fill);
         if capacity > 0 && available_space == 0 {
             Some(PlaybackStatus::SPACE_EMPTY)
@@ -10635,8 +10670,8 @@ mod av_shared_backing_tests {
         assert_eq!(stats.evicted_slots, 0);
         assert_eq!(stats.av_overflow_no_slot, 1);
         assert_eq!(stats.alloc_failures, 1);
-        assert!(backing.release(1));
-        assert!(!backing.release(1));
+        assert!(backing.release(1).unwrap());
+        assert!(!backing.release(1).unwrap());
         assert_eq!(backing.stats().stale_releases, 1);
     }
 
@@ -10649,7 +10684,7 @@ mod av_shared_backing_tests {
         assert_eq!(first.len, payload.len());
         assert!(first.offset + first.len < backing.total_size());
         assert_eq!(backing.stats().allocated_slots, 1);
-        assert!(backing.release(100));
+        assert!(backing.release(100).unwrap());
         assert_eq!(backing.stats().allocated_slots, 0);
         assert_eq!(backing.stats().free_slots, AV_SLOT_COUNT);
         let second = backing.allocate(101, &payload).expect("reused AV slot");
@@ -11336,13 +11371,10 @@ mod frontend_capability_tests {
                     caps.bandwidthCap,
                     FrontendIsdbtBandwidth::AUTO.0 | FrontendIsdbtBandwidth::BANDWIDTH_6MHZ.0
                 );
-                assert_eq!(caps.modulationCap, FrontendIsdbtModulation::AUTO.0);
-                assert_eq!(caps.coderateCap, FrontendIsdbtCoderate::AUTO.0);
-                assert_eq!(caps.guardIntervalCap, FrontendIsdbtGuardInterval::AUTO.0);
-                assert_eq!(
-                    caps.timeInterleaveCap,
-                    FrontendIsdbtTimeInterleaveMode::AUTO.0
-                );
+                assert_eq!(caps.modulationCap, isdbt_modulation_caps());
+                assert_eq!(caps.coderateCap, isdbt_coderate_caps());
+                assert_eq!(caps.guardIntervalCap, isdbt_guard_interval_caps());
+                assert_eq!(caps.timeInterleaveCap, isdbt_time_interleave_caps());
                 assert!(caps.isSegmentAuto);
                 assert!(caps.isFullSegment);
             }
@@ -11355,8 +11387,8 @@ mod frontend_capability_tests {
         let entry = px4_entry(2, FrontendType::ISDBS, FrontendSystem::IsdbS);
         match entry_frontend_caps(&entry) {
             FrontendCapabilities::IsdbsCaps(caps) => {
-                assert_eq!(caps.modulationCap, FrontendIsdbsModulation::AUTO.0);
-                assert_eq!(caps.coderateCap, FrontendIsdbsCoderate::AUTO.0);
+                assert_eq!(caps.modulationCap, isdbs_modulation_caps());
+                assert_eq!(caps.coderateCap, isdbs_coderate_caps());
             }
             _ => panic!("ISDB-S項目はISDB-S能力を報告する必要があります"),
         }
@@ -12362,7 +12394,7 @@ mod static_completion_tests {
             Arc::clone(&hal.descrambler_registry),
             Arc::clone(&hal.descrambler_diagnostics),
             Arc::clone(&hal.descrambler_key_table),
-        );
+        ).unwrap();
         descrambler.setDemuxSource(demux_id).unwrap();
         descrambler.close().unwrap();
         descrambler.close().unwrap();
@@ -13188,12 +13220,12 @@ mod static_completion_tests {
         assert!(!handle.ints.contains(&(AV_MIN_SLOT_SIZE as i32)));
         assert!(!handle.ints.contains(&(AV_SLOT_COUNT as i32)));
 
-        backing.release_all();
+        backing.release_all().unwrap();
         assert_eq!(backing.stats().allocated_slots, 0);
 
         backing.allocate(1, &[0x47; 188]).unwrap();
         assert_eq!(backing.stats().allocated_slots, 1);
-        backing.release_all();
+        backing.release_all().unwrap();
         let stats = backing.stats();
         assert_eq!(stats.allocated_slots, 0);
         assert_eq!(stats.free_slots, AV_SLOT_COUNT);
@@ -13234,7 +13266,7 @@ mod static_completion_tests {
                 failed_reason: None,
             },
         );
-        registry.flush_all();
+        registry.flush_all().unwrap();
         assert_eq!(av_shared.stats().allocated_slots, 0);
         assert_eq!(registry.entry_count(), 1);
         let dump = registry.dump_av_shared_for_debug().join("\n");
@@ -13620,7 +13652,7 @@ mod descrambler_state_tests {
             Arc::clone(&hal.descrambler_registry),
             Arc::clone(&hal.descrambler_diagnostics),
             Arc::clone(&hal.descrambler_key_table),
-        );
+        ).unwrap();
 
         assert!(descrambler.setDemuxSource(demux_id).is_ok());
         let key_slot = DescramblerKeySlot::empty()
@@ -13669,7 +13701,7 @@ mod descrambler_state_tests {
             Arc::clone(&hal.descrambler_registry),
             Arc::clone(&hal.descrambler_diagnostics),
             Arc::clone(&hal.descrambler_key_table),
-        );
+        ).unwrap();
 
         assert!(descrambler.add_pid_for_test(0x0100).is_err());
         assert!(descrambler.setKeyToken(&[]).is_err());
@@ -13703,7 +13735,7 @@ mod descrambler_state_tests {
             Arc::clone(&hal.descrambler_registry),
             Arc::clone(&hal.descrambler_diagnostics),
             Arc::clone(&hal.descrambler_key_table),
-        );
+        ).unwrap();
         let pid = DemuxPid::TPid(0x0123);
 
         assert_tuner_result(
@@ -13757,7 +13789,7 @@ mod descrambler_state_tests {
             Arc::clone(&hal.descrambler_registry),
             Arc::clone(&hal.descrambler_diagnostics),
             Arc::clone(&hal.descrambler_key_table),
-        );
+        ).unwrap();
         let pid = DemuxPid::TPid(0x0201);
 
         descrambler.setDemuxSource(demux_id).unwrap();
@@ -13774,6 +13806,32 @@ mod descrambler_state_tests {
     }
 
     #[test]
+    fn public_descrambler_remove_pid_after_void_key_token_succeeds() {
+        let hal = TunerHal::new();
+        let (demux_id, record) = hal.allocate_demux_record().unwrap();
+        let demux_state = record.lock().unwrap().state.clone();
+        let source = register_test_filter(&demux_state, demux_id);
+        let descrambler = TunerDescrambler::new(
+            Arc::clone(&hal.demux_registry),
+            Arc::clone(&hal.descrambler_registry),
+            Arc::clone(&hal.descrambler_diagnostics),
+            Arc::clone(&hal.descrambler_key_table),
+        ).unwrap();
+        let pid = DemuxPid::TPid(0x0204);
+
+        descrambler.setDemuxSource(demux_id).unwrap();
+        let key_token = register_test_key(&hal);
+        descrambler.setKeyToken(&key_token).unwrap();
+        descrambler.addPid(&pid, &source).unwrap();
+        descrambler.setKeyToken(&[0x00]).unwrap();
+
+        descrambler.removePid(&pid, &source).unwrap();
+        let (_, _, _, token_after_remove, pids_after_remove) = descrambler.debug_snapshot();
+        assert_eq!(token_after_remove, None);
+        assert!(!pids_after_remove.contains(&0x0204));
+    }
+
+    #[test]
     fn public_descrambler_rejects_stale_demux_generation_for_pid_mutations() {
         let hal = TunerHal::new();
         let (demux_id, record) = hal.allocate_demux_record().unwrap();
@@ -13784,7 +13842,7 @@ mod descrambler_state_tests {
             Arc::clone(&hal.descrambler_registry),
             Arc::clone(&hal.descrambler_diagnostics),
             Arc::clone(&hal.descrambler_key_table),
-        );
+        ).unwrap();
         let pid = DemuxPid::TPid(0x0202);
 
         descrambler.setDemuxSource(demux_id).unwrap();
@@ -13820,7 +13878,7 @@ mod descrambler_state_tests {
             Arc::clone(&hal.descrambler_registry),
             Arc::clone(&hal.descrambler_diagnostics),
             Arc::clone(&hal.descrambler_key_table),
-        );
+        ).unwrap();
 
         assert!(descrambler.setDemuxSource(demux_id).is_ok());
         let key_slot = DescramblerKeySlot::empty()
@@ -13836,7 +13894,7 @@ mod descrambler_state_tests {
         let snapshots = {
             let handle = demux_state.lock().unwrap();
             hal.descrambler_registry
-                .snapshots_for_demux(demux_id, demux_generation, &handle)
+                .snapshots_for_demux(demux_id, demux_generation, &handle).unwrap()
         };
         assert_eq!(snapshots.len(), 1);
         assert!(snapshots[0].targets_pid(0x0123));
@@ -13853,7 +13911,7 @@ mod descrambler_state_tests {
         let snapshots_after_close = {
             let handle = demux_state.lock().unwrap();
             hal.descrambler_registry
-                .snapshots_for_demux(demux_id, demux_generation, &handle)
+                .snapshots_for_demux(demux_id, demux_generation, &handle).unwrap()
         };
         assert!(snapshots_after_close.is_empty());
     }
@@ -13867,7 +13925,7 @@ mod descrambler_state_tests {
             Arc::clone(&hal.descrambler_registry),
             Arc::clone(&hal.descrambler_diagnostics),
             Arc::clone(&hal.descrambler_key_table),
-        );
+        ).unwrap();
         assert!(descrambler.setDemuxSource(demux_id).is_ok());
         let key_slot = DescramblerKeySlot::empty()
             .try_with_even(Multi2KeyMaterial::new([0x55; 32], [0x66; 8], [0x77; 8])).unwrap();
@@ -13885,13 +13943,13 @@ mod descrambler_state_tests {
                 demux_id,
                 generation.saturating_add(1),
                 &handle,
-            )
+            ).unwrap()
         };
         assert!(wrong_generation_snapshot.is_empty());
 
         assert!(descrambler.add_pid_for_test(0x0200).is_ok());
         hal.descrambler_registry
-            .invalidate_demux(demux_id, generation);
+            .invalidate_demux(demux_id, generation).unwrap();
         let (_, demux_after_invalidate, generation_after_invalidate, _, pids_after_invalidate) =
             descrambler.debug_snapshot();
         assert_eq!(demux_after_invalidate, None);
@@ -13908,13 +13966,13 @@ mod descrambler_state_tests {
             Arc::clone(&hal.descrambler_registry),
             Arc::clone(&hal.descrambler_diagnostics),
             Arc::clone(&hal.descrambler_key_table),
-        );
+        ).unwrap();
         let second = TunerDescrambler::new(
             Arc::clone(&hal.demux_registry),
             Arc::clone(&hal.descrambler_registry),
             Arc::clone(&hal.descrambler_diagnostics),
             Arc::clone(&hal.descrambler_key_table),
-        );
+        ).unwrap();
         let key_slot = DescramblerKeySlot::empty()
             .try_with_even(Multi2KeyMaterial::new([0x01; 32], [0x02; 8], [0x03; 8])).unwrap();
         let key_token = hal.descrambler_key_table.register_for_test(key_slot);
@@ -13932,7 +13990,7 @@ mod descrambler_state_tests {
     fn descrambler_snapshot_prunes_source_filter_generation_mismatch() {
         let registry = DescramblerRuntimeRegistry::new();
         let state = Arc::new(Mutex::new(TunerDescramblerState::default()));
-        let _id = registry.register(&state);
+        let _id = registry.register(&state).unwrap();
         let mut demux = DemuxHandle::new(DEMUX_ID_BASE);
         let filter = demux
             .register_filter_result(1, FilterOpenType::TsSection, 4096)
@@ -13953,7 +14011,7 @@ mod descrambler_state_tests {
         }
         assert_eq!(
             registry
-                .snapshots_for_demux(DEMUX_ID_BASE, 10, &demux)
+                .snapshots_for_demux(DEMUX_ID_BASE, 10, &demux).unwrap()
                 .len(),
             1
         );
@@ -13976,7 +14034,7 @@ mod descrambler_state_tests {
             )
             .unwrap();
         assert!(registry
-            .snapshots_for_demux(DEMUX_ID_BASE, 10, &demux)
+            .snapshots_for_demux(DEMUX_ID_BASE, 10, &demux).unwrap()
             .is_empty());
         assert!(state.lock().unwrap().pids.is_empty());
     }
@@ -14300,7 +14358,7 @@ mod descrambler_state_tests {
             Arc::clone(&hal.descrambler_registry),
             Arc::clone(&hal.descrambler_diagnostics),
             Arc::clone(&hal.descrambler_key_table),
-        );
+        ).unwrap();
         assert!(descrambler.setDemuxSource(demux_id).is_ok());
 
         assert_tuner_result(descrambler.setKeyToken(&[]), TunerResult::INVALID_ARGUMENT);
@@ -14358,7 +14416,7 @@ mod descrambler_state_tests {
             Arc::clone(&hal.descrambler_registry),
             Arc::clone(&hal.descrambler_diagnostics),
             Arc::clone(&hal.descrambler_key_table),
-        );
+        ).unwrap();
         assert!(descrambler.setDemuxSource(demux_id).is_ok());
         let key_token = register_test_key(&hal);
         assert!(descrambler.setKeyToken(&key_token).is_ok());
@@ -14384,7 +14442,7 @@ mod descrambler_state_tests {
         let snapshots_after_void = {
             let handle = demux_state.lock().unwrap();
             hal.descrambler_registry
-                .snapshots_for_demux(demux_id, demux_generation, &handle)
+                .snapshots_for_demux(demux_id, demux_generation, &handle).unwrap()
         };
         assert_eq!(snapshots_after_void.len(), 1);
         assert!(snapshots_after_void[0].targets_pid(0x0123));
@@ -14697,7 +14755,7 @@ mod contract_regression_tests {
         let queue = SharedMemoryBacking::new_ring(4096).unwrap();
         let av_queue = SharedMemoryBacking::new_ring(4096).unwrap();
         let av_shared_drops = Arc::new(AtomicU64::new(0));
-        runtime_io.register_filter(filter.filter_id, &queue, &av_queue, None, &av_shared_drops);
+        runtime_io.register_filter(filter.filter_id, &queue, &av_queue, None, &av_shared_drops).unwrap();
         runtime.bound_demuxes.lock().unwrap().insert(
             DEMUX_ID_BASE,
             BoundDemuxRuntime {

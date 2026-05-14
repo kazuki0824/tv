@@ -165,7 +165,7 @@ impl SectionAssembler {
                     self.buf.extend_from_slice(&payload[1..1 + pointer]);
                     self.try_take_pending(&mut out);
                 }
-                // PUSI は新しいsection境界を示す。pointer byte列だけが直前sectionの
+                // PUSI は新しいsection境界を示す。pointer バイト列だけが直前sectionの
                 // 合法な継続である。pointer == 0 を含め、完了できない場合は古い未完了sectionを
                 // 新しいsection本体へ連結してはならない。
                 if !self.buf.is_empty() || self.expected_len.is_some() {
@@ -404,7 +404,7 @@ mod tests {
         first.extend_from_slice(&stale[..6]);
         assert!(assembler.push_payload(true, &first).is_empty());
 
-        // pointer byte列は未完了sectionを完了するには短すぎる。
+        // pointer バイト列は未完了sectionを完了するには短すぎる。
         // 合法な末尾試行として扱った後、新しいsection本体の開始前に古い未完了sectionを破棄する。
         let mut second = vec![0x02];
         second.extend_from_slice(&stale[6..8]);

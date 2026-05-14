@@ -4,7 +4,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
-import com.maleicacid.tvinput.common.AppIds
 import com.maleicacid.tvinput.common.LogTags
 
 /**
@@ -20,7 +19,12 @@ class EpgBootSyncReceiver : BroadcastReceiver() {
             Intent.ACTION_BOOT_COMPLETED -> {
                 Log.i(LogTags.TIS, "boot後EPG最小再同期の pending drain を確認します action=${intent.action}")
                 if (DirectBootGuard.drainIfUserUnlocked(context.applicationContext, "BOOT_COMPLETED", System.currentTimeMillis()) == DirectBootGuard.DrainDecision.START_BOOT_EPG_SYNC) {
-                    ChannelScanManager.startBootEpgSyncIfIdle(context.applicationContext, AppIds.TV_INPUT_SERVICE)
+                    val resolvedInputId = TisInputIdResolver.resolveOwnInputId(context.applicationContext)
+                    if (resolvedInputId == null) {
+                        DirectBootGuard.deferPending(context.applicationContext, "TV_INPUT_ID_UNRESOLVED")
+                    } else {
+                        ChannelScanManager.startBootEpgSyncIfIdle(context.applicationContext, resolvedInputId)
+                    }
                 }
             }
         }

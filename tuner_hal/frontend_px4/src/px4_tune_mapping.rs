@@ -86,8 +86,14 @@ fn checked_direct_freq_no(
     )
 }
 
+fn is_japan_cs110_if_frequency_range_hz(if_hz: u64) -> bool {
+    let last = PX4_CS_BASE_IF_HZ
+        + PX4_CS_STEP_HZ * ((PX4_CS_FREQ_NO_MAX - PX4_CS_FREQ_NO_MIN) as u64);
+    (PX4_CS_BASE_IF_HZ..=last).contains(&if_hz)
+}
+
 fn is_exact_japan_cs110_if_frequency_hz(if_hz: u64) -> bool {
-    if if_hz < PX4_CS_BASE_IF_HZ {
+    if !is_japan_cs110_if_frequency_range_hz(if_hz) {
         return false;
     }
     let delta = if_hz - PX4_CS_BASE_IF_HZ;
@@ -259,7 +265,7 @@ pub fn map_tune_request_to_px4(request: &FrontendTuneRequest) -> Result<Px4TuneR
     match request.system {
         FrontendSystem::IsdbT => map_isdbt_frequency_to_px4(request.frequency),
         FrontendSystem::IsdbS => {
-            let band = if is_exact_japan_cs110_if_frequency_hz(request.frequency) {
+            let band = if is_japan_cs110_if_frequency_range_hz(request.frequency) {
                 Px4SatBand::Cs110
             } else {
                 Px4SatBand::Bs

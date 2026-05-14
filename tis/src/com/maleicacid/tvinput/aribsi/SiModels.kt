@@ -30,8 +30,6 @@ data class PmtPidMapping(
     val pmtPid: Int,
 )
 
-
-
 enum class CaDescriptorScope { PROGRAM, ES }
 
 data class CaDescriptor(
@@ -64,6 +62,9 @@ data class AribElementaryStream(
     val componentType: Int?,
     val streamContent: Int?,
     val languageCodes: List<String> = emptyList(),
+    val dataComponentId: Int? = null,
+    val isCaption: Boolean = false,
+    val isSuperimpose: Boolean = false,
 )
 
 data class AribService(
@@ -78,6 +79,7 @@ data class AribService(
     val hasProgramCaDescriptor: Boolean = false,
     val hasEsCaDescriptor: Boolean = false,
     val serviceScopedCaDescriptors: List<CaDescriptor> = emptyList(),
+    val componentsJson: String = "{\"video\":[],\"audio\":[],\"subtitle\":[],\"data\":[]}",
 ) {
     val requiresCas: Boolean get() = hasProgramCaDescriptor || hasEsCaDescriptor
 }
@@ -102,6 +104,32 @@ data class AribParentalRating(
     val supported: Boolean,
 )
 
+data class AribEventDiagnostics(
+    val summary: String = "",
+    val descriptorDiagnosticsJson: String = "{}",
+    val textDiagnostics: List<String> = emptyList(),
+)
+
+data class AribEventDescriptors(
+    val extendedItems: List<AribExtendedItem> = emptyList(),
+    val componentText: String? = null,
+    val audioComponentText: String? = null,
+    val audioLanguage: String? = null,
+    val broadcastGenre: String? = null,
+    val genreSupplementText: String? = null,
+    val relatedItemsJson: String = "[]",
+    val linkageJson: String = "[]",
+    val scrambled: Boolean? = null,
+    val freeCaModeJson: String = "null",
+    val seriesId: Int? = null,
+    val episodeNumber: Int? = null,
+    val lastEpisodeNumber: Int? = null,
+    val seriesJson: String = "null",
+    val parentalRatings: List<AribParentalRating> = emptyList(),
+    val componentsJson: String = "{\"video\":[],\"audio\":[],\"subtitle\":[],\"data\":[]}",
+    val diagnostics: AribEventDiagnostics = AribEventDiagnostics(),
+)
+
 data class AribEvent(
     val serviceKey: ServiceKey,
     val stableIdentity: String,
@@ -112,20 +140,7 @@ data class AribEvent(
     val description: String,
     val extendedDescription: String = "",
     val eventScope: String = "present_following",
-    val extendedItems: List<AribExtendedItem> = emptyList(),
-    val componentText: String? = null,
-    val audioComponentText: String? = null,
-    val audioLanguage: String? = null,
-    val canonicalGenre: String? = null, // 非推奨互換フィールド。r51 通常経路では設定しない
-    val broadcastGenre: String? = null,
-    val genreSupplementText: String? = null,
-    val eventGroupText: String? = null,
-    val freeCaText: String? = null,
-    val seriesName: String? = null,
-    val diagnosticText: String = "",
-    val diagnosticDescriptorJson: String = "{}",
-    val textDiagnostics: List<String> = emptyList(),
-    val parentalRatings: List<AribParentalRating> = emptyList(),
+    val descriptors: AribEventDescriptors = AribEventDescriptors(),
 )
 
 data class AribEventDiagnostic(
@@ -135,7 +150,6 @@ data class AribEventDiagnostic(
     val diagnosticText: String,
     val diagnosticDescriptorJson: String,
 )
-
 
 data class AribEpgUpdateWindow(
     val serviceKey: ServiceKey,
@@ -200,7 +214,6 @@ data class CaMetadata(
         return result
     }
 }
-
 
 data class PrivateSection(
     val pid: Int,

@@ -19,14 +19,19 @@ class TvProviderWriterR51FixTest {
         val rating15 = requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 15, 15, true)))
         val p = ProgramRecord(
             key, 1, "p1", 1_700_000_000_000L, 1_800_000L, "title", "desc",
-            audioLanguage = "jpn", broadcastGenre = "ARIB(0x0/0x0):ニュース/報道/定時・総合", contentRatings = listOf(rating15),
+            audioLanguage = "jpn", canonicalGenres = listOf("NEWS"), broadcastGenre = "ARIB(0x0/0x0):ニュース/報道/定時・総合", contentRatings = listOf(rating15), scrambled = false, seriesId = 100, episodeNumber = 3, lastEpisodeNumber = 12,
         )
         writer.upsertPrograms(listOf(p))
-        writer.upsertPrograms(listOf(p.copy(audioLanguage = null, broadcastGenre = null, contentRatings = emptyList())))
+        writer.upsertPrograms(listOf(p.copy(audioLanguage = null, canonicalGenres = emptyList(), broadcastGenre = null, contentRatings = emptyList(), scrambled = null, seriesId = null, episodeNumber = null, lastEpisodeNumber = null)))
         val values = store.programs.values.single()
         check(values.get(TvContract.Programs.COLUMN_AUDIO_LANGUAGE) == null)
         check(values.get(TvContract.Programs.COLUMN_BROADCAST_GENRE) == null)
+        check(values.get(TvContract.Programs.COLUMN_CANONICAL_GENRE) == null)
         check(values.get(TvContract.Programs.COLUMN_CONTENT_RATING) == null)
+        check(values.get(TvProviderWriter.COLUMN_SCRAMBLED) == null)
+        check(values.get(TvProviderWriter.COLUMN_SERIES_ID) == null)
+        check(values.get(TvProviderWriter.COLUMN_EPISODE_DISPLAY_NUMBER) == null)
+        check(values.get(TvProviderWriter.COLUMN_ITEM_COUNT) == null)
     }
 
     private class MergeStore : TvProviderWriter.ChannelStore {

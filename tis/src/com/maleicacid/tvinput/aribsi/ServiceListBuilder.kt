@@ -4,7 +4,7 @@ import com.maleicacid.tvinput.common.ServiceKey
 
 /**
  * TvProvider 登録用のサービス snapshot を構築する。
- * readiness / EPG 公開可否 / clear live 視聴可否は Rust 側 diagnostic を SSOT とし、
+ * readiness / EPG 公開可否 / 平文ライブ視聴 視聴可否は Rust 側 診断 を SSOT とし、
  * Kotlin 側では再計算しない。
  */
 class ServiceListBuilder(private val engine: AribSiEngine) {

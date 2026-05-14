@@ -7,7 +7,7 @@
 - Android TV 14 系の `android.hardware.tv.tuner.ITuner/default`
 - r51 target driver: `kazuki0824/px4_drv` `feat/android-ddk` branch、および Linux `earth_pt1`
 - 対象放送: 日本向け ISDB-T / ISDB-S
-- CAS HAL は placeholder。descramble 前提の VTS / 視聴 flow は対象外。
+- CAS HAL は 仮実装。descramble 前提の VTS / 視聴 flow は対象外。
 
 ## 統合手順の SSOT
 

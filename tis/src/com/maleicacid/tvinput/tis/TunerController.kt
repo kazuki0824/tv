@@ -70,6 +70,7 @@ class TunerController(
         val pcrPid: Int?,
         val video: AribElementaryStream?,
         val audio: AribElementaryStream?,
+        val subtitle: AribElementaryStream? = null,
     )
 
     data class TisTrack(
@@ -80,6 +81,8 @@ class TunerController(
         val componentTag: Int?,
         val componentType: Int?,
         val language: String?,
+        val dataComponentId: Int? = null,
+        val captionServiceKind: String? = null,
     )
 
     enum class SectionReadDecision { INGEST, SHORT_READ, READ_ERROR, STALE_GENERATION }
@@ -189,7 +192,7 @@ class TunerController(
     fun tuneForLive(channelUri: Uri): TuneOutcome = callOnController { tuneForLiveOnController(channelUri) }
 
     private fun tuneForLiveOnController(channelUri: Uri): TuneOutcome {
-        // channel 解決に失敗する場合も既存 live state を先に破棄する。
+        // channel 解決に失敗する場合も既存 ライブ state を先に破棄する。
         resetBeforeTune()
         val resolved = resolveChannel(channelUri).getOrElse { e ->
             Log.w(LogTags.TIS, "channel 解決に失敗しました inputId=$inputId uri=$channelUri", e)
@@ -495,8 +498,8 @@ class TunerController(
     }
 
     private fun startPlaybackIfStreamsKnown() {
-        // 実際の service snapshot は MaleicacidLiveSession と AribSiEngine が管理する。
-        // この hook は section 取り込み後の callback 用であり、視聴可能状態を主張しない。
+        // 実際の サービススナップショット は MaleicacidLiveSession と AribSiEngine が管理する。
+        // この hook は section 取り込み後の コールバック 用であり、視聴可能状態を主張しない。
     }
 
     fun selectAvStreams(
@@ -504,11 +507,14 @@ class TunerController(
         pcrPid: Int?,
         streams: List<AribElementaryStream>,
         preferredAudioTrackId: String? = null,
+        preferredSubtitleTrackId: String? = null,
     ): AvStreamSelection {
         val video = streams.firstOrNull { it.streamType in VIDEO_STREAM_TYPES }
         val audioCandidates = streams.filter { it.streamType in AUDIO_STREAM_TYPES }
         val audio = preferredAudioTrackId?.let { wanted -> audioCandidates.firstOrNull { trackIdForAudio(it) == wanted } } ?: audioCandidates.firstOrNull()
-        return AvStreamSelection(serviceKey, pcrPid, video, audio)
+        val subtitleCandidates = streams.filter { isCaptionStream(it) }
+        val subtitle = preferredSubtitleTrackId?.let { wanted -> subtitleCandidates.firstOrNull { trackIdForSubtitle(it) == wanted } } ?: subtitleCandidates.firstOrNull()
+        return AvStreamSelection(serviceKey, pcrPid, video, audio, subtitle)
     }
 
     fun tracksFor(streams: List<AribElementaryStream>): List<TisTrack> = buildList {
@@ -518,15 +524,23 @@ class TunerController(
         streams.filter { it.streamType in AUDIO_STREAM_TYPES }.forEach { stream ->
             add(TisTrack(trackIdForAudio(stream), android.media.tv.TvTrackInfo.TYPE_AUDIO, stream.elementaryPid, stream.streamType, stream.componentTag, stream.componentType, stream.languageCodes.firstOrNull()))
         }
+        streams.filter { isCaptionStream(it) }.forEach { stream ->
+            add(TisTrack(trackIdForSubtitle(stream), android.media.tv.TvTrackInfo.TYPE_SUBTITLE, stream.elementaryPid, stream.streamType, stream.componentTag, stream.componentType, stream.languageCodes.firstOrNull(), stream.dataComponentId, captionKindFor(stream)))
+        }
     }
 
     fun trackIdForVideo(stream: AribElementaryStream): String = trackIdForVideoStream(stream)
     fun trackIdForAudio(stream: AribElementaryStream): String = trackIdForAudioStream(stream)
+    fun trackIdForSubtitle(stream: AribElementaryStream): String = trackIdForSubtitleStream(stream)
 
     fun startPlayback(selection: AvStreamSelection): PlaybackPipeline.StartResult? {
         val channel = currentTune ?: return null
         val tunerInstance = tuner ?: return null
         return playbackPipeline.start(tunerInstance, channel, selection)
+    }
+
+    fun setOnSubtitlePesCallback(callback: (String, ByteArray, Long) -> Unit) {
+        playbackPipeline.setOnSubtitlePesCallback(callback)
     }
 
     fun switchAudioTrack(selection: AvStreamSelection): PlaybackPipeline.AudioSwitchResult? {
@@ -648,11 +662,15 @@ class TunerController(
         private const val SECTION_EVENT_MAX_BYTES = 4096L
         private val VIDEO_STREAM_TYPES = setOf(0x02, 0x1b)
         private val AUDIO_STREAM_TYPES = setOf(0x03, 0x04, 0x0f)
+        private val CAPTION_DATA_COMPONENT_IDS = setOf(0x0008, 0x0012)
 
         fun isR51SupportedVideoStreamTypeForTest(streamType: Int): Boolean = streamType in VIDEO_STREAM_TYPES
 
         fun selectVideoForTest(streams: List<AribElementaryStream>): AribElementaryStream? =
             streams.firstOrNull { it.streamType in VIDEO_STREAM_TYPES }
+
+        fun hasR51SupportedVideoForTest(streams: List<AribElementaryStream>): Boolean =
+            streams.any { it.streamType in VIDEO_STREAM_TYPES }
 
         fun sectionReadDecisionForTest(expected: Int, actual: Int, generationMatches: Boolean): SectionReadDecision = when {
             !generationMatches -> SectionReadDecision.STALE_GENERATION
@@ -673,12 +691,25 @@ class TunerController(
         fun trackIdForAudioStream(stream: AribElementaryStream): String =
             stream.componentTag?.let { "audio:${stream.elementaryPid}:$it" } ?: "audio:${stream.elementaryPid}"
 
+        fun trackIdForSubtitleStream(stream: AribElementaryStream): String =
+            stream.componentTag?.let { "subtitle:${stream.elementaryPid}:$it" } ?: "subtitle:${stream.elementaryPid}"
+
+        fun isCaptionStream(stream: AribElementaryStream): Boolean =
+            stream.isCaption || stream.dataComponentId in CAPTION_DATA_COMPONENT_IDS
+
+        fun captionKindFor(stream: AribElementaryStream): String = when {
+            stream.isSuperimpose -> "superimpose"
+            stream.dataComponentId == 0x0012 -> "one-seg-caption"
+            else -> "caption"
+        }
+
         fun isCs110SelectorAllowedForTest(satelliteBand: String?, selector: StreamSelector): Boolean =
             satelliteBand != "110CS" || selector.type == StreamSelectorType.NONE
 
         fun isSelectableTrackForTest(type: Int, trackId: String?, tracks: List<TisTrack>): Boolean = when (type) {
             android.media.tv.TvTrackInfo.TYPE_AUDIO -> trackId != null && tracks.any { it.type == type && it.id == trackId }
             android.media.tv.TvTrackInfo.TYPE_VIDEO -> trackId != null && tracks.firstOrNull { it.type == type }?.id == trackId
+            android.media.tv.TvTrackInfo.TYPE_SUBTITLE -> trackId != null && tracks.any { it.type == type && it.id == trackId }
             else -> false
         }
     }

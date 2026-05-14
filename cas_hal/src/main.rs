@@ -53,6 +53,15 @@ mod cas_placeholder_tests {
         let service = MediaCasStub;
         assert!(service.enumeratePlugins().unwrap().is_empty());
         assert!(!service.isSystemIdSupported(0x0005).unwrap());
+        assert!(!service.isSystemIdSupported(0x0001).unwrap());
         assert!(!service.isDescramblerSupported(0x0005).unwrap());
+        assert!(!service.isDescramblerSupported(0x0001).unwrap());
+    }
+
+    #[test]
+    fn プレースホルダーは_descrambler_を返さない() {
+        let service = MediaCasStub;
+        assert!(service.createDescrambler(0x0005).is_err());
+        assert!(service.createDescrambler(0x0001).is_err());
     }
 }

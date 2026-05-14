@@ -49,8 +49,8 @@ class CurrentProgramRatingResolver(private val context: Context) {
         }
 
         /**
-         * framework 提供 rating が現在 Program と一致し、現在 Program identity が完全な場合だけ
-         * unblock key を返す。event / start / end identity を持たない UNRATED fallback は、
+         * framework 提供 レーティングが現在 Program と一致し、現在 Program identity が完全な場合だけ
+         * unblock key を返す。event / start / end identity を持たない UNRATED 代替処理 は、
          * 意図的に unblock 不可とする。
          */
         fun exactUnblockKeyFor(rating: TvContentRating): String? {

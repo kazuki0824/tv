@@ -1,0 +1,93 @@
+{
+  "schema": "maleicacid.tv.program",
+  "schemaVersion": 1,
+  "programKey": {
+    "kind": "arib-event-v1",
+    "originalNetworkId": 4,
+    "transportStreamId": 16400,
+    "serviceId": 101,
+    "eventId": 12345
+  },
+  "serviceKey": {
+    "originalNetworkId": 4,
+    "transportStreamId": 16400,
+    "serviceId": 101
+  },
+  "timing": {
+    "startUtcMillis": 1730000000000,
+    "endUtcMillis": 1730001800000,
+    "durationMillis": 1800000
+  },
+  "source": {
+    "pid": 18,
+    "tableId": 78,
+    "version": 12,
+    "sectionNumber": 0,
+    "lastSectionNumber": 1
+  },
+  "cas": {
+    "requiresCas": false,
+    "unsupportedCas": false,
+    "clearLivePlaybackSupported": true,
+    "source": "CURRENT_DIAGNOSTIC"
+  },
+  "ratings": [],
+  "genres": [
+    {
+      "level1": 0,
+      "level2": 0,
+      "userNibble": 0,
+      "aribName": "ニュース／報道",
+      "unmappedReason": null,
+      "parseStatus": "OK"
+    }
+  ],
+  "series": null,
+  "relatedItems": [],
+  "linkage": [],
+  "freeCaMode": {
+    "raw": 0,
+    "scrambled": false,
+    "parseStatus": "OK"
+  },
+  "audioLanguages": [],
+  "audio": null,
+  "video": null,
+  "extendedItems": [],
+  "components": {
+    "video": [
+      {
+        "esPid": 288,
+        "streamType": 36,
+        "componentTag": 1,
+        "componentType": 0,
+        "codec": "HEVC",
+        "r51PlaybackSupported": false,
+        "liveViewableClaim": false,
+        "diagnosticCode": "UNSUPPORTED_R51_CODEC",
+        "parseStatus": "UNSUPPORTED_R51"
+      }
+    ],
+    "audio": [
+      {
+        "esPid": 273,
+        "streamType": 17,
+        "componentTag": 2,
+        "componentType": 0,
+        "codec": "MPEG-4-AAC-LATM",
+        "language": "jpn",
+        "r51PlaybackSupported": false,
+        "liveViewableClaim": false,
+        "diagnosticCode": "UNSUPPORTED_R51_CODEC",
+        "parseStatus": "UNSUPPORTED_R51"
+      }
+    ],
+    "subtitle": [],
+    "data": []
+  },
+  "diagnostics": {
+    "descriptorDiagnostics": [],
+    "publishDiagnostics": [],
+    "parserDiagnostics": []
+  }
+}

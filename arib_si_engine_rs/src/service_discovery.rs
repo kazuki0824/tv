@@ -722,8 +722,8 @@ impl ServiceDiscoveryEngine {
 
 
 impl ServiceDiscoveryCollector {
-    /// service が r51 視聴可能になる前に PMT section filter を開く必要がある。
-    /// service の公開可否や視聴可否に依存せず、PAT 由来の PMT PID を返す。
+    /// サービスが r51 視聴可能になる前に PMTセクションフィルター を開く必要がある。
+    /// サービス の公開可否や視聴可否に依存せず、PAT 由来の PMT PID を返す。
     pub fn pmt_pids_for_section_filters(&self) -> Vec<u16> {
         let mut pids: Vec<u16> = self.engine.pat_programs.values().copied().collect();
         pids.extend(self.engine.snapshot().pmt_pids_by_service.iter().map(|mapping| mapping.pmt_pid));
@@ -886,12 +886,14 @@ impl ServiceDiscoveryCollector {
             missing_for_service.sort_unstable();
             missing_for_service.dedup();
             let publishable = missing_for_service.is_empty();
-            let video_pids: BTreeSet<u16> = service.streams.iter()
+            let supported_video_pids: BTreeSet<u16> = service.streams.iter()
                 .filter(|stream| matches!(stream.stream_type, 0x02 | 0x1b))
                 .map(|stream| stream.elementary_pid)
                 .collect();
+            let has_any_video_es = service.streams.iter().any(|stream| matches!(stream.stream_type, 0x02 | 0x1b | 0x24));
+            let has_unsupported_video_codec = service.streams.iter().any(|stream| matches!(stream.stream_type, 0x24));
             let has_program_ca_descriptor = !service.program_ca_descriptors.is_empty();
-            let has_video_es_ca_descriptor = service.es_ca_descriptors.iter().any(|ca| video_pids.contains(&ca.elementary_pid));
+            let has_video_es_ca_descriptor = service.es_ca_descriptors.iter().any(|ca| supported_video_pids.contains(&ca.elementary_pid));
             let pmt_pid_resolved = service.pmt_pid.is_some();
             let pmt_parsed = service.pmt_pid.is_some() && service.pcr_pid.is_some();
             let free_ca_mode_resolved = service.free_ca_mode.is_some();
@@ -902,7 +904,8 @@ impl ServiceDiscoveryCollector {
             let mut registration_reasons = Vec::new();
             if !publishable { registration_reasons.push("NOT_PUBLISHABLE"); }
             if service.pcr_pid.is_none() { registration_reasons.push("NO_PCR_PID"); }
-            if video_pids.is_empty() { registration_reasons.push("NO_SUPPORTED_VIDEO_ES"); }
+            if supported_video_pids.is_empty() { registration_reasons.push("NO_SUPPORTED_VIDEO_ES"); }
+            if supported_video_pids.is_empty() && has_any_video_es && has_unsupported_video_codec { registration_reasons.push("UNSUPPORTED_VIDEO_CODEC"); }
             if service.free_ca_mode.is_none() && !requires_cas { registration_reasons.push("UNRESOLVED_CA_STATE"); }
             registration_reasons.sort_unstable();
             registration_reasons.dedup();
@@ -918,7 +921,8 @@ impl ServiceDiscoveryCollector {
             if !publishable { reasons.push("NOT_PUBLISHABLE"); }
             if !channel_registration_ready { reasons.push("NOT_CHANNEL_REGISTRATION_READY"); }
             if service.pcr_pid.is_none() { reasons.push("NO_PCR_PID"); }
-            if video_pids.is_empty() { reasons.push("NO_SUPPORTED_VIDEO_ES"); }
+            if supported_video_pids.is_empty() { reasons.push("NO_SUPPORTED_VIDEO_ES"); }
+            if supported_video_pids.is_empty() && has_any_video_es && has_unsupported_video_codec { reasons.push("UNSUPPORTED_VIDEO_CODEC"); }
             if service.free_ca_mode != Some(false) { reasons.push("SCRAMBLED_OR_UNKNOWN_SDT_FREE_CA_MODE"); }
             if has_program_ca_descriptor { reasons.push("PMT_PROGRAM_CA_DESCRIPTOR"); }
             if has_video_es_ca_descriptor { reasons.push("VIDEO_ES_CA_DESCRIPTOR"); }
@@ -1927,6 +1931,13 @@ mod clear_live_playback_coverage_tests {
             assert!(!publishability.clear_live_playback_supported);
             assert!(!publishability.clear_live_playback_supported);
             assert!(publishability.reasons.contains(&"NO_SUPPORTED_VIDEO_ES"));
+            if stream_type == 0x24 {
+                assert!(publishability.reasons.contains(&"UNSUPPORTED_VIDEO_CODEC"));
+                assert!(publishability.registration_reasons.contains(&"UNSUPPORTED_VIDEO_CODEC"));
+                assert!(publishability.epg_reasons.contains(&"UNSUPPORTED_VIDEO_CODEC"));
+            } else {
+                assert!(!publishability.reasons.contains(&"UNSUPPORTED_VIDEO_CODEC"));
+            }
         }
     }
 

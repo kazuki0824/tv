@@ -12,7 +12,7 @@ import java.util.concurrent.Executors
  * PMT/CAT の CA情報 は arib_si_engine_rs の snapshot から受ける。
  * ECM/EMM は完全な section として扱い、生 TS packet は扱わない。
  * カード I/O、CW 生成、鍵発行は MediaCas/CAS HAL 側の責務とする。
- * Tuner HAL には 不透明 token と ES PID 登録だけを渡す。
+ * Tuner HAL には 不透明 トークン と ES PID 登録だけを渡す。
  */
 class CasController(
     private val supportedSystemIds: Set<Int> = SupportedCasSystemIds.B25_B1,

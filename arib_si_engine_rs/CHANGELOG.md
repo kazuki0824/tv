@@ -1,18 +1,95 @@
+## r50ck
+- r50cj 設計・実装不一致レポートの残件1〜5に対応し、ProgramProviderDataV1 の relatedItems / linkage / components / descriptorDiagnostics を型付き serde 構造へ寄せた。
+- program provider-data の audio / video metadata に schema required の codec を必ず出すようにし、extendedItems の新規出力名を description / text へ統一した。
+- hard-limit 時の program provider-data 切り詰めでも CAS 状態と ratings を保持するようにした。
+- Android/Soong build、Rust 単体テスト、atest、VTS、CTS、実機確認は未実施。
+
+## r50ci
+- r50ch の優先順位 1〜4 を再確認し、serde / serde_json provider-data、schema required field、unknown key 値付き退避、TIS 側 nested DTO 境界は静的に維持されていることを前提に、優先順位 5〜7 を進めた。
+- service bulk JSON に `components` を追加し、PMT 由来 ES メタデータを `video` / `audio` / `subtitle` / `data` の provider-data 構造へ渡せるようにした。
+- event bulk JSON の `descriptors.components` に空構造を明示し、TIS 側で service bulk JSON 由来 components を上書きできる境界にした。
+- event 以外も含めた旧 indexed helper と未使用 bool helper を削除し、通常境界を bulk snapshot と provider-data JNI API に限定した。
+- Android/Soong build、Rust 単体テスト、atest、VTS、CTS、実機確認は未実施。
+
+## r50cg
+- provider-data 生成・正規化を `serde_json` ベースの ProgramProviderDataV1 / ChannelProviderDataV1 構造経由に変更し、既存 JSON 断片の raw 流用をやめた。
+- Channel provider-data を `serviceKey` / `tune` / `cas` / `diagnostics` の nested JSON v1 形へ変更し、schema も同形へ更新した。
+- bulk event JSON の通常境界から `freeCaText` / `seriesName` / `diagnosticDescriptorJson` 等の flat field を削除し、`descriptors` 配下の構造化 DTO に寄せた。
+- event 以外も含めた旧 indexed JNI getter export を削除し、通常境界を `nativeSnapshotBulkJson()` と provider-data JNI API に限定した。
+- Android/Soong build、Rust 単体テスト、atest、VTS、CTS、実機確認は未実施。
+
+## r50cf
+- provider-data 生成・正規化・現在番組診断追記を、既存 JSON をそのまま返す経路ではなく固定順の JSON v1 再出力経路へ寄せ、署名を再出力後バイト列から計算するようにした。
+- Channel provider-data に `schema="maleicacid.tv.channel"` を追加し、`schema/channel_provider_data_v1.schema.json` を追加した。
+- 未対応視聴年齢制限は記述子診断情報ではなく `ratings[]` と `diagnostics.publishDiagnostics[]` に保持するようにした。
+- Android/Soong build、Rust 単体テスト、atest、VTS、CTS、実機確認は未実施。
+
+## r50ce
+- provider-data / 診断情報の r51 設計固定として、unknown key の扱い、`diagnostics.currentProgram`、ChannelProviderDataV1、未対応視聴年齢制限の格納先を明記した。
+- Android canonical genre の Rust 所有を禁止し、旧 `canonicalGenres` event field と `nativeGetEventCount()` / `nativeGetEvent*` indexed JNI getter 群を廃止境界として固定した。
+- 実装追随として、bulk event JSON から Rust 由来の `canonicalGenres` を削除し、旧 indexed event JNI シンボルを削除した。
+- Android/Soong build、Rust 単体テスト、atest、VTS、CTS、実機確認は未実施。
+
+## r50cb
+- WP-13対応として、unsupported codec provider-data テストデータを testdata に追加し、`maleicacid_arib_si_engine_rs_test` の data から参照できるようにした。
+- schema、試験データ、provider-data v1 の r51確認対象は、tv直下の作業メモではなく `tis/INTEGRATION.md` の r51 ビルド・試験確認ゲートを正とする。
+- Android/Soong build、Rust 単体テスト、atest、VTS、CTS、実機確認は未実施。
+
+## r50ca
+- WP-12対応として、HEVC-only サービスの 公開可否診断に `UNSUPPORTED_VIDEO_CODEC` を追加し、codecメタデータ認識と r51 平文ライブ視聴の対応宣言を分離した。
+- HEVC-only サービスが `NO_SUPPORTED_VIDEO_ES` だけでなく `UNSUPPORTED_VIDEO_CODEC` を持つことを Rust test source で固定した。
+- Android/Soong build、Rust 単体テスト、atest、VTS、CTS、実機確認は未実施。
+
+## r50bx
+- WP-09対応として、EIT更新区間JSONに `deletionAuthoritative` を出力し、TIS側の廃止削除判定へ Rust parser の authoritative 判定を伝搬できるようにした。
+- EIT schedule other `0x60..0x6F` が r51 Programs publish/delete 対象の snapshot / 更新区間に入らないことを Rust test source で固定した。
+- Android/Soong build、Rust 単体テスト、atest、VTS、CTS、実機確認は未実施。
+
+## r50br
+- WP-05 対応として、PMT由来ESの `dataComponentId`、字幕判定、スーパーインポーズ判定を JNI / JSON snapshot からTISへ渡せるようにした。
+- `arib_si_engine_rs` 本体は字幕本文処理を所有せず、字幕本文は TIS 側の別 Rust JNI 境界で `libaribcaption` C API へ渡す分離を維持した。
+- Android/Soong build、Rust 単体テスト、atest、VTS、CTS、実機確認は未実施。
+
+## r50bq
+- WP-04 対応として、未知 descriptor を通常フィールドに混ぜず `DescriptorDiagnosticV1` 形の診断へ出すようにした。
+- `event_descriptors_to_json()` の descriptor 診断要素を `schema` / `schemaVersion` / `severity` / `code` / `scope` / `descriptor` / `message` を持つ v1 形へ変更した。
+- `event_group_descriptor` の `group_type` 変換を、`0x1=shared`、`0x2/0x4=relay`、`0x3/0x5=movement` とする SSOT に合わせた。
+- Android/Soong build、Rust 単体テスト、atest、VTS、CTS、実機確認は未実施。
+
+## r50bp
+- WP-03 対応として、ARIB content_descriptor から r51 明示写像に一致する canonical genre 配列を出力できるようにした。
+- event_group_descriptor を `relatedItems`、linkage_descriptor を `linkage`、series_descriptor を series 構造と episode/count 用値として TIS へ渡せる JSON / JNI 経路を追加した。
+- EIT `free_CA_mode` を TvProvider scrambled 投影用 boolean と provider-data `freeCaMode` へ渡せるようにした。
+- Android/Soong build、Rust 単体テスト、atest、VTS、CTS、実機確認は未実施。
+
+## r50bo
+- WP-02 対応として、Program provider-data の新規生成を `ProgramProviderDataV1` の top-level schema へ切り替えた。
+- 旧 `programKeyB64` / flat フィールド 形式は新規書き込みから外し、読み取り互換と正規化入力だけに限定した。
+- `descriptorDiagnostics` は `ProgramProviderDataV1.diagnostics.descriptorDiagnostics[]` 配下の `DescriptorDiagnosticV1` 要素として生成する形へ変更した。
+- provider-data が上限を超える場合も `ProgramProviderDataV1` の必須フィールドを維持した切り詰め JSON を生成するようにした。
+- Android/Soong build、Rust 単体テスト、atest、VTS、CTS、実機確認は未実施。
+
+## r50bn
+- WP-01 対応として、`ProgramProviderDataV1` schema から重複していた `DescriptorDiagnosticV1` 定義を外し、`descriptor_diagnostic_v1.schema.json` への外部参照に統一した。
+- `descriptor_diagnostic_v1.schema.json` の `$id` を `program_provider_data_v1.schema.json` からの相対参照と整合する URI に変更した。
+- provider-data / 記述子診断情報の検証用JSONが schema 検証を通り、Rust 側と TIS 側の複製が バイト単位で同一であることを確認した。
+- Android/Soong build、Rust 単体テスト、atest、VTS、CTS、実機確認は未実施。
+
 ## r50bm6
 - r50bm5 の確認サマリ不足を受け、リリース物規則違反の人手観点を追加確認した。
-- 本モジュールの実装ロジックは変更していない。Android/Soong build、Rust unit test、atest、VTS、CTS、実機確認は未実施。
+- 本モジュールの実装ロジックは変更していない。Android/Soong build、Rust 単体テスト、atest、VTS、CTS、実機確認は未実施。
 
 ## r50bm5
 - r50bm4 の確認漏れ是正として、リリース物規則違反の再スキャンを実施し、残っていた英語自然文コメントと診断文字列を日本語化した。
-- 実装ロジックは変更していない。Android/Soong build、Rust unit test、atest、VTS、CTS、実機確認は未実施。
+- 実装ロジックは変更していない。Android/Soong build、Rust 単体テスト、atest、VTS、CTS、実機確認は未実施。
 
 ## r50bm4
-- r50bm3 の仕様固定内容を再確認し、event group を LONG_DESCRIPTION へ出す旧記述が残っていた箇所を provider-data JSON `relatedItems` 保存方針へ統一した。
-- 実装コードは変更していない。Android/Soong build、Rust unit test、atest、VTS、CTS、実機確認は未実施。
+- r50bm3 の仕様固定内容を再確認し、イベントグループを LONG_DESCRIPTION へ出す旧記述が残っていた箇所を provider-data JSON `relatedItems` 保存方針へ統一した。
+- 実装コードは変更していない。Android/Soong build、Rust 単体テスト、atest、VTS、CTS、実機確認は未実施。
 
 ## r50bm3
-- 承認済みスコープ拡大の仕様固定として、canonical genre 投影の入力構造、series / event group / linkage / free_CA_mode / audio language / parental rating の provider-data 契約を更新した。
-- 実装コードは変更していない。Android/Soong build、Rust unit test、atest、VTS、CTS、実機確認は未実施。
+- 承認済みスコープ拡大の仕様固定として、canonical genre 投影の入力構造、series / イベントグループ / linkage / free_CA_mode / audio language / 視聴年齢制限の provider-data 契約を更新した。
+- 実装コードは変更していない。Android/Soong build、Rust 単体テスト、atest、VTS、CTS、実機確認は未実施。
 
 ## r50bm2
 - リリース物規則違反の追加是正として、provider-data 投影方針に残っていた英語自然文を日本語の現行仕様文へ置換した。
@@ -25,116 +102,116 @@
 
 ## r50bk12
 - TIS 側の r51 設計契約未達修正のみで、arib_si_engine_rs の実装変更はない。
-- Android/Soong build、Rust unit test 実行、atest、VTS、CTS、実機確認はこの環境では未実施。
+- Android/Soong build、Rust 単体テスト 実行、atest、VTS、CTS、実機確認はこの環境では未実施。
 
 ## r50bk11
 - DescriptorDiagnosticV1 の canonical schema を計画どおり `actualRemainingLength` / `rawPrefixHex` を持つ形に更新し、互換用に `remainingLength` / `rawPrefix` も保持するようにした。
-- JSON schema、golden fixture、Rust unit test の期待値を新 schema に合わせた。
-- Android/Soong build、Rust unit test 実行、atest、VTS、CTS、実機確認はこの環境では未実施。
+- JSON schema、期待値テストデータ、Rust 単体テストの期待値を新 schema に合わせた。
+- Android/Soong build、Rust 単体テスト 実行、atest、VTS、CTS、実機確認はこの環境では未実施。
 
 ## r50bk10
-- r50bk8 completion 版からの追加として、provider-data JSON v1 の golden / deterministic signature / hard-limit fallback の Rust unit test を保持し、TIS 側完了条件の testable boundary と整合する形にした。
-- Rust provider-data API の Android/Soong build、Rust unit test 実行、atest、VTS、CTS、実機確認はこの環境では未実施。
+- r50bk8 completion 版からの追加として、provider-data JSON v1 の golden / deterministic 署名 / 上限超過時の代替処理 の Rust 単体テスト を保持し、TIS 側完了条件の テスト可能な境界 と整合する形にした。
+- Rust provider-data API の Android/Soong build、Rust 単体テスト 実行、atest、VTS、CTS、実機確認はこの環境では未実施。
 
 ## r50bk8-rerelease
 - r50bk8 TIS / arib_si_engine_rs 追加修正計画の provider-data / EIT authoritative delete / malformed descriptor 境界に対応した。
-- `provider_data.rs` を追加し、Channel/Program provider-data JSON v1 の生成、program/channel key 抽出、SHA-256 signature、current-program diagnostics 追記を native API として公開した。
-- `NativeAribSiParser` JNI に provider-data build / normalize / extract / diagnostics append 用 entry point を追加した。
-- EIT update window に `deletion_authoritative` を追加し、malformed EIT event または descriptor diagnostics を含む update window を obsolete delete 根拠にしない情報を TIS へ返すようにした。
-- malformed descriptor loop を検出した section を parser 全体で即破棄せず、collector へ投入したうえで malformed status を返すように変更した。
-- Android/Soong build、Rust unit test、atest、VTS、CTS、実機確認はこの環境では未実施。
+- `provider_data.rs` を追加し、Channel/Program provider-data JSON v1 の生成、program/channel key 抽出、SHA-256 署名、current-program 診断情報 追記を native API として公開した。
+- `NativeAribSiParser` JNI に provider-data build / 正規化 / 抽出 / 診断情報追記 用 entry point を追加した。
+- EIT 更新区間に `deletion_authoritative` を追加し、malformed EIT event または 記述子診断情報を含む 更新区間 を 廃止行削除根拠にしない情報を TIS へ返すようにした。
+- malformed descriptor loop を検出した section を parser 全体で即破棄せず、collector へ投入したうえで malformed 状態 を返すように変更した。
+- Android/Soong build、Rust 単体テスト、atest、VTS、CTS、実機確認はこの環境では未実施。
 
 ## r50bj3
-- r50bj2 後に残っていた設計未固定事項として、ARIB descriptor の length / loop / fragment sequence 不整合を正常 field に採用しないこと、extended_event fragment の欠番・重複・last_descriptor_number 不一致を diagnostic 扱いにすること、malformed EIT event を旧 event 削除根拠にしないことを DESIGN_JA.md に固定した。
-- 実装コードは変更していない。Android/Soong build、Rust unit test、atest、VTS、CTS、実機確認はこの環境では未実施。
+- r50bj2 後に残っていた設計未固定事項として、ARIB descriptor の length / loop / fragment sequence 不整合を正常フィールドに採用しないこと、extended_event fragment の欠番・重複・last_descriptor_number 不一致を 診断 扱いにすること、malformed EIT event を旧 event 削除根拠にしないことを DESIGN_JA.md に固定した。
+- 実装コードは変更していない。Android/Soong build、Rust 単体テスト、atest、VTS、CTS、実機確認はこの環境では未実施。
 
 ## r50bj2
-- r50bj の Rust provider-data / diagnostics SSOT 方針と矛盾しないよう、TvProvider 投影方針文書側の旧未固定記述を整理した。
-- 実装コードは変更していない。Android/Soong build、Rust unit test、atest、VTS、CTS、実機確認はこの環境では未実施。
+- r50bj の Rust provider-data / 診断情報 SSOT 方針と矛盾しないよう、TvProvider 投影方針文書側の旧未固定記述を整理した。
+- 実装コードは変更していない。Android/Soong build、Rust 単体テスト、atest、VTS、CTS、実機確認はこの環境では未実施。
 
 ## r50bj
-- 設計文書上で provider-data / descriptor diagnostics の Rust serde SSOT、canonical JSON、signature、JNI boundary、JSON Schema / golden fixture 方針を固定した。
-- 実装コードは変更していない。Android/Soong build、Rust unit test、atest、VTS、CTS、実機確認はこの環境では未実施。
+- 設計文書上で provider-data / 記述子診断情報の Rust serde SSOT、canonical JSON、署名、JNI boundary、JSON Schema / 期待値テストデータ 方針を固定した。
+- 実装コードは変更していない。Android/Soong build、Rust 単体テスト、atest、VTS、CTS、実機確認はこの環境では未実施。
 
 ## r50bi6
 - Phase B 完了証跡として、既存の SDT / NIT / BAT scope 実装が ONID+TSID / table-specific scope に閉じていることを静的確認した。
-- TIS 側 JNI production path から呼ばれる snapshot を bulk wrapper 経由にし、count + index 型 getter を AribSiEngine public path から直接呼ばないようにした。
-- Android/Soong build、Rust unit test、atest、VTS、CTS、実機確認はこの環境では未実施。
+- TIS 側 JNI 本番経路から呼ばれる snapshot を bulk ラッパー 経由にし、count + index 型 getter を AribSiEngine public path から直接呼ばないようにした。
+- Android/Soong build、Rust 単体テスト、atest、VTS、CTS、実機確認はこの環境では未実施。
 
 ## r50bi4
-- parental_rating_descriptor の Rust 側出力が ARIB 構造化データと diagnostic JSON に留まり、Android `TvContentRating` domain / ISDB rating string を持たないことを behavior test で固定した。
-- malformed length / truncated parental rating descriptor が diagnostic として記録され、Android rating projection 文字列を Rust 側に混入させないことを test で補強した。
-- Android/Soong build、Rust unit test、atest、VTS、CTS、実機確認はこの環境では未実施。
+- parental_rating_descriptor の Rust 側出力が ARIB 構造化データと 診断JSON に留まり、Android `TvContentRating` domain / ISDB レーティング文字列 を持たないことを 挙動テスト で固定した。
+- malformed length / truncated 視聴年齢制限descriptor が 診断として記録され、Android レーティング projection 文字列を Rust 側に混入させないことを test で補強した。
+- Android/Soong build、Rust 単体テスト、atest、VTS、CTS、実機確認はこの環境では未実施。
 
 ## r50bi3
-- service publishability diagnostic に `pmt_pid_resolved` / `pmt_parsed` / `ca_state_resolved` / `free_ca_mode_resolved` を追加し、TIS が current diagnostic complete を理由文字列だけに依存せず判定できるようにした。
-- Android/Soong build、Rust unit test、atest、VTS、CTS、実機確認はこの環境では未実施。
+- サービス 公開可否診断に `pmt_pid_resolved` / `pmt_parsed` / `ca_state_resolved` / `free_ca_mode_resolved` を追加し、TIS が 現在診断情報の完備を理由文字列だけに依存せず判定できるようにした。
+- Android/Soong build、Rust 単体テスト、atest、VTS、CTS、実機確認はこの環境では未実施。
 
 ## r50bh
 - Replaced persistent/product-path `r51_live_claimable` naming with `clear_live_playback_supported`.
-- Added service publishability fields for `channel_registration_ready`, `epg_publishable`, `requires_cas`, and `unsupported_cas`, and made `registration_ready_snapshot()` depend on the explicit Rust readiness flag.
-- Made clear live playback support depend on transport/service publishability, registration readiness, supported video, and clear/no-CA state; scrambled services may be channel/EPG publishable but are not clear live playback supported.
-- Android/Soong build, Rust unit test, atest, VTS, CTS, and real-device checks were not run in this environment.
+- `channel_registration_ready`、`epg_publishable`、`requires_cas`、`unsupported_cas` をサービス公開可否フィールドとして追加し、`registration_ready_snapshot()` が Rust 側の明示的な準備完了フラグに依存するようにした。
+- 平文ライブ視聴対応は、transport / サービスの公開可否、登録準備完了、対応映像、平文またはCA情報なしの状態に依存するようにした。スクランブルサービスはチャンネル/EPG公開可能でも、平文ライブ視聴対応とは扱わない。
+- Android/Soong build, Rust 単体テスト, atest, VTS, CTS, and real-device checks were not run in this environment.
 
 ## r50bg
-- service-local registration-ready snapshot を通常 channel registration 用 snapshot として公開し、clear live claimable と scrambled unsupported registration を分離した。
-- EIT section 更新後の event set が空になった場合も update window を保持し、TIS が obsolete Programs delete に使える JNI accessor を追加した。
-- `arib_si_engine_rs/DESIGN_JA.md` を r51 の service-local registration-ready 方針と empty EIT update window 方針に合わせて改訂した。
-- Android/Soong build、Rust unit test、atest、VTS、CTS、実機確認はこの環境では未実施。
+- サービス単位の登録可能snapshot を通常 channel registration 用 snapshot として公開し、平文ライブ視聴の対応宣言可能 と scrambled unsupported registration を分離した。
+- EIT section 更新後の event set が空になった場合も 更新区間 を保持し、TIS が obsolete Programs delete に使える JNI accessor を追加した。
+- `arib_si_engine_rs/DESIGN_JA.md` を r51 の サービス単位の登録可能 方針と empty EIT 更新区間 方針に合わせて改訂した。
+- Android/Soong build、Rust 単体テスト、atest、VTS、CTS、実機確認はこの環境では未実施。
 
 ## r50bf2
-- r50bf のロジック未達を是正し、ARIB content_descriptor の display name を `<majorName>/<middleName>` 形式に変更した。
-- JNI の broadcast genre token は `ARIB(0xM/0xN):<majorName>/<middleName>` を返し、supplement text も同じ分類名を保持するようにした。
-- Android/Soong build、Rust unit test、atest、VTS、CTS、実機確認はこの環境では未実施。
+- r50bf のロジック未達を是正し、ARIB content_descriptor の 表示名 を `<majorName>/<middleName>` 形式に変更した。
+- JNI の broadcast genre トークン は `ARIB(0xM/0xN):<majorName>/<middleName>` を返し、supplement text も同じ分類名を保持するようにした。
+- Android/Soong build、Rust 単体テスト、atest、VTS、CTS、実機確認はこの環境では未実施。
 
 ## r50bf
-- PMT の `PCR_PID=0x1fff` を PCR なしとして正規化し、r51 clear-live claimable 判定で `NO_PCR_PID` reason を出すようにした。
+- PMT の `PCR_PID=0x1fff` を PCR なしとして正規化し、r51 平文ライブ視聴の対応宣言可能 判定で `NO_PCR_PID` reason を出すようにした。
 - PMT parse / descriptor-loop malformed 判定を PAT で確定した PMT PID に限定し、`table_id=0x02` 単独では PMT と見なさないようにした。
-- `SectionAssembler` を test-only に閉じ、production の `arib_si_engine_rs` は assembled section payload の semantic parse だけを担当する境界へ戻した。
-- ARIB content_descriptor 由来の broadcast genre token を `ARIB(0xM/0xN):<表示名>` 形式で JNI から返す accessor を追加した。
-- Android/Soong build、Rust unit test、atest、VTS、CTS、実機確認はこの環境では未実施。
+- `SectionAssembler` を テスト専用 に閉じ、本番経路の `arib_si_engine_rs` は assembled section payload の 意味解析 だけを担当する境界へ戻した。
+- ARIB content_descriptor 由来の broadcast genre トークン を `ARIB(0xM/0xN):<表示名>` 形式で JNI から返す accessor を追加した。
+- Android/Soong build、Rust 単体テスト、atest、VTS、CTS、実機確認はこの環境では未実施。
 
 ## r50be
 - CHANGELOG の見出しを `# CHANGELOG` と `## r50be` 形式に統一した。
 - arib_si_engine_rs の実装ロジックは r50bd から変更していない。
 
 ## r50bd
-- r51向け Direct Boot 境界、TvProvider Programs 更新、service scoped CAS、AudioTrack write 診断、PTS fallback 診断、extended event JSON 解析、TIS product integration を更新。
+- r51向け Direct Boot 境界、TvProvider Programs 更新、サービス単位 CAS、AudioTrack write 診断、PTS代替同期 診断、extended event JSON 解析、TIS product integration を更新。
 
 ## r50bc4
-- r50bc3 完了判定で指摘された証跡不一致を踏まえ、EIT same-version 差分削除の説明コメントを日本語化し、r51 clear-live claimability の静的証跡対象を整理した。
-- Android/Soong build、Rust unit test、atest、VTS、CTS、実機確認はこの環境では未実施。
+- r50bc3 完了判定で指摘された証跡不一致を踏まえ、EIT same-version 差分削除の説明コメントを日本語化し、r51 平文ライブ視聴の対応宣言可否の静的証跡対象を整理した。
+- Android/Soong build、Rust 単体テスト、atest、VTS、CTS、実機確認はこの環境では未実施。
 
 ## r50bc3
-- Split r51 clear-live claimability from transport-level publishability so a service with PMT/PCR, r51-supported video, `free_ca_mode=false`, and no CA descriptors can appear in the r51 viewable snapshot even while NIT or other transport-level discovery is still incomplete.
-- Added Rust regression coverage for service-level r51 claimability when the transport-level NIT completion gate is still missing.
+- r51の 平文ライブ視聴の対応宣言可否 を transport 単位の公開可否から分離し、 サービスが PMT/PCR, r51対応映像, `free_ca_mode=false`, and no CA_descriptor が r51 視聴可能スナップショット even NIT など transport 単位の検出が未完了でも.
+- transport単位のNIT完了条件が未達でも、サービス単位のr51対応宣言可否を確認する Rust 回帰テストを追加した。
 - Android/Soong build, Rust unit tests, atest, VTS, CTS, and real-device checks were not run in this environment.
 
 ## r50bb7
-- Added JNI accessors for structured `parental_rating_descriptor` entries so TIS can project ARIB ratings to Android `TvContentRating`.
+- TIS が ARIB の視聴年齢制限情報を Android `TvContentRating` へ投影できるよう、構造化した `parental_rating_descriptor` 要素の JNI アクセサを追加した。
 
 ## r50bb4
-- Added raw discovery PMT PID access for section filter control, independent of r51 viewable service snapshot filtering.
-- Added JNI/Kotlin raw CAS discovery service and CA情報 accessors so PMT/CAT CA情報 can be used for diagnostics and ECM/EMM filter setup without publishing scrambled services as clear-viewable channels.
-- Added a Rust regression test confirming PAT-derived PMT PIDs are available for section filters before r51 viewable snapshot publication.
+- 検出用 PMT PID を セクションフィルター制御, r51視聴可能サービススナップショットのフィルタリングから独立して取得できるようにした。.
+- スクランブルサービスを平文視聴可能チャンネルとして公開せずに、PMT/CAT の CA情報を診断情報と ECM/EMM フィルター設定に使えるよう、JNI/Kotlin に検出用 CAS サービス情報と CA情報アクセサを追加した。
+- PAT由来 PMT PID が r51視聴可能スナップショット公開前にセクションフィルターで利用できることを確認する Rust 回帰テストを追加した。
 - Android/Soong build, Rust unit tests, atest, VTS, CTS, and real-device checks were not run in this environment.
 
 ## r50bb
-- Changed `libmaleicacid_arib_si_engine_jni` from `product_available: true` to `product_specific: true` according to the supplied Soong patch.
+- 提供された Soong パッチに従い、`libmaleicacid_arib_si_engine_jni` を `product_available: true` から `product_specific: true` へ変更した。
 - Android/Soong build, Rust unit tests, atest, VTS, CTS, and real-device checks were not run in this environment.
 
 ## r50ba5
-- Added r51 test coverage for clear MPEG-2/AVC video service claimability and rejection of audio-only, data-only, HEVC-only, SDT-scrambled, PMT program-CA, and video ES-CA services.
-- Added descriptor parser tests for short_event, content, component, event_group, linkage, unknown descriptor preservation, and diagnostic JSON coverage.
-- Added EIT tests for invalid time ranges, undefined MJD, and descriptor-loop overflow diagnostics.
-- Added CAT tests for version replacement and same-version multi-section merge.
-- Added ARIB string diagnostic entry field coverage.
+- 平文 MPEG-2/AVC 映像サービスの r51対応宣言可否、および audio-only、data-only、HEVC-only、SDT scrambled、PMT program-CA、video ES-CA サービスの除外を確認する r51 テストを追加した。
+- short_event、content、component、event_group、linkage、未知 descriptor の保持、診断JSONを確認する descriptor parser テストを追加した。
+- 不正な時間範囲、未定義MJD、descriptor loop overflow 診断情報を確認する EIT テストを追加した。
+- version 置換と同一version複数section統合を確認する CAT テストを追加した。
+- ARIB 文字列診断 entry フィールドを確認するテストを追加した。
 
 ## r50ba4
-- Removed `product_available: true` from `maleicacid_arib_si_engine_rs_test` so the Rust test module does not request a product image variant of Soong `libtest`.
-- Added r51 publishability diagnostic fields for `viewable`, `r51LiveClaimable`, and r51 exclusion reasons across Rust JNI and Kotlin models.
-- Changed ARIB string lossy decode diagnostics from aggregate-only counters to offset/code-set/reason/replacement entries while preserving summary counters.
-- Preserved malformed EIT event descriptor-loop overflow as event diagnostics instead of silently breaking the parse loop.
+- Rust test module が Soong `libtest` の product image variant を要求しないよう、`maleicacid_arib_si_engine_rs_test` から `product_available: true` を削除した。
+- Rust JNI と Kotlin モデルに、`viewable`、`r51LiveClaimable`、r51除外理由を含む r51公開可否診断フィールドを追加した。
+- ARIB文字列の損失許容復号診断情報を、集計カウンターだけではなく offset / code-set / reason / replacement の要素として持つ形式に変更し、要約カウンターも維持した。
+- 不正な EIT event descriptor-loop overflow は、parse loop を黙って中断するのではなく event 診断情報として保持するようにした。
 
 ## r50ba3
-- Reworked r51 ARIB SI / TvProvider projection planning implementation.
+- r51 ARIB SI / TvProvider 投影計画の実装を作り直した。

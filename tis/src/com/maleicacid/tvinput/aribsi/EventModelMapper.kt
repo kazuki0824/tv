@@ -2,6 +2,7 @@ package com.maleicacid.tvinput.aribsi
 
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.db.ChannelRecord
+import com.maleicacid.tvinput.db.ProgramDescriptors
 import com.maleicacid.tvinput.db.ProgramRecord
 import org.json.JSONArray
 import org.json.JSONObject
@@ -17,17 +18,11 @@ data class ProgramPublishState(
     val source: ProgramPublishStateSource,
 ) {
     companion object {
-        fun from(
-            diagnostic: ServicePublishabilityDiagnostic?,
-            fallback: ChannelRecord?,
-        ): ProgramPublishState {
+        fun from(diagnostic: ServicePublishabilityDiagnostic?, fallback: ChannelRecord?): ProgramPublishState {
             val diagnosticComplete = diagnostic?.isCurrentDiagnosticComplete() == true
             val diagnosticCasResolved = diagnostic?.caStateResolved == true
             return when {
                 diagnosticCasResolved -> {
-                    // CAS field の採用は、publishability 全体の完全性とは分離する。
-                    // freeCaMode がない場合や残りの service diagnostics が未完了の場合でも、
-                    // PMT CA_descriptor により requiresCas / unsupportedCas を確定できる。
                     val requiresCas = diagnostic!!.requiresCas
                     val unsupportedCas = diagnostic.unsupportedCas
                     ProgramPublishState(
@@ -59,14 +54,7 @@ data class ProgramPublishState(
                     epgPublishable = fallback.epgPublishable,
                     source = ProgramPublishStateSource.CHANNEL_FALLBACK,
                 )
-                else -> ProgramPublishState(
-                    requiresCas = false,
-                    unsupportedCas = false,
-                    clearLivePlaybackSupported = false,
-                    channelRegistrationReady = false,
-                    epgPublishable = false,
-                    source = ProgramPublishStateSource.NONE,
-                )
+                else -> ProgramPublishState(false, false, false, false, false, ProgramPublishStateSource.NONE)
             }
         }
 
@@ -74,9 +62,7 @@ data class ProgramPublishState(
             diagnostics: Map<ServiceKey, ServicePublishabilityDiagnostic>,
             channelFallbacks: Map<ServiceKey, ChannelRecord>,
             serviceKeys: Set<ServiceKey>,
-        ): Map<ServiceKey, ProgramPublishState> = serviceKeys.associateWith { key ->
-            from(diagnostics[key], channelFallbacks[key])
-        }
+        ): Map<ServiceKey, ProgramPublishState> = serviceKeys.associateWith { key -> from(diagnostics[key], channelFallbacks[key]) }
     }
 }
 
@@ -87,19 +73,9 @@ fun ServicePublishabilityDiagnostic.isCurrentDiagnosticComplete(): Boolean {
     if (!pmtPidResolved || !pmtParsed) return false
     if (!caStateResolved) return false
     if (unsupportedCas && !requiresCas) return false
-    val unresolvedMarkers = listOf(
-        "UNRESOLVED",
-        "NO_RUST_PUBLISHABILITY_DIAGNOSTIC",
-        "NO_PMT_PID",
-        "NO_PMT",
-        "NO_PCR_PID",
-        "NO_SUPPORTED_VIDEO_ES",
-        "MISSING",
-    )
+    val unresolvedMarkers = listOf("UNRESOLVED", "NO_RUST_PUBLISHABILITY_DIAGNOSTIC", "NO_PMT_PID", "NO_PMT", "NO_PCR_PID", "NO_SUPPORTED_VIDEO_ES", "MISSING")
     val allReasons = missingComponents + reasons + registrationReasons + epgReasons
-    return allReasons.none { reason ->
-        unresolvedMarkers.any { marker -> reason.contains(marker, ignoreCase = true) }
-    }
+    return allReasons.none { reason -> unresolvedMarkers.any { marker -> reason.contains(marker, ignoreCase = true) } }
 }
 
 class EventModelMapper {
@@ -111,66 +87,63 @@ class EventModelMapper {
     ): List<ProgramRecord> {
         val serviceKeys = events.map { it.serviceKey }.toSet()
         val effectiveStates = publishStateByServiceKey.ifEmpty {
-            ProgramPublishState.resolveByServiceKey(
-                diagnostics = publishabilityByServiceKey,
-                channelFallbacks = channelFallbackByServiceKey,
-                serviceKeys = serviceKeys,
-            )
+            ProgramPublishState.resolveByServiceKey(publishabilityByServiceKey, channelFallbackByServiceKey, serviceKeys)
         }
         return events.mapNotNull { event ->
             val state = effectiveStates[event.serviceKey]
             val end = event.startTimeMillis + event.durationMillis
-            if (event.startTimeMillis <= 0L || end <= event.startTimeMillis) {
-                null
-            } else {
-                ProgramRecord(
-                    serviceKey = event.serviceKey,
-                    eventId = event.eventId,
-                    stableIdentity = event.stableIdentity,
-                    startTimeMillis = event.startTimeMillis,
-                    durationMillis = event.durationMillis,
-                    title = event.title.ifBlank { "event-${event.eventId}" },
-                    description = providerDescription(event),
-                    shortDescription = shortDescription(event),
-                    extendedItemsJson = extendedItemsJson(event.extendedItems),
-                    componentText = event.componentText,
-                    audioComponentText = event.audioComponentText,
-                    audioLanguage = event.audioLanguage,
-                    canonicalGenre = null,
-                    broadcastGenre = event.broadcastGenre,
-                    genreSupplementText = event.genreSupplementText,
-                    eventGroupText = event.eventGroupText,
-                    freeCaText = event.freeCaText,
-                    seriesName = event.seriesName,
-                    requiresCas = state?.requiresCas ?: false,
-                    unsupportedCas = state?.unsupportedCas ?: false,
-                    clearLivePlaybackSupported = state?.clearLivePlaybackSupported ?: false,
-                    channelRegistrationReady = state?.channelRegistrationReady ?: false,
-                    epgPublishable = state?.epgPublishable ?: false,
-                    publishStateSource = publishStateSourceName(state?.source),
-                    diagnosticText = event.diagnosticText,
-                    diagnosticDescriptorJson = event.diagnosticDescriptorJson,
-                    contentRatings = event.parentalRatings.mapNotNull { AribRatingMapper.toTvContentRatingString(it) },
-                    parentalRatingDiagnosticsJson = parentalRatingDiagnosticsJson(event),
-                    unsupportedDescriptorJson = unsupportedDescriptorJson(event),
-                    malformedCaDescriptorCount = descriptorDiagnosticCount(event.diagnosticDescriptorJson),
-                )
-            }
+            if (event.startTimeMillis <= 0L || end <= event.startTimeMillis) null else ProgramRecord(
+                serviceKey = event.serviceKey,
+                eventId = event.eventId,
+                stableIdentity = event.stableIdentity,
+                startTimeMillis = event.startTimeMillis,
+                durationMillis = event.durationMillis,
+                title = event.title.ifBlank { "event-${event.eventId}" },
+                description = providerDescription(event),
+                shortDescription = event.description.take(256),
+                canonicalGenres = canonicalGenresFromBroadcastGenre(event.descriptors.broadcastGenre),
+                descriptors = ProgramDescriptors(
+                    extendedItemsJson = extendedItemsJson(event.descriptors.extendedItems),
+                    componentText = event.descriptors.componentText,
+                    audioComponentText = event.descriptors.audioComponentText,
+                    audioLanguage = event.descriptors.audioLanguage,
+                    broadcastGenre = event.descriptors.broadcastGenre,
+                    genreSupplementText = event.descriptors.genreSupplementText,
+                    relatedItemsJson = event.descriptors.relatedItemsJson,
+                    linkageJson = event.descriptors.linkageJson,
+                    scrambled = event.descriptors.scrambled,
+                    freeCaModeJson = event.descriptors.freeCaModeJson,
+                    seriesId = event.descriptors.seriesId,
+                    episodeNumber = event.descriptors.episodeNumber,
+                    lastEpisodeNumber = event.descriptors.lastEpisodeNumber,
+                    seriesJson = event.descriptors.seriesJson,
+                    descriptorDiagnosticsJson = event.descriptors.diagnostics.descriptorDiagnosticsJson,
+                    parentalRatings = event.descriptors.parentalRatings,
+                    componentsJson = event.descriptors.componentsJson,
+                ),
+                requiresCas = state?.requiresCas ?: false,
+                unsupportedCas = state?.unsupportedCas ?: false,
+                clearLivePlaybackSupported = state?.clearLivePlaybackSupported ?: false,
+                channelRegistrationReady = state?.channelRegistrationReady ?: false,
+                epgPublishable = state?.epgPublishable ?: false,
+                publishStateSource = publishStateSourceName(state?.source),
+                diagnosticText = event.descriptors.diagnostics.summary,
+                contentRatings = event.descriptors.parentalRatings.mapNotNull { AribRatingMapper.toTvContentRatingString(it) },
+                malformedCaDescriptorCount = descriptorDiagnosticCount(event.descriptors.diagnostics.descriptorDiagnosticsJson),
+            )
         }
     }
 
-    private fun shortDescription(event: AribEvent): String = event.description.take(256)
-
     private fun providerDescription(event: AribEvent): String {
-        val extended = event.extendedItems.joinToString("\n") { item ->
+        val d = event.descriptors
+        val extended = d.extendedItems.joinToString("\n") { item ->
             if (item.itemDescription.isBlank()) item.itemText else "【${item.itemDescription}】${item.itemText}"
         }
         val uiSupplements = listOfNotNull(
-            event.componentText?.takeIf { it.isNotBlank() }?.let { "映像: $it" },
-            event.audioComponentText?.takeIf { it.isNotBlank() }?.let { "音声: $it" },
-            event.genreSupplementText?.takeIf { it.isNotBlank() }?.let { "ジャンル: $it" },
-            event.eventGroupText?.takeIf { it.isNotBlank() }?.let { "関連番組: $it" },
-            event.freeCaText?.takeIf { it.isNotBlank() }?.let { "放送種別: $it" },
+            d.componentText?.takeIf { it.isNotBlank() }?.let { "映像: $it" },
+            d.audioComponentText?.takeIf { it.isNotBlank() }?.let { "音声: $it" },
+            d.genreSupplementText?.takeIf { it.isNotBlank() }?.let { "ジャンル: $it" },
+            freeCaLabelFromJson(d.freeCaModeJson, d.scrambled)?.takeIf { it.isNotBlank() }?.let { "放送種別: $it" },
         )
         return listOf(event.description, event.extendedDescription, extended)
             .plus(uiSupplements)
@@ -178,78 +151,70 @@ class EventModelMapper {
             .joinToString("\n")
     }
 
-    private fun unsupportedDescriptorJson(event: AribEvent): String {
-        val unsupportedRatings = event.parentalRatings.filter { AribRatingMapper.toTvContentRatingString(it) == null }
-        val arr = JSONArray()
-        unsupportedRatings.forEach { rating ->
-            arr.put(JSONObject()
-                .put("parseStatus", "UnsupportedValue")
-                .put("tag", 0x55)
-                .put("offset", -1)
-                .put("declaredLength", -1)
-                .put("remainingLength", -1)
-                .put("rawPrefix", "")
-                .put("message", "unsupported parental rating country=${rating.countryCode} rating=${rating.rating} raw=${rating.rawRating} supported=${rating.supported}")
-                .put("serviceKey", JSONObject()
-                    .put("originalNetworkId", event.serviceKey.originalNetworkId)
-                    .put("transportStreamId", event.serviceKey.transportStreamId)
-                    .put("serviceId", event.serviceKey.serviceId))
-                .put("eventId", event.eventId)
-                .put("pid", 18)
-                .put("tableId", JSONObject.NULL)
-                .put("sectionNumber", JSONObject.NULL))
+
+    private fun freeCaLabelFromJson(raw: String, scrambled: Boolean?): String? {
+        val fromJson = runCatching { org.json.JSONObject(raw).optString("text") }.getOrNull()?.takeIf { it.isNotBlank() }
+        return fromJson ?: when (scrambled) {
+            true -> "有料放送"
+            false -> "無料放送"
+            null -> null
         }
-        return JSONObject()
-            .put("schemaVersion", 1)
-            .put("diagnostics", arr)
-            .toString()
     }
 
-
-
-
-    private fun descriptorDiagnosticCount(json: String): Int = runCatching {
-        JSONObject(json).optJSONArray("diagnostics")?.length() ?: 0
-    }.getOrDefault(0)
-
-
-    private fun parentalRatingDiagnosticsJson(event: AribEvent): String {
-        val arr = JSONArray()
-        event.parentalRatings.forEach { rating ->
-            val mapped = AribRatingMapper.toTvContentRatingString(rating)
-            if (mapped == null) {
-                val parseStatus = when {
-                    !rating.supported -> "unsupported"
-                    rating.countryCode != "JPN" -> "unsupported_country"
-                    rating.rating !in 4..20 -> "unsupported_rating"
-                    else -> "unmapped"
+    private fun canonicalGenresFromBroadcastGenre(broadcastGenre: String?): List<String> {
+        if (broadcastGenre.isNullOrBlank()) return emptyList()
+        val out = linkedSetOf<String>()
+        Regex("ARIB\(0x([0-9a-fA-F]+)/0x([0-9a-fA-F]+)\)").findAll(broadcastGenre).forEach { match ->
+            val level1 = match.groupValues[1].toIntOrNull(16) ?: return@forEach
+            val level2 = match.groupValues[2].toIntOrNull(16) ?: return@forEach
+            when (level1) {
+                0x0 -> out += "NEWS"
+                0x1 -> out += "SPORTS"
+                0x3 -> out += "DRAMA"
+                0x4 -> out += "MUSIC"
+                0x5 -> {
+                    out += "ENTERTAINMENT"
+                    when (level2) {
+                        0x3 -> out += "COMEDY"
+                        0x4 -> out += "MUSIC"
+                        0x5 -> out += "TRAVEL"
+                        0x6 -> out += "LIFE_STYLE"
+                    }
                 }
-                arr.put(JSONObject()
-                    .put("countryCode", rating.countryCode)
-                    .put("ratingValue", rating.rating)
-                    .put("rawRatingByte", rating.rawRating)
-                    .put("supported", rating.supported)
-                    .put("parseStatus", parseStatus)
-                    .put("mappedTvContentRating", "")
-                    .put("diagnosticCode", "INVALID_PARENTAL_RATING"))
+                0x6 -> out += "MOVIES"
+                0x7 -> out += "ENTERTAINMENT"
+                0x8 -> when (level2) {
+                    0x2 -> out += "ANIMAL_WILDLIFE"
+                    0x3 -> out += "TECH_SCIENCE"
+                    0x4, 0x5 -> out += "ARTS"
+                    0x6 -> out += "SPORTS"
+                }
+                0x9 -> {
+                    out += "ARTS"
+                    when (level2) {
+                        0x1 -> out += "MUSIC"
+                        0x3 -> out += "COMEDY"
+                    }
+                }
+                0xA -> when (level2) {
+                    0x1 -> out += "LIFE_STYLE"
+                    0x6 -> out += "GAMING"
+                    0x7 -> out += "EDUCATION"
+                    0x8 -> { out += "EDUCATION"; out += "FAMILY_KIDS" }
+                    0x9, 0xA, 0xB, 0xC -> out += "EDUCATION"
+                }
             }
         }
-        return JSONObject().put("parentalRatings", arr).toString()
+        return out.toList()
     }
 
-    private fun extendedItemsJson(items: List<AribExtendedItem>): String {
-        val arr = JSONArray()
-        items.forEach { item ->
-            arr.put(JSONObject().put("description", item.itemDescription).put("text", item.itemText))
-        }
-        return arr.toString()
-    }
+    private fun descriptorDiagnosticCount(json: String): Int = runCatching {
+        JSONObject(json).optJSONArray("diagnostics")?.length() ?: JSONArray(json).length()
+    }.getOrDefault(0)
 
-    private fun publishStateSourceName(source: ProgramPublishStateSource?): String = when (source) {
-        ProgramPublishStateSource.CURRENT_DIAGNOSTIC -> "current"
-        ProgramPublishStateSource.CHANNEL_FALLBACK,
-        ProgramPublishStateSource.MERGED_CHANNEL_CAS_STATE -> "fallback"
-        ProgramPublishStateSource.NONE,
-        null -> "none"
-    }
+    private fun extendedItemsJson(items: List<AribExtendedItem>): String = JSONArray().apply {
+        items.forEach { put(JSONObject().put("description", it.itemDescription).put("text", it.itemText)) }
+    }.toString()
+
+    private fun publishStateSourceName(source: ProgramPublishStateSource?): String = (source ?: ProgramPublishStateSource.NONE).name
 }

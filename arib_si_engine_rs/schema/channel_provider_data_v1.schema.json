@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maleicacid.local/schema/channel_provider_data_v1.schema.json",
+  "title": "Maleicacid ChannelProviderDataV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "schemaVersion",
+    "serviceKey",
+    "tune",
+    "cas",
+    "diagnostics"
+  ],
+  "properties": {
+    "schema": {
+      "const": "maleicacid.tv.channel"
+    },
+    "schemaVersion": {
+      "const": 1
+    },
+    "serviceKey": {
+      "$ref": "#/$defs/serviceKey"
+    },
+    "tune": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "system",
+        "frequencyHz",
+        "streamSelector"
+      ],
+      "properties": {
+        "inputId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "displayName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "system": {
+          "type": "string"
+        },
+        "frequencyHz": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "streamSelector": {
+          "$ref": "#/$defs/streamSelector"
+        },
+        "physicalChannel": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "backendHint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "satelliteBand": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "remoteControlKeyId": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
+    },
+    "cas": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requiresCas",
+        "unsupportedCas",
+        "clearLivePlaybackSupported"
+      ],
+      "properties": {
+        "requiresCas": {
+          "type": "boolean"
+        },
+        "unsupportedCas": {
+          "type": "boolean"
+        },
+        "clearLivePlaybackSupported": {
+          "type": "boolean"
+        }
+      }
+    },
+    "diagnostics": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "channelRegistrationReady",
+        "epgPublishable"
+      ],
+      "properties": {
+        "channelRegistrationReady": {
+          "type": "boolean"
+        },
+        "epgPublishable": {
+          "type": "boolean"
+        },
+        "publishStateSource": {
+          "type": "string"
+        },
+        "providerDataTruncated": {
+          "type": "boolean"
+        },
+        "providerDataHardLimitBytes": {
+          "type": "integer"
+        },
+        "providerDataSoftLimitBytes": {
+          "type": "integer"
+        },
+        "rawProviderDataExtensions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "key",
+              "value"
+            ],
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "value": {}
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "uint16": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 65535
+    },
+    "serviceKey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "originalNetworkId",
+        "transportStreamId",
+        "serviceId"
+      ],
+      "properties": {
+        "originalNetworkId": {
+          "$ref": "#/$defs/uint16"
+        },
+        "transportStreamId": {
+          "$ref": "#/$defs/uint16"
+        },
+        "serviceId": {
+          "$ref": "#/$defs/uint16"
+        }
+      }
+    },
+    "streamSelector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "value"
+      ],
+      "properties": {
+        "type": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

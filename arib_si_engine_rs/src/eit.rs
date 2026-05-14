@@ -392,7 +392,11 @@ mod tests {
     }
 
     fn eit_body(version: u8, events: &[(u16, [u8; 5])]) -> Vec<u8> {
-        let mut body = vec![0x50, 0xf0, 0x00, 0x00, 0x01, 0xc1 | ((version & 0x1f) << 1), 0x00, 0x00, 0x00, 0x11, 0x00, 0x22, 0x00, 0x00];
+        eit_body_with_table_id(0x50, version, events)
+    }
+
+    fn eit_body_with_table_id(table_id: u8, version: u8, events: &[(u16, [u8; 5])]) -> Vec<u8> {
+        let mut body = vec![table_id, 0xf0, 0x00, 0x00, 0x01, 0xc1 | ((version & 0x1f) << 1), 0x00, 0x00, 0x00, 0x11, 0x00, 0x22, 0x00, 0x00];
         for (event_id, start) in events {
             body.extend_from_slice(&event_id.to_be_bytes());
             body.extend_from_slice(start);
@@ -429,6 +433,30 @@ mod tests {
         let events = store.snapshot_r51();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_id, 2);
+    }
+
+    #[test]
+    fn authoritative_valid_update_window_marks_obsolete_delete_allowed() {
+        let mut store = EitStore::default();
+        let start1 = [0xee, 0x00, 0x12, 0x00, 0x00];
+        let start2 = [0xee, 0x01, 0x13, 0x00, 0x00];
+        store.upsert_section(&section_with_crc(eit_body(1, &[(1, start1), (2, start2)])));
+        let _ = store.take_update_windows_r51();
+
+        store.upsert_section(&section_with_crc(eit_body(2, &[(2, start2)])));
+        let windows = store.take_update_windows_r51();
+        assert!(windows.iter().any(|w| w.deletion_authoritative), "{:?}", windows);
+        assert!(windows.iter().any(|w| w.valid_event_identities.iter().any(|id| id.event_id == 2)), "{:?}", windows);
+    }
+
+    #[test]
+    fn schedule_other_is_not_r51_snapshot_or_update_window() {
+        let mut store = EitStore::default();
+        let start = [0xee, 0x00, 0x12, 0x00, 0x00];
+        store.upsert_section(&section_with_crc(eit_body_with_table_id(0x60, 1, &[(1, start)])));
+        assert!(store.snapshot_r51().is_empty());
+        assert!(store.take_update_windows_r51().is_empty());
+        assert_eq!(store.snapshot_all_for_diagnostic().len(), 1, "診断用snapshotには保持してよい");
     }
 
     #[test]

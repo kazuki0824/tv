@@ -800,28 +800,17 @@ impl Px4FrontendBackend {
     }
 
     fn detect_supported_systems(&mut self) -> Result<Vec<FrontendSystem>, HalError> {
-        self.ensure_control_open()?;
-        let mut systems = Vec::new();
-        for (mode, system) in [
-            (PTX_ISDB_T_SYSTEM, FrontendSystem::IsdbT),
-            (PTX_ISDB_S_SYSTEM, FrontendSystem::IsdbS),
-        ] {
-            let mut probe_mode = mode;
-            if self
-                .ioctl_ptr(PTX_SET_SYSTEM_MODE, &mut probe_mode, "PTX_SET_SYSTEM_MODE")
-                .is_ok()
-            {
-                systems.push(system);
-            }
+        if !self.probe_device() {
+            return Ok(Vec::new());
         }
-        let mut unspecified: u32 = 0;
-        let _ = self.ioctl_ptr(PTX_SET_SYSTEM_MODE, &mut unspecified, "PTX_SET_SYSTEM_MODE");
-        Ok(systems)
+        // 能力調査で PTX_SET_SYSTEM_MODE を発行すると、実デバイスの選局前状態を変更してしまう。
+        // px4 系の対応方式は本 HAL の対象範囲として ISDB-T / ISDB-S に固定し、実際の mode 変更は tune 時だけ行う。
+        Ok(vec![FrontendSystem::IsdbT, FrontendSystem::IsdbS])
     }
 
     fn lock_from_driver_tune_result(tuning_active: bool, driver_tune_locked: bool) -> bool {
         // px4_drv legacy PTX_SET_CHANNEL は driver 内部で ops->check_lock() を待ち、
-        // lock 失敗時は ioctl error になる。HAL の疑似 DEMOD_LOCK は TS 到着ではなく、
+        // ロック 失敗時は ioctl error になる。HAL の疑似 DEMOD_LOCK は TS 到着ではなく、
         // そのioctl成功結果を真値として扱う。
         tuning_active && driver_tune_locked
     }

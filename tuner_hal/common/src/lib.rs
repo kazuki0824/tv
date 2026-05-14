@@ -230,7 +230,7 @@ pub const DEMUX_MAX_VIDEO_FILTERS: i32 = 4;
 pub const DEMUX_MAX_PES_FILTERS: i32 = 8;
 pub const DEMUX_MAX_RECORD_FILTERS: i32 = 32;
 pub const MAX_SECTION_FILTER_BYTES: i32 = 16;
-/// section filter 経由で配送する組立済み PSI/SI section payload の上限。
+/// セクションフィルター 経由で配送する組立済み PSI/SI section payload の上限。
 /// `MAX_SECTION_FILTER_BYTES` は mask/filter のbyte幅だけを表すため、payload上限とは分離する。
 pub const MAX_SECTION_PAYLOAD_BYTES: usize = 8192;
 

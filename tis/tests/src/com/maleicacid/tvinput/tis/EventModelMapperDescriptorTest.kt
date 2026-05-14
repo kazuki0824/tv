@@ -22,9 +22,13 @@ class EventModelMapperDescriptorTest {
             audioLanguage = "jpn",
             broadcastGenre = "ARIB(0x0/0x0):ニュース/報道/定時・総合",
             genreSupplementText = "ニュース/報道/定時・総合",
-            eventGroupText = "sid=101 event=202",
-            freeCaText = "無料放送",
-            seriesName = "シリーズ",
+            relatedItemsJson = """[{"kind":"shared","groupType":1,"originalNetworkId":4,"transportStreamId":16625,"serviceId":101,"eventId":202,"parseStatus":"OK"}]""",
+            scrambled = false,
+            freeCaModeJson = """{"raw":0,"scrambled":false,"text":"無料放送","parseStatus":"OK"}""",
+            seriesId = 100,
+            episodeNumber = 3,
+            lastEpisodeNumber = 12,
+            seriesJson = """{"seriesId":100,"repeatLabel":0,"programPattern":0,"expireDateValid":false,"expireDate":null,"episodeNumber":3,"lastEpisodeNumber":12,"name":"シリーズ","parseStatus":"OK"}""",
             diagnosticText = "unknownCount=0",
             diagnosticDescriptorJson = "{\"extendedItems\":[]}",
         )
@@ -36,18 +40,22 @@ class EventModelMapperDescriptorTest {
         check(record.description.contains("映像: 映像"))
         check(record.description.contains("音声: 音声"))
         check(record.description.contains("ジャンル: ニュース/報道/定時・総合"))
-        check(record.description.contains("関連番組: sid=101 event=202"))
+        check(!record.description.contains("関連番組:"))
         check(record.description.contains("放送種別: 無料放送"))
         check(!record.description.contains("シリーズ: シリーズ"))
         check(record.extendedItemsJson.contains("出演"))
         check(record.componentText == "映像")
         check(record.audioComponentText == "音声")
         check(record.audioLanguage == "jpn")
-        check(record.canonicalGenre == null)
+        check(record.canonicalGenres == listOf("NEWS"))
         check(record.broadcastGenre == "ARIB(0x0/0x0):ニュース/報道/定時・総合")
         check(record.genreSupplementText == "ニュース/報道/定時・総合")
-        check(record.eventGroupText == "sid=101 event=202")
-        check(record.freeCaText == "無料放送")
-        check(record.seriesName == "シリーズ")
+        check(record.relatedItemsJson.contains("eventId"))
+        check(record.scrambled == false)
+        check(record.descriptors.freeCaModeJson.contains("無料放送"))
+        check(record.seriesId == 100)
+        check(record.episodeNumber == 3)
+        check(record.lastEpisodeNumber == 12)
+        check(record.descriptors.seriesJson.contains("シリーズ"))
     }
 }

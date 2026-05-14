@@ -19,7 +19,7 @@ class PmtCatCaMetadataMapper {
 
     /**
      * PMT の番組単位 CA_descriptor を ES PID 単位の束縛へ展開する。
-     * 同じ service、CA_system_id、ECM PID の ES-level CA_descriptor がない場合に使う。
+     * 同じ サービス、CA_system_id、ECM PID の ES-level CA_descriptor がない場合に使う。
      * PMT/CAT の意味解釈は TIS 側 SI 解析器と制御部に留める。
      */
     fun expandProgramLevelToElementaryStreams(

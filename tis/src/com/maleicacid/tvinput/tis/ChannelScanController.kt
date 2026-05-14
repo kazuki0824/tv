@@ -72,7 +72,7 @@ class ChannelScanController(
     private val programPublishCoordinator = ProgramPublishCoordinator(tvProviderWriter)
     private val caMapper = PmtCatCaMetadataMapper()
     private val casController = CasController()
-    // ChannelScanManager と共有する取消token。
+    // ChannelScanManager と共有する取消トークン。
     // controller / engine close は manager executor 上に閉じる一方、scan実行中の
     // collectSiForCandidate() には executor queue を待たず即時に取消を観測させる。
     private val cancelled = cancelRequested
@@ -152,7 +152,7 @@ class ChannelScanController(
             }
             val publishResult = publishCurrentServiceSnapshot(mode)
             // TvProvider問い合わせ失敗は公開失敗であり、チャンネル不在ではない。
-            // SI collection 自体が完了し registration-ready service が存在しても、
+            // SI collection 自体が完了し 登録可能 サービスが存在しても、
             // boot保留解除/成功診断に加算してはならない。
             // Program件数は0の場合があるが、ここではprovider失敗だけが阻害要因である。
             if (collection.outcome == SiCollectionOutcome.COMPLETE && collection.registrationReadyServices > 0 && publishResult.success) successfulCandidates++
@@ -259,7 +259,7 @@ class ChannelScanController(
         sdtActualTransports: List<com.maleicacid.tvinput.aribsi.AribTransport>,
     ): List<AribService> {
         // 登録は同一snapshot transaction内のSDT actualで確定した
-        // 現在TSのTransportKeyに完全一致するserviceだけに限定する。
+        // 現在TSのTransportKeyに完全一致するサービスだけに限定する。
         // PMT mapping / SDT-other / NIT-other / BAT 由来transportは、現在candidateの物理情報へ紐づけない。
         val actualTransports = sdtActualTransports
             .map { it.originalNetworkId to it.transportStreamId }
@@ -312,7 +312,7 @@ class ChannelScanController(
         // 再試行状態を排出できるよう、必ずcoordinatorへ入る。
         val result = programPublishCoordinator.publishWithUpdates(mode, allPrograms, updateWindows, allowedServiceKeys)
         // coordinatorが問い合わせ失敗とチャンネル不在を分離した後に、追加の
-        // TvProvider問い合わせを発行しない。logだけを目的にした2回目の問い合わせ失敗は
+        // TvProvider問い合わせを発行しない。ログだけを目的にした2回目の問い合わせ失敗は
         // ProgramPublishResult.failuresを迂回し、boot保留解除がcandidateを
         // 成功扱いする原因になる。
         if (result.skippedNoChannel > 0) Log.d(LogTags.TIS, "${mode} で未登録channelのeventをskipしました skipped=${result.skippedNoChannel}")

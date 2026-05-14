@@ -11,6 +11,7 @@ import android.media.tv.TvTrackInfo
 import android.net.Uri
 import android.os.Build
 import android.view.Surface
+import android.view.View
 import java.util.concurrent.Callable
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.ExecutorService
@@ -60,7 +61,10 @@ class MaleicacidLiveSession(
     private var latestService: AribService? = null
     private val latestVideoMetadataByProgramKey = linkedMapOf<String, PlaybackPipeline.VideoFormatInfo>()
     private var preferredAudioTrackId: String? = null
+    private var selectedSubtitleTrackId: String? = null
     private var currentTrackSignature: Set<String> = emptySet()
+    private val captionOverlayView = CaptionOverlayView(appContext)
+    private val captionController = AribCaptionController(captionOverlayView)
     private val unblockedContentKeys = linkedSetOf<String>()
     private var currentUnblockProgramIdentityKey: String? = null
     private data class BlockedContent(val rating: TvContentRating, val unblockKey: String)
@@ -79,6 +83,10 @@ class MaleicacidLiveSession(
             onVideoUnavailable = { reason -> enqueueSessionAction { handlePlaybackUnavailable(reason) } },
         )
         tunerController.setOnVideoFormatDiscoveredCallback { info -> enqueueSessionAction { updateCurrentProgramVideoMetadata(info) } }
+        tunerController.setOnSubtitlePesCallback { trackId, pesData, ptsMillis ->
+            captionController.onPesData(trackId, pesData, ptsMillis)
+        }
+        runCatching { setOverlayViewEnabled(true) }
         ChannelScanManager.registerLiveSession()
         registerParentalControlReceiver()
     }
@@ -134,6 +142,8 @@ class MaleicacidLiveSession(
         return true
     }
 
+    override fun onCreateOverlayView(): View? = captionOverlayView
+
     override fun onSetStreamVolume(volume: Float) {
         enqueueSessionAction { onSetStreamVolumeOnSessionExecutor(volume) }
     }
@@ -144,7 +154,11 @@ class MaleicacidLiveSession(
     }
 
     override fun onSetCaptionEnabled(enabled: Boolean) {
-        enqueueSessionAction { captionEnabled = enabled }
+        enqueueSessionAction {
+            captionEnabled = enabled
+            captionController.setEnabled(enabled)
+            latestService?.let { updateSubtitleSelection(tunerController.tracksFor(it.streams)) }
+        }
     }
 
     override fun onTune(channelUri: Uri?): Boolean = runOnSessionExecutorBlocking {
@@ -166,6 +180,9 @@ class MaleicacidLiveSession(
         currentUnblockProgramIdentityKey = null
         programPublishCoordinator.reset()
         preferredAudioTrackId = null
+        selectedSubtitleTrackId = null
+        captionController.setEnabled(captionEnabled)
+        captionController.selectTrack(null)
         currentTrackSignature = emptySet()
         playbackStartGate.reset()
         val outcome = tunerController.tuneForLive(channelUri)
@@ -247,7 +264,18 @@ class MaleicacidLiveSession(
         } else {
             notifyContentAllowed()
         }
-        val selection = tunerController.selectAvStreams(service.serviceKey, service.pcrPid, service.streams, preferredAudioTrackId)
+        val selection = tunerController.selectAvStreams(service.serviceKey, service.pcrPid, service.streams, preferredAudioTrackId, selectedSubtitleTrackId)
+        if (shouldRejectPlaybackSelectionWithoutVideoForTest(selection)) {
+            currentPlaybackSignature = null
+            pendingPlaybackSignature = null
+            playbackStartGate.reset()
+            tunerController.stopPlayback()
+            notifyVideoUnavailable(mapUnavailableReason(PlaybackPipeline.PlaybackUnavailable(
+                PlaybackPipeline.PlaybackUnavailableReason.UNSUPPORTED_VIDEO_STREAM,
+                "r51対象の映像ESがありません service=${service.serviceKey}",
+            )))
+            return false
+        }
         val signature = playbackSignatureFor(service, selection) ?: return false
         if (!playbackStartGate.shouldAttempt(signature)) {
             return currentPlaybackSignature == signature && playbackStartGate.isStartedSignature(signature)
@@ -256,12 +284,19 @@ class MaleicacidLiveSession(
         val shouldStopBeforeRestart = previousSignature != null && previousSignature != signature && playbackStartGate.isStartedSignature(previousSignature)
         playbackStartGate.recordAttempt(signature)
         val result = tunerController.startPlayback(selection)
-        if (result?.firstFramePending == true) {
+        if (result == null) {
+            pendingPlaybackSignature = null
+            currentPlaybackSignature = null
+            playbackStartGate.recordResult(signature, startedVideo = false)
+            notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+            return false
+        }
+        if (result.firstFramePending == true) {
             pendingPlaybackSignature = signature
             currentPlaybackSignature = null
             return false
         }
-        val started = result?.startedVideo == true
+        val started = result.startedVideo
         playbackStartGate.recordResult(signature, started)
         if (started) {
             currentPlaybackSignature = signature
@@ -286,6 +321,8 @@ class MaleicacidLiveSession(
             videoStreamType = video.streamType,
             audioPid = audio?.elementaryPid,
             audioStreamType = audio?.streamType,
+            subtitlePid = selection.subtitle?.elementaryPid,
+            subtitleDataComponentId = selection.subtitle?.dataComponentId,
             clear = true,
             keyTokenAvailable = false,
         )
@@ -297,15 +334,14 @@ class MaleicacidLiveSession(
 
     private fun onSelectTrackOnSessionExecutor(type: Int, trackId: String?): Boolean {
         val service = latestService ?: return false
-        if (trackId == null) return false
         val tracks = tunerController.tracksFor(service.streams)
         return when (type) {
             TvTrackInfo.TYPE_AUDIO -> {
-                if (tracks.none { it.type == TvTrackInfo.TYPE_AUDIO && it.id == trackId }) return false
+                if (trackId == null || tracks.none { it.type == TvTrackInfo.TYPE_AUDIO && it.id == trackId }) return false
                 val previousAudioTrackId = preferredAudioTrackId
                 val previousSignature = currentPlaybackSignature ?: return false
                 preferredAudioTrackId = trackId
-                val selection = tunerController.selectAvStreams(service.serviceKey, service.pcrPid, service.streams, preferredAudioTrackId)
+                val selection = tunerController.selectAvStreams(service.serviceKey, service.pcrPid, service.streams, preferredAudioTrackId, selectedSubtitleTrackId)
                 val signature = playbackSignatureFor(service, selection) ?: run {
                     preferredAudioTrackId = previousAudioTrackId
                     currentPlaybackSignature = previousSignature
@@ -326,12 +362,31 @@ class MaleicacidLiveSession(
                 }
             }
             TvTrackInfo.TYPE_VIDEO -> {
+                if (trackId == null) return false
                 val currentVideo = tracks.firstOrNull { it.type == TvTrackInfo.TYPE_VIDEO }?.id
                 if (trackId == currentVideo) {
                     notifyTrackSelected(TvTrackInfo.TYPE_VIDEO, trackId)
                     true
                 } else {
                     false
+                }
+            }
+            TvTrackInfo.TYPE_SUBTITLE -> {
+                if (trackId == null) {
+                    selectedSubtitleTrackId = null
+                    captionController.selectTrack(null)
+                    notifyTrackSelected(TvTrackInfo.TYPE_SUBTITLE, null)
+                    playbackStartGate.allowRetry()
+                    maybeStartPlayback(service)
+                    true
+                } else {
+                    val subtitle = tracks.firstOrNull { it.type == TvTrackInfo.TYPE_SUBTITLE && it.id == trackId } ?: return false
+                    selectedSubtitleTrackId = subtitle.id
+                    captionController.selectTrack(subtitle)
+                    if (captionEnabled) notifyTrackSelected(TvTrackInfo.TYPE_SUBTITLE, subtitle.id)
+                    playbackStartGate.allowRetry()
+                    maybeStartPlayback(service)
+                    true
                 }
             }
             else -> false
@@ -343,6 +398,7 @@ class MaleicacidLiveSession(
         val signature = tracks.map { track ->
             val audioComponentType = if (track.type == TvTrackInfo.TYPE_AUDIO) track.componentType ?: -1 else -1
             val videoComponentType = if (track.type == TvTrackInfo.TYPE_VIDEO) track.componentType ?: -1 else -1
+            val subtitleDataComponentId = if (track.type == TvTrackInfo.TYPE_SUBTITLE) track.dataComponentId ?: -1 else -1
             listOf(
                 track.id,
                 track.type.toString(),
@@ -352,6 +408,7 @@ class MaleicacidLiveSession(
                 track.language.orEmpty(),
                 audioComponentType.toString(),
                 videoComponentType.toString(),
+                subtitleDataComponentId.toString(),
             ).joinToString("|")
         }.toSet()
         if (signature != currentTrackSignature) {
@@ -371,6 +428,15 @@ class MaleicacidLiveSession(
             preferredAudioTrackId = it.id
             notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, it.id)
         }
+        updateSubtitleSelection(tracks)
+    }
+
+    private fun updateSubtitleSelection(tracks: List<TunerController.TisTrack>) {
+        val selected = selectedSubtitleTrackId?.let { wanted -> tracks.firstOrNull { it.type == TvTrackInfo.TYPE_SUBTITLE && it.id == wanted } }
+            ?: tracks.firstOrNull { it.type == TvTrackInfo.TYPE_SUBTITLE }
+        selectedSubtitleTrackId = selected?.id
+        captionController.selectTrack(selected)
+        notifyTrackSelected(TvTrackInfo.TYPE_SUBTITLE, if (captionEnabled) selected?.id else null)
     }
 
     private fun handleFirstFrameAvailable() {
@@ -570,6 +636,10 @@ class MaleicacidLiveSession(
             surface = null
             currentChannelUri = null
             captionEnabled = false
+            selectedSubtitleTrackId = null
+            captionController.setEnabled(false)
+            captionController.selectTrack(null)
+            captionController.close()
             unblockedContentKeys.clear()
             currentUnblockProgramIdentityKey = null
             currentPlaybackSignature = null
@@ -596,6 +666,20 @@ class MaleicacidLiveSession(
                 unblockedContentKeys.clear()
             }
             return nextIdentityKey
+        }
+
+        fun shouldRejectPlaybackSelectionWithoutVideoForTest(selection: TunerController.AvStreamSelection): Boolean = selection.video == null
+
+        fun unsupportedLivePlaybackReasonForTest(): Int = TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN
+
+        fun subtitleSelectionAcceptedForTest(
+            trackId: String?,
+            tracks: List<TunerController.TisTrack>,
+            captionEnabled: Boolean,
+        ): Boolean = if (trackId == null) {
+            true
+        } else {
+            captionEnabled && tracks.any { it.type == TvTrackInfo.TYPE_SUBTITLE && it.id == trackId }
         }
 
         fun audioTrackSelectionAcceptedForTest(

@@ -11,6 +11,8 @@ rust_ffi_shared {
     min_sdk_version: "31",
     rustlibs: [
         "libjni",
+        "libserde",
+        "libserde_json",
     ],
 }
 
@@ -22,12 +24,16 @@ rust_test {
     edition: "2021",
     rustlibs: [
         "libjni",
+        "libserde",
+        "libserde_json",
     ],
     data: [
+        "schema/channel_provider_data_v1.schema.json",
         "schema/descriptor_diagnostic_v1.schema.json",
         "schema/program_provider_data_v1.schema.json",
         "testdata/descriptor_diagnostic_v1/malformed_length.json",
         "testdata/program_provider_data_v1/minimal_clear_program.json",
+        "testdata/program_provider_data_v1/unsupported_codec_program.json",
     ],
     auto_gen_config: true,
     test_suites: ["general-tests"],

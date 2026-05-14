@@ -26,4 +26,13 @@ class SetupActivityBk10CompletionTest {
         check(!SetupActivity.shouldFinishSetupForStateForTest(current, activeSetupGeneration = null, invalidInputId = false))
         check(!SetupActivity.shouldFinishSetupForStateForTest(current, activeSetupGeneration = 7, invalidInputId = true))
     }
+    @Test fun setupActivityDoesNotTreatForeignInputAsOwn() {
+        check(!TisInputIdResolver.isOwnInputInfoForTest(
+            infoId = "foreign.input",
+            servicePackageName = "foreign.package",
+            serviceName = "foreign.Service",
+            ownPackageName = "com.maleicacid.tvinput",
+            ownClassName = "com.maleicacid.tvinput.tis.MaleicacidTvInputService",
+        ))
+    }
 }

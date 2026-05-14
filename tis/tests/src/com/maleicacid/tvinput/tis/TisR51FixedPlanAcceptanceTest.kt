@@ -7,8 +7,10 @@ import android.media.tv.TvTrackInfo
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
 import com.maleicacid.tvinput.aribsi.AribEvent
 import com.maleicacid.tvinput.aribsi.AribParentalRating
+import com.maleicacid.tvinput.aribsi.AribService
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
 import com.maleicacid.tvinput.aribsi.EventModelMapper
+import com.maleicacid.tvinput.aribsi.NativeAribSiParser
 import com.maleicacid.tvinput.aribsi.isCurrentDiagnosticComplete
 import com.maleicacid.tvinput.aribsi.SectionIngestController
 import com.maleicacid.tvinput.aribsi.ServiceListBuilder
@@ -42,9 +44,85 @@ class TisR51FixedPlanAcceptanceTest {
         check(TunerController.selectVideoForTest(listOf(es(0x101, 0x02)))?.streamType == 0x02)
     }
 
+    @Test fun unsupportedVideoCodecMetadataIsSeparatedFromR51PlaybackClaim() {
+        check(NativeAribSiParser.isRecognizedVideoCodecForTest(0x24))
+        check(!NativeAribSiParser.isR51PlaybackSupportedVideoCodecForTest(0x24))
+        val service = AribService(
+            serviceKey = key,
+            name = "HEVC service",
+            pcrPid = 0x100,
+            freeCaMode = false,
+            streams = listOf(es(0x120, 0x24, componentTag = 1)),
+        )
+        val components = org.json.JSONObject(NativeAribSiParser.componentsJsonForServiceForTest(service))
+        val video = components.getJSONArray("video").getJSONObject(0)
+        check(video.getString("codec") == "HEVC")
+        check(video.getString("parseStatus") == "UNSUPPORTED_R51")
+        check(video.getString("diagnosticCode") == "UNSUPPORTED_R51_CODEC")
+        check(!video.getBoolean("r51PlaybackSupported"))
+        check(!video.getBoolean("liveViewableClaim"))
+        val providerData = org.json.JSONObject(TvProviderWriter.programProviderDataForTest(
+            EventModelMapper().toProgramRecords(listOf(aribEvent().copy(componentsJson = components.toString()))).single(),
+        ))
+        val providerVideo = providerData.getJSONObject("components").getJSONArray("video").getJSONObject(0)
+        check(providerVideo.getString("codec") == "HEVC")
+        check(!providerVideo.getBoolean("r51PlaybackSupported"))
+        check(!providerVideo.getBoolean("liveViewableClaim"))
+        check(TunerController.selectVideoForTest(service.streams) == null)
+    }
+
+    @Test fun unsupportedAudioCodecMetadataDoesNotMakePlaybackUnsupportedWhenVideoIsSupported() {
+        check(NativeAribSiParser.isRecognizedAudioCodecForTest(0x11))
+        check(!NativeAribSiParser.isR51PlaybackSupportedAudioCodecForTest(0x11))
+        val service = AribService(
+            serviceKey = key,
+            name = "H264 with LATM audio",
+            pcrPid = 0x100,
+            freeCaMode = false,
+            streams = listOf(es(0x101, 0x1b), es(0x111, 0x11, componentTag = 2, language = "jpn")),
+        )
+        val components = org.json.JSONObject(NativeAribSiParser.componentsJsonForServiceForTest(service))
+        val audio = components.getJSONArray("audio").getJSONObject(0)
+        check(audio.getString("codec") == "MPEG-4-AAC-LATM")
+        check(audio.getString("parseStatus") == "UNSUPPORTED_R51")
+        check(!audio.getBoolean("r51PlaybackSupported"))
+        val providerData = org.json.JSONObject(TvProviderWriter.programProviderDataForTest(
+            EventModelMapper().toProgramRecords(listOf(aribEvent().copy(componentsJson = components.toString()))).single(),
+        ))
+        val providerAudio = providerData.getJSONObject("components").getJSONArray("audio").getJSONObject(0)
+        check(providerAudio.getString("codec") == "MPEG-4-AAC-LATM")
+        check(!providerAudio.getBoolean("r51PlaybackSupported"))
+        check(TunerController.selectVideoForTest(service.streams)?.streamType == 0x1b)
+        check(!PlaybackPipeline.isSupportedAudioStreamTypeForTest(0x11))
+    }
+
     @Test fun mixedH264AndHevcSelectsH264CapablePath() {
         val selected = TunerController.selectVideoForTest(listOf(es(0x200, 0x24), es(0x201, 0x1b)))
         check(selected?.streamType == 0x1b)
+    }
+
+    @Test fun audioOnlyServiceIsRejectedForLivePlayback() {
+        val selection = TunerController.AvStreamSelection(
+            serviceKey = key,
+            pcrPid = 0x100,
+            video = null,
+            audio = es(0x110, 0x0f),
+        )
+        check(!TunerController.hasR51SupportedVideoForTest(listOf(es(0x110, 0x0f))))
+        check(MaleicacidLiveSession.shouldRejectPlaybackSelectionWithoutVideoForTest(selection))
+        check(MaleicacidLiveSession.unsupportedLivePlaybackReasonForTest() == android.media.tv.TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+    }
+
+    @Test fun hevcOnlyServiceIsRejectedBeforePlaybackStart() {
+        val streams = listOf(es(0x120, 0x24))
+        val selection = TunerController.AvStreamSelection(
+            serviceKey = key,
+            pcrPid = 0x100,
+            video = TunerController.selectVideoForTest(streams),
+            audio = null,
+        )
+        check(!TunerController.hasR51SupportedVideoForTest(streams))
+        check(MaleicacidLiveSession.shouldRejectPlaybackSelectionWithoutVideoForTest(selection))
     }
 
     @Test fun supportedAribRatingConvertsToTvContentRatingString() {
@@ -68,30 +146,26 @@ class TisR51FixedPlanAcceptanceTest {
         check(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 12, 12, supported = false)) == null)
     }
 
-    @Test fun unsupportedDescriptorGoesToInternalProviderData() {
+    @Test fun unsupportedRatingGoesToRatingsAndPublishDiagnostics() {
         val event = aribEvent(parentalRatings = listOf(AribParentalRating("USA", 15, 15, supported = false)))
         val record = EventModelMapper().toProgramRecords(listOf(event)).single()
         check(record.contentRatings.isEmpty())
-        val unsupported = org.json.JSONObject(record.unsupportedDescriptorJson)
-        check(unsupported.getInt("schemaVersion") == 1)
-        val unsupportedEntry = unsupported.getJSONArray("diagnostics").getJSONObject(0)
-        check(unsupportedEntry.getString("parseStatus") == "UnsupportedValue")
-        check(unsupportedEntry.getInt("tag") == 0x55)
-        check(unsupportedEntry.getJSONObject("serviceKey").getInt("serviceId") == key.serviceId)
-        check(unsupportedEntry.getInt("eventId") == event.eventId)
-        check(unsupportedEntry.getString("message").contains("USA"))
-        check(!record.unsupportedDescriptorJson.contains("diagnosticCode"))
-        check(!record.unsupportedDescriptorJson.contains("descriptorOffset"))
+        val ratingDiagnostics = org.json.JSONObject(record.parentalRatingDiagnosticsJson)
+        val ratingEntry = ratingDiagnostics.getJSONArray("parentalRatings").getJSONObject(0)
+        check(ratingEntry.getString("countryCode") == "USA")
+        check(ratingEntry.getInt("ratingValue") == 15)
+        check(ratingEntry.getBoolean("supported") == false)
+        check(ratingEntry.getString("parseStatus") == "unsupported")
         val providerData = org.json.JSONObject(TvProviderWriter.programProviderDataForTest(record))
-        val normalizedUnsupported = providerData.getJSONObject("unsupportedDescriptorDiagnostics")
-        check(normalizedUnsupported.getInt("schemaVersion") == 1)
-        val normalizedEntry = normalizedUnsupported.getJSONArray("diagnostics").getJSONObject(0)
-        check(normalizedEntry.getString("parseStatus") == "UnsupportedValue")
-        check(normalizedEntry.getJSONObject("serviceKey").getInt("serviceId") == key.serviceId)
-        check(providerData.has("parentalRatingDiagnostics"))
+        val ratings = providerData.getJSONArray("ratings")
+        check(ratings.length() == 1)
+        check(ratings.getJSONObject(0).getString("countryCode") == "USA")
+        val diagnostics = providerData.getJSONObject("diagnostics")
+        check(diagnostics.getJSONArray("descriptorDiagnostics").length() == 0)
+        check(diagnostics.getJSONArray("publishDiagnostics").getJSONObject(0).getString("code") == "UNSUPPORTED_PARENTAL_RATING")
+        check(!providerData.has("unsupportedDescriptorDiagnostics"))
+        check(!providerData.has("parentalRatingDiagnostics"))
     }
-
-
 
     @Test fun malformedAndTruncatedParentalRatingAreNotProjectedToContentRating() {
         val malformed = aribEvent(
@@ -109,8 +183,9 @@ class TisR51FixedPlanAcceptanceTest {
         records.forEach { record ->
             check(record.contentRatings.isEmpty())
             val providerData = TvProviderWriter.programProviderDataForTest(record)
-            check(providerData.contains("unsupportedDescriptorDiagnostics"))
-            check(providerData.contains("parentalRatingDiagnostics"))
+            check(providerData.contains("descriptorDiagnostics"))
+            check(!providerData.contains("unsupportedDescriptorDiagnostics"))
+            check(!providerData.contains("parentalRatingDiagnostics"))
         }
     }
 
@@ -129,8 +204,9 @@ class TisR51FixedPlanAcceptanceTest {
         val values = store.programs.values.single()
         check(values.getAsString(TvContract.Programs.COLUMN_CONTENT_RATING) == null)
         val providerData = values.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).toString(Charsets.UTF_8)
-        check(providerData.contains("unsupportedDescriptorDiagnostics"))
-        check(providerData.contains("parentalRatingDiagnostics"))
+        check(providerData.contains("descriptorDiagnostics"))
+        check(!providerData.contains("unsupportedDescriptorDiagnostics"))
+        check(!providerData.contains("parentalRatingDiagnostics"))
     }
 
     @Test fun oldCustomAribRatingDomainIsNotGeneratedOnProductPath() {
@@ -440,18 +516,39 @@ class TisR51FixedPlanAcceptanceTest {
         check(PlaybackPipeline.h264DimensionsForTest(malformed) == null)
     }
 
-    @Test fun pmtGeneratesVideoAudioTrackIds() {
+    @Test fun pmtGeneratesVideoAudioSubtitleTrackIds() {
         val video = es(0x101, 0x1b)
         val audio = es(0x110, 0x0f, componentTag = 7, language = "jpn")
+        val subtitle = es(0x130, 0x06, componentTag = 8, dataComponentId = 0x0008, isCaption = true)
         check(TunerController.trackIdForVideoStream(video) == "video:257")
         check(TunerController.trackIdForAudioStream(audio) == "audio:272:7")
+        check(TunerController.trackIdForSubtitleStream(subtitle) == "subtitle:304:8")
         val tracks = listOf(
             TunerController.TisTrack("video:257", TvTrackInfo.TYPE_VIDEO, 0x101, 0x1b, null, -1, null),
             TunerController.TisTrack("audio:272:7", TvTrackInfo.TYPE_AUDIO, 0x110, 0x0f, 7, -1, "jpn"),
+            TunerController.TisTrack("subtitle:304:8", TvTrackInfo.TYPE_SUBTITLE, 0x130, 0x06, 8, null, null, dataComponentId = 0x0008),
         )
         check(TunerController.isSelectableTrackForTest(TvTrackInfo.TYPE_AUDIO, "audio:272:7", tracks))
         check(!TunerController.isSelectableTrackForTest(TvTrackInfo.TYPE_AUDIO, "audio:999", tracks))
+        check(TunerController.isSelectableTrackForTest(TvTrackInfo.TYPE_SUBTITLE, "subtitle:304:8", tracks))
         check(!TunerController.isSelectableTrackForTest(TvTrackInfo.TYPE_SUBTITLE, "subtitle:1", tracks))
+    }
+
+    @Test fun subtitleSelectionIsAdvertisedOnlyWhenCaptionIsEnabled() {
+        val tracks = listOf(
+            TunerController.TisTrack("subtitle:304:8", TvTrackInfo.TYPE_SUBTITLE, 0x130, 0x06, 8, null, null, dataComponentId = 0x0008),
+        )
+        check(MaleicacidLiveSession.subtitleSelectionAcceptedForTest("subtitle:304:8", tracks, captionEnabled = true))
+        check(!MaleicacidLiveSession.subtitleSelectionAcceptedForTest("subtitle:304:8", tracks, captionEnabled = false))
+        check(!MaleicacidLiveSession.subtitleSelectionAcceptedForTest("subtitle:999", tracks, captionEnabled = true))
+        check(!MaleicacidLiveSession.subtitleSelectionAcceptedForTest(null, tracks, captionEnabled = true))
+    }
+
+    @Test fun captionControllerDrawsOnlyEnabledSelectedTrack() {
+        check(AribCaptionController.shouldDrawCaptionForTest(enabled = true, selectedTrackId = "subtitle:304:8", incomingTrackId = "subtitle:304:8"))
+        check(!AribCaptionController.shouldDrawCaptionForTest(enabled = false, selectedTrackId = "subtitle:304:8", incomingTrackId = "subtitle:304:8"))
+        check(!AribCaptionController.shouldDrawCaptionForTest(enabled = true, selectedTrackId = "subtitle:304:8", incomingTrackId = "subtitle:999"))
+        check(!AribCaptionController.shouldDrawCaptionForTest(enabled = true, selectedTrackId = null, incomingTrackId = "subtitle:304:8"))
     }
 
 
@@ -659,11 +756,9 @@ class TisR51FixedPlanAcceptanceTest {
         val same = listOf(program(key, description = "desc"))
         val changedDescription = listOf(program(key, description = "updated"))
         val changedRating = listOf(program(key, description = "desc", contentRatings = listOf(requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 18, 18, true))))))
-        val changedUnsupported = listOf(program(key, description = "desc", unsupportedDescriptorJson = "{\"tag\":255}"))
         check(ProgramPublishCoordinator.programSignatureForTest(first) == ProgramPublishCoordinator.programSignatureForTest(same))
         check(ProgramPublishCoordinator.programSignatureForTest(first) != ProgramPublishCoordinator.programSignatureForTest(changedDescription))
         check(ProgramPublishCoordinator.programSignatureForTest(first) != ProgramPublishCoordinator.programSignatureForTest(changedRating))
-        check(ProgramPublishCoordinator.programSignatureForTest(first) != ProgramPublishCoordinator.programSignatureForTest(changedUnsupported))
     }
 
     @Test fun currentDiagnosticCompleteRequiresExplicitPmtAndCaStateFields() {
@@ -748,7 +843,15 @@ class TisR51FixedPlanAcceptanceTest {
         epgReasons = if (clearLive) emptyList() else reasons,
     )
 
-    private fun es(pid: Int, streamType: Int, componentTag: Int? = null, language: String? = null): AribElementaryStream =
+    private fun es(
+        pid: Int,
+        streamType: Int,
+        componentTag: Int? = null,
+        language: String? = null,
+        dataComponentId: Int? = null,
+        isCaption: Boolean = false,
+        isSuperimpose: Boolean = false,
+    ): AribElementaryStream =
         AribElementaryStream(
             elementaryPid = pid,
             streamType = streamType,
@@ -756,6 +859,9 @@ class TisR51FixedPlanAcceptanceTest {
             componentType = null,
             streamContent = null,
             languageCodes = listOfNotNull(language),
+            dataComponentId = dataComponentId,
+            isCaption = isCaption,
+            isSuperimpose = isSuperimpose,
         )
 
     private fun aribEvent(parentalRatings: List<AribParentalRating> = emptyList()): AribEvent = AribEvent(
@@ -773,7 +879,6 @@ class TisR51FixedPlanAcceptanceTest {
         serviceKey: ServiceKey,
         description: String = "desc",
         contentRatings: List<String> = emptyList(),
-        unsupportedDescriptorJson: String = "{}",
     ): ProgramRecord = ProgramRecord(
         serviceKey = serviceKey,
         eventId = 1,
@@ -783,7 +888,6 @@ class TisR51FixedPlanAcceptanceTest {
         title = "title",
         description = description,
         contentRatings = contentRatings,
-        unsupportedDescriptorJson = unsupportedDescriptorJson,
     )
 
     private fun makeSps(

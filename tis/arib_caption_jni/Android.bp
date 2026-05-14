@@ -1,0 +1,34 @@
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+rust_ffi_shared {
+    name: "libmaleicacid_arib_caption_jni",
+    crate_name: "maleicacid_arib_caption_jni",
+    srcs: ["src/lib.rs"],
+    edition: "2021",
+    product_specific: true,
+    min_sdk_version: "31",
+    rustlibs: [
+        "libjni",
+    ],
+    shared_libs: [
+        "libdl",
+    ],
+}
+
+
+rust_test {
+    name: "libmaleicacid_arib_caption_jni_test",
+    crate_name: "maleicacid_arib_caption_jni_test",
+    srcs: ["src/lib.rs"],
+    edition: "2021",
+    rustlibs: [
+        "libjni",
+    ],
+    shared_libs: [
+        "libdl",
+    ],
+    auto_gen_config: true,
+    test_suites: ["general-tests"],
+}

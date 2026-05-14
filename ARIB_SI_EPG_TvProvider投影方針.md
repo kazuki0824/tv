@@ -4,7 +4,7 @@
 
 この文書は、`arib_si_engine_rs` が抽出したARIB SI/EPG情報を Android `TvProvider` の標準列と `internal_provider_data` にどう投影するかを固定する。
 
-この文書では、EDCBとEPGStationから補完できた範囲を TvProvider 標準列への投影として固定する。r51 で標準列へ自然対応できる値だけを部分投影し、自然対応できない情報は TvProvider 標準列や一般ユーザー向け UI 本文へ投影しない。ただし、`internal_provider_data` の schema、key 名、canonical encode、signature、保存上限、diagnostics schema は現行仕様として固定し、標準列非投影または部分投影項目とは別に扱う。
+この文書では、EDCBとEPGStationから補完できた範囲を TvProvider 標準列への投影として固定する。r51 で標準列へ自然対応できる値だけを部分投影し、自然対応できない情報は TvProvider 標準列や一般ユーザー向け UI 本文へ投影しない。ただし、`internal_provider_data` の schema、key 名、canonical encode、署名、保存上限、診断情報 schema は現行仕様として固定し、標準列非投影または部分投影項目とは別に扱う。
 
 ## 2. 基本原則
 
@@ -25,9 +25,9 @@ r51でTvProvider標準列へ非投影または部分投影にする情報:
   完全な構造は JSON v1 internal_provider_data へ構造化保存する。
 ```
 
-`internal_provider_data` は、挿入した TV input service が内部で使う私的データであり、system TV app や他アプリがdecodeする前提にしない。ただし TIS 自身の内部形式は JSON v1 に固定し、`arib_si_engine_rs` の Rust provider-data serde model を SSOT とする。
+`internal_provider_data` は、挿入した TV入力サービスが内部で使う私的データであり、システムTVアプリや他アプリがdecodeする前提にしない。ただし TIS 自身の内部形式は JSON v1 に固定し、`arib_si_engine_rs` の Rust provider-data serde構造体を SSOT とする。
 
-TvProvider 標準列へ投影する ARIB descriptor 由来値は、Rust parser が構文的に有効な descriptor / event と判定したものに限る。不正 descriptor、fragment 欠落、length 不整合、不正 EIT event 由来の値を title / description / genre / audio / rating / long description の正常 field として投影してはならない。これらは JSON v1 diagnostics にのみ保持する。
+TvProvider 標準列へ投影する ARIB descriptor 由来値は、Rust parser が構文的に有効な descriptor / event と判定したものに限る。不正 descriptor、fragment 欠落、length 不整合、不正 EIT event 由来の値を title / description / genre / audio / レーティング / long description の正常フィールドとして投影してはならない。これらは JSON v1 診断情報にのみ保持する。
 
 ## 3. 設計として固定する投影
 
@@ -35,55 +35,55 @@ EDCBとEPGStationの参照から補完できたため、次を設計として固
 
 | ARIB由来データ | TvProvider標準列への投影 | internal_provider_dataへの保存 | 固定理由 |
 |---|---|---|---|
-| event name | `Programs.COLUMN_TITLE` | event keyと合わせて保持する | EDCB/EPGStationとも番組名として扱う |
-| short_event text | `Programs.COLUMN_SHORT_DESCRIPTION` と `Programs.COLUMN_LONG_DESCRIPTION` 冒頭 | 元文字列を保持する | 概要としてUI表示する |
-| extended_event text | `Programs.COLUMN_LONG_DESCRIPTION` | 元文字列を保持する | 詳細説明としてUI表示する |
-| extended_event item_description / item_text | `Programs.COLUMN_LONG_DESCRIPTION` に `【項目名】本文` としてflatten | extended item listを構造保持 | EPGStationの `extended` はflatten文字列、元構造は `rawExtended` 相当 |
-| component_descriptor text | `Programs.COLUMN_LONG_DESCRIPTION` に `映像: ...` として補足 | component構造を保持 | EDCB系UIでは映像情報として表示される |
-| audio_component_descriptor text | `Programs.COLUMN_LONG_DESCRIPTION` に `音声: ...` として補足 | audio component構造を保持 | EDCB系UIでは音声情報として表示される |
-| audio language | `Programs.COLUMN_AUDIO_LANGUAGE` | audio component構造を保持 | Android標準列がある |
-| content genre 大分類 / 中分類 | `arib_si_engine_rs` がARIB分類値とARIB表示名を出力し、TIS がその表示名を `Programs.COLUMN_BROADCAST_GENRE` へ `TvContract.Programs.Genres.encode(...)` 形式で格納する | 元ARIB分類、大分類、中分類、表示文字列を保持 | Android TvProvider には放送規格由来ジャンル用の `COLUMN_BROADCAST_GENRE` があり、ARIB分類を直接 canonical genre と混同しないため |
-| Android canonical genre | 本文「ARIB分類から Android canonical genre への明示写像表」に一致する分類だけを `Programs.COLUMN_CANONICAL_GENRE` へ `TvContract.Programs.Genres.encode(...)` 形式で格納する。写像不能分類は直接設定しない。 | 写像元のARIB分類、直接設定したcanonical genre、写像不能理由、TvProvider読み出し後のcanonical genreを診断用に区別して保持する | canonical genre は Android 定義済み値の列であるため、明示写像できる分類だけを設定し、推測写像を禁止するため |
-| content genre UI補足 | `Programs.COLUMN_LONG_DESCRIPTION` に `ジャンル: ...` として補足 | 元ARIB分類を保持 | 準正式案でUI向け補足として固定 |
-| event_group_descriptor | r51 では標準列や一般 UI 本文へは出さず、JSON v1 `internal_provider_data.relatedItems` に `shared` / `relay` / `movement` として構造化保存する。r53 で安全条件付き予約追従に使う。 | event group構造、group type、ONID / TSID / service_id / event_id を保持 | Android標準列に自然対応しないが、予約追従に必要なARIB-native構造であるため |
-| parental_rating_descriptor | `TvContentRating` に変換できる範囲を `Programs.COLUMN_CONTENT_RATING` へ `TvContentRating.flattenToString()` 形式で格納する | country_code、rating値、未対応値、raw descriptorを保持 | Android TIF の parental control は `COLUMN_CONTENT_RATING` と `TvInputService.Session` の content block通知に接続するため |
+| 番組名 | `Programs.COLUMN_TITLE` | イベントキーと合わせて保持する | EDCB/EPGStationとも番組名として扱う |
+| 短形式イベント本文 | `Programs.COLUMN_SHORT_DESCRIPTION` と `Programs.COLUMN_LONG_DESCRIPTION` 冒頭 | 元文字列を保持する | 概要としてUI表示する |
+| 長形式イベント本文 | `Programs.COLUMN_LONG_DESCRIPTION` | 元文字列を保持する | 詳細説明としてUI表示する |
+| extended_event の項目説明 / item_text | `Programs.COLUMN_LONG_DESCRIPTION` に `【項目名】本文` として平坦化 | 長形式イベント項目リストを構造保持 | EPGStationの `extended` は平坦化文字列、元構造は `rawExtended` 相当 |
+| component_descriptor の text | `Programs.COLUMN_LONG_DESCRIPTION` に `映像: ...` として補足 | コンポーネント構造を保持 | EDCB系UIでは映像情報として表示される |
+| audio_component_descriptor の text | `Programs.COLUMN_LONG_DESCRIPTION` に `音声: ...` として補足 | 音声コンポーネント構造を保持 | EDCB系UIでは音声情報として表示される |
+| audio language | `Programs.COLUMN_AUDIO_LANGUAGE` | 音声コンポーネント構造を保持 | Android標準列がある |
+| コンテンツジャンル 大分類 / 中分類 | `arib_si_engine_rs` がARIB分類値とARIB表示名を出力し、TIS がその表示名を `Programs.COLUMN_BROADCAST_GENRE` へ `TvContract.Programs.Genres.encode(...)` 形式で格納する | 元ARIB分類、大分類、中分類、表示文字列を保持 | Android TvProvider には放送規格由来ジャンル用の `COLUMN_BROADCAST_GENRE` があり、ARIB分類を直接 canonical genre と混同しないため |
+| Android canonical genre | 本文「ARIB分類から Android canonical genre への明示写像表」に一致する分類だけを TIS が `Programs.COLUMN_CANONICAL_GENRE` へ `TvContract.Programs.Genres.encode(...)` 形式で格納する。写像不能分類は直接設定しない。 | 写像元のARIB分類、TIS が直接設定した canonical genre、写像不能理由、TvProvider読み出し後のcanonical genreを診断用に区別して保持する。`arib_si_engine_rs` の SI event DTO は Android canonical genre を出力しない。provider-data に保持する canonical genre 投影結果は TIS が決定した値に限る。 | canonical genre は Android 定義済み値の列であるため、TIS が明示写像できる分類だけを設定し、推測写像を禁止するため |
+| コンテンツジャンルUI補足 | `Programs.COLUMN_LONG_DESCRIPTION` に `ジャンル: ...` として補足 | 元ARIB分類を保持 | 準正式案でUI向け補足として固定 |
+| event_group_descriptor | r51 では標準列や一般 UI 本文へは出さず、JSON v1 `internal_provider_data.relatedItems` に `shared` / `relay` / `movement` として構造化保存する。r53 で安全条件付き予約追従に使う。 | イベントグループ構造、グループ種別、ONID / TSID / service_id / event_id を保持 | Android標準列に自然対応しないが、予約追従に必要なARIB-native構造であるため |
+| parental_rating_descriptor | `TvContentRating` に変換できる範囲を `Programs.COLUMN_CONTENT_RATING` へ `TvContentRating.flattenToString()` 形式で格納する | country_code、レーティング値、未対応値、元記述子を保持 | Android TIF の視聴制限は `COLUMN_CONTENT_RATING` と `TvInputService.Session` の content block 通知に接続するため |
 | freeCA / isFree | `Programs.COLUMN_SCRAMBLED` に暗号化有無を格納し、必要に応じて `Programs.COLUMN_LONG_DESCRIPTION` に `放送種別: 無料放送/有料放送` として補足 | free_ca_modeを保持 | EDCB/EPGStationでユーザー向け情報として扱う |
-| event_id | `Programs.COLUMN_EVENT_ID` | event keyとして保持する | Android標準列がある |
-| service name | `Channels.COLUMN_DISPLAY_NAME` | service構造を保持する | チャンネル名としてUI表示する |
-| service_id | `Channels.COLUMN_SERVICE_ID` | service keyとして保持する | Android標準列がある |
-| transport_stream_id | `Channels.COLUMN_TRANSPORT_STREAM_ID` | service keyとして保持する | Android標準列がある |
-| original_network_id | `Channels.COLUMN_ORIGINAL_NETWORK_ID` | service keyとして保持する | Android標準列がある |
+| event_id | `Programs.COLUMN_EVENT_ID` | イベントキーとして保持する | Android標準列がある |
+| サービス名 | `Channels.COLUMN_DISPLAY_NAME` | サービス構造を保持する | チャンネル名としてUI表示する |
+| service_id | `Channels.COLUMN_SERVICE_ID` | サービスキーとして保持する | Android標準列がある |
+| transport_stream_id | `Channels.COLUMN_TRANSPORT_STREAM_ID` | サービスキーとして保持する | Android標準列がある |
+| original_network_id | `Channels.COLUMN_ORIGINAL_NETWORK_ID` | サービスキーとして保持する | Android標準列がある |
 
 ## 4. 表示文の固定形式
 
 `Programs.COLUMN_LONG_DESCRIPTION` は、次の順で構成する。
 
 ```text
-1. short_event text
-2. extended_event text
+1. 短形式イベント本文
+2. 長形式イベント本文
 3. extended_event item list
-4. component_descriptor text
-5. audio_component_descriptor text
-6. content genre UI補足
+4. component_descriptor の text
+5. audio_component_descriptor の text
+6. コンテンツジャンルUI補足
 7. freeCA / isFree UI補足
 ```
 
 各要素の整形は次で固定する。
 
 ```text
-extended item:
-  【<item_description>】<item_text>
+長形式イベント項目:
+  【<項目説明>】<item_text>
 
-item_description が空の場合:
+項目説明が空の場合:
   <item_text>
 
-component_descriptor text:
+component_descriptor の text:
   映像: <text>
 
-audio_component_descriptor text:
+audio_component_descriptor の text:
   音声: <text>
 
-content genre UI補足:
+コンテンツジャンルUI補足:
   ジャンル: <text>
 
 
@@ -95,7 +95,7 @@ freeCA / isFree UI補足:
 
 ## 5. r51で標準列非投影または部分投影にするもの
 
-以下は、Android TvProvider の標準列または一般ユーザー向け UI 本文へ機械的に全量投影してはならない情報である。自然対応できる一部の値だけを標準列へ投影し、それ以外は `internal_provider_data` の JSON v1 schema と Rust provider-data serde model に従って構造化保存する。
+以下は、Android TvProvider の標準列または一般ユーザー向け UI 本文へ機械的に全量投影してはならない情報である。自然対応できる一部の値だけを標準列へ投影し、それ以外は `internal_provider_data` の JSON v1 schema と Rust provider-data serde構造体に従って構造化保存する。
 
 | データ・判断 | r51 の扱い | 境界を設ける理由 |
 |---|---|---|
@@ -104,11 +104,11 @@ freeCA / isFree UI補足:
 | linkage_descriptor | JSON v1 `internal_provider_data` の linkage 構造に保存し、r51 では標準列・一般 UI・予約追従へ接続しない。r53 で安全条件付き予約追従に使う。 | Android標準列に自然対応しないため |
 | event_group_descriptor | JSON v1 `internal_provider_data.relatedItems` に `shared` / `relay` / `movement` として構造化保存し、r51 では標準列・一般 UI・予約追従へ接続しない。r53 で安全条件付き予約追従に使う。 | Android標準列には自然対応しないが、予約追従に必要なARIB-native構造であるため |
 | multi-lingual name の候補列 | r51 で選んだ1文字列だけ標準 title/name へ出し、候補列は JSON v1 `internal_provider_data` に保存する。 | 標準 title/name は1値であり、候補列の全量投影先がないため |
-| decode diagnostic | JSON v1 `diagnostics.parserDiagnostics` または `diagnostics.descriptorDiagnostics` に保存し、標準列へは出さない。 | 一般ユーザー向けUI情報ではないため |
-| publishability diagnostic | JSON v1 `diagnostics.publishDiagnostics` に保存し、標準列へは出さない。 | 一般ユーザー向けUI情報ではないため |
-| raw descriptor bytes | JSON v1 diagnostics の `rawPrefixHex` または descriptor 構造に上限内で保存し、標準列へは出さない。 | UI表示情報ではなく、標準列を肥大化させるため |
+| 復号診断 | JSON v1 `diagnostics.parserDiagnostics` または `diagnostics.descriptorDiagnostics` に保存し、標準列へは出さない。 | 一般ユーザー向けUI情報ではないため |
+| 公開可否診断 | JSON v1 `diagnostics.publishDiagnostics` に保存し、標準列へは出さない。 | 一般ユーザー向けUI情報ではないため |
+| 元記述子バイト列 | JSON v1 診断情報の `rawPrefixHex` または descriptor 構造に上限内で保存し、標準列へは出さない。 | UI表示情報ではなく、標準列を肥大化させるため |
 
-この表は「r51で標準列非投影または部分投影にするもの」の一覧である。`internal_provider_data` の schema 名、JSON key 名、BLOB サイズ上限、diagnostics key 名、`LONG_DESCRIPTION` 最大長、長文 truncate 方針は現行仕様として固定し、この表に含めてはならない。
+この表は「r51で標準列非投影または部分投影にするもの」の一覧である。`internal_provider_data` の schema 名、JSON key 名、BLOB サイズ上限、診断情報キー名、`LONG_DESCRIPTION` 最大長、長文 truncate 方針は現行仕様として固定し、この表に含めてはならない。
 
 ## 6. 実装契約
 
@@ -116,50 +116,50 @@ freeCA / isFree UI補足:
 
 ```text
 Programs.COLUMN_TITLE:
-  event name
+  番組名
 
 Programs.COLUMN_SHORT_DESCRIPTION:
-  short_event text を先頭から短縮したもの
+  短形式イベント本文を先頭から短縮したもの
 
 Programs.COLUMN_LONG_DESCRIPTION:
-  short_event text
-  extended_event text
-  extended_event item listをflattenしたもの
-  component_descriptor text
-  audio_component_descriptor text
-  content genre UI補足
+  短形式イベント本文
+  長形式イベント本文
+  extended_event item listを平坦化したもの
+  component_descriptor の text
+  audio_component_descriptor の text
+  コンテンツジャンルUI補足
   freeCA / isFree UI補足
 
 Programs.COLUMN_AUDIO_LANGUAGE:
-  audio componentから得られる言語情報。
+  音声コンポーネントから得られる言語情報。
 
 Programs.COLUMN_BROADCAST_GENRE:
   ARIB content_descriptor の大分類 / 中分類を、放送規格由来ジャンル文字列として `TvContract.Programs.Genres.encode(...)` 形式で格納する。
   値はARIB由来であることが分かる表示文字列または内部正規名にし、Android canonical genre と混同しない。
-  元の大分類 / 中分類 / raw value / 表示文字列は `internal_provider_data` に保持する。
+  元の大分類 / 中分類 / 元値 / 表示文字列は `internal_provider_data` に保持する。
 
 Programs.COLUMN_CANONICAL_GENRE:
-  r51 では、本文「ARIB分類から Android canonical genre への明示写像表」に一致する分類だけを TIS が primary projection として直接設定する。
+  r51 では、本文「ARIB分類から Android canonical genre への明示写像表」に一致する分類だけを TIS が 主投影として直接設定する。
   写像後の値だけを `TvContract.Programs.Genres.encode(...)` 形式で `ContentValues` に設定する。
   写像不能な ARIB 分類、reserved、extension、others、user_nibble 由来分類を、TIS が推測で canonical genre に入れてはならない。
-  Android TvProvider が `Programs.COLUMN_BROADCAST_GENRE` から canonical genre を内部補完する場合があるため、TIS が直接設定した値と TvProvider 読み出し後の値は diagnostics で区別する。
+  Android TvProvider が `Programs.COLUMN_BROADCAST_GENRE` から canonical genre を内部補完する場合があるため、TIS が直接設定した値と TvProvider 読み出し後の値は 診断情報で区別する。
 
 Programs.COLUMN_CONTENT_RATING:
-  parental_rating_descriptor から TIS が AOSP system-defined ISDB rating domain（`com.android.tv / ISDB / ISDB_<age>`）の `TvContentRating` を作り、`TvContentRating.flattenToString()` の結果を格納する。
-  複数 rating を持つ場合は、Android TvProvider の content rating 形式に従って複数の flattened rating を保持する。
-  変換できない値、未対応 country_code、未取得 rating は推測で標準列へ入れず、`internal_provider_data` と診断に保持する。
-  live session 側で現在番組の rating が未取得または未対応の場合は、parental control 判定では `TvContentRating.UNRATED` として扱う。
+  parental_rating_descriptor から TIS が AOSP system-defined ISDB レーティングドメイン（`com.android.tv / ISDB / ISDB_<age>`）の `TvContentRating` を作り、`TvContentRating.flattenToString()` の結果を格納する。
+  複数のレーティングを持つ場合は、Android TvProvider のコンテンツレーティング 形式に従って複数の `flattenToString()` 後のレーティングを保持する。
+  変換できない値、未対応 country_code、未取得レーティングは推測で標準列へ入れず、`internal_provider_data` と診断に保持する。
+  ライブセッション側で現在番組のレーティングが未取得または未対応の場合は、視聴制限判定では `TvContentRating.UNRATED` として扱う。
 
 Programs.COLUMN_LONG_DESCRIPTION のUI補足:
   ジャンル: ...
   放送種別: 無料放送/有料放送
-  event group は LONG_DESCRIPTION に出さない
+  イベントグループは LONG_DESCRIPTION に出さない
 
 Programs.COLUMN_INTERNAL_PROVIDER_DATA:
-  JSON v1 UTF-8 bytes のみを新規書き込み正形式とする。
-  `schema`, `schemaVersion`, `programKey`, `serviceKey`, `timing`, `source`, `cas`, `ratings`, `genres`, `series`, `relatedItems`, `linkage`, `freeCaMode`, `audioLanguages`, `audio`, `video`, `extendedItems`, `components`, `diagnostics` を top-level field として持つ。
-  provider-data JSON v1 の構造、canonical encode、normalize、signature、stable key extraction は `arib_si_engine_rs/DESIGN_JA.md` の `ProgramProviderDataV1` を SSOT とする。
-  extended item list、component/audio/series/linkage/event_group/free_CA_mode/audioLanguages等の完全構造、decode/publishability/descriptor diagnostics は JSON v1 内に保存する。
+  JSON v1 UTF-8 バイト列のみを新規書き込み正形式とする。
+  `schema`, `schemaVersion`, `programKey`, `serviceKey`, `timing`, `source`, `cas`, `ratings`, `genres`, `series`, `relatedItems`, `linkage`, `freeCaMode`, `audioLanguages`, `audio`, `video`, `extendedItems`, `components`, `diagnostics` を最上位フィールドとして持つ。
+  provider-data JSON v1 の構造、canonical encode、正規化、署名、安定キー抽出は `arib_si_engine_rs/DESIGN_JA.md` の `ProgramProviderDataV1` / `ChannelProviderDataV1` を SSOT とする。現在番組選択の診断は `diagnostics.currentProgram` 配下に保存する。
+  長形式イベント項目リスト、component/audio/series/linkage/event_group/free_CA_mode/audioLanguages等の完全構造、decode/publishability/記述子診断情報は JSON v1 内に保存する。
 ```
 
 ## 7. テスト方針
@@ -167,19 +167,19 @@ Programs.COLUMN_INTERNAL_PROVIDER_DATA:
 最低限、次をテストする。
 
 ```text
-1. extended item が `【項目名】本文` として LONG_DESCRIPTION に出る。
+1. 長形式イベント項目が `【項目名】本文` として LONG_DESCRIPTION に出る。
 2. component text が `映像: ...` として LONG_DESCRIPTION に出る。
-3. audio component text が `音声: ...` として LONG_DESCRIPTION に出る。
+3. 音声コンポーネント本文が `音声: ...` として LONG_DESCRIPTION に出る。
 4. genre補足が `ジャンル: ...` として LONG_DESCRIPTION に出る。
 5. ARIB content_descriptor は `Programs.COLUMN_BROADCAST_GENRE` に入り、元ARIB分類が `internal_provider_data` に残る。
 6. 明示写像表に一致するARIB分類では、TIS が `ContentValues` に `Programs.COLUMN_CANONICAL_GENRE` を直接設定することを確認する。写像不能分類では直接設定しないことを確認する。
-7. event group が LONG_DESCRIPTION に出ず、provider-data JSON `relatedItems` に保存される。
+7. イベントグループ が LONG_DESCRIPTION に出ず、provider-data JSON `relatedItems` に保存される。
 8. freeCA が `Programs.COLUMN_SCRAMBLED` と provider-data JSON に反映され、UI補足を出す場合は `放送種別: ...` として LONG_DESCRIPTION に出る。
 9. parental_rating_descriptor が変換可能な場合、`Programs.COLUMN_CONTENT_RATING` に `TvContentRating.flattenToString()` 形式で出る。
-10. parental_rating_descriptor の元値、未対応値、raw descriptor は `internal_provider_data` に残る。
-11. 未対応 rating は推測で `COLUMN_CONTENT_RATING` に出ない。
+10. parental_rating_descriptor の元値、未対応値、元記述子は `internal_provider_data` に残る。
+11. 未対応 レーティングは推測で `COLUMN_CONTENT_RATING` に出ない。
 12. `series_id`、episode number、last episode number は自然対応する標準列へ出る。`series_name` は `COLUMN_TITLE` / `COLUMN_EPISODE_TITLE` / `LONG_DESCRIPTION` へ機械的に出ず、JSON v1 internal_provider_data の series 構造に残る。
-13. diagnostic は標準列へ出ず、JSON v1 internal_provider_data の diagnostics 構造に残る。
+13. 診断情報は標準列へ出ず、JSON v1 internal_provider_data の 診断情報 構造に残る。
 ```
 
 ## 8. 今後の固定方法
@@ -189,7 +189,7 @@ Programs.COLUMN_INTERNAL_PROVIDER_DATA:
 ```text
 1. どの標準列へ入れるかを明記する。
 2. 一般ユーザー向けUIに表示させる理由を明記する。
-3. JSON v1 internal_provider_data に残す完全構造を明記し、Rust provider-data serde model、`schema/program_provider_data_v1.schema.json`、`arib_si_engine_rs/testdata/program_provider_data_v1/minimal_clear_program.json`、`tis/tests/assets/program_provider_data_v1/minimal_clear_program.json` を更新する。2つの golden fixture は byte-identical な複製とし、片方だけを更新してはならない。
+3. JSON v1 internal_provider_data に残す完全構造を明記し、Rust provider-data serde構造体、`schema/program_provider_data_v1.schema.json`、`arib_si_engine_rs/testdata/program_provider_data_v1/minimal_clear_program.json`、`tis/tests/assets/program_provider_data_v1/minimal_clear_program.json` を更新する。2つの 期待値テストデータは バイト単位で同一 な複製とし、片方だけを更新してはならない。
 4. unit testで標準列と JSON v1 internal_provider_data の両方を確認する。
 5. この文書を更新し、開発規則.mdのリリース物ルールに反しないことを確認する。
 ```
@@ -198,88 +198,26 @@ Programs.COLUMN_INTERNAL_PROVIDER_DATA:
 
 `internal_provider_data` の新規書き込み正形式は JSON v1 のみとする。`;` 区切り key-value 形式は読み取り互換入力として移行用に限り許可し、新規書き込みは禁止する。
 
-この文書は TvProvider 標準列への投影方針を固定する。`internal_provider_data` の具体 schema、canonical encode、normalize、signature、stable key extraction は `arib_si_engine_rs` の Rust provider-data serde model を SSOT とする。TIS Kotlin は provider-data JSON を手書き構築しない。
+この文書は TvProvider 標準列への投影方針を固定する。`internal_provider_data` の具体 schema、canonical encode、正規化、署名、安定キー抽出は `arib_si_engine_rs` の Rust provider-data serde構造体を SSOT とする。TIS Kotlin は provider-data JSON を手書き構築しない。
 
-Programs の JSON v1 は以下を基本形とする。この例は `arib_si_engine_rs/DESIGN_JA.md` の `ProgramProviderDataV1` と top-level field を一致させる。
-
-```json
-{
-  "schema": "maleicacid.tv.program",
-  "schemaVersion": 1,
-  "programKey": {
-    "kind": "arib-event-v1",
-    "originalNetworkId": 4,
-    "transportStreamId": 16400,
-    "serviceId": 101,
-    "eventId": 12345
-  },
-  "serviceKey": {
-    "originalNetworkId": 4,
-    "transportStreamId": 16400,
-    "serviceId": 101
-  },
-  "timing": {
-    "startUtcMillis": 1730000000000,
-    "endUtcMillis": 1730001800000,
-    "durationMillis": 1800000
-  },
-  "source": {
-    "pid": 18,
-    "tableId": 78,
-    "version": 12,
-    "sectionNumber": 0,
-    "lastSectionNumber": 1
-  },
-  "cas": {
-    "requiresCas": false,
-    "unsupportedCas": false,
-    "clearLivePlaybackSupported": true,
-    "source": "CURRENT_DIAGNOSTIC"
-  },
-  "ratings": [],
-  "genres": [],
-  "series": null,
-  "relatedItems": [],
-  "linkage": [],
-  "freeCaMode": {
-    "raw": 0,
-    "scrambled": false,
-    "parseStatus": "OK"
-  },
-  "audioLanguages": [],
-  "audio": null,
-  "video": null,
-  "extendedItems": [],
-  "components": {
-    "video": [],
-    "audio": [],
-    "subtitle": [],
-    "data": []
-  },
-  "diagnostics": {
-    "descriptorDiagnostics": [],
-    "publishDiagnostics": [],
-    "parserDiagnostics": []
-  }
-}
-```
+Programs の JSON v1 の具体 schema と検証用JSONは、`arib_si_engine_rs/schema/program_provider_data_v1.schema.json`、`arib_si_engine_rs/schema/descriptor_diagnostic_v1.schema.json`、`arib_si_engine_rs/testdata/program_provider_data_v1/minimal_clear_program.json` を正とする。Channels の JSON v1 は `schema="maleicacid.tv.channel"` / `schemaVersion=1` とし、実装追随時に `arib_si_engine_rs/schema/channel_provider_data_v1.schema.json` を追加する。この文書では provider-data schema 本文を再定義せず、TvProvider 標準列への投影規則だけを固定する。
 
 `programKey` は ONID / TSID / SID / event_id 由来の安定IDであり、start/end/duration を含めない。開始時刻、終了時刻、duration は `timing` と TvProvider 標準列に保持する。
 
-Programs の `internal_provider_data` には、`requiresCas`, `unsupportedCas`, `clearLivePlaybackSupported`, `channelRegistrationReady`, `epgPublishable`, `publishStateSource` 相当の CAS / readiness state を `cas` または diagnostics に保存する。parental rating については `countryCode`, `ratingValue`, `rawRatingByte`, `supported`, `parseStatus`, `mappedTvContentRating` 相当の情報を `ratings` または diagnostics に保存する。
+Programs の `internal_provider_data` には、`requiresCas`, `unsupportedCas`, `clearLivePlaybackSupported`, `channelRegistrationReady`, `epgPublishable`, `publishStateSource` 相当の CAS / 準備状態を `cas` または 診断情報に保存する。視聴年齢制限 については `countryCode`, `ratingValue`, `rawRatingByte`, `supported`, `parseStatus`, `mappedTvContentRating` 相当の情報を `ratings` または 診断情報に保存する。
 
 現在の診断情報が完全であれば、その値を Programs CAS 状態の正とする。診断情報が欠落または不完全な場合、既存 channel の `internal_provider_data` から CAS / 準備状態を代替参照して Programs 側に保存する。channel 側だけに保存して Programs 側を false に落としてはならない。
 
-provider-data 全体は 16 KiB を目安上限、32 KiB を絶対上限とする。絶対上限を超える場合は、識別子、時刻、CAS 状態、rating を保持し、診断情報と長文補助情報を切り詰める。
+provider-data 全体は 16 KiB を目安上限、32 KiB を絶対上限とする。絶対上限を超える場合は、識別子、時刻、CAS 状態、レーティングを保持し、診断情報と長文補助情報を切り詰める。
 
-`components.video[]` / `components.audio[]` / `components.subtitle[]` / `components.data[]` には、PMT / component descriptor / audio component descriptor 等から得た ES または component 単位の metadata を保存する。実際に主 track として採用された候補の要約だけを `video` / `audio` に置き、未選択時は `null` とする。字幕 track metadata は `components.subtitle[]` に保存し、字幕本文、DRCS、BML 実行状態、双方向データ放送 UI 状態は保存しない。codec metadata を保存することは live viewable / playable capability の claim を意味しない。
+`components.video[]` / `components.audio[]` / `components.subtitle[]` / `components.data[]` には、PMT / component descriptor / 音声コンポーネントdescriptor 等から得た ES または component 単位のメタデータを保存する。実際に主track として採用された候補の要約だけを `video` / `audio` に置き、未選択時は `null` とする。字幕 trackメタデータは `components.subtitle[]` に保存し、字幕本文、DRCS、BML 実行状態、双方向データ放送 UI 状態は保存しない。codecメタデータを保存することは ライブ視聴可能性 / 再生可能性の対応宣言を意味しない。
 
 ## 不正 descriptor / EIT 投影規則
 
-- 新規 provider-data 書き込みでは `ProgramProviderDataV1` を provider-data 全体の唯一の schema とする。descriptor diagnostics schema v1 は `diagnostics.descriptorDiagnostics[]` 配下の要素 schema であり、provider-data 全体の schema ではない。Rust は `schemaVersion=1` と `diagnostics.descriptorDiagnostics[]` を出力し、Kotlin はその object を別 schema へ変換しない。
+- 新規 provider-data 書き込みでは `ProgramProviderDataV1` を provider-data 全体の唯一の schema とする。descriptor 診断情報 schema v1 は `diagnostics.descriptorDiagnostics[]` 配下の要素 schema であり、provider-data 全体の schema ではない。Rust は `schemaVersion=1` と `diagnostics.descriptorDiagnostics[]` を出力し、Kotlin はそのオブジェクトを別 schema へ変換しない。
 - 新規の extended-event item は `description/text` として書き込む。`key/value` と `itemDescription/itemText` は読み取り互換入力としてのみ受け付ける。
-- 不正な short / extended / content / audio_component / event_group descriptor は、通常の title、description、extended item、genre、audio、event-group field として部分投影してはならない。
-- 不正な EIT event timing は、以前有効だった event が消滅した根拠にしてはならない。不正 section だけでは obsolete delete window を作らない。
+- 不正な short / extended / content / audio_component / event_group descriptor は、通常の title、description、長形式イベント項目、genre、audio、event-group フィールドとして部分投影してはならない。
+- 不正な EIT event timing は、以前有効だった event が消滅した根拠にしてはならない。不正 section だけでは 廃止行削除区間 を作らない。
 
 
 ## ARIB分類から Android canonical genre への明示写像表
@@ -329,6 +267,6 @@ TIS は次の表に一致する分類だけを `Programs.COLUMN_CANONICAL_GENRE`
 | ARIB / PMT 要素 | 投影先 | 完了条件 |
 |---|---|---|
 | EIT `free_CA_mode` | TvProvider scrambled 判定、provider-data JSON | `1` を scrambled、`0` を not scrambled とし、CAS 状態と混同しない。 |
-| 音声 ISO639 language | TvProvider audio language metadata、provider-data JSON | PMT / descriptor から取得可能な言語だけ設定し、取得不能時に推測しない。 |
-| parental rating | `COLUMN_CONTENT_RATING`、provider-data JSON、diagnostics | 既存 rating domain と整合する値だけ設定し、reserved / malformed / domain 不明は diagnostics に留める。 |
+| 音声 ISO639 language | TvProvider audio language メタデータ、provider-data JSON | PMT / descriptor から取得可能な言語だけ設定し、取得不能時に推測しない。 |
+| 視聴年齢制限 | `COLUMN_CONTENT_RATING`、provider-data JSON、診断情報 | 既存レーティングドメイン と整合する値だけ設定し、reserved / malformed / domain不明は 診断情報に留める。 |
 | event_group_descriptor | provider-data JSON `relatedItems` | r51 では保存・診断のみ。r53 で安全条件付き予約追従に使う。 |

@@ -12,6 +12,8 @@ import android.media.tv.tuner.filter.Filter
 import android.media.tv.tuner.filter.FilterCallback
 import android.media.tv.tuner.filter.FilterEvent
 import android.media.tv.tuner.filter.MediaEvent
+import android.media.tv.tuner.filter.PesEvent
+import android.media.tv.tuner.filter.PesSettings
 import android.media.tv.tuner.filter.TsFilterConfiguration
 import android.os.Handler
 import android.os.Looper
@@ -46,11 +48,14 @@ class PlaybackPipeline(
     private var onVideoAvailable: () -> Unit = {}
     private var onVideoUnavailable: (PlaybackUnavailable) -> Unit = {}
     private var onVideoFormatDiscovered: (VideoFormatInfo) -> Unit = {}
+    private var onSubtitlePes: (String, ByteArray, Long) -> Unit = { _, _, _ -> }
     private var videoFilter: Filter? = null
     private var audioFilter: Filter? = null
+    private var subtitleFilter: Filter? = null
     private var nextAvFilterToken: Long = 1L
     private var currentVideoFilterToken: Long = -1L
     private var currentAudioFilterToken: Long = -1L
+    private var currentSubtitleFilterToken: Long = -1L
     private var videoDecoder: VideoDecoderPipeline? = null
     private var audioDecoder: AudioDecoderPipeline? = null
     private val videoAvailableNotified = AtomicBoolean(false)
@@ -159,6 +164,10 @@ class PlaybackPipeline(
         runOnPlaybackExecutorBlocking { onVideoFormatDiscovered = callback }
     }
 
+    fun setOnSubtitlePesCallback(callback: (String, ByteArray, Long) -> Unit) {
+        runOnPlaybackExecutorBlocking { onSubtitlePes = callback }
+    }
+
     fun reportUnavailable(reason: PlaybackUnavailableReason, detail: String = "") {
         enqueuePlaybackAction { emitUnavailable(reason, detail) }
     }
@@ -254,6 +263,16 @@ class PlaybackPipeline(
             }
         } else {
             diagnostics += "audio=absent-or-unsupported-video-only"
+        }
+        val subtitle = selection.subtitle
+        if (subtitle != null) {
+            val openedSubtitle = createAndStartSubtitlePesFilter(tuner, subtitle)
+                .onFailure { error -> diagnostics += "subtitle PES filter start failed: ${error.message}" }
+                .getOrNull()
+            if (openedSubtitle != null) {
+                subtitleFilter = openedSubtitle
+                diagnostics += "subtitlePid=${subtitle.elementaryPid}"
+            }
         }
         diagnostics += "service=${selection.serviceKey}"
         diagnostics += "channel=${channel.displayNumber}"
@@ -372,9 +391,59 @@ class PlaybackPipeline(
         filter
     }
 
+    private fun createAndStartSubtitlePesFilter(tuner: Tuner, stream: AribElementaryStream): Result<Filter> = runCatching {
+        val pid = stream.elementaryPid
+        require(pid in 0..0x1fff) { "PID が範囲外です: $pid" }
+        require(TunerController.isCaptionStream(stream)) { "字幕ではない stream を subtitle filter に接続しません pid=$pid" }
+        val filterGeneration = playbackGeneration
+        val filterToken = nextAvFilterToken++
+        currentSubtitleFilterToken = filterToken
+        fun tokenMatches(): Boolean = currentSubtitleFilterToken == filterToken
+        val trackId = TunerController.trackIdForSubtitleStream(stream)
+        val filter = tuner.openFilter(Filter.TYPE_TS, Filter.SUBTYPE_PES, SUBTITLE_FILTER_BUFFER_BYTES, executor, object : FilterCallback {
+            override fun onFilterEvent(filter: Filter, events: Array<FilterEvent>) {
+                runCatching {
+                    if (filterGeneration != playbackGeneration || !tokenMatches()) return
+                    for (event in events.filterIsInstance<PesEvent>()) {
+                        if (filterGeneration != playbackGeneration || !tokenMatches()) continue
+                        val dataLength = event.dataLength
+                        if (dataLength <= 0 || dataLength > MAX_SUBTITLE_PES_BYTES) continue
+                        val buffer = ByteArray(dataLength)
+                        val read = filter.read(buffer, 0, dataLength.toLong())
+                        if (read <= 0) continue
+                        val payload = if (read == buffer.size) buffer else buffer.copyOf(read)
+                        onSubtitlePes(trackId, payload, ARIBCC_PTS_NOPTS_MILLIS)
+                    }
+                }.onFailure { error ->
+                    Log.w(LogTags.TIS, "字幕PES filter callback に失敗しました inputId=$inputId pid=$pid", error)
+                }
+            }
+            override fun onFilterStatusChanged(filter: Filter, status: Int) {
+                Log.d(LogTags.TIS, "字幕PES filter 状態 inputId=$inputId pid=$pid status=$status")
+            }
+        }) ?: error("openFilter が null を返しました subtitle pid=$pid")
+        val settings = PesSettings.builder(Filter.TYPE_TS)
+            .setStreamId(PES_STREAM_ID_PRIVATE_STREAM_1)
+            .build()
+        val config = TsFilterConfiguration.builder().setTpid(pid).setSettings(settings).build()
+        val configureResult = filter.configure(config)
+        if (configureResult != Tuner.RESULT_SUCCESS) {
+            if (currentSubtitleFilterToken == filterToken) currentSubtitleFilterToken = -1L
+            closeFilter(filter)
+            error("subtitle PES filter configure failed result=$configureResult pid=$pid")
+        }
+        val startResult = filter.start()
+        if (startResult != Tuner.RESULT_SUCCESS) {
+            if (currentSubtitleFilterToken == filterToken) currentSubtitleFilterToken = -1L
+            closeFilter(filter)
+            error("subtitle PES filter start failed result=$startResult pid=$pid")
+        }
+        filter
+    }
+
     private fun markFirstFrameRendered(generation: Long) {
-        // MediaCodec frame-rendered callback は playback executor ではなく mainHandler へ届く。
-        // callback thread から playbackGeneration / surface を読んだり first-frame state を変更したりせず、
+        // MediaCodec frame-rendered コールバック は playback executor ではなく mainHandler へ届く。
+        // コールバック thread から playbackGeneration / surface を読んだり first-frame state を変更したりせず、
         // playback executor へ直列化する。これにより既存 generation の frame notification が
         // current state を進めることを防ぐ。
         enqueuePlaybackAction { markFirstFrameRenderedOnPlaybackExecutor(generation) }
@@ -1076,11 +1145,14 @@ class PlaybackPipeline(
         playbackGeneration++
         currentVideoFilterToken = -1L
         currentAudioFilterToken = -1L
+        currentSubtitleFilterToken = -1L
         videoAvailableNotified.set(false)
         closeFilter(videoFilter)
         closeFilter(audioFilter)
+        closeFilter(subtitleFilter)
         videoFilter = null
         audioFilter = null
+        subtitleFilter = null
         videoDecoder?.close()
         audioDecoder?.close()
         videoDecoder = null
@@ -1195,6 +1267,10 @@ class PlaybackPipeline(
         }
 
         private const val AV_FILTER_BUFFER_BYTES = 16 * 1024 * 1024L
+        private const val SUBTITLE_FILTER_BUFFER_BYTES = 256 * 1024L
+        private const val MAX_SUBTITLE_PES_BYTES = 256 * 1024
+        private const val PES_STREAM_ID_PRIVATE_STREAM_1 = 0xbd
+        private const val ARIBCC_PTS_NOPTS_MILLIS = Long.MIN_VALUE
         private const val CODEC_DEQUEUE_TIMEOUT_US = 0L
         private const val CODEC_CONFIG_MAX_BYTES = 512 * 1024
         private const val MEDIA_EVENT_SAMPLE_MAX_BYTES = 1024L * 1024L

@@ -23,6 +23,7 @@ android_app {
 
     jni_libs: [
         "libmaleicacid_arib_si_engine_jni",
+        "libmaleicacid_arib_caption_jni",
     ],
 
     required: [
