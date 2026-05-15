@@ -18,7 +18,7 @@ object AribRatingMapper {
 
     fun toTvContentRating(rating: AribParentalRating): TvContentRating? {
         if (!rating.supported || rating.countryCode != "JPN") return null
-        val age = rating.rating.takeIf { it in 4..20 } ?: return null
+        val age = rating.ratingValue.takeIf { it in 4..20 } ?: return null
         return TvContentRating.createRating(DOMAIN, RATING_SYSTEM, "$RATING_PREFIX$age")
     }
 

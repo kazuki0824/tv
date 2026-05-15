@@ -12,7 +12,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
     private val program = ProgramRecord(
         serviceKey = key,
         eventId = 10,
-        stableIdentity = "onid=4;tsid=16625;sid=101;event=10",
+        stableIdentity = "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":10}",
         startTimeMillis = 1_700_000_000_000L,
         durationMillis = 1_800_000L,
         title = "News",
@@ -210,7 +210,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
             if (failDelete) return Result.failure(IllegalStateException("削除失敗"))
             val before = programs.size
             val removeIds = programs.mapNotNull { (id, values) ->
-                val key = TvProviderWriter.parseProgramKey(values.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).toString(Charsets.UTF_8))
+                val key = TvProviderWriter.parseProgramKey(values.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA))
                 if (key == null || key !in validProgramKeys) id else null
             }
             removeIds.forEach { programs.remove(it) }
@@ -218,7 +218,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         }
 
         private fun programIndex(): Map<String, Long> = programs.mapNotNull { (id, values) ->
-            val key = TvProviderWriter.parseProgramKey(values.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).toString(Charsets.UTF_8))
+            val key = TvProviderWriter.parseProgramKey(values.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA))
             key?.let { it to id }
         }.toMap()
     }

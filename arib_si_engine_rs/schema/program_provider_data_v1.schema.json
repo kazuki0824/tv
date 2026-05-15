@@ -678,6 +678,16 @@
         },
         "parseStatus": {
           "$ref": "#/$defs/parseStatus"
+        },
+        "r51PlaybackSupported": {
+          "type": "boolean"
+        },
+        "liveViewableClaim": {
+          "type": "boolean"
+        },
+        "diagnosticCode": {
+          "type": "string",
+          "minLength": 1
         }
       }
     },
@@ -733,6 +743,16 @@
         },
         "parseStatus": {
           "$ref": "#/$defs/parseStatus"
+        },
+        "r51PlaybackSupported": {
+          "type": "boolean"
+        },
+        "liveViewableClaim": {
+          "type": "boolean"
+        },
+        "diagnosticCode": {
+          "type": "string",
+          "minLength": 1
         }
       }
     },
@@ -923,6 +943,23 @@
               "value": {}
             }
           }
+        },
+        "providerDataTruncated": {
+          "type": "boolean"
+        },
+        "providerDataHardLimitBytes": {
+          "type": "integer"
+        },
+        "providerDataSoftLimitBytes": {
+          "type": "integer"
+        },
+        "providerDataDroppedCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "malformedCaDescriptorCount": {
+          "type": "integer",
+          "minimum": 0
         }
       }
     }

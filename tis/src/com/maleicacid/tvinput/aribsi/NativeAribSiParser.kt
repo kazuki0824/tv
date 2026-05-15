@@ -5,11 +5,15 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 class NativeAribSiParser : AutoCloseable {
-    data class BulkSnapshot(
+    private data class NativeTransaction(
+        val snapshotGeneration: Long,
+        val ingestSequence: Long,
         val services: List<AribService>,
         val servicesForCasDiscovery: List<AribService>,
         val caMetadata: List<CaMetadata>,
         val caMetadataForCasDiscovery: List<CaMetadata>,
+        val malformedCaDescriptorDiagnostics: List<MalformedCaDescriptorDiagnostic>,
+        val malformedCaDescriptorCountByServiceId: Map<Int, Int>,
         val pmtPidMappings: List<PmtPidMapping>,
         val pmtPidsForSectionFilters: List<Int>,
         val transports: List<AribTransport>,
@@ -18,17 +22,19 @@ class NativeAribSiParser : AutoCloseable {
         val events: List<AribEvent>,
         val epgUpdateWindows: List<AribEpgUpdateWindow>,
         val publishabilityDiagnostics: List<ServicePublishabilityDiagnostic>,
+        val parserDiagnostics: List<ParserDiagnostic>,
     )
 
     private var handle: Long = nativeCreate()
 
     fun buildChannelProviderData(requestJson: String): String = nativeBuildChannelProviderData(requestJson)
     fun buildProgramProviderData(requestJson: String): String = nativeBuildProgramProviderData(requestJson)
-    fun normalizeProgramProviderData(providerData: String): String = nativeNormalizeProgramProviderData(providerData)
-    fun programProviderDataSignature(providerData: String): String = nativeProgramProviderDataSignature(providerData)
-    fun extractProgramKeyResult(providerData: String): String = nativeExtractProgramKeyResult(providerData)
+    fun buildProgramKey(onid: Int, tsid: Int, sid: Int, eventId: Int): String = nativeBuildProgramKey(onid, tsid, sid, eventId)
+    fun normalizeProgramProviderData(providerData: ByteArray): String = nativeNormalizeProgramProviderData(providerData)
+    fun programProviderDataSignature(providerData: ByteArray): String = nativeProgramProviderDataSignature(providerData)
+    fun extractProgramKeyResult(providerData: ByteArray): String = nativeExtractProgramKeyResult(providerData)
     fun extractChannelTuneKey(providerData: String): String = nativeExtractChannelTuneKey(providerData)
-    fun appendCurrentProgramDiagnostics(providerData: String, overlapCount: Long, selectedProgramId: Long, selectionRule: String): String =
+    fun appendCurrentProgramDiagnostics(providerData: ByteArray, overlapCount: Long, selectedProgramId: Long, selectionRule: String): String =
         nativeAppendCurrentProgramDiagnostics(providerData, overlapCount, selectedProgramId, selectionRule)
 
     fun ingestSection(pid: Int, section: ByteArray): Int {
@@ -41,23 +47,107 @@ class NativeAribSiParser : AutoCloseable {
     fun isDiscoveryComplete(): Boolean = discoveryStage() == SiDiscoveryStage.COMPLETE
 
     @Synchronized
-    fun snapshotBulk(): BulkSnapshot = snapshotBulk(takeUpdateWindows = false)
+    fun takeProgramPublishSnapshot(): ProgramPublishSnapshot = buildProgramPublishSnapshot(readNativeTransaction(takeUpdateWindows = true))
 
     @Synchronized
-    fun snapshotBulk(takeUpdateWindows: Boolean): BulkSnapshot {
-        check(handle != 0L) { "ネイティブ解析器は終了済みです" }
-        return parseBulkSnapshotJson(nativeSnapshotBulkJson(handle, if (takeUpdateWindows) 1 else 0))
+    fun programStateSnapshot(): ProgramPublishSnapshot = buildProgramPublishSnapshot(readNativeTransaction(takeUpdateWindows = false))
+
+    @Synchronized
+    fun serviceRegistrationSnapshot(): ServiceRegistrationSnapshot {
+        val snapshot = readNativeTransaction(takeUpdateWindows = false)
+        return ServiceRegistrationSnapshot(
+            snapshotGeneration = snapshot.snapshotGeneration,
+            services = snapshot.services,
+            actualTransports = snapshot.sdtActualTransports.map { TransportKey(it.originalNetworkId, it.transportStreamId) }.toSet(),
+            publishabilityByServiceKey = snapshot.publishabilityDiagnostics.associateBy { it.serviceKey },
+            diagnostics = snapshot.parserDiagnostics,
+        )
     }
 
-    private fun parseBulkSnapshotJson(raw: String): BulkSnapshot {
+    @Synchronized
+    fun casDiscoverySnapshot(): CasDiscoverySnapshot {
+        val snapshot = readNativeTransaction(takeUpdateWindows = false)
+        return CasDiscoverySnapshot(
+            snapshotGeneration = snapshot.snapshotGeneration,
+            services = snapshot.servicesForCasDiscovery,
+            caMetadata = snapshot.caMetadataForCasDiscovery,
+            pmtPids = snapshot.pmtPidMappings.associate { it.serviceKey to it.pmtPid },
+            catEmmPids = snapshot.caMetadataForCasDiscovery.mapNotNull { it.emmPid }.distinct().sorted(),
+            diagnostics = descriptorDiagnosticsFromEvents(snapshot.events),
+            malformedCaDescriptorDiagnostics = snapshot.malformedCaDescriptorDiagnostics,
+        )
+    }
+
+    private fun buildProgramPublishSnapshot(snapshot: NativeTransaction): ProgramPublishSnapshot = ProgramPublishSnapshot(
+        snapshotGeneration = snapshot.snapshotGeneration,
+        ingestSequence = snapshot.ingestSequence,
+        events = snapshot.events,
+        updateWindows = snapshot.epgUpdateWindows,
+        publishabilityByServiceKey = snapshot.publishabilityDiagnostics.associateBy { it.serviceKey },
+        descriptorDiagnostics = descriptorDiagnosticsFromEvents(snapshot.events),
+        parserDiagnostics = snapshot.parserDiagnostics,
+        malformedCaDescriptorCountByServiceId = snapshot.malformedCaDescriptorCountByServiceId,
+    )
+
+    private fun descriptorDiagnosticsFromEvents(events: List<AribEvent>): List<DescriptorDiagnostic> = events.flatMap { event ->
+        parseDescriptorDiagnostics(event.descriptors.diagnostics.descriptorDiagnosticsCanonicalJson)
+    }
+
+    private fun parseDescriptorDiagnostics(raw: String): List<DescriptorDiagnostic> {
+        val array = runCatching { JSONArray(raw.ifBlank { "[]" }) }.getOrNull() ?: return emptyList()
+        return (0 until array.length()).mapNotNull { index ->
+            val obj = array.optJSONObject(index) ?: return@mapNotNull null
+            val scope = obj.optJSONObject("scope") ?: JSONObject()
+            val descriptor = obj.optJSONObject("descriptor") ?: JSONObject()
+            DescriptorDiagnostic(
+                schema = obj.optString("schema"),
+                schemaVersion = obj.optInt("schemaVersion", 0),
+                severity = obj.optString("severity"),
+                code = obj.optString("code"),
+                scope = DescriptorDiagnosticScope(
+                    pid = optIntOrNull(scope, "pid"),
+                    tableId = optIntOrNull(scope, "tableId"),
+                    tableIdExtension = optIntOrNull(scope, "tableIdExtension"),
+                    version = optIntOrNull(scope, "version"),
+                    sectionNumber = optIntOrNull(scope, "sectionNumber"),
+                    originalNetworkId = optIntOrNull(scope, "originalNetworkId"),
+                    transportStreamId = optIntOrNull(scope, "transportStreamId"),
+                    serviceId = optIntOrNull(scope, "serviceId"),
+                    eventId = optIntOrNull(scope, "eventId"),
+                ),
+                descriptor = DescriptorDiagnosticDescriptor(
+                    tag = descriptor.optInt("tag", -1),
+                    name = optStringOrNull(descriptor, "name"),
+                    offset = descriptor.optInt("offset", -1),
+                    declaredLength = descriptor.optInt("declaredLength", -1),
+                    actualRemainingLength = descriptor.optInt("actualRemainingLength", -1),
+                    parseStatus = descriptor.optString("parseStatus"),
+                    rawPrefixHex = descriptor.optString("rawPrefixHex"),
+                ),
+                message = obj.optString("message"),
+                rawJson = obj.toString(),
+            )
+        }
+    }
+
+    private fun readNativeTransaction(takeUpdateWindows: Boolean): NativeTransaction {
+        check(handle != 0L) { "ネイティブ解析器は終了済みです" }
+        return parseNativeTransactionJson(nativeSnapshotBulkJson(handle, if (takeUpdateWindows) 1 else 0))
+    }
+
+    private fun parseNativeTransactionJson(raw: String): NativeTransaction {
         val root = JSONObject(raw.ifBlank { "{}" })
         val services = parseServices(root.optJSONArray("services"))
         val events = attachServiceComponentsToEvents(parseEvents(root.optJSONArray("events")), services)
-        return BulkSnapshot(
+        return NativeTransaction(
+            snapshotGeneration = root.optLong("snapshotGeneration", 0L),
+            ingestSequence = root.optLong("ingestSequence", 0L),
             services = services,
             servicesForCasDiscovery = parseServices(root.optJSONArray("servicesForCasDiscovery")),
             caMetadata = parseCaMetadataList(root.optJSONArray("caMetadata")),
             caMetadataForCasDiscovery = parseCaMetadataList(root.optJSONArray("caMetadataForCasDiscovery")),
+            malformedCaDescriptorDiagnostics = parseMalformedCaDescriptorDiagnostics(root.optJSONArray("malformedCaDescriptorDiagnostics")),
+            malformedCaDescriptorCountByServiceId = parseMalformedCaDescriptorCounts(root.optJSONArray("malformedCaDescriptorCounts")),
             pmtPidMappings = parsePmtPidMappings(root.optJSONArray("pmtPidMappings")),
             pmtPidsForSectionFilters = parseIntArray(root.optJSONArray("pmtPidsForSectionFilters")).filter { it in 0..0x1fff },
             transports = parseTransports(root.optJSONArray("transports")),
@@ -66,6 +156,7 @@ class NativeAribSiParser : AutoCloseable {
             events = events,
             epgUpdateWindows = parseEpgUpdateWindows(root.optJSONArray("epgUpdateWindows")),
             publishabilityDiagnostics = parsePublishabilityDiagnostics(root.optJSONArray("publishabilityDiagnostics")),
+            parserDiagnostics = parseParserDiagnostics(root.optJSONArray("parserDiagnostics")),
         )
     }
 
@@ -181,7 +272,7 @@ class NativeAribSiParser : AutoCloseable {
             val index = merged.indexOfFirst { sameComponentIdentity(it, eventEntry) }
             if (index >= 0) {
                 merged[index] = mergeComponentEntry(eventEntry, merged[index])
-            } else {
+            } else if (eventEntry.esPid >= 0) {
                 merged += eventEntry
             }
         }
@@ -227,6 +318,30 @@ class NativeAribSiParser : AutoCloseable {
         )
     }
 
+    private fun parseMalformedCaDescriptorDiagnostics(array: JSONArray?): List<MalformedCaDescriptorDiagnostic> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
+        val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
+        MalformedCaDescriptorDiagnostic(
+            pid = obj.optInt("pid", -1),
+            tableId = obj.optInt("tableId", -1),
+            tableIdExtension = optIntOrNull(obj, "tableIdExtension"),
+            serviceId = optIntOrNull(obj, "serviceId"),
+            elementaryPid = optIntOrNull(obj, "elementaryPid"),
+            scope = obj.optString("scope"),
+            offset = obj.optInt("offset", -1),
+            declaredLength = obj.optInt("declaredLength", -1),
+            actualRemainingLength = obj.optInt("actualRemainingLength", -1),
+            reason = obj.optString("reason"),
+            rawPrefixHex = obj.optString("rawPrefixHex"),
+        ).takeIf { it.pid >= 0 && it.tableId >= 0 && it.offset >= 0 && it.reason.isNotBlank() }
+    }
+
+    private fun parseMalformedCaDescriptorCounts(array: JSONArray?): Map<Int, Int> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
+        val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
+        val serviceId = obj.optInt("serviceId", -1)
+        val count = obj.optInt("count", 0)
+        if (serviceId < 0 || count <= 0) null else serviceId to count
+    }.toMap()
+
     private fun parsePrivateSections(array: JSONArray?): List<PrivateSection> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
         val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
         val pid = obj.optInt("pid", -1)
@@ -236,10 +351,13 @@ class NativeAribSiParser : AutoCloseable {
 
     private fun parseEvents(array: JSONArray?): List<AribEvent> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
         val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
-        val key = serviceKeyFrom(obj)
-        val eventId = obj.optInt("eventId", -1)
-        val start = obj.optLong("startTimeMillis", -1L)
-        val duration = obj.optLong("durationMillis", -1L)
+        val serviceKeyObj = obj.optJSONObject("serviceKey") ?: return@mapNotNull null
+        val programKeyObj = obj.optJSONObject("programKey") ?: return@mapNotNull null
+        val timingObj = obj.optJSONObject("timing") ?: return@mapNotNull null
+        val key = serviceKeyFrom(serviceKeyObj)
+        val eventId = programKeyObj.optInt("eventId", -1)
+        val start = timingObj.optLong("startUtcMillis", -1L)
+        val duration = timingObj.optLong("durationMillis", -1L)
         val descriptorsObj = obj.optJSONObject("descriptors") ?: JSONObject()
         val sourceObj = obj.optJSONObject("source") ?: JSONObject()
         val component = descriptorsObj.optJSONObject("component") ?: JSONObject()
@@ -248,7 +366,7 @@ class NativeAribSiParser : AutoCloseable {
         val freeCaMode = descriptorsObj.optJSONObject("freeCaMode") ?: JSONObject()
         val diagnostics = descriptorsObj.optJSONObject("diagnostics") ?: JSONObject()
         val series = descriptorsObj.optJSONObject("series")
-        val descriptorDiagnostics = diagnostics.optJSONArray("descriptorDiagnostics")
+        val descriptorDiagnosticsCanonicalJson = diagnostics.optString("descriptorDiagnosticsCanonicalJson", "[]")
         if (key.originalNetworkId < 0 || key.transportStreamId < 0 || key.serviceId < 0 || eventId < 0 || start <= 0L || duration <= 0L) return@mapNotNull null
         AribEvent(
             serviceKey = key,
@@ -260,26 +378,33 @@ class NativeAribSiParser : AutoCloseable {
             description = obj.optString("description"),
             extendedDescription = obj.optString("extendedDescription"),
             eventScope = obj.optString("eventScope", "present_following"),
+            source = AribProgramSource(
+                pid = sourceObj.optInt("pid", 18),
+                tableId = sourceObj.optInt("tableId", 0x4e),
+                version = sourceObj.optInt("version", 0),
+                sectionNumber = sourceObj.optInt("sectionNumber", 0),
+                lastSectionNumber = sourceObj.optInt("lastSectionNumber", 0),
+            ),
             descriptors = AribEventDescriptors(
                 extendedItems = parseExtendedItems(descriptorsObj.optJSONArray("extendedItems")),
                 componentText = optStringOrNull(component, "text"),
                 audioComponentText = optStringOrNull(audio, "componentText"),
-                audioLanguage = optStringOrNull(audio, "language"),
-                broadcastGenre = optStringOrNull(genres, "broadcastGenre"),
+                audioLanguage = null,
+                contentGenres = parseContentGenres(genres.optJSONArray("content")),
                 genreSupplementText = optStringOrNull(genres, "genreSupplementText"),
                 relatedItems = parseRelatedItems(descriptorsObj.optJSONArray("relatedItems")),
                 linkage = parseLinkage(descriptorsObj.optJSONArray("linkage")),
                 scrambled = if (freeCaMode.isNull("scrambled")) null else freeCaMode.optBoolean("scrambled"),
                 freeCaMode = parseFreeCaMode(freeCaMode),
-                seriesId = if (series == null || series.isNull("seriesId")) null else series.optInt("seriesId"),
-                episodeNumber = if (series == null || series.isNull("episodeNumber")) null else series.optInt("episodeNumber"),
-                lastEpisodeNumber = if (series == null || series.isNull("lastEpisodeNumber")) null else series.optInt("lastEpisodeNumber"),
+                seriesId = null,
+                episodeNumber = null,
+                lastEpisodeNumber = null,
                 series = parseSeries(series),
                 parentalRatings = parseParentalRatings(descriptorsObj.optJSONArray("parentalRatings")),
                 components = parseComponents(descriptorsObj.optJSONObject("components")) ?: AribComponents(),
                 diagnostics = AribEventDiagnostics(
                     summary = diagnostics.optString("summary"),
-                    descriptorDiagnostics = parseDescriptorDiagnostics(descriptorDiagnostics),
+                    descriptorDiagnosticsCanonicalJson = descriptorDiagnosticsCanonicalJson,
                     textDiagnostics = parseTextDiagnosticSummary(diagnostics.optString("summary")),
                 ),
             ),
@@ -294,9 +419,28 @@ class NativeAribSiParser : AutoCloseable {
     private fun parseParentalRatings(array: JSONArray?): List<AribParentalRating> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
         val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
         val country = obj.optString("countryCode")
-        val rating = obj.optInt("ratingValue", obj.optInt("rating", -1))
-        val raw = obj.optInt("rawRatingByte", obj.optInt("rawRating", -1))
-        if (country.isBlank() || rating < 0 || raw < 0) null else AribParentalRating(country, rating, raw, obj.optBoolean("supported"))
+        val rating = obj.optInt("ratingValue", -1)
+        val raw = obj.optInt("rawRatingByte", rating)
+        if (country.isBlank() || rating < 0 || raw < 0) null else AribParentalRating(
+            countryCode = country,
+            ratingValue = rating,
+            rawRatingByte = raw,
+            supported = obj.optBoolean("supported"),
+            parseStatus = obj.optString("parseStatus", "OK"),
+        )
+    }
+
+    private fun parseContentGenres(array: JSONArray?): List<AribContentGenre> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
+        val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
+        val level1 = obj.optInt("level1", -1)
+        val level2 = obj.optInt("level2", -1)
+        if (level1 < 0 || level2 < 0) null else AribContentGenre(
+            level1 = level1,
+            level2 = level2,
+            userNibble = obj.optInt("userNibble", 0),
+            aribName = obj.optString("aribName"),
+            parseStatus = obj.optString("parseStatus", "OK"),
+        )
     }
 
 
@@ -358,7 +502,7 @@ class NativeAribSiParser : AutoCloseable {
     private fun parseComponentEntries(array: JSONArray?): List<AribComponentEntry> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
         val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
         val pid = obj.optInt("esPid", -1)
-        if (pid < 0) null else AribComponentEntry(
+        if (pid < 0 && optIntOrNull(obj, "componentTag") == null) null else AribComponentEntry(
             esPid = pid,
             streamType = optIntOrNull(obj, "streamType"),
             componentTag = optIntOrNull(obj, "componentTag"),
@@ -386,37 +530,6 @@ class NativeAribSiParser : AutoCloseable {
         )
     }
 
-    private fun parseDescriptorDiagnostics(array: JSONArray?): List<AribDescriptorDiagnosticV1> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
-        val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
-        val scopeObj = obj.optJSONObject("scope") ?: JSONObject()
-        val descriptorObj = obj.optJSONObject("descriptor") ?: return@mapNotNull null
-        AribDescriptorDiagnosticV1(
-            severity = obj.optString("severity", "info"),
-            code = obj.optString("code", "UNKNOWN"),
-            scope = AribDescriptorScope(
-                pid = optIntOrNull(scopeObj, "pid"),
-                tableId = optIntOrNull(scopeObj, "tableId"),
-                tableIdExtension = optIntOrNull(scopeObj, "tableIdExtension"),
-                version = optIntOrNull(scopeObj, "version"),
-                sectionNumber = optIntOrNull(scopeObj, "sectionNumber"),
-                originalNetworkId = optIntOrNull(scopeObj, "originalNetworkId"),
-                transportStreamId = optIntOrNull(scopeObj, "transportStreamId"),
-                serviceId = optIntOrNull(scopeObj, "serviceId"),
-                eventId = optIntOrNull(scopeObj, "eventId"),
-            ),
-            descriptor = AribDescriptorInfo(
-                tag = descriptorObj.optInt("tag", -1),
-                name = optStringOrNull(descriptorObj, "name"),
-                offset = descriptorObj.optInt("offset", 0),
-                declaredLength = descriptorObj.optInt("declaredLength", 0),
-                actualRemainingLength = descriptorObj.optInt("actualRemainingLength", 0),
-                parseStatus = descriptorObj.optString("parseStatus", "UNKNOWN"),
-                rawPrefixHex = descriptorObj.optString("rawPrefixHex", ""),
-            ),
-            message = obj.optString("message", ""),
-        ).takeIf { it.descriptor.tag >= 0 }
-    }
-
     private fun parseEpgUpdateWindows(array: JSONArray?): List<AribEpgUpdateWindow> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
         val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
         val key = serviceKeyFrom(obj)
@@ -427,6 +540,7 @@ class NativeAribSiParser : AutoCloseable {
             windowStartMillis = start,
             windowEndMillis = end,
             validProgramStableIdentities = parseStringArray(obj.optJSONArray("validProgramStableIdentities")),
+            deletionAuthoritative = obj.optBoolean("deletionAuthoritative", false),
         )
     }
 
@@ -452,20 +566,16 @@ class NativeAribSiParser : AutoCloseable {
         )
     }
 
-    fun snapshotServicesBulk(): List<AribService> = snapshotBulk().services
-    fun snapshotServicesForCasDiscoveryBulk(): List<AribService> = snapshotBulk().servicesForCasDiscovery
-    fun snapshotCaMetadataBulk(): List<CaMetadata> = snapshotBulk().caMetadata
-    fun snapshotCaMetadataForCasDiscoveryBulk(): List<CaMetadata> = snapshotBulk().caMetadataForCasDiscovery
-    fun snapshotPmtPidsBulk(): List<PmtPidMapping> = snapshotBulk().pmtPidMappings
-    fun snapshotPmtPidsForSectionFiltersBulk(): List<Int> = snapshotBulk().pmtPidsForSectionFilters
-    fun snapshotTransportsBulk(): List<AribTransport> = snapshotBulk().transports
-    fun snapshotSdtActualTransportsBulk(): List<AribTransport> = snapshotBulk().sdtActualTransports
-    fun snapshotPrivateSectionsBulk(): List<PrivateSection> = snapshotBulk().privateSections
-    fun eventsForTestOnly(): List<AribEvent> = snapshotBulk().events
-    fun publishabilityDiagnosticsForTestOnly(): List<ServicePublishabilityDiagnostic> = snapshotBulk().publishabilityDiagnostics
 
-    @Synchronized
-    fun drainEpgWindowsForTestOnly(): List<AribEpgUpdateWindow> = snapshotBulk(takeUpdateWindows = true).epgUpdateWindows
+    private fun parseParserDiagnostics(array: JSONArray?): List<ParserDiagnostic> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
+        val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
+        val code = obj.optString("code").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+        ParserDiagnostic(
+            code = code,
+            message = obj.optString("message"),
+            severity = optStringOrNull(obj, "severity"),
+        )
+    }
 
     private fun parseTextDiagnosticSummary(raw: String): List<String> = raw
         .split(' ', '\n')
@@ -484,11 +594,12 @@ class NativeAribSiParser : AutoCloseable {
 
     private external fun nativeBuildChannelProviderData(requestJson: String): String
     private external fun nativeBuildProgramProviderData(requestJson: String): String
-    private external fun nativeNormalizeProgramProviderData(providerData: String): String
-    private external fun nativeProgramProviderDataSignature(providerData: String): String
-    private external fun nativeExtractProgramKeyResult(providerData: String): String
+    private external fun nativeBuildProgramKey(onid: Int, tsid: Int, sid: Int, eventId: Int): String
+    private external fun nativeNormalizeProgramProviderData(providerData: ByteArray): String
+    private external fun nativeProgramProviderDataSignature(providerData: ByteArray): String
+    private external fun nativeExtractProgramKeyResult(providerData: ByteArray): String
     private external fun nativeExtractChannelTuneKey(providerData: String): String
-    private external fun nativeAppendCurrentProgramDiagnostics(providerData: String, overlapCount: Long, selectedProgramId: Long, selectionRule: String): String
+    private external fun nativeAppendCurrentProgramDiagnostics(providerData: ByteArray, overlapCount: Long, selectedProgramId: Long, selectionRule: String): String
     private external fun nativeCreate(): Long
     private external fun nativeDestroy(handle: Long): Int
     private external fun nativeIngestSection(handle: Long, pid: Int, section: ByteArray): Int

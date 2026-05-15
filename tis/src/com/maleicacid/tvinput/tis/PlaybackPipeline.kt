@@ -1273,7 +1273,7 @@ class PlaybackPipeline(
         private const val ARIBCC_PTS_NOPTS_MILLIS = Long.MIN_VALUE
         private const val CODEC_DEQUEUE_TIMEOUT_US = 0L
         private const val CODEC_CONFIG_MAX_BYTES = 512 * 1024
-        private const val MEDIA_EVENT_SAMPLE_MAX_BYTES = 1024L * 1024L
+        private const val MEDIA_EVENT_SAMPLE_MAX_BYTES = 4L * 1024L * 1024L
         private const val DECODER_PENDING_SAMPLE_LIMIT = 32
         private const val DEFAULT_VIDEO_WIDTH = 1920
         private const val DEFAULT_VIDEO_HEIGHT = 1080

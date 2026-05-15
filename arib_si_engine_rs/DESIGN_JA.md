@@ -118,6 +118,23 @@ Rust 側に `com.android.tv` や `ISDB_<age>` の Android domain 決定文字列
 
 ## provider-data / 診断情報 Rust SSOT
 
+### provider-data 受け渡し境界（推奨案A）
+
+TIS が JNI へ渡す JSON は、保存形式ではなく Rust serde 型へ値を渡すための受け渡し用形式である。受け渡し用形式の型、必須項目、欠落時の扱い、旧形式拒否、値域検査は Rust 側の serde 型を正とする。
+
+Rust provider-data builder は、受け渡し用 JSON を serde 型へ読み込み、必須項目、型、値域、旧形式混入を検査する。検査に通った入力だけから、保存用 JSON、署名、識別子、切り詰め診断を生成する。
+
+保存用 JSON の schema、正規化、署名、識別子抽出、サイズ上限処理は Rust が単独で所有する。TIS は保存用 JSON を直接生成してはならない。
+
+受け渡し用形式の schema 名は `maleicacid.tv.programRequest` / `maleicacid.tv.channelRequest` とし、保存用 schema 名 `maleicacid.tv.program` / `maleicacid.tv.channel` と分離する。
+
+受け渡し用形式と保存用形式は別物である。受け渡し用形式を `Programs.COLUMN_INTERNAL_PROVIDER_DATA` / `Channels.COLUMN_INTERNAL_PROVIDER_DATA` に保存してはならない。
+
+required field 欠落時に `0`、`false`、`jpn`、`UNKNOWN`、空文字で補完して provider-data を成立させてはならない。r50 以前の `;` 区切り形式、旧 flat provider-data、旧 provider-data 断片は受け渡し用形式としても保存用形式としても拒否する。
+
+`DescriptorDiagnosticV1` は Rust が生成した正規 JSON を正とする。TIS から戻ってくる場合も、TIS が項目単位で再構築した JSON ではなく、Rust が生成した正規 JSON を透過保持したものだけを受ける。
+
+
 `arib_si_engine_rs` は SI/EIT 意味解析 に加えて、TvProvider `internal_provider_data` JSON v1 の構造 SSOT を持つ。実装上は `provider_data` module に Rust `serde` struct を置き、JSON canonical encode、正規化、署名、安定キー抽出 をこの module に閉じる。
 
 TIS Kotlin は provider-data schema を定義しない。TIS は Rust JNI が返す JSON bytes を `Programs.COLUMN_INTERNAL_PROVIDER_DATA` へ保存し、標準列用の値だけを `ARIB_SI_EPG_TvProvider投影方針.md` に従って `ContentValues` へ詰める。
@@ -227,6 +244,10 @@ extractProgramKey(rawBytes) -> ProgramKeyResult?
 ```
 
 `inputJson` は Rust builder への入力 DTO であり、TvProvider 保存 schema ではない。最終 provider-data bytes と 署名 は Rust が返す。
+
+`rawBytes` は任意バイナリではなく、既存 TvProvider に保存済みの JSON v1 UTF-8 バイト列を指す。JNI 呼び出し元は provider-data を `String` 化して渡してはならず、保存済み BLOB バイト列をそのまま渡す。互換上 TvProvider が文字列として返す場合も、呼び出し元は UTF-8 バイト列へ戻すだけに限定し、provider-data JSON を Kotlin 側で解釈・再構築しない。
+
+Rust は `rawBytes` が invalid UTF-8 または malformed JSON の場合、通常実行経路では panic せず、`ProviderDataResult` の空結果または key 抽出失敗へ落とす。`programProviderDataSignature(rawBytes)` は入力 `rawBytes` そのものの SHA-256 lowercase hex を返す。`buildProgramProviderData(inputJson)` と `normalizeProgramProviderData(rawBytes)` が返す `ProviderDataResult.signature` は、返却する canonical provider-data bytes に対する署名であり、入力 raw bytes の署名ではない。
 
 
 

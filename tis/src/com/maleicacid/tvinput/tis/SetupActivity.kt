@@ -27,9 +27,9 @@ class SetupActivity : Activity(), ChannelScanManager.Listener {
         statusView = TextView(this).apply {
             textSize = 18f
             text = if (invalidInputId) {
-                "Maleicacid TV Input setup\n不正なsetup intentです。inputIdがないか、このTvInputServiceに属していません。"
+                "Maleicacid TV入力 設定\n不正な設定要求です。inputIdがないか、このTvInputServiceに属していません。"
             } else {
-                "Maleicacid TV Input setup\nチャンネルスキャンを開始できます。"
+                "Maleicacid TV入力 設定\nチャンネルスキャンを開始できます。"
             }
         }
         scanButton = Button(this).apply {
@@ -38,7 +38,7 @@ class SetupActivity : Activity(), ChannelScanManager.Listener {
             setOnClickListener {
                 val resolved = inputId
                 if (resolved.isNullOrBlank() || !isOwnInputId(resolved)) {
-                    statusView.text = "不正なsetup intentです。inputIdがないか、このTvInputServiceに属していません。"
+                    statusView.text = "不正な設定要求です。inputIdがないか、このTvInputServiceに属していません。"
                     setResult(RESULT_CANCELED)
                 } else {
                     setupGeneration = ChannelScanManager.startIfIdle(this@SetupActivity, resolved)
@@ -46,7 +46,7 @@ class SetupActivity : Activity(), ChannelScanManager.Listener {
             }
         }
         cancelButton = Button(this).apply {
-            text = "Cancel scan"
+            text = "スキャン中止"
             isEnabled = false
             setOnClickListener { ChannelScanManager.cancel() }
         }
@@ -76,22 +76,22 @@ class SetupActivity : Activity(), ChannelScanManager.Listener {
                 is ScanState.Idle -> {
                     scanButton.isEnabled = !invalidInputId
                     cancelButton.isEnabled = false
-                    statusView.text = if (invalidInputId) "不正なsetup intentです。inputIdがないか、このTvInputServiceに属していません。" else "チャンネルスキャンを開始できます。"
+                    statusView.text = if (invalidInputId) "不正な設定要求です。inputIdがないか、このTvInputServiceに属していません。" else "チャンネルスキャンを開始できます。"
                 }
                 is ScanState.Running -> {
                     scanButton.isEnabled = false
                     cancelButton.isEnabled = true
                     statusView.text = when (state.purpose) {
-                        ScanPurpose.SETUP_SCAN -> "Scanning channels..."
-                        ScanPurpose.BOOT_EPG_SYNC -> "Boot EPG sync is running in the background."
-                        ScanPurpose.BACKGROUND_MAINTENANCE -> "Background channel maintenance is running."
+                        ScanPurpose.SETUP_SCAN -> "チャンネルスキャン中です。"
+                        ScanPurpose.BOOT_EPG_SYNC -> "起動後EPG同期を実行中です。"
+                        ScanPurpose.BACKGROUND_MAINTENANCE -> "バックグラウンドチャンネル保守を実行中です。"
                     }
                 }
                 is ScanState.Completed -> {
                     scanButton.isEnabled = !invalidInputId
                     cancelButton.isEnabled = false
                     val diagnostics = state.result.diagnostics.joinToString("\n") { "${it.candidate.displayChannel}: ${it.message}" }
-                    statusView.text = "${state.purpose} complete\nscanned=${state.result.scanned} published=${state.result.published}" +
+                    statusView.text = "${purposeLabel(state.purpose)} 完了\nスキャン数=${state.result.scanned} 公開数=${state.result.published}" +
                         if (diagnostics.isNotBlank()) "\n$diagnostics" else ""
                     if (shouldFinishSetupForStateForTest(state, setupGeneration, invalidInputId)) {
                         setResult(RESULT_OK)
@@ -101,7 +101,7 @@ class SetupActivity : Activity(), ChannelScanManager.Listener {
                 is ScanState.Failed -> {
                     scanButton.isEnabled = !invalidInputId
                     cancelButton.isEnabled = false
-                    statusView.text = "${state.purpose} failed: ${state.message}"
+                    statusView.text = "${purposeLabel(state.purpose)} 失敗: ${state.message}"
                     if (state.purpose == ScanPurpose.SETUP_SCAN && state.generation == setupGeneration) {
                         setResult(RESULT_CANCELED)
                     }
@@ -109,7 +109,7 @@ class SetupActivity : Activity(), ChannelScanManager.Listener {
                 is ScanState.Cancelled -> {
                     scanButton.isEnabled = !invalidInputId
                     cancelButton.isEnabled = false
-                    statusView.text = "${state.purpose} cancelled"
+                    statusView.text = "${purposeLabel(state.purpose)} 中止"
                     if (state.purpose == ScanPurpose.SETUP_SCAN && state.generation == setupGeneration) {
                         setResult(RESULT_CANCELED)
                     }
@@ -118,10 +118,17 @@ class SetupActivity : Activity(), ChannelScanManager.Listener {
         }
     }
 
+
+    private fun purposeLabel(purpose: ScanPurpose): String = when (purpose) {
+        ScanPurpose.SETUP_SCAN -> "設定スキャン"
+        ScanPurpose.BOOT_EPG_SYNC -> "起動後EPG同期"
+        ScanPurpose.BACKGROUND_MAINTENANCE -> "バックグラウンドチャンネル保守"
+    }
+
     private fun drainDirectBootPending(source: String) {
         val state = DirectBootGuard.pendingStateForTest(applicationContext)
         if (state.pending) {
-            statusView.text = "${statusView.text}\nBoot EPG sync is pending and will be drained outside setup. source=$source"
+            statusView.text = "${statusView.text}\n起動後EPG同期は保留中です。設定画面の外で処理します。source=$source"
         }
     }
 

@@ -198,7 +198,16 @@ Programs.COLUMN_INTERNAL_PROVIDER_DATA:
 
 `internal_provider_data` の正形式は JSON v1 のみとする。r50 以前の `;` 区切り key-value 形式、旧 flat provider-data、旧 provider-data 断片は読み取り互換入力としても残さない。
 
-この文書は TvProvider 標準列への投影方針を固定する。`internal_provider_data` の具体 schema、canonical encode、正規化、署名、安定キー抽出は `arib_si_engine_rs` の Rust provider-data serde構造体を SSOT とする。TIS Kotlin は provider-data JSON を手書き構築しない。
+この文書は TvProvider 標準列への投影方針を固定する。`internal_provider_data` の具体 schema、正規化、署名、安定キー抽出は `arib_si_engine_rs` の Rust provider-data serde構造体を正とする。TIS Kotlin は保存用 provider-data JSON を手書き構築しない。TIS が JNI へ渡す一時 JSON は保存形式ではなく、Rust serde 型へ値を渡すための受け渡し用形式に限る。
+
+
+### TIS と Rust provider-data builder の境界
+
+TIS が JNI へ渡す JSON は、保存形式ではなく Rust serde 型へ値を渡すための受け渡し用形式である。受け渡し用形式の schema 名は `maleicacid.tv.programRequest` / `maleicacid.tv.channelRequest` とし、保存用 schema 名 `maleicacid.tv.program` / `maleicacid.tv.channel` と分離する。`internal_provider_data` の保存用 JSON、型検査、欠落判定、旧形式拒否、正規化、署名、識別子抽出、サイズ上限処理は `arib_si_engine_rs` の Rust provider-data serde 構造体を正とする。
+
+TIS Kotlin は保存用 provider-data JSON を手書き構築しない。TIS が作ってよい JSON は、Rust へ値を渡すための一時形式に限る。TIS はその一時形式を保存形式、正規形、署名対象、または Kotlin 側 schema 実装として扱ってはならない。
+
+`DescriptorDiagnosticV1` は Rust が生成した正規 JSON を透過保持する。Kotlin は中身を項目ごとに作り直してはならない。
 
 Programs の JSON v1 の具体 schema と検証用JSONは、`arib_si_engine_rs/schema/program_provider_data_v1.schema.json`、`arib_si_engine_rs/schema/descriptor_diagnostic_v1.schema.json`、`arib_si_engine_rs/testdata/program_provider_data_v1/minimal_clear_program.json` を正とする。Channels の JSON v1 は `schema="maleicacid.tv.channel"` / `schemaVersion=1` とし、実装追随時に `arib_si_engine_rs/schema/channel_provider_data_v1.schema.json` を追加する。この文書では provider-data schema 本文を再定義せず、TvProvider 標準列への投影規則だけを固定する。
 

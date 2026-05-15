@@ -1,5 +1,8 @@
 package com.maleicacid.tvinput.tis
 
+import com.maleicacid.tvinput.aribsi.AribComponentEntry
+import com.maleicacid.tvinput.aribsi.AribComponents
+import com.maleicacid.tvinput.aribsi.AribContentGenre
 import com.maleicacid.tvinput.aribsi.AribEvent
 import com.maleicacid.tvinput.aribsi.AribEventDescriptors
 import com.maleicacid.tvinput.aribsi.AribExtendedItem
@@ -14,7 +17,7 @@ class EventModelMapperDescriptorTest {
     @Test fun descriptorDetailsArePreservedForTvProviderInternalData() {
         val event = AribEvent(
             serviceKey = ServiceKey(4, 16625, 101),
-            stableIdentity = "onid=4;tsid=16625;sid=101;event=10",
+            stableIdentity = "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":10}",
             eventId = 10,
             startTimeMillis = 1_700_000_000_000L,
             durationMillis = 1_800_000L,
@@ -24,16 +27,14 @@ class EventModelMapperDescriptorTest {
                 extendedItems = listOf(AribExtendedItem("出演", "A")),
                 componentText = "映像",
                 audioComponentText = "音声",
-                audioLanguage = "jpn",
+                contentGenres = listOf(AribContentGenre(0x0, 0x0, aribName = "ニュース/報道/定時・総合")),
                 broadcastGenre = "ARIB(0x0/0x0):ニュース/報道/定時・総合",
                 genreSupplementText = "ニュース/報道/定時・総合",
                 relatedItems = listOf(AribRelatedItem("shared", 1, 4, 16625, 101, 202)),
                 scrambled = false,
                 freeCaMode = AribFreeCaMode(raw = 0, scrambled = false, text = "無料放送"),
-                seriesId = 100,
-                episodeNumber = 3,
-                lastEpisodeNumber = 12,
                 series = AribSeries(seriesId = 100, episodeNumber = 3, lastEpisodeNumber = 12, name = "シリーズ"),
+                components = AribComponents(audio = listOf(AribComponentEntry(esPid = 256, streamType = 0x0f, componentTag = 1, componentType = 3, codec = "AAC", language = "jpn", parseStatus = "OK"))),
             ),
         )
         val record = EventModelMapper().toProgramRecords(listOf(event)).single()

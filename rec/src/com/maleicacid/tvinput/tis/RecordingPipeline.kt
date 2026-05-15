@@ -41,8 +41,9 @@ class RecordingPipeline(
     }
 
     private fun refreshDynamicSiAndCasFilters() {
-        val caMetadata = caMapper.expandProgramLevelToElementaryStreams(aribSiEngine.snapshotCaMetadata(), aribSiEngine.snapshotServices())
-        val pmtPids = aribSiEngine.snapshotPmtPids().map { it.pmtPid }.filter { it in 0..0x1fff }.toSet()
+        val snapshot = aribSiEngine.casDiscoverySnapshot()
+        val caMetadata = caMapper.expandProgramLevelToElementaryStreams(snapshot.caMetadata, snapshot.services)
+        val pmtPids = snapshot.pmtPidMappings.map { it.pmtPid }.filter { it in 0..0x1fff }.toSet()
         val ecmPids = caMetadata.mapNotNull { it.ecmPid }.filter { it in 0..0x1fff }.toSet()
         val emmPids = caMetadata.mapNotNull { it.emmPid }.filter { it in 0..0x1fff }.toSet()
         tunerController.openDynamicFiltersFromCurrentSi(pmtPids, ecmPids, emmPids)

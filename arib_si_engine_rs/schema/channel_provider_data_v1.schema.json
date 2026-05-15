@@ -152,6 +152,17 @@
               "value": {}
             }
           }
+        },
+        "providerDataDroppedCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "providerDataTruncationCode": {
+          "type": "string",
+          "enum": [
+            "PROVIDER_DATA_TRUNCATED",
+            "DIAGNOSTICS_TRUNCATED"
+          ]
         }
       }
     }

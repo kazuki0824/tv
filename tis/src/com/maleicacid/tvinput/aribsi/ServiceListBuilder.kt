@@ -62,11 +62,11 @@ class ServiceListBuilder(private val engine: AribSiEngine) {
             .joinToString("|") { it.signatureToken() }
     }
 
-    fun snapshot(): List<AribService> = engine.takeProgramPublishSnapshot().services
+    fun snapshot(): List<AribService> = engine.serviceRegistrationSnapshot().services
 
     fun completenessSummary(): ServiceSnapshotSummary {
-        val transaction = engine.takeProgramPublishSnapshot()
-        val publishability = transaction.publishabilityDiagnostics.associateBy { it.serviceKey }
+        val transaction = engine.serviceRegistrationSnapshot()
+        val publishability = transaction.publishabilityByServiceKey
         val completeness = transaction.services.map { completenessForModel(it, publishability[it.serviceKey]) }
         return ServiceSnapshotSummary(
             totalKeys = completeness.map { it.serviceKey }.toSet(),
@@ -79,26 +79,26 @@ class ServiceListBuilder(private val engine: AribSiEngine) {
     }
 
     fun epgPublishableSnapshot(): List<AribService> {
-        val transaction = engine.takeProgramPublishSnapshot()
-        val publishability = transaction.publishabilityDiagnostics.associateBy { it.serviceKey }
+        val transaction = engine.serviceRegistrationSnapshot()
+        val publishability = transaction.publishabilityByServiceKey
         return transaction.services.filter { service -> publishability[service.serviceKey]?.epgPublishable == true }
     }
 
     fun registrationReadySnapshot(): List<AribService> {
-        val transaction = engine.takeProgramPublishSnapshot()
-        val publishability = transaction.publishabilityDiagnostics.associateBy { it.serviceKey }
+        val transaction = engine.serviceRegistrationSnapshot()
+        val publishability = transaction.publishabilityByServiceKey
         return transaction.services.filter { service -> publishability[service.serviceKey]?.channelRegistrationReady == true }
     }
 
     fun clearLivePlaybackSupportedSnapshot(): List<AribService> {
-        val transaction = engine.takeProgramPublishSnapshot()
-        val publishability = transaction.publishabilityDiagnostics.associateBy { it.serviceKey }
+        val transaction = engine.serviceRegistrationSnapshot()
+        val publishability = transaction.publishabilityByServiceKey
         return transaction.services.filter { service -> publishability[service.serviceKey]?.clearLivePlaybackSupported == true }
     }
 
     fun incompleteReasons(): Map<ServiceKey, List<String>> {
-        val transaction = engine.takeProgramPublishSnapshot()
-        val publishability = transaction.publishabilityDiagnostics.associateBy { it.serviceKey }
+        val transaction = engine.serviceRegistrationSnapshot()
+        val publishability = transaction.publishabilityByServiceKey
         val completeness = transaction.services.map { completenessForModel(it, publishability[it.serviceKey]) }
         val reasons = completeness
             .filter { !it.isRegistrationReady }
@@ -107,16 +107,16 @@ class ServiceListBuilder(private val engine: AribSiEngine) {
     }
 
     fun isServicePublishable(service: AribService): Boolean =
-        engine.takeProgramPublishSnapshot().publishabilityDiagnostics.any { it.serviceKey == service.serviceKey && it.publishable }
+        engine.serviceRegistrationSnapshot().publishabilityByServiceKey[service.serviceKey]?.publishable == true
 
     fun isServiceComplete(service: AribService): Boolean = completenessFor(service).isComplete
 
     fun isServiceClearLivePlaybackSupported(service: AribService): Boolean =
-        engine.takeProgramPublishSnapshot().publishabilityDiagnostics.any { it.serviceKey == service.serviceKey && it.clearLivePlaybackSupported }
+        engine.serviceRegistrationSnapshot().publishabilityByServiceKey[service.serviceKey]?.clearLivePlaybackSupported == true
 
     fun completenessFor(service: AribService): ServiceCompleteness = completenessForModel(
         service = service,
-        publishability = engine.takeProgramPublishSnapshot().publishabilityDiagnostics.firstOrNull { it.serviceKey == service.serviceKey },
+        publishability = engine.serviceRegistrationSnapshot().publishabilityByServiceKey[service.serviceKey],
     )
 
     companion object {

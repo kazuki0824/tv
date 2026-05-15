@@ -1,3 +1,81 @@
+# r50dc
+
+- r50db の provider-data raw bytes 境界修正に対し、TIS instrumentation test 側の provider-data 検査を追随させた。
+- Program provider-data bytes は `parseProgramKey(providerData)` へ直接渡し、JSON 内容確認だけを test helper の UTF-8 text view で行うようにした。
+- Android/Soong build、Kotlin compile、instrumentationテスト、atest、CTS、実機確認は未実施。静的差分確認のみ実施した。
+
+# r50db
+
+- provider-data の既存データ入力境界について、`rawBytes` の意味、invalid UTF-8 / malformed JSON の扱い、署名対象を DESIGN_JA.md に補足固定した。
+- `normalizeProgramProviderData` / `programProviderDataSignature` / `extractProgramKey` / `appendCurrentProgramDiagnostics` の Kotlin/JNI 境界を `String` ではなく `ByteArray` 受けへ統一した。
+- TvProvider から読み出した `COLUMN_INTERNAL_PROVIDER_DATA` は BLOB bytes を優先して Rust へ渡し、文字列で返る場合も UTF-8 bytes への互換変換だけに限定した。
+- Android/Soong build、Kotlin compile、instrumentationテスト、atest、CTS、実機確認は未実施。静的差分確認のみ実施した。
+
+# r50da
+
+- CAS discovery snapshot に malformed CA_descriptor 詳細診断を追加し、Program provider-data の `malformedCaDescriptorCount` は CA_descriptor 診断 summary だけを参照するようにした。
+- EventModelMapper が EIT descriptor 診断件数を malformed CA_descriptor count として誤用しないよう修正した。
+- audio component の unsupported codec 診断 field を Rust bulk snapshot から TIS component model へ渡せるようにした。
+- Android/Soong build、Kotlin compile、instrumentationテスト、atest、CTS、実機確認は未実施。静的差分確認のみ実施した。
+
+# r50cz
+
+- r50cy の malformed CA_descriptor 診断粒度固定を前提に、ProviderDataResult を `bytes` / `signature` / `schemaVersion` / `truncated` / `diagnosticsDroppedCount` の設計形状へ寄せた。
+- Program publish / CAS discovery の `descriptorDiagnostics` を `DescriptorDiagnosticV1` schema 準拠 DTO として扱うようにし、`AribEventDiagnostic` 要約 DTO への置換をやめた。
+- unsupported codec の `r51PlaybackSupported` / `liveViewableClaim` / `diagnosticCode` を provider-data component に保持する経路へ寄せた。
+- malformed CA_descriptor count は Program provider-data の診断 summary として保存し、raw descriptor や table/PID/service context を Program ごとに重複保存しない方針に合わせた。
+
+# r50cy
+
+- malformed CA_descriptor 診断の保存粒度を設計に補足固定した。詳細診断は CAS 検出 snapshot または service / channel provider-data 診断を一次保存先とし、Program provider-data には公開時点 summary として `malformedCaDescriptorCount` だけを保存し、raw descriptor や table/PID/service context を Program ごとに重複展開しない方針にした。
+
+# r50cx
+- r50cw 静的再確認で残っていた設計・実装不一致のうち、CAS HAL stub と libaribcaption.so 供給方式を除く項目を修正した。
+- transaction DTO を `ProgramPublishSnapshot` / `ServiceRegistrationSnapshot` / `CasDiscoverySnapshot` の設計形状へ寄せ、`snapshotGeneration`、`ingestSequence`、publishability map、診断情報を同一 native transaction から扱うようにした。
+- `takeProgramPublishSnapshot()` の boolean 分岐を本番 API から削除し、updateWindows を消費しない視聴中参照は `programStateSnapshot()` に分離した。
+- 廃止 bulk snapshot wrapper と event diagnostics wrapper を公開通常境界から外し、Native parser の bulk JSON 取得は private 実装詳細へ閉じた。
+- SetupActivity の利用者向け英語文言と ScanPurpose enum 名露出を日本語表示へ置換した。
+- Android/Soong build、Kotlin compile、instrumentationテスト、atest、CTS、実機確認は未実施。静的差分確認のみ実施した。
+
+# r50cw
+- r51リリース前の設計・実装不一致のうち、MediaEvent sample 上限、transaction DTO境界、provider-data未知キー保持、切り詰め診断、extended_event空項目名、UI文言、README旧情報を設計に合わせて修正した。
+- `AribSiEngine` の本番境界を `ProgramPublishSnapshot` / `ServiceRegistrationSnapshot` / `CasDiscoverySnapshot` へ分離し、サービス登録・CAS検出で program publish snapshot を流用しないようにした。
+- No.6 の Channel provider-data unknown key schema 変更、および libaribcaption.so 供給方式の固定は今回対象外とした。
+- Android/Soong build、Kotlin compile、instrumentationテスト、atest、CTS、実機確認は未実施。静的差分確認のみ実施した。
+
+# r50cv
+- r50cu 推奨案A固定後の未達1〜8に対し、実装側を設計へ合わせた。
+- ProviderDataBridge が JNI へ渡す JSON を `programRequest` / `channelRequest` の受け渡し用形式へ分離し、保存用 schema 名を名乗らないようにした。
+- DescriptorDiagnosticV1 の Kotlin typed DTO / 再構築経路を削除し、canonical JSON 文字列の不透明保持へ戻した。
+- Program stable key は Kotlin 生成をやめ、Rust JNI 経由で取得するようにした。
+- Android/Soong build、Kotlin compile、instrumentationテスト、atest、CTS、実機確認は未実施。
+
+# r50cu
+- 推奨案Aに従い、TIS と Rust provider-data builder の受け渡し境界を DESIGN_JA.md に固定した。
+- TIS は保存用 provider-data JSON を直接生成せず、JNI へ渡す JSON は Rust serde 型への受け渡し用形式に限ることを明記した。
+- 実装修正は行わず、固定後の設計と実装の不一致は別レポートで抽出した。
+
+# r50ct
+- r50cs 設計・実装不一致レポートのうち、境界整理対象の TIS provider-data input JSON 手組み問題を除き、デグレ1件と未達6件を設計に合わせて修正した。
+- DescriptorDiagnosticV1 の canonical JSON は TIS 側で再符号化せず、opaque string として Rust provider-data builder へ返す形にした。
+- test source の旧 flat DTO 断片を現行 structured DTO 起点へ寄せた。
+- Android/Soong build、Kotlin compile、instrumentationテスト、atest、CTS、実機確認は未実施。
+
+# r50cs
+- r50cr 設計・実装不一致レポートの10件を、未達とデグレを区別した上で全件修正した。
+- Rust bulk event DTO の nested 化に合わせ、TIS parser は `programKey` / `serviceKey` / `timing` だけを通常 event 境界として読むようにした。
+- DescriptorDiagnosticV1 は Rust 生成 array JSON を `descriptorDiagnosticsCanonicalJson` として透過保持し、provider-data へ array 単位で保存するようにした。
+- `freeCaMode`、`series`、`audioLanguages`、`video` の provider-data 生成で旧 flat field fallback を削除した。
+- semicolon 形式の program identity を通常 source と test fixture から削除した。
+- Android/Soong build、Kotlin compile、instrumentationテスト、atest、CTS、実機確認は未実施。
+
+# r50cr
+- r50cq 設計・実装不一致レポートの残件1〜7に対応した。
+- content genre は Rust の構造化 DTO から TIS が canonical genre / broadcast genre 表示へ投影する形にし、正規表現で `ARIB(...)` 文字列を復元する経路を削除した。
+- DescriptorDiagnosticV1 は Rust 生成 canonical JSON を透過保持し、TIS 側で schema / scope / descriptor を field-by-field 再構築しないようにした。
+- provider-data video 要約は選択 video component 由来に変更し、parental rating DTO 名を `ratingValue` / `rawRatingByte` へ寄せた。
+- Android/Soong build、Kotlin compile、instrumentationテスト、atest、CTS、実機確認は未実施。
+
 # r50cq
 - r50cp 設計・実装不一致レポートの残件1〜8に対応した。
 - Program provider-data へ DescriptorDiagnosticV1、EIT source、選択 audio component 要約を渡すようにし、content rating 逆生成 fallback を削除した。

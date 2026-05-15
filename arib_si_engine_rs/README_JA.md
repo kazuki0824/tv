@@ -24,6 +24,6 @@ ARIB 文字列 decoder は字幕以外の SI/EPG 文字列用であり、字幕�
 この範囲を超える字幕 PES、字幕管理データ、字幕本文、DRCS/外字レンダリング、厳密な組版制御は恒久的に `arib_si_engine_rs` の対象外であり、必要な場合は `libaribcaption` 側の責務とする。未対応 escape / 未対応文字は `panic` ではなく 診断情報と置換文字へ変換する。これは r51 の設計方針として固定する。
 
 
-## r50ce 境界
+## 公開境界の固定
 
-`arib_si_engine_rs` は Android canonical genre を決定しない。旧 `canonicalGenres` event フィールドと `nativeGetEventCount()` / `nativeGetEvent*` indexed JNI getter 群は廃止し、通常境界は bulk snapshot と provider-data JNI API に限定する。
+`arib_si_engine_rs` は Android canonical genre を決定しない。旧 `canonicalGenres` event フィールドと indexed JNI getter 群は通常境界に残さず、transaction snapshot と provider-data JNI API に限定する。

@@ -1,7 +1,7 @@
 package com.maleicacid.tvinput.db
 
 import com.maleicacid.tvinput.aribsi.AribComponents
-import com.maleicacid.tvinput.aribsi.AribDescriptorDiagnosticV1
+import com.maleicacid.tvinput.aribsi.AribContentGenre
 import com.maleicacid.tvinput.aribsi.AribFreeCaMode
 import com.maleicacid.tvinput.aribsi.AribLinkage
 import com.maleicacid.tvinput.aribsi.AribParentalRating
@@ -41,6 +41,7 @@ data class ProgramDescriptors(
     val componentText: String? = null,
     val audioComponentText: String? = null,
     val audioLanguage: String? = null,
+    val contentGenres: List<AribContentGenre> = emptyList(),
     val broadcastGenre: String? = null,
     val genreSupplementText: String? = null,
     val relatedItems: List<AribRelatedItem> = emptyList(),
@@ -51,7 +52,7 @@ data class ProgramDescriptors(
     val episodeNumber: Int? = null,
     val lastEpisodeNumber: Int? = null,
     val series: AribSeries? = null,
-    val descriptorDiagnostics: List<AribDescriptorDiagnosticV1> = emptyList(),
+    val descriptorDiagnosticsCanonicalJson: String = "[]",
     val parentalRatings: List<AribParentalRating> = emptyList(),
     val components: AribComponents = AribComponents(),
 )

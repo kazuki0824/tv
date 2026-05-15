@@ -206,17 +206,18 @@ class MaleicacidLiveSession(
 
     private fun refreshDynamicSiAndCasFilters() {
         val serviceKey = currentService ?: return
-        val transaction = aribSiEngine.takeProgramPublishSnapshot(takeUpdateWindows = false)
-        val service = transaction.services.firstOrNull { it.serviceKey == serviceKey }
-        val pmtPids = transaction.pmtPidsForSectionFilters.filter { it in 0..0x1fff }.toSet()
-        val allCaMetadata = if (ENABLE_CAS_ORCHESTRATION) transaction.caMetadataForCasDiscovery else emptyList()
+        val serviceSnapshot = aribSiEngine.serviceRegistrationSnapshot()
+        val transaction = aribSiEngine.casDiscoverySnapshot()
+        val service = serviceSnapshot.services.firstOrNull { it.serviceKey == serviceKey }
+        val pmtPids = transaction.pmtPids.values.filter { it in 0..0x1fff }.toSet()
+        val allCaMetadata = if (ENABLE_CAS_ORCHESTRATION) transaction.caMetadata else emptyList()
         val serviceScopedCa = allCaMetadata.filter {
             it.serviceKey == serviceKey && it.source != com.maleicacid.tvinput.aribsi.CaMetadataSource.CAT
         }
         val catCa = allCaMetadata.filter { it.source == com.maleicacid.tvinput.aribsi.CaMetadataSource.CAT }
         val expanded = caMapper.expandProgramLevelToElementaryStreams(
             serviceScopedCa + catCa,
-            transaction.servicesForCasDiscovery,
+            transaction.services,
         )
         val serviceCaMetadata = expanded.filter { it.serviceKey == serviceKey }
         val caMetadata = expanded.filter { it.serviceKey == null || it.serviceKey == serviceKey }
@@ -487,7 +488,7 @@ class MaleicacidLiveSession(
         val ratingSet = currentProgramRatingResolver.resolve(
             channelUri = currentChannelUri,
             serviceKey = currentService,
-            latestEvents = aribSiEngine.takeProgramPublishSnapshot(takeUpdateWindows = false).events,
+            latestEvents = aribSiEngine.programStateSnapshot().events,
         )
         clearUnblocksIfCurrentProgramChanged(ratingSet)
         return ratingSet.ratingsForBlocking().firstNotNullOfOrNull { rating ->
@@ -524,13 +525,14 @@ class MaleicacidLiveSession(
             android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "既存 channel 復元失敗のため video metadata provider-data 更新を中止します", error)
             return
         }
-        val transaction = aribSiEngine.takeProgramPublishSnapshot(takeUpdateWindows = false)
+        val transaction = aribSiEngine.programStateSnapshot()
         val records = eventModelMapper.toProgramRecords(
             events = transaction.events.filter { event ->
                 event.serviceKey == key && now >= event.startTimeMillis && now < event.startTimeMillis + event.durationMillis
             },
-            publishabilityByServiceKey = transaction.publishabilityDiagnostics.associateBy { it.serviceKey },
+            publishabilityByServiceKey = transaction.publishabilityByServiceKey,
             channelFallbackByServiceKey = channelFallbacks.associateBy { it.serviceKey },
+            malformedCaDescriptorCountByServiceId = transaction.malformedCaDescriptorCountByServiceId,
         )
         if (records.isEmpty()) return
         rememberVideoMetadata(records, info)
@@ -541,7 +543,7 @@ class MaleicacidLiveSession(
         val ratingSet = currentProgramRatingResolver.resolve(
             channelUri = currentChannelUri,
             serviceKey = currentService,
-            latestEvents = aribSiEngine.takeProgramPublishSnapshot(takeUpdateWindows = false).events,
+            latestEvents = aribSiEngine.programStateSnapshot().events,
         )
         clearUnblocksIfCurrentProgramChanged(ratingSet)
     }
@@ -552,11 +554,12 @@ class MaleicacidLiveSession(
             android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "既存 channel 復元失敗のため live Programs publish を中止します", error)
             return
         }
-        val transaction = aribSiEngine.takeProgramPublishSnapshot(takeUpdateWindows = false)
+        val transaction = aribSiEngine.programStateSnapshot()
         val records = eventModelMapper.toProgramRecords(
             events = transaction.events.filter { it.serviceKey == key },
-            publishabilityByServiceKey = transaction.publishabilityDiagnostics.associateBy { it.serviceKey },
+            publishabilityByServiceKey = transaction.publishabilityByServiceKey,
             channelFallbackByServiceKey = channelFallbacks.associateBy { it.serviceKey },
+            malformedCaDescriptorCountByServiceId = transaction.malformedCaDescriptorCountByServiceId,
         )
         publishLivePrograms(applyLatestVideoMetadata(records))
     }
@@ -610,7 +613,7 @@ class MaleicacidLiveSession(
         val ratingSet = currentProgramRatingResolver.resolve(
             channelUri = currentChannelUri,
             serviceKey = currentService,
-            latestEvents = aribSiEngine.takeProgramPublishSnapshot(takeUpdateWindows = false).events,
+            latestEvents = aribSiEngine.programStateSnapshot().events,
         )
         clearUnblocksIfCurrentProgramChanged(ratingSet)
         val unblockKey = ratingSet.exactUnblockKeyFor(rating) ?: return

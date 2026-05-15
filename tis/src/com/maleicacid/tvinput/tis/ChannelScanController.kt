@@ -8,6 +8,7 @@ import com.maleicacid.tvinput.aribsi.AribSiEngine
 import com.maleicacid.tvinput.aribsi.EventModelMapper
 import com.maleicacid.tvinput.aribsi.PmtCatCaMetadataMapper
 import com.maleicacid.tvinput.aribsi.ProviderDataBridge
+import com.maleicacid.tvinput.aribsi.TransportKey
 import com.maleicacid.tvinput.aribsi.SectionIngestController
 import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.common.ServiceKey
@@ -182,13 +183,13 @@ class ChannelScanController(
     }
 
     fun refreshDynamicSectionFilters() {
-        val transaction = engine.takeProgramPublishSnapshot(takeUpdateWindows = false)
-        val servicesForCas = transaction.servicesForCasDiscovery
-        val allCaMetadata = if (ENABLE_CAS_ORCHESTRATION) transaction.caMetadataForCasDiscovery else emptyList()
+        val transaction = engine.casDiscoverySnapshot()
+        val servicesForCas = transaction.services
+        val allCaMetadata = if (ENABLE_CAS_ORCHESTRATION) transaction.caMetadata else emptyList()
         val serviceScopedCa = allCaMetadata.filter { it.source != com.maleicacid.tvinput.aribsi.CaMetadataSource.CAT && it.serviceKey != null }
         val catCa = allCaMetadata.filter { it.source == com.maleicacid.tvinput.aribsi.CaMetadataSource.CAT }
         val caMetadata = caMapper.expandProgramLevelToElementaryStreams(serviceScopedCa + catCa, servicesForCas)
-        val pmtPids = transaction.pmtPidsForSectionFilters.filter { it in 0..0x1fff }.toSet()
+        val pmtPids = transaction.pmtPids.values.filter { it in 0..0x1fff }.toSet()
         val ecmPids = caMetadata.mapNotNull { it.ecmPid }.filter { it in 0..0x1fff }.toSet()
         val emmPids = caMetadata.mapNotNull { it.emmPid }.filter { it in 0..0x1fff }.toSet()
         tunerController.openDynamicFiltersFromCurrentSi(pmtPids, ecmPids, emmPids)
@@ -210,13 +211,13 @@ class ChannelScanController(
             return PublishSnapshotResult(result.changed, result.failures)
         }
         val candidate = currentCandidate ?: return PublishSnapshotResult(0)
-        val transaction = engine.takeProgramPublishSnapshot(takeUpdateWindows = false)
-        val transportRemoteKeys = transaction.transports.associateBy({ it.originalNetworkId to it.transportStreamId }, { it.remoteControlKeyId })
-        val diagnostics = transaction.publishabilityDiagnostics.associateBy { it.serviceKey }
+        val transaction = engine.serviceRegistrationSnapshot()
+        val transportRemoteKeys = emptyMap<Pair<Int, Int>, Int?>()
+        val diagnostics = transaction.publishabilityByServiceKey
         val registrationReadyServices = transaction.services.filter { service ->
             diagnostics[service.serviceKey]?.channelRegistrationReady == true
         }
-        val services = filterServicesForCurrentCandidate(registrationReadyServices, transaction.sdtActualTransports)
+        val services = filterServicesForCurrentCandidate(registrationReadyServices, transaction.actualTransports)
         val channels = services.map { service ->
             val remoteKey = transportRemoteKeys[service.serviceKey.originalNetworkId to service.serviceKey.transportStreamId]
             val diagnostic = diagnostics[service.serviceKey]
@@ -256,12 +257,12 @@ class ChannelScanController(
 
     private fun filterServicesForCurrentCandidate(
         services: List<AribService>,
-        sdtActualTransports: List<com.maleicacid.tvinput.aribsi.AribTransport>,
+        actualTransportKeys: Set<TransportKey>,
     ): List<AribService> {
         // 登録は同一snapshot transaction内のSDT actualで確定した
         // 現在TSのTransportKeyに完全一致するサービスだけに限定する。
         // PMT mapping / SDT-other / NIT-other / BAT 由来transportは、現在candidateの物理情報へ紐づけない。
-        val actualTransports = sdtActualTransports
+        val actualTransports = actualTransportKeys
             .map { it.originalNetworkId to it.transportStreamId }
             .toSet()
         if (actualTransports.size != 1) {
@@ -282,15 +283,16 @@ class ChannelScanController(
             Log.w(LogTags.TIS, "既存 channel 復元失敗のため Programs publish を中止します mode=$mode diagnostic=$diagnostic")
             return ProgramPublishCoordinator.ProgramPublishResult(0, 0, failures = listOf(diagnostic))
         }
-        val transaction = engine.takeProgramPublishSnapshot(takeUpdateWindows = true)
-        val publishabilityByServiceKey = transaction.publishabilityDiagnostics.associateBy { it.serviceKey }
+        val transaction = engine.takeProgramPublishSnapshot()
+        val publishabilityByServiceKey = transaction.publishabilityByServiceKey
         val channelFallbackByServiceKey = channelFallbackResult.getOrThrow().associateBy { it.serviceKey }
         val allPrograms = EventModelMapper().toProgramRecords(
             events = transaction.events,
             publishabilityByServiceKey = publishabilityByServiceKey,
             channelFallbackByServiceKey = channelFallbackByServiceKey,
+            malformedCaDescriptorCountByServiceId = transaction.malformedCaDescriptorCountByServiceId,
         )
-        val updateWindows = transaction.epgUpdateWindows.map { update ->
+        val updateWindows = transaction.updateWindows.map { update ->
             val validProgramKeys = allPrograms
                 .filter { program ->
                     program.serviceKey == update.serviceKey &&
@@ -321,8 +323,8 @@ class ChannelScanController(
     }
 
     private fun serviceCounts(): ServiceCounts {
-        val transaction = engine.takeProgramPublishSnapshot(takeUpdateWindows = false)
-        val publishability = transaction.publishabilityDiagnostics.associateBy { it.serviceKey }
+        val transaction = engine.serviceRegistrationSnapshot()
+        val publishability = transaction.publishabilityByServiceKey
         val completeness = transaction.services.map { service ->
             ServiceListBuilder.completenessForModel(service, publishability[service.serviceKey])
         }

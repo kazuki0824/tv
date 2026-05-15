@@ -82,6 +82,7 @@ class EventModelMapper {
         publishabilityByServiceKey: Map<ServiceKey, ServicePublishabilityDiagnostic> = emptyMap(),
         channelFallbackByServiceKey: Map<ServiceKey, ChannelRecord> = emptyMap(),
         publishStateByServiceKey: Map<ServiceKey, ProgramPublishState> = emptyMap(),
+        malformedCaDescriptorCountByServiceId: Map<Int, Int> = emptyMap(),
     ): List<ProgramRecord> {
         val serviceKeys = events.map { it.serviceKey }.toSet()
         val effectiveStates = publishStateByServiceKey.ifEmpty {
@@ -99,23 +100,24 @@ class EventModelMapper {
                 title = event.title.ifBlank { "event-${event.eventId}" },
                 description = providerDescription(event),
                 shortDescription = event.description.take(256),
-                canonicalGenres = canonicalGenresFromBroadcastGenre(event.descriptors.broadcastGenre),
+                canonicalGenres = canonicalGenresFromContentGenres(event.descriptors.contentGenres),
                 descriptors = ProgramDescriptors(
                     extendedItems = event.descriptors.extendedItems,
                     componentText = event.descriptors.componentText,
                     audioComponentText = event.descriptors.audioComponentText,
-                    audioLanguage = event.descriptors.audioLanguage,
-                    broadcastGenre = event.descriptors.broadcastGenre,
-                    genreSupplementText = event.descriptors.genreSupplementText,
+                    audioLanguage = event.descriptors.components.audio.firstOrNull { !it.language.isNullOrBlank() }?.language,
+                    contentGenres = event.descriptors.contentGenres,
+                    broadcastGenre = broadcastGenreText(event.descriptors.contentGenres),
+                    genreSupplementText = genreSupplementText(event.descriptors.contentGenres, event.descriptors.genreSupplementText),
                     relatedItems = event.descriptors.relatedItems,
                     linkage = event.descriptors.linkage,
                     scrambled = event.descriptors.scrambled,
                     freeCaMode = event.descriptors.freeCaMode,
-                    seriesId = event.descriptors.seriesId,
-                    episodeNumber = event.descriptors.episodeNumber,
-                    lastEpisodeNumber = event.descriptors.lastEpisodeNumber,
+                    seriesId = event.descriptors.series?.seriesId,
+                    episodeNumber = event.descriptors.series?.episodeNumber,
+                    lastEpisodeNumber = event.descriptors.series?.lastEpisodeNumber,
                     series = event.descriptors.series,
-                    descriptorDiagnostics = event.descriptors.diagnostics.descriptorDiagnostics,
+                    descriptorDiagnosticsCanonicalJson = event.descriptors.diagnostics.descriptorDiagnosticsCanonicalJson,
                     parentalRatings = event.descriptors.parentalRatings,
                     components = event.descriptors.components,
                 ),
@@ -128,7 +130,7 @@ class EventModelMapper {
                 publishStateSource = publishStateSourceName(state?.source),
                 diagnosticText = event.descriptors.diagnostics.summary,
                 contentRatings = event.descriptors.parentalRatings.mapNotNull { AribRatingMapper.toTvContentRatingString(it) },
-                malformedCaDescriptorCount = descriptorDiagnosticCount(event.descriptors.diagnostics.descriptorDiagnostics),
+                malformedCaDescriptorCount = malformedCaDescriptorCountByServiceId[event.serviceKey.serviceId] ?: 0,
             )
         }
     }
@@ -150,20 +152,17 @@ class EventModelMapper {
             .joinToString("\n")
     }
 
-    private fun canonicalGenresFromBroadcastGenre(broadcastGenre: String?): List<String> {
-        if (broadcastGenre.isNullOrBlank()) return emptyList()
+    private fun canonicalGenresFromContentGenres(genres: List<AribContentGenre>): List<String> {
         val out = linkedSetOf<String>()
-        Regex("ARIB\\(0x([0-9a-fA-F]+)/0x([0-9a-fA-F]+)\\)").findAll(broadcastGenre).forEach { match ->
-            val level1 = match.groupValues[1].toIntOrNull(16) ?: return@forEach
-            val level2 = match.groupValues[2].toIntOrNull(16) ?: return@forEach
-            when (level1) {
+        genres.forEach { genre ->
+            when (genre.level1) {
                 0x0 -> out += "NEWS"
                 0x1 -> out += "SPORTS"
                 0x3 -> out += "DRAMA"
                 0x4 -> out += "MUSIC"
                 0x5 -> {
                     out += "ENTERTAINMENT"
-                    when (level2) {
+                    when (genre.level2) {
                         0x3 -> out += "COMEDY"
                         0x4 -> out += "MUSIC"
                         0x5 -> out += "TRAVEL"
@@ -172,7 +171,7 @@ class EventModelMapper {
                 }
                 0x6 -> out += "MOVIES"
                 0x7 -> out += "ENTERTAINMENT"
-                0x8 -> when (level2) {
+                0x8 -> when (genre.level2) {
                     0x2 -> out += "ANIMAL_WILDLIFE"
                     0x3 -> out += "TECH_SCIENCE"
                     0x4, 0x5 -> out += "ARTS"
@@ -180,12 +179,12 @@ class EventModelMapper {
                 }
                 0x9 -> {
                     out += "ARTS"
-                    when (level2) {
+                    when (genre.level2) {
                         0x1 -> out += "MUSIC"
                         0x3 -> out += "COMEDY"
                     }
                 }
-                0xA -> when (level2) {
+                0xA -> when (genre.level2) {
                     0x1 -> out += "LIFE_STYLE"
                     0x6 -> out += "GAMING"
                     0x7 -> out += "EDUCATION"
@@ -197,7 +196,15 @@ class EventModelMapper {
         return out.toList()
     }
 
-    private fun descriptorDiagnosticCount(diagnostics: List<AribDescriptorDiagnosticV1>): Int = diagnostics.size
+    private fun broadcastGenreText(genres: List<AribContentGenre>): String? = genres.takeIf { it.isNotEmpty() }?.joinToString("、") { genre ->
+        val name = genre.aribName.takeIf { it.isNotBlank() } ?: ""
+        "ARIB(0x${genre.level1.toString(16)}/0x${genre.level2.toString(16)}):$name"
+    }
+
+    private fun genreSupplementText(genres: List<AribContentGenre>, fallback: String?): String? =
+        fallback?.takeIf { it.isNotBlank() } ?: genres.takeIf { it.isNotEmpty() }?.joinToString("、") { it.aribName.takeIf { name -> name.isNotBlank() } ?: "ARIB(0x${it.level1.toString(16)}/0x${it.level2.toString(16)})" }
+
+
 
     private fun publishStateSourceName(source: ProgramPublishStateSource?): String = (source ?: ProgramPublishStateSource.NONE).name
 }

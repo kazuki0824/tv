@@ -255,7 +255,7 @@ class TvProviderWriter private constructor(
         put(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_FLAG2, if (program.unsupportedCas) 1 else 0)
         put(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_FLAG3, if (program.clearLivePlaybackSupported) 1 else 0)
         put(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_FLAG4, if (program.epgPublishable) 1 else 0)
-        put(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA, ProviderDataBridge.buildProgramProviderData(program.copy(tvProviderProgramId = null)).json.toByteArray(Charsets.UTF_8))
+        put(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA, ProviderDataBridge.buildProgramProviderData(program.copy(tvProviderProgramId = null)).bytes)
     }
 
     private fun programIdentity(program: ProgramRecord): String = ProviderDataBridge.buildProgramKey(program)
@@ -301,22 +301,20 @@ class TvProviderWriter private constructor(
         fun programProviderDataForTest(program: ProgramRecord): String =
             ProviderDataBridge.buildProgramProviderData(program).json
 
-        fun parseProgramKey(providerData: String?): String? = ProviderDataBridge.extractProgramKey(providerData)
+        fun parseProgramKey(providerData: ByteArray?): String? = ProviderDataBridge.extractProgramKey(providerData)
 
-        fun providerDataMatchesService(providerData: String?, serviceKey: ServiceKey?): Boolean {
+        fun providerDataMatchesService(providerData: ByteArray?, serviceKey: ServiceKey?): Boolean {
             if (serviceKey == null) return true
-            val programKey = parseProgramKey(providerData) ?: return false
-            return programKey.startsWith(
-                "onid=${serviceKey.originalNetworkId};tsid=${serviceKey.transportStreamId};sid=${serviceKey.serviceId};"
-            )
+            val key = ProviderDataBridge.extractProgramKeyResult(providerData) ?: return false
+            return key.serviceKey == serviceKey
         }
 
         fun providerDataWithCurrentProgramDiagnostics(
-            providerData: String?,
+            providerData: ByteArray?,
             overlapCount: Int,
             selectedProgramId: Long,
             selectionRule: String,
-        ): String = ProviderDataBridge.appendCurrentProgramDiagnostics(providerData, overlapCount, selectedProgramId, selectionRule).json
+        ): ByteArray = ProviderDataBridge.appendCurrentProgramDiagnostics(providerData, overlapCount, selectedProgramId, selectionRule).bytes
 
         fun signatureForContentValues(values: ContentValues): String {
             val bytes = buildString {
@@ -460,7 +458,7 @@ class TvProviderWriter private constructor(
                 ?: throw IllegalStateException("TvProvider program query returned null cursor")
             cursor.use { cursor ->
                 while (cursor.moveToNext()) {
-                    val data = cursor.getBlob(1)?.toString(Charsets.UTF_8)
+                    val data = providerDataBytes(cursor, 1)
                     if (TvProviderWriter.parseProgramKey(data) == programKey) return@use cursor.getLong(0)
                 }
                 null
@@ -476,7 +474,7 @@ class TvProviderWriter private constructor(
             val out = linkedMapOf<String, Long>()
             cursor.use { c ->
                 while (c.moveToNext()) {
-                    val data = c.getBlob(1)?.toString(Charsets.UTF_8)
+                    val data = providerDataBytes(c, 1)
                     val key = TvProviderWriter.parseProgramKey(data)
                     if (key != null) out[key] = c.getLong(0)
                 }
@@ -498,12 +496,17 @@ class TvProviderWriter private constructor(
             val out = linkedMapOf<String, Long>()
             cursor.use { c ->
                 while (c.moveToNext()) {
-                    val data = c.getBlob(1)?.toString(Charsets.UTF_8)
+                    val data = providerDataBytes(c, 1)
                     val key = TvProviderWriter.parseProgramKey(data)
                     if (key != null && key !in out) out[key] = c.getLong(0)
                 }
             }
             out
+        }
+
+        private fun providerDataBytes(cursor: android.database.Cursor, index: Int): ByteArray? {
+            return runCatching { cursor.getBlob(index) }.getOrNull()
+                ?: runCatching { cursor.getString(index)?.toByteArray(Charsets.UTF_8) }.getOrNull()
         }
 
         override fun insertProgram(values: ContentValues): Result<Long?> = runCatching {
@@ -524,7 +527,7 @@ class TvProviderWriter private constructor(
             cursor.use { cursor ->
                 while (cursor.moveToNext()) {
                     val id = cursor.getLong(0)
-                    val key = TvProviderWriter.parseProgramKey(cursor.getBlob(1)?.toString(Charsets.UTF_8))
+                    val key = TvProviderWriter.parseProgramKey(providerDataBytes(cursor, 1))
                     if (key == null || key !in validProgramKeys) {
                         deleted += context.contentResolver.delete(ContentUris.withAppendedId(TvContract.Programs.CONTENT_URI, id), null, null)
                     }

@@ -2,6 +2,9 @@ package com.maleicacid.tvinput.tis
 
 import android.content.ContentValues
 import android.media.tv.TvContract
+import com.maleicacid.tvinput.aribsi.AribComponentEntry
+import com.maleicacid.tvinput.aribsi.AribComponents
+import com.maleicacid.tvinput.aribsi.AribContentGenre
 import com.maleicacid.tvinput.aribsi.AribParentalRating
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
 import com.maleicacid.tvinput.common.ServiceKey
@@ -24,14 +27,12 @@ class TvProviderWriterR51FixTest {
             key, 1, "p1", 1_700_000_000_000L, 1_800_000L, "title", "desc",
             canonicalGenres = listOf("NEWS"),
             descriptors = ProgramDescriptors(
-                audioLanguage = "jpn",
+                contentGenres = listOf(AribContentGenre(0x0, 0x0, aribName = "ニュース/報道/定時・総合")),
                 broadcastGenre = "ARIB(0x0/0x0):ニュース/報道/定時・総合",
                 scrambled = false,
                 freeCaMode = AribFreeCaMode(raw = 0, scrambled = false, text = "無料放送"),
-                seriesId = 100,
-                episodeNumber = 3,
-                lastEpisodeNumber = 12,
                 series = AribSeries(seriesId = 100, episodeNumber = 3, lastEpisodeNumber = 12, name = null),
+                components = AribComponents(audio = listOf(AribComponentEntry(esPid = 256, streamType = 0x0f, componentTag = 1, componentType = 3, codec = "AAC", language = "jpn", parseStatus = "OK"))),
             ),
             contentRatings = listOf(rating15),
         )
@@ -56,10 +57,10 @@ class TvProviderWriterR51FixTest {
         override fun findExistingChannelId(key: ServiceKey): Result<Long?> = Result.success(channels.keys.firstOrNull())
         override fun insertChannel(values: ContentValues): Result<Long?> { val id = nextChannelId++; channels[id] = ContentValues(values); return Result.success(id) }
         override fun updateChannel(channelId: Long, values: ContentValues): Result<Int> { channels[channelId]?.putAll(values); return Result.success(1) }
-        override fun findExistingProgramId(channelId: Long, programKey: String): Result<Long?> = Result.success(programs.entries.firstOrNull { (_, v) -> TvProviderWriter.parseProgramKey(v.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).toString(Charsets.UTF_8)) == programKey }?.key)
+        override fun findExistingProgramId(channelId: Long, programKey: String): Result<Long?> = Result.success(programs.entries.firstOrNull { (_, v) -> TvProviderWriter.parseProgramKey(v.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA)) == programKey }?.key)
         override fun indexExistingProgramsForWindow(channelId: Long, windowStartMs: Long, windowEndMs: Long): Result<Map<String, Long>> = Result.success(
             programs.entries.mapNotNull { (id, v) ->
-                val key = TvProviderWriter.parseProgramKey(v.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).toString(Charsets.UTF_8)) ?: return@mapNotNull null
+                val key = TvProviderWriter.parseProgramKey(v.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA)) ?: return@mapNotNull null
                 key to id
             }.toMap(),
         )

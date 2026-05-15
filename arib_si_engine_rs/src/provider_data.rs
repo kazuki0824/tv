@@ -1,50 +1,21 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 const PROVIDER_SCHEMA_VERSION: i64 = 1;
 const PROGRAM_SCHEMA_NAME: &str = "maleicacid.tv.program";
 const CHANNEL_SCHEMA_NAME: &str = "maleicacid.tv.channel";
+const PROGRAM_REQUEST_SCHEMA_NAME: &str = "maleicacid.tv.programRequest";
+const CHANNEL_REQUEST_SCHEMA_NAME: &str = "maleicacid.tv.channelRequest";
 const CHANNEL_SCHEMA_VERSION: i64 = 1;
 const SOFT_LIMIT_BYTES: usize = 16 * 1024;
 const HARD_LIMIT_BYTES: usize = 32 * 1024;
-
-const PROGRAM_KNOWN_TOP_LEVEL_KEYS: &[&str] = &[
-    "schema",
-    "schemaVersion",
-    "programKey",
-    "serviceKey",
-    "timing",
-    "source",
-    "cas",
-    "ratings",
-    "genres",
-    "series",
-    "relatedItems",
-    "linkage",
-    "freeCaMode",
-    "audioLanguages",
-    "audio",
-    "video",
-    "extendedItems",
-    "components",
-    "diagnostics",
-];
-
-const CHANNEL_KNOWN_TOP_LEVEL_KEYS: &[&str] = &[
-    "schema",
-    "schemaVersion",
-    "serviceKey",
-    "tune",
-    "cas",
-    "diagnostics",
-];
-
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProviderDataResult {
     pub json: String,
     pub signature: String,
-    pub extracted_key: String,
+    pub schema_version: i64,
+    pub truncated: bool,
+    pub diagnostics_dropped_count: i64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -54,23 +25,6 @@ pub struct ProgramKeyResult {
     pub service_id: i64,
     pub event_id: i64,
     pub key: String,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ProgramIdentity {
-    onid: i64,
-    tsid: i64,
-    sid: i64,
-    event_id: i64,
-    start_utc_millis: i64,
-    duration_millis: i64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct CurrentProgramDiagnostics {
-    overlap_count: i64,
-    selected_program_id: i64,
-    selection_rule: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -278,6 +232,9 @@ struct VideoComponentV1 {
     aspect: Option<String>,
     profile_level: Option<String>,
     source_descriptor: Option<String>,
+    r51_playback_supported: Option<bool>,
+    live_viewable_claim: Option<bool>,
+    diagnostic_code: Option<String>,
     parse_status: String,
 }
 
@@ -293,6 +250,9 @@ struct AudioComponentV1 {
     channel_configuration: Option<String>,
     sampling_info: Option<String>,
     source_descriptor: Option<String>,
+    r51_playback_supported: Option<bool>,
+    live_viewable_claim: Option<bool>,
+    diagnostic_code: Option<String>,
     parse_status: String,
 }
 
@@ -339,7 +299,7 @@ struct DiagnosticItemV1 {
 #[serde(rename_all = "camelCase")]
 struct RawProviderDataExtensionV1 {
     key: String,
-    value: Value,
+    value: serde_json::Value,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -366,6 +326,10 @@ struct DiagnosticsV1 {
     provider_data_hard_limit_bytes: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     provider_data_soft_limit_bytes: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider_data_dropped_count: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    malformed_ca_descriptor_count: Option<i64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -390,6 +354,42 @@ struct ProgramProviderDataV1 {
     extended_items: Vec<ExtendedItemV1>,
     components: ComponentsV1,
     diagnostics: DiagnosticsV1,
+    #[serde(default, flatten)]
+    extensions: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProgramRequestDiagnosticsV1 {
+    descriptor_diagnostics_canonical_json: String,
+    publish_diagnostics: Vec<DiagnosticItemV1>,
+    parser_diagnostics: Vec<DiagnosticItemV1>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProgramProviderDataRequestV1 {
+    schema: String,
+    schema_version: i64,
+    program_key: ProgramKeyV1,
+    service_key: ServiceKeyV1,
+    timing: TimingV1,
+    source: SourceV1,
+    cas: CasV1,
+    ratings: Vec<RatingV1>,
+    genres: Vec<GenreV1>,
+    series: Option<SeriesV1>,
+    related_items: Vec<RelatedItemV1>,
+    linkage: Vec<LinkageV1>,
+    free_ca_mode: Option<FreeCaModeV1>,
+    audio_languages: Vec<AudioLanguageV1>,
+    audio: Option<AudioMetadataV1>,
+    video: Option<VideoMetadataV1>,
+    extended_items: Vec<ExtendedItemV1>,
+    components: ComponentsV1,
+    diagnostics: ProgramRequestDiagnosticsV1,
+    #[serde(default)]
+    malformed_ca_descriptor_count: i64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -429,6 +429,10 @@ struct ChannelDiagnosticsV1 {
     provider_data_hard_limit_bytes: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     provider_data_soft_limit_bytes: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider_data_dropped_count: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider_data_truncation_code: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -442,578 +446,366 @@ struct ChannelProviderDataV1 {
     diagnostics: ChannelDiagnosticsV1,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChannelProviderDataRequestV1 {
+    schema: String,
+    schema_version: i64,
+    service_key: ServiceKeyV1,
+    tune: ChannelTuneV1,
+    cas: ChannelCasV1,
+    diagnostics: ChannelDiagnosticsV1,
+}
+
 pub fn build_program_key(onid: i32, tsid: i32, sid: i32, event_id: i32) -> String {
-    format!("onid={};tsid={};sid={};event={}", onid, tsid, sid, event_id)
+    serde_json::json!({
+        "kind": "arib-event-v1",
+        "originalNetworkId": onid,
+        "transportStreamId": tsid,
+        "serviceId": sid,
+        "eventId": event_id,
+    }).to_string()
 }
 
 pub fn build_program_provider_data(request_json: &str) -> ProviderDataResult {
-    let value = parse_input(request_json);
-    let identity = ProgramIdentity::from_value(&value);
-    finalize_program(program_from_value(&value, identity, None))
+    let Ok(request) = serde_json::from_str::<ProgramProviderDataRequestV1>(request_json) else { return empty_result(); };
+    let Some(data) = program_data_from_request(request) else { return empty_result(); };
+    finalize_program(data)
 }
 
 pub fn build_channel_provider_data(request_json: &str) -> ProviderDataResult {
-    let value = parse_input(request_json);
-    finalize_channel(channel_from_value(&value))
+    let Ok(request) = serde_json::from_str::<ChannelProviderDataRequestV1>(request_json) else { return empty_result(); };
+    let Some(data) = channel_data_from_request(request) else { return empty_result(); };
+    finalize_channel(data)
 }
 
-pub fn normalize_program_provider_data(provider_data: &str) -> ProviderDataResult {
-    let value = parse_input(provider_data.trim());
-    if value.get("schema").and_then(Value::as_str) != Some(PROGRAM_SCHEMA_NAME) {
-        return ProviderDataResult { json: "{}".to_string(), signature: sha256_hex(b"{}"), extracted_key: String::new() };
-    }
-    let Some(identity) = ProgramIdentity::from_value_optional(&value) else {
-        return ProviderDataResult { json: "{}".to_string(), signature: sha256_hex(b"{}"), extracted_key: String::new() };
-    };
-    finalize_program(program_from_value(&value, identity, None))
+pub fn normalize_program_provider_data(raw_bytes: &[u8]) -> ProviderDataResult {
+    let Ok(text) = std::str::from_utf8(raw_bytes) else { return empty_result(); };
+    let Ok(raw_value) = serde_json::from_str::<serde_json::Value>(text.trim()) else { return empty_result(); };
+    let Ok(data) = serde_json::from_value::<ProgramProviderDataV1>(raw_value.clone()) else { return empty_result(); };
+    let data = normalize_program_extensions(data, Some(&raw_value));
+    if !valid_program_provider_data(&data) { return empty_result(); }
+    finalize_program(data)
 }
 
-pub fn append_current_program_diagnostics(provider_data: &str, overlap_count: i64, selected_program_id: i64, selection_rule: &str) -> ProviderDataResult {
-    let value = parse_input(provider_data.trim());
-    if value.get("schema").and_then(Value::as_str) != Some(PROGRAM_SCHEMA_NAME) {
-        return ProviderDataResult { json: "{}".to_string(), signature: sha256_hex(b"{}"), extracted_key: String::new() };
-    }
-    let Some(identity) = ProgramIdentity::from_value_optional(&value) else {
-        return ProviderDataResult { json: "{}".to_string(), signature: sha256_hex(b"{}"), extracted_key: String::new() };
-    };
-    let current = CurrentProgramDiagnostics {
-        overlap_count: overlap_count.max(0),
-        selected_program_id,
-        selection_rule: selection_rule.to_string(),
-    };
-    finalize_program(program_from_value(&value, identity, Some(current)))
+pub fn append_current_program_diagnostics(raw_bytes: &[u8], overlap_count: i64, selected_program_id: i64, selection_rule: &str) -> ProviderDataResult {
+    let Ok(text) = std::str::from_utf8(raw_bytes) else { return empty_result(); };
+    let Ok(raw_value) = serde_json::from_str::<serde_json::Value>(text.trim()) else { return empty_result(); };
+    let Ok(data) = serde_json::from_value::<ProgramProviderDataV1>(raw_value.clone()) else { return empty_result(); };
+    let mut data = normalize_program_extensions(data, Some(&raw_value));
+    if !valid_program_provider_data(&data) { return empty_result(); }
+    data.diagnostics.current_program = Some(CurrentProgramDiagnosticsV1 { overlap_count: overlap_count.max(0), selected_program_id, selection_rule: selection_rule.to_string() });
+    finalize_program(data)
 }
 
-pub fn program_provider_data_signature(provider_data: &str) -> String {
-    sha256_hex(provider_data.as_bytes())
+pub fn program_provider_data_signature(raw_bytes: &[u8]) -> String {
+    sha256_hex(raw_bytes)
 }
 
-pub fn extract_program_key_result(provider_data: &str) -> Option<ProgramKeyResult> {
-    let raw = provider_data.trim();
-    if raw.is_empty() { return None; }
-    let value = parse_input(raw);
-    if value.get("schema").and_then(Value::as_str) != Some(PROGRAM_SCHEMA_NAME) { return None; }
-    let identity = ProgramIdentity::from_value_optional(&value)?;
+pub fn extract_program_key_result(raw_bytes: &[u8]) -> Option<ProgramKeyResult> {
+    let text = std::str::from_utf8(raw_bytes).ok()?;
+    let data = serde_json::from_str::<ProgramProviderDataV1>(text.trim()).ok()?;
+    if !valid_program_provider_data(&data) { return None; }
     Some(ProgramKeyResult {
-        original_network_id: identity.onid,
-        transport_stream_id: identity.tsid,
-        service_id: identity.sid,
-        event_id: identity.event_id,
-        key: identity.stable_key_string(),
+        original_network_id: data.program_key.original_network_id,
+        transport_stream_id: data.program_key.transport_stream_id,
+        service_id: data.program_key.service_id,
+        event_id: data.program_key.event_id,
+        key: serde_json::to_string(&data.program_key).unwrap_or_default(),
     })
 }
 
-pub fn extract_program_key(provider_data: &str) -> Option<String> {
-    extract_program_key_result(provider_data).map(|v| v.key)
+pub fn extract_program_key(raw_bytes: &[u8]) -> Option<String> {
+    extract_program_key_result(raw_bytes).map(|v| v.key)
 }
 
 pub fn extract_channel_tune_key(provider_data: &str) -> String {
-    let raw = provider_data.trim();
-    if raw.is_empty() { return String::new(); }
-    let value = parse_input(raw);
-    if value.get("schema").and_then(Value::as_str) != Some(CHANNEL_SCHEMA_NAME) {
-        return String::new();
-    }
-    let data = channel_from_value(&value);
+    let Ok(data) = serde_json::from_str::<ChannelProviderDataV1>(provider_data.trim()) else { return String::new(); };
+    if !valid_channel_provider_data(&data) { return String::new(); }
     serde_json::to_string(&data).unwrap_or_default()
 }
 
-impl ProgramIdentity {
-    fn from_value(value: &Value) -> Self {
-        Self::from_value_optional(value).unwrap_or(Self {
-            onid: 0,
-            tsid: 0,
-            sid: 0,
-            event_id: 0,
-            start_utc_millis: time_from(value),
-            duration_millis: duration_from(value),
-        }).clamped()
-    }
-
-    fn from_value_optional(value: &Value) -> Option<Self> {
-        let program_key = value.get("programKey")?.as_object()?;
-        let timing = value.get("timing")?;
-        let start = i64_field(timing, "startUtcMillis", -1);
-        let duration = i64_field(timing, "durationMillis", -1);
-        let onid = program_key.get("originalNetworkId").and_then(Value::as_i64)?;
-        let tsid = program_key.get("transportStreamId").and_then(Value::as_i64)?;
-        let sid = program_key.get("serviceId").and_then(Value::as_i64)?;
-        let event_id = program_key.get("eventId").and_then(Value::as_i64)?;
-        if onid < 0 || tsid < 0 || sid < 0 || event_id < 0 || start < 0 || duration < 0 { return None; }
-        Some(Self {
-            onid,
-            tsid,
-            sid,
-            event_id,
-            start_utc_millis: start,
-            duration_millis: duration,
-        }.clamped())
-    }
-
-    fn clamped(self) -> Self {
-        Self {
-            onid: clamp_i64(self.onid, 0, 0xffff),
-            tsid: clamp_i64(self.tsid, 0, 0xffff),
-            sid: clamp_i64(self.sid, 0, 0xffff),
-            event_id: clamp_i64(self.event_id, 0, 0xffff),
-            start_utc_millis: self.start_utc_millis.max(0),
-            duration_millis: self.duration_millis.max(0),
-        }
-    }
-
-    fn stable_key_string(&self) -> String {
-        format!("onid={};tsid={};sid={};event={}", self.onid, self.tsid, self.sid, self.event_id)
-    }
-}
-
-fn program_from_value(value: &Value, identity: ProgramIdentity, current: Option<CurrentProgramDiagnostics>) -> ProgramProviderDataV1 {
-    let diagnostics = diagnostics_from(value, current, PROGRAM_KNOWN_TOP_LEVEL_KEYS);
-    let related_items = related_items_from(value);
-    let linkage = linkage_from(value);
-    let components = components_from(value);
-    ProgramProviderDataV1 {
+fn program_data_from_request(request: ProgramProviderDataRequestV1) -> Option<ProgramProviderDataV1> {
+    if request.schema != PROGRAM_REQUEST_SCHEMA_NAME || request.schema_version != PROVIDER_SCHEMA_VERSION { return None; }
+    if request.program_key.kind != "arib-event-v1" { return None; }
+    if request.service_key.original_network_id != request.program_key.original_network_id || request.service_key.transport_stream_id != request.program_key.transport_stream_id || request.service_key.service_id != request.program_key.service_id { return None; }
+    let descriptor_diagnostics = parse_descriptor_diagnostics(&request.diagnostics.descriptor_diagnostics_canonical_json)?;
+    let data = ProgramProviderDataV1 {
         schema: PROGRAM_SCHEMA_NAME.to_string(),
         schema_version: PROVIDER_SCHEMA_VERSION,
-        program_key: ProgramKeyV1 {
-            kind: "arib-event-v1".to_string(),
-            original_network_id: identity.onid,
-            transport_stream_id: identity.tsid,
-            service_id: identity.sid,
-            event_id: identity.event_id,
-        },
-        service_key: ServiceKeyV1 {
-            original_network_id: identity.onid,
-            transport_stream_id: identity.tsid,
-            service_id: identity.sid,
-        },
-        timing: TimingV1 {
-            start_utc_millis: identity.start_utc_millis,
-            end_utc_millis: identity.start_utc_millis.saturating_add(identity.duration_millis),
-            duration_millis: identity.duration_millis,
-        },
-        source: source_from(value),
-        cas: cas_from(value),
-        ratings: ratings_from(value),
-        genres: genres_from(value),
-        series: series_from(value),
-        related_items,
-        linkage,
-        free_ca_mode: free_ca_mode_from(value),
-        audio_languages: audio_languages_from(value),
-        audio: audio_from(value),
-        video: video_from(value),
-        extended_items: extended_items_from(value),
-        components,
-        diagnostics,
-    }
-}
-
-fn channel_from_value(value: &Value) -> ChannelProviderDataV1 {
-    let service_source = value.get("serviceKey").unwrap_or(&Value::Null);
-    let tune_source = value.get("tune").unwrap_or(&Value::Null);
-    let cas_source = value.get("cas").unwrap_or(&Value::Null);
-    let diag_source = value.get("diagnostics").unwrap_or(&Value::Null);
-    ChannelProviderDataV1 {
-        schema: CHANNEL_SCHEMA_NAME.to_string(),
-        schema_version: CHANNEL_SCHEMA_VERSION,
-        service_key: ServiceKeyV1 {
-            original_network_id: i64_field(service_source, "originalNetworkId", -1),
-            transport_stream_id: i64_field(service_source, "transportStreamId", -1),
-            service_id: i64_field(service_source, "serviceId", -1),
-        },
-        tune: ChannelTuneV1 {
-            input_id: string_field(tune_source, "inputId", ""),
-            display_name: string_field(tune_source, "displayName", ""),
-            delivery_system: string_field(tune_source, "deliverySystem", ""),
-            frequency_hz: i64_field(tune_source, "frequencyHz", 0),
-            stream_id: optional_i64(tune_source, "streamId"),
-            stream_id_type: string_field(tune_source, "streamIdType", "NONE"),
-            physical_channel: optional_i64(tune_source, "physicalChannel"),
-            backend_hint: string_opt(tune_source, "backendHint"),
-            satellite_band: string_opt(tune_source, "satelliteBand"),
-            remote_control_key_id: optional_i64(tune_source, "remoteControlKeyId"),
-        },
-        cas: ChannelCasV1 {
-            requires_cas: bool_field(cas_source, "requiresCas", false),
-            unsupported_cas: bool_field(cas_source, "unsupportedCas", false),
-            clear_live_playback_supported: bool_field(cas_source, "clearLivePlaybackSupported", false),
-        },
-        diagnostics: ChannelDiagnosticsV1 {
-            channel_registration_ready: bool_field(diag_source, "channelRegistrationReady", false),
-            epg_publishable: bool_field(diag_source, "epgPublishable", false),
-            publish_state_source: string_field(diag_source, "publishStateSource", "current"),
-            raw_provider_data_extensions: raw_extensions_from(value, CHANNEL_KNOWN_TOP_LEVEL_KEYS),
+        program_key: request.program_key,
+        service_key: request.service_key,
+        timing: request.timing,
+        source: request.source,
+        cas: request.cas,
+        ratings: request.ratings,
+        genres: request.genres,
+        series: request.series,
+        related_items: request.related_items,
+        linkage: request.linkage,
+        free_ca_mode: request.free_ca_mode,
+        audio_languages: request.audio_languages,
+        audio: request.audio,
+        video: request.video,
+        extended_items: request.extended_items,
+        components: request.components,
+        diagnostics: DiagnosticsV1 {
+            descriptor_diagnostics,
+            publish_diagnostics: request.diagnostics.publish_diagnostics,
+            parser_diagnostics: request.diagnostics.parser_diagnostics,
+            current_program: None,
+            raw_provider_data_extensions: Vec::new(),
             provider_data_truncated: None,
             provider_data_hard_limit_bytes: None,
             provider_data_soft_limit_bytes: None,
+            provider_data_dropped_count: None,
+            malformed_ca_descriptor_count: (request.malformed_ca_descriptor_count > 0).then_some(request.malformed_ca_descriptor_count),
         },
+        extensions: serde_json::Map::new(),
+    };
+    valid_program_provider_data(&data).then_some(data)
+}
+
+fn channel_data_from_request(request: ChannelProviderDataRequestV1) -> Option<ChannelProviderDataV1> {
+    if request.schema != CHANNEL_REQUEST_SCHEMA_NAME || request.schema_version != CHANNEL_SCHEMA_VERSION { return None; }
+    let data = ChannelProviderDataV1 {
+        schema: CHANNEL_SCHEMA_NAME.to_string(),
+        schema_version: CHANNEL_SCHEMA_VERSION,
+        service_key: request.service_key,
+        tune: request.tune,
+        cas: request.cas,
+        diagnostics: request.diagnostics,
+    };
+    valid_channel_provider_data(&data).then_some(data)
+}
+
+fn normalize_program_extensions(mut data: ProgramProviderDataV1, raw_value: Option<&serde_json::Value>) -> ProgramProviderDataV1 {
+    let extensions = std::mem::take(&mut data.extensions);
+    for (key, value) in extensions {
+        data.diagnostics.raw_provider_data_extensions.push(RawProviderDataExtensionV1 { key, value });
+    }
+    if let Some(raw) = raw_value {
+        let mut nested = Vec::new();
+        collect_program_unknown_extensions(raw, &mut nested);
+        for extension in nested {
+            if !data.diagnostics.raw_provider_data_extensions.iter().any(|existing| existing.key == extension.key) {
+                data.diagnostics.raw_provider_data_extensions.push(extension);
+            }
+        }
+    }
+    data
+}
+
+fn collect_program_unknown_extensions(raw: &serde_json::Value, out: &mut Vec<RawProviderDataExtensionV1>) {
+    collect_object_unknown(raw, "", &["schema", "schemaVersion", "programKey", "serviceKey", "timing", "source", "cas", "ratings", "genres", "series", "relatedItems", "linkage", "freeCaMode", "audioLanguages", "audio", "video", "extendedItems", "components", "diagnostics"], out);
+    collect_object_unknown(raw.get("programKey").unwrap_or(&serde_json::Value::Null), "programKey", &["kind", "originalNetworkId", "transportStreamId", "serviceId", "eventId"], out);
+    collect_object_unknown(raw.get("serviceKey").unwrap_or(&serde_json::Value::Null), "serviceKey", &["originalNetworkId", "transportStreamId", "serviceId"], out);
+    collect_object_unknown(raw.get("timing").unwrap_or(&serde_json::Value::Null), "timing", &["startUtcMillis", "endUtcMillis", "durationMillis"], out);
+    collect_object_unknown(raw.get("source").unwrap_or(&serde_json::Value::Null), "source", &["pid", "tableId", "version", "sectionNumber", "lastSectionNumber"], out);
+    collect_object_unknown(raw.get("cas").unwrap_or(&serde_json::Value::Null), "cas", &["requiresCas", "unsupportedCas", "clearLivePlaybackSupported", "source"], out);
+    collect_array_unknown(raw.get("ratings").unwrap_or(&serde_json::Value::Null), "ratings", &["countryCode", "ratingValue", "rawRatingByte", "supported", "mappedTvContentRating", "parseStatus"], out);
+    collect_array_unknown(raw.get("genres").unwrap_or(&serde_json::Value::Null), "genres", &["level1", "level2", "userNibble", "aribName", "unmappedReason", "canonicalGenres", "parseStatus"], out);
+    collect_object_unknown(raw.get("series").unwrap_or(&serde_json::Value::Null), "series", &["seriesId", "repeatLabel", "programPattern", "expireDateValid", "expireDate", "episodeNumber", "lastEpisodeNumber", "name", "parseStatus"], out);
+    collect_array_unknown(raw.get("relatedItems").unwrap_or(&serde_json::Value::Null), "relatedItems", &["kind", "groupType", "originalNetworkId", "transportStreamId", "serviceId", "eventId", "parseStatus"], out);
+    collect_array_unknown(raw.get("linkage").unwrap_or(&serde_json::Value::Null), "linkage", &["transportStreamId", "originalNetworkId", "serviceId", "linkageType", "privateDataPrefixHex", "parseStatus"], out);
+    collect_object_unknown(raw.get("freeCaMode").unwrap_or(&serde_json::Value::Null), "freeCaMode", &["raw", "scrambled", "text", "parseStatus"], out);
+    collect_array_unknown(raw.get("audioLanguages").unwrap_or(&serde_json::Value::Null), "audioLanguages", &["language", "source", "parseStatus"], out);
+    collect_object_unknown(raw.get("audio").unwrap_or(&serde_json::Value::Null), "audio", &["esPid", "componentTag", "codec", "language", "text", "parseStatus"], out);
+    collect_object_unknown(raw.get("video").unwrap_or(&serde_json::Value::Null), "video", &["esPid", "componentTag", "codec", "format", "width", "height", "parseStatus"], out);
+    collect_array_unknown(raw.get("extendedItems").unwrap_or(&serde_json::Value::Null), "extendedItems", &["description", "text", "parseStatus"], out);
+    if let Some(components) = raw.get("components") {
+        collect_object_unknown(components, "components", &["video", "audio", "subtitle", "data"], out);
+        collect_array_unknown(components.get("video").unwrap_or(&serde_json::Value::Null), "components.video", &["esPid", "streamType", "componentTag", "componentType", "codec", "resolution", "scan", "aspect", "profileLevel", "sourceDescriptor", "r51PlaybackSupported", "liveViewableClaim", "diagnosticCode", "parseStatus"], out);
+        collect_array_unknown(components.get("audio").unwrap_or(&serde_json::Value::Null), "components.audio", &["esPid", "streamType", "componentTag", "componentType", "codec", "language", "channelConfiguration", "samplingInfo", "sourceDescriptor", "r51PlaybackSupported", "liveViewableClaim", "diagnosticCode", "parseStatus"], out);
+        collect_array_unknown(components.get("subtitle").unwrap_or(&serde_json::Value::Null), "components.subtitle", &["esPid", "componentTag", "dataComponentId", "language", "trackId", "captionServiceKind", "parseStatus"], out);
+        collect_array_unknown(components.get("data").unwrap_or(&serde_json::Value::Null), "components.data", &["esPid", "componentTag", "dataComponentId", "componentType", "parseStatus"], out);
+    }
+    if let Some(diagnostics) = raw.get("diagnostics") {
+        collect_object_unknown(diagnostics, "diagnostics", &["descriptorDiagnostics", "publishDiagnostics", "parserDiagnostics", "currentProgram", "rawProviderDataExtensions", "providerDataTruncated", "providerDataHardLimitBytes", "providerDataSoftLimitBytes", "providerDataDroppedCount", "malformedCaDescriptorCount"], out);
+        collect_descriptor_diagnostic_unknown(diagnostics.get("descriptorDiagnostics").unwrap_or(&serde_json::Value::Null), out);
+        collect_array_unknown(diagnostics.get("publishDiagnostics").unwrap_or(&serde_json::Value::Null), "diagnostics.publishDiagnostics", &["code", "message", "severity"], out);
+        collect_array_unknown(diagnostics.get("parserDiagnostics").unwrap_or(&serde_json::Value::Null), "diagnostics.parserDiagnostics", &["code", "message", "severity"], out);
+        collect_object_unknown(diagnostics.get("currentProgram").unwrap_or(&serde_json::Value::Null), "diagnostics.currentProgram", &["overlapCount", "selectedProgramId", "selectionRule"], out);
     }
 }
 
-fn source_from(value: &Value) -> SourceV1 {
-    let src = value.get("source").unwrap_or(value);
-    SourceV1 {
-        pid: clamp_i64(i64_field(src, "pid", 18), 0, 8191),
-        table_id: clamp_i64(i64_field(src, "tableId", 78), 0, 255),
-        version: clamp_i64(i64_field(src, "version", 0), 0, 31),
-        section_number: clamp_i64(i64_field(src, "sectionNumber", 0), 0, 255),
-        last_section_number: clamp_i64(i64_field(src, "lastSectionNumber", 0), 0, 255),
+
+fn collect_descriptor_diagnostic_unknown(value: &serde_json::Value, out: &mut Vec<RawProviderDataExtensionV1>) {
+    let Some(items) = value.as_array() else { return; };
+    for (index, item) in items.iter().enumerate() {
+        let base = format!("diagnostics.descriptorDiagnostics[{}]", index);
+        collect_object_unknown(item, &base, &["schema", "schemaVersion", "severity", "code", "scope", "descriptor", "message"], out);
+        if let Some(scope) = item.get("scope") {
+            collect_object_unknown(scope, &format!("{}.scope", base), &["pid", "tableId", "tableIdExtension", "version", "sectionNumber", "originalNetworkId", "transportStreamId", "serviceId", "eventId"], out);
+        }
+        if let Some(descriptor) = item.get("descriptor") {
+            collect_object_unknown(descriptor, &format!("{}.descriptor", base), &["tag", "name", "offset", "declaredLength", "actualRemainingLength", "parseStatus", "rawPrefixHex"], out);
+        }
     }
 }
 
-fn cas_from(value: &Value) -> CasV1 {
-    let cas = value.get("cas").unwrap_or(value);
-    let requires_cas = bool_field(cas, "requiresCas", bool_field(value, "requiresCas", false));
-    let unsupported_cas = bool_field(cas, "unsupportedCas", bool_field(value, "unsupportedCas", false));
-    CasV1 {
-        requires_cas,
-        unsupported_cas,
-        clear_live_playback_supported: bool_field(cas, "clearLivePlaybackSupported", !requires_cas && !unsupported_cas),
-        source: string_field(cas, "source", string_field(value, "publishStateSource", "CURRENT_DIAGNOSTIC")),
+fn collect_array_unknown(value: &serde_json::Value, path: &str, known_keys: &[&str], out: &mut Vec<RawProviderDataExtensionV1>) {
+    let Some(items) = value.as_array() else { return; };
+    for (index, item) in items.iter().enumerate() {
+        collect_object_unknown(item, &format!("{}[{}]", path, index), known_keys, out);
     }
 }
 
-fn ratings_from(value: &Value) -> Vec<RatingV1> {
-    let array = value.get("ratings").and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    if !array.is_empty() {
-        return array.into_iter().filter_map(|entry| {
-            let obj = entry.as_object()?;
-            Some(RatingV1 {
-                country_code: object_string(obj, "countryCode", "JPN"),
-                rating_value: clamp_i64(object_i64(obj, "ratingValue", object_i64(obj, "rating", 0)), 0, 255),
-                raw_rating_byte: clamp_i64(object_i64(obj, "rawRatingByte", object_i64(obj, "rawRating", 0)), 0, 255),
-                supported: object_bool(obj, "supported", false),
-                mapped_tv_content_rating: obj.get("mappedTvContentRating").and_then(Value::as_str).map(ToString::to_string),
-                parse_status: object_string(obj, "parseStatus", "OK"),
-            })
-        }).collect();
-    }
-    Vec::new()
-}
-
-fn genres_from(value: &Value) -> Vec<GenreV1> {
-    if let Some(array) = value.get("genres").and_then(Value::as_array) {
-        return array.iter().filter_map(|entry| {
-            let obj = entry.as_object()?;
-            Some(GenreV1 {
-                level1: clamp_i64(object_i64(obj, "level1", 0), 0, 15),
-                level2: clamp_i64(object_i64(obj, "level2", 0), 0, 15),
-                user_nibble: clamp_i64(object_i64(obj, "userNibble", 0), 0, 15),
-                arib_name: object_string(obj, "aribName", ""),
-                unmapped_reason: obj.get("unmappedReason").and_then(Value::as_str).map(ToString::to_string),
-                canonical_genres: string_array(obj.get("canonicalGenres")),
-                parse_status: object_string(obj, "parseStatus", "OK"),
-            })
-        }).collect();
-    }
-    Vec::new()
-}
-
-fn series_from(value: &Value) -> Option<SeriesV1> {
-    let src = value.get("series")?;
-    let obj = src.as_object()?;
-    Some(SeriesV1 {
-        series_id: clamp_i64(object_i64(obj, "seriesId", 0), 0, 0xffff),
-        repeat_label: clamp_i64(object_i64(obj, "repeatLabel", 0), 0, 15),
-        program_pattern: clamp_i64(object_i64(obj, "programPattern", 0), 0, 7),
-        expire_date_valid: object_bool(obj, "expireDateValid", false),
-        expire_date: obj.get("expireDate").and_then(Value::as_str).map(ToString::to_string),
-        episode_number: clamp_i64(object_i64(obj, "episodeNumber", 0), 0, 4095),
-        last_episode_number: clamp_i64(object_i64(obj, "lastEpisodeNumber", 0), 0, 4095),
-        name: obj.get("name").and_then(Value::as_str).map(ToString::to_string),
-        parse_status: object_string(obj, "parseStatus", "OK"),
-    })
-}
-
-fn free_ca_mode_from(value: &Value) -> Option<FreeCaModeV1> {
-    let src = value.get("freeCaMode")?;
-    let obj = src.as_object()?;
-    Some(FreeCaModeV1 {
-        raw: clamp_i64(object_i64(obj, "raw", 0), 0, 1),
-        scrambled: object_bool(obj, "scrambled", false),
-        text: obj.get("text").and_then(Value::as_str).map(ToString::to_string),
-        parse_status: object_string(obj, "parseStatus", "OK"),
-    })
-}
-
-fn audio_languages_from(value: &Value) -> Vec<AudioLanguageV1> {
-    value.get("audioLanguages").and_then(Value::as_array).cloned().unwrap_or_default().into_iter().filter_map(|entry| {
-        let obj = entry.as_object()?;
-        Some(AudioLanguageV1 {
-            language: object_string(obj, "language", "jpn"),
-            source: object_string(obj, "source", "AUDIO_COMPONENT"),
-            parse_status: object_string(obj, "parseStatus", "OK"),
-        })
-    }).collect()
-}
-
-fn audio_from(value: &Value) -> Option<AudioMetadataV1> {
-    let src = value.get("audio")?.as_object()?;
-    Some(AudioMetadataV1 {
-        es_pid: src.get("esPid").and_then(Value::as_i64),
-        component_tag: src.get("componentTag").and_then(Value::as_i64),
-        codec: object_string(src, "codec", object_string(src, "format", "UNKNOWN_AUDIO")),
-        language: src.get("language").and_then(Value::as_str).map(ToString::to_string),
-        text: src.get("text").or_else(|| src.get("componentText")).and_then(Value::as_str).map(ToString::to_string),
-        parse_status: object_string(src, "parseStatus", "OK"),
-    })
-}
-
-fn video_from(value: &Value) -> Option<VideoMetadataV1> {
-    let src = value.get("video")?.as_object()?;
-    Some(VideoMetadataV1 {
-        es_pid: src.get("esPid").and_then(Value::as_i64),
-        component_tag: src.get("componentTag").and_then(Value::as_i64),
-        codec: object_string(src, "codec", object_string(src, "format", object_string(src, "videoFormat", "UNKNOWN_VIDEO"))),
-        format: src.get("format").or_else(|| src.get("videoFormat")).and_then(Value::as_str).map(ToString::to_string),
-        width: src.get("width").and_then(Value::as_i64),
-        height: src.get("height").and_then(Value::as_i64),
-        parse_status: object_string(src, "parseStatus", "OK"),
-    })
-}
-
-fn extended_items_from(value: &Value) -> Vec<ExtendedItemV1> {
-    value.get("extendedItems").and_then(Value::as_array).cloned().unwrap_or_default().into_iter().filter_map(|entry| {
-        let obj = entry.as_object()?;
-        Some(ExtendedItemV1 {
-            description: object_string(obj, "description", ""),
-            text: object_string(obj, "text", ""),
-            parse_status: object_string(obj, "parseStatus", "OK"),
-        })
-    }).collect()
-}
-
-fn diagnostics_from(value: &Value, current: Option<CurrentProgramDiagnostics>, known_keys: &[&str]) -> DiagnosticsV1 {
-    let src = value.get("diagnostics").unwrap_or(value);
-    let mut out = DiagnosticsV1::default();
-    out.descriptor_diagnostics = descriptor_diagnostics_from(value, src);
-    out.publish_diagnostics = publish_diagnostics_from(src);
-    out.parser_diagnostics = parser_diagnostics_from(src);
-    out.raw_provider_data_extensions = raw_extensions_from(value, known_keys);
-    if let Some(current) = current {
-        out.current_program = Some(CurrentProgramDiagnosticsV1 {
-            overlap_count: current.overlap_count,
-            selected_program_id: current.selected_program_id,
-            selection_rule: current.selection_rule,
-        });
-    } else if let Some(existing) = src.get("currentProgram").and_then(Value::as_object) {
-        out.current_program = Some(CurrentProgramDiagnosticsV1 {
-            overlap_count: object_i64(existing, "overlapCount", 0),
-            selected_program_id: object_i64(existing, "selectedProgramId", 0),
-            selection_rule: object_string(existing, "selectionRule", "UNKNOWN"),
-        });
-    }
-    out
-}
-
-fn descriptor_diagnostics_from(root: &Value, diagnostics: &Value) -> Vec<DescriptorDiagnosticV1> {
-    let array = diagnostics.get("descriptorDiagnostics").and_then(Value::as_array).cloned().unwrap_or_default();
-    array.into_iter().filter_map(|entry| descriptor_diagnostic_from_value(&entry, root)).collect()
-}
-
-fn publish_diagnostics_from(diagnostics: &Value) -> Vec<DiagnosticItemV1> {
-    diagnostics.get("publishDiagnostics").and_then(Value::as_array).cloned().unwrap_or_default().into_iter().filter_map(|entry| {
-        let obj = entry.as_object()?;
-        Some(DiagnosticItemV1 {
-            code: object_string(obj, "code", "UNKNOWN"),
-            message: object_string(obj, "message", ""),
-            severity: obj.get("severity").and_then(Value::as_str).map(ToString::to_string),
-        })
-    }).collect()
-}
-
-fn parser_diagnostics_from(diagnostics: &Value) -> Vec<DiagnosticItemV1> {
-    diagnostics.get("parserDiagnostics").and_then(Value::as_array).cloned().unwrap_or_default().into_iter().filter_map(|entry| {
-        let obj = entry.as_object()?;
-        Some(DiagnosticItemV1 {
-            code: object_string(obj, "code", "UNKNOWN"),
-            message: object_string(obj, "message", ""),
-            severity: obj.get("severity").and_then(Value::as_str).map(ToString::to_string),
-        })
-    }).collect()
-}
-
-fn raw_extensions_from(value: &Value, known_keys: &[&str]) -> Vec<RawProviderDataExtensionV1> {
-    let Some(obj) = value.as_object() else { return Vec::new(); };
-    obj.iter()
-        .filter(|(k, _)| !known_keys.contains(&k.as_str()))
-        .map(|(k, v)| RawProviderDataExtensionV1 { key: k.clone(), value: v.clone() })
-        .collect()
-}
-
-
-fn related_items_from(value: &Value) -> Vec<RelatedItemV1> {
-    value.get("relatedItems").and_then(Value::as_array).cloned().unwrap_or_default().into_iter().filter_map(|entry| {
-        let obj = entry.as_object()?;
-        Some(RelatedItemV1 {
-            kind: object_string(obj, "kind", "shared"),
-            group_type: clamp_i64(object_i64(obj, "groupType", 0), 0, 15),
-            original_network_id: clamp_i64(object_i64(obj, "originalNetworkId", 0), 0, 0xffff),
-            transport_stream_id: clamp_i64(object_i64(obj, "transportStreamId", 0), 0, 0xffff),
-            service_id: clamp_i64(object_i64(obj, "serviceId", 0), 0, 0xffff),
-            event_id: clamp_i64(object_i64(obj, "eventId", 0), 0, 0xffff),
-            parse_status: object_string(obj, "parseStatus", "OK"),
-        })
-    }).collect()
-}
-
-fn linkage_from(value: &Value) -> Vec<LinkageV1> {
-    value.get("linkage").and_then(Value::as_array).cloned().unwrap_or_default().into_iter().filter_map(|entry| {
-        let obj = entry.as_object()?;
-        Some(LinkageV1 {
-            transport_stream_id: clamp_i64(object_i64(obj, "transportStreamId", 0), 0, 0xffff),
-            original_network_id: clamp_i64(object_i64(obj, "originalNetworkId", 0), 0, 0xffff),
-            service_id: clamp_i64(object_i64(obj, "serviceId", 0), 0, 0xffff),
-            linkage_type: clamp_i64(object_i64(obj, "linkageType", 0), 0, 0xff),
-            private_data_prefix_hex: object_string(obj, "privateDataPrefixHex", object_string(obj, "privateDataHex", "")),
-            parse_status: object_string(obj, "parseStatus", "OK"),
-        })
-    }).collect()
-}
-
-fn components_from(value: &Value) -> ComponentsV1 {
-    let Some(obj) = value.get("components").and_then(Value::as_object) else { return ComponentsV1::default(); };
-    ComponentsV1 {
-        video: obj.get("video").and_then(Value::as_array).cloned().unwrap_or_default().into_iter().filter_map(video_component_from_value).collect(),
-        audio: obj.get("audio").and_then(Value::as_array).cloned().unwrap_or_default().into_iter().filter_map(audio_component_from_value).collect(),
-        subtitle: obj.get("subtitle").and_then(Value::as_array).cloned().unwrap_or_default().into_iter().filter_map(subtitle_component_from_value).collect(),
-        data: obj.get("data").and_then(Value::as_array).cloned().unwrap_or_default().into_iter().filter_map(data_component_from_value).collect(),
+fn collect_object_unknown(value: &serde_json::Value, path: &str, known_keys: &[&str], out: &mut Vec<RawProviderDataExtensionV1>) {
+    let Some(object) = value.as_object() else { return; };
+    for (key, value) in object {
+        if !known_keys.iter().any(|known| *known == key) {
+            let full_key = if path.is_empty() { key.clone() } else { format!("{}.{}", path, key) };
+            out.push(RawProviderDataExtensionV1 { key: full_key, value: value.clone() });
+        }
     }
 }
 
-fn video_component_from_value(value: Value) -> Option<VideoComponentV1> {
-    let obj = value.as_object()?;
-    Some(VideoComponentV1 {
-        es_pid: clamp_i64(object_i64(obj, "esPid", 0), 0, 8191),
-        stream_type: clamp_i64(object_i64(obj, "streamType", 0), 0, 255),
-        component_tag: clamp_i64(object_i64(obj, "componentTag", 0), 0, 255),
-        component_type: clamp_i64(object_i64(obj, "componentType", 0), 0, 255),
-        codec: object_string(obj, "codec", "UNKNOWN_VIDEO"),
-        resolution: obj.get("resolution").and_then(Value::as_str).map(ToString::to_string),
-        scan: obj.get("scan").and_then(Value::as_str).map(ToString::to_string),
-        aspect: obj.get("aspect").and_then(Value::as_str).map(ToString::to_string),
-        profile_level: obj.get("profileLevel").and_then(Value::as_str).map(ToString::to_string),
-        source_descriptor: obj.get("sourceDescriptor").and_then(Value::as_str).map(ToString::to_string),
-        parse_status: object_string(obj, "parseStatus", "OK"),
-    })
+fn program_truncation_dropped_count(data: &ProgramProviderDataV1) -> i64 {
+    let mut count = 0i64;
+    count += data.genres.len() as i64;
+    count += data.series.as_ref().map(|_| 1).unwrap_or(0);
+    count += data.related_items.len() as i64;
+    count += data.linkage.len() as i64;
+    count += data.audio_languages.len() as i64;
+    count += data.audio.as_ref().map(|_| 1).unwrap_or(0);
+    count += data.video.as_ref().map(|_| 1).unwrap_or(0);
+    count += data.extended_items.len() as i64;
+    count += data.components.video.len() as i64;
+    count += data.components.audio.len() as i64;
+    count += data.components.subtitle.len() as i64;
+    count += data.components.data.len() as i64;
+    count += data.diagnostics.descriptor_diagnostics.len() as i64;
+    count += data.diagnostics.publish_diagnostics.len() as i64;
+    count += data.diagnostics.parser_diagnostics.len() as i64;
+    count += data.diagnostics.raw_provider_data_extensions.len() as i64;
+    count.max(1)
 }
 
-fn audio_component_from_value(value: Value) -> Option<AudioComponentV1> {
-    let obj = value.as_object()?;
-    Some(AudioComponentV1 {
-        es_pid: clamp_i64(object_i64(obj, "esPid", 0), 0, 8191),
-        stream_type: clamp_i64(object_i64(obj, "streamType", 0), 0, 255),
-        component_tag: clamp_i64(object_i64(obj, "componentTag", 0), 0, 255),
-        component_type: clamp_i64(object_i64(obj, "componentType", 0), 0, 255),
-        codec: object_string(obj, "codec", "UNKNOWN_AUDIO"),
-        language: object_string(obj, "language", "und"),
-        channel_configuration: obj.get("channelConfiguration").and_then(Value::as_str).map(ToString::to_string),
-        sampling_info: obj.get("samplingInfo").and_then(Value::as_str).map(ToString::to_string),
-        source_descriptor: obj.get("sourceDescriptor").and_then(Value::as_str).map(ToString::to_string),
-        parse_status: object_string(obj, "parseStatus", "OK"),
-    })
+fn channel_truncation_dropped_count(data: &ChannelProviderDataV1) -> i64 {
+    (data.diagnostics.raw_provider_data_extensions.len() as i64).max(1)
 }
 
-fn subtitle_component_from_value(value: Value) -> Option<SubtitleComponentV1> {
-    let obj = value.as_object()?;
-    Some(SubtitleComponentV1 {
-        es_pid: clamp_i64(object_i64(obj, "esPid", 0), 0, 8191),
-        component_tag: clamp_i64(object_i64(obj, "componentTag", 0), 0, 255),
-        data_component_id: clamp_i64(object_i64(obj, "dataComponentId", 0), 0, 0xffff),
-        language: object_string(obj, "language", "und"),
-        track_id: object_string(obj, "trackId", "subtitle-0"),
-        caption_service_kind: object_string(obj, "captionServiceKind", "caption"),
-        parse_status: object_string(obj, "parseStatus", "OK"),
-    })
+fn provider_data_truncated_item(dropped_count: i64) -> DiagnosticItemV1 {
+    DiagnosticItemV1 {
+        code: "PROVIDER_DATA_TRUNCATED".to_string(),
+        message: format!("provider-data hard limit exceeded; droppedCount={}", dropped_count),
+        severity: Some("warning".to_string()),
+    }
 }
 
-fn data_component_from_value(value: Value) -> Option<DataComponentV1> {
-    let obj = value.as_object()?;
-    Some(DataComponentV1 {
-        es_pid: clamp_i64(object_i64(obj, "esPid", 0), 0, 8191),
-        component_tag: clamp_i64(object_i64(obj, "componentTag", 0), 0, 255),
-        data_component_id: clamp_i64(object_i64(obj, "dataComponentId", 0), 0, 0xffff),
-        component_type: clamp_i64(object_i64(obj, "componentType", 0), 0, 255),
-        parse_status: object_string(obj, "parseStatus", "OK"),
-    })
+fn parse_descriptor_diagnostics(text: &str) -> Option<Vec<DescriptorDiagnosticV1>> {
+    let items = serde_json::from_str::<Vec<DescriptorDiagnosticV1>>(text).ok()?;
+    if items.iter().all(valid_descriptor_diagnostic) { Some(items) } else { None }
 }
 
-fn descriptor_diagnostic_from_value(value: &Value, root: &Value) -> Option<DescriptorDiagnosticV1> {
-    let obj = value.as_object()?;
-    let scope_obj = obj.get("scope").and_then(Value::as_object);
-    let desc_obj = obj.get("descriptor").and_then(Value::as_object).or(Some(obj))?;
-    Some(DescriptorDiagnosticV1 {
-        schema: object_string(obj, "schema", "maleicacid.tv.descriptorDiagnostic"),
-        schema_version: object_i64(obj, "schemaVersion", 1),
-        severity: object_string(obj, "severity", "warning"),
-        code: object_string(obj, "code", object_string(desc_obj, "parseStatus", "DESCRIPTOR_DIAGNOSTIC")),
-        scope: SectionScopeV1 {
-            pid: scope_obj.and_then(|o| o.get("pid")).and_then(Value::as_i64).or_else(|| root.get("source").and_then(|s| s.get("pid")).and_then(Value::as_i64)),
-            table_id: scope_obj.and_then(|o| o.get("tableId")).and_then(Value::as_i64).or_else(|| root.get("source").and_then(|s| s.get("tableId")).and_then(Value::as_i64)),
-            table_id_extension: scope_obj.and_then(|o| o.get("tableIdExtension")).and_then(Value::as_i64),
-            version: scope_obj.and_then(|o| o.get("version")).and_then(Value::as_i64).or_else(|| root.get("source").and_then(|s| s.get("version")).and_then(Value::as_i64)),
-            section_number: scope_obj.and_then(|o| o.get("sectionNumber")).and_then(Value::as_i64).or_else(|| root.get("source").and_then(|s| s.get("sectionNumber")).and_then(Value::as_i64)),
-            original_network_id: scope_obj.and_then(|o| o.get("originalNetworkId")).and_then(Value::as_i64).or_else(|| root.get("serviceKey").and_then(|s| s.get("originalNetworkId")).and_then(Value::as_i64)),
-            transport_stream_id: scope_obj.and_then(|o| o.get("transportStreamId")).and_then(Value::as_i64).or_else(|| root.get("serviceKey").and_then(|s| s.get("transportStreamId")).and_then(Value::as_i64)),
-            service_id: scope_obj.and_then(|o| o.get("serviceId")).and_then(Value::as_i64).or_else(|| root.get("serviceKey").and_then(|s| s.get("serviceId")).and_then(Value::as_i64)),
-            event_id: scope_obj.and_then(|o| o.get("eventId")).and_then(Value::as_i64).or_else(|| root.get("programKey").and_then(|s| s.get("eventId")).and_then(Value::as_i64)),
-        },
-        descriptor: DescriptorScopeV1 {
-            tag: clamp_i64(object_i64(desc_obj, "tag", 0), 0, 255),
-            name: desc_obj.get("name").and_then(Value::as_str).map(ToString::to_string),
-            offset: object_i64(desc_obj, "offset", 0).max(0),
-            declared_length: clamp_i64(object_i64(desc_obj, "declaredLength", 0), 0, 255),
-            actual_remaining_length: object_i64(desc_obj, "actualRemainingLength", object_i64(desc_obj, "actualRemaining", 0)).max(0),
-            parse_status: object_string(desc_obj, "parseStatus", object_string(obj, "code", "DESCRIPTOR_DIAGNOSTIC")),
-            raw_prefix_hex: object_string(desc_obj, "rawPrefixHex", object_string(desc_obj, "rawPrefix", "")),
-        },
-        message: object_string(obj, "message", "descriptor diagnostic"),
-    })
+fn valid_descriptor_diagnostic(item: &DescriptorDiagnosticV1) -> bool {
+    item.schema == "maleicacid.tv.descriptorDiagnostic" &&
+        item.schema_version == 1 &&
+        !item.severity.is_empty() &&
+        !item.code.is_empty() &&
+        item.descriptor.tag >= 0 && item.descriptor.tag <= 255 &&
+        item.descriptor.offset >= 0 &&
+        item.descriptor.declared_length >= 0 && item.descriptor.declared_length <= 255 &&
+        item.descriptor.actual_remaining_length >= 0 &&
+        !item.descriptor.parse_status.is_empty()
 }
 
-fn string_array(value: Option<&Value>) -> Vec<String> {
-    value.and_then(Value::as_array)
-        .map(|array| array.iter().filter_map(Value::as_str).filter(|s| !s.is_empty()).map(ToString::to_string).collect())
-        .unwrap_or_default()
+fn valid_program_provider_data(data: &ProgramProviderDataV1) -> bool {
+    data.schema == PROGRAM_SCHEMA_NAME &&
+        data.schema_version == PROVIDER_SCHEMA_VERSION &&
+        data.program_key.kind == "arib-event-v1" &&
+        in_u16(data.program_key.original_network_id) && in_u16(data.program_key.transport_stream_id) && in_u16(data.program_key.service_id) && in_u16(data.program_key.event_id) &&
+        data.service_key.original_network_id == data.program_key.original_network_id &&
+        data.service_key.transport_stream_id == data.program_key.transport_stream_id &&
+        data.service_key.service_id == data.program_key.service_id &&
+        data.timing.start_utc_millis >= 0 && data.timing.duration_millis >= 0 && data.timing.end_utc_millis == data.timing.start_utc_millis.saturating_add(data.timing.duration_millis) &&
+        data.source.pid >= 0 && data.source.pid <= 8191 && data.source.table_id >= 0 && data.source.table_id <= 255 && data.source.version >= 0 && data.source.version <= 31 && data.source.section_number >= 0 && data.source.section_number <= 255 && data.source.last_section_number >= data.source.section_number && data.source.last_section_number <= 255 &&
+        !data.cas.source.is_empty() &&
+        data.ratings.iter().all(valid_rating) &&
+        data.genres.iter().all(valid_genre) &&
+        data.series.as_ref().map(valid_series).unwrap_or(true) &&
+        data.related_items.iter().all(valid_related_item) &&
+        data.linkage.iter().all(valid_linkage) &&
+        data.free_ca_mode.as_ref().map(valid_free_ca_mode).unwrap_or(true) &&
+        data.audio_languages.iter().all(valid_audio_language) &&
+        data.audio.as_ref().map(valid_audio_metadata).unwrap_or(true) &&
+        data.video.as_ref().map(valid_video_metadata).unwrap_or(true) &&
+        data.extended_items.iter().all(valid_extended_item) &&
+        valid_components(&data.components) &&
+        data.diagnostics.descriptor_diagnostics.iter().all(valid_descriptor_diagnostic) &&
+        data.diagnostics.publish_diagnostics.iter().all(valid_diagnostic_item) &&
+        data.diagnostics.parser_diagnostics.iter().all(valid_diagnostic_item)
 }
 
-fn parse_input(text: &str) -> Value {
-    serde_json::from_str::<Value>(text).unwrap_or(Value::Null)
+fn valid_channel_provider_data(data: &ChannelProviderDataV1) -> bool {
+    data.schema == CHANNEL_SCHEMA_NAME && data.schema_version == CHANNEL_SCHEMA_VERSION &&
+        in_u16(data.service_key.original_network_id) && in_u16(data.service_key.transport_stream_id) && in_u16(data.service_key.service_id) &&
+        !data.tune.input_id.is_empty() && !data.tune.display_name.is_empty() && !data.tune.delivery_system.is_empty() && data.tune.frequency_hz > 0 &&
+        matches!(data.tune.stream_id_type.as_str(), "NONE" | "TSID" | "RELATIVE") &&
+        (if data.tune.stream_id_type == "NONE" { data.tune.stream_id.is_none() } else { data.tune.stream_id.map(in_u16).unwrap_or(false) }) &&
+        !data.diagnostics.publish_state_source.is_empty()
 }
 
-fn time_from(value: &Value) -> i64 { i64_field(value.get("timing").unwrap_or(&Value::Null), "startUtcMillis", 0) }
-fn duration_from(value: &Value) -> i64 {
-    let timing = value.get("timing").unwrap_or(&Value::Null);
-    let duration = i64_field(timing, "durationMillis", -1);
-    if duration >= 0 { return duration; }
-    let start = i64_field(timing, "startUtcMillis", 0);
-    i64_field(timing, "endUtcMillis", start).saturating_sub(start)
+fn in_u16(v: i64) -> bool { (0..=0xffff).contains(&v) }
+fn nonempty(s: &str) -> bool { !s.is_empty() }
+fn valid_rating(v: &RatingV1) -> bool { nonempty(&v.country_code) && (0..=255).contains(&v.rating_value) && (0..=255).contains(&v.raw_rating_byte) && nonempty(&v.parse_status) }
+fn valid_genre(v: &GenreV1) -> bool { (0..=15).contains(&v.level1) && (0..=15).contains(&v.level2) && (0..=15).contains(&v.user_nibble) && nonempty(&v.parse_status) }
+fn valid_series(v: &SeriesV1) -> bool { in_u16(v.series_id) && (0..=15).contains(&v.repeat_label) && (0..=7).contains(&v.program_pattern) && (0..=4095).contains(&v.episode_number) && (0..=4095).contains(&v.last_episode_number) && nonempty(&v.parse_status) }
+fn valid_related_item(v: &RelatedItemV1) -> bool { nonempty(&v.kind) && in_u16(v.original_network_id) && in_u16(v.transport_stream_id) && in_u16(v.service_id) && in_u16(v.event_id) && nonempty(&v.parse_status) }
+fn valid_linkage(v: &LinkageV1) -> bool { in_u16(v.original_network_id) && in_u16(v.transport_stream_id) && in_u16(v.service_id) && (0..=255).contains(&v.linkage_type) && nonempty(&v.parse_status) }
+fn valid_free_ca_mode(v: &FreeCaModeV1) -> bool { (0..=1).contains(&v.raw) && nonempty(&v.parse_status) }
+fn valid_audio_language(v: &AudioLanguageV1) -> bool { nonempty(&v.language) && nonempty(&v.source) && nonempty(&v.parse_status) }
+fn valid_audio_metadata(v: &AudioMetadataV1) -> bool { nonempty(&v.codec) && nonempty(&v.parse_status) }
+fn valid_video_metadata(v: &VideoMetadataV1) -> bool { nonempty(&v.codec) && nonempty(&v.parse_status) }
+fn valid_extended_item(v: &ExtendedItemV1) -> bool { nonempty(&v.text) && nonempty(&v.parse_status) }
+fn valid_diagnostic_item(v: &DiagnosticItemV1) -> bool { nonempty(&v.code) && nonempty(&v.message) }
+fn valid_components(v: &ComponentsV1) -> bool { v.video.iter().all(valid_video_component) && v.audio.iter().all(valid_audio_component) && v.subtitle.iter().all(valid_subtitle_component) && v.data.iter().all(valid_data_component) }
+fn valid_video_component(v: &VideoComponentV1) -> bool { v.es_pid > 0 && v.es_pid <= 8191 && (0..=255).contains(&v.stream_type) && (0..=255).contains(&v.component_tag) && (0..=255).contains(&v.component_type) && nonempty(&v.codec) && nonempty(&v.parse_status) }
+fn valid_audio_component(v: &AudioComponentV1) -> bool { v.es_pid > 0 && v.es_pid <= 8191 && (0..=255).contains(&v.stream_type) && (0..=255).contains(&v.component_tag) && (0..=255).contains(&v.component_type) && nonempty(&v.codec) && nonempty(&v.language) && nonempty(&v.parse_status) }
+fn valid_subtitle_component(v: &SubtitleComponentV1) -> bool { v.es_pid > 0 && v.es_pid <= 8191 && (0..=255).contains(&v.component_tag) && nonempty(&v.language) && nonempty(&v.track_id) && nonempty(&v.caption_service_kind) && nonempty(&v.parse_status) }
+fn valid_data_component(v: &DataComponentV1) -> bool { v.es_pid > 0 && v.es_pid <= 8191 && (0..=255).contains(&v.component_tag) && (0..=65535).contains(&v.data_component_id) && (0..=255).contains(&v.component_type) && nonempty(&v.parse_status) }
+
+fn empty_result() -> ProviderDataResult {
+    ProviderDataResult { json: "{}".to_string(), signature: sha256_hex(b"{}"), schema_version: PROVIDER_SCHEMA_VERSION, truncated: false, diagnostics_dropped_count: 0 }
 }
 
 fn finalize_program(data: ProgramProviderDataV1) -> ProviderDataResult {
+    if !valid_program_provider_data(&data) { return empty_result(); }
     let mut text = serde_json::to_string(&data).unwrap_or_else(|_| "{}".to_string());
+    let mut truncated_flag = false;
+    let mut dropped_count = 0i64;
     if text.len() > HARD_LIMIT_BYTES {
+        dropped_count = program_truncation_dropped_count(&data);
         let mut truncated = truncated_program_value(&data);
         truncated.diagnostics.provider_data_truncated = Some(true);
         truncated.diagnostics.provider_data_hard_limit_bytes = Some(HARD_LIMIT_BYTES as i64);
         truncated.diagnostics.provider_data_soft_limit_bytes = Some(SOFT_LIMIT_BYTES as i64);
+        truncated.diagnostics.provider_data_dropped_count = Some(dropped_count);
+        truncated.diagnostics.publish_diagnostics.push(provider_data_truncated_item(dropped_count));
         text = serde_json::to_string(&truncated).unwrap_or_else(|_| "{}".to_string());
+        truncated_flag = true;
     }
-    ProviderDataResult { signature: sha256_hex(text.as_bytes()), json: text, extracted_key: format!("onid={};tsid={};sid={};event={}", data.program_key.original_network_id, data.program_key.transport_stream_id, data.program_key.service_id, data.program_key.event_id) }
+    ProviderDataResult { signature: sha256_hex(text.as_bytes()), json: text, schema_version: PROVIDER_SCHEMA_VERSION, truncated: truncated_flag, diagnostics_dropped_count: dropped_count }
 }
 
 fn finalize_channel(data: ChannelProviderDataV1) -> ProviderDataResult {
+    if !valid_channel_provider_data(&data) { return empty_result(); }
     let mut text = serde_json::to_string(&data).unwrap_or_else(|_| "{}".to_string());
+    let mut truncated_flag = false;
+    let mut dropped_count = 0i64;
     if text.len() > HARD_LIMIT_BYTES {
+        dropped_count = channel_truncation_dropped_count(&data);
         let mut truncated = truncated_channel_value(&data);
         truncated.diagnostics.provider_data_truncated = Some(true);
         truncated.diagnostics.provider_data_hard_limit_bytes = Some(HARD_LIMIT_BYTES as i64);
         truncated.diagnostics.provider_data_soft_limit_bytes = Some(SOFT_LIMIT_BYTES as i64);
+        truncated.diagnostics.provider_data_dropped_count = Some(dropped_count);
+        truncated.diagnostics.provider_data_truncation_code = Some("PROVIDER_DATA_TRUNCATED".to_string());
         text = serde_json::to_string(&truncated).unwrap_or_else(|_| "{}".to_string());
+        truncated_flag = true;
     }
-    ProviderDataResult { signature: sha256_hex(text.as_bytes()), json: text, extracted_key: format!("onid={};tsid={};sid={}", data.service_key.original_network_id, data.service_key.transport_stream_id, data.service_key.service_id) }
+    ProviderDataResult { signature: sha256_hex(text.as_bytes()), json: text, schema_version: CHANNEL_SCHEMA_VERSION, truncated: truncated_flag, diagnostics_dropped_count: dropped_count }
 }
 
 fn truncated_program_value(data: &ProgramProviderDataV1) -> ProgramProviderDataV1 {
@@ -1036,7 +828,8 @@ fn truncated_program_value(data: &ProgramProviderDataV1) -> ProgramProviderDataV
         video: None,
         extended_items: Vec::new(),
         components: ComponentsV1::default(),
-        diagnostics: DiagnosticsV1::default(),
+        diagnostics: DiagnosticsV1 { malformed_ca_descriptor_count: data.diagnostics.malformed_ca_descriptor_count, ..DiagnosticsV1::default() },
+        extensions: serde_json::Map::new(),
     }
 }
 
@@ -1055,19 +848,11 @@ fn truncated_channel_value(data: &ChannelProviderDataV1) -> ChannelProviderDataV
             provider_data_truncated: None,
             provider_data_hard_limit_bytes: None,
             provider_data_soft_limit_bytes: None,
+            provider_data_dropped_count: None,
+            provider_data_truncation_code: None,
         },
     }
 }
-
-fn i64_field(value: &Value, key: &str, default: i64) -> i64 { value.get(key).and_then(Value::as_i64).unwrap_or(default) }
-fn bool_field(value: &Value, key: &str, default: bool) -> bool { value.get(key).and_then(Value::as_bool).unwrap_or(default) }
-fn string_field<S: AsRef<str>>(value: &Value, key: &str, default: S) -> String { value.get(key).and_then(Value::as_str).map(ToString::to_string).unwrap_or_else(|| default.as_ref().to_string()) }
-fn string_opt(value: &Value, key: &str) -> Option<String> { value.get(key).and_then(Value::as_str).filter(|s| !s.is_empty()).map(ToString::to_string) }
-fn optional_i64(value: &Value, key: &str) -> Option<i64> { value.get(key).and_then(Value::as_i64) }
-fn object_i64(value: &serde_json::Map<String, Value>, key: &str, default: i64) -> i64 { value.get(key).and_then(Value::as_i64).unwrap_or(default) }
-fn object_bool(value: &serde_json::Map<String, Value>, key: &str, default: bool) -> bool { value.get(key).and_then(Value::as_bool).unwrap_or(default) }
-fn object_string<S: AsRef<str>>(value: &serde_json::Map<String, Value>, key: &str, default: S) -> String { value.get(key).and_then(Value::as_str).map(ToString::to_string).unwrap_or_else(|| default.as_ref().to_string()) }
-fn clamp_i64(value: i64, min: i64, max: i64) -> i64 { value.max(min).min(max) }
 
 fn sha256_hex(data: &[u8]) -> String {
     let digest = sha256(data);
@@ -1117,4 +902,63 @@ fn sha256(data: &[u8]) -> [u8; 32] {
     let mut out = [0u8; 32];
     for (i, v) in h.iter().enumerate() { out[i*4..i*4+4].copy_from_slice(&v.to_be_bytes()); }
     out
+}
+
+#[cfg(test)]
+mod provider_data_tests {
+    use super::*;
+
+    fn minimal_program_json(extra_top_level: &str) -> String {
+        format!(r#"{{
+            "schema":"maleicacid.tv.program",
+            "schemaVersion":1,
+            "programKey":{{"kind":"arib-event-v1","originalNetworkId":4,"transportStreamId":16400,"serviceId":101,"eventId":12345}},
+            "serviceKey":{{"originalNetworkId":4,"transportStreamId":16400,"serviceId":101}},
+            "timing":{{"startUtcMillis":1730000000000,"endUtcMillis":1730001800000,"durationMillis":1800000}},
+            "source":{{"pid":18,"tableId":78,"version":12,"sectionNumber":0,"lastSectionNumber":1}},
+            "cas":{{"requiresCas":false,"unsupportedCas":false,"clearLivePlaybackSupported":true,"source":"CURRENT_DIAGNOSTIC"}},
+            "ratings":[],
+            "genres":[],
+            "series":null,
+            "relatedItems":[],
+            "linkage":[],
+            "freeCaMode":{{"raw":0,"scrambled":false,"parseStatus":"OK"}},
+            "audioLanguages":[],
+            "audio":null,
+            "video":null,
+            "extendedItems":[],
+            "components":{{"video":[],"audio":[],"subtitle":[],"data":[]}},
+            "diagnostics":{{"descriptorDiagnostics":[],"publishDiagnostics":[],"parserDiagnostics":[]}}
+            {}
+        }}"#, extra_top_level)
+    }
+
+    #[test]
+    fn extended_event_item_allows_empty_description_when_text_exists() {
+        let item = ExtendedItemV1 { description: String::new(), text: "本文".to_string(), parse_status: "OK".to_string() };
+        assert!(valid_extended_item(&item));
+    }
+
+    #[test]
+    fn normalize_program_provider_data_preserves_top_level_unknown_key() {
+        let result = normalize_program_provider_data(minimal_program_json(",\"futureVendorKey\":{\"x\":1}").as_bytes());
+        let value: serde_json::Value = serde_json::from_str(&result.json).unwrap();
+        let extensions = value["diagnostics"]["rawProviderDataExtensions"].as_array().unwrap();
+        assert_eq!(extensions[0]["key"], "futureVendorKey");
+        assert_eq!(extensions[0]["value"]["x"], 1);
+        assert!(value.get("futureVendorKey").is_none());
+    }
+
+    #[test]
+    fn oversized_program_provider_data_records_truncation_diagnostic() {
+        let mut data: ProgramProviderDataV1 = serde_json::from_str(&minimal_program_json("")).unwrap();
+        data.extended_items = (0..200)
+            .map(|i| ExtendedItemV1 { description: String::new(), text: format!("{}{}", i, "x".repeat(512)), parse_status: "OK".to_string() })
+            .collect();
+        let result = finalize_program(data);
+        let value: serde_json::Value = serde_json::from_str(&result.json).unwrap();
+        assert_eq!(value["diagnostics"]["providerDataTruncated"], true);
+        assert_eq!(value["diagnostics"]["publishDiagnostics"][0]["code"], "PROVIDER_DATA_TRUNCATED");
+        assert!(value["diagnostics"]["providerDataDroppedCount"].as_i64().unwrap() > 0);
+    }
 }

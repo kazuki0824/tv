@@ -99,9 +99,18 @@ data class AribExtendedItem(
 
 data class AribParentalRating(
     val countryCode: String,
-    val rating: Int,
-    val rawRating: Int,
+    val ratingValue: Int,
+    val rawRatingByte: Int,
     val supported: Boolean,
+    val parseStatus: String = "OK",
+)
+
+data class AribContentGenre(
+    val level1: Int,
+    val level2: Int,
+    val userNibble: Int = 0,
+    val aribName: String = "",
+    val parseStatus: String = "OK",
 )
 
 
@@ -177,41 +186,9 @@ data class AribComponents(
     val data: List<AribComponentEntry> = emptyList(),
 )
 
-data class AribDescriptorScope(
-    val pid: Int?,
-    val tableId: Int?,
-    val tableIdExtension: Int?,
-    val version: Int?,
-    val sectionNumber: Int?,
-    val originalNetworkId: Int?,
-    val transportStreamId: Int?,
-    val serviceId: Int?,
-    val eventId: Int?,
-)
-
-data class AribDescriptorInfo(
-    val tag: Int,
-    val name: String?,
-    val offset: Int,
-    val declaredLength: Int,
-    val actualRemainingLength: Int,
-    val parseStatus: String,
-    val rawPrefixHex: String,
-)
-
-data class AribDescriptorDiagnosticV1(
-    val schema: String = "maleicacid.tv.descriptorDiagnostic",
-    val schemaVersion: Int = 1,
-    val severity: String,
-    val code: String,
-    val scope: AribDescriptorScope,
-    val descriptor: AribDescriptorInfo,
-    val message: String,
-)
-
 data class AribEventDiagnostics(
     val summary: String = "",
-    val descriptorDiagnostics: List<AribDescriptorDiagnosticV1> = emptyList(),
+    val descriptorDiagnosticsCanonicalJson: String = "[]",
     val textDiagnostics: List<String> = emptyList(),
 )
 
@@ -228,6 +205,7 @@ data class AribEventDescriptors(
     val componentText: String? = null,
     val audioComponentText: String? = null,
     val audioLanguage: String? = null,
+    val contentGenres: List<AribContentGenre> = emptyList(),
     val broadcastGenre: String? = null,
     val genreSupplementText: String? = null,
     val relatedItems: List<AribRelatedItem> = emptyList(),
@@ -264,11 +242,102 @@ data class AribEventDiagnostic(
     val diagnosticText: String,
 )
 
+data class DescriptorDiagnosticScope(
+    val pid: Int?,
+    val tableId: Int?,
+    val tableIdExtension: Int?,
+    val version: Int?,
+    val sectionNumber: Int?,
+    val originalNetworkId: Int?,
+    val transportStreamId: Int?,
+    val serviceId: Int?,
+    val eventId: Int?,
+)
+
+data class DescriptorDiagnosticDescriptor(
+    val tag: Int,
+    val name: String?,
+    val offset: Int,
+    val declaredLength: Int,
+    val actualRemainingLength: Int,
+    val parseStatus: String,
+    val rawPrefixHex: String,
+)
+
+data class DescriptorDiagnostic(
+    val schema: String,
+    val schemaVersion: Int,
+    val severity: String,
+    val code: String,
+    val scope: DescriptorDiagnosticScope,
+    val descriptor: DescriptorDiagnosticDescriptor,
+    val message: String,
+    val rawJson: String,
+)
+
 data class AribEpgUpdateWindow(
     val serviceKey: ServiceKey,
     val windowStartMillis: Long,
     val windowEndMillis: Long,
     val validProgramStableIdentities: List<String>,
+    val deletionAuthoritative: Boolean = false,
+)
+
+typealias EpgUpdateWindow = AribEpgUpdateWindow
+typealias ProgramPublishability = ServicePublishabilityDiagnostic
+
+data class ParserDiagnostic(
+    val code: String,
+    val message: String,
+    val severity: String? = null,
+)
+
+data class MalformedCaDescriptorDiagnostic(
+    val pid: Int,
+    val tableId: Int,
+    val tableIdExtension: Int?,
+    val serviceId: Int?,
+    val elementaryPid: Int?,
+    val scope: String,
+    val offset: Int,
+    val declaredLength: Int,
+    val actualRemainingLength: Int,
+    val reason: String,
+    val rawPrefixHex: String,
+)
+
+data class TransportKey(
+    val originalNetworkId: Int,
+    val transportStreamId: Int,
+)
+
+data class ProgramPublishSnapshot(
+    val snapshotGeneration: Long,
+    val ingestSequence: Long,
+    val events: List<AribEvent>,
+    val updateWindows: List<EpgUpdateWindow>,
+    val publishabilityByServiceKey: Map<ServiceKey, ProgramPublishability>,
+    val descriptorDiagnostics: List<DescriptorDiagnostic>,
+    val parserDiagnostics: List<ParserDiagnostic>,
+    val malformedCaDescriptorCountByServiceId: Map<Int, Int> = emptyMap(),
+)
+
+data class ServiceRegistrationSnapshot(
+    val snapshotGeneration: Long,
+    val services: List<AribService>,
+    val actualTransports: Set<TransportKey>,
+    val publishabilityByServiceKey: Map<ServiceKey, ProgramPublishability>,
+    val diagnostics: List<ParserDiagnostic>,
+)
+
+data class CasDiscoverySnapshot(
+    val snapshotGeneration: Long,
+    val services: List<AribService>,
+    val caMetadata: List<CaMetadata>,
+    val pmtPids: Map<ServiceKey, Int>,
+    val catEmmPids: List<Int>,
+    val diagnostics: List<DescriptorDiagnostic>,
+    val malformedCaDescriptorDiagnostics: List<MalformedCaDescriptorDiagnostic> = emptyList(),
 )
 
 data class ServicePublishabilityDiagnostic(

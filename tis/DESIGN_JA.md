@@ -187,6 +187,8 @@ provider-data 診断情報は `diagnostics.currentProgram` 配下に保存する
 
 CA_descriptor の raw bytes は Rust parser が元 section から保持し、JNI snapshot DTO に raw bytes として渡す。Kotlin 本番経路 code で CA_descriptor を再構築しない。malformed CA_descriptor は 元記述子 / CAS メタデータ から除外し、サービス自体は保持する。診断情報には `malformedCaDescriptorCount` と table/PID/サービス context を残す。Kotlin 側で修復して provider-data や CASメタデータに不正な元記述子を入れてはならない。
 
+malformed CA_descriptor の詳細診断は、CAS 検出 snapshot またはサービス / channel provider-data 診断を一次保存先とする。Program provider-data には、その Program 公開時点で参照した service / CAS 診断の summary として `malformedCaDescriptorCount` を保存してよい。ただし raw descriptor、table/PID/サービス context の完全情報を Program ごとに重複展開してはならない。Program 側 summary は CAS メタデータや再生可否判定の根拠ではなく、公開時点の診断参照結果として扱う。
+
 ## transaction DTO / provider-data SSOT / executor / setup / retry の固定
 
 ### Rust JNI provider-data API
@@ -211,6 +213,10 @@ data class ProviderDataResult(
 ```
 
 `inputJson` は Rust builder への入力 DTO であり、TvProvider に保存する provider-data schema ではない。最終JSONバイト列、署名、正規化、安定キー抽出は Rust が行う。
+
+`rawBytes` は任意バイナリではなく、既存 TvProvider に保存済みの JSON v1 UTF-8 バイト列を指す。Kotlin は `String(rawBytes)` などで再解釈してから Rust へ渡してはならず、TvProvider から取得した `COLUMN_INTERNAL_PROVIDER_DATA` の BLOB バイト列をそのまま Rust JNI 境界へ渡す。TvProvider が文字列として返した場合の互換補助は、UTF-8 バイト列へ戻すだけに限定し、Kotlin 側で JSON 構造を解釈・再構築してはならない。
+
+`normalizeProgramProviderData(rawBytes)`、`programProviderDataSignature(rawBytes)`、`extractProgramKey(rawBytes)`、`appendCurrentProgramDiagnostics(rawBytes, ...)` は、invalid UTF-8 または malformed JSON を Kotlin 側で修復しない。Rust は診断付き空結果または空文字列相当へ落とし、通常実行経路で例外や panic に変換しない。`programProviderDataSignature(rawBytes)` は、引数として渡された provider-data UTF-8 バイト列そのものの SHA-256 lowercase hex を返す。`buildProgramProviderData(inputJson)` と `normalizeProgramProviderData(rawBytes)` が返す `ProviderDataResult.signature` は、Rust が返す canonical provider-data bytes に対する署名とする。
 
 ### 診断情報 schema
 
@@ -238,6 +244,9 @@ data class ProgramPublishSnapshot(
     val publishabilityByServiceKey: Map<ServiceKey, ProgramPublishability>,
     val descriptorDiagnostics: List<DescriptorDiagnostic>,
     val parserDiagnostics: List<ParserDiagnostic>,
+    // CAS 診断一次保存先から Program provider-data summary へ渡す service_id 別件数。
+    // Program ごとに raw descriptor / table / PID context を重複展開しない。
+    val malformedCaDescriptorCountByServiceId: Map<Int, Int>,
 )
 
 fun takeProgramPublishSnapshot(): ProgramPublishSnapshot
@@ -263,12 +272,17 @@ data class CasDiscoverySnapshot(
     val pmtPids: Map<ServiceKey, Int>,
     val catEmmPids: List<Int>,
     val diagnostics: List<DescriptorDiagnostic>,
+    val malformedCaDescriptorDiagnostics: List<MalformedCaDescriptorDiagnostic>,
 )
 
 fun casDiscoverySnapshot(): CasDiscoverySnapshot
 ```
 
-`takeProgramPublishSnapshot()` は events / updateWindows / publishability / 診断情報を同一ロック / 同一 native state から取得し、updateWindows の drain もこの API 内だけで行う。`snapshotEvents()` と `takeEpgUpdateWindows()` を 本番経路 呼び出し側 で別々に呼ぶことは禁止する。
+`MalformedCaDescriptorDiagnostic` は、少なくとも `pid`、`tableId`、`tableIdExtension`、`serviceId`、`elementaryPid`、`scope`、`offset`、`declaredLength`、`actualRemainingLength`、`reason`、`rawPrefixHex` を持つ。詳細診断の一次保存先は CAS discovery snapshot とし、Program provider-data は `malformedCaDescriptorCount` summary だけを保存する。
+
+`takeProgramPublishSnapshot()` は events / updateWindows / publishability / 診断情報を同一ロック / 同一 native state から取得し、updateWindows の drain もこの API 内だけで行う。`snapshotEvents()` と `takeEpgUpdateWindows()` を 本番経路 呼び出し側 で別々に呼ぶことは禁止する。LiveSession の現在番組判定、視聴年齢制限判定、映像メタデータ補完のように updateWindows を消費してはならない read-only 参照は `programStateSnapshot()` を使い、drain 型 state を返してはならない。
+
+廃止 snapshot wrapper は本番経路・公開通常境界・product build に残してはならない。テスト専用に必要な入口は test source または test-only 可視性に隔離し、本番 APK / JNI API / release API から参照不能にする。
 
 ### LiveSession / PlaybackPipeline / Scan の直列化
 
@@ -297,7 +311,7 @@ Boot EPG sync / background maintenance の開始条件は、`activeLiveSessionCo
 
 - `SectionEvent.dataLength` は、Tuner コールバック から読み取る section の正確な byte 長として扱う。
 - TIS が section event として受け付ける長さは `1..4096` byte だけとする。`dataLength <= 0` は不正、`dataLength > 4096` は過大として、どちらも `ByteArray` 確保前に破棄し、PID 別診断に計上する。
-- `MediaEvent` sample は `1 MiB` を上限とする。負の offset、0 以下の length、offset + length の overflow、LinearBlock 容量超過は sample 確保なしで破棄し、診断に計上する。
+- `MediaEvent` sample は `4 MiB` を上限とする。負の offset、0 以下の length、offset + length の overflow、LinearBlock 容量超過は sample 確保なしで破棄し、診断に計上する。
 - decoder input-buffer の逆圧は無通知破棄ではない。sample は上限付き pending queue に保持し、後続 コールバック / drain で再試行する。sample を破棄するのは上限付き queue が満杯の場合だけとし、破棄 counter を加算する。
 
 ## provider-data / retry / attribution 境界の完了条件
@@ -359,3 +373,20 @@ ISO/IEC 14496-2 Visual、JPEG 2000、auxiliary video、SVC、MVC、3D additional
 | MPEG-4 ALS | codec として認識対象。対象 transport profile を本プロダクトが 対応宣言しない場合は playable capability に入れない。対応する場合は decoder / AudioTrack / メタデータ / unsupported 診断情報 まで必須。 |
 
 AC-3、Enhanced AC-3、MPEG-H 3D Audio、DTS、DTS-HD、Dolby TrueHD は、今回確認した ARIB 資料群では国内デジタル放送の対象 codec として固定する根拠を確認できないため、r52 codec 固定表には含めない。
+
+## provider-data 受け渡し境界（推奨案A）
+
+TIS は TvProvider 標準列への投影を担当する。TIS は `Programs.COLUMN_INTERNAL_PROVIDER_DATA` / `Channels.COLUMN_INTERNAL_PROVIDER_DATA` に保存される最終 JSON を直接生成してはならない。
+
+TIS が JNI へ渡す JSON は、保存形式ではなく Rust へ値を渡すための受け渡し用形式である。この受け渡し用形式の型、必須項目、欠落時の扱い、旧形式拒否、値域検査は Rust の serde 型を正とする。TIS はこの受け渡し用 JSON を provider-data schema の Kotlin 実装、保存形式、正規形、署名対象として扱ってはならない。
+
+受け渡し用形式の schema 名は `maleicacid.tv.programRequest` / `maleicacid.tv.channelRequest` とし、保存用 schema 名 `maleicacid.tv.program` / `maleicacid.tv.channel` を名乗らない。
+
+Rust は受け渡し用 JSON を serde 型へ読み込み、検査し、保存用 JSON、署名、識別子、切り詰め診断を生成する。TIS は Rust が返した保存用 JSON をそのまま TvProvider の `internal_provider_data` に保存する。TIS は Rust が返した署名、識別子、診断結果だけを使う。
+
+TIS は保存データの型、正規化、必須項目判定、欠落補完、旧形式互換、署名、識別子抽出、サイズ上限処理を実装してはならない。TIS 側で `0`、`false`、`jpn`、`UNKNOWN`、空文字などを使って必須項目欠落を補い、provider-data を成立させてはならない。
+
+`DescriptorDiagnosticV1` は Rust が生成した正規 JSON を正とする。TIS は `DescriptorDiagnosticV1` を項目ごとに再構築してはならない。TIS が保持する場合は、Rust 生成の正規 JSON を不透明な文字列として透過保持する。
+
+TIS の試験は、受け渡し用 JSON の細部を保存形式として検査しない。検査対象は Rust provider-data builder が返した保存用 JSON、署名、識別子、拒否診断に寄せる。
+

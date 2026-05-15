@@ -2,7 +2,7 @@ use crate::arib_string::decode_arib_string_lossy;
 use crate::sections::{parse_section_header, section_crc_valid};
 use crate::discovery_requirements::requirement_for_original_network_id;
 use crate::eit::{EitEvent, EitStore, EitUpdateWindow};
-use crate::ca_descriptor::{parse_ca_descriptors, CaDescriptor};
+use crate::ca_descriptor::{parse_ca_descriptors, parse_ca_descriptors_with_diagnostics, CaDescriptor, CaDescriptorParseContext, MalformedCaDescriptorDiagnostic};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -66,6 +66,7 @@ pub struct DiscoverySnapshot {
     pub transports: Vec<DiscoveredTransport>,
     pub pmt_pids_by_service: Vec<PmtPidMapping>,
     pub cat_ca: CatCaMetadata,
+    pub malformed_ca_descriptor_diagnostics: Vec<MalformedCaDescriptorDiagnostic>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -196,7 +197,7 @@ impl DiscoveryCollectionState {
             .filter(|mapping| keys.contains(&(mapping.transport_stream_id, mapping.original_network_id, mapping.service_id)))
             .cloned()
             .collect();
-        Some(DiscoverySnapshot { services, transports, pmt_pids_by_service, cat_ca: self.snapshot.cat_ca.clone() })
+        Some(DiscoverySnapshot { services, transports, pmt_pids_by_service, cat_ca: self.snapshot.cat_ca.clone(), malformed_ca_descriptor_diagnostics: self.snapshot.malformed_ca_descriptor_diagnostics.clone() })
     }
 
     pub fn best_available_snapshot(&self) -> Option<DiscoverySnapshotEnvelope> {
@@ -262,6 +263,7 @@ pub struct ServiceDiscoveryEngine {
     unresolved_pmts_by_pat: BTreeMap<(u16, u16, u16), PendingPmtInfo>,
     pending_pmts: BTreeMap<(u16, u16, u16, u16), PendingPmtInfo>,
     cat_ca: CatCaMetadata,
+    malformed_ca_descriptor_diagnostics: Vec<MalformedCaDescriptorDiagnostic>,
     eit_store: EitStore,
 }
 
@@ -313,6 +315,7 @@ impl ServiceDiscoveryEngine {
             transports,
             pmt_pids_by_service,
             cat_ca: self.cat_ca.clone(),
+            malformed_ca_descriptor_diagnostics: self.malformed_ca_descriptor_diagnostics.clone(),
         }
     }
 
@@ -320,6 +323,7 @@ impl ServiceDiscoveryEngine {
         match (pid, table_id) {
             (0x0001, 0x01) => {
                 self.cat_ca.descriptors.clear();
+                self.malformed_ca_descriptor_diagnostics.retain(|d| !(d.pid == pid && d.table_id == table_id && d.table_id_extension == Some(table_extension)));
             }
             (0x0000, 0x00) => {
                 self.pat_programs.clear();
@@ -350,6 +354,7 @@ impl ServiceDiscoveryEngine {
                         && affected_tsids.contains(&service.transport_stream_id)
                 }) {
                     Self::clear_pmt_state(service);
+                    self.malformed_ca_descriptor_diagnostics.retain(|d| !(d.pid == pid && d.table_id == table_id && d.service_id == Some(program_number)));
                 }
             }
             (0x0010, 0x40 | 0x41) => {}
@@ -514,8 +519,18 @@ impl ServiceDiscoveryEngine {
         if body_end <= 8 || body_end > section.len() {
             return;
         }
-        self.cat_ca.descriptors.extend(parse_ca_descriptors(&section[8..body_end]));
+        let result = parse_ca_descriptors_with_diagnostics(&section[8..body_end], CaDescriptorParseContext {
+            pid: 0x0001,
+            table_id: 0x01,
+            table_id_extension: parse_section_header(section, 12).and_then(|h| h.table_id_extension),
+            service_id: None,
+            elementary_pid: None,
+            scope: "CAT",
+        });
+        self.cat_ca.descriptors.extend(result.descriptors);
+        self.malformed_ca_descriptor_diagnostics.extend(result.diagnostics);
         dedup_ca_descriptors(&mut self.cat_ca.descriptors);
+        dedup_malformed_ca_diagnostics(&mut self.malformed_ca_descriptor_diagnostics);
     }
 
     fn parse_pmt(&mut self, pid: u16, section: &[u8]) {
@@ -529,7 +544,16 @@ impl ServiceDiscoveryEngine {
         let program_info_length = (((section[10] & 0x0f) as usize) << 8) | section[11] as usize;
         let program_info_start = 12usize;
         let Some(program_info_end) = checked_end(program_info_start, program_info_length, body_end) else { return; };
-        let program_ca_descriptors = parse_ca_descriptors(&section[program_info_start..program_info_end]);
+        let program_ca_result = parse_ca_descriptors_with_diagnostics(&section[program_info_start..program_info_end], CaDescriptorParseContext {
+            pid,
+            table_id: 0x02,
+            table_id_extension: Some(service_id),
+            service_id: Some(service_id),
+            elementary_pid: None,
+            scope: "PMT_PROGRAM",
+        });
+        let program_ca_descriptors = program_ca_result.descriptors;
+        self.malformed_ca_descriptor_diagnostics.extend(program_ca_result.diagnostics);
         let mut service_es_ca_descriptors = Vec::new();
         let mut cursor = program_info_end;
         let mut streams = Vec::new();
@@ -552,13 +576,23 @@ impl ServiceDiscoveryEngine {
             };
             let descriptor_bytes = &section[desc_start..desc_end];
             apply_es_descriptors(&mut stream, descriptor_bytes);
-            let es_ca = parse_ca_descriptors(descriptor_bytes);
+            let es_ca_result = parse_ca_descriptors_with_diagnostics(descriptor_bytes, CaDescriptorParseContext {
+                pid,
+                table_id: 0x02,
+                table_id_extension: Some(service_id),
+                service_id: Some(service_id),
+                elementary_pid: Some(elementary_pid),
+                scope: "PMT_ES",
+            });
+            self.malformed_ca_descriptor_diagnostics.extend(es_ca_result.diagnostics);
+            let es_ca = es_ca_result.descriptors;
             if !es_ca.is_empty() {
                 service_es_ca_descriptors.push(EsCaMetadata { elementary_pid, descriptors: es_ca });
             }
             streams.push(stream);
             cursor = cursor.saturating_add(5 + es_info_length);
         }
+        dedup_malformed_ca_diagnostics(&mut self.malformed_ca_descriptor_diagnostics);
         let pending = PendingPmtInfo {
             pmt_pid: pid,
             pcr_pid,
@@ -1334,6 +1368,11 @@ fn parse_bouquet_name(descriptors: &[u8]) -> Option<String> {
 fn dedup_ca_descriptors(descriptors: &mut Vec<CaDescriptor>) {
     let mut seen = BTreeSet::new();
     descriptors.retain(|d| seen.insert((d.ca_system_id, d.ca_pid, d.private_data.clone())));
+}
+
+fn dedup_malformed_ca_diagnostics(diagnostics: &mut Vec<MalformedCaDescriptorDiagnostic>) {
+    let mut seen = BTreeSet::new();
+    diagnostics.retain(|d| seen.insert((d.pid, d.table_id, d.table_id_extension, d.service_id, d.elementary_pid, d.scope, d.offset, d.declared_length, d.reason)));
 }
 
 fn arib_string_lossy(bytes: &[u8]) -> String {

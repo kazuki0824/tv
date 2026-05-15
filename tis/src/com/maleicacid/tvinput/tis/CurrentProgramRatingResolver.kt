@@ -101,13 +101,12 @@ class CurrentProgramRatingResolver(private val context: Context) {
                 val start: Long,
                 val end: Long,
                 val flattenedRatings: String?,
-                val providerData: String?,
+                val providerData: ByteArray?,
             )
             val candidates = mutableListOf<Candidate>()
             context.contentResolver.query(TvContract.buildProgramsUriForChannel(channelUri), projection, selection, selectionArgs, sortOrder)?.use { cursor ->
                 while (cursor.moveToNext()) {
-                    val providerData = runCatching { cursor.getBlob(5)?.let { String(it, Charsets.UTF_8) } }.getOrNull()
-                        ?: runCatching { cursor.getString(5) }.getOrNull()
+                    val providerData = providerDataBytes(cursor, 5)
                     if (TvProviderWriter.providerDataMatchesService(providerData, serviceKey)) {
                         candidates += Candidate(
                             rowId = cursor.getLong(0),
@@ -139,13 +138,17 @@ class CurrentProgramRatingResolver(private val context: Context) {
                     selectionRule = selectionRule,
                 )
                 val updateValues = ContentValues().apply {
-                    put(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA, updatedProviderData.toByteArray(Charsets.UTF_8))
+                    put(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA, updatedProviderData)
                 }
                 context.contentResolver.update(ContentUris.withAppendedId(TvContract.Programs.CONTENT_URI, selected.rowId), updateValues, null, null)
             }
             ratingSet
         }.getOrNull()
     }
+
+    private fun providerDataBytes(cursor: android.database.Cursor, index: Int): ByteArray? =
+        runCatching { cursor.getBlob(index) }.getOrNull()
+            ?: runCatching { cursor.getString(index)?.toByteArray(Charsets.UTF_8) }.getOrNull()
 
     private fun fromLatestEit(
         channelUri: Uri?,
@@ -172,8 +175,13 @@ class CurrentProgramRatingResolver(private val context: Context) {
     }
 
     companion object {
-        fun stableProgramKey(serviceKey: ServiceKey, eventId: Int): String =
-            "onid=${serviceKey.originalNetworkId};tsid=${serviceKey.transportStreamId};sid=${serviceKey.serviceId};event=$eventId"
+        fun stableProgramKey(serviceKey: ServiceKey, eventId: Int): String = org.json.JSONObject()
+            .put("kind", "arib-event-v1")
+            .put("originalNetworkId", serviceKey.originalNetworkId)
+            .put("transportStreamId", serviceKey.transportStreamId)
+            .put("serviceId", serviceKey.serviceId)
+            .put("eventId", eventId)
+            .toString()
 
         fun unblockKey(
             serviceKey: ServiceKey?,
