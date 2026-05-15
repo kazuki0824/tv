@@ -1,3 +1,29 @@
+# r50co
+- r50cn 後の設計固定に従い、r50 以前の provider-data 互換入力経路を廃止した。
+- Channel provider-data 復元は Rust から返る JSON v1 を読む形に変更し、`;` 区切り key-value の fallback parser を削除した。
+- Program provider-data builder は `programKey` object を渡す形に変更し、旧 key 文字列入力を通常経路から外した。
+- Android/Soong build、Kotlin compile、instrumentationテスト、atest、CTS、実機確認は未実施。
+
+# r50cn
+- r50cm 設計・実装不一致レポートの残件1〜3に対応した。
+- EIT component_descriptor / audio_component_descriptor 由来の構造を provider-data components へ渡し、service components と component_tag で統合するようにした。
+- DescriptorDiagnosticV1 の Kotlin rawJson 再投入経路を削除し、型付き DTO から JSON を再構成する境界へ変更した。
+- EIT section の version / sectionNumber を DescriptorDiagnosticV1 scope へ保持するようにした。
+- Android/Soong build、Rust 単体テスト、Kotlin compile、instrumentationテスト、atest、VTS、CTS、実機確認は未実施。
+
+# r50cm
+- r50cl 設計・実装不一致レポートの残件1〜8に対応した。
+- provider-data へ TIS 決定の canonical genre を保存し、DescriptorDiagnosticV1 は Rust 由来 rawJson をそのまま渡す境界に変更した。
+- `AribEventDiagnostic` の旧 `diagnosticDescriptorJson` を削除し、TIS テスト source を現行 nested DTO へ追随させた。
+- Android/Soong build、Kotlin compile、instrumentationテスト、atest、CTS、実機確認は未実施。
+
+# r50cl
+- r50ck の残件1〜5を静的再確認したうえで、残件6〜9に対応した。
+- Kotlin 側の provider-data 境界から raw JSON 断片保持を外し、relatedItems / linkage / components / descriptorDiagnostics を型付き DTO として扱うようにした。
+- DescriptorDiagnosticV1 は Rust 側配列を直接受け取り、Kotlin 側で旧診断コンテナから抽出する経路を削除した。
+- TIS 側 provider-data asset から旧 `canonicalGenres` を削除し、Rust 側 testdata と byte 単位で一致させた。
+- Android/Soong build、Kotlin compile、instrumentationテスト、atest、CTS、実機確認は未実施。
+
 # r50ck
 - r50cj 設計・実装不一致レポートの残件5に対応し、TIS の通常 DTO から旧表示用 flat field を削除し、free_CA_mode と series は nested JSON 構造を provider-data へ渡す境界にした。
 - Program provider-data へ渡す audio / video metadata に schema required の codec を付与した。

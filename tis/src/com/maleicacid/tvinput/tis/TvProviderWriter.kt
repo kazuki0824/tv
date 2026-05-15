@@ -345,32 +345,25 @@ class TvProviderWriter private constructor(
         }
 
         fun parseChannelProviderData(providerData: String?): Map<String, String> {
-            val extracted = ProviderDataBridge.extractChannelTuneKey(providerData)
-            if (extracted != null) {
-                return linkedMapOf(
-                    "originalNetworkId" to extracted.serviceKey.originalNetworkId.toString(),
-                    "transportStreamId" to extracted.serviceKey.transportStreamId.toString(),
-                    "serviceId" to extracted.serviceKey.serviceId.toString(),
-                    "system" to extracted.system,
-                    "frequencyHz" to extracted.frequencyHz.toString(),
-                    "streamSelectorType" to extracted.streamSelector.type.name,
-                    "streamSelectorValue" to (extracted.streamSelector.value?.toString().orEmpty()),
-                    "physicalChannel" to (extracted.physicalChannel?.toString().orEmpty()),
-                    "backendHint" to extracted.backendHint.orEmpty(),
-                    "satelliteBand" to extracted.satelliteBand.orEmpty(),
-                    "remoteControlKeyId" to (extracted.remoteControlKeyId?.toString().orEmpty()),
-                    "requiresCas" to extracted.requiresCas.toString(),
-                    "unsupportedCas" to extracted.unsupportedCas.toString(),
-                    "clearLivePlaybackSupported" to extracted.clearLivePlaybackSupported.toString(),
-                    "channelRegistrationReady" to extracted.channelRegistrationReady.toString(),
-                    "epgPublishable" to extracted.epgPublishable.toString(),
-                )
-            }
-            val raw = providerData?.takeIf { it.isNotBlank() } ?: return emptyMap()
-            return raw.split(';').mapNotNull { part ->
-                val i = part.indexOf('=')
-                if (i <= 0) null else part.substring(0, i) to part.substring(i + 1)
-            }.toMap()
+            val extracted = ProviderDataBridge.extractChannelTuneKey(providerData) ?: return emptyMap()
+            return linkedMapOf(
+                "originalNetworkId" to extracted.serviceKey.originalNetworkId.toString(),
+                "transportStreamId" to extracted.serviceKey.transportStreamId.toString(),
+                "serviceId" to extracted.serviceKey.serviceId.toString(),
+                "system" to extracted.system,
+                "frequencyHz" to extracted.frequencyHz.toString(),
+                "streamSelectorType" to extracted.streamSelector.type.name,
+                "streamSelectorValue" to (extracted.streamSelector.value?.toString().orEmpty()),
+                "physicalChannel" to (extracted.physicalChannel?.toString().orEmpty()),
+                "backendHint" to extracted.backendHint.orEmpty(),
+                "satelliteBand" to extracted.satelliteBand.orEmpty(),
+                "remoteControlKeyId" to (extracted.remoteControlKeyId?.toString().orEmpty()),
+                "requiresCas" to extracted.requiresCas.toString(),
+                "unsupportedCas" to extracted.unsupportedCas.toString(),
+                "clearLivePlaybackSupported" to extracted.clearLivePlaybackSupported.toString(),
+                "channelRegistrationReady" to extracted.channelRegistrationReady.toString(),
+                "epgPublishable" to extracted.epgPublishable.toString(),
+            )
         }
 
 

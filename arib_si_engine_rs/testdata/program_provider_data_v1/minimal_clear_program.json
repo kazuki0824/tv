@@ -39,7 +39,10 @@
       "userNibble": 0,
       "aribName": "ニュース／報道",
       "unmappedReason": null,
-      "parseStatus": "OK"
+      "parseStatus": "OK",
+      "canonicalGenres": [
+        "NEWS"
+      ]
     }
   ],
   "series": null,

@@ -1,7 +1,5 @@
 package com.maleicacid.tvinput.aribsi
 
-import android.util.Log
-import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.common.ServiceKey
 import org.json.JSONArray
 import org.json.JSONObject
@@ -107,7 +105,7 @@ class NativeAribSiParser : AutoCloseable {
             hasEsCaDescriptor = obj.optBoolean("hasEsCaDescriptor"),
             serviceScopedCaDescriptors = caDescriptors,
         )
-        provisional.copy(componentsJson = obj.optJSONObject("components")?.toString() ?: componentsJsonForServiceForTest(provisional))
+        provisional.copy(components = parseComponents(obj.optJSONObject("components")) ?: componentsForServiceForTest(provisional))
     }
 
     private fun parseStreams(array: JSONArray?): List<AribElementaryStream> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
@@ -161,12 +159,57 @@ class NativeAribSiParser : AutoCloseable {
 
     private fun attachServiceComponentsToEvents(events: List<AribEvent>, services: List<AribService>): List<AribEvent> {
         if (events.isEmpty() || services.isEmpty()) return events
-        val componentsByService = services.associate { it.serviceKey to it.componentsJson }
+        val componentsByService = services.associate { it.serviceKey to it.components }
         return events.map { event ->
-            val components = componentsByService[event.serviceKey] ?: event.descriptors.componentsJson
-            event.copy(descriptors = event.descriptors.copy(componentsJson = components))
+            val serviceComponents = componentsByService[event.serviceKey]
+            val components = if (serviceComponents == null) event.descriptors.components else mergeEventAndServiceComponents(event.descriptors.components, serviceComponents)
+            event.copy(descriptors = event.descriptors.copy(components = components))
         }
     }
+
+    private fun mergeEventAndServiceComponents(eventComponents: AribComponents, serviceComponents: AribComponents): AribComponents = AribComponents(
+        video = mergeComponentEntries(eventComponents.video, serviceComponents.video),
+        audio = mergeComponentEntries(eventComponents.audio, serviceComponents.audio),
+        subtitle = serviceComponents.subtitle + eventComponents.subtitle.filterNot { e -> serviceComponents.subtitle.any { sameComponentIdentity(it, e) } },
+        data = serviceComponents.data + eventComponents.data.filterNot { e -> serviceComponents.data.any { sameComponentIdentity(it, e) } },
+    )
+
+    private fun mergeComponentEntries(eventEntries: List<AribComponentEntry>, serviceEntries: List<AribComponentEntry>): List<AribComponentEntry> {
+        if (eventEntries.isEmpty()) return serviceEntries
+        val merged = serviceEntries.toMutableList()
+        eventEntries.forEach { eventEntry ->
+            val index = merged.indexOfFirst { sameComponentIdentity(it, eventEntry) }
+            if (index >= 0) {
+                merged[index] = mergeComponentEntry(eventEntry, merged[index])
+            } else {
+                merged += eventEntry
+            }
+        }
+        return merged
+    }
+
+    private fun sameComponentIdentity(left: AribComponentEntry, right: AribComponentEntry): Boolean {
+        val leftTag = left.componentTag
+        val rightTag = right.componentTag
+        return leftTag != null && rightTag != null && leftTag == rightTag
+    }
+
+    private fun mergeComponentEntry(eventEntry: AribComponentEntry, serviceEntry: AribComponentEntry): AribComponentEntry = serviceEntry.copy(
+        componentType = eventEntry.componentType ?: serviceEntry.componentType,
+        language = eventEntry.language ?: serviceEntry.language,
+        secondLanguage = eventEntry.secondLanguage ?: serviceEntry.secondLanguage,
+        channelConfiguration = eventEntry.channelConfiguration ?: serviceEntry.channelConfiguration,
+        samplingInfo = eventEntry.samplingInfo ?: serviceEntry.samplingInfo,
+        sourceDescriptor = eventEntry.sourceDescriptor ?: serviceEntry.sourceDescriptor,
+        resolution = eventEntry.resolution ?: serviceEntry.resolution,
+        scan = eventEntry.scan ?: serviceEntry.scan,
+        aspect = eventEntry.aspect ?: serviceEntry.aspect,
+        profileLevel = eventEntry.profileLevel ?: serviceEntry.profileLevel,
+        main = eventEntry.main ?: serviceEntry.main,
+        multiLingual = eventEntry.multiLingual ?: serviceEntry.multiLingual,
+        qualityIndicator = eventEntry.qualityIndicator ?: serviceEntry.qualityIndicator,
+        parseStatus = if (eventEntry.parseStatus != "OK") eventEntry.parseStatus else serviceEntry.parseStatus,
+    )
 
     private fun parseCaMetadataList(array: JSONArray?): List<CaMetadata> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
         val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
@@ -204,7 +247,7 @@ class NativeAribSiParser : AutoCloseable {
         val freeCaMode = descriptorsObj.optJSONObject("freeCaMode") ?: JSONObject()
         val diagnostics = descriptorsObj.optJSONObject("diagnostics") ?: JSONObject()
         val series = descriptorsObj.optJSONObject("series")
-        val descriptorDiagnostics = diagnostics.opt("descriptorDiagnostics")
+        val descriptorDiagnostics = diagnostics.optJSONArray("descriptorDiagnostics")
         if (key.originalNetworkId < 0 || key.transportStreamId < 0 || key.serviceId < 0 || eventId < 0 || start <= 0L || duration <= 0L) return@mapNotNull null
         AribEvent(
             serviceKey = key,
@@ -223,22 +266,19 @@ class NativeAribSiParser : AutoCloseable {
                 audioLanguage = optStringOrNull(audio, "language"),
                 broadcastGenre = optStringOrNull(genres, "broadcastGenre"),
                 genreSupplementText = optStringOrNull(genres, "genreSupplementText"),
-                relatedItemsJson = descriptorsObj.optJSONArray("relatedItems")?.toString() ?: "[]",
-                linkageJson = descriptorsObj.optJSONArray("linkage")?.toString() ?: "[]",
+                relatedItems = parseRelatedItems(descriptorsObj.optJSONArray("relatedItems")),
+                linkage = parseLinkage(descriptorsObj.optJSONArray("linkage")),
                 scrambled = if (freeCaMode.isNull("scrambled")) null else freeCaMode.optBoolean("scrambled"),
-                freeCaModeJson = if (freeCaMode.length() == 0) "null" else freeCaMode.toString(),
+                freeCaMode = parseFreeCaMode(freeCaMode),
                 seriesId = if (series == null || series.isNull("seriesId")) null else series.optInt("seriesId"),
                 episodeNumber = if (series == null || series.isNull("episodeNumber")) null else series.optInt("episodeNumber"),
                 lastEpisodeNumber = if (series == null || series.isNull("lastEpisodeNumber")) null else series.optInt("lastEpisodeNumber"),
-                seriesJson = series?.toString() ?: "null",
+                series = parseSeries(series),
                 parentalRatings = parseParentalRatings(descriptorsObj.optJSONArray("parentalRatings")),
-                componentsJson = descriptorsObj.optJSONObject("components")?.toString() ?: defaultComponentsJson(),
+                components = parseComponents(descriptorsObj.optJSONObject("components")) ?: AribComponents(),
                 diagnostics = AribEventDiagnostics(
                     summary = diagnostics.optString("summary"),
-                    descriptorDiagnosticsJson = when (descriptorDiagnostics) {
-                        is JSONObject, is JSONArray -> descriptorDiagnostics.toString()
-                        else -> "{}"
-                    },
+                    descriptorDiagnostics = parseDescriptorDiagnostics(descriptorDiagnostics),
                     textDiagnostics = parseTextDiagnosticSummary(diagnostics.optString("summary")),
                 ),
             ),
@@ -256,6 +296,124 @@ class NativeAribSiParser : AutoCloseable {
         val rating = obj.optInt("ratingValue", obj.optInt("rating", -1))
         val raw = obj.optInt("rawRatingByte", obj.optInt("rawRating", -1))
         if (country.isBlank() || rating < 0 || raw < 0) null else AribParentalRating(country, rating, raw, obj.optBoolean("supported"))
+    }
+
+
+    private fun parseRelatedItems(array: JSONArray?): List<AribRelatedItem> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
+        val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
+        AribRelatedItem(
+            kind = obj.optString("kind", "unknown"),
+            groupType = obj.optInt("groupType", 0),
+            originalNetworkId = optIntOrNull(obj, "originalNetworkId"),
+            transportStreamId = optIntOrNull(obj, "transportStreamId"),
+            serviceId = obj.optInt("serviceId", -1),
+            eventId = obj.optInt("eventId", -1),
+            parseStatus = obj.optString("parseStatus", "OK"),
+        ).takeIf { it.serviceId >= 0 && it.eventId >= 0 }
+    }
+
+    private fun parseLinkage(array: JSONArray?): List<AribLinkage> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
+        val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
+        AribLinkage(
+            linkageType = obj.optInt("linkageType", -1),
+            originalNetworkId = obj.optInt("originalNetworkId", -1),
+            transportStreamId = obj.optInt("transportStreamId", -1),
+            serviceId = obj.optInt("serviceId", -1),
+            privateDataHex = obj.optString("privateDataHex", ""),
+            parseStatus = obj.optString("parseStatus", "OK"),
+        ).takeIf { it.linkageType >= 0 && it.originalNetworkId >= 0 && it.transportStreamId >= 0 && it.serviceId >= 0 }
+    }
+
+    private fun parseFreeCaMode(obj: JSONObject): AribFreeCaMode? = if (obj.length() == 0) null else AribFreeCaMode(
+        raw = optIntOrNull(obj, "raw"),
+        scrambled = optBoolOrNull(obj, "scrambled"),
+        text = optStringOrNull(obj, "text"),
+        parseStatus = obj.optString("parseStatus", "OK"),
+    )
+
+    private fun parseSeries(obj: JSONObject?): AribSeries? = obj?.let {
+        AribSeries(
+            seriesId = optIntOrNull(it, "seriesId"),
+            repeatLabel = it.optInt("repeatLabel", 0),
+            programPattern = it.optInt("programPattern", 0),
+            expireDateValid = it.optBoolean("expireDateValid"),
+            expireDate = optIntOrNull(it, "expireDate"),
+            episodeNumber = optIntOrNull(it, "episodeNumber"),
+            lastEpisodeNumber = optIntOrNull(it, "lastEpisodeNumber"),
+            name = optStringOrNull(it, "name"),
+            parseStatus = it.optString("parseStatus", "OK"),
+        )
+    }
+
+    private fun parseComponents(obj: JSONObject?): AribComponents? = obj?.let {
+        AribComponents(
+            video = parseComponentEntries(it.optJSONArray("video")),
+            audio = parseComponentEntries(it.optJSONArray("audio")),
+            subtitle = parseComponentEntries(it.optJSONArray("subtitle")),
+            data = parseComponentEntries(it.optJSONArray("data")),
+        )
+    }
+
+    private fun parseComponentEntries(array: JSONArray?): List<AribComponentEntry> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
+        val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
+        val pid = obj.optInt("esPid", -1)
+        if (pid < 0) null else AribComponentEntry(
+            esPid = pid,
+            streamType = optIntOrNull(obj, "streamType"),
+            componentTag = optIntOrNull(obj, "componentTag"),
+            componentType = optIntOrNull(obj, "componentType"),
+            codec = optStringOrNull(obj, "codec"),
+            language = optStringOrNull(obj, "language"),
+            secondLanguage = optStringOrNull(obj, "secondLanguage"),
+            channelConfiguration = optStringOrNull(obj, "channelConfiguration"),
+            samplingInfo = optStringOrNull(obj, "samplingInfo"),
+            sourceDescriptor = optStringOrNull(obj, "sourceDescriptor"),
+            resolution = optStringOrNull(obj, "resolution"),
+            scan = optStringOrNull(obj, "scan"),
+            aspect = optStringOrNull(obj, "aspect"),
+            profileLevel = optStringOrNull(obj, "profileLevel"),
+            dataComponentId = optIntOrNull(obj, "dataComponentId"),
+            trackId = optStringOrNull(obj, "trackId"),
+            captionServiceKind = optStringOrNull(obj, "captionServiceKind"),
+            r51PlaybackSupported = optBoolOrNull(obj, "r51PlaybackSupported"),
+            liveViewableClaim = optBoolOrNull(obj, "liveViewableClaim"),
+            diagnosticCode = optStringOrNull(obj, "diagnosticCode"),
+            main = optBoolOrNull(obj, "main"),
+            multiLingual = optBoolOrNull(obj, "multiLingual"),
+            qualityIndicator = optIntOrNull(obj, "qualityIndicator"),
+            parseStatus = obj.optString("parseStatus", "OK"),
+        )
+    }
+
+    private fun parseDescriptorDiagnostics(array: JSONArray?): List<AribDescriptorDiagnosticV1> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
+        val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
+        val scopeObj = obj.optJSONObject("scope") ?: JSONObject()
+        val descriptorObj = obj.optJSONObject("descriptor") ?: return@mapNotNull null
+        AribDescriptorDiagnosticV1(
+            severity = obj.optString("severity", "info"),
+            code = obj.optString("code", "UNKNOWN"),
+            scope = AribDescriptorScope(
+                pid = optIntOrNull(scopeObj, "pid"),
+                tableId = optIntOrNull(scopeObj, "tableId"),
+                tableIdExtension = optIntOrNull(scopeObj, "tableIdExtension"),
+                version = optIntOrNull(scopeObj, "version"),
+                sectionNumber = optIntOrNull(scopeObj, "sectionNumber"),
+                originalNetworkId = optIntOrNull(scopeObj, "originalNetworkId"),
+                transportStreamId = optIntOrNull(scopeObj, "transportStreamId"),
+                serviceId = optIntOrNull(scopeObj, "serviceId"),
+                eventId = optIntOrNull(scopeObj, "eventId"),
+            ),
+            descriptor = AribDescriptorInfo(
+                tag = descriptorObj.optInt("tag", -1),
+                name = optStringOrNull(descriptorObj, "name"),
+                offset = descriptorObj.optInt("offset", 0),
+                declaredLength = descriptorObj.optInt("declaredLength", 0),
+                actualRemainingLength = descriptorObj.optInt("actualRemainingLength", 0),
+                parseStatus = descriptorObj.optString("parseStatus", "UNKNOWN"),
+                rawPrefixHex = descriptorObj.optString("rawPrefixHex", ""),
+            ),
+            message = obj.optString("message", ""),
+        ).takeIf { it.descriptor.tag >= 0 }
     }
 
     private fun parseEpgUpdateWindows(array: JSONArray?): List<AribEpgUpdateWindow> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
@@ -310,7 +468,7 @@ class NativeAribSiParser : AutoCloseable {
 
     private fun parseTextDiagnosticSummary(raw: String): List<String> = raw
         .split(' ', '\n')
-        .filter { it.contains("unknownCount=") || it.contains("json=") || it.contains("component=") || it.contains("audio=") }
+        .filter { it.contains("unknownCount=") || it.contains("component=") || it.contains("audio=") }
 
     fun decodeAribString(bytes: ByteArray): String = nativeDecodeAribString(bytes)
     fun decodeAribStringDiagnosticSummary(bytes: ByteArray): String = nativeDecodeAribStringDiagnosticSummary(bytes)
@@ -350,76 +508,57 @@ class NativeAribSiParser : AutoCloseable {
             System.loadLibrary("maleicacid_arib_si_engine_jni")
         }
 
-        private fun defaultComponentsJson(): String = JSONObject()
-            .put("video", JSONArray())
-            .put("audio", JSONArray())
-            .put("subtitle", JSONArray())
-            .put("data", JSONArray())
-            .toString()
-
-        fun componentsJsonForServiceForTest(service: AribService): String {
-            val video = JSONArray()
-            val audio = JSONArray()
-            val subtitle = JSONArray()
-            val data = JSONArray()
+        fun componentsForServiceForTest(service: AribService): AribComponents {
+            val video = mutableListOf<AribComponentEntry>()
+            val audio = mutableListOf<AribComponentEntry>()
+            val subtitle = mutableListOf<AribComponentEntry>()
+            val data = mutableListOf<AribComponentEntry>()
             service.streams.forEach { stream ->
                 val videoCodec = RECOGNIZED_VIDEO_CODECS[stream.streamType]
                 val audioCodec = RECOGNIZED_AUDIO_CODECS[stream.streamType]
                 when {
-                    videoCodec != null -> video.put(codecComponentJson(stream, videoCodec, r51Supported = R51_VIDEO_CODECS.containsKey(stream.streamType)))
-                    audioCodec != null -> audio.put(codecComponentJson(stream, audioCodec, r51Supported = R51_AUDIO_CODECS.containsKey(stream.streamType)).put("language", stream.languageCodes.firstOrNull() ?: "jpn"))
-                    stream.isCaption || stream.dataComponentId in CAPTION_DATA_COMPONENT_IDS -> subtitle.put(JSONObject()
-                        .put("esPid", stream.elementaryPid)
-                        .put("componentTag", stream.componentTag ?: 0)
-                        .put("dataComponentId", stream.dataComponentId ?: 0x0008)
-                        .put("language", stream.languageCodes.firstOrNull() ?: "jpn")
-                        .put("trackId", stream.componentTag?.let { "subtitle:${stream.elementaryPid}:$it" } ?: "subtitle:${stream.elementaryPid}")
-                        .put("captionServiceKind", when {
+                    videoCodec != null -> video += codecComponent(stream, videoCodec, r51Supported = R51_VIDEO_CODECS.containsKey(stream.streamType))
+                    audioCodec != null -> audio += codecComponent(stream, audioCodec, r51Supported = R51_AUDIO_CODECS.containsKey(stream.streamType)).copy(language = stream.languageCodes.firstOrNull() ?: "jpn")
+                    stream.isCaption || stream.dataComponentId in CAPTION_DATA_COMPONENT_IDS -> subtitle += AribComponentEntry(
+                        esPid = stream.elementaryPid,
+                        componentTag = stream.componentTag ?: 0,
+                        dataComponentId = stream.dataComponentId ?: 0x0008,
+                        language = stream.languageCodes.firstOrNull() ?: "jpn",
+                        trackId = stream.componentTag?.let { "subtitle:${stream.elementaryPid}:$it" } ?: "subtitle:${stream.elementaryPid}",
+                        captionServiceKind = when {
                             stream.isSuperimpose -> "superimpose"
                             stream.dataComponentId == 0x0012 -> "one-seg-caption"
                             else -> "caption"
-                        })
-                        .put("parseStatus", "OK"))
-                    stream.dataComponentId != null -> data.put(JSONObject()
-                        .put("esPid", stream.elementaryPid)
-                        .put("componentTag", stream.componentTag ?: 0)
-                        .put("dataComponentId", stream.dataComponentId)
-                        .put("componentType", stream.componentType ?: 0)
-                        .put("parseStatus", "OK"))
+                        },
+                    )
+                    stream.dataComponentId != null -> data += AribComponentEntry(
+                        esPid = stream.elementaryPid,
+                        componentTag = stream.componentTag ?: 0,
+                        dataComponentId = stream.dataComponentId,
+                        componentType = stream.componentType ?: 0,
+                    )
                 }
             }
-            return JSONObject().put("video", video).put("audio", audio).put("subtitle", subtitle).put("data", data).toString()
+            return AribComponents(video = video, audio = audio, subtitle = subtitle, data = data)
         }
 
-        private fun codecComponentJson(stream: AribElementaryStream, codec: String, r51Supported: Boolean): JSONObject = JSONObject()
-            .put("esPid", stream.elementaryPid)
-            .put("streamType", stream.streamType)
-            .put("componentTag", stream.componentTag ?: 0)
-            .put("componentType", stream.componentType ?: 0)
-            .put("codec", codec)
-            .put("r51PlaybackSupported", r51Supported)
-            .put("liveViewableClaim", r51Supported)
-            .put("diagnosticCode", if (r51Supported) "OK" else "UNSUPPORTED_R51_CODEC")
-            .put("parseStatus", if (r51Supported) "OK" else "UNSUPPORTED_R51")
+        fun toComponentsObjectForServiceForTest(service: AribService): String = ProviderDataBridge.toComponentsObject(componentsForServiceForTest(service)).toString()
+
+        private fun codecComponent(stream: AribElementaryStream, codec: String, r51Supported: Boolean): AribComponentEntry = AribComponentEntry(
+            esPid = stream.elementaryPid,
+            streamType = stream.streamType,
+            componentTag = stream.componentTag ?: 0,
+            componentType = stream.componentType ?: 0,
+            codec = codec,
+            r51PlaybackSupported = r51Supported,
+            liveViewableClaim = r51Supported,
+            diagnosticCode = if (r51Supported) "OK" else "UNSUPPORTED_R51_CODEC",
+            parseStatus = if (r51Supported) "OK" else "UNSUPPORTED_R51",
+        )
 
         fun isR51PlaybackSupportedVideoCodecForTest(streamType: Int): Boolean = R51_VIDEO_CODECS.containsKey(streamType)
         fun isRecognizedVideoCodecForTest(streamType: Int): Boolean = RECOGNIZED_VIDEO_CODECS.containsKey(streamType)
         fun isR51PlaybackSupportedAudioCodecForTest(streamType: Int): Boolean = R51_AUDIO_CODECS.containsKey(streamType)
         fun isRecognizedAudioCodecForTest(streamType: Int): Boolean = RECOGNIZED_AUDIO_CODECS.containsKey(streamType)
-
-        fun parseExtendedItemsJsonForTest(raw: String): List<AribExtendedItem> {
-            if (raw.isBlank() || raw == "[]") return emptyList()
-            return runCatching {
-                val array = JSONArray(raw)
-                (0 until array.length()).map { index ->
-                    val obj = array.getJSONObject(index)
-                    AribExtendedItem(itemDescription = obj.optString("description"), itemText = obj.optString("text"))
-                }
-            }.getOrElse { error ->
-                NativeAribSiParserDiagnostics.extendedItemJsonParseErrors.incrementAndGet()
-                Log.w(LogTags.ARIBSI, "拡張形式イベント記述子 item JSON の解析に失敗しました", error)
-                emptyList()
-            }
-        }
     }
 }

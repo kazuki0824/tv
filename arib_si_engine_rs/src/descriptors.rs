@@ -29,7 +29,6 @@ pub struct EventProviderFields {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EventDescriptorDiagnostic {
-    pub descriptor_json: String,
     pub content_count: usize,
     pub component_count: usize,
     pub audio_component_count: usize,
@@ -50,7 +49,6 @@ pub fn event_provider_fields(desc: &EventDescriptors) -> EventProviderFields {
 
 pub fn event_descriptor_diagnostic(desc: &EventDescriptors) -> EventDescriptorDiagnostic {
     EventDescriptorDiagnostic {
-        descriptor_json: event_descriptors_to_json(desc),
         content_count: desc.contents.len(),
         component_count: desc.components.len(),
         audio_component_count: desc.audio_components.len(),
@@ -675,6 +673,32 @@ fn join_description(current: &str, next: &str) -> String { if current.is_empty()
 
 /// TvProvider の安定キーに自然に入らない記述子向けの診断専用 JSON。
 /// TvProvider 向けのタイトルと説明は event_provider_fields() を使う。
+
+pub fn event_descriptor_diagnostics_array_json(desc: &EventDescriptors) -> String {
+    event_descriptor_diagnostics_array_json_scoped(desc, None)
+}
+
+pub fn event_descriptor_diagnostics_array_json_scoped(desc: &EventDescriptors, scope: Option<DescriptorSectionScope>) -> String {
+    format!("[{}]", desc.diagnostics.iter().map(|d| descriptor_diagnostic_to_json_scoped(d, scope)).collect::<Vec<_>>().join(","))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DescriptorSectionScope {
+    pub pid: Option<u16>,
+    pub table_id: Option<u8>,
+    pub table_id_extension: Option<u16>,
+    pub version: Option<u8>,
+    pub section_number: Option<u8>,
+    pub original_network_id: Option<u16>,
+    pub transport_stream_id: Option<u16>,
+    pub service_id: Option<u16>,
+    pub event_id: Option<u16>,
+}
+
+fn scope_value<T: std::fmt::Display>(value: Option<T>) -> String {
+    value.map(|v| v.to_string()).unwrap_or_else(|| "null".to_string())
+}
+
 pub fn event_descriptors_to_json(desc: &EventDescriptors) -> String {
     let mut fields = Vec::new();
     fields.push("\"schemaVersion\":1".to_string());
@@ -697,11 +721,35 @@ pub fn event_descriptors_to_json(desc: &EventDescriptors) -> String {
 }
 
 fn descriptor_diagnostic_to_json(d: &DescriptorDiagnostic) -> String {
+    descriptor_diagnostic_to_json_scoped(d, None)
+}
+
+fn descriptor_diagnostic_to_json_scoped(d: &DescriptorDiagnostic, scope: Option<DescriptorSectionScope>) -> String {
     let raw_prefix_hex = hex_prefix(&d.raw_prefix, 16);
+    let s = scope.unwrap_or(DescriptorSectionScope {
+        pid: None,
+        table_id: None,
+        table_id_extension: None,
+        version: None,
+        section_number: None,
+        original_network_id: None,
+        transport_stream_id: None,
+        service_id: None,
+        event_id: None,
+    });
     format!(
-        r#"{{"schema":"maleicacid.tv.descriptorDiagnostic","schemaVersion":1,"severity":"{}","code":"{}","scope":{{"pid":null,"tableId":null,"tableIdExtension":null,"version":null,"sectionNumber":null,"originalNetworkId":null,"transportStreamId":null,"serviceId":null,"eventId":null}},"descriptor":{{"tag":{},"name":null,"offset":{},"declaredLength":{},"actualRemainingLength":{},"parseStatus":"{}","rawPrefixHex":"{}"}},"message":"{}"}}"#,
+        r#"{{"schema":"maleicacid.tv.descriptorDiagnostic","schemaVersion":1,"severity":"{}","code":"{}","scope":{{"pid":{},"tableId":{},"tableIdExtension":{},"version":{},"sectionNumber":{},"originalNetworkId":{},"transportStreamId":{},"serviceId":{},"eventId":{}}},"descriptor":{{"tag":{},"name":null,"offset":{},"declaredLength":{},"actualRemainingLength":{},"parseStatus":"{}","rawPrefixHex":"{}"}},"message":"{}"}}"#,
         descriptor_diagnostic_severity(d.parse_status),
         descriptor_diagnostic_code(d.parse_status),
+        scope_value(s.pid),
+        scope_value(s.table_id),
+        scope_value(s.table_id_extension),
+        scope_value(s.version),
+        scope_value(s.section_number),
+        scope_value(s.original_network_id),
+        scope_value(s.transport_stream_id),
+        scope_value(s.service_id),
+        scope_value(s.event_id),
         d.descriptor_tag,
         d.offset,
         d.declared_length,
@@ -823,7 +871,6 @@ mod diagnostic_json_tests {
         assert_eq!(provider.title, "番組");
         assert_eq!(provider.description, "説明");
         assert_eq!(diagnostic.content_count, 1);
-        assert!(diagnostic.descriptor_json.contains("\"contents\""));
     }
 }
 

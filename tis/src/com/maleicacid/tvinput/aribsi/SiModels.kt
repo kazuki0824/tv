@@ -79,7 +79,7 @@ data class AribService(
     val hasProgramCaDescriptor: Boolean = false,
     val hasEsCaDescriptor: Boolean = false,
     val serviceScopedCaDescriptors: List<CaDescriptor> = emptyList(),
-    val componentsJson: String = "{\"video\":[],\"audio\":[],\"subtitle\":[],\"data\":[]}",
+    val components: AribComponents = AribComponents(),
 ) {
     val requiresCas: Boolean get() = hasProgramCaDescriptor || hasEsCaDescriptor
 }
@@ -104,9 +104,114 @@ data class AribParentalRating(
     val supported: Boolean,
 )
 
+
+data class AribRelatedItem(
+    val kind: String,
+    val groupType: Int,
+    val originalNetworkId: Int?,
+    val transportStreamId: Int?,
+    val serviceId: Int,
+    val eventId: Int,
+    val parseStatus: String = "OK",
+)
+
+data class AribLinkage(
+    val linkageType: Int,
+    val originalNetworkId: Int,
+    val transportStreamId: Int,
+    val serviceId: Int,
+    val privateDataHex: String = "",
+    val parseStatus: String = "OK",
+)
+
+data class AribFreeCaMode(
+    val raw: Int?,
+    val scrambled: Boolean?,
+    val text: String?,
+    val parseStatus: String = "OK",
+)
+
+data class AribSeries(
+    val seriesId: Int?,
+    val repeatLabel: Int = 0,
+    val programPattern: Int = 0,
+    val expireDateValid: Boolean = false,
+    val expireDate: Int? = null,
+    val episodeNumber: Int?,
+    val lastEpisodeNumber: Int?,
+    val name: String?,
+    val parseStatus: String = "OK",
+)
+
+data class AribComponentEntry(
+    val esPid: Int,
+    val streamType: Int? = null,
+    val componentTag: Int? = null,
+    val componentType: Int? = null,
+    val codec: String? = null,
+    val language: String? = null,
+    val secondLanguage: String? = null,
+    val channelConfiguration: String? = null,
+    val samplingInfo: String? = null,
+    val sourceDescriptor: String? = null,
+    val resolution: String? = null,
+    val scan: String? = null,
+    val aspect: String? = null,
+    val profileLevel: String? = null,
+    val dataComponentId: Int? = null,
+    val trackId: String? = null,
+    val captionServiceKind: String? = null,
+    val r51PlaybackSupported: Boolean? = null,
+    val liveViewableClaim: Boolean? = null,
+    val diagnosticCode: String? = null,
+    val main: Boolean? = null,
+    val multiLingual: Boolean? = null,
+    val qualityIndicator: Int? = null,
+    val parseStatus: String = "OK",
+)
+
+data class AribComponents(
+    val video: List<AribComponentEntry> = emptyList(),
+    val audio: List<AribComponentEntry> = emptyList(),
+    val subtitle: List<AribComponentEntry> = emptyList(),
+    val data: List<AribComponentEntry> = emptyList(),
+)
+
+data class AribDescriptorScope(
+    val pid: Int?,
+    val tableId: Int?,
+    val tableIdExtension: Int?,
+    val version: Int?,
+    val sectionNumber: Int?,
+    val originalNetworkId: Int?,
+    val transportStreamId: Int?,
+    val serviceId: Int?,
+    val eventId: Int?,
+)
+
+data class AribDescriptorInfo(
+    val tag: Int,
+    val name: String?,
+    val offset: Int,
+    val declaredLength: Int,
+    val actualRemainingLength: Int,
+    val parseStatus: String,
+    val rawPrefixHex: String,
+)
+
+data class AribDescriptorDiagnosticV1(
+    val schema: String = "maleicacid.tv.descriptorDiagnostic",
+    val schemaVersion: Int = 1,
+    val severity: String,
+    val code: String,
+    val scope: AribDescriptorScope,
+    val descriptor: AribDescriptorInfo,
+    val message: String,
+)
+
 data class AribEventDiagnostics(
     val summary: String = "",
-    val descriptorDiagnosticsJson: String = "{}",
+    val descriptorDiagnostics: List<AribDescriptorDiagnosticV1> = emptyList(),
     val textDiagnostics: List<String> = emptyList(),
 )
 
@@ -117,16 +222,16 @@ data class AribEventDescriptors(
     val audioLanguage: String? = null,
     val broadcastGenre: String? = null,
     val genreSupplementText: String? = null,
-    val relatedItemsJson: String = "[]",
-    val linkageJson: String = "[]",
+    val relatedItems: List<AribRelatedItem> = emptyList(),
+    val linkage: List<AribLinkage> = emptyList(),
     val scrambled: Boolean? = null,
-    val freeCaModeJson: String = "null",
+    val freeCaMode: AribFreeCaMode? = null,
     val seriesId: Int? = null,
     val episodeNumber: Int? = null,
     val lastEpisodeNumber: Int? = null,
-    val seriesJson: String = "null",
+    val series: AribSeries? = null,
     val parentalRatings: List<AribParentalRating> = emptyList(),
-    val componentsJson: String = "{\"video\":[],\"audio\":[],\"subtitle\":[],\"data\":[]}",
+    val components: AribComponents = AribComponents(),
     val diagnostics: AribEventDiagnostics = AribEventDiagnostics(),
 )
 
@@ -148,7 +253,6 @@ data class AribEventDiagnostic(
     val stableIdentity: String,
     val eventId: Int,
     val diagnosticText: String,
-    val diagnosticDescriptorJson: String,
 )
 
 data class AribEpgUpdateWindow(

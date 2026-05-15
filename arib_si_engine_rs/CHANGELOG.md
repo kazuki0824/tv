@@ -1,3 +1,31 @@
+## r50co
+- r50cn 後の設計固定に従い、r50 以前の provider-data 互換入力経路を廃止した。
+- channel tune 復元 API は JSON v1 だけを受け、`;` 区切り key-value 形式を解析しないようにした。
+- Program provider-data の入力 DTO も `programKey` object を使う形へ寄せ、旧 key 文字列入力を通常経路から外した。
+- DescriptorScopeV1 の `name` は任意、`parseStatus` は必須であることを DESIGN_JA.md に固定した。
+- Android/Soong build、Rust 単体テスト、Kotlin compile、instrumentationテスト、atest、VTS、CTS、実機確認は未実施。
+
+## r50cn
+- r50cm 設計・実装不一致レポートの残件1〜3に対応した。
+- EIT component_descriptor / audio_component_descriptor 由来の構造を provider-data components へ渡し、service components と component_tag で統合するようにした。
+- DescriptorDiagnosticV1 の Kotlin rawJson 再投入経路を削除し、型付き DTO から JSON を再構成する境界へ変更した。
+- EIT section の version / sectionNumber を DescriptorDiagnosticV1 scope へ保持するようにした。
+- Android/Soong build、Rust 単体テスト、Kotlin compile、instrumentationテスト、atest、VTS、CTS、実機確認は未実施。
+
+## r50cm
+- r50cl 設計・実装不一致レポートの残件1〜8に対応した。
+- program provider-data の genres[] に TIS が直接設定した canonical genre を保持できるようにし、free_CA_mode の raw / parseStatus と DescriptorDiagnosticV1 の scope / parseStatus を設計どおり保持するようにした。
+- channel provider-data の上限超過時も CAS 状態を保持するようにした。
+- DescriptorDiagnosticV1 schema の parseStatus 必須化と provider-data fixture の canonical genre 反映を行った。
+- Android/Soong build、Rust 単体テスト、atest、VTS、CTS、実機確認は未実施。
+
+## r50cl
+- r50ck の残件1〜5を静的再確認したうえで、残件6〜9に対応した。
+- Rust bulk event JSON の `descriptorDiagnostics` を DescriptorDiagnosticV1 配列に直接し、旧診断コンテナを通常境界から外した。
+- event diagnostic summary へ旧 descriptor JSON 全体を埋め込まないようにした。
+- TIS 側 provider-data fixture と Rust 側 testdata を byte 単位で一致させた。
+- Android/Soong build、Rust 単体テスト、atest、VTS、CTS、実機確認は未実施。
+
 ## r50ck
 - r50cj 設計・実装不一致レポートの残件1〜5に対応し、ProgramProviderDataV1 の relatedItems / linkage / components / descriptorDiagnostics を型付き serde 構造へ寄せた。
 - program provider-data の audio / video metadata に schema required の codec を必ず出すようにし、extendedItems の新規出力名を description / text へ統一した。

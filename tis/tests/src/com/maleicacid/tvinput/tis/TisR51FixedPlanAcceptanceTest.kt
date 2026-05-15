@@ -5,6 +5,12 @@ import android.media.tv.TvContentRating
 import android.media.tv.TvContract
 import android.media.tv.TvTrackInfo
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
+import com.maleicacid.tvinput.aribsi.AribEventDescriptors
+import com.maleicacid.tvinput.aribsi.AribDescriptorScope
+import com.maleicacid.tvinput.aribsi.AribDescriptorInfo
+import com.maleicacid.tvinput.aribsi.AribDescriptorDiagnosticV1
+import com.maleicacid.tvinput.aribsi.AribComponents
+import com.maleicacid.tvinput.aribsi.AribComponentEntry
 import com.maleicacid.tvinput.aribsi.AribEvent
 import com.maleicacid.tvinput.aribsi.AribParentalRating
 import com.maleicacid.tvinput.aribsi.AribService
@@ -54,7 +60,7 @@ class TisR51FixedPlanAcceptanceTest {
             freeCaMode = false,
             streams = listOf(es(0x120, 0x24, componentTag = 1)),
         )
-        val components = org.json.JSONObject(NativeAribSiParser.componentsJsonForServiceForTest(service))
+        val components = org.json.JSONObject(NativeAribSiParser.toComponentsObjectForServiceForTest(service))
         val video = components.getJSONArray("video").getJSONObject(0)
         check(video.getString("codec") == "HEVC")
         check(video.getString("parseStatus") == "UNSUPPORTED_R51")
@@ -62,7 +68,7 @@ class TisR51FixedPlanAcceptanceTest {
         check(!video.getBoolean("r51PlaybackSupported"))
         check(!video.getBoolean("liveViewableClaim"))
         val providerData = org.json.JSONObject(TvProviderWriter.programProviderDataForTest(
-            EventModelMapper().toProgramRecords(listOf(aribEvent().copy(componentsJson = components.toString()))).single(),
+            EventModelMapper().toProgramRecords(listOf(aribEvent().withComponents(componentsFromJson(components)))).single(),
         ))
         val providerVideo = providerData.getJSONObject("components").getJSONArray("video").getJSONObject(0)
         check(providerVideo.getString("codec") == "HEVC")
@@ -81,13 +87,13 @@ class TisR51FixedPlanAcceptanceTest {
             freeCaMode = false,
             streams = listOf(es(0x101, 0x1b), es(0x111, 0x11, componentTag = 2, language = "jpn")),
         )
-        val components = org.json.JSONObject(NativeAribSiParser.componentsJsonForServiceForTest(service))
+        val components = org.json.JSONObject(NativeAribSiParser.toComponentsObjectForServiceForTest(service))
         val audio = components.getJSONArray("audio").getJSONObject(0)
         check(audio.getString("codec") == "MPEG-4-AAC-LATM")
         check(audio.getString("parseStatus") == "UNSUPPORTED_R51")
         check(!audio.getBoolean("r51PlaybackSupported"))
         val providerData = org.json.JSONObject(TvProviderWriter.programProviderDataForTest(
-            EventModelMapper().toProgramRecords(listOf(aribEvent().copy(componentsJson = components.toString()))).single(),
+            EventModelMapper().toProgramRecords(listOf(aribEvent().withComponents(componentsFromJson(components)))).single(),
         ))
         val providerAudio = providerData.getJSONObject("components").getJSONArray("audio").getJSONObject(0)
         check(providerAudio.getString("codec") == "MPEG-4-AAC-LATM")
@@ -150,12 +156,10 @@ class TisR51FixedPlanAcceptanceTest {
         val event = aribEvent(parentalRatings = listOf(AribParentalRating("USA", 15, 15, supported = false)))
         val record = EventModelMapper().toProgramRecords(listOf(event)).single()
         check(record.contentRatings.isEmpty())
-        val ratingDiagnostics = org.json.JSONObject(record.parentalRatingDiagnosticsJson)
-        val ratingEntry = ratingDiagnostics.getJSONArray("parentalRatings").getJSONObject(0)
-        check(ratingEntry.getString("countryCode") == "USA")
-        check(ratingEntry.getInt("ratingValue") == 15)
-        check(ratingEntry.getBoolean("supported") == false)
-        check(ratingEntry.getString("parseStatus") == "unsupported")
+        val ratingEntry = record.descriptors.parentalRatings.single()
+        check(ratingEntry.countryCode == "USA")
+        check(ratingEntry.rating == 15)
+        check(!ratingEntry.supported)
         val providerData = org.json.JSONObject(TvProviderWriter.programProviderDataForTest(record))
         val ratings = providerData.getJSONArray("ratings")
         check(ratings.length() == 1)
@@ -170,13 +174,11 @@ class TisR51FixedPlanAcceptanceTest {
     @Test fun malformedAndTruncatedParentalRatingAreNotProjectedToContentRating() {
         val malformed = aribEvent(
             parentalRatings = listOf(AribParentalRating("JPN", 12, 12, supported = false)),
-        ).copy(
-            diagnosticDescriptorJson = """{"parentalRatingDescriptors":[{"parseStatus":"MalformedLength"}]}""",
+            descriptorDiagnostics = listOf(descriptorDiagnostic("MalformedLength", 0x55)),
         )
         val truncated = aribEvent(
             parentalRatings = listOf(AribParentalRating("JPN", 15, 15, supported = false)),
-        ).copy(
-            diagnosticDescriptorJson = """{"diagnostics":[{"parseStatus":"TruncatedDescriptor","tag":85}]}""",
+            descriptorDiagnostics = listOf(descriptorDiagnostic("TruncatedDescriptor", 0x55)),
         )
         val records = EventModelMapper().toProgramRecords(listOf(malformed, truncated))
         check(records.size == 2)
@@ -864,7 +866,10 @@ class TisR51FixedPlanAcceptanceTest {
             isSuperimpose = isSuperimpose,
         )
 
-    private fun aribEvent(parentalRatings: List<AribParentalRating> = emptyList()): AribEvent = AribEvent(
+    private fun aribEvent(
+        parentalRatings: List<AribParentalRating> = emptyList(),
+        descriptorDiagnostics: List<AribDescriptorDiagnosticV1> = emptyList(),
+    ): AribEvent = AribEvent(
         serviceKey = key,
         stableIdentity = "onid=4;tsid=16400;sid=101;event=1",
         eventId = 1,
@@ -872,8 +877,51 @@ class TisR51FixedPlanAcceptanceTest {
         durationMillis = 1_800_000L,
         title = "title",
         description = "desc",
-        parentalRatings = parentalRatings,
+        descriptors = AribEventDescriptors(
+            parentalRatings = parentalRatings,
+            diagnostics = com.maleicacid.tvinput.aribsi.AribEventDiagnostics(descriptorDiagnostics = descriptorDiagnostics),
+        ),
     )
+
+    private fun AribEvent.withComponents(components: AribComponents): AribEvent =
+        copy(descriptors = descriptors.copy(components = components))
+
+    private fun componentsFromJson(obj: org.json.JSONObject): AribComponents = AribComponents(
+        video = componentEntries(obj.optJSONArray("video")),
+        audio = componentEntries(obj.optJSONArray("audio")),
+        subtitle = componentEntries(obj.optJSONArray("subtitle")),
+        data = componentEntries(obj.optJSONArray("data")),
+    )
+
+    private fun componentEntries(array: org.json.JSONArray?): List<AribComponentEntry> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
+        val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
+        val pid = obj.optInt("esPid", -1)
+        if (pid < 0) null else AribComponentEntry(
+            esPid = pid,
+            streamType = obj.optInt("streamType").takeIf { obj.has("streamType") },
+            componentTag = obj.optInt("componentTag").takeIf { obj.has("componentTag") },
+            componentType = obj.optInt("componentType").takeIf { obj.has("componentType") },
+            codec = obj.optString("codec").takeIf { it.isNotBlank() },
+            language = obj.optString("language").takeIf { it.isNotBlank() },
+            dataComponentId = obj.optInt("dataComponentId").takeIf { obj.has("dataComponentId") },
+            trackId = obj.optString("trackId").takeIf { it.isNotBlank() },
+            captionServiceKind = obj.optString("captionServiceKind").takeIf { it.isNotBlank() },
+            r51PlaybackSupported = obj.optBoolean("r51PlaybackSupported").takeIf { obj.has("r51PlaybackSupported") },
+            liveViewableClaim = obj.optBoolean("liveViewableClaim").takeIf { obj.has("liveViewableClaim") },
+            diagnosticCode = obj.optString("diagnosticCode").takeIf { it.isNotBlank() },
+            parseStatus = obj.optString("parseStatus", "OK"),
+        )
+    }
+
+    private fun descriptorDiagnostic(status: String, tag: Int): AribDescriptorDiagnosticV1 {
+        return AribDescriptorDiagnosticV1(
+            severity = "warning",
+            code = status,
+            scope = AribDescriptorScope(18, 78, 101, null, null, 4, 16400, 101, 1),
+            descriptor = AribDescriptorInfo(tag, null, 0, 0, 0, status, ""),
+            message = status,
+        )
+    }
 
     private fun program(
         serviceKey: ServiceKey,

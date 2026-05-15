@@ -15,7 +15,7 @@ use jni::sys::{jboolean, jbyteArray, jint, jlong, jstring};
 use jni::JNIEnv;
 use sections::{parse_section_header, section_crc_valid};
 use eit::{EitEvent, EitUpdateWindow};
-use descriptors::{event_descriptor_diagnostic, event_provider_fields, json_escape};
+use descriptors::{event_descriptor_diagnostic, event_descriptor_diagnostics_array_json_scoped, event_provider_fields, json_escape, DescriptorSectionScope};
 use provider_data as provider_data_api;
 use service_discovery::{
     DiscoveredElementaryStream, DiscoveredService, DiscoveredTransport, EsCaMetadata,
@@ -533,7 +533,7 @@ fn event_diagnostic_text(event: &EitEvent) -> String {
     let d = event.descriptors.clone();
     let diagnostic = event_descriptor_diagnostic(&d);
     format!(
-        "content={:?} component={:?} audio={:?} parental={:?} series={:?} eventGroupCount={} linkageCount={} unknownCount={} json={}",
+        "content={:?} component={:?} audio={:?} parental={:?} series={:?} eventGroupCount={} linkageCount={} unknownCount={}",
         d.contents.iter().map(|c| (c.content_nibble_level_1, c.content_nibble_level_2)).collect::<Vec<_>>(),
         d.components.iter().map(|c| (c.stream_content, c.component_type, c.component_tag, c.language_code.clone())).collect::<Vec<_>>(),
         d.audio_components.iter().map(|a| (a.stream_content, a.component_type, a.component_tag, a.stream_type, a.language_code.clone(), a.language_code_2.clone())).collect::<Vec<_>>(),
@@ -542,7 +542,6 @@ fn event_diagnostic_text(event: &EitEvent) -> String {
         diagnostic.event_group_count,
         diagnostic.linkage_count,
         diagnostic.unknown_count,
-        diagnostic.descriptor_json,
     )
 }
 
@@ -553,11 +552,89 @@ fn parental_ratings_json(event: &EitEvent) -> String {
     )).collect())
 }
 
+
+fn event_video_components_json(event: &EitEvent) -> String {
+    json_array(event.descriptors.components.iter().map(|c| format!(
+        "{{\"esPid\":0,\"streamType\":0,\"componentTag\":{},\"componentType\":{},\"codec\":\"UNKNOWN_VIDEO\",\"language\":{},\"sourceDescriptor\":\"component_descriptor\",\"parseStatus\":\"OK\"}}",
+        c.component_tag,
+        c.component_type,
+        json_string(&c.language_code),
+    )).collect())
+}
+
+fn audio_sampling_info(value: u8) -> &'static str {
+    match value {
+        0 => "unknown",
+        1 => "16kHz",
+        2 => "22.05kHz",
+        3 => "24kHz",
+        5 => "32kHz",
+        6 => "44.1kHz",
+        7 => "48kHz",
+        _ => "reserved",
+    }
+}
+
+fn audio_channel_configuration(value: u8) -> &'static str {
+    match value {
+        0x1 => "1/0 mode",
+        0x2 => "1/0+1/0 mode",
+        0x3 => "2/0 mode",
+        0x4 => "2/1 mode",
+        0x5 => "3/0 mode",
+        0x6 => "2/2 mode",
+        0x7 => "3/1 mode",
+        0x8 => "3/2 mode",
+        0x9 => "3/2+LFE mode",
+        _ => "unknown",
+    }
+}
+
+fn audio_codec_name(stream_type: u8) -> &'static str {
+    match stream_type {
+        0x03 | 0x04 => "MPEG-Audio",
+        0x0f => "AAC",
+        0x11 => "MPEG-4-AAC-LATM",
+        _ => "UNKNOWN_AUDIO",
+    }
+}
+
+fn event_audio_components_json(event: &EitEvent) -> String {
+    json_array(event.descriptors.audio_components.iter().map(|a| format!(
+        "{{\"esPid\":0,\"streamType\":{},\"componentTag\":{},\"componentType\":{},\"codec\":{},\"language\":{},\"secondLanguage\":{},\"channelConfiguration\":{},\"samplingInfo\":{},\"sourceDescriptor\":\"audio_component_descriptor\",\"main\":{},\"multiLingual\":{},\"qualityIndicator\":{},\"parseStatus\":\"OK\"}}",
+        a.stream_type,
+        a.component_tag,
+        a.component_type,
+        json_string(audio_codec_name(a.stream_type)),
+        json_string(&a.language_code),
+        json_opt_string(a.language_code_2.as_deref()),
+        json_string(audio_channel_configuration(a.component_type)),
+        json_string(audio_sampling_info(a.sampling_rate)),
+        json_bool(a.main_component_flag),
+        json_bool(a.es_multi_lingual_flag),
+        a.quality_indicator,
+    )).collect())
+}
+
+fn event_components_json(event: &EitEvent) -> String {
+    format!("{{\"video\":{},\"audio\":{},\"subtitle\":[],\"data\":[]}}", event_video_components_json(event), event_audio_components_json(event))
+}
+
 fn event_json(event: &EitEvent) -> String {
     let provider = event_provider_fields(&event.descriptors);
-    let descriptor_diagnostic = event_descriptor_diagnostic(&event.descriptors);
+    let descriptor_diagnostics = event_descriptor_diagnostics_array_json_scoped(&event.descriptors, Some(DescriptorSectionScope {
+        pid: Some(18),
+        table_id: Some(event.table_id),
+        table_id_extension: Some(event.service_id),
+        version: Some(event.version),
+        section_number: Some(event.section_number),
+        original_network_id: Some(event.original_network_id),
+        transport_stream_id: Some(event.transport_stream_id),
+        service_id: Some(event.service_id),
+        event_id: Some(event.event_id),
+    }));
     format!(
-        "{{\"originalNetworkId\":{},\"transportStreamId\":{},\"serviceId\":{},\"stableIdentity\":{},\"eventId\":{},\"startTimeMillis\":{},\"durationMillis\":{},\"title\":{},\"description\":{},\"extendedDescription\":{},\"eventScope\":{},\"descriptors\":{{\"extendedItems\":{},\"component\":{{\"text\":{}}},\"audio\":{{\"componentText\":{},\"language\":{}}},\"genres\":{{\"broadcastGenre\":{},\"genreSupplementText\":{}}},\"relatedItems\":{},\"linkage\":{},\"freeCaMode\":{{\"scrambled\":{},\"text\":{}}},\"series\":{},\"components\":{},\"diagnostics\":{{\"summary\":{},\"descriptorDiagnostics\":{}}},\"parentalRatings\":{}}}}}}",
+        "{{\"originalNetworkId\":{},\"transportStreamId\":{},\"serviceId\":{},\"stableIdentity\":{},\"eventId\":{},\"startTimeMillis\":{},\"durationMillis\":{},\"title\":{},\"description\":{},\"extendedDescription\":{},\"eventScope\":{},\"descriptors\":{{\"extendedItems\":{},\"component\":{{\"text\":{}}},\"audio\":{{\"componentText\":{},\"language\":{}}},\"genres\":{{\"broadcastGenre\":{},\"genreSupplementText\":{}}},\"relatedItems\":{},\"linkage\":{},\"freeCaMode\":{{\"raw\":{},\"scrambled\":{},\"text\":{},\"parseStatus\":\"OK\"}},\"series\":{},\"components\":{},\"diagnostics\":{{\"summary\":{},\"descriptorDiagnostics\":{}}},\"parentalRatings\":{}}}}}}",
         event.original_network_id,
         event.transport_stream_id,
         event.service_id,
@@ -577,12 +654,13 @@ fn event_json(event: &EitEvent) -> String {
         json_opt_string(Some(&event_genre_supplement_text(event))),
         event_related_items_json(event),
         event_linkage_json(event),
+        if event.free_ca_mode { 1 } else { 0 },
         json_bool(event.free_ca_mode),
         json_string(if event.free_ca_mode { "有料放送" } else { "無料放送" }),
         event_primary_series_json(event),
-        "{\"video\":[],\"audio\":[],\"subtitle\":[],\"data\":[]}",
+        event_components_json(event),
         json_string(&event_diagnostic_text(event)),
-        descriptor_diagnostic.descriptor_json,
+        descriptor_diagnostics,
         parental_ratings_json(event),
     )
 }
@@ -1388,6 +1466,8 @@ mod tests {
         EitEvent {
             diagnostics: Vec::new(),
             table_id: 0x4e,
+            version: 0,
+            section_number: 0,
             scope: crate::eit::EitScope::PresentFollowing,
             service_id: 101,
             transport_stream_id: 16625,

@@ -7,6 +7,11 @@ import com.maleicacid.tvinput.aribsi.AribRatingMapper
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.db.ChannelRecord
 import com.maleicacid.tvinput.db.ProgramRecord
+import com.maleicacid.tvinput.db.ProgramDescriptors
+import com.maleicacid.tvinput.aribsi.AribSeries
+import com.maleicacid.tvinput.aribsi.AribRelatedItem
+import com.maleicacid.tvinput.aribsi.AribFreeCaMode
+import com.maleicacid.tvinput.aribsi.AribExtendedItem
 import org.junit.Test
 
 class TvProviderWriterProgramsTest {
@@ -90,8 +95,24 @@ class TvProviderWriterProgramsTest {
         writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", 473_142_857L)))
         val p = ProgramRecord(
             key, 11, "onid=4;tsid=16625;sid=101;event=11", 1_700_000_000_000L, 1_800_000L,
-            "News", "desc", extendedItemsJson = "[{\"description\":\"出演\",\"text\":\"A\"}]",
-            componentText = "映像", audioComponentText = "音声", audioLanguage = "jpn", canonicalGenres = listOf("NEWS"), broadcastGenre = "ARIB(0x0/0x0):ニュース/報道/定時・総合", genreSupplementText = "ニュース/報道/定時・総合", relatedItemsJson = """[{"kind":"shared","groupType":1,"originalNetworkId":4,"transportStreamId":16625,"serviceId":101,"eventId":202,"parseStatus":"OK"}]""", scrambled = false, freeCaModeJson = """{"raw":0,"scrambled":false,"text":"無料放送","parseStatus":"OK"}""", seriesId = 100, episodeNumber = 3, lastEpisodeNumber = 12, seriesJson = """{"seriesId":100,"repeatLabel":0,"programPattern":0,"expireDateValid":false,"expireDate":null,"episodeNumber":3,"lastEpisodeNumber":12,"name":"シリーズ","parseStatus":"OK"}""", diagnosticText = "unknownCount=0", diagnosticDescriptorJson = "{}",
+            "News", "desc",
+            canonicalGenres = listOf("NEWS"),
+            descriptors = ProgramDescriptors(
+                extendedItems = listOf(AribExtendedItem("出演", "A")),
+                componentText = "映像",
+                audioComponentText = "音声",
+                audioLanguage = "jpn",
+                broadcastGenre = "ARIB(0x0/0x0):ニュース/報道/定時・総合",
+                genreSupplementText = "ニュース/報道/定時・総合",
+                relatedItems = listOf(AribRelatedItem("shared", 1, 4, 16625, 101, 202)),
+                scrambled = false,
+                freeCaMode = AribFreeCaMode(raw = 0, scrambled = false, text = "無料放送"),
+                seriesId = 100,
+                episodeNumber = 3,
+                lastEpisodeNumber = 12,
+                series = AribSeries(seriesId = 100, episodeNumber = 3, lastEpisodeNumber = 12, name = "シリーズ"),
+            ),
+            diagnosticText = "unknownCount=0",
         )
         writer.upsertPrograms(listOf(p))
         val providerData = store.programs.values.single().getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA).toString(Charsets.UTF_8)

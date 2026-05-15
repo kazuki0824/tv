@@ -196,7 +196,7 @@ Programs.COLUMN_INTERNAL_PROVIDER_DATA:
 
 ## internal_provider_data JSON v1 schema
 
-`internal_provider_data` の新規書き込み正形式は JSON v1 のみとする。`;` 区切り key-value 形式は読み取り互換入力として移行用に限り許可し、新規書き込みは禁止する。
+`internal_provider_data` の正形式は JSON v1 のみとする。r50 以前の `;` 区切り key-value 形式、旧 flat provider-data、旧 provider-data 断片は読み取り互換入力としても残さない。
 
 この文書は TvProvider 標準列への投影方針を固定する。`internal_provider_data` の具体 schema、canonical encode、正規化、署名、安定キー抽出は `arib_si_engine_rs` の Rust provider-data serde構造体を SSOT とする。TIS Kotlin は provider-data JSON を手書き構築しない。
 
@@ -215,7 +215,7 @@ provider-data 全体は 16 KiB を目安上限、32 KiB を絶対上限とする
 ## 不正 descriptor / EIT 投影規則
 
 - 新規 provider-data 書き込みでは `ProgramProviderDataV1` を provider-data 全体の唯一の schema とする。descriptor 診断情報 schema v1 は `diagnostics.descriptorDiagnostics[]` 配下の要素 schema であり、provider-data 全体の schema ではない。Rust は `schemaVersion=1` と `diagnostics.descriptorDiagnostics[]` を出力し、Kotlin はそのオブジェクトを別 schema へ変換しない。
-- 新規の extended-event item は `description/text` として書き込む。`key/value` と `itemDescription/itemText` は読み取り互換入力としてのみ受け付ける。
+- extended-event item は `description/text` として書き込む。`key/value` と `itemDescription/itemText` の旧入力形式は受け付けない。
 - 不正な short / extended / content / audio_component / event_group descriptor は、通常の title、description、長形式イベント項目、genre、audio、event-group フィールドとして部分投影してはならない。
 - 不正な EIT event timing は、以前有効だった event が消滅した根拠にしてはならない。不正 section だけでは 廃止行削除区間 を作らない。
 

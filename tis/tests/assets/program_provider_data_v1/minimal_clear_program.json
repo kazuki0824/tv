@@ -38,11 +38,11 @@
       "level2": 0,
       "userNibble": 0,
       "aribName": "ニュース／報道",
+      "unmappedReason": null,
+      "parseStatus": "OK",
       "canonicalGenres": [
         "NEWS"
-      ],
-      "unmappedReason": null,
-      "parseStatus": "OK"
+      ]
     }
   ],
   "series": null,

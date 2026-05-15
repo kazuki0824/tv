@@ -87,7 +87,6 @@ class AribSiEngine(private val context: Context) : AutoCloseable {
                 event.stableIdentity,
                 event.eventId,
                 event.descriptors.diagnostics.summary,
-                event.descriptors.diagnostics.descriptorDiagnosticsJson,
             )
         }
     }

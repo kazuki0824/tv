@@ -362,6 +362,13 @@
         },
         "parseStatus": {
           "$ref": "#/$defs/parseStatus"
+        },
+        "canonicalGenres": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         }
       }
     },

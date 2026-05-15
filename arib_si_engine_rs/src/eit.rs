@@ -19,6 +19,8 @@ impl EitScope {
 pub struct EitEvent {
     pub diagnostics: Vec<EitEventDiagnostic>,
     pub table_id: u8,
+    pub version: u8,
+    pub section_number: u8,
     pub scope: EitScope,
     pub service_id: u16,
     pub transport_stream_id: u16,
@@ -304,7 +306,7 @@ pub fn parse_eit_section(section: &[u8]) -> Vec<EitEvent> {
                         malformed_descriptor_count: descriptors.diagnostics.len(),
                         descriptor_diagnostics: descriptors.diagnostics.clone(),
                     }];
-                    out.push(EitEvent { diagnostics, table_id: header.table_id, scope, service_id, transport_stream_id: tsid, original_network_id: onid, event_id, start_time_millis: start, duration_millis: duration, free_ca_mode, descriptors });
+                    out.push(EitEvent { diagnostics, table_id: header.table_id, version: header.version.unwrap_or(0), section_number: header.section_number.unwrap_or(0), scope, service_id, transport_stream_id: tsid, original_network_id: onid, event_id, start_time_millis: start, duration_millis: duration, free_ca_mode, descriptors });
                 }
             }
             break;
@@ -324,7 +326,7 @@ pub fn parse_eit_section(section: &[u8]) -> Vec<EitEvent> {
                         descriptor_diagnostics: descriptors.diagnostics.clone(),
                     }]
                 };
-                out.push(EitEvent { diagnostics, table_id: header.table_id, scope, service_id, transport_stream_id: tsid, original_network_id: onid, event_id, start_time_millis: start, duration_millis: duration, free_ca_mode, descriptors });
+                out.push(EitEvent { diagnostics, table_id: header.table_id, version: header.version.unwrap_or(0), section_number: header.section_number.unwrap_or(0), scope, service_id, transport_stream_id: tsid, original_network_id: onid, event_id, start_time_millis: start, duration_millis: duration, free_ca_mode, descriptors });
             }
         }
         cursor = desc_end;
@@ -476,6 +478,8 @@ mod tests {
         let event = EitEvent {
             diagnostics: Vec::new(),
             table_id: 0x50,
+            version: 0,
+            section_number: 0,
             scope: EitScope::R51MinimumSchedule,
             service_id: 1,
             transport_stream_id: 0x11,

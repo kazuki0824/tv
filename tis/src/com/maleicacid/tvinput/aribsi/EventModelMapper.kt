@@ -4,8 +4,6 @@ import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.db.ChannelRecord
 import com.maleicacid.tvinput.db.ProgramDescriptors
 import com.maleicacid.tvinput.db.ProgramRecord
-import org.json.JSONArray
-import org.json.JSONObject
 
 enum class ProgramPublishStateSource { CURRENT_DIAGNOSTIC, CHANNEL_FALLBACK, MERGED_CHANNEL_CAS_STATE, NONE }
 
@@ -103,23 +101,23 @@ class EventModelMapper {
                 shortDescription = event.description.take(256),
                 canonicalGenres = canonicalGenresFromBroadcastGenre(event.descriptors.broadcastGenre),
                 descriptors = ProgramDescriptors(
-                    extendedItemsJson = extendedItemsJson(event.descriptors.extendedItems),
+                    extendedItems = event.descriptors.extendedItems,
                     componentText = event.descriptors.componentText,
                     audioComponentText = event.descriptors.audioComponentText,
                     audioLanguage = event.descriptors.audioLanguage,
                     broadcastGenre = event.descriptors.broadcastGenre,
                     genreSupplementText = event.descriptors.genreSupplementText,
-                    relatedItemsJson = event.descriptors.relatedItemsJson,
-                    linkageJson = event.descriptors.linkageJson,
+                    relatedItems = event.descriptors.relatedItems,
+                    linkage = event.descriptors.linkage,
                     scrambled = event.descriptors.scrambled,
-                    freeCaModeJson = event.descriptors.freeCaModeJson,
+                    freeCaMode = event.descriptors.freeCaMode,
                     seriesId = event.descriptors.seriesId,
                     episodeNumber = event.descriptors.episodeNumber,
                     lastEpisodeNumber = event.descriptors.lastEpisodeNumber,
-                    seriesJson = event.descriptors.seriesJson,
-                    descriptorDiagnosticsJson = event.descriptors.diagnostics.descriptorDiagnosticsJson,
+                    series = event.descriptors.series,
+                    descriptorDiagnostics = event.descriptors.diagnostics.descriptorDiagnostics,
                     parentalRatings = event.descriptors.parentalRatings,
-                    componentsJson = event.descriptors.componentsJson,
+                    components = event.descriptors.components,
                 ),
                 requiresCas = state?.requiresCas ?: false,
                 unsupportedCas = state?.unsupportedCas ?: false,
@@ -129,7 +127,7 @@ class EventModelMapper {
                 publishStateSource = publishStateSourceName(state?.source),
                 diagnosticText = event.descriptors.diagnostics.summary,
                 contentRatings = event.descriptors.parentalRatings.mapNotNull { AribRatingMapper.toTvContentRatingString(it) },
-                malformedCaDescriptorCount = descriptorDiagnosticCount(event.descriptors.diagnostics.descriptorDiagnosticsJson),
+                malformedCaDescriptorCount = descriptorDiagnosticCount(event.descriptors.diagnostics.descriptorDiagnostics),
             )
         }
     }
@@ -143,7 +141,7 @@ class EventModelMapper {
             d.componentText?.takeIf { it.isNotBlank() }?.let { "映像: $it" },
             d.audioComponentText?.takeIf { it.isNotBlank() }?.let { "音声: $it" },
             d.genreSupplementText?.takeIf { it.isNotBlank() }?.let { "ジャンル: $it" },
-            freeCaLabelFromJson(d.freeCaModeJson, d.scrambled)?.takeIf { it.isNotBlank() }?.let { "放送種別: $it" },
+            (d.freeCaMode?.text ?: when (d.scrambled) { true -> "有料放送"; false -> "無料放送"; null -> null })?.takeIf { it.isNotBlank() }?.let { "放送種別: $it" },
         )
         return listOf(event.description, event.extendedDescription, extended)
             .plus(uiSupplements)
@@ -151,20 +149,10 @@ class EventModelMapper {
             .joinToString("\n")
     }
 
-
-    private fun freeCaLabelFromJson(raw: String, scrambled: Boolean?): String? {
-        val fromJson = runCatching { org.json.JSONObject(raw).optString("text") }.getOrNull()?.takeIf { it.isNotBlank() }
-        return fromJson ?: when (scrambled) {
-            true -> "有料放送"
-            false -> "無料放送"
-            null -> null
-        }
-    }
-
     private fun canonicalGenresFromBroadcastGenre(broadcastGenre: String?): List<String> {
         if (broadcastGenre.isNullOrBlank()) return emptyList()
         val out = linkedSetOf<String>()
-        Regex("ARIB\(0x([0-9a-fA-F]+)/0x([0-9a-fA-F]+)\)").findAll(broadcastGenre).forEach { match ->
+        Regex("ARIB\\(0x([0-9a-fA-F]+)/0x([0-9a-fA-F]+)\\)").findAll(broadcastGenre).forEach { match ->
             val level1 = match.groupValues[1].toIntOrNull(16) ?: return@forEach
             val level2 = match.groupValues[2].toIntOrNull(16) ?: return@forEach
             when (level1) {
@@ -208,13 +196,7 @@ class EventModelMapper {
         return out.toList()
     }
 
-    private fun descriptorDiagnosticCount(json: String): Int = runCatching {
-        JSONObject(json).optJSONArray("diagnostics")?.length() ?: JSONArray(json).length()
-    }.getOrDefault(0)
-
-    private fun extendedItemsJson(items: List<AribExtendedItem>): String = JSONArray().apply {
-        items.forEach { put(JSONObject().put("description", it.itemDescription).put("text", it.itemText)) }
-    }.toString()
+    private fun descriptorDiagnosticCount(diagnostics: List<AribDescriptorDiagnosticV1>): Int = diagnostics.size
 
     private fun publishStateSourceName(source: ProgramPublishStateSource?): String = (source ?: ProgramPublishStateSource.NONE).name
 }

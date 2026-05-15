@@ -7,6 +7,9 @@ import com.maleicacid.tvinput.aribsi.AribRatingMapper
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.db.ChannelRecord
 import com.maleicacid.tvinput.db.ProgramRecord
+import com.maleicacid.tvinput.aribsi.AribFreeCaMode
+import com.maleicacid.tvinput.aribsi.AribSeries
+import com.maleicacid.tvinput.db.ProgramDescriptors
 import org.junit.Test
 
 class TvProviderWriterR51FixTest {
@@ -19,10 +22,21 @@ class TvProviderWriterR51FixTest {
         val rating15 = requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 15, 15, true)))
         val p = ProgramRecord(
             key, 1, "p1", 1_700_000_000_000L, 1_800_000L, "title", "desc",
-            audioLanguage = "jpn", canonicalGenres = listOf("NEWS"), broadcastGenre = "ARIB(0x0/0x0):ニュース/報道/定時・総合", contentRatings = listOf(rating15), scrambled = false, seriesId = 100, episodeNumber = 3, lastEpisodeNumber = 12,
+            canonicalGenres = listOf("NEWS"),
+            descriptors = ProgramDescriptors(
+                audioLanguage = "jpn",
+                broadcastGenre = "ARIB(0x0/0x0):ニュース/報道/定時・総合",
+                scrambled = false,
+                freeCaMode = AribFreeCaMode(raw = 0, scrambled = false, text = "無料放送"),
+                seriesId = 100,
+                episodeNumber = 3,
+                lastEpisodeNumber = 12,
+                series = AribSeries(seriesId = 100, episodeNumber = 3, lastEpisodeNumber = 12, name = null),
+            ),
+            contentRatings = listOf(rating15),
         )
         writer.upsertPrograms(listOf(p))
-        writer.upsertPrograms(listOf(p.copy(audioLanguage = null, canonicalGenres = emptyList(), broadcastGenre = null, contentRatings = emptyList(), scrambled = null, seriesId = null, episodeNumber = null, lastEpisodeNumber = null)))
+        writer.upsertPrograms(listOf(p.copy(canonicalGenres = emptyList(), descriptors = ProgramDescriptors(), contentRatings = emptyList())))
         val values = store.programs.values.single()
         check(values.get(TvContract.Programs.COLUMN_AUDIO_LANGUAGE) == null)
         check(values.get(TvContract.Programs.COLUMN_BROADCAST_GENRE) == null)

@@ -1,6 +1,12 @@
 package com.maleicacid.tvinput.db
 
+import com.maleicacid.tvinput.aribsi.AribComponents
+import com.maleicacid.tvinput.aribsi.AribDescriptorDiagnosticV1
+import com.maleicacid.tvinput.aribsi.AribFreeCaMode
+import com.maleicacid.tvinput.aribsi.AribLinkage
 import com.maleicacid.tvinput.aribsi.AribParentalRating
+import com.maleicacid.tvinput.aribsi.AribRelatedItem
+import com.maleicacid.tvinput.aribsi.AribSeries
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.StreamSelector
 
@@ -30,23 +36,23 @@ data class ChannelRecord(
 }
 
 data class ProgramDescriptors(
-    val extendedItemsJson: String = "[]",
+    val extendedItems: List<com.maleicacid.tvinput.aribsi.AribExtendedItem> = emptyList(),
     val componentText: String? = null,
     val audioComponentText: String? = null,
     val audioLanguage: String? = null,
     val broadcastGenre: String? = null,
     val genreSupplementText: String? = null,
-    val relatedItemsJson: String = "[]",
-    val linkageJson: String = "[]",
+    val relatedItems: List<AribRelatedItem> = emptyList(),
+    val linkage: List<AribLinkage> = emptyList(),
     val scrambled: Boolean? = null,
-    val freeCaModeJson: String = "null",
+    val freeCaMode: AribFreeCaMode? = null,
     val seriesId: Int? = null,
     val episodeNumber: Int? = null,
     val lastEpisodeNumber: Int? = null,
-    val seriesJson: String = "null",
-    val descriptorDiagnosticsJson: String = "{}",
+    val series: AribSeries? = null,
+    val descriptorDiagnostics: List<AribDescriptorDiagnosticV1> = emptyList(),
     val parentalRatings: List<AribParentalRating> = emptyList(),
-    val componentsJson: String = "{\"video\":[],\"audio\":[],\"subtitle\":[],\"data\":[]}",
+    val components: AribComponents = AribComponents(),
 )
 
 data class ProgramRecord(

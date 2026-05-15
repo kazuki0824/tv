@@ -1,7 +1,11 @@
 package com.maleicacid.tvinput.tis
 
 import com.maleicacid.tvinput.aribsi.AribEvent
+import com.maleicacid.tvinput.aribsi.AribEventDescriptors
 import com.maleicacid.tvinput.aribsi.AribExtendedItem
+import com.maleicacid.tvinput.aribsi.AribFreeCaMode
+import com.maleicacid.tvinput.aribsi.AribRelatedItem
+import com.maleicacid.tvinput.aribsi.AribSeries
 import com.maleicacid.tvinput.aribsi.EventModelMapper
 import com.maleicacid.tvinput.common.ServiceKey
 import org.junit.Test
@@ -16,21 +20,21 @@ class EventModelMapperDescriptorTest {
             durationMillis = 1_800_000L,
             title = "番組",
             description = "短い説明\n詳細説明",
-            extendedItems = listOf(AribExtendedItem("出演", "A")),
-            componentText = "映像",
-            audioComponentText = "音声",
-            audioLanguage = "jpn",
-            broadcastGenre = "ARIB(0x0/0x0):ニュース/報道/定時・総合",
-            genreSupplementText = "ニュース/報道/定時・総合",
-            relatedItemsJson = """[{"kind":"shared","groupType":1,"originalNetworkId":4,"transportStreamId":16625,"serviceId":101,"eventId":202,"parseStatus":"OK"}]""",
-            scrambled = false,
-            freeCaModeJson = """{"raw":0,"scrambled":false,"text":"無料放送","parseStatus":"OK"}""",
-            seriesId = 100,
-            episodeNumber = 3,
-            lastEpisodeNumber = 12,
-            seriesJson = """{"seriesId":100,"repeatLabel":0,"programPattern":0,"expireDateValid":false,"expireDate":null,"episodeNumber":3,"lastEpisodeNumber":12,"name":"シリーズ","parseStatus":"OK"}""",
-            diagnosticText = "unknownCount=0",
-            diagnosticDescriptorJson = "{\"extendedItems\":[]}",
+            descriptors = AribEventDescriptors(
+                extendedItems = listOf(AribExtendedItem("出演", "A")),
+                componentText = "映像",
+                audioComponentText = "音声",
+                audioLanguage = "jpn",
+                broadcastGenre = "ARIB(0x0/0x0):ニュース/報道/定時・総合",
+                genreSupplementText = "ニュース/報道/定時・総合",
+                relatedItems = listOf(AribRelatedItem("shared", 1, 4, 16625, 101, 202)),
+                scrambled = false,
+                freeCaMode = AribFreeCaMode(raw = 0, scrambled = false, text = "無料放送"),
+                seriesId = 100,
+                episodeNumber = 3,
+                lastEpisodeNumber = 12,
+                series = AribSeries(seriesId = 100, episodeNumber = 3, lastEpisodeNumber = 12, name = "シリーズ"),
+            ),
         )
         val record = EventModelMapper().toProgramRecords(listOf(event)).single()
         check(record.shortDescription == "短い説明")
@@ -43,19 +47,19 @@ class EventModelMapperDescriptorTest {
         check(!record.description.contains("関連番組:"))
         check(record.description.contains("放送種別: 無料放送"))
         check(!record.description.contains("シリーズ: シリーズ"))
-        check(record.extendedItemsJson.contains("出演"))
-        check(record.componentText == "映像")
-        check(record.audioComponentText == "音声")
-        check(record.audioLanguage == "jpn")
+        check(record.descriptors.extendedItems.single().itemDescription == "出演")
+        check(record.descriptors.componentText == "映像")
+        check(record.descriptors.audioComponentText == "音声")
+        check(record.descriptors.audioLanguage == "jpn")
         check(record.canonicalGenres == listOf("NEWS"))
-        check(record.broadcastGenre == "ARIB(0x0/0x0):ニュース/報道/定時・総合")
-        check(record.genreSupplementText == "ニュース/報道/定時・総合")
-        check(record.relatedItemsJson.contains("eventId"))
-        check(record.scrambled == false)
-        check(record.descriptors.freeCaModeJson.contains("無料放送"))
-        check(record.seriesId == 100)
-        check(record.episodeNumber == 3)
-        check(record.lastEpisodeNumber == 12)
-        check(record.descriptors.seriesJson.contains("シリーズ"))
+        check(record.descriptors.broadcastGenre == "ARIB(0x0/0x0):ニュース/報道/定時・総合")
+        check(record.descriptors.genreSupplementText == "ニュース/報道/定時・総合")
+        check(record.descriptors.relatedItems.single().eventId == 202)
+        check(record.descriptors.scrambled == false)
+        check(record.descriptors.freeCaMode?.text == "無料放送")
+        check(record.descriptors.seriesId == 100)
+        check(record.descriptors.episodeNumber == 3)
+        check(record.descriptors.lastEpisodeNumber == 12)
+        check(record.descriptors.series?.name == "シリーズ")
     }
 }

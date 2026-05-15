@@ -126,7 +126,8 @@
         "offset",
         "declaredLength",
         "actualRemainingLength",
-        "rawPrefixHex"
+        "rawPrefixHex",
+        "parseStatus"
       ],
       "properties": {
         "tag": {
@@ -154,10 +155,8 @@
           "minimum": 0
         },
         "parseStatus": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string",
+          "minLength": 1
         },
         "rawPrefixHex": {
           "type": "string",

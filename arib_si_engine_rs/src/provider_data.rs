@@ -169,6 +169,8 @@ struct GenreV1 {
     user_nibble: i64,
     arib_name: String,
     unmapped_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    canonical_genres: Vec<String>,
     parse_status: String,
 }
 
@@ -279,7 +281,7 @@ struct DescriptorScopeV1 {
     offset: i64,
     declared_length: i64,
     actual_remaining_length: i64,
-    parse_status: Option<String>,
+    parse_status: String,
     raw_prefix_hex: String,
 }
 
@@ -495,13 +497,13 @@ pub fn build_channel_provider_data(request_json: &str) -> ProviderDataResult {
 
 pub fn normalize_program_provider_data(provider_data: &str) -> ProviderDataResult {
     let value = parse_input(provider_data.trim());
-    let identity = ProgramIdentity::from_value_or_legacy(&value, provider_data);
+    let identity = ProgramIdentity::from_value(&value);
     finalize_program(program_from_value(&value, identity, None))
 }
 
 pub fn append_current_program_diagnostics(provider_data: &str, overlap_count: i64, selected_program_id: i64, selection_rule: &str) -> ProviderDataResult {
     let value = parse_input(provider_data.trim());
-    let identity = ProgramIdentity::from_value_or_legacy(&value, provider_data);
+    let identity = ProgramIdentity::from_value(&value);
     let current = CurrentProgramDiagnostics {
         overlap_count: overlap_count.max(0),
         selected_program_id,
@@ -517,20 +519,14 @@ pub fn program_provider_data_signature(provider_data: &str) -> String {
 pub fn extract_program_key_result(provider_data: &str) -> Option<ProgramKeyResult> {
     let raw = provider_data.trim();
     if raw.is_empty() { return None; }
-    let identity = parse_legacy_key(raw).or_else(|| {
-        let value = parse_input(raw);
-        ProgramIdentity::from_value_optional(&value).or_else(|| {
-            value.get("programKey")
-                .and_then(Value::as_str)
-                .and_then(parse_legacy_key)
-        })
-    })?;
+    let value = parse_input(raw);
+    let identity = ProgramIdentity::from_value_optional(&value)?;
     Some(ProgramKeyResult {
         original_network_id: identity.onid,
         transport_stream_id: identity.tsid,
         service_id: identity.sid,
         event_id: identity.event_id,
-        key: identity.legacy_key(),
+        key: identity.stable_key_string(),
     })
 }
 
@@ -542,26 +538,11 @@ pub fn extract_channel_tune_key(provider_data: &str) -> String {
     let raw = provider_data.trim();
     if raw.is_empty() { return String::new(); }
     let value = parse_input(raw);
+    if value.get("schema").and_then(Value::as_str) != Some(CHANNEL_SCHEMA_NAME) {
+        return String::new();
+    }
     let data = channel_from_value(&value);
-    format!(
-        "originalNetworkId={};transportStreamId={};serviceId={};system={};frequencyHz={};streamSelectorType={};streamSelectorValue={};physicalChannel={};backendHint={};satelliteBand={};remoteControlKeyId={};requiresCas={};unsupportedCas={};clearLivePlaybackSupported={};channelRegistrationReady={};epgPublishable={}",
-        data.service_key.original_network_id,
-        data.service_key.transport_stream_id,
-        data.service_key.service_id,
-        data.tune.system,
-        data.tune.frequency_hz,
-        data.tune.stream_selector.r#type,
-        data.tune.stream_selector.value,
-        data.tune.physical_channel.map(|v| v.to_string()).unwrap_or_default(),
-        data.tune.backend_hint.unwrap_or_default(),
-        data.tune.satellite_band.unwrap_or_default(),
-        data.tune.remote_control_key_id.map(|v| v.to_string()).unwrap_or_default(),
-        data.cas.requires_cas,
-        data.cas.unsupported_cas,
-        data.cas.clear_live_playback_supported,
-        data.diagnostics.channel_registration_ready,
-        data.diagnostics.epg_publishable,
-    )
+    serde_json::to_string(&data).unwrap_or_default()
 }
 
 impl ProgramIdentity {
@@ -576,18 +557,7 @@ impl ProgramIdentity {
         }).clamped()
     }
 
-    fn from_value_or_legacy(value: &Value, raw: &str) -> Self {
-        if let Some(id) = Self::from_value_optional(value) { return id; }
-        if let Some(id) = parse_legacy_key(raw) { return id; }
-        Self::from_value(value)
-    }
-
     fn from_value_optional(value: &Value) -> Option<Self> {
-        if let Some(key) = value.get("programKey").and_then(Value::as_str) {
-            if let Some(id) = parse_legacy_key(key) {
-                return Some(Self { start_utc_millis: time_from(value), duration_millis: duration_from(value), ..id }.clamped());
-            }
-        }
         let program_key = value.get("programKey").and_then(Value::as_object);
         let service = value.get("serviceKey").unwrap_or(value);
         let timing = value.get("timing").unwrap_or(value);
@@ -621,7 +591,7 @@ impl ProgramIdentity {
         }
     }
 
-    fn legacy_key(&self) -> String {
+    fn stable_key_string(&self) -> String {
         format!("onid={};tsid={};sid={};event={}", self.onid, self.tsid, self.sid, self.event_id)
     }
 }
@@ -767,6 +737,7 @@ fn genres_from(value: &Value) -> Vec<GenreV1> {
                 user_nibble: clamp_i64(object_i64(obj, "userNibble", 0), 0, 15),
                 arib_name: object_string(obj, "aribName", ""),
                 unmapped_reason: obj.get("unmappedReason").and_then(Value::as_str).map(ToString::to_string),
+                canonical_genres: string_array(obj.get("canonicalGenres")),
                 parse_status: object_string(obj, "parseStatus", "OK"),
             })
         }).collect();
@@ -851,8 +822,8 @@ fn extended_items_from(value: &Value) -> Vec<ExtendedItemV1> {
     value.get("extendedItems").and_then(Value::as_array).cloned().unwrap_or_default().into_iter().filter_map(|entry| {
         let obj = entry.as_object()?;
         Some(ExtendedItemV1 {
-            description: object_string(obj, "description", object_string(obj, "itemDescription", "")),
-            text: object_string(obj, "text", object_string(obj, "itemText", "")),
+            description: object_string(obj, "description", ""),
+            text: object_string(obj, "text", ""),
             parse_status: object_string(obj, "parseStatus", "OK"),
         })
     }).collect()
@@ -1042,24 +1013,21 @@ fn descriptor_diagnostic_from_value(value: &Value, root: &Value) -> Option<Descr
             offset: object_i64(desc_obj, "offset", 0).max(0),
             declared_length: clamp_i64(object_i64(desc_obj, "declaredLength", 0), 0, 255),
             actual_remaining_length: object_i64(desc_obj, "actualRemainingLength", object_i64(desc_obj, "actualRemaining", 0)).max(0),
-            parse_status: desc_obj.get("parseStatus").and_then(Value::as_str).map(ToString::to_string),
+            parse_status: object_string(desc_obj, "parseStatus", object_string(obj, "code", "DESCRIPTOR_DIAGNOSTIC")),
             raw_prefix_hex: object_string(desc_obj, "rawPrefixHex", object_string(desc_obj, "rawPrefix", "")),
         },
         message: object_string(obj, "message", "descriptor diagnostic"),
     })
 }
 
-fn parse_input(text: &str) -> Value {
-    serde_json::from_str::<Value>(text).unwrap_or_else(|_| legacy_value(text))
+fn string_array(value: Option<&Value>) -> Vec<String> {
+    value.and_then(Value::as_array)
+        .map(|array| array.iter().filter_map(Value::as_str).filter(|s| !s.is_empty()).map(ToString::to_string).collect())
+        .unwrap_or_default()
 }
 
-fn legacy_value(text: &str) -> Value {
-    let mut map = serde_json::Map::new();
-    for part in text.split(';') {
-        let Some((key, value)) = part.split_once('=') else { continue; };
-        map.insert(key.trim().to_string(), Value::String(value.trim().to_string()));
-    }
-    Value::Object(map)
+fn parse_input(text: &str) -> Value {
+    serde_json::from_str::<Value>(text).unwrap_or(Value::Null)
 }
 
 fn time_from(value: &Value) -> i64 { i64_field(value.get("timing").unwrap_or(value), "startUtcMillis", i64_field(value, "startTimeMillis", 0)) }
@@ -1086,7 +1054,7 @@ fn finalize_program(data: ProgramProviderDataV1) -> ProviderDataResult {
 fn finalize_channel(data: ChannelProviderDataV1) -> ProviderDataResult {
     let mut text = serde_json::to_string(&data).unwrap_or_else(|_| "{}".to_string());
     if text.len() > HARD_LIMIT_BYTES {
-        let mut truncated = truncated_channel_value(&data.service_key, &data.tune);
+        let mut truncated = truncated_channel_value(&data);
         truncated.diagnostics.provider_data_truncated = Some(true);
         truncated.diagnostics.provider_data_hard_limit_bytes = Some(HARD_LIMIT_BYTES as i64);
         truncated.diagnostics.provider_data_soft_limit_bytes = Some(SOFT_LIMIT_BYTES as i64);
@@ -1119,17 +1087,17 @@ fn truncated_program_value(data: &ProgramProviderDataV1) -> ProgramProviderDataV
     }
 }
 
-fn truncated_channel_value(service_key: &ServiceKeyV1, tune: &ChannelTuneV1) -> ChannelProviderDataV1 {
+fn truncated_channel_value(data: &ChannelProviderDataV1) -> ChannelProviderDataV1 {
     ChannelProviderDataV1 {
         schema: CHANNEL_SCHEMA_NAME.to_string(),
         schema_version: CHANNEL_SCHEMA_VERSION,
-        service_key: service_key.clone(),
-        tune: tune.clone(),
-        cas: ChannelCasV1 { requires_cas: false, unsupported_cas: false, clear_live_playback_supported: false },
+        service_key: data.service_key.clone(),
+        tune: data.tune.clone(),
+        cas: data.cas.clone(),
         diagnostics: ChannelDiagnosticsV1 {
-            channel_registration_ready: false,
-            epg_publishable: false,
-            publish_state_source: "TRUNCATED_IDENTITY_ONLY".to_string(),
+            channel_registration_ready: data.diagnostics.channel_registration_ready,
+            epg_publishable: data.diagnostics.epg_publishable,
+            publish_state_source: "TRUNCATED_WITH_CAS_STATE".to_string(),
             raw_provider_data_extensions: Vec::new(),
             provider_data_truncated: None,
             provider_data_hard_limit_bytes: None,
@@ -1147,24 +1115,6 @@ fn object_i64(value: &serde_json::Map<String, Value>, key: &str, default: i64) -
 fn object_bool(value: &serde_json::Map<String, Value>, key: &str, default: bool) -> bool { value.get(key).and_then(Value::as_bool).unwrap_or(default) }
 fn object_string<S: AsRef<str>>(value: &serde_json::Map<String, Value>, key: &str, default: S) -> String { value.get(key).and_then(Value::as_str).map(ToString::to_string).unwrap_or_else(|| default.as_ref().to_string()) }
 fn clamp_i64(value: i64, min: i64, max: i64) -> i64 { value.max(min).min(max) }
-
-fn parse_legacy_key(input: &str) -> Option<ProgramIdentity> {
-    let mut onid = None;
-    let mut tsid = None;
-    let mut sid = None;
-    let mut event_id = None;
-    for part in input.split(';') {
-        let Some((key, value)) = part.split_once('=') else { continue; };
-        match key.trim() {
-            "onid" | "originalNetworkId" => onid = value.parse::<i64>().ok(),
-            "tsid" | "transportStreamId" => tsid = value.parse::<i64>().ok(),
-            "sid" | "serviceId" => sid = value.parse::<i64>().ok(),
-            "event" | "eventId" => event_id = value.parse::<i64>().ok(),
-            _ => {}
-        }
-    }
-    Some(ProgramIdentity { onid: onid?, tsid: tsid?, sid: sid?, event_id: event_id?, start_utc_millis: 0, duration_millis: 0 }.clamped())
-}
 
 fn sha256_hex(data: &[u8]) -> String {
     let digest = sha256(data);
