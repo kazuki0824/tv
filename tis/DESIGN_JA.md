@@ -11,7 +11,7 @@ BS は IF 周波数と typed stream selector を保持し、selector は TSID �
 
 CS110 tune request 生成時、TIS は Android Tuner API builder の default `streamId` / `streamIdType` に依存しない。CS110 では frontend stream selector を明示的に none / `UNDEFINED` 相当に設定する。CS110 の ONID / TSID / service_id は channel identity / サービス識別子 として保持してよいが、HAL frontend selector へ転用してはならない。BS は IF 周波数 + TSID、または px4 backend 限定の relative stream number を使う。
 
-TvProvider の channel internal provider data には `streamSelectorType` と `streamSelectorValue` を分けて保存する。`NONE` は値なし、`TSID` は 0..0xffff、`RELATIVE` は 0..7 とする。
+TvProvider の channel internal provider data には JSON v1 `tune.streamIdType` と `tune.streamId` を保存する。`NONE` は `streamId=null`、`TSID` は 0..0xffff、`RELATIVE` は 0..7 とする。
 
 
 ## 製品 scan 候補表の保持者
@@ -160,7 +160,7 @@ SDT-other / NIT-other / BAT 由来で現在 candidate の actual transport に�
 
 ## provider-data schema / 署名
 
-`Programs.COLUMN_INTERNAL_PROVIDER_DATA` の新規書き込み正形式は UTF-8 JSON v1 バイト列のみとする。`programKeyB64` や `;` 区切り key-value 形式は読み取り互換入力として移行用に限り許可し、新規書き込みは禁止する。
+`Programs.COLUMN_INTERNAL_PROVIDER_DATA` の新規書き込み・読み取り正形式は UTF-8 JSON v1 バイト列のみとする。`programKeyB64`、`;` 区切り key-value 形式、旧 flat provider-data、旧 provider-data 断片は読み取り互換入力としても残さない。既存端末の旧形式データは r51 リリース物では移行対象にせず、DB 再構築または setup 再実行で JSON v1 を再生成する。
 
 provider-data JSON v1 の構造、canonical encode、正規化、署名、安定キー抽出は `arib_si_engine_rs` の Rust `provider_data` module の `serde` struct を SSOT とする。TIS Kotlin は provider-data JSON を `JSONObject.put()` や手書き string concatenation で直接構築してはならない。TIS Kotlin は Rust JNI の build / 正規化 / 署名 / key extraction API で得た bytes と 署名 を TvProvider に書く。
 
@@ -170,7 +170,7 @@ Program provider-data の top-level envelope、必須フィールド、検証規
 
 TIS は `components.video[]`、`components.audio[]`、`components.subtitle[]`、`components.data[]` を provider-data schema として再定義しない。映像・音声 codecメタデータ、字幕 trackメタデータ、非対応 codec 診断は Rust JNI が返す JSON v1 バイト列の中に保存される。TIS は TvProvider 標準列、`TvTrackInfo`、MediaFormat / AudioTrack / 字幕表示経路へ接続する接着層に限定する。`audio` / `video` が `null` の場合は主track 未選択または未確定を意味し、空オブジェクト と同義に扱ってはならない。
 
-Channel provider-data の top-level envelope は `schema="maleicacid.tv.channel"`, `schemaVersion=1`, `serviceKey`, `tune`, `cas`, `diagnostics` を持つ JSON v1 とする。`tune` は `deliverySystem`, `frequencyHz`, `streamId`, `streamIdType` を持ち、CS110 は `streamIdType="NONE"` とし selector value を持たない。
+Channel provider-data の top-level envelope は `schema="maleicacid.tv.channel"`, `schemaVersion=1`, `serviceKey`, `tune`, `cas`, `diagnostics` を持つ JSON v1 とする。`tune` は `inputId`、`displayName`、`deliverySystem`、`frequencyHz`、`streamId`、`streamIdType`、`physicalChannel`、`backendHint`、`satelliteBand`、`remoteControlKeyId` を持つ。CS110 は `streamIdType="NONE"` とし、`streamId` は null とする。
 
 Program署名 は TvProvider に実際に書く `ContentValues` と Rust JNI が返した provider-data bytes から生成する。署名入力は固定 column list 順に `<columnName>\0<byteLength>\0<bytes>
 ` で連結し、そのバイト列の SHA-256 lowercase hex とする。`ContentValues` の iteration order には依存しない。insert 後に provider-data を再生成した場合、cache する signature は再生成後に実際に書いた バイト列の signature とする。
@@ -306,7 +306,7 @@ Boot EPG sync / background maintenance の開始条件は、`activeLiveSessionCo
 
 `TvContract.Channels/Programs.COLUMN_INTERNAL_PROVIDER_DATA` の新規書き込みは `arib_si_engine_rs` の provider-data JNI API が返す JSON v1 bytes をそのまま保存する。TIS Kotlin は TvProvider 標準列を詰める接着層であり、provider-data 本体、program stable key、descriptor 診断情報 schema、provider-data 署名 を独自 JSON schema として再構築してはならない。
 
-Channel provider-data の `key=value;...` 形式は読み取り専用の互換入力である。新規 channel row は JSON v1 のみを書き込む。JSON v1 は `schema="maleicacid.tv.channel"` / `schemaVersion=1` を持ち、channel tune 復元に必要な inputId、物理選局情報、ONID / TSID / service_id、表示名、登録可能性診断を Rust provider-data API 由来の構造として保存する。
+Channel provider-data の新規書き込み・読み取り正形式は JSON v1 のみとする。`key=value;...` 形式、旧 flat provider-data、旧 provider-data 断片は読み取り互換入力としても残さない。JSON v1 は `schema="maleicacid.tv.channel"` / `schemaVersion=1` を持ち、channel tune 復元に必要な inputId、物理選局情報、ONID / TSID / service_id、表示名、登録可能性診断を Rust provider-data API 由来の構造として保存する。
 
 
 

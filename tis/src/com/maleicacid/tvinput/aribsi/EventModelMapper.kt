@@ -119,6 +119,7 @@ class EventModelMapper {
                     parentalRatings = event.descriptors.parentalRatings,
                     components = event.descriptors.components,
                 ),
+                source = event.source,
                 requiresCas = state?.requiresCas ?: false,
                 unsupportedCas = state?.unsupportedCas ?: false,
                 clearLivePlaybackSupported = state?.clearLivePlaybackSupported ?: false,

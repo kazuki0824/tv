@@ -1,3 +1,15 @@
+# r50cq
+- r50cp 設計・実装不一致レポートの残件1〜8に対応した。
+- Program provider-data へ DescriptorDiagnosticV1、EIT source、選択 audio component 要約を渡すようにし、content rating 逆生成 fallback を削除した。
+- Channel provider-data の inputId / displayName を JSON v1 の必須保存値として扱うようにした。
+- Android/Soong build、Kotlin compile、instrumentationテスト、atest、CTS、実機確認は未実施。
+
+# r50cp
+- r50co 設計・実装不一致レポートの残件1〜7に対応した。
+- TIS 設計文書から r50 以前 provider-data 互換入力許容を削除し、Channel provider-data の tune 形を JSON v1 の `deliverySystem` / `streamId` / `streamIdType` へ統一した。
+- 通常サービス解析経路の component metadata fallback と、Kotlin 側の DescriptorDiagnosticV1 JSON 再構築経路を削除した。
+- Android/Soong build、Kotlin compile、instrumentationテスト、atest、CTS、実機確認は未実施。
+
 # r50co
 - r50cn 後の設計固定に従い、r50 以前の provider-data 互換入力経路を廃止した。
 - Channel provider-data 復元は Rust から返る JSON v1 を読む形に変更し、`;` 区切り key-value の fallback parser を削除した。

@@ -215,6 +215,14 @@ data class AribEventDiagnostics(
     val textDiagnostics: List<String> = emptyList(),
 )
 
+data class AribProgramSource(
+    val pid: Int = 18,
+    val tableId: Int = 0x4e,
+    val version: Int = 0,
+    val sectionNumber: Int = 0,
+    val lastSectionNumber: Int = 0,
+)
+
 data class AribEventDescriptors(
     val extendedItems: List<AribExtendedItem> = emptyList(),
     val componentText: String? = null,
@@ -245,6 +253,7 @@ data class AribEvent(
     val description: String,
     val extendedDescription: String = "",
     val eventScope: String = "present_following",
+    val source: AribProgramSource = AribProgramSource(),
     val descriptors: AribEventDescriptors = AribEventDescriptors(),
 )
 

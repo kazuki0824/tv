@@ -1,4 +1,5 @@
 use crate::arib_string::decode_arib_string_lossy;
+use crate::provider_data::{DescriptorDiagnosticV1, DescriptorScopeV1, SectionScopeV1};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EventDescriptors {
@@ -674,12 +675,14 @@ fn join_description(current: &str, next: &str) -> String { if current.is_empty()
 /// TvProvider の安定キーに自然に入らない記述子向けの診断専用 JSON。
 /// TvProvider 向けのタイトルと説明は event_provider_fields() を使う。
 
+#[cfg(test)]
 pub fn event_descriptor_diagnostics_array_json(desc: &EventDescriptors) -> String {
     event_descriptor_diagnostics_array_json_scoped(desc, None)
 }
 
 pub fn event_descriptor_diagnostics_array_json_scoped(desc: &EventDescriptors, scope: Option<DescriptorSectionScope>) -> String {
-    format!("[{}]", desc.diagnostics.iter().map(|d| descriptor_diagnostic_to_json_scoped(d, scope)).collect::<Vec<_>>().join(","))
+    let models = desc.diagnostics.iter().map(|d| descriptor_diagnostic_model(d, scope)).collect::<Vec<_>>();
+    serde_json::to_string(&models).unwrap_or_else(|_| "[]".to_string())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -695,10 +698,7 @@ pub struct DescriptorSectionScope {
     pub event_id: Option<u16>,
 }
 
-fn scope_value<T: std::fmt::Display>(value: Option<T>) -> String {
-    value.map(|v| v.to_string()).unwrap_or_else(|| "null".to_string())
-}
-
+#[cfg(test)]
 pub fn event_descriptors_to_json(desc: &EventDescriptors) -> String {
     let mut fields = Vec::new();
     fields.push("\"schemaVersion\":1".to_string());
@@ -720,12 +720,12 @@ pub fn event_descriptors_to_json(desc: &EventDescriptors) -> String {
     format!("{{{}}}", fields.join(","))
 }
 
+#[cfg(test)]
 fn descriptor_diagnostic_to_json(d: &DescriptorDiagnostic) -> String {
     descriptor_diagnostic_to_json_scoped(d, None)
 }
 
-fn descriptor_diagnostic_to_json_scoped(d: &DescriptorDiagnostic, scope: Option<DescriptorSectionScope>) -> String {
-    let raw_prefix_hex = hex_prefix(&d.raw_prefix, 16);
+fn descriptor_diagnostic_model(d: &DescriptorDiagnostic, scope: Option<DescriptorSectionScope>) -> DescriptorDiagnosticV1 {
     let s = scope.unwrap_or(DescriptorSectionScope {
         pid: None,
         table_id: None,
@@ -737,27 +737,38 @@ fn descriptor_diagnostic_to_json_scoped(d: &DescriptorDiagnostic, scope: Option<
         service_id: None,
         event_id: None,
     });
-    format!(
-        r#"{{"schema":"maleicacid.tv.descriptorDiagnostic","schemaVersion":1,"severity":"{}","code":"{}","scope":{{"pid":{},"tableId":{},"tableIdExtension":{},"version":{},"sectionNumber":{},"originalNetworkId":{},"transportStreamId":{},"serviceId":{},"eventId":{}}},"descriptor":{{"tag":{},"name":null,"offset":{},"declaredLength":{},"actualRemainingLength":{},"parseStatus":"{}","rawPrefixHex":"{}"}},"message":"{}"}}"#,
-        descriptor_diagnostic_severity(d.parse_status),
-        descriptor_diagnostic_code(d.parse_status),
-        scope_value(s.pid),
-        scope_value(s.table_id),
-        scope_value(s.table_id_extension),
-        scope_value(s.version),
-        scope_value(s.section_number),
-        scope_value(s.original_network_id),
-        scope_value(s.transport_stream_id),
-        scope_value(s.service_id),
-        scope_value(s.event_id),
-        d.descriptor_tag,
-        d.offset,
-        d.declared_length,
-        d.remaining_length,
-        d.parse_status.as_str(),
-        raw_prefix_hex,
-        json_escape(&d.message)
-    )
+    DescriptorDiagnosticV1 {
+        schema: "maleicacid.tv.descriptorDiagnostic".to_string(),
+        schema_version: 1,
+        severity: descriptor_diagnostic_severity(d.parse_status).to_string(),
+        code: descriptor_diagnostic_code(d.parse_status).to_string(),
+        scope: SectionScopeV1 {
+            pid: s.pid.map(i64::from),
+            table_id: s.table_id.map(i64::from),
+            table_id_extension: s.table_id_extension.map(i64::from),
+            version: s.version.map(i64::from),
+            section_number: s.section_number.map(i64::from),
+            original_network_id: s.original_network_id.map(i64::from),
+            transport_stream_id: s.transport_stream_id.map(i64::from),
+            service_id: s.service_id.map(i64::from),
+            event_id: s.event_id.map(i64::from),
+        },
+        descriptor: DescriptorScopeV1 {
+            tag: i64::from(d.descriptor_tag),
+            name: None,
+            offset: d.offset as i64,
+            declared_length: d.declared_length as i64,
+            actual_remaining_length: d.remaining_length as i64,
+            parse_status: d.parse_status.as_str().to_string(),
+            raw_prefix_hex: hex_prefix(&d.raw_prefix, 16),
+        },
+        message: d.message.clone(),
+    }
+}
+
+fn descriptor_diagnostic_to_json_scoped(d: &DescriptorDiagnostic, scope: Option<DescriptorSectionScope>) -> String {
+    let model = descriptor_diagnostic_model(d, scope);
+    serde_json::to_string(&model).unwrap_or_else(|_| "{}".to_string())
 }
 
 fn descriptor_diagnostic_severity(status: DescriptorParseStatus) -> &'static str {

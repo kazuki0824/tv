@@ -26,32 +26,42 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "system",
+        "displayName",
+        "inputId",
+        "deliverySystem",
         "frequencyHz",
-        "streamSelector"
+        "streamId",
+        "streamIdType"
       ],
       "properties": {
         "inputId": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "displayName": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
-        "system": {
+        "deliverySystem": {
           "type": "string"
         },
         "frequencyHz": {
           "type": "integer",
           "minimum": 0
         },
-        "streamSelector": {
-          "$ref": "#/$defs/streamSelector"
+        "streamId": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "streamIdType": {
+          "type": "string",
+          "enum": [
+            "NONE",
+            "TSID",
+            "RELATIVE"
+          ]
         },
         "physicalChannel": {
           "type": [
@@ -169,22 +179,6 @@
         },
         "serviceId": {
           "$ref": "#/$defs/uint16"
-        }
-      }
-    },
-    "streamSelector": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "type",
-        "value"
-      ],
-      "properties": {
-        "type": {
-          "type": "string"
-        },
-        "value": {
-          "type": "string"
         }
       }
     }

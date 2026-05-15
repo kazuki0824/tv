@@ -5,6 +5,7 @@ import com.maleicacid.tvinput.aribsi.AribDescriptorDiagnosticV1
 import com.maleicacid.tvinput.aribsi.AribFreeCaMode
 import com.maleicacid.tvinput.aribsi.AribLinkage
 import com.maleicacid.tvinput.aribsi.AribParentalRating
+import com.maleicacid.tvinput.aribsi.AribProgramSource
 import com.maleicacid.tvinput.aribsi.AribRelatedItem
 import com.maleicacid.tvinput.aribsi.AribSeries
 import com.maleicacid.tvinput.common.ServiceKey
@@ -66,6 +67,7 @@ data class ProgramRecord(
     val shortDescription: String = description.lineSequence().firstOrNull()?.take(256).orEmpty(),
     val canonicalGenres: List<String> = emptyList(),
     val descriptors: ProgramDescriptors = ProgramDescriptors(),
+    val source: AribProgramSource = AribProgramSource(),
     val requiresCas: Boolean = false,
     val unsupportedCas: Boolean = false,
     val clearLivePlaybackSupported: Boolean = false,

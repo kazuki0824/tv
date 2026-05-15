@@ -28,18 +28,6 @@ const PROGRAM_KNOWN_TOP_LEVEL_KEYS: &[&str] = &[
     "extendedItems",
     "components",
     "diagnostics",
-    "descriptorDiagnostics",
-    "parserDiagnostics",
-    "publishDiagnostics",
-    "parentalRatings",
-    "audioLanguage",
-    "eventId",
-    "originalNetworkId",
-    "transportStreamId",
-    "serviceId",
-    "startTimeMillis",
-    "endUtcMillis",
-    "durationMillis",
 ];
 
 const CHANNEL_KNOWN_TOP_LEVEL_KEYS: &[&str] = &[
@@ -49,26 +37,6 @@ const CHANNEL_KNOWN_TOP_LEVEL_KEYS: &[&str] = &[
     "tune",
     "cas",
     "diagnostics",
-    "originalNetworkId",
-    "transportStreamId",
-    "serviceId",
-    "inputId",
-    "displayName",
-    "system",
-    "frequencyHz",
-    "streamSelector",
-    "streamSelectorType",
-    "streamSelectorValue",
-    "physicalChannel",
-    "backendHint",
-    "satelliteBand",
-    "remoteControlKeyId",
-    "requiresCas",
-    "unsupportedCas",
-    "clearLivePlaybackSupported",
-    "channelRegistrationReady",
-    "epgPublishable",
-    "publishStateSource",
 ];
 
 
@@ -261,40 +229,40 @@ struct LinkageV1 {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SectionScopeV1 {
-    pid: Option<i64>,
-    table_id: Option<i64>,
-    table_id_extension: Option<i64>,
-    version: Option<i64>,
-    section_number: Option<i64>,
-    original_network_id: Option<i64>,
-    transport_stream_id: Option<i64>,
-    service_id: Option<i64>,
-    event_id: Option<i64>,
+pub(crate) struct SectionScopeV1 {
+    pub(crate) pid: Option<i64>,
+    pub(crate) table_id: Option<i64>,
+    pub(crate) table_id_extension: Option<i64>,
+    pub(crate) version: Option<i64>,
+    pub(crate) section_number: Option<i64>,
+    pub(crate) original_network_id: Option<i64>,
+    pub(crate) transport_stream_id: Option<i64>,
+    pub(crate) service_id: Option<i64>,
+    pub(crate) event_id: Option<i64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct DescriptorScopeV1 {
-    tag: i64,
-    name: Option<String>,
-    offset: i64,
-    declared_length: i64,
-    actual_remaining_length: i64,
-    parse_status: String,
-    raw_prefix_hex: String,
+pub(crate) struct DescriptorScopeV1 {
+    pub(crate) tag: i64,
+    pub(crate) name: Option<String>,
+    pub(crate) offset: i64,
+    pub(crate) declared_length: i64,
+    pub(crate) actual_remaining_length: i64,
+    pub(crate) parse_status: String,
+    pub(crate) raw_prefix_hex: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct DescriptorDiagnosticV1 {
-    schema: String,
-    schema_version: i64,
-    severity: String,
-    code: String,
-    scope: SectionScopeV1,
-    descriptor: DescriptorScopeV1,
-    message: String,
+pub(crate) struct DescriptorDiagnosticV1 {
+    pub(crate) schema: String,
+    pub(crate) schema_version: i64,
+    pub(crate) severity: String,
+    pub(crate) code: String,
+    pub(crate) scope: SectionScopeV1,
+    pub(crate) descriptor: DescriptorScopeV1,
+    pub(crate) message: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -426,19 +394,13 @@ struct ProgramProviderDataV1 {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct StreamSelectorV1 {
-    r#type: String,
-    value: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct ChannelTuneV1 {
-    input_id: Option<String>,
-    display_name: Option<String>,
-    system: String,
+    input_id: String,
+    display_name: String,
+    delivery_system: String,
     frequency_hz: i64,
-    stream_selector: StreamSelectorV1,
+    stream_id: Option<i64>,
+    stream_id_type: String,
     physical_channel: Option<i64>,
     backend_hint: Option<String>,
     satellite_band: Option<String>,
@@ -497,13 +459,23 @@ pub fn build_channel_provider_data(request_json: &str) -> ProviderDataResult {
 
 pub fn normalize_program_provider_data(provider_data: &str) -> ProviderDataResult {
     let value = parse_input(provider_data.trim());
-    let identity = ProgramIdentity::from_value(&value);
+    if value.get("schema").and_then(Value::as_str) != Some(PROGRAM_SCHEMA_NAME) {
+        return ProviderDataResult { json: "{}".to_string(), signature: sha256_hex(b"{}"), extracted_key: String::new() };
+    }
+    let Some(identity) = ProgramIdentity::from_value_optional(&value) else {
+        return ProviderDataResult { json: "{}".to_string(), signature: sha256_hex(b"{}"), extracted_key: String::new() };
+    };
     finalize_program(program_from_value(&value, identity, None))
 }
 
 pub fn append_current_program_diagnostics(provider_data: &str, overlap_count: i64, selected_program_id: i64, selection_rule: &str) -> ProviderDataResult {
     let value = parse_input(provider_data.trim());
-    let identity = ProgramIdentity::from_value(&value);
+    if value.get("schema").and_then(Value::as_str) != Some(PROGRAM_SCHEMA_NAME) {
+        return ProviderDataResult { json: "{}".to_string(), signature: sha256_hex(b"{}"), extracted_key: String::new() };
+    }
+    let Some(identity) = ProgramIdentity::from_value_optional(&value) else {
+        return ProviderDataResult { json: "{}".to_string(), signature: sha256_hex(b"{}"), extracted_key: String::new() };
+    };
     let current = CurrentProgramDiagnostics {
         overlap_count: overlap_count.max(0),
         selected_program_id,
@@ -520,6 +492,7 @@ pub fn extract_program_key_result(provider_data: &str) -> Option<ProgramKeyResul
     let raw = provider_data.trim();
     if raw.is_empty() { return None; }
     let value = parse_input(raw);
+    if value.get("schema").and_then(Value::as_str) != Some(PROGRAM_SCHEMA_NAME) { return None; }
     let identity = ProgramIdentity::from_value_optional(&value)?;
     Some(ProgramKeyResult {
         original_network_id: identity.onid,
@@ -558,25 +531,22 @@ impl ProgramIdentity {
     }
 
     fn from_value_optional(value: &Value) -> Option<Self> {
-        let program_key = value.get("programKey").and_then(Value::as_object);
-        let service = value.get("serviceKey").unwrap_or(value);
-        let timing = value.get("timing").unwrap_or(value);
-        let onid = program_key.and_then(|obj| obj.get("originalNetworkId")).and_then(Value::as_i64)
-            .unwrap_or_else(|| i64_field(service, "originalNetworkId", i64_field(value, "originalNetworkId", 0)));
-        let tsid = program_key.and_then(|obj| obj.get("transportStreamId")).and_then(Value::as_i64)
-            .unwrap_or_else(|| i64_field(service, "transportStreamId", i64_field(value, "transportStreamId", 0)));
-        let sid = program_key.and_then(|obj| obj.get("serviceId")).and_then(Value::as_i64)
-            .unwrap_or_else(|| i64_field(service, "serviceId", i64_field(value, "serviceId", 0)));
-        let event_id = program_key.and_then(|obj| obj.get("eventId")).and_then(Value::as_i64)
-            .unwrap_or_else(|| i64_field(value, "eventId", 0));
-        if onid == 0 && tsid == 0 && sid == 0 && event_id == 0 { return None; }
+        let program_key = value.get("programKey")?.as_object()?;
+        let timing = value.get("timing")?;
+        let start = i64_field(timing, "startUtcMillis", -1);
+        let duration = i64_field(timing, "durationMillis", -1);
+        let onid = program_key.get("originalNetworkId").and_then(Value::as_i64)?;
+        let tsid = program_key.get("transportStreamId").and_then(Value::as_i64)?;
+        let sid = program_key.get("serviceId").and_then(Value::as_i64)?;
+        let event_id = program_key.get("eventId").and_then(Value::as_i64)?;
+        if onid < 0 || tsid < 0 || sid < 0 || event_id < 0 || start < 0 || duration < 0 { return None; }
         Some(Self {
             onid,
             tsid,
             sid,
             event_id,
-            start_utc_millis: i64_field(timing, "startUtcMillis", time_from(value)),
-            duration_millis: i64_field(timing, "durationMillis", duration_from(value)),
+            start_utc_millis: start,
+            duration_millis: duration,
         }.clamped())
     }
 
@@ -639,28 +609,25 @@ fn program_from_value(value: &Value, identity: ProgramIdentity, current: Option<
 }
 
 fn channel_from_value(value: &Value) -> ChannelProviderDataV1 {
-    let service_source = value.get("serviceKey").unwrap_or(value);
-    let tune_source = value.get("tune").unwrap_or(value);
-    let selector_source = tune_source.get("streamSelector").unwrap_or(tune_source);
-    let cas_source = value.get("cas").unwrap_or(value);
-    let diag_source = value.get("diagnostics").unwrap_or(value);
+    let service_source = value.get("serviceKey").unwrap_or(&Value::Null);
+    let tune_source = value.get("tune").unwrap_or(&Value::Null);
+    let cas_source = value.get("cas").unwrap_or(&Value::Null);
+    let diag_source = value.get("diagnostics").unwrap_or(&Value::Null);
     ChannelProviderDataV1 {
         schema: CHANNEL_SCHEMA_NAME.to_string(),
         schema_version: CHANNEL_SCHEMA_VERSION,
         service_key: ServiceKeyV1 {
-            original_network_id: i64_field(service_source, "originalNetworkId", i64_field(value, "originalNetworkId", -1)),
-            transport_stream_id: i64_field(service_source, "transportStreamId", i64_field(value, "transportStreamId", -1)),
-            service_id: i64_field(service_source, "serviceId", i64_field(value, "serviceId", -1)),
+            original_network_id: i64_field(service_source, "originalNetworkId", -1),
+            transport_stream_id: i64_field(service_source, "transportStreamId", -1),
+            service_id: i64_field(service_source, "serviceId", -1),
         },
         tune: ChannelTuneV1 {
-            input_id: string_opt(tune_source, "inputId"),
-            display_name: string_opt(tune_source, "displayName"),
-            system: string_field(tune_source, "system", ""),
+            input_id: string_field(tune_source, "inputId", ""),
+            display_name: string_field(tune_source, "displayName", ""),
+            delivery_system: string_field(tune_source, "deliverySystem", ""),
             frequency_hz: i64_field(tune_source, "frequencyHz", 0),
-            stream_selector: StreamSelectorV1 {
-                r#type: string_field(selector_source, "type", string_field(tune_source, "streamSelectorType", "NONE")),
-                value: string_field(selector_source, "value", string_field(tune_source, "streamSelectorValue", "")),
-            },
+            stream_id: optional_i64(tune_source, "streamId"),
+            stream_id_type: string_field(tune_source, "streamIdType", "NONE"),
             physical_channel: optional_i64(tune_source, "physicalChannel"),
             backend_hint: string_opt(tune_source, "backendHint"),
             satellite_band: string_opt(tune_source, "satelliteBand"),
@@ -672,9 +639,9 @@ fn channel_from_value(value: &Value) -> ChannelProviderDataV1 {
             clear_live_playback_supported: bool_field(cas_source, "clearLivePlaybackSupported", false),
         },
         diagnostics: ChannelDiagnosticsV1 {
-            channel_registration_ready: bool_field(diag_source, "channelRegistrationReady", bool_field(value, "channelRegistrationReady", false)),
-            epg_publishable: bool_field(diag_source, "epgPublishable", bool_field(value, "epgPublishable", false)),
-            publish_state_source: string_field(diag_source, "publishStateSource", string_field(value, "publishStateSource", "current")),
+            channel_registration_ready: bool_field(diag_source, "channelRegistrationReady", false),
+            epg_publishable: bool_field(diag_source, "epgPublishable", false),
+            publish_state_source: string_field(diag_source, "publishStateSource", "current"),
             raw_provider_data_extensions: raw_extensions_from(value, CHANNEL_KNOWN_TOP_LEVEL_KEYS),
             provider_data_truncated: None,
             provider_data_hard_limit_bytes: None,
@@ -709,7 +676,6 @@ fn cas_from(value: &Value) -> CasV1 {
 fn ratings_from(value: &Value) -> Vec<RatingV1> {
     let array = value.get("ratings").and_then(Value::as_array)
         .cloned()
-        .or_else(|| value.get("parentalRatings").and_then(Value::as_array).cloned())
         .unwrap_or_default();
     if !array.is_empty() {
         return array.into_iter().filter_map(|entry| {
@@ -773,24 +739,14 @@ fn free_ca_mode_from(value: &Value) -> Option<FreeCaModeV1> {
 }
 
 fn audio_languages_from(value: &Value) -> Vec<AudioLanguageV1> {
-    if let Some(array) = value.get("audioLanguages").and_then(Value::as_array) {
-        return array.iter().filter_map(|entry| {
-            let obj = entry.as_object()?;
-            Some(AudioLanguageV1 {
-                language: object_string(obj, "language", "jpn"),
-                source: object_string(obj, "source", "AUDIO_COMPONENT"),
-                parse_status: object_string(obj, "parseStatus", "OK"),
-            })
-        }).collect();
-    }
-    if let Some(lang) = value.get("audioLanguage").and_then(Value::as_str).filter(|s| !s.is_empty()) {
-        return vec![AudioLanguageV1 {
-            language: lang.to_string(),
-            source: "AUDIO_COMPONENT".to_string(),
-            parse_status: "OK".to_string(),
-        }];
-    }
-    Vec::new()
+    value.get("audioLanguages").and_then(Value::as_array).cloned().unwrap_or_default().into_iter().filter_map(|entry| {
+        let obj = entry.as_object()?;
+        Some(AudioLanguageV1 {
+            language: object_string(obj, "language", "jpn"),
+            source: object_string(obj, "source", "AUDIO_COMPONENT"),
+            parse_status: object_string(obj, "parseStatus", "OK"),
+        })
+    }).collect()
 }
 
 fn audio_from(value: &Value) -> Option<AudioMetadataV1> {
@@ -853,10 +809,7 @@ fn diagnostics_from(value: &Value, current: Option<CurrentProgramDiagnostics>, k
 }
 
 fn descriptor_diagnostics_from(root: &Value, diagnostics: &Value) -> Vec<DescriptorDiagnosticV1> {
-    let array = diagnostics.get("descriptorDiagnostics").and_then(Value::as_array).cloned()
-        .or_else(|| root.get("descriptorDiagnostics").and_then(Value::as_array).cloned())
-        .or_else(|| root.get("descriptorDiagnostics").and_then(Value::as_object).and_then(|obj| obj.get("diagnostics")).and_then(Value::as_array).cloned())
-        .unwrap_or_default();
+    let array = diagnostics.get("descriptorDiagnostics").and_then(Value::as_array).cloned().unwrap_or_default();
     array.into_iter().filter_map(|entry| descriptor_diagnostic_from_value(&entry, root)).collect()
 }
 
@@ -1005,7 +958,7 @@ fn descriptor_diagnostic_from_value(value: &Value, root: &Value) -> Option<Descr
             original_network_id: scope_obj.and_then(|o| o.get("originalNetworkId")).and_then(Value::as_i64).or_else(|| root.get("serviceKey").and_then(|s| s.get("originalNetworkId")).and_then(Value::as_i64)),
             transport_stream_id: scope_obj.and_then(|o| o.get("transportStreamId")).and_then(Value::as_i64).or_else(|| root.get("serviceKey").and_then(|s| s.get("transportStreamId")).and_then(Value::as_i64)),
             service_id: scope_obj.and_then(|o| o.get("serviceId")).and_then(Value::as_i64).or_else(|| root.get("serviceKey").and_then(|s| s.get("serviceId")).and_then(Value::as_i64)),
-            event_id: scope_obj.and_then(|o| o.get("eventId")).and_then(Value::as_i64).or_else(|| root.get("eventId").and_then(Value::as_i64)),
+            event_id: scope_obj.and_then(|o| o.get("eventId")).and_then(Value::as_i64).or_else(|| root.get("programKey").and_then(|s| s.get("eventId")).and_then(Value::as_i64)),
         },
         descriptor: DescriptorScopeV1 {
             tag: clamp_i64(object_i64(desc_obj, "tag", 0), 0, 255),
@@ -1030,13 +983,13 @@ fn parse_input(text: &str) -> Value {
     serde_json::from_str::<Value>(text).unwrap_or(Value::Null)
 }
 
-fn time_from(value: &Value) -> i64 { i64_field(value.get("timing").unwrap_or(value), "startUtcMillis", i64_field(value, "startTimeMillis", 0)) }
+fn time_from(value: &Value) -> i64 { i64_field(value.get("timing").unwrap_or(&Value::Null), "startUtcMillis", 0) }
 fn duration_from(value: &Value) -> i64 {
-    let timing = value.get("timing").unwrap_or(value);
-    let duration = i64_field(timing, "durationMillis", i64_field(value, "durationMillis", -1));
+    let timing = value.get("timing").unwrap_or(&Value::Null);
+    let duration = i64_field(timing, "durationMillis", -1);
     if duration >= 0 { return duration; }
-    let start = i64_field(timing, "startUtcMillis", time_from(value));
-    i64_field(timing, "endUtcMillis", i64_field(value, "endUtcMillis", start)).saturating_sub(start)
+    let start = i64_field(timing, "startUtcMillis", 0);
+    i64_field(timing, "endUtcMillis", start).saturating_sub(start)
 }
 
 fn finalize_program(data: ProgramProviderDataV1) -> ProviderDataResult {

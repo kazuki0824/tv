@@ -105,7 +105,7 @@ class NativeAribSiParser : AutoCloseable {
             hasEsCaDescriptor = obj.optBoolean("hasEsCaDescriptor"),
             serviceScopedCaDescriptors = caDescriptors,
         )
-        provisional.copy(components = parseComponents(obj.optJSONObject("components")) ?: componentsForServiceForTest(provisional))
+        provisional.copy(components = parseComponents(obj.optJSONObject("components")) ?: AribComponents())
     }
 
     private fun parseStreams(array: JSONArray?): List<AribElementaryStream> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
@@ -241,6 +241,7 @@ class NativeAribSiParser : AutoCloseable {
         val start = obj.optLong("startTimeMillis", -1L)
         val duration = obj.optLong("durationMillis", -1L)
         val descriptorsObj = obj.optJSONObject("descriptors") ?: JSONObject()
+        val sourceObj = obj.optJSONObject("source") ?: JSONObject()
         val component = descriptorsObj.optJSONObject("component") ?: JSONObject()
         val audio = descriptorsObj.optJSONObject("audio") ?: JSONObject()
         val genres = descriptorsObj.optJSONObject("genres") ?: JSONObject()

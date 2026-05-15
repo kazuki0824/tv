@@ -1,3 +1,16 @@
+## r50cq
+- r50cp 設計・実装不一致レポートの残件1〜8に対応した。
+- Program provider-data へ DescriptorDiagnosticV1 を保存する経路を復旧し、r50以前の旧 flat provider-data 入力を normalize / extract 系 API から拒否するようにした。
+- EIT section 由来 source を bulk event DTO から TIS provider-data へ渡し、DescriptorDiagnosticV1 生成は provider_data.rs の serde struct を使う形へ寄せた。
+- 旧 descriptor dump helper を test cfg に閉じ、通常 source の旧診断断片生成経路から外した。
+- Android/Soong build、Rust 単体テスト、Kotlin compile、instrumentationテスト、atest、VTS、CTS、実機確認は未実施。
+
+## r50cp
+- r50co 設計・実装不一致レポートの残件1〜7に対応した。
+- Channel provider-data の tune 形を設計どおり `deliverySystem` / `frequencyHz` / `streamId` / `streamIdType` へ統一し、旧 `system` / `streamSelector` 形を schema と実装から削除した。
+- provider-data builder の旧 descriptor diagnostic container fallback と、Rust 側の旧 flat event helper / 孤立 `#[no_mangle]` 残骸を削除した。
+- Android/Soong build、Rust 単体テスト、Kotlin compile、instrumentationテスト、atest、VTS、CTS、実機確認は未実施。
+
 ## r50co
 - r50cn 後の設計固定に従い、r50 以前の provider-data 互換入力経路を廃止した。
 - channel tune 復元 API は JSON v1 だけを受け、`;` 区切り key-value 形式を解析しないようにした。
