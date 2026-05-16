@@ -1,3 +1,34 @@
+## r50do
+- r50dn に残っていた RECORD filter の 0 byte event と `DATA_SIZE_DELAY_IN_BYTES` の矛盾を修正した。
+- RECORD filter に `DATA_SIZE_DELAY_IN_BYTES` を設定した場合は `INVALID_ARGUMENT` とし、byte 数待ちで `TsRecordEvent` が永久に配送されない経路を閉じた。
+- RECORD filter の `TIME_DELAY_IN_MS` は従来どおり受け付ける。
+- Section / PES / TS raw filter の `DATA_SIZE_DELAY_IN_BYTES` 契約は維持した。
+- Android/Soong build、Rust 単体テスト実行、atest、VTS、CTS、実機確認はこの環境では未実施。静的差分確認のみ実施した。
+
+## r50dn
+- r50dm に残った RECORD metadata event queue の entry 数上限不足と frontend_px4 RECORD test 旧仕様を修正した。
+- 0 byte の `RecordPacket` は FMQ payload bytes としては引き続き 0 byte のまま扱い、`event_bytes()` の 188 byte TS packet は `TsRecordEvent` 生成専用に保持する。
+- `push_filter_payload()` は 0 byte payload について filter buffer size から導く entry 上限を設け、上限超過時に drop-new / overflow として扱う。
+- frontend_px4 の RECORD reader pump test は、filter 側では empty bytes + event_bytes の record metadata、DVR 側では 188 byte TS packet を確認する期待へ更新した。
+- Android/Soong build、Rust 単体テスト実行、atest、VTS、CTS、実機確認はこの環境では未実施。静的差分確認のみ実施した。
+
+## r50dm
+- r50dl に残っていた `TsPes -> TsPes` の raw 表現不一致と、`TsPes -> AV` の `configureAvStreamType()` 呼び順依存を修正した。
+- `TsPes -> TsPes` は source / destination の `raw` が一致する場合だけ `setDataSource()` を成功させる。配送側でも `PesData.raw` 一致を要求し、raw PES と ES payload の混在を防止する。
+- `TsPes -> TsAudio/TsVideo` は `setDataSource()` 時点では destination の open type で audio/video を判定し、`configureAvStreamType()` 未実行だけでは拒否しない。AV filter の `start()` と配送側では引き続き `configureAvStreamType()` 済みを要求する。
+- `TsPes(raw=true) -> AV`、wildcard PES、audio/video 不一致 PES は引き続き `setDataSource()` で拒否する。
+- `future_work/not_planned/tuner_linkcaps_ts_subtype_terminal_scope.md` の `TsPes -> AV` 記載を、r50dm の呼び順方針に合わせて更新した。
+- Android/Soong build、Rust 単体テスト実行、atest、VTS、CTS、実機確認はこの環境では未実施。静的差分確認のみ実施した。
+
+## r50dl
+- r50dk に残っていた 25/26/27/28 を修正した。
+- `linkCaps` は TS main type の TS→TS 広告を維持し、subtype 終端制約との差分は `future_work/not_planned/tuner_linkcaps_ts_subtype_terminal_scope.md` に not planned 項目として固定した。
+- `TsPes -> TsAudio/TsVideo` の `setDataSource()` 成功条件を、`raw=false`、明示 stream_id、AV stream type 設定済み、audio/video 整合ありの場合だけに限定した。
+- delivery 側にも同じ guard を入れ、接続後の状態変化や root TS 経路でも audio/video 不一致の AV payload を配送しないようにした。
+- `TsPes(raw=true) -> AV` は `setDataSource()` で `InvalidKind` に倒し、AV shared memory に PES header 付き raw PES が入らないようにした。
+- AV passthrough 非対応の診断文字列を r51 限定表現から本製品の恒久非対応表現へ更新した。
+- Android/Soong build、Rust 単体テスト実行、atest、VTS、CTS、実機確認はこの環境では未実施。静的差分確認のみ実施した。
+
 ## r50dk
 - r50dj に残っていた AV passthrough / AV source filter 境界の未固定を修正した。
 - AV passthrough は本製品では恒久的に対応せず、`DemuxFilterAvSettings.isPassthrough=true` は r51 以降も configure 時点で `UNAVAILABLE` とする設計を `DESIGN_JA.md` と `開発規則.md` に固定した。

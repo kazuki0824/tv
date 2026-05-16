@@ -1270,7 +1270,11 @@ mod tests {
             })
             .unwrap();
         assert_eq!(count, 1);
-        assert_eq!(demux.pop_filter_payload(filter.filter_id).unwrap(), packet);
+        let record_event = demux
+            .pop_filter_payload_entry(filter.filter_id)
+            .expect("record index metadata should be queued");
+        assert!(record_event.bytes().is_empty());
+        assert_eq!(record_event.event_bytes(), &packet[..]);
         assert_eq!(demux.pop_dvr_payload(dvr.dvr_id).unwrap(), packet);
     }
 

@@ -421,6 +421,26 @@ pub enum AvFilterStreamKind {
     Video,
 }
 
+fn pes_stream_id_kind(stream_id: i32) -> Option<AvFilterStreamKind> {
+    match stream_id {
+        0xc0..=0xdf => Some(AvFilterStreamKind::Audio),
+        0xe0..=0xef => Some(AvFilterStreamKind::Video),
+        _ => None,
+    }
+}
+
+fn pes_stream_id_matches_av_kind(stream_id: i32, av_stream_kind: AvFilterStreamKind) -> bool {
+    pes_stream_id_kind(stream_id) == Some(av_stream_kind)
+}
+
+fn av_kind_for_filter_open_type(open_type: FilterOpenType) -> Option<AvFilterStreamKind> {
+    match open_type {
+        FilterOpenType::TsAudio => Some(AvFilterStreamKind::Audio),
+        FilterOpenType::TsVideo => Some(AvFilterStreamKind::Video),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DemuxConfigError {
     NotFound,
@@ -1091,6 +1111,72 @@ impl DemuxHandle {
         })
     }
 
+    fn validate_pes_to_av_data_source(
+        &self,
+        source: &DemuxFilterRecord,
+        destination: &DemuxFilterRecord,
+        source_config: &FilterConfig,
+        destination_config: &FilterConfig,
+    ) -> Result<(), DemuxConfigError> {
+        if !matches!(source.open_type, FilterOpenType::TsPes)
+            || !matches!(destination.open_type, FilterOpenType::TsAudio | FilterOpenType::TsVideo)
+        {
+            return Ok(());
+        }
+        let FilterConfigKind::PesData { stream_id, raw } = &source_config.kind else {
+            return Err(DemuxConfigError::InvalidKind);
+        };
+        let FilterConfigKind::Av { passthrough, .. } = &destination_config.kind else {
+            return Err(DemuxConfigError::InvalidKind);
+        };
+        if *passthrough || *raw || *stream_id < 0 {
+            return Err(DemuxConfigError::InvalidKind);
+        }
+        let Some(expected_kind) = av_kind_for_filter_open_type(destination.open_type) else {
+            return Err(DemuxConfigError::InvalidKind);
+        };
+        if !pes_stream_id_matches_av_kind(*stream_id, expected_kind) {
+            return Err(DemuxConfigError::InvalidKind);
+        }
+        Ok(())
+    }
+
+    fn validate_pes_to_pes_data_source(
+        &self,
+        source: &DemuxFilterRecord,
+        destination: &DemuxFilterRecord,
+        source_config: &FilterConfig,
+        destination_config: &FilterConfig,
+    ) -> Result<(), DemuxConfigError> {
+        if !matches!(source.open_type, FilterOpenType::TsPes)
+            || !matches!(destination.open_type, FilterOpenType::TsPes)
+        {
+            return Ok(());
+        }
+        let FilterConfigKind::PesData {
+            stream_id: source_stream_id,
+            raw: source_raw,
+        } = &source_config.kind else {
+            return Err(DemuxConfigError::InvalidKind);
+        };
+        let FilterConfigKind::PesData {
+            stream_id: destination_stream_id,
+            raw: destination_raw,
+        } = &destination_config.kind else {
+            return Err(DemuxConfigError::InvalidKind);
+        };
+        if source_raw != destination_raw {
+            return Err(DemuxConfigError::InvalidKind);
+        }
+        if *source_stream_id != -1
+            && *destination_stream_id != -1
+            && *source_stream_id != *destination_stream_id
+        {
+            return Err(DemuxConfigError::InvalidKind);
+        }
+        Ok(())
+    }
+
     pub fn validate_filter_data_source(
         &self,
         filter_id: i32,
@@ -1116,6 +1202,8 @@ impl DemuxHandle {
         if source_config.tpid != destination_config.tpid {
             return Err(DemuxConfigError::InvalidKind);
         }
+        self.validate_pes_to_av_data_source(source, destination, source_config, destination_config)?;
+        self.validate_pes_to_pes_data_source(source, destination, source_config, destination_config)?;
         if filter_id == upstream_filter_id {
             return Err(DemuxConfigError::InvalidKind);
         }
@@ -1165,6 +1253,11 @@ impl DemuxHandle {
         delay_hint: FilterDelayHintState,
     ) -> bool {
         if let Some(filter) = self.filters.get_mut(&filter_id) {
+            if matches!(filter.open_type, FilterOpenType::TsRecord)
+                && matches!(delay_hint, FilterDelayHintState::DataSizeDelayBytes(bytes) if bytes > 0)
+            {
+                return false;
+            }
             match delay_hint {
                 FilterDelayHintState::TimeDelayMs(0) => filter.delay_hints.time_delay_ms = None,
                 FilterDelayHintState::TimeDelayMs(ms) => {
@@ -2513,11 +2606,35 @@ impl DemuxHandle {
             (FilterConfigKind::Section { .. }, FilterPayload::Bytes(bytes)) => {
                 self.payload_matches_filter(filter, bytes)
             }
-            (FilterConfigKind::PesData { stream_id, .. }, FilterPayload::PesData { stream_id: payload_stream_id, .. }) => {
-                *stream_id == -1 || *stream_id == *payload_stream_id
+            (
+                FilterConfigKind::PesData { stream_id, raw },
+                FilterPayload::PesData {
+                    stream_id: payload_stream_id,
+                    raw: payload_raw,
+                    ..
+                },
+            ) => *raw == *payload_raw && (*stream_id == -1 || *stream_id == *payload_stream_id),
+            (FilterConfigKind::Av { .. }, FilterPayload::AvEs { metadata, .. }) => {
+                matches!(filter.av_stream_kind, Some(kind) if pes_stream_id_matches_av_kind(metadata.stream_id, kind))
             }
-            (FilterConfigKind::Av { .. }, FilterPayload::AvEs { .. }) => true,
-            (FilterConfigKind::Av { .. }, FilterPayload::PesData { .. }) => true,
+            (
+                FilterConfigKind::Av { .. },
+                FilterPayload::PesData {
+                    stream_id,
+                    raw,
+                    metadata,
+                    ..
+                },
+            ) => {
+                !*raw
+                    && *stream_id >= 0
+                    && matches!(
+                        filter.av_stream_kind,
+                        Some(kind)
+                            if metadata.stream_id == *stream_id
+                                && pes_stream_id_matches_av_kind(*stream_id, kind)
+                    )
+            }
             _ => false,
         }
     }
@@ -2787,7 +2904,10 @@ impl DemuxHandle {
             FilterConfigKind::PesData { stream_id, .. } => {
                 *stream_id == -1 || *stream_id == pes.stream_id as i32
             }
-            FilterConfigKind::Av { .. } => true,
+            FilterConfigKind::Av { .. } => matches!(
+                filter.av_stream_kind,
+                Some(kind) if pes_stream_id_matches_av_kind(pes.stream_id as i32, kind)
+            ),
             _ => false,
         }
     }
@@ -2878,6 +2998,22 @@ impl DemuxHandle {
                 .get(&filter_id)
                 .map(|f| f.queued_bytes)
                 .unwrap_or(0);
+            let queued_entries = self
+                .filter_queues
+                .get(&filter_id)
+                .map(|queue| queue.len())
+                .unwrap_or(0);
+            let max_zero_payload_entries = (max_bytes / TS_PACKET_SIZE).max(1);
+            if payload_len == 0 && queued_entries >= max_zero_payload_entries {
+                if let Some(filter) = self.filters.get_mut(&filter_id) {
+                    filter.pending_overflow = true;
+                    filter.overflow_events = filter.overflow_events.saturating_add(1);
+                }
+                outcome.dropped_entries = 1;
+                outcome.dropped_new = true;
+                outcome.overflowed = true;
+                return outcome;
+            }
             if queued.saturating_add(payload_len) > max_bytes {
                 if let Some(filter) = self.filters.get_mut(&filter_id) {
                     filter.pending_overflow = true;
@@ -4556,6 +4692,24 @@ mod filter_contract_tests {
     }
 
     #[test]
+    fn record_filter_rejects_data_size_delay_but_accepts_time_delay() {
+        let mut demux = DemuxHandle::new(0);
+        let record = demux
+            .register_filter_result(1, FilterOpenType::TsRecord, 4096)
+            .expect("test setup should register filter");
+        assert!(demux.configure_filter_with_summary(record.filter_id, record_config()));
+        assert!(demux.set_filter_delay_hint(record.filter_id, FilterDelayHintState::TimeDelayMs(10)));
+        assert!(!demux.set_filter_delay_hint(
+            record.filter_id,
+            FilterDelayHintState::DataSizeDelayBytes(188)
+        ));
+        assert_eq!(
+            demux.filter_record(record.filter_id).unwrap().delay_hints.data_size_delay_bytes,
+            None
+        );
+    }
+
+    #[test]
     fn time_and_data_size_delay_are_kept_independently_and_or_ready() {
         let mut demux = DemuxHandle::new(0);
         let by_time = demux
@@ -5680,6 +5834,54 @@ mod filter_dvr_state_contract_tests {
     }
 
     #[test]
+    fn zero_byte_record_events_are_limited_by_filter_queue_entry_count() {
+        let mut demux = DemuxHandle::new(0);
+        let record_filter = demux
+            .register_filter_result(1, FilterOpenType::TsRecord, TS_PACKET_SIZE as i32)
+            .expect("test setup should register filter");
+        let packet = ts_payload_packet(
+            0x0125,
+            0,
+            true,
+            &[0x00, 0x80, 0x00, 0x03, 0x44, 0x55, 0x66],
+        );
+
+        let first = demux.push_filter_payload(
+            record_filter.filter_id,
+            FilterPayload::RecordPacket(packet.clone()),
+        );
+        assert_eq!(first.dropped_entries, 0);
+        assert!(!first.overflowed);
+        assert_eq!(demux.current_filter_fill_bytes(record_filter.filter_id), Some(0));
+        assert_eq!(
+            demux
+                .filter_queues
+                .get(&record_filter.filter_id)
+                .map(|queue| queue.len()),
+            Some(1)
+        );
+
+        let second = demux.push_filter_payload(
+            record_filter.filter_id,
+            FilterPayload::RecordPacket(packet),
+        );
+        assert_eq!(second.dropped_entries, 1);
+        assert!(second.dropped_new);
+        assert!(second.overflowed);
+        assert_eq!(demux.current_filter_fill_bytes(record_filter.filter_id), Some(0));
+        let record = demux.filter_record(record_filter.filter_id).unwrap();
+        assert!(record.pending_overflow);
+        assert_eq!(record.overflow_events, 1);
+        assert_eq!(
+            demux
+                .filter_queues
+                .get(&record_filter.filter_id)
+                .map(|queue| queue.len()),
+            Some(1)
+        );
+    }
+
+    #[test]
     fn filter_flush_generation_suppresses_stale_partial_section_without_breaking_peer_filter() {
         let pid = 0x0120;
         let section = vec![0x80, 0x00, 0x03, 0xaa, 0xbb, 0xcc];
@@ -5949,6 +6151,282 @@ mod filter_dvr_state_contract_tests {
                 .data_source_filter_id,
             None
         );
+    }
+
+    fn pes_config_with(pid: u16, stream_id: i32, raw: bool) -> FilterConfig {
+        FilterConfig {
+            kind: FilterConfigKind::PesData { stream_id, raw },
+            ..pes_config(pid)
+        }
+    }
+
+    fn configured_pes_to_video_av_pair(
+        demux: &mut DemuxHandle,
+        pid: u16,
+        stream_id: i32,
+        raw: bool,
+        set_av_stream_type: bool,
+    ) -> (i32, i32) {
+        let source = demux
+            .register_filter_result(1, FilterOpenType::TsPes, TS_PACKET_SIZE * 4)
+            .expect("test setup should register filter");
+        let destination = demux
+            .register_filter_result(1, FilterOpenType::TsVideo, TS_PACKET_SIZE * 4)
+            .expect("test setup should register filter");
+        assert!(demux.configure_filter_with_summary(
+            source.filter_id,
+            pes_config_with(pid, stream_id, raw)
+        ));
+        assert!(demux.configure_filter_with_summary(destination.filter_id, av_config(pid)));
+        if set_av_stream_type {
+            assert!(demux.set_filter_av_stream_type_hint(
+                destination.filter_id,
+                0xe0,
+                AvFilterStreamKind::Video
+            ));
+        }
+        (source.filter_id, destination.filter_id)
+    }
+
+    #[test]
+    fn set_filter_data_source_allows_nonraw_video_pes_to_video_av() {
+        let pid = 0x0123;
+        let mut demux = DemuxHandle::new(0);
+        let (source, destination) = configured_pes_to_video_av_pair(&mut demux, pid, 0xe0, false, true);
+        assert_eq!(
+            demux.set_filter_data_source_result(destination, source),
+            Ok(())
+        );
+        assert_eq!(
+            demux.filter_record(destination).unwrap().data_source_filter_id,
+            Some(source)
+        );
+    }
+
+    #[test]
+    fn set_filter_data_source_allows_pes_to_pes_when_raw_mode_matches() {
+        let pid = 0x0123;
+        let mut demux = DemuxHandle::new(0);
+        let raw_source = demux
+            .register_filter_result(1, FilterOpenType::TsPes, TS_PACKET_SIZE * 4)
+            .expect("test setup should register filter");
+        let raw_destination = demux
+            .register_filter_result(1, FilterOpenType::TsPes, TS_PACKET_SIZE * 4)
+            .expect("test setup should register filter");
+        assert!(demux.configure_filter_with_summary(raw_source.filter_id, pes_config_with(pid, 0xe0, true)));
+        assert!(demux.configure_filter_with_summary(raw_destination.filter_id, pes_config_with(pid, 0xe0, true)));
+        assert_eq!(
+            demux.set_filter_data_source_result(raw_destination.filter_id, raw_source.filter_id),
+            Ok(())
+        );
+
+        let nonraw_source = demux
+            .register_filter_result(1, FilterOpenType::TsPes, TS_PACKET_SIZE * 4)
+            .expect("test setup should register filter");
+        let nonraw_destination = demux
+            .register_filter_result(1, FilterOpenType::TsPes, TS_PACKET_SIZE * 4)
+            .expect("test setup should register filter");
+        assert!(demux.configure_filter_with_summary(nonraw_source.filter_id, pes_config_with(pid, 0xe0, false)));
+        assert!(demux.configure_filter_with_summary(nonraw_destination.filter_id, pes_config_with(pid, -1, false)));
+        assert_eq!(
+            demux.set_filter_data_source_result(nonraw_destination.filter_id, nonraw_source.filter_id),
+            Ok(())
+        );
+
+        let wildcard_source = demux
+            .register_filter_result(1, FilterOpenType::TsPes, TS_PACKET_SIZE * 4)
+            .expect("test setup should register filter");
+        let explicit_destination = demux
+            .register_filter_result(1, FilterOpenType::TsPes, TS_PACKET_SIZE * 4)
+            .expect("test setup should register filter");
+        assert!(demux.configure_filter_with_summary(wildcard_source.filter_id, pes_config_with(pid, -1, false)));
+        assert!(demux.configure_filter_with_summary(explicit_destination.filter_id, pes_config_with(pid, 0xe0, false)));
+        assert_eq!(
+            demux.set_filter_data_source_result(explicit_destination.filter_id, wildcard_source.filter_id),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn set_filter_data_source_rejects_pes_to_pes_when_raw_mode_differs() {
+        let pid = 0x0123;
+        let mut demux = DemuxHandle::new(0);
+        let source = demux
+            .register_filter_result(1, FilterOpenType::TsPes, TS_PACKET_SIZE * 4)
+            .expect("test setup should register filter");
+        let destination = demux
+            .register_filter_result(1, FilterOpenType::TsPes, TS_PACKET_SIZE * 4)
+            .expect("test setup should register filter");
+        assert!(demux.configure_filter_with_summary(source.filter_id, pes_config_with(pid, 0xe0, true)));
+        assert!(demux.configure_filter_with_summary(destination.filter_id, pes_config_with(pid, 0xe0, false)));
+        assert_eq!(
+            demux.set_filter_data_source_result(destination.filter_id, source.filter_id),
+            Err(DemuxConfigError::InvalidKind)
+        );
+        assert_eq!(
+            demux.filter_record(destination.filter_id).unwrap().data_source_filter_id,
+            None
+        );
+    }
+
+    #[test]
+    fn set_filter_data_source_rejects_pes_to_pes_when_explicit_stream_ids_differ() {
+        let pid = 0x0123;
+        let mut demux = DemuxHandle::new(0);
+        let source = demux
+            .register_filter_result(1, FilterOpenType::TsPes, TS_PACKET_SIZE * 4)
+            .expect("test setup should register filter");
+        let destination = demux
+            .register_filter_result(1, FilterOpenType::TsPes, TS_PACKET_SIZE * 4)
+            .expect("test setup should register filter");
+        assert!(demux.configure_filter_with_summary(source.filter_id, pes_config_with(pid, 0xe0, false)));
+        assert!(demux.configure_filter_with_summary(destination.filter_id, pes_config_with(pid, 0xc0, false)));
+        assert_eq!(
+            demux.set_filter_data_source_result(destination.filter_id, source.filter_id),
+            Err(DemuxConfigError::InvalidKind)
+        );
+        assert_eq!(
+            demux.filter_record(destination.filter_id).unwrap().data_source_filter_id,
+            None
+        );
+    }
+
+    #[test]
+    fn pes_destination_payload_guard_rejects_raw_mode_mismatch() {
+        let pid = 0x0123;
+        let mut demux = DemuxHandle::new(0);
+        let filter = demux
+            .register_filter_result(1, FilterOpenType::TsPes, TS_PACKET_SIZE * 4)
+            .expect("test setup should register filter");
+        assert!(demux.configure_filter_with_summary(filter.filter_id, pes_config_with(pid, 0xe0, false)));
+        let record = demux.filter_record(filter.filter_id).unwrap().clone();
+        let metadata = AvPayloadMetadata {
+            pts_90khz: Some(90_000),
+            dts_90khz: None,
+            stream_id: 0xe0,
+        };
+        let nonraw_video = FilterPayload::PesData {
+            bytes: vec![1, 2, 3],
+            stream_id: 0xe0,
+            raw: false,
+            metadata: metadata.clone(),
+        };
+        let raw_video = FilterPayload::PesData {
+            bytes: vec![0, 0, 1, 0xe0, 1, 2, 3],
+            stream_id: 0xe0,
+            raw: true,
+            metadata,
+        };
+        assert!(demux.payload_entry_matches_filter(&record, &nonraw_video));
+        assert!(!demux.payload_entry_matches_filter(&record, &raw_video));
+    }
+
+    #[test]
+    fn set_filter_data_source_rejects_raw_pes_to_video_av() {
+        let pid = 0x0123;
+        let mut demux = DemuxHandle::new(0);
+        let (source, destination) = configured_pes_to_video_av_pair(&mut demux, pid, 0xe0, true, true);
+        assert_eq!(
+            demux.set_filter_data_source_result(destination, source),
+            Err(DemuxConfigError::InvalidKind)
+        );
+        assert_eq!(
+            demux.filter_record(destination).unwrap().data_source_filter_id,
+            None
+        );
+    }
+
+    #[test]
+    fn set_filter_data_source_rejects_wildcard_pes_to_video_av() {
+        let pid = 0x0123;
+        let mut demux = DemuxHandle::new(0);
+        let (source, destination) = configured_pes_to_video_av_pair(&mut demux, pid, -1, false, true);
+        assert_eq!(
+            demux.set_filter_data_source_result(destination, source),
+            Err(DemuxConfigError::InvalidKind)
+        );
+        assert_eq!(
+            demux.filter_record(destination).unwrap().data_source_filter_id,
+            None
+        );
+    }
+
+    #[test]
+    fn set_filter_data_source_rejects_audio_pes_to_video_av() {
+        let pid = 0x0123;
+        let mut demux = DemuxHandle::new(0);
+        let (source, destination) = configured_pes_to_video_av_pair(&mut demux, pid, 0xc0, false, true);
+        assert_eq!(
+            demux.set_filter_data_source_result(destination, source),
+            Err(DemuxConfigError::InvalidKind)
+        );
+        assert_eq!(
+            demux.filter_record(destination).unwrap().data_source_filter_id,
+            None
+        );
+    }
+
+    #[test]
+    fn set_filter_data_source_allows_pes_to_av_before_configure_av_stream_type_but_start_rejects() {
+        let pid = 0x0123;
+        let mut demux = DemuxHandle::new(0);
+        let (source, destination) = configured_pes_to_video_av_pair(&mut demux, pid, 0xe0, false, false);
+        assert_eq!(demux.set_filter_data_source_result(destination, source), Ok(()));
+        assert_eq!(
+            demux.filter_record(destination).unwrap().data_source_filter_id,
+            Some(source)
+        );
+        assert_eq!(
+            demux.start_filter_result(destination),
+            Err(DemuxConfigError::InvalidState)
+        );
+    }
+
+    #[test]
+    fn av_destination_payload_guard_rejects_raw_or_wrong_stream_pes() {
+        let pid = 0x0123;
+        let mut demux = DemuxHandle::new(0);
+        let av = demux
+            .register_filter_result(1, FilterOpenType::TsVideo, TS_PACKET_SIZE * 4)
+            .expect("test setup should register filter");
+        assert!(demux.configure_filter_with_summary(av.filter_id, av_config(pid)));
+        assert!(demux.set_filter_av_stream_type_hint(
+            av.filter_id,
+            0xe0,
+            AvFilterStreamKind::Video
+        ));
+        let record = demux.filter_record(av.filter_id).unwrap().clone();
+        let video_metadata = AvPayloadMetadata {
+            pts_90khz: Some(90_000),
+            dts_90khz: None,
+            stream_id: 0xe0,
+        };
+        let audio_metadata = AvPayloadMetadata {
+            pts_90khz: Some(90_000),
+            dts_90khz: None,
+            stream_id: 0xc0,
+        };
+        let nonraw_video = FilterPayload::PesData {
+            bytes: vec![1, 2, 3],
+            stream_id: 0xe0,
+            raw: false,
+            metadata: video_metadata.clone(),
+        };
+        let raw_video = FilterPayload::PesData {
+            bytes: vec![0, 0, 1, 0xe0, 1, 2, 3],
+            stream_id: 0xe0,
+            raw: true,
+            metadata: video_metadata,
+        };
+        let nonraw_audio = FilterPayload::PesData {
+            bytes: vec![4, 5, 6],
+            stream_id: 0xc0,
+            raw: false,
+            metadata: audio_metadata,
+        };
+        assert!(demux.payload_entry_matches_filter(&record, &nonraw_video));
+        assert!(!demux.payload_entry_matches_filter(&record, &raw_video));
+        assert!(!demux.payload_entry_matches_filter(&record, &nonraw_audio));
     }
 
 

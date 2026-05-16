@@ -10222,6 +10222,14 @@ fn normalize_filter_delay_hint_for_record(
             None,
         ));
     }
+    if record.open_type == FilterOpenType::TsRecord
+        && hint.hintType == FilterDelayHintType::DATA_SIZE_DELAY_IN_BYTES
+    {
+        return Err(Status::new_service_specific_error(
+            TunerResult::INVALID_ARGUMENT.0,
+            None,
+        ));
+    }
     normalize_filter_delay_hint(hint)
 }
 
@@ -10403,7 +10411,7 @@ fn build_filter_summary_for_open_type(
                     }
                     DemuxTsFilterSettingsFilterSettings::Av(av) => {
                         if av.isPassthrough {
-                            return Err(Status::new_service_specific_error(TunerResult::UNAVAILABLE.0, Some("r51ではAV passthroughは未対応です。MediaEvent/共有メモリ配送を使ってください")));
+                            return Err(Status::new_service_specific_error(TunerResult::UNAVAILABLE.0, Some("本製品ではAV passthroughは恒久的に非対応です。non-passthrough MediaEvent + 共有メモリ配送を使ってください")));
                         }
                         if av.isSecureMemory {
                             return Err(Status::new_service_specific_error(
@@ -13245,11 +13253,16 @@ mod static_completion_tests {
         assert_eq!(
             normalize_filter_delay_hint_for_record(
                 demux.filter_record(record.filter_id).unwrap(),
-                &size_hint
+                &time_hint
             )
             .unwrap(),
-            FilterDelayHintState::DataSizeDelayBytes(188)
+            FilterDelayHintState::TimeDelayMs(10)
         );
+        assert!(normalize_filter_delay_hint_for_record(
+            demux.filter_record(record.filter_id).unwrap(),
+            &size_hint
+        )
+        .is_err());
     }
 
     #[test]
