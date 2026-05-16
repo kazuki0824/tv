@@ -228,10 +228,6 @@ enum WorkerExit {
 }
 
 impl WorkerExit {
-    const Cancelled: WorkerExit = WorkerExit::StopRequested;
-    const Error: WorkerExit = WorkerExit::RuntimeFailure;
-    const Panic: WorkerExit = WorkerExit::PanicOrJoinFailure;
-
     fn is_abnormal(self) -> bool {
         matches!(
             self,
@@ -281,10 +277,10 @@ where
                     "maleicacid-tuner-hal-worker: panic stop fail-closed: worker={} worker_panic_count={}",
                     name, total
                 );
-                WorkerExit::Panic
+                WorkerExit::PanicOrJoinFailure
             }
         };
-        if matches!(exit, WorkerExit::Error) {
+        if matches!(exit, WorkerExit::RuntimeFailure) {
             let total = WORKER_ERROR_COUNT.fetch_add(1, Ordering::SeqCst).saturating_add(1);
             eprintln!(
                 "maleicacid-tuner-hal-worker: error stop fail-closed: worker={} worker_error_count={}",
@@ -320,7 +316,7 @@ fn join_worker_with_diagnostics(handle: WorkerJoinHandle, name: &'static str) ->
                 "maleicacid-tuner-hal-worker: observed uncaught panic stop during join: worker={} worker_panic_count={}",
                 name, total
             );
-            WorkerExit::Panic
+            WorkerExit::PanicOrJoinFailure
         }
     }
 }
@@ -484,7 +480,7 @@ where
         move || {
             body(Arc::clone(&signal_for_thread));
             if signal_for_thread.is_stop_requested() {
-                WorkerExit::Cancelled
+                WorkerExit::StopRequested
             } else {
                 WorkerExit::Normal
             }
@@ -656,6 +652,10 @@ fn av_payload_status_decision(
 
 fn av_payload_should_write_standard_fmq(is_media: bool) -> bool {
     !is_media
+}
+
+fn payload_uses_standard_fmq_watermarks(is_media: bool, payload: &FilterPayload) -> bool {
+    av_payload_should_write_standard_fmq(is_media) && !matches!(payload, FilterPayload::RecordPacket(_))
 }
 
 fn av_payload_should_emit_data_event(is_media: bool, av_slice: Option<AvBufferSlice>) -> bool {
@@ -1303,11 +1303,11 @@ impl SharedMemoryBacking {
                                 dvr_id,
                                 &format!("dvr_playback_consumer_failed: {err}"),
                             );
-                            return WorkerExit::Error;
+                            return WorkerExit::RuntimeFailure;
                         }
                     }
                 }
-                WorkerExit::Cancelled
+                WorkerExit::StopRequested
             },
             move |exit| {
                 if exit.is_abnormal() {
@@ -3617,7 +3617,7 @@ impl FrontendRuntime {
                             "worker=frontend_live_pump reason=frontend_backend_lock_failed",
                         );
                         self.mark_live_path_failed("frontend_backend_lock_failed");
-                        return WorkerExit::Error;
+                        return WorkerExit::RuntimeFailure;
                     };
                     if !FrontendHal::backend_tuning_active(&backend) {
                         Ok(None)
@@ -3643,7 +3643,7 @@ impl FrontendRuntime {
                     Err(detail) => {
                         self.record_runtime_failure(detail.clone());
                         self.mark_live_path_failed(&detail);
-                        return WorkerExit::Error;
+                        return WorkerExit::RuntimeFailure;
                     }
                 }
             };
@@ -3658,7 +3658,7 @@ impl FrontendRuntime {
                             format!("worker=frontend_live_pump operation=sample_ts error={err}");
                         self.record_runtime_failure(detail.clone());
                         self.mark_live_path_failed(&detail);
-                        return WorkerExit::Error;
+                        return WorkerExit::RuntimeFailure;
                     }
                 }
             } else {
@@ -3677,7 +3677,7 @@ impl FrontendRuntime {
                         "worker=frontend_live_pump reason=bound_demuxes_lock_failed",
                     );
                     self.mark_live_path_failed("bound_demuxes_lock_failed");
-                    return WorkerExit::Error;
+                    return WorkerExit::RuntimeFailure;
                 };
                 let demuxes: Vec<BoundDemuxRuntime> = demuxes_guard.values().cloned().collect();
                 drop(demuxes_guard);
@@ -3687,7 +3687,7 @@ impl FrontendRuntime {
                             "worker=frontend_live_pump reason=demux_handle_lock_failed",
                         );
                         self.mark_live_path_failed("demux_handle_lock_failed");
-                        return WorkerExit::Error;
+                        return WorkerExit::RuntimeFailure;
                     };
                     let active_descramblers = match self.descrambler_registry.snapshots_for_demux(
                         handle.demux_id(),
@@ -3700,7 +3700,7 @@ impl FrontendRuntime {
                                 "worker=frontend_live_pump reason=descrambler_registry_lock_failed",
                             );
                             self.mark_live_path_failed("descrambler_registry_lock_failed");
-                            return WorkerExit::Error;
+                            return WorkerExit::RuntimeFailure;
                         }
                     };
                     for packet in &packets {
@@ -3743,7 +3743,7 @@ impl FrontendRuntime {
                             "worker=frontend_live_pump reason=bound_demuxes_lock_failed_after_pump",
                         );
                         self.mark_live_path_failed("bound_demuxes_lock_failed_after_pump");
-                        return WorkerExit::Error;
+                        return WorkerExit::RuntimeFailure;
                     }
                 };
             if no_demux_bound {
@@ -3762,7 +3762,7 @@ impl FrontendRuntime {
             }
         }
         self.pump_stop.store(true, Ordering::SeqCst);
-        WorkerExit::Cancelled
+        WorkerExit::StopRequested
     }
 }
 
@@ -5554,12 +5554,12 @@ impl FrontendHal {
                     let detail = format!("worker=frontend_tune_worker operation=wait_for_lock error=runtime_backend_failure");
                     shared.record_runtime_failure(detail.clone());
                     shared.mark_live_path_failed(&detail);
-                    return WorkerExit::Error;
+                    return WorkerExit::RuntimeFailure;
                 }
-                return WorkerExit::Cancelled;
+                return WorkerExit::StopRequested;
             };
             if outcome.cancelled || tune_signal.is_stop_requested() {
-                return WorkerExit::Cancelled;
+                return WorkerExit::StopRequested;
             }
             if outcome.locked {
                 FrontendHal::notify_event_with_callback(&callback_registry, &shared, None, None, FrontendEventType::LOCKED);
@@ -5568,7 +5568,7 @@ impl FrontendHal {
                         let detail = format!("worker=frontend_tune_worker operation=ensure_live_pump status={:?}", status);
                         shared.record_runtime_failure(detail.clone());
                         shared.mark_live_path_failed(&detail);
-                        return WorkerExit::Error;
+                        return WorkerExit::RuntimeFailure;
                     }
                 }
             } else {
@@ -6822,8 +6822,8 @@ impl IFrontend for FrontendHal {
                         ScanPhase::FailedBackend
                         | ScanPhase::FailedCallback
                         | ScanPhase::FailedPanic,
-                    ) => WorkerExit::Error,
-                    Some(ScanPhase::Cancelled) => WorkerExit::Cancelled,
+                    ) => WorkerExit::RuntimeFailure,
+                    Some(ScanPhase::Cancelled) => WorkerExit::StopRequested,
                     _ => WorkerExit::Normal,
                 }
             },
@@ -6832,14 +6832,14 @@ impl IFrontend for FrontendHal {
                     let detail = format!("worker=frontend_scan_worker exit={:?}", exit);
                     shared_for_hook.record_runtime_failure(detail.clone());
                     match exit {
-                        WorkerExit::Panic => {
+                        WorkerExit::PanicOrJoinFailure => {
                             FrontendHal::mark_scan_session_phase(
                                 &scan_session_for_hook,
                                 session_id,
                                 ScanPhase::FailedPanic,
                             );
                         }
-                        WorkerExit::Error => {
+                        WorkerExit::RuntimeFailure => {
                             if !matches!(FrontendHal::scan_session_phase(&scan_session_for_hook, session_id), Some(phase) if phase.is_failed())
                             {
                                 FrontendHal::mark_scan_session_phase(
@@ -7645,7 +7645,7 @@ impl FilterHal {
                                 filter_id,
                                 "filter_callback_worker lost demux state",
                             );
-                            return WorkerExit::Error;
+                            return WorkerExit::RuntimeFailure;
                         };
                         let start_event_id = demux.take_filter_start_event_id_if_ready(filter_id);
                         let pending_overflow = demux.take_filter_pending_overflow(filter_id);
@@ -7665,7 +7665,7 @@ impl FilterHal {
                             filter_id,
                             "filter_callback_worker missing filter record",
                         );
-                        return WorkerExit::Error;
+                        return WorkerExit::RuntimeFailure;
                     };
                     if record.delivery_generation != observed_delivery_generation {
                         cumulative_bytes = 0;
@@ -7679,7 +7679,7 @@ impl FilterHal {
                         if let Err(err) = callback_clone.onFilterEvent(&[DemuxFilterEvent::StartId(start_id)]) {
                             eprintln!("maleicacid-tuner-hal-callback: filter_id={} start_id={} api=onFilterEvent(StartId) binder_status={:?}", filter_id, start_id, err);
                             FilterHal::fail_filter_worker(&state_clone, &runtime_io_clone, &queue_backing_clone, &av_queue_backing_clone, &av_shared_backing_clone, &closed_clone, &stop_clone, filter_id, "filter callback failure on StartId");
-                            return WorkerExit::Error;
+                            return WorkerExit::RuntimeFailure;
                         }
                     }
                     if payloads.is_empty() {
@@ -7687,7 +7687,7 @@ impl FilterHal {
                             if let Err(err) = callback_clone.onFilterStatus(DemuxFilterStatus::OVERFLOW) {
                                 eprintln!("maleicacid-tuner-hal-callback: filter_id={} api=onFilterStatus(OVERFLOW) binder_status={:?}", filter_id, err);
                                 FilterHal::fail_filter_worker(&state_clone, &runtime_io_clone, &queue_backing_clone, &av_queue_backing_clone, &av_shared_backing_clone, &closed_clone, &stop_clone, filter_id, "filter callback failure on OVERFLOW");
-                                return WorkerExit::Error;
+                                return WorkerExit::RuntimeFailure;
                             }
                         }
                         queue_backing_clone.wait_for_stop_or_timeout(Duration::from_millis(20));
@@ -7714,7 +7714,7 @@ impl FilterHal {
                                         let reason = format!("filter AV shared allocation internal_error={}", err.as_str());
                                         eprintln!("maleicacid-tuner-hal: filter_id={} AV shared allocation internal_error={}", filter_id, err.as_str());
                                         FilterHal::fail_filter_worker(&state_clone, &runtime_io_clone, &queue_backing_clone, &av_queue_backing_clone, &av_shared_backing_clone, &closed_clone, &stop_clone, filter_id, &reason);
-                                        return WorkerExit::Error;
+                                        return WorkerExit::RuntimeFailure;
                                     }
                                 };
                                 let Some(shared_backing) = shared_backing else {
@@ -7722,7 +7722,7 @@ impl FilterHal {
                                     let reason = format!("filter AV shared allocation internal_error={}", err.as_str());
                                     eprintln!("maleicacid-tuner-hal: filter_id={} AV shared allocation internal_error={}", filter_id, err.as_str());
                                     FilterHal::fail_filter_worker(&state_clone, &runtime_io_clone, &queue_backing_clone, &av_queue_backing_clone, &av_shared_backing_clone, &closed_clone, &stop_clone, filter_id, &reason);
-                                    return WorkerExit::Error;
+                                    return WorkerExit::RuntimeFailure;
                                 };
                                 let id = next_av_data_id_clone.fetch_add(1, Ordering::SeqCst);
                                 match shared_backing.allocate(id, &payload_bytes) {
@@ -7739,7 +7739,7 @@ impl FilterHal {
                                         let reason = format!("filter AV shared allocation internal_error={}", err.as_str());
                                         eprintln!("maleicacid-tuner-hal: filter_id={} AV shared allocation internal_error={}", filter_id, err.as_str());
                                         FilterHal::fail_filter_worker(&state_clone, &runtime_io_clone, &queue_backing_clone, &av_queue_backing_clone, &av_shared_backing_clone, &closed_clone, &stop_clone, filter_id, &reason);
-                                        return WorkerExit::Error;
+                                        return WorkerExit::RuntimeFailure;
                                     }
                                     Err(AvPayloadAllocateError::Delivery(result)) => {
                                         av_delivery = Some(result);
@@ -7766,30 +7766,30 @@ impl FilterHal {
                                 if let Err(err) = callback_clone.onFilterStatus(DemuxFilterStatus::DATA_READY) {
                                     eprintln!("maleicacid-tuner-hal-callback: filter_id={} api=onFilterStatus(DATA_READY) binder_status={:?}", filter_id, err);
                                     FilterHal::fail_filter_worker(&state_clone, &runtime_io_clone, &queue_backing_clone, &av_queue_backing_clone, &av_shared_backing_clone, &closed_clone, &stop_clone, filter_id, "filter callback failure on DATA_READY");
-                                    return WorkerExit::Error;
+                                    return WorkerExit::RuntimeFailure;
                                 }
                             }
                             if notify_overflow {
                                 if let Err(err) = callback_clone.onFilterStatus(DemuxFilterStatus::OVERFLOW) {
                                     eprintln!("maleicacid-tuner-hal-callback: filter_id={} api=onFilterStatus(OVERFLOW) binder_status={:?}", filter_id, err);
                                     FilterHal::fail_filter_worker(&state_clone, &runtime_io_clone, &queue_backing_clone, &av_queue_backing_clone, &av_shared_backing_clone, &closed_clone, &stop_clone, filter_id, "filter callback failure on OVERFLOW");
-                                    return WorkerExit::Error;
+                                    return WorkerExit::RuntimeFailure;
                                 }
                             }
-                            if !is_media {
+                            if payload_uses_standard_fmq_watermarks(is_media, &payload) {
                                 let high_water = record.buffer_size.max(0) as usize * 3 / 4;
                                 let low_water = record.buffer_size.max(0) as usize / 4;
                                 if high_water > 0 && fill >= high_water {
                                     if let Err(err) = callback_clone.onFilterStatus(DemuxFilterStatus::HIGH_WATER) {
                                         eprintln!("maleicacid-tuner-hal-callback: filter_id={} api=onFilterStatus(HIGH_WATER) binder_status={:?}", filter_id, err);
                                         FilterHal::fail_filter_worker(&state_clone, &runtime_io_clone, &queue_backing_clone, &av_queue_backing_clone, &av_shared_backing_clone, &closed_clone, &stop_clone, filter_id, "filter callback failure on HIGH_WATER");
-                                        return WorkerExit::Error;
+                                        return WorkerExit::RuntimeFailure;
                                     }
                                 } else if low_water > 0 && fill <= low_water {
                                     if let Err(err) = callback_clone.onFilterStatus(DemuxFilterStatus::LOW_WATER) {
                                         eprintln!("maleicacid-tuner-hal-callback: filter_id={} api=onFilterStatus(LOW_WATER) binder_status={:?}", filter_id, err);
                                         FilterHal::fail_filter_worker(&state_clone, &runtime_io_clone, &queue_backing_clone, &av_queue_backing_clone, &av_shared_backing_clone, &closed_clone, &stop_clone, filter_id, "filter callback failure on LOW_WATER");
-                                        return WorkerExit::Error;
+                                        return WorkerExit::RuntimeFailure;
                                     }
                                 }
                             }
@@ -7805,7 +7805,7 @@ impl FilterHal {
                                     if let Err(err) = callback_clone.onFilterEvent(&[event]) {
                                         eprintln!("maleicacid-tuner-hal-callback: filter_id={} api=onFilterEvent(data) binder_status={:?}", filter_id, err);
                                         FilterHal::fail_filter_worker(&state_clone, &runtime_io_clone, &queue_backing_clone, &av_queue_backing_clone, &av_shared_backing_clone, &closed_clone, &stop_clone, filter_id, "filter callback failure on データイベント");
-                                        return WorkerExit::Error;
+                                        return WorkerExit::RuntimeFailure;
                                     }
                                 }
                             }
@@ -7813,7 +7813,7 @@ impl FilterHal {
                         cumulative_bytes = cumulative_bytes.saturating_add(event_payload_bytes.len() as u64);
                     }
                 }
-                WorkerExit::Cancelled
+                WorkerExit::StopRequested
             }, move |exit| {
                 if exit.is_abnormal() {
                     FilterHal::fail_filter_worker(
@@ -8576,11 +8576,11 @@ impl DvrHal {
                     let (thresholds, status_mask, interval_hint_ms, running, pending_overflow, payloads) = {
                         let Some(mut demux) = lock_mutex_option(&state, "demux_handle") else {
                             DvrHal::fail_dvr_worker(&state, &runtime_io_clone, &queue_backing_clone, &closed_clone, &cleanup_complete_clone, Some(&last_cleanup_steps_clone), &callback_stop, &callback_wake_clone, dvr_id, "dvr_callback_worker lost demux state");
-                            return WorkerExit::Error;
+                            return WorkerExit::RuntimeFailure;
                         };
                         let Some(record) = demux.dvr_record(dvr_id).cloned() else {
                             DvrHal::fail_dvr_worker(&state, &runtime_io_clone, &queue_backing_clone, &closed_clone, &cleanup_complete_clone, Some(&last_cleanup_steps_clone), &callback_stop, &callback_wake_clone, dvr_id, "dvr_callback_worker missing dvr record");
-                            return WorkerExit::Error;
+                            return WorkerExit::RuntimeFailure;
                         };
                         let running = record.started;
                         let interval = record.status_check_interval_hint_ms;
@@ -8601,14 +8601,14 @@ impl DvrHal {
                             if let Err(err) = callback.onRecordStatus(RecordStatus::DATA_READY) {
                                 eprintln!("maleicacid-tuner-hal-callback: dvr_id={} api=onRecordStatus(DATA_READY) binder_status={:?}", dvr_id, err);
                                 DvrHal::fail_dvr_worker(&state, &runtime_io_clone, &queue_backing_clone, &closed_clone, &cleanup_complete_clone, Some(&last_cleanup_steps_clone), &callback_stop, &callback_wake_clone, dvr_id, "dvr callback failure on DATA_READY");
-                                return WorkerExit::Error;
+                                return WorkerExit::RuntimeFailure;
                             }
                         }
                         if overflow && Self::status_mask_allows(status_mask, RecordStatus::OVERFLOW.0) {
                             if let Err(err) = callback.onRecordStatus(RecordStatus::OVERFLOW) {
                                 eprintln!("maleicacid-tuner-hal-callback: dvr_id={} api=onRecordStatus(OVERFLOW) binder_status={:?}", dvr_id, err);
                                 DvrHal::fail_dvr_worker(&state, &runtime_io_clone, &queue_backing_clone, &closed_clone, &cleanup_complete_clone, Some(&last_cleanup_steps_clone), &callback_stop, &callback_wake_clone, dvr_id, "dvr callback failure on OVERFLOW");
-                                return WorkerExit::Error;
+                                return WorkerExit::RuntimeFailure;
                             }
                         }
                     }
@@ -8621,7 +8621,7 @@ impl DvrHal {
                                     if let Err(err) = callback.onRecordStatus(status) {
                                     eprintln!("maleicacid-tuner-hal-callback: dvr_id={} api=onRecordStatus(threshold) binder_status={:?}", dvr_id, err);
                                     DvrHal::fail_dvr_worker(&state, &runtime_io_clone, &queue_backing_clone, &closed_clone, &cleanup_complete_clone, Some(&last_cleanup_steps_clone), &callback_stop, &callback_wake_clone, dvr_id, "dvr callback failure on record threshold");
-                                    return WorkerExit::Error;
+                                    return WorkerExit::RuntimeFailure;
                                 }
                                 }
                             }
@@ -8632,7 +8632,7 @@ impl DvrHal {
                                         if let Err(err) = callback.onPlaybackStatus(status) {
                                         eprintln!("maleicacid-tuner-hal-callback: dvr_id={} api=onPlaybackStatus(threshold) binder_status={:?}", dvr_id, err);
                                         DvrHal::fail_dvr_worker(&state, &runtime_io_clone, &queue_backing_clone, &closed_clone, &cleanup_complete_clone, Some(&last_cleanup_steps_clone), &callback_stop, &callback_wake_clone, dvr_id, "dvr callback failure on playback threshold");
-                                        return WorkerExit::Error;
+                                        return WorkerExit::RuntimeFailure;
                                     }
                                     }
                                 }
@@ -8643,7 +8643,7 @@ impl DvrHal {
                     let sleep_ms = u64::try_from(interval_hint_ms).unwrap_or(DVR_DEFAULT_STATUS_CHECK_INTERVAL_MS as u64);
                     DvrHal::wait_for_callback_interval(&callback_stop, &callback_wake_clone, Duration::from_millis(sleep_ms));
                 }
-                WorkerExit::Cancelled
+                WorkerExit::StopRequested
             }, move |exit| {
                 if exit.is_abnormal() {
                     DvrHal::fail_dvr_worker(
@@ -11807,6 +11807,23 @@ mod vts_contract_tests {
     }
 
     #[test]
+    fn record_packet_does_not_use_standard_fmq_watermarks() {
+        let packet = record_ts_packet(0x0123, true, 0);
+        assert!(!payload_uses_standard_fmq_watermarks(
+            false,
+            &FilterPayload::RecordPacket(packet)
+        ));
+        assert!(payload_uses_standard_fmq_watermarks(
+            false,
+            &FilterPayload::TsPacket(vec![0x47; TS_PACKET_SIZE])
+        ));
+        assert!(!payload_uses_standard_fmq_watermarks(
+            true,
+            &FilterPayload::TsPacket(vec![0x47; TS_PACKET_SIZE])
+        ));
+    }
+
+    #[test]
     fn av_sync_is_exposed_through_av_filters_without_time_filter_claim() {
         let hal = TunerHal::new();
         let caps = hal.getDemuxCaps().unwrap();
@@ -14844,11 +14861,11 @@ mod contract_regression_tests {
     #[test]
     fn worker_exit_contract_distinguishes_all_terminal_reasons() {
         assert!(!WorkerExit::Normal.is_abnormal());
-        assert!(!WorkerExit::Cancelled.is_abnormal());
-        assert!(WorkerExit::Error.is_abnormal());
-        assert!(WorkerExit::Panic.is_abnormal());
-        assert_ne!(WorkerExit::Normal, WorkerExit::Cancelled);
-        assert_ne!(WorkerExit::Error, WorkerExit::Panic);
+        assert!(!WorkerExit::StopRequested.is_abnormal());
+        assert!(WorkerExit::RuntimeFailure.is_abnormal());
+        assert!(WorkerExit::PanicOrJoinFailure.is_abnormal());
+        assert_ne!(WorkerExit::Normal, WorkerExit::StopRequested);
+        assert_ne!(WorkerExit::RuntimeFailure, WorkerExit::PanicOrJoinFailure);
     }
 
     #[test]
@@ -15009,7 +15026,7 @@ mod contract_regression_tests {
         )
         .unwrap();
         cancelled_worker.stop_and_join();
-        assert_eq!(rx_cancel.recv().unwrap(), WorkerExit::Cancelled);
+        assert_eq!(rx_cancel.recv().unwrap(), WorkerExit::StopRequested);
 
         let (tx_panic, rx_panic) = std::sync::mpsc::channel();
         let mut panic_worker = spawn_managed_worker_with_exit_hook(
@@ -15023,7 +15040,7 @@ mod contract_regression_tests {
         )
         .unwrap();
         panic_worker.stop_and_join();
-        assert_eq!(rx_panic.recv().unwrap(), WorkerExit::Panic);
+        assert_eq!(rx_panic.recv().unwrap(), WorkerExit::PanicOrJoinFailure);
     }
 
     #[test]

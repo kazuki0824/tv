@@ -33,6 +33,7 @@ pub enum QueueKind {
 pub enum FilterQueueDiscipline {
     PacketPassthrough,
     SectionReassembled,
+    RecordEventMetadata,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -42,23 +43,50 @@ pub enum DvrQueueDiscipline {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QueueOverflowPolicy {
+    DropNew,
+    DropOld,
+    MetadataEntryDropNew,
+    ProducerBackpressure,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct QueuePolicy {
     pub bounded_bytes: usize,
-    pub oldest_drop: bool,
+    pub bounded_entries: Option<usize>,
+    pub overflow_policy: QueueOverflowPolicy,
 }
 
 impl QueuePolicy {
-    pub const fn bounded(bounded_bytes: usize) -> Self {
+    pub const fn bounded_drop_old(bounded_bytes: usize) -> Self {
         Self {
             bounded_bytes,
-            oldest_drop: true,
+            bounded_entries: None,
+            overflow_policy: QueueOverflowPolicy::DropOld,
         }
     }
 
     pub const fn bounded_drop_new(bounded_bytes: usize) -> Self {
         Self {
             bounded_bytes,
-            oldest_drop: false,
+            bounded_entries: None,
+            overflow_policy: QueueOverflowPolicy::DropNew,
+        }
+    }
+
+    pub const fn bounded_metadata_entries(bounded_entries: usize) -> Self {
+        Self {
+            bounded_bytes: 0,
+            bounded_entries: Some(bounded_entries),
+            overflow_policy: QueueOverflowPolicy::MetadataEntryDropNew,
+        }
+    }
+
+    pub const fn producer_backpressure(bounded_bytes: usize) -> Self {
+        Self {
+            bounded_bytes,
+            bounded_entries: None,
+            overflow_policy: QueueOverflowPolicy::ProducerBackpressure,
         }
     }
 }
@@ -105,17 +133,60 @@ pub struct FilterContractSkeleton {
     pub filter_id: i32,
     pub buffer_size: usize,
     pub lifecycle: FilterLifecycleState,
+    pub discipline: FilterQueueDiscipline,
     pub output_queue: QueuePolicy,
 }
 
 impl FilterContractSkeleton {
-    pub fn new(filter_id: i32, buffer_size: usize) -> Self {
+    pub fn new(
+        filter_id: i32,
+        buffer_size: usize,
+        discipline: FilterQueueDiscipline,
+        output_queue: QueuePolicy,
+    ) -> Self {
         Self {
             filter_id,
             buffer_size,
             lifecycle: FilterLifecycleState::Allocated,
-            output_queue: QueuePolicy::bounded(buffer_size),
+            discipline,
+            output_queue,
         }
+    }
+
+    pub fn new_packet_passthrough_drop_new(filter_id: i32, buffer_size: usize) -> Self {
+        Self::new(
+            filter_id,
+            buffer_size,
+            FilterQueueDiscipline::PacketPassthrough,
+            QueuePolicy::bounded_drop_new(buffer_size),
+        )
+    }
+
+    pub fn new_section_reassembled(filter_id: i32, buffer_size: usize) -> Self {
+        Self::new(
+            filter_id,
+            buffer_size,
+            FilterQueueDiscipline::SectionReassembled,
+            QueuePolicy::bounded_drop_new(buffer_size),
+        )
+    }
+
+    pub fn new_av_media(filter_id: i32, buffer_size: usize) -> Self {
+        Self::new(
+            filter_id,
+            buffer_size,
+            FilterQueueDiscipline::PacketPassthrough,
+            QueuePolicy::bounded_drop_old(buffer_size),
+        )
+    }
+
+    pub fn new_record_metadata(filter_id: i32, bounded_entries: usize) -> Self {
+        Self::new(
+            filter_id,
+            0,
+            FilterQueueDiscipline::RecordEventMetadata,
+            QueuePolicy::bounded_metadata_entries(bounded_entries),
+        )
     }
 
     pub fn configure(&mut self) {
@@ -134,14 +205,10 @@ impl FilterContractSkeleton {
         self.lifecycle = FilterLifecycleState::Closed;
     }
 
-    pub fn queue_model(&self, section_reassembled: bool) -> FilterQueueModel {
+    pub fn queue_model(&self) -> FilterQueueModel {
         FilterQueueModel {
             queue_kind: QueueKind::FilterOutput,
-            discipline: if section_reassembled {
-                FilterQueueDiscipline::SectionReassembled
-            } else {
-                FilterQueueDiscipline::PacketPassthrough
-            },
+            discipline: self.discipline,
             policy: self.output_queue,
         }
     }
@@ -163,7 +230,10 @@ impl DvrContractSkeleton {
             direction,
             buffer_size,
             lifecycle: DvrLifecycleState::Allocated,
-            queue: QueuePolicy::bounded(buffer_size),
+            queue: match direction {
+                DvrDirection::Record => QueuePolicy::bounded_drop_new(buffer_size),
+                DvrDirection::Playback => QueuePolicy::producer_backpressure(buffer_size),
+            },
         }
     }
 
@@ -195,7 +265,7 @@ impl DvrContractSkeleton {
             },
             policy: match self.direction {
                 DvrDirection::Record => QueuePolicy::bounded_drop_new(self.buffer_size),
-                DvrDirection::Playback => self.queue,
+                DvrDirection::Playback => QueuePolicy::producer_backpressure(self.buffer_size),
             },
         }
     }
@@ -217,23 +287,43 @@ pub struct DvrQueueModel {
 
 #[cfg(test)]
 mod tests {
-
-    use super::{DvrContractSkeleton, DvrDirection, DvrLifecycleState, DvrQueueDiscipline, FilterContractSkeleton, FilterLifecycleState, FilterQueueDiscipline, QueueKind};
+    use super::{
+        DvrContractSkeleton, DvrDirection, DvrLifecycleState, DvrQueueDiscipline,
+        FilterContractSkeleton, FilterLifecycleState, FilterQueueDiscipline, QueueKind,
+        QueueOverflowPolicy,
+    };
 
     #[test]
-    fn filter_contract_switches_between_section_and_packet_disciplines() {
-        let mut filter = FilterContractSkeleton::new(1, 4096);
-        assert_eq!(filter.lifecycle, FilterLifecycleState::Allocated);
-        filter.configure();
-        filter.start();
-        let section = filter.queue_model(true);
-        let packet = filter.queue_model(false);
-        assert_eq!(section.queue_kind, QueueKind::FilterOutput);
+    fn filter_contract_exposes_explicit_queue_disciplines_and_policies() {
+        let mut packet = FilterContractSkeleton::new_packet_passthrough_drop_new(1, 4096);
+        assert_eq!(packet.lifecycle, FilterLifecycleState::Allocated);
+        packet.configure();
+        packet.start();
+        let packet_model = packet.queue_model();
+        assert_eq!(packet_model.queue_kind, QueueKind::FilterOutput);
+        assert_eq!(packet_model.discipline, FilterQueueDiscipline::PacketPassthrough);
+        assert_eq!(packet_model.policy.bounded_entries, None);
+        assert_eq!(packet_model.policy.overflow_policy, QueueOverflowPolicy::DropNew);
+        packet.stop();
+        packet.close();
+        assert_eq!(packet.lifecycle, FilterLifecycleState::Closed);
+
+        let section = FilterContractSkeleton::new_section_reassembled(2, 4096).queue_model();
         assert_eq!(section.discipline, FilterQueueDiscipline::SectionReassembled);
-        assert_eq!(packet.discipline, FilterQueueDiscipline::PacketPassthrough);
-        filter.stop();
-        filter.close();
-        assert_eq!(filter.lifecycle, FilterLifecycleState::Closed);
+        assert_eq!(section.policy.overflow_policy, QueueOverflowPolicy::DropNew);
+
+        let av = FilterContractSkeleton::new_av_media(3, 4096).queue_model();
+        assert_eq!(av.discipline, FilterQueueDiscipline::PacketPassthrough);
+        assert_eq!(av.policy.overflow_policy, QueueOverflowPolicy::DropOld);
+
+        let record = FilterContractSkeleton::new_record_metadata(4, 8).queue_model();
+        assert_eq!(record.discipline, FilterQueueDiscipline::RecordEventMetadata);
+        assert_eq!(record.policy.bounded_bytes, 0);
+        assert_eq!(record.policy.bounded_entries, Some(8));
+        assert_eq!(
+            record.policy.overflow_policy,
+            QueueOverflowPolicy::MetadataEntryDropNew
+        );
     }
 
     #[test]
@@ -244,6 +334,8 @@ mod tests {
         let record_model = record.queue_model();
         assert_eq!(record_model.queue_kind, QueueKind::DvrRecord);
         assert_eq!(record_model.discipline, DvrQueueDiscipline::PacketPassthrough);
+        assert_eq!(record.queue.overflow_policy, QueueOverflowPolicy::DropNew);
+        assert_eq!(record_model.policy.overflow_policy, QueueOverflowPolicy::DropNew);
 
         let mut playback = DvrContractSkeleton::new(11, DvrDirection::Playback, 32768);
         playback.configure();
@@ -251,6 +343,14 @@ mod tests {
         let playback_model = playback.queue_model();
         assert_eq!(playback_model.queue_kind, QueueKind::DvrPlayback);
         assert_eq!(playback_model.discipline, DvrQueueDiscipline::PlaybackReinject);
+        assert_eq!(
+            playback.queue.overflow_policy,
+            QueueOverflowPolicy::ProducerBackpressure
+        );
+        assert_eq!(
+            playback_model.policy.overflow_policy,
+            QueueOverflowPolicy::ProducerBackpressure
+        );
 
         playback.stop();
         playback.close();

@@ -14,7 +14,7 @@ use maleicacid_tuner_hal_common::{
 };
 use maleicacid_tuner_hal_dvr::{
     DvrQueueDiscipline, DvrQueueModel, FilterQueueDiscipline, FilterQueueModel, QueueKind,
-    QueuePolicy,
+    QueueOverflowPolicy, QueuePolicy,
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::{Duration, Instant};
@@ -680,6 +680,10 @@ pub struct DemuxHandle {
     closed: bool,
 }
 
+fn zero_payload_entry_limit(buffer_size: i32) -> usize {
+    ((buffer_size.max(0) as usize) / TS_PACKET_SIZE).max(1)
+}
+
 impl DemuxHandle {
     pub fn new(demux_id: i32) -> Self {
         Self {
@@ -1254,7 +1258,7 @@ impl DemuxHandle {
     ) -> bool {
         if let Some(filter) = self.filters.get_mut(&filter_id) {
             if matches!(filter.open_type, FilterOpenType::TsRecord)
-                && matches!(delay_hint, FilterDelayHintState::DataSizeDelayBytes(bytes) if bytes > 0)
+                && matches!(delay_hint, FilterDelayHintState::DataSizeDelayBytes(_))
             {
                 return false;
             }
@@ -2017,8 +2021,19 @@ impl DemuxHandle {
     }
 
     pub fn has_filter_payload_ready(&self, filter_id: i32) -> bool {
-        self.current_filter_fill_bytes(filter_id)
-            .map_or(false, |n| n > 0)
+        let queued_bytes_ready = self
+            .filters
+            .get(&filter_id)
+            .map_or(false, |filter| filter.queued_bytes > 0);
+        let queued_entry_ready = self
+            .filter_queues
+            .get(&filter_id)
+            .map_or(false, |queue| !queue.is_empty());
+        queued_bytes_ready || queued_entry_ready
+    }
+
+    pub fn current_filter_queue_entries(&self, filter_id: i32) -> Option<usize> {
+        self.filter_queues.get(&filter_id).map(|queue| queue.len())
     }
 
     pub fn dvr_threshold_state(
@@ -2037,13 +2052,24 @@ impl DemuxHandle {
 
     pub fn filter_queue_model(&self, filter_id: i32) -> Option<FilterQueueModel> {
         let filter = self.filters.get(&filter_id)?;
+        let discipline = match filter.config.as_ref().map(|cfg| &cfg.kind) {
+            Some(FilterConfigKind::Section { .. }) => FilterQueueDiscipline::SectionReassembled,
+            Some(FilterConfigKind::Record { .. }) => FilterQueueDiscipline::RecordEventMetadata,
+            _ => FilterQueueDiscipline::PacketPassthrough,
+        };
+        let policy = match discipline {
+            FilterQueueDiscipline::RecordEventMetadata => {
+                QueuePolicy::bounded_metadata_entries(zero_payload_entry_limit(filter.buffer_size))
+            }
+            _ if filter.open_type.is_media() => {
+                QueuePolicy::bounded_drop_old(filter.buffer_size.max(0) as usize)
+            }
+            _ => QueuePolicy::bounded_drop_new(filter.buffer_size.max(0) as usize),
+        };
         Some(FilterQueueModel {
             queue_kind: QueueKind::FilterOutput,
-            discipline: match filter.config.as_ref().map(|cfg| &cfg.kind) {
-                Some(FilterConfigKind::Section { .. }) => FilterQueueDiscipline::SectionReassembled,
-                _ => FilterQueueDiscipline::PacketPassthrough,
-            },
-            policy: QueuePolicy::bounded(filter.buffer_size.max(0) as usize),
+            discipline,
+            policy,
         })
     }
 
@@ -2063,7 +2089,7 @@ impl DemuxHandle {
                     QueuePolicy::bounded_drop_new(dvr.buffer_size.max(0) as usize)
                 }
                 DemuxPathDirection::Playback => {
-                    QueuePolicy::bounded(dvr.buffer_size.max(0) as usize)
+                    QueuePolicy::producer_backpressure(dvr.buffer_size.max(0) as usize)
                 }
             },
         })
@@ -2992,7 +3018,7 @@ impl DemuxHandle {
             .map(|f| f.open_type.is_media())
             .unwrap_or(false);
         let mut outcome = QueuePushOutcome::default();
-        if max_bytes > 0 && !drop_old_policy {
+        if !drop_old_policy {
             let queued = self
                 .filters
                 .get(&filter_id)
@@ -3003,8 +3029,9 @@ impl DemuxHandle {
                 .get(&filter_id)
                 .map(|queue| queue.len())
                 .unwrap_or(0);
-            let max_zero_payload_entries = (max_bytes / TS_PACKET_SIZE).max(1);
-            if payload_len == 0 && queued_entries >= max_zero_payload_entries {
+            let is_record_metadata_event = matches!(payload, FilterPayload::RecordPacket(_));
+            let max_zero_payload_entries = zero_payload_entry_limit(max_bytes as i32);
+            if is_record_metadata_event && queued_entries >= max_zero_payload_entries {
                 if let Some(filter) = self.filters.get_mut(&filter_id) {
                     filter.pending_overflow = true;
                     filter.overflow_events = filter.overflow_events.saturating_add(1);
@@ -3014,7 +3041,7 @@ impl DemuxHandle {
                 outcome.overflowed = true;
                 return outcome;
             }
-            if queued.saturating_add(payload_len) > max_bytes {
+            if max_bytes > 0 && queued.saturating_add(payload_len) > max_bytes {
                 if let Some(filter) = self.filters.get_mut(&filter_id) {
                     filter.pending_overflow = true;
                     filter.overflow_events = filter.overflow_events.saturating_add(1);
@@ -4701,6 +4728,10 @@ mod filter_contract_tests {
         assert!(demux.set_filter_delay_hint(record.filter_id, FilterDelayHintState::TimeDelayMs(10)));
         assert!(!demux.set_filter_delay_hint(
             record.filter_id,
+            FilterDelayHintState::DataSizeDelayBytes(0)
+        ));
+        assert!(!demux.set_filter_delay_hint(
+            record.filter_id,
             FilterDelayHintState::DataSizeDelayBytes(188)
         ));
         assert_eq!(
@@ -5517,6 +5548,37 @@ mod filter_dvr_state_contract_tests {
     }
 
     #[test]
+    fn non_media_filter_overflow_drops_new_but_media_filter_drops_old() {
+        let mut non_media = DemuxHandle::new(0);
+        let raw = non_media
+            .register_filter_result(1, FilterOpenType::TsRaw, 3)
+            .expect("test setup should register filter");
+        assert!(non_media.configure_filter_with_summary(raw.filter_id, raw_config(0x0100)));
+        let first = non_media.push_filter_payload(raw.filter_id, FilterPayload::Bytes(vec![1, 2, 3]));
+        assert!(!first.overflowed);
+        let second = non_media.push_filter_payload(raw.filter_id, FilterPayload::Bytes(vec![4]));
+        assert!(second.dropped_new);
+        assert!(second.overflowed);
+        let kept = non_media.drain_filter_payloads(raw.filter_id);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].bytes(), &[1, 2, 3]);
+
+        let mut media = DemuxHandle::new(1);
+        let video = media
+            .register_filter_result(1, FilterOpenType::TsVideo, 3)
+            .expect("test setup should register filter");
+        assert!(media.configure_filter_with_summary(video.filter_id, av_config(0x0100)));
+        let first = media.push_filter_payload(video.filter_id, FilterPayload::Bytes(vec![1, 2, 3]));
+        assert!(!first.overflowed);
+        let second = media.push_filter_payload(video.filter_id, FilterPayload::Bytes(vec![4]));
+        assert!(second.dropped_old);
+        assert!(second.overflowed);
+        let kept = media.drain_filter_payloads(video.filter_id);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].bytes(), &[4]);
+    }
+
+    #[test]
     fn record_dvr_overflow_drops_new_packet_and_reports_pending_overflow() {
         let mut demux = DemuxHandle::new(0);
         let dvr = demux
@@ -5853,13 +5915,8 @@ mod filter_dvr_state_contract_tests {
         assert_eq!(first.dropped_entries, 0);
         assert!(!first.overflowed);
         assert_eq!(demux.current_filter_fill_bytes(record_filter.filter_id), Some(0));
-        assert_eq!(
-            demux
-                .filter_queues
-                .get(&record_filter.filter_id)
-                .map(|queue| queue.len()),
-            Some(1)
-        );
+        assert_eq!(demux.current_filter_queue_entries(record_filter.filter_id), Some(1));
+        assert!(demux.has_filter_payload_ready(record_filter.filter_id));
 
         let second = demux.push_filter_payload(
             record_filter.filter_id,
@@ -5872,12 +5929,101 @@ mod filter_dvr_state_contract_tests {
         let record = demux.filter_record(record_filter.filter_id).unwrap();
         assert!(record.pending_overflow);
         assert_eq!(record.overflow_events, 1);
+        assert_eq!(demux.current_filter_queue_entries(record_filter.filter_id), Some(1));
+    }
+
+    #[test]
+    fn filter_queue_model_matches_payload_discipline_and_overflow_policy() {
+        let mut demux = DemuxHandle::new(0);
+        let cases = [
+            (
+                FilterOpenType::TsRaw,
+                raw_config(0x0125),
+                FilterQueueDiscipline::PacketPassthrough,
+                None,
+            ),
+            (
+                FilterOpenType::TsSection,
+                section_config(0x0125),
+                FilterQueueDiscipline::SectionReassembled,
+                None,
+            ),
+            (
+                FilterOpenType::TsPes,
+                pes_config(0x0125),
+                FilterQueueDiscipline::PacketPassthrough,
+                None,
+            ),
+            (
+                FilterOpenType::TsAudio,
+                av_config(0x0125),
+                FilterQueueDiscipline::PacketPassthrough,
+                None,
+            ),
+            (
+                FilterOpenType::TsVideo,
+                av_config(0x0125),
+                FilterQueueDiscipline::PacketPassthrough,
+                None,
+            ),
+            (
+                FilterOpenType::TsRecord,
+                record_config(0x0125),
+                FilterQueueDiscipline::RecordEventMetadata,
+                Some(2),
+            ),
+        ];
+        for (open_type, config, discipline, bounded_entries) in cases {
+            let filter = demux
+                .register_filter_result(1, open_type, (TS_PACKET_SIZE * 2) as i32)
+                .expect("test setup should register filter");
+            assert!(demux.configure_filter_with_summary(filter.filter_id, config));
+            let model = demux
+                .filter_queue_model(filter.filter_id)
+                .expect("filter queue model should exist");
+            assert_eq!(model.discipline, discipline);
+            assert_eq!(model.policy.bounded_entries, bounded_entries);
+            let expected_policy = match discipline {
+                FilterQueueDiscipline::RecordEventMetadata => {
+                    QueueOverflowPolicy::MetadataEntryDropNew
+                }
+                _ if open_type.is_media() => QueueOverflowPolicy::DropOld,
+                _ => QueueOverflowPolicy::DropNew,
+            };
+            assert_eq!(model.policy.overflow_policy, expected_policy);
+            if matches!(discipline, FilterQueueDiscipline::RecordEventMetadata) {
+                assert_eq!(model.policy.bounded_bytes, 0);
+            } else {
+                assert_eq!(model.policy.bounded_bytes, (TS_PACKET_SIZE * 2) as usize);
+            }
+        }
+    }
+
+    #[test]
+    fn dvr_queue_model_distinguishes_record_output_and_playback_input_policy() {
+        let mut demux = DemuxHandle::new(0);
+        let record = demux
+            .register_dvr(DemuxPathDirection::Record, TS_PACKET_SIZE * 4)
+            .expect("test setup should register record dvr");
+        let playback = demux
+            .register_dvr(DemuxPathDirection::Playback, TS_PACKET_SIZE * 4)
+            .expect("test setup should register playback dvr");
+
+        let record_model = demux
+            .dvr_queue_model(record.dvr_id)
+            .expect("record dvr model should exist");
+        assert_eq!(record_model.queue_kind, QueueKind::DvrRecord);
+        assert_eq!(record_model.discipline, DvrQueueDiscipline::PacketPassthrough);
+        assert_eq!(record_model.policy.overflow_policy, QueueOverflowPolicy::DropNew);
+
+        let playback_model = demux
+            .dvr_queue_model(playback.dvr_id)
+            .expect("playback dvr model should exist");
+        assert_eq!(playback_model.queue_kind, QueueKind::DvrPlayback);
+        assert_eq!(playback_model.discipline, DvrQueueDiscipline::PlaybackReinject);
         assert_eq!(
-            demux
-                .filter_queues
-                .get(&record_filter.filter_id)
-                .map(|queue| queue.len()),
-            Some(1)
+            playback_model.policy.overflow_policy,
+            QueueOverflowPolicy::ProducerBackpressure
         );
     }
 
