@@ -171,6 +171,8 @@ tune / scan ロック timeout は、backend 種別、ISDB-T、BS、CS110 を問�
 
 Tuner HAL は `IDvr` を 対応宣言対象とする。DVR は 188-byte MPEG-TS のみを受け入れ、192-byte / 204-byte TS、MMT、TLV は扱わない。DVR record gate は ISDB-T、BS、CS110 のすべてに掛ける。TIS の予約 UI と予約スケジューラは 後続対象だが、HAL の `IDvr` record / playback 面は完成状態に固定する。
 
+`DemuxCapabilities.numRecord` と `DemuxCapabilities.numPlayback` は、本製品では恒久的に demux 数と同数を広告する。これは HAL 全体で同時に開ける record DVR / playback DVR の最大数であり、各 demux につき同一方向 DVR は1本までとする。別 demux であれば record DVR は demux 数ぶん同時 open 可能、playback DVR も demux 数ぶん同時 open 可能でなければならない。同一 demux 内の record 2本目または playback 2本目は、現在状態による容量超過として `INVALID_STATE` に倒す。
+
 表明する録画範囲は**1サービスTS録画** とする。サービスPID集合の SSOT は TIS に置く。TIS は PMT と サービス検出結果から、PAT、PMT、PCR、video、audio、caption、data、必要な CA 関連 PID を record filter として接続する。Tuner HAL は service_id を理解して record 対象を自動生成しない。HAL は attach された複数 record filter の 188-byte TS packet を、受信 TS順序に近い順序を保って record DVR へ multiplex する。
 
 record filter capacity は32を標準値とする。8 PID 前提の VTS/lab PID-record だけに最適化してはならない。PMT 変更時の PID attach/detach は TIS が行い、HAL は started 中の合法的な attach/detach、重複 attach、detach 後 packet delivery 停止、overflow 通知を state machine として扱う。full transport recording mode は 対応宣言対象外とし、将来の診断または full TS dump feature として扱う。
@@ -198,7 +200,7 @@ ISDB-T / ISDB-S の frontend capability bitmask は Android 14 AIDL enum 名に�
 
 ライブ AV filter を正式スコープに含める。AV filter は non-passthrough の `MediaEvent` 経路を実装し、`MediaEvent` から framework が取得できる 共有ハンドル / linear block 相当の実体を返す。FMQ / EventFlag もスコープに含め、section、PES、record、DVR では custom ring ではなく official FMQ shim を使う。AV payload は FMQ / EventFlag へ載せず、shared memory + MediaEvent に一本化する。
 
-r51 では AV passthrough を 対応宣言しない。`DemuxFilterAvSettings.isPassthrough=true` は configure 時点で `UNAVAILABLE` とし、成功 no-op または無配送の AV filter として受け入れてはならない。r51 が 対応宣言する AV 経路は non-passthrough `MediaEvent` + shared memory 経路だけである。
+AV passthrough は本製品では恒久的に対応しない。`DemuxFilterAvSettings.isPassthrough=true` は r51 以降も configure 時点で `UNAVAILABLE` とし、成功 no-op または無配送の AV filter として受け入れてはならない。本製品のライブ AV filter は non-passthrough `MediaEvent` + shared memory 経路のみを正式対応とする。AV payload を通常 FMQ / EventFlag へ載せる経路、および AV filter を他 filter の source とする経路は実装しない。
 
 ここで「FMQ / EventFlag もスコープに含める」とは、section、PES、record、DVR の official FMQ 接続を完了条件に含めることと、ライブ AV filter の正式 delivery を完了条件に含めることの両方を意味する。前者は custom ring を残さず official FMQ/EventFlag に接続する責務であり、後者は `MediaEvent` + 共有ハンドル によって framework が ライブ AV payload を正式に受け取れるようにする責務である。
 

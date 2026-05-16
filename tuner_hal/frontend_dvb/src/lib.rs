@@ -2,9 +2,10 @@ mod explicit_scan;
 
 use explicit_scan::dvb_scan_requests;
 use maleicacid_tuner_hal_common::{
-    FrontendBackendKind, FrontendDevicePath, FrontendRuntimeState, FrontendScanMode,
-    FrontendSelection, FrontendStreamIdKind, FrontendSystem, FrontendTelemetry,
-    FrontendTuneRequest, HalError, TsPacketCompletionBuffer, TS_PACKET_SIZE,
+    is_japan_isdbt_frequency_contract_hz, FrontendBackendKind, FrontendDevicePath,
+    FrontendRuntimeState, FrontendScanMode, FrontendSelection, FrontendStreamIdKind,
+    FrontendSystem, FrontendTelemetry, FrontendTuneRequest, HalError, TsPacketCompletionBuffer,
+    TS_PACKET_SIZE,
 };
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Read};
@@ -101,15 +102,6 @@ const JAPAN_BS_STEP_HZ: u64 = 38_360_000;
 const JAPAN_CS110_FIRST_IF_HZ: u64 = 1_613_000_000;
 const JAPAN_CS110_LAST_IF_HZ: u64 = 2_053_000_000;
 const JAPAN_CS110_STEP_HZ: u64 = 40_000_000;
-const JAPAN_CATV_C13_CENTER_HZ: u64 = 111_142_857;
-const JAPAN_UHF_62_CENTER_HZ: u64 = 767_142_857;
-const JAPAN_ISDBT_TUNE_TOLERANCE_HZ: u64 = 500_000;
-
-fn is_japan_isdbt_frequency_contract_hz(frequency_hz: u64) -> bool {
-    frequency_hz >= JAPAN_CATV_C13_CENTER_HZ.saturating_sub(JAPAN_ISDBT_TUNE_TOLERANCE_HZ)
-        && frequency_hz <= JAPAN_UHF_62_CENTER_HZ.saturating_add(JAPAN_ISDBT_TUNE_TOLERANCE_HZ)
-}
-
 fn is_japan_bs_if_frequency_hz(if_frequency_hz: u64) -> bool {
     if if_frequency_hz < JAPAN_BS_FIRST_IF_HZ || if_frequency_hz > JAPAN_BS_LAST_IF_HZ {
         return false;
@@ -1924,7 +1916,7 @@ mod bs_cs_contract_tests {
     }
 
     #[test]
-    fn dvb_common_validation_accepts_representable_isdbt_frequency_without_scan_table() {
+    fn dvb_common_validation_rejects_vhf_1_to_12_outside_r51_isdbt_contract() {
         let valid_isdbt = FrontendTuneRequest {
             system: FrontendSystem::IsdbT,
             frequency: 473_142_857,
@@ -1936,11 +1928,17 @@ mod bs_cs_contract_tests {
         };
         assert!(DvbFrontendBackend::validate_driver_frequency_from_common(&valid_isdbt).is_ok());
 
-        let arbitrary_representable_isdbt = FrontendTuneRequest {
+        let vhf_1_to_12_outside_contract = FrontendTuneRequest {
             frequency: 90_000_000,
             ..valid_isdbt.clone()
         };
-        assert!(DvbFrontendBackend::validate_driver_frequency_from_common(&arbitrary_representable_isdbt).is_ok());
+        assert!(DvbFrontendBackend::validate_driver_frequency_from_common(&vhf_1_to_12_outside_contract).is_err());
+
+        let below_c13_contract = FrontendTuneRequest {
+            frequency: 110_642_856,
+            ..valid_isdbt.clone()
+        };
+        assert!(DvbFrontendBackend::validate_driver_frequency_from_common(&below_c13_contract).is_err());
 
         let unrepresentable = FrontendTuneRequest {
             frequency: u64::from(u32::MAX) + 1,

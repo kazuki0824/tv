@@ -291,6 +291,23 @@ pub enum FrontendStreamIdKind {
     RelativeStreamNumber,
 }
 
+pub const JAPAN_CATV_C13_CENTER_HZ: u64 = 111_142_857;
+pub const JAPAN_UHF_62_CENTER_HZ: u64 = 767_142_857;
+pub const JAPAN_ISDBT_TUNE_TOLERANCE_HZ: u64 = 500_000;
+
+pub fn japan_isdbt_frequency_contract_range_hz() -> (u64, u64, u64) {
+    (
+        JAPAN_CATV_C13_CENTER_HZ.saturating_sub(JAPAN_ISDBT_TUNE_TOLERANCE_HZ),
+        JAPAN_UHF_62_CENTER_HZ.saturating_add(JAPAN_ISDBT_TUNE_TOLERANCE_HZ),
+        JAPAN_ISDBT_TUNE_TOLERANCE_HZ,
+    )
+}
+
+pub fn is_japan_isdbt_frequency_contract_hz(frequency_hz: u64) -> bool {
+    let (min_hz, max_hz, _) = japan_isdbt_frequency_contract_range_hz();
+    frequency_hz >= min_hz && frequency_hz <= max_hz
+}
+
 pub fn is_japan_cs110_if_frequency_hz(if_frequency_hz: u64) -> bool {
     let first = 1_613_000_000_u64;
     let last = 2_053_000_000_u64;
@@ -504,8 +521,25 @@ impl ServiceConfig {
 }
 
 #[cfg(test)]
-mod r51_isdbs_frequency_contract_tests {
-    use super::is_japan_cs110_if_frequency_hz;
+mod r51_frequency_contract_tests {
+    use super::{
+        is_japan_cs110_if_frequency_hz, is_japan_isdbt_frequency_contract_hz,
+        japan_isdbt_frequency_contract_range_hz,
+    };
+
+    #[test]
+    fn isdbt_frequency_helper_rejects_vhf_1_to_12_contract() {
+        let (min_hz, max_hz, tolerance_hz) = japan_isdbt_frequency_contract_range_hz();
+        assert_eq!(min_hz, 110_642_857);
+        assert_eq!(max_hz, 767_642_857);
+        assert_eq!(tolerance_hz, 500_000);
+        assert!(is_japan_isdbt_frequency_contract_hz(111_142_857));
+        assert!(is_japan_isdbt_frequency_contract_hz(473_142_857));
+        assert!(is_japan_isdbt_frequency_contract_hz(767_142_857));
+        assert!(!is_japan_isdbt_frequency_contract_hz(90_000_000));
+        assert!(!is_japan_isdbt_frequency_contract_hz(110_642_856));
+        assert!(!is_japan_isdbt_frequency_contract_hz(767_642_858));
+    }
 
     #[test]
     fn cs110_frequency_helper_is_exact_for_acquire_range_zero_contract() {

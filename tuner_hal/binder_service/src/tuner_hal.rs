@@ -76,8 +76,9 @@ use binder::{
     StatusCode, Strong,
 };
 use maleicacid_tuner_hal_common::{
-    is_japan_cs110_if_frequency_hz, FrontendScanMode, FrontendStreamIdKind, FrontendSystem,
-    FrontendTelemetry, FrontendTuneRequest, HalError, TsPacketCompletionBuffer,
+    is_japan_cs110_if_frequency_hz, japan_isdbt_frequency_contract_range_hz, FrontendScanMode,
+    FrontendStreamIdKind, FrontendSystem, FrontendTelemetry, FrontendTuneRequest, HalError,
+    TsPacketCompletionBuffer,
     DEMUX_MAX_AUDIO_FILTERS, DEMUX_MAX_FILTERS_PER_DEMUX, DEMUX_MAX_PES_FILTERS,
     DEMUX_MAX_SECTION_FILTERS, DEMUX_MAX_TS_FILTERS, DEMUX_MAX_VIDEO_FILTERS,
     MAX_SECTION_FILTER_BYTES, MAX_SECTION_PAYLOAD_BYTES, TS_PACKET_SIZE,
@@ -114,6 +115,16 @@ use std::time::{Duration, Instant};
 type TunerQueueDesc = CommonMqDescriptor<i8, CommonSynchronizedReadWrite>;
 type TunerNativeHandle = CommonNativeHandle;
 
+fn descrambler_source_filter_open_type_allowed(open_type: FilterOpenType) -> bool {
+    matches!(
+        open_type,
+        FilterOpenType::TsAudio
+            | FilterOpenType::TsVideo
+            | FilterOpenType::TsPes
+            | FilterOpenType::TsRecord
+    )
+}
+
 fn empty_native_handle() -> TunerNativeHandle {
     TunerNativeHandle {
         fds: Vec::new(),
@@ -140,11 +151,6 @@ const ERRNO_EINVAL: i32 = 22;
 const MAX_LIVE_DEMUXES: usize = 8;
 const SUPPORTED_DEMUX_FILTER_CAPS: i32 = DemuxFilterMainType::TS.0;
 const DEMUX_ID_BASE: i32 = 0;
-const JAPAN_CATV_C13_CENTER_HZ: i64 = 111_142_857;
-const JAPAN_CATV_C63_CENTER_HZ: i64 = 465_142_857;
-const JAPAN_UHF_13_CENTER_HZ: i64 = 473_142_857;
-const JAPAN_UHF_62_CENTER_HZ: i64 = 767_142_857;
-const JAPAN_ISDBT_TUNE_TOLERANCE_HZ: i64 = 500_000;
 const JAPAN_BS_FIRST_IF_HZ: i64 = 1_049_480_000;
 const JAPAN_CS110_LAST_IF_HZ: i64 = 2_053_000_000;
 const MAX_DISEQC_MESSAGE_LEN: usize = 6;
@@ -3009,32 +3015,33 @@ fn isdbs_coderate_caps() -> i32 {
         | FrontendIsdbsCoderate::CODERATE_7_8.0
 }
 
+fn entry_frontend_max_symbol_rate_contract(_entry: &FrontendEntry) -> i32 {
+    // r51 の ISDB-T / ISDB-S public frontend contract では explicit symbolRate を広告しない。
+    // DVB probe が symbol rate を返しても、AOSP frontend capability へは出さない。
+    0
+}
+
 fn entry_frontend_frequency_contract(entry: &FrontendEntry) -> (i64, i64, i64) {
+    let (isdbt_min_hz, isdbt_max_hz, isdbt_tolerance_hz) = japan_isdbt_frequency_contract_range_hz();
     match &entry.kind {
         FrontendEntryKind::Px4 { declared_type, .. } if *declared_type == FrontendType::ISDBT => (
-            JAPAN_CATV_C13_CENTER_HZ - JAPAN_ISDBT_TUNE_TOLERANCE_HZ,
-            JAPAN_UHF_62_CENTER_HZ + JAPAN_ISDBT_TUNE_TOLERANCE_HZ,
-            JAPAN_ISDBT_TUNE_TOLERANCE_HZ,
+            isdbt_min_hz as i64,
+            isdbt_max_hz as i64,
+            isdbt_tolerance_hz as i64,
         ),
         FrontendEntryKind::Px4 { declared_type, .. } if *declared_type == FrontendType::ISDBS => {
             (JAPAN_BS_FIRST_IF_HZ, JAPAN_CS110_LAST_IF_HZ, 0)
         }
         FrontendEntryKind::Dvb { declared_type, .. } if *declared_type == FrontendType::ISDBT => (
-            JAPAN_CATV_C13_CENTER_HZ - JAPAN_ISDBT_TUNE_TOLERANCE_HZ,
-            JAPAN_UHF_62_CENTER_HZ + JAPAN_ISDBT_TUNE_TOLERANCE_HZ,
-            JAPAN_ISDBT_TUNE_TOLERANCE_HZ,
+            isdbt_min_hz as i64,
+            isdbt_max_hz as i64,
+            isdbt_tolerance_hz as i64,
         ),
         FrontendEntryKind::Dvb { declared_type, .. } if *declared_type == FrontendType::ISDBS => {
             (JAPAN_BS_FIRST_IF_HZ, JAPAN_CS110_LAST_IF_HZ, 0)
         }
         _ => (0, 0, 0),
     }
-}
-
-fn entry_frontend_max_symbol_rate_contract(_entry: &FrontendEntry) -> i32 {
-    // r51 の ISDB-T / ISDB-S public contract は explicit symbolRate を使わない。
-    // driver probe が nonzero を返しても advertise しない。
-    0
 }
 
 fn entry_frontend_caps(entry: &FrontendEntry) -> FrontendCapabilities {
@@ -3845,13 +3852,18 @@ impl DescramblerRuntimeRegistry {
                 continue;
             }
             let key_slot = state.key_slot.clone();
-            state.pids.retain(|_, registration| {
-                registration.source_filter_id < 0
-                    || demux_handle
-                        .filter_generation(registration.source_filter_id)
-                        .map_or(false, |generation| {
-                            generation == registration.source_filter_generation
-                        })
+            state.pids.retain(|pid, registration| {
+                if registration.source_filter_id < 0 {
+                    return true;
+                }
+                demux_handle
+                    .filter_source_snapshot(registration.source_filter_id)
+                    .map_or(false, |snapshot| {
+                        snapshot.generation == registration.source_filter_generation
+                            && snapshot.configured
+                            && snapshot.tpid == Some(*pid as i32)
+                            && descrambler_source_filter_open_type_allowed(snapshot.open_type)
+                    })
             });
             if !state.pids.is_empty() {
                 snapshots.push(ActiveDescramblerSnapshot {
@@ -4221,6 +4233,12 @@ impl IDescrambler for TunerDescrambler {
                     None,
                 ));
             };
+            if state.key_token.is_none() {
+                return Err(Status::new_service_specific_error(
+                    TunerResult::INVALID_STATE.0,
+                    None,
+                ));
+            }
             (demux_id, demux_generation)
         };
         self.ensure_bound_demux_generation_current(demux_id, demux_generation)?;
@@ -4229,14 +4247,26 @@ impl IDescrambler for TunerDescrambler {
         if demux.demux_id() != demux_id {
             return Err(invalid_argument_status("source filter belongs to another demux"));
         }
-        match demux.filter_generation(source_filter.identity.filter_id) {
-            Some(generation) if generation == source_filter.identity.generation => {}
-            Some(_) => {
-                return Err(invalid_state_status(
-                    "source filter generation changed before PID claim",
-                ))
-            }
-            None => return Err(invalid_argument_status("source filter is not an open demux filter")),
+        let Some(source_snapshot) = demux.filter_source_snapshot(source_filter.identity.filter_id) else {
+            return Err(invalid_argument_status("source filter is not an open demux filter"));
+        };
+        if source_snapshot.generation != source_filter.identity.generation {
+            return Err(invalid_state_status(
+                "source filter generation changed before PID claim",
+            ));
+        }
+        if !source_snapshot.configured || source_snapshot.tpid.is_none() {
+            return Err(invalid_state_status("source filter is not configured"));
+        }
+        if source_snapshot.tpid != Some(pid as i32) {
+            return Err(invalid_argument_status(
+                "source filter PID does not match descrambler PID",
+            ));
+        }
+        if !descrambler_source_filter_open_type_allowed(source_snapshot.open_type) {
+            return Err(invalid_argument_status(
+                "source filter subtype is not valid for descrambler PID source",
+            ));
         }
         self.descrambler_registry.try_claim_pid_for_descrambler(
             self.id,
@@ -7602,7 +7632,7 @@ impl FilterHal {
                 let mut record_event_state = RecordEventState::default();
                 let mut observed_delivery_generation = 0u64;
                 while !stop_clone.load(Ordering::SeqCst) && !closed_clone.load(Ordering::SeqCst) {
-                    let (record, start_event_ready, pending_overflow, payloads) = {
+                    let (record, start_event_id, pending_overflow, payloads) = {
                         let Some(mut demux) = lock_mutex_option(&state_clone, "demux_handle") else {
                             FilterHal::fail_filter_worker(
                                 &state_clone,
@@ -7617,11 +7647,11 @@ impl FilterHal {
                             );
                             return WorkerExit::Error;
                         };
-                        let start_event_ready = demux.take_filter_start_event_if_ready(filter_id);
+                        let start_event_id = demux.take_filter_start_event_id_if_ready(filter_id);
                         let pending_overflow = demux.take_filter_pending_overflow(filter_id);
                         let record = demux.filter_record(filter_id).cloned();
                         let payloads = demux.drain_filter_payloads_for_delivery(filter_id);
-                        (record, start_event_ready, pending_overflow, payloads)
+                        (record, start_event_id, pending_overflow, payloads)
                     };
                     let Some(record) = record else {
                         FilterHal::fail_filter_worker(
@@ -7645,9 +7675,9 @@ impl FilterHal {
                     let _monitor_mask = record.monitor_event_mask;
                     let send_status = true;
                     let send_event = true;
-                    if start_event_ready && send_event {
-                        if let Err(err) = callback_clone.onFilterEvent(&[DemuxFilterEvent::StartId(filter_id)]) {
-                            eprintln!("maleicacid-tuner-hal-callback: filter_id={} api=onFilterEvent(StartId) binder_status={:?}", filter_id, err);
+                    if let Some(start_id) = start_event_id.filter(|_| send_event) {
+                        if let Err(err) = callback_clone.onFilterEvent(&[DemuxFilterEvent::StartId(start_id)]) {
+                            eprintln!("maleicacid-tuner-hal-callback: filter_id={} start_id={} api=onFilterEvent(StartId) binder_status={:?}", filter_id, start_id, err);
                             FilterHal::fail_filter_worker(&state_clone, &runtime_io_clone, &queue_backing_clone, &av_queue_backing_clone, &av_shared_backing_clone, &closed_clone, &stop_clone, filter_id, "filter callback failure on StartId");
                             return WorkerExit::Error;
                         }
@@ -7666,6 +7696,7 @@ impl FilterHal {
                     let mut internal_overflow_pending = pending_overflow;
                     for payload in payloads {
                         let payload_bytes = payload.bytes().to_vec();
+                        let event_payload_bytes = payload.event_bytes().to_vec();
                         let is_media = matches!(record.config.as_ref().map(|c| &c.kind), Some(FilterConfigKind::Av { .. }));
                         let mut queue_ring = RingWriteResult::default();
                         let mut overflow = internal_overflow_pending;
@@ -7779,7 +7810,7 @@ impl FilterHal {
                                 }
                             }
                         }
-                        cumulative_bytes = cumulative_bytes.saturating_add(payload_bytes.len() as u64);
+                        cumulative_bytes = cumulative_bytes.saturating_add(event_payload_bytes.len() as u64);
                     }
                 }
                 WorkerExit::Cancelled
@@ -8157,7 +8188,14 @@ impl IFilter for FilterHal {
 
     fn configure(&self, settings: &DemuxFilterSettings) -> BinderResult<()> {
         self.ensure_open()?;
-        let summary = build_filter_summary(settings)?;
+        let open_type = {
+            let state = lock_mutex_status(&self.state, "demux_handle")?;
+            let Some(record) = state.filter_record(self.filter_id) else {
+                return Err(StatusCode::NAME_NOT_FOUND.into());
+            };
+            record.open_type
+        };
+        let summary = build_filter_summary_for_open_type(settings, open_type)?;
         lock_mutex_status(&self.state, "demux_handle")?
             .configure_filter_with_summary_result(self.filter_id, summary)
             .map_err(demux_config_error_status)?;
@@ -8215,7 +8253,7 @@ impl IFilter for FilterHal {
                 ));
             }
         }
-        let (ready, start_event_ready, monitor_mask, is_media) = {
+        let (ready, start_event_id, monitor_mask, is_media) = {
             let mut state = lock_mutex_status(&self.state, "demux_handle")?;
             state
                 .start_filter_result(self.filter_id)
@@ -8228,6 +8266,11 @@ impl IFilter for FilterHal {
                 );
             let start_event_ready = filter_start_event_ready(readiness);
             let record = state.filter_record(self.filter_id).cloned();
+            let start_event_id = if start_event_ready {
+                record.as_ref().map(|r| r.pending_start_id)
+            } else {
+                None
+            };
             // configureMonitorEvent() は通常 コールバック の gating API ではない。
             // r51 は monitor-event bit を support しないため、DATA_READY / OVERFLOW / データイベント は常に有効のままにする。
             let monitor_mask = 0;
@@ -8244,7 +8287,7 @@ impl IFilter for FilterHal {
             } else {
                 state.set_filter_start_event_pending(self.filter_id, false);
             }
-            (ready, start_event_ready, monitor_mask, is_media)
+            (ready, start_event_id, monitor_mask, is_media)
         };
         let send_status = monitor_mask == 0 || (monitor_mask & FILTER_MONITOR_MASK_STATUS) != 0;
         let send_event = monitor_mask == 0 || (monitor_mask & FILTER_MONITOR_MASK_EVENT) != 0;
@@ -8253,10 +8296,10 @@ impl IFilter for FilterHal {
                 return Err(self.fail_from_callback("onFilterStatus(DATA_READY)", err));
             }
         }
-        if start_event_ready && send_event {
+        if let Some(start_id) = start_event_id.filter(|_| send_event) {
             if let Err(err) = self
                 .callback
-                .onFilterEvent(&[DemuxFilterEvent::StartId(self.filter_id)])
+                .onFilterEvent(&[DemuxFilterEvent::StartId(start_id)])
             {
                 return Err(self.fail_from_callback("onFilterEvent(StartId)", err));
             }
@@ -8921,7 +8964,7 @@ impl DvrHal {
     }
 
     fn status_mask_allows(status_mask: i32, status_bit: i32) -> bool {
-        status_mask == 0 || (status_mask & status_bit) != 0
+        (status_mask & status_bit) != 0
     }
 
     fn record_status_from_thresholds(
@@ -9214,6 +9257,28 @@ impl LnbHal {
         Ok(())
     }
 
+    fn update_lnb_state<F>(&self, mut update: F) -> BinderResult<()>
+    where
+        F: FnMut(&mut LnbRuntimeState) -> BinderResult<()>,
+    {
+        let (old_state, new_state) = {
+            let mut registry = lock_mutex_status(&self.registry, "lnb_registry")?;
+            let old = registry.get(&self.lnb_id).cloned();
+            let state = registry.entry(self.lnb_id).or_default();
+            update(state)?;
+            state.generation = state.generation.saturating_add(1);
+            (old, state.clone())
+        };
+        if let Err(err) = self.apply_to_matching_frontends(&new_state) {
+            self.restore_state(old_state.clone());
+            if let Some(old) = old_state.as_ref() {
+                let _ = self.apply_to_matching_frontends(old);
+            }
+            return Err(hal_error_status(err));
+        }
+        Ok(())
+    }
+
     fn ensure_open(&self) -> BinderResult<()> {
         if self.closed.load(Ordering::SeqCst) {
             return Err(invalid_state_status("LNB is closed"));
@@ -9272,17 +9337,16 @@ impl ILnb for LnbHal {
 
     fn setTone(&self, tone: LnbTone) -> BinderResult<()> {
         self.ensure_open()?;
-        if matches!(tone, LnbTone::NONE) {
-            let mut registry = lock_mutex_status(&self.registry, "lnb_registry")?;
-            let state = registry.entry(self.lnb_id).or_default();
-            state.tone = Some(LnbTone::NONE);
-            state.generation = state.generation.saturating_add(1);
-            return Ok(());
+        if !matches!(tone, LnbTone::NONE) {
+            return Err(Status::new_service_specific_error(
+                TunerResult::UNAVAILABLE.0,
+                None,
+            ));
         }
-        Err(Status::new_service_specific_error(
-            TunerResult::UNAVAILABLE.0,
-            None,
-        ))
+        self.update_lnb_state(|state| {
+            state.tone = Some(LnbTone::NONE);
+            Ok(())
+        })
     }
 
     fn setSatellitePosition(&self, position: LnbPosition) -> BinderResult<()> {
@@ -9295,10 +9359,10 @@ impl ILnb for LnbHal {
                 None,
             ));
         }
-        let mut registry = lock_mutex_status(&self.registry, "lnb_registry")?;
-        let state = registry.entry(self.lnb_id).or_default();
-        state.position = Some(LnbPosition::UNDEFINED);
-        state.generation = state.generation.saturating_add(1);
+        self.update_lnb_state(|state| {
+            state.position = Some(LnbPosition::UNDEFINED);
+            Ok(())
+        })?;
         eprintln!(
             "maleicacid-tuner-hal: LNB {} satellite_position=UNDEFINED fixed-profile",
             self.lnb_id
@@ -9479,7 +9543,7 @@ fn build_filter_event_from_entry(
 ) -> Option<DemuxFilterEvent> {
     build_filter_event_from_payload(
         record,
-        payload.bytes(),
+        payload.event_bytes(),
         payload.av_metadata(),
         payload.pes_stream_id(),
         offset,
@@ -10117,6 +10181,7 @@ fn filter_open_type(filter_type: &DemuxFilterType) -> BinderResult<FilterOpenTyp
     }
     match &filter_type.subType {
         DemuxFilterSubType::TsFilterType(ts_type) => match *ts_type {
+            DemuxTsFilterType::TS => Ok(FilterOpenType::TsRaw),
             DemuxTsFilterType::AUDIO => Ok(FilterOpenType::TsAudio),
             DemuxTsFilterType::VIDEO => Ok(FilterOpenType::TsVideo),
             DemuxTsFilterType::SECTION => Ok(FilterOpenType::TsSection),
@@ -10227,6 +10292,36 @@ fn record_sc_mask_variant_type(mask: &DemuxFilterScIndexMask) -> (i32, i32) {
     }
 }
 
+fn supported_record_sc_index_mask(sc_index_type: i32) -> i32 {
+    match sc_index_type {
+        RECORD_SC_TYPE_NONE => 0,
+        RECORD_SC_TYPE_SC => (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3),
+        RECORD_SC_TYPE_SC_AVC => {
+            AVC_SC_I_SLICE | AVC_SC_P_SLICE | AVC_SC_B_SLICE | AVC_SC_SI_SLICE | AVC_SC_SP_SLICE
+        }
+        RECORD_SC_TYPE_SC_HEVC => {
+            HEVC_SC_SPS
+                | HEVC_SC_AUD
+                | HEVC_SC_BLA_W_LP
+                | HEVC_SC_BLA_W_RADL
+                | HEVC_SC_BLA_N_LP
+                | HEVC_SC_IDR_W_RADL
+                | HEVC_SC_IDR_N_LP
+                | HEVC_SC_TRAIL_CRA
+        }
+        RECORD_SC_TYPE_SC_VVC => {
+            VVC_SC_IDR_W_RADL
+                | VVC_SC_IDR_N_LP
+                | VVC_SC_CRA
+                | VVC_SC_GDR
+                | VVC_SC_VPS
+                | VVC_SC_SPS
+                | VVC_SC_AUD
+        }
+        _ => 0,
+    }
+}
+
 fn validate_record_index_settings(
     ts_index_mask: i32,
     sc_index_type: i32,
@@ -10254,10 +10349,23 @@ fn validate_record_index_settings(
             "record SC index type and mask union variant mismatch",
         ));
     }
+    let supported_mask = supported_record_sc_index_mask(sc_index_type);
+    if (sc_index_mask_bits & !supported_mask) != 0 {
+        return Err(invalid_argument_status(
+            "record scIndexMask に未対応bitが含まれます",
+        ));
+    }
     Ok(sc_index_mask_bits)
 }
 
 fn build_filter_summary(settings: &DemuxFilterSettings) -> BinderResult<FilterConfig> {
+    build_filter_summary_for_open_type(settings, FilterOpenType::TsOther)
+}
+
+fn build_filter_summary_for_open_type(
+    settings: &DemuxFilterSettings,
+    open_type: FilterOpenType,
+) -> BinderResult<FilterConfig> {
     let config = match settings {
         DemuxFilterSettings::Ts(ts) => {
             let tpid = validate_ts_pid(ts.tpid)?;
@@ -10267,10 +10375,13 @@ fn build_filter_summary(settings: &DemuxFilterSettings) -> BinderResult<FilterCo
                 sub_type_hint: 0,
                 kind: match &ts.filterSettings {
                     DemuxTsFilterSettingsFilterSettings::Noinit(_) => {
-                        return Err(Status::new_service_specific_error(
-                            TunerResult::UNAVAILABLE.0,
-                            None,
-                        ));
+                        if open_type != FilterOpenType::TsRaw {
+                            return Err(Status::new_service_specific_error(
+                                TunerResult::INVALID_ARGUMENT.0,
+                                Some("TS noinit settings are valid only for DemuxTsFilterType::TS"),
+                            ));
+                        }
+                        FilterConfigKind::Noinit
                     }
                     DemuxTsFilterSettingsFilterSettings::Section(section) => {
                         let Some(length_field_bits) =
@@ -11422,16 +11533,7 @@ mod frontend_capability_tests {
 
     #[test]
     fn px4_isdbt_advertised_range_covers_japan_catv_and_uhf_contract() {
-        assert_eq!(
-            JAPAN_CATV_C13_CENTER_HZ - JAPAN_ISDBT_TUNE_TOLERANCE_HZ,
-            110_642_857
-        );
-        assert_eq!(JAPAN_CATV_C63_CENTER_HZ, 465_142_857);
-        assert_eq!(JAPAN_UHF_13_CENTER_HZ, 473_142_857);
-        assert_eq!(
-            JAPAN_UHF_62_CENTER_HZ + JAPAN_ISDBT_TUNE_TOLERANCE_HZ,
-            767_642_857
-        );
+        assert_eq!(japan_isdbt_frequency_contract_range_hz(), (110_642_857, 767_642_857, 500_000));
     }
 
     #[test]
@@ -11707,12 +11809,15 @@ mod vts_contract_tests {
     }
 
     #[test]
-    fn noinit_ts_filters_used_by_pcr_ts_temi_are_rejected_at_configure_time() {
+    fn noinit_ts_filter_settings_are_accepted_only_for_raw_ts_filter_subtype() {
         let settings = DemuxFilterSettings::Ts(android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::DemuxTsFilterSettings::DemuxTsFilterSettings {
             tpid: 0x100,
             filterSettings: DemuxTsFilterSettingsFilterSettings::Noinit(false),
         });
         assert!(build_filter_summary(&settings).is_err());
+        let summary = build_filter_summary_for_open_type(&settings, FilterOpenType::TsRaw).unwrap();
+        assert_eq!(summary.tpid, 0x100);
+        assert_eq!(summary.kind, FilterConfigKind::Noinit);
     }
 }
 
@@ -12011,6 +12116,10 @@ mod static_completion_tests {
 
     #[test]
     fn open_time_filter_type_preserves_media_and_non_media_subtype() {
+        assert_eq!(
+            filter_open_type(&ts_filter_type(DemuxTsFilterType::TS)).unwrap(),
+            FilterOpenType::TsRaw
+        );
         assert_eq!(
             filter_open_type(&ts_filter_type(DemuxTsFilterType::AUDIO)).unwrap(),
             FilterOpenType::TsAudio
@@ -12556,6 +12665,27 @@ mod static_completion_tests {
         assert!(build_filter_summary(&pes_settings_with_stream_id(0x0100, 256)).is_err());
     }
 
+
+    #[test]
+    fn descrambler_source_filter_open_type_policy_includes_audio_video_pes_and_record_only() {
+        for open_type in [
+            FilterOpenType::TsAudio,
+            FilterOpenType::TsVideo,
+            FilterOpenType::TsPes,
+            FilterOpenType::TsRecord,
+        ] {
+            assert!(descrambler_source_filter_open_type_allowed(open_type));
+        }
+        for open_type in [
+            FilterOpenType::TsRaw,
+            FilterOpenType::TsSection,
+            FilterOpenType::TsOther,
+            FilterOpenType::NonTs,
+        ] {
+            assert!(!descrambler_source_filter_open_type_allowed(open_type));
+        }
+    }
+
     #[test]
     fn record_index_config_rejects_unsupported_and_mismatched_values() {
         let valid_ts = DEMUX_TS_INDEX_FIRST_PACKET | DEMUX_TS_INDEX_PAYLOAD_UNIT_START;
@@ -12585,6 +12715,30 @@ mod static_completion_tests {
             valid_ts,
             RECORD_SC_TYPE_SC_HEVC,
             &DemuxFilterScIndexMask::ScAvc(1),
+        )
+        .is_err());
+        assert!(validate_record_index_settings(
+            valid_ts,
+            RECORD_SC_TYPE_SC,
+            &DemuxFilterScIndexMask::ScIndex(1 << 20),
+        )
+        .is_err());
+        assert!(validate_record_index_settings(
+            valid_ts,
+            RECORD_SC_TYPE_SC_AVC,
+            &DemuxFilterScIndexMask::ScAvc(1 << 20),
+        )
+        .is_err());
+        assert!(validate_record_index_settings(
+            valid_ts,
+            RECORD_SC_TYPE_SC_HEVC,
+            &DemuxFilterScIndexMask::ScHevc(1 << 20),
+        )
+        .is_err());
+        assert!(validate_record_index_settings(
+            valid_ts,
+            RECORD_SC_TYPE_SC_VVC,
+            &DemuxFilterScIndexMask::ScVvc(1 << 20),
         )
         .is_err());
     }
@@ -12947,11 +13101,32 @@ mod static_completion_tests {
     fn advertised_ts_linkage_succeeds_on_public_set_data_source_path() {
         let mut demux = DemuxHandle::new(DEMUX_ID_BASE);
         let source = demux
-            .register_filter_result(1, FilterOpenType::TsSection, 4096)
+            .register_filter_result(1, FilterOpenType::TsRaw, 4096)
             .expect("test setup should register filter");
         let destination = demux
             .register_filter_result(1, FilterOpenType::TsSection, 4096)
             .expect("test setup should register filter");
+        let raw_summary = FilterConfig {
+            tpid: 0x0123,
+            main_type_bits: 1,
+            sub_type_hint: 0,
+            kind: FilterConfigKind::Noinit,
+        };
+        let section_summary = FilterConfig {
+            tpid: 0x0123,
+            main_type_bits: 1,
+            sub_type_hint: 0,
+            kind: FilterConfigKind::Section {
+                check_crc: false,
+                repeat: true,
+                raw: false,
+                length_field_bits: 12,
+                condition_kind: SectionConditionKind::SectionBits,
+                condition: SectionCondition::default(),
+            },
+        };
+        assert!(demux.configure_filter_with_summary(source.filter_id, raw_summary));
+        assert!(demux.configure_filter_with_summary(destination.filter_id, section_summary));
         let state = Arc::new(Mutex::new(demux));
         let runtime_io = Arc::new(RuntimeIoRegistry::default());
         let callback = BnFilterCallback::new_binder(NoopFilterCallback, BinderFeatures::default());
@@ -13286,6 +13461,8 @@ mod static_completion_tests {
             ip_cid: None,
             data_source_filter_id: None,
             pending_start_event: false,
+            pending_start_id: 0,
+            ever_started: true,
             delay_hints: maleicacid_tuner_hal_soft_demux::FilterDelayHints::default(),
             delivery_not_before: None,
             av_stream_type_hint: Some(0xe0),
@@ -13303,6 +13480,8 @@ mod static_completion_tests {
             pending_overflow: false,
             overflow_events: 0,
             drop_bytes: 0,
+            section_drop_events: 0,
+            stale_partial_discards: 0,
             events_emitted: 0,
             delivery_generation: 0,
         };
@@ -13336,6 +13515,8 @@ mod static_completion_tests {
             ip_cid: None,
             data_source_filter_id: None,
             pending_start_event: false,
+            pending_start_id: 0,
+            ever_started: true,
             delay_hints: maleicacid_tuner_hal_soft_demux::FilterDelayHints::default(),
             delivery_not_before: None,
             av_stream_type_hint: Some(0xe0),
@@ -13353,6 +13534,8 @@ mod static_completion_tests {
             pending_overflow: false,
             overflow_events: 0,
             drop_bytes: 0,
+            section_drop_events: 0,
+            stale_partial_discards: 0,
             events_emitted: 0,
             delivery_generation: 0,
         };
@@ -13390,6 +13573,8 @@ mod static_completion_tests {
             ip_cid: None,
             data_source_filter_id: None,
             pending_start_event: false,
+            pending_start_id: 0,
+            ever_started: true,
             delay_hints: maleicacid_tuner_hal_soft_demux::FilterDelayHints::default(),
             delivery_not_before: None,
             av_stream_type_hint: Some(0xe0),
@@ -13407,6 +13592,8 @@ mod static_completion_tests {
             pending_overflow: false,
             overflow_events: 0,
             drop_bytes: 0,
+            section_drop_events: 0,
+            stale_partial_discards: 0,
             events_emitted: 0,
             delivery_generation: 0,
         };
@@ -13618,12 +13805,30 @@ mod descrambler_state_tests {
     fn register_test_filter(
         state: &Arc<Mutex<DemuxHandle>>,
         owner_demux_id: i32,
+        pid: i32,
     ) -> Strong<dyn IFilter> {
-        let record = state
-            .lock()
-            .unwrap()
-            .register_filter_result(1, FilterOpenType::TsSection, 4096)
-            .expect("test setup should register source filter");
+        let record = {
+            let mut demux = state.lock().unwrap();
+            let record = demux
+                .register_filter_result(1, FilterOpenType::TsPes, 4096)
+                .expect("test setup should register source filter");
+            assert!(
+                demux.configure_filter_with_summary(
+                    record.filter_id,
+                    FilterConfig {
+                        tpid: pid,
+                        main_type_bits: 1,
+                        sub_type_hint: 0xbd,
+                        kind: FilterConfigKind::PesData {
+                            stream_id: -1,
+                            raw: false,
+                        },
+                    },
+                ),
+                "test setup should configure source filter"
+            );
+            record
+        };
         let callback =
             BnFilterCallback::new_binder(DescramblerTestFilterCallback, BinderFeatures::default());
         let filter = FilterHal::new(
@@ -13729,7 +13934,7 @@ mod descrambler_state_tests {
     fn public_descrambler_methods_map_state_and_argument_errors_exactly() {
         let hal = TunerHal::new();
         let (demux_id, record) = hal.allocate_demux_record().unwrap();
-        let source = register_test_filter(&record.lock().unwrap().state, demux_id);
+        let source = register_test_filter(&record.lock().unwrap().state, demux_id, 0x0123);
         let descrambler = TunerDescrambler::new(
             Arc::clone(&hal.demux_registry),
             Arc::clone(&hal.descrambler_registry),
@@ -13782,8 +13987,8 @@ mod descrambler_state_tests {
         let hal = TunerHal::new();
         let (demux_id, record) = hal.allocate_demux_record().unwrap();
         let demux_state = record.lock().unwrap().state.clone();
-        let first_source = register_test_filter(&demux_state, demux_id);
-        let second_source = register_test_filter(&demux_state, demux_id);
+        let first_source = register_test_filter(&demux_state, demux_id, 0x0201);
+        let second_source = register_test_filter(&demux_state, demux_id, 0x0201);
         let descrambler = TunerDescrambler::new(
             Arc::clone(&hal.demux_registry),
             Arc::clone(&hal.descrambler_registry),
@@ -13810,7 +14015,7 @@ mod descrambler_state_tests {
         let hal = TunerHal::new();
         let (demux_id, record) = hal.allocate_demux_record().unwrap();
         let demux_state = record.lock().unwrap().state.clone();
-        let source = register_test_filter(&demux_state, demux_id);
+        let source = register_test_filter(&demux_state, demux_id, 0x0204);
         let descrambler = TunerDescrambler::new(
             Arc::clone(&hal.demux_registry),
             Arc::clone(&hal.descrambler_registry),
@@ -13836,7 +14041,7 @@ mod descrambler_state_tests {
         let hal = TunerHal::new();
         let (demux_id, record) = hal.allocate_demux_record().unwrap();
         let demux_state = record.lock().unwrap().state.clone();
-        let source = register_test_filter(&demux_state, demux_id);
+        let source = register_test_filter(&demux_state, demux_id, 0x0202);
         let descrambler = TunerDescrambler::new(
             Arc::clone(&hal.demux_registry),
             Arc::clone(&hal.descrambler_registry),
@@ -14826,11 +15031,7 @@ mod contract_regression_tests {
         };
         assert_eq!(
             entry_frontend_frequency_contract(&isdbt),
-            (
-                JAPAN_CATV_C13_CENTER_HZ - JAPAN_ISDBT_TUNE_TOLERANCE_HZ,
-                JAPAN_UHF_62_CENTER_HZ + JAPAN_ISDBT_TUNE_TOLERANCE_HZ,
-                JAPAN_ISDBT_TUNE_TOLERANCE_HZ,
-            ),
+            (110_642_857, 767_642_857, 500_000),
         );
 
         let isdbs = FrontendEntry {
@@ -14935,5 +15136,92 @@ mod contract_regression_tests {
             FrontendHal::to_scan_mode(FrontendScanType::SCAN_BLIND),
             Err(HalError::Unsupported(_))
         ));
+    }
+}
+
+#[cfg(test)]
+mod r50de_phase3_5_binder_tests {
+    use super::*;
+
+    #[test]
+    fn dvr_status_mask_zero_subscribes_no_status_bits() {
+        assert!(!DvrHal::status_mask_allows(0, RecordStatus::DATA_READY.0));
+        assert!(!DvrHal::status_mask_allows(0, RecordStatus::OVERFLOW.0));
+        assert!(DvrHal::status_mask_allows(
+            RecordStatus::DATA_READY.0,
+            RecordStatus::DATA_READY.0,
+        ));
+        assert!(!DvrHal::status_mask_allows(
+            RecordStatus::DATA_READY.0,
+            RecordStatus::OVERFLOW.0,
+        ));
+    }
+
+
+    #[test]
+    fn record_sc_index_mask_rejects_unsupported_bits() {
+        assert!(validate_record_index_settings(0, RECORD_SC_TYPE_SC, &DemuxFilterScIndexMask::ScIndex(0x1)).is_ok());
+        let err = validate_record_index_settings(0, RECORD_SC_TYPE_SC, &DemuxFilterScIndexMask::ScIndex(0x10))
+            .expect_err("unsupported SC bit should be rejected");
+        assert_eq!(err.service_specific_error(), TunerResult::INVALID_ARGUMENT.0);
+    }
+
+    #[test]
+    fn dvr_capability_counts_are_advertised_as_demux_count() {
+        let hal = TunerHal::new();
+        let caps = hal.getDemuxCaps().unwrap();
+        assert_eq!(caps.numRecord, MAX_LIVE_DEMUXES as i32);
+        assert_eq!(caps.numPlayback, MAX_LIVE_DEMUXES as i32);
+    }
+
+    #[test]
+    fn dvr_record_can_open_on_all_demuxes_but_not_twice_on_one_demux() {
+        let hal = TunerHal::new();
+        let callback = BnDvrCallback::new_binder(NoopDvrCallback, BinderFeatures::default());
+        let mut opened = Vec::new();
+        for demux_id in hal.getDemuxIds().unwrap() {
+            let demux = hal.openDemuxById(demux_id).unwrap();
+            let dvr = demux
+                .openDvr(DvrType::RECORD, 4096, &callback)
+                .expect("record DVR should open once per demux");
+            opened.push((demux, dvr));
+        }
+        assert_eq!(opened.len(), MAX_LIVE_DEMUXES);
+
+        let err = match opened[0].0.openDvr(DvrType::RECORD, 4096, &callback) {
+            Ok(_) => panic!("second record DVR on same demux should be invalid state"),
+            Err(err) => err,
+        };
+        assert_eq!(err.service_specific_error(), TunerResult::INVALID_STATE.0);
+    }
+
+    #[test]
+    fn dvr_playback_can_open_on_all_demuxes_but_not_twice_on_one_demux() {
+        let hal = TunerHal::new();
+        let callback = BnDvrCallback::new_binder(NoopDvrCallback, BinderFeatures::default());
+        let mut opened = Vec::new();
+        for demux_id in hal.getDemuxIds().unwrap() {
+            let demux = hal.openDemuxById(demux_id).unwrap();
+            let dvr = demux
+                .openDvr(DvrType::PLAYBACK, 4096, &callback)
+                .expect("playback DVR should open once per demux");
+            opened.push((demux, dvr));
+        }
+        assert_eq!(opened.len(), MAX_LIVE_DEMUXES);
+
+        let err = match opened[0].0.openDvr(DvrType::PLAYBACK, 4096, &callback) {
+            Ok(_) => panic!("second playback DVR on same demux should be invalid state"),
+            Err(err) => err,
+        };
+        assert_eq!(err.service_specific_error(), TunerResult::INVALID_STATE.0);
+    }
+
+    #[test]
+    fn dvr_capability_count_is_fixed_to_demux_count_in_design() {
+        let design = include_str!("../../DESIGN_JA.md");
+        assert!(design.contains("numRecord"));
+        assert!(design.contains("numPlayback"));
+        assert!(design.contains("demux 数と同数"));
+        assert!(design.contains("同一方向 DVR は1本"));
     }
 }

@@ -1,3 +1,63 @@
+## r50dk
+- r50dj に残っていた AV passthrough / AV source filter 境界の未固定を修正した。
+- AV passthrough は本製品では恒久的に対応せず、`DemuxFilterAvSettings.isPassthrough=true` は r51 以降も configure 時点で `UNAVAILABLE` とする設計を `DESIGN_JA.md` と `開発規則.md` に固定した。
+- ライブ AV filter は non-passthrough `MediaEvent` + shared memory 経路のみを正式対応とし、AV payload を通常 FMQ / EventFlag へ載せる経路、および AV filter を他 filter の source とする経路を禁止した。
+- `setDataSource()` の source 側から `TsAudio` / `TsVideo` を除外し、AV filter を終端 filter として扱うようにした。destination としての AV filter は維持する。
+- `FilterPayload::PesData` に PTS/DTS/stream_id metadata を保持し、`TsPes -> TsAudio/TsVideo` の linked 経路でも `MediaEvent` が PES 由来 timestamp を参照できるようにした。
+- Android/Soong build、Rust 単体テスト実行、atest、VTS、CTS、実機確認はこの環境では未実施。静的差分確認のみ実施した。
+
+## r50dj
+- r50di に残っていた RECORD filter と TS raw source の責務混線を修正した。
+- RECORD filter は DVR record buffer と TsRecordEvent の終端 filter とし、`setDataSource()` の source filter としては拒否する。
+- `propagate_filter_output_with_origin_generation()` と root TS packet path で `TsRecord` を downstream TS packet source として扱わないようにした。`TsRaw` は引き続き downstream source として扱う。
+- RECORD filter を source にした `setDataSource()` が `INVALID_ARGUMENT` 相当の `InvalidKind` で失敗し、接続状態を変更しない単体テストを追加した。
+- Android/Soong build、Rust 単体テスト実行、atest、VTS、CTS、実機確認はこの環境では未実施。静的差分確認のみ実施した。
+
+## r50di
+- r50dh に残った 21/22 を修正した。
+- `entry_frontend_max_symbol_rate_contract()` を復活させ、ISDB-T / ISDB-S の public frontend contract では explicit symbolRate を広告しないため、`maxSymbolRate=0` に固定した。
+- RECORD filter の record metadata event は filter FMQ payload として扱わず、queue の使用量計算では 0 byte とする。`TsRecordEvent` 生成用の 188 byte TS packet 参照は `event_bytes()` 側に保持する。
+- TS raw filter は従来どおり 188 byte TS packet を filter FMQ payload として扱う。RECORD filter と TS raw filter の出力先・queue 使用量計算を分離した。
+- Android/Soong build、Rust 単体テスト実行、atest、VTS、CTS、実機確認はこの環境では未実施。静的差分確認のみ実施した。
+
+## r50dh
+- r50dg に残った 17/18/19/20 を修正した。
+- `setDataSource()` は TS main type の `linkCaps` 広告を維持しつつ、source / destination subtype と PID が意味的に整合する組み合わせだけを受理する。PID 不一致や成立しない subtype pair は `INVALID_ARGUMENT` に倒す。
+- linked TS path は raw TS filter 自身への 188 byte 配送と、下流 section / PES / AV / record 解析を分離し、下流解析は transport error / continuity duplicate / discontinuity の処理後に行う。
+- `setTone(NONE)` と `setSatellitePosition(UNDEFINED)` は `setVoltage()` と同じく LNB registry 更新後に選択中 frontend へ適用し、失敗時は旧 state へ rollback する。
+- ISDB-T 周波数契約 helper を common crate に集約し、DVB backend と binder capability が同じ C13〜UHF62 契約を参照するようにした。90 MHz は r51 契約外として拒否するテストに反転した。
+- Android/Soong build、Rust 単体テスト実行、atest、VTS、CTS、実機確認はこの環境では未実施。静的差分確認のみ実施した。
+
+## r50dg
+- r50df の追加バグ 12/13/15/16 を修正した。
+- RECORD filter は DVR record buffer と record index event 用に限定し、filter FMQ へ 188 byte TS packet を二重配送しないようにした。TS raw filter は従来どおり対象 PID の TS packet を filter FMQ に配送する。
+- `linkCaps` が TS→TS を main type 粒度で広告する契約に合わせ、`setDataSource()` の source を `TsRaw` だけに限定せず、TS 系 source / destination 全体を受理し、配送時に destination 条件を再評価するようにした。
+- `setDataSource()` は source filter の開始済み状態を要求せず、configured / demux / cycle / destination stopped の条件で接続できるようにした。配送は source と destination が実際に start 済みのときだけ発生する。
+- `IDescrambler.addPid()` の source filter subtype 許可表は `TsAudio / TsVideo / TsPes / TsRecord` で統一済みであることを確認し、r50dg 差分では該当経路を維持した。
+- Android/Soong build、Rust 単体テスト実行、atest、VTS、CTS、実機確認はこの環境では未実施。静的差分確認のみ実施した。
+
+## r50df
+- r50de のフェーズ5完了条件を再確認し、同一 demux 内の record DVR / playback DVR 2本目を `INVALID_STATE` に固定した。
+- `numRecord=numPlayback=demux_count` 恒久仕様では、別 demux で demux 数ぶん同時 open 可能、同一 demux の同方向2本目は現在状態による容量超過として `INVALID_STATE` に倒す。
+- フェーズ6〜7には進めていない。Android/Soong build、Rust 単体テスト実行、atest、VTS、CTS、実機確認はこの環境では未実施。静的差分確認のみ実施した。
+
+## r50de
+- r50dd のフェーズ1〜2完了条件を静的確認し、フェーズ3〜5として section repeat、DVR statusMask、StartId、descrambler source filter、record SC index mask、DVR capability 恒久仕様を修正した。
+- section `isRepeat=false` は filter 全体の one-shot 停止ではなく、`table_id / table_id_extension / version / section_number` 単位の同一 section 重複抑止に変更した。
+- DVR `statusMask=0` を全 status 購読扱いにせず、設定 bit が立った status だけを通知対象にした。
+- filter `StartId` は filter id 流用を廃止し、初回 start は `StartId(0)`、再設定・再開始後は非0の delivery generation 由来 ID を送る。
+- `IDescrambler.addPid()` は non-null source filter の configured、generation、PID、subtype を検査し、SECTION / raw TS source を復号対象 PID source として拒否する。
+- record `scIndexMask` は SC / AVC / HEVC / VVC ごとに実際に event 化できる bit だけを許可し、未対応 bit は `INVALID_ARGUMENT` とする。
+- `DemuxCapabilities.numRecord` / `numPlayback` を demux 数ぶん同時 open 可能な恒久製品仕様として `DESIGN_JA.md` に明記した。
+- Android/Soong build、Rust 単体テスト実行、atest、VTS、CTS、実機確認はこの環境では未実施。静的差分確認のみ実施した。
+
+## r50dd
+- r50dc の Tuner HAL 修正計画のフェーズ1〜2として、non-null `setDataSource()` linkage と raw TS filter subtype を修正した。
+- `setDataSource()` は source を `DemuxTsFilterType::TS` 由来の raw TS filter に固定し、destination を SECTION / PES / RECORD / AUDIO / VIDEO に限定した。下流 filter へ payload を丸流しせず、PID、section 条件、PES 条件、record 条件、AV 条件を再評価する。
+- 上流 filter の configure / flush / stop / unregister により、下流 filter の接続、起動状態、queue、runtime、pending status を破棄するようにした。
+- `DemuxTsFilterType::TS` を `TsRaw` として open 可能にし、`DemuxTsFilterSettings.Noinit` は raw TS filter subtype だけで受理する。対象 PID の188 byte TS packet は filter queue / FMQ 配送対象とする。
+- Android/Soong build、Rust 単体テスト実行、atest、VTS、CTS、実機確認はこの環境では未実施。静的差分確認のみ実施した。
+
 ## r50cd2
 - r50cd の未達1だけを修正し、`IDescrambler.removePid()` が `Tuner.VOID_KEYTOKEN` 相当の `setKeyToken([0x00])` 後でも登録済み PID を解除できるようにした。
 - `removePid()` の現在鍵必須条件を外し、demux 束縛、世代、PID登録、入力元フィルタ世代の検証は維持した。
