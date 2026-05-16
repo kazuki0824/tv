@@ -2054,6 +2054,7 @@ impl DemuxHandle {
         let filter = self.filters.get(&filter_id)?;
         let discipline = match filter.config.as_ref().map(|cfg| &cfg.kind) {
             Some(FilterConfigKind::Section { .. }) => FilterQueueDiscipline::SectionReassembled,
+            Some(FilterConfigKind::Av { .. }) => FilterQueueDiscipline::AvMediaEvent,
             Some(FilterConfigKind::Record { .. }) => FilterQueueDiscipline::RecordEventMetadata,
             _ => FilterQueueDiscipline::PacketPassthrough,
         };
@@ -3579,7 +3580,7 @@ mod duplicate_packet_tests {
     }
 
     #[test]
-    fn duplicate_ts_packet_is_kept_for_raw_record_filter_but_not_parser_assembly() {
+    fn duplicate_ts_packet_is_not_returned_as_record_filter_payload_without_index_event() {
         let pid = 0x0100;
         let mut demux = DemuxHandle::new(0);
         let filter = demux
@@ -3601,8 +3602,7 @@ mod duplicate_packet_tests {
         demux.start_filter(filter.filter_id);
         assert!(demux.push_ts_packet(&packet(pid, 0)));
         assert!(demux.push_ts_packet(&packet(pid, 0)));
-        let queued = demux.drain_filter_payloads(filter.filter_id);
-        assert_eq!(queued.len(), 2);
+        assert!(demux.drain_filter_payloads(filter.filter_id).is_empty());
     }
 
     #[test]
@@ -3821,7 +3821,7 @@ mod transport_error_indicator_tests {
     }
 
     #[test]
-    fn tei_packet_is_kept_for_record_filter_and_dvr() {
+    fn tei_packet_is_kept_for_record_dvr_without_record_filter_payload_when_index_disabled() {
         let pid = 0x0100;
         let mut demux = DemuxHandle::new(0);
         let filter = demux
@@ -3848,14 +3848,12 @@ mod transport_error_indicator_tests {
 
         let tei = packet(pid, 0, true);
         assert!(demux.push_ts_packet(&tei));
-        let queued = demux.drain_filter_payloads(filter.filter_id);
-        assert_eq!(queued.len(), 1);
-        assert_eq!(queued[0].bytes(), &tei);
+        assert!(demux.drain_filter_payloads(filter.filter_id).is_empty());
         assert_eq!(demux.pop_dvr_payload(dvr.dvr_id).as_deref(), Some(&tei[..]));
     }
 
     #[test]
-    fn tei_packet_does_not_advance_continuity_state() {
+    fn tei_packet_does_not_create_record_filter_payload_when_index_disabled() {
         let pid = 0x0100;
         let mut demux = DemuxHandle::new(0);
         let filter = demux
@@ -3867,8 +3865,7 @@ mod transport_error_indicator_tests {
         assert!(demux.push_ts_packet(&packet(pid, 0, false)));
         assert!(demux.push_ts_packet(&packet(pid, 1, true)));
         assert!(demux.push_ts_packet(&packet(pid, 1, false)));
-        let queued = demux.drain_filter_payloads(filter.filter_id);
-        assert_eq!(queued.len(), 3);
+        assert!(demux.drain_filter_payloads(filter.filter_id).is_empty());
     }
 
     fn section_config(pid: u16) -> FilterConfig {
@@ -5957,13 +5954,13 @@ mod filter_dvr_state_contract_tests {
             (
                 FilterOpenType::TsAudio,
                 av_config(0x0125),
-                FilterQueueDiscipline::PacketPassthrough,
+                FilterQueueDiscipline::AvMediaEvent,
                 None,
             ),
             (
                 FilterOpenType::TsVideo,
                 av_config(0x0125),
-                FilterQueueDiscipline::PacketPassthrough,
+                FilterQueueDiscipline::AvMediaEvent,
                 None,
             ),
             (

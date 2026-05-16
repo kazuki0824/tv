@@ -33,6 +33,7 @@ pub enum QueueKind {
 pub enum FilterQueueDiscipline {
     PacketPassthrough,
     SectionReassembled,
+    AvMediaEvent,
     RecordEventMetadata,
 }
 
@@ -175,7 +176,7 @@ impl FilterContractSkeleton {
         Self::new(
             filter_id,
             buffer_size,
-            FilterQueueDiscipline::PacketPassthrough,
+            FilterQueueDiscipline::AvMediaEvent,
             QueuePolicy::bounded_drop_old(buffer_size),
         )
     }
@@ -313,7 +314,7 @@ mod tests {
         assert_eq!(section.policy.overflow_policy, QueueOverflowPolicy::DropNew);
 
         let av = FilterContractSkeleton::new_av_media(3, 4096).queue_model();
-        assert_eq!(av.discipline, FilterQueueDiscipline::PacketPassthrough);
+        assert_eq!(av.discipline, FilterQueueDiscipline::AvMediaEvent);
         assert_eq!(av.policy.overflow_policy, QueueOverflowPolicy::DropOld);
 
         let record = FilterContractSkeleton::new_record_metadata(4, 8).queue_model();

@@ -4020,9 +4020,6 @@ impl TunerDescrambler {
 
     fn record_key_token_error(&self, demux_id: Option<i32>, error: DescramblerKeyResolveError) {
         let diagnostic = match error {
-            DescramblerKeyResolveError::CasBridgeUnconnected => {
-                DescramblerDiagnosticKind::CasBridgeUnconnected
-            }
             DescramblerKeyResolveError::RegistryUnavailable => DescramblerDiagnosticKind::RuntimeFailure,
             DescramblerKeyResolveError::ExpiredKeySlot => DescramblerDiagnosticKind::ExpiredKeySlot,
             DescramblerKeyResolveError::EmptyToken
@@ -4035,9 +4032,6 @@ impl TunerDescrambler {
 
     fn status_for_key_token_error(error: DescramblerKeyResolveError) -> Status {
         match error {
-            DescramblerKeyResolveError::CasBridgeUnconnected => {
-                Status::new_service_specific_error(TunerResult::UNAVAILABLE.0, None)
-            }
             DescramblerKeyResolveError::RegistryUnavailable => Status::from(StatusCode::UNKNOWN_ERROR),
             DescramblerKeyResolveError::ExpiredKeySlot => {
                 Status::new_service_specific_error(TunerResult::INVALID_ARGUMENT.0, None)
@@ -14573,7 +14567,7 @@ mod descrambler_state_tests {
         assert!(table.resolve_with_diagnostic(&token).is_ok());
     }
 
-    fn legacy_long_descrambler_diagnostic_token_for_test() -> [u8; 48] {
+    fn too_long_descrambler_diagnostic_token_for_test() -> [u8; 48] {
         [
             0x6d, 0x61, 0x6c, 0x65, 0x69, 0x63, 0x61, 0x63,
             0x69, 0x64, 0x2d, 0x74, 0x65, 0x73, 0x74, 0x2d,
@@ -14608,11 +14602,11 @@ mod descrambler_state_tests {
         assert_eq!(after_too_long.bad_token, 2);
 
         assert_tuner_result(
-            descrambler.setKeyToken(&legacy_long_descrambler_diagnostic_token_for_test()),
+            descrambler.setKeyToken(&too_long_descrambler_diagnostic_token_for_test()),
             TunerResult::INVALID_ARGUMENT,
         );
-        let after_legacy_ascii = hal.descrambler_diagnostics.snapshot(demux_id, 0x1fff);
-        assert_eq!(after_legacy_ascii.bad_token, 3);
+        let after_long_ascii = hal.descrambler_diagnostics.snapshot(demux_id, 0x1fff);
+        assert_eq!(after_long_ascii.bad_token, 3);
 
         assert_tuner_result(
             descrambler.setKeyToken(&[0x42; 8]),
@@ -14623,10 +14617,10 @@ mod descrambler_state_tests {
 
         assert_tuner_result(
             descrambler.setKeyToken(b"placeholder"),
-            TunerResult::UNAVAILABLE,
+            TunerResult::INVALID_ARGUMENT,
         );
         let after_placeholder = hal.descrambler_diagnostics.snapshot(demux_id, 0x1fff);
-        assert_eq!(after_placeholder.cas_bridge_unconnected, 1);
+        assert_eq!(after_placeholder.bad_token, 5);
 
         let key_slot = DescramblerKeySlot::empty()
             .try_with_even(Multi2KeyMaterial::new([0x11; 32], [0x22; 8], [0x33; 8])).unwrap();
@@ -14636,10 +14630,10 @@ mod descrambler_state_tests {
 
         assert!(hal
             .dump_descrambler_diagnostics_for_debug()
-            .contains("BAD_TOKEN=4"));
+            .contains("BAD_TOKEN=5"));
         assert!(hal
             .dump_descrambler_diagnostics_for_debug()
-            .contains("CAS_BRIDGE_UNCONNECTED=1"));
+            .contains("CAS_BRIDGE_UNCONNECTED=0"));
     }
 
     #[test]

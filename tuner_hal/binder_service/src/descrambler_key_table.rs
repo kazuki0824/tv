@@ -5,9 +5,6 @@ use std::sync::Mutex;
 
 const DESCRAMBLER_TOKEN_MAX_LEN: usize = 16;
 
-fn is_legacy_placeholder_token(token: &[u8]) -> bool {
-    token == b"placeholder"
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DescramblerKeyRegistrationError {
@@ -22,7 +19,6 @@ pub enum DescramblerKeyResolveError {
     EmptyToken,
     MalformedToken,
     UnknownToken,
-    CasBridgeUnconnected,
     ExpiredKeySlot,
     RegistryUnavailable,
 }
@@ -61,11 +57,7 @@ impl DescramblerKeyTable {
         if let Some(slot) = slots.get(token).cloned() {
             return Ok(slot);
         }
-        if is_legacy_placeholder_token(token) {
-            Err(DescramblerKeyResolveError::CasBridgeUnconnected)
-        } else {
-            Err(DescramblerKeyResolveError::UnknownToken)
-        }
+        Err(DescramblerKeyResolveError::UnknownToken)
     }
 
     #[cfg(test)]
@@ -172,6 +164,10 @@ mod tests {
         let table = DescramblerKeyTable::new();
         assert_eq!(
             table.resolve_with_diagnostic(&[0x42; 8]).unwrap_err(),
+            DescramblerKeyResolveError::UnknownToken
+        );
+        assert_eq!(
+            table.resolve_with_diagnostic(b"placeholder").unwrap_err(),
             DescramblerKeyResolveError::UnknownToken
         );
     }

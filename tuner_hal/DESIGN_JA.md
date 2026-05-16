@@ -207,7 +207,7 @@ AV passthrough は本製品では恒久的に対応しない。`DemuxFilterAvSet
 
 ここで「FMQ / EventFlag もスコープに含める」とは、section、PES、record、DVR の official FMQ 接続を完了条件に含めることと、ライブ AV filter の正式 delivery を完了条件に含めることの両方を意味する。前者は custom ring を残さず official FMQ/EventFlag に接続する責務であり、後者は `MediaEvent` + 共有ハンドル によって framework が ライブ AV payload を正式に受け取れるようにする責務である。
 
-AV filter の正式経路は `MediaEvent` + 共有ハンドル とし、FMQ だけにESを流す経路を ライブ AV filter の完成条件にしない。AV payload は通常 queue / AV補助queue を含む FMQ / EventFlag 経路に載せない。診断は shared memory delivery 結果、`MediaEvent`、コールバック 状態、AV shared 診断情報で行う。
+AV filter の正式経路は `MediaEvent` + 共有ハンドル とし、FMQ だけにESを流す経路を ライブ AV filter の完成条件にしない。AV payload は通常 queue / AV補助queue を含む FMQ / EventFlag 経路に載せない。診断は shared memory delivery 結果、`MediaEvent`、コールバック 状態、AV shared 診断情報で行う。queue 診断モデルでは AV filter を packet passthrough ではなく `AvMediaEvent` として表現し、shared memory + `MediaEvent` の終端 filter であることを明示する。
 
 `openFilter()` は section / PES / record / PCR / AV の種別にかかわらず AV shared memory を確保しない。`/dev/dma_heap/system` への依存は、AV filter が `getAvSharedHandle()` に到達した時点の lazy allocation に限定する。非 AV filter の `openFilter()`、`configure()`、`start()`、`getQueueDesc()` は dma heap の存在・権限・SELinux 許可に依存してはならない。AV filter の `start()` は AV stream type が確定済みであれば成功可能とし、`getAvSharedHandle()` 未実行だけを理由に失敗させない。ただし 共有ハンドル 未 export 中は framework/JNI が消費できない成功風 `MediaEvent` を出さず、drop/overflow 診断へ落とす。binder 公開経路と soft_demux core の `start_filter_result()` は、AV stream type 未設定の AV filter start を `InvalidState` として拒否し、再設定 は既存の AV stream type binding を必ず破棄する。
 
