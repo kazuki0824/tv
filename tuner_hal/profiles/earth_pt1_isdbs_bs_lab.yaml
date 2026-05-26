@@ -1,7 +1,7 @@
 # r51合格判定に使う前に、対象実機・対象地点のPAT/PMT由来値へ更新するlab placeholder。
-profile_name: earth_pt1_isdbs_bs_lab
+name: earth_pt1_isdbs_bs_lab
 frontend:
-  id: FE_ISDBS_BS
+  id: FE_ISDBS_0
   type: ISDBS
   satellite_band: BS
   is_software_frontend: false
@@ -9,15 +9,18 @@ frontend:
   stream_id_type: TS_ID
   stream_id: 16400
   symbol_rate: 0
+  modulation: 1
+  coderate: 1
+  rolloff: 0
 live:
-  audio_filter_id: FILTER_AUDIO_BS
+  audio_filter_id: FILTER_TS_AUDIO_0
   audio_pid: 273
-  video_filter_id: FILTER_VIDEO_BS
+  video_filter_id: FILTER_TS_VIDEO_0
   video_pid: 272
 record:
-  filter_id: FILTER_RECORD_BS
+  filter_id: FILTER_TS_RECORD_0
   pid: 272
-  dvr_id: DVR_RECORD_BS
+  dvr_id: DVR_RECORD_0
 scan:
   support_blind_scan: false
   notes: "earth_pt1/DVB の BS は IF frequency + TSID で選局し、相対 TS 番号は受け付けない。"

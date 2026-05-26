@@ -1,15 +1,16 @@
 package com.maleicacid.tvinput.aribsi
 
+import com.maleicacid.tvinput.common.TsPid
 import org.junit.Test
 
 class NativeAribSiParserCasDiscoveryTest {
     @Test fun caDiscoveryDoesNotDependOnClearLivePlaybackSnapshot() {
         val parser = NativeAribSiParser()
         try {
-            check(parser.ingestSection(PID_PAT, section(PAT_BODY)) == SiStatus.OK)
-            check(parser.ingestSection(PID_SDT, section(SDT_SCRAMBLED_SERVICE_BODY)) == SiStatus.OK)
-            check(parser.ingestSection(PID_PMT, section(PMT_WITH_PROGRAM_AND_ES_CA_BODY)) == SiStatus.OK)
-            check(parser.ingestSection(PID_CAT, section(CAT_BODY)) == SiStatus.OK)
+            check(parser.ingestSection(TsPid(PID_PAT), section(PAT_BODY)) == SiStatus.OK)
+            check(parser.ingestSection(TsPid(PID_SDT), section(SDT_SCRAMBLED_SERVICE_BODY)) == SiStatus.OK)
+            check(parser.ingestSection(TsPid(PID_PMT), section(PMT_WITH_PROGRAM_AND_ES_CA_BODY)) == SiStatus.OK)
+            check(parser.ingestSection(TsPid(PID_CAT), section(CAT_BODY)) == SiStatus.OK)
 
             // サービス登録 snapshot はチャンネル登録可否判定用に予約する。
             // CAS検出は、そのsnapshotが空かどうかに依存してはならない。
@@ -18,14 +19,21 @@ class NativeAribSiParserCasDiscoveryTest {
             val discoveryServices = snapshot.services
             check(discoveryServices.single().serviceKey.serviceId == SERVICE_ID)
 
+            val liveSnapshot = parser.livePlaybackSnapshot()
+            check(liveSnapshot.snapshotGeneration == snapshot.snapshotGeneration)
+            check(liveSnapshot.servicesForCasDiscovery.single().serviceKey.serviceId == SERVICE_ID)
+            check(liveSnapshot.pmtPids.values.single() == TsPid(PID_PMT))
+            check(liveSnapshot.caMetadataForCasDiscovery.any { it.source == CaMetadataSource.PROGRAM && it.ecmPid == TsPid(ECM_PID_PROGRAM) })
+            check(liveSnapshot.catEmmPids == listOf(TsPid(EMM_PID)))
+
             val metadata = snapshot.caMetadata
-            check(metadata.any { it.source == CaMetadataSource.PROGRAM && it.ecmPid == ECM_PID_PROGRAM }) {
+            check(metadata.any { it.source == CaMetadataSource.PROGRAM && it.ecmPid == TsPid(ECM_PID_PROGRAM) }) {
                 "番組単位CA_descriptorはCAS検出から見える必要があります"
             }
-            check(metadata.any { it.source == CaMetadataSource.ELEMENTARY_STREAM && it.elementaryPid == VIDEO_PID && it.ecmPid == ECM_PID_ES }) {
+            check(metadata.any { it.source == CaMetadataSource.ELEMENTARY_STREAM && it.elementaryPid == TsPid(VIDEO_PID) && it.ecmPid == TsPid(ECM_PID_ES) }) {
                 "ES単位CA_descriptorはCAS検出から見える必要があります"
             }
-            check(metadata.any { it.source == CaMetadataSource.CAT && it.serviceKey == null && it.emmPid == EMM_PID }) {
+            check(metadata.any { it.source == CaMetadataSource.CAT && it.serviceKey == null && it.emmPid == TsPid(EMM_PID) }) {
                 "CAT EMM PIDはサービス行公開と独立して見える必要があります"
             }
 

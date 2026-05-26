@@ -15,6 +15,7 @@ object ChannelScanManager {
 
     data class BackgroundMaintenanceStartDecision(val allowed: Boolean, val reason: String?)
     data class BootEpgSyncStartDecision(val allowed: Boolean, val reason: String?)
+    data class LiveSessionPreemptDecision(val shouldCancel: Boolean, val deferBootEpgSync: Boolean, val diagnosticReason: String?)
 
     private val executor: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "maleicacid-channel-scan-manager").apply { isDaemon = true }
@@ -33,6 +34,8 @@ object ChannelScanManager {
     @Volatile private var cancelledGeneration: Int = 0
     @Volatile private var pendingBootEpgContext: Context? = null
     @Volatile private var pendingBootEpgInputId: String? = null
+    @Volatile private var activeScanContext: Context? = null
+    @Volatile private var activeScanInputId: String? = null
 
     fun currentState(): ScanState = state
 
@@ -65,6 +68,7 @@ object ChannelScanManager {
 
     fun beginLiveSessionCreation() {
         sessionCreationsInProgress.incrementAndGet()
+        preemptBootOrBackgroundScanForLiveSessionCreation()
     }
 
     fun finishLiveSessionCreation() {
@@ -81,9 +85,13 @@ object ChannelScanManager {
     fun bootEpgSyncStartDecisionForTest(activeLiveSessionCount: Int, scanRunning: Boolean, sessionCreationInProgress: Boolean = false): BootEpgSyncStartDecision =
         bootEpgSyncStartDecision(activeLiveSessionCount, scanRunning, sessionCreationInProgress)
 
+    fun liveSessionPreemptDecisionForTest(scanRunning: Boolean, purpose: ScanPurpose?): LiveSessionPreemptDecision =
+        liveSessionPreemptDecision(scanRunning, purpose)
+
     fun startIfIdle(context: Context, inputId: String): Int? {
         val generation = beginScan(ScanPurpose.SETUP_SCAN) ?: return null
         val appContext = context.applicationContext
+        setActiveScanOwner(appContext, inputId)
         executor.execute {
             val result = runCatching {
                 val createdEngine = AribSiEngine(appContext)
@@ -132,6 +140,7 @@ object ChannelScanManager {
             markBootEpgSyncDeferred(appContext, inputId, "SCAN_RUNNING")
             return false
         }
+        setActiveScanOwner(appContext, inputId)
         if (activeLiveSessions.get() > 0 || sessionCreationsInProgress.get() > 0) {
             setTerminalStateIfCurrent(generation, ScanState.Idle)
             finishScanIfCurrent(generation)
@@ -208,13 +217,14 @@ object ChannelScanManager {
             markBackgroundMaintenanceSkipped("SCAN_RUNNING", source)
             return false
         }
+        val appContext = context.applicationContext
+        setActiveScanOwner(appContext, inputId)
         if (activeLiveSessions.get() > 0 || sessionCreationsInProgress.get() > 0) {
             setTerminalStateIfCurrent(generation, ScanState.Idle)
             finishScanIfCurrent(generation)
             markBackgroundMaintenanceSkipped("LIVE_SESSION_STARTING_OR_ACTIVE", source)
             return false
         }
-        val appContext = context.applicationContext
         executor.execute {
             if (activeLiveSessions.get() > 0 || sessionCreationsInProgress.get() > 0) {
                 setTerminalStateIfCurrent(generation, ScanState.Idle)
@@ -269,6 +279,42 @@ object ChannelScanManager {
         setTerminalStateIfCurrent(generation, ScanState.Cancelled(generation, purpose))
     }
 
+    private fun preemptBootOrBackgroundScanForLiveSessionCreation() {
+        val decision = liveSessionPreemptDecision(running.get(), activePurpose)
+        if (!decision.shouldCancel) return
+        val generation = activeGeneration
+        val purpose = activePurpose ?: return
+        if (generation == 0 || isCancelledGeneration(generation)) return
+        if (decision.deferBootEpgSync) {
+            val context = activeScanContext
+            val inputId = activeScanInputId
+            if (context != null && inputId != null) {
+                markBootEpgSyncDeferred(context, inputId, decision.diagnosticReason ?: "LIVE_SESSION_PREEMPTED_RUNNING_BOOT_EPG_SYNC")
+            } else {
+                Log.w(LogTags.TIS, "running boot EPG 同期の再開待ち情報が不足しています")
+            }
+        }
+        if (purpose == ScanPurpose.BACKGROUND_MAINTENANCE) {
+            BackgroundChannelMaintenanceDiagnostics.cancelledByLiveSessionCount.incrementAndGet()
+            BackgroundChannelMaintenanceDiagnostics.lastSkippedReason = decision.diagnosticReason ?: "LIVE_SESSION_PREEMPTED_RUNNING_BACKGROUND_MAINTENANCE"
+        }
+        cancel()
+    }
+
+    private fun liveSessionPreemptDecision(scanRunning: Boolean, purpose: ScanPurpose?): LiveSessionPreemptDecision {
+        if (!scanRunning || purpose == null) return LiveSessionPreemptDecision(false, false, null)
+        return when (purpose) {
+            ScanPurpose.BOOT_EPG_SYNC -> LiveSessionPreemptDecision(true, true, "LIVE_SESSION_PREEMPTED_RUNNING_BOOT_EPG_SYNC")
+            ScanPurpose.BACKGROUND_MAINTENANCE -> LiveSessionPreemptDecision(true, false, "LIVE_SESSION_PREEMPTED_RUNNING_BACKGROUND_MAINTENANCE")
+            ScanPurpose.SETUP_SCAN -> LiveSessionPreemptDecision(false, false, null)
+        }
+    }
+
+    private fun setActiveScanOwner(context: Context, inputId: String) {
+        activeScanContext = context.applicationContext
+        activeScanInputId = inputId
+    }
+
     private fun beginScan(purpose: ScanPurpose): Int? {
         if (!running.compareAndSet(false, true)) return null
         val generation = nextGeneration.incrementAndGet()
@@ -296,6 +342,8 @@ object ChannelScanManager {
         closeController()
         activeGeneration = 0
         activePurpose = null
+        activeScanContext = null
+        activeScanInputId = null
         cancelRequested.set(false)
         cancelledGeneration = 0
         running.set(false)

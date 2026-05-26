@@ -67,7 +67,15 @@ class MaleicacidLiveSession(
     private val captionController = AribCaptionController(captionOverlayView)
     private val unblockedContentKeys = linkedSetOf<String>()
     private var currentUnblockProgramIdentityKey: String? = null
+    private var lastParentalAccessState: ParentalAccessState = ParentalAccessState.UNKNOWN
+    private var lastBlockedContent: BlockedContent? = null
     private data class BlockedContent(val rating: TvContentRating, val unblockKey: String)
+    private enum class ParentalAccessState { UNKNOWN, ALLOWED, BLOCKED }
+    private sealed class ContentAccessDecision {
+        data class Block(val blocked: BlockedContent) : ContentAccessDecision()
+        object Allow : ContentAccessDecision()
+        data class HoldPrevious(val reason: String) : ContentAccessDecision()
+    }
     private val parentalControlReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             enqueueSessionAction { reevaluateParentalControls() }
@@ -83,8 +91,8 @@ class MaleicacidLiveSession(
             onVideoUnavailable = { reason -> enqueueSessionAction { handlePlaybackUnavailable(reason) } },
         )
         tunerController.setOnVideoFormatDiscoveredCallback { info -> enqueueSessionAction { updateCurrentProgramVideoMetadata(info) } }
-        tunerController.setOnSubtitlePesCallback { trackId, pesData, ptsMillis ->
-            captionController.onPesData(trackId, pesData, ptsMillis)
+        tunerController.setOnSubtitlePesCallback { trackId, pesData, timestamp ->
+            captionController.onPesData(trackId, pesData, timestamp)
         }
         runCatching { setOverlayViewEnabled(true) }
         ChannelScanManager.registerLiveSession()
@@ -206,23 +214,22 @@ class MaleicacidLiveSession(
 
     private fun refreshDynamicSiAndCasFilters() {
         val serviceKey = currentService ?: return
-        val serviceSnapshot = aribSiEngine.serviceRegistrationSnapshot()
-        val transaction = aribSiEngine.casDiscoverySnapshot()
-        val service = serviceSnapshot.services.firstOrNull { it.serviceKey == serviceKey }
-        val pmtPids = transaction.pmtPids.values.filter { it in 0..0x1fff }.toSet()
-        val allCaMetadata = if (ENABLE_CAS_ORCHESTRATION) transaction.caMetadata else emptyList()
+        val transaction = aribSiEngine.livePlaybackSnapshot()
+        val service = transaction.services.firstOrNull { it.serviceKey == serviceKey }
+        val pmtPids = transaction.pmtPids.values.toSet()
+        val allCaMetadata = if (ENABLE_CAS_ORCHESTRATION) transaction.caMetadataForCasDiscovery else emptyList()
         val serviceScopedCa = allCaMetadata.filter {
             it.serviceKey == serviceKey && it.source != com.maleicacid.tvinput.aribsi.CaMetadataSource.CAT
         }
         val catCa = allCaMetadata.filter { it.source == com.maleicacid.tvinput.aribsi.CaMetadataSource.CAT }
         val expanded = caMapper.expandProgramLevelToElementaryStreams(
             serviceScopedCa + catCa,
-            transaction.services,
+            transaction.servicesForCasDiscovery,
         )
         val serviceCaMetadata = expanded.filter { it.serviceKey == serviceKey }
         val caMetadata = expanded.filter { it.serviceKey == null || it.serviceKey == serviceKey }
-        val ecmPids = caMetadata.mapNotNull { it.ecmPid }.filter { it in 0..0x1fff }.toSet()
-        val emmPids = caMetadata.mapNotNull { it.emmPid }.filter { it in 0..0x1fff }.toSet()
+        val ecmPids = caMetadata.mapNotNull { it.ecmPid }.toSet()
+        val emmPids = caMetadata.mapNotNull { it.emmPid }.toSet()
         tunerController.updateDynamicSectionFiltersForService(serviceKey, pmtPids, ecmPids, emmPids, currentGeneration)
 
         publishLiveProgramsForCurrentService()
@@ -258,12 +265,20 @@ class MaleicacidLiveSession(
     }
 
     private fun maybeStartPlayback(service: AribService): Boolean {
-        val blocked = blockedContentRating()
-        if (blocked != null) {
-            stopPlaybackForBlockedContent(blocked)
-            return false
-        } else {
-            notifyContentAllowed()
+        when (val decision = contentAccessDecision()) {
+            is ContentAccessDecision.Block -> {
+                rememberBlockedContent(decision.blocked)
+                stopPlaybackForBlockedContent(decision.blocked)
+                return false
+            }
+            ContentAccessDecision.Allow -> {
+                rememberAllowedContent()
+                notifyContentAllowed()
+            }
+            is ContentAccessDecision.HoldPrevious -> {
+                holdPreviousParentalAccessState(decision.reason)
+                return false
+            }
         }
         val selection = tunerController.selectAvStreams(service.serviceKey, service.pcrPid, service.streams, preferredAudioTrackId, selectedSubtitleTrackId)
         if (shouldRejectPlaybackSelectionWithoutVideoForTest(selection)) {
@@ -447,13 +462,21 @@ class MaleicacidLiveSession(
             currentPlaybackSignature = signature
             pendingPlaybackSignature = null
         }
-        val blocked = blockedContentRating()
-        if (blocked != null) {
-            stopPlaybackForBlockedContent(blocked)
-            return
+        when (val decision = contentAccessDecision()) {
+            is ContentAccessDecision.Block -> {
+                rememberBlockedContent(decision.blocked)
+                stopPlaybackForBlockedContent(decision.blocked)
+                return
+            }
+            ContentAccessDecision.Allow -> {
+                rememberAllowedContent()
+                notifyContentAllowed()
+                notifyVideoAvailable()
+            }
+            is ContentAccessDecision.HoldPrevious -> {
+                holdPreviousParentalAccessState(decision.reason)
+            }
         }
-        notifyContentAllowed()
-        notifyVideoAvailable()
     }
 
     private fun handlePlaybackUnavailable(reason: PlaybackPipeline.PlaybackUnavailable) {
@@ -482,18 +505,54 @@ class MaleicacidLiveSession(
         tunerController.stopPlayback()
     }
 
-    private fun blockedContentRating(): BlockedContent? {
-        val manager = tvInputManager ?: return null
-        if (!manager.isParentalControlsEnabled) return null
-        val ratingSet = currentProgramRatingResolver.resolve(
+    private fun contentAccessDecision(): ContentAccessDecision {
+        val manager = tvInputManager ?: return ContentAccessDecision.Allow
+        if (!manager.isParentalControlsEnabled) return ContentAccessDecision.Allow
+        return when (val result = currentProgramRatingResolver.resolveDetailed(
             channelUri = currentChannelUri,
             serviceKey = currentService,
             latestEvents = aribSiEngine.programStateSnapshot().events,
-        )
-        clearUnblocksIfCurrentProgramChanged(ratingSet)
-        return ratingSet.ratingsForBlocking().firstNotNullOfOrNull { rating ->
-            val unblockKey = ratingSet.unblockKeyFor(rating)
-            if (unblockKey !in unblockedContentKeys && manager.isRatingBlocked(rating)) BlockedContent(rating, unblockKey) else null
+        )) {
+            is CurrentProgramRatingResolver.ResolveResult.Ratings -> {
+                val ratingSet = result.ratingSet
+                clearUnblocksIfCurrentProgramChanged(ratingSet)
+                ratingSet.ratingsForBlocking().firstNotNullOfOrNull { rating ->
+                    val unblockKey = ratingSet.unblockKeyFor(rating)
+                    if (unblockKey !in unblockedContentKeys && manager.isRatingBlocked(rating)) BlockedContent(rating, unblockKey) else null
+                }?.let { ContentAccessDecision.Block(it) } ?: ContentAccessDecision.Allow
+            }
+            is CurrentProgramRatingResolver.ResolveResult.ProviderQueryFailed -> {
+                android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "TvProvider current program rating query failure; keeping previous parental access state reason=${result.reason}")
+                ContentAccessDecision.HoldPrevious(result.reason)
+            }
+        }
+    }
+
+    private fun rememberAllowedContent() {
+        lastParentalAccessState = ParentalAccessState.ALLOWED
+        lastBlockedContent = null
+    }
+
+    private fun rememberBlockedContent(blocked: BlockedContent) {
+        lastParentalAccessState = ParentalAccessState.BLOCKED
+        lastBlockedContent = blocked
+    }
+
+    private fun holdPreviousParentalAccessState(reason: String) {
+        when (lastParentalAccessState) {
+            ParentalAccessState.ALLOWED -> {
+                android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "TvProvider rating query failure中のため、直前の許可状態を維持します reason=$reason")
+                notifyVideoAvailable()
+            }
+            ParentalAccessState.BLOCKED -> {
+                val blocked = lastBlockedContent
+                android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "TvProvider rating query failure中のため、直前の遮断状態を維持します reason=$reason")
+                if (blocked != null) stopPlaybackForBlockedContent(blocked) else notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+            }
+            ParentalAccessState.UNKNOWN -> {
+                android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "TvProvider rating query failure中で直前状態が無いため、許可通知を出さず映像不可にします reason=$reason")
+                notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+            }
         }
     }
 
@@ -506,14 +565,21 @@ class MaleicacidLiveSession(
     }
 
     private fun reevaluateParentalControls() {
-        val blocked = blockedContentRating()
-        if (blocked != null) {
-            stopPlaybackForBlockedContent(blocked)
-        } else {
-            notifyContentAllowed()
-            latestService?.let { service ->
-                playbackStartGate.allowRetry()
-                maybeStartPlayback(service)
+        when (val decision = contentAccessDecision()) {
+            is ContentAccessDecision.Block -> {
+                rememberBlockedContent(decision.blocked)
+                stopPlaybackForBlockedContent(decision.blocked)
+            }
+            ContentAccessDecision.Allow -> {
+                rememberAllowedContent()
+                notifyContentAllowed()
+                latestService?.let { service ->
+                    playbackStartGate.allowRetry()
+                    maybeStartPlayback(service)
+                }
+            }
+            is ContentAccessDecision.HoldPrevious -> {
+                holdPreviousParentalAccessState(decision.reason)
             }
         }
     }
@@ -540,12 +606,14 @@ class MaleicacidLiveSession(
     }
 
     private fun refreshCurrentProgramRatingState() {
-        val ratingSet = currentProgramRatingResolver.resolve(
+        when (val result = currentProgramRatingResolver.resolveDetailed(
             channelUri = currentChannelUri,
             serviceKey = currentService,
             latestEvents = aribSiEngine.programStateSnapshot().events,
-        )
-        clearUnblocksIfCurrentProgramChanged(ratingSet)
+        )) {
+            is CurrentProgramRatingResolver.ResolveResult.Ratings -> clearUnblocksIfCurrentProgramChanged(result.ratingSet)
+            is CurrentProgramRatingResolver.ResolveResult.ProviderQueryFailed -> android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "TvProvider rating query failure中のため unblock 状態を更新しません reason=${result.reason}")
+        }
     }
 
     private fun publishLiveProgramsForCurrentService() {
@@ -610,12 +678,20 @@ class MaleicacidLiveSession(
 
     private fun onUnblockContentOnSessionExecutor(unblockedRating: TvContentRating?) {
         val rating = unblockedRating ?: return
-        val ratingSet = currentProgramRatingResolver.resolve(
+        val ratingSet = when (val result = currentProgramRatingResolver.resolveDetailed(
             channelUri = currentChannelUri,
             serviceKey = currentService,
             latestEvents = aribSiEngine.programStateSnapshot().events,
-        )
-        clearUnblocksIfCurrentProgramChanged(ratingSet)
+        )) {
+            is CurrentProgramRatingResolver.ResolveResult.Ratings -> {
+                clearUnblocksIfCurrentProgramChanged(result.ratingSet)
+                result.ratingSet
+            }
+            is CurrentProgramRatingResolver.ResolveResult.ProviderQueryFailed -> {
+                android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "TvProvider rating query failure中のため unblock 状態を更新しません reason=${result.reason}")
+                return
+            }
+        }
         val unblockKey = ratingSet.exactUnblockKeyFor(rating) ?: return
         unblockedContentKeys += unblockKey
         notifyContentAllowed()

@@ -1,5 +1,7 @@
 package com.maleicacid.tvinput.aribsi
 
+import com.maleicacid.tvinput.common.TsPid
+
 class PmtCatCaMetadataMapper {
     fun programLevel(metadata: List<CaMetadata>): List<CaMetadata> {
         return metadata.filter { it.source == CaMetadataSource.PROGRAM && it.ecmPid != null && it.elementaryPid == null && it.serviceKey != null }
@@ -51,7 +53,7 @@ class PmtCatCaMetadataMapper {
     private data class EsBindingKey(
         val serviceKey: String,
         val caSystemId: Int,
-        val ecmPid: Int,
-        val elementaryPid: Int,
+        val ecmPid: TsPid,
+        val elementaryPid: TsPid,
     )
 }

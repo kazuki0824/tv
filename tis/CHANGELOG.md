@@ -1,3 +1,73 @@
+# r50dx10
+
+- r50dx9 のフェーズ5完了条件を再確認し、`PlaybackStartGateTest` に残っていた裸の PID 入力を `TsPid` に修正した。
+- これにより、型化後のテストコードで残っていた構文上のデグレを解消した。フェーズ6は未実施。
+- Android/Soong build、instrumentationテスト、atest、CTS、実機確認は未実施。
+
+# r50dx9
+
+- r50dx8 のフェーズ4完了条件を確認し、フェーズ5として字幕 PTS、CAS token、視聴年齢制限の実動作補強を実施した。
+- 字幕 PES の PTS あり経路を `CaptionTimestamp.Pts` として維持し、PTS 欠落時だけ `subtitlePtsFallbackSamplesForDiagnostic()` が増えるようにした。
+- `TunerKeyToken` の 0バイトおよび17バイト以上を型生成時に拒否する受け入れ試験を追加し、不正長 token を HAL に渡せない境界を固定した。
+- TvProvider の現在番組 rating 問い合わせで null cursor または例外が発生した場合を `ProviderQueryFailed` として分離し、保持済みEIT情報が無い場合は直前の遮断/許可状態を維持して、新規の `notifyContentAllowed()` を出さないようにした。
+- Android/Soong build、instrumentationテスト、atest、CTS、実機確認は未実施。静的確認のみ実施した。
+
+# r50dx8
+
+- r50dx7 のフェーズ3完了条件を確認し、ライブ視聴経路が `LivePlaybackSnapshot` の単一取得へ統一されていることを維持した。
+- フェーズ4として、ライブセッション作成開始時に実行中の boot EPG 同期を中断し、再開待ちとして保持するようにした。
+- フェーズ4として、ライブセッション作成開始時に実行中のバックグラウンド保守処理を中断し、ライブ中の新規要求は開始せず診断へ記録する方針を固定した。
+- `SETUP_SCAN` はライブセッション作成時にも自動中断しないことを `liveSessionPreemptDecisionForTest()` と受け入れ試験で固定した。
+- Android/Soong build、instrumentationテスト、atest、CTS、実機確認は未実施。静的確認のみ実施した。
+
+# r50dx7
+
+- r50dx6 のフェーズ1・2完了条件を再確認し、静的条件を満たしているためフェーズ3を実施した。
+- `LivePlaybackSnapshot` を追加し、ライブ視聴中の service / PMT / CAT / CA metadata / 診断情報を同一 native transaction から取得する境界へ統一した。
+- `MaleicacidLiveSession.refreshDynamicSiAndCasFilters()` が `serviceRegistrationSnapshot()` と `casDiscoverySnapshot()` を連続取得して合成しないよう修正した。
+- Android/Soong build、instrumentationテスト、atest、CTS、実機確認は未実施。静的確認のみ実施した。
+
+# r50dx6
+
+- r50dx5 のフェーズ1・2完了条件を再確認し、`NativeAribSiParser` の `DescriptorDiagnosticScope` 生成で `eventId` named argument が二重指定されていた未達を修正した。
+- これにより、型化後の Kotlin コードで残っていた構文上のデグレを解消した。フェーズ3は未実施。
+- Android/Soong build、instrumentationテスト、atest、CTS、実機確認は未実施。
+
+# r50dx5
+
+- r50dx4 のフェーズ1・2完了条件を再確認し、テスト側に残っていた `ChannelRecord` の裸の周波数値と `NativeAribSiParser.ingestSection()` の裸の PID 入力を修正した。
+- `ScanPlanPolicyTest` の周波数比較を `FrequencyHz.value` に追随させ、テストコードでも `FrequencyHz` / `TsPid` 型境界を維持するよう補強した。
+- フェーズ3は未実施。Android/Soong build、instrumentationテスト、atest、CTS、実機確認は未実施。
+
+# r50dx4
+
+- r50dx3 のフェーズ1・2完了条件を再確認し、Program 安定キーの Kotlin 手組みが残っていたため、`ProviderDataBridge.buildProgramKey(ServiceKey, eventId)` 経由へ統一した。
+- `AribTransport` / `AribRelatedItem` / `AribLinkage` / `DescriptorDiagnosticScope` / `TransportKey` / malformed CA descriptor summary の ONID / TSID / SID を 16 bit 型または `ServiceKey` へ寄せ、内部モデルで裸の識別子を保持しないよう補強した。
+- 字幕 PES の時刻引き渡し境界を `CaptionTimestamp` / `PesPts90k` / `CaptionPtsMillis` へ寄せ、TIS 内部で裸の字幕 PTS `Long` を受け渡さないよう補強した。
+- フェーズ3は未実施。Android/Soong build、instrumentationテスト、atest、CTS、実機確認は未実施。
+
+# r50dx3
+
+- r50dx2 のフェーズ2完了条件を再確認し、型化後のテストコードに残っていた裸の PID / 周波数値 / 不正 ServiceKey 生成を修正した。
+- `ChannelRecord` / `ScanCandidate` のテスト入力は `FrequencyHz` を使い、`AribService` / `AribComponentEntry` / `AvPlaybackSignature` / `TisTrack` / CAS metadata のテスト入力は `TsPid` を使うように揃えた。
+- `ServiceKey` の 16 bit 値域制限に合わせ、不正 service key は `ChannelRecord` 生成後の検証ではなく `ServiceKey.fromOrNull()` の失敗として確認する形に変更した。
+- フェーズ3は未実施。Android/Soong build、instrumentationテスト、atest、CTS、実機確認は未実施。
+
+# r50dx2
+
+- r50dx のフェーズ2未達を修正し、section PID の内部境界を `TsPid` に統一した。
+- `TunerController` の section filter、動的 PMT/ECM/EMM filter、`SectionIngestController`、`AribSiEngine`、`NativeAribSiParser` の公開境界を `TsPid` 化し、Android/JNI 境界だけ `Int` に戻す形へ固定した。
+- `ChannelRecord`、`ScanCandidate`、`TuneRequest`、`ResolvedChannel`、`ProviderDataBridge.ChannelTuneKey` の周波数を `FrequencyHz` 化し、Android/TvProvider/JNI 境界だけ `Long` に戻す形へ固定した。
+- `CasController` の ECM/EMM PID index と診断 PID を `TsPid` 化し、不正 PID を内部状態として表現できないようにした。
+- Android/Soong build、instrumentationテスト、atest、CTS、実機確認は未実施。Android非依存の型基盤は `kotlinc` で構文確認し、CAS 制御は最小 Android stub 付きで `kotlinc` 構文確認した。
+
+# r50dx
+
+- provider-data JNI result の `success=false` と `bytes` 欠落を失敗として扱い、TvProvider への追加・更新・削除に進まないようにした。
+- Program provider-data の旧 `canonicalGenres` request 出力を削除し、Android canonical genre は TvProvider 標準列への投影専用に残した。
+- `TsPid`、`TunerKeyToken`、`NetworkId16` / `TransportStreamId16` / `ServiceId16`、`StreamSelector`、`FrequencyHz`、字幕 PTS 型を追加し、CAS / SI / 再生開始署名の PID と token 境界を型で制限した。
+- Android/Soong build、instrumentationテスト、atest、CTS、実機確認は未実施。型化対象の一部 Kotlin ファイルはローカル stubs 付き `kotlinc` で構文確認した。
+
 # r50dc
 
 - r50db の provider-data raw bytes 境界修正に対し、TIS instrumentation test 側の provider-data 検査を追随させた。

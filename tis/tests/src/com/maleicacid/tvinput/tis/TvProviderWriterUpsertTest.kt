@@ -2,6 +2,7 @@ package com.maleicacid.tvinput.tis
 
 import android.content.ContentValues
 import android.media.tv.TvContract
+import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.db.ChannelRecord
 import org.junit.Test
@@ -13,7 +14,7 @@ class TvProviderWriterUpsertTest {
     @Test fun insertNewChannel() {
         val store = FakeChannelStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
-        val result = writer.upsertChannels(listOf(ChannelRecord(key, displayNumber = "101", displayName = "NHK", frequencyHz = 473_142_857L)))
+        val result = writer.upsertChannels(listOf(ChannelRecord(key, displayNumber = "101", displayName = "NHK", frequencyHz = FrequencyHz(473_142_857L))))
         check(result.inserted == 1) { result.toString() }
         check(result.updated == 0)
         check(result.failures.isEmpty())
@@ -25,27 +26,22 @@ class TvProviderWriterUpsertTest {
     @Test fun updateExistingChannel() {
         val store = FakeChannelStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
-        writer.upsertChannels(listOf(ChannelRecord(key, displayNumber = "101", displayName = "NHK", frequencyHz = 473_142_857L)))
-        val result = writer.upsertChannels(listOf(ChannelRecord(key, displayNumber = "101", displayName = "NHK G", frequencyHz = 473_142_857L)))
+        writer.upsertChannels(listOf(ChannelRecord(key, displayNumber = "101", displayName = "NHK", frequencyHz = FrequencyHz(473_142_857L))))
+        val result = writer.upsertChannels(listOf(ChannelRecord(key, displayNumber = "101", displayName = "NHK G", frequencyHz = FrequencyHz(473_142_857L))))
         check(result.inserted == 0) { result.toString() }
         check(result.updated == 1)
         check(store.rows.size == 1)
         check(store.rows.values.single().getAsString(TvContract.Channels.COLUMN_DISPLAY_NAME) == "NHK G")
     }
 
-    @Test fun rejectInvalidMetadata() {
-        val writer = TvProviderWriter("input.test", FakeChannelStore(), testOnly = true)
-        val invalid = ChannelRecord(ServiceKey(originalNetworkId = -1, transportStreamId = 16625, serviceId = 101), displayNumber = "101", displayName = "bad", frequencyHz = 473_142_857L)
-        val result = writer.upsertChannels(listOf(invalid))
-        check(result.inserted == 0)
-        check(result.updated == 0)
-        check(result.failures.single().operation == "validate")
+    @Test fun invalidServiceKeyIsRejectedBeforeChannelRecordConstruction() {
+        check(ServiceKey.fromOrNull(originalNetworkId = -1, transportStreamId = 16625, serviceId = 101) == null)
     }
 
     @Test fun providerFailureIsDiagnostic() {
         val store = FakeChannelStore(failInsert = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
-        val result = writer.upsertChannels(listOf(ChannelRecord(key, displayNumber = "101", displayName = "NHK", frequencyHz = 473_142_857L)))
+        val result = writer.upsertChannels(listOf(ChannelRecord(key, displayNumber = "101", displayName = "NHK", frequencyHz = FrequencyHz(473_142_857L))))
         check(result.inserted == 0)
         check(result.failures.single().operation == "insert")
     }

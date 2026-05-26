@@ -11,11 +11,14 @@ const HARD_LIMIT_BYTES: usize = 32 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProviderDataResult {
+    pub success: bool,
     pub json: String,
     pub signature: String,
     pub schema_version: i64,
     pub truncated: bool,
     pub diagnostics_dropped_count: i64,
+    pub error_code: String,
+    pub error_message: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -91,8 +94,6 @@ struct GenreV1 {
     user_nibble: i64,
     arib_name: String,
     unmapped_reason: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    canonical_genres: Vec<String>,
     parse_status: String,
 }
 
@@ -468,32 +469,64 @@ pub fn build_program_key(onid: i32, tsid: i32, sid: i32, event_id: i32) -> Strin
 }
 
 pub fn build_program_provider_data(request_json: &str) -> ProviderDataResult {
-    let Ok(request) = serde_json::from_str::<ProgramProviderDataRequestV1>(request_json) else { return empty_result(); };
-    let Some(data) = program_data_from_request(request) else { return empty_result(); };
+    let request = match serde_json::from_str::<ProgramProviderDataRequestV1>(request_json) {
+        Ok(request) => request,
+        Err(err) => return failure_result("PROGRAM_REQUEST_PARSE_FAILED", format!("Program provider-data request JSON parse failed: {err}"), PROVIDER_SCHEMA_VERSION),
+    };
+    let Some(data) = program_data_from_request(request) else {
+        return failure_result("PROGRAM_REQUEST_INVALID", "Program provider-data request did not satisfy schema v1 invariants".to_string(), PROVIDER_SCHEMA_VERSION);
+    };
     finalize_program(data)
 }
 
 pub fn build_channel_provider_data(request_json: &str) -> ProviderDataResult {
-    let Ok(request) = serde_json::from_str::<ChannelProviderDataRequestV1>(request_json) else { return empty_result(); };
-    let Some(data) = channel_data_from_request(request) else { return empty_result(); };
+    let request = match serde_json::from_str::<ChannelProviderDataRequestV1>(request_json) {
+        Ok(request) => request,
+        Err(err) => return failure_result("CHANNEL_REQUEST_PARSE_FAILED", format!("Channel provider-data request JSON parse failed: {err}"), CHANNEL_SCHEMA_VERSION),
+    };
+    let Some(data) = channel_data_from_request(request) else {
+        return failure_result("CHANNEL_REQUEST_INVALID", "Channel provider-data request did not satisfy schema v1 invariants".to_string(), CHANNEL_SCHEMA_VERSION);
+    };
     finalize_channel(data)
 }
 
 pub fn normalize_program_provider_data(raw_bytes: &[u8]) -> ProviderDataResult {
-    let Ok(text) = std::str::from_utf8(raw_bytes) else { return empty_result(); };
-    let Ok(raw_value) = serde_json::from_str::<serde_json::Value>(text.trim()) else { return empty_result(); };
-    let Ok(data) = serde_json::from_value::<ProgramProviderDataV1>(raw_value.clone()) else { return empty_result(); };
+    let text = match std::str::from_utf8(raw_bytes) {
+        Ok(text) => text,
+        Err(err) => return failure_result("PROGRAM_PROVIDER_DATA_UTF8_FAILED", format!("Program provider-data is not UTF-8: {err}"), PROVIDER_SCHEMA_VERSION),
+    };
+    let raw_value = match serde_json::from_str::<serde_json::Value>(text.trim()) {
+        Ok(value) => value,
+        Err(err) => return failure_result("PROGRAM_PROVIDER_DATA_PARSE_FAILED", format!("Program provider-data JSON parse failed: {err}"), PROVIDER_SCHEMA_VERSION),
+    };
+    let data = match serde_json::from_value::<ProgramProviderDataV1>(raw_value.clone()) {
+        Ok(data) => data,
+        Err(err) => return failure_result("PROGRAM_PROVIDER_DATA_SCHEMA_FAILED", format!("Program provider-data JSON v1 schema parse failed: {err}"), PROVIDER_SCHEMA_VERSION),
+    };
     let data = normalize_program_extensions(data, Some(&raw_value));
-    if !valid_program_provider_data(&data) { return empty_result(); }
+    if !valid_program_provider_data(&data) {
+        return failure_result("PROGRAM_PROVIDER_DATA_INVALID", "Program provider-data JSON v1 invariants failed".to_string(), PROVIDER_SCHEMA_VERSION);
+    }
     finalize_program(data)
 }
 
 pub fn append_current_program_diagnostics(raw_bytes: &[u8], overlap_count: i64, selected_program_id: i64, selection_rule: &str) -> ProviderDataResult {
-    let Ok(text) = std::str::from_utf8(raw_bytes) else { return empty_result(); };
-    let Ok(raw_value) = serde_json::from_str::<serde_json::Value>(text.trim()) else { return empty_result(); };
-    let Ok(data) = serde_json::from_value::<ProgramProviderDataV1>(raw_value.clone()) else { return empty_result(); };
+    let text = match std::str::from_utf8(raw_bytes) {
+        Ok(text) => text,
+        Err(err) => return failure_result("PROGRAM_PROVIDER_DATA_UTF8_FAILED", format!("Program provider-data is not UTF-8: {err}"), PROVIDER_SCHEMA_VERSION),
+    };
+    let raw_value = match serde_json::from_str::<serde_json::Value>(text.trim()) {
+        Ok(value) => value,
+        Err(err) => return failure_result("PROGRAM_PROVIDER_DATA_PARSE_FAILED", format!("Program provider-data JSON parse failed: {err}"), PROVIDER_SCHEMA_VERSION),
+    };
+    let data = match serde_json::from_value::<ProgramProviderDataV1>(raw_value.clone()) {
+        Ok(data) => data,
+        Err(err) => return failure_result("PROGRAM_PROVIDER_DATA_SCHEMA_FAILED", format!("Program provider-data JSON v1 schema parse failed: {err}"), PROVIDER_SCHEMA_VERSION),
+    };
     let mut data = normalize_program_extensions(data, Some(&raw_value));
-    if !valid_program_provider_data(&data) { return empty_result(); }
+    if !valid_program_provider_data(&data) {
+        return failure_result("PROGRAM_PROVIDER_DATA_INVALID", "Program provider-data JSON v1 invariants failed".to_string(), PROVIDER_SCHEMA_VERSION);
+    }
     data.diagnostics.current_program = Some(CurrentProgramDiagnosticsV1 { overlap_count: overlap_count.max(0), selected_program_id, selection_rule: selection_rule.to_string() });
     finalize_program(data)
 }
@@ -604,7 +637,7 @@ fn collect_program_unknown_extensions(raw: &serde_json::Value, out: &mut Vec<Raw
     collect_object_unknown(raw.get("source").unwrap_or(&serde_json::Value::Null), "source", &["pid", "tableId", "version", "sectionNumber", "lastSectionNumber"], out);
     collect_object_unknown(raw.get("cas").unwrap_or(&serde_json::Value::Null), "cas", &["requiresCas", "unsupportedCas", "clearLivePlaybackSupported", "source"], out);
     collect_array_unknown(raw.get("ratings").unwrap_or(&serde_json::Value::Null), "ratings", &["countryCode", "ratingValue", "rawRatingByte", "supported", "mappedTvContentRating", "parseStatus"], out);
-    collect_array_unknown(raw.get("genres").unwrap_or(&serde_json::Value::Null), "genres", &["level1", "level2", "userNibble", "aribName", "unmappedReason", "canonicalGenres", "parseStatus"], out);
+    collect_array_unknown(raw.get("genres").unwrap_or(&serde_json::Value::Null), "genres", &["level1", "level2", "userNibble", "aribName", "unmappedReason", "parseStatus"], out);
     collect_object_unknown(raw.get("series").unwrap_or(&serde_json::Value::Null), "series", &["seriesId", "repeatLabel", "programPattern", "expireDateValid", "expireDate", "episodeNumber", "lastEpisodeNumber", "name", "parseStatus"], out);
     collect_array_unknown(raw.get("relatedItems").unwrap_or(&serde_json::Value::Null), "relatedItems", &["kind", "groupType", "originalNetworkId", "transportStreamId", "serviceId", "eventId", "parseStatus"], out);
     collect_array_unknown(raw.get("linkage").unwrap_or(&serde_json::Value::Null), "linkage", &["transportStreamId", "originalNetworkId", "serviceId", "linkageType", "privateDataPrefixHex", "parseStatus"], out);
@@ -766,13 +799,40 @@ fn valid_audio_component(v: &AudioComponentV1) -> bool { v.es_pid > 0 && v.es_pi
 fn valid_subtitle_component(v: &SubtitleComponentV1) -> bool { v.es_pid > 0 && v.es_pid <= 8191 && (0..=255).contains(&v.component_tag) && nonempty(&v.language) && nonempty(&v.track_id) && nonempty(&v.caption_service_kind) && nonempty(&v.parse_status) }
 fn valid_data_component(v: &DataComponentV1) -> bool { v.es_pid > 0 && v.es_pid <= 8191 && (0..=255).contains(&v.component_tag) && (0..=65535).contains(&v.data_component_id) && (0..=255).contains(&v.component_type) && nonempty(&v.parse_status) }
 
-fn empty_result() -> ProviderDataResult {
-    ProviderDataResult { json: "{}".to_string(), signature: sha256_hex(b"{}"), schema_version: PROVIDER_SCHEMA_VERSION, truncated: false, diagnostics_dropped_count: 0 }
+fn failure_result(code: &str, message: String, schema_version: i64) -> ProviderDataResult {
+    ProviderDataResult {
+        success: false,
+        json: String::new(),
+        signature: String::new(),
+        schema_version,
+        truncated: false,
+        diagnostics_dropped_count: 0,
+        error_code: code.to_string(),
+        error_message: message,
+    }
+}
+
+fn success_result(json: String, schema_version: i64, truncated: bool, diagnostics_dropped_count: i64) -> ProviderDataResult {
+    ProviderDataResult {
+        success: true,
+        signature: sha256_hex(json.as_bytes()),
+        json,
+        schema_version,
+        truncated,
+        diagnostics_dropped_count,
+        error_code: String::new(),
+        error_message: String::new(),
+    }
 }
 
 fn finalize_program(data: ProgramProviderDataV1) -> ProviderDataResult {
-    if !valid_program_provider_data(&data) { return empty_result(); }
-    let mut text = serde_json::to_string(&data).unwrap_or_else(|_| "{}".to_string());
+    if !valid_program_provider_data(&data) {
+        return failure_result("PROGRAM_PROVIDER_DATA_INVALID", "Program provider-data JSON v1 invariants failed".to_string(), PROVIDER_SCHEMA_VERSION);
+    }
+    let mut text = match serde_json::to_string(&data) {
+        Ok(text) => text,
+        Err(err) => return failure_result("PROGRAM_PROVIDER_DATA_SERIALIZE_FAILED", format!("Program provider-data serialization failed: {err}"), PROVIDER_SCHEMA_VERSION),
+    };
     let mut truncated_flag = false;
     let mut dropped_count = 0i64;
     if text.len() > HARD_LIMIT_BYTES {
@@ -783,15 +843,23 @@ fn finalize_program(data: ProgramProviderDataV1) -> ProviderDataResult {
         truncated.diagnostics.provider_data_soft_limit_bytes = Some(SOFT_LIMIT_BYTES as i64);
         truncated.diagnostics.provider_data_dropped_count = Some(dropped_count);
         truncated.diagnostics.publish_diagnostics.push(provider_data_truncated_item(dropped_count));
-        text = serde_json::to_string(&truncated).unwrap_or_else(|_| "{}".to_string());
+        text = match serde_json::to_string(&truncated) {
+            Ok(text) => text,
+            Err(err) => return failure_result("PROGRAM_PROVIDER_DATA_SERIALIZE_FAILED", format!("Truncated program provider-data serialization failed: {err}"), PROVIDER_SCHEMA_VERSION),
+        };
         truncated_flag = true;
     }
-    ProviderDataResult { signature: sha256_hex(text.as_bytes()), json: text, schema_version: PROVIDER_SCHEMA_VERSION, truncated: truncated_flag, diagnostics_dropped_count: dropped_count }
+    success_result(text, PROVIDER_SCHEMA_VERSION, truncated_flag, dropped_count)
 }
 
 fn finalize_channel(data: ChannelProviderDataV1) -> ProviderDataResult {
-    if !valid_channel_provider_data(&data) { return empty_result(); }
-    let mut text = serde_json::to_string(&data).unwrap_or_else(|_| "{}".to_string());
+    if !valid_channel_provider_data(&data) {
+        return failure_result("CHANNEL_PROVIDER_DATA_INVALID", "Channel provider-data JSON v1 invariants failed".to_string(), CHANNEL_SCHEMA_VERSION);
+    }
+    let mut text = match serde_json::to_string(&data) {
+        Ok(text) => text,
+        Err(err) => return failure_result("CHANNEL_PROVIDER_DATA_SERIALIZE_FAILED", format!("Channel provider-data serialization failed: {err}"), CHANNEL_SCHEMA_VERSION),
+    };
     let mut truncated_flag = false;
     let mut dropped_count = 0i64;
     if text.len() > HARD_LIMIT_BYTES {
@@ -802,10 +870,13 @@ fn finalize_channel(data: ChannelProviderDataV1) -> ProviderDataResult {
         truncated.diagnostics.provider_data_soft_limit_bytes = Some(SOFT_LIMIT_BYTES as i64);
         truncated.diagnostics.provider_data_dropped_count = Some(dropped_count);
         truncated.diagnostics.provider_data_truncation_code = Some("PROVIDER_DATA_TRUNCATED".to_string());
-        text = serde_json::to_string(&truncated).unwrap_or_else(|_| "{}".to_string());
+        text = match serde_json::to_string(&truncated) {
+            Ok(text) => text,
+            Err(err) => return failure_result("CHANNEL_PROVIDER_DATA_SERIALIZE_FAILED", format!("Truncated channel provider-data serialization failed: {err}"), CHANNEL_SCHEMA_VERSION),
+        };
         truncated_flag = true;
     }
-    ProviderDataResult { signature: sha256_hex(text.as_bytes()), json: text, schema_version: CHANNEL_SCHEMA_VERSION, truncated: truncated_flag, diagnostics_dropped_count: dropped_count }
+    success_result(text, CHANNEL_SCHEMA_VERSION, truncated_flag, dropped_count)
 }
 
 fn truncated_program_value(data: &ProgramProviderDataV1) -> ProgramProviderDataV1 {
@@ -942,6 +1013,7 @@ mod provider_data_tests {
     #[test]
     fn normalize_program_provider_data_preserves_top_level_unknown_key() {
         let result = normalize_program_provider_data(minimal_program_json(",\"futureVendorKey\":{\"x\":1}").as_bytes());
+        assert!(result.success, "{}", result.error_message);
         let value: serde_json::Value = serde_json::from_str(&result.json).unwrap();
         let extensions = value["diagnostics"]["rawProviderDataExtensions"].as_array().unwrap();
         assert_eq!(extensions[0]["key"], "futureVendorKey");
@@ -956,9 +1028,18 @@ mod provider_data_tests {
             .map(|i| ExtendedItemV1 { description: String::new(), text: format!("{}{}", i, "x".repeat(512)), parse_status: "OK".to_string() })
             .collect();
         let result = finalize_program(data);
+        assert!(result.success, "{}", result.error_message);
         let value: serde_json::Value = serde_json::from_str(&result.json).unwrap();
         assert_eq!(value["diagnostics"]["providerDataTruncated"], true);
         assert_eq!(value["diagnostics"]["publishDiagnostics"][0]["code"], "PROVIDER_DATA_TRUNCATED");
         assert!(value["diagnostics"]["providerDataDroppedCount"].as_i64().unwrap() > 0);
+    }
+
+    #[test]
+    fn invalid_program_provider_data_returns_failure_not_empty_json() {
+        let result = build_program_provider_data("{not-json");
+        assert!(!result.success);
+        assert!(result.json.is_empty());
+        assert_eq!(result.error_code, "PROGRAM_REQUEST_PARSE_FAILED");
     }
 }

@@ -7,7 +7,12 @@ import com.maleicacid.tvinput.aribsi.AribComponents
 import com.maleicacid.tvinput.aribsi.AribContentGenre
 import com.maleicacid.tvinput.aribsi.AribParentalRating
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
+import com.maleicacid.tvinput.common.FrequencyHz
+import com.maleicacid.tvinput.common.NetworkId16
+import com.maleicacid.tvinput.common.ServiceId16
 import com.maleicacid.tvinput.common.ServiceKey
+import com.maleicacid.tvinput.common.TransportStreamId16
+import com.maleicacid.tvinput.common.TsPid
 import com.maleicacid.tvinput.db.ChannelRecord
 import com.maleicacid.tvinput.db.ProgramRecord
 import com.maleicacid.tvinput.db.ProgramDescriptors
@@ -23,7 +28,7 @@ class TvProviderWriterProgramsTest {
     @Test fun insertAndUpdateProgram() {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
-        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", 473_142_857L)))
+        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", FrequencyHz(473_142_857L))))
         val p = ProgramRecord(key, 10, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":10}", 1_700_000_000_000L, 1_800_000L, "News", "desc")
         val first = writer.upsertPrograms(listOf(p))
         check(first.inserted == 1)
@@ -43,7 +48,7 @@ class TvProviderWriterProgramsTest {
     @Test fun sameEventWithMovedTimeUpdatesExistingRowOutsideNewWindow() {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
-        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", 473_142_857L)))
+        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", FrequencyHz(473_142_857L))))
         val original = ProgramRecord(key, 10, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":10}", 1_700_000_000_000L, 1_800_000L, "News", "desc")
         val first = writer.upsertPrograms(listOf(original))
         check(first.inserted == 1) { first.toString() }
@@ -68,7 +73,7 @@ class TvProviderWriterProgramsTest {
     @Test fun programProviderDataContainsCasAndReadinessState() {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
-        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", 473_142_857L)))
+        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", FrequencyHz(473_142_857L))))
         val p = ProgramRecord(
             key,
             14,
@@ -95,7 +100,7 @@ class TvProviderWriterProgramsTest {
     @Test fun descriptorDetailsStayInInternalProviderData() {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
-        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", 473_142_857L)))
+        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", FrequencyHz(473_142_857L))))
         val p = ProgramRecord(
             key, 11, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":11}", 1_700_000_000_000L, 1_800_000L,
             "News", "desc",
@@ -107,11 +112,11 @@ class TvProviderWriterProgramsTest {
                 contentGenres = listOf(AribContentGenre(0x0, 0x0, aribName = "ニュース/報道/定時・総合")),
                 broadcastGenre = "ARIB(0x0/0x0):ニュース/報道/定時・総合",
                 genreSupplementText = "ニュース/報道/定時・総合",
-                relatedItems = listOf(AribRelatedItem("shared", 1, 4, 16625, 101, 202)),
+                relatedItems = listOf(AribRelatedItem("shared", 1, NetworkId16(4), TransportStreamId16(16625), ServiceId16(101), 202)),
                 scrambled = false,
                 freeCaMode = AribFreeCaMode(raw = 0, scrambled = false, text = "無料放送"),
                 series = AribSeries(seriesId = 100, episodeNumber = 3, lastEpisodeNumber = 12, name = "シリーズ"),
-                components = AribComponents(audio = listOf(AribComponentEntry(esPid = 256, streamType = 0x0f, componentTag = 1, componentType = 3, codec = "AAC", language = "jpn", parseStatus = "OK"))),
+                components = AribComponents(audio = listOf(AribComponentEntry(esPid = TsPid(256), streamType = 0x0f, componentTag = 1, componentType = 3, codec = "AAC", language = "jpn", parseStatus = "OK"))),
             ),
             diagnosticText = "unknownCount=0",
         )
@@ -148,7 +153,7 @@ class TvProviderWriterProgramsTest {
         val missingChannel = coordinator.publish(ChannelScanController.PublishMode.LIVE_TUNE_REFRESH, listOf(p), allowedServiceKeys = null)
         check(missingChannel.inserted == 0 && missingChannel.updated == 0 && store.programs.isEmpty())
 
-        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", 473_142_857L)))
+        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", FrequencyHz(473_142_857L))))
         val first = coordinator.publish(ChannelScanController.PublishMode.LIVE_TUNE_REFRESH, listOf(p), allowedServiceKeys = null)
         check(first.inserted == 1)
 
@@ -182,7 +187,7 @@ class TvProviderWriterProgramsTest {
         val info = PlaybackPipeline.VideoFormatInfo(0x1b, "video/avc", 1280, 720)
         val metadata = mapOf(MaleicacidLiveSession.programVideoMetadataKeyForTest(p) to info)
 
-        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", 473_142_857L)))
+        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", FrequencyHz(473_142_857L))))
         val withVideoMetadata = MaleicacidLiveSession.mergeVideoMetadataForTest(listOf(p), metadata)
         val first = coordinator.publish(ChannelScanController.PublishMode.LIVE_TUNE_REFRESH, withVideoMetadata, allowedServiceKeys = null)
         check(first.inserted == 1)
@@ -203,7 +208,7 @@ class TvProviderWriterProgramsTest {
     @Test fun obsoleteProgramsInsideCurrentUpdateWindowAreDeletedOnlyWhenAuthoritative() {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
-        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", 473_142_857L)))
+        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", FrequencyHz(473_142_857L))))
         val p1 = ProgramRecord(key, 21, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":21}", 1_700_000_000_000L, 1_800_000L, "P1", "desc")
         val p2 = ProgramRecord(key, 22, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":22}", 1_700_000_600_000L, 600_000L, "P2", "desc")
         val p3 = ProgramRecord(key, 23, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":23}", 1_700_001_200_000L, 600_000L, "P3", "desc")

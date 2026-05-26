@@ -1,6 +1,7 @@
 package com.maleicacid.tvinput.tis
 
 import com.maleicacid.tvinput.common.ServiceKey
+import com.maleicacid.tvinput.common.TsPid
 
 /**
  * AV パイプラインの過剰な再起動を抑止する純粋な状態機械。
@@ -11,14 +12,14 @@ import com.maleicacid.tvinput.common.ServiceKey
  */
 data class AvPlaybackSignature(
     val serviceKey: ServiceKey,
-    val pcrPid: Int?,
-    val videoPid: Int,
+    val pcrPid: TsPid?,
+    val videoPid: TsPid,
     val videoStreamType: Int,
-    val audioPid: Int?,
+    val audioPid: TsPid?,
     val audioStreamType: Int?,
     val clear: Boolean,
     val keyTokenAvailable: Boolean,
-    val subtitlePid: Int? = null,
+    val subtitlePid: TsPid? = null,
     val subtitleDataComponentId: Int? = null,
 )
 

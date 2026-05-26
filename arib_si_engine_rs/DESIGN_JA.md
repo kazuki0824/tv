@@ -69,6 +69,7 @@ TvProvider に自然に入らない descriptor は構造化した内部データ
 
 provider-data JSON v1 は `provider-data / diagnostics Rust SSOT` 節の `ProgramProviderDataV1` を唯一の正式 schema とする。少なくとも `series`、`relatedItems`、`linkage`、`freeCaMode`、`audioLanguages`、`ratings`、`genres`、`extendedItems`、`components`、`audio`、`video`、`diagnostics` を最上位フィールドとして保持する。`relatedItems` は `shared` / `relay` / `movement` の種別、ONID、TSID、service_id、event_id を保持する。`series` は series_id、repeat_label、program_pattern、expire_date、episode_number、last_episode_number、series_name を保持する。
 
+
 ## r51 descriptor 対象
 
 short_event、extended_event、content、component、audio_component、parental_rating、series、event_group、linkage を r51 で構造化変換する。未知 descriptor は破棄せず 診断に保持する。
@@ -136,6 +137,10 @@ required field 欠落時に `0`、`false`、`jpn`、`UNKNOWN`、空文字で補�
 
 
 `arib_si_engine_rs` は SI/EIT 意味解析 に加えて、TvProvider `internal_provider_data` JSON v1 の構造 SSOT を持つ。実装上は `provider_data` module に Rust `serde` struct を置き、JSON canonical encode、正規化、署名、安定キー抽出 をこの module に閉じる。
+
+Programs の `internal_provider_data` には、`requiresCas`, `unsupportedCas`, `clearLivePlaybackSupported`, `channelRegistrationReady`, `epgPublishable`, `publishStateSource` 相当の CAS / 準備状態を `cas` または診断情報に保存する。視聴年齢制限については `countryCode`, `ratingValue`, `rawRatingByte`, `supported`, `parseStatus`, `mappedTvContentRating` 相当の情報を `ratings` または診断情報に保存する。現在の診断情報が完全であれば、その値を Programs CAS 状態の正とする。診断情報が欠落または不完全な場合、既存 channel の `internal_provider_data` から CAS / 準備状態を代替参照して Programs 側に保存する。channel 側だけに保存して Programs 側を false に落としてはならない。
+
+provider-data 全体は 16 KiB を目安上限、32 KiB を絶対上限とする。絶対上限を超える場合は、識別子、時刻、CAS 状態、レーティングを保持し、診断情報と長文補助情報を切り詰める。切り詰め時は `DIAGNOSTICS_TRUNCATED` または `PROVIDER_DATA_TRUNCATED` 診断と dropped count を必ず保存する。
 
 TIS Kotlin は provider-data schema を定義しない。TIS は Rust JNI が返す JSON bytes を `Programs.COLUMN_INTERNAL_PROVIDER_DATA` へ保存し、標準列用の値だけを `ARIB_SI_EPG_TvProvider投影方針.md` に従って `ContentValues` へ詰める。
 
@@ -257,7 +262,7 @@ Rust は `rawBytes` が invalid UTF-8 または malformed JSON の場合、通�
 
 ### ChannelProviderDataV1
 
-Channel provider-data の正形式は JSON v1 のみとし、schema は `maleicacid.tv.channel` / `schemaVersion=1` とする。`arib_si_engine_rs/schema/channel_provider_data_v1.schema.json` は、channel row の tune 復元に必要な `inputId`、物理選局情報、ONID / TSID / service_id、表示名、登録可能性診断を検証対象にする。r50 以前の `;` 区切り key-value 形式、旧 flat provider-data、旧 provider-data 断片は読み取り互換入力としても残さない。
+Channel provider-data の正形式は JSON v1 のみとし、schema は `maleicacid.tv.channel` / `schemaVersion=1` とする。`arib_si_engine_rs/schema/channel_provider_data_v1.schema.json` は、channel row の tune 復元に必要な `inputId`、物理選局情報、ONID / TSID / service_id、表示名、登録可能性診断を検証対象にする。r50 以前の `;` 区切り key-value 形式、旧 flat provider-data、旧 provider-data 断片は読み取り互換入力としても残さない。 Channel provider-data の top-level envelope は `schema="maleicacid.tv.channel"`, `schemaVersion=1`, `serviceKey`, `tune`, `cas`, `diagnostics` を持つ JSON v1 とする。`tune` は `inputId`、`displayName`、`deliverySystem`、`frequencyHz`、`streamId`、`streamIdType`、`physicalChannel`、`backendHint`、`satelliteBand`、`remoteControlKeyId` を持つ。CS110 は `streamIdType="NONE"` とし、`streamId` は null とする。
 
 ### 旧 event field / indexed JNI の廃止
 
@@ -267,7 +272,7 @@ Channel provider-data の正形式は JSON v1 のみとし、schema は `maleica
 
 ### JSON Schema / 期待値テストデータ
 
-r51 では Rust serde struct を SSOT としつつ、`schema/program_provider_data_v1.schema.json`、`schema/descriptor_diagnostic_v1.schema.json`、期待値テストデータを置く。`ProgramProviderDataV1` の JSON Schema は、top-level と nested オブジェクト の双方で required 最小フィールド と `additionalProperties: true` を併用し、固定済み フィールドを検証しながら ARIB descriptor 拡張を保持できる形にする。期待値テストデータは `arib_si_engine_rs/testdata/program_provider_data_v1/minimal_clear_program.json` と `tis/tests/assets/program_provider_data_v1/minimal_clear_program.json` の双方に バイト単位で同一 に複製して置く。これは Rust host test と Android instrumentation asset packaging の参照経路が異なるためであり、2つの内容差分は違反とする。Rust test と Kotlin test は同じ内容の テストデータを読み、Rust JSON -> Kotlin round-trip と Kotlin input -> Rust build -> 期待値テストデータとの一致 を確認する。
+r51 では Rust serde struct を SSOT としつつ、`arib_si_engine_rs/schema/program_provider_data_v1.schema.json`、`arib_si_engine_rs/schema/descriptor_diagnostic_v1.schema.json`、期待値テストデータを置く。`ProgramProviderDataV1` の JSON Schema は、top-level と nested オブジェクト の双方で required 最小フィールド と `additionalProperties: true` を併用し、固定済み フィールドを検証しながら ARIB descriptor 拡張を保持できる形にする。期待値テストデータは `arib_si_engine_rs/testdata/program_provider_data_v1/minimal_clear_program.json` と `tis/tests/assets/program_provider_data_v1/minimal_clear_program.json` の双方に バイト単位で同一 に複製して置く。これは Rust host test と Android instrumentation asset packaging の参照経路が異なるためであり、2つの内容差分は違反とする。Rust test と Kotlin test は同じ内容の テストデータを読み、Rust JSON -> Kotlin round-trip と Kotlin input -> Rust build -> 期待値テストデータとの一致 を確認する。
 
 ### 現行実装との関係
 

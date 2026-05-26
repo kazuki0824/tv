@@ -1,3 +1,64 @@
+# r50dx10
+
+- r50dx10 では TIS 側テストの `TsPid` 型化追随のみを実施し、Rust provider-data 本体の追加変更は行っていない。
+- r50dx の provider-data 失敗 result 化と旧 `canonicalGenres` 削除、および r50dx7 の `LivePlaybackSnapshot` 境界の完了条件は維持した。
+- Android/Soong build、Rust単体テスト、atest、VTS、CTS、実機確認は未実施。
+
+# r50dx9
+
+- r50dx9 では TIS フェーズ5のみを実施し、Rust provider-data 本体の追加変更は行っていない。
+- r50dx の provider-data 失敗 result 化と旧 `canonicalGenres` 削除、および r50dx7 の `LivePlaybackSnapshot` 境界の完了条件は維持した。
+- Android/Soong build、Rust単体テスト、atest、VTS、CTS、実機確認は未実施。
+
+# r50dx8
+
+- r50dx8 では TIS フェーズ4の資源制御のみを実施し、Rust provider-data 本体の追加変更は行っていない。
+- r50dx7 の `LivePlaybackSnapshot` 境界、および r50dx の provider-data 失敗 result 化と旧 `canonicalGenres` 削除の完了条件は維持した。
+- Android/Soong build、Rust単体テスト、atest、VTS、CTS、実機確認は未実施。
+
+# r50dx7
+
+- r50dx6 のフェーズ1・2完了条件を維持し、TIS フェーズ3用に `LivePlaybackSnapshot` を追加した。
+- Rust native transaction 由来の bulk snapshot から、ライブ視聴用の service / PMT / CAT / CA metadata / 診断情報を一括取得する Kotlin 境界を追加した。
+- Android/Soong build、Rust単体テスト、atest、VTS、CTS、実機確認は未実施。静的確認のみ実施した。
+
+# r50dx6
+
+- r50dx6 では TIS 側フェーズ2未達の是正のみを実施し、Rust provider-data 本体の追加変更は行っていない。
+- r50dx の provider-data 失敗 result 化と旧 `canonicalGenres` 削除の完了条件は維持した。
+- Android/Soong build、Rust単体テスト、atest、VTS、CTS、実機確認は未実施。
+
+# r50dx5
+
+- r50dx5 では TIS 側フェーズ2未達の是正のみを実施し、Rust provider-data 本体の追加変更は行っていない。
+- r50dx の provider-data 失敗 result 化と旧 `canonicalGenres` 削除の完了条件は維持した。
+- Android/Soong build、Rust単体テスト、atest、VTS、CTS、実機確認は未実施。
+
+# r50dx4
+
+- r50dx4 では TIS 側フェーズ1・2未達の是正のみを実施し、Rust provider-data 本体の追加変更は行っていない。
+- r50dx の provider-data 失敗 result 化と旧 `canonicalGenres` 削除の完了条件は維持した。
+- Android/Soong build、Rust単体テスト、atest、VTS、CTS、実機確認は未実施。
+
+# r50dx3
+
+- r50dx3 では TIS 側フェーズ2未達の是正のみを実施し、Rust provider-data 本体の追加変更は行っていない。
+- r50dx / r50dx2 の provider-data 失敗 result 化、旧 `canonicalGenres` 削除、型化済み Kotlin 境界の完了条件は維持した。
+- Android/Soong build、Rust単体テスト、atest、VTS、CTS、実機確認は未実施。
+
+# r50dx2
+
+- r50dx2 では TIS 側フェーズ2未達の是正のみを実施し、Rust provider-data 本体の追加変更は行っていない。
+- r50dx の provider-data 失敗 result 化と旧 `canonicalGenres` 削除の完了条件は維持した。
+- Android/Soong build、Rust単体テスト、atest、VTS、CTS、実機確認は未実施。
+
+# r50dx
+
+- Program / Channel provider-data 生成失敗時の `{}` 成功扱いを廃止し、JNI result に `success`、`errorCode`、`errorMessage` を追加した。
+- 保存用 Program provider-data schema / serde model / 期待値データから旧 `canonicalGenres` を削除した。
+- 不正 provider-data request が失敗 result になり、空 JSON を返さないことを単体試験に追加した。
+- Android/Soong build、Rust単体テスト、atest、VTS、CTS、実機確認は未実施。JSON 構文確認と静的差分確認のみ実施した。
+
 # r50dc
 
 - TIS 側テストの provider-data raw bytes 境界追随に合わせ、arib_si_engine_rs 側の設計・実装変更は行っていない。
@@ -132,7 +193,7 @@
 
 ## r50cf
 - provider-data 生成・正規化・現在番組診断追記を、既存 JSON をそのまま返す経路ではなく固定順の JSON v1 再出力経路へ寄せ、署名を再出力後バイト列から計算するようにした。
-- Channel provider-data に `schema="maleicacid.tv.channel"` を追加し、`schema/channel_provider_data_v1.schema.json` を追加した。
+- Channel provider-data に `schema="maleicacid.tv.channel"` を追加し、`arib_si_engine_rs/schema/channel_provider_data_v1.schema.json` を追加した。
 - 未対応視聴年齢制限は記述子診断情報ではなく `ratings[]` と `diagnostics.publishDiagnostics[]` に保持するようにした。
 - Android/Soong build、Rust 単体テスト、atest、VTS、CTS、実機確認は未実施。
 

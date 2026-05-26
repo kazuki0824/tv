@@ -1,6 +1,10 @@
 package com.maleicacid.tvinput.aribsi
 
+import com.maleicacid.tvinput.common.NetworkId16
+import com.maleicacid.tvinput.common.ServiceId16
 import com.maleicacid.tvinput.common.ServiceKey
+import com.maleicacid.tvinput.common.TransportStreamId16
+import com.maleicacid.tvinput.common.TsPid
 
 object SiStatus {
     const val OK = 0
@@ -21,22 +25,22 @@ object SiDiscoveryStage {
 }
 
 data class SiIngestResult(
-    val pid: Int,
+    val pid: TsPid,
     val status: Int,
 )
 
 data class PmtPidMapping(
     val serviceKey: ServiceKey,
-    val pmtPid: Int,
+    val pmtPid: TsPid,
 )
 
 enum class CaDescriptorScope { PROGRAM, ES }
 
 data class CaDescriptor(
     val caSystemId: Int,
-    val caPid: Int?,
+    val caPid: TsPid?,
     val scope: CaDescriptorScope,
-    val esPid: Int?,
+    val esPid: TsPid?,
     val rawDescriptor: ByteArray,
 ) {
     override fun equals(other: Any?): Boolean {
@@ -47,16 +51,16 @@ data class CaDescriptor(
 
     override fun hashCode(): Int {
         var result = caSystemId
-        result = 31 * result + (caPid ?: 0)
+        result = 31 * result + (caPid?.value ?: 0)
         result = 31 * result + scope.hashCode()
-        result = 31 * result + (esPid ?: 0)
+        result = 31 * result + (esPid?.value ?: 0)
         result = 31 * result + rawDescriptor.contentHashCode()
         return result
     }
 }
 
 data class AribElementaryStream(
-    val elementaryPid: Int,
+    val elementaryPid: TsPid,
     val streamType: Int,
     val componentTag: Int?,
     val componentType: Int?,
@@ -72,8 +76,8 @@ data class AribService(
     val name: String,
     val providerName: String = "",
     val serviceType: Int? = null,
-    val pmtPid: Int? = null,
-    val pcrPid: Int? = null,
+    val pmtPid: TsPid? = null,
+    val pcrPid: TsPid? = null,
     val freeCaMode: Boolean? = null,
     val streams: List<AribElementaryStream> = emptyList(),
     val hasProgramCaDescriptor: Boolean = false,
@@ -85,12 +89,15 @@ data class AribService(
 }
 
 data class AribTransport(
-    val originalNetworkId: Int,
-    val transportStreamId: Int,
+    val originalNetwork: NetworkId16,
+    val transportStream: TransportStreamId16,
     val networkName: String = "",
     val transportStreamName: String = "",
     val remoteControlKeyId: Int? = null,
-)
+) {
+    val originalNetworkId: Int get() = originalNetwork.value
+    val transportStreamId: Int get() = transportStream.value
+}
 
 data class AribExtendedItem(
     val itemDescription: String,
@@ -117,21 +124,27 @@ data class AribContentGenre(
 data class AribRelatedItem(
     val kind: String,
     val groupType: Int,
-    val originalNetworkId: Int?,
-    val transportStreamId: Int?,
-    val serviceId: Int,
+    val originalNetwork: NetworkId16?,
+    val transportStream: TransportStreamId16?,
+    val service: ServiceId16,
     val eventId: Int,
     val parseStatus: String = "OK",
-)
+) {
+    val originalNetworkId: Int? get() = originalNetwork?.value
+    val transportStreamId: Int? get() = transportStream?.value
+    val serviceId: Int get() = service.value
+}
 
 data class AribLinkage(
     val linkageType: Int,
-    val originalNetworkId: Int,
-    val transportStreamId: Int,
-    val serviceId: Int,
+    val serviceKey: ServiceKey,
     val privateDataHex: String = "",
     val parseStatus: String = "OK",
-)
+) {
+    val originalNetworkId: Int get() = serviceKey.originalNetworkId
+    val transportStreamId: Int get() = serviceKey.transportStreamId
+    val serviceId: Int get() = serviceKey.serviceId
+}
 
 data class AribFreeCaMode(
     val raw: Int?,
@@ -153,7 +166,7 @@ data class AribSeries(
 )
 
 data class AribComponentEntry(
-    val esPid: Int,
+    val esPid: TsPid,
     val streamType: Int? = null,
     val componentTag: Int? = null,
     val componentType: Int? = null,
@@ -193,7 +206,7 @@ data class AribEventDiagnostics(
 )
 
 data class AribProgramSource(
-    val pid: Int = 18,
+    val pid: TsPid = TsPid.EIT,
     val tableId: Int = 0x4e,
     val version: Int = 0,
     val sectionNumber: Int = 0,
@@ -243,16 +256,20 @@ data class AribEventDiagnostic(
 )
 
 data class DescriptorDiagnosticScope(
-    val pid: Int?,
+    val pid: TsPid?,
     val tableId: Int?,
     val tableIdExtension: Int?,
     val version: Int?,
     val sectionNumber: Int?,
-    val originalNetworkId: Int?,
-    val transportStreamId: Int?,
-    val serviceId: Int?,
+    val originalNetwork: NetworkId16?,
+    val transportStream: TransportStreamId16?,
+    val service: ServiceId16?,
     val eventId: Int?,
-)
+) {
+    val originalNetworkId: Int? get() = originalNetwork?.value
+    val transportStreamId: Int? get() = transportStream?.value
+    val serviceId: Int? get() = service?.value
+}
 
 data class DescriptorDiagnosticDescriptor(
     val tag: Int,
@@ -293,23 +310,28 @@ data class ParserDiagnostic(
 )
 
 data class MalformedCaDescriptorDiagnostic(
-    val pid: Int,
+    val pid: TsPid,
     val tableId: Int,
     val tableIdExtension: Int?,
-    val serviceId: Int?,
-    val elementaryPid: Int?,
+    val service: ServiceId16?,
+    val elementaryPid: TsPid?,
     val scope: String,
     val offset: Int,
     val declaredLength: Int,
     val actualRemainingLength: Int,
     val reason: String,
     val rawPrefixHex: String,
-)
+) {
+    val serviceId: Int? get() = service?.value
+}
 
 data class TransportKey(
-    val originalNetworkId: Int,
-    val transportStreamId: Int,
-)
+    val originalNetwork: NetworkId16,
+    val transportStream: TransportStreamId16,
+) {
+    val originalNetworkId: Int get() = originalNetwork.value
+    val transportStreamId: Int get() = transportStream.value
+}
 
 data class ProgramPublishSnapshot(
     val snapshotGeneration: Long,
@@ -319,7 +341,7 @@ data class ProgramPublishSnapshot(
     val publishabilityByServiceKey: Map<ServiceKey, ProgramPublishability>,
     val descriptorDiagnostics: List<DescriptorDiagnostic>,
     val parserDiagnostics: List<ParserDiagnostic>,
-    val malformedCaDescriptorCountByServiceId: Map<Int, Int> = emptyMap(),
+    val malformedCaDescriptorCountByServiceId: Map<ServiceId16, Int> = emptyMap(),
 )
 
 data class ServiceRegistrationSnapshot(
@@ -334,9 +356,23 @@ data class CasDiscoverySnapshot(
     val snapshotGeneration: Long,
     val services: List<AribService>,
     val caMetadata: List<CaMetadata>,
-    val pmtPids: Map<ServiceKey, Int>,
-    val catEmmPids: List<Int>,
+    val pmtPids: Map<ServiceKey, TsPid>,
+    val catEmmPids: List<TsPid>,
     val diagnostics: List<DescriptorDiagnostic>,
+    val malformedCaDescriptorDiagnostics: List<MalformedCaDescriptorDiagnostic> = emptyList(),
+)
+
+data class LivePlaybackSnapshot(
+    val snapshotGeneration: Long,
+    val ingestSequence: Long,
+    val services: List<AribService>,
+    val servicesForCasDiscovery: List<AribService>,
+    val caMetadataForCasDiscovery: List<CaMetadata>,
+    val pmtPids: Map<ServiceKey, TsPid>,
+    val catEmmPids: List<TsPid>,
+    val publishabilityByServiceKey: Map<ServiceKey, ProgramPublishability>,
+    val descriptorDiagnostics: List<DescriptorDiagnostic>,
+    val parserDiagnostics: List<ParserDiagnostic>,
     val malformedCaDescriptorDiagnostics: List<MalformedCaDescriptorDiagnostic> = emptyList(),
 )
 
@@ -363,9 +399,9 @@ enum class CaMetadataSource { PROGRAM, ELEMENTARY_STREAM, CAT }
 data class CaMetadata(
     val serviceKey: ServiceKey?,
     val caSystemId: Int,
-    val ecmPid: Int?,
-    val emmPid: Int?,
-    val elementaryPid: Int?,
+    val ecmPid: TsPid?,
+    val emmPid: TsPid?,
+    val elementaryPid: TsPid?,
     val privateData: ByteArray = ByteArray(0),
     val source: CaMetadataSource = when {
         ecmPid != null && elementaryPid != null -> CaMetadataSource.ELEMENTARY_STREAM
@@ -388,9 +424,9 @@ data class CaMetadata(
     override fun hashCode(): Int {
         var result = serviceKey?.hashCode() ?: 0
         result = 31 * result + caSystemId
-        result = 31 * result + (ecmPid ?: 0)
-        result = 31 * result + (emmPid ?: 0)
-        result = 31 * result + (elementaryPid ?: 0)
+        result = 31 * result + (ecmPid?.value ?: 0)
+        result = 31 * result + (emmPid?.value ?: 0)
+        result = 31 * result + (elementaryPid?.value ?: 0)
         result = 31 * result + privateData.contentHashCode()
         result = 31 * result + source.hashCode()
         return result
@@ -398,7 +434,7 @@ data class CaMetadata(
 }
 
 data class PrivateSection(
-    val pid: Int,
+    val pid: TsPid,
     val tableId: Int,
     val bytes: ByteArray,
 ) {
@@ -409,7 +445,7 @@ data class PrivateSection(
     }
 
     override fun hashCode(): Int {
-        var result = pid
+        var result = pid.value
         result = 31 * result + tableId
         result = 31 * result + bytes.contentHashCode()
         return result

@@ -1,3 +1,11 @@
+mod descrambler_session;
+mod frontend_capability;
+mod fmq_queue;
+mod stream_boundary;
+mod registry_ledger;
+mod lifecycle_txn;
+mod worker_runtime;
+mod hal_sync;
 mod descrambler_key_table;
 mod tuner_hal;
 

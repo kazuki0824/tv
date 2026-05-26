@@ -4,7 +4,7 @@
 
 この文書は、`arib_si_engine_rs` が抽出したARIB SI/EPG情報を Android `TvProvider` の標準列と `internal_provider_data` にどう投影するかを固定する。
 
-この文書では、EDCBとEPGStationから補完できた範囲を TvProvider 標準列への投影として固定する。r51 で標準列へ自然対応できる値だけを部分投影し、自然対応できない情報は TvProvider 標準列や一般ユーザー向け UI 本文へ投影しない。ただし、`internal_provider_data` の schema、key 名、canonical encode、署名、保存上限、診断情報 schema は現行仕様として固定し、標準列非投影または部分投影項目とは別に扱う。
+この文書では、EDCBとEPGStationから補完できた範囲を TvProvider 標準列への投影として固定する。r51 で標準列へ自然対応できる値だけを部分投影し、自然対応できない情報は TvProvider 標準列や一般ユーザー向け UI 本文へ投影しない。`internal_provider_data` の schema、key 名、正規化、署名、保存上限、診断情報 schema は `arib_si_engine_rs/DESIGN_JA.md` と `arib_si_engine_rs/schema/*.schema.json` を正とし、本書では再定義しない。
 
 ## 2. 基本原則
 
@@ -25,7 +25,7 @@ r51でTvProvider標準列へ非投影または部分投影にする情報:
   完全な構造は JSON v1 internal_provider_data へ構造化保存する。
 ```
 
-`internal_provider_data` は、挿入した TV入力サービスが内部で使う私的データであり、システムTVアプリや他アプリがdecodeする前提にしない。ただし TIS 自身の内部形式は JSON v1 に固定し、`arib_si_engine_rs` の Rust provider-data serde構造体を SSOT とする。
+`internal_provider_data` は、本TISが内部で使う私的データであり、システムTVアプリや他アプリが解釈する前提にしない。保存形式は JSON v1 とし、具体 schema、正規化、署名、安定キー抽出、保存上限は `arib_si_engine_rs` の Rust provider-data serde構造体を SSOT とする。
 
 TvProvider 標準列へ投影する ARIB descriptor 由来値は、Rust parser が構文的に有効な descriptor / event と判定したものに限る。不正 descriptor、fragment 欠落、length 不整合、不正 EIT event 由来の値を title / description / genre / audio / レーティング / long description の正常フィールドとして投影してはならない。これらは JSON v1 診断情報にのみ保持する。
 
@@ -108,7 +108,7 @@ freeCA / isFree UI補足:
 | 公開可否診断 | JSON v1 `diagnostics.publishDiagnostics` に保存し、標準列へは出さない。 | 一般ユーザー向けUI情報ではないため |
 | 元記述子バイト列 | JSON v1 診断情報の `rawPrefixHex` または descriptor 構造に上限内で保存し、標準列へは出さない。 | UI表示情報ではなく、標準列を肥大化させるため |
 
-この表は「r51で標準列非投影または部分投影にするもの」の一覧である。`internal_provider_data` の schema 名、JSON key 名、BLOB サイズ上限、診断情報キー名、`LONG_DESCRIPTION` 最大長、長文 truncate 方針は現行仕様として固定し、この表に含めてはならない。
+この表は「r51で標準列非投影または部分投影にするもの」の一覧である。`internal_provider_data` の schema 名、JSON key 名、BLOB サイズ上限、診断情報キー名、`LONG_DESCRIPTION` 最大長、長文切り詰め方針は `arib_si_engine_rs/DESIGN_JA.md` と schema ファイル側で固定し、この表に含めてはならない。
 
 ## 6. 実装契約
 
@@ -189,41 +189,20 @@ Programs.COLUMN_INTERNAL_PROVIDER_DATA:
 ```text
 1. どの標準列へ入れるかを明記する。
 2. 一般ユーザー向けUIに表示させる理由を明記する。
-3. JSON v1 internal_provider_data に残す完全構造を明記し、Rust provider-data serde構造体、`schema/program_provider_data_v1.schema.json`、`arib_si_engine_rs/testdata/program_provider_data_v1/minimal_clear_program.json`、`tis/tests/assets/program_provider_data_v1/minimal_clear_program.json` を更新する。2つの 期待値テストデータは バイト単位で同一 な複製とし、片方だけを更新してはならない。
+3. JSON v1 internal_provider_data に残す完全構造を明記し、Rust provider-data serde構造体、`arib_si_engine_rs/schema/program_provider_data_v1.schema.json`、`arib_si_engine_rs/testdata/program_provider_data_v1/minimal_clear_program.json`、`tis/tests/assets/program_provider_data_v1/minimal_clear_program.json` を更新する。2つの期待値テストデータはバイト単位で同一な複製とし、片方だけを更新してはならない。
 4. unit testで標準列と JSON v1 internal_provider_data の両方を確認する。
 5. この文書を更新し、開発規則.mdのリリース物ルールに反しないことを確認する。
 ```
 
-## internal_provider_data JSON v1 schema
+## 9. internal_provider_data 参照方針
 
-`internal_provider_data` の正形式は JSON v1 のみとする。r50 以前の `;` 区切り key-value 形式、旧 flat provider-data、旧 provider-data 断片は読み取り互換入力としても残さない。
+`internal_provider_data` の具体 schema、正規化、署名、安定キー抽出、保存上限、診断情報 schema は `arib_si_engine_rs/DESIGN_JA.md` の「provider-data / diagnostics Rust SSOT」と `arib_si_engine_rs/schema/*.schema.json` を正とする。本書は TvProvider 標準列への投影規則、一般ユーザー向け本文への補足出力規則、標準列非投影または部分投影の境界だけを固定する。
 
-この文書は TvProvider 標準列への投影方針を固定する。`internal_provider_data` の具体 schema、正規化、署名、安定キー抽出は `arib_si_engine_rs` の Rust provider-data serde構造体を正とする。TIS Kotlin は保存用 provider-data JSON を手書き構築しない。TIS が JNI へ渡す一時 JSON は保存形式ではなく、Rust serde 型へ値を渡すための受け渡し用形式に限る。
+標準列へ自然対応しない完全構造は JSON v1 `internal_provider_data` に保存する。ただし、そのフィールド定義、正規化、署名、切り詰め、診断情報の詳細を本書で再定義してはならない。
 
+## 10. 不正 descriptor / EIT 投影規則
 
-### TIS と Rust provider-data builder の境界
-
-TIS が JNI へ渡す JSON は、保存形式ではなく Rust serde 型へ値を渡すための受け渡し用形式である。受け渡し用形式の schema 名は `maleicacid.tv.programRequest` / `maleicacid.tv.channelRequest` とし、保存用 schema 名 `maleicacid.tv.program` / `maleicacid.tv.channel` と分離する。`internal_provider_data` の保存用 JSON、型検査、欠落判定、旧形式拒否、正規化、署名、識別子抽出、サイズ上限処理は `arib_si_engine_rs` の Rust provider-data serde 構造体を正とする。
-
-TIS Kotlin は保存用 provider-data JSON を手書き構築しない。TIS が作ってよい JSON は、Rust へ値を渡すための一時形式に限る。TIS はその一時形式を保存形式、正規形、署名対象、または Kotlin 側 schema 実装として扱ってはならない。
-
-`DescriptorDiagnosticV1` は Rust が生成した正規 JSON を透過保持する。Kotlin は中身を項目ごとに作り直してはならない。
-
-Programs の JSON v1 の具体 schema と検証用JSONは、`arib_si_engine_rs/schema/program_provider_data_v1.schema.json`、`arib_si_engine_rs/schema/descriptor_diagnostic_v1.schema.json`、`arib_si_engine_rs/testdata/program_provider_data_v1/minimal_clear_program.json` を正とする。Channels の JSON v1 は `schema="maleicacid.tv.channel"` / `schemaVersion=1` とし、実装追随時に `arib_si_engine_rs/schema/channel_provider_data_v1.schema.json` を追加する。この文書では provider-data schema 本文を再定義せず、TvProvider 標準列への投影規則だけを固定する。
-
-`programKey` は ONID / TSID / SID / event_id 由来の安定IDであり、start/end/duration を含めない。開始時刻、終了時刻、duration は `timing` と TvProvider 標準列に保持する。
-
-Programs の `internal_provider_data` には、`requiresCas`, `unsupportedCas`, `clearLivePlaybackSupported`, `channelRegistrationReady`, `epgPublishable`, `publishStateSource` 相当の CAS / 準備状態を `cas` または 診断情報に保存する。視聴年齢制限 については `countryCode`, `ratingValue`, `rawRatingByte`, `supported`, `parseStatus`, `mappedTvContentRating` 相当の情報を `ratings` または 診断情報に保存する。
-
-現在の診断情報が完全であれば、その値を Programs CAS 状態の正とする。診断情報が欠落または不完全な場合、既存 channel の `internal_provider_data` から CAS / 準備状態を代替参照して Programs 側に保存する。channel 側だけに保存して Programs 側を false に落としてはならない。
-
-provider-data 全体は 16 KiB を目安上限、32 KiB を絶対上限とする。絶対上限を超える場合は、識別子、時刻、CAS 状態、レーティングを保持し、診断情報と長文補助情報を切り詰める。
-
-`components.video[]` / `components.audio[]` / `components.subtitle[]` / `components.data[]` には、PMT / component descriptor / 音声コンポーネントdescriptor 等から得た ES または component 単位のメタデータを保存する。実際に主track として採用された候補の要約だけを `video` / `audio` に置き、未選択時は `null` とする。字幕 trackメタデータは `components.subtitle[]` に保存し、字幕本文、DRCS、BML 実行状態、双方向データ放送 UI 状態は保存しない。codecメタデータを保存することは ライブ視聴可能性 / 再生可能性の対応宣言を意味しない。
-
-## 不正 descriptor / EIT 投影規則
-
-- 新規 provider-data 書き込みでは `ProgramProviderDataV1` を provider-data 全体の唯一の schema とする。descriptor 診断情報 schema v1 は `diagnostics.descriptorDiagnostics[]` 配下の要素 schema であり、provider-data 全体の schema ではない。Rust は `schemaVersion=1` と `diagnostics.descriptorDiagnostics[]` を出力し、Kotlin はそのオブジェクトを別 schema へ変換しない。
+- 新規 provider-data 書き込みでは `arib_si_engine_rs` の `ProgramProviderDataV1` を provider-data 全体の唯一の schema とする。descriptor 診断情報 schema v1 は `diagnostics.descriptorDiagnostics[]` 配下の要素 schema であり、provider-data 全体の schema ではない。
 - extended-event item は `description/text` として書き込む。`key/value` と `itemDescription/itemText` の旧入力形式は受け付けない。
 - 不正な short / extended / content / audio_component / event_group descriptor は、通常の title、description、長形式イベント項目、genre、audio、event-group フィールドとして部分投影してはならない。
 - 不正な EIT event timing は、以前有効だった event が消滅した根拠にしてはならない。不正 section だけでは 廃止行削除区間 を作らない。

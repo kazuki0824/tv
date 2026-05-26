@@ -968,12 +968,15 @@ fn jbytearray_to_vec(env: &mut JNIEnv<'_>, value: JByteArray<'_>) -> Vec<u8> {
 
 fn provider_result_json(result: provider_data_api::ProviderDataResult) -> String {
     format!(
-        "{{\"bytes\":{},\"signature\":{},\"schemaVersion\":{},\"truncated\":{},\"diagnosticsDroppedCount\":{}}}",
+        "{{\"success\":{},\"bytes\":{},\"signature\":{},\"schemaVersion\":{},\"truncated\":{},\"diagnosticsDroppedCount\":{},\"errorCode\":{},\"errorMessage\":{}}}",
+        if result.success { "true" } else { "false" },
         json_string(&result.json),
         json_string(&result.signature),
         result.schema_version,
         if result.truncated { "true" } else { "false" },
         result.diagnostics_dropped_count,
+        json_string(&result.error_code),
+        json_string(&result.error_message),
     )
 }
 

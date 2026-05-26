@@ -1,6 +1,7 @@
 package com.maleicacid.tvinput.tis
 
 import com.maleicacid.tvinput.common.ServiceKey
+import com.maleicacid.tvinput.common.TsPid
 import org.junit.Test
 
 class PlaybackStartGateTest {
@@ -8,7 +9,7 @@ class PlaybackStartGateTest {
 
     @Test fun repeatedSectionUpdatesAfterFailedStartDoNotRetrySameSignature() {
         val gate = PlaybackStartGate()
-        val signature = signature(videoPid = 0x0101, audioPid = 0x0102)
+        val signature = signature(videoPid = TsPid(0x0101), audioPid = TsPid(0x0102))
 
         check(gate.shouldAttempt(signature))
         gate.recordAttempt(signature)
@@ -21,7 +22,7 @@ class PlaybackStartGateTest {
 
     @Test fun eitCatEcmEmmUpdatesWithSameSignatureStayNoopAfterStarted() {
         val gate = PlaybackStartGate()
-        val signature = signature(videoPid = 0x0101, audioPid = 0x0102)
+        val signature = signature(videoPid = TsPid(0x0101), audioPid = TsPid(0x0102))
 
         check(gate.shouldAttempt(signature))
         gate.recordAttempt(signature)
@@ -36,8 +37,8 @@ class PlaybackStartGateTest {
 
     @Test fun pmtPidChangeAllowsExactlyOneNewAttempt() {
         val gate = PlaybackStartGate()
-        val first = signature(videoPid = 0x0101, audioPid = 0x0102)
-        val changed = signature(videoPid = 0x0201, audioPid = 0x0202)
+        val first = signature(videoPid = TsPid(0x0101), audioPid = TsPid(0x0102))
+        val changed = signature(videoPid = TsPid(0x0201), audioPid = TsPid(0x0202))
 
         gate.recordAttempt(first)
         gate.recordResult(first, startedVideo = true)
@@ -50,7 +51,7 @@ class PlaybackStartGateTest {
 
     @Test fun surfaceReattachAllowsRetryingPreviouslyFailedSignature() {
         val gate = PlaybackStartGate()
-        val signature = signature(videoPid = 0x0101, audioPid = null)
+        val signature = signature(videoPid = TsPid(0x0101), audioPid = null)
 
         gate.recordAttempt(signature)
         gate.recordResult(signature, startedVideo = false)
@@ -64,7 +65,7 @@ class PlaybackStartGateTest {
 
     @Test fun newTuneResetsAllGateState() {
         val gate = PlaybackStartGate()
-        val signature = signature(videoPid = 0x0101, audioPid = 0x0102)
+        val signature = signature(videoPid = TsPid(0x0101), audioPid = TsPid(0x0102))
 
         gate.recordAttempt(signature)
         gate.recordResult(signature, startedVideo = true)
@@ -74,9 +75,9 @@ class PlaybackStartGateTest {
         check(gate.shouldAttempt(signature))
     }
 
-    private fun signature(videoPid: Int, audioPid: Int?): AvPlaybackSignature = AvPlaybackSignature(
+    private fun signature(videoPid: TsPid, audioPid: TsPid?): AvPlaybackSignature = AvPlaybackSignature(
         serviceKey = key,
-        pcrPid = 0x0100,
+        pcrPid = TsPid(0x0100),
         videoPid = videoPid,
         videoStreamType = 0x1b,
         audioPid = audioPid,

@@ -158,24 +158,20 @@ retry queue は全体上限 512 windows、ServiceKey ごと上限 32 windows と
 
 SDT-other / NIT-other / BAT 由来で現在 candidate の actual transport に解決できない サービスは、現在 candidate の物理情報で channel insert しない。未登録で Program row が存在しない unresolved transport は scan/maintenance 診断情報に `skippedUnresolvedTransportCount` として記録し、Program provider-data には書かない。publish 済み Program には自 サービスの `skippedUnresolvedTransport=false` を入れる。
 
-## provider-data schema / 署名
+## provider-data 利用境界 / 署名
 
-`Programs.COLUMN_INTERNAL_PROVIDER_DATA` の新規書き込み・読み取り正形式は UTF-8 JSON v1 バイト列のみとする。`programKeyB64`、`;` 区切り key-value 形式、旧 flat provider-data、旧 provider-data 断片は読み取り互換入力としても残さない。既存端末の旧形式データは r51 リリース物では移行対象にせず、DB 再構築または setup 再実行で JSON v1 を再生成する。
+`Programs.COLUMN_INTERNAL_PROVIDER_DATA` / `Channels.COLUMN_INTERNAL_PROVIDER_DATA` の具体 schema、正規化、署名、安定キー抽出、保存上限は `arib_si_engine_rs/DESIGN_JA.md` の「provider-data / diagnostics Rust SSOT」と `arib_si_engine_rs/schema/*.schema.json` を正とする。TIS は保存 schema を再定義しない。
 
-provider-data JSON v1 の構造、canonical encode、正規化、署名、安定キー抽出は `arib_si_engine_rs` の Rust `provider_data` module の `serde` struct を SSOT とする。TIS Kotlin は provider-data JSON を `JSONObject.put()` や手書き string concatenation で直接構築してはならない。TIS Kotlin は Rust JNI の build / 正規化 / 署名 / key extraction API で得た bytes と 署名 を TvProvider に書く。
+TIS Kotlin は provider-data JSON を `JSONObject.put()` や文字列連結で直接構築してはならない。TIS Kotlin は Rust JNI の build / 正規化 / 署名 / key extraction API で得た bytes と署名を TvProvider に書く。TIS が JNI へ渡す JSON は Rust builder への入力 DTO であり、TvProvider に保存する provider-data schema ではない。
 
-Program provider-data の top-level envelope、必須フィールド、検証規則、canonical encode、正規化、署名、安定キー抽出は TIS では再定義しない。正本は `arib_si_engine_rs/DESIGN_JA.md`、`arib_si_engine_rs/schema/program_provider_data_v1.schema.json`、`arib_si_engine_rs/schema/descriptor_diagnostic_v1.schema.json`、`arib_si_engine_rs/testdata/program_provider_data_v1/minimal_clear_program.json` とする。TIS instrumentationテスト 用 テストデータは `tis/tests/assets/program_provider_data_v1/minimal_clear_program.json` に置き、Rust 側 テストデータと バイト単位で同一 に保つ。TIS は Rust JNI が返した provider-data bytes を保存し、新規 provider-data JSON を Kotlin 側独自 schema で構築してはならない。
+Program provider-data の top-level envelope、必須フィールド、検証規則、正規化、署名、安定キー抽出は TIS では再定義しない。正本は `arib_si_engine_rs/DESIGN_JA.md`、`arib_si_engine_rs/schema/program_provider_data_v1.schema.json`、`arib_si_engine_rs/schema/descriptor_diagnostic_v1.schema.json`、`arib_si_engine_rs/testdata/program_provider_data_v1/minimal_clear_program.json` とする。TIS instrumentation テスト用の期待値 JSON を置く場合は Rust 側テストデータとバイト単位で同一に保つ。
 
-`programKey` は `originalNetworkId / transportStreamId / serviceId / eventId` のみで構成する。`startUtcMillis`、`endUtcMillis`、`durationMillis` は `timing` に置き、stable key に含めない。event_id 不明の event を stable ARIB event として扱ってはならない。
+TIS は `components.video[]`、`components.audio[]`、`components.subtitle[]`、`components.data[]` を provider-data schema として再定義しない。TIS は TvProvider 標準列、`TvTrackInfo`、MediaFormat / AudioTrack / 字幕表示経路へ接続する接着層に限定する。`audio` / `video` が `null` の場合は主 track 未選択または未確定を意味し、空オブジェクトと同義に扱ってはならない。
 
-TIS は `components.video[]`、`components.audio[]`、`components.subtitle[]`、`components.data[]` を provider-data schema として再定義しない。映像・音声 codecメタデータ、字幕 trackメタデータ、非対応 codec 診断は Rust JNI が返す JSON v1 バイト列の中に保存される。TIS は TvProvider 標準列、`TvTrackInfo`、MediaFormat / AudioTrack / 字幕表示経路へ接続する接着層に限定する。`audio` / `video` が `null` の場合は主track 未選択または未確定を意味し、空オブジェクト と同義に扱ってはならない。
+Program 署名は TvProvider に実際に書く `ContentValues` と Rust JNI が返した provider-data bytes から生成する。署名入力は固定 column list 順に `<columnName>\0<byteLength>\0<bytes>` で連結し、そのバイト列の SHA-256 lowercase hex とする。`ContentValues` の iteration order には依存しない。insert 後に provider-data を再生成した場合、cache する signature は再生成後に実際に書いたバイト列の signature とする。
 
-Channel provider-data の top-level envelope は `schema="maleicacid.tv.channel"`, `schemaVersion=1`, `serviceKey`, `tune`, `cas`, `diagnostics` を持つ JSON v1 とする。`tune` は `inputId`、`displayName`、`deliverySystem`、`frequencyHz`、`streamId`、`streamIdType`、`physicalChannel`、`backendHint`、`satelliteBand`、`remoteControlKeyId` を持つ。CS110 は `streamIdType="NONE"` とし、`streamId` は null とする。
+`selectedProgramId` のような TvProvider row id 依存値は stable provider-data 署名の構成要素にしてはならない。必要な場合は補助診断として扱い、署名 skip 判定を壊さない。
 
-Program署名 は TvProvider に実際に書く `ContentValues` と Rust JNI が返した provider-data bytes から生成する。署名入力は固定 column list 順に `<columnName>\0<byteLength>\0<bytes>
-` で連結し、そのバイト列の SHA-256 lowercase hex とする。`ContentValues` の iteration order には依存しない。insert 後に provider-data を再生成した場合、cache する signature は再生成後に実際に書いた バイト列の signature とする。
-
-`selectedProgramId` のような TvProvider row id 依存値は stable provider-data 署名 の構成要素にしてはならない。必要な場合は 補助診断として扱い、署名skip 判定を壊さない。
 
 ## 現在番組 選択
 

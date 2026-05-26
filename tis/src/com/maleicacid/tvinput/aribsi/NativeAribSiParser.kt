@@ -1,6 +1,10 @@
 package com.maleicacid.tvinput.aribsi
 
+import com.maleicacid.tvinput.common.NetworkId16
+import com.maleicacid.tvinput.common.ServiceId16
 import com.maleicacid.tvinput.common.ServiceKey
+import com.maleicacid.tvinput.common.TransportStreamId16
+import com.maleicacid.tvinput.common.TsPid
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -13,9 +17,9 @@ class NativeAribSiParser : AutoCloseable {
         val caMetadata: List<CaMetadata>,
         val caMetadataForCasDiscovery: List<CaMetadata>,
         val malformedCaDescriptorDiagnostics: List<MalformedCaDescriptorDiagnostic>,
-        val malformedCaDescriptorCountByServiceId: Map<Int, Int>,
+        val malformedCaDescriptorCountByServiceId: Map<ServiceId16, Int>,
         val pmtPidMappings: List<PmtPidMapping>,
-        val pmtPidsForSectionFilters: List<Int>,
+        val pmtPidsForSectionFilters: List<TsPid>,
         val transports: List<AribTransport>,
         val sdtActualTransports: List<AribTransport>,
         val privateSections: List<PrivateSection>,
@@ -37,9 +41,9 @@ class NativeAribSiParser : AutoCloseable {
     fun appendCurrentProgramDiagnostics(providerData: ByteArray, overlapCount: Long, selectedProgramId: Long, selectionRule: String): String =
         nativeAppendCurrentProgramDiagnostics(providerData, overlapCount, selectedProgramId, selectionRule)
 
-    fun ingestSection(pid: Int, section: ByteArray): Int {
+    fun ingestSection(pid: TsPid, section: ByteArray): Int {
         check(handle != 0L) { "ネイティブ解析器は終了済みです" }
-        return nativeIngestSection(handle, pid, section)
+        return nativeIngestSection(handle, pid.value, section)
     }
 
     fun lastStatus(): Int = nativeLastStatus(handle)
@@ -58,7 +62,7 @@ class NativeAribSiParser : AutoCloseable {
         return ServiceRegistrationSnapshot(
             snapshotGeneration = snapshot.snapshotGeneration,
             services = snapshot.services,
-            actualTransports = snapshot.sdtActualTransports.map { TransportKey(it.originalNetworkId, it.transportStreamId) }.toSet(),
+            actualTransports = snapshot.sdtActualTransports.map { TransportKey(it.originalNetwork, it.transportStream) }.toSet(),
             publishabilityByServiceKey = snapshot.publishabilityDiagnostics.associateBy { it.serviceKey },
             diagnostics = snapshot.parserDiagnostics,
         )
@@ -74,6 +78,24 @@ class NativeAribSiParser : AutoCloseable {
             pmtPids = snapshot.pmtPidMappings.associate { it.serviceKey to it.pmtPid },
             catEmmPids = snapshot.caMetadataForCasDiscovery.mapNotNull { it.emmPid }.distinct().sorted(),
             diagnostics = descriptorDiagnosticsFromEvents(snapshot.events),
+            malformedCaDescriptorDiagnostics = snapshot.malformedCaDescriptorDiagnostics,
+        )
+    }
+
+    @Synchronized
+    fun livePlaybackSnapshot(): LivePlaybackSnapshot {
+        val snapshot = readNativeTransaction(takeUpdateWindows = false)
+        return LivePlaybackSnapshot(
+            snapshotGeneration = snapshot.snapshotGeneration,
+            ingestSequence = snapshot.ingestSequence,
+            services = snapshot.services,
+            servicesForCasDiscovery = snapshot.servicesForCasDiscovery,
+            caMetadataForCasDiscovery = snapshot.caMetadataForCasDiscovery,
+            pmtPids = snapshot.pmtPidMappings.associate { it.serviceKey to it.pmtPid },
+            catEmmPids = snapshot.caMetadataForCasDiscovery.mapNotNull { it.emmPid }.distinct().sorted(),
+            publishabilityByServiceKey = snapshot.publishabilityDiagnostics.associateBy { it.serviceKey },
+            descriptorDiagnostics = descriptorDiagnosticsFromEvents(snapshot.events),
+            parserDiagnostics = snapshot.parserDiagnostics,
             malformedCaDescriptorDiagnostics = snapshot.malformedCaDescriptorDiagnostics,
         )
     }
@@ -105,14 +127,14 @@ class NativeAribSiParser : AutoCloseable {
                 severity = obj.optString("severity"),
                 code = obj.optString("code"),
                 scope = DescriptorDiagnosticScope(
-                    pid = optIntOrNull(scope, "pid"),
+                    pid = TsPid.fromOrNull(optIntOrNull(scope, "pid")),
                     tableId = optIntOrNull(scope, "tableId"),
                     tableIdExtension = optIntOrNull(scope, "tableIdExtension"),
                     version = optIntOrNull(scope, "version"),
                     sectionNumber = optIntOrNull(scope, "sectionNumber"),
-                    originalNetworkId = optIntOrNull(scope, "originalNetworkId"),
-                    transportStreamId = optIntOrNull(scope, "transportStreamId"),
-                    serviceId = optIntOrNull(scope, "serviceId"),
+                    originalNetwork = NetworkId16.fromOrNull(optIntOrNull(scope, "originalNetworkId")),
+                    transportStream = TransportStreamId16.fromOrNull(optIntOrNull(scope, "transportStreamId")),
+                    service = ServiceId16.fromOrNull(optIntOrNull(scope, "serviceId")),
                     eventId = optIntOrNull(scope, "eventId"),
                 ),
                 descriptor = DescriptorDiagnosticDescriptor(
@@ -149,7 +171,7 @@ class NativeAribSiParser : AutoCloseable {
             malformedCaDescriptorDiagnostics = parseMalformedCaDescriptorDiagnostics(root.optJSONArray("malformedCaDescriptorDiagnostics")),
             malformedCaDescriptorCountByServiceId = parseMalformedCaDescriptorCounts(root.optJSONArray("malformedCaDescriptorCounts")),
             pmtPidMappings = parsePmtPidMappings(root.optJSONArray("pmtPidMappings")),
-            pmtPidsForSectionFilters = parseIntArray(root.optJSONArray("pmtPidsForSectionFilters")).filter { it in 0..0x1fff },
+            pmtPidsForSectionFilters = parseIntArray(root.optJSONArray("pmtPidsForSectionFilters")).mapNotNull(TsPid::fromOrNull),
             transports = parseTransports(root.optJSONArray("transports")),
             sdtActualTransports = parseTransports(root.optJSONArray("sdtActualTransports")),
             privateSections = parsePrivateSections(root.optJSONArray("privateSections")),
@@ -171,7 +193,7 @@ class NativeAribSiParser : AutoCloseable {
         return ByteArray(hex.length / 2) { index -> hex.substring(index * 2, index * 2 + 2).toIntOrNull(16)?.toByte() ?: 0 }
     }
 
-    private fun serviceKeyFrom(obj: JSONObject): ServiceKey = ServiceKey(
+    private fun serviceKeyFrom(obj: JSONObject): ServiceKey? = ServiceKey.fromOrNull(
         originalNetworkId = obj.optInt("originalNetworkId", -1),
         transportStreamId = obj.optInt("transportStreamId", -1),
         serviceId = obj.optInt("serviceId", -1),
@@ -179,8 +201,7 @@ class NativeAribSiParser : AutoCloseable {
 
     private fun parseServices(array: JSONArray?): List<AribService> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
         val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
-        val key = serviceKeyFrom(obj)
-        if (key.originalNetworkId < 0 || key.transportStreamId < 0 || key.serviceId < 0) return@mapNotNull null
+        val key = serviceKeyFrom(obj) ?: return@mapNotNull null
         val streams = parseStreams(obj.optJSONArray("streams"))
         val caDescriptors = parseCaDescriptors(obj.optJSONArray("serviceScopedCaDescriptors"))
         val provisional = AribService(
@@ -188,8 +209,8 @@ class NativeAribSiParser : AutoCloseable {
             name = obj.optString("name"),
             providerName = obj.optString("providerName"),
             serviceType = optIntOrNull(obj, "serviceType"),
-            pmtPid = optIntOrNull(obj, "pmtPid"),
-            pcrPid = optIntOrNull(obj, "pcrPid"),
+            pmtPid = TsPid.fromOrNull(optIntOrNull(obj, "pmtPid")),
+            pcrPid = TsPid.fromOrNull(optIntOrNull(obj, "pcrPid")),
             freeCaMode = optBoolOrNull(obj, "freeCaMode"),
             streams = streams,
             hasProgramCaDescriptor = obj.optBoolean("hasProgramCaDescriptor"),
@@ -201,9 +222,9 @@ class NativeAribSiParser : AutoCloseable {
 
     private fun parseStreams(array: JSONArray?): List<AribElementaryStream> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
         val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
-        val pid = obj.optInt("elementaryPid", -1)
+        val pid = TsPid.fromOrNull(obj.optInt("elementaryPid", -1))
         val streamType = obj.optInt("streamType", -1)
-        if (pid < 0 || streamType < 0) null else AribElementaryStream(
+        if (pid == null || streamType < 0) null else AribElementaryStream(
             elementaryPid = pid,
             streamType = streamType,
             componentTag = optIntOrNull(obj, "componentTag"),
@@ -221,27 +242,27 @@ class NativeAribSiParser : AutoCloseable {
         val systemId = obj.optInt("caSystemId", -1)
         if (systemId < 0) null else CaDescriptor(
             caSystemId = systemId,
-            caPid = optIntOrNull(obj, "caPid"),
+            caPid = TsPid.fromOrNull(optIntOrNull(obj, "caPid")),
             scope = if (obj.optString("scope") == "ES") CaDescriptorScope.ES else CaDescriptorScope.PROGRAM,
-            esPid = optIntOrNull(obj, "esPid"),
+            esPid = TsPid.fromOrNull(optIntOrNull(obj, "esPid")),
             rawDescriptor = hexToBytes(obj.optString("rawDescriptorHex")),
         )
     }
 
     private fun parsePmtPidMappings(array: JSONArray?): List<PmtPidMapping> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
         val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
-        val key = serviceKeyFrom(obj)
-        val pmtPid = obj.optInt("pmtPid", -1)
-        if (key.originalNetworkId < 0 || key.transportStreamId < 0 || key.serviceId < 0 || pmtPid !in 0..0x1fff) null else PmtPidMapping(key, pmtPid)
+        val key = serviceKeyFrom(obj) ?: return@mapNotNull null
+        val pmtPid = TsPid.fromOrNull(obj.optInt("pmtPid", -1))
+        if (pmtPid == null) null else PmtPidMapping(key, pmtPid)
     }
 
     private fun parseTransports(array: JSONArray?): List<AribTransport> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
         val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
-        val onid = obj.optInt("originalNetworkId", -1)
-        val tsid = obj.optInt("transportStreamId", -1)
-        if (onid < 0 || tsid < 0) null else AribTransport(
-            originalNetworkId = onid,
-            transportStreamId = tsid,
+        val onid = NetworkId16.fromOrNull(obj.optInt("originalNetworkId", -1))
+        val tsid = TransportStreamId16.fromOrNull(obj.optInt("transportStreamId", -1))
+        if (onid == null || tsid == null) null else AribTransport(
+            originalNetwork = onid,
+            transportStream = tsid,
             networkName = obj.optString("networkName"),
             transportStreamName = obj.optString("transportStreamName"),
             remoteControlKeyId = optIntOrNull(obj, "remoteControlKeyId"),
@@ -272,7 +293,7 @@ class NativeAribSiParser : AutoCloseable {
             val index = merged.indexOfFirst { sameComponentIdentity(it, eventEntry) }
             if (index >= 0) {
                 merged[index] = mergeComponentEntry(eventEntry, merged[index])
-            } else if (eventEntry.esPid >= 0) {
+            } else {
                 merged += eventEntry
             }
         }
@@ -305,14 +326,14 @@ class NativeAribSiParser : AutoCloseable {
     private fun parseCaMetadataList(array: JSONArray?): List<CaMetadata> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
         val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
         val keyObj = obj.optJSONObject("serviceKey")
-        val serviceKey = keyObj?.let { serviceKeyFrom(it) }?.takeIf { it.originalNetworkId >= 0 && it.transportStreamId >= 0 && it.serviceId >= 0 }
+        val serviceKey = keyObj?.let { serviceKeyFrom(it) }
         val systemId = obj.optInt("caSystemId", -1)
         if (systemId < 0) null else CaMetadata(
             serviceKey = serviceKey,
             caSystemId = systemId,
-            ecmPid = optIntOrNull(obj, "ecmPid"),
-            emmPid = optIntOrNull(obj, "emmPid"),
-            elementaryPid = optIntOrNull(obj, "elementaryPid"),
+            ecmPid = TsPid.fromOrNull(optIntOrNull(obj, "ecmPid")),
+            emmPid = TsPid.fromOrNull(optIntOrNull(obj, "emmPid")),
+            elementaryPid = TsPid.fromOrNull(optIntOrNull(obj, "elementaryPid")),
             privateData = hexToBytes(obj.optString("privateDataHex")),
             source = runCatching { CaMetadataSource.valueOf(obj.optString("source")) }.getOrDefault(CaMetadataSource.PROGRAM),
         )
@@ -321,32 +342,32 @@ class NativeAribSiParser : AutoCloseable {
     private fun parseMalformedCaDescriptorDiagnostics(array: JSONArray?): List<MalformedCaDescriptorDiagnostic> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
         val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
         MalformedCaDescriptorDiagnostic(
-            pid = obj.optInt("pid", -1),
+            pid = TsPid.fromOrNull(obj.optInt("pid", -1)) ?: return@mapNotNull null,
             tableId = obj.optInt("tableId", -1),
             tableIdExtension = optIntOrNull(obj, "tableIdExtension"),
-            serviceId = optIntOrNull(obj, "serviceId"),
-            elementaryPid = optIntOrNull(obj, "elementaryPid"),
+            service = ServiceId16.fromOrNull(optIntOrNull(obj, "serviceId")),
+            elementaryPid = TsPid.fromOrNull(optIntOrNull(obj, "elementaryPid")),
             scope = obj.optString("scope"),
             offset = obj.optInt("offset", -1),
             declaredLength = obj.optInt("declaredLength", -1),
             actualRemainingLength = obj.optInt("actualRemainingLength", -1),
             reason = obj.optString("reason"),
             rawPrefixHex = obj.optString("rawPrefixHex"),
-        ).takeIf { it.pid >= 0 && it.tableId >= 0 && it.offset >= 0 && it.reason.isNotBlank() }
+        ).takeIf { it.tableId >= 0 && it.offset >= 0 && it.reason.isNotBlank() }
     }
 
-    private fun parseMalformedCaDescriptorCounts(array: JSONArray?): Map<Int, Int> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
+    private fun parseMalformedCaDescriptorCounts(array: JSONArray?): Map<ServiceId16, Int> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
         val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
-        val serviceId = obj.optInt("serviceId", -1)
+        val serviceId = ServiceId16.fromOrNull(obj.optInt("serviceId", -1))
         val count = obj.optInt("count", 0)
-        if (serviceId < 0 || count <= 0) null else serviceId to count
+        if (serviceId == null || count <= 0) null else serviceId to count
     }.toMap()
 
     private fun parsePrivateSections(array: JSONArray?): List<PrivateSection> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
         val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
-        val pid = obj.optInt("pid", -1)
+        val pid = TsPid.fromOrNull(obj.optInt("pid", -1))
         val tableId = obj.optInt("tableId", -1)
-        if (pid < 0 || tableId < 0) null else PrivateSection(pid, tableId, hexToBytes(obj.optString("bytesHex")))
+        if (pid == null || tableId < 0) null else PrivateSection(pid, tableId, hexToBytes(obj.optString("bytesHex")))
     }
 
     private fun parseEvents(array: JSONArray?): List<AribEvent> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
@@ -354,7 +375,7 @@ class NativeAribSiParser : AutoCloseable {
         val serviceKeyObj = obj.optJSONObject("serviceKey") ?: return@mapNotNull null
         val programKeyObj = obj.optJSONObject("programKey") ?: return@mapNotNull null
         val timingObj = obj.optJSONObject("timing") ?: return@mapNotNull null
-        val key = serviceKeyFrom(serviceKeyObj)
+        val key = serviceKeyFrom(serviceKeyObj) ?: return@mapNotNull null
         val eventId = programKeyObj.optInt("eventId", -1)
         val start = timingObj.optLong("startUtcMillis", -1L)
         val duration = timingObj.optLong("durationMillis", -1L)
@@ -367,7 +388,7 @@ class NativeAribSiParser : AutoCloseable {
         val diagnostics = descriptorsObj.optJSONObject("diagnostics") ?: JSONObject()
         val series = descriptorsObj.optJSONObject("series")
         val descriptorDiagnosticsCanonicalJson = diagnostics.optString("descriptorDiagnosticsCanonicalJson", "[]")
-        if (key.originalNetworkId < 0 || key.transportStreamId < 0 || key.serviceId < 0 || eventId < 0 || start <= 0L || duration <= 0L) return@mapNotNull null
+        if (eventId < 0 || start <= 0L || duration <= 0L) return@mapNotNull null
         AribEvent(
             serviceKey = key,
             stableIdentity = obj.optString("stableIdentity"),
@@ -379,7 +400,7 @@ class NativeAribSiParser : AutoCloseable {
             extendedDescription = obj.optString("extendedDescription"),
             eventScope = obj.optString("eventScope", "present_following"),
             source = AribProgramSource(
-                pid = sourceObj.optInt("pid", 18),
+                pid = TsPid.fromOrNull(sourceObj.optInt("pid", 18)) ?: TsPid.EIT,
                 tableId = sourceObj.optInt("tableId", 0x4e),
                 version = sourceObj.optInt("version", 0),
                 sectionNumber = sourceObj.optInt("sectionNumber", 0),
@@ -449,9 +470,9 @@ class NativeAribSiParser : AutoCloseable {
         AribRelatedItem(
             kind = obj.optString("kind", "unknown"),
             groupType = obj.optInt("groupType", 0),
-            originalNetworkId = optIntOrNull(obj, "originalNetworkId"),
-            transportStreamId = optIntOrNull(obj, "transportStreamId"),
-            serviceId = obj.optInt("serviceId", -1),
+            originalNetwork = NetworkId16.fromOrNull(optIntOrNull(obj, "originalNetworkId")),
+            transportStream = TransportStreamId16.fromOrNull(optIntOrNull(obj, "transportStreamId")),
+            service = ServiceId16.fromOrNull(obj.optInt("serviceId", -1)) ?: return@mapNotNull null,
             eventId = obj.optInt("eventId", -1),
             parseStatus = obj.optString("parseStatus", "OK"),
         ).takeIf { it.serviceId >= 0 && it.eventId >= 0 }
@@ -459,14 +480,17 @@ class NativeAribSiParser : AutoCloseable {
 
     private fun parseLinkage(array: JSONArray?): List<AribLinkage> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
         val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
-        AribLinkage(
-            linkageType = obj.optInt("linkageType", -1),
+        val key = ServiceKey.fromOrNull(
             originalNetworkId = obj.optInt("originalNetworkId", -1),
             transportStreamId = obj.optInt("transportStreamId", -1),
             serviceId = obj.optInt("serviceId", -1),
+        ) ?: return@mapNotNull null
+        AribLinkage(
+            linkageType = obj.optInt("linkageType", -1),
+            serviceKey = key,
             privateDataHex = obj.optString("privateDataHex", ""),
             parseStatus = obj.optString("parseStatus", "OK"),
-        ).takeIf { it.linkageType >= 0 && it.originalNetworkId >= 0 && it.transportStreamId >= 0 && it.serviceId >= 0 }
+        ).takeIf { it.linkageType >= 0 }
     }
 
     private fun parseFreeCaMode(obj: JSONObject): AribFreeCaMode? = if (obj.length() == 0) null else AribFreeCaMode(
@@ -501,9 +525,9 @@ class NativeAribSiParser : AutoCloseable {
 
     private fun parseComponentEntries(array: JSONArray?): List<AribComponentEntry> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
         val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
-        val pid = obj.optInt("esPid", -1)
-        if (pid < 0 && optIntOrNull(obj, "componentTag") == null) null else AribComponentEntry(
-            esPid = pid,
+        val pid = TsPid.fromOrNull(obj.optInt("esPid", -1))
+        if (pid == null && optIntOrNull(obj, "componentTag") == null) null else AribComponentEntry(
+            esPid = pid ?: TsPid.PAT,
             streamType = optIntOrNull(obj, "streamType"),
             componentTag = optIntOrNull(obj, "componentTag"),
             componentType = optIntOrNull(obj, "componentType"),
@@ -532,10 +556,10 @@ class NativeAribSiParser : AutoCloseable {
 
     private fun parseEpgUpdateWindows(array: JSONArray?): List<AribEpgUpdateWindow> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
         val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
-        val key = serviceKeyFrom(obj)
+        val key = serviceKeyFrom(obj) ?: return@mapNotNull null
         val start = obj.optLong("windowStartMillis", -1L)
         val end = obj.optLong("windowEndMillis", -1L)
-        if (key.originalNetworkId < 0 || key.transportStreamId < 0 || key.serviceId < 0 || start < 0L || end <= start) null else AribEpgUpdateWindow(
+        if (start < 0L || end <= start) null else AribEpgUpdateWindow(
             serviceKey = key,
             windowStartMillis = start,
             windowEndMillis = end,
@@ -546,8 +570,8 @@ class NativeAribSiParser : AutoCloseable {
 
     private fun parsePublishabilityDiagnostics(array: JSONArray?): List<ServicePublishabilityDiagnostic> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
         val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
-        val key = serviceKeyFrom(obj)
-        if (key.originalNetworkId < 0 || key.transportStreamId < 0 || key.serviceId < 0) null else ServicePublishabilityDiagnostic(
+        val key = serviceKeyFrom(obj) ?: return@mapNotNull null
+        ServicePublishabilityDiagnostic(
             serviceKey = key,
             publishable = obj.optBoolean("publishable"),
             channelRegistrationReady = obj.optBoolean("channelRegistrationReady"),

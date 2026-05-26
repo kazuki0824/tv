@@ -7,21 +7,15 @@
 
 ## 文字列 decoder の範囲
 
-このライブラリの ARIB 文字列 decoder は、字幕以外の SI/EPG 文字列を対象にする。字幕は TIS 側の字幕 path で `libaribcaption` を使う前提であり、このライブラリは字幕用 decoder の完全実装を 対応宣言しない。`arib_si_engine_rs` は libaribcaption ラッパー を所有しない。
+ARIB 文字列 decoder の適用範囲、完了条件、未対応文字・escape の扱い、字幕との責務境界は `arib_si_engine_rs/DESIGN_JA.md` を正とする。README では同じ設計本文を再定義しない。
+
+このライブラリは、字幕以外の SI/EPG 文字列を安定して文字列化し、TIS が TvProvider へ投影できる構造を返す。字幕本文、字幕管理データ、外字・DRCSを含む字幕表示処理は TIS 側の `libaribcaption` 経路の責務である。
 
 ## 公開 API 境界
 
 通常の JNI getter が返す サービス/transport/PMT snapshot は 公開可能スナップショット である。元スナップショット は診断・test の内部確認用に限定する。publish できない サービスの理由は 公開可否診断 getter で確認する。
 
 EIT event は stable identity `onid/tsid/sid/event` と開始時刻を分離して返す。descriptor JSON は診断 API として返し、TIS は必要な範囲を `internal_provider_data` の内部データとして保存する。
-
-ARIB 文字列 decoder は字幕以外の SI/EPG 文字列用であり、字幕は TIS 側の字幕 path で `libaribcaption` により処理する。
-
-### 文字 decoder 固定方針
-
-自前 ARIB 文字列 decoder の完了条件は、mirakc が EPG / サービスモデル 構築で扱う範囲に合わせる。すなわち、字幕本文レンダリングではなく、サービス名、番組名、短形式イベント記述、長形式イベント記述、各種 SI/EPG descriptor の テキストフィールドを安定して文字列化する範囲を対象にする。
-
-この範囲を超える字幕 PES、字幕管理データ、字幕本文、DRCS/外字レンダリング、厳密な組版制御は恒久的に `arib_si_engine_rs` の対象外であり、必要な場合は `libaribcaption` 側の責務とする。未対応 escape / 未対応文字は `panic` ではなく 診断情報と置換文字へ変換する。これは r51 の設計方針として固定する。
 
 
 ## 公開境界の固定

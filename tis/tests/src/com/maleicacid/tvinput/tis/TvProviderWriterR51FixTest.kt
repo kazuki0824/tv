@@ -7,7 +7,9 @@ import com.maleicacid.tvinput.aribsi.AribComponents
 import com.maleicacid.tvinput.aribsi.AribContentGenre
 import com.maleicacid.tvinput.aribsi.AribParentalRating
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
+import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.ServiceKey
+import com.maleicacid.tvinput.common.TsPid
 import com.maleicacid.tvinput.db.ChannelRecord
 import com.maleicacid.tvinput.db.ProgramRecord
 import com.maleicacid.tvinput.aribsi.AribFreeCaMode
@@ -21,7 +23,7 @@ class TvProviderWriterR51FixTest {
     @Test fun optionalProgramColumnsAreClearedByMergeUpdate() {
         val store = MergeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
-        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", 473_142_857L)))
+        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", FrequencyHz(473_142_857L))))
         val rating15 = requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 15, 15, true)))
         val p = ProgramRecord(
             key, 1, "p1", 1_700_000_000_000L, 1_800_000L, "title", "desc",
@@ -32,7 +34,7 @@ class TvProviderWriterR51FixTest {
                 scrambled = false,
                 freeCaMode = AribFreeCaMode(raw = 0, scrambled = false, text = "無料放送"),
                 series = AribSeries(seriesId = 100, episodeNumber = 3, lastEpisodeNumber = 12, name = null),
-                components = AribComponents(audio = listOf(AribComponentEntry(esPid = 256, streamType = 0x0f, componentTag = 1, componentType = 3, codec = "AAC", language = "jpn", parseStatus = "OK"))),
+                components = AribComponents(audio = listOf(AribComponentEntry(esPid = TsPid(256), streamType = 0x0f, componentTag = 1, componentType = 3, codec = "AAC", language = "jpn", parseStatus = "OK"))),
             ),
             contentRatings = listOf(rating15),
         )

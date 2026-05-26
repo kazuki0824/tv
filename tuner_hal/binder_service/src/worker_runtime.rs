@@ -1,0 +1,506 @@
+//! Tuner HAL 内部 worker 制御を集約する。
+//!
+//! r50dz19 では既存の worker signal 実装をこの module へ移し、
+//! lock / wait 失敗を正常停止やtimeoutに丸めない方針を固定する。
+
+use std::sync::{atomic::{AtomicBool, Ordering}, Condvar, LockResult, Mutex, MutexGuard, WaitTimeoutResult};
+use std::time::Duration;
+
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkerExit {
+    Normal,
+    StopRequested,
+    RuntimeFailure,
+    PanicOrJoinFailure,
+}
+
+impl WorkerExit {
+    pub fn is_abnormal(self) -> bool {
+        matches!(
+            self,
+            WorkerExit::RuntimeFailure | WorkerExit::PanicOrJoinFailure
+        )
+    }
+}
+
+pub trait IntoWorkerExit {
+    fn into_worker_exit(self) -> WorkerExit;
+}
+
+impl IntoWorkerExit for () {
+    fn into_worker_exit(self) -> WorkerExit {
+        WorkerExit::Normal
+    }
+}
+
+impl IntoWorkerExit for WorkerExit {
+    fn into_worker_exit(self) -> WorkerExit {
+        self
+    }
+}
+
+type ThreadWorkerHandleRaw = std::thread::JoinHandle<WorkerExit>;
+
+#[derive(Debug)]
+pub struct RuntimeAtomicFlag {
+    inner: AtomicBool,
+}
+
+impl Clone for RuntimeAtomicFlag {
+    fn clone(&self) -> Self { Self::new(self.load(Ordering::SeqCst)) }
+}
+
+impl Default for RuntimeAtomicFlag {
+    fn default() -> Self { Self::new(false) }
+}
+
+impl RuntimeAtomicFlag {
+    pub fn new(value: bool) -> Self { Self { inner: AtomicBool::new(value) } }
+    pub fn load(&self, order: Ordering) -> bool { self.inner.load(order) }
+    pub fn store(&self, value: bool, order: Ordering) { self.inner.store(value, order) }
+    pub fn swap(&self, value: bool, order: Ordering) -> bool { self.inner.swap(value, order) }
+    pub fn compare_exchange(&self, current: bool, new: bool, success: Ordering, failure: Ordering) -> Result<bool, bool> {
+        self.inner.compare_exchange(current, new, success, failure)
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct RuntimeWaitSignal {
+    inner: Condvar,
+}
+
+impl RuntimeWaitSignal {
+    pub fn new() -> Self { Self { inner: Condvar::new() } }
+    pub fn notify_all(&self) { self.inner.notify_all(); }
+    pub fn wait_timeout<'a, T>(&self, guard: MutexGuard<'a, T>, dur: Duration) -> LockResult<(MutexGuard<'a, T>, WaitTimeoutResult)> {
+        self.inner.wait_timeout(guard, dur)
+    }
+}
+
+
+static WORKER_PANIC_COUNT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static WORKER_ERROR_COUNT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+pub(crate) fn spawn_worker_with_exit_hook<F, R, H>(
+    name: &'static str,
+    body: F,
+    hook: H,
+) -> std::io::Result<ThreadWorkerHandleRaw>
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: IntoWorkerExit + Send + 'static,
+    H: FnOnce(WorkerExit) + Send + 'static,
+{
+    std::thread::Builder::new().name(name.to_string()).spawn(move || {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+        let exit = match result {
+            Ok(value) => value.into_worker_exit(),
+            Err(_) => {
+                let total = WORKER_PANIC_COUNT
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    .saturating_add(1);
+                eprintln!(
+                    "maleicacid-tuner-hal-worker: panic stop fail-closed: worker={} worker_panic_count={}",
+                    name, total
+                );
+                WorkerExit::PanicOrJoinFailure
+            }
+        };
+        if matches!(exit, WorkerExit::RuntimeFailure) {
+            let total = WORKER_ERROR_COUNT
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                .saturating_add(1);
+            eprintln!(
+                "maleicacid-tuner-hal-worker: error stop fail-closed: worker={} worker_error_count={}",
+                name, total
+            );
+        }
+        hook(exit);
+        exit
+    })
+}
+
+pub(crate) fn join_worker_with_diagnostics(handle: ThreadWorkerHandleRaw, name: &'static str) -> WorkerExit {
+    match handle.join() {
+        Ok(exit) => {
+            if exit.is_abnormal() {
+                eprintln!(
+                    "maleicacid-tuner-hal-worker: observed abnormal worker stop during join: worker={} exit={:?}",
+                    name, exit
+                );
+            }
+            exit
+        }
+        Err(_) => {
+            let total = WORKER_PANIC_COUNT
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                .saturating_add(1);
+            eprintln!(
+                "maleicacid-tuner-hal-worker: observed uncaught panic stop during join: worker={} worker_panic_count={}",
+                name, total
+            );
+            WorkerExit::PanicOrJoinFailure
+        }
+    }
+}
+
+pub type ConcreteWorkerSignal = WorkerSignal<WorkerExit>;
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum WorkerExitReason {
+    NotStarted,
+    Normal,
+    StopRequested,
+    RuntimeFailure,
+    PanicOrJoinFailure,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum WorkerJoinOutcome {
+    Joined(WorkerExitReason),
+    SkippedSelfJoin,
+    JoinUnavailable,
+}
+
+#[derive(Debug)]
+struct WorkerSignalState<E> {
+    stop_requested: bool,
+    work_generation: u64,
+    active: bool,
+    exit_reason: Option<E>,
+}
+
+impl<E> Default for WorkerSignalState<E> {
+    fn default() -> Self {
+        Self {
+            stop_requested: false,
+            work_generation: 0,
+            active: false,
+            exit_reason: None,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct WorkerSignal<E> {
+    state: Mutex<WorkerSignalState<E>>,
+    cv: Condvar,
+    runtime_failure: AtomicBool,
+}
+
+impl<E> WorkerSignal<E> {
+    pub fn new(active: bool) -> Self {
+        Self {
+            state: Mutex::new(WorkerSignalState {
+                active,
+                ..WorkerSignalState::default()
+            }),
+            cv: Condvar::new(),
+            runtime_failure: AtomicBool::new(false),
+        }
+    }
+
+    fn mark_runtime_failure(&self, reason: &str) {
+        self.runtime_failure.store(true, Ordering::SeqCst);
+        eprintln!("maleicacid-tuner-hal-worker: worker signal failure: {reason}");
+        self.cv.notify_all();
+    }
+
+    pub fn clear_for_start(&self) {
+        match self.state.lock() {
+            Ok(mut state) => {
+                state.stop_requested = false;
+                state.active = true;
+                state.exit_reason = None;
+                state.work_generation = state.work_generation.saturating_add(1);
+                self.runtime_failure.store(false, Ordering::SeqCst);
+                self.cv.notify_all();
+            }
+            Err(_) => self.mark_runtime_failure("poisoned during start"),
+        }
+    }
+
+    pub fn request_stop(&self) {
+        match self.state.lock() {
+            Ok(mut state) => {
+                state.stop_requested = true;
+                state.work_generation = state.work_generation.saturating_add(1);
+                self.cv.notify_all();
+            }
+            Err(_) => self.mark_runtime_failure("poisoned during stop request"),
+        }
+    }
+
+    pub fn notify_work(&self) {
+        match self.state.lock() {
+            Ok(mut state) => {
+                state.work_generation = state.work_generation.saturating_add(1);
+                self.cv.notify_all();
+            }
+            Err(_) => self.mark_runtime_failure("poisoned during work notification"),
+        }
+    }
+
+    pub fn is_runtime_failure(&self) -> bool {
+        self.runtime_failure.load(Ordering::SeqCst)
+    }
+
+    pub fn is_stop_requested(&self) -> bool {
+        if self.is_runtime_failure() {
+            return true;
+        }
+        match self.state.lock() {
+            Ok(state) => state.stop_requested,
+            Err(_) => {
+                self.mark_runtime_failure("poisoned during stop check");
+                true
+            }
+        }
+    }
+
+    pub fn wait_until_work_or_stop(&self, observed_generation: &mut u64, timeout: Duration) -> bool {
+        if self.is_runtime_failure() {
+            return true;
+        }
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
+            Err(_) => {
+                self.mark_runtime_failure("poisoned before wait");
+                return true;
+            }
+        };
+        loop {
+            if self.is_runtime_failure() || state.stop_requested {
+                return true;
+            }
+            if state.work_generation != *observed_generation {
+                *observed_generation = state.work_generation;
+                return false;
+            }
+            match self.cv.wait_timeout(state, timeout) {
+                Ok((next_state, wait_result)) => {
+                    state = next_state;
+                    if wait_result.timed_out() {
+                        return false;
+                    }
+                }
+                Err(_) => {
+                    self.mark_runtime_failure("poisoned during wait");
+                    return true;
+                }
+            }
+        }
+    }
+
+    pub fn wait_timeout_or_stop(&self, timeout: Duration) -> bool {
+        if self.is_runtime_failure() {
+            return true;
+        }
+        let state = match self.state.lock() {
+            Ok(state) => state,
+            Err(_) => {
+                self.mark_runtime_failure("poisoned before timed wait");
+                return true;
+            }
+        };
+        if state.stop_requested {
+            return true;
+        }
+        match self.cv.wait_timeout(state, timeout) {
+            Ok((next_state, _)) => next_state.stop_requested || self.is_runtime_failure(),
+            Err(_) => {
+                self.mark_runtime_failure("poisoned during timed wait");
+                true
+            }
+        }
+    }
+
+    pub fn set_exit_reason(&self, exit: E) {
+        match self.state.lock() {
+            Ok(mut state) => {
+                state.exit_reason = Some(exit);
+                state.active = false;
+                self.cv.notify_all();
+            }
+            Err(_) => self.mark_runtime_failure("poisoned while recording exit reason"),
+        }
+    }
+}
+
+impl<E> Default for WorkerSignal<E> {
+    fn default() -> Self {
+        Self::new(false)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum WorkerRuntimeError { SpawnFailed, WakeFailed, JoinFailed, SelfJoin, ExitReasonRecordFailed }
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct WorkerOwnerId(pub &'static str, pub i32);
+
+pub struct WorkerHandle {
+    owner_id: WorkerOwnerId,
+    name: &'static str,
+    signal: std::sync::Arc<ConcreteWorkerSignal>,
+    handle: Option<ThreadWorkerHandleRaw>,
+    exit_reason: WorkerExitReason,
+}
+
+impl WorkerHandle {
+    fn from_raw(owner_id: WorkerOwnerId, name: &'static str, handle: ThreadWorkerHandleRaw) -> Self {
+        Self {
+            owner_id,
+            name,
+            signal: std::sync::Arc::new(ConcreteWorkerSignal::new(true)),
+            handle: Some(handle),
+            exit_reason: WorkerExitReason::NotStarted,
+        }
+    }
+
+    fn take_raw(mut self) -> Option<ThreadWorkerHandleRaw> { self.handle.take() }
+
+    pub fn is_finished(&self) -> bool {
+        self.handle.as_ref().map(|handle| handle.is_finished()).unwrap_or(true)
+    }
+
+    pub fn request_stop(&self, _reason: WorkerExitReason) -> Result<(), WorkerRuntimeError> {
+        self.signal.request_stop();
+        if self.signal.is_runtime_failure() { Err(WorkerRuntimeError::WakeFailed) } else { Ok(()) }
+    }
+    pub fn wake(&self) -> Result<(), WorkerRuntimeError> {
+        self.signal.notify_work();
+        if self.signal.is_runtime_failure() { Err(WorkerRuntimeError::WakeFailed) } else { Ok(()) }
+    }
+    pub fn join_from_owner(&mut self) -> Result<WorkerJoinOutcome, WorkerRuntimeError> {
+        let Some(handle) = self.handle.take() else { return Ok(WorkerJoinOutcome::JoinUnavailable); };
+        let exit = join_worker_with_diagnostics(handle, self.name);
+        let reason = WorkerExitReason::from(exit);
+        self.signal.set_exit_reason(exit);
+        self.exit_reason = reason;
+        Ok(WorkerJoinOutcome::Joined(reason))
+    }
+    pub fn exit_reason(&self) -> Option<WorkerExitReason> {
+        if self.exit_reason == WorkerExitReason::NotStarted { None } else { Some(self.exit_reason) }
+    }
+    pub fn owner_id(&self) -> &WorkerOwnerId { &self.owner_id }
+}
+
+#[derive(Debug, Default)]
+pub struct WorkerRuntime { exit_reason: WorkerExitReason }
+
+impl WorkerRuntime {
+    pub fn new() -> Self { Self::default() }
+
+    pub fn spawn_owned<F, R>(owner_id: WorkerOwnerId, name: &'static str, body: F) -> Result<WorkerHandle, WorkerRuntimeError>
+    where F: FnOnce(std::sync::Arc<ConcreteWorkerSignal>) -> R + Send + 'static, R: IntoWorkerExit + Send + 'static {
+        let signal = std::sync::Arc::new(ConcreteWorkerSignal::new(true));
+        let thread_signal = std::sync::Arc::clone(&signal);
+        let handle = spawn_worker_with_exit_hook(name, move || body(thread_signal), |_| {})
+            .map_err(|_| WorkerRuntimeError::SpawnFailed)?;
+        Ok(WorkerHandle { owner_id, name, signal, handle: Some(handle), exit_reason: WorkerExitReason::NotStarted })
+    }
+
+    pub(crate) fn spawn_owned_with_exit_hook<F, R, H>(
+        owner_id: WorkerOwnerId,
+        name: &'static str,
+        body: F,
+        hook: H,
+    ) -> Result<WorkerHandle, WorkerRuntimeError>
+    where
+        F: FnOnce(std::sync::Arc<ConcreteWorkerSignal>) -> R + Send + 'static,
+        R: IntoWorkerExit + Send + 'static,
+        H: FnOnce(WorkerExit) + Send + 'static,
+    {
+        let signal = std::sync::Arc::new(ConcreteWorkerSignal::new(true));
+        let signal_for_body = std::sync::Arc::clone(&signal);
+        let signal_for_hook = std::sync::Arc::clone(&signal);
+        let handle = spawn_worker_with_exit_hook(
+            name,
+            move || body(signal_for_body),
+            move |exit| {
+                signal_for_hook.set_exit_reason(exit);
+                hook(exit);
+            },
+        )
+        .map_err(|_| WorkerRuntimeError::SpawnFailed)?;
+        Ok(WorkerHandle {
+            owner_id,
+            name,
+            signal,
+            handle: Some(handle),
+            exit_reason: WorkerExitReason::NotStarted,
+        })
+    }
+
+    pub fn fail_worker_owned_cleanup(&mut self, reason: WorkerExitReason) {
+        self.exit_reason = reason;
+    }
+
+
+    pub(crate) fn join(mut handle: WorkerHandle, name: &'static str) -> WorkerExit {
+        match handle.join_from_owner() {
+            Ok(WorkerJoinOutcome::Joined(reason)) => match reason {
+                WorkerExitReason::Normal => WorkerExit::Normal,
+                WorkerExitReason::StopRequested => WorkerExit::StopRequested,
+                WorkerExitReason::RuntimeFailure => WorkerExit::RuntimeFailure,
+                WorkerExitReason::PanicOrJoinFailure => WorkerExit::PanicOrJoinFailure,
+                WorkerExitReason::NotStarted => WorkerExit::RuntimeFailure,
+            },
+            Ok(WorkerJoinOutcome::JoinUnavailable) => WorkerExit::Normal,
+            Ok(WorkerJoinOutcome::SkippedSelfJoin) => WorkerExit::RuntimeFailure,
+            Err(_) => {
+                eprintln!("maleicacid-tuner-hal-worker: join failed through WorkerHandle: worker={}", name);
+                WorkerExit::RuntimeFailure
+            }
+        }
+    }
+    pub fn set_exit_reason(&mut self, reason: WorkerExitReason) { self.exit_reason = reason; }
+    pub fn join_outcome_for_completed_worker(&self) -> WorkerJoinOutcome { WorkerJoinOutcome::Joined(self.exit_reason) }
+}
+
+impl From<WorkerExit> for WorkerExitReason {
+    fn from(exit: WorkerExit) -> Self {
+        match exit { WorkerExit::Normal => WorkerExitReason::Normal, WorkerExit::StopRequested => WorkerExitReason::StopRequested, WorkerExit::RuntimeFailure => WorkerExitReason::RuntimeFailure, WorkerExit::PanicOrJoinFailure => WorkerExitReason::PanicOrJoinFailure }
+    }
+}
+
+impl Default for WorkerExitReason {
+    fn default() -> Self {
+        WorkerExitReason::NotStarted
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn worker_runtime_preserves_runtime_failure_reason() {
+        let mut runtime = WorkerRuntime::new();
+        runtime.set_exit_reason(WorkerExitReason::RuntimeFailure);
+        assert_eq!(
+            runtime.join_outcome_for_completed_worker(),
+            WorkerJoinOutcome::Joined(WorkerExitReason::RuntimeFailure)
+        );
+    }
+
+    #[test]
+    fn owned_worker_body_observes_owner_stop_signal() {
+        let mut handle = WorkerRuntime::spawn_owned_with_exit_hook(
+            WorkerOwnerId("test", 7),
+            "owned_worker_body_observes_owner_stop_signal",
+            |signal| {
+                assert!(!signal.is_stop_requested());
+                signal.request_stop();
+                if signal.is_stop_requested() { WorkerExit::StopRequested } else { WorkerExit::RuntimeFailure }
+            },
+            |_| {},
+        ).expect("worker spawn");
+        let outcome = handle.join_from_owner().expect("worker join");
+        assert_eq!(outcome, WorkerJoinOutcome::Joined(WorkerExitReason::StopRequested));
+    }
+}

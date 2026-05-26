@@ -24,15 +24,24 @@ pub fn parse_section_header(section: &[u8], length_field_bits: i32) -> Option<Se
     if normalized != 12 || section.len() < 3 {
         return None;
     }
+    if (section[1] & 0x30) != 0x30 {
+        return None;
+    }
     let section_length = (((section[1] & 0x0f) as usize) << 8) | section[2] as usize;
+    if section_length > 1021 {
+        return None;
+    }
     let total_length = 3 + section_length;
+    let syntax = (section[1] & 0x80) != 0;
+    if syntax && (section_length < 9 || total_length < 12) {
+        return None;
+    }
     if section.len() < total_length {
         return None;
     }
-    let syntax = (section[1] & 0x80) != 0;
     let (table_id_extension, version, current_next_indicator, section_number, last_section_number) =
         if syntax {
-            if total_length < 8 {
+            if (section[5] & 0xc0) != 0xc0 {
                 return None;
             }
             (
@@ -199,34 +208,29 @@ impl SectionAssembler {
                 self.expected_len = None;
                 break;
             }
-            let Some(header) = parse_section_header(remaining, 12).or_else(|| {
-                let partial_len =
-                    3 + ((((remaining[1] & 0x0f) as usize) << 8) | remaining[2] as usize);
-                Some(SectionHeader {
-                    table_id: remaining[0],
-                    syntax: (remaining[1] & 0x80) != 0,
-                    section_length: partial_len.saturating_sub(3),
-                    total_length: partial_len,
-                    table_id_extension: None,
-                    version: None,
-                    current_next_indicator: None,
-                    section_number: None,
-                    last_section_number: None,
-                })
-            }) else {
-                break;
-            };
-            if header.total_length > MAX_SECTION_PAYLOAD_BYTES {
+            let section_length = (((remaining[1] & 0x0f) as usize) << 8) | remaining[2] as usize;
+            let total_length = 3 + section_length;
+            let syntax = (remaining[1] & 0x80) != 0;
+            let invalid_declared_header = (remaining[1] & 0x30) != 0x30
+                || section_length > 1021
+                || (syntax && (section_length < 9 || total_length < 12));
+            if invalid_declared_header || total_length > MAX_SECTION_PAYLOAD_BYTES {
                 self.oversized_section_drops = self.oversized_section_drops.saturating_add(1);
-                break;
+                cursor += 1;
+                continue;
             }
-            if remaining.len() >= header.total_length {
-                out.push(remaining[..header.total_length].to_vec());
-                cursor += header.total_length;
+            if remaining.len() >= total_length {
+                if parse_section_header(remaining, 12).is_some() {
+                    out.push(remaining[..total_length].to_vec());
+                    cursor += total_length;
+                } else {
+                    self.oversized_section_drops = self.oversized_section_drops.saturating_add(1);
+                    cursor += 1;
+                }
                 continue;
             }
             self.buf.extend_from_slice(remaining);
-            if !self.set_expected_len_or_drop(header.total_length) {
+            if !self.set_expected_len_or_drop(total_length) {
                 break;
             }
             break;
@@ -322,13 +326,13 @@ mod tests {
     }
 
     #[test]
-    fn assembler_delivers_largest_mpeg_section_under_8192_cap() {
-        // MPEG/ARIB の section_length は12bitなので、表現可能な最大sectionは 3 + 4095 byte。
-        // 8192 byte の製品guardが、有効な大きめEIT系sectionを拒否しないことを確認する。
+    fn assembler_delivers_largest_fixed_section_length() {
         let mut assembler = SectionAssembler::default();
-        let total_len = 3 + 4095;
-        let mut section = vec![0x4e, 0xbf, 0xff];
+        let total_len = 3 + 1021;
+        let mut section = vec![0x4e, 0xb3, 0xfd];
         section.resize(total_len, 0x00);
+        // syntaxありsectionのversion byte reserved bitsは11でなければならない。
+        section[5] = 0xc1;
         let mut payload = vec![0x00];
         payload.extend_from_slice(&section);
         let out = assembler.push_payload(true, &payload);
@@ -447,5 +451,37 @@ mod section_header_contract_tests {
     fn rejects_non_12bit_length_field_contract() {
         let section = [0x00, 0xb0, 0x0d];
         assert!(parse_section_header(&section, 10).is_none());
+    }
+
+    #[test]
+    fn rejects_section_length_above_1021() {
+        let section = [0x42, 0xb3, 0xfe, 0, 0, 0xc1, 0, 0, 0, 0, 0, 0];
+        assert!(parse_section_header(&section, 12).is_none());
+    }
+
+    #[test]
+    fn rejects_short_syntax_section_length() {
+        let section = [0x42, 0xb0, 0x08, 0, 0, 0xc1, 0, 0, 0, 0, 0];
+        assert!(parse_section_header(&section, 12).is_none());
+    }
+
+    #[test]
+    fn rejects_reserved_bit_errors() {
+        let bad_length_reserved = [0x42, 0x80, 0x09, 0, 0, 0xc1, 0, 0, 0, 0, 0, 0];
+        assert!(parse_section_header(&bad_length_reserved, 12).is_none());
+        let bad_version_reserved = [0x42, 0xb0, 0x09, 0, 0, 0x01, 0, 0, 0, 0, 0, 0];
+        assert!(parse_section_header(&bad_version_reserved, 12).is_none());
+    }
+
+    #[test]
+    fn assembler_skips_bad_candidate_and_emits_later_section() {
+        let mut assembler = SectionAssembler::default();
+        let bad = [0x42, 0x80, 0x09, 0, 0, 0x01, 0, 0, 0, 0, 0, 0];
+        let good = [0x42, 0x30, 0x00];
+        let mut payload = vec![0x00];
+        payload.extend_from_slice(&bad);
+        payload.extend_from_slice(&good);
+        let out = assembler.push_payload(true, &payload);
+        assert_eq!(out, vec![good.to_vec()]);
     }
 }

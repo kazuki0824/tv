@@ -4,6 +4,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import com.maleicacid.tvinput.aribsi.NativeAribCaptionRenderer
+import com.maleicacid.tvinput.common.CaptionTimestamp
 import com.maleicacid.tvinput.common.LogTags
 
 /** ARIB字幕track選択、libaribcaption JNI呼び出し、overlay描画を束ねる。 */
@@ -25,13 +26,13 @@ class AribCaptionController(
         if (!enabled) mainHandler.post { overlayView.clearCaption() }
     }
 
-    fun onPesData(trackId: String, pesData: ByteArray, ptsMillis: Long) {
+    fun onPesData(trackId: String, pesData: ByteArray, timestamp: CaptionTimestamp) {
         val track = selectedTrack ?: return
         if (!enabled || track.id != trackId) return
         val decoded = runCatching {
             renderer.decodePes(
                 pesData = pesData,
-                ptsMillis = ptsMillis,
+                timestamp = timestamp,
                 dataComponentId = track.dataComponentId,
                 superimpose = track.captionServiceKind == "superimpose",
             )

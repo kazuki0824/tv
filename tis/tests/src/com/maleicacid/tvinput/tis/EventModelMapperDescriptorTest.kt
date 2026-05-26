@@ -10,7 +10,11 @@ import com.maleicacid.tvinput.aribsi.AribFreeCaMode
 import com.maleicacid.tvinput.aribsi.AribRelatedItem
 import com.maleicacid.tvinput.aribsi.AribSeries
 import com.maleicacid.tvinput.aribsi.EventModelMapper
+import com.maleicacid.tvinput.common.NetworkId16
+import com.maleicacid.tvinput.common.ServiceId16
 import com.maleicacid.tvinput.common.ServiceKey
+import com.maleicacid.tvinput.common.TransportStreamId16
+import com.maleicacid.tvinput.common.TsPid
 import org.junit.Test
 
 class EventModelMapperDescriptorTest {
@@ -30,11 +34,11 @@ class EventModelMapperDescriptorTest {
                 contentGenres = listOf(AribContentGenre(0x0, 0x0, aribName = "ニュース/報道/定時・総合")),
                 broadcastGenre = "ARIB(0x0/0x0):ニュース/報道/定時・総合",
                 genreSupplementText = "ニュース/報道/定時・総合",
-                relatedItems = listOf(AribRelatedItem("shared", 1, 4, 16625, 101, 202)),
+                relatedItems = listOf(AribRelatedItem("shared", 1, NetworkId16(4), TransportStreamId16(16625), ServiceId16(101), 202)),
                 scrambled = false,
                 freeCaMode = AribFreeCaMode(raw = 0, scrambled = false, text = "無料放送"),
                 series = AribSeries(seriesId = 100, episodeNumber = 3, lastEpisodeNumber = 12, name = "シリーズ"),
-                components = AribComponents(audio = listOf(AribComponentEntry(esPid = 256, streamType = 0x0f, componentTag = 1, componentType = 3, codec = "AAC", language = "jpn", parseStatus = "OK"))),
+                components = AribComponents(audio = listOf(AribComponentEntry(esPid = TsPid(256), streamType = 0x0f, componentTag = 1, componentType = 3, codec = "AAC", language = "jpn", parseStatus = "OK"))),
             ),
         )
         val record = EventModelMapper().toProgramRecords(listOf(event)).single()

@@ -8,6 +8,7 @@ import com.maleicacid.tvinput.aribsi.AribParentalRating
 import com.maleicacid.tvinput.aribsi.AribProgramSource
 import com.maleicacid.tvinput.aribsi.AribRelatedItem
 import com.maleicacid.tvinput.aribsi.AribSeries
+import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.StreamSelector
 
@@ -15,7 +16,7 @@ data class ChannelRecord(
     val serviceKey: ServiceKey,
     val displayNumber: String,
     val displayName: String,
-    val frequencyHz: Long,
+    val frequencyHz: FrequencyHz,
     val tvProviderChannelId: Long? = null,
     val deliverySystem: String = DELIVERY_SYSTEM_ISDB_T,
     val streamSelector: StreamSelector = StreamSelector.NONE,

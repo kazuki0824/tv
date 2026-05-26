@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi
 
+import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.StreamSelector
 import com.maleicacid.tvinput.db.ChannelRecord
@@ -25,7 +26,7 @@ object ProviderDataBridge {
     data class ChannelTuneKey(
         val serviceKey: ServiceKey,
         val system: String,
-        val frequencyHz: Long,
+        val frequencyHz: FrequencyHz,
         val streamSelector: StreamSelector,
         val physicalChannel: Int?,
         val backendHint: String?,
@@ -53,7 +54,7 @@ object ProviderDataBridge {
                 .put("inputId", channel.inputId ?: JSONObject.NULL)
                 .put("displayName", channel.displayName)
                 .put("deliverySystem", channel.deliverySystem)
-                .put("frequencyHz", channel.frequencyHz)
+                .put("frequencyHz", channel.frequencyHz.value)
                 .put("streamId", selector.value ?: JSONObject.NULL)
                 .put("streamIdType", selector.type.name)
                 .put("physicalChannel", channel.physicalChannel ?: JSONObject.NULL)
@@ -71,12 +72,14 @@ object ProviderDataBridge {
         return parseResult(native.buildChannelProviderData(request.toString()))
     }
 
-    fun buildProgramKey(program: ProgramRecord): String =
+    fun buildProgramKey(program: ProgramRecord): String = buildProgramKey(program.serviceKey, program.eventId)
+
+    fun buildProgramKey(serviceKey: ServiceKey, eventId: Int): String =
         native.buildProgramKey(
-            program.serviceKey.originalNetworkId,
-            program.serviceKey.transportStreamId,
-            program.serviceKey.serviceId,
-            program.eventId,
+            serviceKey.originalNetworkId,
+            serviceKey.transportStreamId,
+            serviceKey.serviceId,
+            eventId,
         )
 
     fun buildProgramProviderData(program: ProgramRecord): Result {
@@ -119,7 +122,7 @@ object ProviderDataBridge {
             .put("video", videoMetadataJson(program))
             .put("components", toComponentsObject(descriptors.components))
             .put("source", JSONObject()
-                .put("pid", program.source.pid)
+                .put("pid", program.source.pid.value)
                 .put("tableId", program.source.tableId)
                 .put("version", program.source.version)
                 .put("sectionNumber", program.source.sectionNumber)
@@ -165,8 +168,8 @@ object ProviderDataBridge {
         val tsid = serviceKeyObj.optInt("transportStreamId", -1)
         val sid = serviceKeyObj.optInt("serviceId", -1)
         val system = tuneObj.optString("deliverySystem").ifBlank { return null }
-        val frequencyHz = tuneObj.optLong("frequencyHz", -1L)
-        if (onid < 0 || tsid < 0 || sid < 0 || frequencyHz <= 0L) return null
+        val frequencyHz = FrequencyHz.fromOrNull(tuneObj.optLong("frequencyHz", -1L))
+        if (onid < 0 || tsid < 0 || sid < 0 || frequencyHz == null) return null
         return ChannelTuneKey(
             serviceKey = ServiceKey(onid, tsid, sid),
             system = system,
@@ -198,19 +201,15 @@ object ProviderDataBridge {
         return arr
     }
 
-    private fun genresJson(program: ProgramRecord): JSONArray {
-        val canonical = JSONArray(program.canonicalGenres.distinct().sorted())
-        return JSONArray().apply {
-            program.descriptors.contentGenres.forEach { genre ->
-                put(JSONObject()
-                    .put("level1", genre.level1)
-                    .put("level2", genre.level2)
-                    .put("userNibble", genre.userNibble)
-                    .put("aribName", genre.aribName)
-                    .put("unmappedReason", if (canonical.length() == 0) "TIS_DECIDES_CANONICAL_GENRE" else JSONObject.NULL)
-                    .put("canonicalGenres", canonical)
-                    .put("parseStatus", genre.parseStatus))
-            }
+    private fun genresJson(program: ProgramRecord): JSONArray = JSONArray().apply {
+        program.descriptors.contentGenres.forEach { genre ->
+            put(JSONObject()
+                .put("level1", genre.level1)
+                .put("level2", genre.level2)
+                .put("userNibble", genre.userNibble)
+                .put("aribName", genre.aribName)
+                .put("unmappedReason", JSONObject.NULL)
+                .put("parseStatus", genre.parseStatus))
         }
     }
 
@@ -256,7 +255,7 @@ object ProviderDataBridge {
         val selected = descriptors.components.audio.firstOrNull { it.main == true } ?: descriptors.components.audio.firstOrNull() ?: return JSONObject.NULL
         val codec = selected.codec ?: return JSONObject.NULL
         return JSONObject()
-            .put("esPid", selected.esPid)
+            .put("esPid", selected.esPid.value)
             .put("componentTag", selected.componentTag ?: JSONObject.NULL)
             .put("codec", codec)
             .put("language", selected.language ?: JSONObject.NULL)
@@ -268,7 +267,7 @@ object ProviderDataBridge {
         val selected = program.descriptors.components.video.firstOrNull() ?: return JSONObject.NULL
         val codec = selected.codec ?: return JSONObject.NULL
         return JSONObject()
-            .put("esPid", selected.esPid)
+            .put("esPid", selected.esPid.value)
             .put("componentTag", selected.componentTag ?: JSONObject.NULL)
             .put("codec", codec)
             .put("format", selected.sourceDescriptor ?: JSONObject.NULL)
@@ -284,10 +283,21 @@ object ProviderDataBridge {
         if (obj.has(key) && !obj.isNull(key)) obj.optInt(key) else null
 
     private fun parseResult(raw: String): Result {
-        val obj = JSONObject(raw.ifBlank { "{}" })
+        val obj = runCatching { JSONObject(raw) }.getOrElse { error ->
+            throw IllegalStateException("provider-data JNI result is not JSON", error)
+        }
+        if (!obj.optBoolean("success", false)) {
+            val code = obj.optString("errorCode", "PROVIDER_DATA_FAILED")
+            val message = obj.optString("errorMessage", "provider-data generation failed")
+            throw IllegalStateException("$code: $message")
+        }
+        val json = obj.optString("bytes", "")
+        require(json.isNotBlank() && json != "{}") { "provider-data JNI result did not contain valid JSON v1 bytes" }
+        val signature = obj.optString("signature", "")
+        require(signature.isNotBlank()) { "provider-data JNI result did not contain signature" }
         return Result(
-            bytes = obj.optString("bytes", "{}").toByteArray(Charsets.UTF_8),
-            signature = obj.optString("signature", ""),
+            bytes = json.toByteArray(Charsets.UTF_8),
+            signature = signature,
             schemaVersion = obj.optInt("schemaVersion", 1),
             truncated = obj.optBoolean("truncated", false),
             diagnosticsDroppedCount = obj.optInt("diagnosticsDroppedCount", 0),
@@ -332,7 +342,7 @@ object ProviderDataBridge {
 
     private fun componentEntriesJson(entries: List<AribComponentEntry>): JSONArray = JSONArray().apply {
         entries.forEach { entry ->
-            val obj = JSONObject().put("esPid", entry.esPid).put("parseStatus", entry.parseStatus)
+            val obj = JSONObject().put("esPid", entry.esPid.value).put("parseStatus", entry.parseStatus)
             entry.streamType?.let { obj.put("streamType", it) }
             entry.componentTag?.let { obj.put("componentTag", it) }
             entry.componentType?.let { obj.put("componentType", it) }

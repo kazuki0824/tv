@@ -8,5 +8,6 @@ object BackgroundChannelMaintenanceDiagnostics {
     val skippedActiveLiveSessionCount = AtomicLong(0)
     val skippedScanRunningCount = AtomicLong(0)
     val skippedOtherCount = AtomicLong(0)
+    val cancelledByLiveSessionCount = AtomicLong(0)
     @Volatile var lastSkippedReason: String = ""
 }

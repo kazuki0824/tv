@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.aribsi
 
+import com.maleicacid.tvinput.common.ServiceId16
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.db.ChannelRecord
 import com.maleicacid.tvinput.db.ProgramDescriptors
@@ -82,7 +83,7 @@ class EventModelMapper {
         publishabilityByServiceKey: Map<ServiceKey, ServicePublishabilityDiagnostic> = emptyMap(),
         channelFallbackByServiceKey: Map<ServiceKey, ChannelRecord> = emptyMap(),
         publishStateByServiceKey: Map<ServiceKey, ProgramPublishState> = emptyMap(),
-        malformedCaDescriptorCountByServiceId: Map<Int, Int> = emptyMap(),
+        malformedCaDescriptorCountByServiceId: Map<ServiceId16, Int> = emptyMap(),
     ): List<ProgramRecord> {
         val serviceKeys = events.map { it.serviceKey }.toSet()
         val effectiveStates = publishStateByServiceKey.ifEmpty {
@@ -130,7 +131,7 @@ class EventModelMapper {
                 publishStateSource = publishStateSourceName(state?.source),
                 diagnosticText = event.descriptors.diagnostics.summary,
                 contentRatings = event.descriptors.parentalRatings.mapNotNull { AribRatingMapper.toTvContentRatingString(it) },
-                malformedCaDescriptorCount = malformedCaDescriptorCountByServiceId[event.serviceKey.serviceId] ?: 0,
+                malformedCaDescriptorCount = malformedCaDescriptorCountByServiceId[event.serviceKey.service] ?: 0,
             )
         }
     }

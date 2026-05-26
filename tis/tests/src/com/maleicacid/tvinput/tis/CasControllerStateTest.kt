@@ -3,6 +3,8 @@ package com.maleicacid.tvinput.tis
 import com.maleicacid.tvinput.aribsi.CaMetadata
 import com.maleicacid.tvinput.aribsi.CaMetadataSource
 import com.maleicacid.tvinput.common.ServiceKey
+import com.maleicacid.tvinput.common.TsPid
+import com.maleicacid.tvinput.common.TunerKeyToken
 import org.junit.Test
 
 /** AndroidJUnitRunner から実行する CasController 状態遷移テスト。 */
@@ -13,17 +15,17 @@ class CasControllerStateTest {
         val factory = FakeMediaCasBridgeFactory()
         val descrambler = FakeTunerDescramblerBridge()
         val controller = CasController(mediaCasFactory = factory)
-        val update = controller.updateFromCaMetadata(b25Metadata(esPid = 0x101, ecmPid = 0x123, emmPid = 0x010), descrambler)
+        val update = controller.updateFromCaMetadata(b25Metadata(esPid = TsPid(0x101), ecmPid = TsPid(0x123), emmPid = TsPid(0x010)), descrambler)
         check(update.diagnostics.isEmpty()) { update.diagnostics.toString() }
-        check(update.ecmPids == setOf(0x123))
-        check(update.emmPids == setOf(0x010))
+        check(update.ecmPids == setOf(TsPid(0x123)))
+        check(update.emmPids == setOf(TsPid(0x010)))
 
-        val ecmDiagnostics = controller.onEcmSection(0x123, byteArrayOf(0x80.toByte()))
+        val ecmDiagnostics = controller.onEcmSection(TsPid(0x123), byteArrayOf(0x80.toByte()))
         check(ecmDiagnostics.isEmpty()) { ecmDiagnostics.toString() }
         check(descrambler.keyTokens.single().contentEquals(FakeMediaCasSessionBridge.KEY_TOKEN))
         check(0x101 in descrambler.addedPids)
 
-        val emmDiagnostics = controller.onEmmSection(0x010, byteArrayOf(0x82.toByte()))
+        val emmDiagnostics = controller.onEmmSection(TsPid(0x010), byteArrayOf(0x82.toByte()))
         check(emmDiagnostics.isEmpty()) { emmDiagnostics.toString() }
         check(factory.created.getValue(CasController.SupportedCasSystemIds.ARIB_STD_B25).processedEmmCount == 1)
     }
@@ -43,7 +45,7 @@ class CasControllerStateTest {
     @Test fun unsupportedSystemIdIsError() {
         val controller = CasController(mediaCasFactory = FakeMediaCasBridgeFactory())
         val result = controller.updateFromCaMetadata(
-            listOf(CaMetadata(serviceKey, 0x7fff, ecmPid = 0x123, emmPid = null, elementaryPid = 0x101, source = CaMetadataSource.ELEMENTARY_STREAM)),
+            listOf(CaMetadata(serviceKey, 0x7fff, ecmPid = TsPid(0x123), emmPid = null, elementaryPid = TsPid(0x101), source = CaMetadataSource.ELEMENTARY_STREAM)),
             FakeTunerDescramblerBridge(),
         )
         check(result.diagnostics.any { it.errorCode == CasController.ErrorCode.UNSUPPORTED_SYSTEM_ID })
@@ -53,10 +55,10 @@ class CasControllerStateTest {
     @Test fun pmtUpdateRemovesOldPidAndAddsNewPid() {
         val controller = CasController(mediaCasFactory = FakeMediaCasBridgeFactory())
         val descrambler = FakeTunerDescramblerBridge()
-        controller.updateFromCaMetadata(b25Metadata(esPid = 0x101, ecmPid = 0x123, emmPid = 0x010), descrambler)
-        controller.onEcmSection(0x123, byteArrayOf(0x80.toByte()))
-        controller.updateFromCaMetadata(b25Metadata(esPid = 0x102, ecmPid = 0x124, emmPid = 0x010), descrambler)
-        controller.onEcmSection(0x124, byteArrayOf(0x80.toByte()))
+        controller.updateFromCaMetadata(b25Metadata(esPid = TsPid(0x101), ecmPid = TsPid(0x123), emmPid = TsPid(0x010)), descrambler)
+        controller.onEcmSection(TsPid(0x123), byteArrayOf(0x80.toByte()))
+        controller.updateFromCaMetadata(b25Metadata(esPid = TsPid(0x102), ecmPid = TsPid(0x124), emmPid = TsPid(0x010)), descrambler)
+        controller.onEcmSection(TsPid(0x124), byteArrayOf(0x80.toByte()))
         check(0x101 in descrambler.removedPids)
         check(0x102 in descrambler.addedPids)
     }
@@ -64,10 +66,10 @@ class CasControllerStateTest {
     @Test fun diagnosticOnlyEcmDoesNotSetKeyTokenOrAddPid() {
         val controller = CasController(mediaCasFactory = DiagnosticOnlyMediaCasBridgeFactory())
         val descrambler = FakeTunerDescramblerBridge()
-        val update = controller.updateFromCaMetadata(b25Metadata(esPid = 0x101, ecmPid = 0x123, emmPid = 0x010), descrambler)
+        val update = controller.updateFromCaMetadata(b25Metadata(esPid = TsPid(0x101), ecmPid = TsPid(0x123), emmPid = TsPid(0x010)), descrambler)
         check(update.diagnostics.isEmpty()) { update.diagnostics.toString() }
 
-        val ecmDiagnostics = controller.onEcmSection(0x123, byteArrayOf(0x80.toByte()))
+        val ecmDiagnostics = controller.onEcmSection(TsPid(0x123), byteArrayOf(0x80.toByte()))
         check(ecmDiagnostics.any { it.errorCode == CasController.ErrorCode.KEY_TOKEN_MISSING }) { ecmDiagnostics.toString() }
         check(descrambler.keyTokens.isEmpty())
         check(descrambler.addedPids.isEmpty())
@@ -76,7 +78,7 @@ class CasControllerStateTest {
     @Test fun pluginUnavailableDoesNotAttachDescramblerToken() {
         val controller = CasController(mediaCasFactory = UnavailableMediaCasBridgeFactory())
         val descrambler = FakeTunerDescramblerBridge()
-        val update = controller.updateFromCaMetadata(b25Metadata(esPid = 0x101, ecmPid = 0x123, emmPid = 0x010), descrambler)
+        val update = controller.updateFromCaMetadata(b25Metadata(esPid = TsPid(0x101), ecmPid = TsPid(0x123), emmPid = TsPid(0x010)), descrambler)
         check(update.diagnostics.any { it.errorCode == CasController.ErrorCode.SESSION_OPEN_FAILED }) { update.diagnostics.toString() }
         check(descrambler.keyTokens.isEmpty())
         check(descrambler.addedPids.isEmpty())
@@ -85,13 +87,13 @@ class CasControllerStateTest {
     @Test fun closeReleasesDescrambler() {
         val controller = CasController(mediaCasFactory = FakeMediaCasBridgeFactory())
         val descrambler = FakeTunerDescramblerBridge()
-        controller.updateFromCaMetadata(b25Metadata(esPid = 0x101, ecmPid = 0x123, emmPid = 0x010), descrambler)
+        controller.updateFromCaMetadata(b25Metadata(esPid = TsPid(0x101), ecmPid = TsPid(0x123), emmPid = TsPid(0x010)), descrambler)
         controller.close()
         check(descrambler.closed)
         check(controller.lastDiagnostic().state == CasController.State.CLOSED)
     }
 
-    private fun b25Metadata(esPid: Int, ecmPid: Int, emmPid: Int): List<CaMetadata> = listOf(
+    private fun b25Metadata(esPid: TsPid, ecmPid: TsPid, emmPid: TsPid): List<CaMetadata> = listOf(
         CaMetadata(serviceKey, CasController.SupportedCasSystemIds.ARIB_STD_B25, ecmPid = ecmPid, emmPid = null, elementaryPid = null, privateData = byteArrayOf(0x01), source = CaMetadataSource.PROGRAM),
         CaMetadata(serviceKey, CasController.SupportedCasSystemIds.ARIB_STD_B25, ecmPid = ecmPid, emmPid = null, elementaryPid = esPid, privateData = byteArrayOf(0x02), source = CaMetadataSource.ELEMENTARY_STREAM),
         CaMetadata(null, CasController.SupportedCasSystemIds.ARIB_STD_B25, ecmPid = null, emmPid = emmPid, elementaryPid = null, privateData = byteArrayOf(0x03), source = CaMetadataSource.CAT),
@@ -142,7 +144,7 @@ class CasControllerStateTest {
     private class FakeMediaCasSessionBridge : CasController.MediaCasSessionBridge {
         companion object { val KEY_TOKEN = byteArrayOf(0x11, 0x22, 0x33) }
         override fun setPrivateData(privateData: ByteArray): Result<Unit> = Result.success(Unit)
-        override fun processEcm(section: ByteArray): Result<EcmProcessResult> = Result.success(EcmProcessResult.RealKeyToken(KEY_TOKEN.copyOf()))
+        override fun processEcm(section: ByteArray): Result<EcmProcessResult> = Result.success(EcmProcessResult.RealKeyToken(TunerKeyToken(KEY_TOKEN.copyOf())))
         override fun close() = Unit
     }
 
@@ -151,9 +153,9 @@ class CasControllerStateTest {
         val addedPids = linkedSetOf<Int>()
         val removedPids = linkedSetOf<Int>()
         var closed = false
-        override fun setKeyToken(keyToken: ByteArray): Result<Unit> { keyTokens += keyToken.copyOf(); return Result.success(Unit) }
-        override fun addPid(elementaryPid: Int): Result<Unit> { addedPids += elementaryPid; return Result.success(Unit) }
-        override fun removePid(elementaryPid: Int): Result<Unit> { removedPids += elementaryPid; return Result.success(Unit) }
+        override fun setKeyToken(keyToken: TunerKeyToken): Result<Unit> { keyTokens += keyToken.toByteArray(); return Result.success(Unit) }
+        override fun addPid(elementaryPid: TsPid): Result<Unit> { addedPids += elementaryPid.value; return Result.success(Unit) }
+        override fun removePid(elementaryPid: TsPid): Result<Unit> { removedPids += elementaryPid.value; return Result.success(Unit) }
         override fun close() { closed = true }
     }
 }

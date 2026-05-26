@@ -7,6 +7,7 @@ import android.media.tv.TvContract
 import android.net.Uri
 import android.util.Log
 import com.maleicacid.tvinput.common.LogTags
+import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.StreamSelector
 import com.maleicacid.tvinput.db.ChannelRecord
@@ -57,7 +58,10 @@ class TvProviderWriter private constructor(
         channels.forEach { channel ->
             val validation = validate(channel)
             if (validation != null) { failures += validation; return@forEach }
-            val values = channelValues(channel)
+            val values = runCatching { channelValues(channel) }.getOrElse { error ->
+                failures += Diagnostic(channel.serviceKey, "provider-data", error.message.orEmpty())
+                return@forEach
+            }
             val existingIdResult = channelStore.findExistingChannelId(channel.serviceKey)
             if (existingIdResult.isFailure) { failures += Diagnostic(channel.serviceKey, "query", existingIdResult.exceptionOrNull()?.message.orEmpty()); return@forEach }
             val existingId = existingIdResult.getOrNull()
@@ -121,8 +125,11 @@ class TvProviderWriter private constructor(
                 val key = programIdentity(program)
                 validKeys += key
                 val existingId = existingProgramsByKey[key]
+                val values = runCatching { programValues(channelId, program, key) }.getOrElse { error ->
+                    failures += Diagnostic(serviceKey, "program-provider-data", error.message.orEmpty())
+                    return@forEach
+                }
                 if (existingId == null) {
-                    val values = programValues(channelId, program, key)
                     val insertResult = channelStore.insertProgram(values)
                     if (insertResult.isFailure) { failures += Diagnostic(serviceKey, "program-insert", insertResult.exceptionOrNull()?.message.orEmpty()); return@forEach }
                     val insertedId = insertResult.getOrNull()
@@ -132,7 +139,6 @@ class TvProviderWriter private constructor(
                         inserted++
                     }
                 } else {
-                    val values = programValues(channelId, program, key)
                     val updateResult = channelStore.updateProgram(existingId, values)
                     if (updateResult.isFailure) { failures += Diagnostic(serviceKey, "program-update", updateResult.exceptionOrNull()?.message.orEmpty()); return@forEach }
                     if ((updateResult.getOrNull() ?: 0) <= 0) failures += Diagnostic(serviceKey, "program-update", "provider 更新対象行なし id=$existingId") else updated++
@@ -199,8 +205,7 @@ class TvProviderWriter private constructor(
             key.serviceId !in 1..0xffff -> Diagnostic(key, "validate", "不正な service_id=${key.serviceId}")
             key.transportStreamId !in 0..0xffff -> Diagnostic(key, "validate", "不正な transport_stream_id=${key.transportStreamId}")
             key.originalNetworkId !in 0..0xffff -> Diagnostic(key, "validate", "不正な original_network_id=${key.originalNetworkId}")
-            channel.frequencyHz <= 0L -> Diagnostic(key, "validate", "不正な frequencyHz=${channel.frequencyHz}")
-            channel.deliverySystem != ChannelRecord.DELIVERY_SYSTEM_ISDB_T && channel.deliverySystem != ChannelRecord.DELIVERY_SYSTEM_ISDB_S -> Diagnostic(key, "validate", "対象外 deliverySystem=${channel.deliverySystem}")
+                        channel.deliverySystem != ChannelRecord.DELIVERY_SYSTEM_ISDB_T && channel.deliverySystem != ChannelRecord.DELIVERY_SYSTEM_ISDB_S -> Diagnostic(key, "validate", "対象外 deliverySystem=${channel.deliverySystem}")
             inputId.isBlank() -> Diagnostic(key, "validate", "inputId が空です")
             else -> null
         }
@@ -349,7 +354,7 @@ class TvProviderWriter private constructor(
                 "transportStreamId" to extracted.serviceKey.transportStreamId.toString(),
                 "serviceId" to extracted.serviceKey.serviceId.toString(),
                 "system" to extracted.system,
-                "frequencyHz" to extracted.frequencyHz.toString(),
+                "frequencyHz" to extracted.frequencyHz.value.toString(),
                 "streamSelectorType" to extracted.streamSelector.type.name,
                 "streamSelectorValue" to (extracted.streamSelector.value?.toString().orEmpty()),
                 "physicalChannel" to (extracted.physicalChannel?.toString().orEmpty()),
@@ -416,7 +421,7 @@ class TvProviderWriter private constructor(
                 while (cursor.moveToNext()) {
                     val providerData = cursor.getBlob(6)?.toString(Charsets.UTF_8)
                     val stored = TvProviderWriter.parseChannelProviderData(providerData)
-                    val frequencyHz = stored["frequencyHz"]?.toLongOrNull()
+                    val frequencyHz = FrequencyHz.fromOrNull(stored["frequencyHz"]?.toLongOrNull())
                     val system = stored["system"]
                     if (frequencyHz == null || system == null) {
                         Log.w(LogTags.TIS, "既存 channel の物理選局情報を復元できないため boot/background sync から除外します id=${cursor.getLong(0)}")
@@ -528,7 +533,9 @@ class TvProviderWriter private constructor(
                 while (cursor.moveToNext()) {
                     val id = cursor.getLong(0)
                     val key = TvProviderWriter.parseProgramKey(providerDataBytes(cursor, 1))
-                    if (key == null || key !in validProgramKeys) {
+                    if (key == null) {
+                        Log.w(LogTags.TIS, "Program provider-data から安定キーを抽出できないため削除を保留します id=$id")
+                    } else if (key !in validProgramKeys) {
                         deleted += context.contentResolver.delete(ContentUris.withAppendedId(TvContract.Programs.CONTENT_URI, id), null, null)
                     }
                 }

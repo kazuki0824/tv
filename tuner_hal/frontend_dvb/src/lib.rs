@@ -4,8 +4,8 @@ use explicit_scan::dvb_scan_requests;
 use maleicacid_tuner_hal_common::{
     is_japan_isdbt_frequency_contract_hz, FrontendBackendKind, FrontendDevicePath,
     FrontendRuntimeState, FrontendScanMode, FrontendSelection, FrontendStreamIdKind,
-    FrontendSystem, FrontendTelemetry, FrontendTuneRequest, HalError, TsPacketCompletionBuffer,
-    TS_PACKET_SIZE,
+    retry_after_interrupted_read, FrontendSystem, FrontendTelemetry, FrontendTuneRequest, HalError,
+    TsPacketCompletionBuffer, TS_PACKET_SIZE,
 };
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Read};
@@ -13,6 +13,7 @@ use std::mem::size_of;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 extern "C" {
@@ -32,6 +33,8 @@ const POLLIN: i16 = 0x0001;
 const POLLERR: i16 = 0x0008;
 const POLLHUP: i16 = 0x0010;
 const POLLNVAL: i16 = 0x0020;
+
+static FRONTEND_DVB_READ_EINTR_RETRY_COUNT: AtomicU64 = AtomicU64::new(0);
 
 fn last_errno() -> i32 {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(-1)
@@ -128,7 +131,7 @@ const DMX_OUT_TS_TAP: u32 = 2;
 const DMX_PES_OTHER: u32 = 20;
 const DMX_IMMEDIATE_START: u32 = 1;
 
-#[repr(C)]
+#[repr(C, packed)]
 #[derive(Clone, Copy)]
 struct DtvPropertyBuffer {
     data: [u8; 32],
@@ -137,13 +140,25 @@ struct DtvPropertyBuffer {
     reserved2: *mut core::ffi::c_void,
 }
 
+impl DtvPropertyBuffer {
+    fn read_len_unaligned(&self) -> u32 {
+        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*self).len)) }
+    }
+
+    fn read_data_unaligned(&self) -> [u8; 32] {
+        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*self).data)) }
+    }
+}
+
 #[repr(C)]
+#[derive(Clone, Copy)]
 union DtvPropertyUnion {
     data: u32,
     buffer: DtvPropertyBuffer,
 }
 
-#[repr(C)]
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
 struct DtvProperty {
     cmd: u32,
     reserved: [u32; 3],
@@ -159,6 +174,24 @@ impl DtvProperty {
             u: DtvPropertyUnion { data: value },
             result: 0,
         }
+    }
+
+    #[cfg(test)]
+    fn read_data_unaligned(&self) -> u32 {
+        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*self).u) as *const u32) }
+    }
+
+    fn read_buffer_unaligned(&self) -> DtvPropertyBuffer {
+        unsafe {
+            core::ptr::read_unaligned(
+                core::ptr::addr_of!((*self).u) as *const DtvPropertyBuffer,
+            )
+        }
+    }
+
+    #[cfg(test)]
+    fn read_result_unaligned(&self) -> i32 {
+        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*self).result)) }
     }
 }
 
@@ -585,13 +618,32 @@ impl DvbFrontendBackend {
             .collect::<Vec<_>>();
         self.ioctl_props(FE_SET_PROPERTY, &mut props, "FE_SET_PROPERTY")?;
 
+        let status_result = self.read_status();
+        let mut status = match status_result {
+            Ok(status) => status,
+            Err(err) => {
+                if let Err(cleanup_err) = self.clear_properties() {
+                    self.state.last_error = Some(format!(
+                        "FE_READ_STATUS failed after tune; rollback clear_properties also failed: {cleanup_err}"
+                    ));
+                } else {
+                    self.state.last_error = Some("FE_READ_STATUS failed after tune; rollback clear_properties completed".into());
+                }
+                self.state.tuning_active = false;
+                self.last_tune = None;
+                self.telemetry.locked = false;
+                self.telemetry.rf_locked = None;
+                return Err(err);
+            }
+        };
         self.state.tuning_active = true;
         self.state.tune_request_count += 1;
         self.state.last_error = None;
         self.telemetry.current_system = request.system;
         self.telemetry.tuned_frequency = request.frequency_hz.map(u64::from);
         self.last_tune = Some(request);
-        self.read_status()
+        status.telemetry = self.telemetry.clone();
+        Ok(status)
     }
 
     fn validate_symbol_rate_from_common(request: &FrontendTuneRequest) -> Result<(), HalError> {
@@ -690,7 +742,10 @@ impl DvbFrontendBackend {
 
     pub fn stop_tune(&mut self) -> Result<(), HalError> {
         self.stop_stream_reader();
-        self.clear_properties()?;
+        if let Err(err) = self.clear_properties() {
+            self.state.last_error = Some(format!("stop_tune clear_properties failed: {err}"));
+            return Err(err);
+        }
         self.state.tuning_active = false;
         self.telemetry.locked = false;
         self.telemetry.rf_locked = None;
@@ -762,7 +817,11 @@ impl DvbFrontendBackend {
             if pushed >= max_packets {
                 break;
             }
-            match reader.read(&mut scratch) {
+            match retry_after_interrupted_read(
+                "frontend_dvb_read",
+                &FRONTEND_DVB_READ_EINTR_RETRY_COUNT,
+                || reader.read(&mut scratch),
+            ) {
                 Ok(0) => break,
                 Ok(read) => {
                     let drain =
@@ -777,8 +836,7 @@ impl DvbFrontendBackend {
                 }
                 Err(err)
                     if err.kind() == ErrorKind::WouldBlock
-                        || err.kind() == ErrorKind::UnexpectedEof
-                        || err.kind() == ErrorKind::Interrupted =>
+                        || err.kind() == ErrorKind::UnexpectedEof =>
                 {
                     break
                 }
@@ -870,6 +928,10 @@ impl DvbFrontendBackend {
 
     pub fn close(&mut self) -> Result<(), HalError> {
         self.stop_stream_reader();
+        if let Err(err) = self.clear_properties() {
+            self.state.last_error = Some(format!("close clear_properties failed: {err}"));
+            return Err(err);
+        }
         self.control = None;
         self.state.tuning_active = false;
         self.telemetry.locked = false;
@@ -1160,7 +1222,10 @@ impl DvbFrontendBackend {
 
     fn fallback_systems_from_fe_type(fe_type: u32) -> Vec<FrontendSystem> {
         match fe_type {
-            2 => vec![FrontendSystem::IsdbT],
+            // r50dz56/G2-18: after earth_pt1 identity validation, ENUM_DELSYS failure must not
+            // collapse capability to terrestrial-only. Preserve the known ISDB-T/ISDB-S product
+            // capability so satellite frontends are not silently de-advertised.
+            2 => vec![FrontendSystem::IsdbT, FrontendSystem::IsdbS],
             _ => Vec::new(),
         }
     }
@@ -1298,11 +1363,12 @@ impl DvbFrontendBackend {
                 let mut systems = Vec::new();
                 let rc = unsafe { ioctl(fd, FE_GET_PROPERTY, &mut props) };
                 if rc == 0 {
-                    let buffer = unsafe { prop.u.buffer };
-                    let count = usize::try_from(buffer.len)
+                    let buffer = prop.read_buffer_unaligned();
+                    let buffer_data = buffer.read_data_unaligned();
+                    let count = usize::try_from(buffer.read_len_unaligned())
                         .unwrap_or(0)
-                        .min(buffer.data.len());
-                    for delsys in &buffer.data[..count] {
+                        .min(buffer_data.len());
+                    for delsys in &buffer_data[..count] {
                         match u32::from(*delsys) {
                             SYS_ISDBT => systems.push(FrontendSystem::IsdbT),
                             SYS_ISDBS => systems.push(FrontendSystem::IsdbS),
@@ -1605,7 +1671,7 @@ mod tests {
         assert!(DvbFrontendBackend::fallback_systems_from_fe_type(0).is_empty());
         assert_eq!(
             DvbFrontendBackend::fallback_systems_from_fe_type(2),
-            vec![FrontendSystem::IsdbT]
+            vec![FrontendSystem::IsdbT, FrontendSystem::IsdbS]
         );
     }
 
@@ -1748,6 +1814,116 @@ mod tests {
             })
             .expect_err("帯域幅契約違反はデバイスを開く前に失敗する必要があります");
         assert!(matches!(err, HalError::InvalidArgument(_)));
+    }
+}
+
+#[cfg(test)]
+mod dtv_property_abi_tests {
+    use super::*;
+    use core::mem::{align_of, size_of, MaybeUninit};
+
+    fn offset_of_dtv_property_cmd() -> usize {
+        let value = MaybeUninit::<DtvProperty>::uninit();
+        let base = value.as_ptr();
+        unsafe { core::ptr::addr_of!((*base).cmd) as usize - base as usize }
+    }
+
+    fn offset_of_dtv_property_reserved() -> usize {
+        let value = MaybeUninit::<DtvProperty>::uninit();
+        let base = value.as_ptr();
+        unsafe { core::ptr::addr_of!((*base).reserved) as usize - base as usize }
+    }
+
+    fn offset_of_dtv_property_u() -> usize {
+        let value = MaybeUninit::<DtvProperty>::uninit();
+        let base = value.as_ptr();
+        unsafe { core::ptr::addr_of!((*base).u) as usize - base as usize }
+    }
+
+    fn offset_of_dtv_property_result() -> usize {
+        let value = MaybeUninit::<DtvProperty>::uninit();
+        let base = value.as_ptr();
+        unsafe { core::ptr::addr_of!((*base).result) as usize - base as usize }
+    }
+
+    fn offset_of_dtv_property_buffer_data() -> usize {
+        let value = MaybeUninit::<DtvPropertyBuffer>::uninit();
+        let base = value.as_ptr();
+        unsafe { core::ptr::addr_of!((*base).data) as usize - base as usize }
+    }
+
+    fn offset_of_dtv_property_buffer_len() -> usize {
+        let value = MaybeUninit::<DtvPropertyBuffer>::uninit();
+        let base = value.as_ptr();
+        unsafe { core::ptr::addr_of!((*base).len) as usize - base as usize }
+    }
+
+    fn offset_of_dtv_property_buffer_reserved1() -> usize {
+        let value = MaybeUninit::<DtvPropertyBuffer>::uninit();
+        let base = value.as_ptr();
+        unsafe { core::ptr::addr_of!((*base).reserved1) as usize - base as usize }
+    }
+
+    fn offset_of_dtv_property_buffer_reserved2() -> usize {
+        let value = MaybeUninit::<DtvPropertyBuffer>::uninit();
+        let base = value.as_ptr();
+        unsafe { core::ptr::addr_of!((*base).reserved2) as usize - base as usize }
+    }
+
+    #[test]
+    fn dtv_property_layout_matches_linux_uapi() {
+        assert_eq!(size_of::<DtvProperty>(), 76);
+        assert_eq!(align_of::<DtvProperty>(), 1);
+        assert_eq!(offset_of_dtv_property_cmd(), 0);
+        assert_eq!(offset_of_dtv_property_reserved(), 4);
+        assert_eq!(offset_of_dtv_property_u(), 16);
+        assert_eq!(offset_of_dtv_property_result(), 72);
+    }
+
+    #[test]
+    fn dtv_property_array_stride_is_76() {
+        let props = [
+            DtvProperty::with_data(DTV_CLEAR, 0),
+            DtvProperty::with_data(DTV_TUNE, 0),
+        ];
+        let base = props.as_ptr() as usize;
+        let second = unsafe { props.as_ptr().add(1) } as usize;
+        assert_eq!(second - base, 76);
+    }
+
+    #[test]
+    fn dtv_property_buffer_layout_matches_linux_uapi() {
+        assert_eq!(size_of::<DtvPropertyBuffer>(), 56);
+        assert_eq!(align_of::<DtvPropertyBuffer>(), 1);
+        assert_eq!(offset_of_dtv_property_buffer_data(), 0);
+        assert_eq!(offset_of_dtv_property_buffer_len(), 32);
+        assert_eq!(offset_of_dtv_property_buffer_reserved1(), 36);
+        assert_eq!(offset_of_dtv_property_buffer_reserved2(), 48);
+    }
+
+    #[test]
+    fn dtv_property_packed_helpers_read_unaligned_fields() {
+        let prop = DtvProperty {
+            cmd: DTV_ENUM_DELSYS,
+            reserved: [0; 3],
+            u: DtvPropertyUnion {
+                buffer: DtvPropertyBuffer {
+                    data: [0x5a; 32],
+                    len: 3,
+                    reserved1: [0; 3],
+                    reserved2: core::ptr::null_mut(),
+                },
+            },
+            result: -7,
+        };
+        let buffer = prop.read_buffer_unaligned();
+        let buffer_data = buffer.read_data_unaligned();
+        assert_eq!(buffer.read_len_unaligned(), 3);
+        assert_eq!(&buffer_data[..3], &[0x5a, 0x5a, 0x5a]);
+        assert_eq!(prop.read_result_unaligned(), -7);
+
+        let data_prop = DtvProperty::with_data(DTV_TUNE, 0x1234_5678);
+        assert_eq!(data_prop.read_data_unaligned(), 0x1234_5678);
     }
 }
 
@@ -2219,3 +2395,139 @@ mod status_word_tests {
         assert!(residual.malformed_bytes() >= TS_PACKET_SIZE as u64);
     }
 }
+#[cfg(test)]
+mod r50dz52_g2_12_tests {
+    use super::*;
+
+    #[test]
+    fn stop_tune_clear_failure_does_not_commit_stopped_state() {
+        let mut backend = DvbFrontendBackend::new(0, 0, 0, 0, vec![FrontendSystem::IsdbT]);
+        backend.state.tuning_active = true;
+        backend.telemetry.locked = true;
+        backend.telemetry.rf_locked = Some(true);
+
+        let result = backend.stop_tune();
+
+        assert!(result.is_err());
+        assert!(backend.state.tuning_active);
+        assert!(backend.telemetry.locked);
+        assert_eq!(backend.telemetry.rf_locked, Some(true));
+        assert!(backend.state.last_error.as_deref().unwrap_or_default().contains("stop_tune clear_properties failed"));
+    }
+}
+
+#[cfg(test)]
+mod r50dz52_g2_13_tests {
+    use super::*;
+
+    #[test]
+    fn close_clear_failure_is_reported_not_success_committed() {
+        let mut backend = DvbFrontendBackend::new(0, 0, 0, 0, vec![FrontendSystem::IsdbT]);
+        backend.state.tuning_active = true;
+        backend.telemetry.locked = true;
+        backend.telemetry.rf_locked = Some(true);
+
+        let result = backend.close();
+
+        assert!(result.is_err());
+        assert!(backend.state.tuning_active);
+        assert!(backend.telemetry.locked);
+        assert_eq!(backend.telemetry.rf_locked, Some(true));
+        assert!(backend.state.last_error.as_deref().unwrap_or_default().contains("close clear_properties failed"));
+    }
+}
+
+#[cfg(test)]
+mod r50dz52_g2_14_tests {
+    use super::*;
+    use std::io::{self, Read};
+
+    struct InterruptedThenPacket {
+        interrupted_once: bool,
+        packet: [u8; TS_PACKET_SIZE],
+        done: bool,
+    }
+
+    impl Read for InterruptedThenPacket {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if !self.interrupted_once {
+                self.interrupted_once = true;
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "eintr"));
+            }
+            if self.done {
+                return Ok(0);
+            }
+            self.done = true;
+            buf[..self.packet.len()].copy_from_slice(&self.packet);
+            Ok(self.packet.len())
+        }
+    }
+
+    #[test]
+    fn dvb_reader_retries_eintr_and_still_delivers_packet() {
+        let mut packet = [0x55u8; TS_PACKET_SIZE];
+        packet[0] = 0x47;
+        let mut reader = InterruptedThenPacket {
+            interrupted_once: false,
+            packet,
+            done: false,
+        };
+        let mut residual = TsPacketCompletionBuffer::default();
+        let mut delivered = Vec::new();
+
+        let pushed = DvbFrontendBackend::pump_reader_packets(
+            &mut reader,
+            None,
+            1,
+            &mut residual,
+            |packet| delivered.push(packet.to_vec()),
+        )
+        .unwrap();
+
+        assert_eq!(pushed, 1);
+        assert_eq!(delivered, vec![packet.to_vec()]);
+    }
+}
+
+#[cfg(test)]
+mod r50dz52_g2_18_tests {
+    use super::*;
+
+    #[test]
+    fn enum_delsys_failure_fallback_preserves_isdbs_capability() {
+        let systems = DvbFrontendBackend::fallback_systems_from_fe_type(2);
+        assert!(systems.contains(&FrontendSystem::IsdbT));
+        assert!(systems.contains(&FrontendSystem::IsdbS));
+        assert!(!systems.contains(&FrontendSystem::IsdbS3));
+        assert!(!systems.contains(&FrontendSystem::DvbS));
+    }
+}
+
+#[cfg(test)]
+mod r50dz52_g2_11_tests {
+    use super::*;
+
+    #[test]
+    fn tune_error_does_not_commit_active_state_or_request_counter() {
+        let mut backend = DvbFrontendBackend::new(0, 0, 0, 0, vec![FrontendSystem::IsdbT]);
+        backend.state.tuning_active = false;
+        backend.state.tune_request_count = 7;
+        backend.telemetry.locked = true;
+        backend.telemetry.rf_locked = Some(true);
+
+        let result = backend.tune(DvbTuneRequest {
+            frequency_hz: Some(473_142_857),
+            stream_id: None,
+            stream_id_kind: None,
+            bandwidth_hz: Some(6_000_000),
+            symbol_rate: None,
+            system: Some(FrontendSystem::IsdbT),
+        });
+
+        assert!(result.is_err());
+        assert!(!backend.state.tuning_active);
+        assert_eq!(backend.state.tune_request_count, 7);
+        assert!(backend.last_tune.is_none());
+    }
+}
+

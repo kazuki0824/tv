@@ -210,6 +210,7 @@ record_pid: 272
 
 ```bash
 python3 tuner_hal/tools/render_vts_config.py \
+  --select earth_pt1_isdbs_bs_lab \
   tuner_hal/profiles/earth_pt1_isdbs_bs_lab.yaml \
   tuner_hal/profiles/px4_isdbs_cs110_lab.yaml \
   tuner_hal/profiles/earth_pt1_isdbt_lab.yaml \
@@ -336,3 +337,106 @@ adb shell dmesg | grep -i -E 'dvb|px4|tuner|maleicacid'
 - 対象 profile の frontend tune が LOCKED へ到達する。
 - 指定 PID の filter / DVR 経路で data が取得できる。
 ```
+
+## r50dz17: 50件根治後の追加確認
+
+共通部品化後は、既存Tuner HAL testに加え、次のtest moduleを必ず実行する。
+
+- `maleicacid_tuner_hal_binder_service_test`
+- `maleicacid_tuner_hal_soft_demux_test`
+- `maleicacid_tuner_hal_dvr_test`
+- `maleicacid_tuner_hal_descrambler_test`
+
+確認観点は次で固定する。
+
+- mutex汚染を正常停止や空queueへ丸めない。
+- openFilter/openDvr失敗時に幽霊登録が残らない。
+- demux close失敗後に再closeできる。
+- descrambler close失敗後に再closeできる。
+- source filter経由recordでrecord index eventが出る。
+- raw section / raw PESでeventが出る。
+- PES marker bit不正を拒否または診断化する。
+- discontinuity_indicatorでassemblerが切れる。
+- VVC/H.264/H.265 start codeを同一packet内で全走査する。
+- ISDB-T/S両対応frontendのruntime allowed systemsが両対応になる。
+
+r50dz17単体の確認では、追加した共通部品骨格のtestがcrate内に存在すること、既存実行経路へ接続していないことを静的確認する。
+
+
+## r50dz19 WP-03/WP-04 追加確認
+
+r50dz19 以降の Tuner HAL build 前確認では、少なくとも以下を実行する。
+
+```bash
+grep -R "poisoned\.into_inner" tuner_hal/binder_service/src tuner_hal/soft_demux/src
+grep -R "next_.*_id += 1" tuner_hal/binder_service/src tuner_hal/soft_demux/src
+grep -R "clear_best_effort" tuner_hal/binder_service/src | grep -v Drop
+grep -R "demux_live_ids\.insert\|demux_live_ids\.remove" tuner_hal/binder_service/src
+grep -R "tuner_fmq_" tuner_hal/binder_service/src | grep -v fmq_queue.rs
+grep -R "parse_pts\|decode_pts\|start_code" tuner_hal/binder_service/src | grep -v record_index
+```
+
+上記が一致する場合、WP-04 未完了として扱う。
+
+
+### r50dz20: WP-04静的確認の追加
+
+WP-04確認では、次も確認する。
+
+```bash
+grep -R "drop(live_ids)" tuner_hal/binder_service/src/tuner_hal.rs
+```
+
+一致する場合、demux live ID修復経路が再びguard破棄後再使用になっていないか確認する。
+
+## r50dz21: WP-04 補修後の追加grep確認
+
+WP-04確認では次も残存禁止として確認する。
+
+```bash
+grep -R "struct TsPacketView" vendor/maleicacid/tv/tuner_hal/soft_demux/src/lib.rs
+grep -R "FMQ ring I/O lock poisoned; fill must not be reported as empty" vendor/maleicacid/tv/tuner_hal/binder_service/src
+grep -R "LNB operation lock ledger poisoned" vendor/maleicacid/tv/tuner_hal/binder_service/src
+```
+
+いずれも該当なしを合格条件とする。
+
+## r50dz22: WP-04 補修後の追加grep確認
+
+WP-04 完了確認では、既存の残存禁止grepに加えて次を確認する。
+
+```bash
+grep -R "expect(.*normal recovery is forbidden" tuner_hal/binder_service/src
+grep -R "TsPacketRecordView\|StartCodeInfo\|find_sc_prefix\|BitReader" tuner_hal/binder_service/src
+grep -R "fn pes_time_fields\|fn pts_dts_field_value" tuner_hal/binder_service/src/tuner_hal.rs
+```
+
+いずれも空でなければならない。
+
+### r50dz23: WP-04 追加確認
+
+WP-04確認では、既存の残存禁止grepに加えて次を確認する。
+
+```bash
+grep -R "struct ManagedWorker\|enum WorkerExit\|fn spawn_worker\|type WorkerJoinHandle" tuner_hal/binder_service/src/tuner_hal.rs
+grep -R "LNB_OPERATION_LOCKS" tuner_hal/binder_service/src/tuner_hal.rs
+```
+
+どちらも空であること。
+
+## r50dz24: WP-04 補修後の追加grep
+
+WP-04確認では、既存grepに加えて次も確認する。
+
+```bash
+grep -R "fmq_queue_\|TunerFmqQueue\|tuner_fmq_" tuner_hal/binder_service/src/tuner_hal.rs
+grep -R "fn poisoned_lock_status\|fn lock_mutex_status\|fn lock_mutex_hal\|fn lock_mutex_io\|fn lock_mutex_option" tuner_hal/binder_service/src/tuner_hal.rs
+```
+
+上記はいずれもヒットしてはならない。
+
+```bash
+grep -R "callback_wake\|dvr_callback_wake\|Arc<(Mutex<bool>, Condvar)>" tuner_hal/binder_service/src/tuner_hal.rs
+```
+
+上記もヒットしてはならない。

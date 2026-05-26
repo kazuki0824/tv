@@ -2,32 +2,19 @@
 <TunerConfiguration version="1.0" xmlns:xi="http://www.w3.org/2001/XInclude">
   <hardwareConfiguration>
     <frontends>
-      <frontend id="FE_ISDBS_BS" type="ISDBS" isSoftwareFrontend="false" frequency="1049480000"><isdbsFrontendSettings streamId="16400" streamIdType="0" modulation="1" coderate="1" symbolRate="0"/></frontend>
-      <frontend id="FE_ISDBS_CS110" type="ISDBS" isSoftwareFrontend="false" frequency="1613000000"><isdbsFrontendSettings modulation="1" coderate="1" symbolRate="0"/></frontend>
-      <frontend id="FE_ISDBT_UHF" type="ISDBT" isSoftwareFrontend="false" frequency="557142857"><isdbtFrontendSettings serviceAreaId="0" inversion="0" bandwidth="8" mode="1" guardInterval="1" partialReceptionFlag="0"><FrontendIsdbtLayerSettings modulation="1" coderate="1" timeInterleave="1" numOfSegment="0"/></isdbtFrontendSettings></frontend>
+      <frontend id="FE_ISDBS_0" type="ISDBS" isSoftwareFrontend="false" frequency="1049480000" supportBlindScan="false"><isdbsFrontendSettings streamId="16400" streamIdType="0" modulation="1" coderate="1" symbolRate="0" rolloff="0"/></frontend>
     </frontends>
     <filters>
-      <filter id="FILTER_AUDIO_BS" mainType="TS" subType="AUDIO" bufferSize="16777216" pid="273" useFMQ="false" monitorEventTypes="0"><avFilterSettings isPassthrough="false" isSecureMemory="false"><audioStreamType>2</audioStreamType></avFilterSettings></filter>
-      <filter id="FILTER_VIDEO_BS" mainType="TS" subType="VIDEO" bufferSize="16777216" pid="272" useFMQ="false" monitorEventTypes="0"><avFilterSettings isPassthrough="false" isSecureMemory="false"><videoStreamType>2</videoStreamType></avFilterSettings></filter>
-      <filter id="FILTER_RECORD_BS" mainType="TS" subType="RECORD" bufferSize="16777216" pid="272" useFMQ="false"><recordFilterSettings tsIndexMask="1" scIndexType="NONE"/></filter>
-      <filter id="FILTER_AUDIO_CS110" mainType="TS" subType="AUDIO" bufferSize="16777216" pid="273" useFMQ="false" monitorEventTypes="0"><avFilterSettings isPassthrough="false" isSecureMemory="false"><audioStreamType>2</audioStreamType></avFilterSettings></filter>
-      <filter id="FILTER_VIDEO_CS110" mainType="TS" subType="VIDEO" bufferSize="16777216" pid="272" useFMQ="false" monitorEventTypes="0"><avFilterSettings isPassthrough="false" isSecureMemory="false"><videoStreamType>2</videoStreamType></avFilterSettings></filter>
-      <filter id="FILTER_RECORD_CS110" mainType="TS" subType="RECORD" bufferSize="16777216" pid="272" useFMQ="false"><recordFilterSettings tsIndexMask="1" scIndexType="NONE"/></filter>
-      <filter id="FILTER_AUDIO_ISDBT" mainType="TS" subType="AUDIO" bufferSize="16777216" pid="273" useFMQ="false" monitorEventTypes="0"><avFilterSettings isPassthrough="false" isSecureMemory="false"><audioStreamType>2</audioStreamType></avFilterSettings></filter>
-      <filter id="FILTER_VIDEO_ISDBT" mainType="TS" subType="VIDEO" bufferSize="16777216" pid="272" useFMQ="false" monitorEventTypes="0"><avFilterSettings isPassthrough="false" isSecureMemory="false"><videoStreamType>2</videoStreamType></avFilterSettings></filter>
-      <filter id="FILTER_RECORD_ISDBT" mainType="TS" subType="RECORD" bufferSize="16777216" pid="272" useFMQ="false"><recordFilterSettings tsIndexMask="1" scIndexType="NONE"/></filter>
+      <filter id="FILTER_TS_AUDIO_0" mainType="TS" subType="AUDIO" bufferSize="16777216" pid="273" useFMQ="false" monitorEventTypes="0"><avFilterSettings isPassthrough="false" isSecureMemory="false"><audioStreamType>2</audioStreamType></avFilterSettings></filter>
+      <filter id="FILTER_TS_VIDEO_0" mainType="TS" subType="VIDEO" bufferSize="16777216" pid="272" useFMQ="false" monitorEventTypes="0"><avFilterSettings isPassthrough="false" isSecureMemory="false"><videoStreamType>2</videoStreamType></avFilterSettings></filter>
+      <filter id="FILTER_TS_RECORD_0" mainType="TS" subType="RECORD" bufferSize="16777216" pid="272" useFMQ="false"><recordFilterSettings tsIndexMask="1" scIndexType="NONE"/></filter>
     </filters>
-    <dvrs><dvr id="DVR_RECORD_BS" type="RECORD" bufferSize="4194304" statusMask="15" lowThreshold="1048576" highThreshold="3145728" dataFormat="TS" packetSize="188"/><dvr id="DVR_PLAYBACK_BS" type="PLAYBACK" bufferSize="4194304" statusMask="15" lowThreshold="1048576" highThreshold="3145728" dataFormat="TS" packetSize="188"/><dvr id="DVR_RECORD_CS110" type="RECORD" bufferSize="4194304" statusMask="15" lowThreshold="1048576" highThreshold="3145728" dataFormat="TS" packetSize="188"/><dvr id="DVR_PLAYBACK_CS110" type="PLAYBACK" bufferSize="4194304" statusMask="15" lowThreshold="1048576" highThreshold="3145728" dataFormat="TS" packetSize="188"/><dvr id="DVR_RECORD_ISDBT" type="RECORD" bufferSize="4194304" statusMask="15" lowThreshold="1048576" highThreshold="3145728" dataFormat="TS" packetSize="188"/><dvr id="DVR_PLAYBACK_ISDBT" type="PLAYBACK" bufferSize="4194304" statusMask="15" lowThreshold="1048576" highThreshold="3145728" dataFormat="TS" packetSize="188"/></dvrs>
+    <dvrs>
+      <dvr id="DVR_RECORD_0" type="RECORD" bufferSize="4194304" statusMask="15" lowThreshold="1048576" highThreshold="3145728" dataFormat="TS" packetSize="188"/>
+    </dvrs>
   </hardwareConfiguration>
   <dataFlowConfiguration>
-    <clearLiveBroadcast frontendConnection="FE_ISDBS_BS" audioFilterConnection="FILTER_AUDIO_BS" videoFilterConnection="FILTER_VIDEO_BS"/>
-    <dvrRecord hasFrontendConnection="true" frontendConnection="FE_ISDBS_BS" recordFilterConnection="FILTER_RECORD_BS" dvrRecordConnection="DVR_RECORD_BS"/>
-    <dvrPlayback dvrConnection="DVR_PLAYBACK_BS" audioFilterConnection="FILTER_AUDIO_BS" videoFilterConnection="FILTER_VIDEO_BS"/>
-    <clearLiveBroadcast frontendConnection="FE_ISDBS_CS110" audioFilterConnection="FILTER_AUDIO_CS110" videoFilterConnection="FILTER_VIDEO_CS110"/>
-    <dvrRecord hasFrontendConnection="true" frontendConnection="FE_ISDBS_CS110" recordFilterConnection="FILTER_RECORD_CS110" dvrRecordConnection="DVR_RECORD_CS110"/>
-    <dvrPlayback dvrConnection="DVR_PLAYBACK_CS110" audioFilterConnection="FILTER_AUDIO_CS110" videoFilterConnection="FILTER_VIDEO_CS110"/>
-    <clearLiveBroadcast frontendConnection="FE_ISDBT_UHF" audioFilterConnection="FILTER_AUDIO_ISDBT" videoFilterConnection="FILTER_VIDEO_ISDBT"/>
-    <dvrRecord hasFrontendConnection="true" frontendConnection="FE_ISDBT_UHF" recordFilterConnection="FILTER_RECORD_ISDBT" dvrRecordConnection="DVR_RECORD_ISDBT"/>
-    <dvrPlayback dvrConnection="DVR_PLAYBACK_ISDBT" audioFilterConnection="FILTER_AUDIO_ISDBT" videoFilterConnection="FILTER_VIDEO_ISDBT"/>
+    <clearLiveBroadcast frontendConnection="FE_ISDBS_0" audioFilterConnection="FILTER_TS_AUDIO_0" videoFilterConnection="FILTER_TS_VIDEO_0"/>
+    <dvrRecord hasFrontendConnection="true" frontendConnection="FE_ISDBS_0" recordFilterConnection="FILTER_TS_RECORD_0" dvrRecordConnection="DVR_RECORD_0"/>
   </dataFlowConfiguration>
 </TunerConfiguration>

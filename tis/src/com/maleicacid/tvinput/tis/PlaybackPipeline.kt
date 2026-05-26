@@ -20,7 +20,9 @@ import android.os.Looper
 import android.util.Log
 import android.view.Surface
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
+import com.maleicacid.tvinput.common.CaptionTimestamp
 import com.maleicacid.tvinput.common.LogTags
+import com.maleicacid.tvinput.common.PesPts90k
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.util.concurrent.Callable
@@ -48,7 +50,7 @@ class PlaybackPipeline(
     private var onVideoAvailable: () -> Unit = {}
     private var onVideoUnavailable: (PlaybackUnavailable) -> Unit = {}
     private var onVideoFormatDiscovered: (VideoFormatInfo) -> Unit = {}
-    private var onSubtitlePes: (String, ByteArray, Long) -> Unit = { _, _, _ -> }
+    private var onSubtitlePes: (String, ByteArray, CaptionTimestamp) -> Unit = { _, _, _ -> }
     private var videoFilter: Filter? = null
     private var audioFilter: Filter? = null
     private var subtitleFilter: Filter? = null
@@ -67,6 +69,7 @@ class PlaybackPipeline(
     private var decoderBackpressureDrops: Int = 0
     private var audioPtsFallbackSamples: Int = 0
     private var videoPtsFallbackSamples: Int = 0
+    private var subtitlePtsFallbackSamples: Int = 0
     private val released = AtomicBoolean(false)
 
     enum class PlaybackUnavailableReason {
@@ -164,7 +167,7 @@ class PlaybackPipeline(
         runOnPlaybackExecutorBlocking { onVideoFormatDiscovered = callback }
     }
 
-    fun setOnSubtitlePesCallback(callback: (String, ByteArray, Long) -> Unit) {
+    fun setOnSubtitlePesCallback(callback: (String, ByteArray, CaptionTimestamp) -> Unit) {
         runOnPlaybackExecutorBlocking { onSubtitlePes = callback }
     }
 
@@ -329,7 +332,7 @@ class PlaybackPipeline(
 
     private fun createAndStartAvFilter(tuner: Tuner, stream: AribElementaryStream, isAudio: Boolean): Result<Filter> = runCatching {
         val pid = stream.elementaryPid
-        require(pid in 0..0x1fff) { "PID が範囲外です: $pid" }
+        val pidValue = pid.value
         val subtype = if (isAudio) Filter.SUBTYPE_AUDIO else Filter.SUBTYPE_VIDEO
         val filterGeneration = playbackGeneration
         val filterToken = nextAvFilterToken++
@@ -373,7 +376,7 @@ class PlaybackPipeline(
         } else {
             settingsBuilder.setVideoStreamType(mapVideoStreamType(stream.streamType))
         }
-        val config = TsFilterConfiguration.builder().setTpid(pid).setSettings(settingsBuilder.build()).build()
+        val config = TsFilterConfiguration.builder().setTpid(pidValue).setSettings(settingsBuilder.build()).build()
         val configureResult = filter.configure(config)
         if (configureResult != Tuner.RESULT_SUCCESS) {
             if (isAudio && currentAudioFilterToken == filterToken) currentAudioFilterToken = -1L
@@ -393,7 +396,7 @@ class PlaybackPipeline(
 
     private fun createAndStartSubtitlePesFilter(tuner: Tuner, stream: AribElementaryStream): Result<Filter> = runCatching {
         val pid = stream.elementaryPid
-        require(pid in 0..0x1fff) { "PID が範囲外です: $pid" }
+        val pidValue = pid.value
         require(TunerController.isCaptionStream(stream)) { "字幕ではない stream を subtitle filter に接続しません pid=$pid" }
         val filterGeneration = playbackGeneration
         val filterToken = nextAvFilterToken++
@@ -412,7 +415,7 @@ class PlaybackPipeline(
                         val read = filter.read(buffer, 0, dataLength.toLong())
                         if (read <= 0) continue
                         val payload = if (read == buffer.size) buffer else buffer.copyOf(read)
-                        onSubtitlePes(trackId, payload, ARIBCC_PTS_NOPTS_MILLIS)
+                        onSubtitlePes(trackId, payload, captionTimestampFrom(event))
                     }
                 }.onFailure { error ->
                     Log.w(LogTags.TIS, "字幕PES filter callback に失敗しました inputId=$inputId pid=$pid", error)
@@ -425,7 +428,7 @@ class PlaybackPipeline(
         val settings = PesSettings.builder(Filter.TYPE_TS)
             .setStreamId(PES_STREAM_ID_PRIVATE_STREAM_1)
             .build()
-        val config = TsFilterConfiguration.builder().setTpid(pid).setSettings(settings).build()
+        val config = TsFilterConfiguration.builder().setTpid(pidValue).setSettings(settings).build()
         val configureResult = filter.configure(config)
         if (configureResult != Tuner.RESULT_SUCCESS) {
             if (currentSubtitleFilterToken == filterToken) currentSubtitleFilterToken = -1L
@@ -479,6 +482,7 @@ class PlaybackPipeline(
     fun decoderBackpressureDropsForDiagnostic(): Int = decoderBackpressureDrops
     fun audioPtsFallbackSamplesForDiagnostic(): Int = audioPtsFallbackSamples
     fun videoPtsFallbackSamplesForDiagnostic(): Int = videoPtsFallbackSamples
+    fun subtitlePtsFallbackSamplesForDiagnostic(): Int = subtitlePtsFallbackSamples
 
     fun simulateFirstFrameRenderedForTest(generation: Long) {
         markFirstFrameRendered(generation)
@@ -901,6 +905,12 @@ class PlaybackPipeline(
     data class NormalizedPresentationTime(val presentationUs: Long, val fallbackUsed: Boolean)
     enum class MediaEventBoundsDecision { ACCEPT, MALFORMED, OVERSIZED, OUT_OF_BOUNDS }
 
+    private fun captionTimestampFrom(event: PesEvent): CaptionTimestamp {
+        val timestamp = PlaybackPipeline.captionTimestampForTest(event.isPtsPresent, if (event.isPtsPresent) event.pts else null)
+        if (timestamp == CaptionTimestamp.NoPts) subtitlePtsFallbackSamples++
+        return timestamp
+    }
+
     private object PesTimestampNormalizer {
         fun toPresentationUs(pts90k: Long?): NormalizedPresentationTime {
             if (pts90k == null || pts90k < 0) return NormalizedPresentationTime(System.nanoTime() / 1000L, true)
@@ -1209,6 +1219,9 @@ class PlaybackPipeline(
 
         fun normalizedPresentationTimeForTest(pts90k: Long?): NormalizedPresentationTime = PesTimestampNormalizer.toPresentationUs(pts90k)
 
+        fun captionTimestampForTest(isPtsPresent: Boolean, pts90k: Long?): CaptionTimestamp =
+            if (isPtsPresent) PesPts90k.fromOrNull(pts90k)?.toCaptionPtsMillis()?.let { CaptionTimestamp.Pts(it) } ?: CaptionTimestamp.NoPts else CaptionTimestamp.NoPts
+
         fun isAudioWriteErrorForTest(writeResult: Int): Boolean = writeResult < 0
 
         fun shouldDropOversizedSampleForTest(sampleSize: Int, inputRemaining: Int): Boolean = sampleSize > inputRemaining
@@ -1270,7 +1283,6 @@ class PlaybackPipeline(
         private const val SUBTITLE_FILTER_BUFFER_BYTES = 256 * 1024L
         private const val MAX_SUBTITLE_PES_BYTES = 256 * 1024
         private const val PES_STREAM_ID_PRIVATE_STREAM_1 = 0xbd
-        private const val ARIBCC_PTS_NOPTS_MILLIS = Long.MIN_VALUE
         private const val CODEC_DEQUEUE_TIMEOUT_US = 0L
         private const val CODEC_CONFIG_MAX_BYTES = 512 * 1024
         private const val MEDIA_EVENT_SAMPLE_MAX_BYTES = 4L * 1024L * 1024L

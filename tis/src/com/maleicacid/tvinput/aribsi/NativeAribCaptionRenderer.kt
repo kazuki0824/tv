@@ -1,5 +1,7 @@
 package com.maleicacid.tvinput.aribsi
 
+import com.maleicacid.tvinput.common.CaptionTimestamp
+
 /**
  * ARIB字幕PESを libaribcaption C API へ渡すJNI境界。
  * TIS Kotlinは字幕本文を自前ARIB文字列decoderへ渡さず、この境界から返る表示文字列だけを描画層へ渡す。
@@ -11,16 +13,20 @@ class NativeAribCaptionRenderer : AutoCloseable {
 
     fun decodePes(
         pesData: ByteArray,
-        ptsMillis: Long,
+        timestamp: CaptionTimestamp,
         dataComponentId: Int?,
         superimpose: Boolean,
     ): DecodedCaption? {
         val h = handle.takeIf { it != 0L } ?: return null
         if (pesData.isEmpty()) return null
+        val ptsMillis = when (timestamp) {
+            is CaptionTimestamp.Pts -> timestamp.ptsMillis.value
+            CaptionTimestamp.NoPts -> ARIBCC_PTS_NOPTS_MILLIS
+        }
         val text = nativeDecodePes(h, pesData, ptsMillis, dataComponentId ?: 0x0008, superimpose)
             ?.takeIf { it.isNotBlank() }
             ?: return null
-        return DecodedCaption(text = text, ptsMillis = ptsMillis)
+        return DecodedCaption(text = text, timestamp = timestamp)
     }
 
     override fun close() {
@@ -31,10 +37,14 @@ class NativeAribCaptionRenderer : AutoCloseable {
 
     data class DecodedCaption(
         val text: String,
-        val ptsMillis: Long,
+        val timestamp: CaptionTimestamp,
     )
 
     private external fun nativeCreateRenderer(): Long
     private external fun nativeReleaseRenderer(handle: Long)
     private external fun nativeDecodePes(handle: Long, pesData: ByteArray, ptsMillis: Long, dataComponentId: Int, superimpose: Boolean): String?
+
+    companion object {
+        const val ARIBCC_PTS_NOPTS_MILLIS = Long.MIN_VALUE
+    }
 }

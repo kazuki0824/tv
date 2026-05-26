@@ -177,7 +177,8 @@ class ChannelScanController(
 
     /** 完全な section を受ける入口。byte array は 生 TS packet ではない。 */
     fun onSection(pid: Int, section: ByteArray) {
-        tunerController.onSection(pid, section)
+        val tsPid = TsPid.fromOrNull(pid) ?: return
+        tunerController.onSection(tsPid, section)
         refreshDynamicSectionFilters()
         publishCurrentServiceSnapshot(PublishMode.LIVE_TUNE_REFRESH)
     }
@@ -189,9 +190,9 @@ class ChannelScanController(
         val serviceScopedCa = allCaMetadata.filter { it.source != com.maleicacid.tvinput.aribsi.CaMetadataSource.CAT && it.serviceKey != null }
         val catCa = allCaMetadata.filter { it.source == com.maleicacid.tvinput.aribsi.CaMetadataSource.CAT }
         val caMetadata = caMapper.expandProgramLevelToElementaryStreams(serviceScopedCa + catCa, servicesForCas)
-        val pmtPids = transaction.pmtPids.values.filter { it in 0..0x1fff }.toSet()
-        val ecmPids = caMetadata.mapNotNull { it.ecmPid }.filter { it in 0..0x1fff }.toSet()
-        val emmPids = caMetadata.mapNotNull { it.emmPid }.filter { it in 0..0x1fff }.toSet()
+        val pmtPids = transaction.pmtPids.values.toSet()
+        val ecmPids = caMetadata.mapNotNull { it.ecmPid }.toSet()
+        val emmPids = caMetadata.mapNotNull { it.emmPid }.toSet()
         tunerController.openDynamicFiltersFromCurrentSi(pmtPids, ecmPids, emmPids)
         if (caMetadata.isEmpty()) {
             casController.clearForClearService()
@@ -212,14 +213,14 @@ class ChannelScanController(
         }
         val candidate = currentCandidate ?: return PublishSnapshotResult(0)
         val transaction = engine.serviceRegistrationSnapshot()
-        val transportRemoteKeys = emptyMap<Pair<Int, Int>, Int?>()
+        val transportRemoteKeys = emptyMap<TransportKey, Int?>()
         val diagnostics = transaction.publishabilityByServiceKey
         val registrationReadyServices = transaction.services.filter { service ->
             diagnostics[service.serviceKey]?.channelRegistrationReady == true
         }
         val services = filterServicesForCurrentCandidate(registrationReadyServices, transaction.actualTransports)
         val channels = services.map { service ->
-            val remoteKey = transportRemoteKeys[service.serviceKey.originalNetworkId to service.serviceKey.transportStreamId]
+            val remoteKey = transportRemoteKeys[TransportKey(service.serviceKey.originalNetwork, service.serviceKey.transportStream)]
             val diagnostic = diagnostics[service.serviceKey]
             ChannelRecord(
                 serviceKey = service.serviceKey,
@@ -263,15 +264,13 @@ class ChannelScanController(
         // 現在TSのTransportKeyに完全一致するサービスだけに限定する。
         // PMT mapping / SDT-other / NIT-other / BAT 由来transportは、現在candidateの物理情報へ紐づけない。
         val actualTransports = actualTransportKeys
-            .map { it.originalNetworkId to it.transportStreamId }
-            .toSet()
         if (actualTransports.size != 1) {
             skippedUnresolvedTransportCount += services.size
             Log.w(LogTags.TIS, "current candidate の SDT actual TransportKey が一意に確定していないため channel 登録を省略します actualTransports=$actualTransports")
             return emptyList()
         }
         val actualTransport = actualTransports.single()
-        val filtered = services.filter { (it.serviceKey.originalNetworkId to it.serviceKey.transportStreamId) == actualTransport }
+        val filtered = services.filter { TransportKey(it.serviceKey.originalNetwork, it.serviceKey.transportStream) == actualTransport }
         skippedUnresolvedTransportCount += services.size - filtered.size
         return filtered
     }

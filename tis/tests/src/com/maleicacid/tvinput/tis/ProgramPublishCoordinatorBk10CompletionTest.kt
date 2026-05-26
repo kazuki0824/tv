@@ -2,6 +2,7 @@ package com.maleicacid.tvinput.tis
 
 import android.content.ContentValues
 import android.media.tv.TvContract
+import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.db.ChannelRecord
 import com.maleicacid.tvinput.db.ProgramRecord
@@ -23,7 +24,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         val store = FakeStore(failServiceIndexOnce = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         val coordinator = ProgramPublishCoordinator(writer)
-        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", 473_142_857L)))
+        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", FrequencyHz(473_142_857L))))
 
         val first = coordinator.publish(
             mode = ChannelScanController.PublishMode.LIVE_TUNE_REFRESH,
@@ -48,7 +49,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         val store = FakeStore(failInsertOnce = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         val coordinator = ProgramPublishCoordinator(writer)
-        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", 473_142_857L)))
+        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", FrequencyHz(473_142_857L))))
 
         val failed = coordinator.publish(ChannelScanController.PublishMode.SETUP_SCAN, listOf(program), allowedServiceKeys = null)
         check(failed.failures.any { it.operation == "program-insert" }) { failed.toString() }
@@ -62,7 +63,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         val store = FakeStore(failDelete = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         val coordinator = ProgramPublishCoordinator(writer)
-        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", 473_142_857L)))
+        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", FrequencyHz(473_142_857L))))
         writer.upsertPrograms(listOf(program))
 
         val window = ProgramPublishCoordinator.EpgUpdateWindow(
@@ -101,7 +102,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         val store = FakeStore(failDelete = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         val coordinator = ProgramPublishCoordinator(writer)
-        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", 473_142_857L)))
+        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", FrequencyHz(473_142_857L))))
 
         val windows = (0 until (ProgramPublishCoordinator.MAX_RETRY_WINDOWS_PER_SERVICE_FOR_TEST + 1)).map { i ->
             ProgramPublishCoordinator.EpgUpdateWindow(
@@ -130,7 +131,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         val store = FakeStore(failDelete = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         val coordinator = ProgramPublishCoordinator(writer)
-        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", 473_142_857L)))
+        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", FrequencyHz(473_142_857L))))
 
         val expiredFirstFailure = System.currentTimeMillis() - ProgramPublishCoordinator.RETRY_RETENTION_MS_FOR_TEST - 60_000L
         val window = ProgramPublishCoordinator.EpgUpdateWindow(

@@ -7,6 +7,6 @@ enum class FrontendProfile {
 
 data class TuneRequest(
     val profile: FrontendProfile,
-    val frequencyHz: Long,
+    val frequencyHz: FrequencyHz,
     val streamSelector: StreamSelector = StreamSelector.NONE,
 )

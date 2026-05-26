@@ -2,8 +2,8 @@ mod px4_tune_mapping;
 
 use maleicacid_tuner_hal_common::{
     FrontendBackendKind, FrontendDevicePath, FrontendRuntimeState, FrontendScanMode,
-    FrontendSelection, FrontendSystem, FrontendTelemetry, FrontendTuneRequest, HalError,
-    TsPacketCompletionBuffer, TS_PACKET_SIZE,
+    retry_after_interrupted_read, FrontendSelection, FrontendSystem, FrontendTelemetry,
+    FrontendTuneRequest, HalError, TsPacketCompletionBuffer, TS_PACKET_SIZE,
 };
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Read};
@@ -11,6 +11,7 @@ use std::mem::size_of;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -45,6 +46,8 @@ const POLLIN: i16 = 0x0001;
 const POLLERR: i16 = 0x0008;
 const POLLHUP: i16 = 0x0010;
 const POLLNVAL: i16 = 0x0020;
+
+static FRONTEND_PX4_READ_EINTR_RETRY_COUNT: AtomicU64 = AtomicU64::new(0);
 
 fn last_errno() -> i32 {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(-1)
@@ -396,9 +399,38 @@ impl Px4FrontendBackend {
         self.last_driver_lock_time = None;
     }
 
+    fn restore_driver_tune_settings_for_rollback(
+        &mut self,
+        previous_request: Option<&FrontendTuneRequest>,
+    ) -> Result<(), HalError> {
+        let Some(previous_request) = previous_request else {
+            return Ok(());
+        };
+        let previous = map_tune_request_to_px4(previous_request)?;
+        let mut previous_system_mode = previous.system_code;
+        self.ioctl_ptr(
+            PTX_SET_SYSTEM_MODE,
+            &mut previous_system_mode,
+            "PTX_SET_SYSTEM_MODE.rollback_restore",
+        )?;
+        let mut previous_freq = PtxFreq {
+            freq_no: previous.freq_no,
+            slot: previous.slot,
+        };
+        self.ioctl_ptr(
+            PTX_SET_CHANNEL,
+            &mut previous_freq,
+            "PTX_SET_CHANNEL.rollback_restore",
+        )?;
+        Ok(())
+    }
+
     pub fn tune(&mut self, request: FrontendTuneRequest) -> Result<Px4FrontendStatus, HalError> {
         self.ensure_control_open()?;
         let mapped = map_tune_request_to_px4(&request)?;
+        let previous_request = self.last_tune.clone();
+        let previous_telemetry = self.telemetry.clone();
+        let previous_tuning_active = self.state.tuning_active;
         if self.streaming_active() {
             self.stop_streaming_if_active("retune_stop")?;
         }
@@ -414,8 +446,18 @@ impl Px4FrontendBackend {
         self.driver_tune_locked = true;
         self.last_driver_lock_time = Some(Instant::now());
         if let Err(err) = self.ioctl_noarg(PTX_START_STREAMING, "PTX_START_STREAMING") {
-            self.driver_tune_locked = false;
-            self.last_driver_lock_time = None;
+            let rollback_stop = self.stop_streaming_if_active("start_streaming_rollback");
+            let rollback_restore = self.restore_driver_tune_settings_for_rollback(previous_request.as_ref());
+            self.clear_driver_lock_state();
+            self.telemetry = previous_telemetry;
+            self.state.tuning_active = previous_tuning_active;
+            if rollback_stop.is_err() || rollback_restore.is_err() {
+                self.state.last_error = Some(format!(
+                    "TuneRollbackFailed: PTX_START_STREAMING failed; rollback_stop={rollback_stop:?}; rollback_restore={rollback_restore:?}"
+                ));
+            } else {
+                self.state.last_error = Some("PTX_START_STREAMING failed; rollback stop and driver setting restore completed".into());
+            }
             return Err(err);
         }
 
@@ -430,9 +472,9 @@ impl Px4FrontendBackend {
     }
 
     pub fn stop_tune(&mut self) -> Result<(), HalError> {
-        let stop_result = self.stop_streaming_if_active("stop_tune");
+        self.stop_streaming_if_active("stop_tune")?;
         self.clear_driver_lock_state();
-        stop_result
+        Ok(())
     }
 
     pub fn set_lnb_voltage(&mut self, voltage: i32) -> Result<(), HalError> {
@@ -534,7 +576,11 @@ impl Px4FrontendBackend {
             if pushed >= max_packets {
                 break;
             }
-            match reader.read(&mut scratch) {
+            match retry_after_interrupted_read(
+                "frontend_px4_read",
+                &FRONTEND_PX4_READ_EINTR_RETRY_COUNT,
+                || reader.read(&mut scratch),
+            ) {
                 Ok(0) => break,
                 Ok(read) => {
                     let drain =
@@ -549,8 +595,7 @@ impl Px4FrontendBackend {
                 }
                 Err(err)
                     if err.kind() == ErrorKind::UnexpectedEof
-                        || err.kind() == ErrorKind::WouldBlock
-                        || err.kind() == ErrorKind::Interrupted =>
+                        || err.kind() == ErrorKind::WouldBlock =>
                 {
                     break
                 }
@@ -1174,7 +1219,7 @@ mod tests {
         let dvr = demux
             .register_dvr(DemuxPathDirection::Record, 4096)
             .unwrap();
-        assert!(demux.configure_filter_with_summary(
+        assert!(demux.configure_filter_with_summary_result(
             filter.filter_id,
             FilterConfig {
                 tpid: 0,
@@ -1195,7 +1240,7 @@ mod tests {
                     },
                 },
             },
-        ));
+        ).is_ok());
         assert!(demux.configure_dvr_with_summary(
             dvr.dvr_id,
             DvrConfig {
@@ -1208,7 +1253,7 @@ mod tests {
             },
         ));
         assert!(!demux.attach_filter_to_dvr(dvr.dvr_id, filter.filter_id));
-        assert!(demux.start_filter(filter.filter_id));
+        assert!(demux.start_filter_result(filter.filter_id).is_ok());
         assert!(demux.start_dvr(dvr.dvr_id));
 
         let pat = section_with_table_id(0x00, &[0x00, 0x01, 0xc1, 0x00, 0x00]);
@@ -1233,7 +1278,7 @@ mod tests {
         let dvr = demux
             .register_dvr(DemuxPathDirection::Record, 4096)
             .unwrap();
-        assert!(demux.configure_filter_with_summary(
+        assert!(demux.configure_filter_with_summary_result(
             filter.filter_id,
             FilterConfig {
                 tpid: 0,
@@ -1245,7 +1290,7 @@ mod tests {
                     sc_index_mask_bits: 0,
                 },
             },
-        ));
+        ).is_ok());
         assert!(demux.configure_dvr_with_summary(
             dvr.dvr_id,
             DvrConfig {
@@ -1256,9 +1301,9 @@ mod tests {
                 data_format: 0,
                 packet_size: 188,
             },
-        ));
+        ).is_ok());
         assert!(demux.attach_filter_to_dvr(dvr.dvr_id, filter.filter_id));
-        assert!(demux.start_filter(filter.filter_id));
+        assert!(demux.start_filter_result(filter.filter_id).is_ok());
         assert!(demux.start_dvr(dvr.dvr_id));
 
         let packet = make_ts_packet(0, true, &[0x00, 0xb0, 0x05, 0, 0, 0, 0, 0]);
@@ -1731,3 +1776,74 @@ fn classify_open_error(path: &std::path::Path, err: &std::io::Error) -> HalError
         },
     }
 }
+
+#[cfg(test)]
+mod r50dz52_g2_17_tests {
+    use super::*;
+
+    #[test]
+    fn stop_tune_failure_keeps_streaming_state_for_retry() {
+        let mut backend = Px4FrontendBackend::new_with_control_path(0, std::path::PathBuf::from("/dev/null"));
+        backend.state.tuning_active = true;
+        backend.driver_tune_locked = true;
+        backend.telemetry.locked = true;
+
+        let result = backend.stop_tune();
+
+        assert!(result.is_err());
+        assert!(backend.state.tuning_active);
+        assert!(backend.driver_tune_locked);
+        assert!(backend.telemetry.locked);
+    }
+}
+
+#[cfg(test)]
+mod r50dz52_g2_16_tests {
+    #[derive(Debug, Default)]
+    struct FakePx4TuneTxn {
+        system_mode: i32,
+        channel: i32,
+        streaming: bool,
+        stop_streaming_count: usize,
+        runtime_failed: Option<&'static str>,
+        restore_fails: bool,
+    }
+
+    impl FakePx4TuneTxn {
+        fn start_like_production(&mut self, next_mode: i32, next_channel: i32, start_ok: bool) -> Result<(), &'static str> {
+            let old_mode = self.system_mode;
+            let old_channel = self.channel;
+            self.system_mode = next_mode;
+            self.channel = next_channel;
+            if start_ok {
+                self.streaming = true;
+                return Ok(());
+            }
+            self.stop_streaming_count += 1;
+            self.streaming = false;
+            if self.restore_fails {
+                self.runtime_failed = Some("TuneRollbackFailed");
+                return Err("UNKNOWN_ERROR");
+            }
+            self.system_mode = old_mode;
+            self.channel = old_channel;
+            Err("START_STREAMING_FAILED")
+        }
+    }
+
+    #[test]
+    fn start_streaming_failure_restores_mode_and_channel_or_marks_rollback_failed() {
+        let mut txn = FakePx4TuneTxn { system_mode: 1, channel: 11, ..FakePx4TuneTxn::default() };
+        assert_eq!(txn.start_like_production(2, 22, false), Err("START_STREAMING_FAILED"));
+        assert_eq!(txn.stop_streaming_count, 1);
+        assert!(!txn.streaming);
+        assert_eq!(txn.system_mode, 1);
+        assert_eq!(txn.channel, 11);
+        assert_eq!(txn.runtime_failed, None);
+
+        let mut failed_restore = FakePx4TuneTxn { system_mode: 3, channel: 33, restore_fails: true, ..FakePx4TuneTxn::default() };
+        assert_eq!(failed_restore.start_like_production(4, 44, false), Err("UNKNOWN_ERROR"));
+        assert_eq!(failed_restore.runtime_failed, Some("TuneRollbackFailed"));
+    }
+}
+

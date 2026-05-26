@@ -1,21 +1,26 @@
 # r51合格判定に使う前に、対象実機・対象地点のPAT/PMT由来値へ更新するlab placeholder。
-profile_name: px4_isdbs_cs110_lab
+name: px4_isdbs_cs110_lab
 frontend:
-  id: FE_ISDBS_CS110
+  id: FE_ISDBS_0
   type: ISDBS
   satellite_band: CS110
   is_software_frontend: false
   frequency: 1613000000
+  stream_id_type: TS_ID
+  stream_id: 0
   symbol_rate: 0
+  modulation: 1
+  coderate: 1
+  rolloff: 0
 live:
-  audio_filter_id: FILTER_AUDIO_CS110
+  audio_filter_id: FILTER_TS_AUDIO_0
   audio_pid: 273
-  video_filter_id: FILTER_VIDEO_CS110
+  video_filter_id: FILTER_TS_VIDEO_0
   video_pid: 272
 record:
-  filter_id: FILTER_RECORD_CS110
+  filter_id: FILTER_TS_RECORD_0
   pid: 272
-  dvr_id: DVR_RECORD_CS110
+  dvr_id: DVR_RECORD_0
 scan:
   support_blind_scan: false
   notes: "CS110 は TIS SSOT が explicit frequency のみを渡す。TSID は service identity であり frontend selector ではない。HAL は scan 表を生成しない。"

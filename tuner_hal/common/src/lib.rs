@@ -1,10 +1,39 @@
 use std::collections::VecDeque;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::io;
+use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
 pub const TUNER_SERVICE_NAME: &str = "android.hardware.tv.tuner.ITuner/default";
 pub const TS_PACKET_SIZE: usize = 188;
+
+/// Retry an I/O read operation after `ErrorKind::Interrupted` without treating EINTR
+/// as EOF or a normal short read. The retry counter is updated with saturating
+/// semantics so debug/release behavior stays identical at `u64::MAX`.
+pub fn retry_after_interrupted_read(
+    operation: &'static str,
+    retry_counter: &AtomicU64,
+    mut f: impl FnMut() -> io::Result<usize>,
+) -> io::Result<usize> {
+    loop {
+        match f() {
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => {
+                let _ = retry_counter.fetch_update(
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                    |value| Some(value.saturating_add(1)),
+                );
+                eprintln!(
+                    "maleicacid-tuner-hal-read-retry: operation={} error=EINTR action=retry",
+                    operation
+                );
+                continue;
+            }
+            other => return other,
+        }
+    }
+}
+
 const TS_RESYNC_CONFIRM_PACKETS: usize = 3;
 const TS_RESYNC_TAIL_BYTES: usize = TS_PACKET_SIZE * (TS_RESYNC_CONFIRM_PACKETS - 1);
 const TS_RESYNC_CONFIRM_BYTES: usize = TS_RESYNC_TAIL_BYTES + 1;
@@ -118,6 +147,23 @@ impl TsPacketCompletionBuffer {
     pub fn malformed_bytes(&self) -> u64 {
         self.malformed_bytes
     }
+
+    /// Drain all completed packets at a lifecycle boundary and drop only the
+    /// incomplete tail. This prevents a complete packet already held by the
+    /// completion buffer from waiting for a later push after stop/flush/close.
+    pub fn drain_for_boundary(&mut self) -> TsPacketBufferDrain {
+        let packets = self.drain_completed(usize::MAX);
+        let malformed_bytes = self.buf.len();
+        if malformed_bytes > 0 {
+            self.malformed_bytes = self.malformed_bytes.saturating_add(malformed_bytes as u64);
+            self.buf.clear();
+        }
+        self.resync_required = false;
+        TsPacketBufferDrain {
+            packets,
+            malformed_bytes,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -218,6 +264,38 @@ mod ts_packet_completion_buffer_tests {
         assert_eq!(out.packets, vec![p0, p1, p2]);
         assert_eq!(out.malformed_bytes, 5);
         assert_eq!(buffer.malformed_bytes(), 5);
+        assert_eq!(buffer.tail_len(), 0);
+    }
+}
+
+#[cfg(test)]
+mod r50dz52_g2_19_tests {
+    use super::*;
+
+    fn packet(seed: u8) -> [u8; TS_PACKET_SIZE] {
+        let mut packet = [seed; TS_PACKET_SIZE];
+        packet[0] = 0x47;
+        packet
+    }
+
+    #[test]
+    fn boundary_drain_keeps_completed_packets_and_drops_only_incomplete_tail() {
+        let p0 = packet(0x21);
+        let p1 = packet(0x22);
+        let p2 = packet(0x23);
+        let mut input = Vec::new();
+        input.extend_from_slice(&p0);
+        input.extend_from_slice(&p1);
+        input.extend_from_slice(&p2[..31]);
+
+        let mut buffer = TsPacketCompletionBuffer::default();
+        let initial = buffer.push_limited(&input, 0);
+        assert!(initial.packets.is_empty());
+        assert_eq!(buffer.tail_len(), 31);
+
+        let drained = buffer.drain_for_boundary();
+        assert_eq!(drained.packets, vec![p0, p1]);
+        assert_eq!(drained.malformed_bytes, 31);
         assert_eq!(buffer.tail_len(), 0);
     }
 }
@@ -550,3 +628,62 @@ mod r51_frequency_contract_tests {
         assert!(!is_japan_cs110_if_frequency_hz(1_612_999_999));
     }
 }
+#[cfg(test)]
+mod r50dz52_g1_20_tests {
+    use super::*;
+
+    fn packet(seed: u8) -> [u8; TS_PACKET_SIZE] {
+        let mut packet = [seed; TS_PACKET_SIZE];
+        packet[0] = 0x47;
+        packet
+    }
+
+    #[test]
+    fn completion_buffer_requires_confirmed_resync_and_emits_aligned_tail() {
+        let mut single_sync = TsPacketCompletionBuffer::default();
+        let mut malformed = vec![0x00; TS_PACKET_SIZE + 11];
+        malformed[5] = 0x47;
+        assert!(single_sync.push(&malformed).packets.is_empty());
+
+        let p0 = packet(0x31);
+        let p1 = packet(0x32);
+        let p2 = packet(0x33);
+        let mut confirmed = vec![0x11, 0x22, 0x33];
+        confirmed.extend_from_slice(&p0);
+        confirmed.extend_from_slice(&p1);
+        confirmed.extend_from_slice(&p2);
+        let mut buffer = TsPacketCompletionBuffer::default();
+        let out = buffer.push(&confirmed);
+        assert_eq!(out.packets, vec![p0, p1, p2]);
+        assert_eq!(out.malformed_bytes, 3);
+
+        let aligned = packet(0x44);
+        let mut tail_buffer = TsPacketCompletionBuffer::default();
+        assert_eq!(tail_buffer.push(&aligned).packets, vec![aligned]);
+    }
+}
+
+#[cfg(test)]
+mod r50dz52_g2_15_tests {
+    use super::*;
+    use std::io;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[test]
+    fn interrupted_read_is_retried_and_counted_without_eof_success() {
+        let counter = AtomicU64::new(0);
+        let mut attempts = 0usize;
+        let result = retry_after_interrupted_read("r50dz52_g2_15", &counter, || {
+            attempts += 1;
+            if attempts <= 2 {
+                Err(io::Error::new(io::ErrorKind::Interrupted, "eintr"))
+            } else {
+                Ok(188)
+            }
+        });
+        assert_eq!(result.unwrap(), 188);
+        assert_eq!(attempts, 3);
+        assert_eq!(counter.load(Ordering::SeqCst), 2);
+    }
+}
+
