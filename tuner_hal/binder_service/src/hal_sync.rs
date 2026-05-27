@@ -65,16 +65,16 @@ pub fn lock_mutex_option<'a, T>(mutex: &'a Mutex<T>, name: &'static str) -> Opti
 }
 
 pub struct HalMutex<T> {
-    inner: Mutex<T>,
+    _inner: Mutex<T>,
 }
 
 impl<T> HalMutex<T> {
     pub fn new(value: T) -> Self {
-        Self { inner: Mutex::new(value) }
+        Self { _inner: Mutex::new(value) }
     }
 
     pub fn lock(&self) -> Result<HalMutexGuard<'_, T>, HalLockError> {
-        self.inner
+        self._inner
             .lock()
             .map(HalMutexGuard)
             .map_err(|_| HalLockError::Poisoned)
@@ -98,23 +98,25 @@ impl<'a, T> std::ops::DerefMut for HalMutexGuard<'a, T> {
 }
 
 pub struct HalCondvar {
-    inner: Condvar,
+    _inner: Condvar,
 }
 
 impl HalCondvar {
     pub fn new() -> Self {
-        Self { inner: Condvar::new() }
+        Self { _inner: Condvar::new() }
     }
 
+    #[cfg(test)]
+
     pub fn notify_all(&self) {
-        self.inner.notify_all();
+        self._inner.notify_all();
     }
 
     pub fn wait<'a, T>(
         &self,
         guard: HalMutexGuard<'a, T>,
     ) -> Result<HalMutexGuard<'a, T>, HalWaitError> {
-        self.inner
+        self._inner
             .wait(guard.0)
             .map(HalMutexGuard)
             .map_err(|_| HalWaitError::Poisoned)

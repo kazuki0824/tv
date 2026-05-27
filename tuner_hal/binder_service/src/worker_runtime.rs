@@ -44,7 +44,7 @@ type ThreadWorkerHandleRaw = std::thread::JoinHandle<WorkerExit>;
 
 #[derive(Debug)]
 pub struct RuntimeAtomicFlag {
-    inner: AtomicBool,
+    _inner: AtomicBool,
 }
 
 impl Clone for RuntimeAtomicFlag {
@@ -56,25 +56,27 @@ impl Default for RuntimeAtomicFlag {
 }
 
 impl RuntimeAtomicFlag {
-    pub fn new(value: bool) -> Self { Self { inner: AtomicBool::new(value) } }
-    pub fn load(&self, order: Ordering) -> bool { self.inner.load(order) }
-    pub fn store(&self, value: bool, order: Ordering) { self.inner.store(value, order) }
-    pub fn swap(&self, value: bool, order: Ordering) -> bool { self.inner.swap(value, order) }
+    pub fn new(value: bool) -> Self { Self { _inner: AtomicBool::new(value) } }
+    pub fn load(&self, order: Ordering) -> bool { self._inner.load(order) }
+    pub fn store(&self, value: bool, order: Ordering) { self._inner.store(value, order) }
+    pub fn swap(&self, value: bool, order: Ordering) -> bool { self._inner.swap(value, order) }
+    #[cfg(test)]
     pub fn compare_exchange(&self, current: bool, new: bool, success: Ordering, failure: Ordering) -> Result<bool, bool> {
-        self.inner.compare_exchange(current, new, success, failure)
+        self._inner.compare_exchange(current, new, success, failure)
     }
 }
 
 #[derive(Debug, Default)]
 pub struct RuntimeWaitSignal {
-    inner: Condvar,
+    _inner: Condvar,
 }
 
 impl RuntimeWaitSignal {
-    pub fn new() -> Self { Self { inner: Condvar::new() } }
-    pub fn notify_all(&self) { self.inner.notify_all(); }
+    pub fn new() -> Self { Self { _inner: Condvar::new() } }
+    #[cfg(test)]
+    pub fn notify_all(&self) { self._inner.notify_all(); }
     pub fn wait_timeout<'a, T>(&self, guard: MutexGuard<'a, T>, dur: Duration) -> LockResult<(MutexGuard<'a, T>, WaitTimeoutResult)> {
-        self.inner.wait_timeout(guard, dur)
+        self._inner.wait_timeout(guard, dur)
     }
 }
 
@@ -209,6 +211,8 @@ impl<E> WorkerSignal<E> {
         self.cv.notify_all();
     }
 
+    #[cfg(test)]
+
     pub fn clear_for_start(&self) {
         match self.state.lock() {
             Ok(mut state) => {
@@ -260,6 +264,8 @@ impl<E> WorkerSignal<E> {
             }
         }
     }
+
+    #[cfg(test)]
 
     pub fn wait_until_work_or_stop(&self, observed_generation: &mut u64, timeout: Duration) -> bool {
         if self.is_runtime_failure() {
@@ -351,6 +357,7 @@ pub struct WorkerHandle {
 }
 
 impl WorkerHandle {
+    #[cfg(test)]
     fn from_raw(owner_id: WorkerOwnerId, name: &'static str, handle: ThreadWorkerHandleRaw) -> Self {
         Self {
             owner_id,
@@ -360,6 +367,8 @@ impl WorkerHandle {
             exit_reason: WorkerExitReason::NotStarted,
         }
     }
+
+    #[cfg(test)]
 
     fn take_raw(mut self) -> Option<ThreadWorkerHandleRaw> { self.handle.take() }
 
@@ -383,9 +392,11 @@ impl WorkerHandle {
         self.exit_reason = reason;
         Ok(WorkerJoinOutcome::Joined(reason))
     }
+    #[cfg(test)]
     pub fn exit_reason(&self) -> Option<WorkerExitReason> {
         if self.exit_reason == WorkerExitReason::NotStarted { None } else { Some(self.exit_reason) }
     }
+    #[cfg(test)]
     pub fn owner_id(&self) -> &WorkerOwnerId { &self.owner_id }
 }
 
@@ -435,6 +446,8 @@ impl WorkerRuntime {
             exit_reason: WorkerExitReason::NotStarted,
         })
     }
+
+    #[cfg(test)]
 
     pub fn fail_worker_owned_cleanup(&mut self, reason: WorkerExitReason) {
         self.exit_reason = reason;

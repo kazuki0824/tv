@@ -37,6 +37,7 @@ impl<R: Clone> DemuxLedger<R> {
         self.records.insert(id, LedgerRecord { state: LedgerState::Live, generation, record: Some(record) });
         Ok(generation)
     }
+    #[cfg(test)]
     pub fn open_or_recover(&mut self, id: LedgerId) -> Result<Option<R>, LedgerError> {
         match self.records.get_mut(&id) {
             Some(entry) if entry.state == LedgerState::Live => Ok(entry.record.clone()),
@@ -61,6 +62,7 @@ impl<R: Clone> DemuxLedger<R> {
         match self.records.remove(&id) { Some(entry) => entry.record.ok_or(LedgerError::InvalidState), None => Err(LedgerError::NotFound) }
     }
     pub fn rollback_open(&mut self, id: LedgerId) -> Result<(), LedgerError> { self.records.remove(&id).map(|_| ()).ok_or(LedgerError::NotFound) }
+    #[cfg(test)]
     pub fn insert_record(&mut self, id: LedgerId, record: R) -> Result<(), LedgerError> { self.create_live(id, record).map(|_| ()) }
     pub fn get_record(&self, id: LedgerId) -> Option<R> { self.get_live(id).ok() }
     pub fn contains_live(&self, id: LedgerId) -> bool { self.records.get(&id).is_some_and(|e| e.state == LedgerState::Live) }
@@ -176,6 +178,8 @@ impl LnbLedger {
         active.insert(lnb_id);
         Ok(LnbOperationGuard { lnb_id, active: true })
     }
+
+    #[cfg(test)]
 
     pub fn operation_failure_diagnostic(lnb_id: i32) -> Option<&'static str> {
         lnb_operation_failures().lock().ok().and_then(|failures| failures.get(&lnb_id).copied())

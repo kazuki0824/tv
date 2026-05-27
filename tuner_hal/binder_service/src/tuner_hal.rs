@@ -190,10 +190,12 @@ fn lnb_operation_guard_for_id(lnb_id: i32) -> BinderResult<LnbOperationGuard> {
 }
 const FILTER_MONITOR_MASK_STATUS: i32 = 1 << 0;
 const FILTER_MONITOR_MASK_EVENT: i32 = 1 << 1;
+#[cfg(test)]
 const SUPPORTED_FILTER_MONITOR_MASK: i32 = 0;
 const AV_SHARED_SLOT_COUNT: usize = 32;
 const AV_SHARED_SLOT_SIZE_BYTES: usize = 1024 * 1024;
 const AV_SLOT_COUNT: usize = AV_SHARED_SLOT_COUNT;
+#[cfg(test)]
 const AV_MIN_SLOT_SIZE: usize = AV_SHARED_SLOT_SIZE_BYTES;
 const AV_DEBUG_LOG_INTERVAL: u64 = 64;
 const DVR_DEFAULT_STATUS_CHECK_INTERVAL_MS: i64 = 25;
@@ -250,6 +252,7 @@ const SUPPORTED_DEMUX_FILTER_CAPS: i32 = DemuxFilterMainType::TS.0;
 const DEMUX_ID_BASE: i32 = 0;
 const JAPAN_BS_FIRST_IF_HZ: i64 = 1_049_480_000;
 const JAPAN_CS110_LAST_IF_HZ: i64 = 2_053_000_000;
+#[cfg(test)]
 const MAX_DISEQC_MESSAGE_LEN: usize = 6;
 const MFD_CLOEXEC: i32 = 0x0001;
 const PROT_READ: i32 = 0x1;
@@ -265,6 +268,9 @@ const SYS_MEMFD_CREATE: isize = 319;
 const SYS_MEMFD_CREATE: isize = 356;
 #[cfg(target_arch = "aarch64")]
 const SYS_MEMFD_CREATE: isize = 279;
+
+
+#[cfg(test)]
 
 
 type WorkerSignal = RuntimeWorkerSignal<WorkerExit>;
@@ -330,7 +336,7 @@ unsafe impl Sync for SharedMemoryBacking {}
 
 #[derive(Clone, Copy, Debug, Default)]
 struct RingWriteResult {
-    start_offset: usize,
+    _start_offset: usize,
     len: usize,
     overflowed: bool,
 }
@@ -356,6 +362,7 @@ struct AvBufferSlice {
 
 const PX4_DEVICE_FAMILY_UNKNOWN: i32 = 0;
 const DVR_STATUS_MASK_DISABLED: i32 = 0;
+#[cfg(test)]
 const NO_DISEQC_GENERATION: u64 = 0;
 const PES_STREAM_ID_UNKNOWN: i32 = 0;
 const MEDIA_EVENT_TIMESTAMP_ABSENT: i64 = 0;
@@ -651,6 +658,8 @@ impl Px4PathDiagnostics {
             );
         }
     }
+
+    #[cfg(test)]
 
     fn snapshot(&self) -> Px4PathDiagnosticSnapshot {
         Px4PathDiagnosticSnapshot {
@@ -1106,6 +1115,7 @@ impl AvSharedBacking {
     }
 
     #[cfg(test)]
+    #[cfg(test)]
     fn stats(&self) -> AvSharedStats {
         self.stats_result().expect("av shared stats locks must be readable in tests")
     }
@@ -1164,6 +1174,7 @@ impl AvSharedBacking {
         Ok((handle, identity))
     }
 
+    #[cfg(test)]
     #[cfg(test)]
     fn build_native_handle(&self) -> BinderResult<TunerNativeHandle> {
         let (handle, _) = self.build_native_handle_with_identity(0, 1)?;
@@ -1268,7 +1279,7 @@ impl SharedMemoryBacking {
                 ));
             }
             return Ok(RingWriteResult {
-                start_offset: 0,
+                _start_offset: 0,
                 len: 0,
                 overflowed: true,
             });
@@ -1293,7 +1304,7 @@ impl SharedMemoryBacking {
         }
         self.wake_waiters()?;
         Ok(RingWriteResult {
-            start_offset: 0,
+            _start_offset: 0,
             len: written,
             overflowed: false,
         })
@@ -1661,7 +1672,7 @@ impl RuntimeIoRegistry {
         queue: &Arc<SharedMemoryBacking>,
         av_queue: &Arc<SharedMemoryBacking>,
         av_shared: Option<&Arc<AvSharedBacking>>,
-        av_drop_unexported: &Arc<AtomicU64>,
+        _av_drop_unexported: &Arc<AtomicU64>,
     ) -> BinderResult<()> {
         let mut entries = lock_mutex_status(&self.entries, "runtime_io_entries")?;
         entries.insert(
@@ -1673,7 +1684,7 @@ impl RuntimeIoRegistry {
                 filter_queue: Some(Arc::downgrade(queue)),
                 filter_av_queue: Some(Arc::downgrade(av_queue)),
                 filter_av_shared: av_shared.map(Arc::downgrade),
-                filter_av_drop_unexported: Some(Arc::clone(av_drop_unexported)),
+                filter_av_drop_unexported: Some(Arc::clone(_av_drop_unexported)),
                 dvr_queue: None,
                 failed_reason: None,
             },
@@ -1806,6 +1817,8 @@ impl RuntimeIoRegistry {
         Ok(())
     }
 
+    #[cfg(test)]
+
     fn failed_reason_for_debug(&self) -> Vec<String> {
         let Some(entries) = lock_mutex_option(&self.entries, "runtime_io_entries") else {
             return vec!["runtime_io=poisoned".to_string()];
@@ -1881,7 +1894,7 @@ impl RuntimeIoRegistry {
             }
             if let Some(counter) = backings.filter_av_drop_unexported.as_ref() {
                 out.push(format!(
-                    "{} av_drop_unexported={}",
+                    "{} _av_drop_unexported={}",
                     owner,
                     counter.load(Ordering::SeqCst)
                 ));
@@ -1893,6 +1906,7 @@ impl RuntimeIoRegistry {
         out
     }
 
+    #[cfg(test)]
     #[cfg(test)]
     fn entry_count(&self) -> usize {
         lock_mutex_status(&self.entries, "runtime_io_entries")
@@ -2047,6 +2061,7 @@ impl LivePumpWake {
         }
     }
 
+    #[cfg(test)]
     #[cfg(test)]
     fn drain_for_test(&self) {
         if let Some(mut reader) = lock_mutex_option(&self.reader, "live_pump_reader") {
@@ -2267,6 +2282,8 @@ impl DescramblerDiagnosticRegistry {
             .unwrap_or_default()
     }
 
+    #[cfg(test)]
+
     fn dump_for_debug(&self) -> String {
         let Some(counters) = lock_mutex_option(&self.counters, "descrambler_diagnostic_counters")
         else {
@@ -2281,6 +2298,7 @@ impl DescramblerDiagnosticRegistry {
             .join("\n")
     }
 
+    #[cfg(test)]
     #[cfg(test)]
     fn dump_for_test(&self) -> String {
         self.dump_for_debug()
@@ -2347,6 +2365,8 @@ impl ActiveDescramblerSnapshot {
     fn targets_pid(&self, pid: u16) -> bool {
         self.pids.contains(&pid)
     }
+
+    #[cfg(test)]
 
     fn descramble_packet_in_place(&self, packet: &mut [u8]) -> Result<(), DescrambleFailure> {
         let Some(key_slot) = self.key_slot.as_ref() else {
@@ -2560,6 +2580,7 @@ fn descramble_packet_for_pid_with_diagnostics(
 }
 
 #[cfg(test)]
+#[cfg(test)]
 fn descramble_packet_bytes_for_pid_with_diagnostics(
     packet: &[u8],
     demux_id: i32,
@@ -2581,6 +2602,8 @@ fn descramble_packet_bytes_for_pid_with_diagnostics(
         diagnostics,
     ))
 }
+
+#[cfg(test)]
 
 fn maybe_descramble_packet_for_pid(
     packet: &[u8; 188],
@@ -2779,16 +2802,16 @@ impl StartupDiagnosticRegistry {
     }
 
     fn record(&self, message: impl Into<String>) {
-        if let Some(mut records) = lock_mutex_option(&self.records, "startup_diagnostics") {
+        if let Some(mut records) = lock_mutex_option(&self.records, "_startup_diagnostics") {
             records.push(message.into());
         }
     }
 
     fn dump_for_debug(&self) -> String {
-        lock_mutex_option(&self.records, "startup_diagnostics")
+        lock_mutex_option(&self.records, "_startup_diagnostics")
             .map(|records| {
                 if records.is_empty() {
-                    "startup_diagnostics=ok".to_string()
+                    "_startup_diagnostics=ok".to_string()
                 } else {
                     records
                         .iter()
@@ -2797,7 +2820,7 @@ impl StartupDiagnosticRegistry {
                         .join("\n")
                 }
             })
-            .unwrap_or_else(|| "startup_diagnostics=poisoned".to_string())
+            .unwrap_or_else(|| "_startup_diagnostics=poisoned".to_string())
     }
 }
 
@@ -2855,14 +2878,14 @@ impl DiagnosticFileWriteRegistry {
         lock_mutex_option(&self.records, "diagnostic_file_write_records")
             .map(|records| {
                 if records.is_empty() {
-                    "diagnostic_file_writes=ok".to_string()
+                    "_diagnostic_file_writes=ok".to_string()
                 } else {
                     records.iter().map(|(path, (total, consecutive, detail))| {
                         format!("diagnostic_file_write path={} total_failures={} consecutive_failures={} last={}", path, total, consecutive, detail)
                     }).collect::<Vec<_>>().join("\n")
                 }
             })
-            .unwrap_or_else(|| "diagnostic_file_writes=poisoned".to_string())
+            .unwrap_or_else(|| "_diagnostic_file_writes=poisoned".to_string())
     }
 }
 
@@ -2872,7 +2895,7 @@ enum FrontendEntryKind {
         unit: i32,
         device_name: Option<String>,
         control_path: PathBuf,
-        declared_type: FrontendType,
+        _declared_type: FrontendType,
         allowed_systems: Vec<FrontendSystem>,
     },
     Dvb {
@@ -2880,7 +2903,7 @@ enum FrontendEntryKind {
         frontend_index: i32,
         demux_index: i32,
         dvr_index: i32,
-        declared_type: FrontendType,
+        _declared_type: FrontendType,
         supported_systems: Vec<FrontendSystem>,
         min_frequency_hz: i64,
         max_frequency_hz: i64,
@@ -3066,6 +3089,8 @@ fn demux_id_in_pool(demux_id: i32) -> bool {
     relative >= 0 && (relative as usize) < MAX_LIVE_DEMUXES
 }
 
+#[cfg(test)]
+
 fn local_filter_identity(filter: &Strong<dyn IFilter>) -> BinderResult<(i32, i32)> {
     let binder_native: Binder<BnFilter> = filter.as_binder().try_into().map_err(|_| {
         invalid_argument_status("filter object is not a local Maleicacid HAL filter")
@@ -3081,6 +3106,8 @@ struct LocalFilterGenerationIdentity {
     filter_id: i32,
     generation: u64,
 }
+
+#[cfg(test)]
 
 fn pid_only_descrambler_source_identity() -> LocalFilterGenerationIdentity {
     LocalFilterGenerationIdentity {
@@ -3322,7 +3349,7 @@ fn enumerate_frontend_entries() -> Vec<FrontendEntry> {
                     unit: probe.frontend_index,
                     device_name: probe.device_name.clone(),
                     control_path: probe.control_path.clone(),
-                    declared_type: FrontendType::ISDBT,
+                    _declared_type: FrontendType::ISDBT,
                     allowed_systems: vec![FrontendSystem::IsdbT],
                 },
             });
@@ -3338,7 +3365,7 @@ fn enumerate_frontend_entries() -> Vec<FrontendEntry> {
                     unit: probe.frontend_index,
                     device_name: probe.device_name.clone(),
                     control_path: probe.control_path.clone(),
-                    declared_type: FrontendType::ISDBS,
+                    _declared_type: FrontendType::ISDBS,
                     allowed_systems: vec![FrontendSystem::IsdbS],
                 },
             });
@@ -3348,7 +3375,7 @@ fn enumerate_frontend_entries() -> Vec<FrontendEntry> {
     for probe in DvbFrontendBackend::enumerate_probes() {
         let base_id = 10_000 + probe.adapter_id * 10 + probe.frontend_index * 2;
         let mut exported_any = false;
-        for (offset, declared_type, system) in [
+        for (offset, _declared_type, system) in [
             (0, FrontendType::ISDBT, FrontendSystem::IsdbT),
             (1, FrontendType::ISDBS, FrontendSystem::IsdbS),
         ] {
@@ -3364,7 +3391,7 @@ fn enumerate_frontend_entries() -> Vec<FrontendEntry> {
                     frontend_index: probe.frontend_index,
                     demux_index: probe.demux_index,
                     dvr_index: probe.dvr_index,
-                    declared_type,
+                    _declared_type,
                     supported_systems: vec![system],
                     min_frequency_hz,
                     max_frequency_hz,
@@ -3480,7 +3507,7 @@ struct LnbRuntimeState {
     supports_tone: bool,
     supports_diseqc: bool,
     generation: u64,
-    diseqc_generation: u64,
+    _diseqc_generation: u64,
     last_close_reset_error: Option<String>,
 }
 
@@ -3499,13 +3526,13 @@ struct FrontendRuntime {
     allowed_systems: Vec<FrontendSystem>,
     advertised_status_support: FrontendStatusSupport,
     backend: Mutex<FrontendBackendState>,
-    ci_cam_id: Mutex<Option<i32>>,
+    _ci_cam_id: Mutex<Option<i32>>,
     lnb_registry: Arc<Mutex<BTreeMap<i32, LnbRuntimeState>>>,
     bound_demuxes: Mutex<BTreeMap<i32, BoundDemuxRuntime>>,
     descrambler_registry: Arc<DescramblerRuntimeRegistry>,
     descrambler_diagnostics: Arc<DescramblerDiagnosticRegistry>,
     px4_path_diagnostics: Arc<Px4PathDiagnostics>,
-    sent_diseqc_generations: Mutex<BTreeMap<i32, u64>>,
+    _sent_diseqc_generations: Mutex<BTreeMap<i32, u64>>,
     runtime_failures: Mutex<Vec<String>>,
     scan_terminal_debug: Mutex<Option<String>>,
     pump_stop: RuntimeAtomicFlag,
@@ -3539,7 +3566,7 @@ impl FrontendRuntime {
                 frontend_index,
                 demux_index,
                 dvr_index,
-                declared_type: _,
+                _declared_type: _,
                 supported_systems,
                 ..
             } => (
@@ -3572,13 +3599,13 @@ impl FrontendRuntime {
             allowed_systems,
             advertised_status_support,
             backend: Mutex::new(backend),
-            ci_cam_id: Mutex::new(None),
+            _ci_cam_id: Mutex::new(None),
             lnb_registry,
             bound_demuxes: Mutex::new(BTreeMap::new()),
             descrambler_registry,
             descrambler_diagnostics,
             px4_path_diagnostics: Arc::new(Px4PathDiagnostics::new()),
-            sent_diseqc_generations: Mutex::new(BTreeMap::new()),
+            _sent_diseqc_generations: Mutex::new(BTreeMap::new()),
             runtime_failures: Mutex::new(Vec::new()),
             scan_terminal_debug: Mutex::new(None),
             pump_stop: RuntimeAtomicFlag::new(false),
@@ -4445,6 +4472,7 @@ impl TunerDescrambler {
     }
 
     #[cfg(test)]
+    #[cfg(test)]
     fn debug_snapshot(
         &self,
     ) -> (
@@ -4464,6 +4492,7 @@ impl TunerDescrambler {
         )
     }
 
+    #[cfg(test)]
     #[cfg(test)]
     fn add_pid_for_test(&self, pid: u16) -> BinderResult<()> {
         if pid > 0x1ffe {
@@ -4559,6 +4588,7 @@ impl TunerDescrambler {
         Ok(())
     }
 
+    #[cfg(test)]
     #[cfg(test)]
     fn remove_pid_for_test(&self, pid: u16) -> BinderResult<()> {
         if pid > 0x1ffe {
@@ -4831,8 +4861,8 @@ pub struct TunerHal {
     descrambler_registry: Arc<DescramblerRuntimeRegistry>,
     descrambler_diagnostics: Arc<DescramblerDiagnosticRegistry>,
     descrambler_key_table: Arc<DescramblerKeyTable>,
-    startup_diagnostics: Arc<StartupDiagnosticRegistry>,
-    diagnostic_file_writes: Arc<DiagnosticFileWriteRegistry>,
+    _startup_diagnostics: Arc<StartupDiagnosticRegistry>,
+    _diagnostic_file_writes: Arc<DiagnosticFileWriteRegistry>,
     demux_core: DemuxCore,
     lnb_registry: Arc<Mutex<BTreeMap<i32, LnbRuntimeState>>>,
     diagnostic_workers: Mutex<Vec<WorkerHandle>>,
@@ -4846,10 +4876,10 @@ fn frontend_open_count_or_zero(map: &std::collections::BTreeMap<i32, i32>, front
 impl TunerHal {
     pub fn new() -> Self {
         let frontend_entries = enumerate_frontend_entries();
-        let startup_diagnostics = Arc::new(StartupDiagnosticRegistry::new());
-        let diagnostic_file_writes = Arc::new(DiagnosticFileWriteRegistry::new());
+        let _startup_diagnostics = Arc::new(StartupDiagnosticRegistry::new());
+        let _diagnostic_file_writes = Arc::new(DiagnosticFileWriteRegistry::new());
         if frontend_entries.is_empty() {
-            startup_diagnostics
+            _startup_diagnostics
                 .record("target tuner device absent; advertising zero frontend resources");
         }
         let frontend_ids = frontend_entries.iter().map(|e| e.id).collect();
@@ -4889,8 +4919,8 @@ impl TunerHal {
         let mut diagnostic_workers = Vec::new();
         if let Ok(path) = std::env::var("MALEICACID_TUNER_HAL_DESCRAMBLER_DIAGNOSTIC_FILE") {
             let diagnostics_for_file = Arc::clone(&descrambler_diagnostics);
-            let diagnostic_file_writes_for_file = Arc::clone(&diagnostic_file_writes);
-            let startup_diagnostics_for_hook = Arc::clone(&startup_diagnostics);
+            let diagnostic_file_writes_for_file = Arc::clone(&_diagnostic_file_writes);
+            let startup_diagnostics_for_hook = Arc::clone(&_startup_diagnostics);
             let path_for_file = path.clone();
             match WorkerRuntime::spawn_owned_with_exit_hook(
                 WorkerOwnerId("diagnostic_worker", 1),
@@ -4912,7 +4942,7 @@ impl TunerHal {
             ) {
                 Ok(worker) => diagnostic_workers.push(worker),
                 Err(err) => {
-                    startup_diagnostics.record(format!("diagnostic_worker name=descrambler_diagnostic_file spawn_failed error={err:?}"));
+                    _startup_diagnostics.record(format!("diagnostic_worker name=descrambler_diagnostic_file spawn_failed error={err:?}"));
                     eprintln!("maleicacid-tuner-hal-worker: failed to spawn descrambler_diagnostic_file: {err:?}");
                 }
             }
@@ -4937,9 +4967,9 @@ impl TunerHal {
         let demux_ledger: DemuxLedgerStore = Arc::new(Mutex::new(DemuxLedger::<DemuxRecordRef>::default()));
         if let Ok(path) = std::env::var("MALEICACID_TUNER_HAL_FRONTEND_DIAGNOSTIC_FILE") {
             let frontend_registry_for_file = frontend_registry.clone();
-            let startup_diagnostics_for_file = Arc::clone(&startup_diagnostics);
-            let startup_diagnostics_for_hook = Arc::clone(&startup_diagnostics);
-            let diagnostic_file_writes_for_file = Arc::clone(&diagnostic_file_writes);
+            let startup_diagnostics_for_file = Arc::clone(&_startup_diagnostics);
+            let startup_diagnostics_for_hook = Arc::clone(&_startup_diagnostics);
+            let diagnostic_file_writes_for_file = Arc::clone(&_diagnostic_file_writes);
             let path_for_file = path.clone();
             match WorkerRuntime::spawn_owned_with_exit_hook(
                 WorkerOwnerId("diagnostic_worker", 2),
@@ -4979,7 +5009,7 @@ impl TunerHal {
             ) {
                 Ok(worker) => diagnostic_workers.push(worker),
                 Err(err) => {
-                    startup_diagnostics.record(format!(
+                    _startup_diagnostics.record(format!(
                         "diagnostic_worker name=frontend_diagnostic_file spawn_failed error={err:?}"
                     ));
                     eprintln!("maleicacid-tuner-hal-worker: failed to spawn frontend_diagnostic_file: {err:?}");
@@ -4988,8 +5018,8 @@ impl TunerHal {
         }
         let demux_ledger_for_av_debug = Arc::clone(&demux_ledger);
         if let Ok(path) = std::env::var("MALEICACID_TUNER_HAL_AV_SHARED_DIAGNOSTIC_FILE") {
-            let diagnostic_file_writes_for_file = Arc::clone(&diagnostic_file_writes);
-            let startup_diagnostics_for_hook = Arc::clone(&startup_diagnostics);
+            let diagnostic_file_writes_for_file = Arc::clone(&_diagnostic_file_writes);
+            let startup_diagnostics_for_hook = Arc::clone(&_startup_diagnostics);
             let path_for_file = path.clone();
             match WorkerRuntime::spawn_owned_with_exit_hook(
                 WorkerOwnerId("diagnostic_worker", 3),
@@ -5036,7 +5066,7 @@ impl TunerHal {
             ) {
                 Ok(worker) => diagnostic_workers.push(worker),
                 Err(err) => {
-                    startup_diagnostics.record(format!(
+                    _startup_diagnostics.record(format!(
                         "diagnostic_worker name=av_shared_diagnostic_file spawn_failed error={err:?}"
                     ));
                     eprintln!("maleicacid-tuner-hal-worker: failed to spawn av_shared_diagnostic_file: {err:?}");
@@ -5056,17 +5086,21 @@ impl TunerHal {
             descrambler_registry,
             descrambler_diagnostics,
             descrambler_key_table,
-            startup_diagnostics,
-            diagnostic_file_writes,
+            _startup_diagnostics,
+            _diagnostic_file_writes,
             demux_core: DemuxCore::new(),
             lnb_registry,
             diagnostic_workers: Mutex::new(diagnostic_workers),
         }
     }
 
+    #[cfg(test)]
+
     pub fn dump_descrambler_diagnostics_for_debug(&self) -> String {
         self.descrambler_diagnostics.dump_for_debug()
     }
+
+    #[cfg(test)]
 
     pub fn dump_frontend_path_diagnostics_for_debug(&self) -> String {
         let frontend_dump = self
@@ -5083,14 +5117,16 @@ impl TunerHal {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        let startup_dump = self.startup_diagnostics.dump_for_debug();
-        let file_dump = self.diagnostic_file_writes.dump_for_debug();
+        let startup_dump = self._startup_diagnostics.dump_for_debug();
+        let file_dump = self._diagnostic_file_writes.dump_for_debug();
         if frontend_dump.is_empty() {
             format!("{startup_dump}\n{file_dump}")
         } else {
             format!("{startup_dump}\n{frontend_dump}\n{file_dump}")
         }
     }
+
+    #[cfg(test)]
 
     pub fn dump_av_shared_diagnostics_for_debug(&self) -> String {
         lock_mutex_option(&self.demux_ledger, "demux_ledger")
@@ -5337,6 +5373,8 @@ impl TunerHal {
         Ok((demux_id, record))
     }
 
+    #[cfg(test)]
+
     fn open_or_create_demux_record_by_id(
         &self,
         demux_id: i32,
@@ -5362,6 +5400,7 @@ impl TunerHal {
         self.create_demux_record_for_id_locked(demux_id)
     }
 
+    #[cfg(test)]
     #[cfg(test)]
     fn first_available_demux_id(&self) -> Option<i32> {
         let live = lock_mutex_status(&self.demux_ledger, "test_mutex").expect("test mutex should lock");
@@ -5617,7 +5656,7 @@ enum FrontendBackendState {
     Dvb(DvbFrontendBackend),
     Unavailable {
         reason: String,
-        declared_type: FrontendType,
+        _declared_type: FrontendType,
         allowed_systems: Vec<FrontendSystem>,
         selected_lnb_id: Option<i32>,
     },
@@ -5750,9 +5789,9 @@ impl FrontendHal {
             FrontendBackendState::Dvb(inner) => inner.hardware_info(),
             FrontendBackendState::Unavailable {
                 reason,
-                declared_type,
+                _declared_type,
                 ..
-            } => format!("unavailable {:?}: {}", declared_type, reason),
+            } => format!("unavailable {:?}: {}", _declared_type, reason),
         }
     }
 
@@ -5837,6 +5876,8 @@ impl FrontendHal {
             }),
         }
     }
+
+    #[cfg(test)]
 
     fn backend_send_diseqc_message(
         _backend: &mut FrontendBackendState,
@@ -5943,6 +5984,8 @@ impl FrontendHal {
         }
     }
 
+    #[cfg(test)]
+
     fn current_callback(&self) -> Option<Strong<dyn IFrontendCallback>> {
         lock_mutex_option(&self.callback, "frontend_callback").and_then(|callback| callback.clone())
     }
@@ -5978,6 +6021,8 @@ impl FrontendHal {
             Self::mark_scan_session_phase(scan_session, session_id, ScanPhase::FailedCallback);
         }
     }
+
+    #[cfg(test)]
 
     fn notify_event(&self, event: FrontendEventType) {
         if let Some(callback) = self.current_callback() {
@@ -6531,6 +6576,8 @@ impl FrontendHal {
             }
         }
     }
+
+    #[cfg(test)]
 
     fn remember_scan_terminal_from_current(&self) {
         let Some(session_id) = lock_mutex_option(&self.scan_session, "frontend_scan_session")
@@ -7717,22 +7764,22 @@ FrontendHal::notify_scan_end_required(
         Ok(())
     }
 
-    fn linkCiCam(&self, ci_cam_id: i32) -> BinderResult<i32> {
+    fn linkCiCam(&self, _ci_cam_id: i32) -> BinderResult<i32> {
         self.ensure_open()?;
-        let detail = format!("ci_cam_unsupported api=linkCiCam ci_cam_id={}", ci_cam_id);
+        let detail = format!("ci_cam_unsupported api=linkCiCam _ci_cam_id={}", _ci_cam_id);
         self.shared.record_runtime_failure(detail.clone());
-        eprintln!("maleicacid-tuner-hal: CI CAM is permanently unsupported; linkCiCam rejected ci_cam_id={}", ci_cam_id);
+        eprintln!("maleicacid-tuner-hal: CI CAM is permanently unsupported; linkCiCam rejected _ci_cam_id={}", _ci_cam_id);
         Err(Status::new_service_specific_error(
             TunerResult::UNAVAILABLE.0,
             None,
         ))
     }
 
-    fn unlinkCiCam(&self, ci_cam_id: i32) -> BinderResult<()> {
+    fn unlinkCiCam(&self, _ci_cam_id: i32) -> BinderResult<()> {
         self.ensure_open()?;
-        let detail = format!("ci_cam_unsupported api=unlinkCiCam ci_cam_id={}", ci_cam_id);
+        let detail = format!("ci_cam_unsupported api=unlinkCiCam _ci_cam_id={}", _ci_cam_id);
         self.shared.record_runtime_failure(detail.clone());
-        eprintln!("maleicacid-tuner-hal: CI CAM is permanently unsupported; unlinkCiCam rejected ci_cam_id={}", ci_cam_id);
+        eprintln!("maleicacid-tuner-hal: CI CAM is permanently unsupported; unlinkCiCam rejected _ci_cam_id={}", _ci_cam_id);
         Err(Status::new_service_specific_error(
             TunerResult::UNAVAILABLE.0,
             None,
@@ -8474,9 +8521,9 @@ impl IDemux for DemuxHal {
         Ok(BnDvr::new_binder(dvr_hal, BinderFeatures::default()))
     }
 
-    fn connectCiCam(&self, ci_cam_id: i32) -> BinderResult<()> {
+    fn connectCiCam(&self, _ci_cam_id: i32) -> BinderResult<()> {
         self.ensure_open()?;
-        self.record_ci_cam_unsupported(&format!("connectCiCam ci_cam_id={}", ci_cam_id));
+        self.record_ci_cam_unsupported(&format!("connectCiCam _ci_cam_id={}", _ci_cam_id));
         Err(Status::new_service_specific_error(
             TunerResult::UNAVAILABLE.0,
             None,
@@ -8524,7 +8571,7 @@ pub struct FilterHal {
     av_shared_handle_client_released: Arc<RuntimeAtomicFlag>,
     current_av_handle_identity: Arc<Mutex<Option<AvSharedHandleIdentity>>>,
     av_export_generation: Arc<AtomicU64>,
-    av_drop_unexported: Arc<AtomicU64>,
+    _av_drop_unexported: Arc<AtomicU64>,
     callback_stop: Arc<RuntimeAtomicFlag>,
     callback_worker: Mutex<Option<WorkerHandle>>,
     closed: Arc<RuntimeAtomicFlag>,
@@ -8556,13 +8603,13 @@ impl FilterHal {
         let av_shared_handle_client_released = Arc::new(RuntimeAtomicFlag::new(false));
         let current_av_handle_identity = Arc::new(Mutex::new(None));
         let av_export_generation = Arc::new(AtomicU64::new(0));
-        let av_drop_unexported = Arc::new(AtomicU64::new(0));
+        let _av_drop_unexported = Arc::new(AtomicU64::new(0));
         runtime_io.register_filter(
             filter_id,
             &queue_backing,
             &av_queue_backing,
             None,
-            &av_drop_unexported,
+            &_av_drop_unexported,
         )?;
         let callback_stop = Arc::new(RuntimeAtomicFlag::new(false));
         let closed = Arc::new(RuntimeAtomicFlag::new(false));
@@ -8578,7 +8625,7 @@ impl FilterHal {
             let av_shared_backing_clone = Arc::clone(&av_shared_backing);
             let av_shared_handle_exported_clone = Arc::clone(&av_shared_handle_exported);
             let av_shared_handle_client_released_clone = Arc::clone(&av_shared_handle_client_released);
-            let av_drop_unexported_clone = Arc::clone(&av_drop_unexported);
+            let av_drop_unexported_clone = Arc::clone(&_av_drop_unexported);
             let next_av_data_id_clone = Arc::clone(&next_av_data_id);
             let runtime_io_clone = Arc::clone(&runtime_io);
             let closed_clone = Arc::clone(&closed);
@@ -8733,7 +8780,7 @@ impl FilterHal {
                                 // 呼び出し側が shared fd をまだ取得していない。framework/JNI が消費できない成功風 MediaEvent は出さない。
                                 let drops = av_drop_unexported_clone.fetch_add(1, Ordering::SeqCst).saturating_add(1);
                                 if AvSharedBacking::should_log_counter(drops) {
-                                    eprintln!("maleicacid-tuner-hal: AV payload dropped before shared handle export filter_id={} av_drop_unexported={}", filter_id, drops);
+                                    eprintln!("maleicacid-tuner-hal: AV payload dropped before shared handle export filter_id={} _av_drop_unexported={}", filter_id, drops);
                                 }
                                 av_delivery = Some(AvPayloadDeliveryResult::DroppedBeforeHandleExport);
                                 overflow = true;
@@ -8860,7 +8907,7 @@ impl FilterHal {
             av_shared_handle_client_released,
             current_av_handle_identity,
             av_export_generation,
-            av_drop_unexported,
+            _av_drop_unexported,
             callback_stop,
             callback_worker,
             closed,
@@ -8924,6 +8971,8 @@ impl FilterHal {
         });
     }
 
+    #[cfg(test)]
+
     fn fail_from_callback(&self, api: &str, err: Status) -> Status {
         let status = callback_failure_status("filter", self.filter_id, api, &err);
         let _ = self.close_internal();
@@ -8967,6 +9016,8 @@ impl FilterHal {
         self.runtime_io
             .ensure_not_failed(RuntimeIoKind::Filter, self.filter_id)
     }
+
+    #[cfg(test)]
 
     fn stop_callback_worker(&self) -> BinderResult<()> {
         self.callback_stop.store(true, Ordering::SeqCst);
@@ -9034,6 +9085,8 @@ impl FilterHal {
             Ok(())
         }
     }
+
+    #[cfg(test)]
 
     fn av_filter_state(&self) -> (bool, bool) {
         let Some(demux) = lock_mutex_option(&self.state, "demux_handle") else {
@@ -9240,6 +9293,8 @@ impl FilterHal {
             .clear_filter_av_shared_best_effort(self.filter_id);
     }
 
+    #[cfg(test)]
+
     fn release_all_av_shared_handles(&self) -> BinderResult<()> {
         let Some(backing) =
             lock_mutex_status(&self.av_shared_backing, "filter_av_shared_backing")?.as_ref().cloned()
@@ -9431,6 +9486,8 @@ impl FilterHal {
         self.closed.store(true, Ordering::SeqCst);
         self.cleanup_complete.store(true, Ordering::SeqCst);
     }
+
+    #[cfg(test)]
 
     fn has_av_shared_backing(&self) -> BinderResult<bool> {
         Ok(lock_mutex_status(&self.av_shared_backing, "filter_av_shared_backing")?.is_some())
@@ -10220,6 +10277,8 @@ impl DvrHal {
         Ok(())
     }
 
+    #[cfg(test)]
+
     fn wake_callback_worker(worker: &Mutex<Option<WorkerHandle>>) -> BinderResult<()> {
         let guard = lock_mutex_status(worker, "dvr_callback_worker")?;
         if let Some(handle) = guard.as_ref() {
@@ -10358,6 +10417,8 @@ impl DvrHal {
         }
         Ok(())
     }
+
+    #[cfg(test)]
 
     fn stop_callback_worker_best_effort(&self) {
         self.callback_stop.store(true, Ordering::SeqCst);
@@ -10879,6 +10940,8 @@ impl LnbHal {
         Ok(())
     }
 
+    #[cfg(test)]
+
     fn apply_diseqc_once_to_matching_frontends(
         &self,
         generation: u64,
@@ -10889,7 +10952,7 @@ impl LnbHal {
             if FrontendHal::backend_selected_lnb_id(&backend) != Some(self.lnb_id) {
                 continue;
             }
-            let mut sent_generations = lock_mutex_hal(&runtime.sent_diseqc_generations, "sent_diseqc_generations")?;
+            let mut sent_generations = lock_mutex_hal(&runtime._sent_diseqc_generations, "_sent_diseqc_generations")?;
             let already_sent = sent_generations
                 .get(&self.lnb_id)
                 .copied()
@@ -11129,6 +11192,7 @@ impl LnbHal {
         }
     }
 
+    #[cfg(test)]
     #[cfg(test)]
     fn callback_is_set_for_test(&self) -> bool {
         lock_mutex_status(&self.callback, "test_mutex").unwrap().is_some()
@@ -11413,9 +11477,13 @@ fn optional_positive_i64_to_u64(value: i64, field: &'static str) -> Result<Optio
     Ok(positive_i64_to_u64(value))
 }
 
+#[cfg(test)]
+
 fn positive_i32_to_u32(value: i32) -> Option<u32> {
     u32::try_from(value).ok().filter(|v| *v > 0)
 }
+
+#[cfg(test)]
 
 fn nonnegative_i32_to_u32(value: i32) -> Option<u32> {
     u32::try_from(value).ok()
@@ -11485,6 +11553,8 @@ fn map_isdbs_stream_selector(
         ))),
     }
 }
+
+#[cfg(test)]
 
 fn satellite_symbol_rate_sps(value: i32, field_name: &str) -> Result<Option<u32>, HalError> {
     let Some(rate) = positive_i32_to_u32(value) else {
@@ -11759,6 +11829,8 @@ fn validate_record_index_settings(
     }
     Ok(sc_index_mask_bits)
 }
+
+#[cfg(test)]
 
 fn build_filter_summary(settings: &DemuxFilterSettings) -> BinderResult<FilterConfig> {
     build_filter_summary_for_open_type(settings, FilterOpenType::TsOther)

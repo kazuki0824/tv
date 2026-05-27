@@ -71,6 +71,7 @@ impl DescramblerKeyTable {
     }
 
     #[cfg(test)]
+    #[cfg(test)]
     pub fn resolve_for_test(&self, token: &[u8]) -> Option<DescramblerKeySlot> {
         self.resolve_with_diagnostic(token).ok().map(|resolved| resolved.slot)
     }

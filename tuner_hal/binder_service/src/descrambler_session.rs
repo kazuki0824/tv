@@ -204,6 +204,8 @@ impl DescramblerSession {
         }
     }
 
+    #[cfg(test)]
+
     pub fn pending_cleanup_items(&self) -> impl Iterator<Item = DescramblerCleanupItem> + '_ {
         self.pending_cleanup.iter().copied()
     }

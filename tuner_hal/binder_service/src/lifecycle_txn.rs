@@ -41,6 +41,7 @@ pub struct LifecycleTxn {
 }
 
 impl LifecycleTxn {
+    #[cfg(test)]
     pub fn new() -> Self { Self::default() }
 
     pub fn validate<F, E>(&mut self, name: &'static str, f: F) -> Result<(), E>
@@ -93,7 +94,10 @@ impl LifecycleTxn {
         }
     }
 
+    #[cfg(test)]
+
     pub fn record_step(&mut self, name: &'static str) { self.steps.push(TxnStep { stage: LifecycleStage::Apply, name }); }
+    #[cfg(test)]
     pub fn record_error_once(&mut self, step: &'static str) { self.record_error_once_at(LifecycleStage::Apply, step); }
     pub fn record_error_once_at(&mut self, stage: LifecycleStage, step: &'static str) {
         if self.first_error.is_none() { self.first_error = Some(FirstError { stage, step }); }
