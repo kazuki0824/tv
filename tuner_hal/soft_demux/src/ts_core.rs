@@ -179,6 +179,7 @@ pub struct PesAssembler {
     pid: Option<u16>,
     buf: Vec<u8>,
     expected_len: Option<usize>,
+    unbounded_summary: Option<PesHeaderSummary>,
     overflow_drop_count: u64,
     overflow_generation: u64,
     last_drop_reason: Option<&'static str>,
@@ -194,21 +195,30 @@ impl PesAssembler {
             self.pid = Some(pid);
             self.buf.clear();
             self.expected_len = None;
+            self.unbounded_summary = None;
         }
         if self.pid != Some(pid) {
             self.pid = Some(pid);
             self.buf.clear();
             self.expected_len = None;
+            self.unbounded_summary = None;
         }
         self.buf.extend_from_slice(payload);
-        if self.buf.len() > MAX_PES_BUFFER_BYTES {
-            self.reset_after_overflow_drop();
-            return out;
-        }
         if self.expected_len.is_none() {
             if let Some(summary) = parse_pes_header_summary(&self.buf) {
                 self.expected_len = summary.expected_len;
+                self.unbounded_summary = if summary.expected_len.is_none() {
+                    Some(summary)
+                } else {
+                    None
+                };
             }
+        }
+        if self.buf.len() > MAX_PES_BUFFER_BYTES && self.expected_len.is_none() {
+            if let Some(packet) = self.take_unbounded_chunk() {
+                out.push(packet);
+            }
+            return out;
         }
         if let Some(expected_len) = self.expected_len {
             if self.buf.len() >= expected_len {
@@ -226,12 +236,31 @@ impl PesAssembler {
         self.take_completed()
     }
 
-    fn reset_after_overflow_drop(&mut self) {
-        self.buf.clear();
+    fn take_unbounded_chunk(&mut self) -> Option<PesPacket> {
+        let pid = self.pid?;
+        let summary = self.unbounded_summary?;
+        if self.buf.is_empty() {
+            return None;
+        }
+        let raw_bytes = std::mem::take(&mut self.buf);
+        let payload = if raw_bytes.starts_with(&[0x00, 0x00, 0x01]) {
+            raw_bytes[summary.payload_offset.min(raw_bytes.len())..].to_vec()
+        } else {
+            raw_bytes.clone()
+        };
         self.expected_len = None;
         self.overflow_drop_count = self.overflow_drop_count.saturating_add(1);
         self.overflow_generation = self.overflow_generation.saturating_add(1);
-        self.last_drop_reason = Some("pes_assembler_buffer_overflow_drop");
+        self.last_drop_reason = Some("pes_assembler_unbounded_chunk_delivery");
+        Some(PesPacket {
+            pid,
+            stream_id: summary.stream_id,
+            pts_90khz: summary.pts_90khz,
+            dts_90khz: summary.dts_90khz,
+            data_alignment_indicator: summary.data_alignment_indicator,
+            raw_bytes,
+            payload,
+        })
     }
 
     pub fn take_drop_diagnostic(&mut self) -> Option<(&'static str, u64)> {
@@ -247,13 +276,17 @@ impl PesAssembler {
 
     fn take_completed(&mut self) -> Option<PesPacket> {
         let pid = self.pid?;
-        let summary = parse_pes_header_summary(&self.buf)?;
+        let summary = parse_pes_header_summary(&self.buf).or(self.unbounded_summary)?;
         if let Some(expected_len) = summary.expected_len {
             if self.buf.len() < expected_len {
                 return None;
             }
         }
-        let payload = self.buf[summary.payload_offset..].to_vec();
+        let payload = if self.buf.starts_with(&[0x00, 0x00, 0x01]) {
+            self.buf[summary.payload_offset.min(self.buf.len())..].to_vec()
+        } else {
+            self.buf.clone()
+        };
         let raw_bytes = std::mem::take(&mut self.buf);
         self.expected_len = None;
         Some(PesPacket {
@@ -514,13 +547,22 @@ mod r50dz52_g2_07_tests {
     use super::{PesAssembler, MAX_PES_BUFFER_BYTES};
 
     #[test]
-    fn pes_assembler_overflow_records_drop_diagnostic_and_resets_state() {
+    fn unbounded_pes_over_limit_is_chunk_delivered_not_dropped() {
         let mut assembler = PesAssembler::default();
         let mut oversized = vec![0x00, 0x00, 0x01, 0xe0, 0x00, 0x00, 0x80, 0x00, 0x00];
         oversized.resize(MAX_PES_BUFFER_BYTES + 1, 0xaa);
-        assert!(assembler.push(0x0100, true, &oversized).is_empty());
+        let chunks = assembler.push(0x0100, true, &oversized);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].pid, 0x0100);
+        assert_eq!(chunks[0].stream_id, 0xe0);
+        assert!(!chunks[0].payload.is_empty());
         assert_eq!(assembler.overflow_drop_count(), 1);
-        assert_eq!(assembler.take_drop_diagnostic(), Some(("pes_assembler_buffer_overflow_drop", 1)));
-        assert!(assembler.flush().is_none());
+        assert_eq!(assembler.take_drop_diagnostic(), Some(("pes_assembler_unbounded_chunk_delivery", 1)));
+        let tail = vec![0xbb; 188];
+        assert!(assembler.push(0x0100, false, &tail).is_empty());
+        let final_chunk = assembler.flush().expect("unbounded PES tail is delivered at lifecycle boundary");
+        assert_eq!(final_chunk.pid, 0x0100);
+        assert_eq!(final_chunk.stream_id, 0xe0);
+        assert_eq!(final_chunk.payload, tail);
     }
 }

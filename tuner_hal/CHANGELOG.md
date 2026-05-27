@@ -1,5 +1,13 @@
 # 変更履歴
 
+## r50dz86
+
+- G1-13: source filter が closed または runtime failed の場合、`setDataSource()` 系の local filter 解決を `INVALID_STATE` に分離した。別 demux、非local filter、未open demux filter は `INVALID_ARGUMENT` のままとする。
+- G1-12: LNB backend へ新状態を適用した後の registry commit 失敗で、旧状態 rollback を先に試行し、rollback 失敗時だけ voltage/tone/position を安全状態へ再投入する経路を追加した。
+- G2-07: unbounded PES が 1MiB を超えた場合の即時 clear/drop を廃止し、chunk delivery と lifecycle boundary delivery に変更した。
+- binder_service build gate: 未読 `queue_ring` 初期代入を削除し、未使用 FMQ FFI wrapper 群を削除した。
+- 検証スクリプトは `m -k 0 -j"$JOBS"` を維持する。
+
 ## r50dz85
 
 - r50dz84 の `m -k 0` 検証で、残件が binder_service の 8 件に絞られたことを確認した。

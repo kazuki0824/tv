@@ -3107,10 +3107,10 @@ enum LocalFilterOwnerValidationError {
 fn local_filter_owner_error_tuner_result(err: LocalFilterOwnerValidationError) -> i32 {
     match err {
         LocalFilterOwnerValidationError::RuntimeRegistryFailed => TunerResult::UNKNOWN_ERROR.0,
+        LocalFilterOwnerValidationError::Closed
+        | LocalFilterOwnerValidationError::RuntimeFailed => TunerResult::INVALID_STATE.0,
         LocalFilterOwnerValidationError::NotLocalFilter
         | LocalFilterOwnerValidationError::ForeignDemux
-        | LocalFilterOwnerValidationError::Closed
-        | LocalFilterOwnerValidationError::RuntimeFailed
         | LocalFilterOwnerValidationError::NotOpenDemuxFilter => TunerResult::INVALID_ARGUMENT.0,
     }
 }
@@ -3482,6 +3482,16 @@ struct LnbRuntimeState {
     generation: u64,
     diseqc_generation: u64,
     last_close_reset_error: Option<String>,
+}
+
+fn lnb_safe_state_after_commit_failure(previous: &LnbRuntimeState) -> LnbRuntimeState {
+    let mut state = previous.clone();
+    state.voltage = Some(LnbVoltage::NONE);
+    state.tone = Some(LnbTone::NONE);
+    state.position = Some(LnbPosition::UNDEFINED);
+    state.generation = state.generation.saturating_add(1);
+    state.last_close_reset_error = None;
+    state
 }
 
 struct FrontendRuntime {
@@ -8650,7 +8660,6 @@ impl FilterHal {
                         let payload_bytes = payload.bytes().to_vec();
                         let event_payload_bytes = payload.event_bytes().to_vec();
                         let is_media = matches!(record.config.as_ref().map(|c| &c.kind), Some(FilterConfigKind::Av { .. }));
-                        let mut queue_ring = RingWriteResult::default();
                         let mut overflow = internal_overflow_pending;
                         internal_overflow_pending = false;
                         let mut av_slice = None;
@@ -8732,8 +8741,7 @@ impl FilterHal {
                         } else if av_payload_should_write_standard_fmq(is_media) {
                             match queue_backing_clone.write_bytes(&payload_bytes) {
                                 Ok(ring) => {
-                                    queue_ring = ring;
-                                    overflow |= queue_ring.overflowed;
+                                    overflow |= ring.overflowed;
                                 }
                                 Err(err) => {
                                     record_tuner_diagnostic_counter(
@@ -11011,6 +11019,22 @@ impl LnbHal {
         }
     }
 
+    fn safe_state_from_previous(&self, previous: &LnbRuntimeState) -> LnbRuntimeState {
+        lnb_safe_state_after_commit_failure(previous)
+    }
+
+    fn mark_lnb_update_commit_failed(&self, detail: &str) {
+        self.failed.store(true, Ordering::SeqCst);
+        record_tuner_diagnostic_counter(
+            &LNB_BACKEND_APPLY_ERROR_COUNT,
+            detail,
+        );
+        eprintln!(
+            "maleicacid-tuner-hal-lnb-diagnostic: lnb_id={} {}",
+            self.lnb_id, detail
+        );
+    }
+
     fn update_lnb_state<F>(&self, mut update: F) -> BinderResult<()>
     where
         F: FnMut(&mut LnbRuntimeState) -> BinderResult<()>,
@@ -11022,12 +11046,13 @@ impl LnbHal {
         if self.closed.load(Ordering::SeqCst) {
             return Err(invalid_state_status("LNB is closed"));
         }
-        let new_state = {
+        let (old_state, new_state) = {
             let registry = lock_mutex_status(&self.registry, "lnb_registry")?;
-            let mut state = registry.get(&self.lnb_id).cloned().unwrap_or_default();
-            update(&mut state)?;
-            state.generation = state.generation.saturating_add(1);
-            state
+            let old_state = registry.get(&self.lnb_id).cloned().unwrap_or_default();
+            let mut new_state = old_state.clone();
+            update(&mut new_state)?;
+            new_state.generation = new_state.generation.saturating_add(1);
+            (old_state, new_state)
         };
         if let Err(err) = self.apply_to_matching_frontends(&new_state) {
             record_tuner_diagnostic_counter(
@@ -11040,7 +11065,45 @@ impl LnbHal {
             );
             return Err(hal_error_status(err));
         }
-        self.commit_lnb_state(new_state, "update")
+        match lock_mutex_status(&self.registry, "lnb_registry") {
+            Ok(mut entries) => {
+                entries.insert(self.lnb_id, new_state);
+                Ok(())
+            }
+            Err(status) => {
+                record_tuner_diagnostic_counter(
+                    &LNB_BACKEND_APPLY_ERROR_COUNT,
+                    "lnb_registry_commit_failed_after_backend_apply",
+                );
+                eprintln!(
+                    "maleicacid-tuner-hal-lnb-diagnostic: lnb_id={} registry_commit_failed_after_backend_apply={:?}",
+                    self.lnb_id, status
+                );
+                if let Err(rollback_err) = self.apply_to_matching_frontends(&old_state) {
+                    record_tuner_diagnostic_counter(
+                        &LNB_BACKEND_APPLY_ERROR_COUNT,
+                        "lnb_backend_rollback_failed_after_commit_error",
+                    );
+                    eprintln!(
+                        "maleicacid-tuner-hal-lnb-diagnostic: lnb_id={} backend_rollback_failed_after_commit_error={rollback_err:?}",
+                        self.lnb_id
+                    );
+                    let safe_state = self.safe_state_from_previous(&old_state);
+                    if let Err(safe_err) = self.apply_to_matching_frontends(&safe_state) {
+                        record_tuner_diagnostic_counter(
+                            &LNB_BACKEND_APPLY_ERROR_COUNT,
+                            "lnb_backend_safe_state_failed_after_commit_error",
+                        );
+                        eprintln!(
+                            "maleicacid-tuner-hal-lnb-diagnostic: lnb_id={} backend_safe_state_failed_after_commit_error={safe_err:?}",
+                            self.lnb_id
+                        );
+                        self.mark_lnb_update_commit_failed("lnb_internal_failed_after_backend_apply_commit_error");
+                    }
+                }
+                Err(Status::from(StatusCode::UNKNOWN_ERROR))
+            }
+        }
     }
 
     fn ensure_open(&self) -> BinderResult<()> {
@@ -12300,17 +12363,50 @@ mod r50dz52_g1_11_tests {
 
 #[cfg(test)]
 mod r50dz52_g1_12_tests {
+    use super::{lnb_safe_state_after_commit_failure, LnbPosition, LnbRuntimeState, LnbTone, LnbVoltage};
+
     #[test]
-    fn compile_gate_marker() {
-        assert_eq!(2 + 2, 4);
+    fn registry_commit_failure_safe_state_turns_power_and_tone_off() {
+        let previous = LnbRuntimeState {
+            voltage: Some(LnbVoltage::VOLTAGE_15V),
+            tone: Some(LnbTone::CONTINUOUS),
+            position: Some(LnbPosition::POSITION_A),
+            generation: 7,
+            last_close_reset_error: Some("old".to_string()),
+            ..Default::default()
+        };
+        let safe = lnb_safe_state_after_commit_failure(&previous);
+        assert_eq!(safe.voltage, Some(LnbVoltage::NONE));
+        assert_eq!(safe.tone, Some(LnbTone::NONE));
+        assert_eq!(safe.position, Some(LnbPosition::UNDEFINED));
+        assert_eq!(safe.generation, 8);
+        assert!(safe.last_close_reset_error.is_none());
     }
 }
 
 #[cfg(test)]
 mod r50dz52_g1_13_tests {
+    use super::{local_filter_owner_error_tuner_result, LocalFilterOwnerValidationError};
+    use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::Result::Result as TunerResult;
+
     #[test]
-    fn compile_gate_marker() {
-        assert_eq!(2 + 2, 4);
+    fn source_lifecycle_errors_are_invalid_state_not_invalid_argument() {
+        assert_eq!(
+            local_filter_owner_error_tuner_result(LocalFilterOwnerValidationError::Closed),
+            TunerResult::INVALID_STATE.0
+        );
+        assert_eq!(
+            local_filter_owner_error_tuner_result(LocalFilterOwnerValidationError::RuntimeFailed),
+            TunerResult::INVALID_STATE.0
+        );
+        assert_eq!(
+            local_filter_owner_error_tuner_result(LocalFilterOwnerValidationError::ForeignDemux),
+            TunerResult::INVALID_ARGUMENT.0
+        );
+        assert_eq!(
+            local_filter_owner_error_tuner_result(LocalFilterOwnerValidationError::NotLocalFilter),
+            TunerResult::INVALID_ARGUMENT.0
+        );
     }
 }
 

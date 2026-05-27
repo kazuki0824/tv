@@ -1183,3 +1183,15 @@ AV shared backing は、検証が成功するまで旧 backing を保持する�
 ### test と release API の境界
 
 テストの都合で release path の API 可視性を広げない。テスト補助関数は `#[cfg(test)]` 内に閉じる。旧 helper、互換 alias、互換 wrapper を release path に戻してはならない。
+
+## LNB 状態更新の失敗時整合性
+
+LNB backend へ新状態を適用した後に registry commit が失敗した場合、HAL は旧状態の backend rollback を必ず先に試行する。旧状態 rollback が失敗した場合だけ、voltage none、tone none、position undefined の安全状態を backend へ再投入する。旧状態 rollback と安全状態再投入の両方に失敗した場合だけ、当該 LNB を internal failed として扱い、以後の LNB 制御 API は `UNKNOWN_ERROR` を返す。registry commit 失敗後に `failed=true` だけを設定して backend 実状態を放置してはならない。
+
+## Filter data source の source lifecycle エラー
+
+`setDataSource()` の source filter が closed または runtime failed の場合、HAL は lifecycle 異常として `INVALID_STATE` を返す。存在しない filter、別 demux の filter、local HAL filter ではない object、source と sink の自己参照、種別不一致、PID不一致は引数不正として `INVALID_ARGUMENT` を返す。source lifecycle 異常を `INVALID_ARGUMENT` に丸めてはならない。
+
+## unbounded PES の大きい access unit
+
+`PES_packet_length == 0` の unbounded PES は、固定サイズ到達だけを理由に破棄してはならない。assembler の保持量が上限を超えた場合は、既に判明している PES header 情報を保持したまま delivery chunk として出力し、後続 payload は同一 stream id の continuation chunk として lifecycle boundary または次の payload start まで配送する。破損 PES と正当な大きい access unit は区別し、正当な大きい access unit を silent drop してはならない。
