@@ -1,13 +1,13 @@
-mod descrambler_session;
-mod frontend_capability;
-mod fmq_queue;
-mod stream_boundary;
-mod registry_ledger;
-mod lifecycle_txn;
-mod worker_runtime;
-mod hal_sync;
-mod descrambler_key_table;
-mod tuner_hal;
+pub mod descrambler_session;
+pub mod frontend_capability;
+pub mod fmq_queue;
+pub mod stream_boundary;
+pub mod registry_ledger;
+pub mod lifecycle_txn;
+pub mod worker_runtime;
+pub mod hal_sync;
+pub mod descrambler_key_table;
+pub mod tuner_hal;
 
 use crate::tuner_hal::TunerHal;
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::ITuner::BnTuner;

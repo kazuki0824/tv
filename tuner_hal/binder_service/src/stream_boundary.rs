@@ -27,7 +27,6 @@ pub trait StreamBoundaryResources {
 impl StreamBoundaryResetPlan {
     pub fn for_demux(reason: StreamBoundaryReason, demux_id: i32, generation: u64) -> Self { Self { reason, demux_id, generation } }
 
-    #[cfg(test)]
     pub fn execute<R: StreamBoundaryResources>(&self, resources: &mut R) -> Result<StreamBoundaryResetResult, R::Error> {
         self.execute_from_step(resources, None)
     }

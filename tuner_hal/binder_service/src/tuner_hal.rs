@@ -275,7 +275,7 @@ const SYS_MEMFD_CREATE: isize = 279;
 #[cfg(test)]
 
 
-type WorkerSignal = ConcreteWorkerSignal;
+pub type WorkerSignal = ConcreteWorkerSignal;
 
 fn worker_exit_status(worker_name: &'static str, exit: WorkerExit) -> Status {
     tuner_service_error(TunerResult::UNKNOWN_ERROR.0, format!("worker={worker_name} abnormal_stop exit={exit:?}"))
@@ -365,7 +365,7 @@ struct AvBufferSlice {
 const PX4_DEVICE_FAMILY_UNKNOWN: i32 = 0;
 const DVR_STATUS_MASK_DISABLED: i32 = 0;
 #[cfg(test)]
-const NO_DISEQC_GENERATION: u64 = 0;
+pub const NO_DISEQC_GENERATION: u64 = 0;
 const PES_STREAM_ID_UNKNOWN: i32 = 0;
 const MEDIA_EVENT_TIMESTAMP_ABSENT: i64 = 0;
 const SECTION_VERSION_ABSENT: i32 = 0;
@@ -1176,7 +1176,7 @@ impl AvSharedBacking {
 
     #[cfg(test)]
     #[cfg(test)]
-    fn build_native_handle(&self) -> BinderResult<TunerNativeHandle> {
+    pub fn build_native_handle(&self) -> BinderResult<TunerNativeHandle> {
         let (handle, _) = self.build_native_handle_with_identity(0, 1)?;
         Ok(handle)
     }
@@ -1544,8 +1544,7 @@ impl SharedMemoryBacking {
         Ok(dropped)
     }
 
-    #[allow(dead_code)]
-    fn discard_playback_input_for_boundary_best_effort(&self, dvr_id: i32, boundary: &str) {
+    pub fn discard_playback_input_for_boundary_best_effort(&self, dvr_id: i32, boundary: &str) {
         if let Err(err) = self.discard_playback_input_for_boundary_result(dvr_id, boundary) {
             eprintln!(
                 "maleicacid-tuner-hal-dvr-playback-diagnostic: dvr_id={} boundary={} best_effort_discard_failed={:?}",
@@ -1908,7 +1907,7 @@ impl RuntimeIoRegistry {
 
     #[cfg(test)]
     #[cfg(test)]
-    fn entry_count(&self) -> usize {
+    pub fn entry_count(&self) -> usize {
         lock_mutex_status(&self.entries, "runtime_io_entries")
             .expect("runtime_io_entries lock must be readable in tests")
             .len()
@@ -2281,7 +2280,7 @@ impl DescramblerDiagnosticRegistry {
             .unwrap_or_default()
     }
 
-    fn dump_for_debug(&self) -> String {
+    pub fn dump_for_debug(&self) -> String {
         let Some(counters) = lock_mutex_option(&self.counters, "descrambler_diagnostic_counters")
         else {
             return "descrambler_diagnostic_counters=poisoned".to_string();
@@ -2577,7 +2576,7 @@ fn descramble_packet_for_pid_with_diagnostics(
 
 #[cfg(test)]
 #[cfg(test)]
-fn descramble_packet_bytes_for_pid_with_diagnostics(
+pub fn descramble_packet_bytes_for_pid_with_diagnostics(
     packet: &[u8],
     demux_id: i32,
     pid: u16,
@@ -2601,7 +2600,7 @@ fn descramble_packet_bytes_for_pid_with_diagnostics(
 
 #[cfg(test)]
 
-fn maybe_descramble_packet_for_pid(
+pub fn maybe_descramble_packet_for_pid(
     packet: &[u8; 188],
     pid: u16,
     active_descramblers: &[ActiveDescramblerSnapshot],
@@ -2803,7 +2802,7 @@ impl StartupDiagnosticRegistry {
         }
     }
 
-    fn dump_for_debug(&self) -> String {
+    pub fn dump_for_debug(&self) -> String {
         lock_mutex_option(&self.records, "_startup_diagnostics")
             .map(|records| {
                 if records.is_empty() {
@@ -2870,7 +2869,7 @@ impl DiagnosticFileWriteRegistry {
         }
     }
 
-    fn dump_for_debug(&self) -> String {
+    pub fn dump_for_debug(&self) -> String {
         lock_mutex_option(&self.records, "diagnostic_file_write_records")
             .map(|records| {
                 if records.is_empty() {
@@ -3087,7 +3086,7 @@ fn demux_id_in_pool(demux_id: i32) -> bool {
 
 #[cfg(test)]
 
-fn local_filter_identity(filter: &Strong<dyn IFilter>) -> BinderResult<(i32, i32)> {
+pub fn local_filter_identity(filter: &Strong<dyn IFilter>) -> BinderResult<(i32, i32)> {
     let binder_native: Binder<BnFilter> = filter.as_binder().try_into().map_err(|_| {
         invalid_argument_status("filter object is not a local Maleicacid HAL filter")
     })?;
@@ -3105,7 +3104,7 @@ struct LocalFilterGenerationIdentity {
 
 #[cfg(test)]
 
-fn pid_only_descrambler_source_identity() -> LocalFilterGenerationIdentity {
+pub fn pid_only_descrambler_source_identity() -> LocalFilterGenerationIdentity {
     LocalFilterGenerationIdentity {
         filter_id: -1,
         generation: 0,
@@ -3205,7 +3204,7 @@ fn local_filter_id_for_owner(
         .map_err(local_filter_owner_error_status)
 }
 
-fn local_filter_identity_for_owner(
+pub fn local_filter_identity_for_owner(
     filter: &Strong<dyn IFilter>,
     expected_owner_demux_id: i32,
 ) -> BinderResult<LocalFilterGenerationIdentity> {
@@ -5371,7 +5370,7 @@ impl TunerHal {
 
     #[cfg(test)]
 
-    fn open_or_create_demux_record_by_id(
+    pub fn open_or_create_demux_record_by_id(
         &self,
         demux_id: i32,
     ) -> BinderResult<DemuxRecordRef> {
@@ -5982,7 +5981,7 @@ impl FrontendHal {
 
     #[cfg(test)]
 
-    fn current_callback(&self) -> Option<Strong<dyn IFrontendCallback>> {
+    pub fn current_callback(&self) -> Option<Strong<dyn IFrontendCallback>> {
         lock_mutex_option(&self.callback, "frontend_callback").and_then(|callback| callback.clone())
     }
 
@@ -6020,7 +6019,7 @@ impl FrontendHal {
 
     #[cfg(test)]
 
-    fn notify_event(&self, event: FrontendEventType) {
+    pub fn notify_event(&self, event: FrontendEventType) {
         if let Some(callback) = self.current_callback() {
             if let Err(err) = callback.onEvent(event) {
                 Self::handle_frontend_callback_failure(
@@ -8969,7 +8968,7 @@ impl FilterHal {
 
     #[cfg(test)]
 
-    fn fail_from_callback(&self, api: &str, err: Status) -> Status {
+    pub fn fail_from_callback(&self, api: &str, err: Status) -> Status {
         let status = callback_failure_status("filter", self.filter_id, api, &err);
         let _ = self.close_internal();
         status
@@ -9013,7 +9012,7 @@ impl FilterHal {
             .ensure_not_failed(RuntimeIoKind::Filter, self.filter_id)
     }
 
-    fn stop_callback_worker(&self) -> BinderResult<()> {
+    pub fn stop_callback_worker(&self) -> BinderResult<()> {
         self.callback_stop.store(true, Ordering::SeqCst);
         if let Some(handle) =
             lock_mutex_status(&self.callback_worker, "filter_callback_worker")?.take()
@@ -9289,7 +9288,7 @@ impl FilterHal {
 
     #[cfg(test)]
 
-    fn release_all_av_shared_handles(&self) -> BinderResult<()> {
+    pub fn release_all_av_shared_handles(&self) -> BinderResult<()> {
         let Some(backing) =
             lock_mutex_status(&self.av_shared_backing, "filter_av_shared_backing")?.as_ref().cloned()
         else {
@@ -9483,7 +9482,7 @@ impl FilterHal {
 
     #[cfg(test)]
 
-    fn has_av_shared_backing(&self) -> BinderResult<bool> {
+    pub fn has_av_shared_backing(&self) -> BinderResult<bool> {
         Ok(lock_mutex_status(&self.av_shared_backing, "filter_av_shared_backing")?.is_some())
     }
 
@@ -10334,7 +10333,7 @@ impl DvrHal {
         }
     }
 
-    fn fail_from_callback(&self, api: &str, err: Status) -> Status {
+    pub fn fail_from_callback(&self, api: &str, err: Status) -> Status {
         let status = callback_failure_status("dvr", self.dvr_id, api, &err);
         let _ = self.close_internal();
         status
@@ -10385,7 +10384,7 @@ impl DvrHal {
             .ensure_not_failed(RuntimeIoKind::Dvr, self.dvr_id)
     }
 
-    fn stop_callback_worker(&self) -> BinderResult<()> {
+    pub fn stop_callback_worker(&self) -> BinderResult<()> {
         self.callback_stop.store(true, Ordering::SeqCst);
         DvrHal::wake_callback_worker(&self.callback_worker)?;
         if let Some(handle) =
@@ -10412,7 +10411,7 @@ impl DvrHal {
 
     #[cfg(test)]
 
-    fn stop_callback_worker_best_effort(&self) {
+    pub fn stop_callback_worker_best_effort(&self) {
         self.callback_stop.store(true, Ordering::SeqCst);
         if let Err(err) = DvrHal::wake_callback_worker(&self.callback_worker) {
             eprintln!("maleicacid-tuner-hal-dvr: callback wake failed during best-effort stop: {:?}", err);
@@ -11186,7 +11185,7 @@ impl LnbHal {
 
     #[cfg(test)]
     #[cfg(test)]
-    fn callback_is_set_for_test(&self) -> bool {
+    pub fn callback_is_set_for_test(&self) -> bool {
         lock_mutex_status(&self.callback, "test_mutex").unwrap().is_some()
     }
 }
@@ -11471,13 +11470,13 @@ fn optional_positive_i64_to_u64(value: i64, field: &'static str) -> Result<Optio
 
 #[cfg(test)]
 
-fn positive_i32_to_u32(value: i32) -> Option<u32> {
+pub fn positive_i32_to_u32(value: i32) -> Option<u32> {
     u32::try_from(value).ok().filter(|v| *v > 0)
 }
 
 #[cfg(test)]
 
-fn nonnegative_i32_to_u32(value: i32) -> Option<u32> {
+pub fn nonnegative_i32_to_u32(value: i32) -> Option<u32> {
     u32::try_from(value).ok()
 }
 
@@ -11548,7 +11547,7 @@ fn map_isdbs_stream_selector(
 
 #[cfg(test)]
 
-fn satellite_symbol_rate_sps(value: i32, field_name: &str) -> Result<Option<u32>, HalError> {
+pub fn satellite_symbol_rate_sps(value: i32, field_name: &str) -> Result<Option<u32>, HalError> {
     let Some(rate) = positive_i32_to_u32(value) else {
         return Ok(None);
     };
@@ -11824,11 +11823,11 @@ fn validate_record_index_settings(
 
 #[cfg(test)]
 
-fn build_filter_summary(settings: &DemuxFilterSettings) -> BinderResult<FilterConfig> {
+pub fn build_filter_summary(settings: &DemuxFilterSettings) -> BinderResult<FilterConfig> {
     build_filter_summary_for_open_type(settings, FilterOpenType::TsOther)
 }
 
-fn build_filter_summary_for_open_type(
+pub fn build_filter_summary_for_open_type(
     settings: &DemuxFilterSettings,
     open_type: FilterOpenType,
 ) -> BinderResult<FilterConfig> {
