@@ -71,3 +71,10 @@
 - demux ledger create live transaction の closure 戻り型を `BinderResult<()>` に固定し、型推論失敗を解消した。
 - `FrontendHal` から frontend ID を参照する箇所を `shared.frontend_id` に統一した。
 - 検証スクリプトは `m -k 0 -j"$JOBS"` を維持する。
+
+## r50dz88
+
+- r50dz87 の build gate ログで検出された binder_service の test-build compile error のうち、cfg(test) に閉じ過ぎた production helper を release/test 共通経路へ戻した。
+- `LifecycleTxn::new()`、FMQ wait/read、PX4 diagnostic snapshot、descrambler diagnostic dump、Filter/DVR callback worker stop helper の可視性を現行呼び出し経路に合わせた。
+- 未使用 import を削除した。
+- 検証スクリプトは `m -k 0 -j"$JOBS"` を維持する。

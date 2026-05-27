@@ -8,7 +8,7 @@ use crate::hal_sync::{
     lock_mutex_hal, lock_mutex_io, lock_mutex_option, lock_mutex_status, poisoned_lock_status,
 };
 use crate::worker_runtime::{
-    WorkerExit, WorkerExitReason, WorkerJoinOutcome, WorkerRuntime, WorkerHandle, WorkerOwnerId, ConcreteWorkerSignal, WorkerSignal as RuntimeWorkerSignal,
+    WorkerExit, WorkerExitReason, WorkerJoinOutcome, WorkerRuntime, WorkerHandle, WorkerOwnerId, ConcreteWorkerSignal,
     RuntimeAtomicFlag,
 };
 use crate::fmq_queue::{FmqFillStatus, FmqQueue, FmqQueueError};
@@ -273,7 +273,7 @@ const SYS_MEMFD_CREATE: isize = 279;
 #[cfg(test)]
 
 
-type WorkerSignal = RuntimeWorkerSignal<WorkerExit>;
+type WorkerSignal = ConcreteWorkerSignal;
 
 fn worker_exit_status(worker_name: &'static str, exit: WorkerExit) -> Status {
     tuner_service_error(TunerResult::UNKNOWN_ERROR.0, format!("worker={worker_name} abnormal_stop exit={exit:?}"))
@@ -658,8 +658,6 @@ impl Px4PathDiagnostics {
             );
         }
     }
-
-    #[cfg(test)]
 
     fn snapshot(&self) -> Px4PathDiagnosticSnapshot {
         Px4PathDiagnosticSnapshot {
@@ -2282,8 +2280,6 @@ impl DescramblerDiagnosticRegistry {
             .unwrap_or_default()
     }
 
-    #[cfg(test)]
-
     fn dump_for_debug(&self) -> String {
         let Some(counters) = lock_mutex_option(&self.counters, "descrambler_diagnostic_counters")
         else {
@@ -2298,7 +2294,6 @@ impl DescramblerDiagnosticRegistry {
             .join("\n")
     }
 
-    #[cfg(test)]
     #[cfg(test)]
     fn dump_for_test(&self) -> String {
         self.dump_for_debug()
@@ -9017,8 +9012,6 @@ impl FilterHal {
             .ensure_not_failed(RuntimeIoKind::Filter, self.filter_id)
     }
 
-    #[cfg(test)]
-
     fn stop_callback_worker(&self) -> BinderResult<()> {
         self.callback_stop.store(true, Ordering::SeqCst);
         if let Some(handle) =
@@ -10276,8 +10269,6 @@ impl DvrHal {
         }
         Ok(())
     }
-
-    #[cfg(test)]
 
     fn wake_callback_worker(worker: &Mutex<Option<WorkerHandle>>) -> BinderResult<()> {
         let guard = lock_mutex_status(worker, "dvr_callback_worker")?;

@@ -29,7 +29,6 @@ extern "C" {
     #[link_name = "tuner_fmq_queue_wake"]
     fn native_queue_wake(queue: *mut TunerFmqQueue, bits: u32) -> i32;
     #[link_name = "tuner_fmq_queue_wait"]
-    #[cfg(test)]
     fn native_queue_wait(queue: *mut TunerFmqQueue, bits: u32, timeout_ns: i64, state: *mut u32) -> i32;
     #[link_name = "tuner_fmq_queue_quantum"]
     fn native_queue_quantum(queue: *const TunerFmqQueue) -> i32;
@@ -98,8 +97,6 @@ impl NativeFmqQueue {
             Err(status)
         }
     }
-
-    #[cfg(test)]
 
     fn read(&self, data: &mut [u8]) -> usize {
         if data.is_empty() {
@@ -172,14 +169,17 @@ impl Drop for NativeFmqQueue {
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[cfg(not(test))]
 pub enum FmqReadOutcome { NoData, Bytes(usize) }
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[cfg(any())]
 pub enum FmqWriteOutcome { Written(usize) }
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum FmqClearOutcome { Cleared }
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum FmqFillStatus { Bytes(usize), Unavailable }
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[cfg(not(test))]
 pub enum FmqWaitOutcome { Woken, TimedOut }
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum FmqQueueError { Internal, InvalidArgument, NativeReadZero }
@@ -192,6 +192,7 @@ impl FmqQueue {
         let native = NativeFmqQueue::create(num_bytes, configure_event_flag).ok_or(FmqQueueError::Internal)?;
         Ok(Self { native: Some(native), test_fill: 0 })
     }
+    #[cfg(not(test))]
     fn read(&self, max_bytes: usize) -> Result<FmqReadOutcome, FmqQueueError> {
         if max_bytes == 0 { return Ok(FmqReadOutcome::NoData); }
         let Some(native) = &self.native else { return Ok(FmqReadOutcome::NoData); };
@@ -203,7 +204,7 @@ impl FmqQueue {
         let Some(native) = &self.native else { return Ok(0); };
         Ok(native.read(data))
     }
-    #[cfg(test)]
+    #[cfg(any())]
     pub fn write(&self, bytes: &[u8]) -> Result<FmqWriteOutcome, FmqQueueError> {
         let Some(native) = &self.native else { return Err(FmqQueueError::Internal); };
         native.write_checked(bytes).map(FmqWriteOutcome::Written).map_err(|_| FmqQueueError::Internal)
@@ -233,7 +234,7 @@ impl FmqQueue {
         let Some(native) = &self.native else { return Ok(()); };
         if native.wake(event_mask) == 0 { Ok(()) } else { Err(FmqQueueError::Internal) }
     }
-    #[cfg(test)]
+    #[cfg(not(test))]
     pub fn wait(&self, event_mask: u32, timeout_ms: i32) -> Result<FmqWaitOutcome, FmqQueueError> {
         let Some(native) = &self.native else { return Ok(FmqWaitOutcome::TimedOut); };
         native.wait(event_mask, timeout_ms).map_err(|_| FmqQueueError::Internal)
@@ -246,8 +247,7 @@ impl FmqQueue {
         self.native.as_ref().map(|q| q.available_to_read()).ok_or(FmqQueueError::Internal)
     }
 
-    #[cfg(test)]
-
+    #[cfg(any())]
     pub(crate) fn available_to_read_for_test(&self) -> usize {
         self.native.as_ref().map(|q| q.available_to_read()).unwrap_or(self.test_fill)
     }
