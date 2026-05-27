@@ -100,6 +100,10 @@ fn pts_dts_field_value(field: &[u8], expected_prefix: u8) -> Option<u64> {
     Some(value)
 }
 
+pub fn pes_stream_id(bytes: &[u8]) -> Option<i32> {
+    parse_pes_header_summary(bytes).map(|summary| summary.stream_id as i32)
+}
+
 pub fn parse_pes_header_summary(bytes: &[u8]) -> Option<PesHeaderSummary> {
     if bytes.len() < 6 || &bytes[..3] != [0x00, 0x00, 0x01] {
         return None;

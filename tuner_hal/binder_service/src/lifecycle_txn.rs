@@ -59,6 +59,12 @@ impl LifecycleTxn {
         self.cleanup_outcome = if result.is_ok() { CleanupOutcome::Success } else { CleanupOutcome::Failed };
         result
     }
+    pub fn cleanup_value<F, T, E>(&mut self, name: &'static str, f: F) -> Result<T, E>
+    where F: FnOnce() -> Result<T, E> {
+        let result = self.run_stage_value(LifecycleStage::Cleanup, name, f);
+        self.cleanup_outcome = if result.is_ok() { CleanupOutcome::Success } else { CleanupOutcome::Failed };
+        result
+    }
 
     pub fn validate_value<F, T, E>(&mut self, name: &'static str, f: F) -> Result<T, E>
     where F: FnOnce() -> Result<T, E> { self.run_stage_value(LifecycleStage::Validate, name, f) }

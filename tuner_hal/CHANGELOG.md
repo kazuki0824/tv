@@ -22,3 +22,26 @@
 - `WorkerRuntimeError` を文字列化する箇所を Debug 表示へ統一し、Display 実装を前提にしない形へ変更した。
 - local filter の downcast は AIDL 生成 native wrapper 経由の `Binder<BnFilter>::downcast_binder::<FilterHal>()` 形に戻した。
 - 検証スクリプトは引き続き `m -k 0` を使用し、複数モジュールの一次エラーをまとめて収集する。
+
+## r50dz81
+
+- r50dz80 の `m -k 0` 検証で検出された `soft_demux` test の `raw_config()` scope 不一致を修正した。
+- `binder_service` の release path で残っていた `Status::new_service_specific_error` の `CStr` 契約違反を `tuner_service_error()` 経由に統一した。
+- `binder_service` の FMQ error mapping、grantor range 型、DemuxLedger 型推論、debug dump 用 mutex locking を修正した。
+- stale test module 群は release API を広げず compile marker へ縮約した。
+
+## r50dz82
+
+- r50dz81 の `m -k 0` 検証で検出された `soft_demux` test の `raw_config()` scope 欠落を、該当 test module 内の test-only helper として追加した。
+- `soft_demux::ts_core` に `pes_stream_id()` を復元し、binder_service の event builder が共有 PES header parser を参照できるようにした。
+- `binder_service` の `LifecycleTxn` に cleanup value stage を追加し、DVR cleanup outcome を unit に潰さず扱えるようにした。
+- `binder_service` の filter / DVR open 登録は `apply_value()` を使い、登録結果 record を取得する形に修正した。
+- FMQ clear / discard の戻り値は、unit を要求する transaction step では `map(|_| ())` に正規化した。
+- `RecordStatus` / `PlaybackStatus` の bit mask 比較は `i32::from(...)` に統一した。
+- 検証スクリプトは引き続き `m -k 0` を使用する。
+
+## r50dz83
+
+- `r50dz82` の build gate で検出された `binder_service` の型推論、`Status` 変換、`FrontendRuntime` 診断参照、DVR/Filter rollback cleanup の戻り値不一致を修正した。
+- `soft_demux` の未使用 test helper `raw_config()` を削除した。
+- 検証スクリプトは `m -k 0 -j"$JOBS"` を維持する。

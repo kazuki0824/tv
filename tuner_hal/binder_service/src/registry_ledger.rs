@@ -20,8 +20,14 @@ pub enum LedgerError { AlreadyExists, NotFound, IdExhausted, InvalidState }
 #[derive(Debug, Clone)]
 struct LedgerRecord<R> { state: LedgerState, generation: u64, record: Option<R> }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct DemuxLedger<R = ()> { records: BTreeMap<LedgerId, LedgerRecord<R>>, next_generation: u64 }
+
+impl<R> Default for DemuxLedger<R> {
+    fn default() -> Self {
+        Self { records: BTreeMap::new(), next_generation: 0 }
+    }
+}
 
 impl<R: Clone> DemuxLedger<R> {
     pub fn create_live(&mut self, id: LedgerId, record: R) -> Result<u64, LedgerError> {

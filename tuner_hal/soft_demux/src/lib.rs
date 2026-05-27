@@ -3346,16 +3346,6 @@ mod filter_capacity_tests {
         }
     }
 
-    fn raw_config() -> FilterConfig {
-        FilterConfig {
-            tpid: 0x0100,
-            main_type_bits: 1,
-            sub_type_hint: 0,
-            kind: FilterConfigKind::Noinit,
-        }
-    }
-
-
     #[test]
     fn audio_and_video_capacity_are_enforced_independently() {
         let mut demux = DemuxHandle::new(0);
@@ -4842,6 +4832,15 @@ mod start_event_delay_tests {
     };
     use std::thread;
     use std::time::Duration;
+
+    fn raw_config() -> FilterConfig {
+        FilterConfig {
+            tpid: 0x0100,
+            main_type_bits: 1,
+            sub_type_hint: 0,
+            kind: FilterConfigKind::Noinit,
+        }
+    }
 
     fn section_config() -> FilterConfig {
         FilterConfig {
