@@ -3576,9 +3576,6 @@ impl FrontendRuntime {
             match &mut backend {
                 FrontendBackendState::Px4(inner) => inner.set_lnb_id(lnb_id),
                 FrontendBackendState::Dvb(inner) => inner.set_lnb_id(lnb_id),
-                FrontendBackendState::Unavailable {
-                    selected_lnb_id, ..
-                } => *selected_lnb_id = Some(lnb_id),
             }
         }
         Arc::new(Self {
@@ -5641,12 +5638,6 @@ impl ITuner for TunerHal {
 enum FrontendBackendState {
     Px4(Px4FrontendBackend),
     Dvb(DvbFrontendBackend),
-    Unavailable {
-        reason: String,
-        _declared_type: FrontendType,
-        allowed_systems: Vec<FrontendSystem>,
-        selected_lnb_id: Option<i32>,
-    },
 }
 
 #[derive(Clone)]
@@ -5773,11 +5764,6 @@ impl FrontendHal {
         match backend {
             FrontendBackendState::Px4(inner) => inner.hardware_info(),
             FrontendBackendState::Dvb(inner) => inner.hardware_info(),
-            FrontendBackendState::Unavailable {
-                reason,
-                _declared_type,
-                ..
-            } => format!("unavailable {:?}: {}", _declared_type, reason),
         }
     }
 
@@ -5785,7 +5771,6 @@ impl FrontendHal {
         match backend {
             FrontendBackendState::Px4(inner) => inner.probe_device(),
             FrontendBackendState::Dvb(inner) => inner.probe_device(),
-            FrontendBackendState::Unavailable { .. } => false,
         }
     }
 
@@ -5793,9 +5778,6 @@ impl FrontendHal {
         match backend {
             FrontendBackendState::Px4(inner) => inner.set_callback_registered(registered),
             FrontendBackendState::Dvb(inner) => inner.set_callback_registered(registered),
-            FrontendBackendState::Unavailable { .. } => {
-                let _ = registered;
-            }
         }
     }
 
@@ -5803,7 +5785,6 @@ impl FrontendHal {
         match backend {
             FrontendBackendState::Px4(inner) => inner.mark_callback_failed(message),
             FrontendBackendState::Dvb(inner) => inner.mark_callback_failed(message),
-            FrontendBackendState::Unavailable { reason, .. } => *reason = message,
         }
     }
 
@@ -5811,9 +5792,6 @@ impl FrontendHal {
         match backend {
             FrontendBackendState::Px4(inner) => inner.set_lnb_id(lnb_id),
             FrontendBackendState::Dvb(inner) => inner.set_lnb_id(lnb_id),
-            FrontendBackendState::Unavailable {
-                selected_lnb_id, ..
-            } => *selected_lnb_id = Some(lnb_id),
         }
     }
 
@@ -5821,7 +5799,6 @@ impl FrontendHal {
         match backend {
             FrontendBackendState::Px4(inner) => inner.runtime_state().tuning_active,
             FrontendBackendState::Dvb(inner) => inner.runtime_state().tuning_active,
-            FrontendBackendState::Unavailable { .. } => false,
         }
     }
 
@@ -5829,9 +5806,6 @@ impl FrontendHal {
         match backend {
             FrontendBackendState::Px4(inner) => inner.runtime_state().lnb_id,
             FrontendBackendState::Dvb(inner) => inner.runtime_state().lnb_id,
-            FrontendBackendState::Unavailable {
-                selected_lnb_id, ..
-            } => *selected_lnb_id,
         }
     }
 
@@ -5856,10 +5830,6 @@ impl FrontendHal {
                 // earth_pt1 固定プロファイルは電圧のみ扱う。トーンは恒久未対応。
                 inner.set_lnb_voltage(mv)
             }
-            FrontendBackendState::Unavailable { reason, .. } => Err(HalError::OpenFailed {
-                path: PathBuf::from("unavailable-frontend"),
-                message: reason.clone(),
-            }),
         }
     }
 
@@ -5884,10 +5854,6 @@ impl FrontendHal {
             FrontendBackendState::Dvb(inner) => Ok(inner
                 .live_stream_reader()?
                 .map(FrontendLiveStreamReader::Dvb)),
-            FrontendBackendState::Unavailable { reason, .. } => Err(HalError::OpenFailed {
-                path: PathBuf::from("unavailable-frontend"),
-                message: reason.clone(),
-            }),
         }
     }
 
@@ -5916,19 +5882,6 @@ impl FrontendHal {
         match backend {
             FrontendBackendState::Px4(inner) => inner.read_status().map(|s| s.telemetry),
             FrontendBackendState::Dvb(inner) => inner.read_status().map(|s| s.telemetry),
-            FrontendBackendState::Unavailable {
-                reason,
-                allowed_systems,
-                ..
-            } => {
-                let mut telemetry = FrontendTelemetry::default();
-                telemetry.current_system = allowed_systems.first().copied();
-                telemetry.locked = false;
-                Err(HalError::OpenFailed {
-                    path: PathBuf::from("unavailable-frontend"),
-                    message: reason.clone(),
-                })
-            }
         }
     }
 
@@ -5936,7 +5889,6 @@ impl FrontendHal {
         match backend {
             FrontendBackendState::Px4(inner) => inner.stop_tune(),
             FrontendBackendState::Dvb(inner) => inner.stop_tune(),
-            FrontendBackendState::Unavailable { .. } => Ok(()),
         }
     }
 
@@ -5944,18 +5896,13 @@ impl FrontendHal {
         match backend {
             FrontendBackendState::Px4(inner) => inner.close(),
             FrontendBackendState::Dvb(inner) => inner.close(),
-            FrontendBackendState::Unavailable { .. } => Ok(()),
         }
     }
 
-    fn backend_flavor(backend: &FrontendBackendState) -> Result<BackendFlavor, HalError> {
+    fn backend_flavor(backend: &FrontendBackendState) -> BackendFlavor {
         match backend {
-            FrontendBackendState::Px4(_) => Ok(BackendFlavor::Px4),
-            FrontendBackendState::Dvb(_) => Ok(BackendFlavor::Dvb),
-            FrontendBackendState::Unavailable { reason, .. } => Err(HalError::OpenFailed {
-                path: PathBuf::from("unavailable-frontend"),
-                message: reason.clone(),
-            }),
+            FrontendBackendState::Px4(_) => BackendFlavor::Px4,
+            FrontendBackendState::Dvb(_) => BackendFlavor::Dvb,
         }
     }
 
@@ -5966,10 +5913,6 @@ impl FrontendHal {
         match backend {
             FrontendBackendState::Px4(inner) => inner.tune(request).map(|_| ()),
             FrontendBackendState::Dvb(inner) => inner.tune_from_common(request).map(|_| ()),
-            FrontendBackendState::Unavailable { reason, .. } => Err(HalError::OpenFailed {
-                path: PathBuf::from("unavailable-frontend"),
-                message: reason.clone(),
-            }),
         }
     }
 
@@ -6393,7 +6336,7 @@ impl FrontendHal {
     ) -> Result<LockWaitOutcome, HalError> {
         let flavor = {
             let backend = lock_mutex_hal(&shared.backend, "frontend_backend")?;
-            Self::backend_flavor(&backend)?
+            Self::backend_flavor(&backend)
         };
         let config = Self::lock_wait_config(flavor, system, mode);
         if Self::wait_interruptibly(stop_signal, Duration::from_millis(config.initial_settle_ms)) {
@@ -6968,10 +6911,6 @@ impl FrontendHal {
         match backend {
             FrontendBackendState::Px4(inner) => inner.validate_tune_request(request),
             FrontendBackendState::Dvb(inner) => inner.validate_tune_request(request),
-            FrontendBackendState::Unavailable { reason, .. } => Err(HalError::OpenFailed {
-                path: PathBuf::from("unavailable-frontend"),
-                message: reason.clone(),
-            }),
         }
     }
 
@@ -7046,10 +6985,6 @@ impl FrontendHal {
                     Err(HalError::Unsupported("ISDB-S3/DVB-S は製品対象外です"))
                 }
             },
-            FrontendBackendState::Unavailable { reason, .. } => Err(HalError::OpenFailed {
-                path: PathBuf::from("unavailable-frontend"),
-                message: reason.clone(),
-            }),
         }
     }
 
@@ -7802,16 +7737,15 @@ FrontendHal::notify_scan_end_required(
         }
         let (backend_available, tuning_active, telemetry) = {
             let mut backend = lock_mutex_status(&self.shared.backend, "frontend_backend")?;
-            let backend_available = !matches!(&*backend, FrontendBackendState::Unavailable { .. });
             let tuning_active = Self::backend_tuning_active(&backend);
-            let telemetry = if backend_available && !tuning_active {
+            let telemetry = if !tuning_active {
                 self.apply_selected_lnb(&mut backend)
                     .and_then(|_| Self::backend_read_status(&mut backend))
                     .ok()
             } else {
                 None
             };
-            (backend_available, tuning_active, telemetry)
+            (true, tuning_active, telemetry)
         };
         Self::readiness_for_types(
             support,

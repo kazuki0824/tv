@@ -1,3 +1,10 @@
+# r50dz98
+
+- `FrontendBackendState::Unavailable` を削除し、frontend backend 不在を永続状態ではなく probe / open 時点の `UNAVAILABLE` または診断で扱う方針に固定した。
+- `backend_stop_tune()` / `backend_close()` / `backend_flavor()` / tune / scan / status 系の `Unavailable` 分岐を削除し、active backend は `Px4` / `Dvb` のみにした。
+- 追加の `#[allow(dead_code)]` や `-Adead_code` は使用しない。
+- `verify_r50dz98_min.sh` は `m -k 0 -j"$JOBS"` を維持する。
+
 # r50dz97
 
 - r50dz96 検証ログで再検出された `BackendFlavor::Unavailable` dead_code を、現ソースで残存しないことを確認した。
