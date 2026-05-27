@@ -71,9 +71,7 @@ const FE_GET_PROPERTY: u64 = ior::<DtvProperties>(FE_IOCTL_TYPE, 83);
 const FE_READ_STATUS: u64 = ior::<u32>(FE_IOCTL_TYPE, 69);
 const FE_READ_SIGNAL_STRENGTH: u64 = ior::<u16>(FE_IOCTL_TYPE, 71);
 const FE_READ_SNR: u64 = ior::<u16>(FE_IOCTL_TYPE, 72);
-const FE_SET_TONE: u64 = io(FE_IOCTL_TYPE, 66);
 const FE_SET_VOLTAGE: u64 = io(FE_IOCTL_TYPE, 67);
-const FE_DISEQC_SEND_MASTER_CMD: u64 = iow::<FeDiseqcMasterCmd>(FE_IOCTL_TYPE, 63);
 
 const DMX_SET_PES_FILTER: u64 = iow::<DmxPesFilterParams>(FE_IOCTL_TYPE, 44);
 const DMX_SET_SOURCE: u64 = iow::<u32>(FE_IOCTL_TYPE, 49);
@@ -83,7 +81,6 @@ const DTV_TUNE: u32 = 1;
 const DTV_CLEAR: u32 = 2;
 const DTV_FREQUENCY: u32 = 3;
 const DTV_BANDWIDTH_HZ: u32 = 5;
-const DTV_SYMBOL_RATE: u32 = 8;
 const DTV_DELIVERY_SYSTEM: u32 = 17;
 const DTV_STREAM_ID: u32 = 42;
 const DTV_ENUM_DELSYS: u32 = 44;
@@ -120,8 +117,6 @@ fn is_japan_cs110_if_frequency_hz(if_frequency_hz: u64) -> bool {
 }
 
 
-const SEC_TONE_ON: u32 = 0;
-const SEC_TONE_OFF: u32 = 1;
 const SEC_VOLTAGE_13: u32 = 0;
 const SEC_VOLTAGE_18: u32 = 1;
 const SEC_VOLTAGE_OFF: u32 = 2;
@@ -212,15 +207,6 @@ struct DmxPesFilterParams {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct FeDiseqcMasterCmd {
-    msg: [u8; 6],
-    msg_len: u8,
-}
-
-const MAX_DISEQC_MESSAGE_LEN: usize = 6;
-
-#[repr(C)]
-#[derive(Clone, Copy)]
 struct DvbFrontendInfo {
     name: [u8; 128],
     fe_type: u32,
@@ -263,10 +249,6 @@ fn is_supported_earth_pt1_frontend_identity(
     matches!(driver_basename, Some("earth-pt1"))
 }
 
-#[cfg(test)]
-fn is_supported_earth_pt1_frontend_info(info: &DvbFrontendInfo) -> bool {
-    is_supported_earth_pt1_frontend_identity(info, Some("earth-pt1"))
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DvbFrontendProbe {
@@ -597,7 +579,6 @@ impl DvbFrontendBackend {
             pairs.push((DTV_BANDWIDTH_HZ, bandwidth_hz));
         }
         // r51 の ISDB-T/ISDB-S バックエンド契約は明示symbol_rateを扱わない。
-        // DTV_SYMBOL_RATE は設定しない。
         if let Some(stream_id) = Self::validate_stream_id(request)? {
             pairs.push((DTV_STREAM_ID, u32::from(stream_id)));
         }
@@ -1411,17 +1392,12 @@ impl DvbFrontendBackend {
 mod tests {
 
     use super::{
-        DvbFrontendBackend, DvbFrontendProbe, DvbTuneRequest, DTV_BANDWIDTH_HZ,
-        DTV_DELIVERY_SYSTEM, DTV_FREQUENCY, DTV_STREAM_ID, DTV_SYMBOL_RATE, SYS_ISDBS, SYS_ISDBT,
+        DvbFrontendBackend, DvbFrontendInfo, DvbFrontendProbe, DvbTuneRequest, DTV_BANDWIDTH_HZ,
+        DTV_DELIVERY_SYSTEM, DTV_FREQUENCY, DTV_STREAM_ID, SYS_ISDBS, SYS_ISDBT,
     };
     use maleicacid_tuner_hal_common::{
         FrontendScanMode, FrontendStreamIdKind, FrontendSystem, FrontendTuneRequest, HalError,
-        TsPacketCompletionBuffer, TS_PACKET_SIZE,
     };
-    use std::io::{self, Cursor, Read, Write};
-    use std::os::fd::AsRawFd;
-    use std::os::unix::net::UnixStream;
-
     #[test]
     fn strict_stream_pair_requires_unambiguous_mapping() {
         assert_eq!(
@@ -1721,7 +1697,6 @@ mod tests {
     fn dtv_commands_match_expected_uapi_values() {
         assert_eq!(DTV_FREQUENCY, 3);
         assert_eq!(DTV_BANDWIDTH_HZ, 5);
-        assert_eq!(DTV_SYMBOL_RATE, 8);
         assert_eq!(DTV_DELIVERY_SYSTEM, 17);
         assert_eq!(DTV_STREAM_ID, 42);
     }
@@ -1782,7 +1757,7 @@ mod tests {
         assert!(pairs.contains(&(DTV_DELIVERY_SYSTEM, SYS_ISDBT)));
         assert!(pairs.contains(&(DTV_FREQUENCY, 473_142_857)));
         assert!(pairs.contains(&(DTV_BANDWIDTH_HZ, 6_000_000)));
-        assert!(!pairs.iter().any(|(cmd, _)| *cmd == DTV_SYMBOL_RATE));
+        assert!(pairs.iter().all(|(cmd, _)| *cmd != 8));
     }
 
     #[test]
@@ -1929,12 +1904,11 @@ mod dtv_property_abi_tests {
 
 #[cfg(test)]
 mod diseqc_tests {
-    use super::{DvbFrontendBackend, MAX_DISEQC_MESSAGE_LEN};
+    use super::DvbFrontendBackend;
     use maleicacid_tuner_hal_common::FrontendSystem;
 
     #[test]
-    fn diseqc_is_permanently_unsupported_before_payload_validation() {
-        assert_eq!(MAX_DISEQC_MESSAGE_LEN, 6);
+    fn diseqc_is_permanently_unsupported_without_payload_uapi_shadow() {
         let mut backend = DvbFrontendBackend::new(-1, 0, 0, 0, vec![FrontendSystem::IsdbS]);
         assert!(backend.send_diseqc_message(&[]).is_err());
         assert!(backend.send_diseqc_message(&[0xff; 8]).is_err());
@@ -2204,7 +2178,7 @@ mod status_word_tests {
     fn status_word_distinguishes_no_carrier_from_no_status_support() {
         let mut backend = DvbFrontendBackend::new(0, 0, 0, 0, vec![FrontendSystem::IsdbS]);
         assert_eq!(backend.telemetry.rf_locked, None);
-        backend.apply_status_word(FE_HAS_LOCK, 0, 0);
+        backend.apply_status_word(FE_HAS_LOCK, Some(0), Some(0));
         assert_eq!(backend.telemetry.rf_locked, Some(false));
         assert!(backend.telemetry.locked);
     }
@@ -2321,20 +2295,20 @@ mod status_word_tests {
         let mut reader = Cursor::new(input);
         assert_eq!(
             DvbFrontendBackend::pump_reader_packets(&mut reader, None, 1, &mut residual, |pkt| out
-                .push(*pkt))
+                .push(pkt.to_vec()))
             .unwrap(),
             1
         );
-        assert_eq!(out, vec![first]);
+        assert_eq!(out, vec![first.to_vec()]);
 
         let mut empty = Cursor::new(Vec::<u8>::new());
         assert_eq!(
             DvbFrontendBackend::pump_reader_packets(&mut empty, None, 1, &mut residual, |pkt| out
-                .push(*pkt))
+                .push(pkt.to_vec()))
             .unwrap(),
             1
         );
-        assert_eq!(out, vec![first, second]);
+        assert_eq!(out, vec![first.to_vec(), second.to_vec()]);
     }
 
     #[test]

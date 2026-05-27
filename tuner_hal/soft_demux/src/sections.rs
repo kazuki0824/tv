@@ -434,7 +434,7 @@ mod tests {
 
 #[cfg(test)]
 mod section_header_contract_tests {
-    use super::parse_section_header;
+    use super::{parse_section_header, SectionAssembler};
 
     #[test]
     fn parses_current_next_indicator() {

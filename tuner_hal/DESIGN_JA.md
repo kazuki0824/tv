@@ -1157,178 +1157,29 @@ r50dz24では、r50dz23時点で残っていたWP-04未達を補修する。
 
 DVR callback workerの起床・停止通知は `WorkerHandle::request_stop()` / `WorkerHandle::wake()` と owner `ConcreteWorkerSignal` を使う。
 `Arc<(Mutex<bool>, Condvar)>`をDVR専用wake flagとして保持する実装は禁止する。
-## r50dz53: 60件バグ先行 source-ready 修正
 
-r50dz53 では、r50dz52 60件バグ実装計画のうち、soft_demux packet pipeline / resync / raw section / record index / unbounded PES / AV dataId の局所修正に先行着手した。
+## 60件修正後の恒久仕様補足
 
-- soft_demux の旧 `TsPacketResyncBuffer` を削除し、TS byte stream 分割を `TsPacketCompletionBuffer` に統合する。
-- source filter 由来 TS packet は `TsInputOrigin::SourceFilter { source_filter_id }` として frontend/playback origin から分離する。
-- source filter downstream TS packet は `PacketPipeline::accept/plan/assemble` を通す。
-- discontinuity 検出時は generation だけでなく同一 origin の section/PES assembler partial state を破棄する。
-- raw section は condition / CRC / version 判定を配送条件にしないが、section_length に基づく完全 section 境界は必須にする。
-- `PES_packet_length == 0` の unbounded PES は lifecycle flush 境界で finalize する。
-- record index の start-code prefix、PES header/PTS、PES payload offset、first_mb 採用境界を補正する。
-- AV MediaEvent `avDataId` は 0 予約・負数禁止・wrap禁止の checked allocator を通す。
+### Filter / DVR 開始 commit 境界
 
-この版は build / rust test / atest / VTS / 実機確認を未実行とする。
+Filter と DVR の開始状態は、初回 callback が成功した後だけ開始済みとして確定する。初回 callback が失敗した場合、対象オブジェクトは開始済み状態へ一度も遷移してはならない。cleanup または rollback が失敗した場合は成功扱いにせず、診断、失敗状態、再試行可能な cleanup 状態のいずれかへ反映する。
 
+### PES 解析境界
 
-## r50dz60: partial-card source-edit continuation
+record index は、PES と raw elementary stream を区別する。共有 PES parser が PES 形式として拒否した入力を、元 payload 全体の raw elementary stream として再走査してはならない。raw elementary stream として扱うのは、PES stream id として解釈しない入力だけとする。
 
-r50dz60 continues the r50dz52 60-card repair sequence without declaring source-ready completion.
+### packet origin
 
-- `openDemuxById()` now treats rollback failure after by-id demux allocation as `UNKNOWN_ERROR` and leaves the record quarantined via the existing closing state, instead of returning only the original binder-creation error.
-- PX4 `tune()` now attempts to restore previous driver mode/channel settings after `PTX_START_STREAMING` failure, and records `TuneRollbackFailed` in `last_error` when rollback stop or setting restore fails.
-- soft_demux stream-boundary reset now avoids a duplicate completion-buffer reset call; lifecycle-boundary residual accounting remains centralized in `PacketPipeline::reset_boundary()`.
+source filter 由来の TS packet は frontend 由来の TS packet と同じ packet pipeline を通る。ただし origin namespace は frontend と source filter で分離し、assembler generation、carry state、flush state を相互に消してはならない。
 
-This version remains a partial source-edit release. Per-card tests and evidence files are still tracked by the release status document.
+### worker 停止失敗
 
-## r50dz61: close failure state continuation
+scan worker と tune worker は、join 失敗時に worker slot を破棄してはならない。停止失敗は診断に残し、後続 close または stop で再試行できる状態を保持する。
 
-r50dz61 continues the r50dz52 60-card repair sequence without declaring source-ready completion.
+### AV shared backing
 
-- G1-07/G1-08 close cleanup failures are represented as explicit close failure records rather than being only logged.
-- Filter close now distinguishes `closed=true` from `cleanup_complete=true`; a cleanup failure makes subsequent operational APIs invalid while leaving close retry available.
-- DVR close keeps the same `cleanup_complete=false` retry gate and adds explicit close failure state for cleanup and rollback-close failures.
-- build, rust test, atest, VTS, and device validation remain integration-gate items and are not executed in this source-edit pass.
+AV shared backing は、検証が成功するまで旧 backing を保持する。設定変更の後段失敗で旧 backing、公開済み handle、stream type を破棄してはならない。release、flush、clear は active/free map を中間不整合のまま公開してはならない。
 
-## r50dz62: diagnostic and boundary-drain source-ready candidates
+### test と release API の境界
 
-r50dz62 continues the r50dz52 60-card repair sequence without declaring all cards source-ready.
-
-- G3-10: descrambler diagnostic counter update failure is observable outside the poisoned diagnostic map. Best-effort diagnostic recording increments an atomic failure counter without recursively writing to the same map, and the frontend live worker converts a diagnostic update failure during packet descrambling into `WorkerExit::RuntimeFailure`.
-- G2-19: `TsPacketCompletionBuffer::drain_for_boundary()` is covered by an explicit card-named test that drains completed 188-byte packets at lifecycle boundary and drops only the incomplete tail as malformed bytes.
-- build, rust test, atest, VTS, and device validation remain integration-gate items and are not executed in this source-edit pass.
-
-## r50dz63: packet pipeline and record-index source-ready evidence pass
-
-r50dz63 continues the r50dz52 60-card repair sequence. It does not declare all cards source-ready.
-
-This pass promotes a limited set of already localized packet-pipeline and record-index repairs to static source-ready by adding card-named tests and per-card evidence. The pass preserves the design rule that malformed or discontinuous transport input must not be treated as successful payload delivery, and that parser boundary state must be explicit rather than implicit in one TS packet.
-
-- G1-14: discontinuity resets section/PES assembler state for the same origin/PID path before accepting further payload.
-- G2-01: AV dataId allocation remains checked and never wraps into zero or negative ids.
-- G2-02/G2-03/G2-04: record index parsing keeps explicit carry/parser validation across TS payload boundaries and rejects malformed PES layout.
-
-Build, rust test, atest, VTS, and device validation remain integration-gate work and are recorded as not executed.
-
-
-
-## r50dz64 source-ready static evidence pass
-
-- G1-15 / G1-16 / G1-19: source-filter TS packets remain on `PacketPipeline` acceptance/reporting paths. TEI, duplicate, no-payload, diagnostic, and origin-separated assembler state are treated as pipeline state, not bypass delivery state.
-- G2-05 / G2-06 / G2-07: record index and PES assembler source-ready evidence now covers configured-mask `first_mb_in_slice`, unbounded PES lifecycle flush, and PES overflow diagnostic reset behavior.
-- This section records static/source-ready evidence only. build, rust test, atest, VTS, and device confirmation remain integration-gate items.
-
-## r50dz65 static source-ready evidence pass
-
-- G1-17/G1-18: raw section delivery remains assembler-bounded. Raw mode skips table/version/CRC condition checks only after a complete `section_length`-bounded section has been assembled; malformed or boundary-broken section payloads are not delivered.
-- G1-20: soft_demux byte-stream synchronization uses `TsPacketCompletionBuffer`; single stray `0x47` bytes are not synchronization points, three 188-byte-spaced sync words are required for resync, and complete aligned tail packets are emitted without waiting for a following sync byte.
-- G2-12/G2-13: DVB stop/close cleanup failures are not committed as stopped/closed success. `clear_properties()` failure is returned and recorded in `last_error` for retry/diagnostic handling.
-- G2-14/G2-15: DVB/PX4 reader paths use the common EINTR retry primitive so interrupted reads are retried and counted instead of being treated as EOF or success.
-- G2-18: earth_pt1 capability fallback preserves both ISDB-T and ISDB-S when `DTV_ENUM_DELSYS` fails after identity validation.
-
-## r50dz66 static source-ready evidence pass
-
-- G2-11/G2-17: frontend state commits remain guarded by successful backend observation/stop operations. DVB tune failure must not commit active tune state, and PX4 stop failure must not clear streaming state.
-- G3-14/G3-15/G3-16/G3-18: AV shared release/reset/diagnostic/configure paths keep active/free map updates atomic, counters saturating, and old AV backing preserved until validation succeeds.
-- This section records static/source-ready evidence only. build, rust test, atest, VTS, and device confirmation remain integration-gate items.
-
-
-
-## r50dz67 static source-ready evidence pass and release-artifact split
-
-r50dz67 continues the r50dz52 60-card repair sequence. It does not declare all cards source-ready.
-
-This pass promotes a limited set of FMQ, EventFlag, delay-hint, and frontend-worker repairs to static source-ready by adding card-named tests and per-card evidence. The pass keeps build, rust test, atest, VTS, and device confirmation as integration-gate items.
-
-Release artifact rule clarification for this train: temporary source-ready evidence files (`PATCH-*`, `PATH-*`, `TESTCODE-*`, `STATIC-*`, `GATE-*`, and release status markdown) are not bundled inside the release source archive. They are emitted as a separate evidence package. Permanent design changes remain in `DESIGN_JA.md`; implementation rules remain in `CODE_CONVENTION.md`.
-
-Static source-ready promotions in this pass:
-
-- G3-11: FMQ clear reports native read-zero as `NativeReadZero` instead of treating partial clear as success.
-- G3-12: EventFlag / shared-memory wake failure remains observable and is not rounded into successful payload write.
-- G3-13: FMQ descriptor internal errors are detected before descriptor export and can drive runtime I/O failure.
-- G3-17: filter delay hint normalization rejects invalid values and preserves the checked-add lifecycle boundary.
-- G3-19 / G3-20: frontend scan/tune worker stop paths retain worker slots on stop/join failure and clear them only after successful owner join.
-
-
-## r50dz68 demux/filter/DVR lifecycle static source-ready evidence pass
-
-r50dz68 continues the r50dz52 60-card repair sequence. It does not declare all cards source-ready.
-
-This pass promotes the first six binder-service lifecycle cards to static source-ready by adding card-named tests and per-card evidence. The pass preserves the release-artifact split introduced in r50dz67: temporary evidence files are emitted in a separate evidence package and are not bundled into the release source archive.
-
-Static source-ready promotions in this pass:
-
-- G1-01: `openDemux()` binder creation failure rolls back registry record, live id, and ledger provisional entry.
-- G1-02: `openDemuxById()` increments `ref_count` only after binder creation success and quarantines rollback-failed opens.
-- G1-03: `openFilter()` ledger commit failure cleans worker, runtime entry, demux filter record, and provisional ledger state.
-- G1-04: `openDvr()` ledger commit failure cleans worker, runtime entry, demux DVR record, and provisional ledger state.
-- G1-05: `setDataSource()` rollback failure moves filter runtime to rollback-failed state, keeps `closed=false`, rejects further mutating operations, and allows close.
-- G1-06: `DemuxHal::close_internal()` does not report success when demux ledger removal fails and keeps close retry possible.
-
-## r50dz69 LNB and close lifecycle static source-ready evidence pass
-
-r50dz69 continues the r50dz52 60-card repair sequence. It does not declare all cards source-ready.
-
-This pass promotes G1-07 through G1-13 to static source-ready by adding card-scoped tests and external evidence files. The permanent design points are:
-
-- Filter/DVR close rollback failures are retained as close failure state. `closed=true` and `cleanup_complete=false` are distinguishable, later non-close operations return invalid state, and a later close retries remaining cleanup.
-- LNB operation contention is distinct from mutex poisoning. Normal active-operation contention maps to unavailable; poisoned/internal-failed states map to unknown error and leave a persistent diagnostic state.
-- LNB guard drop failures are recorded in the ledger diagnostic state and observed by the next LNB operation instead of being silently discarded.
-- LNB close commits `closed=true` only after backend reset and registry commit succeed. Failed close remains retryable.
-- LNB backend apply followed by registry commit failure follows AT-011: the backend rollback apply is not attempted. The runtime is marked `LnbInternalFailed` with diagnostic `lnb_registry_commit_failed_after_backend_apply`.
-- `setDataSource()` validation keeps lifecycle checks before demux ownership and self-reference checks, preserving distinct diagnostics for closed source, runtime-failed source, foreign source, and self-reference.
-
-Release packaging rule: card evidence files produced for this pass remain outside the release source archive and are shipped only in the dedicated source-ready evidence package.
-
-## r50dz70 descrambler and PX4/LNB observation static source-ready evidence pass
-
-r50dz70 continues the r50dz52 60-card repair sequence. It does not declare all cards source-ready.
-
-This pass promotes a bounded set of already localized frontend and descrambler repairs to static source-ready by adding card-scoped tests and external evidence files. The permanent design points are:
-
-- PX4 tune start failure rolls back STOP_STREAMING and restores the previous system mode/channel before leaving the backend in a successful tuned state. Rollback failure is observable as `TuneRollbackFailed`.
-- `IFrontend.getStatus()` remains an observation-only API and does not apply selected LNB state or perform backend ioctl side effects.
-- Descrambler demux-source and close operations perform prepare checks before ledger commit, retain demux-ledger close failures as pending cleanup, and retry cleanup on later close.
-- Descrambler runtime id and key-token allocators reject reserved zero, negative/wrapped ids, and collision exhaustion instead of reusing stale ids.
-- Descrambler key replacement and clear-to-VOID commit only after old-token release succeeds; release failure leaves the old session key and a pending key-release cleanup.
-
-Release packaging rule: card evidence files produced for this pass remain outside the release source archive and are shipped only in the dedicated source-ready evidence package.
-
-## r50dz71 final static source-ready evidence pass
-
-r50dz71 completes the r50dz52 60-card static source-ready sequence. It does not claim integration-gate execution.
-
-This pass promotes the remaining cards by adding card-scoped tests and external evidence files. The permanent design points are:
-
-- Filter and DVR `start()` commit the started state only after the initial callback/status callback succeeds. Callback failure cleanup errors remain observable in the transaction result and the object must not remain partially started.
-- `IFrontend.tune()` is modeled as a staged frontend tune transaction: backend tune success is not enough to commit runtime tuned state. Later worker spawn or stream-boundary failures roll back packet reader/backend/runtime state; rollback failure fixes the frontend runtime in `TuneRollbackFailed`.
-- `setDemuxSource()` rollback failure records `DescramblerCleanupItem::DemuxLedgerClose` pending cleanup and returns `UNKNOWN_ERROR` without adding a separate ledger-failure state.
-- Descrambler stale PID cleanup updates PID registrations, upstream filter registrations, and snapshots in one method so the three ledgers retain identical PID sets after cleanup.
-- Descrambler invalidate-demux key expiration succeeds before session clear commit. Expiration failure keeps the session retryable and records pending key-release cleanup.
-- `configureAvStreamType()` validates all later requirements before dropping old AV backing or committing the new stream type; failure preserves the old backing and stream type.
-
-Release artifact rule: temporary evidence files (`PATCH-*`, `PATH-*`, `TESTCODE-*`, `STATIC-*`, `GATE-*`, and release status markdown) remain outside the release source archive and are shipped only in the dedicated source-ready evidence package.
-
-## r50dz72 condition-1/2 correction pass
-
-r50dz72 corrects the r50dz71 source-ready overclaim.  The evidence files are no longer treated as proof by themselves: public API entry points are checked against the source path.  This pass focuses on cards whose old path or non-unique replacement path remained reachable.
-
-Permanent design decisions in this pass:
-
-- Demux/filter/DVR open rollback and cleanup failures are not discarded with best-effort `let _` on public main paths.  The first cleanup/rollback failure is surfaced as `UNKNOWN_ERROR` or an explicit retry/quarantine state.
-- Filter and DVR `start()` callbacks are part of the transaction commit condition.  The demux started state is committed after the initial callback/status callback has succeeded, not before.
-- Frontend `tune()` is staged through an explicit `FrontendTuneTxn`: cancellation, backend stop, live pump stop, stream-boundary reset, backend validate/apply/submit, and worker spawn are tracked as one transaction.  Worker-spawn rollback failure fixes the live path in `TuneRollbackFailed`.
-- Record-index PES parsing uses the shared `ts_core::parse_pes_header_summary()` path for payload offset and timestamp extraction.  Local `payload[8]` offset decisions are not a production path.
-- `setDemuxSource()` rolls back or records `DescramblerCleanupItem::DemuxLedgerClose` if the session commit after demux-ledger commit fails, so ledger/session commit cannot silently diverge.
-
-Release artifact rule remains unchanged: source-ready evidence stays outside the release source archive and is distributed only in the evidence package.
-
-
-## r50dz73 condition-1/2 residual correction pass
-
-r50dz73 closes the residual G2-04 condition-1/2 gap found after the r50dz72 source audit.  Record-index start-code scanning now distinguishes raw elementary stream start codes from malformed PES packets before using the shared PES header parser.  If a payload starts with a plausible PES stream id and the shared parser rejects it, record-index does not fall back to scanning the original header bytes as ES payload.  Raw elementary stream NAL/start-code input remains scannable when the start-code id is not a PES stream id.
-
-The pass also removes dead Filter/DVR start rollback helpers left behind after r50dz72 moved start commit after the first callback success.  Release artifacts continue to keep source archives free of source-ready evidence and status markdown; evidence is exported separately.
+テストの都合で release path の API 可視性を広げない。テスト補助関数は `#[cfg(test)]` 内に閉じる。旧 helper、互換 alias、互換 wrapper を release path に戻してはならない。

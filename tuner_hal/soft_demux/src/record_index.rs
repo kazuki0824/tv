@@ -402,12 +402,6 @@ fn pes_payload_kind(payload: &[u8]) -> PesPayloadKind<'_> {
     }
 }
 
-fn pes_payload_bytes(payload: &[u8]) -> Option<&[u8]> {
-    match pes_payload_kind(payload) {
-        PesPayloadKind::ElementaryStream(bytes) => Some(bytes),
-        PesPayloadKind::NotPes | PesPayloadKind::MalformedPes => None,
-    }
-}
 
 fn find_sc_prefix(bytes: &[u8]) -> Option<(usize, usize)> {
     let mut i = 0usize;
@@ -728,16 +722,16 @@ mod r50dz52_g2_04_tests {
     #[test]
     fn pes_payload_offset_uses_validated_header_layout() {
         let optional_header_missing = [0x00, 0x00, 0x01, 0xe0, 0x00, 0x00, 0x80, 0x80];
-        assert!(pes_payload_bytes(&optional_header_missing).is_none());
+        assert!(matches!(pes_payload_kind(&optional_header_missing), PesPayloadKind::MalformedPes));
 
         let malformed_flags = [0x00, 0x00, 0x01, 0xe0, 0x00, 0x03, 0x00, 0x80, 0x00];
-        assert!(pes_payload_bytes(&malformed_flags).is_none());
+        assert!(matches!(pes_payload_kind(&malformed_flags), PesPayloadKind::MalformedPes));
 
         let optional_header_too_large = [0x00, 0x00, 0x01, 0xe0, 0x00, 0x03, 0x80, 0x80, 0x10];
-        assert!(pes_payload_bytes(&optional_header_too_large).is_none());
+        assert!(matches!(pes_payload_kind(&optional_header_too_large), PesPayloadKind::MalformedPes));
 
         let private_stream_2 = [0x00, 0x00, 0x01, 0xbf, 0x00, 0x02, 0xaa, 0xbb];
-        assert_eq!(pes_payload_bytes(&private_stream_2), Some(&private_stream_2[6..]));
+        assert!(matches!(pes_payload_kind(&private_stream_2), PesPayloadKind::ElementaryStream(bytes) if bytes == &private_stream_2[6..]));
     }
 
     #[test]

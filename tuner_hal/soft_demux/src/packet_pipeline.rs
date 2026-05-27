@@ -443,7 +443,7 @@ impl PacketPipeline {
         Self::validate_packet(packet).ok().filter(|view| !view.transport_error_indicator)
     }
 
-    pub fn accept_ts_packet<'a>(&mut self, packet: &'a [u8], origin: crate::TsInputOrigin) -> Option<TsPacketView<'a>> {
+    pub(crate) fn accept_ts_packet<'a>(&mut self, packet: &'a [u8], origin: crate::TsInputOrigin) -> Option<TsPacketView<'a>> {
         let view = Self::validate_packet(packet).ok()?;
         if view.transport_error_indicator {
             return None;
@@ -468,7 +468,7 @@ impl PacketPipeline {
     }
 
 
-    pub fn plan_packet_delivery(
+    pub(crate) fn plan_packet_delivery(
         &self,
         pid: i32,
         origin: crate::TsInputOrigin,
@@ -524,7 +524,7 @@ impl PacketPipeline {
     }
 
 
-    pub fn plan_ts_packet_report(
+    pub(crate) fn plan_ts_packet_report(
         &self,
         view: &TsPacketView<'_>,
         origin: crate::TsInputOrigin,
@@ -558,7 +558,7 @@ impl PacketPipeline {
         }
         report
     }
-    pub fn plan_and_assemble_ts_packet_report(
+    pub(crate) fn plan_and_assemble_ts_packet_report(
         &mut self,
         view: &TsPacketView<'_>,
         origin: crate::TsInputOrigin,
@@ -684,7 +684,7 @@ impl PacketPipeline {
     }
 
 
-    pub fn reset_assembly_for_origin_pid(&mut self, origin: crate::TsInputOrigin, pid: i32) {
+    pub(crate) fn reset_assembly_for_origin_pid(&mut self, origin: crate::TsInputOrigin, pid: i32) {
         // r50dz53/G1-14: discontinuity は generation だけでなく assembler 本体も破棄する。
         // 現在の assembler key は origin/filter_id で、PID を保持しないため、同一 origin の
         // partial section/PES を保守的に破棄し、PID key を持つ generation/flush state は対象 PID だけ消す。
@@ -704,7 +704,7 @@ impl PacketPipeline {
         });
     }
 
-    pub fn reset_continuity_pid(&mut self, origin: crate::TsInputOrigin, pid: u16) {
+    pub(crate) fn reset_continuity_pid(&mut self, origin: crate::TsInputOrigin, pid: u16) {
         self.continuity_trackers.entry(origin).or_default().reset_pid(pid);
     }
 
@@ -721,7 +721,7 @@ impl PacketPipeline {
             .observe(pid, continuity_counter, has_payload)
     }
 
-    pub fn assemble_section_for_filter(
+    pub(crate) fn assemble_section_for_filter(
         &mut self,
         origin: crate::TsInputOrigin,
         filter_id: i32,
@@ -734,7 +734,7 @@ impl PacketPipeline {
             .push_payload_with_outcome(payload_unit_start, payload)
     }
 
-    pub fn assemble_pes_for_filter(
+    pub(crate) fn assemble_pes_for_filter(
         &mut self,
         origin: crate::TsInputOrigin,
         filter_id: i32,
@@ -748,14 +748,14 @@ impl PacketPipeline {
             .push(pid, payload_unit_start, payload)
     }
 
-    pub fn remove_section_for_filter_ids(&mut self, origin: Option<crate::TsInputOrigin>, filter_ids: &[i32]) {
+    pub(crate) fn remove_section_for_filter_ids(&mut self, origin: Option<crate::TsInputOrigin>, filter_ids: &[i32]) {
         self.section_assemblers.retain(|(stored_origin, filter_id), _| {
             !filter_ids.iter().any(|id| id == filter_id)
                 || origin.map_or(false, |target| target != *stored_origin)
         });
     }
 
-    pub fn remove_pes_for_filter_ids(&mut self, origin: Option<crate::TsInputOrigin>, filter_ids: &[i32]) {
+    pub(crate) fn remove_pes_for_filter_ids(&mut self, origin: Option<crate::TsInputOrigin>, filter_ids: &[i32]) {
         self.pes_assemblers.retain(|(stored_origin, filter_id), _| {
             !filter_ids.iter().any(|id| id == filter_id)
                 || origin.map_or(false, |target| target != *stored_origin)
@@ -773,33 +773,33 @@ impl PacketPipeline {
         }
     }
 
-    pub fn current_section_generation(&self, origin: crate::TsInputOrigin, pid: i32) -> u64 {
+    pub(crate) fn current_section_generation(&self, origin: crate::TsInputOrigin, pid: i32) -> u64 {
         self.section_assembler_generations
             .get(&(origin, pid))
             .copied()
             .unwrap_or(PIPELINE_GENERATION_INITIAL)
     }
 
-    pub fn current_pes_generation(&self, origin: crate::TsInputOrigin, pid: i32) -> u64 {
+    pub(crate) fn current_pes_generation(&self, origin: crate::TsInputOrigin, pid: i32) -> u64 {
         self.pes_assembler_generations
             .get(&(origin, pid))
             .copied()
             .unwrap_or(PIPELINE_GENERATION_INITIAL)
     }
 
-    pub fn bump_section_generation(&mut self, origin: crate::TsInputOrigin, pid: i32) -> u64 {
+    pub(crate) fn bump_section_generation(&mut self, origin: crate::TsInputOrigin, pid: i32) -> u64 {
         let generation = self.section_assembler_generations.entry((origin, pid)).or_insert(0);
         *generation = generation.saturating_add(1);
         *generation
     }
 
-    pub fn bump_pes_generation(&mut self, origin: crate::TsInputOrigin, pid: i32) -> u64 {
+    pub(crate) fn bump_pes_generation(&mut self, origin: crate::TsInputOrigin, pid: i32) -> u64 {
         let generation = self.pes_assembler_generations.entry((origin, pid)).or_insert(0);
         *generation = generation.saturating_add(1);
         *generation
     }
 
-    pub fn section_generation_allows_delivery(
+    pub(crate) fn section_generation_allows_delivery(
         &self,
         origin: crate::TsInputOrigin,
         filter_id: i32,
@@ -811,7 +811,7 @@ impl PacketPipeline {
             .map_or(true, |flushed_generation| generation > *flushed_generation)
     }
 
-    pub fn pes_generation_allows_delivery(
+    pub(crate) fn pes_generation_allows_delivery(
         &self,
         origin: crate::TsInputOrigin,
         filter_id: i32,
@@ -852,7 +852,7 @@ impl PacketPipeline {
     }
 
     #[cfg(test)]
-    pub fn test_assemble_pes_for_filter(
+    pub(crate) fn test_assemble_pes_for_filter(
         &mut self,
         origin: crate::TsInputOrigin,
         pid: u16,
@@ -863,15 +863,16 @@ impl PacketPipeline {
     }
 
     #[cfg(test)]
-    pub fn test_record_oversized_section_drop(&mut self, origin: crate::TsInputOrigin, filter_id: i32) -> bool {
+    pub(crate) fn test_record_oversized_section_drop(&mut self, origin: crate::TsInputOrigin, filter_id: i32) -> bool {
         self.section_assemblers
             .entry((origin, filter_id))
             .or_default()
-            .set_expected_len_or_drop(crate::sections::MAX_SECTION_PAYLOAD_BYTES + 1)
+            .inner
+            .set_expected_len_or_drop(maleicacid_tuner_hal_common::MAX_SECTION_PAYLOAD_BYTES + 1)
     }
 
     #[cfg(test)]
-    pub fn test_assemble_section_for_filter(
+    pub(crate) fn test_assemble_section_for_filter(
         &mut self,
         origin: crate::TsInputOrigin,
         filter_id: i32,
@@ -882,12 +883,12 @@ impl PacketPipeline {
     }
 
     #[cfg(test)]
-    pub fn test_seed_section(&mut self, origin: crate::TsInputOrigin, filter_id: i32) {
+    pub(crate) fn test_seed_section(&mut self, origin: crate::TsInputOrigin, filter_id: i32) {
         self.section_assemblers.entry((origin, filter_id)).or_default();
     }
 
     #[cfg(test)]
-    pub fn test_seed_pes(&mut self, origin: crate::TsInputOrigin, filter_id: i32) {
+    pub(crate) fn test_seed_pes(&mut self, origin: crate::TsInputOrigin, filter_id: i32) {
         self.pes_assemblers.entry((origin, filter_id)).or_default();
     }
 

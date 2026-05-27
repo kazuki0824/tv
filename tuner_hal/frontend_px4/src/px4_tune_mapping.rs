@@ -92,18 +92,6 @@ fn is_japan_cs110_if_frequency_range_hz(if_hz: u64) -> bool {
     (PX4_CS_BASE_IF_HZ..=last).contains(&if_hz)
 }
 
-fn is_exact_japan_cs110_if_frequency_hz(if_hz: u64) -> bool {
-    if !is_japan_cs110_if_frequency_range_hz(if_hz) {
-        return false;
-    }
-    let delta = if_hz - PX4_CS_BASE_IF_HZ;
-    if delta % PX4_CS_STEP_HZ != 0 {
-        return false;
-    }
-    let freq_no = PX4_CS_FREQ_NO_MIN + i32::try_from(delta / PX4_CS_STEP_HZ).unwrap_or(i32::MAX);
-    (PX4_CS_FREQ_NO_MIN..=PX4_CS_FREQ_NO_MAX).contains(&freq_no)
-}
-
 pub fn map_isdbt_frequency_to_px4(freq_hz: u64) -> Result<Px4TuneRequest, HalError> {
     let freq_khz = hz_to_nearest_khz(freq_hz)?;
     if let Some((freq_no, addfreq_khz)) = checked_direct_freq_no(

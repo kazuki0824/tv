@@ -72,6 +72,23 @@ pub struct DescramblerSession {
     pub pending_cleanup: BTreeSet<DescramblerCleanupItem>,
 }
 
+impl Default for DescramblerSession {
+    fn default() -> Self {
+        Self {
+            demux_id: None,
+            demux_generation: None,
+            key_token: None,
+            key_slot: None,
+            pid_registrations: BTreeMap::new(),
+            key: None,
+            pids: BTreeSet::new(),
+            upstream_filters: BTreeSet::new(),
+            close_state: DescramblerCloseState::Open,
+            pending_cleanup: BTreeSet::new(),
+        }
+    }
+}
+
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct DescramblerCloseSnapshot {
@@ -196,11 +213,11 @@ impl DescramblerSession {
     }
 
     pub fn has_pending_cleanup(&self, item: DescramblerCleanupItem) -> bool {
-        self.pending_cleanup.contains(item)
+        self.pending_cleanup.contains(&item)
     }
 
     pub fn mark_cleanup_complete(&mut self, item: DescramblerCleanupItem) {
-        self.pending_cleanup.remove(item);
+        self.pending_cleanup.remove(&item);
     }
 
     pub fn can_complete_close(&self) -> bool {

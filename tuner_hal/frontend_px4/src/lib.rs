@@ -888,6 +888,7 @@ mod tests {
 
     use super::{
         map_tune_request_to_px4, Px4FrontendBackend, Px4LiveStreamReader, Px4LiveStreamReaderState,
+        POLLERR, POLLHUP, POLLIN, POLLNVAL,
     };
 
     fn systems_from_cap(bits: u32) -> Vec<FrontendSystem> {
@@ -901,8 +902,8 @@ mod tests {
         systems
     }
     use maleicacid_tuner_hal_common::{
-        FrontendScanMode, FrontendStreamIdKind, FrontendSystem, FrontendTuneRequest,
-        TsPacketCompletionBuffer, TS_PACKET_SIZE,
+        FrontendStreamIdKind, FrontendSystem, FrontendTuneRequest, TsPacketCompletionBuffer,
+        TS_PACKET_SIZE,
     };
     use maleicacid_tuner_hal_soft_demux::{
         DemuxCore, DemuxPathDirection, DvrConfig, FilterConfig, FilterConfigKind, FilterOpenType,
@@ -1241,7 +1242,7 @@ mod tests {
                 },
             },
         ).is_ok());
-        assert!(demux.configure_dvr_with_summary(
+        assert!(demux.configure_dvr_with_summary_result(
             dvr.dvr_id,
             DvrConfig {
                 direction: DemuxPathDirection::Record,
@@ -1251,10 +1252,10 @@ mod tests {
                 data_format: 0,
                 packet_size: 188,
             },
-        ));
-        assert!(!demux.attach_filter_to_dvr(dvr.dvr_id, filter.filter_id));
+        ).is_ok());
+        assert!(demux.attach_filter_to_dvr_result(dvr.dvr_id, filter.filter_id).is_err());
         assert!(demux.start_filter_result(filter.filter_id).is_ok());
-        assert!(demux.start_dvr(dvr.dvr_id));
+        assert!(demux.start_dvr_result(dvr.dvr_id).is_ok());
 
         let pat = section_with_table_id(0x00, &[0x00, 0x01, 0xc1, 0x00, 0x00]);
         let packet = make_ts_packet(0, true, &pat);
@@ -1291,7 +1292,7 @@ mod tests {
                 },
             },
         ).is_ok());
-        assert!(demux.configure_dvr_with_summary(
+        assert!(demux.configure_dvr_with_summary_result(
             dvr.dvr_id,
             DvrConfig {
                 direction: DemuxPathDirection::Record,
@@ -1302,9 +1303,9 @@ mod tests {
                 packet_size: 188,
             },
         ).is_ok());
-        assert!(demux.attach_filter_to_dvr(dvr.dvr_id, filter.filter_id));
+        assert!(demux.attach_filter_to_dvr_result(dvr.dvr_id, filter.filter_id).is_ok());
         assert!(demux.start_filter_result(filter.filter_id).is_ok());
-        assert!(demux.start_dvr(dvr.dvr_id));
+        assert!(demux.start_dvr_result(dvr.dvr_id).is_ok());
 
         let packet = make_ts_packet(0, true, &[0x00, 0xb0, 0x05, 0, 0, 0, 0, 0]);
         let mut cursor = Cursor::new(packet.clone());

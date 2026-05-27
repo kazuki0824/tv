@@ -210,7 +210,7 @@ capability は実体と一致させる。
 - device node 不在、open 不可、permission 不足は `UNAVAILABLE` とする。device が存在する状態での 実行時ioctl失敗 / TS read 失敗 / pump 失敗 は `UNKNOWN_ERROR` とする。
 - client不正入力 は `INVALID_ARGUMENT` とする。CS110 stream selector 指定、unknown monitor bit、負値または `default_max` 超過の `setMaxNumberOfFrontends()` は `INVALID_ARGUMENT` に固定する。
 - product実行時 に 劣化frontend entry variant / generator / helper を置かない。device不在 は サービス 起動継続 + 診断情報記録 + frontend 非広告で扱う。
-- 一時レビュー用 Markdown と変更履歴ファイルを リリースアーカイブ に同梱しない。恒久設計は `DESIGN_JA.md`、実装規約は `CODE_CONVENTION.md` に統合する。未公開リリース候補のため、後方互換目的の alias、互換 field、旧API は非公開化ではなく削除する。
+- 一時レビュー用 Markdown と一時変更履歴ファイルを リリースアーカイブ に同梱しない。恒久設計は `DESIGN_JA.md`、実装規約は `CODE_CONVENTION.md` に統合する。恒久的な変更履歴は `README_JA.md` が指定する `CHANGELOG.md` だけに記録し、複数の履歴ファイルを作らない。未公開リリース候補のため、後方互換目的の alias、互換 field、旧API は非公開化ではなく削除する.
 
 ## WorkerExit / scan 終了理由
 
