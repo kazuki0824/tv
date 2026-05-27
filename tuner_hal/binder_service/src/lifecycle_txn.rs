@@ -65,10 +65,6 @@ impl LifecycleTxn {
         self.cleanup_outcome = if result.is_ok() { CleanupOutcome::Success } else { CleanupOutcome::Failed };
         result
     }
-
-    #[cfg(not(test))]
-    pub fn validate_value<F, T, E>(&mut self, name: &'static str, f: F) -> Result<T, E>
-    where F: FnOnce() -> Result<T, E> { self.run_stage_value(LifecycleStage::Validate, name, f) }
     pub fn prepare_value<F, T, E>(&mut self, name: &'static str, f: F) -> Result<T, E>
     where F: FnOnce() -> Result<T, E> { self.run_stage_value(LifecycleStage::Prepare, name, f) }
     pub fn apply_value<F, T, E>(&mut self, name: &'static str, f: F) -> Result<T, E>
@@ -93,16 +89,14 @@ impl LifecycleTxn {
             Err(e) => { self.record_error_once_at(stage, name); Err(e) }
         }
     }
-
-    #[cfg(any())]
-    pub fn record_step(&mut self, name: &'static str) { self.steps.push(TxnStep { stage: LifecycleStage::Apply, name }); }
-    #[cfg(any())]
-    pub fn record_error_once(&mut self, step: &'static str) { self.record_error_once_at(LifecycleStage::Apply, step); }
     pub fn record_error_once_at(&mut self, stage: LifecycleStage, step: &'static str) {
         if self.first_error.is_none() { self.first_error = Some(FirstError { stage, step }); }
     }
+    #[cfg(test)]
     pub fn first_error(&self) -> Option<&FirstError> { self.first_error.as_ref() }
+    #[cfg(test)]
     pub fn steps(&self) -> &[TxnStep] { &self.steps }
+    #[cfg(test)]
     pub fn cleanup_outcome(&self) -> CleanupOutcome { self.cleanup_outcome }
 }
 
@@ -136,6 +130,7 @@ pub struct CloseCleanupOutcome<E> {
     pub step_results: CloseCleanupStepResults,
 }
 impl<E> CloseCleanupOutcome<E> {
+    #[cfg(test)]
     pub fn new(first_error: Option<E>, all_cleanup_complete: bool, step_results: CloseCleanupStepResults) -> Self {
         Self { first_error, all_cleanup_complete, step_results }
     }

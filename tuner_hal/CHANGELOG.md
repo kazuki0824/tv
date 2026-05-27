@@ -78,3 +78,30 @@
 - `LifecycleTxn::new()`、FMQ wait/read、PX4 diagnostic snapshot、descrambler diagnostic dump、Filter/DVR callback worker stop helper の可視性を現行呼び出し経路に合わせた。
 - 未使用 import を削除した。
 - 検証スクリプトは `m -k 0 -j"$JOBS"` を維持する。
+## r50dz89
+
+- `#[cfg(any())]` で実質的に無効化されていた FMQ / lifecycle 補助要素を削除または通常の `#[cfg(test)]` 境界へ整理した。
+- `FmqWaitOutcome` の test build scope 欠落を、未使用 wait 経路の削除で解消した。
+- binder_service の release build に残っていた未使用 import と FMQ unreachable 補助型を整理した。
+- 検証スクリプトは `m -k 0 -j"$JOBS"` を維持する。
+
+## r50dz90
+
+- binder_service test build の残件を修正した。
+- `DescramblerSession::has_pid()` を test-only helper として復元した。
+- `FmqQueue::available_to_read_result()` を現行呼び出し経路へ復元した。
+- `LivePumpWakeFd::drain_for_test()` 用に `Read` trait import を戻した。
+- 検証スクリプトは `m -k 0 -j"$JOBS"` を維持する。
+## r50dz91
+
+- `tuner_hal.rs` の `Read` trait import を test 専用に分離し、release build の unused import を解消した。
+- `maleicacid_tuner_hal_binder_service_test` は binary crate を `--test` で直接ビルドする構造のため、release entrypoint 非到達による dead_code 誤検出を test target 限定の `-Adead_code` で抑制した。release binary には適用しない。
+- `verify_r50dz91_min.sh` は `m -k 0 -j"$JOBS"` を維持する。
+
+
+## r50dz92
+
+- `maleicacid_tuner_hal_binder_service_test` が service binary crate の `main.rs` を `--test` で直接ビルドしていた構造を廃止した。
+- `binder_service/src/lib.rs` を追加し、service 本体を library crate `libmaleicacid_tuner_hal_binder_service` に分離した。
+- `binder_service/src/main.rs` は `run_service()` を呼ぶ thin binary にした。
+- binder_service の rust_test は `binder_service/src/lib.rs` を crate root にし、`-Adead_code` を削除した。

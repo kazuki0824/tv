@@ -50,6 +50,7 @@ pub enum DescramblerCleanupItem {
 }
 
 impl DescramblerCleanupItem {
+    #[cfg(test)]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::RuntimeRegistry => "runtime_registry",
@@ -153,8 +154,9 @@ impl DescramblerSession {
         self.pid_registrations.remove(&(pid.pid as u16));
     }
 
+    #[cfg(test)]
     pub fn has_pid(&self, pid: PidBinding) -> bool {
-        self.pids.contains(&pid)
+        self.pids.contains(&pid) && self.pid_registrations.contains_key(&(pid.pid as u16))
     }
 
     pub fn begin_close(&mut self) {
@@ -210,10 +212,12 @@ impl DescramblerSession {
         self.pending_cleanup.iter().copied()
     }
 
+    #[cfg(test)]
     pub fn pending_cleanup_names(&self) -> Vec<&'static str> {
         self.pending_cleanup.iter().copied().map(DescramblerCleanupItem::as_str).collect()
     }
 
+    #[cfg(test)]
     pub fn has_pending_cleanup(&self, item: DescramblerCleanupItem) -> bool {
         self.pending_cleanup.contains(&item)
     }

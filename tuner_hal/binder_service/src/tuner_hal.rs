@@ -128,7 +128,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{c_void, CString};
 use std::fs::File;
 use std::os::unix::fs::MetadataExt;
-use std::io::{Read, Write};
+use std::io::Write;
+#[cfg(test)]
+use std::io::Read;
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -1556,7 +1558,7 @@ impl SharedMemoryBacking {
         let _guard = lock_mutex_status(&self.ring_io_lock, "fmq_ring_io")?;
         match self.queue.current_fill() {
             Ok(FmqFillStatus::Bytes(bytes)) => Ok(bytes),
-            Ok(FmqFillStatus::Unavailable) | Err(_) => Err(Status::from(StatusCode::UNKNOWN_ERROR)),
+            Err(_) => Err(Status::from(StatusCode::UNKNOWN_ERROR)),
         }
     }
 
@@ -2059,7 +2061,6 @@ impl LivePumpWake {
         }
     }
 
-    #[cfg(test)]
     #[cfg(test)]
     fn drain_for_test(&self) {
         if let Some(mut reader) = lock_mutex_option(&self.reader, "live_pump_reader") {

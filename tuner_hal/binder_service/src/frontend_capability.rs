@@ -56,6 +56,7 @@ impl FrontendCapabilityModel {
         }
     }
 
+    #[cfg(test)]
     pub fn allow_system(mut self, system: FrontendSystem) -> Self {
         self.supported_systems.insert(system);
         self.runtime_allowed_systems.insert(system);

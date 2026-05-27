@@ -28,8 +28,6 @@ extern "C" {
     fn native_queue_read(queue: *mut TunerFmqQueue, data: *mut u8, size: usize) -> usize;
     #[link_name = "tuner_fmq_queue_wake"]
     fn native_queue_wake(queue: *mut TunerFmqQueue, bits: u32) -> i32;
-    #[link_name = "tuner_fmq_queue_wait"]
-    fn native_queue_wait(queue: *mut TunerFmqQueue, bits: u32, timeout_ns: i64, state: *mut u32) -> i32;
     #[link_name = "tuner_fmq_queue_quantum"]
     fn native_queue_quantum(queue: *const TunerFmqQueue) -> i32;
     #[link_name = "tuner_fmq_queue_flags"]
@@ -110,19 +108,6 @@ impl NativeFmqQueue {
         unsafe { native_queue_wake(self.queue, bits) }
     }
 
-    fn wait(&self, bits: u32, timeout_ms: i32) -> Result<FmqWaitOutcome, i32> {
-        let timeout_ns = if timeout_ms < 0 { -1 } else { (timeout_ms as i64).saturating_mul(1_000_000) };
-        let mut state = 0u32;
-        let status = unsafe { native_queue_wait(self.queue, bits, timeout_ns, &mut state) };
-        if status == 0 && (state & bits) != 0 {
-            Ok(FmqWaitOutcome::Woken)
-        } else if status == 0 || status == -110 || status == -11 {
-            Ok(FmqWaitOutcome::TimedOut)
-        } else {
-            Err(status)
-        }
-    }
-
     pub(crate) fn quantum(&self) -> i32 {
         unsafe { native_queue_quantum(self.queue) }
     }
@@ -168,21 +153,13 @@ impl Drop for NativeFmqQueue {
     }
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-#[cfg(not(test))]
-pub enum FmqReadOutcome { NoData, Bytes(usize) }
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-#[cfg(any())]
-pub enum FmqWriteOutcome { Written(usize) }
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum FmqClearOutcome { Cleared }
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum FmqFillStatus { Bytes(usize), Unavailable }
+pub enum FmqFillStatus { Bytes(usize) }
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-#[cfg(not(test))]
-pub enum FmqWaitOutcome { Woken, TimedOut }
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum FmqQueueError { Internal, InvalidArgument, NativeReadZero }
+pub enum FmqQueueError { Internal, #[cfg(test)] NativeReadZero }
 
 pub struct FmqQueue { native: Option<NativeFmqQueue>, test_fill: usize }
 
@@ -192,22 +169,9 @@ impl FmqQueue {
         let native = NativeFmqQueue::create(num_bytes, configure_event_flag).ok_or(FmqQueueError::Internal)?;
         Ok(Self { native: Some(native), test_fill: 0 })
     }
-    #[cfg(not(test))]
-    fn read(&self, max_bytes: usize) -> Result<FmqReadOutcome, FmqQueueError> {
-        if max_bytes == 0 { return Ok(FmqReadOutcome::NoData); }
-        let Some(native) = &self.native else { return Ok(FmqReadOutcome::NoData); };
-        let mut data = vec![0u8; max_bytes];
-        let read = native.read(&mut data);
-        if read == 0 { Ok(FmqReadOutcome::NoData) } else { Ok(FmqReadOutcome::Bytes(read)) }
-    }
     pub(crate) fn read_into(&self, data: &mut [u8]) -> Result<usize, FmqQueueError> {
         let Some(native) = &self.native else { return Ok(0); };
         Ok(native.read(data))
-    }
-    #[cfg(any())]
-    pub fn write(&self, bytes: &[u8]) -> Result<FmqWriteOutcome, FmqQueueError> {
-        let Some(native) = &self.native else { return Err(FmqQueueError::Internal); };
-        native.write_checked(bytes).map(FmqWriteOutcome::Written).map_err(|_| FmqQueueError::Internal)
     }
     pub(crate) fn write_checked(&self, bytes: &[u8]) -> Result<usize, i32> {
         self.native.as_ref().ok_or(-1)?.write_checked(bytes)
@@ -234,22 +198,15 @@ impl FmqQueue {
         let Some(native) = &self.native else { return Ok(()); };
         if native.wake(event_mask) == 0 { Ok(()) } else { Err(FmqQueueError::Internal) }
     }
-    #[cfg(not(test))]
-    pub fn wait(&self, event_mask: u32, timeout_ms: i32) -> Result<FmqWaitOutcome, FmqQueueError> {
-        let Some(native) = &self.native else { return Ok(FmqWaitOutcome::TimedOut); };
-        native.wait(event_mask, timeout_ms).map_err(|_| FmqQueueError::Internal)
-    }
     fn native_ref(&self) -> Result<&NativeFmqQueue, FmqQueueError> {
         self.native.as_ref().ok_or(FmqQueueError::Internal)
     }
 
     pub(crate) fn available_to_read_result(&self) -> Result<usize, FmqQueueError> {
-        self.native.as_ref().map(|q| q.available_to_read()).ok_or(FmqQueueError::Internal)
-    }
-
-    #[cfg(any())]
-    pub(crate) fn available_to_read_for_test(&self) -> usize {
-        self.native.as_ref().map(|q| q.available_to_read()).unwrap_or(self.test_fill)
+        match &self.native {
+            Some(native) => Ok(native.available_to_read()),
+            None => Ok(self.test_fill),
+        }
     }
 
     pub(crate) fn available_to_write_result(&self) -> Result<usize, FmqQueueError> {

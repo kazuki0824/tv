@@ -91,15 +91,25 @@ cc_library_shared {
     cflags: ["-std=c++20"],
 }
 
-rust_binary {
-    name: "maleicacid.tv.tuner_hal-service",
-    relative_install_path: "hw",
+rust_library {
+    name: "libmaleicacid_tuner_hal_binder_service",
     vendor: true,
-    crate_root: "binder_service/src/main.rs",
-    srcs: ["binder_service/src/*.rs"],
+    crate_name: "maleicacid_tuner_hal_binder_service",
+    crate_root: "binder_service/src/lib.rs",
+    srcs: [
+        "binder_service/src/lib.rs",
+        "binder_service/src/descrambler_key_table.rs",
+        "binder_service/src/descrambler_session.rs",
+        "binder_service/src/fmq_queue.rs",
+        "binder_service/src/frontend_capability.rs",
+        "binder_service/src/hal_sync.rs",
+        "binder_service/src/lifecycle_txn.rs",
+        "binder_service/src/registry_ledger.rs",
+        "binder_service/src/stream_boundary.rs",
+        "binder_service/src/tuner_hal.rs",
+        "binder_service/src/worker_runtime.rs",
+    ],
     edition: "2021",
-    init_rc: ["tuner-hal-service.rc"],
-    vintf_fragments: ["tuner-hal-service.xml"],
     shared_libs: [
         "libmaleicacid_tuner_hal_fmq_shim",
     ],
@@ -114,6 +124,20 @@ rust_binary {
         "libmaleicacid_tuner_hal_soft_demux",
         "libmaleicacid_tuner_hal_descrambler",
         "libmaleicacid_tuner_hal_dvr",
+    ],
+}
+
+rust_binary {
+    name: "maleicacid.tv.tuner_hal-service",
+    relative_install_path: "hw",
+    vendor: true,
+    crate_root: "binder_service/src/main.rs",
+    srcs: ["binder_service/src/main.rs"],
+    edition: "2021",
+    init_rc: ["tuner-hal-service.rc"],
+    vintf_fragments: ["tuner-hal-service.xml"],
+    rustlibs: [
+        "libmaleicacid_tuner_hal_binder_service",
     ],
 }
 
@@ -182,8 +206,20 @@ rust_test {
     name: "maleicacid_tuner_hal_binder_service_test",
     vendor: true,
     crate_name: "maleicacid_tuner_hal_binder_service_test",
-    crate_root: "binder_service/src/main.rs",
-    srcs: ["binder_service/src/*.rs"],
+    crate_root: "binder_service/src/lib.rs",
+    srcs: [
+        "binder_service/src/lib.rs",
+        "binder_service/src/descrambler_key_table.rs",
+        "binder_service/src/descrambler_session.rs",
+        "binder_service/src/fmq_queue.rs",
+        "binder_service/src/frontend_capability.rs",
+        "binder_service/src/hal_sync.rs",
+        "binder_service/src/lifecycle_txn.rs",
+        "binder_service/src/registry_ledger.rs",
+        "binder_service/src/stream_boundary.rs",
+        "binder_service/src/tuner_hal.rs",
+        "binder_service/src/worker_runtime.rs",
+    ],
     edition: "2021",
     shared_libs: [
         "libmaleicacid_tuner_hal_fmq_shim",

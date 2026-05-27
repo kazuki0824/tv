@@ -5,7 +5,7 @@
 //! 埋め込みは禁止し、具象 resource trait で操作する。
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum StreamBoundaryReason { TuneStart, ScanStart, FrontendClose, FrontendUnbind, SourceFilterChange, DvrPlaybackDiscontinuity }
+pub enum StreamBoundaryReason { TuneStart, FrontendClose, FrontendUnbind, SourceFilterChange }
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum StreamBoundaryStep { AdvanceGeneration, NotifyWorkerBoundary, FlushRuntimeIo, ClearFmq, ResetPacketPipeline, DiscardAvPayloads, ResetDvrPlayback, CommitGeneration }
 
@@ -27,6 +27,7 @@ pub trait StreamBoundaryResources {
 impl StreamBoundaryResetPlan {
     pub fn for_demux(reason: StreamBoundaryReason, demux_id: i32, generation: u64) -> Self { Self { reason, demux_id, generation } }
 
+    #[cfg(test)]
     pub fn execute<R: StreamBoundaryResources>(&self, resources: &mut R) -> Result<StreamBoundaryResetResult, R::Error> {
         self.execute_from_step(resources, None)
     }
