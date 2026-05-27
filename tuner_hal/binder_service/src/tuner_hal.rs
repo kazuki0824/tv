@@ -128,7 +128,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{c_void, CString};
 use std::fs::File;
 use std::os::unix::fs::MetadataExt;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -1022,7 +1022,7 @@ impl AvSharedBacking {
     fn increment_av_payload_drop_counter(
         &self,
         counter: &Mutex<u64>,
-        counter_name: &str,
+        counter_name: &'static str,
     ) -> Result<(), AvPayloadAllocateError> {
         let Ok(mut value) = lock_mutex_hal(counter, counter_name) else {
             return Err(AvPayloadAllocateError::Internal(
@@ -1331,7 +1331,12 @@ impl SharedMemoryBacking {
         if !dvr.is_started_for_api() || dvr.direction != DemuxPathDirection::Playback {
             return Ok(PlaybackConsumeState::Empty);
         }
-        let available = self.queue.available_to_read_result().map_err(|err| fmq_queue_error_status("fmq_available_to_read", err))?;
+        let available = self.queue.available_to_read_result().map_err(|err| {
+            std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("FMQ available_to_read failed: {err:?}"),
+            )
+        })?;
         if available == 0 {
             return Ok(PlaybackConsumeState::Empty);
         }
@@ -1479,7 +1484,7 @@ impl SharedMemoryBacking {
     fn clear_result(&self) -> BinderResult<usize> {
         let _ring_guard = lock_mutex_status(&self.ring_io_lock, "fmq_ring_io")?;
         let _consume_guard = lock_mutex_status(&self.playback_consume_lock, "playback_consume")?;
-        let available = self.queue.available_to_read_result().map_err(|err| fmq_queue_error_status("fmq_available_to_read", err))?;
+        let available = self.queue.available_to_read_result().map_err(|err| fmq_queue_error_status("fmq_clear_available_to_read", err))?;
         let mut dropped = 0usize;
         if available > 0 {
             let mut sink = vec![0u8; available];
@@ -3524,7 +3529,7 @@ impl FrontendRuntime {
                 frontend_index,
                 demux_index,
                 dvr_index,
-                declared_type,
+                declared_type: _,
                 supported_systems,
                 ..
             } => (
@@ -5301,7 +5306,7 @@ impl TunerHal {
             descrambler_ledger: DescramblerLedger::default(),
             pending_stream_boundary_plan: None,
         }));
-        txn.apply("demux_ledger_create_live", || {
+        txn.apply("demux_ledger_create_live", || -> BinderResult<()> {
             let mut ledger = lock_mutex_status(&self.demux_ledger, "demux_ledger")?;
             ledger
                 .create_live(LedgerId(demux_id), Arc::clone(&record))
@@ -6186,7 +6191,7 @@ impl FrontendHal {
         let shared_for_hook = Arc::clone(&shared);
         let shared_for_spawn_failure = Arc::clone(&shared);
         let handle = WorkerRuntime::spawn_owned_with_exit_hook(
-            WorkerOwnerId("frontend_tune_worker", self.frontend_id),
+            WorkerOwnerId("frontend_tune_worker", self.shared.frontend_id),
             "frontend_tune_worker",
             move |owner_signal| {
             let outcome = FrontendHal::wait_for_lock(&shared, request.system, LockWaitMode::Tune, Some(&owner_signal));
@@ -6551,7 +6556,7 @@ impl FrontendHal {
             };
             let should_unbind = {
                 let mut record = lock_mutex_status(&record, "demux_record")?;
-                if record.bound_frontend_id != Some(self.frontend_id)
+                if record.bound_frontend_id != Some(self.shared.frontend_id)
                     || record.bound_frontend_generation != Some(self.session_generation)
                 {
                     false
@@ -6597,7 +6602,7 @@ impl FrontendHal {
                 let Some(mut record) = lock_mutex_option(&record, "demux_record") else {
                     continue;
                 };
-                if record.bound_frontend_id != Some(self.frontend_id)
+                if record.bound_frontend_id != Some(self.shared.frontend_id)
                     || record.bound_frontend_generation != Some(self.session_generation)
                 {
                     false
@@ -6627,16 +6632,16 @@ impl FrontendHal {
 
     fn release_frontend_lease(&self) -> BinderResult<()> {
         let mut leases = lock_mutex_status(&self.lease_registry, "frontend_leases")?;
-        if !leases.open_frontends.remove(&self.frontend_id) {
+        if !leases.open_frontends.remove(&self.shared.frontend_id) {
             return Ok(());
         }
         leases.open_physical_groups.remove(&self.physical_group_id);
         let active_generation = leases
             .open_generations
-            .get(&self.frontend_id)
+            .get(&self.shared.frontend_id)
             .copied();
         if active_generation == Some(self.session_generation) {
-            leases.open_generations.remove(&self.frontend_id);
+            leases.open_generations.remove(&self.shared.frontend_id);
         }
         let count = leases
             .open_counts_by_type
@@ -6661,16 +6666,16 @@ impl FrontendHal {
         let Some(mut leases) = lock_mutex_option(&self.lease_registry, "frontend_leases") else {
             return;
         };
-        if !leases.open_frontends.remove(&self.frontend_id) {
+        if !leases.open_frontends.remove(&self.shared.frontend_id) {
             return;
         }
         leases.open_physical_groups.remove(&self.physical_group_id);
         let active_generation = leases
             .open_generations
-            .get(&self.frontend_id)
+            .get(&self.shared.frontend_id)
             .copied();
         if active_generation == Some(self.session_generation) {
-            leases.open_generations.remove(&self.frontend_id);
+            leases.open_generations.remove(&self.shared.frontend_id);
         }
         let count = frontend_open_count_or_zero(&leases.open_counts_by_type, self.frontend_type);
         let next_count = count.saturating_sub(1);
@@ -7330,12 +7335,11 @@ impl IFrontend for FrontendHal {
         let callback_registry = Arc::clone(&self.callback);
         let shared = Arc::clone(&self.shared);
         let scan_session = Arc::clone(&self.scan_session);
-        let callback_registry_for_hook = Arc::clone(&callback_registry);
         let shared_for_hook = Arc::clone(&shared);
         let scan_session_for_hook = Arc::clone(&scan_session);
         let scan_last_terminal_for_hook = Arc::clone(&self.scan_last_terminal);
         let handle = match WorkerRuntime::spawn_owned_with_exit_hook(
-            WorkerOwnerId("frontend_scan_worker", self.frontend_id),
+            WorkerOwnerId("frontend_scan_worker", self.shared.frontend_id),
             "frontend_scan_worker",
             move |owner_signal| {
                 let total = requests.len().max(1) as i32;
@@ -7347,15 +7351,13 @@ impl IFrontend for FrontendHal {
                             session_id,
                             ScanPhase::Cancelled,
                         );
-if !FrontendHal::notify_scan_end_required(
+FrontendHal::notify_scan_end_required(
                             &callback_registry,
                             &shared,
                             &scan_session,
                             session_id,
                             "notify_end_after_stop_requested",
-                        ) {
-                            scan_failed = true;
-                        }
+                        );
                         break;
                     }
                     let request = requests[index].clone();
@@ -7418,15 +7420,13 @@ if !FrontendHal::notify_scan_end_required(
                             ScanPhase::FailedBackend,
                         );
                         shared.mark_live_path_failed(&detail);
-if !FrontendHal::notify_scan_end_required(
+FrontendHal::notify_scan_end_required(
                             &callback_registry,
                             &shared,
                             &scan_session,
                             session_id,
                             "notify_end_after_failure",
-                        ) {
-                            scan_failed = true;
-                        }
+                        );
                         scan_failed = true;
                         break;
                     }
@@ -7445,15 +7445,13 @@ if !FrontendHal::notify_scan_end_required(
                             ScanPhase::FailedBackend,
                         );
                         shared.mark_live_path_failed(&detail);
-if !FrontendHal::notify_scan_end_required(
+FrontendHal::notify_scan_end_required(
                             &callback_registry,
                             &shared,
                             &scan_session,
                             session_id,
                             "notify_end_after_failure",
-                        ) {
-                            scan_failed = true;
-                        }
+                        );
                         scan_failed = true;
                         break;
                     };
@@ -7463,15 +7461,13 @@ if !FrontendHal::notify_scan_end_required(
                             session_id,
                             ScanPhase::Cancelled,
                         );
-if !FrontendHal::notify_scan_end_required(
+FrontendHal::notify_scan_end_required(
                             &callback_registry,
                             &shared,
                             &scan_session,
                             session_id,
                             "notify_end_after_stop_requested",
-                        ) {
-                            scan_failed = true;
-                        }
+                        );
                         break;
                     }
                     if outcome.locked {
@@ -7572,15 +7568,13 @@ if !FrontendHal::notify_scan_end_required(
                     }
                     shared.mark_live_path_failed(failure_reason);
                     if !already_callback_failed {
-                        if !FrontendHal::notify_scan_end_required(
+                        FrontendHal::notify_scan_end_required(
                             &callback_registry,
                             &shared,
                             &scan_session,
                             session_id,
                             "notify_end_after_cleanup_failure",
-                        ) {
-                            scan_failed = true;
-                        }
+                        );
                     }
                     scan_failed = true;
                 }
@@ -7596,15 +7590,13 @@ if !FrontendHal::notify_scan_end_required(
                         session_id,
                         ScanPhase::Completed,
                     );
-if !FrontendHal::notify_scan_end_required(
+FrontendHal::notify_scan_end_required(
                         &callback_registry,
                         &shared,
                         &scan_session,
                         session_id,
                         "notify_end_after_completed",
-                    ) {
-                        scan_failed = true;
-                    }
+                    );
                 }
                 match FrontendHal::scan_session_phase(&scan_session, session_id) {
                     Some(
@@ -7705,7 +7697,7 @@ if !FrontendHal::notify_scan_end_required(
         let _lnb_op = lnb_operation_guard_for_id(lnb_id)?;
         let lnb = Self::validate_lnb_owner(
             &self.shared.allowed_systems,
-            self.frontend_id,
+            self.shared.frontend_id,
             &self.shared.lnb_registry,
             lnb_id,
         )?;
@@ -7743,7 +7735,7 @@ if !FrontendHal::notify_scan_end_required(
         Ok(format!(
             "{} frontend_id={} device_present={}",
             Self::backend_hardware_info(&mut backend),
-            self.frontend_id,
+            self.shared.frontend_id,
             Self::backend_probe_device(&backend)
         ))
     }
@@ -8816,8 +8808,7 @@ impl FilterHal {
                             // avDataId=0 / 共有ハンドルなしの MediaEvent を出して FMQ-only delivery を
                             // ライブ AV 成功経路にしてはならない。
                             if av_payload_should_emit_data_event(is_media, av_slice) {
-                                let event_offset = av_slice.map(|slice| slice.offset as i64).unwrap_or(queue_ring.start_offset as i64);
-                                if let Some(event) = build_filter_event_from_entry(&record, &payload, event_offset, cumulative_bytes, av_slice, av_data_id, av_memory, &mut record_event_state) {
+                                if let Some(event) = build_filter_event_from_entry(&record, &payload, cumulative_bytes, av_slice, av_data_id, av_memory, &mut record_event_state) {
                                     if let Err(err) = callback_clone.onFilterEvent(&[event]) {
                                         eprintln!("maleicacid-tuner-hal-callback: filter_id={} api=onFilterEvent(data) binder_status={:?}", filter_id, err);
                                         FilterHal::fail_filter_worker(&state_clone, &runtime_io_clone, &queue_backing_clone, &av_queue_backing_clone, &av_shared_backing_clone, &closed_clone, &stop_clone, filter_id, "filter callback failure on データイベント");
@@ -11172,7 +11163,6 @@ impl ILnb for LnbHal {
 fn build_filter_event_from_entry(
     record: &maleicacid_tuner_hal_soft_demux::DemuxFilterRecord,
     payload: &FilterPayload,
-    offset: i64,
     cumulative_bytes: u64,
     av_slice: Option<AvBufferSlice>,
     av_data_id: Option<i64>,
@@ -11184,7 +11174,6 @@ fn build_filter_event_from_entry(
         payload.event_bytes(),
         payload.av_metadata(),
         payload.pes_stream_id(),
-        offset,
         cumulative_bytes,
         av_slice,
         av_data_id,
@@ -11198,7 +11187,6 @@ fn build_filter_event_from_payload(
     payload: &[u8],
     av_metadata: Option<&AvPayloadMetadata>,
     pes_stream_id: Option<i32>,
-    offset: i64,
     cumulative_bytes: u64,
     av_slice: Option<AvBufferSlice>,
     av_data_id: Option<i64>,

@@ -1,5 +1,14 @@
 # 変更履歴
 
+## r50dz85
+
+- r50dz84 の `m -k 0` 検証で、残件が binder_service の 8 件に絞られたことを確認した。
+- `AvSharedBacking::increment_av_payload_drop_counter()` の mutex 名引数を `&'static str` に固定し、`lock_mutex_hal()` の契約と一致させた。
+- DVB frontend entry 構築時の未使用 `declared_type` destructuring を削除した。
+- scan worker の未使用 clone と redundant な `scan_failed` 代入を削除した。
+- filter event builder から未使用 `offset` 引数を削除した。
+- 検証スクリプトは `m -k 0 -j"$JOBS"` を維持する。
+
 ## r50dz79
 
 - r50dz78 の検証ログで残った `soft_demux` の test helper 可視性不一致を修正した。
@@ -44,4 +53,13 @@
 
 - `r50dz82` の build gate で検出された `binder_service` の型推論、`Status` 変換、`FrontendRuntime` 診断参照、DVR/Filter rollback cleanup の戻り値不一致を修正した。
 - `soft_demux` の未使用 test helper `raw_config()` を削除した。
+- 検証スクリプトは `m -k 0 -j"$JOBS"` を維持する。
+
+## r50dz84
+
+- r50dz83 の `m -k 0` 検証で検出された binder_service の残件を修正した。
+- playback FMQ の readable-byte 取得失敗は `std::io::Error` に変換し、`std::io::Result` の境界に合わせた。
+- `LivePumpWakeFd::drain_for_test()` が `Read` trait を参照できるよう import を修正した。
+- demux ledger create live transaction の closure 戻り型を `BinderResult<()>` に固定し、型推論失敗を解消した。
+- `FrontendHal` から frontend ID を参照する箇所を `shared.frontend_id` に統一した。
 - 検証スクリプトは `m -k 0 -j"$JOBS"` を維持する。
