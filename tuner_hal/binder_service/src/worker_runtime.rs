@@ -349,7 +349,7 @@ pub enum WorkerRuntimeError { SpawnFailed, WakeFailed, JoinFailed, SelfJoin, Exi
 pub struct WorkerOwnerId(pub &'static str, pub i32);
 
 pub struct WorkerHandle {
-    owner_id: WorkerOwnerId,
+    _owner_id: WorkerOwnerId,
     name: &'static str,
     signal: std::sync::Arc<ConcreteWorkerSignal>,
     handle: Option<ThreadWorkerHandleRaw>,
@@ -360,7 +360,7 @@ impl WorkerHandle {
     #[cfg(test)]
     fn from_raw(owner_id: WorkerOwnerId, name: &'static str, handle: ThreadWorkerHandleRaw) -> Self {
         Self {
-            owner_id,
+            _owner_id: owner_id,
             name,
             signal: std::sync::Arc::new(ConcreteWorkerSignal::new(true)),
             handle: Some(handle),
@@ -397,7 +397,7 @@ impl WorkerHandle {
         if self.exit_reason == WorkerExitReason::NotStarted { None } else { Some(self.exit_reason) }
     }
     #[cfg(test)]
-    pub fn owner_id(&self) -> &WorkerOwnerId { &self.owner_id }
+    pub fn owner_id(&self) -> &WorkerOwnerId { &self._owner_id }
 }
 
 #[derive(Debug, Default)]
@@ -412,7 +412,7 @@ impl WorkerRuntime {
         let thread_signal = std::sync::Arc::clone(&signal);
         let handle = spawn_worker_with_exit_hook(name, move || body(thread_signal), |_| {})
             .map_err(|_| WorkerRuntimeError::SpawnFailed)?;
-        Ok(WorkerHandle { owner_id, name, signal, handle: Some(handle), exit_reason: WorkerExitReason::NotStarted })
+        Ok(WorkerHandle { _owner_id: owner_id, name, signal, handle: Some(handle), exit_reason: WorkerExitReason::NotStarted })
     }
 
     pub(crate) fn spawn_owned_with_exit_hook<F, R, H>(
@@ -439,7 +439,7 @@ impl WorkerRuntime {
         )
         .map_err(|_| WorkerRuntimeError::SpawnFailed)?;
         Ok(WorkerHandle {
-            owner_id,
+            _owner_id: owner_id,
             name,
             signal,
             handle: Some(handle),

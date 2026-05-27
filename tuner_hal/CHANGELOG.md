@@ -1,4 +1,31 @@
+# r50dz97
+
+- r50dz96 検証ログで再検出された `BackendFlavor::Unavailable` dead_code を、現ソースで残存しないことを確認した。
+- `BackendFlavor` は active backend の `Px4` / `Dvb` だけを表す型として固定し、unavailable frontend は `FrontendBackendState::Unavailable` から `HalError::OpenFailed { path, message }` へ写像する。
+- 追加の `#[allow(dead_code)]` や `-Adead_code` は使用しない。
+- `verify_r50dz97_min.sh` は `m -k 0 -j"$JOBS"` を維持する。
+
+# r50dz96
+
+- `FrontendHal::backend_flavor()` の unavailable frontend error を、既存の `HalError::OpenFailed { path, message }` 契約に合わせた。
+- r50dz95 検証ログで検出された `OpenFailed` の存在しない `stage` / `reason` field 指定を修正した。
+
 # 変更履歴
+
+## r50dz95
+
+- r50dz94 検証ログで検出された `BackendFlavor::Unavailable` の残存 dead_code を再確認し、backend flavor は active backend だけを表す型として固定した。
+- unavailable frontend backend を DVB に丸めず、`frontend_backend_unavailable` の `HalError::OpenFailed` として返すようにした。
+- `verify_r50dz95_min.sh` は `m -k 0 -j"$JOBS"` を維持する。
+
+## r50dz94
+
+- r50dz93 の `m -k 0` 検証で検出された binder_service library crate の `-D warnings` 残件を整理した。
+- `LocalFilterGenerationIdentity` を返す helper の公開範囲を crate 外へ出さない形に戻し、private interface 警告を解消した。
+- test fallback 用 memfd_create 経路を `#[cfg(test)]` に閉じ、release build の未使用 syscall / ftruncate / memfd 定数を除外した。
+- 未使用になった playback boundary best-effort helper、CAS bridge diagnostic variant、debug dump helper、DVB frontend entry の未読 field、BackendFlavor の未到達 variant を削除または内部化した。
+- `worker_runtime::WorkerHandle` の owner id は保持するが、release path で未読のため `_owner_id` に整理した。
+- 検証スクリプトは `m -k 0 -j"$JOBS"` を維持する。
 
 ## r50dz93
 

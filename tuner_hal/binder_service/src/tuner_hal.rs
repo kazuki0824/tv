@@ -256,6 +256,7 @@ const JAPAN_BS_FIRST_IF_HZ: i64 = 1_049_480_000;
 const JAPAN_CS110_LAST_IF_HZ: i64 = 2_053_000_000;
 #[cfg(test)]
 const MAX_DISEQC_MESSAGE_LEN: usize = 6;
+#[cfg(test)]
 const MFD_CLOEXEC: i32 = 0x0001;
 const PROT_READ: i32 = 0x1;
 const PROT_WRITE: i32 = 0x2;
@@ -264,11 +265,11 @@ const MAP_FAILED: *mut c_void = !0usize as *mut c_void;
 const PX4_PHYSICAL_GROUP_TAG: i32 = 0x1000_0000;
 const DVB_PHYSICAL_GROUP_TAG: i32 = 0x2000_0000;
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(test, target_arch = "x86_64"))]
 const SYS_MEMFD_CREATE: isize = 319;
-#[cfg(target_arch = "x86")]
+#[cfg(all(test, target_arch = "x86"))]
 const SYS_MEMFD_CREATE: isize = 356;
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(test, target_arch = "aarch64"))]
 const SYS_MEMFD_CREATE: isize = 279;
 
 
@@ -308,7 +309,9 @@ fn status_is_descriptor_internal_error(status: &Status) -> bool {
 }
 
 extern "C" {
+    #[cfg(test)]
     fn syscall(num: isize, ...) -> isize;
+    #[cfg(test)]
     fn ftruncate(fd: i32, length: i64) -> i32;
     fn mmap(
         addr: *mut c_void,
@@ -1544,14 +1547,6 @@ impl SharedMemoryBacking {
         Ok(dropped)
     }
 
-    pub fn discard_playback_input_for_boundary_best_effort(&self, dvr_id: i32, boundary: &str) {
-        if let Err(err) = self.discard_playback_input_for_boundary_result(dvr_id, boundary) {
-            eprintln!(
-                "maleicacid-tuner-hal-dvr-playback-diagnostic: dvr_id={} boundary={} best_effort_discard_failed={:?}",
-                dvr_id, boundary, err
-            );
-        }
-    }
 
     fn current_fill_bytes(&self) -> BinderResult<usize> {
         let _guard = lock_mutex_status(&self.ring_io_lock, "fmq_ring_io")?;
@@ -2094,7 +2089,6 @@ enum DescramblerDiagnosticKind {
     ScrambledWithoutPayload,
     NoKey,
     BadToken,
-    CasBridgeUnconnected,
     RuntimeFailure,
     ExpiredKeySlot,
     Multi2Fail,
@@ -2118,7 +2112,6 @@ struct DescramblerDiagnosticCounters {
     scrambled_without_payload: u64,
     no_key: u64,
     bad_token: u64,
-    cas_bridge_unconnected: u64,
     runtime_failure: u64,
     expired_key_slot: u64,
     multi2_fail: u64,
@@ -2174,9 +2167,6 @@ impl DescramblerDiagnosticCounters {
             DescramblerDiagnosticKind::BadToken => {
                 self.bad_token = self.bad_token.saturating_add(1)
             }
-            DescramblerDiagnosticKind::CasBridgeUnconnected => {
-                self.cas_bridge_unconnected = self.cas_bridge_unconnected.saturating_add(1)
-            }
             DescramblerDiagnosticKind::RuntimeFailure => {
                 self.runtime_failure = self.runtime_failure.saturating_add(1)
             }
@@ -2195,7 +2185,7 @@ impl DescramblerDiagnosticCounters {
 
     fn summary(&self) -> String {
         format!(
-            "CLEAR_PACKET={} DESCRAMBLED={} SCRAMBLED_PASSTHROUGH_FOR_RECORDING={} TRANSPORT_ERROR_RECORD={} SCRAMBLED_NULL_PID={} MALFORMED_PACKET_FOR_RECORDING={} DESCRAMBLE_FAILED={} INVALID_PACKET_SIZE={} BAD_SYNC_BYTE={} INVALID_AFC={} INVALID_ADAPTATION_FIELD={} INVALID_TSC={} SCRAMBLED_WITHOUT_PAYLOAD={} NO_KEY={} BAD_TOKEN={} CAS_BRIDGE_UNCONNECTED={} RUNTIME_FAILURE={} EXPIRED_KEY_SLOT={} MULTI2_FAIL={} SCRAMBLED_WITHOUT_DESCRAMBLER={}",
+            "CLEAR_PACKET={} DESCRAMBLED={} SCRAMBLED_PASSTHROUGH_FOR_RECORDING={} TRANSPORT_ERROR_RECORD={} SCRAMBLED_NULL_PID={} MALFORMED_PACKET_FOR_RECORDING={} DESCRAMBLE_FAILED={} INVALID_PACKET_SIZE={} BAD_SYNC_BYTE={} INVALID_AFC={} INVALID_ADAPTATION_FIELD={} INVALID_TSC={} SCRAMBLED_WITHOUT_PAYLOAD={} NO_KEY={} BAD_TOKEN={} RUNTIME_FAILURE={} EXPIRED_KEY_SLOT={} MULTI2_FAIL={} SCRAMBLED_WITHOUT_DESCRAMBLER={}",
             self.clear_packets,
             self.descrambled_packets,
             self.scrambled_passthrough_for_recording_packets,
@@ -2211,7 +2201,6 @@ impl DescramblerDiagnosticCounters {
             self.scrambled_without_payload,
             self.no_key,
             self.bad_token,
-            self.cas_bridge_unconnected,
             self.runtime_failure,
             self.expired_key_slot,
             self.multi2_fail,
@@ -2274,6 +2263,7 @@ impl DescramblerDiagnosticRegistry {
         self.update_failures.load(Ordering::SeqCst)
     }
 
+    #[cfg(test)]
     fn snapshot(&self, demux_id: i32, pid: u16) -> DescramblerDiagnosticCounters {
         lock_mutex_option(&self.counters, "descrambler_diagnostic_counters")
             .and_then(|counters| counters.get(&(demux_id, pid)).cloned())
@@ -2731,6 +2721,7 @@ fn create_dma_heap_file(name: &str, len: usize) -> Result<File, AvSharedFileErro
     Ok(unsafe { File::from_raw_fd(raw) })
 }
 
+#[cfg(test)]
 fn create_memfd_file(name: &str, len: usize) -> Result<File, AvSharedFileError> {
     let cname = CString::new(name).map_err(|_| AvSharedFileError {
         stage: "memfd_name",
@@ -2869,6 +2860,7 @@ impl DiagnosticFileWriteRegistry {
         }
     }
 
+    #[cfg(test)]
     pub fn dump_for_debug(&self) -> String {
         lock_mutex_option(&self.records, "diagnostic_file_write_records")
             .map(|records| {
@@ -2900,9 +2892,9 @@ enum FrontendEntryKind {
         dvr_index: i32,
         _declared_type: FrontendType,
         supported_systems: Vec<FrontendSystem>,
-        min_frequency_hz: i64,
-        max_frequency_hz: i64,
-        max_symbol_rate: i32,
+        _min_frequency_hz: i64,
+        _max_frequency_hz: i64,
+        _max_symbol_rate: i32,
     },
 }
 
@@ -3104,7 +3096,7 @@ struct LocalFilterGenerationIdentity {
 
 #[cfg(test)]
 
-pub fn pid_only_descrambler_source_identity() -> LocalFilterGenerationIdentity {
+fn pid_only_descrambler_source_identity() -> LocalFilterGenerationIdentity {
     LocalFilterGenerationIdentity {
         filter_id: -1,
         generation: 0,
@@ -3204,7 +3196,7 @@ fn local_filter_id_for_owner(
         .map_err(local_filter_owner_error_status)
 }
 
-pub fn local_filter_identity_for_owner(
+fn local_filter_identity_for_owner(
     filter: &Strong<dyn IFilter>,
     expected_owner_demux_id: i32,
 ) -> BinderResult<LocalFilterGenerationIdentity> {
@@ -3388,9 +3380,9 @@ fn enumerate_frontend_entries() -> Vec<FrontendEntry> {
                     dvr_index: probe.dvr_index,
                     _declared_type,
                     supported_systems: vec![system],
-                    min_frequency_hz,
-                    max_frequency_hz,
-                    max_symbol_rate: probe.max_symbol_rate,
+                    _min_frequency_hz: min_frequency_hz,
+                    _max_frequency_hz: max_frequency_hz,
+                    _max_symbol_rate: probe.max_symbol_rate,
                 },
             });
         }
@@ -5680,7 +5672,6 @@ impl FrontendLiveStreamReader {
 enum BackendFlavor {
     Px4,
     Dvb,
-    Unavailable,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -5957,11 +5948,14 @@ impl FrontendHal {
         }
     }
 
-    fn backend_flavor(backend: &FrontendBackendState) -> BackendFlavor {
+    fn backend_flavor(backend: &FrontendBackendState) -> Result<BackendFlavor, HalError> {
         match backend {
-            FrontendBackendState::Px4(_) => BackendFlavor::Px4,
-            FrontendBackendState::Dvb(_) => BackendFlavor::Dvb,
-            FrontendBackendState::Unavailable { .. } => BackendFlavor::Unavailable,
+            FrontendBackendState::Px4(_) => Ok(BackendFlavor::Px4),
+            FrontendBackendState::Dvb(_) => Ok(BackendFlavor::Dvb),
+            FrontendBackendState::Unavailable { reason, .. } => Err(HalError::OpenFailed {
+                path: PathBuf::from("unavailable-frontend"),
+                message: reason.clone(),
+            }),
         }
     }
 
@@ -6388,12 +6382,6 @@ impl FrontendHal {
                     consecutive_lock_samples: 2,
                 },
             },
-            BackendFlavor::Unavailable => LockWaitConfig {
-                initial_settle_ms: 0,
-                poll_interval_ms: 100,
-                timeout_ms: 0,
-                consecutive_lock_samples: 1,
-            },
         }
     }
 
@@ -6405,7 +6393,7 @@ impl FrontendHal {
     ) -> Result<LockWaitOutcome, HalError> {
         let flavor = {
             let backend = lock_mutex_hal(&shared.backend, "frontend_backend")?;
-            Self::backend_flavor(&backend)
+            Self::backend_flavor(&backend)?
         };
         let config = Self::lock_wait_config(flavor, system, mode);
         if Self::wait_interruptibly(stop_signal, Duration::from_millis(config.initial_settle_ms)) {
