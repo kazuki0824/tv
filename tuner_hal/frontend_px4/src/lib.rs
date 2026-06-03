@@ -2,7 +2,7 @@ mod px4_tune_mapping;
 
 use maleicacid_tuner_hal_common::{
     FrontendBackendKind, FrontendDevicePath, FrontendRuntimeState, FrontendScanMode,
-    retry_after_interrupted_read, FrontendSelection, FrontendSystem, FrontendTelemetry,
+    retry_after_interrupted_read_with_saturation, FrontendSelection, FrontendSystem, FrontendTelemetry,
     FrontendTuneRequest, HalError, TsPacketCompletionBuffer, TS_PACKET_SIZE,
 };
 use std::fs::{File, OpenOptions};
@@ -11,12 +11,12 @@ use std::mem::size_of;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 pub use px4_tune_mapping::reportable_bs_tsid_for_scan;
-use px4_tune_mapping::{map_tune_request_to_px4, px4_scan_requests};
+use px4_tune_mapping::{map_tune_request_to_px4, px4_scan_requests, Px4TuneRequest};
 
 pub const PX4_PROBE_PREFIXES: &[&str] = &[
     "px4video",
@@ -48,6 +48,12 @@ const POLLHUP: i16 = 0x0010;
 const POLLNVAL: i16 = 0x0020;
 
 static FRONTEND_PX4_READ_EINTR_RETRY_COUNT: AtomicU64 = AtomicU64::new(0);
+static FRONTEND_PX4_READ_EINTR_RETRY_SATURATED: AtomicBool = AtomicBool::new(false);
+
+
+fn poll_error_is_interrupted(err: &std::io::Error) -> bool {
+    err.kind() == ErrorKind::Interrupted
+}
 
 fn last_errno() -> i32 {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(-1)
@@ -118,6 +124,51 @@ pub struct Px4FrontendProbe {
     pub supported_systems: Vec<FrontendSystem>,
 }
 
+
+trait Px4TuneOps {
+    fn set_system_mode(&mut self, mode: u32, op: &'static str) -> Result<(), HalError>;
+    fn set_channel(&mut self, freq: PtxFreq, op: &'static str) -> Result<(), HalError>;
+    fn mark_streaming_start_requested(&mut self);
+    fn start_streaming(&mut self) -> Result<(), HalError>;
+    fn stop_streaming_if_active(&mut self, operation: &'static str) -> Result<(), HalError>;
+}
+
+struct RealPx4TuneOps<'a> {
+    backend: &'a mut Px4FrontendBackend,
+}
+
+impl<'a> Px4TuneOps for RealPx4TuneOps<'a> {
+    fn set_system_mode(&mut self, mode: u32, op: &'static str) -> Result<(), HalError> {
+        let mut mode = mode;
+        self.backend.ioctl_ptr(PTX_SET_SYSTEM_MODE, &mut mode, op)
+    }
+
+    fn set_channel(&mut self, freq: PtxFreq, op: &'static str) -> Result<(), HalError> {
+        let mut freq = freq;
+        self.backend.ioctl_ptr(PTX_SET_CHANNEL, &mut freq, op)
+    }
+
+    fn mark_streaming_start_requested(&mut self) {
+        self.backend.driver_tune_locked = true;
+        self.backend.last_driver_lock_time = Some(Instant::now());
+    }
+
+    fn start_streaming(&mut self) -> Result<(), HalError> {
+        self.backend.ioctl_noarg(PTX_START_STREAMING, "PTX_START_STREAMING")
+    }
+
+    fn stop_streaming_if_active(&mut self, operation: &'static str) -> Result<(), HalError> {
+        self.backend.stop_streaming_if_active(operation)
+    }
+}
+
+#[derive(Debug)]
+enum Px4TuneApplyFailure {
+    SetSystemMode { error: HalError },
+    SetChannel { error: HalError, rollback_error: Option<HalError> },
+    StartStreaming { error: HalError, stop_error: Option<HalError>, restore_error: Option<HalError> },
+}
+
 trait Px4LnbOps {
     fn set_extended_lnb_voltage(&mut self, voltage: i32) -> Result<(), HalError>;
     fn set_legacy_lnb_enabled(&mut self, enabled: bool, voltage: i32) -> Result<(), HalError>;
@@ -184,6 +235,7 @@ pub struct Px4LiveStreamReaderState {
     reader_path: PathBuf,
     residual: TsPacketCompletionBuffer,
     malformed_bytes_total: u64,
+    malformed_bytes_saturated: bool,
     last_packet_seen: Option<Instant>,
     stopped: bool,
 }
@@ -208,6 +260,7 @@ impl Px4LiveStreamReader {
             reader_path,
             residual,
             malformed_bytes_total,
+            malformed_bytes_saturated,
             last_packet_seen,
             stopped,
         } = &mut *inner;
@@ -235,14 +288,26 @@ impl Px4LiveStreamReader {
                 packets.push(packet);
             },
         )?;
-        let malformed_delta = residual.malformed_bytes().saturating_sub(malformed_before);
+        let malformed_delta = residual.malformed_bytes().checked_sub(malformed_before).unwrap_or(0);
+        if residual.malformed_bytes_saturated() {
+            *malformed_bytes_saturated = true;
+        }
         if malformed_delta > 0 {
-            *malformed_bytes_total = malformed_bytes_total.saturating_add(malformed_delta);
+            match malformed_bytes_total.checked_add(malformed_delta) {
+                Some(next) => *malformed_bytes_total = next,
+                None => {
+                    *malformed_bytes_total = u64::MAX;
+                    *malformed_bytes_saturated = true;
+                }
+            }
             eprintln!(
                 "maleicacid-tuner-hal-px4-diagnostic: malformed_ts_bytes={} total_malformed_ts_bytes={}",
                 malformed_delta,
                 *malformed_bytes_total
             );
+            if *malformed_bytes_saturated {
+                eprintln!("maleicacid-tuner-hal-px4-diagnostic: malformed_ts_bytes_counter_saturated=true");
+            }
         }
         if pushed > 0 {
             *last_packet_seen = Some(Instant::now());
@@ -306,10 +371,28 @@ impl Px4FrontendBackend {
     }
     pub fn mark_callback_failed(&mut self, message: impl Into<String>) {
         self.state.callback_registered = false;
-        self.state.tuning_active = false;
         self.state.last_error = Some(message.into());
+    }
+
+    fn mark_backend_failed(&mut self, message: impl Into<String>) {
+        self.state.tuning_active = false;
+        self.state.last_error = Some(format!("BackendFailed: {}", message.into()));
         self.telemetry.locked = false;
         self.telemetry.rf_locked = None;
+        self.driver_tune_locked = false;
+        self.last_driver_lock_time = None;
+    }
+
+    fn ensure_not_backend_failed(&self) -> Result<(), HalError> {
+        if self
+            .state
+            .last_error
+            .as_deref()
+            .map_or(false, |message| message.starts_with("BackendFailed:"))
+        {
+            return Err(HalError::Internal("px4 backend is failed; close/reopen required".into()));
+        }
+        Ok(())
     }
     pub fn set_lnb_id(&mut self, lnb_id: i32) {
         self.state.lnb_id = Some(lnb_id);
@@ -333,6 +416,12 @@ impl Px4FrontendBackend {
     pub fn last_tune(&self) -> Option<&FrontendTuneRequest> {
         self.last_tune.as_ref()
     }
+
+    pub fn tune_matches_common(&self, request: &FrontendTuneRequest) -> Result<bool, HalError> {
+        self.validate_tune_request(request)?;
+        Ok(self.state.tuning_active && self.last_tune.as_ref() == Some(request))
+    }
+
     pub fn probe_device(&self) -> bool {
         self.selection.control_path.as_path().exists()
     }
@@ -399,33 +488,57 @@ impl Px4FrontendBackend {
         self.last_driver_lock_time = None;
     }
 
-    fn restore_driver_tune_settings_for_rollback(
-        &mut self,
+    fn restore_tune_settings_with_ops<O: Px4TuneOps>(
+        ops: &mut O,
         previous_request: Option<&FrontendTuneRequest>,
     ) -> Result<(), HalError> {
         let Some(previous_request) = previous_request else {
             return Ok(());
         };
         let previous = map_tune_request_to_px4(previous_request)?;
-        let mut previous_system_mode = previous.system_code;
-        self.ioctl_ptr(
-            PTX_SET_SYSTEM_MODE,
-            &mut previous_system_mode,
-            "PTX_SET_SYSTEM_MODE.rollback_restore",
-        )?;
-        let mut previous_freq = PtxFreq {
-            freq_no: previous.freq_no,
-            slot: previous.slot,
-        };
-        self.ioctl_ptr(
-            PTX_SET_CHANNEL,
-            &mut previous_freq,
+        ops.set_system_mode(previous.system_code, "PTX_SET_SYSTEM_MODE.rollback_restore")?;
+        ops.set_channel(
+            PtxFreq {
+                freq_no: previous.freq_no,
+                slot: previous.slot,
+            },
             "PTX_SET_CHANNEL.rollback_restore",
         )?;
         Ok(())
     }
 
+    fn apply_tune_sequence_with_ops<O: Px4TuneOps>(
+        ops: &mut O,
+        previous_request: Option<&FrontendTuneRequest>,
+        mapped: Px4TuneRequest,
+    ) -> Result<(), Px4TuneApplyFailure> {
+        ops.set_system_mode(mapped.system_code, "PTX_SET_SYSTEM_MODE")
+            .map_err(|error| Px4TuneApplyFailure::SetSystemMode { error })?;
+        if let Err(error) = ops.set_channel(
+            PtxFreq {
+                freq_no: mapped.freq_no,
+                slot: mapped.slot,
+            },
+            "PTX_SET_CHANNEL",
+        ) {
+            let rollback_error = Self::restore_tune_settings_with_ops(ops, previous_request).err();
+            return Err(Px4TuneApplyFailure::SetChannel { error, rollback_error });
+        }
+        ops.mark_streaming_start_requested();
+        if let Err(error) = ops.start_streaming() {
+            let stop_error = ops.stop_streaming_if_active("start_streaming_rollback").err();
+            let restore_error = Self::restore_tune_settings_with_ops(ops, previous_request).err();
+            return Err(Px4TuneApplyFailure::StartStreaming {
+                error,
+                stop_error,
+                restore_error,
+            });
+        }
+        Ok(())
+    }
+
     pub fn tune(&mut self, request: FrontendTuneRequest) -> Result<Px4FrontendStatus, HalError> {
+        self.ensure_not_backend_failed()?;
         self.ensure_control_open()?;
         let mapped = map_tune_request_to_px4(&request)?;
         let previous_request = self.last_tune.clone();
@@ -435,30 +548,40 @@ impl Px4FrontendBackend {
             self.stop_streaming_if_active("retune_stop")?;
         }
         self.clear_driver_lock_state();
-        let mut system_mode = mapped.system_code;
-        self.ioctl_ptr(PTX_SET_SYSTEM_MODE, &mut system_mode, "PTX_SET_SYSTEM_MODE")?;
-
-        let mut freq = PtxFreq {
-            freq_no: mapped.freq_no,
-            slot: mapped.slot,
+        let apply_result = {
+            let mut ops = RealPx4TuneOps { backend: self };
+            Self::apply_tune_sequence_with_ops(&mut ops, previous_request.as_ref(), mapped)
         };
-        self.ioctl_ptr(PTX_SET_CHANNEL, &mut freq, "PTX_SET_CHANNEL")?;
-        self.driver_tune_locked = true;
-        self.last_driver_lock_time = Some(Instant::now());
-        if let Err(err) = self.ioctl_noarg(PTX_START_STREAMING, "PTX_START_STREAMING") {
-            let rollback_stop = self.stop_streaming_if_active("start_streaming_rollback");
-            let rollback_restore = self.restore_driver_tune_settings_for_rollback(previous_request.as_ref());
-            self.clear_driver_lock_state();
-            self.telemetry = previous_telemetry;
-            self.state.tuning_active = previous_tuning_active;
-            if rollback_stop.is_err() || rollback_restore.is_err() {
-                self.state.last_error = Some(format!(
-                    "TuneRollbackFailed: PTX_START_STREAMING failed; rollback_stop={rollback_stop:?}; rollback_restore={rollback_restore:?}"
-                ));
-            } else {
-                self.state.last_error = Some("PTX_START_STREAMING failed; rollback stop and driver setting restore completed".into());
+        if let Err(failure) = apply_result {
+            match failure {
+                Px4TuneApplyFailure::SetSystemMode { error } => return Err(error),
+                Px4TuneApplyFailure::SetChannel { error, rollback_error } => {
+                    if let Some(rollback_err) = rollback_error {
+                        self.mark_backend_failed(format!(
+                            "PTX_SET_CHANNEL failed and system mode rollback failed: channel_err={error:?}; rollback_err={rollback_err:?}"
+                        ));
+                        return Err(HalError::Internal("PTX_SET_CHANNEL rollback failed".into()));
+                    }
+                    self.clear_driver_lock_state();
+                    self.telemetry = previous_telemetry;
+                    self.state.tuning_active = previous_tuning_active;
+                    self.state.last_error = Some("PTX_SET_CHANNEL failed; system mode rollback completed".into());
+                    return Err(error);
+                }
+                Px4TuneApplyFailure::StartStreaming { error, stop_error, restore_error } => {
+                    self.clear_driver_lock_state();
+                    self.telemetry = previous_telemetry;
+                    self.state.tuning_active = previous_tuning_active;
+                    if stop_error.is_some() || restore_error.is_some() {
+                        self.mark_backend_failed(format!(
+                            "PTX_START_STREAMING failed; rollback_stop={stop_error:?}; rollback_restore={restore_error:?}"
+                        ));
+                        return Err(HalError::Internal("PTX_START_STREAMING rollback failed".into()));
+                    }
+                    self.state.last_error = Some("PTX_START_STREAMING failed; rollback stop and driver setting restore completed".into());
+                    return Err(error);
+                }
             }
-            return Err(err);
         }
 
         self.state.tuning_active = true;
@@ -576,9 +699,10 @@ impl Px4FrontendBackend {
             if pushed >= max_packets {
                 break;
             }
-            match retry_after_interrupted_read(
+            match retry_after_interrupted_read_with_saturation(
                 "frontend_px4_read",
                 &FRONTEND_PX4_READ_EINTR_RETRY_COUNT,
+                Some(&FRONTEND_PX4_READ_EINTR_RETRY_SATURATED),
                 || reader.read(&mut scratch),
             ) {
                 Ok(0) => break,
@@ -650,9 +774,15 @@ impl Px4FrontendBackend {
                 revents: 0,
             });
         }
-        let rc = unsafe { poll(pollfds.as_mut_ptr(), pollfds.len(), 1_000) };
-        if rc < 0 {
+        let rc = loop {
+            let rc = unsafe { poll(pollfds.as_mut_ptr(), pollfds.len(), 1_000) };
+            if rc >= 0 {
+                break rc;
+            }
             let err = std::io::Error::last_os_error();
+            if poll_error_is_interrupted(&err) {
+                continue;
+            }
             return Err(HalError::Io {
                 backend: "px4",
                 operation: "dvr_poll",
@@ -660,7 +790,7 @@ impl Px4FrontendBackend {
                 errno: err.raw_os_error(),
                 message: format!("px4 DVR pollに失敗しました: {}", err),
             });
-        }
+        };
         if rc == 0 {
             return Ok(false);
         }
@@ -776,6 +906,7 @@ impl Px4FrontendBackend {
             reader_path: path,
             residual: TsPacketCompletionBuffer::default(),
             malformed_bytes_total: 0,
+            malformed_bytes_saturated: false,
             last_packet_seen: None,
             stopped: false,
         })));
@@ -827,7 +958,8 @@ impl Px4FrontendBackend {
     }
 
     pub fn validate_tune_request(&self, request: &FrontendTuneRequest) -> Result<(), HalError> {
-        let _ = map_tune_request_to_px4(request)?;
+        self.ensure_not_backend_failed()?;
+        map_tune_request_to_px4(request)?;
         Ok(())
     }
 
@@ -836,6 +968,7 @@ impl Px4FrontendBackend {
         base: &FrontendTuneRequest,
         scan_mode: FrontendScanMode,
     ) -> Result<Vec<FrontendTuneRequest>, HalError> {
+        self.ensure_not_backend_failed()?;
         if matches!(scan_mode, FrontendScanMode::Blind) {
             return Err(HalError::Unsupported(
                 "px4 backend は BLIND_SCAN を提供しません。日本向けscanのSSOTはTISが持ちます",
@@ -1503,6 +1636,7 @@ mod tests {
                 reader_path: std::path::PathBuf::from("/dev/px4/old"),
                 residual: TsPacketCompletionBuffer::default(),
                 malformed_bytes_total: 0,
+            malformed_bytes_saturated: false,
                 last_packet_seen: None,
                 stopped: true,
             })),
@@ -1800,51 +1934,183 @@ mod r50dz52_g2_17_tests {
 
 #[cfg(test)]
 mod r50dz52_g2_16_tests {
+    use super::*;
+
     #[derive(Debug, Default)]
-    struct FakePx4TuneTxn {
-        system_mode: i32,
-        channel: i32,
-        streaming: bool,
-        stop_streaming_count: usize,
-        runtime_failed: Option<&'static str>,
-        restore_fails: bool,
+    struct FakePx4TuneIoOps {
+        fail_channel: bool,
+        fail_start: bool,
+        fail_stop: bool,
+        fail_restore: bool,
+        modes: Vec<u32>,
+        channels: Vec<(i32, i32, &'static str)>,
+        start_calls: usize,
+        stop_calls: usize,
+        mark_start_requested_calls: usize,
     }
 
-    impl FakePx4TuneTxn {
-        fn start_like_production(&mut self, next_mode: i32, next_channel: i32, start_ok: bool) -> Result<(), &'static str> {
-            let old_mode = self.system_mode;
-            let old_channel = self.channel;
-            self.system_mode = next_mode;
-            self.channel = next_channel;
-            if start_ok {
-                self.streaming = true;
-                return Ok(());
+    impl Px4TuneOps for FakePx4TuneIoOps {
+        fn set_system_mode(&mut self, mode: u32, op: &'static str) -> Result<(), HalError> {
+            if op.contains("rollback_restore") && self.fail_restore {
+                return Err(HalError::Internal("rollback mode failed".into()));
             }
-            self.stop_streaming_count += 1;
-            self.streaming = false;
-            if self.restore_fails {
-                self.runtime_failed = Some("TuneRollbackFailed");
-                return Err("UNKNOWN_ERROR");
+            self.modes.push(mode);
+            Ok(())
+        }
+
+        fn set_channel(&mut self, freq: PtxFreq, op: &'static str) -> Result<(), HalError> {
+            if op == "PTX_SET_CHANNEL" && self.fail_channel {
+                return Err(HalError::Internal("set channel failed".into()));
             }
-            self.system_mode = old_mode;
-            self.channel = old_channel;
-            Err("START_STREAMING_FAILED")
+            if op.contains("rollback_restore") && self.fail_restore {
+                return Err(HalError::Internal("rollback channel failed".into()));
+            }
+            self.channels.push((freq.freq_no, freq.slot, op));
+            Ok(())
+        }
+
+        fn mark_streaming_start_requested(&mut self) {
+            self.mark_start_requested_calls += 1;
+        }
+
+        fn start_streaming(&mut self) -> Result<(), HalError> {
+            self.start_calls += 1;
+            if self.fail_start {
+                Err(HalError::Internal("start streaming failed".into()))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn stop_streaming_if_active(&mut self, _operation: &'static str) -> Result<(), HalError> {
+            self.stop_calls += 1;
+            if self.fail_stop {
+                Err(HalError::Internal("stop streaming failed".into()))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    fn isdbt_request(frequency: u64) -> FrontendTuneRequest {
+        FrontendTuneRequest {
+            system: FrontendSystem::IsdbT,
+            frequency,
+            end_frequency: None,
+            stream_id: None,
+            stream_id_kind: None,
+            bandwidth_hz: None,
+            symbol_rate: None,
         }
     }
 
     #[test]
-    fn start_streaming_failure_restores_mode_and_channel_or_marks_rollback_failed() {
-        let mut txn = FakePx4TuneTxn { system_mode: 1, channel: 11, ..FakePx4TuneTxn::default() };
-        assert_eq!(txn.start_like_production(2, 22, false), Err("START_STREAMING_FAILED"));
-        assert_eq!(txn.stop_streaming_count, 1);
-        assert!(!txn.streaming);
-        assert_eq!(txn.system_mode, 1);
-        assert_eq!(txn.channel, 11);
-        assert_eq!(txn.runtime_failed, None);
+    fn px4_tune_channel_failure_rolls_back_mode() {
+        let previous_request = isdbt_request(473_142_857);
+        let previous = map_tune_request_to_px4(&previous_request).unwrap();
+        let next = Px4TuneRequest { system_code: PTX_ISDB_T_SYSTEM, freq_no: previous.freq_no + 1, slot: previous.slot };
+        let mut ops = FakePx4TuneIoOps { fail_channel: true, ..Default::default() };
 
-        let mut failed_restore = FakePx4TuneTxn { system_mode: 3, channel: 33, restore_fails: true, ..FakePx4TuneTxn::default() };
-        assert_eq!(failed_restore.start_like_production(4, 44, false), Err("UNKNOWN_ERROR"));
-        assert_eq!(failed_restore.runtime_failed, Some("TuneRollbackFailed"));
+        let result = Px4FrontendBackend::apply_tune_sequence_with_ops(&mut ops, Some(&previous_request), next);
+
+        assert!(matches!(result, Err(Px4TuneApplyFailure::SetChannel { rollback_error: None, .. })));
+        assert_eq!(ops.modes, vec![next.system_code, previous.system_code]);
+        assert_eq!(ops.channels, vec![(previous.freq_no, previous.slot, "PTX_SET_CHANNEL.rollback_restore")]);
+        assert_eq!(ops.start_calls, 0);
+    }
+
+    #[test]
+    fn px4_tune_rollback_failure_enters_failed() {
+        let previous_request = isdbt_request(473_142_857);
+        let previous = map_tune_request_to_px4(&previous_request).unwrap();
+        let next = Px4TuneRequest { system_code: PTX_ISDB_T_SYSTEM, freq_no: previous.freq_no + 1, slot: previous.slot };
+        let mut ops = FakePx4TuneIoOps { fail_channel: true, fail_restore: true, ..Default::default() };
+
+        let result = Px4FrontendBackend::apply_tune_sequence_with_ops(&mut ops, Some(&previous_request), next);
+
+        assert!(matches!(result, Err(Px4TuneApplyFailure::SetChannel { rollback_error: Some(_), .. })));
+    }
+
+    #[test]
+    fn px4_start_streaming_failure_rolls_back_all_or_failed() {
+        let previous_request = isdbt_request(473_142_857);
+        let previous = map_tune_request_to_px4(&previous_request).unwrap();
+        let next = Px4TuneRequest { system_code: PTX_ISDB_T_SYSTEM, freq_no: previous.freq_no + 1, slot: previous.slot };
+        let mut ops = FakePx4TuneIoOps { fail_start: true, ..Default::default() };
+
+        let result = Px4FrontendBackend::apply_tune_sequence_with_ops(&mut ops, Some(&previous_request), next);
+
+        assert!(matches!(result, Err(Px4TuneApplyFailure::StartStreaming { stop_error: None, restore_error: None, .. })));
+        assert_eq!(ops.mark_start_requested_calls, 1);
+        assert_eq!(ops.stop_calls, 1);
+        assert_eq!(ops.modes, vec![next.system_code, previous.system_code]);
+        assert_eq!(ops.channels, vec![(next.freq_no, next.slot, "PTX_SET_CHANNEL"), (previous.freq_no, previous.slot, "PTX_SET_CHANNEL.rollback_restore")]);
+    }
+
+    #[test]
+    fn start_streaming_failure_restores_mode_and_channel_or_marks_rollback_failed() {
+        let previous_request = isdbt_request(473_142_857);
+        let previous = map_tune_request_to_px4(&previous_request).unwrap();
+        let next = Px4TuneRequest { system_code: PTX_ISDB_T_SYSTEM, freq_no: previous.freq_no + 1, slot: previous.slot };
+        let mut rollback_failed = FakePx4TuneIoOps { fail_start: true, fail_restore: true, ..Default::default() };
+
+        let result = Px4FrontendBackend::apply_tune_sequence_with_ops(&mut rollback_failed, Some(&previous_request), next);
+
+        assert!(matches!(result, Err(Px4TuneApplyFailure::StartStreaming { restore_error: Some(_), .. })));
+        assert_eq!(rollback_failed.stop_calls, 1);
     }
 }
 
+
+#[cfg(test)]
+mod r50ea8_px4_failed_backend_tests {
+    use super::*;
+
+
+
+    #[test]
+    fn px4_failed_rejects_tune() {
+        let mut backend = Px4FrontendBackend::new_with_control_path(0, std::path::PathBuf::from("/dev/null"));
+        backend.mark_backend_failed("injected rollback failure");
+        let req = FrontendTuneRequest {
+            system: FrontendSystem::IsdbT,
+            frequency: 473_142_857,
+            end_frequency: None,
+            stream_id: None,
+            stream_id_kind: None,
+            bandwidth_hz: None,
+            symbol_rate: None,
+        };
+        assert!(backend.validate_tune_request(&req).is_err());
+    }
+
+    #[test]
+    fn px4_failed_rejects_tune_and_scan_validation() {
+        let mut backend = Px4FrontendBackend::new_with_control_path(0, std::path::PathBuf::from("/dev/null"));
+        backend.mark_backend_failed("injected rollback failure");
+        let req = FrontendTuneRequest {
+            system: FrontendSystem::IsdbT,
+            frequency: 473_142_857,
+            end_frequency: None,
+            stream_id: None,
+            stream_id_kind: None,
+            bandwidth_hz: None,
+            symbol_rate: None,
+        };
+        assert!(backend.validate_tune_request(&req).is_err());
+        assert!(backend.scan_requests(&req, FrontendScanMode::Auto).is_err());
+    }}
+
+#[cfg(test)]
+mod r50ea25_poll_eintr_contract_tests {
+    use super::poll_error_is_interrupted;
+    use std::io::{self, ErrorKind};
+
+    #[test]
+    fn poll_interrupted_error_is_retryable() {
+        let err = io::Error::new(ErrorKind::Interrupted, "eintr");
+        assert!(poll_error_is_interrupted(&err));
+        let fatal = io::Error::new(ErrorKind::Other, "fatal");
+        assert!(!poll_error_is_interrupted(&fatal));
+    }
+}

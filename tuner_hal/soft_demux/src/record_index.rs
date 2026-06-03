@@ -130,13 +130,19 @@ impl RecordEventState {
         merged
     }
 
-    fn observe_pts(&mut self, payload: &[u8]) -> Option<i64> {
-        if payload.starts_with(&[0x00, 0x00, 0x01]) {
+    fn observe_pts(&mut self, payload: &[u8], payload_unit_start: bool) -> Option<i64> {
+        if payload_unit_start || payload.starts_with(&[0x00, 0x00, 0x01]) {
             self.pes_header_carry.clear();
-            self.pes_header_carry.extend_from_slice(&payload[..payload.len().min(19)]);
-            if let Some(pts) = record_packet_pts(payload) {
-                self.pes_header_carry.clear();
-                return Some(pts);
+            if payload.starts_with(&[0x00, 0x00, 0x01]) {
+                self.pes_header_carry.extend_from_slice(&payload[..payload.len().min(19)]);
+                if let Some(pts) = record_packet_pts(payload) {
+                    self.pes_header_carry.clear();
+                    return Some(pts);
+                }
+                return None;
+            }
+            if is_pes_start_prefix_fragment(payload) {
+                self.pes_header_carry.extend_from_slice(payload);
             }
             return None;
         }
@@ -144,6 +150,10 @@ impl RecordEventState {
             return None;
         }
         self.pes_header_carry.extend_from_slice(&payload[..payload.len().min(19)]);
+        if !starts_with_complete_or_partial_pes_prefix(&self.pes_header_carry) {
+            self.pes_header_carry.clear();
+            return None;
+        }
         if self.pes_header_carry.len() > 32 {
             self.pes_header_carry.truncate(32);
         }
@@ -153,6 +163,15 @@ impl RecordEventState {
         }
         pts
     }
+}
+
+
+fn is_pes_start_prefix_fragment(payload: &[u8]) -> bool {
+    matches!(payload, [0x00] | [0x00, 0x00])
+}
+
+fn starts_with_complete_or_partial_pes_prefix(bytes: &[u8]) -> bool {
+    bytes.starts_with(&[0x00, 0x00, 0x01]) || is_pes_start_prefix_fragment(bytes)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -277,7 +296,9 @@ fn build_ts_record_event_data(
         }
         _ => {}
     }
-    let pts = record_state.observe_pts(packet_payload).unwrap_or(RECORD_INDEX_PTS_ABSENT);
+    let pts = record_state
+        .observe_pts(packet_payload, packet_view.payload_unit_start)
+        .unwrap_or(RECORD_INDEX_PTS_ABSENT);
     let sc_payload = record_state.payload_with_sc_carry(packet_payload);
     let sc_info = record_sc_info(
         &sc_payload,
@@ -299,7 +320,7 @@ fn build_ts_record_event_data(
         ts_index_mask,
         sc_index_type,
         sc_index_mask_bits,
-        byte_number: cumulative_bytes as i64,
+        byte_number: i64::try_from(cumulative_bytes).ok()?,
         pts,
         first_mb_in_slice,
     })
@@ -710,8 +731,26 @@ mod r50dz52_g2_03_tests {
         let first = [0x00, 0x00, 0x01, 0xe0, 0x00, 0x00, 0x80, 0x80];
         let second = [0x05, 0x21, 0x00, 0x01, 0x00, 0x01];
 
-        assert_eq!(state.observe_pts(&first), None);
-        assert_eq!(state.observe_pts(&second), Some(0));
+        assert_eq!(state.observe_pts(&first, true), None);
+        assert_eq!(state.observe_pts(&second, false), Some(0));
+    }
+
+    #[test]
+    fn pts_start_prefix_fragment_carry_crosses_ts_payload_boundary() {
+        let mut state = RecordEventState::default();
+        let first = [0x00, 0x00];
+        let second = [0x01, 0xe0, 0x00, 0x00, 0x80, 0x80, 0x05, 0x21, 0x00, 0x01, 0x00, 0x01];
+
+        assert_eq!(state.observe_pts(&first, true), None);
+        assert_eq!(state.observe_pts(&second, false), Some(0));
+    }
+
+    #[test]
+    fn malformed_prefix_fragment_is_cleared_without_pts() {
+        let mut state = RecordEventState::default();
+        assert_eq!(state.observe_pts(&[0x00, 0x00], true), None);
+        assert_eq!(state.observe_pts(&[0x02, 0xe0, 0x00, 0x00], false), None);
+        assert_eq!(state.observe_pts(&[0x01, 0xe0, 0x00, 0x00, 0x80, 0x80, 0x05, 0x21, 0x00, 0x01, 0x00, 0x01], false), None);
     }
 }
 
@@ -782,4 +821,65 @@ mod r50dz52_g2_05_tests {
             assert_eq!(mask & AVC_SC_I_SLICE, AVC_SC_I_SLICE);
         }
     }
+    #[test]
+    fn record_byte_number_never_negative() {
+        let mut state = RecordEventState::default();
+        let mut packet = [0xffu8; 188];
+        packet[0] = 0x47;
+        packet[1] = 0x41;
+        packet[2] = 0x20;
+        packet[3] = 0x10;
+        packet[4..13].copy_from_slice(&[0x00, 0x00, 0x01, 0xe0, 0x00, 0x00, 0x80, 0x00, 0x00]);
+        let event = build_ts_record_event_data(
+            &packet,
+            i64::MAX as u64,
+            DEMUX_TS_INDEX_PAYLOAD_UNIT_START,
+            RECORD_SC_TYPE_NONE,
+            0,
+            &mut state,
+        )
+        .unwrap();
+        assert!(event.byte_number >= 0);
+    }
+
+    #[test]
+    fn record_byte_number_overflow_stops_dvr() {
+        let mut state = RecordEventState::default();
+        let mut packet = [0xffu8; 188];
+        packet[0] = 0x47;
+        packet[1] = 0x41;
+        packet[2] = 0x20;
+        packet[3] = 0x10;
+        packet[4..13].copy_from_slice(&[0x00, 0x00, 0x01, 0xe0, 0x00, 0x00, 0x80, 0x00, 0x00]);
+        assert!(build_ts_record_event_data(
+            &packet,
+            (i64::MAX as u64).saturating_add(1),
+            DEMUX_TS_INDEX_PAYLOAD_UNIT_START,
+            RECORD_SC_TYPE_NONE,
+            0,
+            &mut state,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn record_byte_number_overflow_does_not_emit_event() {
+        let mut state = RecordEventState::default();
+        let mut packet = [0xffu8; 188];
+        packet[0] = 0x47;
+        packet[1] = 0x41;
+        packet[2] = 0x20;
+        packet[3] = 0x10;
+        packet[4..13].copy_from_slice(&[0x00, 0x00, 0x01, 0xe0, 0x00, 0x00, 0x80, 0x00, 0x00]);
+        assert!(build_ts_record_event_data(
+            &packet,
+            (i64::MAX as u64).saturating_add(1),
+            DEMUX_TS_INDEX_PAYLOAD_UNIT_START,
+            RECORD_SC_TYPE_NONE,
+            0,
+            &mut state,
+        )
+        .is_none());
+    }
+
 }

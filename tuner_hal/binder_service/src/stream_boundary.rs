@@ -5,7 +5,7 @@
 //! 埋め込みは禁止し、具象 resource trait で操作する。
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum StreamBoundaryReason { TuneStart, FrontendClose, FrontendUnbind, SourceFilterChange }
+pub enum StreamBoundaryReason { TuneStart, TuneStop, FrontendClose, FrontendUnbind, SourceFilterChange }
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum StreamBoundaryStep { AdvanceGeneration, NotifyWorkerBoundary, FlushRuntimeIo, ClearFmq, ResetPacketPipeline, DiscardAvPayloads, ResetDvrPlayback, CommitGeneration }
 

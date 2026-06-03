@@ -1,4 +1,6 @@
-use maleicacid_tuner_hal_common::MAX_SECTION_PAYLOAD_BYTES;
+use maleicacid_tuner_hal_common::{
+    max_arib_section_length_for_table_id, MAX_SECTION_PAYLOAD_BYTES,
+};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SectionHeader {
     pub table_id: u8,
@@ -28,10 +30,13 @@ pub fn parse_section_header(section: &[u8], length_field_bits: i32) -> Option<Se
         return None;
     }
     let section_length = (((section[1] & 0x0f) as usize) << 8) | section[2] as usize;
-    if section_length > 1021 {
+    if section_length > max_arib_section_length_for_table_id(section[0]) {
         return None;
     }
     let total_length = 3 + section_length;
+    if total_length > MAX_SECTION_PAYLOAD_BYTES {
+        return None;
+    }
     let syntax = (section[1] & 0x80) != 0;
     if syntax && (section_length < 9 || total_length < 12) {
         return None;
@@ -97,6 +102,8 @@ pub struct SectionPushOutcome {
     pub sections: Vec<Vec<u8>>,
     pub oversized_section_drop_delta: u64,
     pub stale_partial_discard_delta: u64,
+    pub oversized_section_counter_saturated: bool,
+    pub stale_partial_counter_saturated: bool,
 }
 
 impl SectionPushOutcome {
@@ -111,6 +118,8 @@ pub struct SectionAssembler {
     buf: Vec<u8>,
     oversized_section_drops: u64,
     stale_partial_section_discards: u64,
+    oversized_section_drop_counter_saturated: bool,
+    stale_partial_section_discard_counter_saturated: bool,
 }
 
 impl SectionAssembler {
@@ -127,9 +136,28 @@ impl SectionAssembler {
         self.stale_partial_section_discards
     }
 
+    pub fn diagnostic_counter_saturated(&self) -> bool {
+        self.oversized_section_drop_counter_saturated
+            || self.stale_partial_section_discard_counter_saturated
+    }
+
+    fn increment_oversized_section_drops(&mut self) {
+        match self.oversized_section_drops.checked_add(1) {
+            Some(next) => self.oversized_section_drops = next,
+            None => self.oversized_section_drop_counter_saturated = true,
+        }
+    }
+
+    fn increment_stale_partial_section_discards(&mut self) {
+        match self.stale_partial_section_discards.checked_add(1) {
+            Some(next) => self.stale_partial_section_discards = next,
+            None => self.stale_partial_section_discard_counter_saturated = true,
+        }
+    }
+
     pub(crate) fn set_expected_len_or_drop(&mut self, expected_len: usize) -> bool {
         if expected_len > MAX_SECTION_PAYLOAD_BYTES {
-            self.oversized_section_drops = self.oversized_section_drops.saturating_add(1);
+            self.increment_oversized_section_drops();
             self.reset();
             return false;
         }
@@ -144,6 +172,8 @@ impl SectionAssembler {
     ) -> SectionPushOutcome {
         let oversized_before = self.oversized_section_drops;
         let stale_before = self.stale_partial_section_discards;
+        let oversized_saturated_before = self.oversized_section_drop_counter_saturated;
+        let stale_saturated_before = self.stale_partial_section_discard_counter_saturated;
         let sections = self.push_payload(payload_unit_start, payload);
         SectionPushOutcome {
             sections,
@@ -153,6 +183,10 @@ impl SectionAssembler {
             stale_partial_discard_delta: self
                 .stale_partial_section_discards
                 .saturating_sub(stale_before),
+            oversized_section_counter_saturated: !oversized_saturated_before
+                && self.oversized_section_drop_counter_saturated,
+            stale_partial_counter_saturated: !stale_saturated_before
+                && self.stale_partial_section_discard_counter_saturated,
         }
     }
 
@@ -178,8 +212,7 @@ impl SectionAssembler {
                 // 合法な継続である。pointer == 0 を含め、完了できない場合は古い未完了sectionを
                 // 新しいsection本体へ連結してはならない。
                 if !self.buf.is_empty() || self.expected_len.is_some() {
-                    self.stale_partial_section_discards =
-                        self.stale_partial_section_discards.saturating_add(1);
+                    self.increment_stale_partial_section_discards();
                     self.reset();
                 }
             }
@@ -212,10 +245,11 @@ impl SectionAssembler {
             let total_length = 3 + section_length;
             let syntax = (remaining[1] & 0x80) != 0;
             let invalid_declared_header = (remaining[1] & 0x30) != 0x30
-                || section_length > 1021
+                || section_length > max_arib_section_length_for_table_id(remaining[0])
+                || total_length > MAX_SECTION_PAYLOAD_BYTES
                 || (syntax && (section_length < 9 || total_length < 12));
-            if invalid_declared_header || total_length > MAX_SECTION_PAYLOAD_BYTES {
-                self.oversized_section_drops = self.oversized_section_drops.saturating_add(1);
+            if invalid_declared_header {
+                self.increment_oversized_section_drops();
                 cursor += 1;
                 continue;
             }
@@ -224,7 +258,7 @@ impl SectionAssembler {
                     out.push(remaining[..total_length].to_vec());
                     cursor += total_length;
                 } else {
-                    self.oversized_section_drops = self.oversized_section_drops.saturating_add(1);
+                    self.increment_oversized_section_drops();
                     cursor += 1;
                 }
                 continue;
@@ -241,9 +275,17 @@ impl SectionAssembler {
     fn try_take_pending(&mut self, out: &mut Vec<Vec<u8>>) {
         loop {
             if self.expected_len.is_none() && self.buf.len() >= 3 {
-                let expected_len =
-                    3 + ((((self.buf[1] & 0x0f) as usize) << 8) | self.buf[2] as usize);
-                if !self.set_expected_len_or_drop(expected_len) {
+                let section_length =
+                    (((self.buf[1] & 0x0f) as usize) << 8) | self.buf[2] as usize;
+                let expected_len = 3 + section_length;
+                let syntax = (self.buf[1] & 0x80) != 0;
+                let invalid_declared_header = (self.buf[1] & 0x30) != 0x30
+                    || section_length > max_arib_section_length_for_table_id(self.buf[0])
+                    || expected_len > MAX_SECTION_PAYLOAD_BYTES
+                    || (syntax && (section_length < 9 || expected_len < 12));
+                if invalid_declared_header || !self.set_expected_len_or_drop(expected_len) {
+                    self.increment_oversized_section_drops();
+                    self.reset();
                     return;
                 }
             }
@@ -256,7 +298,11 @@ impl SectionAssembler {
             let remaining = self.buf.split_off(expected_len);
             let section = std::mem::replace(&mut self.buf, remaining);
             self.expected_len = None;
-            out.push(section);
+            if parse_section_header(&section, 12).is_some() {
+                out.push(section);
+            } else {
+                self.increment_oversized_section_drops();
+            }
             if self.buf.is_empty() {
                 return;
             }
@@ -271,7 +317,10 @@ impl SectionAssembler {
 #[cfg(test)]
 mod tests {
     use super::{crc32_mpeg, parse_section_header, section_crc_valid, SectionAssembler};
-    use maleicacid_tuner_hal_common::MAX_SECTION_PAYLOAD_BYTES;
+    use maleicacid_tuner_hal_common::{
+        MAX_ARIB_EIT_SECTION_LENGTH, MAX_ARIB_SECTION_TOTAL_BYTES,
+        MAX_ARIB_SHORT_SECTION_LENGTH, MAX_SECTION_PAYLOAD_BYTES,
+    };
 
     fn section_with_crc(mut bytes: Vec<u8>) -> Vec<u8> {
         let crc = crc32_mpeg(&bytes);
@@ -310,12 +359,15 @@ mod tests {
     }
 
     #[test]
-    fn assembler_has_8192_byte_product_payload_cap() {
-        assert_eq!(MAX_SECTION_PAYLOAD_BYTES, 8192);
+    fn assembler_has_arib_eit_total_payload_cap() {
+        assert_eq!(MAX_ARIB_SHORT_SECTION_LENGTH, 1021);
+        assert_eq!(MAX_ARIB_EIT_SECTION_LENGTH, 4093);
+        assert_eq!(MAX_ARIB_SECTION_TOTAL_BYTES, 4096);
+        assert_eq!(MAX_SECTION_PAYLOAD_BYTES, MAX_ARIB_SECTION_TOTAL_BYTES);
     }
 
     #[test]
-    fn assembler_accepts_8192_cap_and_rejects_8193_for_product_guard() {
+    fn assembler_accepts_4096_cap_and_rejects_4097_for_product_guard() {
         let mut assembler = SectionAssembler::default();
         assert!(assembler.set_expected_len_or_drop(MAX_SECTION_PAYLOAD_BYTES));
         assert_eq!(assembler.oversized_section_drops(), 0);
@@ -326,10 +378,10 @@ mod tests {
     }
 
     #[test]
-    fn assembler_delivers_largest_fixed_section_length() {
+    fn assembler_delivers_largest_eit_section_length() {
         let mut assembler = SectionAssembler::default();
-        let total_len = 3 + 1021;
-        let mut section = vec![0x4e, 0xb3, 0xfd];
+        let total_len = 3 + MAX_ARIB_EIT_SECTION_LENGTH;
+        let mut section = vec![0x4e, 0xbf, 0xfd];
         section.resize(total_len, 0x00);
         // syntaxありsectionのversion byte reserved bitsは11でなければならない。
         section[5] = 0xc1;
@@ -338,6 +390,20 @@ mod tests {
         let out = assembler.push_payload(true, &payload);
         assert_eq!(out, vec![section]);
         assert_eq!(assembler.oversized_section_drops(), 0);
+    }
+
+    #[test]
+    fn assembler_rejects_non_eit_section_above_1021() {
+        let mut assembler = SectionAssembler::default();
+        let total_len = 3 + MAX_ARIB_SHORT_SECTION_LENGTH + 1;
+        let mut section = vec![0x42, 0xb3, 0xfe];
+        section.resize(total_len, 0x00);
+        section[5] = 0xc1;
+        let mut payload = vec![0x00];
+        payload.extend_from_slice(&section);
+        let out = assembler.push_payload(true, &payload);
+        assert!(out.is_empty());
+        assert!(assembler.oversized_section_drops() >= 1);
     }
 
     #[test]
@@ -454,9 +520,51 @@ mod section_header_contract_tests {
     }
 
     #[test]
-    fn rejects_section_length_above_1021() {
-        let section = [0x42, 0xb3, 0xfe, 0, 0, 0xc1, 0, 0, 0, 0, 0, 0];
-        assert!(parse_section_header(&section, 12).is_none());
+    fn eit_max_section_accepted() {
+        let mut max_eit = vec![0x50, 0xbf, 0xfd];
+        max_eit.resize(4096, 0);
+        max_eit[5] = 0xc1;
+        let header = parse_section_header(&max_eit, 12).unwrap();
+        assert_eq!(header.section_length, 4093);
+        assert_eq!(header.total_length, 4096);
+    }
+
+    #[test]
+    fn eit_oversize_rejected() {
+        let oversized_eit = [0x50, 0xbf, 0xfe, 0, 0, 0xc1, 0, 0, 0, 0, 0, 0];
+        assert!(parse_section_header(&oversized_eit, 12).is_none());
+    }
+
+    #[test]
+    fn non_eit_1022_rejected() {
+        let oversized_sdt = [0x42, 0xb3, 0xfe, 0, 0, 0xc1, 0, 0, 0, 0, 0, 0];
+        assert!(parse_section_header(&oversized_sdt, 12).is_none());
+    }
+
+    #[test]
+    fn accepts_eit_section_length_4093_and_rejects_4094() {
+        let mut max_eit = vec![0x50, 0xbf, 0xfd];
+        max_eit.resize(4096, 0);
+        max_eit[5] = 0xc1;
+        let header = parse_section_header(&max_eit, 12).unwrap();
+        assert_eq!(header.section_length, 4093);
+        assert_eq!(header.total_length, 4096);
+
+        let oversized_eit = [0x50, 0xbf, 0xfe, 0, 0, 0xc1, 0, 0, 0, 0, 0, 0];
+        assert!(parse_section_header(&oversized_eit, 12).is_none());
+    }
+
+    #[test]
+    fn accepts_short_section_length_1021_and_rejects_1022() {
+        let mut max_sdt = vec![0x42, 0xb3, 0xfd];
+        max_sdt.resize(1024, 0);
+        max_sdt[5] = 0xc1;
+        let header = parse_section_header(&max_sdt, 12).unwrap();
+        assert_eq!(header.section_length, 1021);
+        assert_eq!(header.total_length, 1024);
+
+        let oversized_sdt = [0x42, 0xb3, 0xfe, 0, 0, 0xc1, 0, 0, 0, 0, 0, 0];
+        assert!(parse_section_header(&oversized_sdt, 12).is_none());
     }
 
     #[test]

@@ -4,7 +4,7 @@ use explicit_scan::dvb_scan_requests;
 use maleicacid_tuner_hal_common::{
     is_japan_isdbt_frequency_contract_hz, FrontendBackendKind, FrontendDevicePath,
     FrontendRuntimeState, FrontendScanMode, FrontendSelection, FrontendStreamIdKind,
-    retry_after_interrupted_read, FrontendSystem, FrontendTelemetry, FrontendTuneRequest, HalError,
+    retry_after_interrupted_read_with_saturation, FrontendSystem, FrontendTelemetry, FrontendTuneRequest, HalError,
     TsPacketCompletionBuffer, TS_PACKET_SIZE,
 };
 use std::fs::{File, OpenOptions};
@@ -13,7 +13,7 @@ use std::mem::size_of;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex};
 
 extern "C" {
@@ -35,6 +35,12 @@ const POLLHUP: i16 = 0x0010;
 const POLLNVAL: i16 = 0x0020;
 
 static FRONTEND_DVB_READ_EINTR_RETRY_COUNT: AtomicU64 = AtomicU64::new(0);
+static FRONTEND_DVB_READ_EINTR_RETRY_SATURATED: AtomicBool = AtomicBool::new(false);
+
+
+fn poll_error_is_interrupted(err: &std::io::Error) -> bool {
+    err.kind() == ErrorKind::Interrupted
+}
 
 fn last_errno() -> i32 {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(-1)
@@ -296,6 +302,7 @@ pub struct DvbLiveStreamReaderState {
     dvr_path: PathBuf,
     residual: TsPacketCompletionBuffer,
     malformed_bytes_total: u64,
+    malformed_bytes_saturated: bool,
     stopped: bool,
 }
 
@@ -319,6 +326,7 @@ impl DvbLiveStreamReader {
             dvr_path,
             residual,
             malformed_bytes_total,
+            malformed_bytes_saturated,
             stopped,
         } = &mut *inner;
         if *stopped {
@@ -341,14 +349,26 @@ impl DvbLiveStreamReader {
                 packets.push(packet);
             },
         )?;
-        let malformed_delta = residual.malformed_bytes().saturating_sub(malformed_before);
+        let malformed_delta = residual.malformed_bytes().checked_sub(malformed_before).unwrap_or(0);
+        if residual.malformed_bytes_saturated() {
+            *malformed_bytes_saturated = true;
+        }
         if malformed_delta > 0 {
-            *malformed_bytes_total = malformed_bytes_total.saturating_add(malformed_delta);
+            match malformed_bytes_total.checked_add(malformed_delta) {
+                Some(next) => *malformed_bytes_total = next,
+                None => {
+                    *malformed_bytes_total = u64::MAX;
+                    *malformed_bytes_saturated = true;
+                }
+            }
             eprintln!(
                 "maleicacid-tuner-hal-dvb-diagnostic: malformed_ts_bytes={} total_malformed_ts_bytes={}",
                 malformed_delta,
                 *malformed_bytes_total
             );
+            if *malformed_bytes_saturated {
+                eprintln!("maleicacid-tuner-hal-dvb-diagnostic: malformed_ts_bytes_counter_saturated=true");
+            }
         }
         Ok(packets)
     }
@@ -427,10 +447,7 @@ impl DvbFrontendBackend {
 
     pub fn mark_callback_failed(&mut self, message: impl Into<String>) {
         self.state.callback_registered = false;
-        self.state.tuning_active = false;
         self.state.last_error = Some(message.into());
-        self.telemetry.locked = false;
-        self.telemetry.rf_locked = None;
     }
 
     pub fn set_lnb_id(&mut self, lnb_id: i32) {
@@ -589,7 +606,7 @@ impl DvbFrontendBackend {
     pub fn tune(&mut self, request: DvbTuneRequest) -> Result<DvbFrontendStatus, HalError> {
         let property_pairs = Self::tune_property_pairs(&request)?;
         self.ensure_control_open()?;
-        self.stop_stream_reader();
+        self.stop_stream_reader()?;
         self.state.tuning_active = false;
         self.telemetry.locked = false;
         self.clear_properties()?;
@@ -657,31 +674,62 @@ impl DvbFrontendBackend {
     }
 
     pub fn validate_tune_request(&self, request: &FrontendTuneRequest) -> Result<(), HalError> {
-        let _ = Self::delivery_system(Some(request.system))?;
+        Self::delivery_system(Some(request.system))?;
         Self::validate_symbol_rate_from_common(request)?;
-        let _ = Self::normalize_bandwidth_from_common(request)?;
-        let _ = Self::validate_driver_frequency_from_common(request)?;
-        let _ = Self::normalize_stream_id_from_common(request)?;
+        Self::normalize_bandwidth_from_common(request)?;
+        Self::validate_driver_frequency_from_common(request)?;
+        Self::normalize_stream_id_from_common(request)?;
         Ok(())
     }
 
-    pub fn tune_from_common(
-        &mut self,
-        request: FrontendTuneRequest,
-    ) -> Result<DvbFrontendStatus, HalError> {
-        self.validate_tune_request(&request)?;
-        let requested_frequency = request.frequency;
-        let normalized_bandwidth = Self::normalize_bandwidth_from_common(&request)?;
-        let driver_frequency = Self::validate_driver_frequency_from_common(&request)?;
-        let (stream_id, stream_id_kind) = Self::normalize_stream_id_from_common(&request)?;
-        let mut status = self.tune(DvbTuneRequest {
+    pub fn normalized_tune_request(
+        &self,
+        request: &FrontendTuneRequest,
+    ) -> Result<DvbTuneRequest, HalError> {
+        self.validate_tune_request(request)?;
+        let normalized_bandwidth = Self::normalize_bandwidth_from_common(request)?;
+        let driver_frequency = Self::validate_driver_frequency_from_common(request)?;
+        let (stream_id, stream_id_kind) = Self::normalize_stream_id_from_common(request)?;
+        Ok(DvbTuneRequest {
             frequency_hz: Some(driver_frequency),
             stream_id,
             stream_id_kind,
             bandwidth_hz: normalized_bandwidth,
             symbol_rate: None,
             system: Some(request.system),
-        })?;
+        })
+    }
+
+    pub fn tune_matches_common(
+        &self,
+        request: &FrontendTuneRequest,
+    ) -> Result<bool, HalError> {
+        let normalized = self.normalized_tune_request(request)?;
+        Ok(self.state.tuning_active && self.last_tune.as_ref() == Some(&normalized))
+    }
+
+    pub fn last_common_tune(&self) -> Option<FrontendTuneRequest> {
+        let tune = self.last_tune.as_ref()?;
+        let system = tune.system?;
+        let frequency = self.telemetry.tuned_frequency.or(tune.frequency_hz.map(u64::from))?;
+        Some(FrontendTuneRequest {
+            system,
+            frequency,
+            end_frequency: None,
+            stream_id: tune.stream_id,
+            stream_id_kind: tune.stream_id_kind,
+            bandwidth_hz: tune.bandwidth_hz,
+            symbol_rate: None,
+        })
+    }
+
+    pub fn tune_from_common(
+        &mut self,
+        request: FrontendTuneRequest,
+    ) -> Result<DvbFrontendStatus, HalError> {
+        let requested_frequency = request.frequency;
+        let normalized_request = self.normalized_tune_request(&request)?;
+        let mut status = self.tune(normalized_request)?;
         self.telemetry.tuned_frequency = Some(requested_frequency);
         status.telemetry.tuned_frequency = Some(requested_frequency);
         Ok(status)
@@ -692,20 +740,28 @@ impl DvbFrontendBackend {
         let mut status: u32 = 0;
         self.ioctl_ptr(FE_READ_STATUS, &mut status, "FE_READ_STATUS")?;
 
-        let mut signal_strength: u16 = 0;
-        let signal_strength = self
-            .ioctl_ptr(
-                FE_READ_SIGNAL_STRENGTH,
-                &mut signal_strength,
-                "FE_READ_SIGNAL_STRENGTH",
-            )
-            .map(|()| u32::from(signal_strength))
-            .ok();
-        let mut snr: u16 = 0;
-        let snr = self
-            .ioctl_ptr(FE_READ_SNR, &mut snr, "FE_READ_SNR")
-            .map(|()| u32::from(snr))
-            .ok();
+        let mut signal_strength_raw: u16 = 0;
+        let signal_strength = match self.ioctl_ptr(
+            FE_READ_SIGNAL_STRENGTH,
+            &mut signal_strength_raw,
+            "FE_READ_SIGNAL_STRENGTH",
+        ) {
+            Ok(()) => Some(u32::from(signal_strength_raw)),
+            Err(err) => {
+                eprintln!(
+                    "frontend_dvb_optional_status metric=signal_strength error={err:?}"
+                );
+                None
+            }
+        };
+        let mut snr_raw: u16 = 0;
+        let snr = match self.ioctl_ptr(FE_READ_SNR, &mut snr_raw, "FE_READ_SNR") {
+            Ok(()) => Some(u32::from(snr_raw)),
+            Err(err) => {
+                eprintln!("frontend_dvb_optional_status metric=snr error={err:?}");
+                None
+            }
+        };
 
         self.apply_status_word(status, signal_strength, snr);
         Ok(DvbFrontendStatus {
@@ -722,7 +778,7 @@ impl DvbFrontendBackend {
     }
 
     pub fn stop_tune(&mut self) -> Result<(), HalError> {
-        self.stop_stream_reader();
+        self.stop_stream_reader()?;
         if let Err(err) = self.clear_properties() {
             self.state.last_error = Some(format!("stop_tune clear_properties failed: {err}"));
             return Err(err);
@@ -798,9 +854,10 @@ impl DvbFrontendBackend {
             if pushed >= max_packets {
                 break;
             }
-            match retry_after_interrupted_read(
+            match retry_after_interrupted_read_with_saturation(
                 "frontend_dvb_read",
                 &FRONTEND_DVB_READ_EINTR_RETRY_COUNT,
+                Some(&FRONTEND_DVB_READ_EINTR_RETRY_SATURATED),
                 || reader.read(&mut scratch),
             ) {
                 Ok(0) => break,
@@ -872,9 +929,15 @@ impl DvbFrontendBackend {
                 revents: 0,
             });
         }
-        let rc = unsafe { poll(pollfds.as_mut_ptr(), pollfds.len(), 1_000) };
-        if rc < 0 {
+        let rc = loop {
+            let rc = unsafe { poll(pollfds.as_mut_ptr(), pollfds.len(), 1_000) };
+            if rc >= 0 {
+                break rc;
+            }
             let err = std::io::Error::last_os_error();
+            if poll_error_is_interrupted(&err) {
+                continue;
+            }
             return Err(HalError::Io {
                 backend: "dvb",
                 operation: "dvr_poll",
@@ -882,7 +945,7 @@ impl DvbFrontendBackend {
                 errno: err.raw_os_error(),
                 message: format!("DVB DVR pollに失敗しました: {}", err),
             });
-        }
+        };
         if rc == 0 {
             return Ok(false);
         }
@@ -908,15 +971,17 @@ impl DvbFrontendBackend {
     }
 
     pub fn close(&mut self) -> Result<(), HalError> {
-        self.stop_stream_reader();
+        let stop_error = self.stop_stream_reader_for_close();
         if let Err(err) = self.clear_properties() {
-            self.state.last_error = Some(format!("close clear_properties failed: {err}"));
-            return Err(err);
+            self.state.last_error = Some(format!("close clear_properties best-effort failed: {err}"));
         }
         self.control = None;
         self.state.tuning_active = false;
         self.telemetry.locked = false;
         self.telemetry.rf_locked = None;
+        if let Some(err) = stop_error {
+            self.state.last_error = Some(format!("close DMX_STOP best-effort failed: {err}"));
+        }
         Ok(())
     }
 
@@ -1010,15 +1075,52 @@ impl DvbFrontendBackend {
             dvr_path,
             residual: TsPacketCompletionBuffer::default(),
             malformed_bytes_total: 0,
+            malformed_bytes_saturated: false,
             stopped: false,
         })));
         Ok(())
     }
 
-    fn stop_stream_reader(&mut self) {
-        if let Some(demux) = self.ts_demux.as_ref() {
-            let _ = unsafe { ioctl(demux.as_raw_fd(), DMX_STOP) };
+    fn dmx_stop_status(rc: i32, path: PathBuf) -> Result<(), HalError> {
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(HalError::IoctlFailed {
+                backend: "dvb",
+                path: Some(path),
+                op: "DMX_STOP",
+                errno: last_errno(),
+            })
         }
+    }
+
+    fn stop_stream_reader(&mut self) -> Result<(), HalError> {
+        if let Some(demux) = self.ts_demux.as_ref() {
+            let rc = unsafe { ioctl(demux.as_raw_fd(), DMX_STOP) };
+            if let Err(err) = Self::dmx_stop_status(rc, self.demux_path()) {
+                self.state.last_error = Some("DMX_STOP failed while stopping stream reader".into());
+                return Err(err);
+            }
+        }
+        self.release_stream_reader_after_stop();
+        Ok(())
+    }
+
+    fn stop_stream_reader_for_close(&mut self) -> Option<HalError> {
+        let stop_error = if let Some(demux) = self.ts_demux.as_ref() {
+            let rc = unsafe { ioctl(demux.as_raw_fd(), DMX_STOP) };
+            Self::dmx_stop_status(rc, self.demux_path()).err()
+        } else {
+            None
+        };
+        if stop_error.is_some() {
+            self.state.last_error = Some("DMX_STOP failed during close; releasing DVB stream fds anyway".into());
+        }
+        self.release_stream_reader_after_stop();
+        stop_error
+    }
+
+    fn release_stream_reader_after_stop(&mut self) {
         if let Some(reader) = self.ts_reader.as_ref() {
             if let Ok(mut reader) = reader.lock() {
                 reader.stopped = true;
@@ -1312,7 +1414,14 @@ impl DvbFrontendBackend {
                     notifier_delay: 0,
                     caps: 0,
                 };
-                let _ = unsafe { ioctl(fd, FE_GET_INFO, &mut info) };
+                if unsafe { ioctl(fd, FE_GET_INFO, &mut info) } != 0 {
+                    eprintln!(
+                        "maleicacid-dvb: FE_GET_INFO に失敗した DVB frontend を無視します adapter={} frontend={}",
+                        adapter_id,
+                        frontend_index,
+                    );
+                    continue;
+                }
                 let driver_basename = sysfs_driver_basename(adapter_id, frontend_index);
                 if !is_supported_earth_pt1_frontend_identity(&info, driver_basename.as_deref()) {
                     eprintln!(
@@ -2248,6 +2357,7 @@ mod status_word_tests {
                 dvr_path: std::path::PathBuf::from("/dev/dvb/old"),
                 residual: TsPacketCompletionBuffer::default(),
                 malformed_bytes_total: 0,
+            malformed_bytes_saturated: false,
                 stopped: true,
             })),
         };
@@ -2395,7 +2505,7 @@ mod r50dz52_g2_13_tests {
     use super::*;
 
     #[test]
-    fn close_clear_failure_is_reported_not_success_committed() {
+    fn close_clear_failure_is_best_effort_and_commits_closed_state() {
         let mut backend = DvbFrontendBackend::new(0, 0, 0, 0, vec![FrontendSystem::IsdbT]);
         backend.state.tuning_active = true;
         backend.telemetry.locked = true;
@@ -2403,11 +2513,14 @@ mod r50dz52_g2_13_tests {
 
         let result = backend.close();
 
-        assert!(result.is_err());
-        assert!(backend.state.tuning_active);
-        assert!(backend.telemetry.locked);
-        assert_eq!(backend.telemetry.rf_locked, Some(true));
-        assert!(backend.state.last_error.as_deref().unwrap_or_default().contains("close clear_properties failed"));
+        assert!(result.is_ok());
+        assert!(!backend.state.tuning_active);
+        assert!(!backend.telemetry.locked);
+        assert_eq!(backend.telemetry.rf_locked, None);
+        assert!(backend.control.is_none());
+        assert!(backend.ts_reader.is_none());
+        assert!(backend.ts_demux.is_none());
+        assert!(backend.state.last_error.as_deref().unwrap_or_default().contains("close"));
     }
 }
 
@@ -2505,3 +2618,36 @@ mod r50dz52_g2_11_tests {
     }
 }
 
+
+
+#[cfg(test)]
+mod r50ea8_dvb_stop_stream_reader_tests {
+    use super::*;
+
+    #[test]
+    fn dvb_stop_stream_reader_propagates_dmx_stop_failure() {
+        let err = DvbFrontendBackend::dmx_stop_status(-1, PathBuf::from("/dev/dvb/adapter0/demux0"))
+            .expect_err("DMX_STOP failure must propagate");
+        assert!(matches!(err, HalError::IoctlFailed { op: "DMX_STOP", .. }));
+    }
+
+    #[test]
+    fn dvb_stop_retry_after_failure() {
+        assert!(DvbFrontendBackend::dmx_stop_status(-1, PathBuf::from("/dev/dvb/adapter0/demux0")).is_err());
+        assert!(DvbFrontendBackend::dmx_stop_status(0, PathBuf::from("/dev/dvb/adapter0/demux0")).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod r50ea25_poll_eintr_contract_tests {
+    use super::poll_error_is_interrupted;
+    use std::io::{self, ErrorKind};
+
+    #[test]
+    fn poll_interrupted_error_is_retryable() {
+        let err = io::Error::new(ErrorKind::Interrupted, "eintr");
+        assert!(poll_error_is_interrupted(&err));
+        let fatal = io::Error::new(ErrorKind::Other, "fatal");
+        assert!(!poll_error_is_interrupted(&fatal));
+    }
+}

@@ -85,6 +85,25 @@ static WORKER_PANIC_COUNT: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 static WORKER_ERROR_COUNT: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
+static WORKER_DIAGNOSTIC_COUNTER_SATURATED: AtomicBool = AtomicBool::new(false);
+
+fn increment_worker_diagnostic_counter(
+    counter: &std::sync::atomic::AtomicU64,
+    name: &'static str,
+) -> u64 {
+    let mut current = counter.load(Ordering::SeqCst);
+    loop {
+        let Some(total) = current.checked_add(1) else {
+            WORKER_DIAGNOSTIC_COUNTER_SATURATED.store(true, Ordering::SeqCst);
+            eprintln!("maleicacid-tuner-hal-worker: diagnostic_counter_saturated name={name}");
+            return u64::MAX;
+        };
+        match counter.compare_exchange(current, total, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return total,
+            Err(next_current) => current = next_current,
+        }
+    }
+}
 
 pub(crate) fn spawn_worker_with_exit_hook<F, R, H>(
     name: &'static str,
@@ -101,9 +120,10 @@ where
         let exit = match result {
             Ok(value) => value.into_worker_exit(),
             Err(_) => {
-                let total = WORKER_PANIC_COUNT
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-                    .saturating_add(1);
+                let total = increment_worker_diagnostic_counter(
+                    &WORKER_PANIC_COUNT,
+                    "worker_panic_count",
+                );
                 eprintln!(
                     "maleicacid-tuner-hal-worker: panic stop fail-closed: worker={} worker_panic_count={}",
                     name, total
@@ -112,9 +132,10 @@ where
             }
         };
         if matches!(exit, WorkerExit::RuntimeFailure) {
-            let total = WORKER_ERROR_COUNT
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-                .saturating_add(1);
+            let total = increment_worker_diagnostic_counter(
+                &WORKER_ERROR_COUNT,
+                "worker_error_count",
+            );
             eprintln!(
                 "maleicacid-tuner-hal-worker: error stop fail-closed: worker={} worker_error_count={}",
                 name, total
@@ -137,9 +158,10 @@ pub(crate) fn join_worker_with_diagnostics(handle: ThreadWorkerHandleRaw, name: 
             exit
         }
         Err(_) => {
-            let total = WORKER_PANIC_COUNT
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-                .saturating_add(1);
+            let total = increment_worker_diagnostic_counter(
+                &WORKER_PANIC_COUNT,
+                "worker_panic_count",
+            );
             eprintln!(
                 "maleicacid-tuner-hal-worker: observed uncaught panic stop during join: worker={} worker_panic_count={}",
                 name, total
@@ -150,6 +172,14 @@ pub(crate) fn join_worker_with_diagnostics(handle: ThreadWorkerHandleRaw, name: 
 }
 
 pub type ConcreteWorkerSignal = WorkerSignal<WorkerExit>;
+
+pub trait WorkerSignalRuntimeExit {
+    fn runtime_failure_exit() -> Self;
+}
+
+impl WorkerSignalRuntimeExit for WorkerExit {
+    fn runtime_failure_exit() -> Self { WorkerExit::RuntimeFailure }
+}
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum WorkerExitReason {
@@ -193,7 +223,7 @@ pub struct WorkerSignal<E> {
     runtime_failure: AtomicBool,
 }
 
-impl<E> WorkerSignal<E> {
+impl<E: WorkerSignalRuntimeExit> WorkerSignal<E> {
     pub fn new(active: bool) -> Self {
         Self {
             state: Mutex::new(WorkerSignalState {
@@ -211,6 +241,28 @@ impl<E> WorkerSignal<E> {
         self.cv.notify_all();
     }
 
+    fn mark_runtime_failure_locked(state: &mut WorkerSignalState<E>, reason: &str) {
+        state.stop_requested = true;
+        state.active = false;
+        if state.exit_reason.is_none() {
+            state.exit_reason = Some(E::runtime_failure_exit());
+        }
+        eprintln!("maleicacid-tuner-hal-worker: worker signal failure: {reason}");
+    }
+
+    fn advance_work_generation_locked(state: &mut WorkerSignalState<E>, reason: &str) -> bool {
+        match state.work_generation.checked_add(1) {
+            Some(next_generation) => {
+                state.work_generation = next_generation;
+                true
+            }
+            None => {
+                Self::mark_runtime_failure_locked(state, reason);
+                false
+            }
+        }
+    }
+
     #[cfg(test)]
 
     pub fn clear_for_start(&self) {
@@ -219,8 +271,11 @@ impl<E> WorkerSignal<E> {
                 state.stop_requested = false;
                 state.active = true;
                 state.exit_reason = None;
-                state.work_generation = state.work_generation.saturating_add(1);
-                self.runtime_failure.store(false, Ordering::SeqCst);
+                if Self::advance_work_generation_locked(&mut state, "generation exhausted during start") {
+                    self.runtime_failure.store(false, Ordering::SeqCst);
+                } else {
+                    self.runtime_failure.store(true, Ordering::SeqCst);
+                }
                 self.cv.notify_all();
             }
             Err(_) => self.mark_runtime_failure("poisoned during start"),
@@ -231,7 +286,9 @@ impl<E> WorkerSignal<E> {
         match self.state.lock() {
             Ok(mut state) => {
                 state.stop_requested = true;
-                state.work_generation = state.work_generation.saturating_add(1);
+                if !Self::advance_work_generation_locked(&mut state, "generation exhausted during stop request") {
+                    self.runtime_failure.store(true, Ordering::SeqCst);
+                }
                 self.cv.notify_all();
             }
             Err(_) => self.mark_runtime_failure("poisoned during stop request"),
@@ -241,7 +298,9 @@ impl<E> WorkerSignal<E> {
     pub fn notify_work(&self) {
         match self.state.lock() {
             Ok(mut state) => {
-                state.work_generation = state.work_generation.saturating_add(1);
+                if !Self::advance_work_generation_locked(&mut state, "generation exhausted during work notification") {
+                    self.runtime_failure.store(true, Ordering::SeqCst);
+                }
                 self.cv.notify_all();
             }
             Err(_) => self.mark_runtime_failure("poisoned during work notification"),
@@ -327,7 +386,13 @@ impl<E> WorkerSignal<E> {
     pub fn set_exit_reason(&self, exit: E) {
         match self.state.lock() {
             Ok(mut state) => {
-                state.exit_reason = Some(exit);
+                if self.is_runtime_failure() {
+                    if state.exit_reason.is_none() {
+                        state.exit_reason = Some(E::runtime_failure_exit());
+                    }
+                } else {
+                    state.exit_reason = Some(exit);
+                }
                 state.active = false;
                 self.cv.notify_all();
             }
@@ -336,7 +401,7 @@ impl<E> WorkerSignal<E> {
     }
 }
 
-impl<E> Default for WorkerSignal<E> {
+impl<E: WorkerSignalRuntimeExit> Default for WorkerSignal<E> {
     fn default() -> Self {
         Self::new(false)
     }

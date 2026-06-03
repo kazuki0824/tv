@@ -21,7 +21,7 @@ use maleicacid_tuner_hal_dvr::{
     QueuePolicy,
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 #[cfg(test)]
 use maleicacid_tuner_hal_dvr::QueueOverflowPolicy;
@@ -39,16 +39,74 @@ const TEST_TS_PACKET_BUFFER_SIZE: i32 = (TS_PACKET_SIZE * 4) as i32;
 static FILTER_STOP_IDEMPOTENT_COUNT: AtomicU64 = AtomicU64::new(0);
 static DVR_STOP_IDEMPOTENT_COUNT: AtomicU64 = AtomicU64::new(0);
 static SET_DATA_SOURCE_SUCCESS_COUNT: AtomicU64 = AtomicU64::new(0);
+static SOURCE_FILTER_DOWNSTREAM_DROP_COUNT: AtomicU64 = AtomicU64::new(0);
 static SET_DATA_SOURCE_INVALID_PAIR_COUNT: AtomicU64 = AtomicU64::new(0);
+static SOFT_DEMUX_DIAGNOSTIC_COUNTER_SATURATED: AtomicBool = AtomicBool::new(false);
 
 fn should_log_soft_demux_counter(count: u64) -> bool {
     count <= 4 || count.is_power_of_two() || count % 64 == 0
 }
 
 fn record_soft_demux_diagnostic(counter: &AtomicU64, name: &str) {
-    let total = counter.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+    let total = counter.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+        current.checked_add(1)
+    });
+    let total = match total {
+        Ok(previous) => previous + 1,
+        Err(_) => {
+            SOFT_DEMUX_DIAGNOSTIC_COUNTER_SATURATED.store(true, Ordering::SeqCst);
+            u64::MAX
+        }
+    };
     if should_log_soft_demux_counter(total) {
         eprintln!("maleicacid-tuner-hal-soft-demux-diagnostic: {name} total={total}");
+    }
+}
+
+fn increment_diagnostic_counter(value: &mut u64, saturated: &mut bool) {
+    match value.checked_add(1) {
+        Some(next) => *value = next,
+        None => *saturated = true,
+    }
+}
+
+fn add_diagnostic_counter(value: &mut u64, amount: u64, saturated: &mut bool) {
+    match value.checked_add(amount) {
+        Some(next) => *value = next,
+        None => {
+            *value = u64::MAX;
+            *saturated = true;
+        }
+    }
+}
+
+fn add_queue_accounting(value: usize, amount: usize, saturated: &mut bool) -> Option<usize> {
+    match value.checked_add(amount) {
+        Some(next) => Some(next),
+        None => {
+            *saturated = true;
+            None
+        }
+    }
+}
+
+fn sub_queue_accounting(value: usize, amount: usize, saturated: &mut bool) -> usize {
+    match value.checked_sub(amount) {
+        Some(next) => next,
+        None => {
+            *saturated = true;
+            0
+        }
+    }
+}
+
+fn add_queue_outcome_counter(value: &mut usize, amount: usize, saturated: &mut bool) {
+    match value.checked_add(amount) {
+        Some(next) => *value = next,
+        None => {
+            *value = usize::MAX;
+            *saturated = true;
+        }
     }
 }
 
@@ -62,7 +120,7 @@ pub enum DemuxPathDirection {
 pub(crate) enum TsInputOrigin {
     Frontend,
     Playback,
-    SourceFilter { source_filter_id: i32 },
+    SourceFilter { source_filter_id: i32, source_filter_generation: u64 },
 }
 
 impl TsInputOrigin {
@@ -133,10 +191,6 @@ pub struct FilterLinkagePolicyEntry {
 
 const TS_LINKABLE_OPEN_TYPES: &[FilterOpenType] = &[
     FilterOpenType::TsRaw,
-    FilterOpenType::TsAudio,
-    FilterOpenType::TsVideo,
-    FilterOpenType::TsSection,
-    FilterOpenType::TsPes,
     FilterOpenType::TsRecord,
 ];
 
@@ -149,34 +203,15 @@ pub const FILTER_LINKAGE_POLICY: &[FilterLinkagePolicyEntry] = &[FilterLinkagePo
 
 
 pub fn can_link_filter_open_types(source: FilterOpenType, destination: FilterOpenType) -> bool {
-    // linkCaps は main type 粒度しか表現しないため、TS→TS の広告は維持する。
-    // ただし setDataSource() 成功条件は、実際に source output を destination input として
-    // 意味的に処理できる subtype pair に限定する。
-    // RECORD は DVR record buffer と TsRecordEvent の終端 filter であり、downstream の
-    // TS packet source としては扱わない。
-    // AV filter は non-passthrough MediaEvent + shared memory の終端 filter であり、
-    // AV payload を他 filter の source として扱う経路は本製品では恒久的に対応しない。
-    match source {
-        FilterOpenType::TsRaw => matches!(
-            destination,
-            FilterOpenType::TsRaw
-                | FilterOpenType::TsAudio
-                | FilterOpenType::TsVideo
-                | FilterOpenType::TsSection
-                | FilterOpenType::TsPes
-                | FilterOpenType::TsRecord
-        ),
-        FilterOpenType::TsSection => matches!(destination, FilterOpenType::TsSection),
-        FilterOpenType::TsPes => matches!(
-            destination,
-            FilterOpenType::TsPes | FilterOpenType::TsAudio | FilterOpenType::TsVideo
-        ),
-        FilterOpenType::TsAudio
-        | FilterOpenType::TsVideo
-        | FilterOpenType::TsRecord
-        | FilterOpenType::TsOther
-        | FilterOpenType::NonTs => false,
-    }
+    // r50ea48/WP-02: DESIGN_JA.md の SourceFilter 契約に合わせ、setDataSource()
+    // 成功条件は raw TS packet を downstream raw TS / record 系へ渡す範囲だけに固定する。
+    // section/PES/AV payload の直接多段再配送、および raw TS から section/PES/AV への
+    // 再parse chain は本製品では advertised しない。要求された場合は UNAVAILABLE とする。
+    matches!(
+        (source, destination),
+        (FilterOpenType::TsRaw, FilterOpenType::TsRaw)
+            | (FilterOpenType::TsRaw, FilterOpenType::TsRecord)
+    )
 }
 
 pub fn demux_link_caps_for_filter_linkage_policy() -> Vec<i32> {
@@ -373,7 +408,33 @@ pub struct DemuxFilterRecord {
     pub section_drop_events: u64,
     pub stale_partial_discards: u64,
     pub events_emitted: u64,
+    pub diagnostic_counter_saturated: bool,
     pub delivery_generation: u64,
+}
+
+
+fn next_filter_delivery_generation_record(filter: &DemuxFilterRecord) -> Result<u64, DemuxConfigError> {
+    let next = filter
+        .delivery_generation
+        .checked_add(1)
+        .ok_or(DemuxConfigError::IdExhausted)?;
+    if next > i32::MAX as u64 {
+        return Err(DemuxConfigError::IdExhausted);
+    }
+    Ok(next)
+}
+
+fn bump_filter_delivery_generation_record(filter: &mut DemuxFilterRecord) -> Result<u64, DemuxConfigError> {
+    let next = next_filter_delivery_generation_record(filter)?;
+    filter.delivery_generation = next;
+    Ok(next)
+}
+
+fn mark_filter_generation_exhausted(filter: &mut DemuxFilterRecord) {
+    filter.set_lifecycle(FilterLifecycleState::FailedClosed);
+    filter.pending_start_event = false;
+    filter.pending_overflow = false;
+    filter.delivery_not_before = None;
 }
 
 impl DemuxFilterRecord {
@@ -407,6 +468,7 @@ impl DemuxFilterRecord {
             section_drop_events: 0,
             stale_partial_discards: 0,
             events_emitted: 0,
+            diagnostic_counter_saturated: false,
             delivery_generation: 0,
         }
     }
@@ -482,6 +544,7 @@ pub struct DemuxDvrRecord {
     pub playback_injected_packets: u64,
     pub playback_injected_bytes: u64,
     pub playback_malformed_bytes: u64,
+    pub diagnostic_counter_saturated: bool,
 }
 
 impl DemuxDvrRecord {
@@ -503,6 +566,7 @@ impl DemuxDvrRecord {
             playback_injected_packets: 0,
             playback_injected_bytes: 0,
             playback_malformed_bytes: 0,
+            diagnostic_counter_saturated: false,
         }
     }
 
@@ -562,17 +626,58 @@ pub enum DemuxConfigError {
     CapacityExceeded,
     InvalidKind,
     InvalidState,
+    Unavailable,
     IdExhausted,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct QueuePushOutcome {
     pub accepted_bytes: usize,
+    pub accepted_entries: usize,
     pub dropped_bytes: usize,
     pub dropped_entries: usize,
     pub dropped_old: bool,
     pub dropped_new: bool,
     pub overflowed: bool,
+    pub counter_saturated: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PacketPushOutcome {
+    Consumed,
+    DroppedMalformed,
+    DroppedTransportError,
+    DroppedDuplicate,
+    DroppedNoPayload,
+    DroppedNoDelivery,
+}
+
+impl PacketPushOutcome {
+    pub fn is_consumed(self) -> bool {
+        matches!(self, Self::Consumed)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PlaybackInjectionOutcome {
+    ConsumedWithDelivery,
+    ConsumedNoDelivery,
+    Malformed,
+    InvalidState,
+    InternalError,
+}
+
+impl PlaybackInjectionOutcome {
+    pub fn is_nonfatal_consumed(self) -> bool {
+        matches!(
+            self,
+            Self::ConsumedWithDelivery | Self::ConsumedNoDelivery | Self::Malformed
+        )
+    }
+
+    pub fn is_legacy_success(self) -> bool {
+        matches!(self, Self::ConsumedWithDelivery | Self::ConsumedNoDelivery)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -869,7 +974,9 @@ impl DemuxHandle {
                 filter.queued_bytes = 0;
                 filter.pending_start_event = false;
                 filter.pending_overflow = false;
-                filter.delivery_generation = filter.delivery_generation.saturating_add(1);
+                if bump_filter_delivery_generation_record(filter).is_err() {
+                    mark_filter_generation_exhausted(filter);
+                }
             }
             self.filter_queues.insert(filter_id, VecDeque::new());
             self.section_filter_runtime
@@ -891,6 +998,16 @@ impl DemuxHandle {
         self.latest_pcr_instant = None;
         self.pcr_extender.reset();
         self.latest_pcr_90khz = None;
+    }
+
+    pub fn next_filter_id_candidate(&self) -> Result<i32, DemuxConfigError> {
+        if self.closed {
+            return Err(DemuxConfigError::InvalidState);
+        }
+        self.next_filter_id
+            .checked_add(1)
+            .ok_or(DemuxConfigError::IdExhausted)
+            .map(|_| self.next_filter_id)
     }
 
     pub fn register_filter_result(
@@ -916,17 +1033,55 @@ impl DemuxHandle {
     }
 
 
-    fn disconnect_downstreams_of(&mut self, filter_id: i32) {
-        let downstream_ids: Vec<i32> = self
-            .filters
+    fn reset_source_origin_partial_state(
+        &mut self,
+        origin: TsInputOrigin,
+        downstream_filter_id: i32,
+        pid: i32,
+    ) {
+        self.packet_pipeline
+            .mark_filter_flush_generation_for_origin(downstream_filter_id, pid, origin);
+        self.packet_pipeline
+            .reset_downstream_assembly_for_origin_pid_filter(origin, pid, downstream_filter_id);
+    }
+
+    fn source_filter_downstream_snapshots(&self, filter_id: i32) -> Vec<(i32, i32)> {
+        self.filters
             .iter()
             .filter_map(|(id, downstream)| {
-                (downstream.data_upstream_filter_id == Some(filter_id)).then_some(*id)
+                if downstream.data_upstream_filter_id == Some(filter_id) {
+                    downstream
+                        .config
+                        .as_ref()
+                        .map(|config| (*id, config.tpid))
+                } else {
+                    None
+                }
             })
-            .collect();
-        for downstream_id in downstream_ids {
+            .collect()
+    }
+
+    fn reset_source_filter_downstream_partial_state(
+        &mut self,
+        origin: TsInputOrigin,
+        downstreams: &[(i32, i32)],
+    ) {
+        for (downstream_id, pid) in downstreams.iter().copied() {
+            self.reset_source_origin_partial_state(origin, downstream_id, pid);
+        }
+    }
+
+    fn disconnect_downstreams_of(&mut self, filter_id: i32) {
+        let source_origin = self.source_filter_origin(filter_id);
+        let downstreams = self.source_filter_downstream_snapshots(filter_id);
+        if let Some(origin) = source_origin {
+            self.reset_source_filter_downstream_partial_state(origin, &downstreams);
+        }
+        for (downstream_id, _) in downstreams {
+            self.mark_filter_flush_generation(downstream_id);
             if let Some(downstream) = self.filters.get_mut(&downstream_id) {
                 // 表SSOTどおり、既出力 queue / pending event は維持し、新規配送だけ止める。
+                // ただし source filter 契約上、接続解除境界では downstream の partial state を破棄する。
                 downstream.data_upstream_filter_id = None;
                 downstream.set_lifecycle(FilterLifecycleState::Stopped);
                 downstream.delivery_not_before = None;
@@ -991,17 +1146,30 @@ impl DemuxHandle {
         }
         if let Some(filter) = self.filters.get_mut(&filter_id) {
             filter.pending_overflow = true;
-            filter.overflow_events = filter.overflow_events.saturating_add(
+            add_diagnostic_counter(
+                &mut filter.overflow_events,
                 outcome
                     .oversized_section_drop_delta
-                    .saturating_add(outcome.stale_partial_discard_delta),
+                    .checked_add(outcome.stale_partial_discard_delta)
+                    .unwrap_or_else(|| {
+                        filter.diagnostic_counter_saturated = true;
+                        u64::MAX
+                    }),
+                &mut filter.diagnostic_counter_saturated,
             );
-            filter.section_drop_events = filter
-                .section_drop_events
-                .saturating_add(outcome.oversized_section_drop_delta);
-            filter.stale_partial_discards = filter
-                .stale_partial_discards
-                .saturating_add(outcome.stale_partial_discard_delta);
+            add_diagnostic_counter(
+                &mut filter.section_drop_events,
+                outcome.oversized_section_drop_delta,
+                &mut filter.diagnostic_counter_saturated,
+            );
+            add_diagnostic_counter(
+                &mut filter.stale_partial_discards,
+                outcome.stale_partial_discard_delta,
+                &mut filter.diagnostic_counter_saturated,
+            );
+            if outcome.oversized_section_counter_saturated || outcome.stale_partial_counter_saturated {
+                filter.diagnostic_counter_saturated = true;
+            }
         }
     }
 
@@ -1132,6 +1300,7 @@ impl DemuxHandle {
         } else {
             None
         };
+        let next_delivery_generation = next_filter_delivery_generation_record(existing)?;
         self.disconnect_downstreams_of(filter_id);
         {
             let Some(filter) = self.filters.get_mut(&filter_id) else {
@@ -1151,7 +1320,7 @@ impl DemuxHandle {
             filter.pending_start_event = false;
             filter.pending_start_id = 0;
             filter.delivery_not_before = None;
-            filter.delivery_generation = filter.delivery_generation.saturating_add(1);
+            filter.delivery_generation = next_delivery_generation;
         }
         if is_av {
             let state = self
@@ -1213,8 +1382,32 @@ impl DemuxHandle {
         if filter_ids.len() < pids.len() {
             return Err(DemuxConfigError::CapacityExceeded);
         }
-        for (filter_id, pid) in filter_ids.iter().copied().zip(pids.iter().copied()) {
-            self.configure_record_pid_filter(filter_id, pid)?;
+        let target_ids: Vec<i32> = filter_ids.iter().copied().take(pids.len()).collect();
+        let snapshots: Vec<(i32, DemuxFilterRecord, VecDeque<FilterPayload>, SectionFilterRuntime)> =
+            target_ids
+                .iter()
+                .copied()
+                .map(|filter_id| {
+                    let record = self.filters.get(&filter_id).cloned().ok_or(DemuxConfigError::NotFound)?;
+                    let queue = self.filter_queues.get(&filter_id).cloned().unwrap_or_default();
+                    let section_runtime = self
+                        .section_filter_runtime
+                        .get(&filter_id)
+                        .cloned()
+                        .unwrap_or_default();
+                    Ok((filter_id, record, queue, section_runtime))
+                })
+                .collect::<Result<_, DemuxConfigError>>()?;
+        for (filter_id, pid) in target_ids.iter().copied().zip(pids.iter().copied()) {
+            if let Err(err) = self.configure_record_pid_filter(filter_id, pid) {
+                for (snapshot_id, record, queue, section_runtime) in snapshots {
+                    self.filters.insert(snapshot_id, record);
+                    self.filter_queues.insert(snapshot_id, queue);
+                    self.section_filter_runtime.insert(snapshot_id, section_runtime);
+                    self.packet_pipeline.clear_filter_state(snapshot_id);
+                }
+                return Err(err);
+            }
         }
         Ok(())
     }
@@ -1237,6 +1430,40 @@ impl DemuxHandle {
             tpid: filter.config.as_ref().map(|config| config.tpid),
             open_type: filter.open_type,
         })
+    }
+
+    fn source_filter_origin(&self, source_filter_id: i32) -> Option<TsInputOrigin> {
+        self.filters.get(&source_filter_id).map(|filter| TsInputOrigin::SourceFilter {
+            source_filter_id,
+            source_filter_generation: filter.delivery_generation,
+        })
+    }
+
+    fn source_filter_origins_feeding_filter(&self, filter_id: i32) -> Vec<TsInputOrigin> {
+        self.filters
+            .get(&filter_id)
+            .and_then(|filter| filter.data_upstream_filter_id)
+            .and_then(|source_filter_id| self.source_filter_origin(source_filter_id))
+            .into_iter()
+            .collect()
+    }
+
+    fn active_input_origins_for_filter(&self, filter_id: i32) -> Vec<TsInputOrigin> {
+        if let Some(source_origin) = self.source_filter_origins_feeding_filter(filter_id).into_iter().next() {
+            return vec![source_origin];
+        }
+        let mut origins = Vec::new();
+        if self.frontend_id.is_some() {
+            origins.push(TsInputOrigin::Frontend);
+        }
+        if self
+            .dvrs
+            .values()
+            .any(|dvr| dvr.direction == DemuxPathDirection::Playback && dvr.is_started_for_api())
+        {
+            origins.push(TsInputOrigin::Playback);
+        }
+        origins
     }
 
     fn validate_pes_to_av_data_source(
@@ -1353,8 +1580,8 @@ impl DemuxHandle {
             return Err(DemuxConfigError::InvalidKind);
         }
         if !can_link_filter_open_types(source.open_type, destination.open_type) {
-            record_soft_demux_diagnostic(&SET_DATA_SOURCE_INVALID_PAIR_COUNT, "set_data_source_invalid_pair");
-            return Err(DemuxConfigError::InvalidKind);
+            record_soft_demux_diagnostic(&SET_DATA_SOURCE_INVALID_PAIR_COUNT, "set_data_source_unavailable_pair");
+            return Err(DemuxConfigError::Unavailable);
         }
         let (Some(source_config), Some(destination_config)) =
             (source.config.as_ref(), destination.config.as_ref())
@@ -1397,19 +1624,64 @@ impl DemuxHandle {
         Ok(())
     }
 
+    fn filter_config_pid(&self, filter_id: i32) -> Result<i32, DemuxConfigError> {
+        self.filters
+            .get(&filter_id)
+            .and_then(|filter| filter.config.as_ref().map(|config| config.tpid))
+            .ok_or(DemuxConfigError::NotFound)
+    }
+
+    fn source_origin_for_snapshot(
+        &self,
+        upstream_filter_id: Option<i32>,
+    ) -> Result<Option<TsInputOrigin>, DemuxConfigError> {
+        match upstream_filter_id {
+            Some(source_id) => self
+                .source_filter_origin(source_id)
+                .map(Some)
+                .ok_or(DemuxConfigError::NotFound),
+            None => Ok(None),
+        }
+    }
+
+    fn apply_filter_data_source_transition(
+        &mut self,
+        filter_id: i32,
+        upstream_filter_id: Option<i32>,
+    ) -> Result<(), DemuxConfigError> {
+        let previous_upstream = self.filter_data_source_snapshot(filter_id)?;
+        let pid = self.filter_config_pid(filter_id)?;
+        let previous_origin = self.source_origin_for_snapshot(previous_upstream)?;
+        let next_origin = self.source_origin_for_snapshot(upstream_filter_id)?;
+        let next_delivery_generation = {
+            let Some(filter) = self.filters.get(&filter_id) else {
+                return Err(DemuxConfigError::NotFound);
+            };
+            next_filter_delivery_generation_record(filter)?
+        };
+
+        if let Some(origin) = previous_origin {
+            self.reset_source_origin_partial_state(origin, filter_id, pid);
+        }
+        if let Some(origin) = next_origin {
+            self.reset_source_origin_partial_state(origin, filter_id, pid);
+        }
+
+        let Some(filter) = self.filters.get_mut(&filter_id) else {
+            return Err(DemuxConfigError::NotFound);
+        };
+        filter.data_upstream_filter_id = upstream_filter_id;
+        filter.delivery_generation = next_delivery_generation;
+        Ok(())
+    }
+
     pub fn set_filter_data_source_result(
         &mut self,
         filter_id: i32,
         upstream_filter_id: i32,
     ) -> Result<(), DemuxConfigError> {
         self.validate_filter_data_source(filter_id, upstream_filter_id)?;
-        self.mark_filter_flush_generation(filter_id);
-        let Some(filter) = self.filters.get_mut(&filter_id) else {
-            return Err(DemuxConfigError::NotFound);
-        };
-        // setDataSource() は既存上流接続を置換するが、既出力 queue は維持する。
-        filter.data_upstream_filter_id = Some(upstream_filter_id);
-        filter.delivery_generation = filter.delivery_generation.saturating_add(1);
+        self.apply_filter_data_source_transition(filter_id, Some(upstream_filter_id))?;
         record_soft_demux_diagnostic(&SET_DATA_SOURCE_SUCCESS_COUNT, "set_data_source_success");
         Ok(())
     }
@@ -1429,13 +1701,7 @@ impl DemuxHandle {
         filter_id: i32,
         upstream_filter_id: Option<i32>,
     ) -> Result<(), DemuxConfigError> {
-        let Some(filter) = self.filters.get_mut(&filter_id) else {
-            return Err(DemuxConfigError::NotFound);
-        };
-        filter.data_upstream_filter_id = upstream_filter_id;
-        filter.delivery_generation = filter.delivery_generation.saturating_add(1);
-        self.mark_filter_flush_generation(filter_id);
-        Ok(())
+        self.apply_filter_data_source_transition(filter_id, upstream_filter_id)
     }
 
     #[cfg(test)]
@@ -1590,23 +1856,23 @@ impl DemuxHandle {
         if filter.is_started_for_api() {
             return Ok(());
         }
-        filter.pending_start_id = if filter.ever_started {
-            filter.delivery_generation.max(1).min(i32::MAX as u64) as i32
+        let pending_start_id = if filter.ever_started {
+            filter.delivery_generation.max(1) as i32
         } else {
             0
         };
-        filter.ever_started = true;
-        filter.set_lifecycle(FilterLifecycleState::Started);
-        filter.delivery_not_before = if let Some(ms) = filter.delay_hints.time_delay_ms.filter(|ms| *ms > 0) {
+        let delivery_not_before = if let Some(ms) = filter.delay_hints.time_delay_ms.filter(|ms| *ms > 0) {
             let Some(deadline) = Instant::now().checked_add(Duration::from_millis(ms)) else {
-                filter.set_lifecycle(FilterLifecycleState::Stopped);
-                filter.delivery_not_before = None;
                 return Err(DemuxConfigError::InvalidState);
             };
             Some(deadline)
         } else {
             None
         };
+        filter.pending_start_id = pending_start_id;
+        filter.ever_started = true;
+        filter.set_lifecycle(FilterLifecycleState::Started);
+        filter.delivery_not_before = delivery_not_before;
         self.section_filter_runtime
             .insert(filter_id, SectionFilterRuntime::default());
         Ok(())
@@ -1671,21 +1937,32 @@ impl DemuxHandle {
     }
 
     pub fn flush_filter_result(&mut self, filter_id: i32) -> Result<(), DemuxConfigError> {
+        let old_source_origin = self.source_filter_origin(filter_id);
+        let downstreams = self.source_filter_downstream_snapshots(filter_id);
+        let next_delivery_generation = {
+            let Some(filter) = self.filters.get(&filter_id) else {
+                return Err(DemuxConfigError::NotFound);
+            };
+            if !filter.is_configured_for_api() {
+                return Err(DemuxConfigError::InvalidState);
+            }
+            next_filter_delivery_generation_record(filter)?
+        };
         let Some(filter) = self.filters.get_mut(&filter_id) else {
             return Err(DemuxConfigError::NotFound);
         };
-        if !filter.is_configured_for_api() {
-            return Err(DemuxConfigError::InvalidState);
-        }
         // linkage / configure 内容 / AV shared backing は維持する。
         filter.queued_bytes = 0;
         filter.pending_start_event = false;
         filter.pending_overflow = false;
         filter.delivery_not_before = None;
-        filter.delivery_generation = filter.delivery_generation.saturating_add(1);
+        filter.delivery_generation = next_delivery_generation;
         self.filter_queues.insert(filter_id, VecDeque::new());
         self.section_filter_runtime
             .insert(filter_id, SectionFilterRuntime::default());
+        if let Some(origin) = old_source_origin {
+            self.reset_source_filter_downstream_partial_state(origin, &downstreams);
+        }
         self.mark_filter_flush_generation(filter_id);
         Ok(())
     }
@@ -1712,12 +1989,12 @@ impl DemuxHandle {
             return false;
         }
         let payload_entry = FilterPayload::Bytes(payload.to_vec());
-        self.push_filter_payload(filter_id, payload_entry.clone());
-        self.propagate_filter_output(filter_id, &payload_entry);
-        if let Some(filter_mut) = self.filters.get_mut(&filter_id) {
-            filter_mut.events_emitted += 1;
+        if self.push_filter_payload_for_delivery(filter_id, payload_entry.clone()) {
+            self.propagate_filter_output(filter_id, &payload_entry);
+            true
+        } else {
+            false
         }
-        true
     }
 
     pub fn push_ts_stream(&mut self, payload: &[u8]) -> usize {
@@ -1728,7 +2005,7 @@ impl DemuxHandle {
         let packets = self.packet_pipeline.split_ts_bytes(payload, PipelineInputKind::Live);
         let mut pushed = 0usize;
         for packet in packets {
-            if self.push_ts_packet_with_origin(&packet, TsInputOrigin::Frontend) {
+            if self.push_ts_packet_with_origin(&packet, TsInputOrigin::Frontend).is_consumed() {
                 pushed += 1;
             }
         }
@@ -1737,7 +2014,7 @@ impl DemuxHandle {
 
 
     pub fn push_ts_packet(&mut self, packet: &[u8]) -> bool {
-        self.push_ts_packet_with_origin(packet, TsInputOrigin::Frontend)
+        self.push_ts_packet_with_origin(packet, TsInputOrigin::Frontend).is_consumed()
     }
 
     pub fn push_ts_packet_record_only(&mut self, packet: &[u8]) -> bool {
@@ -1746,55 +2023,62 @@ impl DemuxHandle {
         };
         let filter_views = self.pipeline_filter_views();
         let report = self.packet_pipeline.plan_ts_packet_report(&parsed, TsInputOrigin::Frontend, &filter_views);
+        let mut retained = false;
         for action in report.delivery_actions.into_iter() {
             match action {
                 PipelineDeliveryAction::DvrMirror { dvr_id: filter_id } => {
                     let packet_entry = FilterPayload::RecordPacket(packet.to_vec());
-                    self.mirror_filter_payload_to_record_dvrs(filter_id, &packet_entry);
+                    if self.mirror_filter_payload_to_record_dvrs(filter_id, &packet_entry) {
+                        retained = true;
+                    }
                 }
                 PipelineDeliveryAction::RecordPacket { filter_id } => {
                     let packet_entry = FilterPayload::RecordPacket(packet.to_vec());
-                    self.push_filter_payload(filter_id, packet_entry);
-                    if let Some(filter_mut) = self.filters.get_mut(&filter_id) {
-                        filter_mut.events_emitted += 1;
+                    if self.push_filter_payload_for_delivery(filter_id, packet_entry) {
+                        retained = true;
                     }
                 }
                 _ => {}
             }
         }
-        true
+        retained
     }
 
 
-    fn push_ts_packet_with_origin(&mut self, packet: &[u8], origin: TsInputOrigin) -> bool {
-        let Some(parsed) = self.packet_pipeline.accept_ts_packet(packet, origin) else {
-            return true;
+    fn push_ts_packet_with_origin(&mut self, packet: &[u8], origin: TsInputOrigin) -> PacketPushOutcome {
+        let parsed = match self.packet_pipeline.accept_ts_packet_with_outcome(packet, origin) {
+            crate::packet_pipeline::PacketAcceptOutcome::Accepted(view) => view,
+            crate::packet_pipeline::PacketAcceptOutcome::Malformed => return PacketPushOutcome::DroppedMalformed,
+            crate::packet_pipeline::PacketAcceptOutcome::TransportError => return PacketPushOutcome::DroppedTransportError,
+            crate::packet_pipeline::PacketAcceptOutcome::Duplicate => return PacketPushOutcome::DroppedDuplicate,
+            crate::packet_pipeline::PacketAcceptOutcome::NoPayload => return PacketPushOutcome::DroppedNoPayload,
         };
 
         // r50dz39: 対象選択だけでなく section/PES 組立結果も PacketPipeline report を正とする。
         let filter_views = self.pipeline_filter_views();
         let pipeline_report = self.packet_pipeline.plan_and_assemble_ts_packet_report(&parsed, origin, &filter_views);
+        let mut retained_payload = false;
         let mut linked_packet_sources = Vec::new();
         for action in pipeline_report.delivery_actions.iter().cloned() {
             match action {
                 PipelineDeliveryAction::RawPacket { filter_id } => {
                     let packet_entry = FilterPayload::TsPacket(packet.to_vec());
-                    self.push_filter_payload(filter_id, packet_entry);
-                    linked_packet_sources.push(filter_id);
-                    if let Some(filter_mut) = self.filters.get_mut(&filter_id) {
-                        filter_mut.events_emitted += 1;
+                    if self.push_filter_payload_for_delivery(filter_id, packet_entry) {
+                        retained_payload = true;
+                        linked_packet_sources.push(filter_id);
                     }
                 }
                 PipelineDeliveryAction::RecordPacket { filter_id } => {
                     let record_entry = FilterPayload::RecordPacket(packet.to_vec());
-                    self.push_filter_payload(filter_id, record_entry);
-                    if let Some(filter_mut) = self.filters.get_mut(&filter_id) {
-                        filter_mut.events_emitted += 1;
+                    if self.push_filter_payload_for_delivery(filter_id, record_entry) {
+                        retained_payload = true;
                     }
                 }
                 PipelineDeliveryAction::DvrMirror { dvr_id: filter_id } => {
                     let record_entry = FilterPayload::RecordPacket(packet.to_vec());
-                    self.mirror_filter_payload_to_record_dvrs(filter_id, &record_entry);
+                    if self.mirror_filter_payload_to_record_dvrs(filter_id, &record_entry) {
+                        retained_payload = true;
+                    }
                 }
                 PipelineDeliveryAction::SectionPayload { .. }
                 | PipelineDeliveryAction::PesPayload { .. }
@@ -1822,19 +2106,20 @@ impl DemuxHandle {
                         continue;
                     }
                     let section_entry = FilterPayload::Bytes(bytes.clone());
-                    self.push_filter_payload(filter_id, section_entry.clone());
-                    self.propagate_filter_output_with_origin_generation(
-                        filter_id,
-                        &section_entry,
-                        origin,
-                        Some(AssemblyGeneration::Section { pid, generation }),
-                    );
-                    if let Some(filter_mut) = self.filters.get_mut(&filter_id) {
-                        filter_mut.events_emitted += 1;
+                    if self.push_filter_payload_for_delivery(filter_id, section_entry.clone()) {
+                        retained_payload = true;
+                        self.propagate_filter_output_with_origin_generation(
+                            filter_id,
+                            &section_entry,
+                            origin,
+                            Some(AssemblyGeneration::Section { pid, generation }),
+                        );
                     }
                 }
                 PipelineGeneratedEvent::PesPacketReady { filter_id, pid, generation, packet } => {
-                    self.route_pes_packet_for_filter(origin, pid, filter_id, &packet, generation);
+                    if self.route_pes_packet_for_filter(origin, pid, filter_id, &packet, generation) {
+                        retained_payload = true;
+                    }
                 }
                 PipelineGeneratedEvent::DataReady { .. }
                 | PipelineGeneratedEvent::Section { .. }
@@ -1842,53 +2127,118 @@ impl DemuxHandle {
                 | PipelineGeneratedEvent::Record { .. } => {}
             }
         }
-        true
+        if retained_payload {
+            PacketPushOutcome::Consumed
+        } else {
+            PacketPushOutcome::DroppedNoDelivery
+        }
     }
 
-    pub fn inject_playback_payload(&mut self, dvr_id: i32, payload: &[u8]) -> bool {
+    pub fn inject_playback_payload_result(
+        &mut self,
+        dvr_id: i32,
+        payload: &[u8],
+    ) -> PlaybackInjectionOutcome {
         let Some(dvr) = self.dvrs.get(&dvr_id).cloned() else {
-            return false;
+            return PlaybackInjectionOutcome::InvalidState;
         };
         if !dvr.is_started_for_api() || dvr.direction != DemuxPathDirection::Playback {
-            return false;
+            return PlaybackInjectionOutcome::InvalidState;
         }
         if payload.len() % TS_PACKET_SIZE != 0 {
             if let Some(dvr) = self.dvrs.get_mut(&dvr_id) {
-                dvr.playback_malformed_bytes = dvr
-                    .playback_malformed_bytes
-                    .saturating_add(payload.len() as u64);
+                add_diagnostic_counter(
+                    &mut dvr.playback_malformed_bytes,
+                    payload.len() as u64,
+                    &mut dvr.diagnostic_counter_saturated,
+                );
             }
-            return false;
+            return PlaybackInjectionOutcome::Malformed;
         }
-        let mut pushed = 0usize;
+
+        let mut delivered_packets = 0usize;
+        let mut no_delivery_packets = 0usize;
         let mut malformed = 0u64;
+        let mut malformed_saturated = false;
+        let mut saw_packet = false;
         for chunk in payload.chunks_exact(TS_PACKET_SIZE) {
+            saw_packet = true;
             if chunk[0] != 0x47 {
-                malformed = malformed.saturating_add(TS_PACKET_SIZE as u64);
+                match malformed.checked_add(TS_PACKET_SIZE as u64) {
+                    Some(next) => malformed = next,
+                    None => {
+                        malformed = u64::MAX;
+                        malformed_saturated = true;
+                    }
+                }
                 continue;
             }
             let mut packet = [0u8; TS_PACKET_SIZE];
             packet.copy_from_slice(chunk);
-            if self.push_ts_packet_with_origin(&packet, TsInputOrigin::Playback) {
-                pushed += 1;
+            match self.push_ts_packet_with_origin(&packet, TsInputOrigin::Playback) {
+                PacketPushOutcome::Consumed => delivered_packets += 1,
+                PacketPushOutcome::DroppedNoDelivery
+                | PacketPushOutcome::DroppedDuplicate
+                | PacketPushOutcome::DroppedNoPayload => no_delivery_packets += 1,
+                PacketPushOutcome::DroppedMalformed
+                | PacketPushOutcome::DroppedTransportError => {
+                    match malformed.checked_add(TS_PACKET_SIZE as u64) {
+                    Some(next) => malformed = next,
+                    None => {
+                        malformed = u64::MAX;
+                        malformed_saturated = true;
+                    }
+                }
+                }
             }
         }
+
         if let Some(dvr) = self.dvrs.get_mut(&dvr_id) {
-            dvr.playback_malformed_bytes = dvr.playback_malformed_bytes.saturating_add(malformed);
-            dvr.playback_injected_packets =
-                dvr.playback_injected_packets.saturating_add(pushed as u64);
-            dvr.playback_injected_bytes = dvr
-                .playback_injected_bytes
-                .saturating_add((pushed * TS_PACKET_SIZE) as u64);
+            add_diagnostic_counter(
+                &mut dvr.playback_malformed_bytes,
+                malformed,
+                &mut dvr.diagnostic_counter_saturated,
+            );
+            if malformed_saturated {
+                dvr.diagnostic_counter_saturated = true;
+            }
+            add_diagnostic_counter(
+                &mut dvr.playback_injected_packets,
+                delivered_packets as u64,
+                &mut dvr.diagnostic_counter_saturated,
+            );
+            add_diagnostic_counter(
+                &mut dvr.playback_injected_bytes,
+                (delivered_packets * TS_PACKET_SIZE) as u64,
+                &mut dvr.diagnostic_counter_saturated,
+            );
         }
-        pushed > 0
+
+        if delivered_packets > 0 {
+            PlaybackInjectionOutcome::ConsumedWithDelivery
+        } else if no_delivery_packets > 0 || (saw_packet && malformed == 0) {
+            PlaybackInjectionOutcome::ConsumedNoDelivery
+        } else if malformed > 0 {
+            PlaybackInjectionOutcome::Malformed
+        } else {
+            PlaybackInjectionOutcome::ConsumedNoDelivery
+        }
+    }
+
+    pub fn inject_playback_payload(&mut self, dvr_id: i32, payload: &[u8]) -> bool {
+        self.inject_playback_payload_result(dvr_id, payload)
+            .is_legacy_success()
     }
 
     pub fn pop_filter_payload_entry(&mut self, filter_id: i32) -> Option<FilterPayload> {
         let payload = self.filter_queues.get_mut(&filter_id)?.pop_front();
         if let Some(ref entry) = payload {
             if let Some(filter) = self.filters.get_mut(&filter_id) {
-                filter.queued_bytes = filter.queued_bytes.saturating_sub(entry.len());
+                filter.queued_bytes = sub_queue_accounting(
+                    filter.queued_bytes,
+                    entry.len(),
+                    &mut filter.diagnostic_counter_saturated,
+                );
             }
         }
         payload
@@ -1897,6 +2247,19 @@ impl DemuxHandle {
     pub fn pop_filter_payload(&mut self, filter_id: i32) -> Option<Vec<u8>> {
         self.pop_filter_payload_entry(filter_id)
             .map(FilterPayload::into_bytes)
+    }
+
+    pub fn next_dvr_id_candidate(&self, direction: DemuxPathDirection) -> Result<i32, DemuxConfigError> {
+        if self.closed {
+            return Err(DemuxConfigError::InvalidState);
+        }
+        if self.dvrs.values().any(|dvr| dvr.direction == direction) {
+            return Err(DemuxConfigError::InvalidState);
+        }
+        self.next_dvr_id
+            .checked_add(1)
+            .ok_or(DemuxConfigError::IdExhausted)
+            .map(|_| self.next_dvr_id)
     }
 
     pub fn register_dvr(
@@ -1952,6 +2315,7 @@ impl DemuxHandle {
             dvr.pending_overflow = false;
             dvr.overflow_events = 0;
             dvr.drop_bytes = 0;
+            dvr.diagnostic_counter_saturated = false;
             dvr.section_drop_events = 0;
             dvr.stale_partial_discards = 0;
             dvr.playback_injected_packets = 0;
@@ -2042,6 +2406,9 @@ impl DemuxHandle {
         if !dvr.is_configured_for_api() {
             return Err(DemuxConfigError::InvalidState);
         }
+        if !dvr.attached_filter_ids.contains(&filter_id) {
+            return Err(DemuxConfigError::InvalidState);
+        }
         dvr.attached_filter_ids.retain(|id| *id != filter_id);
         Ok(())
     }
@@ -2112,6 +2479,7 @@ impl DemuxHandle {
                 dvr.pending_overflow = false;
                 dvr.overflow_events = 0;
                 dvr.drop_bytes = 0;
+                dvr.diagnostic_counter_saturated = false;
                 dvr.section_drop_events = 0;
                 dvr.stale_partial_discards = 0;
                 self.dvr_queues.insert(dvr_id, VecDeque::new());
@@ -2142,7 +2510,11 @@ impl DemuxHandle {
         let payload = self.dvr_queues.get_mut(&dvr_id)?.pop_front();
         if let Some(ref bytes) = payload {
             if let Some(dvr) = self.dvrs.get_mut(&dvr_id) {
-                dvr.queued_bytes = dvr.queued_bytes.saturating_sub(bytes.len());
+                dvr.queued_bytes = sub_queue_accounting(
+                    dvr.queued_bytes,
+                    bytes.len(),
+                    &mut dvr.diagnostic_counter_saturated,
+                );
             }
         }
         payload
@@ -2435,17 +2807,16 @@ impl DemuxHandle {
         filter_id: i32,
         pes: &PesPacket,
         generation: u64,
-    ) {
+    ) -> bool {
         let Some(filter) = self.filters.get(&filter_id).cloned() else {
-            return;
+            return false;
         };
         if !filter.is_started_for_api()
             || !self.filter_accepts_pes(&filter, pid, pes)
             || !self.pes_generation_allows_delivery(origin, filter_id, pid, generation)
         {
-            return;
+            return false;
         }
-        let _ = pes.pts_90khz;
         let kind = filter.config.as_ref().map(|c| c.kind.clone());
         let metadata = AvPayloadMetadata {
             pts_90khz: pes.pts_90khz,
@@ -2474,15 +2845,16 @@ impl DemuxHandle {
             Some(FilterConfigKind::Av { .. }) => FilterPayload::Bytes(pes.raw_bytes.clone()),
             _ => FilterPayload::Bytes(pes.raw_bytes.clone()),
         };
-        self.push_filter_payload(filter_id, payload.clone());
-        self.propagate_filter_output_with_origin_generation(
-            filter_id,
-            &payload,
-            origin,
-            Some(AssemblyGeneration::Pes { pid, generation }),
-        );
-        if let Some(filter_mut) = self.filters.get_mut(&filter_id) {
-            filter_mut.events_emitted += 1;
+        if self.push_filter_payload_for_delivery(filter_id, payload.clone()) {
+            self.propagate_filter_output_with_origin_generation(
+                filter_id,
+                &payload,
+                origin,
+                Some(AssemblyGeneration::Pes { pid, generation }),
+            );
+            true
+        } else {
+            false
         }
     }
 
@@ -2500,13 +2872,13 @@ impl DemuxHandle {
             })
     }
 
-    fn mirror_filter_payload_to_record_dvrs(&mut self, filter_id: i32, payload: &FilterPayload) {
+    fn mirror_filter_payload_to_record_dvrs(&mut self, filter_id: i32, payload: &FilterPayload) -> bool {
         let bytes = match payload {
             FilterPayload::TsPacket(bytes) | FilterPayload::RecordPacket(bytes) => bytes,
-            _ => return,
+            _ => return false,
         };
         if bytes.len() != maleicacid_tuner_hal_common::TS_PACKET_SIZE {
-            return;
+            return false;
         }
         let attached: Vec<i32> = self
             .dvrs
@@ -2518,9 +2890,14 @@ impl DemuxHandle {
             })
             .map(|(id, _)| *id)
             .collect();
+        let mut retained = false;
         for dvr_id in attached {
-            self.push_dvr_payload(dvr_id, bytes);
+            let outcome = self.push_dvr_payload(dvr_id, bytes);
+            if Self::payload_retained_after_push(&outcome) {
+                retained = true;
+            }
         }
+        retained
     }
 
     fn propagate_filter_output(&mut self, upstream_filter_id: i32, payload: &FilterPayload) {
@@ -2567,8 +2944,10 @@ impl DemuxHandle {
         upstream_filter_id: i32,
         payload: &FilterPayload,
         origin: TsInputOrigin,
-        generation: Option<AssemblyGeneration>,
+        _generation: Option<AssemblyGeneration>,
     ) {
+        // DESIGN_JA.md: SourceFilter 経由の再投入対象は raw TS packet だけに固定する。
+        // section/PES/AV payload の直接多段再配送は行わない。
         let source_is_ts_packet_source = self
             .filters
             .get(&upstream_filter_id)
@@ -2576,90 +2955,7 @@ impl DemuxHandle {
             .unwrap_or(false);
         if source_is_ts_packet_source {
             if let FilterPayload::TsPacket(packet) = payload {
-                self.route_ts_packet_to_downstreams(
-                    upstream_filter_id,
-                    packet,
-                    TsInputOrigin::SourceFilter { source_filter_id: upstream_filter_id },
-                );
-            }
-            return;
-        }
-
-        let mut stack = vec![upstream_filter_id];
-        let mut visited = BTreeSet::new();
-        while let Some(current_source) = stack.pop() {
-            if !visited.insert(current_source) {
-                continue;
-            }
-            let downstreams: Vec<i32> = self
-                .filters
-                .iter()
-                .filter(|(_, filter)| {
-                    filter.is_started_for_api() && filter.data_upstream_filter_id == Some(current_source)
-                })
-                .map(|(id, _)| *id)
-                .collect();
-            for downstream_id in downstreams {
-                let Some(downstream) = self.filters.get(&downstream_id).cloned() else {
-                    continue;
-                };
-                if !self.generation_allows_downstream_delivery(origin, downstream_id, generation) {
-                    continue;
-                }
-                if let (FilterOpenType::TsSection, FilterPayload::Bytes(bytes)) =
-                    (downstream.open_type, payload)
-                {
-                    let Some(tpid) = downstream.config.as_ref().map(|config| config.tpid) else {
-                        continue;
-                    };
-                    if !self.filter_accepts_section(downstream_id, tpid, bytes) {
-                        continue;
-                    }
-                    self.push_filter_payload(downstream_id, payload.clone());
-                    stack.push(downstream_id);
-                    if let Some(filter_mut) = self.filters.get_mut(&downstream_id) {
-                        filter_mut.events_emitted += 1;
-                    }
-                    continue;
-                }
-                if !self.payload_entry_matches_filter(&downstream, payload) {
-                    continue;
-                }
-                match payload {
-                    FilterPayload::TsPacket(packet) => {
-                        match downstream.open_type {
-                            FilterOpenType::TsRaw => {
-                                self.push_filter_payload(downstream_id, payload.clone());
-                                self.route_ts_packet_to_downstreams(
-                                    downstream_id,
-                                    packet,
-                                    TsInputOrigin::SourceFilter { source_filter_id: downstream_id },
-                                );
-                            }
-                            FilterOpenType::TsRecord => {
-                                let record_entry = FilterPayload::RecordPacket(packet.to_vec());
-                                if origin.allows_record_mirror() {
-                                    self.mirror_filter_payload_to_record_dvrs(downstream_id, &record_entry);
-                                }
-                                if self.record_filter_wants_index_events(downstream_id) {
-                                    self.push_filter_payload(downstream_id, record_entry);
-                                }
-                            }
-                            _ => {
-                                self.push_filter_payload(downstream_id, payload.clone());
-                            }
-                        }
-                    }
-                    _ => {
-                        if downstream.open_type != FilterOpenType::TsRecord {
-                            self.push_filter_payload(downstream_id, payload.clone());
-                            stack.push(downstream_id);
-                        }
-                    }
-                }
-                if let Some(filter_mut) = self.filters.get_mut(&downstream_id) {
-                    filter_mut.events_emitted += 1;
-                }
+                self.route_ts_packet_to_downstreams(upstream_filter_id, packet, origin);
             }
         }
     }
@@ -2668,13 +2964,9 @@ impl DemuxHandle {
         &mut self,
         upstream_filter_id: i32,
         packet: &[u8],
-        origin: TsInputOrigin,
+        _origin: TsInputOrigin,
     ) {
-        let packet_origin = match origin {
-            TsInputOrigin::SourceFilter { .. } => origin,
-            _ => TsInputOrigin::SourceFilter { source_filter_id: upstream_filter_id },
-        };
-        let Some(parsed) = self.packet_pipeline.accept_ts_packet(packet, packet_origin) else {
+        let Some(packet_origin) = self.source_filter_origin(upstream_filter_id) else {
             return;
         };
         let downstreams: Vec<i32> = self
@@ -2686,6 +2978,7 @@ impl DemuxHandle {
             .map(|(id, _)| *id)
             .collect();
         if downstreams.is_empty() {
+            // DESIGN_JA.md WP-02: downstream 未接続時は source origin の continuity / assembler を進めない。
             return;
         }
 
@@ -2707,32 +3000,37 @@ impl DemuxHandle {
                 })
             })
             .collect();
+        if downstream_views.is_empty() {
+            // 設定不完全な downstream だけの場合も source origin 状態を汚染しない。
+            return;
+        }
+
+        let Some(parsed) = self.packet_pipeline.accept_ts_packet(packet, packet_origin) else {
+            return;
+        };
         let pipeline_report = self.packet_pipeline.plan_and_assemble_ts_packet_report(&parsed, packet_origin, &downstream_views);
 
         for action in pipeline_report.delivery_actions.iter().cloned() {
             match action {
                 PipelineDeliveryAction::RawPacket { filter_id: downstream_id } => {
                     let packet_entry = FilterPayload::TsPacket(packet.to_vec());
-                    self.push_filter_payload(downstream_id, packet_entry.clone());
-                    self.route_ts_packet_to_downstreams(
-                        downstream_id,
-                        packet,
-                        TsInputOrigin::SourceFilter { source_filter_id: downstream_id },
-                    );
-                    if let Some(filter_mut) = self.filters.get_mut(&downstream_id) {
-                        filter_mut.events_emitted += 1;
+                    if self.push_filter_payload_for_delivery(downstream_id, packet_entry) {
+                        if let Some(origin) = self.source_filter_origin(downstream_id) {
+                            self.route_ts_packet_to_downstreams(downstream_id, packet, origin);
+                        }
                     }
                 }
                 PipelineDeliveryAction::RecordPacket { filter_id: downstream_id } => {
                     let record_entry = FilterPayload::RecordPacket(packet.to_vec());
-                    self.push_filter_payload(downstream_id, record_entry);
-                    if let Some(filter_mut) = self.filters.get_mut(&downstream_id) {
-                        filter_mut.events_emitted += 1;
+                    if !self.push_filter_payload_for_delivery(downstream_id, record_entry) {
+                        record_soft_demux_diagnostic(&SOURCE_FILTER_DOWNSTREAM_DROP_COUNT, "source_filter_downstream_record_drop");
                     }
                 }
                 PipelineDeliveryAction::DvrMirror { dvr_id: downstream_id } => {
                     let record_entry = FilterPayload::RecordPacket(packet.to_vec());
-                    self.mirror_filter_payload_to_record_dvrs(downstream_id, &record_entry);
+                    if !self.mirror_filter_payload_to_record_dvrs(downstream_id, &record_entry) {
+                        record_soft_demux_diagnostic(&SOURCE_FILTER_DOWNSTREAM_DROP_COUNT, "source_filter_downstream_dvr_mirror_drop");
+                    }
                 }
                 PipelineDeliveryAction::SectionPayload { .. }
                 | PipelineDeliveryAction::PesPayload { .. }
@@ -2742,21 +3040,10 @@ impl DemuxHandle {
 
         for generated in pipeline_report.generated_events.into_iter() {
             match generated {
-                PipelineGeneratedEvent::SectionPayloadReady { filter_id: downstream_id, pid, generation, bytes } => {
-                    if !self.section_generation_allows_delivery(packet_origin, downstream_id, pid, generation) {
-                        continue;
-                    }
-                    if !self.filter_accepts_section(downstream_id, pid, &bytes) {
-                        continue;
-                    }
-                    let section_entry = FilterPayload::Bytes(bytes.clone());
-                    self.push_filter_payload(downstream_id, section_entry);
-                    if let Some(filter_mut) = self.filters.get_mut(&downstream_id) {
-                        filter_mut.events_emitted += 1;
-                    }
-                }
-                PipelineGeneratedEvent::PesPacketReady { filter_id: downstream_id, pid, generation, packet } => {
-                    self.route_pes_packet_for_filter(packet_origin, pid, downstream_id, &packet, generation);
+                PipelineGeneratedEvent::SectionPayloadReady { .. }
+                | PipelineGeneratedEvent::PesPacketReady { .. } => {
+                    // WP-02: source filter linkage では raw TS packet の再投入だけを正式対応とし、
+                    // source origin 由来の section/PES payload を直接多段配送しない。
                 }
                 PipelineGeneratedEvent::DataReady { .. }
                 | PipelineGeneratedEvent::Section { .. }
@@ -2867,8 +3154,7 @@ impl DemuxHandle {
                     matches_pid.then_some(*filter_id)
                 })
                 .collect();
-            self.packet_pipeline.remove_section_for_filter_ids(None, &section_filter_ids_for_pid);
-            self.packet_pipeline.retain_generations_not_pid(pid, true, false);
+            self.packet_pipeline.remove_section_for_filter_ids_all_origins(&section_filter_ids_for_pid);
         }
         if !self.pid_has_started_pes_or_av_filter(pid) {
             let pes_filter_ids_for_pid: Vec<i32> = self
@@ -2885,8 +3171,7 @@ impl DemuxHandle {
                     matches_pid.then_some(*filter_id)
                 })
                 .collect();
-            self.packet_pipeline.remove_pes_for_filter_ids(None, &pes_filter_ids_for_pid);
-            self.packet_pipeline.retain_generations_not_pid(pid, false, true);
+            self.packet_pipeline.remove_pes_for_filter_ids_all_origins(&pes_filter_ids_for_pid);
         }
     }
 
@@ -2918,7 +3203,14 @@ impl DemuxHandle {
         else {
             return;
         };
-        self.packet_pipeline.mark_filter_flush_generation(filter_id, pid);
+        for origin in self.active_input_origins_for_filter(filter_id) {
+            self.packet_pipeline
+                .mark_filter_flush_generation_for_origin(filter_id, pid, origin);
+        }
+        self.packet_pipeline.clear_filter_state(filter_id);
+        if let Some(source_origin) = self.source_filter_origin(filter_id) {
+            self.packet_pipeline.reset_assembly_for_origin_pid(source_origin, pid);
+        }
     }
 
 
@@ -3022,6 +3314,23 @@ impl DemuxHandle {
     }
 
 
+    fn payload_retained_after_push(outcome: &QueuePushOutcome) -> bool {
+        outcome.accepted_entries > 0 && !outcome.dropped_new
+    }
+
+    fn push_filter_payload_for_delivery(&mut self, filter_id: i32, payload: FilterPayload) -> bool {
+        let outcome = self.push_filter_payload(filter_id, payload);
+        if Self::payload_retained_after_push(&outcome) {
+            if let Some(filter_mut) = self.filters.get_mut(&filter_id) {
+                filter_mut.events_emitted += 1;
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+
     fn push_filter_payload(&mut self, filter_id: i32, payload: FilterPayload) -> QueuePushOutcome {
         let payload_len = payload.len();
         let Some(filter) = self.filters.get(&filter_id) else {
@@ -3034,6 +3343,18 @@ impl DemuxHandle {
             .map(|f| f.open_type.is_media())
             .unwrap_or(false);
         let mut outcome = QueuePushOutcome::default();
+        if drop_old_policy && max_bytes > 0 && payload_len > max_bytes {
+            if let Some(filter) = self.filters.get_mut(&filter_id) {
+                filter.pending_overflow = true;
+                increment_diagnostic_counter(&mut filter.overflow_events, &mut filter.diagnostic_counter_saturated);
+                add_diagnostic_counter(&mut filter.drop_bytes, payload_len as u64, &mut filter.diagnostic_counter_saturated);
+            }
+            outcome.dropped_bytes = payload_len;
+            outcome.dropped_entries = 1;
+            outcome.dropped_new = true;
+            outcome.overflowed = true;
+            return outcome;
+        }
         if !drop_old_policy {
             let queued = filter.queued_bytes;
             let queued_entries = self
@@ -3046,18 +3367,23 @@ impl DemuxHandle {
             if is_record_metadata_event && queued_entries >= max_zero_payload_entries {
                 if let Some(filter) = self.filters.get_mut(&filter_id) {
                     filter.pending_overflow = true;
-                    filter.overflow_events = filter.overflow_events.saturating_add(1);
+                    increment_diagnostic_counter(&mut filter.overflow_events, &mut filter.diagnostic_counter_saturated);
                 }
                 outcome.dropped_entries = 1;
                 outcome.dropped_new = true;
                 outcome.overflowed = true;
                 return outcome;
             }
-            if max_bytes > 0 && queued.saturating_add(payload_len) > max_bytes {
+            let queued_overflowed = queued.checked_add(payload_len).is_none();
+            if max_bytes > 0 && queued.checked_add(payload_len).map_or(true, |next| next > max_bytes) {
                 if let Some(filter) = self.filters.get_mut(&filter_id) {
+                    if queued_overflowed {
+                        filter.diagnostic_counter_saturated = true;
+                        outcome.counter_saturated = true;
+                    }
                     filter.pending_overflow = true;
-                    filter.overflow_events = filter.overflow_events.saturating_add(1);
-                    filter.drop_bytes = filter.drop_bytes.saturating_add(payload_len as u64);
+                    increment_diagnostic_counter(&mut filter.overflow_events, &mut filter.diagnostic_counter_saturated);
+                    add_diagnostic_counter(&mut filter.drop_bytes, payload_len as u64, &mut filter.diagnostic_counter_saturated);
                 }
                 outcome.dropped_bytes = payload_len;
                 outcome.dropped_entries = 1;
@@ -3071,8 +3397,36 @@ impl DemuxHandle {
             .get(&filter_id)
             .map(|queue| queue.is_empty())
             .unwrap_or(true);
+        let Some(next_queued) = self
+            .filters
+            .get(&filter_id)
+            .and_then(|filter| {
+                let mut saturated = false;
+                let next = add_queue_accounting(filter.queued_bytes, payload_len, &mut saturated);
+                if saturated {
+                    // Queue accounting overflow is an input overflow, not a value to clamp and reuse.
+                    None
+                } else {
+                    next
+                }
+            })
+        else {
+            if let Some(filter) = self.filters.get_mut(&filter_id) {
+                filter.pending_overflow = true;
+                filter.diagnostic_counter_saturated = true;
+                increment_diagnostic_counter(&mut filter.overflow_events, &mut filter.diagnostic_counter_saturated);
+                add_diagnostic_counter(&mut filter.drop_bytes, payload_len as u64, &mut filter.diagnostic_counter_saturated);
+            }
+            outcome.dropped_bytes = payload_len;
+            outcome.dropped_entries = 1;
+            outcome.dropped_new = true;
+            outcome.overflowed = true;
+            outcome.counter_saturated = true;
+            return outcome;
+        };
         let queue = self.filter_queues.entry(filter_id).or_default();
         queue.push_back(payload);
+        outcome.accepted_entries = 1;
         outcome.accepted_bytes = payload_len;
         if let Some(filter) = self.filters.get_mut(&filter_id) {
             if queue_was_empty && filter.is_started_for_api() {
@@ -3082,27 +3436,41 @@ impl DemuxHandle {
                     .filter(|ms| *ms > 0)
                     .map(|ms| Instant::now() + Duration::from_millis(ms));
             }
-            filter.queued_bytes = filter.queued_bytes.saturating_add(payload_len);
+            filter.queued_bytes = next_queued;
             if max_bytes > 0 && drop_old_policy {
                 while filter.queued_bytes > max_bytes {
                     if let Some(removed) = queue.pop_front() {
                         let removed_len = removed.len();
-                        filter.queued_bytes = filter.queued_bytes.saturating_sub(removed_len);
-                        outcome.dropped_bytes = outcome.dropped_bytes.saturating_add(removed_len);
-                        outcome.dropped_entries = outcome.dropped_entries.saturating_add(1);
+                        filter.queued_bytes = sub_queue_accounting(
+                            filter.queued_bytes,
+                            removed_len,
+                            &mut filter.diagnostic_counter_saturated,
+                        );
+                        add_queue_outcome_counter(
+                            &mut outcome.dropped_bytes,
+                            removed_len,
+                            &mut outcome.counter_saturated,
+                        );
+                        add_queue_outcome_counter(
+                            &mut outcome.dropped_entries,
+                            1,
+                            &mut outcome.counter_saturated,
+                        );
                         outcome.dropped_old = true;
                     } else {
+                        filter.diagnostic_counter_saturated = true;
                         break;
                     }
                 }
             }
+            if outcome.counter_saturated {
+                filter.diagnostic_counter_saturated = true;
+            }
             if outcome.dropped_entries > 0 {
                 outcome.overflowed = true;
                 filter.pending_overflow = true;
-                filter.overflow_events = filter.overflow_events.saturating_add(1);
-                filter.drop_bytes = filter
-                    .drop_bytes
-                    .saturating_add(outcome.dropped_bytes as u64);
+                increment_diagnostic_counter(&mut filter.overflow_events, &mut filter.diagnostic_counter_saturated);
+                add_diagnostic_counter(&mut filter.drop_bytes, outcome.dropped_bytes as u64, &mut filter.diagnostic_counter_saturated);
             }
         }
         outcome
@@ -3114,17 +3482,26 @@ impl DemuxHandle {
         };
         let max_bytes = dvr.buffer_size.max(0) as usize;
         let mut outcome = QueuePushOutcome::default();
+        let dvr_queued_overflowed = self
+            .dvrs
+            .get(&dvr_id)
+            .map(|d| d.queued_bytes.checked_add(payload.len()).is_none())
+            .unwrap_or(false);
         if max_bytes > 0
             && self
                 .dvrs
                 .get(&dvr_id)
-                .map(|d| d.queued_bytes.saturating_add(payload.len()) > max_bytes)
+                .map(|d| d.queued_bytes.checked_add(payload.len()).map_or(true, |next| next > max_bytes))
                 .unwrap_or(false)
         {
             if let Some(dvr) = self.dvrs.get_mut(&dvr_id) {
+                if dvr_queued_overflowed {
+                    dvr.diagnostic_counter_saturated = true;
+                    outcome.counter_saturated = true;
+                }
                 dvr.pending_overflow = true;
-                dvr.overflow_events = dvr.overflow_events.saturating_add(1);
-                dvr.drop_bytes = dvr.drop_bytes.saturating_add(payload.len() as u64);
+                increment_diagnostic_counter(&mut dvr.overflow_events, &mut dvr.diagnostic_counter_saturated);
+                add_diagnostic_counter(&mut dvr.drop_bytes, payload.len() as u64, &mut dvr.diagnostic_counter_saturated);
             }
             outcome.dropped_bytes = payload.len();
             outcome.dropped_entries = 1;
@@ -3132,10 +3509,33 @@ impl DemuxHandle {
             outcome.overflowed = true;
             return outcome;
         }
+        let Some(next_queued) = self
+            .dvrs
+            .get(&dvr_id)
+            .and_then(|dvr| {
+                let mut saturated = false;
+                let next = add_queue_accounting(dvr.queued_bytes, payload.len(), &mut saturated);
+                if saturated { None } else { next }
+            })
+        else {
+            if let Some(dvr) = self.dvrs.get_mut(&dvr_id) {
+                dvr.pending_overflow = true;
+                dvr.diagnostic_counter_saturated = true;
+                increment_diagnostic_counter(&mut dvr.overflow_events, &mut dvr.diagnostic_counter_saturated);
+                add_diagnostic_counter(&mut dvr.drop_bytes, payload.len() as u64, &mut dvr.diagnostic_counter_saturated);
+            }
+            outcome.dropped_bytes = payload.len();
+            outcome.dropped_entries = 1;
+            outcome.dropped_new = true;
+            outcome.overflowed = true;
+            outcome.counter_saturated = true;
+            return outcome;
+        };
         let queue = self.dvr_queues.entry(dvr_id).or_default();
         queue.push_back(payload.to_vec());
+        outcome.accepted_entries = 1;
         if let Some(dvr) = self.dvrs.get_mut(&dvr_id) {
-            dvr.queued_bytes = dvr.queued_bytes.saturating_add(payload.len());
+            dvr.queued_bytes = next_queued;
             outcome.accepted_bytes = payload.len();
         }
         outcome
@@ -4337,6 +4737,8 @@ mod section_payload_cap_tests {
             sections: Vec::new(),
             oversized_section_drop_delta: 1,
             stale_partial_discard_delta: 0,
+            oversized_section_counter_saturated: false,
+            stale_partial_counter_saturated: false,
         };
 
         demux.apply_section_push_outcome(filter.filter_id, &outcome);
@@ -5336,6 +5738,26 @@ mod filter_dvr_state_contract_tests {
     }
 
     #[test]
+    fn record_dvr_detach_unattached_filter_is_invalid_state() {
+        let mut demux = DemuxHandle::new(0);
+        let dvr = demux
+            .register_dvr(DemuxPathDirection::Record, 4096)
+            .unwrap();
+        assert_eq!(demux.configure_dvr_with_summary_result(
+            dvr.dvr_id,
+            dvr_config(DemuxPathDirection::Record)
+        ), Ok(()));
+        let record = demux
+            .register_filter_result(1, FilterOpenType::TsRecord, 4096)
+            .expect("test setup should register filter");
+        assert!(demux.configure_filter_with_summary(record.filter_id, record_config(0x0100)));
+        assert_eq!(
+            demux.detach_filter_from_dvr_result(dvr.dvr_id, record.filter_id),
+            Err(DemuxConfigError::InvalidState)
+        );
+    }
+
+    #[test]
     fn dvr_start_enforces_direction_specific_prerequisites() {
         let mut demux = DemuxHandle::new(0);
         assert_eq!(demux.start_dvr_result(999), Err(DemuxConfigError::NotFound));
@@ -6136,13 +6558,13 @@ mod filter_dvr_state_contract_tests {
             assert!(can_link_filter_open_types(FilterOpenType::TsRaw, *destination));
             assert!(!can_link_filter_open_types(FilterOpenType::TsRecord, *destination));
         }
-        assert!(can_link_filter_open_types(
+        assert!(!can_link_filter_open_types(
             FilterOpenType::TsSection,
             FilterOpenType::TsSection
         ));
-        assert!(can_link_filter_open_types(FilterOpenType::TsPes, FilterOpenType::TsPes));
-        assert!(can_link_filter_open_types(FilterOpenType::TsPes, FilterOpenType::TsVideo));
-        assert!(can_link_filter_open_types(FilterOpenType::TsPes, FilterOpenType::TsAudio));
+        assert!(!can_link_filter_open_types(FilterOpenType::TsPes, FilterOpenType::TsPes));
+        assert!(!can_link_filter_open_types(FilterOpenType::TsPes, FilterOpenType::TsVideo));
+        assert!(!can_link_filter_open_types(FilterOpenType::TsPes, FilterOpenType::TsAudio));
         assert!(!can_link_filter_open_types(FilterOpenType::TsAudio, FilterOpenType::TsAudio));
         assert!(!can_link_filter_open_types(FilterOpenType::TsVideo, FilterOpenType::TsVideo));
         assert!(!can_link_filter_open_types(FilterOpenType::TsSection, FilterOpenType::TsRaw));
@@ -6168,7 +6590,7 @@ mod filter_dvr_state_contract_tests {
             .expect("test setup should register filter");
         assert_eq!(
             demux.set_filter_data_source_result(destination.filter_id, source.filter_id),
-            Err(DemuxConfigError::InvalidKind)
+            Err(DemuxConfigError::Unavailable)
         );
         assert_eq!(
             demux
@@ -6268,7 +6690,41 @@ mod filter_dvr_state_contract_tests {
     }
 
     #[test]
-    fn playback_residual_drops_malformed_full_packet_with_diagnostic() {
+    fn playback_no_payload_packet_not_counted_consumed() {
+        let mut demux = DemuxHandle::new(0);
+        let dvr = demux
+            .register_dvr(DemuxPathDirection::Playback, TEST_TS_PACKET_BUFFER_SIZE)
+            .unwrap();
+        assert_eq!(demux.configure_dvr_with_summary_result(dvr.dvr_id, dvr_config(DemuxPathDirection::Playback)), Ok(()));
+        assert_eq!(demux.start_dvr_result(dvr.dvr_id), Ok(()));
+        let mut packet = [0xffu8; TS_PACKET_SIZE];
+        packet[0] = 0x47;
+        packet[1] = 0x01;
+        packet[2] = 0x00;
+        packet[3] = 0x20; // adaptation only, no payload
+        packet[4] = 183;
+        assert!(!demux.inject_playback_payload(dvr.dvr_id, &packet));
+        assert_eq!(demux.playback_diagnostics(dvr.dvr_id), Some((0, 0, 0)));
+    }
+
+    #[test]
+    fn playback_duplicate_packet_counted_dropped() {
+        let mut demux = DemuxHandle::new(0);
+        let dvr = demux
+            .register_dvr(DemuxPathDirection::Playback, TEST_TS_PACKET_BUFFER_SIZE)
+            .unwrap();
+        assert_eq!(demux.configure_dvr_with_summary_result(dvr.dvr_id, dvr_config(DemuxPathDirection::Playback)), Ok(()));
+        assert_eq!(demux.start_dvr_result(dvr.dvr_id), Ok(()));
+        let packet = ts_packet(0x0100, 0x45);
+        let mut data = Vec::new();
+        data.extend_from_slice(&packet);
+        data.extend_from_slice(&packet);
+        assert!(demux.inject_playback_payload(dvr.dvr_id, &data));
+        assert_eq!(demux.playback_diagnostics(dvr.dvr_id), Some((1, TS_PACKET_SIZE as u64, 0)));
+    }
+
+    #[test]
+    fn playback_malformed_packet_not_counted_consumed() {
         let mut demux = DemuxHandle::new(0);
         let dvr = demux
             .register_dvr(DemuxPathDirection::Playback, TEST_TS_PACKET_BUFFER_SIZE)
@@ -6276,7 +6732,44 @@ mod filter_dvr_state_contract_tests {
         assert_eq!(demux.configure_dvr_with_summary_result(dvr.dvr_id, dvr_config(DemuxPathDirection::Playback)), Ok(()));
         assert_eq!(demux.start_dvr_result(dvr.dvr_id), Ok(()));
         let malformed = [0u8; TS_PACKET_SIZE];
-        assert!(demux.inject_playback_payload(dvr.dvr_id, &malformed));
+        assert!(!demux.inject_playback_payload(dvr.dvr_id, &malformed));
+        assert_eq!(
+            demux.playback_diagnostics(dvr.dvr_id),
+            Some((0, 0, TS_PACKET_SIZE as u64))
+        );
+    }
+
+    #[test]
+    fn playback_valid_packet_without_delivery_is_nonfatal_no_delivery() {
+        let mut demux = DemuxHandle::new(0);
+        let dvr = demux
+            .register_dvr(DemuxPathDirection::Playback, TEST_TS_PACKET_BUFFER_SIZE)
+            .unwrap();
+        assert_eq!(demux.configure_dvr_with_summary_result(dvr.dvr_id, dvr_config(DemuxPathDirection::Playback)), Ok(()));
+        assert_eq!(demux.start_dvr_result(dvr.dvr_id), Ok(()));
+
+        let packet = ts_packet(0x0100, 0x45);
+        assert_eq!(
+            demux.inject_playback_payload_result(dvr.dvr_id, &packet),
+            PlaybackInjectionOutcome::ConsumedNoDelivery
+        );
+        assert_eq!(demux.playback_diagnostics(dvr.dvr_id), Some((0, 0, 0)));
+    }
+
+    #[test]
+    fn playback_malformed_packet_is_nonfatal_malformed_result() {
+        let mut demux = DemuxHandle::new(0);
+        let dvr = demux
+            .register_dvr(DemuxPathDirection::Playback, TEST_TS_PACKET_BUFFER_SIZE)
+            .unwrap();
+        assert_eq!(demux.configure_dvr_with_summary_result(dvr.dvr_id, dvr_config(DemuxPathDirection::Playback)), Ok(()));
+        assert_eq!(demux.start_dvr_result(dvr.dvr_id), Ok(()));
+
+        let malformed = [0u8; TS_PACKET_SIZE];
+        assert_eq!(
+            demux.inject_playback_payload_result(dvr.dvr_id, &malformed),
+            PlaybackInjectionOutcome::Malformed
+        );
         assert_eq!(
             demux.playback_diagnostics(dvr.dvr_id),
             Some((0, 0, TS_PACKET_SIZE as u64))
@@ -6296,7 +6789,7 @@ mod filter_dvr_state_contract_tests {
         assert!(demux.configure_filter_with_summary(destination.filter_id, section_config(0x0124)));
         assert_eq!(
             demux.set_filter_data_source_result(destination.filter_id, source.filter_id),
-            Err(DemuxConfigError::InvalidKind)
+            Err(DemuxConfigError::Unavailable)
         );
         assert_eq!(
             demux
@@ -6321,7 +6814,7 @@ mod filter_dvr_state_contract_tests {
         assert!(demux.configure_filter_with_summary(destination.filter_id, section_config(pid)));
         assert_eq!(
             demux.set_filter_data_source_result(destination.filter_id, source.filter_id),
-            Err(DemuxConfigError::InvalidKind)
+            Err(DemuxConfigError::Unavailable)
         );
         assert_eq!(
             demux
@@ -6346,7 +6839,7 @@ mod filter_dvr_state_contract_tests {
         assert!(demux.configure_filter_with_summary(destination.filter_id, pes_config(pid)));
         assert_eq!(
             demux.set_filter_data_source_result(destination.filter_id, source.filter_id),
-            Err(DemuxConfigError::InvalidKind)
+            Err(DemuxConfigError::Unavailable)
         );
         assert_eq!(
             demux
@@ -6393,22 +6886,22 @@ mod filter_dvr_state_contract_tests {
     }
 
     #[test]
-    fn set_filter_data_source_allows_nonraw_video_pes_to_video_av() {
+    fn set_filter_data_source_rejects_nonraw_video_pes_to_video_av() {
         let pid = 0x0123;
         let mut demux = DemuxHandle::new(0);
         let (source, destination) = configured_pes_to_video_av_pair(&mut demux, pid, 0xe0, false, true);
         assert_eq!(
             demux.set_filter_data_source_result(destination, source),
-            Ok(())
+            Err(DemuxConfigError::Unavailable)
         );
         assert_eq!(
             demux.filter_record(destination).unwrap().data_upstream_filter_id,
-            Some(source)
+            None
         );
     }
 
     #[test]
-    fn set_filter_data_source_allows_pes_to_pes_when_raw_mode_matches() {
+    fn set_filter_data_source_rejects_pes_to_pes_even_when_raw_mode_matches() {
         let pid = 0x0123;
         let mut demux = DemuxHandle::new(0);
         let raw_source = demux
@@ -6421,7 +6914,7 @@ mod filter_dvr_state_contract_tests {
         assert!(demux.configure_filter_with_summary(raw_destination.filter_id, pes_config_with(pid, 0xe0, true)));
         assert_eq!(
             demux.set_filter_data_source_result(raw_destination.filter_id, raw_source.filter_id),
-            Ok(())
+            Err(DemuxConfigError::Unavailable)
         );
 
         let nonraw_source = demux
@@ -6434,7 +6927,7 @@ mod filter_dvr_state_contract_tests {
         assert!(demux.configure_filter_with_summary(nonraw_destination.filter_id, pes_config_with(pid, -1, false)));
         assert_eq!(
             demux.set_filter_data_source_result(nonraw_destination.filter_id, nonraw_source.filter_id),
-            Ok(())
+            Err(DemuxConfigError::Unavailable)
         );
 
         let wildcard_source = demux
@@ -6447,7 +6940,7 @@ mod filter_dvr_state_contract_tests {
         assert!(demux.configure_filter_with_summary(explicit_destination.filter_id, pes_config_with(pid, 0xe0, false)));
         assert_eq!(
             demux.set_filter_data_source_result(explicit_destination.filter_id, wildcard_source.filter_id),
-            Ok(())
+            Err(DemuxConfigError::Unavailable)
         );
     }
 
@@ -6465,7 +6958,7 @@ mod filter_dvr_state_contract_tests {
         assert!(demux.configure_filter_with_summary(destination.filter_id, pes_config_with(pid, 0xe0, false)));
         assert_eq!(
             demux.set_filter_data_source_result(destination.filter_id, source.filter_id),
-            Err(DemuxConfigError::InvalidKind)
+            Err(DemuxConfigError::Unavailable)
         );
         assert_eq!(
             demux.filter_record(destination.filter_id).unwrap().data_upstream_filter_id,
@@ -6487,7 +6980,7 @@ mod filter_dvr_state_contract_tests {
         assert!(demux.configure_filter_with_summary(destination.filter_id, pes_config_with(pid, 0xc0, false)));
         assert_eq!(
             demux.set_filter_data_source_result(destination.filter_id, source.filter_id),
-            Err(DemuxConfigError::InvalidKind)
+            Err(DemuxConfigError::Unavailable)
         );
         assert_eq!(
             demux.filter_record(destination.filter_id).unwrap().data_upstream_filter_id,
@@ -6526,7 +7019,7 @@ mod filter_dvr_state_contract_tests {
     }
 
     #[test]
-    fn set_filter_data_source_allows_nonraw_audio_pes_to_audio_av_without_configure_av_stream_type() {
+    fn set_filter_data_source_rejects_nonraw_audio_pes_to_audio_av_without_configure_av_stream_type() {
         let pid = 0x0123;
         let mut demux = DemuxHandle::new(0);
         let source = demux
@@ -6540,11 +7033,11 @@ mod filter_dvr_state_contract_tests {
         assert_eq!(demux.filter_record(destination.filter_id).unwrap().av_stream_kind, None);
         assert_eq!(
             demux.set_filter_data_source_result(destination.filter_id, source.filter_id),
-            Ok(())
+            Err(DemuxConfigError::Unavailable)
         );
         assert_eq!(
             demux.filter_record(destination.filter_id).unwrap().data_upstream_filter_id,
-            Some(source.filter_id)
+            None
         );
     }
 
@@ -6555,7 +7048,7 @@ mod filter_dvr_state_contract_tests {
         let (source, destination) = configured_pes_to_video_av_pair(&mut demux, pid, 0xe0, true, true);
         assert_eq!(
             demux.set_filter_data_source_result(destination, source),
-            Err(DemuxConfigError::InvalidKind)
+            Err(DemuxConfigError::Unavailable)
         );
         assert_eq!(
             demux.filter_record(destination).unwrap().data_upstream_filter_id,
@@ -6570,7 +7063,7 @@ mod filter_dvr_state_contract_tests {
         let (source, destination) = configured_pes_to_video_av_pair(&mut demux, pid, -1, false, true);
         assert_eq!(
             demux.set_filter_data_source_result(destination, source),
-            Err(DemuxConfigError::InvalidKind)
+            Err(DemuxConfigError::Unavailable)
         );
         assert_eq!(
             demux.filter_record(destination).unwrap().data_upstream_filter_id,
@@ -6585,7 +7078,7 @@ mod filter_dvr_state_contract_tests {
         let (source, destination) = configured_pes_to_video_av_pair(&mut demux, pid, 0xc0, false, true);
         assert_eq!(
             demux.set_filter_data_source_result(destination, source),
-            Err(DemuxConfigError::InvalidKind)
+            Err(DemuxConfigError::Unavailable)
         );
         assert_eq!(
             demux.filter_record(destination).unwrap().data_upstream_filter_id,
@@ -6594,16 +7087,18 @@ mod filter_dvr_state_contract_tests {
     }
 
     #[test]
-    fn set_filter_data_source_allows_pes_to_av_before_configure_av_stream_type_and_start_accepts() {
+    fn set_filter_data_source_rejects_pes_to_av_before_configure_av_stream_type() {
         let pid = 0x0123;
         let mut demux = DemuxHandle::new(0);
         let (source, destination) = configured_pes_to_video_av_pair(&mut demux, pid, 0xe0, false, false);
-        assert_eq!(demux.set_filter_data_source_result(destination, source), Ok(()));
+        assert_eq!(
+            demux.set_filter_data_source_result(destination, source),
+            Err(DemuxConfigError::Unavailable)
+        );
         assert_eq!(
             demux.filter_record(destination).unwrap().data_upstream_filter_id,
-            Some(source)
+            None
         );
-        assert_eq!(demux.start_filter_result(destination), Ok(()));
     }
 
     #[test]
@@ -6657,7 +7152,7 @@ mod filter_dvr_state_contract_tests {
             .register_filter_result(1, FilterOpenType::TsRaw, TEST_TS_PACKET_BUFFER_SIZE)
             .expect("test setup should register filter");
         let destination = demux
-            .register_filter_result(1, FilterOpenType::TsSection, TEST_TS_PACKET_BUFFER_SIZE)
+            .register_filter_result(1, FilterOpenType::TsRaw, TEST_TS_PACKET_BUFFER_SIZE)
             .expect("test setup should register filter");
         assert_eq!(
             demux.set_filter_data_source_result(source.filter_id, source.filter_id),
@@ -6668,7 +7163,7 @@ mod filter_dvr_state_contract_tests {
             Err(DemuxConfigError::InvalidState)
         );
         assert!(demux.configure_filter_with_summary(source.filter_id, raw_config(0x0123)));
-        assert!(demux.configure_filter_with_summary(destination.filter_id, section_config(0x0123)));
+        assert!(demux.configure_filter_with_summary(destination.filter_id, raw_config(0x0123)));
         assert_eq!(
             demux.set_filter_data_source_result(destination.filter_id, source.filter_id),
             Ok(())
@@ -6734,7 +7229,7 @@ mod filter_dvr_state_contract_tests {
             .set_lifecycle(FilterLifecycleState::FailedClosed);
         assert_eq!(
             demux.set_filter_data_source_result(destination.filter_id, source.filter_id),
-            Err(DemuxConfigError::InvalidKind)
+            Err(DemuxConfigError::InvalidState)
         );
         assert_eq!(demux.filter_record(destination.filter_id).unwrap().data_upstream_filter_id, None);
     }
@@ -7178,5 +7673,279 @@ mod raw_section_contract_tests {
         assert!(demux.start_filter(filter.filter_id));
         assert!(demux.push_ts_packet(&ts_payload_packet(pid, true, &[0x01, 0x02])));
         assert!(demux.drain_filter_payloads(filter.filter_id).is_empty());
+    }
+}
+
+
+#[cfg(test)]
+mod r50ea26_source_filter_boundary_tests {
+    use super::*;
+
+    fn raw_config(pid: i32) -> FilterConfig {
+        FilterConfig {
+            tpid: pid,
+            main_type_bits: 1,
+            sub_type_hint: 0,
+            kind: FilterConfigKind::Noinit,
+        }
+    }
+
+    fn non_repeat_section_config(pid: i32) -> FilterConfig {
+        FilterConfig {
+            tpid: pid,
+            main_type_bits: 1,
+            sub_type_hint: 0,
+            kind: FilterConfigKind::Section {
+                check_crc: false,
+                repeat: false,
+                raw: false,
+                length_field_bits: 12,
+                condition_kind: SectionConditionKind::SectionBits,
+                condition: SectionCondition::default(),
+            },
+        }
+    }
+
+    fn pes_config(pid: i32, stream_id: i32, raw: bool) -> FilterConfig {
+        FilterConfig {
+            tpid: pid,
+            main_type_bits: 1,
+            sub_type_hint: 0,
+            kind: FilterConfigKind::PesData { stream_id, raw },
+        }
+    }
+
+    fn versioned_section(version: u8, section_number: u8) -> Vec<u8> {
+        vec![
+            0x00,
+            0xb0,
+            0x05,
+            0x00,
+            0x01,
+            0xc0 | ((version & 0x1f) << 1) | 0x01,
+            section_number,
+            section_number,
+        ]
+    }
+
+    fn ts_payload_packet(pid: u16, cc: u8, payload_unit_start: bool, payload: &[u8]) -> [u8; TS_PACKET_SIZE] {
+        let mut packet = [0xffu8; TS_PACKET_SIZE];
+        packet[0] = 0x47;
+        packet[1] = ((pid >> 8) as u8) & 0x1f;
+        if payload_unit_start {
+            packet[1] |= 0x40;
+        }
+        packet[2] = pid as u8;
+        packet[3] = 0x10 | (cc & 0x0f);
+        packet[4..4 + payload.len()].copy_from_slice(payload);
+        packet
+    }
+
+    fn section_packet(pid: u16, section: &[u8]) -> [u8; TS_PACKET_SIZE] {
+        ts_payload_packet(pid, 0, true, section)
+    }
+
+    #[test]
+    fn set_data_source_rejects_section_payload_direct_chain_as_unavailable() {
+        let mut demux = DemuxHandle::new(1);
+        let source = demux.register_filter_result(1, FilterOpenType::TsSection, 4096).unwrap();
+        let destination = demux.register_filter_result(2, FilterOpenType::TsSection, 4096).unwrap();
+        assert!(demux.configure_filter_with_summary(source.filter_id, non_repeat_section_config(0x0100)));
+        assert!(demux.configure_filter_with_summary(destination.filter_id, non_repeat_section_config(0x0100)));
+        assert_eq!(
+            demux.set_filter_data_source_result(destination.filter_id, source.filter_id),
+            Err(DemuxConfigError::Unavailable)
+        );
+    }
+
+    #[test]
+    fn set_data_source_rejects_pes_payload_direct_chain_as_unavailable() {
+        let mut demux = DemuxHandle::new(1);
+        let source = demux.register_filter_result(1, FilterOpenType::TsPes, 4096).unwrap();
+        let destination = demux.register_filter_result(2, FilterOpenType::TsPes, 4096).unwrap();
+        assert!(demux.configure_filter_with_summary(source.filter_id, pes_config(0x0100, 0xe0, false)));
+        assert!(demux.configure_filter_with_summary(destination.filter_id, pes_config(0x0100, 0xe0, false)));
+        assert_eq!(
+            demux.set_filter_data_source_result(destination.filter_id, source.filter_id),
+            Err(DemuxConfigError::Unavailable)
+        );
+    }
+
+    #[test]
+    fn source_filter_origin_generation_separates_new_source_epoch() {
+        let mut demux = DemuxHandle::new(1);
+        let source = demux.register_filter_result(1, FilterOpenType::TsRaw, 4096).unwrap();
+        let downstream = demux.register_filter_result(2, FilterOpenType::TsRaw, 4096).unwrap();
+        assert!(demux.configure_filter_with_summary(source.filter_id, raw_config(0x0100)));
+        assert!(demux.configure_filter_with_summary(downstream.filter_id, raw_config(0x0100)));
+        assert!(demux.start_filter(source.filter_id));
+        assert!(demux.set_filter_data_source(downstream.filter_id, source.filter_id));
+        assert!(demux.start_filter(downstream.filter_id));
+
+        assert!(demux.push_ts_packet(&ts_payload_packet(0x0100, 0, true, &[0x01, 0x02])));
+        assert_eq!(demux.current_filter_queue_entries(downstream.filter_id), Some(1));
+        assert!(demux.flush_filter(source.filter_id));
+        assert!(demux.push_ts_packet(&ts_payload_packet(0x0100, 0, true, &[0x03, 0x04])));
+        assert_eq!(demux.current_filter_queue_entries(downstream.filter_id), Some(2));
+    }
+}
+
+#[cfg(test)]
+mod r50ea48_source_filter_state_ownership_tests {
+    use super::*;
+
+    fn raw_config(pid: i32) -> FilterConfig {
+        FilterConfig {
+            tpid: pid,
+            main_type_bits: 1,
+            sub_type_hint: 0,
+            kind: FilterConfigKind::Noinit,
+        }
+    }
+
+    fn record_config(pid: i32) -> FilterConfig {
+        FilterConfig {
+            tpid: pid,
+            main_type_bits: 1,
+            sub_type_hint: 0,
+            kind: FilterConfigKind::Record {
+                ts_index_mask: 0,
+                sc_index_type: 0,
+                sc_index_mask_bits: 0,
+            },
+        }
+    }
+
+    fn section_config(pid: i32) -> FilterConfig {
+        FilterConfig {
+            tpid: pid,
+            main_type_bits: 1,
+            sub_type_hint: 0,
+            kind: FilterConfigKind::Section {
+                check_crc: false,
+                repeat: false,
+                raw: false,
+                length_field_bits: 12,
+                condition_kind: SectionConditionKind::SectionBits,
+                condition: SectionCondition::default(),
+            },
+        }
+    }
+
+    fn ts_packet(pid: u16, cc: u8, pusi: bool, payload: &[u8]) -> [u8; TS_PACKET_SIZE] {
+        let mut packet = [0xffu8; TS_PACKET_SIZE];
+        packet[0] = 0x47;
+        packet[1] = ((pid >> 8) as u8) & 0x1f;
+        if pusi {
+            packet[1] |= 0x40;
+        }
+        packet[2] = pid as u8;
+        packet[3] = 0x10 | (cc & 0x0f);
+        packet[4..4 + payload.len()].copy_from_slice(payload);
+        packet
+    }
+
+    #[test]
+    fn source_filter_without_downstream_does_not_advance_origin_continuity() {
+        let pid = 0x0123;
+        let mut demux = DemuxHandle::new(1);
+        let source = demux.register_filter_result(1, FilterOpenType::TsRaw, 4096).unwrap();
+        let downstream = demux.register_filter_result(1, FilterOpenType::TsRaw, 4096).unwrap();
+        assert!(demux.configure_filter_with_summary(source.filter_id, raw_config(pid)));
+        assert!(demux.configure_filter_with_summary(downstream.filter_id, raw_config(pid)));
+        assert!(demux.start_filter(source.filter_id));
+
+        let first = ts_packet(pid as u16, 0, true, &[0x01, 0x02]);
+        demux.propagate_filter_output(source.filter_id, &FilterPayload::TsPacket(first.to_vec()));
+        assert!(demux.drain_filter_payloads(downstream.filter_id).is_empty());
+
+        assert_eq!(demux.set_filter_data_source_result(downstream.filter_id, source.filter_id), Ok(()));
+        assert!(demux.start_filter(downstream.filter_id));
+        let second = ts_packet(pid as u16, 0, true, &[0x03, 0x04]);
+        demux.propagate_filter_output(source.filter_id, &FilterPayload::TsPacket(second.to_vec()));
+        assert_eq!(demux.current_filter_queue_entries(downstream.filter_id), Some(1));
+    }
+
+    #[test]
+    fn source_filter_raw_to_record_is_supported() {
+        let pid = 0x0123;
+        let mut demux = DemuxHandle::new(1);
+        let source = demux.register_filter_result(1, FilterOpenType::TsRaw, 4096).unwrap();
+        let record = demux.register_filter_result(1, FilterOpenType::TsRecord, 4096).unwrap();
+        assert!(demux.configure_filter_with_summary(source.filter_id, raw_config(pid)));
+        assert!(demux.configure_filter_with_summary(record.filter_id, record_config(pid)));
+        assert_eq!(demux.set_filter_data_source_result(record.filter_id, source.filter_id), Ok(()));
+        assert!(demux.start_filter(source.filter_id));
+        assert!(demux.start_filter(record.filter_id));
+        assert!(demux.push_ts_packet(&ts_packet(pid as u16, 0, true, &[0x05, 0x06])));
+        assert_eq!(demux.current_filter_queue_entries(record.filter_id), Some(1));
+    }
+
+    #[test]
+    fn source_filter_raw_to_section_is_unavailable() {
+        let pid = 0x0123;
+        let mut demux = DemuxHandle::new(1);
+        let source = demux.register_filter_result(1, FilterOpenType::TsRaw, 4096).unwrap();
+        let section = demux.register_filter_result(1, FilterOpenType::TsSection, 4096).unwrap();
+        assert!(demux.configure_filter_with_summary(source.filter_id, raw_config(pid)));
+        assert!(demux.configure_filter_with_summary(section.filter_id, section_config(pid)));
+        assert_eq!(
+            demux.set_filter_data_source_result(section.filter_id, source.filter_id),
+            Err(DemuxConfigError::Unavailable)
+        );
+        assert_eq!(demux.filter_record(section.filter_id).unwrap().data_upstream_filter_id, None);
+    }
+
+    #[test]
+    fn source_filter_flush_preserves_record_downstream_and_resets_origin_state() {
+        let pid = 0x0123;
+        let mut demux = DemuxHandle::new(1);
+        let source = demux.register_filter_result(1, FilterOpenType::TsRaw, 4096).unwrap();
+        let record = demux.register_filter_result(1, FilterOpenType::TsRecord, 4096).unwrap();
+        assert!(demux.configure_filter_with_summary(source.filter_id, raw_config(pid)));
+        assert!(demux.configure_filter_with_summary(record.filter_id, record_config(pid)));
+        assert_eq!(demux.set_filter_data_source_result(record.filter_id, source.filter_id), Ok(()));
+        assert!(demux.start_filter(source.filter_id));
+        assert!(demux.start_filter(record.filter_id));
+
+        let first = ts_packet(pid as u16, 0, true, &[0x01, 0x02]);
+        demux.propagate_filter_output(source.filter_id, &FilterPayload::TsPacket(first.to_vec()));
+        assert_eq!(demux.current_filter_queue_entries(record.filter_id), Some(1));
+
+        assert!(demux.flush_filter(source.filter_id));
+        assert_eq!(demux.filter_record(record.filter_id).unwrap().data_upstream_filter_id, Some(source.filter_id));
+
+        // source flush advances the SourceFilter origin generation and resets the old origin state.
+        // The same continuity counter must therefore be accepted in the new source epoch.
+        let second = ts_packet(pid as u16, 0, true, &[0x03, 0x04]);
+        demux.propagate_filter_output(source.filter_id, &FilterPayload::TsPacket(second.to_vec()));
+        assert_eq!(demux.current_filter_queue_entries(record.filter_id), Some(2));
+    }
+
+    #[test]
+    fn source_filter_reconfigure_disconnects_downstream() {
+        let pid = 0x0123;
+        let mut demux = DemuxHandle::new(1);
+        let source = demux.register_filter_result(1, FilterOpenType::TsRaw, 4096).unwrap();
+        let downstream = demux.register_filter_result(1, FilterOpenType::TsRaw, 4096).unwrap();
+        assert!(demux.configure_filter_with_summary(source.filter_id, raw_config(pid)));
+        assert!(demux.configure_filter_with_summary(downstream.filter_id, raw_config(pid)));
+        assert_eq!(demux.set_filter_data_source_result(downstream.filter_id, source.filter_id), Ok(()));
+        assert_eq!(demux.filter_record(downstream.filter_id).unwrap().data_upstream_filter_id, Some(source.filter_id));
+        assert!(demux.configure_filter_with_summary(source.filter_id, raw_config(pid + 1)));
+        assert_eq!(demux.filter_record(downstream.filter_id).unwrap().data_upstream_filter_id, None);
+    }
+
+    #[test]
+    fn source_filter_close_disconnects_downstream() {
+        let pid = 0x0123;
+        let mut demux = DemuxHandle::new(1);
+        let source = demux.register_filter_result(1, FilterOpenType::TsRaw, 4096).unwrap();
+        let downstream = demux.register_filter_result(1, FilterOpenType::TsRaw, 4096).unwrap();
+        assert!(demux.configure_filter_with_summary(source.filter_id, raw_config(pid)));
+        assert!(demux.configure_filter_with_summary(downstream.filter_id, raw_config(pid)));
+        assert_eq!(demux.set_filter_data_source_result(downstream.filter_id, source.filter_id), Ok(()));
+        assert!(demux.unregister_filter(source.filter_id).is_some());
+        assert_eq!(demux.filter_record(downstream.filter_id).unwrap().data_upstream_filter_id, None);
     }
 }

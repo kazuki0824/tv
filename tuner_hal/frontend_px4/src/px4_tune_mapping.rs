@@ -304,7 +304,7 @@ pub fn px4_scan_requests(base: &FrontendTuneRequest) -> Result<Vec<FrontendTuneR
     if base.end_frequency.unwrap_or(base.frequency) != base.frequency {
         return Err(HalError::Unsupported("px4バックエンドは日本向けscan表を生成しません。TISが明示選局候補を渡す必要があります"));
     }
-    let _ = map_tune_request_to_px4(base)?;
+    map_tune_request_to_px4(base)?;
     Ok(vec![base.clone()])
 }
 

@@ -122,6 +122,7 @@ pub struct CloseCleanupStepResults {
 }
 
 pub type DvrCleanupStepResults = CloseCleanupStepResults;
+pub type FilterCleanupStepResults = CloseCleanupStepResults;
 
 #[derive(Debug)]
 pub struct CloseCleanupOutcome<E> {
@@ -136,6 +137,7 @@ impl<E> CloseCleanupOutcome<E> {
     }
 }
 pub type DvrCleanupOutcome<E> = CloseCleanupOutcome<E>;
+pub type FilterCleanupOutcome<E> = CloseCleanupOutcome<E>;
 
 #[cfg(test)]
 mod tests {

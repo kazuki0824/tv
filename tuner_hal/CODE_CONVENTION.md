@@ -183,9 +183,9 @@ capability は実体と一致させる。
 - DVR再生 / 録画 を 対応宣言する場合は、ワーカー 失敗 / queue overflow を 状態 として返す
 ```
 
-## 10. 完了判定
+## 10. 実装規約の静的確認観点
 
-この規則に準拠していることは、次で確認する。
+本節は、実装規約違反をレビュー時に検出するための静的確認観点を示す。リリース完了条件、WP完了条件、atest/VTS合格条件は本書では定義しない。
 
 ```text
 1. リリースHAL経路 に `panic` / `unwrap` / expect / assert 系が残っていない
@@ -306,3 +306,55 @@ r50dz17では共通部品骨格の追加だけを行い、既存実行経路は�
 - production 経路、HAL object の public API、worker、FMQ、registry、descrambler session、stream boundary の本処理では `hal_sync` または対象共通部品を使う。
 - テスト内の `lock().unwrap()` はテスト fixture の観測・準備専用であり、mutex 汚染を production 成功扱いへ丸める根拠にしてはならない。
 - production ファイルで直接 `lock()` が必要になった場合は、この例外へ含めず、対象関数、理由、失敗時の扱いを個別に追記する。
+
+## 12. 失敗領域の混同禁止
+
+- callback未登録、callback Binder error、scan通知失敗を frontend backend failure として扱ってはならない。
+- FMQ / AV shared backing の水位取得失敗を、queue破損またはdata path破損と同一視してはならない。
+- backend ioctl/read/tune/stop失敗だけを backend failure として扱う。
+- lifecycle違反、owner不一致、foreign object、closed object は対象APIの `INVALID_STATE` / `INVALID_ARGUMENT` に写像し、backend failureへ昇格させない。
+
+## 13. public API transaction 実装規約
+
+- public Binder method は、validate → prepare → commit の順に実装する。
+- validate段階で公開状態を変更してはならない。
+- prepare段階で旧queue、旧backing、旧binding、旧tokenを破棄してはならない。
+- commit前に失敗した場合は、prepareで確保した資源だけをrollbackする。
+- commit後に失敗した場合は、成功扱いで継続せず、対象objectをquarantineまたはFailedClosingへ移す。
+- public API内で `let _ = cleanup...` により critical cleanup 失敗を握りつぶしてはならない。
+
+## 14. 同一条件 no-op guard
+
+- `setFrontendDataSource()` は、現在と同一frontend/generationなら stream boundary reset を呼ばない。
+- `tune()` は、現在と同一 normalized tune settings なら backend stop、live pump停止、demux boundary reset を呼ばない。
+- `configure()` は、現在設定と同一なら queue / AV backing / DVR backing を破棄しない。
+- no-op guard は破壊的処理の前に置く。
+
+## 15. best-effort 使用制限
+
+- `best_effort` と名付けた関数を public API の主経路で使ってはならない。
+- Drop / teardown 以外で `best_effort` を使う場合は、失敗が public API の戻り値・状態遷移に影響しない補助診断に限る。
+- queue clear、registry unregister、backend stop、token release、worker join は best-effort で沈黙させない。
+- 失敗を返せない場所では、診断名、対象ID、失敗段階を必ず記録する。
+
+## 16. 寿命ID / generation / token 実装規約
+
+- lifetime ID、generation、worker wake generation、token ID に `saturating_add()` を使ってはならない。
+- wrap可能な `fetch_add()` を release HAL path に追加してはならない。
+- 上限到達時は `checked_add()` 失敗として扱い、対象objectをquarantineまたは新規発行失敗にする。
+- expired token は保持目的が明示されない限り table から削除する。
+- 0、負値、予約値を通常発行IDとして使ってはならない。
+
+## 17. backend診断分離
+
+- DVB backend の失敗を px4 診断構造へ記録してはならない。
+- px4 backend の失敗を DVB 診断構造へ記録してはならない。
+- frontend共通処理から backend failure を記録する場合は、backend種別を引数として受け取り、対応する診断名前空間だけを更新する。
+
+## 18. source filter 実装規約
+
+- source filter downstream は `DESIGN_JA.md` の source filter downstream 契約表にある組み合わせだけを実装する。
+- 未対応の downstream 組み合わせを成功 no-op にしてはならない。
+- raw TS source を downstream へ渡す場合は、TEI、continuity、discontinuity、duplicate、flush generation の判定を通常入力と同じ経路で通す。
+- section/PES/AV/record payload を別filterのsourceとして直接再配送する経路を追加してはならない。ただし `DESIGN_JA.md` で対応に変更した場合を除く。
+

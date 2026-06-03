@@ -104,15 +104,24 @@ pub fn pes_stream_id(bytes: &[u8]) -> Option<i32> {
     parse_pes_header_summary(bytes).map(|summary| summary.stream_id as i32)
 }
 
-pub fn parse_pes_header_summary(bytes: &[u8]) -> Option<PesHeaderSummary> {
-    if bytes.len() < 6 || &bytes[..3] != [0x00, 0x00, 0x01] {
-        return None;
+enum PesHeaderParseStatus {
+    Incomplete,
+    Malformed,
+    Complete(PesHeaderSummary),
+}
+
+fn parse_pes_header_status(bytes: &[u8]) -> PesHeaderParseStatus {
+    if bytes.len() < 6 {
+        return PesHeaderParseStatus::Incomplete;
+    }
+    if &bytes[..3] != [0x00, 0x00, 0x01] {
+        return PesHeaderParseStatus::Malformed;
     }
     let stream_id = bytes[3];
     let packet_length = u16::from_be_bytes([bytes[4], bytes[5]]) as usize;
     if !pes_stream_has_optional_header(stream_id) {
         let expected_len = if packet_length == 0 { None } else { Some(6 + packet_length) };
-        return Some(PesHeaderSummary {
+        return PesHeaderParseStatus::Complete(PesHeaderSummary {
             stream_id,
             payload_offset: 6,
             pts_90khz: None,
@@ -122,44 +131,51 @@ pub fn parse_pes_header_summary(bytes: &[u8]) -> Option<PesHeaderSummary> {
         });
     }
     if bytes.len() < 9 {
-        return None;
+        return PesHeaderParseStatus::Incomplete;
     }
     let flags1 = bytes[6];
     let flags2 = bytes[7];
     let header_data_len = bytes[8] as usize;
     let payload_offset = 9 + header_data_len;
-    if bytes.len() < payload_offset || (flags1 & 0xc0) != 0x80 {
-        return None;
+    if (flags1 & 0xc0) != 0x80 {
+        return PesHeaderParseStatus::Malformed;
     }
     if packet_length != 0 && packet_length < 3 + header_data_len {
-        return None;
+        return PesHeaderParseStatus::Malformed;
     }
-    let data_alignment_indicator = (flags1 & 0x04) != 0;
     let pts_dts_flags = (flags2 >> 6) & 0x03;
     if pts_dts_flags == 0b01 {
-        return None;
+        return PesHeaderParseStatus::Malformed;
     }
+    match pts_dts_flags {
+        0b10 if header_data_len < 5 => return PesHeaderParseStatus::Malformed,
+        0b11 if header_data_len < 10 => return PesHeaderParseStatus::Malformed,
+        _ => {}
+    }
+    if bytes.len() < payload_offset {
+        return PesHeaderParseStatus::Incomplete;
+    }
+    let data_alignment_indicator = (flags1 & 0x04) != 0;
     let pts_90khz = match pts_dts_flags {
-        0b10 => {
-            if header_data_len < 5 { return None; }
-            Some(pts_dts_field_value(bytes.get(9..14)?, 0b0010)?)
-        }
-        0b11 => {
-            if header_data_len < 10 { return None; }
-            Some(pts_dts_field_value(bytes.get(9..14)?, 0b0011)?)
-        }
+        0b10 => match pts_dts_field_value(&bytes[9..14], 0b0010) {
+            Some(value) => Some(value),
+            None => return PesHeaderParseStatus::Malformed,
+        },
+        0b11 => match pts_dts_field_value(&bytes[9..14], 0b0011) {
+            Some(value) => Some(value),
+            None => return PesHeaderParseStatus::Malformed,
+        },
         _ => None,
     };
     let dts_90khz = match pts_dts_flags {
-        0b11 => Some(pts_dts_field_value(bytes.get(14..19)?, 0b0001)?),
+        0b11 => match pts_dts_field_value(&bytes[14..19], 0b0001) {
+            Some(value) => Some(value),
+            None => return PesHeaderParseStatus::Malformed,
+        },
         _ => None,
     };
-    let expected_len = if packet_length == 0 {
-        None
-    } else {
-        Some(6 + packet_length)
-    };
-    Some(PesHeaderSummary {
+    let expected_len = if packet_length == 0 { None } else { Some(6 + packet_length) };
+    PesHeaderParseStatus::Complete(PesHeaderSummary {
         stream_id,
         payload_offset,
         pts_90khz,
@@ -167,6 +183,13 @@ pub fn parse_pes_header_summary(bytes: &[u8]) -> Option<PesHeaderSummary> {
         data_alignment_indicator,
         expected_len,
     })
+}
+
+pub fn parse_pes_header_summary(bytes: &[u8]) -> Option<PesHeaderSummary> {
+    match parse_pes_header_status(bytes) {
+        PesHeaderParseStatus::Complete(summary) => Some(summary),
+        PesHeaderParseStatus::Incomplete | PesHeaderParseStatus::Malformed => None,
+    }
 }
 
 #[cfg(test)]
@@ -182,6 +205,8 @@ pub struct PesAssembler {
     unbounded_summary: Option<PesHeaderSummary>,
     overflow_drop_count: u64,
     overflow_generation: u64,
+    overflow_drop_counter_saturated: bool,
+    overflow_generation_counter_saturated: bool,
     last_drop_reason: Option<&'static str>,
 }
 
@@ -189,35 +214,38 @@ impl PesAssembler {
     pub fn push(&mut self, pid: u16, payload_unit_start: bool, payload: &[u8]) -> Vec<PesPacket> {
         let mut out = Vec::new();
         if payload_unit_start {
-            if let Some(packet) = self.take_completed() {
-                out.push(packet);
+            if self.unbounded_summary.is_some() {
+                if let Some(packet) = self.take_completed() {
+                    out.push(packet);
+                }
             }
+            self.reset_state_only();
             self.pid = Some(pid);
-            self.buf.clear();
-            self.expected_len = None;
-            self.unbounded_summary = None;
+        } else if self.pid != Some(pid) {
+            self.reset_with_drop("pes_assembler_continuation_without_start");
+            return out;
         }
-        if self.pid != Some(pid) {
-            self.pid = Some(pid);
-            self.buf.clear();
-            self.expected_len = None;
-            self.unbounded_summary = None;
-        }
+
         self.buf.extend_from_slice(payload);
         if self.expected_len.is_none() {
-            if let Some(summary) = parse_pes_header_summary(&self.buf) {
-                self.expected_len = summary.expected_len;
-                self.unbounded_summary = if summary.expected_len.is_none() {
-                    Some(summary)
-                } else {
-                    None
-                };
+            match parse_pes_header_status(&self.buf) {
+                PesHeaderParseStatus::Complete(summary) => {
+                    self.expected_len = summary.expected_len;
+                    self.unbounded_summary = if summary.expected_len.is_none() {
+                        Some(summary)
+                    } else {
+                        None
+                    };
+                }
+                PesHeaderParseStatus::Incomplete => {}
+                PesHeaderParseStatus::Malformed => {
+                    self.reset_with_drop("pes_assembler_malformed_pes");
+                    return out;
+                }
             }
         }
-        if self.buf.len() > MAX_PES_BUFFER_BYTES && self.expected_len.is_none() {
-            if let Some(packet) = self.take_unbounded_chunk() {
-                out.push(packet);
-            }
+        if self.buf.len() > MAX_PES_BUFFER_BYTES {
+            self.reset_with_drop("pes_assembler_oversized_pes");
             return out;
         }
         if let Some(expected_len) = self.expected_len {
@@ -231,36 +259,30 @@ impl PesAssembler {
     }
 
     pub fn flush(&mut self) -> Option<PesPacket> {
-        // r50dz53/G2-06: PES_packet_length == 0 は unbounded PES として、
-        // stop/flush/close などの lifecycle boundary で現在の buffer を finalize する。
-        self.take_completed()
+        self.reset_with_drop("pes_assembler_flush_discard");
+        None
     }
 
-    fn take_unbounded_chunk(&mut self) -> Option<PesPacket> {
-        let pid = self.pid?;
-        let summary = self.unbounded_summary?;
-        if self.buf.is_empty() {
-            return None;
-        }
-        let raw_bytes = std::mem::take(&mut self.buf);
-        let payload = if raw_bytes.starts_with(&[0x00, 0x00, 0x01]) {
-            raw_bytes[summary.payload_offset.min(raw_bytes.len())..].to_vec()
-        } else {
-            raw_bytes.clone()
-        };
+    fn reset_state_only(&mut self) {
+        self.pid = None;
+        self.buf.clear();
         self.expected_len = None;
-        self.overflow_drop_count = self.overflow_drop_count.saturating_add(1);
-        self.overflow_generation = self.overflow_generation.saturating_add(1);
-        self.last_drop_reason = Some("pes_assembler_unbounded_chunk_delivery");
-        Some(PesPacket {
-            pid,
-            stream_id: summary.stream_id,
-            pts_90khz: summary.pts_90khz,
-            dts_90khz: summary.dts_90khz,
-            data_alignment_indicator: summary.data_alignment_indicator,
-            raw_bytes,
-            payload,
-        })
+        self.unbounded_summary = None;
+    }
+
+    fn reset_with_drop(&mut self, reason: &'static str) {
+        if self.pid.is_some() || !self.buf.is_empty() || self.expected_len.is_some() || self.unbounded_summary.is_some() {
+            match self.overflow_drop_count.checked_add(1) {
+                Some(next) => self.overflow_drop_count = next,
+                None => self.overflow_drop_counter_saturated = true,
+            }
+            match self.overflow_generation.checked_add(1) {
+                Some(next) => self.overflow_generation = next,
+                None => self.overflow_generation_counter_saturated = true,
+            }
+            self.last_drop_reason = Some(reason);
+        }
+        self.reset_state_only();
     }
 
     pub fn take_drop_diagnostic(&mut self) -> Option<(&'static str, u64)> {
@@ -289,6 +311,8 @@ impl PesAssembler {
         };
         let raw_bytes = std::mem::take(&mut self.buf);
         self.expected_len = None;
+        self.unbounded_summary = None;
+        self.pid = None;
         Some(PesPacket {
             pid,
             stream_id: summary.stream_id,
@@ -406,15 +430,14 @@ mod pes_flush_tests {
     use super::PesAssembler;
 
     #[test]
-    fn length_zero_pes_flushes_on_lifecycle_boundary() {
+    fn length_zero_pes_is_discarded_on_lifecycle_boundary() {
         let mut assembler = PesAssembler::default();
         let mut payload = vec![0x00, 0x00, 0x01, 0xe0, 0x00, 0x00, 0x80, 0x00, 0x00];
         payload.extend_from_slice(&[0xaa, 0xbb, 0xcc]);
         let out = assembler.push(0x100, true, &payload);
         assert!(out.is_empty());
-        let flushed = assembler.flush().expect("length-zero PES should flush");
-        assert_eq!(flushed.stream_id, 0xe0);
-        assert_eq!(flushed.payload, vec![0xaa, 0xbb, 0xcc]);
+        assert!(assembler.flush().is_none());
+        assert_eq!(assembler.take_drop_diagnostic(), Some(("pes_assembler_flush_discard", 1)));
     }
 }
 
@@ -527,42 +550,43 @@ mod pes_optional_header_contract_tests {
 
 
 #[cfg(test)]
-mod r50dz52_g2_06_tests {
+mod r50ea25_pes_boundary_tests {
     use super::PesAssembler;
 
     #[test]
-    fn unbounded_pes_finalizes_on_flush_boundary() {
+    fn unbounded_pes_is_discarded_on_flush_boundary() {
         let mut assembler = PesAssembler::default();
         let mut pes = vec![0x00, 0x00, 0x01, 0xe0, 0x00, 0x00, 0x80, 0x00, 0x00];
         pes.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
         assert!(assembler.push(0x0100, true, &pes).is_empty());
-        let flushed = assembler.flush();
-        assert!(matches!(flushed.as_ref().map(|packet| packet.stream_id), Some(0xe0)));
-        assert_eq!(flushed.map(|packet| packet.payload), Some(vec![0xde, 0xad, 0xbe, 0xef]));
+        assert!(assembler.flush().is_none());
+        assert_eq!(assembler.take_drop_diagnostic(), Some(("pes_assembler_flush_discard", 1)));
+    }
+
+    #[test]
+    fn continuation_without_start_is_dropped_until_next_pusi() {
+        let mut assembler = PesAssembler::default();
+        assert!(assembler.push(0x0100, false, &[0xaa, 0xbb]).is_empty());
+        assert_eq!(assembler.take_drop_diagnostic(), None);
+        let pes = vec![0x00, 0x00, 0x01, 0xe0, 0x00, 0x04, 0x80, 0x00, 0x00, 0xde];
+        assert!(assembler.push(0x0100, true, &pes).is_empty());
     }
 }
 
 #[cfg(test)]
-mod r50dz52_g2_07_tests {
+mod r50ea25_pes_oversized_tests {
     use super::{PesAssembler, MAX_PES_BUFFER_BYTES};
 
     #[test]
-    fn unbounded_pes_over_limit_is_chunk_delivered_not_dropped() {
+    fn unbounded_pes_over_limit_is_dropped_and_next_pusi_recovers() {
         let mut assembler = PesAssembler::default();
         let mut oversized = vec![0x00, 0x00, 0x01, 0xe0, 0x00, 0x00, 0x80, 0x00, 0x00];
         oversized.resize(MAX_PES_BUFFER_BYTES + 1, 0xaa);
-        let chunks = assembler.push(0x0100, true, &oversized);
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0].pid, 0x0100);
-        assert_eq!(chunks[0].stream_id, 0xe0);
-        assert!(!chunks[0].payload.is_empty());
+        assert!(assembler.push(0x0100, true, &oversized).is_empty());
         assert_eq!(assembler.overflow_drop_count(), 1);
-        assert_eq!(assembler.take_drop_diagnostic(), Some(("pes_assembler_unbounded_chunk_delivery", 1)));
-        let tail = vec![0xbb; 188];
-        assert!(assembler.push(0x0100, false, &tail).is_empty());
-        let final_chunk = assembler.flush().expect("unbounded PES tail is delivered at lifecycle boundary");
-        assert_eq!(final_chunk.pid, 0x0100);
-        assert_eq!(final_chunk.stream_id, 0xe0);
-        assert_eq!(final_chunk.payload, tail);
+        assert_eq!(assembler.take_drop_diagnostic(), Some(("pes_assembler_oversized_pes", 1)));
+
+        let pes = vec![0x00, 0x00, 0x01, 0xe0, 0x00, 0x04, 0x80, 0x00, 0x00, 0xde];
+        assert!(assembler.push(0x0100, true, &pes).is_empty());
     }
 }

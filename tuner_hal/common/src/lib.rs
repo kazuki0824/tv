@@ -2,30 +2,49 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::io;
-use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
 pub const TUNER_SERVICE_NAME: &str = "android.hardware.tv.tuner.ITuner/default";
 pub const TS_PACKET_SIZE: usize = 188;
 
+fn increment_atomic_counter_with_saturation(counter: &AtomicU64, saturated: Option<&AtomicBool>) -> u64 {
+    match counter.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| value.checked_add(1)) {
+        Ok(previous) => previous + 1,
+        Err(_) => {
+            if let Some(flag) = saturated {
+                flag.store(true, Ordering::SeqCst);
+            }
+            u64::MAX
+        }
+    }
+}
+
 /// Retry an I/O read operation after `ErrorKind::Interrupted` without treating EINTR
-/// as EOF or a normal short read. The retry counter is updated with saturating
-/// semantics so debug/release behavior stays identical at `u64::MAX`.
+/// as EOF or a normal short read. This compatibility wrapper records the retry count
+/// but cannot expose counter saturation. New call sites should pass a saturated flag
+/// through `retry_after_interrupted_read_with_saturation()`.
 pub fn retry_after_interrupted_read(
     operation: &'static str,
     retry_counter: &AtomicU64,
+    f: impl FnMut() -> io::Result<usize>,
+) -> io::Result<usize> {
+    retry_after_interrupted_read_with_saturation(operation, retry_counter, None, f)
+}
+
+pub fn retry_after_interrupted_read_with_saturation(
+    operation: &'static str,
+    retry_counter: &AtomicU64,
+    retry_counter_saturated: Option<&AtomicBool>,
     mut f: impl FnMut() -> io::Result<usize>,
 ) -> io::Result<usize> {
     loop {
         match f() {
             Err(err) if err.kind() == io::ErrorKind::Interrupted => {
-                let _ = retry_counter.fetch_update(
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                    |value| Some(value.saturating_add(1)),
-                );
+                let total = increment_atomic_counter_with_saturation(retry_counter, retry_counter_saturated);
                 eprintln!(
-                    "maleicacid-tuner-hal-read-retry: operation={} error=EINTR action=retry",
-                    operation
+                    "maleicacid-tuner-hal-read-retry: operation={} error=EINTR action=retry total={}",
+                    operation,
+                    total,
                 );
                 continue;
             }
@@ -49,10 +68,38 @@ pub struct TsPacketCompletionBuffer {
     buf: Vec<u8>,
     completed: VecDeque<[u8; TS_PACKET_SIZE]>,
     malformed_bytes: u64,
+    malformed_bytes_saturated: bool,
     resync_required: bool,
 }
 
 impl TsPacketCompletionBuffer {
+    fn add_local_malformed(local: &mut usize, amount: usize, saturated: &mut bool) {
+        match local.checked_add(amount) {
+            Some(next) => *local = next,
+            None => {
+                *local = usize::MAX;
+                *saturated = true;
+            }
+        }
+    }
+
+    fn add_malformed_bytes(&mut self, amount: usize) {
+        if amount == 0 {
+            return;
+        }
+        let amount = u64::try_from(amount).unwrap_or(u64::MAX);
+        match self.malformed_bytes.checked_add(amount) {
+            Some(next) => self.malformed_bytes = next,
+            None => {
+                self.malformed_bytes = u64::MAX;
+                self.malformed_bytes_saturated = true;
+            }
+        }
+        if amount == u64::MAX {
+            self.malformed_bytes_saturated = true;
+        }
+    }
+
     fn confirmed_sync_offset(buf: &[u8]) -> Option<usize> {
         if buf.len() < TS_RESYNC_CONFIRM_BYTES {
             return None;
@@ -67,19 +114,20 @@ impl TsPacketCompletionBuffer {
     pub fn push(&mut self, data: &[u8]) -> TsPacketBufferDrain {
         self.buf.extend_from_slice(data);
         let mut malformed_bytes = 0usize;
+        let mut local_malformed_saturated = false;
         loop {
             if self.resync_required {
                 let Some(offset) = Self::confirmed_sync_offset(&self.buf) else {
                     if self.buf.len() > TS_RESYNC_TAIL_BYTES {
                         let discard = self.buf.len() - TS_RESYNC_TAIL_BYTES;
                         self.buf.drain(..discard);
-                        malformed_bytes = malformed_bytes.saturating_add(discard);
+                        Self::add_local_malformed(&mut malformed_bytes, discard, &mut local_malformed_saturated);
                     }
                     break;
                 };
                 if offset > 0 {
                     self.buf.drain(..offset);
-                    malformed_bytes = malformed_bytes.saturating_add(offset);
+                    Self::add_local_malformed(&mut malformed_bytes, offset, &mut local_malformed_saturated);
                 }
                 self.resync_required = false;
                 continue;
@@ -98,7 +146,10 @@ impl TsPacketCompletionBuffer {
             self.completed.push_back(packet);
         }
         if malformed_bytes > 0 {
-            self.malformed_bytes = self.malformed_bytes.saturating_add(malformed_bytes as u64);
+            self.add_malformed_bytes(malformed_bytes);
+        }
+        if local_malformed_saturated {
+            self.malformed_bytes_saturated = true;
         }
         let packets = self.drain_completed(usize::MAX);
         TsPacketBufferDrain {
@@ -148,6 +199,10 @@ impl TsPacketCompletionBuffer {
         self.malformed_bytes
     }
 
+    pub fn malformed_bytes_saturated(&self) -> bool {
+        self.malformed_bytes_saturated
+    }
+
     /// Drain all completed packets at a lifecycle boundary and drop only the
     /// incomplete tail. This prevents a complete packet already held by the
     /// completion buffer from waiting for a later push after stop/flush/close.
@@ -155,7 +210,7 @@ impl TsPacketCompletionBuffer {
         let packets = self.drain_completed(usize::MAX);
         let malformed_bytes = self.buf.len();
         if malformed_bytes > 0 {
-            self.malformed_bytes = self.malformed_bytes.saturating_add(malformed_bytes as u64);
+            self.add_malformed_bytes(malformed_bytes);
             self.buf.clear();
         }
         self.resync_required = false;
@@ -308,9 +363,25 @@ pub const DEMUX_MAX_VIDEO_FILTERS: i32 = 4;
 pub const DEMUX_MAX_PES_FILTERS: i32 = 8;
 pub const DEMUX_MAX_RECORD_FILTERS: i32 = 32;
 pub const MAX_SECTION_FILTER_BYTES: i32 = 16;
-/// セクションフィルター 経由で配送する組立済み PSI/SI section payload の上限。
-/// `MAX_SECTION_FILTER_BYTES` は mask/filter のbyte幅だけを表すため、payload上限とは分離する。
-pub const MAX_SECTION_PAYLOAD_BYTES: usize = 8192;
+/// ARIB STD-B10 で EIT 以外の PSI/SI table に使う section_length 上限。
+/// section_length は section_length field 直後から CRC_32 末尾までの byte 数である。
+pub const MAX_ARIB_SHORT_SECTION_LENGTH: usize = 1021;
+/// ARIB STD-B10 の EIT table に使う section_length 上限。
+pub const MAX_ARIB_EIT_SECTION_LENGTH: usize = 4093;
+/// セクションフィルター 経由で配送する組立済み PSI/SI section payload の製品上限。
+/// section total length は 3 + section_length であり、EIT の最大 section は 4096 bytes である。
+pub const MAX_ARIB_SECTION_TOTAL_BYTES: usize = 3 + MAX_ARIB_EIT_SECTION_LENGTH;
+/// 既存呼び出し元互換の別名。意味は組立済み section total length の上限である。
+pub const MAX_SECTION_PAYLOAD_BYTES: usize = MAX_ARIB_SECTION_TOTAL_BYTES;
+
+/// ARIB STD-B10 の table_id 別 section_length 上限を返す。
+/// EIT p/f と EIT schedule は 0x4e..=0x6f、それ以外の正式対応 table は短い section として扱う。
+pub fn max_arib_section_length_for_table_id(table_id: u8) -> usize {
+    match table_id {
+        0x4e..=0x6f => MAX_ARIB_EIT_SECTION_LENGTH,
+        _ => MAX_ARIB_SHORT_SECTION_LENGTH,
+    }
+}
 
 #[derive(Debug)]
 pub struct IdAllocator {
@@ -667,7 +738,7 @@ mod r50dz52_g1_20_tests {
 mod r50dz52_g2_15_tests {
     use super::*;
     use std::io;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     #[test]
     fn interrupted_read_is_retried_and_counted_without_eof_success() {
@@ -685,5 +756,29 @@ mod r50dz52_g2_15_tests {
         assert_eq!(attempts, 3);
         assert_eq!(counter.load(Ordering::SeqCst), 2);
     }
+
+    #[test]
+    fn interrupted_read_sets_saturated_flag_at_counter_limit() {
+        let counter = AtomicU64::new(u64::MAX);
+        let saturated = AtomicBool::new(false);
+        let mut attempts = 0usize;
+        let result = retry_after_interrupted_read_with_saturation(
+            "r50ea58_retry_saturation",
+            &counter,
+            Some(&saturated),
+            || {
+                attempts += 1;
+                if attempts == 1 {
+                    Err(io::Error::new(io::ErrorKind::Interrupted, "eintr"))
+                } else {
+                    Ok(188)
+                }
+            },
+        );
+        assert_eq!(result.unwrap(), 188);
+        assert_eq!(counter.load(Ordering::SeqCst), u64::MAX);
+        assert!(saturated.load(Ordering::SeqCst));
+    }
+
 }
 

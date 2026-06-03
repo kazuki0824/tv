@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-const DESCRAMBLER_TOKEN_MAX_LEN: usize = 16;
+const DESCRAMBLER_TOKEN_LEN: usize = 8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DescramblerKeyRegistrationError {
@@ -37,11 +37,15 @@ pub struct ResolvedDescramblerKeySlot {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum DescramblerKeySlotState {
-    Active(ResolvedDescramblerKeySlot),
-    Expired {
-        origin: DescramblerTokenOrigin,
-    },
+struct DescramblerKeySlotState {
+    resolved: ResolvedDescramblerKeySlot,
+    refcount: usize,
+}
+
+impl DescramblerKeySlotState {
+    fn new(resolved: ResolvedDescramblerKeySlot) -> Self {
+        Self { resolved, refcount: 0 }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -59,18 +63,16 @@ impl DescramblerKeyTable {
         if token.is_empty() {
             return Err(DescramblerKeyResolveError::EmptyToken);
         }
-        if token.len() > DESCRAMBLER_TOKEN_MAX_LEN {
+        if token.len() != DESCRAMBLER_TOKEN_LEN {
             return Err(DescramblerKeyResolveError::MalformedToken);
         }
         let slots = lock_mutex_status(&self.slots, "descrambler_key_table_slots").map_err(|_| DescramblerKeyResolveError::RegistryUnavailable)?;
         match slots.get(token) {
-            Some(DescramblerKeySlotState::Active(slot)) => Ok(slot.clone()),
-            Some(DescramblerKeySlotState::Expired { .. }) => Err(DescramblerKeyResolveError::ExpiredKeySlot),
+            Some(state) => Ok(state.resolved.clone()),
             None => Err(DescramblerKeyResolveError::UnknownToken),
         }
     }
 
-    #[cfg(test)]
     #[cfg(test)]
     pub fn resolve_for_test(&self, token: &[u8]) -> Option<DescramblerKeySlot> {
         self.resolve_with_diagnostic(token).ok().map(|resolved| resolved.slot)
@@ -95,64 +97,79 @@ impl DescramblerKeyTable {
             }
             slots.insert(
                 token.clone(),
-                DescramblerKeySlotState::Active(ResolvedDescramblerKeySlot { slot, origin }),
+                DescramblerKeySlotState::new(ResolvedDescramblerKeySlot { slot, origin }),
             );
             return Ok(token);
         }
         Err(DescramblerKeyRegistrationError::TokenExhausted)
     }
 
-    pub fn expire_token(&self, token: &[u8]) -> Result<(), DescramblerKeyResolveError> {
+    pub fn acquire_ref_with_diagnostic(&self, token: &[u8]) -> Result<ResolvedDescramblerKeySlot, DescramblerKeyResolveError> {
         if token.is_empty() {
             return Err(DescramblerKeyResolveError::EmptyToken);
         }
-        if token.len() > DESCRAMBLER_TOKEN_MAX_LEN {
+        if token.len() != DESCRAMBLER_TOKEN_LEN {
             return Err(DescramblerKeyResolveError::MalformedToken);
         }
-        let mut slots = lock_mutex_status(&self.slots, "descrambler_key_table_slots").map_err(|_| DescramblerKeyResolveError::RegistryUnavailable)?;
-        match slots.get_mut(token) {
-            Some(state) => match state {
-                DescramblerKeySlotState::Active(resolved) => {
-                    let origin = resolved.origin;
-                    *state = DescramblerKeySlotState::Expired { origin };
-                    Ok(())
-                }
-                DescramblerKeySlotState::Expired { .. } => Ok(()),
-            },
-            None => Err(DescramblerKeyResolveError::UnknownToken),
+        let mut slots = lock_mutex_status(&self.slots, "descrambler_key_table_slots")
+            .map_err(|_| DescramblerKeyResolveError::RegistryUnavailable)?;
+        let Some(state) = slots.get_mut(token) else {
+            return Err(DescramblerKeyResolveError::UnknownToken);
+        };
+        state.refcount = state
+            .refcount
+            .checked_add(1)
+            .ok_or(DescramblerKeyResolveError::RegistryUnavailable)?;
+        Ok(state.resolved.clone())
+    }
+
+    pub fn release_ref(&self, token: &[u8]) -> Result<(), DescramblerKeyResolveError> {
+        if token.is_empty() {
+            return Err(DescramblerKeyResolveError::EmptyToken);
         }
+        if token.len() != DESCRAMBLER_TOKEN_LEN {
+            return Err(DescramblerKeyResolveError::MalformedToken);
+        }
+        let mut slots = lock_mutex_status(&self.slots, "descrambler_key_table_slots")
+            .map_err(|_| DescramblerKeyResolveError::RegistryUnavailable)?;
+        let Some(state) = slots.get_mut(token) else {
+            return Err(DescramblerKeyResolveError::UnknownToken);
+        };
+        if state.refcount == 0 {
+            return Err(DescramblerKeyResolveError::ExpiredKeySlot);
+        }
+        state.refcount -= 1;
+        if state.refcount == 0 {
+            slots.remove(token);
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn refcount_for_test(&self, token: &[u8]) -> Option<usize> {
+        let slots = self.slots.lock().ok()?;
+        slots.get(token).map(|state| state.refcount)
     }
 
     pub fn expire_all_by_origin(
         &self,
         target_origin: DescramblerTokenOrigin,
     ) -> Result<usize, DescramblerKeyResolveError> {
-        let mut expired = 0usize;
-        let mut slots = lock_mutex_status(&self.slots, "descrambler_key_table_slots").map_err(|_| DescramblerKeyResolveError::RegistryUnavailable)?;
-        for state in slots.values_mut() {
-            match state {
-                DescramblerKeySlotState::Active(resolved) if resolved.origin == target_origin => {
-                    let origin = resolved.origin;
-                    *state = DescramblerKeySlotState::Expired { origin };
-                    expired = expired.saturating_add(1);
-                }
-                _ => {}
-            }
-        }
-        Ok(expired)
+        let mut slots = lock_mutex_status(&self.slots, "descrambler_key_table_slots")
+            .map_err(|_| DescramblerKeyResolveError::RegistryUnavailable)?;
+        let before = slots.len();
+        slots.retain(|_, state| {
+            state.resolved.origin != target_origin || state.refcount > 0
+        });
+        Ok(before - slots.len())
     }
 
     pub fn expire_all(&self) -> Result<usize, DescramblerKeyResolveError> {
-        let mut expired = 0usize;
-        let mut slots = lock_mutex_status(&self.slots, "descrambler_key_table_slots").map_err(|_| DescramblerKeyResolveError::RegistryUnavailable)?;
-        for state in slots.values_mut() {
-            if let DescramblerKeySlotState::Active(resolved) = state {
-                let origin = resolved.origin;
-                *state = DescramblerKeySlotState::Expired { origin };
-                expired = expired.saturating_add(1);
-            }
-        }
-        Ok(expired)
+        let mut slots = lock_mutex_status(&self.slots, "descrambler_key_table_slots")
+            .map_err(|_| DescramblerKeyResolveError::RegistryUnavailable)?;
+        let before = slots.len();
+        slots.retain(|_, state| state.refcount > 0);
+        Ok(before - slots.len())
     }
 
     pub fn register_from_cas_bridge(
@@ -231,7 +248,7 @@ mod tests {
             DescramblerKeyResolveError::EmptyToken
         );
         assert_eq!(
-            table.resolve_with_diagnostic(&[0x55; DESCRAMBLER_TOKEN_MAX_LEN + 1]).unwrap_err(),
+            table.resolve_with_diagnostic(&[0x55; DESCRAMBLER_TOKEN_LEN + 1]).unwrap_err(),
             DescramblerKeyResolveError::MalformedToken
         );
     }
@@ -245,7 +262,7 @@ mod tests {
         );
         assert_eq!(
             table.resolve_with_diagnostic(b"placeholder").unwrap_err(),
-            DescramblerKeyResolveError::UnknownToken
+            DescramblerKeyResolveError::MalformedToken
         );
     }
 
@@ -279,14 +296,21 @@ mod tests {
     }
 
     #[test]
-    fn expired_token_resolves_as_expired_not_unknown() {
+    fn token_slot_is_removed_only_after_last_reference_is_released() {
         let table = DescramblerKeyTable::new();
         let token = table.register_for_test(even_key_slot());
+        assert_eq!(table.refcount_for_test(&token), Some(0));
+        table.acquire_ref_with_diagnostic(&token).unwrap();
+        table.acquire_ref_with_diagnostic(&token).unwrap();
+        assert_eq!(table.refcount_for_test(&token), Some(2));
+        table.release_ref(&token).unwrap();
         assert!(table.resolve_with_diagnostic(&token).is_ok());
-        table.expire_token(&token).unwrap();
+        assert_eq!(table.refcount_for_test(&token), Some(1));
+        table.release_ref(&token).unwrap();
+        assert_eq!(table.refcount_for_test(&token), None);
         assert_eq!(
             table.resolve_with_diagnostic(&token).unwrap_err(),
-            DescramblerKeyResolveError::ExpiredKeySlot
+            DescramblerKeyResolveError::UnknownToken
         );
         assert_eq!(
             table.resolve_with_diagnostic(&[0x42; 8]).unwrap_err(),
@@ -295,7 +319,18 @@ mod tests {
     }
 
     #[test]
-    fn expire_all_by_origin_keeps_origin_specific_boundaries() {
+    fn release_without_acquire_is_expired_key_slot() {
+        let table = DescramblerKeyTable::new();
+        let token = table.register_for_test(even_key_slot());
+        assert_eq!(
+            table.release_ref(&token).unwrap_err(),
+            DescramblerKeyResolveError::ExpiredKeySlot
+        );
+        assert!(table.resolve_with_diagnostic(&token).is_ok());
+    }
+
+    #[test]
+    fn expire_all_by_origin_removes_matching_unreferenced_tokens_only() {
         let table = DescramblerKeyTable::new();
         let unit_token = table.register_for_test(even_key_slot());
         let cas_token = table.register_from_cas_bridge(paired_key_slot(), true).unwrap();
@@ -303,24 +338,37 @@ mod tests {
         assert!(table.resolve_with_diagnostic(&unit_token).is_ok());
         assert_eq!(
             table.resolve_with_diagnostic(&cas_token).unwrap_err(),
-            DescramblerKeyResolveError::ExpiredKeySlot
+            DescramblerKeyResolveError::UnknownToken
         );
     }
 
     #[test]
-    fn expire_all_marks_remaining_active_tokens_expired() {
+    fn expire_all_by_origin_keeps_matching_referenced_tokens_until_release() {
+        let table = DescramblerKeyTable::new();
+        let cas_token = table.register_from_cas_bridge(paired_key_slot(), true).unwrap();
+        table.acquire_ref_with_diagnostic(&cas_token).unwrap();
+        assert_eq!(table.expire_all_by_origin(DescramblerTokenOrigin::CasBridge).unwrap(), 0);
+        assert_eq!(table.refcount_for_test(&cas_token), Some(1));
+        assert!(table.resolve_with_diagnostic(&cas_token).is_ok());
+        table.release_ref(&cas_token).unwrap();
+        assert_eq!(table.refcount_for_test(&cas_token), None);
+    }
+
+    #[test]
+    fn expire_all_removes_unreferenced_tokens_but_keeps_referenced_tokens() {
         let table = DescramblerKeyTable::new();
         let first = table.register_for_test(even_key_slot());
         let second = table.register_from_cas_bridge(paired_key_slot(), true).unwrap();
-        assert_eq!(table.expire_all().unwrap(), 2);
+        table.acquire_ref_with_diagnostic(&second).unwrap();
+        assert_eq!(table.expire_all().unwrap(), 1);
         assert_eq!(
             table.resolve_with_diagnostic(&first).unwrap_err(),
-            DescramblerKeyResolveError::ExpiredKeySlot
+            DescramblerKeyResolveError::UnknownToken
         );
-        assert_eq!(
-            table.resolve_with_diagnostic(&second).unwrap_err(),
-            DescramblerKeyResolveError::ExpiredKeySlot
-        );
+        assert_eq!(table.refcount_for_test(&second), Some(1));
+        assert!(table.resolve_with_diagnostic(&second).is_ok());
+        table.release_ref(&second).unwrap();
+        assert_eq!(table.refcount_for_test(&second), None);
     }
 }
 
