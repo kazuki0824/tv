@@ -4,7 +4,6 @@ use crate::frontend_capability as frontend_cap_model;
 use crate::lifecycle_txn::{
     LifecycleCleanupCaller as DvrCleanupCaller,
     LifecycleCleanupStepResult as DvrCleanupStepResult,
-    DvrCleanupOutcome,
     DvrCleanupStepResults,
     LifecycleTxn,
 };
@@ -196,8 +195,6 @@ fn lnb_operation_guard_for_id(lnb_id: i32) -> BinderResult<LnbOperationGuard> {
     LnbLedger::operation_guard(lnb_id)
         .map_err(|err| lnb_operation_guard_error_status(lnb_id, err))
 }
-const FILTER_MONITOR_MASK_STATUS: i32 = 1 << 0;
-const FILTER_MONITOR_MASK_EVENT: i32 = 1 << 1;
 #[cfg(test)]
 const SUPPORTED_FILTER_MONITOR_MASK: i32 = 0;
 const AV_SHARED_SLOT_COUNT: usize = 32;
@@ -210,8 +207,6 @@ const DVR_DEFAULT_STATUS_CHECK_INTERVAL_MS: i64 = 25;
 const MAX_FILTER_DELAY_MS: i64 = 10_000;
 const MAX_DVR_STATUS_INTERVAL_MS: i64 = 1_000;
 const MAX_FILTER_BUFFER_SIZE_BYTES: i32 = 16 * 1024 * 1024;
-const MAX_AV_SHARED_SLOT_SIZE_BYTES: usize = 8 * 1024 * 1024;
-const MAX_AV_SHARED_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 const MAX_DVR_BUFFER_SIZE_BYTES: i32 = 64 * 1024 * 1024;
 const LOCK_TIMEOUT_MS: u64 = 5_000;
 const PX4_PATH_DIAGNOSTIC_TIMEOUT_MS: u64 = LOCK_TIMEOUT_MS;
@@ -274,7 +269,6 @@ static DEMUX_DROP_CLEANUP_ERROR_COUNT: AtomicU64 = AtomicU64::new(0);
 static DESCRAMBLER_DEMUX_INVALIDATE_ERROR_COUNT: AtomicU64 = AtomicU64::new(0);
 static LNB_BACKEND_APPLY_ERROR_COUNT: AtomicU64 = AtomicU64::new(0);
 static FRONTEND_LIVE_PATH_FAILURE_ERROR_COUNT: AtomicU64 = AtomicU64::new(0);
-static AV_HANDLE_IDENTITY_CLEAR_ERROR_COUNT: AtomicU64 = AtomicU64::new(0);
 static RUNTIME_IO_BEST_EFFORT_ERROR_COUNT: AtomicU64 = AtomicU64::new(0);
 static LNB_DIAGNOSTIC_RECORD_ERROR_COUNT: AtomicU64 = AtomicU64::new(0);
 static OPTIONAL_LOCK_DIAGNOSTIC_ERROR_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -671,7 +665,7 @@ impl LifecycleCleanupCollector {
     }
 }
 
-fn collect_lifecycle_cleanup<F>(owner: &'static str, f: F) -> BinderResult<()>
+fn collect_lifecycle_cleanup<F>(_owner: &'static str, f: F) -> BinderResult<()>
 where
     F: FnOnce(&mut LifecycleCleanupCollector),
 {
@@ -712,10 +706,12 @@ fn mark_callback_unhealthy_flags(callback_unhealthy: &RuntimeAtomicFlag, callbac
     callback_stop.store(true, Ordering::SeqCst);
 }
 
+#[cfg(test)]
 fn callback_unhealthy_recovery_requires_reopen(callback_unhealthy: &RuntimeAtomicFlag) -> bool {
     callback_unhealthy.load(Ordering::SeqCst)
 }
 
+#[cfg(test)]
 fn lifecycle_commit_then_apply<C, A>(
     txn: &mut LifecycleTxn,
     commit_name: &'static str,
@@ -872,6 +868,7 @@ impl Px4PathDiagnostics {
             pat_timeouts: AtomicU64::new(0),
             pmt_timeouts: AtomicU64::new(0),
             av_data_timeouts: AtomicU64::new(0),
+            counter_saturated: AtomicBool::new(false),
         }
     }
 
@@ -985,6 +982,7 @@ impl Px4PathDiagnostics {
             pat_timeouts: self.pat_timeouts.load(Ordering::SeqCst),
             pmt_timeouts: self.pmt_timeouts.load(Ordering::SeqCst),
             av_data_timeouts: self.av_data_timeouts.load(Ordering::SeqCst),
+            counter_saturated: self.counter_saturated.load(Ordering::SeqCst),
         }
     }
 
@@ -1359,6 +1357,7 @@ impl AvSharedBacking {
         Ok(slice)
     }
 
+    #[cfg(test)]
     fn ensure_not_quarantined(&self) -> Result<(), AvPayloadAllocateError> {
         let Ok(state) = lock_mutex_hal(&self.state, "av_shared_state") else {
             return Err(AvPayloadAllocateError::Internal(
@@ -2079,9 +2078,6 @@ impl RuntimeFailClosedTransition {
         runtime_io.mark_failed(self.kind, self.id, reason);
     }
 
-    fn close_atomic(self, closed: &Arc<RuntimeAtomicFlag>) -> bool {
-        !closed.swap(true, Ordering::SeqCst)
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -2153,23 +2149,6 @@ impl RuntimeIoRegistry {
             entry.filter_av_shared = None;
         }
         Ok(())
-    }
-
-    fn clear_filter_av_shared_best_effort(&self, filter_id: i32) {
-        match lock_mutex_status(&self.entries, "runtime_io_entries") {
-            Ok(mut entries) => {
-                if let Some(entry) = entries.get_mut(&RuntimeIoKey {
-                    kind: RuntimeIoKind::Filter,
-                    id: filter_id,
-                }) {
-                    entry.filter_av_shared = None;
-                }
-            }
-            Err(status) => record_runtime_io_best_effort_failure(
-                "runtime_io_clear_filter_av_shared_best_effort_lock_failed",
-                &format!("filter_id={filter_id} status={status:?}"),
-            ),
-        }
     }
 
     fn register_dvr(&self, dvr_id: i32, queue: &Arc<SharedMemoryBacking>) -> BinderResult<()> {
@@ -4074,6 +4053,7 @@ fn checked_next_lnb_generation(current: u64) -> BinderResult<u64> {
     })
 }
 
+#[cfg(test)]
 fn lnb_safe_state_after_commit_failure(previous: &LnbRuntimeState) -> LnbRuntimeState {
     let mut state = previous.clone();
     state.voltage = Some(LnbVoltage::NONE);
@@ -6268,6 +6248,20 @@ impl Drop for TunerHal {
 
 impl Interface for TunerHal {}
 
+
+impl TunerHal {
+    fn push_lnb_id_after_open_success<T>(
+        lnb_id: &mut Vec<i32>,
+        id: i32,
+        open_result: BinderResult<T>,
+    ) -> BinderResult<T> {
+        lnb_id.clear();
+        let opened = open_result?;
+        lnb_id.push(id);
+        Ok(opened)
+    }
+}
+
 impl ITuner for TunerHal {
     fn getFrontendIds(&self) -> BinderResult<Vec<i32>> {
         Ok(self.frontend_ids.clone())
@@ -6388,16 +6382,6 @@ impl ITuner for TunerHal {
         ))
     }
 
-    fn push_lnb_id_after_open_success<T>(
-        lnb_id: &mut Vec<i32>,
-        id: i32,
-        open_result: BinderResult<T>,
-    ) -> BinderResult<T> {
-        lnb_id.clear();
-        let opened = open_result?;
-        lnb_id.push(id);
-        Ok(opened)
-    }
 
     fn openLnbByName(
         &self,
@@ -8377,7 +8361,7 @@ impl<'a> FrontendTuneTxn<'a> {
             let backend = lock_mutex_status(&self.hal.shared.backend, "frontend_backend")?;
             Ok::<Option<FrontendTuneRequest>, Status>(FrontendHal::backend_active_tune_snapshot(&backend))
         })?;
-        let same_active_tune = self.txn.prepare("frontend_tune_same_request_noop", || {
+        let same_active_tune = self.txn.prepare_value("frontend_tune_same_request_noop", || {
             let mut backend = lock_mutex_status(&self.hal.shared.backend, "frontend_backend")?;
             FrontendHal::backend_matches_active_tune(&mut backend, &self.request).map_err(hal_error_status)
         })?;
@@ -9287,7 +9271,8 @@ impl DemuxHal {
             let record = lock_mutex_status(&self.demux_ledger, "demux_ledger")?
                 .get_live(LedgerId(self.demux_id))
                 .map_err(|_| invalid_state_status("demux ledger record is not live"))?;
-            lock_mutex_status(&record, "demux_record")?.state.clone()
+            let state = lock_mutex_status(&record, "demux_record")?.state.clone();
+            state
         };
         if lock_mutex_status(&state, "demux_handle")?.is_closed() {
             return Err(invalid_state_status("demux handle is closed"));
@@ -10534,12 +10519,12 @@ impl FilterHal {
     }
 
     fn fail_filter_worker(
-        state: &Arc<Mutex<DemuxHandle>>,
+        _state: &Arc<Mutex<DemuxHandle>>,
         runtime_io: &Arc<RuntimeIoRegistry>,
-        queue_backing: &Arc<SharedMemoryBacking>,
-        av_queue_backing: &Arc<SharedMemoryBacking>,
-        av_shared_backing: &Arc<Mutex<Option<Arc<AvSharedBacking>>>>,
-        closed: &Arc<RuntimeAtomicFlag>,
+        _queue_backing: &Arc<SharedMemoryBacking>,
+        _av_queue_backing: &Arc<SharedMemoryBacking>,
+        _av_shared_backing: &Arc<Mutex<Option<Arc<AvSharedBacking>>>>,
+        _closed: &Arc<RuntimeAtomicFlag>,
         callback_stop: &Arc<RuntimeAtomicFlag>,
         filter_id: i32,
         reason: &str,
@@ -10549,7 +10534,6 @@ impl FilterHal {
         // demux unregister / FMQ stop / AV backing clear / ledger close は正式な
         // close_internal() 経路に集約する。ここでbest-effort cleanupを行うと、
         // ledgerのcleanup_stepに残らない部分破棄が発生し、次回closeで再試行できない。
-        std::mem::drop((state, queue_backing, av_queue_backing, av_shared_backing, closed));
         let transition = RuntimeFailClosedTransition::filter(filter_id, "filter_callback_worker");
         transition.mark_failed(runtime_io, reason);
         callback_stop.store(true, Ordering::SeqCst);
@@ -10638,23 +10622,6 @@ impl FilterHal {
             }
         }
         Ok(())
-    }
-
-    fn remember_cleanup_error(
-        first_error: &mut Option<Status>,
-        filter_id: i32,
-        step: &str,
-        result: BinderResult<()>,
-    ) {
-        if let Err(status) = result {
-            eprintln!(
-                "maleicacid-tuner-hal-filter-close: filter={} step={} status={:?}",
-                filter_id, step, status
-            );
-            if first_error.is_none() {
-                *first_error = Some(status);
-            }
-        }
     }
 
     fn record_flush_cleanup_result(
@@ -10758,26 +10725,6 @@ impl FilterHal {
         self.av_shared_handle_client_released.store(false, Ordering::SeqCst);
         *lock_mutex_status(&self.current_av_handle_identity, "filter_av_handle_identity")? = None;
         Ok(())
-    }
-
-    fn clear_current_av_handle_identity_best_effort(&self) {
-        self.av_shared_handle_exported.store(false, Ordering::SeqCst);
-        self.av_shared_handle_client_released.store(false, Ordering::SeqCst);
-        match lock_mutex_option(&self.current_av_handle_identity, "filter_av_handle_identity") {
-            Some(mut identity) => {
-                *identity = None;
-            }
-            None => {
-                record_tuner_diagnostic_counter(
-                    &AV_HANDLE_IDENTITY_CLEAR_ERROR_COUNT,
-                    "av_handle_identity_clear_error",
-                );
-                eprintln!(
-                    "maleicacid-tuner-hal-filter-av: filter={} clear_current_handle_identity_lock_failed",
-                    self.filter_id
-                );
-            }
-        }
     }
 
     fn accept_returned_av_shared_handle_release(&self, av_memory: &TunerNativeHandle, av_data_id: i64) -> BinderResult<()> {
@@ -10901,29 +10848,6 @@ impl FilterHal {
             backing.clear_result()?;
         }
         self.runtime_io.clear_filter_av_shared(self.filter_id)
-    }
-
-    fn drop_av_shared_backing_best_effort(&self) {
-        self.clear_current_av_handle_identity_best_effort();
-        match lock_mutex_status(&self.av_shared_backing, "filter_av_shared_backing") {
-            Ok(mut backing_slot) => {
-                if let Some(backing) = backing_slot.take() {
-                    backing.clear_drop_only();
-                }
-            }
-            Err(status) => {
-                record_tuner_diagnostic_counter(
-                    &AV_HANDLE_IDENTITY_CLEAR_ERROR_COUNT,
-                    "filter_av_shared_backing_drop_lock_failed",
-                );
-                eprintln!(
-                    "maleicacid-tuner-hal-filter-av: filter={} drop_av_shared_backing_lock_failed status={status:?}",
-                    self.filter_id
-                );
-            }
-        }
-        self.runtime_io
-            .clear_filter_av_shared_best_effort(self.filter_id);
     }
 
     #[cfg(test)]
@@ -11168,7 +11092,7 @@ impl FilterHal {
         };
         eprintln!(
             "maleicacid-tuner-hal-filter-drop: demux={} filter={} quarantine_failed={} cleanup_error={:?}",
-            self.demux_id, self.filter_id, quarantine_failed, status
+            self.owner_demux_id, self.filter_id, quarantine_failed, status
         );
     }
 
@@ -12034,12 +11958,12 @@ impl DvrHal {
     }
 
     fn fail_dvr_worker(
-        state: &Arc<Mutex<DemuxHandle>>,
+        _state: &Arc<Mutex<DemuxHandle>>,
         runtime_io: &Arc<RuntimeIoRegistry>,
-        queue_backing: &Arc<SharedMemoryBacking>,
-        closed: &Arc<RuntimeAtomicFlag>,
-        cleanup_complete: &Arc<RuntimeAtomicFlag>,
-        last_cleanup_steps: Option<&Arc<Mutex<Option<DvrCleanupStepResults>>>>,
+        _queue_backing: &Arc<SharedMemoryBacking>,
+        _closed: &Arc<RuntimeAtomicFlag>,
+        _cleanup_complete: &Arc<RuntimeAtomicFlag>,
+        _last_cleanup_steps: Option<&Arc<Mutex<Option<DvrCleanupStepResults>>>>,
         callback_stop: &Arc<RuntimeAtomicFlag>,
         dvr_id: i32,
         reason: &str,
@@ -12048,7 +11972,6 @@ impl DvrHal {
         // worker異常時も queue/runtime/demux unregister をbest-effortで進めない。
         // runtime_failed と callback停止要求だけを記録し、実資源解放は
         // close_internal() の DvrCloseStep / DvrLedger cleanup_step 経路に集約する。
-        std::mem::drop((state, queue_backing, closed, cleanup_complete, last_cleanup_steps));
         let transition = RuntimeFailClosedTransition::dvr(dvr_id, "dvr_callback_worker");
         transition.mark_failed(runtime_io, reason);
         callback_stop.store(true, Ordering::SeqCst);
@@ -12144,226 +12067,6 @@ impl DvrHal {
         }
         Ok(())
     }
-    fn remember_first_error(first_error: &mut Option<Status>, result: BinderResult<()>) {
-        if let Err(err) = result {
-            first_error.get_or_insert(err);
-        }
-    }
-
-    fn record_flush_cleanup_result(
-        dvr_id: i32,
-        step: &str,
-        counter: &AtomicU64,
-        result: BinderResult<()>,
-    ) {
-        if let Err(status) = result {
-            record_tuner_diagnostic_counter(counter, step);
-            eprintln!(
-                "maleicacid-tuner-hal-dvr-flush: dvr={} step={} status={:?}",
-                dvr_id, step, status
-            );
-        }
-    }
-
-    fn cleanup_dvr_resources_shared(
-        caller: DvrCleanupCaller,
-        state: &Arc<Mutex<DemuxHandle>>,
-        runtime_io: &Arc<RuntimeIoRegistry>,
-        queue_backing: &Arc<SharedMemoryBacking>,
-        callback_worker: Option<&Mutex<Option<WorkerHandle>>>,
-        callback_stop: &Arc<RuntimeAtomicFlag>,
-        dvr_id: i32,
-    ) -> DvrCleanupOutcome<Status> {
-        let mut runner = RealDvrCleanupRunner {
-            state,
-            runtime_io,
-            queue_backing,
-            callback_worker,
-            callback_stop,
-            dvr_id,
-        };
-        Self::cleanup_dvr_resources_with_runner(caller, &mut runner)
-    }
-
-    fn cleanup_dvr_resources_with_runner(
-        caller: DvrCleanupCaller,
-        runner: &mut impl DvrCleanupStepRunner,
-    ) -> DvrCleanupOutcome<Status> {
-        let mut first_error: Option<Status> = None;
-        let mut step_results = DvrCleanupStepResults::default();
-
-        match runner.stop_callback_worker(caller) {
-            Ok(result) => step_results.callback_worker = result,
-            Err(err) => {
-                step_results.callback_worker = DvrCleanupStepResult::Failed;
-                Self::remember_first_error(&mut first_error, Err(err));
-            }
-        }
-
-        match runner.clear_queue(caller) {
-            Ok(result) => step_results.queue_clear = result,
-            Err(err) => {
-                step_results.queue_clear = DvrCleanupStepResult::Failed;
-                Self::remember_first_error(&mut first_error, Err(err));
-            }
-        }
-
-        match runner.unregister_runtime(caller) {
-            Ok(result) => step_results.runtime_unregister = result,
-            Err(err) => {
-                step_results.runtime_unregister = DvrCleanupStepResult::Failed;
-                Self::remember_first_error(&mut first_error, Err(err));
-            }
-        }
-
-        match runner.stop_queue(caller) {
-            Ok(result) => step_results.queue_stop = result,
-            Err(err) => {
-                step_results.queue_stop = DvrCleanupStepResult::Failed;
-                Self::remember_first_error(&mut first_error, Err(err));
-            }
-        }
-
-        match runner.unregister_demux() {
-            Ok(result) => step_results.demux_unregister = result,
-            Err(err) => {
-                step_results.demux_unregister = DvrCleanupStepResult::Failed;
-                Self::remember_first_error(&mut first_error, Err(err));
-            }
-        }
-
-        let all_cleanup_complete = step_results.callback_worker.is_complete()
-            && step_results.queue_clear.is_complete()
-            && step_results.runtime_unregister.is_complete()
-            && step_results.queue_stop.is_complete()
-            && step_results.demux_unregister.is_complete();
-        DvrCleanupOutcome {
-            first_error,
-            all_cleanup_complete,
-            step_results,
-        }
-    }
-
-    fn cleanup_dvr_resources(&self, caller: DvrCleanupCaller) -> DvrCleanupOutcome<Status> {
-        let outcome = Self::cleanup_dvr_resources_shared(
-            caller,
-            &self.state,
-            &self.runtime_io,
-            &self.queue_backing,
-            Some(&self.callback_worker),
-            &self.callback_stop,
-            self.dvr_id,
-        );
-        match lock_mutex_status(&self.last_cleanup_steps, "dvr_last_cleanup_steps") {
-            Ok(mut last) => *last = Some(outcome.step_results.clone()),
-            Err(status) => record_drop_cleanup_counter(
-                &DVR_DROP_CLEANUP_ERROR_COUNT,
-                "dvr_last_cleanup_steps_record_lock_failed",
-                "dvr",
-                &status,
-            ),
-        }
-        outcome
-    }
-
-    fn begin_dvr_close(&self) -> BinderResult<DvrCloseStep> {
-        let mut step = *lock_mutex_status(&self.next_cleanup_step, "dvr_next_cleanup_step")?;
-        if let Some(record) = self.demux_record.as_ref() {
-            let ledger_step = lock_mutex_status(record, "demux_record").and_then(|mut record| {
-                record.dvr_ledger.begin_close(LedgerId(self.dvr_id))
-                    .map_err(|_| invalid_state_status("dvr ledger begin_close failed"))?;
-                Ok(DvrCloseStep::from_ledger_name(
-                    record.dvr_ledger.cleanup_step(LedgerId(self.dvr_id)).unwrap_or(step.ledger_name()),
-                ))
-            })?;
-            if ledger_step > step {
-                step = ledger_step;
-            }
-        }
-        *lock_mutex_status(&self.next_cleanup_step, "dvr_next_cleanup_step")? = step;
-        Ok(step)
-    }
-
-    fn mark_dvr_close_step(&self, step: DvrCloseStep) -> BinderResult<()> {
-        // r50ea3 rev5:
-        // cleanup step 記録失敗時も object-local の再開点を先に進める。
-        // ledger側の mark 失敗は呼び出し元で同じ step の close failure として扱う。
-        *lock_mutex_status(&self.next_cleanup_step, "dvr_next_cleanup_step")? = step;
-        if let Some(record) = self.demux_record.as_ref() {
-            lock_mutex_status(record, "demux_record").and_then(|mut record| {
-                record.dvr_ledger.mark_cleanup_step(LedgerId(self.dvr_id), step.ledger_name())
-                    .map_err(|_| invalid_state_status("dvr ledger mark_cleanup_step failed"))
-            })?;
-        }
-        Ok(())
-    }
-
-    fn record_dvr_close_failed(&self, failed_step: DvrCloseStep, status: Status) -> BinderResult<()> {
-        self.closed.store(true, Ordering::SeqCst);
-        self.cleanup_complete.store(false, Ordering::SeqCst);
-        let mark_failed = self.mark_dvr_close_step(failed_step).is_err();
-        match lock_mutex_status(&self.close_failure, "dvr_close_failure") {
-            Ok(mut failure) => {
-                let remaining = failed_step.remaining_from();
-                let reason = if mark_failed {
-                    "cleanup_failed_step_mark_failed"
-                } else {
-                    "cleanup_failed"
-                };
-                *failure = Some(CloseFailureRecord::new(
-                    failed_step.ledger_name(),
-                    reason,
-                    &remaining,
-                ));
-            }
-            Err(lock_status) => record_drop_cleanup_counter(
-                &DVR_DROP_CLEANUP_ERROR_COUNT,
-                "dvr_close_failure_record_lock_failed",
-                "dvr",
-                &lock_status,
-            ),
-        }
-        Err(status)
-    }
-
-    fn record_dvr_partial_config_cleanup_failed(&self, failed_step: DvrCloseStep, status: Status) -> BinderResult<()> {
-        self.closed.store(true, Ordering::SeqCst);
-        self.cleanup_complete.store(false, Ordering::SeqCst);
-        if let Ok(mut step) = self.next_cleanup_step.lock() {
-            *step = failed_step;
-        }
-        let quarantine_failed = if let Some(record) = self.demux_record.as_ref() {
-            match record.lock() {
-                Ok(mut record) => record.dvr_ledger.quarantine(LedgerId(self.dvr_id)).is_err(),
-                Err(_) => true,
-            }
-        } else {
-            false
-        };
-        match lock_mutex_status(&self.close_failure, "dvr_close_failure") {
-            Ok(mut failure) => {
-                let remaining = failed_step.remaining_from();
-                let reason = if quarantine_failed {
-                    "configure_cleanup_failed_quarantine_failed"
-                } else {
-                    "configure_cleanup_failed"
-                };
-                *failure = Some(CloseFailureRecord::new(
-                    failed_step.ledger_name(),
-                    reason,
-                    &remaining,
-                ));
-            }
-            Err(lock_status) => record_drop_cleanup_counter(
-                &DVR_DROP_CLEANUP_ERROR_COUNT,
-                "dvr_partial_config_cleanup_record_lock_failed",
-                "dvr",
-                &lock_status,
-            ),
-        }
-        Err(status)
-    }
-
     fn close_internal(&self) -> BinderResult<()> {
         if self.cleanup_complete.load(Ordering::SeqCst) {
             return Ok(());
@@ -12480,7 +12183,7 @@ impl DvrHal {
         };
         eprintln!(
             "maleicacid-tuner-hal-dvr-drop: demux={} dvr={} quarantine_failed={} cleanup_error={:?}",
-            self.demux_id, self.dvr_id, quarantine_failed, status
+            self.owner_demux_id, self.dvr_id, quarantine_failed, status
         );
     }
 
@@ -13004,9 +12707,6 @@ impl LnbHal {
         }
     }
 
-    fn safe_state_from_previous(&self, previous: &LnbRuntimeState) -> LnbRuntimeState {
-        lnb_safe_state_after_commit_failure(previous)
-    }
 
     fn mark_lnb_update_commit_failed(&self, detail: &str) {
         self.failed.store(true, Ordering::SeqCst);
@@ -13674,7 +13374,7 @@ fn normalize_filter_delay_hint(hint: &FilterDelayHint) -> BinderResult<FilterDel
     }
     match hint.hintType {
         FilterDelayHintType::TIME_DELAY_IN_MS => {
-            if hint.hintValue > MAX_FILTER_DELAY_MS {
+            if i64::from(hint.hintValue) > MAX_FILTER_DELAY_MS {
                 return Err(invalid_argument_status(
                     "フィルタ遅延指定は MAX_FILTER_DELAY_MS 以下である必要があります",
                 ));

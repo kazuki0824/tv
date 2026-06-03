@@ -716,7 +716,7 @@ impl DvbFrontendBackend {
             system,
             frequency,
             end_frequency: None,
-            stream_id: tune.stream_id,
+            stream_id: tune.stream_id.map(u32::from),
             stream_id_kind: tune.stream_id_kind,
             bandwidth_hz: tune.bandwidth_hz,
             symbol_rate: None,

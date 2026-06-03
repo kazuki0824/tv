@@ -140,7 +140,6 @@ impl<'a> TsPacketView<'a> {
                         return Err(TsPacketValidationError::InvalidAdaptationLength);
                     }
                     adaptation_extension_flag = true;
-                    cursor += extension_len;
                 }
             }
             offset += 1 + adaptation_len;
@@ -820,7 +819,7 @@ impl PacketPipeline {
             .retain(|(_, _, filter_id), _| !filter_ids.iter().any(|id| id == filter_id));
     }
 
-    pub fn drop_generations_for_pid_origin(&mut self, origin: crate::TsInputOrigin, pid: i32, section: bool, pes: bool) {
+    pub(crate) fn drop_generations_for_pid_origin(&mut self, origin: crate::TsInputOrigin, pid: i32, section: bool, pes: bool) {
         if section {
             self.section_assembler_generations
                 .retain(|(stored_origin, stored_pid), _| !(*stored_origin == origin && *stored_pid == pid));
@@ -888,7 +887,7 @@ impl PacketPipeline {
             .map_or(true, |flushed_generation| generation > *flushed_generation)
     }
 
-    pub fn mark_filter_flush_generation_for_origin(
+    pub(crate) fn mark_filter_flush_generation_for_origin(
         &mut self,
         filter_id: i32,
         pid: i32,

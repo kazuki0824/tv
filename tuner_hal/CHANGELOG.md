@@ -1,3 +1,31 @@
+# r50ea89_build_gate_round4_dead_code_fix
+
+- binder_service: remove or cfg-gate dead helper constants/functions rejected by Android Rust 1.75 `-D warnings`.
+- binder_service: replace Copy-tuple `std::mem::drop(...)` parameter suppression with explicit underscore parameters.
+
+# r50ea88_build_gate_round3_fix
+
+- Fix binder_service build gate after r50ea87:
+  - silence unused owner parameter in lifecycle cleanup collector wrapper;
+  - make DemuxHal::ensure_open() drop the demux record MutexGuard before the Arc source binding leaves scope, avoiding Rust 1.75 temporary lifetime E0597 under Soong/Clippy.
+
+# r50ea87_build_gate_round2_fix
+
+- Fixed build-gate errors observed in r1 verification logs.
+- Moved LNB open helper out of ITuner trait impl.
+- Completed Px4 diagnostic saturation field initialization and snapshot export.
+- Fixed FrontendTuneTxn same-request prepare_value usage.
+- Corrected Filter/DVR drop diagnostic owner_demux_id field references.
+- Fixed filter delay hint i32/i64 comparison.
+- Restored source-filter test TS packet helper.
+
+# r50ea86_build_gate_clippy_fix
+
+- Fixed build-gate errors found by r50ea85 verify logs.
+- Converted DVB last_common_tune stream_id from Option<u16> to Option<u32>.
+- Removed unused/over-public soft_demux helpers that failed -D warnings Clippy.
+- Removed an unused adaptation-field cursor assignment and unused test helpers.
+
 # r50ea85_archive_layout_fix
 
 - release: fixed the archive layout so extraction produces `vendor/maleicacid/tv/` and does not place `tuner_hal/`, `tis/`, `rec/`, `cas_hal/`, or project Markdown files at the AOSP root.

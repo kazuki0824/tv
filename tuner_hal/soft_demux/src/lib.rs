@@ -2922,23 +2922,6 @@ impl DemuxHandle {
         );
     }
 
-    fn generation_allows_downstream_delivery(
-        &self,
-        origin: TsInputOrigin,
-        downstream_id: i32,
-        generation: Option<AssemblyGeneration>,
-    ) -> bool {
-        match generation {
-            Some(AssemblyGeneration::Section { pid, generation }) => {
-                self.section_generation_allows_delivery(origin, downstream_id, pid, generation)
-            }
-            Some(AssemblyGeneration::Pes { pid, generation }) => {
-                self.pes_generation_allows_delivery(origin, downstream_id, pid, generation)
-            }
-            None => true,
-        }
-    }
-
     fn propagate_filter_output_with_origin_generation(
         &mut self,
         upstream_filter_id: i32,
@@ -3053,6 +3036,7 @@ impl DemuxHandle {
         }
     }
 
+    #[cfg(test)]
     fn payload_entry_matches_filter(&self, filter: &DemuxFilterRecord, payload: &FilterPayload) -> bool {
         let Some(config) = filter.config.as_ref() else {
             return false;
@@ -7715,34 +7699,17 @@ mod r50ea26_source_filter_boundary_tests {
         }
     }
 
-    fn versioned_section(version: u8, section_number: u8) -> Vec<u8> {
-        vec![
-            0x00,
-            0xb0,
-            0x05,
-            0x00,
-            0x01,
-            0xc0 | ((version & 0x1f) << 1) | 0x01,
-            section_number,
-            section_number,
-        ]
-    }
-
-    fn ts_payload_packet(pid: u16, cc: u8, payload_unit_start: bool, payload: &[u8]) -> [u8; TS_PACKET_SIZE] {
+    fn ts_payload_packet(pid: u16, cc: u8, pusi: bool, payload: &[u8]) -> [u8; TS_PACKET_SIZE] {
         let mut packet = [0xffu8; TS_PACKET_SIZE];
         packet[0] = 0x47;
         packet[1] = ((pid >> 8) as u8) & 0x1f;
-        if payload_unit_start {
+        if pusi {
             packet[1] |= 0x40;
         }
         packet[2] = pid as u8;
         packet[3] = 0x10 | (cc & 0x0f);
         packet[4..4 + payload.len()].copy_from_slice(payload);
         packet
-    }
-
-    fn section_packet(pid: u16, section: &[u8]) -> [u8; TS_PACKET_SIZE] {
-        ts_payload_packet(pid, 0, true, section)
     }
 
     #[test]
