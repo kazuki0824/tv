@@ -1,3 +1,14 @@
+# r50ea91_build_gate_round6_unused_av_shared_helper
+
+- Removed the unused `AvSharedBacking::clear_drop_only()` helper that failed Android Rust/Clippy `-D warnings`.
+- Kept `SharedMemoryBacking::clear_drop_only()` because it is still used by DVR best-effort cleanup.
+- This is a build-gate cleanup only; functional AV shared-memory behavior is unchanged.
+
+# r50ea90_build_gate_round5_dvr_helper_restore
+
+- Restore DvrHal cleanup/flush helper methods that were accidentally removed during r50ea89 dead-code cleanup.
+- Fix binder_service build gate errors for DvrHal::close_internal(), DvrHal::configure(), and DvrHal::flush().
+
 # r50ea89_build_gate_round4_dead_code_fix
 
 - binder_service: remove or cfg-gate dead helper constants/functions rejected by Android Rust 1.75 `-D warnings`.

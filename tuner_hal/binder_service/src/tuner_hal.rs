@@ -1576,11 +1576,6 @@ impl AvSharedBacking {
         Ok(())
     }
 
-    fn clear_drop_only(&self) {
-        if let Err(err) = self.clear_result() {
-            eprintln!("maleicacid-tuner-hal-av-shared: best-effort clear failed: {err:?}");
-        }
-    }
 
     fn build_native_handle_with_identity(
         &self,
@@ -12066,6 +12061,132 @@ impl DvrHal {
             }
         }
         Ok(())
+    }
+
+
+    fn record_flush_cleanup_result(
+        dvr_id: i32,
+        step: &str,
+        counter: &AtomicU64,
+        result: BinderResult<()>,
+    ) {
+        if let Err(status) = result {
+            record_tuner_diagnostic_counter(counter, step);
+            eprintln!(
+                "maleicacid-tuner-hal-dvr-flush: dvr={} step={} status={:?}",
+                dvr_id, step, status
+            );
+        }
+    }
+
+    fn begin_dvr_close(&self) -> BinderResult<DvrCloseStep> {
+        let mut step = *lock_mutex_status(&self.next_cleanup_step, "dvr_next_cleanup_step")?;
+        if let Some(record) = self.demux_record.as_ref() {
+            let ledger_step = lock_mutex_status(record, "demux_record").and_then(|mut record| {
+                record
+                    .dvr_ledger
+                    .begin_close(LedgerId(self.dvr_id))
+                    .map_err(|_| invalid_state_status("dvr ledger begin_close failed"))?;
+                Ok(DvrCloseStep::from_ledger_name(
+                    record
+                        .dvr_ledger
+                        .cleanup_step(LedgerId(self.dvr_id))
+                        .unwrap_or(step.ledger_name()),
+                ))
+            })?;
+            if ledger_step > step {
+                step = ledger_step;
+            }
+        }
+        *lock_mutex_status(&self.next_cleanup_step, "dvr_next_cleanup_step")? = step;
+        Ok(step)
+    }
+
+    fn mark_dvr_close_step(&self, step: DvrCloseStep) -> BinderResult<()> {
+        *lock_mutex_status(&self.next_cleanup_step, "dvr_next_cleanup_step")? = step;
+        if let Some(record) = self.demux_record.as_ref() {
+            lock_mutex_status(record, "demux_record").and_then(|mut record| {
+                record
+                    .dvr_ledger
+                    .mark_cleanup_step(LedgerId(self.dvr_id), step.ledger_name())
+                    .map_err(|_| invalid_state_status("dvr ledger mark_cleanup_step failed"))
+            })?;
+        }
+        Ok(())
+    }
+
+    fn record_dvr_close_failed(
+        &self,
+        failed_step: DvrCloseStep,
+        status: Status,
+    ) -> BinderResult<()> {
+        self.closed.store(true, Ordering::SeqCst);
+        self.cleanup_complete.store(false, Ordering::SeqCst);
+        let mark_failed = self.mark_dvr_close_step(failed_step).is_err();
+        match lock_mutex_status(&self.close_failure, "dvr_close_failure") {
+            Ok(mut failure) => {
+                let remaining = failed_step.remaining_from();
+                let reason = if mark_failed {
+                    "cleanup_failed_step_mark_failed"
+                } else {
+                    "cleanup_failed"
+                };
+                *failure = Some(CloseFailureRecord::new(
+                    failed_step.ledger_name(),
+                    reason,
+                    &remaining,
+                ));
+            }
+            Err(lock_status) => record_drop_cleanup_counter(
+                &DVR_DROP_CLEANUP_ERROR_COUNT,
+                "dvr_close_failure_record_lock_failed",
+                "dvr",
+                &lock_status,
+            ),
+        }
+        Err(status)
+    }
+
+    fn record_dvr_partial_config_cleanup_failed(
+        &self,
+        failed_step: DvrCloseStep,
+        status: Status,
+    ) -> BinderResult<()> {
+        self.closed.store(true, Ordering::SeqCst);
+        self.cleanup_complete.store(false, Ordering::SeqCst);
+        if let Ok(mut step) = self.next_cleanup_step.lock() {
+            *step = failed_step;
+        }
+        let quarantine_failed = if let Some(record) = self.demux_record.as_ref() {
+            match record.lock() {
+                Ok(mut record) => record.dvr_ledger.quarantine(LedgerId(self.dvr_id)).is_err(),
+                Err(_) => true,
+            }
+        } else {
+            false
+        };
+        match lock_mutex_status(&self.close_failure, "dvr_close_failure") {
+            Ok(mut failure) => {
+                let remaining = failed_step.remaining_from();
+                let reason = if quarantine_failed {
+                    "configure_cleanup_failed_quarantine_failed"
+                } else {
+                    "configure_cleanup_failed"
+                };
+                *failure = Some(CloseFailureRecord::new(
+                    failed_step.ledger_name(),
+                    reason,
+                    &remaining,
+                ));
+            }
+            Err(lock_status) => record_drop_cleanup_counter(
+                &DVR_DROP_CLEANUP_ERROR_COUNT,
+                "dvr_partial_config_cleanup_record_lock_failed",
+                "dvr",
+                &lock_status,
+            ),
+        }
+        Err(status)
     }
     fn close_internal(&self) -> BinderResult<()> {
         if self.cleanup_complete.load(Ordering::SeqCst) {
