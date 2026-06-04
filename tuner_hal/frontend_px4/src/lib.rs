@@ -876,6 +876,11 @@ impl Px4FrontendBackend {
         self.state.tuning_active || self.ts_reader.is_some() || self.driver_tune_locked
     }
 
+    fn start_streaming(&mut self) -> Result<(), HalError> {
+        self.ensure_control_open()?;
+        self.ioctl_noarg(PTX_START_STREAMING, "PTX_START_STREAMING")
+    }
+
     fn stop_streaming_if_active(&mut self, operation: &'static str) -> Result<(), HalError> {
         if !self.streaming_active() {
             return Ok(());

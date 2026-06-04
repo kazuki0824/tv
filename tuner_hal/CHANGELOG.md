@@ -1,3 +1,11 @@
+# r50eb34_design_r51_wording_and_build_log_fix_prebuild_unverified
+
+- 添付 verify log の Soong/Rust 失敗を確認し、PX4 backend の rollback restart 経路で未定義だった `Px4FrontendBackend::start_streaming()` を追加した。
+- WP-14 で追加した `SoftDemuxConfigureTxn` / `SoftDemuxOriginTxn` / `SoftDemuxOriginView` の所有対象を、実メソッドを持つ `DemuxHandle` に修正した。`DemuxCore` は handle factory であり configure/origin 実処理の所有者ではない。
+- full project tree 内の各 `DESIGN_JA.md` から `r51` / `r52` / `r53` など版数で将来差分を示唆する表現を除去し、`本リリース範囲` / `後続作業` / `現行 Android 14 Rust 生成境界` へ置換した。
+- 作業監査スクリプトはリリース物に同梱しない方針を維持した。
+- この環境では Rust型検査、Soong build、atest、VTS、実機確認は未実行。添付ログに基づく修正候補であり、再verifyが必要。
+
 # r50eb32_wp14_release_tree_fix_prebuild_unverified
 
 ## r50eb33_full_project_tree_restore_prebuild_unverified

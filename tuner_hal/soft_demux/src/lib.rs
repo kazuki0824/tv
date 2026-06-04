@@ -759,12 +759,12 @@ impl FilterPayload {
 pub struct DemuxCore;
 
 
-pub struct SoftDemuxConfigureTxn<'a> { demux: &'a mut DemuxCore }
-pub(crate) struct SoftDemuxOriginTxn<'a> { demux: &'a mut DemuxCore }
+pub struct SoftDemuxConfigureTxn<'a> { demux: &'a mut DemuxHandle }
+pub(crate) struct SoftDemuxOriginTxn<'a> { demux: &'a mut DemuxHandle }
 pub struct AvSyncClock;
 
 impl<'a> SoftDemuxConfigureTxn<'a> {
-    pub fn new(demux: &'a mut DemuxCore) -> Self { Self { demux } }
+    pub fn new(demux: &'a mut DemuxHandle) -> Self { Self { demux } }
 
     pub fn configure_filter(self, filter_id: i32, summary: FilterConfig) -> Result<(), DemuxConfigError> {
         self.demux.configure_filter_with_summary_result_impl(filter_id, summary)
@@ -784,7 +784,7 @@ impl<'a> SoftDemuxConfigureTxn<'a> {
 }
 
 impl<'a> SoftDemuxOriginTxn<'a> {
-    pub fn new(demux: &'a mut DemuxCore) -> Self { Self { demux } }
+    pub fn new(demux: &'a mut DemuxHandle) -> Self { Self { demux } }
     pub fn set_source(self, filter_id: i32, upstream_filter_id: i32) -> Result<(), DemuxConfigError> {
         self.demux.set_filter_data_source_result_impl(filter_id, upstream_filter_id)
     }
@@ -817,10 +817,10 @@ impl<'a> SoftDemuxOriginTxn<'a> {
     }
 }
 
-pub(crate) struct SoftDemuxOriginView<'a> { demux: &'a DemuxCore }
+pub(crate) struct SoftDemuxOriginView<'a> { demux: &'a DemuxHandle }
 
 impl<'a> SoftDemuxOriginView<'a> {
-    pub fn new(demux: &'a DemuxCore) -> Self { Self { demux } }
+    pub fn new(demux: &'a DemuxHandle) -> Self { Self { demux } }
 
     pub fn source_origin(&self, source_filter_id: i32) -> Option<TsInputOrigin> {
         self.demux.source_filter_origin_impl(source_filter_id)
