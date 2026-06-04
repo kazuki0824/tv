@@ -137,11 +137,10 @@ mod tests {
     fn hal_mutex_reports_poison_instead_of_recovering_inner() {
         let mutex = std::sync::Arc::new(HalMutex::new(1_i32));
         let cloned = std::sync::Arc::clone(&mutex);
-        let _ = std::thread::spawn(move || {
+        let _ = std::panic::catch_unwind(move || {
             let _guard = cloned.lock().expect("initial lock must succeed");
             panic!("poison test");
-        })
-        .join();
+        });
 
         assert_eq!(mutex.lock().err(), Some(HalLockError::Poisoned));
     }

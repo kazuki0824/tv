@@ -280,7 +280,7 @@ impl PipelineResyncState {
 /// `DemuxHandle` はこの構造体を1つだけ保持し、assembler/tracker/resyncを
 /// 個別フィールドとして持たない。これにより stream境界、source filter経路、
 /// DVR/record配送が同じpacket pipeline状態を共有する。
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct PacketPipeline {
     pub(crate) section_assemblers: BTreeMap<(crate::TsInputOrigin, i32, i32), PipelineSectionState>,
     pub(crate) pes_assemblers: BTreeMap<(crate::TsInputOrigin, i32, i32), PipelinePesState>,
@@ -901,6 +901,13 @@ impl PacketPipeline {
             (origin, filter_id, pid),
             self.current_pes_generation(origin, pid),
         );
+    }
+
+    pub fn flush_filter(&mut self, filter_id: i32, origins: &[(crate::TsInputOrigin, i32)]) {
+        for (origin, pid) in origins.iter().copied() {
+            self.mark_filter_flush_generation_for_origin(filter_id, pid, origin);
+        }
+        self.clear_filter_state_after_flush(filter_id);
     }
 
     pub fn clear_filter_state_after_flush(&mut self, filter_id: i32) {

@@ -1,3 +1,421 @@
+# r50eb32_wp14_release_tree_fix_prebuild_unverified
+
+- r50eb31 archive root が `tuner_hal/` になっていた問題を修正し、リリース物の root を `vendor/maleicacid/tv/tuner_hal/` へ戻した。
+- WP-14 code content は r50eb31 から変更しない。
+- build / atest / VTS / 実機確認は未実行。
+
+
+## r50eb31_wp14_soft_demux_configure_txn_prebuild_unverified
+
+- WP-14: `SoftDemuxConfigureTxn` を追加し、filter configure / record PID set / data source set / data source restore の public configure 系入口を同一Txnへ集約した。
+- 旧 `FilterConfigureTxn` / `RecordPidSetTxn` を削除した。
+- `SoftDemuxOriginTxn` は origin 操作の低レベル所有者として維持し、configure public entry の正本ではなくした。
+- Rust型検査、Soong build、atest、VTS、実機確認は未実行。
+# r50eb30_wp13_lnb_lifecycle_boundary_audit_prebuild_unverified
+
+- WP-13: LNB lifecycle boundary を実コードで確認した。
+- `ILnb.close()` / owner loss は `LnbLifecycleTxn` 経由、Rust `Drop` は `DropLeakTxn` による未close診断・quarantine・callback local clear のみに限定されていることを確認した。
+- 監査スクリプトはリリース物に同梱せず、外部成果物として分離した。
+- WP-14 (`SoftDemuxConfigureTxn`) は未実施であり、外部auditでは既知FAILとして検出される。
+- prebuild_unverified: Rust型検査、Soong build、atest、VTS、実機確認は未実行。
+
+# r50eb28_wp12_completion_queue_cleanup_import_fix_prebuild_unverified
+
+- WP-10未達修正: `queue_cleanup_txn.rs` が `tuner_hal.rs` 内の private import alias `BinderResult` を再export前提で参照していた問題を修正し、`binder::Result as BinderResult` を直接importする形へ変更した。
+- WP-09〜WP-12の構造変更は維持。WP-13は未実施。
+- Rust型検査、Soong build、atest、VTS、実機確認は未実行。
+
+# r50eb26_wp12_scan_session_txn_public_api_dispatch_prebuild_unverified
+
+## r50eb27_wp12_completion_queue_worker_fix_prebuild_unverified
+
+- WP-10 completion sweep: move Filter/DVR cleanup calls through `QueueCleanupResource` and remove owner-local cleanup primitive helpers.
+- WP-11 completion sweep: route live pump runtime failures through `WorkerFailureClassifier` instead of direct backend fail-closed calls from worker-control/demux/descrambler control failures.
+- WP-12 status: retain `ScanSessionTxn` public API dispatch from r50eb26; no WP-13 implementation in this version.
+- Prebuild-unverified: Rust type check, Soong build, atest, VTS, and device validation were not run.
+
+
+- WP-12 completion sweep: IFrontend.scan() is now a thin dispatch to ScanSessionTxn::start(); scan session / worker slot / start signal ownership stays inside ScanSessionTxn.
+- Removed accidental duplicated LNB operation guard acquisition in IFrontend.setLnb().
+- Prebuild-unverified: Rust type check, Soong build, atest, VTS, and device validation are not executed in this environment.
+
+
+## r50eb25_wp12_scan_session_txn_completion_prebuild_unverified
+
+- WP-12未達修正: scan() が scan_worker_slot lock保持中に ScanSessionTxn::cancel_session() を呼び、同じscan_worker_slotを再lockする経路を廃止。
+- ScanSessionTxn に finish_cancelled_without_worker_stop() を追加し、worker slot lifecycleを既に所有している経路では session phase だけを終了させる。
+- stopTune() / stopScan() のscan停止は ScanSessionTxn に集約し、worker停止の二重実行を削除。
+- Rust型検査、Soong build、atest、VTS、実機確認は未実行。
+
+
+## r50eb24_wp12_queue_worker_scan_txn_prebuild_unverified
+
+- WP-10: QueueCleanupTxn を binder_service/src/queue_cleanup_txn.rs へ分離し、release artifact 内の作業監査スクリプト非同梱方針を維持。
+- WP-10: Filter/DVR queue cleanup の owner-specific primitive 名を削除し、QueueCleanupTxn 経由の cleanup owner 経路へ寄せた。
+- WP-11: WorkerFailureClassifier を追加し、live pump の worker control failure と backend failure を分類する経路へ変更。
+- WP-12: ScanOperationTxn を ScanSessionTxn へ正本名変更し、scan worker slot 名を scan_worker_slot へ変更。
+- External audit scripts are provided separately and are not included in the release artifact.
+- Prebuild unverified: Rust type-check / Soong build / atest / VTS / device test are not executed.
+
+# r50eb22_wp09_close_step_txn_completion_prebuild_unverified
+
+- WP-09未達を是正した。Demux close の `DemuxCleanupStep` 手書き進行を `CloseStepTxn` 経由へ移行した。
+- `DESIGN_JA.md` に残っていた旧 `StreamBoundaryManager` 正本名を `StreamBoundaryTxn` へ補正した。
+- 作業監査スクリプトはリリース物へ同梱しない方針を維持した。追加auditスクリプトは別アーカイブで提供する。
+- Rust型検査、Soong build、atest、VTS、実機確認は未実行。
+
+# r50eb20_release_artifact_cleanup_prebuild_unverified
+
+- r50eb19 に混入していた作業監査用ファイル `tools/audit_txn_ownership.py` と `tools/test_audit_txn_ownership.py` をリリース物から削除した。
+- `tools/__pycache__/` を削除した。
+- 製品統合用生成ツールである `tools/render_vts_config.py` と、その自己テスト `tools/test_render_vts_config.py` は維持した。
+- 追加の共通化監査はリリース物にスクリプトを同梱せず、外部報告書として分離する。
+- build / atest / VTS / 実機確認は未実行。
+
+# r50eb19_wp07_old_path_audit_prebuild_unverified
+
+- WP-07: 旧 owner-side 経路の再導入を防ぐ静的 audit を `tools/audit_txn_ownership.py` として追加した。
+- `WorkerLifecycleTxn` / `ResourceLifecycleTxn` / `QueueCleanupTxn` / `StreamBoundaryTxn` / `SoftDemuxOriginTxn` / `DescramblerSessionTxn` を迂回する代表的な旧経路名を検出する。
+- audit 自体の unit test `tools/test_audit_txn_ownership.py` を追加した。
+- Rust 型検査、Soong build、atest、VTS、実機確認は未実行。
+
+
+## r50eb18_wp06_descrambler_session_txn_completion_test_old_path_sweep_prebuild_unverified
+
+- WP-06 completion sweep: removed unused test-only `TunerDescrambler::add_pid_for_test()` and `remove_pid_for_test()` helper paths that directly mutated descrambler session / runtime registry outside `DescramblerSessionTxn`.
+- Kept `DescramblerSession` as the canonical state object; `DescramblerSessionTxn` remains the public-API operation owner and does not replace or duplicate the state model.
+- Build / rustc / cargo / atest / VTS are not executed in this environment.
+
+
+## r50eb16_wp05_soft_demux_origin_txn_prebuild_unverified
+
+- WP-05: introduced `SoftDemuxOriginTxn` / `SoftDemuxOriginView` as the owner-side facade for source-filter origin transitions, source downstream disconnect, source-origin partial reset, and filter flush-generation marking.
+- Routed setDataSource/restoreDataSource, filter unregister/configure/flush, and source-filter downstream TS routing origin lookup through the new origin facade.
+- Removed the old `SourceFilterLinkTxn` name so source-filter lifecycle/origin operations have a single WP-05 owner name.
+- Kept packet-pipeline origin/assembler functions as low-level backing primitives inside `DemuxCore`; owner-side source-filter origin paths enter through `SoftDemuxOriginTxn` / `SoftDemuxOriginView`.
+- Build / Rust type check / atest / VTS / device verification not run in this environment.
+
+
+## r50eb15_wp04_stream_boundary_txn_prebuild_unverified
+
+- WP-04: stream boundary owner を `StreamBoundaryTxn` に統一。
+- tune start/stop, frontend unbind/failure, source filter change の public API 主経路から、旧 `StreamBoundaryManager` 名の直接経路を削除。
+- 既存の `StreamBoundaryResetPlan` / pending retry / resource trait は `StreamBoundaryTxn` 内部の低レベル実装部品として維持。
+- build / Rust型検査 / atest / VTS / 実機確認は未実行。
+
+## r50eb14_wp03_queue_cleanup_txn_completion_runtime_io_sweep_prebuild_unverified
+
+- WP-03 completion sweep: routed `RuntimeIoRegistry::flush_all()` queue/backing clears through `QueueCleanupTxn` so stream-boundary runtime I/O flush no longer bypasses the common queue cleanup diagnostic path.
+- Kept low-level backing methods (`clear_result()`, `release_all()`, playback discard primitives) as private backing primitives; owner-side cleanup paths must enter through `QueueCleanupTxn` wrappers.
+- WP-04 was not started because r50eb13 failed the strict WP-03 old-path deletion check.
+- Build / Rust type check / atest / VTS / device verification not run in this environment.
+
+## r50eb13_wp03_queue_cleanup_txn_prebuild_unverified
+
+- WP-03: Added `QueueCleanupTxn` as the shared owner-side cleanup path for Filter/DVR queue boundary cleanup.
+- Routed Filter configure/flush queue clear, AV queue clear, AV shared release/drop, and DVR configure/flush record/playback queue cleanup through `QueueCleanupTxn`.
+- Removed the old per-type `record_flush_cleanup_result` helpers so Filter/DVR flush diagnostics use the common queue cleanup transaction path.
+- Kept low-level backing `clear_result()` / `discard_playback_input_for_boundary_result()` methods as backing primitives; public API owner paths now enter through `QueueCleanupTxn` wrappers.
+- Build / Rust type check / atest / VTS / device verification not run in this environment.
+
+
+## r50eb12_wp02_resource_lifecycle_txn_completion_old_path_sweep_prebuild_unverified
+
+- WP-02 completion sweep: per-resource child ledger lifecycle primitives for Filter / DVR / Descrambler are no longer public callable paths.
+- Kept ResourceLifecycleTxn as the only owner-side façade for reserve / commit-open / rollback-open / begin-close / quarantine / cleanup-step / commit-close.
+- WP-03 was not started because r50eb11 failed the strict old-path deletion check.
+- Prebuild-unverified: Rust type check, build, atest, VTS, and device validation are not run in this environment.
+
+
+## r50eb11_wp02_resource_lifecycle_txn_prebuild_unverified
+
+- WP-02: Added `ResourceLifecycleTxn` as the owner-side facade for Filter / DVR / Descrambler resource ledger transitions.
+- Routed Filter/DVR/Descrambler open reserve/commit/rollback, close begin/cleanup-step/quarantine/commit-close, and related cleanup retry tests through `ResourceLifecycleTxn`.
+- Kept DemuxLedger direct APIs as the demux resource ledger owner; WP-02 sweep targeted per-demux child resource ledgers.
+- Static grep confirmed no direct `filter_ledger.*`, `dvr_ledger.*`, or `descrambler_ledger.*` lifecycle method calls remain in `tuner_hal.rs`; direct demux ledger calls remain intentionally owned by `DemuxLedger`.
+- Build / Rust type check / atest / VTS / device verification not run in this environment.
+
+## r50eb10_wp01_worker_lifecycle_txn_completion_test_old_path_sweep_prebuild_unverified
+
+- WP-01 old path sweep continued.
+- Removed direct `std::thread::spawn` usage from `hal_sync.rs` tests by using `std::panic::catch_unwind` to poison the mutex in-place.
+- Replaced `worker_runtime.rs` test-only direct `WorkerRuntime::spawn_owned_with_exit_hook(...)` calls with `WorkerLifecycleTxn::spawn_with_exit_hook(...)`, so owner-side spawn/join examples also go through the common lifecycle transaction.
+- Production worker owner paths were already routed through `WorkerLifecycleTxn`; this sweep removes remaining test-level bypasses from the static grep target.
+- Build / Rust type check / atest / VTS / device verification not run in this environment.
+
+
+## r50eb9_wp01_worker_lifecycle_txn_completion_old_path_sweep_prebuild_unverified
+
+- WP-01 worker lifecycle completion sweep.
+- Removed the remaining legacy `WorkerRuntime::join(...)` crate-visible helper so owner-side joins are exposed through `WorkerLifecycleTxn` only.
+- Confirmed no `WorkerRuntime::` direct usage remains outside `worker_runtime.rs` by static grep.
+- Build / Rust type check / atest / VTS / device verification not run in this environment.
+
+# r50eb8_wp01_worker_lifecycle_txn_completion_prebuild_unverified
+
+- WP-01未達是正: `worker_runtime.rs` の追加テストを現行 `wait_until_work_or_stop(&mut generation, timeout)` APIへ合わせ、Rust型検査で落ち得る不一致を除去した。
+- `WorkerRuntime` と raw spawn/join helper の可視性を下げ、`tuner_hal.rs` から直接 `WorkerHandle::request_stop()/wake()/join_from_owner()` を呼ぶ旧停止経路を使えない構造へ寄せた。
+- `WorkerLifecycleTxn::request_stop_wake_join_slot()` / `request_stop_join_slot()` を追加し、shared memory playback worker、frontend scan/tune worker、live pump、Filter callback worker、DVR callback worker、diagnostic worker の停止・wake・join を共通slot helperへ移した。
+- build / Rust型検査 / atest / VTS / 実機確認は未実行。
+
+# r50eb7_wp01_worker_lifecycle_txn_prebuild_unverified
+
+- WP-01: `WorkerLifecycleTxn` を `worker_runtime.rs` に追加し、worker の spawn / request_stop / wake / join / abnormal exit 判定を共通経路へ集約した。
+- `IFrontend.scan()` / `stopScan()` / tune worker / live pump / Filter callback worker / DVR callback worker / playback shared memory worker の spawn・停止・join 呼び出しを `WorkerLifecycleTxn` 経由へ移行した。
+- scan / tune worker の stop request + wake + join は `request_stop_wake_join_mut()` に集約した。
+- worker lifecycle の単体テストを追加した。
+- build / Rust単体テスト / atest / VTS / 実機確認は未実行。
+
+# r50eb6_lnb_owner_loss_lifecycle_prebuild_unverified
+
+- r50eb5 の DESIGN_JA.md が要求する LNB owner loss lifecycle 経路を実装に接続した。`FrontendHal::close_internal()` は backend close 前に選択中かつ当該 frontend 所有の LNB を `LnbLifecycleTxn::close_from_owner_loss()` 経由で安全状態へ戻す。
+- `LnbLifecycleTxn::close_from_owner_loss()` は dead code ではなく実使用経路になった。Rust `Drop` は引き続き通常 cleanup を行わず、未close診断・quarantine・callback local clear のみに留める。
+- build / Rust単体テスト / atest / VTS / 実機確認は未実行。
+
+# r50eb5_wp01_to_wp04_prebuild_unverified
+
+- WP-01: LNBのRust Dropに通常cleanupを置かない方針に固定し、`DESIGN_JA.md` の旧Drop安全状態反映記載を削除した。`LnbHal::drop()` は `DropLeakTxn::record_unclosed_drop(ResourceKind::Lnb)` 相当の未close診断、quarantine、callback local clear のみに寄せ、backend apply / registry safe commit を呼ばない。
+- WP-02: `IDescrambler.setDemuxSource()` で `demux_record` lock を demux generation / closed 再確認から descrambler ledger commit、session commit 完了まで保持する順序へ変更した。session commit失敗時は同一 `demux_record` lock 保持下で descrambler ledger quarantine を行う。
+- WP-03: `IFrontend.scan()` の scan worker 所有権を `scan_worker slot lock -> spawn -> scan_session record -> slot格納 -> start signal` に変更した。slot lock取得失敗時はspawnしない。start signal失敗時はslotからhandleを取り出してjoinする。
+- WP-04: scan session lock poison時も `into_inner()` で回復し、terminal phase / terminal debug clear / finish phase を診断だけで終わらせないようにした。scan local failureをlive path failedへ昇格しない方針は維持した。
+- build / Rust単体テスト / atest / VTS / 実機確認は未実行。
+
+
+## r50eb3_prebuild_unverified_targeted_fix
+
+- r50eb2 rev5 顧客再指摘のうち、setDemuxSource() の session/ledger commit 境界、demux close競合再確認、frontend boundary failure時の demux ledger quarantine、frontend close/unbind の ledger/state 更新順序、scan worker spawn-before-destroy、scan start signal失敗時のhandle回収、LNB Drop quarantine を補修した。
+- nullable Binder 境界は引き続き future_work / blocker で、実装済み扱いにしない。
+- build / Rust単体テスト / atest / VTS / 実機確認は未実行。
+
+# r50eb2_prebuild_unverified_rev5_static_rechecked
+
+- rev4成果物を rev3 計画で再照合した。
+- コード実体はrev4から変更しない。RELEASE_VERSIONと本記録のみ更新。
+- nullable Binder境界は引き続き future_work/blocker とし、r50eb2対象外。
+- build / Rust単体テスト / atest / VTS / 実機確認は未実行。
+
+# r50eb2_prebuild_unverified_rev4_static_checked
+
+- rev3計画を照合対象にし、WP-02〜WP-07の未達を再修正した。
+- `mark_live_path_failed()` と frontend/scan/boundary の旧 `*_best_effort` 通常経路を削除し、FailureClassifier / FrontendDemuxBindingTxn / StreamBoundaryManager / ScanOperationTxn 経路へ寄せた。
+- nullable Binder境界は引き続き future_work/blocker であり、実装済み扱いにしていない。
+- build、Rust単体テスト、atest、VTS、実機確認は未実行。
+
+# r50ea95_design_ja_lossless_dedup_trace
+
+- `DESIGN_JA.md` に正本章・補足章・移動済み情報の読み方を追加した。
+- r50ea92 改訂前 `DESIGN_JA.md` から消えた非空行195件を `DESIGN_JA_LOSSLESS_TRACE_r50ea95.md` で分類した。
+- scan `END` callback失敗が `mark_live_path_failed()` へ波及する旧記載を削除し、callback failure 診断に限定した。
+- 旧重複章を `補足契約:` 見出しへ整理し、正本章と補足章の上下関係を明示した。
+- コード修正、build、Rust単体テスト、atest、VTS、実機確認は未実施。
+
+# r50ea94_design_ja_lossless_dedup
+
+- r50ea93 の DESIGN_JA.md 改訂で CHANGELOG 側へ退避されただけになっていた設計契約を DESIGN_JA.md へ復帰した。
+- raw section / raw PES event、TS resync buffer、ARIB section validator、filter delivery delay、checked FMQ shim、playback consumer worker、AV sync hardware ID の契約を設計正本へ戻した。
+- 表10、表12、表13、表16 は正本参照へ変更し、同じ契約の重複定義を排除した。
+- コード修正、build、atest、VTS、実機確認は未実施。
+
+# r50ea93_design_ja_contract_revision
+
+- DESIGN_JA.md を設計正本として再整理した。
+- 作業履歴・リリース履歴を DESIGN_JA.md から外し、以下に移動した。
+- build / atest / VTS / grep / 成果物命名は DESIGN_JA.md ではなく開発規則・完了判定文書を正とする整理にした。
+
+## DESIGN_JA.md から移動した履歴記載
+
+### DESIGN_JA.md release-history block r50dz14-r50dz24
+
+### r50dz14: cleanup / AV shared / LNB / AV sync ID 固定
+
+今回の修正対象は、AOSP AIDL 公開面を変更せず、HAL内部の状態遷移と失敗伝播を固定する。
+
+- `IDvr.configure()` は、settings 検証と DVR record 存在確認を先に行う。settings 不正または DVR 不在の場合、旧 playback input、record queue、FMQ状態を破棄しない。旧一過性状態の破棄に成功した後だけ demux DVR 設定を変更する。
+- `IDvr.flush()` と `IFilter.flush()` は、demux flush、通常FMQ破棄、AV用FMQ破棄、AV shared active slot 破棄を可能な限り全て試行し、最初の失敗を返す。途中失敗で後続 cleanup を飛ばしてはならない。
+- `configureAvStreamType()` は AV MediaEvent 解釈境界である。旧 AV shared backing、active `avDataId`、handle identity を fallible に破棄できた場合だけ stream type hint を変更する。best-effort 破棄で成功扱いしない。
+- `ensure_av_shared_backing()` は `FilterHal` 側 slot と `RuntimeIoRegistry` への登録を単一の `av_shared_backing` lock 保持中に行う。`RuntimeIoRegistry` だけに backing が存在し、`FilterHal` slot が `None` の状態を作らない。
+- `ILnb.close()` は failed 状態でも資源解放として実行する。callback は必ず解放し、closed は必ず true にする。backend reset / registry commit は試行し、失敗した場合は first error を返すが、callback 解放と closed 遷移は妨げない。Drop も同じく callback を必ず解放する。
+- `IFrontend.setLnb()` は LNB state を backend に適用できた後だけ selected LNB ID を更新する。LNB state 適用失敗時に selected LNB ID だけが先に変わる部分成功を禁止する。
+- soft demux の filter ID は `checked_add()` で増やし、上限到達時は `DemuxConfigError::IdExhausted` にする。wrap / reuse は禁止する。
+- AV sync hardware ID は `filter_id & 0xffff` から導出しない。demux 内の `filter_id -> hw_id` と `hw_id -> filter_id` の双方向表で固定し、filter ID 65536周期の衝突を禁止する。filter unregister、non-AV configure、demux close では双方向表を消す。
+- `IFrontend.setCallback()` は callback slot と backend callback flag を固定順序で両方確保してから更新する。片方だけ更新される状態を作らない。
+
+
+### r50dz15: scan/tune・FMQ・DVR・demux・descrambler・LNB 状態境界の再固定
+
+r50dz15 では、AOSP AIDL 公開面を変更せず、HAL 内部の状態境界を次のように固定する。
+
+- scan の失敗終端は一箇所に集約する。callback failure が原因の場合は `ScanPhase::FailedCallback` とし、END の再送で失敗を重ねない。backend failure / normal completion の場合だけ END 通知を試行する。scan worker 異常終了後も scan session は terminal debug に publish して clear する。
+- `tune()` は本書の「表19. `IFrontend.tune()` transaction 契約」を正とし、settings / delivery system / 周波数範囲 / frontend capability / LNB候補 / worker・callback・rollback path の validate / prepare が完了するまで、既存 scan/tune/live pump、backend state、demux stream boundary を破壊しない。commit開始後に backend submit または worker spawn が失敗した場合は旧 tune 復旧を試み、復旧不能な場合だけ frontend failed と bound demux quarantine へ落とす。
+- tune worker は `bound_demuxes` lock 失敗を「bound demux なし」と見なしてはならない。LOCKED 通知後の live pump 判定で lock 失敗した場合は `RuntimeFailure` とする。
+- FMQ read/write/clear/fill 確認は `ring_io_lock` で直列化する。playback consume は `ring_io_lock -> playback_consume_lock -> demux/DVR state` の順序で固定する。
+- checked FMQ shim は `queue == null` または `out_written == null` を invalid argument とし、`size == 0` は `data == null` でも成功 no-op とする。`size > 0 && data == null` は invalid argument とする。
+- DVR playback consumer worker は `RuntimeIoRegistry` への DVR 登録成功後にだけ開始する。登録前に playback worker が DVR state を観測してはならない。
+- `IFilter.configure()` / `IDvr.configure()` は、open状態・startedではないこと・settings妥当性・容量制限を先に検証する。検証失敗時に旧 queue / AV shared / playback input を破棄してはならない。
+- playback status は writable space を基準とし、空き容量 0 を `SPACE_FULL`、空き容量 capacity 以上を `SPACE_EMPTY` とする。低水位以下は `SPACE_ALMOST_FULL`、高水位以上は `SPACE_ALMOST_EMPTY` とする。
+- demux close は cleanup 全試行成功後に `closed=true` とする。cleanup 途中失敗時は `closed=false` を維持し、次回 close で再試行可能にする。Drop の best-effort cleanup でも、record lock 取得前に `closed=true` を先行設定しない。
+- descrambler の key lifetime と PID lifetime は分離する。`VOID_KEYTOKEN` は key slot だけを解除し、PID登録を維持する。key未設定でも `addPid()` は PID登録を拒否しない。後段の復号時に key が無い PID は `NO_KEY` 診断とする。
+- LNB Drop は operation lock 取得失敗時でも callback 解放と closed 遷移を先に試行する。DiSEqC generation は backend送信成功後だけ更新する。
+
+### r50dz16: LNB snapshot・descrambler PID-only・playback consumer 起動順序の補正
+
+r50dz16 では、r50dz15 の未達を次のように固定する。
+
+- `IFrontend.setLnb()` は LNB ID ごとの操作ロックを取得してから owner 検証、LNB state snapshot 取得、backend への state 適用、selected LNB ID 更新を行う。同じ LNB ID に対する `setVoltage()` / `setTone()` / `setSatellitePosition()` / `close()` / Drop reset と `setLnb()` は同時に進めない。selected LNB ID と backend へ適用した LNB state は、同じ snapshot に由来しなければならない。
+- LNB 操作ロックは `ILnb` object ごとのロックではなく、LNB ID ごとの共有ロックとする。同じ LNB ID を複数回 open した場合も、状態更新と frontend への適用は直列化する。
+- `IDescrambler` の key lifetime と PID lifetime は分離する。key token 未設定でも PID 登録を拒否しない。PID-only 登録は source filter identity を持たない登録として扱い、後段の復号時に key が無い PID は `NO_KEY` 診断へ落とす。
+- Rust AIDL public method 境界で source filter が非 null 型として生成される経路では、public `addPid()` / `removePid()` は渡された source filter を検証する。PID-only 経路は HAL 内部経路とテスト経路で固定し、AIDL binding が nullable source filter を表現できる構成へ変わった場合は同じ内部経路へ接続する。
+- playback consumer worker は DVR が demux / `RuntimeIoRegistry` へ登録された後にだけ起動する。`SharedMemoryBacking` 生成直後に playback worker を開始する旧 helper は使わない。
+
+## r50dz17: Tuner HAL 内部共通部品の使用固定
+
+Tuner HALの公開AIDL実装は、以下の共通部品を必ず経由する。
+
+1. `hal_sync`
+   mutex、condvar、mutex汚染、lock失敗、wait失敗を扱う。`std::sync::Mutex::lock()`の直接使用、`PoisonError::into_inner()`による通常復旧、lock失敗の既定値丸めは禁止する。
+
+2. `worker_runtime`
+   worker起動、停止、join、異常終了理由記録を扱う。各HAL objectが`JoinHandle`、`Condvar`、`AtomicBool`を直接組み合わせてworker制御することは禁止する。
+
+3. `lifecycle_txn`
+   open、close、configure、rollback、cleanupのvalidate / prepare / apply / commit / rollback / cleanupを扱う。台帳更新とruntime登録を各APIが手書きで分散実装することは禁止する。
+
+4. `registry_ledger`
+   demux、filter、DVR、descrambler、LNB、frontend bindingのID、世代、所有権、live状態を管理する。live IDとregistry recordを別々に更新してはならない。
+
+5. `stream_boundary`
+   tune、scan、frontend close、frontend unbind、source切替時のsoft_demux reset、RuntimeIo flush、AV/DVR/FMQ旧データ破棄を扱う。soft_demuxだけ、またはRuntimeIoだけを個別resetしてはならない。
+
+6. `fmq_queue`
+   FMQ descriptor、read、write、clear、fill、EventFlagを扱う。HAL objectからfmq_shimを直接呼ぶことは禁止する。
+
+7. `packet_pipeline`
+   TS packet検証、continuity、section/PES assembly、raw/record/DVR/AV配送、record index event生成を扱う。binder_service内に別TS/PES/parserを置くことは禁止する。
+
+8. `record_index_parser`
+   scrambling change、PES timestamp、H.264/H.265/VVC start code index eventを生成する。binder_service側でpayloadを直接走査してindex eventを作ってはならない。
+
+9. `frontend_capability`
+   DVB/px4 probe能力、AIDL capability、runtime tune許可、LNB要否を生成する。declared frontend typeだけでruntime allowed systemsを決めてはならない。
+
+10. `descrambler_session`
+    PID binding、source filter binding、key token binding、close処理を扱う。PID寿命とkey token寿命を混在させてはならない。
+
+r50dz17では上記共通部品の骨格だけを追加し、既存のtune、scan、filter、DVR、descrambler、LNB実行経路は変更しない。r50dz18以降で各公開AIDL実装を段階的に共通部品へ接続する。
+
+
+## r50dz18: WP-02 個別先行修正の固定
+
+r50dz18では、共通部品化を待たずに安全に潰せる個別バグを先行修正する。ここで入れる修正は、後続の `registry_ledger`、`packet_pipeline`、`record_index`、`fmq_queue` への移行時に同じ契約を保ったまま共通部品側へ移す。
+
+- DVR ID採番は `checked_add(1)` を使う。採番上限に達した場合は `DemuxConfigError::IdExhausted` とし、Binder境界では `UNKNOWN_ERROR` へ写像する。
+- section bits 条件の `filter`、`mask`、`mode` は同一長でなければならない。長さ不一致は configure 時点の不正条件とし、match 時にも一致不能とする。`mode` のbitが0なら一致要求、1なら不一致要求とする。
+- filter delivery delay は、有効な時間条件と有効なbyte数条件が両方ある場合、両方を満たした場合だけ配送可能とする。片方だけを満たした状態ではDATA_READYを出さない。
+- record DVR start は、接続済み record filter が configured かつ started の場合だけ成功させる。source filter未接続、未configure、停止中はいずれも `INVALID_STATE` とする。
+- raw section filter ではFMQ dataに加えて `DemuxFilterEvent::Section` を生成する。section headerをparseできないraw payloadでもevent自体を欠落させない。
+- raw PES filter ではFMQ dataに加えて `DemuxFilterEvent::Pes` を生成する。PES headerをparseできないraw payloadでもevent自体を欠落させない。
+- TS resync buffer は、入力末尾に完全な188 byte packetがある場合、次入力のsync byteを待たずにそのpacketを返す。
+- section validatorは ARIB table 種別別上限に従う。EIT table_id `0x4e..=0x6f` は `section_length <= 4093`、その他の正式対応 PSI/SI table は `section_length <= 1021` とする。syntaxありsectionでは `section_length >= 9` かつ `total_length >= 12` を要求する。section length fieldのreserved bits、およびsyntaxありsectionのversion byte reserved bitsは `11` でなければならない。
+- 同一payload内で不正section候補を見つけた場合、その候補だけを診断対象として捨て、後続の正常section候補を走査する。
+
+### r50dz19: WP-03/WP-04 共通部品化実施固定
+
+r50dz19 では、r50dz6 由来50件の再発防止として、以下を実装固定とする。
+
+- FMQ の FFI symbol は `tuner_hal/binder_service/src/fmq_queue.rs` だけが保持する。`FilterHal`、`DvrHal`、`SharedMemoryBacking` は `fmq_queue` module の wrapper を経由する。
+- LNB 操作用台帳の mutex 汚染は通常復旧しない。`PoisonError::into_inner()` による継続を禁止する。
+- worker signal の lock / wait 失敗は stop / timeout / normal wake へ丸めない。異常として停止させる。
+- `current_fill_bytes()` は lock 失敗を `0 byte` として返さない。
+- Demux の live ID と registry record は、registry 登録成功後にだけ live ID を公開する。live ID だけが残った場合は同一IDで再作成して修復する。
+- `IDescrambler.close()` は registry unregister 成功前に `closed=true` を立てない。unregister失敗時は再 close 可能なまま残す。
+- `IDescrambler.setKeyToken()` の non-VOID token 差し替えでは旧 token を expire 対象にする。`VOID_KEYTOKEN` は key binding だけ解除し、PID binding は維持する。
+- `IDescrambler.removePid()` は未登録 PID でも source filter 所有権・世代検証を先に実施する。
+- frontend unbind / close 系の demux reset では、soft demux reset と RuntimeIo flush を同じ境界処理として実施する。
+- soft demux の raw / record / DVR 配送は、TEI、continuity duplicate、discontinuity 判定後の単一 stream view で実施する。
+- TS raw source filter 経由の record filter でも、直接 TS 経路と同じ record packet event を生成する。
+- PES timestamp は marker bit と forbidden PTS_DTS_flags を検証する。不正時は timestamp なし扱いにする。
+- record index の scrambling change は、初回 packet でも scrambled state なら change event を生成する。
+- record index の start-code scan は payload 内の全候補を走査する。VVC は2 byte NAL headerの2 byte目から `nal_unit_type` を抽出する。
+- DVB frontend の runtime allowed systems は probe 由来 `supported_systems` を正本とし、declared frontend type だけでは削らない。
+
+
+### r50dz20: WP-04照合時に検出したdemux live ID修復経路の補正
+
+r50dz20では、`open_or_create_demux_record_by_id()` の live ID修復経路で、`demux_live_ids` のguardを明示的に破棄した後に同じguardを再使用する誤りを修正する。
+
+固定事項:
+
+- live IDあり・registry recordなしの部分登録修復では、`demux_live_ids` guardを保持したまま該当IDを除去し、同一IDでrecordを再作成する。
+- guard破棄後の再使用は禁止する。
+- demux live IDとregistry recordの整合性修復は、成功時のみ公開状態へ戻す。
+
+## r50dz21: WP-04 未達補修の固定
+
+r50dz20 の WP-04 確認で残った補修事項を次の通り固定する。
+
+- LNB ID ごとの操作ロック台帳は、mutex 汚染時に `panic` や通常復旧を行わず、Binder error として fail-closed する。
+- FMQ fill 取得は `0 byte` や `panic` へ丸めず、失敗を `BinderResult<usize>` として呼び出し側へ伝播する。ワーカー文脈では runtime failure として対象 filter / DVR を fail-closed にする。
+- DVR playback 入力で読み取った bytes がすべて malformed TS と判定された場合、成功消費にしない。playback worker failure として扱う。
+- TS packet view は `packet_pipeline` の `TsPacketView` を唯一の定義とし、`soft_demux/src/lib.rs` 内に別定義を置かない。
+- adaptation field の `discontinuity_indicator` は `packet_pipeline` で露出し、soft demux は当該 PID の continuity 状態と section/PES assembler を切断する。
+
+## r50dz22: WP-04 完了補修の固定
+
+r50dz22 では、r50dz21 の WP-04 照合で残った実質未達を次のように補修する。
+
+- worker signal は mutex 汚染時に `expect()` で `panic` してはならない。汚染を `runtime_failure` として記録し、ワーカー終了分類は `WorkerExit::RuntimeFailure` に写像する。
+- DVR callback wake は mutex 汚染時に `panic` してはならない。公開経路では `BinderResult` として返し、best-effort cleanup では診断ログに残す。
+- record event 用 TS packet view は `packet_pipeline::TsPacketView` を使用する。binder_service 側に `TsPacketRecordView` を置かない。
+- record index 用の start-code 走査、PES timestamp 解析、NAL header 解釈は `record_index` へ置く。binder_service 側に record event 用 TS/PES/start-code parser を再追加しない。
+- `packet_pipeline::TsPacketView` は record event に必要な priority、scrambling_control、adaptation field flags も公開する。
+
+### r50dz23: WP-04 完了補修
+
+WP-04 の旧コード削除確認で残った未達を補修する。
+
+- worker 起動、停止、join、異常終了理由記録は `worker_runtime.rs` の `WorkerHandle` / `WorkerExit` / `WorkerRuntime::spawn_owned*` を経由する。`tuner_hal.rs` には worker join 実装を置かない。
+- LNB ID ごとの操作ロックは `registry_ledger.rs` の `LnbLedger` が管理する。`tuner_hal.rs` に LNB 操作ロック用の裸の大域台帳を置かない。
+- `soft_demux::configure_filter_with_summary_result()` は AV sync ID の採番失敗があり得る処理を、下流切断や filter 状態更新より前に検証する。configure失敗時に下流切断だけ反映された状態を作らない。
+- DVR playback payload は、全 TS packet が破棄された場合に成功消費扱いにしない。
+- record-only TS packet delivery は TEI 付き packet を成功配送扱いにしない。
+
+## r50dz24: WP-04 補修の固定
+
+r50dz24では、r50dz23時点で残っていたWP-04未達を補修する。
+
+- FMQのnative接続は`tuner_hal/binder_service/src/fmq_queue.rs`に閉じ込める。
+- `SharedMemoryBacking`は`NativeFmqQueue`のメソッドだけを使い、`tuner_fmq_*`または`fmq_queue_*`相当のraw関数を直接呼ばない。
+- mutex汚染時のBinder/IO/HAL向け写像は`hal_sync`に集約し、`tuner_hal.rs`内に手書きのlock helperを置かない。
+- live pumpおよびDVR callback wakeのlock/wait失敗は正常停止・timeoutとして丸めず、runtime failureまたはBinder errorとして扱う。
+
+### r50dz24追加固定: DVR callback worker wake
+
+DVR callback workerの起床・停止通知は `WorkerHandle::request_stop()` / `WorkerHandle::wake()` と owner `ConcreteWorkerSignal` を使う。
+`Arc<(Mutex<bool>, Condvar)>`をDVR専用wake flagとして保持する実装は禁止する。
+
+### DESIGN_JA.md release-history block r50ea82-r50ea83
+
+### r50ea82 実装修正固定事項
+
+- `setMaxNumberOfFrontends(frontend_type, max_number)` は、HAL が公開していない `frontend_type` について `max_number == 0` であっても成功させない。未搭載 type は `UNAVAILABLE`、値域不正は `INVALID_ARGUMENT` とする。
+- Playback DVR へ投入された入力が malformed TS のみで構成され、有効 TS packet を1件も形成しない場合は、通常の payload delivery 成功とは区別し、malformed playback diagnostic として記録する。worker 自体は即時 fail-close しない。
+- `IDvr.start()` 後の初期 status callback は start commit 後の queue fill / threshold snapshot を使う。start 前 snapshot で status を通知しない。
+- fd 付き `TunerNativeHandle` を伴う `releaseAvHandle()` は、個別 dataId release には使わない。`avDataId == 0` と fd 付き handle の組み合わせは `INVALID_ARGUMENT` とする。empty handle + `avDataId == 0` の lifetime 通知とは区別する。
+
+
+### r50ea83 設計固定事項: scan停止、section repeat、queue overflow policy
+
+- active scan 中の停止APIは `stopScan()` に一本化する。`IFrontend.scan()` が backend tune/stop を内部で行っていても、public `stopTune()` は scan generation を停止しない。active scan 中の `stopTune()` は `INVALID_STATE` を返す。利用者は scan 停止に `stopScan()` を使う。これは scan lifecycle と tune lifecycle を分け、scan worker の terminal reason と callback ordering を保つためである。
+- `TableInfo + repeat=false` は、最初に latch した `table_id / table_id_extension / version` の table を `section_number = 0..last_section_number` で1回ずつ集め、table complete 後に同じ start 世代内の配送を停止する。放送中の version 更新を同じ filter start 世代で拾う用途には使わない。version 更新を継続取得する場合は `repeat=true`、または `stop()` / `flush()` / `configure()` / `start()` による明示的な世代更新を使う。
+- filter queue では `payload_len == buffer_size` を正当な境界値として許容する。この payload は queue 全体を占有し、次 payload で overflow / drop 診断が出る。`payload_len > buffer_size` だけを oversized payload として drop する。
+- DVR record queue は drop-new policy に固定する。満杯時に古いTSを捨てて新TSを入れる drop-old にはしない。録画 path では暗黙に古いデータを消して連続して見せるより、overflow / pending_overflow 診断で新規入力欠落を明示することを優先する。playback DVR は producer backpressure policy とし、record DVR と混同しない。
+
+# r50ea92_av_shared_release_contract_fix
+
+- Fix AV shared handle release contract mismatch: fd-bearing handles returned by getAvSharedHandle() are always rejected by releaseAvHandle() and no identity matching is performed.
+- Make repeated getAvSharedHandle() idempotent with respect to exported backing: it returns a fresh fd duplicate without replacing an internal release identity.
+- Keep releaseAvHandle(empty, 0) as the only client shared-handle release notification.
+
 # r50ea91_build_gate_round6_unused_av_shared_helper
 
 - Removed the unused `AvSharedBacking::clear_drop_only()` helper that failed Android Rust/Clippy `-D warnings`.
@@ -986,3 +1404,103 @@ Unverified: Android/Soong build, Rust unit tests, atest, VTS, and device tests.
 - `DESIGN_JA.md` から r50dz 番号付き作業メモ節を削除し、恒久仕様へ整理した。
 - frontend / soft_demux / binder_service の build gate 修正を行った。
 - ただし r50dz78 検証では `soft_demux` と `binder_service` に追加 build gate 残件が残った。
+
+## r50ea96_design_ja_supplement_absorbed
+
+- `DESIGN_JA.md` の旧 `補足契約:` 章を正本章へ吸収した。
+- `補足契約:` 見出しを `DESIGN_JA.md` から削除した。
+- `DESIGN_JA_SUPPLEMENT_ABSORPTION_TRACE_r50ea96.md` を追加した。
+- コード変更、build、Rust単体テスト、atest、VTS、実機確認は未実施。
+
+## r50eb2_impl_prebuild_nullable_rollback
+
+- r50eb をベースに、nullable Binder 経路を誤って実装済み対象へ寄せた変更をロールバックした。
+- `IFilter.setDataSource(NULL)`, `IDescrambler.addPid/removePid(NULL)`, `IFrontend.setCallback(NULL)`, `ILnb.setCallback(NULL)` は Android 14 Rust generated trait 境界の未解決 blocker として `future_work/r51/android14_aidl_rust_nullable_filter_boundary_blocker.md` を正とする。
+- `releaseAvHandle(fd付き handle, 0)` は AOSP/VTS 互換の shared AV handle 使用終了通知として成功させる実装を維持した。
+- `FilterDelayHint` の time + data 条件を OR 条件に変更した。
+- active scan 中の `stopTune()` と再scan時の既存scan worker停止経路を維持した。
+- build、Rust単体テスト、atest、VTS、実機確認は未実行。
+
+## r50eb2_prebuild_unverified
+
+- r50eb をベースに、nullable Binder 境界は future_work/blocker として維持したまま、現 Rust 署名で実装可能な修正対象を反映した。
+- `releaseAvHandle(fd付き handle, 0)` を shared AV handle 使用終了通知として成功させる実装を維持した。
+- `FilterDelayHint` の time + data 条件を OR 条件に変更した。
+- scan worker の callback/local failure を live path failed へ誤昇格しないよう整理した。
+- frontend-demux unbind は live pump stop 成功後に binding を外す順序へ変更した。
+- filter / DVR / descrambler Drop から通常 close cleanup を呼ばないようにし、明示 close の再試行性を壊さない診断/隔離へ寄せた。
+- soft_demux configure / record PID configure / non-null source filter link は DemuxTxnSnapshot により filter、queue、section runtime、packet pipeline、AV sync state を一括復元するようにした。
+- filter flush は対象filterのflush generation / local stateだけを扱い、source origin 全体の assembler を広域 reset しないようにした。
+- A/V sync clock は saturating timestamp 丸めをやめ、checked arithmetic 失敗時は時刻を無効化するようにした。
+- DVB/PX4 tune 失敗時は旧tune/旧streaming復元または失敗化へ寄せた。
+- build、Rust単体テスト、atest、VTS、実機確認は未実行。
+
+## r50eb2_prebuild_unverified_static_checked
+
+- r50eb2_prebuild_unverified の静的再確認で残っていた Drop 通常 cleanup 経路を追加整理した。
+- `FrontendHal::drop()` は通常 close cleanup を呼ばず、未close診断と callback release のみに限定した。
+- `DemuxHal::drop()` は通常 close/unbind/invalidate cleanup を呼ばず、未close診断と ledger quarantine のみに限定した。
+- `close_internal_for_drop_cleanup()` を削除した。
+- nullable Binder 境界は引き続き future_work/blocker とし、実装済み扱いにしていない。
+- build、Rust単体テスト、atest、VTS、実機確認は未実行。
+
+## r50eb2_prebuild_unverified_rev3_static
+
+- r50eb をベースに、r50eb2_fix_plan rev3 の nullable Binder blocker を除外した範囲で実装上の正本化を進めた。
+- nullable Binder 境界 (`setDataSource(NULL)`, `addPid/removePid(NULL)`, `setCallback(NULL)`) は future_work blocker のまま維持し、実装済み扱いにしていない。
+- `releaseAvHandle(fd付きhandle, 0)` を shared AV handle 使用終了通知として成功させる実装を維持した。
+- `FilterDelayHint` の time + data 条件を OR 条件として維持した。
+- `DescramblerLifecycleTxn` / `DescramblerSessionTxn` を追加し、descrambler close と stale demux invalidation の入口を transaction 名義へ寄せた。
+- `FrontendDemuxBindingTxn` / `StreamBoundaryManager` / `FailureClassifier` を追加し、frontend-demux unbind と stream boundary の主経路を正本名義へ寄せた。
+- `ScanOperationTxn` を追加し、scan cancel / terminal state 記録を正本名義へ寄せた。
+- `LnbApplyTxn` / `LnbLifecycleTxn` を追加し、LNB backend apply / registry commit と close を正本名義へ寄せた。
+- `FilterConfigureTxn` / `RecordPidSetTxn` / `SourceFilterLinkTxn` を追加し、soft_demux configure / record PID / source filter link の主経路を transaction 名義へ寄せた。
+- `PacketPipeline::flush_filter()` を追加し、flush generation を対象filter/origin/PID単位で扱う入口を追加した。
+- `BackendTuneTxn` を DVB/PX4 backend に追加し、tune失敗時復元経路の入口を正本名義へ寄せた。
+- `AvSyncClock::now_checked()` を追加し、A/V sync時刻計算を checked arithmetic の入口へ寄せた。
+- build、Rust単体テスト、atest、VTS、実機確認は未実行。
+
+## r50eb4_remove_unused_legacy_paths_prebuild_unverified
+
+- r50eb3 をベースに、未使用の旧 cleanup / best-effort 経路を削除した。
+- `LifecycleCleanupCaller` と `BestEffortDrop` / `WorkerFailure` 経路を削除し、DVR cleanup runner は明示 close の通常経路だけを持つ構造へ整理した。
+- `SharedMemoryBacking::stop_best_effort()` と `RuntimeIoRegistry::unregister_dvr_best_effort()` を削除した。
+- `ScanOperationTxn::finish_session_as_diagnostic()` を削除した。
+- `DemuxHal::release_registration_best_effort()` は通常 cleanup ではなく Drop 診断 / quarantine のみであることを明確にするため `record_unclosed_drop()` へ改名した。
+- `DESIGN_JA.md` の古い `close_internal_best_effort()` / `BestEffortDrop` / `WorkerFailure` 記載を削除し、DVR通常 cleanup は `close_internal()` のみが実行する設計へ更新した。
+- nullable Binder 境界は引き続き future_work / blocker とし、実装済み扱いにしていない。
+- build、Rust単体テスト、atest、VTS、実機確認は未実行。
+
+## r50eb17_wp06_descrambler_session_txn_prebuild_unverified
+
+- WP-06: Descrambler public API session mutations are routed through `DescramblerSessionTxn`.
+- Moved `setDemuxSource`, `setKeyToken`, `addPid`, and `removePid` owner-side bodies out of the `IDescrambler` implementation into the transaction owner.
+- The `IDescrambler` public implementation is now a thin dispatch layer for the session transaction plus the existing close lifecycle transaction.
+- Prebuild/static-only artifact. Rust type check, build, atest, VTS, and device verification are not run in this environment.
+
+## r50eb21_wp09_demux_lifecycle_close_step_txn_prebuild_unverified
+
+- WP-08: Added `DemuxLifecycleTxn` as the owner-side facade for ref-counted demux ledger lifecycle operations.
+- WP-08: Moved demux open/ref/close/quarantine/binding call sites toward `DemuxLifecycleTxn`.
+- WP-09: Added generic `CloseStepTxn` for resumable close-step execution.
+- WP-09: Migrated Filter and DVR close step execution to `CloseStepTxn` while preserving their concrete cleanup primitives and failure recorders.
+- Status: prebuild_unverified. Rust type checking, Soong build, atest, VTS, and device validation are not run in this environment.
+
+## r50eb23_wp09_close_step_txn_completion_final_step_prebuild_unverified
+
+- WP-09 completion sweep: Filter/DVR LedgerCommitClose final step is now executed through CloseStepTxn::run_required instead of a handwritten final if-block.
+- External audit scripts are not included in the release artifact; they are provided separately.
+- Prebuild unverified: rustc/cargo/Soong/atest/VTS/real-device checks not executed in this environment.
+
+## r50eb29_wp12_completion_old_path_sweep_prebuild_unverified
+
+- WP-10 completion sweep:
+  - Removed owner-local queue cleanup wrapper methods that duplicated `QueueCleanupResource` dispatch.
+  - Moved Filter/DVR configure, close and open-rollback cleanup call sites to direct `QueueCleanupTxn::required_resource()` calls.
+  - Added `QueueCleanupResource` implementation for the DVR close runner so close cleanup does not depend on a `DvrHal`-only helper.
+- WP-11 completion sweep:
+  - Added tune-worker failure classification through `WorkerFailureClassifier::classify_tune_worker()`.
+  - Replaced tune-worker direct backend fail-closed calls with `FrontendRuntime::handle_tune_worker_failure()`.
+- WP-12 retained:
+  - `IFrontend.scan()` remains a thin dispatch to `ScanSessionTxn::start()`.
+- Verification: static source review only. Rust type check, Soong build, atest, VTS and device validation are not run.

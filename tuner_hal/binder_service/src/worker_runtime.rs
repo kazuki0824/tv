@@ -105,7 +105,7 @@ fn increment_worker_diagnostic_counter(
     }
 }
 
-pub(crate) fn spawn_worker_with_exit_hook<F, R, H>(
+fn spawn_worker_with_exit_hook<F, R, H>(
     name: &'static str,
     body: F,
     hook: H,
@@ -146,7 +146,7 @@ where
     })
 }
 
-pub(crate) fn join_worker_with_diagnostics(handle: ThreadWorkerHandleRaw, name: &'static str) -> WorkerExit {
+fn join_worker_with_diagnostics(handle: ThreadWorkerHandleRaw, name: &'static str) -> WorkerExit {
     match handle.join() {
         Ok(exit) => {
             if exit.is_abnormal() {
@@ -441,15 +441,15 @@ impl WorkerHandle {
         self.handle.as_ref().map(|handle| handle.is_finished()).unwrap_or(true)
     }
 
-    pub fn request_stop(&self, _reason: WorkerExitReason) -> Result<(), WorkerRuntimeError> {
+    fn request_stop(&self, _reason: WorkerExitReason) -> Result<(), WorkerRuntimeError> {
         self.signal.request_stop();
         if self.signal.is_runtime_failure() { Err(WorkerRuntimeError::WakeFailed) } else { Ok(()) }
     }
-    pub fn wake(&self) -> Result<(), WorkerRuntimeError> {
+    fn wake(&self) -> Result<(), WorkerRuntimeError> {
         self.signal.notify_work();
         if self.signal.is_runtime_failure() { Err(WorkerRuntimeError::WakeFailed) } else { Ok(()) }
     }
-    pub fn join_from_owner(&mut self) -> Result<WorkerJoinOutcome, WorkerRuntimeError> {
+    fn join_from_owner(&mut self) -> Result<WorkerJoinOutcome, WorkerRuntimeError> {
         let Some(handle) = self.handle.take() else { return Ok(WorkerJoinOutcome::JoinUnavailable); };
         let exit = join_worker_with_diagnostics(handle, self.name);
         let reason = WorkerExitReason::from(exit);
@@ -466,12 +466,12 @@ impl WorkerHandle {
 }
 
 #[derive(Debug, Default)]
-pub struct WorkerRuntime { exit_reason: WorkerExitReason }
+struct WorkerRuntime { exit_reason: WorkerExitReason }
 
 impl WorkerRuntime {
-    pub fn new() -> Self { Self::default() }
+    fn new() -> Self { Self::default() }
 
-    pub fn spawn_owned<F, R>(owner_id: WorkerOwnerId, name: &'static str, body: F) -> Result<WorkerHandle, WorkerRuntimeError>
+    fn spawn_owned<F, R>(owner_id: WorkerOwnerId, name: &'static str, body: F) -> Result<WorkerHandle, WorkerRuntimeError>
     where F: FnOnce(std::sync::Arc<ConcreteWorkerSignal>) -> R + Send + 'static, R: IntoWorkerExit + Send + 'static {
         let signal = std::sync::Arc::new(ConcreteWorkerSignal::new(true));
         let thread_signal = std::sync::Arc::clone(&signal);
@@ -480,7 +480,7 @@ impl WorkerRuntime {
         Ok(WorkerHandle { _owner_id: owner_id, name, signal, handle: Some(handle), exit_reason: WorkerExitReason::NotStarted })
     }
 
-    pub(crate) fn spawn_owned_with_exit_hook<F, R, H>(
+    fn spawn_owned_with_exit_hook<F, R, H>(
         owner_id: WorkerOwnerId,
         name: &'static str,
         body: F,
@@ -519,25 +519,158 @@ impl WorkerRuntime {
     }
 
 
-    pub(crate) fn join(mut handle: WorkerHandle, name: &'static str) -> WorkerExit {
-        match handle.join_from_owner() {
-            Ok(WorkerJoinOutcome::Joined(reason)) => match reason {
-                WorkerExitReason::Normal => WorkerExit::Normal,
-                WorkerExitReason::StopRequested => WorkerExit::StopRequested,
-                WorkerExitReason::RuntimeFailure => WorkerExit::RuntimeFailure,
-                WorkerExitReason::PanicOrJoinFailure => WorkerExit::PanicOrJoinFailure,
-                WorkerExitReason::NotStarted => WorkerExit::RuntimeFailure,
-            },
-            Ok(WorkerJoinOutcome::JoinUnavailable) => WorkerExit::Normal,
-            Ok(WorkerJoinOutcome::SkippedSelfJoin) => WorkerExit::RuntimeFailure,
-            Err(_) => {
-                eprintln!("maleicacid-tuner-hal-worker: join failed through WorkerHandle: worker={}", name);
-                WorkerExit::RuntimeFailure
-            }
+    fn set_exit_reason(&mut self, reason: WorkerExitReason) { self.exit_reason = reason; }
+    fn join_outcome_for_completed_worker(&self) -> WorkerJoinOutcome { WorkerJoinOutcome::Joined(self.exit_reason) }
+}
+
+
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum WorkerStopJoinError {
+    StopRequestFailed(WorkerRuntimeError),
+    WakeFailed(WorkerRuntimeError),
+    JoinFailed(WorkerRuntimeError),
+}
+
+/// Worker の所有権遷移を API 個別実装から切り離すための共通取引。
+///
+/// この型は worker slot の mutex そのものは所有しない。slot の取得順序は
+/// 呼び出し側の資源 lifetime と一緒に決める必要があるためである。
+/// 代わりに、spawn / stop request / wake / join / abnormal exit 判定を一箇所に集約する。
+pub struct WorkerLifecycleTxn;
+
+impl WorkerLifecycleTxn {
+    pub fn spawn_with_exit_hook<F, R, H>(
+        owner_id: WorkerOwnerId,
+        name: &'static str,
+        body: F,
+        hook: H,
+    ) -> Result<WorkerHandle, WorkerRuntimeError>
+    where
+        F: FnOnce(std::sync::Arc<ConcreteWorkerSignal>) -> R + Send + 'static,
+        R: IntoWorkerExit + Send + 'static,
+        H: FnOnce(WorkerExit) + Send + 'static,
+    {
+        WorkerRuntime::spawn_owned_with_exit_hook(owner_id, name, body, hook)
+    }
+
+    pub fn spawn<F, R>(
+        owner_id: WorkerOwnerId,
+        name: &'static str,
+        body: F,
+    ) -> Result<WorkerHandle, WorkerRuntimeError>
+    where
+        F: FnOnce(std::sync::Arc<ConcreteWorkerSignal>) -> R + Send + 'static,
+        R: IntoWorkerExit + Send + 'static,
+    {
+        WorkerRuntime::spawn_owned(owner_id, name, body)
+    }
+
+    pub fn wake(handle: &WorkerHandle) -> Result<(), WorkerRuntimeError> {
+        handle.wake()
+    }
+
+    pub fn request_stop(handle: &WorkerHandle, reason: WorkerExitReason) -> Result<(), WorkerRuntimeError> {
+        handle.request_stop(reason)
+    }
+
+    pub fn join(handle: WorkerHandle) -> Result<WorkerJoinOutcome, WorkerRuntimeError> {
+        let mut handle = handle;
+        handle.join_from_owner()
+    }
+
+    pub fn join_mut(handle: &mut WorkerHandle) -> Result<WorkerJoinOutcome, WorkerRuntimeError> {
+        handle.join_from_owner()
+    }
+
+    pub fn request_stop_and_join(
+        mut handle: WorkerHandle,
+        reason: WorkerExitReason,
+    ) -> Result<WorkerJoinOutcome, WorkerStopJoinError> {
+        handle
+            .request_stop(reason)
+            .map_err(WorkerStopJoinError::StopRequestFailed)?;
+        handle
+            .join_from_owner()
+            .map_err(WorkerStopJoinError::JoinFailed)
+    }
+
+    pub fn request_stop_wake_join_mut(
+        handle: &mut WorkerHandle,
+        reason: WorkerExitReason,
+    ) -> Result<WorkerJoinOutcome, WorkerStopJoinError> {
+        handle
+            .request_stop(reason)
+            .map_err(WorkerStopJoinError::StopRequestFailed)?;
+        handle
+            .wake()
+            .map_err(WorkerStopJoinError::WakeFailed)?;
+        handle
+            .join_from_owner()
+            .map_err(WorkerStopJoinError::JoinFailed)
+    }
+
+
+
+    pub fn request_stop_join_slot(
+        slot: &mut Option<WorkerHandle>,
+        reason: WorkerExitReason,
+    ) -> Result<Option<WorkerJoinOutcome>, WorkerStopJoinError> {
+        let Some(worker) = slot.as_mut() else {
+            return Ok(None);
+        };
+        worker
+            .request_stop(reason)
+            .map_err(WorkerStopJoinError::StopRequestFailed)?;
+        let mut handle = slot.take().expect("worker slot checked as Some");
+        handle
+            .join_from_owner()
+            .map(Some)
+            .map_err(WorkerStopJoinError::JoinFailed)
+    }
+
+    pub fn request_stop_wake_join_slot(
+        slot: &mut Option<WorkerHandle>,
+        reason: WorkerExitReason,
+    ) -> Result<Option<WorkerJoinOutcome>, WorkerStopJoinError> {
+        let Some(worker) = slot.as_mut() else {
+            return Ok(None);
+        };
+        worker
+            .request_stop(reason)
+            .map_err(WorkerStopJoinError::StopRequestFailed)?;
+        worker
+            .wake()
+            .map_err(WorkerStopJoinError::WakeFailed)?;
+        let mut handle = slot.take().expect("worker slot checked as Some");
+        handle
+            .join_from_owner()
+            .map(Some)
+            .map_err(WorkerStopJoinError::JoinFailed)
+    }
+
+    pub fn exit_from_join_outcome(outcome: WorkerJoinOutcome) -> WorkerExit {
+        match outcome {
+            WorkerJoinOutcome::Joined(WorkerExitReason::Normal) => WorkerExit::Normal,
+            WorkerJoinOutcome::Joined(WorkerExitReason::StopRequested) => WorkerExit::StopRequested,
+            WorkerJoinOutcome::Joined(WorkerExitReason::RuntimeFailure) => WorkerExit::RuntimeFailure,
+            WorkerJoinOutcome::Joined(WorkerExitReason::PanicOrJoinFailure) => WorkerExit::PanicOrJoinFailure,
+            WorkerJoinOutcome::Joined(WorkerExitReason::NotStarted) => WorkerExit::RuntimeFailure,
+            WorkerJoinOutcome::SkippedSelfJoin => WorkerExit::RuntimeFailure,
+            WorkerJoinOutcome::JoinUnavailable => WorkerExit::Normal,
         }
     }
-    pub fn set_exit_reason(&mut self, reason: WorkerExitReason) { self.exit_reason = reason; }
-    pub fn join_outcome_for_completed_worker(&self) -> WorkerJoinOutcome { WorkerJoinOutcome::Joined(self.exit_reason) }
+
+    pub fn join_exit(handle: WorkerHandle, _name: &'static str) -> WorkerExit {
+        match Self::join(handle) {
+            Ok(outcome) => Self::exit_from_join_outcome(outcome),
+            Err(_) => WorkerExit::RuntimeFailure,
+        }
+    }
+
+    pub fn abnormal(outcome: WorkerJoinOutcome) -> bool {
+        Self::exit_from_join_outcome(outcome).is_abnormal()
+    }
 }
 
 impl From<WorkerExit> for WorkerExitReason {
@@ -566,9 +699,59 @@ mod tests {
         );
     }
 
+
+
+    #[test]
+    fn worker_lifecycle_txn_stop_wake_join_mut_returns_stop_requested() {
+        let mut handle = WorkerLifecycleTxn::spawn_with_exit_hook(
+            WorkerOwnerId("test", 8),
+            "worker_lifecycle_txn_stop_wake_join_mut_returns_stop_requested",
+            |signal| {
+                let mut observed_generation = 0_u64;
+                let stopped = signal.wait_until_work_or_stop(
+                    &mut observed_generation,
+                    Duration::from_millis(100),
+                );
+                if stopped { WorkerExit::StopRequested } else { WorkerExit::RuntimeFailure }
+            },
+            |_| {},
+        ).expect("worker spawn");
+        let outcome = WorkerLifecycleTxn::request_stop_wake_join_mut(
+            &mut handle,
+            WorkerExitReason::StopRequested,
+        ).expect("worker lifecycle txn stop+wake+join");
+        assert_eq!(outcome, WorkerJoinOutcome::Joined(WorkerExitReason::StopRequested));
+    }
+
+
+
+    #[test]
+    fn worker_lifecycle_txn_slot_helper_clears_joined_worker() {
+        let handle = WorkerLifecycleTxn::spawn_with_exit_hook(
+            WorkerOwnerId("test", 9),
+            "worker_lifecycle_txn_slot_helper_clears_joined_worker",
+            |signal| {
+                let mut observed_generation = 0_u64;
+                let stopped = signal.wait_until_work_or_stop(
+                    &mut observed_generation,
+                    Duration::from_millis(100),
+                );
+                if stopped { WorkerExit::StopRequested } else { WorkerExit::RuntimeFailure }
+            },
+            |_| {},
+        ).expect("worker spawn");
+        let mut slot = Some(handle);
+        let outcome = WorkerLifecycleTxn::request_stop_wake_join_slot(
+            &mut slot,
+            WorkerExitReason::StopRequested,
+        ).expect("worker lifecycle txn slot stop+wake+join");
+        assert_eq!(outcome, Some(WorkerJoinOutcome::Joined(WorkerExitReason::StopRequested)));
+        assert!(slot.is_none());
+    }
+
     #[test]
     fn owned_worker_body_observes_owner_stop_signal() {
-        let mut handle = WorkerRuntime::spawn_owned_with_exit_hook(
+        let handle = WorkerLifecycleTxn::spawn_with_exit_hook(
             WorkerOwnerId("test", 7),
             "owned_worker_body_observes_owner_stop_signal",
             |signal| {
@@ -578,7 +761,7 @@ mod tests {
             },
             |_| {},
         ).expect("worker spawn");
-        let outcome = handle.join_from_owner().expect("worker join");
+        let outcome = WorkerLifecycleTxn::join(handle).expect("worker join");
         assert_eq!(outcome, WorkerJoinOutcome::Joined(WorkerExitReason::StopRequested));
     }
 }

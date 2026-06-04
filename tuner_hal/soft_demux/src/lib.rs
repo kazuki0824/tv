@@ -758,6 +758,88 @@ impl FilterPayload {
 #[derive(Debug, Default)]
 pub struct DemuxCore;
 
+
+pub struct SoftDemuxConfigureTxn<'a> { demux: &'a mut DemuxCore }
+pub(crate) struct SoftDemuxOriginTxn<'a> { demux: &'a mut DemuxCore }
+pub struct AvSyncClock;
+
+impl<'a> SoftDemuxConfigureTxn<'a> {
+    pub fn new(demux: &'a mut DemuxCore) -> Self { Self { demux } }
+
+    pub fn configure_filter(self, filter_id: i32, summary: FilterConfig) -> Result<(), DemuxConfigError> {
+        self.demux.configure_filter_with_summary_result_impl(filter_id, summary)
+    }
+
+    pub fn configure_record_pid_set(self, filter_ids: &[i32], pids: &BTreeSet<u16>) -> Result<(), DemuxConfigError> {
+        self.demux.configure_record_pid_set_impl(filter_ids, pids)
+    }
+
+    pub fn set_data_source(self, filter_id: i32, upstream_filter_id: i32) -> Result<(), DemuxConfigError> {
+        self.demux.set_filter_data_source_result_impl(filter_id, upstream_filter_id)
+    }
+
+    pub fn restore_data_source(self, filter_id: i32, upstream_filter_id: Option<i32>) -> Result<(), DemuxConfigError> {
+        self.demux.restore_filter_data_source_snapshot_impl(filter_id, upstream_filter_id)
+    }
+}
+
+impl<'a> SoftDemuxOriginTxn<'a> {
+    pub fn new(demux: &'a mut DemuxCore) -> Self { Self { demux } }
+    pub fn set_source(self, filter_id: i32, upstream_filter_id: i32) -> Result<(), DemuxConfigError> {
+        self.demux.set_filter_data_source_result_impl(filter_id, upstream_filter_id)
+    }
+    pub fn restore_source(self, filter_id: i32, upstream_filter_id: Option<i32>) -> Result<(), DemuxConfigError> {
+        self.demux.restore_filter_data_source_snapshot_impl(filter_id, upstream_filter_id)
+    }
+
+    fn source_origin(&self, source_filter_id: i32) -> Option<TsInputOrigin> {
+        self.demux.source_filter_origin_impl(source_filter_id)
+    }
+
+    fn active_origins_for_filter(&self, filter_id: i32) -> Vec<TsInputOrigin> {
+        self.demux.active_input_origins_for_filter_impl(filter_id)
+    }
+
+    pub fn disconnect_downstreams(self, filter_id: i32) {
+        self.demux.disconnect_downstreams_of_impl(filter_id);
+    }
+
+    pub fn mark_flush_generation(self, filter_id: i32) {
+        self.demux.mark_filter_flush_generation_impl(filter_id);
+    }
+
+    pub fn reset_filter_source_origin(self, origin: TsInputOrigin, downstream_filter_id: i32, pid: i32) {
+        self.demux.reset_source_origin_partial_state_impl(origin, downstream_filter_id, pid);
+    }
+
+    pub fn reset_downstreams_for_source(self, origin: TsInputOrigin, downstreams: &[(i32, i32)]) {
+        self.demux.reset_source_filter_downstream_partial_state_impl(origin, downstreams);
+    }
+}
+
+pub(crate) struct SoftDemuxOriginView<'a> { demux: &'a DemuxCore }
+
+impl<'a> SoftDemuxOriginView<'a> {
+    pub fn new(demux: &'a DemuxCore) -> Self { Self { demux } }
+
+    pub fn source_origin(&self, source_filter_id: i32) -> Option<TsInputOrigin> {
+        self.demux.source_filter_origin_impl(source_filter_id)
+    }
+
+    pub fn active_origins_for_filter(&self, filter_id: i32) -> Vec<TsInputOrigin> {
+        self.demux.active_input_origins_for_filter_impl(filter_id)
+    }
+}
+
+impl AvSyncClock {
+    pub fn now_checked(base: i64, elapsed: std::time::Duration) -> Option<i64> {
+        let elapsed_ns = elapsed.as_nanos();
+        let elapsed_90khz_u128 = elapsed_ns.checked_mul(90_000)? / 1_000_000_000;
+        let elapsed_90khz = i64::try_from(elapsed_90khz_u128).ok()?;
+        base.checked_add(elapsed_90khz)
+    }
+}
+
 impl DemuxCore {
     pub const fn new() -> Self {
         Self
@@ -806,19 +888,19 @@ struct AvSyncTimestampExtender {
 }
 
 impl AvSyncTimestampExtender {
-    fn update(&mut self, raw_33bit: u64) -> i64 {
+    fn update_checked(&mut self, raw_33bit: u64) -> Option<i64> {
         let raw = (raw_33bit & ((1u64 << 33) - 1)) as i64;
         if let Some(last_raw) = self.last_raw {
             let last = (last_raw & ((1u64 << 33) - 1)) as i64;
             let diff = raw - last;
             if diff < -AV_SYNC_33BIT_HALF_RANGE {
-                self.epoch = self.epoch.saturating_add(AV_SYNC_33BIT_MODULUS);
+                self.epoch = self.epoch.checked_add(AV_SYNC_33BIT_MODULUS)?;
             } else if diff > AV_SYNC_33BIT_HALF_RANGE {
-                self.epoch = self.epoch.saturating_sub(AV_SYNC_33BIT_MODULUS);
+                self.epoch = self.epoch.checked_sub(AV_SYNC_33BIT_MODULUS)?;
             }
         }
         self.last_raw = Some(raw as u64);
-        self.epoch.saturating_add(raw)
+        self.epoch.checked_add(raw)
     }
 
     fn reset(&mut self) {
@@ -873,6 +955,18 @@ enum FilterCapacityKind {
     Pes,
     Record,
     Other,
+}
+
+#[derive(Clone)]
+struct DemuxTxnSnapshot {
+    filters: BTreeMap<i32, DemuxFilterRecord>,
+    filter_queues: BTreeMap<i32, VecDeque<FilterPayload>>,
+    section_filter_runtime: BTreeMap<i32, SectionFilterRuntime>,
+    packet_pipeline: PacketPipeline,
+    av_sync_states: BTreeMap<i32, AvSyncState>,
+    av_sync_hw_ids: BTreeMap<i32, i32>,
+    av_sync_filter_by_hw_id: BTreeMap<i32, i32>,
+    next_av_sync_hw_id: i32,
 }
 
 pub struct DemuxHandle {
@@ -1033,7 +1127,7 @@ impl DemuxHandle {
     }
 
 
-    fn reset_source_origin_partial_state(
+    fn reset_source_origin_partial_state_impl(
         &mut self,
         origin: TsInputOrigin,
         downstream_filter_id: i32,
@@ -1061,24 +1155,24 @@ impl DemuxHandle {
             .collect()
     }
 
-    fn reset_source_filter_downstream_partial_state(
+    fn reset_source_filter_downstream_partial_state_impl(
         &mut self,
         origin: TsInputOrigin,
         downstreams: &[(i32, i32)],
     ) {
         for (downstream_id, pid) in downstreams.iter().copied() {
-            self.reset_source_origin_partial_state(origin, downstream_id, pid);
+            self.reset_source_origin_partial_state_impl(origin, downstream_id, pid);
         }
     }
 
-    fn disconnect_downstreams_of(&mut self, filter_id: i32) {
-        let source_origin = self.source_filter_origin(filter_id);
+    fn disconnect_downstreams_of_impl(&mut self, filter_id: i32) {
+        let source_origin = self.source_filter_origin_impl(filter_id);
         let downstreams = self.source_filter_downstream_snapshots(filter_id);
         if let Some(origin) = source_origin {
-            self.reset_source_filter_downstream_partial_state(origin, &downstreams);
+            self.reset_source_filter_downstream_partial_state_impl(origin, &downstreams);
         }
         for (downstream_id, _) in downstreams {
-            self.mark_filter_flush_generation(downstream_id);
+            SoftDemuxOriginTxn::new(self).mark_flush_generation(downstream_id);
             if let Some(downstream) = self.filters.get_mut(&downstream_id) {
                 // 表SSOTどおり、既出力 queue / pending event は維持し、新規配送だけ止める。
                 // ただし source filter 契約上、接続解除境界では downstream の partial state を破棄する。
@@ -1104,7 +1198,7 @@ impl DemuxHandle {
             self.av_sync_filter_by_hw_id.remove(&hw_id);
         }
         self.packet_pipeline.clear_filter_state(filter_id);
-        self.disconnect_downstreams_of(filter_id);
+        SoftDemuxOriginTxn::new(self).disconnect_downstreams(filter_id);
         let removed = self.filters.remove(&filter_id);
         if let Some(pid) = pid {
             self.prune_assemblers_for_pid(pid);
@@ -1248,6 +1342,30 @@ impl DemuxHandle {
         false
     }
 
+    fn txn_snapshot(&self) -> DemuxTxnSnapshot {
+        DemuxTxnSnapshot {
+            filters: self.filters.clone(),
+            filter_queues: self.filter_queues.clone(),
+            section_filter_runtime: self.section_filter_runtime.clone(),
+            packet_pipeline: self.packet_pipeline.clone(),
+            av_sync_states: self.av_sync_states.clone(),
+            av_sync_hw_ids: self.av_sync_hw_ids.clone(),
+            av_sync_filter_by_hw_id: self.av_sync_filter_by_hw_id.clone(),
+            next_av_sync_hw_id: self.next_av_sync_hw_id,
+        }
+    }
+
+    fn restore_txn_snapshot(&mut self, snapshot: DemuxTxnSnapshot) {
+        self.filters = snapshot.filters;
+        self.filter_queues = snapshot.filter_queues;
+        self.section_filter_runtime = snapshot.section_filter_runtime;
+        self.packet_pipeline = snapshot.packet_pipeline;
+        self.av_sync_states = snapshot.av_sync_states;
+        self.av_sync_hw_ids = snapshot.av_sync_hw_ids;
+        self.av_sync_filter_by_hw_id = snapshot.av_sync_filter_by_hw_id;
+        self.next_av_sync_hw_id = snapshot.next_av_sync_hw_id;
+    }
+
     pub fn validate_filter_configure_result(
         &self,
         filter_id: i32,
@@ -1283,8 +1401,18 @@ impl DemuxHandle {
         filter_id: i32,
         summary: FilterConfig,
     ) -> Result<(), DemuxConfigError> {
+        SoftDemuxConfigureTxn::new(self).configure_filter(filter_id, summary)
+    }
+
+    fn configure_filter_with_summary_result_impl(
+        &mut self,
+        filter_id: i32,
+        summary: FilterConfig,
+    ) -> Result<(), DemuxConfigError> {
         self.validate_filter_configure_result(filter_id, &summary)?;
+        let snapshot = self.txn_snapshot();
         let Some(existing) = self.filters.get(&filter_id) else {
+            self.restore_txn_snapshot(snapshot);
             return Err(DemuxConfigError::NotFound);
         };
         let open_type = existing.open_type;
@@ -1301,9 +1429,10 @@ impl DemuxHandle {
             None
         };
         let next_delivery_generation = next_filter_delivery_generation_record(existing)?;
-        self.disconnect_downstreams_of(filter_id);
+        SoftDemuxOriginTxn::new(self).disconnect_downstreams(filter_id);
         {
             let Some(filter) = self.filters.get_mut(&filter_id) else {
+                self.restore_txn_snapshot(snapshot);
                 return Err(DemuxConfigError::NotFound);
             };
             filter.set_lifecycle(FilterLifecycleState::Configured);
@@ -1379,33 +1508,28 @@ impl DemuxHandle {
         filter_ids: &[i32],
         pids: &BTreeSet<u16>,
     ) -> Result<(), DemuxConfigError> {
+        SoftDemuxConfigureTxn::new(self).configure_record_pid_set(filter_ids, pids)
+    }
+
+    fn configure_record_pid_set_impl(
+        &mut self,
+        filter_ids: &[i32],
+        pids: &BTreeSet<u16>,
+    ) -> Result<(), DemuxConfigError> {
         if filter_ids.len() < pids.len() {
             return Err(DemuxConfigError::CapacityExceeded);
         }
         let target_ids: Vec<i32> = filter_ids.iter().copied().take(pids.len()).collect();
-        let snapshots: Vec<(i32, DemuxFilterRecord, VecDeque<FilterPayload>, SectionFilterRuntime)> =
-            target_ids
-                .iter()
-                .copied()
-                .map(|filter_id| {
-                    let record = self.filters.get(&filter_id).cloned().ok_or(DemuxConfigError::NotFound)?;
-                    let queue = self.filter_queues.get(&filter_id).cloned().unwrap_or_default();
-                    let section_runtime = self
-                        .section_filter_runtime
-                        .get(&filter_id)
-                        .cloned()
-                        .unwrap_or_default();
-                    Ok((filter_id, record, queue, section_runtime))
-                })
-                .collect::<Result<_, DemuxConfigError>>()?;
+        let snapshot = self.txn_snapshot();
+        for filter_id in &target_ids {
+            if !self.filters.contains_key(filter_id) {
+                self.restore_txn_snapshot(snapshot);
+                return Err(DemuxConfigError::NotFound);
+            }
+        }
         for (filter_id, pid) in target_ids.iter().copied().zip(pids.iter().copied()) {
             if let Err(err) = self.configure_record_pid_filter(filter_id, pid) {
-                for (snapshot_id, record, queue, section_runtime) in snapshots {
-                    self.filters.insert(snapshot_id, record);
-                    self.filter_queues.insert(snapshot_id, queue);
-                    self.section_filter_runtime.insert(snapshot_id, section_runtime);
-                    self.packet_pipeline.clear_filter_state(snapshot_id);
-                }
+                self.restore_txn_snapshot(snapshot);
                 return Err(err);
             }
         }
@@ -1432,7 +1556,7 @@ impl DemuxHandle {
         })
     }
 
-    fn source_filter_origin(&self, source_filter_id: i32) -> Option<TsInputOrigin> {
+    fn source_filter_origin_impl(&self, source_filter_id: i32) -> Option<TsInputOrigin> {
         self.filters.get(&source_filter_id).map(|filter| TsInputOrigin::SourceFilter {
             source_filter_id,
             source_filter_generation: filter.delivery_generation,
@@ -1443,12 +1567,12 @@ impl DemuxHandle {
         self.filters
             .get(&filter_id)
             .and_then(|filter| filter.data_upstream_filter_id)
-            .and_then(|source_filter_id| self.source_filter_origin(source_filter_id))
+            .and_then(|source_filter_id| SoftDemuxOriginView::new(self).source_origin(source_filter_id))
             .into_iter()
             .collect()
     }
 
-    fn active_input_origins_for_filter(&self, filter_id: i32) -> Vec<TsInputOrigin> {
+    fn active_input_origins_for_filter_impl(&self, filter_id: i32) -> Vec<TsInputOrigin> {
         if let Some(source_origin) = self.source_filter_origins_feeding_filter(filter_id).into_iter().next() {
             return vec![source_origin];
         }
@@ -1637,7 +1761,7 @@ impl DemuxHandle {
     ) -> Result<Option<TsInputOrigin>, DemuxConfigError> {
         match upstream_filter_id {
             Some(source_id) => self
-                .source_filter_origin(source_id)
+                .source_filter_origin_impl(source_id)
                 .map(Some)
                 .ok_or(DemuxConfigError::NotFound),
             None => Ok(None),
@@ -1661,10 +1785,10 @@ impl DemuxHandle {
         };
 
         if let Some(origin) = previous_origin {
-            self.reset_source_origin_partial_state(origin, filter_id, pid);
+            self.reset_source_origin_partial_state_impl(origin, filter_id, pid);
         }
         if let Some(origin) = next_origin {
-            self.reset_source_origin_partial_state(origin, filter_id, pid);
+            self.reset_source_origin_partial_state_impl(origin, filter_id, pid);
         }
 
         let Some(filter) = self.filters.get_mut(&filter_id) else {
@@ -1680,8 +1804,20 @@ impl DemuxHandle {
         filter_id: i32,
         upstream_filter_id: i32,
     ) -> Result<(), DemuxConfigError> {
+        SoftDemuxConfigureTxn::new(self).set_data_source(filter_id, upstream_filter_id)
+    }
+
+    fn set_filter_data_source_result_impl(
+        &mut self,
+        filter_id: i32,
+        upstream_filter_id: i32,
+    ) -> Result<(), DemuxConfigError> {
         self.validate_filter_data_source(filter_id, upstream_filter_id)?;
-        self.apply_filter_data_source_transition(filter_id, Some(upstream_filter_id))?;
+        let snapshot = self.txn_snapshot();
+        if let Err(err) = self.apply_filter_data_source_transition(filter_id, Some(upstream_filter_id)) {
+            self.restore_txn_snapshot(snapshot);
+            return Err(err);
+        }
         record_soft_demux_diagnostic(&SET_DATA_SOURCE_SUCCESS_COUNT, "set_data_source_success");
         Ok(())
     }
@@ -1701,7 +1837,20 @@ impl DemuxHandle {
         filter_id: i32,
         upstream_filter_id: Option<i32>,
     ) -> Result<(), DemuxConfigError> {
-        self.apply_filter_data_source_transition(filter_id, upstream_filter_id)
+        SoftDemuxConfigureTxn::new(self).restore_data_source(filter_id, upstream_filter_id)
+    }
+
+    fn restore_filter_data_source_snapshot_impl(
+        &mut self,
+        filter_id: i32,
+        upstream_filter_id: Option<i32>,
+    ) -> Result<(), DemuxConfigError> {
+        let snapshot = self.txn_snapshot();
+        if let Err(err) = self.apply_filter_data_source_transition(filter_id, upstream_filter_id) {
+            self.restore_txn_snapshot(snapshot);
+            return Err(err);
+        }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -1937,7 +2086,7 @@ impl DemuxHandle {
     }
 
     pub fn flush_filter_result(&mut self, filter_id: i32) -> Result<(), DemuxConfigError> {
-        let old_source_origin = self.source_filter_origin(filter_id);
+        let old_source_origin = SoftDemuxOriginView::new(self).source_origin(filter_id);
         let downstreams = self.source_filter_downstream_snapshots(filter_id);
         let next_delivery_generation = {
             let Some(filter) = self.filters.get(&filter_id) else {
@@ -1961,9 +2110,9 @@ impl DemuxHandle {
         self.section_filter_runtime
             .insert(filter_id, SectionFilterRuntime::default());
         if let Some(origin) = old_source_origin {
-            self.reset_source_filter_downstream_partial_state(origin, &downstreams);
+            self.reset_source_filter_downstream_partial_state_impl(origin, &downstreams);
         }
-        self.mark_filter_flush_generation(filter_id);
+        SoftDemuxOriginTxn::new(self).mark_flush_generation(filter_id);
         Ok(())
     }
 
@@ -2091,9 +2240,16 @@ impl DemuxHandle {
         }
 
         if let Some(pcr) = parsed.pcr_90khz {
-            self.latest_pcr = Some(pcr);
-            self.latest_pcr_instant = Some(Instant::now());
-            self.latest_pcr_90khz = Some(self.pcr_extender.update(pcr));
+            if let Some(extended_pcr) = self.pcr_extender.update_checked(pcr) {
+                self.latest_pcr = Some(pcr);
+                self.latest_pcr_instant = Some(Instant::now());
+                self.latest_pcr_90khz = Some(extended_pcr);
+            } else {
+                self.latest_pcr = None;
+                self.latest_pcr_instant = None;
+                self.latest_pcr_90khz = None;
+                self.pcr_extender.reset();
+            }
         }
 
         for generated in pipeline_report.generated_events.into_iter() {
@@ -2669,14 +2825,10 @@ impl DemuxHandle {
             && filter.queued_bytes >= filter.delay_hints.data_size_delay_bytes.unwrap_or(FILTER_DELAY_DATA_SIZE_DISABLED_BYTES);
 
         if has_time_delay && has_data_size_delay {
-            if time_ready && data_ready {
+            if time_ready || data_ready {
                 return FilterDeliveryReadiness::Ready;
             }
-            return if !time_ready {
-                FilterDeliveryReadiness::WaitingForTime
-            } else {
-                FilterDeliveryReadiness::WaitingForDataSize
-            };
+            return FilterDeliveryReadiness::WaitingForTime;
         }
         if has_time_delay {
             if time_ready {
@@ -2747,9 +2899,9 @@ impl DemuxHandle {
         let base = self.latest_pcr_90khz?;
         let instant = self.latest_pcr_instant?;
         let elapsed_ns = instant.elapsed().as_nanos();
-        let elapsed_90khz_u128 = elapsed_ns.saturating_mul(90_000) / 1_000_000_000;
-        let elapsed_90khz = elapsed_90khz_u128.min(i64::MAX as u128) as i64;
-        Some(base.saturating_add(elapsed_90khz))
+        let elapsed_90khz_u128 = elapsed_ns.checked_mul(90_000)? / 1_000_000_000;
+        let elapsed_90khz = i64::try_from(elapsed_90khz_u128).ok()?;
+        base.checked_add(elapsed_90khz)
     }
 
     pub fn av_sync_time_now(&self, av_sync_hw_id: i32) -> Option<i64> {
@@ -2949,7 +3101,7 @@ impl DemuxHandle {
         packet: &[u8],
         _origin: TsInputOrigin,
     ) {
-        let Some(packet_origin) = self.source_filter_origin(upstream_filter_id) else {
+        let Some(packet_origin) = SoftDemuxOriginView::new(self).source_origin(upstream_filter_id) else {
             return;
         };
         let downstreams: Vec<i32> = self
@@ -2998,7 +3150,7 @@ impl DemuxHandle {
                 PipelineDeliveryAction::RawPacket { filter_id: downstream_id } => {
                     let packet_entry = FilterPayload::TsPacket(packet.to_vec());
                     if self.push_filter_payload_for_delivery(downstream_id, packet_entry) {
-                        if let Some(origin) = self.source_filter_origin(downstream_id) {
+                        if let Some(origin) = SoftDemuxOriginView::new(self).source_origin(downstream_id) {
                             self.route_ts_packet_to_downstreams(downstream_id, packet, origin);
                         }
                     }
@@ -3179,7 +3331,7 @@ impl DemuxHandle {
         self.packet_pipeline.pes_generation_allows_delivery(origin, filter_id, pid, generation)
     }
 
-    fn mark_filter_flush_generation(&mut self, filter_id: i32) {
+    fn mark_filter_flush_generation_impl(&mut self, filter_id: i32) {
         let Some(pid) = self
             .filters
             .get(&filter_id)
@@ -3187,14 +3339,12 @@ impl DemuxHandle {
         else {
             return;
         };
-        for origin in self.active_input_origins_for_filter(filter_id) {
-            self.packet_pipeline
-                .mark_filter_flush_generation_for_origin(filter_id, pid, origin);
-        }
-        self.packet_pipeline.clear_filter_state(filter_id);
-        if let Some(source_origin) = self.source_filter_origin(filter_id) {
-            self.packet_pipeline.reset_assembly_for_origin_pid(source_origin, pid);
-        }
+        let origins: Vec<(TsInputOrigin, i32)> = self
+            .active_input_origins_for_filter_impl(filter_id)
+            .into_iter()
+            .map(|origin| (origin, pid))
+            .collect();
+        self.packet_pipeline.flush_filter(filter_id, &origins);
     }
 
 
@@ -5149,7 +5299,7 @@ mod filter_contract_tests {
     }
 
     #[test]
-    fn time_and_data_size_delay_both_must_be_ready() {
+    fn time_and_data_size_delay_uses_or_condition() {
         let mut demux = DemuxHandle::new(0);
         let by_time = demux
             .register_filter_result(1, FilterOpenType::TsSection, 4096)
@@ -5171,21 +5321,13 @@ mod filter_contract_tests {
         thread::sleep(Duration::from_millis(25));
         assert_eq!(
             demux.filter_delivery_readiness(by_time.filter_id),
-            FilterDeliveryReadiness::WaitingForDataSize
-        );
-        assert!(demux
-            .drain_filter_payloads_for_delivery(by_time.filter_id)
-            .is_empty());
-        demux.push_filter_payload(by_time.filter_id, FilterPayload::Bytes(vec![4; 61]));
-        assert_eq!(
-            demux.filter_delivery_readiness(by_time.filter_id),
             FilterDeliveryReadiness::Ready
         );
         assert_eq!(
             demux
                 .drain_filter_payloads_for_delivery(by_time.filter_id)
                 .len(),
-            2
+            1
         );
 
         let by_size = demux
@@ -5202,11 +5344,14 @@ mod filter_contract_tests {
         demux.push_filter_payload(by_size.filter_id, FilterPayload::Bytes(vec![1, 2, 3]));
         assert_eq!(
             demux.filter_delivery_readiness(by_size.filter_id),
-            FilterDeliveryReadiness::WaitingForTime
+            FilterDeliveryReadiness::Ready
         );
-        assert!(demux
-            .drain_filter_payloads_for_delivery(by_size.filter_id)
-            .is_empty());
+        assert_eq!(
+            demux
+                .drain_filter_payloads_for_delivery(by_size.filter_id)
+                .len(),
+            1
+        );
     }
 }
 

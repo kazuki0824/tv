@@ -103,41 +103,55 @@ impl LifecycleTxn {
 impl Default for CleanupOutcome { fn default() -> Self { Self::NotRun } }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LifecycleCleanupCaller { ExternalClose, BestEffortDrop, WorkerFailure }
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LifecycleCleanupStepResult { Success, SafeNoOp, Failed, Unknown, SkippedDueToWorkerFailureContext }
+pub enum LifecycleCleanupStepResult { Success, SafeNoOp, Failed, Unknown }
 impl LifecycleCleanupStepResult { pub fn is_complete(self) -> bool { matches!(self, Self::Success | Self::SafeNoOp) } }
 impl Default for LifecycleCleanupStepResult { fn default() -> Self { Self::Unknown } }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct CloseCleanupStepResults {
-    pub callback_worker: LifecycleCleanupStepResult,
-    pub queue_clear: LifecycleCleanupStepResult,
-    pub runtime_unregister: LifecycleCleanupStepResult,
-    pub queue_stop: LifecycleCleanupStepResult,
-    pub demux_unregister: LifecycleCleanupStepResult,
-    pub key_release: LifecycleCleanupStepResult,
-    pub registry_unregister: LifecycleCleanupStepResult,
+
+/// Common close-step runner for resumable resource cleanup.
+///
+/// The concrete owner still supplies the actual cleanup operation and the
+/// persistent step marker, but this type owns the common order:
+/// run current step, advance marker, and route failures through a single
+/// failure recorder.
+#[derive(Debug, Clone, Copy)]
+pub struct CloseStepTxn<Step> {
+    current: Step,
 }
 
-pub type DvrCleanupStepResults = CloseCleanupStepResults;
-pub type FilterCleanupStepResults = CloseCleanupStepResults;
+impl<Step> CloseStepTxn<Step>
+where
+    Step: Copy + Ord,
+{
+    pub fn new(current: Step) -> Self { Self { current } }
+    pub fn current_step(&self) -> Step { self.current }
 
-#[derive(Debug)]
-pub struct CloseCleanupOutcome<E> {
-    pub first_error: Option<E>,
-    pub all_cleanup_complete: bool,
-    pub step_results: CloseCleanupStepResults,
-}
-impl<E> CloseCleanupOutcome<E> {
-    #[cfg(test)]
-    pub fn new(first_error: Option<E>, all_cleanup_complete: bool, step_results: CloseCleanupStepResults) -> Self {
-        Self { first_error, all_cleanup_complete, step_results }
+    pub fn run_required<F, M, R, E>(
+        &mut self,
+        step: Step,
+        next: Step,
+        operation: F,
+        mark_next: M,
+        record_failure: R,
+    ) -> Result<(), E>
+    where
+        F: FnOnce() -> Result<(), E>,
+        M: FnOnce(Step) -> Result<(), E>,
+        R: FnOnce(Step, E) -> Result<(), E>,
+    {
+        if self.current > step {
+            return Ok(());
+        }
+        if let Err(error) = operation() {
+            return record_failure(step, error);
+        }
+        self.current = next;
+        if let Err(error) = mark_next(next) {
+            return record_failure(next, error);
+        }
+        Ok(())
     }
 }
-pub type DvrCleanupOutcome<E> = CloseCleanupOutcome<E>;
-pub type FilterCleanupOutcome<E> = CloseCleanupOutcome<E>;
 
 #[cfg(test)]
 mod tests {

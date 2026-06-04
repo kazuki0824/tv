@@ -4,6 +4,7 @@ pub mod fmq_queue;
 pub mod stream_boundary;
 pub mod registry_ledger;
 pub mod lifecycle_txn;
+pub mod queue_cleanup_txn;
 pub mod worker_runtime;
 pub mod hal_sync;
 pub mod descrambler_key_table;

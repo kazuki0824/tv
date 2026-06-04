@@ -390,6 +390,16 @@ pub struct DvbFrontendBackend {
     telemetry: FrontendTelemetry,
 }
 
+
+struct BackendTuneTxn<'a> { backend: &'a mut DvbFrontendBackend }
+
+impl<'a> BackendTuneTxn<'a> {
+    fn new(backend: &'a mut DvbFrontendBackend) -> Self { Self { backend } }
+    fn apply(self, request: DvbTuneRequest) -> Result<DvbFrontendStatus, HalError> {
+        self.backend.tune_impl(request)
+    }
+}
+
 impl DvbFrontendBackend {
     pub fn new(
         adapter_id: i32,
@@ -603,9 +613,49 @@ impl DvbFrontendBackend {
         Ok(pairs)
     }
 
+    fn restore_tune_after_apply_failure(
+        &mut self,
+        previous_request: Option<DvbTuneRequest>,
+        previous_telemetry: FrontendTelemetry,
+        previous_tuning_active: bool,
+        reason: &str,
+    ) -> Result<(), HalError> {
+        match previous_request {
+            Some(previous) => {
+                let previous_pairs = Self::tune_property_pairs(&previous)?;
+                self.clear_properties()?;
+                let mut props = previous_pairs
+                    .into_iter()
+                    .map(|(cmd, value)| DtvProperty::with_data(cmd, value))
+                    .collect::<Vec<_>>();
+                self.ioctl_props(FE_SET_PROPERTY, &mut props, "FE_SET_PROPERTY.rollback_restore")?;
+                self.last_tune = Some(previous);
+                self.telemetry = previous_telemetry;
+                self.state.tuning_active = previous_tuning_active;
+                self.state.last_error = Some(format!("{reason}; previous tune restored"));
+                Ok(())
+            }
+            None => {
+                self.clear_properties()?;
+                self.last_tune = None;
+                self.telemetry = previous_telemetry;
+                self.state.tuning_active = false;
+                self.state.last_error = Some(format!("{reason}; no previous tune"));
+                Ok(())
+            }
+        }
+    }
+
     pub fn tune(&mut self, request: DvbTuneRequest) -> Result<DvbFrontendStatus, HalError> {
+        BackendTuneTxn::new(self).apply(request)
+    }
+
+    fn tune_impl(&mut self, request: DvbTuneRequest) -> Result<DvbFrontendStatus, HalError> {
         let property_pairs = Self::tune_property_pairs(&request)?;
         self.ensure_control_open()?;
+        let previous_request = self.last_tune.clone();
+        let previous_telemetry = self.telemetry.clone();
+        let previous_tuning_active = self.state.tuning_active;
         self.stop_stream_reader()?;
         self.state.tuning_active = false;
         self.telemetry.locked = false;
@@ -614,23 +664,36 @@ impl DvbFrontendBackend {
             .into_iter()
             .map(|(cmd, value)| DtvProperty::with_data(cmd, value))
             .collect::<Vec<_>>();
-        self.ioctl_props(FE_SET_PROPERTY, &mut props, "FE_SET_PROPERTY")?;
+        if let Err(err) = self.ioctl_props(FE_SET_PROPERTY, &mut props, "FE_SET_PROPERTY") {
+            if let Err(restore_err) = self.restore_tune_after_apply_failure(
+                previous_request,
+                previous_telemetry,
+                previous_tuning_active,
+                "FE_SET_PROPERTY failed during tune",
+            ) {
+                self.state.last_error = Some(format!(
+                    "FE_SET_PROPERTY failed and previous tune restore failed: {restore_err}"
+                ));
+                return Err(HalError::Internal("DVB tune rollback failed".into()));
+            }
+            return Err(err);
+        }
 
         let status_result = self.read_status();
         let mut status = match status_result {
             Ok(status) => status,
             Err(err) => {
-                if let Err(cleanup_err) = self.clear_properties() {
+                if let Err(restore_err) = self.restore_tune_after_apply_failure(
+                    previous_request,
+                    previous_telemetry,
+                    previous_tuning_active,
+                    "FE_READ_STATUS failed after tune",
+                ) {
                     self.state.last_error = Some(format!(
-                        "FE_READ_STATUS failed after tune; rollback clear_properties also failed: {cleanup_err}"
+                        "FE_READ_STATUS failed after tune; previous tune restore also failed: {restore_err}"
                     ));
-                } else {
-                    self.state.last_error = Some("FE_READ_STATUS failed after tune; rollback clear_properties completed".into());
+                    return Err(HalError::Internal("DVB tune rollback failed".into()));
                 }
-                self.state.tuning_active = false;
-                self.last_tune = None;
-                self.telemetry.locked = false;
-                self.telemetry.rf_locked = None;
                 return Err(err);
             }
         };

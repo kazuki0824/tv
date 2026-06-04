@@ -329,6 +329,16 @@ pub struct Px4FrontendBackend {
     last_driver_lock_time: Option<Instant>,
 }
 
+
+struct BackendTuneTxn<'a> { backend: &'a mut Px4FrontendBackend }
+
+impl<'a> BackendTuneTxn<'a> {
+    fn new(backend: &'a mut Px4FrontendBackend) -> Self { Self { backend } }
+    fn apply(self, request: FrontendTuneRequest) -> Result<Px4FrontendStatus, HalError> {
+        self.backend.tune_impl(request)
+    }
+}
+
 impl Px4FrontendBackend {
     pub fn new(frontend_id: i32) -> Self {
         Self::new_with_control_path(frontend_id, Self::default_control_path(frontend_id))
@@ -537,7 +547,27 @@ impl Px4FrontendBackend {
         Ok(())
     }
 
+    fn restore_previous_streaming_after_tune_failure(
+        &mut self,
+        previous_tuning_active: bool,
+        reason: &str,
+    ) -> Result<(), HalError> {
+        if previous_tuning_active {
+            self.start_streaming().map_err(|err| {
+                self.mark_backend_failed(format!(
+                    "{reason}; previous streaming restart failed: {err:?}"
+                ));
+                HalError::Internal("PX4 tune rollback streaming restart failed".into())
+            })?;
+        }
+        Ok(())
+    }
+
     pub fn tune(&mut self, request: FrontendTuneRequest) -> Result<Px4FrontendStatus, HalError> {
+        BackendTuneTxn::new(self).apply(request)
+    }
+
+    fn tune_impl(&mut self, request: FrontendTuneRequest) -> Result<Px4FrontendStatus, HalError> {
         self.ensure_not_backend_failed()?;
         self.ensure_control_open()?;
         let mapped = map_tune_request_to_px4(&request)?;
@@ -565,6 +595,12 @@ impl Px4FrontendBackend {
                     self.clear_driver_lock_state();
                     self.telemetry = previous_telemetry;
                     self.state.tuning_active = previous_tuning_active;
+                    if let Err(restore_err) = self.restore_previous_streaming_after_tune_failure(
+                        previous_tuning_active,
+                        "PTX_SET_CHANNEL failed",
+                    ) {
+                        return Err(restore_err);
+                    }
                     self.state.last_error = Some("PTX_SET_CHANNEL failed; system mode rollback completed".into());
                     return Err(error);
                 }
@@ -577,6 +613,12 @@ impl Px4FrontendBackend {
                             "PTX_START_STREAMING failed; rollback_stop={stop_error:?}; rollback_restore={restore_error:?}"
                         ));
                         return Err(HalError::Internal("PTX_START_STREAMING rollback failed".into()));
+                    }
+                    if let Err(restore_err) = self.restore_previous_streaming_after_tune_failure(
+                        previous_tuning_active,
+                        "PTX_START_STREAMING failed",
+                    ) {
+                        return Err(restore_err);
                     }
                     self.state.last_error = Some("PTX_START_STREAMING failed; rollback stop and driver setting restore completed".into());
                     return Err(error);
