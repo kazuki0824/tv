@@ -22,9 +22,9 @@
 1. `DESIGN_JA.md の責務境界`、`製品スコープ / AOSP capability / VTS profile 境界`、`AIDL 契約境界`、`Tuner HAL 状態遷移表SSOT` を最上位正本とする。
 2. `0-S. 状態所有・寿命・失敗時遷移設計`、`表1`〜`表20`、`ARIB/ISDB入力処理契約`、`Stream boundary 契約`、`Packet pipeline 正本契約`、`AV shared handle 入出力契約` を、現在の設計契約の正本とする。
 3. 旧 `補足契約:` 章は本体正本章へ吸収済みであり、本書内に二重正本として残さない。
-4. r50dz/r50ea の個別履歴、作業経緯、build/atest/VTS/grep/成果物命名/完了宣言は本書では定義しない。履歴は `CHANGELOG.md`、完了判定は `タスク完了判定の実施方法.md` を正とする。
+4. 旧版の個別履歴、作業経緯、build/atest/VTS/grep/成果物命名/完了宣言は本書では定義しない。履歴は `CHANGELOG.md`、完了判定は `タスク完了判定の実施方法.md` を正とする。
 
-削除・移動した旧記載は、`DESIGN_JA_LOSSLESS_TRACE_r50ea95.md` と `DESIGN_JA_SUPPLEMENT_ABSORPTION_TRACE_r50ea96.md` で追跡する。追跡表に分類されていない削除は認めない。
+削除・移動した旧記載は、design trace 文書 で追跡する。追跡表に分類されていない削除は認めない。
 
 ## 製品スコープ / AOSP capability / VTS profile 境界
 
@@ -48,8 +48,8 @@ VTS XML/profileで使う機能、capabilityで宣言する機能、実装済み�
 
 | 領域 | capability / profile 方針 | 設計契約 |
 |---|---|---|
-| `setDataSource(NULL)` | AOSP意味論として存在。ただしAndroid 14 Rust generated trait境界ではr51実装済み扱いにしない | `future_work/r51/android14_aidl_rust_nullable_filter_boundary_blocker.md` を正とする |
-| `IDescrambler.addPid/removePid(NULL)` | AOSP意味論として存在。ただしAndroid 14 Rust generated trait境界ではr51実装済み扱いにしない | `future_work/r51/android14_aidl_rust_nullable_filter_boundary_blocker.md` を正とする |
+| `setDataSource(NULL)` | AOSP意味論として存在。ただしAndroid 14 Rust generated trait境界では現行実装済み扱いにしない | `future_work 配下の Android 14 AIDL Rust nullable Binder 境界文書` を正とする |
+| `IDescrambler.addPid/removePid(NULL)` | AOSP意味論として存在。ただしAndroid 14 Rust generated trait境界では現行実装済み扱いにしない | `future_work 配下の Android 14 AIDL Rust nullable Binder 境界文書` を正とする |
 | AV shared handle release | media filter shared memory profileでは到達する | `releaseAvHandle(fd付き handle, 0)` を成功させる |
 | monitor event | `monitorEventTypes > 0` を使うprofileだけ対応宣言 | 非対応profileでは非0 mask を使わない |
 | AV passthrough | 対応宣言しない | profileでは `isPassthrough=false` に固定する |
@@ -72,9 +72,9 @@ VTS XML/profileで使う機能、capabilityで宣言する機能、実装済み�
 
 ### Android 14 AIDL filter source 境界の現行処理
 
-`IFilter.setDataSource()` は AOSP意味論では `source == NULL` により sink filter の入力元を demux input へ戻す。ただし Android 14 Rust generated trait 境界では r51 現行実装の public method が non-null `Strong<dyn IFilter>` を要求するため、`setDataSource(NULL)` は r51実装済み対象に含めない。non-null source filter を指定する場合の互換性、閉鎖済み source、別 demux source、自己参照、sink 開始中の扱いは、本書の「表1-D. `setDataSource()` 互換表」を正とする。`configure()` は既存上流接続を必ず解除する。nullable Binder 境界は `future_work/r51/android14_aidl_rust_nullable_filter_boundary_blocker.md` を正とする。
+`IFilter.setDataSource()` は AOSP意味論では `source == NULL` により sink filter の入力元を demux input へ戻す。ただし Android 14 Rust generated trait 境界では 現行実装の public method が non-null `Strong<dyn IFilter>` を要求するため、`setDataSource(NULL)` は 現行実装済み対象に含めない。non-null source filter を指定する場合の互換性、閉鎖済み source、別 demux source、自己参照、sink 開始中の扱いは、本書の「表1-D. `setDataSource()` 互換表」を正とする。`configure()` は既存上流接続を必ず解除する。nullable Binder 境界は `future_work 配下の Android 14 AIDL Rust nullable Binder 境界文書` を正とする。
 
-`IDescrambler.addPid()` / `removePid()` は、AOSP意味論では `optionalSourceFilter == NULL` を demux input 全体に対する PID 登録 / 解除として扱う。ただし Android 14 Rust generated trait 境界では r51 現行実装の public method が non-null `Strong<dyn IFilter>` を要求するため、NULL 経路は r51実装済み対象に含めない。non-null source filter 経路は、本書の「表D-1. IDescrambler PID 操作表」を正とし、同一 demux、非閉鎖、世代一致を検証する。nullable Binder 境界は `future_work/r51/android14_aidl_rust_nullable_filter_boundary_blocker.md` を正とする。
+`IDescrambler.addPid()` / `removePid()` は、AOSP意味論では `optionalSourceFilter == NULL` を demux input 全体に対する PID 登録 / 解除として扱う。ただし Android 14 Rust generated trait 境界では 現行実装の public method が non-null `Strong<dyn IFilter>` を要求するため、NULL 経路は 現行実装済み対象に含めない。non-null source filter 経路は、本書の「表D-1. IDescrambler PID 操作表」を正とし、同一 demux、非閉鎖、世代一致を検証する。nullable Binder 境界は `future_work 配下の Android 14 AIDL Rust nullable Binder 境界文書` を正とする。
 
 
 ## AIDL 契約境界
@@ -83,7 +83,7 @@ VTS XML/profileで使う機能、capabilityで宣言する機能、実装済み�
 
 `IFrontend.getStatus(statusTypes)` は、要求された `statusTypes` の各要素に対して、同じ順序で1つの `FrontendStatus` を返す。未対応 状態 type を黙ってdropして短い配列を返してはならない。未対応 状態 type が要求された場合、`getStatus()` は呼び出し全体を `INVALID_ARGUMENT` として失敗させる。`getFrontendStatusReadiness(statusTypes)` は AOSP VTS 期待に合わせ、要求された全 状態 type と同じ長さの readiness 配列を返す。`statusCaps` 外の type は要素ごとに `UNSUPPORTED`、`statusCaps` 内で backend が現在利用不可または 状態 word / telemetry を現在取得できない場合は `UNAVAILABLE`、tune/probe 中なら `UNSTABLE`、有効値を返せる状態なら `STABLE` とする。`statusCaps`、`getStatus()`、`getFrontendStatusReadiness()` は同一の 状態 support 判定 SSOT を使うが、戻り方は API ごとの AOSP 契約に従って分ける。`statusCaps` には起動時列挙時点で値の取得根拠を固定できる 状態 type だけを含め、read 時に失敗し得る optional ioctl 由来の 状態 type は含めない。telemetry 未取得値を `0` として成功返却してはならない。
 
-`IFilter.setDataSource(source)` は、AOSP意味論では `source != NULL` の場合に指定 filter output を入力元とし、`source == NULL` の場合に sink filter の入力元を demux input へ戻す。ただし r51 現行実装では Android 14 Rust generated trait 上の nullable binder 受け口が未固定であるため、`setDataSource(NULL)` は実装済み対象に含めない。AOSP frozen/stable AIDL の vendor 独自改変、raw Binder transaction parser による公開契約の迂回は採用しない。non-null source filter 経路では、旧 `SourceFilter(filter_id, generation)` origin に属する section / PES assembler、continuity、flush generation、downstream partial state を切断し、旧 source 由来の未完了 payload を新 source 由来 payload へ連結してはならない。
+`IFilter.setDataSource(source)` は、AOSP意味論では `source != NULL` の場合に指定 filter output を入力元とし、`source == NULL` の場合に sink filter の入力元を demux input へ戻す。ただし 現行実装では Android 14 Rust generated trait 上の nullable binder 受け口が未固定であるため、`setDataSource(NULL)` は実装済み対象に含めない。AOSP frozen/stable AIDL の vendor 独自改変、raw Binder transaction parser による公開契約の迂回は採用しない。non-null source filter 経路では、旧 `SourceFilter(filter_id, generation)` origin に属する section / PES assembler、continuity、flush generation、downstream partial state を切断し、旧 source 由来の未完了 payload を新 source 由来 payload へ連結してはならない。
 
 `IFrontend.tune()` は binder thread 上で ロック 完了まで待ち続けない。前回 tune / scan の ワーカーを generation で無効化し、backend へ tune request を投入し、非同期 ワーカー が ロック timeout と event 通知を行う。`stopTune()`、`close()`、次回 `tune()`、`scan()` は該当 generation を cancel し、古い ワーカー からの `LOCKED` / `NO_SIGNAL` 通知を捨てる。
 
@@ -222,7 +222,7 @@ Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時�
 - ワーカー は handle 保存先の mutex を確保してから spawn する。保存先を確保できない場合は spawn しない。ワーカー `panic` は `WorkerHandle::join_from_owner()` 経由で診断へ残し、detached ワーカーを作らない。
 - 長寿命 ワーカー の待機は `Mutex` + `Condvar` を基本とし、stop request → wake → join の順で停止する。`AtomicBool` は close済み / stop要求 / export済みなどの単純 flag に限定し、複合状態同期の代替にしない。`loom` は テスト専用 候補であり、通常 単体テスト と静的ロジック確認の代替にはしない。
 
-- r51 で管理対象となる長寿命 ワーカー は、`WorkerHandle` が owner id、`JoinHandle`、owner `ConcreteWorkerSignal` を所有し、owner signal の `Mutex<WorkerSignalState> + Condvar` で stop/work generation を wake する。`WorkerExit` は `Normal` / `StopRequested` / `RuntimeFailure` / `PanicOrJoinFailure` を正式名とする。
+- 本リリース範囲で管理対象となる長寿命 ワーカー は、`WorkerHandle` が owner id、`JoinHandle`、owner `ConcreteWorkerSignal` を所有し、owner signal の `Mutex<WorkerSignalState> + Condvar` で stop/work generation を wake する。`WorkerExit` は `Normal` / `StopRequested` / `RuntimeFailure` / `PanicOrJoinFailure` を正式名とする。
 - `frontend_tune_worker` / `frontend_scan_worker` の停止は、`AtomicBool + thread::sleep()` polling ではなく、`WorkerHandle::request_stop()` → `WorkerHandle::wake()` → `WorkerHandle::join_from_owner()` の順に行う。
 - Demux close / ライブ pump failure / ワーカー spawn failure は子 Filter / DVR / runtime I/O を fail-閉鎖済み にし、close後の既存 child オブジェクト の `configure()` / `start()` / `getQueueDesc()` などを成功扱いしない。
 - frontend source transition は transactional に扱い、new bind / old unbind / record更新 / stream 境界 reset の途中失敗時には新 binding をrollbackし、rollback不能なら demux を fail-閉鎖済み にする。
@@ -235,9 +235,9 @@ Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時�
 - セクションフィルターの `repeat=false` は重複抑止ではなく、同一 `start()` 世代内の配送停止条件である。`SectionBits` は最初に一致した section を1件配送した後、version や section number が異なる後続 section も配送しない。`TableInfo` は最初に一致した table id / table id extension / version を処理対象 table として固定し、その table の `0..last_section_number` を1回ずつ配送して table 完了後に停止する。table 完了前の別 version は配送しない。`repeat=true` の場合だけ同一条件の section / table を繰り返し配送する。section filter の配送可否状態は demux 入力から直接組み立てた section にだけ適用する。source filter 経由で section payload を再配送する経路は本製品では対応しない。この配送停止は公開 `IFilter.stop()` 呼び出しと同じ状態遷移ではない。filter object の公開状態は Started のまま維持し、利用側が明示的に `stop()` / `flush()` / `configure()` / `close()` を呼べる状態を保つ。
 - `TableInfo.version` は `-1` または `0..31` だけを受け付ける。`-1` は wildcard、範囲外は `INVALID_ARGUMENT` とする。
 - PES `streamId` は `0..=255` を明示 `stream_id` として照合し、`-1` だけを wildcard として扱う。その他の負値と `256` 以上は `INVALID_ARGUMENT` とする。`streamId=0` は wildcard ではなく、8-bit 値 `0x00` の明示照合である。
-- `IFilter.setDataSource()` の互換性は本書の「表1-D. `setDataSource()` 互換表」を正とする。`setDataSource(NULL)` は AOSP意味論としては demux input 復帰であるが、r51現行Rust境界では実装済み対象に含めない。filter source を指定する場合は、表1-D-3の subtype 別成立条件を正とする。source filter として指定できるのは TS生データフィルタだけである。下流として成功させるのは TS生データフィルタと record フィルタだけである。section / PES / AV への raw TS 再parse chain、および section payload、PES payload、AV payload、record payload を直接 source として再配送する経路は作らない。非対応の linkage は `UNAVAILABLE` とし、ペイロードなしフィルタを source または sink にする接続は `INVALID_ARGUMENT` とする。
+- `IFilter.setDataSource()` の互換性は本書の「表1-D. `setDataSource()` 互換表」を正とする。`setDataSource(NULL)` は AOSP意味論としては demux input 復帰であるが、現行 Android 14 Rust 生成境界では実装済み対象に含めない。filter source を指定する場合は、表1-D-3の subtype 別成立条件を正とする。source filter として指定できるのは TS生データフィルタだけである。下流として成功させるのは TS生データフィルタと record フィルタだけである。section / PES / AV への raw TS 再parse chain、および section payload、PES payload、AV payload、record payload を直接 source として再配送する経路は作らない。非対応の linkage は `UNAVAILABLE` とし、ペイロードなしフィルタを source または sink にする接続は `INVALID_ARGUMENT` とする。
 - `IFilter.getQueueDesc()` の成否は configure 済みかどうかではなく、open時フィルタ種別が通常FMQを持つかどうかで決める。通常FMQ対象フィルタは未configureでも記述子取得を成功させる。
-- `IDescrambler.addPid()` / `removePid()` の source filter は AOSP意味論では optional であり、`NULL` は demux 入力全体の PID 指定である。ただし r51現行Rust境界では実装済み対象に含めない。
+- `IDescrambler.addPid()` / `removePid()` の source filter は AOSP意味論では optional であり、`NULL` は demux 入力全体の PID 指定である。ただし 現行 Android 14 Rust 生成境界では実装済み対象に含めない。
 - AV共有メモリの slot size は filter `bufferSize` に依存させず、製品定数 `AV_SHARED_SLOT_SIZE_BYTES` で固定する。
 - 入力値不正は `INVALID_ARGUMENT`、未対応 capability は `UNAVAILABLE`、オブジェクト state 不整合は `INVALID_STATE`、mutex汚染 や内部整合性崩壊は `UNKNOWN_ERROR` / `HalError::Internal` に写像する。
 - CHANGELOG と ログ message を除き、source comment は日本語に統一する。
@@ -448,19 +448,19 @@ AV filter の audio/video routing 種別は open subtype を正とする。TsAud
 | 1 | sink が閉鎖済み | `INVALID_STATE` | sink 状態を維持 | `setDataSource()` は sink 側公開APIであり、sink 自身の閉鎖状態を最優先で判定する |
 | 2 | sink が実行時失敗状態 | `INVALID_STATE` | sink 状態を維持 | fail-closed 状態の filter は再配線しない |
 | 3 | sink が開始中 | `INVALID_STATE` | sink 状態を維持 | 開始中に入力元参照を変更しない |
-| 4 | source が `NULL` | r51現行Rust境界では到達不能 | sink 状態を維持 | AOSP意味論では demux input 復帰だが、Android 14 Rust generated trait で null を受け取る経路が未固定であるため、r51実装済み対象に含めない |
+| 4 | source が `NULL` | 現行 Android 14 Rust 生成境界では到達不能 | sink 状態を維持 | AOSP意味論では demux input 復帰だが、Android 14 Rust generated trait で null を受け取る経路が未固定であるため、現行実装済み対象に含めない |
 | 5 | source と sink が同一 object | `INVALID_ARGUMENT` | sink 状態を維持 | 自己参照を禁止する |
 | 6 | source が閉鎖済みまたは実行時失敗状態 | `INVALID_STATE` | sink 状態を維持 | source の lifecycle 異常であり、引数形式不正として扱わない |
 | 7 | source が別 demux 所属 | `INVALID_ARGUMENT` | sink 状態を維持 | demux 境界をまたいだ接続を禁止する |
 | 8 | 上記に該当しない | 表1-D-3に従う | 表1-D-3に従う | 通常の種別互換判定を行う |
 
-source は非閉鎖かつ非実行時失敗であれば、設定済み、開始済み、停止済みのいずれでも入力元として利用可能とする。sink は非閉鎖、非実行時失敗、かつ非開始の状態だけ、表1-D-3の互換判定へ進む。source が `NULL` の場合は AOSP契約上 filter object ではないため、自己参照、source閉鎖、別demux所属の判定対象にしない。ただし r51現行Rust境界では public HAL method で null を受け取れないため、実装済み対象に含めない。
+source は非閉鎖かつ非実行時失敗であれば、設定済み、開始済み、停止済みのいずれでも入力元として利用可能とする。sink は非閉鎖、非実行時失敗、かつ非開始の状態だけ、表1-D-3の互換判定へ進む。source が `NULL` の場合は AOSP契約上 filter object ではないため、自己参照、source閉鎖、別demux所属の判定対象にしない。ただし 現行 Android 14 Rust 生成境界では public HAL method で null を受け取れないため、実装済み対象に含めない。
 
 ##### 表1-D-2. `setDataSource()` endpoint分類表
 
 | 分類名 | 含むもの | 通常FMQ payload | AV共有メモリ | 備考 |
 |---|---|---:|---:|---|
-| demux input | source が `NULL` の場合のAOSP契約上の標準入力元 | 対象sinkに従う | 対象sinkに従う | filter object ではない。r51現行Rust境界では実装済み対象に含めない |
+| demux input | source が `NULL` の場合のAOSP契約上の標準入力元 | 対象sinkに従う | 対象sinkに従う | filter object ではない。現行 Android 14 Rust 生成境界では実装済み対象に含めない |
 | section フィルタ | section payload を出す FMQ対象フィルタ | あり | なし | source にはしない。SourceFilter 経由の section sink としても扱わない |
 | PES フィルタ | PES payload を出す FMQ対象フィルタ | あり | なし | source にはしない。SourceFilter 経由の PES sink としても扱わない |
 | TS生データフィルタ | TS raw payload を出す FMQ対象フィルタ | あり | なし | `SourceFilter` 経由で再投入できる唯一の source 種別。下流として成功させるのは TS生データフィルタと record フィルタだけである |
@@ -748,7 +748,7 @@ checked FMQ shim は、`queue == null` または `out_written == null` を `INVA
 | 11 | EventFlag はペイロード格納先ではない。EventFlag は FMQ対象経路の通知機構として扱う | EventFlag説明 |
 | 12 | close の成功固定に読める既存行は表5に合わせる。致命的後片付け失敗は成功扱いしない | close説明 |
 | 13 | AV flush / release の既存行は表4に合わせる。flush は shared backing と公開済みハンドルを維持し、使用中領域と全`dataId`を破棄する。`releaseAvHandle(dataId=0)` は shared backing を破棄しない | AV資源寿命説明 |
-| 14 | `setDataSource(NULL)` は AOSP意味論として sink の入力元を demux input に戻す。ただし r51現行Rust境界では実装済み対象に含めない | setDataSource説明 / future_work |
+| 14 | `setDataSource(NULL)` は AOSP意味論として sink の入力元を demux input に戻す。ただし 現行 Android 14 Rust 生成境界では実装済み対象に含めない | setDataSource説明 / future_work |
 
 ### 10. 設計表の自己整合条件
 
@@ -764,7 +764,7 @@ checked FMQ shim は、`queue == null` または `out_written == null` を `INVA
 | 8 | EventFlag表現検査 | EventFlag をペイロード格納先として扱う表現がない |
 | 9 | close検査 | `closed` と `cleanup_complete` が分離され、致命的後片付け失敗を成功扱いにしていない |
 | 10 | AOSP releaseAvHandle 検査 | `releaseAvHandle(dataId=0)` は client 側 AV handle 使用終了通知として扱い、shared backing、公開済みハンドル、既存`dataId`、使用中領域を破棄しない |
-| 11 | AOSP setDataSource 検査 | `setDataSource(NULL)` は AOSP意味論として存在するが、r51現行Rust境界では future_work blocker として扱う |
+| 11 | AOSP setDataSource 検査 | `setDataSource(NULL)` は AOSP意味論として存在するが、現行 Android 14 Rust 生成境界では future_work blocker として扱う |
 | 12 | 実装反映検査 | 表1〜表8の各行に対応する単体テストや状態遷移テストを作成できる |
 
 
@@ -1065,7 +1065,7 @@ Tuner HAL は、TIS が生成した explicit tune candidate を検証・変換�
 
 TIS が持つ候補範囲は、地上波UHF、CATV、BS、CS110を含める。地上波UHFとCATVは周波数候補をそのまま試す。CS110は周波数帯だけで試し、frontend stream id / relative stream number を要求しない。BSだけは同一周波数に複数TSが存在するため、TIS が持つBS TSID表に含まれる同一IF周波数上のTSID候補をすべて試す。px4 backend は BS `STREAM_ID` の TSID 値と BS `RELATIVE_STREAM_NUMBER` の相対TS番号値をそのまま legacy `slot` へ渡し、BS `STREAM_ID` の 0..11 は拒否する。earth_pt1/DVB backend はTSIDをそのまま `DTV_STREAM_ID` に渡すが、BS `STREAM_ID` の 0..11 は absolute TSID ではないため拒否する。
 
-実行時候補生成では、TIS が持つ BS TSID 表だけを正とする。px4 backend 側に TSID から legacy slot への変換表を持たない。TIS から渡された absolute TSID はそのまま px4 legacy API の `slot` へ渡し、px4 専用の相対TS番号もそのまま `slot` へ渡す。absolute TSID として 0..11 が渡された場合は、全backendで相対TS番号レンジとして拒否する。TSID 直渡しにより、TIS 候補表と px4 側 TSID 表の一致確認は r51 設計上の成立条件から削除する。
+実行時候補生成では、TIS が持つ BS TSID 表だけを正とする。px4 backend 側に TSID から legacy slot への変換表を持たない。TIS から渡された absolute TSID はそのまま px4 legacy API の `slot` へ渡し、px4 専用の相対TS番号もそのまま `slot` へ渡す。absolute TSID として 0..11 が渡された場合は、全backendで相対TS番号レンジとして拒否する。TSID 直渡しにより、TIS 候補表と px4 側 TSID 表の一致確認は 本リリース範囲 設計上の成立条件から削除する。
 
 この px4 BS `STREAM_ID` direct-slot 契約は、対象 kernel driver が本プロジェクトで採用する px4_drv `feat/android-ddk` 系、すなわち BS legacy `slot >= 8` reject が無効化され、`slot` 値を absolute TSID として `set_stream_id()` へ渡せる実装であることを前提にする。公開 `nns779/px4_drv` develop 相当のように BS `slot >= 8` reject が有効な driver では、absolute TSID direct-slot 経路は使用不可であり、その product で px4 BS `STREAM_ID` 対応を 対応宣言 してはならない。HAL は互換 代替処理 として TSID→relative slot 変換表を復活させない。driver 前提が満たせない場合は、TIS/profile/VTS 設定側で px4 BS absolute TSID 経路を使わない構成にする。
 
@@ -1140,11 +1140,11 @@ filter runtime state と DVR runtime state は pending overflow を持つ。コ�
 
 | 項目 | 固定内容 |
 |---|---|
-| `AV_SHARED_SLOT_SIZE_BYTES` | r51 product profile では 1 MiB 以上にする。VTS/lab overflow test profile だけ小容量化を許可する |
+| `AV_SHARED_SLOT_SIZE_BYTES` | 本製品プロファイル では 1 MiB 以上にする。VTS/lab overflow test profile だけ小容量化を許可する |
 | slot size と `bufferSize` | AV shared memory slot size は framework が渡す filter `bufferSize` だけから縮小算出しない。product profile の下限を下回ってはならない |
 | oversize 診断 | slot size 超過は `DroppedOversizePayload` とし、malformed / empty payload と混同しない |
 | overflow 状態 | oversize drop は `pending_overflow` または AV 専用 overflow pending を立て、次 callback 周期で `OVERFLOW` を通知する |
-| 通常視聴条件 | r51 product profile では、正常な live AV access unit を 256 KiB 固定値で恒常 drop しないこと |
+| 通常視聴条件 | 本製品プロファイル では、正常な live AV access unit を 256 KiB 固定値で恒常 drop しないこと |
 
 AV payload delivery result は、少なくとも `Delivered`、`DroppedBeforeHandleExport`、`DroppedNoFreeSlot`、`DroppedOversizePayload`、`DroppedMalformedPayload` を区別する。slot size 超過を `DroppedInvalidPayload` に丸めてはならない。
 
@@ -1526,7 +1526,7 @@ ISDB-T / ISDB-S の frontend capability bitmask は Android 14 AIDL enum 名に�
 
 `RF_LOCK` は backend が RF/carrier acquisition を別途取得できる場合だけ advertise する。DVB / earth_pt1 backend は Linux DVB `FE_READ_STATUS` が返す `FE_HAS_CARRIER` を `RF_LOCK`、`FE_HAS_LOCK` を `DEMOD_LOCK` に対応させる。px4_drv backend は RF/carrier ロックを返す API を持たないため、px4 の擬似 ロック は `DEMOD_LOCK` のみに使い、`RF_LOCK` には使わない。
 
-`SNR` と `SIGNAL_STRENGTH` は、r51 では `statusCaps` に含めない。DVB / earth_pt1 の `FE_READ_SNR` と `FE_READ_SIGNAL_STRENGTH`、px4 の `PTX_GET_CNR` は target driver / device 状態によって read 時に失敗し得る optional telemetry であり、起動時列挙時点で frontend entry の固定 capability として証明できないためである。これらの optional telemetry は 診断内部値として保持してよいが、AOSP statusCaps 上の supported 状態として advertise してはならない。
+`SNR` と `SIGNAL_STRENGTH` は、本リリース範囲では `statusCaps` に含めない。DVB / earth_pt1 の `FE_READ_SNR` と `FE_READ_SIGNAL_STRENGTH`、px4 の `PTX_GET_CNR` は target driver / device 状態によって read 時に失敗し得る optional telemetry であり、起動時列挙時点で frontend entry の固定 capability として証明できないためである。これらの optional telemetry は 診断内部値として保持してよいが、AOSP statusCaps 上の supported 状態として advertise してはならない。
 
 `SIGNAL_QUALITY` は、backend ごとに根拠ある合成値を返せる場合だけ `statusCaps` に含める。DVB / earth_pt1 backend の `SIGNAL_QUALITY` は Linux DVB `FE_READ_STATUS` 状態 bit の ロック 進捗を 0〜100 に正規化した値とする。px4 backend は `PTX_GET_CNR` を安定取得できることを frontend entry の capability として固定できない限り、`SNR` と `SIGNAL_QUALITY` を advertise しない。いずれも `DEMOD_LOCK` や `RF_LOCK` の代替ではなく、UI/診断 用の合成指標である。未取得 telemetry を `SIGNAL_QUALITY=0` として成功返却してはならない。
 
@@ -1611,14 +1611,14 @@ AV filter を 対応宣言する demux は AOSP の `getAvSyncHwId(Filter)` と 
 
 ## A/V sync 後続拡張境界
 
-AV filter の `start()`、共有ハンドル、MediaEvent、`releaseAvHandle()` の状態別契約は、本書の「表4. AV共有メモリ資源寿命表」を正とする。本節では A/V sync の r51 境界と後続拡張だけを固定する。
+AV filter の `start()`、共有ハンドル、MediaEvent、`releaseAvHandle()` の状態別契約は、本書の「表4. AV共有メモリ資源寿命表」を正とする。本節では A/V sync の 本リリース範囲 境界と後続拡張だけを固定する。
 
 - A/V sync は、PCR が未観測であれば 有効な同期ID を返さない。有効な同期ID を返す場合は、`getAvSyncTime(id)` が valid 90kHz timestamp を返せる状態に限る。
 - PTS は current A/V sync clock の 代替処理 として使わない。
 - PCR と monotonic clock の対応付けによる最小 wallclock 補間は維持する。
 - `AvSyncState` は、PCR PID 明示管理、サービス clock、jitter smoothing、PLL / clock discipline を後続で接続できる構造にする。
 
-r51 リリース後の後続 future_work として、以下は今回の実装範囲外にする。
+後続 future_work として、以下は今回の実装範囲外にする。
 
 - PCR PID 明示管理。
 - サービス clock モデル。
@@ -1633,7 +1633,7 @@ r51 リリース後の後続 future_work として、以下は今回の実装範
 
 LNB は satellite frontend の所有物として扱い、shared LNB の余地は置かない。`setLnb(lnb_id)` は当該 satellite frontend に紐付いた LNB ID だけを受け付け、別 frontend の LNB ID、地上波 frontend への LNB attach、不明な LNB ID は失敗させる。
 
-`ILnb.setCallback(non-null)` は、受け取ったコールバック実体を `LnbHal` 内に保持する。再設定時は新しいコールバック実体で置換する。`ILnb.close()` と未閉鎖 `LnbHal` の破棄経路では保持中のコールバック実体を解放する。Android 14 の AIDL Rust 生成 trait の r51 現行境界では `setCallback(null)` を Rust HAL 公開メソッドで受ける実装方式がないため、null解除を実装済み扱いにしない。nullable callback 境界は `future_work/r51/android14_aidl_rust_nullable_filter_boundary_blocker.md` を正とする。AOSP frozen/stable AIDL の vendor 独自改変、生の Binder transaction 解析器による公開契約の迂回は採用しない。
+`ILnb.setCallback(non-null)` は、受け取ったコールバック実体を `LnbHal` 内に保持する。再設定時は新しいコールバック実体で置換する。`ILnb.close()` と未閉鎖 `LnbHal` の破棄経路では保持中のコールバック実体を解放する。Android 14 の AIDL Rust 生成 trait の 本リリース範囲 現行境界では `setCallback(null)` を Rust HAL 公開メソッドで受ける実装方式がないため、null解除を実装済み扱いにしない。nullable callback 境界は `future_work 配下の Android 14 AIDL Rust nullable Binder 境界文書` を正とする。AOSP frozen/stable AIDL の vendor 独自改変、生の Binder transaction 解析器による公開契約の迂回は採用しない。
 
 `setVoltage()`、`setTone()`、`setSatellitePosition()` は `update_lnb_state()` を唯一の状態更新入口にする。LNB状態更新は registry を先に変更しない。旧状態から新状態候補を作り、frontend backend への反映が成功した場合だけ registry を新状態へ更新する。backend 反映に失敗した場合は registry を変更せず、backend rollback apply は行わず、`UNKNOWN_ERROR` と `lnb_backend_apply_error` 診断へ落とす。これにより HAL内部台帳と実 backend 状態の二重 rollback 失敗を作らない。
 
@@ -1657,7 +1657,7 @@ LNB backend へ新状態を適用した後に registry commit が失敗した場
 | `Unknown` | 台帳に存在しない token。未登録、refcount 0 到達による削除、refcount 0 の未使用 slot revoke 済みを含む | `UnknownToken` | 不可 | 削除済み token を復号可能として扱わない |
 | `RegistryUnavailable` | 台帳 lock 失敗、内部状態破損、CAS bridge registry 不在などで解決不能 | `RegistryUnavailable` または AIDL `UNKNOWN_ERROR` 相当 | 不可 | 内部障害を復号成功にしない |
 
-r51 の key token table は persistent `Expired` slot を保持しない。通常 release により refcount が 0 になった token slot は削除する。CAS bridge 側の session close / service switch / PMT 変更 / 明示 revoke は、refcount 0 の slot だけを削除し、refcount > 0 の slot は active session が release するまで保持する。削除済み token を後から `setKeyToken()` された場合は `UnknownToken` とする。`ExpiredKeySlot` は stale release / refcount underflow 検出用の診断名であり、通常の `setKeyToken()` resolve 結果として要求しない。
+本リリース範囲の key token table は persistent `Expired` slot を保持しない。通常 release により refcount が 0 になった token slot は削除する。CAS bridge 側の session close / service switch / PMT 変更 / 明示 revoke は、refcount 0 の slot だけを削除し、refcount > 0 の slot は active session が release するまで保持する。削除済み token を後から `setKeyToken()` された場合は `UnknownToken` とする。`ExpiredKeySlot` は stale release / refcount underflow 検出用の診断名であり、通常の `setKeyToken()` resolve 結果として要求しない。
 
 ## デスクランブル gate
 
@@ -1666,22 +1666,22 @@ VTS/lab config には descrambling flow を置かない。VTS 用 XML に ECM fi
 
 ## IDescrambler optionalSourceFilter 境界
 
-AOSP意味論では、`IDescrambler.addPid(pid, optionalSourceFilter)` および `removePid(pid, optionalSourceFilter)` の `optionalSourceFilter == NULL` は demux input 全体に対する PID 登録 / 解除である。ただし r51現行Rust境界では public HAL method が non-null `Strong<dyn IFilter>` を要求するため、NULL経路は実装済み対象に含めない。non-null 経路は指定 filter output、すなわち upper stream を対象にした PID 登録 / 解除であり、source filter検証後に成功対象とする。nullable Binder 境界は `future_work/r51/android14_aidl_rust_nullable_filter_boundary_blocker.md` を正とする。
+AOSP意味論では、`IDescrambler.addPid(pid, optionalSourceFilter)` および `removePid(pid, optionalSourceFilter)` の `optionalSourceFilter == NULL` は demux input 全体に対する PID 登録 / 解除である。ただし 現行 Android 14 Rust 生成境界では public HAL method が non-null `Strong<dyn IFilter>` を要求するため、NULL経路は実装済み対象に含めない。non-null 経路は指定 filter output、すなわち upper stream を対象にした PID 登録 / 解除であり、source filter検証後に成功対象とする。nullable Binder 境界は `future_work 配下の Android 14 AIDL Rust nullable Binder 境界文書` を正とする。
 
 ### 表D-1. IDescrambler PID 操作表
 
 | No | API | source filter | 条件 | AIDL戻り値 | 副作用 | 設計上の成立条件 |
 |---:|---|---|---|---|---|---|
-| DS-001 | `addPid(pid, NULL)` | なし | AOSP意味論上の正式入力 | r51現行Rust境界では到達不能 | なし | `future_work/r51/android14_aidl_rust_nullable_filter_boundary_blocker.md` で管理する。実装済み対象に含めない |
+| DS-001 | `addPid(pid, NULL)` | なし | AOSP意味論上の正式入力 | 現行 Android 14 Rust 生成境界では到達不能 | なし | `future_work 配下の Android 14 AIDL Rust nullable Binder 境界文書` で管理する。実装済み対象に含めない |
 | DS-002 | `addPid(pid, filter)` | あり | filter が同一 demux、非閉鎖、generation 有効、pid valid | 成功 | source filter に紐づく PID として登録 | source filter id と generation を保存する |
 | DS-003 | `addPid(pid, filter)` | あり | filter が別 demux、foreign filter、dangling filter、閉鎖済み | `INVALID_ARGUMENT` | なし | 不正 source filter を登録しない |
-| DS-004 | `addPid(pid, filter)` | あり | invalid PID | `INVALID_ARGUMENT` | なし | PID 範囲外を登録しない。NULL経路はr51実装済み対象外 |
-| DS-005 | `addPid(pid, filter)` | あり | descrambler 閉鎖済み、demux 未設定、別 active descrambler が同一 demux generation / PID を所有 | `INVALID_STATE` | なし | 状態衝突を引数不正として扱わない。key token 未設定は PID 登録拒否条件ではない。NULL経路はr51実装済み対象外 |
-| DS-006 | `removePid(pid, NULL)` | なし | AOSP意味論上の正式入力 | r51現行Rust境界では到達不能 | なし | `future_work/r51/android14_aidl_rust_nullable_filter_boundary_blocker.md` で管理する。実装済み対象に含めない |
+| DS-004 | `addPid(pid, filter)` | あり | invalid PID | `INVALID_ARGUMENT` | なし | PID 範囲外を登録しない。NULL経路は現行実装済み対象外 |
+| DS-005 | `addPid(pid, filter)` | あり | descrambler 閉鎖済み、demux 未設定、別 active descrambler が同一 demux generation / PID を所有 | `INVALID_STATE` | なし | 状態衝突を引数不正として扱わない。key token 未設定は PID 登録拒否条件ではない。NULL経路は現行実装済み対象外 |
+| DS-006 | `removePid(pid, NULL)` | なし | AOSP意味論上の正式入力 | 現行 Android 14 Rust 生成境界では到達不能 | なし | `future_work 配下の Android 14 AIDL Rust nullable Binder 境界文書` で管理する。実装済み対象に含めない |
 | DS-007 | `removePid(pid, filter)` | あり | 登録済み source-filter 紐づき PID | 成功 | 紐づく PID 登録を解除 | source filter id と generation が一致する登録だけ解除する |
-| DS-008 | `removePid(pid, filter)` | あり | 未登録 PID | 成功 | なし | cleanup として冪等成功にする。NULL経路はr51実装済み対象外 |
-| DS-009 | `removePid(pid, filter)` | あり | invalid PID | `INVALID_ARGUMENT` | なし | PID 範囲外を解除対象にしない。NULL経路はr51実装済み対象外 |
-| DS-010 | `addPid()` / `removePid()` | あり | unsupported `DemuxPid` variant | `UNAVAILABLE` | なし | product capability 未対応に限定する。NULL経路はr51実装済み対象外 |
+| DS-008 | `removePid(pid, filter)` | あり | 未登録 PID | 成功 | なし | cleanup として冪等成功にする。NULL経路は現行実装済み対象外 |
+| DS-009 | `removePid(pid, filter)` | あり | invalid PID | `INVALID_ARGUMENT` | なし | PID 範囲外を解除対象にしない。NULL経路は現行実装済み対象外 |
+| DS-010 | `addPid()` / `removePid()` | あり | unsupported `DemuxPid` variant | `UNAVAILABLE` | なし | product capability 未対応に限定する。NULL経路は現行実装済み対象外 |
 
 同一 descrambler 内では PID 登録表の主キーを PID とし、同一PIDに対する `addPid(pid, sourceFilter)` は既存登録を新しい source filter generation で置換する。別 descrambler 間では、同一 demux / demux generation / PID を二重に復号対象へ登録しないため、既に他の active descrambler が同一PIDを保持している場合は `INVALID_STATE` とする。
 
@@ -1696,7 +1696,7 @@ DVB backend は frontend index と同じ demux index / dvr index を使う。`ad
 
 ## 診断可観測性の固定
 
-現行設計では CAS bridge はまだ 本番経路 接続しない。`register_from_cas_bridge()` は将来接続用の登録口だが、現時点の非 test product 経路からは呼ばれない。本番TIS は 仮トークン または診断専用トークンを `setKeyToken()` へ渡してはならない。 `production token` は r52 以降に CAS HAL 本体が発行する復号用の不透明参照値だけを指す。`fake token`、`diagnostic token`、`placeholder token` は 本番経路で復号成功に使ってはならない。
+現行設計では CAS bridge はまだ 本番経路 接続しない。`register_from_cas_bridge()` は将来接続用の登録口だが、現時点の非 test product 経路からは呼ばれない。本番TIS は 仮トークン または診断専用トークンを `setKeyToken()` へ渡してはならない。 `production token` は 後続作業に CAS HAL 本体が発行する復号用の不透明参照値だけを指す。`fake token`、`diagnostic token`、`placeholder token` は 本番経路で復号成功に使ってはならない。
 
 `IDescrambler.setKeyToken()` に到達する non-VOID トークン は、HAL key token table が発行した 8 byte の opaque byte array だけを有効とする。Android 14 系の `Tuner.VOID_KEYTOKEN` は 1 byte トークン `[0x00]` として扱い、current key removal 用の有効 トークン とする。空 トークン `[]` は VOID トークン ではなく、常に `INVALID_ARGUMENT` と内部診断 `BAD_TOKEN` に落とす。non-VOID で 8 byte 以外の トークン は registry lookup 前に `INVALID_ARGUMENT` / `BAD_TOKEN` とする。
 
@@ -1715,7 +1715,7 @@ DVB backend は frontend index と同じ demux index / dvr index を使う。`ad
 
 ### 失効 トークン 診断
 
-`maleicacid-expired-desc-token-*` は診断名であり、`setKeyToken()` に渡す実 トークン ではない。r51 では persistent expired state を持たないため、失効または revoke 済み token の `setKeyToken()` は unknown token として扱う。`EXPIRED_KEY_SLOT` は stale release / refcount underflow 検出用の診断名としてだけ使う。
+`maleicacid-expired-desc-token-*` は診断名であり、`setKeyToken()` に渡す実 トークン ではない。本リリース範囲では persistent expired state を持たないため、失効または revoke 済み token の `setKeyToken()` は unknown token として扱う。`EXPIRED_KEY_SLOT` は stale release / refcount underflow 検出用の診断名としてだけ使う。
 
 `setKeyToken()` は、空 トークン、8 byte 以外の non-VOID トークン、未登録 トークン、CAS bridge 未接続 トークン を区別して診断カウンターに記録する。`[0x00]` は `Tuner.VOID_KEYTOKEN` として扱い、`BAD_TOKEN`、unknown トークン、CAS bridge 未接続には混ぜず、key 未設定状態でも success no-op とする。空 トークン `[]` は registry lookup、current key slot 変更、PID 登録変更を行わない。
 
@@ -1808,13 +1808,13 @@ px4 probe prefix を変更する場合は、`frontend_px4/src/lib.rs` の `PX4_P
 | No | テスト | 目的 |
 |---:|---|---|
 | T-AOSP-1 | `setDataSource(sourceFilter)` 成功 | source filter接続 |
-| T-AOSP-2 | `setDataSource(nullptr)` | AOSP意味論確認。r51現行Rust境界では future_work blocker |
+| T-AOSP-2 | `setDataSource(nullptr)` | AOSP意味論確認。現行 Android 14 Rust 生成境界では future_work blocker |
 | T-AOSP-3 | `setDataSource(nullptr)` 後の再start/data出力 | future_work完了後の検証項目 |
 | T-AOSP-4 | source filter owner demux不一致 | `INVALID_ARGUMENT` |
 | T-AOSP-5 | source filter closed/failed | `INVALID_STATE` |
 | T-AOSP-6 | unsupported source/sink subtype | `UNAVAILABLE` |
-| T-AOSP-7 | `addPid(pid, nullptr)` | AOSP意味論確認。r51現行Rust境界では future_work blocker |
-| T-AOSP-8 | `removePid(pid, nullptr)` | AOSP意味論確認。r51現行Rust境界では future_work blocker |
+| T-AOSP-7 | `addPid(pid, nullptr)` | AOSP意味論確認。現行 Android 14 Rust 生成境界では future_work blocker |
+| T-AOSP-8 | `removePid(pid, nullptr)` | AOSP意味論確認。現行 Android 14 Rust 生成境界では future_work blocker |
 | T-AOSP-9 | `addPid(pid, sourceFilter)` 成功 | upper stream識別ありPID登録 |
 | T-AOSP-10 | `removePid(pid, sourceFilter)` 成功 | upper stream識別ありPID解除 |
 | T-AOSP-11 | optionalSourceFilter owner demux不一致 | `INVALID_ARGUMENT` |
