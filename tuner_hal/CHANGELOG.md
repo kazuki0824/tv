@@ -1,5 +1,13 @@
 # r50eb32_wp14_release_tree_fix_prebuild_unverified
 
+## r50eb33_full_project_tree_restore_prebuild_unverified
+
+- r50eb32 の Tuner HAL 修正内容を維持したまま、リリース物の project tree を復元した。
+- r50eb32 で欠落していた vendor/maleicacid/tv 直下の開発規則、タスク完了判定文書、GLOBAL_CODE_CONVENTION、ARIB_SI_EPG_TvProvider投影方針、future_work、tis、arib_si_engine_rs、rec、cas_hal を r50eb6 系 full-tree から復元した。
+- 作業監査スクリプトはリリース物に同梱しない方針を維持した。
+- Rust型検査、Soong build、atest、VTS、実機確認は未実行。
+
+
 - r50eb31 archive root が `tuner_hal/` になっていた問題を修正し、リリース物の root を `vendor/maleicacid/tv/tuner_hal/` へ戻した。
 - WP-14 code content は r50eb31 から変更しない。
 - build / atest / VTS / 実機確認は未実行。

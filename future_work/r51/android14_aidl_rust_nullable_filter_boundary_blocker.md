@@ -1,19 +1,21 @@
-# Android 14 AIDL/Rust nullable filter 境界の r51 阻害項目
+# Android 14 AIDL/Rust nullable Binder 境界の r51 阻害項目
 
 ## 1. 管理対象
 
-本ファイルは、Android 14 系 Tuner HAL AIDL を Rust backend で実装する際に、AOSP framework / JNI / HIDL 側には存在する nullable filter 意味論を、official Rust generated trait だけでは受け取れない構造課題を管理する。
+本ファイルは、Android 14 系 Tuner HAL AIDL を Rust backend で実装する際に、AOSP framework / JNI / HIDL 側には存在する nullable Binder 意味論を、official Rust generated trait だけでは受け取れない構造課題を管理する。
 
 本件は `not_planned` ではない。AOSP 契約の意味論としては対応対象である一方、Android 14 AIDL / Rust generated trait 境界で実装方式が未固定であるため、r51 の AOSP 契約未達阻害項目として扱う。
 
-同根として扱う対象は次の2件である。
+同根として扱う対象は次の4件である。
 
 | 対象API | AOSP側の意味論 | Android 14 AIDL/Rust backend 上の制約 |
 |---|---|---|
 | `IDescrambler.addPid()` / `removePid()` | null source filter / PID-only 経路 | Rust generated trait が non-null `Strong<dyn IFilter>` として現れ、Rust HAL public method だけでは null を受け取れない |
 | `IFilter.setDataSource()` | `source == null` で入力元を demux に戻す | Rust generated trait が non-null `Strong<dyn IFilter>` として現れ、Rust HAL public method だけでは null を受け取れない |
+| `IFrontend.setCallback()` | `callback == null` で callback 解除 | Rust generated trait が non-null `Strong<dyn IFrontendCallback>` として現れ、Rust HAL public method だけでは null を受け取れない |
+| `ILnb.setCallback()` | `callback == null` で callback 解除 | Rust generated trait が non-null `Strong<dyn ILnbCallback>` として現れ、Rust HAL public method だけでは null を受け取れない |
 
-nullable filter 境界の同根課題を追加する場合は、本ファイル内に追記し、別ファイルへ分散させない。
+nullable Binder 境界の同根課題を追加する場合は、本ファイル内に追記し、別ファイルへ分散させない。
 
 ## 2. 対象 Android バージョン
 
@@ -34,6 +36,12 @@ AOSP framework API 側では、`Descrambler.addPid()` / `removePid()` の `Filte
 AOSP framework API / HIDL 契約では、`Filter.setDataSource(null)` / `IFilter.setDataSource(NULL)` は入力元を demux に戻す意味を持つ。
 
 この意味論では、upstream filter source を設定した後に null source を渡して demux source へ復帰する経路は実在する。したがって、demux source 復帰経路を恒久対象外として扱うことは AOSP の意味論と一致しない。
+
+### 3.3 `IFrontend.setCallback()` / `ILnb.setCallback()`
+
+AOSP AIDL では frontend callback および LNB callback は null 入力を許容し、既存 callback の解除として扱える意味論を持つ。
+
+この意味論では、callback を必須扱いし、null による解除を実装済み範囲外として隠すことは AOSP の意味論と一致しない。ただし、Android 14 系 Rust generated trait が non-null `Strong<dyn ...Callback>` として現れる場合、Rust HAL public method だけでは null callback を受け取れない。
 
 ## 4. Android 14 Tuner HAL AIDL / Rust backend 側の制約
 
@@ -86,11 +94,15 @@ Rust generated trait で到達できる non-null filter 経路の r51 現行処�
 
 - `IDescrambler.addPid()` / `removePid()` の `optionalSourceFilter == null` を PID-only として受ける実装可否。
 - `IFilter.setDataSource(null)` を demux source 復帰として受ける実装可否。
+- `IFrontend.setCallback(null)` を callback 解除として受ける実装可否。
+- `ILnb.setCallback(null)` を callback 解除として受ける実装可否。
 
 AOSP の意味論として上記2件は存在する。ただし Android 14 AIDL / Rust generated trait 境界で null filter を受け取る経路が未固定であるため、r51 では次を実装済みとして扱わない。
 
 - `IDescrambler.addPid()` / `removePid()` の `optionalSourceFilter == null` を PID-only として受ける実装。
 - `IFilter.setDataSource(null)` を demux source 復帰として受ける実装。
+- `IFrontend.setCallback(null)` を callback 解除として受ける実装。
+- `ILnb.setCallback(null)` を callback 解除として受ける実装。
 - AOSP AIDL への `@nullable` 追加。
 - vendor 独自 AIDL 追加。
 - C++ / NDK ラッパー追加。
@@ -119,6 +131,8 @@ AOSP 契約完全達成を主張するには、次をすべて満たす必要が
 - `setDataSource(NULL)` が demux input 復帰として end-to-end で成立する。
 - `addPid(pid, NULL)` が demux 入力全体の PID 指定として end-to-end で成立する。
 - `removePid(pid, NULL)` が demux 入力全体の PID 登録解除として end-to-end で成立する。
+- `IFrontend.setCallback(NULL)` が callback 解除として end-to-end で成立する。
+- `ILnb.setCallback(NULL)` が callback 解除として end-to-end で成立する。
 - 上記のために AOSP stable / frozen AIDL を vendor 独自改変していない。
 - 上記のために開発規則で禁止された C++ / NDK ラッパー、vendor 独自 AIDL、Rust raw Binder transaction parser を無断追加していない。
 - nullable 経路を実機または AOSP service 経路で確認できる。
