@@ -1520,3 +1520,12 @@ Unverified: Android/Soong build, Rust unit tests, atest, VTS, and device tests.
 - WP-12 retained:
   - `IFrontend.scan()` remains a thin dispatch to `ScanSessionTxn::start()`.
 - Verification: static source review only. Rust type check, Soong build, atest, VTS and device validation are not run.
+
+## r50eb35_design_scope_rollback_soft_demux_build_fix_prebuild_unverified
+
+- r50eb34 の `DESIGN_JA.md` 版数表現一括置換を撤回し、r50eb33 の設計文書へ戻した。
+- 開発規則の r51/r52/r53 スコープと一致する版数表現は残し、勝手な版数仮置きに見える表現だけを今後の個別レビュー対象とした。
+- `PacketPipeline::flush_filter()` を crate 内部公開へ戻し、private type `TsInputOrigin` を public API に露出しないよう修正した。
+- `SoftDemuxOriginTxn` / `SoftDemuxOriginView` の未使用メソッドを削除し、`-D warnings` の dead_code failure を解消した。
+
+未実行: Rust型検査、Soong build、Rust単体テスト、atest、VTS、実機確認。

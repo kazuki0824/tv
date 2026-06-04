@@ -903,7 +903,7 @@ impl PacketPipeline {
         );
     }
 
-    pub fn flush_filter(&mut self, filter_id: i32, origins: &[(crate::TsInputOrigin, i32)]) {
+    pub(crate) fn flush_filter(&mut self, filter_id: i32, origins: &[(crate::TsInputOrigin, i32)]) {
         for (origin, pid) in origins.iter().copied() {
             self.mark_filter_flush_generation_for_origin(filter_id, pid, origin);
         }

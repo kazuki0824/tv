@@ -785,20 +785,6 @@ impl<'a> SoftDemuxConfigureTxn<'a> {
 
 impl<'a> SoftDemuxOriginTxn<'a> {
     pub fn new(demux: &'a mut DemuxHandle) -> Self { Self { demux } }
-    pub fn set_source(self, filter_id: i32, upstream_filter_id: i32) -> Result<(), DemuxConfigError> {
-        self.demux.set_filter_data_source_result_impl(filter_id, upstream_filter_id)
-    }
-    pub fn restore_source(self, filter_id: i32, upstream_filter_id: Option<i32>) -> Result<(), DemuxConfigError> {
-        self.demux.restore_filter_data_source_snapshot_impl(filter_id, upstream_filter_id)
-    }
-
-    fn source_origin(&self, source_filter_id: i32) -> Option<TsInputOrigin> {
-        self.demux.source_filter_origin_impl(source_filter_id)
-    }
-
-    fn active_origins_for_filter(&self, filter_id: i32) -> Vec<TsInputOrigin> {
-        self.demux.active_input_origins_for_filter_impl(filter_id)
-    }
 
     pub fn disconnect_downstreams(self, filter_id: i32) {
         self.demux.disconnect_downstreams_of_impl(filter_id);
@@ -806,14 +792,6 @@ impl<'a> SoftDemuxOriginTxn<'a> {
 
     pub fn mark_flush_generation(self, filter_id: i32) {
         self.demux.mark_filter_flush_generation_impl(filter_id);
-    }
-
-    pub fn reset_filter_source_origin(self, origin: TsInputOrigin, downstream_filter_id: i32, pid: i32) {
-        self.demux.reset_source_origin_partial_state_impl(origin, downstream_filter_id, pid);
-    }
-
-    pub fn reset_downstreams_for_source(self, origin: TsInputOrigin, downstreams: &[(i32, i32)]) {
-        self.demux.reset_source_filter_downstream_partial_state_impl(origin, downstreams);
     }
 }
 
@@ -826,9 +804,6 @@ impl<'a> SoftDemuxOriginView<'a> {
         self.demux.source_filter_origin_impl(source_filter_id)
     }
 
-    pub fn active_origins_for_filter(&self, filter_id: i32) -> Vec<TsInputOrigin> {
-        self.demux.active_input_origins_for_filter_impl(filter_id)
-    }
 }
 
 impl AvSyncClock {
