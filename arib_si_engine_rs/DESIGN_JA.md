@@ -9,7 +9,7 @@
 
 自前の ARIB 文字列 decoder は、サービス名、番組名、短形式イベント、長形式イベント、各種 descriptor のテキストなど、字幕以外の SI/EPG 文字列に限定して使う。字幕 PES、字幕管理データ、字幕本文、外字・DRCS を含む字幕表示処理は `libaribcaption` の責務とし、`arib_si_engine_rs` の自前 decoder に字幕用 ARIB B24 decoder としての完全性を 対応宣言しない。
 
-未対応の SI/EPG 文字・escape は `panic` させず、置換文字または 診断によって安定動作させる。字幕 payload を `decode_arib_string_lossy()` に渡す経路は禁止する。本リリース範囲 の字幕本文処理は TIS 側の libaribcaption 経路だけで行う。
+未対応の SI/EPG 文字・escape は `panic` させず、置換文字または 診断によって安定動作させる。字幕 payload を `decode_arib_string_lossy()` に渡す経路は禁止する。r51 の字幕本文処理は TIS 側の libaribcaption 経路だけで行う。
 `arib_si_engine_rs` は libaribcaption ラッパー を所有しない。libaribcaption は TIS 側の字幕 path から Rust JNI boundary と 安全なRustラッパー 経由で呼ぶ。
 
 ARIB文字列decoderの初期状態は ARIB STD-B24 の SI/EPG 前提に合わせ、G0=Kanji、G1=Alphanumeric、G2=Hiragana、G3=Macro、GL=LS0(G0)、GR=LS2R(G2) とする。ESCによるdesignation/invocation、LS0/LS1/LS2/LS3、LS1R/LS2R/LS3R、SS2/SS3 は、字幕ではなくSI/EPG文字列の安定復号に必要な範囲で扱う。
@@ -17,11 +17,11 @@ ARIB文字列decoderの初期状態は ARIB STD-B24 の SI/EPG 前提に合わ�
 
 ## EIT 範囲
 
-本リリース範囲は EIT p/f を主経路とする。EIT schedule actual `0x50..0x5F` は、scan/setup 後に `TvProvider.Programs` へ最低限の初期番組情報を出すための短期補完に限って利用する。schedule actual を常時収集や長期 EPG 収集として扱わない。EIT schedule other `0x60..0x6F`、長期 schedule window、サービス横断 EPG 更新、予約録画と追従録画の高度利用は 後続作業 とする。
+r51 は EIT p/f を主経路とする。EIT schedule actual `0x50..0x5F` は、scan/setup 後に `TvProvider.Programs` へ最低限の初期番組情報を出すための短期補完に限って利用する。schedule actual を常時収集や長期 EPG 収集として扱わない。EIT schedule other `0x60..0x6F`、長期 schedule window、サービス横断 EPG 更新、予約録画と追従録画の高度利用は r53 とする。
 
 ## descriptor 変換
 
-今後表示できる必要がある EIT descriptor は 本リリース範囲で構造化変換する。TvProvider 標準列への投影は tv 直下の `ARIB_SI_EPG_TvProvider投影方針.md` を正とし、`internal_provider_data` の具体 schema / canonical encode / 署名 は本 crate の Rust provider-data serde構造体を SSOT とする。同文書で標準列投影が固定されている component、音声コンポーネント、コンテンツジャンル、Android canonical genre、free_CA_mode、視聴年齢制限、series id、episode number、last episode number、音声言語は provider 用 フィールドとして出せる。series の完全構造、イベントグループ、linkage、unknown、診断JSON など標準列へ自然対応しない項目は、JSON v1 `internal_provider_data` に構造化保存し、同時に診断 API でも観測できるようにする。
+今後表示できる必要がある EIT descriptor は r51 で構造化変換する。TvProvider 標準列への投影は tv 直下の `ARIB_SI_EPG_TvProvider投影方針.md` を正とし、`internal_provider_data` の具体 schema / canonical encode / 署名 は本 crate の Rust provider-data serde構造体を SSOT とする。同文書で標準列投影が固定されている component、音声コンポーネント、コンテンツジャンル、Android canonical genre、free_CA_mode、視聴年齢制限、series id、episode number、last episode number、音声言語は provider 用 フィールドとして出せる。series の完全構造、イベントグループ、linkage、unknown、診断JSON など標準列へ自然対応しない項目は、JSON v1 `internal_provider_data` に構造化保存し、同時に診断 API でも観測できるようにする。
 
 `arib_si_engine_rs` は Android canonical genre の写像表をSSOTとして所有しない。content_descriptor 由来のARIB分類、表示文字列、user_nibble を構造化して出力し、TIS が `ARIB_SI_EPG_TvProvider投影方針.md` の明示写像表に基づいて `Programs.COLUMN_CANONICAL_GENRE` へ入れる値を決定する。
 
@@ -49,7 +49,7 @@ parental_rating_descriptor:
 
 BS と CS110 の complete 判定には BAT、SDT other、NIT other を含める。これらは table_id だけの global 完了ではなく、table_extension と NIT/BAT transport loop から得た ONID/TSID scope を使って transport 単位で判定する。リモコンキー が得られない場合は service_id を表示番号の代替値 とする。
 
-partial snapshot は サービス単位の登録可能判定に使ってよい。ただし partial snapshot を無条件に channel 登録へ出してはならない。global complete 判定だけで publish 可否を決めず、サービス / transport 単位の `publishability_by_service` と 登録可能判定で、service_id、TSID、ONID、PMT、PCR、必要 table、本リリース範囲対応 video ES の欠落理由を分離する。登録可能サービスは、ONID / TSID / SID、PMT PID と PMT、有効 PCR、本リリース範囲対応 video ES、後続更新可能な internal key を持つ サービスに限定する。audio は必須ではなく、video-only サービスは登録可能として扱い、audio absent / unsupported を診断に残す。audio-only サービスは AOSP/TIF 上は `VIDEO_UNAVAILABLE_REASON_AUDIO_ONLY` に該当するため、登録可能snapshot には含めない。scrambled サービスは 登録可能 として channel 登録してよいが、本リリース範囲の 平文ライブ視聴成功 対応宣言対象にはしない。登録可能未満の partial snapshot は 診断情報 / ライブ更新 / debugに限定し、channel insert に使わない。
+partial snapshot は サービス単位の登録可能判定に使ってよい。ただし partial snapshot を無条件に channel 登録へ出してはならない。global complete 判定だけで publish 可否を決めず、サービス / transport 単位の `publishability_by_service` と 登録可能判定で、service_id、TSID、ONID、PMT、PCR、必要 table、r51対応 video ES の欠落理由を分離する。登録可能サービスは、ONID / TSID / SID、PMT PID と PMT、有効 PCR、r51対応 video ES、後続更新可能な internal key を持つ サービスに限定する。audio は必須ではなく、video-only サービスは登録可能として扱い、audio absent / unsupported を診断に残す。audio-only サービスは AOSP/TIF 上は `VIDEO_UNAVAILABLE_REASON_AUDIO_ONLY` に該当するため、登録可能snapshot には含めない。scrambled サービスは 登録可能 として channel 登録してよいが、r51 の 平文ライブ視聴成功 対応宣言対象にはしない。登録可能未満の partial snapshot は 診断情報 / ライブ更新 / debugに限定し、channel insert に使わない。
 
 ## section 更新
 
@@ -70,15 +70,15 @@ TvProvider に自然に入らない descriptor は構造化した内部データ
 provider-data JSON v1 は `provider-data / diagnostics Rust SSOT` 節の `ProgramProviderDataV1` を唯一の正式 schema とする。少なくとも `series`、`relatedItems`、`linkage`、`freeCaMode`、`audioLanguages`、`ratings`、`genres`、`extendedItems`、`components`、`audio`、`video`、`diagnostics` を最上位フィールドとして保持する。`relatedItems` は `shared` / `relay` / `movement` の種別、ONID、TSID、service_id、event_id を保持する。`series` は series_id、repeat_label、program_pattern、expire_date、episode_number、last_episode_number、series_name を保持する。
 
 
-## 本リリース範囲 descriptor 対象
+## r51 descriptor 対象
 
-short_event、extended_event、content、component、audio_component、parental_rating、series、event_group、linkage を 本リリース範囲で構造化変換する。未知 descriptor は破棄せず 診断に保持する。
+short_event、extended_event、content、component、audio_component、parental_rating、series、event_group、linkage を r51 で構造化変換する。未知 descriptor は破棄せず 診断に保持する。
 
 ARIB descriptor は `descriptor_length`、descriptor 内部 length、loop 単位、fragment sequence が妥当な場合だけ正常フィールドとして採用する。length 不整合、余剰 byte、fragment 欠落、`descriptor_number` 重複、`last_descriptor_number` 不一致、必須フィールド 不足は 不正 descriptor とし、番組名、short text、長形式イベント本文、コンテンツジャンル、component、音声コンポーネント、series、event_group、linkage の正常フィールドには採用しない。不正 descriptor は parser を停止させず、`DescriptorDiagnosticV1` に tag、offset、declaredLength、actualRemainingLength、parseStatus、rawPrefixHex、section scope を保持する。
 
 ## API 境界の固定
 
-Kotlin/JNI の通常 サービススナップショット は channel registration 用の `registration_ready_snapshot()` 相当を使う。これは 本リリース範囲の 平文ライブ視聴対応宣言対象だけでなく、サービス単位の登録可能条件を満たす scrambled unsupported サービス も含み得る。平文ライブ視聴対応宣言対象は別途 `clear_live_playback_supported_snapshot()` / `clear_live_playback_supported` で判定する。`publishable_snapshot()` は診断・test 用であり、登録可能未満の サービスを通常 channel 登録経路に出さない。publishable だが 本リリース範囲のライブ視聴対象外の サービスについては `publishability_by_service` を JNI 診断として公開し、ONID、TSID、service_id、publishable / channel_registration_ready / epg_publishable / clear_live_playback_supported / requires_cas / unsupported_cas 可否、欠落 component、除外理由を分けて観測する。
+Kotlin/JNI の通常 サービススナップショット は channel registration 用の `registration_ready_snapshot()` 相当を使う。これは r51 の 平文ライブ視聴対応宣言対象だけでなく、サービス単位の登録可能条件を満たす scrambled unsupported サービス も含み得る。平文ライブ視聴対応宣言対象は別途 `clear_live_playback_supported_snapshot()` / `clear_live_playback_supported` で判定する。`publishable_snapshot()` は診断・test 用であり、登録可能未満の サービスを通常 channel 登録経路に出さない。publishable だが r51 ライブ視聴対象外の サービスについては `publishability_by_service` を JNI 診断として公開し、ONID、TSID、service_id、publishable / channel_registration_ready / epg_publishable / clear_live_playback_supported / requires_cas / unsupported_cas 可否、欠落 component、除外理由を分けて観測する。
 
 PAT は ONID を持たないため、`(transport_stream_id, service_id) -> pmt_pid` をそのまま publishable サービス識別子 として扱わない。SDT/NIT/BAT 等で ONID が一意に解決できた場合だけ `(original_network_id, transport_stream_id, service_id, pmt_pid)` へ昇格し、ONID が曖昧な場合は publish 抑止または欠落診断に留める。
 
@@ -94,7 +94,7 @@ EIT event の stable key は `original_network_id / transport_stream_id / servic
 
 自前 ARIB 文字列 decoder の完了条件は、mirakc が EPG / サービスモデル 構築で扱う範囲に合わせる。すなわち、字幕本文レンダリングではなく、サービス名、番組名、短形式イベント記述、長形式イベント記述、各種 SI/EPG descriptor の テキストフィールドを安定して文字列化する範囲を対象にする。
 
-この範囲を超える字幕 PES、字幕管理データ、字幕本文、DRCS/外字レンダリング、厳密な組版制御は恒久的に `arib_si_engine_rs` の対象外であり、必要な場合は `libaribcaption` 側の責務とする。未対応 escape / 未対応文字は `panic` ではなく 診断情報と置換文字へ変換する。これは 本リリース範囲 の設計方針として固定する。
+この範囲を超える字幕 PES、字幕管理データ、字幕本文、DRCS/外字レンダリング、厳密な組版制御は恒久的に `arib_si_engine_rs` の対象外であり、必要な場合は `libaribcaption` 側の責務とする。未対応 escape / 未対応文字は `panic` ではなく 診断情報と置換文字へ変換する。これは本crateの設計方針として固定する。
 
 ## mirakc 相当の ARIB 文字列範囲
 
@@ -104,7 +104,7 @@ extended_event は、全 fragment の `last_descriptor_number` が一致し、`d
 
 ## 単体テスト と TvProvider 境界の固定
 
-ARIB SI/EPG文字デコードの受け入れ判定は、単体テストのみで通過してよい。実波 TS ファイル テストデータは 本リリース範囲 必須条件にせず、descriptor byte array / section builder による Rust 単体テスト を正式な受け入れ条件にする。対象は SDT サービス名、EIT short_event、extended_event fragment、長形式イベント項目、component、audio_component、series、unsupported escape、truncated text、replacement 診断である。
+ARIB SI/EPG文字デコードの受け入れ判定は、単体テストのみで通過してよい。実波 TS ファイル テストデータは本文字デコード仕様の成立に必須の入力形式にせず、descriptor byte array / section builder による Rust 単体テスト を正式な受け入れ条件にする。対象は SDT サービス名、EIT short_event、extended_event fragment、長形式イベント項目、component、audio_component、series、unsupported escape、truncated text、replacement 診断である。
 
 Rust descriptor モデル から Kotlin/TvProvider へ渡す通常境界は、`ProgramProviderDataV1` と、TvProvider 標準列へ投影するための構造化 DTO だけにする。旧来の `eventGroupText`、`freeCaText`、`seriesName` のような表示用 flat フィールド は通常投影経路では使わない。イベントグループは provider-data JSON の `relatedItems`、free_CA_mode は `freeCaMode`、series name は `series.name` に保存する。TvProvider の title / description / long description への投影は `ARIB_SI_EPG_TvProvider投影方針.md` を SSOT とし、同文書で固定済みの component/audio/content/freeCA 補足だけを `Programs.COLUMN_LONG_DESCRIPTION` へ出す。イベントグループは LONG_DESCRIPTION や一般 UI 本文へ出さない。
 
@@ -131,7 +131,7 @@ Rust provider-data builder は、受け渡し用 JSON を serde 型へ読み込�
 
 受け渡し用形式と保存用形式は別物である。受け渡し用形式を `Programs.COLUMN_INTERNAL_PROVIDER_DATA` / `Channels.COLUMN_INTERNAL_PROVIDER_DATA` に保存してはならない。
 
-required field 欠落時に `0`、`false`、`jpn`、`UNKNOWN`、空文字で補完して provider-data を成立させてはならない。旧形式の `;` 区切り形式、旧 flat provider-data、旧 provider-data 断片は受け渡し用形式としても保存用形式としても拒否する。
+required field 欠落時に `0`、`false`、`jpn`、`UNKNOWN`、空文字で補完して provider-data を成立させてはならない。r50 以前の `;` 区切り形式、旧 flat provider-data、旧 provider-data 断片は受け渡し用形式としても保存用形式としても拒否する。
 
 `DescriptorDiagnosticV1` は Rust が生成した正規 JSON を正とする。TIS から戻ってくる場合も、TIS が項目単位で再構築した JSON ではなく、Rust が生成した正規 JSON を透過保持したものだけを受ける。
 
@@ -196,7 +196,7 @@ JSON は正規表現ではなく、Rust `serde` / Kotlin JSON parser / JSON Sche
 
 `relatedItems` は `event_group_descriptor` の構造保存先であり、`kind` は `shared` / `relay` / `movement` のいずれかに正規化する。`group_type=0x1` は `shared`、`0x2` / `0x4` は `relay`、`0x3` / `0x5` は `movement` とする。ONID / TSID / service_id / event_id は数値のまま保持する。
 
-`linkage` は `linkage_descriptor` の transport_stream_id、original_network_id、service_id、linkage_type、private_data_prefix、parse_status を保持する。本リリース範囲では標準列、一般 UI、予約追従へ接続しない。
+`linkage` は `linkage_descriptor` の transport_stream_id、original_network_id、service_id、linkage_type、private_data_prefix、parse_status を保持する。r51 では標準列、一般 UI、予約追従へ接続しない。
 
 `freeCaMode` は EIT `free_CA_mode` の raw 値、scrambled 投影用 boolean、parse_status を保持する。CAS 権利状態、カード状態、CAS HAL 状態と混同しない。
 
@@ -262,7 +262,7 @@ Rust は `rawBytes` が invalid UTF-8 または malformed JSON の場合、通�
 
 ### ChannelProviderDataV1
 
-Channel provider-data の正形式は JSON v1 のみとし、schema は `maleicacid.tv.channel` / `schemaVersion=1` とする。`arib_si_engine_rs/schema/channel_provider_data_v1.schema.json` は、channel row の tune 復元に必要な `inputId`、物理選局情報、ONID / TSID / service_id、表示名、登録可能性診断を検証対象にする。旧形式の `;` 区切り key-value 形式、旧 flat provider-data、旧 provider-data 断片は読み取り互換入力としても残さない。 Channel provider-data の top-level envelope は `schema="maleicacid.tv.channel"`, `schemaVersion=1`, `serviceKey`, `tune`, `cas`, `diagnostics` を持つ JSON v1 とする。`tune` は `inputId`、`displayName`、`deliverySystem`、`frequencyHz`、`streamId`、`streamIdType`、`physicalChannel`、`backendHint`、`satelliteBand`、`remoteControlKeyId` を持つ。CS110 は `streamIdType="NONE"` とし、`streamId` は null とする。
+Channel provider-data の正形式は JSON v1 のみとし、schema は `maleicacid.tv.channel` / `schemaVersion=1` とする。`arib_si_engine_rs/schema/channel_provider_data_v1.schema.json` は、channel row の tune 復元に必要な `inputId`、物理選局情報、ONID / TSID / service_id、表示名、登録可能性診断を検証対象にする。r50 以前の `;` 区切り key-value 形式、旧 flat provider-data、旧 provider-data 断片は読み取り互換入力としても残さない。 Channel provider-data の top-level envelope は `schema="maleicacid.tv.channel"`, `schemaVersion=1`, `serviceKey`, `tune`, `cas`, `diagnostics` を持つ JSON v1 とする。`tune` は `inputId`、`displayName`、`deliverySystem`、`frequencyHz`、`streamId`、`streamIdType`、`physicalChannel`、`backendHint`、`satelliteBand`、`remoteControlKeyId` を持つ。CS110 は `streamIdType="NONE"` とし、`streamId` は null とする。
 
 ### 旧 event field / indexed JNI の廃止
 
@@ -272,7 +272,7 @@ Channel provider-data の正形式は JSON v1 のみとし、schema は `maleica
 
 ### JSON Schema / 期待値テストデータ
 
-本リリース範囲では Rust serde struct を SSOT としつつ、`arib_si_engine_rs/schema/program_provider_data_v1.schema.json`、`arib_si_engine_rs/schema/descriptor_diagnostic_v1.schema.json`、期待値テストデータを置く。`ProgramProviderDataV1` の JSON Schema は、top-level と nested オブジェクト の双方で required 最小フィールド と `additionalProperties: true` を併用し、固定済み フィールドを検証しながら ARIB descriptor 拡張を保持できる形にする。期待値テストデータは `arib_si_engine_rs/testdata/program_provider_data_v1/minimal_clear_program.json` と `tis/tests/assets/program_provider_data_v1/minimal_clear_program.json` の双方に バイト単位で同一 に複製して置く。これは Rust host test と Android instrumentation asset packaging の参照経路が異なるためであり、2つの内容差分は違反とする。Rust test と Kotlin test は同じ内容の テストデータを読み、Rust JSON -> Kotlin round-trip と Kotlin input -> Rust build -> 期待値テストデータとの一致 を確認する。
+r51 では Rust serde struct を SSOT としつつ、`arib_si_engine_rs/schema/program_provider_data_v1.schema.json`、`arib_si_engine_rs/schema/descriptor_diagnostic_v1.schema.json`、期待値テストデータを置く。`ProgramProviderDataV1` の JSON Schema は、top-level と nested オブジェクト の双方で required 最小フィールド と `additionalProperties: true` を併用し、固定済み フィールドを検証しながら ARIB descriptor 拡張を保持できる形にする。期待値テストデータは `arib_si_engine_rs/testdata/program_provider_data_v1/minimal_clear_program.json` と `tis/tests/assets/program_provider_data_v1/minimal_clear_program.json` の双方に バイト単位で同一 に複製して置く。これは Rust host test と Android instrumentation asset packaging の参照経路が異なるためであり、2つの内容差分は違反とする。Rust test と Kotlin test は同じ内容の テストデータを読み、Rust JSON -> Kotlin round-trip と Kotlin input -> Rust build -> 期待値テストデータとの一致 を確認する。
 
 ### 現行実装との関係
 
@@ -280,11 +280,11 @@ Channel provider-data の正形式は JSON v1 のみとし、schema は `maleica
 
 ## event_group_descriptor の provider-data 契約
 
-`event_group_descriptor` は 本リリース範囲で構造化変換する。`group_type=0x1` は `shared`、`0x2` / `0x4` は `relay`、`0x3` / `0x5` は `movement` として provider-data JSON の `relatedItems` に保存する。ONID / TSID / service_id / event_id は数値のまま保持する。本リリース範囲では一般 UI や予約追従へ接続しない。後続作業で予約追従に使う場合は、event identity と authoritative 条件が安全に確定できる場合だけにする。
+`event_group_descriptor` は r51 で構造化変換する。`group_type=0x1` は `shared`、`0x2` / `0x4` は `relay`、`0x3` / `0x5` は `movement` として provider-data JSON の `relatedItems` に保存する。ONID / TSID / service_id / event_id は数値のまま保持する。r51 では一般 UI や予約追従へ接続しない。r53 で予約追従に使う場合は、event identity と authoritative 条件が安全に確定できる場合だけにする。
 
 ## series_descriptor の provider-data と標準列連携
 
-`series_descriptor` は 本リリース範囲で構造化変換する。`series_id`、episode number、last episode number は TIS が Android 標準列へ自然対応として投影できるように出力する。repeat label、program pattern、expire date、series name は provider-data JSON に保持する。series name は番組表表示 title を置換する値として扱わない。
+`series_descriptor` は r51 で構造化変換する。`series_id`、episode number、last episode number は TIS が Android 標準列へ自然対応として投影できるように出力する。repeat label、program pattern、expire date、series name は provider-data JSON に保持する。series name は番組表表示 title を置換する値として扱わない。
 
 ## free_CA_mode / 音声言語 / 視聴年齢制限の構造化契約
 

@@ -1,3 +1,15 @@
+# r50eb36_design_scope_selective_build_fix_prebuild_unverified
+
+- r50eb34 の DESIGN_JA.md 版数語一括置換方針は誤りだったため、r50eb35 でロールバックした状態を維持した。
+- 開発規則.md の r51/r52/r53 スコープと照合し、DESIGN_JA.md の版数語は一律削除せず、スコープ定義ではなく Android 14 AIDL Rust 生成境界を説明していた箇所だけを選択的に補正した。
+- `r51現行Rust境界` / `r51実装済み対象外` は、リリース版数ではなく現行 Android 14 AIDL Rust 生成 trait の nullable 境界を説明していたため、`現行 Android 14 AIDL Rust 生成境界` / `現行実装対象外` へ変更した。
+- `arib_si_engine_rs/DESIGN_JA.md` の `r51 の設計方針` / `r51 必須条件` は、設計契約または入力形式条件として読めるよう、版数仮置き表現を除去した。
+- `tuner_hal/DESIGN_JA.md` の `r51 product profile` は、将来リリースとの差分を示す表現ではなく通常 product profile の契約として記載するよう補正した。
+- 添付 verify log の build failure に対応し、`FilterHal::new()` 内 callback worker に不足していた `queue_backing` / hook 用 clone を追加した。
+- `FrontendHal::drop()` が存在しない `self.frontend_id` を参照していた箇所を `self.shared.frontend_id` へ修正した。
+- `DemuxLifecycleTxn::commit_close()` の戻り値を close step closure の `Result<(), Status>` に合わせて破棄するよう修正した。
+- この環境では Rust型検査、Soong build、atest、VTS、実機確認は未実行。添付ログに基づく一次失敗への修正版であり、再verifyが必要。
+
 # r50eb34_design_r51_wording_and_build_log_fix_prebuild_unverified
 
 - 添付 verify log の Soong/Rust 失敗を確認し、PX4 backend の rollback restart 経路で未定義だった `Px4FrontendBackend::start_streaming()` を追加した。

@@ -8654,7 +8654,7 @@ impl Drop for FrontendHal {
             );
             eprintln!(
                 "maleicacid-tuner-hal-frontend-drop: frontend={} unclosed_resource_drop",
-                self.frontend_id
+                self.shared.frontend_id
             );
         }
         match lock_mutex_status(&self.callback, "frontend_callback") {
@@ -9125,13 +9125,15 @@ impl DemuxHal {
             DemuxCleanupStep::CommitClose,
             || {
                 let mut ledger = lock_mutex_status(&self.demux_ledger, "demux_ledger")?;
-                DemuxLifecycleTxn::commit_close(&mut ledger, LedgerId(self.demux_id)).map_err(|err| {
-                    eprintln!(
-                        "maleicacid-tuner-hal-demux-close: demux={} step=demux_ledger_commit_close error={:?}",
-                        self.demux_id, err
-                    );
-                    tuner_service_error(TunerResult::UNKNOWN_ERROR.0, "demux ledger commit_close failed")
-                })
+                DemuxLifecycleTxn::commit_close(&mut ledger, LedgerId(self.demux_id))
+                    .map(|_| ())
+                    .map_err(|err| {
+                        eprintln!(
+                            "maleicacid-tuner-hal-demux-close: demux={} step=demux_ledger_commit_close error={:?}",
+                            self.demux_id, err
+                        );
+                        tuner_service_error(TunerResult::UNKNOWN_ERROR.0, "demux ledger commit_close failed")
+                    })
             },
             |_next| Ok(()),
             |failed, status| fail_cleanup(failed, status, false),
@@ -9846,9 +9848,11 @@ impl FilterHal {
         let next_av_data_id = Arc::new(AtomicI64::new(1));
         let callback_worker = {
             let state_clone = Arc::clone(&state);
+            let state_hook = Arc::clone(&state);
             let callback_clone = callback.clone();
             let stop_clone = Arc::clone(&callback_stop);
             let unhealthy_clone = Arc::clone(&callback_unhealthy);
+            let queue_backing_clone = Arc::clone(&queue_backing);
             let av_queue_backing_clone = Arc::clone(&av_queue_backing);
             let av_shared_backing_clone = Arc::clone(&av_shared_backing);
             let av_shared_handle_exported_clone = Arc::clone(&av_shared_handle_exported);
@@ -9858,8 +9862,10 @@ impl FilterHal {
             let runtime_io_clone = Arc::clone(&runtime_io);
             let closed_clone = Arc::clone(&closed);
             let runtime_io_hook = Arc::clone(&runtime_io);
+            let queue_backing_hook = Arc::clone(&queue_backing);
             let av_queue_backing_hook = Arc::clone(&av_queue_backing);
             let av_shared_backing_hook = Arc::clone(&av_shared_backing);
+            let closed_hook = Arc::clone(&closed);
             let stop_hook = Arc::clone(&callback_stop);
             let handle = WorkerLifecycleTxn::spawn_with_exit_hook(WorkerOwnerId("filter_callback_worker", filter_id), "filter_callback_worker", move |owner_signal| {
                 let mut cumulative_bytes = 0u64;
