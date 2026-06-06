@@ -158,23 +158,67 @@ impl Drop for NativeFmqQueue {
 pub enum FmqClearOutcome { Cleared }
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum FmqFillStatus { Bytes(usize) }
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum FmqQueueError { Internal, #[cfg(test)] NativeReadZero }
+pub enum FmqQueueError {
+    NativeCreateFailed,
+    NoNativeQueue,
+    NativeWriteInvalidArgument,
+    NativeWriteFailed,
+    NativeReadZero,
+    NativeWakeFailed,
+    DescriptorGrantorUnavailable,
+    DescriptorFdDupFailed,
+    DescriptorIntUnavailable,
+}
+
+impl FmqQueueError {
+    pub(crate) fn is_transient_descriptor_export_error(self) -> bool {
+        matches!(
+            self,
+            FmqQueueError::DescriptorFdDupFailed
+                | FmqQueueError::DescriptorGrantorUnavailable
+                | FmqQueueError::DescriptorIntUnavailable
+        )
+    }
+
+    pub(crate) fn is_data_path_failure(self) -> bool {
+        matches!(
+            self,
+            FmqQueueError::NativeWriteInvalidArgument
+                | FmqQueueError::NativeWriteFailed
+                | FmqQueueError::NativeReadZero
+                | FmqQueueError::NativeWakeFailed
+        )
+    }
+}
 
 pub struct FmqQueue { native: Option<NativeFmqQueue>, test_fill: usize }
 
 impl FmqQueue {
     pub fn new() -> Self { Self { native: None, test_fill: 0 } }
     pub fn create(num_bytes: usize, configure_event_flag: bool) -> Result<Self, FmqQueueError> {
-        let native = NativeFmqQueue::create(num_bytes, configure_event_flag).ok_or(FmqQueueError::Internal)?;
+        let native = NativeFmqQueue::create(num_bytes, configure_event_flag).ok_or(FmqQueueError::NativeCreateFailed)?;
         Ok(Self { native: Some(native), test_fill: 0 })
     }
     pub(crate) fn read_into(&self, data: &mut [u8]) -> Result<usize, FmqQueueError> {
         let Some(native) = &self.native else { return Ok(0); };
-        Ok(native.read(data))
+        let available = native.available_to_read();
+        let read = native.read(data);
+        if available > 0 && !data.is_empty() && read == 0 {
+            return Err(FmqQueueError::NativeReadZero);
+        }
+        Ok(read)
     }
-    pub(crate) fn write_checked(&self, bytes: &[u8]) -> Result<usize, i32> {
-        self.native.as_ref().ok_or(-1)?.write_checked(bytes)
+    pub(crate) fn write_checked(&self, bytes: &[u8]) -> Result<usize, FmqQueueError> {
+        let Some(native) = self.native.as_ref() else {
+            return Err(FmqQueueError::NoNativeQueue);
+        };
+        native.write_checked(bytes).map_err(|status| match status {
+            -1 => FmqQueueError::NativeWriteInvalidArgument,
+            -2 => FmqQueueError::NativeWriteFailed,
+            _ => FmqQueueError::NativeWriteFailed,
+        })
     }
     #[cfg(test)]
     pub fn clear(&mut self) -> Result<FmqClearOutcome, FmqQueueError> {
@@ -195,11 +239,11 @@ impl FmqQueue {
     }
     pub fn current_fill(&self) -> Result<FmqFillStatus, FmqQueueError> { self.fill_status() }
     pub(crate) fn wake(&self, event_mask: u32) -> Result<(), FmqQueueError> {
-        let Some(native) = &self.native else { return Ok(()); };
-        if native.wake(event_mask) == 0 { Ok(()) } else { Err(FmqQueueError::Internal) }
+        let Some(native) = &self.native else { return Err(FmqQueueError::NoNativeQueue); };
+        if native.wake(event_mask) == 0 { Ok(()) } else { Err(FmqQueueError::NativeWakeFailed) }
     }
     fn native_ref(&self) -> Result<&NativeFmqQueue, FmqQueueError> {
-        self.native.as_ref().ok_or(FmqQueueError::Internal)
+        self.native.as_ref().ok_or(FmqQueueError::NoNativeQueue)
     }
 
     pub(crate) fn available_to_read_result(&self) -> Result<usize, FmqQueueError> {
@@ -216,11 +260,18 @@ impl FmqQueue {
     pub(crate) fn quantum_result(&self) -> Result<i32, FmqQueueError> { Ok(self.native_ref()?.quantum()) }
     pub(crate) fn flags_result(&self) -> Result<i32, FmqQueueError> { Ok(self.native_ref()?.flags()) }
     pub(crate) fn grantor_count_result(&self) -> Result<usize, FmqQueueError> { Ok(self.native_ref()?.grantor_count()) }
-    pub(crate) fn grantor_at_result(&self, index: usize) -> Result<Option<(i32,i32,i64)>, FmqQueueError> { Ok(self.native_ref()?.grantor_at(index)) }
+    pub(crate) fn grantor_at_result(&self, index: usize) -> Result<(i32,i32,i64), FmqQueueError> {
+        self.native_ref()?.grantor_at(index).ok_or(FmqQueueError::DescriptorGrantorUnavailable)
+    }
     pub(crate) fn fd_count_result(&self) -> Result<usize, FmqQueueError> { Ok(self.native_ref()?.fd_count()) }
-    pub(crate) fn dup_fd_at_result(&self, index: usize) -> Result<i32, FmqQueueError> { Ok(self.native_ref()?.dup_fd_at(index)) }
+    pub(crate) fn dup_fd_at_result(&self, index: usize) -> Result<i32, FmqQueueError> {
+        let fd = self.native_ref()?.dup_fd_at(index);
+        if fd < 0 { Err(FmqQueueError::DescriptorFdDupFailed) } else { Ok(fd) }
+    }
     pub(crate) fn int_count_result(&self) -> Result<usize, FmqQueueError> { Ok(self.native_ref()?.int_count()) }
-    pub(crate) fn int_at_result(&self, index: usize) -> Result<Option<i32>, FmqQueueError> { Ok(self.native_ref()?.int_at(index)) }
+    pub(crate) fn int_at_result(&self, index: usize) -> Result<i32, FmqQueueError> {
+        self.native_ref()?.int_at(index).ok_or(FmqQueueError::DescriptorIntUnavailable)
+    }
 }
 impl Default for FmqQueue { fn default() -> Self { Self::new() } }
 
@@ -236,12 +287,12 @@ impl Default for FmqQueue { fn default() -> Self { Self::new() } }
     #[test]
     fn native_metadata_accessors_do_not_round_missing_queue_to_zero() {
         let queue = FmqQueue::new();
-        assert_eq!(queue.available_to_write_result(), Err(FmqQueueError::Internal));
-        assert_eq!(queue.grantor_count_result(), Err(FmqQueueError::Internal));
-        assert_eq!(queue.fd_count_result(), Err(FmqQueueError::Internal));
-        assert_eq!(queue.int_count_result(), Err(FmqQueueError::Internal));
-        assert_eq!(queue.quantum_result(), Err(FmqQueueError::Internal));
-        assert_eq!(queue.flags_result(), Err(FmqQueueError::Internal));
+        assert_eq!(queue.available_to_write_result(), Err(FmqQueueError::NoNativeQueue));
+        assert_eq!(queue.grantor_count_result(), Err(FmqQueueError::NoNativeQueue));
+        assert_eq!(queue.fd_count_result(), Err(FmqQueueError::NoNativeQueue));
+        assert_eq!(queue.int_count_result(), Err(FmqQueueError::NoNativeQueue));
+        assert_eq!(queue.quantum_result(), Err(FmqQueueError::NoNativeQueue));
+        assert_eq!(queue.flags_result(), Err(FmqQueueError::NoNativeQueue));
     }
 }
 
@@ -267,5 +318,24 @@ mod r50dz52_g3_11_tests {
     fn native_read_zero_is_not_reported_as_cleared() {
         assert_eq!(clear_probe_for_test(188, &[0]), Err(FmqQueueError::NativeReadZero));
         assert_eq!(clear_probe_for_test(188, &[188]), Ok(FmqClearOutcome::Cleared));
+    }
+}
+
+#[cfg(test)]
+mod r50eb40_fmq_error_classification_tests {
+    use super::*;
+
+    #[test]
+    fn fmq_error_classification_separates_descriptor_export_from_data_path_failure() {
+        assert!(FmqQueueError::DescriptorFdDupFailed.is_transient_descriptor_export_error());
+        assert!(FmqQueueError::DescriptorGrantorUnavailable.is_transient_descriptor_export_error());
+        assert!(FmqQueueError::DescriptorIntUnavailable.is_transient_descriptor_export_error());
+        assert!(!FmqQueueError::DescriptorFdDupFailed.is_data_path_failure());
+
+        assert!(FmqQueueError::NativeWriteFailed.is_data_path_failure());
+        assert!(FmqQueueError::NativeWriteInvalidArgument.is_data_path_failure());
+        assert!(FmqQueueError::NativeReadZero.is_data_path_failure());
+        assert!(FmqQueueError::NativeWakeFailed.is_data_path_failure());
+        assert!(!FmqQueueError::NativeWakeFailed.is_transient_descriptor_export_error());
     }
 }

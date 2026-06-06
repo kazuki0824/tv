@@ -1,3 +1,118 @@
+# r50ec5-fix1
+
+- `SourceBoundaryTxn` を source filter downstream queue 境界の所有者に拡張。
+- source filter 切断時、旧 source-origin queue を共通処理で物理破棄し、downstream lifecycle は維持。
+- filter unregister 時の DVR attach 解除を `SourceBoundaryTxn` 経路へ移管し、診断counterへ記録。
+- r50ec5 の `SoftDemuxConfigureTxn` / `GenerationBoundaryTxn` 方針は維持。
+
+# r50ec5
+
+- r50ec4 を基準に、soft_demux の source filter / configure / generation boundary の所有者を明示。
+- SourceBoundaryTxn / GenerationBoundaryTxn を追加し、source filter 切断時の下流境界処理と generation 更新を共通経路へ接続。
+- configure_filter / configure_record_pid_set は既存 snapshot rollback 経路を維持し、境界処理が共通 transaction 経路を通るよう固定。
+
+# r50ec4
+
+- r50ec3-fix1 を基準に、descrambler cleanup / key lifetime の共通 transaction 方針を反映。
+- stale demux binding cleanup と demux invalidation は、1件の key release 失敗で後続 session 処理を中断しない。
+- cleanup 失敗は対象 session の pending cleanup として記録し、全件試行後に集約 Err を返す。
+
+# r50ec3-fix1_worker_stream_boundary_completion_prebuild_unverified
+
+- r50ec3 の WP-03/WP-04 完了条件未達を是正。
+- stopTune 境界で demux record lock 取得失敗時にも、record なしの `StreamBoundaryTxn` fallback を実行し、fallback失敗を runtime failed / 診断へ接続する。
+- TuneStart / frontend failure 境界の record lock 失敗 fallback で、`StreamBoundaryTxn` 失敗を `let _ =` で捨てず、demux単位の runtime failed / 診断へ接続する。
+- frontend unbind の ledger/state unbind 失敗時、quarantine 失敗を握らず cleanup failure として返す。
+- 既存 `WorkerFailureKind` / `WorkerLifecycleTxn` / `StreamBoundaryTxn` 経路を維持し、共通部品を迂回する局所実装は追加しない。
+- Rust型検査、Soong build、atest、VTS、実機確認は未実行。
+
+# r50ec3_worker_stream_boundary_prebuild_unverified
+
+- r50ec2-fix1 の WP-01/WP-02/WP-07 完了条件を静的確認し、WP-03/WP-04 相当を反映した。
+- WP-03: `WorkerFailureClassifier` の `reason.contains(...)` 文字列分類を廃止し、`WorkerFailureKind` 列挙値を呼び出し側から渡す分類へ変更した。live pump / tune worker の backend failure と worker control failure の分類は、失敗発生箇所で明示する。
+- WP-03: `stop_live_pump()` は既存 `WorkerLifecycleTxn::request_stop_wake_join_slot()` により worker slot の stop / wake / join 所有権を共通部品へ残し、異常終了時は worker control failure として記録する。
+- WP-04: demux record lock 失敗時も `StreamBoundaryTxn` の共通境界処理を可能な範囲で実行し、demux単位で runtime failed / quarantine / boundary failure 診断へ接続する。
+- WP-04: frontend failure 境界でも demux record lock 失敗時に境界処理を完全に省略せず、pending plan へ書けない場合は record なしの同一 `StreamBoundaryTxn` 経路で処理を試行する。
+- Rust型検査、Soong build、atest、VTS、実機確認は未実行。
+
+# r50ec2-fix1_close_open_lifecycle_completion_prebuild_unverified
+
+- r50ec2 の WP-01/WP-02/WP-07 完了条件未達を是正。
+- Filter / DVR open construction 失敗 cleanup で、runtime registry 未登録の場合を cleanup 失敗にしない `_if_present` 経路へ限定。
+- Filter / DVR open commit 失敗後、明示 cleanup 成功済みの一時 object が DropLeakTxn へ二重記録されないよう closed/cleanup_complete を確定。
+- DVR playback open 中に callback worker 生成が失敗した場合、先に生成済みの playback worker を停止してから失敗を返す。
+- 既存共通部品を迂回せず、LifecycleTxn / cleanup collector / SharedMemoryBacking stop 経路へ接続。
+
+# r50ec2_fmq_delivery_txn_prebuild_unverified
+
+- WP-07: `FmqDeliveryTxn` を追加し、FMQ write 後の EventFlag wake と worker wake を delivery commit 条件へ含めた。
+- FMQ write成功後に `DATA_READY` wake または worker wake が失敗した場合、ログだけで成功扱いせず、呼び出し元へ `EventFlagWakeFailed` を返す。既存の Filter / DVR runtime failed 処理へ接続する。
+- r50ec1 の Filter / DVR close gate と open rollback 方針を維持した。
+- Rust型検査、Soong build、atest、VTS、実機確認は未実行。
+
+# r50ec1_close_open_lifecycle_prebuild_unverified
+
+- WP-01: Filter / DVR close開始時点で `closed=true` / `cleanup_complete=false` を確定し、通常APIを遮断する close gate を実装した。`close_internal()` は `close_lock` で直列化し、cleanup失敗時は `close()` のみ再試行可能な状態に残す。
+- WP-02: Filter / DVR open途中失敗は既存 `LifecycleTxn` / cleanup collector 経路を維持し、runtime / worker / demux登録 / ledger rollback を呼び出し元で手書き分岐しない方針を確認した。
+- Rust型検査、Soong build、atest、VTS、実機確認は未実行。
+
+# r50ec
+
+- `DESIGN_JA.md` の外部提出向け整理を反映した。コード実装は変更しない。
+- `getQueueDesc()` は通常状態表より横断gateを優先することを明記した。close開始後、closed、cleanup failed、異常時閉鎖済み、quarantine、runtime failed、callback unhealthy では通常状態表の成功行を適用しない。
+- Filter / DVR の Drop は公開 `close()` の代替ではなく、通常 cleanup を再試行しないことを表5と close gate 表へ固定した。Drop は DropLeakTxn による未close / cleanup未完了の診断・隔離に限定する。
+- AT-014 に、Filter / DVR `start()` のような commit 後 callback API では callback失敗時に commit済み状態を rollback せず、`callback_unhealthy` に固定する契約を追記した。
+- CHANGELOG は設計正本ではないため、状態遷移・資源寿命・戻り値・capability・失敗時波及範囲は `DESIGN_JA.md` を正とする。
+- Rust型検査、Soong build、atest、VTS、実機確認は未実行。
+
+# r50eb42_post_commit_callback_failure_alignment_prebuild_unverified
+
+- r50eb41 の No.16 / No.21 修正を `DESIGN_JA.md` の post-commit callback failure 方針へ合わせ直した。
+- No.16: `IFilter.start()` の内部 start commit 後に初回 `DATA_READY` / `StartId` callback delivery が失敗した場合、demux 側 started 状態を rollback せず、既存の `fail_from_callback()` により `callback_unhealthy` として固定する。`stop()` / `flush()` / `close()` は復旧操作として許可する。
+- No.21: `IDvr.start()` の内部 start commit 後に status callback / post-commit snapshot / fill snapshot が失敗した場合、demux 側 started 状態を rollback せず、`callback_unhealthy` として固定する。
+- No.17 / No.22 の flush 後 cleanup 失敗を runtime failed へ落とす fail-closed 修正は維持した。
+- Rust型検査、Soong build、atest、VTS、実機確認は未実行。
+
+# r50eb41_start_flush_transaction_fix_prebuild_unverified
+
+- r50eb40 の残件として指摘された No.16, 17, 21, 22 に対応した。
+- No.16: `IFilter.start()` の初回 `DATA_READY` / `StartId` callback 失敗時に、callback unhealthy 化だけでなく demux 側 start を `stop_filter_result()` で rollback するよう修正した。rollback 不能時は対象 filter を runtime failed に落とす。
+- No.17: `IFilter.flush()` で demux flush 後の normal FMQ / AV FMQ / AV shared cleanup が失敗した場合、Err だけで返さず対象 filter を runtime failed に落とすよう修正した。
+- No.21: `IDvr.start()` の post-commit snapshot / fill snapshot / status callback 失敗時に demux 側 start を `stop_dvr_result()` で rollback するよう修正した。rollback 不能時は対象 DVR を runtime failed に落とす。
+- No.22: `IDvr.flush()` で demux flush 後の playback discard / record queue cleanup が失敗した場合、Err だけで返さず対象 DVR を runtime failed に落とすよう修正した。
+- Rust型検査、Soong build、atest、VTS、実機確認は未実行。
+
+# r50eb40_fmq_descriptor_error_classification_prebuild_unverified
+
+- r50eb39 の No.1, 2, 7, 8, 9, 20, 29 の修正完了条件を静的確認し、15/30 のみ追加対応した。
+- No.15/30: `Internal` への一括丸めを廃止し、FMQ生成失敗、native queue未生成、native write失敗、native read zero、EventFlag wake失敗、descriptor grantor取得失敗、fd複製失敗、int取得失敗を原因別 enum に分離した。
+- `IFilter.getQueueDesc()` / `IDvr.getQueueDesc()` は descriptor export 一時失敗では `runtime_io.mark_failed()` しない。grantor範囲不正、fd metadata不整合、quantum不正、int数不正などの descriptor内部不整合だけ対象queueを異常時閉鎖する。
+- `SharedMemoryBacking::build_queue_desc()` は `QueueDescBuildError` で一時的な記述子公開失敗と構造不正を分離し、`Status` 文字列判定に依存しない。
+- Rust型検査、Soong build、atest、VTS、実機確認は未実行。
+
+# r50eb39_no15_30_excluded_fix_prebuild_unverified
+
+- 顧客指摘 15/30 を除外し、No.1, 2, 7, 8, 9, 29 に対応した。No.20 は現行実装が既に close_failure clear を cleanup required step にしていないため、追加実装修正なしとした。
+- No.1/2: frontend failure 境界で `bound_demuxes` の実demux IDを保持し、偽ID `-1` を廃止した。`StreamBoundaryTxn::execute_for_demux()` の結果を `let _ =` で破棄せず、失敗時は診断へ残すよう修正した。
+- No.7: live pump から LNB apply を削除し、live pump の責務を TS packet delivery に限定した。LNB状態反映は既存の LNB / frontend lifecycle transaction 経路に寄せる。
+- No.8: live pump の個別demux handle lock失敗を worker全体失敗にせず、実demux IDで runtime failed / quarantine 診断に落として他demux配送を継続するよう修正した。`bound_demuxes` 全体 lock失敗、backend reader失敗、TS reader失敗は引き続き worker全体失敗として扱う。
+- No.9: descrambler snapshot取得失敗時は該当demuxだけ record-only delivery に落とし、section / PES / AV へ clear成功扱いで配送しないよう修正した。他demux配送は継続する。
+- No.29: `PacketPipeline` に origin-aware assembler prune API を追加し、`prune_assemblers_for_pid()` から `remove_*_all_origins()` を廃止した。frontend / playback / source-filter origin ごとに対象originだけ section/PES assembler を破棄する。
+- リリース物ルールに合わせ、tv直下の作業確認用 `r50eb3_completion_check.md` を同梱しないよう削除した。
+- Rust型検査、Soong build、atest、VTS、実機確認は未実行。
+
+# r50eb38_30_bug_unmet_fix_prebuild_unverified
+
+- 顧客指摘の部分修正/要確認 12, 16, 17, 21, 22, 27 に対応した。
+- No.12: `IFrontend.setCallback()` は active scan/tune 中でも差し替えを許可し、以後の通知は都度 callback slot から取得した最新 callback へ送る設計契約を `DESIGN_JA.md` に明記した。
+- No.16: `IFilter.start()` の初回 `DATA_READY` / `StartId` callback 失敗を成功扱いにせず、callback unhealthy 化した上で error を返すよう修正した。
+- No.17: `IFilter.flush()` の normal FMQ / AV FMQ / AV shared cleanup を `QueueCleanupTxn::required_resource()` に変更し、cleanup失敗を public API 成功にしないよう修正した。
+- No.21: `IDvr.start()` の初回 record/playback status callback 失敗と fill snapshot 取得失敗を成功扱いにせず error を返すよう修正した。
+- No.22: `IDvr.flush()` の playback discard / record queue clear を `QueueCleanupTxn::required_resource()` に変更した。
+- No.27: source filter downstream disconnect で downstream lifecycle を `Stopped` にしないよう修正し、接続解除を upstream解除・origin partial state reset・generation更新に限定した。
+- 未使用化した `QueueCleanupTxn::best_effort_resource()` を削除し、旧 best-effort cleanup wrapper の再導入余地を減らした。
+- Rust型検査、Soong build、atest、VTS、実機確認は未実行。
+
 # r50eb36_design_scope_selective_build_fix_prebuild_unverified
 
 - r50eb34 の DESIGN_JA.md 版数語一括置換方針は誤りだったため、r50eb35 でロールバックした状態を維持した。
@@ -1541,3 +1656,12 @@ Unverified: Android/Soong build, Rust unit tests, atest, VTS, and device tests.
 - `SoftDemuxOriginTxn` / `SoftDemuxOriginView` の未使用メソッドを削除し、`-D warnings` の dead_code failure を解消した。
 
 未実行: Rust型検査、Soong build、Rust単体テスト、atest、VTS、実機確認。
+
+## r50eb37_build_dead_code_sweep_prebuild_unverified
+
+- r50eb36 verify log 20260604_225240 の binder_service dead_code build failure に対応。
+- production で未使用の旧補助経路を削除、test 専用確認helperは `#[cfg(test)]` へ限定。
+- DescramblerLedger には cleanup-step primitive を生成しないよう ResourceLedger macro を分割。
+- WorkerRuntime の未使用 exit_reason 状態と旧test helperを削除。
+- 未使用の FMQ drop-only clear、FrontendRuntime failure wrapper、DVR callback wake helper を削除。
+- build / atest / VTS / 実機確認は未実行。

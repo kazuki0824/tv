@@ -422,14 +422,28 @@ fn worker_exit_status(worker_name: &'static str, exit: WorkerExit) -> Status {
 
 
 fn fmq_queue_error_io(context: &str, err: FmqQueueError) -> std::io::Error {
+    let category = if err.is_data_path_failure() {
+        "data_path_failure"
+    } else if err.is_transient_descriptor_export_error() {
+        "descriptor_export_transient"
+    } else {
+        "queue_state"
+    };
     std::io::Error::new(
         std::io::ErrorKind::Other,
-        format!("{context}: FMQ queue unavailable or failed: {err:?}"),
+        format!("{context}: FMQ {category}: {err:?}"),
     )
 }
 
 fn fmq_queue_error_status(context: &str, err: FmqQueueError) -> Status {
-    eprintln!("maleicacid-tuner-hal-fmq: {context}: {err:?}");
+    let category = if err.is_transient_descriptor_export_error() {
+        "descriptor_export_transient"
+    } else if err.is_data_path_failure() {
+        "data_path_failure"
+    } else {
+        "queue_state"
+    };
+    eprintln!("maleicacid-tuner-hal-fmq: {context}: {category}: {err:?}");
     Status::from(StatusCode::UNKNOWN_ERROR)
 }
 fn fmq_clear_error_status(detail: impl AsRef<str>) -> Status {
@@ -442,27 +456,61 @@ fn is_event_flag_wake_failure(err: &std::io::Error) -> bool {
     err.to_string().contains("EventFlagWakeFailed")
 }
 
-fn status_is_descriptor_internal_error(status: &Status) -> bool {
-    format!("{status:?}").contains("descriptor_internal_error")
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QueueDescFailureKind {
+    ExportTransient,
+    StructuralDescriptor,
+}
+
+struct QueueDescBuildError {
+    status: Status,
+    kind: QueueDescFailureKind,
+}
+
+impl QueueDescBuildError {
+    fn should_fail_queue(&self) -> bool {
+        matches!(self.kind, QueueDescFailureKind::StructuralDescriptor)
+    }
+}
+
+type QueueDescBuildResult<T> = Result<T, QueueDescBuildError>;
+
+fn queue_desc_export_error(context: &str, err: FmqQueueError) -> QueueDescBuildError {
+    let kind = if err.is_transient_descriptor_export_error() {
+        QueueDescFailureKind::ExportTransient
+    } else {
+        // No native queue / create failure are API state failures here, not proof that an
+        // already-running data path is corrupt.  Native read/write/wake failures do not arise
+        // from descriptor export helpers.
+        QueueDescFailureKind::ExportTransient
+    };
+    QueueDescBuildError { status: fmq_queue_error_status(context, err), kind }
+}
+
+fn queue_desc_structural_error(detail: impl AsRef<str>) -> QueueDescBuildError {
+    QueueDescBuildError {
+        status: fmq_clear_error_status(detail),
+        kind: QueueDescFailureKind::StructuralDescriptor,
+    }
 }
 
 fn validate_fmq_grantor_ranges_against_fd_sizes(
     grantors: &[CommonGrantorDescriptor],
     fd_sizes: &[i64],
-) -> BinderResult<()> {
+) -> QueueDescBuildResult<()> {
     for grantor in grantors {
         if grantor.fdIndex < 0 || grantor.fdIndex as usize >= fd_sizes.len() {
-            return Err(fmq_clear_error_status("descriptor_internal_error: grantor fdIndex out of range"));
+            return Err(queue_desc_structural_error("descriptor_internal_error: grantor fdIndex out of range"));
         }
         if grantor.offset < 0 || grantor.extent <= 0 {
-            return Err(fmq_clear_error_status("descriptor_internal_error: invalid grantor range"));
+            return Err(queue_desc_structural_error("descriptor_internal_error: invalid grantor range"));
         }
         let Some(end) = i64::from(grantor.offset).checked_add(grantor.extent) else {
-            return Err(fmq_clear_error_status("descriptor_internal_error: grantor range overflow"));
+            return Err(queue_desc_structural_error("descriptor_internal_error: grantor range overflow"));
         };
         let fd_size = fd_sizes[grantor.fdIndex as usize];
         if fd_size < 0 || end > fd_size {
-            return Err(fmq_clear_error_status("descriptor_internal_error: grantor range exceeds fd size"));
+            return Err(queue_desc_structural_error("descriptor_internal_error: grantor range exceeds fd size"));
         }
     }
     Ok(())
@@ -504,6 +552,37 @@ struct RingWriteResult {
     _start_offset: usize,
     len: usize,
     overflowed: bool,
+}
+
+/// FMQ write と EventFlag / worker wake を一体の delivery commit として扱う。
+/// write 済み data を framework 側へ通知できない場合、成功扱いにしない。
+struct FmqDeliveryTxn;
+
+impl FmqDeliveryTxn {
+    fn wake_event_flag(
+        queue: &FmqQueue,
+        event_mask: u32,
+        context: &'static str,
+    ) -> std::io::Result<()> {
+        queue.wake(event_mask).map_err(|err| {
+            std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("EventFlagWakeFailed: {context} status={err:?}"),
+            )
+        })
+    }
+
+    fn wake_worker<F>(context: &'static str, wake: F) -> std::io::Result<()>
+    where
+        F: FnOnce() -> std::io::Result<()>,
+    {
+        wake().map_err(|err| {
+            std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("EventFlagWakeFailed: {context}: {err:?}"),
+            )
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1630,40 +1709,33 @@ impl SharedMemoryBacking {
         let _ring_guard = lock_mutex_io(&self.ring_io_lock, "fmq_ring_io")?;
         let available = self.queue.available_to_write_result().map_err(|err| fmq_queue_error_io("fmq_available_to_write", err))?;
         if available < bytes.len() {
-            if let Err(wake_err) = self.queue.wake(TUNER_EVENT_DATA_OVERFLOW) {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("EventFlagWakeFailed: FMQ overflow wake failed status={wake_err:?}"),
-                ));
-            }
+            FmqDeliveryTxn::wake_event_flag(
+                &self.queue,
+                TUNER_EVENT_DATA_OVERFLOW,
+                "fmq_overflow_wake",
+            )?;
             return Ok(RingWriteResult {
                 _start_offset: 0,
                 len: 0,
                 overflowed: true,
             });
         }
-        let written = self.queue.write_checked(bytes).map_err(|write_status| {
-            std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("FMQ write failed status={write_status}"),
-            )
-        })?;
+        let written = self
+            .queue
+            .write_checked(bytes)
+            .map_err(|err| fmq_queue_error_io("fmq_write", err))?;
         if written != bytes.len() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 format!("FMQ short write requested={} written={written}", bytes.len()),
             ));
         }
-        if let Err(wake_err) = self.queue.wake(TUNER_EVENT_DATA_READY) {
-            eprintln!(
-                "maleicacid-tuner-hal-fmq: data written but EventFlag wake failed status={wake_err:?}"
-            );
-        }
-        if let Err(wake_err) = self.wake_waiters() {
-            eprintln!(
-                "maleicacid-tuner-hal-fmq: data written but worker wake failed error={wake_err:?}"
-            );
-        }
+        FmqDeliveryTxn::wake_event_flag(
+            &self.queue,
+            TUNER_EVENT_DATA_READY,
+            "fmq_data_ready_wake",
+        )?;
+        FmqDeliveryTxn::wake_worker("shared_memory_worker_wake", || self.wake_waiters())?;
         Ok(RingWriteResult {
             _start_offset: 0,
             len: written,
@@ -1799,54 +1871,53 @@ impl SharedMemoryBacking {
         }
     }
 
-    fn build_queue_desc(&self) -> BinderResult<TunerQueueDesc> {
-        let grantor_count = self.queue.grantor_count_result().map_err(|err| fmq_queue_error_status("fmq_grantor_count", err))?;
+    fn build_queue_desc(&self) -> QueueDescBuildResult<TunerQueueDesc> {
+        let grantor_count = self.queue.grantor_count_result().map_err(|err| queue_desc_export_error("fmq_grantor_count", err))?;
         let mut grantors = Vec::with_capacity(grantor_count);
         for i in 0..grantor_count {
-            let Some((fd_index, offset, extent)) = self.queue.grantor_at_result(i).map_err(|err| fmq_queue_error_status("fmq_grantor_at", err))? else {
-                return Err(Status::from(StatusCode::UNKNOWN_ERROR));
-            };
+            let (fd_index, offset, extent) = self
+                .queue
+                .grantor_at_result(i)
+                .map_err(|err| queue_desc_export_error("fmq_grantor_at", err))?;
             grantors.push(CommonGrantorDescriptor {
                 fdIndex: fd_index,
                 offset,
                 extent,
             });
         }
-        let fd_count = self.queue.fd_count_result().map_err(|err| fmq_queue_error_status("fmq_fd_count", err))?;
+        let fd_count = self.queue.fd_count_result().map_err(|err| queue_desc_export_error("fmq_fd_count", err))?;
         let mut fds = Vec::with_capacity(fd_count);
         let mut fd_sizes = Vec::with_capacity(fd_count);
         for i in 0..fd_count {
-            let fd = self.queue.dup_fd_at_result(i).map_err(|err| fmq_queue_error_status("fmq_dup_fd_at", err))?;
-            if fd < 0 {
-                return Err(Status::from(StatusCode::UNKNOWN_ERROR));
-            }
+            let fd = self.queue.dup_fd_at_result(i).map_err(|err| queue_desc_export_error("fmq_dup_fd_at", err))?;
             let file = unsafe { File::from_raw_fd(fd) };
             let fd_size_u64 = file.metadata().map_err(|err| {
                 eprintln!("maleicacid-tuner-hal-fmq: descriptor_internal_error: fstat fd failed: {err:?}");
-                fmq_clear_error_status("descriptor_internal_error: fd metadata failed")
+                queue_desc_structural_error("descriptor_internal_error: fd metadata failed")
             })?.size();
             let fd_size = i64::try_from(fd_size_u64).map_err(|_| {
-                fmq_clear_error_status("descriptor_internal_error: fd size overflow")
+                queue_desc_structural_error("descriptor_internal_error: fd size overflow")
             })?;
             fd_sizes.push(fd_size);
             fds.push(ParcelFileDescriptor::new(file));
         }
-        let int_count = self.queue.int_count_result().map_err(|err| fmq_queue_error_status("fmq_int_count", err))?;
+        let int_count = self.queue.int_count_result().map_err(|err| queue_desc_export_error("fmq_int_count", err))?;
         let mut ints = Vec::with_capacity(int_count);
         for i in 0..int_count {
-            let Some(v) = self.queue.int_at_result(i).map_err(|err| fmq_queue_error_status("fmq_int_at", err))? else {
-                return Err(Status::from(StatusCode::UNKNOWN_ERROR));
-            };
+            let v = self
+                .queue
+                .int_at_result(i)
+                .map_err(|err| queue_desc_export_error("fmq_int_at", err))?;
             ints.push(v);
         }
         validate_fmq_grantor_ranges_against_fd_sizes(&grantors, &fd_sizes)?;
-        let quantum = self.queue.quantum_result().map_err(|err| fmq_queue_error_status("fmq_quantum", err))?;
+        let quantum = self.queue.quantum_result().map_err(|err| queue_desc_export_error("fmq_quantum", err))?;
         if quantum <= 0 {
-            return Err(fmq_clear_error_status("descriptor_internal_error: invalid quantum"));
+            return Err(queue_desc_structural_error("descriptor_internal_error: invalid quantum"));
         }
-        let flags = self.queue.flags_result().map_err(|err| fmq_queue_error_status("fmq_flags", err))?;
+        let flags = self.queue.flags_result().map_err(|err| queue_desc_export_error("fmq_flags", err))?;
         if int_count > 4 {
-            return Err(fmq_clear_error_status("descriptor_internal_error: invalid int count"));
+            return Err(queue_desc_structural_error("descriptor_internal_error: invalid int count"));
         }
         let handle = CommonNativeHandle { fds, ints };
         let mut desc = TunerQueueDesc::default();
@@ -1883,11 +1954,6 @@ impl SharedMemoryBacking {
         Ok(dropped)
     }
 
-    fn clear_drop_only(&self) {
-        if let Err(err) = self.clear_result() {
-            eprintln!("maleicacid-tuner-hal-fmq: best-effort clear failed: {err:?}");
-        }
-    }
 
     fn discard_playback_input_for_boundary_result(
         &self,
@@ -2090,6 +2156,15 @@ impl RuntimeIoRegistry {
             Err(runtime_unregister_missing_status("filter", filter_id))
         }
     }
+
+    fn unregister_filter_if_present(&self, filter_id: i32) -> BinderResult<()> {
+        let _ = lock_mutex_status(&self.entries, "runtime_io_entries")?.remove(&RuntimeIoKey {
+            kind: RuntimeIoKind::Filter,
+            id: filter_id,
+        });
+        Ok(())
+    }
+
     fn unregister_dvr(&self, dvr_id: i32) -> BinderResult<()> {
         let removed = lock_mutex_status(&self.entries, "runtime_io_entries")?.remove(&RuntimeIoKey {
             kind: RuntimeIoKind::Dvr,
@@ -2100,6 +2175,14 @@ impl RuntimeIoRegistry {
         } else {
             Err(runtime_unregister_missing_status("dvr", dvr_id))
         }
+    }
+
+    fn unregister_dvr_if_present(&self, dvr_id: i32) -> BinderResult<()> {
+        let _ = lock_mutex_status(&self.entries, "runtime_io_entries")?.remove(&RuntimeIoKey {
+            kind: RuntimeIoKind::Dvr,
+            id: dvr_id,
+        });
+        Ok(())
     }
 
 
@@ -2409,17 +2492,8 @@ struct BoundDemuxRuntime {
 struct FailureClassifier;
 
 impl FailureClassifier {
-    fn mark_callback_failed(runtime: &FrontendRuntime, reason: &str) {
-        runtime.record_runtime_failure(format!("callback_failure: {reason}"));
-    }
-    fn mark_worker_failed(runtime: &FrontendRuntime, reason: &str) {
-        runtime.record_runtime_failure(format!("worker_failure: {reason}"));
-    }
     fn mark_backend_failed(runtime: &FrontendRuntime, reason: &str) {
         runtime.record_runtime_failure(format!("backend_failure: {reason}"));
-    }
-    fn mark_stream_boundary_failed(runtime: &FrontendRuntime, reason: &str) {
-        runtime.record_runtime_failure(format!("stream_boundary_failure: {reason}"));
     }
 }
 
@@ -4032,6 +4106,7 @@ struct FrontendRuntime {
     px4_path_diagnostics: Arc<Px4PathDiagnostics>,
     _sent_diseqc_generations: Mutex<BTreeMap<i32, u64>>,
     runtime_failures: Mutex<Vec<String>>,
+    stream_boundary_results: Mutex<Vec<String>>,
     scan_terminal_debug: Mutex<Option<String>>,
     pump_stop: RuntimeAtomicFlag,
     pump_wake_fd: Option<Arc<LivePumpWake>>,
@@ -4045,29 +4120,29 @@ enum WorkerFailureClass {
     Backend,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkerFailureKind {
+    WorkerControl,
+    BackendIo,
+    RuntimeIo,
+    LockFailure,
+    QueueIo,
+    CallbackDelivery,
+    UnexpectedPanic,
+}
+
 struct WorkerFailureClassifier;
 
 impl WorkerFailureClassifier {
-    fn classify_live_pump(reason: &str) -> WorkerFailureClass {
-        if reason.contains("frontend_backend")
-            || reason.contains("operation=stream_reader")
-            || reason.contains("operation=sample_ts")
-            || reason.contains("backend_io")
-        {
-            WorkerFailureClass::Backend
-        } else {
-            WorkerFailureClass::WorkerControl
-        }
-    }
-
-    fn classify_tune_worker(reason: &str) -> WorkerFailureClass {
-        if reason.contains("operation=wait_for_lock")
-            || reason.contains("runtime_backend_failure")
-            || reason.contains("backend_io")
-        {
-            WorkerFailureClass::Backend
-        } else {
-            WorkerFailureClass::WorkerControl
+    fn classify(kind: WorkerFailureKind) -> WorkerFailureClass {
+        match kind {
+            WorkerFailureKind::BackendIo => WorkerFailureClass::Backend,
+            WorkerFailureKind::WorkerControl
+            | WorkerFailureKind::RuntimeIo
+            | WorkerFailureKind::LockFailure
+            | WorkerFailureKind::QueueIo
+            | WorkerFailureKind::CallbackDelivery
+            | WorkerFailureKind::UnexpectedPanic => WorkerFailureClass::WorkerControl,
         }
     }
 }
@@ -4138,6 +4213,7 @@ impl FrontendRuntime {
             px4_path_diagnostics: Arc::new(Px4PathDiagnostics::new()),
             _sent_diseqc_generations: Mutex::new(BTreeMap::new()),
             runtime_failures: Mutex::new(Vec::new()),
+            stream_boundary_results: Mutex::new(Vec::new()),
             scan_terminal_debug: Mutex::new(None),
             pump_stop: RuntimeAtomicFlag::new(false),
             pump_wake_fd: match LivePumpWake::new() {
@@ -4261,6 +4337,16 @@ impl FrontendRuntime {
                         "StreamBoundaryResetFailed: demux={} generation={} step=demux_handle_lock status={:?}",
                         bound_demux_id, bound.demux_generation, status
                     ));
+                    if let Some(quarantine_status) = self.quarantine_demux_for_stream_boundary_failure(
+                        bound_demux_id,
+                        bound.demux_generation,
+                        StreamBoundaryReason::TuneStart,
+                        "HandleLockFailedAndQuarantined",
+                    ) {
+                        if first_error.is_none() {
+                            first_error = Some(quarantine_status);
+                        }
+                    }
                     if first_error.is_none() {
                         first_error = Some(status);
                     }
@@ -4278,7 +4364,31 @@ impl FrontendRuntime {
                         px4.clone(),
                         Some(&mut record.pending_stream_boundary_plan),
                     ),
-                    Err(status) => Err(status),
+                    Err(status) => {
+                        self.record_runtime_failure(format!(
+                            "StreamBoundaryResetRecordLockFailed: demux={} generation={} status={:?}",
+                            demux_id, bound.demux_generation, status
+                        ));
+                        match StreamBoundaryTxn::execute_for_demux(
+                            StreamBoundaryReason::TuneStart,
+                            demux_id,
+                            bound.demux_generation,
+                            Arc::clone(&bound.runtime_io),
+                            Arc::clone(&bound.state),
+                            px4.clone(),
+                            None,
+                        ) {
+                            Ok(_) => {}
+                            Err(fallback_status) => {
+                                bound.runtime_io.mark_all_failed("stream boundary fallback failed");
+                                self.record_runtime_failure(format!(
+                                    "StreamBoundaryResetFallbackFailed: demux={} generation={} status={:?}",
+                                    demux_id, bound.demux_generation, fallback_status
+                                ));
+                            }
+                        }
+                        Err(status)
+                    }
                 }
             } else {
                 StreamBoundaryTxn::execute_for_demux(
@@ -4293,11 +4403,15 @@ impl FrontendRuntime {
             };
             if let Err(status) = reset_result {
                 bound.runtime_io.mark_all_failed("stream boundary reset failed");
-                if let Err(quarantine_status) = quarantine_demux_after_stop_tune_boundary_failure(&self.demux_ledger, demux_id) {
-                    self.record_runtime_failure(format!(
-                        "StreamBoundaryResetQuarantineFailed: demux={} generation={} status={:?}",
-                        demux_id, bound.demux_generation, quarantine_status
-                    ));
+                if let Some(quarantine_status) = self.quarantine_demux_for_stream_boundary_failure(
+                    demux_id,
+                    bound.demux_generation,
+                    StreamBoundaryReason::TuneStart,
+                    "BoundaryFailedAndQuarantined",
+                ) {
+                    if first_error.is_none() {
+                        first_error = Some(quarantine_status);
+                    }
                 }
                 self.record_runtime_failure(format!(
                     "StreamBoundaryResetFailed: demux={} generation={} status={:?}",
@@ -4306,6 +4420,13 @@ impl FrontendRuntime {
                 if first_error.is_none() {
                     first_error = Some(status);
                 }
+            } else {
+                self.record_stream_boundary_result(
+                    StreamBoundaryReason::TuneStart,
+                    demux_id,
+                    bound.demux_generation,
+                    "Applied",
+                );
             }
         }
         if let Some(status) = first_error {
@@ -4336,13 +4457,52 @@ impl FrontendRuntime {
         }
     }
 
-    fn mark_callback_failure_diagnostic_only(&self, reason: &str) {
-        FailureClassifier::mark_callback_failed(self, reason);
+    fn record_stream_boundary_result(
+        &self,
+        reason: StreamBoundaryReason,
+        demux_id: i32,
+        generation: u64,
+        outcome: &str,
+    ) {
+        let message = format!(
+            "StreamBoundaryDemuxResult: reason={reason:?} demux={demux_id} generation={generation} outcome={outcome}"
+        );
+        self.record_runtime_failure(message.clone());
+        match lock_mutex_status(&self.stream_boundary_results, "frontend_stream_boundary_results") {
+            Ok(mut results) => results.push(message),
+            Err(status) => {
+                record_tuner_diagnostic_counter(
+                    &FRONTEND_LIVE_PATH_FAILURE_ERROR_COUNT,
+                    "frontend_stream_boundary_result_record_lock_failed",
+                );
+                eprintln!(
+                    "maleicacid-tuner-hal-runtime: frontend={} stream_boundary_result_record_lock_failed status={status:?}",
+                    self.frontend_id
+                );
+            }
+        }
     }
 
-    fn mark_worker_failure_fail_closed(&self, reason: &str) {
-        FailureClassifier::mark_worker_failed(self, reason);
-        self.fail_bound_demuxes_for_frontend_failure(reason, StreamBoundaryReason::FrontendClose);
+    fn quarantine_demux_for_stream_boundary_failure(
+        &self,
+        demux_id: i32,
+        generation: u64,
+        reason: StreamBoundaryReason,
+        outcome: &str,
+    ) -> Option<Status> {
+        match quarantine_demux_after_stop_tune_boundary_failure(&self.demux_ledger, demux_id) {
+            Ok(()) => {
+                self.record_stream_boundary_result(reason, demux_id, generation, outcome);
+                None
+            }
+            Err(status) => {
+                self.record_stream_boundary_result(reason, demux_id, generation, "QuarantineFailed");
+                self.record_runtime_failure(format!(
+                    "StreamBoundaryQuarantineFailed: reason={reason:?} demux={demux_id} generation={generation} status={status:?}"
+                ));
+                Some(status)
+            }
+        }
     }
 
     fn mark_backend_failure_fail_closed(&self, reason: &str) {
@@ -4350,16 +4510,15 @@ impl FrontendRuntime {
         self.fail_bound_demuxes_for_frontend_failure(reason, StreamBoundaryReason::FrontendClose);
     }
 
-    fn mark_stream_boundary_failure_fail_closed(&self, reason: &str) {
-        FailureClassifier::mark_stream_boundary_failed(self, reason);
-        self.fail_bound_demuxes_for_frontend_failure(reason, StreamBoundaryReason::FrontendClose);
-    }
 
     fn fail_bound_demuxes_for_frontend_failure(&self, reason: &str, boundary_reason: StreamBoundaryReason) {
         self.pump_stop.store(true, Ordering::SeqCst);
         let px4 = self.px4_path_diagnostics_for_current_backend_diagnostic();
-        let demuxes: Vec<BoundDemuxRuntime> = match lock_mutex_status(&self.bound_demuxes, "frontend_bound_demuxes") {
-            Ok(demuxes) => demuxes.values().cloned().collect(),
+        let demuxes: Vec<(i32, BoundDemuxRuntime)> = match lock_mutex_status(&self.bound_demuxes, "frontend_bound_demuxes") {
+            Ok(demuxes) => demuxes
+                .iter()
+                .map(|(demux_id, bound)| (*demux_id, bound.clone()))
+                .collect(),
             Err(status) => {
                 record_tuner_diagnostic_counter(
                     &FRONTEND_LIVE_PATH_FAILURE_ERROR_COUNT,
@@ -4371,52 +4530,54 @@ impl FrontendRuntime {
                 Vec::new()
             }
         };
-        for bound in demuxes {
+        for (bound_demux_id, bound) in demuxes {
             bound.runtime_io.mark_all_failed(reason);
-            let demux_id = match lock_mutex_option(&bound.state, "demux_handle") {
-                Some(demux) => demux.demux_id(),
-                None => {
+            let demux_id = match lock_mutex_status(&bound.state, "demux_handle") {
+                Ok(demux) => demux.demux_id(),
+                Err(status) => {
                     record_tuner_diagnostic_counter(
                         &FRONTEND_LIVE_PATH_FAILURE_ERROR_COUNT,
                         "frontend_failure_demux_handle_lock_failed",
                     );
                     self.record_runtime_failure(format!(
-                        "frontend_failure reason={reason} generation={} demux_handle_lock_failed",
+                        "frontend_failure reason={reason} demux={bound_demux_id} generation={} demux_handle_lock_failed status={status:?}",
                         bound.demux_generation
                     ));
-                    -1
+                    bound_demux_id
                 }
             };
-            if demux_id >= 0 {
-                if let Err(status) = quarantine_demux_after_stop_tune_boundary_failure(&self.demux_ledger, demux_id) {
-                    self.record_runtime_failure(format!(
-                        "frontend_failure reason={reason} demux={demux_id} quarantine_failed status={status:?}"
-                    ));
-                }
+            let quarantine_failed = self.quarantine_demux_for_stream_boundary_failure(
+                demux_id,
+                bound.demux_generation,
+                boundary_reason,
+                "FrontendFailureQuarantined",
+            );
+            if quarantine_failed.is_some() {
+                self.record_runtime_failure(format!(
+                    "frontend_failure reason={reason} demux={demux_id} quarantine_failed"
+                ));
             }
-            if let Some(record) = bound.demux_record.as_ref() {
-                match lock_mutex_option(&record, "demux_record") {
-                    Some(mut record) => {
-                        let _ = StreamBoundaryTxn::execute_for_demux(
-                            boundary_reason,
-                            demux_id,
-                            bound.demux_generation,
-                            Arc::clone(&bound.runtime_io),
-                            Arc::clone(&bound.state),
-                            px4.clone(),
-                            Some(&mut record.pending_stream_boundary_plan),
-                        );
-                    }
-                    None => {
+            let boundary_result = if let Some(record) = bound.demux_record.as_ref() {
+                match lock_mutex_status(record, "demux_record") {
+                    Ok(mut record) => StreamBoundaryTxn::execute_for_demux(
+                        boundary_reason,
+                        demux_id,
+                        bound.demux_generation,
+                        Arc::clone(&bound.runtime_io),
+                        Arc::clone(&bound.state),
+                        px4.clone(),
+                        Some(&mut record.pending_stream_boundary_plan),
+                    ),
+                    Err(status) => {
                         record_tuner_diagnostic_counter(
                             &FRONTEND_LIVE_PATH_FAILURE_ERROR_COUNT,
                             "frontend_failure_demux_record_lock_failed",
                         );
                         self.record_runtime_failure(format!(
-                            "frontend_failure reason={reason} demux={demux_id} generation={} demux_record_lock_failed",
+                            "frontend_failure reason={reason} demux={demux_id} generation={} demux_record_lock_failed status={status:?}",
                             bound.demux_generation
                         ));
-                        let _ = StreamBoundaryTxn::execute_for_demux(
+                        match StreamBoundaryTxn::execute_for_demux(
                             boundary_reason,
                             demux_id,
                             bound.demux_generation,
@@ -4424,11 +4585,32 @@ impl FrontendRuntime {
                             Arc::clone(&bound.state),
                             px4.clone(),
                             None,
-                        );
+                        ) {
+                            Ok(_) => self.record_stream_boundary_result(
+                                boundary_reason,
+                                demux_id,
+                                bound.demux_generation,
+                                "RecordLockFailedFallbackApplied",
+                            ),
+                            Err(fallback_status) => {
+                                bound.runtime_io.mark_all_failed("frontend failure stream boundary fallback failed");
+                                self.record_runtime_failure(format!(
+                                    "frontend_failure reason={reason} demux={demux_id} generation={} stream_boundary_fallback_failed status={fallback_status:?}",
+                                    bound.demux_generation
+                                ));
+                                let _ = self.quarantine_demux_for_stream_boundary_failure(
+                                    demux_id,
+                                    bound.demux_generation,
+                                    boundary_reason,
+                                    "RecordLockFailedFallbackFailedAndQuarantined",
+                                );
+                            }
+                        }
+                        Err(status)
                     }
                 }
             } else {
-                let _ = StreamBoundaryTxn::execute_for_demux(
+                StreamBoundaryTxn::execute_for_demux(
                     boundary_reason,
                     demux_id,
                     bound.demux_generation,
@@ -4436,9 +4618,32 @@ impl FrontendRuntime {
                     Arc::clone(&bound.state),
                     px4.clone(),
                     None,
+                )
+            };
+            if let Err(status) = boundary_result {
+                record_tuner_diagnostic_counter(
+                    &FRONTEND_LIVE_PATH_FAILURE_ERROR_COUNT,
+                    "frontend_failure_stream_boundary_failed",
+                );
+                let _ = self.quarantine_demux_for_stream_boundary_failure(
+                    demux_id,
+                    bound.demux_generation,
+                    boundary_reason,
+                    "BoundaryFailedAndQuarantined",
+                );
+                self.record_runtime_failure(format!(
+                    "frontend_failure reason={reason} demux={demux_id} generation={} stream_boundary_failed status={status:?}",
+                    bound.demux_generation
+                ));
+            } else {
+                self.record_stream_boundary_result(
+                    boundary_reason,
+                    demux_id,
+                    bound.demux_generation,
+                    "Applied",
                 );
             }
-            if let Some(mut demux) = lock_mutex_option(&bound.state, "demux_handle") {
+            if let Ok(mut demux) = lock_mutex_status(&bound.state, "demux_handle") {
                 demux.close();
             } else {
                 record_tuner_diagnostic_counter(
@@ -4492,44 +4697,20 @@ impl FrontendRuntime {
     }
 
 
-    fn handle_live_pump_worker_failure(&self, detail: String) {
+    fn handle_live_pump_worker_failure(&self, kind: WorkerFailureKind, detail: String) {
         self.record_runtime_failure(detail.clone());
-        if matches!(WorkerFailureClassifier::classify_live_pump(&detail), WorkerFailureClass::Backend) {
+        if matches!(WorkerFailureClassifier::classify(kind), WorkerFailureClass::Backend) {
             self.mark_backend_failure_fail_closed(&detail);
         }
     }
 
-    fn handle_tune_worker_failure(&self, detail: String) {
+    fn handle_tune_worker_failure(&self, kind: WorkerFailureKind, detail: String) {
         self.record_runtime_failure(detail.clone());
-        if matches!(WorkerFailureClassifier::classify_tune_worker(&detail), WorkerFailureClass::Backend) {
+        if matches!(WorkerFailureClassifier::classify(kind), WorkerFailureClass::Backend) {
             self.mark_backend_failure_fail_closed(&detail);
         }
     }
 
-    fn wake_live_pump(&self) {
-        if let Some(wake_fd) = self.pump_wake_fd.as_ref() {
-            if let Err(err) = wake_fd.wake() {
-                self.record_runtime_failure(format!("live_pump_wake_fd_failed err={err:?}"));
-                eprintln!(
-                    "maleicacid-tuner-hal-live-pump: frontend={} wake_fd_failed={err:?}",
-                    self.frontend_id
-                );
-            }
-        }
-        match lock_mutex_status(&self.pump_worker, "frontend_pump_worker") {
-            Ok(worker) => {
-                if let Some(handle) = worker.as_ref() {
-                    if let Err(err) = WorkerLifecycleTxn::wake(handle) {
-                        self.handle_live_pump_worker_failure(format!("live_pump_worker_wake_failed err={err:?}"));
-                    }
-                }
-            }
-            Err(status) => {
-                let detail = format!("live_pump_worker_lock_failed_in_wake status={status:?}");
-                self.handle_live_pump_worker_failure(detail.clone());
-            }
-        }
-    }
 
     fn wait_live_pump_interval(&self, owner_signal: &ConcreteWorkerSignal, interval: Duration) {
         if self.pump_stop.load(Ordering::SeqCst) {
@@ -4537,7 +4718,7 @@ impl FrontendRuntime {
         }
         let stopped_or_failed = owner_signal.wait_timeout_or_stop(interval);
         if stopped_or_failed && owner_signal.is_runtime_failure() {
-            self.handle_live_pump_worker_failure("live_pump_wait_signal_runtime_failure".to_string());
+            self.handle_live_pump_worker_failure(WorkerFailureKind::WorkerControl, "live_pump_wait_signal_runtime_failure".to_string());
         }
     }
 
@@ -4560,7 +4741,7 @@ impl FrontendRuntime {
             let exit = WorkerLifecycleTxn::join_exit(worker, "frontend_pump_worker");
             if exit.is_abnormal() {
                 let detail = format!("worker=frontend_live_pump exit={:?}", exit);
-                self.handle_live_pump_worker_failure(detail.clone());
+                self.handle_live_pump_worker_failure(WorkerFailureKind::WorkerControl, detail.clone());
                 return Err(tuner_service_error(TunerResult::UNKNOWN_ERROR.0, &detail));
             }
         }
@@ -4578,7 +4759,7 @@ impl FrontendRuntime {
             move |exit| {
                 if exit.is_abnormal() {
                     let detail = format!("worker=frontend_live_pump exit={:?}", exit);
-                    runtime_for_hook.handle_live_pump_worker_failure(detail.clone());
+                    runtime_for_hook.handle_live_pump_worker_failure(WorkerFailureKind::WorkerControl, detail.clone());
                 }
             },
         ) {
@@ -4588,7 +4769,7 @@ impl FrontendRuntime {
             }
             Err(err) => {
                 let detail = format!("worker=frontend_live_pump operation=spawn error={err:?}");
-                self.handle_live_pump_worker_failure(detail.clone());
+                self.handle_live_pump_worker_failure(WorkerFailureKind::WorkerControl, detail.clone());
                 Err(tuner_service_error(TunerResult::UNKNOWN_ERROR.0, &detail))
             }
         }
@@ -4610,7 +4791,7 @@ impl FrontendRuntime {
             let exit = WorkerLifecycleTxn::exit_from_join_outcome(outcome);
             if exit.is_abnormal() {
                 let detail = format!("worker=frontend_live_pump stop_join_abnormal exit={exit:?}");
-                self.handle_live_pump_worker_failure(detail.clone());
+                self.handle_live_pump_worker_failure(WorkerFailureKind::WorkerControl, detail.clone());
                 return Err(worker_exit_status("frontend_live_pump", exit));
             }
         }
@@ -4628,33 +4809,27 @@ impl FrontendRuntime {
                             let detail = format!(
                                 "worker=frontend_live_pump reason=frontend_backend_lock_failed status={status:?}"
                             );
-                            self.handle_live_pump_worker_failure(detail);
+                            self.handle_live_pump_worker_failure(WorkerFailureKind::BackendIo, detail);
                             return WorkerExit::RuntimeFailure;
                         }
                     };
                     if !FrontendHal::backend_tuning_active(&backend) {
                         Ok(None)
                     } else {
-                        FrontendHal::apply_selected_lnb_from_registry(
-                            &self.lnb_registry,
-                            &mut backend,
-                        )
-                        .map_err(|err| {
-                            format!("worker=frontend_live_pump operation=apply_lnb error={err:?}")
-                        })
-                        .and_then(|()| {
-                            FrontendHal::backend_live_stream_reader(&mut backend).map_err(|err| {
-                                format!(
-                                    "worker=frontend_live_pump operation=stream_reader error={err:?}"
-                                )
-                            })
+                        // LNB状態反映は明示的なLNB/frontend lifecycle transactionが担当する。
+                        // live pump はTS packet配送だけを担当し、LNB apply失敗で配送workerや
+                        // 無関係なdemuxを停止させない。
+                        FrontendHal::backend_live_stream_reader(&mut backend).map_err(|err| {
+                            format!(
+                                "worker=frontend_live_pump operation=stream_reader error={err:?}"
+                            )
                         })
                     }
                 };
                 match reader_result {
                     Ok(reader) => reader,
                     Err(detail) => {
-                        self.handle_live_pump_worker_failure(detail);
+                        self.handle_live_pump_worker_failure(WorkerFailureKind::BackendIo, detail);
                         return WorkerExit::RuntimeFailure;
                     }
                 }
@@ -4667,7 +4842,7 @@ impl FrontendRuntime {
                             let detail = format!(
                                 "worker=frontend_live_pump reason=live_pump_reader_fd_lock_failed error={err:?}"
                             );
-                            self.handle_live_pump_worker_failure(detail);
+                            self.handle_live_pump_worker_failure(WorkerFailureKind::WorkerControl, detail);
                             return WorkerExit::RuntimeFailure;
                         }
                     },
@@ -4678,7 +4853,7 @@ impl FrontendRuntime {
                     Err(err) => {
                         let detail =
                             format!("worker=frontend_live_pump operation=sample_ts error={err:?}");
-                        self.handle_live_pump_worker_failure(detail);
+                        self.handle_live_pump_worker_failure(WorkerFailureKind::BackendIo, detail);
                         return WorkerExit::RuntimeFailure;
                     }
                 }
@@ -4697,30 +4872,49 @@ impl FrontendRuntime {
                         let detail = format!(
                             "worker=frontend_live_pump reason=bound_demuxes_lock_failed status={status:?}"
                         );
-                        self.handle_live_pump_worker_failure(detail);
+                        self.handle_live_pump_worker_failure(WorkerFailureKind::WorkerControl, detail);
                         return WorkerExit::RuntimeFailure;
                     }
                 };
-                let demuxes: Vec<BoundDemuxRuntime> = demuxes_guard.values().cloned().collect();
+                let demuxes: Vec<(i32, BoundDemuxRuntime)> = demuxes_guard
+                    .iter()
+                    .map(|(demux_id, demux)| (*demux_id, demux.clone()))
+                    .collect();
                 drop(demuxes_guard);
-                for demux in demuxes {
-                    let Some(mut handle) = lock_mutex_option(&demux.state, "demux_handle") else {
-                        self.handle_live_pump_worker_failure(
-                            "worker=frontend_live_pump reason=demux_handle_lock_failed".to_string(),
-                        );
-                        return WorkerExit::RuntimeFailure;
+                for (bound_demux_id, demux) in demuxes {
+                    let mut handle = match lock_mutex_status(&demux.state, "demux_handle") {
+                        Ok(handle) => handle,
+                        Err(status) => {
+                            demux.runtime_io.mark_all_failed("live pump demux handle lock failed");
+                            self.record_runtime_failure(format!(
+                                "worker=frontend_live_pump reason=demux_handle_lock_failed demux={bound_demux_id} generation={} status={status:?}",
+                                demux.demux_generation
+                            ));
+                            if let Err(quarantine_status) = quarantine_demux_after_stop_tune_boundary_failure(&self.demux_ledger, bound_demux_id) {
+                                self.record_runtime_failure(format!(
+                                    "worker=frontend_live_pump reason=demux_handle_lock_failed_quarantine_failed demux={bound_demux_id} generation={} status={quarantine_status:?}",
+                                    demux.demux_generation
+                                ));
+                            }
+                            continue;
+                        }
                     };
+                    let demux_id = handle.demux_id();
                     let active_descramblers = match self.descrambler_registry.snapshots_for_demux(
-                        handle.demux_id(),
+                        demux_id,
                         demux.demux_generation,
                         &handle,
                     ) {
                         Ok(snapshots) => snapshots,
-                        Err(_) => {
-                            self.handle_live_pump_worker_failure(
-                                "worker=frontend_live_pump reason=descrambler_registry_lock_failed".to_string(),
-                            );
-                            return WorkerExit::RuntimeFailure;
+                        Err(status) => {
+                            self.record_runtime_failure(format!(
+                                "worker=frontend_live_pump reason=descrambler_snapshot_failed demux={demux_id} generation={} status={status:?}",
+                                demux.demux_generation
+                            ));
+                            for packet in &packets {
+                                handle.push_ts_packet_record_only(packet);
+                            }
+                            continue;
                         }
                     };
                     for packet in &packets {
@@ -4731,7 +4925,7 @@ impl FrontendRuntime {
                                 .diagnostic_update_failure_count();
                             let decision = descramble_packet_for_pid_with_diagnostics(
                                 packet,
-                                handle.demux_id(),
+                                demux_id,
                                 pid_u16,
                                 &active_descramblers,
                                 &self.descrambler_diagnostics,
@@ -4743,10 +4937,10 @@ impl FrontendRuntime {
                             {
                                 let detail = format!(
                                     "worker=frontend_live_pump reason=descrambler_diagnostic_update_failed demux={} pid={}",
-                                    handle.demux_id(),
+                                    demux_id,
                                     pid_u16
                                 );
-                                self.handle_live_pump_worker_failure(detail);
+                                self.handle_live_pump_worker_failure(WorkerFailureKind::WorkerControl, detail);
                                 return WorkerExit::RuntimeFailure;
                             }
                             match decision.flow {
@@ -4777,7 +4971,7 @@ impl FrontendRuntime {
                     let detail = format!(
                         "worker=frontend_live_pump reason=bound_demuxes_lock_failed_after_pump status={status:?}"
                     );
-                    self.handle_live_pump_worker_failure(detail);
+                    self.handle_live_pump_worker_failure(WorkerFailureKind::WorkerControl, detail);
                     return WorkerExit::RuntimeFailure;
                 }
             };
@@ -4933,19 +5127,34 @@ impl DescramblerRuntimeRegistry {
         }
         drop(entries);
 
+        let mut first_cleanup_error: Option<Status> = None;
         for (state_arc, stale_generation, _) in stale_bindings {
-            let mut state = lock_mutex_status(&state_arc, "descrambler_state")?;
+            let mut state = match lock_mutex_status(&state_arc, "descrambler_state") {
+                Ok(state) => state,
+                Err(status) => {
+                    if first_cleanup_error.is_none() {
+                        first_cleanup_error = Some(status);
+                    }
+                    continue;
+                }
+            };
             if state.demux_id != Some(demux_id) || state.demux_generation != Some(stale_generation) {
                 continue;
             }
             let token = state.key_token.clone();
             if let Err(err) = self.release_key_token_result(token) {
                 state.mark_cleanup_failed(DescramblerCleanupItem::KeyRelease);
-                return Err(err);
+                if first_cleanup_error.is_none() {
+                    first_cleanup_error = Some(err);
+                }
+                continue;
             }
             state.clear_key();
             state.clear_demux();
             state.mark_cleanup_complete(DescramblerCleanupItem::KeyRelease);
+        }
+        if let Some(err) = first_cleanup_error {
+            return Err(err);
         }
         Ok(snapshots)
     }
@@ -4973,19 +5182,34 @@ impl DescramblerRuntimeRegistry {
         }
         drop(entries);
 
+        let mut first_cleanup_error: Option<Status> = None;
         for state_arc in affected {
-            let mut state = lock_mutex_status(&state_arc, "descrambler_state")?;
+            let mut state = match lock_mutex_status(&state_arc, "descrambler_state") {
+                Ok(state) => state,
+                Err(status) => {
+                    if first_cleanup_error.is_none() {
+                        first_cleanup_error = Some(status);
+                    }
+                    continue;
+                }
+            };
             if state.demux_id != Some(demux_id) || state.demux_generation != Some(demux_generation) {
                 continue;
             }
             let token = state.key_token.clone();
             if let Err(err) = self.release_key_token_result(token) {
                 state.mark_cleanup_failed(DescramblerCleanupItem::KeyRelease);
-                return Err(err);
+                if first_cleanup_error.is_none() {
+                    first_cleanup_error = Some(err);
+                }
+                continue;
             }
             state.clear_key();
             state.clear_demux();
             state.mark_cleanup_complete(DescramblerCleanupItem::KeyRelease);
+        }
+        if let Some(err) = first_cleanup_error {
+            return Err(err);
         }
         Ok(())
     }
@@ -7540,7 +7764,7 @@ impl FrontendHal {
         .map_err(|_| Status::from(StatusCode::UNKNOWN_ERROR))? {
             if matches!(outcome, WorkerJoinOutcome::Joined(WorkerExitReason::RuntimeFailure | WorkerExitReason::PanicOrJoinFailure)) {
                 let detail = format!("worker=frontend_tune_worker stop_join_abnormal outcome={outcome:?}");
-                self.shared.handle_tune_worker_failure(detail.clone());
+                self.shared.handle_tune_worker_failure(WorkerFailureKind::WorkerControl, detail.clone());
                 return Err(worker_exit_status("frontend_tune_worker", WorkerExit::RuntimeFailure));
             }
         }
@@ -7565,7 +7789,7 @@ impl FrontendHal {
             let Ok(outcome) = outcome else {
                 if !owner_signal.is_stop_requested() {
                     let detail = format!("worker=frontend_tune_worker operation=wait_for_lock error=runtime_backend_failure");
-                    shared.handle_tune_worker_failure(detail.clone());
+                    shared.handle_tune_worker_failure(WorkerFailureKind::BackendIo, detail.clone());
                     return WorkerExit::RuntimeFailure;
                 }
                 return WorkerExit::StopRequested;
@@ -7582,14 +7806,14 @@ impl FrontendHal {
                     Ok(demuxes) => !demuxes.is_empty(),
                     Err(_) => {
                         let detail = "worker=frontend_tune_worker operation=bound_demuxes_lock_failed".to_string();
-                        shared.handle_tune_worker_failure(detail.clone());
+                        shared.handle_tune_worker_failure(WorkerFailureKind::WorkerControl, detail.clone());
                         return WorkerExit::RuntimeFailure;
                     }
                 };
                 if has_bound_demux {
                     if let Err(status) = shared.ensure_live_pump() {
                         let detail = format!("worker=frontend_tune_worker operation=ensure_live_pump status={:?}", status);
-                        shared.handle_tune_worker_failure(detail.clone());
+                        shared.handle_tune_worker_failure(WorkerFailureKind::WorkerControl, detail.clone());
                         return WorkerExit::RuntimeFailure;
                     }
                 }
@@ -7604,7 +7828,7 @@ impl FrontendHal {
         move |exit| {
             if exit.is_abnormal() {
                 let detail = format!("worker=frontend_tune_worker exit={:?}", exit);
-                shared_for_hook.handle_tune_worker_failure(detail.clone());
+                shared_for_hook.handle_tune_worker_failure(WorkerFailureKind::WorkerControl, detail.clone());
             }
         }).map_err(|err| {
             // WP-03: worker spawn 失敗は tune transaction 側で rollback する。
@@ -7901,10 +8125,21 @@ impl FrontendHal {
             let demux_id = match lock_mutex_status(&bound.state, "demux_handle") {
                 Ok(handle) => handle.demux_id(),
                 Err(status) => {
+                    bound.runtime_io.mark_all_failed("stopTune stream boundary demux handle lock failed");
                     self.shared.record_runtime_failure(format!(
                         "StopTuneBoundaryResetFailed: demux={} generation={} step=demux_handle_lock status={:?}",
                         bound_demux_id, bound.demux_generation, status
                     ));
+                    if let Some(quarantine_status) = self.shared.quarantine_demux_for_stream_boundary_failure(
+                        bound_demux_id,
+                        bound.demux_generation,
+                        StreamBoundaryReason::TuneStop,
+                        "HandleLockFailedAndQuarantined",
+                    ) {
+                        if cleanup_error.is_none() {
+                            cleanup_error = Some(quarantine_status);
+                        }
+                    }
                     if first_error.is_none() {
                         first_error = Some(status);
                     }
@@ -7922,7 +8157,42 @@ impl FrontendHal {
                         px4.clone(),
                         Some(&mut record_guard.pending_stream_boundary_plan),
                     ),
-                    Err(status) => Err(status),
+                    Err(status) => {
+                        self.shared.record_runtime_failure(format!(
+                            "StopTuneBoundaryResetRecordLockFailed: demux={} generation={} status={:?}",
+                            demux_id, bound.demux_generation, status
+                        ));
+                        match StreamBoundaryTxn::execute_for_demux(
+                            StreamBoundaryReason::TuneStop,
+                            demux_id,
+                            bound.demux_generation,
+                            Arc::clone(&bound.runtime_io),
+                            Arc::clone(&bound.state),
+                            px4.clone(),
+                            None,
+                        ) {
+                            Ok(_) => self.shared.record_stream_boundary_result(
+                                StreamBoundaryReason::TuneStop,
+                                demux_id,
+                                bound.demux_generation,
+                                "RecordLockFailedFallbackApplied",
+                            ),
+                            Err(fallback_status) => {
+                                bound.runtime_io.mark_all_failed("stopTune stream boundary fallback failed");
+                                self.shared.record_runtime_failure(format!(
+                                    "StopTuneBoundaryFallbackFailed: demux={} generation={} status={:?}",
+                                    demux_id, bound.demux_generation, fallback_status
+                                ));
+                                let _ = self.shared.quarantine_demux_for_stream_boundary_failure(
+                                    demux_id,
+                                    bound.demux_generation,
+                                    StreamBoundaryReason::TuneStop,
+                                    "RecordLockFailedFallbackFailedAndQuarantined",
+                                );
+                            }
+                        }
+                        Err(status)
+                    },
                 }
             } else {
                 StreamBoundaryTxn::execute_for_demux(
@@ -7940,9 +8210,22 @@ impl FrontendHal {
                     "StopTuneBoundaryResetFailed: demux={} generation={} status={:?}",
                     demux_id, bound.demux_generation, status
                 ));
+                let _ = self.shared.quarantine_demux_for_stream_boundary_failure(
+                    demux_id,
+                    bound.demux_generation,
+                    StreamBoundaryReason::TuneStop,
+                    "BoundaryFailedAndQuarantined",
+                );
                 if first_error.is_none() {
                     first_error = Some(status);
                 }
+            } else {
+                self.shared.record_stream_boundary_result(
+                    StreamBoundaryReason::TuneStop,
+                    demux_id,
+                    bound.demux_generation,
+                    "Applied",
+                );
             }
         }
 
@@ -8013,12 +8296,24 @@ impl FrontendHal {
                             .map_err(|_| tuner_service_error(TunerResult::UNKNOWN_ERROR.0, "frontend demux ledger unbind failed")))
                     {
                         record.runtime_io.mark_all_failed("frontend demux ledger unbind failed");
-                        let _ = quarantine_demux_after_stop_tune_boundary_failure(&self.demux_ledger, demux_id);
+                        if let Err(cleanup_status) = quarantine_demux_after_stop_tune_boundary_failure(&self.demux_ledger, demux_id) {
+                            self.shared.record_runtime_failure(format!(
+                                "frontend_unbind demux={demux_id} generation={} ledger_unbind_quarantine_failed status={cleanup_status:?}",
+                                record.generation
+                            ));
+                            return Err(cleanup_status);
+                        }
                         return Err(status);
                     }
                     if let Err(status) = lock_mutex_status(&record.state, "demux_handle").map(|mut state| state.unbind_frontend()) {
                         record.runtime_io.mark_all_failed("frontend demux state unbind failed");
-                        let _ = quarantine_demux_after_stop_tune_boundary_failure(&self.demux_ledger, demux_id);
+                        if let Err(cleanup_status) = quarantine_demux_after_stop_tune_boundary_failure(&self.demux_ledger, demux_id) {
+                            self.shared.record_runtime_failure(format!(
+                                "frontend_unbind demux={demux_id} generation={} state_unbind_quarantine_failed status={cleanup_status:?}",
+                                record.generation
+                            ));
+                            return Err(cleanup_status);
+                        }
                         return Err(status);
                     }
                     true
@@ -9463,7 +9758,7 @@ impl IDemux for DemuxHal {
                 let original_error = err;
                 if let Err(status) = collect_lifecycle_cleanup("filter_open_construction", |cleanup| {
                     cleanup.step("filter_open_construction", "filter_ledger_rollback", || self.rollback_filter_open_ledger(filter_id));
-                    cleanup.step("filter_open_construction", "runtime_unregister_filter", || runtime_io.unregister_filter(filter_id));
+                    cleanup.step("filter_open_construction", "runtime_unregister_filter_if_present", || runtime_io.unregister_filter_if_present(filter_id));
                     cleanup.step("filter_open_construction", "demux_unregister_filter", || self.unregister_filter_from_demux_for_open_rollback(&state, filter_id));
                 }) {
                     eprintln!(
@@ -9487,6 +9782,7 @@ impl IDemux for DemuxHal {
             if cleanup.is_err() {
                 return Err(tuner_service_error(TunerResult::UNKNOWN_ERROR.0, "filter_open_commit_cleanup_failed"));
             }
+            filter_hal.mark_failed_open_cleanup_complete();
             return Err(status);
         }
         Ok(BnFilter::new_binder(filter_hal, BinderFeatures::default()))
@@ -9595,7 +9891,7 @@ impl IDemux for DemuxHal {
                 let original_error = err;
                 if let Err(status) = collect_lifecycle_cleanup("dvr_open_construction", |cleanup| {
                     cleanup.step("dvr_open_construction", "dvr_ledger_rollback", || self.rollback_dvr_open_ledger(dvr_id));
-                    cleanup.step("dvr_open_construction", "runtime_unregister_dvr", || runtime_io.unregister_dvr(dvr_id));
+                    cleanup.step("dvr_open_construction", "runtime_unregister_dvr_if_present", || runtime_io.unregister_dvr_if_present(dvr_id));
                     cleanup.step("dvr_open_construction", "demux_unregister_dvr", || self.unregister_dvr_from_demux_for_open_rollback(&state, dvr_id));
                 }) {
                     eprintln!(
@@ -9626,6 +9922,7 @@ impl IDemux for DemuxHal {
             if cleanup.is_err() {
                 return Err(tuner_service_error(TunerResult::UNKNOWN_ERROR.0, "dvr_open_commit_cleanup_failed"));
             }
+            dvr_hal.mark_failed_open_cleanup_complete();
             return Err(status);
         }
         Ok(BnDvr::new_binder(dvr_hal, BinderFeatures::default()))
@@ -9802,6 +10099,7 @@ pub struct FilterHal {
     callback_stop: Arc<RuntimeAtomicFlag>,
     callback_unhealthy: Arc<RuntimeAtomicFlag>,
     callback_worker: Mutex<Option<WorkerHandle>>,
+    close_lock: Mutex<()>,
     closed: Arc<RuntimeAtomicFlag>,
     cleanup_complete: Arc<RuntimeAtomicFlag>,
     next_cleanup_step: Arc<Mutex<FilterCloseStep>>,
@@ -10176,6 +10474,7 @@ impl FilterHal {
             callback_stop,
             callback_unhealthy,
             callback_worker,
+            close_lock: Mutex::new(()),
             closed,
             cleanup_complete,
             next_cleanup_step,
@@ -10203,8 +10502,6 @@ impl FilterHal {
         transition.mark_failed(runtime_io, reason);
         callback_stop.store(true, Ordering::SeqCst);
     }
-
-    #[cfg(test)]
 
     pub fn fail_from_callback(&self, api: &str, err: Status) -> Status {
         let status = callback_failure_status("filter", self.filter_id, api, &err);
@@ -10294,6 +10591,17 @@ impl FilterHal {
 
     fn queue_cleanup_txn(&self, phase: &'static str) -> QueueCleanupTxn {
         QueueCleanupTxn::new("filter", self.filter_id, phase)
+    }
+
+    fn mark_filter_runtime_failed(&self, worker: &'static str, reason: &str) {
+        RuntimeFailClosedTransition::filter(self.filter_id, worker)
+            .mark_failed(&self.runtime_io, reason);
+        self.callback_stop.store(true, Ordering::SeqCst);
+    }
+
+
+    fn mark_filter_flush_cleanup_failed(&self, reason: &str) {
+        self.mark_filter_runtime_failed("filter_flush_cleanup", reason);
     }
 
     #[cfg(test)]
@@ -10575,9 +10883,14 @@ impl FilterHal {
     }
 
     fn close_internal(&self) -> BinderResult<()> {
+        let _close_guard = lock_mutex_status(&self.close_lock, "filter_close_lock")?;
         if self.closed.load(Ordering::SeqCst) && self.cleanup_complete.load(Ordering::SeqCst) {
             return Ok(());
         }
+        // close開始時点で通常APIを遮断する。cleanup失敗時も closed=true /
+        // cleanup_complete=false に残し、close() だけが同じ CloseStepTxn で再試行できる。
+        self.closed.store(true, Ordering::SeqCst);
+        self.cleanup_complete.store(false, Ordering::SeqCst);
         let step = self.begin_filter_close()?;
         let mut close_txn = CloseStepTxn::new(step);
 
@@ -10666,6 +10979,11 @@ impl FilterHal {
             );
         }
         Ok(())
+    }
+
+    fn mark_failed_open_cleanup_complete(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+        self.cleanup_complete.store(true, Ordering::SeqCst);
     }
 
     fn record_drop_cleanup_failure(&self, status: &Status) {
@@ -10784,15 +11102,15 @@ impl IFilter for FilterHal {
         self.ensure_filter_has_normal_fmq_queue()?;
         *queue = match self.queue_backing.build_queue_desc() {
             Ok(desc) => desc,
-            Err(status) => {
-                if status_is_descriptor_internal_error(&status) {
+            Err(err) => {
+                if err.should_fail_queue() {
                     self.runtime_io.mark_failed(
                         RuntimeIoKind::Filter,
                         self.filter_id,
                         "DescriptorInternalError",
                     );
                 }
-                return Err(status);
+                return Err(err.status);
             }
         };
         Ok(())
@@ -10971,7 +11289,8 @@ impl IFilter for FilterHal {
         };
         if ready && !is_media {
             if let Err(err) = self.callback.onFilterStatus(DemuxFilterStatus::DATA_READY) {
-                self.mark_callback_unhealthy("onFilterStatus(DATA_READY)", &err);
+                let status = self.fail_from_callback("onFilterStatus(DATA_READY)", err);
+                return Err(status);
             }
         }
         if let Some(start_id) = start_event_id {
@@ -10979,7 +11298,8 @@ impl IFilter for FilterHal {
                 .callback
                 .onFilterEvent(&[DemuxFilterEvent::StartId(start_id)])
             {
-                self.mark_callback_unhealthy("onFilterEvent(StartId)", &err);
+                let status = self.fail_from_callback("onFilterEvent(StartId)", err);
+                return Err(status);
             }
         }
         Ok(())
@@ -11004,24 +11324,33 @@ impl IFilter for FilterHal {
             Err(status) => return Err(status),
         };
         let cleanup = self.queue_cleanup_txn("flush");
-        cleanup.best_effort_resource(
+        if let Err(status) = cleanup.required_resource(
             self,
             "normal_queue",
             "normal_fmq_clear",
             &FILTER_FLUSH_NORMAL_FMQ_CLEAR_ERROR_COUNT,
-        );
-        cleanup.best_effort_resource(
+        ) {
+            self.mark_filter_flush_cleanup_failed("filter flush normal FMQ clear failed after demux flush");
+            return Err(status);
+        }
+        if let Err(status) = cleanup.required_resource(
             self,
             "av_queue",
             "av_fmq_clear",
             &FILTER_FLUSH_AV_FMQ_CLEAR_ERROR_COUNT,
-        );
-        cleanup.best_effort_resource(
+        ) {
+            self.mark_filter_flush_cleanup_failed("filter flush AV FMQ clear failed after demux flush");
+            return Err(status);
+        }
+        if let Err(status) = cleanup.required_resource(
             self,
             "av_shared_release_all",
             "av_shared_release_all",
             &FILTER_FLUSH_AV_SHARED_RELEASE_ERROR_COUNT,
-        );
+        ) {
+            self.mark_filter_flush_cleanup_failed("filter flush AV shared release failed after demux flush");
+            return Err(status);
+        }
         Ok(())
     }
 
@@ -11183,6 +11512,7 @@ pub struct DvrHal {
     callback_stop: Arc<RuntimeAtomicFlag>,
     callback_unhealthy: Arc<RuntimeAtomicFlag>,
     callback_worker: Mutex<Option<WorkerHandle>>,
+    close_lock: Mutex<()>,
     closed: Arc<RuntimeAtomicFlag>,
     cleanup_complete: Arc<RuntimeAtomicFlag>,
     next_cleanup_step: Arc<Mutex<DvrCloseStep>>,
@@ -11322,7 +11652,7 @@ impl DvrHal {
             let queue_backing_clone = Arc::clone(&queue_backing);
             let runtime_io_hook = Arc::clone(&runtime_io);
             let callback_stop_hook = Arc::clone(&callback_stop);
-            WorkerLifecycleTxn::spawn_with_exit_hook(WorkerOwnerId("dvr_callback_worker", dvr_id), "dvr_callback_worker", move |owner_signal| {
+            let callback_spawn = WorkerLifecycleTxn::spawn_with_exit_hook(WorkerOwnerId("dvr_callback_worker", dvr_id), "dvr_callback_worker", move |owner_signal| {
                 while !callback_stop.load(Ordering::SeqCst) && !closed_clone.load(Ordering::SeqCst) && !owner_signal.is_stop_requested() {
                     let (thresholds, status_mask, interval_hint_ms, running, pending_overflow, payloads) = {
                         let Some(mut demux) = lock_mutex_option(&state, "demux_handle") else {
@@ -11454,7 +11784,29 @@ impl DvrHal {
                         &format!("dvr_callback_worker_{exit:?}"),
                     );
                 }
-            }).map_err(|_| Status::from(StatusCode::UNKNOWN_ERROR))?
+            });
+            match callback_spawn {
+                Ok(handle) => handle,
+                Err(err) => {
+                    if matches!(direction, DemuxPathDirection::Playback) {
+                        if let Err(stop_status) = queue_backing.stop() {
+                            eprintln!(
+                                "maleicacid-tuner-hal-dvr-open: dvr={} callback_worker_spawn_failed_playback_worker_stop_failed spawn_error={:?} stop_status={:?}",
+                                dvr_id, err, stop_status
+                            );
+                            return Err(tuner_service_error(
+                                TunerResult::UNKNOWN_ERROR.0,
+                                "dvr_open_callback_worker_spawn_playback_worker_stop_failed",
+                            ));
+                        }
+                    }
+                    eprintln!(
+                        "maleicacid-tuner-hal-worker: failed to spawn dvr_callback_worker: {:?}",
+                        err
+                    );
+                    return Err(Status::from(StatusCode::UNKNOWN_ERROR));
+                }
+            }
         };
         Ok(Self {
             owner_demux_id,
@@ -11467,6 +11819,7 @@ impl DvrHal {
             queue_backing,
             callback_stop,
             callback_worker: Mutex::new(Some(callback_worker)),
+            close_lock: Mutex::new(()),
             callback_unhealthy,
             closed,
             cleanup_complete,
@@ -11491,13 +11844,6 @@ impl DvrHal {
         Ok(())
     }
 
-    fn wake_callback_worker(worker: &Mutex<Option<WorkerHandle>>) -> BinderResult<()> {
-        let guard = lock_mutex_status(worker, "dvr_callback_worker")?;
-        if let Some(handle) = guard.as_ref() {
-            WorkerLifecycleTxn::wake(handle).map_err(|_| Status::from(StatusCode::UNKNOWN_ERROR))?;
-        }
-        Ok(())
-    }
 
     fn fail_dvr_worker(
         runtime_io: &Arc<RuntimeIoRegistry>,
@@ -11607,6 +11953,17 @@ impl DvrHal {
         QueueCleanupTxn::new("dvr", self.dvr_id, phase)
     }
 
+    fn mark_dvr_runtime_failed(&self, worker: &'static str, reason: &str) {
+        RuntimeFailClosedTransition::dvr(self.dvr_id, worker)
+            .mark_failed(&self.runtime_io, reason);
+        self.callback_stop.store(true, Ordering::SeqCst);
+    }
+
+
+    fn mark_dvr_flush_cleanup_failed(&self, reason: &str) {
+        self.mark_dvr_runtime_failed("dvr_flush_cleanup", reason);
+    }
+
     fn begin_dvr_close(&self) -> BinderResult<DvrCloseStep> {
         let mut step = *lock_mutex_status(&self.next_cleanup_step, "dvr_next_cleanup_step")?;
         if let Some(record) = self.demux_record.as_ref() {
@@ -11711,9 +12068,14 @@ impl DvrHal {
         Err(status)
     }
     fn close_internal(&self) -> BinderResult<()> {
-        if self.cleanup_complete.load(Ordering::SeqCst) {
+        let _close_guard = lock_mutex_status(&self.close_lock, "dvr_close_lock")?;
+        if self.closed.load(Ordering::SeqCst) && self.cleanup_complete.load(Ordering::SeqCst) {
             return Ok(());
         }
+        // close開始時点で通常APIを遮断する。cleanup失敗時も closed=true /
+        // cleanup_complete=false に残し、close() だけが同じ CloseStepTxn で再試行できる。
+        self.closed.store(true, Ordering::SeqCst);
+        self.cleanup_complete.store(false, Ordering::SeqCst);
         let step = self.begin_dvr_close()?;
         let mut runner = RealDvrCleanupRunner {
             state: &self.state,
@@ -11811,6 +12173,11 @@ impl DvrHal {
             );
         }
         Ok(())
+    }
+
+    fn mark_failed_open_cleanup_complete(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+        self.cleanup_complete.store(true, Ordering::SeqCst);
     }
 
     fn record_drop_cleanup_failure(&self, status: &Status) {
@@ -11915,15 +12282,15 @@ impl IDvr for DvrHal {
         }
         *queue = match self.queue_backing.build_queue_desc() {
             Ok(desc) => desc,
-            Err(status) => {
-                if status_is_descriptor_internal_error(&status) {
+            Err(err) => {
+                if err.should_fail_queue() {
                     self.runtime_io.mark_failed(
                         RuntimeIoKind::Dvr,
                         self.dvr_id,
                         "DescriptorInternalError",
                     );
                 }
-                return Err(status);
+                return Err(err.status);
             }
         };
         Ok(())
@@ -12016,52 +12383,55 @@ impl IDvr for DvrHal {
             record.config.as_ref().map(|config| config.status_mask)
                 .unwrap_or(DVR_STATUS_MASK_DISABLED)
         };
-        commit_then_best_effort_delivery(
-            || {
-                lock_mutex_status(&self.state, "demux_handle")?
-                    .start_dvr_result(self.dvr_id)
-                    .map_err(demux_config_error_status)
-            },
-            || {
-                let state = match lock_mutex_status(&self.state, "demux_handle") {
-                    Ok(demux) => demux.dvr_threshold_state(self.dvr_id),
+        lock_mutex_status(&self.state, "demux_handle")?
+            .start_dvr_result(self.dvr_id)
+            .map_err(demux_config_error_status)?;
+        let state = match lock_mutex_status(&self.state, "demux_handle") {
+            Ok(demux) => demux.dvr_threshold_state(self.dvr_id),
+            Err(status) => {
+                self.mark_callback_unhealthy("dvr.start.post_commit_snapshot", &status);
+                return Err(status);
+            }
+        };
+        match (self.direction, state) {
+            (DemuxPathDirection::Record, Some((_fill, low, high, _capacity))) => {
+                match self.queue_backing.current_fill_bytes() {
+                    Ok(fill) => {
+                        let status = Self::record_status_from_thresholds(fill, low, high);
+                        if Self::status_mask_allows(status_mask, i32::from(status.0)) {
+                            if let Err(err) = self.callback.onRecordStatus(status) {
+                                let status = self.fail_from_callback("onRecordStatus(start)", err);
+                                return Err(status);
+                            }
+                        }
+                    }
                     Err(status) => {
-                        self.mark_callback_unhealthy("dvr.start.post_commit_snapshot", &status);
-                        return;
+                        self.mark_callback_unhealthy("dvr.start.record_fill_snapshot", &status);
+                        return Err(status);
                     }
-                };
-                match (self.direction, state) {
-                    (DemuxPathDirection::Record, Some((_fill, low, high, _capacity))) => {
-                        match self.queue_backing.current_fill_bytes() {
-                            Ok(fill) => {
-                                let status = Self::record_status_from_thresholds(fill, low, high);
-                                if Self::status_mask_allows(status_mask, i32::from(status.0)) {
-                                    if let Err(err) = self.callback.onRecordStatus(status) {
-                                        self.mark_callback_unhealthy("onRecordStatus(start)", &err);
-                                    }
-                                }
-                            }
-                            Err(status) => self.mark_callback_unhealthy("dvr.start.record_fill_snapshot", &status),
-                        }
-                    }
-                    (DemuxPathDirection::Playback, Some((_fill, low, high, capacity))) => {
-                        match self.queue_backing.current_fill_bytes() {
-                            Ok(fill) => {
-                                if let Some(status) = Self::playback_status_from_thresholds(fill, low, high, capacity) {
-                                    if Self::status_mask_allows(status_mask, i32::from(status.0)) {
-                                        if let Err(err) = self.callback.onPlaybackStatus(status) {
-                                            self.mark_callback_unhealthy("onPlaybackStatus(start)", &err);
-                                        }
-                                    }
-                                }
-                            }
-                            Err(status) => self.mark_callback_unhealthy("dvr.start.playback_fill_snapshot", &status),
-                        }
-                    }
-                    _ => {}
                 }
-            },
-        )
+            }
+            (DemuxPathDirection::Playback, Some((_fill, low, high, capacity))) => {
+                match self.queue_backing.current_fill_bytes() {
+                    Ok(fill) => {
+                        if let Some(status) = Self::playback_status_from_thresholds(fill, low, high, capacity) {
+                            if Self::status_mask_allows(status_mask, i32::from(status.0)) {
+                                if let Err(err) = self.callback.onPlaybackStatus(status) {
+                                    let status = self.fail_from_callback("onPlaybackStatus(start)", err);
+                                    return Err(status);
+                                }
+                            }
+                        }
+                    }
+                    Err(status) => {
+                        self.mark_callback_unhealthy("dvr.start.playback_fill_snapshot", &status);
+                        return Err(status);
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     fn stop(&self) -> BinderResult<()> {
@@ -12084,19 +12454,25 @@ impl IDvr for DvrHal {
             Err(status) => return Err(status),
         };
         if matches!(self.direction, DemuxPathDirection::Playback) {
-            self.queue_cleanup_txn("flush").best_effort_resource(
+            if let Err(status) = self.queue_cleanup_txn("flush").required_resource(
                 self,
                 "playback_input",
                 "playback_discard",
                 &DVR_FLUSH_PLAYBACK_DISCARD_ERROR_COUNT,
-            );
+            ) {
+                self.mark_dvr_flush_cleanup_failed("dvr flush playback discard failed after demux flush");
+                return Err(status);
+            }
         } else {
-            self.queue_cleanup_txn("flush").best_effort_resource(
+            if let Err(status) = self.queue_cleanup_txn("flush").required_resource(
                 self,
                 "record_queue",
                 "record_queue_clear",
                 &DVR_FLUSH_RECORD_QUEUE_CLEAR_ERROR_COUNT,
-            );
+            ) {
+                self.mark_dvr_flush_cleanup_failed("dvr flush record queue clear failed after demux flush");
+                return Err(status);
+            }
         }
         Ok(())
     }

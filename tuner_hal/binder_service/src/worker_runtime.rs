@@ -466,11 +466,9 @@ impl WorkerHandle {
 }
 
 #[derive(Debug, Default)]
-struct WorkerRuntime { exit_reason: WorkerExitReason }
+struct WorkerRuntime;
 
 impl WorkerRuntime {
-    fn new() -> Self { Self::default() }
-
     fn spawn_owned<F, R>(owner_id: WorkerOwnerId, name: &'static str, body: F) -> Result<WorkerHandle, WorkerRuntimeError>
     where F: FnOnce(std::sync::Arc<ConcreteWorkerSignal>) -> R + Send + 'static, R: IntoWorkerExit + Send + 'static {
         let signal = std::sync::Arc::new(ConcreteWorkerSignal::new(true));
@@ -512,15 +510,6 @@ impl WorkerRuntime {
         })
     }
 
-    #[cfg(test)]
-
-    pub fn fail_worker_owned_cleanup(&mut self, reason: WorkerExitReason) {
-        self.exit_reason = reason;
-    }
-
-
-    fn set_exit_reason(&mut self, reason: WorkerExitReason) { self.exit_reason = reason; }
-    fn join_outcome_for_completed_worker(&self) -> WorkerJoinOutcome { WorkerJoinOutcome::Joined(self.exit_reason) }
 }
 
 
@@ -688,17 +677,6 @@ impl Default for WorkerExitReason {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn worker_runtime_preserves_runtime_failure_reason() {
-        let mut runtime = WorkerRuntime::new();
-        runtime.set_exit_reason(WorkerExitReason::RuntimeFailure);
-        assert_eq!(
-            runtime.join_outcome_for_completed_worker(),
-            WorkerJoinOutcome::Joined(WorkerExitReason::RuntimeFailure)
-        );
-    }
-
 
 
     #[test]

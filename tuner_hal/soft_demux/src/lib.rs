@@ -40,6 +40,8 @@ static FILTER_STOP_IDEMPOTENT_COUNT: AtomicU64 = AtomicU64::new(0);
 static DVR_STOP_IDEMPOTENT_COUNT: AtomicU64 = AtomicU64::new(0);
 static SET_DATA_SOURCE_SUCCESS_COUNT: AtomicU64 = AtomicU64::new(0);
 static SOURCE_FILTER_DOWNSTREAM_DROP_COUNT: AtomicU64 = AtomicU64::new(0);
+static SOURCE_FILTER_BOUNDARY_QUEUE_DROP_COUNT: AtomicU64 = AtomicU64::new(0);
+static SOURCE_FILTER_DVR_ATTACH_DETACH_COUNT: AtomicU64 = AtomicU64::new(0);
 static SET_DATA_SOURCE_INVALID_PAIR_COUNT: AtomicU64 = AtomicU64::new(0);
 static SOFT_DEMUX_DIAGNOSTIC_COUNTER_SATURATED: AtomicBool = AtomicBool::new(false);
 
@@ -761,6 +763,8 @@ pub struct DemuxCore;
 
 pub struct SoftDemuxConfigureTxn<'a> { demux: &'a mut DemuxHandle }
 pub(crate) struct SoftDemuxOriginTxn<'a> { demux: &'a mut DemuxHandle }
+pub(crate) struct SourceBoundaryTxn<'a> { demux: &'a mut DemuxHandle }
+pub(crate) struct GenerationBoundaryTxn<'a> { demux: &'a mut DemuxHandle }
 pub struct AvSyncClock;
 
 impl<'a> SoftDemuxConfigureTxn<'a> {
@@ -787,10 +791,30 @@ impl<'a> SoftDemuxOriginTxn<'a> {
     pub fn new(demux: &'a mut DemuxHandle) -> Self { Self { demux } }
 
     pub fn disconnect_downstreams(self, filter_id: i32) {
-        self.demux.disconnect_downstreams_of_impl(filter_id);
+        SourceBoundaryTxn::new(self.demux).disconnect_downstreams(filter_id);
     }
 
     pub fn mark_flush_generation(self, filter_id: i32) {
+        GenerationBoundaryTxn::new(self.demux).mark_filter_flush_generation(filter_id);
+    }
+}
+
+impl<'a> SourceBoundaryTxn<'a> {
+    pub fn new(demux: &'a mut DemuxHandle) -> Self { Self { demux } }
+
+    pub fn disconnect_downstreams(self, filter_id: i32) {
+        self.demux.disconnect_downstreams_of_impl(filter_id);
+    }
+
+    pub fn detach_filter_from_dvrs_for_unregister(self, filter_id: i32) {
+        self.demux.detach_filter_from_dvrs_for_unregister_impl(filter_id);
+    }
+}
+
+impl<'a> GenerationBoundaryTxn<'a> {
+    pub fn new(demux: &'a mut DemuxHandle) -> Self { Self { demux } }
+
+    pub fn mark_filter_flush_generation(self, filter_id: i32) {
         self.demux.mark_filter_flush_generation_impl(filter_id);
     }
 }
@@ -1140,6 +1164,26 @@ impl DemuxHandle {
         }
     }
 
+    fn clear_source_boundary_downstream_queue_impl(&mut self, downstream_id: i32) {
+        let removed_entries = self
+            .filter_queues
+            .get(&downstream_id)
+            .map(|queue| queue.len())
+            .unwrap_or(0);
+        if removed_entries > 0 {
+            record_soft_demux_diagnostic(
+                &SOURCE_FILTER_BOUNDARY_QUEUE_DROP_COUNT,
+                "source_filter_boundary_queue_dropped",
+            );
+        }
+        self.filter_queues.insert(downstream_id, VecDeque::new());
+        if let Some(downstream) = self.filters.get_mut(&downstream_id) {
+            downstream.queued_bytes = 0;
+            downstream.pending_overflow = false;
+            downstream.delivery_not_before = None;
+        }
+    }
+
     fn disconnect_downstreams_of_impl(&mut self, filter_id: i32) {
         let source_origin = self.source_filter_origin_impl(filter_id);
         let downstreams = self.source_filter_downstream_snapshots(filter_id);
@@ -1148,12 +1192,26 @@ impl DemuxHandle {
         }
         for (downstream_id, _) in downstreams {
             SoftDemuxOriginTxn::new(self).mark_flush_generation(downstream_id);
+            self.clear_source_boundary_downstream_queue_impl(downstream_id);
             if let Some(downstream) = self.filters.get_mut(&downstream_id) {
-                // 表SSOTどおり、既出力 queue / pending event は維持し、新規配送だけ止める。
-                // ただし source filter 契約上、接続解除境界では downstream の partial state を破棄する。
+                // SourceBoundaryTxn is the single owner for source-origin boundary cleanup.
+                // Old source-origin payloads are physically removed by the common path here;
+                // downstream public lifecycle is not implicitly stopped or failed.
                 downstream.data_upstream_filter_id = None;
-                downstream.set_lifecycle(FilterLifecycleState::Stopped);
                 downstream.delivery_not_before = None;
+            }
+        }
+    }
+
+    fn detach_filter_from_dvrs_for_unregister_impl(&mut self, filter_id: i32) {
+        for dvr in self.dvrs.values_mut() {
+            let before = dvr.attached_filter_ids.len();
+            dvr.attached_filter_ids.retain(|id| *id != filter_id);
+            if dvr.attached_filter_ids.len() != before {
+                record_soft_demux_diagnostic(
+                    &SOURCE_FILTER_DVR_ATTACH_DETACH_COUNT,
+                    "filter_unregister_detached_from_record_dvr",
+                );
             }
         }
     }
@@ -1163,9 +1221,7 @@ impl DemuxHandle {
             .filters
             .get(&filter_id)
             .and_then(|filter| filter.config.as_ref().map(|config| config.tpid));
-        for dvr in self.dvrs.values_mut() {
-            dvr.attached_filter_ids.retain(|id| *id != filter_id);
-        }
+        SourceBoundaryTxn::new(self).detach_filter_from_dvrs_for_unregister(filter_id);
         self.filter_queues.remove(&filter_id);
         self.section_filter_runtime.remove(&filter_id);
         self.av_sync_states.remove(&filter_id);
@@ -1385,6 +1441,8 @@ impl DemuxHandle {
         summary: FilterConfig,
     ) -> Result<(), DemuxConfigError> {
         self.validate_filter_configure_result(filter_id, &summary)?;
+        // r50ec5: configure は SoftDemuxConfigureTxn の snapshot rollback 境界で実行する。
+        // source boundary / generation 更新は SourceBoundaryTxn / GenerationBoundaryTxn 経路へ集約する。
         let snapshot = self.txn_snapshot();
         let Some(existing) = self.filters.get(&filter_id) else {
             self.restore_txn_snapshot(snapshot);
@@ -1495,6 +1553,7 @@ impl DemuxHandle {
             return Err(DemuxConfigError::CapacityExceeded);
         }
         let target_ids: Vec<i32> = filter_ids.iter().copied().take(pids.len()).collect();
+        // r50ec5: record PID set は複数 filter を1つの configure transaction として扱う。
         let snapshot = self.txn_snapshot();
         for filter_id in &target_ids {
             if !self.filters.contains_key(filter_id) {
@@ -3228,61 +3287,110 @@ impl DemuxHandle {
         condition.matches(payload, *length_field_bits)
     }
 
-    fn pid_has_started_section_filter(&self, pid: i32) -> bool {
-        self.filters.values().any(|filter| {
-            filter.data_upstream_filter_id.is_none()
-                && filter.is_started_for_api()
-                && filter.config.as_ref().map_or(false, |config| {
-                    config.tpid == pid && matches!(&config.kind, FilterConfigKind::Section { .. })
-                })
-        })
+    fn section_filter_accepts_origin_for_pid(&self, filter_id: i32, pid: i32, origin: TsInputOrigin) -> bool {
+        let Some(filter) = self.filters.get(&filter_id) else {
+            return false;
+        };
+        if !filter.is_started_for_api() {
+            return false;
+        }
+        let Some(config) = filter.config.as_ref() else {
+            return false;
+        };
+        if config.tpid != pid || !matches!(&config.kind, FilterConfigKind::Section { .. }) {
+            return false;
+        }
+        self.active_input_origins_for_filter_impl(filter_id)
+            .into_iter()
+            .any(|active_origin| active_origin == origin)
     }
 
-    fn pid_has_started_pes_or_av_filter(&self, pid: i32) -> bool {
-        self.filters.values().any(|filter| {
-            filter.data_upstream_filter_id.is_none()
-                && filter.is_started_for_api()
-                && filter.config.as_ref().map_or(false, |config| {
-                    config.tpid == pid
-                        && matches!(
-                            &config.kind,
-                            FilterConfigKind::PesData { .. } | FilterConfigKind::Av { .. }
-                        )
-                })
-        })
+    fn pes_or_av_filter_accepts_origin_for_pid(&self, filter_id: i32, pid: i32, origin: TsInputOrigin) -> bool {
+        let Some(filter) = self.filters.get(&filter_id) else {
+            return false;
+        };
+        if !filter.is_started_for_api() {
+            return false;
+        }
+        let Some(config) = filter.config.as_ref() else {
+            return false;
+        };
+        if config.tpid != pid
+            || !matches!(
+                &config.kind,
+                FilterConfigKind::PesData { .. } | FilterConfigKind::Av { .. }
+            )
+        {
+            return false;
+        }
+        self.active_input_origins_for_filter_impl(filter_id)
+            .into_iter()
+            .any(|active_origin| active_origin == origin)
+    }
+
+    fn filter_ids_for_pid<F>(&self, pid: i32, predicate: F) -> Vec<i32>
+    where
+        F: Fn(&FilterConfigKind) -> bool,
+    {
+        self.filters
+            .iter()
+            .filter_map(|(filter_id, filter)| {
+                let matches_pid = filter.config.as_ref().map_or(false, |config| {
+                    config.tpid == pid && predicate(&config.kind)
+                });
+                matches_pid.then_some(*filter_id)
+            })
+            .collect()
+    }
+
+    fn known_input_origins_for_prune(&self, pid: i32) -> Vec<TsInputOrigin> {
+        let mut origins = BTreeSet::new();
+        origins.insert(TsInputOrigin::Frontend);
+        origins.insert(TsInputOrigin::Playback);
+        for filter_id in self.filters.keys().copied() {
+            if let Some(origin) = self.source_filter_origin_impl(filter_id) {
+                origins.insert(origin);
+            }
+        }
+        for origin in self.packet_pipeline.assembly_origins_for_pid(pid) {
+            origins.insert(origin);
+        }
+        origins.into_iter().collect()
     }
 
     fn prune_assemblers_for_pid(&mut self, pid: i32) {
-        if !self.pid_has_started_section_filter(pid) {
-            let section_filter_ids_for_pid: Vec<i32> = self
+        let section_filter_ids_for_pid = self.filter_ids_for_pid(pid, |kind| {
+            matches!(kind, FilterConfigKind::Section { .. })
+        });
+        let pes_filter_ids_for_pid = self.filter_ids_for_pid(pid, |kind| {
+            matches!(kind, FilterConfigKind::PesData { .. } | FilterConfigKind::Av { .. })
+        });
+        let origins = self.known_input_origins_for_prune(pid);
+        for origin in origins {
+            let has_section = self
                 .filters
-                .iter()
-                .filter_map(|(filter_id, filter)| {
-                    let matches_pid = filter.config.as_ref().map_or(false, |config| {
-                        config.tpid == pid
-                            && matches!(config.kind, FilterConfigKind::Section { .. })
-                    });
-                    matches_pid.then_some(*filter_id)
-                })
-                .collect();
-            self.packet_pipeline.remove_section_for_filter_ids_all_origins(&section_filter_ids_for_pid);
-        }
-        if !self.pid_has_started_pes_or_av_filter(pid) {
-            let pes_filter_ids_for_pid: Vec<i32> = self
+                .keys()
+                .copied()
+                .any(|filter_id| self.section_filter_accepts_origin_for_pid(filter_id, pid, origin));
+            if !has_section {
+                self.packet_pipeline.remove_section_for_filter_ids_origin_pid(
+                    origin,
+                    pid,
+                    &section_filter_ids_for_pid,
+                );
+            }
+            let has_pes_or_av = self
                 .filters
-                .iter()
-                .filter_map(|(filter_id, filter)| {
-                    let matches_pid = filter.config.as_ref().map_or(false, |config| {
-                        config.tpid == pid
-                            && matches!(
-                                config.kind,
-                                FilterConfigKind::PesData { .. } | FilterConfigKind::Av { .. }
-                            )
-                    });
-                    matches_pid.then_some(*filter_id)
-                })
-                .collect();
-            self.packet_pipeline.remove_pes_for_filter_ids_all_origins(&pes_filter_ids_for_pid);
+                .keys()
+                .copied()
+                .any(|filter_id| self.pes_or_av_filter_accepts_origin_for_pid(filter_id, pid, origin));
+            if !has_pes_or_av {
+                self.packet_pipeline.remove_pes_for_filter_ids_origin_pid(
+                    origin,
+                    pid,
+                    &pes_filter_ids_for_pid,
+                );
+            }
         }
     }
 

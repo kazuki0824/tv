@@ -809,14 +809,79 @@ impl PacketPipeline {
             .push(pid, payload_unit_start, payload)
     }
 
-    pub(crate) fn remove_section_for_filter_ids_all_origins(&mut self, filter_ids: &[i32]) {
-        self.section_assemblers
-            .retain(|(_, _, filter_id), _| !filter_ids.iter().any(|id| id == filter_id));
+    pub(crate) fn assembly_origins_for_pid(&self, pid: i32) -> Vec<crate::TsInputOrigin> {
+        let mut origins = std::collections::BTreeSet::new();
+        for (origin, stored_pid, _) in self.section_assemblers.keys() {
+            if *stored_pid == pid {
+                origins.insert(*origin);
+            }
+        }
+        for (origin, stored_pid, _) in self.pes_assemblers.keys() {
+            if *stored_pid == pid {
+                origins.insert(*origin);
+            }
+        }
+        for (origin, stored_pid) in self.section_assembler_generations.keys() {
+            if *stored_pid == pid {
+                origins.insert(*origin);
+            }
+        }
+        for (origin, stored_pid) in self.pes_assembler_generations.keys() {
+            if *stored_pid == pid {
+                origins.insert(*origin);
+            }
+        }
+        for (origin, _, stored_pid) in self.filter_section_flush_generations.keys() {
+            if *stored_pid == pid {
+                origins.insert(*origin);
+            }
+        }
+        for (origin, _, stored_pid) in self.filter_pes_flush_generations.keys() {
+            if *stored_pid == pid {
+                origins.insert(*origin);
+            }
+        }
+        origins.into_iter().collect()
     }
 
-    pub(crate) fn remove_pes_for_filter_ids_all_origins(&mut self, filter_ids: &[i32]) {
-        self.pes_assemblers
-            .retain(|(_, _, filter_id), _| !filter_ids.iter().any(|id| id == filter_id));
+    pub(crate) fn remove_section_for_filter_ids_origin_pid(
+        &mut self,
+        origin: crate::TsInputOrigin,
+        pid: i32,
+        filter_ids: &[i32],
+    ) {
+        self.section_assemblers.retain(|(stored_origin, stored_pid, filter_id), _| {
+            !(*stored_origin == origin
+                && *stored_pid == pid
+                && filter_ids.iter().any(|id| id == filter_id))
+        });
+        self.filter_section_flush_generations.retain(|(stored_origin, filter_id, stored_pid), _| {
+            !(*stored_origin == origin
+                && *stored_pid == pid
+                && filter_ids.iter().any(|id| id == filter_id))
+        });
+        self.section_assembler_generations
+            .retain(|(stored_origin, stored_pid), _| !(*stored_origin == origin && *stored_pid == pid));
+    }
+
+    pub(crate) fn remove_pes_for_filter_ids_origin_pid(
+        &mut self,
+        origin: crate::TsInputOrigin,
+        pid: i32,
+        filter_ids: &[i32],
+    ) {
+        self.pes_assemblers.retain(|(stored_origin, stored_pid, filter_id), _| {
+            !(*stored_origin == origin
+                && *stored_pid == pid
+                && filter_ids.iter().any(|id| id == filter_id))
+        });
+        self.filter_pes_flush_generations.retain(|(stored_origin, filter_id, stored_pid), _| {
+            !(*stored_origin == origin
+                && *stored_pid == pid
+                && filter_ids.iter().any(|id| id == filter_id))
+        });
+        self.pes_assembler_generations
+            .retain(|(stored_origin, stored_pid), _| !(*stored_origin == origin && *stored_pid == pid));
     }
 
     pub(crate) fn drop_generations_for_pid_origin(&mut self, origin: crate::TsInputOrigin, pid: i32, section: bool, pes: bool) {
@@ -1408,6 +1473,27 @@ mod r50dz52_g1_17_tests {
 #[cfg(test)]
 mod r50dz52_g1_19_tests {
     use super::*;
+
+
+
+    #[test]
+    fn origin_aware_filter_prune_does_not_remove_other_origin_assemblers() {
+        let mut pipeline = PacketPipeline::default();
+        let frontend = crate::TsInputOrigin::Frontend;
+        let source = crate::TsInputOrigin::SourceFilter { source_filter_id: 42, source_filter_generation: 3 };
+        pipeline.test_seed_section_for_pid(frontend, 0x0100, 7);
+        pipeline.test_seed_section_for_pid(source, 0x0100, 7);
+        pipeline.test_seed_pes_for_pid(frontend, 0x0100, 8);
+        pipeline.test_seed_pes_for_pid(source, 0x0100, 8);
+
+        pipeline.remove_section_for_filter_ids_origin_pid(source, 0x0100, &[7]);
+        pipeline.remove_pes_for_filter_ids_origin_pid(source, 0x0100, &[8]);
+
+        assert!(pipeline.section_assemblers.contains_key(&(frontend, 0x0100, 7)));
+        assert!(!pipeline.section_assemblers.contains_key(&(source, 0x0100, 7)));
+        assert!(pipeline.pes_assemblers.contains_key(&(frontend, 0x0100, 8)));
+        assert!(!pipeline.pes_assemblers.contains_key(&(source, 0x0100, 8)));
+    }
 
     #[test]
     fn source_filter_origin_keeps_generation_and_assembler_state_separate_from_frontend() {

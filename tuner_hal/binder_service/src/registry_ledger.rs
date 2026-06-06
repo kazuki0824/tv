@@ -153,9 +153,10 @@ impl<R: Clone> DemuxLedger<R> {
     #[cfg(test)]
     fn insert_record(&mut self, id: LedgerId, record: R) -> Result<(), LedgerError> { self.create_live(id, record).map(|_| ()) }
     fn get_record(&self, id: LedgerId) -> Option<R> { self.get_live(id).ok() }
+    #[cfg(test)]
     fn get_record_any_state(&self, id: LedgerId) -> Option<R> { self.records.get(&id).and_then(|e| e.record.clone()) }
+    #[cfg(test)]
     fn contains_live(&self, id: LedgerId) -> bool { self.records.get(&id).is_some_and(|e| e.state == LedgerState::Live && e.ref_count > 0) }
-    fn remove_record(&mut self, id: LedgerId) -> Result<R, LedgerError> { self.commit_close(id) }
     fn records(&self) -> impl Iterator<Item = R> + '_ { self.records.values().filter_map(|e| e.record.clone()) }
     fn first_available<I>(&self, ids: I) -> Option<i32> where I: IntoIterator<Item = i32> {
         ids.into_iter().find(|id| !self.records.contains_key(&LedgerId(*id)))
@@ -210,16 +211,6 @@ impl DemuxLifecycleTxn {
     pub fn records<R: Clone>(ledger: &DemuxLedger<R>) -> impl Iterator<Item = R> + '_ { ledger.records() }
 }
 
-impl DemuxLedger<()> {
-    fn insert_live(&mut self, id: LedgerId) -> Result<(), LedgerError> { self.create_live(id, ()).map(|_| ()) }
-    fn remove_live(&mut self, id: LedgerId) -> Result<(), LedgerError> {
-        match self.begin_close_ref(id)? {
-            DemuxCloseAction::StillReferenced => Err(LedgerError::InvalidState),
-            DemuxCloseAction::Final { .. } => self.commit_close(id).map(|_| ()),
-        }
-    }
-}
-
 #[derive(Debug, Default)]
 struct ResourceLedger {
     reserved: BTreeSet<LedgerId>,
@@ -259,6 +250,7 @@ impl ResourceLedger {
         self.cleanup_step.remove(&id);
         Ok(())
     }
+    #[cfg(test)]
     fn rollback_close(&mut self, id: LedgerId) -> Result<(), LedgerError> {
         if !self.closing.remove(&id) { return Err(LedgerError::NotFound); }
         self.live.insert(id);
@@ -279,8 +271,37 @@ impl ResourceLedger {
 #[derive(Debug, Default)] pub struct FilterLedger { inner: ResourceLedger }
 #[derive(Debug, Default)] pub struct DvrLedger { inner: ResourceLedger }
 #[derive(Debug, Default)] pub struct DescramblerLedger { inner: ResourceLedger }
-macro_rules! resource_ledger_api { ($t:ty) => { impl $t { fn reserve(&mut self, id: LedgerId)->Result<u64,LedgerError>{self.inner.reserve(id)} fn commit_open(&mut self,id:LedgerId)->Result<(),LedgerError>{self.inner.commit_open(id)} fn rollback_open(&mut self,id:LedgerId)->Result<(),LedgerError>{self.inner.rollback_open(id)} fn begin_close(&mut self,id:LedgerId)->Result<u64,LedgerError>{self.inner.begin_close(id)} fn quarantine(&mut self,id:LedgerId)->Result<(),LedgerError>{self.inner.quarantine(id)} fn commit_close(&mut self,id:LedgerId)->Result<(),LedgerError>{self.inner.commit_close(id)} fn generation(&self,id:LedgerId)->Option<u64>{self.inner.generation(id)} fn cleanup_step(&self,id:LedgerId)->Option<&'static str>{self.inner.cleanup_step(id)} fn mark_cleanup_step(&mut self,id:LedgerId,step:&'static str)->Result<(),LedgerError>{self.inner.mark_cleanup_step(id,step)} } }; }
-resource_ledger_api!(FilterLedger); resource_ledger_api!(DvrLedger); resource_ledger_api!(DescramblerLedger);
+macro_rules! resource_ledger_api_with_cleanup {
+    ($t:ty) => {
+        impl $t {
+            fn reserve(&mut self, id: LedgerId) -> Result<u64, LedgerError> { self.inner.reserve(id) }
+            fn commit_open(&mut self, id: LedgerId) -> Result<(), LedgerError> { self.inner.commit_open(id) }
+            fn rollback_open(&mut self, id: LedgerId) -> Result<(), LedgerError> { self.inner.rollback_open(id) }
+            fn begin_close(&mut self, id: LedgerId) -> Result<u64, LedgerError> { self.inner.begin_close(id) }
+            fn quarantine(&mut self, id: LedgerId) -> Result<(), LedgerError> { self.inner.quarantine(id) }
+            fn commit_close(&mut self, id: LedgerId) -> Result<(), LedgerError> { self.inner.commit_close(id) }
+            fn generation(&self, id: LedgerId) -> Option<u64> { self.inner.generation(id) }
+            fn cleanup_step(&self, id: LedgerId) -> Option<&'static str> { self.inner.cleanup_step(id) }
+            fn mark_cleanup_step(&mut self, id: LedgerId, step: &'static str) -> Result<(), LedgerError> { self.inner.mark_cleanup_step(id, step) }
+        }
+    };
+}
+macro_rules! resource_ledger_api_basic {
+    ($t:ty) => {
+        impl $t {
+            fn reserve(&mut self, id: LedgerId) -> Result<u64, LedgerError> { self.inner.reserve(id) }
+            fn commit_open(&mut self, id: LedgerId) -> Result<(), LedgerError> { self.inner.commit_open(id) }
+            fn rollback_open(&mut self, id: LedgerId) -> Result<(), LedgerError> { self.inner.rollback_open(id) }
+            fn begin_close(&mut self, id: LedgerId) -> Result<u64, LedgerError> { self.inner.begin_close(id) }
+            fn quarantine(&mut self, id: LedgerId) -> Result<(), LedgerError> { self.inner.quarantine(id) }
+            fn commit_close(&mut self, id: LedgerId) -> Result<(), LedgerError> { self.inner.commit_close(id) }
+            fn generation(&self, id: LedgerId) -> Option<u64> { self.inner.generation(id) }
+        }
+    };
+}
+resource_ledger_api_with_cleanup!(FilterLedger);
+resource_ledger_api_with_cleanup!(DvrLedger);
+resource_ledger_api_basic!(DescramblerLedger);
 
 
 /// ResourceLifecycleTxn is the owner-side façade for per-resource ledgers.

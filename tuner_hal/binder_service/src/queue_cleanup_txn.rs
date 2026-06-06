@@ -46,19 +46,6 @@ impl QueueCleanupTxn {
         }
     }
 
-    pub(crate) fn best_effort_resource<R>(
-        &self,
-        owner: &R,
-        resource: &'static str,
-        step: &'static str,
-        counter: &AtomicU64,
-    )
-    where
-        R: QueueCleanupResource + ?Sized,
-    {
-        self.best_effort(step, counter, || owner.cleanup_queue_resource(resource, self.phase));
-    }
-
     pub(crate) fn required_resource<R>(
         &self,
         owner: &R,
