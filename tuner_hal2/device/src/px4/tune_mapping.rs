@@ -408,7 +408,7 @@ mod tests {
     }
 
     #[test]
-    fn maps_bs_tsid_to_direct_slot_inside_px4_backend() {
+    fn maps_bs_tsid_to_direct_slot_inside_px4_mapping() {
         let mapped = map_tune_request_to_px4(&bs_request(0x4011)).unwrap();
         assert_eq!(mapped.system_code, PTX_ISDB_S_SYSTEM);
         assert_eq!(mapped.freq_no, 0);

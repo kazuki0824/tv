@@ -6,12 +6,25 @@ pub mod descrambler;
 pub mod lnb;
 pub mod status;
 pub mod aidl_method;
-pub mod domain_request;
+pub mod aidl_filter_config;
 
 pub use status::{AidlFailureSource, AidlStatusMapper, ApiStatusPrecedence, DomainResult, StatusPrecedenceStep, TunerStatusCode};
-pub use aidl_method::{AidlInputField, AidlInputSnapshot, AidlMethodAdapter, AidlMethodCall, AidlMethodPlan};
-pub use domain_request::domain_request_from_snapshot;
-pub use maleicacid_tuner_hal2_domain_request::{AidlApi, AidlDomainRequest, AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan, DomainProfileSupport, DomainRequestField, DomainValueValidation, RuntimeExecutableRequest, RuntimeTransactionName, AIDL_TRANSACTION_TABLE};
+pub use aidl_method::{
+    build_dvr_configure_request, build_dvr_open_request,
+    build_filter_av_stream_type_request, build_filter_delay_hint_request,
+    build_lnb_satellite_position_request, build_lnb_tone_request,
+    build_lnb_voltage_request, AidlMethodAdapter, AidlMethodCall, AidlMethodPlan,
+};
+pub use aidl_filter_config::{build_filter_summary_for_open_type, build_open_filter_request, build_section_condition, build_section_condition_kind, filter_main_type_supported, filter_open_type, normalize_pes_stream_id, validate_record_index_settings, validate_ts_pid};
+pub use maleicacid_tuner_hal2_domain_request::{
+    AidlApi, AidlDomainRequest, AidlObjectGeneration, AidlObjectId, AidlObjectKind,
+    CommandPlan, DemuxSetFrontendDataSourceRequest, DomainProfileSupport,
+    DvrConfigureKind, DvrConfigureRequest, DvrFilterLinkRequest, DvrOpenKind,
+    FilterAvStreamKind, FilterAvStreamTypeRequest, FilterDelayHintKind,
+    FilterDelayHintRequest, FilterReleaseAvHandleRequest, FilterSetDataSourceRequest,
+    LnbSetSatellitePositionRequest, LnbToneRequest, LnbVoltageRequest,
+    OpenDvrRequest, RuntimeExecutableRequest, RuntimeTransactionName, AIDL_TRANSACTION_TABLE,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DomainCommand {
@@ -27,33 +40,33 @@ pub enum DomainCommand {
 impl DomainCommand {
     pub fn runtime_executable_request(&self) -> Option<RuntimeExecutableRequest> {
         match self {
-            DomainCommand::UnsupportedPublicApi { request: Some(request), .. } => Some(request.clone().into_runtime_executable_request()),
+            DomainCommand::UnsupportedPublicApi { request: Some(request), .. } => Some(request.clone()),
             DomainCommand::UnsupportedPublicApi { request: None, .. } => None,
             DomainCommand::Frontend(frontend::FrontendCommand::SetCallback(request)) => {
-                Some(request.clone().into_runtime_executable_request())
+                Some(request.clone())
             }
             DomainCommand::Demux(demux::DemuxCommand::SetFrontendDataSource(request)
                 | demux::DemuxCommand::OpenFilter(request)
                 | demux::DemuxCommand::OpenDvr(request)) => {
-                Some(request.clone().into_runtime_executable_request())
+                Some(request.clone())
             }
             DomainCommand::Filter(filter::FilterCommand::Configure(request)
                 | filter::FilterCommand::ConfigureAvStreamType(request)
                 | filter::FilterCommand::ReleaseAvHandle(request)
                 | filter::FilterCommand::SetDataSource(request)
                 | filter::FilterCommand::SetDelayHint(request)) => {
-                Some(request.clone().into_runtime_executable_request())
+                Some(request.clone())
             }
             DomainCommand::Dvr(dvr::DvrCommand::Configure(request)
                 | dvr::DvrCommand::AttachFilter(request)
                 | dvr::DvrCommand::DetachFilter(request)) => {
-                Some(request.clone().into_runtime_executable_request())
+                Some(request.clone())
             }
             DomainCommand::Lnb(lnb::LnbCommand::SetCallback(request)
                 | lnb::LnbCommand::SetVoltage(request)
                 | lnb::LnbCommand::SetTone(request)
                 | lnb::LnbCommand::SetSatellitePosition(request)) => {
-                Some(request.clone().into_runtime_executable_request())
+                Some(request.clone())
             }
             DomainCommand::Frontend(_)
             | DomainCommand::Demux(demux::DemuxCommand::Close)
@@ -98,6 +111,7 @@ impl DomainCommand {
     }
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,7 +145,7 @@ mod tests {
     }
 
     #[test]
-    fn aidl_method_adapter_creates_domain_command_without_string_transaction() {
+    fn aidl_method_adapter_creates_domain_command_without_intermediate_string_layer() {
         let plan = aidl_method::AidlMethodAdapter::frontend_tune(request());
         assert!(matches!(plan.command, DomainCommand::Frontend(frontend::FrontendCommand::Tune(_))));
         assert_eq!(plan.command_plan.transaction, RuntimeTransactionName::FrontendTuneTxnApply);
@@ -144,35 +158,4 @@ mod tests {
             assert!(AIDL_TRANSACTION_TABLE.contains(&plan.command_plan));
         }
     }
-    #[test]
-    fn filter_configure_command_carries_domain_request_not_snapshot_only() {
-        let snapshot = aidl_method::AidlInputSnapshot::from_fields(
-            "DemuxFilterSettings",
-            vec![aidl_method::AidlInputField::new("top_variant", "ts"), aidl_method::AidlInputField::new("ts.tpid", "256")],
-        );
-        let command = aidl_method::AidlMethodCall::FilterConfigure(snapshot).into_domain_command();
-        match command {
-            DomainCommand::Filter(filter::FilterCommand::Configure(request)) => {
-                assert_eq!(request.profile_support(), DomainProfileSupport::Supported);
-                assert!(request.validate_supported_values().is_ok());
-            }
-            _ => panic!("unexpected command"),
-        }
-    }
-
-    #[test]
-    fn filter_configure_unsupported_variant_is_domain_request_unavailable_profile() {
-        let snapshot = aidl_method::AidlInputSnapshot::from_fields(
-            "DemuxFilterSettings",
-            vec![aidl_method::AidlInputField::new("top_variant", "alp")],
-        );
-        let command = aidl_method::AidlMethodCall::FilterConfigure(snapshot).into_domain_command();
-        match command {
-            DomainCommand::Filter(filter::FilterCommand::Configure(request)) => {
-                assert_eq!(request.profile_support(), DomainProfileSupport::UnsupportedRecordThenUnavailable);
-            }
-            _ => panic!("unexpected command"),
-        }
-    }
-
 }

@@ -42,7 +42,7 @@ impl Default for RuntimeCommandDispatcher {
 impl RuntimeCommandDispatcher {
     pub fn new() -> Self {
         Self {
-            covered_transaction_count: crate::dispatch::SERVICE_RUNTIME_DISPATCH_TABLE.len(),
+            covered_transaction_count: crate::transaction_registry::transaction_spec_count(),
         }
     }
 

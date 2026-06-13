@@ -1,3 +1,4 @@
+use crate::config::FilterOpenType;
 use crate::packet_pipeline::{FilterPipelineConfig, PipelineFilterView, PipelineOpenKind};
 use crate::TsInputOrigin;
 
@@ -39,6 +40,7 @@ impl FilterSource {
 pub struct FilterRuntimeSnapshot {
     pub state: FilterRuntimeState,
     pub generation: u64,
+    pub open_type: FilterOpenType,
     pub open_kind: PipelineOpenKind,
     pub tpid: Option<i32>,
     pub raw: bool,
@@ -52,6 +54,7 @@ pub struct FilterRuntime {
     filter_id: i32,
     state: FilterRuntimeState,
     generation: u64,
+    open_type: FilterOpenType,
     open_kind: PipelineOpenKind,
     tpid: Option<i32>,
     raw: bool,
@@ -62,11 +65,35 @@ pub struct FilterRuntime {
 
 impl FilterRuntime {
     pub fn new(filter_id: i32, generation: u64, open_kind: PipelineOpenKind) -> Self {
+        let open_type = match open_kind {
+            PipelineOpenKind::Raw => FilterOpenType::TsRaw,
+            PipelineOpenKind::Av => FilterOpenType::TsVideo,
+            PipelineOpenKind::Section => FilterOpenType::TsSection,
+            PipelineOpenKind::Pes => FilterOpenType::TsPes,
+            PipelineOpenKind::Record => FilterOpenType::TsRecord,
+            PipelineOpenKind::Other => FilterOpenType::TsRaw,
+        };
         Self {
             filter_id,
             state: FilterRuntimeState::Open,
             generation,
+            open_type,
             open_kind,
+            tpid: None,
+            raw: false,
+            source: FilterSource::DemuxInput,
+            queue_present: false,
+            av_backing_present: false,
+        }
+    }
+
+    pub fn new_typed(filter_id: i32, generation: u64, open_type: FilterOpenType) -> Self {
+        Self {
+            filter_id,
+            state: FilterRuntimeState::Open,
+            generation,
+            open_type,
+            open_kind: open_type.pipeline_open_kind(),
             tpid: None,
             raw: false,
             source: FilterSource::DemuxInput,
@@ -78,6 +105,7 @@ impl FilterRuntime {
     pub fn filter_id(&self) -> i32 { self.filter_id }
     pub fn state(&self) -> FilterRuntimeState { self.state }
     pub fn generation(&self) -> u64 { self.generation }
+    pub fn open_type(&self) -> FilterOpenType { self.open_type }
     pub fn open_kind(&self) -> PipelineOpenKind { self.open_kind }
     pub fn tpid(&self) -> Option<i32> { self.tpid }
     pub fn source(&self) -> FilterSource { self.source }
@@ -88,6 +116,7 @@ impl FilterRuntime {
         FilterRuntimeSnapshot {
             state: self.state,
             generation: self.generation,
+            open_type: self.open_type,
             open_kind: self.open_kind,
             tpid: self.tpid,
             raw: self.raw,
@@ -100,6 +129,7 @@ impl FilterRuntime {
     pub fn restore(&mut self, snapshot: FilterRuntimeSnapshot) {
         self.state = snapshot.state;
         self.generation = snapshot.generation;
+        self.open_type = snapshot.open_type;
         self.open_kind = snapshot.open_kind;
         self.tpid = snapshot.tpid;
         self.raw = snapshot.raw;
@@ -108,8 +138,8 @@ impl FilterRuntime {
         self.av_backing_present = snapshot.av_backing_present;
     }
 
-    pub fn configure(&mut self, config: FilterPipelineConfig) {
-        self.generation = self.generation.saturating_add(1);
+    pub fn configure_with_generation(&mut self, generation: u64, config: FilterPipelineConfig) {
+        self.generation = generation;
         self.tpid = config.tpid;
         self.raw = config.raw;
         self.source = FilterSource::DemuxInput;

@@ -222,311 +222,116 @@ pub enum DomainProfileSupport {
     UnsupportedRecordThenUnavailable,
 }
 
+use maleicacid_tuner_hal2_demux::config::{FilterConfig, OpenFilterRequest};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DomainValueValidation {
-    Bool,
-    I32Any,
-    I32NonNegative,
-    I32Positive,
-    I64Any,
-    I64NonNegative,
-    U16TsPid,
-    EnumKnown,
-    HandlePresence,
-    BytesLength,
-    DebugOnly,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DomainRequestField {
-    pub name: &'static str,
-    pub value: String,
-    pub validation: DomainValueValidation,
-}
-
-impl DomainRequestField {
-    pub fn new(name: &'static str, value: impl Into<String>, validation: DomainValueValidation) -> Self {
-        Self { name, value: value.into(), validation }
-    }
-
-    pub fn validate(&self) -> Result<(), HalError> {
-        match self.validation {
-            DomainValueValidation::Bool => match self.value.as_str() {
-                "true" | "false" => Ok(()),
-                _ => Err(HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, format!("{} must be bool", self.name))),
-            },
-            DomainValueValidation::I32Any | DomainValueValidation::EnumKnown | DomainValueValidation::DebugOnly | DomainValueValidation::HandlePresence | DomainValueValidation::BytesLength => Ok(()),
-            DomainValueValidation::I32NonNegative => {
-                let value = self.value.parse::<i64>().map_err(|_| HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, format!("{} must be integer", self.name)))?;
-                if value >= 0 { Ok(()) } else { Err(HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, format!("{} must be non-negative", self.name))) }
-            }
-            DomainValueValidation::I32Positive => {
-                let value = self.value.parse::<i64>().map_err(|_| HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, format!("{} must be integer", self.name)))?;
-                if value > 0 { Ok(()) } else { Err(HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, format!("{} must be positive", self.name))) }
-            }
-            DomainValueValidation::I64Any => Ok(()),
-            DomainValueValidation::I64NonNegative => {
-                let value = self.value.parse::<i128>().map_err(|_| HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, format!("{} must be integer", self.name)))?;
-                if value >= 0 { Ok(()) } else { Err(HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, format!("{} must be non-negative", self.name))) }
-            }
-            DomainValueValidation::U16TsPid => {
-                let value = self.value.parse::<i64>().map_err(|_| HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, format!("{} must be integer", self.name)))?;
-                if (0..=0x1ffe).contains(&value) { Ok(()) } else { Err(HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, format!("{} must be TS PID 0..=0x1ffe", self.name))) }
-            }
-        }
-    }
+pub struct DemuxSetFrontendDataSourceRequest {
+    pub frontend_id: i32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct TsPid(pub u16);
-
-impl TsPid {
-    pub fn parse(name: &'static str, value: &str) -> Result<Self, HalError> {
-        let pid = value.parse::<i64>().map_err(|_| HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, format!("{} must be integer", name)))?;
-        if (0..=0x1ffe).contains(&pid) {
-            Ok(Self(pid as u16))
-        } else {
-            Err(HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, format!("{} must be TS PID 0..=0x1ffe", name)))
-        }
-    }
+pub enum DvrOpenKind {
+    Record,
+    Playback,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DemuxFilterRootVariant { Ts, Mmtp, Ip, Tlv, Alp, Unknown }
-
-impl DemuxFilterRootVariant {
-    pub fn profile_support(self) -> DomainProfileSupport {
-        match self {
-            DemuxFilterRootVariant::Ts => DomainProfileSupport::Supported,
-            DemuxFilterRootVariant::Mmtp | DemuxFilterRootVariant::Ip | DemuxFilterRootVariant::Tlv | DemuxFilterRootVariant::Alp | DemuxFilterRootVariant::Unknown => DomainProfileSupport::UnsupportedRecordThenUnavailable,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TsFilterSubVariant { Noinit, Section, Av, PesData, Record, Unknown }
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DemuxFilterTypeDomain { Ts, Section, Av, PesData, Record, Unknown }
-
-impl DemuxFilterTypeDomain {
-    pub fn is_compatible_with_ts_variant(self, variant: TsFilterSubVariant) -> bool {
-        match (self, variant) {
-            (Self::Ts, TsFilterSubVariant::Noinit) => true,
-            (Self::Section, TsFilterSubVariant::Section) => true,
-            (Self::Av, TsFilterSubVariant::Av) => true,
-            (Self::PesData, TsFilterSubVariant::PesData) => true,
-            (Self::Record, TsFilterSubVariant::Record) => true,
-            (Self::Unknown, _) | (_, TsFilterSubVariant::Unknown) => false,
-            _ => false,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SectionConditionKind { SectionBits, TableInfo, Unknown }
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SectionBitsConditionRequest {
-    pub filter: Vec<u8>,
-    pub mask: Vec<u8>,
-    pub mode: Vec<u8>,
-}
-
-impl SectionBitsConditionRequest {
-    pub fn validate_lengths(&self) -> Result<(), HalError> {
-        let filter_len = self.filter.len();
-        if self.mask.len() != filter_len || self.mode.len() != filter_len {
-            return Err(HalError::invalid_argument(
-                HalInvalidArgumentKind::NumericRange,
-                "section condition filter/mask/mode byte arrays must have identical lengths",
-            ));
-        }
-        Ok(())
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TableInfoConditionRequest {
-    pub table_id: i32,
-    pub version: i32,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum SectionConditionRequest {
-    SectionBits(SectionBitsConditionRequest),
-    TableInfo(TableInfoConditionRequest),
-    Unknown,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TsNoinitFilterRequest {
-    pub tpid: TsPid,
-    pub raw_fields: Vec<DomainRequestField>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TsSectionFilterRequest {
-    pub tpid: TsPid,
-    pub is_check_crc: bool,
-    pub is_repeat: bool,
-    pub is_raw: bool,
-    pub bit_width_of_length_field: i32,
-    pub condition: SectionConditionRequest,
-    pub raw_fields: Vec<DomainRequestField>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TsAvFilterRequest {
-    pub tpid: TsPid,
-    pub is_passthrough: bool,
-    pub is_secure_memory: bool,
-    pub raw_fields: Vec<DomainRequestField>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TsPesDataFilterRequest {
-    pub tpid: TsPid,
-    pub stream_id: i32,
-    pub is_raw: bool,
-    pub raw_fields: Vec<DomainRequestField>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ScIndexMaskRequest {
-    pub raw_debug: Option<String>,
-    pub normalized_mask: Option<i32>,
-}
-
-impl ScIndexMaskRequest {
-    pub fn from_debug(raw_debug: Option<String>) -> Self {
-        let normalized_mask = raw_debug
-            .as_deref()
-            .and_then(|value| value.trim().parse::<i32>().ok());
-        Self { raw_debug, normalized_mask }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TsRecordFilterRequest {
-    pub tpid: TsPid,
-    pub ts_index_mask: i32,
-    pub sc_index_type: i32,
-    pub sc_index_mask: ScIndexMaskRequest,
-    pub raw_fields: Vec<DomainRequestField>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DemuxOpenFilterRequest {
-    pub filter_type: DemuxFilterTypeDomain,
+pub struct OpenDvrRequest {
+    pub kind: DvrOpenKind,
     pub buffer_size: i32,
-    pub callback_present: bool,
-    pub raw_fields: Vec<DomainRequestField>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DemuxOpenDvrRequest {
-    pub direction: DvrDirection,
-    pub buffer_size: i32,
-    pub callback_present: bool,
-    pub raw_fields: Vec<DomainRequestField>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct UnsupportedDemuxFilterRequest {
-    pub root_variant: DemuxFilterRootVariant,
-    pub reason: &'static str,
-    pub raw_fields: Vec<DomainRequestField>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum TsFilterRuntimeRequest {
-    Noinit(TsNoinitFilterRequest),
-    Section(TsSectionFilterRequest),
-    Av(TsAvFilterRequest),
-    PesData(TsPesDataFilterRequest),
-    Record(TsRecordFilterRequest),
-    UnsupportedTsVariant(UnsupportedDemuxFilterRequest),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DemuxFilterDomainRequest {
-    Ts(TsFilterRuntimeRequest),
-    UnsupportedVariant(UnsupportedDemuxFilterRequest),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DvrDirection { Record, Playback, Unknown }
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DvrRuntimeRequest {
-    pub direction: DvrDirection,
-    pub packet_size: i64,
-    pub low_threshold: i64,
-    pub high_threshold: i64,
-    pub status_mask: i32,
-    pub raw_fields: Vec<DomainRequestField>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DvrDomainRequest {
-    Runtime(DvrRuntimeRequest),
-    Unsupported { reason: &'static str, raw_fields: Vec<DomainRequestField> },
+pub enum FilterAvStreamKind {
+    Audio,
+    Video,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AvStreamKind { Video, Audio, Unknown }
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AvStreamDomainRequest {
-    pub kind: AvStreamKind,
-    pub stream_type_hint: i32,
-    pub raw_fields: Vec<DomainRequestField>,
+pub struct FilterAvStreamTypeRequest {
+    pub kind: FilterAvStreamKind,
+    pub stream_type: i32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FilterDelayKind { TimeDelayMs, DataSizeDelayBytes, InvalidOrUnknown }
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FilterDelayDomainRequest {
-    pub kind: FilterDelayKind,
-    pub value: i32,
-    pub raw_fields: Vec<DomainRequestField>,
+pub struct FilterReleaseAvHandleRequest {
+    pub av_data_id: i64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct GenericDomainRequest {
-    pub source_type: &'static str,
-    pub fields: Vec<DomainRequestField>,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FilterSetDataSourceRequest {
+    pub source_filter_id: i64,
+    pub source_filter_generation: u64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum AidlDomainRequest {
-    DemuxOpenFilter(DemuxOpenFilterRequest),
-    DemuxOpenDvr(DemuxOpenDvrRequest),
-    DemuxFilter(DemuxFilterDomainRequest),
-    Dvr(DvrDomainRequest),
-    AvStream(AvStreamDomainRequest),
-    FilterDelay(FilterDelayDomainRequest),
-    Generic(GenericDomainRequest),
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FilterDelayHintKind {
+    TimeDelayMs,
+    DataSizeDelayBytes,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FilterDelayHintRequest {
+    pub kind: FilterDelayHintKind,
+    pub value: i64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DvrConfigureKind {
+    Record,
+    Playback,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DvrConfigureRequest {
+    pub kind: DvrConfigureKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DvrFilterLinkRequest {
+    pub filter_id: i64,
+    pub filter_generation: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LnbVoltageRequest {
+    None,
+    Voltage11V,
+    Voltage15V,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LnbToneRequest {
+    None,
+    Continuous,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LnbSetSatellitePositionRequest {
+    pub position: i32,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RuntimeExecutableRequest {
-    OpenFilter(DemuxOpenFilterRequest),
-    OpenDvr(DemuxOpenDvrRequest),
-    ConfigureTsNoinitFilter(TsNoinitFilterRequest),
-    ConfigureTsSectionFilter(TsSectionFilterRequest),
-    ConfigureTsAvFilter(TsAvFilterRequest),
-    ConfigureTsPesDataFilter(TsPesDataFilterRequest),
-    ConfigureTsRecordFilter(TsRecordFilterRequest),
-    ConfigureDvr(DvrRuntimeRequest),
-    ConfigureAvStream(AvStreamDomainRequest),
-    ConfigureFilterDelay(FilterDelayDomainRequest),
-    UnsupportedProfile { reason: &'static str, fields: Vec<DomainRequestField> },
-    Generic { source_type: &'static str, fields: Vec<DomainRequestField> },
+    NoPayload,
+    OpenFilter(OpenFilterRequest),
+    ConfigureFilter(FilterConfig),
+    UnsupportedProfile { reason: &'static str },
+    DemuxSetFrontendDataSource(DemuxSetFrontendDataSourceRequest),
+    OpenDvr(OpenDvrRequest),
+    FilterConfigureAvStreamType(FilterAvStreamTypeRequest),
+    FilterReleaseAvHandle(FilterReleaseAvHandleRequest),
+    FilterSetDataSource(FilterSetDataSourceRequest),
+    FilterDelayHint(FilterDelayHintRequest),
+    DvrConfigure(DvrConfigureRequest),
+    DvrAttachFilter(DvrFilterLinkRequest),
+    DvrDetachFilter(DvrFilterLinkRequest),
+    LnbSetVoltage(LnbVoltageRequest),
+    LnbSetTone(LnbToneRequest),
+    LnbSetSatellitePosition(LnbSetSatellitePositionRequest),
 }
+
+pub type AidlDomainRequest = RuntimeExecutableRequest;
 
 impl RuntimeExecutableRequest {
     pub fn profile_support(&self) -> DomainProfileSupport {
@@ -539,139 +344,84 @@ impl RuntimeExecutableRequest {
     pub fn validate_supported_values(&self) -> Result<(), HalError> {
         match self {
             Self::OpenFilter(request) => {
-                if request.filter_type == DemuxFilterTypeDomain::Unknown {
-                    return Err(HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, "unknown DemuxFilterType"));
-                }
                 if request.buffer_size <= 0 {
-                    return Err(HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, "filter buffer size must be positive"));
+                    return Err(HalError::invalid_argument(
+                        HalInvalidArgumentKind::NumericRange,
+                        "filter buffer size must be positive",
+                    ));
                 }
                 Ok(())
             }
             Self::OpenDvr(request) => {
-                if request.direction == DvrDirection::Unknown {
-                    return Err(HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, "unknown DvrType"));
-                }
                 if request.buffer_size <= 0 {
-                    return Err(HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, "DVR buffer size must be positive"));
+                    return Err(HalError::invalid_argument(
+                        HalInvalidArgumentKind::NumericRange,
+                        "DVR buffer size must be positive",
+                    ));
                 }
                 Ok(())
             }
-            Self::ConfigureTsSectionFilter(request) => request.condition.validate_supported_values(),
-            Self::ConfigureTsRecordFilter(request) => {
-                if request.ts_index_mask < 0 {
-                    return Err(HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, "record.tsIndexMask must be non-negative"));
-                }
-                if request.sc_index_type < 0 {
-                    return Err(HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, "record.scIndexType must be non-negative"));
-                }
-                if let Some(mask) = request.sc_index_mask.normalized_mask {
-                    if mask < 0 {
-                        return Err(HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, "record.scIndexMask must be non-negative when represented as a scalar mask"));
-                    }
+            Self::DemuxSetFrontendDataSource(request) => {
+                if request.frontend_id < 0 {
+                    return Err(HalError::invalid_argument(
+                        HalInvalidArgumentKind::NumericRange,
+                        "frontend id must be non-negative",
+                    ));
                 }
                 Ok(())
             }
-            Self::ConfigureDvr(request) => {
-                if request.packet_size <= 0 {
-                    return Err(HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, "DVR packet size must be positive"));
-                }
-                if request.low_threshold < 0 || request.high_threshold < 0 {
-                    return Err(HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, "DVR thresholds must be non-negative"));
-                }
-                Ok(())
-            }
-            Self::ConfigureFilterDelay(request) if request.kind == FilterDelayKind::InvalidOrUnknown => {
-                Err(HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, "unknown FilterDelayHintType"))
-            }
-            Self::ConfigureAvStream(request) if request.kind == AvStreamKind::Unknown => {
-                Err(HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, "unknown AvStreamType"))
-            }
-            _ => Ok(()),
-        }
-    }
-}
-
-impl SectionConditionRequest {
-    pub fn validate_supported_values(&self) -> Result<(), HalError> {
-        match self {
-            SectionConditionRequest::SectionBits(bits) => bits.validate_lengths(),
-            SectionConditionRequest::TableInfo(table) => {
-                if !(0..=0xff).contains(&table.table_id) {
-                    return Err(HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, "section tableId must be 0..=255"));
+            Self::FilterConfigureAvStreamType(request) => {
+                if request.stream_type < 0 {
+                    return Err(HalError::invalid_argument(
+                        HalInvalidArgumentKind::NumericRange,
+                        "AV stream type must be non-negative",
+                    ));
                 }
                 Ok(())
             }
-            SectionConditionRequest::Unknown => Err(HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, "unknown section condition")),
+            Self::FilterReleaseAvHandle(request) => {
+                if request.av_data_id < 0 {
+                    return Err(HalError::invalid_argument(
+                        HalInvalidArgumentKind::NumericRange,
+                        "AV data id must be non-negative",
+                    ));
+                }
+                Ok(())
+            }
+            Self::FilterDelayHint(request) => {
+                if request.value < 0 {
+                    return Err(HalError::invalid_argument(
+                        HalInvalidArgumentKind::NumericRange,
+                        "filter delay hint value must be non-negative",
+                    ));
+                }
+                Ok(())
+            }
+            Self::DvrAttachFilter(request) | Self::DvrDetachFilter(request) => {
+                if request.filter_id < 0 {
+                    return Err(HalError::invalid_argument(
+                        HalInvalidArgumentKind::NumericRange,
+                        "DVR filter id must be non-negative",
+                    ));
+                }
+                Ok(())
+            }
+            Self::LnbSetSatellitePosition(request) => {
+                if request.position < 0 {
+                    return Err(HalError::invalid_argument(
+                        HalInvalidArgumentKind::NumericRange,
+                        "LNB satellite position must be non-negative",
+                    ));
+                }
+                Ok(())
+            }
+            Self::NoPayload
+            | Self::ConfigureFilter(_)
+            | Self::UnsupportedProfile { .. }
+            | Self::FilterSetDataSource(_)
+            | Self::DvrConfigure(_)
+            | Self::LnbSetVoltage(_)
+            | Self::LnbSetTone(_) => Ok(()),
         }
-    }
-}
-
-impl AidlDomainRequest {
-    pub fn profile_support(&self) -> DomainProfileSupport {
-        match self {
-            AidlDomainRequest::DemuxOpenFilter(_) | AidlDomainRequest::DemuxOpenDvr(_) => DomainProfileSupport::Supported,
-            AidlDomainRequest::DemuxFilter(DemuxFilterDomainRequest::Ts(TsFilterRuntimeRequest::UnsupportedTsVariant(_))) => DomainProfileSupport::UnsupportedRecordThenUnavailable,
-            AidlDomainRequest::DemuxFilter(DemuxFilterDomainRequest::Ts(_)) => DomainProfileSupport::Supported,
-            AidlDomainRequest::DemuxFilter(DemuxFilterDomainRequest::UnsupportedVariant(_)) => DomainProfileSupport::UnsupportedRecordThenUnavailable,
-            _ => DomainProfileSupport::Supported,
-        }
-    }
-
-    pub fn validate_supported_values(&self) -> Result<(), HalError> {
-        for field in self.fields() {
-            field.validate()?;
-        }
-        match self {
-            AidlDomainRequest::DemuxFilter(DemuxFilterDomainRequest::UnsupportedVariant(_)) => Ok(()),
-            AidlDomainRequest::DemuxFilter(DemuxFilterDomainRequest::Ts(TsFilterRuntimeRequest::UnsupportedTsVariant(_))) => Ok(()),
-            AidlDomainRequest::Dvr(DvrDomainRequest::Unsupported { .. }) => Ok(()),
-            AidlDomainRequest::FilterDelay(request) if request.kind == FilterDelayKind::InvalidOrUnknown => Err(HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, "unknown FilterDelayHintType")),
-            AidlDomainRequest::AvStream(request) if request.kind == AvStreamKind::Unknown => Err(HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, "unknown AvStreamType")),
-            _ => Ok(()),
-        }
-    }
-
-    pub fn into_runtime_executable_request(self) -> RuntimeExecutableRequest {
-        match self {
-            AidlDomainRequest::DemuxOpenFilter(request) => RuntimeExecutableRequest::OpenFilter(request),
-            AidlDomainRequest::DemuxOpenDvr(request) => RuntimeExecutableRequest::OpenDvr(request),
-            AidlDomainRequest::DemuxFilter(DemuxFilterDomainRequest::Ts(TsFilterRuntimeRequest::Noinit(request))) => RuntimeExecutableRequest::ConfigureTsNoinitFilter(request),
-            AidlDomainRequest::DemuxFilter(DemuxFilterDomainRequest::Ts(TsFilterRuntimeRequest::Section(request))) => RuntimeExecutableRequest::ConfigureTsSectionFilter(request),
-            AidlDomainRequest::DemuxFilter(DemuxFilterDomainRequest::Ts(TsFilterRuntimeRequest::Av(request))) => RuntimeExecutableRequest::ConfigureTsAvFilter(request),
-            AidlDomainRequest::DemuxFilter(DemuxFilterDomainRequest::Ts(TsFilterRuntimeRequest::PesData(request))) => RuntimeExecutableRequest::ConfigureTsPesDataFilter(request),
-            AidlDomainRequest::DemuxFilter(DemuxFilterDomainRequest::Ts(TsFilterRuntimeRequest::Record(request))) => RuntimeExecutableRequest::ConfigureTsRecordFilter(request),
-            AidlDomainRequest::DemuxFilter(DemuxFilterDomainRequest::Ts(TsFilterRuntimeRequest::UnsupportedTsVariant(request)))
-            | AidlDomainRequest::DemuxFilter(DemuxFilterDomainRequest::UnsupportedVariant(request)) => RuntimeExecutableRequest::UnsupportedProfile { reason: request.reason, fields: request.raw_fields },
-            AidlDomainRequest::Dvr(DvrDomainRequest::Runtime(request)) => RuntimeExecutableRequest::ConfigureDvr(request),
-            AidlDomainRequest::Dvr(DvrDomainRequest::Unsupported { reason, raw_fields }) => RuntimeExecutableRequest::UnsupportedProfile { reason, fields: raw_fields },
-            AidlDomainRequest::AvStream(request) => RuntimeExecutableRequest::ConfigureAvStream(request),
-            AidlDomainRequest::FilterDelay(request) => RuntimeExecutableRequest::ConfigureFilterDelay(request),
-            AidlDomainRequest::Generic(request) => RuntimeExecutableRequest::Generic { source_type: request.source_type, fields: request.fields },
-        }
-    }
-
-    pub fn fields(&self) -> &[DomainRequestField] {
-        match self {
-            AidlDomainRequest::DemuxOpenFilter(request) => &request.raw_fields,
-            AidlDomainRequest::DemuxOpenDvr(request) => &request.raw_fields,
-            AidlDomainRequest::DemuxFilter(DemuxFilterDomainRequest::Ts(request)) => ts_filter_raw_fields(request),
-            AidlDomainRequest::DemuxFilter(DemuxFilterDomainRequest::UnsupportedVariant(request)) => &request.raw_fields,
-            AidlDomainRequest::Dvr(DvrDomainRequest::Runtime(request)) => &request.raw_fields,
-            AidlDomainRequest::Dvr(DvrDomainRequest::Unsupported { raw_fields, .. }) => raw_fields,
-            AidlDomainRequest::AvStream(request) => &request.raw_fields,
-            AidlDomainRequest::FilterDelay(request) => &request.raw_fields,
-            AidlDomainRequest::Generic(request) => &request.fields,
-        }
-    }
-}
-
-fn ts_filter_raw_fields(request: &TsFilterRuntimeRequest) -> &[DomainRequestField] {
-    match request {
-        TsFilterRuntimeRequest::Noinit(request) => &request.raw_fields,
-        TsFilterRuntimeRequest::Section(request) => &request.raw_fields,
-        TsFilterRuntimeRequest::Av(request) => &request.raw_fields,
-        TsFilterRuntimeRequest::PesData(request) => &request.raw_fields,
-        TsFilterRuntimeRequest::Record(request) => &request.raw_fields,
-        TsFilterRuntimeRequest::UnsupportedTsVariant(request) => &request.raw_fields,
     }
 }

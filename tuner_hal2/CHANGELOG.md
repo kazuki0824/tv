@@ -1,3 +1,31 @@
+# r50eg_tuner_hal2_dead_code_cleanup
+
+- 品質整理として、moduleを定義しない `tuner_hal2/aidl_service/Android.bp` を削除した。
+- 旧snapshot/field validation由来の未使用 `DomainValueValidation` と re-export を削除した。
+- 未使用 `FrontendTuneStep` と re-export を削除した。
+- production source / config の作業単位・過去版数由来文言を削除し、現行 scope の未接続メッセージへ寄せた。
+- `common/src/os_abi.rs` を common library / common test の Android.bp srcs に接続した。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認は未実施。
+
+# r50eg_tuner_hal2_test_cleanup
+
+- 旧snapshot / field contract / Px4Backend wrapper 系の削除対象テストは、該当旧ファイル削除済みであることを確認した。
+- 新規 `#[test]` 関数は追加せず、既存テストを atest 対象に接続するため `maleicacid_tuner_hal2_control_core_test` / `maleicacid_tuner_hal2_fmq_test` / `maleicacid_tuner_hal2_descrambler_test` を Android.bp に追加した。
+- `maleicacid_tuner_hal2_device_test` の srcs を library 側 runtime srcs と整合させ、`backend_worker.rs` / `scan_session.rs` / `live_pump.rs` を含めるようにした。
+- `GLOBAL_CODE_CONVENTION.md` に Rust test / loom test の分担規約を追加した。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認は未実施。
+
+# r50eg_tuner_hal2_quality_fix5
+
+- tuner_hal2 の品質是正として、AIDL snapshot / Debug文字列変換層を本番経路から外し、AIDL型から型付き filter config へ直接変換する正本へ置換した。
+- descriptor-only の `px4_backend.rs` / `dvb_backend.rs` を削除し、live reader descriptor生成をregistry entry / backend session側へ寄せた。
+- transaction / dispatch / handler coverage の正本を分離し、runtime側は `service_runtime/src/transaction_registry.rs` の `RuntimeTransactionSpec` を正とした。
+- demux runtime generation 更新を `checked_add()` に寄せ、overflow時は対象runtimeをFailedにして成功扱いしない。
+- backend tune transaction の generation=0固定を廃止し、frontend worker generationを `FrontendBackendTunePlan` から `BackendTuneTxn` へ渡すようにした。
+- live pump join reportを破棄せず、packet数、malformed byte数、cancel理由、終端理由、join結果をfrontend runtime diagnosticsへ記録するようにした。
+- 本番経路から外れた旧snapshot placeholderファイルを削除し、リリース物規則に合わせて英語のみのコメントを日本語化した。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認は未実施。
+
 # r50ef5
 
 - product release marker を r50ef5 に更新。

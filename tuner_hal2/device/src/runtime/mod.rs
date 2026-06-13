@@ -9,20 +9,15 @@ pub mod scan_session;
 pub mod tune_txn;
 pub mod reader;
 pub mod live_pump;
-pub mod dvb_backend;
-pub mod px4_backend;
 
-pub use frontend_runtime::{FrontendRuntime, FrontendRuntimeSnapshot, FrontendRuntimeState, FrontendSignalState, FrontendTerminalEvent, FrontendTerminalEventKind, FrontendTerminalEventReason};
+pub use frontend_runtime::{FrontendDiagnosticWriteFailure, FrontendLivePumpDiagnostic, FrontendLivePumpJoinResult, FrontendLivePumpTerminalReason, FrontendRuntime, FrontendRuntimeSnapshot, FrontendRuntimeState, FrontendSignalState, FrontendTerminalEvent, FrontendTerminalEventKind, FrontendTerminalEventReason};
 pub use frontend_worker::{FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind, FrontendWorkerRegistry, FrontendWorkerStartError, FrontendWorkerStopOutcome};
 pub use tune_txn::{
     BackendTuneCommit, BackendTuneOps, BackendTuneOutcome, BackendTuneRollbackFailure,
     BackendTuneRollbackReport, BackendTuneRollbackStep, BackendTuneStep, BackendTuneTxn,
-    FrontendTuneOutcome, FrontendTuneStep, FrontendTuneTxn, TuneWorkerStart,
+    FrontendTuneOutcome, FrontendTuneTxn, TuneWorkerStart,
 };
 pub use reader::{FrontendLiveReaderDescriptor, FrontendLiveReaderDescriptorKind};
 pub use live_pump::{FrontendLivePacketSink, FrontendLivePumpJoinOutcome, FrontendLivePumpOwner, FrontendLivePumpReport, run_frontend_live_pump, run_frontend_live_pump_limited};
-pub use dvb_backend::DvbBackend;
-pub use px4_backend::Px4Backend;
-
 pub use backend_worker::{FrontendBackendSession, FrontendBackendSessionKind, FrontendBackendTunePlan, run_frontend_backend_tune_worker, run_frontend_backend_tune_worker_with_previous};
 pub use scan_session::{FrontendScanPhase, FrontendScanSession, FrontendScanTerminalReason};

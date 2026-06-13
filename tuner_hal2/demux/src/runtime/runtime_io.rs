@@ -16,13 +16,6 @@ pub enum RuntimeIoFailureKind {
     WorkerFailed,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RuntimeIoFailureRecord {
-    pub kind: RuntimeIoKind,
-    pub id: i32,
-    pub failure: RuntimeIoFailureKind,
-}
-
 #[derive(Debug, Default)]
 pub struct RuntimeIoRegistry {
     failures: BTreeMap<(RuntimeIoKind, i32), RuntimeIoFailureKind>,

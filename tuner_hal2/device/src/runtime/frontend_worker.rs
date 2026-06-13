@@ -1,7 +1,7 @@
 //! frontend 非同期worker slot所有。
 //!
 //! このmoduleは並行処理境界だけを所有する。tune/scan成功を装わず、呼び出し元がbackend jobを渡し、slotは完了・取消状態だけを記録する。
-//! r50ee54で削除した偽operation状態を再導入しないための境界である。
+//! worker slotは完了・取消・失敗状態だけを保持し、実operationの成功を代用しない。
 
 use std::collections::BTreeMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};

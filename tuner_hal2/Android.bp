@@ -41,7 +41,11 @@ rust_library {
     name: "libmaleicacid_tuner_hal2_common",
     vendor: true,
     crate_name: "maleicacid_tuner_hal2_common",
-    srcs: ["common/src/lib.rs"],
+    crate_root: "common/src/lib.rs",
+    srcs: [
+        "common/src/lib.rs",
+        "common/src/os_abi.rs",
+    ],
     edition: "2021",
 }
 
@@ -85,8 +89,6 @@ rust_library {
         "device/src/runtime/tune_txn.rs",
         "device/src/runtime/reader.rs",
         "device/src/runtime/live_pump.rs",
-        "device/src/runtime/dvb_backend.rs",
-        "device/src/runtime/px4_backend.rs",
     ],
     edition: "2021",
     rustlibs: ["libmaleicacid_tuner_hal2_common", "libmaleicacid_tuner_hal2_control_core"],
@@ -105,6 +107,7 @@ rust_library {
         "demux/src/parser/packet_pipeline.rs",
         "demux/src/parser/record_index.rs",
         "demux/src/runtime/mod.rs",
+        "demux/src/config.rs",
         "demux/src/runtime/demux.rs",
         "demux/src/runtime/filter.rs",
         "demux/src/runtime/dvr.rs",
@@ -183,6 +186,7 @@ rust_library {
         "service_runtime/src/object_table.rs",
         "service_runtime/src/runtime_result.rs",
         "service_runtime/src/runtime_handlers.rs",
+        "service_runtime/src/transaction_registry.rs",
         "service_runtime/src/capability_profile.rs",
         "service_runtime/src/callback_registry.rs",
     ],
@@ -206,7 +210,7 @@ rust_library {
     crate_root: "domain_request/src/lib.rs",
     srcs: ["domain_request/src/lib.rs"],
     edition: "2021",
-    rustlibs: ["libmaleicacid_tuner_hal2_common"],
+    rustlibs: ["libmaleicacid_tuner_hal2_common", "libmaleicacid_tuner_hal2_demux"],
 }
 
 rust_library {
@@ -224,12 +228,14 @@ rust_library {
         "binder_adapter/src/lnb.rs",
         "binder_adapter/src/status.rs",
         "binder_adapter/src/aidl_method.rs",
-        "binder_adapter/src/domain_request.rs",
+        "binder_adapter/src/aidl_filter_config.rs",
     ],
     edition: "2021",
     rustlibs: [
         "libmaleicacid_tuner_hal2_common",
         "libmaleicacid_tuner_hal2_domain_request",
+        "libmaleicacid_tuner_hal2_demux",
+        "android.hardware.tv.tuner-V2-rust",
     ],
 }
 
@@ -255,8 +261,6 @@ rust_library {
         "aidl_service/src/error_bridge.rs",
         "aidl_service/src/object_handle.rs",
         "aidl_service/src/object_runtime.rs",
-        "aidl_service/src/input_snapshot.rs",
-        "aidl_service/src/aidl_v2_conversion_contract.rs",
     ],
     edition: "2021",
     rustlibs: [
@@ -293,8 +297,57 @@ rust_test {
     name: "maleicacid_tuner_hal2_common_test",
     vendor: true,
     crate_name: "maleicacid_tuner_hal2_common_test",
-    srcs: ["common/src/lib.rs"],
+    crate_root: "common/src/lib.rs",
+    srcs: [
+        "common/src/lib.rs",
+        "common/src/os_abi.rs",
+    ],
     edition: "2021",
+    auto_gen_config: true,
+    test_suites: ["general-tests"],
+}
+
+rust_test {
+    name: "maleicacid_tuner_hal2_control_core_test",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal2_control_core_test",
+    srcs: ["control/src/lib.rs"],
+    edition: "2021",
+    rustlibs: ["libmaleicacid_tuner_hal2_common"],
+    auto_gen_config: true,
+    test_suites: ["general-tests"],
+}
+
+rust_test {
+    name: "maleicacid_tuner_hal2_fmq_test",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal2_fmq_test",
+    srcs: ["fmq/src/lib.rs"],
+    edition: "2021",
+    shared_libs: ["libmaleicacid_tuner_hal2_fmq_shim"],
+    auto_gen_config: true,
+    test_suites: ["general-tests"],
+}
+
+rust_test {
+    name: "maleicacid_tuner_hal2_descrambler_test",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal2_descrambler_test",
+    crate_root: "descrambler/src/lib.rs",
+    srcs: [
+        "descrambler/src/lib.rs",
+        "descrambler/src/core/mod.rs",
+        "descrambler/src/core/multi2.rs",
+        "descrambler/src/core/packet.rs",
+        "descrambler/src/runtime/mod.rs",
+        "descrambler/src/runtime/token.rs",
+        "descrambler/src/runtime/key_table.rs",
+        "descrambler/src/runtime/session.rs",
+        "descrambler/src/runtime/pid_claim.rs",
+        "descrambler/src/runtime/session_txn.rs",
+    ],
+    edition: "2021",
+    rustlibs: ["libmaleicacid_tuner_hal2_common", "libmaleicacid_tuner_hal2_control_core"],
     auto_gen_config: true,
     test_suites: ["general-tests"],
 }
@@ -316,10 +369,11 @@ rust_test {
         "device/src/runtime/mod.rs",
         "device/src/runtime/frontend_runtime.rs",
         "device/src/runtime/frontend_worker.rs",
+        "device/src/runtime/backend_worker.rs",
+        "device/src/runtime/scan_session.rs",
         "device/src/runtime/tune_txn.rs",
         "device/src/runtime/reader.rs",
-        "device/src/runtime/dvb_backend.rs",
-        "device/src/runtime/px4_backend.rs",
+        "device/src/runtime/live_pump.rs",
     ],
     edition: "2021",
     rustlibs: ["libmaleicacid_tuner_hal2_common", "libmaleicacid_tuner_hal2_control_core"],
@@ -340,6 +394,7 @@ rust_test {
         "demux/src/parser/packet_pipeline.rs",
         "demux/src/parser/record_index.rs",
         "demux/src/runtime/mod.rs",
+        "demux/src/config.rs",
         "demux/src/runtime/demux.rs",
         "demux/src/runtime/filter.rs",
         "demux/src/runtime/dvr.rs",
@@ -404,6 +459,7 @@ rust_test {
         "service_runtime/src/object_table.rs",
         "service_runtime/src/runtime_result.rs",
         "service_runtime/src/runtime_handlers.rs",
+        "service_runtime/src/transaction_registry.rs",
         "service_runtime/src/capability_profile.rs",
         "service_runtime/src/callback_registry.rs",
     ],
@@ -436,12 +492,14 @@ rust_test {
         "binder_adapter/src/lnb.rs",
         "binder_adapter/src/status.rs",
         "binder_adapter/src/aidl_method.rs",
-        "binder_adapter/src/domain_request.rs",
+        "binder_adapter/src/aidl_filter_config.rs",
     ],
     edition: "2021",
     rustlibs: [
         "libmaleicacid_tuner_hal2_common",
         "libmaleicacid_tuner_hal2_domain_request",
+        "libmaleicacid_tuner_hal2_demux",
+        "android.hardware.tv.tuner-V2-rust",
     ],
     auto_gen_config: true,
     test_suites: ["general-tests"],
@@ -468,8 +526,6 @@ rust_test {
         "aidl_service/src/error_bridge.rs",
         "aidl_service/src/object_handle.rs",
         "aidl_service/src/object_runtime.rs",
-        "aidl_service/src/input_snapshot.rs",
-        "aidl_service/src/aidl_v2_conversion_contract.rs",
     ],
     edition: "2021",
     rustlibs: [

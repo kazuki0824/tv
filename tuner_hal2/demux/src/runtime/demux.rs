@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, VecDeque};
 
+use crate::config::FilterOpenType;
 use crate::packet_pipeline::{FilterPipelineConfig, PacketPipeline, PipelineFilterView, PipelineInputKind, PipelineOpenKind, PipelineReport, PipelineResetReport};
 use crate::TsInputOrigin;
 
@@ -7,7 +8,7 @@ use super::dvr::{DvrKind, DvrRuntime};
 use super::filter::{FilterRuntime, FilterRuntimeSnapshot};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DemuxRuntimeState { Open, Closing, CleanupFailed, Closed, Quarantined }
+pub enum DemuxRuntimeState { Open, Closing, CleanupFailed, Closed, Failed, Quarantined }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DemuxRuntimeErrorKind {
@@ -21,6 +22,7 @@ pub enum DemuxRuntimeErrorKind {
     InvalidSinkSubtype,
     PidMismatch,
     PipelineFailed,
+    GenerationExhausted,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -37,7 +39,13 @@ impl DemuxRuntimeError {
     pub const fn invalid_sink_subtype(filter_id: i32) -> Self { Self { kind: DemuxRuntimeErrorKind::InvalidSinkSubtype, id: Some(filter_id) } }
     pub const fn pid_mismatch(filter_id: i32) -> Self { Self { kind: DemuxRuntimeErrorKind::PidMismatch, id: Some(filter_id) } }
     pub const fn pipeline_failed() -> Self { Self { kind: DemuxRuntimeErrorKind::PipelineFailed, id: None } }
+    pub const fn generation_exhausted(id: Option<i32>) -> Self { Self { kind: DemuxRuntimeErrorKind::GenerationExhausted, id } }
 }
+
+pub fn next_generation(current: u64) -> Result<u64, DemuxRuntimeError> {
+    current.checked_add(1).ok_or(DemuxRuntimeError::generation_exhausted(None))
+}
+
 
 #[derive(Clone, Debug)]
 pub struct DemuxRuntimeSnapshot {
@@ -150,13 +158,27 @@ impl DemuxRuntime {
 
     pub fn configure_filter_runtime(&mut self, filter_id: i32, config: FilterPipelineConfig) -> Result<(), DemuxRuntimeError> {
         let filter = self.filters.get_mut(&filter_id).ok_or(DemuxRuntimeError::filter_missing(filter_id))?;
-        filter.configure(config.clone());
+        let next = match next_generation(filter.generation()) {
+            Ok(next) => next,
+            Err(_) => {
+                filter.mark_failed();
+                return Err(DemuxRuntimeError::generation_exhausted(Some(filter_id)));
+            }
+        };
+        filter.configure_with_generation(next, config.clone());
         self.pipeline.configure_filter(filter_id, config).map_err(|_| DemuxRuntimeError::pipeline_failed())
     }
 
     pub fn configure_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {
         let dvr = self.dvrs.get_mut(&dvr_id).ok_or(DemuxRuntimeError::dvr_missing(dvr_id))?;
-        dvr.configure();
+        let next = match next_generation(dvr.generation()) {
+            Ok(next) => next,
+            Err(_) => {
+                dvr.mark_failed();
+                return Err(DemuxRuntimeError::generation_exhausted(Some(dvr_id)));
+            }
+        };
+        dvr.configure_with_generation(next);
         Ok(())
     }
 
@@ -183,7 +205,7 @@ impl DemuxRuntime {
         if sink_snapshot.tpid.is_some() && source_snapshot.tpid.is_some() && sink_snapshot.tpid != source_snapshot.tpid {
             return Err(DemuxRuntimeError::pid_mismatch(source_filter_id));
         }
-        let reset = self.reset_generation_boundary();
+        let reset = self.reset_generation_boundary()?;
         self.filters
             .get_mut(&sink_filter_id)
             .ok_or(DemuxRuntimeError::filter_missing(sink_filter_id))?
@@ -191,9 +213,16 @@ impl DemuxRuntime {
         Ok(reset)
     }
 
-    pub fn reset_generation_boundary(&mut self) -> PipelineResetReport {
-        self.generation = self.generation.saturating_add(1);
-        self.pipeline.reset_boundary()
+    pub fn reset_generation_boundary(&mut self) -> Result<PipelineResetReport, DemuxRuntimeError> {
+        let next = match next_generation(self.generation) {
+            Ok(next) => next,
+            Err(_) => {
+                self.state = DemuxRuntimeState::Failed;
+                return Err(DemuxRuntimeError::generation_exhausted(Some(self.demux_id)));
+            }
+        };
+        self.generation = next;
+        Ok(self.pipeline.reset_boundary())
     }
 
     pub fn quarantine(&mut self) {
@@ -225,7 +254,13 @@ impl DemuxRuntime {
 
     pub fn open_filter_runtime(filter_id: i32, generation: u64, kind: PipelineOpenKind, config: Option<FilterPipelineConfig>) -> FilterRuntime {
         let mut runtime = FilterRuntime::new(filter_id, generation, kind);
-        if let Some(config) = config { runtime.configure(config); }
+        if let Some(config) = config { runtime.configure_with_generation(generation, config); }
+        runtime
+    }
+
+    pub fn open_filter_runtime_typed(filter_id: i32, generation: u64, open_type: FilterOpenType, config: Option<FilterPipelineConfig>) -> FilterRuntime {
+        let mut runtime = FilterRuntime::new_typed(filter_id, generation, open_type);
+        if let Some(config) = config { runtime.configure_with_generation(generation, config); }
         runtime
     }
 

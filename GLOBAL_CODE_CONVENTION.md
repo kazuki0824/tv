@@ -190,6 +190,36 @@ Rust実行時コード では次を守る。
 - 複数ロック が必要なら ロック順序 を文書化する
 ```
 
+
+### Rust test / loom test の分担
+
+Rustで実装し Android.bp を持つモジュールは、通常の Rust 単体テストと loom テストを分ける。
+
+通常の Rust 単体テスト:
+
+- Soong の rust_test として定義する。
+- atest で実行可能にする。
+- parser、AIDL入力変換、resource ledger、runtime state、status mapping、公開関数の戻り値と状態遷移を検査する。
+- cfg(loom) を有効にしない。
+- libloom に依存しない。
+- Android.bp に存在しない #[test] を完了条件に数えない。
+
+loom テスト:
+
+- 並行性、lock順序、interleaving、race 条件の検査だけを対象にする。
+- ビルドホスト側で実行する。
+- 通常の rust_test に混ぜない。
+- target device 上の atest、VTS、実機確認の代替にしない。
+- cfg(loom) と libloom 依存は loom 専用 test module に限定する。
+- loom 専用 test module は通常の rust_test module と名前を分ける。
+- production module に loom defaults を適用しない。
+
+禁止:
+
+- 通常 rust_test に cfg(loom) を混ぜること。
+- loom テストを atest / VTS / 実機確認の代替完了条件にすること。
+- 同じテストを通常 rust_test と loom test の両方の正本にすること。
+
 ### 実装規約レビューの補助確認
 
 実装規約レビューでは、補助確認として次の grep を行う。本節は完了判定の正本ではなく、完了判定は `タスク完了判定の実施方法.md` を正とする。

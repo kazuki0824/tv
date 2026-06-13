@@ -8,6 +8,7 @@ use std::time::Duration;
 use maleicacid_tuner_hal2_common::os_abi::{ioctl, last_errno};
 use maleicacid_tuner_hal2_common::{
     FrontendBackendKind, FrontendDevicePath, FrontendTuneRequest, HalError, HalErrorDetail,
+    HalInternalKind,
 };
 
 use super::reader::{FrontendLiveReaderDescriptor, FrontendLiveReaderDescriptorKind};
@@ -27,6 +28,7 @@ use crate::runtime::{FrontendSignalState, FrontendWorkerContext};
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FrontendBackendTunePlan {
     pub frontend_id: i32,
+    pub generation: u64,
     pub backend: FrontendBackendKind,
     pub device_path: FrontendDevicePath,
     pub request: FrontendTuneRequest,
@@ -35,16 +37,31 @@ pub struct FrontendBackendTunePlan {
 impl FrontendBackendTunePlan {
     pub fn new(
         frontend_id: i32,
+        generation: u64,
         backend: FrontendBackendKind,
         device_path: FrontendDevicePath,
         request: FrontendTuneRequest,
     ) -> Self {
         Self {
             frontend_id,
+            generation,
             backend,
             device_path,
             request,
         }
+    }
+
+    pub fn validate_worker_generation(&self, worker_generation: u64) -> Result<(), HalError> {
+        if self.generation == worker_generation {
+            return Ok(());
+        }
+        Err(HalError::internal(
+            HalInternalKind::InvariantViolation,
+            format!(
+                "frontend backend tune plan generation mismatch: plan={} worker={}",
+                self.generation, worker_generation
+            ),
+        ))
     }
 }
 
@@ -89,16 +106,18 @@ impl FrontendBackendSession {
     ) -> Result<Self, FrontendBackendSubmitFailure> {
         let mut executor = FrontendBackendTuneExecutor::open(plan.clone(), previous_request)
             .map_err(|error| FrontendBackendSubmitFailure {
+                generation: plan.generation,
                 error,
                 rollback_succeeded: true,
                 step: None,
             })?;
-        let mut txn = BackendTuneTxn::new(plan.frontend_id, 0, plan.request.clone());
+        let mut txn = BackendTuneTxn::new(plan.frontend_id, plan.generation, plan.request.clone());
         match txn.apply(&mut executor) {
             BackendTuneOutcome::Committed { .. } => {
                 executor
                     .into_session()
                     .map_err(|error| FrontendBackendSubmitFailure {
+                        generation: plan.generation,
                         error,
                         rollback_succeeded: true,
                         step: None,
@@ -109,6 +128,7 @@ impl FrontendBackendSession {
                 error,
                 rollback,
             } => Err(FrontendBackendSubmitFailure {
+                generation: plan.generation,
                 error,
                 rollback_succeeded: rollback.succeeded(),
                 step: Some(step),
@@ -118,6 +138,7 @@ impl FrontendBackendSession {
                 error,
                 rollback: _,
             } => Err(FrontendBackendSubmitFailure {
+                generation: plan.generation,
                 error,
                 rollback_succeeded: false,
                 step: Some(step),
@@ -192,6 +213,7 @@ impl FrontendBackendSession {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FrontendBackendSubmitFailure {
+    pub generation: u64,
     pub error: HalError,
     pub rollback_succeeded: bool,
     pub step: Option<BackendTuneStep>,
@@ -311,7 +333,7 @@ impl FrontendBackendTuneExecutor {
                     "PTX_SET_SYSTEM_MODE",
                 )
             }
-            // DVB applies delivery-system and channel properties as one FE_SET_PROPERTY(DTV_TUNE) packet.
+            // DVBはdelivery-systemとchannel propertyをFE_SET_PROPERTY(DTV_TUNE)の1回のpacketとして適用する。
             FrontendBackendSessionKind::Dvb { .. } => Ok(()),
         }
     }
@@ -362,7 +384,7 @@ impl FrontendBackendTuneExecutor {
                 PTX_START_STREAMING,
                 "PTX_START_STREAMING",
             ),
-            // DVB starts delivery after FE_SET_PROPERTY(DTV_TUNE); there is no separate userspace start ioctl here.
+            // DVBはFE_SET_PROPERTY(DTV_TUNE)後に配送を開始するため、ここに別のuserspace start ioctlは置かない。
             FrontendBackendSessionKind::Dvb { .. } => Ok(()),
         }
     }
@@ -485,6 +507,7 @@ pub fn run_frontend_backend_tune_worker_with_previous(
     plan: FrontendBackendTunePlan,
     previous_request: Option<FrontendTuneRequest>,
 ) -> Result<(), HalError> {
+    plan.validate_worker_generation(ctx.generation())?;
     let session = FrontendBackendSession::open_and_submit_with_previous(&plan, previous_request)?;
     while !ctx.cancel_requested() {
         thread::sleep(Duration::from_millis(20));
@@ -568,11 +591,13 @@ mod tests {
         };
         let plan = FrontendBackendTunePlan::new(
             7,
+            41,
             FrontendBackendKind::LinuxDvb,
             FrontendDevicePath::new("/dev/dvb/adapter0/frontend0"),
             request.clone(),
         );
         assert_eq!(plan.frontend_id, 7);
+        assert_eq!(plan.generation, 41);
         assert_eq!(plan.backend, FrontendBackendKind::LinuxDvb);
         assert_eq!(plan.device_path.display(), "/dev/dvb/adapter0/frontend0");
         assert_eq!(plan.request, request);
@@ -591,6 +616,7 @@ mod tests {
         };
         let plan = FrontendBackendTunePlan::new(
             8,
+            42,
             FrontendBackendKind::Px4CharDevice,
             FrontendDevicePath::new("/dev/px4video0"),
             request.clone(),
@@ -600,8 +626,56 @@ mod tests {
     }
 
     #[test]
+    fn tune_plan_detects_worker_generation_mismatch() {
+        let request = FrontendTuneRequest {
+            system: FrontendSystem::IsdbT,
+            frequency: 473_142_857,
+            end_frequency: None,
+            stream_id: None,
+            stream_id_kind: None,
+            bandwidth_hz: Some(6_000_000),
+            symbol_rate: None,
+        };
+        let plan = FrontendBackendTunePlan::new(
+            9,
+            55,
+            FrontendBackendKind::LinuxDvb,
+            FrontendDevicePath::new("/dev/dvb/adapter0/frontend0"),
+            request,
+        );
+        assert!(plan.validate_worker_generation(55).is_ok());
+        assert!(matches!(
+            plan.validate_worker_generation(56),
+            Err(HalError::Internal { .. })
+        ));
+    }
+
+    #[test]
+    fn backend_tune_txn_uses_plan_generation() {
+        let request = FrontendTuneRequest {
+            system: FrontendSystem::IsdbT,
+            frequency: 473_142_857,
+            end_frequency: None,
+            stream_id: None,
+            stream_id_kind: None,
+            bandwidth_hz: Some(6_000_000),
+            symbol_rate: None,
+        };
+        let plan = FrontendBackendTunePlan::new(
+            10,
+            77,
+            FrontendBackendKind::LinuxDvb,
+            FrontendDevicePath::new("/dev/dvb/adapter0/frontend0"),
+            request.clone(),
+        );
+        let txn = BackendTuneTxn::new(plan.frontend_id, plan.generation, request);
+        assert_eq!(txn.generation(), plan.generation);
+    }
+
+    #[test]
     fn submit_failure_preserves_original_error_kind() {
         let failure = FrontendBackendSubmitFailure {
+            generation: 99,
             error: HalError::IoctlFailed {
                 backend: "dvb",
                 path: None,

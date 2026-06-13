@@ -8,6 +8,7 @@ pub mod object_table;
 pub mod registry;
 pub mod runtime_handlers;
 pub mod runtime_result;
+pub mod transaction_registry;
 
 pub use boot::{
     start_frontend_demux_live_pump_from_reader, FrontendDemuxPacketSink, FrontendProbeOutcome,
@@ -28,10 +29,7 @@ pub use diagnostics::{
     CapabilitySuppressionReason, StartupDiagnosticKind, StartupDiagnosticPhase,
     StartupDiagnosticRecord,
 };
-pub use dispatch::{
-    dispatch_target_for, RuntimeDispatchEntry, ServiceRuntimeDispatchTarget,
-    SERVICE_RUNTIME_DISPATCH_TABLE,
-};
+pub use dispatch::{dispatch_target_for, ServiceRuntimeDispatchTarget};
 pub use object_table::{
     RuntimeObjectEntry, RuntimeObjectLifecycle, RuntimeObjectTable, RuntimeObjectTableError,
     RuntimeOwnerRelation,
@@ -42,10 +40,13 @@ pub use registry::{
 };
 pub use runtime_handlers::{
     all_runtime_transactions_are_classified, runtime_handler_coverage_for, RuntimeDispatchHandler,
-    RuntimeHandlerCoverageEntry, RUNTIME_HANDLER_COVERAGE_TABLE,
 };
 pub use runtime_result::{
     RuntimeHandlerCoverage, RuntimeHandlerError, RuntimeHandlerResult, RuntimeHandlerSuccess,
+};
+pub use transaction_registry::{
+    every_aidl_transaction_has_runtime_spec, runtime_transaction_specs, transaction_spec_for,
+    RuntimeDispatchTarget, RuntimeTransactionSpec, RUNTIME_TRANSACTION_SPECS,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -427,7 +428,11 @@ mod tests {
 
     #[test]
     fn command_plan_reaches_service_runtime_dispatch_target() {
-        let command_plan = AIDL_TRANSACTION_TABLE[0];
+        let command_plan = AIDL_TRANSACTION_TABLE
+            .iter()
+            .copied()
+            .find(|plan| plan.transaction == RuntimeTransactionName::FrontendTuneTxnApply)
+            .expect("frontend tune transaction exists");
         let plan =
             RuntimeCommandDispatcher::plan(command_plan, None).expect("dispatch target exists");
         assert_eq!(

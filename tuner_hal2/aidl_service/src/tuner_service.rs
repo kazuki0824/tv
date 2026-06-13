@@ -58,9 +58,12 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
 use binder::binder_impl::Binder;
 use binder::{BinderFeatures, Interface, Result as BinderResult, Status, Strong};
 use maleicacid_tuner_hal2_binder_adapter::{
-    AidlApi, AidlFailureSource, AidlInputField, AidlInputSnapshot, AidlMethodAdapter,
-    AidlMethodCall, AidlMethodPlan, AidlObjectGeneration, AidlObjectId, AidlObjectKind,
-    AidlStatusMapper, TunerStatusCode,
+    AidlApi, AidlFailureSource, AidlMethodAdapter, AidlMethodCall, AidlMethodPlan,
+    AidlObjectGeneration, AidlObjectId, AidlObjectKind, AidlStatusMapper, TunerStatusCode,
+    FilterReleaseAvHandleRequest, FilterSetDataSourceRequest, DvrFilterLinkRequest,
+    build_dvr_configure_request, build_dvr_open_request, build_filter_av_stream_type_request,
+    build_filter_delay_hint_request, build_filter_summary_for_open_type, build_lnb_satellite_position_request,
+    build_lnb_tone_request, build_lnb_voltage_request, build_open_filter_request,
 };
 use maleicacid_tuner_hal2_common::{
     is_japan_bs_if_frequency_hz, is_japan_cs110_if_frequency_hz,
@@ -68,7 +71,6 @@ use maleicacid_tuner_hal2_common::{
     FrontendBackendKind, FrontendDevicePath, FrontendScanMode, FrontendStreamIdKind,
     FrontendSystem, FrontendTuneRequest, HalError, HalInternalKind, HalInvalidArgumentKind,
 };
-use maleicacid_tuner_hal2_demux::packet_pipeline::PipelineOpenKind;
 use maleicacid_tuner_hal2_device::{
     FrontendBackendSession, FrontendBackendTunePlan, FrontendLivePumpJoinOutcome,
     FrontendRuntimeState, FrontendSignalState, FrontendWorkerCancelReason, FrontendWorkerContext,
@@ -86,11 +88,6 @@ use crate::descrambler_object::DescramblerAidlObject;
 use crate::dvr_object::DvrAidlObject;
 use crate::filter_object::FilterAidlObject;
 use crate::frontend_object::FrontendAidlObject;
-use crate::input_snapshot::{
-    snapshot_av_stream_type, snapshot_demux_open_dvr, snapshot_demux_open_filter,
-    snapshot_dvr_settings, snapshot_filter_delay_hint, snapshot_filter_settings,
-    snapshot_strong_handle,
-};
 use crate::lnb_object::LnbAidlObject;
 use crate::object_handle::AidlObjectHandle;
 use crate::object_runtime::SharedTunerRuntime;
@@ -554,7 +551,7 @@ impl ITuner for TunerAidlService {
         plan_tuner_query_method(
             self,
             AidlApi::TunerOpenFrontendById,
-            Some(snapshot_value("frontend_id", frontend_id.to_string())),
+            None,
         )?;
         {
             let runtime = self.lock_runtime()?;
@@ -588,7 +585,7 @@ impl ITuner for TunerAidlService {
             self,
             AidlApi::TunerGetDemuxCaps,
             None,
-            "demux capability is not implemented in WP-R03",
+            "demux capability runtime is not connected in current tuner_hal2 scope",
         )?;
         Err(status_unknown_error(
             "getDemuxCaps unavailable path unexpectedly returned success",
@@ -611,7 +608,7 @@ impl ITuner for TunerAidlService {
         plan_tuner_query_method(
             self,
             AidlApi::TunerGetFrontendInfo,
-            Some(snapshot_value("frontend_id", frontend_id.to_string())),
+            None,
         )?;
         let entry = self.frontend_entry(frontend_id)?;
         Ok(frontend_info_from_entry(&entry))
@@ -627,7 +624,7 @@ impl ITuner for TunerAidlService {
         plan_tuner_query_method(
             self,
             AidlApi::TunerOpenLnbById,
-            Some(snapshot_value("lnb_id", lnb_id.to_string())),
+            None,
         )?;
         let runtime = self.lock_runtime()?;
         if !runtime.has_lnb_id(lnb_id) {
@@ -648,7 +645,7 @@ impl ITuner for TunerAidlService {
         plan_tuner_query_method(
             self,
             AidlApi::TunerOpenLnbByName,
-            Some(snapshot_value("lnb_name", lnb_name)),
+            None,
         )?;
         let id = {
             let runtime = self.lock_runtime()?;
@@ -670,7 +667,7 @@ impl ITuner for TunerAidlService {
         unavailable_after_tuner_method_plan(
             self,
             AidlApi::TunerSetLna,
-            Some(snapshot_value("enable", b_enable.to_string())),
+            None,
             "LNA is unsupported",
         )
     }
@@ -680,13 +677,7 @@ impl ITuner for TunerAidlService {
         frontend_type: FrontendType,
         max_number: i32,
     ) -> BinderResult<()> {
-        let input = Some(snapshot_fields(
-            "SetMaxNumberOfFrontends",
-            vec![
-                AidlInputField::new("frontend_type", format!("{:?}", frontend_type)),
-                AidlInputField::new("max_number", max_number.to_string()),
-            ],
-        ));
+        let input = None;
         if max_number == 0 {
             plan_tuner_query_method(self, AidlApi::TunerSetMaxNumberOfFrontends, input)?;
             Ok(())
@@ -704,13 +695,7 @@ impl ITuner for TunerAidlService {
         plan_tuner_query_method(
             self,
             AidlApi::TunerGetMaxNumberOfFrontends,
-            Some(snapshot_fields(
-                "GetMaxNumberOfFrontends",
-                vec![AidlInputField::new(
-                    "frontend_type",
-                    format!("{:?}", frontend_type),
-                )],
-            )),
+            None,
         )?;
         Ok(0)
     }
@@ -730,7 +715,7 @@ impl ITuner for TunerAidlService {
         plan_tuner_query_method(
             self,
             AidlApi::TunerOpenDemuxById,
-            Some(snapshot_value("demux_id", demux_id.to_string())),
+            None,
         )?;
         let runtime = self.lock_runtime()?;
         if !runtime.has_demux_id(demux_id) {
@@ -746,7 +731,7 @@ impl ITuner for TunerAidlService {
         unavailable_after_tuner_method_plan(
             self,
             AidlApi::TunerGetDemuxInfo,
-            Some(snapshot_value("demux_id", demux_id.to_string())),
+            None,
             "demux info is not available",
         )?;
         Err(status_unknown_error(
@@ -1285,12 +1270,6 @@ fn start_frontend_backend_tune_worker_for_object(
     kind: FrontendWorkerKind,
 ) -> BinderResult<()> {
     let frontend_id = runtime_entry_public_id(runtime, handle, AidlObjectKind::Frontend)?;
-    let plan = FrontendBackendTunePlan::new(
-        frontend_id,
-        entry.backend,
-        FrontendDevicePath::new(entry.device_path.clone()),
-        request.clone(),
-    );
     let mut guard = runtime
         .lock()
         .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
@@ -1329,11 +1308,19 @@ fn start_frontend_backend_tune_worker_for_object(
             .map_err(status_from_hal_error)?;
         return Err(status_from_hal_error(error));
     }
+    let plan = FrontendBackendTunePlan::new(
+        frontend_id,
+        generation,
+        entry.backend,
+        FrontendDevicePath::new(entry.device_path.clone()),
+        request.clone(),
+    );
     let previous_tune_for_worker = snapshot.active_tune_request.clone();
     let frontend_snapshot_for_worker = snapshot.clone();
     let demux_snapshots_for_worker = demux_snapshots.clone();
     let runtime_for_worker = Arc::clone(runtime);
     if let Err(error) = guard.start_frontend_worker(frontend_id, kind, generation, move |ctx| {
+        plan.validate_worker_generation(ctx.generation())?;
         let session = match FrontendBackendSession::open_and_submit_with_previous_report(
             &plan,
             previous_tune_for_worker,
@@ -1405,7 +1392,14 @@ fn start_frontend_backend_tune_worker_for_object(
                 match owner.collect_if_finished() {
                     FrontendLivePumpJoinOutcome::Running => {}
                     FrontendLivePumpJoinOutcome::Completed(result) => {
-                        result?;
+                        let report = result?;
+                        let mut guard = runtime_for_worker.lock().map_err(|_| {
+                            HalError::internal(
+                                HalInternalKind::InvariantViolation,
+                                "service runtime lock poisoned while recording completed live pump report",
+                            )
+                        })?;
+                        guard.record_live_pump_report(frontend_id, generation, report, ctx.cancel_reason())?;
                         return session.stop();
                     }
                 }
@@ -1413,7 +1407,14 @@ fn start_frontend_backend_tune_worker_for_object(
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         if let Some(owner) = live_pump {
-            let _ = owner.join_after_stop()?;
+            let report = owner.join_after_stop()?;
+            let mut guard = runtime_for_worker.lock().map_err(|_| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "service runtime lock poisoned while recording stopped live pump report",
+                )
+            })?;
+            guard.record_live_pump_report(frontend_id, generation, report, ctx.cancel_reason())?;
         }
         session.stop()
     }) {
@@ -1450,10 +1451,12 @@ fn run_frontend_backend_scan_session_worker(
         }
         let plan = FrontendBackendTunePlan::new(
             ctx.frontend_id(),
+            ctx.generation(),
             backend,
             device_path.clone(),
             candidate,
         );
+        plan.validate_worker_generation(ctx.generation())?;
         let session = match FrontendBackendSession::open_and_submit_with_previous_report(
             &plan,
             previous_request.clone(),
@@ -1819,15 +1822,15 @@ fn unavailable_after_method_plan(
 fn unsupported_public_api_call(
     object: AidlObjectKind,
     api: AidlApi,
-    input: Option<AidlInputSnapshot>,
+    input: Option<()>,
 ) -> AidlMethodCall {
-    AidlMethodCall::UnsupportedPublicApi { object, api, input }
+    AidlMethodCall::UnsupportedPublicApi { object, api }
 }
 
 fn unavailable_after_tuner_method_plan(
     service: &TunerAidlService,
     api: AidlApi,
-    input: Option<AidlInputSnapshot>,
+    input: Option<()>,
     message: &'static str,
 ) -> BinderResult<()> {
     let method = unsupported_public_api_call(AidlObjectKind::Tuner, api, input);
@@ -1849,7 +1852,7 @@ fn unavailable_after_tuner_method_plan(
 fn plan_tuner_query_method(
     service: &TunerAidlService,
     api: AidlApi,
-    input: Option<AidlInputSnapshot>,
+    input: Option<()>,
 ) -> BinderResult<()> {
     let method = unsupported_public_api_call(AidlObjectKind::Tuner, api, input);
     let method_plan = AidlMethodAdapter::plan(method);
@@ -1864,14 +1867,6 @@ fn unavailable_after_object_public_api_plan(
     message: &'static str,
 ) -> BinderResult<()> {
     unavailable_after_method_plan(plan, message)
-}
-
-fn snapshot_value(source_type: &'static str, value: impl Into<String>) -> AidlInputSnapshot {
-    AidlInputSnapshot::single_field(source_type, "value", value.into())
-}
-
-fn snapshot_fields(source_type: &'static str, fields: Vec<AidlInputField>) -> AidlInputSnapshot {
-    AidlInputSnapshot::from_fields(source_type, fields)
 }
 
 fn runtime_entry_public_id(
@@ -1977,21 +1972,14 @@ fn allocate_dvr_public_runtime(
     Ok(entry.id.0)
 }
 
-fn open_kind_for_demux_filter_type(filter_type: &DemuxFilterType) -> PipelineOpenKind {
-    if filter_type.mainType != DemuxFilterMainType::TS {
-        return PipelineOpenKind::Other;
-    }
-    match &filter_type.subType {
-        DemuxFilterSubType::TsFilterType(ts_type) => match *ts_type {
-            DemuxTsFilterType::TS => PipelineOpenKind::Raw,
-            DemuxTsFilterType::SECTION => PipelineOpenKind::Section,
-            DemuxTsFilterType::PES => PipelineOpenKind::Pes,
-            DemuxTsFilterType::RECORD => PipelineOpenKind::Record,
-            DemuxTsFilterType::AUDIO | DemuxTsFilterType::VIDEO => PipelineOpenKind::Av,
-            _ => PipelineOpenKind::Other,
-        },
-        _ => PipelineOpenKind::Other,
-    }
+fn current_filter_open_type(filter: &FilterAidlObject) -> BinderResult<maleicacid_tuner_hal2_demux::FilterOpenType> {
+    let runtime = filter.runtime();
+    let public_id = runtime_entry_public_id(&runtime, filter.handle(), AidlObjectKind::Filter)?;
+    runtime
+        .lock()
+        .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
+        .filter_open_type(public_id)
+        .ok_or_else(|| service_error(TunerResult::INVALID_STATE.0, "filter runtime is missing"))
 }
 
 fn local_filter_handle_from_strong(filter: &Strong<dyn IFilter>) -> BinderResult<AidlObjectHandle> {
@@ -2035,11 +2023,7 @@ fn filter_entry_public_id_and_owner(
 
 impl IFrontend for FrontendAidlObject {
     fn setCallback(&self, callback: &Strong<dyn IFrontendCallback>) -> BinderResult<()> {
-        let snapshot = snapshot_fields(
-            "IFrontendCallback",
-            vec![AidlInputField::new("strong_present", "true")],
-        );
-        self.plan_method(AidlMethodCall::FrontendSetCallback(snapshot))?;
+        self.plan_method(AidlMethodCall::FrontendSetCallback)?;
         self.retain_callback(callback)
     }
     fn tune(&self, settings: &FrontendSettings) -> BinderResult<()> {
@@ -2113,10 +2097,7 @@ impl IFrontend for FrontendAidlObject {
         self.plan_method(unsupported_public_api_call(
             AidlObjectKind::Frontend,
             AidlApi::FrontendGetStatus,
-            Some(snapshot_fields(
-                "FrontendStatusTypes",
-                vec![AidlInputField::new("count", status_types.len().to_string())],
-            )),
+            None,
         ))?;
         let entry = runtime_frontend_entry_for_object(&self.runtime(), self.handle())?;
         let signal_state = frontend_signal_state_for_object(&self.runtime(), self.handle())?;
@@ -2148,9 +2129,9 @@ impl IFrontend for FrontendAidlObject {
             self.plan_method(unsupported_public_api_call(
                 AidlObjectKind::Frontend,
                 AidlApi::FrontendSetLnb,
-                Some(snapshot_value("lnb_id", lnb_id.to_string())),
+                None,
             )),
-            "frontend LNB backend binding is not implemented in this WP",
+            "frontend LNB backend binding is not connected in current tuner_hal2 scope",
         )
     }
     fn linkCiCam(&self, ci_cam_id: i32) -> BinderResult<i32> {
@@ -2158,7 +2139,7 @@ impl IFrontend for FrontendAidlObject {
             self.plan_method(unsupported_public_api_call(
                 AidlObjectKind::Frontend,
                 AidlApi::FrontendLinkCiCam,
-                Some(snapshot_value("ci_cam_id", ci_cam_id.to_string())),
+                None,
             )),
             "CI CAM is unsupported",
         )?;
@@ -2171,7 +2152,7 @@ impl IFrontend for FrontendAidlObject {
             self.plan_method(unsupported_public_api_call(
                 AidlObjectKind::Frontend,
                 AidlApi::FrontendUnlinkCiCam,
-                Some(snapshot_value("ci_cam_id", ci_cam_id.to_string())),
+                None,
             )),
             "CI CAM is unsupported",
         )
@@ -2194,7 +2175,7 @@ impl IFrontend for FrontendAidlObject {
             self.plan_method(unsupported_public_api_call(
                 AidlObjectKind::Frontend,
                 AidlApi::FrontendRemoveOutputPid,
-                Some(snapshot_value("pid", pid.to_string())),
+                None,
             )),
             "frontend output PID removal is unsupported",
         )
@@ -2207,10 +2188,7 @@ impl IFrontend for FrontendAidlObject {
         self.plan_method(unsupported_public_api_call(
             AidlObjectKind::Frontend,
             AidlApi::FrontendGetFrontendStatusReadiness,
-            Some(snapshot_fields(
-                "FrontendStatusReadiness",
-                vec![AidlInputField::new("count", status_types.len().to_string())],
-            )),
+            None,
         ))?;
         let entry = runtime_frontend_entry_for_object(&self.runtime(), self.handle())?;
         let runtime_state = frontend_runtime_state_for_object(&self.runtime(), self.handle())?;
@@ -2227,10 +2205,7 @@ impl IFrontend for FrontendAidlObject {
 impl IDemux for DemuxAidlObject {
     fn setFrontendDataSource(&self, frontend_id: i32) -> BinderResult<()> {
         self.ensure_open()?;
-        self.plan_method(AidlMethodCall::DemuxSetFrontendDataSource(snapshot_fields(
-            "DemuxSetFrontendDataSource",
-            vec![AidlInputField::new("frontend_id", frontend_id.to_string())],
-        )))?;
+        self.plan_method(AidlMethodCall::DemuxSetFrontendDataSource { frontend_id })?;
         let runtime = self.runtime();
         let demux_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Demux)?;
         runtime
@@ -2247,8 +2222,8 @@ impl IDemux for DemuxAidlObject {
         _cb: &Strong<dyn IFilterCallback>,
     ) -> BinderResult<Strong<dyn IFilter>> {
         self.ensure_open()?;
-        let snapshot = snapshot_demux_open_filter(filter_type, buffer_size, true);
-        self.plan_method(AidlMethodCall::DemuxOpenFilter(snapshot))?;
+        let open_request = build_open_filter_request(filter_type, buffer_size, true).map_err(status_from_hal_error)?;
+        self.plan_method(AidlMethodCall::DemuxOpenFilter(maleicacid_tuner_hal2_binder_adapter::RuntimeExecutableRequest::OpenFilter(open_request.clone())))?;
         let runtime = self.runtime();
         let owner_demux_id =
             runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Demux)?;
@@ -2259,7 +2234,7 @@ impl IDemux for DemuxAidlObject {
             .register_demux_filter_runtime(
                 owner_demux_id,
                 filter_id,
-                open_kind_for_demux_filter_type(filter_type),
+                open_request.open_type,
             )
         {
             unregister_child_public_runtime(&runtime, AidlObjectKind::Filter, filter_id)?;
@@ -2304,9 +2279,9 @@ impl IDemux for DemuxAidlObject {
             self.plan_method(unsupported_public_api_call(
                 AidlObjectKind::Demux,
                 AidlApi::DemuxGetAvSyncHwId,
-                Some(snapshot_strong_handle("IFilter")),
+                None,
             )),
-            "AV sync is not implemented in WP-R03",
+            "AV sync is not connected in current tuner_hal2 scope",
         )?;
         Err(status_unknown_error(
             "getAvSyncHwId unavailable path unexpectedly returned success",
@@ -2317,9 +2292,9 @@ impl IDemux for DemuxAidlObject {
             self.plan_method(unsupported_public_api_call(
                 AidlObjectKind::Demux,
                 AidlApi::DemuxGetAvSyncTime,
-                Some(snapshot_value("av_sync_hw_id", av_sync_hw_id.to_string())),
+                None,
             )),
-            "AV sync is not implemented in WP-R03",
+            "AV sync is not connected in current tuner_hal2 scope",
         )?;
         Err(status_unknown_error(
             "getAvSyncTime unavailable path unexpectedly returned success",
@@ -2335,8 +2310,8 @@ impl IDemux for DemuxAidlObject {
         _cb: &Strong<dyn IDvrCallback>,
     ) -> BinderResult<Strong<dyn IDvr>> {
         self.ensure_open()?;
-        let snapshot = snapshot_demux_open_dvr(dvr_type, buffer_size, true);
-        self.plan_method(AidlMethodCall::DemuxOpenDvr(snapshot))?;
+        let request = build_dvr_open_request(dvr_type, buffer_size).map_err(status_from_hal_error)?;
+        self.plan_method(AidlMethodCall::DemuxOpenDvr(request))?;
         let runtime = self.runtime();
         let owner_demux_id =
             runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Demux)?;
@@ -2367,7 +2342,7 @@ impl IDemux for DemuxAidlObject {
             self.plan_method(unsupported_public_api_call(
                 AidlObjectKind::Demux,
                 AidlApi::DemuxConnectCiCam,
-                Some(snapshot_value("ci_cam_id", ci_cam_id.to_string())),
+                None,
             )),
             "CI CAM is unsupported",
         )
@@ -2388,7 +2363,7 @@ impl IFilter for FilterAidlObject {
     fn getQueueDesc(&self, _queue: &mut TunerQueueDesc) -> BinderResult<()> {
         unavailable_after_method_plan(
             self.plan_method(AidlMethodCall::FilterGetQueueDesc),
-            "FMQ runtime is not implemented in WP-R03",
+            "FMQ runtime is not connected in current tuner_hal2 scope",
         )
     }
     fn close(&self) -> BinderResult<()> {
@@ -2396,36 +2371,26 @@ impl IFilter for FilterAidlObject {
     }
     fn configure(&self, _settings: &DemuxFilterSettings) -> BinderResult<()> {
         unavailable_after_method_plan(
-            self.plan_method(AidlMethodCall::FilterConfigure(snapshot_filter_settings(
-                _settings,
-            ))),
-            "filter runtime is not implemented in WP-R03",
+            self.plan_method(AidlMethodCall::FilterConfigure(maleicacid_tuner_hal2_binder_adapter::RuntimeExecutableRequest::ConfigureFilter(build_filter_summary_for_open_type(_settings, current_filter_open_type(self)?)
+                .map_err(status_from_hal_error)?))),
+            "filter runtime is not connected in current tuner_hal2 scope",
         )
     }
-    fn configureAvStreamType(&self, _av_stream_type: &AvStreamType) -> BinderResult<()> {
+    fn configureAvStreamType(&self, av_stream_type: &AvStreamType) -> BinderResult<()> {
+        let request = build_filter_av_stream_type_request(av_stream_type).map_err(status_from_hal_error)?;
         unavailable_after_method_plan(
-            self.plan_method(AidlMethodCall::FilterConfigureAvStreamType(
-                snapshot_av_stream_type(_av_stream_type),
-            )),
-            "AV stream configuration runtime is not implemented in WP-R03",
+            self.plan_method(AidlMethodCall::FilterConfigureAvStreamType(request)),
+            "AV stream configuration runtime is not connected in current tuner_hal2 scope",
         )
     }
     fn configureIpCid(&self, ip_cid: i32) -> BinderResult<()> {
         unavailable_after_method_plan(
-            self.plan_method(AidlMethodCall::FilterConfigure(
-                AidlInputSnapshot::single_field("ipCid", "ip_cid", ip_cid.to_string()),
-            )),
+            self.plan_method(AidlMethodCall::FilterConfigure(maleicacid_tuner_hal2_binder_adapter::RuntimeExecutableRequest::UnsupportedProfile { reason: "IP CID filtering is outside the TS-only tuner_hal2 profile" })),
             "IP CID filtering is outside the TS-only tuner_hal2 profile",
         )
     }
     fn configureMonitorEvent(&self, monitor_event_types: i32) -> BinderResult<()> {
-        let plan = self.plan_method(AidlMethodCall::FilterConfigure(
-            AidlInputSnapshot::single_field(
-                "monitorEventTypes",
-                "monitor_event_types",
-                monitor_event_types.to_string(),
-            ),
-        ))?;
+        let plan = self.plan_method(AidlMethodCall::FilterConfigure(maleicacid_tuner_hal2_binder_adapter::RuntimeExecutableRequest::UnsupportedProfile { reason: "monitor event filtering is outside the TS-only tuner_hal2 profile" }))?;
         if monitor_event_types == 0 {
             drop(plan);
             Ok(())
@@ -2439,25 +2404,25 @@ impl IFilter for FilterAidlObject {
     fn start(&self) -> BinderResult<()> {
         unavailable_after_method_plan(
             self.plan_method(AidlMethodCall::FilterStart),
-            "filter runtime is not implemented in WP-R03",
+            "filter runtime is not connected in current tuner_hal2 scope",
         )
     }
     fn stop(&self) -> BinderResult<()> {
         unavailable_after_method_plan(
             self.plan_method(AidlMethodCall::FilterStop),
-            "filter runtime is not implemented in WP-R03",
+            "filter runtime is not connected in current tuner_hal2 scope",
         )
     }
     fn flush(&self) -> BinderResult<()> {
         unavailable_after_method_plan(
             self.plan_method(AidlMethodCall::FilterFlush),
-            "filter runtime is not implemented in WP-R03",
+            "filter runtime is not connected in current tuner_hal2 scope",
         )
     }
     fn getAvSharedHandle(&self, _av_memory: &mut TunerNativeHandle) -> BinderResult<i64> {
         unavailable_after_method_plan(
             self.plan_method(AidlMethodCall::FilterGetAvSharedHandle),
-            "AV shared memory is not implemented in WP-R03",
+            "AV shared memory is not connected in current tuner_hal2 scope",
         )?;
         Err(status_unknown_error(
             "getAvSharedHandle unavailable path unexpectedly returned success",
@@ -2474,21 +2439,12 @@ impl IFilter for FilterAidlObject {
     }
     fn releaseAvHandle(&self, _av_memory: &TunerNativeHandle, av_data_id: i64) -> BinderResult<()> {
         unavailable_after_method_plan(
-            self.plan_method(AidlMethodCall::FilterReleaseAvHandle(snapshot_fields(
-                "releaseAvHandle",
-                vec![
-                    AidlInputField::new("av_data_id", av_data_id.to_string()),
-                    AidlInputField::new("native_handle_present", "true"),
-                ],
-            ))),
-            "AV shared memory is not implemented in WP-R03",
+            self.plan_method(AidlMethodCall::FilterReleaseAvHandle(FilterReleaseAvHandleRequest { av_data_id })),
+            "AV shared memory is not connected in current tuner_hal2 scope",
         )
     }
     fn setDataSource(&self, filter: &Strong<dyn IFilter>) -> BinderResult<()> {
         self.ensure_open()?;
-        self.plan_method(AidlMethodCall::FilterSetDataSource(snapshot_strong_handle(
-            "IFilter",
-        )))?;
         let runtime = self.runtime();
         let sink_handle = self.handle();
         let source_handle = local_filter_handle_from_strong(filter)?;
@@ -2527,6 +2483,10 @@ impl IFilter for FilterAidlObject {
             i32::try_from(demux_entry.ledger_id.0)
                 .map_err(|_| status_unknown_error("demux runtime id out of i32 range"))?
         };
+        self.plan_method(AidlMethodCall::FilterSetDataSource(FilterSetDataSourceRequest {
+            source_filter_id: source_handle.object_id().0,
+            source_filter_generation: source_handle.generation().0,
+        }))?;
         runtime
             .lock()
             .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
@@ -2534,12 +2494,11 @@ impl IFilter for FilterAidlObject {
             .map_err(status_from_hal_error)?;
         Ok(())
     }
-    fn setDelayHint(&self, _hint: &FilterDelayHint) -> BinderResult<()> {
+    fn setDelayHint(&self, hint: &FilterDelayHint) -> BinderResult<()> {
+        let request = build_filter_delay_hint_request(hint).map_err(status_from_hal_error)?;
         unavailable_after_method_plan(
-            self.plan_method(AidlMethodCall::FilterSetDelayHint(
-                snapshot_filter_delay_hint(_hint),
-            )),
-            "filter delay runtime is not implemented in WP-R03",
+            self.plan_method(AidlMethodCall::FilterSetDelayHint(request)),
+            "filter delay runtime is not connected in current tuner_hal2 scope",
         )
     }
 }
@@ -2548,49 +2507,56 @@ impl IDvr for DvrAidlObject {
     fn getQueueDesc(&self, _queue: &mut TunerQueueDesc) -> BinderResult<()> {
         unavailable_after_method_plan(
             self.plan_method(AidlMethodCall::DvrGetQueueDesc),
-            "DVR FMQ runtime is not implemented in WP-R03",
+            "DVR FMQ runtime is not connected in current tuner_hal2 scope",
         )
     }
-    fn configure(&self, _settings: &DvrSettings) -> BinderResult<()> {
+    fn configure(&self, settings: &DvrSettings) -> BinderResult<()> {
+        let request = build_dvr_configure_request(settings).map_err(status_from_hal_error)?;
         unavailable_after_method_plan(
-            self.plan_method(AidlMethodCall::DvrConfigure(snapshot_dvr_settings(
-                _settings,
-            ))),
-            "DVR runtime is not implemented in WP-R03",
+            self.plan_method(AidlMethodCall::DvrConfigure(request)),
+            "DVR runtime is not connected in current tuner_hal2 scope",
         )
     }
-    fn attachFilter(&self, _filter: &Strong<dyn IFilter>) -> BinderResult<()> {
+    fn attachFilter(&self, filter: &Strong<dyn IFilter>) -> BinderResult<()> {
+        self.ensure_open()?;
+        let filter_handle = local_filter_handle_from_strong(filter)?;
+        let request = DvrFilterLinkRequest {
+            filter_id: filter_handle.object_id().0,
+            filter_generation: filter_handle.generation().0,
+        };
         unavailable_after_method_plan(
-            self.plan_method(AidlMethodCall::DvrAttachFilter(snapshot_strong_handle(
-                "IFilter",
-            ))),
-            "DVR runtime is not implemented in WP-R03",
+            self.plan_method(AidlMethodCall::DvrAttachFilter(request)),
+            "DVR runtime is not connected in current tuner_hal2 scope",
         )
     }
-    fn detachFilter(&self, _filter: &Strong<dyn IFilter>) -> BinderResult<()> {
+    fn detachFilter(&self, filter: &Strong<dyn IFilter>) -> BinderResult<()> {
+        self.ensure_open()?;
+        let filter_handle = local_filter_handle_from_strong(filter)?;
+        let request = DvrFilterLinkRequest {
+            filter_id: filter_handle.object_id().0,
+            filter_generation: filter_handle.generation().0,
+        };
         unavailable_after_method_plan(
-            self.plan_method(AidlMethodCall::DvrDetachFilter(snapshot_strong_handle(
-                "IFilter",
-            ))),
-            "DVR runtime is not implemented in WP-R03",
+            self.plan_method(AidlMethodCall::DvrDetachFilter(request)),
+            "DVR runtime is not connected in current tuner_hal2 scope",
         )
     }
     fn start(&self) -> BinderResult<()> {
         unavailable_after_method_plan(
             self.plan_method(AidlMethodCall::DvrStart),
-            "DVR runtime is not implemented in WP-R03",
+            "DVR runtime is not connected in current tuner_hal2 scope",
         )
     }
     fn stop(&self) -> BinderResult<()> {
         unavailable_after_method_plan(
             self.plan_method(AidlMethodCall::DvrStop),
-            "DVR runtime is not implemented in WP-R03",
+            "DVR runtime is not connected in current tuner_hal2 scope",
         )
     }
     fn flush(&self) -> BinderResult<()> {
         unavailable_after_method_plan(
             self.plan_method(AidlMethodCall::DvrFlush),
-            "DVR runtime is not implemented in WP-R03",
+            "DVR runtime is not connected in current tuner_hal2 scope",
         )
     }
     fn close(&self) -> BinderResult<()> {
@@ -2599,7 +2565,7 @@ impl IDvr for DvrAidlObject {
     fn setStatusCheckIntervalHint(&self, milliseconds: i64) -> BinderResult<()> {
         unavailable_after_method_plan(
             self.plan_method(AidlMethodCall::DvrSetStatusCheckIntervalHint(milliseconds)),
-            "DVR callback runtime is not implemented in WP-R03",
+            "DVR callback runtime is not connected in current tuner_hal2 scope",
         )
     }
 }
@@ -2608,13 +2574,13 @@ impl IDescrambler for DescramblerAidlObject {
     fn setDemuxSource(&self, demux_id: i32) -> BinderResult<()> {
         unavailable_after_method_plan(
             self.plan_method(AidlMethodCall::DescramblerSetDemuxSource(demux_id)),
-            "descrambler runtime is not implemented in WP-R03",
+            "descrambler runtime is not connected in current tuner_hal2 scope",
         )
     }
     fn setKeyToken(&self, key_token: &[u8]) -> BinderResult<()> {
         unavailable_after_method_plan(
             self.plan_method(AidlMethodCall::DescramblerSetKeyToken(key_token.to_vec())),
-            "descrambler key runtime is not implemented in WP-R03",
+            "descrambler key runtime is not connected in current tuner_hal2 scope",
         )
     }
     fn addPid(
@@ -2626,7 +2592,7 @@ impl IDescrambler for DescramblerAidlObject {
         let pid = ts_pid_from_demux_pid(pid).map_err(status_from_hal_error)?;
         unavailable_after_method_plan(
             self.plan_method(AidlMethodCall::DescramblerAddPid(pid)),
-            "descrambler PID runtime is not implemented in WP-R03",
+            "descrambler PID runtime is not connected in current tuner_hal2 scope",
         )
     }
     fn removePid(
@@ -2638,7 +2604,7 @@ impl IDescrambler for DescramblerAidlObject {
         let pid = ts_pid_from_demux_pid(pid).map_err(status_from_hal_error)?;
         unavailable_after_method_plan(
             self.plan_method(AidlMethodCall::DescramblerRemovePid(pid)),
-            "descrambler PID runtime is not implemented in WP-R03",
+            "descrambler PID runtime is not connected in current tuner_hal2 scope",
         )
     }
     fn close(&self) -> BinderResult<()> {
@@ -2648,43 +2614,34 @@ impl IDescrambler for DescramblerAidlObject {
 
 impl ILnb for LnbAidlObject {
     fn setCallback(&self, callback: &Strong<dyn ILnbCallback>) -> BinderResult<()> {
-        self.plan_method(AidlMethodCall::LnbSetCallback(snapshot_fields(
-            "ILnbCallback",
-            vec![AidlInputField::new("strong_present", "true")],
-        )))?;
+        self.plan_method(AidlMethodCall::LnbSetCallback)?;
         self.retain_callback(callback)
     }
-    fn setVoltage(&self, _voltage: LnbVoltage) -> BinderResult<()> {
+    fn setVoltage(&self, voltage: LnbVoltage) -> BinderResult<()> {
+        let request = build_lnb_voltage_request(voltage).map_err(status_from_hal_error)?;
         unavailable_after_method_plan(
-            self.plan_method(AidlMethodCall::LnbSetVoltage(snapshot_fields(
-                "LnbVoltage",
-                vec![AidlInputField::new("voltage", format!("{:?}", _voltage))],
-            ))),
-            "LNB runtime is not implemented in WP-R03",
+            self.plan_method(AidlMethodCall::LnbSetVoltage(request)),
+            "LNB runtime is not connected in current tuner_hal2 scope",
         )
     }
-    fn setTone(&self, _tone: LnbTone) -> BinderResult<()> {
+    fn setTone(&self, tone: LnbTone) -> BinderResult<()> {
+        let request = build_lnb_tone_request(tone).map_err(status_from_hal_error)?;
         unavailable_after_method_plan(
-            self.plan_method(AidlMethodCall::LnbSetTone(snapshot_fields(
-                "LnbTone",
-                vec![AidlInputField::new("tone", format!("{:?}", _tone))],
-            ))),
-            "LNB runtime is not implemented in WP-R03",
+            self.plan_method(AidlMethodCall::LnbSetTone(request)),
+            "LNB runtime is not connected in current tuner_hal2 scope",
         )
     }
-    fn setSatellitePosition(&self, _position: LnbPosition) -> BinderResult<()> {
+    fn setSatellitePosition(&self, position: LnbPosition) -> BinderResult<()> {
+        let request = build_lnb_satellite_position_request(position).map_err(status_from_hal_error)?;
         unavailable_after_method_plan(
-            self.plan_method(AidlMethodCall::LnbSetSatellitePosition(snapshot_fields(
-                "LnbPosition",
-                vec![AidlInputField::new("position", format!("{:?}", _position))],
-            ))),
-            "LNB runtime is not implemented in WP-R03",
+            self.plan_method(AidlMethodCall::LnbSetSatellitePosition(request)),
+            "LNB runtime is not connected in current tuner_hal2 scope",
         )
     }
     fn sendDiseqcMessage(&self, diseqc_message: &[u8]) -> BinderResult<()> {
         unavailable_after_method_plan(
             self.plan_method(AidlMethodCall::LnbSendDiseqc(diseqc_message.to_vec())),
-            "DiSEqC runtime is not implemented in WP-R03",
+            "DiSEqC runtime is not connected in current tuner_hal2 scope",
         )
     }
     fn close(&self) -> BinderResult<()> {

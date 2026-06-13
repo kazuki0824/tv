@@ -2,7 +2,7 @@ use maleicacid_tuner_hal2_common::{
     FrontendBackendKind, FrontendTuneRequest, HalError, HalInternalKind,
 };
 
-use super::{FrontendLiveReaderDescriptor, FrontendScanSession, FrontendWorkerCancelReason};
+use super::{FrontendLivePumpReport, FrontendLiveReaderDescriptor, FrontendScanSession, FrontendWorkerCancelReason};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FrontendRuntimeState {
@@ -56,6 +56,62 @@ pub struct FrontendTerminalEvent {
     pub reason: FrontendTerminalEventReason,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrontendLivePumpTerminalReason {
+    Eof,
+    Cancelled,
+    Stopped,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrontendLivePumpJoinResult {
+    Joined,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FrontendLivePumpDiagnostic {
+    pub generation: u64,
+    pub packets_delivered: u64,
+    pub malformed_bytes: u64,
+    pub stopped_by_cancel: bool,
+    pub reached_eof: bool,
+    pub cancel_reason: Option<FrontendWorkerCancelReason>,
+    pub terminal_reason: FrontendLivePumpTerminalReason,
+    pub join_result: FrontendLivePumpJoinResult,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FrontendDiagnosticWriteFailure {
+    pub generation: u64,
+    pub detail: String,
+}
+
+impl FrontendLivePumpDiagnostic {
+    pub fn from_report(
+        generation: u64,
+        report: FrontendLivePumpReport,
+        cancel_reason: Option<FrontendWorkerCancelReason>,
+    ) -> Self {
+        let terminal_reason = if report.reached_eof {
+            FrontendLivePumpTerminalReason::Eof
+        } else if report.stopped_by_cancel {
+            FrontendLivePumpTerminalReason::Cancelled
+        } else {
+            FrontendLivePumpTerminalReason::Stopped
+        };
+        Self {
+            generation,
+            packets_delivered: report.packets_delivered,
+            malformed_bytes: report.malformed_bytes,
+            stopped_by_cancel: report.stopped_by_cancel,
+            reached_eof: report.reached_eof,
+            cancel_reason,
+            terminal_reason,
+            join_result: FrontendLivePumpJoinResult::Joined,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FrontendRuntimeSnapshot {
     pub state: FrontendRuntimeState,
@@ -63,6 +119,8 @@ pub struct FrontendRuntimeSnapshot {
     pub live_reader_descriptor: Option<FrontendLiveReaderDescriptor>,
     pub terminal_event_min_generation: u64,
     pub terminal_events: Vec<FrontendTerminalEvent>,
+    pub live_pump_reports: Vec<FrontendLivePumpDiagnostic>,
+    pub diagnostic_write_failures: Vec<FrontendDiagnosticWriteFailure>,
     pub scan_session: Option<FrontendScanSession>,
     pub last_error: Option<HalError>,
     pub active_tune_request: Option<FrontendTuneRequest>,
@@ -78,6 +136,8 @@ pub struct FrontendRuntime {
     live_reader_descriptor: Option<FrontendLiveReaderDescriptor>,
     terminal_event_min_generation: u64,
     terminal_events: Vec<FrontendTerminalEvent>,
+    live_pump_reports: Vec<FrontendLivePumpDiagnostic>,
+    diagnostic_write_failures: Vec<FrontendDiagnosticWriteFailure>,
     scan_session: Option<FrontendScanSession>,
     last_error: Option<HalError>,
     active_tune_request: Option<FrontendTuneRequest>,
@@ -94,6 +154,8 @@ impl FrontendRuntime {
             live_reader_descriptor: None,
             terminal_event_min_generation: 0,
             terminal_events: Vec::new(),
+            live_pump_reports: Vec::new(),
+            diagnostic_write_failures: Vec::new(),
             scan_session: None,
             last_error: None,
             active_tune_request: None,
@@ -149,6 +211,12 @@ impl FrontendRuntime {
     pub fn terminal_events(&self) -> &[FrontendTerminalEvent] {
         &self.terminal_events
     }
+    pub fn live_pump_reports(&self) -> &[FrontendLivePumpDiagnostic] {
+        &self.live_pump_reports
+    }
+    pub fn diagnostic_write_failures(&self) -> &[FrontendDiagnosticWriteFailure] {
+        &self.diagnostic_write_failures
+    }
     pub fn active_scan_session(&self) -> Option<&FrontendScanSession> {
         self.scan_session.as_ref()
     }
@@ -169,6 +237,8 @@ impl FrontendRuntime {
             live_reader_descriptor: self.live_reader_descriptor.clone(),
             terminal_event_min_generation: self.terminal_event_min_generation,
             terminal_events: self.terminal_events.clone(),
+            live_pump_reports: self.live_pump_reports.clone(),
+            diagnostic_write_failures: self.diagnostic_write_failures.clone(),
             scan_session: self.scan_session.clone(),
             last_error: self.last_error.clone(),
             active_tune_request: self.active_tune_request.clone(),
@@ -182,6 +252,8 @@ impl FrontendRuntime {
         self.live_reader_descriptor = snapshot.live_reader_descriptor;
         self.terminal_event_min_generation = snapshot.terminal_event_min_generation;
         self.terminal_events = snapshot.terminal_events;
+        self.live_pump_reports = snapshot.live_pump_reports;
+        self.diagnostic_write_failures = snapshot.diagnostic_write_failures;
         self.scan_session = snapshot.scan_session;
         self.last_error = snapshot.last_error;
         self.active_tune_request = snapshot.active_tune_request;
@@ -200,6 +272,33 @@ impl FrontendRuntime {
             ));
         }
         self.signal_state = signal_state;
+        Ok(())
+    }
+
+    pub fn record_live_pump_report(
+        &mut self,
+        generation: u64,
+        report: FrontendLivePumpReport,
+        cancel_reason: Option<FrontendWorkerCancelReason>,
+    ) -> Result<(), HalError> {
+        if generation != self.generation {
+            let detail = format!(
+                "DiagnosticWriteFailed: live pump report generation mismatch: report={} runtime={}",
+                generation, self.generation
+            );
+            self.diagnostic_write_failures.push(FrontendDiagnosticWriteFailure {
+                generation,
+                detail: detail.clone(),
+            });
+            let error = HalError::internal(HalInternalKind::InvariantViolation, detail);
+            self.last_error = Some(error.clone());
+            return Err(error);
+        }
+        self.live_pump_reports.push(FrontendLivePumpDiagnostic::from_report(
+            generation,
+            report,
+            cancel_reason,
+        ));
         Ok(())
     }
 
@@ -491,6 +590,83 @@ mod tests {
         assert_eq!(runtime.checked_next_generation().unwrap(), 1);
         assert_eq!(runtime.generation(), 0);
         assert_eq!(runtime.state(), FrontendRuntimeState::Idle);
+    }
+    #[test]
+    fn live_pump_report_is_recorded_as_frontend_diagnostic() {
+        let mut runtime = FrontendRuntime::new(7, FrontendBackendKind::Px4CharDevice);
+        runtime.commit_generation(1).unwrap();
+        runtime.mark_tuning(1);
+        runtime
+            .record_live_pump_report(
+                1,
+                FrontendLivePumpReport {
+                    packets_delivered: 3,
+                    malformed_bytes: 2,
+                    read_retries: 0,
+                    read_retry_counter_saturated: false,
+                    stopped_by_cancel: false,
+                    reached_eof: true,
+                },
+                None,
+            )
+            .unwrap();
+        let report = &runtime.live_pump_reports()[0];
+        assert_eq!(report.packets_delivered, 3);
+        assert_eq!(report.malformed_bytes, 2);
+        assert_eq!(report.cancel_reason, None);
+        assert_eq!(report.terminal_reason, FrontendLivePumpTerminalReason::Eof);
+        assert_eq!(report.join_result, FrontendLivePumpJoinResult::Joined);
+    }
+
+    #[test]
+    fn live_pump_report_records_cancel_reason_and_malformed_count() {
+        let mut runtime = FrontendRuntime::new(7, FrontendBackendKind::Px4CharDevice);
+        runtime.commit_generation(3).unwrap();
+        runtime.mark_tuning(3);
+        runtime
+            .record_live_pump_report(
+                3,
+                FrontendLivePumpReport {
+                    packets_delivered: 5,
+                    malformed_bytes: 9,
+                    read_retries: 0,
+                    read_retry_counter_saturated: false,
+                    stopped_by_cancel: true,
+                    reached_eof: false,
+                },
+                Some(FrontendWorkerCancelReason::SupersededByNewRequest),
+            )
+            .unwrap();
+        let report = &runtime.live_pump_reports()[0];
+        assert_eq!(report.packets_delivered, 5);
+        assert_eq!(report.malformed_bytes, 9);
+        assert_eq!(
+            report.cancel_reason,
+            Some(FrontendWorkerCancelReason::SupersededByNewRequest)
+        );
+        assert_eq!(report.terminal_reason, FrontendLivePumpTerminalReason::Cancelled);
+    }
+
+    #[test]
+    fn live_pump_report_write_failure_is_diagnostic_not_silent() {
+        let mut runtime = FrontendRuntime::new(7, FrontendBackendKind::Px4CharDevice);
+        runtime.commit_generation(2).unwrap();
+        runtime.mark_tuning(2);
+        let result = runtime.record_live_pump_report(
+            1,
+            FrontendLivePumpReport {
+                packets_delivered: 0,
+                malformed_bytes: 4,
+                read_retries: 0,
+                read_retry_counter_saturated: false,
+                stopped_by_cancel: true,
+                reached_eof: false,
+            },
+            Some(FrontendWorkerCancelReason::StopRequested),
+        );
+        assert!(result.is_err());
+        assert_eq!(runtime.diagnostic_write_failures().len(), 1);
+        assert!(matches!(runtime.last_error(), Some(HalError::Internal { .. })));
     }
     #[test]
     fn new_generation_invalidates_old_terminal_events() {

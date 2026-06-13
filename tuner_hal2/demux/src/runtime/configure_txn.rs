@@ -1,4 +1,4 @@
-use super::demux::{DemuxRuntime, DemuxRuntimeError};
+use super::demux::{DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind};
 use super::dvr::DvrRuntimeSnapshot;
 use super::filter::FilterRuntimeSnapshot;
 use crate::packet_pipeline::{FilterPipelineConfig, PipelineOpenKind};
@@ -33,6 +33,7 @@ pub enum DvrConfigureStep {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FilterConfigureOutcome {
     Committed,
+    Failed { failed_step: FilterConfigureStep },
     RolledBack { failed_step: FilterConfigureStep },
     Quarantined { failed_step: FilterConfigureStep },
 }
@@ -40,6 +41,7 @@ pub enum FilterConfigureOutcome {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DvrConfigureOutcome {
     Committed,
+    Failed { failed_step: DvrConfigureStep },
     RolledBack { failed_step: DvrConfigureStep },
     Quarantined { failed_step: DvrConfigureStep },
 }
@@ -142,6 +144,12 @@ impl FilterConfigureTxn {
         }
         self.record_step(FilterConfigureStep::ApplySoftDemuxConfig);
         if let Err(err) = demux.configure_filter_runtime(self.filter_id, config) {
+            if err.kind == DemuxRuntimeErrorKind::GenerationExhausted {
+                self.outcome = Some(FilterConfigureOutcome::Failed {
+                    failed_step: FilterConfigureStep::ApplySoftDemuxConfig,
+                });
+                return (self, Err(err));
+            }
             self.record_step(FilterConfigureStep::RollbackSoftDemuxConfig);
             if demux
                 .restore_filter_snapshot(self.filter_id, snapshot)
@@ -214,6 +222,12 @@ impl DvrConfigureTxn {
         }
         self.record_step(DvrConfigureStep::ApplySoftDemuxConfig);
         if let Err(err) = demux.configure_dvr_runtime(self.dvr_id) {
+            if err.kind == DemuxRuntimeErrorKind::GenerationExhausted {
+                self.outcome = Some(DvrConfigureOutcome::Failed {
+                    failed_step: DvrConfigureStep::ApplySoftDemuxConfig,
+                });
+                return (self, Err(err));
+            }
             self.record_step(DvrConfigureStep::RollbackSoftDemuxConfig);
             if let Some(dvr) = demux.dvr_mut(self.dvr_id) {
                 dvr.restore(snapshot);

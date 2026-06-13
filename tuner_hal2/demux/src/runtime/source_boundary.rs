@@ -76,7 +76,13 @@ impl SourceBoundaryTxn {
         }
 
         self.record_step(SourceBoundaryStep::BumpGeneration);
-        demux.reset_generation_boundary();
+        if let Err(err) = demux.reset_generation_boundary() {
+            let outcome = SourceBoundaryOutcome::Failed {
+                step: SourceBoundaryStep::BumpGeneration,
+            };
+            self.outcome = Some(outcome);
+            return (self, Err(err));
+        }
 
         self.record_step(SourceBoundaryStep::Commit);
         let outcome = SourceBoundaryOutcome::Committed;

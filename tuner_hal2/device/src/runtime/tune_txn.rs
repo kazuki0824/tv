@@ -235,13 +235,6 @@ fn rollback_backend_tune<B: BackendTuneOps>(backend: &mut B, snapshot: &B::Snaps
     BackendTuneRollbackReport { attempted_steps, failure: None }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FrontendTuneStep {
-    BackendTune,
-    StartTuneWorker,
-    CommitFrontendRuntime,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FrontendTuneOutcome {
     Committed { commit: BackendTuneCommit },

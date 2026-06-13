@@ -14,6 +14,7 @@ pub mod ts_core;
 pub mod parser;
 pub mod runtime;
 pub mod av;
+pub mod config;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum TsInputOrigin {
@@ -26,7 +27,8 @@ impl TsInputOrigin {
     pub const fn allows_record_mirror(self) -> bool { matches!(self, TsInputOrigin::Frontend) }
 }
 
-pub use runtime::{DemuxRuntime, DvrRuntime, FilterRuntime, RuntimeIoRegistry};
+pub use runtime::{DemuxRuntime, DemuxRuntimeState, DvrConfigureOutcome, DvrConfigureStep, DvrConfigureTxn, DvrRuntime, DvrRuntimeState, FilterConfigureOutcome, FilterConfigureStep, FilterConfigureTxn, FilterRuntime, FilterRuntimeState, GenerationBoundaryTxn, RuntimeIoRegistry, SourceBoundaryOutcome, SourceBoundaryStep, SourceBoundaryTxn, DemuxStreamGeneration};
+pub use config::{AvSettings, FilterConfig, FilterConfigKind, FilterOpenType, OpenFilterRequest, PesSettings, RecordIndexSettings, SectionCondition, SectionConditionKind};
 pub use av::{AvDataId, AvDataIdState, AvFilterReleaseState, AvHandleReleaseInput, AvHandleReleaseOutcome, AvHandleReleaseTxn, AvPayloadDeliveryOutcome, AvSharedBacking, AvSlotId, ClientHandleState};
 
 
@@ -53,6 +55,18 @@ mod tests {
     }
 
     #[test]
+    fn typed_filter_runtime_preserves_audio_video_open_type() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux.register_filter(DemuxRuntime::open_filter_runtime_typed(20, 1, FilterOpenType::TsAudio, None)).unwrap();
+        demux.register_filter(DemuxRuntime::open_filter_runtime_typed(21, 1, FilterOpenType::TsVideo, None)).unwrap();
+
+        assert_eq!(demux.filter(20).unwrap().open_type(), FilterOpenType::TsAudio);
+        assert_eq!(demux.filter(20).unwrap().open_kind(), PipelineOpenKind::Av);
+        assert_eq!(demux.filter(21).unwrap().open_type(), FilterOpenType::TsVideo);
+        assert_eq!(demux.filter(21).unwrap().open_kind(), PipelineOpenKind::Av);
+    }
+
+    #[test]
     fn filter_configure_failure_rolls_back_runtime_snapshot() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux.register_filter(DemuxRuntime::open_filter_runtime(11, 1, PipelineOpenKind::Raw, Some(FilterPipelineConfig { tpid: Some(100), raw: false }))).unwrap();
@@ -65,9 +79,76 @@ mod tests {
     }
 
     #[test]
+    fn generation_overflow_marks_filter_failed() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux.register_filter(DemuxRuntime::open_filter_runtime(30, u64::MAX, PipelineOpenKind::Raw, None)).unwrap();
+        let result = demux.configure_filter_runtime(30, FilterPipelineConfig { tpid: Some(100), raw: false });
+        assert!(result.is_err());
+        assert_eq!(demux.filter(30).unwrap().state(), FilterRuntimeState::Failed);
+    }
+
+    #[test]
+    fn generation_overflow_marks_dvr_failed() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux.register_dvr(DemuxRuntime::open_record_dvr_runtime(31, u64::MAX)).unwrap();
+        let result = demux.configure_dvr_runtime(31);
+        assert!(result.is_err());
+        assert_eq!(demux.dvr(31).unwrap().state(), DvrRuntimeState::Failed);
+    }
+
+    #[test]
+    fn filter_configure_txn_does_not_rollback_generation_overflow() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux.register_filter(DemuxRuntime::open_filter_runtime(
+            32,
+            u64::MAX,
+            PipelineOpenKind::Raw,
+            None,
+        ))
+        .unwrap();
+        let (txn, result) = FilterConfigureTxn::new(32).configure(
+            &mut demux,
+            PipelineOpenKind::Raw,
+            FilterPipelineConfig { tpid: Some(100), raw: false },
+        );
+        assert!(result.is_err());
+        assert_eq!(
+            txn.outcome(),
+            Some(FilterConfigureOutcome::Failed {
+                failed_step: FilterConfigureStep::ApplySoftDemuxConfig
+            })
+        );
+        assert_eq!(demux.filter(32).unwrap().state(), FilterRuntimeState::Failed);
+    }
+
+    #[test]
+    fn dvr_configure_txn_does_not_rollback_generation_overflow() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux.register_dvr(DemuxRuntime::open_record_dvr_runtime(33, u64::MAX)).unwrap();
+        let (txn, result) = DvrConfigureTxn::new(33).configure(&mut demux);
+        assert!(result.is_err());
+        assert_eq!(
+            txn.outcome(),
+            Some(DvrConfigureOutcome::Failed {
+                failed_step: DvrConfigureStep::ApplySoftDemuxConfig
+            })
+        );
+        assert_eq!(demux.dvr(33).unwrap().state(), DvrRuntimeState::Failed);
+    }
+
+    #[test]
+    fn generation_boundary_overflow_marks_demux_failed() {
+        let mut demux = DemuxRuntime::new(1, u64::MAX);
+        let (_, result) = GenerationBoundaryTxn::new(DemuxStreamGeneration(u64::MAX)).apply(&mut demux);
+        assert!(result.is_err());
+        assert_eq!(demux.state(), DemuxRuntimeState::Failed);
+    }
+
+    #[test]
     fn generation_boundary_resets_pipeline_and_bumps_generation() {
         let mut demux = DemuxRuntime::new(1, 7);
         let (_, report) = GenerationBoundaryTxn::new(DemuxStreamGeneration(7)).apply(&mut demux);
+        let report = report.unwrap();
         assert_eq!(report.next_generation, DemuxStreamGeneration(8));
         assert_eq!(demux.generation(), 8);
     }

@@ -1,4 +1,4 @@
-use super::demux::DemuxRuntime;
+use super::demux::{DemuxRuntime, DemuxRuntimeError};
 use crate::packet_pipeline::{PipelineBoundaryReason, PipelineResetReport};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -51,21 +51,24 @@ impl GenerationBoundaryTxn {
         &self.steps
     }
 
-    pub fn apply(mut self, demux: &mut DemuxRuntime) -> (Self, GenerationBoundaryReport) {
+    pub fn apply(mut self, demux: &mut DemuxRuntime) -> (Self, Result<GenerationBoundaryReport, DemuxRuntimeError>) {
         let reason = self.reason;
         self.record_step(GenerationBoundaryStep::InvalidateAssembler);
         self.record_step(GenerationBoundaryStep::ClearContinuity);
-        let reset = demux.reset_generation_boundary();
+        let reset = match demux.reset_generation_boundary() {
+            Ok(reset) => reset,
+            Err(err) => return (self, Err(err)),
+        };
         self.record_step(GenerationBoundaryStep::BumpGeneration);
         let next = DemuxStreamGeneration(demux.generation());
         self.record_step(GenerationBoundaryStep::Commit);
         (
             self,
-            GenerationBoundaryReport {
+            Ok(GenerationBoundaryReport {
                 reason,
                 reset,
                 next_generation: next,
-            },
+            }),
         )
     }
 }

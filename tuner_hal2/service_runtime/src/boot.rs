@@ -6,6 +6,7 @@ use maleicacid_tuner_hal2_common::{
     FrontendBackendKind, FrontendDevicePath, FrontendSystem, FrontendTuneRequest, HalError,
     HalInternalKind, HalInvalidArgumentKind, HalInvalidStateKind, TS_PACKET_SIZE,
 };
+use maleicacid_tuner_hal2_demux::config::FilterOpenType;
 use maleicacid_tuner_hal2_demux::packet_pipeline::{PipelineBoundaryReason, PipelineReport};
 use maleicacid_tuner_hal2_demux::packet_pipeline::{PipelineOpenKind, PipelineResetReport};
 use maleicacid_tuner_hal2_demux::runtime::{
@@ -14,7 +15,7 @@ use maleicacid_tuner_hal2_demux::runtime::{
 use maleicacid_tuner_hal2_demux::{FilterRuntime, TsInputOrigin};
 use maleicacid_tuner_hal2_device::{
     FrontendLivePacketSink, FrontendLivePumpOwner, FrontendLiveReaderDescriptor,
-    FrontendRuntimeSnapshot, FrontendRuntimeState, FrontendSignalState, FrontendWorkerCancelReason,
+    FrontendLivePumpReport, FrontendRuntimeSnapshot, FrontendRuntimeState, FrontendSignalState, FrontendWorkerCancelReason,
     FrontendWorkerContext, FrontendWorkerKind, FrontendWorkerRegistry, FrontendWorkerStartError,
     FrontendWorkerStopOutcome,
 };
@@ -165,6 +166,35 @@ impl FrontendLivePacketSink for FrontendDemuxPacketSink {
             })?
             .push_frontend_ts_packet_to_bound_demuxes(self.frontend_id, packet)
             .map(|_| ())
+    }
+}
+
+
+fn demux_runtime_error_to_hal(error: maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeError) -> HalError {
+    match error.kind {
+        maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::GenerationExhausted => {
+            HalError::internal(HalInternalKind::InvariantViolation, "demux runtime generation exhausted")
+        }
+        maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::FilterMissing
+        | maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::DvrMissing
+        | maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::QueueMissing => {
+            HalError::invalid_state(HalInvalidStateKind::InvalidLifecycle, "demux runtime object is missing")
+        }
+        maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::InvalidState
+        | maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::SourceLifecycle
+        | maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::SinkLifecycle => {
+            HalError::invalid_state(HalInvalidStateKind::InvalidLifecycle, "demux runtime lifecycle is invalid")
+        }
+        maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::InvalidSourceSubtype
+        | maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::InvalidSinkSubtype => {
+            HalError::Unsupported("demux source/sink subtype is unsupported")
+        }
+        maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::PidMismatch => {
+            HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, "demux source/sink PID mismatch")
+        }
+        maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::PipelineFailed => {
+            HalError::internal(HalInternalKind::InvariantViolation, "demux runtime pipeline operation failed")
+        }
     }
 }
 
@@ -377,6 +407,25 @@ impl TunerServiceRuntime {
                 )
             })?;
         runtime.record_signal_state(generation, signal_state)
+    }
+
+    pub fn record_live_pump_report(
+        &mut self,
+        frontend_id: i32,
+        generation: u64,
+        report: FrontendLivePumpReport,
+        cancel_reason: Option<FrontendWorkerCancelReason>,
+    ) -> Result<(), HalError> {
+        let runtime = self
+            .registry
+            .frontend_runtime_mut(crate::registry::FrontendRuntimeId(frontend_id))
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend runtime is missing for advertised frontend",
+                )
+            })?;
+        runtime.record_live_pump_report(generation, report, cancel_reason)
     }
 
     pub fn frontend_signal_state(&self, frontend_id: i32) -> Result<FrontendSignalState, HalError> {
@@ -906,7 +955,7 @@ impl TunerServiceRuntime {
         &mut self,
         owner_demux_id: i32,
         filter_id: i32,
-        open_kind: PipelineOpenKind,
+        open_type: FilterOpenType,
     ) -> Result<(), HalError> {
         let Some(demux_runtime) = self
             .registry
@@ -918,10 +967,10 @@ impl TunerServiceRuntime {
             ));
         };
         demux_runtime
-            .register_filter(FilterRuntime::new(
+            .register_filter(FilterRuntime::new_typed(
                 filter_id,
                 demux_runtime.generation(),
-                open_kind,
+                open_type,
             ))
             .map_err(|_| {
                 HalError::invalid_state(
@@ -929,6 +978,19 @@ impl TunerServiceRuntime {
                     "filter runtime registration failed",
                 )
             })
+    }
+
+
+    pub fn filter_open_kind(&self, filter_id: i32) -> Option<PipelineOpenKind> {
+        let entry = self.registry.filter(FilterRuntimeId(filter_id))?;
+        let demux = self.registry.demux_runtime(DemuxRuntimeId(entry.owner_demux_id))?;
+        demux.filter(filter_id).map(|filter| filter.open_kind())
+    }
+
+    pub fn filter_open_type(&self, filter_id: i32) -> Option<FilterOpenType> {
+        let entry = self.registry.filter(FilterRuntimeId(filter_id))?;
+        let demux = self.registry.demux_runtime(DemuxRuntimeId(entry.owner_demux_id))?;
+        demux.filter(filter_id).map(|filter| filter.open_type())
     }
 
     pub fn set_filter_data_source_non_null(
@@ -1082,6 +1144,7 @@ impl TunerServiceRuntime {
         let (_, report) =
             GenerationBoundaryTxn::for_reason(generation, PipelineBoundaryReason::TuneStart)
                 .apply(demux_runtime);
+        let report = report.map_err(demux_runtime_error_to_hal)?;
         self.registry.bind_demux_frontend(demux_key, frontend_key);
         Ok(report)
     }
@@ -1109,7 +1172,7 @@ impl TunerServiceRuntime {
             let (_, report) =
                 GenerationBoundaryTxn::for_reason(generation, PipelineBoundaryReason::TuneStart)
                     .apply(demux_runtime);
-            reports.push(report);
+            reports.push(report.map_err(demux_runtime_error_to_hal)?);
         }
         Ok(reports)
     }
@@ -1137,7 +1200,7 @@ impl TunerServiceRuntime {
             let generation = DemuxStreamGeneration(demux_runtime.generation());
             let (_, report) =
                 GenerationBoundaryTxn::for_reason(generation, reason).apply(demux_runtime);
-            reports.push(report);
+            reports.push(report.map_err(demux_runtime_error_to_hal)?);
         }
         self.registry.unbind_frontend_demuxes(frontend_key);
         Ok(reports)

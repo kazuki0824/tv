@@ -1,5 +1,5 @@
 use maleicacid_tuner_hal2_domain_request::{
-    AidlObjectGeneration, AidlObjectId, RuntimeTransactionName, AIDL_TRANSACTION_TABLE,
+    AidlObjectGeneration, AidlObjectId, RuntimeTransactionName,
 };
 
 use crate::command_dispatch::RuntimeCommandDispatchPlan;
@@ -7,158 +7,18 @@ use crate::object_table::RuntimeObjectTable;
 use crate::runtime_result::{
     RuntimeHandlerCoverage, RuntimeHandlerError, RuntimeHandlerResult, RuntimeHandlerSuccess,
 };
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RuntimeHandlerCoverageEntry {
-    pub transaction: RuntimeTransactionName,
-    pub coverage: RuntimeHandlerCoverage,
-}
-
-pub const RUNTIME_HANDLER_COVERAGE_TABLE: &[RuntimeHandlerCoverageEntry] = &[
-    RuntimeHandlerCoverageEntry {
-        transaction: RuntimeTransactionName::FrontendTuneTxnApply,
-        coverage: RuntimeHandlerCoverage::Connected,
-    },
-    RuntimeHandlerCoverageEntry {
-        transaction: RuntimeTransactionName::FrontendStopTuneTxn,
-        coverage: RuntimeHandlerCoverage::Connected,
-    },
-    RuntimeHandlerCoverageEntry {
-        transaction: RuntimeTransactionName::FrontendScanTxn,
-        coverage: RuntimeHandlerCoverage::Connected,
-    },
-    RuntimeHandlerCoverageEntry {
-        transaction: RuntimeTransactionName::FrontendStopScanTxn,
-        coverage: RuntimeHandlerCoverage::NotConnected,
-    },
-    RuntimeHandlerCoverageEntry {
-        transaction: RuntimeTransactionName::FrontendCloseLifecycleTxn,
-        coverage: RuntimeHandlerCoverage::Connected,
-    },
-    RuntimeHandlerCoverageEntry {
-        transaction: RuntimeTransactionName::FrontendCallbackRegistrationTxn,
-        coverage: RuntimeHandlerCoverage::NotConnected,
-    },
-    RuntimeHandlerCoverageEntry {
-        transaction: RuntimeTransactionName::DemuxSetFrontendDataSourceTxn,
-        coverage: RuntimeHandlerCoverage::Connected,
-    },
-    RuntimeHandlerCoverageEntry {
-        transaction: RuntimeTransactionName::DemuxOpenFilterTxn,
-        coverage: RuntimeHandlerCoverage::NotConnected,
-    },
-    RuntimeHandlerCoverageEntry {
-        transaction: RuntimeTransactionName::DemuxOpenDvrTxn,
-        coverage: RuntimeHandlerCoverage::NotConnected,
-    },
-    RuntimeHandlerCoverageEntry {
-        transaction: RuntimeTransactionName::DemuxCloseLifecycleTxn,
-        coverage: RuntimeHandlerCoverage::NotConnected,
-    },
-    RuntimeHandlerCoverageEntry {
-        transaction: RuntimeTransactionName::FilterConfigureTxn,
-        coverage: RuntimeHandlerCoverage::NotConnected,
-    },
-    RuntimeHandlerCoverageEntry {
-        transaction: RuntimeTransactionName::FilterGetQueueDescTxn,
-        coverage: RuntimeHandlerCoverage::NotConnected,
-    },
-    RuntimeHandlerCoverageEntry {
-        transaction: RuntimeTransactionName::FilterGetAvSharedHandleTxn,
-        coverage: RuntimeHandlerCoverage::NotConnected,
-    },
-    RuntimeHandlerCoverageEntry {
-        transaction: RuntimeTransactionName::FilterReleaseAvHandleTxn,
-        coverage: RuntimeHandlerCoverage::NotConnected,
-    },
-    RuntimeHandlerCoverageEntry {
-        transaction: RuntimeTransactionName::FilterStartTxn,
-        coverage: RuntimeHandlerCoverage::NotConnected,
-    },
-    RuntimeHandlerCoverageEntry {
-        transaction: RuntimeTransactionName::FilterStopTxn,
-        coverage: RuntimeHandlerCoverage::NotConnected,
-    },
-    RuntimeHandlerCoverageEntry {
-        transaction: RuntimeTransactionName::FilterFlushTxn,
-        coverage: RuntimeHandlerCoverage::NotConnected,
-    },
-    RuntimeHandlerCoverageEntry {
-        transaction: RuntimeTransactionName::FilterCloseLifecycleTxn,
-        coverage: RuntimeHandlerCoverage::NotConnected,
-    },
-    RuntimeHandlerCoverageEntry {
-        transaction: RuntimeTransactionName::FilterSetDataSourceTxn,
-        coverage: RuntimeHandlerCoverage::Connected,
-    },
-    RuntimeHandlerCoverageEntry {
-        transaction: RuntimeTransactionName::DvrGetQueueDescTxn,
-        coverage: RuntimeHandlerCoverage::NotConnected,
-    },
-    RuntimeHandlerCoverageEntry {
-        transaction: RuntimeTransactionName::DvrConfigureTxn,
-        coverage: RuntimeHandlerCoverage::NotConnected,
-    },
-    RuntimeHandlerCoverageEntry {
-        transaction: RuntimeTransactionName::DvrStartTxn,
-        coverage: RuntimeHandlerCoverage::NotConnected,
-    },
-    RuntimeHandlerCoverageEntry {
-        transaction: RuntimeTransactionName::DvrStopTxn,
-        coverage: RuntimeHandlerCoverage::NotConnected,
-    },
-    RuntimeHandlerCoverageEntry {
-        transaction: RuntimeTransactionName::DvrFlushTxn,
-        coverage: RuntimeHandlerCoverage::NotConnected,
-    },
-    RuntimeHandlerCoverageEntry {
-        transaction: RuntimeTransactionName::DvrCloseLifecycleTxn,
-        coverage: RuntimeHandlerCoverage::NotConnected,
-    },
-    RuntimeHandlerCoverageEntry {
-        transaction: RuntimeTransactionName::DescramblerSessionTxnSetDemuxSource,
-        coverage: RuntimeHandlerCoverage::NotConnected,
-    },
-    RuntimeHandlerCoverageEntry {
-        transaction: RuntimeTransactionName::DescramblerSessionTxnSetKeyToken,
-        coverage: RuntimeHandlerCoverage::NotConnected,
-    },
-    RuntimeHandlerCoverageEntry {
-        transaction: RuntimeTransactionName::DescramblerSessionTxnAddPid,
-        coverage: RuntimeHandlerCoverage::NotConnected,
-    },
-    RuntimeHandlerCoverageEntry {
-        transaction: RuntimeTransactionName::DescramblerSessionTxnRemovePid,
-        coverage: RuntimeHandlerCoverage::NotConnected,
-    },
-    RuntimeHandlerCoverageEntry {
-        transaction: RuntimeTransactionName::DescramblerSessionTxnClose,
-        coverage: RuntimeHandlerCoverage::NotConnected,
-    },
-    RuntimeHandlerCoverageEntry {
-        transaction: RuntimeTransactionName::LnbApplyTxn,
-        coverage: RuntimeHandlerCoverage::NotConnected,
-    },
-    RuntimeHandlerCoverageEntry {
-        transaction: RuntimeTransactionName::LnbLifecycleTxnClose,
-        coverage: RuntimeHandlerCoverage::NotConnected,
-    },
-];
+use crate::transaction_registry::{
+    every_aidl_transaction_has_runtime_spec, transaction_spec_count, transaction_spec_for,
+};
 
 pub fn runtime_handler_coverage_for(transaction: RuntimeTransactionName) -> RuntimeHandlerCoverage {
-    RUNTIME_HANDLER_COVERAGE_TABLE
-        .iter()
-        .find(|entry| entry.transaction == transaction)
-        .map(|entry| entry.coverage)
+    transaction_spec_for(transaction)
+        .map(|spec| spec.handler_coverage)
         .unwrap_or(RuntimeHandlerCoverage::NotConnected)
 }
 
 pub fn all_runtime_transactions_are_classified() -> bool {
-    AIDL_TRANSACTION_TABLE.iter().all(|plan| {
-        RUNTIME_HANDLER_COVERAGE_TABLE
-            .iter()
-            .any(|entry| entry.transaction == plan.transaction)
-    })
+    every_aidl_transaction_has_runtime_spec()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -175,7 +35,7 @@ impl Default for RuntimeDispatchHandler {
 impl RuntimeDispatchHandler {
     pub fn new() -> Self {
         Self {
-            classified_transaction_count: RUNTIME_HANDLER_COVERAGE_TABLE.len(),
+            classified_transaction_count: transaction_spec_count(),
         }
     }
 
@@ -231,14 +91,14 @@ impl RuntimeDispatchHandler {
         }
 
         if let Some(request) = dispatch_plan.executable_request.as_ref() {
+            if request.profile_support() == maleicacid_tuner_hal2_domain_request::DomainProfileSupport::UnsupportedRecordThenUnavailable {
+                return Err(RuntimeHandlerError::UnsupportedProfile { transaction });
+            }
             if let Err(error) = request.validate_supported_values() {
                 return Err(RuntimeHandlerError::InputValidation {
                     transaction,
                     source: error,
                 });
-            }
-            if request.profile_support() == maleicacid_tuner_hal2_domain_request::DomainProfileSupport::UnsupportedRecordThenUnavailable {
-                return Err(RuntimeHandlerError::UnsupportedProfile { transaction });
             }
         }
 

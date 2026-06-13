@@ -42,7 +42,7 @@ pub fn execute_object_aidl_method(
 
     let mut profile_unsupported_precedence = false;
     for request in command_domain_requests(&method_plan.command) {
-        let executable_request = request.clone().into_runtime_executable_request();
+        let executable_request = (*request).clone();
         match executable_request.profile_support() {
             DomainProfileSupport::Supported => {}
             DomainProfileSupport::UnsupportedRecordThenUnavailable => {

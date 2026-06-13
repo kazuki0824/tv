@@ -1,6 +1,6 @@
 //! frontend scan session所有。
 //!
-//! 削除した選局代用scan仮実装を置き換える正本である。scan sessionは単なるbackend tune loopではなく、candidate順序、現在candidate index、終端phase、終端reasonを所有する。
+//! scan sessionは単なるbackend tune loopではなく、candidate順序、現在candidate index、終端phase、終端reasonを所有する。
 //! scan行を完了扱いにするには、callback配送とlive pump統合がこの状態を消費しなければならない。
 
 use maleicacid_tuner_hal2_common::{FrontendTuneRequest, HalError, HalInternalKind};

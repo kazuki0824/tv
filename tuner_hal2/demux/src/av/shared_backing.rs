@@ -1,4 +1,4 @@
-use super::event::AvMediaEventDraft;
+use super::event::AvMediaEventDescriptor;
 use super::release_txn::{AvDataIdState, AvFilterReleaseState, AvHandleReleaseInput, AvHandleReleaseOutcome, AvHandleReleaseTxn};
 use super::slot::{AvDataId, AvSlotId};
 
@@ -10,7 +10,7 @@ pub enum ClientHandleState { NotExported, ExportedActive, ClientReleased }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AvPayloadDeliveryOutcome {
-    Delivered(AvMediaEventDraft),
+    Delivered(AvMediaEventDescriptor),
     SharedHandleNotExported,
     ClientHandleReleased,
     PayloadOversized,
@@ -103,7 +103,7 @@ impl AvSharedBacking {
         let slot = &mut self.slots[slot_index];
         slot.active_data_id = Some(data_id);
         slot.data_length = data_length;
-        AvPayloadDeliveryOutcome::Delivered(AvMediaEventDraft { data_id, slot_id: slot.slot_id, offset: slot.slot_id.0 as usize * self.slot_size, data_length })
+        AvPayloadDeliveryOutcome::Delivered(AvMediaEventDescriptor { data_id, slot_id: slot.slot_id, offset: slot.slot_id.0 as usize * self.slot_size, data_length })
     }
 
     fn release_slot(&mut self, data_id: AvDataId) -> bool {

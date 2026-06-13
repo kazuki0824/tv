@@ -30,8 +30,8 @@ impl DvrRuntime {
         self.playback_assembler_present = snapshot.playback_assembler_present;
     }
 
-    pub fn configure(&mut self) {
-        self.generation = self.generation.saturating_add(1);
+    pub fn configure_with_generation(&mut self, generation: u64) {
+        self.generation = generation;
         self.queue_present = true;
         self.playback_assembler_present = matches!(self.kind, DvrKind::Playback);
         self.state = DvrRuntimeState::Configured;

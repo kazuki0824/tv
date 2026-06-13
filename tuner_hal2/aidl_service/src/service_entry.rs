@@ -88,7 +88,7 @@ fn probe_lnb_profile_for_frontend(
         FrontendBackendKind::Px4CharDevice => {
             let name = device_name
                 .or_else(|| path.file_name().and_then(|value| value.to_str()))
-                .unwrap_or_default();
+                .unwrap_or("");
             px4_lnb_profile_from_device_name(name)
         }
         FrontendBackendKind::LinuxDvb => LnbRegistryProfile::EarthPt1FixedLnb,
