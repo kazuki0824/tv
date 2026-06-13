@@ -51,7 +51,10 @@ impl GenerationBoundaryTxn {
         &self.steps
     }
 
-    pub fn apply(mut self, demux: &mut DemuxRuntime) -> (Self, Result<GenerationBoundaryReport, DemuxRuntimeError>) {
+    pub fn apply(
+        mut self,
+        demux: &mut DemuxRuntime,
+    ) -> (Self, Result<GenerationBoundaryReport, DemuxRuntimeError>) {
         let reason = self.reason;
         self.record_step(GenerationBoundaryStep::InvalidateAssembler);
         self.record_step(GenerationBoundaryStep::ClearContinuity);

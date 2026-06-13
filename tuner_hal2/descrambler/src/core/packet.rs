@@ -1,4 +1,6 @@
-use crate::core::multi2::{multi2_decrypt_payload, Multi2KeyMaterial, Multi2PrepareError, PreparedMulti2Key};
+use crate::core::multi2::{
+    multi2_decrypt_payload, Multi2KeyMaterial, Multi2PrepareError, PreparedMulti2Key,
+};
 use maleicacid_tuner_hal2_common::TS_PACKET_SIZE;
 use std::collections::BTreeSet;
 
@@ -17,7 +19,12 @@ pub struct DescramblerKeySlot {
 }
 
 impl DescramblerKeySlot {
-    pub const fn empty() -> Self { Self { even: None, odd: None } }
+    pub const fn empty() -> Self {
+        Self {
+            even: None,
+            odd: None,
+        }
+    }
 
     pub fn try_with_even(mut self, key: Multi2KeyMaterial) -> Result<Self, Multi2PrepareError> {
         self.even = Some(key.prepare()?);
@@ -81,8 +88,15 @@ pub enum DescrambleFailure {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DescrambleOutcome {
-    Descrambled { pid: u16, parity: KeyParity, payload_offset: usize },
-    PassedThrough { pid: u16, reason: PassThroughReason },
+    Descrambled {
+        pid: u16,
+        parity: KeyParity,
+        payload_offset: usize,
+    },
+    PassedThrough {
+        pid: u16,
+        reason: PassThroughReason,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -132,7 +146,11 @@ pub fn parse_ts_packet_header(packet: &[u8]) -> Result<TsPacketHeader, Descrambl
         transport_scrambling_control,
         adaptation_field_control,
         continuity_counter: packet[3] & 0x0f,
-        payload_offset: if adaptation_field_control == 2 { None } else { Some(offset) },
+        payload_offset: if adaptation_field_control == 2 {
+            None
+        } else {
+            Some(offset)
+        },
     })
 }
 
@@ -154,7 +172,10 @@ pub fn descramble_ts_packet_in_place(
             } else {
                 PassThroughReason::ClearPacket
             };
-            return Ok(DescrambleOutcome::PassedThrough { pid: header.pid, reason });
+            return Ok(DescrambleOutcome::PassedThrough {
+                pid: header.pid,
+                reason,
+            });
         }
         1 => return Err(DescrambleFailure::InvalidTsc),
         2 | 3 => {
@@ -165,7 +186,11 @@ pub fn descramble_ts_packet_in_place(
         _ => return Err(DescrambleFailure::InvalidTsc),
     }
 
-    let parity = if header.transport_scrambling_control == 2 { KeyParity::Even } else { KeyParity::Odd };
+    let parity = if header.transport_scrambling_control == 2 {
+        KeyParity::Even
+    } else {
+        KeyParity::Odd
+    };
     if !target_pids.contains(&header.pid) {
         return Err(DescrambleFailure::ScrambledPidNotRegistered);
     }
@@ -178,23 +203,36 @@ pub fn descramble_ts_packet_in_place(
     let key = key_slot.key_for(parity).ok_or(DescrambleFailure::NoKey)?;
     multi2_decrypt_payload(&mut packet[payload_offset..], key);
     packet[3] &= 0x3f;
-    Ok(DescrambleOutcome::Descrambled { pid: header.pid, parity, payload_offset })
+    Ok(DescrambleOutcome::Descrambled {
+        pid: header.pid,
+        parity,
+        payload_offset,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        multi2_decrypt_payload, multi2_encrypt_payload, Multi2KeyMaterial, Multi2PrepareError,
+        PreparedMulti2Key,
+    };
     use maleicacid_tuner_hal2_common::TS_PACKET_SIZE;
     use std::collections::BTreeSet;
-    use crate::{multi2_decrypt_payload, multi2_encrypt_payload, Multi2KeyMaterial, Multi2PrepareError, PreparedMulti2Key};
 
     fn sample_key(byte: u8) -> Multi2KeyMaterial {
         let mut system_key = [0u8; 32];
-        for (i, b) in system_key.iter_mut().enumerate() { *b = byte.wrapping_add(i as u8); }
+        for (i, b) in system_key.iter_mut().enumerate() {
+            *b = byte.wrapping_add(i as u8);
+        }
         let mut iv = [0u8; 8];
-        for (i, b) in iv.iter_mut().enumerate() { *b = 0xa0u8.wrapping_add(byte).wrapping_add(i as u8); }
+        for (i, b) in iv.iter_mut().enumerate() {
+            *b = 0xa0u8.wrapping_add(byte).wrapping_add(i as u8);
+        }
         let mut data_key = [0u8; 8];
-        for (i, b) in data_key.iter_mut().enumerate() { *b = 0x40u8.wrapping_add(byte).wrapping_add((i * 3) as u8); }
+        for (i, b) in data_key.iter_mut().enumerate() {
+            *b = 0x40u8.wrapping_add(byte).wrapping_add((i * 3) as u8);
+        }
         Multi2KeyMaterial::new(system_key, iv, data_key)
     }
 
@@ -204,11 +242,16 @@ mod tests {
         p[1] = ((pid >> 8) as u8) & 0x1f;
         p[2] = (pid & 0xff) as u8;
         p[3] = (tsc << 6) | (afc << 4) | 0x05;
-        for i in 4..TS_PACKET_SIZE { p[i] = (i as u8).wrapping_mul(3).wrapping_add(1); }
+        for i in 4..TS_PACKET_SIZE {
+            p[i] = (i as u8).wrapping_mul(3).wrapping_add(1);
+        }
         p
     }
 
-    fn encrypt_payload_packet(mut p: [u8; TS_PACKET_SIZE], key: &PreparedMulti2Key) -> [u8; TS_PACKET_SIZE] {
+    fn encrypt_payload_packet(
+        mut p: [u8; TS_PACKET_SIZE],
+        key: &PreparedMulti2Key,
+    ) -> [u8; TS_PACKET_SIZE] {
         let off = parse_ts_packet_header(&p).unwrap().payload_offset.unwrap();
         multi2_encrypt_payload(&mut p[off..], key);
         p
@@ -218,8 +261,19 @@ mod tests {
     fn clear_packet_passes_byte_identical() {
         let mut p = packet(100, 0, 1);
         let original = p;
-        let outcome = descramble_ts_packet_in_place(&mut p, &BTreeSet::from([100]), &DescramblerKeySlot::empty()).unwrap();
-        assert_eq!(outcome, DescrambleOutcome::PassedThrough { pid: 100, reason: PassThroughReason::ClearPacket });
+        let outcome = descramble_ts_packet_in_place(
+            &mut p,
+            &BTreeSet::from([100]),
+            &DescramblerKeySlot::empty(),
+        )
+        .unwrap();
+        assert_eq!(
+            outcome,
+            DescrambleOutcome::PassedThrough {
+                pid: 100,
+                reason: PassThroughReason::ClearPacket
+            }
+        );
         assert_eq!(p, original);
     }
 
@@ -227,8 +281,19 @@ mod tests {
     fn null_pid_clear_passes_as_null_pid() {
         let mut p = packet(NULL_PID, 0, 1);
         let original = p;
-        let outcome = descramble_ts_packet_in_place(&mut p, &BTreeSet::from([NULL_PID]), &DescramblerKeySlot::empty()).unwrap();
-        assert_eq!(outcome, DescrambleOutcome::PassedThrough { pid: NULL_PID, reason: PassThroughReason::NullPid });
+        let outcome = descramble_ts_packet_in_place(
+            &mut p,
+            &BTreeSet::from([NULL_PID]),
+            &DescramblerKeySlot::empty(),
+        )
+        .unwrap();
+        assert_eq!(
+            outcome,
+            DescrambleOutcome::PassedThrough {
+                pid: NULL_PID,
+                reason: PassThroughReason::NullPid
+            }
+        );
         assert_eq!(p, original);
     }
 
@@ -237,7 +302,11 @@ mod tests {
         let mut p = packet(NULL_PID, 1, 1);
         let original = p;
         assert_eq!(
-            descramble_ts_packet_in_place(&mut p, &BTreeSet::from([NULL_PID]), &DescramblerKeySlot::empty()),
+            descramble_ts_packet_in_place(
+                &mut p,
+                &BTreeSet::from([NULL_PID]),
+                &DescramblerKeySlot::empty()
+            ),
             Err(DescrambleFailure::InvalidTsc)
         );
         assert_eq!(p, original);
@@ -248,7 +317,11 @@ mod tests {
         let mut p = packet(NULL_PID, 2, 1);
         let original = p;
         assert_eq!(
-            descramble_ts_packet_in_place(&mut p, &BTreeSet::from([NULL_PID]), &DescramblerKeySlot::empty()),
+            descramble_ts_packet_in_place(
+                &mut p,
+                &BTreeSet::from([NULL_PID]),
+                &DescramblerKeySlot::empty()
+            ),
             Err(DescrambleFailure::ScrambledNullPid)
         );
         assert_eq!(p, original);
@@ -259,7 +332,11 @@ mod tests {
         let mut p = packet(NULL_PID, 3, 1);
         let original = p;
         assert_eq!(
-            descramble_ts_packet_in_place(&mut p, &BTreeSet::from([NULL_PID]), &DescramblerKeySlot::empty()),
+            descramble_ts_packet_in_place(
+                &mut p,
+                &BTreeSet::from([NULL_PID]),
+                &DescramblerKeySlot::empty()
+            ),
             Err(DescrambleFailure::ScrambledNullPid)
         );
         assert_eq!(p, original);
@@ -271,7 +348,11 @@ mod tests {
         p[4] = 183;
         let original = p;
         assert_eq!(
-            descramble_ts_packet_in_place(&mut p, &BTreeSet::from([100]), &DescramblerKeySlot::empty()),
+            descramble_ts_packet_in_place(
+                &mut p,
+                &BTreeSet::from([100]),
+                &DescramblerKeySlot::empty()
+            ),
             Err(DescrambleFailure::ScrambledWithoutPayload)
         );
         assert_eq!(p, original);
@@ -282,8 +363,19 @@ mod tests {
         let mut p = packet(100, 0, 2);
         p[4] = 183;
         let original = p;
-        let outcome = descramble_ts_packet_in_place(&mut p, &BTreeSet::from([100]), &DescramblerKeySlot::empty()).unwrap();
-        assert_eq!(outcome, DescrambleOutcome::PassedThrough { pid: 100, reason: PassThroughReason::ClearAdaptationOnly });
+        let outcome = descramble_ts_packet_in_place(
+            &mut p,
+            &BTreeSet::from([100]),
+            &DescramblerKeySlot::empty(),
+        )
+        .unwrap();
+        assert_eq!(
+            outcome,
+            DescrambleOutcome::PassedThrough {
+                pid: 100,
+                reason: PassThroughReason::ClearAdaptationOnly
+            }
+        );
         assert_eq!(p, original);
     }
 
@@ -292,7 +384,11 @@ mod tests {
         for tsc in 0..=3 {
             let mut p = packet(100, tsc, 0);
             assert_eq!(
-                descramble_ts_packet_in_place(&mut p, &BTreeSet::from([100]), &DescramblerKeySlot::empty()),
+                descramble_ts_packet_in_place(
+                    &mut p,
+                    &BTreeSet::from([100]),
+                    &DescramblerKeySlot::empty()
+                ),
                 Err(DescrambleFailure::InvalidAfc)
             );
         }
@@ -311,7 +407,11 @@ mod tests {
         p[1] |= 0x80;
         let original = p;
         assert_eq!(
-            descramble_ts_packet_in_place(&mut p, &BTreeSet::from([100]), &DescramblerKeySlot::empty()),
+            descramble_ts_packet_in_place(
+                &mut p,
+                &BTreeSet::from([100]),
+                &DescramblerKeySlot::empty()
+            ),
             Err(DescrambleFailure::TransportErrorRecord)
         );
         assert_eq!(p, original);
@@ -320,9 +420,18 @@ mod tests {
     #[test]
     fn non_tei_invalid_tsc_remains_invalid_tsc_after_header_parse() {
         let mut p = packet(100, 1, 1);
-        assert_eq!(parse_ts_packet_header(&p).unwrap().transport_scrambling_control, 1);
         assert_eq!(
-            descramble_ts_packet_in_place(&mut p, &BTreeSet::from([100]), &DescramblerKeySlot::empty()),
+            parse_ts_packet_header(&p)
+                .unwrap()
+                .transport_scrambling_control,
+            1
+        );
+        assert_eq!(
+            descramble_ts_packet_in_place(
+                &mut p,
+                &BTreeSet::from([100]),
+                &DescramblerKeySlot::empty()
+            ),
             Err(DescrambleFailure::InvalidTsc)
         );
     }
@@ -333,7 +442,11 @@ mod tests {
         p[1] |= 0x80;
         let original = p;
         assert_eq!(
-            descramble_ts_packet_in_place(&mut p, &BTreeSet::from([100]), &DescramblerKeySlot::empty()),
+            descramble_ts_packet_in_place(
+                &mut p,
+                &BTreeSet::from([100]),
+                &DescramblerKeySlot::empty()
+            ),
             Err(DescrambleFailure::TransportErrorRecord)
         );
         assert_eq!(p, original);
@@ -362,7 +475,11 @@ mod tests {
         p[1] |= 0x80;
         let original_tsc = p[3] >> 6;
         assert_eq!(
-            descramble_ts_packet_in_place(&mut p, &BTreeSet::from([100]), &DescramblerKeySlot::empty()),
+            descramble_ts_packet_in_place(
+                &mut p,
+                &BTreeSet::from([100]),
+                &DescramblerKeySlot::empty()
+            ),
             Err(DescrambleFailure::TransportErrorRecord)
         );
         assert_eq!(p[3] >> 6, original_tsc);
@@ -373,7 +490,11 @@ mod tests {
         let mut p = packet(100, 2, 0);
         p[1] |= 0x80;
         assert_eq!(
-            descramble_ts_packet_in_place(&mut p, &BTreeSet::from([100]), &DescramblerKeySlot::empty()),
+            descramble_ts_packet_in_place(
+                &mut p,
+                &BTreeSet::from([100]),
+                &DescramblerKeySlot::empty()
+            ),
             Err(DescrambleFailure::InvalidAfc)
         );
     }
@@ -384,7 +505,11 @@ mod tests {
         p[1] |= 0x80;
         p[4] = 183;
         assert_eq!(
-            descramble_ts_packet_in_place(&mut p, &BTreeSet::from([100]), &DescramblerKeySlot::empty()),
+            descramble_ts_packet_in_place(
+                &mut p,
+                &BTreeSet::from([100]),
+                &DescramblerKeySlot::empty()
+            ),
             Err(DescrambleFailure::InvalidAdaptationField)
         );
     }
@@ -393,9 +518,16 @@ mod tests {
     fn afc11_payload_zero_is_invalid_adaptation_field() {
         let mut p = packet(100, 0, 3);
         p[4] = 183;
-        assert_eq!(parse_ts_packet_header(&p), Err(DescrambleFailure::InvalidAdaptationField));
         assert_eq!(
-            descramble_ts_packet_in_place(&mut p, &BTreeSet::from([100]), &DescramblerKeySlot::empty()),
+            parse_ts_packet_header(&p),
+            Err(DescrambleFailure::InvalidAdaptationField)
+        );
+        assert_eq!(
+            descramble_ts_packet_in_place(
+                &mut p,
+                &BTreeSet::from([100]),
+                &DescramblerKeySlot::empty()
+            ),
             Err(DescrambleFailure::InvalidAdaptationField)
         );
     }
@@ -406,7 +538,11 @@ mod tests {
         p[4] = 183;
         let original = p;
         assert_eq!(
-            descramble_ts_packet_in_place(&mut p, &BTreeSet::from([100]), &DescramblerKeySlot::empty()),
+            descramble_ts_packet_in_place(
+                &mut p,
+                &BTreeSet::from([100]),
+                &DescramblerKeySlot::empty()
+            ),
             Err(DescrambleFailure::InvalidAdaptationField)
         );
         assert_eq!(p, original);
@@ -417,7 +553,11 @@ mod tests {
         let mut p = packet(100, 2, 3);
         p[4] = 183;
         assert_eq!(
-            descramble_ts_packet_in_place(&mut p, &BTreeSet::from([100]), &DescramblerKeySlot::empty()),
+            descramble_ts_packet_in_place(
+                &mut p,
+                &BTreeSet::from([100]),
+                &DescramblerKeySlot::empty()
+            ),
             Err(DescrambleFailure::InvalidAdaptationField)
         );
     }
@@ -426,7 +566,11 @@ mod tests {
     fn tsc_afc_matrix_matches_fixed_descrambler_contract() {
         let even = sample_key(1);
         let odd = sample_key(2);
-        let keys = DescramblerKeySlot::empty().try_with_even(even).unwrap().try_with_odd(odd).unwrap();
+        let keys = DescramblerKeySlot::empty()
+            .try_with_even(even)
+            .unwrap()
+            .try_with_odd(odd)
+            .unwrap();
         for tsc in 0..=3 {
             for afc in 0..=3 {
                 let mut p = packet(0x0100 + ((tsc as u16) << 4) + afc as u16, tsc, afc);
@@ -519,9 +663,21 @@ mod tests {
         let even_prepared = even.prepare().unwrap();
         let mut scrambled = encrypt_payload_packet(clear, &even_prepared);
         scrambled[3] = (scrambled[3] & 0x3f) | (2 << 6);
-        let keys = DescramblerKeySlot::empty().try_with_even(even).unwrap().try_with_odd(odd).unwrap();
-        let outcome = descramble_ts_packet_in_place(&mut scrambled, &BTreeSet::from([100]), &keys).unwrap();
-        assert_eq!(outcome, DescrambleOutcome::Descrambled { pid: 100, parity: KeyParity::Even, payload_offset: 4 });
+        let keys = DescramblerKeySlot::empty()
+            .try_with_even(even)
+            .unwrap()
+            .try_with_odd(odd)
+            .unwrap();
+        let outcome =
+            descramble_ts_packet_in_place(&mut scrambled, &BTreeSet::from([100]), &keys).unwrap();
+        assert_eq!(
+            outcome,
+            DescrambleOutcome::Descrambled {
+                pid: 100,
+                parity: KeyParity::Even,
+                payload_offset: 4
+            }
+        );
         assert_eq!(scrambled[3] >> 6, 0);
         assert_eq!(scrambled, clear);
     }
@@ -534,7 +690,11 @@ mod tests {
         let odd_prepared = odd.prepare().unwrap();
         let mut scrambled = encrypt_payload_packet(clear, &odd_prepared);
         scrambled[3] = (scrambled[3] & 0x3f) | (3 << 6);
-        let keys = DescramblerKeySlot::empty().try_with_even(even).unwrap().try_with_odd(odd).unwrap();
+        let keys = DescramblerKeySlot::empty()
+            .try_with_even(even)
+            .unwrap()
+            .try_with_odd(odd)
+            .unwrap();
         descramble_ts_packet_in_place(&mut scrambled, &BTreeSet::from([101]), &keys).unwrap();
         assert_eq!(scrambled[3] >> 6, 0);
         assert_eq!(scrambled, clear);
@@ -544,7 +704,14 @@ mod tests {
     fn invalid_tsc_is_rejected() {
         let mut p = packet(100, 1, 1);
         let original = p;
-        assert_eq!(descramble_ts_packet_in_place(&mut p, &BTreeSet::from([100]), &DescramblerKeySlot::empty()), Err(DescrambleFailure::InvalidTsc));
+        assert_eq!(
+            descramble_ts_packet_in_place(
+                &mut p,
+                &BTreeSet::from([100]),
+                &DescramblerKeySlot::empty()
+            ),
+            Err(DescrambleFailure::InvalidTsc)
+        );
         assert_eq!(p, original);
     }
 
@@ -552,7 +719,14 @@ mod tests {
     fn failed_no_key_does_not_clear_tsc() {
         let mut p = packet(100, 2, 1);
         let original_tsc = p[3] >> 6;
-        assert_eq!(descramble_ts_packet_in_place(&mut p, &BTreeSet::from([100]), &DescramblerKeySlot::empty()), Err(DescrambleFailure::NoKey));
+        assert_eq!(
+            descramble_ts_packet_in_place(
+                &mut p,
+                &BTreeSet::from([100]),
+                &DescramblerKeySlot::empty()
+            ),
+            Err(DescrambleFailure::NoKey)
+        );
         assert_eq!(p[3] >> 6, original_tsc);
     }
 
@@ -560,8 +734,19 @@ mod tests {
     fn clear_pid_not_targeted_passes_byte_identical() {
         let mut p = packet(100, 0, 1);
         let original = p;
-        let outcome = descramble_ts_packet_in_place(&mut p, &BTreeSet::from([200]), &DescramblerKeySlot::empty()).unwrap();
-        assert_eq!(outcome, DescrambleOutcome::PassedThrough { pid: 100, reason: PassThroughReason::ClearPacket });
+        let outcome = descramble_ts_packet_in_place(
+            &mut p,
+            &BTreeSet::from([200]),
+            &DescramblerKeySlot::empty(),
+        )
+        .unwrap();
+        assert_eq!(
+            outcome,
+            DescrambleOutcome::PassedThrough {
+                pid: 100,
+                reason: PassThroughReason::ClearPacket
+            }
+        );
         assert_eq!(p, original);
     }
 
@@ -569,16 +754,29 @@ mod tests {
     fn scrambled_unregistered_pid_is_not_silently_decoded() {
         let mut p = packet(100, 2, 1);
         let original = p;
-        assert_eq!(descramble_ts_packet_in_place(&mut p, &BTreeSet::from([200]), &DescramblerKeySlot::empty()), Err(DescrambleFailure::ScrambledPidNotRegistered));
+        assert_eq!(
+            descramble_ts_packet_in_place(
+                &mut p,
+                &BTreeSet::from([200]),
+                &DescramblerKeySlot::empty()
+            ),
+            Err(DescrambleFailure::ScrambledPidNotRegistered)
+        );
         assert_eq!(p, original);
     }
 
     #[test]
     fn invalid_size_and_sync_are_rejected() {
-        assert_eq!(parse_ts_packet_header(&[0u8; 187]), Err(DescrambleFailure::InvalidPacketSize));
+        assert_eq!(
+            parse_ts_packet_header(&[0u8; 187]),
+            Err(DescrambleFailure::InvalidPacketSize)
+        );
         let mut p = packet(100, 0, 1);
         p[0] = 0x00;
-        assert_eq!(parse_ts_packet_header(&p), Err(DescrambleFailure::BadSyncByte));
+        assert_eq!(
+            parse_ts_packet_header(&p),
+            Err(DescrambleFailure::BadSyncByte)
+        );
     }
 
     #[test]
@@ -600,7 +798,13 @@ mod tests {
         let mut payload = *b"0123456789abcdef";
         let key = sample_key(9).prepare().unwrap();
         multi2_encrypt_payload(&mut payload, &key);
-        assert_eq!(payload, [0x81, 0x23, 0xc7, 0xf8, 0xb7, 0x1a, 0xfb, 0x06, 0xa9, 0x0e, 0x78, 0x3a, 0xd9, 0x87, 0x5b, 0x5d]);
+        assert_eq!(
+            payload,
+            [
+                0x81, 0x23, 0xc7, 0xf8, 0xb7, 0x1a, 0xfb, 0x06, 0xa9, 0x0e, 0x78, 0x3a, 0xd9, 0x87,
+                0x5b, 0x5d
+            ]
+        );
     }
 
     #[test]
@@ -608,7 +812,13 @@ mod tests {
         let mut payload = *b"0123456789abcdef";
         let key = sample_key(9).prepare().unwrap();
         multi2_encrypt_payload(&mut payload, &key);
-        assert_eq!(payload, [0x81, 0x23, 0xc7, 0xf8, 0xb7, 0x1a, 0xfb, 0x06, 0xa9, 0x0e, 0x78, 0x3a, 0xd9, 0x87, 0x5b, 0x5d]);
+        assert_eq!(
+            payload,
+            [
+                0x81, 0x23, 0xc7, 0xf8, 0xb7, 0x1a, 0xfb, 0x06, 0xa9, 0x0e, 0x78, 0x3a, 0xd9, 0x87,
+                0x5b, 0x5d
+            ]
+        );
         multi2_decrypt_payload(&mut payload, &key);
         assert_eq!(&payload, b"0123456789abcdef");
     }
@@ -638,7 +848,10 @@ mod tests {
     fn test_registration_rejects_unprepared_invalid_key() {
         let mut key = sample_key(12);
         key.rounds = 0;
-        assert_eq!(DescramblerKeySlot::empty().try_with_even(key), Err(Multi2PrepareError::InvalidRoundsZero));
+        assert_eq!(
+            DescramblerKeySlot::empty().try_with_even(key),
+            Err(Multi2PrepareError::InvalidRoundsZero)
+        );
     }
 
     #[test]
@@ -646,7 +859,10 @@ mod tests {
         let mut key = sample_key(7);
         key.rounds = 0;
         assert_eq!(key.prepare(), Err(Multi2PrepareError::InvalidRoundsZero));
-        assert_eq!(DescramblerKeySlot::empty().try_with_even(key), Err(Multi2PrepareError::InvalidRoundsZero));
+        assert_eq!(
+            DescramblerKeySlot::empty().try_with_even(key),
+            Err(Multi2PrepareError::InvalidRoundsZero)
+        );
     }
 
     #[test]
@@ -690,5 +906,4 @@ mod tests {
         even_key_is_selected_and_tsc_is_cleared();
         odd_key_is_selected_and_tsc_is_cleared();
     }
-
 }

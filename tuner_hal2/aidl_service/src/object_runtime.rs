@@ -1,25 +1,23 @@
 use std::sync::{Arc, Mutex};
 
-use binder::{Result as BinderResult, Status};
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::Result::Result as TunerResult;
-use maleicacid_tuner_hal2_binder_adapter::{
-    AidlApi, AidlDomainRequest, AidlFailureSource, AidlMethodAdapter, AidlMethodCall,
-    AidlMethodPlan, AidlStatusMapper, DomainCommand, DomainProfileSupport,
-    StatusPrecedenceStep,
-};
+use binder::{Result as BinderResult, Status};
 use maleicacid_tuner_hal2_binder_adapter::{
     demux::DemuxCommand, dvr::DvrCommand, filter::FilterCommand, frontend::FrontendCommand,
     lnb::LnbCommand,
 };
+use maleicacid_tuner_hal2_binder_adapter::{
+    AidlApi, AidlDomainRequest, AidlFailureSource, AidlMethodAdapter, AidlMethodCall,
+    AidlMethodPlan, AidlStatusMapper, DomainCommand, DomainProfileSupport, StatusPrecedenceStep,
+};
 use maleicacid_tuner_hal2_common::{HalError, HalInvalidStateKind};
-use maleicacid_tuner_hal2_service_runtime::{RuntimeObjectTableError, TunerServiceRuntime};
 use maleicacid_tuner_hal2_resource_ledger::CleanupStep;
+use maleicacid_tuner_hal2_service_runtime::{RuntimeObjectTableError, TunerServiceRuntime};
 
 use crate::callback_store::clear_owner_callbacks;
 use crate::object_handle::AidlObjectHandle;
 
 pub type SharedTunerRuntime = Arc<Mutex<TunerServiceRuntime>>;
-
 
 #[derive(Clone, Debug)]
 pub struct AidlMethodExecutionOutcome {
@@ -28,8 +26,12 @@ pub struct AidlMethodExecutionOutcome {
 }
 
 impl AidlMethodExecutionOutcome {
-    pub fn plan(&self) -> &AidlMethodPlan { &self.plan }
-    pub fn precedence(&self) -> &[StatusPrecedenceStep] { &self.precedence }
+    pub fn plan(&self) -> &AidlMethodPlan {
+        &self.plan
+    }
+    pub fn precedence(&self) -> &[StatusPrecedenceStep] {
+        &self.precedence
+    }
 }
 
 pub fn execute_object_aidl_method(
@@ -47,9 +49,11 @@ pub fn execute_object_aidl_method(
             DomainProfileSupport::Supported => {}
             DomainProfileSupport::UnsupportedRecordThenUnavailable => {
                 profile_unsupported_precedence = true;
-                failures.push(AidlFailureSource::ProfileUnsupported(HalError::Unsupported(
-                    "AIDL input variant is outside the TS-only tuner_hal2 profile",
-                )));
+                failures.push(AidlFailureSource::ProfileUnsupported(
+                    HalError::Unsupported(
+                        "AIDL input variant is outside the TS-only tuner_hal2 profile",
+                    ),
+                ));
             }
         }
         if let Err(error) = executable_request.validate_supported_values() {
@@ -58,9 +62,13 @@ pub fn execute_object_aidl_method(
     }
 
     let precedence = if profile_unsupported_precedence {
-        AidlStatusMapper::unsupported_precedence_for_profile_api(method_plan.api).steps.to_vec()
+        AidlStatusMapper::unsupported_precedence_for_profile_api(method_plan.api)
+            .steps
+            .to_vec()
     } else {
-        AidlStatusMapper::precedence_for_api(method_plan.api).steps.to_vec()
+        AidlStatusMapper::precedence_for_api(method_plan.api)
+            .steps
+            .to_vec()
     };
 
     if method_plan.command_plan.object != handle.object_kind() {
@@ -73,13 +81,22 @@ pub fn execute_object_aidl_method(
     for step in &precedence {
         match step {
             StatusPrecedenceStep::ObjectLifetime => {
-                if failures.iter().any(|failure| failure.step() == StatusPrecedenceStep::ObjectLifetime) {
+                if failures
+                    .iter()
+                    .any(|failure| failure.step() == StatusPrecedenceStep::ObjectLifetime)
+                {
                     continue;
                 }
                 match runtime.lock() {
                     Ok(runtime) => {
-                        if let Err(error) = runtime.object_table().entry_for_kind(handle.object_id(), handle.generation(), handle.object_kind()) {
-                            failures.push(AidlFailureSource::ObjectLifetime(object_table_hal_error(error)));
+                        if let Err(error) = runtime.object_table().entry_for_kind(
+                            handle.object_id(),
+                            handle.generation(),
+                            handle.object_kind(),
+                        ) {
+                            failures.push(AidlFailureSource::ObjectLifetime(
+                                object_table_hal_error(error),
+                            ));
                         }
                     }
                     Err(_) => failures.push(AidlFailureSource::RuntimeFailure(HalError::internal(
@@ -97,7 +114,10 @@ pub fn execute_object_aidl_method(
                 }
                 match runtime.lock() {
                     Ok(mut runtime) => {
-                        if let Err(err) = runtime.plan_command_dispatch(method_plan.command_plan, method_plan.command.runtime_executable_request()) {
+                        if let Err(err) = runtime.plan_command_dispatch(
+                            method_plan.command_plan,
+                            method_plan.command.runtime_executable_request(),
+                        ) {
                             failures.push(AidlFailureSource::RuntimeDispatch(err.into_hal_error()));
                         }
                     }
@@ -113,57 +133,95 @@ pub fn execute_object_aidl_method(
         }
     }
 
-    if let Some(failure) = AidlStatusMapper::resolve_failure_source_by_precedence(method_plan.api, &failures, profile_unsupported_precedence) {
+    if let Some(failure) = AidlStatusMapper::resolve_failure_source_by_precedence(
+        method_plan.api,
+        &failures,
+        profile_unsupported_precedence,
+    ) {
         return Err(status_from_hal_error(failure.error()));
     }
 
-    Ok(AidlMethodExecutionOutcome { plan: method_plan, precedence })
+    Ok(AidlMethodExecutionOutcome {
+        plan: method_plan,
+        precedence,
+    })
 }
 
 fn command_domain_requests(command: &DomainCommand) -> Vec<&AidlDomainRequest> {
     match command {
         DomainCommand::Frontend(FrontendCommand::SetCallback(request)) => vec![request],
-        DomainCommand::Demux(DemuxCommand::SetFrontendDataSource(request)
+        DomainCommand::Demux(
+            DemuxCommand::SetFrontendDataSource(request)
             | DemuxCommand::OpenFilter(request)
-            | DemuxCommand::OpenDvr(request)) => vec![request],
-        DomainCommand::Filter(FilterCommand::Configure(request)
+            | DemuxCommand::OpenDvr(request),
+        ) => vec![request],
+        DomainCommand::Filter(
+            FilterCommand::Configure(request)
             | FilterCommand::ConfigureAvStreamType(request)
             | FilterCommand::ReleaseAvHandle(request)
             | FilterCommand::SetDataSource(request)
-            | FilterCommand::SetDelayHint(request)) => vec![request],
-        DomainCommand::Dvr(DvrCommand::Configure(request)
+            | FilterCommand::SetDelayHint(request),
+        ) => vec![request],
+        DomainCommand::Dvr(
+            DvrCommand::Configure(request)
             | DvrCommand::AttachFilter(request)
-            | DvrCommand::DetachFilter(request)) => vec![request],
-        DomainCommand::Lnb(LnbCommand::SetCallback(request)
+            | DvrCommand::DetachFilter(request),
+        ) => vec![request],
+        DomainCommand::Lnb(
+            LnbCommand::SetCallback(request)
             | LnbCommand::SetVoltage(request)
             | LnbCommand::SetTone(request)
-            | LnbCommand::SetSatellitePosition(request)) => vec![request],
+            | LnbCommand::SetSatellitePosition(request),
+        ) => vec![request],
         _ => Vec::new(),
     }
 }
 
-pub fn ensure_object_live(runtime: &SharedTunerRuntime, handle: AidlObjectHandle) -> BinderResult<()> {
-    let runtime = runtime.lock().map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
+pub fn ensure_object_live(
+    runtime: &SharedTunerRuntime,
+    handle: AidlObjectHandle,
+) -> BinderResult<()> {
+    let runtime = runtime
+        .lock()
+        .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
     runtime
         .object_table()
-        .entry_for_kind(handle.object_id(), handle.generation(), handle.object_kind())
+        .entry_for_kind(
+            handle.object_id(),
+            handle.generation(),
+            handle.object_kind(),
+        )
         .map(|_| ())
         .map_err(status_from_object_table_error)
 }
 
 pub fn close_object(runtime: &SharedTunerRuntime, handle: AidlObjectHandle) -> BinderResult<()> {
-    let mut runtime = runtime.lock().map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
+    let mut runtime = runtime
+        .lock()
+        .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
     runtime
         .object_table_mut()
-        .begin_close_cascade(handle.object_id(), handle.generation(), CleanupStep::StopWorker)
+        .begin_close_cascade(
+            handle.object_id(),
+            handle.generation(),
+            CleanupStep::StopWorker,
+        )
         .map_err(status_from_object_table_error)?;
-    runtime.callback_registry_mut().clear_owner(handle.object_id(), handle.generation());
+    runtime
+        .callback_registry_mut()
+        .clear_owner(handle.object_id(), handle.generation());
     if clear_owner_callbacks(handle).is_err() {
         runtime
             .object_table_mut()
-            .mark_cleanup_failed_cascade(handle.object_id(), handle.generation(), CleanupStep::UnregisterRuntime)
+            .mark_cleanup_failed_cascade(
+                handle.object_id(),
+                handle.generation(),
+                CleanupStep::UnregisterRuntime,
+            )
             .map_err(status_from_object_table_error)?;
-        return Err(status_unknown_error("callback store cleanup failed during AIDL object close"));
+        return Err(status_unknown_error(
+            "callback store cleanup failed during AIDL object close",
+        ));
     }
     let closed_entries = runtime
         .object_table_mut()
@@ -180,15 +238,25 @@ pub fn record_callback_registration(
     handle: AidlObjectHandle,
     api: AidlApi,
 ) -> BinderResult<()> {
-    let mut runtime = runtime.lock().map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
+    let mut runtime = runtime
+        .lock()
+        .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
     runtime
         .object_table()
-        .entry_for_kind(handle.object_id(), handle.generation(), handle.object_kind())
+        .entry_for_kind(
+            handle.object_id(),
+            handle.generation(),
+            handle.object_kind(),
+        )
         .map_err(status_from_object_table_error)?;
-    runtime.callback_registry_mut().record_registration(handle.object_kind(), handle.object_id(), handle.generation(), api);
+    runtime.callback_registry_mut().record_registration(
+        handle.object_kind(),
+        handle.object_id(),
+        handle.generation(),
+        api,
+    );
     Ok(())
 }
-
 
 pub fn plan_object_aidl_method(
     runtime: &SharedTunerRuntime,
@@ -214,12 +282,16 @@ fn object_table_hal_error(error: RuntimeObjectTableError) -> HalError {
         RuntimeObjectTableError::GenerationMismatch { .. } => "AIDL object generation mismatch",
         RuntimeObjectTableError::InvalidOwner { .. } => "AIDL object owner mismatch",
         RuntimeObjectTableError::MissingOwner { .. } => "AIDL object owner is missing",
-        RuntimeObjectTableError::OwnerGenerationMismatch { .. } => "AIDL object owner generation mismatch",
+        RuntimeObjectTableError::OwnerGenerationMismatch { .. } => {
+            "AIDL object owner generation mismatch"
+        }
         RuntimeObjectTableError::OwnerKindMismatch { .. } => "AIDL object owner kind mismatch",
         RuntimeObjectTableError::OwnerNotLive { .. } => "AIDL object owner is not live",
         RuntimeObjectTableError::InvalidLifecycle { .. } => "AIDL object is not live",
         RuntimeObjectTableError::DuplicateObjectId { .. } => "AIDL object id already registered",
-        RuntimeObjectTableError::DuplicateRuntimeBinding { .. } => "AIDL public runtime object is already opened",
+        RuntimeObjectTableError::DuplicateRuntimeBinding { .. } => {
+            "AIDL public runtime object is already opened"
+        }
         RuntimeObjectTableError::UnsupportedObjectKind { .. } => "AIDL object kind is unsupported",
         RuntimeObjectTableError::GenerationOverflow => "AIDL object generation overflow",
     };
@@ -229,10 +301,18 @@ fn object_table_hal_error(error: RuntimeObjectTableError) -> HalError {
 fn status_from_hal_error(error: &HalError) -> Status {
     let code = match AidlStatusMapper::map_error(error) {
         maleicacid_tuner_hal2_binder_adapter::TunerStatusCode::Ok => TunerResult::UNKNOWN_ERROR.0,
-        maleicacid_tuner_hal2_binder_adapter::TunerStatusCode::InvalidArgument => TunerResult::INVALID_ARGUMENT.0,
-        maleicacid_tuner_hal2_binder_adapter::TunerStatusCode::InvalidState => TunerResult::INVALID_STATE.0,
-        maleicacid_tuner_hal2_binder_adapter::TunerStatusCode::Unavailable => TunerResult::UNAVAILABLE.0,
-        maleicacid_tuner_hal2_binder_adapter::TunerStatusCode::UnknownError => TunerResult::UNKNOWN_ERROR.0,
+        maleicacid_tuner_hal2_binder_adapter::TunerStatusCode::InvalidArgument => {
+            TunerResult::INVALID_ARGUMENT.0
+        }
+        maleicacid_tuner_hal2_binder_adapter::TunerStatusCode::InvalidState => {
+            TunerResult::INVALID_STATE.0
+        }
+        maleicacid_tuner_hal2_binder_adapter::TunerStatusCode::Unavailable => {
+            TunerResult::UNAVAILABLE.0
+        }
+        maleicacid_tuner_hal2_binder_adapter::TunerStatusCode::UnknownError => {
+            TunerResult::UNKNOWN_ERROR.0
+        }
     };
     service_error(code, &error.to_string())
 }
@@ -244,19 +324,25 @@ fn status_from_object_table_error(error: RuntimeObjectTableError) -> Status {
         RuntimeObjectTableError::GenerationMismatch { .. } => "AIDL object generation mismatch",
         RuntimeObjectTableError::InvalidOwner { .. } => "AIDL object owner mismatch",
         RuntimeObjectTableError::MissingOwner { .. } => "AIDL object owner is missing",
-        RuntimeObjectTableError::OwnerGenerationMismatch { .. } => "AIDL object owner generation mismatch",
+        RuntimeObjectTableError::OwnerGenerationMismatch { .. } => {
+            "AIDL object owner generation mismatch"
+        }
         RuntimeObjectTableError::OwnerKindMismatch { .. } => "AIDL object owner kind mismatch",
         RuntimeObjectTableError::OwnerNotLive { .. } => "AIDL object owner is not live",
         RuntimeObjectTableError::InvalidLifecycle { .. } => "AIDL object is not live",
         RuntimeObjectTableError::DuplicateObjectId { .. } => "AIDL object id already registered",
-        RuntimeObjectTableError::DuplicateRuntimeBinding { .. } => "AIDL public runtime object is already opened",
+        RuntimeObjectTableError::DuplicateRuntimeBinding { .. } => {
+            "AIDL public runtime object is already opened"
+        }
         RuntimeObjectTableError::UnsupportedObjectKind { .. } => "AIDL object kind is unsupported",
         RuntimeObjectTableError::GenerationOverflow => "AIDL object generation overflow",
     };
     service_error(TunerResult::INVALID_STATE.0, message)
 }
 
-fn status_unknown_error(message: &str) -> Status { service_error(TunerResult::UNKNOWN_ERROR.0, message) }
+fn status_unknown_error(message: &str) -> Status {
+    service_error(TunerResult::UNKNOWN_ERROR.0, message)
+}
 
 fn service_error(code: i32, message: &str) -> Status {
     match std::ffi::CString::new(message) {

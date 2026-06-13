@@ -21,8 +21,13 @@ pub fn max_arib_section_length_for_table_id(table_id: u8) -> usize {
     }
 }
 
-fn increment_atomic_counter_with_saturation(counter: &AtomicU64, saturated: Option<&AtomicBool>) -> u64 {
-    match counter.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| value.checked_add(1)) {
+fn increment_atomic_counter_with_saturation(
+    counter: &AtomicU64,
+    saturated: Option<&AtomicBool>,
+) -> u64 {
+    match counter.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
+        value.checked_add(1)
+    }) {
         Ok(previous) => previous + 1,
         Err(_) => {
             if let Some(flag) = saturated {
@@ -50,7 +55,10 @@ pub fn retry_after_interrupted_read_with_saturation(
     loop {
         match f() {
             Err(err) if err.kind() == io::ErrorKind::Interrupted => {
-                let total = increment_atomic_counter_with_saturation(retry_counter, retry_counter_saturated);
+                let total = increment_atomic_counter_with_saturation(
+                    retry_counter,
+                    retry_counter_saturated,
+                );
                 eprintln!(
                     "maleicacid-tuner-hal2-read-retry: operation={} error=EINTR action=retry total={}",
                     operation,
@@ -131,13 +139,21 @@ impl TsPacketCompletionBuffer {
                     if self.buf.len() > TS_RESYNC_TAIL_BYTES {
                         let discard = self.buf.len() - TS_RESYNC_TAIL_BYTES;
                         self.buf.drain(..discard);
-                        Self::add_local_malformed(&mut malformed_bytes, discard, &mut local_malformed_saturated);
+                        Self::add_local_malformed(
+                            &mut malformed_bytes,
+                            discard,
+                            &mut local_malformed_saturated,
+                        );
                     }
                     break;
                 };
                 if offset > 0 {
                     self.buf.drain(..offset);
-                    Self::add_local_malformed(&mut malformed_bytes, offset, &mut local_malformed_saturated);
+                    Self::add_local_malformed(
+                        &mut malformed_bytes,
+                        offset,
+                        &mut local_malformed_saturated,
+                    );
                 }
                 self.resync_required = false;
                 continue;
@@ -162,7 +178,10 @@ impl TsPacketCompletionBuffer {
             self.malformed_bytes_saturated = true;
         }
         let packets = self.drain_completed(usize::MAX);
-        TsPacketBufferDrain { packets, malformed_bytes }
+        TsPacketBufferDrain {
+            packets,
+            malformed_bytes,
+        }
     }
 
     pub fn push_limited(&mut self, data: &[u8], max_packets: usize) -> TsPacketBufferDrain {
@@ -175,13 +194,18 @@ impl TsPacketCompletionBuffer {
         for packet in pending.into_iter().rev() {
             self.completed.push_front(packet);
         }
-        TsPacketBufferDrain { packets, malformed_bytes: drain.malformed_bytes }
+        TsPacketBufferDrain {
+            packets,
+            malformed_bytes: drain.malformed_bytes,
+        }
     }
 
     pub fn drain_completed(&mut self, max_packets: usize) -> Vec<[u8; TS_PACKET_SIZE]> {
         let mut packets = Vec::new();
         while packets.len() < max_packets {
-            let Some(packet) = self.completed.pop_front() else { break; };
+            let Some(packet) = self.completed.pop_front() else {
+                break;
+            };
             packets.push(packet);
         }
         packets
@@ -193,9 +217,15 @@ impl TsPacketCompletionBuffer {
         self.resync_required = false;
     }
 
-    pub fn tail_len(&self) -> usize { self.buf.len() }
-    pub fn malformed_bytes(&self) -> u64 { self.malformed_bytes }
-    pub fn malformed_bytes_saturated(&self) -> bool { self.malformed_bytes_saturated }
+    pub fn tail_len(&self) -> usize {
+        self.buf.len()
+    }
+    pub fn malformed_bytes(&self) -> u64 {
+        self.malformed_bytes
+    }
+    pub fn malformed_bytes_saturated(&self) -> bool {
+        self.malformed_bytes_saturated
+    }
 
     pub fn drain_for_boundary(&mut self) -> TsPacketBufferDrain {
         let packets = self.drain_completed(usize::MAX);
@@ -205,7 +235,10 @@ impl TsPacketCompletionBuffer {
             self.buf.clear();
         }
         self.resync_required = false;
-        TsPacketBufferDrain { packets, malformed_bytes }
+        TsPacketBufferDrain {
+            packets,
+            malformed_bytes,
+        }
     }
 }
 
@@ -222,23 +255,36 @@ pub struct IdAllocator {
 
 impl IdAllocator {
     pub const fn new(start: i32) -> Self {
-        Self { next: AtomicI32::new(start), max: i32::MAX }
+        Self {
+            next: AtomicI32::new(start),
+            max: i32::MAX,
+        }
     }
 
     pub const fn new_bounded(start: i32, max: i32) -> Self {
-        Self { next: AtomicI32::new(start), max }
+        Self {
+            next: AtomicI32::new(start),
+            max,
+        }
     }
 
     pub fn try_allocate(&self) -> Result<i32, IdExhausted> {
         loop {
             let current = self.next.load(Ordering::SeqCst);
             if current > self.max {
-                return Err(IdExhausted { last_attempted: current });
+                return Err(IdExhausted {
+                    last_attempted: current,
+                });
             }
             let Some(next) = current.checked_add(1) else {
-                return Err(IdExhausted { last_attempted: current });
+                return Err(IdExhausted {
+                    last_attempted: current,
+                });
             };
-            match self.next.compare_exchange(current, next, Ordering::SeqCst, Ordering::SeqCst) {
+            match self
+                .next
+                .compare_exchange(current, next, Ordering::SeqCst, Ordering::SeqCst)
+            {
                 Ok(_) => return Ok(current),
                 Err(_) => continue,
             }
@@ -285,8 +331,6 @@ pub enum FrontendStreamIdKind {
     AbsoluteStreamId,
     RelativeStreamNumber,
 }
-
-
 
 pub const JAPAN_CATV_C13_CENTER_HZ: u64 = 111_142_857;
 pub const JAPAN_UHF_62_CENTER_HZ: u64 = 767_142_857;
@@ -335,9 +379,15 @@ pub struct FrontendDevicePath {
 }
 
 impl FrontendDevicePath {
-    pub fn new(path: impl Into<PathBuf>) -> Self { Self { inner: path.into() } }
-    pub fn as_path(&self) -> &Path { &self.inner }
-    pub fn display(&self) -> String { self.inner.display().to_string() }
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self { inner: path.into() }
+    }
+    pub fn as_path(&self) -> &Path {
+        &self.inner
+    }
+    pub fn display(&self) -> String {
+        self.inner.display().to_string()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -380,54 +430,120 @@ pub struct HalErrorDetail {
 }
 
 impl HalErrorDetail {
-    pub fn new(detail: impl Into<String>) -> Self { Self { detail: detail.into() } }
+    pub fn new(detail: impl Into<String>) -> Self {
+        Self {
+            detail: detail.into(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HalError {
     DeviceMissing(PathBuf),
-    OpenFailed { path: PathBuf, detail: HalErrorDetail },
-    PermissionDenied { path: PathBuf, detail: HalErrorDetail },
-    Busy { path: Option<PathBuf>, detail: HalErrorDetail },
-    IoctlFailed { backend: &'static str, path: Option<PathBuf>, op: &'static str, errno: i32 },
-    CallbackFailed { callback: &'static str, detail: HalErrorDetail },
-    FmqFailed { operation: &'static str, detail: HalErrorDetail },
-    EventFlagFailed { operation: &'static str, detail: HalErrorDetail },
-    CleanupFailed { resource: &'static str, detail: HalErrorDetail },
-    InvalidArgument { kind: HalInvalidArgumentKind, detail: HalErrorDetail },
-    InvalidState { kind: HalInvalidStateKind, detail: HalErrorDetail },
-    Io { backend: &'static str, operation: &'static str, path: Option<PathBuf>, errno: Option<i32>, detail: HalErrorDetail },
-    Internal { kind: HalInternalKind, detail: HalErrorDetail },
+    OpenFailed {
+        path: PathBuf,
+        detail: HalErrorDetail,
+    },
+    PermissionDenied {
+        path: PathBuf,
+        detail: HalErrorDetail,
+    },
+    Busy {
+        path: Option<PathBuf>,
+        detail: HalErrorDetail,
+    },
+    IoctlFailed {
+        backend: &'static str,
+        path: Option<PathBuf>,
+        op: &'static str,
+        errno: i32,
+    },
+    CallbackFailed {
+        callback: &'static str,
+        detail: HalErrorDetail,
+    },
+    FmqFailed {
+        operation: &'static str,
+        detail: HalErrorDetail,
+    },
+    EventFlagFailed {
+        operation: &'static str,
+        detail: HalErrorDetail,
+    },
+    CleanupFailed {
+        resource: &'static str,
+        detail: HalErrorDetail,
+    },
+    InvalidArgument {
+        kind: HalInvalidArgumentKind,
+        detail: HalErrorDetail,
+    },
+    InvalidState {
+        kind: HalInvalidStateKind,
+        detail: HalErrorDetail,
+    },
+    Io {
+        backend: &'static str,
+        operation: &'static str,
+        path: Option<PathBuf>,
+        errno: Option<i32>,
+        detail: HalErrorDetail,
+    },
+    Internal {
+        kind: HalInternalKind,
+        detail: HalErrorDetail,
+    },
     Unsupported(&'static str),
 }
 
 impl HalError {
     pub fn invalid_argument(kind: HalInvalidArgumentKind, detail: impl Into<String>) -> Self {
-        Self::InvalidArgument { kind, detail: HalErrorDetail::new(detail) }
+        Self::InvalidArgument {
+            kind,
+            detail: HalErrorDetail::new(detail),
+        }
     }
 
     pub fn invalid_state(kind: HalInvalidStateKind, detail: impl Into<String>) -> Self {
-        Self::InvalidState { kind, detail: HalErrorDetail::new(detail) }
+        Self::InvalidState {
+            kind,
+            detail: HalErrorDetail::new(detail),
+        }
     }
 
     pub fn internal(kind: HalInternalKind, detail: impl Into<String>) -> Self {
-        Self::Internal { kind, detail: HalErrorDetail::new(detail) }
+        Self::Internal {
+            kind,
+            detail: HalErrorDetail::new(detail),
+        }
     }
 
     pub fn callback_failed(callback: &'static str, detail: impl Into<String>) -> Self {
-        Self::CallbackFailed { callback, detail: HalErrorDetail::new(detail) }
+        Self::CallbackFailed {
+            callback,
+            detail: HalErrorDetail::new(detail),
+        }
     }
 
     pub fn fmq_failed(operation: &'static str, detail: impl Into<String>) -> Self {
-        Self::FmqFailed { operation, detail: HalErrorDetail::new(detail) }
+        Self::FmqFailed {
+            operation,
+            detail: HalErrorDetail::new(detail),
+        }
     }
 
     pub fn event_flag_failed(operation: &'static str, detail: impl Into<String>) -> Self {
-        Self::EventFlagFailed { operation, detail: HalErrorDetail::new(detail) }
+        Self::EventFlagFailed {
+            operation,
+            detail: HalErrorDetail::new(detail),
+        }
     }
 
     pub fn cleanup_failed(resource: &'static str, detail: impl Into<String>) -> Self {
-        Self::CleanupFailed { resource, detail: HalErrorDetail::new(detail) }
+        Self::CleanupFailed {
+            resource,
+            detail: HalErrorDetail::new(detail),
+        }
     }
 
     pub fn invalid_argument_kind(&self) -> Option<HalInvalidArgumentKind> {
@@ -458,19 +574,40 @@ pub fn errno_name(errno: i32) -> &'static str {
 }
 
 fn display_path(path: &Option<PathBuf>) -> String {
-    path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "<unavailable>".to_string())
+    path.as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "<unavailable>".to_string())
 }
 
 impl fmt::Display for HalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             HalError::DeviceMissing(path) => write!(f, "device not found: {}", path.display()),
-            HalError::OpenFailed { path, detail } => write!(f, "open に失敗しました {}: {}", path.display(), detail.detail),
-            HalError::PermissionDenied { path, detail } => write!(f, "permission denied opening {}: {}", path.display(), detail.detail),
+            HalError::OpenFailed { path, detail } => write!(
+                f,
+                "open に失敗しました {}: {}",
+                path.display(),
+                detail.detail
+            ),
+            HalError::PermissionDenied { path, detail } => write!(
+                f,
+                "permission denied opening {}: {}",
+                path.display(),
+                detail.detail
+            ),
             HalError::Busy { path, detail } => {
-                if let Some(path) = path { write!(f, "device busy {}: {}", path.display(), detail.detail) } else { write!(f, "device busy: {}", detail.detail) }
+                if let Some(path) = path {
+                    write!(f, "device busy {}: {}", path.display(), detail.detail)
+                } else {
+                    write!(f, "device busy: {}", detail.detail)
+                }
             }
-            HalError::IoctlFailed { backend, path, op, errno } => write!(
+            HalError::IoctlFailed {
+                backend,
+                path,
+                op,
+                errno,
+            } => write!(
                 f,
                 "実行時ioctl失敗: backend={} operation={} device_path={} errno={} errno_name={}",
                 backend,
@@ -479,20 +616,57 @@ impl fmt::Display for HalError {
                 errno,
                 errno_name(*errno),
             ),
-            HalError::CallbackFailed { callback, detail } => write!(f, "callback failed: callback={} detail={}", callback, detail.detail),
-            HalError::FmqFailed { operation, detail } => write!(f, "FMQ failed: operation={} detail={}", operation, detail.detail),
-            HalError::EventFlagFailed { operation, detail } => write!(f, "EventFlag failed: operation={} detail={}", operation, detail.detail),
-            HalError::CleanupFailed { resource, detail } => write!(f, "cleanup failed: resource={} detail={}", resource, detail.detail),
-            HalError::InvalidArgument { kind, detail } => write!(f, "invalid argument: kind={kind:?} detail={}", detail.detail),
-            HalError::InvalidState { kind, detail } => write!(f, "invalid state: kind={kind:?} detail={}", detail.detail),
-            HalError::Io { backend, operation, path, errno, detail } => {
+            HalError::CallbackFailed { callback, detail } => write!(
+                f,
+                "callback failed: callback={} detail={}",
+                callback, detail.detail
+            ),
+            HalError::FmqFailed { operation, detail } => write!(
+                f,
+                "FMQ failed: operation={} detail={}",
+                operation, detail.detail
+            ),
+            HalError::EventFlagFailed { operation, detail } => write!(
+                f,
+                "EventFlag failed: operation={} detail={}",
+                operation, detail.detail
+            ),
+            HalError::CleanupFailed { resource, detail } => write!(
+                f,
+                "cleanup failed: resource={} detail={}",
+                resource, detail.detail
+            ),
+            HalError::InvalidArgument { kind, detail } => write!(
+                f,
+                "invalid argument: kind={kind:?} detail={}",
+                detail.detail
+            ),
+            HalError::InvalidState { kind, detail } => {
+                write!(f, "invalid state: kind={kind:?} detail={}", detail.detail)
+            }
+            HalError::Io {
+                backend,
+                operation,
+                path,
+                errno,
+                detail,
+            } => {
                 if let Some(errno) = errno {
                     write!(f, "io failed: backend={} operation={} device_path={} errno={} errno_name={} detail={}", backend, operation, display_path(path), errno, errno_name(*errno), detail.detail)
                 } else {
-                    write!(f, "io failed: backend={} operation={} device_path={} detail={}", backend, operation, display_path(path), detail.detail)
+                    write!(
+                        f,
+                        "io failed: backend={} operation={} device_path={} detail={}",
+                        backend,
+                        operation,
+                        display_path(path),
+                        detail.detail
+                    )
                 }
             }
-            HalError::Internal { kind, detail } => write!(f, "internal error: kind={kind:?} detail={}", detail.detail),
+            HalError::Internal { kind, detail } => {
+                write!(f, "internal error: kind={kind:?} detail={}", detail.detail)
+            }
             HalError::Unsupported(feature) => write!(f, "unsupported feature: {feature}"),
         }
     }

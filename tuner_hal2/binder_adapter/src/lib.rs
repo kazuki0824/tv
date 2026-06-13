@@ -1,34 +1,43 @@
-pub mod frontend;
+pub mod aidl_filter_config;
+pub mod aidl_method;
 pub mod demux;
-pub mod filter;
-pub mod dvr;
 pub mod descrambler;
+pub mod dvr;
+pub mod filter;
+pub mod frontend;
 pub mod lnb;
 pub mod status;
-pub mod aidl_method;
-pub mod aidl_filter_config;
 
-pub use status::{AidlFailureSource, AidlStatusMapper, ApiStatusPrecedence, DomainResult, StatusPrecedenceStep, TunerStatusCode};
+pub use aidl_filter_config::{
+    build_filter_summary_for_open_type, build_open_filter_request, build_section_condition,
+    build_section_condition_kind, filter_main_type_supported, filter_open_type,
+    normalize_pes_stream_id, validate_record_index_settings, validate_ts_pid,
+};
 pub use aidl_method::{
-    build_dvr_configure_request, build_dvr_open_request,
-    build_filter_av_stream_type_request, build_filter_delay_hint_request,
-    build_lnb_satellite_position_request, build_lnb_tone_request,
+    build_dvr_configure_request, build_dvr_open_request, build_filter_av_stream_type_request,
+    build_filter_delay_hint_request, build_lnb_satellite_position_request, build_lnb_tone_request,
     build_lnb_voltage_request, AidlMethodAdapter, AidlMethodCall, AidlMethodPlan,
 };
-pub use aidl_filter_config::{build_filter_summary_for_open_type, build_open_filter_request, build_section_condition, build_section_condition_kind, filter_main_type_supported, filter_open_type, normalize_pes_stream_id, validate_record_index_settings, validate_ts_pid};
 pub use maleicacid_tuner_hal2_domain_request::{
-    AidlApi, AidlDomainRequest, AidlObjectGeneration, AidlObjectId, AidlObjectKind,
-    CommandPlan, DemuxSetFrontendDataSourceRequest, DomainProfileSupport,
-    DvrConfigureKind, DvrConfigureRequest, DvrFilterLinkRequest, DvrOpenKind,
-    FilterAvStreamKind, FilterAvStreamTypeRequest, FilterDelayHintKind,
-    FilterDelayHintRequest, FilterReleaseAvHandleRequest, FilterSetDataSourceRequest,
-    LnbSetSatellitePositionRequest, LnbToneRequest, LnbVoltageRequest,
+    AidlApi, AidlDomainRequest, AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan,
+    DemuxSetFrontendDataSourceRequest, DomainProfileSupport, DvrConfigureKind, DvrConfigureRequest,
+    DvrFilterLinkRequest, DvrOpenKind, FilterAvStreamKind, FilterAvStreamTypeRequest,
+    FilterDelayHintKind, FilterDelayHintRequest, FilterReleaseAvHandleRequest,
+    FilterSetDataSourceRequest, LnbSetSatellitePositionRequest, LnbToneRequest, LnbVoltageRequest,
     OpenDvrRequest, RuntimeExecutableRequest, RuntimeTransactionName, AIDL_TRANSACTION_TABLE,
+};
+pub use status::{
+    AidlFailureSource, AidlStatusMapper, ApiStatusPrecedence, DomainResult, StatusPrecedenceStep,
+    TunerStatusCode,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DomainCommand {
-    UnsupportedPublicApi { object: AidlObjectKind, api: AidlApi, request: Option<AidlDomainRequest> },
+    UnsupportedPublicApi {
+        object: AidlObjectKind,
+        api: AidlApi,
+        request: Option<AidlDomainRequest>,
+    },
     Frontend(frontend::FrontendCommand),
     Demux(demux::DemuxCommand),
     Filter(filter::FilterCommand),
@@ -40,50 +49,57 @@ pub enum DomainCommand {
 impl DomainCommand {
     pub fn runtime_executable_request(&self) -> Option<RuntimeExecutableRequest> {
         match self {
-            DomainCommand::UnsupportedPublicApi { request: Some(request), .. } => Some(request.clone()),
+            DomainCommand::UnsupportedPublicApi {
+                request: Some(request),
+                ..
+            } => Some(request.clone()),
             DomainCommand::UnsupportedPublicApi { request: None, .. } => None,
             DomainCommand::Frontend(frontend::FrontendCommand::SetCallback(request)) => {
                 Some(request.clone())
             }
-            DomainCommand::Demux(demux::DemuxCommand::SetFrontendDataSource(request)
+            DomainCommand::Demux(
+                demux::DemuxCommand::SetFrontendDataSource(request)
                 | demux::DemuxCommand::OpenFilter(request)
-                | demux::DemuxCommand::OpenDvr(request)) => {
-                Some(request.clone())
-            }
-            DomainCommand::Filter(filter::FilterCommand::Configure(request)
+                | demux::DemuxCommand::OpenDvr(request),
+            ) => Some(request.clone()),
+            DomainCommand::Filter(
+                filter::FilterCommand::Configure(request)
                 | filter::FilterCommand::ConfigureAvStreamType(request)
                 | filter::FilterCommand::ReleaseAvHandle(request)
                 | filter::FilterCommand::SetDataSource(request)
-                | filter::FilterCommand::SetDelayHint(request)) => {
-                Some(request.clone())
-            }
-            DomainCommand::Dvr(dvr::DvrCommand::Configure(request)
+                | filter::FilterCommand::SetDelayHint(request),
+            ) => Some(request.clone()),
+            DomainCommand::Dvr(
+                dvr::DvrCommand::Configure(request)
                 | dvr::DvrCommand::AttachFilter(request)
-                | dvr::DvrCommand::DetachFilter(request)) => {
-                Some(request.clone())
-            }
-            DomainCommand::Lnb(lnb::LnbCommand::SetCallback(request)
+                | dvr::DvrCommand::DetachFilter(request),
+            ) => Some(request.clone()),
+            DomainCommand::Lnb(
+                lnb::LnbCommand::SetCallback(request)
                 | lnb::LnbCommand::SetVoltage(request)
                 | lnb::LnbCommand::SetTone(request)
-                | lnb::LnbCommand::SetSatellitePosition(request)) => {
-                Some(request.clone())
-            }
+                | lnb::LnbCommand::SetSatellitePosition(request),
+            ) => Some(request.clone()),
             DomainCommand::Frontend(_)
             | DomainCommand::Demux(demux::DemuxCommand::Close)
-            | DomainCommand::Filter(filter::FilterCommand::GetQueueDesc
+            | DomainCommand::Filter(
+                filter::FilterCommand::GetQueueDesc
                 | filter::FilterCommand::GetId
                 | filter::FilterCommand::GetId64Bit
                 | filter::FilterCommand::GetAvSharedHandle
                 | filter::FilterCommand::Start
                 | filter::FilterCommand::Stop
                 | filter::FilterCommand::Flush
-                | filter::FilterCommand::Close)
-            | DomainCommand::Dvr(dvr::DvrCommand::GetQueueDesc
+                | filter::FilterCommand::Close,
+            )
+            | DomainCommand::Dvr(
+                dvr::DvrCommand::GetQueueDesc
                 | dvr::DvrCommand::Start
                 | dvr::DvrCommand::Stop
                 | dvr::DvrCommand::Flush
                 | dvr::DvrCommand::Close
-                | dvr::DvrCommand::SetStatusCheckIntervalHint(_))
+                | dvr::DvrCommand::SetStatusCheckIntervalHint(_),
+            )
             | DomainCommand::Descrambler(_)
             | DomainCommand::Lnb(lnb::LnbCommand::SendDiseqc(_) | lnb::LnbCommand::Close) => None,
         }
@@ -96,7 +112,9 @@ impl DomainCommand {
                 api: *api,
                 transaction: match object {
                     AidlObjectKind::Tuner => RuntimeTransactionName::TunerUnsupportedPublicApiTxn,
-                    AidlObjectKind::Frontend => RuntimeTransactionName::FrontendUnsupportedPublicApiTxn,
+                    AidlObjectKind::Frontend => {
+                        RuntimeTransactionName::FrontendUnsupportedPublicApiTxn
+                    }
                     AidlObjectKind::Demux => RuntimeTransactionName::DemuxUnsupportedPublicApiTxn,
                     _ => RuntimeTransactionName::TunerUnsupportedPublicApiTxn,
                 },
@@ -110,7 +128,6 @@ impl DomainCommand {
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -132,7 +149,10 @@ mod tests {
     #[test]
     fn frontend_tune_command_maps_to_frontend_tune_transaction() {
         let command = DomainCommand::Frontend(frontend::FrontendCommand::Tune(request()));
-        assert_eq!(command.plan().transaction, RuntimeTransactionName::FrontendTuneTxnApply);
+        assert_eq!(
+            command.plan().transaction,
+            RuntimeTransactionName::FrontendTuneTxnApply
+        );
     }
 
     #[test]
@@ -147,8 +167,14 @@ mod tests {
     #[test]
     fn aidl_method_adapter_creates_domain_command_without_intermediate_string_layer() {
         let plan = aidl_method::AidlMethodAdapter::frontend_tune(request());
-        assert!(matches!(plan.command, DomainCommand::Frontend(frontend::FrontendCommand::Tune(_))));
-        assert_eq!(plan.command_plan.transaction, RuntimeTransactionName::FrontendTuneTxnApply);
+        assert!(matches!(
+            plan.command,
+            DomainCommand::Frontend(frontend::FrontendCommand::Tune(_))
+        ));
+        assert_eq!(
+            plan.command_plan.transaction,
+            RuntimeTransactionName::FrontendTuneTxnApply
+        );
     }
 
     #[test]

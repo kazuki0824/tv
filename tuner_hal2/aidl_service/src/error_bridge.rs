@@ -12,18 +12,27 @@ pub struct AidlErrorBridge {
 }
 
 impl AidlErrorBridge {
-    pub const fn new(aidl_version: u32) -> Self { Self { mapper: AidlStatusMapper::new(aidl_version) } }
+    pub const fn new(aidl_version: u32) -> Self {
+        Self {
+            mapper: AidlStatusMapper::new(aidl_version),
+        }
+    }
 
     pub fn map_domain_error(&self, error: HalError) -> AidlErrorMapping {
         let status = AidlStatusMapper::map_error(&error);
-        AidlErrorMapping { status, source_error: error }
+        AidlErrorMapping {
+            status,
+            source_error: error,
+        }
     }
 
     pub fn map_domain_error_ref(&self, error: &HalError) -> TunerStatusCode {
         AidlStatusMapper::map_error(error)
     }
 
-    pub const fn aidl_version(&self) -> u32 { self.mapper.aidl_version() }
+    pub const fn aidl_version(&self) -> u32 {
+        self.mapper.aidl_version()
+    }
 }
 
 #[cfg(test)]

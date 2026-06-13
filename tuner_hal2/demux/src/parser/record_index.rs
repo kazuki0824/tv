@@ -22,9 +22,13 @@ pub struct RecordIndexParser {
 }
 
 impl RecordIndexParser {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
-    pub fn processed_packets(&self) -> u64 { self.processed_packets }
+    pub fn processed_packets(&self) -> u64 {
+        self.processed_packets
+    }
 
     pub fn push_ts_packet(
         &mut self,
@@ -55,10 +59,16 @@ impl RecordIndexParser {
         configured_sc_index_mask_bits: i32,
         record_state: &mut RecordEventState,
     ) -> Option<TsRecordEventData> {
-        self.push_ts_packet(packet, cumulative_bytes, configured_ts_index_mask, sc_index_type, configured_sc_index_mask_bits, record_state)
+        self.push_ts_packet(
+            packet,
+            cumulative_bytes,
+            configured_ts_index_mask,
+            sc_index_type,
+            configured_sc_index_mask_bits,
+            record_state,
+        )
     }
 }
-
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RecordStartCodeInfo {
@@ -95,7 +105,6 @@ pub const RECORD_SC_TYPE_SC_HEVC: i32 = 2;
 pub const RECORD_SC_TYPE_SC_AVC: i32 = 3;
 pub const RECORD_SC_TYPE_SC_VVC: i32 = 4;
 
-
 pub const DEMUX_TS_INDEX_FIRST_PACKET: i32 = 1 << 0;
 pub const DEMUX_TS_INDEX_PAYLOAD_UNIT_START: i32 = 1 << 1;
 pub const DEMUX_TS_INDEX_CHANGE_TO_NOT_SCRAMBLED: i32 = 1 << 2;
@@ -118,7 +127,6 @@ pub struct RecordEventState {
     pes_header_carry: Vec<u8>,
 }
 
-
 impl RecordEventState {
     fn payload_with_sc_carry(&mut self, payload: &[u8]) -> Vec<u8> {
         let mut merged = Vec::with_capacity(self.sc_prefix_carry.len() + payload.len());
@@ -127,7 +135,8 @@ impl RecordEventState {
         let keep = payload.len().min(3);
         self.sc_prefix_carry.clear();
         if keep > 0 {
-            self.sc_prefix_carry.extend_from_slice(&payload[payload.len() - keep..]);
+            self.sc_prefix_carry
+                .extend_from_slice(&payload[payload.len() - keep..]);
         }
         merged
     }
@@ -136,7 +145,8 @@ impl RecordEventState {
         if payload_unit_start || payload.starts_with(&[0x00, 0x00, 0x01]) {
             self.pes_header_carry.clear();
             if payload.starts_with(&[0x00, 0x00, 0x01]) {
-                self.pes_header_carry.extend_from_slice(&payload[..payload.len().min(19)]);
+                self.pes_header_carry
+                    .extend_from_slice(&payload[..payload.len().min(19)]);
                 if let Some(pts) = record_packet_pts(payload) {
                     self.pes_header_carry.clear();
                     return Some(pts);
@@ -151,7 +161,8 @@ impl RecordEventState {
         if self.pes_header_carry.is_empty() {
             return None;
         }
-        self.pes_header_carry.extend_from_slice(&payload[..payload.len().min(19)]);
+        self.pes_header_carry
+            .extend_from_slice(&payload[..payload.len().min(19)]);
         if !starts_with_complete_or_partial_pes_prefix(&self.pes_header_carry) {
             self.pes_header_carry.clear();
             return None;
@@ -166,7 +177,6 @@ impl RecordEventState {
         pts
     }
 }
-
 
 fn is_pes_start_prefix_fragment(payload: &[u8]) -> bool {
     matches!(payload, [0x00] | [0x00, 0x00])
@@ -302,11 +312,7 @@ fn build_ts_record_event_data(
         .observe_pts(packet_payload, packet_view.payload_unit_start)
         .unwrap_or(RECORD_INDEX_PTS_ABSENT);
     let sc_payload = record_state.payload_with_sc_carry(packet_payload);
-    let sc_info = record_sc_info(
-        &sc_payload,
-        sc_index_type,
-        configured_sc_index_mask_bits,
-    );
+    let sc_info = record_sc_info(&sc_payload, sc_index_type, configured_sc_index_mask_bits);
     let first_mb_in_slice = sc_info
         .map(|info| info.first_mb_in_slice)
         .unwrap_or(INVALID_FIRST_MB_IN_SLICE);
@@ -424,7 +430,6 @@ fn pes_payload_kind(payload: &[u8]) -> PesPayloadKind<'_> {
         None => PesPayloadKind::MalformedPes,
     }
 }
-
 
 fn find_sc_prefix(bytes: &[u8]) -> Option<(usize, usize)> {
     let mut i = 0usize;
@@ -555,7 +560,10 @@ struct BitReader<'a> {
 
 impl<'a> BitReader<'a> {
     fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, bit_offset: 0 }
+        Self {
+            bytes,
+            bit_offset: 0,
+        }
     }
 
     fn read_bit(&mut self) -> Option<u8> {
@@ -581,7 +589,11 @@ impl<'a> BitReader<'a> {
                 return None;
             }
         }
-        let suffix = if leading_zero_bits == 0 { 0 } else { self.read_bits(leading_zero_bits)? };
+        let suffix = if leading_zero_bits == 0 {
+            0
+        } else {
+            self.read_bits(leading_zero_bits)?
+        };
         Some(((1u32 << leading_zero_bits) - 1) + suffix)
     }
 }
@@ -597,7 +609,6 @@ pub fn pes_time_fields(payload: &[u8]) -> (Option<u64>, Option<u64>) {
     }
     (summary.pts_90khz, summary.dts_90khz)
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -619,7 +630,9 @@ mod tests {
 
     #[test]
     fn codec_scanner_trait_preserves_codec_kind() {
-        let scanner = TestScanner { codec: CodecKind::H264 };
+        let scanner = TestScanner {
+            codec: CodecKind::H264,
+        };
         assert_eq!(scanner.codec(), CodecKind::H264);
         assert_eq!(scanner.scan_start_codes(&[]), 0);
     }
@@ -627,7 +640,11 @@ mod tests {
 
 #[cfg(test)]
 mod adaptation_field_contract_tests {
-    use super::{RecordEventState, RecordIndexParser, DEMUX_TS_INDEX_ADAPTATION_EXTENSION, DEMUX_TS_INDEX_OPCR, DEMUX_TS_INDEX_PCR, DEMUX_TS_INDEX_PRIVATE_DATA, DEMUX_TS_INDEX_SPLICING_POINT, RECORD_SC_TYPE_NONE};
+    use super::{
+        RecordEventState, RecordIndexParser, DEMUX_TS_INDEX_ADAPTATION_EXTENSION,
+        DEMUX_TS_INDEX_OPCR, DEMUX_TS_INDEX_PCR, DEMUX_TS_INDEX_PRIVATE_DATA,
+        DEMUX_TS_INDEX_SPLICING_POINT, RECORD_SC_TYPE_NONE,
+    };
     use maleicacid_tuner_hal2_common::TS_PACKET_SIZE;
 
     fn packet_with_adaptation(flags: u8, body: &[u8]) -> [u8; TS_PACKET_SIZE] {
@@ -646,7 +663,14 @@ mod adaptation_field_contract_tests {
         let mut parser = RecordIndexParser::new();
         let mut state = RecordEventState::default();
         parser
-            .push_ts_packet(packet, TS_PACKET_SIZE as u64, mask, RECORD_SC_TYPE_NONE, 0, &mut state)
+            .push_ts_packet(
+                packet,
+                TS_PACKET_SIZE as u64,
+                mask,
+                RECORD_SC_TYPE_NONE,
+                0,
+                &mut state,
+            )
             .map(|event| event.ts_index_mask)
             .unwrap_or(0)
     }
@@ -679,12 +703,21 @@ mod adaptation_field_contract_tests {
         let private_short = packet_with_adaptation(0x02, &[3, 0xaa]);
         assert_eq!(event_mask(&private_short, DEMUX_TS_INDEX_PRIVATE_DATA), 0);
         let private_ok = packet_with_adaptation(0x02, &[1, 0xaa]);
-        assert_eq!(event_mask(&private_ok, DEMUX_TS_INDEX_PRIVATE_DATA), DEMUX_TS_INDEX_PRIVATE_DATA);
+        assert_eq!(
+            event_mask(&private_ok, DEMUX_TS_INDEX_PRIVATE_DATA),
+            DEMUX_TS_INDEX_PRIVATE_DATA
+        );
 
         let extension_short = packet_with_adaptation(0x01, &[2, 0xaa]);
-        assert_eq!(event_mask(&extension_short, DEMUX_TS_INDEX_ADAPTATION_EXTENSION), 0);
+        assert_eq!(
+            event_mask(&extension_short, DEMUX_TS_INDEX_ADAPTATION_EXTENSION),
+            0
+        );
         let extension_ok = packet_with_adaptation(0x01, &[1, 0xaa]);
-        assert_eq!(event_mask(&extension_ok, DEMUX_TS_INDEX_ADAPTATION_EXTENSION), DEMUX_TS_INDEX_ADAPTATION_EXTENSION);
+        assert_eq!(
+            event_mask(&extension_ok, DEMUX_TS_INDEX_ADAPTATION_EXTENSION),
+            DEMUX_TS_INDEX_ADAPTATION_EXTENSION
+        );
     }
 }
 
@@ -719,9 +752,17 @@ mod record_start_code_boundary_tests {
             .is_none());
 
         let second = payload_packet(0x0100, 1, &[0x01, 0xb3]);
-        let event = parser
-            .push_ts_packet(&second, TS_PACKET_SIZE as u64, 0, RECORD_SC_TYPE_SC, 1 << 3, &mut state);
-        assert!(matches!(event, Some(TsRecordEventData { sc_index_mask_bits, .. }) if sc_index_mask_bits == (1 << 3)));
+        let event = parser.push_ts_packet(
+            &second,
+            TS_PACKET_SIZE as u64,
+            0,
+            RECORD_SC_TYPE_SC,
+            1 << 3,
+            &mut state,
+        );
+        assert!(
+            matches!(event, Some(TsRecordEventData { sc_index_mask_bits, .. }) if sc_index_mask_bits == (1 << 3))
+        );
     }
 }
 
@@ -743,7 +784,9 @@ mod record_pts_boundary_tests {
     fn pts_start_prefix_fragment_carry_crosses_ts_payload_boundary() {
         let mut state = RecordEventState::default();
         let first = [0x00, 0x00];
-        let second = [0x01, 0xe0, 0x00, 0x00, 0x80, 0x80, 0x05, 0x21, 0x00, 0x01, 0x00, 0x01];
+        let second = [
+            0x01, 0xe0, 0x00, 0x00, 0x80, 0x80, 0x05, 0x21, 0x00, 0x01, 0x00, 0x01,
+        ];
 
         assert_eq!(state.observe_pts(&first, true), None);
         assert_eq!(state.observe_pts(&second, false), Some(0));
@@ -754,7 +797,13 @@ mod record_pts_boundary_tests {
         let mut state = RecordEventState::default();
         assert_eq!(state.observe_pts(&[0x00, 0x00], true), None);
         assert_eq!(state.observe_pts(&[0x02, 0xe0, 0x00, 0x00], false), None);
-        assert_eq!(state.observe_pts(&[0x01, 0xe0, 0x00, 0x00, 0x80, 0x80, 0x05, 0x21, 0x00, 0x01, 0x00, 0x01], false), None);
+        assert_eq!(
+            state.observe_pts(
+                &[0x01, 0xe0, 0x00, 0x00, 0x80, 0x80, 0x05, 0x21, 0x00, 0x01, 0x00, 0x01],
+                false
+            ),
+            None
+        );
     }
 }
 
@@ -765,23 +814,33 @@ mod record_pes_payload_tests {
     #[test]
     fn pes_payload_offset_uses_validated_header_layout() {
         let optional_header_missing = [0x00, 0x00, 0x01, 0xe0, 0x00, 0x00, 0x80, 0x80];
-        assert!(matches!(pes_payload_kind(&optional_header_missing), PesPayloadKind::MalformedPes));
+        assert!(matches!(
+            pes_payload_kind(&optional_header_missing),
+            PesPayloadKind::MalformedPes
+        ));
 
         let malformed_flags = [0x00, 0x00, 0x01, 0xe0, 0x00, 0x03, 0x00, 0x80, 0x00];
-        assert!(matches!(pes_payload_kind(&malformed_flags), PesPayloadKind::MalformedPes));
+        assert!(matches!(
+            pes_payload_kind(&malformed_flags),
+            PesPayloadKind::MalformedPes
+        ));
 
         let optional_header_too_large = [0x00, 0x00, 0x01, 0xe0, 0x00, 0x03, 0x80, 0x80, 0x10];
-        assert!(matches!(pes_payload_kind(&optional_header_too_large), PesPayloadKind::MalformedPes));
+        assert!(matches!(
+            pes_payload_kind(&optional_header_too_large),
+            PesPayloadKind::MalformedPes
+        ));
 
         let private_stream_2 = [0x00, 0x00, 0x01, 0xbf, 0x00, 0x02, 0xaa, 0xbb];
-        assert!(matches!(pes_payload_kind(&private_stream_2), PesPayloadKind::ElementaryStream(bytes) if bytes == &private_stream_2[6..]));
+        assert!(
+            matches!(pes_payload_kind(&private_stream_2), PesPayloadKind::ElementaryStream(bytes) if bytes == &private_stream_2[6..])
+        );
     }
 
     #[test]
     fn malformed_pes_does_not_fall_back_to_scanning_header_bytes() {
         let malformed_pes_with_embedded_avc_slice = [
-            0x00, 0x00, 0x01, 0xe0, 0x00, 0x03, 0x00, 0x80, 0x00,
-            0x00, 0x00, 0x01, 0x65, 0x33,
+            0x00, 0x00, 0x01, 0xe0, 0x00, 0x03, 0x00, 0x80, 0x00, 0x00, 0x00, 0x01, 0x65, 0x33,
         ];
         assert!(matches!(
             pes_payload_kind(&malformed_pes_with_embedded_avc_slice),
@@ -798,14 +857,15 @@ mod record_pes_payload_tests {
     #[test]
     fn raw_elementary_stream_start_code_is_still_scanned() {
         let raw_avc_slice = [0x00, 0x00, 0x01, 0x65, 0x33];
-        assert!(matches!(pes_payload_kind(&raw_avc_slice), PesPayloadKind::NotPes));
+        assert!(matches!(
+            pes_payload_kind(&raw_avc_slice),
+            PesPayloadKind::NotPes
+        ));
         let info = record_sc_info(&raw_avc_slice, RECORD_SC_TYPE_SC_AVC, AVC_SC_I_SLICE)
             .expect("raw ES AVC slice should still be indexed");
         assert_eq!(info.mask & AVC_SC_I_SLICE, AVC_SC_I_SLICE);
     }
 }
-
-
 
 #[cfg(test)]
 mod record_start_code_mask_tests {
@@ -820,7 +880,13 @@ mod record_start_code_mask_tests {
         payload.extend_from_slice(&matched_i_slice);
 
         let info = record_sc_info(&payload, RECORD_SC_TYPE_SC_AVC, AVC_SC_I_SLICE);
-        assert!(matches!(info, Some(RecordStartCodeInfo { first_mb_in_slice: 5, .. })));
+        assert!(matches!(
+            info,
+            Some(RecordStartCodeInfo {
+                first_mb_in_slice: 5,
+                ..
+            })
+        ));
         if let Some(RecordStartCodeInfo { mask, .. }) = info {
             assert_eq!(mask & AVC_SC_I_SLICE, AVC_SC_I_SLICE);
         }
@@ -885,5 +951,4 @@ mod record_start_code_mask_tests {
         )
         .is_none());
     }
-
 }

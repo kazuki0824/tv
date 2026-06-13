@@ -1,20 +1,15 @@
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
-    AvStreamType::AvStreamType,
-    DvrSettings::DvrSettings,
-    DvrType::DvrType,
-    FilterDelayHint::FilterDelayHint,
-    FilterDelayHintType::FilterDelayHintType,
-    LnbPosition::LnbPosition,
-    LnbTone::LnbTone,
-    LnbVoltage::LnbVoltage,
+    AvStreamType::AvStreamType, DvrSettings::DvrSettings, DvrType::DvrType,
+    FilterDelayHint::FilterDelayHint, FilterDelayHintType::FilterDelayHintType,
+    LnbPosition::LnbPosition, LnbTone::LnbTone, LnbVoltage::LnbVoltage,
 };
 use maleicacid_tuner_hal2_common::{FrontendTuneRequest, HalError, HalInvalidArgumentKind};
 use maleicacid_tuner_hal2_domain_request::{
-    DemuxSetFrontendDataSourceRequest, DvrConfigureKind, DvrConfigureRequest,
-    DvrFilterLinkRequest, DvrOpenKind, FilterAvStreamKind, FilterAvStreamTypeRequest,
-    FilterDelayHintKind, FilterDelayHintRequest, FilterReleaseAvHandleRequest,
-    FilterSetDataSourceRequest, LnbSetSatellitePositionRequest, LnbToneRequest,
-    LnbVoltageRequest, OpenDvrRequest, RuntimeExecutableRequest,
+    DemuxSetFrontendDataSourceRequest, DvrConfigureKind, DvrConfigureRequest, DvrFilterLinkRequest,
+    DvrOpenKind, FilterAvStreamKind, FilterAvStreamTypeRequest, FilterDelayHintKind,
+    FilterDelayHintRequest, FilterReleaseAvHandleRequest, FilterSetDataSourceRequest,
+    LnbSetSatellitePositionRequest, LnbToneRequest, LnbVoltageRequest, OpenDvrRequest,
+    RuntimeExecutableRequest,
 };
 
 use crate::demux::DemuxCommand;
@@ -27,14 +22,19 @@ use crate::{CommandPlan, DomainCommand};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AidlMethodCall {
-    UnsupportedPublicApi { object: crate::AidlObjectKind, api: crate::AidlApi },
+    UnsupportedPublicApi {
+        object: crate::AidlObjectKind,
+        api: crate::AidlApi,
+    },
     FrontendTune(FrontendTuneRequest),
     FrontendStopTune,
     FrontendScan(FrontendTuneRequest),
     FrontendStopScan,
     FrontendClose,
     FrontendSetCallback,
-    DemuxSetFrontendDataSource { frontend_id: i32 },
+    DemuxSetFrontendDataSource {
+        frontend_id: i32,
+    },
     DemuxOpenFilter(RuntimeExecutableRequest),
     DemuxOpenDvr(OpenDvrRequest),
     DemuxClose,
@@ -83,7 +83,7 @@ impl AidlMethodCall {
             Self::FrontendStopScan => crate::AidlApi::FrontendStopScan,
             Self::FrontendClose => crate::AidlApi::FrontendClose,
             Self::FrontendSetCallback => crate::AidlApi::FrontendSetCallback,
-            Self::DemuxSetFrontendDataSource{ .. } => crate::AidlApi::DemuxSetFrontendDataSource,
+            Self::DemuxSetFrontendDataSource { .. } => crate::AidlApi::DemuxSetFrontendDataSource,
             Self::DemuxOpenFilter(_) => crate::AidlApi::DemuxOpenFilter,
             Self::DemuxOpenDvr(_) => crate::AidlApi::DemuxOpenDvr,
             Self::DemuxClose => crate::AidlApi::DemuxClose,
@@ -125,48 +125,106 @@ impl AidlMethodCall {
 
     pub fn into_domain_command(self) -> DomainCommand {
         match self {
-            Self::UnsupportedPublicApi { object, api } => DomainCommand::UnsupportedPublicApi { object, api, request: None },
+            Self::UnsupportedPublicApi { object, api } => DomainCommand::UnsupportedPublicApi {
+                object,
+                api,
+                request: None,
+            },
             Self::FrontendTune(request) => DomainCommand::Frontend(FrontendCommand::Tune(request)),
             Self::FrontendStopTune => DomainCommand::Frontend(FrontendCommand::StopTune),
             Self::FrontendScan(request) => DomainCommand::Frontend(FrontendCommand::Scan(request)),
             Self::FrontendStopScan => DomainCommand::Frontend(FrontendCommand::StopScan),
             Self::FrontendClose => DomainCommand::Frontend(FrontendCommand::Close),
-            Self::FrontendSetCallback => DomainCommand::Frontend(FrontendCommand::SetCallback(RuntimeExecutableRequest::NoPayload)),
-            Self::DemuxSetFrontendDataSource { frontend_id } => DomainCommand::Demux(DemuxCommand::SetFrontendDataSource(RuntimeExecutableRequest::DemuxSetFrontendDataSource(DemuxSetFrontendDataSourceRequest { frontend_id }))),
-            Self::DemuxOpenFilter(request) => DomainCommand::Demux(DemuxCommand::OpenFilter(request)),
-            Self::DemuxOpenDvr(request) => DomainCommand::Demux(DemuxCommand::OpenDvr(RuntimeExecutableRequest::OpenDvr(request))),
+            Self::FrontendSetCallback => DomainCommand::Frontend(FrontendCommand::SetCallback(
+                RuntimeExecutableRequest::NoPayload,
+            )),
+            Self::DemuxSetFrontendDataSource { frontend_id } => {
+                DomainCommand::Demux(DemuxCommand::SetFrontendDataSource(
+                    RuntimeExecutableRequest::DemuxSetFrontendDataSource(
+                        DemuxSetFrontendDataSourceRequest { frontend_id },
+                    ),
+                ))
+            }
+            Self::DemuxOpenFilter(request) => {
+                DomainCommand::Demux(DemuxCommand::OpenFilter(request))
+            }
+            Self::DemuxOpenDvr(request) => DomainCommand::Demux(DemuxCommand::OpenDvr(
+                RuntimeExecutableRequest::OpenDvr(request),
+            )),
             Self::DemuxClose => DomainCommand::Demux(DemuxCommand::Close),
-            Self::FilterConfigure(request) => DomainCommand::Filter(FilterCommand::Configure(request)),
-            Self::FilterConfigureAvStreamType(request) => DomainCommand::Filter(FilterCommand::ConfigureAvStreamType(RuntimeExecutableRequest::FilterConfigureAvStreamType(request))),
+            Self::FilterConfigure(request) => {
+                DomainCommand::Filter(FilterCommand::Configure(request))
+            }
+            Self::FilterConfigureAvStreamType(request) => {
+                DomainCommand::Filter(FilterCommand::ConfigureAvStreamType(
+                    RuntimeExecutableRequest::FilterConfigureAvStreamType(request),
+                ))
+            }
             Self::FilterGetQueueDesc => DomainCommand::Filter(FilterCommand::GetQueueDesc),
             Self::FilterGetId => DomainCommand::Filter(FilterCommand::GetId),
             Self::FilterGetId64Bit => DomainCommand::Filter(FilterCommand::GetId64Bit),
-            Self::FilterGetAvSharedHandle => DomainCommand::Filter(FilterCommand::GetAvSharedHandle),
-            Self::FilterReleaseAvHandle(request) => DomainCommand::Filter(FilterCommand::ReleaseAvHandle(RuntimeExecutableRequest::FilterReleaseAvHandle(request))),
+            Self::FilterGetAvSharedHandle => {
+                DomainCommand::Filter(FilterCommand::GetAvSharedHandle)
+            }
+            Self::FilterReleaseAvHandle(request) => {
+                DomainCommand::Filter(FilterCommand::ReleaseAvHandle(
+                    RuntimeExecutableRequest::FilterReleaseAvHandle(request),
+                ))
+            }
             Self::FilterStart => DomainCommand::Filter(FilterCommand::Start),
             Self::FilterStop => DomainCommand::Filter(FilterCommand::Stop),
             Self::FilterFlush => DomainCommand::Filter(FilterCommand::Flush),
             Self::FilterClose => DomainCommand::Filter(FilterCommand::Close),
-            Self::FilterSetDataSource(request) => DomainCommand::Filter(FilterCommand::SetDataSource(RuntimeExecutableRequest::FilterSetDataSource(request))),
-            Self::FilterSetDelayHint(request) => DomainCommand::Filter(FilterCommand::SetDelayHint(RuntimeExecutableRequest::FilterDelayHint(request))),
+            Self::FilterSetDataSource(request) => {
+                DomainCommand::Filter(FilterCommand::SetDataSource(
+                    RuntimeExecutableRequest::FilterSetDataSource(request),
+                ))
+            }
+            Self::FilterSetDelayHint(request) => DomainCommand::Filter(
+                FilterCommand::SetDelayHint(RuntimeExecutableRequest::FilterDelayHint(request)),
+            ),
             Self::DvrGetQueueDesc => DomainCommand::Dvr(DvrCommand::GetQueueDesc),
-            Self::DvrConfigure(request) => DomainCommand::Dvr(DvrCommand::Configure(RuntimeExecutableRequest::DvrConfigure(request))),
-            Self::DvrAttachFilter(request) => DomainCommand::Dvr(DvrCommand::AttachFilter(RuntimeExecutableRequest::DvrAttachFilter(request))),
-            Self::DvrDetachFilter(request) => DomainCommand::Dvr(DvrCommand::DetachFilter(RuntimeExecutableRequest::DvrDetachFilter(request))),
+            Self::DvrConfigure(request) => DomainCommand::Dvr(DvrCommand::Configure(
+                RuntimeExecutableRequest::DvrConfigure(request),
+            )),
+            Self::DvrAttachFilter(request) => DomainCommand::Dvr(DvrCommand::AttachFilter(
+                RuntimeExecutableRequest::DvrAttachFilter(request),
+            )),
+            Self::DvrDetachFilter(request) => DomainCommand::Dvr(DvrCommand::DetachFilter(
+                RuntimeExecutableRequest::DvrDetachFilter(request),
+            )),
             Self::DvrStart => DomainCommand::Dvr(DvrCommand::Start),
             Self::DvrStop => DomainCommand::Dvr(DvrCommand::Stop),
             Self::DvrFlush => DomainCommand::Dvr(DvrCommand::Flush),
             Self::DvrClose => DomainCommand::Dvr(DvrCommand::Close),
-            Self::DvrSetStatusCheckIntervalHint(v) => DomainCommand::Dvr(DvrCommand::SetStatusCheckIntervalHint(v)),
-            Self::DescramblerSetDemuxSource(v) => DomainCommand::Descrambler(DescramblerCommand::SetDemuxSource(v)),
-            Self::DescramblerSetKeyToken(v) => DomainCommand::Descrambler(DescramblerCommand::SetKeyToken(v)),
+            Self::DvrSetStatusCheckIntervalHint(v) => {
+                DomainCommand::Dvr(DvrCommand::SetStatusCheckIntervalHint(v))
+            }
+            Self::DescramblerSetDemuxSource(v) => {
+                DomainCommand::Descrambler(DescramblerCommand::SetDemuxSource(v))
+            }
+            Self::DescramblerSetKeyToken(v) => {
+                DomainCommand::Descrambler(DescramblerCommand::SetKeyToken(v))
+            }
             Self::DescramblerAddPid(v) => DomainCommand::Descrambler(DescramblerCommand::AddPid(v)),
-            Self::DescramblerRemovePid(v) => DomainCommand::Descrambler(DescramblerCommand::RemovePid(v)),
+            Self::DescramblerRemovePid(v) => {
+                DomainCommand::Descrambler(DescramblerCommand::RemovePid(v))
+            }
             Self::DescramblerClose => DomainCommand::Descrambler(DescramblerCommand::Close),
-            Self::LnbSetCallback => DomainCommand::Lnb(LnbCommand::SetCallback(RuntimeExecutableRequest::NoPayload)),
-            Self::LnbSetVoltage(request) => DomainCommand::Lnb(LnbCommand::SetVoltage(RuntimeExecutableRequest::LnbSetVoltage(request))),
-            Self::LnbSetTone(request) => DomainCommand::Lnb(LnbCommand::SetTone(RuntimeExecutableRequest::LnbSetTone(request))),
-            Self::LnbSetSatellitePosition(request) => DomainCommand::Lnb(LnbCommand::SetSatellitePosition(RuntimeExecutableRequest::LnbSetSatellitePosition(request))),
+            Self::LnbSetCallback => {
+                DomainCommand::Lnb(LnbCommand::SetCallback(RuntimeExecutableRequest::NoPayload))
+            }
+            Self::LnbSetVoltage(request) => DomainCommand::Lnb(LnbCommand::SetVoltage(
+                RuntimeExecutableRequest::LnbSetVoltage(request),
+            )),
+            Self::LnbSetTone(request) => DomainCommand::Lnb(LnbCommand::SetTone(
+                RuntimeExecutableRequest::LnbSetTone(request),
+            )),
+            Self::LnbSetSatellitePosition(request) => {
+                DomainCommand::Lnb(LnbCommand::SetSatellitePosition(
+                    RuntimeExecutableRequest::LnbSetSatellitePosition(request),
+                ))
+            }
             Self::LnbSendDiseqc(v) => DomainCommand::Lnb(LnbCommand::SendDiseqc(v)),
             Self::LnbClose => DomainCommand::Lnb(LnbCommand::Close),
         }
@@ -177,7 +235,10 @@ fn invalid(detail: &'static str) -> HalError {
     HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, detail)
 }
 
-pub fn build_dvr_open_request(dvr_type: DvrType, buffer_size: i32) -> Result<OpenDvrRequest, HalError> {
+pub fn build_dvr_open_request(
+    dvr_type: DvrType,
+    buffer_size: i32,
+) -> Result<OpenDvrRequest, HalError> {
     let kind = match dvr_type {
         DvrType::RECORD => DvrOpenKind::Record,
         DvrType::PLAYBACK => DvrOpenKind::Playback,
@@ -186,7 +247,9 @@ pub fn build_dvr_open_request(dvr_type: DvrType, buffer_size: i32) -> Result<Ope
     Ok(OpenDvrRequest { kind, buffer_size })
 }
 
-pub fn build_filter_av_stream_type_request(av_stream_type: &AvStreamType) -> Result<FilterAvStreamTypeRequest, HalError> {
+pub fn build_filter_av_stream_type_request(
+    av_stream_type: &AvStreamType,
+) -> Result<FilterAvStreamTypeRequest, HalError> {
     let (kind, stream_type) = match av_stream_type {
         AvStreamType::Video(value) => (FilterAvStreamKind::Video, value.0),
         AvStreamType::Audio(value) => (FilterAvStreamKind::Audio, value.0),
@@ -194,16 +257,23 @@ pub fn build_filter_av_stream_type_request(av_stream_type: &AvStreamType) -> Res
     Ok(FilterAvStreamTypeRequest { kind, stream_type })
 }
 
-pub fn build_filter_delay_hint_request(hint: &FilterDelayHint) -> Result<FilterDelayHintRequest, HalError> {
+pub fn build_filter_delay_hint_request(
+    hint: &FilterDelayHint,
+) -> Result<FilterDelayHintRequest, HalError> {
     let kind = match hint.hintType {
         FilterDelayHintType::TIME_DELAY_IN_MS => FilterDelayHintKind::TimeDelayMs,
         FilterDelayHintType::DATA_SIZE_DELAY_IN_BYTES => FilterDelayHintKind::DataSizeDelayBytes,
         _ => return Err(invalid("filter delay hint type is unsupported")),
     };
-    Ok(FilterDelayHintRequest { kind, value: i64::from(hint.hintValue) })
+    Ok(FilterDelayHintRequest {
+        kind,
+        value: i64::from(hint.hintValue),
+    })
 }
 
-pub fn build_dvr_configure_request(settings: &DvrSettings) -> Result<DvrConfigureRequest, HalError> {
+pub fn build_dvr_configure_request(
+    settings: &DvrSettings,
+) -> Result<DvrConfigureRequest, HalError> {
     let kind = match settings {
         DvrSettings::Record(_) => DvrConfigureKind::Record,
         DvrSettings::Playback(_) => DvrConfigureKind::Playback,
@@ -228,8 +298,12 @@ pub fn build_lnb_tone_request(tone: LnbTone) -> Result<LnbToneRequest, HalError>
     }
 }
 
-pub fn build_lnb_satellite_position_request(position: LnbPosition) -> Result<LnbSetSatellitePositionRequest, HalError> {
-    Ok(LnbSetSatellitePositionRequest { position: position.0 })
+pub fn build_lnb_satellite_position_request(
+    position: LnbPosition,
+) -> Result<LnbSetSatellitePositionRequest, HalError> {
+    Ok(LnbSetSatellitePositionRequest {
+        position: position.0,
+    })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -247,7 +321,11 @@ impl AidlMethodAdapter {
         let api = method.api();
         let command = method.into_domain_command();
         let command_plan = command.plan();
-        AidlMethodPlan { api, command, command_plan }
+        AidlMethodPlan {
+            api,
+            command,
+            command_plan,
+        }
     }
 
     pub fn frontend_tune(request: FrontendTuneRequest) -> AidlMethodPlan {
@@ -265,7 +343,10 @@ pub fn all_aidl_method_kinds_for_coverage(request: FrontendTuneRequest) -> Vec<A
         AidlMethodCall::FrontendClose,
         AidlMethodCall::FrontendSetCallback,
         AidlMethodCall::DemuxSetFrontendDataSource { frontend_id: 1 },
-        AidlMethodCall::DemuxOpenDvr(OpenDvrRequest { kind: DvrOpenKind::Record, buffer_size: 188 * 1024 }),
+        AidlMethodCall::DemuxOpenDvr(OpenDvrRequest {
+            kind: DvrOpenKind::Record,
+            buffer_size: 188 * 1024,
+        }),
         AidlMethodCall::DemuxClose,
         AidlMethodCall::FilterGetQueueDesc,
         AidlMethodCall::FilterGetId,
@@ -276,19 +357,33 @@ pub fn all_aidl_method_kinds_for_coverage(request: FrontendTuneRequest) -> Vec<A
         AidlMethodCall::FilterStop,
         AidlMethodCall::FilterFlush,
         AidlMethodCall::FilterClose,
-        AidlMethodCall::FilterSetDataSource(FilterSetDataSourceRequest { source_filter_id: 2, source_filter_generation: 1 }),
-        AidlMethodCall::FilterSetDelayHint(FilterDelayHintRequest { kind: FilterDelayHintKind::TimeDelayMs, value: 0 }),
+        AidlMethodCall::FilterSetDataSource(FilterSetDataSourceRequest {
+            source_filter_id: 2,
+            source_filter_generation: 1,
+        }),
+        AidlMethodCall::FilterSetDelayHint(FilterDelayHintRequest {
+            kind: FilterDelayHintKind::TimeDelayMs,
+            value: 0,
+        }),
         AidlMethodCall::DvrGetQueueDesc,
-        AidlMethodCall::DvrConfigure(DvrConfigureRequest { kind: DvrConfigureKind::Record }),
-        AidlMethodCall::DvrAttachFilter(DvrFilterLinkRequest { filter_id: 2, filter_generation: 1 }),
-        AidlMethodCall::DvrDetachFilter(DvrFilterLinkRequest { filter_id: 2, filter_generation: 1 }),
+        AidlMethodCall::DvrConfigure(DvrConfigureRequest {
+            kind: DvrConfigureKind::Record,
+        }),
+        AidlMethodCall::DvrAttachFilter(DvrFilterLinkRequest {
+            filter_id: 2,
+            filter_generation: 1,
+        }),
+        AidlMethodCall::DvrDetachFilter(DvrFilterLinkRequest {
+            filter_id: 2,
+            filter_generation: 1,
+        }),
         AidlMethodCall::DvrStart,
         AidlMethodCall::DvrStop,
         AidlMethodCall::DvrFlush,
         AidlMethodCall::DvrClose,
         AidlMethodCall::DvrSetStatusCheckIntervalHint(100),
         AidlMethodCall::DescramblerSetDemuxSource(1),
-        AidlMethodCall::DescramblerSetKeyToken(vec![1,2,3]),
+        AidlMethodCall::DescramblerSetKeyToken(vec![1, 2, 3]),
         AidlMethodCall::DescramblerAddPid(100),
         AidlMethodCall::DescramblerRemovePid(100),
         AidlMethodCall::DescramblerClose,

@@ -31,9 +31,17 @@ pub struct LnbOperationLedger {
 }
 
 impl LnbOperationLedger {
-    pub fn begin(&mut self, lnb_id: i32, kind: LnbOperationKind) -> Result<LnbOperationGuard, LnbOperationFailureRecord> {
+    pub fn begin(
+        &mut self,
+        lnb_id: i32,
+        kind: LnbOperationKind,
+    ) -> Result<LnbOperationGuard, LnbOperationFailureRecord> {
         if self.active.contains_key(&lnb_id) {
-            let record = LnbOperationFailureRecord { lnb_id, kind: LnbFailureKind::OperationAlreadyActive, step: LnbFailureStep::ValidateState };
+            let record = LnbOperationFailureRecord {
+                lnb_id,
+                kind: LnbFailureKind::OperationAlreadyActive,
+                step: LnbFailureStep::ValidateState,
+            };
             self.failures.insert(lnb_id, record);
             return Err(record);
         }
@@ -45,15 +53,23 @@ impl LnbOperationLedger {
         match self.active.remove(&guard.lnb_id) {
             Some(active) if active == guard.kind => Ok(()),
             _ => {
-                let record = LnbOperationFailureRecord { lnb_id: guard.lnb_id, kind: LnbFailureKind::OperationLockFailed, step: LnbFailureStep::CommitClosed };
+                let record = LnbOperationFailureRecord {
+                    lnb_id: guard.lnb_id,
+                    kind: LnbFailureKind::OperationLockFailed,
+                    step: LnbFailureStep::CommitClosed,
+                };
                 self.failures.insert(guard.lnb_id, record);
                 Err(record)
             }
         }
     }
 
-    pub fn active_operation(&self, lnb_id: i32) -> Option<LnbOperationKind> { self.active.get(&lnb_id).copied() }
-    pub fn failure(&self, lnb_id: i32) -> Option<LnbOperationFailureRecord> { self.failures.get(&lnb_id).copied() }
+    pub fn active_operation(&self, lnb_id: i32) -> Option<LnbOperationKind> {
+        self.active.get(&lnb_id).copied()
+    }
+    pub fn failure(&self, lnb_id: i32) -> Option<LnbOperationFailureRecord> {
+        self.failures.get(&lnb_id).copied()
+    }
 }
 
 #[cfg(test)]

@@ -204,7 +204,9 @@ pub fn runtime_transaction_specs() -> &'static [RuntimeTransactionSpec] {
     RUNTIME_TRANSACTION_SPECS
 }
 
-pub fn transaction_spec_for(transaction: RuntimeTransactionName) -> Option<&'static RuntimeTransactionSpec> {
+pub fn transaction_spec_for(
+    transaction: RuntimeTransactionName,
+) -> Option<&'static RuntimeTransactionSpec> {
     RUNTIME_TRANSACTION_SPECS
         .iter()
         .find(|spec| spec.transaction == transaction)

@@ -2,7 +2,10 @@ use maleicacid_tuner_hal2_common::{
     FrontendBackendKind, FrontendTuneRequest, HalError, HalInternalKind,
 };
 
-use super::{FrontendLivePumpReport, FrontendLiveReaderDescriptor, FrontendScanSession, FrontendWorkerCancelReason};
+use super::{
+    FrontendLivePumpReport, FrontendLiveReaderDescriptor, FrontendScanSession,
+    FrontendWorkerCancelReason,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FrontendRuntimeState {
@@ -286,19 +289,21 @@ impl FrontendRuntime {
                 "DiagnosticWriteFailed: live pump report generation mismatch: report={} runtime={}",
                 generation, self.generation
             );
-            self.diagnostic_write_failures.push(FrontendDiagnosticWriteFailure {
-                generation,
-                detail: detail.clone(),
-            });
+            self.diagnostic_write_failures
+                .push(FrontendDiagnosticWriteFailure {
+                    generation,
+                    detail: detail.clone(),
+                });
             let error = HalError::internal(HalInternalKind::InvariantViolation, detail);
             self.last_error = Some(error.clone());
             return Err(error);
         }
-        self.live_pump_reports.push(FrontendLivePumpDiagnostic::from_report(
-            generation,
-            report,
-            cancel_reason,
-        ));
+        self.live_pump_reports
+            .push(FrontendLivePumpDiagnostic::from_report(
+                generation,
+                report,
+                cancel_reason,
+            ));
         Ok(())
     }
 
@@ -644,7 +649,10 @@ mod tests {
             report.cancel_reason,
             Some(FrontendWorkerCancelReason::SupersededByNewRequest)
         );
-        assert_eq!(report.terminal_reason, FrontendLivePumpTerminalReason::Cancelled);
+        assert_eq!(
+            report.terminal_reason,
+            FrontendLivePumpTerminalReason::Cancelled
+        );
     }
 
     #[test]
@@ -666,7 +674,10 @@ mod tests {
         );
         assert!(result.is_err());
         assert_eq!(runtime.diagnostic_write_failures().len(), 1);
-        assert!(matches!(runtime.last_error(), Some(HalError::Internal { .. })));
+        assert!(matches!(
+            runtime.last_error(),
+            Some(HalError::Internal { .. })
+        ));
     }
     #[test]
     fn new_generation_invalidates_old_terminal_events() {

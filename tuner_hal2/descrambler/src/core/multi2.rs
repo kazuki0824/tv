@@ -10,7 +10,12 @@ pub struct Multi2KeyMaterial {
 
 impl Multi2KeyMaterial {
     pub const fn new(system_key: [u8; 32], cbc_iv: [u8; 8], data_key: [u8; 8]) -> Self {
-        Self { system_key, cbc_iv, data_key, rounds: DEFAULT_MULTI2_ROUNDS }
+        Self {
+            system_key,
+            cbc_iv,
+            data_key,
+            rounds: DEFAULT_MULTI2_ROUNDS,
+        }
     }
 
     pub fn prepare(&self) -> Result<PreparedMulti2Key, Multi2PrepareError> {
@@ -21,7 +26,11 @@ impl Multi2KeyMaterial {
         let data_key = [load_be(&self.data_key[0..4]), load_be(&self.data_key[4..8])];
         let work_key = schedule(data_key, system_key);
         let cbc_iv = [load_be(&self.cbc_iv[0..4]), load_be(&self.cbc_iv[4..8])];
-        Ok(PreparedMulti2Key { cbc_iv, work_key, rounds: self.rounds })
+        Ok(PreparedMulti2Key {
+            cbc_iv,
+            work_key,
+            rounds: self.rounds,
+        })
     }
 }
 
@@ -64,9 +73,15 @@ fn store_be(p: &mut [u8], v: u32) {
     p[3] = (v & 0xff) as u8;
 }
 
-fn rot<const N: u32>(v: u32) -> u32 { v.rotate_left(N) }
-fn rot1_sub(v: u32) -> u32 { v.wrapping_add(v >> 31) }
-fn rot1_add_dec(v: u32) -> u32 { rot::<1>(v).wrapping_add(v).wrapping_sub(1) }
+fn rot<const N: u32>(v: u32) -> u32 {
+    v.rotate_left(N)
+}
+fn rot1_sub(v: u32) -> u32 {
+    v.wrapping_add(v >> 31)
+}
+fn rot1_add_dec(v: u32) -> u32 {
+    rot::<1>(v).wrapping_add(v).wrapping_sub(1)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Block {
@@ -75,21 +90,41 @@ struct Block {
 }
 
 impl Block {
-    fn load(p: &[u8]) -> Self { Self { left: load_be(&p[0..4]), right: load_be(&p[4..8]) } }
+    fn load(p: &[u8]) -> Self {
+        Self {
+            left: load_be(&p[0..4]),
+            right: load_be(&p[4..8]),
+        }
+    }
     fn store(self, p: &mut [u8]) {
         store_be(&mut p[0..4], self.left);
         store_be(&mut p[4..8], self.right);
     }
-    fn xor(self, other: Block) -> Self { Self { left: self.left ^ other.left, right: self.right ^ other.right } }
-    fn cbc_post_decrypt(self, ciphertext: Block, state: Block) -> (Block, Block) { (self.xor(state), ciphertext) }
+    fn xor(self, other: Block) -> Self {
+        Self {
+            left: self.left ^ other.left,
+            right: self.right ^ other.right,
+        }
+    }
+    fn cbc_post_decrypt(self, ciphertext: Block, state: Block) -> (Block, Block) {
+        (self.xor(state), ciphertext)
+    }
 }
 
-fn pi1(p: Block) -> Block { Block { left: p.left, right: p.right ^ p.left } }
+fn pi1(p: Block) -> Block {
+    Block {
+        left: p.left,
+        right: p.right ^ p.left,
+    }
+}
 fn pi2(p: Block, k1: u32) -> Block {
     let x = p.right;
     let y = x.wrapping_add(k1);
     let z = rot1_add_dec(y);
-    Block { left: p.left ^ rot::<4>(z) ^ z, right: p.right }
+    Block {
+        left: p.left ^ rot::<4>(z) ^ z,
+        right: p.right,
+    }
 }
 fn pi3(p: Block, k2: u32, k3: u32) -> Block {
     let x = p.left;
@@ -98,12 +133,18 @@ fn pi3(p: Block, k2: u32, k3: u32) -> Block {
     let a = rot::<8>(z) ^ z;
     let b = a.wrapping_add(k3);
     let c = rot1_sub(b);
-    Block { left: p.left, right: p.right ^ rot::<16>(c) ^ (c | x) }
+    Block {
+        left: p.left,
+        right: p.right ^ rot::<16>(c) ^ (c | x),
+    }
 }
 fn pi4(p: Block, k4: u32) -> Block {
     let x = p.right;
     let y = x.wrapping_add(k4);
-    Block { left: p.left ^ rot::<2>(y).wrapping_add(y).wrapping_add(1), right: p.right }
+    Block {
+        left: p.left ^ rot::<2>(y).wrapping_add(y).wrapping_add(1),
+        right: p.right,
+    }
 }
 
 fn cipher_encrypt(mut b: Block, wk: [u32; 8], rounds: usize) -> Block {
@@ -135,7 +176,10 @@ fn cipher_decrypt(mut b: Block, wk: [u32; 8], rounds: usize) -> Block {
 }
 
 fn schedule(dk: [u32; 2], sk: [u32; 8]) -> [u32; 8] {
-    let a0 = pi1(Block { left: dk[0], right: dk[1] });
+    let a0 = pi1(Block {
+        left: dk[0],
+        right: dk[1],
+    });
     let a1 = pi2(a0, sk[0]);
     let a2 = pi3(a1, sk[1], sk[2]);
     let a3 = pi4(a2, sk[3]);
@@ -144,11 +188,16 @@ fn schedule(dk: [u32; 2], sk: [u32; 8]) -> [u32; 8] {
     let a6 = pi3(a5, sk[5], sk[6]);
     let a7 = pi4(a6, sk[7]);
     let a8 = pi1(a7);
-    [a1.left, a2.right, a3.left, a4.right, a5.left, a6.right, a7.left, a8.right]
+    [
+        a1.left, a2.right, a3.left, a4.right, a5.left, a6.right, a7.left, a8.right,
+    ]
 }
 
 fn encrypt_cbc_ofb(buf: &mut [u8], iv: [u32; 2], key: [u32; 8], rounds: usize) {
-    let mut state = Block { left: iv[0], right: iv[1] };
+    let mut state = Block {
+        left: iv[0],
+        right: iv[1],
+    };
     let mut chunks = buf.chunks_exact_mut(8);
     for chunk in &mut chunks {
         let p = Block::load(chunk);
@@ -168,7 +217,10 @@ fn encrypt_cbc_ofb(buf: &mut [u8], iv: [u32; 2], key: [u32; 8], rounds: usize) {
 }
 
 fn decrypt_cbc_ofb(buf: &mut [u8], iv: [u32; 2], key: [u32; 8], rounds: usize) {
-    let mut state = Block { left: iv[0], right: iv[1] };
+    let mut state = Block {
+        left: iv[0],
+        right: iv[1],
+    };
     let mut chunks = buf.chunks_exact_mut(8);
     for chunk in &mut chunks {
         let c = Block::load(chunk);

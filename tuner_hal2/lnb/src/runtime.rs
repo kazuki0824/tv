@@ -32,7 +32,11 @@ pub struct LnbElectricalState {
 
 impl LnbElectricalState {
     pub const fn safe() -> Self {
-        Self { voltage: LnbVoltage::Off, tone: LnbTone::Off, satellite_position: None }
+        Self {
+            voltage: LnbVoltage::Off,
+            tone: LnbTone::Off,
+            satellite_position: None,
+        }
     }
 }
 
@@ -63,16 +67,33 @@ impl LnbRuntime {
         }
     }
 
-    pub fn lnb_id(&self) -> i32 { self.lnb_id }
-    pub fn state(&self) -> LnbRuntimeState { self.state }
-    pub fn registry_state(&self) -> LnbElectricalState { self.registry_state }
-    pub fn backend_committed_state(&self) -> LnbElectricalState { self.backend_committed_state }
-    pub fn callback_registered(&self) -> bool { self.callback_registered }
-    pub fn last_failure(&self) -> Option<&LnbFailureRecord> { self.last_failure.as_ref() }
-    pub fn drop_leak_recorded(&self) -> bool { self.drop_leak_recorded }
+    pub fn lnb_id(&self) -> i32 {
+        self.lnb_id
+    }
+    pub fn state(&self) -> LnbRuntimeState {
+        self.state
+    }
+    pub fn registry_state(&self) -> LnbElectricalState {
+        self.registry_state
+    }
+    pub fn backend_committed_state(&self) -> LnbElectricalState {
+        self.backend_committed_state
+    }
+    pub fn callback_registered(&self) -> bool {
+        self.callback_registered
+    }
+    pub fn last_failure(&self) -> Option<&LnbFailureRecord> {
+        self.last_failure.as_ref()
+    }
+    pub fn drop_leak_recorded(&self) -> bool {
+        self.drop_leak_recorded
+    }
 
     pub fn set_callback_registered(&mut self, registered: bool) {
-        if matches!(self.state, LnbRuntimeState::Open | LnbRuntimeState::Applying) {
+        if matches!(
+            self.state,
+            LnbRuntimeState::Open | LnbRuntimeState::Applying
+        ) {
             self.callback_registered = registered;
         }
     }
@@ -87,7 +108,10 @@ impl LnbRuntime {
                 self.state = LnbRuntimeState::Applying;
                 Ok(())
             }
-            _ => Err(self.record_failure(LnbFailureKind::InvalidState, LnbFailureStep::ValidateState)),
+            _ => {
+                Err(self
+                    .record_failure(LnbFailureKind::InvalidState, LnbFailureStep::ValidateState))
+            }
         }
     }
 
@@ -98,7 +122,9 @@ impl LnbRuntime {
                 Ok(())
             }
             LnbRuntimeState::Closed => Ok(()),
-            _ => Err(self.record_failure(LnbFailureKind::InvalidState, LnbFailureStep::MarkClosing)),
+            _ => {
+                Err(self.record_failure(LnbFailureKind::InvalidState, LnbFailureStep::MarkClosing))
+            }
         }
     }
 
@@ -106,7 +132,11 @@ impl LnbRuntime {
         self.backend_committed_state = state;
     }
 
-    pub(crate) fn commit_registry(&mut self, state: LnbElectricalState, step: LnbFailureStep) -> Result<(), LnbFailureRecord> {
+    pub(crate) fn commit_registry(
+        &mut self,
+        state: LnbElectricalState,
+        step: LnbFailureStep,
+    ) -> Result<(), LnbFailureRecord> {
         if let Some(kind) = self.force_next_registry_commit_failure.take() {
             return Err(self.record_failure(kind, step));
         }
@@ -127,28 +157,51 @@ impl LnbRuntime {
         self.callback_registered = false;
     }
 
-    pub(crate) fn record_failure(&mut self, kind: LnbFailureKind, step: LnbFailureStep) -> LnbFailureRecord {
+    pub(crate) fn record_failure(
+        &mut self,
+        kind: LnbFailureKind,
+        step: LnbFailureStep,
+    ) -> LnbFailureRecord {
         self.state = LnbRuntimeState::Failed;
-        let record = LnbFailureRecord { lnb_id: self.lnb_id, kind, step };
+        let record = LnbFailureRecord {
+            lnb_id: self.lnb_id,
+            kind,
+            step,
+        };
         self.last_failure = Some(record.clone());
         record
     }
 
-    pub(crate) fn quarantine(&mut self, kind: LnbFailureKind, step: LnbFailureStep) -> LnbFailureRecord {
+    pub(crate) fn quarantine(
+        &mut self,
+        kind: LnbFailureKind,
+        step: LnbFailureStep,
+    ) -> LnbFailureRecord {
         self.state = LnbRuntimeState::Quarantined;
-        let record = LnbFailureRecord { lnb_id: self.lnb_id, kind, step };
+        let record = LnbFailureRecord {
+            lnb_id: self.lnb_id,
+            kind,
+            step,
+        };
         self.last_failure = Some(record.clone());
         record
     }
 
     pub fn record_unclosed_drop(&mut self) -> LnbFailureRecord {
         self.drop_leak_recorded = true;
-        self.quarantine(LnbFailureKind::DropWithoutClose, LnbFailureStep::DropLeakRecord)
+        self.quarantine(
+            LnbFailureKind::DropWithoutClose,
+            LnbFailureStep::DropLeakRecord,
+        )
     }
 }
 
 pub trait LnbBackendOps {
-    fn apply_lnb_state(&mut self, lnb_id: i32, state: LnbElectricalState) -> Result<(), LnbFailureKind>;
+    fn apply_lnb_state(
+        &mut self,
+        lnb_id: i32,
+        state: LnbElectricalState,
+    ) -> Result<(), LnbFailureKind>;
     fn clear_lnb_callback(&mut self, lnb_id: i32) -> Result<(), LnbFailureKind>;
 }
 
@@ -164,18 +217,33 @@ mod tests {
     }
 
     impl TestBackend {
-        fn new() -> Self { Self { applied: Vec::new(), clear_count: 0, fail_apply: None, fail_clear: None } }
+        fn new() -> Self {
+            Self {
+                applied: Vec::new(),
+                clear_count: 0,
+                fail_apply: None,
+                fail_clear: None,
+            }
+        }
     }
 
     impl LnbBackendOps for TestBackend {
-        fn apply_lnb_state(&mut self, _lnb_id: i32, state: LnbElectricalState) -> Result<(), LnbFailureKind> {
-            if let Some(kind) = self.fail_apply.take() { return Err(kind); }
+        fn apply_lnb_state(
+            &mut self,
+            _lnb_id: i32,
+            state: LnbElectricalState,
+        ) -> Result<(), LnbFailureKind> {
+            if let Some(kind) = self.fail_apply.take() {
+                return Err(kind);
+            }
             self.applied.push(state);
             Ok(())
         }
 
         fn clear_lnb_callback(&mut self, _lnb_id: i32) -> Result<(), LnbFailureKind> {
-            if let Some(kind) = self.fail_clear.take() { return Err(kind); }
+            if let Some(kind) = self.fail_clear.take() {
+                return Err(kind);
+            }
             self.clear_count += 1;
             Ok(())
         }

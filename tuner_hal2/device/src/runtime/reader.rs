@@ -14,11 +14,17 @@ pub struct FrontendLiveReaderDescriptor {
 
 impl FrontendLiveReaderDescriptor {
     pub fn px4_from_control_fd(frontend_id: i32, control_path: FrontendDevicePath) -> Self {
-        Self { kind: FrontendLiveReaderDescriptorKind::Px4DuplicatedControlFd { control_path }, frontend_id }
+        Self {
+            kind: FrontendLiveReaderDescriptorKind::Px4DuplicatedControlFd { control_path },
+            frontend_id,
+        }
     }
 
     pub fn dvb_dvr_device(frontend_id: i32, dvr_path: FrontendDevicePath) -> Self {
-        Self { kind: FrontendLiveReaderDescriptorKind::DvbDvrDevice { dvr_path }, frontend_id }
+        Self {
+            kind: FrontendLiveReaderDescriptorKind::DvbDvrDevice { dvr_path },
+            frontend_id,
+        }
     }
 }
 
@@ -28,7 +34,10 @@ mod tests {
 
     #[test]
     fn px4_reader_kind_records_control_fd_duplication_not_second_open() {
-        let reader = FrontendLiveReaderDescriptor::px4_from_control_fd(1, FrontendDevicePath::new("/dev/px4video0"));
+        let reader = FrontendLiveReaderDescriptor::px4_from_control_fd(
+            1,
+            FrontendDevicePath::new("/dev/px4video0"),
+        );
         match reader.kind {
             FrontendLiveReaderDescriptorKind::Px4DuplicatedControlFd { ref control_path } => {
                 assert_eq!(control_path.display(), "/dev/px4video0");

@@ -45,9 +45,13 @@ pub struct AvHandleReleaseTxn {
 }
 
 impl AvHandleReleaseTxn {
-    pub fn new(input: AvHandleReleaseInput) -> Self { Self { input } }
+    pub fn new(input: AvHandleReleaseInput) -> Self {
+        Self { input }
+    }
 
-    pub fn input(&self) -> AvHandleReleaseInput { self.input }
+    pub fn input(&self) -> AvHandleReleaseInput {
+        self.input
+    }
 
     pub fn classify(input: AvHandleReleaseInput) -> AvHandleReleaseOutcome {
         // DESIGN_JA.md 表1-C-AVH priority 1.
@@ -58,8 +62,12 @@ impl AvHandleReleaseTxn {
         // priority 2/3: fd付き shared handle + dataId==0 は client handle release通知。
         if input.has_fd && input.data_id.0 == 0 {
             return match input.filter_state {
-                AvFilterReleaseState::Closed => AvHandleReleaseOutcome::ClientHandleReleaseAfterClose,
-                _ if input.client_state == ClientHandleState::ClientReleased => AvHandleReleaseOutcome::ClientHandleAlreadyReleased,
+                AvFilterReleaseState::Closed => {
+                    AvHandleReleaseOutcome::ClientHandleReleaseAfterClose
+                }
+                _ if input.client_state == ClientHandleState::ClientReleased => {
+                    AvHandleReleaseOutcome::ClientHandleAlreadyReleased
+                }
                 _ => AvHandleReleaseOutcome::ClientHandleReleased,
             };
         }
@@ -74,13 +82,17 @@ impl AvHandleReleaseTxn {
             return if input.data_id.0 == 0 {
                 AvHandleReleaseOutcome::ClientHandleReleaseAfterClose
             } else {
-                AvHandleReleaseOutcome::StaleReleaseAfterClose { data_id: input.data_id }
+                AvHandleReleaseOutcome::StaleReleaseAfterClose {
+                    data_id: input.data_id,
+                }
             };
         }
 
         // priority 9: empty handle + dataId==0 は全slot解放ではなくclient release通知。
         if input.data_id.0 == 0 {
-            if input.shared_handle_exported && input.client_state == ClientHandleState::ClientReleased {
+            if input.shared_handle_exported
+                && input.client_state == ClientHandleState::ClientReleased
+            {
                 return AvHandleReleaseOutcome::ClientHandleAlreadyReleased;
             }
             return AvHandleReleaseOutcome::ClientHandleReleased;
@@ -89,7 +101,9 @@ impl AvHandleReleaseTxn {
         // priority 6/7: non-AV filterでの旧AV dataId release。
         if input.filter_state == AvFilterReleaseState::OpenNonAv {
             return if input.shared_handle_exported {
-                AvHandleReleaseOutcome::StaleReleaseAccepted { data_id: input.data_id }
+                AvHandleReleaseOutcome::StaleReleaseAccepted {
+                    data_id: input.data_id,
+                }
             } else {
                 AvHandleReleaseOutcome::UnavailableForNonAvFilter
             };
@@ -102,8 +116,12 @@ impl AvHandleReleaseTxn {
 
         // priority 10/11: active slotだけ解放し、staleは成功扱いの無処理。
         match input.data_id_state {
-            AvDataIdState::Active => AvHandleReleaseOutcome::SlotReleased { data_id: input.data_id },
-            AvDataIdState::Stale => AvHandleReleaseOutcome::StaleReleaseAccepted { data_id: input.data_id },
+            AvDataIdState::Active => AvHandleReleaseOutcome::SlotReleased {
+                data_id: input.data_id,
+            },
+            AvDataIdState::Stale => AvHandleReleaseOutcome::StaleReleaseAccepted {
+                data_id: input.data_id,
+            },
             AvDataIdState::Unknown => AvHandleReleaseOutcome::UnknownDataId,
         }
     }
@@ -128,36 +146,58 @@ mod tests {
     fn release_priority_rejects_negative_data_id_first() {
         let mut input = open_av_input(-1);
         input.has_fd = true;
-        assert_eq!(AvHandleReleaseTxn::classify(input), AvHandleReleaseOutcome::InvalidDataId);
+        assert_eq!(
+            AvHandleReleaseTxn::classify(input),
+            AvHandleReleaseOutcome::InvalidDataId
+        );
     }
 
     #[test]
     fn fd_handle_zero_is_client_release_not_slot_release() {
         let mut input = open_av_input(0);
         input.has_fd = true;
-        assert_eq!(AvHandleReleaseTxn::classify(input), AvHandleReleaseOutcome::ClientHandleReleased);
+        assert_eq!(
+            AvHandleReleaseTxn::classify(input),
+            AvHandleReleaseOutcome::ClientHandleReleased
+        );
     }
 
     #[test]
     fn fd_handle_positive_data_id_is_invalid_for_slot_release() {
         let mut input = open_av_input(7);
         input.has_fd = true;
-        assert_eq!(AvHandleReleaseTxn::classify(input), AvHandleReleaseOutcome::InvalidHandleForSlotRelease);
+        assert_eq!(
+            AvHandleReleaseTxn::classify(input),
+            AvHandleReleaseOutcome::InvalidHandleForSlotRelease
+        );
     }
 
     #[test]
     fn empty_zero_after_client_release_is_duplicate_not_full_cleanup() {
         let mut input = open_av_input(0);
         input.client_state = ClientHandleState::ClientReleased;
-        assert_eq!(AvHandleReleaseTxn::classify(input), AvHandleReleaseOutcome::ClientHandleAlreadyReleased);
+        assert_eq!(
+            AvHandleReleaseTxn::classify(input),
+            AvHandleReleaseOutcome::ClientHandleAlreadyReleased
+        );
     }
 
     #[test]
     fn active_and_stale_data_id_are_distinguished() {
         let mut input = open_av_input(3);
         input.data_id_state = AvDataIdState::Active;
-        assert_eq!(AvHandleReleaseTxn::classify(input), AvHandleReleaseOutcome::SlotReleased { data_id: AvDataId(3) });
+        assert_eq!(
+            AvHandleReleaseTxn::classify(input),
+            AvHandleReleaseOutcome::SlotReleased {
+                data_id: AvDataId(3)
+            }
+        );
         input.data_id_state = AvDataIdState::Stale;
-        assert_eq!(AvHandleReleaseTxn::classify(input), AvHandleReleaseOutcome::StaleReleaseAccepted { data_id: AvDataId(3) });
+        assert_eq!(
+            AvHandleReleaseTxn::classify(input),
+            AvHandleReleaseOutcome::StaleReleaseAccepted {
+                data_id: AvDataId(3)
+            }
+        );
     }
 }

@@ -16,11 +16,18 @@ const IOC_WRITE: u32 = 1;
 const IOC_READ: u32 = 2;
 
 pub const fn ioc(dir: u32, typ: u32, nr: u32, size: u32) -> u64 {
-    ((dir << IOC_DIRSHIFT) | (typ << IOC_TYPESHIFT) | (nr << IOC_NRSHIFT) | (size << IOC_SIZESHIFT)) as u64
+    ((dir << IOC_DIRSHIFT) | (typ << IOC_TYPESHIFT) | (nr << IOC_NRSHIFT) | (size << IOC_SIZESHIFT))
+        as u64
 }
-pub const fn io(typ: u32, nr: u32) -> u64 { ioc(IOC_NONE, typ, nr, 0) }
-pub const fn ior<T>(typ: u32, nr: u32) -> u64 { ioc(IOC_READ, typ, nr, size_of::<T>() as u32) }
-pub const fn iow<T>(typ: u32, nr: u32) -> u64 { ioc(IOC_WRITE, typ, nr, size_of::<T>() as u32) }
+pub const fn io(typ: u32, nr: u32) -> u64 {
+    ioc(IOC_NONE, typ, nr, 0)
+}
+pub const fn ior<T>(typ: u32, nr: u32) -> u64 {
+    ioc(IOC_READ, typ, nr, size_of::<T>() as u32)
+}
+pub const fn iow<T>(typ: u32, nr: u32) -> u64 {
+    ioc(IOC_WRITE, typ, nr, size_of::<T>() as u32)
+}
 
 pub const FE_IOCTL_TYPE: u32 = b'o' as u32;
 
@@ -63,7 +70,12 @@ pub struct DtvProperty {
 
 impl DtvProperty {
     pub fn with_data(cmd: u32, value: u32) -> Self {
-        Self { cmd, reserved: [0; 3], u: DtvPropertyUnion { data: value }, result: 0 }
+        Self {
+            cmd,
+            reserved: [0; 3],
+            u: DtvPropertyUnion { data: value },
+            result: 0,
+        }
     }
 
     pub fn read_data_unaligned(&self) -> u32 {
@@ -73,7 +85,9 @@ impl DtvProperty {
 
     pub fn read_buffer_unaligned(&self) -> DtvPropertyBuffer {
         // 安全性: DtvPropertyはpackedであり、buffer variant bytesをcopyして取り出す。
-        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*self).u) as *const DtvPropertyBuffer) }
+        unsafe {
+            core::ptr::read_unaligned(core::ptr::addr_of!((*self).u) as *const DtvPropertyBuffer)
+        }
     }
 
     pub fn read_result_unaligned(&self) -> i32 {
@@ -154,8 +168,14 @@ pub const DMX_PES_OTHER: u32 = 20;
 pub const DMX_IMMEDIATE_START: u32 = 1;
 
 pub fn dvb_frontend_name(info: &DvbFrontendInfo) -> String {
-    let nul = info.name.iter().position(|b| *b == 0).unwrap_or(info.name.len());
-    String::from_utf8_lossy(&info.name[..nul]).trim().to_string()
+    let nul = info
+        .name
+        .iter()
+        .position(|b| *b == 0)
+        .unwrap_or(info.name.len());
+    String::from_utf8_lossy(&info.name[..nul])
+        .trim()
+        .to_string()
 }
 
 #[cfg(test)]

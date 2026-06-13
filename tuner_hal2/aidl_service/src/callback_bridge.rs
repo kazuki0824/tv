@@ -44,13 +44,17 @@ pub struct CallbackBridge {
 }
 
 impl CallbackBridge {
-    pub const fn new() -> Self { Self { last_failure: None } }
+    pub const fn new() -> Self {
+        Self { last_failure: None }
+    }
 
     pub fn record_failure(&mut self, owner: CallbackOwnerKind, api: CallbackApi, error: HalError) {
         self.last_failure = Some(CallbackFailureRecord { owner, api, error });
     }
 
-    pub fn last_failure(&self) -> Option<&CallbackFailureRecord> { self.last_failure.as_ref() }
+    pub fn last_failure(&self) -> Option<&CallbackFailureRecord> {
+        self.last_failure.as_ref()
+    }
 
     pub const fn api_owner_for_set_callback(api: AidlApi) -> Option<CallbackOwnerKind> {
         match api {

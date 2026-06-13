@@ -2,7 +2,9 @@
 //!
 //! 製品scan candidate表はTISが所有する。このhelperは、DVB backendが日本向けscan rangeを独自展開しない規則だけを保持する。
 
-use maleicacid_tuner_hal2_common::{FrontendScanMode, FrontendSystem, FrontendTuneRequest, HalError};
+use maleicacid_tuner_hal2_common::{
+    FrontendScanMode, FrontendSystem, FrontendTuneRequest, HalError,
+};
 
 pub fn dvb_scan_requests(
     base: &FrontendTuneRequest,
@@ -56,6 +58,9 @@ mod tests {
             bandwidth_hz: None,
             symbol_rate: None,
         };
-        assert_eq!(dvb_scan_requests(&base, FrontendScanMode::Auto).unwrap(), vec![base]);
+        assert_eq!(
+            dvb_scan_requests(&base, FrontendScanMode::Auto).unwrap(),
+            vec![base]
+        );
     }
 }

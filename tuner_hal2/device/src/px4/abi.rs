@@ -16,11 +16,18 @@ const IOC_WRITE: u32 = 1;
 const IOC_READ: u32 = 2;
 
 pub const fn ioc(dir: u32, typ: u32, nr: u32, size: u32) -> u64 {
-    ((dir << IOC_DIRSHIFT) | (typ << IOC_TYPESHIFT) | (nr << IOC_NRSHIFT) | (size << IOC_SIZESHIFT)) as u64
+    ((dir << IOC_DIRSHIFT) | (typ << IOC_TYPESHIFT) | (nr << IOC_NRSHIFT) | (size << IOC_SIZESHIFT))
+        as u64
 }
-pub const fn io(typ: u32, nr: u32) -> u64 { ioc(IOC_NONE, typ, nr, 0) }
-pub const fn iow<T>(typ: u32, nr: u32) -> u64 { ioc(IOC_WRITE, typ, nr, size_of::<T>() as u32) }
-pub const fn ior<T>(typ: u32, nr: u32) -> u64 { ioc(IOC_READ, typ, nr, size_of::<T>() as u32) }
+pub const fn io(typ: u32, nr: u32) -> u64 {
+    ioc(IOC_NONE, typ, nr, 0)
+}
+pub const fn iow<T>(typ: u32, nr: u32) -> u64 {
+    ioc(IOC_WRITE, typ, nr, size_of::<T>() as u32)
+}
+pub const fn ior<T>(typ: u32, nr: u32) -> u64 {
+    ioc(IOC_READ, typ, nr, size_of::<T>() as u32)
+}
 
 pub const PTX_IOCTL_TYPE_BASIC: u32 = 0x8d;
 pub const PTX_IOCTL_TYPE_EXT: u32 = 0xe7;

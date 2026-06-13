@@ -119,7 +119,11 @@ fn parse_pes_header_status(bytes: &[u8]) -> PesHeaderParseStatus {
     let stream_id = bytes[3];
     let packet_length = u16::from_be_bytes([bytes[4], bytes[5]]) as usize;
     if !pes_stream_has_optional_header(stream_id) {
-        let expected_len = if packet_length == 0 { None } else { Some(6 + packet_length) };
+        let expected_len = if packet_length == 0 {
+            None
+        } else {
+            Some(6 + packet_length)
+        };
         return PesHeaderParseStatus::Complete(PesHeaderSummary {
             stream_id,
             payload_offset: 6,
@@ -173,7 +177,11 @@ fn parse_pes_header_status(bytes: &[u8]) -> PesHeaderParseStatus {
         },
         _ => None,
     };
-    let expected_len = if packet_length == 0 { None } else { Some(6 + packet_length) };
+    let expected_len = if packet_length == 0 {
+        None
+    } else {
+        Some(6 + packet_length)
+    };
     PesHeaderParseStatus::Complete(PesHeaderSummary {
         stream_id,
         payload_offset,
@@ -195,7 +203,6 @@ pub fn parse_pes_header_summary(bytes: &[u8]) -> Option<PesHeaderSummary> {
 fn parse_pes_header(bytes: &[u8]) -> Option<PesHeaderSummary> {
     parse_pes_header_summary(bytes)
 }
-
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PesDropReason {
@@ -279,7 +286,11 @@ impl PesAssembler {
     }
 
     fn reset_with_drop(&mut self, reason: PesDropReason) {
-        if self.pid.is_some() || !self.buf.is_empty() || self.expected_len.is_some() || self.unbounded_summary.is_some() {
+        if self.pid.is_some()
+            || !self.buf.is_empty()
+            || self.expected_len.is_some()
+            || self.unbounded_summary.is_some()
+        {
             match self.overflow_drop_count.checked_add(1) {
                 Some(next) => self.overflow_drop_count = next,
                 None => self.overflow_drop_counter_saturated = true,
@@ -302,7 +313,6 @@ impl PesAssembler {
     pub fn overflow_drop_count(&self) -> u64 {
         self.overflow_drop_count
     }
-
 
     fn take_completed(&mut self) -> Option<PesPacket> {
         let pid = self.pid?;
@@ -445,7 +455,10 @@ mod pes_flush_tests {
         let out = assembler.push(0x100, true, &payload);
         assert!(out.is_empty());
         assert!(assembler.flush().is_none());
-        assert_eq!(assembler.take_drop_diagnostic(), Some((PesDropReason::FlushDiscard, 1)));
+        assert_eq!(
+            assembler.take_drop_diagnostic(),
+            Some((PesDropReason::FlushDiscard, 1))
+        );
     }
 }
 
@@ -453,9 +466,25 @@ mod pes_flush_tests {
 mod pes_optional_header_contract_tests {
     use super::{parse_pes_header, PesAssembler};
 
-    fn pes_with_optional(stream_id: u8, flags1: u8, flags2: u8, header: &[u8], payload: &[u8]) -> Vec<u8> {
+    fn pes_with_optional(
+        stream_id: u8,
+        flags1: u8,
+        flags2: u8,
+        header: &[u8],
+        payload: &[u8],
+    ) -> Vec<u8> {
         let packet_length = (3 + header.len() + payload.len()) as u16;
-        let mut bytes = vec![0x00, 0x00, 0x01, stream_id, (packet_length >> 8) as u8, packet_length as u8, flags1, flags2, header.len() as u8];
+        let mut bytes = vec![
+            0x00,
+            0x00,
+            0x01,
+            stream_id,
+            (packet_length >> 8) as u8,
+            packet_length as u8,
+            flags1,
+            flags2,
+            header.len() as u8,
+        ];
         bytes.extend_from_slice(header);
         bytes.extend_from_slice(payload);
         bytes
@@ -463,14 +492,27 @@ mod pes_optional_header_contract_tests {
 
     fn pes_without_optional(stream_id: u8, payload: &[u8]) -> Vec<u8> {
         let packet_length = payload.len() as u16;
-        let mut bytes = vec![0x00, 0x00, 0x01, stream_id, (packet_length >> 8) as u8, packet_length as u8];
+        let mut bytes = vec![
+            0x00,
+            0x00,
+            0x01,
+            stream_id,
+            (packet_length >> 8) as u8,
+            packet_length as u8,
+        ];
         bytes.extend_from_slice(payload);
         bytes
     }
 
-    fn pts_only_field() -> [u8; 5] { [0x21, 0x00, 0x01, 0x00, 0x01] }
-    fn pts_dts_pts_field() -> [u8; 5] { [0x31, 0x00, 0x01, 0x00, 0x01] }
-    fn dts_field() -> [u8; 5] { [0x11, 0x00, 0x01, 0x00, 0x01] }
+    fn pts_only_field() -> [u8; 5] {
+        [0x21, 0x00, 0x01, 0x00, 0x01]
+    }
+    fn pts_dts_pts_field() -> [u8; 5] {
+        [0x31, 0x00, 0x01, 0x00, 0x01]
+    }
+    fn dts_field() -> [u8; 5] {
+        [0x11, 0x00, 0x01, 0x00, 0x01]
+    }
 
     #[test]
     fn c06_accepts_optional_header_marker_pattern_for_video_stream() {
@@ -494,7 +536,8 @@ mod pes_optional_header_contract_tests {
     fn c09_optional_header_absent_stream_does_not_require_marker_bytes() {
         for stream_id in [0xbe, 0xbf, 0xf0, 0xf1, 0xf2, 0xf8, 0xff] {
             let bytes = pes_without_optional(stream_id, &[0x00, 0x11, 0x22]);
-            let summary = parse_pes_header(&bytes).expect("optional-header-absent stream must parse without marker bytes");
+            let summary = parse_pes_header(&bytes)
+                .expect("optional-header-absent stream must parse without marker bytes");
             assert_eq!(summary.stream_id, stream_id);
             assert_eq!(summary.payload_offset, 6);
         }
@@ -540,7 +583,11 @@ mod pes_optional_header_contract_tests {
 
     #[test]
     fn c07_rejects_marker_bit_failures() {
-        for bad in [[0x20, 0x00, 0x01, 0x00, 0x01], [0x21, 0x00, 0x00, 0x00, 0x01], [0x21, 0x00, 0x01, 0x00, 0x00]] {
+        for bad in [
+            [0x20, 0x00, 0x01, 0x00, 0x01],
+            [0x21, 0x00, 0x00, 0x00, 0x01],
+            [0x21, 0x00, 0x01, 0x00, 0x00],
+        ] {
             let bytes = pes_with_optional(0xe0, 0x80, 0x80, &bad, &[0xaa]);
             assert!(parse_pes_header(&bytes).is_none());
         }
@@ -556,7 +603,6 @@ mod pes_optional_header_contract_tests {
     }
 }
 
-
 #[cfg(test)]
 mod pes_boundary_tests {
     use super::{PesAssembler, PesDropReason};
@@ -568,7 +614,10 @@ mod pes_boundary_tests {
         pes.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
         assert!(assembler.push(0x0100, true, &pes).is_empty());
         assert!(assembler.flush().is_none());
-        assert_eq!(assembler.take_drop_diagnostic(), Some((PesDropReason::FlushDiscard, 1)));
+        assert_eq!(
+            assembler.take_drop_diagnostic(),
+            Some((PesDropReason::FlushDiscard, 1))
+        );
     }
 
     #[test]
@@ -592,7 +641,10 @@ mod pes_oversized_tests {
         oversized.resize(MAX_PES_BUFFER_BYTES + 1, 0xaa);
         assert!(assembler.push(0x0100, true, &oversized).is_empty());
         assert_eq!(assembler.overflow_drop_count(), 1);
-        assert_eq!(assembler.take_drop_diagnostic(), Some((PesDropReason::OversizedPes, 1)));
+        assert_eq!(
+            assembler.take_drop_diagnostic(),
+            Some((PesDropReason::OversizedPes, 1))
+        );
 
         let pes = vec![0x00, 0x00, 0x01, 0xe0, 0x00, 0x04, 0x80, 0x00, 0x00, 0xde];
         assert!(assembler.push(0x0100, true, &pes).is_empty());

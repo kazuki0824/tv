@@ -1,6 +1,6 @@
 use super::{
-    DescramblerKeyLookupError, DescramblerKeySlotId, DescramblerKeyTable,
-    DescramblerKeyToken, DescramblerPidClaim, DescramblerSession,
+    DescramblerKeyLookupError, DescramblerKeySlotId, DescramblerKeyTable, DescramblerKeyToken,
+    DescramblerPidClaim, DescramblerSession,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -39,11 +39,30 @@ pub struct DescramblerCleanupReport {
 }
 
 impl DescramblerCleanupReport {
-    pub fn complete(steps: Vec<DescramblerSessionTxnStep>) -> Self { Self { steps, failed: None } }
-    pub fn failed(steps: Vec<DescramblerSessionTxnStep>, failure: DescramblerSessionFailure) -> Self { Self { steps, failed: Some(failure) } }
-    pub fn steps(&self) -> &[DescramblerSessionTxnStep] { &self.steps }
-    pub fn failure(&self) -> Option<DescramblerSessionFailure> { self.failed }
-    pub fn is_complete(&self) -> bool { self.failed.is_none() }
+    pub fn complete(steps: Vec<DescramblerSessionTxnStep>) -> Self {
+        Self {
+            steps,
+            failed: None,
+        }
+    }
+    pub fn failed(
+        steps: Vec<DescramblerSessionTxnStep>,
+        failure: DescramblerSessionFailure,
+    ) -> Self {
+        Self {
+            steps,
+            failed: Some(failure),
+        }
+    }
+    pub fn steps(&self) -> &[DescramblerSessionTxnStep] {
+        &self.steps
+    }
+    pub fn failure(&self) -> Option<DescramblerSessionFailure> {
+        self.failed
+    }
+    pub fn is_complete(&self) -> bool {
+        self.failed.is_none()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -52,21 +71,37 @@ pub struct DescramblerSessionTxn {
 }
 
 impl DescramblerSessionTxn {
-    pub fn new() -> Self { Self::default() }
-    pub fn steps(&self) -> &[DescramblerSessionTxnStep] { &self.steps }
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn steps(&self) -> &[DescramblerSessionTxnStep] {
+        &self.steps
+    }
 
-    fn record_step(&mut self, step: DescramblerSessionTxnStep) { self.steps.push(step); }
+    fn record_step(&mut self, step: DescramblerSessionTxnStep) {
+        self.steps.push(step);
+    }
 
-    fn ensure_open(&mut self, session: &DescramblerSession) -> Result<(), DescramblerSessionFailure> {
+    fn ensure_open(
+        &mut self,
+        session: &DescramblerSession,
+    ) -> Result<(), DescramblerSessionFailure> {
         self.record_step(DescramblerSessionTxnStep::ValidateOpen);
         if session.is_closed() {
-            Err(DescramblerSessionFailure { step: DescramblerSessionTxnStep::ValidateOpen, kind: DescramblerSessionFailureKind::SessionClosed })
+            Err(DescramblerSessionFailure {
+                step: DescramblerSessionTxnStep::ValidateOpen,
+                kind: DescramblerSessionFailureKind::SessionClosed,
+            })
         } else {
             Ok(())
         }
     }
 
-    pub fn bind_demux(&mut self, session: &mut DescramblerSession, demux_id: i32) -> Result<(), DescramblerSessionFailure> {
+    pub fn bind_demux(
+        &mut self,
+        session: &mut DescramblerSession,
+        demux_id: i32,
+    ) -> Result<(), DescramblerSessionFailure> {
         self.ensure_open(session)?;
         self.record_step(DescramblerSessionTxnStep::ValidateDemux);
         session.set_demux_id(demux_id);
@@ -88,12 +123,18 @@ impl DescramblerSessionTxn {
             Err(DescramblerKeyLookupError::UnknownToken) => {
                 self.record_step(DescramblerSessionTxnStep::Rollback);
                 session.restore(snapshot);
-                return Err(DescramblerSessionFailure { step: DescramblerSessionTxnStep::ResolveToken, kind: DescramblerSessionFailureKind::UnknownToken });
+                return Err(DescramblerSessionFailure {
+                    step: DescramblerSessionTxnStep::ResolveToken,
+                    kind: DescramblerSessionFailureKind::UnknownToken,
+                });
             }
             Err(DescramblerKeyLookupError::ExpiredToken) => {
                 self.record_step(DescramblerSessionTxnStep::Rollback);
                 session.restore(snapshot);
-                return Err(DescramblerSessionFailure { step: DescramblerSessionTxnStep::ResolveToken, kind: DescramblerSessionFailureKind::ExpiredToken });
+                return Err(DescramblerSessionFailure {
+                    step: DescramblerSessionTxnStep::ResolveToken,
+                    kind: DescramblerSessionFailureKind::ExpiredToken,
+                });
             }
         };
         self.record_step(DescramblerSessionTxnStep::ReplaceKey);
@@ -102,11 +143,18 @@ impl DescramblerSessionTxn {
         Ok(key_slot)
     }
 
-    pub fn add_pid_claim(&mut self, session: &mut DescramblerSession, claim: DescramblerPidClaim) -> Result<(), DescramblerSessionFailure> {
+    pub fn add_pid_claim(
+        &mut self,
+        session: &mut DescramblerSession,
+        claim: DescramblerPidClaim,
+    ) -> Result<(), DescramblerSessionFailure> {
         self.ensure_open(session)?;
         self.record_step(DescramblerSessionTxnStep::ValidateDemux);
         if session.demux_id().is_none() {
-            return Err(DescramblerSessionFailure { step: DescramblerSessionTxnStep::ValidateDemux, kind: DescramblerSessionFailureKind::DemuxNotBound });
+            return Err(DescramblerSessionFailure {
+                step: DescramblerSessionTxnStep::ValidateDemux,
+                kind: DescramblerSessionFailureKind::DemuxNotBound,
+            });
         }
         self.record_step(DescramblerSessionTxnStep::AddPidClaim);
         session.add_pid_claim(claim);
@@ -114,7 +162,11 @@ impl DescramblerSessionTxn {
         Ok(())
     }
 
-    pub fn remove_pid_claim(&mut self, session: &mut DescramblerSession, claim: DescramblerPidClaim) -> Result<(), DescramblerSessionFailure> {
+    pub fn remove_pid_claim(
+        &mut self,
+        session: &mut DescramblerSession,
+        claim: DescramblerPidClaim,
+    ) -> Result<(), DescramblerSessionFailure> {
         self.ensure_open(session)?;
         self.record_step(DescramblerSessionTxnStep::RemovePidClaim);
         session.remove_pid_claim(claim);
@@ -144,9 +196,14 @@ mod tests {
         table.insert_test_key(token.clone(), DescramblerKeySlotId(44));
         let mut session = DescramblerSession::new();
         let mut txn = DescramblerSessionTxn::new();
-        assert_eq!(txn.replace_key(&mut session, &table, &token), Ok(DescramblerKeySlotId(44)));
+        assert_eq!(
+            txn.replace_key(&mut session, &table, &token),
+            Ok(DescramblerKeySlotId(44))
+        );
         assert_eq!(session.key_slot(), Some(DescramblerKeySlotId(44)));
-        assert!(txn.steps().contains(&DescramblerSessionTxnStep::ResolveToken));
+        assert!(txn
+            .steps()
+            .contains(&DescramblerSessionTxnStep::ResolveToken));
         assert!(txn.steps().contains(&DescramblerSessionTxnStep::ReplaceKey));
     }
 
@@ -158,14 +215,22 @@ mod tests {
         table.insert_test_key(known.clone(), DescramblerKeySlotId(7));
         let mut session = DescramblerSession::new();
         let mut txn = DescramblerSessionTxn::new();
-        assert_eq!(txn.replace_key(&mut session, &table, &known), Ok(DescramblerKeySlotId(7)));
+        assert_eq!(
+            txn.replace_key(&mut session, &table, &known),
+            Ok(DescramblerKeySlotId(7))
+        );
         let mut failed = DescramblerSessionTxn::new();
         assert_eq!(
             failed.replace_key(&mut session, &table, &unknown),
-            Err(DescramblerSessionFailure { step: DescramblerSessionTxnStep::ResolveToken, kind: DescramblerSessionFailureKind::UnknownToken })
+            Err(DescramblerSessionFailure {
+                step: DescramblerSessionTxnStep::ResolveToken,
+                kind: DescramblerSessionFailureKind::UnknownToken
+            })
         );
         assert_eq!(session.key_slot(), Some(DescramblerKeySlotId(7)));
-        assert!(failed.steps().contains(&DescramblerSessionTxnStep::Rollback));
+        assert!(failed
+            .steps()
+            .contains(&DescramblerSessionTxnStep::Rollback));
     }
 
     #[test]
@@ -175,7 +240,10 @@ mod tests {
         let mut missing_demux = DescramblerSessionTxn::new();
         assert_eq!(
             missing_demux.add_pid_claim(&mut session, claim),
-            Err(DescramblerSessionFailure { step: DescramblerSessionTxnStep::ValidateDemux, kind: DescramblerSessionFailureKind::DemuxNotBound })
+            Err(DescramblerSessionFailure {
+                step: DescramblerSessionTxnStep::ValidateDemux,
+                kind: DescramblerSessionFailureKind::DemuxNotBound
+            })
         );
         let mut bind = DescramblerSessionTxn::new();
         assert_eq!(bind.bind_demux(&mut session, 8), Ok(()));
@@ -193,7 +261,10 @@ mod tests {
         let mut session = DescramblerSession::new();
         let mut prepare = DescramblerSessionTxn::new();
         assert_eq!(prepare.bind_demux(&mut session, 1), Ok(()));
-        assert_eq!(prepare.replace_key(&mut session, &table, &token), Ok(DescramblerKeySlotId(9)));
+        assert_eq!(
+            prepare.replace_key(&mut session, &table, &token),
+            Ok(DescramblerKeySlotId(9))
+        );
         assert_eq!(prepare.add_pid_claim(&mut session, claim), Ok(()));
         let mut cleanup = DescramblerSessionTxn::new();
         let report = cleanup.cleanup_all(&mut session);

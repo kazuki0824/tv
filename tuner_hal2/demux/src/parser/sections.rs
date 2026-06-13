@@ -190,7 +190,11 @@ impl SectionAssembler {
         }
     }
 
-    pub(crate) fn push_payload(&mut self, payload_unit_start: bool, payload: &[u8]) -> Vec<Vec<u8>> {
+    pub(crate) fn push_payload(
+        &mut self,
+        payload_unit_start: bool,
+        payload: &[u8],
+    ) -> Vec<Vec<u8>> {
         let mut out = Vec::new();
         if payload.is_empty() {
             return out;
@@ -275,8 +279,7 @@ impl SectionAssembler {
     fn try_take_pending(&mut self, out: &mut Vec<Vec<u8>>) {
         loop {
             if self.expected_len.is_none() && self.buf.len() >= 3 {
-                let section_length =
-                    (((self.buf[1] & 0x0f) as usize) << 8) | self.buf[2] as usize;
+                let section_length = (((self.buf[1] & 0x0f) as usize) << 8) | self.buf[2] as usize;
                 let expected_len = 3 + section_length;
                 let syntax = (self.buf[1] & 0x80) != 0;
                 let invalid_declared_header = (self.buf[1] & 0x30) != 0x30
@@ -318,8 +321,8 @@ impl SectionAssembler {
 mod tests {
     use super::{crc32_mpeg, parse_section_header, section_crc_valid, SectionAssembler};
     use maleicacid_tuner_hal2_common::{
-        MAX_ARIB_EIT_SECTION_LENGTH, MAX_ARIB_SECTION_TOTAL_BYTES,
-        MAX_ARIB_SHORT_SECTION_LENGTH, MAX_SECTION_PAYLOAD_BYTES,
+        MAX_ARIB_EIT_SECTION_LENGTH, MAX_ARIB_SECTION_TOTAL_BYTES, MAX_ARIB_SHORT_SECTION_LENGTH,
+        MAX_SECTION_PAYLOAD_BYTES,
     };
 
     fn section_with_crc(mut bytes: Vec<u8>) -> Vec<u8> {

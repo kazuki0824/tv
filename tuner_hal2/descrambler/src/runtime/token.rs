@@ -15,12 +15,17 @@ impl DescramblerKeyToken {
             return Err(DescramblerKeyTokenError::Empty);
         }
         if bytes.len() > MAX_DESCRAMBLER_TOKEN_BYTES {
-            return Err(DescramblerKeyTokenError::TooLong { len: bytes.len(), max: MAX_DESCRAMBLER_TOKEN_BYTES });
+            return Err(DescramblerKeyTokenError::TooLong {
+                len: bytes.len(),
+                max: MAX_DESCRAMBLER_TOKEN_BYTES,
+            });
         }
         Ok(Self(bytes))
     }
 
-    pub fn as_binder_token_bytes(&self) -> &[u8] { &self.0 }
+    pub fn as_binder_token_bytes(&self) -> &[u8] {
+        &self.0
+    }
 }
 
 #[cfg(test)]
@@ -29,7 +34,10 @@ mod tests {
 
     #[test]
     fn token_length_is_checked_at_boundary() {
-        assert_eq!(DescramblerKeyToken::try_from_bytes(Vec::new()).unwrap_err(), DescramblerKeyTokenError::Empty);
+        assert_eq!(
+            DescramblerKeyToken::try_from_bytes(Vec::new()).unwrap_err(),
+            DescramblerKeyTokenError::Empty
+        );
         assert_eq!(
             DescramblerKeyToken::try_from_bytes(vec![0x55; 17]).unwrap_err(),
             DescramblerKeyTokenError::TooLong { len: 17, max: 16 }

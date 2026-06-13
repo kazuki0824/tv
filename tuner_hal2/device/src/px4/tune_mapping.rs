@@ -40,10 +40,7 @@ const PX4_CS_FREQ_NO_MAX: i32 = 23;
 fn hz_to_nearest_khz(hz: u64) -> Result<i32, HalError> {
     let rounded = (hz + 500) / 1_000;
     i32::try_from(rounded).map_err(|_| {
-        HalError::invalid_argument(
-            HalInvalidArgumentKind::NumericRange,
-            "frequency too large",
-        )
+        HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, "frequency too large")
     })
 }
 
@@ -91,8 +88,8 @@ fn checked_direct_freq_no(
 }
 
 fn is_japan_cs110_if_frequency_range_hz(if_hz: u64) -> bool {
-    let last = PX4_CS_BASE_IF_HZ
-        + PX4_CS_STEP_HZ * ((PX4_CS_FREQ_NO_MAX - PX4_CS_FREQ_NO_MIN) as u64);
+    let last =
+        PX4_CS_BASE_IF_HZ + PX4_CS_STEP_HZ * ((PX4_CS_FREQ_NO_MAX - PX4_CS_FREQ_NO_MIN) as u64);
     (PX4_CS_BASE_IF_HZ..=last).contains(&if_hz)
 }
 
@@ -333,7 +330,9 @@ pub fn map_tune_request_to_px4(request: &FrontendTuneRequest) -> Result<Px4TuneR
 
 pub fn px4_scan_requests(base: &FrontendTuneRequest) -> Result<Vec<FrontendTuneRequest>, HalError> {
     if base.end_frequency.unwrap_or(base.frequency) != base.frequency {
-        return Err(HalError::Unsupported("px4バックエンドは日本向けscan表を生成しません。TISが明示選局候補を渡す必要があります"));
+        return Err(HalError::Unsupported(
+            "px4バックエンドは日本向けscan表を生成しません。TISが明示選局候補を渡す必要があります",
+        ));
     }
     map_tune_request_to_px4(base)?;
     Ok(vec![base.clone()])
