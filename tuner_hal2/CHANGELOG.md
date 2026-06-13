@@ -1,10 +1,18 @@
+# r50eh_tuner_service_trait_shim_refactor
+
+- 非機能リファクタとして、`tuner_service.rs` に集まっていた AIDL frontend settings 変換を `binder_adapter/src/aidl_frontend_settings.rs` へ分離した。
+- frontend request の registry / backend validation を `service_runtime/src/frontend_request_txn.rs` へ分離した。
+- frontend worker generation / snapshot / rollback / scan session / live descriptor 処理を `service_runtime/src/frontend_worker_txn.rs` へ分離した。
+- scan END callback配送を `aidl_service/src/frontend_callback_delivery.rs` へ分離し、Binder callback型を service_runtime へ持ち込まない構造へ寄せた。
+- openFilter/openDvr の child object生成・callback保持・rollback を `aidl_service/src/child_object_open.rs` へ分離した。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認は未実施。
+
 # r50eg_wp_r06_demux_open_foundation
 
 - WP-R06として demux capability / demux info、filter open request、DVR open request、Filter/DVR callback保持の基盤を実装した。
 - `getDemuxCaps()` / `getDemuxInfo()` は TS-only profile と旧 `tuner_hal` の demux/filter/DVR capability 数へ合わせ、未知 demux id は `Unsupported` へ倒す。
 - `openFilter()` は filter type / buffer size / callback_present を `FilterRuntime` へ保持し、AIDL child object生成・callback owner登録・失敗時rollbackまで接続した。
 - `openDvr()` は record/playback種別、buffer size、callback_present を `DvrRuntime` へ保持し、demux owner配下のDVR runtime登録・callback owner登録・失敗時rollbackまで接続した。
-- Filter/DVR callback owner登録失敗時のcallback保持rollbackで、callback store cleanup失敗を黙殺せず `UNKNOWN_ERROR` へ倒すよう修正した。
 - Android 14 AIDL Rust生成境界に合わせ、section table info生成名と `FilterDelayHint.hintValue` の型変換を修正した。
 - `m maleicacid_tuner_hal2_device_test maleicacid_tuner_hal2_service_runtime_test maleicacid_tuner_hal2_aidl_service_test` は成功。atest、VTS、実機確認は未実施。
 

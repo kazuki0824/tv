@@ -189,6 +189,8 @@ rust_library {
         "service_runtime/src/transaction_registry.rs",
         "service_runtime/src/capability_profile.rs",
         "service_runtime/src/callback_registry.rs",
+        "service_runtime/src/frontend_request_txn.rs",
+        "service_runtime/src/frontend_worker_txn.rs",
     ],
     edition: "2021",
     rustlibs: [
@@ -229,6 +231,7 @@ rust_library {
         "binder_adapter/src/status.rs",
         "binder_adapter/src/aidl_method.rs",
         "binder_adapter/src/aidl_filter_config.rs",
+        "binder_adapter/src/aidl_frontend_settings.rs",
     ],
     edition: "2021",
     rustlibs: [
@@ -261,6 +264,8 @@ rust_library {
         "aidl_service/src/error_bridge.rs",
         "aidl_service/src/object_handle.rs",
         "aidl_service/src/object_runtime.rs",
+        "aidl_service/src/frontend_callback_delivery.rs",
+        "aidl_service/src/child_object_open.rs",
     ],
     edition: "2021",
     rustlibs: [
@@ -462,6 +467,8 @@ rust_test {
         "service_runtime/src/transaction_registry.rs",
         "service_runtime/src/capability_profile.rs",
         "service_runtime/src/callback_registry.rs",
+        "service_runtime/src/frontend_request_txn.rs",
+        "service_runtime/src/frontend_worker_txn.rs",
     ],
     edition: "2021",
     rustlibs: [
@@ -493,6 +500,7 @@ rust_test {
         "binder_adapter/src/status.rs",
         "binder_adapter/src/aidl_method.rs",
         "binder_adapter/src/aidl_filter_config.rs",
+        "binder_adapter/src/aidl_frontend_settings.rs",
     ],
     edition: "2021",
     rustlibs: [
@@ -526,6 +534,8 @@ rust_test {
         "aidl_service/src/error_bridge.rs",
         "aidl_service/src/object_handle.rs",
         "aidl_service/src/object_runtime.rs",
+        "aidl_service/src/frontend_callback_delivery.rs",
+        "aidl_service/src/child_object_open.rs",
     ],
     edition: "2021",
     rustlibs: [

@@ -162,7 +162,7 @@ mod tests {
             op: "FE_SET_PROPERTY",
             errno: 5,
         };
-        let callback = HalError::callback_failed("IFrontendCallback", "binder failure");
+        let callback = HalError::callback_failed("frontend callback", "binder failure");
         let fmq = HalError::fmq_failed("write", "native write failed");
         let event = HalError::event_flag_failed("wake", "native wake failed");
         let cleanup = HalError::cleanup_failed("filter", "queue clear failed");

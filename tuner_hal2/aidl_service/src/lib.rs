@@ -4,6 +4,8 @@ pub mod callback_store;
 pub mod demux_object;
 pub mod descrambler_object;
 pub mod dvr_object;
+pub mod frontend_callback_delivery;
+pub mod child_object_open;
 pub mod error_bridge;
 pub mod filter_object;
 pub mod frontend_object;

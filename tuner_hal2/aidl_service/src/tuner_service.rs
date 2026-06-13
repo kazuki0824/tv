@@ -76,11 +76,18 @@ use maleicacid_tuner_hal2_device::{
     FrontendWorkerKind, FrontendWorkerStartError, FrontendWorkerStopOutcome,
 };
 use maleicacid_tuner_hal2_service_runtime::{
-    start_frontend_demux_live_pump_from_reader, FrontendRegistryEntry, FrontendRuntimeId,
+    FrontendRegistryEntry, FrontendRuntimeId,
     LnbRegistryProfile, RuntimeCommandDispatchError, RuntimeCommandDispatchPlan,
     RuntimeOwnerRelation, TunerServiceRuntime,
 };
+use maleicacid_tuner_hal2_service_runtime::frontend_worker_txn::{
+    close_frontend_live_data_and_unbind, close_frontend_workers_and_live_data,
+    start_frontend_backend_scan_session_worker, start_frontend_backend_tune_worker,
+    stop_frontend_live_data_and_unbind, stop_frontend_scan_worker, stop_frontend_tune_worker,
+};
 
+use crate::child_object_open::{open_dvr_child_after_plan, open_filter_child_after_plan};
+use crate::frontend_callback_delivery::scan_end_notifier;
 use crate::callback_store::{
     clear_owner_callbacks, frontend_callback_for_owner, retain_dvr_callback, retain_filter_callback,
 };
@@ -744,1058 +751,35 @@ impl ITuner for TunerAidlService {
     }
 }
 
-const AOSP_TUNER_INVALID_STREAM_ID: i32 = -1;
 
-fn cast_u64_field(value: i64, field: &'static str) -> Result<u64, HalError> {
-    u64::try_from(value).map_err(|_| {
-        HalError::invalid_argument(
-            HalInvalidArgumentKind::NumericRange,
-            format!("{field} must be non-negative"),
-        )
-    })
-}
 
-fn optional_positive_i64_to_u64_field(
-    value: i64,
-    field: &'static str,
-) -> Result<Option<u64>, HalError> {
-    if value < 0 {
-        return Err(HalError::invalid_argument(
-            HalInvalidArgumentKind::NumericRange,
-            format!("{field} must be non-negative"),
-        ));
-    }
-    Ok(u64::try_from(value).ok().filter(|v| *v > 0))
-}
 
-fn map_isdbt_bandwidth(bandwidth: FrontendIsdbtBandwidth) -> Option<u32> {
-    match bandwidth {
-        FrontendIsdbtBandwidth::BANDWIDTH_6MHZ => Some(6_000_000),
-        FrontendIsdbtBandwidth::BANDWIDTH_7MHZ => Some(7_000_000),
-        FrontendIsdbtBandwidth::BANDWIDTH_8MHZ => Some(8_000_000),
-        _ => None,
-    }
-}
 
-fn validate_isdbt_fixed_settings(
-    s: &android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::FrontendIsdbtSettings::FrontendIsdbtSettings,
-) -> Result<(), HalError> {
-    if !matches!(
-        s.bandwidth,
-        FrontendIsdbtBandwidth::AUTO | FrontendIsdbtBandwidth::BANDWIDTH_6MHZ
-    ) {
-        return Err(HalError::invalid_argument(
-            HalInvalidArgumentKind::UnsupportedBandwidth,
-            "ISDB-T bandwidth must be AUTO or 6MHz",
-        ));
-    }
-    if !matches!(s.mode, FrontendIsdbtMode::AUTO | FrontendIsdbtMode::MODE_3) {
-        return Err(HalError::invalid_argument(
-            HalInvalidArgumentKind::UnsupportedBandwidth,
-            "ISDB-T mode must be AUTO or MODE_3",
-        ));
-    }
-    if !matches!(
-        s.guardInterval,
-        FrontendIsdbtGuardInterval::AUTO
-            | FrontendIsdbtGuardInterval::INTERVAL_1_32
-            | FrontendIsdbtGuardInterval::INTERVAL_1_16
-            | FrontendIsdbtGuardInterval::INTERVAL_1_8
-            | FrontendIsdbtGuardInterval::INTERVAL_1_4
-    ) {
-        return Err(HalError::invalid_argument(
-            HalInvalidArgumentKind::UnsupportedBandwidth,
-            "unsupported ISDB-T guard interval",
-        ));
-    }
-    for layer in &s.layerSettings {
-        if !matches!(
-            layer.modulation,
-            FrontendIsdbtModulation::AUTO
-                | FrontendIsdbtModulation::MOD_DQPSK
-                | FrontendIsdbtModulation::MOD_QPSK
-                | FrontendIsdbtModulation::MOD_16QAM
-                | FrontendIsdbtModulation::MOD_64QAM
-        ) {
-            return Err(HalError::invalid_argument(
-                HalInvalidArgumentKind::UnsupportedBandwidth,
-                "unsupported ISDB-T layer modulation",
-            ));
-        }
-        if !matches!(
-            layer.coderate,
-            FrontendIsdbtCoderate::AUTO
-                | FrontendIsdbtCoderate::CODERATE_1_2
-                | FrontendIsdbtCoderate::CODERATE_2_3
-                | FrontendIsdbtCoderate::CODERATE_3_4
-                | FrontendIsdbtCoderate::CODERATE_5_6
-                | FrontendIsdbtCoderate::CODERATE_7_8
-        ) {
-            return Err(HalError::invalid_argument(
-                HalInvalidArgumentKind::UnsupportedBandwidth,
-                "unsupported ISDB-T layer coderate",
-            ));
-        }
-        if !matches!(
-            layer.timeInterleave,
-            FrontendIsdbtTimeInterleaveMode::AUTO
-                | FrontendIsdbtTimeInterleaveMode::INTERLEAVE_3_0
-                | FrontendIsdbtTimeInterleaveMode::INTERLEAVE_3_1
-                | FrontendIsdbtTimeInterleaveMode::INTERLEAVE_3_2
-                | FrontendIsdbtTimeInterleaveMode::INTERLEAVE_3_4
-        ) {
-            return Err(HalError::invalid_argument(
-                HalInvalidArgumentKind::UnsupportedBandwidth,
-                "unsupported ISDB-T layer time interleave",
-            ));
-        }
-    }
-    Ok(())
-}
 
-fn validate_isdbs_fixed_settings(
-    s: &android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::FrontendIsdbsSettings::FrontendIsdbsSettings,
-) -> Result<(), HalError> {
-    if !matches!(
-        s.modulation,
-        FrontendIsdbsModulation::AUTO
-            | FrontendIsdbsModulation::MOD_BPSK
-            | FrontendIsdbsModulation::MOD_QPSK
-            | FrontendIsdbsModulation::MOD_TC8PSK
-    ) {
-        return Err(HalError::invalid_argument(
-            HalInvalidArgumentKind::UnsupportedBandwidth,
-            "unsupported ISDB-S modulation",
-        ));
-    }
-    if !matches!(
-        s.coderate,
-        FrontendIsdbsCoderate::AUTO
-            | FrontendIsdbsCoderate::CODERATE_1_2
-            | FrontendIsdbsCoderate::CODERATE_2_3
-            | FrontendIsdbsCoderate::CODERATE_3_4
-            | FrontendIsdbsCoderate::CODERATE_5_6
-            | FrontendIsdbsCoderate::CODERATE_7_8
-    ) {
-        return Err(HalError::invalid_argument(
-            HalInvalidArgumentKind::UnsupportedSymbolRate,
-            "unsupported ISDB-S coderate",
-        ));
-    }
-    if s.symbolRate != 0 {
-        return Err(HalError::invalid_argument(
-            HalInvalidArgumentKind::UnsupportedSymbolRate,
-            "ISDB-S symbolRate must be 0 in this product scope",
-        ));
-    }
-    Ok(())
-}
 
-fn map_isdbs_stream_selector(
-    stream_id: i32,
-    stream_id_type: FrontendIsdbsStreamIdType,
-    frequency_hz: u64,
-) -> Result<(Option<u32>, Option<FrontendStreamIdKind>), HalError> {
-    match stream_id_type {
-        FrontendIsdbsStreamIdType::UNDEFINED => {
-            if stream_id != 0 {
-                return Err(HalError::invalid_argument(
-                    HalInvalidArgumentKind::UnsupportedStreamSelector,
-                    "streamId must be 0 when streamIdType is UNDEFINED",
-                ));
-            }
-            Ok((None, None))
-        }
-        FrontendIsdbsStreamIdType::STREAM_ID => {
-            if stream_id == AOSP_TUNER_INVALID_STREAM_ID {
-                return Ok((None, None));
-            }
-            if stream_id < 0 {
-                return Err(HalError::invalid_argument(
-                    HalInvalidArgumentKind::InvalidStreamIdRange,
-                    "negative ISDB-S stream selector",
-                ));
-            }
-            if is_japan_cs110_if_frequency_hz(frequency_hz) {
-                return Err(HalError::invalid_argument(
-                    HalInvalidArgumentKind::UnsupportedStreamSelector,
-                    "CS110 tune must not carry TSID or relative stream selector",
-                ));
-            }
-            let value = u32::try_from(stream_id).map_err(|_| {
-                HalError::invalid_argument(
-                    HalInvalidArgumentKind::InvalidStreamIdRange,
-                    "ISDB-S stream selector out of range",
-                )
-            })?;
-            Ok((Some(value), Some(FrontendStreamIdKind::AbsoluteStreamId)))
-        }
-        FrontendIsdbsStreamIdType::RELATIVE_STREAM_NUMBER => {
-            if stream_id < 0 {
-                return Err(HalError::invalid_argument(
-                    HalInvalidArgumentKind::InvalidStreamIdRange,
-                    "negative ISDB-S relative stream selector",
-                ));
-            }
-            if is_japan_cs110_if_frequency_hz(frequency_hz) {
-                return Err(HalError::invalid_argument(
-                    HalInvalidArgumentKind::UnsupportedStreamSelector,
-                    "CS110 tune must not carry TSID or relative stream selector",
-                ));
-            }
-            let value = u32::try_from(stream_id).map_err(|_| {
-                HalError::invalid_argument(
-                    HalInvalidArgumentKind::InvalidStreamIdRange,
-                    "ISDB-S relative stream selector out of range",
-                )
-            })?;
-            Ok((
-                Some(value),
-                Some(FrontendStreamIdKind::RelativeStreamNumber),
-            ))
-        }
-        _ => Err(HalError::invalid_argument(
-            HalInvalidArgumentKind::UnsupportedStreamSelector,
-            "unsupported ISDB-S streamIdType",
-        )),
-    }
-}
 
-fn aidl_frontend_settings_to_request(
-    settings: &FrontendSettings,
-) -> Result<FrontendTuneRequest, HalError> {
-    match settings {
-        FrontendSettings::Isdbt(s) => {
-            validate_isdbt_fixed_settings(s)?;
-            Ok(FrontendTuneRequest {
-                system: FrontendSystem::IsdbT,
-                frequency: cast_u64_field(s.frequency, "isdbt.frequency")?,
-                end_frequency: optional_positive_i64_to_u64_field(
-                    s.endFrequency,
-                    "isdbt.endFrequency",
-                )?,
-                stream_id: None,
-                stream_id_kind: None,
-                bandwidth_hz: map_isdbt_bandwidth(s.bandwidth),
-                symbol_rate: None,
-            })
-        }
-        FrontendSettings::Isdbs(s) => {
-            validate_isdbs_fixed_settings(s)?;
-            let frequency = cast_u64_field(s.frequency, "isdbs.frequency")?;
-            let (stream_id, stream_id_kind) =
-                map_isdbs_stream_selector(s.streamId, s.streamIdType, frequency)?;
-            Ok(FrontendTuneRequest {
-                system: FrontendSystem::IsdbS,
-                frequency,
-                end_frequency: optional_positive_i64_to_u64_field(
-                    s.endFrequency,
-                    "isdbs.endFrequency",
-                )?,
-                stream_id,
-                stream_id_kind,
-                bandwidth_hz: None,
-                symbol_rate: None,
-            })
-        }
-        FrontendSettings::Isdbs3(_) => Err(HalError::Unsupported(
-            "ISDB-S3 is outside the r51 product scope",
-        )),
-        FrontendSettings::Dvbs(_) => Err(HalError::Unsupported(
-            "DVB-S is outside the r51 product scope",
-        )),
-        _ => Err(HalError::Unsupported(
-            "frontend setting is outside the r51 product scope",
-        )),
-    }
-}
 
-fn validate_frontend_request_against_entry(
-    entry: &FrontendRegistryEntry,
-    request: &FrontendTuneRequest,
-) -> Result<(), HalError> {
-    if entry.system != request.system {
-        return Err(HalError::invalid_argument(
-            HalInvalidArgumentKind::MissingDeliverySystem,
-            format!(
-                "requested frontend system {} does not match exported frontend {}",
-                request.system.as_hint(),
-                entry.system.as_hint()
-            ),
-        ));
-    }
 
-    match request.system {
-        FrontendSystem::IsdbT => {
-            if !is_japan_isdbt_frequency_contract_hz(request.frequency) {
-                return Err(HalError::invalid_argument(
-                    HalInvalidArgumentKind::UnsupportedFrequency,
-                    "ISDB-T frequency is outside Japan CATV C13..UHF62 contract range",
-                ));
-            }
-            if let Some(end_frequency) = request.end_frequency {
-                if end_frequency < request.frequency
-                    || !is_japan_isdbt_frequency_contract_hz(end_frequency)
-                {
-                    return Err(HalError::invalid_argument(
-                        HalInvalidArgumentKind::UnsupportedScanRange,
-                        "ISDB-T endFrequency must be >= frequency and inside Japan contract range",
-                    ));
-                }
-            }
-            if request.stream_id.is_some() || request.stream_id_kind.is_some() {
-                return Err(HalError::invalid_argument(
-                    HalInvalidArgumentKind::UnsupportedStreamSelector,
-                    "ISDB-T tune must not carry ISDB-S stream selector",
-                ));
-            }
-        }
-        FrontendSystem::IsdbS => {
-            let is_bs = is_japan_bs_if_frequency_hz(request.frequency);
-            let is_cs110 = is_japan_cs110_if_frequency_hz(request.frequency);
-            if !is_bs && !is_cs110 {
-                return Err(HalError::invalid_argument(
-                    HalInvalidArgumentKind::UnsupportedFrequency,
-                    "ISDB-S frequency must be a Japan BS/CS110 IF center frequency",
-                ));
-            }
-            if let Some(end_frequency) = request.end_frequency {
-                if end_frequency < request.frequency {
-                    return Err(HalError::invalid_argument(
-                        HalInvalidArgumentKind::UnsupportedScanRange,
-                        "ISDB-S endFrequency must be >= frequency",
-                    ));
-                }
-                if !(is_japan_bs_if_frequency_hz(end_frequency)
-                    || is_japan_cs110_if_frequency_hz(end_frequency))
-                {
-                    return Err(HalError::invalid_argument(
-                        HalInvalidArgumentKind::UnsupportedScanRange,
-                        "ISDB-S endFrequency must be a Japan BS/CS110 IF center frequency",
-                    ));
-                }
-            }
-            if is_cs110 && (request.stream_id.is_some() || request.stream_id_kind.is_some()) {
-                return Err(HalError::invalid_argument(
-                    HalInvalidArgumentKind::UnsupportedStreamSelector,
-                    "CS110 tune must not carry TSID or relative stream selector",
-                ));
-            }
-        }
-        FrontendSystem::IsdbS3 | FrontendSystem::DvbS => {
-            return Err(HalError::Unsupported(
-                "frontend system is outside the r51 product scope",
-            ));
-        }
-    }
-    Ok(())
-}
 
-fn validate_frontend_request_for_object(
-    runtime: &SharedTunerRuntime,
-    handle: AidlObjectHandle,
-    request: &FrontendTuneRequest,
-) -> BinderResult<FrontendRegistryEntry> {
-    let entry = runtime_frontend_entry_for_object(runtime, handle)?;
-    validate_frontend_request_against_entry(&entry, request).map_err(status_from_hal_error)?;
-    validate_frontend_lnb_candidate(runtime, &entry, request)?;
-    Ok(entry)
-}
 
-fn validate_frontend_lnb_candidate(
-    runtime: &SharedTunerRuntime,
-    entry: &FrontendRegistryEntry,
-    request: &FrontendTuneRequest,
-) -> BinderResult<()> {
-    if !matches!(request.system, FrontendSystem::IsdbS) {
-        return Ok(());
-    }
-    let lnb = runtime
-        .lock()
-        .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
-        .lnb_for_frontend_id(entry.id.0);
-    match (entry.lnb_profile, lnb) {
-        (Some(expected_profile), Some(lnb_entry)) if lnb_entry.profile == expected_profile => {
-            Ok(())
-        }
-        (Some(_), Some(_)) => Err(status_unknown_error(
-            "frontend/LNB profile mismatch in runtime registry",
-        )),
-        _ => Err(service_error(
-            TunerResult::UNAVAILABLE.0,
-            "ISDB-S frontend does not have a registered LNB candidate",
-        )),
-    }
-}
 
-fn validate_backend_tune_preflight(
-    entry: &FrontendRegistryEntry,
-    request: &FrontendTuneRequest,
-) -> Result<(), HalError> {
-    match entry.backend {
-        FrontendBackendKind::Px4CharDevice => {
-            let _mapped = maleicacid_tuner_hal2_device::px4::map_tune_request_to_px4(request)?;
-        }
-        FrontendBackendKind::LinuxDvb => {
-            let normalized =
-                maleicacid_tuner_hal2_device::dvb::normalized_tune_request_from_common(request)?;
-            let pairs = maleicacid_tuner_hal2_device::dvb::tune_property_pairs(&normalized)?;
-            let _dtv_properties = pairs.to_dtv_properties();
-        }
-    }
-    Ok(())
-}
 
-fn backend_scan_candidates(
-    entry: &FrontendRegistryEntry,
-    request: &FrontendTuneRequest,
-    scan_mode: FrontendScanMode,
-) -> Result<Vec<FrontendTuneRequest>, HalError> {
-    let candidates = match entry.backend {
-        FrontendBackendKind::Px4CharDevice => {
-            maleicacid_tuner_hal2_device::px4::px4_scan_requests(request)?
-        }
-        FrontendBackendKind::LinuxDvb => {
-            maleicacid_tuner_hal2_device::dvb::dvb_scan_requests(request, scan_mode)?
-        }
-    };
-    for candidate in candidates.iter() {
-        validate_backend_tune_preflight(entry, candidate)?;
-    }
-    Ok(candidates)
-}
 
-fn mark_frontend_callback_unhealthy(runtime: &SharedTunerRuntime, handle: AidlObjectHandle) {
-    if let Ok(mut guard) = runtime.lock() {
-        guard.callback_registry_mut().mark_unhealthy(
-            handle.object_kind(),
-            handle.object_id(),
-            handle.generation(),
-            AidlApi::FrontendSetCallback,
-        );
-    }
-}
 
-fn mark_scan_end_callback_failed(
-    runtime: &SharedTunerRuntime,
-    handle: AidlObjectHandle,
-    frontend_id: i32,
-    generation: u64,
-) -> Result<(), HalError> {
-    mark_frontend_callback_unhealthy(runtime, handle);
-    let mut guard = runtime.lock().map_err(|_| {
-        HalError::internal(
-            HalInternalKind::InvariantViolation,
-            "service runtime lock poisoned while marking scan callback failure",
-        )
-    })?;
-    guard.mark_frontend_scan_session_callback_failed(frontend_id, generation)
-}
 
-fn mark_tune_worker_failed(
-    runtime: &SharedTunerRuntime,
-    frontend_id: i32,
-    generation: u64,
-    error: HalError,
-) -> Result<(), HalError> {
-    let mut guard = runtime.lock().map_err(|_| {
-        HalError::internal(
-            HalInternalKind::InvariantViolation,
-            "service runtime lock poisoned while marking tune worker failure",
-        )
-    })?;
-    guard.mark_frontend_tune_worker_failed(frontend_id, generation, error)
-}
 
-fn deliver_scan_end_callback(
-    runtime: &SharedTunerRuntime,
-    handle: AidlObjectHandle,
-    frontend_id: i32,
-    generation: u64,
-) -> Result<(), HalError> {
-    let callback = match frontend_callback_for_owner(handle) {
-        Ok(Some(callback)) => callback,
-        Ok(None) => {
-            if let Err(mark_error) =
-                mark_scan_end_callback_failed(runtime, handle, frontend_id, generation)
-            {
-                return Err(mark_error);
-            }
-            return Err(HalError::callback_failed(
-                "IFrontendCallback.onScanMessage(END)",
-                "frontend callback is not registered",
-            ));
-        }
-        Err(_) => {
-            if let Err(mark_error) =
-                mark_scan_end_callback_failed(runtime, handle, frontend_id, generation)
-            {
-                return Err(mark_error);
-            }
-            return Err(HalError::callback_failed(
-                "IFrontendCallback.onScanMessage(END)",
-                "callback store lock poisoned",
-            ));
-        }
-    };
-    let message = FrontendScanMessage::IsEnd(true);
-    if let Err(err) = callback.onScanMessage(FrontendScanMessageType::END, &message) {
-        if let Err(mark_error) =
-            mark_scan_end_callback_failed(runtime, handle, frontend_id, generation)
-        {
-            return Err(mark_error);
-        }
-        return Err(HalError::callback_failed(
-            "IFrontendCallback.onScanMessage(END)",
-            format!("binder failure: {err:?}"),
-        ));
-    }
-    Ok(())
-}
 
-fn map_frontend_worker_start_error(error: FrontendWorkerStartError) -> Status {
-    match error {
-        FrontendWorkerStartError::AlreadyRunning { .. } => service_error(
-            TunerResult::INVALID_STATE.0,
-            "frontend worker is already running",
-        ),
-        FrontendWorkerStartError::SpawnFailed { detail } => service_error(
-            TunerResult::UNKNOWN_ERROR.0,
-            &format!("frontend worker spawn failed: {detail}"),
-        ),
-    }
-}
 
-fn start_frontend_backend_tune_worker_for_object(
-    runtime: &SharedTunerRuntime,
-    handle: AidlObjectHandle,
-    entry: &FrontendRegistryEntry,
-    request: FrontendTuneRequest,
-    kind: FrontendWorkerKind,
-) -> BinderResult<()> {
-    let frontend_id = runtime_entry_public_id(runtime, handle, AidlObjectKind::Frontend)?;
-    let mut guard = runtime
-        .lock()
-        .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
-    if guard
-        .frontend_has_same_active_tune(frontend_id, &request)
-        .map_err(status_from_hal_error)?
-    {
-        return Ok(());
-    }
-    let snapshot = guard
-        .frontend_runtime_snapshot(frontend_id)
-        .map_err(status_from_hal_error)?;
-    let demux_snapshots = guard
-        .bound_demux_runtime_snapshots(frontend_id)
-        .map_err(status_from_hal_error)?;
-    let generation = guard
-        .prepare_frontend_worker_generation(frontend_id, kind)
-        .map_err(status_from_hal_error)?;
-    if let Err(error) = guard.reset_bound_demuxes_for_frontend_tune_start(frontend_id) {
-        guard
-            .restore_frontend_runtime_snapshot(frontend_id, snapshot)
-            .map_err(status_from_hal_error)?;
-        guard
-            .restore_bound_demux_runtime_snapshots(demux_snapshots.clone())
-            .map_err(status_from_hal_error)?;
-        return Err(status_from_hal_error(error));
-    }
-    if let Err(error) =
-        guard.install_frontend_live_reader_descriptor_for_generation(frontend_id, kind, generation)
-    {
-        guard
-            .restore_frontend_runtime_snapshot(frontend_id, snapshot)
-            .map_err(status_from_hal_error)?;
-        guard
-            .restore_bound_demux_runtime_snapshots(demux_snapshots.clone())
-            .map_err(status_from_hal_error)?;
-        return Err(status_from_hal_error(error));
-    }
-    let plan = FrontendBackendTunePlan::new(
-        frontend_id,
-        generation,
-        entry.backend,
-        FrontendDevicePath::new(entry.device_path.clone()),
-        request.clone(),
-    );
-    let previous_tune_for_worker = snapshot.active_tune_request.clone();
-    let frontend_snapshot_for_worker = snapshot.clone();
-    let demux_snapshots_for_worker = demux_snapshots.clone();
-    let runtime_for_worker = Arc::clone(runtime);
-    if let Err(error) = guard.start_frontend_worker(frontend_id, kind, generation, move |ctx| {
-        plan.validate_worker_generation(ctx.generation())?;
-        let session = match FrontendBackendSession::open_and_submit_with_previous_report(
-            &plan,
-            previous_tune_for_worker,
-        ) {
-            Ok(session) => session,
-            Err(failure) if failure.rollback_succeeded => {
-                let report_error = failure.error;
-                let mut guard = runtime_for_worker.lock().map_err(|_| {
-                    HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "service runtime lock poisoned while restoring tune rollback state",
-                    )
-                })?;
-                guard.restore_frontend_runtime_snapshot(
-                    frontend_id,
-                    frontend_snapshot_for_worker.clone(),
-                )?;
-                guard.restore_bound_demux_runtime_snapshots(demux_snapshots_for_worker.clone())?;
-                return Err(report_error);
-            }
-            Err(failure) => {
-                let report_error = failure.error.clone();
-                match mark_tune_worker_failed(
-                    &runtime_for_worker,
-                    frontend_id,
-                    generation,
-                    failure.error,
-                ) {
-                    Ok(()) => return Err(report_error),
-                    Err(mark_error) => return Err(mark_error),
-                }
-            }
-        };
-        {
-            let mut guard = runtime_for_worker.lock().map_err(|_| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "service runtime lock poisoned while recording frontend signal state",
-                )
-            })?;
-            guard.record_frontend_signal_state(
-                frontend_id,
-                generation,
-                session.initial_signal_state(),
-            )?;
-        }
-        let mut live_pump = None;
-        while !ctx.cancel_requested() {
-            if live_pump.is_none() {
-                let live_reader_descriptor = {
-                    let guard = runtime_for_worker.lock().map_err(|_| {
-                        HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "service runtime lock poisoned while checking frontend live pump readiness",
-                    )
-                    })?;
-                    guard.frontend_live_reader_descriptor_for_live_pump(frontend_id)?
-                };
-                if let Some(descriptor) = live_reader_descriptor {
-                    let reader = session.open_live_reader(&descriptor)?;
-                    live_pump = Some(start_frontend_demux_live_pump_from_reader(
-                        Arc::clone(&runtime_for_worker),
-                        frontend_id,
-                        reader,
-                    )?);
-                }
-            }
-            if let Some(owner) = live_pump.as_mut() {
-                match owner.collect_if_finished() {
-                    FrontendLivePumpJoinOutcome::Running => {}
-                    FrontendLivePumpJoinOutcome::Completed(result) => {
-                        let report = result?;
-                        let mut guard = runtime_for_worker.lock().map_err(|_| {
-                            HalError::internal(
-                                HalInternalKind::InvariantViolation,
-                                "service runtime lock poisoned while recording completed live pump report",
-                            )
-                        })?;
-                        guard.record_live_pump_report(frontend_id, generation, report, ctx.cancel_reason())?;
-                        return session.stop();
-                    }
-                }
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        if let Some(owner) = live_pump {
-            let report = owner.join_after_stop()?;
-            let mut guard = runtime_for_worker.lock().map_err(|_| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "service runtime lock poisoned while recording stopped live pump report",
-                )
-            })?;
-            guard.record_live_pump_report(frontend_id, generation, report, ctx.cancel_reason())?;
-        }
-        session.stop()
-    }) {
-        guard
-            .restore_frontend_runtime_snapshot(frontend_id, snapshot)
-            .map_err(status_from_hal_error)?;
-        guard
-            .restore_bound_demux_runtime_snapshots(demux_snapshots.clone())
-            .map_err(status_from_hal_error)?;
-        return Err(map_frontend_worker_start_error(error));
-    }
-    guard
-        .commit_frontend_active_tune_request(frontend_id, generation, request)
-        .map_err(status_from_hal_error)
-}
 
-fn run_frontend_backend_scan_session_worker(
-    runtime: SharedTunerRuntime,
-    handle: AidlObjectHandle,
-    ctx: FrontendWorkerContext,
-    backend: FrontendBackendKind,
-    device_path: FrontendDevicePath,
-    candidates: Vec<FrontendTuneRequest>,
-    previous_request: Option<FrontendTuneRequest>,
-    frontend_snapshot: maleicacid_tuner_hal2_device::FrontendRuntimeSnapshot,
-    demux_snapshots: Vec<(
-        maleicacid_tuner_hal2_service_runtime::DemuxRuntimeId,
-        maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeSnapshot,
-    )>,
-) -> Result<(), HalError> {
-    for candidate in candidates {
-        if ctx.cancel_requested() {
-            return Ok(());
-        }
-        let plan = FrontendBackendTunePlan::new(
-            ctx.frontend_id(),
-            ctx.generation(),
-            backend,
-            device_path.clone(),
-            candidate,
-        );
-        plan.validate_worker_generation(ctx.generation())?;
-        let session = match FrontendBackendSession::open_and_submit_with_previous_report(
-            &plan,
-            previous_request.clone(),
-        ) {
-            Ok(session) => session,
-            Err(failure) if failure.rollback_succeeded => {
-                let mut guard = runtime.lock().map_err(|_| {
-                    HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "service runtime lock poisoned while restoring scan rollback state",
-                    )
-                })?;
-                guard.restore_frontend_runtime_snapshot(
-                    ctx.frontend_id(),
-                    frontend_snapshot.clone(),
-                )?;
-                guard.restore_bound_demux_runtime_snapshots(demux_snapshots.clone())?;
-                return Err(failure.error);
-            }
-            Err(failure) => {
-                let mut guard = runtime.lock().map_err(|_| {
-                    HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "service runtime lock poisoned while marking scan backend failure",
-                    )
-                })?;
-                guard.mark_frontend_scan_session_backend_failed(
-                    ctx.frontend_id(),
-                    ctx.generation(),
-                )?;
-                return Err(failure.error);
-            }
-        };
-        {
-            let mut guard = runtime.lock().map_err(|_| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "service runtime lock poisoned while recording scan signal state",
-                )
-            })?;
-            guard.record_frontend_signal_state(
-                ctx.frontend_id(),
-                ctx.generation(),
-                session.initial_signal_state(),
-            )?;
-        }
-        for _ in 0..5 {
-            if ctx.cancel_requested() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        session.stop()?;
-        if ctx.cancel_requested() {
-            return Ok(());
-        }
-        let mut guard = runtime.lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "service runtime lock poisoned while advancing scan session",
-            )
-        })?;
-        let has_next = guard
-            .advance_frontend_scan_session_after_candidate(ctx.frontend_id(), ctx.generation())?;
-        drop(guard);
-        if !has_next {
-            deliver_scan_end_callback(&runtime, handle, ctx.frontend_id(), ctx.generation())?;
-            return Ok(());
-        }
-    }
-    Ok(())
-}
 
-fn start_frontend_backend_scan_session_for_object(
-    runtime: &SharedTunerRuntime,
-    handle: AidlObjectHandle,
-    entry: &FrontendRegistryEntry,
-    request: FrontendTuneRequest,
-    scan_mode: FrontendScanMode,
-    candidates: Vec<FrontendTuneRequest>,
-) -> BinderResult<()> {
-    replace_existing_scan_worker_for_object(runtime, handle)?;
-    let frontend_id = runtime_entry_public_id(runtime, handle, AidlObjectKind::Frontend)?;
-    let fingerprint = format!("{:?}:{:?}", scan_mode, request);
-    let mut guard = runtime
-        .lock()
-        .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
-    let snapshot = guard
-        .frontend_runtime_snapshot(frontend_id)
-        .map_err(status_from_hal_error)?;
-    let demux_snapshots = guard
-        .bound_demux_runtime_snapshots(frontend_id)
-        .map_err(status_from_hal_error)?;
-    let generation = guard
-        .prepare_frontend_worker_generation(frontend_id, FrontendWorkerKind::Scan)
-        .map_err(status_from_hal_error)?;
-    if let Err(error) = guard.reset_bound_demuxes_for_frontend_tune_start(frontend_id) {
-        guard
-            .restore_frontend_runtime_snapshot(frontend_id, snapshot)
-            .map_err(status_from_hal_error)?;
-        guard
-            .restore_bound_demux_runtime_snapshots(demux_snapshots.clone())
-            .map_err(status_from_hal_error)?;
-        return Err(status_from_hal_error(error));
-    }
-    if let Err(error) = guard.install_frontend_live_reader_descriptor_for_generation(
-        frontend_id,
-        FrontendWorkerKind::Scan,
-        generation,
-    ) {
-        guard
-            .restore_frontend_runtime_snapshot(frontend_id, snapshot)
-            .map_err(status_from_hal_error)?;
-        guard
-            .restore_bound_demux_runtime_snapshots(demux_snapshots.clone())
-            .map_err(status_from_hal_error)?;
-        return Err(status_from_hal_error(error));
-    }
-    if let Err(error) =
-        guard.begin_frontend_scan_session(frontend_id, generation, fingerprint, candidates.clone())
-    {
-        guard
-            .restore_frontend_runtime_snapshot(frontend_id, snapshot)
-            .map_err(status_from_hal_error)?;
-        guard
-            .restore_bound_demux_runtime_snapshots(demux_snapshots.clone())
-            .map_err(status_from_hal_error)?;
-        return Err(status_from_hal_error(error));
-    }
-    let previous_tune_for_worker = snapshot.active_tune_request.clone();
-    let frontend_snapshot_for_worker = snapshot.clone();
-    let demux_snapshots_for_worker = demux_snapshots.clone();
-    let runtime_for_worker = Arc::clone(runtime);
-    let backend = entry.backend;
-    let device_path = FrontendDevicePath::new(entry.device_path.clone());
-    if let Err(error) = guard.start_frontend_worker(
-        frontend_id,
-        FrontendWorkerKind::Scan,
-        generation,
-        move |ctx| {
-            run_frontend_backend_scan_session_worker(
-                runtime_for_worker,
-                handle,
-                ctx,
-                backend,
-                device_path,
-                candidates,
-                previous_tune_for_worker,
-                frontend_snapshot_for_worker,
-                demux_snapshots_for_worker,
-            )
-        },
-    ) {
-        guard
-            .restore_frontend_runtime_snapshot(frontend_id, snapshot)
-            .map_err(status_from_hal_error)?;
-        guard
-            .restore_bound_demux_runtime_snapshots(demux_snapshots.clone())
-            .map_err(status_from_hal_error)?;
-        return Err(map_frontend_worker_start_error(error));
-    }
-    Ok(())
-}
 
-fn request_frontend_worker_stop_and_join_for_object(
-    runtime: &SharedTunerRuntime,
-    handle: AidlObjectHandle,
-    kind: FrontendWorkerKind,
-    reason: FrontendWorkerCancelReason,
-) -> BinderResult<FrontendWorkerStopOutcome> {
-    let frontend_id = runtime_entry_public_id(runtime, handle, AidlObjectKind::Frontend)?;
-    let outcome = runtime
-        .lock()
-        .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
-        .request_frontend_worker_stop_and_join(frontend_id, kind, reason);
-    if let FrontendWorkerStopOutcome::Completed {
-        result: Err(error), ..
-    } = &outcome
-    {
-        return Err(status_from_hal_error(error.clone()));
-    }
-    Ok(outcome)
-}
 
-fn record_scan_cancelled_terminal_event_for_object(
-    runtime: &SharedTunerRuntime,
-    handle: AidlObjectHandle,
-    generation: u64,
-    reason: FrontendWorkerCancelReason,
-) -> BinderResult<()> {
-    let frontend_id = runtime_entry_public_id(runtime, handle, AidlObjectKind::Frontend)?;
-    runtime
-        .lock()
-        .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
-        .cancel_frontend_scan_session(frontend_id, generation, reason)
-        .map_err(status_from_hal_error)
-}
 
-fn record_scan_cancelled_from_stop_outcome(
-    runtime: &SharedTunerRuntime,
-    handle: AidlObjectHandle,
-    outcome: &FrontendWorkerStopOutcome,
-    reason: FrontendWorkerCancelReason,
-) -> BinderResult<()> {
-    let generation = match outcome {
-        FrontendWorkerStopOutcome::NotRunning => return Ok(()),
-        FrontendWorkerStopOutcome::CancelRequested { generation, .. }
-        | FrontendWorkerStopOutcome::Completed {
-            generation,
-            result: Ok(()),
-            ..
-        } => *generation,
-        FrontendWorkerStopOutcome::Completed {
-            result: Err(error), ..
-        } => {
-            return Err(status_from_hal_error(error.clone()));
-        }
-    };
-    record_scan_cancelled_terminal_event_for_object(runtime, handle, generation, reason)
-}
 
-fn replace_existing_scan_worker_for_object(
-    runtime: &SharedTunerRuntime,
-    handle: AidlObjectHandle,
-) -> BinderResult<()> {
-    let reason = FrontendWorkerCancelReason::SupersededByNewRequest;
-    let outcome = request_frontend_worker_stop_and_join_for_object(
-        runtime,
-        handle,
-        FrontendWorkerKind::Scan,
-        reason,
-    )?;
-    record_scan_cancelled_from_stop_outcome(runtime, handle, &outcome, reason)?;
-    if !matches!(outcome, FrontendWorkerStopOutcome::NotRunning) {
-        clear_frontend_live_reader_descriptor_for_object(runtime, handle)?;
-    }
-    Ok(())
-}
 
-fn clear_frontend_live_reader_descriptor_for_object(
-    runtime: &SharedTunerRuntime,
-    handle: AidlObjectHandle,
-) -> BinderResult<()> {
-    let frontend_id = runtime_entry_public_id(runtime, handle, AidlObjectKind::Frontend)?;
-    runtime
-        .lock()
-        .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
-        .clear_frontend_live_reader_descriptor_and_idle(frontend_id)
-        .map_err(status_from_hal_error)
-}
 
-fn stop_frontend_live_data_and_unbind_for_object(
-    runtime: &SharedTunerRuntime,
-    handle: AidlObjectHandle,
-) -> BinderResult<()> {
-    let frontend_id = runtime_entry_public_id(runtime, handle, AidlObjectKind::Frontend)?;
-    runtime
-        .lock()
-        .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
-        .stop_frontend_live_data_and_unbind(frontend_id)
-        .map(|_| ())
-        .map_err(status_from_hal_error)
-}
 
-fn close_frontend_live_data_and_unbind_for_object(
-    runtime: &SharedTunerRuntime,
-    handle: AidlObjectHandle,
-) -> BinderResult<()> {
-    let frontend_id = runtime_entry_public_id(runtime, handle, AidlObjectKind::Frontend)?;
-    runtime
-        .lock()
-        .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
-        .close_frontend_live_data_and_unbind(frontend_id)
-        .map(|_| ())
-        .map_err(status_from_hal_error)
-}
 
-fn request_all_frontend_workers_stop_for_object(
-    runtime: &SharedTunerRuntime,
-    handle: AidlObjectHandle,
-    reason: FrontendWorkerCancelReason,
-) -> BinderResult<()> {
-    let tune_outcome = request_frontend_worker_stop_and_join_for_object(
-        runtime,
-        handle,
-        FrontendWorkerKind::Tune,
-        reason,
-    );
-    let scan_outcome = request_frontend_worker_stop_and_join_for_object(
-        runtime,
-        handle,
-        FrontendWorkerKind::Scan,
-        reason,
-    );
-
-    let mut first_error = None;
-    if let Ok(outcome) = &scan_outcome {
-        if let Err(error) =
-            record_scan_cancelled_from_stop_outcome(runtime, handle, outcome, reason)
-        {
-            first_error = Some(error);
-        }
-    }
-    if let Err(error) = tune_outcome {
-        if first_error.is_none() {
-            first_error = Some(error);
-        }
-    }
-    if let Err(error) = scan_outcome {
-        if first_error.is_none() {
-            first_error = Some(error);
-        }
-    }
-    if let Some(error) = first_error {
-        Err(error)
-    } else {
-        Ok(())
-    }
-}
-
-fn aidl_scan_type_to_mode(scan_type: FrontendScanType) -> Result<FrontendScanMode, HalError> {
-    match scan_type {
-        FrontendScanType::SCAN_AUTO => Ok(FrontendScanMode::Auto),
-        FrontendScanType::SCAN_BLIND => Err(HalError::Unsupported(
-            "blind scan is outside the r51 product scope; TIS must submit explicit candidates",
-        )),
-        FrontendScanType::SCAN_UNDEFINED => Err(HalError::invalid_argument(
-            HalInvalidArgumentKind::NumericRange,
-            "scan type must be SCAN_AUTO or SCAN_BLIND",
-        )),
-        _ => Err(HalError::Unsupported(
-            "frontend scan type is outside the r51 product scope",
-        )),
-    }
-}
 
 fn ts_pid_from_demux_pid(pid: &DemuxPid) -> Result<u16, HalError> {
     match pid {
@@ -1889,125 +873,13 @@ fn runtime_entry_public_id(
         .map_err(|_| status_unknown_error("public runtime id out of i32 range"))
 }
 
-fn register_child_aidl_object(
-    runtime: &SharedTunerRuntime,
-    kind: AidlObjectKind,
-    public_runtime_id: i32,
-    owner: RuntimeOwnerRelation,
-) -> BinderResult<AidlObjectHandle> {
-    let entry = runtime
-        .lock()
-        .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
-        .register_aidl_object_for_runtime_auto_generation(kind, i64::from(public_runtime_id), owner)
-        .map_err(|_| {
-            service_error(
-                TunerResult::INVALID_STATE.0,
-                "AIDL child object registration failed",
-            )
-        })?;
-    Ok(AidlObjectHandle::new(
-        entry.object_kind,
-        entry.object_id,
-        entry.generation,
-    ))
-}
 
-fn rollback_child_aidl_object(
-    runtime: &SharedTunerRuntime,
-    handle: AidlObjectHandle,
-) -> BinderResult<()> {
-    runtime
-        .lock()
-        .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
-        .unregister_aidl_object_after_registration_failure(handle.object_id(), handle.generation())
-        .map(|_| ())
-        .map_err(|_| {
-            service_error(
-                TunerResult::UNKNOWN_ERROR.0,
-                "AIDL child object rollback failed",
-            )
-        })
-}
 
-fn unregister_child_public_runtime(
-    runtime: &SharedTunerRuntime,
-    kind: AidlObjectKind,
-    public_runtime_id: i32,
-) -> BinderResult<()> {
-    let mut runtime = runtime
-        .lock()
-        .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
-    match kind {
-        AidlObjectKind::Filter => {
-            runtime.unregister_filter_runtime(public_runtime_id);
-        }
-        AidlObjectKind::Dvr => {
-            runtime.unregister_dvr_runtime(public_runtime_id);
-        }
-        AidlObjectKind::Descrambler => {
-            runtime.unregister_descrambler_runtime(public_runtime_id);
-        }
-        _ => {}
-    }
-    Ok(())
-}
 
-fn allocate_filter_public_runtime(
-    runtime: &SharedTunerRuntime,
-    owner_demux_id: i32,
-) -> BinderResult<i32> {
-    let entry = runtime
-        .lock()
-        .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
-        .allocate_filter_runtime(owner_demux_id)
-        .map_err(|_| status_unknown_error("filter runtime allocation failed"))?;
-    Ok(entry.id.0)
-}
 
-fn allocate_dvr_public_runtime(
-    runtime: &SharedTunerRuntime,
-    owner_demux_id: i32,
-) -> BinderResult<i32> {
-    let entry = runtime
-        .lock()
-        .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
-        .allocate_dvr_runtime(owner_demux_id)
-        .map_err(|_| status_unknown_error("DVR runtime allocation failed"))?;
-    Ok(entry.id.0)
-}
 
-fn rollback_retained_child_callback(handle: AidlObjectHandle) -> BinderResult<()> {
-    clear_owner_callbacks(handle)
-        .map_err(|_| status_unknown_error("child callback rollback failed"))
-}
 
-fn retain_filter_child_callback(
-    runtime: &SharedTunerRuntime,
-    handle: AidlObjectHandle,
-    callback: &Strong<dyn IFilterCallback>,
-) -> BinderResult<()> {
-    retain_filter_callback(handle, callback)
-        .map_err(|_| Status::new_service_specific_error(TunerResult::UNKNOWN_ERROR.0, None))?;
-    if let Err(status) = record_callback_registration(runtime, handle, AidlApi::DemuxOpenFilter) {
-        rollback_retained_child_callback(handle)?;
-        return Err(status);
-    }
-    Ok(())
-}
 
-fn retain_dvr_child_callback(
-    runtime: &SharedTunerRuntime,
-    handle: AidlObjectHandle,
-    callback: &Strong<dyn IDvrCallback>,
-) -> BinderResult<()> {
-    retain_dvr_callback(handle, callback)
-        .map_err(|_| Status::new_service_specific_error(TunerResult::UNKNOWN_ERROR.0, None))?;
-    if let Err(status) = record_callback_registration(runtime, handle, AidlApi::DemuxOpenDvr) {
-        rollback_retained_child_callback(handle)?;
-        return Err(status);
-    }
-    Ok(())
-}
 
 fn current_filter_open_type(
     filter: &FilterAidlObject,
@@ -2068,69 +940,89 @@ impl IFrontend for FrontendAidlObject {
     }
     fn tune(&self, settings: &FrontendSettings) -> BinderResult<()> {
         self.ensure_open()?;
-        let request = aidl_frontend_settings_to_request(settings).map_err(status_from_hal_error)?;
-        let entry = validate_frontend_request_for_object(&self.runtime(), self.handle(), &request)?;
-        validate_backend_tune_preflight(&entry, &request).map_err(status_from_hal_error)?;
+        let request = frontend_settings_to_request(settings).map_err(status_from_hal_error)?;
+        let runtime = self.runtime();
+        let frontend_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Frontend)?;
+        let entry = runtime
+            .lock()
+            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
+            .validate_frontend_request_for_id(frontend_id, &request)
+            .map_err(status_from_hal_error)?;
         self.plan_method(AidlMethodCall::FrontendTune(request.clone()))?;
-        start_frontend_backend_tune_worker_for_object(
-            &self.runtime(),
-            self.handle(),
-            &entry,
+        start_frontend_backend_tune_worker(
+            runtime,
+            frontend_id,
+            entry,
             request,
             FrontendWorkerKind::Tune,
         )
+        .map_err(status_from_hal_error)
     }
     fn stopTune(&self) -> BinderResult<()> {
         self.ensure_open()?;
         self.plan_method(AidlMethodCall::FrontendStopTune)?;
-        request_frontend_worker_stop_and_join_for_object(
-            &self.runtime(),
-            self.handle(),
-            FrontendWorkerKind::Tune,
+        let runtime = self.runtime();
+        let frontend_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Frontend)?;
+        stop_frontend_tune_worker(
+            runtime.clone(),
+            frontend_id,
             FrontendWorkerCancelReason::StopRequested,
-        )?;
-        stop_frontend_live_data_and_unbind_for_object(&self.runtime(), self.handle())
+        )
+        .map_err(status_from_hal_error)?;
+        stop_frontend_live_data_and_unbind(runtime, frontend_id).map_err(status_from_hal_error)
     }
     fn close(&self) -> BinderResult<()> {
         self.ensure_open()?;
         self.plan_method(AidlMethodCall::FrontendClose)?;
-        request_all_frontend_workers_stop_for_object(
-            &self.runtime(),
-            self.handle(),
+        let runtime = self.runtime();
+        let frontend_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Frontend)?;
+        close_frontend_workers_and_live_data(
+            runtime,
+            frontend_id,
             FrontendWorkerCancelReason::FrontendClosing,
-        )?;
-        close_frontend_live_data_and_unbind_for_object(&self.runtime(), self.handle())?;
+        )
+        .map_err(status_from_hal_error)?;
         self.close_object()
     }
     fn scan(&self, settings: &FrontendSettings, scan_type: FrontendScanType) -> BinderResult<()> {
         self.ensure_open()?;
-        let scan_mode = aidl_scan_type_to_mode(scan_type).map_err(status_from_hal_error)?;
-        let request = aidl_frontend_settings_to_request(settings).map_err(status_from_hal_error)?;
-        let entry = validate_frontend_request_for_object(&self.runtime(), self.handle(), &request)?;
-        let candidates =
-            backend_scan_candidates(&entry, &request, scan_mode).map_err(status_from_hal_error)?;
+        let scan_mode = frontend_scan_mode_from_aidl(scan_type).map_err(status_from_hal_error)?;
+        let request = frontend_settings_to_request(settings).map_err(status_from_hal_error)?;
+        let runtime = self.runtime();
+        let frontend_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Frontend)?;
+        let entry = runtime
+            .lock()
+            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
+            .validate_frontend_request_for_id(frontend_id, &request)
+            .map_err(status_from_hal_error)?;
+        let candidates = runtime
+            .lock()
+            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
+            .scan_candidates_for_frontend_entry(&entry, &request, scan_mode)
+            .map_err(status_from_hal_error)?;
         self.plan_method(AidlMethodCall::FrontendScan(request.clone()))?;
-        start_frontend_backend_scan_session_for_object(
-            &self.runtime(),
-            self.handle(),
-            &entry,
+        start_frontend_backend_scan_session_worker(
+            runtime.clone(),
+            frontend_id,
+            entry,
             request,
             scan_mode,
             candidates,
+            scan_end_notifier(runtime, self.handle()),
         )
+        .map_err(status_from_hal_error)
     }
     fn stopScan(&self) -> BinderResult<()> {
         self.ensure_open()?;
         self.plan_method(AidlMethodCall::FrontendStopScan)?;
-        let reason = FrontendWorkerCancelReason::StopRequested;
-        let outcome = request_frontend_worker_stop_and_join_for_object(
-            &self.runtime(),
-            self.handle(),
-            FrontendWorkerKind::Scan,
-            reason,
-        )?;
-        record_scan_cancelled_from_stop_outcome(&self.runtime(), self.handle(), &outcome, reason)?;
-        clear_frontend_live_reader_descriptor_for_object(&self.runtime(), self.handle())
+        let runtime = self.runtime();
+        let frontend_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Frontend)?;
+        stop_frontend_scan_worker(
+            runtime,
+            frontend_id,
+            FrontendWorkerCancelReason::StopRequested,
+        )
+        .map_err(status_from_hal_error)
     }
     fn getStatus(&self, status_types: &[FrontendStatusType]) -> BinderResult<Vec<FrontendStatus>> {
         self.ensure_open()?;
@@ -2272,42 +1164,7 @@ impl IDemux for DemuxAidlObject {
         let runtime = self.runtime();
         let owner_demux_id =
             runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Demux)?;
-        let filter_id = allocate_filter_public_runtime(&runtime, owner_demux_id)?;
-        if let Err(error) = runtime
-            .lock()
-            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
-            .register_demux_filter_runtime(owner_demux_id, filter_id, &open_request)
-        {
-            unregister_child_public_runtime(&runtime, AidlObjectKind::Filter, filter_id)?;
-            return Err(status_from_hal_error(error));
-        }
-        let owner = RuntimeOwnerRelation::Demux {
-            demux: self.handle().object_id(),
-            generation: self.handle().generation(),
-        };
-        let child_handle =
-            match register_child_aidl_object(&runtime, AidlObjectKind::Filter, filter_id, owner) {
-                Ok(handle) => handle,
-                Err(status) => {
-                    unregister_child_public_runtime(&runtime, AidlObjectKind::Filter, filter_id)?;
-                    return Err(status);
-                }
-            };
-        match FilterAidlObject::new(child_handle, runtime.clone()) {
-            Ok(object) => {
-                if let Err(status) = retain_filter_child_callback(&runtime, child_handle, cb) {
-                    rollback_child_aidl_object(&runtime, child_handle)?;
-                    unregister_child_public_runtime(&runtime, AidlObjectKind::Filter, filter_id)?;
-                    return Err(status);
-                }
-                Ok(BnFilter::new_binder(object, BinderFeatures::default()))
-            }
-            Err(_) => {
-                rollback_child_aidl_object(&runtime, child_handle)?;
-                unregister_child_public_runtime(&runtime, AidlObjectKind::Filter, filter_id)?;
-                Err(status_unknown_error("filter object kind mismatch"))
-            }
-        }
+        open_filter_child_after_plan(&runtime, self.handle(), owner_demux_id, open_request, cb)
     }
     fn openTimeFilter(&self) -> BinderResult<Strong<dyn ITimeFilter>> {
         unavailable_after_object_public_api_plan(
@@ -2364,42 +1221,7 @@ impl IDemux for DemuxAidlObject {
         let runtime = self.runtime();
         let owner_demux_id =
             runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Demux)?;
-        let dvr_id = allocate_dvr_public_runtime(&runtime, owner_demux_id)?;
-        if let Err(error) = runtime
-            .lock()
-            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
-            .register_demux_dvr_runtime(owner_demux_id, dvr_id, &request, true)
-        {
-            unregister_child_public_runtime(&runtime, AidlObjectKind::Dvr, dvr_id)?;
-            return Err(status_from_hal_error(error));
-        }
-        let owner = RuntimeOwnerRelation::Demux {
-            demux: self.handle().object_id(),
-            generation: self.handle().generation(),
-        };
-        let child_handle =
-            match register_child_aidl_object(&runtime, AidlObjectKind::Dvr, dvr_id, owner) {
-                Ok(handle) => handle,
-                Err(status) => {
-                    unregister_child_public_runtime(&runtime, AidlObjectKind::Dvr, dvr_id)?;
-                    return Err(status);
-                }
-            };
-        match DvrAidlObject::new(child_handle, runtime.clone()) {
-            Ok(object) => {
-                if let Err(status) = retain_dvr_child_callback(&runtime, child_handle, cb) {
-                    rollback_child_aidl_object(&runtime, child_handle)?;
-                    unregister_child_public_runtime(&runtime, AidlObjectKind::Dvr, dvr_id)?;
-                    return Err(status);
-                }
-                Ok(BnDvr::new_binder(object, BinderFeatures::default()))
-            }
-            Err(_) => {
-                rollback_child_aidl_object(&runtime, child_handle)?;
-                unregister_child_public_runtime(&runtime, AidlObjectKind::Dvr, dvr_id)?;
-                Err(status_unknown_error("DVR object kind mismatch"))
-            }
-        }
+        open_dvr_child_after_plan(&runtime, self.handle(), owner_demux_id, request, cb)
     }
     fn connectCiCam(&self, _ci_cam_id: i32) -> BinderResult<()> {
         unavailable_after_object_public_api_plan(

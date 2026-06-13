@@ -1,4 +1,5 @@
 pub mod aidl_filter_config;
+pub mod aidl_frontend_settings;
 pub mod aidl_method;
 pub mod demux;
 pub mod descrambler;
@@ -8,6 +9,9 @@ pub mod frontend;
 pub mod lnb;
 pub mod status;
 
+pub use aidl_frontend_settings::{
+    aidl_frontend_settings_to_request, aidl_scan_type_to_mode,
+};
 pub use aidl_filter_config::{
     build_filter_summary_for_open_type, build_open_filter_request, build_section_condition,
     build_section_condition_kind, filter_main_type_supported, filter_open_type,

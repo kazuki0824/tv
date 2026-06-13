@@ -8,6 +8,8 @@ pub mod object_table;
 pub mod registry;
 pub mod runtime_handlers;
 pub mod runtime_result;
+pub mod frontend_request_txn;
+pub mod frontend_worker_txn;
 pub mod transaction_registry;
 
 pub use boot::{
