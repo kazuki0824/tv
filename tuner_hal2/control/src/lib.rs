@@ -248,12 +248,6 @@ pub struct FmqDeliveryResult {
     pub action: FmqDeliveryAction,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct FmqWriteCommit {
-    pub expected_bytes: usize,
-    pub written_bytes: usize,
-}
-
 pub struct FmqDeliveryTxn {
     object_kind: FmqObjectKind,
     phase: FmqDeliveryPhase,
@@ -270,8 +264,8 @@ impl FmqDeliveryTxn {
         write_result: Result<usize, FmqFailureKind>,
         wake_result: Result<(), FmqFailureKind>,
     ) -> FmqDeliveryResult {
-        let write_commit = match write_result {
-            Ok(written_bytes) if written_bytes == expected_bytes => FmqWriteCommit { expected_bytes, written_bytes },
+        let written_bytes = match write_result {
+            Ok(written_bytes) if written_bytes == expected_bytes => written_bytes,
             Ok(_) => {
                 return FmqDeliveryResult {
                     object_kind: self.object_kind,
@@ -294,13 +288,13 @@ impl FmqDeliveryTxn {
             Ok(()) => FmqDeliveryResult {
                 object_kind: self.object_kind,
                 phase: FmqDeliveryPhase::Wake,
-                bytes: write_commit.written_bytes,
+                bytes: written_bytes,
                 action: FmqDeliveryAction::Continue,
             },
             Err(err) => FmqDeliveryResult {
                 object_kind: self.object_kind,
                 phase: FmqDeliveryPhase::Wake,
-                bytes: write_commit.written_bytes,
+                bytes: written_bytes,
                 action: FmqDeliveryAction::RuntimeFailed(err),
             },
         }
