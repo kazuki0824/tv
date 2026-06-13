@@ -50,7 +50,11 @@ impl StartupDiagnosticRecord {
         }
     }
 
-    pub fn device_open_failed(backend: FrontendBackendKind, path: impl Into<PathBuf>, error: HalError) -> Self {
+    pub fn device_open_failed(
+        backend: FrontendBackendKind,
+        path: impl Into<PathBuf>,
+        error: HalError,
+    ) -> Self {
         Self {
             kind: StartupDiagnosticKind::DeviceOpenFailed,
             phase: StartupDiagnosticPhase::OpenDevice,

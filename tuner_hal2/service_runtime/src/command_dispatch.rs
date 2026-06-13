@@ -1,5 +1,7 @@
-use maleicacid_tuner_hal2_domain_request::{CommandPlan, RuntimeExecutableRequest, RuntimeTransactionName};
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
+use maleicacid_tuner_hal2_domain_request::{
+    CommandPlan, RuntimeExecutableRequest, RuntimeTransactionName,
+};
 
 use crate::dispatch::{dispatch_target_for, ServiceRuntimeDispatchTarget};
 
@@ -18,9 +20,10 @@ pub enum RuntimeCommandDispatchError {
 impl RuntimeCommandDispatchError {
     pub fn into_hal_error(self) -> HalError {
         match self {
-            Self::MissingDispatchTarget { .. } => {
-                HalError::internal(HalInternalKind::InvariantViolation, "runtime dispatch target missing")
-            }
+            Self::MissingDispatchTarget { .. } => HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "runtime dispatch target missing",
+            ),
         }
     }
 }
@@ -31,20 +34,35 @@ pub struct RuntimeCommandDispatcher {
 }
 
 impl Default for RuntimeCommandDispatcher {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RuntimeCommandDispatcher {
     pub fn new() -> Self {
-        Self { covered_transaction_count: crate::dispatch::SERVICE_RUNTIME_DISPATCH_TABLE.len() }
+        Self {
+            covered_transaction_count: crate::dispatch::SERVICE_RUNTIME_DISPATCH_TABLE.len(),
+        }
     }
 
-    pub const fn covered_transaction_count(&self) -> usize { self.covered_transaction_count }
+    pub const fn covered_transaction_count(&self) -> usize {
+        self.covered_transaction_count
+    }
 
-    pub fn plan(command_plan: CommandPlan, executable_request: Option<RuntimeExecutableRequest>) -> Result<RuntimeCommandDispatchPlan, RuntimeCommandDispatchError> {
+    pub fn plan(
+        command_plan: CommandPlan,
+        executable_request: Option<RuntimeExecutableRequest>,
+    ) -> Result<RuntimeCommandDispatchPlan, RuntimeCommandDispatchError> {
         let Some(target) = dispatch_target_for(command_plan.transaction) else {
-            return Err(RuntimeCommandDispatchError::MissingDispatchTarget { transaction: command_plan.transaction });
+            return Err(RuntimeCommandDispatchError::MissingDispatchTarget {
+                transaction: command_plan.transaction,
+            });
         };
-        Ok(RuntimeCommandDispatchPlan { command_plan, target, executable_request })
+        Ok(RuntimeCommandDispatchPlan {
+            command_plan,
+            target,
+            executable_request,
+        })
     }
 }

@@ -61,19 +61,27 @@ pub const fn feature_declared(feature: ProfileFeature) -> bool {
     }
 }
 
-pub const fn hal_generates_japanese_scan_plan() -> bool { false }
+pub const fn hal_generates_japanese_scan_plan() -> bool {
+    false
+}
 
-pub const fn scan_candidate_owner() -> ScanCandidateOwner { ScanCandidateOwner::TisExplicitCandidate }
+pub const fn scan_candidate_owner() -> ScanCandidateOwner {
+    ScanCandidateOwner::TisExplicitCandidate
+}
 
 pub fn configure_ip_cid_result(_ip_cid: i32) -> Result<(), HalError> {
-    Err(HalError::Unsupported("IP CID is outside the product TS-only capability/profile"))
+    Err(HalError::Unsupported(
+        "IP CID is outside the product TS-only capability/profile",
+    ))
 }
 
 pub fn configure_monitor_event_result(monitor_event_types: i32) -> Result<(), HalError> {
     if monitor_event_types == 0 {
         Ok(())
     } else {
-        Err(HalError::Unsupported("monitor event is not declared by this profile"))
+        Err(HalError::Unsupported(
+            "monitor event is not declared by this profile",
+        ))
     }
 }
 
@@ -101,13 +109,18 @@ pub fn failure_domain(error: &HalError) -> RuntimeFailureDomain {
 }
 
 pub fn open_failed(path: impl Into<PathBuf>, detail: impl Into<String>) -> HalError {
-    HalError::OpenFailed { path: path.into(), detail: HalErrorDetail::new(detail) }
+    HalError::OpenFailed {
+        path: path.into(),
+        detail: HalErrorDetail::new(detail),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maleicacid_tuner_hal2_common::{HalInternalKind, HalInvalidArgumentKind, HalInvalidStateKind};
+    use maleicacid_tuner_hal2_common::{
+        HalInternalKind, HalInvalidArgumentKind, HalInvalidStateKind,
+    };
 
     #[test]
     fn ts_only_profile_does_not_declare_other_stream_inputs() {
@@ -121,45 +134,78 @@ mod tests {
     #[test]
     fn monitor_event_zero_is_noop_nonzero_is_unavailable_boundary() {
         assert!(configure_monitor_event_result(0).is_ok());
-        assert!(matches!(configure_monitor_event_result(1), Err(HalError::Unsupported(_))));
+        assert!(matches!(
+            configure_monitor_event_result(1),
+            Err(HalError::Unsupported(_))
+        ));
     }
 
     #[test]
     fn ip_cid_is_never_accepted_as_save_only_success() {
-        assert!(matches!(configure_ip_cid_result(0), Err(HalError::Unsupported(_))));
-        assert!(matches!(configure_ip_cid_result(-1), Err(HalError::Unsupported(_))));
+        assert!(matches!(
+            configure_ip_cid_result(0),
+            Err(HalError::Unsupported(_))
+        ));
+        assert!(matches!(
+            configure_ip_cid_result(-1),
+            Err(HalError::Unsupported(_))
+        ));
     }
 
     #[test]
     fn failure_domains_are_not_collapsed_to_internal() {
         let missing = HalError::DeviceMissing(PathBuf::from("/dev/missing"));
         let open = open_failed("/dev/dvb/adapter0/frontend0", "open failed");
-        let ioctl = HalError::IoctlFailed { backend: "dvb", path: None, op: "FE_SET_PROPERTY", errno: 5 };
+        let ioctl = HalError::IoctlFailed {
+            backend: "dvb",
+            path: None,
+            op: "FE_SET_PROPERTY",
+            errno: 5,
+        };
         let callback = HalError::callback_failed("IFrontendCallback", "binder failure");
         let fmq = HalError::fmq_failed("write", "native write failed");
         let event = HalError::event_flag_failed("wake", "native wake failed");
         let cleanup = HalError::cleanup_failed("filter", "queue clear failed");
         let invalid_arg = HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, "range");
-        let invalid_state = HalError::invalid_state(HalInvalidStateKind::InvalidLifecycle, "closed");
+        let invalid_state =
+            HalError::invalid_state(HalInvalidStateKind::InvalidLifecycle, "closed");
         let unsupported = HalError::Unsupported("unsupported");
         let internal = HalError::internal(HalInternalKind::InvariantViolation, "broken");
 
-        assert_eq!(failure_domain(&missing), RuntimeFailureDomain::DeviceMissing);
+        assert_eq!(
+            failure_domain(&missing),
+            RuntimeFailureDomain::DeviceMissing
+        );
         assert_eq!(failure_domain(&open), RuntimeFailureDomain::DeviceOpen);
         assert_eq!(failure_domain(&ioctl), RuntimeFailureDomain::RuntimeIoctl);
         assert_eq!(failure_domain(&callback), RuntimeFailureDomain::Callback);
         assert_eq!(failure_domain(&fmq), RuntimeFailureDomain::Fmq);
         assert_eq!(failure_domain(&event), RuntimeFailureDomain::EventFlag);
         assert_eq!(failure_domain(&cleanup), RuntimeFailureDomain::Cleanup);
-        assert_eq!(failure_domain(&invalid_arg), RuntimeFailureDomain::ClientArgument);
-        assert_eq!(failure_domain(&invalid_state), RuntimeFailureDomain::ObjectState);
-        assert_eq!(failure_domain(&unsupported), RuntimeFailureDomain::UnsupportedByDesign);
-        assert_eq!(failure_domain(&internal), RuntimeFailureDomain::InternalInvariant);
+        assert_eq!(
+            failure_domain(&invalid_arg),
+            RuntimeFailureDomain::ClientArgument
+        );
+        assert_eq!(
+            failure_domain(&invalid_state),
+            RuntimeFailureDomain::ObjectState
+        );
+        assert_eq!(
+            failure_domain(&unsupported),
+            RuntimeFailureDomain::UnsupportedByDesign
+        );
+        assert_eq!(
+            failure_domain(&internal),
+            RuntimeFailureDomain::InternalInvariant
+        );
     }
 
     #[test]
     fn tuner_hal_does_not_own_japanese_scan_plan_generation() {
         assert!(!hal_generates_japanese_scan_plan());
-        assert_eq!(scan_candidate_owner(), ScanCandidateOwner::TisExplicitCandidate);
+        assert_eq!(
+            scan_candidate_owner(),
+            ScanCandidateOwner::TisExplicitCandidate
+        );
     }
 }

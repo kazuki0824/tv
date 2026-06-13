@@ -6,23 +6,51 @@ use maleicacid_tuner_hal2_resource_ledger::{CleanupStep, LedgerGeneration, Ledge
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeOwnerRelation {
     Root,
-    Frontend { frontend: AidlObjectId, generation: AidlObjectGeneration },
-    Demux { demux: AidlObjectId, generation: AidlObjectGeneration },
-    Filter { filter: AidlObjectId, generation: AidlObjectGeneration },
-    Dvr { dvr: AidlObjectId, generation: AidlObjectGeneration },
-    Descrambler { descrambler: AidlObjectId, generation: AidlObjectGeneration },
-    Lnb { lnb: AidlObjectId, generation: AidlObjectGeneration },
+    Frontend {
+        frontend: AidlObjectId,
+        generation: AidlObjectGeneration,
+    },
+    Demux {
+        demux: AidlObjectId,
+        generation: AidlObjectGeneration,
+    },
+    Filter {
+        filter: AidlObjectId,
+        generation: AidlObjectGeneration,
+    },
+    Dvr {
+        dvr: AidlObjectId,
+        generation: AidlObjectGeneration,
+    },
+    Descrambler {
+        descrambler: AidlObjectId,
+        generation: AidlObjectGeneration,
+    },
+    Lnb {
+        lnb: AidlObjectId,
+        generation: AidlObjectGeneration,
+    },
 }
 
 impl RuntimeOwnerRelation {
-    pub const fn referenced_object(self) -> Option<(AidlObjectKind, AidlObjectId, AidlObjectGeneration)> {
+    pub const fn referenced_object(
+        self,
+    ) -> Option<(AidlObjectKind, AidlObjectId, AidlObjectGeneration)> {
         match self {
             Self::Root => None,
-            Self::Frontend { frontend, generation } => Some((AidlObjectKind::Frontend, frontend, generation)),
+            Self::Frontend {
+                frontend,
+                generation,
+            } => Some((AidlObjectKind::Frontend, frontend, generation)),
             Self::Demux { demux, generation } => Some((AidlObjectKind::Demux, demux, generation)),
-            Self::Filter { filter, generation } => Some((AidlObjectKind::Filter, filter, generation)),
+            Self::Filter { filter, generation } => {
+                Some((AidlObjectKind::Filter, filter, generation))
+            }
             Self::Dvr { dvr, generation } => Some((AidlObjectKind::Dvr, dvr, generation)),
-            Self::Descrambler { descrambler, generation } => Some((AidlObjectKind::Descrambler, descrambler, generation)),
+            Self::Descrambler {
+                descrambler,
+                generation,
+            } => Some((AidlObjectKind::Descrambler, descrambler, generation)),
             Self::Lnb { lnb, generation } => Some((AidlObjectKind::Lnb, lnb, generation)),
         }
     }
@@ -44,8 +72,12 @@ pub enum RuntimeObjectLifecycle {
 }
 
 impl RuntimeObjectLifecycle {
-    pub const fn is_live(self) -> bool { matches!(self, Self::Live) }
-    pub const fn is_terminal(self) -> bool { matches!(self, Self::Closed | Self::Quarantined) }
+    pub const fn is_live(self) -> bool {
+        matches!(self, Self::Live)
+    }
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Closed | Self::Quarantined)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,18 +93,62 @@ pub struct RuntimeObjectEntry {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RuntimeObjectTableError {
-    DuplicateObjectId { object_id: AidlObjectId, existing_kind: AidlObjectKind, attempted_kind: AidlObjectKind },
-    DuplicateRuntimeBinding { object_kind: AidlObjectKind, runtime_id: LedgerId },
-    MissingObject { object_id: AidlObjectId },
-    ObjectKindMismatch { object_id: AidlObjectId, expected: AidlObjectKind, actual: AidlObjectKind },
-    GenerationMismatch { object_id: AidlObjectId, expected: AidlObjectGeneration, actual: AidlObjectGeneration },
-    InvalidOwner { object_id: AidlObjectId, expected: RuntimeOwnerRelation, actual: RuntimeOwnerRelation },
-    MissingOwner { object_id: AidlObjectId, owner_id: AidlObjectId, owner_kind: AidlObjectKind },
-    OwnerGenerationMismatch { object_id: AidlObjectId, owner_id: AidlObjectId, expected: AidlObjectGeneration, actual: AidlObjectGeneration },
-    OwnerKindMismatch { object_id: AidlObjectId, owner_id: AidlObjectId, expected: AidlObjectKind, actual: AidlObjectKind },
-    OwnerNotLive { object_id: AidlObjectId, owner_id: AidlObjectId, lifecycle: RuntimeObjectLifecycle },
-    InvalidLifecycle { object_id: AidlObjectId, lifecycle: RuntimeObjectLifecycle },
-    UnsupportedObjectKind { object_kind: AidlObjectKind },
+    DuplicateObjectId {
+        object_id: AidlObjectId,
+        existing_kind: AidlObjectKind,
+        attempted_kind: AidlObjectKind,
+    },
+    DuplicateRuntimeBinding {
+        object_kind: AidlObjectKind,
+        runtime_id: LedgerId,
+    },
+    MissingObject {
+        object_id: AidlObjectId,
+    },
+    ObjectKindMismatch {
+        object_id: AidlObjectId,
+        expected: AidlObjectKind,
+        actual: AidlObjectKind,
+    },
+    GenerationMismatch {
+        object_id: AidlObjectId,
+        expected: AidlObjectGeneration,
+        actual: AidlObjectGeneration,
+    },
+    InvalidOwner {
+        object_id: AidlObjectId,
+        expected: RuntimeOwnerRelation,
+        actual: RuntimeOwnerRelation,
+    },
+    MissingOwner {
+        object_id: AidlObjectId,
+        owner_id: AidlObjectId,
+        owner_kind: AidlObjectKind,
+    },
+    OwnerGenerationMismatch {
+        object_id: AidlObjectId,
+        owner_id: AidlObjectId,
+        expected: AidlObjectGeneration,
+        actual: AidlObjectGeneration,
+    },
+    OwnerKindMismatch {
+        object_id: AidlObjectId,
+        owner_id: AidlObjectId,
+        expected: AidlObjectKind,
+        actual: AidlObjectKind,
+    },
+    OwnerNotLive {
+        object_id: AidlObjectId,
+        owner_id: AidlObjectId,
+        lifecycle: RuntimeObjectLifecycle,
+    },
+    InvalidLifecycle {
+        object_id: AidlObjectId,
+        lifecycle: RuntimeObjectLifecycle,
+    },
+    UnsupportedObjectKind {
+        object_kind: AidlObjectKind,
+    },
     GenerationOverflow,
 }
 
@@ -97,7 +173,10 @@ impl RuntimeObjectTable {
                 && existing.ledger_id == entry.ledger_id
                 && !existing.lifecycle.is_terminal()
         }) {
-            return Err(RuntimeObjectTableError::DuplicateRuntimeBinding { object_kind: entry.object_kind, runtime_id: entry.ledger_id });
+            return Err(RuntimeObjectTableError::DuplicateRuntimeBinding {
+                object_kind: entry.object_kind,
+                runtime_id: entry.ledger_id,
+            });
         }
         self.ensure_owner_live_for(entry.object_id, entry.owner)?;
         entry.lifecycle = RuntimeObjectLifecycle::Live;
@@ -105,45 +184,80 @@ impl RuntimeObjectTable {
         Ok(())
     }
 
-    pub fn remove(&mut self, object_id: AidlObjectId, generation: AidlObjectGeneration) -> Result<RuntimeObjectEntry, RuntimeObjectTableError> {
+    pub fn remove(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<RuntimeObjectEntry, RuntimeObjectTableError> {
         self.entry_checked(object_id, generation)?;
-        self.entries.remove(&object_id).ok_or(RuntimeObjectTableError::MissingObject { object_id })
+        self.entries
+            .remove(&object_id)
+            .ok_or(RuntimeObjectTableError::MissingObject { object_id })
     }
 
-    pub fn begin_close(&mut self, object_id: AidlObjectId, generation: AidlObjectGeneration, step: CleanupStep) -> Result<RuntimeObjectEntry, RuntimeObjectTableError> {
+    pub fn begin_close(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        step: CleanupStep,
+    ) -> Result<RuntimeObjectEntry, RuntimeObjectTableError> {
         let entry = self.entry_mut_checked_allow_cleanup_failed(object_id, generation)?;
         match entry.lifecycle {
             RuntimeObjectLifecycle::Live | RuntimeObjectLifecycle::CleanupFailed { .. } => {
                 entry.lifecycle = RuntimeObjectLifecycle::Closing { step };
                 Ok(entry.clone())
             }
-            lifecycle => Err(RuntimeObjectTableError::InvalidLifecycle { object_id, lifecycle }),
+            lifecycle => Err(RuntimeObjectTableError::InvalidLifecycle {
+                object_id,
+                lifecycle,
+            }),
         }
     }
 
-    pub fn mark_cleanup_failed(&mut self, object_id: AidlObjectId, generation: AidlObjectGeneration, step: CleanupStep) -> Result<RuntimeObjectEntry, RuntimeObjectTableError> {
+    pub fn mark_cleanup_failed(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        step: CleanupStep,
+    ) -> Result<RuntimeObjectEntry, RuntimeObjectTableError> {
         let entry = self.entry_mut_checked_any(object_id, generation)?;
         match entry.lifecycle {
-            RuntimeObjectLifecycle::Closing { .. } | RuntimeObjectLifecycle::CleanupFailed { .. } => {
+            RuntimeObjectLifecycle::Closing { .. }
+            | RuntimeObjectLifecycle::CleanupFailed { .. } => {
                 entry.lifecycle = RuntimeObjectLifecycle::CleanupFailed { step };
                 Ok(entry.clone())
             }
-            lifecycle => Err(RuntimeObjectTableError::InvalidLifecycle { object_id, lifecycle }),
+            lifecycle => Err(RuntimeObjectTableError::InvalidLifecycle {
+                object_id,
+                lifecycle,
+            }),
         }
     }
 
-    pub fn commit_close(&mut self, object_id: AidlObjectId, generation: AidlObjectGeneration) -> Result<RuntimeObjectEntry, RuntimeObjectTableError> {
+    pub fn commit_close(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<RuntimeObjectEntry, RuntimeObjectTableError> {
         let entry = self.entry_mut_checked_any(object_id, generation)?;
         match entry.lifecycle {
             RuntimeObjectLifecycle::Closing { .. } => {
                 entry.lifecycle = RuntimeObjectLifecycle::Closed;
                 Ok(entry.clone())
             }
-            lifecycle => Err(RuntimeObjectTableError::InvalidLifecycle { object_id, lifecycle }),
+            lifecycle => Err(RuntimeObjectTableError::InvalidLifecycle {
+                object_id,
+                lifecycle,
+            }),
         }
     }
 
-    pub fn begin_close_cascade(&mut self, object_id: AidlObjectId, generation: AidlObjectGeneration, step: CleanupStep) -> Result<Vec<RuntimeObjectEntry>, RuntimeObjectTableError> {
+    pub fn begin_close_cascade(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        step: CleanupStep,
+    ) -> Result<Vec<RuntimeObjectEntry>, RuntimeObjectTableError> {
         self.entry_checked_any(object_id, generation)?;
         let mut targets = self.descendant_object_keys(object_id, generation);
         targets.push((object_id, generation));
@@ -156,13 +270,23 @@ impl RuntimeObjectTable {
                     changed.push(entry.clone());
                 }
                 RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined => {}
-                lifecycle => return Err(RuntimeObjectTableError::InvalidLifecycle { object_id: target_id, lifecycle }),
+                lifecycle => {
+                    return Err(RuntimeObjectTableError::InvalidLifecycle {
+                        object_id: target_id,
+                        lifecycle,
+                    })
+                }
             }
         }
         Ok(changed)
     }
 
-    pub fn mark_cleanup_failed_cascade(&mut self, object_id: AidlObjectId, generation: AidlObjectGeneration, step: CleanupStep) -> Result<Vec<RuntimeObjectEntry>, RuntimeObjectTableError> {
+    pub fn mark_cleanup_failed_cascade(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        step: CleanupStep,
+    ) -> Result<Vec<RuntimeObjectEntry>, RuntimeObjectTableError> {
         self.entry_checked_any(object_id, generation)?;
         let mut targets = self.descendant_object_keys(object_id, generation);
         targets.push((object_id, generation));
@@ -170,18 +294,28 @@ impl RuntimeObjectTable {
         for (target_id, target_generation) in targets {
             let entry = self.entry_mut_checked_any(target_id, target_generation)?;
             match entry.lifecycle {
-                RuntimeObjectLifecycle::Closing { .. } | RuntimeObjectLifecycle::CleanupFailed { .. } => {
+                RuntimeObjectLifecycle::Closing { .. }
+                | RuntimeObjectLifecycle::CleanupFailed { .. } => {
                     entry.lifecycle = RuntimeObjectLifecycle::CleanupFailed { step };
                     changed.push(entry.clone());
                 }
                 RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined => {}
-                lifecycle => return Err(RuntimeObjectTableError::InvalidLifecycle { object_id: target_id, lifecycle }),
+                lifecycle => {
+                    return Err(RuntimeObjectTableError::InvalidLifecycle {
+                        object_id: target_id,
+                        lifecycle,
+                    })
+                }
             }
         }
         Ok(changed)
     }
 
-    pub fn commit_close_cascade(&mut self, object_id: AidlObjectId, generation: AidlObjectGeneration) -> Result<Vec<RuntimeObjectEntry>, RuntimeObjectTableError> {
+    pub fn commit_close_cascade(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<Vec<RuntimeObjectEntry>, RuntimeObjectTableError> {
         self.entry_checked_any(object_id, generation)?;
         let mut targets = self.descendant_object_keys(object_id, generation);
         targets.push((object_id, generation));
@@ -189,21 +323,36 @@ impl RuntimeObjectTable {
         for (target_id, target_generation) in targets {
             let entry = self.entry_mut_checked_any(target_id, target_generation)?;
             match entry.lifecycle {
-                RuntimeObjectLifecycle::Closing { .. } | RuntimeObjectLifecycle::CleanupFailed { .. } => {
+                RuntimeObjectLifecycle::Closing { .. }
+                | RuntimeObjectLifecycle::CleanupFailed { .. } => {
                     entry.lifecycle = RuntimeObjectLifecycle::Closed;
                     changed.push(entry.clone());
                 }
                 RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined => {}
-                lifecycle => return Err(RuntimeObjectTableError::InvalidLifecycle { object_id: target_id, lifecycle }),
+                lifecycle => {
+                    return Err(RuntimeObjectTableError::InvalidLifecycle {
+                        object_id: target_id,
+                        lifecycle,
+                    })
+                }
             }
         }
         Ok(changed)
     }
 
-    pub fn quarantine(&mut self, object_id: AidlObjectId, generation: AidlObjectGeneration) -> Result<RuntimeObjectEntry, RuntimeObjectTableError> {
+    pub fn quarantine(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<RuntimeObjectEntry, RuntimeObjectTableError> {
         let entry = self.entry_mut_checked_any(object_id, generation)?;
         match entry.lifecycle {
-            RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined => Err(RuntimeObjectTableError::InvalidLifecycle { object_id, lifecycle: entry.lifecycle }),
+            RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined => {
+                Err(RuntimeObjectTableError::InvalidLifecycle {
+                    object_id,
+                    lifecycle: entry.lifecycle,
+                })
+            }
             _ => {
                 entry.lifecycle = RuntimeObjectLifecycle::Quarantined;
                 Ok(entry.clone())
@@ -215,10 +364,17 @@ impl RuntimeObjectTable {
         self.entries.get(&object_id)
     }
 
-    pub fn entry_checked(&self, object_id: AidlObjectId, generation: AidlObjectGeneration) -> Result<&RuntimeObjectEntry, RuntimeObjectTableError> {
+    pub fn entry_checked(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<&RuntimeObjectEntry, RuntimeObjectTableError> {
         let entry = self.entry_checked_any(object_id, generation)?;
         if !entry.lifecycle.is_live() {
-            return Err(RuntimeObjectTableError::InvalidLifecycle { object_id, lifecycle: entry.lifecycle });
+            return Err(RuntimeObjectTableError::InvalidLifecycle {
+                object_id,
+                lifecycle: entry.lifecycle,
+            });
         }
         Ok(entry)
     }
@@ -231,7 +387,11 @@ impl RuntimeObjectTable {
     ) -> Result<&RuntimeObjectEntry, RuntimeObjectTableError> {
         let entry = self.entry_checked(object_id, generation)?;
         if entry.object_kind != expected_kind {
-            return Err(RuntimeObjectTableError::ObjectKindMismatch { object_id, expected: expected_kind, actual: entry.object_kind });
+            return Err(RuntimeObjectTableError::ObjectKindMismatch {
+                object_id,
+                expected: expected_kind,
+                actual: entry.object_kind,
+            });
         }
         self.ensure_owner_live_for(object_id, entry.owner)?;
         Ok(entry)
@@ -245,21 +405,42 @@ impl RuntimeObjectTable {
     ) -> Result<&RuntimeObjectEntry, RuntimeObjectTableError> {
         let entry = self.entry_checked(object_id, generation)?;
         if entry.owner != expected_owner {
-            return Err(RuntimeObjectTableError::InvalidOwner { object_id, expected: expected_owner, actual: entry.owner });
+            return Err(RuntimeObjectTableError::InvalidOwner {
+                object_id,
+                expected: expected_owner,
+                actual: entry.owner,
+            });
         }
         self.ensure_owner_live_for(object_id, entry.owner)?;
         Ok(entry)
     }
 
-    pub fn len(&self) -> usize { self.entries.len() }
-    pub fn is_empty(&self) -> bool { self.entries.is_empty() }
-    pub fn clear(&mut self) { self.entries.clear(); }
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
 
-    fn ensure_owner_live_for(&self, object_id: AidlObjectId, owner: RuntimeOwnerRelation) -> Result<(), RuntimeObjectTableError> {
+    fn ensure_owner_live_for(
+        &self,
+        object_id: AidlObjectId,
+        owner: RuntimeOwnerRelation,
+    ) -> Result<(), RuntimeObjectTableError> {
         let Some((owner_kind, owner_id, owner_generation)) = owner.referenced_object() else {
             return Ok(());
         };
-        let owner_entry = self.entries.get(&owner_id).ok_or(RuntimeObjectTableError::MissingOwner { object_id, owner_id, owner_kind })?;
+        let owner_entry =
+            self.entries
+                .get(&owner_id)
+                .ok_or(RuntimeObjectTableError::MissingOwner {
+                    object_id,
+                    owner_id,
+                    owner_kind,
+                })?;
         if owner_entry.object_kind != owner_kind {
             return Err(RuntimeObjectTableError::OwnerKindMismatch {
                 object_id,
@@ -277,13 +458,22 @@ impl RuntimeObjectTable {
             });
         }
         if !owner_entry.lifecycle.is_live() {
-            return Err(RuntimeObjectTableError::OwnerNotLive { object_id, owner_id, lifecycle: owner_entry.lifecycle });
+            return Err(RuntimeObjectTableError::OwnerNotLive {
+                object_id,
+                owner_id,
+                lifecycle: owner_entry.lifecycle,
+            });
         }
         self.ensure_owner_live_for(owner_id, owner_entry.owner)
     }
 
-    fn descendant_object_keys(&self, owner_id: AidlObjectId, owner_generation: AidlObjectGeneration) -> Vec<(AidlObjectId, AidlObjectGeneration)> {
-        let direct: Vec<(AidlObjectId, AidlObjectGeneration)> = self.entries
+    fn descendant_object_keys(
+        &self,
+        owner_id: AidlObjectId,
+        owner_generation: AidlObjectGeneration,
+    ) -> Vec<(AidlObjectId, AidlObjectGeneration)> {
+        let direct: Vec<(AidlObjectId, AidlObjectGeneration)> = self
+            .entries
             .values()
             .filter(|entry| entry.owner.owns(owner_id, owner_generation))
             .map(|entry| (entry.object_id, entry.generation))
@@ -296,28 +486,60 @@ impl RuntimeObjectTable {
         result
     }
 
-    fn entry_checked_any(&self, object_id: AidlObjectId, generation: AidlObjectGeneration) -> Result<&RuntimeObjectEntry, RuntimeObjectTableError> {
-        let entry = self.entries.get(&object_id).ok_or(RuntimeObjectTableError::MissingObject { object_id })?;
+    fn entry_checked_any(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<&RuntimeObjectEntry, RuntimeObjectTableError> {
+        let entry = self
+            .entries
+            .get(&object_id)
+            .ok_or(RuntimeObjectTableError::MissingObject { object_id })?;
         if entry.generation != generation {
-            return Err(RuntimeObjectTableError::GenerationMismatch { object_id, expected: entry.generation, actual: generation });
+            return Err(RuntimeObjectTableError::GenerationMismatch {
+                object_id,
+                expected: entry.generation,
+                actual: generation,
+            });
         }
         Ok(entry)
     }
 
-    fn entry_mut_checked_any(&mut self, object_id: AidlObjectId, generation: AidlObjectGeneration) -> Result<&mut RuntimeObjectEntry, RuntimeObjectTableError> {
-        let entry = self.entries.get_mut(&object_id).ok_or(RuntimeObjectTableError::MissingObject { object_id })?;
+    fn entry_mut_checked_any(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<&mut RuntimeObjectEntry, RuntimeObjectTableError> {
+        let entry = self
+            .entries
+            .get_mut(&object_id)
+            .ok_or(RuntimeObjectTableError::MissingObject { object_id })?;
         if entry.generation != generation {
-            return Err(RuntimeObjectTableError::GenerationMismatch { object_id, expected: entry.generation, actual: generation });
+            return Err(RuntimeObjectTableError::GenerationMismatch {
+                object_id,
+                expected: entry.generation,
+                actual: generation,
+            });
         }
         Ok(entry)
     }
 
-    fn entry_mut_checked_allow_cleanup_failed(&mut self, object_id: AidlObjectId, generation: AidlObjectGeneration) -> Result<&mut RuntimeObjectEntry, RuntimeObjectTableError> {
+    fn entry_mut_checked_allow_cleanup_failed(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<&mut RuntimeObjectEntry, RuntimeObjectTableError> {
         let entry = self.entry_mut_checked_any(object_id, generation)?;
-        if matches!(entry.lifecycle, RuntimeObjectLifecycle::Live | RuntimeObjectLifecycle::CleanupFailed { .. }) {
+        if matches!(
+            entry.lifecycle,
+            RuntimeObjectLifecycle::Live | RuntimeObjectLifecycle::CleanupFailed { .. }
+        ) {
             Ok(entry)
         } else {
-            Err(RuntimeObjectTableError::InvalidLifecycle { object_id, lifecycle: entry.lifecycle })
+            Err(RuntimeObjectTableError::InvalidLifecycle {
+                object_id,
+                lifecycle: entry.lifecycle,
+            })
         }
     }
 }

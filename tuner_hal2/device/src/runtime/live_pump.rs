@@ -4,17 +4,26 @@
 //! 明示的なpacket sinkを必須とし、demux bindingなしで完了に見える無処理成功sinkは提供しない。
 
 use std::io::{self, Read};
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use maleicacid_tuner_hal2_common::{
     retry_after_interrupted_read_with_saturation, HalError, HalErrorDetail, HalInternalKind,
-    TS_PACKET_SIZE, TsPacketCompletionBuffer,
+    TsPacketCompletionBuffer, TS_PACKET_SIZE,
 };
 
 pub trait FrontendLivePacketSink: Send {
     fn deliver_ts_packet(&mut self, packet: &[u8; TS_PACKET_SIZE]) -> Result<(), HalError>;
+}
+
+impl<T> FrontendLivePacketSink for Box<T>
+where
+    T: FrontendLivePacketSink + ?Sized,
+{
+    fn deliver_ts_packet(&mut self, packet: &[u8; TS_PACKET_SIZE]) -> Result<(), HalError> {
+        (**self).deliver_ts_packet(packet)
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -79,8 +88,14 @@ impl FrontendLivePumpOwner {
                     *guard = Some(outcome);
                 }
             })
-            .map_err(|error| HalError::cleanup_failed("frontend live pump spawn", error.to_string()))?;
-        Ok(Self { cancel, result, join: Some(join) })
+            .map_err(|error| {
+                HalError::cleanup_failed("frontend live pump spawn", error.to_string())
+            })?;
+        Ok(Self {
+            cancel,
+            result,
+            join: Some(join),
+        })
     }
 
     pub fn request_stop(&self) {
@@ -88,7 +103,12 @@ impl FrontendLivePumpOwner {
     }
 
     pub fn collect_if_finished(&mut self) -> FrontendLivePumpJoinOutcome {
-        if self.join.as_ref().map(|handle| handle.is_finished()).unwrap_or(false) {
+        if self
+            .join
+            .as_ref()
+            .map(|handle| handle.is_finished())
+            .unwrap_or(false)
+        {
             if let Some(handle) = self.join.take() {
                 if handle.join().is_err() {
                     return FrontendLivePumpJoinOutcome::Completed(Err(HalError::internal(
@@ -142,7 +162,7 @@ pub fn run_frontend_live_pump<R, S>(
 ) -> Result<FrontendLivePumpReport, HalError>
 where
     R: Read,
-    S: FrontendLivePacketSink,
+    S: FrontendLivePacketSink + ?Sized,
 {
     run_frontend_live_pump_limited(reader, sink, cancel, None)
 }
@@ -155,7 +175,7 @@ pub fn run_frontend_live_pump_limited<R, S>(
 ) -> Result<FrontendLivePumpReport, HalError>
 where
     R: Read,
-    S: FrontendLivePacketSink,
+    S: FrontendLivePacketSink + ?Sized,
 {
     let mut report = FrontendLivePumpReport::default();
     let retry_counter = AtomicU64::new(0);
@@ -264,8 +284,14 @@ mod tests {
     fn live_pump_reports_sink_failure() {
         struct FailingSink;
         impl FrontendLivePacketSink for FailingSink {
-            fn deliver_ts_packet(&mut self, _packet: &[u8; TS_PACKET_SIZE]) -> Result<(), HalError> {
-                Err(HalError::cleanup_failed("frontend live pump test sink", "forced failure"))
+            fn deliver_ts_packet(
+                &mut self,
+                _packet: &[u8; TS_PACKET_SIZE],
+            ) -> Result<(), HalError> {
+                Err(HalError::cleanup_failed(
+                    "frontend live pump test sink",
+                    "forced failure",
+                ))
             }
         }
         let mut reader = Cursor::new(packet(3).to_vec());
@@ -278,7 +304,11 @@ mod tests {
     fn live_pump_owner_collects_report() {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&packet(4));
-        let owner = FrontendLivePumpOwner::start(Box::new(Cursor::new(bytes)), Box::new(VecSink::default())).unwrap();
+        let owner = FrontendLivePumpOwner::start(
+            Box::new(Cursor::new(bytes)),
+            Box::new(VecSink::default()),
+        )
+        .unwrap();
         let report = owner.join_after_stop().unwrap();
         assert_eq!(report.packets_delivered, 1);
     }

@@ -5,18 +5,24 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 
+use maleicacid_tuner_hal2_common::os_abi::{ioctl, last_errno};
 use maleicacid_tuner_hal2_common::{
     FrontendBackendKind, FrontendDevicePath, FrontendTuneRequest, HalError, HalErrorDetail,
 };
-use maleicacid_tuner_hal2_common::os_abi::{ioctl, last_errno};
 
-use crate::dvb;
-use crate::dvb::abi::{DtvProperties, DtvProperty, DTV_CLEAR, FE_READ_STATUS, FE_SET_PROPERTY, FE_HAS_LOCK, FE_HAS_SIGNAL};
-use crate::px4;
-use crate::px4::abi::{PtxFreq, PTX_GET_CNR, PTX_SET_CHANNEL, PTX_SET_SYSTEM_MODE, PTX_START_STREAMING, PTX_STOP_STREAMING};
-use crate::runtime::{FrontendSignalState, FrontendWorkerContext};
 use super::reader::{FrontendLiveReaderDescriptor, FrontendLiveReaderDescriptorKind};
-use super::tune_txn::{BackendTuneOps, BackendTuneOutcome, BackendTuneTxn};
+use super::tune_txn::{BackendTuneOps, BackendTuneOutcome, BackendTuneStep, BackendTuneTxn};
+use crate::dvb;
+use crate::dvb::abi::{
+    DtvProperties, DtvProperty, DTV_CLEAR, FE_HAS_LOCK, FE_HAS_SIGNAL, FE_READ_STATUS,
+    FE_SET_PROPERTY,
+};
+use crate::px4;
+use crate::px4::abi::{
+    PtxFreq, PTX_GET_CNR, PTX_SET_CHANNEL, PTX_SET_SYSTEM_MODE, PTX_START_STREAMING,
+    PTX_STOP_STREAMING,
+};
+use crate::runtime::{FrontendSignalState, FrontendWorkerContext};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FrontendBackendTunePlan {
@@ -27,8 +33,18 @@ pub struct FrontendBackendTunePlan {
 }
 
 impl FrontendBackendTunePlan {
-    pub fn new(frontend_id: i32, backend: FrontendBackendKind, device_path: FrontendDevicePath, request: FrontendTuneRequest) -> Self {
-        Self { frontend_id, backend, device_path, request }
+    pub fn new(
+        frontend_id: i32,
+        backend: FrontendBackendKind,
+        device_path: FrontendDevicePath,
+        request: FrontendTuneRequest,
+    ) -> Self {
+        Self {
+            frontend_id,
+            backend,
+            device_path,
+            request,
+        }
     }
 }
 
@@ -72,35 +88,70 @@ impl FrontendBackendSession {
         previous_request: Option<FrontendTuneRequest>,
     ) -> Result<Self, FrontendBackendSubmitFailure> {
         let mut executor = FrontendBackendTuneExecutor::open(plan.clone(), previous_request)
-            .map_err(|error| FrontendBackendSubmitFailure { error, rollback_succeeded: true })?;
+            .map_err(|error| FrontendBackendSubmitFailure {
+                error,
+                rollback_succeeded: true,
+                step: None,
+            })?;
         let mut txn = BackendTuneTxn::new(plan.frontend_id, 0, plan.request.clone());
         match txn.apply(&mut executor) {
-            BackendTuneOutcome::Committed { .. } => executor.into_session()
-                .map_err(|error| FrontendBackendSubmitFailure { error, rollback_succeeded: true }),
-            BackendTuneOutcome::Failed { step, error, rollback } => Err(FrontendBackendSubmitFailure {
-                error: backend_tune_outcome_error("backend tune failed", step, error, rollback.succeeded()),
+            BackendTuneOutcome::Committed { .. } => {
+                executor
+                    .into_session()
+                    .map_err(|error| FrontendBackendSubmitFailure {
+                        error,
+                        rollback_succeeded: true,
+                        step: None,
+                    })
+            }
+            BackendTuneOutcome::Failed {
+                step,
+                error,
+                rollback,
+            } => Err(FrontendBackendSubmitFailure {
+                error,
                 rollback_succeeded: rollback.succeeded(),
+                step: Some(step),
             }),
-            BackendTuneOutcome::RollbackFailed { step, error, rollback } => Err(FrontendBackendSubmitFailure {
-                error: backend_tune_outcome_error("backend tune rollback failed", step, error, rollback.succeeded()),
+            BackendTuneOutcome::RollbackFailed {
+                step,
+                error,
+                rollback: _,
+            } => Err(FrontendBackendSubmitFailure {
+                error,
                 rollback_succeeded: false,
+                step: Some(step),
             }),
         }
     }
 
-    pub fn initial_signal_state(&self) -> FrontendSignalState { self.initial_signal_state }
+    pub fn initial_signal_state(&self) -> FrontendSignalState {
+        self.initial_signal_state
+    }
 
-    pub fn open_live_reader(&self, descriptor: &FrontendLiveReaderDescriptor) -> Result<Box<dyn Read + Send>, HalError> {
+    pub fn open_live_reader(
+        &self,
+        descriptor: &FrontendLiveReaderDescriptor,
+    ) -> Result<Box<dyn Read + Send>, HalError> {
         match (&self.kind, &descriptor.kind) {
-            (FrontendBackendSessionKind::Px4 { .. }, FrontendLiveReaderDescriptorKind::Px4DuplicatedControlFd { .. }) => {
+            (
+                FrontendBackendSessionKind::Px4 { .. },
+                FrontendLiveReaderDescriptorKind::Px4DuplicatedControlFd { .. },
+            ) => {
                 let file = self.file.try_clone().map_err(|error| {
                     HalError::cleanup_failed("px4 live reader fd duplication", error.to_string())
                 })?;
                 Ok(Box::new(file))
             }
-            (FrontendBackendSessionKind::Dvb { .. }, FrontendLiveReaderDescriptorKind::DvbDvrDevice { dvr_path }) => {
+            (
+                FrontendBackendSessionKind::Dvb { .. },
+                FrontendLiveReaderDescriptorKind::DvbDvrDevice { dvr_path },
+            ) => {
                 let file = File::open(dvr_path.as_path()).map_err(|error| {
-                    HalError::cleanup_failed("dvb live dvr reader open", format!("{}: {error}", dvr_path.display()))
+                    HalError::cleanup_failed(
+                        "dvb live dvr reader open",
+                        format!("{}: {error}", dvr_path.display()),
+                    )
                 })?;
                 Ok(Box::new(file))
             }
@@ -122,7 +173,10 @@ impl FrontendBackendSession {
             ),
             FrontendBackendSessionKind::Dvb { frontend_path } => {
                 let mut prop = DtvProperty::with_data(DTV_CLEAR, 0);
-                let mut props = DtvProperties { num: 1, props: &mut prop as *mut DtvProperty };
+                let mut props = DtvProperties {
+                    num: 1,
+                    props: &mut prop as *mut DtvProperty,
+                };
                 ioctl_ptr(
                     "dvb",
                     Some(frontend_path.as_path().to_path_buf()),
@@ -140,10 +194,31 @@ impl FrontendBackendSession {
 pub struct FrontendBackendSubmitFailure {
     pub error: HalError,
     pub rollback_succeeded: bool,
+    pub step: Option<BackendTuneStep>,
 }
 
 impl FrontendBackendSubmitFailure {
-    pub fn into_error(self) -> HalError { self.error }
+    pub fn into_error(self) -> HalError {
+        self.error
+    }
+}
+
+fn initial_signal_state_from_observation(
+    frontend_id: i32,
+    result: Result<FrontendSignalState, HalError>,
+) -> FrontendSignalState {
+    match result {
+        Ok(state) => state,
+        Err(error) => {
+            eprintln!(
+                "maleicacid-tuner-hal2-backend-readiness: frontend_id={} step={:?} error={:?}",
+                frontend_id,
+                BackendTuneStep::ReadInitialStatus,
+                error,
+            );
+            FrontendSignalState::Unknown
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -160,20 +235,38 @@ struct FrontendBackendTuneExecutor {
 }
 
 impl FrontendBackendTuneExecutor {
-    fn open(plan: FrontendBackendTunePlan, previous_request: Option<FrontendTuneRequest>) -> Result<Self, HalError> {
+    fn open(
+        plan: FrontendBackendTunePlan,
+        previous_request: Option<FrontendTuneRequest>,
+    ) -> Result<Self, HalError> {
         let file = open_rw(&plan.device_path)?;
         let kind = match plan.backend {
-            FrontendBackendKind::Px4CharDevice => FrontendBackendSessionKind::Px4 { control_path: plan.device_path.clone() },
-            FrontendBackendKind::LinuxDvb => FrontendBackendSessionKind::Dvb { frontend_path: plan.device_path.clone() },
+            FrontendBackendKind::Px4CharDevice => FrontendBackendSessionKind::Px4 {
+                control_path: plan.device_path.clone(),
+            },
+            FrontendBackendKind::LinuxDvb => FrontendBackendSessionKind::Dvb {
+                frontend_path: plan.device_path.clone(),
+            },
         };
-        Ok(Self { plan, previous_request, kind, file: Some(file), initial_signal_state: FrontendSignalState::Unknown })
+        Ok(Self {
+            plan,
+            previous_request,
+            kind,
+            file: Some(file),
+            initial_signal_state: FrontendSignalState::Unknown,
+        })
     }
 
     fn file_fd(&self) -> Result<i32, HalError> {
-        self.file.as_ref().map(|file| file.as_raw_fd()).ok_or_else(|| HalError::internal(
-            maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-            "backend tune executor file was already consumed",
-        ))
+        self.file
+            .as_ref()
+            .map(|file| file.as_raw_fd())
+            .ok_or_else(|| {
+                HalError::internal(
+                    maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                    "backend tune executor file was already consumed",
+                )
+            })
     }
 
     fn stop_current(&self) -> Result<(), HalError> {
@@ -188,7 +281,10 @@ impl FrontendBackendTuneExecutor {
             ),
             FrontendBackendSessionKind::Dvb { frontend_path } => {
                 let mut prop = DtvProperty::with_data(DTV_CLEAR, 0);
-                let mut props = DtvProperties { num: 1, props: &mut prop as *mut DtvProperty };
+                let mut props = DtvProperties {
+                    num: 1,
+                    props: &mut prop as *mut DtvProperty,
+                };
                 ioctl_ptr(
                     "dvb",
                     Some(frontend_path.as_path().to_path_buf()),
@@ -224,7 +320,10 @@ impl FrontendBackendTuneExecutor {
         match &self.kind {
             FrontendBackendSessionKind::Px4 { control_path } => {
                 let mapped = px4::map_tune_request_to_px4(request)?;
-                let mut freq = PtxFreq { freq_no: mapped.freq_no, slot: mapped.slot };
+                let mut freq = PtxFreq {
+                    freq_no: mapped.freq_no,
+                    slot: mapped.slot,
+                };
                 ioctl_ptr(
                     "px4",
                     Some(control_path.as_path().to_path_buf()),
@@ -238,7 +337,10 @@ impl FrontendBackendTuneExecutor {
                 let normalized = dvb::normalized_tune_request_from_common(request)?;
                 let pairs = dvb::tune_property_pairs(&normalized)?;
                 let mut properties = pairs.to_dtv_properties();
-                let mut props = DtvProperties { num: properties.len() as u32, props: properties.as_mut_ptr() };
+                let mut props = DtvProperties {
+                    num: properties.len() as u32,
+                    props: properties.as_mut_ptr(),
+                };
                 ioctl_ptr(
                     "dvb",
                     Some(frontend_path.as_path().to_path_buf()),
@@ -283,7 +385,11 @@ impl FrontendBackendTuneExecutor {
                     &mut cnr,
                     "PTX_GET_CNR",
                 )?;
-                if cnr == 0 { Ok(FrontendSignalState::NoSignal) } else { Ok(FrontendSignalState::SignalDetected) }
+                if cnr == 0 {
+                    Ok(FrontendSignalState::NoSignal)
+                } else {
+                    Ok(FrontendSignalState::SignalDetected)
+                }
             }
             FrontendBackendSessionKind::Dvb { frontend_path } => {
                 let mut status: u32 = 0;
@@ -307,11 +413,17 @@ impl FrontendBackendTuneExecutor {
     }
 
     fn into_session(mut self) -> Result<FrontendBackendSession, HalError> {
-        let file = self.file.take().ok_or_else(|| HalError::internal(
-            maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-            "backend tune executor file was already consumed",
-        ))?;
-        Ok(FrontendBackendSession { kind: self.kind, file, initial_signal_state: self.initial_signal_state })
+        let file = self.file.take().ok_or_else(|| {
+            HalError::internal(
+                maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                "backend tune executor file was already consumed",
+            )
+        })?;
+        Ok(FrontendBackendSession {
+            kind: self.kind,
+            file,
+            initial_signal_state: self.initial_signal_state,
+        })
     }
 }
 
@@ -319,7 +431,9 @@ impl BackendTuneOps for FrontendBackendTuneExecutor {
     type Snapshot = FrontendBackendRollbackSnapshot;
 
     fn capture_previous_state(&mut self) -> Result<Self::Snapshot, HalError> {
-        Ok(FrontendBackendRollbackSnapshot { previous_request: self.previous_request.clone() })
+        Ok(FrontendBackendRollbackSnapshot {
+            previous_request: self.previous_request.clone(),
+        })
     }
 
     fn stop_previous_tune(&mut self) -> Result<(), HalError> {
@@ -339,7 +453,8 @@ impl BackendTuneOps for FrontendBackendTuneExecutor {
     }
 
     fn read_initial_status(&mut self) -> Result<(), HalError> {
-        self.initial_signal_state = self.read_signal_state()?;
+        self.initial_signal_state =
+            initial_signal_state_from_observation(self.plan.frontend_id, self.read_signal_state());
         Ok(())
     }
 
@@ -347,7 +462,10 @@ impl BackendTuneOps for FrontendBackendTuneExecutor {
         self.stop_current()
     }
 
-    fn rollback_restore_previous_state(&mut self, snapshot: &Self::Snapshot) -> Result<(), HalError> {
+    fn rollback_restore_previous_state(
+        &mut self,
+        snapshot: &Self::Snapshot,
+    ) -> Result<(), HalError> {
         match snapshot.previous_request.as_ref() {
             Some(previous) => self.submit_request_for_rollback(previous),
             None => Ok(()),
@@ -355,20 +473,10 @@ impl BackendTuneOps for FrontendBackendTuneExecutor {
     }
 }
 
-fn backend_tune_outcome_error(
-    prefix: &'static str,
-    step: super::tune_txn::BackendTuneStep,
-    error: HalError,
-    rollback_succeeded: bool,
-) -> HalError {
-    let rollback = if rollback_succeeded { "rollback succeeded" } else { "rollback failed" };
-    HalError::internal(
-        maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-        format!("{prefix} at {step:?}: {error:?}; {rollback}"),
-    )
-}
-
-pub fn run_frontend_backend_tune_worker(ctx: FrontendWorkerContext, plan: FrontendBackendTunePlan) -> Result<(), HalError> {
+pub fn run_frontend_backend_tune_worker(
+    ctx: FrontendWorkerContext,
+    plan: FrontendBackendTunePlan,
+) -> Result<(), HalError> {
     run_frontend_backend_tune_worker_with_previous(ctx, plan, None)
 }
 
@@ -401,20 +509,43 @@ fn open_rw(path: &FrontendDevicePath) -> Result<File, HalError> {
         })
 }
 
-fn ioctl_ptr<T>(backend: &'static str, path: Option<PathBuf>, fd: i32, request: u64, arg: &mut T, op: &'static str) -> Result<(), HalError> {
+fn ioctl_ptr<T>(
+    backend: &'static str,
+    path: Option<PathBuf>,
+    fd: i32,
+    request: u64,
+    arg: &mut T,
+    op: &'static str,
+) -> Result<(), HalError> {
     // 安全性: `fd` はFrontendBackendSession生成が所有し、`arg` は選択backend ABI用のC互換ioctl payloadを指す。
     let rc = unsafe { ioctl(fd, request, arg) };
     if rc < 0 {
-        return Err(HalError::IoctlFailed { backend, path, op, errno: last_errno() });
+        return Err(HalError::IoctlFailed {
+            backend,
+            path,
+            op,
+            errno: last_errno(),
+        });
     }
     Ok(())
 }
 
-fn ioctl_noarg(backend: &'static str, path: Option<PathBuf>, fd: i32, request: u64, op: &'static str) -> Result<(), HalError> {
+fn ioctl_noarg(
+    backend: &'static str,
+    path: Option<PathBuf>,
+    fd: i32,
+    request: u64,
+    op: &'static str,
+) -> Result<(), HalError> {
     // 安全性: 選択backend ABIに対する引数なしioctlである。
     let rc = unsafe { ioctl(fd, request) };
     if rc < 0 {
-        return Err(HalError::IoctlFailed { backend, path, op, errno: last_errno() });
+        return Err(HalError::IoctlFailed {
+            backend,
+            path,
+            op,
+            errno: last_errno(),
+        });
     }
     Ok(())
 }
@@ -466,5 +597,42 @@ mod tests {
         );
         assert!(matches!(plan.backend, FrontendBackendKind::Px4CharDevice));
         assert_eq!(plan.request.stream_id, Some(0x4010));
+    }
+
+    #[test]
+    fn submit_failure_preserves_original_error_kind() {
+        let failure = FrontendBackendSubmitFailure {
+            error: HalError::IoctlFailed {
+                backend: "dvb",
+                path: None,
+                op: "FE_SET_PROPERTY",
+                errno: 5,
+            },
+            rollback_succeeded: false,
+            step: Some(BackendTuneStep::ApplyChannel),
+        };
+        assert!(matches!(
+            failure.into_error(),
+            HalError::IoctlFailed {
+                backend: "dvb",
+                op: "FE_SET_PROPERTY",
+                errno: 5,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn initial_status_observation_failure_falls_back_to_unknown_signal() {
+        let state = initial_signal_state_from_observation(
+            9,
+            Err(HalError::IoctlFailed {
+                backend: "px4",
+                path: None,
+                op: "PTX_GET_CNR",
+                errno: 5,
+            }),
+        );
+        assert_eq!(state, FrontendSignalState::Unknown);
     }
 }

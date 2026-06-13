@@ -46,3 +46,7 @@ breakfast virtio_x86_64_tv_grub
 - grep、rg、正規表現抽出、見出し抽出だけで全文精読または完了確認をしたと書かない。
 - build、unit test、atest、VTS、実機確認を実施していない場合は、未実施と明記する。
 - 完了条件を満たさない場合は No と書く。
+
+
+## Git操作
+build/Rust unit testが通った場合は、その時点でgit commitをするようにお願いします。

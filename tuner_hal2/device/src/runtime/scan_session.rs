@@ -23,7 +23,10 @@ impl FrontendScanPhase {
     }
 
     pub const fn is_failed(self) -> bool {
-        matches!(self, Self::FailedBackend | Self::FailedCallback | Self::FailedPanic)
+        matches!(
+            self,
+            Self::FailedBackend | Self::FailedCallback | Self::FailedPanic
+        )
     }
 }
 
@@ -86,12 +89,24 @@ impl FrontendScanSession {
         })
     }
 
-    pub const fn generation(&self) -> u64 { self.generation }
-    pub fn fingerprint(&self) -> &str { &self.fingerprint }
-    pub const fn phase(&self) -> FrontendScanPhase { self.phase }
-    pub const fn terminal_reason(&self) -> Option<FrontendScanTerminalReason> { self.terminal_reason }
-    pub const fn current_index(&self) -> usize { self.current_index }
-    pub fn candidates(&self) -> &[FrontendTuneRequest] { &self.candidates }
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+    pub fn fingerprint(&self) -> &str {
+        &self.fingerprint
+    }
+    pub const fn phase(&self) -> FrontendScanPhase {
+        self.phase
+    }
+    pub const fn terminal_reason(&self) -> Option<FrontendScanTerminalReason> {
+        self.terminal_reason
+    }
+    pub const fn current_index(&self) -> usize {
+        self.current_index
+    }
+    pub fn candidates(&self) -> &[FrontendTuneRequest] {
+        &self.candidates
+    }
 
     pub fn current_candidate(&self) -> Option<&FrontendTuneRequest> {
         if self.phase.is_terminal() {
@@ -102,10 +117,12 @@ impl FrontendScanSession {
 
     pub fn advance_after_candidate(&mut self) -> Result<Option<&FrontendTuneRequest>, HalError> {
         self.ensure_running()?;
-        let next = self.current_index.checked_add(1).ok_or_else(|| HalError::internal(
-            HalInternalKind::InvariantViolation,
-            "scan candidate index overflow",
-        ))?;
+        let next = self.current_index.checked_add(1).ok_or_else(|| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "scan candidate index overflow",
+            )
+        })?;
         if next >= self.candidates.len() {
             self.complete();
             return Ok(None);
@@ -161,7 +178,7 @@ mod tests {
     use super::*;
     use maleicacid_tuner_hal2_common::FrontendSystem;
 
-    fn request(frequency: i64) -> FrontendTuneRequest {
+    fn request(frequency: u64) -> FrontendTuneRequest {
         FrontendTuneRequest {
             system: FrontendSystem::IsdbT,
             frequency,
@@ -180,30 +197,50 @@ mod tests {
 
     #[test]
     fn candidate_progression_completes_after_last_candidate() {
-        let mut session = FrontendScanSession::start(4, "two", vec![request(473_142_857), request(479_142_857)]).unwrap();
+        let mut session =
+            FrontendScanSession::start(4, "two", vec![request(473_142_857), request(479_142_857)])
+                .unwrap();
         assert_eq!(session.current_candidate().unwrap().frequency, 473_142_857);
-        assert_eq!(session.advance_after_candidate().unwrap().unwrap().frequency, 479_142_857);
+        assert_eq!(
+            session
+                .advance_after_candidate()
+                .unwrap()
+                .unwrap()
+                .frequency,
+            479_142_857
+        );
         assert!(session.advance_after_candidate().unwrap().is_none());
         assert_eq!(session.phase(), FrontendScanPhase::Completed);
-        assert_eq!(session.terminal_reason(), Some(FrontendScanTerminalReason::End));
+        assert_eq!(
+            session.terminal_reason(),
+            Some(FrontendScanTerminalReason::End)
+        );
     }
 
     #[test]
     fn cancellation_preserves_reason() {
-        let mut session = FrontendScanSession::start(5, "cancel", vec![request(473_142_857)]).unwrap();
+        let mut session =
+            FrontendScanSession::start(5, "cancel", vec![request(473_142_857)]).unwrap();
         session.cancel(FrontendWorkerCancelReason::SupersededByNewRequest);
         assert_eq!(session.phase(), FrontendScanPhase::Cancelled);
-        assert_eq!(session.terminal_reason(), Some(FrontendScanTerminalReason::SupersededByNewRequest));
+        assert_eq!(
+            session.terminal_reason(),
+            Some(FrontendScanTerminalReason::SupersededByNewRequest)
+        );
         assert!(session.current_candidate().is_none());
     }
 
     #[test]
     fn failed_phase_is_not_overwritten_by_cancel_or_complete() {
-        let mut session = FrontendScanSession::start(6, "fail", vec![request(473_142_857)]).unwrap();
+        let mut session =
+            FrontendScanSession::start(6, "fail", vec![request(473_142_857)]).unwrap();
         session.fail_backend();
         session.cancel(FrontendWorkerCancelReason::StopRequested);
         session.complete();
         assert_eq!(session.phase(), FrontendScanPhase::FailedBackend);
-        assert_eq!(session.terminal_reason(), Some(FrontendScanTerminalReason::BackendFailure));
+        assert_eq!(
+            session.terminal_reason(),
+            Some(FrontendScanTerminalReason::BackendFailure)
+        );
     }
 }

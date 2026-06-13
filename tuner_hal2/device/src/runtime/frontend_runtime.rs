@@ -1,6 +1,8 @@
-use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendTuneRequest, HalError, HalInternalKind};
+use maleicacid_tuner_hal2_common::{
+    FrontendBackendKind, FrontendTuneRequest, HalError, HalInternalKind,
+};
 
-use super::{FrontendWorkerCancelReason, FrontendLiveReaderDescriptor, FrontendScanPhase, FrontendScanSession, FrontendScanTerminalReason};
+use super::{FrontendLiveReaderDescriptor, FrontendScanSession, FrontendWorkerCancelReason};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FrontendRuntimeState {
@@ -99,16 +101,29 @@ impl FrontendRuntime {
         }
     }
 
-    pub fn frontend_id(&self) -> i32 { self.frontend_id }
-    pub fn backend_kind(&self) -> FrontendBackendKind { self.backend_kind }
-    pub fn state(&self) -> FrontendRuntimeState { self.state }
-    pub fn generation(&self) -> u64 { self.generation }
+    pub fn frontend_id(&self) -> i32 {
+        self.frontend_id
+    }
+    pub fn backend_kind(&self) -> FrontendBackendKind {
+        self.backend_kind
+    }
+    pub fn state(&self) -> FrontendRuntimeState {
+        self.state
+    }
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
 
     pub fn checked_next_generation(&self) -> Result<u64, HalError> {
         self.generation
             .checked_add(1)
             .filter(|value| *value > 0)
-            .ok_or_else(|| HalError::internal(HalInternalKind::InvariantViolation, "frontend operation generation exhausted"))
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend operation generation exhausted",
+                )
+            })
     }
 
     pub fn commit_generation(&mut self, generation: u64) -> Result<(), HalError> {
@@ -122,14 +137,30 @@ impl FrontendRuntime {
         Ok(())
     }
 
-    pub fn live_reader_descriptor(&self) -> Option<&FrontendLiveReaderDescriptor> { self.live_reader_descriptor.as_ref() }
-    pub fn terminal_event_min_generation(&self) -> u64 { self.terminal_event_min_generation }
-    pub fn should_accept_terminal_event(&self, generation: u64) -> bool { generation >= self.terminal_event_min_generation && generation == self.generation }
-    pub fn terminal_events(&self) -> &[FrontendTerminalEvent] { &self.terminal_events }
-    pub fn active_scan_session(&self) -> Option<&FrontendScanSession> { self.scan_session.as_ref() }
-    pub fn active_tune_request(&self) -> Option<&FrontendTuneRequest> { self.active_tune_request.as_ref() }
-    pub fn signal_state(&self) -> FrontendSignalState { self.signal_state }
-    pub fn same_active_tune(&self, request: &FrontendTuneRequest) -> bool { self.active_tune_request.as_ref() == Some(request) }
+    pub fn live_reader_descriptor(&self) -> Option<&FrontendLiveReaderDescriptor> {
+        self.live_reader_descriptor.as_ref()
+    }
+    pub fn terminal_event_min_generation(&self) -> u64 {
+        self.terminal_event_min_generation
+    }
+    pub fn should_accept_terminal_event(&self, generation: u64) -> bool {
+        generation >= self.terminal_event_min_generation && generation == self.generation
+    }
+    pub fn terminal_events(&self) -> &[FrontendTerminalEvent] {
+        &self.terminal_events
+    }
+    pub fn active_scan_session(&self) -> Option<&FrontendScanSession> {
+        self.scan_session.as_ref()
+    }
+    pub fn active_tune_request(&self) -> Option<&FrontendTuneRequest> {
+        self.active_tune_request.as_ref()
+    }
+    pub fn signal_state(&self) -> FrontendSignalState {
+        self.signal_state
+    }
+    pub fn same_active_tune(&self, request: &FrontendTuneRequest) -> bool {
+        self.active_tune_request.as_ref() == Some(request)
+    }
 
     pub fn snapshot(&self) -> FrontendRuntimeSnapshot {
         FrontendRuntimeSnapshot {
@@ -157,7 +188,11 @@ impl FrontendRuntime {
         self.signal_state = snapshot.signal_state;
     }
 
-    pub fn record_signal_state(&mut self, generation: u64, signal_state: FrontendSignalState) -> Result<(), HalError> {
+    pub fn record_signal_state(
+        &mut self,
+        generation: u64,
+        signal_state: FrontendSignalState,
+    ) -> Result<(), HalError> {
         if generation != self.generation {
             return Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
@@ -168,7 +203,11 @@ impl FrontendRuntime {
         Ok(())
     }
 
-    pub fn commit_active_tune_request(&mut self, generation: u64, request: FrontendTuneRequest) -> Result<(), HalError> {
+    pub fn commit_active_tune_request(
+        &mut self,
+        generation: u64,
+        request: FrontendTuneRequest,
+    ) -> Result<(), HalError> {
         if generation != self.generation {
             return Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
@@ -197,7 +236,11 @@ impl FrontendRuntime {
         Ok(())
     }
 
-    pub fn cancel_scan_session(&mut self, generation: u64, reason: FrontendWorkerCancelReason) -> Result<(), HalError> {
+    pub fn cancel_scan_session(
+        &mut self,
+        generation: u64,
+        reason: FrontendWorkerCancelReason,
+    ) -> Result<(), HalError> {
         if !self.should_accept_terminal_event(generation) {
             return Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
@@ -246,11 +289,17 @@ impl FrontendRuntime {
             ));
         }
         session.fail_backend();
-        self.last_error = Some(HalError::internal(HalInternalKind::InvariantViolation, "scan backend failure"));
+        self.last_error = Some(HalError::internal(
+            HalInternalKind::InvariantViolation,
+            "scan backend failure",
+        ));
         self.state = FrontendRuntimeState::Failed;
         Ok(())
     }
-    pub fn advance_scan_session_after_candidate(&mut self, generation: u64) -> Result<bool, HalError> {
+    pub fn advance_scan_session_after_candidate(
+        &mut self,
+        generation: u64,
+    ) -> Result<bool, HalError> {
         if !self.should_accept_terminal_event(generation) {
             return Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
@@ -281,16 +330,19 @@ impl FrontendRuntime {
         Ok(has_next)
     }
 
-
-
-    pub fn mark_tune_worker_failed(&mut self, generation: u64, error: HalError) -> Result<(), HalError> {
+    pub fn mark_tune_worker_failed(
+        &mut self,
+        generation: u64,
+        error: HalError,
+    ) -> Result<(), HalError> {
         if !self.should_accept_terminal_event(generation) {
             return Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
                 "stale tune failure generation cannot be recorded",
             ));
         }
-        if !matches!(self.state, FrontendRuntimeState::Tuning { generation: current } if current == generation) {
+        if !matches!(self.state, FrontendRuntimeState::Tuning { generation: current } if current == generation)
+        {
             return Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
                 "tune failure can only be recorded for the active tune generation",
@@ -330,22 +382,34 @@ impl FrontendRuntime {
             kind: FrontendTerminalEventKind::ScanEnd,
             reason: FrontendTerminalEventReason::CallbackFailure,
         });
-        self.last_error = Some(HalError::callback_failed("IFrontendCallback.onScanMessage(END)", "scan terminal delivery failed"));
+        self.last_error = Some(HalError::callback_failed(
+            "IFrontendCallback.onScanMessage(END)",
+            "scan terminal delivery failed",
+        ));
         self.state = FrontendRuntimeState::Idle;
         Ok(())
     }
 
-    pub fn last_terminal_event(&self) -> Option<FrontendTerminalEvent> { self.terminal_events.last().copied() }
-    pub fn last_error(&self) -> Option<&HalError> { self.last_error.as_ref() }
+    pub fn last_terminal_event(&self) -> Option<FrontendTerminalEvent> {
+        self.terminal_events.last().copied()
+    }
+    pub fn last_error(&self) -> Option<&HalError> {
+        self.last_error.as_ref()
+    }
 
-    pub fn record_scan_cancelled(&mut self, generation: u64, reason: FrontendWorkerCancelReason) -> Result<(), HalError> {
+    pub fn record_scan_cancelled(
+        &mut self,
+        generation: u64,
+        reason: FrontendWorkerCancelReason,
+    ) -> Result<(), HalError> {
         if !self.should_accept_terminal_event(generation) {
             return Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
                 "stale scan cancellation generation cannot be recorded",
             ));
         }
-        if !matches!(self.state, FrontendRuntimeState::Scanning { generation: current } if current == generation) {
+        if !matches!(self.state, FrontendRuntimeState::Scanning { generation: current } if current == generation)
+        {
             return Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
                 "scan cancellation can only be recorded for the active scan generation",
@@ -373,18 +437,30 @@ impl FrontendRuntime {
         self.terminal_event_min_generation = generation;
         self.state = FrontendRuntimeState::Scanning { generation };
     }
-    pub fn mark_idle(&mut self) { self.state = FrontendRuntimeState::Idle; }
-    pub fn mark_closing(&mut self) { self.state = FrontendRuntimeState::Closing; }
-    pub fn set_live_reader_descriptor(&mut self, reader: FrontendLiveReaderDescriptor) { self.live_reader_descriptor = Some(reader); }
-    pub fn clear_live_reader_descriptor(&mut self) { self.live_reader_descriptor = None; }
-    pub fn mark_failed(&mut self, error: HalError) { self.last_error = Some(error); self.state = FrontendRuntimeState::Failed; }
+    pub fn mark_idle(&mut self) {
+        self.state = FrontendRuntimeState::Idle;
+    }
+    pub fn mark_closing(&mut self) {
+        self.state = FrontendRuntimeState::Closing;
+    }
+    pub fn set_live_reader_descriptor(&mut self, reader: FrontendLiveReaderDescriptor) {
+        self.live_reader_descriptor = Some(reader);
+    }
+    pub fn clear_live_reader_descriptor(&mut self) {
+        self.live_reader_descriptor = None;
+    }
+    pub fn mark_failed(&mut self, error: HalError) {
+        self.last_error = Some(error);
+        self.state = FrontendRuntimeState::Failed;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maleicacid_tuner_hal2_common::FrontendDevicePath;
     use crate::runtime::FrontendLiveReaderDescriptor;
+    use crate::{FrontendScanPhase, FrontendScanTerminalReason};
+    use maleicacid_tuner_hal2_common::FrontendDevicePath;
 
     #[test]
     fn runtime_owns_backend_kind_generation_and_reader() {
@@ -392,7 +468,10 @@ mod tests {
         assert_eq!(runtime.backend_kind(), FrontendBackendKind::Px4CharDevice);
         let generation = runtime.next_generation().unwrap();
         runtime.mark_tuning(generation);
-        runtime.set_live_reader_descriptor(FrontendLiveReaderDescriptor::px4_from_control_fd(7, FrontendDevicePath::new("/dev/px4video0")));
+        runtime.set_live_reader_descriptor(FrontendLiveReaderDescriptor::px4_from_control_fd(
+            7,
+            FrontendDevicePath::new("/dev/px4video0"),
+        ));
         assert_eq!(runtime.state(), FrontendRuntimeState::Tuning { generation });
         assert!(runtime.live_reader_descriptor().is_some());
     }
@@ -430,7 +509,9 @@ mod tests {
         let mut runtime = FrontendRuntime::new(7, FrontendBackendKind::Px4CharDevice);
         runtime.commit_generation(1).unwrap();
         runtime.mark_scanning(1);
-        runtime.record_scan_cancelled(1, FrontendWorkerCancelReason::StopRequested).unwrap();
+        runtime
+            .record_scan_cancelled(1, FrontendWorkerCancelReason::StopRequested)
+            .unwrap();
         assert_eq!(
             runtime.last_terminal_event(),
             Some(FrontendTerminalEvent {
@@ -448,7 +529,9 @@ mod tests {
         runtime.mark_scanning(1);
         runtime.commit_generation(2).unwrap();
         runtime.mark_scanning(2);
-        assert!(runtime.record_scan_cancelled(1, FrontendWorkerCancelReason::StopRequested).is_err());
+        assert!(runtime
+            .record_scan_cancelled(1, FrontendWorkerCancelReason::StopRequested)
+            .is_err());
     }
 
     #[test]
@@ -472,7 +555,12 @@ mod tests {
         let mut runtime = FrontendRuntime::new(7, FrontendBackendKind::Px4CharDevice);
         runtime.commit_generation(1).unwrap();
         runtime.mark_tuning(1);
-        runtime.mark_tune_worker_failed(1, HalError::internal(HalInternalKind::InvariantViolation, "backend failed")).unwrap();
+        runtime
+            .mark_tune_worker_failed(
+                1,
+                HalError::internal(HalInternalKind::InvariantViolation, "backend failed"),
+            )
+            .unwrap();
         assert_eq!(runtime.state(), FrontendRuntimeState::Failed);
         assert_eq!(
             runtime.last_terminal_event(),
@@ -497,12 +585,21 @@ mod tests {
             bandwidth_hz: Some(6_000_000),
             symbol_rate: None,
         };
-        runtime.begin_scan_session(1, "scan", vec![request]).unwrap();
-        runtime.cancel_scan_session(1, FrontendWorkerCancelReason::StopRequested).unwrap();
+        runtime
+            .begin_scan_session(1, "scan", vec![request])
+            .unwrap();
+        runtime
+            .cancel_scan_session(1, FrontendWorkerCancelReason::StopRequested)
+            .unwrap();
         assert_eq!(runtime.state(), FrontendRuntimeState::Idle);
-        assert_eq!(runtime.active_scan_session().unwrap().phase(), FrontendScanPhase::Cancelled);
-        assert_eq!(runtime.active_scan_session().unwrap().terminal_reason(), Some(FrontendScanTerminalReason::StopRequested));
+        assert_eq!(
+            runtime.active_scan_session().unwrap().phase(),
+            FrontendScanPhase::Cancelled
+        );
+        assert_eq!(
+            runtime.active_scan_session().unwrap().terminal_reason(),
+            Some(FrontendScanTerminalReason::StopRequested)
+        );
         assert_eq!(runtime.last_terminal_event().unwrap().generation, 1);
     }
-
 }

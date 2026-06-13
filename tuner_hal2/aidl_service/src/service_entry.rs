@@ -4,10 +4,17 @@ use std::path::PathBuf;
 
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::ITuner::BnTuner;
 use binder::BinderFeatures;
-use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem, HalError, HalErrorDetail, TUNER_SERVICE_NAME};
 use maleicacid_tuner_hal2_common::os_abi::{ioctl, last_errno};
-use maleicacid_tuner_hal2_device::dvb::{DtvProperties, DtvProperty, DtvPropertyBuffer, DtvPropertyUnion, DvbFrontendInfo, DTV_ENUM_DELSYS, FE_GET_INFO, FE_GET_PROPERTY, SYS_ISDBS, SYS_ISDBT};
-use maleicacid_tuner_hal2_service_runtime::{FrontendProbeOutcome, FrontendRuntimeId, TunerServiceRuntime};
+use maleicacid_tuner_hal2_common::{
+    FrontendBackendKind, FrontendSystem, HalError, HalErrorDetail, TUNER_SERVICE_NAME,
+};
+use maleicacid_tuner_hal2_device::dvb::{
+    DtvProperties, DtvProperty, DtvPropertyBuffer, DtvPropertyUnion, DvbFrontendInfo,
+    DTV_ENUM_DELSYS, FE_GET_INFO, FE_GET_PROPERTY, SYS_ISDBS, SYS_ISDBT,
+};
+use maleicacid_tuner_hal2_service_runtime::{
+    FrontendProbeOutcome, FrontendRuntimeId, LnbRegistryProfile, TunerServiceRuntime,
+};
 
 use crate::tuner_service::TunerAidlService;
 
@@ -23,23 +30,69 @@ const PX4_PROBE_PREFIXES: &[&str] = &[
 ];
 
 fn px4_device_family_code(device_name: &str) -> i32 {
-    if device_name.starts_with("px4video") { return 1; }
-    if device_name.starts_with("pxmlt5video") { return 2; }
-    if device_name.starts_with("pxmlt8video") { return 3; }
-    if device_name.starts_with("isdb6014video") { return 4; }
-    if device_name.starts_with("isdb2056video") { return 5; }
-    if device_name.starts_with("pxm1urvideo") { return 6; }
-    if device_name.starts_with("pxs1urvideo") { return 7; }
-    if device_name.starts_with("isdbt2071video") { return 8; }
+    if device_name.starts_with("px4video") {
+        return 1;
+    }
+    if device_name.starts_with("pxmlt5video") {
+        return 2;
+    }
+    if device_name.starts_with("pxmlt8video") {
+        return 3;
+    }
+    if device_name.starts_with("isdb6014video") {
+        return 4;
+    }
+    if device_name.starts_with("isdb2056video") {
+        return 5;
+    }
+    if device_name.starts_with("pxm1urvideo") {
+        return 6;
+    }
+    if device_name.starts_with("pxs1urvideo") {
+        return 7;
+    }
+    if device_name.starts_with("isdbt2071video") {
+        return 8;
+    }
     0
 }
 
 fn px4_export_frontend_base_id(unit: i32, device_name: &str) -> Option<i32> {
-    if unit < 0 { return None; }
+    if unit < 0 {
+        return None;
+    }
     let family = px4_device_family_code(device_name);
     1_000_000i32
         .checked_add(family.checked_mul(10_000)?)
         .and_then(|base| base.checked_add(unit.checked_mul(10)?))
+}
+
+fn px4_lnb_profile_from_device_name(device_name: &str) -> LnbRegistryProfile {
+    if device_name.starts_with("px4video") {
+        LnbRegistryProfile::Px4Device15VOnly
+    } else {
+        LnbRegistryProfile::NoPower
+    }
+}
+
+fn probe_lnb_profile_for_frontend(
+    backend: FrontendBackendKind,
+    system: FrontendSystem,
+    path: &std::path::Path,
+    device_name: Option<&str>,
+) -> Option<LnbRegistryProfile> {
+    if !matches!(system, FrontendSystem::IsdbS) {
+        return None;
+    }
+    Some(match backend {
+        FrontendBackendKind::Px4CharDevice => {
+            let name = device_name
+                .or_else(|| path.file_name().and_then(|value| value.to_str()))
+                .unwrap_or_default();
+            px4_lnb_profile_from_device_name(name)
+        }
+        FrontendBackendKind::LinuxDvb => LnbRegistryProfile::EarthPt1FixedLnb,
+    })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -48,7 +101,11 @@ struct DvbProbeVariant {
     system: FrontendSystem,
 }
 
-fn dvb_export_frontend_id(adapter: i32, frontend_index: i32, system: FrontendSystem) -> Option<i32> {
+fn dvb_export_frontend_id(
+    adapter: i32,
+    frontend_index: i32,
+    system: FrontendSystem,
+) -> Option<i32> {
     if !(0..=255).contains(&adapter) || !(0..=255).contains(&frontend_index) {
         return None;
     }
@@ -65,7 +122,9 @@ fn dvb_export_frontend_id(adapter: i32, frontend_index: i32, system: FrontendSys
 
 fn systems_from_dvb_delsys_buffer(buffer: DtvPropertyBuffer) -> Vec<FrontendSystem> {
     let buffer_data = buffer.read_data_unaligned();
-    let count = usize::try_from(buffer.read_len_unaligned()).unwrap_or(0).min(buffer_data.len());
+    let count = usize::try_from(buffer.read_len_unaligned())
+        .unwrap_or(0)
+        .min(buffer_data.len());
     let mut systems = Vec::new();
     for delsys in &buffer_data[..count] {
         match u32::from(*delsys) {
@@ -91,7 +150,9 @@ fn probe_dvb_delivery_systems(path: &PathBuf) -> Result<Vec<FrontendSystem>, Hal
         .open(path)
         .map_err(|error| HalError::OpenFailed {
             path: path.clone(),
-            detail: HalErrorDetail::new(format!("open DVB frontend for delivery-system probe failed: {error}")),
+            detail: HalErrorDetail::new(format!(
+                "open DVB frontend for delivery-system probe failed: {error}"
+            )),
         })?;
     let fd = file.as_raw_fd();
 
@@ -111,27 +172,49 @@ fn probe_dvb_delivery_systems(path: &PathBuf) -> Result<Vec<FrontendSystem>, Hal
     // 安全性: `fd` はopen済みDVB frontend fdであり、`info` は呼び出し中に書込み可能なFE_GET_INFO互換C layout構造体を指す。
     let info_rc = unsafe { ioctl(fd, FE_GET_INFO, &mut info) };
     if info_rc != 0 {
-        return Err(HalError::IoctlFailed { backend: "dvb", path: Some(path.clone()), op: "FE_GET_INFO", errno: last_errno() });
+        return Err(HalError::IoctlFailed {
+            backend: "dvb",
+            path: Some(path.clone()),
+            op: "FE_GET_INFO",
+            errno: last_errno(),
+        });
     }
 
     let mut prop = DtvProperty {
         cmd: DTV_ENUM_DELSYS,
         reserved: [0; 3],
         u: DtvPropertyUnion {
-            buffer: DtvPropertyBuffer { data: [0; 32], len: 0, reserved1: [0; 3], reserved2: core::ptr::null_mut() },
+            buffer: DtvPropertyBuffer {
+                data: [0; 32],
+                len: 0,
+                reserved1: [0; 3],
+                reserved2: core::ptr::null_mut(),
+            },
         },
         result: 0,
     };
-    let mut props = DtvProperties { num: 1, props: &mut prop };
+    let mut props = DtvProperties {
+        num: 1,
+        props: &mut prop,
+    };
     // 安全性: `props` は初期化済みunion buffer variantを持つ可変DtvPropertyを指す。kernelはdelivery-system bufferをin-placeで書く。
     let rc = unsafe { ioctl(fd, FE_GET_PROPERTY, &mut props) };
     if rc != 0 {
-        return Err(HalError::IoctlFailed { backend: "dvb", path: Some(path.clone()), op: "DTV_ENUM_DELSYS", errno: last_errno() });
+        return Err(HalError::IoctlFailed {
+            backend: "dvb",
+            path: Some(path.clone()),
+            op: "DTV_ENUM_DELSYS",
+            errno: last_errno(),
+        });
     }
     Ok(systems_from_dvb_delsys_buffer(prop.read_buffer_unaligned()))
 }
 
-fn dvb_probe_variants(adapter: i32, frontend_index: i32, path: &PathBuf) -> Result<Vec<DvbProbeVariant>, HalError> {
+fn dvb_probe_variants(
+    adapter: i32,
+    frontend_index: i32,
+    path: &PathBuf,
+) -> Result<Vec<DvbProbeVariant>, HalError> {
     let systems = probe_dvb_delivery_systems(path)?;
     let mut variants = Vec::new();
     for system in systems {
@@ -149,10 +232,16 @@ fn probe_frontends() -> Vec<FrontendProbeOutcome> {
     if let Ok(dir) = std::fs::read_dir("/dev") {
         for entry in dir.flatten() {
             let name = entry.file_name();
-            let Some(name) = name.to_str() else { continue; };
+            let Some(name) = name.to_str() else {
+                continue;
+            };
             for prefix in PX4_PROBE_PREFIXES {
-                let Some(idx) = name.strip_prefix(prefix) else { continue; };
-                let Ok(index) = idx.parse::<i32>() else { continue; };
+                let Some(idx) = name.strip_prefix(prefix) else {
+                    continue;
+                };
+                let Ok(index) = idx.parse::<i32>() else {
+                    continue;
+                };
                 px4_candidates.push((index, entry.path(), name.to_string()));
             }
         }
@@ -163,26 +252,42 @@ fn probe_frontends() -> Vec<FrontendProbeOutcome> {
     px4_candidates.sort_by(|a, b| (a.0, &a.2).cmp(&(b.0, &b.2)));
     px4_candidates.dedup_by(|a, b| a.1 == b.1);
     for (unit, path, name) in px4_candidates {
-        let Some(base_id) = px4_export_frontend_base_id(unit, &name) else { continue; };
+        let Some(base_id) = px4_export_frontend_base_id(unit, &name) else {
+            continue;
+        };
         outcomes.push(FrontendProbeOutcome::Available {
             id: FrontendRuntimeId(base_id),
             backend: FrontendBackendKind::Px4CharDevice,
             system: FrontendSystem::IsdbT,
             path: path.clone(),
+            lnb_profile: probe_lnb_profile_for_frontend(
+                FrontendBackendKind::Px4CharDevice,
+                FrontendSystem::IsdbT,
+                &path,
+                Some(&name),
+            ),
         });
         if let Some(isdbs_id) = base_id.checked_add(1) {
             outcomes.push(FrontendProbeOutcome::Available {
                 id: FrontendRuntimeId(isdbs_id),
                 backend: FrontendBackendKind::Px4CharDevice,
                 system: FrontendSystem::IsdbS,
-                path,
+                path: path.clone(),
+                lnb_profile: probe_lnb_profile_for_frontend(
+                    FrontendBackendKind::Px4CharDevice,
+                    FrontendSystem::IsdbS,
+                    &path,
+                    Some(&name),
+                ),
             });
         }
     }
 
     for adapter in 0..16 {
         for frontend_index in 0..16 {
-            let path = PathBuf::from(format!("/dev/dvb/adapter{adapter}/frontend{frontend_index}"));
+            let path = PathBuf::from(format!(
+                "/dev/dvb/adapter{adapter}/frontend{frontend_index}"
+            ));
             if !path.exists() {
                 continue;
             }
@@ -201,6 +306,12 @@ fn probe_frontends() -> Vec<FrontendProbeOutcome> {
                                 backend: FrontendBackendKind::LinuxDvb,
                                 system: variant.system,
                                 path: path.clone(),
+                                lnb_profile: probe_lnb_profile_for_frontend(
+                                    FrontendBackendKind::LinuxDvb,
+                                    variant.system,
+                                    &path,
+                                    None,
+                                ),
                             });
                         }
                     }
@@ -224,12 +335,14 @@ pub fn run_service() {
     let tuner = TunerAidlService::new(runtime);
     let binder = BnTuner::new_binder(tuner, BinderFeatures::default());
     if let Err(error) = binder::add_service(TUNER_SERVICE_NAME, binder.as_binder()) {
-        eprintln!("maleicacid tuner_hal2 service registration failed {}: {:?}", TUNER_SERVICE_NAME, error);
+        eprintln!(
+            "maleicacid tuner_hal2 service registration failed {}: {:?}",
+            TUNER_SERVICE_NAME, error
+        );
         std::process::exit(1);
     }
     binder::ProcessState::join_thread_pool();
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -238,9 +351,18 @@ mod tests {
 
     #[test]
     fn dvb_export_ids_keep_isdb_t_and_isdb_s_as_distinct_variants() {
-        assert_eq!(dvb_export_frontend_id(0, 0, FrontendSystem::IsdbT), Some(2_000_000));
-        assert_eq!(dvb_export_frontend_id(0, 0, FrontendSystem::IsdbS), Some(2_000_001));
-        assert_eq!(dvb_export_frontend_id(1, 2, FrontendSystem::IsdbT), Some(2_004_128));
+        assert_eq!(
+            dvb_export_frontend_id(0, 0, FrontendSystem::IsdbT),
+            Some(2_000_000)
+        );
+        assert_eq!(
+            dvb_export_frontend_id(0, 0, FrontendSystem::IsdbS),
+            Some(2_000_001)
+        );
+        assert_eq!(
+            dvb_export_frontend_id(1, 2, FrontendSystem::IsdbT),
+            Some(2_004_128)
+        );
     }
 
     #[test]

@@ -2,16 +2,14 @@
 //!
 //! TEI / adaptation field / discontinuity / payload有無を1か所で決定する。
 
-use maleicacid_tuner_hal2_common::{TS_PACKET_SIZE, TsPacketCompletionBuffer};
 use crate::ts_core::PesDropReason;
+use maleicacid_tuner_hal2_common::{TsPacketCompletionBuffer, TS_PACKET_SIZE};
 use std::collections::BTreeMap;
 
 const PIPELINE_GENERATION_INITIAL: u64 = 0;
 
 #[cfg(test)]
-pub fn lock_test_mutex<T>(
-    mutex: &std::sync::Mutex<T>,
-) -> std::sync::MutexGuard<'_, T> {
+pub fn lock_test_mutex<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().expect("test mutex must be available")
 }
 
@@ -183,7 +181,6 @@ impl<'a> TsPacketView<'a> {
     }
 }
 
-
 // assembler / tracker 所有権は packet_pipeline に閉じ込める。
 // 呼び出し元は Pipeline* の操作だけを使い、sections.rs / ts_core.rs の状態型を直接保持しない。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -197,7 +194,8 @@ impl PipelineSectionState {
         payload_unit_start: bool,
         payload: &[u8],
     ) -> crate::sections::SectionPushOutcome {
-        self.inner.push_payload_with_outcome(payload_unit_start, payload)
+        self.inner
+            .push_payload_with_outcome(payload_unit_start, payload)
     }
 
     pub fn oversized_section_drops(&self) -> u64 {
@@ -285,7 +283,10 @@ pub struct PacketPipeline {
 pub enum PipelineInputKind {
     Live,
     Playback,
-    SourceFilter { source_filter_id: i32, source_filter_generation: u64 },
+    SourceFilter {
+        source_filter_id: i32,
+        source_filter_generation: u64,
+    },
 }
 
 #[derive(Debug, Default, Clone, Eq, PartialEq)]
@@ -324,10 +325,20 @@ pub enum PipelineDeliveryAction {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum PipelineGeneratedEvent {
-    DataReady { filter_id: i32 },
-    Section { filter_id: i32, raw: bool },
-    Pes { filter_id: i32, raw: bool },
-    Record { filter_id: i32 },
+    DataReady {
+        filter_id: i32,
+    },
+    Section {
+        filter_id: i32,
+        raw: bool,
+    },
+    Pes {
+        filter_id: i32,
+        raw: bool,
+    },
+    Record {
+        filter_id: i32,
+    },
     SectionPayloadReady {
         filter_id: i32,
         pid: i32,
@@ -356,10 +367,20 @@ pub enum PipelineDiagnosticKind {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PipelineDiagnostic { pub kind: PipelineDiagnosticKind, pub pid: Option<i32> }
+pub struct PipelineDiagnostic {
+    pub kind: PipelineDiagnosticKind,
+    pub pid: Option<i32>,
+}
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum PipelineOpenKind { Raw, Record, Section, Pes, Av, Other }
+pub enum PipelineOpenKind {
+    Raw,
+    Record,
+    Section,
+    Pes,
+    Av,
+    Other,
+}
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct PipelineFilterView {
@@ -380,13 +401,28 @@ impl PipelineFilterView {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Default)]
-pub struct FilterPipelineConfig { pub tpid: Option<i32>, pub raw: bool }
+pub struct FilterPipelineConfig {
+    pub tpid: Option<i32>,
+    pub raw: bool,
+}
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum PipelineError { InvalidState, InvalidPacket, Internal }
+pub enum PipelineError {
+    InvalidState,
+    InvalidPacket,
+    Internal,
+}
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum PipelineBoundaryReason { TuneStart, ScanStart, FrontendClose, FrontendUnbind, SourceFilterChange, DvrPlaybackDiscontinuity }
+pub enum PipelineBoundaryReason {
+    TuneStart,
+    ScanStart,
+    FrontendClose,
+    FrontendUnbind,
+    SourceFilterChange,
+    DvrPlaybackDiscontinuity,
+}
 
 #[derive(Debug, Clone, Copy)]
+#[cfg(test)]
 pub enum PacketAcceptOutcome<'a> {
     Accepted(TsPacketView<'a>),
     Malformed,
@@ -400,31 +436,43 @@ impl PacketPipeline {
         TsPacketView::validate(bytes)
     }
 
-
-
     pub fn push_ts_packet(&mut self, packet: &[u8], kind: PipelineInputKind) -> PipelineReport {
         let mut report = PipelineReport::default();
         let origin = match kind {
             PipelineInputKind::Live => crate::TsInputOrigin::Frontend,
             PipelineInputKind::Playback => crate::TsInputOrigin::Playback,
-            PipelineInputKind::SourceFilter { source_filter_id, source_filter_generation } => {
-                crate::TsInputOrigin::SourceFilter { source_filter_id, source_filter_generation }
-            }
+            PipelineInputKind::SourceFilter {
+                source_filter_id,
+                source_filter_generation,
+            } => crate::TsInputOrigin::SourceFilter {
+                source_filter_id,
+                source_filter_generation,
+            },
         };
         let view = match Self::validate_packet(packet) {
             Ok(view) => view,
             Err(_) => {
                 report.dropped_packets += 1;
                 report.malformed_packets += 1;
-                report.drop_reasons.push(PipelineDropReason::MalformedPacket);
-                report.diagnostics.push(PipelineDiagnostic { kind: PipelineDiagnosticKind::MalformedTsPacket, pid: None });
+                report
+                    .drop_reasons
+                    .push(PipelineDropReason::MalformedPacket);
+                report.diagnostics.push(PipelineDiagnostic {
+                    kind: PipelineDiagnosticKind::MalformedTsPacket,
+                    pid: None,
+                });
                 return report;
             }
         };
         if view.transport_error_indicator {
             report.dropped_packets += 1;
-            report.drop_reasons.push(PipelineDropReason::TransportErrorIndicator);
-            report.diagnostics.push(PipelineDiagnostic { kind: PipelineDiagnosticKind::TeiPacketDrop, pid: Some(view.pid) });
+            report
+                .drop_reasons
+                .push(PipelineDropReason::TransportErrorIndicator);
+            report.diagnostics.push(PipelineDiagnostic {
+                kind: PipelineDiagnosticKind::TeiPacketDrop,
+                pid: Some(view.pid),
+            });
             return report;
         }
         if view.discontinuity_indicator {
@@ -439,8 +487,13 @@ impl PacketPipeline {
         );
         if matches!(continuity, crate::ts_core::ContinuityOutcome::Duplicate) {
             report.dropped_packets += 1;
-            report.drop_reasons.push(PipelineDropReason::DuplicatePacket);
-            report.diagnostics.push(PipelineDiagnostic { kind: PipelineDiagnosticKind::DuplicatePacketDrop, pid: Some(view.pid) });
+            report
+                .drop_reasons
+                .push(PipelineDropReason::DuplicatePacket);
+            report.diagnostics.push(PipelineDiagnostic {
+                kind: PipelineDiagnosticKind::DuplicatePacketDrop,
+                pid: Some(view.pid),
+            });
             return report;
         }
         if matches!(continuity, crate::ts_core::ContinuityOutcome::Discontinuity) {
@@ -449,7 +502,10 @@ impl PacketPipeline {
         if view.payload.is_none() {
             report.dropped_packets += 1;
             report.drop_reasons.push(PipelineDropReason::NoPayload);
-            report.diagnostics.push(PipelineDiagnostic { kind: PipelineDiagnosticKind::NoPayloadPacketDrop, pid: Some(view.pid) });
+            report.diagnostics.push(PipelineDiagnostic {
+                kind: PipelineDiagnosticKind::NoPayloadPacketDrop,
+                pid: Some(view.pid),
+            });
             return report;
         }
         report.accepted_packets += 1;
@@ -457,10 +513,17 @@ impl PacketPipeline {
     }
 
     pub fn inspect_ts_packet<'a>(&self, packet: &'a [u8]) -> Option<TsPacketView<'a>> {
-        Self::validate_packet(packet).ok().filter(|view| !view.transport_error_indicator)
+        Self::validate_packet(packet)
+            .ok()
+            .filter(|view| !view.transport_error_indicator)
     }
 
-    pub(crate) fn accept_ts_packet_with_outcome<'a>(&mut self, packet: &'a [u8], origin: crate::TsInputOrigin) -> PacketAcceptOutcome<'a> {
+    #[cfg(test)]
+    pub(crate) fn accept_ts_packet_with_outcome<'a>(
+        &mut self,
+        packet: &'a [u8],
+        origin: crate::TsInputOrigin,
+    ) -> PacketAcceptOutcome<'a> {
         let view = match Self::validate_packet(packet) {
             Ok(view) => view,
             Err(_) => return PacketAcceptOutcome::Malformed,
@@ -490,13 +553,17 @@ impl PacketPipeline {
         PacketAcceptOutcome::Accepted(view)
     }
 
-    pub(crate) fn accept_ts_packet<'a>(&mut self, packet: &'a [u8], origin: crate::TsInputOrigin) -> Option<TsPacketView<'a>> {
+    #[cfg(test)]
+    pub(crate) fn accept_ts_packet<'a>(
+        &mut self,
+        packet: &'a [u8],
+        origin: crate::TsInputOrigin,
+    ) -> Option<TsPacketView<'a>> {
         match self.accept_ts_packet_with_outcome(packet, origin) {
             PacketAcceptOutcome::Accepted(view) => Some(view),
             _ => None,
         }
     }
-
 
     pub(crate) fn plan_packet_delivery(
         &self,
@@ -505,15 +572,25 @@ impl PacketPipeline {
         filters: &[PipelineFilterView],
     ) -> Vec<PipelineDeliveryAction> {
         let mut actions = Vec::new();
-        for filter in filters.iter().copied().filter(|filter| filter.accepts_pid(pid)) {
+        for filter in filters
+            .iter()
+            .copied()
+            .filter(|filter| filter.accepts_pid(pid))
+        {
             match filter.open_kind {
-                PipelineOpenKind::Raw => actions.push(PipelineDeliveryAction::RawPacket { filter_id: filter.filter_id }),
+                PipelineOpenKind::Raw => actions.push(PipelineDeliveryAction::RawPacket {
+                    filter_id: filter.filter_id,
+                }),
                 PipelineOpenKind::Record => {
                     if origin.allows_record_mirror() {
-                        actions.push(PipelineDeliveryAction::DvrMirror { dvr_id: filter.filter_id });
+                        actions.push(PipelineDeliveryAction::DvrMirror {
+                            dvr_id: filter.filter_id,
+                        });
                     }
                     if filter.wants_record_index {
-                        actions.push(PipelineDeliveryAction::RecordPacket { filter_id: filter.filter_id });
+                        actions.push(PipelineDeliveryAction::RecordPacket {
+                            filter_id: filter.filter_id,
+                        });
                     }
                 }
                 _ => {}
@@ -526,19 +603,35 @@ impl PacketPipeline {
         filters
             .iter()
             .copied()
-            .filter(|filter| filter.accepts_pid(pid) && filter.open_kind == PipelineOpenKind::Section)
+            .filter(|filter| {
+                filter.accepts_pid(pid) && filter.open_kind == PipelineOpenKind::Section
+            })
             .map(|filter| filter.filter_id)
             .collect()
     }
 
-    pub fn plan_pes_actions(&self, pid: i32, filters: &[PipelineFilterView]) -> Vec<PipelineDeliveryAction> {
+    pub fn plan_pes_actions(
+        &self,
+        pid: i32,
+        filters: &[PipelineFilterView],
+    ) -> Vec<PipelineDeliveryAction> {
         filters
             .iter()
             .copied()
-            .filter(|filter| filter.accepts_pid(pid) && matches!(filter.open_kind, PipelineOpenKind::Pes | PipelineOpenKind::Av))
+            .filter(|filter| {
+                filter.accepts_pid(pid)
+                    && matches!(
+                        filter.open_kind,
+                        PipelineOpenKind::Pes | PipelineOpenKind::Av
+                    )
+            })
             .map(|filter| match filter.open_kind {
-                PipelineOpenKind::Av => PipelineDeliveryAction::AvPayload { filter_id: filter.filter_id },
-                _ => PipelineDeliveryAction::PesPayload { filter_id: filter.filter_id },
+                PipelineOpenKind::Av => PipelineDeliveryAction::AvPayload {
+                    filter_id: filter.filter_id,
+                },
+                _ => PipelineDeliveryAction::PesPayload {
+                    filter_id: filter.filter_id,
+                },
             })
             .collect()
     }
@@ -547,12 +640,12 @@ impl PacketPipeline {
         self.plan_pes_actions(pid, filters)
             .into_iter()
             .filter_map(|action| match action {
-                PipelineDeliveryAction::PesPayload { filter_id } | PipelineDeliveryAction::AvPayload { filter_id } => Some(filter_id),
+                PipelineDeliveryAction::PesPayload { filter_id }
+                | PipelineDeliveryAction::AvPayload { filter_id } => Some(filter_id),
                 _ => None,
             })
             .collect()
     }
-
 
     pub(crate) fn plan_ts_packet_report(
         &self,
@@ -562,26 +655,53 @@ impl PacketPipeline {
     ) -> PipelineReport {
         let mut report = PipelineReport::default();
         report.accepted_packets = 1;
-        report.delivery_actions.extend(self.plan_packet_delivery(view.pid, origin, filters));
+        report
+            .delivery_actions
+            .extend(self.plan_packet_delivery(view.pid, origin, filters));
         if view.payload.is_some() {
             for filter_id in self.plan_section_filters(view.pid, filters) {
-                report.delivery_actions.push(PipelineDeliveryAction::SectionPayload { filter_id });
+                report
+                    .delivery_actions
+                    .push(PipelineDeliveryAction::SectionPayload { filter_id });
             }
-            report.delivery_actions.extend(self.plan_pes_actions(view.pid, filters));
+            report
+                .delivery_actions
+                .extend(self.plan_pes_actions(view.pid, filters));
         }
         for action in report.delivery_actions.iter() {
             match *action {
                 PipelineDeliveryAction::RawPacket { filter_id } => {
-                    report.generated_events.push(PipelineGeneratedEvent::DataReady { filter_id });
+                    report
+                        .generated_events
+                        .push(PipelineGeneratedEvent::DataReady { filter_id });
                 }
                 PipelineDeliveryAction::RecordPacket { filter_id } => {
-                    report.generated_events.push(PipelineGeneratedEvent::Record { filter_id });
+                    report
+                        .generated_events
+                        .push(PipelineGeneratedEvent::Record { filter_id });
                 }
                 PipelineDeliveryAction::SectionPayload { filter_id } => {
-                    report.generated_events.push(PipelineGeneratedEvent::Section { filter_id, raw: filters.iter().find(|filter| filter.filter_id == filter_id).map(|filter| filter.section_raw).unwrap_or(false) });
+                    report
+                        .generated_events
+                        .push(PipelineGeneratedEvent::Section {
+                            filter_id,
+                            raw: filters
+                                .iter()
+                                .find(|filter| filter.filter_id == filter_id)
+                                .map(|filter| filter.section_raw)
+                                .unwrap_or(false),
+                        });
                 }
-                PipelineDeliveryAction::PesPayload { filter_id } | PipelineDeliveryAction::AvPayload { filter_id } => {
-                    report.generated_events.push(PipelineGeneratedEvent::Pes { filter_id, raw: filters.iter().find(|filter| filter.filter_id == filter_id).map(|filter| filter.pes_raw).unwrap_or(false) });
+                PipelineDeliveryAction::PesPayload { filter_id }
+                | PipelineDeliveryAction::AvPayload { filter_id } => {
+                    report.generated_events.push(PipelineGeneratedEvent::Pes {
+                        filter_id,
+                        raw: filters
+                            .iter()
+                            .find(|filter| filter.filter_id == filter_id)
+                            .map(|filter| filter.pes_raw)
+                            .unwrap_or(false),
+                    });
                 }
                 PipelineDeliveryAction::DvrMirror { .. } => {}
             }
@@ -599,7 +719,10 @@ impl PacketPipeline {
             return report;
         };
 
-        let has_section_action = report.delivery_actions.iter().any(|action| matches!(action, PipelineDeliveryAction::SectionPayload { .. }));
+        let has_section_action = report
+            .delivery_actions
+            .iter()
+            .any(|action| matches!(action, PipelineDeliveryAction::SectionPayload { .. }));
         if has_section_action {
             let section_generation = if view.payload_unit_start {
                 self.bump_section_generation(origin, view.pid)
@@ -607,10 +730,14 @@ impl PacketPipeline {
                 Some(self.current_section_generation(origin, view.pid))
             };
             if let Some(section_generation) = section_generation {
-                let section_filter_ids: Vec<i32> = report.delivery_actions.iter().filter_map(|action| match action {
-                    PipelineDeliveryAction::SectionPayload { filter_id } => Some(*filter_id),
-                    _ => None,
-                }).collect();
+                let section_filter_ids: Vec<i32> = report
+                    .delivery_actions
+                    .iter()
+                    .filter_map(|action| match action {
+                        PipelineDeliveryAction::SectionPayload { filter_id } => Some(*filter_id),
+                        _ => None,
+                    })
+                    .collect();
                 for filter_id in section_filter_ids {
                     let outcome = self.assemble_section_for_filter(
                         origin,
@@ -622,28 +749,44 @@ impl PacketPipeline {
                     if outcome.has_drop_or_discard() {
                         report.dropped_packets += 1;
                         report.drop_reasons.push(PipelineDropReason::AssemblyDrop);
-                        report.diagnostics.push(PipelineDiagnostic { kind: PipelineDiagnosticKind::SectionAssemblyDrop, pid: Some(view.pid) });
+                        report.diagnostics.push(PipelineDiagnostic {
+                            kind: PipelineDiagnosticKind::SectionAssemblyDrop,
+                            pid: Some(view.pid),
+                        });
                     }
                     for section in outcome.sections {
-                        report.generated_events.push(PipelineGeneratedEvent::SectionPayloadReady {
-                            filter_id,
-                            pid: view.pid,
-                            generation: section_generation,
-                            bytes: section,
-                        });
+                        report
+                            .generated_events
+                            .push(PipelineGeneratedEvent::SectionPayloadReady {
+                                filter_id,
+                                pid: view.pid,
+                                generation: section_generation,
+                                bytes: section,
+                            });
                     }
                 }
             } else {
                 report.dropped_packets += 1;
-                report.drop_reasons.push(PipelineDropReason::SectionGenerationOverflow);
-                report.diagnostics.push(PipelineDiagnostic { kind: PipelineDiagnosticKind::SectionGenerationOverflow, pid: Some(view.pid) });
+                report
+                    .drop_reasons
+                    .push(PipelineDropReason::SectionGenerationOverflow);
+                report.diagnostics.push(PipelineDiagnostic {
+                    kind: PipelineDiagnosticKind::SectionGenerationOverflow,
+                    pid: Some(view.pid),
+                });
                 self.reset_assembly_for_origin_pid(origin, view.pid);
             }
         } else {
             self.drop_generations_for_pid_origin(origin, view.pid, true, false);
         }
 
-        let has_pes_action = report.delivery_actions.iter().any(|action| matches!(action, PipelineDeliveryAction::PesPayload { .. } | PipelineDeliveryAction::AvPayload { .. }));
+        let has_pes_action = report.delivery_actions.iter().any(|action| {
+            matches!(
+                action,
+                PipelineDeliveryAction::PesPayload { .. }
+                    | PipelineDeliveryAction::AvPayload { .. }
+            )
+        });
         if has_pes_action {
             let pes_generation = if view.payload_unit_start {
                 self.bump_pes_generation(origin, view.pid)
@@ -652,15 +795,25 @@ impl PacketPipeline {
             };
             let Some(pes_generation) = pes_generation else {
                 report.dropped_packets += 1;
-                report.drop_reasons.push(PipelineDropReason::PesGenerationOverflow);
-                report.diagnostics.push(PipelineDiagnostic { kind: PipelineDiagnosticKind::PesGenerationOverflow, pid: Some(view.pid) });
+                report
+                    .drop_reasons
+                    .push(PipelineDropReason::PesGenerationOverflow);
+                report.diagnostics.push(PipelineDiagnostic {
+                    kind: PipelineDiagnosticKind::PesGenerationOverflow,
+                    pid: Some(view.pid),
+                });
                 self.reset_assembly_for_origin_pid(origin, view.pid);
                 return report;
             };
-            let pes_filter_ids: Vec<i32> = report.delivery_actions.iter().filter_map(|action| match action {
-                PipelineDeliveryAction::PesPayload { filter_id } | PipelineDeliveryAction::AvPayload { filter_id } => Some(*filter_id),
-                _ => None,
-            }).collect();
+            let pes_filter_ids: Vec<i32> = report
+                .delivery_actions
+                .iter()
+                .filter_map(|action| match action {
+                    PipelineDeliveryAction::PesPayload { filter_id }
+                    | PipelineDeliveryAction::AvPayload { filter_id } => Some(*filter_id),
+                    _ => None,
+                })
+                .collect();
             for filter_id in pes_filter_ids {
                 let packets = self.assemble_pes_for_filter(
                     origin,
@@ -675,16 +828,23 @@ impl PacketPipeline {
                     .and_then(|state| state.take_drop_diagnostic())
                 {
                     report.dropped_packets += 1;
-                    report.drop_reasons.push(PipelineDropReason::PesAssemblerOverflow);
-                    report.diagnostics.push(PipelineDiagnostic { kind: PipelineDiagnosticKind::PesAssemblerDrop(reason), pid: Some(view.pid) });
+                    report
+                        .drop_reasons
+                        .push(PipelineDropReason::PesAssemblerOverflow);
+                    report.diagnostics.push(PipelineDiagnostic {
+                        kind: PipelineDiagnosticKind::PesAssemblerDrop(reason),
+                        pid: Some(view.pid),
+                    });
                 }
                 for packet in packets {
-                    report.generated_events.push(PipelineGeneratedEvent::PesPacketReady {
-                        filter_id,
-                        pid: view.pid,
-                        generation: pes_generation,
-                        packet,
-                    });
+                    report
+                        .generated_events
+                        .push(PipelineGeneratedEvent::PesPacketReady {
+                            filter_id,
+                            pid: view.pid,
+                            generation: pes_generation,
+                            packet,
+                        });
                 }
             }
         } else {
@@ -694,14 +854,30 @@ impl PacketPipeline {
         report
     }
 
-    pub fn configure_filter(&mut self, filter_id: i32, _config: FilterPipelineConfig) -> Result<(), PipelineError> {
+    pub fn configure_filter(
+        &mut self,
+        filter_id: i32,
+        _config: FilterPipelineConfig,
+    ) -> Result<(), PipelineError> {
         self.clear_filter_state(filter_id);
         Ok(())
     }
-    pub fn start_filter(&mut self, _filter_id: i32) -> Result<(), PipelineError> { Ok(()) }
-    pub fn stop_filter(&mut self, _filter_id: i32) -> Result<(), PipelineError> { Ok(()) }
-    pub fn remove_filter(&mut self, filter_id: i32) -> Result<(), PipelineError> { self.clear_filter_state(filter_id); Ok(()) }
-    pub fn reset_boundary_for_reason(&mut self, _reason: PipelineBoundaryReason) -> Result<PipelineResetReport, PipelineError> { Ok(self.reset_boundary()) }
+    pub fn start_filter(&mut self, _filter_id: i32) -> Result<(), PipelineError> {
+        Ok(())
+    }
+    pub fn stop_filter(&mut self, _filter_id: i32) -> Result<(), PipelineError> {
+        Ok(())
+    }
+    pub fn remove_filter(&mut self, filter_id: i32) -> Result<(), PipelineError> {
+        self.clear_filter_state(filter_id);
+        Ok(())
+    }
+    pub fn reset_boundary_for_reason(
+        &mut self,
+        _reason: PipelineBoundaryReason,
+    ) -> Result<PipelineResetReport, PipelineError> {
+        Ok(self.reset_boundary())
+    }
 
     pub fn clear_filter_state(&mut self, filter_id: i32) {
         self.section_assemblers
@@ -728,46 +904,57 @@ impl PacketPipeline {
             .sum()
     }
 
-
     pub(crate) fn reset_assembly_for_origin_pid(&mut self, origin: crate::TsInputOrigin, pid: i32) {
         // discontinuity は対象 PID の section/PES assembler だけを破棄する。
         // 無関係な PID の途中 section/PES を同一 origin というだけで破棄してはならない。
-        self.section_assemblers.retain(|(stored_origin, stored_pid, _), _| {
-            *stored_origin != origin || *stored_pid != pid
-        });
-        self.pes_assemblers.retain(|(stored_origin, stored_pid, _), _| {
-            *stored_origin != origin || *stored_pid != pid
-        });
-        self.section_assembler_generations.retain(|(stored_origin, stored_pid), _| {
-            *stored_origin != origin || *stored_pid != pid
-        });
-        self.pes_assembler_generations.retain(|(stored_origin, stored_pid), _| {
-            *stored_origin != origin || *stored_pid != pid
-        });
-        self.filter_section_flush_generations.retain(|(stored_origin, _, stored_pid), _| {
-            *stored_origin != origin || *stored_pid != pid
-        });
-        self.filter_pes_flush_generations.retain(|(stored_origin, _, stored_pid), _| {
-            *stored_origin != origin || *stored_pid != pid
-        });
+        self.section_assemblers
+            .retain(|(stored_origin, stored_pid, _), _| {
+                *stored_origin != origin || *stored_pid != pid
+            });
+        self.pes_assemblers
+            .retain(|(stored_origin, stored_pid, _), _| {
+                *stored_origin != origin || *stored_pid != pid
+            });
+        self.section_assembler_generations
+            .retain(|(stored_origin, stored_pid), _| {
+                *stored_origin != origin || *stored_pid != pid
+            });
+        self.pes_assembler_generations
+            .retain(|(stored_origin, stored_pid), _| {
+                *stored_origin != origin || *stored_pid != pid
+            });
+        self.filter_section_flush_generations
+            .retain(|(stored_origin, _, stored_pid), _| {
+                *stored_origin != origin || *stored_pid != pid
+            });
+        self.filter_pes_flush_generations
+            .retain(|(stored_origin, _, stored_pid), _| {
+                *stored_origin != origin || *stored_pid != pid
+            });
     }
 
+    #[cfg(test)]
     pub(crate) fn reset_downstream_assembly_for_origin_pid_filter(
         &mut self,
         origin: crate::TsInputOrigin,
         pid: i32,
         filter_id: i32,
     ) {
-        self.section_assemblers.retain(|(stored_origin, stored_pid, stored_filter), _| {
-            !(*stored_origin == origin && *stored_pid == pid && *stored_filter == filter_id)
-        });
-        self.pes_assemblers.retain(|(stored_origin, stored_pid, stored_filter), _| {
-            !(*stored_origin == origin && *stored_pid == pid && *stored_filter == filter_id)
-        });
+        self.section_assemblers
+            .retain(|(stored_origin, stored_pid, stored_filter), _| {
+                !(*stored_origin == origin && *stored_pid == pid && *stored_filter == filter_id)
+            });
+        self.pes_assemblers
+            .retain(|(stored_origin, stored_pid, stored_filter), _| {
+                !(*stored_origin == origin && *stored_pid == pid && *stored_filter == filter_id)
+            });
     }
 
     pub(crate) fn reset_continuity_pid(&mut self, origin: crate::TsInputOrigin, pid: u16) {
-        self.continuity_trackers.entry(origin).or_default().reset_pid(pid);
+        self.continuity_trackers
+            .entry(origin)
+            .or_default()
+            .reset_pid(pid);
     }
 
     fn check_continuity(
@@ -777,10 +964,11 @@ impl PacketPipeline {
         continuity_counter: u8,
         has_payload: bool,
     ) -> crate::ts_core::ContinuityOutcome {
-        self.continuity_trackers
-            .entry(origin)
-            .or_default()
-            .observe(pid, continuity_counter, has_payload)
+        self.continuity_trackers.entry(origin).or_default().observe(
+            pid,
+            continuity_counter,
+            has_payload,
+        )
     }
 
     pub(crate) fn assemble_section_for_filter(
@@ -811,6 +999,7 @@ impl PacketPipeline {
             .push(pid, payload_unit_start, payload)
     }
 
+    #[cfg(test)]
     pub(crate) fn assembly_origins_for_pid(&self, pid: i32) -> Vec<crate::TsInputOrigin> {
         let mut origins = std::collections::BTreeSet::new();
         for (origin, stored_pid, _) in self.section_assemblers.keys() {
@@ -846,61 +1035,85 @@ impl PacketPipeline {
         origins.into_iter().collect()
     }
 
+    #[cfg(test)]
     pub(crate) fn remove_section_for_filter_ids_origin_pid(
         &mut self,
         origin: crate::TsInputOrigin,
         pid: i32,
         filter_ids: &[i32],
     ) {
-        self.section_assemblers.retain(|(stored_origin, stored_pid, filter_id), _| {
-            !(*stored_origin == origin
-                && *stored_pid == pid
-                && filter_ids.iter().any(|id| id == filter_id))
-        });
-        self.filter_section_flush_generations.retain(|(stored_origin, filter_id, stored_pid), _| {
-            !(*stored_origin == origin
-                && *stored_pid == pid
-                && filter_ids.iter().any(|id| id == filter_id))
-        });
+        self.section_assemblers
+            .retain(|(stored_origin, stored_pid, filter_id), _| {
+                !(*stored_origin == origin
+                    && *stored_pid == pid
+                    && filter_ids.iter().any(|id| id == filter_id))
+            });
+        self.filter_section_flush_generations.retain(
+            |(stored_origin, filter_id, stored_pid), _| {
+                !(*stored_origin == origin
+                    && *stored_pid == pid
+                    && filter_ids.iter().any(|id| id == filter_id))
+            },
+        );
         self.section_assembler_generations
-            .retain(|(stored_origin, stored_pid), _| !(*stored_origin == origin && *stored_pid == pid));
+            .retain(|(stored_origin, stored_pid), _| {
+                !(*stored_origin == origin && *stored_pid == pid)
+            });
     }
 
+    #[cfg(test)]
     pub(crate) fn remove_pes_for_filter_ids_origin_pid(
         &mut self,
         origin: crate::TsInputOrigin,
         pid: i32,
         filter_ids: &[i32],
     ) {
-        self.pes_assemblers.retain(|(stored_origin, stored_pid, filter_id), _| {
-            !(*stored_origin == origin
-                && *stored_pid == pid
-                && filter_ids.iter().any(|id| id == filter_id))
-        });
-        self.filter_pes_flush_generations.retain(|(stored_origin, filter_id, stored_pid), _| {
-            !(*stored_origin == origin
-                && *stored_pid == pid
-                && filter_ids.iter().any(|id| id == filter_id))
-        });
+        self.pes_assemblers
+            .retain(|(stored_origin, stored_pid, filter_id), _| {
+                !(*stored_origin == origin
+                    && *stored_pid == pid
+                    && filter_ids.iter().any(|id| id == filter_id))
+            });
+        self.filter_pes_flush_generations
+            .retain(|(stored_origin, filter_id, stored_pid), _| {
+                !(*stored_origin == origin
+                    && *stored_pid == pid
+                    && filter_ids.iter().any(|id| id == filter_id))
+            });
         self.pes_assembler_generations
-            .retain(|(stored_origin, stored_pid), _| !(*stored_origin == origin && *stored_pid == pid));
+            .retain(|(stored_origin, stored_pid), _| {
+                !(*stored_origin == origin && *stored_pid == pid)
+            });
     }
 
-    pub(crate) fn drop_generations_for_pid_origin(&mut self, origin: crate::TsInputOrigin, pid: i32, section: bool, pes: bool) {
+    pub(crate) fn drop_generations_for_pid_origin(
+        &mut self,
+        origin: crate::TsInputOrigin,
+        pid: i32,
+        section: bool,
+        pes: bool,
+    ) {
         if section {
             self.section_assembler_generations
-                .retain(|(stored_origin, stored_pid), _| !(*stored_origin == origin && *stored_pid == pid));
+                .retain(|(stored_origin, stored_pid), _| {
+                    !(*stored_origin == origin && *stored_pid == pid)
+                });
             self.filter_section_flush_generations
-                .retain(|(stored_origin, _, stored_pid), _| !(*stored_origin == origin && *stored_pid == pid));
+                .retain(|(stored_origin, _, stored_pid), _| {
+                    !(*stored_origin == origin && *stored_pid == pid)
+                });
         }
         if pes {
             self.pes_assembler_generations
-                .retain(|(stored_origin, stored_pid), _| !(*stored_origin == origin && *stored_pid == pid));
+                .retain(|(stored_origin, stored_pid), _| {
+                    !(*stored_origin == origin && *stored_pid == pid)
+                });
             self.filter_pes_flush_generations
-                .retain(|(stored_origin, _, stored_pid), _| !(*stored_origin == origin && *stored_pid == pid));
+                .retain(|(stored_origin, _, stored_pid), _| {
+                    !(*stored_origin == origin && *stored_pid == pid)
+                });
         }
     }
-
 
     pub(crate) fn current_section_generation(&self, origin: crate::TsInputOrigin, pid: i32) -> u64 {
         self.section_assembler_generations
@@ -916,20 +1129,35 @@ impl PacketPipeline {
             .unwrap_or(PIPELINE_GENERATION_INITIAL)
     }
 
-    pub(crate) fn bump_section_generation(&mut self, origin: crate::TsInputOrigin, pid: i32) -> Option<u64> {
-        let generation = self.section_assembler_generations.entry((origin, pid)).or_insert(0);
+    pub(crate) fn bump_section_generation(
+        &mut self,
+        origin: crate::TsInputOrigin,
+        pid: i32,
+    ) -> Option<u64> {
+        let generation = self
+            .section_assembler_generations
+            .entry((origin, pid))
+            .or_insert(0);
         let next = generation.checked_add(1)?;
         *generation = next;
         Some(next)
     }
 
-    pub(crate) fn bump_pes_generation(&mut self, origin: crate::TsInputOrigin, pid: i32) -> Option<u64> {
-        let generation = self.pes_assembler_generations.entry((origin, pid)).or_insert(0);
+    pub(crate) fn bump_pes_generation(
+        &mut self,
+        origin: crate::TsInputOrigin,
+        pid: i32,
+    ) -> Option<u64> {
+        let generation = self
+            .pes_assembler_generations
+            .entry((origin, pid))
+            .or_insert(0);
         let next = generation.checked_add(1)?;
         *generation = next;
         Some(next)
     }
 
+    #[cfg(test)]
     pub(crate) fn section_generation_allows_delivery(
         &self,
         origin: crate::TsInputOrigin,
@@ -942,6 +1170,7 @@ impl PacketPipeline {
             .map_or(true, |flushed_generation| generation > *flushed_generation)
     }
 
+    #[cfg(test)]
     pub(crate) fn pes_generation_allows_delivery(
         &self,
         origin: crate::TsInputOrigin,
@@ -954,6 +1183,7 @@ impl PacketPipeline {
             .map_or(true, |flushed_generation| generation > *flushed_generation)
     }
 
+    #[cfg(test)]
     pub(crate) fn mark_filter_flush_generation_for_origin(
         &mut self,
         filter_id: i32,
@@ -970,6 +1200,7 @@ impl PacketPipeline {
         );
     }
 
+    #[cfg(test)]
     pub(crate) fn flush_filter(&mut self, filter_id: i32, origins: &[(crate::TsInputOrigin, i32)]) {
         for (origin, pid) in origins.iter().copied() {
             self.mark_filter_flush_generation_for_origin(filter_id, pid, origin);
@@ -1007,7 +1238,11 @@ impl PacketPipeline {
     }
 
     #[cfg(test)]
-    pub(crate) fn test_record_oversized_section_drop(&mut self, origin: crate::TsInputOrigin, filter_id: i32) -> bool {
+    pub(crate) fn test_record_oversized_section_drop(
+        &mut self,
+        origin: crate::TsInputOrigin,
+        filter_id: i32,
+    ) -> bool {
         self.section_assemblers
             .entry((origin, filter_id, filter_id))
             .or_default()
@@ -1023,7 +1258,8 @@ impl PacketPipeline {
         payload_unit_start: bool,
         payload: &[u8],
     ) -> Vec<Vec<u8>> {
-        self.assemble_section_for_filter(origin, filter_id, filter_id, payload_unit_start, payload).sections
+        self.assemble_section_for_filter(origin, filter_id, filter_id, payload_unit_start, payload)
+            .sections
     }
 
     #[cfg(test)]
@@ -1032,8 +1268,15 @@ impl PacketPipeline {
     }
 
     #[cfg(test)]
-    pub(crate) fn test_seed_section_for_pid(&mut self, origin: crate::TsInputOrigin, pid: i32, filter_id: i32) {
-        self.section_assemblers.entry((origin, pid, filter_id)).or_default();
+    pub(crate) fn test_seed_section_for_pid(
+        &mut self,
+        origin: crate::TsInputOrigin,
+        pid: i32,
+        filter_id: i32,
+    ) {
+        self.section_assemblers
+            .entry((origin, pid, filter_id))
+            .or_default();
     }
 
     #[cfg(test)]
@@ -1042,13 +1285,26 @@ impl PacketPipeline {
     }
 
     #[cfg(test)]
-    pub(crate) fn test_seed_pes_for_pid(&mut self, origin: crate::TsInputOrigin, pid: i32, filter_id: i32) {
-        self.pes_assemblers.entry((origin, pid, filter_id)).or_default();
+    pub(crate) fn test_seed_pes_for_pid(
+        &mut self,
+        origin: crate::TsInputOrigin,
+        pid: i32,
+        filter_id: i32,
+    ) {
+        self.pes_assemblers
+            .entry((origin, pid, filter_id))
+            .or_default();
     }
 
-    pub fn split_ts_bytes(&mut self, input: &[u8], kind: PipelineInputKind) -> Vec<[u8; TS_PACKET_SIZE]> {
+    pub fn split_ts_bytes(
+        &mut self,
+        input: &[u8],
+        kind: PipelineInputKind,
+    ) -> Vec<[u8; TS_PACKET_SIZE]> {
         match kind {
-            PipelineInputKind::Live | PipelineInputKind::SourceFilter { .. } => self.resync.push(input),
+            PipelineInputKind::Live | PipelineInputKind::SourceFilter { .. } => {
+                self.resync.push(input)
+            }
             PipelineInputKind::Playback => input
                 .chunks_exact(TS_PACKET_SIZE)
                 .map(|chunk| {
@@ -1062,22 +1318,33 @@ impl PacketPipeline {
 
     pub fn push_ts_bytes(&mut self, input: &[u8], kind: PipelineInputKind) -> PipelineReport {
         let mut report = PipelineReport::default();
-        let remainder = if matches!(kind, PipelineInputKind::Playback) { input.len() % TS_PACKET_SIZE } else { 0 };
+        let remainder = if matches!(kind, PipelineInputKind::Playback) {
+            input.len() % TS_PACKET_SIZE
+        } else {
+            0
+        };
         for packet in self.split_ts_bytes(input, kind) {
             let packet_report = self.push_ts_packet(&packet, kind);
             report.accepted_packets += packet_report.accepted_packets;
             report.dropped_packets += packet_report.dropped_packets;
             report.malformed_packets += packet_report.malformed_packets;
             report.drop_reasons.extend(packet_report.drop_reasons);
-            report.delivery_actions.extend(packet_report.delivery_actions);
-            report.generated_events.extend(packet_report.generated_events);
+            report
+                .delivery_actions
+                .extend(packet_report.delivery_actions);
+            report
+                .generated_events
+                .extend(packet_report.generated_events);
             report.diagnostics.extend(packet_report.diagnostics);
         }
         report.dropped_packets += remainder;
         if remainder > 0 {
             report.malformed_packets += remainder;
             report.drop_reasons.push(PipelineDropReason::ResidualBytes);
-            report.diagnostics.push(PipelineDiagnostic { kind: PipelineDiagnosticKind::ResidualBytesDrop, pid: None });
+            report.diagnostics.push(PipelineDiagnostic {
+                kind: PipelineDiagnosticKind::ResidualBytesDrop,
+                pid: None,
+            });
         }
         report
     }
@@ -1115,7 +1382,10 @@ mod tests {
     fn validator_rejects_missing_sync_byte() {
         let mut packet = [0u8; TS_PACKET_SIZE];
         packet[0] = 0x00;
-        assert_eq!(TsPacketView::validate(&packet).unwrap_err(), TsPacketValidationError::MissingSyncByte);
+        assert_eq!(
+            TsPacketView::validate(&packet).unwrap_err(),
+            TsPacketValidationError::MissingSyncByte
+        );
     }
 
     #[test]
@@ -1227,12 +1497,38 @@ mod tests {
         packet[3] = 0x10;
         let view = TsPacketView::validate(&packet).unwrap();
         let filters = [
-            PipelineFilterView { filter_id: 1, tpid: Some(0x0100), started: true, has_upstream: false, open_kind: PipelineOpenKind::Pes, section_raw: false, pes_raw: false, wants_record_index: false },
-            PipelineFilterView { filter_id: 2, tpid: Some(0x0100), started: true, has_upstream: false, open_kind: PipelineOpenKind::Av, section_raw: false, pes_raw: false, wants_record_index: false },
+            PipelineFilterView {
+                filter_id: 1,
+                tpid: Some(0x0100),
+                started: true,
+                has_upstream: false,
+                open_kind: PipelineOpenKind::Pes,
+                section_raw: false,
+                pes_raw: false,
+                wants_record_index: false,
+            },
+            PipelineFilterView {
+                filter_id: 2,
+                tpid: Some(0x0100),
+                started: true,
+                has_upstream: false,
+                open_kind: PipelineOpenKind::Av,
+                section_raw: false,
+                pes_raw: false,
+                wants_record_index: false,
+            },
         ];
-        let report = PacketPipeline::default().plan_ts_packet_report(&view, crate::TsInputOrigin::Frontend, &filters);
-        assert!(report.delivery_actions.contains(&PipelineDeliveryAction::PesPayload { filter_id: 1 }));
-        assert!(report.delivery_actions.contains(&PipelineDeliveryAction::AvPayload { filter_id: 2 }));
+        let report = PacketPipeline::default().plan_ts_packet_report(
+            &view,
+            crate::TsInputOrigin::Frontend,
+            &filters,
+        );
+        assert!(report
+            .delivery_actions
+            .contains(&PipelineDeliveryAction::PesPayload { filter_id: 1 }));
+        assert!(report
+            .delivery_actions
+            .contains(&PipelineDeliveryAction::AvPayload { filter_id: 2 }));
     }
 
     #[test]
@@ -1244,16 +1540,58 @@ mod tests {
         packet[3] = 0x10;
         let view = TsPacketView::validate(&packet).unwrap();
         let filters = [
-            PipelineFilterView { filter_id: 10, tpid: Some(0x0100), started: true, has_upstream: false, open_kind: PipelineOpenKind::Raw, section_raw: false, pes_raw: false, wants_record_index: false },
-            PipelineFilterView { filter_id: 11, tpid: Some(0x0100), started: true, has_upstream: false, open_kind: PipelineOpenKind::Section, section_raw: false, pes_raw: false, wants_record_index: false },
-            PipelineFilterView { filter_id: 12, tpid: Some(0x0100), started: true, has_upstream: false, open_kind: PipelineOpenKind::Pes, section_raw: false, pes_raw: false, wants_record_index: false },
+            PipelineFilterView {
+                filter_id: 10,
+                tpid: Some(0x0100),
+                started: true,
+                has_upstream: false,
+                open_kind: PipelineOpenKind::Raw,
+                section_raw: false,
+                pes_raw: false,
+                wants_record_index: false,
+            },
+            PipelineFilterView {
+                filter_id: 11,
+                tpid: Some(0x0100),
+                started: true,
+                has_upstream: false,
+                open_kind: PipelineOpenKind::Section,
+                section_raw: false,
+                pes_raw: false,
+                wants_record_index: false,
+            },
+            PipelineFilterView {
+                filter_id: 12,
+                tpid: Some(0x0100),
+                started: true,
+                has_upstream: false,
+                open_kind: PipelineOpenKind::Pes,
+                section_raw: false,
+                pes_raw: false,
+                wants_record_index: false,
+            },
         ];
-        let report = PacketPipeline::default().plan_ts_packet_report(&view, crate::TsInputOrigin::Frontend, &filters);
-        assert!(report.generated_events.contains(&PipelineGeneratedEvent::DataReady { filter_id: 10 }));
-        assert!(report.generated_events.contains(&PipelineGeneratedEvent::Section { filter_id: 11, raw: false }));
-        assert!(report.generated_events.contains(&PipelineGeneratedEvent::Pes { filter_id: 12, raw: false }));
+        let report = PacketPipeline::default().plan_ts_packet_report(
+            &view,
+            crate::TsInputOrigin::Frontend,
+            &filters,
+        );
+        assert!(report
+            .generated_events
+            .contains(&PipelineGeneratedEvent::DataReady { filter_id: 10 }));
+        assert!(report
+            .generated_events
+            .contains(&PipelineGeneratedEvent::Section {
+                filter_id: 11,
+                raw: false
+            }));
+        assert!(report
+            .generated_events
+            .contains(&PipelineGeneratedEvent::Pes {
+                filter_id: 12,
+                raw: false
+            }));
     }
-
 }
 
 #[cfg(test)]
@@ -1285,8 +1623,12 @@ mod adaptation_payload_boundary_tests {
         let report = pipeline.push_ts_packet(&packet, PipelineInputKind::Live);
 
         assert_eq!(report.accepted_packets, 1);
-        assert!(!pipeline.section_assemblers.contains_key(&(origin, pid as i32, 10)));
-        assert!(pipeline.section_assemblers.contains_key(&(origin, other_pid, 12)));
+        assert!(!pipeline
+            .section_assemblers
+            .contains_key(&(origin, pid as i32, 10)));
+        assert!(pipeline
+            .section_assemblers
+            .contains_key(&(origin, other_pid, 12)));
     }
 
     #[test]
@@ -1302,8 +1644,12 @@ mod adaptation_payload_boundary_tests {
         let report = pipeline.push_ts_packet(&packet, PipelineInputKind::Live);
 
         assert_eq!(report.accepted_packets, 1);
-        assert!(!pipeline.pes_assemblers.contains_key(&(origin, pid as i32, 11)));
-        assert!(pipeline.pes_assemblers.contains_key(&(origin, other_pid, 13)));
+        assert!(!pipeline
+            .pes_assemblers
+            .contains_key(&(origin, pid as i32, 11)));
+        assert!(pipeline
+            .pes_assemblers
+            .contains_key(&(origin, other_pid, 13)));
     }
 
     #[test]
@@ -1321,14 +1667,20 @@ mod adaptation_payload_boundary_tests {
         let report = pipeline.push_ts_packet(&packet, PipelineInputKind::Live);
 
         assert_eq!(report.accepted_packets, 1);
-        assert!(!pipeline.section_assemblers.contains_key(&(origin, pid as i32, 10)));
-        assert!(!pipeline.pes_assemblers.contains_key(&(origin, pid as i32, 11)));
-        assert!(pipeline.section_assemblers.contains_key(&(origin, other_pid, 12)));
-        assert!(pipeline.pes_assemblers.contains_key(&(origin, other_pid, 13)));
+        assert!(!pipeline
+            .section_assemblers
+            .contains_key(&(origin, pid as i32, 10)));
+        assert!(!pipeline
+            .pes_assemblers
+            .contains_key(&(origin, pid as i32, 11)));
+        assert!(pipeline
+            .section_assemblers
+            .contains_key(&(origin, other_pid, 12)));
+        assert!(pipeline
+            .pes_assemblers
+            .contains_key(&(origin, other_pid, 13)));
     }
 }
-
-
 
 #[cfg(test)]
 mod continuity_duplicate_tests {
@@ -1359,20 +1711,55 @@ mod continuity_duplicate_tests {
     fn source_filter_packets_use_pipeline_drop_and_continuity_rules() {
         let mut tei = payload_packet(0x0100, 0);
         tei[1] |= 0x80;
-        let tei_report = PacketPipeline::default().push_ts_packet(&tei, PipelineInputKind::SourceFilter { source_filter_id: -1, source_filter_generation: 0 });
+        let tei_report = PacketPipeline::default().push_ts_packet(
+            &tei,
+            PipelineInputKind::SourceFilter {
+                source_filter_id: -1,
+                source_filter_generation: 0,
+            },
+        );
         assert_eq!(tei_report.accepted_packets, 0);
         assert_eq!(tei_report.dropped_packets, 1);
-        assert!(tei_report.drop_reasons.contains(&PipelineDropReason::TransportErrorIndicator));
+        assert!(tei_report
+            .drop_reasons
+            .contains(&PipelineDropReason::TransportErrorIndicator));
 
         let mut pipeline = PacketPipeline::default();
         let first = payload_packet(0x0100, 1);
-        assert_eq!(pipeline.push_ts_packet(&first, PipelineInputKind::SourceFilter { source_filter_id: -1, source_filter_generation: 0 }).accepted_packets, 1);
-        let duplicate = pipeline.push_ts_packet(&first, PipelineInputKind::SourceFilter { source_filter_id: -1, source_filter_generation: 0 });
-        assert!(duplicate.drop_reasons.contains(&PipelineDropReason::DuplicatePacket));
+        assert_eq!(
+            pipeline
+                .push_ts_packet(
+                    &first,
+                    PipelineInputKind::SourceFilter {
+                        source_filter_id: -1,
+                        source_filter_generation: 0
+                    }
+                )
+                .accepted_packets,
+            1
+        );
+        let duplicate = pipeline.push_ts_packet(
+            &first,
+            PipelineInputKind::SourceFilter {
+                source_filter_id: -1,
+                source_filter_generation: 0,
+            },
+        );
+        assert!(duplicate
+            .drop_reasons
+            .contains(&PipelineDropReason::DuplicatePacket));
 
         let no_payload = adaptation_only_packet(0x0100, 2);
-        let no_payload_report = PacketPipeline::default().push_ts_packet(&no_payload, PipelineInputKind::SourceFilter { source_filter_id: -1, source_filter_generation: 0 });
-        assert!(no_payload_report.drop_reasons.contains(&PipelineDropReason::NoPayload));
+        let no_payload_report = PacketPipeline::default().push_ts_packet(
+            &no_payload,
+            PipelineInputKind::SourceFilter {
+                source_filter_id: -1,
+                source_filter_generation: 0,
+            },
+        );
+        assert!(no_payload_report
+            .drop_reasons
+            .contains(&PipelineDropReason::NoPayload));
     }
 }
 
@@ -1384,12 +1771,18 @@ mod malformed_adaptation_tests {
     #[test]
     fn pipeline_report_carries_drop_reasons_and_diagnostics() {
         let wrong_len = [0u8; 3];
-        let malformed = PacketPipeline::default().push_ts_packet(&wrong_len, PipelineInputKind::Live);
+        let malformed =
+            PacketPipeline::default().push_ts_packet(&wrong_len, PipelineInputKind::Live);
         assert_eq!(malformed.accepted_packets, 0);
         assert_eq!(malformed.dropped_packets, 1);
         assert_eq!(malformed.malformed_packets, 1);
-        assert!(malformed.drop_reasons.contains(&PipelineDropReason::MalformedPacket));
-        assert!(malformed.diagnostics.iter().any(|diag| diag.code == "malformed_ts_packet"));
+        assert!(malformed
+            .drop_reasons
+            .contains(&PipelineDropReason::MalformedPacket));
+        assert!(malformed
+            .diagnostics
+            .iter()
+            .any(|diag| diag.code == "malformed_ts_packet"));
 
         let mut tei = [0xffu8; TS_PACKET_SIZE];
         tei[0] = 0x47;
@@ -1397,11 +1790,15 @@ mod malformed_adaptation_tests {
         tei[2] = 0x10;
         tei[3] = 0x10;
         let report = PacketPipeline::default().push_ts_packet(&tei, PipelineInputKind::Live);
-        assert!(report.drop_reasons.contains(&PipelineDropReason::TransportErrorIndicator));
-        assert!(report.diagnostics.iter().any(|diag| diag.code == "tei_packet_drop" && diag.pid == Some(0x10)));
+        assert!(report
+            .drop_reasons
+            .contains(&PipelineDropReason::TransportErrorIndicator));
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|diag| diag.code == "tei_packet_drop" && diag.pid == Some(0x10)));
     }
 }
-
 
 #[cfg(test)]
 mod discontinuity_generation_tests {
@@ -1450,7 +1847,10 @@ mod discontinuity_generation_tests {
             crate::TsInputOrigin::Frontend,
             &[filter],
         );
-        assert!(!first_report.generated_events.iter().any(|event| matches!(event, PipelineGeneratedEvent::SectionPayloadReady { .. })));
+        assert!(!first_report
+            .generated_events
+            .iter()
+            .any(|event| matches!(event, PipelineGeneratedEvent::SectionPayloadReady { .. })));
 
         let second_view = PacketPipeline::validate_packet(&second).unwrap();
         let second_report = pipeline.plan_and_assemble_ts_packet_report(
@@ -1462,9 +1862,12 @@ mod discontinuity_generation_tests {
             .generated_events
             .iter()
             .filter_map(|event| match event {
-                PipelineGeneratedEvent::SectionPayloadReady { filter_id, pid, bytes, .. } => {
-                    Some((*filter_id, *pid, bytes.clone()))
-                }
+                PipelineGeneratedEvent::SectionPayloadReady {
+                    filter_id,
+                    pid,
+                    bytes,
+                    ..
+                } => Some((*filter_id, *pid, bytes.clone())),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -1476,13 +1879,14 @@ mod discontinuity_generation_tests {
 mod resync_boundary_tests {
     use super::*;
 
-
-
     #[test]
     fn origin_aware_filter_prune_does_not_remove_other_origin_assemblers() {
         let mut pipeline = PacketPipeline::default();
         let frontend = crate::TsInputOrigin::Frontend;
-        let source = crate::TsInputOrigin::SourceFilter { source_filter_id: 42, source_filter_generation: 3 };
+        let source = crate::TsInputOrigin::SourceFilter {
+            source_filter_id: 42,
+            source_filter_generation: 3,
+        };
         pipeline.test_seed_section_for_pid(frontend, 0x0100, 7);
         pipeline.test_seed_section_for_pid(source, 0x0100, 7);
         pipeline.test_seed_pes_for_pid(frontend, 0x0100, 8);
@@ -1491,8 +1895,12 @@ mod resync_boundary_tests {
         pipeline.remove_section_for_filter_ids_origin_pid(source, 0x0100, &[7]);
         pipeline.remove_pes_for_filter_ids_origin_pid(source, 0x0100, &[8]);
 
-        assert!(pipeline.section_assemblers.contains_key(&(frontend, 0x0100, 7)));
-        assert!(!pipeline.section_assemblers.contains_key(&(source, 0x0100, 7)));
+        assert!(pipeline
+            .section_assemblers
+            .contains_key(&(frontend, 0x0100, 7)));
+        assert!(!pipeline
+            .section_assemblers
+            .contains_key(&(source, 0x0100, 7)));
         assert!(pipeline.pes_assemblers.contains_key(&(frontend, 0x0100, 8)));
         assert!(!pipeline.pes_assemblers.contains_key(&(source, 0x0100, 8)));
     }
@@ -1501,7 +1909,10 @@ mod resync_boundary_tests {
     fn source_filter_origin_keeps_generation_and_assembler_state_separate_from_frontend() {
         let mut pipeline = PacketPipeline::default();
         let frontend = crate::TsInputOrigin::Frontend;
-        let source = crate::TsInputOrigin::SourceFilter { source_filter_id: 42, source_filter_generation: 0 };
+        let source = crate::TsInputOrigin::SourceFilter {
+            source_filter_id: 42,
+            source_filter_generation: 0,
+        };
         pipeline.test_seed_section_for_pid(frontend, 0x0100, 7);
         pipeline.test_seed_section_for_pid(source, 0x0100, 7);
         pipeline.test_seed_pes_for_pid(frontend, 0x0100, 8);
@@ -1511,8 +1922,12 @@ mod resync_boundary_tests {
 
         pipeline.reset_assembly_for_origin_pid(source, 0x0100);
 
-        assert!(pipeline.section_assemblers.contains_key(&(frontend, 0x0100, 7)));
-        assert!(!pipeline.section_assemblers.contains_key(&(source, 0x0100, 7)));
+        assert!(pipeline
+            .section_assemblers
+            .contains_key(&(frontend, 0x0100, 7)));
+        assert!(!pipeline
+            .section_assemblers
+            .contains_key(&(source, 0x0100, 7)));
         assert!(pipeline.pes_assemblers.contains_key(&(frontend, 0x0100, 8)));
         assert!(!pipeline.pes_assemblers.contains_key(&(source, 0x0100, 8)));
         assert_eq!(pipeline.current_section_generation(frontend, 0x0100), 1);

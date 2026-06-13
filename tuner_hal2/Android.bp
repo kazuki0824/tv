@@ -41,7 +41,7 @@ rust_library {
     name: "libmaleicacid_tuner_hal2_common",
     vendor: true,
     crate_name: "maleicacid_tuner_hal2_common",
-    srcs: ["common/src/lib.rs", "common/src/os_abi.rs"],
+    srcs: ["common/src/lib.rs"],
     edition: "2021",
 }
 
@@ -262,12 +262,15 @@ rust_library {
     rustlibs: [
         "android.hardware.tv.tuner-V2-rust",
         "android.hardware.common-V2-rust",
+        "android.hardware.common.fmq-V1-rust",
         "libbinder_rs",
         "libmaleicacid_tuner_hal2_common",
         "libmaleicacid_tuner_hal2_binder_adapter",
         "libmaleicacid_tuner_hal2_service_runtime",
         "libmaleicacid_tuner_hal2_device",
+        "libmaleicacid_tuner_hal2_demux",
         "libmaleicacid_tuner_hal2_fmq",
+        "libmaleicacid_tuner_hal2_resource_ledger",
     ],
 }
 
@@ -290,7 +293,7 @@ rust_test {
     name: "maleicacid_tuner_hal2_common_test",
     vendor: true,
     crate_name: "maleicacid_tuner_hal2_common_test",
-    srcs: ["common/src/lib.rs", "common/src/os_abi.rs"],
+    srcs: ["common/src/lib.rs"],
     edition: "2021",
     auto_gen_config: true,
     test_suites: ["general-tests"],
@@ -472,14 +475,16 @@ rust_test {
     rustlibs: [
         "android.hardware.tv.tuner-V2-rust",
         "android.hardware.common-V2-rust",
+        "android.hardware.common.fmq-V1-rust",
         "libbinder_rs",
         "libmaleicacid_tuner_hal2_common",
         "libmaleicacid_tuner_hal2_binder_adapter",
         "libmaleicacid_tuner_hal2_service_runtime",
         "libmaleicacid_tuner_hal2_device",
+        "libmaleicacid_tuner_hal2_demux",
         "libmaleicacid_tuner_hal2_fmq",
+        "libmaleicacid_tuner_hal2_resource_ledger",
     ],
     auto_gen_config: true,
     test_suites: ["general-tests"],
 }
-

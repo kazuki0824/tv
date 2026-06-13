@@ -23,7 +23,6 @@ pub struct DvrRuntimeId(pub i32);
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct DescramblerRuntimeId(pub i32);
 
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FrontendRegistryEntry {
     pub id: FrontendRuntimeId,
@@ -132,7 +131,10 @@ impl Default for RuntimeRegistry {
 }
 
 impl RuntimeRegistry {
-    pub fn register_frontend(&mut self, entry: FrontendRegistryEntry) -> Result<(), RegistryCommitError> {
+    pub fn register_frontend(
+        &mut self,
+        entry: FrontendRegistryEntry,
+    ) -> Result<(), RegistryCommitError> {
         if self.frontends.contains_key(&entry.id) {
             return Err(RegistryCommitError::DuplicateFrontendId { id: entry.id });
         }
@@ -165,7 +167,6 @@ impl RuntimeRegistry {
         self.next_descrambler_id = 1;
     }
 
-
     pub fn frontend_count(&self) -> usize {
         self.frontends.len()
     }
@@ -176,7 +177,13 @@ impl RuntimeRegistry {
 
     pub fn allocate_demux(&mut self) -> Result<DemuxRegistryEntry, RegistryCommitError> {
         let id = DemuxRuntimeId(self.next_demux_id);
-        let next = self.next_demux_id.checked_add(1).filter(|value| *value > 0).ok_or(RegistryCommitError::RuntimeIdExhausted { kind: RuntimeRegistryKind::Demux })?;
+        let next = self
+            .next_demux_id
+            .checked_add(1)
+            .filter(|value| *value > 0)
+            .ok_or(RegistryCommitError::RuntimeIdExhausted {
+                kind: RuntimeRegistryKind::Demux,
+            })?;
         self.next_demux_id = next;
         let entry = DemuxRegistryEntry { id };
         self.register_demux(entry.clone())?;
@@ -187,7 +194,8 @@ impl RuntimeRegistry {
         if self.demuxes.contains_key(&entry.id) {
             return Err(RegistryCommitError::DuplicateDemuxId { id: entry.id });
         }
-        self.demux_runtimes.insert(entry.id, DemuxRuntime::new(entry.id.0, 1));
+        self.demux_runtimes
+            .insert(entry.id, DemuxRuntime::new(entry.id.0, 1));
         self.demuxes.insert(entry.id, entry);
         Ok(())
     }
@@ -206,11 +214,18 @@ impl RuntimeRegistry {
         self.demux_runtimes.get_mut(&id)
     }
 
-    pub fn bind_demux_frontend(&mut self, demux_id: DemuxRuntimeId, frontend_id: FrontendRuntimeId) {
+    pub fn bind_demux_frontend(
+        &mut self,
+        demux_id: DemuxRuntimeId,
+        frontend_id: FrontendRuntimeId,
+    ) {
         self.demux_frontend_bindings.insert(demux_id, frontend_id);
     }
 
-    pub fn unbind_frontend_demuxes(&mut self, frontend_id: FrontendRuntimeId) -> Vec<DemuxRuntimeId> {
+    pub fn unbind_frontend_demuxes(
+        &mut self,
+        frontend_id: FrontendRuntimeId,
+    ) -> Vec<DemuxRuntimeId> {
         let demux_ids = self.frontend_bound_demux_ids(frontend_id);
         for demux_id in &demux_ids {
             self.demux_frontend_bindings.remove(demux_id);
@@ -221,11 +236,16 @@ impl RuntimeRegistry {
     pub fn frontend_bound_demux_ids(&self, frontend_id: FrontendRuntimeId) -> Vec<DemuxRuntimeId> {
         self.demux_frontend_bindings
             .iter()
-            .filter_map(|(demux_id, bound_frontend)| (*bound_frontend == frontend_id).then_some(*demux_id))
+            .filter_map(|(demux_id, bound_frontend)| {
+                (*bound_frontend == frontend_id).then_some(*demux_id)
+            })
             .collect()
     }
 
-    pub fn quarantine_bound_demuxes_for_frontend(&mut self, frontend_id: FrontendRuntimeId) -> Vec<DemuxRuntimeId> {
+    pub fn quarantine_bound_demuxes_for_frontend(
+        &mut self,
+        frontend_id: FrontendRuntimeId,
+    ) -> Vec<DemuxRuntimeId> {
         let demux_ids = self.frontend_bound_demux_ids(frontend_id);
         for demux_id in &demux_ids {
             if let Some(runtime) = self.demux_runtimes.get_mut(demux_id) {
@@ -272,11 +292,15 @@ impl RuntimeRegistry {
     }
 
     pub fn lnb_for_frontend(&self, frontend_id: FrontendRuntimeId) -> Option<&LnbRegistryEntry> {
-        self.lnbs.values().find(|entry| entry.owner_frontend_id == frontend_id)
+        self.lnbs
+            .values()
+            .find(|entry| entry.owner_frontend_id == frontend_id)
     }
 
     pub fn lnb_by_name(&self, name: &str) -> Option<&LnbRegistryEntry> {
-        self.lnbs.values().find(|entry| entry.name.as_deref() == Some(name))
+        self.lnbs
+            .values()
+            .find(|entry| entry.name.as_deref() == Some(name))
     }
 
     pub fn register_lnb(&mut self, entry: LnbRegistryEntry) -> Result<(), RegistryCommitError> {
@@ -287,16 +311,28 @@ impl RuntimeRegistry {
         Ok(())
     }
 
-    pub fn allocate_filter(&mut self, owner_demux_id: i32) -> Result<FilterRegistryEntry, RegistryCommitError> {
+    pub fn allocate_filter(
+        &mut self,
+        owner_demux_id: i32,
+    ) -> Result<FilterRegistryEntry, RegistryCommitError> {
         let id = FilterRuntimeId(self.next_filter_id);
-        let next = self.next_filter_id.checked_add(1).filter(|value| *value > 0).ok_or(RegistryCommitError::RuntimeIdExhausted { kind: RuntimeRegistryKind::Filter })?;
+        let next = self
+            .next_filter_id
+            .checked_add(1)
+            .filter(|value| *value > 0)
+            .ok_or(RegistryCommitError::RuntimeIdExhausted {
+                kind: RuntimeRegistryKind::Filter,
+            })?;
         self.next_filter_id = next;
         let entry = FilterRegistryEntry { id, owner_demux_id };
         self.register_filter(entry.clone())?;
         Ok(entry)
     }
 
-    pub fn register_filter(&mut self, entry: FilterRegistryEntry) -> Result<(), RegistryCommitError> {
+    pub fn register_filter(
+        &mut self,
+        entry: FilterRegistryEntry,
+    ) -> Result<(), RegistryCommitError> {
         if self.filters.contains_key(&entry.id) {
             return Err(RegistryCommitError::DuplicateFilterId { id: entry.id });
         }
@@ -312,9 +348,18 @@ impl RuntimeRegistry {
         self.filters.remove(&id)
     }
 
-    pub fn allocate_dvr(&mut self, owner_demux_id: i32) -> Result<DvrRegistryEntry, RegistryCommitError> {
+    pub fn allocate_dvr(
+        &mut self,
+        owner_demux_id: i32,
+    ) -> Result<DvrRegistryEntry, RegistryCommitError> {
         let id = DvrRuntimeId(self.next_dvr_id);
-        let next = self.next_dvr_id.checked_add(1).filter(|value| *value > 0).ok_or(RegistryCommitError::RuntimeIdExhausted { kind: RuntimeRegistryKind::Dvr })?;
+        let next = self
+            .next_dvr_id
+            .checked_add(1)
+            .filter(|value| *value > 0)
+            .ok_or(RegistryCommitError::RuntimeIdExhausted {
+                kind: RuntimeRegistryKind::Dvr,
+            })?;
         self.next_dvr_id = next;
         let entry = DvrRegistryEntry { id, owner_demux_id };
         self.register_dvr(entry.clone())?;
@@ -333,16 +378,27 @@ impl RuntimeRegistry {
         self.dvrs.remove(&id)
     }
 
-    pub fn allocate_descrambler(&mut self) -> Result<DescramblerRegistryEntry, RegistryCommitError> {
+    pub fn allocate_descrambler(
+        &mut self,
+    ) -> Result<DescramblerRegistryEntry, RegistryCommitError> {
         let id = DescramblerRuntimeId(self.next_descrambler_id);
-        let next = self.next_descrambler_id.checked_add(1).filter(|value| *value > 0).ok_or(RegistryCommitError::RuntimeIdExhausted { kind: RuntimeRegistryKind::Descrambler })?;
+        let next = self
+            .next_descrambler_id
+            .checked_add(1)
+            .filter(|value| *value > 0)
+            .ok_or(RegistryCommitError::RuntimeIdExhausted {
+                kind: RuntimeRegistryKind::Descrambler,
+            })?;
         self.next_descrambler_id = next;
         let entry = DescramblerRegistryEntry { id };
         self.register_descrambler(entry.clone())?;
         Ok(entry)
     }
 
-    pub fn register_descrambler(&mut self, entry: DescramblerRegistryEntry) -> Result<(), RegistryCommitError> {
+    pub fn register_descrambler(
+        &mut self,
+        entry: DescramblerRegistryEntry,
+    ) -> Result<(), RegistryCommitError> {
         if self.descramblers.contains_key(&entry.id) {
             return Err(RegistryCommitError::DuplicateDescramblerId { id: entry.id });
         }
@@ -350,10 +406,10 @@ impl RuntimeRegistry {
         Ok(())
     }
 
-    pub fn unregister_descrambler(&mut self, id: DescramblerRuntimeId) -> Option<DescramblerRegistryEntry> {
+    pub fn unregister_descrambler(
+        &mut self,
+        id: DescramblerRuntimeId,
+    ) -> Option<DescramblerRegistryEntry> {
         self.descramblers.remove(&id)
     }
-
 }
-
-

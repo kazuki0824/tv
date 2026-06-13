@@ -4,15 +4,13 @@
 //! r50ee54で削除した偽operation状態を再導入しないための境界である。
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
-use maleicacid_tuner_hal2_control_core::{
-    WorkerExit, WorkerFailureDomain, WorkerRuntimeFailureKind, WorkerStopReason,
-};
+use maleicacid_tuner_hal2_control_core::{WorkerExit, WorkerFailureDomain, WorkerStopReason};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum FrontendWorkerKind {
@@ -35,8 +33,14 @@ pub struct FrontendWorkerKey {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FrontendWorkerStartError {
-    AlreadyRunning { frontend_id: i32, kind: FrontendWorkerKind, generation: u64 },
-    SpawnFailed { detail: String },
+    AlreadyRunning {
+        frontend_id: i32,
+        kind: FrontendWorkerKind,
+        generation: u64,
+    },
+    SpawnFailed {
+        detail: String,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -77,10 +81,18 @@ pub struct FrontendWorkerContext {
 }
 
 impl FrontendWorkerContext {
-    pub fn frontend_id(&self) -> i32 { self.frontend_id }
-    pub fn kind(&self) -> FrontendWorkerKind { self.kind }
-    pub fn generation(&self) -> u64 { self.generation }
-    pub fn cancel_requested(&self) -> bool { self.cancel.load(Ordering::SeqCst) }
+    pub fn frontend_id(&self) -> i32 {
+        self.frontend_id
+    }
+    pub fn kind(&self) -> FrontendWorkerKind {
+        self.kind
+    }
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+    pub fn cancel_requested(&self) -> bool {
+        self.cancel.load(Ordering::SeqCst)
+    }
     pub fn cancel_reason(&self) -> Option<FrontendWorkerCancelReason> {
         self.cancel_reason.lock().ok().and_then(|guard| *guard)
     }
@@ -88,8 +100,6 @@ impl FrontendWorkerContext {
 
 #[derive(Debug)]
 struct FrontendWorkerSlot {
-    frontend_id: i32,
-    kind: FrontendWorkerKind,
     generation: u64,
     cancel: Arc<AtomicBool>,
     cancel_reason: Arc<Mutex<Option<FrontendWorkerCancelReason>>>,
@@ -100,12 +110,26 @@ struct FrontendWorkerSlot {
 
 impl FrontendWorkerSlot {
     fn is_running(&self) -> bool {
-        let completed = self.result.lock().map(|guard| guard.is_some()).unwrap_or(true);
-        !completed && self.join.as_ref().map(|handle| !handle.is_finished()).unwrap_or(false)
+        let completed = self
+            .result
+            .lock()
+            .map(|guard| guard.is_some())
+            .unwrap_or(true);
+        !completed
+            && self
+                .join
+                .as_ref()
+                .map(|handle| !handle.is_finished())
+                .unwrap_or(false)
     }
 
     fn join_if_finished(&mut self) {
-        if self.join.as_ref().map(|handle| handle.is_finished()).unwrap_or(false) {
+        if self
+            .join
+            .as_ref()
+            .map(|handle| handle.is_finished())
+            .unwrap_or(false)
+        {
             if let Some(handle) = self.join.take() {
                 match handle.join() {
                     Ok(()) => {}
@@ -172,7 +196,13 @@ impl FrontendWorkerRegistry {
         let worker_cancel = Arc::clone(&cancel);
         let worker_cancel_reason = Arc::clone(&cancel_reason);
         let worker_result = Arc::clone(&result);
-        let context = FrontendWorkerContext { frontend_id, kind, generation, cancel: worker_cancel, cancel_reason: worker_cancel_reason };
+        let context = FrontendWorkerContext {
+            frontend_id,
+            kind,
+            generation,
+            cancel: worker_cancel,
+            cancel_reason: Arc::clone(&worker_cancel_reason),
+        };
 
         let join = thread::Builder::new()
             .name(format!("maleicacid-fe-{frontend_id}-{kind:?}-{generation}"))
@@ -189,7 +219,9 @@ impl FrontendWorkerRegistry {
                     }
                     Ok(Err(error)) => (
                         Err(error),
-                        WorkerExit::RuntimeFailure(WorkerFailureDomain::Backend.runtime_failure_kind()),
+                        WorkerExit::RuntimeFailure(
+                            WorkerFailureDomain::Backend.runtime_failure_kind(),
+                        ),
                     ),
                     Err(_) => (
                         Err(HalError::internal(
@@ -203,9 +235,21 @@ impl FrontendWorkerRegistry {
                     *guard = Some(outcome);
                 }
             })
-            .map_err(|error| FrontendWorkerStartError::SpawnFailed { detail: error.to_string() })?;
+            .map_err(|error| FrontendWorkerStartError::SpawnFailed {
+                detail: error.to_string(),
+            })?;
 
-        self.slots.insert(key, FrontendWorkerSlot { frontend_id, kind, generation, cancel, cancel_reason, result, join: Some(join), join_failure: None });
+        self.slots.insert(
+            key,
+            FrontendWorkerSlot {
+                generation,
+                cancel,
+                cancel_reason,
+                result,
+                join: Some(join),
+                join_failure: None,
+            },
+        );
         Ok(())
     }
 
@@ -222,15 +266,25 @@ impl FrontendWorkerRegistry {
         if let Some((result, exit)) = slot.completed_result() {
             let generation = slot.generation;
             self.slots.remove(&key);
-            return FrontendWorkerStopOutcome::Completed { frontend_id, kind, generation, exit, result };
+            return FrontendWorkerStopOutcome::Completed {
+                frontend_id,
+                kind,
+                generation,
+                exit,
+                result,
+            };
         }
         if let Ok(mut guard) = slot.cancel_reason.lock() {
             *guard = Some(reason);
         }
         slot.cancel.store(true, Ordering::SeqCst);
-        FrontendWorkerStopOutcome::CancelRequested { frontend_id, kind, generation: slot.generation, reason }
+        FrontendWorkerStopOutcome::CancelRequested {
+            frontend_id,
+            kind,
+            generation: slot.generation,
+            reason,
+        }
     }
-
 
     pub fn request_stop_and_join(
         &mut self,
@@ -244,7 +298,13 @@ impl FrontendWorkerRegistry {
         };
 
         if let Some((result, exit)) = slot.completed_result() {
-            return FrontendWorkerStopOutcome::Completed { frontend_id, kind, generation: slot.generation, exit, result };
+            return FrontendWorkerStopOutcome::Completed {
+                frontend_id,
+                kind,
+                generation: slot.generation,
+                exit,
+                result,
+            };
         }
 
         if let Ok(mut guard) = slot.cancel_reason.lock() {
@@ -282,19 +342,39 @@ impl FrontendWorkerRegistry {
                 WorkerExit::RuntimeFailure(WorkerFailureDomain::Signal.runtime_failure_kind()),
             ),
         };
-        FrontendWorkerStopOutcome::Completed { frontend_id, kind, generation: slot.generation, exit, result }
+        FrontendWorkerStopOutcome::Completed {
+            frontend_id,
+            kind,
+            generation: slot.generation,
+            exit,
+            result,
+        }
     }
 
-    pub fn take_completed(&mut self, frontend_id: i32, kind: FrontendWorkerKind) -> Option<FrontendWorkerStopOutcome> {
+    pub fn take_completed(
+        &mut self,
+        frontend_id: i32,
+        kind: FrontendWorkerKind,
+    ) -> Option<FrontendWorkerStopOutcome> {
         let key = FrontendWorkerKey { frontend_id, kind };
         let slot = self.slots.get_mut(&key)?;
         let (result, exit) = slot.completed_result()?;
         let generation = slot.generation;
         self.slots.remove(&key);
-        Some(FrontendWorkerStopOutcome::Completed { frontend_id, kind, generation, exit, result })
+        Some(FrontendWorkerStopOutcome::Completed {
+            frontend_id,
+            kind,
+            generation,
+            exit,
+            result,
+        })
     }
 
-    pub fn running_generation(&mut self, frontend_id: i32, kind: FrontendWorkerKind) -> Option<u64> {
+    pub fn running_generation(
+        &mut self,
+        frontend_id: i32,
+        kind: FrontendWorkerKind,
+    ) -> Option<u64> {
         let key = FrontendWorkerKey { frontend_id, kind };
         let slot = self.slots.get_mut(&key)?;
         slot.is_running().then_some(slot.generation)
@@ -307,7 +387,11 @@ impl FrontendWorkerRegistry {
             .filter_map(|(key, slot)| {
                 slot.join_if_finished();
                 let finished = slot.join_failure.is_some()
-                    || slot.result.lock().map(|guard| guard.is_some()).unwrap_or(true);
+                    || slot
+                        .result
+                        .lock()
+                        .map(|guard| guard.is_some())
+                        .unwrap_or(true);
                 finished.then_some(*key)
             })
             .collect();
@@ -327,24 +411,37 @@ mod tests {
     fn duplicate_running_worker_is_rejected() {
         let mut registry = FrontendWorkerRegistry::default();
         let (tx, rx) = mpsc::channel();
-        registry.start(7, FrontendWorkerKind::Tune, 1, move |ctx| {
-            tx.send(ctx.generation()).unwrap();
-            while !ctx.cancel_requested() {
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            Ok(())
-        }).unwrap();
+        registry
+            .start(7, FrontendWorkerKind::Tune, 1, move |ctx| {
+                tx.send(ctx.generation()).unwrap();
+                while !ctx.cancel_requested() {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Ok(())
+            })
+            .unwrap();
         assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap(), 1);
         assert!(matches!(
             registry.start(7, FrontendWorkerKind::Tune, 2, |_| Ok(())),
             Err(FrontendWorkerStartError::AlreadyRunning { generation: 1, .. })
         ));
         assert!(matches!(
-            registry.request_stop(7, FrontendWorkerKind::Tune, FrontendWorkerCancelReason::StopRequested),
-            FrontendWorkerStopOutcome::CancelRequested { generation: 1, reason: FrontendWorkerCancelReason::StopRequested, .. }
+            registry.request_stop(
+                7,
+                FrontendWorkerKind::Tune,
+                FrontendWorkerCancelReason::StopRequested
+            ),
+            FrontendWorkerStopOutcome::CancelRequested {
+                generation: 1,
+                reason: FrontendWorkerCancelReason::StopRequested,
+                ..
+            }
         ));
         for _ in 0..100 {
-            if registry.take_completed(7, FrontendWorkerKind::Tune).is_some() {
+            if registry
+                .take_completed(7, FrontendWorkerKind::Tune)
+                .is_some()
+            {
                 return;
             }
             std::thread::sleep(Duration::from_millis(1));
@@ -352,31 +449,42 @@ mod tests {
         panic!("cancelled worker did not complete");
     }
 
-
     #[test]
     fn cancellation_reason_is_visible_to_worker() {
         let mut registry = FrontendWorkerRegistry::default();
         let (started_tx, started_rx) = mpsc::channel();
         let (reason_tx, reason_rx) = mpsc::channel();
-        registry.start(10, FrontendWorkerKind::Scan, 5, move |ctx| {
-            started_tx.send(()).unwrap();
-            while !ctx.cancel_requested() {
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            reason_tx.send(ctx.cancel_reason()).unwrap();
-            Ok(())
-        }).unwrap();
+        registry
+            .start(10, FrontendWorkerKind::Scan, 5, move |ctx| {
+                started_tx.send(()).unwrap();
+                while !ctx.cancel_requested() {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                reason_tx.send(ctx.cancel_reason()).unwrap();
+                Ok(())
+            })
+            .unwrap();
         started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         assert!(matches!(
-            registry.request_stop(10, FrontendWorkerKind::Scan, FrontendWorkerCancelReason::SupersededByNewRequest),
-            FrontendWorkerStopOutcome::CancelRequested { reason: FrontendWorkerCancelReason::SupersededByNewRequest, .. }
+            registry.request_stop(
+                10,
+                FrontendWorkerKind::Scan,
+                FrontendWorkerCancelReason::SupersededByNewRequest
+            ),
+            FrontendWorkerStopOutcome::CancelRequested {
+                reason: FrontendWorkerCancelReason::SupersededByNewRequest,
+                ..
+            }
         ));
         assert_eq!(
             reason_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
             Some(FrontendWorkerCancelReason::SupersededByNewRequest)
         );
         for _ in 0..100 {
-            if registry.take_completed(10, FrontendWorkerKind::Scan).is_some() {
+            if registry
+                .take_completed(10, FrontendWorkerKind::Scan)
+                .is_some()
+            {
                 return;
             }
             std::thread::sleep(Duration::from_millis(1));
@@ -387,10 +495,17 @@ mod tests {
     #[test]
     fn completed_worker_result_is_reported_and_slot_removed() {
         let mut registry = FrontendWorkerRegistry::default();
-        registry.start(8, FrontendWorkerKind::Scan, 3, |_| Ok(())).unwrap();
+        registry
+            .start(8, FrontendWorkerKind::Scan, 3, |_| Ok(()))
+            .unwrap();
         for _ in 0..100 {
-            if registry.take_completed(8, FrontendWorkerKind::Scan).is_some() {
-                assert!(registry.running_generation(8, FrontendWorkerKind::Scan).is_none());
+            if registry
+                .take_completed(8, FrontendWorkerKind::Scan)
+                .is_some()
+            {
+                assert!(registry
+                    .running_generation(8, FrontendWorkerKind::Scan)
+                    .is_none());
                 return;
             }
             std::thread::sleep(Duration::from_millis(1));
@@ -400,13 +515,24 @@ mod tests {
     #[test]
     fn panicked_worker_is_reported_as_error_and_slot_removed() {
         let mut registry = FrontendWorkerRegistry::default();
-        registry.start(9, FrontendWorkerKind::Tune, 4, |_| -> Result<(), HalError> {
-            panic!("intentional test panic");
-        }).unwrap();
+        registry
+            .start(
+                9,
+                FrontendWorkerKind::Tune,
+                4,
+                |_| -> Result<(), HalError> {
+                    panic!("intentional test panic");
+                },
+            )
+            .unwrap();
         for _ in 0..100 {
-            if let Some(FrontendWorkerStopOutcome::Completed { result, .. }) = registry.take_completed(9, FrontendWorkerKind::Tune) {
+            if let Some(FrontendWorkerStopOutcome::Completed { result, .. }) =
+                registry.take_completed(9, FrontendWorkerKind::Tune)
+            {
                 assert!(result.is_err());
-                assert!(registry.running_generation(9, FrontendWorkerKind::Tune).is_none());
+                assert!(registry
+                    .running_generation(9, FrontendWorkerKind::Tune)
+                    .is_none());
                 return;
             }
             std::thread::sleep(Duration::from_millis(1));
@@ -418,23 +544,35 @@ mod tests {
     fn stop_and_join_removes_running_worker_and_allows_replacement() {
         let mut registry = FrontendWorkerRegistry::default();
         let (started_tx, started_rx) = mpsc::channel();
-        registry.start(12, FrontendWorkerKind::Scan, 8, move |ctx| {
-            started_tx.send(()).unwrap();
-            while !ctx.cancel_requested() {
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            assert_eq!(ctx.cancel_reason(), Some(FrontendWorkerCancelReason::SupersededByNewRequest));
-            Ok(())
-        }).unwrap();
+        registry
+            .start(12, FrontendWorkerKind::Scan, 8, move |ctx| {
+                started_tx.send(()).unwrap();
+                while !ctx.cancel_requested() {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                assert_eq!(
+                    ctx.cancel_reason(),
+                    Some(FrontendWorkerCancelReason::SupersededByNewRequest)
+                );
+                Ok(())
+            })
+            .unwrap();
         started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         assert!(matches!(
-            registry.request_stop_and_join(12, FrontendWorkerKind::Scan, FrontendWorkerCancelReason::SupersededByNewRequest),
-            FrontendWorkerStopOutcome::Completed { generation: 8, result: Ok(()), .. }
+            registry.request_stop_and_join(
+                12,
+                FrontendWorkerKind::Scan,
+                FrontendWorkerCancelReason::SupersededByNewRequest
+            ),
+            FrontendWorkerStopOutcome::Completed {
+                generation: 8,
+                result: Ok(()),
+                ..
+            }
         ));
         assert!(matches!(
             registry.start(12, FrontendWorkerKind::Scan, 9, |_| Ok(())),
             Ok(())
         ));
     }
-
 }

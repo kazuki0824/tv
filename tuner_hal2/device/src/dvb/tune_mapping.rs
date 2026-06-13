@@ -9,8 +9,8 @@ use maleicacid_tuner_hal2_common::{
 };
 
 use crate::dvb::abi::{
-    DtvProperty, DTV_BANDWIDTH_HZ, DTV_DELIVERY_SYSTEM, DTV_FREQUENCY,
-    DTV_STREAM_ID, DTV_TUNE, SYS_DVBS2, SYS_ISDBS, SYS_ISDBT,
+    DtvProperty, DTV_BANDWIDTH_HZ, DTV_DELIVERY_SYSTEM, DTV_FREQUENCY, DTV_STREAM_ID, DTV_TUNE,
+    SYS_DVBS2, SYS_ISDBS, SYS_ISDBT,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -43,7 +43,9 @@ pub fn delivery_system(system: Option<FrontendSystem>) -> Result<u32, HalError> 
         Some(FrontendSystem::IsdbT) => Ok(SYS_ISDBT),
         Some(FrontendSystem::IsdbS) => Ok(SYS_ISDBS),
         Some(FrontendSystem::DvbS) => Ok(SYS_DVBS2),
-        Some(FrontendSystem::IsdbS3) => Err(HalError::Unsupported("ISDB-S3 is outside the TS-only product scope")),
+        Some(FrontendSystem::IsdbS3) => Err(HalError::Unsupported(
+            "ISDB-S3 is outside the TS-only product scope",
+        )),
         None => Err(HalError::invalid_argument(
             HalInvalidArgumentKind::MissingDeliverySystem,
             "DVB tune request requires a delivery system",
@@ -52,8 +54,13 @@ pub fn delivery_system(system: Option<FrontendSystem>) -> Result<u32, HalError> 
 }
 
 fn validate_stream_id(request: &DvbTuneRequest) -> Result<Option<u16>, HalError> {
-    let Some(stream_id) = request.stream_id else { return Ok(None); };
-    if matches!(request.stream_id_kind, Some(FrontendStreamIdKind::RelativeStreamNumber)) {
+    let Some(stream_id) = request.stream_id else {
+        return Ok(None);
+    };
+    if matches!(
+        request.stream_id_kind,
+        Some(FrontendStreamIdKind::RelativeStreamNumber)
+    ) {
         return Err(HalError::invalid_argument(
             HalInvalidArgumentKind::UnsupportedStreamSelector,
             "DVB backend does not accept relative stream number",
@@ -170,7 +177,10 @@ fn normalize_stream_id_from_common(
                     ));
                 }
             }
-            Ok((Some(stream_id), Some(FrontendStreamIdKind::AbsoluteStreamId)))
+            Ok((
+                Some(stream_id),
+                Some(FrontendStreamIdKind::AbsoluteStreamId),
+            ))
         }
     }
 }
@@ -204,7 +214,9 @@ pub fn normalized_tune_request_from_common(
             }
         }
         FrontendSystem::IsdbS3 | FrontendSystem::DvbS => {
-            return Err(HalError::Unsupported("system is outside r51 DVB explicit tune scope"));
+            return Err(HalError::Unsupported(
+                "system is outside r51 DVB explicit tune scope",
+            ));
         }
     }
     if request.symbol_rate.is_some() {
@@ -217,13 +229,15 @@ pub fn normalized_tune_request_from_common(
     let bandwidth_hz = match request.system {
         FrontendSystem::IsdbT => match request.bandwidth_hz {
             None | Some(6_000_000) => Some(6_000_000),
-            Some(_) => return Err(HalError::invalid_argument(
-                HalInvalidArgumentKind::UnsupportedBandwidth,
-                "r51 DVB ISDB-T accepts only 6MHz bandwidth",
-            )),
+            Some(_) => {
+                return Err(HalError::invalid_argument(
+                    HalInvalidArgumentKind::UnsupportedBandwidth,
+                    "r51 DVB ISDB-T accepts only 6MHz bandwidth",
+                ))
+            }
         },
         FrontendSystem::IsdbS => {
-            if let Some(other) = request.bandwidth_hz {
+            if request.bandwidth_hz.is_some() {
                 return Err(HalError::invalid_argument(
                     HalInvalidArgumentKind::UnsupportedBandwidth,
                     "r51 DVB ISDB-S does not accept bandwidth_hz",

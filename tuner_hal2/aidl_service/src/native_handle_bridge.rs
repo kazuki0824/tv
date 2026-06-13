@@ -1,4 +1,4 @@
-use maleicacid_tuner_hal2_common::{HalError, HalInvalidArgumentKind, HalInternalKind};
+use maleicacid_tuner_hal2_common::{HalError, HalInternalKind, HalInvalidArgumentKind};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NativeHandleBridgeKind {
@@ -28,9 +28,11 @@ impl NativeHandleBridgeError {
 
     pub fn into_hal_error(self) -> HalError {
         match self.kind {
-            NativeHandleBridgeErrorKind::InvalidDataId | NativeHandleBridgeErrorKind::UnsupportedHandleShape => {
-                HalError::invalid_argument(HalInvalidArgumentKind::UnsupportedSelector, "native handle shape")
-            }
+            NativeHandleBridgeErrorKind::InvalidDataId
+            | NativeHandleBridgeErrorKind::UnsupportedHandleShape => HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "native handle shape",
+            ),
             NativeHandleBridgeErrorKind::MissingHandle
             | NativeHandleBridgeErrorKind::UnexpectedFdCount
             | NativeHandleBridgeErrorKind::UnexpectedIntCount => {
@@ -46,8 +48,12 @@ pub struct NativeHandleBridge {
 }
 
 impl NativeHandleBridge {
-    pub const fn new(bridge_kind: NativeHandleBridgeKind) -> Self { Self { bridge_kind } }
-    pub const fn bridge_kind(&self) -> NativeHandleBridgeKind { self.bridge_kind }
+    pub const fn new(bridge_kind: NativeHandleBridgeKind) -> Self {
+        Self { bridge_kind }
+    }
+    pub const fn bridge_kind(&self) -> NativeHandleBridgeKind {
+        self.bridge_kind
+    }
 
     pub fn validate_av_data_id(&self, data_id: i64) -> Result<(), NativeHandleBridgeError> {
         if data_id < 0 {

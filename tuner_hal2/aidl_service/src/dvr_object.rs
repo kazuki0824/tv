@@ -1,8 +1,11 @@
-use binder::Result as BinderResult;
+use binder::{Interface, Result as BinderResult};
 use maleicacid_tuner_hal2_binder_adapter::{AidlMethodCall, AidlMethodPlan};
 
 use crate::object_handle::{AidlObjectHandle, AidlObjectHandleError, AidlObjectKind};
-use crate::object_runtime::{close_object, close_object_after_aidl_method_plan, ensure_object_live, plan_object_aidl_method, SharedTunerRuntime};
+use crate::object_runtime::{
+    close_object, close_object_after_aidl_method_plan, ensure_object_live, plan_object_aidl_method,
+    SharedTunerRuntime,
+};
 
 #[derive(Clone)]
 pub struct DvrAidlObject {
@@ -10,15 +13,24 @@ pub struct DvrAidlObject {
     runtime: SharedTunerRuntime,
 }
 
+impl Interface for DvrAidlObject {}
+
 impl DvrAidlObject {
-    pub fn new(handle: AidlObjectHandle, runtime: SharedTunerRuntime) -> Result<Self, AidlObjectHandleError> {
+    pub fn new(
+        handle: AidlObjectHandle,
+        runtime: SharedTunerRuntime,
+    ) -> Result<Self, AidlObjectHandleError> {
         handle.ensure_kind(AidlObjectKind::Dvr)?;
         Ok(Self { handle, runtime })
     }
 
-    pub const fn handle(&self) -> AidlObjectHandle { self.handle }
+    pub const fn handle(&self) -> AidlObjectHandle {
+        self.handle
+    }
 
-    pub fn runtime(&self) -> SharedTunerRuntime { self.runtime.clone() }
+    pub fn runtime(&self) -> SharedTunerRuntime {
+        self.runtime.clone()
+    }
 
     pub fn ensure_open(&self) -> BinderResult<()> {
         ensure_object_live(&self.runtime, self.handle)
