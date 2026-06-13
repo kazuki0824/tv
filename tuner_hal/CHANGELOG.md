@@ -1,3 +1,11 @@
+# r50ee97_future_wording_and_wallclock_research_fix
+
+- `future_work/not_planned/r50z_avsync_wallclock_research.md` を `future_work/not_planned/avsync_wallclock_research.md` へ改名し、future_work として必要な wallclock 補間調査、先行例、参照URLを復元した。
+- wallclock 文書から旧アーカイブ別の修正済み報告・現行仕様正本の再定義を除き、非採用範囲と調査根拠に限定した。
+- `ARIB_SI_EPG_TvProvider投影方針.md`、`arib_si_engine_rs/DESIGN_JA.md`、`tis/DESIGN_JA.md`、`tis/INTEGRATION.md`、`rec/DESIGN_JA.md`、`rec/README_JA.md`、`cas_hal/*`、nullable Binder future_work の r51/r52/r53 表現を、開発規則で定義されたリリース計画を暗黙に再定義しない現行仕様・現行product・非採用範囲の表現へ補正した。
+- `tuner_hal/DESIGN_JA.md` の nullable Binder / A/V sync 境界も、r番号で将来作業を示唆しない表現へ補正した。
+- コード実装変更なし。Android/Soong build、Rust unit test、atest、VTS、実機確認は未実施。
+
 # r50ee96_doc_responsibility_scope_final
 
 - `GLOBAL_CODE_CONVENTION.md` の静的確認節を実装規約レビューの補助確認として表現し、完了判定の正本ではないことを明記。
