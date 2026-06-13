@@ -162,9 +162,9 @@ Programs.COLUMN_INTERNAL_PROVIDER_DATA:
   長形式イベント項目リスト、component/audio/series/linkage/event_group/free_CA_mode/audioLanguages等の完全構造、decode/publishability/記述子診断情報は JSON v1 内に保存する。
 ```
 
-## 7. テスト方針
+## 7. 投影確認観点
 
-最低限、次をテストする。
+投影仕様の確認観点は次とする。本節は実行手順、atest名、成果物名、完了判定の正本ではない。
 
 ```text
 1. 長形式イベント項目が `【項目名】本文` として LONG_DESCRIPTION に出る。
@@ -189,8 +189,8 @@ Programs.COLUMN_INTERNAL_PROVIDER_DATA:
 ```text
 1. どの標準列へ入れるかを明記する。
 2. 一般ユーザー向けUIに表示させる理由を明記する。
-3. JSON v1 internal_provider_data に残す完全構造を明記し、Rust provider-data serde構造体、`arib_si_engine_rs/schema/program_provider_data_v1.schema.json`、`arib_si_engine_rs/testdata/program_provider_data_v1/minimal_clear_program.json`、`tis/tests/assets/program_provider_data_v1/minimal_clear_program.json` を更新する。2つの期待値テストデータはバイト単位で同一な複製とし、片方だけを更新してはならない。
-4. unit testで標準列と JSON v1 internal_provider_data の両方を確認する。
+3. JSON v1 internal_provider_data に残す完全構造を明記し、Rust provider-data serde構造体、`arib_si_engine_rs/schema/program_provider_data_v1.schema.json`、`arib_si_engine_rs/testdata/program_provider_data_v1/minimal_clear_program.json`、`tis/tests/assets/program_provider_data_v1/minimal_clear_program.json` を更新する。2つの schema 整合確認データはバイト単位で同一な複製とし、片方だけを更新してはならない。
+4. 標準列と JSON v1 internal_provider_data の両方で投影結果を確認する。
 5. この文書を更新し、開発規則.mdのリリース物ルールに反しないことを確認する。
 ```
 
@@ -252,7 +252,7 @@ TIS は次の表に一致する分類だけを `Programs.COLUMN_CANONICAL_GENRE`
 
 ## TvProvider 自然対応項目の追加固定
 
-| ARIB / PMT 要素 | 投影先 | 完了条件 |
+| ARIB / PMT 要素 | 投影先 | 投影成立条件 |
 |---|---|---|
 | EIT `free_CA_mode` | TvProvider scrambled 判定、provider-data JSON | `1` を scrambled、`0` を not scrambled とし、CAS 状態と混同しない。 |
 | 音声 ISO639 language | TvProvider audio language メタデータ、provider-data JSON | PMT / descriptor から取得可能な言語だけ設定し、取得不能時に推測しない。 |

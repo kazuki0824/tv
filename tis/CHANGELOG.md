@@ -1,3 +1,22 @@
+# r50ee96_doc_responsibility_scope_final
+
+- `tis/DESIGN_JA.md` の字幕節で `完了条件` としていた表現を `対応宣言条件` へ補正し、DESIGN_JA.md が完了判定正本に見えないよう文書責務を整理。
+- `tis/INTEGRATION.md` の字幕統合境界にも同じ `対応宣言条件` 表現を適用。
+- コード実装変更なし。Android/Soong build、Rust unit test、atest、CTS、実機確認は未実施。
+
+# r50ee95_doc_responsibility_readfix
+
+- `tis/DESIGN_JA.md` の `provider-data / retry / attribution 境界の完了条件` 見出しを `provider-data / retry / attribution 境界契約` へ修正した。
+- TIS 実装コードは変更していない。
+- build / unit / atest / CTS / 実機確認は未実行。
+
+# r50ee93-responsibility-boundary-docs
+
+- r51字幕表示に必要な libaribcaption Soong / renderer 統合境界を `tis/DESIGN_JA.md` と `tis/INTEGRATION.md` へ吸収した。
+- `future_work/r51/libaribcaption_android_soong_ready_plan(1).md` のうち現行r51境界に必要な内容を TIS 正式文書へ移し、future_work 側の重複計画を削除対象にした。
+- provider-data schema / TvProvider投影 / TIS runtime利用の正本境界を `tis/DESIGN_JA.md` に明記した。
+- Android/Soong build、instrumentation test、atest、CTS、実機確認は未実行。
+
 # r50dx10
 
 - r50dx9 のフェーズ5完了条件を再確認し、`PlaybackStartGateTest` に残っていた裸の PID 入力を `TsPid` に修正した。

@@ -1,3 +1,32 @@
+# r50ee96_doc_responsibility_scope_final
+
+- `GLOBAL_CODE_CONVENTION.md` の静的確認節を実装規約レビューの補助確認として表現し、完了判定の正本ではないことを明記。
+- `tuner_hal/DESIGN_JA.md` の `設計検証項目` を `契約確認観点` へ改め、表ヘッダの `テスト` を `確認観点` に補正。
+- `future_work/not_planned/tuner_linkcaps_ts_subtype_terminal_scope.md` の `完了判定` 見出しを `非採用範囲の管理境界` に補正。
+- `ARIB_SI_EPG_TvProvider投影方針.md` の確認観点内に残っていた `期待値テストデータ` 表現を `schema 整合確認データ` に補正。
+- コード実装変更なし。Android/Soong build、Rust unit test、atest、VTS、実機確認は未実施。
+
+# r50ee95_doc_responsibility_readfix
+
+- `future_work/not_planned/r50z_avsync_wallclock_research.md` を、現行設計・修正済み報告・旧調査経緯の混在から、A/V sync の非採用後続拡張だけを記録する文書へ縮約した。
+- `ARIB_SI_EPG_TvProvider投影方針.md` の `テスト方針` 見出しを `投影確認観点` へ修正し、実行手順・atest名・完了判定の正本ではないことを明記した。
+- Tuner HAL 実装コードは変更していない。
+- build / unit / atest / VTS / 実機確認は未実行。
+
+# r50ee94_nullable_future_work_reference_fix
+
+- R1として `future_work/r51/android14_aidl_rust_nullable_filter_boundary_blocker.md` の正本性表現を是正した。
+- nullable Binder 境界の現行 r51 設計判断・実装済み範囲・戻り値・状態遷移は `tuner_hal/DESIGN_JA.md` を正とし、future_work は後続検討資料として扱うことを明記した。
+- Tuner HAL 実装コードは変更していない。
+- build / unit / atest / VTS / 実機確認は未実行。
+
+# r50ee93-responsibility-boundary-docs
+
+- `tuner_hal/DESIGN_JA.md` から存在しない trace 文書への正本参照を削除した。
+- nullable Binder 境界（`IFilter.setDataSource(NULL)`、`IDescrambler.addPid/removePid(NULL)`、`IFrontend.setCallback(NULL)`、`ILnb.setCallback(NULL)`）を `future_work` 参照ではなく `tuner_hal/DESIGN_JA.md` 本体で管理する記述へ変更した。
+- 検証・完了判定・統合手順の正本を本書から分離し、`タスク完了判定の実施方法.md` と `tuner_hal2/INTEGRATION.md` への境界を維持した。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認は未実行。
+
 # r50ec5-fix1
 
 - `SourceBoundaryTxn` を source filter downstream queue 境界の所有者に拡張。

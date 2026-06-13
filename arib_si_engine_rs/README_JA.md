@@ -7,7 +7,7 @@
 
 ## 文字列 decoder の範囲
 
-ARIB 文字列 decoder の適用範囲、完了条件、未対応文字・escape の扱い、字幕との責務境界は `arib_si_engine_rs/DESIGN_JA.md` を正とする。README では同じ設計本文を再定義しない。
+ARIB 文字列 decoder の設計対象範囲、未対応文字・escape の扱い、字幕との責務境界は `arib_si_engine_rs/DESIGN_JA.md` を正とする。README では同じ設計本文を再定義しない。
 
 このライブラリは、字幕以外の SI/EPG 文字列を安定して文字列化し、TIS が TvProvider へ投影できる構造を返す。字幕本文、字幕管理データ、外字・DRCSを含む字幕表示処理は TIS 側の `libaribcaption` 経路の責務である。
 

@@ -35,7 +35,7 @@ AOSP の `linkCaps` は demux filter の main type 粒度で表現される。�
 - AV filter または RECORD filter を source とする要求は拒否する。
 - `TsPes -> TsAudio/TsVideo` は、PES が `raw=false`、明示 stream_id、destination open type と audio/video 整合ありの場合に `setDataSource()` を受ける。`configureAvStreamType()` 未実行だけでは `setDataSource()` を拒否しないが、AV filter の `start()` と配送側では AV stream type 設定済みを要求する。
 
-## 完了判定
+## 非採用範囲の管理境界
 
 - この文書の存在により、`linkCaps` の main type 表現と subtype 終端制約の差が既知の not planned 項目として扱われる。
 - 実装側は `setDataSource()` の subtype 別検査を正とし、`linkCaps` のみで成功可否を判断しない。

@@ -1,3 +1,10 @@
+# r50ee96_doc_responsibility_scope_final
+
+- `arib_si_engine_rs/DESIGN_JA.md` の `完了条件` / `単体テスト` / `受け入れ判定` / `期待値テストデータ` 表現を、設計対象範囲、入力境界、schema整合確認データの表現へ補正。
+- `arib_si_engine_rs/README_JA.md` の `完了条件` 表現を `設計対象範囲` に補正し、README が完了判定正本に見えないよう整理。
+- provider-data schema / canonical encode / 署名 / 保存上限 / 診断schema の正本性は維持し、完了判定やテスト実行手順の正本ではないことが読める構成に整理。
+- コード実装変更なし。Android/Soong build、Rust unit test、atest、実機確認は未実施。
+
 # r50dx10
 
 - r50dx10 では TIS 側テストの `TsPid` 型化追随のみを実施し、Rust provider-data 本体の追加変更は行っていない。

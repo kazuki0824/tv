@@ -27,6 +27,23 @@ PRODUCT_COPY_FILES += \
 
 CAS HAL 仮実装 は r51 の TIS 初回 ビルド確認ゲート へ含めない。
 
+
+## libaribcaption Soong / renderer 統合
+
+ARIB字幕表示の product 統合では、repoで供給される `libaribcaption-android` の product fork を Soong graph に含め、renderer 有効の `libaribcaption.so` を生成する。`libmaleicacid_arib_caption_jni` はこの `libaribcaption` に明示依存し、`MaleicacidTvInput` は `libmaleicacid_arib_caption_jni` を JNI library として同梱する。
+
+次は r51 字幕対応宣言条件として認めない。
+
+```text
+- `dlopen()` で .so が開けることだけ
+- decoder API を呼べることだけ
+- Canvas 文字描画だけ
+- renderer 無効 build
+- provenance と build option が不明な out-of-graph .so
+```
+
+ビルド確認では `m libaribcaption libmaleicacid_arib_caption_jni MaleicacidTvInput` を確認対象に含める。実機確認では字幕 PES 入力から libaribcaption renderer 出力、TIS字幕 overlay 表示までを接続確認対象とする。
+
 ## 権限と priv-app
 
 `MaleicacidTvInput` は product priv-app として組み込み、`privapp-permissions-maleicacid-tvinput` を同じ product image に入れる。
@@ -93,6 +110,7 @@ source build/envsetup.sh
 lunch <your_android_tv_14_product>-userdebug
 m nothing
 m \
+  libaribcaption \
   libmaleicacid_arib_si_engine_jni \
   libmaleicacid_arib_caption_jni \
   MaleicacidTvInput \
