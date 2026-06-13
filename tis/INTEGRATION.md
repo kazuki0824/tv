@@ -25,14 +25,14 @@ PRODUCT_COPY_FILES += \
 
 `MaleicacidTvInput` の `<uses-feature android:name="android.software.live_tv" />` は APK の要求であり、device feature 宣言の代替ではない。TIF 対応 product では上記 feature XML を product image へ配置する。
 
-CAS HAL 仮実装 は r51 の TIS 初回 ビルド確認ゲート へ含めない。
+CAS HAL 仮実装は TIS 初回ビルド確認ゲートへ含めない。
 
 
 ## libaribcaption Soong / renderer 統合
 
 ARIB字幕表示の product 統合では、repoで供給される `libaribcaption-android` の product fork を Soong graph に含め、renderer 有効の `libaribcaption.so` を生成する。`libmaleicacid_arib_caption_jni` はこの `libaribcaption` に明示依存し、`MaleicacidTvInput` は `libmaleicacid_arib_caption_jni` を JNI library として同梱する。
 
-次は r51 字幕対応宣言条件として認めない。
+次は字幕対応宣言条件として認めない。
 
 ```text
 - `dlopen()` で .so が開けることだけ
@@ -61,9 +61,9 @@ ARIB字幕表示の product 統合では、repoで供給される `libaribcaptio
 
 ## 録画・予約の除外
 
-r51 の product 統合では `rec/` 配下の予約録画 サービス / receiver / test module を product package または release確認条件へ入れない。TIS メタデータは `android:canRecord="false"` を維持し、`onCreateRecordingSession()` は `null` を返す状態を r51 の正とする。
+現行 product 統合では `rec/` 配下の予約録画 サービス / receiver / test module を product package または release確認条件へ入れない。TIS メタデータは `android:canRecord="false"` を維持し、`onCreateRecordingSession()` は `null` を返す状態を 現行仕様の正とする。
 
-`MaleicacidRecScopeTests` は r53 の録画・予約作業で明示指定して使う範囲に限定し、r51 の build / atest / VTS / 実機確認 gate へ混ぜない。
+`MaleicacidRecScopeTests` は録画・予約作業で明示指定して使う範囲に限定し、現行 product の build / atest / VTS / 実機確認 gate へ混ぜない。
 
 ## Direct Boot と boot receiver
 
@@ -71,7 +71,7 @@ TIS は `directBootAware=true` を維持する。`LOCKED_BOOT_COMPLETED` では 
 
 `ACTION_USER_UNLOCKED` は manifest receiver へ登録しない。Boot EPG sync / background maintenance は BootReceiver、UserUnlockReceiver、または明示的な maintenance scheduler からのみ起動する。`MaleicacidTvInputService.onCreate()` は Direct Boot pending drain、boot EPG sync、background maintenance を開始してはならない。
 
-Boot EPG sync / background maintenance の開始条件は、active ライブセッション、session creation in progress、setup scan、playback pipeline、scan manager running がすべて存在しないこととする。ライブセッション 作成要求が来た時点で boot/background task が未開始なら defer する。boot/background task が既に running の場合、r51 では boot/background task を cancel/defer し ライブ tune を優先する。
+Boot EPG sync / background maintenance の開始条件は、active ライブセッション、session creation in progress、setup scan、playback pipeline、scan manager running がすべて存在しないこととする。ライブセッション 作成要求が来た時点で boot/background task が未開始なら defer する。boot/background task が既に running の場合、現行仕様では boot/background task を cancel/defer し ライブ tune を優先する。
 
 ## flash 後の確認
 
@@ -97,9 +97,9 @@ adb shell dumpsys tv_input | grep -i Maleicacid
 - scrambled unsupported サービスは parental allowed でも playback success にせず、`notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN)` を使うことを確認する。
 
 
-## r51 ビルド・試験確認ゲート
+## ビルド・試験確認ゲート
 
-この章は、tv 直下に作業メモを置かずに TIS / ARIB SI / ARIB字幕 JNI の r51 確認対象を固定するための統合手順である。
+この章は、tv 直下に作業メモを置かずに TIS / ARIB SI / ARIB字幕 JNI の確認対象を固定するための統合手順である。
 
 ### Soong モジュールビルド
 
@@ -133,12 +133,12 @@ atest \
 
 `maleicacid_arib_si_engine_rs_test` は `arib_si_engine_rs/src/lib.rs` を試験用 crate として使う。`libmaleicacid_arib_caption_jni_test` は `tis/arib_caption_jni/src/lib.rs` を試験用 crate として使う。`MaleicacidTvInputAcceptanceTests` は `tis/tests/src/**/*.kt` と `tis/tests/assets` を確認対象とする。
 
-### r51 仕様カバレッジ
+### 仕様カバレッジ
 
 ```text
 - provider-data JSON v1、descriptor 診断、未対応 codec 試験データは maleicacid_arib_si_engine_rs_test と MaleicacidTvInputAcceptanceTests で確認する。
 - TvProvider 標準列投影、字幕トラック、視聴年齢制限、CAS 仮実装 境界、設定、scan、チャンネル登録 は MaleicacidTvInputAcceptanceTests の対象とする。
-- 録画・予約は r51 の確認対象外とし、MaleicacidRecScopeTests は r53 で明示指定して使う。
+- 録画・予約は現行 product の確認対象外とし、MaleicacidRecScopeTests は録画・予約作業で明示指定して使う。
 ```
 
 ### 実機投入後の確認

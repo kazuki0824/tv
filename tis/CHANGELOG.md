@@ -1,3 +1,9 @@
+# r50ee97_future_wording_and_wallclock_research_fix
+
+- TIS 設計・統合文書の r51/r52/r53 表現を、開発規則で定義されたリリース計画を暗黙に再定義しない現行 product / 現行仕様 / 非採用範囲の表現へ補正した。
+- 字幕、録画・予約、codec、EPG、boot/background maintenance の境界を、r番号ではなく対応宣言条件と設計正本吸収条件で記述する形へ補正した。
+- コード実装変更なし。Android/Soong build、Rust unit test、atest、VTS、実機確認は未実施。
+
 # r50ee96_doc_responsibility_scope_final
 
 - `tis/DESIGN_JA.md` の字幕節で `完了条件` としていた表現を `対応宣言条件` へ補正し、DESIGN_JA.md が完了判定正本に見えないよう文書責務を整理。

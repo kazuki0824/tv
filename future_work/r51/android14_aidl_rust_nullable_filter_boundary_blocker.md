@@ -1,10 +1,10 @@
-# Android 14 AIDL/Rust nullable Binder 境界の r51 阻害項目
+# Android 14 AIDL/Rust nullable Binder 境界の阻害項目
 
 ## 1. 管理対象
 
 本ファイルは、Android 14 系 Tuner HAL AIDL を Rust backend で実装する際に、AOSP framework / JNI / HIDL 側には存在する nullable Binder 意味論を、official Rust generated trait だけでは受け取れない構造課題を管理する。
 
-本件は `not_planned` ではない。AOSP 契約の意味論としては対応対象である一方、Android 14 AIDL / Rust generated trait 境界で実装方式が未固定であるため、r51 の AOSP 契約未達阻害項目として扱う。
+本件は `not_planned` ではない。AOSP 契約の意味論としては対応対象である一方、Android 14 AIDL / Rust generated trait 境界で実装方式が未固定であるため、現行の AOSP 契約未達阻害項目として扱う。
 
 同根として扱う対象は次の4件である。
 
@@ -15,7 +15,7 @@
 | `IFrontend.setCallback()` | `callback == null` で callback 解除 | Rust generated trait が non-null `Strong<dyn IFrontendCallback>` として現れ、Rust HAL public method だけでは null を受け取れない |
 | `ILnb.setCallback()` | `callback == null` で callback 解除 | Rust generated trait が non-null `Strong<dyn ILnbCallback>` として現れ、Rust HAL public method だけでは null を受け取れない |
 
-nullable Binder 境界の同根課題を追加する場合は、現行リリース設計の正本である `tuner_hal/DESIGN_JA.md` へ吸収してから扱う。本ファイルは後続検討資料であり、現行 r51 設計判断、完了判定、実装済み範囲の正本ではない。
+nullable Binder 境界の同根課題を追加する場合は、現行リリース設計の正本である `tuner_hal/DESIGN_JA.md` へ吸収してから扱う。本ファイルは未解決条件の記録であり、現行設計判断、完了判定、実装済み範囲の正本ではない。
 
 ## 2. 対象 Android バージョン
 
@@ -51,7 +51,7 @@ AIDL の `@nullable` 仕様では、Rust backend において `@nullable T` が 
 
 そのため、Android 14 系 official AIDL から生成された Rust trait が non-null `Strong<dyn IFilter>` 相当になる場合、Rust HAL 実装の public binder method だけでは null filter を受け取れない。
 
-r51 現行実装の public method が `Strong<dyn IFilter>` を要求する限り、`setDataSource(NULL)` と `optionalSourceFilter == NULL` を Rust HAL public method の内部だけで実装済み扱いにしてはならない。
+現行実装の public method が `Strong<dyn IFilter>` を要求する限り、`setDataSource(NULL)` と `optionalSourceFilter == NULL` を Rust HAL public method の内部だけで実装済み扱いにしてはならない。
 
 ## 5. 開発規則との関係
 
@@ -69,11 +69,11 @@ C++ / ネイティブ薄層を認める例外は、FMQ / EventFlag / dma-buf な
 
 上記禁止事項をすべて維持する場合、nullable filter を Rust HAL public method で受ける実装経路は固定できない。
 
-## 6. r51 判定
+## 6. 現行判定
 
 本件は AOSP 標準との構造的な未達である。
 
-ただし、現行の r51 Rust-only Tuner HAL 実装修正だけで完了可能な通常バグではない。
+ただし、現行の Rust-only Tuner HAL 実装修正だけで完了可能な通常バグではない。
 
 理由は、次の条件を同時に満たす実装経路が Android 14 Rust backend では成立しないためである。
 
@@ -84,22 +84,22 @@ C++ / ネイティブ薄層を認める例外は、FMQ / EventFlag / dma-buf な
 4. null filter を public Rust Binder method で受ける。
 ```
 
-したがって r51 では、nullable filter 経路を実装済み扱いにしてはならない。本件は Android 14 AIDL / Rust backend 境界の nullable 未解決課題であり、r51 の AOSP 契約未達阻害項目として追跡する。
+したがって現行方針では、nullable filter 経路を実装済み扱いにしてはならない。本件は Android 14 AIDL / Rust backend 境界の nullable 未解決課題であり、現行の AOSP 契約未達阻害項目として追跡する。
 
 ## 7. 現行リリース側との関係
 
-Rust generated trait で到達できる non-null filter 経路の r51 現行処理、error mapping、state cleanup、regression 防止条件は `tuner_hal/DESIGN_JA.md` を正とする。
+Rust generated trait で到達できる non-null filter 経路の現行処理、error mapping、state cleanup、regression 防止条件は `tuner_hal/DESIGN_JA.md` を正とする。
 
-一方、本ファイルは次の境界について、Android 14 AIDL / Rust generated trait 上の未解決点と後続検討条件を記録する。
+一方、本ファイルは次の境界について、Android 14 AIDL / Rust generated trait 上の未解決点と解決条件を記録する。
 
 - `IDescrambler.addPid()` / `removePid()` の `optionalSourceFilter == null` を PID-only として受ける実装可否。
 - `IFilter.setDataSource(null)` を demux source 復帰として受ける実装可否。
 - `IFrontend.setCallback(null)` を callback 解除として受ける実装可否。
 - `ILnb.setCallback(null)` を callback 解除として受ける実装可否。
 
-上記境界の現行 r51 設計判断、capability / profile 方針、実装済み範囲、戻り値、状態遷移は `tuner_hal/DESIGN_JA.md` を正とする。本ファイルを現行リリース契約の正本として参照してはならない。
+上記境界の現行設計判断、capability / profile 方針、実装済み範囲、戻り値、状態遷移は `tuner_hal/DESIGN_JA.md` を正とする。本ファイルを現行リリース契約の正本として参照してはならない。
 
-AOSP の意味論として上記境界は存在する。ただし Android 14 AIDL / Rust generated trait 境界で null filter を受け取る経路が未固定であるため、r51 では次を実装済みとして扱わない。
+AOSP の意味論として上記境界は存在する。ただし Android 14 AIDL / Rust generated trait 境界で null filter を受け取る経路が未固定であるため、現行方針では次を実装済みとして扱わない。
 
 - `IDescrambler.addPid()` / `removePid()` の `optionalSourceFilter == null` を PID-only として受ける実装。
 - `IFilter.setDataSource(null)` を demux source 復帰として受ける実装。
@@ -120,13 +120,13 @@ AOSP の意味論として上記境界は存在する。ただし Android 14 AID
 3. 開発規則を明示的に改訂し、Rust raw Binder transaction parser による generated trait 迂回を例外許可する。
 4. AOSP framework / tuner service 側で null 経路を HAL へ到達させる、または HAL 到達前に AOSP 意味論を満たす公式経路を固定する。
 
-現時点では、いずれも採用しない。したがって本件は r51 の AOSP 契約未達阻害項目として残る。
+現時点では、いずれも採用しない。したがって本件は 現行の AOSP 契約未達阻害項目として残る。
 
-## 9. 後続検討資料としての扱い
+## 9. 未解決条件記録としての扱い
 
-本ファイルは r51 の完了判定正本ではない。r51 の完了判定では、`tuner_hal/DESIGN_JA.md` に定義された現行実装済み範囲と、アーカイブ外の○×表を正とする。
+本ファイルは現行リリースの完了判定正本ではない。完了判定では、`tuner_hal/DESIGN_JA.md` に定義された現行実装済み範囲と、アーカイブ外の○×表を正とする。
 
-本ファイルは、nullable Binder 境界を将来実装済み扱いに戻す場合の未解決条件を記録するためにだけ使う。r51 で確認できるのは、Rust generated trait で到達できる non-null filter 経路の実装、error mapping、state cleanup、regression 防止に限定する。
+本ファイルは、nullable Binder 境界を実装済み扱いに戻すための未解決条件を記録するためにだけ使う。本ファイルで確認対象として扱えるのは、Rust generated trait で到達できる non-null filter 経路の実装、error mapping、state cleanup、regression 防止に限定する。
 
 AOSP 契約完全達成を主張するには、次をすべて満たす必要がある。
 
@@ -139,4 +139,4 @@ AOSP 契約完全達成を主張するには、次をすべて満たす必要が
 - 上記のために開発規則で禁止された C++ / NDK ラッパー、vendor 独自 AIDL、Rust raw Binder transaction parser を無断追加していない。
 - nullable 経路を実機または AOSP service 経路で確認できる。
 
-上記を満たす実装方式が固定されるまで、現行リリース側の設計判断は `tuner_hal/DESIGN_JA.md` を正とし、本ファイルは後続検討資料としてだけ扱う。
+上記を満たす実装方式が固定されるまで、現行リリース側の設計判断は `tuner_hal/DESIGN_JA.md` を正とし、本ファイルは未解決条件記録としてだけ扱う。

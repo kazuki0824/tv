@@ -1,3 +1,8 @@
+# r50ee97_future_wording_and_wallclock_research_fix
+
+- `arib_si_engine_rs/DESIGN_JA.md` の r51/r53 表現を、現行仕様・現行ライブ視聴対応・予約追従接続時の設計正本固定条件へ補正した。
+- コード実装変更なし。Android/Soong build、Rust unit test、atest、VTS、実機確認は未実施。
+
 # r50ee96_doc_responsibility_scope_final
 
 - `arib_si_engine_rs/DESIGN_JA.md` の `完了条件` / `単体テスト` / `受け入れ判定` / `期待値テストデータ` 表現を、設計対象範囲、入力境界、schema整合確認データの表現へ補正。

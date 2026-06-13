@@ -2,7 +2,7 @@
 
 ## 位置付け
 
-この文書は、本製品で将来実装しない範囲を記録する。対象は Tuner HAL の `linkCaps` 表現と、`setDataSource()` の subtype 別成立条件の差である。
+この文書は、本製品で実装しない範囲を記録する。対象は Tuner HAL の `linkCaps` 表現と、`setDataSource()` の subtype 別成立条件の差である。
 
 ## 固定内容
 
@@ -26,7 +26,7 @@ AOSP の `linkCaps` は demux filter の main type 粒度で表現される。�
 
 `linkCaps` だけでは、TS main type のうち `TsRaw` / `TsSection` / `TsPes` は source として成立し得るが、`TsAudio` / `TsVideo` / `TsRecord` は本製品では終端 filter である、という subtype 粒度の差を表現できない。
 
-この差は AOSP API の表現粒度と本製品設計の差であり、r51、r52、r53 のいずれでも追加実装対象にしない。
+この差は AOSP API の表現粒度と本製品設計の差であり、本製品では追加実装対象にしない。
 
 ## 実装上の扱い
 

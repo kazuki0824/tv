@@ -4,7 +4,7 @@
 
 この文書は、`arib_si_engine_rs` が抽出したARIB SI/EPG情報を Android `TvProvider` の標準列と `internal_provider_data` にどう投影するかを固定する。
 
-この文書では、EDCBとEPGStationから補完できた範囲を TvProvider 標準列への投影として固定する。r51 で標準列へ自然対応できる値だけを部分投影し、自然対応できない情報は TvProvider 標準列や一般ユーザー向け UI 本文へ投影しない。`internal_provider_data` の schema、key 名、正規化、署名、保存上限、診断情報 schema は `arib_si_engine_rs/DESIGN_JA.md` と `arib_si_engine_rs/schema/*.schema.json` を正とし、本書では再定義しない。
+この文書では、EDCBとEPGStationから補完できた範囲を TvProvider 標準列への投影として固定する。現行仕様で標準列へ自然対応できる値だけを部分投影し、自然対応できない情報は TvProvider 標準列や一般ユーザー向け UI 本文へ投影しない。`internal_provider_data` の schema、key 名、正規化、署名、保存上限、診断情報 schema は `arib_si_engine_rs/DESIGN_JA.md` と `arib_si_engine_rs/schema/*.schema.json` を正とし、本書では再定義しない。
 
 ## 2. 基本原則
 
@@ -19,7 +19,7 @@ UIに表示させたいが専用標準列がない情報:
 TIS内部だけが使う情報:
   TvProvider の internal_provider_data に置く。
 
-r51でTvProvider標準列へ非投影または部分投影にする情報:
+現行仕様でTvProvider標準列へ非投影または部分投影にする情報:
   自然対応できる一部の値だけを標準列へ投影する。
   自然対応できない値は標準列や一般ユーザー向け UI 本文へ投影しない。
   完全な構造は JSON v1 internal_provider_data へ構造化保存する。
@@ -45,7 +45,7 @@ EDCBとEPGStationの参照から補完できたため、次を設計として固
 | コンテンツジャンル 大分類 / 中分類 | `arib_si_engine_rs` がARIB分類値とARIB表示名を出力し、TIS がその表示名を `Programs.COLUMN_BROADCAST_GENRE` へ `TvContract.Programs.Genres.encode(...)` 形式で格納する | 元ARIB分類、大分類、中分類、表示文字列を保持 | Android TvProvider には放送規格由来ジャンル用の `COLUMN_BROADCAST_GENRE` があり、ARIB分類を直接 canonical genre と混同しないため |
 | Android canonical genre | 本文「ARIB分類から Android canonical genre への明示写像表」に一致する分類だけを TIS が `Programs.COLUMN_CANONICAL_GENRE` へ `TvContract.Programs.Genres.encode(...)` 形式で格納する。写像不能分類は直接設定しない。 | 写像元のARIB分類、TIS が直接設定した canonical genre、写像不能理由、TvProvider読み出し後のcanonical genreを診断用に区別して保持する。`arib_si_engine_rs` の SI event DTO は Android canonical genre を出力しない。provider-data に保持する canonical genre 投影結果は TIS が決定した値に限る。 | canonical genre は Android 定義済み値の列であるため、TIS が明示写像できる分類だけを設定し、推測写像を禁止するため |
 | コンテンツジャンルUI補足 | `Programs.COLUMN_LONG_DESCRIPTION` に `ジャンル: ...` として補足 | 元ARIB分類を保持 | 準正式案でUI向け補足として固定 |
-| event_group_descriptor | r51 では標準列や一般 UI 本文へは出さず、JSON v1 `internal_provider_data.relatedItems` に `shared` / `relay` / `movement` として構造化保存する。r53 で安全条件付き予約追従に使う。 | イベントグループ構造、グループ種別、ONID / TSID / service_id / event_id を保持 | Android標準列に自然対応しないが、予約追従に必要なARIB-native構造であるため |
+| event_group_descriptor | 現行仕様では標準列や一般 UI 本文へは出さず、JSON v1 `internal_provider_data.relatedItems` に `shared` / `relay` / `movement` として構造化保存する。予約追従へ接続する場合は、event identity と authoritative 条件を設計正本へ固定してから扱う。 | イベントグループ構造、グループ種別、ONID / TSID / service_id / event_id を保持 | Android標準列に自然対応しないが、予約追従に必要なARIB-native構造であるため |
 | parental_rating_descriptor | `TvContentRating` に変換できる範囲を `Programs.COLUMN_CONTENT_RATING` へ `TvContentRating.flattenToString()` 形式で格納する | country_code、レーティング値、未対応値、元記述子を保持 | Android TIF の視聴制限は `COLUMN_CONTENT_RATING` と `TvInputService.Session` の content block 通知に接続するため |
 | freeCA / isFree | `Programs.COLUMN_SCRAMBLED` に暗号化有無を格納し、必要に応じて `Programs.COLUMN_LONG_DESCRIPTION` に `放送種別: 無料放送/有料放送` として補足 | free_ca_modeを保持 | EDCB/EPGStationでユーザー向け情報として扱う |
 | event_id | `Programs.COLUMN_EVENT_ID` | イベントキーとして保持する | Android標準列がある |
@@ -93,22 +93,22 @@ freeCA / isFree UI補足:
 
 空文字列は出力しない。空セクションの見出しも出力しない。セクション間は改行1つで結合する。
 
-## 5. r51で標準列非投影または部分投影にするもの
+## 5. 現行仕様で標準列非投影または部分投影にするもの
 
 以下は、Android TvProvider の標準列または一般ユーザー向け UI 本文へ機械的に全量投影してはならない情報である。自然対応できる一部の値だけを標準列へ投影し、それ以外は `internal_provider_data` の JSON v1 schema と Rust provider-data serde構造体に従って構造化保存する。
 
-| データ・判断 | r51 の扱い | 境界を設ける理由 |
+| データ・判断 | 現行仕様の扱い | 境界を設ける理由 |
 |---|---|---|
 | series_descriptor series_name | JSON v1 `internal_provider_data` の series 構造に保存する。`COLUMN_TITLE` や `COLUMN_EPISODE_TITLE` へ機械的に入れない。 | EIT `event_name_char` の番組表表示名を壊さないため |
 | series episode/count / series id | `series_id` は `COLUMN_SERIES_ID` または `COLUMN_MULTI_SERIES_ID` へ、episode number は `COLUMN_EPISODE_DISPLAY_NUMBER` へ、last episode number は `COLUMN_ITEM_COUNT` へ自然対応として出す。repeat_label、program_pattern、expire_date、series_name などの完全構造は JSON v1 `internal_provider_data` に保持する。 | Android 標準列へ自然対応できる値だけを投影し、残りはARIB-native構造として保持するため |
-| linkage_descriptor | JSON v1 `internal_provider_data` の linkage 構造に保存し、r51 では標準列・一般 UI・予約追従へ接続しない。r53 で安全条件付き予約追従に使う。 | Android標準列に自然対応しないため |
-| event_group_descriptor | JSON v1 `internal_provider_data.relatedItems` に `shared` / `relay` / `movement` として構造化保存し、r51 では標準列・一般 UI・予約追従へ接続しない。r53 で安全条件付き予約追従に使う。 | Android標準列には自然対応しないが、予約追従に必要なARIB-native構造であるため |
-| multi-lingual name の候補列 | r51 で選んだ1文字列だけ標準 title/name へ出し、候補列は JSON v1 `internal_provider_data` に保存する。 | 標準 title/name は1値であり、候補列の全量投影先がないため |
+| linkage_descriptor | JSON v1 `internal_provider_data` の linkage 構造に保存し、現行仕様では標準列・一般 UI・予約追従へ接続しない。予約追従へ接続する場合は、event identity と authoritative 条件を設計正本へ固定してから扱う。 | Android標準列に自然対応しないため |
+| event_group_descriptor | JSON v1 `internal_provider_data.relatedItems` に `shared` / `relay` / `movement` として構造化保存し、現行仕様では標準列・一般 UI・予約追従へ接続しない。予約追従へ接続する場合は、event identity と authoritative 条件を設計正本へ固定してから扱う。 | Android標準列には自然対応しないが、予約追従に必要なARIB-native構造であるため |
+| multi-lingual name の候補列 | 現行仕様で選んだ1文字列だけ標準 title/name へ出し、候補列は JSON v1 `internal_provider_data` に保存する。 | 標準 title/name は1値であり、候補列の全量投影先がないため |
 | 復号診断 | JSON v1 `diagnostics.parserDiagnostics` または `diagnostics.descriptorDiagnostics` に保存し、標準列へは出さない。 | 一般ユーザー向けUI情報ではないため |
 | 公開可否診断 | JSON v1 `diagnostics.publishDiagnostics` に保存し、標準列へは出さない。 | 一般ユーザー向けUI情報ではないため |
 | 元記述子バイト列 | JSON v1 診断情報の `rawPrefixHex` または descriptor 構造に上限内で保存し、標準列へは出さない。 | UI表示情報ではなく、標準列を肥大化させるため |
 
-この表は「r51で標準列非投影または部分投影にするもの」の一覧である。`internal_provider_data` の schema 名、JSON key 名、BLOB サイズ上限、診断情報キー名、`LONG_DESCRIPTION` 最大長、長文切り詰め方針は `arib_si_engine_rs/DESIGN_JA.md` と schema ファイル側で固定し、この表に含めてはならない。
+この表は「現行仕様で標準列非投影または部分投影にするもの」の一覧である。`internal_provider_data` の schema 名、JSON key 名、BLOB サイズ上限、診断情報キー名、`LONG_DESCRIPTION` 最大長、長文切り詰め方針は `arib_si_engine_rs/DESIGN_JA.md` と schema ファイル側で固定し、この表に含めてはならない。
 
 ## 6. 実装契約
 
@@ -139,7 +139,7 @@ Programs.COLUMN_BROADCAST_GENRE:
   元の大分類 / 中分類 / 元値 / 表示文字列は `internal_provider_data` に保持する。
 
 Programs.COLUMN_CANONICAL_GENRE:
-  r51 では、本文「ARIB分類から Android canonical genre への明示写像表」に一致する分類だけを TIS が 主投影として直接設定する。
+  現行仕様では、本文「ARIB分類から Android canonical genre への明示写像表」に一致する分類だけを TIS が 主投影として直接設定する。
   写像後の値だけを `TvContract.Programs.Genres.encode(...)` 形式で `ContentValues` に設定する。
   写像不能な ARIB 分類、reserved、extension、others、user_nibble 由来分類を、TIS が推測で canonical genre に入れてはならない。
   Android TvProvider が `Programs.COLUMN_BROADCAST_GENRE` から canonical genre を内部補完する場合があるため、TIS が直接設定した値と TvProvider 読み出し後の値は 診断情報で区別する。
@@ -184,7 +184,7 @@ Programs.COLUMN_INTERNAL_PROVIDER_DATA:
 
 ## 8. 今後の固定方法
 
-この文書で r51 標準列投影対象外とした項目を将来標準列へ投影したい場合は、次を満たすこと。
+この文書で標準列投影対象外とした項目を標準列へ投影対象として追加する場合は、次を満たすこと。
 
 ```text
 1. どの標準列へ入れるかを明記する。
@@ -257,4 +257,4 @@ TIS は次の表に一致する分類だけを `Programs.COLUMN_CANONICAL_GENRE`
 | EIT `free_CA_mode` | TvProvider scrambled 判定、provider-data JSON | `1` を scrambled、`0` を not scrambled とし、CAS 状態と混同しない。 |
 | 音声 ISO639 language | TvProvider audio language メタデータ、provider-data JSON | PMT / descriptor から取得可能な言語だけ設定し、取得不能時に推測しない。 |
 | 視聴年齢制限 | `COLUMN_CONTENT_RATING`、provider-data JSON、診断情報 | 既存レーティングドメイン と整合する値だけ設定し、reserved / malformed / domain不明は 診断情報に留める。 |
-| event_group_descriptor | provider-data JSON `relatedItems` | r51 では保存・診断のみ。r53 で安全条件付き予約追従に使う。 |
+| event_group_descriptor | provider-data JSON `relatedItems` | 現行仕様では保存・診断のみ。予約追従へ接続する場合は安全条件を設計正本へ固定する。 |
