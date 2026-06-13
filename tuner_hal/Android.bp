@@ -58,20 +58,6 @@ rust_library {
     ],
 }
 
-prebuilt_etc {
-    name: "maleicacid_tuner_hal_vts_config_aidl_v2",
-    vendor: true,
-    src: "config/tuner_vts_config_aidl_V2.xml",
-    filename: "tuner_vts_config_aidl_V2.xml",
-}
-
-
-filegroup {
-    name: "maleicacid_tuner_hal_lab_profiles",
-    srcs: ["profiles/*.yaml"],
-}
-
-
 cc_library_shared {
     name: "libmaleicacid_tuner_hal_fmq_shim",
     vendor: true,
@@ -124,20 +110,6 @@ rust_library {
         "libmaleicacid_tuner_hal_soft_demux",
         "libmaleicacid_tuner_hal_descrambler",
         "libmaleicacid_tuner_hal_dvr",
-    ],
-}
-
-rust_binary {
-    name: "maleicacid.tv.tuner_hal-service",
-    relative_install_path: "hw",
-    vendor: true,
-    crate_root: "binder_service/src/main.rs",
-    srcs: ["binder_service/src/main.rs"],
-    edition: "2021",
-    init_rc: ["tuner-hal-service.rc"],
-    vintf_fragments: ["tuner-hal-service.xml"],
-    rustlibs: [
-        "libmaleicacid_tuner_hal_binder_service",
     ],
 }
 
@@ -215,21 +187,3 @@ rust_test {
     auto_gen_config: true,
     test_suites: ["general-tests"],
 }
-
-
-prebuilt_etc {
-    name: "maleicacid_tuner_hal_ueventd_rc",
-    vendor: true,
-    src: "config/ueventd.tuner_hal.rc",
-    filename: "ueventd.tuner_hal.rc",
-}
-
-filegroup {
-    name: "maleicacid_tuner_hal_sepolicy_files",
-    srcs: [
-        "sepolicy/file_contexts",
-        "sepolicy/device.te",
-        "sepolicy/tuner_hal.te",
-    ],
-}
-
