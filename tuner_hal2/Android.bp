@@ -1,0 +1,485 @@
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+// external/rust/android-crates-io で libloom が供給される環境だけで使う任意defaults。
+// 通常testには適用しない。loom対象testを追加するときに defaults に指定する。
+rust_defaults {
+    name: "maleicacid_tuner_hal2_loom_test_defaults",
+    rustlibs: ["libloom"],
+    cfgs: ["loom"],
+}
+
+prebuilt_etc {
+    name: "maleicacid_tuner_hal2_ueventd_rc",
+    vendor: true,
+    src: "config/ueventd.tuner_hal2.rc",
+    filename: "ueventd.tuner_hal2.rc",
+}
+
+
+cc_library_shared {
+    name: "libmaleicacid_tuner_hal2_fmq_shim",
+    vendor: true,
+    srcs: ["fmq_shim/src/tuner_fmq_shim.cpp"],
+    export_include_dirs: ["fmq_shim/include"],
+    shared_libs: [
+        "libfmq",
+        "libutils",
+        "libcutils",
+        "libbase",
+        "libc++",
+        "libdmabufheap",
+        "libhardware",
+        "android.hardware.common.fmq-V1-ndk",
+        "android.hardware.common-V2-ndk",
+    ],
+    cflags: ["-std=c++20"],
+}
+
+rust_library {
+    name: "libmaleicacid_tuner_hal2_common",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal2_common",
+    srcs: ["common/src/lib.rs", "common/src/os_abi.rs"],
+    edition: "2021",
+}
+
+rust_library {
+    name: "libmaleicacid_tuner_hal2_control_core",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal2_control_core",
+    srcs: ["control/src/lib.rs"],
+    edition: "2021",
+    rustlibs: ["libmaleicacid_tuner_hal2_common"],
+}
+
+rust_library {
+    name: "libmaleicacid_tuner_hal2_fmq",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal2_fmq",
+    srcs: ["fmq/src/lib.rs"],
+    edition: "2021",
+    shared_libs: ["libmaleicacid_tuner_hal2_fmq_shim"],
+}
+
+rust_library {
+    name: "libmaleicacid_tuner_hal2_device",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal2_device",
+    crate_root: "device/src/lib.rs",
+    srcs: [
+        "device/src/lib.rs",
+        "device/src/dvb/mod.rs",
+        "device/src/dvb/abi.rs",
+        "device/src/dvb/tune_mapping.rs",
+        "device/src/dvb/explicit_scan.rs",
+        "device/src/px4/mod.rs",
+        "device/src/px4/abi.rs",
+        "device/src/px4/tune_mapping.rs",
+        "device/src/runtime/mod.rs",
+        "device/src/runtime/frontend_runtime.rs",
+        "device/src/runtime/frontend_worker.rs",
+        "device/src/runtime/backend_worker.rs",
+        "device/src/runtime/scan_session.rs",
+        "device/src/runtime/tune_txn.rs",
+        "device/src/runtime/reader.rs",
+        "device/src/runtime/live_pump.rs",
+        "device/src/runtime/dvb_backend.rs",
+        "device/src/runtime/px4_backend.rs",
+    ],
+    edition: "2021",
+    rustlibs: ["libmaleicacid_tuner_hal2_common", "libmaleicacid_tuner_hal2_control_core"],
+}
+
+rust_library {
+    name: "libmaleicacid_tuner_hal2_demux",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal2_demux",
+    crate_root: "demux/src/lib.rs",
+    srcs: [
+        "demux/src/lib.rs",
+        "demux/src/parser/mod.rs",
+        "demux/src/parser/sections.rs",
+        "demux/src/parser/ts_core.rs",
+        "demux/src/parser/packet_pipeline.rs",
+        "demux/src/parser/record_index.rs",
+        "demux/src/runtime/mod.rs",
+        "demux/src/runtime/demux.rs",
+        "demux/src/runtime/filter.rs",
+        "demux/src/runtime/dvr.rs",
+        "demux/src/runtime/runtime_io.rs",
+        "demux/src/runtime/source_boundary.rs",
+        "demux/src/runtime/generation_boundary.rs",
+        "demux/src/runtime/configure_txn.rs",
+        "demux/src/av/mod.rs",
+        "demux/src/av/shared_backing.rs",
+        "demux/src/av/slot.rs",
+        "demux/src/av/release_txn.rs",
+        "demux/src/av/event.rs",
+    ],
+    edition: "2021",
+    rustlibs: ["libmaleicacid_tuner_hal2_common", "libmaleicacid_tuner_hal2_fmq", "libmaleicacid_tuner_hal2_control_core"],
+}
+
+rust_library {
+    name: "libmaleicacid_tuner_hal2_descrambler",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal2_descrambler",
+    crate_root: "descrambler/src/lib.rs",
+    srcs: [
+        "descrambler/src/lib.rs",
+        "descrambler/src/core/mod.rs",
+        "descrambler/src/core/multi2.rs",
+        "descrambler/src/core/packet.rs",
+        "descrambler/src/runtime/mod.rs",
+        "descrambler/src/runtime/token.rs",
+        "descrambler/src/runtime/key_table.rs",
+        "descrambler/src/runtime/session.rs",
+        "descrambler/src/runtime/pid_claim.rs",
+        "descrambler/src/runtime/session_txn.rs",
+    ],
+    edition: "2021",
+    rustlibs: ["libmaleicacid_tuner_hal2_common", "libmaleicacid_tuner_hal2_control_core"],
+}
+
+rust_library {
+    name: "libmaleicacid_tuner_hal2_resource_ledger",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal2_resource_ledger",
+    srcs: ["resource_ledger/src/lib.rs"],
+    edition: "2021",
+    rustlibs: ["libmaleicacid_tuner_hal2_common"],
+}
+
+rust_library {
+    name: "libmaleicacid_tuner_hal2_lnb",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal2_lnb",
+    crate_root: "lnb/src/lib.rs",
+    srcs: [
+        "lnb/src/lib.rs",
+        "lnb/src/runtime.rs",
+        "lnb/src/apply_txn.rs",
+        "lnb/src/lifecycle_txn.rs",
+        "lnb/src/operation_guard.rs",
+    ],
+    edition: "2021",
+    rustlibs: ["libmaleicacid_tuner_hal2_common", "libmaleicacid_tuner_hal2_resource_ledger", "libmaleicacid_tuner_hal2_control_core"],
+}
+
+rust_library {
+    name: "libmaleicacid_tuner_hal2_service_runtime",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal2_service_runtime",
+    crate_root: "service_runtime/src/lib.rs",
+    srcs: [
+        "service_runtime/src/lib.rs",
+        "service_runtime/src/boot.rs",
+        "service_runtime/src/dispatch.rs",
+        "service_runtime/src/registry.rs",
+        "service_runtime/src/diagnostics.rs",
+        "service_runtime/src/command_dispatch.rs",
+        "service_runtime/src/object_table.rs",
+        "service_runtime/src/runtime_result.rs",
+        "service_runtime/src/runtime_handlers.rs",
+        "service_runtime/src/capability_profile.rs",
+        "service_runtime/src/callback_registry.rs",
+    ],
+    edition: "2021",
+    rustlibs: [
+        "libmaleicacid_tuner_hal2_common",
+        "libmaleicacid_tuner_hal2_domain_request",
+        "libmaleicacid_tuner_hal2_device",
+        "libmaleicacid_tuner_hal2_demux",
+        "libmaleicacid_tuner_hal2_descrambler",
+        "libmaleicacid_tuner_hal2_lnb",
+        "libmaleicacid_tuner_hal2_resource_ledger",
+    ],
+}
+
+
+rust_library {
+    name: "libmaleicacid_tuner_hal2_domain_request",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal2_domain_request",
+    crate_root: "domain_request/src/lib.rs",
+    srcs: ["domain_request/src/lib.rs"],
+    edition: "2021",
+    rustlibs: ["libmaleicacid_tuner_hal2_common"],
+}
+
+rust_library {
+    name: "libmaleicacid_tuner_hal2_binder_adapter",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal2_binder_adapter",
+    crate_root: "binder_adapter/src/lib.rs",
+    srcs: [
+        "binder_adapter/src/lib.rs",
+        "binder_adapter/src/frontend.rs",
+        "binder_adapter/src/demux.rs",
+        "binder_adapter/src/filter.rs",
+        "binder_adapter/src/dvr.rs",
+        "binder_adapter/src/descrambler.rs",
+        "binder_adapter/src/lnb.rs",
+        "binder_adapter/src/status.rs",
+        "binder_adapter/src/aidl_method.rs",
+        "binder_adapter/src/domain_request.rs",
+    ],
+    edition: "2021",
+    rustlibs: [
+        "libmaleicacid_tuner_hal2_common",
+        "libmaleicacid_tuner_hal2_domain_request",
+    ],
+}
+
+rust_library {
+    name: "libmaleicacid_tuner_hal2_aidl_service",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal2_aidl_service",
+    crate_root: "aidl_service/src/lib.rs",
+    srcs: [
+        "aidl_service/src/lib.rs",
+        "aidl_service/src/tuner_service.rs",
+        "aidl_service/src/service_entry.rs",
+        "aidl_service/src/frontend_object.rs",
+        "aidl_service/src/demux_object.rs",
+        "aidl_service/src/filter_object.rs",
+        "aidl_service/src/dvr_object.rs",
+        "aidl_service/src/descrambler_object.rs",
+        "aidl_service/src/lnb_object.rs",
+        "aidl_service/src/callback_bridge.rs",
+        "aidl_service/src/callback_slot.rs",
+        "aidl_service/src/callback_store.rs",
+        "aidl_service/src/native_handle_bridge.rs",
+        "aidl_service/src/error_bridge.rs",
+        "aidl_service/src/object_handle.rs",
+        "aidl_service/src/object_runtime.rs",
+        "aidl_service/src/input_snapshot.rs",
+        "aidl_service/src/aidl_v2_conversion_contract.rs",
+    ],
+    edition: "2021",
+    rustlibs: [
+        "android.hardware.tv.tuner-V2-rust",
+        "android.hardware.common-V2-rust",
+        "libbinder_rs",
+        "libmaleicacid_tuner_hal2_common",
+        "libmaleicacid_tuner_hal2_binder_adapter",
+        "libmaleicacid_tuner_hal2_service_runtime",
+        "libmaleicacid_tuner_hal2_device",
+        "libmaleicacid_tuner_hal2_fmq",
+    ],
+}
+
+rust_binary {
+    name: "android.hardware.tv.tuner-service.maleicacid2",
+    vendor: true,
+    relative_install_path: "hw",
+    crate_name: "maleicacid_tuner_hal2_service_main",
+    srcs: ["aidl_service/src/main.rs"],
+    edition: "2021",
+    init_rc: ["init/android.hardware.tv.tuner-service.maleicacid2.rc"],
+    vintf_fragments: ["manifest/android.hardware.tv.tuner-service.maleicacid2.xml"],
+    rustlibs: [
+        "libmaleicacid_tuner_hal2_aidl_service",
+        "libbinder_rs",
+    ],
+}
+
+rust_test {
+    name: "maleicacid_tuner_hal2_common_test",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal2_common_test",
+    srcs: ["common/src/lib.rs", "common/src/os_abi.rs"],
+    edition: "2021",
+    auto_gen_config: true,
+    test_suites: ["general-tests"],
+}
+
+rust_test {
+    name: "maleicacid_tuner_hal2_device_test",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal2_device_test",
+    crate_root: "device/src/lib.rs",
+    srcs: [
+        "device/src/lib.rs",
+        "device/src/dvb/mod.rs",
+        "device/src/dvb/abi.rs",
+        "device/src/dvb/tune_mapping.rs",
+        "device/src/dvb/explicit_scan.rs",
+        "device/src/px4/mod.rs",
+        "device/src/px4/abi.rs",
+        "device/src/px4/tune_mapping.rs",
+        "device/src/runtime/mod.rs",
+        "device/src/runtime/frontend_runtime.rs",
+        "device/src/runtime/frontend_worker.rs",
+        "device/src/runtime/tune_txn.rs",
+        "device/src/runtime/reader.rs",
+        "device/src/runtime/dvb_backend.rs",
+        "device/src/runtime/px4_backend.rs",
+    ],
+    edition: "2021",
+    rustlibs: ["libmaleicacid_tuner_hal2_common", "libmaleicacid_tuner_hal2_control_core"],
+    auto_gen_config: true,
+    test_suites: ["general-tests"],
+}
+
+rust_test {
+    name: "maleicacid_tuner_hal2_demux_test",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal2_demux_test",
+    crate_root: "demux/src/lib.rs",
+    srcs: [
+        "demux/src/lib.rs",
+        "demux/src/parser/mod.rs",
+        "demux/src/parser/sections.rs",
+        "demux/src/parser/ts_core.rs",
+        "demux/src/parser/packet_pipeline.rs",
+        "demux/src/parser/record_index.rs",
+        "demux/src/runtime/mod.rs",
+        "demux/src/runtime/demux.rs",
+        "demux/src/runtime/filter.rs",
+        "demux/src/runtime/dvr.rs",
+        "demux/src/runtime/runtime_io.rs",
+        "demux/src/runtime/source_boundary.rs",
+        "demux/src/runtime/generation_boundary.rs",
+        "demux/src/runtime/configure_txn.rs",
+        "demux/src/av/mod.rs",
+        "demux/src/av/shared_backing.rs",
+        "demux/src/av/slot.rs",
+        "demux/src/av/release_txn.rs",
+        "demux/src/av/event.rs",
+    ],
+    edition: "2021",
+    rustlibs: ["libmaleicacid_tuner_hal2_common", "libmaleicacid_tuner_hal2_fmq", "libmaleicacid_tuner_hal2_control_core"],
+    auto_gen_config: true,
+    test_suites: ["general-tests"],
+}
+
+
+rust_test {
+    name: "maleicacid_tuner_hal2_resource_ledger_test",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal2_resource_ledger_test",
+    srcs: ["resource_ledger/src/lib.rs"],
+    edition: "2021",
+    rustlibs: ["libmaleicacid_tuner_hal2_common"],
+    auto_gen_config: true,
+    test_suites: ["general-tests"],
+}
+
+rust_test {
+    name: "maleicacid_tuner_hal2_lnb_test",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal2_lnb_test",
+    crate_root: "lnb/src/lib.rs",
+    srcs: [
+        "lnb/src/lib.rs",
+        "lnb/src/runtime.rs",
+        "lnb/src/apply_txn.rs",
+        "lnb/src/lifecycle_txn.rs",
+        "lnb/src/operation_guard.rs",
+    ],
+    edition: "2021",
+    rustlibs: ["libmaleicacid_tuner_hal2_common", "libmaleicacid_tuner_hal2_resource_ledger", "libmaleicacid_tuner_hal2_control_core"],
+    auto_gen_config: true,
+    test_suites: ["general-tests"],
+}
+
+rust_test {
+    name: "maleicacid_tuner_hal2_service_runtime_test",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal2_service_runtime_test",
+    crate_root: "service_runtime/src/lib.rs",
+    srcs: [
+        "service_runtime/src/lib.rs",
+        "service_runtime/src/boot.rs",
+        "service_runtime/src/dispatch.rs",
+        "service_runtime/src/registry.rs",
+        "service_runtime/src/diagnostics.rs",
+        "service_runtime/src/command_dispatch.rs",
+        "service_runtime/src/object_table.rs",
+        "service_runtime/src/runtime_result.rs",
+        "service_runtime/src/runtime_handlers.rs",
+        "service_runtime/src/capability_profile.rs",
+        "service_runtime/src/callback_registry.rs",
+    ],
+    edition: "2021",
+    rustlibs: [
+        "libmaleicacid_tuner_hal2_common",
+        "libmaleicacid_tuner_hal2_domain_request",
+        "libmaleicacid_tuner_hal2_device",
+        "libmaleicacid_tuner_hal2_demux",
+        "libmaleicacid_tuner_hal2_descrambler",
+        "libmaleicacid_tuner_hal2_lnb",
+        "libmaleicacid_tuner_hal2_resource_ledger",
+    ],
+    auto_gen_config: true,
+    test_suites: ["general-tests"],
+}
+
+rust_test {
+    name: "maleicacid_tuner_hal2_binder_adapter_test",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal2_binder_adapter_test",
+    crate_root: "binder_adapter/src/lib.rs",
+    srcs: [
+        "binder_adapter/src/lib.rs",
+        "binder_adapter/src/frontend.rs",
+        "binder_adapter/src/demux.rs",
+        "binder_adapter/src/filter.rs",
+        "binder_adapter/src/dvr.rs",
+        "binder_adapter/src/descrambler.rs",
+        "binder_adapter/src/lnb.rs",
+        "binder_adapter/src/status.rs",
+        "binder_adapter/src/aidl_method.rs",
+        "binder_adapter/src/domain_request.rs",
+    ],
+    edition: "2021",
+    rustlibs: [
+        "libmaleicacid_tuner_hal2_common",
+        "libmaleicacid_tuner_hal2_domain_request",
+    ],
+    auto_gen_config: true,
+    test_suites: ["general-tests"],
+}
+rust_test {
+    name: "maleicacid_tuner_hal2_aidl_service_test",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal2_aidl_service_test",
+    crate_root: "aidl_service/src/lib.rs",
+    srcs: [
+        "aidl_service/src/lib.rs",
+        "aidl_service/src/tuner_service.rs",
+        "aidl_service/src/service_entry.rs",
+        "aidl_service/src/frontend_object.rs",
+        "aidl_service/src/demux_object.rs",
+        "aidl_service/src/filter_object.rs",
+        "aidl_service/src/dvr_object.rs",
+        "aidl_service/src/descrambler_object.rs",
+        "aidl_service/src/lnb_object.rs",
+        "aidl_service/src/callback_bridge.rs",
+        "aidl_service/src/callback_slot.rs",
+        "aidl_service/src/callback_store.rs",
+        "aidl_service/src/native_handle_bridge.rs",
+        "aidl_service/src/error_bridge.rs",
+        "aidl_service/src/object_handle.rs",
+        "aidl_service/src/object_runtime.rs",
+        "aidl_service/src/input_snapshot.rs",
+        "aidl_service/src/aidl_v2_conversion_contract.rs",
+    ],
+    edition: "2021",
+    rustlibs: [
+        "android.hardware.tv.tuner-V2-rust",
+        "android.hardware.common-V2-rust",
+        "libbinder_rs",
+        "libmaleicacid_tuner_hal2_common",
+        "libmaleicacid_tuner_hal2_binder_adapter",
+        "libmaleicacid_tuner_hal2_service_runtime",
+        "libmaleicacid_tuner_hal2_device",
+        "libmaleicacid_tuner_hal2_fmq",
+    ],
+    auto_gen_config: true,
+    test_suites: ["general-tests"],
+}
+

@@ -1,0 +1,39 @@
+pub mod runtime;
+pub mod apply_txn;
+pub mod lifecycle_txn;
+pub mod operation_guard;
+
+pub use runtime::{LnbBackendOps, LnbElectricalState, LnbRuntime, LnbRuntimeState, LnbTone, LnbVoltage};
+pub use apply_txn::{LnbApplyOutcome, LnbApplyStep, LnbApplyTxn};
+pub use lifecycle_txn::{LnbLifecycleOutcome, LnbLifecycleReason, LnbLifecycleStep, LnbLifecycleTxn};
+pub use operation_guard::{LnbOperationFailureRecord, LnbOperationGuard, LnbOperationKind, LnbOperationLedger};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LnbFailureKind {
+    InvalidState,
+    OperationAlreadyActive,
+    OperationLockFailed,
+    BackendApplyFailed,
+    RegistryCommitFailed,
+    CallbackClearFailed,
+    DropWithoutClose,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LnbFailureStep {
+    ValidateState,
+    MarkClosing,
+    BuildSafeState,
+    ApplyBackend,
+    CommitRegistry,
+    ClearCallback,
+    CommitClosed,
+    DropLeakRecord,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LnbFailureRecord {
+    pub lnb_id: i32,
+    pub kind: LnbFailureKind,
+    pub step: LnbFailureStep,
+}
