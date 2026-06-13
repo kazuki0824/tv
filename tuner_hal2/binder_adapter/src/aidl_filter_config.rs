@@ -14,7 +14,7 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     DemuxFilterSectionBits::DemuxFilterSectionBits,
     DemuxFilterSectionSettings::DemuxFilterSectionSettings,
     DemuxFilterSectionSettingsCondition::DemuxFilterSectionSettingsCondition,
-    DemuxFilterSectionTableInfo::DemuxFilterSectionTableInfo,
+    DemuxFilterSectionSettingsConditionTableInfo::DemuxFilterSectionSettingsConditionTableInfo,
 };
 use maleicacid_tuner_hal2_common::{HalError, HalInvalidArgumentKind};
 use maleicacid_tuner_hal2_demux::config::{
@@ -107,7 +107,7 @@ fn build_section_bits_condition(bits: &DemuxFilterSectionBits) -> Result<Section
     Ok(SectionCondition { kind: SectionConditionKind::SectionBits, filter: bits.filter.clone(), mask: bits.mask.clone(), mode: bits.mode.clone(), table_id: None, version: None })
 }
 
-fn build_table_info_condition(table: &DemuxFilterSectionTableInfo) -> Result<SectionCondition, HalError> {
+fn build_table_info_condition(table: &DemuxFilterSectionSettingsConditionTableInfo) -> Result<SectionCondition, HalError> {
     let table_id = normalize_section_table_id(table.tableId)?;
     let version = normalize_table_info_version(table.version)?;
     Ok(SectionCondition { kind: SectionConditionKind::TableInfo, filter: vec![table_id as u8], mask: vec![0xff], mode: vec![0], table_id: Some(table_id), version })
@@ -249,7 +249,7 @@ mod tests {
 
     #[test]
     fn invalid_section_condition_is_invalid_argument() {
-        let condition = DemuxFilterSectionSettingsCondition::TableInfo(DemuxFilterSectionTableInfo { tableId: 300, version: -1 });
+        let condition = DemuxFilterSectionSettingsCondition::TableInfo(DemuxFilterSectionSettingsConditionTableInfo { tableId: 300, version: -1 });
         assert!(build_section_condition(&condition).is_err());
     }
 

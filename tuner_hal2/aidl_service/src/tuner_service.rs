@@ -9,11 +9,9 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     DemuxCapabilities::DemuxCapabilities,
     DemuxFilterMainType::DemuxFilterMainType,
     DemuxFilterSettings::DemuxFilterSettings,
-    DemuxFilterSubType::DemuxFilterSubType,
     DemuxFilterType::DemuxFilterType,
     DemuxInfo::DemuxInfo,
     DemuxPid::DemuxPid,
-    DemuxTsFilterType::DemuxTsFilterType,
     DvrSettings::DvrSettings,
     DvrType::DvrType,
     FilterDelayHint::FilterDelayHint,
@@ -58,12 +56,13 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
 use binder::binder_impl::Binder;
 use binder::{BinderFeatures, Interface, Result as BinderResult, Status, Strong};
 use maleicacid_tuner_hal2_binder_adapter::{
-    AidlApi, AidlFailureSource, AidlMethodAdapter, AidlMethodCall, AidlMethodPlan,
-    AidlObjectGeneration, AidlObjectId, AidlObjectKind, AidlStatusMapper, TunerStatusCode,
-    FilterReleaseAvHandleRequest, FilterSetDataSourceRequest, DvrFilterLinkRequest,
     build_dvr_configure_request, build_dvr_open_request, build_filter_av_stream_type_request,
-    build_filter_delay_hint_request, build_filter_summary_for_open_type, build_lnb_satellite_position_request,
-    build_lnb_tone_request, build_lnb_voltage_request, build_open_filter_request,
+    build_filter_delay_hint_request, build_filter_summary_for_open_type,
+    build_lnb_satellite_position_request, build_lnb_tone_request, build_lnb_voltage_request,
+    build_open_filter_request, AidlApi, AidlFailureSource, AidlMethodAdapter, AidlMethodCall,
+    AidlMethodPlan, AidlObjectGeneration, AidlObjectId, AidlObjectKind, AidlStatusMapper,
+    DvrFilterLinkRequest, FilterReleaseAvHandleRequest, FilterSetDataSourceRequest,
+    TunerStatusCode,
 };
 use maleicacid_tuner_hal2_common::{
     is_japan_bs_if_frequency_hz, is_japan_cs110_if_frequency_hz,
@@ -82,7 +81,9 @@ use maleicacid_tuner_hal2_service_runtime::{
     RuntimeOwnerRelation, TunerServiceRuntime,
 };
 
-use crate::callback_store::frontend_callback_for_owner;
+use crate::callback_store::{
+    clear_owner_callbacks, frontend_callback_for_owner, retain_dvr_callback, retain_filter_callback,
+};
 use crate::demux_object::DemuxAidlObject;
 use crate::descrambler_object::DescramblerAidlObject;
 use crate::dvr_object::DvrAidlObject;
@@ -90,10 +91,20 @@ use crate::filter_object::FilterAidlObject;
 use crate::frontend_object::FrontendAidlObject;
 use crate::lnb_object::LnbAidlObject;
 use crate::object_handle::AidlObjectHandle;
-use crate::object_runtime::SharedTunerRuntime;
+use crate::object_runtime::{record_callback_registration, SharedTunerRuntime};
 
 type TunerQueueDesc = CommonMqDescriptor<i8, CommonSynchronizedReadWrite>;
 type TunerNativeHandle = CommonNativeHandle;
+
+const TUNER_HAL2_MAX_LIVE_DEMUXES: i32 = 8;
+const TUNER_HAL2_DEMUX_MAX_TS_FILTERS: i32 = 32;
+const TUNER_HAL2_DEMUX_MAX_SECTION_FILTERS: i32 = 8;
+const TUNER_HAL2_DEMUX_MAX_AUDIO_FILTERS: i32 = 4;
+const TUNER_HAL2_DEMUX_MAX_VIDEO_FILTERS: i32 = 4;
+const TUNER_HAL2_DEMUX_MAX_PES_FILTERS: i32 = 8;
+const TUNER_HAL2_MAX_SECTION_FILTER_BYTES: i64 = 16;
+const DEMUX_FILTER_MAIN_TYPE_COUNT: usize = 5;
+const SUPPORTED_DEMUX_FILTER_CAPS: i32 = DemuxFilterMainType::TS.0;
 
 #[derive(Clone)]
 pub struct TunerAidlService {
@@ -101,6 +112,36 @@ pub struct TunerAidlService {
 }
 
 impl Interface for TunerAidlService {}
+
+fn demux_link_caps_for_ts_filter_linkage() -> Vec<i32> {
+    let mut link_caps = vec![0; DEMUX_FILTER_MAIN_TYPE_COUNT];
+    link_caps[0] = DemuxFilterMainType::TS.0;
+    link_caps
+}
+
+fn tuner_hal2_demux_capabilities() -> DemuxCapabilities {
+    DemuxCapabilities {
+        numDemux: TUNER_HAL2_MAX_LIVE_DEMUXES,
+        numRecord: TUNER_HAL2_MAX_LIVE_DEMUXES,
+        numPlayback: TUNER_HAL2_MAX_LIVE_DEMUXES,
+        numTsFilter: TUNER_HAL2_DEMUX_MAX_TS_FILTERS,
+        numSectionFilter: TUNER_HAL2_DEMUX_MAX_SECTION_FILTERS,
+        numAudioFilter: TUNER_HAL2_DEMUX_MAX_AUDIO_FILTERS,
+        numVideoFilter: TUNER_HAL2_DEMUX_MAX_VIDEO_FILTERS,
+        numPesFilter: TUNER_HAL2_DEMUX_MAX_PES_FILTERS,
+        numPcrFilter: 0,
+        numBytesInSectionFilter: TUNER_HAL2_MAX_SECTION_FILTER_BYTES,
+        filterCaps: SUPPORTED_DEMUX_FILTER_CAPS,
+        linkCaps: demux_link_caps_for_ts_filter_linkage(),
+        bTimeFilter: false,
+    }
+}
+
+fn tuner_hal2_demux_info() -> DemuxInfo {
+    DemuxInfo {
+        filterTypes: SUPPORTED_DEMUX_FILTER_CAPS,
+    }
+}
 
 impl TunerAidlService {
     pub fn new(runtime: TunerServiceRuntime) -> Self {
@@ -548,11 +589,7 @@ impl ITuner for TunerAidlService {
     }
 
     fn openFrontendById(&self, frontend_id: i32) -> BinderResult<Strong<dyn IFrontend>> {
-        plan_tuner_query_method(
-            self,
-            AidlApi::TunerOpenFrontendById,
-            None,
-        )?;
+        plan_tuner_query_method(self, AidlApi::TunerOpenFrontendById, None)?;
         {
             let runtime = self.lock_runtime()?;
             if !runtime.has_frontend_id(frontend_id) {
@@ -581,15 +618,8 @@ impl ITuner for TunerAidlService {
     }
 
     fn getDemuxCaps(&self) -> BinderResult<DemuxCapabilities> {
-        unavailable_after_tuner_method_plan(
-            self,
-            AidlApi::TunerGetDemuxCaps,
-            None,
-            "demux capability runtime is not connected in current tuner_hal2 scope",
-        )?;
-        Err(status_unknown_error(
-            "getDemuxCaps unavailable path unexpectedly returned success",
-        ))
+        plan_tuner_query_method(self, AidlApi::TunerGetDemuxCaps, None)?;
+        Ok(tuner_hal2_demux_capabilities())
     }
 
     fn openDescrambler(&self) -> BinderResult<Strong<dyn IDescrambler>> {
@@ -605,11 +635,7 @@ impl ITuner for TunerAidlService {
     }
 
     fn getFrontendInfo(&self, frontend_id: i32) -> BinderResult<FrontendInfo> {
-        plan_tuner_query_method(
-            self,
-            AidlApi::TunerGetFrontendInfo,
-            None,
-        )?;
+        plan_tuner_query_method(self, AidlApi::TunerGetFrontendInfo, None)?;
         let entry = self.frontend_entry(frontend_id)?;
         Ok(frontend_info_from_entry(&entry))
     }
@@ -621,11 +647,7 @@ impl ITuner for TunerAidlService {
     }
 
     fn openLnbById(&self, lnb_id: i32) -> BinderResult<Strong<dyn ILnb>> {
-        plan_tuner_query_method(
-            self,
-            AidlApi::TunerOpenLnbById,
-            None,
-        )?;
+        plan_tuner_query_method(self, AidlApi::TunerOpenLnbById, None)?;
         let runtime = self.lock_runtime()?;
         if !runtime.has_lnb_id(lnb_id) {
             return Err(status_from_hal_error(HalError::Unsupported(
@@ -642,11 +664,7 @@ impl ITuner for TunerAidlService {
         lnb_id: &mut Vec<i32>,
     ) -> BinderResult<Strong<dyn ILnb>> {
         lnb_id.clear();
-        plan_tuner_query_method(
-            self,
-            AidlApi::TunerOpenLnbByName,
-            None,
-        )?;
+        plan_tuner_query_method(self, AidlApi::TunerOpenLnbByName, None)?;
         let id = {
             let runtime = self.lock_runtime()?;
             runtime.lnb_id_by_name(lnb_name)
@@ -663,18 +681,13 @@ impl ITuner for TunerAidlService {
         }
     }
 
-    fn setLna(&self, b_enable: bool) -> BinderResult<()> {
-        unavailable_after_tuner_method_plan(
-            self,
-            AidlApi::TunerSetLna,
-            None,
-            "LNA is unsupported",
-        )
+    fn setLna(&self, _b_enable: bool) -> BinderResult<()> {
+        unavailable_after_tuner_method_plan(self, AidlApi::TunerSetLna, None, "LNA is unsupported")
     }
 
     fn setMaxNumberOfFrontends(
         &self,
-        frontend_type: FrontendType,
+        _frontend_type: FrontendType,
         max_number: i32,
     ) -> BinderResult<()> {
         let input = None;
@@ -691,12 +704,8 @@ impl ITuner for TunerAidlService {
         }
     }
 
-    fn getMaxNumberOfFrontends(&self, frontend_type: FrontendType) -> BinderResult<i32> {
-        plan_tuner_query_method(
-            self,
-            AidlApi::TunerGetMaxNumberOfFrontends,
-            None,
-        )?;
+    fn getMaxNumberOfFrontends(&self, _frontend_type: FrontendType) -> BinderResult<i32> {
+        plan_tuner_query_method(self, AidlApi::TunerGetMaxNumberOfFrontends, None)?;
         Ok(0)
     }
 
@@ -712,11 +721,7 @@ impl ITuner for TunerAidlService {
     }
 
     fn openDemuxById(&self, demux_id: i32) -> BinderResult<Strong<dyn IDemux>> {
-        plan_tuner_query_method(
-            self,
-            AidlApi::TunerOpenDemuxById,
-            None,
-        )?;
+        plan_tuner_query_method(self, AidlApi::TunerOpenDemuxById, None)?;
         let runtime = self.lock_runtime()?;
         if !runtime.has_demux_id(demux_id) {
             return Err(status_from_hal_error(HalError::Unsupported(
@@ -728,15 +733,14 @@ impl ITuner for TunerAidlService {
     }
 
     fn getDemuxInfo(&self, demux_id: i32) -> BinderResult<DemuxInfo> {
-        unavailable_after_tuner_method_plan(
-            self,
-            AidlApi::TunerGetDemuxInfo,
-            None,
-            "demux info is not available",
-        )?;
-        Err(status_unknown_error(
-            "getDemuxInfo unavailable path unexpectedly returned success",
-        ))
+        plan_tuner_query_method(self, AidlApi::TunerGetDemuxInfo, None)?;
+        let runtime = self.lock_runtime()?;
+        if !runtime.has_demux_id(demux_id) {
+            return Err(status_from_hal_error(HalError::Unsupported(
+                "demux id is not available",
+            )));
+        }
+        Ok(tuner_hal2_demux_info())
     }
 }
 
@@ -1822,7 +1826,7 @@ fn unavailable_after_method_plan(
 fn unsupported_public_api_call(
     object: AidlObjectKind,
     api: AidlApi,
-    input: Option<()>,
+    _input: Option<()>,
 ) -> AidlMethodCall {
     AidlMethodCall::UnsupportedPublicApi { object, api }
 }
@@ -1972,14 +1976,49 @@ fn allocate_dvr_public_runtime(
     Ok(entry.id.0)
 }
 
-fn current_filter_open_type(filter: &FilterAidlObject) -> BinderResult<maleicacid_tuner_hal2_demux::FilterOpenType> {
+fn rollback_retained_child_callback(handle: AidlObjectHandle) {
+    let _ = clear_owner_callbacks(handle);
+}
+
+fn retain_filter_child_callback(
+    runtime: &SharedTunerRuntime,
+    handle: AidlObjectHandle,
+    callback: &Strong<dyn IFilterCallback>,
+) -> BinderResult<()> {
+    retain_filter_callback(handle, callback)
+        .map_err(|_| Status::new_service_specific_error(TunerResult::UNKNOWN_ERROR.0, None))?;
+    if let Err(status) = record_callback_registration(runtime, handle, AidlApi::DemuxOpenFilter) {
+        rollback_retained_child_callback(handle);
+        return Err(status);
+    }
+    Ok(())
+}
+
+fn retain_dvr_child_callback(
+    runtime: &SharedTunerRuntime,
+    handle: AidlObjectHandle,
+    callback: &Strong<dyn IDvrCallback>,
+) -> BinderResult<()> {
+    retain_dvr_callback(handle, callback)
+        .map_err(|_| Status::new_service_specific_error(TunerResult::UNKNOWN_ERROR.0, None))?;
+    if let Err(status) = record_callback_registration(runtime, handle, AidlApi::DemuxOpenDvr) {
+        rollback_retained_child_callback(handle);
+        return Err(status);
+    }
+    Ok(())
+}
+
+fn current_filter_open_type(
+    filter: &FilterAidlObject,
+) -> BinderResult<maleicacid_tuner_hal2_demux::FilterOpenType> {
     let runtime = filter.runtime();
     let public_id = runtime_entry_public_id(&runtime, filter.handle(), AidlObjectKind::Filter)?;
-    runtime
+    let open_type = runtime
         .lock()
         .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
         .filter_open_type(public_id)
-        .ok_or_else(|| service_error(TunerResult::INVALID_STATE.0, "filter runtime is missing"))
+        .ok_or_else(|| service_error(TunerResult::INVALID_STATE.0, "filter runtime is missing"))?;
+    Ok(open_type)
 }
 
 fn local_filter_handle_from_strong(filter: &Strong<dyn IFilter>) -> BinderResult<AidlObjectHandle> {
@@ -2134,7 +2173,7 @@ impl IFrontend for FrontendAidlObject {
             "frontend LNB backend binding is not connected in current tuner_hal2 scope",
         )
     }
-    fn linkCiCam(&self, ci_cam_id: i32) -> BinderResult<i32> {
+    fn linkCiCam(&self, _ci_cam_id: i32) -> BinderResult<i32> {
         unavailable_after_object_public_api_plan(
             self.plan_method(unsupported_public_api_call(
                 AidlObjectKind::Frontend,
@@ -2147,7 +2186,7 @@ impl IFrontend for FrontendAidlObject {
             "linkCiCam unavailable path unexpectedly returned success",
         ))
     }
-    fn unlinkCiCam(&self, ci_cam_id: i32) -> BinderResult<()> {
+    fn unlinkCiCam(&self, _ci_cam_id: i32) -> BinderResult<()> {
         unavailable_after_object_public_api_plan(
             self.plan_method(unsupported_public_api_call(
                 AidlObjectKind::Frontend,
@@ -2170,7 +2209,7 @@ impl IFrontend for FrontendAidlObject {
             "getHardwareInfo unavailable path unexpectedly returned success",
         ))
     }
-    fn removeOutputPid(&self, pid: i32) -> BinderResult<()> {
+    fn removeOutputPid(&self, _pid: i32) -> BinderResult<()> {
         unavailable_after_object_public_api_plan(
             self.plan_method(unsupported_public_api_call(
                 AidlObjectKind::Frontend,
@@ -2219,11 +2258,16 @@ impl IDemux for DemuxAidlObject {
         &self,
         filter_type: &DemuxFilterType,
         buffer_size: i32,
-        _cb: &Strong<dyn IFilterCallback>,
+        cb: &Strong<dyn IFilterCallback>,
     ) -> BinderResult<Strong<dyn IFilter>> {
         self.ensure_open()?;
-        let open_request = build_open_filter_request(filter_type, buffer_size, true).map_err(status_from_hal_error)?;
-        self.plan_method(AidlMethodCall::DemuxOpenFilter(maleicacid_tuner_hal2_binder_adapter::RuntimeExecutableRequest::OpenFilter(open_request.clone())))?;
+        let open_request = build_open_filter_request(filter_type, buffer_size, true)
+            .map_err(status_from_hal_error)?;
+        self.plan_method(AidlMethodCall::DemuxOpenFilter(
+            maleicacid_tuner_hal2_binder_adapter::RuntimeExecutableRequest::OpenFilter(
+                open_request.clone(),
+            ),
+        ))?;
         let runtime = self.runtime();
         let owner_demux_id =
             runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Demux)?;
@@ -2231,11 +2275,7 @@ impl IDemux for DemuxAidlObject {
         if let Err(error) = runtime
             .lock()
             .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
-            .register_demux_filter_runtime(
-                owner_demux_id,
-                filter_id,
-                open_request.open_type,
-            )
+            .register_demux_filter_runtime(owner_demux_id, filter_id, &open_request)
         {
             unregister_child_public_runtime(&runtime, AidlObjectKind::Filter, filter_id)?;
             return Err(status_from_hal_error(error));
@@ -2253,7 +2293,14 @@ impl IDemux for DemuxAidlObject {
                 }
             };
         match FilterAidlObject::new(child_handle, runtime.clone()) {
-            Ok(object) => Ok(BnFilter::new_binder(object, BinderFeatures::default())),
+            Ok(object) => {
+                if let Err(status) = retain_filter_child_callback(&runtime, child_handle, cb) {
+                    rollback_child_aidl_object(&runtime, child_handle)?;
+                    unregister_child_public_runtime(&runtime, AidlObjectKind::Filter, filter_id)?;
+                    return Err(status);
+                }
+                Ok(BnFilter::new_binder(object, BinderFeatures::default()))
+            }
             Err(_) => {
                 rollback_child_aidl_object(&runtime, child_handle)?;
                 unregister_child_public_runtime(&runtime, AidlObjectKind::Filter, filter_id)?;
@@ -2287,7 +2334,7 @@ impl IDemux for DemuxAidlObject {
             "getAvSyncHwId unavailable path unexpectedly returned success",
         ))
     }
-    fn getAvSyncTime(&self, av_sync_hw_id: i32) -> BinderResult<i64> {
+    fn getAvSyncTime(&self, _av_sync_hw_id: i32) -> BinderResult<i64> {
         unavailable_after_object_public_api_plan(
             self.plan_method(unsupported_public_api_call(
                 AidlObjectKind::Demux,
@@ -2307,15 +2354,24 @@ impl IDemux for DemuxAidlObject {
         &self,
         dvr_type: DvrType,
         buffer_size: i32,
-        _cb: &Strong<dyn IDvrCallback>,
+        cb: &Strong<dyn IDvrCallback>,
     ) -> BinderResult<Strong<dyn IDvr>> {
         self.ensure_open()?;
-        let request = build_dvr_open_request(dvr_type, buffer_size).map_err(status_from_hal_error)?;
+        let request =
+            build_dvr_open_request(dvr_type, buffer_size).map_err(status_from_hal_error)?;
         self.plan_method(AidlMethodCall::DemuxOpenDvr(request))?;
         let runtime = self.runtime();
         let owner_demux_id =
             runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Demux)?;
         let dvr_id = allocate_dvr_public_runtime(&runtime, owner_demux_id)?;
+        if let Err(error) = runtime
+            .lock()
+            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
+            .register_demux_dvr_runtime(owner_demux_id, dvr_id, &request, true)
+        {
+            unregister_child_public_runtime(&runtime, AidlObjectKind::Dvr, dvr_id)?;
+            return Err(status_from_hal_error(error));
+        }
         let owner = RuntimeOwnerRelation::Demux {
             demux: self.handle().object_id(),
             generation: self.handle().generation(),
@@ -2329,7 +2385,14 @@ impl IDemux for DemuxAidlObject {
                 }
             };
         match DvrAidlObject::new(child_handle, runtime.clone()) {
-            Ok(object) => Ok(BnDvr::new_binder(object, BinderFeatures::default())),
+            Ok(object) => {
+                if let Err(status) = retain_dvr_child_callback(&runtime, child_handle, cb) {
+                    rollback_child_aidl_object(&runtime, child_handle)?;
+                    unregister_child_public_runtime(&runtime, AidlObjectKind::Dvr, dvr_id)?;
+                    return Err(status);
+                }
+                Ok(BnDvr::new_binder(object, BinderFeatures::default()))
+            }
             Err(_) => {
                 rollback_child_aidl_object(&runtime, child_handle)?;
                 unregister_child_public_runtime(&runtime, AidlObjectKind::Dvr, dvr_id)?;
@@ -2337,7 +2400,7 @@ impl IDemux for DemuxAidlObject {
             }
         }
     }
-    fn connectCiCam(&self, ci_cam_id: i32) -> BinderResult<()> {
+    fn connectCiCam(&self, _ci_cam_id: i32) -> BinderResult<()> {
         unavailable_after_object_public_api_plan(
             self.plan_method(unsupported_public_api_call(
                 AidlObjectKind::Demux,
@@ -2371,26 +2434,35 @@ impl IFilter for FilterAidlObject {
     }
     fn configure(&self, _settings: &DemuxFilterSettings) -> BinderResult<()> {
         unavailable_after_method_plan(
-            self.plan_method(AidlMethodCall::FilterConfigure(maleicacid_tuner_hal2_binder_adapter::RuntimeExecutableRequest::ConfigureFilter(build_filter_summary_for_open_type(_settings, current_filter_open_type(self)?)
-                .map_err(status_from_hal_error)?))),
+            self.plan_method(AidlMethodCall::FilterConfigure(
+                maleicacid_tuner_hal2_binder_adapter::RuntimeExecutableRequest::ConfigureFilter(
+                    build_filter_summary_for_open_type(_settings, current_filter_open_type(self)?)
+                        .map_err(status_from_hal_error)?,
+                ),
+            )),
             "filter runtime is not connected in current tuner_hal2 scope",
         )
     }
     fn configureAvStreamType(&self, av_stream_type: &AvStreamType) -> BinderResult<()> {
-        let request = build_filter_av_stream_type_request(av_stream_type).map_err(status_from_hal_error)?;
+        let request =
+            build_filter_av_stream_type_request(av_stream_type).map_err(status_from_hal_error)?;
         unavailable_after_method_plan(
             self.plan_method(AidlMethodCall::FilterConfigureAvStreamType(request)),
             "AV stream configuration runtime is not connected in current tuner_hal2 scope",
         )
     }
-    fn configureIpCid(&self, ip_cid: i32) -> BinderResult<()> {
+    fn configureIpCid(&self, _ip_cid: i32) -> BinderResult<()> {
         unavailable_after_method_plan(
             self.plan_method(AidlMethodCall::FilterConfigure(maleicacid_tuner_hal2_binder_adapter::RuntimeExecutableRequest::UnsupportedProfile { reason: "IP CID filtering is outside the TS-only tuner_hal2 profile" })),
             "IP CID filtering is outside the TS-only tuner_hal2 profile",
         )
     }
     fn configureMonitorEvent(&self, monitor_event_types: i32) -> BinderResult<()> {
-        let plan = self.plan_method(AidlMethodCall::FilterConfigure(maleicacid_tuner_hal2_binder_adapter::RuntimeExecutableRequest::UnsupportedProfile { reason: "monitor event filtering is outside the TS-only tuner_hal2 profile" }))?;
+        let plan = self.plan_method(AidlMethodCall::FilterConfigure(
+            maleicacid_tuner_hal2_binder_adapter::RuntimeExecutableRequest::UnsupportedProfile {
+                reason: "monitor event filtering is outside the TS-only tuner_hal2 profile",
+            },
+        ))?;
         if monitor_event_types == 0 {
             drop(plan);
             Ok(())
@@ -2439,7 +2511,9 @@ impl IFilter for FilterAidlObject {
     }
     fn releaseAvHandle(&self, _av_memory: &TunerNativeHandle, av_data_id: i64) -> BinderResult<()> {
         unavailable_after_method_plan(
-            self.plan_method(AidlMethodCall::FilterReleaseAvHandle(FilterReleaseAvHandleRequest { av_data_id })),
+            self.plan_method(AidlMethodCall::FilterReleaseAvHandle(
+                FilterReleaseAvHandleRequest { av_data_id },
+            )),
             "AV shared memory is not connected in current tuner_hal2 scope",
         )
     }
@@ -2483,10 +2557,12 @@ impl IFilter for FilterAidlObject {
             i32::try_from(demux_entry.ledger_id.0)
                 .map_err(|_| status_unknown_error("demux runtime id out of i32 range"))?
         };
-        self.plan_method(AidlMethodCall::FilterSetDataSource(FilterSetDataSourceRequest {
-            source_filter_id: source_handle.object_id().0,
-            source_filter_generation: source_handle.generation().0,
-        }))?;
+        self.plan_method(AidlMethodCall::FilterSetDataSource(
+            FilterSetDataSourceRequest {
+                source_filter_id: source_handle.object_id().0,
+                source_filter_generation: source_handle.generation().0,
+            },
+        ))?;
         runtime
             .lock()
             .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
@@ -2632,7 +2708,8 @@ impl ILnb for LnbAidlObject {
         )
     }
     fn setSatellitePosition(&self, position: LnbPosition) -> BinderResult<()> {
-        let request = build_lnb_satellite_position_request(position).map_err(status_from_hal_error)?;
+        let request =
+            build_lnb_satellite_position_request(position).map_err(status_from_hal_error)?;
         unavailable_after_method_plan(
             self.plan_method(AidlMethodCall::LnbSetSatellitePosition(request)),
             "LNB runtime is not connected in current tuner_hal2 scope",
@@ -2679,6 +2756,32 @@ fn service_error(code: i32, message: &str) -> Status {
 mod tests {
     use super::*;
     use maleicacid_tuner_hal2_common::{FrontendSystem, FrontendTuneRequest};
+
+    #[test]
+    fn demux_capabilities_advertise_ts_only_profile() {
+        let caps = tuner_hal2_demux_capabilities();
+
+        assert_eq!(caps.numDemux, TUNER_HAL2_MAX_LIVE_DEMUXES);
+        assert_eq!(caps.numRecord, TUNER_HAL2_MAX_LIVE_DEMUXES);
+        assert_eq!(caps.numPlayback, TUNER_HAL2_MAX_LIVE_DEMUXES);
+        assert_eq!(caps.numTsFilter, 32);
+        assert_eq!(caps.numSectionFilter, 8);
+        assert_eq!(caps.numAudioFilter, 4);
+        assert_eq!(caps.numVideoFilter, 4);
+        assert_eq!(caps.numPesFilter, 8);
+        assert_eq!(caps.numBytesInSectionFilter, 16);
+        assert_eq!(caps.filterCaps, DemuxFilterMainType::TS.0);
+        assert_eq!(caps.linkCaps, vec![DemuxFilterMainType::TS.0, 0, 0, 0, 0]);
+        assert!(!caps.bTimeFilter);
+    }
+
+    #[test]
+    fn demux_info_advertises_same_ts_only_filter_mask() {
+        assert_eq!(
+            tuner_hal2_demux_info().filterTypes,
+            DemuxFilterMainType::TS.0
+        );
+    }
 
     #[test]
     fn configure_ip_cid_returns_unavailable_for_any_value() {

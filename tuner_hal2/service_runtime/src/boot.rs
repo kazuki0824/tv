@@ -9,19 +9,21 @@ use maleicacid_tuner_hal2_common::{
 use maleicacid_tuner_hal2_demux::config::FilterOpenType;
 use maleicacid_tuner_hal2_demux::packet_pipeline::{PipelineBoundaryReason, PipelineReport};
 use maleicacid_tuner_hal2_demux::packet_pipeline::{PipelineOpenKind, PipelineResetReport};
+use maleicacid_tuner_hal2_demux::runtime::DvrKind;
 use maleicacid_tuner_hal2_demux::runtime::{
     DemuxRuntimeSnapshot, DemuxStreamGeneration, GenerationBoundaryReport, GenerationBoundaryTxn,
 };
-use maleicacid_tuner_hal2_demux::{FilterRuntime, TsInputOrigin};
+use maleicacid_tuner_hal2_demux::OpenFilterRequest;
+use maleicacid_tuner_hal2_demux::{DvrRuntime, FilterRuntime, TsInputOrigin};
 use maleicacid_tuner_hal2_device::{
-    FrontendLivePacketSink, FrontendLivePumpOwner, FrontendLiveReaderDescriptor,
-    FrontendLivePumpReport, FrontendRuntimeSnapshot, FrontendRuntimeState, FrontendSignalState, FrontendWorkerCancelReason,
-    FrontendWorkerContext, FrontendWorkerKind, FrontendWorkerRegistry, FrontendWorkerStartError,
-    FrontendWorkerStopOutcome,
+    FrontendLivePacketSink, FrontendLivePumpOwner, FrontendLivePumpReport,
+    FrontendLiveReaderDescriptor, FrontendRuntimeSnapshot, FrontendRuntimeState,
+    FrontendSignalState, FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind,
+    FrontendWorkerRegistry, FrontendWorkerStartError, FrontendWorkerStopOutcome,
 };
 use maleicacid_tuner_hal2_domain_request::{
-    AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan, RuntimeExecutableRequest,
-    RuntimeTransactionName,
+    AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan, DvrOpenKind, OpenDvrRequest,
+    RuntimeExecutableRequest, RuntimeTransactionName,
 };
 
 use crate::callback_registry::RuntimeCallbackRegistry;
@@ -169,31 +171,47 @@ impl FrontendLivePacketSink for FrontendDemuxPacketSink {
     }
 }
 
-
-fn demux_runtime_error_to_hal(error: maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeError) -> HalError {
+fn demux_runtime_error_to_hal(
+    error: maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeError,
+) -> HalError {
     match error.kind {
         maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::GenerationExhausted => {
-            HalError::internal(HalInternalKind::InvariantViolation, "demux runtime generation exhausted")
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "demux runtime generation exhausted",
+            )
         }
         maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::FilterMissing
         | maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::DvrMissing
         | maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::QueueMissing => {
-            HalError::invalid_state(HalInvalidStateKind::InvalidLifecycle, "demux runtime object is missing")
+            HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "demux runtime object is missing",
+            )
         }
         maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::InvalidState
         | maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::SourceLifecycle
         | maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::SinkLifecycle => {
-            HalError::invalid_state(HalInvalidStateKind::InvalidLifecycle, "demux runtime lifecycle is invalid")
+            HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "demux runtime lifecycle is invalid",
+            )
         }
         maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::InvalidSourceSubtype
         | maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::InvalidSinkSubtype => {
             HalError::Unsupported("demux source/sink subtype is unsupported")
         }
         maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::PidMismatch => {
-            HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, "demux source/sink PID mismatch")
+            HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "demux source/sink PID mismatch",
+            )
         }
         maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::PipelineFailed => {
-            HalError::internal(HalInternalKind::InvariantViolation, "demux runtime pipeline operation failed")
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "demux runtime pipeline operation failed",
+            )
         }
     }
 }
@@ -955,7 +973,7 @@ impl TunerServiceRuntime {
         &mut self,
         owner_demux_id: i32,
         filter_id: i32,
-        open_type: FilterOpenType,
+        request: &OpenFilterRequest,
     ) -> Result<(), HalError> {
         let Some(demux_runtime) = self
             .registry
@@ -967,10 +985,10 @@ impl TunerServiceRuntime {
             ));
         };
         demux_runtime
-            .register_filter(FilterRuntime::new_typed(
+            .register_filter(FilterRuntime::new_open_request(
                 filter_id,
                 demux_runtime.generation(),
-                open_type,
+                request,
             ))
             .map_err(|_| {
                 HalError::invalid_state(
@@ -980,16 +998,19 @@ impl TunerServiceRuntime {
             })
     }
 
-
     pub fn filter_open_kind(&self, filter_id: i32) -> Option<PipelineOpenKind> {
         let entry = self.registry.filter(FilterRuntimeId(filter_id))?;
-        let demux = self.registry.demux_runtime(DemuxRuntimeId(entry.owner_demux_id))?;
+        let demux = self
+            .registry
+            .demux_runtime(DemuxRuntimeId(entry.owner_demux_id))?;
         demux.filter(filter_id).map(|filter| filter.open_kind())
     }
 
     pub fn filter_open_type(&self, filter_id: i32) -> Option<FilterOpenType> {
         let entry = self.registry.filter(FilterRuntimeId(filter_id))?;
-        let demux = self.registry.demux_runtime(DemuxRuntimeId(entry.owner_demux_id))?;
+        let demux = self
+            .registry
+            .demux_runtime(DemuxRuntimeId(entry.owner_demux_id))?;
         demux.filter(filter_id).map(|filter| filter.open_type())
     }
 
@@ -1059,7 +1080,54 @@ impl TunerServiceRuntime {
     }
 
     pub fn unregister_dvr_runtime(&mut self, id: i32) -> Option<crate::registry::DvrRegistryEntry> {
-        self.registry.unregister_dvr(DvrRuntimeId(id))
+        let entry = self.registry.unregister_dvr(DvrRuntimeId(id));
+        if let Some(entry_ref) = entry.as_ref() {
+            if let Some(demux_runtime) = self
+                .registry
+                .demux_runtime_mut(DemuxRuntimeId(entry_ref.owner_demux_id))
+            {
+                if demux_runtime.remove_dvr(id).is_err() {
+                    demux_runtime.quarantine();
+                }
+            }
+        }
+        entry
+    }
+
+    pub fn register_demux_dvr_runtime(
+        &mut self,
+        owner_demux_id: i32,
+        dvr_id: i32,
+        request: &OpenDvrRequest,
+        callback_present: bool,
+    ) -> Result<(), HalError> {
+        let Some(demux_runtime) = self
+            .registry
+            .demux_runtime_mut(DemuxRuntimeId(owner_demux_id))
+        else {
+            return Err(HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "owner demux runtime is missing",
+            ));
+        };
+        let kind = match request.kind {
+            DvrOpenKind::Record => DvrKind::Record,
+            DvrOpenKind::Playback => DvrKind::Playback,
+        };
+        demux_runtime
+            .register_dvr(DvrRuntime::new_open_request(
+                dvr_id,
+                kind,
+                demux_runtime.generation(),
+                request.buffer_size,
+                callback_present,
+            ))
+            .map_err(|_| {
+                HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "DVR runtime registration failed",
+                )
+            })
     }
 
     pub fn allocate_descrambler_runtime(

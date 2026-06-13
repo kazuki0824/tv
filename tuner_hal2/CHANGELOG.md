@@ -1,3 +1,12 @@
+# r50eg_wp_r06_demux_open_foundation
+
+- WP-R06として demux capability / demux info、filter open request、DVR open request、Filter/DVR callback保持の基盤を実装した。
+- `getDemuxCaps()` / `getDemuxInfo()` は TS-only profile と旧 `tuner_hal` の demux/filter/DVR capability 数へ合わせ、未知 demux id は `Unsupported` へ倒す。
+- `openFilter()` は filter type / buffer size / callback_present を `FilterRuntime` へ保持し、AIDL child object生成・callback owner登録・失敗時rollbackまで接続した。
+- `openDvr()` は record/playback種別、buffer size、callback_present を `DvrRuntime` へ保持し、demux owner配下のDVR runtime登録・callback owner登録・失敗時rollbackまで接続した。
+- Android 14 AIDL Rust生成境界に合わせ、section table info生成名と `FilterDelayHint.hintValue` の型変換を修正した。
+- `m maleicacid_tuner_hal2_device_test maleicacid_tuner_hal2_service_runtime_test maleicacid_tuner_hal2_aidl_service_test` は成功。atest、VTS、実機確認は未実施。
+
 # r50eg_tuner_hal2_dead_code_cleanup
 
 - 品質整理として、moduleを定義しない `tuner_hal2/aidl_service/Android.bp` を削除した。

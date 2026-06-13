@@ -200,7 +200,7 @@ pub fn build_filter_delay_hint_request(hint: &FilterDelayHint) -> Result<FilterD
         FilterDelayHintType::DATA_SIZE_DELAY_IN_BYTES => FilterDelayHintKind::DataSizeDelayBytes,
         _ => return Err(invalid("filter delay hint type is unsupported")),
     };
-    Ok(FilterDelayHintRequest { kind, value: hint.hintValue })
+    Ok(FilterDelayHintRequest { kind, value: i64::from(hint.hintValue) })
 }
 
 pub fn build_dvr_configure_request(settings: &DvrSettings) -> Result<DvrConfigureRequest, HalError> {
