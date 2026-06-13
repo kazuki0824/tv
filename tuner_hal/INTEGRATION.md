@@ -264,11 +264,11 @@ git diff -- tuner_hal/config/tuner_vts_config_aidl_V2.xml
 
 ### 6.1 Soong モジュールビルド
 
-AOSP root で次を実行する。
+LineageOS ソースツリーのルートで次を実行する。
 
 ```bash
 source build/envsetup.sh
-lunch <your_android_tv_14_product>-userdebug
+breakfast virtio_x86_64_tv_grub
 m nothing
 m \
   libmaleicacid_tuner_hal_common \

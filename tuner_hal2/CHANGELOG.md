@@ -1,3 +1,9 @@
+# r50ef5
+
+- product release marker を r50ef5 に更新。
+- tv直下の `README.md` / `AGENTS.md` 追加、`開発規則.md` の root Markdown 許可リスト更新、Tuner HAL / TIS 統合手順の target 初期化補正のみで、tuner_hal2 のコード実装変更なし。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認は未実施。
+
 # r50ee97_future_wording_and_wallclock_research_fix
 
 - product release marker を r50ee97_future_wording_and_wallclock_research_fix に更新。

@@ -1,3 +1,13 @@
+# r50ef5
+
+- tv直下に人間向け入口の `README.md` と作業エージェント向け入口の `AGENTS.md` を追加した。
+- `AGENTS.md` を、作業開始位置、LineageOS target 初期化、必読文書、最低禁止事項だけを持つ入口文書として整理した。
+- `AGENTS.md` に、`source build/envsetup.sh` と `breakfast virtio_x86_64_tv_grub` による target 初期化を明記した。
+- `README.md` に `<LINEAGE_ROOT>` の定義、Codex 起動位置、AGENTS.md 参照を追加した。
+- `開発規則.md` の root Markdown 許可リストへ `README.md` と `AGENTS.md` を追加し、両文書が設計判断・完了判定・統合手順・変更履歴の正本ではないことを明記した。
+- `tuner_hal/INTEGRATION.md` と `tis/INTEGRATION.md` の target 初期化を LineageOS `breakfast virtio_x86_64_tv_grub` 前提へ補正した。
+- コード実装変更なし。Android/Soong build、Rust unit test、atest、VTS、実機確認は未実施。
+
 # r50ee97_future_wording_and_wallclock_research_fix
 
 - `future_work/not_planned/r50z_avsync_wallclock_research.md` を `future_work/not_planned/avsync_wallclock_research.md` へ改名し、future_work として必要な wallclock 補間調査、先行例、参照URLを復元した。
