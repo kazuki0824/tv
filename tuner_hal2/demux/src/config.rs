@@ -73,6 +73,62 @@ pub struct AvSettings {
     pub is_secure_memory: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AvStreamKind {
+    Audio,
+    Video,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AvStreamTypeConfig {
+    pub kind: AvStreamKind,
+    pub stream_type: i32,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct FilterDelayHints {
+    pub time_delay_ms: Option<u64>,
+    pub data_size_delay_bytes: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FilterDelayReadiness {
+    Ready,
+    WaitingForTime,
+    WaitingForDataSize,
+}
+
+impl FilterDelayHints {
+    pub fn delivery_readiness(
+        self,
+        elapsed_ms_since_queue_armed: u64,
+        queued_bytes: usize,
+    ) -> FilterDelayReadiness {
+        let time_delay_ms = self.time_delay_ms.unwrap_or(0);
+        let data_size_delay_bytes = self.data_size_delay_bytes.unwrap_or(0);
+        if time_delay_ms == 0 && data_size_delay_bytes == 0 {
+            return FilterDelayReadiness::Ready;
+        }
+        if time_delay_ms > 0 && elapsed_ms_since_queue_armed >= time_delay_ms {
+            return FilterDelayReadiness::Ready;
+        }
+        if data_size_delay_bytes > 0 && queued_bytes >= data_size_delay_bytes {
+            return FilterDelayReadiness::Ready;
+        }
+        if time_delay_ms > 0 {
+            FilterDelayReadiness::WaitingForTime
+        } else {
+            FilterDelayReadiness::WaitingForDataSize
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FilterDelayHint {
+    TimeDelayMs(u64),
+    DataSizeDelayBytes(usize),
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FilterConfigKind {
     TsRaw,

@@ -6,7 +6,9 @@ use maleicacid_tuner_hal2_common::{
     FrontendBackendKind, FrontendDevicePath, FrontendSystem, FrontendTuneRequest, HalError,
     HalInternalKind, HalInvalidArgumentKind, HalInvalidStateKind, TS_PACKET_SIZE,
 };
-use maleicacid_tuner_hal2_demux::config::{FilterConfig, FilterOpenType};
+use maleicacid_tuner_hal2_demux::config::{
+    AvStreamKind, AvStreamTypeConfig, FilterConfig, FilterDelayHint, FilterOpenType,
+};
 use maleicacid_tuner_hal2_demux::packet_pipeline::{PipelineBoundaryReason, PipelineReport};
 use maleicacid_tuner_hal2_demux::packet_pipeline::{PipelineOpenKind, PipelineResetReport};
 use maleicacid_tuner_hal2_demux::runtime::{DemuxRuntimeError, DemuxRuntimeErrorKind, DvrKind};
@@ -14,7 +16,9 @@ use maleicacid_tuner_hal2_demux::runtime::{
     DemuxRuntimeSnapshot, DemuxStreamGeneration, GenerationBoundaryReport, GenerationBoundaryTxn,
 };
 use maleicacid_tuner_hal2_demux::OpenFilterRequest;
-use maleicacid_tuner_hal2_demux::{DvrRuntime, FilterConfigureTxn, FilterRuntime, TsInputOrigin};
+use maleicacid_tuner_hal2_demux::{
+    DvrRuntime, FilterConfigureTxn, FilterRuntime, FilterRuntimeState, TsInputOrigin,
+};
 use maleicacid_tuner_hal2_device::{
     FrontendLivePacketSink, FrontendLivePumpOwner, FrontendLivePumpReport,
     FrontendLiveReaderDescriptor, FrontendRuntimeSnapshot, FrontendRuntimeState,
@@ -22,8 +26,9 @@ use maleicacid_tuner_hal2_device::{
     FrontendWorkerRegistry, FrontendWorkerStartError, FrontendWorkerStopOutcome,
 };
 use maleicacid_tuner_hal2_domain_request::{
-    AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan, DvrOpenKind, OpenDvrRequest,
-    RuntimeExecutableRequest, RuntimeTransactionName,
+    AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan, DvrOpenKind,
+    FilterAvStreamKind, FilterAvStreamTypeRequest, FilterDelayHintKind, FilterDelayHintRequest,
+    OpenDvrRequest, RuntimeExecutableRequest, RuntimeTransactionName,
 };
 
 use crate::callback_registry::RuntimeCallbackRegistry;
@@ -1127,6 +1132,143 @@ impl TunerServiceRuntime {
         };
         demux_runtime
             .flush_filter_runtime(filter_id)
+            .map_err(Self::map_filter_runtime_error)
+    }
+
+    pub fn configure_filter_av_stream_type_request(
+        &mut self,
+        filter_id: i32,
+        request: FilterAvStreamTypeRequest,
+    ) -> Result<(), HalError> {
+        let owner_demux_id = self.owner_demux_id_for_filter(filter_id)?;
+        let Some(demux_runtime) = self
+            .registry
+            .demux_runtime_mut(DemuxRuntimeId(owner_demux_id))
+        else {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "owner demux runtime is missing",
+            ));
+        };
+        let snapshot = demux_runtime
+            .filter_snapshot(filter_id)
+            .map_err(Self::map_filter_runtime_error)?;
+        match snapshot.state {
+            FilterRuntimeState::Configured
+            | FilterRuntimeState::Started
+            | FilterRuntimeState::Stopped => {}
+            FilterRuntimeState::Open => {
+                return Err(HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "AV stream type can be configured only after filter configure",
+                ));
+            }
+            FilterRuntimeState::Closing
+            | FilterRuntimeState::CleanupFailed
+            | FilterRuntimeState::Closed
+            | FilterRuntimeState::Failed => {
+                return Err(HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "filter is not live",
+                ));
+            }
+        }
+        let expected_kind = match snapshot.open_type {
+            FilterOpenType::TsAudio => AvStreamKind::Audio,
+            FilterOpenType::TsVideo => AvStreamKind::Video,
+            _ => {
+                return Err(HalError::Unsupported(
+                    "configureAvStreamType is available only for AV filters",
+                ));
+            }
+        };
+        if snapshot.state == FilterRuntimeState::Started {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "AV stream type cannot be changed while filter is started",
+            ));
+        }
+        let requested_kind = match request.kind {
+            FilterAvStreamKind::Audio => AvStreamKind::Audio,
+            FilterAvStreamKind::Video => AvStreamKind::Video,
+        };
+        if requested_kind != expected_kind {
+            return Err(HalError::invalid_argument(
+                HalInvalidArgumentKind::UnsupportedStreamSelector,
+                "AV stream type kind must match filter open subtype",
+            ));
+        }
+        demux_runtime
+            .configure_filter_av_stream_type(
+                filter_id,
+                AvStreamTypeConfig {
+                    kind: requested_kind,
+                    stream_type: request.stream_type,
+                },
+            )
+            .map_err(Self::map_filter_runtime_error)
+    }
+
+    pub fn set_filter_delay_hint_request(
+        &mut self,
+        filter_id: i32,
+        request: FilterDelayHintRequest,
+    ) -> Result<(), HalError> {
+        let owner_demux_id = self.owner_demux_id_for_filter(filter_id)?;
+        let Some(demux_runtime) = self
+            .registry
+            .demux_runtime_mut(DemuxRuntimeId(owner_demux_id))
+        else {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "owner demux runtime is missing",
+            ));
+        };
+        let snapshot = demux_runtime
+            .filter_snapshot(filter_id)
+            .map_err(Self::map_filter_runtime_error)?;
+        if snapshot.state.is_closed_or_failed() {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "filter is not live",
+            ));
+        }
+        if matches!(
+            snapshot.open_type,
+            FilterOpenType::TsAudio | FilterOpenType::TsVideo
+        ) {
+            return Err(HalError::Unsupported(
+                "FilterDelayHint is not available for media filters",
+            ));
+        }
+        let hint = match request.kind {
+            FilterDelayHintKind::TimeDelayMs => {
+                FilterDelayHint::TimeDelayMs(u64::try_from(request.value).map_err(|_| {
+                    HalError::invalid_argument(
+                        HalInvalidArgumentKind::NumericRange,
+                        "filter delay hint value must be non-negative",
+                    )
+                })?)
+            }
+            FilterDelayHintKind::DataSizeDelayBytes => {
+                if snapshot.open_type == FilterOpenType::TsRecord {
+                    return Err(HalError::invalid_argument(
+                        HalInvalidArgumentKind::NumericRange,
+                        "record filters do not accept data-size delay hints",
+                    ));
+                }
+                FilterDelayHint::DataSizeDelayBytes(usize::try_from(request.value).map_err(
+                    |_| {
+                        HalError::invalid_argument(
+                            HalInvalidArgumentKind::NumericRange,
+                            "filter delay hint value is too large",
+                        )
+                    },
+                )?)
+            }
+        };
+        demux_runtime
+            .set_filter_delay_hint(filter_id, hint)
             .map_err(Self::map_filter_runtime_error)
     }
 

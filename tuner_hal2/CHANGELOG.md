@@ -1,3 +1,14 @@
+# r50ei_wp_r07_filter_hint_runtime
+
+- WP-R07継続として、`IFilter.configureAvStreamType()` を service_runtime / demux runtime のAV stream type hint保持へ接続した。
+- `configureAvStreamType()` は、未configure AVを `INVALID_STATE`、AV開始中を `INVALID_STATE`、非AVを `UNAVAILABLE`、open subtypeと異なるaudio/video指定を `INVALID_ARGUMENT` に倒す。
+- `IFilter.setDelayHint()` を runtime保持へ接続し、旧 `tuner_hal` と同じくmedia filterは `UNAVAILABLE`、record filterのdata-size hintは `INVALID_ARGUMENT`、time hint上限は10秒にした。
+- `configureMonitorEvent()` / `configureIpCid()` / 読み取り系を含む `IFilter` 公開APIに `ensure_open()` を追加し、閉鎖後公開API成功を避けるようにした。
+- Filter close時のruntime unregisterで、queue除去に加えてpacket pipeline側のfilter一過性状態も破棄するようにした。
+- `FilterDelayHint` のtime/data併用時にOR条件でready判定する純粋部品を追加した。
+- demux runtimeの単体テストに、AV configure時のbacking marker、AV stream hintの保持/再configure時clear、delay hintのtime/data独立更新、delay OR ready判定を追加した。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認は未実施。
+
 # r50eh_wp_r07_filter_runtime_foundation
 
 - WP-R07の先行実装として、公開 `IFilter.configure()` を `FilterConfigureTxn` 経由で demux runtime / packet pipeline へ接続した。

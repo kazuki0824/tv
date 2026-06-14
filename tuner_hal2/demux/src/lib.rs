@@ -37,7 +37,8 @@ pub use av::{
     AvHandleReleaseTxn, AvPayloadDeliveryOutcome, AvSharedBacking, AvSlotId, ClientHandleState,
 };
 pub use config::{
-    AvSettings, FilterConfig, FilterConfigKind, FilterOpenType, OpenFilterRequest, PesSettings,
+    AvSettings, AvStreamKind, AvStreamTypeConfig, FilterConfig, FilterConfigKind, FilterDelayHint,
+    FilterDelayHints, FilterDelayReadiness, FilterOpenType, OpenFilterRequest, PesSettings,
     RecordIndexSettings, SectionCondition, SectionConditionKind,
 };
 pub use runtime::{
@@ -307,6 +308,148 @@ mod tests {
         assert!(demux.stop_filter_runtime(15).is_err());
         assert!(demux.flush_filter_runtime(15).is_err());
         assert_eq!(demux.filter(15).unwrap().state(), FilterRuntimeState::Open);
+    }
+
+    #[test]
+    fn av_stream_type_hint_is_stored_and_cleared_by_reconfigure() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime(
+                16,
+                1,
+                PipelineOpenKind::Av,
+                Some(FilterPipelineConfig {
+                    tpid: Some(300),
+                    raw: false,
+                }),
+            ))
+            .unwrap();
+
+        let hint = AvStreamTypeConfig {
+            kind: AvStreamKind::Video,
+            stream_type: 27,
+        };
+        demux.configure_filter_av_stream_type(16, hint).unwrap();
+        assert_eq!(demux.filter(16).unwrap().av_stream_type_hint(), Some(hint));
+
+        demux
+            .configure_filter_runtime(
+                16,
+                FilterPipelineConfig {
+                    tpid: Some(301),
+                    raw: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(demux.filter(16).unwrap().av_stream_type_hint(), None);
+    }
+
+    #[test]
+    fn av_configure_uses_av_backing_marker_and_start_stop_preserve_axes() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime(
+                18,
+                1,
+                PipelineOpenKind::Av,
+                None,
+            ))
+            .unwrap();
+
+        demux
+            .configure_filter_runtime(
+                18,
+                FilterPipelineConfig {
+                    tpid: Some(400),
+                    raw: false,
+                },
+            )
+            .unwrap();
+        assert!(demux.filter(18).unwrap().av_backing_present());
+        assert!(!demux.filter(18).unwrap().queue_present());
+        demux
+            .configure_filter_av_stream_type(
+                18,
+                AvStreamTypeConfig {
+                    kind: AvStreamKind::Video,
+                    stream_type: 15,
+                },
+            )
+            .unwrap();
+
+        demux.start_filter_runtime(18).unwrap();
+        assert_eq!(
+            demux.filter(18).unwrap().state(),
+            FilterRuntimeState::Started
+        );
+        assert!(demux.filter(18).unwrap().av_backing_present());
+        assert_eq!(
+            demux.filter(18).unwrap().av_stream_type_hint(),
+            Some(AvStreamTypeConfig {
+                kind: AvStreamKind::Video,
+                stream_type: 15
+            })
+        );
+        demux.stop_filter_runtime(18).unwrap();
+        assert_eq!(
+            demux.filter(18).unwrap().state(),
+            FilterRuntimeState::Stopped
+        );
+        assert!(demux.filter(18).unwrap().av_backing_present());
+    }
+
+    #[test]
+    fn filter_delay_hint_updates_independent_time_and_data_axes() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime(
+                17,
+                1,
+                PipelineOpenKind::Section,
+                None,
+            ))
+            .unwrap();
+
+        demux
+            .set_filter_delay_hint(17, FilterDelayHint::TimeDelayMs(10))
+            .unwrap();
+        demux
+            .set_filter_delay_hint(17, FilterDelayHint::DataSizeDelayBytes(188))
+            .unwrap();
+        let hints = demux.filter(17).unwrap().delay_hints();
+        assert_eq!(hints.time_delay_ms, Some(10));
+        assert_eq!(hints.data_size_delay_bytes, Some(188));
+
+        demux
+            .set_filter_delay_hint(17, FilterDelayHint::TimeDelayMs(0))
+            .unwrap();
+        demux
+            .set_filter_delay_hint(17, FilterDelayHint::DataSizeDelayBytes(0))
+            .unwrap();
+        let hints = demux.filter(17).unwrap().delay_hints();
+        assert_eq!(hints.time_delay_ms, None);
+        assert_eq!(hints.data_size_delay_bytes, None);
+    }
+
+    #[test]
+    fn filter_delay_readiness_uses_or_for_time_and_data_conditions() {
+        let hints = FilterDelayHints {
+            time_delay_ms: Some(1_000),
+            data_size_delay_bytes: Some(188),
+        };
+
+        assert_eq!(
+            hints.delivery_readiness(999, 187),
+            FilterDelayReadiness::WaitingForTime
+        );
+        assert_eq!(
+            hints.delivery_readiness(1_000, 0),
+            FilterDelayReadiness::Ready
+        );
+        assert_eq!(
+            hints.delivery_readiness(0, 188),
+            FilterDelayReadiness::Ready
+        );
     }
 
     #[test]

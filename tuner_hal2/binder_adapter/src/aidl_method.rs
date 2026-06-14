@@ -20,6 +20,8 @@ use crate::frontend::FrontendCommand;
 use crate::lnb::LnbCommand;
 use crate::{CommandPlan, DomainCommand};
 
+const MAX_FILTER_DELAY_MS: i64 = 10_000;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AidlMethodCall {
     UnsupportedPublicApi {
@@ -268,6 +270,15 @@ pub fn build_filter_delay_hint_request(
     Ok(FilterDelayHintRequest {
         kind,
         value: i64::from(hint.hintValue),
+    })
+    .and_then(|request| {
+        if request.value < 0 {
+            return Err(invalid("filter delay hint value must be non-negative"));
+        }
+        if request.kind == FilterDelayHintKind::TimeDelayMs && request.value > MAX_FILTER_DELAY_MS {
+            return Err(invalid("filter delay time hint exceeds product limit"));
+        }
+        Ok(request)
     })
 }
 

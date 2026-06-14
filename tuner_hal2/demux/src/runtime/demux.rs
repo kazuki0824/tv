@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, VecDeque};
 
-use crate::config::{FilterOpenType, OpenFilterRequest};
+use crate::config::{AvStreamTypeConfig, FilterDelayHint, FilterOpenType, OpenFilterRequest};
 use crate::packet_pipeline::{
     FilterPipelineConfig, PacketPipeline, PipelineFilterView, PipelineInputKind, PipelineOpenKind,
     PipelineReport, PipelineResetReport,
@@ -209,7 +209,13 @@ impl DemuxRuntime {
         &mut self,
         filter_id: i32,
     ) -> Result<FilterRuntimeSnapshot, DemuxRuntimeError> {
+        if !self.filters.contains_key(&filter_id) {
+            return Err(DemuxRuntimeError::filter_missing(filter_id));
+        }
         self.filter_queues.remove(&filter_id);
+        self.pipeline
+            .remove_filter(filter_id)
+            .map_err(|_| DemuxRuntimeError::pipeline_failed())?;
         self.filters
             .remove(&filter_id)
             .map(|filter| filter.snapshot())
@@ -387,6 +393,30 @@ impl DemuxRuntime {
             | FilterRuntimeState::Closed
             | FilterRuntimeState::Failed => Err(DemuxRuntimeError::sink_lifecycle(filter_id)),
         }
+    }
+
+    pub fn configure_filter_av_stream_type(
+        &mut self,
+        filter_id: i32,
+        config: AvStreamTypeConfig,
+    ) -> Result<(), DemuxRuntimeError> {
+        self.filters
+            .get_mut(&filter_id)
+            .ok_or(DemuxRuntimeError::filter_missing(filter_id))?
+            .set_av_stream_type_hint(config);
+        Ok(())
+    }
+
+    pub fn set_filter_delay_hint(
+        &mut self,
+        filter_id: i32,
+        hint: FilterDelayHint,
+    ) -> Result<(), DemuxRuntimeError> {
+        self.filters
+            .get_mut(&filter_id)
+            .ok_or(DemuxRuntimeError::filter_missing(filter_id))?
+            .set_delay_hint(hint);
+        Ok(())
     }
 
     pub fn configure_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {

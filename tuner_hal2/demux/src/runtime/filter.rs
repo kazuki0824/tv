@@ -1,5 +1,6 @@
-use crate::config::FilterOpenType;
-use crate::config::OpenFilterRequest;
+use crate::config::{
+    AvStreamTypeConfig, FilterDelayHint, FilterDelayHints, FilterOpenType, OpenFilterRequest,
+};
 use crate::packet_pipeline::{FilterPipelineConfig, PipelineFilterView, PipelineOpenKind};
 use crate::TsInputOrigin;
 
@@ -64,6 +65,8 @@ pub struct FilterRuntimeSnapshot {
     pub source: FilterSource,
     pub queue_present: bool,
     pub av_backing_present: bool,
+    pub av_stream_type_hint: Option<AvStreamTypeConfig>,
+    pub delay_hints: FilterDelayHints,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -80,6 +83,8 @@ pub struct FilterRuntime {
     source: FilterSource,
     queue_present: bool,
     av_backing_present: bool,
+    av_stream_type_hint: Option<AvStreamTypeConfig>,
+    delay_hints: FilterDelayHints,
 }
 
 impl FilterRuntime {
@@ -105,6 +110,8 @@ impl FilterRuntime {
             source: FilterSource::DemuxInput,
             queue_present: false,
             av_backing_present: false,
+            av_stream_type_hint: None,
+            delay_hints: FilterDelayHints::default(),
         }
     }
 
@@ -122,6 +129,8 @@ impl FilterRuntime {
             source: FilterSource::DemuxInput,
             queue_present: false,
             av_backing_present: false,
+            av_stream_type_hint: None,
+            delay_hints: FilterDelayHints::default(),
         }
     }
 
@@ -165,6 +174,12 @@ impl FilterRuntime {
     pub fn av_backing_present(&self) -> bool {
         self.av_backing_present
     }
+    pub fn av_stream_type_hint(&self) -> Option<AvStreamTypeConfig> {
+        self.av_stream_type_hint
+    }
+    pub fn delay_hints(&self) -> FilterDelayHints {
+        self.delay_hints
+    }
 
     pub fn snapshot(&self) -> FilterRuntimeSnapshot {
         FilterRuntimeSnapshot {
@@ -179,6 +194,8 @@ impl FilterRuntime {
             source: self.source,
             queue_present: self.queue_present,
             av_backing_present: self.av_backing_present,
+            av_stream_type_hint: self.av_stream_type_hint,
+            delay_hints: self.delay_hints,
         }
     }
 
@@ -194,6 +211,8 @@ impl FilterRuntime {
         self.source = snapshot.source;
         self.queue_present = snapshot.queue_present;
         self.av_backing_present = snapshot.av_backing_present;
+        self.av_stream_type_hint = snapshot.av_stream_type_hint;
+        self.delay_hints = snapshot.delay_hints;
     }
 
     pub fn configure_with_generation(&mut self, generation: u64, config: FilterPipelineConfig) {
@@ -209,7 +228,25 @@ impl FilterRuntime {
                 | PipelineOpenKind::Pes
         );
         self.av_backing_present = matches!(self.open_kind, PipelineOpenKind::Av);
+        self.av_stream_type_hint = None;
         self.state = FilterRuntimeState::Configured;
+    }
+
+    pub fn set_av_stream_type_hint(&mut self, config: AvStreamTypeConfig) {
+        self.av_stream_type_hint = Some(config);
+    }
+
+    pub fn set_delay_hint(&mut self, hint: FilterDelayHint) {
+        match hint {
+            FilterDelayHint::TimeDelayMs(0) => self.delay_hints.time_delay_ms = None,
+            FilterDelayHint::TimeDelayMs(ms) => self.delay_hints.time_delay_ms = Some(ms),
+            FilterDelayHint::DataSizeDelayBytes(0) => {
+                self.delay_hints.data_size_delay_bytes = None;
+            }
+            FilterDelayHint::DataSizeDelayBytes(bytes) => {
+                self.delay_hints.data_size_delay_bytes = Some(bytes);
+            }
+        }
     }
 
     pub fn disconnect_source(&mut self) {
