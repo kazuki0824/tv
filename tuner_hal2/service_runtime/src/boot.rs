@@ -1047,6 +1047,7 @@ impl TunerServiceRuntime {
         &mut self,
         id: i32,
     ) -> Option<crate::registry::DemuxRegistryEntry> {
+        self.cleanup_descramblers_for_demux_owner_loss(id);
         self.registry.unregister_demux(DemuxRuntimeId(id))
     }
 
@@ -1975,6 +1976,19 @@ impl TunerServiceRuntime {
         &mut self,
         id: i32,
     ) -> Option<crate::registry::DescramblerRegistryEntry> {
+        self.cleanup_descrambler_session(id);
+        self.registry
+            .unregister_descrambler(DescramblerRuntimeId(id))
+    }
+
+    fn cleanup_descramblers_for_demux_owner_loss(&mut self, demux_id: i32) {
+        let descrambler_ids = self.registry.descrambler_ids_bound_to_demux(demux_id);
+        for descrambler_id in descrambler_ids {
+            self.cleanup_descrambler_session(descrambler_id.0);
+        }
+    }
+
+    fn cleanup_descrambler_session(&mut self, id: i32) {
         let mut cleanup_failure = None;
         let old_token = if let Some(runtime) = self
             .registry
@@ -2007,8 +2021,6 @@ impl TunerServiceRuntime {
                 );
             }
         }
-        self.registry
-            .unregister_descrambler(DescramblerRuntimeId(id))
     }
 
     pub fn demux_ids(&self) -> Vec<i32> {

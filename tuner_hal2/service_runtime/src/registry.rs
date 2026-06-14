@@ -557,6 +557,15 @@ impl RuntimeRegistry {
             .map(|runtime| runtime.session().key_slot())
     }
 
+    pub fn descrambler_ids_bound_to_demux(&self, demux_id: i32) -> Vec<DescramblerRuntimeId> {
+        self.descrambler_runtimes
+            .iter()
+            .filter_map(|(id, runtime)| {
+                (runtime.session().demux_id() == Some(demux_id)).then_some(*id)
+            })
+            .collect()
+    }
+
     pub fn descrambler_key_table(&self) -> &DescramblerKeyTable {
         &self.descrambler_key_table
     }

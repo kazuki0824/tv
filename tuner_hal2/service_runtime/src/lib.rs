@@ -1028,6 +1028,43 @@ mod tests {
     }
 
     #[test]
+    fn demux_owner_loss_cleans_bound_descrambler_session() {
+        let mut runtime = TunerServiceRuntime::new();
+        let demux = runtime.allocate_demux_runtime().unwrap();
+        let filter = runtime.allocate_filter_runtime(demux.id.0).unwrap();
+        runtime
+            .register_demux_filter_runtime(
+                demux.id.0,
+                filter.id.0,
+                &configured_pes_filter_request(),
+            )
+            .unwrap();
+        runtime
+            .configure_filter_runtime_request(filter.id.0, configured_pes_filter_config(200))
+            .unwrap();
+        let descrambler = runtime.allocate_descrambler_runtime().unwrap();
+        runtime
+            .set_descrambler_demux_source(descrambler.id.0, demux.id.0)
+            .unwrap();
+        runtime
+            .add_descrambler_pid_non_null_source(descrambler.id.0, 200, filter.id.0)
+            .unwrap();
+
+        runtime.unregister_demux_runtime(demux.id.0);
+
+        let session = runtime
+            .registry()
+            .descrambler_runtime(descrambler.id)
+            .unwrap()
+            .session();
+        assert!(session.is_closed());
+        assert_eq!(session.demux_id(), None);
+        assert_eq!(session.demux_generation(), None);
+        assert_eq!(session.key_slot(), None);
+        assert!(session.pid_claims().is_empty());
+    }
+
+    #[test]
     fn descrambler_remove_pid_rejects_stale_source_filter_generation() {
         let mut runtime = TunerServiceRuntime::new();
         let demux = runtime.allocate_demux_runtime().unwrap();
