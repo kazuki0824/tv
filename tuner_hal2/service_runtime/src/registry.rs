@@ -4,7 +4,9 @@ use std::path::PathBuf;
 use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem};
 use maleicacid_tuner_hal2_demux::DemuxRuntime;
 use maleicacid_tuner_hal2_descrambler::runtime::DescramblerKeySlotId;
-use maleicacid_tuner_hal2_descrambler::{DescramblerKeyTable, DescramblerRuntime};
+use maleicacid_tuner_hal2_descrambler::{
+    DescramblerKeyTable, DescramblerPidClaim, DescramblerRuntime,
+};
 use maleicacid_tuner_hal2_device::FrontendRuntime;
 use maleicacid_tuner_hal2_lnb::LnbRuntime;
 
@@ -554,6 +556,27 @@ impl RuntimeRegistry {
                         .any(|claim| claim.pid().0 == pid)
             })
             .map(|runtime| runtime.session().key_slot())
+    }
+
+    pub fn descrambler_claims_for_demux(
+        &self,
+        demux_id: i32,
+        demux_generation: u64,
+    ) -> Vec<(Vec<DescramblerPidClaim>, Option<DescramblerKeySlotId>)> {
+        self.descrambler_runtimes
+            .values()
+            .filter_map(|runtime| {
+                let session = runtime.session();
+                if session.is_closed()
+                    || session.demux_id() != Some(demux_id)
+                    || session.demux_generation() != Some(demux_generation)
+                    || session.pid_claims().is_empty()
+                {
+                    return None;
+                }
+                Some((session.pid_claims().to_vec(), session.key_slot()))
+            })
+            .collect()
     }
 
     pub fn descrambler_ids_bound_to_demux(&self, demux_id: i32) -> Vec<DescramblerRuntimeId> {

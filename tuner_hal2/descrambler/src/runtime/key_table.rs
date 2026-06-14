@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 #[cfg(test)]
 use std::collections::BTreeSet;
 
+use crate::core::DescramblerKeySlot;
+
 use super::token::DescramblerKeyToken;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -14,8 +16,15 @@ pub enum DescramblerKeyLookupError {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DescramblerKeyRegistrationError {
+    EmptySlot,
+    DuplicateToken,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct DescramblerKeySlotState {
     slot: DescramblerKeySlotId,
+    key_slot: DescramblerKeySlot,
     refcount: usize,
     expired: bool,
 }
@@ -40,11 +49,42 @@ impl DescramblerKeyTable {
         if self.expired.contains(token) {
             return Err(DescramblerKeyLookupError::ExpiredToken);
         }
-        match self.slots.get(token).copied() {
+        match self.slots.get(token).cloned() {
             Some(state) if state.expired => Err(DescramblerKeyLookupError::ExpiredToken),
             Some(state) => Ok(state.slot),
             None => Err(DescramblerKeyLookupError::UnknownToken),
         }
+    }
+
+    pub fn key_slot(&self, slot_id: DescramblerKeySlotId) -> Option<DescramblerKeySlot> {
+        self.slots
+            .values()
+            .find(|state| state.slot == slot_id && !state.expired)
+            .map(|state| state.key_slot.clone())
+    }
+
+    pub fn register_key_slot(
+        &mut self,
+        token: DescramblerKeyToken,
+        key_slot: DescramblerKeySlot,
+    ) -> Result<DescramblerKeySlotId, DescramblerKeyRegistrationError> {
+        if !key_slot.has_any_key() {
+            return Err(DescramblerKeyRegistrationError::EmptySlot);
+        }
+        if self.slots.contains_key(&token) {
+            return Err(DescramblerKeyRegistrationError::DuplicateToken);
+        }
+        let slot_id = DescramblerKeySlotId(token.stable_slot_id());
+        self.slots.insert(
+            token,
+            DescramblerKeySlotState {
+                slot: slot_id,
+                key_slot,
+                refcount: 0,
+                expired: false,
+            },
+        );
+        Ok(slot_id)
     }
 
     pub fn acquire(
@@ -103,11 +143,21 @@ mod tests {
             token: DescramblerKeyToken,
             slot: DescramblerKeySlotId,
         ) {
+            self.insert_test_key_slot(token, slot, DescramblerKeySlot::empty());
+        }
+
+        pub(crate) fn insert_test_key_slot(
+            &mut self,
+            token: DescramblerKeyToken,
+            slot: DescramblerKeySlotId,
+            key_slot: DescramblerKeySlot,
+        ) {
             self.expired.remove(&token);
             self.slots.insert(
                 token,
                 DescramblerKeySlotState {
                     slot,
+                    key_slot,
                     refcount: 0,
                     expired: false,
                 },

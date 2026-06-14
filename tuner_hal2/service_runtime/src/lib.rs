@@ -69,7 +69,11 @@ mod tests {
     use super::*;
     use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem};
     use maleicacid_tuner_hal2_demux::{
+        packet_pipeline::{PipelineAssemblySuppressionReason, PipelineDeliveryAction},
         FilterConfig, FilterConfigKind, FilterOpenType, OpenFilterRequest, PesSettings,
+    };
+    use maleicacid_tuner_hal2_descrambler::{
+        multi2_encrypt_payload, DescramblerKeySlot, DescramblerKeyToken, Multi2KeyMaterial,
     };
     use maleicacid_tuner_hal2_domain_request::{RuntimeTransactionName, AIDL_TRANSACTION_TABLE};
     use std::path::PathBuf;
@@ -842,6 +846,37 @@ mod tests {
         packet
     }
 
+    fn sample_multi2_key(byte: u8) -> Multi2KeyMaterial {
+        let mut system_key = [0u8; 32];
+        for (i, value) in system_key.iter_mut().enumerate() {
+            *value = byte.wrapping_add(i as u8);
+        }
+        let mut iv = [0u8; 8];
+        for (i, value) in iv.iter_mut().enumerate() {
+            *value = 0xa0u8.wrapping_add(byte).wrapping_add(i as u8);
+        }
+        let mut data_key = [0u8; 8];
+        for (i, value) in data_key.iter_mut().enumerate() {
+            *value = 0x40u8.wrapping_add(byte).wrapping_add((i * 3) as u8);
+        }
+        Multi2KeyMaterial::new(system_key, iv, data_key)
+    }
+
+    fn encrypted_scrambled_payload_packet(
+        pid: u16,
+        key_slot: &DescramblerKeySlot,
+    ) -> [u8; maleicacid_tuner_hal2_common::TS_PACKET_SIZE] {
+        let mut packet = scrambled_payload_packet(pid);
+        packet[3] = 0x10;
+        packet[4..12].copy_from_slice(&[0x00, 0x00, 0x01, 0xe0, 0x00, 0x03, 0x80, 0x00]);
+        let even_key = key_slot
+            .key_for(maleicacid_tuner_hal2_descrambler::KeyParity::Even)
+            .expect("test key slot must contain an even key");
+        multi2_encrypt_payload(&mut packet[4..], even_key);
+        packet[3] = 0x90;
+        packet
+    }
+
     #[test]
     fn descrambler_key_clear_without_key_keeps_bound_demux_and_pid_claims() {
         let mut runtime = TunerServiceRuntime::new();
@@ -1021,6 +1056,75 @@ mod tests {
         }));
         assert!(runtime.descrambler_diagnostics().iter().any(|record| {
             record.kind == DescramblerDiagnosticKind::PacketAssemblySuppressed
+                && record.phase == DescramblerDiagnosticPhase::PacketPipeline
+                && record.demux_id == Some(demux.id.0)
+                && record.pid == Some(200)
+        }));
+    }
+
+    #[test]
+    fn descrambler_success_feeds_descrambled_packet_to_demux_pipeline() {
+        let mut runtime = TunerServiceRuntime::new();
+        runtime.boot_from_probe_results([available(
+            1_000_000,
+            FrontendBackendKind::Px4CharDevice,
+            FrontendSystem::IsdbT,
+            "/dev/px4video0",
+            None,
+        )]);
+        let demux = runtime.allocate_demux_runtime().unwrap();
+        runtime
+            .set_demux_frontend_data_source(demux.id.0, 1_000_000)
+            .unwrap();
+        let filter = runtime.allocate_filter_runtime(demux.id.0).unwrap();
+        runtime
+            .register_demux_filter_runtime(
+                demux.id.0,
+                filter.id.0,
+                &configured_pes_filter_request(),
+            )
+            .unwrap();
+        runtime
+            .configure_filter_runtime_request(filter.id.0, configured_pes_filter_config(200))
+            .unwrap();
+        runtime.start_filter_runtime(filter.id.0).unwrap();
+
+        let key_slot = DescramblerKeySlot::empty()
+            .try_with_even(sample_multi2_key(1))
+            .unwrap();
+        let token = DescramblerKeyToken::try_from_bytes(vec![0x10; 8]).unwrap();
+        runtime
+            .register_descrambler_key_slot(token.clone(), key_slot.clone())
+            .unwrap();
+        let descrambler = runtime.allocate_descrambler_runtime().unwrap();
+        runtime
+            .set_descrambler_demux_source(descrambler.id.0, demux.id.0)
+            .unwrap();
+        runtime
+            .add_descrambler_pid_non_null_source(descrambler.id.0, 200, filter.id.0)
+            .unwrap();
+        runtime
+            .set_descrambler_key_token(descrambler.id.0, token.as_binder_token_bytes())
+            .unwrap();
+
+        let reports = runtime
+            .push_frontend_ts_packet_to_bound_demuxes(
+                1_000_000,
+                &encrypted_scrambled_payload_packet(200, &key_slot),
+            )
+            .unwrap();
+        let report = reports.first().expect("bound demux report exists");
+
+        assert!(report
+            .delivery_actions
+            .contains(&PipelineDeliveryAction::PesPayload {
+                filter_id: filter.id.0
+            }));
+        assert!(!report
+            .assembly_suppression_reasons
+            .contains(&PipelineAssemblySuppressionReason::KeylessScrambledWithoutDescrambler));
+        assert!(runtime.descrambler_diagnostics().iter().any(|record| {
+            record.kind == DescramblerDiagnosticKind::PacketDescrambled
                 && record.phase == DescramblerDiagnosticPhase::PacketPipeline
                 && record.demux_id == Some(demux.id.0)
                 && record.pid == Some(200)

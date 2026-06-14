@@ -4,7 +4,10 @@ pub mod session;
 pub mod session_txn;
 pub mod token;
 
-pub use key_table::{DescramblerKeyLookupError, DescramblerKeySlotId, DescramblerKeyTable};
+pub use key_table::{
+    DescramblerKeyLookupError, DescramblerKeyRegistrationError, DescramblerKeySlotId,
+    DescramblerKeyTable,
+};
 pub use pid_claim::{
     DescramblerPid, DescramblerPidClaim, DescramblerPidClaimError, SourceFilterRef,
 };

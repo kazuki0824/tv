@@ -26,6 +26,12 @@ impl DescramblerKeyToken {
     pub fn as_binder_token_bytes(&self) -> &[u8] {
         &self.0
     }
+
+    pub(crate) fn stable_slot_id(&self) -> u64 {
+        let mut bytes = [0u8; DESCRAMBLER_TOKEN_BYTES];
+        bytes.copy_from_slice(&self.0);
+        u64::from_be_bytes(bytes)
+    }
 }
 
 #[cfg(test)]
