@@ -31,7 +31,8 @@ pub use command_dispatch::{
     RuntimeCommandDispatchError, RuntimeCommandDispatchPlan, RuntimeCommandDispatcher,
 };
 pub use diagnostics::{
-    CapabilitySuppressionReason, StartupDiagnosticKind, StartupDiagnosticPhase,
+    CapabilitySuppressionReason, DescramblerDiagnosticKind, DescramblerDiagnosticPhase,
+    DescramblerDiagnosticRecord, StartupDiagnosticKind, StartupDiagnosticPhase,
     StartupDiagnosticRecord,
 };
 pub use dispatch::{dispatch_target_for, ServiceRuntimeDispatchTarget};
@@ -831,6 +832,16 @@ mod tests {
         }
     }
 
+    fn scrambled_payload_packet(pid: u16) -> [u8; maleicacid_tuner_hal2_common::TS_PACKET_SIZE] {
+        let mut packet = [0xffu8; maleicacid_tuner_hal2_common::TS_PACKET_SIZE];
+        packet[0] = 0x47;
+        packet[1] = ((pid >> 8) as u8) & 0x1f;
+        packet[2] = pid as u8;
+        packet[3] = 0x90;
+        packet[4] = 0x00;
+        packet
+    }
+
     #[test]
     fn descrambler_key_clear_without_key_keeps_bound_demux_and_pid_claims() {
         let mut runtime = TunerServiceRuntime::new();
@@ -898,6 +909,14 @@ mod tests {
             err,
             maleicacid_tuner_hal2_common::HalError::InvalidArgument { .. }
         ));
+        assert!(runtime.descrambler_diagnostics().iter().any(|record| {
+            record.kind == DescramblerDiagnosticKind::PidClaimRejected
+                && record.phase == DescramblerDiagnosticPhase::AddPid
+                && record.descrambler_id == Some(descrambler.id.0)
+                && record.demux_id == Some(owner_demux.id.0)
+                && record.pid == Some(200)
+                && record.filter_id == Some(filter.id.0)
+        }));
     }
 
     #[test]
@@ -935,6 +954,77 @@ mod tests {
             err,
             maleicacid_tuner_hal2_common::HalError::InvalidState { .. }
         ));
+    }
+
+    #[test]
+    fn descrambler_set_key_token_records_cas_unavailable_diagnostic() {
+        let mut runtime = TunerServiceRuntime::new();
+        let descrambler = runtime.allocate_descrambler_runtime().unwrap();
+
+        let err = runtime
+            .set_descrambler_key_token(descrambler.id.0, &[1, 2, 3, 4, 5, 6, 7, 8])
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            maleicacid_tuner_hal2_common::HalError::InvalidState { .. }
+        ));
+        assert!(runtime.descrambler_diagnostics().iter().any(|record| {
+            record.kind == DescramblerDiagnosticKind::CasTokenProducerUnavailable
+                && record.phase == DescramblerDiagnosticPhase::SetKeyToken
+                && record.descrambler_id == Some(descrambler.id.0)
+        }));
+    }
+
+    #[test]
+    fn descrambler_packet_policy_records_keyless_scrambled_diagnostics() {
+        let mut runtime = TunerServiceRuntime::new();
+        runtime.boot_from_probe_results([available(
+            1_000_000,
+            FrontendBackendKind::Px4CharDevice,
+            FrontendSystem::IsdbT,
+            "/dev/px4video0",
+            None,
+        )]);
+        let demux = runtime.allocate_demux_runtime().unwrap();
+        runtime
+            .set_demux_frontend_data_source(demux.id.0, 1_000_000)
+            .unwrap();
+        let filter = runtime.allocate_filter_runtime(demux.id.0).unwrap();
+        runtime
+            .register_demux_filter_runtime(
+                demux.id.0,
+                filter.id.0,
+                &configured_pes_filter_request(),
+            )
+            .unwrap();
+        runtime
+            .configure_filter_runtime_request(filter.id.0, configured_pes_filter_config(200))
+            .unwrap();
+        let descrambler = runtime.allocate_descrambler_runtime().unwrap();
+        runtime
+            .set_descrambler_demux_source(descrambler.id.0, demux.id.0)
+            .unwrap();
+        runtime
+            .add_descrambler_pid_non_null_source(descrambler.id.0, 200, filter.id.0)
+            .unwrap();
+
+        runtime
+            .push_frontend_ts_packet_to_bound_demuxes(1_000_000, &scrambled_payload_packet(200))
+            .unwrap();
+
+        assert!(runtime.descrambler_diagnostics().iter().any(|record| {
+            record.kind == DescramblerDiagnosticKind::PacketScrambledWithoutKey
+                && record.phase == DescramblerDiagnosticPhase::PacketPipeline
+                && record.demux_id == Some(demux.id.0)
+                && record.pid == Some(200)
+        }));
+        assert!(runtime.descrambler_diagnostics().iter().any(|record| {
+            record.kind == DescramblerDiagnosticKind::PacketAssemblySuppressed
+                && record.phase == DescramblerDiagnosticPhase::PacketPipeline
+                && record.demux_id == Some(demux.id.0)
+                && record.pid == Some(200)
+        }));
     }
 
     #[test]

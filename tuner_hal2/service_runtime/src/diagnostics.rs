@@ -102,3 +102,99 @@ impl StartupDiagnosticRecord {
         }
     }
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DescramblerDiagnosticKind {
+    KeyTokenEmpty,
+    KeyTokenInvalidLength,
+    KeyTokenUnknown,
+    KeyTokenExpired,
+    CasTokenProducerUnavailable,
+    SessionClosed,
+    KeyTokenReleaseFailed,
+    PidClaimRejected,
+    PacketScrambledWithoutKey,
+    PacketAssemblySuppressed,
+    CleanupKeyReleaseFailed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DescramblerDiagnosticPhase {
+    SetKeyToken,
+    AddPid,
+    RemovePid,
+    PacketPipeline,
+    Cleanup,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DescramblerDiagnosticRecord {
+    pub kind: DescramblerDiagnosticKind,
+    pub phase: DescramblerDiagnosticPhase,
+    pub descrambler_id: Option<i32>,
+    pub demux_id: Option<i32>,
+    pub pid: Option<u16>,
+    pub filter_id: Option<i32>,
+    pub error: Option<HalError>,
+}
+
+impl DescramblerDiagnosticRecord {
+    pub fn set_key_token(
+        descrambler_id: i32,
+        kind: DescramblerDiagnosticKind,
+        error: HalError,
+    ) -> Self {
+        Self {
+            kind,
+            phase: DescramblerDiagnosticPhase::SetKeyToken,
+            descrambler_id: Some(descrambler_id),
+            demux_id: None,
+            pid: None,
+            filter_id: None,
+            error: Some(error),
+        }
+    }
+
+    pub fn pid_claim(
+        phase: DescramblerDiagnosticPhase,
+        descrambler_id: i32,
+        demux_id: Option<i32>,
+        pid: u16,
+        filter_id: i32,
+        error: HalError,
+    ) -> Self {
+        Self {
+            kind: DescramblerDiagnosticKind::PidClaimRejected,
+            phase,
+            descrambler_id: Some(descrambler_id),
+            demux_id,
+            pid: Some(pid),
+            filter_id: Some(filter_id),
+            error: Some(error),
+        }
+    }
+
+    pub fn packet_policy(demux_id: i32, pid: u16, kind: DescramblerDiagnosticKind) -> Self {
+        Self {
+            kind,
+            phase: DescramblerDiagnosticPhase::PacketPipeline,
+            descrambler_id: None,
+            demux_id: Some(demux_id),
+            pid: Some(pid),
+            filter_id: None,
+            error: None,
+        }
+    }
+
+    pub fn cleanup_release_failed(descrambler_id: i32, error: HalError) -> Self {
+        Self {
+            kind: DescramblerDiagnosticKind::CleanupKeyReleaseFailed,
+            phase: DescramblerDiagnosticPhase::Cleanup,
+            descrambler_id: Some(descrambler_id),
+            demux_id: None,
+            pid: None,
+            filter_id: None,
+            error: Some(error),
+        }
+    }
+}

@@ -28,6 +28,10 @@ pub struct DescramblerKeyTable {
 }
 
 impl DescramblerKeyTable {
+    pub fn is_empty(&self) -> bool {
+        self.slots.is_empty()
+    }
+
     pub fn resolve(
         &self,
         token: &DescramblerKeyToken,

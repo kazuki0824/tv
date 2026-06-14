@@ -3,7 +3,9 @@ use std::path::PathBuf;
 
 use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem};
 use maleicacid_tuner_hal2_demux::DemuxRuntime;
-use maleicacid_tuner_hal2_descrambler::{DescramblerKeyTable, DescramblerRuntime};
+use maleicacid_tuner_hal2_descrambler::{
+    DescramblerKeySlotId, DescramblerKeyTable, DescramblerRuntime,
+};
 use maleicacid_tuner_hal2_device::FrontendRuntime;
 use maleicacid_tuner_hal2_lnb::LnbRuntime;
 
@@ -533,6 +535,26 @@ impl RuntimeRegistry {
                         .iter()
                         .any(|claim| claim.pid().0 == pid)
             })
+    }
+
+    pub fn descrambler_key_slot_for_demux_pid(
+        &self,
+        demux_id: i32,
+        demux_generation: u64,
+        pid: u16,
+    ) -> Option<Option<DescramblerKeySlotId>> {
+        self.descrambler_runtimes
+            .values()
+            .find(|runtime| {
+                runtime.session().demux_id() == Some(demux_id)
+                    && runtime.session().demux_generation() == Some(demux_generation)
+                    && runtime
+                        .session()
+                        .pid_claims()
+                        .iter()
+                        .any(|claim| claim.pid().0 == pid)
+            })
+            .map(|runtime| runtime.session().key_slot())
     }
 
     pub fn descrambler_key_table(&self) -> &DescramblerKeyTable {
