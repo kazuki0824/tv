@@ -53,6 +53,16 @@ mod tests {
     use super::*;
     use crate::packet_pipeline::{FilterPipelineConfig, PipelineOpenKind};
 
+    fn pes_start_packet(pid: u16, continuity_counter: u8, payload: &[u8]) -> [u8; 188] {
+        let mut packet = [0xffu8; 188];
+        packet[0] = 0x47;
+        packet[1] = 0x40 | (((pid >> 8) as u8) & 0x1f);
+        packet[2] = pid as u8;
+        packet[3] = 0x10 | (continuity_counter & 0x0f);
+        packet[4..4 + payload.len()].copy_from_slice(payload);
+        packet
+    }
+
     #[test]
     fn frontend_origin_allows_record_mirror() {
         assert!(TsInputOrigin::Frontend.allows_record_mirror());
@@ -450,6 +460,96 @@ mod tests {
             hints.delivery_readiness(0, 188),
             FilterDelayReadiness::Ready
         );
+    }
+
+    #[test]
+    fn filter_flush_clears_partial_pes_state_and_keeps_runtime_started() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime(
+                22,
+                1,
+                PipelineOpenKind::Pes,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                22,
+                FilterPipelineConfig {
+                    tpid: Some(0x0100),
+                    raw: false,
+                },
+            )
+            .unwrap();
+        demux.start_filter_runtime(22).unwrap();
+
+        let partial_pes = pes_start_packet(0x0100, 0, &[0x00, 0x00, 0x01, 0xe0, 0x00]);
+        let report = demux.push_ts_packet_from_origin(&partial_pes, TsInputOrigin::Frontend);
+        assert_eq!(report.accepted_packets, 1);
+        assert!(demux.pipeline().pes_assemblers.contains_key(&(
+            TsInputOrigin::Frontend,
+            0x0100,
+            22
+        )));
+        assert!(demux.queue_exists(22));
+
+        demux.flush_filter_runtime(22).unwrap();
+
+        assert_eq!(
+            demux.filter(22).unwrap().state(),
+            FilterRuntimeState::Started
+        );
+        assert!(demux.queue_exists(22));
+        assert!(!demux.pipeline().pes_assemblers.contains_key(&(
+            TsInputOrigin::Frontend,
+            0x0100,
+            22
+        )));
+    }
+
+    #[test]
+    fn remove_filter_clears_queue_and_partial_parser_state() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime(
+                23,
+                1,
+                PipelineOpenKind::Pes,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                23,
+                FilterPipelineConfig {
+                    tpid: Some(0x0100),
+                    raw: false,
+                },
+            )
+            .unwrap();
+        demux.start_filter_runtime(23).unwrap();
+
+        let partial_pes = pes_start_packet(0x0100, 0, &[0x00, 0x00, 0x01, 0xe0, 0x00]);
+        let report = demux.push_ts_packet_from_origin(&partial_pes, TsInputOrigin::Frontend);
+        assert_eq!(report.accepted_packets, 1);
+        assert!(demux.pipeline().pes_assemblers.contains_key(&(
+            TsInputOrigin::Frontend,
+            0x0100,
+            23
+        )));
+        assert!(demux.queue_exists(23));
+
+        let removed = demux.remove_filter(23).unwrap();
+
+        assert_eq!(removed.state, FilterRuntimeState::Started);
+        assert!(demux.filter(23).is_none());
+        assert!(!demux.queue_exists(23));
+        assert!(!demux.pipeline().pes_assemblers.contains_key(&(
+            TsInputOrigin::Frontend,
+            0x0100,
+            23
+        )));
     }
 
     #[test]

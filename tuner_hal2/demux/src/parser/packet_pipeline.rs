@@ -493,7 +493,9 @@ impl PacketPipeline {
             self.reset_assembly_for_origin_pid(origin, view.pid);
         }
         if view.payload.is_none() {
-            report.assembly_suppression_reasons.push(PipelineAssemblySuppressionReason::NoPayload);
+            report
+                .assembly_suppression_reasons
+                .push(PipelineAssemblySuppressionReason::NoPayload);
             report.diagnostics.push(PipelineDiagnostic {
                 kind: PipelineDiagnosticKind::NoPayloadAssemblySuppressed,
                 pid: Some(view.pid),
@@ -608,9 +610,9 @@ impl PacketPipeline {
                 // section/PES/AV assembly へ入れない。TEI診断はpreflight側で出す。
             } else if view.scrambling_control != 0 {
                 if !section_filter_ids.is_empty() || !pes_actions.is_empty() {
-                    report
-                        .assembly_suppression_reasons
-                        .push(PipelineAssemblySuppressionReason::KeylessScrambledWithoutDescrambler);
+                    report.assembly_suppression_reasons.push(
+                        PipelineAssemblySuppressionReason::KeylessScrambledWithoutDescrambler,
+                    );
                     report.diagnostics.push(PipelineDiagnostic {
                         kind: PipelineDiagnosticKind::KeylessScrambledAssemblySuppressed,
                         pid: Some(view.pid),
@@ -673,9 +675,12 @@ impl PacketPipeline {
         preflight_suppression_reasons: &[PipelineAssemblySuppressionReason],
     ) -> PipelineReport {
         let mut report = self.plan_ts_packet_report(view, origin, filters);
-        let preflight_tei = preflight_suppression_reasons
-            .iter()
-            .any(|reason| matches!(reason, PipelineAssemblySuppressionReason::TransportErrorIndicator));
+        let preflight_tei = preflight_suppression_reasons.iter().any(|reason| {
+            matches!(
+                reason,
+                PipelineAssemblySuppressionReason::TransportErrorIndicator
+            )
+        });
         let preflight_duplicate = preflight_suppression_reasons
             .iter()
             .any(|reason| matches!(reason, PipelineAssemblySuppressionReason::DuplicatePacket));
@@ -695,7 +700,8 @@ impl PacketPipeline {
             report.generated_events.retain(|event| {
                 matches!(
                     event,
-                    PipelineGeneratedEvent::DataReady { .. } | PipelineGeneratedEvent::Record { .. }
+                    PipelineGeneratedEvent::DataReady { .. }
+                        | PipelineGeneratedEvent::Record { .. }
                 )
             });
             return report;
@@ -1829,10 +1835,9 @@ mod malformed_adaptation_tests {
         assert!(report
             .assembly_suppression_reasons
             .contains(&PipelineAssemblySuppressionReason::TransportErrorIndicator));
-        assert!(report
-            .diagnostics
-            .iter()
-            .any(|diag| diag.kind == PipelineDiagnosticKind::TeiAssemblySuppressed && diag.pid == Some(0x10)));
+        assert!(report.diagnostics.iter().any(|diag| diag.kind
+            == PipelineDiagnosticKind::TeiAssemblySuppressed
+            && diag.pid == Some(0x10)));
     }
 }
 
@@ -1973,7 +1978,6 @@ mod resync_boundary_tests {
     }
 }
 
-
 #[cfg(test)]
 mod record_raw_passthrough_policy_tests {
     use super::*;
@@ -2045,7 +2049,9 @@ mod record_raw_passthrough_policy_tests {
         let mut pipeline = PacketPipeline::default();
         let preflight = pipeline.push_ts_packet(&packet, PipelineInputKind::Live);
         assert_eq!(preflight.accepted_packets, 1);
-        assert!(preflight.assembly_suppression_reasons.contains(&PipelineAssemblySuppressionReason::NoPayload));
+        assert!(preflight
+            .assembly_suppression_reasons
+            .contains(&PipelineAssemblySuppressionReason::NoPayload));
         let view = match pipeline.inspect_ts_packet(&packet) {
             Some(view) => view,
             None => return,
@@ -2068,8 +2074,11 @@ mod record_raw_passthrough_policy_tests {
             .delivery_actions
             .contains(&PipelineDeliveryAction::SectionPayload { filter_id: 2 }));
         assert!(!report.generated_events.iter().any(|event| {
-            matches!(event, PipelineGeneratedEvent::SectionPayloadReady { .. }
-                | PipelineGeneratedEvent::PesPacketReady { .. })
+            matches!(
+                event,
+                PipelineGeneratedEvent::SectionPayloadReady { .. }
+                    | PipelineGeneratedEvent::PesPacketReady { .. }
+            )
         }));
     }
 
@@ -2106,7 +2115,12 @@ mod record_raw_passthrough_policy_tests {
     fn duplicate_packet_passes_record_but_not_assembly_path() {
         let packet = payload_packet(0x0100, 0);
         let mut pipeline = PacketPipeline::default();
-        assert_eq!(pipeline.push_ts_packet(&packet, PipelineInputKind::Live).accepted_packets, 1);
+        assert_eq!(
+            pipeline
+                .push_ts_packet(&packet, PipelineInputKind::Live)
+                .accepted_packets,
+            1
+        );
         let preflight = pipeline.push_ts_packet(&packet, PipelineInputKind::Live);
         assert_eq!(preflight.accepted_packets, 1);
         assert!(preflight
@@ -2215,13 +2229,21 @@ mod keyless_scrambled_policy_tests {
             Ok(view) => view,
             Err(_) => return,
         };
-        let filters = [filter(2, PipelineOpenKind::Section), filter(3, PipelineOpenKind::Pes)];
+        let filters = [
+            filter(2, PipelineOpenKind::Section),
+            filter(3, PipelineOpenKind::Pes),
+        ];
         let origin = crate::TsInputOrigin::Frontend;
         let mut pipeline = PacketPipeline::default();
         pipeline.test_seed_section_for_pid(origin, 0x0100, 2);
         pipeline.test_seed_pes_for_pid(origin, 0x0100, 3);
 
-        let report = pipeline.plan_and_assemble_ts_packet_report_after_preflight(&view, origin, &filters, &[]);
+        let report = pipeline.plan_and_assemble_ts_packet_report_after_preflight(
+            &view,
+            origin,
+            &filters,
+            &[],
+        );
 
         assert!(report
             .assembly_suppression_reasons

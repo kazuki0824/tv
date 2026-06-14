@@ -4,6 +4,7 @@
 - keyなし scrambled packet は record path ではTS scrambling metadataだけを観測し、PES/SC/PTS payload metadataを意味値として扱わないようにした。
 - keyなし scrambled packet が section/PES/AV assemblyへ入る場合は diagnostic を出し、該当PIDの partial assembly をresetするようにした。
 - TEI / duplicate continuity counter packet は record/raw TS path へ到達させ、section/PES/AV assembly からだけ除外するように補正した。
+- demux unit testに、`flush()` がPES partial assemblyを消しつつruntime状態/queueを維持すること、`remove_filter()` がqueueとpacket pipelineのpartial stateを破棄することを追加した。
 - release marker を tuner_hal2 / tuner_hal ともに r50ei5_wp_r07a_descrambler_prereq_packet_pipeline_min へ更新した。
 - packet pipeline の診断モデルを、packet reject/drop と assembly suppression に分離した。
 - `plan_and_assemble_ts_packet_report()` の no-preflight 入口と、旧意味論の test helper `accept_ts_packet_with_outcome()` / `accept_ts_packet()` を削除した。

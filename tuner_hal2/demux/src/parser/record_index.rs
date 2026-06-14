@@ -992,7 +992,9 @@ mod scrambled_record_policy_tests {
             0x0100,
             2,
             true,
-            &[0x00, 0x00, 0x01, 0xe0, 0x00, 0x00, 0x80, 0x80, 0x05, 0x21, 0x00, 0x01, 0x00, 0x01],
+            &[
+                0x00, 0x00, 0x01, 0xe0, 0x00, 0x00, 0x80, 0x80, 0x05, 0x21, 0x00, 0x01, 0x00, 0x01,
+            ],
         );
         let mask = DEMUX_TS_INDEX_CHANGE_TO_EVEN_SCRAMBLED | DEMUX_TS_INDEX_PAYLOAD_UNIT_START;
         let event = parser.push_ts_packet(
@@ -1025,10 +1027,20 @@ mod scrambled_record_policy_tests {
             0x0100,
             0,
             false,
-            &[0x01, 0xe0, 0x00, 0x00, 0x80, 0x80, 0x05, 0x21, 0x00, 0x01, 0x00, 0x01],
+            &[
+                0x01, 0xe0, 0x00, 0x00, 0x80, 0x80, 0x05, 0x21, 0x00, 0x01, 0x00, 0x01,
+            ],
         );
 
-        assert!(build_ts_record_event_data(&first, 0, 0, RECORD_SC_TYPE_SC_AVC, AVC_SC_I_SLICE, &mut state).is_none());
+        assert!(build_ts_record_event_data(
+            &first,
+            0,
+            0,
+            RECORD_SC_TYPE_SC_AVC,
+            AVC_SC_I_SLICE,
+            &mut state
+        )
+        .is_none());
         assert!(build_ts_record_event_data(
             &scrambled,
             188,

@@ -535,12 +535,14 @@ impl DemuxRuntime {
             return report;
         };
         let filters = self.filter_views();
-        let downstream = self.pipeline.plan_and_assemble_ts_packet_report_after_preflight(
-            &view,
-            origin,
-            &filters,
-            &report.assembly_suppression_reasons,
-        );
+        let downstream = self
+            .pipeline
+            .plan_and_assemble_ts_packet_report_after_preflight(
+                &view,
+                origin,
+                &filters,
+                &report.assembly_suppression_reasons,
+            );
         report.dropped_packets += downstream.dropped_packets;
         report.malformed_packets += downstream.malformed_packets;
         report.drop_reasons.extend(downstream.drop_reasons);
