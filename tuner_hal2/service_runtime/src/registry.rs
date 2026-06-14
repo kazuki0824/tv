@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem};
 use maleicacid_tuner_hal2_demux::DemuxRuntime;
 use maleicacid_tuner_hal2_device::FrontendRuntime;
+use maleicacid_tuner_hal2_lnb::LnbRuntime;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct FrontendRuntimeId(pub i32);
@@ -76,6 +77,9 @@ pub enum RegistryCommitError {
     DuplicateFrontendId { id: FrontendRuntimeId },
     DuplicateDemuxId { id: DemuxRuntimeId },
     DuplicateLnbId { id: LnbRuntimeId },
+    MissingFrontendId { id: FrontendRuntimeId },
+    MissingLnbId { id: LnbRuntimeId },
+    LnbFrontendMismatch { frontend_id: FrontendRuntimeId, lnb_id: LnbRuntimeId },
     DuplicateFilterId { id: FilterRuntimeId },
     DuplicateDvrId { id: DvrRuntimeId },
     DuplicateDescramblerId { id: DescramblerRuntimeId },
@@ -99,6 +103,8 @@ pub struct RuntimeRegistry {
     demux_runtimes: BTreeMap<DemuxRuntimeId, DemuxRuntime>,
     demux_frontend_bindings: BTreeMap<DemuxRuntimeId, FrontendRuntimeId>,
     lnbs: BTreeMap<LnbRuntimeId, LnbRegistryEntry>,
+    lnb_runtimes: BTreeMap<LnbRuntimeId, LnbRuntime>,
+    frontend_lnb_bindings: BTreeMap<FrontendRuntimeId, LnbRuntimeId>,
     filters: BTreeMap<FilterRuntimeId, FilterRegistryEntry>,
     dvrs: BTreeMap<DvrRuntimeId, DvrRegistryEntry>,
     descramblers: BTreeMap<DescramblerRuntimeId, DescramblerRegistryEntry>,
@@ -118,6 +124,8 @@ impl Default for RuntimeRegistry {
             demux_runtimes: BTreeMap::new(),
             demux_frontend_bindings: BTreeMap::new(),
             lnbs: BTreeMap::new(),
+            lnb_runtimes: BTreeMap::new(),
+            frontend_lnb_bindings: BTreeMap::new(),
             filters: BTreeMap::new(),
             dvrs: BTreeMap::new(),
             descramblers: BTreeMap::new(),
@@ -147,10 +155,13 @@ impl RuntimeRegistry {
     pub fn clear_frontends(&mut self) {
         self.frontends.clear();
         self.frontend_runtimes.clear();
+        self.frontend_lnb_bindings.clear();
     }
 
     pub fn clear_lnbs(&mut self) {
         self.lnbs.clear();
+        self.lnb_runtimes.clear();
+        self.frontend_lnb_bindings.clear();
         self.next_lnb_id = 1;
     }
 
@@ -303,10 +314,59 @@ impl RuntimeRegistry {
             .find(|entry| entry.name.as_deref() == Some(name))
     }
 
+    pub fn lnb_runtime(&self, id: LnbRuntimeId) -> Option<&LnbRuntime> {
+        self.lnb_runtimes.get(&id)
+    }
+
+    pub fn lnb_runtime_mut(&mut self, id: LnbRuntimeId) -> Option<&mut LnbRuntime> {
+        self.lnb_runtimes.get_mut(&id)
+    }
+
+    pub fn selected_lnb_for_frontend(
+        &self,
+        frontend_id: FrontendRuntimeId,
+    ) -> Option<LnbRuntimeId> {
+        self.frontend_lnb_bindings.get(&frontend_id).copied()
+    }
+
+    pub fn selected_frontends_for_lnb(
+        &self,
+        lnb_id: LnbRuntimeId,
+    ) -> Vec<FrontendRuntimeId> {
+        self.frontend_lnb_bindings
+            .iter()
+            .filter_map(|(frontend_id, selected_lnb)| {
+                (*selected_lnb == lnb_id).then_some(*frontend_id)
+            })
+            .collect()
+    }
+
+    pub fn bind_lnb_to_frontend(
+        &mut self,
+        frontend_id: FrontendRuntimeId,
+        lnb_id: LnbRuntimeId,
+    ) -> Result<(), RegistryCommitError> {
+        if !self.frontends.contains_key(&frontend_id) {
+            return Err(RegistryCommitError::MissingFrontendId { id: frontend_id });
+        }
+        let Some(entry) = self.lnbs.get(&lnb_id) else {
+            return Err(RegistryCommitError::MissingLnbId { id: lnb_id });
+        };
+        if entry.owner_frontend_id != frontend_id {
+            return Err(RegistryCommitError::LnbFrontendMismatch {
+                frontend_id,
+                lnb_id,
+            });
+        }
+        self.frontend_lnb_bindings.insert(frontend_id, lnb_id);
+        Ok(())
+    }
+
     pub fn register_lnb(&mut self, entry: LnbRegistryEntry) -> Result<(), RegistryCommitError> {
-        if self.lnbs.contains_key(&entry.id) {
+        if self.lnbs.contains_key(&entry.id) || self.lnb_runtimes.contains_key(&entry.id) {
             return Err(RegistryCommitError::DuplicateLnbId { id: entry.id });
         }
+        self.lnb_runtimes.insert(entry.id, LnbRuntime::new(entry.id.0));
         self.lnbs.insert(entry.id, entry);
         Ok(())
     }

@@ -415,6 +415,21 @@ impl RuntimeObjectTable {
         Ok(entry)
     }
 
+    pub fn live_entry_for_runtime(
+        &self,
+        kind: AidlObjectKind,
+        ledger_id: LedgerId,
+    ) -> Option<RuntimeObjectEntry> {
+        self.entries
+            .values()
+            .find(|entry| {
+                entry.object_kind == kind
+                    && entry.ledger_id == ledger_id
+                    && entry.lifecycle.is_live()
+            })
+            .cloned()
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }

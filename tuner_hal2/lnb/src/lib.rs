@@ -22,6 +22,7 @@ pub enum LnbFailureKind {
     BackendApplyFailed,
     RegistryCommitFailed,
     CallbackClearFailed,
+    GenerationOverflow,
     DropWithoutClose,
 }
 
@@ -30,6 +31,7 @@ pub enum LnbFailureStep {
     ValidateState,
     MarkClosing,
     BuildSafeState,
+    AdvanceGeneration,
     ApplyBackend,
     CommitRegistry,
     ClearCallback,

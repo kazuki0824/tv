@@ -282,6 +282,10 @@ impl TunerServiceRuntime {
         &self.registry
     }
 
+    pub(crate) fn registry_mut(&mut self) -> &mut RuntimeRegistry {
+        &mut self.registry
+    }
+
     pub fn diagnostics(&self) -> &[StartupDiagnosticRecord] {
         &self.diagnostics
     }

@@ -5,6 +5,7 @@ use maleicacid_tuner_hal2_common::FrontendTuneRequest;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FrontendCommand {
     Tune(FrontendTuneRequest),
+    SetLnb(i32),
     StopTune,
     Scan(FrontendTuneRequest),
     StopScan,
@@ -19,6 +20,11 @@ impl FrontendCommand {
                 object: AidlObjectKind::Frontend,
                 api: AidlApi::FrontendTune,
                 transaction: RuntimeTransactionName::FrontendTuneTxnApply,
+            },
+            Self::SetLnb(_) => CommandPlan {
+                object: AidlObjectKind::Frontend,
+                api: AidlApi::FrontendSetLnb,
+                transaction: RuntimeTransactionName::LnbApplyTxn,
             },
             Self::StopTune => CommandPlan {
                 object: AidlObjectKind::Frontend,

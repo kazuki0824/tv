@@ -229,7 +229,7 @@ pub const AIDL_TRANSACTION_TABLE: &[CommandPlan] = &[
     CommandPlan {
         object: AidlObjectKind::Frontend,
         api: AidlApi::FrontendSetLnb,
-        transaction: RuntimeTransactionName::FrontendUnsupportedPublicApiTxn,
+        transaction: RuntimeTransactionName::LnbApplyTxn,
     },
     CommandPlan {
         object: AidlObjectKind::Frontend,

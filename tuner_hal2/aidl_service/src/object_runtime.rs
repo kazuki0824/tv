@@ -8,10 +8,10 @@ use maleicacid_tuner_hal2_binder_adapter::{
 };
 use maleicacid_tuner_hal2_binder_adapter::{
     AidlApi, AidlDomainRequest, AidlFailureSource, AidlMethodAdapter, AidlMethodCall,
-    AidlMethodPlan, AidlStatusMapper, DomainCommand, DomainProfileSupport, StatusPrecedenceStep,
+    AidlMethodPlan, AidlObjectKind, AidlStatusMapper, DomainCommand, DomainProfileSupport, StatusPrecedenceStep,
 };
 use maleicacid_tuner_hal2_common::{HalError, HalInvalidStateKind};
-use maleicacid_tuner_hal2_resource_ledger::CleanupStep;
+use maleicacid_tuner_hal2_resource_ledger::{CleanupStep, LedgerId};
 use maleicacid_tuner_hal2_service_runtime::{RuntimeObjectTableError, TunerServiceRuntime};
 
 use crate::callback_store::clear_owner_callbacks;
@@ -193,6 +193,30 @@ pub fn ensure_object_live(
         )
         .map(|_| ())
         .map_err(status_from_object_table_error)
+}
+
+pub fn clear_live_lnb_callback_for_public_id(
+    runtime: &SharedTunerRuntime,
+    lnb_id: i32,
+) -> BinderResult<()> {
+    let handle = {
+        let mut runtime = runtime
+            .lock()
+            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
+        let Some(entry) = runtime.object_table().live_entry_for_runtime(
+            AidlObjectKind::Lnb,
+            LedgerId(i64::from(lnb_id)),
+        ) else {
+            return Ok(());
+        };
+        runtime
+            .callback_registry_mut()
+            .clear_owner(entry.object_id, entry.generation);
+        AidlObjectHandle::new(entry.object_kind, entry.object_id, entry.generation)
+    };
+    clear_owner_callbacks(handle).map_err(|_| {
+        status_unknown_error("callback store cleanup failed during LNB owner loss")
+    })
 }
 
 pub fn close_object(runtime: &SharedTunerRuntime, handle: AidlObjectHandle) -> BinderResult<()> {

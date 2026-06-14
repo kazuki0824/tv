@@ -29,6 +29,7 @@ pub enum AidlMethodCall {
         api: crate::AidlApi,
     },
     FrontendTune(FrontendTuneRequest),
+    FrontendSetLnb { lnb_id: i32 },
     FrontendStopTune,
     FrontendScan(FrontendTuneRequest),
     FrontendStopScan,
@@ -80,6 +81,7 @@ impl AidlMethodCall {
         match self {
             Self::UnsupportedPublicApi { api, .. } => *api,
             Self::FrontendTune(_) => crate::AidlApi::FrontendTune,
+            Self::FrontendSetLnb { .. } => crate::AidlApi::FrontendSetLnb,
             Self::FrontendStopTune => crate::AidlApi::FrontendStopTune,
             Self::FrontendScan(_) => crate::AidlApi::FrontendScan,
             Self::FrontendStopScan => crate::AidlApi::FrontendStopScan,
@@ -133,6 +135,9 @@ impl AidlMethodCall {
                 request: None,
             },
             Self::FrontendTune(request) => DomainCommand::Frontend(FrontendCommand::Tune(request)),
+            Self::FrontendSetLnb { lnb_id } => {
+                DomainCommand::Frontend(FrontendCommand::SetLnb(lnb_id))
+            }
             Self::FrontendStopTune => DomainCommand::Frontend(FrontendCommand::StopTune),
             Self::FrontendScan(request) => DomainCommand::Frontend(FrontendCommand::Scan(request)),
             Self::FrontendStopScan => DomainCommand::Frontend(FrontendCommand::StopScan),
@@ -348,6 +353,7 @@ impl AidlMethodAdapter {
 pub fn all_aidl_method_kinds_for_coverage(request: FrontendTuneRequest) -> Vec<AidlMethodCall> {
     vec![
         AidlMethodCall::FrontendTune(request.clone()),
+        AidlMethodCall::FrontendSetLnb { lnb_id: 1 },
         AidlMethodCall::FrontendStopTune,
         AidlMethodCall::FrontendScan(request),
         AidlMethodCall::FrontendStopScan,

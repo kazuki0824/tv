@@ -158,7 +158,7 @@ mod tests {
         let mut runtime = LnbRuntime::new(2);
         let mut backend = TestBackend::new();
         let target = LnbElectricalState {
-            voltage: LnbVoltage::V18,
+            voltage: LnbVoltage::Voltage15V,
             tone: LnbTone::On,
             satellite_position: Some(1),
         };

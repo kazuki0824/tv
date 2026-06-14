@@ -10,6 +10,9 @@ pub mod runtime_handlers;
 pub mod runtime_result;
 pub mod frontend_request_txn;
 pub mod frontend_worker_txn;
+pub mod lnb_backend_adapter;
+pub mod lnb_apply_txn;
+pub mod lnb_lifecycle_txn;
 pub mod transaction_registry;
 
 pub use boot::{

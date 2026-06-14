@@ -4,6 +4,7 @@ use crate::{LnbFailureKind, LnbFailureRecord, LnbFailureStep};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LnbApplyStep {
     ValidateState,
+    AdvanceGeneration,
     ApplyBackend,
     CommitRegistry,
     CommitOpen,
@@ -29,13 +30,42 @@ impl LnbApplyTxn {
     }
 
     pub fn apply<B: LnbBackendOps>(
-        mut self,
+        self,
         runtime: &mut LnbRuntime,
         backend: &mut B,
         target_state: LnbElectricalState,
     ) -> LnbApplyOutcome {
+        let next_generation = match runtime.checked_next_generation() {
+            Ok(next) => next,
+            Err(_) => {
+                let record = runtime.quarantine_generation_overflow();
+                return LnbApplyOutcome {
+                    steps: vec![LnbApplyStep::AdvanceGeneration],
+                    result: Err(record),
+                };
+            }
+        };
+        self.apply_with_generation(runtime, backend, target_state, next_generation)
+    }
+
+    pub fn apply_with_generation<B: LnbBackendOps>(
+        mut self,
+        runtime: &mut LnbRuntime,
+        backend: &mut B,
+        target_state: LnbElectricalState,
+        next_generation: u64,
+    ) -> LnbApplyOutcome {
         self.record_step(LnbApplyStep::ValidateState);
         if let Err(record) = runtime.begin_apply() {
+            return LnbApplyOutcome {
+                steps: self.steps,
+                result: Err(record),
+            };
+        }
+
+        self.record_step(LnbApplyStep::AdvanceGeneration);
+        if next_generation <= runtime.generation() {
+            let record = runtime.quarantine_generation_overflow();
             return LnbApplyOutcome {
                 steps: self.steps,
                 result: Err(record),
@@ -54,7 +84,11 @@ impl LnbApplyTxn {
         runtime.note_backend_applied(target_state);
 
         self.record_step(LnbApplyStep::CommitRegistry);
-        if let Err(record) = runtime.commit_registry(target_state, LnbFailureStep::CommitRegistry) {
+        if let Err(record) = runtime.commit_registry_with_generation(
+            target_state,
+            next_generation,
+            LnbFailureStep::CommitRegistry,
+        ) {
             return LnbApplyOutcome {
                 steps: self.steps,
                 result: Err(record),
@@ -116,7 +150,7 @@ mod tests {
         let mut runtime = LnbRuntime::new(1);
         let mut backend = TestBackend::new();
         let target = LnbElectricalState {
-            voltage: LnbVoltage::V13,
+            voltage: LnbVoltage::Voltage11V,
             tone: LnbTone::On,
             satellite_position: Some(3),
         };
@@ -133,7 +167,7 @@ mod tests {
         let mut backend = TestBackend::new();
         runtime.inject_next_registry_commit_failure(LnbFailureKind::RegistryCommitFailed);
         let target = LnbElectricalState {
-            voltage: LnbVoltage::V18,
+            voltage: LnbVoltage::Voltage15V,
             tone: LnbTone::Off,
             satellite_position: None,
         };

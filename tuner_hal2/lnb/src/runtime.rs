@@ -12,9 +12,9 @@ pub enum LnbRuntimeState {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LnbVoltage {
-    Off,
-    V13,
-    V18,
+    None,
+    Voltage11V,
+    Voltage15V,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -33,20 +33,21 @@ pub struct LnbElectricalState {
 impl LnbElectricalState {
     pub const fn safe() -> Self {
         Self {
-            voltage: LnbVoltage::Off,
+            voltage: LnbVoltage::None,
             tone: LnbTone::Off,
             satellite_position: None,
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct LnbRuntime {
     lnb_id: i32,
     state: LnbRuntimeState,
     registry_state: LnbElectricalState,
     backend_committed_state: LnbElectricalState,
     callback_registered: bool,
+    generation: u64,
     last_failure: Option<LnbFailureRecord>,
     force_next_registry_commit_failure: Option<LnbFailureKind>,
     drop_leak_recorded: bool,
@@ -61,6 +62,7 @@ impl LnbRuntime {
             registry_state: safe,
             backend_committed_state: safe,
             callback_registered: false,
+            generation: 0,
             last_failure: None,
             force_next_registry_commit_failure: None,
             drop_leak_recorded: false,
@@ -82,6 +84,9 @@ impl LnbRuntime {
     pub fn callback_registered(&self) -> bool {
         self.callback_registered
     }
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
     pub fn last_failure(&self) -> Option<&LnbFailureRecord> {
         self.last_failure.as_ref()
     }
@@ -98,8 +103,51 @@ impl LnbRuntime {
         }
     }
 
+    pub fn reopen_after_public_open(&mut self) -> Result<(), LnbFailureRecord> {
+        match self.state {
+            LnbRuntimeState::Open => Ok(()),
+            LnbRuntimeState::Closed => {
+                self.state = LnbRuntimeState::Open;
+                self.callback_registered = false;
+                Ok(())
+            }
+            _ => Err(LnbFailureRecord {
+                lnb_id: self.lnb_id,
+                kind: LnbFailureKind::InvalidState,
+                step: LnbFailureStep::ValidateState,
+            }),
+        }
+    }
+
     pub fn inject_next_registry_commit_failure(&mut self, kind: LnbFailureKind) {
         self.force_next_registry_commit_failure = Some(kind);
+    }
+
+
+    pub fn checked_next_generation(&self) -> Result<u64, LnbFailureRecord> {
+        self.generation.checked_add(1).ok_or(LnbFailureRecord {
+            lnb_id: self.lnb_id,
+            kind: LnbFailureKind::GenerationOverflow,
+            step: LnbFailureStep::AdvanceGeneration,
+        })
+    }
+
+    pub fn quarantine_generation_overflow(&mut self) -> LnbFailureRecord {
+        self.quarantine(
+            LnbFailureKind::GenerationOverflow,
+            LnbFailureStep::AdvanceGeneration,
+        )
+    }
+
+    pub(crate) fn commit_registry_with_generation(
+        &mut self,
+        state: LnbElectricalState,
+        generation: u64,
+        step: LnbFailureStep,
+    ) -> Result<(), LnbFailureRecord> {
+        self.commit_registry(state, step)?;
+        self.generation = generation;
+        Ok(())
     }
 
     pub(crate) fn begin_apply(&mut self) -> Result<(), LnbFailureRecord> {
@@ -189,6 +237,7 @@ impl LnbRuntime {
 
     pub fn record_unclosed_drop(&mut self) -> LnbFailureRecord {
         self.drop_leak_recorded = true;
+        self.callback_registered = false;
         self.quarantine(
             LnbFailureKind::DropWithoutClose,
             LnbFailureStep::DropLeakRecord,

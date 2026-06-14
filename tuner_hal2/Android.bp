@@ -191,6 +191,9 @@ rust_library {
         "service_runtime/src/callback_registry.rs",
         "service_runtime/src/frontend_request_txn.rs",
         "service_runtime/src/frontend_worker_txn.rs",
+        "service_runtime/src/lnb_backend_adapter.rs",
+        "service_runtime/src/lnb_apply_txn.rs",
+        "service_runtime/src/lnb_lifecycle_txn.rs",
     ],
     edition: "2021",
     rustlibs: [
@@ -469,6 +472,9 @@ rust_test {
         "service_runtime/src/callback_registry.rs",
         "service_runtime/src/frontend_request_txn.rs",
         "service_runtime/src/frontend_worker_txn.rs",
+        "service_runtime/src/lnb_backend_adapter.rs",
+        "service_runtime/src/lnb_apply_txn.rs",
+        "service_runtime/src/lnb_lifecycle_txn.rs",
     ],
     edition: "2021",
     rustlibs: [

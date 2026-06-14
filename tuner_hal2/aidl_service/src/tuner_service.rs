@@ -87,7 +87,7 @@ use crate::frontend_callback_delivery::scan_end_notifier;
 use crate::frontend_object::FrontendAidlObject;
 use crate::lnb_object::LnbAidlObject;
 use crate::object_handle::AidlObjectHandle;
-use crate::object_runtime::SharedTunerRuntime;
+use crate::object_runtime::{clear_live_lnb_callback_for_public_id, SharedTunerRuntime};
 
 type TunerQueueDesc = CommonMqDescriptor<i8, CommonSynchronizedReadWrite>;
 type TunerNativeHandle = CommonNativeHandle;
@@ -297,6 +297,14 @@ impl TunerAidlService {
             i64::from(id),
             RuntimeOwnerRelation::Root,
         )?;
+        let open_result = self
+            .lock_runtime()?
+            .open_lnb_for_public_id(id)
+            .map_err(status_from_hal_error);
+        if let Err(status) = open_result {
+            self.rollback_registered_child(handle)?;
+            return Err(status);
+        }
         match LnbAidlObject::new(handle, self.runtime.clone()) {
             Ok(object) => Ok(BnLnb::new_binder(object, BinderFeatures::default())),
             Err(_) => {
@@ -930,6 +938,14 @@ impl IFrontend for FrontendAidlObject {
         let runtime = self.runtime();
         let frontend_id =
             runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Frontend)?;
+        let closed_lnb_ids = runtime
+            .lock()
+            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
+            .close_lnb_from_frontend_owner_loss(frontend_id)
+            .map_err(status_from_hal_error)?;
+        for lnb_id in closed_lnb_ids {
+            clear_live_lnb_callback_for_public_id(&runtime, lnb_id)?;
+        }
         close_frontend_workers_and_live_data(
             runtime,
             frontend_id,
@@ -993,14 +1009,15 @@ impl IFrontend for FrontendAidlObject {
     }
     fn setLnb(&self, lnb_id: i32) -> BinderResult<()> {
         self.ensure_open()?;
-        let entry = runtime_frontend_entry_for_object(&self.runtime(), self.handle())?;
+        let runtime = self.runtime();
+        let entry = runtime_frontend_entry_for_object(&runtime, self.handle())?;
+        let frontend_id = entry.id.0;
         let exported_lnb_id = {
-            let runtime = self.runtime();
             let guard = runtime
                 .lock()
                 .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
             guard
-                .lnb_for_frontend_id(entry.id.0)
+                .lnb_for_frontend_id(frontend_id)
                 .ok_or_else(|| {
                     service_error(TunerResult::UNAVAILABLE.0, "frontend has no exported LNB")
                 })?
@@ -1013,14 +1030,12 @@ impl IFrontend for FrontendAidlObject {
                 "LNB does not belong to this frontend",
             ));
         }
-        unavailable_after_object_public_api_plan(
-            self.plan_method(unsupported_public_api_call(
-                AidlObjectKind::Frontend,
-                AidlApi::FrontendSetLnb,
-                None,
-            )),
-            "frontend LNB backend binding is not connected in current tuner_hal2 scope",
-        )
+        self.plan_method(AidlMethodCall::FrontendSetLnb { lnb_id })?;
+        runtime
+            .lock()
+            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
+            .set_frontend_lnb(frontend_id, lnb_id)
+            .map_err(status_from_hal_error)
     }
     fn linkCiCam(&self, _ci_cam_id: i32) -> BinderResult<i32> {
         unavailable_after_object_public_api_plan(
@@ -1516,39 +1531,88 @@ impl IDescrambler for DescramblerAidlObject {
 
 impl ILnb for LnbAidlObject {
     fn setCallback(&self, callback: &Strong<dyn ILnbCallback>) -> BinderResult<()> {
+        self.ensure_open()?;
         self.plan_method(AidlMethodCall::LnbSetCallback)?;
-        self.retain_callback(callback)
+        self.retain_callback(callback)?;
+        let runtime = self.runtime();
+        let lnb_id = match runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Lnb) {
+            Ok(id) => id,
+            Err(status) => {
+                self.rollback_callback_registration()?;
+                return Err(status);
+            }
+        };
+        match runtime
+            .lock()
+            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
+            .mark_lnb_callback_registered(lnb_id)
+        {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.rollback_callback_registration()?;
+                Err(status_from_hal_error(error))
+            }
+        }
     }
     fn setVoltage(&self, voltage: LnbVoltage) -> BinderResult<()> {
+        self.ensure_open()?;
         let request = build_lnb_voltage_request(voltage).map_err(status_from_hal_error)?;
-        unavailable_after_method_plan(
-            self.plan_method(AidlMethodCall::LnbSetVoltage(request)),
-            "LNB runtime is not connected in current tuner_hal2 scope",
-        )
+        self.plan_method(AidlMethodCall::LnbSetVoltage(request))?;
+        let runtime = self.runtime();
+        let lnb_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Lnb)?;
+        runtime
+            .lock()
+            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
+            .apply_lnb_voltage(lnb_id, request)
+            .map_err(status_from_hal_error)
     }
     fn setTone(&self, tone: LnbTone) -> BinderResult<()> {
+        self.ensure_open()?;
         let request = build_lnb_tone_request(tone).map_err(status_from_hal_error)?;
-        unavailable_after_method_plan(
-            self.plan_method(AidlMethodCall::LnbSetTone(request)),
-            "LNB runtime is not connected in current tuner_hal2 scope",
-        )
+        self.plan_method(AidlMethodCall::LnbSetTone(request))?;
+        let runtime = self.runtime();
+        let lnb_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Lnb)?;
+        runtime
+            .lock()
+            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
+            .apply_lnb_tone(lnb_id, request)
+            .map_err(status_from_hal_error)
     }
     fn setSatellitePosition(&self, position: LnbPosition) -> BinderResult<()> {
+        self.ensure_open()?;
         let request =
             build_lnb_satellite_position_request(position).map_err(status_from_hal_error)?;
-        unavailable_after_method_plan(
-            self.plan_method(AidlMethodCall::LnbSetSatellitePosition(request)),
-            "LNB runtime is not connected in current tuner_hal2 scope",
-        )
+        self.plan_method(AidlMethodCall::LnbSetSatellitePosition(request))?;
+        let runtime = self.runtime();
+        let lnb_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Lnb)?;
+        runtime
+            .lock()
+            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
+            .apply_lnb_satellite_position(lnb_id, request)
+            .map_err(status_from_hal_error)
     }
     fn sendDiseqcMessage(&self, diseqc_message: &[u8]) -> BinderResult<()> {
-        unavailable_after_method_plan(
-            self.plan_method(AidlMethodCall::LnbSendDiseqc(diseqc_message.to_vec())),
-            "DiSEqC runtime is not connected in current tuner_hal2 scope",
-        )
+        self.ensure_open()?;
+        self.plan_method(AidlMethodCall::LnbSendDiseqc(diseqc_message.to_vec()))?;
+        let runtime = self.runtime();
+        let lnb_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Lnb)?;
+        runtime
+            .lock()
+            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
+            .reject_lnb_diseqc(lnb_id, diseqc_message)
+            .map_err(status_from_hal_error)
     }
     fn close(&self) -> BinderResult<()> {
-        self.close_object_after_plan(AidlMethodCall::LnbClose)
+        self.ensure_open()?;
+        self.plan_method(AidlMethodCall::LnbClose)?;
+        let runtime = self.runtime();
+        let lnb_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Lnb)?;
+        runtime
+            .lock()
+            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
+            .close_lnb_explicit(lnb_id)
+            .map_err(status_from_hal_error)?;
+        self.close_object()
     }
 }
 
