@@ -11,7 +11,7 @@ pub use operation_guard::{
     LnbOperationFailureRecord, LnbOperationGuard, LnbOperationKind, LnbOperationLedger,
 };
 pub use runtime::{
-    LnbBackendOps, LnbElectricalState, LnbRuntime, LnbRuntimeState, LnbTone, LnbVoltage,
+    LnbBackendOps, LnbDiseqcMessage, LnbElectricalState, LnbRuntime, LnbRuntimeState, LnbTone, LnbVoltage,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -21,7 +21,8 @@ pub enum LnbFailureKind {
     OperationLockFailed,
     BackendApplyFailed,
     RegistryCommitFailed,
-    CallbackClearFailed,
+    DiseqcInvalidMessage,
+    DiseqcUnsupported,
     GenerationOverflow,
     DropWithoutClose,
 }
@@ -34,7 +35,8 @@ pub enum LnbFailureStep {
     AdvanceGeneration,
     ApplyBackend,
     CommitRegistry,
-    ClearCallback,
+    ClearRuntimeCallbackState,
+    SendDiseqc,
     CommitClosed,
     DropLeakRecord,
 }

@@ -1,15 +1,18 @@
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
-use maleicacid_tuner_hal2_lnb::{LnbBackendOps, LnbElectricalState, LnbFailureKind, LnbRuntime};
+use maleicacid_tuner_hal2_lnb::{
+    LnbBackendOps, LnbDiseqcMessage, LnbElectricalState, LnbFailureKind, LnbRuntime, LnbTone,
+    LnbVoltage,
+};
 
 use crate::boot::TunerServiceRuntime;
-use crate::registry::{LnbRuntimeId, RuntimeRegistry};
+use crate::registry::{LnbRegistryProfile, LnbRuntimeId, RuntimeRegistry};
 
-pub(crate) struct ServiceRuntimeLnbBackend<'a> {
+pub(crate) struct ServiceRuntimeLnbProfileBackend<'a> {
     registry: &'a RuntimeRegistry,
     target_lnb_id: LnbRuntimeId,
 }
 
-impl<'a> ServiceRuntimeLnbBackend<'a> {
+impl<'a> ServiceRuntimeLnbProfileBackend<'a> {
     pub(crate) fn new(registry: &'a RuntimeRegistry, target_lnb_id: LnbRuntimeId) -> Self {
         Self {
             registry,
@@ -18,7 +21,7 @@ impl<'a> ServiceRuntimeLnbBackend<'a> {
     }
 }
 
-impl LnbBackendOps for ServiceRuntimeLnbBackend<'_> {
+impl LnbBackendOps for ServiceRuntimeLnbProfileBackend<'_> {
     fn apply_lnb_state(
         &mut self,
         lnb_id: i32,
@@ -28,6 +31,12 @@ impl LnbBackendOps for ServiceRuntimeLnbBackend<'_> {
             return Err(LnbFailureKind::BackendApplyFailed);
         }
         if self.registry.lnb(self.target_lnb_id).is_none() {
+            return Err(LnbFailureKind::BackendApplyFailed);
+        }
+        let Some(entry) = self.registry.lnb(self.target_lnb_id) else {
+            return Err(LnbFailureKind::BackendApplyFailed);
+        };
+        if !profile_accepts_state(entry.profile, _state) {
             return Err(LnbFailureKind::BackendApplyFailed);
         }
         for frontend_id in self.registry.selected_frontends_for_lnb(self.target_lnb_id) {
@@ -41,8 +50,33 @@ impl LnbBackendOps for ServiceRuntimeLnbBackend<'_> {
         Ok(())
     }
 
-    fn clear_lnb_callback(&mut self, _lnb_id: i32) -> Result<(), LnbFailureKind> {
-        Ok(())
+    fn send_diseqc_message(
+        &mut self,
+        lnb_id: i32,
+        _message: &LnbDiseqcMessage,
+    ) -> Result<(), LnbFailureKind> {
+        if lnb_id != self.target_lnb_id.0 {
+            return Err(LnbFailureKind::BackendApplyFailed);
+        }
+        if self.registry.lnb(self.target_lnb_id).is_none() {
+            return Err(LnbFailureKind::BackendApplyFailed);
+        }
+        Err(LnbFailureKind::DiseqcUnsupported)
+    }
+
+}
+
+fn profile_accepts_state(profile: LnbRegistryProfile, state: LnbElectricalState) -> bool {
+    match profile {
+        LnbRegistryProfile::Px4Device15VOnly => {
+            matches!(state.voltage, LnbVoltage::None | LnbVoltage::Voltage15V)
+                && state.tone == LnbTone::Off
+                && state.satellite_position.is_none()
+        }
+        LnbRegistryProfile::EarthPt1FixedLnb => {
+            state.tone == LnbTone::Off && state.satellite_position.is_none()
+        }
+        LnbRegistryProfile::NoPower => state == LnbElectricalState::safe(),
     }
 }
 

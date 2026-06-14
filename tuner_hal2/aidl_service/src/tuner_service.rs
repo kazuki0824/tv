@@ -1599,7 +1599,7 @@ impl ILnb for LnbAidlObject {
         runtime
             .lock()
             .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
-            .reject_lnb_diseqc(lnb_id, diseqc_message)
+            .send_lnb_diseqc(lnb_id, diseqc_message)
             .map_err(status_from_hal_error)
     }
     fn close(&self) -> BinderResult<()> {

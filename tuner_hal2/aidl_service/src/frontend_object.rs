@@ -6,10 +6,10 @@ use crate::callback_store::retain_frontend_callback;
 use crate::object_handle::{AidlObjectHandle, AidlObjectHandleError, AidlObjectKind};
 use crate::object_runtime::{
     close_object, close_object_after_aidl_method_plan, ensure_object_live, plan_object_aidl_method,
+    quarantine_live_aidl_object_after_drop_leak,
     record_callback_registration, SharedTunerRuntime,
 };
 
-#[derive(Clone)]
 pub struct FrontendAidlObject {
     handle: AidlObjectHandle,
     runtime: SharedTunerRuntime,
@@ -53,5 +53,11 @@ impl FrontendAidlObject {
     pub fn retain_callback(&self, callback: &Strong<dyn IFrontendCallback>) -> BinderResult<()> {
         retain_frontend_callback(self.handle, callback).map_err(|_| Status::new_service_specific_error(android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::Result::Result::UNKNOWN_ERROR.0, None))?;
         record_callback_registration(&self.runtime, self.handle, AidlApi::FrontendSetCallback)
+    }
+}
+
+impl Drop for FrontendAidlObject {
+    fn drop(&mut self) {
+        quarantine_live_aidl_object_after_drop_leak(&self.runtime, self.handle);
     }
 }

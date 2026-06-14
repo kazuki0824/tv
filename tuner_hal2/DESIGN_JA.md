@@ -40,3 +40,23 @@
 ## 4. demux依存境界
 
 `tuner_hal2` のfrontend runtimeは、demux runtimeを所有しない。bound demux quarantine、demux unbind、attached demux stop notification、demux sinkの実体はdemux側runtimeの責務であり、frontend側では構造境界だけを持つ。
+
+## 5. AIDL object lifecycle 構造差分
+
+本節は既存 `tuner_hal/DESIGN_JA.md` の close / cleanup failed / Drop leak / quarantine 契約を再定義しない。`tuner_hal2` 内で、その既存契約に対応する実体名を固定するための構造差分だけを記載する。
+
+| 既存契約上の境界 | tuner_hal2の実体 | 既存契約との関係 |
+|---|---|---|
+| public close lifecycle | `aidl_service::object_runtime::close_object()` と `RuntimeObjectTable::{begin_close_cascade, mark_cleanup_failed_cascade, commit_close_cascade}` | public close の object table 遷移と runtime unregister の入口 |
+| Drop leak terminalization | `aidl_service::object_runtime::quarantine_live_aidl_object_after_drop_leak()` と `RuntimeObjectTable::quarantine_cascade()` | Drop は通常 cleanup の代替にせず、live object と descendant を quarantine へ落とす入口 |
+| 単一 object quarantine 遷移 | `RuntimeObjectTable` 内の private helper | 外部から直接呼ばせない。object lifecycle の公開入口は cascade 経路へ統一する |
+| callback実体 cleanup | `aidl_service::callback_store` と `RuntimeCallbackRegistry` | callback object実体の保持・削除はAIDL層が正本。backend trait に callback cleanup を持たせない |
+| runtime unregister | `TunerServiceRuntime::unregister_public_runtime_for_closed_aidl_entry()` | close / Drop leak の object table 終端後にだけ呼ぶ派生処理 |
+
+禁止する構造差分:
+
+- AIDL object 種別ごとに Drop cleanup 処理をコピー実装しない。
+- 単一 object quarantine を外部公開入口として残さない。
+- Drop 経路で public close と同じ通常 cleanup を実行しない。
+- callback store cleanup を LNB backend / profile backend / device backend の責務へ戻さない。
+- close / Drop leak の runtime unregister を object table 終端前に実行しない。

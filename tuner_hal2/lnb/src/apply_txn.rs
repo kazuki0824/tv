@@ -140,9 +140,14 @@ mod tests {
             self.applied.push(state);
             Ok(())
         }
-        fn clear_lnb_callback(&mut self, _lnb_id: i32) -> Result<(), LnbFailureKind> {
-            Ok(())
+        fn send_diseqc_message(
+            &mut self,
+            _lnb_id: i32,
+            _message: &crate::runtime::LnbDiseqcMessage,
+        ) -> Result<(), LnbFailureKind> {
+            Err(LnbFailureKind::DiseqcUnsupported)
         }
+
     }
 
     #[test]

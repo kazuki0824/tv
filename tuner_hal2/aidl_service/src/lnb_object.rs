@@ -7,7 +7,8 @@ use crate::object_handle::{AidlObjectHandle, AidlObjectHandleError, AidlObjectKi
 use crate::object_runtime::{
     clear_owner_callback_registration, clear_owner_callback_registration_best_effort,
     close_object, close_object_after_aidl_method_plan, ensure_object_live, plan_object_aidl_method,
-    record_callback_registration, CallbackCleanupRegistryAction, SharedTunerRuntime,
+    quarantine_live_aidl_object_after_drop_leak, record_callback_registration,
+    CallbackCleanupRegistryAction, SharedTunerRuntime,
 };
 
 pub struct LnbAidlObject {
@@ -100,6 +101,7 @@ impl LnbAidlObject {
             AidlApi::LnbSetCallback,
             success_action,
         );
+        quarantine_live_aidl_object_after_drop_leak(&self.runtime, self.handle);
     }
 }
 

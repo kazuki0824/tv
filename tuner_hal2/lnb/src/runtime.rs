@@ -30,6 +30,32 @@ pub struct LnbElectricalState {
     pub satellite_position: Option<i32>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LnbDiseqcMessage {
+    bytes: Vec<u8>,
+}
+
+impl LnbDiseqcMessage {
+    pub const MAX_LEN: usize = 64;
+
+    pub fn new(lnb_id: i32, bytes: &[u8]) -> Result<Self, LnbFailureRecord> {
+        if bytes.is_empty() || bytes.len() > Self::MAX_LEN {
+            return Err(LnbFailureRecord {
+                lnb_id,
+                kind: LnbFailureKind::DiseqcInvalidMessage,
+                step: LnbFailureStep::SendDiseqc,
+            });
+        }
+        Ok(Self {
+            bytes: bytes.to_vec(),
+        })
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
 impl LnbElectricalState {
     pub const fn safe() -> Self {
         Self {
@@ -251,7 +277,13 @@ pub trait LnbBackendOps {
         lnb_id: i32,
         state: LnbElectricalState,
     ) -> Result<(), LnbFailureKind>;
-    fn clear_lnb_callback(&mut self, lnb_id: i32) -> Result<(), LnbFailureKind>;
+
+    fn send_diseqc_message(
+        &mut self,
+        lnb_id: i32,
+        message: &LnbDiseqcMessage,
+    ) -> Result<(), LnbFailureKind>;
+
 }
 
 #[cfg(test)]
@@ -260,18 +292,14 @@ mod tests {
 
     struct TestBackend {
         applied: Vec<LnbElectricalState>,
-        clear_count: usize,
         fail_apply: Option<LnbFailureKind>,
-        fail_clear: Option<LnbFailureKind>,
     }
 
     impl TestBackend {
         fn new() -> Self {
             Self {
                 applied: Vec::new(),
-                clear_count: 0,
                 fail_apply: None,
-                fail_clear: None,
             }
         }
     }
@@ -289,13 +317,30 @@ mod tests {
             Ok(())
         }
 
-        fn clear_lnb_callback(&mut self, _lnb_id: i32) -> Result<(), LnbFailureKind> {
-            if let Some(kind) = self.fail_clear.take() {
-                return Err(kind);
-            }
-            self.clear_count += 1;
-            Ok(())
+        fn send_diseqc_message(
+            &mut self,
+            _lnb_id: i32,
+            _message: &LnbDiseqcMessage,
+        ) -> Result<(), LnbFailureKind> {
+            Err(LnbFailureKind::DiseqcUnsupported)
         }
+
+    }
+
+
+    #[test]
+    fn diseqc_message_rejects_empty_and_oversized_payloads() {
+        let empty = LnbDiseqcMessage::new(7, &[]).unwrap_err();
+        assert_eq!(empty.kind, LnbFailureKind::DiseqcInvalidMessage);
+        let oversized = vec![0_u8; LnbDiseqcMessage::MAX_LEN + 1];
+        let oversized = LnbDiseqcMessage::new(7, &oversized).unwrap_err();
+        assert_eq!(oversized.kind, LnbFailureKind::DiseqcInvalidMessage);
+    }
+
+    #[test]
+    fn diseqc_message_preserves_valid_payload_bytes() {
+        let message = LnbDiseqcMessage::new(7, &[0xe0, 0x10, 0x5a]).unwrap();
+        assert_eq!(message.bytes(), &[0xe0, 0x10, 0x5a]);
     }
 
     #[test]

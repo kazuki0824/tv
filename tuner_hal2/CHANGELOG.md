@@ -1,3 +1,37 @@
+## r50ei10_qg04_quarantine_api_design_guard
+
+- QG-04: Hid the single-object quarantine transition behind a private `RuntimeObjectTable` helper and kept `quarantine_cascade()` as the public object lifecycle entry point.
+- QG-04: Added a shared AIDL runtime unregister helper used by both explicit close and Drop-leak quarantine paths.
+- QG-04: Added `tuner_hal2/DESIGN_JA.md` section 5 as a structure-difference mapping to the existing `tuner_hal/DESIGN_JA.md` close / Drop leak / quarantine contract. This does not add a new design contract.
+- Build / rustfmt / rust unit / atest / VTS / device validation: not executed in this environment.
+
+## r50ei9_qg03_qg04_drop_quarantine_transaction_gate
+
+- QG-03: Added Drop leak quarantine handling to Frontend/Demux/Filter/Dvr/Descrambler AIDL objects instead of leaving live object-table entries behind. LNB keeps its LNB-runtime leak record path and then uses the same common object quarantine helper.
+- QG-03: Changed Drop leak handling to call a shared `quarantine_live_aidl_object_after_drop_leak()` helper; this is a common helper call, not copy-pasted cleanup logic.
+- QG-04: Added `RuntimeObjectTable::quarantine_cascade()` so Drop leak terminalization covers the owner and descendants as one object-table transition.
+- QG-04: Added object-table tests that quarantine-cascade terminalizes descendants and permits later rebinding of the same runtime id after quarantine.
+- QG-04 scope in this release is AIDL object lifecycle / Drop leak transaction integrity. Broader Demux/Filter/Dvr data-path rollback auditing remains a follow-up quality gate.
+- Build / rustfmt / rust unit / atest / VTS / device validation: not executed in this environment.
+
+## r50ei8_qg01_qg02_lnb_profile_backend_callback_cleanup
+
+- QG-01: Renamed the service-runtime LNB adapter to `ServiceRuntimeLnbProfileBackend` and fixed the responsibility boundary as profile validation/backend policy rather than real hardware LNB control.
+- QG-01: Kept DiSEqC as explicit validated-then-unsupported profile behavior for current exported LNB profiles; no success no-op path is introduced.
+- QG-02: Removed callback-store cleanup from `LnbBackendOps`; callback object cleanup remains owned by AIDL callback store/runtime callback registry.
+- QG-02: `LnbLifecycleTxn` now records `ClearRuntimeCallbackState` and only clears `LnbRuntime` callback ownership state; backend callback cleanup is no longer modeled as a hardware/profile backend operation.
+- Added/updated LNB lifecycle tests so public close clears runtime callback state while Drop leak still avoids normal backend cleanup.
+- Build / rustfmt / rust unit / atest / VTS / device validation: not executed in this environment.
+
+## r50ei7_wp_r11_lnb_completion_quality_gate
+
+- WP-R11 LNB residual completion candidate.
+- Routed `ILnb.sendDiseqcMessage()` through LNB runtime/backend validation instead of a direct ad-hoc reject. Current exported profiles reject DiSEqC as unsupported after payload validation; no silent success path is added.
+- Strengthened LNB profile backend validation so voltage/tone/position applies are checked by both service-runtime profile validation and the backend adapter.
+- Quarantined live LNB AIDL object entries on Rust Drop leak after recording the LNB runtime leak; Drop still does not perform normal safe-state backend cleanup.
+- Added LNB unit tests for DiSEqC payload validation/profile rejection and fixed-profile voltage rejection.
+- Build / rust unit / atest / VTS / device validation: not executed in this environment.
+
 # r50ei5_wp_r07a_descrambler_prereq_packet_pipeline_min
 
 - WP-R10 descrambler / CAS token / MULTI2 packet path の前提として、keyなし scrambled TS packet を record/raw path と section/PES/AV assembly path で分離した。

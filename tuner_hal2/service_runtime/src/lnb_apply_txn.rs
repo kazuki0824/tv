@@ -5,12 +5,12 @@ use maleicacid_tuner_hal2_domain_request::{
     LnbSetSatellitePositionRequest, LnbToneRequest, LnbVoltageRequest,
 };
 use maleicacid_tuner_hal2_lnb::{
-    LnbApplyTxn, LnbElectricalState, LnbFailureKind, LnbFailureRecord, LnbRuntime,
+    LnbApplyTxn, LnbDiseqcMessage, LnbElectricalState, LnbFailureKind, LnbFailureRecord, LnbRuntime,
     LnbRuntimeState, LnbTone as RuntimeLnbTone, LnbVoltage as RuntimeLnbVoltage,
 };
 
 use crate::boot::TunerServiceRuntime;
-use crate::lnb_backend_adapter::{store_lnb_runtime, ServiceRuntimeLnbBackend};
+use crate::lnb_backend_adapter::{store_lnb_runtime, ServiceRuntimeLnbProfileBackend};
 use crate::registry::{FrontendRuntimeId, LnbRegistryProfile, LnbRuntimeId, RegistryCommitError};
 
 fn missing_lnb_error() -> HalError {
@@ -54,11 +54,17 @@ fn map_lnb_failure(record: LnbFailureRecord) -> HalError {
             HalInternalKind::InvariantViolation,
             "LNB generation overflow",
         ),
+        LnbFailureKind::DiseqcInvalidMessage => HalError::invalid_argument(
+            HalInvalidArgumentKind::NumericRange,
+            "DiSEqC message length is invalid",
+        ),
+        LnbFailureKind::DiseqcUnsupported => HalError::Unsupported(
+            "DiSEqC is unavailable for this LNB profile",
+        ),
         LnbFailureKind::BackendApplyFailed
         | LnbFailureKind::RegistryCommitFailed
         | LnbFailureKind::OperationAlreadyActive
         | LnbFailureKind::OperationLockFailed
-        | LnbFailureKind::CallbackClearFailed
         | LnbFailureKind::DropWithoutClose => HalError::internal(
             HalInternalKind::InvariantViolation,
             "LNB apply transaction failed",
@@ -211,7 +217,7 @@ impl TunerServiceRuntime {
         self.apply_lnb_state_with_generation(lnb_key, runtime, target)
     }
 
-    pub fn reject_lnb_diseqc(&mut self, lnb_id: i32, _payload: &[u8]) -> Result<(), HalError> {
+    pub fn send_lnb_diseqc(&mut self, lnb_id: i32, payload: &[u8]) -> Result<(), HalError> {
         let lnb_key = LnbRuntimeId(lnb_id);
         if self.registry().lnb(lnb_key).is_none() {
             return Err(missing_lnb_error());
@@ -221,9 +227,15 @@ impl TunerServiceRuntime {
             .lnb_runtime(lnb_key)
             .ok_or_else(missing_lnb_error)?;
         ensure_lnb_open(runtime)?;
-        Err(HalError::Unsupported(
-            "DiSEqC is permanently unavailable for current LNB profiles",
-        ))
+        let message = LnbDiseqcMessage::new(lnb_id, payload).map_err(map_lnb_failure)?;
+        let mut backend = ServiceRuntimeLnbProfileBackend::new(self.registry(), lnb_key);
+        backend
+            .send_diseqc_message(lnb_id, &message)
+            .map_err(|kind| map_lnb_failure(LnbFailureRecord {
+                lnb_id,
+                kind,
+                step: maleicacid_tuner_hal2_lnb::LnbFailureStep::SendDiseqc,
+            }))
     }
 
     fn apply_lnb_state_with_generation(
@@ -241,7 +253,7 @@ impl TunerServiceRuntime {
             }
         };
         let outcome = {
-            let mut backend = ServiceRuntimeLnbBackend::new(self.registry(), lnb_key);
+            let mut backend = ServiceRuntimeLnbProfileBackend::new(self.registry(), lnb_key);
             LnbApplyTxn::new().apply_with_generation(
                 &mut runtime,
                 &mut backend,
@@ -253,4 +265,55 @@ impl TunerServiceRuntime {
         outcome.result.map(|_| ()).map_err(map_lnb_failure)
     }
 
+}
+
+#[cfg(test)]
+mod wp_r11_lnb_apply_tests {
+    use super::*;
+    use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem, HalError};
+    use crate::registry::{FrontendRegistryEntry, LnbRegistryEntry};
+
+    fn runtime_with_lnb(profile: LnbRegistryProfile) -> TunerServiceRuntime {
+        let mut runtime = TunerServiceRuntime::new();
+        runtime.registry_mut().register_frontend(FrontendRegistryEntry {
+            id: FrontendRuntimeId(1),
+            backend: FrontendBackendKind::Px4CharDevice,
+            system: FrontendSystem::IsdbS,
+            device_path: "/dev/null".into(),
+            lnb_profile: Some(profile),
+        }).unwrap();
+        runtime.registry_mut().register_lnb(LnbRegistryEntry {
+            id: LnbRuntimeId(10001),
+            name: Some("test-lnb".to_string()),
+            owner_frontend_id: FrontendRuntimeId(1),
+            profile,
+        }).unwrap();
+        runtime
+    }
+
+    #[test]
+    fn diseqc_empty_payload_is_invalid_argument() {
+        let mut runtime = runtime_with_lnb(LnbRegistryProfile::Px4Device15VOnly);
+        let err = runtime.send_lnb_diseqc(10001, &[]).unwrap_err();
+        assert!(matches!(err, HalError::InvalidArgument { .. }));
+    }
+
+    #[test]
+    fn diseqc_valid_payload_is_profile_unsupported_not_success() {
+        let mut runtime = runtime_with_lnb(LnbRegistryProfile::Px4Device15VOnly);
+        let err = runtime.send_lnb_diseqc(10001, &[0xe0, 0x10, 0x5a]).unwrap_err();
+        assert_eq!(err, HalError::Unsupported("DiSEqC is unavailable for this LNB profile"));
+    }
+
+    #[test]
+    fn px4_lnb_profile_rejects_11v_before_registry_commit() {
+        let mut runtime = runtime_with_lnb(LnbRegistryProfile::Px4Device15VOnly);
+        let err = runtime.apply_lnb_voltage(10001, LnbVoltageRequest::Voltage11V).unwrap_err();
+        assert_eq!(
+            err,
+            HalError::Unsupported("LNB voltage is unavailable for this fixed profile")
+        );
+        let lnb = runtime.registry().lnb_runtime(LnbRuntimeId(10001)).unwrap();
+        assert_eq!(lnb.registry_state(), LnbElectricalState::safe());
+    }
 }

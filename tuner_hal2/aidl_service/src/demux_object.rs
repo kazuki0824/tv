@@ -4,6 +4,7 @@ use maleicacid_tuner_hal2_binder_adapter::{AidlMethodCall, AidlMethodPlan};
 use crate::object_handle::{AidlObjectHandle, AidlObjectHandleError, AidlObjectKind};
 use crate::object_runtime::{
     close_object, close_object_after_aidl_method_plan, ensure_object_live, plan_object_aidl_method,
+    quarantine_live_aidl_object_after_drop_leak,
     SharedTunerRuntime,
 };
 
@@ -46,5 +47,11 @@ impl DemuxAidlObject {
 
     pub fn close_object(&self) -> BinderResult<()> {
         close_object(&self.runtime, self.handle)
+    }
+}
+
+impl Drop for DemuxAidlObject {
+    fn drop(&mut self) {
+        quarantine_live_aidl_object_after_drop_leak(&self.runtime, self.handle);
     }
 }

@@ -294,6 +294,15 @@ pub fn clear_live_lnb_callback_for_public_id(
     )
 }
 
+fn unregister_public_runtime_entries(
+    runtime: &mut TunerServiceRuntime,
+    entries: &[maleicacid_tuner_hal2_service_runtime::RuntimeObjectEntry],
+) {
+    for entry in entries {
+        runtime.unregister_public_runtime_for_closed_aidl_entry(entry);
+    }
+}
+
 pub fn close_object(runtime: &SharedTunerRuntime, handle: AidlObjectHandle) -> BinderResult<()> {
     let mut runtime = runtime
         .lock()
@@ -326,10 +335,28 @@ pub fn close_object(runtime: &SharedTunerRuntime, handle: AidlObjectHandle) -> B
         .object_table_mut()
         .commit_close_cascade(handle.object_id(), handle.generation())
         .map_err(status_from_object_table_error)?;
-    for entry in &closed_entries {
-        runtime.unregister_public_runtime_for_closed_aidl_entry(entry);
-    }
+    unregister_public_runtime_entries(&mut runtime, &closed_entries);
     Ok(())
+}
+
+
+pub fn quarantine_live_aidl_object_after_drop_leak(
+    runtime: &SharedTunerRuntime,
+    handle: AidlObjectHandle,
+) {
+    let Ok(mut runtime) = runtime.lock() else {
+        return;
+    };
+    let Ok(entries) = runtime
+        .object_table_mut()
+        .quarantine_cascade(handle.object_id(), handle.generation())
+    else {
+        return;
+    };
+    runtime
+        .callback_registry_mut()
+        .clear_owner(handle.object_id(), handle.generation());
+    unregister_public_runtime_entries(&mut runtime, &entries);
 }
 
 pub fn record_callback_registration(

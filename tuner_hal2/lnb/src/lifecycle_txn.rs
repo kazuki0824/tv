@@ -7,7 +7,7 @@ pub enum LnbLifecycleStep {
     BuildSafeState,
     ApplySafeState,
     CommitRegistry,
-    ClearCallback,
+    ClearRuntimeCallbackState,
     CommitClosed,
     RecordDropLeak,
 }
@@ -97,18 +97,7 @@ impl LnbLifecycleTxn {
             };
         }
 
-        self.record_step(LnbLifecycleStep::ClearCallback);
-        if let Err(_kind) = backend.clear_lnb_callback(runtime.lnb_id()) {
-            let record = runtime.record_failure(
-                LnbFailureKind::CallbackClearFailed,
-                LnbFailureStep::ClearCallback,
-            );
-            return LnbLifecycleOutcome {
-                reason,
-                steps: self.steps,
-                result: Err(record),
-            };
-        }
+        self.record_step(LnbLifecycleStep::ClearRuntimeCallbackState);
         runtime.clear_callback();
 
         self.record_step(LnbLifecycleStep::CommitClosed);
@@ -128,13 +117,11 @@ mod tests {
 
     struct TestBackend {
         applied: Vec<LnbElectricalState>,
-        clear_count: usize,
     }
     impl TestBackend {
         fn new() -> Self {
             Self {
                 applied: Vec::new(),
-                clear_count: 0,
             }
         }
     }
@@ -147,10 +134,14 @@ mod tests {
             self.applied.push(state);
             Ok(())
         }
-        fn clear_lnb_callback(&mut self, _lnb_id: i32) -> Result<(), LnbFailureKind> {
-            self.clear_count += 1;
-            Ok(())
+        fn send_diseqc_message(
+            &mut self,
+            _lnb_id: i32,
+            _message: &crate::runtime::LnbDiseqcMessage,
+        ) -> Result<(), LnbFailureKind> {
+            Err(LnbFailureKind::DiseqcUnsupported)
         }
+
     }
 
     #[test]
@@ -166,6 +157,8 @@ mod tests {
             .apply(&mut runtime, &mut backend, target)
             .result
             .is_ok());
+        runtime.set_callback_registered(true);
+        assert!(runtime.callback_registered());
         let outcome = LnbLifecycleTxn::new().close(
             &mut runtime,
             &mut backend,
@@ -178,7 +171,7 @@ mod tests {
             runtime.backend_committed_state(),
             LnbElectricalState::safe()
         );
-        assert_eq!(backend.clear_count, 1);
+        assert!(!runtime.callback_registered());
     }
 
     #[test]
@@ -189,7 +182,6 @@ mod tests {
             LnbLifecycleTxn::new().close(&mut runtime, &mut backend, LnbLifecycleReason::DropLeak);
         assert!(outcome.result.is_err());
         assert_eq!(backend.applied.len(), 0);
-        assert_eq!(backend.clear_count, 0);
         assert_eq!(
             runtime.state(),
             crate::runtime::LnbRuntimeState::Quarantined

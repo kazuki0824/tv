@@ -7,7 +7,7 @@ use maleicacid_tuner_hal2_lnb::{
 };
 
 use crate::boot::TunerServiceRuntime;
-use crate::lnb_backend_adapter::{store_lnb_runtime, ServiceRuntimeLnbBackend};
+use crate::lnb_backend_adapter::{store_lnb_runtime, ServiceRuntimeLnbProfileBackend};
 use crate::registry::{FrontendRuntimeId, LnbRuntimeId};
 
 fn missing_lnb_error() -> HalError {
@@ -32,9 +32,15 @@ fn ensure_lnb_open(runtime: &LnbRuntime) -> Result<(), HalError> {
 fn map_lnb_failure(record: LnbFailureRecord) -> HalError {
     match record.kind {
         LnbFailureKind::InvalidState => lnb_state_error(),
+        LnbFailureKind::DiseqcInvalidMessage => HalError::invalid_argument(
+            maleicacid_tuner_hal2_common::HalInvalidArgumentKind::NumericRange,
+            "DiSEqC message length is invalid",
+        ),
+        LnbFailureKind::DiseqcUnsupported => HalError::Unsupported(
+            "DiSEqC is unavailable for this LNB profile",
+        ),
         LnbFailureKind::BackendApplyFailed
         | LnbFailureKind::RegistryCommitFailed
-        | LnbFailureKind::CallbackClearFailed
         | LnbFailureKind::OperationAlreadyActive
         | LnbFailureKind::OperationLockFailed
         | LnbFailureKind::GenerationOverflow
@@ -115,7 +121,7 @@ impl TunerServiceRuntime {
             return Ok(());
         }
         let outcome = {
-            let mut backend = ServiceRuntimeLnbBackend::new(self.registry(), lnb_key);
+            let mut backend = ServiceRuntimeLnbProfileBackend::new(self.registry(), lnb_key);
             LnbLifecycleTxn::new().close(&mut runtime, &mut backend, LnbLifecycleReason::DropLeak)
         };
         store_lnb_runtime(self, lnb_key, runtime)?;
@@ -140,7 +146,7 @@ impl TunerServiceRuntime {
             .cloned()
             .ok_or_else(missing_lnb_error)?;
         let outcome = {
-            let mut backend = ServiceRuntimeLnbBackend::new(self.registry(), lnb_key);
+            let mut backend = ServiceRuntimeLnbProfileBackend::new(self.registry(), lnb_key);
             LnbLifecycleTxn::new().close(&mut runtime, &mut backend, reason)
         };
         store_lnb_runtime(self, lnb_key, runtime)?;
