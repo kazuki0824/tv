@@ -70,7 +70,6 @@ mod tests {
     use maleicacid_tuner_hal2_demux::{
         FilterConfig, FilterConfigKind, FilterOpenType, OpenFilterRequest, PesSettings,
     };
-    use maleicacid_tuner_hal2_descrambler::DescramblerKeySlotId;
     use maleicacid_tuner_hal2_domain_request::{RuntimeTransactionName, AIDL_TRANSACTION_TABLE};
     use std::path::PathBuf;
 
@@ -833,7 +832,7 @@ mod tests {
     }
 
     #[test]
-    fn descrambler_key_clear_keeps_bound_demux_and_pid_claims() {
+    fn descrambler_key_clear_without_key_keeps_bound_demux_and_pid_claims() {
         let mut runtime = TunerServiceRuntime::new();
         let demux = runtime.allocate_demux_runtime().unwrap();
         let filter = runtime.allocate_filter_runtime(demux.id.0).unwrap();
@@ -852,12 +851,6 @@ mod tests {
         runtime
             .set_descrambler_demux_source(descrambler.id.0, demux.id.0)
             .unwrap();
-        runtime
-            .registry_mut()
-            .descrambler_runtime_mut(descrambler.id)
-            .unwrap()
-            .session_mut()
-            .replace_key_slot(DescramblerKeySlotId(55));
         runtime
             .add_descrambler_pid_non_null_source(descrambler.id.0, 200, filter.id.0)
             .unwrap();

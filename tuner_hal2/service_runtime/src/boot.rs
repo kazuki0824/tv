@@ -274,6 +274,13 @@ fn descrambler_key_lookup_error_to_hal(error: DescramblerKeyLookupError) -> HalE
     }
 }
 
+fn descrambler_key_release_error_to_hal(_error: DescramblerKeyLookupError) -> HalError {
+    HalError::internal(
+        HalInternalKind::InvariantViolation,
+        "descrambler key token release failed",
+    )
+}
+
 fn descrambler_pid_claim_error_to_hal(error: DescramblerPidClaimError) -> HalError {
     match error {
         DescramblerPidClaimError::NullSourceFilterUnsupported => HalError::Unsupported(
@@ -1607,27 +1614,52 @@ impl TunerServiceRuntime {
         key_token: &[u8],
     ) -> Result<(), HalError> {
         if key_token == [0x00].as_slice() {
-            let runtime = self.descrambler_runtime_mut(descrambler_id)?;
-            let mut txn = DescramblerSessionTxn::new();
-            return txn
-                .clear_key(runtime.session_mut())
-                .map_err(|failure| descrambler_session_failure_to_hal(failure.kind));
+            let old_token = {
+                let runtime = self.descrambler_runtime_mut(descrambler_id)?;
+                let mut txn = DescramblerSessionTxn::new();
+                txn.clear_key(runtime.session_mut())
+                    .map_err(|failure| descrambler_session_failure_to_hal(failure.kind))?
+            };
+            if let Some(old_token) = old_token {
+                self.registry
+                    .descrambler_key_table_mut()
+                    .release(&old_token)
+                    .map_err(descrambler_key_release_error_to_hal)?;
+            }
+            return Ok(());
         }
         let token = DescramblerKeyToken::try_from_bytes(key_token.to_vec())
             .map_err(descrambler_key_token_error_to_hal)?;
+        let old_token = {
+            let runtime = self.descrambler_runtime_mut(descrambler_id)?;
+            if runtime.session().is_closed() {
+                return Err(HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "descrambler session is closed",
+                ));
+            }
+            if runtime.session().key_token() == Some(&token) {
+                return Ok(());
+            }
+            runtime.session().key_token().cloned()
+        };
         let key_slot = self
             .registry
-            .descrambler_key_table()
-            .resolve(&token)
+            .descrambler_key_table_mut()
+            .acquire(&token)
             .map_err(descrambler_key_lookup_error_to_hal)?;
-        let runtime = self.descrambler_runtime_mut(descrambler_id)?;
-        if runtime.session().is_closed() {
-            return Err(HalError::invalid_state(
-                HalInvalidStateKind::InvalidLifecycle,
-                "descrambler session is closed",
-            ));
+        if let Some(old_token) = old_token {
+            if let Err(error) = self
+                .registry
+                .descrambler_key_table_mut()
+                .release(&old_token)
+            {
+                let _ = self.registry.descrambler_key_table_mut().release(&token);
+                return Err(descrambler_key_release_error_to_hal(error));
+            }
         }
-        runtime.session_mut().replace_key_slot(key_slot);
+        let runtime = self.descrambler_runtime_mut(descrambler_id)?;
+        runtime.session_mut().replace_key(token, key_slot);
         Ok(())
     }
 
@@ -1700,12 +1732,22 @@ impl TunerServiceRuntime {
         &mut self,
         id: i32,
     ) -> Option<crate::registry::DescramblerRegistryEntry> {
-        if let Some(runtime) = self
+        let old_token = if let Some(runtime) = self
             .registry
             .descrambler_runtime_mut(DescramblerRuntimeId(id))
         {
             let mut txn = DescramblerSessionTxn::new();
+            let old_token = runtime.session().key_token().cloned();
             let _ = txn.cleanup_all(runtime.session_mut());
+            old_token
+        } else {
+            None
+        };
+        if let Some(old_token) = old_token {
+            let _ = self
+                .registry
+                .descrambler_key_table_mut()
+                .release(&old_token);
         }
         self.registry
             .unregister_descrambler(DescramblerRuntimeId(id))

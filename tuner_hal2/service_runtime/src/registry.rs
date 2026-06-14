@@ -539,7 +539,6 @@ impl RuntimeRegistry {
         &self.descrambler_key_table
     }
 
-    #[cfg(test)]
     pub fn descrambler_key_table_mut(&mut self) -> &mut DescramblerKeyTable {
         &mut self.descrambler_key_table
     }

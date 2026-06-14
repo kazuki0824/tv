@@ -139,7 +139,7 @@ impl DescramblerSessionTxn {
             }
         };
         self.record_step(DescramblerSessionTxnStep::ReplaceKey);
-        session.set_key_slot(key_slot);
+        session.set_key(token.clone(), key_slot);
         self.record_step(DescramblerSessionTxnStep::Commit);
         Ok(key_slot)
     }
@@ -178,12 +178,12 @@ impl DescramblerSessionTxn {
     pub fn clear_key(
         &mut self,
         session: &mut DescramblerSession,
-    ) -> Result<(), DescramblerSessionFailure> {
+    ) -> Result<Option<DescramblerKeyToken>, DescramblerSessionFailure> {
         self.ensure_open(session)?;
         self.record_step(DescramblerSessionTxnStep::CleanupKey);
-        session.clear_key_slot();
+        let old = session.clear_key();
         self.record_step(DescramblerSessionTxnStep::Commit);
-        Ok(())
+        Ok(old)
     }
 
     pub fn cleanup_all(&mut self, session: &mut DescramblerSession) -> DescramblerCleanupReport {
@@ -213,6 +213,7 @@ mod tests {
             Ok(DescramblerKeySlotId(44))
         );
         assert_eq!(session.key_slot(), Some(DescramblerKeySlotId(44)));
+        assert_eq!(session.key_token(), Some(&token));
         assert!(txn
             .steps()
             .contains(&DescramblerSessionTxnStep::ResolveToken));
@@ -240,6 +241,7 @@ mod tests {
             })
         );
         assert_eq!(session.key_slot(), Some(DescramblerKeySlotId(7)));
+        assert_eq!(session.key_token(), Some(&known));
         assert!(failed
             .steps()
             .contains(&DescramblerSessionTxnStep::Rollback));
@@ -312,11 +314,12 @@ mod tests {
         add.add_pid_claim(&mut session, claim).unwrap();
 
         let mut clear = DescramblerSessionTxn::new();
-        clear.clear_key(&mut session).unwrap();
+        assert_eq!(clear.clear_key(&mut session).unwrap(), Some(token));
         assert_eq!(session.demux_id(), Some(11));
         assert_eq!(session.demux_generation(), Some(12));
         assert_eq!(session.pid_claims(), &[claim]);
         assert_eq!(session.key_slot(), None);
+        assert_eq!(session.key_token(), None);
         assert!(!session.is_closed());
     }
 }

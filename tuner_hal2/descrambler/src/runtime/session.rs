@@ -1,9 +1,10 @@
-use super::{DescramblerKeySlotId, DescramblerPidClaim};
+use super::{DescramblerKeySlotId, DescramblerKeyToken, DescramblerPidClaim};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DescramblerSession {
     demux_id: Option<i32>,
     demux_generation: Option<u64>,
+    key_token: Option<DescramblerKeyToken>,
     key_slot: Option<DescramblerKeySlotId>,
     pid_claims: Vec<DescramblerPidClaim>,
     closed: bool,
@@ -23,17 +24,28 @@ impl DescramblerSession {
     pub fn key_slot(&self) -> Option<DescramblerKeySlotId> {
         self.key_slot
     }
+    pub fn key_token(&self) -> Option<&DescramblerKeyToken> {
+        self.key_token.as_ref()
+    }
     pub fn pid_claims(&self) -> &[DescramblerPidClaim] {
         &self.pid_claims
     }
     pub fn is_closed(&self) -> bool {
         self.closed
     }
-    pub fn clear_key_slot(&mut self) {
+    pub fn clear_key(&mut self) -> Option<DescramblerKeyToken> {
+        let old = self.key_token.take();
         self.key_slot = None;
+        old
     }
-    pub fn replace_key_slot(&mut self, key_slot: DescramblerKeySlotId) {
+    pub fn replace_key(
+        &mut self,
+        token: DescramblerKeyToken,
+        key_slot: DescramblerKeySlotId,
+    ) -> Option<DescramblerKeyToken> {
+        let old = self.key_token.replace(token);
         self.key_slot = Some(key_slot);
+        old
     }
 
     pub(crate) fn snapshot(&self) -> DescramblerSessionSnapshot {
@@ -46,7 +58,8 @@ impl DescramblerSession {
         self.demux_id = Some(demux_id);
         self.demux_generation = Some(generation);
     }
-    pub(crate) fn set_key_slot(&mut self, key_slot: DescramblerKeySlotId) {
+    pub(crate) fn set_key(&mut self, token: DescramblerKeyToken, key_slot: DescramblerKeySlotId) {
+        self.key_token = Some(token);
         self.key_slot = Some(key_slot);
     }
     pub(crate) fn add_pid_claim(&mut self, claim: DescramblerPidClaim) {
@@ -59,7 +72,7 @@ impl DescramblerSession {
     }
     pub(crate) fn close_all(&mut self) {
         self.pid_claims.clear();
-        self.key_slot = None;
+        self.clear_key();
         self.demux_id = None;
         self.demux_generation = None;
         self.closed = true;
