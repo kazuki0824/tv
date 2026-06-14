@@ -1,3 +1,11 @@
+# r50ei11_origs215_373_expired_token_resolution
+
+- ORIG-215 / ORIG-373 token resolution fix candidate.
+- Added `DescramblerKeyTable::has_token_resolution_state()` so expired-token tombstones used by test/fake-token paths are not hidden behind the CAS-token-producer-unavailable branch.
+- Mapped expired descrambler key tokens to `INVALID_STATE` consistently for direct key lookup and session-token resolution.
+- Preserves CAS producer unavailable for the no-token-state case; no real CAS HAL implementation is added.
+- Build / rust unit / atest / VTS / device validation: not executed in this environment.
+
 ## r50ei10_qg04_quarantine_api_design_guard
 
 - QG-04: Hid the single-object quarantine transition behind a private `RuntimeObjectTable` helper and kept `quarantine_cascade()` as the public object lifecycle entry point.

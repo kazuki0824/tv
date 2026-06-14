@@ -41,6 +41,20 @@ impl DescramblerKeyTable {
         self.slots.is_empty()
     }
 
+    pub fn has_token_resolution_state(&self) -> bool {
+        if !self.slots.is_empty() {
+            return true;
+        }
+        #[cfg(test)]
+        {
+            !self.expired.is_empty()
+        }
+        #[cfg(not(test))]
+        {
+            false
+        }
+    }
+
     pub fn resolve(
         &self,
         token: &DescramblerKeyToken,
@@ -205,9 +219,12 @@ mod tests {
             table.resolve(&token),
             Err(DescramblerKeyLookupError::UnknownToken)
         );
+        assert!(!table.has_token_resolution_state());
         table.insert_test_key(token.clone(), DescramblerKeySlotId(7));
+        assert!(table.has_token_resolution_state());
         assert_eq!(table.resolve(&token), Ok(DescramblerKeySlotId(7)));
         table.expire_test_key(&token);
+        assert!(table.has_token_resolution_state());
         assert_eq!(
             table.resolve(&token),
             Err(DescramblerKeyLookupError::ExpiredToken)

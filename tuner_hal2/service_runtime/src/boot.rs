@@ -277,8 +277,8 @@ fn descrambler_session_failure_to_hal(kind: DescramblerSessionFailureKind) -> Ha
             HalInvalidArgumentKind::NumericRange,
             "descrambler key token is unknown",
         ),
-        DescramblerSessionFailureKind::ExpiredToken => HalError::invalid_argument(
-            HalInvalidArgumentKind::NumericRange,
+        DescramblerSessionFailureKind::ExpiredToken => HalError::invalid_state(
+            HalInvalidStateKind::InvalidLifecycle,
             "descrambler key token is expired",
         ),
     }
@@ -303,8 +303,8 @@ fn descrambler_key_lookup_error_to_hal(error: DescramblerKeyLookupError) -> HalE
             HalInvalidArgumentKind::NumericRange,
             "descrambler key token is unknown",
         ),
-        DescramblerKeyLookupError::ExpiredToken => HalError::invalid_argument(
-            HalInvalidArgumentKind::NumericRange,
+        DescramblerKeyLookupError::ExpiredToken => HalError::invalid_state(
+            HalInvalidStateKind::InvalidLifecycle,
             "descrambler key token is expired",
         ),
     }
@@ -1781,7 +1781,11 @@ impl TunerServiceRuntime {
                 return Err(error);
             }
         };
-        if self.registry.descrambler_key_table().is_empty() {
+        if !self
+            .registry
+            .descrambler_key_table()
+            .has_token_resolution_state()
+        {
             let error = HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
                 "descrambler CAS token producer is not connected",
