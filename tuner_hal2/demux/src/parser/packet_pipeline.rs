@@ -934,6 +934,7 @@ impl PacketPipeline {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn reset_downstream_assembly_for_origin_pid_filter(
         &mut self,
         origin: crate::TsInputOrigin,
@@ -1000,6 +1001,7 @@ impl PacketPipeline {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn assembly_origins_for_pid(&self, pid: i32) -> Vec<crate::TsInputOrigin> {
         let mut origins = std::collections::BTreeSet::new();
         for (origin, stored_pid, _) in self.section_assemblers.keys() {
@@ -1158,6 +1160,7 @@ impl PacketPipeline {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn section_generation_allows_delivery(
         &self,
         origin: crate::TsInputOrigin,
@@ -1171,6 +1174,7 @@ impl PacketPipeline {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn pes_generation_allows_delivery(
         &self,
         origin: crate::TsInputOrigin,
@@ -1225,6 +1229,7 @@ impl PacketPipeline {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn test_assemble_pes_for_filter(
         &mut self,
         origin: crate::TsInputOrigin,
@@ -1236,6 +1241,7 @@ impl PacketPipeline {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn test_record_oversized_section_drop(
         &mut self,
         origin: crate::TsInputOrigin,
@@ -1249,6 +1255,7 @@ impl PacketPipeline {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn test_assemble_section_for_filter(
         &mut self,
         origin: crate::TsInputOrigin,
@@ -1261,6 +1268,7 @@ impl PacketPipeline {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn test_seed_section(&mut self, origin: crate::TsInputOrigin, filter_id: i32) {
         self.test_seed_section_for_pid(origin, filter_id, filter_id);
     }
@@ -1278,6 +1286,7 @@ impl PacketPipeline {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn test_seed_pes(&mut self, origin: crate::TsInputOrigin, filter_id: i32) {
         self.test_seed_pes_for_pid(origin, filter_id, filter_id);
     }

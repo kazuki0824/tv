@@ -1031,11 +1031,12 @@ impl IFrontend for FrontendAidlObject {
             ));
         }
         self.plan_method(AidlMethodCall::FrontendSetLnb { lnb_id })?;
-        runtime
+        let result = runtime
             .lock()
             .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
             .set_frontend_lnb(frontend_id, lnb_id)
-            .map_err(status_from_hal_error)
+            .map_err(status_from_hal_error);
+        result
     }
     fn linkCiCam(&self, _ci_cam_id: i32) -> BinderResult<i32> {
         unavailable_after_object_public_api_plan(
@@ -1494,11 +1495,12 @@ impl IDescrambler for DescramblerAidlObject {
         let runtime = self.runtime();
         let descrambler_id =
             runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Descrambler)?;
-        runtime
+        let result = runtime
             .lock()
             .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
             .set_descrambler_demux_source(descrambler_id, demux_id)
-            .map_err(status_from_hal_error)
+            .map_err(status_from_hal_error);
+        result
     }
     fn setKeyToken(&self, key_token: &[u8]) -> BinderResult<()> {
         self.ensure_open()?;
@@ -1506,11 +1508,12 @@ impl IDescrambler for DescramblerAidlObject {
         let runtime = self.runtime();
         let descrambler_id =
             runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Descrambler)?;
-        runtime
+        let result = runtime
             .lock()
             .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
             .set_descrambler_key_token(descrambler_id, key_token)
-            .map_err(status_from_hal_error)
+            .map_err(status_from_hal_error);
+        result
     }
     fn addPid(
         &self,
@@ -1525,11 +1528,12 @@ impl IDescrambler for DescramblerAidlObject {
             runtime_entry_public_id(&self_runtime, self.handle(), AidlObjectKind::Descrambler)?;
         let (source_filter_id, _) = filter_entry_public_id_and_owner(&self_runtime, source_handle)?;
         self.plan_method(AidlMethodCall::DescramblerAddPid(pid))?;
-        self_runtime
+        let result = self_runtime
             .lock()
             .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
             .add_descrambler_pid_non_null_source(descrambler_id, pid, source_filter_id)
-            .map_err(status_from_hal_error)
+            .map_err(status_from_hal_error);
+        result
     }
     fn removePid(
         &self,
@@ -1544,11 +1548,12 @@ impl IDescrambler for DescramblerAidlObject {
             runtime_entry_public_id(&self_runtime, self.handle(), AidlObjectKind::Descrambler)?;
         let (source_filter_id, _) = filter_entry_public_id_and_owner(&self_runtime, source_handle)?;
         self.plan_method(AidlMethodCall::DescramblerRemovePid(pid))?;
-        self_runtime
+        let result = self_runtime
             .lock()
             .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
             .remove_descrambler_pid_non_null_source(descrambler_id, pid, source_filter_id)
-            .map_err(status_from_hal_error)
+            .map_err(status_from_hal_error);
+        result
     }
     fn close(&self) -> BinderResult<()> {
         self.close_object_after_plan(AidlMethodCall::DescramblerClose)
@@ -1568,7 +1573,7 @@ impl ILnb for LnbAidlObject {
                 return Err(status);
             }
         };
-        match runtime
+        let result = match runtime
             .lock()
             .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
             .mark_lnb_callback_registered(lnb_id)
@@ -1578,7 +1583,8 @@ impl ILnb for LnbAidlObject {
                 self.rollback_callback_registration()?;
                 Err(status_from_hal_error(error))
             }
-        }
+        };
+        result
     }
     fn setVoltage(&self, voltage: LnbVoltage) -> BinderResult<()> {
         self.ensure_open()?;
@@ -1586,11 +1592,12 @@ impl ILnb for LnbAidlObject {
         self.plan_method(AidlMethodCall::LnbSetVoltage(request))?;
         let runtime = self.runtime();
         let lnb_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Lnb)?;
-        runtime
+        let result = runtime
             .lock()
             .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
             .apply_lnb_voltage(lnb_id, request)
-            .map_err(status_from_hal_error)
+            .map_err(status_from_hal_error);
+        result
     }
     fn setTone(&self, tone: LnbTone) -> BinderResult<()> {
         self.ensure_open()?;
@@ -1598,11 +1605,12 @@ impl ILnb for LnbAidlObject {
         self.plan_method(AidlMethodCall::LnbSetTone(request))?;
         let runtime = self.runtime();
         let lnb_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Lnb)?;
-        runtime
+        let result = runtime
             .lock()
             .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
             .apply_lnb_tone(lnb_id, request)
-            .map_err(status_from_hal_error)
+            .map_err(status_from_hal_error);
+        result
     }
     fn setSatellitePosition(&self, position: LnbPosition) -> BinderResult<()> {
         self.ensure_open()?;
@@ -1611,22 +1619,24 @@ impl ILnb for LnbAidlObject {
         self.plan_method(AidlMethodCall::LnbSetSatellitePosition(request))?;
         let runtime = self.runtime();
         let lnb_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Lnb)?;
-        runtime
+        let result = runtime
             .lock()
             .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
             .apply_lnb_satellite_position(lnb_id, request)
-            .map_err(status_from_hal_error)
+            .map_err(status_from_hal_error);
+        result
     }
     fn sendDiseqcMessage(&self, diseqc_message: &[u8]) -> BinderResult<()> {
         self.ensure_open()?;
         self.plan_method(AidlMethodCall::LnbSendDiseqc(diseqc_message.to_vec()))?;
         let runtime = self.runtime();
         let lnb_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Lnb)?;
-        runtime
+        let result = runtime
             .lock()
             .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
             .send_lnb_diseqc(lnb_id, diseqc_message)
-            .map_err(status_from_hal_error)
+            .map_err(status_from_hal_error);
+        result
     }
     fn close(&self) -> BinderResult<()> {
         self.ensure_open()?;

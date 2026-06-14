@@ -3,9 +3,8 @@ use std::path::PathBuf;
 
 use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem};
 use maleicacid_tuner_hal2_demux::DemuxRuntime;
-use maleicacid_tuner_hal2_descrambler::{
-    DescramblerKeySlotId, DescramblerKeyTable, DescramblerRuntime,
-};
+use maleicacid_tuner_hal2_descrambler::runtime::DescramblerKeySlotId;
+use maleicacid_tuner_hal2_descrambler::{DescramblerKeyTable, DescramblerRuntime};
 use maleicacid_tuner_hal2_device::FrontendRuntime;
 use maleicacid_tuner_hal2_lnb::LnbRuntime;
 

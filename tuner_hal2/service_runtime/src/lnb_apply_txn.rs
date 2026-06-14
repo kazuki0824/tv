@@ -5,8 +5,9 @@ use maleicacid_tuner_hal2_domain_request::{
     LnbSetSatellitePositionRequest, LnbToneRequest, LnbVoltageRequest,
 };
 use maleicacid_tuner_hal2_lnb::{
-    LnbApplyTxn, LnbDiseqcMessage, LnbElectricalState, LnbFailureKind, LnbFailureRecord,
-    LnbRuntime, LnbRuntimeState, LnbTone as RuntimeLnbTone, LnbVoltage as RuntimeLnbVoltage,
+    LnbApplyTxn, LnbBackendOps, LnbDiseqcMessage, LnbElectricalState, LnbFailureKind,
+    LnbFailureRecord, LnbRuntime, LnbRuntimeState, LnbTone as RuntimeLnbTone,
+    LnbVoltage as RuntimeLnbVoltage,
 };
 
 use crate::boot::TunerServiceRuntime;

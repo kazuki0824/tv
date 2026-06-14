@@ -8,7 +8,8 @@ use maleicacid_tuner_hal2_binder_adapter::{
 };
 use maleicacid_tuner_hal2_binder_adapter::{
     AidlApi, AidlDomainRequest, AidlFailureSource, AidlMethodAdapter, AidlMethodCall,
-    AidlMethodPlan, AidlObjectKind, AidlStatusMapper, DomainCommand, DomainProfileSupport, StatusPrecedenceStep,
+    AidlMethodPlan, AidlObjectKind, AidlStatusMapper, DomainCommand, DomainProfileSupport,
+    StatusPrecedenceStep,
 };
 use maleicacid_tuner_hal2_common::{HalError, HalInvalidStateKind};
 use maleicacid_tuner_hal2_resource_ledger::{CleanupStep, LedgerId};
@@ -55,7 +56,6 @@ fn mark_runtime_callback_unhealthy(
     Ok(())
 }
 
-
 fn consume_best_effort_callback_cleanup_result(_result: BinderResult<()>) {}
 
 pub fn clear_owner_callback_registration(
@@ -81,12 +81,16 @@ pub fn clear_owner_callback_registration_best_effort(
 ) {
     match clear_owner_callbacks(handle) {
         Ok(()) => match success_action {
-            CallbackCleanupRegistryAction::ClearOwner => consume_best_effort_callback_cleanup_result(
-                clear_runtime_callback_owner(runtime, handle),
-            ),
-            CallbackCleanupRegistryAction::MarkUnhealthy => consume_best_effort_callback_cleanup_result(
-                mark_runtime_callback_unhealthy(runtime, handle, api),
-            ),
+            CallbackCleanupRegistryAction::ClearOwner => {
+                consume_best_effort_callback_cleanup_result(clear_runtime_callback_owner(
+                    runtime, handle,
+                ))
+            }
+            CallbackCleanupRegistryAction::MarkUnhealthy => {
+                consume_best_effort_callback_cleanup_result(mark_runtime_callback_unhealthy(
+                    runtime, handle, api,
+                ))
+            }
         },
         Err(_) => consume_best_effort_callback_cleanup_result(mark_runtime_callback_unhealthy(
             runtime, handle, api,
@@ -275,13 +279,13 @@ pub fn clear_live_lnb_callback_for_public_id(
     lnb_id: i32,
 ) -> BinderResult<()> {
     let handle = {
-        let mut runtime = runtime
+        let runtime = runtime
             .lock()
             .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
-        let Some(entry) = runtime.object_table().live_entry_for_runtime(
-            AidlObjectKind::Lnb,
-            LedgerId(i64::from(lnb_id)),
-        ) else {
+        let Some(entry) = runtime
+            .object_table()
+            .live_entry_for_runtime(AidlObjectKind::Lnb, LedgerId(i64::from(lnb_id)))
+        else {
             return Ok(());
         };
         AidlObjectHandle::new(entry.object_kind, entry.object_id, entry.generation)
@@ -338,7 +342,6 @@ pub fn close_object(runtime: &SharedTunerRuntime, handle: AidlObjectHandle) -> B
     unregister_public_runtime_entries(&mut runtime, &closed_entries);
     Ok(())
 }
-
 
 pub fn quarantine_live_aidl_object_after_drop_leak(
     runtime: &SharedTunerRuntime,
