@@ -63,7 +63,6 @@ impl LnbBackendOps for ServiceRuntimeLnbProfileBackend<'_> {
         }
         Err(LnbFailureKind::DiseqcUnsupported)
     }
-
 }
 
 fn profile_accepts_state(profile: LnbRegistryProfile, state: LnbElectricalState) -> bool {

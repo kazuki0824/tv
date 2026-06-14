@@ -11,7 +11,10 @@ use crate::lnb_backend_adapter::{store_lnb_runtime, ServiceRuntimeLnbProfileBack
 use crate::registry::{FrontendRuntimeId, LnbRuntimeId};
 
 fn missing_lnb_error() -> HalError {
-    HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, "LNB runtime id is missing")
+    HalError::invalid_argument(
+        HalInvalidArgumentKind::NumericRange,
+        "LNB runtime id is missing",
+    )
 }
 
 fn lnb_state_error() -> HalError {
@@ -36,9 +39,9 @@ fn map_lnb_failure(record: LnbFailureRecord) -> HalError {
             maleicacid_tuner_hal2_common::HalInvalidArgumentKind::NumericRange,
             "DiSEqC message length is invalid",
         ),
-        LnbFailureKind::DiseqcUnsupported => HalError::Unsupported(
-            "DiSEqC is unavailable for this LNB profile",
-        ),
+        LnbFailureKind::DiseqcUnsupported => {
+            HalError::Unsupported("DiSEqC is unavailable for this LNB profile")
+        }
         LnbFailureKind::BackendApplyFailed
         | LnbFailureKind::RegistryCommitFailed
         | LnbFailureKind::OperationAlreadyActive
@@ -62,7 +65,9 @@ impl TunerServiceRuntime {
             .lnb_runtime(lnb_key)
             .cloned()
             .ok_or_else(missing_lnb_error)?;
-        runtime.reopen_after_public_open().map_err(map_lnb_failure)?;
+        runtime
+            .reopen_after_public_open()
+            .map_err(map_lnb_failure)?;
         store_lnb_runtime(self, lnb_key, runtime)
     }
 

@@ -350,7 +350,9 @@ impl RuntimeObjectTable {
         targets.push((object_id, generation));
         let mut changed = Vec::with_capacity(targets.len());
         for (target_id, target_generation) in targets {
-            if let Some(entry) = self.quarantine_one_if_live_or_nonterminal(target_id, target_generation)? {
+            if let Some(entry) =
+                self.quarantine_one_if_live_or_nonterminal(target_id, target_generation)?
+            {
                 changed.push(entry);
             }
         }
@@ -574,7 +576,9 @@ impl RuntimeObjectTable {
 #[cfg(test)]
 mod qg_object_lifecycle_tests {
     use super::*;
-    use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
+    use maleicacid_tuner_hal2_domain_request::{
+        AidlObjectGeneration, AidlObjectId, AidlObjectKind,
+    };
     use maleicacid_tuner_hal2_resource_ledger::{LedgerGeneration, LedgerId};
 
     fn entry(
@@ -597,17 +601,28 @@ mod qg_object_lifecycle_tests {
     #[test]
     fn quarantine_cascade_terminalizes_owner_and_descendants() {
         let mut table = RuntimeObjectTable::default();
-        table.insert(entry(AidlObjectKind::Demux, 10, 10, RuntimeOwnerRelation::Root)).unwrap();
-        table.insert(entry(
-            AidlObjectKind::Filter,
-            11,
-            11,
-            RuntimeOwnerRelation::Demux {
-                demux: AidlObjectId(10),
-                generation: AidlObjectGeneration(1),
-            },
-        )).unwrap();
-        let changed = table.quarantine_cascade(AidlObjectId(10), AidlObjectGeneration(1)).unwrap();
+        table
+            .insert(entry(
+                AidlObjectKind::Demux,
+                10,
+                10,
+                RuntimeOwnerRelation::Root,
+            ))
+            .unwrap();
+        table
+            .insert(entry(
+                AidlObjectKind::Filter,
+                11,
+                11,
+                RuntimeOwnerRelation::Demux {
+                    demux: AidlObjectId(10),
+                    generation: AidlObjectGeneration(1),
+                },
+            ))
+            .unwrap();
+        let changed = table
+            .quarantine_cascade(AidlObjectId(10), AidlObjectGeneration(1))
+            .unwrap();
         assert_eq!(changed.len(), 2);
         assert_eq!(
             table.entry(AidlObjectId(10)).unwrap().lifecycle,
@@ -622,9 +637,31 @@ mod qg_object_lifecycle_tests {
     #[test]
     fn quarantined_runtime_binding_can_be_reinserted() {
         let mut table = RuntimeObjectTable::default();
-        table.insert(entry(AidlObjectKind::Filter, 20, 20, RuntimeOwnerRelation::Root)).unwrap();
-        table.quarantine_cascade(AidlObjectId(20), AidlObjectGeneration(1)).unwrap();
-        table.insert(entry(AidlObjectKind::Filter, 21, 20, RuntimeOwnerRelation::Root)).unwrap();
-        assert_eq!(table.live_entry_for_runtime(AidlObjectKind::Filter, LedgerId(20)).unwrap().object_id, AidlObjectId(21));
+        table
+            .insert(entry(
+                AidlObjectKind::Filter,
+                20,
+                20,
+                RuntimeOwnerRelation::Root,
+            ))
+            .unwrap();
+        table
+            .quarantine_cascade(AidlObjectId(20), AidlObjectGeneration(1))
+            .unwrap();
+        table
+            .insert(entry(
+                AidlObjectKind::Filter,
+                21,
+                20,
+                RuntimeOwnerRelation::Root,
+            ))
+            .unwrap();
+        assert_eq!(
+            table
+                .live_entry_for_runtime(AidlObjectKind::Filter, LedgerId(20))
+                .unwrap()
+                .object_id,
+            AidlObjectId(21)
+        );
     }
 }
