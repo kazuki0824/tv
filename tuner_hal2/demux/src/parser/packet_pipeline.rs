@@ -8,11 +8,6 @@ use std::collections::BTreeMap;
 
 const PIPELINE_GENERATION_INITIAL: u64 = 0;
 
-#[cfg(test)]
-pub fn lock_test_mutex<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().expect("test mutex must be available")
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TsPacketValidationError {
     WrongLength,
@@ -933,24 +928,6 @@ impl PacketPipeline {
             });
     }
 
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) fn reset_downstream_assembly_for_origin_pid_filter(
-        &mut self,
-        origin: crate::TsInputOrigin,
-        pid: i32,
-        filter_id: i32,
-    ) {
-        self.section_assemblers
-            .retain(|(stored_origin, stored_pid, stored_filter), _| {
-                !(*stored_origin == origin && *stored_pid == pid && *stored_filter == filter_id)
-            });
-        self.pes_assemblers
-            .retain(|(stored_origin, stored_pid, stored_filter), _| {
-                !(*stored_origin == origin && *stored_pid == pid && *stored_filter == filter_id)
-            });
-    }
-
     pub(crate) fn reset_continuity_pid(&mut self, origin: crate::TsInputOrigin, pid: u16) {
         self.continuity_trackers
             .entry(origin)
@@ -998,94 +975,6 @@ impl PacketPipeline {
             .entry((origin, pid as i32, filter_id))
             .or_default()
             .push(pid, payload_unit_start, payload)
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) fn assembly_origins_for_pid(&self, pid: i32) -> Vec<crate::TsInputOrigin> {
-        let mut origins = std::collections::BTreeSet::new();
-        for (origin, stored_pid, _) in self.section_assemblers.keys() {
-            if *stored_pid == pid {
-                origins.insert(*origin);
-            }
-        }
-        for (origin, stored_pid, _) in self.pes_assemblers.keys() {
-            if *stored_pid == pid {
-                origins.insert(*origin);
-            }
-        }
-        for (origin, stored_pid) in self.section_assembler_generations.keys() {
-            if *stored_pid == pid {
-                origins.insert(*origin);
-            }
-        }
-        for (origin, stored_pid) in self.pes_assembler_generations.keys() {
-            if *stored_pid == pid {
-                origins.insert(*origin);
-            }
-        }
-        for (origin, _, stored_pid) in self.filter_section_flush_generations.keys() {
-            if *stored_pid == pid {
-                origins.insert(*origin);
-            }
-        }
-        for (origin, _, stored_pid) in self.filter_pes_flush_generations.keys() {
-            if *stored_pid == pid {
-                origins.insert(*origin);
-            }
-        }
-        origins.into_iter().collect()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn remove_section_for_filter_ids_origin_pid(
-        &mut self,
-        origin: crate::TsInputOrigin,
-        pid: i32,
-        filter_ids: &[i32],
-    ) {
-        self.section_assemblers
-            .retain(|(stored_origin, stored_pid, filter_id), _| {
-                !(*stored_origin == origin
-                    && *stored_pid == pid
-                    && filter_ids.iter().any(|id| id == filter_id))
-            });
-        self.filter_section_flush_generations.retain(
-            |(stored_origin, filter_id, stored_pid), _| {
-                !(*stored_origin == origin
-                    && *stored_pid == pid
-                    && filter_ids.iter().any(|id| id == filter_id))
-            },
-        );
-        self.section_assembler_generations
-            .retain(|(stored_origin, stored_pid), _| {
-                !(*stored_origin == origin && *stored_pid == pid)
-            });
-    }
-
-    #[cfg(test)]
-    pub(crate) fn remove_pes_for_filter_ids_origin_pid(
-        &mut self,
-        origin: crate::TsInputOrigin,
-        pid: i32,
-        filter_ids: &[i32],
-    ) {
-        self.pes_assemblers
-            .retain(|(stored_origin, stored_pid, filter_id), _| {
-                !(*stored_origin == origin
-                    && *stored_pid == pid
-                    && filter_ids.iter().any(|id| id == filter_id))
-            });
-        self.filter_pes_flush_generations
-            .retain(|(stored_origin, filter_id, stored_pid), _| {
-                !(*stored_origin == origin
-                    && *stored_pid == pid
-                    && filter_ids.iter().any(|id| id == filter_id))
-            });
-        self.pes_assembler_generations
-            .retain(|(stored_origin, stored_pid), _| {
-                !(*stored_origin == origin && *stored_pid == pid)
-            });
     }
 
     pub(crate) fn drop_generations_for_pid_origin(
@@ -1159,34 +1048,6 @@ impl PacketPipeline {
         Some(next)
     }
 
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) fn section_generation_allows_delivery(
-        &self,
-        origin: crate::TsInputOrigin,
-        filter_id: i32,
-        pid: i32,
-        generation: u64,
-    ) -> bool {
-        self.filter_section_flush_generations
-            .get(&(origin, filter_id, pid))
-            .map_or(true, |flushed_generation| generation > *flushed_generation)
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) fn pes_generation_allows_delivery(
-        &self,
-        origin: crate::TsInputOrigin,
-        filter_id: i32,
-        pid: i32,
-        generation: u64,
-    ) -> bool {
-        self.filter_pes_flush_generations
-            .get(&(origin, filter_id, pid))
-            .map_or(true, |flushed_generation| generation > *flushed_generation)
-    }
-
     fn mark_filter_flush_generation_for_origin(
         &mut self,
         filter_id: i32,
@@ -1226,81 +1087,6 @@ impl PacketPipeline {
 
     pub fn has_pending_section(&self) -> bool {
         !self.section_assemblers.is_empty()
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) fn test_assemble_pes_for_filter(
-        &mut self,
-        origin: crate::TsInputOrigin,
-        pid: u16,
-        payload_unit_start: bool,
-        payload: &[u8],
-    ) -> Vec<crate::ts_core::PesPacket> {
-        self.assemble_pes_for_filter(origin, pid as i32, pid, payload_unit_start, payload)
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) fn test_record_oversized_section_drop(
-        &mut self,
-        origin: crate::TsInputOrigin,
-        filter_id: i32,
-    ) -> bool {
-        self.section_assemblers
-            .entry((origin, filter_id, filter_id))
-            .or_default()
-            .inner
-            .set_expected_len_or_drop(maleicacid_tuner_hal2_common::MAX_SECTION_PAYLOAD_BYTES + 1)
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) fn test_assemble_section_for_filter(
-        &mut self,
-        origin: crate::TsInputOrigin,
-        filter_id: i32,
-        payload_unit_start: bool,
-        payload: &[u8],
-    ) -> Vec<Vec<u8>> {
-        self.assemble_section_for_filter(origin, filter_id, filter_id, payload_unit_start, payload)
-            .sections
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) fn test_seed_section(&mut self, origin: crate::TsInputOrigin, filter_id: i32) {
-        self.test_seed_section_for_pid(origin, filter_id, filter_id);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_seed_section_for_pid(
-        &mut self,
-        origin: crate::TsInputOrigin,
-        pid: i32,
-        filter_id: i32,
-    ) {
-        self.section_assemblers
-            .entry((origin, pid, filter_id))
-            .or_default();
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) fn test_seed_pes(&mut self, origin: crate::TsInputOrigin, filter_id: i32) {
-        self.test_seed_pes_for_pid(origin, filter_id, filter_id);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_seed_pes_for_pid(
-        &mut self,
-        origin: crate::TsInputOrigin,
-        pid: i32,
-        filter_id: i32,
-    ) {
-        self.pes_assemblers
-            .entry((origin, pid, filter_id))
-            .or_default();
     }
 
     pub fn split_ts_bytes(
@@ -1382,6 +1168,85 @@ pub struct PipelineResetReport {
     pub cleared: bool,
     pub residual_packets: usize,
     pub residual_malformed_bytes: usize,
+}
+
+#[cfg(test)]
+mod test_support {
+    use super::*;
+
+    impl PacketPipeline {
+        pub(crate) fn remove_section_for_filter_ids_origin_pid(
+            &mut self,
+            origin: crate::TsInputOrigin,
+            pid: i32,
+            filter_ids: &[i32],
+        ) {
+            self.section_assemblers
+                .retain(|(stored_origin, stored_pid, filter_id), _| {
+                    !(*stored_origin == origin
+                        && *stored_pid == pid
+                        && filter_ids.iter().any(|id| id == filter_id))
+                });
+            self.filter_section_flush_generations.retain(
+                |(stored_origin, filter_id, stored_pid), _| {
+                    !(*stored_origin == origin
+                        && *stored_pid == pid
+                        && filter_ids.iter().any(|id| id == filter_id))
+                },
+            );
+            self.section_assembler_generations
+                .retain(|(stored_origin, stored_pid), _| {
+                    !(*stored_origin == origin && *stored_pid == pid)
+                });
+        }
+
+        pub(crate) fn remove_pes_for_filter_ids_origin_pid(
+            &mut self,
+            origin: crate::TsInputOrigin,
+            pid: i32,
+            filter_ids: &[i32],
+        ) {
+            self.pes_assemblers
+                .retain(|(stored_origin, stored_pid, filter_id), _| {
+                    !(*stored_origin == origin
+                        && *stored_pid == pid
+                        && filter_ids.iter().any(|id| id == filter_id))
+                });
+            self.filter_pes_flush_generations.retain(
+                |(stored_origin, filter_id, stored_pid), _| {
+                    !(*stored_origin == origin
+                        && *stored_pid == pid
+                        && filter_ids.iter().any(|id| id == filter_id))
+                },
+            );
+            self.pes_assembler_generations
+                .retain(|(stored_origin, stored_pid), _| {
+                    !(*stored_origin == origin && *stored_pid == pid)
+                });
+        }
+
+        pub(crate) fn test_seed_section_for_pid(
+            &mut self,
+            origin: crate::TsInputOrigin,
+            pid: i32,
+            filter_id: i32,
+        ) {
+            self.section_assemblers
+                .entry((origin, pid, filter_id))
+                .or_default();
+        }
+
+        pub(crate) fn test_seed_pes_for_pid(
+            &mut self,
+            origin: crate::TsInputOrigin,
+            pid: i32,
+            filter_id: i32,
+        ) {
+            self.pes_assemblers
+                .entry((origin, pid, filter_id))
+                .or_default();
+        }
+    }
 }
 
 #[cfg(test)]

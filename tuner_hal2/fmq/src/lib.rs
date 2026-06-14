@@ -176,29 +176,6 @@ pub enum FmqQueueError {
     DescriptorIntUnavailable,
 }
 
-impl FmqQueueError {
-    #[cfg(test)]
-    pub(crate) fn is_transient_descriptor_export_error(self) -> bool {
-        matches!(
-            self,
-            FmqQueueError::DescriptorFdDupFailed
-                | FmqQueueError::DescriptorGrantorUnavailable
-                | FmqQueueError::DescriptorIntUnavailable
-        )
-    }
-
-    #[cfg(test)]
-    pub(crate) fn is_data_path_failure(self) -> bool {
-        matches!(
-            self,
-            FmqQueueError::NativeWriteInvalidArgument
-                | FmqQueueError::NativeWriteFailed
-                | FmqQueueError::NativeReadZero
-                | FmqQueueError::NativeWakeFailed
-        )
-    }
-}
-
 pub struct FmqQueue {
     native: NativeFmqQueue,
 }
@@ -318,6 +295,27 @@ mod fmq_clear_tests {
 #[cfg(test)]
 mod fmq_error_classification_tests {
     use super::*;
+
+    impl FmqQueueError {
+        pub(crate) fn is_transient_descriptor_export_error(self) -> bool {
+            matches!(
+                self,
+                FmqQueueError::DescriptorFdDupFailed
+                    | FmqQueueError::DescriptorGrantorUnavailable
+                    | FmqQueueError::DescriptorIntUnavailable
+            )
+        }
+
+        pub(crate) fn is_data_path_failure(self) -> bool {
+            matches!(
+                self,
+                FmqQueueError::NativeWriteInvalidArgument
+                    | FmqQueueError::NativeWriteFailed
+                    | FmqQueueError::NativeReadZero
+                    | FmqQueueError::NativeWakeFailed
+            )
+        }
+    }
 
     #[test]
     fn fmq_error_classification_separates_descriptor_export_from_data_path_failure() {

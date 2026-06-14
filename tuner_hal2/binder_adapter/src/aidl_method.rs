@@ -29,7 +29,9 @@ pub enum AidlMethodCall {
         api: crate::AidlApi,
     },
     FrontendTune(FrontendTuneRequest),
-    FrontendSetLnb { lnb_id: i32 },
+    FrontendSetLnb {
+        lnb_id: i32,
+    },
     FrontendStopTune,
     FrontendScan(FrontendTuneRequest),
     FrontendStopScan,
@@ -350,65 +352,74 @@ impl AidlMethodAdapter {
 }
 
 #[cfg(test)]
-pub fn all_aidl_method_kinds_for_coverage(request: FrontendTuneRequest) -> Vec<AidlMethodCall> {
-    vec![
-        AidlMethodCall::FrontendTune(request.clone()),
-        AidlMethodCall::FrontendSetLnb { lnb_id: 1 },
-        AidlMethodCall::FrontendStopTune,
-        AidlMethodCall::FrontendScan(request),
-        AidlMethodCall::FrontendStopScan,
-        AidlMethodCall::FrontendClose,
-        AidlMethodCall::FrontendSetCallback,
-        AidlMethodCall::DemuxSetFrontendDataSource { frontend_id: 1 },
-        AidlMethodCall::DemuxOpenDvr(OpenDvrRequest {
-            kind: DvrOpenKind::Record,
-            buffer_size: 188 * 1024,
-        }),
-        AidlMethodCall::DemuxClose,
-        AidlMethodCall::FilterGetQueueDesc,
-        AidlMethodCall::FilterGetId,
-        AidlMethodCall::FilterGetId64Bit,
-        AidlMethodCall::FilterGetAvSharedHandle,
-        AidlMethodCall::FilterReleaseAvHandle(FilterReleaseAvHandleRequest { av_data_id: 1 }),
-        AidlMethodCall::FilterStart,
-        AidlMethodCall::FilterStop,
-        AidlMethodCall::FilterFlush,
-        AidlMethodCall::FilterClose,
-        AidlMethodCall::FilterSetDataSource(FilterSetDataSourceRequest {
-            source_filter_id: 2,
-            source_filter_generation: 1,
-        }),
-        AidlMethodCall::FilterSetDelayHint(FilterDelayHintRequest {
-            kind: FilterDelayHintKind::TimeDelayMs,
-            value: 0,
-        }),
-        AidlMethodCall::DvrGetQueueDesc,
-        AidlMethodCall::DvrConfigure(DvrConfigureRequest {
-            kind: DvrConfigureKind::Record,
-        }),
-        AidlMethodCall::DvrAttachFilter(DvrFilterLinkRequest {
-            filter_id: 2,
-            filter_generation: 1,
-        }),
-        AidlMethodCall::DvrDetachFilter(DvrFilterLinkRequest {
-            filter_id: 2,
-            filter_generation: 1,
-        }),
-        AidlMethodCall::DvrStart,
-        AidlMethodCall::DvrStop,
-        AidlMethodCall::DvrFlush,
-        AidlMethodCall::DvrClose,
-        AidlMethodCall::DvrSetStatusCheckIntervalHint(100),
-        AidlMethodCall::DescramblerSetDemuxSource(1),
-        AidlMethodCall::DescramblerSetKeyToken(vec![1, 2, 3]),
-        AidlMethodCall::DescramblerAddPid(100),
-        AidlMethodCall::DescramblerRemovePid(100),
-        AidlMethodCall::DescramblerClose,
-        AidlMethodCall::LnbSetCallback,
-        AidlMethodCall::LnbSetVoltage(LnbVoltageRequest::None),
-        AidlMethodCall::LnbSetTone(LnbToneRequest::None),
-        AidlMethodCall::LnbSetSatellitePosition(LnbSetSatellitePositionRequest { position: 0 }),
-        AidlMethodCall::LnbSendDiseqc(vec![0xe0, 0x10]),
-        AidlMethodCall::LnbClose,
-    ]
+pub(crate) use tests::all_aidl_method_kinds_for_coverage;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    pub(crate) fn all_aidl_method_kinds_for_coverage(
+        request: FrontendTuneRequest,
+    ) -> Vec<AidlMethodCall> {
+        vec![
+            AidlMethodCall::FrontendTune(request.clone()),
+            AidlMethodCall::FrontendSetLnb { lnb_id: 1 },
+            AidlMethodCall::FrontendStopTune,
+            AidlMethodCall::FrontendScan(request),
+            AidlMethodCall::FrontendStopScan,
+            AidlMethodCall::FrontendClose,
+            AidlMethodCall::FrontendSetCallback,
+            AidlMethodCall::DemuxSetFrontendDataSource { frontend_id: 1 },
+            AidlMethodCall::DemuxOpenDvr(OpenDvrRequest {
+                kind: DvrOpenKind::Record,
+                buffer_size: 188 * 1024,
+            }),
+            AidlMethodCall::DemuxClose,
+            AidlMethodCall::FilterGetQueueDesc,
+            AidlMethodCall::FilterGetId,
+            AidlMethodCall::FilterGetId64Bit,
+            AidlMethodCall::FilterGetAvSharedHandle,
+            AidlMethodCall::FilterReleaseAvHandle(FilterReleaseAvHandleRequest { av_data_id: 1 }),
+            AidlMethodCall::FilterStart,
+            AidlMethodCall::FilterStop,
+            AidlMethodCall::FilterFlush,
+            AidlMethodCall::FilterClose,
+            AidlMethodCall::FilterSetDataSource(FilterSetDataSourceRequest {
+                source_filter_id: 2,
+                source_filter_generation: 1,
+            }),
+            AidlMethodCall::FilterSetDelayHint(FilterDelayHintRequest {
+                kind: FilterDelayHintKind::TimeDelayMs,
+                value: 0,
+            }),
+            AidlMethodCall::DvrGetQueueDesc,
+            AidlMethodCall::DvrConfigure(DvrConfigureRequest {
+                kind: DvrConfigureKind::Record,
+            }),
+            AidlMethodCall::DvrAttachFilter(DvrFilterLinkRequest {
+                filter_id: 2,
+                filter_generation: 1,
+            }),
+            AidlMethodCall::DvrDetachFilter(DvrFilterLinkRequest {
+                filter_id: 2,
+                filter_generation: 1,
+            }),
+            AidlMethodCall::DvrStart,
+            AidlMethodCall::DvrStop,
+            AidlMethodCall::DvrFlush,
+            AidlMethodCall::DvrClose,
+            AidlMethodCall::DvrSetStatusCheckIntervalHint(100),
+            AidlMethodCall::DescramblerSetDemuxSource(1),
+            AidlMethodCall::DescramblerSetKeyToken(vec![1, 2, 3]),
+            AidlMethodCall::DescramblerAddPid(100),
+            AidlMethodCall::DescramblerRemovePid(100),
+            AidlMethodCall::DescramblerClose,
+            AidlMethodCall::LnbSetCallback,
+            AidlMethodCall::LnbSetVoltage(LnbVoltageRequest::None),
+            AidlMethodCall::LnbSetTone(LnbToneRequest::None),
+            AidlMethodCall::LnbSetSatellitePosition(LnbSetSatellitePositionRequest { position: 0 }),
+            AidlMethodCall::LnbSendDiseqc(vec![0xe0, 0x10]),
+            AidlMethodCall::LnbClose,
+        ]
+    }
 }

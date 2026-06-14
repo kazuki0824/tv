@@ -91,45 +91,44 @@ impl DescramblerKeyTable {
         }
         Ok(())
     }
-
-    #[cfg(test)]
-    pub(crate) fn insert_test_key(
-        &mut self,
-        token: DescramblerKeyToken,
-        slot: DescramblerKeySlotId,
-    ) {
-        self.expired.remove(&token);
-        self.slots.insert(
-            token,
-            DescramblerKeySlotState {
-                slot,
-                refcount: 0,
-                expired: false,
-            },
-        );
-    }
-
-    #[cfg(test)]
-    pub(crate) fn expire_test_key(&mut self, token: &DescramblerKeyToken) {
-        if let Some(state) = self.slots.get_mut(token) {
-            if state.refcount == 0 {
-                self.slots.remove(token);
-                self.expired.insert(token.clone());
-            } else {
-                state.expired = true;
-            }
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn refcount_for_test(&self, token: &DescramblerKeyToken) -> Option<usize> {
-        self.slots.get(token).map(|state| state.refcount)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    impl DescramblerKeyTable {
+        pub(crate) fn insert_test_key(
+            &mut self,
+            token: DescramblerKeyToken,
+            slot: DescramblerKeySlotId,
+        ) {
+            self.expired.remove(&token);
+            self.slots.insert(
+                token,
+                DescramblerKeySlotState {
+                    slot,
+                    refcount: 0,
+                    expired: false,
+                },
+            );
+        }
+
+        pub(crate) fn expire_test_key(&mut self, token: &DescramblerKeyToken) {
+            if let Some(state) = self.slots.get_mut(token) {
+                if state.refcount == 0 {
+                    self.slots.remove(token);
+                    self.expired.insert(token.clone());
+                } else {
+                    state.expired = true;
+                }
+            }
+        }
+
+        pub(crate) fn refcount_for_test(&self, token: &DescramblerKeyToken) -> Option<usize> {
+            self.slots.get(token).map(|state| state.refcount)
+        }
+    }
 
     #[test]
     fn key_table_distinguishes_unknown_and_expired_tokens() {
