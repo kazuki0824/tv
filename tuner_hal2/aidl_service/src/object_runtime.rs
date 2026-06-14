@@ -19,6 +19,81 @@ use crate::object_handle::AidlObjectHandle;
 
 pub type SharedTunerRuntime = Arc<Mutex<TunerServiceRuntime>>;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CallbackCleanupRegistryAction {
+    ClearOwner,
+    MarkUnhealthy,
+}
+
+fn clear_runtime_callback_owner(
+    runtime: &SharedTunerRuntime,
+    handle: AidlObjectHandle,
+) -> BinderResult<()> {
+    let mut runtime = runtime
+        .lock()
+        .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
+    runtime
+        .callback_registry_mut()
+        .clear_owner(handle.object_id(), handle.generation());
+    Ok(())
+}
+
+fn mark_runtime_callback_unhealthy(
+    runtime: &SharedTunerRuntime,
+    handle: AidlObjectHandle,
+    api: AidlApi,
+) -> BinderResult<()> {
+    let mut runtime = runtime
+        .lock()
+        .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
+    runtime.callback_registry_mut().mark_unhealthy(
+        handle.object_kind(),
+        handle.object_id(),
+        handle.generation(),
+        api,
+    );
+    Ok(())
+}
+
+
+fn consume_best_effort_callback_cleanup_result(_result: BinderResult<()>) {}
+
+pub fn clear_owner_callback_registration(
+    runtime: &SharedTunerRuntime,
+    handle: AidlObjectHandle,
+    api: AidlApi,
+    failure_message: &'static str,
+) -> BinderResult<()> {
+    match clear_owner_callbacks(handle) {
+        Ok(()) => clear_runtime_callback_owner(runtime, handle),
+        Err(_) => {
+            mark_runtime_callback_unhealthy(runtime, handle, api)?;
+            Err(status_unknown_error(failure_message))
+        }
+    }
+}
+
+pub fn clear_owner_callback_registration_best_effort(
+    runtime: &SharedTunerRuntime,
+    handle: AidlObjectHandle,
+    api: AidlApi,
+    success_action: CallbackCleanupRegistryAction,
+) {
+    match clear_owner_callbacks(handle) {
+        Ok(()) => match success_action {
+            CallbackCleanupRegistryAction::ClearOwner => consume_best_effort_callback_cleanup_result(
+                clear_runtime_callback_owner(runtime, handle),
+            ),
+            CallbackCleanupRegistryAction::MarkUnhealthy => consume_best_effort_callback_cleanup_result(
+                mark_runtime_callback_unhealthy(runtime, handle, api),
+            ),
+        },
+        Err(_) => consume_best_effort_callback_cleanup_result(mark_runtime_callback_unhealthy(
+            runtime, handle, api,
+        )),
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct AidlMethodExecutionOutcome {
     pub plan: AidlMethodPlan,
@@ -209,14 +284,14 @@ pub fn clear_live_lnb_callback_for_public_id(
         ) else {
             return Ok(());
         };
-        runtime
-            .callback_registry_mut()
-            .clear_owner(entry.object_id, entry.generation);
         AidlObjectHandle::new(entry.object_kind, entry.object_id, entry.generation)
     };
-    clear_owner_callbacks(handle).map_err(|_| {
-        status_unknown_error("callback store cleanup failed during LNB owner loss")
-    })
+    clear_owner_callback_registration(
+        runtime,
+        handle,
+        AidlApi::LnbSetCallback,
+        "callback store cleanup failed during LNB owner loss",
+    )
 }
 
 pub fn close_object(runtime: &SharedTunerRuntime, handle: AidlObjectHandle) -> BinderResult<()> {

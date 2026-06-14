@@ -128,6 +128,11 @@ pub struct RecordEventState {
 }
 
 impl RecordEventState {
+    pub fn reset_payload_state(&mut self) {
+        self.sc_prefix_carry.clear();
+        self.pes_header_carry.clear();
+    }
+
     fn payload_with_sc_carry(&mut self, payload: &[u8]) -> Vec<u8> {
         let mut merged = Vec::with_capacity(self.sc_prefix_carry.len() + payload.len());
         merged.extend_from_slice(&self.sc_prefix_carry);
@@ -268,6 +273,7 @@ fn build_ts_record_event_data(
     }
     if packet_view.discontinuity_indicator {
         observed_ts_index |= DEMUX_TS_INDEX_DISCONTINUITY;
+        record_state.reset_payload_state();
     }
     if packet_view.random_access_indicator {
         observed_ts_index |= DEMUX_TS_INDEX_RANDOM_ACCESS;
@@ -308,11 +314,19 @@ fn build_ts_record_event_data(
         }
         _ => {}
     }
-    let pts = record_state
-        .observe_pts(packet_payload, packet_view.payload_unit_start)
-        .unwrap_or(RECORD_INDEX_PTS_ABSENT);
-    let sc_payload = record_state.payload_with_sc_carry(packet_payload);
-    let sc_info = record_sc_info(&sc_payload, sc_index_type, configured_sc_index_mask_bits);
+    let (pts, sc_info) = if packet_view.scrambling_control == 0 {
+        let pts = record_state
+            .observe_pts(packet_payload, packet_view.payload_unit_start)
+            .unwrap_or(RECORD_INDEX_PTS_ABSENT);
+        let sc_payload = record_state.payload_with_sc_carry(packet_payload);
+        (
+            pts,
+            record_sc_info(&sc_payload, sc_index_type, configured_sc_index_mask_bits),
+        )
+    } else {
+        record_state.reset_payload_state();
+        (RECORD_INDEX_PTS_ABSENT, None)
+    };
     let first_mb_in_slice = sc_info
         .map(|info| info.first_mb_in_slice)
         .unwrap_or(INVALID_FIRST_MB_IN_SLICE);
@@ -950,5 +964,88 @@ mod record_start_code_mask_tests {
             &mut state,
         )
         .is_none());
+    }
+}
+
+#[cfg(test)]
+mod scrambled_record_policy_tests {
+    use super::*;
+
+    fn payload_packet(pid: u16, scrambling_control: u8, pusi: bool, payload: &[u8]) -> [u8; 188] {
+        let mut packet = [0xffu8; 188];
+        packet[0] = 0x47;
+        packet[1] = ((pid >> 8) as u8) & 0x1f;
+        if pusi {
+            packet[1] |= 0x40;
+        }
+        packet[2] = pid as u8;
+        packet[3] = ((scrambling_control & 0x03) << 6) | 0x10;
+        packet[4..4 + payload.len()].copy_from_slice(payload);
+        packet
+    }
+
+    #[test]
+    fn scrambled_record_packet_emits_only_ts_scrambling_metadata() {
+        let mut state = RecordEventState::default();
+        let mut parser = RecordIndexParser::new();
+        let packet = payload_packet(
+            0x0100,
+            2,
+            true,
+            &[0x00, 0x00, 0x01, 0xe0, 0x00, 0x00, 0x80, 0x80, 0x05, 0x21, 0x00, 0x01, 0x00, 0x01],
+        );
+        let mask = DEMUX_TS_INDEX_CHANGE_TO_EVEN_SCRAMBLED | DEMUX_TS_INDEX_PAYLOAD_UNIT_START;
+        let event = parser.push_ts_packet(
+            &packet,
+            0,
+            mask,
+            RECORD_SC_TYPE_SC_AVC,
+            AVC_SC_I_SLICE,
+            &mut state,
+        );
+
+        assert!(matches!(
+            event,
+            Some(TsRecordEventData {
+                ts_index_mask,
+                pts: RECORD_INDEX_PTS_ABSENT,
+                sc_index_mask_bits: SC_INDEX_MASK_ABSENT,
+                first_mb_in_slice: INVALID_FIRST_MB_IN_SLICE,
+                ..
+            }) if ts_index_mask == mask
+        ));
+    }
+
+    #[test]
+    fn scrambled_record_packet_clears_cross_packet_pes_and_sc_carry() {
+        let mut state = RecordEventState::default();
+        let first = payload_packet(0x0100, 0, true, &[0x00, 0x00]);
+        let scrambled = payload_packet(0x0100, 2, false, &[0xaa, 0xbb]);
+        let second = payload_packet(
+            0x0100,
+            0,
+            false,
+            &[0x01, 0xe0, 0x00, 0x00, 0x80, 0x80, 0x05, 0x21, 0x00, 0x01, 0x00, 0x01],
+        );
+
+        assert!(build_ts_record_event_data(&first, 0, 0, RECORD_SC_TYPE_SC_AVC, AVC_SC_I_SLICE, &mut state).is_none());
+        assert!(build_ts_record_event_data(
+            &scrambled,
+            188,
+            DEMUX_TS_INDEX_CHANGE_TO_EVEN_SCRAMBLED,
+            RECORD_SC_TYPE_SC_AVC,
+            AVC_SC_I_SLICE,
+            &mut state,
+        )
+        .is_some());
+        let recovered = build_ts_record_event_data(
+            &second,
+            376,
+            DEMUX_TS_INDEX_PAYLOAD_UNIT_START,
+            RECORD_SC_TYPE_SC_AVC,
+            AVC_SC_I_SLICE,
+            &mut state,
+        );
+        assert!(recovered.is_none());
     }
 }

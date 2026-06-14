@@ -102,7 +102,28 @@ impl TunerServiceRuntime {
     }
 
     pub fn record_lnb_drop_leak(&mut self, lnb_id: i32) -> Result<(), HalError> {
-        self.close_lnb_with_reason(LnbRuntimeId(lnb_id), LnbLifecycleReason::DropLeak)
+        let lnb_key = LnbRuntimeId(lnb_id);
+        if self.registry().lnb(lnb_key).is_none() {
+            return Err(missing_lnb_error());
+        }
+        let mut runtime = self
+            .registry()
+            .lnb_runtime(lnb_key)
+            .cloned()
+            .ok_or_else(missing_lnb_error)?;
+        if runtime.state() == LnbRuntimeState::Closed {
+            return Ok(());
+        }
+        let outcome = {
+            let mut backend = ServiceRuntimeLnbBackend::new(self.registry(), lnb_key);
+            LnbLifecycleTxn::new().close(&mut runtime, &mut backend, LnbLifecycleReason::DropLeak)
+        };
+        store_lnb_runtime(self, lnb_key, runtime)?;
+        match outcome.result {
+            Ok(()) => Ok(()),
+            Err(record) if record.kind == LnbFailureKind::DropWithoutClose => Ok(()),
+            Err(record) => Err(map_lnb_failure(record)),
+        }
     }
 
     fn close_lnb_with_reason(

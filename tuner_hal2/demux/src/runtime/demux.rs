@@ -527,16 +527,30 @@ impl DemuxRuntime {
                 source_filter_generation,
             },
         };
-        let view_report = self.pipeline.push_ts_packet(packet, kind);
-        if view_report.accepted_packets == 0 {
-            return view_report;
+        let mut report = self.pipeline.push_ts_packet(packet, kind);
+        if report.accepted_packets == 0 {
+            return report;
         }
         let Some(view) = self.pipeline.inspect_ts_packet(packet) else {
-            return view_report;
+            return report;
         };
         let filters = self.filter_views();
-        self.pipeline
-            .plan_and_assemble_ts_packet_report(&view, origin, &filters)
+        let downstream = self.pipeline.plan_and_assemble_ts_packet_report_after_preflight(
+            &view,
+            origin,
+            &filters,
+            &report.assembly_suppression_reasons,
+        );
+        report.dropped_packets += downstream.dropped_packets;
+        report.malformed_packets += downstream.malformed_packets;
+        report.drop_reasons.extend(downstream.drop_reasons);
+        report
+            .assembly_suppression_reasons
+            .extend(downstream.assembly_suppression_reasons);
+        report.delivery_actions.extend(downstream.delivery_actions);
+        report.generated_events.extend(downstream.generated_events);
+        report.diagnostics.extend(downstream.diagnostics);
+        report
     }
 
     pub fn open_filter_runtime(

@@ -1,3 +1,14 @@
+# r50ei5_wp_r07a_descrambler_prereq_packet_pipeline_min
+
+- WP-R10 descrambler / CAS token / MULTI2 packet path の前提として、keyなし scrambled TS packet を record/raw path と section/PES/AV assembly path で分離した。
+- keyなし scrambled packet は record path ではTS scrambling metadataだけを観測し、PES/SC/PTS payload metadataを意味値として扱わないようにした。
+- keyなし scrambled packet が section/PES/AV assemblyへ入る場合は diagnostic を出し、該当PIDの partial assembly をresetするようにした。
+- TEI / duplicate continuity counter packet は record/raw TS path へ到達させ、section/PES/AV assembly からだけ除外するように補正した。
+- release marker を tuner_hal2 / tuner_hal ともに r50ei5_wp_r07a_descrambler_prereq_packet_pipeline_min へ更新した。
+- packet pipeline の診断モデルを、packet reject/drop と assembly suppression に分離した。
+- `plan_and_assemble_ts_packet_report()` の no-preflight 入口と、旧意味論の test helper `accept_ts_packet_with_outcome()` / `accept_ts_packet()` を削除した。
+- descrambler / CAS token / MULTI2 / key table / IDescrambler public API は未実装のまま維持した。
+
 # r50ei_wp_r07_filter_hint_runtime
 
 - WP-R07継続として、`IFilter.configureAvStreamType()` を service_runtime / demux runtime のAV stream type hint保持へ接続した。

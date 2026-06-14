@@ -15,11 +15,11 @@ use maleicacid_tuner_hal2_common::HalError;
 use maleicacid_tuner_hal2_demux::config::OpenFilterRequest;
 use maleicacid_tuner_hal2_service_runtime::RuntimeOwnerRelation;
 
-use crate::callback_store::{clear_owner_callbacks, retain_dvr_callback, retain_filter_callback};
+use crate::callback_store::{retain_dvr_callback, retain_filter_callback};
 use crate::dvr_object::DvrAidlObject;
 use crate::filter_object::FilterAidlObject;
 use crate::object_handle::AidlObjectHandle;
-use crate::object_runtime::{record_callback_registration, SharedTunerRuntime};
+use crate::object_runtime::{clear_owner_callback_registration, record_callback_registration, SharedTunerRuntime};
 
 fn service_error(code: i32, message: &str) -> Status {
     match CString::new(message) {
@@ -137,9 +137,12 @@ fn allocate_dvr_public_runtime(
     Ok(entry.id.0)
 }
 
-fn rollback_retained_child_callback(handle: AidlObjectHandle) -> BinderResult<()> {
-    clear_owner_callbacks(handle)
-        .map_err(|_| status_unknown_error("child callback rollback failed"))
+fn rollback_retained_child_callback(
+    runtime: &SharedTunerRuntime,
+    handle: AidlObjectHandle,
+    api: AidlApi,
+) -> BinderResult<()> {
+    clear_owner_callback_registration(runtime, handle, api, "child callback rollback failed")
 }
 
 fn retain_filter_child_callback(
@@ -150,7 +153,7 @@ fn retain_filter_child_callback(
     retain_filter_callback(handle, callback)
         .map_err(|_| Status::new_service_specific_error(TunerResult::UNKNOWN_ERROR.0, None))?;
     if let Err(status) = record_callback_registration(runtime, handle, AidlApi::DemuxOpenFilter) {
-        rollback_retained_child_callback(handle)?;
+        rollback_retained_child_callback(runtime, handle, AidlApi::DemuxOpenFilter)?;
         return Err(status);
     }
     Ok(())
@@ -164,7 +167,7 @@ fn retain_dvr_child_callback(
     retain_dvr_callback(handle, callback)
         .map_err(|_| Status::new_service_specific_error(TunerResult::UNKNOWN_ERROR.0, None))?;
     if let Err(status) = record_callback_registration(runtime, handle, AidlApi::DemuxOpenDvr) {
-        rollback_retained_child_callback(handle)?;
+        rollback_retained_child_callback(runtime, handle, AidlApi::DemuxOpenDvr)?;
         return Err(status);
     }
     Ok(())

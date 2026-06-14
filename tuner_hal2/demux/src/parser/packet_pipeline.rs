@@ -295,6 +295,7 @@ pub struct PipelineReport {
     pub dropped_packets: usize,
     pub malformed_packets: usize,
     pub drop_reasons: Vec<PipelineDropReason>,
+    pub assembly_suppression_reasons: Vec<PipelineAssemblySuppressionReason>,
     pub delivery_actions: Vec<PipelineDeliveryAction>,
     pub generated_events: Vec<PipelineGeneratedEvent>,
     pub diagnostics: Vec<PipelineDiagnostic>,
@@ -302,15 +303,20 @@ pub struct PipelineReport {
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum PipelineDropReason {
-    TransportErrorIndicator,
     MalformedPacket,
-    DuplicatePacket,
-    NoPayload,
     AssemblyDrop,
     ResidualBytes,
     PesAssemblerOverflow,
     SectionGenerationOverflow,
     PesGenerationOverflow,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PipelineAssemblySuppressionReason {
+    TransportErrorIndicator,
+    DuplicatePacket,
+    NoPayload,
+    KeylessScrambledWithoutDescrambler,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -356,9 +362,10 @@ pub enum PipelineGeneratedEvent {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PipelineDiagnosticKind {
     MalformedTsPacket,
-    TeiPacketDrop,
-    DuplicatePacketDrop,
-    NoPayloadPacketDrop,
+    TeiAssemblySuppressed,
+    DuplicatePacketAssemblySuppressed,
+    NoPayloadAssemblySuppressed,
+    KeylessScrambledAssemblySuppressed,
     SectionAssemblyDrop,
     SectionGenerationOverflow,
     PesGenerationOverflow,
@@ -421,16 +428,6 @@ pub enum PipelineBoundaryReason {
     DvrPlaybackDiscontinuity,
 }
 
-#[derive(Debug, Clone, Copy)]
-#[cfg(test)]
-pub enum PacketAcceptOutcome<'a> {
-    Accepted(TsPacketView<'a>),
-    Malformed,
-    TransportError,
-    Duplicate,
-    NoPayload,
-}
-
 impl PacketPipeline {
     pub fn validate_packet(bytes: &[u8]) -> Result<TsPacketView<'_>, TsPacketValidationError> {
         TsPacketView::validate(bytes)
@@ -465,15 +462,13 @@ impl PacketPipeline {
             }
         };
         if view.transport_error_indicator {
-            report.dropped_packets += 1;
             report
-                .drop_reasons
-                .push(PipelineDropReason::TransportErrorIndicator);
+                .assembly_suppression_reasons
+                .push(PipelineAssemblySuppressionReason::TransportErrorIndicator);
             report.diagnostics.push(PipelineDiagnostic {
-                kind: PipelineDiagnosticKind::TeiPacketDrop,
+                kind: PipelineDiagnosticKind::TeiAssemblySuppressed,
                 pid: Some(view.pid),
             });
-            return report;
         }
         if view.discontinuity_indicator {
             self.reset_continuity_pid(origin, view.pid as u16);
@@ -486,83 +481,30 @@ impl PacketPipeline {
             view.payload.is_some(),
         );
         if matches!(continuity, crate::ts_core::ContinuityOutcome::Duplicate) {
-            report.dropped_packets += 1;
             report
-                .drop_reasons
-                .push(PipelineDropReason::DuplicatePacket);
+                .assembly_suppression_reasons
+                .push(PipelineAssemblySuppressionReason::DuplicatePacket);
             report.diagnostics.push(PipelineDiagnostic {
-                kind: PipelineDiagnosticKind::DuplicatePacketDrop,
+                kind: PipelineDiagnosticKind::DuplicatePacketAssemblySuppressed,
                 pid: Some(view.pid),
             });
-            return report;
         }
         if matches!(continuity, crate::ts_core::ContinuityOutcome::Discontinuity) {
             self.reset_assembly_for_origin_pid(origin, view.pid);
         }
         if view.payload.is_none() {
-            report.dropped_packets += 1;
-            report.drop_reasons.push(PipelineDropReason::NoPayload);
+            report.assembly_suppression_reasons.push(PipelineAssemblySuppressionReason::NoPayload);
             report.diagnostics.push(PipelineDiagnostic {
-                kind: PipelineDiagnosticKind::NoPayloadPacketDrop,
+                kind: PipelineDiagnosticKind::NoPayloadAssemblySuppressed,
                 pid: Some(view.pid),
             });
-            return report;
         }
         report.accepted_packets += 1;
         report
     }
 
     pub fn inspect_ts_packet<'a>(&self, packet: &'a [u8]) -> Option<TsPacketView<'a>> {
-        Self::validate_packet(packet)
-            .ok()
-            .filter(|view| !view.transport_error_indicator)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn accept_ts_packet_with_outcome<'a>(
-        &mut self,
-        packet: &'a [u8],
-        origin: crate::TsInputOrigin,
-    ) -> PacketAcceptOutcome<'a> {
-        let view = match Self::validate_packet(packet) {
-            Ok(view) => view,
-            Err(_) => return PacketAcceptOutcome::Malformed,
-        };
-        if view.transport_error_indicator {
-            return PacketAcceptOutcome::TransportError;
-        }
-        if view.discontinuity_indicator {
-            self.reset_continuity_pid(origin, view.pid as u16);
-            self.reset_assembly_for_origin_pid(origin, view.pid);
-        }
-        let continuity = self.check_continuity(
-            origin,
-            view.pid as u16,
-            view.continuity_counter,
-            view.payload.is_some(),
-        );
-        if matches!(continuity, crate::ts_core::ContinuityOutcome::Duplicate) {
-            return PacketAcceptOutcome::Duplicate;
-        }
-        if matches!(continuity, crate::ts_core::ContinuityOutcome::Discontinuity) {
-            self.reset_assembly_for_origin_pid(origin, view.pid);
-        }
-        if view.payload.is_none() {
-            return PacketAcceptOutcome::NoPayload;
-        }
-        PacketAcceptOutcome::Accepted(view)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn accept_ts_packet<'a>(
-        &mut self,
-        packet: &'a [u8],
-        origin: crate::TsInputOrigin,
-    ) -> Option<TsPacketView<'a>> {
-        match self.accept_ts_packet_with_outcome(packet, origin) {
-            PacketAcceptOutcome::Accepted(view) => Some(view),
-            _ => None,
-        }
+        Self::validate_packet(packet).ok()
     }
 
     pub(crate) fn plan_packet_delivery(
@@ -659,14 +601,29 @@ impl PacketPipeline {
             .delivery_actions
             .extend(self.plan_packet_delivery(view.pid, origin, filters));
         if view.payload.is_some() {
-            for filter_id in self.plan_section_filters(view.pid, filters) {
-                report
-                    .delivery_actions
-                    .push(PipelineDeliveryAction::SectionPayload { filter_id });
+            let section_filter_ids = self.plan_section_filters(view.pid, filters);
+            let pes_actions = self.plan_pes_actions(view.pid, filters);
+            if view.transport_error_indicator {
+                // TEI付きpacketはrecord/raw TSへは届かせるが、破損payloadを
+                // section/PES/AV assembly へ入れない。TEI診断はpreflight側で出す。
+            } else if view.scrambling_control != 0 {
+                if !section_filter_ids.is_empty() || !pes_actions.is_empty() {
+                    report
+                        .assembly_suppression_reasons
+                        .push(PipelineAssemblySuppressionReason::KeylessScrambledWithoutDescrambler);
+                    report.diagnostics.push(PipelineDiagnostic {
+                        kind: PipelineDiagnosticKind::KeylessScrambledAssemblySuppressed,
+                        pid: Some(view.pid),
+                    });
+                }
+            } else {
+                for filter_id in section_filter_ids {
+                    report
+                        .delivery_actions
+                        .push(PipelineDeliveryAction::SectionPayload { filter_id });
+                }
+                report.delivery_actions.extend(pes_actions);
             }
-            report
-                .delivery_actions
-                .extend(self.plan_pes_actions(view.pid, filters));
         }
         for action in report.delivery_actions.iter() {
             match *action {
@@ -708,16 +665,53 @@ impl PacketPipeline {
         }
         report
     }
-    pub(crate) fn plan_and_assemble_ts_packet_report(
+    pub(crate) fn plan_and_assemble_ts_packet_report_after_preflight(
         &mut self,
         view: &TsPacketView<'_>,
         origin: crate::TsInputOrigin,
         filters: &[PipelineFilterView],
+        preflight_suppression_reasons: &[PipelineAssemblySuppressionReason],
     ) -> PipelineReport {
         let mut report = self.plan_ts_packet_report(view, origin, filters);
+        let preflight_tei = preflight_suppression_reasons
+            .iter()
+            .any(|reason| matches!(reason, PipelineAssemblySuppressionReason::TransportErrorIndicator));
+        let preflight_duplicate = preflight_suppression_reasons
+            .iter()
+            .any(|reason| matches!(reason, PipelineAssemblySuppressionReason::DuplicatePacket));
+        if view.transport_error_indicator || preflight_tei {
+            self.reset_assembly_for_origin_pid(origin, view.pid);
+            return report;
+        }
+        if preflight_duplicate {
+            report.delivery_actions.retain(|action| {
+                matches!(
+                    action,
+                    PipelineDeliveryAction::RawPacket { .. }
+                        | PipelineDeliveryAction::RecordPacket { .. }
+                        | PipelineDeliveryAction::DvrMirror { .. }
+                )
+            });
+            report.generated_events.retain(|event| {
+                matches!(
+                    event,
+                    PipelineGeneratedEvent::DataReady { .. } | PipelineGeneratedEvent::Record { .. }
+                )
+            });
+            return report;
+        }
         let Some(payload) = view.payload else {
             return report;
         };
+        if view.scrambling_control != 0 {
+            if report
+                .assembly_suppression_reasons
+                .contains(&PipelineAssemblySuppressionReason::KeylessScrambledWithoutDescrambler)
+            {
+                self.reset_assembly_for_origin_pid(origin, view.pid);
+            }
+            return report;
+        }
 
         let has_section_action = report
             .delivery_actions
@@ -1328,6 +1322,9 @@ impl PacketPipeline {
             report.malformed_packets += packet_report.malformed_packets;
             report.drop_reasons.extend(packet_report.drop_reasons);
             report
+                .assembly_suppression_reasons
+                .extend(packet_report.assembly_suppression_reasons);
+            report
                 .delivery_actions
                 .extend(packet_report.delivery_actions);
             report
@@ -1383,6 +1380,47 @@ mod tests {
         assert_eq!(
             TsPacketView::validate(&packet).unwrap_err(),
             TsPacketValidationError::MissingSyncByte
+        );
+    }
+
+    #[test]
+    fn validator_rejects_wrong_ts_packet_lengths() {
+        let packet_187 = [0x47u8; TS_PACKET_SIZE - 1];
+        let packet_189 = [0x47u8; TS_PACKET_SIZE + 1];
+        assert_eq!(
+            TsPacketView::validate(&packet_187).unwrap_err(),
+            TsPacketValidationError::WrongLength
+        );
+        assert_eq!(
+            TsPacketView::validate(&packet_189).unwrap_err(),
+            TsPacketValidationError::WrongLength
+        );
+    }
+
+    #[test]
+    fn validator_rejects_reserved_adaptation_control() {
+        let mut packet = [0xffu8; TS_PACKET_SIZE];
+        packet[0] = 0x47;
+        packet[1] = 0x00;
+        packet[2] = 0x20;
+        packet[3] = 0x00;
+        assert_eq!(
+            TsPacketView::validate(&packet).unwrap_err(),
+            TsPacketValidationError::InvalidAdaptationControl
+        );
+    }
+
+    #[test]
+    fn validator_rejects_adaptation_length_past_packet_end() {
+        let mut packet = [0xffu8; TS_PACKET_SIZE];
+        packet[0] = 0x47;
+        packet[1] = 0x00;
+        packet[2] = 0x20;
+        packet[3] = 0x30;
+        packet[4] = 184;
+        assert_eq!(
+            TsPacketView::validate(&packet).unwrap_err(),
+            TsPacketValidationError::InvalidAdaptationLength
         );
     }
 
@@ -1716,11 +1754,11 @@ mod continuity_duplicate_tests {
                 source_filter_generation: 0,
             },
         );
-        assert_eq!(tei_report.accepted_packets, 0);
-        assert_eq!(tei_report.dropped_packets, 1);
+        assert_eq!(tei_report.accepted_packets, 1);
+        assert_eq!(tei_report.dropped_packets, 0);
         assert!(tei_report
-            .drop_reasons
-            .contains(&PipelineDropReason::TransportErrorIndicator));
+            .assembly_suppression_reasons
+            .contains(&PipelineAssemblySuppressionReason::TransportErrorIndicator));
 
         let mut pipeline = PacketPipeline::default();
         let first = payload_packet(0x0100, 1);
@@ -1744,8 +1782,8 @@ mod continuity_duplicate_tests {
             },
         );
         assert!(duplicate
-            .drop_reasons
-            .contains(&PipelineDropReason::DuplicatePacket));
+            .assembly_suppression_reasons
+            .contains(&PipelineAssemblySuppressionReason::DuplicatePacket));
 
         let no_payload = adaptation_only_packet(0x0100, 2);
         let no_payload_report = PacketPipeline::default().push_ts_packet(
@@ -1756,8 +1794,8 @@ mod continuity_duplicate_tests {
             },
         );
         assert!(no_payload_report
-            .drop_reasons
-            .contains(&PipelineDropReason::NoPayload));
+            .assembly_suppression_reasons
+            .contains(&PipelineAssemblySuppressionReason::NoPayload));
     }
 }
 
@@ -1780,7 +1818,7 @@ mod malformed_adaptation_tests {
         assert!(malformed
             .diagnostics
             .iter()
-            .any(|diag| diag.code == "malformed_ts_packet"));
+            .any(|diag| diag.kind == PipelineDiagnosticKind::MalformedTsPacket));
 
         let mut tei = [0xffu8; TS_PACKET_SIZE];
         tei[0] = 0x47;
@@ -1789,12 +1827,12 @@ mod malformed_adaptation_tests {
         tei[3] = 0x10;
         let report = PacketPipeline::default().push_ts_packet(&tei, PipelineInputKind::Live);
         assert!(report
-            .drop_reasons
-            .contains(&PipelineDropReason::TransportErrorIndicator));
+            .assembly_suppression_reasons
+            .contains(&PipelineAssemblySuppressionReason::TransportErrorIndicator));
         assert!(report
             .diagnostics
             .iter()
-            .any(|diag| diag.code == "tei_packet_drop" && diag.pid == Some(0x10)));
+            .any(|diag| diag.kind == PipelineDiagnosticKind::TeiAssemblySuppressed && diag.pid == Some(0x10)));
     }
 }
 
@@ -1840,10 +1878,11 @@ mod discontinuity_generation_tests {
 
         let mut pipeline = PacketPipeline::default();
         let first_view = PacketPipeline::validate_packet(&first).unwrap();
-        let first_report = pipeline.plan_and_assemble_ts_packet_report(
+        let first_report = pipeline.plan_and_assemble_ts_packet_report_after_preflight(
             &first_view,
             crate::TsInputOrigin::Frontend,
             &[filter],
+            &[],
         );
         assert!(!first_report
             .generated_events
@@ -1851,10 +1890,11 @@ mod discontinuity_generation_tests {
             .any(|event| matches!(event, PipelineGeneratedEvent::SectionPayloadReady { .. })));
 
         let second_view = PacketPipeline::validate_packet(&second).unwrap();
-        let second_report = pipeline.plan_and_assemble_ts_packet_report(
+        let second_report = pipeline.plan_and_assemble_ts_packet_report_after_preflight(
             &second_view,
             crate::TsInputOrigin::Frontend,
             &[filter],
+            &[],
         );
         let ready = second_report
             .generated_events
@@ -1930,5 +1970,265 @@ mod resync_boundary_tests {
         assert!(!pipeline.pes_assemblers.contains_key(&(source, 0x0100, 8)));
         assert_eq!(pipeline.current_section_generation(frontend, 0x0100), 1);
         assert_eq!(pipeline.current_section_generation(source, 0x0100), 0);
+    }
+}
+
+
+#[cfg(test)]
+mod record_raw_passthrough_policy_tests {
+    use super::*;
+    use maleicacid_tuner_hal2_common::TS_PACKET_SIZE;
+
+    fn payload_packet(pid: u16, cc: u8) -> [u8; TS_PACKET_SIZE] {
+        let mut packet = [0xffu8; TS_PACKET_SIZE];
+        packet[0] = 0x47;
+        packet[1] = 0x40 | (((pid >> 8) as u8) & 0x1f);
+        packet[2] = pid as u8;
+        packet[3] = 0x10 | (cc & 0x0f);
+        packet[4] = 0x00;
+        packet
+    }
+
+    fn record_filter(filter_id: i32) -> PipelineFilterView {
+        PipelineFilterView {
+            filter_id,
+            tpid: Some(0x0100),
+            started: true,
+            has_upstream: false,
+            open_kind: PipelineOpenKind::Record,
+            section_raw: false,
+            pes_raw: false,
+            wants_record_index: true,
+        }
+    }
+
+    fn section_filter(filter_id: i32) -> PipelineFilterView {
+        PipelineFilterView {
+            filter_id,
+            tpid: Some(0x0100),
+            started: true,
+            has_upstream: false,
+            open_kind: PipelineOpenKind::Section,
+            section_raw: false,
+            pes_raw: false,
+            wants_record_index: false,
+        }
+    }
+
+    fn raw_filter(filter_id: i32) -> PipelineFilterView {
+        PipelineFilterView {
+            filter_id,
+            tpid: Some(0x0100),
+            started: true,
+            has_upstream: false,
+            open_kind: PipelineOpenKind::Raw,
+            section_raw: false,
+            pes_raw: false,
+            wants_record_index: false,
+        }
+    }
+
+    fn adaptation_only_packet(pid: u16, cc: u8) -> [u8; TS_PACKET_SIZE] {
+        let mut packet = [0xffu8; TS_PACKET_SIZE];
+        packet[0] = 0x47;
+        packet[1] = ((pid >> 8) as u8) & 0x1f;
+        packet[2] = pid as u8;
+        packet[3] = 0x20 | (cc & 0x0f);
+        packet[4] = (TS_PACKET_SIZE - 5) as u8;
+        packet[5] = 0x00;
+        packet
+    }
+
+    #[test]
+    fn adaptation_only_packet_passes_raw_record_but_not_assembly_path() {
+        let packet = adaptation_only_packet(0x0100, 0);
+        let mut pipeline = PacketPipeline::default();
+        let preflight = pipeline.push_ts_packet(&packet, PipelineInputKind::Live);
+        assert_eq!(preflight.accepted_packets, 1);
+        assert!(preflight.assembly_suppression_reasons.contains(&PipelineAssemblySuppressionReason::NoPayload));
+        let view = match pipeline.inspect_ts_packet(&packet) {
+            Some(view) => view,
+            None => return,
+        };
+        assert!(view.payload.is_none());
+        let report = pipeline.plan_and_assemble_ts_packet_report_after_preflight(
+            &view,
+            crate::TsInputOrigin::Frontend,
+            &[raw_filter(3), record_filter(1), section_filter(2)],
+            &preflight.assembly_suppression_reasons,
+        );
+
+        assert!(report
+            .delivery_actions
+            .contains(&PipelineDeliveryAction::RawPacket { filter_id: 3 }));
+        assert!(report
+            .delivery_actions
+            .contains(&PipelineDeliveryAction::RecordPacket { filter_id: 1 }));
+        assert!(!report
+            .delivery_actions
+            .contains(&PipelineDeliveryAction::SectionPayload { filter_id: 2 }));
+        assert!(!report.generated_events.iter().any(|event| {
+            matches!(event, PipelineGeneratedEvent::SectionPayloadReady { .. }
+                | PipelineGeneratedEvent::PesPacketReady { .. })
+        }));
+    }
+
+    #[test]
+    fn tei_packet_passes_record_but_not_assembly_path() {
+        let mut packet = payload_packet(0x0100, 0);
+        packet[1] |= 0x80;
+        let mut pipeline = PacketPipeline::default();
+        let preflight = pipeline.push_ts_packet(&packet, PipelineInputKind::Live);
+        assert_eq!(preflight.accepted_packets, 1);
+        assert!(preflight
+            .assembly_suppression_reasons
+            .contains(&PipelineAssemblySuppressionReason::TransportErrorIndicator));
+        let view = match pipeline.inspect_ts_packet(&packet) {
+            Some(view) => view,
+            None => return,
+        };
+        let report = pipeline.plan_and_assemble_ts_packet_report_after_preflight(
+            &view,
+            crate::TsInputOrigin::Frontend,
+            &[record_filter(1), section_filter(2)],
+            &preflight.assembly_suppression_reasons,
+        );
+
+        assert!(report
+            .delivery_actions
+            .contains(&PipelineDeliveryAction::RecordPacket { filter_id: 1 }));
+        assert!(!report
+            .delivery_actions
+            .contains(&PipelineDeliveryAction::SectionPayload { filter_id: 2 }));
+    }
+
+    #[test]
+    fn duplicate_packet_passes_record_but_not_assembly_path() {
+        let packet = payload_packet(0x0100, 0);
+        let mut pipeline = PacketPipeline::default();
+        assert_eq!(pipeline.push_ts_packet(&packet, PipelineInputKind::Live).accepted_packets, 1);
+        let preflight = pipeline.push_ts_packet(&packet, PipelineInputKind::Live);
+        assert_eq!(preflight.accepted_packets, 1);
+        assert!(preflight
+            .assembly_suppression_reasons
+            .contains(&PipelineAssemblySuppressionReason::DuplicatePacket));
+        let view = match pipeline.inspect_ts_packet(&packet) {
+            Some(view) => view,
+            None => return,
+        };
+        let report = pipeline.plan_and_assemble_ts_packet_report_after_preflight(
+            &view,
+            crate::TsInputOrigin::Frontend,
+            &[record_filter(1), section_filter(2)],
+            &preflight.assembly_suppression_reasons,
+        );
+
+        assert!(report
+            .delivery_actions
+            .contains(&PipelineDeliveryAction::RecordPacket { filter_id: 1 }));
+        assert!(!report
+            .delivery_actions
+            .contains(&PipelineDeliveryAction::SectionPayload { filter_id: 2 }));
+    }
+}
+
+#[cfg(test)]
+mod keyless_scrambled_policy_tests {
+    use super::*;
+    use maleicacid_tuner_hal2_common::TS_PACKET_SIZE;
+
+    fn payload_packet(pid: u16, scrambling_control: u8) -> [u8; TS_PACKET_SIZE] {
+        let mut packet = [0xffu8; TS_PACKET_SIZE];
+        packet[0] = 0x47;
+        packet[1] = 0x40 | (((pid >> 8) as u8) & 0x1f);
+        packet[2] = pid as u8;
+        packet[3] = ((scrambling_control & 0x03) << 6) | 0x10;
+        packet[4] = 0x00;
+        packet
+    }
+
+    fn filter(filter_id: i32, open_kind: PipelineOpenKind) -> PipelineFilterView {
+        PipelineFilterView {
+            filter_id,
+            tpid: Some(0x0100),
+            started: true,
+            has_upstream: false,
+            open_kind,
+            section_raw: false,
+            pes_raw: false,
+            wants_record_index: matches!(open_kind, PipelineOpenKind::Record),
+        }
+    }
+
+    #[test]
+    fn keyless_scrambled_packet_passes_record_but_not_assembly_paths() {
+        let packet = payload_packet(0x0100, 2);
+        let parsed = PacketPipeline::validate_packet(&packet);
+        assert!(parsed.is_ok());
+        let view = match parsed {
+            Ok(view) => view,
+            Err(_) => return,
+        };
+        let filters = [
+            filter(1, PipelineOpenKind::Record),
+            filter(2, PipelineOpenKind::Section),
+            filter(3, PipelineOpenKind::Pes),
+            filter(4, PipelineOpenKind::Av),
+        ];
+
+        let mut pipeline = PacketPipeline::default();
+        let report = pipeline.plan_and_assemble_ts_packet_report_after_preflight(
+            &view,
+            crate::TsInputOrigin::Frontend,
+            &filters,
+            &[],
+        );
+
+        assert!(report
+            .delivery_actions
+            .contains(&PipelineDeliveryAction::RecordPacket { filter_id: 1 }));
+        assert!(!report
+            .delivery_actions
+            .contains(&PipelineDeliveryAction::SectionPayload { filter_id: 2 }));
+        assert!(!report
+            .delivery_actions
+            .contains(&PipelineDeliveryAction::PesPayload { filter_id: 3 }));
+        assert!(!report
+            .delivery_actions
+            .contains(&PipelineDeliveryAction::AvPayload { filter_id: 4 }));
+        assert!(report
+            .assembly_suppression_reasons
+            .contains(&PipelineAssemblySuppressionReason::KeylessScrambledWithoutDescrambler));
+        assert!(report.generated_events.iter().all(|event| !matches!(
+            event,
+            PipelineGeneratedEvent::SectionPayloadReady { .. }
+                | PipelineGeneratedEvent::PesPacketReady { .. }
+        )));
+    }
+
+    #[test]
+    fn keyless_scrambled_packet_resets_partial_assembly_for_pid() {
+        let packet = payload_packet(0x0100, 3);
+        let parsed = PacketPipeline::validate_packet(&packet);
+        assert!(parsed.is_ok());
+        let view = match parsed {
+            Ok(view) => view,
+            Err(_) => return,
+        };
+        let filters = [filter(2, PipelineOpenKind::Section), filter(3, PipelineOpenKind::Pes)];
+        let origin = crate::TsInputOrigin::Frontend;
+        let mut pipeline = PacketPipeline::default();
+        pipeline.test_seed_section_for_pid(origin, 0x0100, 2);
+        pipeline.test_seed_pes_for_pid(origin, 0x0100, 3);
+
+        let report = pipeline.plan_and_assemble_ts_packet_report_after_preflight(&view, origin, &filters, &[]);
+
+        assert!(report
+            .assembly_suppression_reasons
+            .contains(&PipelineAssemblySuppressionReason::KeylessScrambledWithoutDescrambler));
+        assert!(!pipeline
+            .section_assemblers
+            .contains_key(&(origin, 0x0100, 2)));
+        assert!(!pipeline.pes_assemblers.contains_key(&(origin, 0x0100, 3)));
     }
 }

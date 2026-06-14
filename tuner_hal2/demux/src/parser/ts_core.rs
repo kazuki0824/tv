@@ -650,3 +650,52 @@ mod pes_oversized_tests {
         assert!(assembler.push(0x0100, true, &pes).is_empty());
     }
 }
+
+#[cfg(test)]
+mod pes_split_and_recovery_tests {
+    use super::{PesAssembler, PesDropReason};
+
+    fn bounded_video_pes(payload: &[u8]) -> Vec<u8> {
+        let packet_length = (3 + payload.len()) as u16;
+        let mut bytes = vec![
+            0x00,
+            0x00,
+            0x01,
+            0xe0,
+            (packet_length >> 8) as u8,
+            packet_length as u8,
+            0x80,
+            0x00,
+            0x00,
+        ];
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
+    #[test]
+    fn pes_header_split_across_ts_payloads_completes_bounded_packet() {
+        let mut assembler = PesAssembler::default();
+        let pes = bounded_video_pes(&[0xaa, 0xbb, 0xcc]);
+        assert!(assembler.push(0x0100, true, &pes[..5]).is_empty());
+        assert!(assembler.push(0x0100, false, &pes[5..9]).is_empty());
+        let out = assembler.push(0x0100, false, &pes[9..]);
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].payload, vec![0xaa, 0xbb, 0xcc]);
+    }
+
+    #[test]
+    fn malformed_pes_resets_and_next_pusi_recovers() {
+        let mut assembler = PesAssembler::default();
+        let malformed = [0x00, 0x00, 0x02, 0xe0, 0x00, 0x04];
+        assert!(assembler.push(0x0100, true, &malformed).is_empty());
+        assert_eq!(
+            assembler.take_drop_diagnostic(),
+            Some((PesDropReason::MalformedPes, 1))
+        );
+
+        let out = assembler.push(0x0100, true, &bounded_video_pes(&[0x55]));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].payload, vec![0x55]);
+    }
+}
