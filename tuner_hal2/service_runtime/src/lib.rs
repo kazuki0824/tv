@@ -73,7 +73,8 @@ mod tests {
         FilterConfig, FilterConfigKind, FilterOpenType, OpenFilterRequest, PesSettings,
     };
     use maleicacid_tuner_hal2_descrambler::{
-        multi2_encrypt_payload, DescramblerKeySlot, DescramblerKeyToken, Multi2KeyMaterial,
+        multi2_encrypt_payload, test_support::expire_key_token, DescramblerKeySlot,
+        DescramblerKeyToken, Multi2KeyMaterial,
     };
     use maleicacid_tuner_hal2_domain_request::{RuntimeTransactionName, AIDL_TRANSACTION_TABLE};
     use std::path::PathBuf;
@@ -1038,6 +1039,34 @@ mod tests {
         ));
         assert!(runtime.descrambler_diagnostics().iter().any(|record| {
             record.kind == DescramblerDiagnosticKind::KeyTokenInvalidLength
+                && record.phase == DescramblerDiagnosticPhase::SetKeyToken
+                && record.descrambler_id == Some(descrambler.id.0)
+        }));
+    }
+
+    #[test]
+    fn descrambler_set_key_token_rejects_expired_tokens() {
+        let mut runtime = TunerServiceRuntime::new();
+        let descrambler = runtime.allocate_descrambler_runtime().unwrap();
+        let token = DescramblerKeyToken::try_from_bytes(vec![9, 9, 9, 9, 9, 9, 9, 9]).unwrap();
+        let key_slot = DescramblerKeySlot::empty()
+            .try_with_even(sample_multi2_key(3))
+            .unwrap();
+
+        runtime
+            .register_descrambler_key_slot(token.clone(), key_slot)
+            .unwrap();
+        expire_key_token(runtime.registry_mut().descrambler_key_table_mut(), &token);
+
+        let err = runtime
+            .set_descrambler_key_token(descrambler.id.0, token.as_binder_token_bytes())
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            maleicacid_tuner_hal2_common::HalError::InvalidState { .. }
+        ));
+        assert!(runtime.descrambler_diagnostics().iter().any(|record| {
+            record.kind == DescramblerDiagnosticKind::KeyTokenExpired
                 && record.phase == DescramblerDiagnosticPhase::SetKeyToken
                 && record.descrambler_id == Some(descrambler.id.0)
         }));

@@ -131,6 +131,23 @@ impl DescramblerKeyTable {
         }
         Ok(())
     }
+
+    pub(crate) fn expire_for_test_support(&mut self, token: &DescramblerKeyToken) {
+        #[cfg(test)]
+        {
+            self.expire_test_key(token);
+        }
+        #[cfg(not(test))]
+        {
+            if let Some(state) = self.slots.get_mut(token) {
+                if state.refcount == 0 {
+                    self.slots.remove(token);
+                } else {
+                    state.expired = true;
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

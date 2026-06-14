@@ -19,3 +19,12 @@ pub use runtime::{
     DescramblerSessionFailure, DescramblerSessionFailureKind, DescramblerSessionTxn,
     DescramblerSessionTxnStep, SourceFilterRef,
 };
+
+#[doc(hidden)]
+pub mod test_support {
+    use crate::{DescramblerKeyTable, DescramblerKeyToken};
+
+    pub fn expire_key_token(table: &mut DescramblerKeyTable, token: &DescramblerKeyToken) {
+        table.expire_for_test_support(token);
+    }
+}
