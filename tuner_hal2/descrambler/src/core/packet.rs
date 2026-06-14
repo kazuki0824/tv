@@ -71,6 +71,13 @@ pub enum PassThroughReason {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PacketPolicyAction {
+    RecordPassThroughAndDropAssembly,
+    DropAndDiagnose,
+    DiagnoseOnly,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DescrambleFailure {
     InvalidPacketSize,
     BadSyncByte,
@@ -84,6 +91,25 @@ pub enum DescrambleFailure {
     BadToken,
     Multi2Fail,
     ScrambledPidNotRegistered,
+}
+
+pub fn packet_policy_for_descramble_failure(failure: DescrambleFailure) -> PacketPolicyAction {
+    match failure {
+        DescrambleFailure::NoKey | DescrambleFailure::ScrambledPidNotRegistered => {
+            PacketPolicyAction::RecordPassThroughAndDropAssembly
+        }
+        DescrambleFailure::BadToken | DescrambleFailure::Multi2Fail => {
+            PacketPolicyAction::DiagnoseOnly
+        }
+        DescrambleFailure::InvalidPacketSize
+        | DescrambleFailure::BadSyncByte
+        | DescrambleFailure::InvalidAfc
+        | DescrambleFailure::InvalidAdaptationField
+        | DescrambleFailure::InvalidTsc
+        | DescrambleFailure::TransportErrorRecord
+        | DescrambleFailure::ScrambledNullPid
+        | DescrambleFailure::ScrambledWithoutPayload => PacketPolicyAction::DropAndDiagnose,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -905,5 +931,29 @@ mod tests {
     fn descramble_existing_even_odd_parity_tests() {
         even_key_is_selected_and_tsc_is_cleared();
         odd_key_is_selected_and_tsc_is_cleared();
+    }
+
+    #[test]
+    fn packet_policy_classifies_descramble_failures_for_later_routing() {
+        assert_eq!(
+            packet_policy_for_descramble_failure(DescrambleFailure::NoKey),
+            PacketPolicyAction::RecordPassThroughAndDropAssembly
+        );
+        assert_eq!(
+            packet_policy_for_descramble_failure(DescrambleFailure::ScrambledPidNotRegistered),
+            PacketPolicyAction::RecordPassThroughAndDropAssembly
+        );
+        assert_eq!(
+            packet_policy_for_descramble_failure(DescrambleFailure::BadToken),
+            PacketPolicyAction::DiagnoseOnly
+        );
+        assert_eq!(
+            packet_policy_for_descramble_failure(DescrambleFailure::Multi2Fail),
+            PacketPolicyAction::DiagnoseOnly
+        );
+        assert_eq!(
+            packet_policy_for_descramble_failure(DescrambleFailure::InvalidAfc),
+            PacketPolicyAction::DropAndDiagnose
+        );
     }
 }
