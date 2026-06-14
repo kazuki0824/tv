@@ -1,3 +1,12 @@
+# r50eh_wp_r07_filter_runtime_foundation
+
+- WP-R07の先行実装として、公開 `IFilter.configure()` を `FilterConfigureTxn` 経由で demux runtime / packet pipeline へ接続した。
+- filter configure commit時に、runtimeのqueue markerと実queueを同期し、再configure時に旧queue cleanupが失敗しないようにした。
+- `IFilter.start()` / `stop()` / `flush()` を filter runtime state と packet pipeline clear/flush境界へ接続し、未configure状態は `INVALID_STATE` へ倒すようにした。
+- `IFilter.getId()` / `getId64Bit()` はAIDL object idではなく公開filter runtime idを返すよう修正した。
+- `child_object_open.rs` への分離で再発していた Filter/DVR callback保持rollback失敗の黙殺を修正した。
+- `m maleicacid_tuner_hal2_device_test maleicacid_tuner_hal2_service_runtime_test maleicacid_tuner_hal2_aidl_service_test` は成功。atest、VTS、実機確認は未実施。
+
 # r50eh_tuner_service_trait_shim_refactor
 
 - 非機能リファクタとして、`tuner_service.rs` に集まっていた AIDL frontend settings 変換を `binder_adapter/src/aidl_frontend_settings.rs` へ分離した。

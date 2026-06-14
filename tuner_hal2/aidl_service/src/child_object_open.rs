@@ -8,7 +8,9 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     Result::Result as TunerResult,
 };
 use binder::{BinderFeatures, Result as BinderResult, Status, Strong};
-use maleicacid_tuner_hal2_binder_adapter::{AidlApi, AidlObjectKind, AidlStatusMapper, OpenDvrRequest, TunerStatusCode};
+use maleicacid_tuner_hal2_binder_adapter::{
+    AidlApi, AidlObjectKind, AidlStatusMapper, OpenDvrRequest, TunerStatusCode,
+};
 use maleicacid_tuner_hal2_common::HalError;
 use maleicacid_tuner_hal2_demux::config::OpenFilterRequest;
 use maleicacid_tuner_hal2_service_runtime::RuntimeOwnerRelation;
@@ -135,8 +137,9 @@ fn allocate_dvr_public_runtime(
     Ok(entry.id.0)
 }
 
-fn rollback_retained_child_callback(handle: AidlObjectHandle) {
-    let _ = clear_owner_callbacks(handle);
+fn rollback_retained_child_callback(handle: AidlObjectHandle) -> BinderResult<()> {
+    clear_owner_callbacks(handle)
+        .map_err(|_| status_unknown_error("child callback rollback failed"))
 }
 
 fn retain_filter_child_callback(
@@ -147,7 +150,7 @@ fn retain_filter_child_callback(
     retain_filter_callback(handle, callback)
         .map_err(|_| Status::new_service_specific_error(TunerResult::UNKNOWN_ERROR.0, None))?;
     if let Err(status) = record_callback_registration(runtime, handle, AidlApi::DemuxOpenFilter) {
-        rollback_retained_child_callback(handle);
+        rollback_retained_child_callback(handle)?;
         return Err(status);
     }
     Ok(())
@@ -161,7 +164,7 @@ fn retain_dvr_child_callback(
     retain_dvr_callback(handle, callback)
         .map_err(|_| Status::new_service_specific_error(TunerResult::UNKNOWN_ERROR.0, None))?;
     if let Err(status) = record_callback_registration(runtime, handle, AidlApi::DemuxOpenDvr) {
-        rollback_retained_child_callback(handle);
+        rollback_retained_child_callback(handle)?;
         return Err(status);
     }
     Ok(())
@@ -187,13 +190,14 @@ pub fn open_filter_child_after_plan(
         demux: owner_handle.object_id(),
         generation: owner_handle.generation(),
     };
-    let child_handle = match register_child_aidl_object(runtime, AidlObjectKind::Filter, filter_id, owner) {
-        Ok(handle) => handle,
-        Err(status) => {
-            unregister_child_public_runtime(runtime, AidlObjectKind::Filter, filter_id)?;
-            return Err(status);
-        }
-    };
+    let child_handle =
+        match register_child_aidl_object(runtime, AidlObjectKind::Filter, filter_id, owner) {
+            Ok(handle) => handle,
+            Err(status) => {
+                unregister_child_public_runtime(runtime, AidlObjectKind::Filter, filter_id)?;
+                return Err(status);
+            }
+        };
     match FilterAidlObject::new(child_handle, runtime.clone()) {
         Ok(object) => {
             if let Err(status) = retain_filter_child_callback(runtime, child_handle, callback) {
@@ -231,7 +235,8 @@ pub fn open_dvr_child_after_plan(
         demux: owner_handle.object_id(),
         generation: owner_handle.generation(),
     };
-    let child_handle = match register_child_aidl_object(runtime, AidlObjectKind::Dvr, dvr_id, owner) {
+    let child_handle = match register_child_aidl_object(runtime, AidlObjectKind::Dvr, dvr_id, owner)
+    {
         Ok(handle) => handle,
         Err(status) => {
             unregister_child_public_runtime(runtime, AidlObjectKind::Dvr, dvr_id)?;

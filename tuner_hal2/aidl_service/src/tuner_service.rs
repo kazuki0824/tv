@@ -20,7 +20,6 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     FrontendIsdbsCapabilities::FrontendIsdbsCapabilities,
     FrontendIsdbsCoderate::FrontendIsdbsCoderate,
     FrontendIsdbsModulation::FrontendIsdbsModulation,
-    FrontendIsdbsStreamIdType::FrontendIsdbsStreamIdType,
     FrontendIsdbtBandwidth::FrontendIsdbtBandwidth,
     FrontendIsdbtCapabilities::FrontendIsdbtCapabilities,
     FrontendIsdbtCoderate::FrontendIsdbtCoderate,
@@ -28,8 +27,6 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     FrontendIsdbtMode::FrontendIsdbtMode,
     FrontendIsdbtModulation::FrontendIsdbtModulation,
     FrontendIsdbtTimeInterleaveMode::FrontendIsdbtTimeInterleaveMode,
-    FrontendScanMessage::FrontendScanMessage,
-    FrontendScanMessageType::FrontendScanMessageType,
     FrontendScanType::FrontendScanType,
     FrontendSettings::FrontendSettings,
     FrontendStatus::FrontendStatus,
@@ -38,7 +35,7 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     FrontendType::FrontendType,
     IDemux::{BnDemux, IDemux},
     IDescrambler::{BnDescrambler, IDescrambler},
-    IDvr::{BnDvr, IDvr},
+    IDvr::IDvr,
     IDvrCallback::IDvrCallback,
     IFilter::{BnFilter, IFilter},
     IFilterCallback::IFilterCallback,
@@ -56,49 +53,41 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
 use binder::binder_impl::Binder;
 use binder::{BinderFeatures, Interface, Result as BinderResult, Status, Strong};
 use maleicacid_tuner_hal2_binder_adapter::{
-    build_dvr_configure_request, build_dvr_open_request, build_filter_av_stream_type_request,
-    build_filter_delay_hint_request, build_filter_summary_for_open_type,
-    build_lnb_satellite_position_request, build_lnb_tone_request, build_lnb_voltage_request,
-    build_open_filter_request, AidlApi, AidlFailureSource, AidlMethodAdapter, AidlMethodCall,
-    AidlMethodPlan, AidlObjectGeneration, AidlObjectId, AidlObjectKind, AidlStatusMapper,
-    DvrFilterLinkRequest, FilterReleaseAvHandleRequest, FilterSetDataSourceRequest,
-    TunerStatusCode,
+    aidl_frontend_settings_to_request, aidl_scan_type_to_mode, build_dvr_configure_request,
+    build_dvr_open_request, build_filter_av_stream_type_request, build_filter_delay_hint_request,
+    build_filter_summary_for_open_type, build_lnb_satellite_position_request,
+    build_lnb_tone_request, build_lnb_voltage_request, build_open_filter_request, AidlApi,
+    AidlFailureSource, AidlMethodAdapter, AidlMethodCall, AidlMethodPlan, AidlObjectGeneration,
+    AidlObjectId, AidlObjectKind, AidlStatusMapper, DvrFilterLinkRequest,
+    FilterReleaseAvHandleRequest, FilterSetDataSourceRequest, TunerStatusCode,
 };
 use maleicacid_tuner_hal2_common::{
-    is_japan_bs_if_frequency_hz, is_japan_cs110_if_frequency_hz,
-    is_japan_isdbt_frequency_contract_hz, japan_isdbt_frequency_contract_range_hz,
-    FrontendBackendKind, FrontendDevicePath, FrontendScanMode, FrontendStreamIdKind,
-    FrontendSystem, FrontendTuneRequest, HalError, HalInternalKind, HalInvalidArgumentKind,
+    japan_isdbt_frequency_contract_range_hz, FrontendBackendKind, FrontendSystem, HalError,
+    HalInvalidArgumentKind,
 };
 use maleicacid_tuner_hal2_device::{
-    FrontendBackendSession, FrontendBackendTunePlan, FrontendLivePumpJoinOutcome,
-    FrontendRuntimeState, FrontendSignalState, FrontendWorkerCancelReason, FrontendWorkerContext,
-    FrontendWorkerKind, FrontendWorkerStartError, FrontendWorkerStopOutcome,
-};
-use maleicacid_tuner_hal2_service_runtime::{
-    FrontendRegistryEntry, FrontendRuntimeId,
-    LnbRegistryProfile, RuntimeCommandDispatchError, RuntimeCommandDispatchPlan,
-    RuntimeOwnerRelation, TunerServiceRuntime,
+    FrontendRuntimeState, FrontendSignalState, FrontendWorkerCancelReason, FrontendWorkerKind,
 };
 use maleicacid_tuner_hal2_service_runtime::frontend_worker_txn::{
-    close_frontend_live_data_and_unbind, close_frontend_workers_and_live_data,
-    start_frontend_backend_scan_session_worker, start_frontend_backend_tune_worker,
-    stop_frontend_live_data_and_unbind, stop_frontend_scan_worker, stop_frontend_tune_worker,
+    close_frontend_workers_and_live_data, start_frontend_backend_scan_session_worker,
+    start_frontend_backend_tune_worker, stop_frontend_live_data_and_unbind,
+    stop_frontend_scan_worker, stop_frontend_tune_worker,
+};
+use maleicacid_tuner_hal2_service_runtime::{
+    FrontendRegistryEntry, FrontendRuntimeId, LnbRegistryProfile, RuntimeCommandDispatchError,
+    RuntimeCommandDispatchPlan, RuntimeOwnerRelation, TunerServiceRuntime,
 };
 
 use crate::child_object_open::{open_dvr_child_after_plan, open_filter_child_after_plan};
-use crate::frontend_callback_delivery::scan_end_notifier;
-use crate::callback_store::{
-    clear_owner_callbacks, frontend_callback_for_owner, retain_dvr_callback, retain_filter_callback,
-};
 use crate::demux_object::DemuxAidlObject;
 use crate::descrambler_object::DescramblerAidlObject;
 use crate::dvr_object::DvrAidlObject;
 use crate::filter_object::FilterAidlObject;
+use crate::frontend_callback_delivery::scan_end_notifier;
 use crate::frontend_object::FrontendAidlObject;
 use crate::lnb_object::LnbAidlObject;
 use crate::object_handle::AidlObjectHandle;
-use crate::object_runtime::{record_callback_registration, SharedTunerRuntime};
+use crate::object_runtime::SharedTunerRuntime;
 
 type TunerQueueDesc = CommonMqDescriptor<i8, CommonSynchronizedReadWrite>;
 type TunerNativeHandle = CommonNativeHandle;
@@ -751,36 +740,6 @@ impl ITuner for TunerAidlService {
     }
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 fn ts_pid_from_demux_pid(pid: &DemuxPid) -> Result<u16, HalError> {
     match pid {
         DemuxPid::TPid(value) if (0..=0x1ffe).contains(value) => Ok(*value as u16),
@@ -873,14 +832,6 @@ fn runtime_entry_public_id(
         .map_err(|_| status_unknown_error("public runtime id out of i32 range"))
 }
 
-
-
-
-
-
-
-
-
 fn current_filter_open_type(
     filter: &FilterAidlObject,
 ) -> BinderResult<maleicacid_tuner_hal2_demux::FilterOpenType> {
@@ -940,9 +891,10 @@ impl IFrontend for FrontendAidlObject {
     }
     fn tune(&self, settings: &FrontendSettings) -> BinderResult<()> {
         self.ensure_open()?;
-        let request = frontend_settings_to_request(settings).map_err(status_from_hal_error)?;
+        let request = aidl_frontend_settings_to_request(settings).map_err(status_from_hal_error)?;
         let runtime = self.runtime();
-        let frontend_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Frontend)?;
+        let frontend_id =
+            runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Frontend)?;
         let entry = runtime
             .lock()
             .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
@@ -962,7 +914,8 @@ impl IFrontend for FrontendAidlObject {
         self.ensure_open()?;
         self.plan_method(AidlMethodCall::FrontendStopTune)?;
         let runtime = self.runtime();
-        let frontend_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Frontend)?;
+        let frontend_id =
+            runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Frontend)?;
         stop_frontend_tune_worker(
             runtime.clone(),
             frontend_id,
@@ -975,7 +928,8 @@ impl IFrontend for FrontendAidlObject {
         self.ensure_open()?;
         self.plan_method(AidlMethodCall::FrontendClose)?;
         let runtime = self.runtime();
-        let frontend_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Frontend)?;
+        let frontend_id =
+            runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Frontend)?;
         close_frontend_workers_and_live_data(
             runtime,
             frontend_id,
@@ -986,10 +940,11 @@ impl IFrontend for FrontendAidlObject {
     }
     fn scan(&self, settings: &FrontendSettings, scan_type: FrontendScanType) -> BinderResult<()> {
         self.ensure_open()?;
-        let scan_mode = frontend_scan_mode_from_aidl(scan_type).map_err(status_from_hal_error)?;
-        let request = frontend_settings_to_request(settings).map_err(status_from_hal_error)?;
+        let scan_mode = aidl_scan_type_to_mode(scan_type).map_err(status_from_hal_error)?;
+        let request = aidl_frontend_settings_to_request(settings).map_err(status_from_hal_error)?;
         let runtime = self.runtime();
-        let frontend_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Frontend)?;
+        let frontend_id =
+            runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Frontend)?;
         let entry = runtime
             .lock()
             .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
@@ -1016,7 +971,8 @@ impl IFrontend for FrontendAidlObject {
         self.ensure_open()?;
         self.plan_method(AidlMethodCall::FrontendStopScan)?;
         let runtime = self.runtime();
-        let frontend_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Frontend)?;
+        let frontend_id =
+            runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Frontend)?;
         stop_frontend_scan_worker(
             runtime,
             frontend_id,
@@ -1255,16 +1211,24 @@ impl IFilter for FilterAidlObject {
     fn close(&self) -> BinderResult<()> {
         self.close_object_after_plan(AidlMethodCall::FilterClose)
     }
-    fn configure(&self, _settings: &DemuxFilterSettings) -> BinderResult<()> {
-        unavailable_after_method_plan(
-            self.plan_method(AidlMethodCall::FilterConfigure(
-                maleicacid_tuner_hal2_binder_adapter::RuntimeExecutableRequest::ConfigureFilter(
-                    build_filter_summary_for_open_type(_settings, current_filter_open_type(self)?)
-                        .map_err(status_from_hal_error)?,
-                ),
-            )),
-            "filter runtime is not connected in current tuner_hal2 scope",
-        )
+    fn configure(&self, settings: &DemuxFilterSettings) -> BinderResult<()> {
+        self.ensure_open()?;
+        let open_type = current_filter_open_type(self)?;
+        let config = build_filter_summary_for_open_type(settings, open_type)
+            .map_err(status_from_hal_error)?;
+        self.plan_method(AidlMethodCall::FilterConfigure(
+            maleicacid_tuner_hal2_binder_adapter::RuntimeExecutableRequest::ConfigureFilter(
+                config.clone(),
+            ),
+        ))?;
+        let runtime = self.runtime();
+        let filter_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Filter)?;
+        let result = runtime
+            .lock()
+            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
+            .configure_filter_runtime_request(filter_id, config)
+            .map_err(status_from_hal_error);
+        result
     }
     fn configureAvStreamType(&self, av_stream_type: &AvStreamType) -> BinderResult<()> {
         let request =
@@ -1297,22 +1261,40 @@ impl IFilter for FilterAidlObject {
         }
     }
     fn start(&self) -> BinderResult<()> {
-        unavailable_after_method_plan(
-            self.plan_method(AidlMethodCall::FilterStart),
-            "filter runtime is not connected in current tuner_hal2 scope",
-        )
+        self.ensure_open()?;
+        self.plan_method(AidlMethodCall::FilterStart)?;
+        let runtime = self.runtime();
+        let filter_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Filter)?;
+        let result = runtime
+            .lock()
+            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
+            .start_filter_runtime(filter_id)
+            .map_err(status_from_hal_error);
+        result
     }
     fn stop(&self) -> BinderResult<()> {
-        unavailable_after_method_plan(
-            self.plan_method(AidlMethodCall::FilterStop),
-            "filter runtime is not connected in current tuner_hal2 scope",
-        )
+        self.ensure_open()?;
+        self.plan_method(AidlMethodCall::FilterStop)?;
+        let runtime = self.runtime();
+        let filter_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Filter)?;
+        let result = runtime
+            .lock()
+            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
+            .stop_filter_runtime(filter_id)
+            .map_err(status_from_hal_error);
+        result
     }
     fn flush(&self) -> BinderResult<()> {
-        unavailable_after_method_plan(
-            self.plan_method(AidlMethodCall::FilterFlush),
-            "filter runtime is not connected in current tuner_hal2 scope",
-        )
+        self.ensure_open()?;
+        self.plan_method(AidlMethodCall::FilterFlush)?;
+        let runtime = self.runtime();
+        let filter_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Filter)?;
+        let result = runtime
+            .lock()
+            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
+            .flush_filter_runtime(filter_id)
+            .map_err(status_from_hal_error);
+        result
     }
     fn getAvSharedHandle(&self, _av_memory: &mut TunerNativeHandle) -> BinderResult<i64> {
         unavailable_after_method_plan(
@@ -1325,12 +1307,14 @@ impl IFilter for FilterAidlObject {
     }
     fn getId(&self) -> BinderResult<i32> {
         self.plan_method(AidlMethodCall::FilterGetId)?;
-        i32::try_from(self.handle().object_id().0)
-            .map_err(|_| status_unknown_error("filter id out of i32 range"))
+        let runtime = self.runtime();
+        runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Filter)
     }
     fn getId64Bit(&self) -> BinderResult<i64> {
         self.plan_method(AidlMethodCall::FilterGetId64Bit)?;
-        Ok(self.handle().object_id().0)
+        let runtime = self.runtime();
+        let filter_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Filter)?;
+        Ok(i64::from(filter_id))
     }
     fn releaseAvHandle(&self, _av_memory: &TunerNativeHandle, av_data_id: i64) -> BinderResult<()> {
         unavailable_after_method_plan(

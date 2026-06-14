@@ -84,15 +84,6 @@ fn validate_frontend_request_against_entry(
         }
     }
     Ok(())
-    pub fn scan_candidates_for_frontend_entry(
-        &self,
-        entry: &FrontendRegistryEntry,
-        request: &FrontendTuneRequest,
-        scan_mode: FrontendScanMode,
-    ) -> Result<Vec<FrontendTuneRequest>, HalError> {
-        self.backend_scan_candidates_for_entry(entry, request, scan_mode)
-    }
-
 }
 
 fn validate_frontend_lnb_candidate(
@@ -105,7 +96,9 @@ fn validate_frontend_lnb_candidate(
     }
     let lnb = runtime.lnb_for_frontend_id(entry.id.0);
     match (entry.lnb_profile, lnb) {
-        (Some(expected_profile), Some(lnb_entry)) if lnb_entry.profile == expected_profile => Ok(()),
+        (Some(expected_profile), Some(lnb_entry)) if lnb_entry.profile == expected_profile => {
+            Ok(())
+        }
         (Some(_), Some(_)) => Err(HalError::internal(
             HalInternalKind::InvariantViolation,
             "frontend/LNB profile mismatch in runtime registry",
@@ -142,7 +135,9 @@ impl TunerServiceRuntime {
     ) -> Result<FrontendRegistryEntry, HalError> {
         let entry = self
             .frontend_entry(frontend_id)
-            .ok_or(HalError::Unsupported("frontend runtime entry is not available"))?;
+            .ok_or(HalError::Unsupported(
+                "frontend runtime entry is not available",
+            ))?;
         validate_frontend_request_against_entry(&entry, request)?;
         validate_frontend_lnb_candidate(self, &entry, request)?;
         Ok(entry)
@@ -166,5 +161,14 @@ impl TunerServiceRuntime {
             validate_backend_tune_preflight(entry, candidate)?;
         }
         Ok(candidates)
+    }
+
+    pub fn scan_candidates_for_frontend_entry(
+        &self,
+        entry: &FrontendRegistryEntry,
+        request: &FrontendTuneRequest,
+        scan_mode: FrontendScanMode,
+    ) -> Result<Vec<FrontendTuneRequest>, HalError> {
+        self.backend_scan_candidates_for_entry(entry, request, scan_mode)
     }
 }

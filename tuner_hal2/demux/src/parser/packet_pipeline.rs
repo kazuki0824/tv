@@ -1183,8 +1183,7 @@ impl PacketPipeline {
             .map_or(true, |flushed_generation| generation > *flushed_generation)
     }
 
-    #[cfg(test)]
-    pub(crate) fn mark_filter_flush_generation_for_origin(
+    fn mark_filter_flush_generation_for_origin(
         &mut self,
         filter_id: i32,
         pid: i32,
@@ -1200,8 +1199,7 @@ impl PacketPipeline {
         );
     }
 
-    #[cfg(test)]
-    pub(crate) fn flush_filter(&mut self, filter_id: i32, origins: &[(crate::TsInputOrigin, i32)]) {
+    pub fn flush_filter(&mut self, filter_id: i32, origins: &[(crate::TsInputOrigin, i32)]) {
         for (origin, pid) in origins.iter().copied() {
             self.mark_filter_flush_generation_for_origin(filter_id, pid, origin);
         }

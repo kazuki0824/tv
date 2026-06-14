@@ -1,6 +1,6 @@
 use super::demux::{DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind};
 use super::dvr::DvrRuntimeSnapshot;
-use super::filter::FilterRuntimeSnapshot;
+use super::filter::{FilterRuntimeSnapshot, FilterRuntimeState};
 use crate::packet_pipeline::{FilterPipelineConfig, PipelineOpenKind};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -93,6 +93,13 @@ impl FilterConfigureTxn {
                 return (self, Err(err));
             }
         };
+        if snapshot.state.is_closed_or_failed() || snapshot.state == FilterRuntimeState::Started {
+            let filter_id = self.filter_id;
+            self.outcome = Some(FilterConfigureOutcome::RolledBack {
+                failed_step: FilterConfigureStep::ValidateState,
+            });
+            return (self, Err(DemuxRuntimeError::invalid_state(filter_id)));
+        }
         self.record_step(FilterConfigureStep::ValidateSettings);
         if snapshot.open_kind != open_kind {
             let filter_id = self.filter_id;

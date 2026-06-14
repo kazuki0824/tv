@@ -6,15 +6,15 @@ use maleicacid_tuner_hal2_common::{
     FrontendBackendKind, FrontendDevicePath, FrontendSystem, FrontendTuneRequest, HalError,
     HalInternalKind, HalInvalidArgumentKind, HalInvalidStateKind, TS_PACKET_SIZE,
 };
-use maleicacid_tuner_hal2_demux::config::FilterOpenType;
+use maleicacid_tuner_hal2_demux::config::{FilterConfig, FilterOpenType};
 use maleicacid_tuner_hal2_demux::packet_pipeline::{PipelineBoundaryReason, PipelineReport};
 use maleicacid_tuner_hal2_demux::packet_pipeline::{PipelineOpenKind, PipelineResetReport};
-use maleicacid_tuner_hal2_demux::runtime::DvrKind;
+use maleicacid_tuner_hal2_demux::runtime::{DemuxRuntimeError, DemuxRuntimeErrorKind, DvrKind};
 use maleicacid_tuner_hal2_demux::runtime::{
     DemuxRuntimeSnapshot, DemuxStreamGeneration, GenerationBoundaryReport, GenerationBoundaryTxn,
 };
 use maleicacid_tuner_hal2_demux::OpenFilterRequest;
-use maleicacid_tuner_hal2_demux::{DvrRuntime, FilterRuntime, TsInputOrigin};
+use maleicacid_tuner_hal2_demux::{DvrRuntime, FilterConfigureTxn, FilterRuntime, TsInputOrigin};
 use maleicacid_tuner_hal2_device::{
     FrontendLivePacketSink, FrontendLivePumpOwner, FrontendLivePumpReport,
     FrontendLiveReaderDescriptor, FrontendRuntimeSnapshot, FrontendRuntimeState,
@@ -1012,6 +1012,122 @@ impl TunerServiceRuntime {
             .registry
             .demux_runtime(DemuxRuntimeId(entry.owner_demux_id))?;
         demux.filter(filter_id).map(|filter| filter.open_type())
+    }
+
+    fn map_filter_runtime_error(error: DemuxRuntimeError) -> HalError {
+        match error.kind {
+            DemuxRuntimeErrorKind::FilterMissing => HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "filter runtime is missing",
+            ),
+            DemuxRuntimeErrorKind::SourceLifecycle
+            | DemuxRuntimeErrorKind::SinkLifecycle
+            | DemuxRuntimeErrorKind::InvalidState => HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "filter lifecycle is invalid for requested operation",
+            ),
+            DemuxRuntimeErrorKind::InvalidSourceSubtype
+            | DemuxRuntimeErrorKind::InvalidSinkSubtype => {
+                HalError::Unsupported("filter subtype is unsupported for requested operation")
+            }
+            DemuxRuntimeErrorKind::PidMismatch => HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "filter PID does not match requested operation",
+            ),
+            DemuxRuntimeErrorKind::GenerationExhausted => HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "filter generation exhausted",
+            ),
+            DemuxRuntimeErrorKind::PipelineFailed
+            | DemuxRuntimeErrorKind::DvrMissing
+            | DemuxRuntimeErrorKind::QueueMissing => HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "filter runtime pipeline operation failed",
+            ),
+        }
+    }
+
+    fn owner_demux_id_for_filter(&self, filter_id: i32) -> Result<i32, HalError> {
+        self.registry
+            .filter(FilterRuntimeId(filter_id))
+            .map(|entry| entry.owner_demux_id)
+            .ok_or_else(|| {
+                HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "filter registry entry is missing",
+                )
+            })
+    }
+
+    pub fn configure_filter_runtime_request(
+        &mut self,
+        filter_id: i32,
+        config: FilterConfig,
+    ) -> Result<(), HalError> {
+        let owner_demux_id = self.owner_demux_id_for_filter(filter_id)?;
+        let Some(demux_runtime) = self
+            .registry
+            .demux_runtime_mut(DemuxRuntimeId(owner_demux_id))
+        else {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "owner demux runtime is missing",
+            ));
+        };
+        let (_txn, result) = FilterConfigureTxn::new(filter_id).configure(
+            demux_runtime,
+            config.open_type.pipeline_open_kind(),
+            config.pipeline_config(),
+        );
+        result.map(|_| ()).map_err(Self::map_filter_runtime_error)
+    }
+
+    pub fn start_filter_runtime(&mut self, filter_id: i32) -> Result<(), HalError> {
+        let owner_demux_id = self.owner_demux_id_for_filter(filter_id)?;
+        let Some(demux_runtime) = self
+            .registry
+            .demux_runtime_mut(DemuxRuntimeId(owner_demux_id))
+        else {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "owner demux runtime is missing",
+            ));
+        };
+        demux_runtime
+            .start_filter_runtime(filter_id)
+            .map_err(Self::map_filter_runtime_error)
+    }
+
+    pub fn stop_filter_runtime(&mut self, filter_id: i32) -> Result<(), HalError> {
+        let owner_demux_id = self.owner_demux_id_for_filter(filter_id)?;
+        let Some(demux_runtime) = self
+            .registry
+            .demux_runtime_mut(DemuxRuntimeId(owner_demux_id))
+        else {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "owner demux runtime is missing",
+            ));
+        };
+        demux_runtime
+            .stop_filter_runtime(filter_id)
+            .map_err(Self::map_filter_runtime_error)
+    }
+
+    pub fn flush_filter_runtime(&mut self, filter_id: i32) -> Result<(), HalError> {
+        let owner_demux_id = self.owner_demux_id_for_filter(filter_id)?;
+        let Some(demux_runtime) = self
+            .registry
+            .demux_runtime_mut(DemuxRuntimeId(owner_demux_id))
+        else {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "owner demux runtime is missing",
+            ));
+        };
+        demux_runtime
+            .flush_filter_runtime(filter_id)
+            .map_err(Self::map_filter_runtime_error)
     }
 
     pub fn set_filter_data_source_non_null(

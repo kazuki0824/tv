@@ -8,7 +8,7 @@ use crate::packet_pipeline::{
 use crate::TsInputOrigin;
 
 use super::dvr::{DvrKind, DvrRuntime};
-use super::filter::{FilterRuntime, FilterRuntimeSnapshot};
+use super::filter::{FilterRuntime, FilterRuntimeSnapshot, FilterRuntimeState};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DemuxRuntimeState {
@@ -309,9 +309,84 @@ impl DemuxRuntime {
             }
         };
         filter.configure_with_generation(next, config.clone());
+        if filter.queue_present() {
+            self.filter_queues.entry(filter_id).or_default();
+        } else {
+            self.filter_queues.remove(&filter_id);
+        }
         self.pipeline
             .configure_filter(filter_id, config)
             .map_err(|_| DemuxRuntimeError::pipeline_failed())
+    }
+
+    pub fn start_filter_runtime(&mut self, filter_id: i32) -> Result<(), DemuxRuntimeError> {
+        let filter = self
+            .filters
+            .get_mut(&filter_id)
+            .ok_or(DemuxRuntimeError::filter_missing(filter_id))?;
+        match filter.state() {
+            FilterRuntimeState::Configured | FilterRuntimeState::Stopped => {
+                self.pipeline
+                    .start_filter(filter_id)
+                    .map_err(|_| DemuxRuntimeError::pipeline_failed())?;
+                filter.mark_started();
+                Ok(())
+            }
+            FilterRuntimeState::Started => Ok(()),
+            FilterRuntimeState::Open => Err(DemuxRuntimeError::invalid_state(filter_id)),
+            FilterRuntimeState::Closing
+            | FilterRuntimeState::CleanupFailed
+            | FilterRuntimeState::Closed
+            | FilterRuntimeState::Failed => Err(DemuxRuntimeError::sink_lifecycle(filter_id)),
+        }
+    }
+
+    pub fn stop_filter_runtime(&mut self, filter_id: i32) -> Result<(), DemuxRuntimeError> {
+        let filter = self
+            .filters
+            .get_mut(&filter_id)
+            .ok_or(DemuxRuntimeError::filter_missing(filter_id))?;
+        match filter.state() {
+            FilterRuntimeState::Started => {
+                self.pipeline
+                    .stop_filter(filter_id)
+                    .map_err(|_| DemuxRuntimeError::pipeline_failed())?;
+                filter.mark_stopped();
+                Ok(())
+            }
+            FilterRuntimeState::Configured | FilterRuntimeState::Stopped => Ok(()),
+            FilterRuntimeState::Open => Err(DemuxRuntimeError::invalid_state(filter_id)),
+            FilterRuntimeState::Closing
+            | FilterRuntimeState::CleanupFailed
+            | FilterRuntimeState::Closed
+            | FilterRuntimeState::Failed => Err(DemuxRuntimeError::sink_lifecycle(filter_id)),
+        }
+    }
+
+    pub fn flush_filter_runtime(&mut self, filter_id: i32) -> Result<(), DemuxRuntimeError> {
+        let filter = self
+            .filters
+            .get(&filter_id)
+            .ok_or(DemuxRuntimeError::filter_missing(filter_id))?;
+        match filter.state() {
+            FilterRuntimeState::Configured
+            | FilterRuntimeState::Started
+            | FilterRuntimeState::Stopped => {
+                let snapshot = filter.snapshot();
+                let origins = [(snapshot.source.origin(), snapshot.tpid.unwrap_or(-1))];
+                if snapshot.tpid.is_some() {
+                    self.pipeline.flush_filter(filter_id, &origins);
+                } else {
+                    self.pipeline.clear_filter_state_after_flush(filter_id);
+                }
+                Ok(())
+            }
+            FilterRuntimeState::Open => Err(DemuxRuntimeError::invalid_state(filter_id)),
+            FilterRuntimeState::Closing
+            | FilterRuntimeState::CleanupFailed
+            | FilterRuntimeState::Closed
+            | FilterRuntimeState::Failed => Err(DemuxRuntimeError::sink_lifecycle(filter_id)),
+        }
     }
 
     pub fn configure_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {

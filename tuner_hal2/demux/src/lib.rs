@@ -174,6 +174,142 @@ mod tests {
     }
 
     #[test]
+    fn filter_configure_creates_queue_and_reconfigure_clears_old_queue() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime(
+                12,
+                1,
+                PipelineOpenKind::Raw,
+                None,
+            ))
+            .unwrap();
+
+        let (txn, result) = FilterConfigureTxn::new(12).configure(
+            &mut demux,
+            PipelineOpenKind::Raw,
+            FilterPipelineConfig {
+                tpid: Some(100),
+                raw: false,
+            },
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(txn.outcome(), Some(FilterConfigureOutcome::Committed));
+        assert!(demux.queue_exists(12));
+
+        let (txn, result) = FilterConfigureTxn::new(12).configure(
+            &mut demux,
+            PipelineOpenKind::Raw,
+            FilterPipelineConfig {
+                tpid: Some(101),
+                raw: false,
+            },
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(txn.outcome(), Some(FilterConfigureOutcome::Committed));
+        assert!(demux.queue_exists(12));
+        assert_eq!(demux.filter(12).unwrap().tpid(), Some(101));
+    }
+
+    #[test]
+    fn started_filter_rejects_reconfigure_and_preserves_state() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime(
+                13,
+                1,
+                PipelineOpenKind::Raw,
+                Some(FilterPipelineConfig {
+                    tpid: Some(100),
+                    raw: false,
+                }),
+            ))
+            .unwrap();
+        demux.start_filter_runtime(13).unwrap();
+        let before = demux.filter(13).unwrap().snapshot();
+
+        let (txn, result) = FilterConfigureTxn::new(13).configure(
+            &mut demux,
+            PipelineOpenKind::Raw,
+            FilterPipelineConfig {
+                tpid: Some(101),
+                raw: false,
+            },
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            txn.outcome(),
+            Some(FilterConfigureOutcome::RolledBack {
+                failed_step: FilterConfigureStep::ValidateState
+            })
+        );
+        assert_eq!(demux.filter(13).unwrap().snapshot(), before);
+    }
+
+    #[test]
+    fn filter_start_stop_flush_state_machine() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime(
+                14,
+                1,
+                PipelineOpenKind::Pes,
+                Some(FilterPipelineConfig {
+                    tpid: Some(200),
+                    raw: true,
+                }),
+            ))
+            .unwrap();
+
+        demux.start_filter_runtime(14).unwrap();
+        assert_eq!(
+            demux.filter(14).unwrap().state(),
+            FilterRuntimeState::Started
+        );
+        demux.start_filter_runtime(14).unwrap();
+        assert_eq!(
+            demux.filter(14).unwrap().state(),
+            FilterRuntimeState::Started
+        );
+        demux.flush_filter_runtime(14).unwrap();
+        assert_eq!(
+            demux.filter(14).unwrap().state(),
+            FilterRuntimeState::Started
+        );
+        demux.stop_filter_runtime(14).unwrap();
+        assert_eq!(
+            demux.filter(14).unwrap().state(),
+            FilterRuntimeState::Stopped
+        );
+        demux.stop_filter_runtime(14).unwrap();
+        assert_eq!(
+            demux.filter(14).unwrap().state(),
+            FilterRuntimeState::Stopped
+        );
+    }
+
+    #[test]
+    fn open_filter_rejects_start_stop_flush_before_configure() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime(
+                15,
+                1,
+                PipelineOpenKind::Raw,
+                None,
+            ))
+            .unwrap();
+
+        assert!(demux.start_filter_runtime(15).is_err());
+        assert!(demux.stop_filter_runtime(15).is_err());
+        assert!(demux.flush_filter_runtime(15).is_err());
+        assert_eq!(demux.filter(15).unwrap().state(), FilterRuntimeState::Open);
+    }
+
+    #[test]
     fn generation_overflow_marks_filter_failed() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux
