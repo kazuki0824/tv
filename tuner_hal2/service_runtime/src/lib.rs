@@ -871,6 +871,7 @@ mod tests {
             .unwrap()
             .session();
         assert_eq!(session.demux_id(), Some(demux.id.0));
+        assert_eq!(session.demux_generation(), Some(1));
         assert_eq!(session.key_slot(), None);
         assert_eq!(session.pid_claims().len(), 1);
         assert!(!session.is_closed());
@@ -903,6 +904,79 @@ mod tests {
         assert!(matches!(
             err,
             maleicacid_tuner_hal2_common::HalError::InvalidArgument { .. }
+        ));
+    }
+
+    #[test]
+    fn descrambler_add_pid_rejects_pid_claimed_by_other_session() {
+        let mut runtime = TunerServiceRuntime::new();
+        let demux = runtime.allocate_demux_runtime().unwrap();
+        let filter = runtime.allocate_filter_runtime(demux.id.0).unwrap();
+        runtime
+            .register_demux_filter_runtime(
+                demux.id.0,
+                filter.id.0,
+                &configured_pes_filter_request(),
+            )
+            .unwrap();
+        runtime
+            .configure_filter_runtime_request(filter.id.0, configured_pes_filter_config(200))
+            .unwrap();
+
+        let first = runtime.allocate_descrambler_runtime().unwrap();
+        let second = runtime.allocate_descrambler_runtime().unwrap();
+        runtime
+            .set_descrambler_demux_source(first.id.0, demux.id.0)
+            .unwrap();
+        runtime
+            .set_descrambler_demux_source(second.id.0, demux.id.0)
+            .unwrap();
+        runtime
+            .add_descrambler_pid_non_null_source(first.id.0, 200, filter.id.0)
+            .unwrap();
+
+        let err = runtime
+            .add_descrambler_pid_non_null_source(second.id.0, 200, filter.id.0)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            maleicacid_tuner_hal2_common::HalError::InvalidState { .. }
+        ));
+    }
+
+    #[test]
+    fn descrambler_remove_pid_rejects_stale_source_filter_generation() {
+        let mut runtime = TunerServiceRuntime::new();
+        let demux = runtime.allocate_demux_runtime().unwrap();
+        let filter = runtime.allocate_filter_runtime(demux.id.0).unwrap();
+        runtime
+            .register_demux_filter_runtime(
+                demux.id.0,
+                filter.id.0,
+                &configured_pes_filter_request(),
+            )
+            .unwrap();
+        runtime
+            .configure_filter_runtime_request(filter.id.0, configured_pes_filter_config(200))
+            .unwrap();
+
+        let descrambler = runtime.allocate_descrambler_runtime().unwrap();
+        runtime
+            .set_descrambler_demux_source(descrambler.id.0, demux.id.0)
+            .unwrap();
+        runtime
+            .add_descrambler_pid_non_null_source(descrambler.id.0, 200, filter.id.0)
+            .unwrap();
+        runtime
+            .configure_filter_runtime_request(filter.id.0, configured_pes_filter_config(200))
+            .unwrap();
+
+        let err = runtime
+            .remove_descrambler_pid_non_null_source(descrambler.id.0, 200, filter.id.0)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            maleicacid_tuner_hal2_common::HalError::InvalidState { .. }
         ));
     }
 }

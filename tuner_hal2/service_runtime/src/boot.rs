@@ -11,7 +11,9 @@ use maleicacid_tuner_hal2_demux::config::{
 };
 use maleicacid_tuner_hal2_demux::packet_pipeline::{PipelineBoundaryReason, PipelineReport};
 use maleicacid_tuner_hal2_demux::packet_pipeline::{PipelineOpenKind, PipelineResetReport};
-use maleicacid_tuner_hal2_demux::runtime::{DemuxRuntimeError, DemuxRuntimeErrorKind, DvrKind};
+use maleicacid_tuner_hal2_demux::runtime::{
+    DemuxRuntimeError, DemuxRuntimeErrorKind, DemuxRuntimeState, DvrKind,
+};
 use maleicacid_tuner_hal2_demux::runtime::{
     DemuxRuntimeSnapshot, DemuxStreamGeneration, GenerationBoundaryReport, GenerationBoundaryTxn,
 };
@@ -1475,7 +1477,7 @@ impl TunerServiceRuntime {
             })
     }
 
-    fn descrambler_bound_demux_id(&self, descrambler_id: i32) -> Result<i32, HalError> {
+    fn descrambler_bound_demux(&self, descrambler_id: i32) -> Result<(i32, u64), HalError> {
         let runtime = self
             .registry
             .descrambler_runtime(DescramblerRuntimeId(descrambler_id))
@@ -1485,17 +1487,25 @@ impl TunerServiceRuntime {
                     "descrambler runtime is missing",
                 )
             })?;
-        runtime.session().demux_id().ok_or_else(|| {
+        let demux_id = runtime.session().demux_id().ok_or_else(|| {
             HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
                 "descrambler demux source is not bound",
             )
-        })
+        })?;
+        let demux_generation = runtime.session().demux_generation().ok_or_else(|| {
+            HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "descrambler demux generation is not bound",
+            )
+        })?;
+        Ok((demux_id, demux_generation))
     }
 
     fn validate_descrambler_source_filter(
         &self,
         expected_demux_id: i32,
+        expected_demux_generation: u64,
         source_filter_id: i32,
         pid: u16,
     ) -> Result<u64, HalError> {
@@ -1523,6 +1533,12 @@ impl TunerServiceRuntime {
                 "owner demux runtime is missing",
             ));
         };
+        if demux_runtime.generation() != expected_demux_generation {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "descrambler demux generation is stale",
+            ));
+        }
         let source_snapshot = demux_runtime
             .filter_snapshot(source_filter_id)
             .map_err(Self::map_filter_runtime_error)?;
@@ -1561,12 +1577,27 @@ impl TunerServiceRuntime {
         descrambler_id: i32,
         demux_id: i32,
     ) -> Result<(), HalError> {
-        if self.registry.demux(DemuxRuntimeId(demux_id)).is_none() {
-            return Err(HalError::Unsupported("demux id is not available"));
+        let demux_runtime = self
+            .registry
+            .demux_runtime(DemuxRuntimeId(demux_id))
+            .ok_or(HalError::Unsupported("demux id is not available"))?;
+        match demux_runtime.state() {
+            DemuxRuntimeState::Open => {}
+            DemuxRuntimeState::Closing
+            | DemuxRuntimeState::CleanupFailed
+            | DemuxRuntimeState::Closed
+            | DemuxRuntimeState::Failed
+            | DemuxRuntimeState::Quarantined => {
+                return Err(HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "demux runtime is not live",
+                ));
+            }
         }
+        let demux_generation = demux_runtime.generation();
         let runtime = self.descrambler_runtime_mut(descrambler_id)?;
         let mut txn = DescramblerSessionTxn::new();
-        txn.bind_demux(runtime.session_mut(), demux_id)
+        txn.bind_demux(runtime.session_mut(), demux_id, demux_generation)
             .map_err(|failure| descrambler_session_failure_to_hal(failure.kind))
     }
 
@@ -1606,9 +1637,24 @@ impl TunerServiceRuntime {
         pid: u16,
         source_filter_id: i32,
     ) -> Result<(), HalError> {
-        let demux_id = self.descrambler_bound_demux_id(descrambler_id)?;
-        let source_generation =
-            self.validate_descrambler_source_filter(demux_id, source_filter_id, pid)?;
+        let (demux_id, demux_generation) = self.descrambler_bound_demux(descrambler_id)?;
+        let source_generation = self.validate_descrambler_source_filter(
+            demux_id,
+            demux_generation,
+            source_filter_id,
+            pid,
+        )?;
+        if self.registry.descrambler_pid_claimed_by_other(
+            DescramblerRuntimeId(descrambler_id),
+            demux_id,
+            demux_generation,
+            pid,
+        ) {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "descrambler PID is already claimed by another session",
+            ));
+        }
         let claim =
             DescramblerPidClaim::from_source_filter(pid, source_filter_id, source_generation)
                 .map_err(descrambler_pid_claim_error_to_hal)?;
@@ -1624,13 +1670,27 @@ impl TunerServiceRuntime {
         pid: u16,
         source_filter_id: i32,
     ) -> Result<(), HalError> {
-        let demux_id = self.descrambler_bound_demux_id(descrambler_id)?;
-        let source_generation =
-            self.validate_descrambler_source_filter(demux_id, source_filter_id, pid)?;
+        let (demux_id, demux_generation) = self.descrambler_bound_demux(descrambler_id)?;
+        let source_generation = self.validate_descrambler_source_filter(
+            demux_id,
+            demux_generation,
+            source_filter_id,
+            pid,
+        )?;
         let claim =
             DescramblerPidClaim::from_source_filter(pid, source_filter_id, source_generation)
                 .map_err(descrambler_pid_claim_error_to_hal)?;
         let runtime = self.descrambler_runtime_mut(descrambler_id)?;
+        if runtime.session().pid_claims().iter().any(|stored| {
+            stored.pid().0 == pid
+                && stored.source_filter().filter_id == source_filter_id
+                && stored.source_filter().generation != source_generation
+        }) {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "source filter generation changed before PID removal",
+            ));
+        }
         let mut txn = DescramblerSessionTxn::new();
         txn.remove_pid_claim(runtime.session_mut(), claim)
             .map_err(|failure| descrambler_session_failure_to_hal(failure.kind))

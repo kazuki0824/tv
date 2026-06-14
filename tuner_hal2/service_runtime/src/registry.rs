@@ -513,6 +513,28 @@ impl RuntimeRegistry {
         self.descrambler_runtimes.get_mut(&id)
     }
 
+    pub fn descrambler_pid_claimed_by_other(
+        &self,
+        current_id: DescramblerRuntimeId,
+        demux_id: i32,
+        demux_generation: u64,
+        pid: u16,
+    ) -> bool {
+        self.descrambler_runtimes
+            .iter()
+            .filter(|(id, _)| **id != current_id)
+            .any(|(_, runtime)| {
+                let session = runtime.session();
+                !session.is_closed()
+                    && session.demux_id() == Some(demux_id)
+                    && session.demux_generation() == Some(demux_generation)
+                    && session
+                        .pid_claims()
+                        .iter()
+                        .any(|claim| claim.pid().0 == pid)
+            })
+    }
+
     pub fn descrambler_key_table(&self) -> &DescramblerKeyTable {
         &self.descrambler_key_table
     }

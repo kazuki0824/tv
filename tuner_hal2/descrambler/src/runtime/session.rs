@@ -3,6 +3,7 @@ use super::{DescramblerKeySlotId, DescramblerPidClaim};
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DescramblerSession {
     demux_id: Option<i32>,
+    demux_generation: Option<u64>,
     key_slot: Option<DescramblerKeySlotId>,
     pid_claims: Vec<DescramblerPidClaim>,
     closed: bool,
@@ -15,6 +16,9 @@ impl DescramblerSession {
 
     pub fn demux_id(&self) -> Option<i32> {
         self.demux_id
+    }
+    pub fn demux_generation(&self) -> Option<u64> {
+        self.demux_generation
     }
     pub fn key_slot(&self) -> Option<DescramblerKeySlotId> {
         self.key_slot
@@ -38,8 +42,9 @@ impl DescramblerSession {
     pub(crate) fn restore(&mut self, snapshot: DescramblerSessionSnapshot) {
         *self = snapshot.0;
     }
-    pub(crate) fn set_demux_id(&mut self, demux_id: i32) {
+    pub(crate) fn set_demux_binding(&mut self, demux_id: i32, generation: u64) {
         self.demux_id = Some(demux_id);
+        self.demux_generation = Some(generation);
     }
     pub(crate) fn set_key_slot(&mut self, key_slot: DescramblerKeySlotId) {
         self.key_slot = Some(key_slot);
@@ -56,6 +61,7 @@ impl DescramblerSession {
         self.pid_claims.clear();
         self.key_slot = None;
         self.demux_id = None;
+        self.demux_generation = None;
         self.closed = true;
     }
 }

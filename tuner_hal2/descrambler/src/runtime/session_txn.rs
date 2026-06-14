@@ -101,10 +101,11 @@ impl DescramblerSessionTxn {
         &mut self,
         session: &mut DescramblerSession,
         demux_id: i32,
+        generation: u64,
     ) -> Result<(), DescramblerSessionFailure> {
         self.ensure_open(session)?;
         self.record_step(DescramblerSessionTxnStep::ValidateDemux);
-        session.set_demux_id(demux_id);
+        session.set_demux_binding(demux_id, generation);
         self.record_step(DescramblerSessionTxnStep::Commit);
         Ok(())
     }
@@ -257,9 +258,10 @@ mod tests {
             })
         );
         let mut bind = DescramblerSessionTxn::new();
-        assert_eq!(bind.bind_demux(&mut session, 8), Ok(()));
+        assert_eq!(bind.bind_demux(&mut session, 8, 14), Ok(()));
         let mut add = DescramblerSessionTxn::new();
         assert_eq!(add.add_pid_claim(&mut session, claim), Ok(()));
+        assert_eq!(session.demux_generation(), Some(14));
         assert_eq!(session.pid_claims(), &[claim]);
     }
 
@@ -271,7 +273,7 @@ mod tests {
         let claim = DescramblerPidClaim::from_source_filter(100, 2, 4).unwrap();
         let mut session = DescramblerSession::new();
         let mut prepare = DescramblerSessionTxn::new();
-        assert_eq!(prepare.bind_demux(&mut session, 1), Ok(()));
+        assert_eq!(prepare.bind_demux(&mut session, 1, 2), Ok(()));
         assert_eq!(
             prepare.replace_key(&mut session, &table, &token),
             Ok(DescramblerKeySlotId(9))
@@ -303,7 +305,7 @@ mod tests {
         let claim = DescramblerPidClaim::from_source_filter(200, 5, 8).unwrap();
         let mut session = DescramblerSession::new();
         let mut bind = DescramblerSessionTxn::new();
-        bind.bind_demux(&mut session, 11).unwrap();
+        bind.bind_demux(&mut session, 11, 12).unwrap();
         let mut replace = DescramblerSessionTxn::new();
         replace.replace_key(&mut session, &table, &token).unwrap();
         let mut add = DescramblerSessionTxn::new();
@@ -312,6 +314,7 @@ mod tests {
         let mut clear = DescramblerSessionTxn::new();
         clear.clear_key(&mut session).unwrap();
         assert_eq!(session.demux_id(), Some(11));
+        assert_eq!(session.demux_generation(), Some(12));
         assert_eq!(session.pid_claims(), &[claim]);
         assert_eq!(session.key_slot(), None);
         assert!(!session.is_closed());
