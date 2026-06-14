@@ -4,15 +4,15 @@ pub mod capability_profile;
 pub mod command_dispatch;
 pub mod diagnostics;
 pub mod dispatch;
+pub mod frontend_request_txn;
+pub mod frontend_worker_txn;
+pub mod lnb_apply_txn;
+pub mod lnb_backend_adapter;
+pub mod lnb_lifecycle_txn;
 pub mod object_table;
 pub mod registry;
 pub mod runtime_handlers;
 pub mod runtime_result;
-pub mod frontend_request_txn;
-pub mod frontend_worker_txn;
-pub mod lnb_backend_adapter;
-pub mod lnb_apply_txn;
-pub mod lnb_lifecycle_txn;
 pub mod transaction_registry;
 
 pub use boot::{
@@ -67,6 +67,10 @@ pub enum ServiceState {
 mod tests {
     use super::*;
     use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem};
+    use maleicacid_tuner_hal2_demux::{
+        FilterConfig, FilterConfigKind, FilterOpenType, OpenFilterRequest, PesSettings,
+    };
+    use maleicacid_tuner_hal2_descrambler::DescramblerKeySlotId;
     use maleicacid_tuner_hal2_domain_request::{RuntimeTransactionName, AIDL_TRANSACTION_TABLE};
     use std::path::PathBuf;
 
@@ -807,5 +811,98 @@ mod tests {
         table
             .commit_close(AidlObjectId(55), AidlObjectGeneration(7))
             .expect("retry close commit succeeds");
+    }
+
+    fn configured_pes_filter_request() -> OpenFilterRequest {
+        OpenFilterRequest {
+            open_type: FilterOpenType::TsPes,
+            buffer_size: 4096,
+            callback_present: false,
+        }
+    }
+
+    fn configured_pes_filter_config(pid: i32) -> FilterConfig {
+        FilterConfig {
+            open_type: FilterOpenType::TsPes,
+            tpid: pid,
+            kind: FilterConfigKind::TsPes(PesSettings {
+                stream_id: 0,
+                raw: false,
+            }),
+        }
+    }
+
+    #[test]
+    fn descrambler_key_clear_keeps_bound_demux_and_pid_claims() {
+        let mut runtime = TunerServiceRuntime::new();
+        let demux = runtime.allocate_demux_runtime().unwrap();
+        let filter = runtime.allocate_filter_runtime(demux.id.0).unwrap();
+        runtime
+            .register_demux_filter_runtime(
+                demux.id.0,
+                filter.id.0,
+                &configured_pes_filter_request(),
+            )
+            .unwrap();
+        runtime
+            .configure_filter_runtime_request(filter.id.0, configured_pes_filter_config(200))
+            .unwrap();
+
+        let descrambler = runtime.allocate_descrambler_runtime().unwrap();
+        runtime
+            .set_descrambler_demux_source(descrambler.id.0, demux.id.0)
+            .unwrap();
+        runtime
+            .registry_mut()
+            .descrambler_runtime_mut(descrambler.id)
+            .unwrap()
+            .session_mut()
+            .replace_key_slot(DescramblerKeySlotId(55));
+        runtime
+            .add_descrambler_pid_non_null_source(descrambler.id.0, 200, filter.id.0)
+            .unwrap();
+
+        runtime
+            .set_descrambler_key_token(descrambler.id.0, &[0x00])
+            .unwrap();
+        let session = runtime
+            .registry()
+            .descrambler_runtime(descrambler.id)
+            .unwrap()
+            .session();
+        assert_eq!(session.demux_id(), Some(demux.id.0));
+        assert_eq!(session.key_slot(), None);
+        assert_eq!(session.pid_claims().len(), 1);
+        assert!(!session.is_closed());
+    }
+
+    #[test]
+    fn descrambler_add_pid_rejects_source_filter_from_other_demux() {
+        let mut runtime = TunerServiceRuntime::new();
+        let owner_demux = runtime.allocate_demux_runtime().unwrap();
+        let other_demux = runtime.allocate_demux_runtime().unwrap();
+        let filter = runtime.allocate_filter_runtime(other_demux.id.0).unwrap();
+        runtime
+            .register_demux_filter_runtime(
+                other_demux.id.0,
+                filter.id.0,
+                &configured_pes_filter_request(),
+            )
+            .unwrap();
+        runtime
+            .configure_filter_runtime_request(filter.id.0, configured_pes_filter_config(200))
+            .unwrap();
+
+        let descrambler = runtime.allocate_descrambler_runtime().unwrap();
+        runtime
+            .set_descrambler_demux_source(descrambler.id.0, owner_demux.id.0)
+            .unwrap();
+        let err = runtime
+            .add_descrambler_pid_non_null_source(descrambler.id.0, 200, filter.id.0)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            maleicacid_tuner_hal2_common::HalError::InvalidArgument { .. }
+        ));
     }
 }

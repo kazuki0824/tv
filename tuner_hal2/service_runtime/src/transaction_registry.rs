@@ -166,27 +166,27 @@ pub const RUNTIME_TRANSACTION_SPECS: &[RuntimeTransactionSpec] = &[
     RuntimeTransactionSpec {
         transaction: RuntimeTransactionName::DescramblerSessionTxnSetDemuxSource,
         dispatch_target: RuntimeDispatchTarget::Descrambler,
-        handler_coverage: RuntimeHandlerCoverage::NotConnected,
+        handler_coverage: RuntimeHandlerCoverage::Connected,
     },
     RuntimeTransactionSpec {
         transaction: RuntimeTransactionName::DescramblerSessionTxnSetKeyToken,
         dispatch_target: RuntimeDispatchTarget::Descrambler,
-        handler_coverage: RuntimeHandlerCoverage::NotConnected,
+        handler_coverage: RuntimeHandlerCoverage::Connected,
     },
     RuntimeTransactionSpec {
         transaction: RuntimeTransactionName::DescramblerSessionTxnAddPid,
         dispatch_target: RuntimeDispatchTarget::Descrambler,
-        handler_coverage: RuntimeHandlerCoverage::NotConnected,
+        handler_coverage: RuntimeHandlerCoverage::Connected,
     },
     RuntimeTransactionSpec {
         transaction: RuntimeTransactionName::DescramblerSessionTxnRemovePid,
         dispatch_target: RuntimeDispatchTarget::Descrambler,
-        handler_coverage: RuntimeHandlerCoverage::NotConnected,
+        handler_coverage: RuntimeHandlerCoverage::Connected,
     },
     RuntimeTransactionSpec {
         transaction: RuntimeTransactionName::DescramblerSessionTxnClose,
         dispatch_target: RuntimeDispatchTarget::Descrambler,
-        handler_coverage: RuntimeHandlerCoverage::NotConnected,
+        handler_coverage: RuntimeHandlerCoverage::Connected,
     },
     RuntimeTransactionSpec {
         transaction: RuntimeTransactionName::LnbApplyTxn,

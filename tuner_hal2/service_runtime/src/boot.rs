@@ -19,6 +19,10 @@ use maleicacid_tuner_hal2_demux::OpenFilterRequest;
 use maleicacid_tuner_hal2_demux::{
     DvrRuntime, FilterConfigureTxn, FilterRuntime, FilterRuntimeState, TsInputOrigin,
 };
+use maleicacid_tuner_hal2_descrambler::{
+    DescramblerKeyLookupError, DescramblerKeyToken, DescramblerKeyTokenError, DescramblerPidClaim,
+    DescramblerPidClaimError, DescramblerSessionFailureKind, DescramblerSessionTxn,
+};
 use maleicacid_tuner_hal2_device::{
     FrontendLivePacketSink, FrontendLivePumpOwner, FrontendLivePumpReport,
     FrontendLiveReaderDescriptor, FrontendRuntimeSnapshot, FrontendRuntimeState,
@@ -218,6 +222,65 @@ fn demux_runtime_error_to_hal(
                 "demux runtime pipeline operation failed",
             )
         }
+    }
+}
+
+fn descrambler_session_failure_to_hal(kind: DescramblerSessionFailureKind) -> HalError {
+    match kind {
+        DescramblerSessionFailureKind::SessionClosed => HalError::invalid_state(
+            HalInvalidStateKind::InvalidLifecycle,
+            "descrambler session is closed",
+        ),
+        DescramblerSessionFailureKind::DemuxNotBound => HalError::invalid_state(
+            HalInvalidStateKind::InvalidLifecycle,
+            "descrambler demux source is not bound",
+        ),
+        DescramblerSessionFailureKind::UnknownToken => HalError::invalid_argument(
+            HalInvalidArgumentKind::NumericRange,
+            "descrambler key token is unknown",
+        ),
+        DescramblerSessionFailureKind::ExpiredToken => HalError::invalid_argument(
+            HalInvalidArgumentKind::NumericRange,
+            "descrambler key token is expired",
+        ),
+    }
+}
+
+fn descrambler_key_token_error_to_hal(error: DescramblerKeyTokenError) -> HalError {
+    match error {
+        DescramblerKeyTokenError::Empty => HalError::invalid_argument(
+            HalInvalidArgumentKind::NumericRange,
+            "descrambler key token must not be empty",
+        ),
+        DescramblerKeyTokenError::TooLong { .. } => HalError::invalid_argument(
+            HalInvalidArgumentKind::NumericRange,
+            "descrambler key token is too long",
+        ),
+    }
+}
+
+fn descrambler_key_lookup_error_to_hal(error: DescramblerKeyLookupError) -> HalError {
+    match error {
+        DescramblerKeyLookupError::UnknownToken => HalError::invalid_argument(
+            HalInvalidArgumentKind::NumericRange,
+            "descrambler key token is unknown",
+        ),
+        DescramblerKeyLookupError::ExpiredToken => HalError::invalid_argument(
+            HalInvalidArgumentKind::NumericRange,
+            "descrambler key token is expired",
+        ),
+    }
+}
+
+fn descrambler_pid_claim_error_to_hal(error: DescramblerPidClaimError) -> HalError {
+    match error {
+        DescramblerPidClaimError::NullSourceFilterUnsupported => HalError::Unsupported(
+            "nullable upstream filter is outside the current Rust AIDL boundary scope",
+        ),
+        DescramblerPidClaimError::InvalidPid => HalError::invalid_argument(
+            HalInvalidArgumentKind::NumericRange,
+            "descrambler PID is invalid",
+        ),
     }
 }
 
@@ -1398,10 +1461,192 @@ impl TunerServiceRuntime {
         self.registry.allocate_descrambler()
     }
 
+    fn descrambler_runtime_mut(
+        &mut self,
+        descrambler_id: i32,
+    ) -> Result<&mut maleicacid_tuner_hal2_descrambler::DescramblerRuntime, HalError> {
+        self.registry
+            .descrambler_runtime_mut(DescramblerRuntimeId(descrambler_id))
+            .ok_or_else(|| {
+                HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "descrambler runtime is missing",
+                )
+            })
+    }
+
+    fn descrambler_bound_demux_id(&self, descrambler_id: i32) -> Result<i32, HalError> {
+        let runtime = self
+            .registry
+            .descrambler_runtime(DescramblerRuntimeId(descrambler_id))
+            .ok_or_else(|| {
+                HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "descrambler runtime is missing",
+                )
+            })?;
+        runtime.session().demux_id().ok_or_else(|| {
+            HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "descrambler demux source is not bound",
+            )
+        })
+    }
+
+    fn validate_descrambler_source_filter(
+        &self,
+        expected_demux_id: i32,
+        source_filter_id: i32,
+        pid: u16,
+    ) -> Result<u64, HalError> {
+        let filter_entry = self
+            .registry
+            .filter(FilterRuntimeId(source_filter_id))
+            .ok_or_else(|| {
+                HalError::invalid_argument(
+                    HalInvalidArgumentKind::NumericRange,
+                    "source filter registry entry is missing",
+                )
+            })?;
+        if filter_entry.owner_demux_id != expected_demux_id {
+            return Err(HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "source filter belongs to another demux",
+            ));
+        }
+        let Some(demux_runtime) = self
+            .registry
+            .demux_runtime(DemuxRuntimeId(filter_entry.owner_demux_id))
+        else {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "owner demux runtime is missing",
+            ));
+        };
+        let source_snapshot = demux_runtime
+            .filter_snapshot(source_filter_id)
+            .map_err(Self::map_filter_runtime_error)?;
+        if source_snapshot.state == FilterRuntimeState::Open
+            || source_snapshot.state.is_closed_or_failed()
+            || source_snapshot.tpid.is_none()
+        {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "source filter is not configured",
+            ));
+        }
+        if source_snapshot.tpid != Some(i32::from(pid)) {
+            return Err(HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "source filter PID does not match descrambler PID",
+            ));
+        }
+        if !matches!(
+            source_snapshot.open_type,
+            FilterOpenType::TsAudio
+                | FilterOpenType::TsVideo
+                | FilterOpenType::TsPes
+                | FilterOpenType::TsRecord
+        ) {
+            return Err(HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "source filter subtype is not valid for descrambler PID source",
+            ));
+        }
+        Ok(source_snapshot.generation)
+    }
+
+    pub fn set_descrambler_demux_source(
+        &mut self,
+        descrambler_id: i32,
+        demux_id: i32,
+    ) -> Result<(), HalError> {
+        if self.registry.demux(DemuxRuntimeId(demux_id)).is_none() {
+            return Err(HalError::Unsupported("demux id is not available"));
+        }
+        let runtime = self.descrambler_runtime_mut(descrambler_id)?;
+        let mut txn = DescramblerSessionTxn::new();
+        txn.bind_demux(runtime.session_mut(), demux_id)
+            .map_err(|failure| descrambler_session_failure_to_hal(failure.kind))
+    }
+
+    pub fn set_descrambler_key_token(
+        &mut self,
+        descrambler_id: i32,
+        key_token: &[u8],
+    ) -> Result<(), HalError> {
+        if key_token == [0x00].as_slice() {
+            let runtime = self.descrambler_runtime_mut(descrambler_id)?;
+            let mut txn = DescramblerSessionTxn::new();
+            return txn
+                .clear_key(runtime.session_mut())
+                .map_err(|failure| descrambler_session_failure_to_hal(failure.kind));
+        }
+        let token = DescramblerKeyToken::try_from_bytes(key_token.to_vec())
+            .map_err(descrambler_key_token_error_to_hal)?;
+        let key_slot = self
+            .registry
+            .descrambler_key_table()
+            .resolve(&token)
+            .map_err(descrambler_key_lookup_error_to_hal)?;
+        let runtime = self.descrambler_runtime_mut(descrambler_id)?;
+        if runtime.session().is_closed() {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "descrambler session is closed",
+            ));
+        }
+        runtime.session_mut().replace_key_slot(key_slot);
+        Ok(())
+    }
+
+    pub fn add_descrambler_pid_non_null_source(
+        &mut self,
+        descrambler_id: i32,
+        pid: u16,
+        source_filter_id: i32,
+    ) -> Result<(), HalError> {
+        let demux_id = self.descrambler_bound_demux_id(descrambler_id)?;
+        let source_generation =
+            self.validate_descrambler_source_filter(demux_id, source_filter_id, pid)?;
+        let claim =
+            DescramblerPidClaim::from_source_filter(pid, source_filter_id, source_generation)
+                .map_err(descrambler_pid_claim_error_to_hal)?;
+        let runtime = self.descrambler_runtime_mut(descrambler_id)?;
+        let mut txn = DescramblerSessionTxn::new();
+        txn.add_pid_claim(runtime.session_mut(), claim)
+            .map_err(|failure| descrambler_session_failure_to_hal(failure.kind))
+    }
+
+    pub fn remove_descrambler_pid_non_null_source(
+        &mut self,
+        descrambler_id: i32,
+        pid: u16,
+        source_filter_id: i32,
+    ) -> Result<(), HalError> {
+        let demux_id = self.descrambler_bound_demux_id(descrambler_id)?;
+        let source_generation =
+            self.validate_descrambler_source_filter(demux_id, source_filter_id, pid)?;
+        let claim =
+            DescramblerPidClaim::from_source_filter(pid, source_filter_id, source_generation)
+                .map_err(descrambler_pid_claim_error_to_hal)?;
+        let runtime = self.descrambler_runtime_mut(descrambler_id)?;
+        let mut txn = DescramblerSessionTxn::new();
+        txn.remove_pid_claim(runtime.session_mut(), claim)
+            .map_err(|failure| descrambler_session_failure_to_hal(failure.kind))
+    }
+
     pub fn unregister_descrambler_runtime(
         &mut self,
         id: i32,
     ) -> Option<crate::registry::DescramblerRegistryEntry> {
+        if let Some(runtime) = self
+            .registry
+            .descrambler_runtime_mut(DescramblerRuntimeId(id))
+        {
+            let mut txn = DescramblerSessionTxn::new();
+            let _ = txn.cleanup_all(runtime.session_mut());
+        }
         self.registry
             .unregister_descrambler(DescramblerRuntimeId(id))
     }

@@ -174,6 +174,17 @@ impl DescramblerSessionTxn {
         Ok(())
     }
 
+    pub fn clear_key(
+        &mut self,
+        session: &mut DescramblerSession,
+    ) -> Result<(), DescramblerSessionFailure> {
+        self.ensure_open(session)?;
+        self.record_step(DescramblerSessionTxnStep::CleanupKey);
+        session.clear_key_slot();
+        self.record_step(DescramblerSessionTxnStep::Commit);
+        Ok(())
+    }
+
     pub fn cleanup_all(&mut self, session: &mut DescramblerSession) -> DescramblerCleanupReport {
         self.record_step(DescramblerSessionTxnStep::CleanupPidClaims);
         self.record_step(DescramblerSessionTxnStep::CleanupKey);
@@ -282,5 +293,27 @@ mod tests {
                 DescramblerSessionTxnStep::Commit,
             ]
         );
+    }
+
+    #[test]
+    fn clear_key_keeps_demux_and_pid_claims() {
+        let token = DescramblerKeyToken::try_from_bytes(vec![1, 2]).unwrap();
+        let mut table = DescramblerKeyTable::default();
+        table.insert_test_key(token.clone(), DescramblerKeySlotId(4));
+        let claim = DescramblerPidClaim::from_source_filter(200, 5, 8).unwrap();
+        let mut session = DescramblerSession::new();
+        let mut bind = DescramblerSessionTxn::new();
+        bind.bind_demux(&mut session, 11).unwrap();
+        let mut replace = DescramblerSessionTxn::new();
+        replace.replace_key(&mut session, &table, &token).unwrap();
+        let mut add = DescramblerSessionTxn::new();
+        add.add_pid_claim(&mut session, claim).unwrap();
+
+        let mut clear = DescramblerSessionTxn::new();
+        clear.clear_key(&mut session).unwrap();
+        assert_eq!(session.demux_id(), Some(11));
+        assert_eq!(session.pid_claims(), &[claim]);
+        assert_eq!(session.key_slot(), None);
+        assert!(!session.is_closed());
     }
 }

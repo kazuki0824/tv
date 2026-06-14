@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem};
 use maleicacid_tuner_hal2_demux::DemuxRuntime;
+use maleicacid_tuner_hal2_descrambler::{DescramblerKeyTable, DescramblerRuntime};
 use maleicacid_tuner_hal2_device::FrontendRuntime;
 use maleicacid_tuner_hal2_lnb::LnbRuntime;
 
@@ -74,16 +75,37 @@ pub struct DescramblerRegistryEntry {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RegistryCommitError {
-    DuplicateFrontendId { id: FrontendRuntimeId },
-    DuplicateDemuxId { id: DemuxRuntimeId },
-    DuplicateLnbId { id: LnbRuntimeId },
-    MissingFrontendId { id: FrontendRuntimeId },
-    MissingLnbId { id: LnbRuntimeId },
-    LnbFrontendMismatch { frontend_id: FrontendRuntimeId, lnb_id: LnbRuntimeId },
-    DuplicateFilterId { id: FilterRuntimeId },
-    DuplicateDvrId { id: DvrRuntimeId },
-    DuplicateDescramblerId { id: DescramblerRuntimeId },
-    RuntimeIdExhausted { kind: RuntimeRegistryKind },
+    DuplicateFrontendId {
+        id: FrontendRuntimeId,
+    },
+    DuplicateDemuxId {
+        id: DemuxRuntimeId,
+    },
+    DuplicateLnbId {
+        id: LnbRuntimeId,
+    },
+    MissingFrontendId {
+        id: FrontendRuntimeId,
+    },
+    MissingLnbId {
+        id: LnbRuntimeId,
+    },
+    LnbFrontendMismatch {
+        frontend_id: FrontendRuntimeId,
+        lnb_id: LnbRuntimeId,
+    },
+    DuplicateFilterId {
+        id: FilterRuntimeId,
+    },
+    DuplicateDvrId {
+        id: DvrRuntimeId,
+    },
+    DuplicateDescramblerId {
+        id: DescramblerRuntimeId,
+    },
+    RuntimeIdExhausted {
+        kind: RuntimeRegistryKind,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -108,6 +130,8 @@ pub struct RuntimeRegistry {
     filters: BTreeMap<FilterRuntimeId, FilterRegistryEntry>,
     dvrs: BTreeMap<DvrRuntimeId, DvrRegistryEntry>,
     descramblers: BTreeMap<DescramblerRuntimeId, DescramblerRegistryEntry>,
+    descrambler_runtimes: BTreeMap<DescramblerRuntimeId, DescramblerRuntime>,
+    descrambler_key_table: DescramblerKeyTable,
     next_demux_id: i32,
     next_lnb_id: i32,
     next_filter_id: i32,
@@ -129,6 +153,8 @@ impl Default for RuntimeRegistry {
             filters: BTreeMap::new(),
             dvrs: BTreeMap::new(),
             descramblers: BTreeMap::new(),
+            descrambler_runtimes: BTreeMap::new(),
+            descrambler_key_table: DescramblerKeyTable::default(),
             next_demux_id: 1,
             next_lnb_id: 1,
             next_filter_id: 1,
@@ -172,6 +198,8 @@ impl RuntimeRegistry {
         self.filters.clear();
         self.dvrs.clear();
         self.descramblers.clear();
+        self.descrambler_runtimes.clear();
+        self.descrambler_key_table = DescramblerKeyTable::default();
         self.next_demux_id = 1;
         self.next_filter_id = 1;
         self.next_dvr_id = 1;
@@ -329,10 +357,7 @@ impl RuntimeRegistry {
         self.frontend_lnb_bindings.get(&frontend_id).copied()
     }
 
-    pub fn selected_frontends_for_lnb(
-        &self,
-        lnb_id: LnbRuntimeId,
-    ) -> Vec<FrontendRuntimeId> {
+    pub fn selected_frontends_for_lnb(&self, lnb_id: LnbRuntimeId) -> Vec<FrontendRuntimeId> {
         self.frontend_lnb_bindings
             .iter()
             .filter_map(|(frontend_id, selected_lnb)| {
@@ -366,7 +391,8 @@ impl RuntimeRegistry {
         if self.lnbs.contains_key(&entry.id) || self.lnb_runtimes.contains_key(&entry.id) {
             return Err(RegistryCommitError::DuplicateLnbId { id: entry.id });
         }
-        self.lnb_runtimes.insert(entry.id, LnbRuntime::new(entry.id.0));
+        self.lnb_runtimes
+            .insert(entry.id, LnbRuntime::new(entry.id.0));
         self.lnbs.insert(entry.id, entry);
         Ok(())
     }
@@ -462,6 +488,8 @@ impl RuntimeRegistry {
         if self.descramblers.contains_key(&entry.id) {
             return Err(RegistryCommitError::DuplicateDescramblerId { id: entry.id });
         }
+        self.descrambler_runtimes
+            .insert(entry.id, DescramblerRuntime::new(entry.id.0));
         self.descramblers.insert(entry.id, entry);
         Ok(())
     }
@@ -470,6 +498,27 @@ impl RuntimeRegistry {
         &mut self,
         id: DescramblerRuntimeId,
     ) -> Option<DescramblerRegistryEntry> {
+        self.descrambler_runtimes.remove(&id);
         self.descramblers.remove(&id)
+    }
+
+    pub fn descrambler_runtime(&self, id: DescramblerRuntimeId) -> Option<&DescramblerRuntime> {
+        self.descrambler_runtimes.get(&id)
+    }
+
+    pub fn descrambler_runtime_mut(
+        &mut self,
+        id: DescramblerRuntimeId,
+    ) -> Option<&mut DescramblerRuntime> {
+        self.descrambler_runtimes.get_mut(&id)
+    }
+
+    pub fn descrambler_key_table(&self) -> &DescramblerKeyTable {
+        &self.descrambler_key_table
+    }
+
+    #[cfg(test)]
+    pub fn descrambler_key_table_mut(&mut self) -> &mut DescramblerKeyTable {
+        &mut self.descrambler_key_table
     }
 }

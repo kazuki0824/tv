@@ -25,6 +25,12 @@ impl DescramblerSession {
     pub fn is_closed(&self) -> bool {
         self.closed
     }
+    pub fn clear_key_slot(&mut self) {
+        self.key_slot = None;
+    }
+    pub fn replace_key_slot(&mut self, key_slot: DescramblerKeySlotId) {
+        self.key_slot = Some(key_slot);
+    }
 
     pub(crate) fn snapshot(&self) -> DescramblerSessionSnapshot {
         DescramblerSessionSnapshot(self.clone())

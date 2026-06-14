@@ -1489,40 +1489,66 @@ impl IDvr for DvrAidlObject {
 
 impl IDescrambler for DescramblerAidlObject {
     fn setDemuxSource(&self, demux_id: i32) -> BinderResult<()> {
-        unavailable_after_method_plan(
-            self.plan_method(AidlMethodCall::DescramblerSetDemuxSource(demux_id)),
-            "descrambler runtime is not connected in current tuner_hal2 scope",
-        )
+        self.ensure_open()?;
+        self.plan_method(AidlMethodCall::DescramblerSetDemuxSource(demux_id))?;
+        let runtime = self.runtime();
+        let descrambler_id =
+            runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Descrambler)?;
+        runtime
+            .lock()
+            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
+            .set_descrambler_demux_source(descrambler_id, demux_id)
+            .map_err(status_from_hal_error)
     }
     fn setKeyToken(&self, key_token: &[u8]) -> BinderResult<()> {
-        unavailable_after_method_plan(
-            self.plan_method(AidlMethodCall::DescramblerSetKeyToken(key_token.to_vec())),
-            "descrambler key runtime is not connected in current tuner_hal2 scope",
-        )
+        self.ensure_open()?;
+        self.plan_method(AidlMethodCall::DescramblerSetKeyToken(key_token.to_vec()))?;
+        let runtime = self.runtime();
+        let descrambler_id =
+            runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Descrambler)?;
+        runtime
+            .lock()
+            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
+            .set_descrambler_key_token(descrambler_id, key_token)
+            .map_err(status_from_hal_error)
     }
     fn addPid(
         &self,
         pid: &DemuxPid,
-        _optional_upstream_filter: &Strong<dyn IFilter>,
+        optional_upstream_filter: &Strong<dyn IFilter>,
     ) -> BinderResult<()> {
         self.ensure_open()?;
         let pid = ts_pid_from_demux_pid(pid).map_err(status_from_hal_error)?;
-        unavailable_after_method_plan(
-            self.plan_method(AidlMethodCall::DescramblerAddPid(pid)),
-            "descrambler PID runtime is not connected in current tuner_hal2 scope",
-        )
+        let source_handle = local_filter_handle_from_strong(optional_upstream_filter)?;
+        let self_runtime = self.runtime();
+        let descrambler_id =
+            runtime_entry_public_id(&self_runtime, self.handle(), AidlObjectKind::Descrambler)?;
+        let (source_filter_id, _) = filter_entry_public_id_and_owner(&self_runtime, source_handle)?;
+        self.plan_method(AidlMethodCall::DescramblerAddPid(pid))?;
+        self_runtime
+            .lock()
+            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
+            .add_descrambler_pid_non_null_source(descrambler_id, pid, source_filter_id)
+            .map_err(status_from_hal_error)
     }
     fn removePid(
         &self,
         pid: &DemuxPid,
-        _optional_upstream_filter: &Strong<dyn IFilter>,
+        optional_upstream_filter: &Strong<dyn IFilter>,
     ) -> BinderResult<()> {
         self.ensure_open()?;
         let pid = ts_pid_from_demux_pid(pid).map_err(status_from_hal_error)?;
-        unavailable_after_method_plan(
-            self.plan_method(AidlMethodCall::DescramblerRemovePid(pid)),
-            "descrambler PID runtime is not connected in current tuner_hal2 scope",
-        )
+        let source_handle = local_filter_handle_from_strong(optional_upstream_filter)?;
+        let self_runtime = self.runtime();
+        let descrambler_id =
+            runtime_entry_public_id(&self_runtime, self.handle(), AidlObjectKind::Descrambler)?;
+        let (source_filter_id, _) = filter_entry_public_id_and_owner(&self_runtime, source_handle)?;
+        self.plan_method(AidlMethodCall::DescramblerRemovePid(pid))?;
+        self_runtime
+            .lock()
+            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
+            .remove_descrambler_pid_non_null_source(descrambler_id, pid, source_filter_id)
+            .map_err(status_from_hal_error)
     }
     fn close(&self) -> BinderResult<()> {
         self.close_object_after_plan(AidlMethodCall::DescramblerClose)
