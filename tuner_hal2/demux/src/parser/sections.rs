@@ -346,6 +346,16 @@ mod tests {
     }
 
     #[test]
+    fn crc_validation_rejects_bad_crc() {
+        let mut section = section_with_crc(vec![
+            0x42, 0xf0, 0x0d, 0x00, 0x01, 0xc7, 0x02, 0x03, 0x00, 0x00,
+        ]);
+        let last = section.len() - 1;
+        section[last] ^= 0x01;
+        assert!(!section_crc_valid(&section, 12));
+    }
+
+    #[test]
     fn assembler_carries_pointer_tail_into_previous_section() {
         let mut assembler = SectionAssembler::default();
         let section = section_with_crc(vec![

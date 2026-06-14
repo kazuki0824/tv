@@ -1012,6 +1012,38 @@ mod tests {
     }
 
     #[test]
+    fn descrambler_set_key_token_rejects_empty_and_invalid_length_tokens() {
+        let mut runtime = TunerServiceRuntime::new();
+        let descrambler = runtime.allocate_descrambler_runtime().unwrap();
+
+        let empty_err = runtime
+            .set_descrambler_key_token(descrambler.id.0, &[])
+            .unwrap_err();
+        assert!(matches!(
+            empty_err,
+            maleicacid_tuner_hal2_common::HalError::InvalidArgument { .. }
+        ));
+        assert!(runtime.descrambler_diagnostics().iter().any(|record| {
+            record.kind == DescramblerDiagnosticKind::KeyTokenEmpty
+                && record.phase == DescramblerDiagnosticPhase::SetKeyToken
+                && record.descrambler_id == Some(descrambler.id.0)
+        }));
+
+        let invalid_len_err = runtime
+            .set_descrambler_key_token(descrambler.id.0, &[1, 2, 3, 4, 5, 6, 7])
+            .unwrap_err();
+        assert!(matches!(
+            invalid_len_err,
+            maleicacid_tuner_hal2_common::HalError::InvalidArgument { .. }
+        ));
+        assert!(runtime.descrambler_diagnostics().iter().any(|record| {
+            record.kind == DescramblerDiagnosticKind::KeyTokenInvalidLength
+                && record.phase == DescramblerDiagnosticPhase::SetKeyToken
+                && record.descrambler_id == Some(descrambler.id.0)
+        }));
+    }
+
+    #[test]
     fn descrambler_packet_policy_records_keyless_scrambled_diagnostics() {
         let mut runtime = TunerServiceRuntime::new();
         runtime.boot_from_probe_results([available(
