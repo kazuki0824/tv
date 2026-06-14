@@ -203,7 +203,7 @@ mod tests {
 
     #[test]
     fn replace_key_uses_token_table_and_does_not_store_token_bytes_in_session() {
-        let token = DescramblerKeyToken::try_from_bytes(vec![1, 2, 3]).unwrap();
+        let token = DescramblerKeyToken::try_from_bytes(vec![1; 8]).unwrap();
         let mut table = DescramblerKeyTable::default();
         table.insert_test_key(token.clone(), DescramblerKeySlotId(44));
         let mut session = DescramblerSession::new();
@@ -221,8 +221,8 @@ mod tests {
 
     #[test]
     fn unknown_key_rolls_back_existing_key_slot() {
-        let known = DescramblerKeyToken::try_from_bytes(vec![1]).unwrap();
-        let unknown = DescramblerKeyToken::try_from_bytes(vec![2]).unwrap();
+        let known = DescramblerKeyToken::try_from_bytes(vec![1; 8]).unwrap();
+        let unknown = DescramblerKeyToken::try_from_bytes(vec![2; 8]).unwrap();
         let mut table = DescramblerKeyTable::default();
         table.insert_test_key(known.clone(), DescramblerKeySlotId(7));
         let mut session = DescramblerSession::new();
@@ -267,7 +267,7 @@ mod tests {
 
     #[test]
     fn cleanup_closes_demux_key_and_pid_claims_as_one_transaction() {
-        let token = DescramblerKeyToken::try_from_bytes(vec![9]).unwrap();
+        let token = DescramblerKeyToken::try_from_bytes(vec![9; 8]).unwrap();
         let mut table = DescramblerKeyTable::default();
         table.insert_test_key(token.clone(), DescramblerKeySlotId(9));
         let claim = DescramblerPidClaim::from_source_filter(100, 2, 4).unwrap();
@@ -299,7 +299,7 @@ mod tests {
 
     #[test]
     fn clear_key_keeps_demux_and_pid_claims() {
-        let token = DescramblerKeyToken::try_from_bytes(vec![1, 2]).unwrap();
+        let token = DescramblerKeyToken::try_from_bytes(vec![1; 8]).unwrap();
         let mut table = DescramblerKeyTable::default();
         table.insert_test_key(token.clone(), DescramblerKeySlotId(4));
         let claim = DescramblerPidClaim::from_source_filter(200, 5, 8).unwrap();

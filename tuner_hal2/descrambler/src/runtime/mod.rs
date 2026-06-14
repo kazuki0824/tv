@@ -13,4 +13,4 @@ pub use session_txn::{
     DescramblerCleanupReport, DescramblerSessionFailure, DescramblerSessionFailureKind,
     DescramblerSessionTxn, DescramblerSessionTxnStep,
 };
-pub use token::{DescramblerKeyToken, DescramblerKeyTokenError, MAX_DESCRAMBLER_TOKEN_BYTES};
+pub use token::{DescramblerKeyToken, DescramblerKeyTokenError, DESCRAMBLER_TOKEN_BYTES};

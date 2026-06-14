@@ -254,9 +254,9 @@ fn descrambler_key_token_error_to_hal(error: DescramblerKeyTokenError) -> HalErr
             HalInvalidArgumentKind::NumericRange,
             "descrambler key token must not be empty",
         ),
-        DescramblerKeyTokenError::TooLong { .. } => HalError::invalid_argument(
+        DescramblerKeyTokenError::InvalidLength { .. } => HalError::invalid_argument(
             HalInvalidArgumentKind::NumericRange,
-            "descrambler key token is too long",
+            "descrambler key token length is invalid",
         ),
     }
 }

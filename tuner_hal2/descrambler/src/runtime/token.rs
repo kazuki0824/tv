@@ -4,20 +4,20 @@ pub struct DescramblerKeyToken(Vec<u8>);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DescramblerKeyTokenError {
     Empty,
-    TooLong { len: usize, max: usize },
+    InvalidLength { len: usize, expected: usize },
 }
 
-pub const MAX_DESCRAMBLER_TOKEN_BYTES: usize = 16;
+pub const DESCRAMBLER_TOKEN_BYTES: usize = 8;
 
 impl DescramblerKeyToken {
     pub fn try_from_bytes(bytes: Vec<u8>) -> Result<Self, DescramblerKeyTokenError> {
         if bytes.is_empty() {
             return Err(DescramblerKeyTokenError::Empty);
         }
-        if bytes.len() > MAX_DESCRAMBLER_TOKEN_BYTES {
-            return Err(DescramblerKeyTokenError::TooLong {
+        if bytes.len() != DESCRAMBLER_TOKEN_BYTES {
+            return Err(DescramblerKeyTokenError::InvalidLength {
                 len: bytes.len(),
-                max: MAX_DESCRAMBLER_TOKEN_BYTES,
+                expected: DESCRAMBLER_TOKEN_BYTES,
             });
         }
         Ok(Self(bytes))
@@ -39,9 +39,19 @@ mod tests {
             DescramblerKeyTokenError::Empty
         );
         assert_eq!(
-            DescramblerKeyToken::try_from_bytes(vec![0x55; 17]).unwrap_err(),
-            DescramblerKeyTokenError::TooLong { len: 17, max: 16 }
+            DescramblerKeyToken::try_from_bytes(vec![0x55; 1]).unwrap_err(),
+            DescramblerKeyTokenError::InvalidLength {
+                len: 1,
+                expected: 8
+            }
         );
-        assert!(DescramblerKeyToken::try_from_bytes(vec![0x01; 16]).is_ok());
+        assert_eq!(
+            DescramblerKeyToken::try_from_bytes(vec![0x55; 9]).unwrap_err(),
+            DescramblerKeyTokenError::InvalidLength {
+                len: 9,
+                expected: 8
+            }
+        );
+        assert!(DescramblerKeyToken::try_from_bytes(vec![0x01; 8]).is_ok());
     }
 }

@@ -59,7 +59,7 @@ mod tests {
 
     #[test]
     fn key_table_distinguishes_unknown_and_expired_tokens() {
-        let token = DescramblerKeyToken::try_from_bytes(vec![1, 2, 3]).unwrap();
+        let token = DescramblerKeyToken::try_from_bytes(vec![1; 8]).unwrap();
         let mut table = DescramblerKeyTable::default();
         assert_eq!(
             table.resolve(&token),
