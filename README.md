@@ -1,4 +1,5 @@
 # maleicacid Android TV components
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/kazuki0824/tv)
 
 このディレクトリは、日本向け Android TV 14 系の製品ツリーに統合する Tuner HAL、TIS、ARIB SI engine、CAS HAL プレースホルダー、録画関連候補を保持する。
 
