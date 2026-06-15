@@ -14,6 +14,21 @@ pub struct RuntimeTransactionSpec {
 
 pub const RUNTIME_TRANSACTION_SPECS: &[RuntimeTransactionSpec] = &[
     RuntimeTransactionSpec {
+        transaction: RuntimeTransactionName::TunerPublicApiTxn,
+        dispatch_target: RuntimeDispatchTarget::Tuner,
+        handler_coverage: RuntimeHandlerCoverage::NotConnected,
+    },
+    RuntimeTransactionSpec {
+        transaction: RuntimeTransactionName::FrontendPublicApiTxn,
+        dispatch_target: RuntimeDispatchTarget::Frontend,
+        handler_coverage: RuntimeHandlerCoverage::NotConnected,
+    },
+    RuntimeTransactionSpec {
+        transaction: RuntimeTransactionName::DemuxPublicApiTxn,
+        dispatch_target: RuntimeDispatchTarget::Demux,
+        handler_coverage: RuntimeHandlerCoverage::NotConnected,
+    },
+    RuntimeTransactionSpec {
         transaction: RuntimeTransactionName::TunerUnsupportedPublicApiTxn,
         dispatch_target: RuntimeDispatchTarget::Tuner,
         handler_coverage: RuntimeHandlerCoverage::NotConnected,

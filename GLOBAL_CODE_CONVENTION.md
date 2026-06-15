@@ -191,6 +191,27 @@ Rust実行時コード では次を守る。
 ```
 
 
+### Rust module import
+
+production code では `use super::*;` を禁止する。親 module から名前を取り込む場合は、依存対象を明示する。
+
+許可例:
+
+```rust
+use super::{DropLeakDomainAction, TunerServiceRuntime};
+use crate::error_bridge::status_from_hal_error;
+```
+
+禁止例:
+
+```rust
+use super::*;
+```
+
+禁止理由は、module 分割後の依存関係を隠し、巨大 module 化、未使用依存の温存、責務境界の曖昧化を再発させるためである。
+
+例外として、`#[cfg(test)]` の `tests` module 内では、対象 module の private helper をまとめて検査する目的に限り `use super::*;` を許可する。ただし production code 側へ同じ import を持ち出してはならない。
+
 ### Rust test / loom test の分担
 
 Rustで実装し Android.bp を持つモジュールは、通常の Rust 単体テストと loom テストを分ける。

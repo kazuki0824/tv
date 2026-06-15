@@ -2,19 +2,12 @@
 //!
 //! parser断片は `parser/` 配下に置く。runtime所有は `runtime/` 配下で再構築し、AV shared memory処理は `av/` 配下へ分ける。
 
-#[path = "parser/packet_pipeline.rs"]
-pub mod packet_pipeline;
-#[path = "parser/record_index.rs"]
-pub mod record_index;
-#[path = "parser/sections.rs"]
-pub mod sections;
-#[path = "parser/ts_core.rs"]
-pub mod ts_core;
-
 pub mod av;
 pub mod config;
 pub mod parser;
 pub mod runtime;
+
+pub use parser::{packet_pipeline, record_index, sections, ts_core};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum TsInputOrigin {

@@ -62,6 +62,18 @@ impl RuntimeCallbackRegistry {
         }
     }
 
+    pub fn mark_owner_unhealthy(
+        &mut self,
+        owner_id: AidlObjectId,
+        owner_generation: AidlObjectGeneration,
+    ) {
+        for ((_, id, generation, _), entry) in self.registrations.iter_mut() {
+            if *id == owner_id && *generation == owner_generation {
+                entry.health = CallbackHealthState::Unhealthy;
+            }
+        }
+    }
+
     pub fn clear_owner(&mut self, owner_id: AidlObjectId, owner_generation: AidlObjectGeneration) {
         self.registrations
             .retain(|(_, id, generation, _), _| *id != owner_id || *generation != owner_generation);
@@ -129,5 +141,65 @@ mod tests {
         );
         registry.clear_owner(AidlObjectId(10), AidlObjectGeneration(2));
         assert_eq!(registry.registration_count(), 0);
+    }
+
+    #[test]
+    fn mark_owner_unhealthy_marks_all_owner_registrations() {
+        let mut registry = RuntimeCallbackRegistry::default();
+        registry.record_registration(
+            AidlObjectKind::Frontend,
+            AidlObjectId(20),
+            AidlObjectGeneration(3),
+            AidlApi::FrontendSetCallback,
+        );
+        registry.record_registration(
+            AidlObjectKind::Lnb,
+            AidlObjectId(20),
+            AidlObjectGeneration(3),
+            AidlApi::LnbSetCallback,
+        );
+        registry.record_registration(
+            AidlObjectKind::Lnb,
+            AidlObjectId(20),
+            AidlObjectGeneration(4),
+            AidlApi::LnbSetCallback,
+        );
+        registry.mark_owner_unhealthy(AidlObjectId(20), AidlObjectGeneration(3));
+        assert_eq!(
+            registry
+                .registration_for(
+                    AidlObjectKind::Frontend,
+                    AidlObjectId(20),
+                    AidlObjectGeneration(3),
+                    AidlApi::FrontendSetCallback
+                )
+                .unwrap()
+                .health,
+            CallbackHealthState::Unhealthy
+        );
+        assert_eq!(
+            registry
+                .registration_for(
+                    AidlObjectKind::Lnb,
+                    AidlObjectId(20),
+                    AidlObjectGeneration(3),
+                    AidlApi::LnbSetCallback
+                )
+                .unwrap()
+                .health,
+            CallbackHealthState::Unhealthy
+        );
+        assert_eq!(
+            registry
+                .registration_for(
+                    AidlObjectKind::Lnb,
+                    AidlObjectId(20),
+                    AidlObjectGeneration(4),
+                    AidlApi::LnbSetCallback
+                )
+                .unwrap()
+                .health,
+            CallbackHealthState::Registered
+        );
     }
 }

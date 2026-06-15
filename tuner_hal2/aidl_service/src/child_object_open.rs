@@ -1,5 +1,3 @@
-use std::ffi::CString;
-
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     IDvr::{BnDvr, IDvr},
     IDvrCallback::IDvrCallback,
@@ -7,48 +5,19 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     IFilterCallback::IFilterCallback,
     Result::Result as TunerResult,
 };
-use binder::{BinderFeatures, Result as BinderResult, Status, Strong};
+use binder::{BinderFeatures, Result as BinderResult, Strong};
 use maleicacid_tuner_hal2_binder_adapter::{
-    AidlApi, AidlObjectKind, AidlStatusMapper, OpenDvrRequest, TunerStatusCode,
+    AidlApi, AidlObjectKind, OpenDvrRequest,
 };
-use maleicacid_tuner_hal2_common::HalError;
 use maleicacid_tuner_hal2_demux::config::OpenFilterRequest;
 use maleicacid_tuner_hal2_service_runtime::RuntimeOwnerRelation;
 
 use crate::callback_store::{retain_dvr_callback, retain_filter_callback};
+use crate::error_bridge::{service_error, status_from_hal_error, status_unknown_error};
 use crate::dvr_object::DvrAidlObject;
 use crate::filter_object::FilterAidlObject;
 use crate::object_handle::AidlObjectHandle;
 use crate::object_runtime::{clear_owner_callback_registration, record_callback_registration, SharedTunerRuntime};
-
-fn service_error(code: i32, message: &str) -> Status {
-    match CString::new(message) {
-        Ok(detail) => Status::new_service_specific_error(code, Some(detail.as_c_str())),
-        Err(_) => Status::new_service_specific_error(code, None),
-    }
-}
-
-fn status_unknown_error(message: &str) -> Status {
-    service_error(TunerResult::UNKNOWN_ERROR.0, message)
-}
-
-fn status_from_tuner_status(status: TunerStatusCode, message: &str) -> Status {
-    match status {
-        TunerStatusCode::Ok => service_error(
-            TunerResult::UNKNOWN_ERROR.0,
-            "unexpected OK status while building error",
-        ),
-        TunerStatusCode::InvalidArgument => service_error(TunerResult::INVALID_ARGUMENT.0, message),
-        TunerStatusCode::InvalidState => service_error(TunerResult::INVALID_STATE.0, message),
-        TunerStatusCode::Unavailable => service_error(TunerResult::UNAVAILABLE.0, message),
-        TunerStatusCode::UnknownError => service_error(TunerResult::UNKNOWN_ERROR.0, message),
-    }
-}
-
-fn status_from_hal_error(error: HalError) -> Status {
-    let status = AidlStatusMapper::map_error(&error);
-    status_from_tuner_status(status, &error.to_string())
-}
 
 fn register_child_aidl_object(
     runtime: &SharedTunerRuntime,
@@ -151,7 +120,7 @@ fn retain_filter_child_callback(
     callback: &Strong<dyn IFilterCallback>,
 ) -> BinderResult<()> {
     retain_filter_callback(handle, callback)
-        .map_err(|_| Status::new_service_specific_error(TunerResult::UNKNOWN_ERROR.0, None))?;
+        .map_err(|_| service_error(TunerResult::UNKNOWN_ERROR.0, "filter callback store retain failed"))?;
     if let Err(status) = record_callback_registration(runtime, handle, AidlApi::DemuxOpenFilter) {
         rollback_retained_child_callback(runtime, handle, AidlApi::DemuxOpenFilter)?;
         return Err(status);
@@ -165,7 +134,7 @@ fn retain_dvr_child_callback(
     callback: &Strong<dyn IDvrCallback>,
 ) -> BinderResult<()> {
     retain_dvr_callback(handle, callback)
-        .map_err(|_| Status::new_service_specific_error(TunerResult::UNKNOWN_ERROR.0, None))?;
+        .map_err(|_| service_error(TunerResult::UNKNOWN_ERROR.0, "DVR callback store retain failed"))?;
     if let Err(status) = record_callback_registration(runtime, handle, AidlApi::DemuxOpenDvr) {
         rollback_retained_child_callback(runtime, handle, AidlApi::DemuxOpenDvr)?;
         return Err(status);

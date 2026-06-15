@@ -94,6 +94,9 @@ pub enum AidlApi {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeTransactionName {
+    TunerPublicApiTxn,
+    FrontendPublicApiTxn,
+    DemuxPublicApiTxn,
     TunerUnsupportedPublicApiTxn,
     FrontendUnsupportedPublicApiTxn,
     DemuxUnsupportedPublicApiTxn,
@@ -144,47 +147,47 @@ pub const AIDL_TRANSACTION_TABLE: &[CommandPlan] = &[
     CommandPlan {
         object: AidlObjectKind::Tuner,
         api: AidlApi::TunerGetFrontendIds,
-        transaction: RuntimeTransactionName::TunerUnsupportedPublicApiTxn,
+        transaction: RuntimeTransactionName::TunerPublicApiTxn,
     },
     CommandPlan {
         object: AidlObjectKind::Tuner,
         api: AidlApi::TunerOpenFrontendById,
-        transaction: RuntimeTransactionName::TunerUnsupportedPublicApiTxn,
+        transaction: RuntimeTransactionName::TunerPublicApiTxn,
     },
     CommandPlan {
         object: AidlObjectKind::Tuner,
         api: AidlApi::TunerOpenDemux,
-        transaction: RuntimeTransactionName::TunerUnsupportedPublicApiTxn,
+        transaction: RuntimeTransactionName::TunerPublicApiTxn,
     },
     CommandPlan {
         object: AidlObjectKind::Tuner,
         api: AidlApi::TunerGetDemuxCaps,
-        transaction: RuntimeTransactionName::TunerUnsupportedPublicApiTxn,
+        transaction: RuntimeTransactionName::TunerPublicApiTxn,
     },
     CommandPlan {
         object: AidlObjectKind::Tuner,
         api: AidlApi::TunerOpenDescrambler,
-        transaction: RuntimeTransactionName::TunerUnsupportedPublicApiTxn,
+        transaction: RuntimeTransactionName::TunerPublicApiTxn,
     },
     CommandPlan {
         object: AidlObjectKind::Tuner,
         api: AidlApi::TunerGetFrontendInfo,
-        transaction: RuntimeTransactionName::TunerUnsupportedPublicApiTxn,
+        transaction: RuntimeTransactionName::TunerPublicApiTxn,
     },
     CommandPlan {
         object: AidlObjectKind::Tuner,
         api: AidlApi::TunerOpenLnbById,
-        transaction: RuntimeTransactionName::TunerUnsupportedPublicApiTxn,
+        transaction: RuntimeTransactionName::TunerPublicApiTxn,
     },
     CommandPlan {
         object: AidlObjectKind::Tuner,
         api: AidlApi::TunerOpenLnbByName,
-        transaction: RuntimeTransactionName::TunerUnsupportedPublicApiTxn,
+        transaction: RuntimeTransactionName::TunerPublicApiTxn,
     },
     CommandPlan {
         object: AidlObjectKind::Tuner,
         api: AidlApi::TunerGetLnbIds,
-        transaction: RuntimeTransactionName::TunerUnsupportedPublicApiTxn,
+        transaction: RuntimeTransactionName::TunerPublicApiTxn,
     },
     CommandPlan {
         object: AidlObjectKind::Tuner,
@@ -194,37 +197,37 @@ pub const AIDL_TRANSACTION_TABLE: &[CommandPlan] = &[
     CommandPlan {
         object: AidlObjectKind::Tuner,
         api: AidlApi::TunerSetMaxNumberOfFrontends,
-        transaction: RuntimeTransactionName::TunerUnsupportedPublicApiTxn,
+        transaction: RuntimeTransactionName::TunerPublicApiTxn,
     },
     CommandPlan {
         object: AidlObjectKind::Tuner,
         api: AidlApi::TunerGetMaxNumberOfFrontends,
-        transaction: RuntimeTransactionName::TunerUnsupportedPublicApiTxn,
+        transaction: RuntimeTransactionName::TunerPublicApiTxn,
     },
     CommandPlan {
         object: AidlObjectKind::Tuner,
         api: AidlApi::TunerIsLnaSupported,
-        transaction: RuntimeTransactionName::TunerUnsupportedPublicApiTxn,
+        transaction: RuntimeTransactionName::TunerPublicApiTxn,
     },
     CommandPlan {
         object: AidlObjectKind::Tuner,
         api: AidlApi::TunerGetDemuxIds,
-        transaction: RuntimeTransactionName::TunerUnsupportedPublicApiTxn,
+        transaction: RuntimeTransactionName::TunerPublicApiTxn,
     },
     CommandPlan {
         object: AidlObjectKind::Tuner,
         api: AidlApi::TunerOpenDemuxById,
-        transaction: RuntimeTransactionName::TunerUnsupportedPublicApiTxn,
+        transaction: RuntimeTransactionName::TunerPublicApiTxn,
     },
     CommandPlan {
         object: AidlObjectKind::Tuner,
         api: AidlApi::TunerGetDemuxInfo,
-        transaction: RuntimeTransactionName::TunerUnsupportedPublicApiTxn,
+        transaction: RuntimeTransactionName::TunerPublicApiTxn,
     },
     CommandPlan {
         object: AidlObjectKind::Frontend,
         api: AidlApi::FrontendGetStatus,
-        transaction: RuntimeTransactionName::FrontendUnsupportedPublicApiTxn,
+        transaction: RuntimeTransactionName::FrontendPublicApiTxn,
     },
     CommandPlan {
         object: AidlObjectKind::Frontend,
@@ -254,7 +257,7 @@ pub const AIDL_TRANSACTION_TABLE: &[CommandPlan] = &[
     CommandPlan {
         object: AidlObjectKind::Frontend,
         api: AidlApi::FrontendGetFrontendStatusReadiness,
-        transaction: RuntimeTransactionName::FrontendUnsupportedPublicApiTxn,
+        transaction: RuntimeTransactionName::FrontendPublicApiTxn,
     },
     CommandPlan {
         object: AidlObjectKind::Demux,

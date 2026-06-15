@@ -43,6 +43,8 @@ enum StoredCallback {
     Filter(Strong<dyn IFilterCallback>),
     Dvr(Strong<dyn IDvrCallback>),
     Lnb(Strong<dyn ILnbCallback>),
+    #[cfg(test)]
+    TestMarker,
 }
 
 #[derive(Default)]
@@ -121,7 +123,7 @@ pub fn clear_owner_callbacks(handle: AidlObjectHandle) -> Result<(), AidlCallbac
 }
 
 #[cfg(test)]
-fn has_callback_for_owner(
+pub(crate) fn has_callback_for_owner(
     handle: AidlObjectHandle,
     api: AidlApi,
 ) -> Result<bool, AidlCallbackStoreError> {
@@ -131,6 +133,27 @@ fn has_callback_for_owner(
     Ok(store
         .callbacks
         .contains_key(&CallbackStoreKey::new(handle, api)))
+}
+
+
+#[cfg(test)]
+pub(crate) fn retain_test_callback_marker(
+    handle: AidlObjectHandle,
+    api: AidlApi,
+) -> Result<(), AidlCallbackStoreError> {
+    let mut store = store()
+        .lock()
+        .map_err(|_| AidlCallbackStoreError::Poisoned)?;
+    store.callbacks.insert(
+        CallbackStoreKey {
+            owner_kind: handle.object_kind(),
+            owner_id: handle.object_id(),
+            owner_generation: handle.generation(),
+            registration_api: api,
+        },
+        StoredCallback::TestMarker,
+    );
+    Ok(())
 }
 
 pub fn frontend_callback_for_owner(

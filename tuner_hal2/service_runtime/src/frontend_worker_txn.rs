@@ -65,11 +65,11 @@ pub fn start_frontend_backend_tune_worker(
     kind: FrontendWorkerKind,
 ) -> Result<(), HalError> {
     let mut guard = lock_runtime(&runtime, "service runtime lock poisoned")?;
-    if guard.frontend_has_same_active_tune(frontend_id, &request)? {
+    if guard.query().frontend_has_same_active_tune(frontend_id, &request)? {
         return Ok(());
     }
-    let snapshot = guard.frontend_runtime_snapshot(frontend_id)?;
-    let demux_snapshots = guard.bound_demux_runtime_snapshots(frontend_id)?;
+    let snapshot = guard.query().frontend_runtime_snapshot(frontend_id)?;
+    let demux_snapshots = guard.query().bound_demux_runtime_snapshots(frontend_id)?;
     let generation = guard.prepare_frontend_worker_generation(frontend_id, kind)?;
     if let Err(error) = guard.reset_bound_demuxes_for_frontend_tune_start(frontend_id) {
         guard.restore_frontend_runtime_snapshot(frontend_id, snapshot)?;
@@ -146,7 +146,7 @@ pub fn start_frontend_backend_tune_worker(
                         &runtime_for_worker,
                         "service runtime lock poisoned while checking frontend live pump readiness",
                     )?;
-                    guard.frontend_live_reader_descriptor_for_live_pump(frontend_id)?
+                    guard.query().frontend_live_reader_descriptor_for_live_pump(frontend_id)?
                 };
                 if let Some(descriptor) = live_reader_descriptor {
                     let reader = session.open_live_reader(&descriptor)?;
@@ -170,7 +170,7 @@ pub fn start_frontend_backend_tune_worker(
                             frontend_id,
                             generation,
                             report,
-                            ctx.cancel_reason(),
+                            ctx.cancel_reason()?,
                         )?;
                         return session.stop();
                     }
@@ -184,7 +184,7 @@ pub fn start_frontend_backend_tune_worker(
                 &runtime_for_worker,
                 "service runtime lock poisoned while recording stopped live pump report",
             )?;
-            guard.record_live_pump_report(frontend_id, generation, report, ctx.cancel_reason())?;
+            guard.record_live_pump_report(frontend_id, generation, report, ctx.cancel_reason()?)?;
         }
         session.stop()
     }) {
@@ -299,8 +299,8 @@ pub fn start_frontend_backend_scan_session_worker(
     )?;
     let fingerprint = format!("{:?}:{:?}", scan_mode, request);
     let mut guard = lock_runtime(&runtime, "service runtime lock poisoned")?;
-    let snapshot = guard.frontend_runtime_snapshot(frontend_id)?;
-    let demux_snapshots = guard.bound_demux_runtime_snapshots(frontend_id)?;
+    let snapshot = guard.query().frontend_runtime_snapshot(frontend_id)?;
+    let demux_snapshots = guard.query().bound_demux_runtime_snapshots(frontend_id)?;
     let generation =
         guard.prepare_frontend_worker_generation(frontend_id, FrontendWorkerKind::Scan)?;
     if let Err(error) = guard.reset_bound_demuxes_for_frontend_tune_start(frontend_id) {
@@ -363,11 +363,14 @@ pub fn stop_frontend_worker(
 ) -> Result<FrontendWorkerStopOutcome, HalError> {
     let outcome = lock_runtime(&runtime, "service runtime lock poisoned")?
         .request_frontend_worker_stop_and_join(frontend_id, kind, reason);
-    if let FrontendWorkerStopOutcome::Completed {
-        result: Err(error), ..
-    } = &outcome
-    {
-        return Err(error.clone());
+    match &outcome {
+        FrontendWorkerStopOutcome::Completed {
+            result: Err(error), ..
+        }
+        | FrontendWorkerStopOutcome::StopRequestFailed { error, .. } => {
+            return Err(error.clone());
+        }
+        _ => {}
     }
     Ok(outcome)
 }
@@ -393,6 +396,7 @@ fn record_scan_cancelled_from_stop_outcome(
 ) -> Result<(), HalError> {
     let generation = match outcome {
         FrontendWorkerStopOutcome::NotRunning => return Ok(()),
+        FrontendWorkerStopOutcome::StopRequestFailed { error, .. } => return Err(error.clone()),
         FrontendWorkerStopOutcome::CancelRequested { generation, .. }
         | FrontendWorkerStopOutcome::Completed {
             generation,

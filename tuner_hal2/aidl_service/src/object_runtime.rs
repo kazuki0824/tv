@@ -1,7 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::Result::Result as TunerResult;
-use binder::{Result as BinderResult, Status};
+use binder::Result as BinderResult;
 use maleicacid_tuner_hal2_binder_adapter::{
     demux::DemuxCommand, dvr::DvrCommand, filter::FilterCommand, frontend::FrontendCommand,
     lnb::LnbCommand,
@@ -16,14 +15,15 @@ use maleicacid_tuner_hal2_resource_ledger::{CleanupStep, LedgerId};
 use maleicacid_tuner_hal2_service_runtime::{RuntimeObjectTableError, TunerServiceRuntime};
 
 use crate::callback_store::clear_owner_callbacks;
+use crate::error_bridge::{status_from_hal_error, status_from_hal_error_ref, status_unknown_error};
 use crate::object_handle::AidlObjectHandle;
 
 pub type SharedTunerRuntime = Arc<Mutex<TunerServiceRuntime>>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CallbackCleanupRegistryAction {
-    ClearOwner,
-    MarkUnhealthy,
+pub enum DropLeakDomainAction {
+    None,
+    RecordLnbDropLeak,
 }
 
 fn clear_runtime_callback_owner(
@@ -56,8 +56,6 @@ fn mark_runtime_callback_unhealthy(
     Ok(())
 }
 
-fn consume_best_effort_callback_cleanup_result(_result: BinderResult<()>) {}
-
 pub fn clear_owner_callback_registration(
     runtime: &SharedTunerRuntime,
     handle: AidlObjectHandle,
@@ -70,31 +68,6 @@ pub fn clear_owner_callback_registration(
             mark_runtime_callback_unhealthy(runtime, handle, api)?;
             Err(status_unknown_error(failure_message))
         }
-    }
-}
-
-pub fn clear_owner_callback_registration_best_effort(
-    runtime: &SharedTunerRuntime,
-    handle: AidlObjectHandle,
-    api: AidlApi,
-    success_action: CallbackCleanupRegistryAction,
-) {
-    match clear_owner_callbacks(handle) {
-        Ok(()) => match success_action {
-            CallbackCleanupRegistryAction::ClearOwner => {
-                consume_best_effort_callback_cleanup_result(clear_runtime_callback_owner(
-                    runtime, handle,
-                ))
-            }
-            CallbackCleanupRegistryAction::MarkUnhealthy => {
-                consume_best_effort_callback_cleanup_result(mark_runtime_callback_unhealthy(
-                    runtime, handle, api,
-                ))
-            }
-        },
-        Err(_) => consume_best_effort_callback_cleanup_result(mark_runtime_callback_unhealthy(
-            runtime, handle, api,
-        )),
     }
 }
 
@@ -217,7 +190,7 @@ pub fn execute_object_aidl_method(
         &failures,
         profile_unsupported_precedence,
     ) {
-        return Err(status_from_hal_error(failure.error()));
+        return Err(status_from_hal_error_ref(failure.error()));
     }
 
     Ok(AidlMethodExecutionOutcome {
@@ -271,7 +244,7 @@ pub fn ensure_object_live(
             handle.object_kind(),
         )
         .map(|_| ())
-        .map_err(status_from_object_table_error)
+        .map_err(|error| status_from_hal_error(object_table_hal_error(error)))
 }
 
 pub fn clear_live_lnb_callback_for_public_id(
@@ -318,7 +291,7 @@ pub fn close_object(runtime: &SharedTunerRuntime, handle: AidlObjectHandle) -> B
             handle.generation(),
             CleanupStep::StopWorker,
         )
-        .map_err(status_from_object_table_error)?;
+        .map_err(|error| status_from_hal_error(object_table_hal_error(error)))?;
     runtime
         .callback_registry_mut()
         .clear_owner(handle.object_id(), handle.generation());
@@ -330,7 +303,7 @@ pub fn close_object(runtime: &SharedTunerRuntime, handle: AidlObjectHandle) -> B
                 handle.generation(),
                 CleanupStep::UnregisterRuntime,
             )
-            .map_err(status_from_object_table_error)?;
+            .map_err(|error| status_from_hal_error(object_table_hal_error(error)))?;
         return Err(status_unknown_error(
             "callback store cleanup failed during AIDL object close",
         ));
@@ -338,29 +311,66 @@ pub fn close_object(runtime: &SharedTunerRuntime, handle: AidlObjectHandle) -> B
     let closed_entries = runtime
         .object_table_mut()
         .commit_close_cascade(handle.object_id(), handle.generation())
-        .map_err(status_from_object_table_error)?;
+        .map_err(|error| status_from_hal_error(object_table_hal_error(error)))?;
     unregister_public_runtime_entries(&mut runtime, &closed_entries);
     Ok(())
 }
 
-pub fn quarantine_live_aidl_object_after_drop_leak(
+fn lnb_public_id_for_drop(
+    runtime: &TunerServiceRuntime,
+    handle: AidlObjectHandle,
+) -> Option<i32> {
+    if handle.object_kind() != AidlObjectKind::Lnb {
+        return None;
+    }
+    runtime
+        .object_table()
+        .entry_for_kind(handle.object_id(), handle.generation(), AidlObjectKind::Lnb)
+        .ok()
+        .and_then(|entry| i32::try_from(entry.ledger_id.0).ok())
+}
+
+fn record_domain_drop_leak(
+    runtime: &mut TunerServiceRuntime,
+    handle: AidlObjectHandle,
+    action: DropLeakDomainAction,
+) -> bool {
+    match action {
+        DropLeakDomainAction::None => true,
+        DropLeakDomainAction::RecordLnbDropLeak => lnb_public_id_for_drop(runtime, handle)
+            .map(|lnb_id| runtime.record_lnb_drop_leak(lnb_id).is_ok())
+            .unwrap_or(false),
+    }
+}
+
+pub fn drop_leak_object(
     runtime: &SharedTunerRuntime,
     handle: AidlObjectHandle,
+    action: DropLeakDomainAction,
 ) {
     let Ok(mut runtime) = runtime.lock() else {
         return;
     };
+    let domain_record_ok = record_domain_drop_leak(&mut runtime, handle, action);
+    let callback_store_ok = clear_owner_callbacks(handle).is_ok();
+    if callback_store_ok && domain_record_ok {
+        runtime
+            .callback_registry_mut()
+            .clear_owner(handle.object_id(), handle.generation());
+    } else {
+        runtime
+            .callback_registry_mut()
+            .mark_owner_unhealthy(handle.object_id(), handle.generation());
+    }
     let Ok(entries) = runtime
         .object_table_mut()
         .quarantine_cascade(handle.object_id(), handle.generation())
     else {
         return;
     };
-    runtime
-        .callback_registry_mut()
-        .clear_owner(handle.object_id(), handle.generation());
     unregister_public_runtime_entries(&mut runtime, &entries);
 }
+
 
 pub fn record_callback_registration(
     runtime: &SharedTunerRuntime,
@@ -377,7 +387,7 @@ pub fn record_callback_registration(
             handle.generation(),
             handle.object_kind(),
         )
-        .map_err(status_from_object_table_error)?;
+        .map_err(|error| status_from_hal_error(object_table_hal_error(error)))?;
     runtime.callback_registry_mut().record_registration(
         handle.object_kind(),
         handle.object_id(),
@@ -427,55 +437,111 @@ fn object_table_hal_error(error: RuntimeObjectTableError) -> HalError {
     HalError::invalid_state(HalInvalidStateKind::InvalidLifecycle, message)
 }
 
-fn status_from_hal_error(error: &HalError) -> Status {
-    let code = match AidlStatusMapper::map_error(error) {
-        maleicacid_tuner_hal2_binder_adapter::TunerStatusCode::Ok => TunerResult::UNKNOWN_ERROR.0,
-        maleicacid_tuner_hal2_binder_adapter::TunerStatusCode::InvalidArgument => {
-            TunerResult::INVALID_ARGUMENT.0
-        }
-        maleicacid_tuner_hal2_binder_adapter::TunerStatusCode::InvalidState => {
-            TunerResult::INVALID_STATE.0
-        }
-        maleicacid_tuner_hal2_binder_adapter::TunerStatusCode::Unavailable => {
-            TunerResult::UNAVAILABLE.0
-        }
-        maleicacid_tuner_hal2_binder_adapter::TunerStatusCode::UnknownError => {
-            TunerResult::UNKNOWN_ERROR.0
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::callback_store::{has_callback_for_owner, retain_test_callback_marker};
+    use maleicacid_tuner_hal2_binder_adapter::{
+        AidlApi, AidlObjectGeneration, AidlObjectId, AidlObjectKind,
     };
-    service_error(code, &error.to_string())
-}
-
-fn status_from_object_table_error(error: RuntimeObjectTableError) -> Status {
-    let message = match error {
-        RuntimeObjectTableError::MissingObject { .. } => "AIDL object is closed or missing",
-        RuntimeObjectTableError::ObjectKindMismatch { .. } => "AIDL object kind mismatch",
-        RuntimeObjectTableError::GenerationMismatch { .. } => "AIDL object generation mismatch",
-        RuntimeObjectTableError::InvalidOwner { .. } => "AIDL object owner mismatch",
-        RuntimeObjectTableError::MissingOwner { .. } => "AIDL object owner is missing",
-        RuntimeObjectTableError::OwnerGenerationMismatch { .. } => {
-            "AIDL object owner generation mismatch"
-        }
-        RuntimeObjectTableError::OwnerKindMismatch { .. } => "AIDL object owner kind mismatch",
-        RuntimeObjectTableError::OwnerNotLive { .. } => "AIDL object owner is not live",
-        RuntimeObjectTableError::InvalidLifecycle { .. } => "AIDL object is not live",
-        RuntimeObjectTableError::DuplicateObjectId { .. } => "AIDL object id already registered",
-        RuntimeObjectTableError::DuplicateRuntimeBinding { .. } => {
-            "AIDL public runtime object is already opened"
-        }
-        RuntimeObjectTableError::UnsupportedObjectKind { .. } => "AIDL object kind is unsupported",
-        RuntimeObjectTableError::GenerationOverflow => "AIDL object generation overflow",
+    use maleicacid_tuner_hal2_service_runtime::{
+        CallbackHealthState, RuntimeObjectLifecycle, RuntimeOwnerRelation,
     };
-    service_error(TunerResult::INVALID_STATE.0, message)
-}
 
-fn status_unknown_error(message: &str) -> Status {
-    service_error(TunerResult::UNKNOWN_ERROR.0, message)
-}
+    fn shared_runtime_with_live_object(
+        kind: AidlObjectKind,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        public_runtime_id: i64,
+    ) -> SharedTunerRuntime {
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        runtime
+            .lock()
+            .unwrap()
+            .register_aidl_object_for_runtime(
+                kind,
+                object_id,
+                generation,
+                public_runtime_id,
+                RuntimeOwnerRelation::Root,
+            )
+            .unwrap();
+        runtime
+    }
 
-fn service_error(code: i32, message: &str) -> Status {
-    match std::ffi::CString::new(message) {
-        Ok(detail) => Status::new_service_specific_error(code, Some(detail.as_c_str())),
-        Err(_) => Status::new_service_specific_error(code, None),
+    #[test]
+    fn drop_leak_clears_runtime_callback_registration_and_quarantines_object() {
+        let handle = AidlObjectHandle::new(
+            AidlObjectKind::Filter,
+            AidlObjectId(91_001),
+            AidlObjectGeneration(1),
+        );
+        clear_owner_callbacks(handle).unwrap();
+        retain_test_callback_marker(handle, AidlApi::DemuxOpenFilter).unwrap();
+        let runtime = shared_runtime_with_live_object(
+            AidlObjectKind::Filter,
+            AidlObjectId(91_001),
+            AidlObjectGeneration(1),
+            91_001,
+        );
+        record_callback_registration(&runtime, handle, AidlApi::DemuxOpenFilter).unwrap();
+
+        drop_leak_object(&runtime, handle, DropLeakDomainAction::None);
+
+        let runtime = runtime.lock().unwrap();
+        assert!(!has_callback_for_owner(handle, AidlApi::DemuxOpenFilter).unwrap());
+        assert_eq!(runtime.callback_registry().registration_count(), 0);
+        assert_eq!(
+            runtime
+                .object_table()
+                .entry(AidlObjectId(91_001))
+                .unwrap()
+                .lifecycle,
+            RuntimeObjectLifecycle::Quarantined
+        );
+    }
+
+    #[test]
+    fn drop_leak_marks_callback_unhealthy_when_domain_drop_record_fails() {
+        let handle = AidlObjectHandle::new(
+            AidlObjectKind::Lnb,
+            AidlObjectId(91_002),
+            AidlObjectGeneration(1),
+        );
+        clear_owner_callbacks(handle).unwrap();
+        retain_test_callback_marker(handle, AidlApi::LnbSetCallback).unwrap();
+        let runtime = shared_runtime_with_live_object(
+            AidlObjectKind::Lnb,
+            AidlObjectId(91_002),
+            AidlObjectGeneration(1),
+            91_002,
+        );
+        record_callback_registration(&runtime, handle, AidlApi::LnbSetCallback).unwrap();
+
+        drop_leak_object(&runtime, handle, DropLeakDomainAction::RecordLnbDropLeak);
+
+        let runtime = runtime.lock().unwrap();
+        assert!(!has_callback_for_owner(handle, AidlApi::LnbSetCallback).unwrap());
+        assert_eq!(
+            runtime
+                .callback_registry()
+                .registration_for(
+                    AidlObjectKind::Lnb,
+                    AidlObjectId(91_002),
+                    AidlObjectGeneration(1),
+                    AidlApi::LnbSetCallback,
+                )
+                .unwrap()
+                .health,
+            CallbackHealthState::Unhealthy
+        );
+        assert_eq!(
+            runtime
+                .object_table()
+                .entry(AidlObjectId(91_002))
+                .unwrap()
+                .lifecycle,
+            RuntimeObjectLifecycle::Quarantined
+        );
     }
 }

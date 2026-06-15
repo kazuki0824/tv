@@ -94,7 +94,7 @@ fn validate_frontend_lnb_candidate(
     if !matches!(request.system, FrontendSystem::IsdbS) {
         return Ok(());
     }
-    let lnb = runtime.lnb_for_frontend_id(entry.id.0);
+    let lnb = runtime.query().lnb_for_frontend_id(entry.id.0);
     match (entry.lnb_profile, lnb) {
         (Some(expected_profile), Some(lnb_entry)) if lnb_entry.profile == expected_profile => {
             Ok(())

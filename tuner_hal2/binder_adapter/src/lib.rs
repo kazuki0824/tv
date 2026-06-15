@@ -37,6 +37,10 @@ pub use status::{
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DomainCommand {
+    PublicApi {
+        object: AidlObjectKind,
+        api: AidlApi,
+    },
     UnsupportedPublicApi {
         object: AidlObjectKind,
         api: AidlApi,
@@ -57,7 +61,8 @@ impl DomainCommand {
                 request: Some(request),
                 ..
             } => Some(request.clone()),
-            DomainCommand::UnsupportedPublicApi { request: None, .. } => None,
+            DomainCommand::PublicApi { .. }
+            | DomainCommand::UnsupportedPublicApi { request: None, .. } => None,
             DomainCommand::Frontend(frontend::FrontendCommand::SetCallback(request)) => {
                 Some(request.clone())
             }
@@ -111,6 +116,16 @@ impl DomainCommand {
 
     pub fn plan(&self) -> CommandPlan {
         match self {
+            DomainCommand::PublicApi { object, api } => CommandPlan {
+                object: *object,
+                api: *api,
+                transaction: match object {
+                    AidlObjectKind::Tuner => RuntimeTransactionName::TunerPublicApiTxn,
+                    AidlObjectKind::Frontend => RuntimeTransactionName::FrontendPublicApiTxn,
+                    AidlObjectKind::Demux => RuntimeTransactionName::DemuxPublicApiTxn,
+                    _ => RuntimeTransactionName::TunerPublicApiTxn,
+                },
+            },
             DomainCommand::UnsupportedPublicApi { object, api, .. } => CommandPlan {
                 object: *object,
                 api: *api,

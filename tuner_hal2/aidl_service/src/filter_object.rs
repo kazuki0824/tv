@@ -7,9 +7,8 @@ use maleicacid_tuner_hal2_service_runtime::{
 
 use crate::object_handle::{AidlObjectHandle, AidlObjectHandleError, AidlObjectKind};
 use crate::object_runtime::{
-    close_object, close_object_after_aidl_method_plan, ensure_object_live, plan_object_aidl_method,
-    quarantine_live_aidl_object_after_drop_leak,
-    SharedTunerRuntime,
+    close_object, close_object_after_aidl_method_plan, drop_leak_object, ensure_object_live,
+    plan_object_aidl_method, DropLeakDomainAction, SharedTunerRuntime,
 };
 
 #[derive(Clone)]
@@ -99,6 +98,6 @@ mod tests {
 
 impl Drop for FilterAidlObject {
     fn drop(&mut self) {
-        quarantine_live_aidl_object_after_drop_leak(&self.runtime, self.handle);
+        drop_leak_object(&self.runtime, self.handle, DropLeakDomainAction::None);
     }
 }

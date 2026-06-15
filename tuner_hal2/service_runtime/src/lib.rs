@@ -3,12 +3,15 @@ pub mod callback_registry;
 pub mod capability_profile;
 pub mod command_dispatch;
 pub mod diagnostics;
+pub mod demux_filter_dvr_ops;
+pub mod descrambler_ops;
 pub mod dispatch;
+pub mod frontend_ops;
+pub mod packet_ops;
 pub mod frontend_request_txn;
-pub mod frontend_worker_txn;
-pub mod lnb_apply_txn;
+mod frontend_worker_txn;
 pub mod lnb_backend_adapter;
-pub mod lnb_lifecycle_txn;
+pub mod lnb_ops;
 pub mod object_table;
 pub mod registry;
 pub mod runtime_handlers;
@@ -17,7 +20,7 @@ pub mod transaction_registry;
 
 pub use boot::{
     start_frontend_demux_live_pump_from_reader, FrontendDemuxPacketSink, FrontendProbeOutcome,
-    ServiceBootOutcome, TunerServiceRuntime,
+    RuntimeObjectPublicEntry, RuntimeObjectQueryError, ServiceBootOutcome, TunerServiceRuntime,
 };
 pub use callback_registry::{
     CallbackHealthState, RuntimeCallbackRegistration, RuntimeCallbackRegistry,
@@ -36,6 +39,11 @@ pub use diagnostics::{
     StartupDiagnosticRecord,
 };
 pub use dispatch::{dispatch_target_for, ServiceRuntimeDispatchTarget};
+pub use frontend_ops::{
+    close_frontend_workers_and_live_data_use_case, start_frontend_scan_use_case,
+    start_frontend_tune_use_case, stop_frontend_live_data_use_case,
+    stop_frontend_scan_use_case, stop_frontend_tune_use_case, FrontendScanEndNotifier,
+};
 pub use object_table::{
     RuntimeObjectEntry, RuntimeObjectLifecycle, RuntimeObjectTable, RuntimeObjectTableError,
     RuntimeOwnerRelation,
@@ -249,7 +257,7 @@ mod tests {
                 maleicacid_tuner_hal2_device::FrontendWorkerCancelReason::StopRequested,
             )
             .unwrap();
-        let events = runtime.frontend_terminal_events(1_000_000).unwrap();
+        let events = runtime.query().frontend_terminal_events(1_000_000).unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].generation, generation);
         assert_eq!(
@@ -323,9 +331,9 @@ mod tests {
 
         assert_eq!(outcome, ServiceBootOutcome::Ready);
         assert_eq!(runtime.registry().lnb_count(), 1);
-        assert_eq!(runtime.lnb_ids(), vec![1_020_001]);
+        assert_eq!(runtime.query().lnb_ids(), vec![1_020_001]);
         assert!(runtime
-            .lnb_id_by_name("maleicacid-lnb-px4-px4video0-unit-0")
+            .query().lnb_id_by_name("maleicacid-lnb-px4-px4video0-unit-0")
             .is_some());
     }
 
@@ -346,7 +354,7 @@ mod tests {
             frontend.lnb_profile,
             Some(LnbRegistryProfile::EarthPt1FixedLnb)
         );
-        let lnb = runtime.lnb_for_frontend_id(2_000_001).unwrap();
+        let lnb = runtime.query().lnb_for_frontend_id(2_000_001).unwrap();
         assert_eq!(lnb.profile, LnbRegistryProfile::EarthPt1FixedLnb);
     }
 
@@ -1056,7 +1064,7 @@ mod tests {
         runtime
             .register_descrambler_key_slot(token.clone(), key_slot)
             .unwrap();
-        expire_key_token(runtime.registry_mut().descrambler_key_table_mut(), &token);
+        expire_key_token(runtime.registry_mut_for_test().descrambler_key_table_mut(), &token);
 
         let err = runtime
             .set_descrambler_key_token(descrambler.id.0, token.as_binder_token_bytes())

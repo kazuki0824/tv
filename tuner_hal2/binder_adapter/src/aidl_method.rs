@@ -24,6 +24,10 @@ const MAX_FILTER_DELAY_MS: i64 = 10_000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AidlMethodCall {
+    PublicApi {
+        object: crate::AidlObjectKind,
+        api: crate::AidlApi,
+    },
     UnsupportedPublicApi {
         object: crate::AidlObjectKind,
         api: crate::AidlApi,
@@ -81,7 +85,7 @@ pub enum AidlMethodCall {
 impl AidlMethodCall {
     pub const fn api(&self) -> crate::AidlApi {
         match self {
-            Self::UnsupportedPublicApi { api, .. } => *api,
+            Self::PublicApi { api, .. } | Self::UnsupportedPublicApi { api, .. } => *api,
             Self::FrontendTune(_) => crate::AidlApi::FrontendTune,
             Self::FrontendSetLnb { .. } => crate::AidlApi::FrontendSetLnb,
             Self::FrontendStopTune => crate::AidlApi::FrontendStopTune,
@@ -131,6 +135,7 @@ impl AidlMethodCall {
 
     pub fn into_domain_command(self) -> DomainCommand {
         match self {
+            Self::PublicApi { object, api } => DomainCommand::PublicApi { object, api },
             Self::UnsupportedPublicApi { object, api } => DomainCommand::UnsupportedPublicApi {
                 object,
                 api,

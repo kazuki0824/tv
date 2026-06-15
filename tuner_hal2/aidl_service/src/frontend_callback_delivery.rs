@@ -6,7 +6,7 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
 };
 use maleicacid_tuner_hal2_binder_adapter::{AidlApi, AidlObjectKind};
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
-use maleicacid_tuner_hal2_service_runtime::frontend_worker_txn::FrontendScanEndNotifier;
+use maleicacid_tuner_hal2_service_runtime::FrontendScanEndNotifier;
 
 use crate::callback_store::frontend_callback_for_owner;
 use crate::object_handle::AidlObjectHandle;

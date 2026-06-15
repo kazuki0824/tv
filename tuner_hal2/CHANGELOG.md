@@ -1,3 +1,251 @@
+# r50ei37_aidl_boundary_public_planning
+
+- Removed AIDL-layer direct imports of `service_runtime::frontend_worker_txn`; AIDL now calls service_runtime public frontend use-case façade functions.
+- Made `service_runtime::frontend_worker_txn` crate-private and re-exported only the public frontend use-case boundary and scan-end notifier type.
+- Moved AIDL object handle/public runtime id lookup behind `TunerServiceRuntime::public_*_for_aidl_object()` query methods so AIDL helpers no longer call `object_table()` directly.
+- Added `AidlMethodCall::PublicApi` / `DomainCommand::PublicApi` and `Tuner/Frontend/DemuxPublicApiTxn` to separate supported public API planning from unsupported-by-design planning.
+- Updated `DESIGN_JA.md` and `CODE_CONVENTION.md` with the AIDL/service_runtime boundary rules for worker use-cases, object query façade, and PublicApi vs UnsupportedPublicApi planning.
+- build, rustfmt, Rust unit test, atest, VTS, and device validation are not executed in this environment.
+
+# r50ei36_registry_mut_boundary_doc_fix
+
+- Adopted the documented registry mutation boundary that allows `TunerServiceRuntime::registry_mut()` only inside `service_runtime/src/boot/*_txn.rs` domain transaction implementations and tests.
+- Updated `DESIGN_JA.md` and `CODE_CONVENTION.md` so the prohibition targets production code outside the boot transaction subtree, not the transaction context itself.
+- Clarified `RuntimeQuery<'a>` documentation to say it holds only required immutable read-only sources; current implementation holds the runtime registry only.
+- Corrected the r50ei35 changelog wording for `filter_open_type`: the AIDL-visible public/type-boundary wrapper is intentionally retained.
+- build, rustfmt, Rust unit test, atest, VTS, and device validation are not executed in this environment.
+
+# r50ei35_query_wrapper_pruning
+
+- Audited `TunerServiceRuntime` read-only query wrappers and moved service_runtime-internal call sites to `runtime.query().*`.
+- Removed internal-only `TunerServiceRuntime` query wrappers for frontend snapshots, demux snapshots, same-tune checks, live-reader descriptors, frontend terminal events, and frontend demux sink readiness.
+- Removed unused `RuntimeQuery` methods for frontend worker running generation. Kept `filter_open_type` because it is still used through the AIDL-visible public/type-boundary wrapper.
+- Kept externally visible query wrappers used by `aidl_service` as public API/type boundaries.
+- Updated `CODE_CONVENTION.md` to require existing wrapper audits and to prefer `runtime.query().*` for crate-internal read-only queries.
+- build, rustfmt, Rust unit test, atest, VTS, and device validation are not executed in this environment.
+
+# r50ei34_transact_visibility_wrapper_rules
+
+- Narrowed flat `transact_*` helper visibility inside `service_runtime/src/boot/*_txn.rs` from `pub(crate)` to private `fn`; domain transaction context methods remain the crate-visible boundary.
+- Removed duplicate LNB registry lookup in `ServiceRuntimeLnbProfileAdapter::apply_lnb_state()`.
+- Renamed the used `_state` parameter in `ServiceRuntimeLnbProfileAdapter::apply_lnb_state()` to `state`.
+- Added explicit wrapper creation criteria and static-check positioning to `CODE_CONVENTION.md`.
+- Added static checks for crate-visible flat `transact_*` helpers, top-level direct `transact_*` calls, adapter `_state` misuse, and wrapper-boundary conventions.
+- build, rustfmt, Rust unit test, atest, VTS, and device validation are not executed in this environment.
+
+# r50ei33_lnb_callback_store_adapter_rename
+
+- Renamed `ServiceRuntimeLnbProfileBackend` to `ServiceRuntimeLnbProfileAdapter` to reflect that it adapts service_runtime registry/profile state to `LnbBackendOps` rather than performing real backend I/O.
+- Renamed `mark_lnb_callback_registered()` to `commit_lnb_callback_registration()` across service_runtime and AIDL LNB method wiring.
+- Changed LNB callback registration state update to follow `clone -> mutate -> store_lnb_runtime()` instead of mutating the registry slot directly.
+- Updated `DESIGN_JA.md` and `CODE_CONVENTION.md` with the LNB adapter naming and LNB runtime mutation convention.
+- build, rustfmt, Rust unit test, atest, VTS, and device validation are not executed in this environment.
+
+# r50ei32_lnb_txn_context_registry_mut_narrowing
+
+- Added `LnbTxn<'a>` in `service_runtime/src/boot/lnb_txn.rs` and moved LNB binding, apply, lifecycle, callback registration, and drop-leak state mutations behind that boot child transaction context.
+- Replaced top-level LNB transaction implementation files with `service_runtime/src/lnb_ops.rs` public wrappers that call `LnbTxn<'a>` methods.
+- Removed production `registry_mut()` call sites outside the `boot` transaction subtree and made `TunerServiceRuntime::registry_mut()` private to `boot` and child modules.
+- Added `registry_mut_for_test()` for test fixture setup only.
+- Updated `DESIGN_JA.md` and `CODE_CONVENTION.md` to include LNB transaction context ownership, flat `transact_*` helper boundaries, one-line wrapper limits, and `registry_mut()` production-use prohibition.
+- build, rustfmt, Rust unit test, atest, VTS, and device validation are not executed in this environment.
+
+# r50ei31_runtime_query_txn_context_facade
+
+- Added `RuntimeQuery<'a>` in `service_runtime/src/boot/query_api.rs`; existing `TunerServiceRuntime` read-only query methods now delegate through `self.query()`.
+- Added domain transaction context facades in `boot/*_txn.rs`: `FrontendTxn<'a>`, `DemuxFilterDvrTxn<'a>`, `DescramblerTxn<'a>`, and `PacketTxn<'a>`.
+- Updated top-level `service_runtime/src/*_ops.rs` wrappers to call domain transaction context methods instead of directly calling flat `transact_*` helpers.
+- Updated `DESIGN_JA.md` section 6.2 to describe `RuntimeQuery<'a>` and domain transaction contexts as the current service_runtime boundary.
+- Flat `transact_*` helpers remain inside `boot/*_txn.rs` as implementation helpers in this release.
+- build, rustfmt, Rust unit test, atest, VTS, and device validation are not executed in this environment.
+
+# r50ei30_design_boundary_clarification
+
+- Reworked `DESIGN_JA.md` section 6.2 into explicit responsibility subsections for `boot.rs`, top-level `*_ops.rs`, `boot/*_txn.rs`, `query_api.rs`, and prohibitions.
+- Removed the stale wording that regular operations live under `service_runtime/src/boot/*.rs`; the current contract places public wrappers in top-level `service_runtime/src/*_ops.rs` and state-changing implementations in `service_runtime/src/boot/*_txn.rs`.
+- Clarified that mutating `transact_*` calls are limited to top-level `*_ops.rs` and `boot/*_txn.rs`, and that `query_api.rs` remains read-only.
+- Added static checks for `transact_*` caller locations and the `query_api.rs` no-mutating-transaction boundary.
+- build, rustfmt, Rust unit test, atest, VTS, and device validation are not executed in this environment.
+
+# r50ei29_transaction_boundary_final_audit
+
+- Re-audited the service_runtime top-level operation wrapper and boot transaction owner boundary after the additional demux/filter/DVR, descrambler, and frontend helper wrapper split work.
+- Confirmed top-level `service_runtime/src/*_ops.rs` files remain wrapper-only and do not directly access `TunerServiceRuntime` private fields.
+- Confirmed `service_runtime/src/boot/*_txn.rs` state-changing public surface is reduced to `transact_*` methods, with `map_filter_runtime_error` kept as a shared non-mutating mapper.
+- Narrowed `map_filter_runtime_error` visibility from `pub(crate)` to `pub(super)` because it is only shared inside the `boot` module subtree.
+- Generated final static checks and an external final audit report for the transaction boundary.
+- build, rustfmt, Rust unit test, atest, VTS, and device validation are not executed in this environment.
+
+# r50ei28_frontend_helper_txn_wrappers
+
+- Extended the top-level frontend operation wrapper split to runtime snapshot restore, tune commit, signal/live-pump reporting, live-reader lifecycle, scan session, and frontend failure helper methods.
+- Added `transact_*` transaction owner methods for those frontend helper operations in `boot/frontend_txn.rs`.
+- Kept `TunerServiceRuntime` private field access inside `service_runtime/src/boot/frontend_txn.rs`; top-level `service_runtime/src/frontend_ops.rs` remains wrapper-only.
+- Updated `DESIGN_JA.md` to describe the expanded frontend wrapper boundary as current structure.
+- `TunerServiceRuntime` fields remain private; no `pub(crate)` field widening was introduced.
+- build, rustfmt, Rust unit test, atest, VTS, and device validation are not executed in this environment.
+
+# r50ei27_descrambler_allocation_txn_wrapper
+
+- Extended the top-level descrambler operation wrapper split to `allocate_descrambler_runtime`.
+- Added `transact_allocate_descrambler_runtime` in `boot/descrambler_txn.rs` and kept registry allocation there.
+- Kept top-level `service_runtime/src/descrambler_ops.rs` wrapper-only and free of `TunerServiceRuntime` private field access.
+- Updated `DESIGN_JA.md` to describe the expanded descrambler wrapper boundary as current structure.
+- `TunerServiceRuntime` fields remain private; no `pub(crate)` field widening was introduced.
+- build, rustfmt, Rust unit test, atest, VTS, and device validation are not executed in this environment.
+
+# r50ei26_demux_filter_dvr_allocation_txn_wrappers
+
+- Extended the top-level demux/filter/DVR operation wrapper split to allocation, unregister, AV stream type, and delay hint methods.
+- Added `transact_allocate_demux_runtime`, `transact_unregister_demux_runtime`, `transact_allocate_filter_runtime`, `transact_unregister_filter_runtime`, `transact_configure_filter_av_stream_type_request`, `transact_set_filter_delay_hint_request`, `transact_allocate_dvr_runtime`, and `transact_unregister_dvr_runtime` transaction owner methods in `boot/demux_filter_dvr_txn.rs`.
+- Kept `TunerServiceRuntime` private field access inside `service_runtime/src/boot/demux_filter_dvr_txn.rs`; top-level `service_runtime/src/demux_filter_dvr_ops.rs` remains wrapper-only.
+- Updated `DESIGN_JA.md` to describe the expanded demux/filter/DVR wrapper boundary as current structure.
+- `TunerServiceRuntime` fields remain private; no `pub(crate)` field widening was introduced.
+- build, rustfmt, Rust unit test, atest, VTS, and device validation are not executed in this environment.
+
+# r50ei25_top_level_transaction_audit
+
+- Audited the service_runtime top-level operation wrapper boundary after frontend, demux/filter/DVR, descrambler, and packet wrapper split work.
+- Confirmed top-level `service_runtime/src/*_ops.rs` files do not directly access `TunerServiceRuntime` private fields and call transaction/query APIs only.
+- Clarified `DESIGN_JA.md` current contract: private field access is confined to `service_runtime/src/boot/query_api.rs` and `service_runtime/src/boot/*_txn.rs`, while top-level operation files remain wrapper-only.
+- Generated static checks and an external audit report for the remaining boot child transaction owner methods, including allocation/unregister/helper methods that still intentionally own registry mutation.
+- build, rustfmt, Rust unit test, atest, VTS, and device validation are not executed in this environment.
+
+# r50ei24_packet_top_level_wrappers
+
+- Added true top-level `service_runtime/src/packet_ops.rs` for packet ingress and demux-binding public wrappers.
+- Kept `TunerServiceRuntime` private field access inside `service_runtime/src/boot/packet_txn.rs`; the top-level wrapper file calls only `pub(crate)` transaction methods.
+- Moved public `set_demux_frontend_data_source`, `reset_bound_demuxes_for_frontend_tune_start`, `reset_and_unbind_bound_demuxes_for_frontend`, `quarantine_frontend_and_bound_demuxes`, and `push_frontend_ts_packet_to_bound_demuxes` wrappers out of `boot/packet_txn.rs`.
+- Moved read-only `ensure_frontend_demux_sink_ready` into `boot/query_api.rs` to keep packet top-level wrappers free of private field access.
+- Updated `service_runtime/src/lib.rs`, `Android.bp`, and `DESIGN_JA.md` to include the top-level packet operation wrapper boundary.
+- `TunerServiceRuntime` fields remain private; no `pub(crate)` field widening was introduced.
+- build, rustfmt, Rust unit test, atest, VTS, and device validation are not executed in this environment.
+
+# r50ei23_descrambler_top_level_wrappers
+
+- Added true top-level `service_runtime/src/descrambler_ops.rs` for descrambler public wrappers.
+- Kept `TunerServiceRuntime` private field access inside `service_runtime/src/boot/descrambler_txn.rs`; the top-level wrapper file calls only `pub(crate)` transaction methods.
+- Moved public `set_descrambler_demux_source`, `set_descrambler_key_token`, `add_descrambler_pid_non_null_source`, `remove_descrambler_pid_non_null_source`, and `unregister_descrambler_runtime` wrappers out of `boot/descrambler_txn.rs`.
+- Moved the crate-visible `cleanup_descramblers_for_demux_owner_loss` wrapper to the top-level descrambler operation file while leaving owner-loss cleanup implementation in the transaction owner.
+- Updated `service_runtime/src/lib.rs`, `Android.bp`, and `DESIGN_JA.md` to include the top-level descrambler operation wrapper boundary.
+- `TunerServiceRuntime` fields remain private; no `pub(crate)` field widening was introduced.
+- Allocation and internal cleanup helpers still live in `boot/descrambler_txn.rs` because they directly own registry/session mutation.
+- build, rustfmt, Rust unit test, atest, VTS, and device validation are not executed in this environment.
+
+# r50ei22_demux_filter_dvr_top_level_wrappers
+
+- Added true top-level `service_runtime/src/demux_filter_dvr_ops.rs` for demux/filter/DVR public wrappers.
+- Kept `TunerServiceRuntime` private field access inside `service_runtime/src/boot/demux_filter_dvr_txn.rs`; the top-level wrapper file calls only `pub(crate)` transaction methods.
+- Moved public `register_demux_filter_runtime`, `configure_filter_runtime_request`, `start_filter_runtime`, `stop_filter_runtime`, `flush_filter_runtime`, `set_filter_data_source_non_null`, and `register_demux_dvr_runtime` wrappers out of `boot/demux_filter_dvr_txn.rs`.
+- Updated `service_runtime/src/lib.rs`, `Android.bp`, and `DESIGN_JA.md` to include the top-level demux/filter/DVR operation wrapper boundary.
+- `TunerServiceRuntime` fields remain private; no `pub(crate)` field widening was introduced.
+- Only demux/filter/DVR methods already backed by explicit `transact_*` APIs were top-levelized in this release; allocation/unregister helpers still live in `boot/demux_filter_dvr_txn.rs`.
+- build, rustfmt, Rust unit test, atest, VTS, and device validation are not executed in this environment.
+
+# r50ei21_frontend_top_level_worker_wrappers
+
+- Added true top-level `service_runtime/src/frontend_ops.rs` for frontend worker lifecycle public wrappers.
+- Kept `TunerServiceRuntime` private field access inside `service_runtime/src/boot/frontend_txn.rs`; the top-level wrapper file calls only `pub(crate)` transaction methods.
+- Moved public `start_frontend_worker`, `request_frontend_worker_stop`, `request_frontend_worker_stop_and_join`, and `clear_finished_frontend_workers` wrappers out of `boot/frontend_txn.rs`.
+- Updated `service_runtime/src/lib.rs`, `Android.bp`, and `DESIGN_JA.md` to include the top-level frontend operation wrapper boundary.
+- `TunerServiceRuntime` fields remain private; no `pub(crate)` field widening was introduced.
+- Only frontend worker lifecycle wrappers were top-levelized in this release; remaining frontend mutation public methods still live in `boot/frontend_txn.rs`.
+- build, rustfmt, Rust unit test, atest, VTS, and device validation are not executed in this environment.
+
+# r50ei20_packet_txn_boundary
+
+- Renamed `service_runtime/src/boot/packet_ops.rs` to `service_runtime/src/boot/packet_txn.rs` and updated `boot.rs`, `Android.bp`, and `DESIGN_JA.md` accordingly.
+- Kept existing public packet/demux-binding runtime method names stable while placing packet ingress and stream-boundary implementation under the transaction owner file.
+- Added explicit `transact_set_demux_frontend_data_source`, `transact_reset_bound_demuxes_for_frontend_tune_start`, `transact_reset_and_unbind_bound_demuxes_for_frontend`, `transact_quarantine_frontend_and_bound_demuxes`, and `transact_push_frontend_ts_packet_to_bound_demuxes` internal transaction methods.
+- Preserved existing `GenerationBoundaryTxn` usage inside the service_runtime transaction boundary.
+- `TunerServiceRuntime` fields remain private; no `pub(crate)` field widening was introduced.
+- Remaining packet helper internals still directly access `self.registry` / diagnostics inside `packet_txn.rs`; allocation/unregister helper cleanup consolidation is not completed in this release.
+- build, rustfmt, Rust unit test, atest, VTS, and device validation are not executed in this environment.
+
+# r50ei19_descrambler_txn_boundary
+
+- Renamed `service_runtime/src/boot/descrambler_ops.rs` to `service_runtime/src/boot/descrambler_txn.rs` and updated `boot.rs`, `Android.bp`, and `DESIGN_JA.md` accordingly.
+- Kept existing public descrambler runtime method names stable while placing descrambler state-changing implementation under the transaction owner file.
+- Added explicit `transact_set_descrambler_demux_source`, `transact_set_descrambler_key_token`, `transact_add_descrambler_pid_non_null_source`, `transact_remove_descrambler_pid_non_null_source`, `transact_unregister_descrambler_runtime`, and `transact_cleanup_descramblers_for_demux_owner_loss` internal transaction methods.
+- Preserved existing `DescramblerSessionTxn` usage inside the service_runtime transaction boundary.
+- `TunerServiceRuntime` fields remain private; no `pub(crate)` field widening was introduced.
+- Remaining descrambler allocation/helper/cleanup internals still directly access `self.registry` inside `descrambler_txn.rs`; packet mutation transaction API work is not completed in this release.
+- build, rustfmt, Rust unit test, atest, VTS, and device validation are not executed in this environment.
+
+# r50ei18_demux_filter_dvr_txn_boundary
+
+- Renamed `service_runtime/src/boot/demux_filter_dvr_ops.rs` to `service_runtime/src/boot/demux_filter_dvr_txn.rs` and updated `boot.rs`, `Android.bp`, and `DESIGN_JA.md` accordingly.
+- Kept existing public demux/filter/DVR runtime method names stable while placing demux/filter/DVR state-changing implementation under the transaction owner file.
+- Added explicit `transact_register_demux_filter_runtime`, `transact_configure_filter_runtime_request`, `transact_start_filter_runtime`, `transact_stop_filter_runtime`, `transact_flush_filter_runtime`, `transact_set_filter_data_source_non_null`, and `transact_register_demux_dvr_runtime` internal transaction methods.
+- Preserved existing `FilterConfigureTxn` usage inside the service_runtime transaction boundary.
+- `TunerServiceRuntime` fields remain private; no `pub(crate)` field widening was introduced.
+- Remaining demux/filter/DVR allocation/unregister paths still directly access `self.registry` inside `demux_filter_dvr_txn.rs`; descrambler and packet mutation transaction API work is not completed in this release.
+- build, rustfmt, Rust unit test, atest, VTS, and device validation are not executed in this environment.
+
+# r50ei17_frontend_txn_boundary
+
+- Renamed `service_runtime/src/boot/frontend_ops.rs` to `service_runtime/src/boot/frontend_txn.rs` and updated `boot.rs`, `Android.bp`, and `DESIGN_JA.md` accordingly.
+- Kept existing public frontend runtime method names stable while placing frontend state-changing implementation under the frontend transaction owner file.
+- Added explicit `transact_frontend_worker_start`, `transact_frontend_worker_stop`, `transact_frontend_worker_stop_and_join`, and `transact_clear_finished_frontend_workers` internal transaction methods for worker lifecycle operations.
+- Moved remaining read-only frontend descriptor/event query methods to `query_api.rs`.
+- `TunerServiceRuntime` fields remain private; no `pub(crate)` field widening was introduced.
+- Remaining frontend runtime mutation methods still directly access `self.registry` inside `frontend_txn.rs`; demux/filter/DVR, descrambler, and packet mutation transaction API work is not completed in this release.
+- build, rustfmt, Rust unit test, atest, VTS, and device validation are not executed in this environment.
+
+# r50ei16_query_api_design_cleanup
+
+- Revised `DESIGN_JA.md` section 6.2 to remove staged wording such as future/next-step/incomplete-state descriptions and keep only the current service_runtime structure contract.
+- Added `service_runtime/src/boot/query_api.rs` as the owner of read-only runtime query methods.
+- Moved read-only query methods from `frontend_ops.rs`, `demux_filter_dvr_ops.rs`, and `packet_ops.rs` into `query_api.rs`.
+- Updated `Android.bp` to include `service_runtime/src/boot/query_api.rs` in the service_runtime source lists.
+- Kept `TunerServiceRuntime` fields private and did not widen them to `pub(crate)` for operation modules.
+- Mutation transaction API implementation is not completed in this release; remaining direct registry/worker mutation paths stay in the domain operation modules.
+- build, rustfmt, Rust unit test, atest, VTS, and device validation are not executed in this environment.
+
+# r50ei15_boot_child_normal_mod_layout
+
+- Removed `#[path]` from `service_runtime/src/boot.rs` operation module declarations.
+- Removed the remaining demux parser `#[path]` declarations by making `demux/src/parser/mod.rs` own the parser child modules and re-exporting them from `demux/src/lib.rs`.
+- Moved service_runtime operation files back under normal Rust child-module layout:
+  - `service_runtime/src/boot/frontend_ops.rs`
+  - `service_runtime/src/boot/demux_filter_dvr_ops.rs`
+  - `service_runtime/src/boot/descrambler_ops.rs`
+  - `service_runtime/src/boot/packet_ops.rs`
+- Updated `Android.bp` source lists to the `service_runtime/src/boot/*.rs` paths.
+- Updated `DESIGN_JA.md` to define this as the current supported layout: ops remain `boot` child modules, no `#[path]`, no `include!`, and no `include_str!`.
+- Documented the next-stage rule: true `service_runtime` top-level module migration requires transaction API design first, and must not be achieved by widening `TunerServiceRuntime` fields to `pub(crate)`.
+- build, rustfmt, Rust unit test, atest, VTS, and device validation are not executed in this environment.
+
+# r50ei14_import_doc_test_cleanup
+
+- Moved `GLOBAL_CODE_CONVENTION.md` production `use super::*;` ban into the Rust section instead of leaving it under the Kotlin heading.
+- Clarified `service_runtime/src/*_ops.rs` ownership in `DESIGN_JA.md`: files are top-level, modules remain `boot` children via `#[path]` to avoid widening `TunerServiceRuntime` field visibility.
+- Added an explanatory comment beside the service_runtime ops module declarations in `boot.rs`.
+- Reduced r50ei13 broad explicit imports in AIDL method files and service_runtime ops files to usage-oriented explicit imports.
+- Extended drop leak unit tests with a test-only callback-store marker so `drop_leak_object()` now verifies callback store clearing as well as runtime callback registry and quarantine state.
+- build, rustfmt, Rust unit test, atest, VTS, and device validation are not executed in this environment.
+
+# r50ei13_explicit_import_split_drop_leak_tests
+
+- `GLOBAL_CODE_CONVENTION.md` に production code の `use super::*;` 禁止を追加した。
+- `aidl_service/src/tuner_service/support.rs` を追加し、AIDL object lookup / unsupported planning / source filter handle helper を `tuner_service.rs` から分離した。
+- `aidl_service/src/tuner_service/*_methods.rs` の `use super::*;` を明示 import へ置換した。
+- service_runtime operation files を `service_runtime/src/*_ops.rs` へ移し、`DESIGN_JA.md` に top-level ops file 境界を明文化した。
+- `service_runtime/src/*_ops.rs` の `use super::*;` を明示 import へ置換した。
+- `drop_leak_object()` の通常 quarantine / callback registry clear と、domain drop record failure 時の callback unhealthy 化を unit test で固定した。
+- build、Rust unit test、atest、VTS、実機確認は未実施。
+
+# r50ei12_structure_cleanup_status_worker_guard
+
+- Split child AIDL trait implementations out of `aidl_service/src/tuner_service.rs` into normal Rust modules under `aidl_service/src/tuner_service/`; no `include!` split is used.
+- Split large `service_runtime/src/boot.rs` operation groups into normal Rust modules under `service_runtime/src/boot/` for frontend, demux/filter/DVR, descrambler, and packet ingress operations.
+- Documented the tuner_hal2 file ownership boundaries in `DESIGN_JA.md`, including the explicit `include!` ban for structural splitting.
+- Replaced callback cleanup best-effort/drop-specific paths with common `drop_leak_object()` plus `DropLeakDomainAction`; LNB Drop keeps only the domain leak marker hook and no longer owns bespoke cleanup flow.
+- Added owner-wide callback unhealthy marking to `RuntimeCallbackRegistry` and tests for that registry behavior.
+- Changed frontend worker cancel-reason poisoning to return `HalError`/`StopRequestFailed` instead of normalizing to `None`; added a poison-lock unit test.
+- Centralized Binder status construction in `aidl_service::error_bridge`; direct `Status::new_service_specific_error()` calls are limited to that file.
+- Build / rustfmt / rust unit / atest / VTS / device validation: not executed in this environment. `rustfmt` and `rustc` binaries were not available in the container.
+
 # r50ei11_origs215_373_expired_token_resolution
 
 - ORIG-215 / ORIG-373 token resolution fix candidate.
