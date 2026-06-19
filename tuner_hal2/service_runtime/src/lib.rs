@@ -2,20 +2,27 @@ pub mod boot;
 pub mod callback_registry;
 pub mod capability_profile;
 pub mod command_dispatch;
-pub mod diagnostics;
 pub mod demux_filter_dvr_ops;
 pub mod descrambler_ops;
+pub mod diagnostics;
 pub mod dispatch;
+pub mod error_mapping;
 pub mod frontend_ops;
-pub mod packet_ops;
 pub mod frontend_request_txn;
 mod frontend_worker_txn;
 pub mod lnb_backend_adapter;
 pub mod lnb_ops;
+mod method_dispatch;
+pub mod method_validation;
+pub mod object_close_txn;
+pub mod object_lifecycle;
+pub mod object_method_txn;
 pub mod object_table;
+pub mod packet_ops;
+pub mod root_object_ops;
+pub use object_method_txn::ObjectMethodDispatchPreflight;
+mod open_rollback;
 pub mod registry;
-pub mod runtime_handlers;
-pub mod runtime_result;
 pub mod transaction_registry;
 
 pub use boot::{
@@ -23,7 +30,8 @@ pub use boot::{
     RuntimeObjectPublicEntry, RuntimeObjectQueryError, ServiceBootOutcome, TunerServiceRuntime,
 };
 pub use callback_registry::{
-    CallbackHealthState, RuntimeCallbackRegistration, RuntimeCallbackRegistry,
+    CallbackHealthState, CallbackRegistryUpdate, RuntimeCallbackRegistration,
+    RuntimeCallbackRegistry,
 };
 pub use capability_profile::{
     configure_ip_cid_result, configure_monitor_event_result, failure_domain, feature_declared,
@@ -34,33 +42,32 @@ pub use command_dispatch::{
     RuntimeCommandDispatchError, RuntimeCommandDispatchPlan, RuntimeCommandDispatcher,
 };
 pub use diagnostics::{
-    CapabilitySuppressionReason, DescramblerDiagnosticKind, DescramblerDiagnosticPhase,
+    CapabilitySuppressionReason, ChildOpenRollbackDiagnosticRecord, ChildOpenRollbackKind,
+    ChildOpenRollbackPhase, DescramblerDiagnosticKind, DescramblerDiagnosticPhase,
     DescramblerDiagnosticRecord, StartupDiagnosticKind, StartupDiagnosticPhase,
     StartupDiagnosticRecord,
 };
 pub use dispatch::{dispatch_target_for, ServiceRuntimeDispatchTarget};
-pub use frontend_ops::{
-    close_frontend_workers_and_live_data_use_case, start_frontend_scan_use_case,
-    start_frontend_tune_use_case, stop_frontend_live_data_use_case,
-    stop_frontend_scan_use_case, stop_frontend_tune_use_case, FrontendScanEndNotifier,
+pub use frontend_ops::set_frontend_lnb_object_use_case;
+pub use frontend_worker_txn::{
+    cleanup_frontend_object_after_close_begin as close_frontend_object_cleanup_use_case,
+    start_frontend_backend_scan_session_worker as start_frontend_scan_use_case,
+    start_frontend_backend_tune_worker as start_frontend_tune_use_case,
+    stop_frontend_scan_object as stop_frontend_scan_use_case,
+    stop_frontend_tune_object as stop_frontend_tune_use_case, FrontendCloseCleanupReport,
+    FrontendScanEndNotifier,
 };
 pub use object_table::{
-    RuntimeObjectEntry, RuntimeObjectLifecycle, RuntimeObjectTable, RuntimeObjectTableError,
-    RuntimeOwnerRelation,
+    RuntimeObjectEntry, RuntimeObjectLifecycle, RuntimeObjectTableError, RuntimeOwnerRelation,
 };
 pub use registry::{
     DemuxRegistryEntry, DemuxRuntimeId, FrontendRegistryEntry, FrontendRuntimeId, LnbRegistryEntry,
     LnbRegistryProfile, LnbRuntimeId, RegistryCommitError, RuntimeRegistry, RuntimeRegistryKind,
 };
-pub use runtime_handlers::{
-    all_runtime_transactions_are_classified, runtime_handler_coverage_for, RuntimeDispatchHandler,
-};
-pub use runtime_result::{
-    RuntimeHandlerCoverage, RuntimeHandlerError, RuntimeHandlerResult, RuntimeHandlerSuccess,
-};
 pub use transaction_registry::{
     every_aidl_transaction_has_runtime_spec, runtime_transaction_specs, transaction_spec_for,
-    RuntimeDispatchTarget, RuntimeTransactionSpec, RUNTIME_TRANSACTION_SPECS,
+    RuntimeDispatchTarget, RuntimeTransactionCoverage, RuntimeTransactionSpec,
+    RUNTIME_TRANSACTION_SPECS,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -86,6 +93,7 @@ mod tests {
     };
     use maleicacid_tuner_hal2_domain_request::{RuntimeTransactionName, AIDL_TRANSACTION_TABLE};
     use std::path::PathBuf;
+    use std::time::Duration;
 
     fn path(name: &str) -> PathBuf {
         PathBuf::from(name)
@@ -160,6 +168,7 @@ mod tests {
         )]);
 
         let generation = runtime
+            .frontend_txn()
             .prepare_frontend_worker_generation(
                 1_000_000,
                 maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
@@ -178,6 +187,77 @@ mod tests {
     }
 
     #[test]
+    fn frontend_worker_prepare_reaps_completed_failure_before_replacement() {
+        let mut runtime = TunerServiceRuntime::new();
+        runtime.boot_from_probe_results([available(
+            1_000_000,
+            FrontendBackendKind::Px4CharDevice,
+            FrontendSystem::IsdbT,
+            "/dev/px4video0",
+            None,
+        )]);
+
+        let generation = runtime
+            .frontend_txn()
+            .prepare_frontend_worker_generation(
+                1_000_000,
+                maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
+            )
+            .unwrap();
+        runtime
+            .frontend_txn()
+            .install_frontend_live_reader_descriptor_for_generation(
+                1_000_000,
+                maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
+                generation,
+            )
+            .unwrap();
+        runtime
+            .frontend_txn()
+            .start_worker(
+                1_000_000,
+                maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
+                generation,
+                |_ctx| {
+                    Err(HalError::internal(
+                        maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                        "test frontend worker failure",
+                    ))
+                },
+            )
+            .unwrap();
+
+        let mut next_generation = None;
+        for _ in 0..100 {
+            match runtime.frontend_txn().prepare_frontend_worker_generation(
+                1_000_000,
+                maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
+            ) {
+                Ok(value) => {
+                    next_generation = Some(value);
+                    break;
+                }
+                Err(HalError::InvalidState { .. }) => std::thread::sleep(Duration::from_millis(1)),
+                Err(other) => panic!("unexpected prepare error after worker completion: {other:?}"),
+            }
+        }
+
+        assert_eq!(next_generation, Some(generation + 1));
+        let frontend = runtime
+            .registry()
+            .frontend_runtime(FrontendRuntimeId(1_000_000))
+            .unwrap();
+        assert_eq!(
+            frontend.state(),
+            maleicacid_tuner_hal2_device::FrontendRuntimeState::Failed
+        );
+        assert!(matches!(
+            frontend.last_error(),
+            Some(HalError::Internal { .. })
+        ));
+    }
+
+    #[test]
     fn frontend_live_reader_descriptor_install_commits_generation_and_stop_clears_reader() {
         let mut runtime = TunerServiceRuntime::new();
         runtime.boot_from_probe_results([available(
@@ -189,12 +269,14 @@ mod tests {
         )]);
 
         let generation = runtime
+            .frontend_txn()
             .prepare_frontend_worker_generation(
                 1_000_000,
                 maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
             )
             .unwrap();
         runtime
+            .frontend_txn()
             .install_frontend_live_reader_descriptor_for_generation(
                 1_000_000,
                 maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
@@ -213,6 +295,7 @@ mod tests {
         assert!(frontend.live_reader_descriptor().is_some());
 
         runtime
+            .frontend_txn()
             .clear_frontend_live_reader_descriptor_and_idle(1_000_000)
             .unwrap();
         let frontend = runtime
@@ -238,12 +321,14 @@ mod tests {
         )]);
 
         let generation = runtime
+            .frontend_txn()
             .prepare_frontend_worker_generation(
                 1_000_000,
                 maleicacid_tuner_hal2_device::FrontendWorkerKind::Scan,
             )
             .unwrap();
         runtime
+            .frontend_txn()
             .install_frontend_live_reader_descriptor_for_generation(
                 1_000_000,
                 maleicacid_tuner_hal2_device::FrontendWorkerKind::Scan,
@@ -251,6 +336,7 @@ mod tests {
             )
             .unwrap();
         runtime
+            .frontend_txn()
             .record_frontend_scan_cancelled(
                 1_000_000,
                 generation,
@@ -266,6 +352,7 @@ mod tests {
         );
 
         runtime
+            .frontend_txn()
             .clear_frontend_live_reader_descriptor_and_idle(1_000_000)
             .unwrap();
         let frontend = runtime
@@ -290,12 +377,14 @@ mod tests {
         )]);
 
         let generation = runtime
+            .frontend_txn()
             .prepare_frontend_worker_generation(
                 2_000_000,
                 maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
             )
             .unwrap();
         runtime
+            .frontend_txn()
             .install_frontend_live_reader_descriptor_for_generation(
                 2_000_000,
                 maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
@@ -333,7 +422,8 @@ mod tests {
         assert_eq!(runtime.registry().lnb_count(), 1);
         assert_eq!(runtime.query().lnb_ids(), vec![1_020_001]);
         assert!(runtime
-            .query().lnb_id_by_name("maleicacid-lnb-px4-px4video0-unit-0")
+            .query()
+            .lnb_id_by_name("maleicacid-lnb-px4-px4video0-unit-0")
             .is_some());
     }
 
@@ -436,7 +526,7 @@ mod tests {
     #[test]
     fn every_binder_adapter_transaction_has_service_runtime_dispatch_target() {
         for plan in AIDL_TRANSACTION_TABLE {
-            assert!(dispatch_target_for(plan.transaction).is_some());
+            assert!(dispatch_target_for(plan.transaction()).is_some());
         }
     }
 
@@ -453,12 +543,12 @@ mod tests {
         let command_plan = AIDL_TRANSACTION_TABLE
             .iter()
             .copied()
-            .find(|plan| plan.transaction == RuntimeTransactionName::FrontendTuneTxnApply)
+            .find(|plan| plan.transaction() == RuntimeTransactionName::FrontendTuneTxnApply)
             .expect("frontend tune transaction exists");
         let plan =
             RuntimeCommandDispatcher::plan(command_plan, None).expect("dispatch target exists");
         assert_eq!(
-            plan.command_plan.transaction,
+            plan.command_plan.transaction(),
             RuntimeTransactionName::FrontendTuneTxnApply
         );
         assert_eq!(plan.target, ServiceRuntimeDispatchTarget::Frontend);
@@ -478,7 +568,7 @@ mod tests {
         };
         use maleicacid_tuner_hal2_resource_ledger::{LedgerGeneration, LedgerId};
 
-        let mut table = RuntimeObjectTable::default();
+        let mut table = crate::object_table::RuntimeObjectTable::default();
         let first = RuntimeObjectEntry {
             object_kind: AidlObjectKind::Frontend,
             object_id: AidlObjectId(10),
@@ -513,7 +603,7 @@ mod tests {
         };
         use maleicacid_tuner_hal2_resource_ledger::{LedgerGeneration, LedgerId};
 
-        let mut table = RuntimeObjectTable::default();
+        let mut table = crate::object_table::RuntimeObjectTable::default();
         table
             .insert(RuntimeObjectEntry {
                 object_kind: AidlObjectKind::Demux,
@@ -554,7 +644,7 @@ mod tests {
         };
         use maleicacid_tuner_hal2_resource_ledger::{LedgerGeneration, LedgerId};
 
-        let mut table = RuntimeObjectTable::default();
+        let mut table = crate::object_table::RuntimeObjectTable::default();
         table
             .insert(RuntimeObjectEntry {
                 object_kind: AidlObjectKind::Filter,
@@ -580,69 +670,13 @@ mod tests {
     }
 
     #[test]
-    fn all_runtime_transactions_have_handler_coverage_classification() {
-        assert!(all_runtime_transactions_are_classified());
-        for plan in AIDL_TRANSACTION_TABLE {
-            let coverage = runtime_handler_coverage_for(plan.transaction);
-            assert!(matches!(
-                coverage,
-                RuntimeHandlerCoverage::Connected
-                    | RuntimeHandlerCoverage::NotConnected
-                    | RuntimeHandlerCoverage::UnsupportedByDesign
-            ));
-        }
-    }
-
-    #[test]
-    fn unconnected_handler_is_typed_error_not_success() {
-        use maleicacid_tuner_hal2_domain_request::{
-            AidlObjectGeneration, AidlObjectId, AidlObjectKind,
-        };
-        use maleicacid_tuner_hal2_resource_ledger::{LedgerGeneration, LedgerId};
-
-        let command_plan = AIDL_TRANSACTION_TABLE
-            .iter()
-            .copied()
-            .find(|plan| plan.transaction == RuntimeTransactionName::FrontendStopScanTxn)
-            .expect("frontend stop scan transaction exists");
-        let dispatch_plan =
-            RuntimeCommandDispatcher::plan(command_plan, None).expect("dispatch target exists");
-        let mut table = RuntimeObjectTable::default();
-        table
-            .insert(RuntimeObjectEntry {
-                object_kind: AidlObjectKind::Frontend,
-                object_id: AidlObjectId(1),
-                generation: AidlObjectGeneration(1),
-                ledger_id: LedgerId(1),
-                ledger_generation: LedgerGeneration(1),
-                owner: RuntimeOwnerRelation::Root,
-                lifecycle: RuntimeObjectLifecycle::Live,
-            })
-            .expect("insert succeeds");
-        let err = RuntimeDispatchHandler::dispatch(
-            &dispatch_plan,
-            &table,
-            AidlObjectId(1),
-            AidlObjectGeneration(1),
-        )
-        .expect_err("handler classification does not fake success for unconnected transactions");
-        assert!(matches!(
-            err,
-            RuntimeHandlerError::NotConnected {
-                transaction: RuntimeTransactionName::FrontendStopScanTxn,
-                ..
-            }
-        ));
-    }
-
-    #[test]
     fn closed_runtime_object_rejects_later_public_method_lookup() {
         use maleicacid_tuner_hal2_domain_request::{
             AidlObjectGeneration, AidlObjectId, AidlObjectKind,
         };
         use maleicacid_tuner_hal2_resource_ledger::{CleanupStep, LedgerGeneration, LedgerId};
 
-        let mut table = RuntimeObjectTable::default();
+        let mut table = crate::object_table::RuntimeObjectTable::default();
         table
             .insert(RuntimeObjectEntry {
                 object_kind: AidlObjectKind::Filter,
@@ -687,7 +721,7 @@ mod tests {
         };
         use maleicacid_tuner_hal2_resource_ledger::{LedgerGeneration, LedgerId};
 
-        let mut table = RuntimeObjectTable::default();
+        let mut table = crate::object_table::RuntimeObjectTable::default();
         let err = table
             .insert(RuntimeObjectEntry {
                 object_kind: AidlObjectKind::Filter,
@@ -719,7 +753,7 @@ mod tests {
         };
         use maleicacid_tuner_hal2_resource_ledger::{CleanupStep, LedgerGeneration, LedgerId};
 
-        let mut table = RuntimeObjectTable::default();
+        let mut table = crate::object_table::RuntimeObjectTable::default();
         table
             .insert(RuntimeObjectEntry {
                 object_kind: AidlObjectKind::Demux,
@@ -788,7 +822,7 @@ mod tests {
         };
         use maleicacid_tuner_hal2_resource_ledger::{CleanupStep, LedgerGeneration, LedgerId};
 
-        let mut table = RuntimeObjectTable::default();
+        let mut table = crate::object_table::RuntimeObjectTable::default();
         table
             .insert(RuntimeObjectEntry {
                 object_kind: AidlObjectKind::Lnb,
@@ -1064,7 +1098,10 @@ mod tests {
         runtime
             .register_descrambler_key_slot(token.clone(), key_slot)
             .unwrap();
-        expire_key_token(runtime.registry_mut_for_test().descrambler_key_table_mut(), &token);
+        expire_key_token(
+            runtime.registry_mut_for_test().descrambler_key_table_mut(),
+            &token,
+        );
 
         let err = runtime
             .set_descrambler_key_token(descrambler.id.0, token.as_binder_token_bytes())
@@ -1223,7 +1260,10 @@ mod tests {
             .add_descrambler_pid_non_null_source(descrambler.id.0, 200, filter.id.0)
             .unwrap();
 
-        runtime.unregister_demux_runtime(demux.id.0);
+        assert!(runtime
+            .unregister_demux_runtime(demux.id.0)
+            .unwrap()
+            .is_some());
 
         let session = runtime
             .registry()
