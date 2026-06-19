@@ -9,6 +9,7 @@ use crate::TsInputOrigin;
 
 use super::dvr::{DvrKind, DvrRuntime};
 use super::filter::{FilterRuntime, FilterRuntimeSnapshot, FilterRuntimeState};
+use super::source_boundary::SourceBoundaryTxn;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DemuxRuntimeState {
@@ -474,7 +475,12 @@ impl DemuxRuntime {
         {
             return Err(DemuxRuntimeError::pid_mismatch(source_filter_id));
         }
-        let reset = self.reset_generation_boundary()?;
+        let (source_boundary, outcome) = SourceBoundaryTxn::new(sink_filter_id).apply(self);
+        outcome?;
+        let reset = source_boundary
+            .reset_report()
+            .cloned()
+            .unwrap_or_default();
         self.filters
             .get_mut(&sink_filter_id)
             .ok_or(DemuxRuntimeError::filter_missing(sink_filter_id))?

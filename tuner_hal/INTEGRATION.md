@@ -170,7 +170,7 @@ BOARD_VENDOR_SEPOLICY_DIRS include
 - HAL-generated 範囲スキャン / ブラインドスキャン は 対応宣言しない。
 - frequency は explicit tune point に固定する。
 - ISDB-T bandwidth は 6MHz または AUTO 相当だけを使う。
-- ISDB-S modulation / coderate / symbolRate は r51 HAL validation と一致させる。
+- ISDB-S modulation / coderate / symbolRate は現行 HAL validation と一致させる。
 - BS は streamId / streamIdType を対象 TS と一致させる。
 - CS110 は stream selector を指定しない。
 ```
@@ -185,7 +185,7 @@ profiles/px4_isdbs_cs110_lab.yaml
 profiles/earth_pt1_isdbt_lab.yaml
 ```
 
-上記 `*_lab.yaml` は検査手順確認用の lab 用仮profile であり、r51 合格判定に使う前に、対象実機・対象地点で取得した PAT/PMT 由来の service_id、PMT PID、video ES PID、audio ES PID、record PID へ更新する。
+上記 `*_lab.yaml` は検査手順確認用の lab 用仮profile であり、合否判定に使う前に、対象実機・対象地点で取得した PAT/PMT 由来の service_id、PMT PID、video ES PID、audio ES PID、record PID へ更新する。
 
 PID は必ず対象 サービスの PMT から決める。
 
@@ -258,9 +258,9 @@ git diff -- tuner_hal/config/tuner_vts_config_aidl_V2.xml
 - README_JA.md に integration 詳細が重複していない。
 ```
 
-## 6. r51 ビルド・試験確認ゲート
+## 6. ビルド・試験確認ゲート
 
-この章は、tv 直下に作業メモを置かずに r51 確認対象を固定するための統合手順である。Tuner HAL 単体の合否判定は、Tuner HAL モジュールビルド、Rust 試験、atest、Tuner VTS モジュール、実機簡易確認 の順で行う。full VTS / full CTS はこの章の合格条件に含めない。
+この章は、tv 直下に作業メモを追加しない形で Tuner HAL 単体の確認対象を固定するための統合手順である。Tuner HAL 単体の合否判定は、Tuner HAL モジュールビルド、Rust 試験、atest、Tuner VTS モジュール、実機簡易確認 の順で行う。full VTS / full CTS はこの章の合格条件に含めない。
 
 ### 6.1 Soong モジュールビルド
 
@@ -317,7 +317,7 @@ out/host/linux-x86/vts/android-vts/tools/vts-tradefed
 run vts --module VtsHalTvTunerTargetTest
 ```
 
-`VtsHalTvTunerTargetTest` より前に `run vts-hal` または `run vts` の結果を r51 の Tuner HAL 合否判定に使ってはならない。
+`VtsHalTvTunerTargetTest` より前に `run vts-hal` または `run vts` の結果を Tuner HAL 単体の合否判定に使ってはならない。
 
 ### 6.4 flash 後の確認
 
@@ -337,106 +337,3 @@ adb shell dmesg | grep -i -E 'dvb|px4|tuner|maleicacid'
 - 対象 profile の frontend tune が LOCKED へ到達する。
 - 指定 PID の filter / DVR 経路で data が取得できる。
 ```
-
-## r50dz17: 50件根治後の追加確認
-
-共通部品化後は、既存Tuner HAL testに加え、次のtest moduleを必ず実行する。
-
-- `maleicacid_tuner_hal_binder_service_test`
-- `maleicacid_tuner_hal_soft_demux_test`
-- `maleicacid_tuner_hal_dvr_test`
-- `maleicacid_tuner_hal_descrambler_test`
-
-確認観点は次で固定する。
-
-- mutex汚染を正常停止や空queueへ丸めない。
-- openFilter/openDvr失敗時に幽霊登録が残らない。
-- demux close失敗後に再closeできる。
-- descrambler close失敗後に再closeできる。
-- source filter経由recordでrecord index eventが出る。
-- raw section / raw PESでeventが出る。
-- PES marker bit不正を拒否または診断化する。
-- discontinuity_indicatorでassemblerが切れる。
-- VVC/H.264/H.265 start codeを同一packet内で全走査する。
-- ISDB-T/S両対応frontendのruntime allowed systemsが両対応になる。
-
-r50dz17単体の確認では、追加した共通部品骨格のtestがcrate内に存在すること、既存実行経路へ接続していないことを静的確認する。
-
-
-## r50dz19 WP-03/WP-04 追加確認
-
-r50dz19 以降の Tuner HAL build 前確認では、少なくとも以下を実行する。
-
-```bash
-grep -R "poisoned\.into_inner" tuner_hal/binder_service/src tuner_hal/soft_demux/src
-grep -R "next_.*_id += 1" tuner_hal/binder_service/src tuner_hal/soft_demux/src
-grep -R "clear_best_effort" tuner_hal/binder_service/src | grep -v Drop
-grep -R "demux_live_ids\.insert\|demux_live_ids\.remove" tuner_hal/binder_service/src
-grep -R "tuner_fmq_" tuner_hal/binder_service/src | grep -v fmq_queue.rs
-grep -R "parse_pts\|decode_pts\|start_code" tuner_hal/binder_service/src | grep -v record_index
-```
-
-上記が一致する場合、WP-04 未完了として扱う。
-
-
-### r50dz20: WP-04静的確認の追加
-
-WP-04確認では、次も確認する。
-
-```bash
-grep -R "drop(live_ids)" tuner_hal/binder_service/src/tuner_hal.rs
-```
-
-一致する場合、demux live ID修復経路が再びguard破棄後再使用になっていないか確認する。
-
-## r50dz21: WP-04 補修後の追加grep確認
-
-WP-04確認では次も残存禁止として確認する。
-
-```bash
-grep -R "struct TsPacketView" vendor/maleicacid/tv/tuner_hal/soft_demux/src/lib.rs
-grep -R "FMQ ring I/O lock poisoned; fill must not be reported as empty" vendor/maleicacid/tv/tuner_hal/binder_service/src
-grep -R "LNB operation lock ledger poisoned" vendor/maleicacid/tv/tuner_hal/binder_service/src
-```
-
-いずれも該当なしを合格条件とする。
-
-## r50dz22: WP-04 補修後の追加grep確認
-
-WP-04 完了確認では、既存の残存禁止grepに加えて次を確認する。
-
-```bash
-grep -R "expect(.*normal recovery is forbidden" tuner_hal/binder_service/src
-grep -R "TsPacketRecordView\|StartCodeInfo\|find_sc_prefix\|BitReader" tuner_hal/binder_service/src
-grep -R "fn pes_time_fields\|fn pts_dts_field_value" tuner_hal/binder_service/src/tuner_hal.rs
-```
-
-いずれも空でなければならない。
-
-### r50dz23: WP-04 追加確認
-
-WP-04確認では、既存の残存禁止grepに加えて次を確認する。
-
-```bash
-grep -R "struct ManagedWorker\|enum WorkerExit\|fn spawn_worker\|type WorkerJoinHandle" tuner_hal/binder_service/src/tuner_hal.rs
-grep -R "LNB_OPERATION_LOCKS" tuner_hal/binder_service/src/tuner_hal.rs
-```
-
-どちらも空であること。
-
-## r50dz24: WP-04 補修後の追加grep
-
-WP-04確認では、既存grepに加えて次も確認する。
-
-```bash
-grep -R "fmq_queue_\|TunerFmqQueue\|tuner_fmq_" tuner_hal/binder_service/src/tuner_hal.rs
-grep -R "fn poisoned_lock_status\|fn lock_mutex_status\|fn lock_mutex_hal\|fn lock_mutex_io\|fn lock_mutex_option" tuner_hal/binder_service/src/tuner_hal.rs
-```
-
-上記はいずれもヒットしてはならない。
-
-```bash
-grep -R "callback_wake\|dvr_callback_wake\|Arc<(Mutex<bool>, Condvar)>" tuner_hal/binder_service/src/tuner_hal.rs
-```
-
-上記もヒットしてはならない。

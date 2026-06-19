@@ -6,6 +6,7 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     IFrontendCallback::IFrontendCallback, ILnbCallback::ILnbCallback,
 };
 use binder::Strong;
+use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
 use maleicacid_tuner_hal2_binder_adapter::{
     AidlApi, AidlObjectGeneration, AidlObjectId, AidlObjectKind,
 };
@@ -114,12 +115,13 @@ pub fn retain_dvr_callback(
     Ok(())
 }
 
-pub fn clear_owner_callbacks(handle: AidlObjectHandle) -> Result<(), AidlCallbackStoreError> {
+pub fn clear_owner_callbacks(handle: AidlObjectHandle) -> Result<usize, AidlCallbackStoreError> {
     let mut store = store()
         .lock()
         .map_err(|_| AidlCallbackStoreError::Poisoned)?;
+    let before = store.callbacks.len();
     store.callbacks.retain(|key, _| !key.matches_owner(handle));
-    Ok(())
+    Ok(before.saturating_sub(store.callbacks.len()))
 }
 
 #[cfg(test)]
@@ -210,6 +212,17 @@ pub fn dvr_callback_for_owner(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AidlCallbackStoreError {
     Poisoned,
+}
+
+impl AidlCallbackStoreError {
+    pub fn into_hal_error(self, context: &'static str) -> HalError {
+        match self {
+            Self::Poisoned => HalError::internal(
+                HalInternalKind::InvariantViolation,
+                format!("{context}: callback store lock poisoned"),
+            ),
+        }
+    }
 }
 
 #[cfg(test)]

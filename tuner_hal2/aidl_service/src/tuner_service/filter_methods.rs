@@ -1,205 +1,279 @@
+use super::support::local_filter_handle_from_strong;
 use super::{
-    AidlMethodCall, AidlObjectKind, AvStreamType, BinderResult, DemuxFilterSettings,
-    FilterAidlObject, FilterDelayHint, FilterReleaseAvHandleRequest,
-    FilterSetDataSourceRequest, IFilter, RuntimeOwnerRelation, Strong,
-    TunerNativeHandle, TunerQueueDesc, TunerResult, build_filter_av_stream_type_request,
-    build_filter_delay_hint_request, build_filter_summary_for_open_type,
-    status_from_hal_error, status_unknown_error, service_error
+    build_filter_av_stream_type_request, build_filter_delay_hint_request,
+    build_filter_summary_for_open_type, close_object_after_close_preflight,
+    execute_object_query_use_case, execute_object_runtime_use_case,
+    execute_object_runtime_use_case_with_request_builder, plan_unavailable_object_method_use_case,
+    status_from_hal_error, status_unknown_error, AidlMethodCall, AidlObjectKind, AvStreamType,
+    BinderResult, DemuxFilterSettings, FilterAidlObject, FilterDelayHint,
+    FilterReleaseAvHandleRequest, FilterSetDataSourceRequest, IFilter, Strong, TunerNativeHandle,
+    TunerQueueDesc,
 };
-use super::support::{
-    current_filter_open_type, demux_public_id_for_owner, filter_entry_public_id_and_owner,
-    local_filter_handle_from_strong, runtime_entry_public_id,
-    unavailable_after_method_plan
-};
+use maleicacid_tuner_hal2_binder_adapter::RuntimeExecutableRequest;
 
 impl IFilter for FilterAidlObject {
     fn getQueueDesc(&self, _queue: &mut TunerQueueDesc) -> BinderResult<()> {
-        self.ensure_open()?;
-        unavailable_after_method_plan(
-            self.plan_method(AidlMethodCall::FilterGetQueueDesc),
+        plan_unavailable_object_method_use_case(
+            &self.runtime(),
+            self.handle(),
+            || Ok(AidlMethodCall::FilterGetQueueDesc),
             "FMQ runtime is not connected in current tuner_hal2 scope",
         )
     }
+
     fn close(&self) -> BinderResult<()> {
-        self.close_object_after_plan(AidlMethodCall::FilterClose)
+        close_object_after_close_preflight(
+            &self.runtime(),
+            self.handle(),
+            AidlMethodCall::FilterClose,
+        )
     }
+
     fn configure(&self, settings: &DemuxFilterSettings) -> BinderResult<()> {
-        self.ensure_open()?;
-        let open_type = current_filter_open_type(self)?;
-        let config = build_filter_summary_for_open_type(settings, open_type)
-            .map_err(status_from_hal_error)?;
-        self.plan_method(AidlMethodCall::FilterConfigure(
-            maleicacid_tuner_hal2_binder_adapter::RuntimeExecutableRequest::ConfigureFilter(
-                config.clone(),
+        execute_object_runtime_use_case(
+            &self.runtime(),
+            self.handle(),
+            AidlMethodCall::FilterConfigure(
+                maleicacid_tuner_hal2_binder_adapter::RuntimeExecutableRequest::ConfigureFilterByCurrentOpenType,
             ),
-        ))?;
-        let runtime = self.runtime();
-        let filter_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Filter)?;
-        let result = runtime
-            .lock()
-            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
-            .configure_filter_runtime_request(filter_id, config)
-            .map_err(status_from_hal_error);
-        result
+            |runtime, handle, command_plan, executable_request| {
+                runtime.configure_filter_runtime_for_object_with_current_open_type(
+                    handle.object_id(),
+                    handle.generation(),
+                    command_plan,
+                    executable_request,
+                    |open_type| build_filter_summary_for_open_type(settings, open_type),
+                )
+            },
+        )
     }
+
     fn configureAvStreamType(&self, av_stream_type: &AvStreamType) -> BinderResult<()> {
-        self.ensure_open()?;
-        let request =
-            build_filter_av_stream_type_request(av_stream_type).map_err(status_from_hal_error)?;
-        self.plan_method(AidlMethodCall::FilterConfigureAvStreamType(request))?;
-        let runtime = self.runtime();
-        let filter_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Filter)?;
-        let result = runtime
-            .lock()
-            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
-            .configure_filter_av_stream_type_request(filter_id, request)
-            .map_err(status_from_hal_error);
-        result
+        execute_object_runtime_use_case_with_request_builder(
+            &self.runtime(),
+            self.handle(),
+            || {
+                let request = build_filter_av_stream_type_request(av_stream_type)
+                    .map_err(status_from_hal_error)?;
+                Ok((
+                    AidlMethodCall::FilterConfigureAvStreamType(request.clone()),
+                    request,
+                ))
+            },
+            |runtime, handle, _command_plan, _executable_request, dispatch_preflight, request| {
+                runtime.configure_filter_av_stream_type_for_object(
+                    handle.object_id(),
+                    handle.generation(),
+                    request,
+                    dispatch_preflight,
+                )
+            },
+        )
     }
+
     fn configureIpCid(&self, _ip_cid: i32) -> BinderResult<()> {
-        self.ensure_open()?;
-        unavailable_after_method_plan(
-            self.plan_method(AidlMethodCall::FilterConfigure(maleicacid_tuner_hal2_binder_adapter::RuntimeExecutableRequest::UnsupportedProfile { reason: "IP CID filtering is outside the TS-only tuner_hal2 profile" })),
+        plan_unavailable_object_method_use_case(
+            &self.runtime(),
+            self.handle(),
+            || {
+                Ok(AidlMethodCall::FilterConfigure(
+                    RuntimeExecutableRequest::UnsupportedProfile {
+                        reason: "IP CID filtering is outside the TS-only tuner_hal2 profile",
+                    },
+                ))
+            },
             "IP CID filtering is outside the TS-only tuner_hal2 profile",
         )
     }
+
     fn configureMonitorEvent(&self, monitor_event_types: i32) -> BinderResult<()> {
-        self.ensure_open()?;
-        let plan = self.plan_method(AidlMethodCall::FilterConfigure(
-            maleicacid_tuner_hal2_binder_adapter::RuntimeExecutableRequest::UnsupportedProfile {
-                reason: "monitor event filtering is outside the TS-only tuner_hal2 profile",
-            },
-        ))?;
         if monitor_event_types == 0 {
-            drop(plan);
-            Ok(())
+            execute_object_runtime_use_case(
+                &self.runtime(),
+                self.handle(),
+                AidlMethodCall::FilterConfigure(RuntimeExecutableRequest::NoPayload),
+                |runtime, handle, command_plan, executable_request| {
+                    runtime.plan_filter_runtime_noop_for_object(
+                        handle.object_id(),
+                        handle.generation(),
+                        command_plan,
+                        executable_request,
+                    )
+                },
+            )
         } else {
-            unavailable_after_method_plan(
-                Ok(plan),
+            plan_unavailable_object_method_use_case(
+                &self.runtime(),
+                self.handle(),
+                || {
+                    Ok(AidlMethodCall::FilterConfigure(
+                        RuntimeExecutableRequest::UnsupportedProfile {
+                            reason:
+                                "monitor event filtering is outside the TS-only tuner_hal2 profile",
+                        },
+                    ))
+                },
                 "non-zero monitor event mask is outside the TS-only tuner_hal2 profile",
             )
         }
     }
+
     fn start(&self) -> BinderResult<()> {
-        self.ensure_open()?;
-        self.plan_method(AidlMethodCall::FilterStart)?;
-        let runtime = self.runtime();
-        let filter_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Filter)?;
-        let result = runtime
-            .lock()
-            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
-            .start_filter_runtime(filter_id)
-            .map_err(status_from_hal_error);
-        result
+        execute_object_runtime_use_case(
+            &self.runtime(),
+            self.handle(),
+            AidlMethodCall::FilterStart,
+            |runtime, handle, command_plan, executable_request| {
+                runtime.start_filter_for_object(
+                    handle.object_id(),
+                    handle.generation(),
+                    command_plan,
+                    executable_request,
+                )
+            },
+        )
     }
+
     fn stop(&self) -> BinderResult<()> {
-        self.ensure_open()?;
-        self.plan_method(AidlMethodCall::FilterStop)?;
-        let runtime = self.runtime();
-        let filter_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Filter)?;
-        let result = runtime
-            .lock()
-            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
-            .stop_filter_runtime(filter_id)
-            .map_err(status_from_hal_error);
-        result
+        execute_object_runtime_use_case(
+            &self.runtime(),
+            self.handle(),
+            AidlMethodCall::FilterStop,
+            |runtime, handle, command_plan, executable_request| {
+                runtime.stop_filter_for_object(
+                    handle.object_id(),
+                    handle.generation(),
+                    command_plan,
+                    executable_request,
+                )
+            },
+        )
     }
+
     fn flush(&self) -> BinderResult<()> {
-        self.ensure_open()?;
-        self.plan_method(AidlMethodCall::FilterFlush)?;
-        let runtime = self.runtime();
-        let filter_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Filter)?;
-        let result = runtime
-            .lock()
-            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
-            .flush_filter_runtime(filter_id)
-            .map_err(status_from_hal_error);
-        result
+        execute_object_runtime_use_case(
+            &self.runtime(),
+            self.handle(),
+            AidlMethodCall::FilterFlush,
+            |runtime, handle, command_plan, executable_request| {
+                runtime.flush_filter_for_object(
+                    handle.object_id(),
+                    handle.generation(),
+                    command_plan,
+                    executable_request,
+                )
+            },
+        )
     }
+
     fn getAvSharedHandle(&self, _av_memory: &mut TunerNativeHandle) -> BinderResult<i64> {
-        self.ensure_open()?;
-        unavailable_after_method_plan(
-            self.plan_method(AidlMethodCall::FilterGetAvSharedHandle),
+        plan_unavailable_object_method_use_case(
+            &self.runtime(),
+            self.handle(),
+            || Ok(AidlMethodCall::FilterGetAvSharedHandle),
             "AV shared memory is not connected in current tuner_hal2 scope",
         )?;
         Err(status_unknown_error(
             "getAvSharedHandle unavailable path unexpectedly returned success",
         ))
     }
+
     fn getId(&self) -> BinderResult<i32> {
-        self.ensure_open()?;
-        self.plan_method(AidlMethodCall::FilterGetId)?;
-        let runtime = self.runtime();
-        runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Filter)
+        execute_object_query_use_case(
+            &self.runtime(),
+            self.handle(),
+            AidlMethodCall::FilterGetId,
+            |runtime, handle| {
+                runtime.public_runtime_id_for_object_method(
+                    handle.object_id(),
+                    handle.generation(),
+                    AidlObjectKind::Filter,
+                )
+            },
+        )
     }
+
     fn getId64Bit(&self) -> BinderResult<i64> {
-        self.ensure_open()?;
-        self.plan_method(AidlMethodCall::FilterGetId64Bit)?;
-        let runtime = self.runtime();
-        let filter_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Filter)?;
-        Ok(i64::from(filter_id))
+        execute_object_query_use_case(
+            &self.runtime(),
+            self.handle(),
+            AidlMethodCall::FilterGetId64Bit,
+            |runtime, handle| {
+                runtime
+                    .public_runtime_id_for_object_method(
+                        handle.object_id(),
+                        handle.generation(),
+                        AidlObjectKind::Filter,
+                    )
+                    .map(i64::from)
+            },
+        )
     }
+
     fn releaseAvHandle(&self, _av_memory: &TunerNativeHandle, av_data_id: i64) -> BinderResult<()> {
-        self.ensure_open()?;
-        unavailable_after_method_plan(
-            self.plan_method(AidlMethodCall::FilterReleaseAvHandle(
-                FilterReleaseAvHandleRequest { av_data_id },
-            )),
+        plan_unavailable_object_method_use_case(
+            &self.runtime(),
+            self.handle(),
+            || {
+                Ok(AidlMethodCall::FilterReleaseAvHandle(
+                    FilterReleaseAvHandleRequest { av_data_id },
+                ))
+            },
             "AV shared memory is not connected in current tuner_hal2 scope",
         )
     }
+
     fn setDataSource(&self, filter: &Strong<dyn IFilter>) -> BinderResult<()> {
-        self.ensure_open()?;
-        let runtime = self.runtime();
         let sink_handle = self.handle();
-        let source_handle = local_filter_handle_from_strong(filter)?;
-        if source_handle.object_id() == sink_handle.object_id()
-            && source_handle.generation() == sink_handle.generation()
-        {
-            return Err(service_error(
-                TunerResult::INVALID_ARGUMENT.0,
-                "filter cannot use itself as source",
-            ));
-        }
-        let (sink_id, sink_owner) = filter_entry_public_id_and_owner(&runtime, sink_handle)?;
-        let (source_id, source_owner) = filter_entry_public_id_and_owner(&runtime, source_handle)?;
-        if sink_owner != source_owner {
-            return Err(service_error(
-                TunerResult::INVALID_ARGUMENT.0,
-                "source filter belongs to a different demux",
-            ));
-        }
-        let RuntimeOwnerRelation::Demux { demux, generation } = sink_owner else {
-            return Err(service_error(
-                TunerResult::INVALID_ARGUMENT.0,
-                "filter owner is not a demux",
-            ));
-        };
-        let demux_id = demux_public_id_for_owner(&runtime, demux, generation)?;
-        self.plan_method(AidlMethodCall::FilterSetDataSource(
-            FilterSetDataSourceRequest {
-                source_filter_id: source_handle.object_id().0,
-                source_filter_generation: source_handle.generation().0,
+        execute_object_runtime_use_case_with_request_builder(
+            &self.runtime(),
+            sink_handle,
+            || {
+                let source_handle = local_filter_handle_from_strong(filter)?;
+                Ok((
+                    AidlMethodCall::FilterSetDataSource(FilterSetDataSourceRequest {
+                        source_filter_id: source_handle.object_id().0,
+                        source_filter_generation: source_handle.generation().0,
+                    }),
+                    source_handle,
+                ))
             },
-        ))?;
-        runtime
-            .lock()
-            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
-            .set_filter_data_source_non_null(demux_id, sink_id, source_id)
-            .map_err(status_from_hal_error)?;
-        Ok(())
+            |runtime,
+             handle,
+             _command_plan,
+             _executable_request,
+             dispatch_preflight,
+             source_handle| {
+                runtime
+                    .set_filter_data_source_for_object(
+                        handle.object_id(),
+                        handle.generation(),
+                        source_handle.object_id(),
+                        source_handle.generation(),
+                        dispatch_preflight,
+                    )
+                    .map(|_| ())
+            },
+        )
     }
+
     fn setDelayHint(&self, hint: &FilterDelayHint) -> BinderResult<()> {
-        self.ensure_open()?;
-        let request = build_filter_delay_hint_request(hint).map_err(status_from_hal_error)?;
-        self.plan_method(AidlMethodCall::FilterSetDelayHint(request))?;
-        let runtime = self.runtime();
-        let filter_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Filter)?;
-        let result = runtime
-            .lock()
-            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
-            .set_filter_delay_hint_request(filter_id, request)
-            .map_err(status_from_hal_error);
-        result
+        execute_object_runtime_use_case_with_request_builder(
+            &self.runtime(),
+            self.handle(),
+            || {
+                let request =
+                    build_filter_delay_hint_request(hint).map_err(status_from_hal_error)?;
+                Ok((AidlMethodCall::FilterSetDelayHint(request.clone()), request))
+            },
+            |runtime, handle, _command_plan, _executable_request, dispatch_preflight, request| {
+                runtime.set_filter_delay_hint_for_object(
+                    handle.object_id(),
+                    handle.generation(),
+                    request,
+                    dispatch_preflight,
+                )
+            },
+        )
     }
 }

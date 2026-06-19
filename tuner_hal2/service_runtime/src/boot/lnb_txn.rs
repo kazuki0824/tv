@@ -1,5 +1,5 @@
 use maleicacid_tuner_hal2_common::{
-    HalError, HalInternalKind, HalInvalidArgumentKind, HalInvalidStateKind,
+    FirstErrorCollector, HalError, HalInternalKind, HalInvalidArgumentKind, HalInvalidStateKind,
 };
 use maleicacid_tuner_hal2_domain_request::{
     LnbSetSatellitePositionRequest, LnbToneRequest, LnbVoltageRequest,
@@ -11,6 +11,7 @@ use maleicacid_tuner_hal2_lnb::{
 };
 
 use super::TunerServiceRuntime;
+use crate::error_mapping::registry_commit_error_to_hal;
 use crate::lnb_backend_adapter::ServiceRuntimeLnbProfileAdapter;
 use crate::registry::{FrontendRuntimeId, LnbRegistryProfile, LnbRuntimeId, RegistryCommitError};
 
@@ -128,11 +129,7 @@ impl<'a> LnbTxn<'a> {
         self.apply_lnb_state_with_generation(lnb_key, runtime, target)
     }
 
-    pub(crate) fn send_lnb_diseqc(
-        &mut self,
-        lnb_id: i32,
-        payload: &[u8],
-    ) -> Result<(), HalError> {
+    pub(crate) fn send_lnb_diseqc(&mut self, lnb_id: i32, payload: &[u8]) -> Result<(), HalError> {
         let lnb_key = LnbRuntimeId(lnb_id);
         if self.runtime.registry().lnb(lnb_key).is_none() {
             return Err(missing_lnb_error());
@@ -196,7 +193,7 @@ impl<'a> LnbTxn<'a> {
     pub(crate) fn close_lnb_from_frontend_owner_loss(
         &mut self,
         frontend_id: i32,
-    ) -> Result<Vec<i32>, HalError> {
+    ) -> (Vec<i32>, Result<(), HalError>) {
         let frontend_key = FrontendRuntimeId(frontend_id);
         let owned_lnb_ids: Vec<LnbRuntimeId> = self
             .runtime
@@ -212,11 +209,14 @@ impl<'a> LnbTxn<'a> {
             })
             .collect();
         let mut closed = Vec::with_capacity(owned_lnb_ids.len());
+        let mut cleanup_collector = FirstErrorCollector::new();
         for lnb_key in owned_lnb_ids {
-            self.close_lnb_with_reason(lnb_key, LnbLifecycleReason::OwnerLoss)?;
-            closed.push(lnb_key.0);
+            match self.close_lnb_with_reason(lnb_key, LnbLifecycleReason::OwnerLoss) {
+                Ok(()) => closed.push(lnb_key.0),
+                Err(error) => cleanup_collector.push_error(error),
+            }
         }
-        Ok(closed)
+        (closed, cleanup_collector.into_result())
     }
 
     pub(crate) fn record_lnb_drop_leak(&mut self, lnb_id: i32) -> Result<(), HalError> {
@@ -234,7 +234,8 @@ impl<'a> LnbTxn<'a> {
             return Ok(());
         }
         let outcome = {
-            let mut backend = ServiceRuntimeLnbProfileAdapter::new(self.runtime.registry(), lnb_key);
+            let mut backend =
+                ServiceRuntimeLnbProfileAdapter::new(self.runtime.registry(), lnb_key);
             LnbLifecycleTxn::new().close(&mut runtime, &mut backend, LnbLifecycleReason::DropLeak)
         };
         self.store_lnb_runtime(lnb_key, runtime)?;
@@ -260,7 +261,8 @@ impl<'a> LnbTxn<'a> {
             }
         };
         let outcome = {
-            let mut backend = ServiceRuntimeLnbProfileAdapter::new(self.runtime.registry(), lnb_key);
+            let mut backend =
+                ServiceRuntimeLnbProfileAdapter::new(self.runtime.registry(), lnb_key);
             LnbApplyTxn::new().apply_with_generation(
                 &mut runtime,
                 &mut backend,
@@ -287,7 +289,8 @@ impl<'a> LnbTxn<'a> {
             .cloned()
             .ok_or_else(missing_lnb_error)?;
         let outcome = {
-            let mut backend = ServiceRuntimeLnbProfileAdapter::new(self.runtime.registry(), lnb_key);
+            let mut backend =
+                ServiceRuntimeLnbProfileAdapter::new(self.runtime.registry(), lnb_key);
             LnbLifecycleTxn::new().close(&mut runtime, &mut backend, reason)
         };
         self.store_lnb_runtime(lnb_key, runtime)?;
@@ -333,18 +336,7 @@ fn ensure_lnb_open(runtime: &LnbRuntime) -> Result<(), HalError> {
 }
 
 fn map_registry_error(error: RegistryCommitError) -> HalError {
-    match error {
-        RegistryCommitError::MissingFrontendId { .. }
-        | RegistryCommitError::MissingLnbId { .. }
-        | RegistryCommitError::LnbFrontendMismatch { .. } => HalError::invalid_argument(
-            HalInvalidArgumentKind::NumericRange,
-            "frontend/LNB binding is invalid",
-        ),
-        _ => HalError::internal(
-            HalInternalKind::InvariantViolation,
-            "LNB registry commit failed",
-        ),
-    }
+    registry_commit_error_to_hal(error, "frontend/LNB binding is invalid")
 }
 
 fn map_lnb_failure(record: LnbFailureRecord) -> HalError {

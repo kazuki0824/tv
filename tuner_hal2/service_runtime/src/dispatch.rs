@@ -22,5 +22,5 @@ pub fn dispatch_target_for(
 pub fn adapter_transactions_are_covered() -> bool {
     AIDL_TRANSACTION_TABLE
         .iter()
-        .all(|plan| dispatch_target_for(plan.transaction).is_some())
+        .all(|plan| dispatch_target_for(plan.transaction()).is_some())
 }

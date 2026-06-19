@@ -10,6 +10,28 @@
 本書と他文書で、状態遷移、資源寿命、戻り値、capability、失敗時波及範囲が矛盾する場合は、本書を正として他文書を修正する。ただし、作業完了判定、成果物名、build / atest / VTS 手順については `タスク完了判定の実施方法.md` を正とする。
 
 
+### 共通部品の定義条件
+
+本書で共通部品と呼ぶものは、単なる関数名・ファイル名・薄い委譲 wrapper ではない。共通部品として設計正本へ置く場合は、次を定義する。
+
+| 項目 | 必須内容 |
+|---|---|
+| 論理契約名 | 例: `ObjectCloseTxn`、`ObjectMethodTxn`、`StreamBoundaryTxn` |
+| 実装正本 | 状態・寿命・失敗時遷移を所有する module / file / type |
+| 公開入口 | AIDL層または service_runtime 層から呼んでよい entry point |
+| 所有する状態 | lifecycle、registry、callback、worker、FMQ、packet assembler など、当該部品が正本として変更する状態 |
+| 所有しない状態 | 呼び出し元または別 transaction が所有する状態 |
+| phase order | lifetime / request build / validation / dispatch / commit / rollback / quarantine の順序 |
+| 失敗時処理 | 戻り値、rollback、cleanup継続、cleanup failed、quarantine の扱い |
+| 呼び出し許可層 | AIDL method body、object wrapper、service_runtime façade、domain transaction のうち許可する層 |
+| 呼び出し禁止層 | 誤用を避けるため直接呼んではならない層 |
+| 最低テスト | status precedence、rollback、retry、cleanup failure、quarantine などを固定する test |
+
+上記を満たさないものは、共通部品ではなく helper、façade、adapter、または implementation detail と呼ぶ。helper / façade が transaction 正本を名乗ってはならない。
+
+`transaction` という名前は、少なくとも状態変更の開始条件、commit、rollback または cleanup failure / quarantine のいずれかを所有する部品にだけ使う。runtime lock を取って closure を呼ぶだけの部品、引数を同名 method へ横流しするだけの wrapper、domain naming を隠さない薄い façade は transaction ではない。
+
+
 ## 外部文書参照: no-panic / 劣化起動 / 閉鎖側失敗境界
 
 この項目は実装規約であるため、詳細な禁止事項、エラー写像、劣化起動、mutex汚染、ワーカー生成・join 方針は `tuner_hal/CODE_CONVENTION.md` を正とする。本書では Tuner HAL が no-`panic` / 劣化起動 / 閉鎖側失敗 を設計上必須とすることだけを固定する。
@@ -22,7 +44,7 @@
 1. `DESIGN_JA.md の責務境界`、`製品スコープ / AOSP capability / VTS profile 境界`、`AIDL 契約境界`、`Tuner HAL 状態遷移表SSOT` を最上位正本とする。
 2. `0-S. 状態所有・寿命・失敗時遷移設計`、`表1`〜`表20`、`ARIB/ISDB入力処理契約`、`Stream boundary 契約`、`Packet pipeline 正本契約`、`AV shared handle 入出力契約` を、現在の設計契約の正本とする。
 3. 旧 `補足契約:` 章は本体正本章へ吸収済みであり、本書内に二重正本として残さない。
-4. r50dz/r50ea の個別履歴、作業経緯、ビルド/atest/VTS/静的検索/成果物命名/完了宣言は本書では定義しない。履歴は `CHANGELOG.md`、完了判定は `タスク完了判定の実施方法.md` を正とする。
+4. 個別リリースの履歴、作業経緯、ビルド/atest/VTS/静的検索/成果物命名/完了宣言は本書では定義しない。履歴は `CHANGELOG.md`、完了判定は `タスク完了判定の実施方法.md` を正とする。
 
 削除・移動した旧記載の追跡表は現行リリース物に置かない。現行仕様は本書、実装規約は `tuner_hal/CODE_CONVENTION.md`、統合手順は `tuner_hal2/INTEGRATION.md`、変更履歴は `tuner_hal/CHANGELOG.md` を正とする。存在しない trace 文書を正本参照にしてはならない。
 
@@ -258,6 +280,7 @@ Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時�
 - `TableInfo.version` は `-1` または `0..31` だけを受け付ける。`-1` は wildcard、範囲外は `INVALID_ARGUMENT` とする。
 - PES `streamId` は `0..=255` を明示 `stream_id` として照合し、`-1` だけを wildcard として扱う。その他の負値と `256` 以上は `INVALID_ARGUMENT` とする。`streamId=0` は wildcard ではなく、8-bit 値 `0x00` の明示照合である。
 - `IFilter.setDataSource()` の互換性は本書の「表1-D. `setDataSource()` 互換表」を正とする。`setDataSource(NULL)` は AOSP意味論としては demux input 復帰であるが、現行 Android 14 AIDL Rust 生成境界では実装済み対象に含めない。filter source を指定する場合は、表1-D-3の subtype 別成立条件を正とする。source filter として指定できるのは TS生データフィルタだけである。下流として成功させるのは TS生データフィルタと record フィルタだけである。section / PES / AV への raw TS 再parse chain、および section payload、PES payload、AV payload、record payload を直接 source として再配送する経路は作らない。非対応の linkage は `UNAVAILABLE` とし、ペイロードなしフィルタを source または sink にする接続は `INVALID_ARGUMENT` とする。
+- `IFilter.setDataSource(source)` の non-null source 経路は 同一demux内のfilter接続グラフ の接続だけを正式対象とする。`linkCaps` は同一 demux 内で開いた source / sink filter の main type 対応可否を表し、別 demux に属する filter を source に指定する経路を capability / VTS profile 対象に含めない。source / sink object の lifetime、generation、kind を先に確認し、その後に owner demux 不一致と自己参照を `INVALID_ARGUMENT` で拒否する。AOSP API 文面上の「another filter」は本製品では同一 demux の filter graph 内の別 filter として扱い、別demux間のfilter接続グラフは作らない。
 - `IFilter.getQueueDesc()` の成否は configure 済みかどうかではなく、open時フィルタ種別が通常FMQを持つかどうかで決める。通常FMQ対象フィルタは未configureでも記述子取得を成功させる。
 - 表1 / 表2 の `getQueueDesc()` 行は、対象オブジェクトが close開始後、閉鎖済み、後片付け未完了、異常時閉鎖済み、隔離済み、runtime failed、callback_unhealthy のいずれにも該当しない通常可用状態に限って適用する。これらの横断gateに該当する場合は、表5および失敗分類表を優先する。
 - `IDescrambler.addPid()` / `removePid()` の source filter は AOSP意味論では optional であり、`NULL` は demux 入力全体の PID 指定である。ただし 現行 Android 14 AIDL Rust 生成境界では実装済み対象に含めない。
@@ -1919,7 +1942,7 @@ px4 probe prefix を変更する場合は、frontend_px4系実装、`tuner_hal2/
 
 | No | 確認観点 | 目的 |
 |---:|---|---|
-| T-AOSP-1 | `setDataSource(sourceFilter)` 成功 | source filter接続 |
+| T-AOSP-1 | `setDataSource(sourceFilter)` 成功 | 同一 demux 内の source filter接続 |
 | T-AOSP-2 | `setDataSource(nullptr)` | AOSP意味論確認。現行 Android 14 AIDL Rust 生成境界では nullable Binder 境界の現行実装済み対象外 |
 | T-AOSP-3 | `setDataSource(nullptr)` 後の再start/data出力 | nullable Binder 境界解決後の検証項目 |
 | T-AOSP-4 | source filter owner demux不一致 | `INVALID_ARGUMENT` |

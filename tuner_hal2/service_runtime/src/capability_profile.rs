@@ -91,6 +91,7 @@ pub fn unsupported_by_design(_api_name: &'static str) -> HalError {
 
 pub fn failure_domain(error: &HalError) -> RuntimeFailureDomain {
     match error {
+        HalError::ComposedFailure { primary, .. } => failure_domain(primary),
         HalError::DeviceMissing(_) => RuntimeFailureDomain::DeviceMissing,
         HalError::OpenFailed { .. } => RuntimeFailureDomain::DeviceOpen,
         HalError::PermissionDenied { .. } => RuntimeFailureDomain::DevicePermission,

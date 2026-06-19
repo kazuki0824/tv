@@ -334,11 +334,7 @@ pub fn run_service() {
     runtime.boot_from_probe_results(probe_frontends());
     let tuner = TunerAidlService::new(runtime);
     let binder = BnTuner::new_binder(tuner, BinderFeatures::default());
-    if let Err(error) = binder::add_service(TUNER_SERVICE_NAME, binder.as_binder()) {
-        eprintln!(
-            "maleicacid tuner_hal2 service registration failed {}: {:?}",
-            TUNER_SERVICE_NAME, error
-        );
+    if binder::add_service(TUNER_SERVICE_NAME, binder.as_binder()).is_err() {
         std::process::exit(1);
     }
     binder::ProcessState::join_thread_pool();

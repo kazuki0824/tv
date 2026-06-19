@@ -12,7 +12,7 @@ use maleicacid_tuner_hal2_demux::config::{
 };
 use maleicacid_tuner_hal2_demux::packet_pipeline::{
     PipelineAssemblySuppressionReason, PipelineBoundaryReason, PipelineDiagnosticKind,
-    PipelineOpenKind, PipelineReport, PipelineResetReport,
+    PipelineReport, PipelineResetReport,
 };
 use maleicacid_tuner_hal2_demux::runtime::{
     DemuxRuntimeError, DemuxRuntimeErrorKind, DemuxRuntimeState, DvrKind,
@@ -48,8 +48,8 @@ use crate::command_dispatch::{
     RuntimeCommandDispatchError, RuntimeCommandDispatchPlan, RuntimeCommandDispatcher,
 };
 use crate::diagnostics::{
-    CapabilitySuppressionReason, DescramblerDiagnosticKind, DescramblerDiagnosticPhase,
-    DescramblerDiagnosticRecord, StartupDiagnosticRecord,
+    CapabilitySuppressionReason, ChildOpenRollbackDiagnosticRecord, DescramblerDiagnosticKind,
+    DescramblerDiagnosticPhase, DescramblerDiagnosticRecord, StartupDiagnosticRecord,
 };
 use crate::dispatch::{
     adapter_transactions_are_covered, dispatch_target_for, ServiceRuntimeDispatchTarget,
@@ -70,11 +70,11 @@ use maleicacid_tuner_hal2_resource_ledger::{LedgerGeneration, LedgerId};
 // TunerServiceRuntime private state without widening field visibility.
 mod query_api;
 pub use query_api::{RuntimeObjectPublicEntry, RuntimeObjectQueryError};
-mod frontend_txn;
 mod demux_filter_dvr_txn;
 mod descrambler_txn;
-mod packet_txn;
+mod frontend_txn;
 mod lnb_txn;
+mod packet_txn;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FrontendProbeOutcome {
@@ -374,7 +374,9 @@ pub fn start_frontend_demux_live_pump_from_reader(
                 "service runtime lock poisoned while preparing frontend demux live pump",
             )
         })?;
-        guard.query().ensure_frontend_demux_sink_ready(frontend_id)?;
+        guard
+            .query()
+            .ensure_frontend_demux_sink_ready(frontend_id)?;
     }
     let sink: Box<dyn FrontendLivePacketSink> = Box::new(FrontendDemuxPacketSink::new(
         Arc::clone(&runtime),
@@ -390,6 +392,7 @@ pub struct TunerServiceRuntime {
     object_table: RuntimeObjectTable,
     diagnostics: Vec<StartupDiagnosticRecord>,
     descrambler_diagnostics: Vec<DescramblerDiagnosticRecord>,
+    child_open_rollback_diagnostics: Vec<ChildOpenRollbackDiagnosticRecord>,
     callback_registry: RuntimeCallbackRegistry,
     frontend_workers: FrontendWorkerRegistry,
     next_aidl_generation: u64,
@@ -410,6 +413,7 @@ impl TunerServiceRuntime {
             object_table: RuntimeObjectTable::default(),
             diagnostics: Vec::new(),
             descrambler_diagnostics: Vec::new(),
+            child_open_rollback_diagnostics: Vec::new(),
             callback_registry: RuntimeCallbackRegistry::default(),
             frontend_workers: FrontendWorkerRegistry::default(),
             next_aidl_generation: 0,
@@ -442,6 +446,10 @@ impl TunerServiceRuntime {
         &self.descrambler_diagnostics
     }
 
+    pub fn child_open_rollback_diagnostics(&self) -> &[ChildOpenRollbackDiagnosticRecord] {
+        &self.child_open_rollback_diagnostics
+    }
+
     pub fn register_descrambler_key_slot(
         &mut self,
         token: DescramblerKeyToken,
@@ -453,17 +461,14 @@ impl TunerServiceRuntime {
             .map(|_| ())
     }
 
+    pub(crate) fn record_child_open_rollback_diagnostic(
+        &mut self,
+        record: ChildOpenRollbackDiagnosticRecord,
+    ) {
+        self.child_open_rollback_diagnostics.push(record);
+    }
+
     fn record_descrambler_diagnostic(&mut self, record: DescramblerDiagnosticRecord) {
-        eprintln!(
-            "maleicacid-tuner-hal2-descrambler-diagnostic: phase={:?} kind={:?} descrambler_id={:?} demux_id={:?} pid={:?} filter_id={:?} error={:?}",
-            record.phase,
-            record.kind,
-            record.descrambler_id,
-            record.demux_id,
-            record.pid,
-            record.filter_id,
-            record.error,
-        );
         self.descrambler_diagnostics.push(record);
     }
 
@@ -526,7 +531,7 @@ impl TunerServiceRuntime {
                                     self.registry.register_lnb(lnb_entry)
                                 {
                                     self.diagnostics.push(
-                                        StartupDiagnosticRecord::duplicate_frontend_id(
+                                        StartupDiagnosticRecord::duplicate_lnb_id(
                                             backend,
                                             path.clone(),
                                         ),
@@ -596,26 +601,6 @@ impl TunerServiceRuntime {
         target
     }
 
-    pub fn frontend_ids(&self) -> Vec<i32> {
-        self.registry
-            .frontend_ids()
-            .into_iter()
-            .map(|id| id.0)
-            .collect()
-    }
-
-    pub fn has_frontend_id(&self, id: i32) -> bool {
-        self.registry
-            .frontend(crate::registry::FrontendRuntimeId(id))
-            .is_some()
-    }
-
-    pub fn frontend_entry(&self, id: i32) -> Option<crate::registry::FrontendRegistryEntry> {
-        self.registry
-            .frontend(crate::registry::FrontendRuntimeId(id))
-            .cloned()
-    }
-
     fn allocate_aidl_generation(
         &mut self,
     ) -> Result<AidlObjectGeneration, RuntimeObjectTableError> {
@@ -683,56 +668,48 @@ impl TunerServiceRuntime {
         self.object_table.remove(object_id, generation)
     }
 
-    pub fn begin_aidl_object_close(
+    pub fn unregister_public_runtime_for_closed_aidl_entry(
         &mut self,
-        object_id: AidlObjectId,
-        generation: AidlObjectGeneration,
-        step: maleicacid_tuner_hal2_resource_ledger::CleanupStep,
-    ) -> Result<RuntimeObjectEntry, RuntimeObjectTableError> {
-        self.object_table.begin_close(object_id, generation, step)
-    }
-
-    pub fn mark_aidl_object_cleanup_failed(
-        &mut self,
-        object_id: AidlObjectId,
-        generation: AidlObjectGeneration,
-        step: maleicacid_tuner_hal2_resource_ledger::CleanupStep,
-    ) -> Result<RuntimeObjectEntry, RuntimeObjectTableError> {
-        self.object_table
-            .mark_cleanup_failed(object_id, generation, step)
-    }
-
-    pub fn commit_aidl_object_close(
-        &mut self,
-        object_id: AidlObjectId,
-        generation: AidlObjectGeneration,
-    ) -> Result<RuntimeObjectEntry, RuntimeObjectTableError> {
-        self.object_table.commit_close(object_id, generation)
-    }
-
-    pub fn unregister_public_runtime_for_closed_aidl_entry(&mut self, entry: &RuntimeObjectEntry) {
-        match entry.object_kind {
-            AidlObjectKind::Demux => {
-                if let Ok(id) = i32::try_from(entry.ledger_id.0) {
-                    self.unregister_demux_runtime(id);
-                }
-            }
-            AidlObjectKind::Filter => {
-                if let Ok(id) = i32::try_from(entry.ledger_id.0) {
-                    self.unregister_filter_runtime(id);
-                }
-            }
-            AidlObjectKind::Dvr => {
-                if let Ok(id) = i32::try_from(entry.ledger_id.0) {
-                    self.unregister_dvr_runtime(id);
-                }
-            }
-            AidlObjectKind::Descrambler => {
-                if let Ok(id) = i32::try_from(entry.ledger_id.0) {
-                    self.unregister_descrambler_runtime(id);
-                }
-            }
-            _ => {}
+        entry: &RuntimeObjectEntry,
+    ) -> Result<(), HalError> {
+        let id = i32::try_from(entry.ledger_id.0).map_err(|_| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                format!(
+                    "public runtime id is outside i32 range during close cleanup: kind={:?}",
+                    entry.object_kind
+                ),
+            )
+        })?;
+        let removed = match entry.object_kind {
+            AidlObjectKind::Demux => match self.unregister_demux_runtime(id)? {
+                Some(_) => true,
+                None => false,
+            },
+            AidlObjectKind::Filter => match self.unregister_filter_runtime(id)? {
+                Some(_) => true,
+                None => false,
+            },
+            AidlObjectKind::Dvr => match self.unregister_dvr_runtime(id)? {
+                Some(_) => true,
+                None => false,
+            },
+            AidlObjectKind::Descrambler => match self.unregister_descrambler_runtime(id)? {
+                Some(_) => true,
+                None => false,
+            },
+            _ => return Ok(()),
+        };
+        if removed {
+            Ok(())
+        } else {
+            Err(HalError::cleanup_failed(
+                "public runtime unregister after AIDL object close",
+                format!(
+                    "runtime entry missing during close cleanup: kind={:?} id={id}",
+                    entry.object_kind
+                ),
+            ))
         }
     }
     pub fn plan_command_dispatch(

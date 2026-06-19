@@ -1,4 +1,5 @@
-use crate::{AidlApi, AidlObjectKind, CommandPlan, RuntimeTransactionName};
+use maleicacid_tuner_hal2_common::HalError;
+use crate::{AidlApi, AidlObjectKind, CommandPlan};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DescramblerCommand {
@@ -10,33 +11,13 @@ pub enum DescramblerCommand {
 }
 
 impl DescramblerCommand {
-    pub fn plan(&self) -> CommandPlan {
+    pub fn plan(&self) -> Result<CommandPlan, HalError> {
         match self {
-            Self::SetDemuxSource(_) => CommandPlan {
-                object: AidlObjectKind::Descrambler,
-                api: AidlApi::DescramblerSetDemuxSource,
-                transaction: RuntimeTransactionName::DescramblerSessionTxnSetDemuxSource,
-            },
-            Self::SetKeyToken(_) => CommandPlan {
-                object: AidlObjectKind::Descrambler,
-                api: AidlApi::DescramblerSetKeyToken,
-                transaction: RuntimeTransactionName::DescramblerSessionTxnSetKeyToken,
-            },
-            Self::AddPid(_) => CommandPlan {
-                object: AidlObjectKind::Descrambler,
-                api: AidlApi::DescramblerAddPid,
-                transaction: RuntimeTransactionName::DescramblerSessionTxnAddPid,
-            },
-            Self::RemovePid(_) => CommandPlan {
-                object: AidlObjectKind::Descrambler,
-                api: AidlApi::DescramblerRemovePid,
-                transaction: RuntimeTransactionName::DescramblerSessionTxnRemovePid,
-            },
-            Self::Close => CommandPlan {
-                object: AidlObjectKind::Descrambler,
-                api: AidlApi::DescramblerClose,
-                transaction: RuntimeTransactionName::DescramblerSessionTxnClose,
-            },
+            Self::SetDemuxSource(_) => CommandPlan::for_api(AidlObjectKind::Descrambler, AidlApi::DescramblerSetDemuxSource),
+            Self::SetKeyToken(_) => CommandPlan::for_api(AidlObjectKind::Descrambler, AidlApi::DescramblerSetKeyToken),
+            Self::AddPid(_) => CommandPlan::for_api(AidlObjectKind::Descrambler, AidlApi::DescramblerAddPid),
+            Self::RemovePid(_) => CommandPlan::for_api(AidlObjectKind::Descrambler, AidlApi::DescramblerRemovePid),
+            Self::Close => CommandPlan::for_api(AidlObjectKind::Descrambler, AidlApi::DescramblerClose),
         }
     }
 }

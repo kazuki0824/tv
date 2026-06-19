@@ -1,5 +1,6 @@
+use maleicacid_tuner_hal2_common::HalError;
 use crate::AidlDomainRequest;
-use crate::{AidlApi, AidlObjectKind, CommandPlan, RuntimeTransactionName};
+use crate::{AidlApi, AidlObjectKind, CommandPlan};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DvrCommand {
@@ -15,53 +16,17 @@ pub enum DvrCommand {
 }
 
 impl DvrCommand {
-    pub fn plan(&self) -> CommandPlan {
+    pub fn plan(&self) -> Result<CommandPlan, HalError> {
         match self {
-            Self::GetQueueDesc => CommandPlan {
-                object: AidlObjectKind::Dvr,
-                api: AidlApi::DvrGetQueueDesc,
-                transaction: RuntimeTransactionName::DvrGetQueueDescTxn,
-            },
-            Self::Configure(_) => CommandPlan {
-                object: AidlObjectKind::Dvr,
-                api: AidlApi::DvrConfigure,
-                transaction: RuntimeTransactionName::DvrConfigureTxn,
-            },
-            Self::AttachFilter(_) => CommandPlan {
-                object: AidlObjectKind::Dvr,
-                api: AidlApi::DvrAttachFilter,
-                transaction: RuntimeTransactionName::DvrConfigureTxn,
-            },
-            Self::DetachFilter(_) => CommandPlan {
-                object: AidlObjectKind::Dvr,
-                api: AidlApi::DvrDetachFilter,
-                transaction: RuntimeTransactionName::DvrConfigureTxn,
-            },
-            Self::Start => CommandPlan {
-                object: AidlObjectKind::Dvr,
-                api: AidlApi::DvrStart,
-                transaction: RuntimeTransactionName::DvrStartTxn,
-            },
-            Self::Stop => CommandPlan {
-                object: AidlObjectKind::Dvr,
-                api: AidlApi::DvrStop,
-                transaction: RuntimeTransactionName::DvrStopTxn,
-            },
-            Self::Flush => CommandPlan {
-                object: AidlObjectKind::Dvr,
-                api: AidlApi::DvrFlush,
-                transaction: RuntimeTransactionName::DvrFlushTxn,
-            },
-            Self::Close => CommandPlan {
-                object: AidlObjectKind::Dvr,
-                api: AidlApi::DvrClose,
-                transaction: RuntimeTransactionName::DvrCloseLifecycleTxn,
-            },
-            Self::SetStatusCheckIntervalHint(_) => CommandPlan {
-                object: AidlObjectKind::Dvr,
-                api: AidlApi::DvrSetStatusCheckIntervalHint,
-                transaction: RuntimeTransactionName::DvrConfigureTxn,
-            },
+            Self::GetQueueDesc => CommandPlan::for_api(AidlObjectKind::Dvr, AidlApi::DvrGetQueueDesc),
+            Self::Configure(_) => CommandPlan::for_api(AidlObjectKind::Dvr, AidlApi::DvrConfigure),
+            Self::AttachFilter(_) => CommandPlan::for_api(AidlObjectKind::Dvr, AidlApi::DvrAttachFilter),
+            Self::DetachFilter(_) => CommandPlan::for_api(AidlObjectKind::Dvr, AidlApi::DvrDetachFilter),
+            Self::Start => CommandPlan::for_api(AidlObjectKind::Dvr, AidlApi::DvrStart),
+            Self::Stop => CommandPlan::for_api(AidlObjectKind::Dvr, AidlApi::DvrStop),
+            Self::Flush => CommandPlan::for_api(AidlObjectKind::Dvr, AidlApi::DvrFlush),
+            Self::Close => CommandPlan::for_api(AidlObjectKind::Dvr, AidlApi::DvrClose),
+            Self::SetStatusCheckIntervalHint(_) => CommandPlan::for_api(AidlObjectKind::Dvr, AidlApi::DvrSetStatusCheckIntervalHint),
         }
     }
 }

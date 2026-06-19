@@ -14,15 +14,25 @@ pub struct RuntimeCommandDispatchPlan {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RuntimeCommandDispatchError {
+    MissingCommandPlan,
     MissingDispatchTarget { transaction: RuntimeTransactionName },
+    RuntimeLockPoison { transaction: RuntimeTransactionName },
 }
 
 impl RuntimeCommandDispatchError {
     pub fn into_hal_error(self) -> HalError {
         match self {
+            Self::MissingCommandPlan => HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "AIDL command plan is missing from the transaction table",
+            ),
             Self::MissingDispatchTarget { .. } => HalError::internal(
                 HalInternalKind::InvariantViolation,
                 "runtime dispatch target missing",
+            ),
+            Self::RuntimeLockPoison { .. } => HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "service runtime lock poisoned while planning method dispatch",
             ),
         }
     }
@@ -54,9 +64,9 @@ impl RuntimeCommandDispatcher {
         command_plan: CommandPlan,
         executable_request: Option<RuntimeExecutableRequest>,
     ) -> Result<RuntimeCommandDispatchPlan, RuntimeCommandDispatchError> {
-        let Some(target) = dispatch_target_for(command_plan.transaction) else {
+        let Some(target) = dispatch_target_for(command_plan.transaction()) else {
             return Err(RuntimeCommandDispatchError::MissingDispatchTarget {
-                transaction: command_plan.transaction,
+                transaction: command_plan.transaction(),
             });
         };
         Ok(RuntimeCommandDispatchPlan {

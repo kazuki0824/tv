@@ -116,6 +116,7 @@ impl AidlStatusMapper {
 
     pub fn map_error(error: &HalError) -> TunerStatusCode {
         match error {
+            HalError::ComposedFailure { primary, .. } => Self::map_error(primary),
             HalError::InvalidArgument { .. } => TunerStatusCode::InvalidArgument,
             HalError::InvalidState { .. } => TunerStatusCode::InvalidState,
             HalError::Unsupported(_) => TunerStatusCode::Unavailable,
@@ -253,8 +254,8 @@ mod tests {
     #[test]
     fn precedence_table_has_entry_for_every_transaction_api() {
         for plan in AIDL_TRANSACTION_TABLE {
-            let precedence = AidlStatusMapper::precedence_for_api(plan.api);
-            assert_eq!(precedence.api, plan.api);
+            let precedence = AidlStatusMapper::precedence_for_api(plan.api());
+            assert_eq!(precedence.api, plan.api());
             assert!(precedence
                 .steps
                 .contains(&StatusPrecedenceStep::ObjectLifetime));

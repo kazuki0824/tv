@@ -5,13 +5,14 @@
 
 use std::io::{self, Read};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
+use std::sync::Arc;
 
 use maleicacid_tuner_hal2_common::{
     retry_after_interrupted_read_with_saturation, HalError, HalErrorDetail, HalInternalKind,
     TsPacketCompletionBuffer, TS_PACKET_SIZE,
 };
+
+use crate::runtime::thread_result_owner::{ThreadResultOwner, ThreadResultPoll};
 
 pub trait FrontendLivePacketSink: Send {
     fn deliver_ts_packet(&mut self, packet: &[u8; TS_PACKET_SIZE]) -> Result<(), HalError>;
@@ -60,15 +61,14 @@ impl core::fmt::Debug for FrontendLivePumpOwner {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("FrontendLivePumpOwner")
             .field("cancelled", &self.cancel.load(Ordering::SeqCst))
-            .field("join_present", &self.join.is_some())
+            .field("thread_result", &self.thread_result)
             .finish()
     }
 }
 
 pub struct FrontendLivePumpOwner {
     cancel: Arc<AtomicBool>,
-    result: Arc<Mutex<Option<Result<FrontendLivePumpReport, HalError>>>>,
-    join: Option<JoinHandle<()>>,
+    thread_result: ThreadResultOwner<FrontendLivePumpReport>,
 }
 
 impl FrontendLivePumpOwner {
@@ -77,24 +77,14 @@ impl FrontendLivePumpOwner {
         mut sink: Box<dyn FrontendLivePacketSink>,
     ) -> Result<Self, HalError> {
         let cancel = Arc::new(AtomicBool::new(false));
-        let result = Arc::new(Mutex::new(None));
         let worker_cancel = Arc::clone(&cancel);
-        let worker_result = Arc::clone(&result);
-        let join = thread::Builder::new()
-            .name("maleicacid-frontend-live-pump".to_string())
-            .spawn(move || {
-                let outcome = run_frontend_live_pump(&mut reader, &mut sink, &worker_cancel);
-                if let Ok(mut guard) = worker_result.lock() {
-                    *guard = Some(outcome);
-                }
-            })
-            .map_err(|error| {
-                HalError::cleanup_failed("frontend live pump spawn", error.to_string())
-            })?;
+        let thread_result = ThreadResultOwner::start("maleicacid-frontend-live-pump", move || {
+            run_frontend_live_pump(&mut reader, &mut sink, &worker_cancel)
+        })
+        .map_err(|error| HalError::cleanup_failed("frontend live pump spawn", format!("{error:?}")))?;
         Ok(Self {
             cancel,
-            result,
-            join: Some(join),
+            thread_result,
         })
     }
 
@@ -103,55 +93,15 @@ impl FrontendLivePumpOwner {
     }
 
     pub fn collect_if_finished(&mut self) -> FrontendLivePumpJoinOutcome {
-        if self
-            .join
-            .as_ref()
-            .map(|handle| handle.is_finished())
-            .unwrap_or(false)
-        {
-            if let Some(handle) = self.join.take() {
-                if handle.join().is_err() {
-                    return FrontendLivePumpJoinOutcome::Completed(Err(HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "frontend live pump thread panicked",
-                    )));
-                }
-            }
-        }
-        match self.result.lock() {
-            Ok(mut guard) => match guard.take() {
-                Some(result) => FrontendLivePumpJoinOutcome::Completed(result),
-                None => FrontendLivePumpJoinOutcome::Running,
-            },
-            Err(_) => FrontendLivePumpJoinOutcome::Completed(Err(HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "frontend live pump result lock poisoned",
-            ))),
+        match self.thread_result.collect_if_finished() {
+            ThreadResultPoll::Running => FrontendLivePumpJoinOutcome::Running,
+            ThreadResultPoll::Completed(result) => FrontendLivePumpJoinOutcome::Completed(result),
         }
     }
 
-    pub fn join_after_stop(mut self) -> Result<FrontendLivePumpReport, HalError> {
+    pub fn join_after_stop(self) -> Result<FrontendLivePumpReport, HalError> {
         self.request_stop();
-        if let Some(handle) = self.join.take() {
-            if handle.join().is_err() {
-                return Err(HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "frontend live pump thread panicked while stopping",
-                ));
-            }
-        }
-        match self.result.lock() {
-            Ok(mut guard) => guard.take().unwrap_or_else(|| {
-                Err(HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "frontend live pump finished without report",
-                ))
-            }),
-            Err(_) => Err(HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "frontend live pump result lock poisoned while stopping",
-            )),
-        }
+        self.thread_result.join_after_stop()
     }
 }
 
@@ -247,6 +197,7 @@ fn io_error_to_hal(operation: &'static str, error: io::Error) -> HalError {
 mod tests {
     use super::*;
     use std::io::Cursor;
+    use std::sync::{Arc, Mutex};
 
     #[derive(Default)]
     struct VecSink {
@@ -312,4 +263,58 @@ mod tests {
         let report = owner.join_after_stop().unwrap();
         assert_eq!(report.packets_delivered, 1);
     }
+
+    #[test]
+    fn live_pump_owner_reports_thread_panic() {
+        struct PanickingReader;
+        impl Read for PanickingReader {
+            fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+                panic!("intentional live pump panic");
+            }
+        }
+        let owner = FrontendLivePumpOwner::start(
+            Box::new(PanickingReader),
+            Box::new(VecSink::default()),
+        )
+        .unwrap();
+        assert!(owner.join_after_stop().is_err());
+    }
+
+    #[test]
+    fn live_pump_owner_missing_report_is_error() {
+        let result: Arc<Mutex<Option<Result<FrontendLivePumpReport, HalError>>>> =
+            Arc::new(Mutex::new(None));
+        let join = std::thread::spawn(|| {});
+        let owner = FrontendLivePumpOwner {
+            cancel: Arc::new(AtomicBool::new(false)),
+            thread_result: ThreadResultOwner::new_for_test(
+                "live-pump-missing-test",
+                result,
+                Some(join),
+            ),
+        };
+        assert!(owner.join_after_stop().is_err());
+    }
+
+    #[test]
+    fn live_pump_owner_result_poison_is_error() {
+        let result: Arc<Mutex<Option<Result<FrontendLivePumpReport, HalError>>>> =
+            Arc::new(Mutex::new(None));
+        let poisoned = Arc::clone(&result);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = poisoned.lock().unwrap();
+            panic!("poison live pump result");
+        }));
+        let join = std::thread::spawn(|| {});
+        let owner = FrontendLivePumpOwner {
+            cancel: Arc::new(AtomicBool::new(false)),
+            thread_result: ThreadResultOwner::new_for_test(
+                "live-pump-poison-test",
+                result,
+                Some(join),
+            ),
+        };
+        assert!(owner.join_after_stop().is_err());
+    }
+
 }

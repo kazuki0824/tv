@@ -11,10 +11,21 @@ pub enum LnbOperationKind {
     Close,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct LnbOperationGuard {
-    pub lnb_id: i32,
-    pub kind: LnbOperationKind,
+    lnb_id: i32,
+    kind: LnbOperationKind,
+    nonce: u64,
+}
+
+impl LnbOperationGuard {
+    pub const fn lnb_id(&self) -> i32 {
+        self.lnb_id
+    }
+
+    pub const fn kind(&self) -> LnbOperationKind {
+        self.kind
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -24,10 +35,17 @@ pub struct LnbOperationFailureRecord {
     pub step: LnbFailureStep,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ActiveLnbOperation {
+    kind: LnbOperationKind,
+    nonce: u64,
+}
+
 #[derive(Debug, Default)]
 pub struct LnbOperationLedger {
-    active: BTreeMap<i32, LnbOperationKind>,
+    active: BTreeMap<i32, ActiveLnbOperation>,
     failures: BTreeMap<i32, LnbOperationFailureRecord>,
+    next_nonce: u64,
 }
 
 impl LnbOperationLedger {
@@ -45,14 +63,26 @@ impl LnbOperationLedger {
             self.failures.insert(lnb_id, record);
             return Err(record);
         }
-        self.active.insert(lnb_id, kind);
-        Ok(LnbOperationGuard { lnb_id, kind })
+        let nonce = self.next_nonce;
+        self.next_nonce = self.next_nonce.wrapping_add(1);
+        self.active.insert(lnb_id, ActiveLnbOperation { kind, nonce });
+        Ok(LnbOperationGuard { lnb_id, kind, nonce })
     }
 
     pub fn finish(&mut self, guard: LnbOperationGuard) -> Result<(), LnbOperationFailureRecord> {
         match self.active.remove(&guard.lnb_id) {
-            Some(active) if active == guard.kind => Ok(()),
-            _ => {
+            Some(active) if active.kind == guard.kind && active.nonce == guard.nonce => Ok(()),
+            Some(active) => {
+                self.active.insert(guard.lnb_id, active);
+                let record = LnbOperationFailureRecord {
+                    lnb_id: guard.lnb_id,
+                    kind: LnbFailureKind::OperationLockFailed,
+                    step: LnbFailureStep::CommitClosed,
+                };
+                self.failures.insert(guard.lnb_id, record);
+                Err(record)
+            }
+            None => {
                 let record = LnbOperationFailureRecord {
                     lnb_id: guard.lnb_id,
                     kind: LnbFailureKind::OperationLockFailed,
@@ -65,8 +95,9 @@ impl LnbOperationLedger {
     }
 
     pub fn active_operation(&self, lnb_id: i32) -> Option<LnbOperationKind> {
-        self.active.get(&lnb_id).copied()
+        self.active.get(&lnb_id).map(|operation| operation.kind)
     }
+
     pub fn failure(&self, lnb_id: i32) -> Option<LnbOperationFailureRecord> {
         self.failures.get(&lnb_id).copied()
     }
@@ -91,5 +122,15 @@ mod tests {
         let guard = ledger.begin(5, LnbOperationKind::Tone).unwrap();
         ledger.finish(guard).unwrap();
         assert_eq!(ledger.active_operation(5), None);
+    }
+
+    #[test]
+    fn operation_guard_is_consumed_by_finish() {
+        let mut ledger = LnbOperationLedger::default();
+        let guard = ledger.begin(6, LnbOperationKind::Voltage).unwrap();
+        assert_eq!(guard.lnb_id(), 6);
+        assert_eq!(guard.kind(), LnbOperationKind::Voltage);
+        ledger.finish(guard).unwrap();
+        assert_eq!(ledger.active_operation(6), None);
     }
 }

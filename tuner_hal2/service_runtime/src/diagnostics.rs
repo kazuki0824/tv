@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use maleicacid_tuner_hal2_common::{FrontendBackendKind, HalError};
+use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StartupDiagnosticKind {
@@ -8,6 +9,7 @@ pub enum StartupDiagnosticKind {
     DeviceOpenFailed,
     CapabilitySuppressed,
     DuplicateFrontendId,
+    DuplicateLnbId,
     RuntimeDispatchMissing,
 }
 
@@ -91,6 +93,17 @@ impl StartupDiagnosticRecord {
         }
     }
 
+    pub fn duplicate_lnb_id(backend: FrontendBackendKind, path: impl Into<PathBuf>) -> Self {
+        Self {
+            kind: StartupDiagnosticKind::DuplicateLnbId,
+            phase: StartupDiagnosticPhase::RegistryCommit,
+            backend: Some(backend),
+            path: Some(path.into()),
+            error: None,
+            capability_reason: None,
+        }
+    }
+
     pub fn runtime_dispatch_missing() -> Self {
         Self {
             kind: StartupDiagnosticKind::RuntimeDispatchMissing,
@@ -99,6 +112,55 @@ impl StartupDiagnosticRecord {
             path: None,
             error: None,
             capability_reason: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChildOpenRollbackKind {
+    ObjectRegistrationRollbackFailed,
+    RuntimeCleanupMissing,
+    BothFailed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChildOpenRollbackPhase {
+    FilterOpen,
+    DvrOpen,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ChildOpenRollbackDiagnosticRecord {
+    pub kind: ChildOpenRollbackKind,
+    pub phase: ChildOpenRollbackPhase,
+    pub object_kind: AidlObjectKind,
+    pub object_id: AidlObjectId,
+    pub generation: AidlObjectGeneration,
+    pub runtime_id: i32,
+    pub object_error: Option<HalError>,
+    pub runtime_cleanup_error: Option<HalError>,
+}
+
+impl ChildOpenRollbackDiagnosticRecord {
+    pub fn new(
+        phase: ChildOpenRollbackPhase,
+        kind: ChildOpenRollbackKind,
+        object_kind: AidlObjectKind,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        runtime_id: i32,
+        object_error: Option<HalError>,
+        runtime_cleanup_error: Option<HalError>,
+    ) -> Self {
+        Self {
+            kind,
+            phase,
+            object_kind,
+            object_id,
+            generation,
+            runtime_id,
+            object_error,
+            runtime_cleanup_error,
         }
     }
 }

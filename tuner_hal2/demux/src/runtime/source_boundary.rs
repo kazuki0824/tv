@@ -1,11 +1,15 @@
-use super::demux::{DemuxRuntime, DemuxRuntimeError};
+use crate::packet_pipeline::PipelineResetReport;
+
+use super::demux::{next_generation, DemuxRuntime, DemuxRuntimeError};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SourceBoundaryStep {
     ValidateEndpoint,
-    DisconnectDownstream,
+    ValidateQueue,
+    ValidateGeneration,
     ClearQueue,
     BumpGeneration,
+    DisconnectDownstream,
     Commit,
     Quarantine,
 }
@@ -22,6 +26,7 @@ pub struct SourceBoundaryTxn {
     sink_filter_id: i32,
     steps: Vec<SourceBoundaryStep>,
     outcome: Option<SourceBoundaryOutcome>,
+    reset_report: Option<PipelineResetReport>,
 }
 
 impl SourceBoundaryTxn {
@@ -30,6 +35,7 @@ impl SourceBoundaryTxn {
             sink_filter_id,
             steps: Vec::new(),
             outcome: None,
+            reset_report: None,
         }
     }
     pub fn record_step(&mut self, step: SourceBoundaryStep) {
@@ -40,6 +46,9 @@ impl SourceBoundaryTxn {
     }
     pub fn outcome(&self) -> Option<SourceBoundaryOutcome> {
         self.outcome
+    }
+    pub fn reset_report(&self) -> Option<&PipelineResetReport> {
+        self.reset_report.as_ref()
     }
 
     pub fn apply(
@@ -56,13 +65,28 @@ impl SourceBoundaryTxn {
             return (self, Err(DemuxRuntimeError::filter_missing(sink_filter_id)));
         }
 
-        self.record_step(SourceBoundaryStep::DisconnectDownstream);
-        if let Err(err) = demux.disconnect_filter_source(self.sink_filter_id) {
+        self.record_step(SourceBoundaryStep::ValidateQueue);
+        if !demux.queue_exists(self.sink_filter_id) {
+            let sink_filter_id = self.sink_filter_id;
             let outcome = SourceBoundaryOutcome::Failed {
-                step: SourceBoundaryStep::DisconnectDownstream,
+                step: SourceBoundaryStep::ValidateQueue,
             };
             self.outcome = Some(outcome);
-            return (self, Err(err));
+            return (self, Err(DemuxRuntimeError::queue_missing(sink_filter_id)));
+        }
+
+        self.record_step(SourceBoundaryStep::ValidateGeneration);
+        if next_generation(demux.generation()).is_err() {
+            let outcome = SourceBoundaryOutcome::Failed {
+                step: SourceBoundaryStep::ValidateGeneration,
+            };
+            self.outcome = Some(outcome);
+            return (
+                self,
+                Err(DemuxRuntimeError::generation_exhausted(Some(
+                    demux.demux_id(),
+                ))),
+            );
         }
 
         self.record_step(SourceBoundaryStep::ClearQueue);
@@ -76,9 +100,21 @@ impl SourceBoundaryTxn {
         }
 
         self.record_step(SourceBoundaryStep::BumpGeneration);
-        if let Err(err) = demux.reset_generation_boundary() {
+        match demux.reset_generation_boundary() {
+            Ok(reset_report) => self.reset_report = Some(reset_report),
+            Err(err) => {
+                let outcome = SourceBoundaryOutcome::Failed {
+                    step: SourceBoundaryStep::BumpGeneration,
+                };
+                self.outcome = Some(outcome);
+                return (self, Err(err));
+            }
+        }
+
+        self.record_step(SourceBoundaryStep::DisconnectDownstream);
+        if let Err(err) = demux.disconnect_filter_source(self.sink_filter_id) {
             let outcome = SourceBoundaryOutcome::Failed {
-                step: SourceBoundaryStep::BumpGeneration,
+                step: SourceBoundaryStep::DisconnectDownstream,
             };
             self.outcome = Some(outcome);
             return (self, Err(err));

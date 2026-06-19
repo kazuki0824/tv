@@ -1,100 +1,113 @@
 use super::{
-    AidlMethodCall, AidlObjectKind, BinderResult, ILnb, ILnbCallback, LnbAidlObject, LnbPosition, LnbTone,
-    LnbVoltage, Strong, build_lnb_satellite_position_request, build_lnb_tone_request,
-    build_lnb_voltage_request, status_from_hal_error, status_unknown_error
-};
-use super::support::{
-    runtime_entry_public_id
+    build_lnb_satellite_position_request, build_lnb_tone_request, build_lnb_voltage_request,
+    close_object_after_close_preflight_with_domain_cleanup, execute_object_runtime_use_case,
+    execute_object_runtime_use_case_with_request_builder, status_from_hal_error,
+    status_unknown_error, AidlMethodCall, BinderResult, ILnb, ILnbCallback, LnbAidlObject,
+    LnbPosition, LnbTone, LnbVoltage, Strong,
 };
 
 impl ILnb for LnbAidlObject {
     fn setCallback(&self, callback: &Strong<dyn ILnbCallback>) -> BinderResult<()> {
-        self.ensure_open()?;
-        self.plan_method(AidlMethodCall::LnbSetCallback)?;
-        self.retain_callback(callback)?;
-        let runtime = self.runtime();
-        let lnb_id = match runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Lnb) {
-            Ok(id) => id,
-            Err(status) => {
-                self.rollback_callback_registration()?;
-                return Err(status);
-            }
-        };
-        let result = match runtime
-            .lock()
-            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
-            .commit_lnb_callback_registration(lnb_id)
-        {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                self.rollback_callback_registration()?;
-                Err(status_from_hal_error(error))
-            }
-        };
-        result
+        self.set_callback_transaction(callback)
     }
+
     fn setVoltage(&self, voltage: LnbVoltage) -> BinderResult<()> {
-        self.ensure_open()?;
-        let request = build_lnb_voltage_request(voltage).map_err(status_from_hal_error)?;
-        self.plan_method(AidlMethodCall::LnbSetVoltage(request))?;
-        let runtime = self.runtime();
-        let lnb_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Lnb)?;
-        let result = runtime
-            .lock()
-            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
-            .apply_lnb_voltage(lnb_id, request)
-            .map_err(status_from_hal_error);
-        result
+        execute_object_runtime_use_case_with_request_builder(
+            &self.runtime(),
+            self.handle(),
+            || {
+                let request = build_lnb_voltage_request(voltage).map_err(status_from_hal_error)?;
+                Ok((AidlMethodCall::LnbSetVoltage(request.clone()), request))
+            },
+            |runtime, handle, _command_plan, _executable_request, dispatch_preflight, request| {
+                runtime.apply_lnb_voltage_for_object(
+                    handle.object_id(),
+                    handle.generation(),
+                    request,
+                    dispatch_preflight,
+                )
+            },
+        )
     }
+
     fn setTone(&self, tone: LnbTone) -> BinderResult<()> {
-        self.ensure_open()?;
-        let request = build_lnb_tone_request(tone).map_err(status_from_hal_error)?;
-        self.plan_method(AidlMethodCall::LnbSetTone(request))?;
-        let runtime = self.runtime();
-        let lnb_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Lnb)?;
-        let result = runtime
-            .lock()
-            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
-            .apply_lnb_tone(lnb_id, request)
-            .map_err(status_from_hal_error);
-        result
+        execute_object_runtime_use_case_with_request_builder(
+            &self.runtime(),
+            self.handle(),
+            || {
+                let request = build_lnb_tone_request(tone).map_err(status_from_hal_error)?;
+                Ok((AidlMethodCall::LnbSetTone(request.clone()), request))
+            },
+            |runtime, handle, _command_plan, _executable_request, dispatch_preflight, request| {
+                runtime.apply_lnb_tone_for_object(
+                    handle.object_id(),
+                    handle.generation(),
+                    request,
+                    dispatch_preflight,
+                )
+            },
+        )
     }
+
     fn setSatellitePosition(&self, position: LnbPosition) -> BinderResult<()> {
-        self.ensure_open()?;
-        let request =
-            build_lnb_satellite_position_request(position).map_err(status_from_hal_error)?;
-        self.plan_method(AidlMethodCall::LnbSetSatellitePosition(request))?;
-        let runtime = self.runtime();
-        let lnb_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Lnb)?;
-        let result = runtime
-            .lock()
-            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
-            .apply_lnb_satellite_position(lnb_id, request)
-            .map_err(status_from_hal_error);
-        result
+        execute_object_runtime_use_case_with_request_builder(
+            &self.runtime(),
+            self.handle(),
+            || {
+                let request = build_lnb_satellite_position_request(position)
+                    .map_err(status_from_hal_error)?;
+                Ok((
+                    AidlMethodCall::LnbSetSatellitePosition(request.clone()),
+                    request,
+                ))
+            },
+            |runtime, handle, _command_plan, _executable_request, dispatch_preflight, request| {
+                runtime.apply_lnb_satellite_position_for_object(
+                    handle.object_id(),
+                    handle.generation(),
+                    request,
+                    dispatch_preflight,
+                )
+            },
+        )
     }
+
     fn sendDiseqcMessage(&self, diseqc_message: &[u8]) -> BinderResult<()> {
-        self.ensure_open()?;
-        self.plan_method(AidlMethodCall::LnbSendDiseqc(diseqc_message.to_vec()))?;
-        let runtime = self.runtime();
-        let lnb_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Lnb)?;
-        let result = runtime
-            .lock()
-            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
-            .send_lnb_diseqc(lnb_id, diseqc_message)
-            .map_err(status_from_hal_error);
-        result
+        execute_object_runtime_use_case(
+            &self.runtime(),
+            self.handle(),
+            AidlMethodCall::LnbSendDiseqc(diseqc_message.to_vec()),
+            |runtime, handle, command_plan, executable_request| {
+                runtime.send_lnb_diseqc_for_object(
+                    handle.object_id(),
+                    handle.generation(),
+                    diseqc_message,
+                    command_plan,
+                    executable_request,
+                )
+            },
+        )
     }
+
     fn close(&self) -> BinderResult<()> {
-        self.ensure_open()?;
-        self.plan_method(AidlMethodCall::LnbClose)?;
-        let runtime = self.runtime();
-        let lnb_id = runtime_entry_public_id(&runtime, self.handle(), AidlObjectKind::Lnb)?;
-        runtime
-            .lock()
-            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?
-            .close_lnb_explicit(lnb_id)
-            .map_err(status_from_hal_error)?;
-        self.close_object()
+        let runtime_for_close = self.runtime();
+        let runtime_for_cleanup = runtime_for_close.clone();
+        let handle = self.handle();
+        close_object_after_close_preflight_with_domain_cleanup(
+            &runtime_for_close,
+            handle,
+            AidlMethodCall::LnbClose,
+            || {
+                let mut runtime = runtime_for_cleanup
+                    .lock()
+                    .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
+                runtime
+                    .close_lnb_explicit_after_object_close_begin(
+                        handle.object_id(),
+                        handle.generation(),
+                    )
+                    .map_err(status_from_hal_error)
+            },
+        )
     }
 }

@@ -1,4 +1,4 @@
-use maleicacid_tuner_hal2_common::{HalError, HalInvalidArgumentKind};
+use maleicacid_tuner_hal2_common::{HalError, HalInternalKind, HalInvalidArgumentKind};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum AidlObjectKind {
@@ -138,367 +138,402 @@ pub enum RuntimeTransactionName {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CommandPlan {
-    pub object: AidlObjectKind,
-    pub api: AidlApi,
-    pub transaction: RuntimeTransactionName,
+    object: AidlObjectKind,
+    api: AidlApi,
+    transaction: RuntimeTransactionName,
+}
+
+impl CommandPlan {
+    const fn table_entry(
+        object: AidlObjectKind,
+        api: AidlApi,
+        transaction: RuntimeTransactionName,
+    ) -> Self {
+        Self { object, api, transaction }
+    }
+
+    pub const fn object(self) -> AidlObjectKind {
+        self.object
+    }
+
+    pub const fn api(self) -> AidlApi {
+        self.api
+    }
+
+    pub const fn transaction(self) -> RuntimeTransactionName {
+        self.transaction
+    }
+
+    pub fn for_api(object: AidlObjectKind, api: AidlApi) -> Result<Self, HalError> {
+        AIDL_TRANSACTION_TABLE
+            .iter()
+            .copied()
+            .find(|plan| plan.object == object && plan.api == api)
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "AIDL command plan is missing from the transaction table",
+                )
+            })
+    }
 }
 
 pub const AIDL_TRANSACTION_TABLE: &[CommandPlan] = &[
-    CommandPlan {
-        object: AidlObjectKind::Tuner,
-        api: AidlApi::TunerGetFrontendIds,
-        transaction: RuntimeTransactionName::TunerPublicApiTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Tuner,
-        api: AidlApi::TunerOpenFrontendById,
-        transaction: RuntimeTransactionName::TunerPublicApiTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Tuner,
-        api: AidlApi::TunerOpenDemux,
-        transaction: RuntimeTransactionName::TunerPublicApiTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Tuner,
-        api: AidlApi::TunerGetDemuxCaps,
-        transaction: RuntimeTransactionName::TunerPublicApiTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Tuner,
-        api: AidlApi::TunerOpenDescrambler,
-        transaction: RuntimeTransactionName::TunerPublicApiTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Tuner,
-        api: AidlApi::TunerGetFrontendInfo,
-        transaction: RuntimeTransactionName::TunerPublicApiTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Tuner,
-        api: AidlApi::TunerOpenLnbById,
-        transaction: RuntimeTransactionName::TunerPublicApiTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Tuner,
-        api: AidlApi::TunerOpenLnbByName,
-        transaction: RuntimeTransactionName::TunerPublicApiTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Tuner,
-        api: AidlApi::TunerGetLnbIds,
-        transaction: RuntimeTransactionName::TunerPublicApiTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Tuner,
-        api: AidlApi::TunerSetLna,
-        transaction: RuntimeTransactionName::TunerUnsupportedPublicApiTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Tuner,
-        api: AidlApi::TunerSetMaxNumberOfFrontends,
-        transaction: RuntimeTransactionName::TunerPublicApiTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Tuner,
-        api: AidlApi::TunerGetMaxNumberOfFrontends,
-        transaction: RuntimeTransactionName::TunerPublicApiTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Tuner,
-        api: AidlApi::TunerIsLnaSupported,
-        transaction: RuntimeTransactionName::TunerPublicApiTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Tuner,
-        api: AidlApi::TunerGetDemuxIds,
-        transaction: RuntimeTransactionName::TunerPublicApiTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Tuner,
-        api: AidlApi::TunerOpenDemuxById,
-        transaction: RuntimeTransactionName::TunerPublicApiTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Tuner,
-        api: AidlApi::TunerGetDemuxInfo,
-        transaction: RuntimeTransactionName::TunerPublicApiTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Frontend,
-        api: AidlApi::FrontendGetStatus,
-        transaction: RuntimeTransactionName::FrontendPublicApiTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Frontend,
-        api: AidlApi::FrontendSetLnb,
-        transaction: RuntimeTransactionName::LnbApplyTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Frontend,
-        api: AidlApi::FrontendLinkCiCam,
-        transaction: RuntimeTransactionName::FrontendUnsupportedPublicApiTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Frontend,
-        api: AidlApi::FrontendUnlinkCiCam,
-        transaction: RuntimeTransactionName::FrontendUnsupportedPublicApiTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Frontend,
-        api: AidlApi::FrontendGetHardwareInfo,
-        transaction: RuntimeTransactionName::FrontendUnsupportedPublicApiTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Frontend,
-        api: AidlApi::FrontendRemoveOutputPid,
-        transaction: RuntimeTransactionName::FrontendUnsupportedPublicApiTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Frontend,
-        api: AidlApi::FrontendGetFrontendStatusReadiness,
-        transaction: RuntimeTransactionName::FrontendPublicApiTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Demux,
-        api: AidlApi::DemuxOpenTimeFilter,
-        transaction: RuntimeTransactionName::DemuxUnsupportedPublicApiTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Demux,
-        api: AidlApi::DemuxGetAvSyncHwId,
-        transaction: RuntimeTransactionName::DemuxUnsupportedPublicApiTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Demux,
-        api: AidlApi::DemuxGetAvSyncTime,
-        transaction: RuntimeTransactionName::DemuxUnsupportedPublicApiTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Demux,
-        api: AidlApi::DemuxConnectCiCam,
-        transaction: RuntimeTransactionName::DemuxUnsupportedPublicApiTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Demux,
-        api: AidlApi::DemuxDisconnectCiCam,
-        transaction: RuntimeTransactionName::DemuxUnsupportedPublicApiTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Frontend,
-        api: AidlApi::FrontendTune,
-        transaction: RuntimeTransactionName::FrontendTuneTxnApply,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Frontend,
-        api: AidlApi::FrontendStopTune,
-        transaction: RuntimeTransactionName::FrontendStopTuneTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Frontend,
-        api: AidlApi::FrontendScan,
-        transaction: RuntimeTransactionName::FrontendScanTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Frontend,
-        api: AidlApi::FrontendStopScan,
-        transaction: RuntimeTransactionName::FrontendStopScanTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Frontend,
-        api: AidlApi::FrontendClose,
-        transaction: RuntimeTransactionName::FrontendCloseLifecycleTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Frontend,
-        api: AidlApi::FrontendSetCallback,
-        transaction: RuntimeTransactionName::FrontendCallbackRegistrationTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Demux,
-        api: AidlApi::DemuxSetFrontendDataSource,
-        transaction: RuntimeTransactionName::DemuxSetFrontendDataSourceTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Demux,
-        api: AidlApi::DemuxOpenFilter,
-        transaction: RuntimeTransactionName::DemuxOpenFilterTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Demux,
-        api: AidlApi::DemuxOpenDvr,
-        transaction: RuntimeTransactionName::DemuxOpenDvrTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Demux,
-        api: AidlApi::DemuxClose,
-        transaction: RuntimeTransactionName::DemuxCloseLifecycleTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Filter,
-        api: AidlApi::FilterConfigure,
-        transaction: RuntimeTransactionName::FilterConfigureTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Filter,
-        api: AidlApi::FilterConfigureAvStreamType,
-        transaction: RuntimeTransactionName::FilterConfigureTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Filter,
-        api: AidlApi::FilterGetQueueDesc,
-        transaction: RuntimeTransactionName::FilterGetQueueDescTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Filter,
-        api: AidlApi::FilterGetId,
-        transaction: RuntimeTransactionName::FilterGetIdTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Filter,
-        api: AidlApi::FilterGetId64Bit,
-        transaction: RuntimeTransactionName::FilterGetId64BitTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Filter,
-        api: AidlApi::FilterGetAvSharedHandle,
-        transaction: RuntimeTransactionName::FilterGetAvSharedHandleTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Filter,
-        api: AidlApi::FilterReleaseAvHandle,
-        transaction: RuntimeTransactionName::FilterReleaseAvHandleTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Filter,
-        api: AidlApi::FilterStart,
-        transaction: RuntimeTransactionName::FilterStartTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Filter,
-        api: AidlApi::FilterStop,
-        transaction: RuntimeTransactionName::FilterStopTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Filter,
-        api: AidlApi::FilterFlush,
-        transaction: RuntimeTransactionName::FilterFlushTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Filter,
-        api: AidlApi::FilterClose,
-        transaction: RuntimeTransactionName::FilterCloseLifecycleTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Filter,
-        api: AidlApi::FilterSetDataSource,
-        transaction: RuntimeTransactionName::FilterSetDataSourceTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Filter,
-        api: AidlApi::FilterSetDelayHint,
-        transaction: RuntimeTransactionName::FilterConfigureTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Dvr,
-        api: AidlApi::DvrGetQueueDesc,
-        transaction: RuntimeTransactionName::DvrGetQueueDescTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Dvr,
-        api: AidlApi::DvrConfigure,
-        transaction: RuntimeTransactionName::DvrConfigureTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Dvr,
-        api: AidlApi::DvrAttachFilter,
-        transaction: RuntimeTransactionName::DvrConfigureTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Dvr,
-        api: AidlApi::DvrDetachFilter,
-        transaction: RuntimeTransactionName::DvrConfigureTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Dvr,
-        api: AidlApi::DvrStart,
-        transaction: RuntimeTransactionName::DvrStartTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Dvr,
-        api: AidlApi::DvrStop,
-        transaction: RuntimeTransactionName::DvrStopTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Dvr,
-        api: AidlApi::DvrFlush,
-        transaction: RuntimeTransactionName::DvrFlushTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Dvr,
-        api: AidlApi::DvrClose,
-        transaction: RuntimeTransactionName::DvrCloseLifecycleTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Dvr,
-        api: AidlApi::DvrSetStatusCheckIntervalHint,
-        transaction: RuntimeTransactionName::DvrConfigureTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Descrambler,
-        api: AidlApi::DescramblerSetDemuxSource,
-        transaction: RuntimeTransactionName::DescramblerSessionTxnSetDemuxSource,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Descrambler,
-        api: AidlApi::DescramblerSetKeyToken,
-        transaction: RuntimeTransactionName::DescramblerSessionTxnSetKeyToken,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Descrambler,
-        api: AidlApi::DescramblerAddPid,
-        transaction: RuntimeTransactionName::DescramblerSessionTxnAddPid,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Descrambler,
-        api: AidlApi::DescramblerRemovePid,
-        transaction: RuntimeTransactionName::DescramblerSessionTxnRemovePid,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Descrambler,
-        api: AidlApi::DescramblerClose,
-        transaction: RuntimeTransactionName::DescramblerSessionTxnClose,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Lnb,
-        api: AidlApi::LnbSetCallback,
-        transaction: RuntimeTransactionName::LnbApplyTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Lnb,
-        api: AidlApi::LnbSetVoltage,
-        transaction: RuntimeTransactionName::LnbApplyTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Lnb,
-        api: AidlApi::LnbSetTone,
-        transaction: RuntimeTransactionName::LnbApplyTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Lnb,
-        api: AidlApi::LnbSetSatellitePosition,
-        transaction: RuntimeTransactionName::LnbApplyTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Lnb,
-        api: AidlApi::LnbSendDiseqc,
-        transaction: RuntimeTransactionName::LnbApplyTxn,
-    },
-    CommandPlan {
-        object: AidlObjectKind::Lnb,
-        api: AidlApi::LnbClose,
-        transaction: RuntimeTransactionName::LnbLifecycleTxnClose,
-    },
+    CommandPlan::table_entry(
+        AidlObjectKind::Tuner,
+        AidlApi::TunerGetFrontendIds,
+        RuntimeTransactionName::TunerPublicApiTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Tuner,
+        AidlApi::TunerOpenFrontendById,
+        RuntimeTransactionName::TunerPublicApiTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Tuner,
+        AidlApi::TunerOpenDemux,
+        RuntimeTransactionName::TunerPublicApiTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Tuner,
+        AidlApi::TunerGetDemuxCaps,
+        RuntimeTransactionName::TunerPublicApiTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Tuner,
+        AidlApi::TunerOpenDescrambler,
+        RuntimeTransactionName::TunerPublicApiTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Tuner,
+        AidlApi::TunerGetFrontendInfo,
+        RuntimeTransactionName::TunerPublicApiTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Tuner,
+        AidlApi::TunerOpenLnbById,
+        RuntimeTransactionName::TunerPublicApiTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Tuner,
+        AidlApi::TunerOpenLnbByName,
+        RuntimeTransactionName::TunerPublicApiTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Tuner,
+        AidlApi::TunerGetLnbIds,
+        RuntimeTransactionName::TunerPublicApiTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Tuner,
+        AidlApi::TunerSetLna,
+        RuntimeTransactionName::TunerUnsupportedPublicApiTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Tuner,
+        AidlApi::TunerSetMaxNumberOfFrontends,
+        RuntimeTransactionName::TunerPublicApiTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Tuner,
+        AidlApi::TunerGetMaxNumberOfFrontends,
+        RuntimeTransactionName::TunerPublicApiTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Tuner,
+        AidlApi::TunerIsLnaSupported,
+        RuntimeTransactionName::TunerPublicApiTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Tuner,
+        AidlApi::TunerGetDemuxIds,
+        RuntimeTransactionName::TunerPublicApiTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Tuner,
+        AidlApi::TunerOpenDemuxById,
+        RuntimeTransactionName::TunerPublicApiTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Tuner,
+        AidlApi::TunerGetDemuxInfo,
+        RuntimeTransactionName::TunerPublicApiTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Frontend,
+        AidlApi::FrontendGetStatus,
+        RuntimeTransactionName::FrontendPublicApiTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Frontend,
+        AidlApi::FrontendSetLnb,
+        RuntimeTransactionName::LnbApplyTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Frontend,
+        AidlApi::FrontendLinkCiCam,
+        RuntimeTransactionName::FrontendUnsupportedPublicApiTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Frontend,
+        AidlApi::FrontendUnlinkCiCam,
+        RuntimeTransactionName::FrontendUnsupportedPublicApiTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Frontend,
+        AidlApi::FrontendGetHardwareInfo,
+        RuntimeTransactionName::FrontendUnsupportedPublicApiTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Frontend,
+        AidlApi::FrontendRemoveOutputPid,
+        RuntimeTransactionName::FrontendUnsupportedPublicApiTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Frontend,
+        AidlApi::FrontendGetFrontendStatusReadiness,
+        RuntimeTransactionName::FrontendPublicApiTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Demux,
+        AidlApi::DemuxOpenTimeFilter,
+        RuntimeTransactionName::DemuxUnsupportedPublicApiTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Demux,
+        AidlApi::DemuxGetAvSyncHwId,
+        RuntimeTransactionName::DemuxUnsupportedPublicApiTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Demux,
+        AidlApi::DemuxGetAvSyncTime,
+        RuntimeTransactionName::DemuxUnsupportedPublicApiTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Demux,
+        AidlApi::DemuxConnectCiCam,
+        RuntimeTransactionName::DemuxUnsupportedPublicApiTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Demux,
+        AidlApi::DemuxDisconnectCiCam,
+        RuntimeTransactionName::DemuxUnsupportedPublicApiTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Frontend,
+        AidlApi::FrontendTune,
+        RuntimeTransactionName::FrontendTuneTxnApply,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Frontend,
+        AidlApi::FrontendStopTune,
+        RuntimeTransactionName::FrontendStopTuneTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Frontend,
+        AidlApi::FrontendScan,
+        RuntimeTransactionName::FrontendScanTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Frontend,
+        AidlApi::FrontendStopScan,
+        RuntimeTransactionName::FrontendStopScanTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Frontend,
+        AidlApi::FrontendClose,
+        RuntimeTransactionName::FrontendCloseLifecycleTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Frontend,
+        AidlApi::FrontendSetCallback,
+        RuntimeTransactionName::FrontendCallbackRegistrationTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Demux,
+        AidlApi::DemuxSetFrontendDataSource,
+        RuntimeTransactionName::DemuxSetFrontendDataSourceTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Demux,
+        AidlApi::DemuxOpenFilter,
+        RuntimeTransactionName::DemuxOpenFilterTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Demux,
+        AidlApi::DemuxOpenDvr,
+        RuntimeTransactionName::DemuxOpenDvrTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Demux,
+        AidlApi::DemuxClose,
+        RuntimeTransactionName::DemuxCloseLifecycleTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Filter,
+        AidlApi::FilterConfigure,
+        RuntimeTransactionName::FilterConfigureTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Filter,
+        AidlApi::FilterConfigureAvStreamType,
+        RuntimeTransactionName::FilterConfigureTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Filter,
+        AidlApi::FilterGetQueueDesc,
+        RuntimeTransactionName::FilterGetQueueDescTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Filter,
+        AidlApi::FilterGetId,
+        RuntimeTransactionName::FilterGetIdTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Filter,
+        AidlApi::FilterGetId64Bit,
+        RuntimeTransactionName::FilterGetId64BitTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Filter,
+        AidlApi::FilterGetAvSharedHandle,
+        RuntimeTransactionName::FilterGetAvSharedHandleTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Filter,
+        AidlApi::FilterReleaseAvHandle,
+        RuntimeTransactionName::FilterReleaseAvHandleTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Filter,
+        AidlApi::FilterStart,
+        RuntimeTransactionName::FilterStartTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Filter,
+        AidlApi::FilterStop,
+        RuntimeTransactionName::FilterStopTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Filter,
+        AidlApi::FilterFlush,
+        RuntimeTransactionName::FilterFlushTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Filter,
+        AidlApi::FilterClose,
+        RuntimeTransactionName::FilterCloseLifecycleTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Filter,
+        AidlApi::FilterSetDataSource,
+        RuntimeTransactionName::FilterSetDataSourceTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Filter,
+        AidlApi::FilterSetDelayHint,
+        RuntimeTransactionName::FilterConfigureTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Dvr,
+        AidlApi::DvrGetQueueDesc,
+        RuntimeTransactionName::DvrGetQueueDescTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Dvr,
+        AidlApi::DvrConfigure,
+        RuntimeTransactionName::DvrConfigureTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Dvr,
+        AidlApi::DvrAttachFilter,
+        RuntimeTransactionName::DvrConfigureTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Dvr,
+        AidlApi::DvrDetachFilter,
+        RuntimeTransactionName::DvrConfigureTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Dvr,
+        AidlApi::DvrStart,
+        RuntimeTransactionName::DvrStartTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Dvr,
+        AidlApi::DvrStop,
+        RuntimeTransactionName::DvrStopTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Dvr,
+        AidlApi::DvrFlush,
+        RuntimeTransactionName::DvrFlushTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Dvr,
+        AidlApi::DvrClose,
+        RuntimeTransactionName::DvrCloseLifecycleTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Dvr,
+        AidlApi::DvrSetStatusCheckIntervalHint,
+        RuntimeTransactionName::DvrConfigureTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Descrambler,
+        AidlApi::DescramblerSetDemuxSource,
+        RuntimeTransactionName::DescramblerSessionTxnSetDemuxSource,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Descrambler,
+        AidlApi::DescramblerSetKeyToken,
+        RuntimeTransactionName::DescramblerSessionTxnSetKeyToken,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Descrambler,
+        AidlApi::DescramblerAddPid,
+        RuntimeTransactionName::DescramblerSessionTxnAddPid,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Descrambler,
+        AidlApi::DescramblerRemovePid,
+        RuntimeTransactionName::DescramblerSessionTxnRemovePid,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Descrambler,
+        AidlApi::DescramblerClose,
+        RuntimeTransactionName::DescramblerSessionTxnClose,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Lnb,
+        AidlApi::LnbSetCallback,
+        RuntimeTransactionName::LnbApplyTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Lnb,
+        AidlApi::LnbSetVoltage,
+        RuntimeTransactionName::LnbApplyTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Lnb,
+        AidlApi::LnbSetTone,
+        RuntimeTransactionName::LnbApplyTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Lnb,
+        AidlApi::LnbSetSatellitePosition,
+        RuntimeTransactionName::LnbApplyTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Lnb,
+        AidlApi::LnbSendDiseqc,
+        RuntimeTransactionName::LnbApplyTxn,
+    ),
+    CommandPlan::table_entry(
+        AidlObjectKind::Lnb,
+        AidlApi::LnbClose,
+        RuntimeTransactionName::LnbLifecycleTxnClose,
+    ),
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -601,6 +636,7 @@ pub enum RuntimeExecutableRequest {
     NoPayload,
     OpenFilter(OpenFilterRequest),
     ConfigureFilter(FilterConfig),
+    ConfigureFilterByCurrentOpenType,
     UnsupportedProfile { reason: &'static str },
     DemuxSetFrontendDataSource(DemuxSetFrontendDataSourceRequest),
     OpenDvr(OpenDvrRequest),
@@ -704,6 +740,7 @@ impl RuntimeExecutableRequest {
             }
             Self::NoPayload
             | Self::ConfigureFilter(_)
+            | Self::ConfigureFilterByCurrentOpenType
             | Self::UnsupportedProfile { .. }
             | Self::FilterSetDataSource(_)
             | Self::DvrConfigure(_)

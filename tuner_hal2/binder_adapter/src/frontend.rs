@@ -1,5 +1,6 @@
+use maleicacid_tuner_hal2_common::HalError;
 use crate::AidlDomainRequest;
-use crate::{AidlApi, AidlObjectKind, CommandPlan, RuntimeTransactionName};
+use crate::{AidlApi, AidlObjectKind, CommandPlan};
 use maleicacid_tuner_hal2_common::FrontendTuneRequest;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -14,43 +15,15 @@ pub enum FrontendCommand {
 }
 
 impl FrontendCommand {
-    pub fn plan(&self) -> CommandPlan {
+    pub fn plan(&self) -> Result<CommandPlan, HalError> {
         match self {
-            Self::Tune(_) => CommandPlan {
-                object: AidlObjectKind::Frontend,
-                api: AidlApi::FrontendTune,
-                transaction: RuntimeTransactionName::FrontendTuneTxnApply,
-            },
-            Self::SetLnb(_) => CommandPlan {
-                object: AidlObjectKind::Frontend,
-                api: AidlApi::FrontendSetLnb,
-                transaction: RuntimeTransactionName::LnbApplyTxn,
-            },
-            Self::StopTune => CommandPlan {
-                object: AidlObjectKind::Frontend,
-                api: AidlApi::FrontendStopTune,
-                transaction: RuntimeTransactionName::FrontendStopTuneTxn,
-            },
-            Self::Scan(_) => CommandPlan {
-                object: AidlObjectKind::Frontend,
-                api: AidlApi::FrontendScan,
-                transaction: RuntimeTransactionName::FrontendScanTxn,
-            },
-            Self::StopScan => CommandPlan {
-                object: AidlObjectKind::Frontend,
-                api: AidlApi::FrontendStopScan,
-                transaction: RuntimeTransactionName::FrontendStopScanTxn,
-            },
-            Self::Close => CommandPlan {
-                object: AidlObjectKind::Frontend,
-                api: AidlApi::FrontendClose,
-                transaction: RuntimeTransactionName::FrontendCloseLifecycleTxn,
-            },
-            Self::SetCallback(_) => CommandPlan {
-                object: AidlObjectKind::Frontend,
-                api: AidlApi::FrontendSetCallback,
-                transaction: RuntimeTransactionName::FrontendCallbackRegistrationTxn,
-            },
+            Self::Tune(_) => CommandPlan::for_api(AidlObjectKind::Frontend, AidlApi::FrontendTune),
+            Self::SetLnb(_) => CommandPlan::for_api(AidlObjectKind::Frontend, AidlApi::FrontendSetLnb),
+            Self::StopTune => CommandPlan::for_api(AidlObjectKind::Frontend, AidlApi::FrontendStopTune),
+            Self::Scan(_) => CommandPlan::for_api(AidlObjectKind::Frontend, AidlApi::FrontendScan),
+            Self::StopScan => CommandPlan::for_api(AidlObjectKind::Frontend, AidlApi::FrontendStopScan),
+            Self::Close => CommandPlan::for_api(AidlObjectKind::Frontend, AidlApi::FrontendClose),
+            Self::SetCallback(_) => CommandPlan::for_api(AidlObjectKind::Frontend, AidlApi::FrontendSetCallback),
         }
     }
 }

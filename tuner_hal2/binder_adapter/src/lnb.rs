@@ -1,5 +1,6 @@
+use maleicacid_tuner_hal2_common::HalError;
 use crate::AidlDomainRequest;
-use crate::{AidlApi, AidlObjectKind, CommandPlan, RuntimeTransactionName};
+use crate::{AidlApi, AidlObjectKind, CommandPlan};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LnbCommand {
@@ -12,38 +13,14 @@ pub enum LnbCommand {
 }
 
 impl LnbCommand {
-    pub fn plan(&self) -> CommandPlan {
+    pub fn plan(&self) -> Result<CommandPlan, HalError> {
         match self {
-            Self::SetCallback(_) => CommandPlan {
-                object: AidlObjectKind::Lnb,
-                api: AidlApi::LnbSetCallback,
-                transaction: RuntimeTransactionName::LnbApplyTxn,
-            },
-            Self::SetVoltage(_) => CommandPlan {
-                object: AidlObjectKind::Lnb,
-                api: AidlApi::LnbSetVoltage,
-                transaction: RuntimeTransactionName::LnbApplyTxn,
-            },
-            Self::SetTone(_) => CommandPlan {
-                object: AidlObjectKind::Lnb,
-                api: AidlApi::LnbSetTone,
-                transaction: RuntimeTransactionName::LnbApplyTxn,
-            },
-            Self::SetSatellitePosition(_) => CommandPlan {
-                object: AidlObjectKind::Lnb,
-                api: AidlApi::LnbSetSatellitePosition,
-                transaction: RuntimeTransactionName::LnbApplyTxn,
-            },
-            Self::SendDiseqc(_) => CommandPlan {
-                object: AidlObjectKind::Lnb,
-                api: AidlApi::LnbSendDiseqc,
-                transaction: RuntimeTransactionName::LnbApplyTxn,
-            },
-            Self::Close => CommandPlan {
-                object: AidlObjectKind::Lnb,
-                api: AidlApi::LnbClose,
-                transaction: RuntimeTransactionName::LnbLifecycleTxnClose,
-            },
+            Self::SetCallback(_) => CommandPlan::for_api(AidlObjectKind::Lnb, AidlApi::LnbSetCallback),
+            Self::SetVoltage(_) => CommandPlan::for_api(AidlObjectKind::Lnb, AidlApi::LnbSetVoltage),
+            Self::SetTone(_) => CommandPlan::for_api(AidlObjectKind::Lnb, AidlApi::LnbSetTone),
+            Self::SetSatellitePosition(_) => CommandPlan::for_api(AidlObjectKind::Lnb, AidlApi::LnbSetSatellitePosition),
+            Self::SendDiseqc(_) => CommandPlan::for_api(AidlObjectKind::Lnb, AidlApi::LnbSendDiseqc),
+            Self::Close => CommandPlan::for_api(AidlObjectKind::Lnb, AidlApi::LnbClose),
         }
     }
 }

@@ -226,20 +226,12 @@ impl FrontendBackendSubmitFailure {
 }
 
 fn initial_signal_state_from_observation(
-    frontend_id: i32,
+    _frontend_id: i32,
     result: Result<FrontendSignalState, HalError>,
 ) -> FrontendSignalState {
     match result {
         Ok(state) => state,
-        Err(error) => {
-            eprintln!(
-                "maleicacid-tuner-hal2-backend-readiness: frontend_id={} step={:?} error={:?}",
-                frontend_id,
-                BackendTuneStep::ReadInitialStatus,
-                error,
-            );
-            FrontendSignalState::Unknown
-        }
+        Err(_error) => FrontendSignalState::Unknown,
     }
 }
 

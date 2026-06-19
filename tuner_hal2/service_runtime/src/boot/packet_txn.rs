@@ -1,12 +1,13 @@
 use super::{
-    BTreeSet, DemuxRuntimeId, DemuxStreamGeneration, DescrambleFailure, DescrambleOutcome,
-    DescramblerDiagnosticKind, DescramblerDiagnosticRecord, FrontendRuntimeId,
-    FrontendRuntimeState, GenerationBoundaryReport, GenerationBoundaryTxn, HalError,
-    HalInternalKind, HalInvalidStateKind, PacketPolicyAction,
+    demux_runtime_error_to_hal, descramble_ts_packet_in_place,
+    diagnostic_kind_for_descramble_failure, packet_policy_for_descramble_failure,
+    parse_ts_packet_header, ActiveDescramblerSnapshot, BTreeSet, DemuxRuntimeId,
+    DemuxStreamGeneration, DescrambleFailure, DescrambleOutcome, DescramblePacketDecision,
+    DescramblePacketFlow, DescramblerDiagnosticKind, DescramblerDiagnosticRecord,
+    FrontendRuntimeId, FrontendRuntimeState, GenerationBoundaryReport, GenerationBoundaryTxn,
+    HalError, HalInternalKind, HalInvalidStateKind, PacketPolicyAction,
     PipelineAssemblySuppressionReason, PipelineBoundaryReason, PipelineDiagnosticKind,
-    PipelineReport, TS_PACKET_SIZE, TsInputOrigin, TunerServiceRuntime,
-    descramble_ts_packet_in_place, packet_policy_for_descramble_failure,
-    parse_ts_packet_header,
+    PipelineReport, TsInputOrigin, TunerServiceRuntime, TS_PACKET_SIZE,
 };
 
 impl TunerServiceRuntime {
@@ -78,7 +79,7 @@ impl TunerServiceRuntime {
         Ok(reports)
     }
 
-    fn transact_reset_and_unbind_bound_demuxes_for_frontend(
+    pub(super) fn transact_reset_and_unbind_bound_demuxes_for_frontend(
         &mut self,
         frontend_id: i32,
         reason: PipelineBoundaryReason,
@@ -162,8 +163,8 @@ impl TunerServiceRuntime {
                         }
                     }
                 }
-                Err(_) => None
-};
+                Err(_) => None,
+            };
             let packet = packet_for_demux
                 .as_ref()
                 .map_or(packet, |packet| &packet[..]);
@@ -256,16 +257,16 @@ impl TunerServiceRuntime {
                 let flow = self.record_descramble_failure_policy(demux_id, 0, failure);
                 return DescramblePacketDecision {
                     packet: *packet,
-                    flow
-};
+                    flow,
+                };
             }
         };
         let pid = header.pid;
         if header.transport_scrambling_control == 0 {
             return DescramblePacketDecision {
                 packet: *packet,
-                flow: DescramblePacketFlow::Clear
-};
+                flow: DescramblePacketFlow::Clear,
+            };
         }
 
         let snapshots = self.active_descrambler_snapshots_for_demux(demux_id, demux_generation);
@@ -288,21 +289,21 @@ impl TunerServiceRuntime {
                     ));
                     return DescramblePacketDecision {
                         packet: candidate,
-                        flow: DescramblePacketFlow::Descrambled
-};
+                        flow: DescramblePacketFlow::Descrambled,
+                    };
                 }
                 Ok(DescrambleOutcome::PassedThrough { .. }) => {
                     return DescramblePacketDecision {
                         packet: *packet,
-                        flow: DescramblePacketFlow::Clear
-};
+                        flow: DescramblePacketFlow::Clear,
+                    };
                 }
                 Err(failure) => {
                     let flow = self.record_descramble_failure_policy(demux_id, pid, failure);
                     return DescramblePacketDecision {
                         packet: *packet,
-                        flow
-};
+                        flow,
+                    };
                 }
             }
         }
@@ -357,7 +358,6 @@ impl TunerServiceRuntime {
         }
     }
 }
-
 
 pub(crate) struct PacketTxn<'a> {
     runtime: &'a mut TunerServiceRuntime,

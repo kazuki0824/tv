@@ -1,3 +1,11 @@
+# r50ei89_doc_responsibility_tuner_docs_fix
+
+- Rewrote `README_JA.md` so the legacy `tuner_hal` role is described as current-state guidance without release-history wording.
+- Removed release/WP-specific completion-check and grep sections from `INTEGRATION.md`; the file now keeps legacy integration, build, VTS, and device sanity-check guidance only.
+- Normalized the r50dz/WP-labelled implementation rules in `CODE_CONVENTION.md` into timeless module-specific coding rules.
+- Removed individual release-label wording from `DESIGN_JA.md` where it described content that belongs to `CHANGELOG.md` or completion-judgement documents.
+- Code behavior was not changed. Android/Soong build, rustfmt, Rust unit tests, atest, VTS, and device checks were not run in this environment.
+
 # r50ef5
 
 - tv直下に人間向け入口の `README.md` と作業エージェント向け入口の `AGENTS.md` を追加した。

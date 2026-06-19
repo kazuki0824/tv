@@ -45,6 +45,7 @@ pub use runtime::{
 mod tests {
     use super::*;
     use crate::packet_pipeline::{FilterPipelineConfig, PipelineOpenKind};
+    use crate::runtime::filter::FilterSource;
 
     fn pes_start_packet(pid: u16, continuity_counter: u8, payload: &[u8]) -> [u8; 188] {
         let mut packet = [0xffu8; 188];
@@ -79,10 +80,98 @@ mod tests {
         assert_eq!(
             txn.outcome(),
             Some(SourceBoundaryOutcome::Failed {
-                step: SourceBoundaryStep::ClearQueue
+                step: SourceBoundaryStep::ValidateQueue
             })
         );
+        assert!(!txn.steps().contains(&SourceBoundaryStep::DisconnectDownstream));
+        assert!(!txn.steps().contains(&SourceBoundaryStep::BumpGeneration));
         assert!(!demux.queue_exists(10));
+    }
+
+    #[test]
+    fn source_boundary_missing_queue_preserves_existing_source() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime(
+                40,
+                1,
+                PipelineOpenKind::Raw,
+                None,
+            ))
+            .unwrap();
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime(
+                41,
+                1,
+                PipelineOpenKind::Pes,
+                None,
+            ))
+            .unwrap();
+        demux
+            .filter_mut(41)
+            .unwrap()
+            .set_source_filter(40, 1);
+        assert!(!demux.queue_exists(41));
+
+        let (txn, result) = SourceBoundaryTxn::new(41).apply(&mut demux);
+
+        assert!(result.is_err());
+        assert_eq!(
+            txn.outcome(),
+            Some(SourceBoundaryOutcome::Failed {
+                step: SourceBoundaryStep::ValidateQueue
+            })
+        );
+        assert!(!txn.steps().contains(&SourceBoundaryStep::DisconnectDownstream));
+        assert_eq!(
+            demux.filter(41).unwrap().source(),
+            FilterSource::SourceFilter {
+                source_filter_id: 40,
+                source_filter_generation: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn set_filter_source_non_null_uses_source_boundary_txn() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime(
+                40,
+                1,
+                PipelineOpenKind::Raw,
+                Some(FilterPipelineConfig {
+                    tpid: Some(0x0100),
+                    raw: false,
+                }),
+            ))
+            .unwrap();
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime(
+                41,
+                1,
+                PipelineOpenKind::Pes,
+                Some(FilterPipelineConfig {
+                    tpid: Some(0x0100),
+                    raw: true,
+                }),
+            ))
+            .unwrap();
+        demux.create_filter_queue(41).unwrap();
+        assert!(demux.filter(41).unwrap().snapshot().queue_present);
+
+        let reset = demux.set_filter_source_non_null(41, 40).unwrap();
+
+        assert!(reset.cleared);
+        let sink = demux.filter(41).unwrap().snapshot();
+        assert!(!sink.queue_present);
+        assert_eq!(
+            sink.source,
+            crate::runtime::filter::FilterSource::SourceFilter {
+                source_filter_id: 40,
+                source_filter_generation: 1,
+            }
+        );
     }
 
     #[test]

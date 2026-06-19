@@ -9,7 +9,7 @@
 - 旧 tuner_hal は参照用ソースとして repository に残すだけで、product image へ入れない。
 - ITuner/default を登録する実体は android.hardware.tv.tuner-service.maleicacid2 だけとする。
 - 旧 tuner_hal の product package、VINTF fragment、init rc、PRODUCT_PACKAGES、product integration を同一productで有効化しない。
-- 旧 `tuner_hal/INTEGRATION.md` は置かず、product統合手順のSSOTは本書だけとする。
+- 旧 `tuner_hal/INTEGRATION.md` は legacy/reference 用であり、既定 product 統合手順のSSOTにはしない。
 ```
 
 ## 1. product makefile
@@ -73,3 +73,9 @@ init rc は `android.hardware.tv.tuner.ITuner/default` を登録する。VINTF f
 ```
 
 旧実装を手動でビルド・参照することは妨げないが、同一productで `ITuner/default` を二重登録してはならない。
+## 6. VTS / product config policy
+
+VTS / product config は `tuner_hal2/DESIGN_JA.md` の product profile 正本に従う。現行 TS-only profile では monitor event feature を要求する構成にしない。
+
+monitor event の API 戻り値、feature 宣言有無、別 WP へ切り替える条件は `tuner_hal2/DESIGN_JA.md` を正とし、本書では重複定義しない。
+

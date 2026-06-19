@@ -340,33 +340,46 @@ pub struct AidlMethodPlan {
 pub struct AidlMethodAdapter;
 
 impl AidlMethodAdapter {
-    pub fn plan(method: AidlMethodCall) -> AidlMethodPlan {
+    pub fn plan(method: AidlMethodCall) -> Result<AidlMethodPlan, HalError> {
         let api = method.api();
         let command = method.into_domain_command();
-        let command_plan = command.plan();
-        AidlMethodPlan {
+        let command_plan = command.plan()?;
+        Ok(AidlMethodPlan {
             api,
             command,
             command_plan,
-        }
+        })
     }
 
-    pub fn frontend_tune(request: FrontendTuneRequest) -> AidlMethodPlan {
+    pub fn frontend_tune(request: FrontendTuneRequest) -> Result<AidlMethodPlan, HalError> {
         Self::plan(AidlMethodCall::FrontendTune(request))
     }
 }
 
 #[cfg(test)]
-pub(crate) use tests::all_aidl_method_kinds_for_coverage;
+pub(crate) use tests::{
+    all_aidl_method_call_variants_for_plan_coverage,
+    AIDL_METHOD_CALL_VARIANT_COUNT_FOR_PLAN_COVERAGE,
+};
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    pub(crate) fn all_aidl_method_kinds_for_coverage(
+    pub(crate) const AIDL_METHOD_CALL_VARIANT_COUNT_FOR_PLAN_COVERAGE: usize = 46;
+
+    pub(crate) fn all_aidl_method_call_variants_for_plan_coverage(
         request: FrontendTuneRequest,
     ) -> Vec<AidlMethodCall> {
         vec![
+            AidlMethodCall::PublicApi {
+                object: crate::AidlObjectKind::Tuner,
+                api: crate::AidlApi::TunerGetFrontendIds,
+            },
+            AidlMethodCall::UnsupportedPublicApi {
+                object: crate::AidlObjectKind::Tuner,
+                api: crate::AidlApi::TunerSetLna,
+            },
             AidlMethodCall::FrontendTune(request.clone()),
             AidlMethodCall::FrontendSetLnb { lnb_id: 1 },
             AidlMethodCall::FrontendStopTune,
@@ -375,11 +388,23 @@ mod tests {
             AidlMethodCall::FrontendClose,
             AidlMethodCall::FrontendSetCallback,
             AidlMethodCall::DemuxSetFrontendDataSource { frontend_id: 1 },
+            AidlMethodCall::DemuxOpenFilter(RuntimeExecutableRequest::OpenFilter(
+                maleicacid_tuner_hal2_demux::config::OpenFilterRequest {
+                    open_type: maleicacid_tuner_hal2_demux::config::FilterOpenType::TsSection,
+                    buffer_size: 188 * 1024,
+                    callback_present: true,
+                },
+            )),
             AidlMethodCall::DemuxOpenDvr(OpenDvrRequest {
                 kind: DvrOpenKind::Record,
                 buffer_size: 188 * 1024,
             }),
             AidlMethodCall::DemuxClose,
+            AidlMethodCall::FilterConfigure(RuntimeExecutableRequest::ConfigureFilterByCurrentOpenType),
+            AidlMethodCall::FilterConfigureAvStreamType(FilterAvStreamTypeRequest {
+                kind: FilterAvStreamKind::Video,
+                stream_type: 1,
+            }),
             AidlMethodCall::FilterGetQueueDesc,
             AidlMethodCall::FilterGetId,
             AidlMethodCall::FilterGetId64Bit,

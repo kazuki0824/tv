@@ -1,3 +1,562 @@
+# r50ei106_callback_closure_typed_boundary_unverified
+
+- Added `vendor/maleicacid/tv/future_work/r51/tuner_hal2_failure_injection_tests_plan.md` so failure-injection test coverage is tracked only as future work and not as a current-release completion requirement.
+- Added `AidlCallbackStoreError::into_hal_error()` and routed callback store retain failures through typed `HalError` instead of object-local Binder `Status` conversion.
+- Changed callback registration retain/rollback closure bounds in `object_runtime.rs` from `BinderResult<()>` to `Result<(), HalError>`.
+- Updated frontend/LNB setCallback and child filter/DVR callback retain/rollback closures to use typed callback store and callback cleanup failures.
+- Kept close-domain cleanup closure ABI as `BinderResult<()>`; converting it requires updating close call sites and tests together with compiler verification.
+- Android/Soong `m`, unit tests, `atest`, VTS, real-device checks, `cargo`, `rustc`, and `rustfmt` were not run in this environment; `rustfmt`/`rustc`/`cargo` commands are not installed.
+
+# r50ei105_object_runtime_status_bridge_reduction_unverified
+
+- Reduced typed-failure loss inside `aidl_service/src/object_runtime.rs` by adding HalError-returning callback-registry cleanup/marking helpers while keeping Binder-returning public wrappers at the AIDL boundary.
+- Changed callback registration record failure handling to preserve the typed primary `HalError` and compose it with rollback `Status` only at the final Binder boundary.
+- Changed callback registration domain failure handling so the domain `HalError` is not converted to Binder `Status` before rollback/unhealthy-marking composition.
+- Changed public close cleanup to collect callback cleanup and domain cleanup as `HalError`, and to compose cleanup-failed marking failure as typed composed failure before Binder status conversion.
+- Changed Drop leak LNB domain-record failure from Binder `Status` conversion back to typed `HalError` collection.
+- Stopped at closure/API boundaries that still expose `BinderResult` for callback retain/rollback and domain cleanup; converting those requires wider signature changes across object-specific AIDL methods and should be compiler-verified.
+- Android/Soong `m`, unit tests, `atest`, VTS, real-device checks, `cargo`, `rustc`, and `rustfmt` were not run in this environment; `rustfmt`/`rustc`/`cargo` commands are not installed.
+
+# r50ei104_status_bridge_reduction_unverified
+
+- Reduced typed-failure loss at AIDL construction boundaries by adding HalError-preserving cleanup composition helpers for root object construction/id-conversion rollback.
+- Updated frontend/demux/descrambler/LNB root object construction and runtime-id conversion rollback paths to compose typed primary `HalError` with typed rollback failure before Binder status conversion.
+- Updated child filter/DVR runtime-id conversion rollback to preserve typed primary and rollback failure; callback-retain rollback now preserves typed rollback failure even though the primary callback retain failure is already a Binder `Status`.
+- Rechecked runtime unregister signature propagation after r50ei103 and removed an ignored `Option` in the affected service-runtime test.
+- Android/Soong `m`, unit tests, `atest`, VTS, real-device checks, `cargo`, `rustc`, and `rustfmt` were not run in this environment; `rustfmt`/`rustc`/`cargo` commands are not installed.
+
+# r50ei103_unregister_cleanup_result_propagation_unverified
+
+- Continued the r50ei102 failure-composition foundation by converting demux/filter/DVR/descrambler runtime unregister paths to return cleanup failure instead of silent `Option`-only success/failure.
+- Converted descrambler session cleanup and demux owner-loss descrambler cleanup to `FirstErrorCollector`-based returned cleanup failure while retaining diagnostic records.
+- Propagated unregister cleanup failures through root-open rollback, public close cleanup, and child filter/DVR open rollback paths.
+- Preserved all-attempt cleanup where local code can continue after a cleanup failure.
+- Android/Soong `m`, unit tests, `atest`, VTS, real-device checks, `cargo`, `rustc`, and `rustfmt` were not run in this environment; `rustfmt`/`rustc`/`cargo` commands are not installed.
+
+# r50ei102_failure_composition_foundation_unverified
+
+- Added `HalError::ComposedFailure` as the typed primary-plus-cleanup failure container and routed AIDL status mapping through the primary error while preserving cleanup detail in the display text.
+- Updated root/child open rollback paths so rollback or cleanup failure is composed with the primary open/construction/registration failure instead of replacing it.
+- Updated callback registration, public close cleanup, Drop leak quarantine, frontend tune/scan worker rollback, and cleanup-failed marking paths to preserve primary-plus-cleanup failure context.
+- Tightened missing-target handling for rollback/public close/owner-loss cleanup paths where this can be detected locally.
+- Updated the r50ei101 implementation plan target with code changes only; no new current-scope feature implementation was added.
+- Android/Soong `m`, unit tests, `atest`, VTS, real-device checks, `cargo`, `rustc`, and `rustfmt` were not run in this environment; `rustfmt`/`rustc`/`cargo` commands are not installed.
+
+# r50ei92_first_error_collector_residual_cleanup_fix
+
+- Replaced the remaining child-open callback cleanup / rollback pairwise `match` blocks with `FirstErrorCollector` while preserving the filter/DVR child-open cleanup semantic wrappers.
+- Replaced the frontend tune-worker commit-failure rollback secondary-error accumulator with `FirstErrorCollector`; primary commit error plus rollback error detail composition is still preserved.
+- Replaced the Drop leak `Option<String>` first-error helper with `FirstErrorCollector<String>` while preserving the callback-registry clear-vs-unhealthy branch.
+- Updated `tuner_hal2/RELEASE_VERSION` to this release name.
+- Android/Soong `m`, `atest`, VTS, device checks, and `rustfmt` were not run in this environment.
+
+# r50ei91_cleanup_all_attempt_first_error_fix
+
+- Added `FirstErrorCollector` as the multi-step cleanup all-attempt / first-error common component and documented it in `tuner_hal2/DESIGN_JA.md`.
+- Changed the AIDL object close finalizer so callback cleanup failure no longer prevents domain cleanup from being attempted; cleanup-failed marking is attempted after all close cleanup steps.
+- Changed frontend close cleanup so LNB owner-loss close, tune/scan worker stop, scan cancel record, live-data close/unbind, and closed-LNB callback cleanup preserve first-error precedence while still attempting later cleanup steps.
+- Changed scan-worker supersede cleanup so scan cancel recording no longer masks a completed worker failure.
+- Updated `tuner_hal2/RELEASE_VERSION` to this release name.
+- Android/Soong `m`, `atest`, VTS, device checks, and `rustfmt` were not run in this environment.
+
+# r50ei90_worker_session_stop_child_open_drop_diagnostic_fix
+
+- Added frontend backend-session stop finalization so tune/scan worker bodies still attempt `FrontendBackendSession::stop()` after session-open-success error paths; tune live-pump stop failure is combined with the primary worker-body failure instead of detaching silently.
+- Changed frontend worker stop handling so `Completed { result: Err(..) }` remains distinguishable from `StopRequestFailed`: `stopTune()` / `stopScan()` now preserve first-failure precedence while still attempting safe terminal cleanup and live-data/live-reader cleanup where the worker has already completed.
+- Strengthened Drop leak accounting so callback-store clear failure, domain drop-leak record failure, callback-registry missing, and object-quarantine failure are returned to `drop_leak_object_from_drop()` for in-memory error recording instead of being swallowed after unhealthy marking.
+- Added `StartupDiagnosticKind::DuplicateLnbId` and records default-LNB registration collisions as LNB duplicate diagnostics instead of frontend duplicate diagnostics.
+- Added rollback for filter/DVR child-open AIDL object registration when child `ledger_id` cannot be represented as `i32`, so typed AIDL object construction does not leave a registered child object on numeric conversion failure.
+- Android/Soong `m`, `atest`, VTS, device checks, and `rustfmt` were not run in this environment; `rustfmt` was attempted but the command is not installed.
+
+# r50ei89_worker_result_method_boundary_callback_registry_fix_source_complete_unverified13
+
+- Generalized `DESIGN_JA.md` and `CODE_CONVENTION.md` from the close-specific AIDL object wrapper ban to a broad ban on public thin wrappers that do not own state, lifetime, phase order, rollback, or error precedence.
+- Removed the public frontend/LNB `rollback_callback_registration()` wrapper methods by inlining callback cleanup into the callback registration rollback closures.
+- Removed the public filter profile validation wrappers used only by tests; tests now call the service_runtime profile validation functions directly.
+- No Android/Soong `m`, `atest`, or `rustfmt` gates were run in this environment; this archive remains source-complete by static review but unverified by the fixed build/test gates.
+
+# r50ei89_worker_result_method_boundary_callback_registry_fix_source_complete_unverified12
+
+- Fixed the LNB `Drop` syntax error introduced in the drop-leak wrapper conversion.
+- Removed all remaining AIDL object close thin wrappers (`close_object_after_close_preflight()` / `close_object()`) from frontend/filter/demux/dvr/descrambler/LNB object wrappers; close trait methods now call the `object_runtime` façade directly.
+- Changed `drop_leak_object()` lock ordering so callback-store owner cleanup runs before acquiring `TunerServiceRuntime` lock; runtime registry clear/unhealthy and object quarantine remain inside the runtime critical section.
+- Updated `DESIGN_JA.md` and `CODE_CONVENTION.md` to forbid AIDL object close thin wrappers and to require callback-store cleanup outside the service runtime lock in Drop leak handling.
+- No Android/Soong `m`, `atest`, or `rustfmt` gates were run in this environment; this archive remains source-complete by static review but unverified by the fixed build/test gates.
+
+# r50ei89_worker_result_method_boundary_callback_registry_fix_source_complete_unverified11
+
+- Added rollback handling for `start_frontend_backend_tune_worker()` after worker start succeeds but `commit_frontend_active_tune_request()` fails: the started worker is stopped/joined via the two-phase stop path, frontend runtime snapshot restore and bound demux snapshot restore are attempted, and primary/secondary failure context is surfaced.
+- Fixed `close_frontend_workers_and_live_data()` error precedence so live-data close/unbind failure no longer overwrites an earlier worker stop or scan-cancel-record failure; live-data cleanup is still attempted.
+- Updated `DESIGN_JA.md` and `CODE_CONVENTION.md` to require post-worker-start fallible commit rollback and first-failure precedence during frontend close cleanup.
+- No Android/Soong `m`, `atest`, or `rustfmt` gates were run in this environment; this archive remains source-complete by static review but unverified by the fixed build/test gates.
+
+# r50ei89_worker_result_method_boundary_callback_registry_fix_source_complete_unverified10
+
+- Replaced frontend worker stop-and-join with a two-phase stop ticket: runtime lock now only removes the worker slot, records cancel reason, sets the cancel flag, and returns `FrontendWorkerStopTicket`; blocking `complete()` / `JoinHandle` wait is performed after releasing `TunerServiceRuntime` lock.
+- Updated scan-start supersede handling to request the old scan worker stop under runtime lock, release the lock for join, then reacquire runtime lock before recording scan cancellation and starting the replacement scan worker.
+- Updated stopTune/stopScan/frontend close paths by routing them through the same lock-free join phase in `stop_frontend_worker()`.
+- Updated `DESIGN_JA.md` and `CODE_CONVENTION.md` to forbid frontend worker blocking join while holding `TunerServiceRuntime` lock.
+- No Android/Soong `m`, `atest`, or `rustfmt` gates were run in this environment; this archive remains source-complete by static review but unverified by the fixed build/test gates.
+
+# r50ei89_worker_result_method_boundary_callback_registry_fix_source_complete_unverified9
+
+- Changed actual AIDL object `Drop` implementations to call `drop_leak_object_from_drop()` instead of discarding `drop_leak_object()` results with `drop(...)`; returned drop-leak errors are recorded in the drop-leak diagnostic record without using `eprintln!`.
+- Changed callback-store owner cleanup to return the number of removed callback artifacts and changed `RuntimeCallbackRegistry::clear_owner()` to return `CallbackRegistryUpdate`; callback clear now treats store-removed/runtime-missing as an error while allowing no-store/no-runtime as already-cleared.
+- Removed stale `ensure_open()` wrappers and the exported `ensure_object_live()` helper so AIDL object wrappers cannot bypass the object-runtime façade.
+- Updated `DESIGN_JA.md` and `CODE_CONVENTION.md` to make the Drop-leak diagnostic record, callback owner clear missing semantics, and no-stderr/no-`drop(result)` rule explicit.
+- No Android/Soong `m`, `atest`, or `rustfmt` gates were run in this environment; this archive remains source-complete by static review but unverified by the fixed build/test gates.
+
+# r50ei89_worker_result_method_boundary_callback_registry_fix_source_complete_unverified8
+
+- Tightened `DESIGN_JA.md` so Drop leak cannot treat `CallbackRegistryUpdate::Missing` as covered merely by quarantine; registry missing must be returned or recorded after quarantine is attempted.
+- Changed `drop_leak_object()` to remember callback registry owner-missing during unhealthy marking, always attempt object quarantine, then return an error for the missing registry entry after quarantine/unregister work completes.
+- Split scan END failure handling so callback artifact absence / callback store failure records only the scan-session failure and returns the artifact/store failure, while actual Binder delivery failure to a retrieved callback performs runtime registry unhealthy marking.
+- Added a drop leak regression test proving registry-missing is reported while the object is still quarantined.
+- No Android/Soong `m`, `atest`, or `rustfmt` gates were run in this environment; this archive remains source-complete by static review but unverified by the fixed build/test gates.
+
+# r50ei89_worker_result_method_boundary_callback_registry_fix_source_complete_unverified7
+
+- Changed `ThreadResultProducer` so producer-side result-cell lock poison is captured through the producer-failure side channel instead of returning a value that the worker thread must discard.
+- Strengthened `execute_object_query_use_case()` so the query façade itself verifies object live / generation / kind before runtime dispatch planning and before running the query closure.
+- Added a query façade behavior test proving a missing object is rejected before the query closure executes.
+- Updated `DESIGN_JA.md` / `CODE_CONVENTION.md` wording for `ThreadResultProducer::record_or_capture_failure()` to match the side-channel design.
+- No Android/Soong `m`, `atest`, or `rustfmt` gates were run in this environment; this archive remains source-complete by static review but unverified by the fixed build/test gates.
+
+# r50ei89_worker_result_method_boundary_callback_registry_fix_source_complete_unverified6
+
+- Added `RuntimeCommandDispatchError::RuntimeLockPoison` and changed root method dispatch planning so service runtime lock poison is no longer misclassified as `MissingDispatchTarget`.
+- Changed filter/DVR child-object construction failure cleanup so callback cleanup and child-open rollback are both attempted; callback cleanup failure no longer prevents child-open rollback from running.
+- Hardened `ThreadResultOwner` against double collection with an explicit already-collected failure, added a behavior test for the second collect, and added a producer-failure side channel so producer-side result lock poison is reported to the owner without `eprintln!`.
+- Removed remaining `eprintln!` diagnostics from tuner_hal2 Rust sources; existing in-memory diagnostics and returned `HalError` paths remain the reporting mechanisms.
+- `IFilter.getId()` / `getId64Bit()` remain on `execute_object_query_use_case()`; this is the intended pure-query façade and not a direct AIDL method-body call to `public_runtime_id_for_object_method()`.
+- No Android/Soong `m`, `atest`, or `rustfmt` gates were run in this environment; this archive remains source-complete by static review but unverified by the fixed build/test gates.
+
+# r50ei89_worker_result_method_boundary_callback_registry_fix_source_complete_unverified5
+
+- Changed `ThreadResultProducer::record()` to return `HalError` on result-cell lock poison and log that failure from the worker thread, while leaving final caller-visible classification to `ThreadResultOwner`.
+- Documented the `catch_unwind(AssertUnwindSafe(...))` contract for one-shot worker closures in `DESIGN_JA.md` and `CODE_CONVENTION.md`.
+- Rechecked `IFilter.getId()` / `getId64Bit()` and kept them on `execute_object_query_use_case()`; their use of `public_runtime_id_for_object_method()` occurs inside the query façade and is the intended object live / generation / kind check for pure query.
+- No Android/Soong `m`, `atest`, or `rustfmt` gates were run in this environment; this archive remains source-complete by static review but unverified by the fixed build/test gates.
+
+# r50ei89_worker_result_method_boundary_callback_registry_fix_source_complete_unverified4
+
+- Added `device/src/runtime/thread_result_owner.rs` to the `libmaleicacid_tuner_hal2_device` and `maleicacid_tuner_hal2_device_test` `Android.bp` `srcs` lists so the new module is included by Soong.
+- No behavior changes beyond build graph correction.
+- `rustfmt`, Android/Soong `m` gates, and `atest` gates were not run in this environment; this archive remains source-complete by static review but unverified by the fixed build/test gates.
+
+# r50ei89_worker_result_method_boundary_callback_registry_fix_source_complete_unverified3
+
+- Removed the unused `CallbackHealthState::Cleared` state and fixed the design wording so callback clear means RuntimeCallbackRegistry entry removal, not a tombstone health state.
+- Narrowed `ThreadResultOwner`, `ThreadResultPoll`, and `ThreadResultFailure` to crate-internal/module-internal visibility, made `ThreadResultProducer` private, removed `ThreadResult*` re-exports from `device/src/runtime/mod.rs` and `device/src/lib.rs`, and kept spawn failure as a start-time `HalError` rather than a worker-result enum case.
+- Removed all `plan_method_without_execution()` object-wrapper/service public helpers and the `plan_object_method_without_runtime_execution()` helper from `aidl_service::object_runtime`; plan-only object method paths must now go through the allowed façade use-cases.
+- Removed the direct plan-only unit test that called the deleted helper and updated `DESIGN_JA.md` / `CODE_CONVENTION.md` so `aidl_service::object_runtime` remains the AIDL object method executor façade.
+- Re-ran static source checks for stale `Cleared`, `ThreadResult*` public re-exports, plan-only helper names, `method_execution`, poison/missing-result success rounding, and direct AIDL `plan_object_method_dispatch`; they returned no matches outside intended internal uses.
+- `rustfmt`, Android/Soong `m` gates, and `atest` gates were not run in this environment; this archive remains source-complete by static review but unverified by the fixed build/test gates.
+
+# r50ei89_worker_result_method_boundary_callback_registry_fix_source_complete_unverified2
+
+- Source-level completion pass for worker result ownership, method execution façade boundary, callback registry ownership, and ObjectMethodTxn/ObjectClose/root-open/query/unavailable method-category documentation.
+- Added `device/src/runtime/thread_result_owner.rs` and connected `FrontendWorkerRegistry` / `FrontendWorkerSlot` and `FrontendLivePumpOwner` through `ThreadResultOwner`, so panic, result lock poison, and missing report are surfaced as `HalError` rather than success/finished states.
+- Added behavior tests for `ThreadResultOwner`, frontend worker missing/poison result reporting, and live pump panic/missing/poison reporting.
+- Deleted `service_runtime/src/method_execution.rs` and kept the low-level runtime execution helpers as private helpers inside `aidl_service/src/object_runtime.rs`, making that file the AIDL object method executor façade.
+- Changed callback registry unhealthy marking to return `CallbackRegistryUpdate`, propagated frontend callback unhealthy-marking failures, and marked callback registrations unhealthy when callback registration rollback fails after domain commit failure.
+- Added callback registry missing-update and callback rollback-failure behavior tests.
+- Added `DESIGN_JA.md` ownership text for callback_store / RuntimeCallbackRegistry / domain runtime state and the AIDL method category required-boundary table.
+- Static source checks for poison/missing success rounding, AIDL direct low-level executor references, and AIDL direct `plan_object_method_dispatch` references were run and returned no matches outside the allowed façade.
+- Changed `drop_leak_object()` to return a Binder result instead of silently returning on runtime lock poison / quarantine failure; Drop implementations now log drop-leak handling failures rather than treating them as invisible.
+- Prevented `FrontendWorkerRegistry::start()` from overwriting a completed-but-unreported worker failure; such failures must be reported via `take_completed()` before replacement.
+- `rustfmt`, Android/Soong `m` gates, and `atest` gates were not run in this environment; this archive is source-complete by static review but unverified by the fixed build/test gates.
+
+# r50ei89_doc_responsibility_tuner_docs_fix
+
+- Corrected the `tuner_hal2/INTEGRATION.md` legacy `tuner_hal/INTEGRATION.md` wording: the legacy integration document may exist for reference, but it is not the default product integration SSOT.
+- Updated the archive release marker after the tuner documentation responsibility cleanup.
+- Code behavior was not changed. Android/Soong build, rustfmt, Rust unit tests, atest, VTS, and device checks were not run in this environment.
+
+# r50ei88_callback_registration_phase_order_fix
+
+- Added `future_work/r51/rollback_failure_composition_common_component_plan.md` to track generic primary-failure / rollback-failure status composition as r51 work instead of expanding that large-scope change in r50.
+- Changed filter/DVR child open completion so callback artifact registration runs before typed AIDL object construction, avoiding the callback-failure path where explicit child rollback and Drop leak handling could run for the same just-created AIDL object.
+- Moved frontend/LNB setCallback onto the existing `ObjectMethodTxn` dispatch-preflight boundary before callback store retain, and pass the dispatch-preflight proof into the service_runtime callback commit use-cases.
+- Added a regression test that verifies callback retain is not attempted when ObjectMethodTxn dispatch preflight fails before registration.
+- Updated `DESIGN_JA.md` and `CODE_CONVENTION.md` to fix the callback registration and child open phase-order contracts around existing common components.
+- Android/Soong build, rustfmt, Rust unit tests, atest, VTS, and device checks were not run in this environment.
+
+# r50ei87_callback_artifact_registration_core_unification
+
+- Removed the old `retain_and_record_callback_registration()` helper so callback retain + runtime registry record is no longer split between setCallback and child-open-specific paths.
+- Added `register_callback_artifact_after_owner_ready()` as the callback artifact registration core used after the owner object has already been validated or registered.
+- Kept frontend/LNB `setCallback()` on `execute_callback_registration_runtime_use_case()`: live/generation/kind check, callback artifact registration, domain runtime commit, and rollback stay in one use-case boundary.
+- Routed filter/DVR child open callback retain through the same callback artifact registration core after child runtime/object registration, while preserving child-open rollback on callback failure.
+- Updated `DESIGN_JA.md` and `CODE_CONVENTION.md` to describe the setCallback and child open callback registration split without reintroducing `retain_and_record_callback_registration()`.
+- Android/Soong build, rustfmt, Rust unit tests, atest, VTS, and device checks were not run in this environment.
+
+# r50ei86_callback_registration_and_method_execution_boundary_fix
+
+- Made `execute_callback_registration_runtime_use_case()` the primary callback registration transaction entry for frontend/LNB setCallback: live/generation/kind check, callback store retain, runtime callback registry record, domain runtime commit, and rollback now stay in one use-case boundary.
+- Removed the frontend/LNB setCallback main-path `retain_callback()` wrappers so they no longer route through `retain_and_record_callback_registration()` before entering the callback registration transaction.
+- Kept `retain_and_record_callback_registration()` for child object open callback retain/record use only.
+- Added a module comment to `service_runtime/src/method_execution.rs` documenting it as a runtime lock / shared runtime / query closure executor, not a transaction owner.
+- Updated `DESIGN_JA.md` and `CODE_CONVENTION.md` so ObjectMethodTxn is limited to fallible request-builder / status-precedence-risk paths and simple methods are not forced into `ObjectMethodTxnPlan` / dispatch-preflight tokens.
+- Android/Soong build, rustfmt, Rust unit tests, atest, VTS, and device checks were not run in this environment.
+
+# r50ei85_aidl_method_plan_coverage_test_name_alignment
+
+- Renamed the AIDL method plan-coverage helper/test so the names describe AIDL method call variants rather than a partial method-kind sample.
+- Added the missing `PublicApi`, `UnsupportedPublicApi`, `DemuxOpenFilter`, `FilterConfigure`, and `FilterConfigureAvStreamType` variants to the plan-coverage helper.
+- Renamed the LNB close transaction-table test to describe the specific `CommandPlan::for_api()` mapping it verifies.
+- Android/Soong build, rustfmt, Rust unit tests, atest, VTS, and device checks were not run in this environment.
+
+# r50ei84_command_plan_for_api_transaction_ssot
+
+- Changed command planning to use `CommandPlan::for_api(object, api)` as the primary path so the runtime transaction name is selected only from `AIDL_TRANSACTION_TABLE`.
+- Removed the caller-supplied transaction-name lookup path from Rust code; command callers now pass object/API identity rather than an expected transaction triple.
+- Updated `DESIGN_JA.md` and `CODE_CONVENTION.md` to keep transaction-name ownership in the AIDL transaction table and avoid duplicating expected transaction names at call sites.
+- Android/Soong build, rustfmt, Rust unit tests, atest, VTS, and device checks were not run in this environment.
+
+# r50ei83_binder_adapter_aidl_method_duplicate_import_cleanup
+
+- Removed the duplicate `HalError` import from `binder_adapter/src/aidl_method.rs` after the fallible command-plan cleanup.
+- No behavior was changed in this revision.
+- Android/Soong build, rustfmt, Rust unit tests, atest, VTS, and device checks were not run in this environment.
+
+# r50ei82_request_builder_plan_result_propagation_fix
+
+- Fixed `aidl_service/src/object_runtime.rs::object_method_txn_plan()` to return `BinderResult<(CommandPlan, Option<RuntimeExecutableRequest>)>` after `AidlMethodAdapter::plan()` became fallible.
+- Updated `execute_object_runtime_use_case_with_request_builder()`, `execute_shared_object_runtime_use_case_with_request_builder()`, and `plan_unavailable_object_method_use_case()` to propagate the fallible plan result from inside their builder closures.
+- Android/Soong build, rustfmt, Rust unit tests, atest, VTS, and device checks were not run in this environment.
+
+# r50ei81_design_contract_cleanup_command_plan_no_expect
+
+- Removed implementation-rule wording from `DESIGN_JA.md` around capability-token visibility and kept only the current design contract; detailed construction/visibility rules remain in `CODE_CONVENTION.md`.
+- Changed AIDL command plan construction to return `Result` instead of panicking with `expect("known AIDL command plan")` in production code paths.
+- Updated binder adapter command planning, AIDL method planning, and AIDL service call sites to propagate command-plan construction failures as HAL/Binder errors instead of panics.
+- Kept transaction-table-backed `CommandPlan` construction and private `CommandPlan` fields.
+- Android/Soong build, rustfmt, Rust unit tests, atest, VTS, and device checks were not run in this environment.
+
+# r50ei80_capability_token_convention_generalization
+
+- Rewrote the capability-token visibility rule in `CODE_CONVENTION.md` as a generic rule for validation tokens, dispatch-preflight proofs, transaction plans, ledger guards, and rollback guards.
+- Removed the struct-by-struct convention wording from `CODE_CONVENTION.md`; concrete component names remain in `DESIGN_JA.md` where implementation ownership is fixed.
+- No code behavior was changed in this revision.
+- Android/Soong build, rustfmt, Rust unit tests, atest, VTS, and device checks were not run in this environment.
+
+# r50ei79_capability_token_visibility_hardening
+
+- Hardened `ObjectMethodDispatchPreflight` so the dispatch-preflight-complete proof and required policy constructors are private to `service_runtime::object_method_txn`; request-builder callers only receive the proof returned by `build_and_plan_object_method_request_after_live()`.
+- Removed `Clone` from `ObjectMethodDispatchPreflight` and `ObjectMethodTxnPlan`; the dispatch proof remains consume-only via `plan(self, ...)`, and transaction plans are generated inside `object_method_txn`.
+- Changed `ObjectMethodTxnPlan::new()` to private and changed the request-builder transaction closure contract to pass `CommandPlan` / `RuntimeExecutableRequest` parts into `object_method_txn`, where the plan is constructed.
+- Made `CommandPlan` fields private and added accessors plus transaction-table-backed construction so inconsistent `(object, api, transaction)` triples cannot be built with public fields.
+- Hardened `LnbOperationGuard` by making its fields private, removing `Clone` / `Copy`, adding an internal nonce, and requiring `LnbOperationLedger::finish()` to match both kind and nonce before clearing active state.
+- Updated `DESIGN_JA.md` and `CODE_CONVENTION.md` to fix the capability-token and transaction-plan visibility contracts.
+- Android/Soong build, rustfmt, Rust unit tests, atest, VTS, and device checks were not run in this environment.
+
+# r50ei78_filter_datasource_dispatch_preflight_arg_fix
+
+- Fixed `IFilter.setDataSource()` request-builder execute closure to receive the `ObjectMethodDispatchPreflight` proof returned by `service_runtime::object_method_txn` and pass that proof to `set_filter_data_source_for_object()`.
+- Verified the other request-builder execute closures under `aidl_service/src` already receive and pass `dispatch_preflight` explicitly.
+- Verified `aidl_service/src` still does not directly construct `already_planned()` and no dispatch-preflight-specific public entry point was reintroduced.
+- Android/Soong build, rustfmt, Rust unit tests, atest, VTS, and device checks were not run in this environment.
+
+# r50ei77_object_method_dispatch_preflight_private_constructor
+
+- Verified the r50ei76 dispatch-preflight policy and child rollback diagnostic changes before applying this type-boundary hardening.
+- Changed `ObjectMethodDispatchPreflight` from a public enum with public `required(...)` / `already_planned()` constructors into a public wrapper over a private state enum; constructors and `plan(...)` are now service_runtime-internal.
+- Changed `build_and_plan_object_method_request_after_live()` to return the dispatch-preflight proof only after live/generation/kind validation, request build, method/object kind validation, executable request validation, and dispatch preflight all succeed.
+- Routed AIDL request-builder execution closures to pass through the returned dispatch-preflight proof instead of constructing an already-planned value locally.
+- Removed the unused normal child-open helper paths that required AIDL to construct the required dispatch policy directly; child open remains on the request-builder object-method transaction path and does not revive dispatch-preflight-specific public entry points.
+- Updated `tuner_hal2/DESIGN_JA.md` and `tuner_hal2/CODE_CONVENTION.md` to fix the proof rule: AIDL and individual method bodies must not freely create a preflight-complete value.
+- Build, rustfmt, Rust unit, atest, VTS, and device checks were not executed.
+
+# r50ei76_object_method_dispatch_policy_child_rollback_diagnostics
+
+- Verified the r50ei75 child-open, unavailable-plan, and duplicate-dispatch fixes before applying this follow-up hardening.
+- Replaced the parallel dispatch-preflight-specific public use-case family with `ObjectMethodDispatchPreflight`; normal callers pass `required(...)`, request-builder callers pass `already_planned()`, and both paths use the same `*_for_object` service_runtime entry points.
+- Routed filter/DVR child open through the demux/filter/DVR transaction context again while preserving the service_runtime object-method dispatch-preflight boundary.
+- Added child-open rollback diagnostics for object registration rollback failure, runtime cleanup target missing, and combined rollback failure; rollback no longer treats a missing filter/DVR runtime cleanup target as success.
+- Updated `tuner_hal2/DESIGN_JA.md` and `tuner_hal2/CODE_CONVENTION.md` to require the dispatch-preflight policy object rather than parallel after-preflight public entry points, and to require child-open rollback diagnostics.
+- Build, rustfmt, Rust unit, atest, VTS, and device checks were not executed.
+
+# r50ei75_object_method_txn_child_unavailable_duplicate_dispatch_fix
+
+- Verified the r50ei74 medium request-builder dispatch-preflight changes before applying this follow-up fix.
+- Routed child `openFilter()` / `openDvr()` request-builder paths through `execute_shared_object_runtime_use_case_with_request_builder()` and service_runtime after-preflight child open entry points, so open request building, executable request validation, and dispatch preflight share the `service_runtime::object_method_txn` boundary.
+- Added after-object-method-preflight service_runtime entry points for request-builder domain operations that already passed dispatch preflight, and routed LNB, filter, descrambler, frontend tune/scan, and child open request-builder closures to those entry points to avoid duplicate dispatch planning.
+- Changed `plan_unavailable_object_method_use_case()` to use the build-and-plan service_runtime transaction boundary directly; it no longer falls back to the old build-only helper plus a second plan-only dispatch pass.
+- Updated `tuner_hal2/DESIGN_JA.md` and `tuner_hal2/CODE_CONVENTION.md` to require request-builder execution closures to call after-preflight service_runtime use-case entry points and to forbid duplicate dispatch planning after `ObjectMethodTxnPlan` preflight.
+- Build, rustfmt, Rust unit, atest, VTS, and device checks were not executed.
+
+# r50ei74_object_method_txn_dispatch_preflight_completion
+
+- Verified the r50ei73 `service_runtime::object_method_txn` boundary before applying the medium hardening.
+- Added `ObjectMethodTxnPlan` to carry the neutral `CommandPlan` and `RuntimeExecutableRequest` pair for object method transactions.
+- Added `build_and_plan_object_method_request_after_live()` so request-builder methods now perform object live/generation/kind validation, request building, executable request validation, and dispatch planning preflight in the service_runtime object method transaction boundary.
+- Routed normal and shared request-builder AIDL adapters through the new build-and-plan transaction path; AIDL helpers now generate the neutral plan and delegate validation/dispatch preflight to service_runtime.
+- Added service_runtime regression coverage for dispatch-preflight execution under the runtime lock, builder failure before dispatch preflight, and method/object kind mismatch rejection.
+- Updated `tuner_hal2/DESIGN_JA.md` and `tuner_hal2/CODE_CONVENTION.md` to fix `ObjectMethodTxnPlan` and dispatch-preflight ownership in `service_runtime::object_method_txn`.
+- Build, rustfmt, Rust unit, atest, VTS, and device checks were not executed.
+
+# r50ei73_object_method_txn_service_runtime_boundary
+
+- Added `service_runtime::object_method_txn` as the implementation owner for the object method request-builder lifecycle critical section.
+- Moved the request-builder live/generation/kind preflight out of the private AIDL-side `ObjectMethodUseCase` phase owner and into `service_runtime::object_method_txn::build_object_method_request_after_live()`.
+- Kept AIDL-side `object_runtime` helpers as adapters for AIDL method static planning, Binder status conversion, and service_runtime transaction dispatch.
+- Added service_runtime regression coverage that request builders run while the runtime lock is held and that closed objects reject before invoking the builder.
+- Updated `tuner_hal2/DESIGN_JA.md` to fix `service_runtime::object_method_txn` as the common-component implementation owner and updated `tuner_hal2/CODE_CONVENTION.md` to forbid AIDL-side ownership of the request-builder critical section.
+- Build, rustfmt, Rust unit, atest, VTS, and device checks were not executed.
+
+# r50ei72_request_builder_lifecycle_lock_fix
+
+- Short-term hardened the object method request-builder boundary: `ObjectMethodUseCase` now runs fallible request builders while holding the same runtime lock used for the object live/generation/kind check.
+- Kept the later service_runtime dispatch/runtime operation recheck, but removed the race where a concurrent close could occur between the first lifecycle check and a failing request builder.
+- Applied the same lock-held builder preflight to shared-runtime request builders and unavailable / unsupported plan-only request builders.
+- Added regression coverage that a request-builder closure observes the runtime lock as held and that closed objects reject before invoking the builder.
+- Updated `tuner_hal2/DESIGN_JA.md` and `tuner_hal2/CODE_CONVENTION.md` to require request builders to run inside the lifecycle critical section and to restrict builder closures to short, side-effect-free conversion.
+- Build, rustfmt, Rust unit, atest, VTS, and device checks were not executed.
+
+# r50ei71_source_boundary_close_preflight_atomicity_fix
+
+- Verified the r50ei70 object method and source boundary updates before applying the follow-up hardening.
+- Reordered `SourceBoundaryTxn` so sink endpoint, queue presence, and generation increment feasibility are validated before any source disconnect. Queue clear, generation boundary reset, and packet pipeline reset now complete before disconnecting the existing source.
+- Added regression coverage that a missing sink queue does not execute the disconnect step and preserves an already connected source filter.
+- Added `service_runtime::object_close_txn::plan_and_begin_object_close_method_dispatch()` and routed `close_object_after_close_preflight_with_domain_cleanup()` through it so closeable lifecycle/dispatch preflight and the `Closing` transition happen in one runtime critical section.
+- Added regression coverage that the close-preflight path has already moved the object to `Closing` before the domain cleanup hook runs.
+- Updated `tuner_hal2/DESIGN_JA.md` and `tuner_hal2/CODE_CONVENTION.md` with the source boundary atomicity and close-preflight critical-section rules.
+- Build, rustfmt, Rust unit, atest, VTS, and device checks were not executed.
+
+# r50ei70_object_method_source_boundary_completion
+
+- Verified the r50ei69 changes and kept the common-component taxonomy, callback lifetime-first behavior, and `setDataSource(source)` same-demux precedence fixes.
+- Added a private `ObjectMethodUseCase` boundary in `aidl_service/src/object_runtime.rs` so normal runtime execution, shared runtime execution, query, request-builder, and unavailable paths share one object method use-case phase owner.
+- Connected `DemuxRuntime::set_filter_source_non_null()` to `SourceBoundaryTxn` so source switch now goes through existing source disconnect, sink queue clear, generation boundary, and packet pipeline reset before committing the new source filter.
+- Extended `SourceBoundaryTxn` to expose the `PipelineResetReport` produced by the generation boundary reset.
+- Added regression coverage for `set_filter_source_non_null()` using the source boundary transaction and preserving the new source only after boundary reset.
+- Updated `tuner_hal2/DESIGN_JA.md` and `tuner_hal2/CODE_CONVENTION.md` to state the `ObjectMethodUseCase` and `SourceBoundaryTxn` ownership rules.
+- Build, rustfmt, Rust unit, atest, VTS, and device checks were not executed.
+
+# r50ei69_common_component_contract_hardening
+
+- Added common-component definition rules to `tuner_hal/DESIGN_JA.md` and `tuner_hal2/DESIGN_JA.md`: logical contract, implementation owner, owned state, phase order, failure behavior, allowed callers, forbidden callers, and minimum tests must be defined before a helper is treated as a transaction/common component.
+- Classified `tuner_hal2` common structures into transaction owners, phase helpers, lock helpers, façades, and adapters so `method_execution` and thin `*_ops.rs` wrappers are not mistaken for transaction owners.
+- Fixed callback registration precedence by checking object live/generation before callback retain in both immediate registration and runtime-use-case registration paths.
+- Fixed `IFilter.setDataSource(source)` service_runtime precedence: sink/source lifetime and owner demux are validated before same-demux and self-source input validation, and cross-demux source filters are rejected before dispatch/commit.
+- Added regression coverage for callback registration paths that must not call the callback retain closure when the target object is already closed.
+- Updated `tuner_hal2/CODE_CONVENTION.md` with common-component naming, callback registration, request-builder, and `setDataSource(source)` relation-validation rules.
+- WP-E packet/stream/source boundary correspondence remains a separate audit scope; no PacketPipeline / StreamBoundaryTxn / SourceBoundaryTxn implementation change is included in this revision.
+- Build, rustfmt, Rust unit, atest, VTS, and device checks were not executed.
+
+# r50ei68_filter_datasource_same_demux_design_docs
+
+- Documented the `IFilter.setDataSource(source)` same-demux ownership rule in `tuner_hal/DESIGN_JA.md` and the corresponding `tuner_hal2` service_runtime validation responsibility in `tuner_hal2/DESIGN_JA.md`.
+- Recorded the checked AOSP basis: AIDL VTS `SetFilterLinkage` opens the source and sink filters from the same demux before calling `setDataSource()`, and the checked VTS path does not require a cross-demux source filter success case.
+- Recorded the AOSP API boundary: `IFilter.setDataSource()` / framework `Filter.setDataSource()` allow another filter output as source and NULL/demux fallback, but do not require cross-demux filter graph ownership.
+- Kept historical/VTS confirmation detail in this CHANGELOG entry only; DESIGN_JA.md entries state the current product contract and implementation responsibility without release-history wording.
+- No code change was made in this revision.
+- Build, rustfmt, Rust unit, atest, VTS, and device checks were not executed.
+
+# r50ei61_object_close_txn_common_regression_tests
+
+- Added common ObjectCloseTxn regression coverage instead of an LNB-only close test.
+- Changed `RuntimeObjectTable::begin_close_cascade()` to reject a second begin on the same target object while still allowing already-closing descendants during parent cascade cleanup.
+- Added `object_close_txn` coverage for second-begin rejection and lifecycle preservation.
+- Added `object_runtime::close_object_with_domain_cleanup()` coverage for hook-after-begin ordering, successful commit to Closed, domain cleanup failure to CleanupFailed, and rejection of a domain hook attempting a second close begin.
+- Did not add an `ILnb.close()`-specific second-begin regression test because the contract is common ObjectCloseTxn behavior, not an LNB-specific behavior.
+- Build, rustfmt, Rust unit, atest, VTS, and device checks were not executed.
+
+# r50ei60_lnb_close_object_close_txn_single_begin
+
+- Reworked `ILnb.close()` to use `close_object_after_aidl_method_plan_with_domain_cleanup()` instead of running `execute_object_runtime_use_case()` before `self.close_object()`.
+- Removed the LNB service_runtime-side `begin_object_close_cascade()` / cleanup-failed marking path so ObjectCloseTxn begin remains owned by `object_runtime::close_object_with_domain_cleanup()`.
+- Added `close_lnb_explicit_after_object_close_begin()` as the LNB domain cleanup hook, resolving the LNB public runtime id from a nonterminal AIDL object after the generic close begin.
+- Confirmed no other service_runtime close path starts `begin_object_close_cascade()` before AIDL ObjectCloseTxn finalization.
+- Updated DESIGN_JA.md and CODE_CONVENTION.md to state that LNB cleanup, like frontend cleanup, is connected as an ObjectCloseTxn domain cleanup hook.
+- Build, rustfmt, Rust unit, atest, VTS, and device checks were not executed.
+
+# r50ei59_method_transaction_and_frontend_txn_surface_cleanup
+
+- Moved `RuntimeExecutableRequest` validation out of the AIDL object executors and `service_runtime::method_transaction` executor heads to avoid bypassing AIDL status precedence.
+- Kept validation in the service_runtime transaction boundary by routing it through `method_dispatch::plan_object_method_dispatch()` after object-handle use-cases perform live/generation validation and before runtime dispatch/mutation.
+- Updated DESIGN_JA.md and CODE_CONVENTION.md to state that validation must not run before object lifetime/profile precedence resolution.
+- Flattened the flagged `FrontendTxn` methods so they own their operation bodies instead of forwarding the same arguments to private `transact_*` methods.
+- Removed the corresponding unused private `transact_*` frontend helper methods for the flagged worker/snapshot paths.
+- Build, rustfmt, Rust unit, atest, VTS, and device checks were not executed.
+
+# r50ei58_method_validation_close_hook_frontend_surface_fix
+
+- Added `service_runtime/src/method_validation.rs` and routed object runtime executors through the shared `RuntimeExecutableRequest` profile/supported-value validation before runtime mutation.
+- Reworked frontend close so `object_runtime::close_object_with_domain_cleanup()` owns the single ObjectCloseTxn begin, callback cleanup, frontend domain cleanup hook, cleanup-failed recording, and final close commit.
+- Changed frontend-specific close cleanup to `cleanup_frontend_object_after_close_begin()` so service_runtime no longer begins close before the generic close transaction.
+- Reduced frontend worker façade surface: public service_runtime re-export aliases remain for AIDL use-case boundaries, and same-name `TunerServiceRuntime -> FrontendTxn` delegates in `frontend_ops.rs` are crate-private.
+- Removed `RuntimeObjectTable` from the service_runtime root public re-export; tests use `crate::object_table::RuntimeObjectTable` directly.
+- Updated DESIGN_JA.md and CODE_CONVENTION.md for method validation and close domain cleanup hook ownership.
+- Build, rustfmt, Rust unit, atest, VTS, and device checks were not executed.
+
+# r50ei57_doc_scope_object_lifecycle_frontend_wrapper_cleanup
+
+- Re-scoped documentation responsibilities: DESIGN_JA.md remains the product/API/profile contract source, INTEGRATION.md only points product/VTS config at that contract, and CODE_CONVENTION.md remains implementation rules only.
+- Added `service_runtime/src/object_lifecycle.rs` as the official service_runtime façade for AIDL object live checks and public runtime binding lookups.
+- Removed production AIDL-side direct `object_table()` / `object_table_mut()` calls from `aidl_service/src/object_runtime.rs`; close commit and drop-leak quarantine now use service_runtime lifecycle/close façade helpers.
+- Removed the frontend_ops one-line worker façade functions; root service_runtime re-exports the private frontend worker use-cases with public boundary names instead of maintaining same-argument wrappers.
+- Build, rustfmt, Rust unit, atest, VTS, and device checks were not executed.
+
+# r50ei56_monitor_event_profile_contract_fix
+
+- Documented the TS-only monitor event policy in DESIGN_JA.md: monitor event is not declared, `configureMonitorEvent(0)` is a supported no-op, and nonzero masks return `UNAVAILABLE`.
+- Documented the VTS/product config policy in INTEGRATION.md: product config must not require nonzero monitor event unless a future WP implements and declares it.
+- Fixed `IFilter.configureMonitorEvent(0)` so it uses a supported `NoPayload` no-op method plan instead of first entering the unsupported-profile status path.
+- Kept nonzero `configureMonitorEvent()` routed through unsupported-profile status precedence.
+- Build, rustfmt, Rust unit, atest, VTS, and device checks were not executed.
+
+# r50ei55_object_txn_lifetime_close_callback_query_fix
+
+- Removed AIDL executor-side lifetime prechecks from `execute_object_runtime_use_case()` and `execute_shared_object_runtime_use_case()` so live/generation validation is owned by service_runtime object-handle use-case transactions.
+- Removed the duplicate `begin_object_close_cascade()` from `close_object_after_aidl_method_plan()`; `close_object()` is the single ObjectCloseTxn begin/finalize entry for this path.
+- Added `execute_callback_registration_runtime_use_case()` and moved `ILnb.setCallback()` retain/commit/rollback assembly out of the AIDL method body.
+- Added root-open rollback for public id conversion failure after `RuntimeObjectEntry` acquisition.
+- Added `execute_object_query_use_case()` and routed frontend status/readiness queries through it to remove AIDL-side `ensure_open()` + runtime query lifecycle double checks.
+- Updated DESIGN_JA.md and CODE_CONVENTION.md for the narrowed transaction boundaries.
+- Build, rustfmt, Rust unit, atest, VTS, and device checks were not executed.
+
+# r50ei54_lifetime_check_dedup_horizontal_fix
+
+- Removed the remaining duplicated pre-check from `ILnb.setCallback()`: callback registration already validates the AIDL object through `record_callback_registration()`, and the runtime commit path validates again through `execute_object_runtime_use_case()`.
+- Keeps unsupported/read-only/unavailable pre-checks unchanged because they are not followed by an object-runtime use-case live check.
+- Build, rustfmt, Rust unit, atest, VTS, and device checks were not executed.
+
+# r50ei53_demux_child_open_lifetime_check_dedup
+
+- Removed duplicated `ensure_open()` calls from `IDemux.openFilter()` and `IDemux.openDvr()` because the child-open common entry now routes through `execute_shared_object_runtime_use_case()`, which performs the authoritative live/generation check.
+- Kept AIDL input conversion before the child-open helper because it is pure AIDL argument validation and does not depend on runtime state.
+- Build, rustfmt, Rust unit, atest, VTS, and device checks were not executed.
+
+# r50ei52_demux_child_open_method_txn_alignment
+
+- Routed `IDemux.setFrontendDataSource()` through `execute_object_runtime_use_case()` instead of hand-assembling `ensure_open()` / `AidlMethodAdapter::plan()` / runtime lock / service_runtime commit in the AIDL method body.
+- Routed demux child-open runtime allocation in `child_object_open.rs` through `execute_shared_object_runtime_use_case()` so child open uses the declared AIDL object method planning boundary rather than local `AidlMethodAdapter::plan()` calls.
+- Kept unsupported/read-only/unavailable `plan_method()` paths unchanged because they do not perform service_runtime state-changing commits.
+- Build, rustfmt, Rust unit, atest, VTS, and device checks were not executed.
+
+# r50ei51_callback_close_dispatch_common_boundary_fix
+
+- Routed frontend/LNB/child callback retain + runtime registration through `retain_and_record_callback_registration()` so registration failure rolls back retained callback store entries.
+- Changed public close callback cleanup to use `clear_owner_callback_registration()` outside the runtime lock and preserve callback-registry unhealthy marking on callback store cleanup failure.
+- Removed unused raw close wrappers from `TunerServiceRuntime` (`begin_aidl_object_close`, `mark_aidl_object_cleanup_failed`, `commit_aidl_object_close`).
+- Added `aidl_service::object_runtime::{execute_object_runtime_use_case, execute_shared_object_runtime_use_case}` and routed frontend/LNB/filter/descrambler state-changing AIDL methods through them.
+- Added `service_runtime::method_dispatch::plan_object_method_dispatch()` and routed root/frontend/demux/filter/DVR/descrambler/LNB dispatch planning through it, including frontend `setLnb`, so dispatch errors use the shared mapper.
+- Updated DESIGN_JA.md and CODE_CONVENTION.md to document callback registration and method dispatch common boundaries.
+- Build, rustfmt, Rust unit, atest, VTS, and device checks were not executed.
+
+# r50ei50_object_close_txn_and_dead_common_cleanup
+
+- Added `service_runtime::object_close_txn` as the concrete ObjectCloseTxn common component and routed AIDL close, frontend close, and LNB close begin/cleanup-failed marking through it.
+- Routed LNB root-open runtime-open failure rollback through `finish_open_rollback()` instead of hand-written early-return rollback.
+- Kept `transaction_registry.rs` as the useful runtime transaction -> dispatch target table, and removed the non-production second handler/status layer (`runtime_handlers.rs` / `runtime_result.rs`).
+- Removed unused public AIDL helper modules/re-exports: `CallbackBridge`, `AidlCallbackSlot`, `NativeHandleBridge`, and `AidlErrorBridge` while keeping the production `error_bridge` status functions.
+- Updated DESIGN_JA.md and CODE_CONVENTION.md to document the useful registry and prohibit dead public bridge/helper common parts.
+- Build, rustfmt, Rust unit, atest, VTS, and device checks were not executed.
+
+# r50ei49_open_rollback_completion_common_helper
+
+- Added `service_runtime::open_rollback::finish_open_rollback()` as the shared rollback-completion helper for root/child object open transactions.
+- Routed root object open rollback and child filter/DVR open rollback through the shared helper, so object-table rollback failure can no longer skip runtime unregister / LNB close.
+- Classified dual object-rollback/runtime-cleanup failure as `CleanupFailed` through the shared helper.
+- Documented the open rollback completion helper in the DESIGN_JA.md common-component catalogue and CODE_CONVENTION.md.
+- Build, rustfmt, Rust unit, atest, VTS, and device checks were not executed.
+
+# r50ei48_object_table_error_mapping_and_rollback_completion
+
+- Removed the duplicate `object_table_hal_error()` mapper from `aidl_service::object_runtime` and routed AIDL object lifecycle code through `service_runtime::error_mapping::object_table_error_to_hal()`.
+- Fixed the `RuntimeObjectTableError::GenerationOverflow` mapping inconsistency: the shared mapper now treats generation overflow as internal counter exhaustion instead of `INVALID_STATE`.
+- Expanded object-table error messages so missing object, kind mismatch, generation mismatch, owner mismatch, duplicate binding, unsupported kind, and generation overflow no longer collapse to one generic context string.
+- Changed root object open rollback and child filter/DVR open rollback so runtime unregister / LNB close is attempted even when object-table rollback fails.
+- Updated DESIGN_JA.md and CODE_CONVENTION.md to require shared object-table error mapping and rollback cleanup continuation.
+- Build, rustfmt, Rust unit, atest, VTS, and device checks were not executed.
+
+# r50ei47_typed_error_mapping_horizontal_fix
+
+- Added `service_runtime::error_mapping` as the shared location for typed service_runtime error enum to `HalError` mapping.
+- Routed root object registration, child filter/DVR object registration, registry allocation/commit, and runtime dispatch planning errors through shared typed mapping helpers instead of local `_ => Internal` collapse.
+- Mapped registry duplicate errors to `InvalidState`, missing/mismatch registry errors to invalid input, and runtime id exhaustion to `Internal`.
+- Kept command dispatch failures on the existing `RuntimeCommandDispatchError::into_hal_error()` mapping instead of manually recreating internal errors at each call site.
+- Documented the shared typed-error mapping boundary in DESIGN_JA.md and CODE_CONVENTION.md.
+- Build, rustfmt, Rust unit, atest, VTS, and device checks were not executed.
+
+# r50ei46_root_object_registration_status_mapping
+
+- Fixed `service_runtime::root_object_ops::register_root_object()` to preserve `RuntimeObjectTableError` classification instead of collapsing all object table registration failures to `HalError::Internal`.
+- Mapped duplicate object id / duplicate runtime binding / lifecycle / owner / kind mismatch root registration failures to `HalError::InvalidState`, preventing avoidable `UNKNOWN_ERROR` responses through binder status mapping.
+- Kept root object generation overflow as `HalError::Internal` because it represents internal counter exhaustion, not client-visible object lifecycle conflict.
+- Added unit tests for duplicate runtime binding and generation overflow status classification.
+- Documented the root object open transaction status-mapping boundary in DESIGN_JA.md and CODE_CONVENTION.md.
+- Build, rustfmt, Rust unit, atest, VTS, and device checks were not executed.
+
+# r50ei45_root_open_and_tuner_query_boundary
+
+- Confirmed that the RuntimeQuery / query façade rule is not excessive: it fixes ownership of read-only projections and prevents AIDL from growing registry-specific dependencies.
+- Added the existing/root object open transaction boundary to the common-component catalogue in DESIGN_JA.md and CODE_CONVENTION.md.
+- Moved ITuner root open runtime allocation, availability check, AIDL object table registration, LNB runtime open, and rollback into `service_runtime::root_object_ops`.
+- Updated ITuner root open methods to create typed Binder objects from returned runtime entries and call service_runtime rollback helper on Binder object construction failure.
+- Kept pure read-only query calls routed through existing `TunerServiceRuntime` query wrappers; no AIDL direct registry/object-table access was added.
+- Build, rustfmt, Rust unit, atest, VTS, and device checks were not executed.
+
+# r50ei44_filter_config_and_source_boundary_txn_completion
+
+- Completed another ObjectMethodTxn horizontal cleanup for implemented filter mutation paths.
+- Moved `IFilter.configure()` current-open-type lookup and config construction into a service_runtime object-handle use-case closure boundary so AIDL no longer resolves runtime filter open type before commit.
+- Moved `IFilter.setDataSource()` self-source rejection into service_runtime `set_filter_data_source_for_object()` so source/sink handle validation and commit remain in the same method transaction boundary.
+- Removed unused AIDL-side query helpers that had become stale after the RuntimeQuery / object-handle use-case migration.
+- Build, rustfmt, Rust unit, atest, VTS, and device checks were not executed.
+
+# r50ei43_child_open_runtime_use_case_completion
+
+- Moved child filter/DVR runtime allocation, runtime registration, and AIDL object table registration from `child_object_open.rs` into service_runtime object-handle child-open use-case helpers.
+- `child_object_open.rs` now calls `open_filter_child_runtime_for_demux_object()` / `open_dvr_child_runtime_for_demux_object()` and performs only typed Binder object construction plus typed callback retain/rollback.
+- Added service_runtime rollback helpers for child-open Binder/callback failure so AIDL does not manually compose child object unregister and public runtime unregister.
+- Updated DESIGN_JA.md to describe the child-open helper as a service_runtime-backed object-handle use-case boundary.
+- Build, rustfmt, Rust unit, atest, VTS, and device checks were not executed.
+
+# r50ei42_child_open_and_close_boundary_completion
+
+- Moved `openFilter()` / `openDvr()` method planning into the existing `child_object_open.rs` common helper so the AIDL method body no longer performs `plan_method()` before child allocation/registration.
+- Renamed child-open helpers to `open_filter_child_for_owner_object()` and `open_dvr_child_for_owner_object()` to reflect that they plan and resolve the owner object internally.
+- Strengthened `close_object_after_aidl_method_plan()` so close method planning and `begin_close_cascade()` run under one runtime lock before callback cleanup / final close processing.
+- Updated DESIGN_JA.md to reference the renamed child-open common helpers.
+- Build, rustfmt, Rust unit, atest, VTS, and device checks were not executed.
+
+# r50ei41_existing_common_txn_usage_fix
+
+- Updated `openFilter()` / `openDvr()` to stop resolving owner demux public id in the AIDL method body; `child_object_open.rs` now resolves the owner through the runtime query façade.
+- Added object-handle based LNB callback registration commit path and routed `ILnb.setCallback()` through it.
+- Strengthened `close_lnb_explicit_for_object()` so `ILnb.close()` moves the object cascade to `Closing` before LNB runtime cleanup and leaves final object close to the common close helper.
+- Removed stale AIDL-side `runtime_entry_public_id` use from demux child-open and LNB callback registration paths.
+- Build, rustfmt, Rust unit, atest, VTS, and device checks were not executed.
+
+# r50ei40_existing_common_txn_boundary_doc
+
+- Merged existing but under-documented common components into the AIDL object lifecycle common-component table instead of adding a separate ad hoc section.
+- Documented `aidl_service/src/child_object_open.rs` as the common child filter/DVR open transaction entry.
+- Documented callback registration helpers (`record_callback_registration`, callback-store retain/rollback, `clear_owner_callback_registration`) as the registration-side counterpart of callback cleanup.
+- Documented `execute_object_aidl_method` / `plan_object_aidl_method` and `close_object_after_aidl_method_plan` as existing object method planning / close helper boundaries.
+- No implementation code was changed in this revision. Build, rustfmt, Rust unit, atest, VTS, and device checks were not executed.
+
+# r50ei39_object_method_txn_close_boundary
+
+- Added object-handle based service_runtime method transaction helpers for demux/filter/descrambler/LNB mutation paths, moving object live/generation resolution and dispatch planning out of AIDL method bodies.
+- Strengthened frontend close begin semantics by marking the frontend object cascade Closing before owner-loss worker/live-data cleanup and marking cleanup failed on runtime cleanup failure.
+- Made runtime object close cascade tolerate already-Closing entries so begin-close and finalize-close phases can be split safely.
+- Updated LNB owner-loss callback cleanup lookup to find nonterminal objects, including Closing entries created by frontend close begin.
+- Updated `DESIGN_JA.md` and `CODE_CONVENTION.md` to describe `ObjectMethodTxn` and minimal `ObjectCloseTxn` boundaries across all domains.
+- build, rustfmt, Rust unit test, atest, VTS, and device validation are not executed in this environment.
+
+# r50ei38_aidl_query_boundary_frontend_method_txn
+
+- Moved remaining frontend read-only registry access behind `RuntimeQuery` / query façade methods; `boot.rs` frontend query wrappers now delegate through `self.query()`.
+- Added single-lock frontend status query façade for `getStatus()` / `getFrontendStatusReadiness()` so frontend entry, runtime state, and signal state are read from one runtime snapshot.
+- Converted frontend mutation AIDL methods (`tune`, `scan`, `stopTune`, `stopScan`, `close`, `setLnb`) to call object-handle based service_runtime use-case façades instead of assembling live/id/validate/plan/commit steps in AIDL.
+- Moved frontend method planning, object live/generation resolution, request validation, and worker/session state reservation into service_runtime frontend use-case transaction boundaries.
+- Updated `DESIGN_JA.md` and `CODE_CONVENTION.md` with the AIDL method transaction boundary and query façade requirements.
+- build, rustfmt, Rust unit test, atest, VTS, and device validation are not executed in this environment.
+
 # r50ei37_aidl_boundary_public_planning
 
 - Removed AIDL-layer direct imports of `service_runtime::frontend_worker_txn`; AIDL now calls service_runtime public frontend use-case façade functions.

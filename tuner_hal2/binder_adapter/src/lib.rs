@@ -9,6 +9,8 @@ pub mod frontend;
 pub mod lnb;
 pub mod status;
 
+use maleicacid_tuner_hal2_common::HalError;
+
 pub use aidl_frontend_settings::{
     aidl_frontend_settings_to_request, aidl_scan_type_to_mode,
 };
@@ -114,29 +116,11 @@ impl DomainCommand {
         }
     }
 
-    pub fn plan(&self) -> CommandPlan {
+    pub fn plan(&self) -> Result<CommandPlan, HalError> {
         match self {
-            DomainCommand::PublicApi { object, api } => CommandPlan {
-                object: *object,
-                api: *api,
-                transaction: match object {
-                    AidlObjectKind::Tuner => RuntimeTransactionName::TunerPublicApiTxn,
-                    AidlObjectKind::Frontend => RuntimeTransactionName::FrontendPublicApiTxn,
-                    AidlObjectKind::Demux => RuntimeTransactionName::DemuxPublicApiTxn,
-                    _ => RuntimeTransactionName::TunerPublicApiTxn,
-                },
-            },
-            DomainCommand::UnsupportedPublicApi { object, api, .. } => CommandPlan {
-                object: *object,
-                api: *api,
-                transaction: match object {
-                    AidlObjectKind::Tuner => RuntimeTransactionName::TunerUnsupportedPublicApiTxn,
-                    AidlObjectKind::Frontend => {
-                        RuntimeTransactionName::FrontendUnsupportedPublicApiTxn
-                    }
-                    AidlObjectKind::Demux => RuntimeTransactionName::DemuxUnsupportedPublicApiTxn,
-                    _ => RuntimeTransactionName::TunerUnsupportedPublicApiTxn,
-                },
+            DomainCommand::PublicApi { object, api }
+            | DomainCommand::UnsupportedPublicApi { object, api, .. } => {
+                CommandPlan::for_api(*object, *api)
             },
             DomainCommand::Frontend(command) => command.plan(),
             DomainCommand::Demux(command) => command.plan(),
@@ -169,37 +153,39 @@ mod tests {
     fn frontend_tune_command_maps_to_frontend_tune_transaction() {
         let command = DomainCommand::Frontend(frontend::FrontendCommand::Tune(request()));
         assert_eq!(
-            command.plan().transaction,
+            command.plan().unwrap().transaction(),
             RuntimeTransactionName::FrontendTuneTxnApply
         );
     }
 
     #[test]
-    fn transaction_table_covers_lnb_close() {
-        assert!(AIDL_TRANSACTION_TABLE.contains(&CommandPlan {
-            object: AidlObjectKind::Lnb,
-            api: AidlApi::LnbClose,
-            transaction: RuntimeTransactionName::LnbLifecycleTxnClose,
-        }));
+    fn command_plan_for_api_maps_lnb_close_to_transaction_table_entry() {
+        assert!(AIDL_TRANSACTION_TABLE.contains(&CommandPlan::for_api(AidlObjectKind::Lnb, AidlApi::LnbClose).unwrap()
+));
     }
 
     #[test]
     fn aidl_method_adapter_creates_domain_command_without_intermediate_string_layer() {
-        let plan = aidl_method::AidlMethodAdapter::frontend_tune(request());
+        let plan = aidl_method::AidlMethodAdapter::frontend_tune(request()).unwrap();
         assert!(matches!(
             plan.command,
             DomainCommand::Frontend(frontend::FrontendCommand::Tune(_))
         ));
         assert_eq!(
-            plan.command_plan.transaction,
+            plan.command_plan.transaction(),
             RuntimeTransactionName::FrontendTuneTxnApply
         );
     }
 
     #[test]
-    fn all_aidl_method_kinds_have_command_plan_entries() {
-        for method in aidl_method::all_aidl_method_kinds_for_coverage(request()) {
-            let plan = aidl_method::AidlMethodAdapter::plan(method);
+    fn all_aidl_method_call_variants_have_command_plan_entries() {
+        let methods = aidl_method::all_aidl_method_call_variants_for_plan_coverage(request());
+        assert_eq!(
+            methods.len(),
+            aidl_method::AIDL_METHOD_CALL_VARIANT_COUNT_FOR_PLAN_COVERAGE
+        );
+        for method in methods {
+            let plan = aidl_method::AidlMethodAdapter::plan(method).unwrap();
             assert!(AIDL_TRANSACTION_TABLE.contains(&plan.command_plan));
         }
     }

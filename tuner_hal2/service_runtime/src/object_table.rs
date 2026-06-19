@@ -258,7 +258,13 @@ impl RuntimeObjectTable {
         generation: AidlObjectGeneration,
         step: CleanupStep,
     ) -> Result<Vec<RuntimeObjectEntry>, RuntimeObjectTableError> {
-        self.entry_checked_any(object_id, generation)?;
+        let root = self.entry_checked_any(object_id, generation)?;
+        if matches!(root.lifecycle, RuntimeObjectLifecycle::Closing { .. }) {
+            return Err(RuntimeObjectTableError::InvalidLifecycle {
+                object_id,
+                lifecycle: root.lifecycle,
+            });
+        }
         let mut targets = self.descendant_object_keys(object_id, generation);
         targets.push((object_id, generation));
         let mut changed = Vec::with_capacity(targets.len());
@@ -269,13 +275,10 @@ impl RuntimeObjectTable {
                     entry.lifecycle = RuntimeObjectLifecycle::Closing { step };
                     changed.push(entry.clone());
                 }
-                RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined => {}
-                lifecycle => {
-                    return Err(RuntimeObjectTableError::InvalidLifecycle {
-                        object_id: target_id,
-                        lifecycle,
-                    })
+                RuntimeObjectLifecycle::Closing { .. } => {
+                    changed.push(entry.clone());
                 }
+                RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined => {}
             }
         }
         Ok(changed)
@@ -425,6 +428,21 @@ impl RuntimeObjectTable {
                 entry.object_kind == kind
                     && entry.ledger_id == ledger_id
                     && entry.lifecycle.is_live()
+            })
+            .cloned()
+    }
+
+    pub fn close_cleanup_entry_for_runtime(
+        &self,
+        kind: AidlObjectKind,
+        ledger_id: LedgerId,
+    ) -> Option<RuntimeObjectEntry> {
+        self.entries
+            .values()
+            .find(|entry| {
+                entry.object_kind == kind
+                    && entry.ledger_id == ledger_id
+                    && !entry.lifecycle.is_terminal()
             })
             .cloned()
     }

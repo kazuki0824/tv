@@ -1,3 +1,6 @@
+use crate::method_dispatch::plan_object_method_dispatch;
+use crate::object_lifecycle::aidl_public_runtime_id_for_close_cleanup;
+use crate::object_method_txn::ObjectMethodDispatchPreflight;
 use maleicacid_tuner_hal2_common::HalError;
 use maleicacid_tuner_hal2_domain_request::{
     LnbSetSatellitePositionRequest, LnbToneRequest, LnbVoltageRequest,
@@ -49,8 +52,9 @@ impl TunerServiceRuntime {
     pub fn close_lnb_from_frontend_owner_loss(
         &mut self,
         frontend_id: i32,
-    ) -> Result<Vec<i32>, HalError> {
-        self.lnb_txn().close_lnb_from_frontend_owner_loss(frontend_id)
+    ) -> (Vec<i32>, Result<(), HalError>) {
+        self.lnb_txn()
+            .close_lnb_from_frontend_owner_loss(frontend_id)
     }
 
     pub fn record_lnb_drop_leak(&mut self, lnb_id: i32) -> Result<(), HalError> {
@@ -60,9 +64,13 @@ impl TunerServiceRuntime {
 
 #[cfg(test)]
 mod wp_r11_lnb_apply_tests {
-    use super::*;
-    use crate::registry::{FrontendRegistryEntry, FrontendRuntimeId, LnbRegistryEntry, LnbRegistryProfile, LnbRuntimeId};
+    use crate::boot::TunerServiceRuntime;
+    use crate::registry::{
+        FrontendRegistryEntry, FrontendRuntimeId, LnbRegistryEntry, LnbRegistryProfile,
+        LnbRuntimeId,
+    };
     use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem, HalError};
+    use maleicacid_tuner_hal2_domain_request::LnbVoltageRequest;
     use maleicacid_tuner_hal2_lnb::LnbElectricalState;
 
     fn runtime_with_lnb(profile: LnbRegistryProfile) -> TunerServiceRuntime {
@@ -120,5 +128,101 @@ mod wp_r11_lnb_apply_tests {
         );
         let lnb = runtime.registry().lnb_runtime(LnbRuntimeId(10001)).unwrap();
         assert_eq!(lnb.registry_state(), LnbElectricalState::safe());
+    }
+}
+
+impl TunerServiceRuntime {
+    pub fn apply_lnb_voltage_for_object(
+        &mut self,
+        object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
+        generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
+        request: LnbVoltageRequest,
+        dispatch: ObjectMethodDispatchPreflight,
+    ) -> Result<(), HalError> {
+        let lnb_id = self.public_runtime_id_for_object_method(
+            object_id,
+            generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Lnb,
+        )?;
+        dispatch.plan(self)?;
+        self.apply_lnb_voltage(lnb_id, request)
+    }
+
+    pub fn apply_lnb_tone_for_object(
+        &mut self,
+        object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
+        generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
+        request: LnbToneRequest,
+        dispatch: ObjectMethodDispatchPreflight,
+    ) -> Result<(), HalError> {
+        let lnb_id = self.public_runtime_id_for_object_method(
+            object_id,
+            generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Lnb,
+        )?;
+        dispatch.plan(self)?;
+        self.apply_lnb_tone(lnb_id, request)
+    }
+
+    pub fn apply_lnb_satellite_position_for_object(
+        &mut self,
+        object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
+        generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
+        request: LnbSetSatellitePositionRequest,
+        dispatch: ObjectMethodDispatchPreflight,
+    ) -> Result<(), HalError> {
+        let lnb_id = self.public_runtime_id_for_object_method(
+            object_id,
+            generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Lnb,
+        )?;
+        dispatch.plan(self)?;
+        self.apply_lnb_satellite_position(lnb_id, request)
+    }
+
+    pub fn send_lnb_diseqc_for_object(
+        &mut self,
+        object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
+        generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
+        payload: &[u8],
+        command_plan: maleicacid_tuner_hal2_domain_request::CommandPlan,
+        executable_request: Option<maleicacid_tuner_hal2_domain_request::RuntimeExecutableRequest>,
+    ) -> Result<(), HalError> {
+        let lnb_id = self.public_runtime_id_for_object_method(
+            object_id,
+            generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Lnb,
+        )?;
+        plan_object_method_dispatch(self, command_plan, executable_request)?;
+        self.send_lnb_diseqc(lnb_id, payload)
+    }
+
+    pub fn commit_lnb_callback_registration_for_object(
+        &mut self,
+        object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
+        generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
+        dispatch: ObjectMethodDispatchPreflight,
+    ) -> Result<(), HalError> {
+        let lnb_id = self.public_runtime_id_for_object_method(
+            object_id,
+            generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Lnb,
+        )?;
+        dispatch.plan(self)?;
+        self.commit_lnb_callback_registration(lnb_id)
+    }
+
+    pub fn close_lnb_explicit_after_object_close_begin(
+        &mut self,
+        object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
+        generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
+    ) -> Result<(), HalError> {
+        let lnb_id = aidl_public_runtime_id_for_close_cleanup(
+            self,
+            object_id,
+            generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Lnb,
+        )?;
+        self.close_lnb_explicit(lnb_id)
     }
 }

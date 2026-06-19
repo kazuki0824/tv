@@ -1,5 +1,3 @@
-pub mod callback_bridge;
-pub mod callback_slot;
 pub mod callback_store;
 pub mod demux_object;
 pub mod descrambler_object;
@@ -10,14 +8,11 @@ pub mod error_bridge;
 pub mod filter_object;
 pub mod frontend_object;
 pub mod lnb_object;
-pub mod native_handle_bridge;
 pub mod object_handle;
 pub mod object_runtime;
 pub mod service_entry;
 pub mod tuner_service;
 
-pub use callback_bridge::{CallbackApi, CallbackBridge, CallbackFailureRecord, CallbackOwnerKind};
-pub use callback_slot::{AidlCallbackSlot, AidlCallbackSlotError};
 pub use callback_store::{
     clear_owner_callbacks, dvr_callback_for_owner, filter_callback_for_owner,
     frontend_callback_for_owner, retain_dvr_callback, retain_filter_callback,
@@ -26,14 +21,9 @@ pub use callback_store::{
 pub use demux_object::DemuxAidlObject;
 pub use descrambler_object::DescramblerAidlObject;
 pub use dvr_object::DvrAidlObject;
-pub use error_bridge::{AidlErrorBridge, AidlErrorMapping};
 pub use filter_object::FilterAidlObject;
 pub use frontend_object::FrontendAidlObject;
 pub use lnb_object::LnbAidlObject;
-pub use native_handle_bridge::{
-    NativeHandleBridge, NativeHandleBridgeError, NativeHandleBridgeErrorKind,
-    NativeHandleBridgeKind,
-};
 pub use object_handle::{
     AidlObjectGeneration, AidlObjectHandle, AidlObjectHandleError, AidlObjectId, AidlObjectKind,
 };

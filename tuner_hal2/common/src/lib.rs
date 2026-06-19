@@ -47,7 +47,7 @@ pub fn retry_after_interrupted_read(
 }
 
 pub fn retry_after_interrupted_read_with_saturation(
-    operation: &'static str,
+    _operation: &'static str,
     retry_counter: &AtomicU64,
     retry_counter_saturated: Option<&AtomicBool>,
     mut f: impl FnMut() -> io::Result<usize>,
@@ -55,14 +55,9 @@ pub fn retry_after_interrupted_read_with_saturation(
     loop {
         match f() {
             Err(err) if err.kind() == io::ErrorKind::Interrupted => {
-                let total = increment_atomic_counter_with_saturation(
+                let _total = increment_atomic_counter_with_saturation(
                     retry_counter,
                     retry_counter_saturated,
-                );
-                eprintln!(
-                    "maleicacid-tuner-hal2-read-retry: operation={} error=EINTR action=retry total={}",
-                    operation,
-                    total,
                 );
                 continue;
             }
@@ -238,6 +233,50 @@ impl TsPacketCompletionBuffer {
         TsPacketBufferDrain {
             packets,
             malformed_bytes,
+        }
+    }
+}
+
+#[derive(Debug)]
+/// Collects the first error among cleanup steps.
+///
+/// This type is not the source of truth for primary + cleanup failure composition;
+/// callers that already have a primary failure must preserve it separately.
+pub struct FirstErrorCollector<E> {
+    first_error: Option<E>,
+}
+
+impl<E> Default for FirstErrorCollector<E> {
+    fn default() -> Self {
+        Self { first_error: None }
+    }
+}
+
+impl<E> FirstErrorCollector<E> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn push_error(&mut self, error: E) {
+        if self.first_error.is_none() {
+            self.first_error = Some(error);
+        }
+    }
+
+    pub fn push_result(&mut self, result: Result<(), E>) {
+        if let Err(error) = result {
+            self.push_error(error);
+        }
+    }
+
+    pub fn has_error(&self) -> bool {
+        self.first_error.is_some()
+    }
+
+    pub fn into_result(self) -> Result<(), E> {
+        match self.first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
         }
     }
 }
@@ -474,6 +513,11 @@ pub enum HalError {
         resource: &'static str,
         detail: HalErrorDetail,
     },
+    ComposedFailure {
+        context: &'static str,
+        primary: Box<HalError>,
+        cleanup: Box<HalError>,
+    },
     InvalidArgument {
         kind: HalInvalidArgumentKind,
         detail: HalErrorDetail,
@@ -543,6 +587,32 @@ impl HalError {
         Self::CleanupFailed {
             resource,
             detail: HalErrorDetail::new(detail),
+        }
+    }
+
+    pub fn composed_failure(
+        context: &'static str,
+        primary: HalError,
+        cleanup: HalError,
+    ) -> Self {
+        Self::ComposedFailure {
+            context,
+            primary: Box::new(primary),
+            cleanup: Box::new(cleanup),
+        }
+    }
+
+    pub fn primary_error(&self) -> &HalError {
+        match self {
+            Self::ComposedFailure { primary, .. } => primary.primary_error(),
+            other => other,
+        }
+    }
+
+    pub fn cleanup_error(&self) -> Option<&HalError> {
+        match self {
+            Self::ComposedFailure { cleanup, .. } => Some(cleanup.as_ref()),
+            _ => None,
         }
     }
 
@@ -636,6 +706,11 @@ impl fmt::Display for HalError {
                 "cleanup failed: resource={} detail={}",
                 resource, detail.detail
             ),
+            HalError::ComposedFailure { context, primary, cleanup } => write!(
+                f,
+                "composed failure: context={} primary=({}) cleanup=({})",
+                context, primary, cleanup
+            ),
             HalError::InvalidArgument { kind, detail } => write!(
                 f,
                 "invalid argument: kind={kind:?} detail={}",
@@ -682,6 +757,40 @@ mod tests {
         let mut p = [seed; TS_PACKET_SIZE];
         p[0] = 0x47;
         p
+    }
+
+
+    #[test]
+    fn first_error_collector_preserves_first_error() {
+        let mut collector = FirstErrorCollector::new();
+        collector.push_result(Ok(()));
+        collector.push_error("first");
+        collector.push_error("second");
+        assert_eq!(collector.into_result(), Err("first"));
+    }
+
+    #[test]
+    fn first_error_collector_reports_success_when_all_steps_succeed() {
+        let mut collector = FirstErrorCollector::<&'static str>::new();
+        collector.push_result(Ok(()));
+        collector.push_result(Ok(()));
+        assert_eq!(collector.into_result(), Ok(()));
+    }
+
+    #[test]
+    fn composed_failure_preserves_primary_and_cleanup() {
+        let primary = HalError::invalid_state(
+            HalInvalidStateKind::InvalidLifecycle,
+            "primary failure",
+        );
+        let cleanup = HalError::cleanup_failed("test cleanup", "cleanup failure");
+        let error = HalError::composed_failure("test composed", primary.clone(), cleanup.clone());
+
+        assert_eq!(error.primary_error(), &primary);
+        assert_eq!(error.cleanup_error(), Some(&cleanup));
+        let rendered = error.to_string();
+        assert!(rendered.contains("primary failure"));
+        assert!(rendered.contains("cleanup failure"));
     }
 
     #[test]

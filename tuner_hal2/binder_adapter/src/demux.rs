@@ -1,5 +1,6 @@
+use maleicacid_tuner_hal2_common::HalError;
 use crate::AidlDomainRequest;
-use crate::{AidlApi, AidlObjectKind, CommandPlan, RuntimeTransactionName};
+use crate::{AidlApi, AidlObjectKind, CommandPlan};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DemuxCommand {
@@ -10,28 +11,12 @@ pub enum DemuxCommand {
 }
 
 impl DemuxCommand {
-    pub fn plan(&self) -> CommandPlan {
+    pub fn plan(&self) -> Result<CommandPlan, HalError> {
         match self {
-            Self::SetFrontendDataSource(_) => CommandPlan {
-                object: AidlObjectKind::Demux,
-                api: AidlApi::DemuxSetFrontendDataSource,
-                transaction: RuntimeTransactionName::DemuxSetFrontendDataSourceTxn,
-            },
-            Self::OpenFilter(_) => CommandPlan {
-                object: AidlObjectKind::Demux,
-                api: AidlApi::DemuxOpenFilter,
-                transaction: RuntimeTransactionName::DemuxOpenFilterTxn,
-            },
-            Self::OpenDvr(_) => CommandPlan {
-                object: AidlObjectKind::Demux,
-                api: AidlApi::DemuxOpenDvr,
-                transaction: RuntimeTransactionName::DemuxOpenDvrTxn,
-            },
-            Self::Close => CommandPlan {
-                object: AidlObjectKind::Demux,
-                api: AidlApi::DemuxClose,
-                transaction: RuntimeTransactionName::DemuxCloseLifecycleTxn,
-            },
+            Self::SetFrontendDataSource(_) => CommandPlan::for_api(AidlObjectKind::Demux, AidlApi::DemuxSetFrontendDataSource),
+            Self::OpenFilter(_) => CommandPlan::for_api(AidlObjectKind::Demux, AidlApi::DemuxOpenFilter),
+            Self::OpenDvr(_) => CommandPlan::for_api(AidlObjectKind::Demux, AidlApi::DemuxOpenDvr),
+            Self::Close => CommandPlan::for_api(AidlObjectKind::Demux, AidlApi::DemuxClose),
         }
     }
 }

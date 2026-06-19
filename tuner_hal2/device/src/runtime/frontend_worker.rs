@@ -4,13 +4,13 @@
 //! worker slotは完了・取消・失敗状態だけを保持し、実operationの成功を代用しない。
 
 use std::collections::BTreeMap;
-use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
 
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
 use maleicacid_tuner_hal2_control_core::{WorkerExit, WorkerFailureDomain, WorkerStopReason};
+
+use crate::runtime::thread_result_owner::{ThreadResultOwner, ThreadResultPoll};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum FrontendWorkerKind {
@@ -37,6 +37,12 @@ pub enum FrontendWorkerStartError {
         frontend_id: i32,
         kind: FrontendWorkerKind,
         generation: u64,
+    },
+    CompletedFailurePending {
+        frontend_id: i32,
+        kind: FrontendWorkerKind,
+        generation: u64,
+        detail: String,
     },
     SpawnFailed {
         detail: String,
@@ -66,6 +72,43 @@ pub enum FrontendWorkerStopOutcome {
         exit: WorkerExit,
         result: Result<(), HalError>,
     },
+}
+
+
+#[derive(Debug)]
+pub struct FrontendWorkerDetachedJoin {
+    frontend_id: i32,
+    kind: FrontendWorkerKind,
+    generation: u64,
+    slot: FrontendWorkerSlot,
+}
+
+impl FrontendWorkerDetachedJoin {
+    pub fn complete(self) -> FrontendWorkerStopOutcome {
+        let (result, exit) = self.slot.join_after_cancel();
+        FrontendWorkerStopOutcome::Completed {
+            frontend_id: self.frontend_id,
+            kind: self.kind,
+            generation: self.generation,
+            exit,
+            result,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum FrontendWorkerStopTicket {
+    Immediate(FrontendWorkerStopOutcome),
+    Join(FrontendWorkerDetachedJoin),
+}
+
+impl FrontendWorkerStopTicket {
+    pub fn complete(self) -> FrontendWorkerStopOutcome {
+        match self {
+            FrontendWorkerStopTicket::Immediate(outcome) => outcome,
+            FrontendWorkerStopTicket::Join(join) => join.complete(),
+        }
+    }
 }
 
 impl FrontendWorkerCancelReason {
@@ -115,61 +158,58 @@ struct FrontendWorkerSlot {
     generation: u64,
     cancel: Arc<AtomicBool>,
     cancel_reason: Arc<Mutex<Option<FrontendWorkerCancelReason>>>,
-    result: Arc<Mutex<Option<(Result<(), HalError>, WorkerExit)>>>,
-    join: Option<JoinHandle<()>>,
-    join_failure: Option<HalError>,
+    thread_result: Option<ThreadResultOwner<(Result<(), HalError>, WorkerExit)>>,
+    pending_completed: Option<(Result<(), HalError>, WorkerExit)>,
 }
 
 impl FrontendWorkerSlot {
-    fn is_running(&self) -> bool {
-        let completed = self
-            .result
-            .lock()
-            .map(|guard| guard.is_some())
-            .unwrap_or(true);
-        !completed
-            && self
-                .join
-                .as_ref()
-                .map(|handle| !handle.is_finished())
-                .unwrap_or(false)
-    }
-
-    fn join_if_finished(&mut self) {
-        if self
-            .join
-            .as_ref()
-            .map(|handle| handle.is_finished())
-            .unwrap_or(false)
-        {
-            if let Some(handle) = self.join.take() {
-                match handle.join() {
-                    Ok(()) => {}
-                    Err(_) => {
-                        self.join_failure = Some(HalError::internal(
-                            HalInternalKind::InvariantViolation,
-                            "frontend worker thread panicked",
-                        ));
-                    }
-                }
+    fn is_running(&mut self) -> bool {
+        if self.pending_completed.is_some() {
+            return false;
+        }
+        match self.completed_result() {
+            Some(completed) => {
+                self.pending_completed = Some(completed);
+                false
             }
+            None => true,
         }
     }
 
     fn completed_result(&mut self) -> Option<(Result<(), HalError>, WorkerExit)> {
-        self.join_if_finished();
-        if let Some(error) = self.join_failure.take() {
-            return Some((Err(error), WorkerExit::PanicOrJoinFailure));
+        if let Some(completed) = self.pending_completed.take() {
+            return Some(completed);
         }
-        match self.result.lock() {
-            Ok(mut guard) => guard.take(),
-            Err(_) => Some((
+        let owner = self.thread_result.as_mut()?;
+        match owner.collect_if_finished() {
+            ThreadResultPoll::Running => None,
+            ThreadResultPoll::Completed(Ok(completed)) => {
+                self.thread_result = None;
+                Some(completed)
+            }
+            ThreadResultPoll::Completed(Err(error)) => {
+                self.thread_result = None;
+                Some((Err(error), WorkerExit::PanicOrJoinFailure))
+            }
+        }
+    }
+
+    fn join_after_cancel(mut self) -> (Result<(), HalError>, WorkerExit) {
+        if let Some(completed) = self.pending_completed.take() {
+            return completed;
+        }
+        let Some(owner) = self.thread_result.take() else {
+            return (
                 Err(HalError::internal(
                     HalInternalKind::InvariantViolation,
-                    "frontend worker result lock poisoned",
+                    "frontend worker slot missing thread result owner",
                 )),
-                WorkerExit::RuntimeFailure(WorkerFailureDomain::Signal.runtime_failure_kind()),
-            )),
+                WorkerExit::PanicOrJoinFailure,
+            );
+        };
+        match owner.join_after_stop() {
+            Ok(completed) => completed,
+            Err(error) => (Err(error), WorkerExit::PanicOrJoinFailure),
         }
     }
 }
@@ -191,23 +231,42 @@ impl FrontendWorkerRegistry {
         F: FnOnce(FrontendWorkerContext) -> Result<(), HalError> + Send + 'static,
     {
         let key = FrontendWorkerKey { frontend_id, kind };
+        let mut remove_finished_success = false;
         if let Some(slot) = self.slots.get_mut(&key) {
-            if slot.is_running() {
-                return Err(FrontendWorkerStartError::AlreadyRunning {
-                    frontend_id,
-                    kind,
-                    generation: slot.generation,
-                });
+            match slot.completed_result() {
+                Some((Ok(()), _exit)) => {
+                    // A successfully completed worker may be replaced. Remove the
+                    // old slot after releasing the mutable slot borrow.
+                    remove_finished_success = true;
+                }
+                Some((Err(error), exit)) => {
+                    let generation = slot.generation;
+                    let detail = format!("{error:?}");
+                    slot.pending_completed = Some((Err(error), exit));
+                    return Err(FrontendWorkerStartError::CompletedFailurePending {
+                        frontend_id,
+                        kind,
+                        generation,
+                        detail,
+                    });
+                }
+                None => {
+                    return Err(FrontendWorkerStartError::AlreadyRunning {
+                        frontend_id,
+                        kind,
+                        generation: slot.generation,
+                    });
+                }
             }
-            slot.join_if_finished();
+        }
+        if remove_finished_success {
+            self.slots.remove(&key);
         }
 
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_reason = Arc::new(Mutex::new(None));
-        let result = Arc::new(Mutex::new(None));
         let worker_cancel = Arc::clone(&cancel);
         let worker_cancel_reason = Arc::clone(&cancel_reason);
-        let worker_result = Arc::clone(&result);
         let context = FrontendWorkerContext {
             frontend_id,
             kind,
@@ -216,48 +275,37 @@ impl FrontendWorkerRegistry {
             cancel_reason: Arc::clone(&worker_cancel_reason),
         };
 
-        let join = thread::Builder::new()
-            .name(format!("maleicacid-fe-{frontend_id}-{kind:?}-{generation}"))
-            .spawn(move || {
-                let outcome = match catch_unwind(AssertUnwindSafe(|| job(context))) {
-                    Ok(Ok(())) => match worker_cancel_reason.lock() {
-                        Ok(guard) => {
-                            let exit = (*guard)
-                                .map(|reason| WorkerExit::StopRequested(reason.to_worker_stop_reason()))
-                                .unwrap_or(WorkerExit::Normal);
-                            (Ok(()), exit)
-                        }
-                        Err(_) => (
-                            Err(HalError::internal(
-                                HalInternalKind::InvariantViolation,
-                                "frontend worker cancel reason lock poisoned",
-                            )),
-                            WorkerExit::RuntimeFailure(
-                                WorkerFailureDomain::Signal.runtime_failure_kind(),
-                            ),
-                        ),
+        let thread_name: &'static str = "maleicacid-frontend-worker";
+        let thread_result = ThreadResultOwner::start(thread_name, move || {
+            match job(context) {
+                Ok(()) => match worker_cancel_reason.lock() {
+                    Ok(guard) => {
+                        let exit = (*guard)
+                            .map(|reason| WorkerExit::StopRequested(reason.to_worker_stop_reason()))
+                            .unwrap_or(WorkerExit::Normal);
+                        Ok((Ok(()), exit))
                     }
-                    Ok(Err(error)) => (
-                        Err(error),
-                        WorkerExit::RuntimeFailure(
-                            WorkerFailureDomain::Backend.runtime_failure_kind(),
-                        ),
-                    ),
-                    Err(_) => (
+                    Err(_) => Ok((
                         Err(HalError::internal(
                             HalInternalKind::InvariantViolation,
-                            "frontend worker thread panicked",
+                            "frontend worker cancel reason lock poisoned",
                         )),
-                        WorkerExit::PanicOrJoinFailure,
+                        WorkerExit::RuntimeFailure(
+                            WorkerFailureDomain::Signal.runtime_failure_kind(),
+                        ),
+                    )),
+                },
+                Err(error) => Ok((
+                    Err(error),
+                    WorkerExit::RuntimeFailure(
+                        WorkerFailureDomain::Backend.runtime_failure_kind(),
                     ),
-                };
-                if let Ok(mut guard) = worker_result.lock() {
-                    *guard = Some(outcome);
-                }
-            })
-            .map_err(|error| FrontendWorkerStartError::SpawnFailed {
-                detail: error.to_string(),
-            })?;
+                )),
+            }
+        })
+        .map_err(|error| FrontendWorkerStartError::SpawnFailed {
+            detail: format!("{error:?}"),
+        })?;
 
         self.slots.insert(
             key,
@@ -265,9 +313,8 @@ impl FrontendWorkerRegistry {
                 generation,
                 cancel,
                 cancel_reason,
-                result,
-                join: Some(join),
-                join_failure: None,
+                thread_result: Some(thread_result),
+                pending_completed: None,
             },
         );
         Ok(())
@@ -319,25 +366,25 @@ impl FrontendWorkerRegistry {
         }
     }
 
-    pub fn request_stop_and_join(
+    pub fn request_stop_for_join(
         &mut self,
         frontend_id: i32,
         kind: FrontendWorkerKind,
         reason: FrontendWorkerCancelReason,
-    ) -> FrontendWorkerStopOutcome {
+    ) -> FrontendWorkerStopTicket {
         let key = FrontendWorkerKey { frontend_id, kind };
         let Some(mut slot) = self.slots.remove(&key) else {
-            return FrontendWorkerStopOutcome::NotRunning;
+            return FrontendWorkerStopTicket::Immediate(FrontendWorkerStopOutcome::NotRunning);
         };
 
         if let Some((result, exit)) = slot.completed_result() {
-            return FrontendWorkerStopOutcome::Completed {
+            return FrontendWorkerStopTicket::Immediate(FrontendWorkerStopOutcome::Completed {
                 frontend_id,
                 kind,
                 generation: slot.generation,
                 exit,
                 result,
-            };
+            });
         }
 
         let generation = slot.generation;
@@ -346,59 +393,30 @@ impl FrontendWorkerRegistry {
             Ok(guard) => guard,
             Err(_) => {
                 self.slots.insert(key, slot);
-                return FrontendWorkerStopOutcome::StopRequestFailed {
-                    frontend_id,
-                    kind,
-                    generation,
-                    reason,
-                    error: HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "frontend worker cancel reason lock poisoned",
-                    ),
-                };
+                return FrontendWorkerStopTicket::Immediate(
+                    FrontendWorkerStopOutcome::StopRequestFailed {
+                        frontend_id,
+                        kind,
+                        generation,
+                        reason,
+                        error: HalError::internal(
+                            HalInternalKind::InvariantViolation,
+                            "frontend worker cancel reason lock poisoned",
+                        ),
+                    },
+                );
             }
         };
         *guard = Some(reason);
         drop(guard);
         slot.cancel.store(true, Ordering::SeqCst);
 
-        if let Some(handle) = slot.join.take() {
-            if handle.join().is_err() {
-                return FrontendWorkerStopOutcome::Completed {
-                    frontend_id,
-                    kind,
-                    generation: slot.generation,
-                    exit: WorkerExit::PanicOrJoinFailure,
-                    result: Err(HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "frontend worker thread panicked while stopping",
-                    )),
-                };
-            }
-        }
-
-        let (result, exit) = match slot.result.lock() {
-            Ok(mut guard) => guard.take().unwrap_or_else(|| {
-                (
-                    Ok(()),
-                    WorkerExit::StopRequested(reason.to_worker_stop_reason()),
-                )
-            }),
-            Err(_) => (
-                Err(HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "frontend worker result lock poisoned while stopping",
-                )),
-                WorkerExit::RuntimeFailure(WorkerFailureDomain::Signal.runtime_failure_kind()),
-            ),
-        };
-        FrontendWorkerStopOutcome::Completed {
+        FrontendWorkerStopTicket::Join(FrontendWorkerDetachedJoin {
             frontend_id,
             kind,
-            generation: slot.generation,
-            exit,
-            result,
-        }
+            generation,
+            slot,
+        })
     }
 
     pub fn take_completed(
@@ -434,15 +452,13 @@ impl FrontendWorkerRegistry {
         let keys: Vec<_> = self
             .slots
             .iter_mut()
-            .filter_map(|(key, slot)| {
-                slot.join_if_finished();
-                let finished = slot.join_failure.is_some()
-                    || slot
-                        .result
-                        .lock()
-                        .map(|guard| guard.is_some())
-                        .unwrap_or(true);
-                finished.then_some(*key)
+            .filter_map(|(key, slot)| match slot.completed_result() {
+                Some((Ok(()), _exit)) => Some(*key),
+                Some(completed) => {
+                    slot.pending_completed = Some(completed);
+                    None
+                }
+                None => None,
             })
             .collect();
         for key in keys {
@@ -454,7 +470,7 @@ impl FrontendWorkerRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::mpsc;
+    use std::sync::{mpsc, Arc, Mutex};
     use std::time::Duration;
 
     #[test]
@@ -631,9 +647,7 @@ mod tests {
         ));
         if let Some(mut slot) = registry.slots.remove(&key) {
             slot.cancel.store(true, Ordering::SeqCst);
-            if let Some(handle) = slot.join.take() {
-                handle.join().unwrap();
-            }
+            let _ = slot.join_after_cancel();
         }
     }
 
@@ -656,11 +670,11 @@ mod tests {
             .unwrap();
         started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         assert!(matches!(
-            registry.request_stop_and_join(
+            registry.request_stop_for_join(
                 12,
                 FrontendWorkerKind::Scan,
                 FrontendWorkerCancelReason::SupersededByNewRequest
-            ),
+            ).complete(),
             FrontendWorkerStopOutcome::Completed {
                 generation: 8,
                 result: Ok(()),
@@ -672,4 +686,133 @@ mod tests {
             Ok(())
         ));
     }
+
+    #[test]
+    fn clear_finished_keeps_failed_worker_for_reporting() {
+        let mut registry = FrontendWorkerRegistry::default();
+        registry
+            .start(13, FrontendWorkerKind::Tune, 9, |_| -> Result<(), HalError> {
+                panic!("intentional test panic");
+            })
+            .unwrap();
+        for _ in 0..100 {
+            registry.clear_finished();
+            if let Some(FrontendWorkerStopOutcome::Completed { result, .. }) =
+                registry.take_completed(13, FrontendWorkerKind::Tune)
+            {
+                assert!(result.is_err());
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("failed worker was removed or not reported");
+    }
+
+    #[test]
+    fn missing_worker_result_is_not_converted_to_success() {
+        let mut registry = FrontendWorkerRegistry::default();
+        let key = FrontendWorkerKey {
+            frontend_id: 14,
+            kind: FrontendWorkerKind::Tune,
+        };
+        let result: Arc<Mutex<Option<Result<(Result<(), HalError>, WorkerExit), HalError>>>> =
+            Arc::new(Mutex::new(None));
+        let join = std::thread::spawn(|| {});
+        registry.slots.insert(
+            key,
+            FrontendWorkerSlot {
+                generation: 10,
+                cancel: Arc::new(AtomicBool::new(false)),
+                cancel_reason: Arc::new(Mutex::new(None)),
+                thread_result: Some(ThreadResultOwner::new_for_test(
+                    "frontend-worker-missing-test",
+                    result,
+                    Some(join),
+                )),
+                pending_completed: None,
+            },
+        );
+
+        match registry.request_stop_for_join(
+            14,
+            FrontendWorkerKind::Tune,
+            FrontendWorkerCancelReason::StopRequested,
+        ).complete() {
+            FrontendWorkerStopOutcome::Completed { result, exit, .. } => {
+                assert!(result.is_err());
+                assert_eq!(exit, WorkerExit::PanicOrJoinFailure);
+            }
+            other => panic!("unexpected stop outcome: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn clear_finished_does_not_silently_remove_poison_result_slot() {
+        let mut registry = FrontendWorkerRegistry::default();
+        let key = FrontendWorkerKey {
+            frontend_id: 15,
+            kind: FrontendWorkerKind::Scan,
+        };
+        let result: Arc<Mutex<Option<Result<(Result<(), HalError>, WorkerExit), HalError>>>> =
+            Arc::new(Mutex::new(None));
+        let poisoned = Arc::clone(&result);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = poisoned.lock().unwrap();
+            panic!("poison frontend worker result");
+        }));
+        let join = std::thread::spawn(|| {});
+        registry.slots.insert(
+            key,
+            FrontendWorkerSlot {
+                generation: 11,
+                cancel: Arc::new(AtomicBool::new(false)),
+                cancel_reason: Arc::new(Mutex::new(None)),
+                thread_result: Some(ThreadResultOwner::new_for_test(
+                    "frontend-worker-poison-test",
+                    result,
+                    Some(join),
+                )),
+                pending_completed: None,
+            },
+        );
+
+        registry.clear_finished();
+        match registry.take_completed(15, FrontendWorkerKind::Scan) {
+            Some(FrontendWorkerStopOutcome::Completed { result, exit, .. }) => {
+                assert!(result.is_err());
+                assert_eq!(exit, WorkerExit::PanicOrJoinFailure);
+            }
+            other => panic!("poison result slot was silently removed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn start_does_not_overwrite_unreported_worker_failure() {
+        let mut registry = FrontendWorkerRegistry::default();
+        registry
+            .start(16, FrontendWorkerKind::Tune, 12, |_| -> Result<(), HalError> {
+                panic!("intentional pending failure");
+            })
+            .unwrap();
+        for _ in 0..100 {
+            if matches!(
+                registry.start(16, FrontendWorkerKind::Tune, 13, |_| Ok(())),
+                Err(FrontendWorkerStartError::CompletedFailurePending {
+                    generation: 12,
+                    ..
+                })
+            ) {
+                match registry.take_completed(16, FrontendWorkerKind::Tune) {
+                    Some(FrontendWorkerStopOutcome::Completed { result, .. }) => {
+                        assert!(result.is_err());
+                        return;
+                    }
+                    other => panic!("pending failure was not preserved: {other:?}"),
+                }
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("pending worker failure was not observed");
+    }
+
 }

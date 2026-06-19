@@ -8,7 +8,6 @@ use maleicacid_tuner_hal2_domain_request::{
 pub enum CallbackHealthState {
     Registered,
     Unhealthy,
-    Cleared,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -18,6 +17,12 @@ pub struct RuntimeCallbackRegistration {
     pub owner_generation: AidlObjectGeneration,
     pub registration_api: AidlApi,
     pub health: CallbackHealthState,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CallbackRegistryUpdate {
+    Updated,
+    Missing,
 }
 
 #[derive(Debug, Default)]
@@ -55,10 +60,13 @@ impl RuntimeCallbackRegistry {
         owner_id: AidlObjectId,
         owner_generation: AidlObjectGeneration,
         registration_api: AidlApi,
-    ) {
+    ) -> CallbackRegistryUpdate {
         let key = (owner_kind, owner_id, owner_generation, registration_api);
         if let Some(entry) = self.registrations.get_mut(&key) {
             entry.health = CallbackHealthState::Unhealthy;
+            CallbackRegistryUpdate::Updated
+        } else {
+            CallbackRegistryUpdate::Missing
         }
     }
 
@@ -66,17 +74,34 @@ impl RuntimeCallbackRegistry {
         &mut self,
         owner_id: AidlObjectId,
         owner_generation: AidlObjectGeneration,
-    ) {
+    ) -> CallbackRegistryUpdate {
+        let mut updated = false;
         for ((_, id, generation, _), entry) in self.registrations.iter_mut() {
             if *id == owner_id && *generation == owner_generation {
                 entry.health = CallbackHealthState::Unhealthy;
+                updated = true;
             }
+        }
+        if updated {
+            CallbackRegistryUpdate::Updated
+        } else {
+            CallbackRegistryUpdate::Missing
         }
     }
 
-    pub fn clear_owner(&mut self, owner_id: AidlObjectId, owner_generation: AidlObjectGeneration) {
+    pub fn clear_owner(
+        &mut self,
+        owner_id: AidlObjectId,
+        owner_generation: AidlObjectGeneration,
+    ) -> CallbackRegistryUpdate {
+        let before = self.registrations.len();
         self.registrations
             .retain(|(_, id, generation, _), _| *id != owner_id || *generation != owner_generation);
+        if self.registrations.len() < before {
+            CallbackRegistryUpdate::Updated
+        } else {
+            CallbackRegistryUpdate::Missing
+        }
     }
 
     pub fn registration_count(&self) -> usize {
@@ -121,11 +146,14 @@ mod tests {
                 .health,
             CallbackHealthState::Registered
         );
-        registry.mark_unhealthy(
-            AidlObjectKind::Lnb,
-            AidlObjectId(10),
-            AidlObjectGeneration(2),
-            AidlApi::LnbSetCallback,
+        assert_eq!(
+            registry.mark_unhealthy(
+                AidlObjectKind::Lnb,
+                AidlObjectId(10),
+                AidlObjectGeneration(2),
+                AidlApi::LnbSetCallback,
+            ),
+            CallbackRegistryUpdate::Updated
         );
         assert_eq!(
             registry
@@ -139,8 +167,15 @@ mod tests {
                 .health,
             CallbackHealthState::Unhealthy
         );
-        registry.clear_owner(AidlObjectId(10), AidlObjectGeneration(2));
+        assert_eq!(
+            registry.clear_owner(AidlObjectId(10), AidlObjectGeneration(2)),
+            CallbackRegistryUpdate::Updated
+        );
         assert_eq!(registry.registration_count(), 0);
+        assert_eq!(
+            registry.clear_owner(AidlObjectId(10), AidlObjectGeneration(2)),
+            CallbackRegistryUpdate::Missing
+        );
     }
 
     #[test]
@@ -164,7 +199,10 @@ mod tests {
             AidlObjectGeneration(4),
             AidlApi::LnbSetCallback,
         );
-        registry.mark_owner_unhealthy(AidlObjectId(20), AidlObjectGeneration(3));
+        assert_eq!(
+            registry.mark_owner_unhealthy(AidlObjectId(20), AidlObjectGeneration(3)),
+            CallbackRegistryUpdate::Updated
+        );
         assert_eq!(
             registry
                 .registration_for(
@@ -200,6 +238,24 @@ mod tests {
                 .unwrap()
                 .health,
             CallbackHealthState::Registered
+        );
+    }
+
+    #[test]
+    fn mark_unhealthy_reports_missing_registration() {
+        let mut registry = RuntimeCallbackRegistry::default();
+        assert_eq!(
+            registry.mark_unhealthy(
+                AidlObjectKind::Frontend,
+                AidlObjectId(99),
+                AidlObjectGeneration(1),
+                AidlApi::FrontendSetCallback,
+            ),
+            CallbackRegistryUpdate::Missing
+        );
+        assert_eq!(
+            registry.mark_owner_unhealthy(AidlObjectId(99), AidlObjectGeneration(1)),
+            CallbackRegistryUpdate::Missing
         );
     }
 }

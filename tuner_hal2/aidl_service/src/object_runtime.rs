@@ -5,13 +5,12 @@ use std::sync::{
 
 use binder::{Result as BinderResult, Status};
 use maleicacid_tuner_hal2_binder_adapter::{
-    AidlApi, AidlFailureSource, AidlMethodAdapter, AidlMethodCall, AidlMethodPlan, AidlObjectKind,
-    AidlStatusMapper, TunerStatusCode,
+    AidlApi, AidlFailureSource, AidlMethodAdapter, AidlMethodCall, AidlObjectKind,
+    AidlStatusMapper, CommandPlan, RuntimeExecutableRequest, TunerStatusCode,
 };
 use maleicacid_tuner_hal2_common::{
     FirstErrorCollector, HalError, HalInternalKind, HalInvalidStateKind,
 };
-use maleicacid_tuner_hal2_domain_request::{CommandPlan, RuntimeExecutableRequest};
 use maleicacid_tuner_hal2_resource_ledger::CleanupStep;
 use maleicacid_tuner_hal2_service_runtime::{
     object_close_txn::{
