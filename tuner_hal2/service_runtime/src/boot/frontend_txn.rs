@@ -2,12 +2,21 @@ use super::{
     live_reader_descriptor_for_frontend_entry, DemuxRuntimeId, DemuxRuntimeSnapshot,
     FrontendLivePumpReport, FrontendRuntimeSnapshot, FrontendSignalState, FrontendTuneRequest,
     FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind,
-    FrontendWorkerStartError, FrontendWorkerStopOutcome, FrontendWorkerStopTicket,
-    GenerationBoundaryReport, HalError, HalInternalKind, HalInvalidStateKind,
-    PipelineBoundaryReason, TunerServiceRuntime,
+    FrontendWorkerStartError, FrontendWorkerStopOutcome, GenerationBoundaryReport, HalError,
+    HalInternalKind, HalInvalidStateKind, PipelineBoundaryReason, TunerServiceRuntime,
 };
+use maleicacid_tuner_hal2_device::FrontendWorkerStopTicket;
 
 impl TunerServiceRuntime {
+    pub fn mark_frontend_scan_session_callback_failed(
+        &mut self,
+        frontend_id: i32,
+        generation: u64,
+    ) -> Result<(), HalError> {
+        self.frontend_txn()
+            .mark_frontend_scan_session_callback_failed(frontend_id, generation)
+    }
+
     fn transact_record_live_pump_report(
         &mut self,
         frontend_id: i32,
@@ -68,24 +77,6 @@ impl TunerServiceRuntime {
             frontend_id,
             PipelineBoundaryReason::FrontendClose,
         )
-    }
-
-    fn transact_record_frontend_scan_cancelled(
-        &mut self,
-        frontend_id: i32,
-        generation: u64,
-        reason: FrontendWorkerCancelReason,
-    ) -> Result<(), HalError> {
-        let runtime = self
-            .registry
-            .frontend_runtime_mut(crate::registry::FrontendRuntimeId(frontend_id))
-            .ok_or_else(|| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "frontend runtime is missing for advertised frontend",
-                )
-            })?;
-        runtime.record_scan_cancelled(generation, reason)
     }
 
     fn transact_begin_frontend_scan_session(
@@ -185,27 +176,6 @@ impl TunerServiceRuntime {
         self.registry
             .quarantine_bound_demuxes_for_frontend(crate::registry::FrontendRuntimeId(frontend_id));
         Ok(())
-    }
-
-    fn transact_mark_frontend_scan_session_callback_failed(
-        &mut self,
-        frontend_id: i32,
-        generation: u64,
-    ) -> Result<(), HalError> {
-        let runtime = self
-            .registry
-            .frontend_runtime_mut(crate::registry::FrontendRuntimeId(frontend_id))
-            .ok_or_else(|| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "frontend runtime is missing for advertised frontend",
-                )
-            })?;
-        runtime.mark_scan_session_callback_failed(generation)
-    }
-
-    fn transact_clear_finished_frontend_workers(&mut self) {
-        self.frontend_workers.clear_finished();
     }
 }
 
@@ -431,16 +401,6 @@ impl<'a> FrontendTxn<'a> {
             .transact_close_frontend_live_data_and_unbind(frontend_id)
     }
 
-    pub(crate) fn record_frontend_scan_cancelled(
-        &mut self,
-        frontend_id: i32,
-        generation: u64,
-        reason: FrontendWorkerCancelReason,
-    ) -> Result<(), HalError> {
-        self.runtime
-            .transact_record_frontend_scan_cancelled(frontend_id, generation, reason)
-    }
-
     pub(crate) fn begin_frontend_scan_session(
         &mut self,
         frontend_id: i32,
@@ -499,8 +459,17 @@ impl<'a> FrontendTxn<'a> {
         frontend_id: i32,
         generation: u64,
     ) -> Result<(), HalError> {
-        self.runtime
-            .transact_mark_frontend_scan_session_callback_failed(frontend_id, generation)
+        let runtime = self
+            .runtime
+            .registry
+            .frontend_runtime_mut(crate::registry::FrontendRuntimeId(frontend_id))
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend runtime is missing for advertised frontend",
+                )
+            })?;
+        runtime.mark_scan_session_callback_failed(generation)
     }
 
     pub(crate) fn start_worker<F>(
@@ -518,17 +487,6 @@ impl<'a> FrontendTxn<'a> {
             .start(frontend_id, kind, generation, job)
     }
 
-    pub(crate) fn request_worker_stop(
-        &mut self,
-        frontend_id: i32,
-        kind: FrontendWorkerKind,
-        reason: FrontendWorkerCancelReason,
-    ) -> FrontendWorkerStopOutcome {
-        self.runtime
-            .frontend_workers
-            .request_stop(frontend_id, kind, reason)
-    }
-
     pub(crate) fn request_worker_stop_for_join(
         &mut self,
         frontend_id: i32,
@@ -538,9 +496,5 @@ impl<'a> FrontendTxn<'a> {
         self.runtime
             .frontend_workers
             .request_stop_for_join(frontend_id, kind, reason)
-    }
-
-    pub(crate) fn clear_finished_workers(&mut self) {
-        self.runtime.transact_clear_finished_frontend_workers();
     }
 }

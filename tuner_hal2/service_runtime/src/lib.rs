@@ -82,7 +82,7 @@ pub enum ServiceState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem};
+    use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem, HalError};
     use maleicacid_tuner_hal2_demux::{
         packet_pipeline::{PipelineAssemblySuppressionReason, PipelineDeliveryAction},
         FilterConfig, FilterConfigKind, FilterOpenType, OpenFilterRequest, PesSettings,
@@ -93,6 +93,7 @@ mod tests {
     };
     use maleicacid_tuner_hal2_domain_request::{RuntimeTransactionName, AIDL_TRANSACTION_TABLE};
     use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     fn path(name: &str) -> PathBuf {
@@ -112,6 +113,18 @@ mod tests {
             system,
             path: path(path_name),
             lnb_profile,
+        }
+    }
+
+    fn isdbt_request(frequency: u64) -> maleicacid_tuner_hal2_common::FrontendTuneRequest {
+        maleicacid_tuner_hal2_common::FrontendTuneRequest {
+            system: FrontendSystem::IsdbT,
+            frequency,
+            end_frequency: None,
+            stream_id: None,
+            stream_id_kind: None,
+            bandwidth_hz: Some(6_000_000),
+            symbol_rate: None,
         }
     }
 
@@ -336,14 +349,19 @@ mod tests {
             )
             .unwrap();
         runtime
-            .frontend_txn()
-            .record_frontend_scan_cancelled(
-                1_000_000,
+            .registry_mut_for_test()
+            .frontend_runtime_mut(FrontendRuntimeId(1_000_000))
+            .unwrap()
+            .record_scan_cancelled(
                 generation,
                 maleicacid_tuner_hal2_device::FrontendWorkerCancelReason::StopRequested,
             )
             .unwrap();
-        let events = runtime.query().frontend_terminal_events(1_000_000).unwrap();
+        let events = runtime
+            .registry()
+            .frontend_runtime(FrontendRuntimeId(1_000_000))
+            .unwrap()
+            .terminal_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].generation, generation);
         assert_eq!(
@@ -362,6 +380,123 @@ mod tests {
         assert_eq!(
             frontend.state(),
             maleicacid_tuner_hal2_device::FrontendRuntimeState::Idle
+        );
+    }
+
+    #[test]
+    fn close_frontend_workers_requests_tune_and_scan_worker_stop() {
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        let (reason_tx, reason_rx) = std::sync::mpsc::channel();
+        {
+            let mut guard = runtime.lock().unwrap();
+            guard.boot_from_probe_results([available(
+                1_000_000,
+                FrontendBackendKind::Px4CharDevice,
+                FrontendSystem::IsdbT,
+                "/dev/px4video0",
+                None,
+            )]);
+
+            let tune_generation = guard
+                .frontend_txn()
+                .prepare_frontend_worker_generation(
+                    1_000_000,
+                    maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
+                )
+                .unwrap();
+            guard
+                .frontend_txn()
+                .install_frontend_live_reader_descriptor_for_generation(
+                    1_000_000,
+                    maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
+                    tune_generation,
+                )
+                .unwrap();
+            let tune_tx = reason_tx.clone();
+            guard
+                .frontend_txn()
+                .start_worker(
+                    1_000_000,
+                    maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
+                    tune_generation,
+                    move |ctx| {
+                        while !ctx.cancel_requested() {
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                        tune_tx
+                            .send((ctx.kind(), ctx.cancel_reason().unwrap()))
+                            .unwrap();
+                        Ok(())
+                    },
+                )
+                .unwrap();
+
+            let scan_generation = guard
+                .frontend_txn()
+                .prepare_frontend_worker_generation(
+                    1_000_000,
+                    maleicacid_tuner_hal2_device::FrontendWorkerKind::Scan,
+                )
+                .unwrap();
+            guard
+                .frontend_txn()
+                .install_frontend_live_reader_descriptor_for_generation(
+                    1_000_000,
+                    maleicacid_tuner_hal2_device::FrontendWorkerKind::Scan,
+                    scan_generation,
+                )
+                .unwrap();
+            guard
+                .frontend_txn()
+                .begin_frontend_scan_session(
+                    1_000_000,
+                    scan_generation,
+                    "close-worker-test".to_string(),
+                    vec![isdbt_request(473_142_857)],
+                )
+                .unwrap();
+            guard
+                .frontend_txn()
+                .start_worker(
+                    1_000_000,
+                    maleicacid_tuner_hal2_device::FrontendWorkerKind::Scan,
+                    scan_generation,
+                    move |ctx| {
+                        while !ctx.cancel_requested() {
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                        reason_tx
+                            .send((ctx.kind(), ctx.cancel_reason().unwrap()))
+                            .unwrap();
+                        Ok(())
+                    },
+                )
+                .unwrap();
+        }
+
+        crate::frontend_worker_txn::close_frontend_workers_and_live_data(
+            Arc::clone(&runtime),
+            1_000_000,
+            maleicacid_tuner_hal2_device::FrontendWorkerCancelReason::FrontendClosing,
+        )
+        .unwrap();
+
+        let first = reason_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let second = reason_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let mut reasons = vec![first, second];
+        reasons.sort_by_key(|(kind, _)| *kind);
+        assert_eq!(
+            reasons,
+            vec![
+                (
+                    maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
+                    Some(maleicacid_tuner_hal2_device::FrontendWorkerCancelReason::FrontendClosing,),
+                ),
+                (
+                    maleicacid_tuner_hal2_device::FrontendWorkerKind::Scan,
+                    Some(maleicacid_tuner_hal2_device::FrontendWorkerCancelReason::FrontendClosing,),
+                ),
+            ]
         );
     }
 
