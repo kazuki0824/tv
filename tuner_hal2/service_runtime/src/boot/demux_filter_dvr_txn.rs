@@ -680,6 +680,26 @@ impl TunerServiceRuntime {
             .flush_dvr_runtime(dvr_id)
             .map_err(Self::map_dvr_runtime_error)
     }
+
+    fn transact_set_dvr_status_check_interval(
+        &mut self,
+        dvr_id: i32,
+        interval_ms: u64,
+    ) -> Result<(), HalError> {
+        let owner_demux_id = self.owner_demux_id_for_dvr(dvr_id)?;
+        let Some(demux_runtime) = self
+            .registry
+            .demux_runtime_mut(DemuxRuntimeId(owner_demux_id))
+        else {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "owner demux runtime is missing",
+            ));
+        };
+        demux_runtime
+            .set_dvr_status_check_interval(dvr_id, interval_ms)
+            .map_err(Self::map_dvr_runtime_error)
+    }
 }
 
 pub(crate) struct DemuxFilterDvrTxn<'a> {
@@ -877,6 +897,15 @@ impl<'a> DemuxFilterDvrTxn<'a> {
 
     pub(crate) fn flush_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), HalError> {
         self.runtime.transact_flush_dvr_runtime(dvr_id)
+    }
+
+    pub(crate) fn set_dvr_status_check_interval(
+        &mut self,
+        dvr_id: i32,
+        interval_ms: u64,
+    ) -> Result<(), HalError> {
+        self.runtime
+            .transact_set_dvr_status_check_interval(dvr_id, interval_ms)
     }
 
     pub(crate) fn open_filter_child_runtime_for_demux_object(

@@ -33,6 +33,7 @@ pub struct DvrRuntimeSnapshot {
     pub generation: u64,
     pub buffer_size: i32,
     pub callback_present: bool,
+    pub status_check_interval_ms: u64,
     pub queue_present: bool,
     pub playback_assembler_present: bool,
     pub attached_record_filters: BTreeSet<i32>,
@@ -47,6 +48,7 @@ pub struct DvrRuntime {
     generation: u64,
     buffer_size: i32,
     callback_present: bool,
+    status_check_interval_ms: u64,
     queue_present: bool,
     playback_assembler_present: bool,
     attached_record_filters: BTreeSet<i32>,
@@ -71,6 +73,7 @@ impl DvrRuntime {
             generation,
             buffer_size,
             callback_present,
+            status_check_interval_ms: 0,
             queue_present: false,
             playback_assembler_present: matches!(kind, DvrKind::Playback),
             attached_record_filters: BTreeSet::new(),
@@ -94,6 +97,9 @@ impl DvrRuntime {
     }
     pub fn callback_present(&self) -> bool {
         self.callback_present
+    }
+    pub fn status_check_interval_ms(&self) -> u64 {
+        self.status_check_interval_ms
     }
     pub fn queue_present(&self) -> bool {
         self.queue_present
@@ -123,6 +129,7 @@ impl DvrRuntime {
             generation: self.generation,
             buffer_size: self.buffer_size,
             callback_present: self.callback_present,
+            status_check_interval_ms: self.status_check_interval_ms,
             queue_present: self.queue_present,
             playback_assembler_present: self.playback_assembler_present,
             attached_record_filters: self.attached_record_filters.clone(),
@@ -135,6 +142,7 @@ impl DvrRuntime {
         self.generation = snapshot.generation;
         self.buffer_size = snapshot.buffer_size;
         self.callback_present = snapshot.callback_present;
+        self.status_check_interval_ms = snapshot.status_check_interval_ms;
         self.queue_present = snapshot.queue_present;
         self.playback_assembler_present = snapshot.playback_assembler_present;
         self.attached_record_filters = snapshot.attached_record_filters;
@@ -171,6 +179,9 @@ impl DvrRuntime {
     }
     pub fn mark_pending_overflow(&mut self) {
         self.pending_overflow = true;
+    }
+    pub fn set_status_check_interval_ms(&mut self, interval_ms: u64) {
+        self.status_check_interval_ms = interval_ms;
     }
 
     pub fn mark_started(&mut self) {

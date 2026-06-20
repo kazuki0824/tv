@@ -566,6 +566,35 @@ mod tests {
     }
 
     #[test]
+    fn dvr_status_check_interval_hint_updates_without_state_transition() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                42,
+                1,
+                crate::runtime::DvrKind::Playback,
+                8192,
+                true,
+            ))
+            .unwrap();
+
+        demux.set_dvr_status_check_interval(42, 250).unwrap();
+        assert_eq!(demux.dvr(42).unwrap().status_check_interval_ms(), 250);
+        assert_eq!(demux.dvr(42).unwrap().state(), DvrRuntimeState::Open);
+
+        demux.configure_dvr_runtime(42).unwrap();
+        demux.start_dvr_runtime(42).unwrap();
+        demux.set_dvr_status_check_interval(42, 500).unwrap();
+        assert_eq!(demux.dvr(42).unwrap().status_check_interval_ms(), 500);
+        assert_eq!(demux.dvr(42).unwrap().state(), DvrRuntimeState::Started);
+
+        demux.stop_dvr_runtime(42).unwrap();
+        demux.set_dvr_status_check_interval(42, 750).unwrap();
+        assert_eq!(demux.dvr(42).unwrap().status_check_interval_ms(), 750);
+        assert_eq!(demux.dvr(42).unwrap().state(), DvrRuntimeState::Stopped);
+    }
+
+    #[test]
     fn demux_restore_preserves_exported_filter_queue_backing() {
         let mut demux = DemuxRuntime::new(1, 1);
         let request = OpenFilterRequest {

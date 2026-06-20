@@ -163,6 +163,15 @@ impl TunerServiceRuntime {
     pub fn flush_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), HalError> {
         self.demux_filter_dvr_txn().flush_dvr_runtime(dvr_id)
     }
+
+    pub fn set_dvr_status_check_interval(
+        &mut self,
+        dvr_id: i32,
+        interval_ms: u64,
+    ) -> Result<(), HalError> {
+        self.demux_filter_dvr_txn()
+            .set_dvr_status_check_interval(dvr_id, interval_ms)
+    }
 }
 
 impl TunerServiceRuntime {
@@ -540,6 +549,22 @@ impl TunerServiceRuntime {
         )?;
         plan_object_method_dispatch(self, command_plan, executable_request)?;
         self.flush_dvr_runtime(dvr_id)
+    }
+
+    pub fn set_dvr_status_check_interval_for_object(
+        &mut self,
+        object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
+        generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
+        interval_ms: u64,
+        dispatch: ObjectMethodDispatchPreflight,
+    ) -> Result<(), HalError> {
+        let dvr_id = self.public_runtime_id_for_object_method(
+            object_id,
+            generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Dvr,
+        )?;
+        dispatch.plan(self)?;
+        self.set_dvr_status_check_interval(dvr_id, interval_ms)
     }
 
     pub fn set_filter_delay_hint_for_object(

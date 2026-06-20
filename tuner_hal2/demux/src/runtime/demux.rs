@@ -741,6 +741,30 @@ impl DemuxRuntime {
         }
     }
 
+    pub fn set_dvr_status_check_interval(
+        &mut self,
+        dvr_id: i32,
+        interval_ms: u64,
+    ) -> Result<(), DemuxRuntimeError> {
+        let dvr = self
+            .dvrs
+            .get_mut(&dvr_id)
+            .ok_or(DemuxRuntimeError::dvr_missing(dvr_id))?;
+        match dvr.state() {
+            super::dvr::DvrRuntimeState::Open
+            | super::dvr::DvrRuntimeState::Configured
+            | super::dvr::DvrRuntimeState::Started
+            | super::dvr::DvrRuntimeState::Stopped => {
+                dvr.set_status_check_interval_ms(interval_ms);
+                Ok(())
+            }
+            super::dvr::DvrRuntimeState::Closing
+            | super::dvr::DvrRuntimeState::CleanupFailed
+            | super::dvr::DvrRuntimeState::Closed
+            | super::dvr::DvrRuntimeState::Failed => Err(DemuxRuntimeError::invalid_state(dvr_id)),
+        }
+    }
+
     pub fn disconnect_filter_source(
         &mut self,
         sink_filter_id: i32,
