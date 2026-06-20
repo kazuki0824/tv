@@ -428,8 +428,9 @@ AV filter の audio/video routing 種別は open subtype を正とする。TsAud
 | F-C-025 | `configureMonitorEvent(0)` | F0, F1, F2, F3, F4, F5, F6, A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11 | 成功 | 入力状態を維持 | なし | `monitor_event_mask_zero` を増やす | mask 0 は無処理成功で同値 |
 | F-C-026 | `configureMonitorEvent(nonzero)` | F0, F1, F2, F3, F4, F5, F6, A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11 | profile 非対応では `UNAVAILABLE`、profile 対応では成功 | 入力状態を維持 | profile 対応では要求 mask を保存し monitor event 配送対象にする | `monitor_event_unavailable` または `monitor_event_configured` を増やす | VTS/profile で `monitorEventTypes > 0` を使う場合は成功と event 配送を必須とする |
 | F-C-027 | `configureIpCid()` | F0, F1, F2, F3, F4, F5, F6, A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11 | `UNAVAILABLE` | 入力状態を維持 | なし | `ip_cid_unavailable` を増やす | IP CID は Tuner HAL の視聴経路 / capability 対象外 |
-| F-C-028 | `setDelayHint()` 正常入力 | F0, F1, F2, F3, F4, F5, F6, A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11 | 成功 | 入力状態を維持 | hint 値だけ保存 | `delay_hint_set` | 資源寿命を変えない |
-| F-C-029 | `setDelayHint()` 不正入力 | F0, F1, F2, F3, F4, F5, F6, A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11 | `INVALID_ARGUMENT` | 入力状態を維持 | なし | `delay_hint_invalid` を増やす | 不正入力は全非閉鎖状態で同じ拒否 |
+| F-C-028 | `setDelayHint()` Media / AV filter | A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11 | `UNAVAILABLE` | 入力状態を維持 | なし | `delay_hint_unavailable` を増やす | AOSP 契約に合わせ、Media / AV filter では delay hint を受け付けない |
+| F-C-029 | `setDelayHint()` 非Media filter / 正常入力 | F0, F1, F2, F3, F4, F5, F6 | 成功 | 入力状態を維持 | hint 値だけ保存 | `delay_hint_set` | 資源寿命を変えない |
+| F-C-029a | `setDelayHint()` 非Media filter / 不正入力 | F0, F1, F2, F3, F4, F5, F6 | `INVALID_ARGUMENT` | 入力状態を維持 | なし | `delay_hint_invalid` を増やす | 不正入力は全非閉鎖状態で同じ拒否 |
 | F-C-030 | `getId()` / `getId64Bit()` | F0, F1, F2, F3, F4, F5, F6, A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11 | 成功 | 入力状態を維持 | IDを返す | なし | 読み取り専用APIで資源寿命を変えない |
 | F-C-031 | `setDataSource()` 成功組み合わせ | 表1-Dで成功と定義した組み合わせ | 成功 | 入力状態を維持 | source 参照を保持 | `set_data_source_success` | 詳細は表1-Dを正とする |
 | F-C-032 | `setDataSource()` 拒否組み合わせ | 表1-Dで拒否と定義した組み合わせ | 表1-Dに従う | 入力状態を維持 | なし | 表1-Dに従う | 詳細は表1-Dを正とする |
@@ -572,8 +573,7 @@ source は非閉鎖かつ非実行時失敗であれば、設定済み、開始�
 | DVR-005 | `configure()` 開始中 | D2, D5 | `INVALID_STATE` | 入力状態を維持 | なし | `dvr_configure_while_started` を増やす | 開始中再設定を禁止 |
 | DVR-006 | `getQueueDesc()` | D1, D2, D3, D4, D5, D6 | 成功 | 入力状態を維持 | DVR FMQ記述子を返す | `dvr_queue_desc_success` | configured DVR は種別に関係なく記述子を持つ |
 | DVR-007 | `getQueueDesc()` | D0R, D0P | `INVALID_STATE` | 入力状態を維持 | なし | `dvr_queue_desc_invalid_state` を増やす | 未設定DVRは記述子を公開しない |
-| DVR-008 | `start()` record / record filter attach 済み | D1, D3 | 成功 | D2 | 録画作業スレッドを開始 | `dvr_start_success` | record DVR は attached record filter を入力源として録画を開始する |
-| DVR-008a | `start()` record / record filter 未attach | D1, D3 | `INVALID_STATE` | 入力状態を維持 | なし | `dvr_start_missing_record_filter` を増やす | AOSP の録画DVR実用フローは record filter attach 後の start であり、入力源なしの record DVR start を成功扱いしない |
+| DVR-008 | `start()` record | D1, D3 | 成功 | D2 | 録画作業スレッドを開始 | `dvr_start_success` | record filter の接続有無は start の成功条件にしない。未接続時は入力なしで開始する |
 | DVR-009 | `start()` playback | D4, D6 | 成功 | D5 | 再生入力受付を開始 | `dvr_start_success` | playback DVR の非開始状態は start に関して同値 |
 | DVR-010 | `start()` 開始済み | D2, D5 | 成功 | 入力状態を維持 | なし | `dvr_start_idempotent` を増やす | 重複 start は冪等成功 |
 | DVR-011 | `start()` 未設定 | D0R, D0P | `INVALID_STATE` | 入力状態を維持 | なし | `dvr_start_invalid_state` を増やす | 未設定DVRでは開始対象が存在しない |
@@ -592,12 +592,12 @@ source は非閉鎖かつ非実行時失敗であれば、設定済み、開始�
 | DVR-024 | `attachFilter()` valid filter | D1, D2, D3 | 成功 | 入力状態を維持 | 未登録なら登録する | `dvr_attach_filter_success` | record DVR だけ filter attach を受ける |
 | DVR-025 | `attachFilter()` 同一filter重複 | D1, D2, D3 | 成功 | 入力状態を維持 | 登録数を増やさない | `dvr_attach_filter_idempotent` を増やす | 重複attachは冪等成功 |
 | DVR-026 | `attachFilter()` 未設定record DVR | D0R | `INVALID_STATE` | D0R | なし | `dvr_attach_invalid_state` を増やす | 未設定record DVRでは attach 対象queueが存在しない |
-| DVR-027 | `attachFilter()` playback DVR | D0P, D4, D5, D6 | `INVALID_STATE` | 入力状態を維持 | なし | `dvr_attach_wrong_kind` を増やす | playback DVR では attach しない |
+| DVR-027 | `attachFilter()` playback DVR | D0P, D4, D5, D6 | `UNAVAILABLE` | 入力状態を維持 | なし | `dvr_attach_unavailable` を増やす | playback DVR では API 自体を提供しない |
 | DVR-028 | `attachFilter()` 不正filter | D1, D2, D3 | `INVALID_ARGUMENT` | 入力状態を維持 | なし | `dvr_attach_invalid_filter` を増やす | 閉鎖済み、別demux、録画非対応filterを attach しない |
 | DVR-029 | `detachFilter()` 登録済みfilter | D1, D2, D3 | 成功 | 入力状態を維持 | 登録を解除する | `dvr_detach_filter_success` | record DVR だけ filter detach を受ける |
 | DVR-030 | `detachFilter()` 未登録filter | D1, D2, D3 | 成功 | 入力状態を維持 | なし | `dvr_detach_filter_idempotent` を増やす | 未登録 detach は冪等成功 |
 | DVR-031 | `detachFilter()` 未設定record DVR | D0R | `INVALID_STATE` | D0R | なし | `dvr_detach_invalid_state` を増やす | 未設定record DVRでは detach 対象登録が存在しない |
-| DVR-032 | `detachFilter()` playback DVR | D0P, D4, D5, D6 | `INVALID_STATE` | 入力状態を維持 | なし | `dvr_detach_wrong_kind` を増やす | playback DVR では detach しない |
+| DVR-032 | `detachFilter()` playback DVR | D0P, D4, D5, D6 | `UNAVAILABLE` | 入力状態を維持 | なし | `dvr_detach_unavailable` を増やす | playback DVR では API 自体を提供しない |
 | DVR-033 | `setStatusCheckIntervalHint()` 正常入力 | D0R, D0P, D1, D2, D3, D4, D5, D6 | 成功 | 入力状態を維持 | hint 値だけ保存 | `dvr_status_hint_set` | 資源寿命を変えない |
 | DVR-034 | `setStatusCheckIntervalHint()` 不正入力 | D0R, D0P, D1, D2, D3, D4, D5, D6 | `INVALID_ARGUMENT` | 入力状態を維持 | なし | `dvr_status_hint_invalid` を増やす | 不正入力は全非閉鎖状態で同じ拒否 |
 | DVR-035 | `close()` | 全非閉鎖状態 | 表5に従う | 表5に従う | 後片付け開始 | 表5に従う | close の戻り値と後片付け完了判定は表5を正とする |
@@ -863,7 +863,7 @@ checked FMQ shim は、`queue == null` または `out_written == null` を `INVA
 | API | 同一条件 | 破壊的処理の可否 | 異なる条件 |
 |---|---|---:|---|
 | `IDemux.setFrontendDataSource(frontend)` | 現在と同じ frontend / generation | stream boundary reset を行わない | 旧frontend unbind、新frontend bind、boundary reset |
-| `IFrontend.tune(settings)` | normalized tune settings が現在条件と同一 | backend stop、live pump停止、demux boundary reset を行わない | 旧tune停止、新tune投入、boundary reset |
+| `IFrontend.tune(settings)` | normalized tune settings が現在条件と同一でも前回Tuneが未完了 | 旧tune workerを停止し、新generationで新しいtuneを開始する | 旧tune停止、新tune投入、boundary reset |
 | `IFilter.configure(settings)` | 現在設定と同一 | queue / AV backing を破棄しない | validate後にcommitし、必要時だけqueue境界処理 |
 | `IDvr.configure(settings)` | 現在設定と同一 | queueを破棄しない | validate後にcommitし、record/playback種別変更時だけqueue境界処理 |
 
@@ -1023,7 +1023,7 @@ backend tune submit 後に ワーカー生成 が失敗した場合は、旧tune
 |---:|---|---|---|---:|
 | TN-001 | validate | settings正規化、capability、周波数範囲、LNB候補検証 | `INVALID_ARGUMENT` / `UNAVAILABLE` | 必須 |
 | TN-002 | prepare | worker/コールバック経路準備、ロールバック経路準備 | `UNKNOWN_ERROR` | 必須 |
-| TN-003 | pre-boundary | 同一tune判定 | 無処理成功 | 維持 |
+| TN-003 | pre-boundary | 既存tune worker停止。同一条件でも未完了なら置換する | 停止失敗を返す | 努力義務 |
 | TN-004 | commit開始 | 旧generation無効化、boundary reset、新backend tune submit | 失敗時は旧tune維持を試す | 努力義務 |
 | TN-005 | ワーカー start | tune worker起動 | backend rollbackを試す | 努力義務 |
 | TN-006 | rollback成功 | backend旧tune復旧、demux状態維持 | `UNKNOWN_ERROR` | 維持 |
