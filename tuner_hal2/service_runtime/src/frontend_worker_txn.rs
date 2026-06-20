@@ -8,8 +8,8 @@ use crate::{
     FrontendRegistryEntry, TunerServiceRuntime,
 };
 use maleicacid_tuner_hal2_common::{
-    FirstErrorCollector, FrontendBackendKind, FrontendDevicePath, FrontendScanMode,
-    FrontendTuneRequest, HalError, HalInternalKind, HalInvalidStateKind,
+    compose_primary_cleanup_failure, FirstErrorCollector, FrontendBackendKind, FrontendDevicePath,
+    FrontendScanMode, FrontendTuneRequest, HalError, HalInternalKind, HalInvalidStateKind,
 };
 use maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeSnapshot;
 use maleicacid_tuner_hal2_device::{
@@ -66,7 +66,7 @@ fn compose_frontend_cleanup_error(
     primary: HalError,
     cleanup: HalError,
 ) -> HalError {
-    HalError::composed_failure(context, primary, cleanup)
+    compose_primary_cleanup_failure(context, primary, cleanup)
 }
 
 fn restore_frontend_state_after_primary_failure(

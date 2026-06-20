@@ -1,3 +1,25 @@
+# r50el_test_mod_cleanup_and_future_work_retirement_unverified
+
+- Retired completed r51 future_work files for rollback/cleanup failure composition and tuner_hal2 failure-injection tests after moving the implemented scope into current code/tests.
+- Added isolated `#[cfg(test)]` failure-injection modules instead of production test branches:
+  - `common/src/failure_injection_tests.rs`
+  - `service_runtime/src/failure_injection_tests.rs`
+  - `aidl_service/src/failure_injection_tests.rs`
+- Kept the new tests as logic-path tests over typed `HalError` composition, close cleanup marking, public-close missing-target cleanup, callback rollback, and close-domain cleanup; they do not use `include_str!`, grep, or source-text self-inspection.
+- Routed remaining direct production `HalError::composed_failure(...)` call sites through the common composition helper where applicable.
+- Removed `future_work/r51/rollback_failure_composition_common_component_plan.md` and `future_work/r51/tuner_hal2_failure_injection_tests_plan.md` so completed work is not left as a misleading future-work item.
+- Android/Soong `m`, unit tests, `atest`, VTS, real-device checks, `cargo`, `rustc`, and `rustfmt` were not run in this environment; `rustfmt`/`rustc`/`cargo` commands are not installed.
+
+# r50ek_future_work_composition_and_boundary_fix_unverified
+
+- Advanced the rollback/cleanup failure composition future-work item by adding common helpers in `common/src/lib.rs`: `compose_primary_cleanup_failure()`, `finish_cleanup_after_primary_failure()`, and `fail_after_cleanup()`.
+- Routed open rollback and AIDL root/child cleanup composition helpers through the common composition helpers instead of local-only composition logic.
+- Advanced the failure-injection future-work item by adding common-helper coverage for primary-only and primary+cleanup failure composition and updating the future-work file to list only remaining build-verified test coverage.
+- Converted close-domain cleanup closure ABI from `BinderResult<()>` to `Result<(), HalError>` and updated frontend/LNB close call sites and close cleanup tests accordingly.
+- Converted child filter/DVR object construction failure cleanup from Binder `Status` primary handling to typed `HalError` primary handling.
+- Updated future_work/r51 documents to distinguish r50ek implemented progress from remaining compiler/build-verified work.
+- Android/Soong `m`, unit tests, `atest`, VTS, real-device checks, `cargo`, `rustc`, and `rustfmt` were not run in this environment; `rustfmt`/`rustc`/`cargo` commands are not installed.
+
 # r50ei106_callback_closure_typed_boundary_unverified
 
 - Added `vendor/maleicacid/tv/future_work/r51/tuner_hal2_failure_injection_tests_plan.md` so failure-injection test coverage is tracked only as future work and not as a current-release completion requirement.

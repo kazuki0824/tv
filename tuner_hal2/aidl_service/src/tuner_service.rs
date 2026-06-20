@@ -59,8 +59,8 @@ use maleicacid_tuner_hal2_binder_adapter::{
     AidlObjectKind, DvrFilterLinkRequest, FilterReleaseAvHandleRequest, FilterSetDataSourceRequest,
 };
 use maleicacid_tuner_hal2_common::{
-    japan_isdbt_frequency_contract_range_hz, FrontendBackendKind, FrontendSystem, HalError,
-    HalInternalKind,
+    fail_after_cleanup, japan_isdbt_frequency_contract_range_hz, FrontendBackendKind,
+    FrontendSystem, HalError, HalInternalKind,
 };
 use maleicacid_tuner_hal2_device::{FrontendRuntimeState, FrontendSignalState};
 use maleicacid_tuner_hal2_service_runtime::{
@@ -159,14 +159,7 @@ fn finish_hal_cleanup_after_primary<T>(
     primary: HalError,
     cleanup: Result<(), HalError>,
 ) -> BinderResult<T> {
-    match cleanup {
-        Ok(()) => Err(status_from_hal_error(primary)),
-        Err(cleanup_error) => Err(status_from_hal_error(HalError::composed_failure(
-            context,
-            primary,
-            cleanup_error,
-        ))),
-    }
+    fail_after_cleanup(context, primary, cleanup).map_err(status_from_hal_error)
 }
 
 impl TunerAidlService {

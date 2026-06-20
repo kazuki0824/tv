@@ -1,4 +1,4 @@
-use maleicacid_tuner_hal2_common::HalError;
+use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, HalError};
 use maleicacid_tuner_hal2_domain_request::{
     AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan, RuntimeExecutableRequest,
 };
@@ -67,7 +67,7 @@ pub fn mark_object_close_cleanup_failed_cascade(
         .map(|_| ())
         .map_err(|error| {
             let mapped = object_table_error_to_hal(error);
-            HalError::composed_failure(
+            compose_primary_cleanup_failure(
                 detail,
                 HalError::cleanup_failed("object close cleanup failed marking", detail),
                 mapped,

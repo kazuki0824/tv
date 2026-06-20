@@ -1,4 +1,4 @@
-use maleicacid_tuner_hal2_common::HalError;
+use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, HalError};
 
 pub(crate) fn finish_open_rollback<F>(
     object_registration_rollback: Result<(), HalError>,
@@ -12,7 +12,7 @@ where
     match (object_registration_rollback, runtime_cleanup) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-        (Err(object_error), Err(runtime_error)) => Err(HalError::composed_failure(
+        (Err(object_error), Err(runtime_error)) => Err(compose_primary_cleanup_failure(
             resource,
             object_error,
             runtime_error,

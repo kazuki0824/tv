@@ -1,9 +1,6 @@
-use binder::Interface;
 use crate::object_handle::{AidlObjectHandle, AidlObjectHandleError, AidlObjectKind};
-use crate::object_runtime::{
-    drop_leak_object_from_drop,
-    DropLeakDomainAction, SharedTunerRuntime,
-};
+use crate::object_runtime::{drop_leak_object_from_drop, DropLeakDomainAction, SharedTunerRuntime};
+use binder::Interface;
 
 #[derive(Clone)]
 pub struct DescramblerAidlObject {

@@ -11,7 +11,7 @@ use super::{
     FrontendAidlObject, FrontendScanType, FrontendSettings, FrontendStatus,
     FrontendStatusReadiness, FrontendStatusType, IFrontend, IFrontendCallback, Strong,
 };
-use crate::object_runtime::clear_live_lnb_callback_for_public_id;
+use crate::object_runtime::clear_live_lnb_callback_for_public_id_hal;
 use maleicacid_tuner_hal2_common::FirstErrorCollector;
 use maleicacid_tuner_hal2_device::{FrontendWorkerCancelReason, FrontendWorkerKind};
 
@@ -73,16 +73,17 @@ impl IFrontend for FrontendAidlObject {
                     FrontendWorkerCancelReason::FrontendClosing,
                 ) {
                     Ok(report) => {
-                        cleanup_collector
-                            .push_result(report.cleanup_result.map_err(status_from_hal_error));
+                        cleanup_collector.push_result(report.cleanup_result);
                         for lnb_id in report.closed_lnb_ids {
-                            cleanup_collector.push_result(clear_live_lnb_callback_for_public_id(
-                                &runtime_for_cleanup,
-                                lnb_id,
-                            ));
+                            cleanup_collector.push_result(
+                                clear_live_lnb_callback_for_public_id_hal(
+                                    &runtime_for_cleanup,
+                                    lnb_id,
+                                ),
+                            );
                         }
                     }
-                    Err(error) => cleanup_collector.push_error(status_from_hal_error(error)),
+                    Err(error) => cleanup_collector.push_error(error),
                 }
                 cleanup_collector.into_result()
             },

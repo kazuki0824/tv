@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
-    FrontendScanMessage::FrontendScanMessage,
-    FrontendScanMessageType::FrontendScanMessageType,
+    FrontendScanMessage::FrontendScanMessage, FrontendScanMessageType::FrontendScanMessageType,
 };
 use maleicacid_tuner_hal2_binder_adapter::{AidlApi, AidlObjectKind};
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};

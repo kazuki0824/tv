@@ -5,9 +5,8 @@ use maleicacid_tuner_hal2_binder_adapter::{AidlApi, AidlMethodCall};
 use crate::callback_store::retain_frontend_callback;
 use crate::object_handle::{AidlObjectHandle, AidlObjectHandleError, AidlObjectKind};
 use crate::object_runtime::{
-    clear_owner_callback_registration_hal,
-    drop_leak_object_from_drop, execute_callback_registration_runtime_use_case,
-    DropLeakDomainAction, SharedTunerRuntime,
+    clear_owner_callback_registration_hal, drop_leak_object_from_drop,
+    execute_callback_registration_runtime_use_case, DropLeakDomainAction, SharedTunerRuntime,
 };
 
 pub struct FrontendAidlObject {
@@ -34,14 +33,18 @@ impl FrontendAidlObject {
         self.runtime.clone()
     }
 
-    pub fn set_callback_transaction(&self, callback: &Strong<dyn IFrontendCallback>) -> BinderResult<()> {
+    pub fn set_callback_transaction(
+        &self,
+        callback: &Strong<dyn IFrontendCallback>,
+    ) -> BinderResult<()> {
         execute_callback_registration_runtime_use_case(
             &self.runtime,
             self.handle,
             AidlMethodCall::FrontendSetCallback,
-            || retain_frontend_callback(self.handle, callback).map_err(|error| {
-                error.into_hal_error("frontend callback store retain failed")
-            }),
+            || {
+                retain_frontend_callback(self.handle, callback)
+                    .map_err(|error| error.into_hal_error("frontend callback store retain failed"))
+            },
             || {
                 clear_owner_callback_registration_hal(
                     &self.runtime,

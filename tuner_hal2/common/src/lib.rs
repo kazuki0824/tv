@@ -1,4 +1,7 @@
 pub mod os_abi;
+
+#[cfg(test)]
+mod failure_injection_tests;
 use std::collections::VecDeque;
 use std::fmt;
 use std::io;
@@ -279,6 +282,47 @@ impl<E> FirstErrorCollector<E> {
             None => Ok(()),
         }
     }
+}
+
+/// Composes a primary failure with a cleanup/rollback failure.
+///
+/// This is the shared primary+cleanup composition helper. It is distinct from
+/// `FirstErrorCollector`, which only decides the first failure among cleanup
+/// steps after cleanup has started.
+pub fn compose_primary_cleanup_failure(
+    context: &'static str,
+    primary: HalError,
+    cleanup: HalError,
+) -> HalError {
+    HalError::composed_failure(context, primary, cleanup)
+}
+
+/// Finishes a cleanup/rollback attempt after a primary failure.
+///
+/// If cleanup succeeds, the original primary failure is returned. If cleanup
+/// fails, a composed failure retaining both primary and cleanup failures is
+/// returned.
+pub fn finish_cleanup_after_primary_failure(
+    context: &'static str,
+    primary: HalError,
+    cleanup: Result<(), HalError>,
+) -> HalError {
+    match cleanup {
+        Ok(()) => primary,
+        Err(cleanup) => compose_primary_cleanup_failure(context, primary, cleanup),
+    }
+}
+
+/// Converts a primary failure plus cleanup result into a result for callers that
+/// have no success value after the primary failure.
+pub fn fail_after_cleanup<T>(
+    context: &'static str,
+    primary: HalError,
+    cleanup: Result<(), HalError>,
+) -> Result<T, HalError> {
+    Err(finish_cleanup_after_primary_failure(
+        context, primary, cleanup,
+    ))
 }
 
 #[derive(Debug)]
@@ -590,11 +634,7 @@ impl HalError {
         }
     }
 
-    pub fn composed_failure(
-        context: &'static str,
-        primary: HalError,
-        cleanup: HalError,
-    ) -> Self {
+    pub fn composed_failure(context: &'static str, primary: HalError, cleanup: HalError) -> Self {
         Self::ComposedFailure {
             context,
             primary: Box::new(primary),
@@ -706,7 +746,11 @@ impl fmt::Display for HalError {
                 "cleanup failed: resource={} detail={}",
                 resource, detail.detail
             ),
-            HalError::ComposedFailure { context, primary, cleanup } => write!(
+            HalError::ComposedFailure {
+                context,
+                primary,
+                cleanup,
+            } => write!(
                 f,
                 "composed failure: context={} primary=({}) cleanup=({})",
                 context, primary, cleanup
@@ -759,7 +803,6 @@ mod tests {
         p
     }
 
-
     #[test]
     fn first_error_collector_preserves_first_error() {
         let mut collector = FirstErrorCollector::new();
@@ -779,10 +822,8 @@ mod tests {
 
     #[test]
     fn composed_failure_preserves_primary_and_cleanup() {
-        let primary = HalError::invalid_state(
-            HalInvalidStateKind::InvalidLifecycle,
-            "primary failure",
-        );
+        let primary =
+            HalError::invalid_state(HalInvalidStateKind::InvalidLifecycle, "primary failure");
         let cleanup = HalError::cleanup_failed("test cleanup", "cleanup failure");
         let error = HalError::composed_failure("test composed", primary.clone(), cleanup.clone());
 
@@ -791,6 +832,34 @@ mod tests {
         let rendered = error.to_string();
         assert!(rendered.contains("primary failure"));
         assert!(rendered.contains("cleanup failure"));
+    }
+
+    #[test]
+    fn finish_cleanup_after_primary_failure_keeps_primary_when_cleanup_succeeds() {
+        let primary = HalError::invalid_state(
+            HalInvalidStateKind::InvalidLifecycle,
+            "primary-only failure",
+        );
+        let error = finish_cleanup_after_primary_failure(
+            "test cleanup composition",
+            primary.clone(),
+            Ok(()),
+        );
+        assert_eq!(error, primary);
+    }
+
+    #[test]
+    fn finish_cleanup_after_primary_failure_composes_both_failures() {
+        let primary =
+            HalError::invalid_state(HalInvalidStateKind::InvalidLifecycle, "primary failure");
+        let cleanup = HalError::cleanup_failed("test cleanup", "cleanup failure");
+        let error = finish_cleanup_after_primary_failure(
+            "test cleanup composition",
+            primary.clone(),
+            Err(cleanup.clone()),
+        );
+        assert_eq!(error.primary_error(), &primary);
+        assert_eq!(error.cleanup_error(), Some(&cleanup));
     }
 
     #[test]

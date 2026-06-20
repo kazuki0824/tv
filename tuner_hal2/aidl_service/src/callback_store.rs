@@ -6,10 +6,10 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     IFrontendCallback::IFrontendCallback, ILnbCallback::ILnbCallback,
 };
 use binder::Strong;
-use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
 use maleicacid_tuner_hal2_binder_adapter::{
     AidlApi, AidlObjectGeneration, AidlObjectId, AidlObjectKind,
 };
+use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
 
 use crate::object_handle::AidlObjectHandle;
 
@@ -136,7 +136,6 @@ pub(crate) fn has_callback_for_owner(
         .callbacks
         .contains_key(&CallbackStoreKey::new(handle, api)))
 }
-
 
 #[cfg(test)]
 pub(crate) fn retain_test_callback_marker(

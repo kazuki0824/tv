@@ -1,17 +1,20 @@
 pub mod callback_store;
+pub mod child_object_open;
 pub mod demux_object;
 pub mod descrambler_object;
 pub mod dvr_object;
-pub mod frontend_callback_delivery;
-pub mod child_object_open;
 pub mod error_bridge;
 pub mod filter_object;
+pub mod frontend_callback_delivery;
 pub mod frontend_object;
 pub mod lnb_object;
 pub mod object_handle;
 pub mod object_runtime;
 pub mod service_entry;
 pub mod tuner_service;
+
+#[cfg(test)]
+mod failure_injection_tests;
 
 pub use callback_store::{
     clear_owner_callbacks, dvr_callback_for_owner, filter_callback_for_owner,

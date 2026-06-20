@@ -9,7 +9,8 @@ use maleicacid_tuner_hal2_binder_adapter::{
     AidlStatusMapper, CommandPlan, RuntimeExecutableRequest, TunerStatusCode,
 };
 use maleicacid_tuner_hal2_common::{
-    FirstErrorCollector, HalError, HalInternalKind, HalInvalidStateKind,
+    compose_primary_cleanup_failure, FirstErrorCollector, HalError, HalInternalKind,
+    HalInvalidStateKind,
 };
 use maleicacid_tuner_hal2_resource_ledger::CleanupStep;
 use maleicacid_tuner_hal2_service_runtime::{
@@ -47,13 +48,6 @@ static DROP_LEAK_ERROR_RECORD_FAILURES: AtomicUsize = AtomicUsize::new(0);
 
 fn callback_store_error_to_hal(error: AidlCallbackStoreError, context: &'static str) -> HalError {
     error.into_hal_error(context)
-}
-
-fn status_debug_to_hal(status: &Status, context: &'static str) -> HalError {
-    HalError::internal(
-        HalInternalKind::InvariantViolation,
-        format!("{context}: {status:?}"),
-    )
 }
 
 fn drop_leak_error_records() -> &'static Mutex<Vec<DropLeakErrorRecord>> {
@@ -248,7 +242,7 @@ pub(crate) fn clear_owner_callback_registration_hal(
                     if let Err(mark_error) =
                         mark_runtime_callback_unhealthy_hal(runtime, handle, api)
                     {
-                        return Err(HalError::composed_failure(
+                        return Err(compose_primary_cleanup_failure(
                             "callback cleanup failed and unhealthy marking failed",
                             cleanup_error,
                             mark_error,
@@ -259,7 +253,7 @@ pub(crate) fn clear_owner_callback_registration_hal(
                     if let Err(mark_error) =
                         mark_runtime_callback_owner_unhealthy_hal(runtime, handle)
                     {
-                        return Err(HalError::composed_failure(
+                        return Err(compose_primary_cleanup_failure(
                             "callback cleanup failed and owner unhealthy marking failed",
                             cleanup_error,
                             mark_error,
@@ -299,7 +293,7 @@ where
             handle,
             "callback artifact rollback failed before runtime registration",
         ) {
-            return Err(status_from_hal_error(HalError::composed_failure(
+            return Err(status_from_hal_error(compose_primary_cleanup_failure(
                 "callback artifact registration rollback failed",
                 primary_error,
                 rollback_error,
@@ -572,13 +566,13 @@ where
                 let cleanup_error = match mark_runtime_callback_unhealthy_hal(runtime, handle, api)
                 {
                     Ok(()) => rollback_error,
-                    Err(mark_error) => HalError::composed_failure(
+                    Err(mark_error) => compose_primary_cleanup_failure(
                         "callback rollback unhealthy marking failed",
                         rollback_error,
                         mark_error,
                     ),
                 };
-                return Err(status_from_hal_error(HalError::composed_failure(
+                return Err(status_from_hal_error(compose_primary_cleanup_failure(
                     "callback registration domain failure rollback failed",
                     primary_error,
                     cleanup_error,
@@ -589,30 +583,35 @@ where
     }
 }
 
-pub fn clear_live_lnb_callback_for_public_id(
+pub(crate) fn clear_live_lnb_callback_for_public_id_hal(
     runtime: &SharedTunerRuntime,
     lnb_id: i32,
-) -> BinderResult<()> {
+) -> Result<(), HalError> {
     let handle = {
-        let runtime = runtime
-            .lock()
-            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
+        let runtime = lock_runtime(runtime)?;
         let Some(entry) =
             aidl_object_for_close_cleanup_runtime(&runtime, AidlObjectKind::Lnb, i64::from(lnb_id))
         else {
-            return Err(status_from_hal_error(HalError::cleanup_failed(
+            return Err(HalError::cleanup_failed(
                 "LNB owner-loss callback cleanup",
                 format!("LNB AIDL object is missing during owner-loss cleanup: id={lnb_id}"),
-            )));
+            ));
         };
         AidlObjectHandle::new(entry.object_kind, entry.object_id, entry.generation)
     };
-    clear_owner_callback_registration(
+    clear_owner_callback_registration_hal(
         runtime,
         handle,
         Some(AidlApi::LnbSetCallback),
         "callback store cleanup failed during LNB owner loss",
     )
+}
+
+pub fn clear_live_lnb_callback_for_public_id(
+    runtime: &SharedTunerRuntime,
+    lnb_id: i32,
+) -> BinderResult<()> {
+    clear_live_lnb_callback_for_public_id_hal(runtime, lnb_id).map_err(status_from_hal_error)
 }
 
 fn unregister_public_runtime_entries(
@@ -647,7 +646,7 @@ fn finish_object_close_after_begin_with_domain_cleanup<F>(
     domain_cleanup: F,
 ) -> BinderResult<()>
 where
-    F: FnOnce() -> BinderResult<()>,
+    F: FnOnce() -> Result<(), HalError>,
 {
     let mut cleanup_collector = FirstErrorCollector::new();
     cleanup_collector.push_result(clear_owner_callback_registration_hal(
@@ -656,10 +655,7 @@ where
         None,
         "callback store cleanup failed during AIDL object close",
     ));
-    cleanup_collector.push_result(
-        domain_cleanup()
-            .map_err(|status| status_debug_to_hal(&status, "AIDL object domain cleanup status")),
-    );
+    cleanup_collector.push_result(domain_cleanup());
 
     if cleanup_collector.has_error() {
         let cleanup_error = match cleanup_collector.into_result() {
@@ -676,7 +672,7 @@ where
             "AIDL object close cleanup failure could not be recorded",
         ) {
             Ok(()) => Err(status_from_hal_error(cleanup_error)),
-            Err(mark_error) => Err(status_from_hal_error(HalError::composed_failure(
+            Err(mark_error) => Err(status_from_hal_error(compose_primary_cleanup_failure(
                 "AIDL object close cleanup failed and cleanup-failed marking failed",
                 cleanup_error,
                 mark_error,
@@ -699,7 +695,7 @@ pub fn close_object_with_domain_cleanup<F>(
     domain_cleanup: F,
 ) -> BinderResult<()>
 where
-    F: FnOnce() -> BinderResult<()>,
+    F: FnOnce() -> Result<(), HalError>,
 {
     {
         let mut guard = runtime
@@ -851,7 +847,7 @@ pub fn close_object_after_close_preflight_with_domain_cleanup<F>(
     domain_cleanup: F,
 ) -> BinderResult<()>
 where
-    F: FnOnce() -> BinderResult<()>,
+    F: FnOnce() -> Result<(), HalError>,
 {
     let method_plan = AidlMethodAdapter::plan(method).map_err(status_from_hal_error)?;
     let executable_request = method_plan.command.runtime_executable_request();
@@ -1290,7 +1286,10 @@ mod tests {
         );
 
         let result = close_object_with_domain_cleanup(&runtime, handle, || {
-            Err(status_unknown_error("domain cleanup failed for test"))
+            Err(HalError::cleanup_failed(
+                "test domain cleanup",
+                "domain cleanup failed for test",
+            ))
         });
 
         assert!(result.is_err());
@@ -1332,7 +1331,7 @@ mod tests {
             );
             assert!(second_begin.is_err());
             drop(guard);
-            second_begin.map_err(status_from_hal_error)
+            second_begin
         });
 
         assert!(result.is_err());
@@ -1789,7 +1788,12 @@ mod tests {
             &runtime,
             handle,
             AidlMethodCall::FilterClose,
-            || Err(status_unknown_error("domain cleanup failed for retry test")),
+            || {
+                Err(HalError::cleanup_failed(
+                    "test domain cleanup retry",
+                    "domain cleanup failed for retry test",
+                ))
+            },
         );
         assert!(first.is_err());
         assert_eq!(

@@ -3,7 +3,7 @@ use crate::error_mapping::{object_table_error_to_hal, registry_commit_error_to_h
 use crate::method_dispatch::plan_object_method_dispatch;
 use crate::open_rollback::finish_open_rollback;
 use crate::{RuntimeObjectEntry, RuntimeOwnerRelation};
-use maleicacid_tuner_hal2_common::HalError;
+use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, HalError};
 use maleicacid_tuner_hal2_domain_request::{
     AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan, RuntimeExecutableRequest,
 };
@@ -95,7 +95,7 @@ impl TunerServiceRuntime {
                     "demux root object rollback after AIDL registration failure",
                 ) {
                     Ok(()) => Err(error),
-                    Err(cleanup_error) => Err(HalError::composed_failure(
+                    Err(cleanup_error) => Err(compose_primary_cleanup_failure(
                         "demux root object registration failure",
                         error,
                         cleanup_error,
@@ -136,7 +136,7 @@ impl TunerServiceRuntime {
                     "descrambler root object rollback after AIDL registration failure",
                 ) {
                     Ok(()) => Err(error),
-                    Err(cleanup_error) => Err(HalError::composed_failure(
+                    Err(cleanup_error) => Err(compose_primary_cleanup_failure(
                         "descrambler root object registration failure",
                         error,
                         cleanup_error,
@@ -169,7 +169,7 @@ impl TunerServiceRuntime {
             );
             return match rollback {
                 Ok(()) => Err(error),
-                Err(rollback_error) => Err(HalError::composed_failure(
+                Err(rollback_error) => Err(compose_primary_cleanup_failure(
                     "LNB root object open failure",
                     error,
                     rollback_error,
@@ -202,7 +202,7 @@ impl TunerServiceRuntime {
             );
             return match rollback {
                 Ok(()) => Err(error),
-                Err(rollback_error) => Err(HalError::composed_failure(
+                Err(rollback_error) => Err(compose_primary_cleanup_failure(
                     "LNB root object open failure",
                     error,
                     rollback_error,

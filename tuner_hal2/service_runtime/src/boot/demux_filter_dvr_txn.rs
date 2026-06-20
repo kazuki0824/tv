@@ -12,6 +12,7 @@ use crate::diagnostics::{
 use crate::error_mapping::{object_table_error_to_hal, registry_commit_error_to_hal};
 use crate::object_method_txn::ObjectMethodDispatchPreflight;
 use crate::open_rollback::finish_open_rollback;
+use maleicacid_tuner_hal2_common::compose_primary_cleanup_failure;
 
 impl TunerServiceRuntime {
     fn transact_allocate_demux_runtime(
@@ -660,7 +661,7 @@ impl<'a> DemuxFilterDvrTxn<'a> {
                 "filter child runtime rollback after demux registration failure",
             ) {
                 Ok(()) => Err(error),
-                Err(cleanup_error) => Err(HalError::composed_failure(
+                Err(cleanup_error) => Err(compose_primary_cleanup_failure(
                     "filter child runtime open failure",
                     error,
                     cleanup_error,
@@ -686,7 +687,7 @@ impl<'a> DemuxFilterDvrTxn<'a> {
                     "filter child runtime rollback after AIDL object registration failure",
                 ) {
                     Ok(()) => Err(primary),
-                    Err(cleanup_error) => Err(HalError::composed_failure(
+                    Err(cleanup_error) => Err(compose_primary_cleanup_failure(
                         "filter child AIDL object registration failure",
                         primary,
                         cleanup_error,
@@ -720,7 +721,7 @@ impl<'a> DemuxFilterDvrTxn<'a> {
                 "DVR child runtime rollback after demux registration failure",
             ) {
                 Ok(()) => Err(error),
-                Err(cleanup_error) => Err(HalError::composed_failure(
+                Err(cleanup_error) => Err(compose_primary_cleanup_failure(
                     "DVR child runtime open failure",
                     error,
                     cleanup_error,
@@ -746,7 +747,7 @@ impl<'a> DemuxFilterDvrTxn<'a> {
                     "DVR child runtime rollback after AIDL object registration failure",
                 ) {
                     Ok(()) => Err(primary),
-                    Err(cleanup_error) => Err(HalError::composed_failure(
+                    Err(cleanup_error) => Err(compose_primary_cleanup_failure(
                         "DVR child AIDL object registration failure",
                         primary,
                         cleanup_error,

@@ -1,9 +1,8 @@
 use super::{
     build_lnb_satellite_position_request, build_lnb_tone_request, build_lnb_voltage_request,
     close_object_after_close_preflight_with_domain_cleanup, execute_object_runtime_use_case,
-    execute_object_runtime_use_case_with_request_builder, status_from_hal_error,
-    status_unknown_error, AidlMethodCall, BinderResult, ILnb, ILnbCallback, LnbAidlObject,
-    LnbPosition, LnbTone, LnbVoltage, Strong,
+    execute_object_runtime_use_case_with_request_builder, status_from_hal_error, AidlMethodCall,
+    BinderResult, ILnb, ILnbCallback, LnbAidlObject, LnbPosition, LnbTone, LnbVoltage, Strong,
 };
 
 impl ILnb for LnbAidlObject {
@@ -98,15 +97,16 @@ impl ILnb for LnbAidlObject {
             handle,
             AidlMethodCall::LnbClose,
             || {
-                let mut runtime = runtime_for_cleanup
-                    .lock()
-                    .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
-                runtime
-                    .close_lnb_explicit_after_object_close_begin(
-                        handle.object_id(),
-                        handle.generation(),
+                let mut runtime = runtime_for_cleanup.lock().map_err(|_| {
+                    maleicacid_tuner_hal2_common::HalError::internal(
+                        maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                        "service runtime lock poisoned",
                     )
-                    .map_err(status_from_hal_error)
+                })?;
+                runtime.close_lnb_explicit_after_object_close_begin(
+                    handle.object_id(),
+                    handle.generation(),
+                )
             },
         )
     }

@@ -64,6 +64,9 @@ pub use registry::{
     DemuxRegistryEntry, DemuxRuntimeId, FrontendRegistryEntry, FrontendRuntimeId, LnbRegistryEntry,
     LnbRegistryProfile, LnbRuntimeId, RegistryCommitError, RuntimeRegistry, RuntimeRegistryKind,
 };
+#[cfg(test)]
+mod failure_injection_tests;
+
 pub use transaction_registry::{
     every_aidl_transaction_has_runtime_spec, runtime_transaction_specs, transaction_spec_for,
     RuntimeDispatchTarget, RuntimeTransactionCoverage, RuntimeTransactionSpec,
