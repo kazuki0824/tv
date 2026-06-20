@@ -1061,7 +1061,7 @@ mod tests {
     }
 
     #[test]
-    fn open_filter_rejects_start_stop_flush_before_configure() {
+    fn open_filter_stop_is_noop_but_start_and_flush_fail() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux
             .register_filter(DemuxRuntime::open_filter_runtime(
@@ -1073,9 +1073,27 @@ mod tests {
             .unwrap();
 
         assert!(demux.start_filter_runtime(15).is_err());
-        assert!(demux.stop_filter_runtime(15).is_err());
+        demux.stop_filter_runtime(15).unwrap();
         assert!(demux.flush_filter_runtime(15).is_err());
         assert_eq!(demux.filter(15).unwrap().state(), FilterRuntimeState::Open);
+    }
+
+    #[test]
+    fn open_dvr_stop_is_noop() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                50,
+                1,
+                crate::runtime::DvrKind::Record,
+                8192,
+                true,
+            ))
+            .unwrap();
+
+        demux.stop_dvr_runtime(50).unwrap();
+
+        assert_eq!(demux.dvr(50).unwrap().state(), DvrRuntimeState::Open);
     }
 
     #[test]

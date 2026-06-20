@@ -538,7 +538,7 @@ impl DemuxRuntime {
                 Ok(())
             }
             FilterRuntimeState::Configured | FilterRuntimeState::Stopped => Ok(()),
-            FilterRuntimeState::Open => Err(DemuxRuntimeError::invalid_state(filter_id)),
+            FilterRuntimeState::Open => Ok(()),
             FilterRuntimeState::Closing
             | FilterRuntimeState::CleanupFailed
             | FilterRuntimeState::Closed
@@ -719,7 +719,7 @@ impl DemuxRuntime {
             super::dvr::DvrRuntimeState::Configured | super::dvr::DvrRuntimeState::Stopped => {
                 Ok(())
             }
-            super::dvr::DvrRuntimeState::Open => Err(DemuxRuntimeError::invalid_state(dvr_id)),
+            super::dvr::DvrRuntimeState::Open => Ok(()),
             super::dvr::DvrRuntimeState::Closing
             | super::dvr::DvrRuntimeState::CleanupFailed
             | super::dvr::DvrRuntimeState::Closed
