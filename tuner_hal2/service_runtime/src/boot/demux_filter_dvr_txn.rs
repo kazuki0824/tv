@@ -119,7 +119,8 @@ impl TunerServiceRuntime {
             ),
             DemuxRuntimeErrorKind::PipelineFailed
             | DemuxRuntimeErrorKind::DvrMissing
-            | DemuxRuntimeErrorKind::QueueMissing => HalError::internal(
+            | DemuxRuntimeErrorKind::QueueMissing
+            | DemuxRuntimeErrorKind::QueueRuntimeFailure => HalError::internal(
                 HalInternalKind::InvariantViolation,
                 "filter runtime pipeline operation failed",
             ),

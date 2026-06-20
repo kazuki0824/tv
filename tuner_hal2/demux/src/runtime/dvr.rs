@@ -90,6 +90,12 @@ impl DvrRuntime {
     pub fn queue_present(&self) -> bool {
         self.queue_present
     }
+    pub fn allows_queue_desc(&self) -> bool {
+        matches!(
+            self.state,
+            DvrRuntimeState::Configured | DvrRuntimeState::Started | DvrRuntimeState::Stopped
+        ) && self.queue_present
+    }
     pub fn playback_assembler_present(&self) -> bool {
         self.playback_assembler_present
     }

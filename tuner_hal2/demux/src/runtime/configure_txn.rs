@@ -217,6 +217,19 @@ impl DvrConfigureTxn {
         self.record_step(DvrConfigureStep::StopWorker);
         self.record_step(DvrConfigureStep::ClearQueue);
         if snapshot.queue_present {
+            if let Err(err) = demux.clear_dvr_queue_runtime(self.dvr_id) {
+                if demux.restore_dvr_snapshot(self.dvr_id, snapshot).is_err() {
+                    self.record_step(DvrConfigureStep::QuarantineOnRollbackFailure);
+                    self.outcome = Some(DvrConfigureOutcome::Quarantined {
+                        failed_step: DvrConfigureStep::ClearQueue,
+                    });
+                } else {
+                    self.outcome = Some(DvrConfigureOutcome::RolledBack {
+                        failed_step: DvrConfigureStep::ClearQueue,
+                    });
+                }
+                return (self, Err(err));
+            }
             if let Some(dvr) = demux.dvr_mut(self.dvr_id) {
                 dvr.clear_queue_marker();
             }
@@ -236,12 +249,16 @@ impl DvrConfigureTxn {
                 return (self, Err(err));
             }
             self.record_step(DvrConfigureStep::RollbackSoftDemuxConfig);
-            if let Some(dvr) = demux.dvr_mut(self.dvr_id) {
-                dvr.restore(snapshot);
+            if demux.restore_dvr_snapshot(self.dvr_id, snapshot).is_err() {
+                self.record_step(DvrConfigureStep::QuarantineOnRollbackFailure);
+                self.outcome = Some(DvrConfigureOutcome::Quarantined {
+                    failed_step: DvrConfigureStep::ApplySoftDemuxConfig,
+                });
+            } else {
+                self.outcome = Some(DvrConfigureOutcome::RolledBack {
+                    failed_step: DvrConfigureStep::ApplySoftDemuxConfig,
+                });
             }
-            self.outcome = Some(DvrConfigureOutcome::RolledBack {
-                failed_step: DvrConfigureStep::ApplySoftDemuxConfig,
-            });
             return (self, Err(err));
         }
         self.record_step(DvrConfigureStep::Commit);

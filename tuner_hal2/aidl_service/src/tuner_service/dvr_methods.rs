@@ -1,18 +1,27 @@
 use super::support::local_filter_handle_from_strong;
 use super::{
-    build_dvr_configure_request, close_object_after_close_preflight,
-    plan_unavailable_object_method_use_case, status_from_hal_error, AidlMethodCall, BinderResult,
-    DvrAidlObject, DvrFilterLinkRequest, DvrSettings, IDvr, IFilter, Strong, TunerQueueDesc,
+    build_dvr_configure_request, close_object_after_close_preflight, execute_object_query_use_case,
+    plan_unavailable_object_method_use_case, status_from_hal_error, tuner_queue_desc_from_snapshot,
+    AidlMethodCall, BinderResult, DvrAidlObject, DvrFilterLinkRequest, DvrSettings, IDvr, IFilter,
+    Strong, TunerQueueDesc,
 };
 
 impl IDvr for DvrAidlObject {
-    fn getQueueDesc(&self, _queue: &mut TunerQueueDesc) -> BinderResult<()> {
-        plan_unavailable_object_method_use_case(
+    fn getQueueDesc(&self, queue: &mut TunerQueueDesc) -> BinderResult<()> {
+        *queue = execute_object_query_use_case(
             &self.runtime(),
             self.handle(),
-            || Ok(AidlMethodCall::DvrGetQueueDesc),
-            "DVR FMQ runtime is not connected in current tuner_hal2 scope",
-        )
+            AidlMethodCall::DvrGetQueueDesc,
+            |runtime, handle| {
+                runtime
+                    .dvr_queue_descriptor_snapshot_for_aidl_object(
+                        handle.object_id(),
+                        handle.generation(),
+                    )
+                    .map(tuner_queue_desc_from_snapshot)
+            },
+        )?;
+        Ok(())
     }
     fn configure(&self, settings: &DvrSettings) -> BinderResult<()> {
         plan_unavailable_object_method_use_case(

@@ -38,7 +38,9 @@ pub use runtime::{
     DemuxRuntime, DemuxRuntimeState, DemuxStreamGeneration, DvrConfigureOutcome, DvrConfigureStep,
     DvrConfigureTxn, DvrRuntime, DvrRuntimeState, FilterConfigureOutcome, FilterConfigureStep,
     FilterConfigureTxn, FilterRuntime, FilterRuntimeState, GenerationBoundaryTxn,
-    RuntimeIoRegistry, SourceBoundaryOutcome, SourceBoundaryStep, SourceBoundaryTxn,
+    QueueDescriptorQueryError, QueueDescriptorSnapshot, QueueGrantorDescriptorSnapshot,
+    QueueRuntime, QueueRuntimeError, QueueRuntimeErrorKind, RuntimeIoRegistry,
+    SourceBoundaryOutcome, SourceBoundaryStep, SourceBoundaryTxn,
 };
 
 #[cfg(test)]
@@ -46,6 +48,7 @@ mod tests {
     use super::*;
     use crate::packet_pipeline::{FilterPipelineConfig, PipelineOpenKind};
     use crate::runtime::filter::FilterSource;
+    use std::os::unix::fs::MetadataExt;
     use std::{thread, time::Duration};
 
     fn pes_start_packet(pid: u16, continuity_counter: u8, payload: &[u8]) -> [u8; 188] {
@@ -89,6 +92,11 @@ mod tests {
             .unwrap();
         demux.start_filter_runtime(filter_id).unwrap();
         demux
+    }
+
+    fn first_fd_identity(snapshot: &QueueDescriptorSnapshot) -> (u64, u64) {
+        let metadata = snapshot.fds[0].metadata().unwrap();
+        (metadata.dev(), metadata.ino())
     }
 
     #[test]
@@ -265,6 +273,154 @@ mod tests {
         assert_eq!(dvr.buffer_size(), 8192);
         assert!(dvr.callback_present());
         assert!(dvr.playback_assembler_present());
+    }
+
+    #[test]
+    fn raw_filter_queue_desc_is_available_before_configure() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        let request = OpenFilterRequest {
+            open_type: FilterOpenType::TsRaw,
+            buffer_size: 4096,
+            callback_present: true,
+        };
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime_from_request(
+                24, 1, &request, None,
+            ))
+            .unwrap();
+
+        let snapshot = demux
+            .export_filter_queue_descriptor(24)
+            .expect("raw filter queue descriptor must exist before configure");
+
+        assert!(!snapshot.grantors.is_empty());
+        assert!(!snapshot.fds.is_empty());
+        assert!(snapshot.quantum > 0);
+    }
+
+    #[test]
+    fn av_filter_queue_desc_is_unavailable() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        let request = OpenFilterRequest {
+            open_type: FilterOpenType::TsVideo,
+            buffer_size: 4096,
+            callback_present: true,
+        };
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime_from_request(
+                25, 1, &request, None,
+            ))
+            .unwrap();
+
+        assert!(matches!(
+            demux.export_filter_queue_descriptor(25),
+            Err(QueueDescriptorQueryError::Unavailable(25))
+        ));
+    }
+
+    #[test]
+    fn dvr_queue_desc_requires_configure() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                26,
+                1,
+                crate::runtime::DvrKind::Record,
+                8192,
+                true,
+            ))
+            .unwrap();
+
+        assert!(matches!(
+            demux.export_dvr_queue_descriptor(26),
+            Err(QueueDescriptorQueryError::InvalidState(26))
+        ));
+
+        demux.configure_dvr_runtime(26).unwrap();
+        let snapshot = demux
+            .export_dvr_queue_descriptor(26)
+            .expect("configured DVR queue descriptor must exist");
+        assert!(!snapshot.grantors.is_empty());
+        assert!(!snapshot.fds.is_empty());
+        assert!(snapshot.quantum > 0);
+    }
+
+    #[test]
+    fn raw_filter_queue_desc_preserves_backing_across_reconfigure() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        let request = OpenFilterRequest {
+            open_type: FilterOpenType::TsRaw,
+            buffer_size: 4096,
+            callback_present: true,
+        };
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime_from_request(
+                27, 1, &request, None,
+            ))
+            .unwrap();
+        let first = demux.export_filter_queue_descriptor(27).unwrap();
+        let first_identity = first_fd_identity(&first);
+
+        FilterConfigureTxn::new(27)
+            .configure(
+                &mut demux,
+                PipelineOpenKind::Raw,
+                FilterPipelineConfig {
+                    tpid: Some(0x0123),
+                    raw: false,
+                },
+            )
+            .1
+            .unwrap();
+        let second = demux.export_filter_queue_descriptor(27).unwrap();
+
+        assert_eq!(first_identity, first_fd_identity(&second));
+    }
+
+    #[test]
+    fn dvr_queue_desc_preserves_backing_across_reconfigure() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                28,
+                1,
+                crate::runtime::DvrKind::Record,
+                8192,
+                true,
+            ))
+            .unwrap();
+
+        DvrConfigureTxn::new(28).configure(&mut demux).1.unwrap();
+        let first = demux.export_dvr_queue_descriptor(28).unwrap();
+        let first_identity = first_fd_identity(&first);
+
+        DvrConfigureTxn::new(28).configure(&mut demux).1.unwrap();
+        let second = demux.export_dvr_queue_descriptor(28).unwrap();
+
+        assert_eq!(first_identity, first_fd_identity(&second));
+    }
+
+    #[test]
+    fn demux_restore_preserves_exported_filter_queue_backing() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        let request = OpenFilterRequest {
+            open_type: FilterOpenType::TsRaw,
+            buffer_size: 4096,
+            callback_present: true,
+        };
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime_from_request(
+                29, 1, &request, None,
+            ))
+            .unwrap();
+        let before_restore = demux.export_filter_queue_descriptor(29).unwrap();
+        let before_identity = first_fd_identity(&before_restore);
+        let snapshot = demux.snapshot();
+
+        demux.restore(snapshot);
+        let after_restore = demux.export_filter_queue_descriptor(29).unwrap();
+
+        assert_eq!(before_identity, first_fd_identity(&after_restore));
     }
 
     #[test]

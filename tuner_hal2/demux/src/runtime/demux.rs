@@ -9,8 +9,9 @@ use crate::packet_pipeline::{
 };
 use crate::TsInputOrigin;
 
-use super::dvr::{DvrKind, DvrRuntime};
+use super::dvr::{DvrKind, DvrRuntime, DvrRuntimeSnapshot};
 use super::filter::{FilterRuntime, FilterRuntimeSnapshot, FilterRuntimeState};
+use super::queue_runtime::{QueueDescriptorSnapshot, QueueRuntime, QueueRuntimeError};
 use super::source_boundary::SourceBoundaryTxn;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -36,6 +37,7 @@ pub enum DemuxRuntimeErrorKind {
     PidMismatch,
     PipelineFailed,
     GenerationExhausted,
+    QueueRuntimeFailure,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -111,6 +113,12 @@ impl DemuxRuntimeError {
             id,
         }
     }
+    pub const fn queue_runtime_failure(id: i32) -> Self {
+        Self {
+            kind: DemuxRuntimeErrorKind::QueueRuntimeFailure,
+            id: Some(id),
+        }
+    }
 }
 
 pub fn next_generation(current: u64) -> Result<u64, DemuxRuntimeError> {
@@ -138,6 +146,18 @@ pub struct DemuxRuntime {
     filters: BTreeMap<i32, FilterRuntime>,
     dvrs: BTreeMap<i32, DvrRuntime>,
     filter_queues: BTreeMap<i32, VecDeque<Vec<u8>>>,
+    filter_queue_runtimes: BTreeMap<i32, QueueRuntime>,
+    dvr_queue_runtimes: BTreeMap<i32, QueueRuntime>,
+}
+
+#[derive(Debug)]
+pub enum QueueDescriptorQueryError {
+    FilterMissing(i32),
+    DvrMissing(i32),
+    InvalidState(i32),
+    Unavailable(i32),
+    RuntimeMissing(i32),
+    Runtime(QueueRuntimeError),
 }
 
 impl DemuxRuntime {
@@ -150,6 +170,8 @@ impl DemuxRuntime {
             filters: BTreeMap::new(),
             dvrs: BTreeMap::new(),
             filter_queues: BTreeMap::new(),
+            filter_queue_runtimes: BTreeMap::new(),
+            dvr_queue_runtimes: BTreeMap::new(),
         }
     }
     pub fn demux_id(&self) -> i32 {
@@ -198,13 +220,42 @@ impl DemuxRuntime {
         self.filters = snapshot.filters;
         self.dvrs = snapshot.dvrs;
         self.filter_queues = snapshot.filter_queues;
+        let stale_filter_queue_ids: Vec<i32> = self
+            .filter_queue_runtimes
+            .keys()
+            .copied()
+            .filter(|filter_id| !self.filter_should_keep_queue_runtime(*filter_id))
+            .collect();
+        for filter_id in stale_filter_queue_ids {
+            self.filter_queue_runtimes.remove(&filter_id);
+        }
+        let stale_dvr_queue_ids: Vec<i32> = self
+            .dvr_queue_runtimes
+            .keys()
+            .copied()
+            .filter(|dvr_id| !self.dvr_should_keep_queue_runtime(*dvr_id))
+            .collect();
+        for dvr_id in stale_dvr_queue_ids {
+            self.dvr_queue_runtimes.remove(&dvr_id);
+        }
+        let filter_ids: Vec<i32> = self.filters.keys().copied().collect();
+        for filter_id in filter_ids {
+            let _ = self.rebuild_filter_queue_runtime(filter_id);
+        }
+        let dvr_ids: Vec<i32> = self.dvrs.keys().copied().collect();
+        for dvr_id in dvr_ids {
+            let _ = self.rebuild_dvr_queue_runtime(dvr_id);
+        }
     }
 
     pub fn register_filter(&mut self, filter: FilterRuntime) -> Result<(), DemuxRuntimeError> {
         if filter.state().is_closed_or_failed() {
             return Err(DemuxRuntimeError::invalid_state(filter.filter_id()));
         }
-        self.filters.insert(filter.filter_id(), filter);
+        let filter_id = filter.filter_id();
+        self.filter_queue_runtimes.remove(&filter_id);
+        self.filters.insert(filter_id, filter);
+        self.rebuild_filter_queue_runtime(filter_id)?;
         Ok(())
     }
 
@@ -216,6 +267,7 @@ impl DemuxRuntime {
             return Err(DemuxRuntimeError::filter_missing(filter_id));
         }
         self.filter_queues.remove(&filter_id);
+        self.filter_queue_runtimes.remove(&filter_id);
         self.pipeline
             .remove_filter(filter_id)
             .map_err(|_| DemuxRuntimeError::pipeline_failed())?;
@@ -229,11 +281,15 @@ impl DemuxRuntime {
         if dvr.state().is_closed_or_failed() {
             return Err(DemuxRuntimeError::invalid_state(dvr.dvr_id()));
         }
-        self.dvrs.insert(dvr.dvr_id(), dvr);
+        let dvr_id = dvr.dvr_id();
+        self.dvr_queue_runtimes.remove(&dvr_id);
+        self.dvrs.insert(dvr_id, dvr);
+        self.rebuild_dvr_queue_runtime(dvr_id)?;
         Ok(())
     }
 
     pub fn remove_dvr(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {
+        self.dvr_queue_runtimes.remove(&dvr_id);
         self.dvrs
             .remove(&dvr_id)
             .map(|_| ())
@@ -258,11 +314,14 @@ impl DemuxRuntime {
     }
 
     pub fn clear_existing_filter_queue(&mut self, filter_id: i32) -> Result<(), DemuxRuntimeError> {
-        let queue = self
-            .filter_queues
-            .get_mut(&filter_id)
-            .ok_or(DemuxRuntimeError::queue_missing(filter_id))?;
-        queue.clear();
+        {
+            let queue = self
+                .filter_queues
+                .get_mut(&filter_id)
+                .ok_or(DemuxRuntimeError::queue_missing(filter_id))?;
+            queue.clear();
+        }
+        self.clear_filter_queue_runtime(filter_id)?;
         if let Some(filter) = self.filters.get_mut(&filter_id) {
             filter.clear_queue_marker();
             filter.clear_queued_payload_state();
@@ -274,6 +333,7 @@ impl DemuxRuntime {
         self.filter_queues
             .remove(&filter_id)
             .ok_or(DemuxRuntimeError::queue_missing(filter_id))?;
+        self.filter_queue_runtimes.remove(&filter_id);
         if let Some(filter) = self.filters.get_mut(&filter_id) {
             filter.clear_queue_marker();
             filter.clear_queued_payload_state();
@@ -363,6 +423,20 @@ impl DemuxRuntime {
             .get_mut(&filter_id)
             .ok_or(DemuxRuntimeError::filter_missing(filter_id))?
             .restore(snapshot);
+        self.rebuild_filter_queue_runtime(filter_id)?;
+        Ok(())
+    }
+
+    pub fn restore_dvr_snapshot(
+        &mut self,
+        dvr_id: i32,
+        snapshot: DvrRuntimeSnapshot,
+    ) -> Result<(), DemuxRuntimeError> {
+        self.dvrs
+            .get_mut(&dvr_id)
+            .ok_or(DemuxRuntimeError::dvr_missing(dvr_id))?
+            .restore(snapshot);
+        self.rebuild_dvr_queue_runtime(dvr_id)?;
         Ok(())
     }
 
@@ -392,6 +466,7 @@ impl DemuxRuntime {
         } else {
             self.filter_queues.remove(&filter_id);
         }
+        self.rebuild_filter_queue_runtime(filter_id)?;
         self.pipeline
             .configure_filter(filter_id, config)
             .map_err(|_| DemuxRuntimeError::pipeline_failed())
@@ -432,6 +507,7 @@ impl DemuxRuntime {
                 if let Some(queue) = self.filter_queues.get_mut(&filter_id) {
                     queue.clear();
                 }
+                self.clear_filter_queue_runtime(filter_id)?;
                 let filter = self
                     .filters
                     .get_mut(&filter_id)
@@ -464,6 +540,7 @@ impl DemuxRuntime {
                 if let Some(queue) = self.filter_queues.get_mut(&filter_id) {
                     queue.clear();
                 }
+                self.clear_filter_queue_runtime(filter_id)?;
                 if let Some(filter) = self.filters.get_mut(&filter_id) {
                     filter.clear_queued_payload_state();
                 }
@@ -514,6 +591,7 @@ impl DemuxRuntime {
             }
         };
         dvr.configure_with_generation(next);
+        self.rebuild_dvr_queue_runtime(dvr_id)?;
         Ok(())
     }
 
@@ -525,6 +603,7 @@ impl DemuxRuntime {
             .get_mut(&sink_filter_id)
             .ok_or(DemuxRuntimeError::filter_missing(sink_filter_id))?
             .disconnect_source();
+        self.rebuild_filter_queue_runtime(sink_filter_id)?;
         Ok(())
     }
 
@@ -691,6 +770,129 @@ impl DemuxRuntime {
         callback_present: bool,
     ) -> DvrRuntime {
         DvrRuntime::new_open_request(dvr_id, kind, generation, buffer_size, callback_present)
+    }
+
+    pub fn export_filter_queue_descriptor(
+        &self,
+        filter_id: i32,
+    ) -> Result<QueueDescriptorSnapshot, QueueDescriptorQueryError> {
+        let snapshot = self
+            .filter(filter_id)
+            .map(FilterRuntime::snapshot)
+            .ok_or(QueueDescriptorQueryError::FilterMissing(filter_id))?;
+        if snapshot.state.is_closed_or_failed() {
+            return Err(QueueDescriptorQueryError::InvalidState(filter_id));
+        }
+        if !self
+            .filter(filter_id)
+            .is_some_and(FilterRuntime::allows_queue_desc)
+        {
+            return Err(QueueDescriptorQueryError::Unavailable(filter_id));
+        }
+        let queue = self
+            .filter_queue_runtimes
+            .get(&filter_id)
+            .ok_or(QueueDescriptorQueryError::RuntimeMissing(filter_id))?;
+        queue
+            .export_descriptor()
+            .map_err(QueueDescriptorQueryError::Runtime)
+    }
+
+    pub fn export_dvr_queue_descriptor(
+        &self,
+        dvr_id: i32,
+    ) -> Result<QueueDescriptorSnapshot, QueueDescriptorQueryError> {
+        let snapshot = self
+            .dvr(dvr_id)
+            .map(DvrRuntime::snapshot)
+            .ok_or(QueueDescriptorQueryError::DvrMissing(dvr_id))?;
+        if snapshot.state.is_closed_or_failed() {
+            return Err(QueueDescriptorQueryError::InvalidState(dvr_id));
+        }
+        if !self.dvr(dvr_id).is_some_and(DvrRuntime::allows_queue_desc) {
+            return Err(QueueDescriptorQueryError::InvalidState(dvr_id));
+        }
+        let queue = self
+            .dvr_queue_runtimes
+            .get(&dvr_id)
+            .ok_or(QueueDescriptorQueryError::RuntimeMissing(dvr_id))?;
+        queue
+            .export_descriptor()
+            .map_err(QueueDescriptorQueryError::Runtime)
+    }
+
+    fn clear_filter_queue_runtime(&mut self, filter_id: i32) -> Result<(), DemuxRuntimeError> {
+        if let Some(queue) = self.filter_queue_runtimes.get_mut(&filter_id) {
+            queue
+                .clear()
+                .map_err(|_| DemuxRuntimeError::queue_runtime_failure(filter_id))?;
+        }
+        Ok(())
+    }
+
+    pub fn clear_dvr_queue_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {
+        if let Some(queue) = self.dvr_queue_runtimes.get_mut(&dvr_id) {
+            queue
+                .clear()
+                .map_err(|_| DemuxRuntimeError::queue_runtime_failure(dvr_id))?;
+        }
+        Ok(())
+    }
+
+    fn rebuild_filter_queue_runtime(&mut self, filter_id: i32) -> Result<(), DemuxRuntimeError> {
+        let Some(filter) = self.filters.get(&filter_id) else {
+            return Err(DemuxRuntimeError::filter_missing(filter_id));
+        };
+        if !Self::should_keep_filter_queue_runtime(filter) {
+            self.filter_queue_runtimes.remove(&filter_id);
+            return Ok(());
+        }
+        if self.filter_queue_runtimes.contains_key(&filter_id) {
+            return Ok(());
+        }
+        let queue = QueueRuntime::new(filter.buffer_size(), true)
+            .map_err(|_| DemuxRuntimeError::queue_runtime_failure(filter_id))?;
+        self.filter_queue_runtimes.insert(filter_id, queue);
+        Ok(())
+    }
+
+    fn rebuild_dvr_queue_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {
+        let Some(dvr) = self.dvrs.get(&dvr_id) else {
+            return Err(DemuxRuntimeError::dvr_missing(dvr_id));
+        };
+        if !Self::should_keep_dvr_queue_runtime(dvr) {
+            self.dvr_queue_runtimes.remove(&dvr_id);
+            return Ok(());
+        }
+        if self.dvr_queue_runtimes.contains_key(&dvr_id) {
+            return Ok(());
+        }
+        let queue = QueueRuntime::new(dvr.buffer_size(), true)
+            .map_err(|_| DemuxRuntimeError::queue_runtime_failure(dvr_id))?;
+        self.dvr_queue_runtimes.insert(dvr_id, queue);
+        Ok(())
+    }
+
+    fn filter_should_keep_queue_runtime(&self, filter_id: i32) -> bool {
+        self.filters
+            .get(&filter_id)
+            .is_some_and(Self::should_keep_filter_queue_runtime)
+    }
+
+    fn dvr_should_keep_queue_runtime(&self, dvr_id: i32) -> bool {
+        self.dvrs
+            .get(&dvr_id)
+            .is_some_and(Self::should_keep_dvr_queue_runtime)
+    }
+
+    fn should_keep_filter_queue_runtime(filter: &FilterRuntime) -> bool {
+        !filter.state().is_closed_or_failed()
+            && filter.supports_normal_fmq_queue()
+            && filter.buffer_size() > 0
+    }
+
+    fn should_keep_dvr_queue_runtime(dvr: &DvrRuntime) -> bool {
+        !dvr.state().is_closed_or_failed() && dvr.buffer_size() > 0
     }
 
     fn enqueue_queue_payloads_from_generated_events(

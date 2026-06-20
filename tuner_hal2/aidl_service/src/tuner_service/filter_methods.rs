@@ -4,21 +4,29 @@ use super::{
     build_filter_summary_for_open_type, close_object_after_close_preflight,
     execute_object_query_use_case, execute_object_runtime_use_case,
     execute_object_runtime_use_case_with_request_builder, plan_unavailable_object_method_use_case,
-    status_from_hal_error, status_unknown_error, AidlMethodCall, AidlObjectKind, AvStreamType,
-    BinderResult, DemuxFilterSettings, FilterAidlObject, FilterDelayHint,
-    FilterReleaseAvHandleRequest, FilterSetDataSourceRequest, IFilter, Strong, TunerNativeHandle,
-    TunerQueueDesc,
+    status_from_hal_error, status_unknown_error, tuner_queue_desc_from_snapshot, AidlMethodCall,
+    AidlObjectKind, AvStreamType, BinderResult, DemuxFilterSettings, FilterAidlObject,
+    FilterDelayHint, FilterReleaseAvHandleRequest, FilterSetDataSourceRequest, IFilter, Strong,
+    TunerNativeHandle, TunerQueueDesc,
 };
 use maleicacid_tuner_hal2_binder_adapter::RuntimeExecutableRequest;
 
 impl IFilter for FilterAidlObject {
-    fn getQueueDesc(&self, _queue: &mut TunerQueueDesc) -> BinderResult<()> {
-        plan_unavailable_object_method_use_case(
+    fn getQueueDesc(&self, queue: &mut TunerQueueDesc) -> BinderResult<()> {
+        *queue = execute_object_query_use_case(
             &self.runtime(),
             self.handle(),
-            || Ok(AidlMethodCall::FilterGetQueueDesc),
-            "FMQ runtime is not connected in current tuner_hal2 scope",
-        )
+            AidlMethodCall::FilterGetQueueDesc,
+            |runtime, handle| {
+                runtime
+                    .filter_queue_descriptor_snapshot_for_aidl_object(
+                        handle.object_id(),
+                        handle.generation(),
+                    )
+                    .map(tuner_queue_desc_from_snapshot)
+            },
+        )?;
+        Ok(())
     }
 
     fn close(&self) -> BinderResult<()> {

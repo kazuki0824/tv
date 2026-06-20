@@ -106,7 +106,7 @@ pub const RUNTIME_TRANSACTION_SPECS: &[RuntimeTransactionSpec] = &[
     RuntimeTransactionSpec {
         transaction: RuntimeTransactionName::FilterGetQueueDescTxn,
         dispatch_target: RuntimeDispatchTarget::Filter,
-        runtime_coverage: RuntimeTransactionCoverage::NotConnected,
+        runtime_coverage: RuntimeTransactionCoverage::Connected,
     },
     RuntimeTransactionSpec {
         transaction: RuntimeTransactionName::FilterGetIdTxn,
@@ -156,7 +156,7 @@ pub const RUNTIME_TRANSACTION_SPECS: &[RuntimeTransactionSpec] = &[
     RuntimeTransactionSpec {
         transaction: RuntimeTransactionName::DvrGetQueueDescTxn,
         dispatch_target: RuntimeDispatchTarget::Dvr,
-        runtime_coverage: RuntimeTransactionCoverage::NotConnected,
+        runtime_coverage: RuntimeTransactionCoverage::Connected,
     },
     RuntimeTransactionSpec {
         transaction: RuntimeTransactionName::DvrConfigureTxn,

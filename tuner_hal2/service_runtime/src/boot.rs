@@ -270,6 +270,12 @@ fn demux_runtime_error_to_hal(
                 "demux runtime pipeline operation failed",
             )
         }
+        maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::QueueRuntimeFailure => {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "demux runtime queue operation failed",
+            )
+        }
     }
 }
 

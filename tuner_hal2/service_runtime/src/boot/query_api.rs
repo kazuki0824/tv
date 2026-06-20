@@ -1,10 +1,11 @@
 use super::{
     AidlObjectGeneration, AidlObjectId, AidlObjectKind, DemuxRuntimeId, DemuxRuntimeSnapshot,
-    FilterOpenType, FilterRuntimeId, FrontendLiveReaderDescriptor, FrontendRuntimeId,
+    DvrRuntimeId, FilterOpenType, FilterRuntimeId, FrontendLiveReaderDescriptor, FrontendRuntimeId,
     FrontendRuntimeSnapshot, FrontendRuntimeState, FrontendSignalState, FrontendTuneRequest,
     HalError, HalInternalKind, HalInvalidStateKind, LnbRuntimeId, RuntimeObjectTable,
     RuntimeObjectTableError, RuntimeOwnerRelation, RuntimeRegistry, TunerServiceRuntime,
 };
+use maleicacid_tuner_hal2_demux::{QueueDescriptorQueryError, QueueDescriptorSnapshot};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeObjectQueryError {
@@ -152,6 +153,24 @@ impl TunerServiceRuntime {
         self.query().filter_open_type(filter_id)
     }
 
+    pub fn filter_queue_descriptor_snapshot_for_aidl_object(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<QueueDescriptorSnapshot, HalError> {
+        self.query()
+            .filter_queue_descriptor_snapshot_for_aidl_object(object_id, generation)
+    }
+
+    pub fn dvr_queue_descriptor_snapshot_for_aidl_object(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<QueueDescriptorSnapshot, HalError> {
+        self.query()
+            .dvr_queue_descriptor_snapshot_for_aidl_object(object_id, generation)
+    }
+
     pub fn public_entry_for_aidl_object(
         &self,
         object_id: AidlObjectId,
@@ -202,7 +221,106 @@ impl TunerServiceRuntime {
             })
     }
 }
+
+fn map_queue_descriptor_query_error(error: QueueDescriptorQueryError) -> HalError {
+    match error {
+        QueueDescriptorQueryError::FilterMissing(id)
+        | QueueDescriptorQueryError::DvrMissing(id)
+        | QueueDescriptorQueryError::InvalidState(id) => HalError::invalid_state(
+            HalInvalidStateKind::InvalidLifecycle,
+            format!("queue descriptor runtime is not available: id={id}"),
+        ),
+        QueueDescriptorQueryError::Unavailable(_) => {
+            HalError::Unsupported("queue descriptor is unavailable in current runtime state")
+        }
+        QueueDescriptorQueryError::RuntimeMissing(id) => HalError::internal(
+            HalInternalKind::InvariantViolation,
+            format!("queue descriptor runtime is missing: id={id}"),
+        ),
+        QueueDescriptorQueryError::Runtime(error) => HalError::internal(
+            HalInternalKind::InvariantViolation,
+            format!(
+                "queue descriptor export failed: kind={:?} detail={}",
+                error.kind, error.detail
+            ),
+        ),
+    }
+}
 impl<'a> RuntimeQuery<'a> {
+    pub(crate) fn filter_queue_descriptor_snapshot_for_aidl_object(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<QueueDescriptorSnapshot, HalError> {
+        let filter_id = self
+            .public_runtime_id_for_aidl_object(object_id, generation, AidlObjectKind::Filter)
+            .map_err(|_| {
+                HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "filter AIDL object is not live",
+                )
+            })?;
+        let owner_demux_id = self
+            .registry
+            .filter(FilterRuntimeId(filter_id))
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "filter runtime entry is missing",
+                )
+            })?
+            .owner_demux_id;
+        let demux = self
+            .registry
+            .demux_runtime(DemuxRuntimeId(owner_demux_id))
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "owner demux runtime is missing for filter queue descriptor",
+                )
+            })?;
+        demux
+            .export_filter_queue_descriptor(filter_id)
+            .map_err(map_queue_descriptor_query_error)
+    }
+
+    pub(crate) fn dvr_queue_descriptor_snapshot_for_aidl_object(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<QueueDescriptorSnapshot, HalError> {
+        let dvr_id = self
+            .public_runtime_id_for_aidl_object(object_id, generation, AidlObjectKind::Dvr)
+            .map_err(|_| {
+                HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "DVR AIDL object is not live",
+                )
+            })?;
+        let owner_demux_id = self
+            .registry
+            .dvr(DvrRuntimeId(dvr_id))
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "DVR runtime entry is missing",
+                )
+            })?
+            .owner_demux_id;
+        let demux = self
+            .registry
+            .demux_runtime(DemuxRuntimeId(owner_demux_id))
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "owner demux runtime is missing for DVR queue descriptor",
+                )
+            })?;
+        demux
+            .export_dvr_queue_descriptor(dvr_id)
+            .map_err(map_queue_descriptor_query_error)
+    }
+
     pub(crate) fn public_entry_for_aidl_object(
         &self,
         object_id: AidlObjectId,

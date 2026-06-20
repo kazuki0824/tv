@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use android_hardware_common::aidl::android::hardware::common::NativeHandle::NativeHandle as CommonNativeHandle;
+use android_hardware_common_fmq::aidl::android::hardware::common::fmq::GrantorDescriptor::GrantorDescriptor as CommonGrantorDescriptor;
 use android_hardware_common_fmq::aidl::android::hardware::common::fmq::MQDescriptor::MQDescriptor as CommonMqDescriptor;
 use android_hardware_common_fmq::aidl::android::hardware::common::fmq::SynchronizedReadWrite::SynchronizedReadWrite as CommonSynchronizedReadWrite;
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
@@ -49,7 +50,9 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     LnbVoltage::LnbVoltage,
     Result::Result as TunerResult,
 };
-use binder::{BinderFeatures, Interface, Result as BinderResult, Status, Strong};
+use binder::{
+    BinderFeatures, Interface, ParcelFileDescriptor, Result as BinderResult, Status, Strong,
+};
 use maleicacid_tuner_hal2_binder_adapter::{
     aidl_frontend_settings_to_request, aidl_scan_type_to_mode, build_dvr_configure_request,
     build_dvr_open_request, build_filter_av_stream_type_request, build_filter_delay_hint_request,
@@ -62,6 +65,7 @@ use maleicacid_tuner_hal2_common::{
     fail_after_cleanup, japan_isdbt_frequency_contract_range_hz, FrontendBackendKind,
     FrontendSystem, HalError, HalInternalKind,
 };
+use maleicacid_tuner_hal2_demux::QueueDescriptorSnapshot;
 use maleicacid_tuner_hal2_device::{FrontendRuntimeState, FrontendSignalState};
 use maleicacid_tuner_hal2_service_runtime::{
     close_frontend_object_cleanup_use_case, set_frontend_lnb_object_use_case,
@@ -160,6 +164,30 @@ fn finish_hal_cleanup_after_primary<T>(
     cleanup: Result<(), HalError>,
 ) -> BinderResult<T> {
     fail_after_cleanup(context, primary, cleanup).map_err(status_from_hal_error)
+}
+
+fn tuner_queue_desc_from_snapshot(snapshot: QueueDescriptorSnapshot) -> TunerQueueDesc {
+    let mut desc = TunerQueueDesc::default();
+    desc.grantors = snapshot
+        .grantors
+        .into_iter()
+        .map(|grantor| CommonGrantorDescriptor {
+            fdIndex: grantor.fd_index,
+            offset: grantor.offset,
+            extent: grantor.extent,
+        })
+        .collect();
+    desc.handle = CommonNativeHandle {
+        fds: snapshot
+            .fds
+            .into_iter()
+            .map(ParcelFileDescriptor::new)
+            .collect(),
+        ints: snapshot.ints,
+    };
+    desc.quantum = snapshot.quantum;
+    desc.flags = snapshot.flags;
+    desc
 }
 
 impl TunerAidlService {

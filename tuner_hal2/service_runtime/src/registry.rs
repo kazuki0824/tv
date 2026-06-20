@@ -463,6 +463,10 @@ impl RuntimeRegistry {
         Ok(())
     }
 
+    pub fn dvr(&self, id: DvrRuntimeId) -> Option<&DvrRegistryEntry> {
+        self.dvrs.get(&id)
+    }
+
     pub fn unregister_dvr(&mut self, id: DvrRuntimeId) -> Option<DvrRegistryEntry> {
         self.dvrs.remove(&id)
     }

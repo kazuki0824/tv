@@ -112,6 +112,7 @@ rust_library {
         "demux/src/runtime/demux.rs",
         "demux/src/runtime/filter.rs",
         "demux/src/runtime/dvr.rs",
+        "demux/src/runtime/queue_runtime.rs",
         "demux/src/runtime/runtime_io.rs",
         "demux/src/runtime/source_boundary.rs",
         "demux/src/runtime/generation_boundary.rs",

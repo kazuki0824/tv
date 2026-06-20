@@ -180,6 +180,27 @@ impl FilterRuntime {
     pub fn queue_present(&self) -> bool {
         self.queue_present
     }
+    pub fn supports_normal_fmq_queue(&self) -> bool {
+        matches!(
+            self.open_kind,
+            PipelineOpenKind::Raw
+                | PipelineOpenKind::Record
+                | PipelineOpenKind::Section
+                | PipelineOpenKind::Pes
+        )
+    }
+    pub fn allows_queue_desc(&self) -> bool {
+        match self.state {
+            FilterRuntimeState::Open => self.supports_normal_fmq_queue(),
+            FilterRuntimeState::Configured
+            | FilterRuntimeState::Started
+            | FilterRuntimeState::Stopped => self.queue_present,
+            FilterRuntimeState::Closing
+            | FilterRuntimeState::CleanupFailed
+            | FilterRuntimeState::Closed
+            | FilterRuntimeState::Failed => false,
+        }
+    }
     pub fn av_backing_present(&self) -> bool {
         self.av_backing_present
     }
@@ -252,13 +273,7 @@ impl FilterRuntime {
         self.tpid = config.tpid;
         self.raw = config.raw;
         self.source = FilterSource::DemuxInput;
-        self.queue_present = matches!(
-            self.open_kind,
-            PipelineOpenKind::Raw
-                | PipelineOpenKind::Record
-                | PipelineOpenKind::Section
-                | PipelineOpenKind::Pes
-        );
+        self.queue_present = self.supports_normal_fmq_queue();
         self.av_backing_present = matches!(self.open_kind, PipelineOpenKind::Av);
         self.av_stream_type_hint = None;
         self.queued_bytes = 0;

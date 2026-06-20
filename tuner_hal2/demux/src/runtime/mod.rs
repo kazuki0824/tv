@@ -3,6 +3,7 @@ pub mod demux;
 pub mod dvr;
 pub mod filter;
 pub mod generation_boundary;
+pub mod queue_runtime;
 pub mod runtime_io;
 pub mod source_boundary;
 
@@ -11,12 +12,17 @@ pub use configure_txn::{
     FilterConfigureStep, FilterConfigureTxn,
 };
 pub use demux::{
-    DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind, DemuxRuntimeSnapshot, DemuxRuntimeState,
+    DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind, DemuxRuntimeSnapshot,
+    DemuxRuntimeState, QueueDescriptorQueryError,
 };
 pub use dvr::{DvrKind, DvrRuntime, DvrRuntimeSnapshot, DvrRuntimeState};
 pub use filter::{FilterRuntime, FilterRuntimeSnapshot, FilterRuntimeState, FilterSource};
 pub use generation_boundary::{
     DemuxStreamGeneration, GenerationBoundaryReport, GenerationBoundaryTxn,
+};
+pub use queue_runtime::{
+    QueueDescriptorSnapshot, QueueGrantorDescriptorSnapshot, QueueRuntime, QueueRuntimeError,
+    QueueRuntimeErrorKind,
 };
 pub use runtime_io::{RuntimeIoFailureKind, RuntimeIoRegistry};
 pub use source_boundary::{SourceBoundaryOutcome, SourceBoundaryStep, SourceBoundaryTxn};
