@@ -502,23 +502,6 @@ impl<'a> RuntimeQuery<'a> {
         Ok(snapshots)
     }
 
-    pub(crate) fn frontend_has_same_active_tune(
-        &self,
-        frontend_id: i32,
-        request: &FrontendTuneRequest,
-    ) -> Result<bool, HalError> {
-        let runtime = self
-            .registry
-            .frontend_runtime(crate::registry::FrontendRuntimeId(frontend_id))
-            .ok_or_else(|| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "frontend runtime is missing for advertised frontend",
-                )
-            })?;
-        Ok(runtime.same_active_tune(request))
-    }
-
     pub(crate) fn frontend_signal_state(
         &self,
         frontend_id: i32,

@@ -274,6 +274,90 @@ mod tests {
     }
 
     #[test]
+    fn identical_tune_request_stops_worker_before_new_generation() {
+        let mut runtime = TunerServiceRuntime::new();
+        runtime.boot_from_probe_results([available(
+            1_000_000,
+            FrontendBackendKind::Px4CharDevice,
+            FrontendSystem::IsdbT,
+            "/dev/px4video0",
+            None,
+        )]);
+        let request = isdbt_request(473_142_857);
+        let generation = runtime
+            .frontend_txn()
+            .prepare_frontend_worker_generation(
+                1_000_000,
+                maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
+            )
+            .unwrap();
+        runtime
+            .frontend_txn()
+            .install_frontend_live_reader_descriptor_for_generation(
+                1_000_000,
+                maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
+                generation,
+            )
+            .unwrap();
+        runtime
+            .frontend_txn()
+            .commit_frontend_active_tune_request(1_000_000, generation, request.clone())
+            .unwrap();
+        runtime
+            .frontend_txn()
+            .start_worker(
+                1_000_000,
+                maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
+                generation,
+                |ctx| {
+                    while !ctx.cancel_requested() {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    assert_eq!(
+                        ctx.cancel_reason()?,
+                        Some(
+                            maleicacid_tuner_hal2_device::FrontendWorkerCancelReason::SupersededByNewRequest
+                        )
+                    );
+                    Ok(())
+                },
+            )
+            .unwrap();
+
+        let outcome = crate::frontend_worker_txn::request_tune_worker_replacement_stop(
+            &mut runtime,
+            1_000_000,
+        )
+        .complete();
+
+        assert!(matches!(
+            outcome,
+            maleicacid_tuner_hal2_device::FrontendWorkerStopOutcome::Completed {
+                result: Ok(()),
+                ..
+            }
+        ));
+        assert_eq!(
+            runtime
+                .registry()
+                .frontend_runtime(FrontendRuntimeId(1_000_000))
+                .unwrap()
+                .active_tune_request(),
+            Some(&request)
+        );
+        assert_eq!(
+            runtime
+                .frontend_txn()
+                .prepare_frontend_worker_generation(
+                    1_000_000,
+                    maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
+                )
+                .unwrap(),
+            generation + 1
+        );
+    }
+
+    #[test]
     fn frontend_live_reader_descriptor_install_commits_generation_and_stop_clears_reader() {
         let mut runtime = TunerServiceRuntime::new();
         runtime.boot_from_probe_results([available(

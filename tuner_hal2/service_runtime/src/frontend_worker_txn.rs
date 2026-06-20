@@ -275,6 +275,17 @@ fn rollback_started_tune_worker_after_commit_failure(
     }
 }
 
+pub(crate) fn request_tune_worker_replacement_stop(
+    runtime: &mut TunerServiceRuntime,
+    frontend_id: i32,
+) -> FrontendWorkerStopTicket {
+    runtime.frontend_txn().request_worker_stop_for_join(
+        frontend_id,
+        FrontendWorkerKind::Tune,
+        FrontendWorkerCancelReason::SupersededByNewRequest,
+    )
+}
+
 pub fn start_frontend_backend_tune_worker(
     runtime: SharedRuntime,
     object_id: AidlObjectId,
@@ -288,12 +299,16 @@ pub fn start_frontend_backend_tune_worker(
         resolve_frontend_object_for_method(&guard, object_id, object_generation)?;
     let entry = guard.validate_frontend_request_for_id(frontend_id, &request)?;
     dispatch.plan(&mut guard)?;
-    if guard
-        .query()
-        .frontend_has_same_active_tune(frontend_id, &request)?
-    {
-        return Ok(());
+    let stop_ticket = request_tune_worker_replacement_stop(&mut guard, frontend_id);
+    drop(guard);
+    let stop_outcome = stop_ticket.complete();
+    if let Some(error) = frontend_worker_stop_failure(&stop_outcome) {
+        return Err(error);
     }
+    let mut guard = lock_runtime(
+        &runtime,
+        "service runtime lock poisoned after tune worker join",
+    )?;
     let snapshot = guard.query().frontend_runtime_snapshot(frontend_id)?;
     let demux_snapshots = guard.query().bound_demux_runtime_snapshots(frontend_id)?;
     let generation = guard

@@ -229,10 +229,6 @@ impl FrontendRuntime {
     pub fn signal_state(&self) -> FrontendSignalState {
         self.signal_state
     }
-    pub fn same_active_tune(&self, request: &FrontendTuneRequest) -> bool {
-        self.active_tune_request.as_ref() == Some(request)
-    }
-
     pub fn snapshot(&self) -> FrontendRuntimeSnapshot {
         FrontendRuntimeSnapshot {
             state: self.state,
