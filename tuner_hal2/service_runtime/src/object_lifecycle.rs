@@ -6,6 +6,12 @@ use maleicacid_tuner_hal2_common::{HalError, HalInternalKind, HalInvalidStateKin
 use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
 use maleicacid_tuner_hal2_resource_ledger::LedgerId;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AidlObjectCloseability {
+    BeginClose,
+    AlreadyClosed,
+}
+
 pub fn aidl_object_entry_for_kind(
     runtime: &TunerServiceRuntime,
     object_id: AidlObjectId,
@@ -33,7 +39,7 @@ pub fn aidl_object_closeable(
     object_id: AidlObjectId,
     generation: AidlObjectGeneration,
     expected_kind: AidlObjectKind,
-) -> Result<(), HalError> {
+) -> Result<AidlObjectCloseability, HalError> {
     let entry = runtime.object_table().entry(object_id).ok_or_else(|| {
         HalError::invalid_state(
             HalInvalidStateKind::InvalidLifecycle,
@@ -53,13 +59,16 @@ pub fn aidl_object_closeable(
         ));
     }
     match entry.lifecycle {
-        RuntimeObjectLifecycle::Live | RuntimeObjectLifecycle::CleanupFailed { .. } => Ok(()),
-        RuntimeObjectLifecycle::Closing { .. }
-        | RuntimeObjectLifecycle::Closed
-        | RuntimeObjectLifecycle::Quarantined => Err(HalError::invalid_state(
-            HalInvalidStateKind::InvalidLifecycle,
-            "AIDL object is not closeable",
-        )),
+        RuntimeObjectLifecycle::Live | RuntimeObjectLifecycle::CleanupFailed { .. } => {
+            Ok(AidlObjectCloseability::BeginClose)
+        }
+        RuntimeObjectLifecycle::Closed => Ok(AidlObjectCloseability::AlreadyClosed),
+        RuntimeObjectLifecycle::Closing { .. } | RuntimeObjectLifecycle::Quarantined => {
+            Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "AIDL object is not closeable",
+            ))
+        }
     }
 }
 
@@ -161,13 +170,16 @@ mod closeable_lifecycle_tests {
     #[test]
     fn aidl_object_closeable_accepts_live_and_cleanup_failed() {
         let mut runtime = runtime_with_filter();
-        aidl_object_closeable(
-            &runtime,
-            AidlObjectId(501),
-            AidlObjectGeneration(1),
-            AidlObjectKind::Filter,
-        )
-        .expect("live object is closeable");
+        assert_eq!(
+            aidl_object_closeable(
+                &runtime,
+                AidlObjectId(501),
+                AidlObjectGeneration(1),
+                AidlObjectKind::Filter,
+            )
+            .expect("live object is closeable"),
+            AidlObjectCloseability::BeginClose
+        );
 
         runtime
             .object_table_mut()
@@ -186,17 +198,20 @@ mod closeable_lifecycle_tests {
             )
             .expect("cleanup failed mark succeeds");
 
-        aidl_object_closeable(
-            &runtime,
-            AidlObjectId(501),
-            AidlObjectGeneration(1),
-            AidlObjectKind::Filter,
-        )
-        .expect("cleanup failed object is closeable for retry");
+        assert_eq!(
+            aidl_object_closeable(
+                &runtime,
+                AidlObjectId(501),
+                AidlObjectGeneration(1),
+                AidlObjectKind::Filter,
+            )
+            .expect("cleanup failed object is closeable for retry"),
+            AidlObjectCloseability::BeginClose
+        );
     }
 
     #[test]
-    fn aidl_object_closeable_rejects_closing_closed_and_quarantined() {
+    fn aidl_object_closeable_rejects_closing_and_quarantined() {
         let mut closing = runtime_with_filter();
         closing
             .object_table_mut()
@@ -208,27 +223,6 @@ mod closeable_lifecycle_tests {
             .expect("begin close succeeds");
         assert!(aidl_object_closeable(
             &closing,
-            AidlObjectId(501),
-            AidlObjectGeneration(1),
-            AidlObjectKind::Filter,
-        )
-        .is_err());
-
-        let mut closed = runtime_with_filter();
-        closed
-            .object_table_mut()
-            .begin_close_cascade(
-                AidlObjectId(501),
-                AidlObjectGeneration(1),
-                CleanupStep::UnregisterRuntime,
-            )
-            .expect("begin close succeeds");
-        closed
-            .object_table_mut()
-            .commit_close_cascade(AidlObjectId(501), AidlObjectGeneration(1))
-            .expect("commit close succeeds");
-        assert!(aidl_object_closeable(
-            &closed,
             AidlObjectId(501),
             AidlObjectGeneration(1),
             AidlObjectKind::Filter,
@@ -247,5 +241,32 @@ mod closeable_lifecycle_tests {
             AidlObjectKind::Filter,
         )
         .is_err());
+    }
+
+    #[test]
+    fn aidl_object_closeable_accepts_closed_as_idempotent_close() {
+        let mut closed = runtime_with_filter();
+        closed
+            .object_table_mut()
+            .begin_close_cascade(
+                AidlObjectId(501),
+                AidlObjectGeneration(1),
+                CleanupStep::UnregisterRuntime,
+            )
+            .expect("begin close succeeds");
+        closed
+            .object_table_mut()
+            .commit_close_cascade(AidlObjectId(501), AidlObjectGeneration(1))
+            .expect("commit close succeeds");
+        assert_eq!(
+            aidl_object_closeable(
+                &closed,
+                AidlObjectId(501),
+                AidlObjectGeneration(1),
+                AidlObjectKind::Filter,
+            )
+            .expect("closed object is idempotently closeable"),
+            AidlObjectCloseability::AlreadyClosed
+        );
     }
 }

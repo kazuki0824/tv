@@ -1,22 +1,18 @@
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
-    FrontendIsdbsCoderate::FrontendIsdbsCoderate,
-    FrontendIsdbsModulation::FrontendIsdbsModulation,
+    FrontendIsdbsCoderate::FrontendIsdbsCoderate, FrontendIsdbsModulation::FrontendIsdbsModulation,
     FrontendIsdbsStreamIdType::FrontendIsdbsStreamIdType,
-    FrontendIsdbtBandwidth::FrontendIsdbtBandwidth,
-    FrontendIsdbtCoderate::FrontendIsdbtCoderate,
-    FrontendIsdbtGuardInterval::FrontendIsdbtGuardInterval,
-    FrontendIsdbtMode::FrontendIsdbtMode,
+    FrontendIsdbtBandwidth::FrontendIsdbtBandwidth, FrontendIsdbtCoderate::FrontendIsdbtCoderate,
+    FrontendIsdbtGuardInterval::FrontendIsdbtGuardInterval, FrontendIsdbtMode::FrontendIsdbtMode,
     FrontendIsdbtModulation::FrontendIsdbtModulation,
     FrontendIsdbtTimeInterleaveMode::FrontendIsdbtTimeInterleaveMode,
-    FrontendScanType::FrontendScanType,
-    FrontendSettings::FrontendSettings,
+    FrontendScanType::FrontendScanType, FrontendSettings::FrontendSettings,
 };
 use maleicacid_tuner_hal2_common::{
     is_japan_cs110_if_frequency_hz, FrontendScanMode, FrontendStreamIdKind, FrontendSystem,
     FrontendTuneRequest, HalError, HalInvalidArgumentKind,
 };
 
-const AOSP_TUNER_INVALID_STREAM_ID: i32 = -1;
+const AOSP_TUNER_INVALID_STREAM_ID: i32 = 0xFFFF;
 
 fn cast_u64_field(value: i64, field: &'static str) -> Result<u64, HalError> {
     u64::try_from(value).map_err(|_| {

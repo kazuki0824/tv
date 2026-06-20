@@ -20,7 +20,8 @@ use maleicacid_tuner_hal2_service_runtime::{
         quarantine_object_cascade,
     },
     object_lifecycle::{
-        aidl_object_for_close_cleanup_runtime, aidl_object_live, lnb_public_id_for_live_object,
+        aidl_object_closeable, aidl_object_for_close_cleanup_runtime, aidl_object_live,
+        lnb_public_id_for_live_object, AidlObjectCloseability,
     },
     object_method_txn::{
         build_and_plan_object_method_request_after_live, ObjectMethodDispatchPreflight,
@@ -701,13 +702,25 @@ where
         let mut guard = runtime
             .lock()
             .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
-        begin_object_close_cascade(
-            &mut guard,
+        match aidl_object_closeable(
+            &guard,
             handle.object_id(),
             handle.generation(),
-            CleanupStep::StopWorker,
+            handle.object_kind(),
         )
-        .map_err(status_from_hal_error)?;
+        .map_err(status_from_hal_error)?
+        {
+            AidlObjectCloseability::BeginClose => {
+                begin_object_close_cascade(
+                    &mut guard,
+                    handle.object_id(),
+                    handle.generation(),
+                    CleanupStep::StopWorker,
+                )
+                .map_err(status_from_hal_error)?;
+            }
+            AidlObjectCloseability::AlreadyClosed => return Ok(()),
+        }
     }
     finish_object_close_after_begin_with_domain_cleanup(runtime, handle, domain_cleanup)
 }
@@ -855,7 +868,7 @@ where
         let mut runtime = runtime
             .lock()
             .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
-        plan_and_begin_object_close_method_dispatch(
+        match plan_and_begin_object_close_method_dispatch(
             &mut runtime,
             handle.object_id(),
             handle.generation(),
@@ -864,7 +877,11 @@ where
             executable_request,
             CleanupStep::StopWorker,
         )
-        .map_err(status_from_hal_error)?;
+        .map_err(status_from_hal_error)?
+        {
+            AidlObjectCloseability::BeginClose => {}
+            AidlObjectCloseability::AlreadyClosed => return Ok(()),
+        }
     }
     finish_object_close_after_begin_with_domain_cleanup(runtime, handle, domain_cleanup)
 }
@@ -1823,6 +1840,48 @@ mod tests {
                 .unwrap()
                 .object_table()
                 .entry(AidlObjectId(91_006))
+                .expect("object remains tracked")
+                .lifecycle,
+            RuntimeObjectLifecycle::Closed
+        );
+    }
+
+    #[test]
+    fn close_object_after_close_preflight_is_idempotent_for_closed_object() {
+        let handle = AidlObjectHandle::new(
+            AidlObjectKind::Filter,
+            AidlObjectId(91_011),
+            AidlObjectGeneration(1),
+        );
+        let runtime = shared_runtime_with_live_object(
+            AidlObjectKind::Filter,
+            AidlObjectId(91_011),
+            AidlObjectGeneration(1),
+            91_011,
+        );
+
+        close_object_after_close_preflight_with_domain_cleanup(
+            &runtime,
+            handle,
+            AidlMethodCall::FilterClose,
+            || Ok(()),
+        )
+        .expect("first close succeeds");
+
+        close_object_after_close_preflight_with_domain_cleanup(
+            &runtime,
+            handle,
+            AidlMethodCall::FilterClose,
+            || panic!("domain cleanup must not run for already closed object"),
+        )
+        .expect("second close is idempotent");
+
+        assert_eq!(
+            runtime
+                .lock()
+                .unwrap()
+                .object_table()
+                .entry(AidlObjectId(91_011))
                 .expect("object remains tracked")
                 .lifecycle,
             RuntimeObjectLifecycle::Closed
