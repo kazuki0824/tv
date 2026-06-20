@@ -1,6 +1,7 @@
 use super::support::local_filter_handle_from_strong;
 use super::{
     build_dvr_configure_request, close_object_after_close_preflight, execute_object_query_use_case,
+    execute_object_runtime_use_case, execute_object_runtime_use_case_with_request_builder,
     plan_unavailable_object_method_use_case, status_from_hal_error, tuner_queue_desc_from_snapshot,
     AidlMethodCall, BinderResult, DvrAidlObject, DvrFilterLinkRequest, DvrSettings, IDvr, IFilter,
     Strong, TunerQueueDesc,
@@ -24,15 +25,23 @@ impl IDvr for DvrAidlObject {
         Ok(())
     }
     fn configure(&self, settings: &DvrSettings) -> BinderResult<()> {
-        plan_unavailable_object_method_use_case(
+        execute_object_runtime_use_case_with_request_builder(
             &self.runtime(),
             self.handle(),
             || {
                 let request =
                     build_dvr_configure_request(settings).map_err(status_from_hal_error)?;
-                Ok(AidlMethodCall::DvrConfigure(request))
+                Ok((AidlMethodCall::DvrConfigure(request.clone()), request))
             },
-            "DVR runtime is not connected in current tuner_hal2 scope",
+            |runtime, handle, command_plan, executable_request, _dispatch_preflight, request| {
+                runtime.configure_dvr_runtime_for_object(
+                    handle.object_id(),
+                    handle.generation(),
+                    request,
+                    command_plan,
+                    executable_request,
+                )
+            },
         )
     }
     fn attachFilter(&self, filter: &Strong<dyn IFilter>) -> BinderResult<()> {
@@ -66,27 +75,48 @@ impl IDvr for DvrAidlObject {
         )
     }
     fn start(&self) -> BinderResult<()> {
-        plan_unavailable_object_method_use_case(
+        execute_object_runtime_use_case(
             &self.runtime(),
             self.handle(),
-            || Ok(AidlMethodCall::DvrStart),
-            "DVR runtime is not connected in current tuner_hal2 scope",
+            AidlMethodCall::DvrStart,
+            |runtime, handle, command_plan, executable_request| {
+                runtime.start_dvr_for_object(
+                    handle.object_id(),
+                    handle.generation(),
+                    command_plan,
+                    executable_request,
+                )
+            },
         )
     }
     fn stop(&self) -> BinderResult<()> {
-        plan_unavailable_object_method_use_case(
+        execute_object_runtime_use_case(
             &self.runtime(),
             self.handle(),
-            || Ok(AidlMethodCall::DvrStop),
-            "DVR runtime is not connected in current tuner_hal2 scope",
+            AidlMethodCall::DvrStop,
+            |runtime, handle, command_plan, executable_request| {
+                runtime.stop_dvr_for_object(
+                    handle.object_id(),
+                    handle.generation(),
+                    command_plan,
+                    executable_request,
+                )
+            },
         )
     }
     fn flush(&self) -> BinderResult<()> {
-        plan_unavailable_object_method_use_case(
+        execute_object_runtime_use_case(
             &self.runtime(),
             self.handle(),
-            || Ok(AidlMethodCall::DvrFlush),
-            "DVR runtime is not connected in current tuner_hal2 scope",
+            AidlMethodCall::DvrFlush,
+            |runtime, handle, command_plan, executable_request| {
+                runtime.flush_dvr_for_object(
+                    handle.object_id(),
+                    handle.generation(),
+                    command_plan,
+                    executable_request,
+                )
+            },
         )
     }
     fn close(&self) -> BinderResult<()> {

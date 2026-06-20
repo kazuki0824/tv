@@ -1,10 +1,11 @@
 use super::{
     AvStreamKind, AvStreamTypeConfig, DemuxRuntimeError, DemuxRuntimeErrorKind, DemuxRuntimeId,
-    DvrKind, DvrOpenKind, DvrRuntime, DvrRuntimeId, FilterAvStreamKind, FilterAvStreamTypeRequest,
-    FilterConfig, FilterConfigureTxn, FilterDelayHint, FilterDelayHintKind, FilterDelayHintRequest,
-    FilterOpenType, FilterRuntime, FilterRuntimeId, FilterRuntimeState, HalError, HalInternalKind,
-    HalInvalidArgumentKind, HalInvalidStateKind, OpenDvrRequest, OpenFilterRequest,
-    PipelineResetReport, RegistryCommitError, TunerServiceRuntime,
+    DvrConfigureKind, DvrConfigureRequest, DvrKind, DvrOpenKind, DvrRuntime, DvrRuntimeId,
+    FilterAvStreamKind, FilterAvStreamTypeRequest, FilterConfig, FilterConfigureTxn,
+    FilterDelayHint, FilterDelayHintKind, FilterDelayHintRequest, FilterOpenType, FilterRuntime,
+    FilterRuntimeId, FilterRuntimeState, HalError, HalInternalKind, HalInvalidArgumentKind,
+    HalInvalidStateKind, OpenDvrRequest, OpenFilterRequest, PipelineResetReport,
+    RegistryCommitError, TunerServiceRuntime,
 };
 use crate::diagnostics::{
     ChildOpenRollbackDiagnosticRecord, ChildOpenRollbackKind, ChildOpenRollbackPhase,
@@ -474,6 +475,143 @@ impl TunerServiceRuntime {
                 )
             })
     }
+
+    fn owner_demux_id_for_dvr(&self, dvr_id: i32) -> Result<i32, HalError> {
+        self.registry
+            .dvr(DvrRuntimeId(dvr_id))
+            .map(|entry| entry.owner_demux_id)
+            .ok_or_else(|| {
+                HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "DVR registry entry is missing",
+                )
+            })
+    }
+
+    fn map_dvr_runtime_error(error: DemuxRuntimeError) -> HalError {
+        match error.kind {
+            DemuxRuntimeErrorKind::DvrMissing => HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "DVR runtime is missing",
+            ),
+            DemuxRuntimeErrorKind::InvalidState => HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "DVR lifecycle is invalid for requested operation",
+            ),
+            DemuxRuntimeErrorKind::GenerationExhausted => HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "DVR generation exhausted",
+            ),
+            DemuxRuntimeErrorKind::PipelineFailed
+            | DemuxRuntimeErrorKind::QueueMissing
+            | DemuxRuntimeErrorKind::QueueRuntimeFailure
+            | DemuxRuntimeErrorKind::FilterMissing
+            | DemuxRuntimeErrorKind::SourceLifecycle
+            | DemuxRuntimeErrorKind::SinkLifecycle
+            | DemuxRuntimeErrorKind::InvalidSourceSubtype
+            | DemuxRuntimeErrorKind::InvalidSinkSubtype
+            | DemuxRuntimeErrorKind::PidMismatch => HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "DVR runtime operation failed",
+            ),
+        }
+    }
+
+    fn transact_configure_dvr_runtime_request(
+        &mut self,
+        dvr_id: i32,
+        request: DvrConfigureRequest,
+    ) -> Result<(), HalError> {
+        let owner_demux_id = self.owner_demux_id_for_dvr(dvr_id)?;
+        let Some(demux_runtime) = self
+            .registry
+            .demux_runtime_mut(DemuxRuntimeId(owner_demux_id))
+        else {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "owner demux runtime is missing",
+            ));
+        };
+        let Some(dvr) = demux_runtime.dvr(dvr_id) else {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "DVR runtime is missing",
+            ));
+        };
+        let expected_kind = match dvr.kind() {
+            DvrKind::Record => DvrConfigureKind::Record,
+            DvrKind::Playback => DvrConfigureKind::Playback,
+        };
+        if request.kind != expected_kind {
+            return Err(HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "DVR settings kind does not match opened DVR kind",
+            ));
+        }
+        let state = dvr.state();
+        if state.is_closed_or_failed() {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "DVR is not live",
+            ));
+        }
+        if state == super::DvrRuntimeState::Started {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "DVR cannot be reconfigured while started",
+            ));
+        }
+        let (_txn, result) = super::DvrConfigureTxn::new(dvr_id).configure(demux_runtime);
+        result.map(|_| ()).map_err(Self::map_dvr_runtime_error)
+    }
+
+    fn transact_start_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), HalError> {
+        let owner_demux_id = self.owner_demux_id_for_dvr(dvr_id)?;
+        let Some(demux_runtime) = self
+            .registry
+            .demux_runtime_mut(DemuxRuntimeId(owner_demux_id))
+        else {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "owner demux runtime is missing",
+            ));
+        };
+        demux_runtime
+            .start_dvr_runtime(dvr_id)
+            .map_err(Self::map_dvr_runtime_error)
+    }
+
+    fn transact_stop_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), HalError> {
+        let owner_demux_id = self.owner_demux_id_for_dvr(dvr_id)?;
+        let Some(demux_runtime) = self
+            .registry
+            .demux_runtime_mut(DemuxRuntimeId(owner_demux_id))
+        else {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "owner demux runtime is missing",
+            ));
+        };
+        demux_runtime
+            .stop_dvr_runtime(dvr_id)
+            .map_err(Self::map_dvr_runtime_error)
+    }
+
+    fn transact_flush_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), HalError> {
+        let owner_demux_id = self.owner_demux_id_for_dvr(dvr_id)?;
+        let Some(demux_runtime) = self
+            .registry
+            .demux_runtime_mut(DemuxRuntimeId(owner_demux_id))
+        else {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "owner demux runtime is missing",
+            ));
+        };
+        demux_runtime
+            .flush_dvr_runtime(dvr_id)
+            .map_err(Self::map_dvr_runtime_error)
+    }
 }
 
 pub(crate) struct DemuxFilterDvrTxn<'a> {
@@ -634,6 +772,27 @@ impl<'a> DemuxFilterDvrTxn<'a> {
             request,
             callback_present,
         )
+    }
+
+    pub(crate) fn configure_dvr_runtime_request(
+        &mut self,
+        dvr_id: i32,
+        request: DvrConfigureRequest,
+    ) -> Result<(), HalError> {
+        self.runtime
+            .transact_configure_dvr_runtime_request(dvr_id, request)
+    }
+
+    pub(crate) fn start_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), HalError> {
+        self.runtime.transact_start_dvr_runtime(dvr_id)
+    }
+
+    pub(crate) fn stop_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), HalError> {
+        self.runtime.transact_stop_dvr_runtime(dvr_id)
+    }
+
+    pub(crate) fn flush_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), HalError> {
+        self.runtime.transact_flush_dvr_runtime(dvr_id)
     }
 
     pub(crate) fn open_filter_child_runtime_for_demux_object(

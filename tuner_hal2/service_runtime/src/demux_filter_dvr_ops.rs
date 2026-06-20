@@ -8,7 +8,7 @@ use maleicacid_tuner_hal2_common::HalError;
 use maleicacid_tuner_hal2_demux::packet_pipeline::PipelineResetReport;
 use maleicacid_tuner_hal2_demux::{FilterConfig, FilterOpenType, OpenFilterRequest};
 use maleicacid_tuner_hal2_domain_request::{
-    FilterAvStreamTypeRequest, FilterDelayHintRequest, OpenDvrRequest,
+    DvrConfigureRequest, FilterAvStreamTypeRequest, FilterDelayHintRequest, OpenDvrRequest,
 };
 
 impl TunerServiceRuntime {
@@ -131,6 +131,27 @@ impl TunerServiceRuntime {
             request,
             callback_present,
         )
+    }
+
+    pub fn configure_dvr_runtime_request(
+        &mut self,
+        dvr_id: i32,
+        request: DvrConfigureRequest,
+    ) -> Result<(), HalError> {
+        self.demux_filter_dvr_txn()
+            .configure_dvr_runtime_request(dvr_id, request)
+    }
+
+    pub fn start_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), HalError> {
+        self.demux_filter_dvr_txn().start_dvr_runtime(dvr_id)
+    }
+
+    pub fn stop_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), HalError> {
+        self.demux_filter_dvr_txn().stop_dvr_runtime(dvr_id)
+    }
+
+    pub fn flush_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), HalError> {
+        self.demux_filter_dvr_txn().flush_dvr_runtime(dvr_id)
     }
 }
 
@@ -328,6 +349,71 @@ impl TunerServiceRuntime {
         )?;
         plan_object_method_dispatch(self, command_plan, executable_request)?;
         self.flush_filter_runtime(filter_id)
+    }
+
+    pub fn configure_dvr_runtime_for_object(
+        &mut self,
+        object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
+        generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
+        request: DvrConfigureRequest,
+        command_plan: maleicacid_tuner_hal2_domain_request::CommandPlan,
+        executable_request: Option<maleicacid_tuner_hal2_domain_request::RuntimeExecutableRequest>,
+    ) -> Result<(), HalError> {
+        let dvr_id = self.public_runtime_id_for_object_method(
+            object_id,
+            generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Dvr,
+        )?;
+        plan_object_method_dispatch(self, command_plan, executable_request)?;
+        self.configure_dvr_runtime_request(dvr_id, request)
+    }
+
+    pub fn start_dvr_for_object(
+        &mut self,
+        object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
+        generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
+        command_plan: maleicacid_tuner_hal2_domain_request::CommandPlan,
+        executable_request: Option<maleicacid_tuner_hal2_domain_request::RuntimeExecutableRequest>,
+    ) -> Result<(), HalError> {
+        let dvr_id = self.public_runtime_id_for_object_method(
+            object_id,
+            generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Dvr,
+        )?;
+        plan_object_method_dispatch(self, command_plan, executable_request)?;
+        self.start_dvr_runtime(dvr_id)
+    }
+
+    pub fn stop_dvr_for_object(
+        &mut self,
+        object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
+        generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
+        command_plan: maleicacid_tuner_hal2_domain_request::CommandPlan,
+        executable_request: Option<maleicacid_tuner_hal2_domain_request::RuntimeExecutableRequest>,
+    ) -> Result<(), HalError> {
+        let dvr_id = self.public_runtime_id_for_object_method(
+            object_id,
+            generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Dvr,
+        )?;
+        plan_object_method_dispatch(self, command_plan, executable_request)?;
+        self.stop_dvr_runtime(dvr_id)
+    }
+
+    pub fn flush_dvr_for_object(
+        &mut self,
+        object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
+        generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
+        command_plan: maleicacid_tuner_hal2_domain_request::CommandPlan,
+        executable_request: Option<maleicacid_tuner_hal2_domain_request::RuntimeExecutableRequest>,
+    ) -> Result<(), HalError> {
+        let dvr_id = self.public_runtime_id_for_object_method(
+            object_id,
+            generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Dvr,
+        )?;
+        plan_object_method_dispatch(self, command_plan, executable_request)?;
+        self.flush_dvr_runtime(dvr_id)
     }
 
     pub fn set_filter_delay_hint_for_object(

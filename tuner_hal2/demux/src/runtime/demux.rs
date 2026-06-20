@@ -595,6 +595,74 @@ impl DemuxRuntime {
         Ok(())
     }
 
+    pub fn start_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {
+        let dvr = self
+            .dvrs
+            .get_mut(&dvr_id)
+            .ok_or(DemuxRuntimeError::dvr_missing(dvr_id))?;
+        match dvr.state() {
+            super::dvr::DvrRuntimeState::Configured | super::dvr::DvrRuntimeState::Stopped => {
+                if dvr.kind() == DvrKind::Record {
+                    return Err(DemuxRuntimeError::invalid_state(dvr_id));
+                }
+                dvr.mark_started();
+                Ok(())
+            }
+            super::dvr::DvrRuntimeState::Started => Ok(()),
+            super::dvr::DvrRuntimeState::Open => Err(DemuxRuntimeError::invalid_state(dvr_id)),
+            super::dvr::DvrRuntimeState::Closing
+            | super::dvr::DvrRuntimeState::CleanupFailed
+            | super::dvr::DvrRuntimeState::Closed
+            | super::dvr::DvrRuntimeState::Failed => Err(DemuxRuntimeError::invalid_state(dvr_id)),
+        }
+    }
+
+    pub fn stop_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {
+        let state = self
+            .dvrs
+            .get(&dvr_id)
+            .ok_or(DemuxRuntimeError::dvr_missing(dvr_id))?;
+        match state.state() {
+            super::dvr::DvrRuntimeState::Started => {
+                self.clear_dvr_queue_runtime(dvr_id)?;
+                let dvr = self
+                    .dvrs
+                    .get_mut(&dvr_id)
+                    .ok_or(DemuxRuntimeError::dvr_missing(dvr_id))?;
+                dvr.mark_stopped();
+                Ok(())
+            }
+            super::dvr::DvrRuntimeState::Configured | super::dvr::DvrRuntimeState::Stopped => {
+                Ok(())
+            }
+            super::dvr::DvrRuntimeState::Open => Err(DemuxRuntimeError::invalid_state(dvr_id)),
+            super::dvr::DvrRuntimeState::Closing
+            | super::dvr::DvrRuntimeState::CleanupFailed
+            | super::dvr::DvrRuntimeState::Closed
+            | super::dvr::DvrRuntimeState::Failed => Err(DemuxRuntimeError::invalid_state(dvr_id)),
+        }
+    }
+
+    pub fn flush_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {
+        let state = self
+            .dvrs
+            .get(&dvr_id)
+            .ok_or(DemuxRuntimeError::dvr_missing(dvr_id))?;
+        match state.state() {
+            super::dvr::DvrRuntimeState::Configured
+            | super::dvr::DvrRuntimeState::Started
+            | super::dvr::DvrRuntimeState::Stopped => {
+                self.clear_dvr_queue_runtime(dvr_id)?;
+                Ok(())
+            }
+            super::dvr::DvrRuntimeState::Open => Err(DemuxRuntimeError::invalid_state(dvr_id)),
+            super::dvr::DvrRuntimeState::Closing
+            | super::dvr::DvrRuntimeState::CleanupFailed
+            | super::dvr::DvrRuntimeState::Closed
+            | super::dvr::DvrRuntimeState::Failed => Err(DemuxRuntimeError::invalid_state(dvr_id)),
+        }
+    }
+
     pub fn disconnect_filter_source(
         &mut self,
         sink_filter_id: i32,

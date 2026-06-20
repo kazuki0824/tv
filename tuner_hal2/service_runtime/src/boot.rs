@@ -22,7 +22,8 @@ use maleicacid_tuner_hal2_demux::runtime::{
 };
 use maleicacid_tuner_hal2_demux::OpenFilterRequest;
 use maleicacid_tuner_hal2_demux::{
-    DvrRuntime, FilterConfigureTxn, FilterRuntime, FilterRuntimeState, TsInputOrigin,
+    DvrConfigureTxn, DvrRuntime, DvrRuntimeState, FilterConfigureTxn, FilterRuntime,
+    FilterRuntimeState, TsInputOrigin,
 };
 use maleicacid_tuner_hal2_descrambler::{
     descramble_ts_packet_in_place, packet_policy_for_descramble_failure, parse_ts_packet_header,
@@ -38,9 +39,10 @@ use maleicacid_tuner_hal2_device::{
     FrontendWorkerRegistry, FrontendWorkerStartError, FrontendWorkerStopOutcome,
 };
 use maleicacid_tuner_hal2_domain_request::{
-    AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan, DvrOpenKind,
-    FilterAvStreamKind, FilterAvStreamTypeRequest, FilterDelayHintKind, FilterDelayHintRequest,
-    OpenDvrRequest, RuntimeExecutableRequest, RuntimeTransactionName,
+    AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan, DvrConfigureKind,
+    DvrConfigureRequest, DvrOpenKind, FilterAvStreamKind, FilterAvStreamTypeRequest,
+    FilterDelayHintKind, FilterDelayHintRequest, OpenDvrRequest, RuntimeExecutableRequest,
+    RuntimeTransactionName,
 };
 
 use crate::callback_registry::RuntimeCallbackRegistry;

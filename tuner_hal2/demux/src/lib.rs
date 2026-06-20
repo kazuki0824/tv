@@ -401,6 +401,56 @@ mod tests {
     }
 
     #[test]
+    fn playback_dvr_start_stop_and_flush_follow_state_machine() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                34,
+                1,
+                crate::runtime::DvrKind::Playback,
+                8192,
+                true,
+            ))
+            .unwrap();
+
+        demux.configure_dvr_runtime(34).unwrap();
+        assert_eq!(demux.dvr(34).unwrap().state(), DvrRuntimeState::Configured);
+
+        demux.start_dvr_runtime(34).unwrap();
+        assert_eq!(demux.dvr(34).unwrap().state(), DvrRuntimeState::Started);
+
+        demux.flush_dvr_runtime(34).unwrap();
+        assert_eq!(demux.dvr(34).unwrap().state(), DvrRuntimeState::Started);
+
+        demux.stop_dvr_runtime(34).unwrap();
+        assert_eq!(demux.dvr(34).unwrap().state(), DvrRuntimeState::Stopped);
+    }
+
+    #[test]
+    fn record_dvr_start_requires_attach_before_running() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                35,
+                1,
+                crate::runtime::DvrKind::Record,
+                8192,
+                true,
+            ))
+            .unwrap();
+
+        demux.configure_dvr_runtime(35).unwrap();
+
+        assert!(matches!(
+            demux.start_dvr_runtime(35),
+            Err(crate::runtime::DemuxRuntimeError {
+                kind: crate::runtime::DemuxRuntimeErrorKind::InvalidState,
+                id: Some(35)
+            })
+        ));
+    }
+
+    #[test]
     fn demux_restore_preserves_exported_filter_queue_backing() {
         let mut demux = DemuxRuntime::new(1, 1);
         let request = OpenFilterRequest {
