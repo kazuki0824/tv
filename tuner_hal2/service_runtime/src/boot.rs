@@ -261,6 +261,9 @@ fn demux_runtime_error_to_hal(
         | maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::InvalidSinkSubtype => {
             HalError::Unsupported("demux source/sink subtype is unsupported")
         }
+        maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::UnsupportedDvrOperation => {
+            HalError::Unsupported("DVR operation is unavailable for this DVR kind")
+        }
         maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::PidMismatch => {
             HalError::invalid_argument(
                 HalInvalidArgumentKind::NumericRange,

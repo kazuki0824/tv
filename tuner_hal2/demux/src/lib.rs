@@ -530,7 +530,7 @@ mod tests {
     }
 
     #[test]
-    fn record_dvr_start_requires_attach_before_running() {
+    fn record_dvr_start_succeeds_without_attached_filter() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux
             .register_dvr(DemuxRuntime::open_dvr_runtime(
@@ -544,13 +544,10 @@ mod tests {
 
         demux.configure_dvr_runtime(35).unwrap();
 
-        assert!(matches!(
-            demux.start_dvr_runtime(35),
-            Err(crate::runtime::DemuxRuntimeError {
-                kind: crate::runtime::DemuxRuntimeErrorKind::InvalidState,
-                id: Some(35)
-            })
-        ));
+        demux.start_dvr_runtime(35).unwrap();
+
+        assert_eq!(demux.dvr(35).unwrap().state(), DvrRuntimeState::Started);
+        assert!(demux.dvr(35).unwrap().attached_record_filters().is_empty());
     }
 
     #[test]
@@ -663,15 +660,25 @@ mod tests {
                 true,
             ))
             .unwrap();
+
+        assert_eq!(
+            demux.attach_dvr_filter(41, 999).unwrap_err().kind,
+            crate::runtime::DemuxRuntimeErrorKind::UnsupportedDvrOperation,
+        );
+        assert_eq!(
+            demux.detach_dvr_filter(41, 999).unwrap_err().kind,
+            crate::runtime::DemuxRuntimeErrorKind::UnsupportedDvrOperation,
+        );
+
         demux.configure_dvr_runtime(41).unwrap();
 
         assert_eq!(
             demux.attach_dvr_filter(41, 40).unwrap_err().kind,
-            crate::runtime::DemuxRuntimeErrorKind::InvalidState,
+            crate::runtime::DemuxRuntimeErrorKind::UnsupportedDvrOperation,
         );
         assert_eq!(
             demux.detach_dvr_filter(41, 40).unwrap_err().kind,
-            crate::runtime::DemuxRuntimeErrorKind::InvalidState,
+            crate::runtime::DemuxRuntimeErrorKind::UnsupportedDvrOperation,
         );
     }
 

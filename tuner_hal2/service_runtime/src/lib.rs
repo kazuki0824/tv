@@ -94,7 +94,10 @@ mod tests {
         multi2_encrypt_payload, test_support::expire_key_token, DescramblerKeySlot,
         DescramblerKeyToken, Multi2KeyMaterial,
     };
-    use maleicacid_tuner_hal2_domain_request::{RuntimeTransactionName, AIDL_TRANSACTION_TABLE};
+    use maleicacid_tuner_hal2_domain_request::{
+        DvrConfigureKind, DvrConfigureRequest, DvrOpenKind, FilterDelayHintKind,
+        FilterDelayHintRequest, OpenDvrRequest, RuntimeTransactionName, AIDL_TRANSACTION_TABLE,
+    };
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
@@ -1099,6 +1102,133 @@ mod tests {
                 raw: false,
             }),
         }
+    }
+
+    #[test]
+    fn attach_dvr_filter_maps_non_record_filter_to_invalid_argument() {
+        let mut runtime = TunerServiceRuntime::new();
+        let demux = runtime.allocate_demux_runtime().unwrap();
+        let filter = runtime.allocate_filter_runtime(demux.id.0).unwrap();
+        runtime
+            .register_demux_filter_runtime(
+                demux.id.0,
+                filter.id.0,
+                &OpenFilterRequest {
+                    open_type: FilterOpenType::TsRaw,
+                    buffer_size: 4096,
+                    callback_present: false,
+                },
+            )
+            .unwrap();
+
+        let dvr = runtime.allocate_dvr_runtime(demux.id.0).unwrap();
+        runtime
+            .register_demux_dvr_runtime(
+                demux.id.0,
+                dvr.id.0,
+                &OpenDvrRequest {
+                    kind: DvrOpenKind::Record,
+                    buffer_size: 8192,
+                },
+                true,
+            )
+            .unwrap();
+        runtime
+            .configure_dvr_runtime_request(
+                dvr.id.0,
+                DvrConfigureRequest {
+                    kind: DvrConfigureKind::Record,
+                    status_mask: 0,
+                    low_threshold_bytes: 0,
+                    high_threshold_bytes: 0,
+                },
+            )
+            .unwrap();
+
+        let error = runtime
+            .attach_dvr_filter(dvr.id.0, filter.id.0)
+            .unwrap_err();
+        assert!(matches!(error, HalError::InvalidArgument { .. }));
+    }
+
+    #[test]
+    fn media_filter_delay_hint_is_typed_unavailable() {
+        let mut runtime = TunerServiceRuntime::new();
+        let demux = runtime.allocate_demux_runtime().unwrap();
+        let filter = runtime.allocate_filter_runtime(demux.id.0).unwrap();
+        runtime
+            .register_demux_filter_runtime(
+                demux.id.0,
+                filter.id.0,
+                &OpenFilterRequest {
+                    open_type: FilterOpenType::TsAudio,
+                    buffer_size: 4096,
+                    callback_present: false,
+                },
+            )
+            .unwrap();
+
+        let error = runtime
+            .set_filter_delay_hint_request(
+                filter.id.0,
+                FilterDelayHintRequest {
+                    kind: FilterDelayHintKind::TimeDelayMs,
+                    value: 10,
+                },
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, HalError::Unsupported(_)));
+    }
+
+    #[test]
+    fn playback_dvr_filter_link_is_typed_unavailable() {
+        let mut runtime = TunerServiceRuntime::new();
+        let demux = runtime.allocate_demux_runtime().unwrap();
+        let filter = runtime.allocate_filter_runtime(demux.id.0).unwrap();
+        runtime
+            .register_demux_filter_runtime(
+                demux.id.0,
+                filter.id.0,
+                &OpenFilterRequest {
+                    open_type: FilterOpenType::TsRecord,
+                    buffer_size: 4096,
+                    callback_present: false,
+                },
+            )
+            .unwrap();
+        let dvr = runtime.allocate_dvr_runtime(demux.id.0).unwrap();
+        runtime
+            .register_demux_dvr_runtime(
+                demux.id.0,
+                dvr.id.0,
+                &OpenDvrRequest {
+                    kind: DvrOpenKind::Playback,
+                    buffer_size: 8192,
+                },
+                true,
+            )
+            .unwrap();
+        runtime
+            .configure_dvr_runtime_request(
+                dvr.id.0,
+                DvrConfigureRequest {
+                    kind: DvrConfigureKind::Playback,
+                    status_mask: 0,
+                    low_threshold_bytes: 0,
+                    high_threshold_bytes: 0,
+                },
+            )
+            .unwrap();
+
+        assert!(matches!(
+            runtime.attach_dvr_filter(dvr.id.0, filter.id.0),
+            Err(HalError::Unsupported(_))
+        ));
+        assert!(matches!(
+            runtime.detach_dvr_filter(dvr.id.0, filter.id.0),
+            Err(HalError::Unsupported(_))
+        ));
     }
 
     fn scrambled_payload_packet(pid: u16) -> [u8; maleicacid_tuner_hal2_common::TS_PACKET_SIZE] {

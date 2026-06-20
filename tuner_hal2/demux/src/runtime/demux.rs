@@ -38,6 +38,7 @@ pub enum DemuxRuntimeErrorKind {
     QueueMissing,
     InvalidState,
     InvalidDvrFilter,
+    UnsupportedDvrOperation,
     SourceLifecycle,
     SinkLifecycle,
     InvalidSourceSubtype,
@@ -83,6 +84,12 @@ impl DemuxRuntimeError {
         Self {
             kind: DemuxRuntimeErrorKind::InvalidDvrFilter,
             id: Some(filter_id),
+        }
+    }
+    pub const fn unsupported_dvr_operation(dvr_id: i32) -> Self {
+        Self {
+            kind: DemuxRuntimeErrorKind::UnsupportedDvrOperation,
+            id: Some(dvr_id),
         }
     }
     pub const fn source_lifecycle(filter_id: i32) -> Self {
@@ -621,6 +628,13 @@ impl DemuxRuntime {
         dvr_id: i32,
         filter_id: i32,
     ) -> Result<(), DemuxRuntimeError> {
+        let dvr = self
+            .dvrs
+            .get(&dvr_id)
+            .ok_or(DemuxRuntimeError::dvr_missing(dvr_id))?;
+        if dvr.kind() != DvrKind::Record {
+            return Err(DemuxRuntimeError::unsupported_dvr_operation(dvr_id));
+        }
         let filter = self
             .filters
             .get(&filter_id)
@@ -636,9 +650,6 @@ impl DemuxRuntime {
             super::dvr::DvrRuntimeState::Configured
             | super::dvr::DvrRuntimeState::Started
             | super::dvr::DvrRuntimeState::Stopped => {
-                if dvr.kind() != DvrKind::Record {
-                    return Err(DemuxRuntimeError::invalid_state(dvr_id));
-                }
                 dvr.attach_record_filter(filter_id);
                 Ok(())
             }
@@ -655,6 +666,13 @@ impl DemuxRuntime {
         dvr_id: i32,
         filter_id: i32,
     ) -> Result<(), DemuxRuntimeError> {
+        let dvr = self
+            .dvrs
+            .get(&dvr_id)
+            .ok_or(DemuxRuntimeError::dvr_missing(dvr_id))?;
+        if dvr.kind() != DvrKind::Record {
+            return Err(DemuxRuntimeError::unsupported_dvr_operation(dvr_id));
+        }
         self.filters
             .get(&filter_id)
             .ok_or(DemuxRuntimeError::filter_missing(filter_id))?;
@@ -666,9 +684,6 @@ impl DemuxRuntime {
             super::dvr::DvrRuntimeState::Configured
             | super::dvr::DvrRuntimeState::Started
             | super::dvr::DvrRuntimeState::Stopped => {
-                if dvr.kind() != DvrKind::Record {
-                    return Err(DemuxRuntimeError::invalid_state(dvr_id));
-                }
                 dvr.detach_record_filter(filter_id);
                 Ok(())
             }
@@ -687,9 +702,6 @@ impl DemuxRuntime {
             .ok_or(DemuxRuntimeError::dvr_missing(dvr_id))?;
         match dvr.state() {
             super::dvr::DvrRuntimeState::Configured | super::dvr::DvrRuntimeState::Stopped => {
-                if dvr.kind() == DvrKind::Record && !dvr.has_attached_record_filters() {
-                    return Err(DemuxRuntimeError::invalid_state(dvr_id));
-                }
                 dvr.mark_started();
                 Ok(())
             }

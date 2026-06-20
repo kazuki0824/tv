@@ -228,6 +228,16 @@ mod tests {
     }
 
     #[test]
+    fn typed_unsupported_dvr_operation_maps_to_unavailable() {
+        assert_eq!(
+            AidlStatusMapper::map_error(&HalError::Unsupported(
+                "DVR operation is unavailable for this DVR kind",
+            )),
+            TunerStatusCode::Unavailable
+        );
+    }
+
+    #[test]
     fn callback_fmq_eventflag_and_cleanup_failures_remain_unknown_not_unsupported() {
         let callback = HalError::callback_failed("IFilterCallback", "binder failure");
         let fmq = HalError::fmq_failed("write", "native failure");

@@ -110,6 +110,9 @@ impl TunerServiceRuntime {
             | DemuxRuntimeErrorKind::InvalidSinkSubtype => {
                 HalError::Unsupported("filter subtype is unsupported for requested operation")
             }
+            DemuxRuntimeErrorKind::UnsupportedDvrOperation => {
+                HalError::Unsupported("DVR operation is unavailable for this DVR kind")
+            }
             DemuxRuntimeErrorKind::PidMismatch => HalError::invalid_argument(
                 HalInvalidArgumentKind::NumericRange,
                 "filter PID does not match requested operation",
@@ -505,6 +508,9 @@ impl TunerServiceRuntime {
                 HalInvalidStateKind::InvalidLifecycle,
                 "DVR lifecycle is invalid for requested operation",
             ),
+            DemuxRuntimeErrorKind::UnsupportedDvrOperation => {
+                HalError::Unsupported("DVR operation is unavailable for this DVR kind")
+            }
             DemuxRuntimeErrorKind::GenerationExhausted => HalError::internal(
                 HalInternalKind::InvariantViolation,
                 "DVR generation exhausted",
