@@ -1,3 +1,11 @@
+# r50ema_wp_r07_filter_delay_queue_runtime_gate
+
+- WP-R07継続として、demux runtime の filter queue に queued-byte と delivery deadline を持たせ、`FilterDelayHint` を queue drain readiness へ接続した。
+- packet pipeline の generated event から raw/record/section/PES payload を filter queue へ積み、time/data-size hint の ready 判定が実queue状態を見るようにした。
+- filter `configure()` / `stop()` / `flush()` / queue clear / queue remove で delay queue state も同時に破棄するよう補正した。
+- demux unit test に、time-delay の再arm、data-size 閾値、time/data OR 判定、packet push 経由の raw queue enqueue を追加した。
+- `m maleicacid_tuner_hal2_demux_test maleicacid_tuner_hal2_service_runtime_test` は成功。rustfmt は実施。Rust unit test 実行、`atest`、VTS、実機確認は未実施。
+
 # r50el_test_mod_cleanup_and_future_work_retirement_unverified
 
 - Retired completed r51 future_work files for rollback/cleanup failure composition and tuner_hal2 failure-injection tests after moving the implemented scope into current code/tests.

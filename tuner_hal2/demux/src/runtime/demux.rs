@@ -1,9 +1,11 @@
 use std::collections::{BTreeMap, VecDeque};
 
-use crate::config::{AvStreamTypeConfig, FilterDelayHint, FilterOpenType, OpenFilterRequest};
+use crate::config::{
+    AvStreamTypeConfig, FilterDelayHint, FilterDelayReadiness, FilterOpenType, OpenFilterRequest,
+};
 use crate::packet_pipeline::{
-    FilterPipelineConfig, PacketPipeline, PipelineFilterView, PipelineInputKind, PipelineOpenKind,
-    PipelineReport, PipelineResetReport,
+    FilterPipelineConfig, PacketPipeline, PipelineFilterView, PipelineGeneratedEvent,
+    PipelineInputKind, PipelineOpenKind, PipelineReport, PipelineResetReport,
 };
 use crate::TsInputOrigin;
 
@@ -263,6 +265,7 @@ impl DemuxRuntime {
         queue.clear();
         if let Some(filter) = self.filters.get_mut(&filter_id) {
             filter.clear_queue_marker();
+            filter.clear_queued_payload_state();
         }
         Ok(())
     }
@@ -273,8 +276,72 @@ impl DemuxRuntime {
             .ok_or(DemuxRuntimeError::queue_missing(filter_id))?;
         if let Some(filter) = self.filters.get_mut(&filter_id) {
             filter.clear_queue_marker();
+            filter.clear_queued_payload_state();
         }
         Ok(())
+    }
+
+    pub fn enqueue_filter_queue_payload(
+        &mut self,
+        filter_id: i32,
+        payload: Vec<u8>,
+    ) -> Result<(), DemuxRuntimeError> {
+        let queue = self
+            .filter_queues
+            .get_mut(&filter_id)
+            .ok_or(DemuxRuntimeError::queue_missing(filter_id))?;
+        let payload_len = payload.len();
+        queue.push_back(payload);
+        let filter = self
+            .filters
+            .get_mut(&filter_id)
+            .ok_or(DemuxRuntimeError::filter_missing(filter_id))?;
+        filter.note_payload_queued(payload_len);
+        Ok(())
+    }
+
+    pub fn filter_delivery_readiness(
+        &self,
+        filter_id: i32,
+    ) -> Result<FilterDelayReadiness, DemuxRuntimeError> {
+        self.filters
+            .get(&filter_id)
+            .map(FilterRuntime::delivery_readiness)
+            .ok_or(DemuxRuntimeError::filter_missing(filter_id))
+    }
+
+    pub fn drain_filter_queue_for_delivery(
+        &mut self,
+        filter_id: i32,
+    ) -> Result<Vec<Vec<u8>>, DemuxRuntimeError> {
+        let readiness = self.filter_delivery_readiness(filter_id)?;
+        let filter = self
+            .filters
+            .get(&filter_id)
+            .ok_or(DemuxRuntimeError::filter_missing(filter_id))?;
+        if !filter.state().is_started() || readiness != FilterDelayReadiness::Ready {
+            return Ok(Vec::new());
+        }
+        let queue = self
+            .filter_queues
+            .get_mut(&filter_id)
+            .ok_or(DemuxRuntimeError::queue_missing(filter_id))?;
+        let drained: Vec<Vec<u8>> = queue.drain(..).collect();
+        let filter = self
+            .filters
+            .get_mut(&filter_id)
+            .ok_or(DemuxRuntimeError::filter_missing(filter_id))?;
+        filter.clear_queued_payload_state();
+        Ok(drained)
+    }
+
+    pub fn snapshot_filter_queue_bytes(&self, filter_id: i32) -> Option<Vec<u8>> {
+        let queue = self.filter_queues.get(&filter_id)?;
+        let mut out = Vec::new();
+        for payload in queue {
+            out.extend_from_slice(payload);
+        }
+        Some(out)
     }
 
     pub fn filter_snapshot(
@@ -304,19 +371,23 @@ impl DemuxRuntime {
         filter_id: i32,
         config: FilterPipelineConfig,
     ) -> Result<(), DemuxRuntimeError> {
-        let filter = self
-            .filters
-            .get_mut(&filter_id)
-            .ok_or(DemuxRuntimeError::filter_missing(filter_id))?;
-        let next = match next_generation(filter.generation()) {
-            Ok(next) => next,
-            Err(_) => {
-                filter.mark_failed();
-                return Err(DemuxRuntimeError::generation_exhausted(Some(filter_id)));
-            }
+        let queue_present = {
+            let filter = self
+                .filters
+                .get_mut(&filter_id)
+                .ok_or(DemuxRuntimeError::filter_missing(filter_id))?;
+            let next = match next_generation(filter.generation()) {
+                Ok(next) => next,
+                Err(_) => {
+                    filter.mark_failed();
+                    return Err(DemuxRuntimeError::generation_exhausted(Some(filter_id)));
+                }
+            };
+            filter.configure_with_generation(next, config.clone());
+            filter.clear_queued_payload_state();
+            filter.queue_present()
         };
-        filter.configure_with_generation(next, config.clone());
-        if filter.queue_present() {
+        if queue_present {
             self.filter_queues.entry(filter_id).or_default();
         } else {
             self.filter_queues.remove(&filter_id);
@@ -349,15 +420,23 @@ impl DemuxRuntime {
     }
 
     pub fn stop_filter_runtime(&mut self, filter_id: i32) -> Result<(), DemuxRuntimeError> {
-        let filter = self
+        let state = self
             .filters
-            .get_mut(&filter_id)
+            .get(&filter_id)
             .ok_or(DemuxRuntimeError::filter_missing(filter_id))?;
-        match filter.state() {
+        match state.state() {
             FilterRuntimeState::Started => {
                 self.pipeline
                     .stop_filter(filter_id)
                     .map_err(|_| DemuxRuntimeError::pipeline_failed())?;
+                if let Some(queue) = self.filter_queues.get_mut(&filter_id) {
+                    queue.clear();
+                }
+                let filter = self
+                    .filters
+                    .get_mut(&filter_id)
+                    .ok_or(DemuxRuntimeError::filter_missing(filter_id))?;
+                filter.clear_queued_payload_state();
                 filter.mark_stopped();
                 Ok(())
             }
@@ -371,20 +450,22 @@ impl DemuxRuntime {
     }
 
     pub fn flush_filter_runtime(&mut self, filter_id: i32) -> Result<(), DemuxRuntimeError> {
-        let filter = self
-            .filters
-            .get(&filter_id)
-            .ok_or(DemuxRuntimeError::filter_missing(filter_id))?;
-        match filter.state() {
+        let snapshot = self.filter_snapshot(filter_id)?;
+        match snapshot.state {
             FilterRuntimeState::Configured
             | FilterRuntimeState::Started
             | FilterRuntimeState::Stopped => {
-                let snapshot = filter.snapshot();
                 let origins = [(snapshot.source.origin(), snapshot.tpid.unwrap_or(-1))];
                 if snapshot.tpid.is_some() {
                     self.pipeline.flush_filter(filter_id, &origins);
                 } else {
                     self.pipeline.clear_filter_state_after_flush(filter_id);
+                }
+                if let Some(queue) = self.filter_queues.get_mut(&filter_id) {
+                    queue.clear();
+                }
+                if let Some(filter) = self.filters.get_mut(&filter_id) {
+                    filter.clear_queued_payload_state();
                 }
                 Ok(())
             }
@@ -477,10 +558,7 @@ impl DemuxRuntime {
         }
         let (source_boundary, outcome) = SourceBoundaryTxn::new(sink_filter_id).apply(self);
         outcome?;
-        let reset = source_boundary
-            .reset_report()
-            .cloned()
-            .unwrap_or_default();
+        let reset = source_boundary.reset_report().cloned().unwrap_or_default();
         self.filters
             .get_mut(&sink_filter_id)
             .ok_or(DemuxRuntimeError::filter_missing(sink_filter_id))?
@@ -558,6 +636,7 @@ impl DemuxRuntime {
         report.delivery_actions.extend(downstream.delivery_actions);
         report.generated_events.extend(downstream.generated_events);
         report.diagnostics.extend(downstream.diagnostics);
+        self.enqueue_queue_payloads_from_generated_events(packet, &report.generated_events);
         report
     }
 
@@ -612,5 +691,32 @@ impl DemuxRuntime {
         callback_present: bool,
     ) -> DvrRuntime {
         DvrRuntime::new_open_request(dvr_id, kind, generation, buffer_size, callback_present)
+    }
+
+    fn enqueue_queue_payloads_from_generated_events(
+        &mut self,
+        packet: &[u8],
+        generated_events: &[PipelineGeneratedEvent],
+    ) {
+        for event in generated_events {
+            let result = match event {
+                PipelineGeneratedEvent::DataReady { filter_id }
+                | PipelineGeneratedEvent::Record { filter_id } => {
+                    self.enqueue_filter_queue_payload(*filter_id, packet.to_vec())
+                }
+                PipelineGeneratedEvent::SectionPayloadReady {
+                    filter_id, bytes, ..
+                } => self.enqueue_filter_queue_payload(*filter_id, bytes.clone()),
+                PipelineGeneratedEvent::PesPacketReady {
+                    filter_id, packet, ..
+                } => self.enqueue_filter_queue_payload(*filter_id, packet.raw_bytes.clone()),
+                PipelineGeneratedEvent::Section { .. } | PipelineGeneratedEvent::Pes { .. } => {
+                    continue;
+                }
+            };
+            if result.is_err() {
+                continue;
+            }
+        }
     }
 }

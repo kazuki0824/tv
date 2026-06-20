@@ -3,6 +3,7 @@ use crate::config::{
 };
 use crate::packet_pipeline::{FilterPipelineConfig, PipelineFilterView, PipelineOpenKind};
 use crate::TsInputOrigin;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FilterRuntimeState {
@@ -67,6 +68,8 @@ pub struct FilterRuntimeSnapshot {
     pub av_backing_present: bool,
     pub av_stream_type_hint: Option<AvStreamTypeConfig>,
     pub delay_hints: FilterDelayHints,
+    pub queued_bytes: usize,
+    pub delivery_not_before: Option<Instant>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -85,6 +88,8 @@ pub struct FilterRuntime {
     av_backing_present: bool,
     av_stream_type_hint: Option<AvStreamTypeConfig>,
     delay_hints: FilterDelayHints,
+    queued_bytes: usize,
+    delivery_not_before: Option<Instant>,
 }
 
 impl FilterRuntime {
@@ -112,6 +117,8 @@ impl FilterRuntime {
             av_backing_present: false,
             av_stream_type_hint: None,
             delay_hints: FilterDelayHints::default(),
+            queued_bytes: 0,
+            delivery_not_before: None,
         }
     }
 
@@ -131,6 +138,8 @@ impl FilterRuntime {
             av_backing_present: false,
             av_stream_type_hint: None,
             delay_hints: FilterDelayHints::default(),
+            queued_bytes: 0,
+            delivery_not_before: None,
         }
     }
 
@@ -181,6 +190,25 @@ impl FilterRuntime {
         self.delay_hints
     }
 
+    pub fn queued_bytes(&self) -> usize {
+        self.queued_bytes
+    }
+
+    pub fn delivery_readiness(&self) -> crate::config::FilterDelayReadiness {
+        self.delay_hints.delivery_readiness(
+            self.delivery_not_before
+                .map(|deadline| {
+                    if deadline <= Instant::now() {
+                        u64::MAX
+                    } else {
+                        0
+                    }
+                })
+                .unwrap_or(u64::MAX),
+            self.queued_bytes,
+        )
+    }
+
     pub fn snapshot(&self) -> FilterRuntimeSnapshot {
         FilterRuntimeSnapshot {
             state: self.state,
@@ -196,6 +224,8 @@ impl FilterRuntime {
             av_backing_present: self.av_backing_present,
             av_stream_type_hint: self.av_stream_type_hint,
             delay_hints: self.delay_hints,
+            queued_bytes: self.queued_bytes,
+            delivery_not_before: self.delivery_not_before,
         }
     }
 
@@ -213,6 +243,8 @@ impl FilterRuntime {
         self.av_backing_present = snapshot.av_backing_present;
         self.av_stream_type_hint = snapshot.av_stream_type_hint;
         self.delay_hints = snapshot.delay_hints;
+        self.queued_bytes = snapshot.queued_bytes;
+        self.delivery_not_before = snapshot.delivery_not_before;
     }
 
     pub fn configure_with_generation(&mut self, generation: u64, config: FilterPipelineConfig) {
@@ -229,6 +261,8 @@ impl FilterRuntime {
         );
         self.av_backing_present = matches!(self.open_kind, PipelineOpenKind::Av);
         self.av_stream_type_hint = None;
+        self.queued_bytes = 0;
+        self.delivery_not_before = None;
         self.state = FilterRuntimeState::Configured;
     }
 
@@ -247,6 +281,23 @@ impl FilterRuntime {
                 self.delay_hints.data_size_delay_bytes = Some(bytes);
             }
         }
+        self.rearm_delivery_deadline_if_needed();
+    }
+
+    pub fn note_payload_queued(&mut self, bytes: usize) {
+        if bytes == 0 {
+            return;
+        }
+        let was_empty = self.queued_bytes == 0;
+        self.queued_bytes = self.queued_bytes.saturating_add(bytes);
+        if was_empty {
+            self.rearm_delivery_deadline_if_needed();
+        }
+    }
+
+    pub fn clear_queued_payload_state(&mut self) {
+        self.queued_bytes = 0;
+        self.delivery_not_before = None;
     }
 
     pub fn disconnect_source(&mut self) {
@@ -287,11 +338,30 @@ impl FilterRuntime {
 
     pub fn mark_started(&mut self) {
         self.state = FilterRuntimeState::Started;
+        self.rearm_delivery_deadline_if_needed();
     }
     pub fn mark_stopped(&mut self) {
         self.state = FilterRuntimeState::Stopped;
+        self.delivery_not_before = None;
     }
     pub fn mark_failed(&mut self) {
         self.state = FilterRuntimeState::Failed;
+        self.delivery_not_before = None;
+    }
+
+    fn rearm_delivery_deadline_if_needed(&mut self) {
+        if !self.state.is_started() || self.queued_bytes == 0 {
+            self.delivery_not_before = None;
+            return;
+        }
+        let Some(delay_ms) = self
+            .delay_hints
+            .time_delay_ms
+            .filter(|delay_ms| *delay_ms > 0)
+        else {
+            self.delivery_not_before = None;
+            return;
+        };
+        self.delivery_not_before = Instant::now().checked_add(Duration::from_millis(delay_ms));
     }
 }

@@ -46,6 +46,7 @@ mod tests {
     use super::*;
     use crate::packet_pipeline::{FilterPipelineConfig, PipelineOpenKind};
     use crate::runtime::filter::FilterSource;
+    use std::{thread, time::Duration};
 
     fn pes_start_packet(pid: u16, continuity_counter: u8, payload: &[u8]) -> [u8; 188] {
         let mut packet = [0xffu8; 188];
@@ -55,6 +56,39 @@ mod tests {
         packet[3] = 0x10 | (continuity_counter & 0x0f);
         packet[4..4 + payload.len()].copy_from_slice(payload);
         packet
+    }
+
+    fn raw_ts_packet(pid: u16, continuity_counter: u8, payload: &[u8]) -> [u8; 188] {
+        let mut packet = [0xffu8; 188];
+        packet[0] = 0x47;
+        packet[1] = 0x40 | (((pid >> 8) as u8) & 0x1f);
+        packet[2] = pid as u8;
+        packet[3] = 0x10 | (continuity_counter & 0x0f);
+        packet[4..4 + payload.len()].copy_from_slice(payload);
+        packet
+    }
+
+    fn started_section_filter_runtime(filter_id: i32) -> DemuxRuntime {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime_typed(
+                filter_id,
+                1,
+                FilterOpenType::TsSection,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                filter_id,
+                FilterPipelineConfig {
+                    tpid: Some(0x0020),
+                    raw: false,
+                },
+            )
+            .unwrap();
+        demux.start_filter_runtime(filter_id).unwrap();
+        demux
     }
 
     #[test]
@@ -83,7 +117,9 @@ mod tests {
                 step: SourceBoundaryStep::ValidateQueue
             })
         );
-        assert!(!txn.steps().contains(&SourceBoundaryStep::DisconnectDownstream));
+        assert!(!txn
+            .steps()
+            .contains(&SourceBoundaryStep::DisconnectDownstream));
         assert!(!txn.steps().contains(&SourceBoundaryStep::BumpGeneration));
         assert!(!demux.queue_exists(10));
     }
@@ -107,10 +143,7 @@ mod tests {
                 None,
             ))
             .unwrap();
-        demux
-            .filter_mut(41)
-            .unwrap()
-            .set_source_filter(40, 1);
+        demux.filter_mut(41).unwrap().set_source_filter(40, 1);
         assert!(!demux.queue_exists(41));
 
         let (txn, result) = SourceBoundaryTxn::new(41).apply(&mut demux);
@@ -122,7 +155,9 @@ mod tests {
                 step: SourceBoundaryStep::ValidateQueue
             })
         );
-        assert!(!txn.steps().contains(&SourceBoundaryStep::DisconnectDownstream));
+        assert!(!txn
+            .steps()
+            .contains(&SourceBoundaryStep::DisconnectDownstream));
         assert_eq!(
             demux.filter(41).unwrap().source(),
             FilterSource::SourceFilter {
@@ -541,6 +576,147 @@ mod tests {
         assert_eq!(
             hints.delivery_readiness(0, 188),
             FilterDelayReadiness::Ready
+        );
+    }
+
+    #[test]
+    fn filter_delay_hint_time_only_rearms_after_queue_drain() {
+        let mut demux = started_section_filter_runtime(30);
+        demux
+            .set_filter_delay_hint(30, FilterDelayHint::TimeDelayMs(20))
+            .unwrap();
+
+        demux
+            .enqueue_filter_queue_payload(30, vec![1, 2, 3])
+            .unwrap();
+        assert_eq!(
+            demux.filter_delivery_readiness(30).unwrap(),
+            FilterDelayReadiness::WaitingForTime
+        );
+        thread::sleep(Duration::from_millis(25));
+        assert_eq!(
+            demux.filter_delivery_readiness(30).unwrap(),
+            FilterDelayReadiness::Ready
+        );
+        assert_eq!(
+            demux.drain_filter_queue_for_delivery(30).unwrap(),
+            vec![vec![1, 2, 3]]
+        );
+
+        demux
+            .enqueue_filter_queue_payload(30, vec![4, 5, 6])
+            .unwrap();
+        assert_eq!(
+            demux.filter_delivery_readiness(30).unwrap(),
+            FilterDelayReadiness::WaitingForTime
+        );
+    }
+
+    #[test]
+    fn filter_delay_hint_data_size_waits_for_threshold() {
+        let mut demux = started_section_filter_runtime(31);
+        demux
+            .set_filter_delay_hint(31, FilterDelayHint::DataSizeDelayBytes(5))
+            .unwrap();
+
+        demux
+            .enqueue_filter_queue_payload(31, vec![1, 2, 3])
+            .unwrap();
+        assert_eq!(
+            demux.filter_delivery_readiness(31).unwrap(),
+            FilterDelayReadiness::WaitingForDataSize
+        );
+
+        demux.enqueue_filter_queue_payload(31, vec![4, 5]).unwrap();
+        assert_eq!(
+            demux.filter_delivery_readiness(31).unwrap(),
+            FilterDelayReadiness::Ready
+        );
+        assert_eq!(
+            demux.snapshot_filter_queue_bytes(31).unwrap(),
+            vec![1, 2, 3, 4, 5]
+        );
+    }
+
+    #[test]
+    fn filter_delay_hint_time_and_data_use_or_condition_for_delivery() {
+        let mut demux = started_section_filter_runtime(32);
+        demux
+            .set_filter_delay_hint(32, FilterDelayHint::TimeDelayMs(10_000))
+            .unwrap();
+        demux
+            .set_filter_delay_hint(32, FilterDelayHint::DataSizeDelayBytes(3))
+            .unwrap();
+
+        demux
+            .enqueue_filter_queue_payload(32, vec![1, 2, 3])
+            .unwrap();
+        assert_eq!(
+            demux.filter_delivery_readiness(32).unwrap(),
+            FilterDelayReadiness::Ready
+        );
+
+        let mut demux = started_section_filter_runtime(33);
+        demux
+            .set_filter_delay_hint(33, FilterDelayHint::TimeDelayMs(20))
+            .unwrap();
+        demux
+            .set_filter_delay_hint(33, FilterDelayHint::DataSizeDelayBytes(64))
+            .unwrap();
+
+        demux
+            .enqueue_filter_queue_payload(33, vec![1, 2, 3])
+            .unwrap();
+        assert_eq!(
+            demux.filter_delivery_readiness(33).unwrap(),
+            FilterDelayReadiness::WaitingForTime
+        );
+        thread::sleep(Duration::from_millis(25));
+        assert_eq!(
+            demux.filter_delivery_readiness(33).unwrap(),
+            FilterDelayReadiness::Ready
+        );
+    }
+
+    #[test]
+    fn push_ts_packet_enqueues_raw_filter_queue_payload_for_delay_gating() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime(
+                34,
+                1,
+                PipelineOpenKind::Raw,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                34,
+                FilterPipelineConfig {
+                    tpid: Some(0x0030),
+                    raw: false,
+                },
+            )
+            .unwrap();
+        demux.start_filter_runtime(34).unwrap();
+        demux
+            .set_filter_delay_hint(34, FilterDelayHint::DataSizeDelayBytes(188))
+            .unwrap();
+
+        let packet = raw_ts_packet(0x0030, 0, &[1, 2, 3, 4]);
+        let report = demux.push_ts_packet_from_origin(&packet, TsInputOrigin::Frontend);
+
+        assert_eq!(report.accepted_packets, 1);
+        assert!(report
+            .generated_events
+            .contains(&packet_pipeline::PipelineGeneratedEvent::DataReady { filter_id: 34 }));
+        assert_eq!(
+            demux.filter_delivery_readiness(34).unwrap(),
+            FilterDelayReadiness::Ready
+        );
+        assert_eq!(
+            demux.snapshot_filter_queue_bytes(34).unwrap(),
+            packet.to_vec()
         );
     }
 
