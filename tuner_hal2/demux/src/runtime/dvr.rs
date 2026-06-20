@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DvrKind {
     Record,
@@ -25,7 +27,7 @@ impl DvrRuntimeState {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DvrRuntimeSnapshot {
     pub state: DvrRuntimeState,
     pub generation: u64,
@@ -33,6 +35,8 @@ pub struct DvrRuntimeSnapshot {
     pub callback_present: bool,
     pub queue_present: bool,
     pub playback_assembler_present: bool,
+    pub attached_record_filters: BTreeSet<i32>,
+    pub pending_overflow: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -45,6 +49,8 @@ pub struct DvrRuntime {
     callback_present: bool,
     queue_present: bool,
     playback_assembler_present: bool,
+    attached_record_filters: BTreeSet<i32>,
+    pending_overflow: bool,
 }
 
 impl DvrRuntime {
@@ -67,6 +73,8 @@ impl DvrRuntime {
             callback_present,
             queue_present: false,
             playback_assembler_present: matches!(kind, DvrKind::Playback),
+            attached_record_filters: BTreeSet::new(),
+            pending_overflow: false,
         }
     }
     pub fn dvr_id(&self) -> i32 {
@@ -99,6 +107,15 @@ impl DvrRuntime {
     pub fn playback_assembler_present(&self) -> bool {
         self.playback_assembler_present
     }
+    pub fn attached_record_filters(&self) -> &BTreeSet<i32> {
+        &self.attached_record_filters
+    }
+    pub fn has_attached_record_filters(&self) -> bool {
+        !self.attached_record_filters.is_empty()
+    }
+    pub fn pending_overflow(&self) -> bool {
+        self.pending_overflow
+    }
 
     pub fn snapshot(&self) -> DvrRuntimeSnapshot {
         DvrRuntimeSnapshot {
@@ -108,6 +125,8 @@ impl DvrRuntime {
             callback_present: self.callback_present,
             queue_present: self.queue_present,
             playback_assembler_present: self.playback_assembler_present,
+            attached_record_filters: self.attached_record_filters.clone(),
+            pending_overflow: self.pending_overflow,
         }
     }
 
@@ -118,12 +137,15 @@ impl DvrRuntime {
         self.callback_present = snapshot.callback_present;
         self.queue_present = snapshot.queue_present;
         self.playback_assembler_present = snapshot.playback_assembler_present;
+        self.attached_record_filters = snapshot.attached_record_filters;
+        self.pending_overflow = snapshot.pending_overflow;
     }
 
     pub fn configure_with_generation(&mut self, generation: u64) {
         self.generation = generation;
         self.queue_present = true;
         self.playback_assembler_present = matches!(self.kind, DvrKind::Playback);
+        self.pending_overflow = false;
         self.state = DvrRuntimeState::Configured;
     }
 
@@ -137,6 +159,18 @@ impl DvrRuntime {
         let had = self.playback_assembler_present;
         self.playback_assembler_present = false;
         had
+    }
+    pub fn attach_record_filter(&mut self, filter_id: i32) {
+        self.attached_record_filters.insert(filter_id);
+    }
+    pub fn detach_record_filter(&mut self, filter_id: i32) {
+        self.attached_record_filters.remove(&filter_id);
+    }
+    pub fn clear_pending_overflow(&mut self) {
+        self.pending_overflow = false;
+    }
+    pub fn mark_pending_overflow(&mut self) {
+        self.pending_overflow = true;
     }
 
     pub fn mark_started(&mut self) {

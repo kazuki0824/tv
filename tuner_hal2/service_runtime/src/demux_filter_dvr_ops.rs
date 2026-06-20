@@ -146,6 +146,16 @@ impl TunerServiceRuntime {
         self.demux_filter_dvr_txn().start_dvr_runtime(dvr_id)
     }
 
+    pub fn attach_dvr_filter(&mut self, dvr_id: i32, filter_id: i32) -> Result<(), HalError> {
+        self.demux_filter_dvr_txn()
+            .attach_dvr_filter(dvr_id, filter_id)
+    }
+
+    pub fn detach_dvr_filter(&mut self, dvr_id: i32, filter_id: i32) -> Result<(), HalError> {
+        self.demux_filter_dvr_txn()
+            .detach_dvr_filter(dvr_id, filter_id)
+    }
+
     pub fn stop_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), HalError> {
         self.demux_filter_dvr_txn().stop_dvr_runtime(dvr_id)
     }
@@ -382,6 +392,122 @@ impl TunerServiceRuntime {
         )?;
         plan_object_method_dispatch(self, command_plan, executable_request)?;
         self.start_dvr_runtime(dvr_id)
+    }
+
+    pub fn attach_dvr_filter_for_object(
+        &mut self,
+        dvr_object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
+        dvr_generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
+        filter_object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
+        filter_generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
+        dispatch: ObjectMethodDispatchPreflight,
+    ) -> Result<(), HalError> {
+        let dvr_entry = self.public_entry_for_object_method(
+            dvr_object_id,
+            dvr_generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Dvr,
+        )?;
+        let filter_entry = self.public_entry_for_object_method(
+            filter_object_id,
+            filter_generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Filter,
+        )?;
+        let (dvr_demux_object_id, dvr_demux_generation) = match dvr_entry.owner() {
+            crate::RuntimeOwnerRelation::Demux { demux, generation } => (demux, generation),
+            _ => {
+                return Err(HalError::invalid_state(
+                    maleicacid_tuner_hal2_common::HalInvalidStateKind::InvalidLifecycle,
+                    "DVR owner demux is not live",
+                ))
+            }
+        };
+        self.public_runtime_id_for_object_method(
+            dvr_demux_object_id,
+            dvr_demux_generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Demux,
+        )?;
+        let (filter_demux_object_id, filter_demux_generation) = match filter_entry.owner() {
+            crate::RuntimeOwnerRelation::Demux { demux, generation } => (demux, generation),
+            _ => {
+                return Err(HalError::invalid_state(
+                    maleicacid_tuner_hal2_common::HalInvalidStateKind::InvalidLifecycle,
+                    "filter owner demux is not live",
+                ))
+            }
+        };
+        self.public_runtime_id_for_object_method(
+            filter_demux_object_id,
+            filter_demux_generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Demux,
+        )?;
+        if dvr_demux_object_id != filter_demux_object_id
+            || dvr_demux_generation != filter_demux_generation
+        {
+            return Err(HalError::invalid_argument(
+                maleicacid_tuner_hal2_common::HalInvalidArgumentKind::NumericRange,
+                "filter owner demux does not match DVR owner demux",
+            ));
+        }
+        dispatch.plan(self)?;
+        self.attach_dvr_filter(dvr_entry.public_id(), filter_entry.public_id())
+    }
+
+    pub fn detach_dvr_filter_for_object(
+        &mut self,
+        dvr_object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
+        dvr_generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
+        filter_object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
+        filter_generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
+        dispatch: ObjectMethodDispatchPreflight,
+    ) -> Result<(), HalError> {
+        let dvr_entry = self.public_entry_for_object_method(
+            dvr_object_id,
+            dvr_generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Dvr,
+        )?;
+        let filter_entry = self.public_entry_for_object_method(
+            filter_object_id,
+            filter_generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Filter,
+        )?;
+        let (dvr_demux_object_id, dvr_demux_generation) = match dvr_entry.owner() {
+            crate::RuntimeOwnerRelation::Demux { demux, generation } => (demux, generation),
+            _ => {
+                return Err(HalError::invalid_state(
+                    maleicacid_tuner_hal2_common::HalInvalidStateKind::InvalidLifecycle,
+                    "DVR owner demux is not live",
+                ))
+            }
+        };
+        self.public_runtime_id_for_object_method(
+            dvr_demux_object_id,
+            dvr_demux_generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Demux,
+        )?;
+        let (filter_demux_object_id, filter_demux_generation) = match filter_entry.owner() {
+            crate::RuntimeOwnerRelation::Demux { demux, generation } => (demux, generation),
+            _ => {
+                return Err(HalError::invalid_state(
+                    maleicacid_tuner_hal2_common::HalInvalidStateKind::InvalidLifecycle,
+                    "filter owner demux is not live",
+                ))
+            }
+        };
+        self.public_runtime_id_for_object_method(
+            filter_demux_object_id,
+            filter_demux_generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Demux,
+        )?;
+        if dvr_demux_object_id != filter_demux_object_id
+            || dvr_demux_generation != filter_demux_generation
+        {
+            return Err(HalError::invalid_argument(
+                maleicacid_tuner_hal2_common::HalInvalidArgumentKind::NumericRange,
+                "filter owner demux does not match DVR owner demux",
+            ));
+        }
+        dispatch.plan(self)?;
+        self.detach_dvr_filter(dvr_entry.public_id(), filter_entry.public_id())
     }
 
     pub fn stop_dvr_for_object(

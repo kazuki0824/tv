@@ -1,11 +1,16 @@
 use std::collections::{BTreeMap, VecDeque};
 
+use maleicacid_tuner_hal2_control_core::{
+    FmqDeliveryAction, FmqDeliveryTxn, FmqFailureKind, FmqObjectKind,
+};
+
 use crate::config::{
     AvStreamTypeConfig, FilterDelayHint, FilterDelayReadiness, FilterOpenType, OpenFilterRequest,
 };
 use crate::packet_pipeline::{
-    FilterPipelineConfig, PacketPipeline, PipelineFilterView, PipelineGeneratedEvent,
-    PipelineInputKind, PipelineOpenKind, PipelineReport, PipelineResetReport,
+    FilterPipelineConfig, PacketPipeline, PipelineDeliveryAction, PipelineFilterView,
+    PipelineGeneratedEvent, PipelineInputKind, PipelineOpenKind, PipelineReport,
+    PipelineResetReport,
 };
 use crate::TsInputOrigin;
 
@@ -13,6 +18,8 @@ use super::dvr::{DvrKind, DvrRuntime, DvrRuntimeSnapshot};
 use super::filter::{FilterRuntime, FilterRuntimeSnapshot, FilterRuntimeState};
 use super::queue_runtime::{QueueDescriptorSnapshot, QueueRuntime, QueueRuntimeError};
 use super::source_boundary::SourceBoundaryTxn;
+
+const TUNER_EVENT_DATA_READY: u32 = 1 << 0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DemuxRuntimeState {
@@ -30,6 +37,7 @@ pub enum DemuxRuntimeErrorKind {
     DvrMissing,
     QueueMissing,
     InvalidState,
+    InvalidDvrFilter,
     SourceLifecycle,
     SinkLifecycle,
     InvalidSourceSubtype,
@@ -69,6 +77,12 @@ impl DemuxRuntimeError {
         Self {
             kind: DemuxRuntimeErrorKind::InvalidState,
             id: Some(id),
+        }
+    }
+    pub const fn invalid_dvr_filter(filter_id: i32) -> Self {
+        Self {
+            kind: DemuxRuntimeErrorKind::InvalidDvrFilter,
+            id: Some(filter_id),
         }
     }
     pub const fn source_lifecycle(filter_id: i32) -> Self {
@@ -595,6 +609,70 @@ impl DemuxRuntime {
         Ok(())
     }
 
+    pub fn attach_dvr_filter(
+        &mut self,
+        dvr_id: i32,
+        filter_id: i32,
+    ) -> Result<(), DemuxRuntimeError> {
+        let filter = self
+            .filters
+            .get(&filter_id)
+            .ok_or(DemuxRuntimeError::filter_missing(filter_id))?;
+        if filter.state().is_closed_or_failed() || filter.open_kind() != PipelineOpenKind::Record {
+            return Err(DemuxRuntimeError::invalid_dvr_filter(filter_id));
+        }
+        let dvr = self
+            .dvrs
+            .get_mut(&dvr_id)
+            .ok_or(DemuxRuntimeError::dvr_missing(dvr_id))?;
+        match dvr.state() {
+            super::dvr::DvrRuntimeState::Configured
+            | super::dvr::DvrRuntimeState::Started
+            | super::dvr::DvrRuntimeState::Stopped => {
+                if dvr.kind() != DvrKind::Record {
+                    return Err(DemuxRuntimeError::invalid_state(dvr_id));
+                }
+                dvr.attach_record_filter(filter_id);
+                Ok(())
+            }
+            super::dvr::DvrRuntimeState::Open
+            | super::dvr::DvrRuntimeState::Closing
+            | super::dvr::DvrRuntimeState::CleanupFailed
+            | super::dvr::DvrRuntimeState::Closed
+            | super::dvr::DvrRuntimeState::Failed => Err(DemuxRuntimeError::invalid_state(dvr_id)),
+        }
+    }
+
+    pub fn detach_dvr_filter(
+        &mut self,
+        dvr_id: i32,
+        filter_id: i32,
+    ) -> Result<(), DemuxRuntimeError> {
+        self.filters
+            .get(&filter_id)
+            .ok_or(DemuxRuntimeError::filter_missing(filter_id))?;
+        let dvr = self
+            .dvrs
+            .get_mut(&dvr_id)
+            .ok_or(DemuxRuntimeError::dvr_missing(dvr_id))?;
+        match dvr.state() {
+            super::dvr::DvrRuntimeState::Configured
+            | super::dvr::DvrRuntimeState::Started
+            | super::dvr::DvrRuntimeState::Stopped => {
+                if dvr.kind() != DvrKind::Record {
+                    return Err(DemuxRuntimeError::invalid_state(dvr_id));
+                }
+                dvr.detach_record_filter(filter_id);
+                Ok(())
+            }
+            super::dvr::DvrRuntimeState::Open
+            | super::dvr::DvrRuntimeState::Closing
+            | super::dvr::DvrRuntimeState::CleanupFailed
+            | super::dvr::DvrRuntimeState::Closed
+            | super::dvr::DvrRuntimeState::Failed => Err(DemuxRuntimeError::invalid_state(dvr_id)),
+        }
+    }
+
     pub fn start_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {
         let dvr = self
             .dvrs
@@ -602,7 +680,7 @@ impl DemuxRuntime {
             .ok_or(DemuxRuntimeError::dvr_missing(dvr_id))?;
         match dvr.state() {
             super::dvr::DvrRuntimeState::Configured | super::dvr::DvrRuntimeState::Stopped => {
-                if dvr.kind() == DvrKind::Record {
+                if dvr.kind() == DvrKind::Record && !dvr.has_attached_record_filters() {
                     return Err(DemuxRuntimeError::invalid_state(dvr_id));
                 }
                 dvr.mark_started();
@@ -783,6 +861,7 @@ impl DemuxRuntime {
         report.delivery_actions.extend(downstream.delivery_actions);
         report.generated_events.extend(downstream.generated_events);
         report.diagnostics.extend(downstream.diagnostics);
+        self.mirror_record_dvr_packets(packet, &report.delivery_actions);
         self.enqueue_queue_payloads_from_generated_events(packet, &report.generated_events);
         report
     }
@@ -963,6 +1042,85 @@ impl DemuxRuntime {
         !dvr.state().is_closed_or_failed() && dvr.buffer_size() > 0
     }
 
+    fn mirror_record_dvr_packets(
+        &mut self,
+        packet: &[u8],
+        delivery_actions: &[PipelineDeliveryAction],
+    ) {
+        for action in delivery_actions {
+            let PipelineDeliveryAction::DvrMirror { dvr_id: filter_id } = *action else {
+                continue;
+            };
+            let target_ids = self.record_dvr_target_ids_for_filter(filter_id);
+            for dvr_id in target_ids {
+                let _ = self.try_write_record_dvr_packet(dvr_id, packet);
+            }
+        }
+    }
+
+    fn record_dvr_target_ids_for_filter(&self, filter_id: i32) -> Vec<i32> {
+        self.dvrs
+            .iter()
+            .filter_map(|(dvr_id, dvr)| {
+                (dvr.kind() == DvrKind::Record
+                    && dvr.state() == super::dvr::DvrRuntimeState::Started
+                    && dvr.attached_record_filters().contains(&filter_id))
+                .then_some(*dvr_id)
+            })
+            .collect()
+    }
+
+    fn try_write_record_dvr_packet(
+        &mut self,
+        dvr_id: i32,
+        packet: &[u8],
+    ) -> Result<(), DemuxRuntimeError> {
+        let Some(queue) = self.dvr_queue_runtimes.get(&dvr_id) else {
+            if let Some(dvr) = self.dvrs.get_mut(&dvr_id) {
+                dvr.mark_failed();
+            }
+            return Err(DemuxRuntimeError::queue_runtime_failure(dvr_id));
+        };
+        let available = queue
+            .available_to_write()
+            .map_err(|_| DemuxRuntimeError::queue_runtime_failure(dvr_id))?;
+        if available < packet.len() {
+            if let Some(dvr) = self.dvrs.get_mut(&dvr_id) {
+                dvr.mark_pending_overflow();
+            }
+            return Ok(());
+        }
+        let result = FmqDeliveryTxn::new(FmqObjectKind::DvrRecord).commit_payload(
+            packet.len(),
+            queue
+                .write_checked(packet)
+                .map_err(|_| FmqFailureKind::WriteFailed),
+            queue
+                .wake(TUNER_EVENT_DATA_READY)
+                .map_err(|_| FmqFailureKind::EventFlagWakeFailed),
+        );
+        match result.action {
+            FmqDeliveryAction::Continue => {
+                if let Some(dvr) = self.dvrs.get_mut(&dvr_id) {
+                    dvr.clear_pending_overflow();
+                }
+                Ok(())
+            }
+            FmqDeliveryAction::Overflow => {
+                if let Some(dvr) = self.dvrs.get_mut(&dvr_id) {
+                    dvr.mark_pending_overflow();
+                }
+                Ok(())
+            }
+            FmqDeliveryAction::RuntimeFailed(_) => {
+                if let Some(dvr) = self.dvrs.get_mut(&dvr_id) {
+                    dvr.mark_failed();
+                }
+                Err(DemuxRuntimeError::queue_runtime_failure(dvr_id))
+            }
+        }
+    }
+
     fn enqueue_queue_payloads_from_generated_events(
         &mut self,
         packet: &[u8],
@@ -988,5 +1146,21 @@ impl DemuxRuntime {
                 continue;
             }
         }
+    }
+
+    pub fn read_dvr_queue_bytes(&self, dvr_id: i32) -> Result<Vec<u8>, DemuxRuntimeError> {
+        let queue = self
+            .dvr_queue_runtimes
+            .get(&dvr_id)
+            .ok_or(DemuxRuntimeError::queue_missing(dvr_id))?;
+        let bytes = queue
+            .available_to_read()
+            .map_err(|_| DemuxRuntimeError::queue_runtime_failure(dvr_id))?;
+        let mut out = vec![0u8; bytes];
+        let read = queue
+            .read_into(&mut out)
+            .map_err(|_| DemuxRuntimeError::queue_runtime_failure(dvr_id))?;
+        out.truncate(read);
+        Ok(out)
     }
 }

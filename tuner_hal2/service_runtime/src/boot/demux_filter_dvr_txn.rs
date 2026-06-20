@@ -120,6 +120,7 @@ impl TunerServiceRuntime {
             ),
             DemuxRuntimeErrorKind::PipelineFailed
             | DemuxRuntimeErrorKind::DvrMissing
+            | DemuxRuntimeErrorKind::InvalidDvrFilter
             | DemuxRuntimeErrorKind::QueueMissing
             | DemuxRuntimeErrorKind::QueueRuntimeFailure => HalError::internal(
                 HalInternalKind::InvariantViolation,
@@ -494,6 +495,12 @@ impl TunerServiceRuntime {
                 HalInvalidStateKind::InvalidLifecycle,
                 "DVR runtime is missing",
             ),
+            DemuxRuntimeErrorKind::FilterMissing | DemuxRuntimeErrorKind::InvalidDvrFilter => {
+                HalError::invalid_argument(
+                    HalInvalidArgumentKind::NumericRange,
+                    "filter is invalid for requested DVR operation",
+                )
+            }
             DemuxRuntimeErrorKind::InvalidState => HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
                 "DVR lifecycle is invalid for requested operation",
@@ -505,7 +512,6 @@ impl TunerServiceRuntime {
             DemuxRuntimeErrorKind::PipelineFailed
             | DemuxRuntimeErrorKind::QueueMissing
             | DemuxRuntimeErrorKind::QueueRuntimeFailure
-            | DemuxRuntimeErrorKind::FilterMissing
             | DemuxRuntimeErrorKind::SourceLifecycle
             | DemuxRuntimeErrorKind::SinkLifecycle
             | DemuxRuntimeErrorKind::InvalidSourceSubtype
@@ -578,6 +584,68 @@ impl TunerServiceRuntime {
         };
         demux_runtime
             .start_dvr_runtime(dvr_id)
+            .map_err(Self::map_dvr_runtime_error)
+    }
+
+    fn transact_attach_dvr_filter(&mut self, dvr_id: i32, filter_id: i32) -> Result<(), HalError> {
+        let owner_demux_id = self.owner_demux_id_for_dvr(dvr_id)?;
+        let filter_entry = self
+            .registry
+            .filter(FilterRuntimeId(filter_id))
+            .ok_or_else(|| {
+                HalError::invalid_argument(
+                    HalInvalidArgumentKind::NumericRange,
+                    "filter registry entry is missing",
+                )
+            })?;
+        if filter_entry.owner_demux_id != owner_demux_id {
+            return Err(HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "filter owner demux does not match DVR owner demux",
+            ));
+        }
+        let Some(demux_runtime) = self
+            .registry
+            .demux_runtime_mut(DemuxRuntimeId(owner_demux_id))
+        else {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "owner demux runtime is missing",
+            ));
+        };
+        demux_runtime
+            .attach_dvr_filter(dvr_id, filter_id)
+            .map_err(Self::map_dvr_runtime_error)
+    }
+
+    fn transact_detach_dvr_filter(&mut self, dvr_id: i32, filter_id: i32) -> Result<(), HalError> {
+        let owner_demux_id = self.owner_demux_id_for_dvr(dvr_id)?;
+        let filter_entry = self
+            .registry
+            .filter(FilterRuntimeId(filter_id))
+            .ok_or_else(|| {
+                HalError::invalid_argument(
+                    HalInvalidArgumentKind::NumericRange,
+                    "filter registry entry is missing",
+                )
+            })?;
+        if filter_entry.owner_demux_id != owner_demux_id {
+            return Err(HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "filter owner demux does not match DVR owner demux",
+            ));
+        }
+        let Some(demux_runtime) = self
+            .registry
+            .demux_runtime_mut(DemuxRuntimeId(owner_demux_id))
+        else {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "owner demux runtime is missing",
+            ));
+        };
+        demux_runtime
+            .detach_dvr_filter(dvr_id, filter_id)
             .map_err(Self::map_dvr_runtime_error)
     }
 
@@ -785,6 +853,22 @@ impl<'a> DemuxFilterDvrTxn<'a> {
 
     pub(crate) fn start_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), HalError> {
         self.runtime.transact_start_dvr_runtime(dvr_id)
+    }
+
+    pub(crate) fn attach_dvr_filter(
+        &mut self,
+        dvr_id: i32,
+        filter_id: i32,
+    ) -> Result<(), HalError> {
+        self.runtime.transact_attach_dvr_filter(dvr_id, filter_id)
+    }
+
+    pub(crate) fn detach_dvr_filter(
+        &mut self,
+        dvr_id: i32,
+        filter_id: i32,
+    ) -> Result<(), HalError> {
+        self.runtime.transact_detach_dvr_filter(dvr_id, filter_id)
     }
 
     pub(crate) fn stop_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), HalError> {

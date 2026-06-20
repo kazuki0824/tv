@@ -451,6 +451,121 @@ mod tests {
     }
 
     #[test]
+    fn record_dvr_attach_detach_and_mirror_follow_runtime_contract() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime(
+                36,
+                1,
+                PipelineOpenKind::Record,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                36,
+                FilterPipelineConfig {
+                    tpid: Some(0x0100),
+                    raw: false,
+                },
+            )
+            .unwrap();
+        demux.start_filter_runtime(36).unwrap();
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                37,
+                1,
+                crate::runtime::DvrKind::Record,
+                8192,
+                true,
+            ))
+            .unwrap();
+        demux.configure_dvr_runtime(37).unwrap();
+
+        demux.attach_dvr_filter(37, 36).unwrap();
+        demux.attach_dvr_filter(37, 36).unwrap();
+        assert_eq!(demux.dvr(37).unwrap().attached_record_filters().len(), 1);
+
+        demux.start_dvr_runtime(37).unwrap();
+        assert_eq!(demux.dvr(37).unwrap().state(), DvrRuntimeState::Started);
+
+        let packet = raw_ts_packet(0x0100, 0, &[0x01, 0x02, 0x03, 0x04]);
+        let report = demux.push_ts_packet_from_origin(&packet, TsInputOrigin::Frontend);
+        assert!(report
+            .delivery_actions
+            .contains(&crate::packet_pipeline::PipelineDeliveryAction::DvrMirror { dvr_id: 36 }));
+        assert_eq!(demux.read_dvr_queue_bytes(37).unwrap(), packet.to_vec());
+
+        demux.stop_dvr_runtime(37).unwrap();
+        assert_eq!(demux.dvr(37).unwrap().state(), DvrRuntimeState::Stopped);
+
+        demux.detach_dvr_filter(37, 36).unwrap();
+        demux.detach_dvr_filter(37, 36).unwrap();
+        assert!(demux.dvr(37).unwrap().attached_record_filters().is_empty());
+    }
+
+    #[test]
+    fn record_dvr_attach_rejects_non_record_filter() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime(
+                38,
+                1,
+                PipelineOpenKind::Raw,
+                None,
+            ))
+            .unwrap();
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                39,
+                1,
+                crate::runtime::DvrKind::Record,
+                8192,
+                true,
+            ))
+            .unwrap();
+        demux.configure_dvr_runtime(39).unwrap();
+
+        let error = demux.attach_dvr_filter(39, 38).unwrap_err();
+        assert_eq!(
+            error.kind,
+            crate::runtime::DemuxRuntimeErrorKind::InvalidDvrFilter
+        );
+    }
+
+    #[test]
+    fn playback_dvr_rejects_attach_and_detach() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime(
+                40,
+                1,
+                PipelineOpenKind::Record,
+                None,
+            ))
+            .unwrap();
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                41,
+                1,
+                crate::runtime::DvrKind::Playback,
+                8192,
+                true,
+            ))
+            .unwrap();
+        demux.configure_dvr_runtime(41).unwrap();
+
+        assert_eq!(
+            demux.attach_dvr_filter(41, 40).unwrap_err().kind,
+            crate::runtime::DemuxRuntimeErrorKind::InvalidState,
+        );
+        assert_eq!(
+            demux.detach_dvr_filter(41, 40).unwrap_err().kind,
+            crate::runtime::DemuxRuntimeErrorKind::InvalidState,
+        );
+    }
+
+    #[test]
     fn demux_restore_preserves_exported_filter_queue_backing() {
         let mut demux = DemuxRuntime::new(1, 1);
         let request = OpenFilterRequest {

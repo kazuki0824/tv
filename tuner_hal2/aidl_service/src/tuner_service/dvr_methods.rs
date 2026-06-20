@@ -3,8 +3,8 @@ use super::{
     build_dvr_configure_request, close_object_after_close_preflight, execute_object_query_use_case,
     execute_object_runtime_use_case, execute_object_runtime_use_case_with_request_builder,
     plan_unavailable_object_method_use_case, status_from_hal_error, tuner_queue_desc_from_snapshot,
-    AidlMethodCall, BinderResult, DvrAidlObject, DvrFilterLinkRequest, DvrSettings, IDvr, IFilter,
-    Strong, TunerQueueDesc,
+    AidlMethodCall, AidlObjectGeneration, AidlObjectId, BinderResult, DvrAidlObject,
+    DvrFilterLinkRequest, DvrSettings, IDvr, IFilter, Strong, TunerQueueDesc,
 };
 
 impl IDvr for DvrAidlObject {
@@ -45,7 +45,7 @@ impl IDvr for DvrAidlObject {
         )
     }
     fn attachFilter(&self, filter: &Strong<dyn IFilter>) -> BinderResult<()> {
-        plan_unavailable_object_method_use_case(
+        execute_object_runtime_use_case_with_request_builder(
             &self.runtime(),
             self.handle(),
             || {
@@ -54,13 +54,21 @@ impl IDvr for DvrAidlObject {
                     filter_id: filter_handle.object_id().0,
                     filter_generation: filter_handle.generation().0,
                 };
-                Ok(AidlMethodCall::DvrAttachFilter(request))
+                Ok((AidlMethodCall::DvrAttachFilter(request), request))
             },
-            "DVR runtime is not connected in current tuner_hal2 scope",
+            |runtime, handle, _command_plan, _executable_request, dispatch_preflight, request| {
+                runtime.attach_dvr_filter_for_object(
+                    handle.object_id(),
+                    handle.generation(),
+                    AidlObjectId(request.filter_id),
+                    AidlObjectGeneration(request.filter_generation),
+                    dispatch_preflight,
+                )
+            },
         )
     }
     fn detachFilter(&self, filter: &Strong<dyn IFilter>) -> BinderResult<()> {
-        plan_unavailable_object_method_use_case(
+        execute_object_runtime_use_case_with_request_builder(
             &self.runtime(),
             self.handle(),
             || {
@@ -69,9 +77,17 @@ impl IDvr for DvrAidlObject {
                     filter_id: filter_handle.object_id().0,
                     filter_generation: filter_handle.generation().0,
                 };
-                Ok(AidlMethodCall::DvrDetachFilter(request))
+                Ok((AidlMethodCall::DvrDetachFilter(request), request))
             },
-            "DVR runtime is not connected in current tuner_hal2 scope",
+            |runtime, handle, _command_plan, _executable_request, dispatch_preflight, request| {
+                runtime.detach_dvr_filter_for_object(
+                    handle.object_id(),
+                    handle.generation(),
+                    AidlObjectId(request.filter_id),
+                    AidlObjectGeneration(request.filter_generation),
+                    dispatch_preflight,
+                )
+            },
         )
     }
     fn start(&self) -> BinderResult<()> {

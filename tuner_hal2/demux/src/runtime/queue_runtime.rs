@@ -85,6 +85,36 @@ impl QueueRuntime {
             .map_err(|err| map_data_path_error(err, "FMQ clear failed"))
     }
 
+    pub fn available_to_read(&self) -> Result<usize, QueueRuntimeError> {
+        self.queue
+            .available_to_read_result()
+            .map_err(|err| map_data_path_error(err, "FMQ available_to_read failed"))
+    }
+
+    pub fn available_to_write(&self) -> Result<usize, QueueRuntimeError> {
+        self.queue
+            .available_to_write_result()
+            .map_err(|err| map_data_path_error(err, "FMQ available_to_write failed"))
+    }
+
+    pub fn read_into(&self, data: &mut [u8]) -> Result<usize, QueueRuntimeError> {
+        self.queue
+            .read_into(data)
+            .map_err(|err| map_data_path_error(err, "FMQ read failed"))
+    }
+
+    pub fn write_checked(&self, data: &[u8]) -> Result<usize, QueueRuntimeError> {
+        self.queue
+            .write_checked(data)
+            .map_err(|err| map_data_path_error(err, "FMQ write failed"))
+    }
+
+    pub fn wake(&self, event_mask: u32) -> Result<(), QueueRuntimeError> {
+        self.queue
+            .wake(event_mask)
+            .map_err(|err| map_data_path_error(err, "FMQ wake failed"))
+    }
+
     pub fn export_descriptor(&self) -> Result<QueueDescriptorSnapshot, QueueRuntimeError> {
         let grantor_count = self
             .queue

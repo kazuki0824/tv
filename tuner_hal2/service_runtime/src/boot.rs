@@ -249,6 +249,7 @@ fn demux_runtime_error_to_hal(
             )
         }
         maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::InvalidState
+        | maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::InvalidDvrFilter
         | maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::SourceLifecycle
         | maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::SinkLifecycle => {
             HalError::invalid_state(
