@@ -164,6 +164,13 @@ pub struct DemuxRuntime {
     dvr_queue_runtimes: BTreeMap<i32, QueueRuntime>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PlaybackConsumeReport {
+    pub bytes_read: usize,
+    pub completed_packets: usize,
+    pub malformed_bytes: usize,
+}
+
 #[derive(Debug)]
 pub enum QueueDescriptorQueryError {
     FilterMissing(i32),
@@ -702,7 +709,6 @@ impl DemuxRuntime {
             .ok_or(DemuxRuntimeError::dvr_missing(dvr_id))?;
         match state.state() {
             super::dvr::DvrRuntimeState::Started => {
-                self.clear_dvr_queue_runtime(dvr_id)?;
                 let dvr = self
                     .dvrs
                     .get_mut(&dvr_id)
@@ -731,6 +737,11 @@ impl DemuxRuntime {
             | super::dvr::DvrRuntimeState::Started
             | super::dvr::DvrRuntimeState::Stopped => {
                 self.clear_dvr_queue_runtime(dvr_id)?;
+                if let Some(dvr) = self.dvrs.get_mut(&dvr_id) {
+                    if dvr.kind() == DvrKind::Playback {
+                        dvr.clear_playback_completion();
+                    }
+                }
                 Ok(())
             }
             super::dvr::DvrRuntimeState::Open => Err(DemuxRuntimeError::invalid_state(dvr_id)),
@@ -763,6 +774,128 @@ impl DemuxRuntime {
             | super::dvr::DvrRuntimeState::Closed
             | super::dvr::DvrRuntimeState::Failed => Err(DemuxRuntimeError::invalid_state(dvr_id)),
         }
+    }
+
+    pub fn write_playback_dvr_queue_bytes(
+        &mut self,
+        dvr_id: i32,
+        data: &[u8],
+    ) -> Result<usize, DemuxRuntimeError> {
+        let dvr = self
+            .dvrs
+            .get(&dvr_id)
+            .ok_or(DemuxRuntimeError::dvr_missing(dvr_id))?;
+        match dvr.state() {
+            super::dvr::DvrRuntimeState::Configured
+            | super::dvr::DvrRuntimeState::Started
+            | super::dvr::DvrRuntimeState::Stopped => {
+                if dvr.kind() != DvrKind::Playback {
+                    return Err(DemuxRuntimeError::invalid_state(dvr_id));
+                }
+            }
+            _ => return Err(DemuxRuntimeError::invalid_state(dvr_id)),
+        }
+        let Some(queue) = self.dvr_queue_runtimes.get(&dvr_id) else {
+            if let Some(dvr) = self.dvrs.get_mut(&dvr_id) {
+                dvr.mark_failed();
+            }
+            return Err(DemuxRuntimeError::queue_runtime_failure(dvr_id));
+        };
+        if data.is_empty() {
+            return Ok(0);
+        }
+        let available = match queue.available_to_write() {
+            Ok(available) => available,
+            Err(_) => {
+                if let Some(dvr) = self.dvrs.get_mut(&dvr_id) {
+                    dvr.mark_failed();
+                }
+                return Err(DemuxRuntimeError::queue_runtime_failure(dvr_id));
+            }
+        };
+        if available < data.len() {
+            return Ok(0);
+        }
+        let result = FmqDeliveryTxn::new(FmqObjectKind::DvrPlayback).commit_payload(
+            data.len(),
+            queue
+                .write_checked(data)
+                .map_err(|_| FmqFailureKind::WriteFailed),
+            queue
+                .wake(TUNER_EVENT_DATA_READY)
+                .map_err(|_| FmqFailureKind::EventFlagWakeFailed),
+        );
+        match result.action {
+            FmqDeliveryAction::Continue => Ok(result.bytes),
+            FmqDeliveryAction::Overflow => Ok(0),
+            FmqDeliveryAction::RuntimeFailed(_) => {
+                if let Some(dvr) = self.dvrs.get_mut(&dvr_id) {
+                    dvr.mark_failed();
+                }
+                Err(DemuxRuntimeError::queue_runtime_failure(dvr_id))
+            }
+        }
+    }
+
+    pub fn consume_playback_dvr_queue(
+        &mut self,
+        dvr_id: i32,
+    ) -> Result<PlaybackConsumeReport, DemuxRuntimeError> {
+        let dvr = self
+            .dvrs
+            .get(&dvr_id)
+            .ok_or(DemuxRuntimeError::dvr_missing(dvr_id))?;
+        if dvr.kind() != DvrKind::Playback || dvr.state() != super::dvr::DvrRuntimeState::Started {
+            return Ok(PlaybackConsumeReport::default());
+        }
+        let queue = self
+            .dvr_queue_runtimes
+            .get(&dvr_id)
+            .ok_or(DemuxRuntimeError::queue_missing(dvr_id))?;
+        let available = match queue.available_to_read() {
+            Ok(available) => available,
+            Err(_) => {
+                if let Some(dvr) = self.dvrs.get_mut(&dvr_id) {
+                    dvr.mark_failed();
+                }
+                return Err(DemuxRuntimeError::queue_runtime_failure(dvr_id));
+            }
+        };
+        if available == 0 {
+            return Ok(PlaybackConsumeReport::default());
+        }
+        let mut payload = vec![0u8; available];
+        let read = match queue.read_into(&mut payload) {
+            Ok(read) => read,
+            Err(_) => {
+                if let Some(dvr) = self.dvrs.get_mut(&dvr_id) {
+                    dvr.mark_failed();
+                }
+                return Err(DemuxRuntimeError::queue_runtime_failure(dvr_id));
+            }
+        };
+        if read == 0 {
+            if let Some(dvr) = self.dvrs.get_mut(&dvr_id) {
+                dvr.mark_failed();
+            }
+            return Err(DemuxRuntimeError::queue_runtime_failure(dvr_id));
+        }
+        payload.truncate(read);
+        let drain = {
+            let dvr = self
+                .dvrs
+                .get_mut(&dvr_id)
+                .ok_or(DemuxRuntimeError::dvr_missing(dvr_id))?;
+            dvr.push_playback_bytes(&payload)
+        };
+        for packet in &drain.packets {
+            let _ = self.push_ts_packet_from_origin(packet, TsInputOrigin::Playback);
+        }
+        Ok(PlaybackConsumeReport {
+            bytes_read: read,
+            completed_packets: drain.packets.len(),
+            malformed_bytes: drain.malformed_bytes,
+        })
     }
 
     pub fn disconnect_filter_source(
@@ -1172,7 +1305,21 @@ impl DemuxRuntime {
         }
     }
 
-    pub fn read_dvr_queue_bytes(&self, dvr_id: i32) -> Result<Vec<u8>, DemuxRuntimeError> {
+    pub fn read_record_dvr_queue_bytes(&self, dvr_id: i32) -> Result<Vec<u8>, DemuxRuntimeError> {
+        let dvr = self
+            .dvrs
+            .get(&dvr_id)
+            .ok_or(DemuxRuntimeError::dvr_missing(dvr_id))?;
+        match dvr.state() {
+            super::dvr::DvrRuntimeState::Configured
+            | super::dvr::DvrRuntimeState::Started
+            | super::dvr::DvrRuntimeState::Stopped => {
+                if dvr.kind() != DvrKind::Record {
+                    return Err(DemuxRuntimeError::invalid_state(dvr_id));
+                }
+            }
+            _ => return Err(DemuxRuntimeError::invalid_state(dvr_id)),
+        }
         let queue = self
             .dvr_queue_runtimes
             .get(&dvr_id)

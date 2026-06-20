@@ -1,5 +1,7 @@
 use std::collections::BTreeSet;
 
+use maleicacid_tuner_hal2_common::{TsPacketBufferDrain, TsPacketCompletionBuffer};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DvrKind {
     Record,
@@ -36,6 +38,7 @@ pub struct DvrRuntimeSnapshot {
     pub status_check_interval_ms: u64,
     pub queue_present: bool,
     pub playback_assembler_present: bool,
+    pub playback_completion: TsPacketCompletionBuffer,
     pub attached_record_filters: BTreeSet<i32>,
     pub pending_overflow: bool,
 }
@@ -51,6 +54,7 @@ pub struct DvrRuntime {
     status_check_interval_ms: u64,
     queue_present: bool,
     playback_assembler_present: bool,
+    playback_completion: TsPacketCompletionBuffer,
     attached_record_filters: BTreeSet<i32>,
     pending_overflow: bool,
 }
@@ -76,6 +80,7 @@ impl DvrRuntime {
             status_check_interval_ms: 0,
             queue_present: false,
             playback_assembler_present: matches!(kind, DvrKind::Playback),
+            playback_completion: TsPacketCompletionBuffer::default(),
             attached_record_filters: BTreeSet::new(),
             pending_overflow: false,
         }
@@ -113,6 +118,9 @@ impl DvrRuntime {
     pub fn playback_assembler_present(&self) -> bool {
         self.playback_assembler_present
     }
+    pub fn playback_completion(&self) -> &TsPacketCompletionBuffer {
+        &self.playback_completion
+    }
     pub fn attached_record_filters(&self) -> &BTreeSet<i32> {
         &self.attached_record_filters
     }
@@ -132,6 +140,7 @@ impl DvrRuntime {
             status_check_interval_ms: self.status_check_interval_ms,
             queue_present: self.queue_present,
             playback_assembler_present: self.playback_assembler_present,
+            playback_completion: self.playback_completion.clone(),
             attached_record_filters: self.attached_record_filters.clone(),
             pending_overflow: self.pending_overflow,
         }
@@ -145,6 +154,7 @@ impl DvrRuntime {
         self.status_check_interval_ms = snapshot.status_check_interval_ms;
         self.queue_present = snapshot.queue_present;
         self.playback_assembler_present = snapshot.playback_assembler_present;
+        self.playback_completion = snapshot.playback_completion;
         self.attached_record_filters = snapshot.attached_record_filters;
         self.pending_overflow = snapshot.pending_overflow;
     }
@@ -153,6 +163,7 @@ impl DvrRuntime {
         self.generation = generation;
         self.queue_present = true;
         self.playback_assembler_present = matches!(self.kind, DvrKind::Playback);
+        self.playback_completion = TsPacketCompletionBuffer::default();
         self.pending_overflow = false;
         self.state = DvrRuntimeState::Configured;
     }
@@ -166,7 +177,14 @@ impl DvrRuntime {
     pub fn reset_playback_assembler_marker(&mut self) -> bool {
         let had = self.playback_assembler_present;
         self.playback_assembler_present = false;
+        self.playback_completion = TsPacketCompletionBuffer::default();
         had
+    }
+    pub fn push_playback_bytes(&mut self, data: &[u8]) -> TsPacketBufferDrain {
+        self.playback_completion.push(data)
+    }
+    pub fn clear_playback_completion(&mut self) {
+        self.playback_completion = TsPacketCompletionBuffer::default();
     }
     pub fn attach_record_filter(&mut self, filter_id: i32) {
         self.attached_record_filters.insert(filter_id);

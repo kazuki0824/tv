@@ -13,7 +13,7 @@ pub use configure_txn::{
 };
 pub use demux::{
     DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind, DemuxRuntimeSnapshot,
-    DemuxRuntimeState, QueueDescriptorQueryError,
+    DemuxRuntimeState, PlaybackConsumeReport, QueueDescriptorQueryError,
 };
 pub use dvr::{DvrKind, DvrRuntime, DvrRuntimeSnapshot, DvrRuntimeState};
 pub use filter::{FilterRuntime, FilterRuntimeSnapshot, FilterRuntimeState, FilterSource};

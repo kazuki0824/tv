@@ -38,9 +38,9 @@ pub use runtime::{
     DemuxRuntime, DemuxRuntimeState, DemuxStreamGeneration, DvrConfigureOutcome, DvrConfigureStep,
     DvrConfigureTxn, DvrRuntime, DvrRuntimeState, FilterConfigureOutcome, FilterConfigureStep,
     FilterConfigureTxn, FilterRuntime, FilterRuntimeState, GenerationBoundaryTxn,
-    QueueDescriptorQueryError, QueueDescriptorSnapshot, QueueGrantorDescriptorSnapshot,
-    QueueRuntime, QueueRuntimeError, QueueRuntimeErrorKind, RuntimeIoRegistry,
-    SourceBoundaryOutcome, SourceBoundaryStep, SourceBoundaryTxn,
+    PlaybackConsumeReport, QueueDescriptorQueryError, QueueDescriptorSnapshot,
+    QueueGrantorDescriptorSnapshot, QueueRuntime, QueueRuntimeError, QueueRuntimeErrorKind,
+    RuntimeIoRegistry, SourceBoundaryOutcome, SourceBoundaryStep, SourceBoundaryTxn,
 };
 
 #[cfg(test)]
@@ -404,8 +404,56 @@ mod tests {
     fn playback_dvr_start_stop_and_flush_follow_state_machine() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux
-            .register_dvr(DemuxRuntime::open_dvr_runtime(
+            .register_filter(DemuxRuntime::open_filter_runtime(
                 34,
+                1,
+                PipelineOpenKind::Raw,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                34,
+                FilterPipelineConfig {
+                    tpid: Some(0x0100),
+                    raw: false,
+                },
+            )
+            .unwrap();
+        demux.start_filter_runtime(34).unwrap();
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime(
+                36,
+                1,
+                PipelineOpenKind::Record,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                36,
+                FilterPipelineConfig {
+                    tpid: Some(0x0100),
+                    raw: false,
+                },
+            )
+            .unwrap();
+        demux.start_filter_runtime(36).unwrap();
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                37,
+                1,
+                crate::runtime::DvrKind::Record,
+                8192,
+                true,
+            ))
+            .unwrap();
+        demux.configure_dvr_runtime(37).unwrap();
+        demux.attach_dvr_filter(37, 36).unwrap();
+        demux.start_dvr_runtime(37).unwrap();
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                35,
                 1,
                 crate::runtime::DvrKind::Playback,
                 8192,
@@ -413,17 +461,72 @@ mod tests {
             ))
             .unwrap();
 
-        demux.configure_dvr_runtime(34).unwrap();
-        assert_eq!(demux.dvr(34).unwrap().state(), DvrRuntimeState::Configured);
+        demux.configure_dvr_runtime(35).unwrap();
+        assert_eq!(demux.dvr(35).unwrap().state(), DvrRuntimeState::Configured);
 
-        demux.start_dvr_runtime(34).unwrap();
-        assert_eq!(demux.dvr(34).unwrap().state(), DvrRuntimeState::Started);
+        let first_packet = raw_ts_packet(0x0100, 0, &[0x01, 0x02, 0x03, 0x04]);
+        assert_eq!(
+            demux
+                .write_playback_dvr_queue_bytes(35, &first_packet)
+                .unwrap(),
+            188
+        );
+        assert_eq!(
+            demux.consume_playback_dvr_queue(35).unwrap(),
+            crate::runtime::PlaybackConsumeReport::default()
+        );
+        assert_eq!(
+            demux.snapshot_filter_queue_bytes(34).unwrap(),
+            Vec::<u8>::new()
+        );
 
-        demux.flush_dvr_runtime(34).unwrap();
-        assert_eq!(demux.dvr(34).unwrap().state(), DvrRuntimeState::Started);
+        demux.start_dvr_runtime(35).unwrap();
+        assert_eq!(demux.dvr(35).unwrap().state(), DvrRuntimeState::Started);
+        let first_consume = demux.consume_playback_dvr_queue(35).unwrap();
+        assert_eq!(first_consume.bytes_read, 188);
+        assert_eq!(first_consume.completed_packets, 1);
+        assert_eq!(
+            demux.snapshot_filter_queue_bytes(34).unwrap(),
+            first_packet.to_vec()
+        );
+        assert_eq!(
+            demux.read_record_dvr_queue_bytes(37).unwrap(),
+            Vec::<u8>::new()
+        );
 
-        demux.stop_dvr_runtime(34).unwrap();
-        assert_eq!(demux.dvr(34).unwrap().state(), DvrRuntimeState::Stopped);
+        demux.stop_dvr_runtime(35).unwrap();
+        assert_eq!(demux.dvr(35).unwrap().state(), DvrRuntimeState::Stopped);
+
+        let second_packet = raw_ts_packet(0x0100, 1, &[0x05, 0x06, 0x07, 0x08]);
+        assert_eq!(
+            demux
+                .write_playback_dvr_queue_bytes(35, &second_packet)
+                .unwrap(),
+            188
+        );
+        demux.start_dvr_runtime(35).unwrap();
+        let second_consume = demux.consume_playback_dvr_queue(35).unwrap();
+        assert_eq!(second_consume.bytes_read, 188);
+        assert_eq!(second_consume.completed_packets, 1);
+        assert_eq!(
+            demux.snapshot_filter_queue_bytes(34).unwrap(),
+            [first_packet.to_vec(), second_packet.to_vec()].concat()
+        );
+
+        demux.stop_dvr_runtime(35).unwrap();
+        assert_eq!(demux.dvr(35).unwrap().state(), DvrRuntimeState::Stopped);
+        let third_packet = raw_ts_packet(0x0100, 2, &[0x09, 0x0a, 0x0b, 0x0c]);
+        assert_eq!(
+            demux
+                .write_playback_dvr_queue_bytes(35, &third_packet)
+                .unwrap(),
+            188
+        );
+        demux.flush_dvr_runtime(35).unwrap();
+        demux.start_dvr_runtime(35).unwrap();
+        let after_flush = demux.consume_playback_dvr_queue(35).unwrap();
+        assert_eq!(after_flush.bytes_read, 0);
+        assert_eq!(after_flush.completed_packets, 0);
     }
 
     #[test]
@@ -494,10 +597,17 @@ mod tests {
         assert!(report
             .delivery_actions
             .contains(&crate::packet_pipeline::PipelineDeliveryAction::DvrMirror { dvr_id: 36 }));
-        assert_eq!(demux.read_dvr_queue_bytes(37).unwrap(), packet.to_vec());
+        assert_eq!(
+            demux.read_record_dvr_queue_bytes(37).unwrap(),
+            packet.to_vec()
+        );
 
         demux.stop_dvr_runtime(37).unwrap();
         assert_eq!(demux.dvr(37).unwrap().state(), DvrRuntimeState::Stopped);
+        assert_eq!(
+            demux.read_record_dvr_queue_bytes(37).unwrap(),
+            Vec::<u8>::new()
+        );
 
         demux.detach_dvr_filter(37, 36).unwrap();
         demux.detach_dvr_filter(37, 36).unwrap();
@@ -592,6 +702,187 @@ mod tests {
         demux.set_dvr_status_check_interval(42, 750).unwrap();
         assert_eq!(demux.dvr(42).unwrap().status_check_interval_ms(), 750);
         assert_eq!(demux.dvr(42).unwrap().state(), DvrRuntimeState::Stopped);
+    }
+
+    #[test]
+    fn record_dvr_read_rejects_wrong_kind_or_unconfigured_state() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                43,
+                1,
+                crate::runtime::DvrKind::Record,
+                8192,
+                true,
+            ))
+            .unwrap();
+        assert_eq!(
+            demux.read_record_dvr_queue_bytes(43).unwrap_err().kind,
+            crate::runtime::DemuxRuntimeErrorKind::InvalidState
+        );
+        demux.configure_dvr_runtime(43).unwrap();
+        assert_eq!(
+            demux.read_record_dvr_queue_bytes(43).unwrap(),
+            Vec::<u8>::new()
+        );
+
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                44,
+                1,
+                crate::runtime::DvrKind::Playback,
+                8192,
+                true,
+            ))
+            .unwrap();
+        demux.configure_dvr_runtime(44).unwrap();
+        assert_eq!(
+            demux.read_record_dvr_queue_bytes(44).unwrap_err().kind,
+            crate::runtime::DemuxRuntimeErrorKind::InvalidState
+        );
+    }
+
+    #[test]
+    fn playback_dvr_write_rejects_wrong_kind_or_unconfigured_state() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        let packet = raw_ts_packet(0x0100, 0, &[0x01, 0x02, 0x03, 0x04]);
+
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                45,
+                1,
+                crate::runtime::DvrKind::Playback,
+                8192,
+                true,
+            ))
+            .unwrap();
+        assert_eq!(
+            demux
+                .write_playback_dvr_queue_bytes(45, &packet)
+                .unwrap_err()
+                .kind,
+            crate::runtime::DemuxRuntimeErrorKind::InvalidState
+        );
+
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                46,
+                1,
+                crate::runtime::DvrKind::Record,
+                8192,
+                true,
+            ))
+            .unwrap();
+        demux.configure_dvr_runtime(46).unwrap();
+        assert_eq!(
+            demux
+                .write_playback_dvr_queue_bytes(46, &packet)
+                .unwrap_err()
+                .kind,
+            crate::runtime::DemuxRuntimeErrorKind::InvalidState
+        );
+    }
+
+    #[test]
+    fn playback_dvr_write_uses_backpressure_without_eviction() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        let packet = raw_ts_packet(0x0100, 0, &[0x01, 0x02, 0x03, 0x04]);
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                47,
+                1,
+                crate::runtime::DvrKind::Playback,
+                64,
+                true,
+            ))
+            .unwrap();
+        demux.configure_dvr_runtime(47).unwrap();
+
+        assert_eq!(
+            demux.write_playback_dvr_queue_bytes(47, &packet).unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn playback_dvr_preserves_partial_packet_across_stop_and_clears_it_on_flush() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime(
+                48,
+                1,
+                PipelineOpenKind::Raw,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                48,
+                FilterPipelineConfig {
+                    tpid: Some(0x0100),
+                    raw: false,
+                },
+            )
+            .unwrap();
+        demux.start_filter_runtime(48).unwrap();
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                49,
+                1,
+                crate::runtime::DvrKind::Playback,
+                8192,
+                true,
+            ))
+            .unwrap();
+        demux.configure_dvr_runtime(49).unwrap();
+        demux.start_dvr_runtime(49).unwrap();
+
+        let packet = raw_ts_packet(0x0100, 0, &[0x01, 0x02, 0x03, 0x04]);
+        assert_eq!(
+            demux
+                .write_playback_dvr_queue_bytes(49, &packet[..100])
+                .unwrap(),
+            100
+        );
+        let first = demux.consume_playback_dvr_queue(49).unwrap();
+        assert_eq!(first.completed_packets, 0);
+        assert_eq!(
+            demux.snapshot_filter_queue_bytes(48).unwrap(),
+            Vec::<u8>::new()
+        );
+
+        demux.stop_dvr_runtime(49).unwrap();
+        assert_eq!(
+            demux
+                .write_playback_dvr_queue_bytes(49, &packet[100..])
+                .unwrap(),
+            88
+        );
+        demux.start_dvr_runtime(49).unwrap();
+        let second = demux.consume_playback_dvr_queue(49).unwrap();
+        assert_eq!(second.completed_packets, 1);
+        assert_eq!(
+            demux.snapshot_filter_queue_bytes(48).unwrap(),
+            packet.to_vec()
+        );
+
+        assert_eq!(
+            demux
+                .write_playback_dvr_queue_bytes(49, &packet[..100])
+                .unwrap(),
+            100
+        );
+        let third = demux.consume_playback_dvr_queue(49).unwrap();
+        assert_eq!(third.completed_packets, 0);
+        demux.flush_dvr_runtime(49).unwrap();
+        assert_eq!(
+            demux
+                .write_playback_dvr_queue_bytes(49, &packet[100..])
+                .unwrap(),
+            88
+        );
+        let after_flush = demux.consume_playback_dvr_queue(49).unwrap();
+        assert_eq!(after_flush.completed_packets, 0);
     }
 
     #[test]
