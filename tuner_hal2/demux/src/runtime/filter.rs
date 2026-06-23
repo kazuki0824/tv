@@ -70,6 +70,7 @@ pub struct FilterRuntimeSnapshot {
     pub delay_hints: FilterDelayHints,
     pub queued_bytes: usize,
     pub delivery_not_before: Option<Instant>,
+    pub callback_unhealthy: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -90,6 +91,7 @@ pub struct FilterRuntime {
     delay_hints: FilterDelayHints,
     queued_bytes: usize,
     delivery_not_before: Option<Instant>,
+    callback_unhealthy: bool,
 }
 
 impl FilterRuntime {
@@ -119,6 +121,7 @@ impl FilterRuntime {
             delay_hints: FilterDelayHints::default(),
             queued_bytes: 0,
             delivery_not_before: None,
+            callback_unhealthy: false,
         }
     }
 
@@ -140,6 +143,7 @@ impl FilterRuntime {
             delay_hints: FilterDelayHints::default(),
             queued_bytes: 0,
             delivery_not_before: None,
+            callback_unhealthy: false,
         }
     }
 
@@ -210,6 +214,9 @@ impl FilterRuntime {
     pub fn delay_hints(&self) -> FilterDelayHints {
         self.delay_hints
     }
+    pub fn callback_unhealthy(&self) -> bool {
+        self.callback_unhealthy
+    }
 
     pub fn queued_bytes(&self) -> usize {
         self.queued_bytes
@@ -247,6 +254,7 @@ impl FilterRuntime {
             delay_hints: self.delay_hints,
             queued_bytes: self.queued_bytes,
             delivery_not_before: self.delivery_not_before,
+            callback_unhealthy: self.callback_unhealthy,
         }
     }
 
@@ -266,6 +274,7 @@ impl FilterRuntime {
         self.delay_hints = snapshot.delay_hints;
         self.queued_bytes = snapshot.queued_bytes;
         self.delivery_not_before = snapshot.delivery_not_before;
+        self.callback_unhealthy = snapshot.callback_unhealthy;
     }
 
     pub fn configure_with_generation(&mut self, generation: u64, config: FilterPipelineConfig) {
@@ -278,6 +287,7 @@ impl FilterRuntime {
         self.av_stream_type_hint = None;
         self.queued_bytes = 0;
         self.delivery_not_before = None;
+        self.callback_unhealthy = false;
         self.state = FilterRuntimeState::Configured;
     }
 
@@ -362,6 +372,10 @@ impl FilterRuntime {
     pub fn mark_failed(&mut self) {
         self.state = FilterRuntimeState::Failed;
         self.delivery_not_before = None;
+    }
+
+    pub fn mark_callback_unhealthy(&mut self) {
+        self.callback_unhealthy = true;
     }
 
     fn rearm_delivery_deadline_if_needed(&mut self) {

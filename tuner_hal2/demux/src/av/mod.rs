@@ -9,7 +9,7 @@ pub use release_txn::{
     AvHandleReleaseTxn,
 };
 pub use shared_backing::{
-    AvPayloadDeliveryOutcome, AvSharedBacking, ClientHandleState, DEFAULT_AV_SHARED_SLOT_COUNT,
-    DEFAULT_AV_SHARED_SLOT_SIZE_BYTES,
+    AvPayloadDeliveryOutcome, AvSharedBacking, AvSharedBackingError, AvSharedHandleExport,
+    ClientHandleState, DEFAULT_AV_SHARED_SLOT_COUNT, DEFAULT_AV_SHARED_SLOT_SIZE_BYTES,
 };
 pub use slot::{AvDataId, AvSlotId};

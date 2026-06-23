@@ -1,11 +1,13 @@
 use super::{
     AidlObjectGeneration, AidlObjectId, AidlObjectKind, DemuxRuntimeId, DemuxRuntimeSnapshot,
     DvrRuntimeId, FilterOpenType, FilterRuntimeId, FrontendLiveReaderDescriptor, FrontendRuntimeId,
-    FrontendRuntimeSnapshot, FrontendRuntimeState, FrontendSignalState, FrontendTuneRequest,
-    HalError, HalInternalKind, HalInvalidStateKind, LnbRuntimeId, RuntimeObjectTable,
-    RuntimeObjectTableError, RuntimeOwnerRelation, RuntimeRegistry, TunerServiceRuntime,
+    FrontendRuntimeSnapshot, FrontendRuntimeState, FrontendSignalState, HalError, HalInternalKind,
+    HalInvalidStateKind, LnbRuntimeId, RuntimeObjectTable, RuntimeObjectTableError,
+    RuntimeOwnerRelation, RuntimeRegistry, TunerServiceRuntime,
 };
-use maleicacid_tuner_hal2_demux::{QueueDescriptorQueryError, QueueDescriptorSnapshot};
+use maleicacid_tuner_hal2_demux::{
+    DvrRuntimeState, DvrStatusEvent, QueueDescriptorQueryError, QueueDescriptorSnapshot,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeObjectQueryError {
@@ -48,6 +50,16 @@ impl RuntimeObjectPublicEntry {
     pub fn owner(&self) -> RuntimeOwnerRelation {
         self.owner
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DvrStatusPollSnapshot {
+    pub event: Option<DvrStatusEvent>,
+    pub interval_ms: u64,
+    pub started: bool,
+    pub callback_present: bool,
+    pub callback_unhealthy: bool,
+    pub status_reporting_enabled: bool,
 }
 
 pub(crate) struct RuntimeQuery<'a> {
@@ -169,6 +181,15 @@ impl TunerServiceRuntime {
     ) -> Result<QueueDescriptorSnapshot, HalError> {
         self.query()
             .dvr_queue_descriptor_snapshot_for_aidl_object(object_id, generation)
+    }
+
+    pub fn dvr_status_poll_snapshot_for_aidl_object(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<DvrStatusPollSnapshot, HalError> {
+        self.query()
+            .dvr_status_poll_snapshot_for_aidl_object(object_id, generation)
     }
 
     pub fn public_entry_for_aidl_object(
@@ -319,6 +340,66 @@ impl<'a> RuntimeQuery<'a> {
         demux
             .export_dvr_queue_descriptor(dvr_id)
             .map_err(map_queue_descriptor_query_error)
+    }
+
+    pub(crate) fn dvr_status_poll_snapshot_for_aidl_object(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<DvrStatusPollSnapshot, HalError> {
+        let dvr_id = self
+            .public_runtime_id_for_aidl_object(object_id, generation, AidlObjectKind::Dvr)
+            .map_err(|_| {
+                HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "DVR AIDL object is not live",
+                )
+            })?;
+        let owner_demux_id = self
+            .registry
+            .dvr(DvrRuntimeId(dvr_id))
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "DVR runtime entry is missing",
+                )
+            })?
+            .owner_demux_id;
+        let demux = self
+            .registry
+            .demux_runtime(DemuxRuntimeId(owner_demux_id))
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "owner demux runtime is missing for DVR status poll",
+                )
+            })?;
+        let dvr = demux.dvr(dvr_id).ok_or_else(|| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "DVR runtime is missing for DVR status poll",
+            )
+        })?;
+        let started = matches!(dvr.state(), DvrRuntimeState::Started);
+        let callback_unhealthy = dvr.callback_unhealthy();
+        let event = if started && !callback_unhealthy {
+            demux.dvr_status_event(dvr_id).map_err(|_| {
+                HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "DVR status event is not available",
+                )
+            })?
+        } else {
+            None
+        };
+        Ok(DvrStatusPollSnapshot {
+            event,
+            interval_ms: dvr.status_check_interval_ms(),
+            started,
+            callback_present: dvr.callback_present(),
+            callback_unhealthy,
+            status_reporting_enabled: dvr.status_mask() != 0,
+        })
     }
 
     pub(crate) fn public_entry_for_aidl_object(

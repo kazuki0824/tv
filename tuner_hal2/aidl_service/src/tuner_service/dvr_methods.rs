@@ -1,10 +1,11 @@
 use super::support::local_filter_handle_from_strong;
 use super::{
-    build_dvr_configure_request, close_object_after_close_preflight, execute_object_query_use_case,
-    execute_object_runtime_use_case, execute_object_runtime_use_case_with_request_builder,
-    status_from_hal_error, tuner_queue_desc_from_snapshot, AidlMethodCall, AidlObjectGeneration,
-    AidlObjectId, BinderResult, DvrAidlObject, DvrFilterLinkRequest, DvrSettings, IDvr, IFilter,
-    Strong, TunerQueueDesc,
+    build_dvr_configure_request, close_object_after_close_preflight_with_domain_cleanup,
+    deliver_started_dvr_status, execute_object_query_use_case, execute_object_runtime_use_case,
+    execute_object_runtime_use_case_with_request_builder, start_dvr_status_notifier,
+    status_from_hal_error, stop_dvr_status_notifier, tuner_queue_desc_from_snapshot,
+    AidlMethodCall, AidlObjectGeneration, AidlObjectId, BinderResult, DvrAidlObject,
+    DvrFilterLinkRequest, DvrSettings, IDvr, IFilter, Strong, TunerQueueDesc,
 };
 use maleicacid_tuner_hal2_common::{HalError, HalInvalidArgumentKind};
 
@@ -104,7 +105,10 @@ impl IDvr for DvrAidlObject {
                     executable_request,
                 )
             },
-        )
+        )?;
+        deliver_started_dvr_status(&self.runtime(), self.handle())
+            .map_err(status_from_hal_error)?;
+        start_dvr_status_notifier(&self.runtime(), self.handle()).map_err(status_from_hal_error)
     }
     fn stop(&self) -> BinderResult<()> {
         execute_object_runtime_use_case(
@@ -119,7 +123,8 @@ impl IDvr for DvrAidlObject {
                     executable_request,
                 )
             },
-        )
+        )?;
+        stop_dvr_status_notifier(self.handle()).map_err(status_from_hal_error)
     }
     fn flush(&self) -> BinderResult<()> {
         execute_object_runtime_use_case(
@@ -137,7 +142,12 @@ impl IDvr for DvrAidlObject {
         )
     }
     fn close(&self) -> BinderResult<()> {
-        close_object_after_close_preflight(&self.runtime(), self.handle(), AidlMethodCall::DvrClose)
+        close_object_after_close_preflight_with_domain_cleanup(
+            &self.runtime(),
+            self.handle(),
+            AidlMethodCall::DvrClose,
+            || stop_dvr_status_notifier(self.handle()),
+        )
     }
     fn setStatusCheckIntervalHint(&self, milliseconds: i64) -> BinderResult<()> {
         execute_object_runtime_use_case_with_request_builder(

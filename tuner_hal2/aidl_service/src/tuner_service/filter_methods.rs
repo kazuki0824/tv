@@ -4,12 +4,13 @@ use super::{
     build_filter_summary_for_open_type, close_object_after_close_preflight,
     execute_object_query_use_case, execute_object_runtime_use_case,
     execute_object_runtime_use_case_with_request_builder, plan_unavailable_object_method_use_case,
-    status_from_hal_error, status_unknown_error, tuner_queue_desc_from_snapshot, AidlMethodCall,
-    AidlObjectKind, AvStreamType, BinderResult, DemuxFilterSettings, FilterAidlObject,
-    FilterDelayHint, FilterReleaseAvHandleRequest, FilterSetDataSourceRequest, IFilter, Strong,
-    TunerNativeHandle, TunerQueueDesc,
+    status_from_hal_error, tuner_queue_desc_from_snapshot, AidlMethodCall, AidlObjectKind,
+    AvStreamType, BinderResult, DemuxFilterSettings, FilterAidlObject, FilterDelayHint,
+    FilterReleaseAvHandleRequest, FilterSetDataSourceRequest, IFilter, ParcelFileDescriptor,
+    Strong, TunerNativeHandle, TunerQueueDesc,
 };
 use maleicacid_tuner_hal2_binder_adapter::RuntimeExecutableRequest;
+use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
 
 impl IFilter for FilterAidlObject {
     fn getQueueDesc(&self, queue: &mut TunerQueueDesc) -> BinderResult<()> {
@@ -174,16 +175,31 @@ impl IFilter for FilterAidlObject {
         )
     }
 
-    fn getAvSharedHandle(&self, _av_memory: &mut TunerNativeHandle) -> BinderResult<i64> {
-        plan_unavailable_object_method_use_case(
+    fn getAvSharedHandle(&self, av_memory: &mut TunerNativeHandle) -> BinderResult<i64> {
+        let export = execute_object_runtime_use_case(
             &self.runtime(),
             self.handle(),
-            || Ok(AidlMethodCall::FilterGetAvSharedHandle),
-            "AV shared memory is not connected in current tuner_hal2 scope",
+            AidlMethodCall::FilterGetAvSharedHandle,
+            |runtime, handle, command_plan, executable_request| {
+                runtime.export_filter_av_shared_handle_for_object(
+                    handle.object_id(),
+                    handle.generation(),
+                    command_plan,
+                    executable_request,
+                )
+            },
         )?;
-        Err(status_unknown_error(
-            "getAvSharedHandle unavailable path unexpectedly returned success",
-        ))
+        let size_bytes = i64::try_from(export.size_bytes).map_err(|_| {
+            status_from_hal_error(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "AV shared backing size does not fit i64",
+            ))
+        })?;
+        *av_memory = TunerNativeHandle {
+            fds: vec![ParcelFileDescriptor::new(export.file)],
+            ints: Vec::new(),
+        };
+        Ok(size_bytes)
     }
 
     fn getId(&self) -> BinderResult<i32> {
@@ -218,16 +234,21 @@ impl IFilter for FilterAidlObject {
         )
     }
 
-    fn releaseAvHandle(&self, _av_memory: &TunerNativeHandle, av_data_id: i64) -> BinderResult<()> {
-        plan_unavailable_object_method_use_case(
+    fn releaseAvHandle(&self, av_memory: &TunerNativeHandle, av_data_id: i64) -> BinderResult<()> {
+        execute_object_runtime_use_case(
             &self.runtime(),
             self.handle(),
-            || {
-                Ok(AidlMethodCall::FilterReleaseAvHandle(
-                    FilterReleaseAvHandleRequest { av_data_id },
-                ))
+            AidlMethodCall::FilterReleaseAvHandle(FilterReleaseAvHandleRequest { av_data_id }),
+            |runtime, handle, command_plan, executable_request| {
+                runtime.release_filter_av_handle_for_object(
+                    handle.object_id(),
+                    handle.generation(),
+                    !av_memory.fds.is_empty(),
+                    av_data_id,
+                    command_plan,
+                    executable_request,
+                )
             },
-            "AV shared memory is not connected in current tuner_hal2 scope",
         )
     }
 

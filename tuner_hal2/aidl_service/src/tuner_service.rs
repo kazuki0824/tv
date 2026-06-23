@@ -81,8 +81,12 @@ use crate::child_object_open::{
 };
 use crate::demux_object::DemuxAidlObject;
 use crate::descrambler_object::DescramblerAidlObject;
+use crate::dvr_callback_delivery::{
+    deliver_started_dvr_status, start_dvr_status_notifier, stop_dvr_status_notifier,
+};
 use crate::dvr_object::DvrAidlObject;
 use crate::error_bridge::{service_error, status_from_hal_error, status_unknown_error};
+use crate::filter_callback_delivery::AidlFilterEventDispatcher;
 use crate::filter_object::FilterAidlObject;
 use crate::frontend_callback_delivery::scan_end_notifier;
 use crate::frontend_object::FrontendAidlObject;
@@ -192,6 +196,9 @@ fn tuner_queue_desc_from_snapshot(snapshot: QueueDescriptorSnapshot) -> TunerQue
 
 impl TunerAidlService {
     pub fn new(runtime: TunerServiceRuntime) -> Self {
+        maleicacid_tuner_hal2_service_runtime::install_filter_event_dispatcher(Arc::new(
+            AidlFilterEventDispatcher,
+        ));
         Self {
             runtime: Arc::new(Mutex::new(runtime)),
         }
@@ -777,6 +784,7 @@ impl ITuner for TunerAidlService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use maleicacid_tuner_hal2_binder_adapter::{DvrOpenKind, OpenDvrRequest};
     use maleicacid_tuner_hal2_common::FrontendSystem;
     use maleicacid_tuner_hal2_service_runtime::RuntimeOwnerRelation;
 
@@ -853,6 +861,46 @@ mod tests {
         let filter = FilterAidlObject::new(handle, service.runtime.clone()).unwrap();
         assert!(filter.configureMonitorEvent(0).is_ok());
         assert!(filter.configureMonitorEvent(1).is_err());
+    }
+
+    #[test]
+    fn dvr_close_is_idempotent_and_closed_object_rejects_start() {
+        let service = TunerAidlService::new(TunerServiceRuntime::new());
+        let handle = AidlObjectHandle::new(
+            AidlObjectKind::Dvr,
+            AidlObjectId(12),
+            AidlObjectGeneration(1),
+        );
+        {
+            let mut runtime = service.lock_runtime().unwrap();
+            let demux = runtime.allocate_demux_runtime().unwrap();
+            let dvr = runtime.allocate_dvr_runtime(demux.id.0).unwrap();
+            runtime
+                .register_demux_dvr_runtime(
+                    demux.id.0,
+                    dvr.id.0,
+                    &OpenDvrRequest {
+                        kind: DvrOpenKind::Playback,
+                        buffer_size: 188,
+                    },
+                    true,
+                )
+                .unwrap();
+            runtime
+                .register_aidl_object_for_runtime(
+                    AidlObjectKind::Dvr,
+                    handle.object_id(),
+                    handle.generation(),
+                    i64::from(dvr.id.0),
+                    RuntimeOwnerRelation::Root,
+                )
+                .unwrap();
+        }
+        let dvr = DvrAidlObject::new(handle, service.runtime.clone()).unwrap();
+
+        assert!(dvr.close().is_ok());
+        assert!(dvr.close().is_ok());
+        assert!(dvr.start().is_err());
     }
 
     #[test]

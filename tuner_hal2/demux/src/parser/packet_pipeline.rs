@@ -326,6 +326,10 @@ pub enum PipelineDeliveryAction {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum PipelineGeneratedEvent {
+    AvMedia {
+        filter_id: i32,
+        descriptor: crate::av::AvMediaEventDescriptor,
+    },
     DataReady {
         filter_id: i32,
     },

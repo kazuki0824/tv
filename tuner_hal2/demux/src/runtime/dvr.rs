@@ -2,6 +2,11 @@ use std::collections::BTreeSet;
 
 use maleicacid_tuner_hal2_common::{TsPacketBufferDrain, TsPacketCompletionBuffer};
 
+const DVR_STATUS_BIT_0: i32 = 1 << 0;
+const DVR_STATUS_BIT_1: i32 = 1 << 1;
+const DVR_STATUS_BIT_2: i32 = 1 << 2;
+const DVR_STATUS_BIT_3: i32 = 1 << 3;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DvrKind {
     Record,
@@ -29,6 +34,18 @@ impl DvrRuntimeState {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DvrStatusEvent {
+    RecordDataReady,
+    RecordLowWater,
+    RecordHighWater,
+    RecordOverflow,
+    PlaybackSpaceEmpty,
+    PlaybackSpaceAlmostEmpty,
+    PlaybackSpaceAlmostFull,
+    PlaybackSpaceFull,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DvrRuntimeSnapshot {
     pub state: DvrRuntimeState,
@@ -41,6 +58,10 @@ pub struct DvrRuntimeSnapshot {
     pub playback_completion: TsPacketCompletionBuffer,
     pub attached_record_filters: BTreeSet<i32>,
     pub pending_overflow: bool,
+    pub status_mask: i32,
+    pub low_threshold_bytes: usize,
+    pub high_threshold_bytes: usize,
+    pub callback_unhealthy: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -57,6 +78,10 @@ pub struct DvrRuntime {
     playback_completion: TsPacketCompletionBuffer,
     attached_record_filters: BTreeSet<i32>,
     pending_overflow: bool,
+    status_mask: i32,
+    low_threshold_bytes: usize,
+    high_threshold_bytes: usize,
+    callback_unhealthy: bool,
 }
 
 impl DvrRuntime {
@@ -83,6 +108,10 @@ impl DvrRuntime {
             playback_completion: TsPacketCompletionBuffer::default(),
             attached_record_filters: BTreeSet::new(),
             pending_overflow: false,
+            status_mask: 0,
+            low_threshold_bytes: 0,
+            high_threshold_bytes: 0,
+            callback_unhealthy: false,
         }
     }
     pub fn dvr_id(&self) -> i32 {
@@ -130,6 +159,18 @@ impl DvrRuntime {
     pub fn pending_overflow(&self) -> bool {
         self.pending_overflow
     }
+    pub fn status_mask(&self) -> i32 {
+        self.status_mask
+    }
+    pub fn low_threshold_bytes(&self) -> usize {
+        self.low_threshold_bytes
+    }
+    pub fn high_threshold_bytes(&self) -> usize {
+        self.high_threshold_bytes
+    }
+    pub fn callback_unhealthy(&self) -> bool {
+        self.callback_unhealthy
+    }
 
     pub fn snapshot(&self) -> DvrRuntimeSnapshot {
         DvrRuntimeSnapshot {
@@ -143,6 +184,10 @@ impl DvrRuntime {
             playback_completion: self.playback_completion.clone(),
             attached_record_filters: self.attached_record_filters.clone(),
             pending_overflow: self.pending_overflow,
+            status_mask: self.status_mask,
+            low_threshold_bytes: self.low_threshold_bytes,
+            high_threshold_bytes: self.high_threshold_bytes,
+            callback_unhealthy: self.callback_unhealthy,
         }
     }
 
@@ -157,6 +202,10 @@ impl DvrRuntime {
         self.playback_completion = snapshot.playback_completion;
         self.attached_record_filters = snapshot.attached_record_filters;
         self.pending_overflow = snapshot.pending_overflow;
+        self.status_mask = snapshot.status_mask;
+        self.low_threshold_bytes = snapshot.low_threshold_bytes;
+        self.high_threshold_bytes = snapshot.high_threshold_bytes;
+        self.callback_unhealthy = snapshot.callback_unhealthy;
     }
 
     pub fn configure_with_generation(&mut self, generation: u64) {
@@ -165,6 +214,7 @@ impl DvrRuntime {
         self.playback_assembler_present = matches!(self.kind, DvrKind::Playback);
         self.playback_completion = TsPacketCompletionBuffer::default();
         self.pending_overflow = false;
+        self.callback_unhealthy = false;
         self.state = DvrRuntimeState::Configured;
     }
 
@@ -198,8 +248,65 @@ impl DvrRuntime {
     pub fn mark_pending_overflow(&mut self) {
         self.pending_overflow = true;
     }
+    pub fn configure_status_reporting(
+        &mut self,
+        status_mask: i32,
+        low_threshold_bytes: usize,
+        high_threshold_bytes: usize,
+    ) {
+        self.status_mask = status_mask;
+        self.low_threshold_bytes = low_threshold_bytes;
+        self.high_threshold_bytes = high_threshold_bytes;
+    }
     pub fn set_status_check_interval_ms(&mut self, interval_ms: u64) {
         self.status_check_interval_ms = interval_ms;
+    }
+    pub fn mark_callback_unhealthy(&mut self) {
+        self.callback_unhealthy = true;
+    }
+
+    fn status_enabled(&self, bit: i32) -> bool {
+        (self.status_mask & bit) != 0
+    }
+
+    pub fn status_event_for_fill(&self, fill_bytes: usize) -> Option<DvrStatusEvent> {
+        match self.kind {
+            DvrKind::Record => {
+                if self.pending_overflow && self.status_enabled(DVR_STATUS_BIT_3) {
+                    return Some(DvrStatusEvent::RecordOverflow);
+                }
+                if fill_bytes >= self.high_threshold_bytes && self.status_enabled(DVR_STATUS_BIT_2)
+                {
+                    return Some(DvrStatusEvent::RecordHighWater);
+                }
+                if fill_bytes <= self.low_threshold_bytes && self.status_enabled(DVR_STATUS_BIT_1) {
+                    return Some(DvrStatusEvent::RecordLowWater);
+                }
+                if fill_bytes > 0 && self.status_enabled(DVR_STATUS_BIT_0) {
+                    return Some(DvrStatusEvent::RecordDataReady);
+                }
+                None
+            }
+            DvrKind::Playback => {
+                let capacity = usize::try_from(self.buffer_size).ok()?;
+                let available_space = capacity.saturating_sub(fill_bytes);
+                if available_space == 0 && self.status_enabled(DVR_STATUS_BIT_0) {
+                    Some(DvrStatusEvent::PlaybackSpaceEmpty)
+                } else if available_space >= capacity && self.status_enabled(DVR_STATUS_BIT_3) {
+                    Some(DvrStatusEvent::PlaybackSpaceFull)
+                } else if available_space <= self.low_threshold_bytes
+                    && self.status_enabled(DVR_STATUS_BIT_1)
+                {
+                    Some(DvrStatusEvent::PlaybackSpaceAlmostEmpty)
+                } else if available_space >= self.high_threshold_bytes
+                    && self.status_enabled(DVR_STATUS_BIT_2)
+                {
+                    Some(DvrStatusEvent::PlaybackSpaceAlmostFull)
+                } else {
+                    None
+                }
+            }
+        }
     }
 
     pub fn mark_started(&mut self) {

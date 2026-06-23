@@ -15,7 +15,7 @@ pub use demux::{
     DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind, DemuxRuntimeSnapshot,
     DemuxRuntimeState, PlaybackConsumeReport, QueueDescriptorQueryError,
 };
-pub use dvr::{DvrKind, DvrRuntime, DvrRuntimeSnapshot, DvrRuntimeState};
+pub use dvr::{DvrKind, DvrRuntime, DvrRuntimeSnapshot, DvrRuntimeState, DvrStatusEvent};
 pub use filter::{FilterRuntime, FilterRuntimeSnapshot, FilterRuntimeState, FilterSource};
 pub use generation_boundary::{
     DemuxStreamGeneration, GenerationBoundaryReport, GenerationBoundaryTxn,

@@ -16,6 +16,67 @@ use crate::open_rollback::finish_open_rollback;
 use maleicacid_tuner_hal2_common::compose_primary_cleanup_failure;
 
 impl TunerServiceRuntime {
+    fn supported_record_status_mask() -> i32 {
+        (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3)
+    }
+
+    fn supported_playback_status_mask() -> i32 {
+        (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3)
+    }
+
+    fn validate_dvr_configure_request(
+        buffer_size: i32,
+        request: DvrConfigureRequest,
+    ) -> Result<(usize, usize), HalError> {
+        if request.low_threshold_bytes < 0 || request.high_threshold_bytes < 0 {
+            return Err(HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "DVR thresholds must be non-negative",
+            ));
+        }
+        if request.low_threshold_bytes > request.high_threshold_bytes {
+            return Err(HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "DVR low threshold must be less than or equal to high threshold",
+            ));
+        }
+        let capacity = usize::try_from(buffer_size).map_err(|_| {
+            HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "DVR buffer size must be positive",
+            )
+        })?;
+        let low_threshold = usize::try_from(request.low_threshold_bytes).map_err(|_| {
+            HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "DVR low threshold must fit usize",
+            )
+        })?;
+        let high_threshold = usize::try_from(request.high_threshold_bytes).map_err(|_| {
+            HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "DVR high threshold must fit usize",
+            )
+        })?;
+        if low_threshold > capacity || high_threshold > capacity {
+            return Err(HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "DVR thresholds must not exceed buffer size",
+            ));
+        }
+        let supported_mask = match request.kind {
+            DvrConfigureKind::Record => Self::supported_record_status_mask(),
+            DvrConfigureKind::Playback => Self::supported_playback_status_mask(),
+        };
+        if (request.status_mask & !supported_mask) != 0 {
+            return Err(HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "DVR status mask contains unsupported bits",
+            ));
+        }
+        Ok((low_threshold, high_threshold))
+    }
+
     fn transact_allocate_demux_runtime(
         &mut self,
     ) -> Result<crate::registry::DemuxRegistryEntry, RegistryCommitError> {
@@ -125,7 +186,8 @@ impl TunerServiceRuntime {
             | DemuxRuntimeErrorKind::DvrMissing
             | DemuxRuntimeErrorKind::InvalidDvrFilter
             | DemuxRuntimeErrorKind::QueueMissing
-            | DemuxRuntimeErrorKind::QueueRuntimeFailure => HalError::internal(
+            | DemuxRuntimeErrorKind::QueueRuntimeFailure
+            | DemuxRuntimeErrorKind::AvBackingFailure => HalError::internal(
                 HalInternalKind::InvariantViolation,
                 "filter runtime pipeline operation failed",
             ),
@@ -212,6 +274,84 @@ impl TunerServiceRuntime {
         };
         demux_runtime
             .flush_filter_runtime(filter_id)
+            .map_err(Self::map_filter_runtime_error)
+    }
+
+    fn transact_export_filter_av_shared_handle(
+        &mut self,
+        filter_id: i32,
+    ) -> Result<maleicacid_tuner_hal2_demux::AvSharedHandleExport, HalError> {
+        let owner_demux_id = self.owner_demux_id_for_filter(filter_id)?;
+        let demux = self
+            .registry
+            .demux_runtime_mut(DemuxRuntimeId(owner_demux_id))
+            .ok_or_else(|| {
+                HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "owner demux runtime is missing",
+                )
+            })?;
+        demux
+            .export_filter_av_shared_handle(filter_id)
+            .map_err(Self::map_filter_runtime_error)
+    }
+
+    fn transact_release_filter_av_handle(
+        &mut self,
+        filter_id: i32,
+        has_fd: bool,
+        av_data_id: i64,
+    ) -> Result<(), HalError> {
+        let owner_demux_id = self.owner_demux_id_for_filter(filter_id)?;
+        let demux = self
+            .registry
+            .demux_runtime_mut(DemuxRuntimeId(owner_demux_id))
+            .ok_or_else(|| {
+                HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "owner demux runtime is missing",
+                )
+            })?;
+        use maleicacid_tuner_hal2_demux::AvHandleReleaseOutcome;
+        match demux
+            .release_filter_av_handle(filter_id, has_fd, av_data_id)
+            .map_err(Self::map_filter_runtime_error)?
+        {
+            AvHandleReleaseOutcome::ClientHandleReleased
+            | AvHandleReleaseOutcome::ClientHandleReleaseAfterClose
+            | AvHandleReleaseOutcome::ClientHandleAlreadyReleased
+            | AvHandleReleaseOutcome::SlotReleased { .. }
+            | AvHandleReleaseOutcome::StaleReleaseAccepted { .. }
+            | AvHandleReleaseOutcome::StaleReleaseAfterClose { .. } => Ok(()),
+            AvHandleReleaseOutcome::InvalidDataId
+            | AvHandleReleaseOutcome::InvalidHandleForSlotRelease
+            | AvHandleReleaseOutcome::UnknownDataId => Err(HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "AV handle release input is invalid",
+            )),
+            AvHandleReleaseOutcome::UnavailableForNonAvFilter
+            | AvHandleReleaseOutcome::InvalidStateWithoutSharedHandle => {
+                Err(HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "AV shared handle is unavailable for this filter state",
+                ))
+            }
+        }
+    }
+
+    fn transact_mark_filter_callback_unhealthy(&mut self, filter_id: i32) -> Result<(), HalError> {
+        let owner_demux_id = self.owner_demux_id_for_filter(filter_id)?;
+        let demux = self
+            .registry
+            .demux_runtime_mut(DemuxRuntimeId(owner_demux_id))
+            .ok_or_else(|| {
+                HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "owner demux runtime is missing",
+                )
+            })?;
+        demux
+            .mark_filter_callback_unhealthy(filter_id)
             .map_err(Self::map_filter_runtime_error)
     }
 
@@ -518,6 +658,7 @@ impl TunerServiceRuntime {
             DemuxRuntimeErrorKind::PipelineFailed
             | DemuxRuntimeErrorKind::QueueMissing
             | DemuxRuntimeErrorKind::QueueRuntimeFailure
+            | DemuxRuntimeErrorKind::AvBackingFailure
             | DemuxRuntimeErrorKind::SourceLifecycle
             | DemuxRuntimeErrorKind::SinkLifecycle
             | DemuxRuntimeErrorKind::InvalidSourceSubtype
@@ -573,8 +714,20 @@ impl TunerServiceRuntime {
                 "DVR cannot be reconfigured while started",
             ));
         }
+        if dvr.callback_unhealthy() {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "DVR callback is unhealthy",
+            ));
+        }
+        let (low_threshold, high_threshold) =
+            Self::validate_dvr_configure_request(dvr.buffer_size(), request)?;
         let (_txn, result) = super::DvrConfigureTxn::new(dvr_id).configure(demux_runtime);
-        result.map(|_| ()).map_err(Self::map_dvr_runtime_error)
+        result.map_err(Self::map_dvr_runtime_error).map(|_| {
+            if let Some(dvr) = demux_runtime.dvr_mut(dvr_id) {
+                dvr.configure_status_reporting(request.status_mask, low_threshold, high_threshold);
+            }
+        })
     }
 
     fn transact_start_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), HalError> {
@@ -706,6 +859,22 @@ impl TunerServiceRuntime {
             .set_dvr_status_check_interval(dvr_id, interval_ms)
             .map_err(Self::map_dvr_runtime_error)
     }
+
+    fn transact_mark_dvr_callback_unhealthy(&mut self, dvr_id: i32) -> Result<(), HalError> {
+        let owner_demux_id = self.owner_demux_id_for_dvr(dvr_id)?;
+        let Some(demux_runtime) = self
+            .registry
+            .demux_runtime_mut(DemuxRuntimeId(owner_demux_id))
+        else {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "owner demux runtime is missing",
+            ));
+        };
+        demux_runtime
+            .mark_dvr_callback_unhealthy(dvr_id)
+            .map_err(Self::map_dvr_runtime_error)
+    }
 }
 
 pub(crate) struct DemuxFilterDvrTxn<'a> {
@@ -776,6 +945,32 @@ impl<'a> DemuxFilterDvrTxn<'a> {
 
     pub(crate) fn flush_filter_runtime(&mut self, filter_id: i32) -> Result<(), HalError> {
         self.runtime.transact_flush_filter_runtime(filter_id)
+    }
+
+    pub(crate) fn export_filter_av_shared_handle(
+        &mut self,
+        filter_id: i32,
+    ) -> Result<maleicacid_tuner_hal2_demux::AvSharedHandleExport, HalError> {
+        self.runtime
+            .transact_export_filter_av_shared_handle(filter_id)
+    }
+
+    pub(crate) fn release_filter_av_handle(
+        &mut self,
+        filter_id: i32,
+        has_fd: bool,
+        av_data_id: i64,
+    ) -> Result<(), HalError> {
+        self.runtime
+            .transact_release_filter_av_handle(filter_id, has_fd, av_data_id)
+    }
+
+    pub(crate) fn mark_filter_callback_unhealthy(
+        &mut self,
+        filter_id: i32,
+    ) -> Result<(), HalError> {
+        self.runtime
+            .transact_mark_filter_callback_unhealthy(filter_id)
     }
 
     pub(crate) fn configure_filter_av_stream_type_request(
@@ -912,6 +1107,10 @@ impl<'a> DemuxFilterDvrTxn<'a> {
     ) -> Result<(), HalError> {
         self.runtime
             .transact_set_dvr_status_check_interval(dvr_id, interval_ms)
+    }
+
+    pub(crate) fn mark_dvr_callback_unhealthy(&mut self, dvr_id: i32) -> Result<(), HalError> {
+        self.runtime.transact_mark_dvr_callback_unhealthy(dvr_id)
     }
 
     pub(crate) fn open_filter_child_runtime_for_demux_object(

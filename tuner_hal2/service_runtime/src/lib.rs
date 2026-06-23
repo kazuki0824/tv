@@ -26,8 +26,10 @@ pub mod registry;
 pub mod transaction_registry;
 
 pub use boot::{
-    start_frontend_demux_live_pump_from_reader, FrontendDemuxPacketSink, FrontendProbeOutcome,
-    RuntimeObjectPublicEntry, RuntimeObjectQueryError, ServiceBootOutcome, TunerServiceRuntime,
+    install_filter_event_dispatcher, start_frontend_demux_live_pump_from_reader,
+    DvrStatusPollSnapshot, FilterEventDelivery, FilterEventDeliverySnapshot, FilterEventDispatcher,
+    FrontendDemuxPacketSink, FrontendProbeOutcome, RuntimeObjectPublicEntry,
+    RuntimeObjectQueryError, ServiceBootOutcome, TunerServiceRuntime,
 };
 pub use callback_registry::{
     CallbackHealthState, CallbackRegistryUpdate, RuntimeCallbackRegistration,

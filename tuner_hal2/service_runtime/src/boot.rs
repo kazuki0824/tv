@@ -1,12 +1,13 @@
 use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use maleicacid_tuner_hal2_common::{
     FrontendBackendKind, FrontendDevicePath, FrontendSystem, FrontendTuneRequest, HalError,
     HalInternalKind, HalInvalidArgumentKind, HalInvalidStateKind, TS_PACKET_SIZE,
 };
+use maleicacid_tuner_hal2_demux::av::AvMediaEventDescriptor;
 use maleicacid_tuner_hal2_demux::config::{
     AvStreamKind, AvStreamTypeConfig, FilterConfig, FilterDelayHint, FilterOpenType,
 };
@@ -71,7 +72,7 @@ use maleicacid_tuner_hal2_resource_ledger::{LedgerGeneration, LedgerId};
 // Operation implementations are boot child modules so they can use
 // TunerServiceRuntime private state without widening field visibility.
 mod query_api;
-pub use query_api::{RuntimeObjectPublicEntry, RuntimeObjectQueryError};
+pub use query_api::{DvrStatusPollSnapshot, RuntimeObjectPublicEntry, RuntimeObjectQueryError};
 mod demux_filter_dvr_txn;
 mod descrambler_txn;
 mod frontend_txn;
@@ -175,6 +176,34 @@ pub struct FrontendDemuxPacketSink {
     frontend_id: i32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FilterEventDeliverySnapshot {
+    pub object_id: AidlObjectId,
+    pub generation: AidlObjectGeneration,
+    pub event: FilterEventDelivery,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FilterEventDelivery {
+    Media(AvMediaEventDescriptor),
+    Section { data_length: usize },
+    Pes { stream_id: i32, data_length: usize },
+}
+
+pub trait FilterEventDispatcher: Send + Sync {
+    fn dispatch(
+        &self,
+        runtime: &Arc<Mutex<TunerServiceRuntime>>,
+        events: Vec<FilterEventDeliverySnapshot>,
+    ) -> Result<(), HalError>;
+}
+
+static FILTER_EVENT_DISPATCHER: OnceLock<Arc<dyn FilterEventDispatcher>> = OnceLock::new();
+
+pub fn install_filter_event_dispatcher(dispatcher: Arc<dyn FilterEventDispatcher>) {
+    let _ = FILTER_EVENT_DISPATCHER.set(dispatcher);
+}
+
 impl FrontendDemuxPacketSink {
     pub fn new(runtime: Arc<Mutex<TunerServiceRuntime>>, frontend_id: i32) -> Self {
         Self {
@@ -190,16 +219,27 @@ impl FrontendDemuxPacketSink {
 
 impl FrontendLivePacketSink for FrontendDemuxPacketSink {
     fn deliver_ts_packet(&mut self, packet: &[u8; TS_PACKET_SIZE]) -> Result<(), HalError> {
-        self.runtime
-            .lock()
-            .map_err(|_| {
+        let events = {
+            let mut runtime = self.runtime.lock().map_err(|_| {
                 HalError::internal(
                     HalInternalKind::InvariantViolation,
                     "service runtime lock poisoned while delivering frontend TS packet",
                 )
-            })?
-            .push_frontend_ts_packet_to_bound_demuxes(self.frontend_id, packet)
-            .map(|_| ())
+            })?;
+            let reports =
+                runtime.push_frontend_ts_packet_to_bound_demuxes(self.frontend_id, packet)?;
+            runtime.filter_event_delivery_snapshots(&reports)
+        };
+        if events.is_empty() {
+            return Ok(());
+        }
+        let dispatcher = FILTER_EVENT_DISPATCHER.get().ok_or_else(|| {
+            HalError::callback_failed(
+                "IFilterCallback.onFilterEvent",
+                "filter event dispatcher is not installed",
+            )
+        })?;
+        dispatcher.dispatch(&self.runtime, events)
     }
 }
 
@@ -276,7 +316,8 @@ fn demux_runtime_error_to_hal(
                 "demux runtime pipeline operation failed",
             )
         }
-        maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::QueueRuntimeFailure => {
+        maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::QueueRuntimeFailure
+        | maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::AvBackingFailure => {
             HalError::internal(
                 HalInternalKind::InvariantViolation,
                 "demux runtime queue operation failed",
@@ -409,6 +450,57 @@ pub struct TunerServiceRuntime {
     frontend_workers: FrontendWorkerRegistry,
     next_aidl_generation: u64,
     next_aidl_object_id: i64,
+}
+
+impl TunerServiceRuntime {
+    fn filter_event_delivery_snapshots(
+        &self,
+        reports: &[PipelineReport],
+    ) -> Vec<FilterEventDeliverySnapshot> {
+        reports
+            .iter()
+            .flat_map(|report| report.generated_events.iter())
+            .filter_map(|event| {
+                use maleicacid_tuner_hal2_demux::packet_pipeline::PipelineGeneratedEvent;
+                let (filter_id, event) = match event {
+                    PipelineGeneratedEvent::AvMedia {
+                        filter_id,
+                        descriptor,
+                    } => (*filter_id, FilterEventDelivery::Media(*descriptor)),
+                    PipelineGeneratedEvent::SectionPayloadReady {
+                        filter_id, bytes, ..
+                    } => (
+                        *filter_id,
+                        FilterEventDelivery::Section {
+                            data_length: bytes.len(),
+                        },
+                    ),
+                    PipelineGeneratedEvent::PesPacketReady {
+                        filter_id,
+                        pid,
+                        packet,
+                        ..
+                    } => (
+                        *filter_id,
+                        FilterEventDelivery::Pes {
+                            stream_id: *pid,
+                            data_length: packet.raw_bytes.len(),
+                        },
+                    ),
+                    _ => return None,
+                };
+                let entry = self.object_table.live_entry_for_runtime(
+                    AidlObjectKind::Filter,
+                    LedgerId(i64::from(filter_id)),
+                )?;
+                Some(FilterEventDeliverySnapshot {
+                    object_id: entry.object_id,
+                    generation: entry.generation,
+                    event,
+                })
+            })
+            .collect()
+    }
 }
 
 impl Default for TunerServiceRuntime {

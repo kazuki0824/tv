@@ -29,11 +29,23 @@ struct DescramblerKeySlotState {
     expired: bool,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct DescramblerKeyTable {
     slots: BTreeMap<DescramblerKeyToken, DescramblerKeySlotState>,
+    next_slot_id: u64,
     #[cfg(test)]
     expired: BTreeSet<DescramblerKeyToken>,
+}
+
+impl Default for DescramblerKeyTable {
+    fn default() -> Self {
+        Self {
+            slots: BTreeMap::new(),
+            next_slot_id: 1,
+            #[cfg(test)]
+            expired: BTreeSet::new(),
+        }
+    }
 }
 
 impl DescramblerKeyTable {
@@ -88,7 +100,8 @@ impl DescramblerKeyTable {
         if self.slots.contains_key(&token) {
             return Err(DescramblerKeyRegistrationError::DuplicateToken);
         }
-        let slot_id = DescramblerKeySlotId(token.stable_slot_id());
+        let slot_id = DescramblerKeySlotId(self.next_slot_id);
+        self.next_slot_id = self.next_slot_id.saturating_add(1);
         self.slots.insert(
             token,
             DescramblerKeySlotState {

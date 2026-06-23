@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 const DESCRAMBLER_TOKEN_LEN: usize = 8;
+const DESCRAMBLER_TOKEN_MAX_LEN: usize = 16;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DescramblerKeyRegistrationError {
@@ -44,7 +45,10 @@ struct DescramblerKeySlotState {
 
 impl DescramblerKeySlotState {
     fn new(resolved: ResolvedDescramblerKeySlot) -> Self {
-        Self { resolved, refcount: 0 }
+        Self {
+            resolved,
+            refcount: 0,
+        }
     }
 }
 
@@ -56,17 +60,24 @@ pub struct DescramblerKeyTable {
 
 impl DescramblerKeyTable {
     pub fn new() -> Self {
-        Self { next_id: AtomicU64::new(1), slots: Mutex::new(BTreeMap::new()) }
+        Self {
+            next_id: AtomicU64::new(1),
+            slots: Mutex::new(BTreeMap::new()),
+        }
     }
 
-    pub fn resolve_with_diagnostic(&self, token: &[u8]) -> Result<ResolvedDescramblerKeySlot, DescramblerKeyResolveError> {
+    pub fn resolve_with_diagnostic(
+        &self,
+        token: &[u8],
+    ) -> Result<ResolvedDescramblerKeySlot, DescramblerKeyResolveError> {
         if token.is_empty() {
             return Err(DescramblerKeyResolveError::EmptyToken);
         }
-        if token.len() != DESCRAMBLER_TOKEN_LEN {
+        if token.len() > DESCRAMBLER_TOKEN_MAX_LEN {
             return Err(DescramblerKeyResolveError::MalformedToken);
         }
-        let slots = lock_mutex_status(&self.slots, "descrambler_key_table_slots").map_err(|_| DescramblerKeyResolveError::RegistryUnavailable)?;
+        let slots = lock_mutex_status(&self.slots, "descrambler_key_table_slots")
+            .map_err(|_| DescramblerKeyResolveError::RegistryUnavailable)?;
         match slots.get(token) {
             Some(state) => Ok(state.resolved.clone()),
             None => Err(DescramblerKeyResolveError::UnknownToken),
@@ -75,10 +86,16 @@ impl DescramblerKeyTable {
 
     #[cfg(test)]
     pub fn resolve_for_test(&self, token: &[u8]) -> Option<DescramblerKeySlot> {
-        self.resolve_with_diagnostic(token).ok().map(|resolved| resolved.slot)
+        self.resolve_with_diagnostic(token)
+            .ok()
+            .map(|resolved| resolved.slot)
     }
 
-    fn insert_slot(&self, slot: DescramblerKeySlot, origin: DescramblerTokenOrigin) -> Result<Vec<u8>, DescramblerKeyRegistrationError> {
+    fn insert_slot(
+        &self,
+        slot: DescramblerKeySlot,
+        origin: DescramblerTokenOrigin,
+    ) -> Result<Vec<u8>, DescramblerKeyRegistrationError> {
         if !slot.has_any_key() {
             return Err(DescramblerKeyRegistrationError::EmptySlot);
         }
@@ -104,11 +121,14 @@ impl DescramblerKeyTable {
         Err(DescramblerKeyRegistrationError::TokenExhausted)
     }
 
-    pub fn acquire_ref_with_diagnostic(&self, token: &[u8]) -> Result<ResolvedDescramblerKeySlot, DescramblerKeyResolveError> {
+    pub fn acquire_ref_with_diagnostic(
+        &self,
+        token: &[u8],
+    ) -> Result<ResolvedDescramblerKeySlot, DescramblerKeyResolveError> {
         if token.is_empty() {
             return Err(DescramblerKeyResolveError::EmptyToken);
         }
-        if token.len() != DESCRAMBLER_TOKEN_LEN {
+        if token.len() > DESCRAMBLER_TOKEN_MAX_LEN {
             return Err(DescramblerKeyResolveError::MalformedToken);
         }
         let mut slots = lock_mutex_status(&self.slots, "descrambler_key_table_slots")
@@ -127,7 +147,7 @@ impl DescramblerKeyTable {
         if token.is_empty() {
             return Err(DescramblerKeyResolveError::EmptyToken);
         }
-        if token.len() != DESCRAMBLER_TOKEN_LEN {
+        if token.len() > DESCRAMBLER_TOKEN_MAX_LEN {
             return Err(DescramblerKeyResolveError::MalformedToken);
         }
         let mut slots = lock_mutex_status(&self.slots, "descrambler_key_table_slots")
@@ -158,9 +178,7 @@ impl DescramblerKeyTable {
         let mut slots = lock_mutex_status(&self.slots, "descrambler_key_table_slots")
             .map_err(|_| DescramblerKeyResolveError::RegistryUnavailable)?;
         let before = slots.len();
-        slots.retain(|_, state| {
-            state.resolved.origin != target_origin || state.refcount > 0
-        });
+        slots.retain(|_, state| state.resolved.origin != target_origin || state.refcount > 0);
         Ok(before - slots.len())
     }
 
@@ -188,7 +206,8 @@ impl DescramblerKeyTable {
 
     #[cfg(test)]
     pub fn register_for_test(&self, slot: DescramblerKeySlot) -> Vec<u8> {
-        self.insert_slot(slot, DescramblerTokenOrigin::UnitTestOnly).expect("テスト用の復号鍵スロットが不正です")
+        self.insert_slot(slot, DescramblerTokenOrigin::UnitTestOnly)
+            .expect("テスト用の復号鍵スロットが不正です")
     }
 }
 
@@ -199,17 +218,20 @@ mod tests {
 
     fn even_key_slot() -> DescramblerKeySlot {
         DescramblerKeySlot::empty()
-            .try_with_even(Multi2KeyMaterial::new([0x10; 32], [0x20; 8], [0x30; 8])).unwrap()
+            .try_with_even(Multi2KeyMaterial::new([0x10; 32], [0x20; 8], [0x30; 8]))
+            .unwrap()
     }
 
     fn odd_key_slot() -> DescramblerKeySlot {
         DescramblerKeySlot::empty()
-            .try_with_odd(Multi2KeyMaterial::new([0x11; 32], [0x21; 8], [0x31; 8])).unwrap()
+            .try_with_odd(Multi2KeyMaterial::new([0x11; 32], [0x21; 8], [0x31; 8]))
+            .unwrap()
     }
 
     fn paired_key_slot() -> DescramblerKeySlot {
         even_key_slot()
-            .try_with_odd(Multi2KeyMaterial::new([0x12; 32], [0x22; 8], [0x32; 8])).unwrap()
+            .try_with_odd(Multi2KeyMaterial::new([0x12; 32], [0x22; 8], [0x32; 8]))
+            .unwrap()
     }
 
     #[test]
@@ -248,13 +270,15 @@ mod tests {
             DescramblerKeyResolveError::EmptyToken
         );
         assert_eq!(
-            table.resolve_with_diagnostic(&[0x55; DESCRAMBLER_TOKEN_LEN + 1]).unwrap_err(),
+            table
+                .resolve_with_diagnostic(&[0x55; DESCRAMBLER_TOKEN_MAX_LEN + 1])
+                .unwrap_err(),
             DescramblerKeyResolveError::MalformedToken
         );
     }
 
     #[test]
-    fn unknown_length_valid_token_is_rejected() {
+    fn unknown_valid_length_token_is_resolved_as_unknown() {
         let table = DescramblerKeyTable::new();
         assert_eq!(
             table.resolve_with_diagnostic(&[0x42; 8]).unwrap_err(),
@@ -262,7 +286,7 @@ mod tests {
         );
         assert_eq!(
             table.resolve_with_diagnostic(b"placeholder").unwrap_err(),
-            DescramblerKeyResolveError::MalformedToken
+            DescramblerKeyResolveError::UnknownToken
         );
     }
 
@@ -270,26 +294,38 @@ mod tests {
     fn cas_bridge_requires_even_and_odd_key_pair() {
         let table = DescramblerKeyTable::new();
         assert_eq!(
-            table.register_from_cas_bridge(even_key_slot(), false).unwrap_err(),
+            table
+                .register_from_cas_bridge(even_key_slot(), false)
+                .unwrap_err(),
             DescramblerKeyRegistrationError::CasBridgeUnconnected
         );
         assert_eq!(
-            table.register_from_cas_bridge(odd_key_slot(), false).unwrap_err(),
+            table
+                .register_from_cas_bridge(odd_key_slot(), false)
+                .unwrap_err(),
             DescramblerKeyRegistrationError::CasBridgeUnconnected
         );
         assert_eq!(
-            table.register_from_cas_bridge(paired_key_slot(), false).unwrap_err(),
+            table
+                .register_from_cas_bridge(paired_key_slot(), false)
+                .unwrap_err(),
             DescramblerKeyRegistrationError::CasBridgeUnconnected
         );
         assert_eq!(
-            table.register_from_cas_bridge(even_key_slot(), true).unwrap_err(),
+            table
+                .register_from_cas_bridge(even_key_slot(), true)
+                .unwrap_err(),
             DescramblerKeyRegistrationError::IncompleteKeyPair
         );
         assert_eq!(
-            table.register_from_cas_bridge(odd_key_slot(), true).unwrap_err(),
+            table
+                .register_from_cas_bridge(odd_key_slot(), true)
+                .unwrap_err(),
             DescramblerKeyRegistrationError::IncompleteKeyPair
         );
-        let token = table.register_from_cas_bridge(paired_key_slot(), true).unwrap();
+        let token = table
+            .register_from_cas_bridge(paired_key_slot(), true)
+            .unwrap();
         assert!(table.resolve_with_diagnostic(&token).is_ok());
         assert!(table.register_for_test(even_key_slot()).len() == 8);
         assert!(table.register_for_test(odd_key_slot()).len() == 8);
@@ -333,8 +369,15 @@ mod tests {
     fn expire_all_by_origin_removes_matching_unreferenced_tokens_only() {
         let table = DescramblerKeyTable::new();
         let unit_token = table.register_for_test(even_key_slot());
-        let cas_token = table.register_from_cas_bridge(paired_key_slot(), true).unwrap();
-        assert_eq!(table.expire_all_by_origin(DescramblerTokenOrigin::CasBridge).unwrap(), 1);
+        let cas_token = table
+            .register_from_cas_bridge(paired_key_slot(), true)
+            .unwrap();
+        assert_eq!(
+            table
+                .expire_all_by_origin(DescramblerTokenOrigin::CasBridge)
+                .unwrap(),
+            1
+        );
         assert!(table.resolve_with_diagnostic(&unit_token).is_ok());
         assert_eq!(
             table.resolve_with_diagnostic(&cas_token).unwrap_err(),
@@ -345,9 +388,16 @@ mod tests {
     #[test]
     fn expire_all_by_origin_keeps_matching_referenced_tokens_until_release() {
         let table = DescramblerKeyTable::new();
-        let cas_token = table.register_from_cas_bridge(paired_key_slot(), true).unwrap();
+        let cas_token = table
+            .register_from_cas_bridge(paired_key_slot(), true)
+            .unwrap();
         table.acquire_ref_with_diagnostic(&cas_token).unwrap();
-        assert_eq!(table.expire_all_by_origin(DescramblerTokenOrigin::CasBridge).unwrap(), 0);
+        assert_eq!(
+            table
+                .expire_all_by_origin(DescramblerTokenOrigin::CasBridge)
+                .unwrap(),
+            0
+        );
         assert_eq!(table.refcount_for_test(&cas_token), Some(1));
         assert!(table.resolve_with_diagnostic(&cas_token).is_ok());
         table.release_ref(&cas_token).unwrap();
@@ -358,7 +408,9 @@ mod tests {
     fn expire_all_removes_unreferenced_tokens_but_keeps_referenced_tokens() {
         let table = DescramblerKeyTable::new();
         let first = table.register_for_test(even_key_slot());
-        let second = table.register_from_cas_bridge(paired_key_slot(), true).unwrap();
+        let second = table
+            .register_from_cas_bridge(paired_key_slot(), true)
+            .unwrap();
         table.acquire_ref_with_diagnostic(&second).unwrap();
         assert_eq!(table.expire_all().unwrap(), 1);
         assert_eq!(
@@ -414,4 +466,3 @@ mod r50dz52_g3_05_tests {
         assert!(table.resolve_with_diagnostic(&max_token).is_ok());
     }
 }
-

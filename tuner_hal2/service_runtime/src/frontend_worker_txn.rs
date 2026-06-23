@@ -16,6 +16,7 @@ use maleicacid_tuner_hal2_device::{
     FrontendBackendSession, FrontendBackendTunePlan, FrontendLivePumpJoinOutcome,
     FrontendLivePumpOwner, FrontendRuntimeSnapshot, FrontendWorkerCancelReason,
     FrontendWorkerContext, FrontendWorkerKind, FrontendWorkerStartError, FrontendWorkerStopOutcome,
+    FrontendWorkerStopTicket,
 };
 use maleicacid_tuner_hal2_domain_request::{
     AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan, RuntimeExecutableRequest,

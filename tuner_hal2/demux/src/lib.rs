@@ -27,7 +27,8 @@ impl TsInputOrigin {
 
 pub use av::{
     AvDataId, AvDataIdState, AvFilterReleaseState, AvHandleReleaseInput, AvHandleReleaseOutcome,
-    AvHandleReleaseTxn, AvPayloadDeliveryOutcome, AvSharedBacking, AvSlotId, ClientHandleState,
+    AvHandleReleaseTxn, AvPayloadDeliveryOutcome, AvSharedBacking, AvSharedBackingError,
+    AvSharedHandleExport, AvSlotId, ClientHandleState,
 };
 pub use config::{
     AvSettings, AvStreamKind, AvStreamTypeConfig, FilterConfig, FilterConfigKind, FilterDelayHint,
@@ -36,11 +37,12 @@ pub use config::{
 };
 pub use runtime::{
     DemuxRuntime, DemuxRuntimeState, DemuxStreamGeneration, DvrConfigureOutcome, DvrConfigureStep,
-    DvrConfigureTxn, DvrRuntime, DvrRuntimeState, FilterConfigureOutcome, FilterConfigureStep,
-    FilterConfigureTxn, FilterRuntime, FilterRuntimeState, GenerationBoundaryTxn,
-    PlaybackConsumeReport, QueueDescriptorQueryError, QueueDescriptorSnapshot,
-    QueueGrantorDescriptorSnapshot, QueueRuntime, QueueRuntimeError, QueueRuntimeErrorKind,
-    RuntimeIoRegistry, SourceBoundaryOutcome, SourceBoundaryStep, SourceBoundaryTxn,
+    DvrConfigureTxn, DvrRuntime, DvrRuntimeState, DvrStatusEvent, FilterConfigureOutcome,
+    FilterConfigureStep, FilterConfigureTxn, FilterRuntime, FilterRuntimeState,
+    GenerationBoundaryTxn, PlaybackConsumeReport, QueueDescriptorQueryError,
+    QueueDescriptorSnapshot, QueueGrantorDescriptorSnapshot, QueueRuntime, QueueRuntimeError,
+    QueueRuntimeErrorKind, RuntimeIoRegistry, SourceBoundaryOutcome, SourceBoundaryStep,
+    SourceBoundaryTxn,
 };
 
 #[cfg(test)]
@@ -709,6 +711,83 @@ mod tests {
         demux.set_dvr_status_check_interval(42, 750).unwrap();
         assert_eq!(demux.dvr(42).unwrap().status_check_interval_ms(), 750);
         assert_eq!(demux.dvr(42).unwrap().state(), DvrRuntimeState::Stopped);
+    }
+
+    #[test]
+    fn dvr_status_events_follow_record_and_playback_threshold_axes() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        let packet = raw_ts_packet(0x0100, 0, &[0x01, 0x02, 0x03, 0x04]);
+
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                420,
+                1,
+                crate::runtime::DvrKind::Record,
+                188,
+                true,
+            ))
+            .unwrap();
+        demux.configure_dvr_runtime(420).unwrap();
+        demux
+            .dvr_mut(420)
+            .unwrap()
+            .configure_status_reporting(0b1111, 0, 188);
+        assert_eq!(
+            demux.dvr_status_event(420).unwrap(),
+            Some(crate::runtime::DvrStatusEvent::RecordLowWater)
+        );
+        demux.dvr_mut(420).unwrap().mark_pending_overflow();
+        assert_eq!(
+            demux.dvr_status_event(420).unwrap(),
+            Some(crate::runtime::DvrStatusEvent::RecordOverflow)
+        );
+
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                421,
+                1,
+                crate::runtime::DvrKind::Playback,
+                188,
+                true,
+            ))
+            .unwrap();
+        demux.configure_dvr_runtime(421).unwrap();
+        demux
+            .dvr_mut(421)
+            .unwrap()
+            .configure_status_reporting(0b1111, 47, 141);
+        assert_eq!(
+            demux.dvr_status_event(421).unwrap(),
+            Some(crate::runtime::DvrStatusEvent::PlaybackSpaceFull)
+        );
+        assert_eq!(
+            demux.write_playback_dvr_queue_bytes(421, &packet).unwrap(),
+            188
+        );
+        assert_eq!(
+            demux.dvr_status_event(421).unwrap(),
+            Some(crate::runtime::DvrStatusEvent::PlaybackSpaceEmpty)
+        );
+    }
+
+    #[test]
+    fn callback_unhealthy_dvr_rejects_restart() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                422,
+                1,
+                crate::runtime::DvrKind::Playback,
+                8192,
+                true,
+            ))
+            .unwrap();
+        demux.configure_dvr_runtime(422).unwrap();
+        demux.mark_dvr_callback_unhealthy(422).unwrap();
+        assert_eq!(
+            demux.start_dvr_runtime(422).unwrap_err().kind,
+            crate::runtime::DemuxRuntimeErrorKind::InvalidState
+        );
     }
 
     #[test]

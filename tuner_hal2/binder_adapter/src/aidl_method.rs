@@ -1,5 +1,5 @@
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
-    AvStreamType::AvStreamType, DvrSettings::DvrSettings, DvrType::DvrType,
+    AvStreamType::AvStreamType, DataFormat::DataFormat, DvrSettings::DvrSettings, DvrType::DvrType,
     FilterDelayHint::FilterDelayHint, FilterDelayHintType::FilterDelayHintType,
     LnbPosition::LnbPosition, LnbTone::LnbTone, LnbVoltage::LnbVoltage,
 };
@@ -21,6 +21,7 @@ use crate::lnb::LnbCommand;
 use crate::{CommandPlan, DomainCommand};
 
 const MAX_FILTER_DELAY_MS: i64 = 10_000;
+const DVR_PACKET_SIZE_TS_188: i64 = 188;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AidlMethodCall {
@@ -297,11 +298,52 @@ pub fn build_filter_delay_hint_request(
 pub fn build_dvr_configure_request(
     settings: &DvrSettings,
 ) -> Result<DvrConfigureRequest, HalError> {
-    let kind = match settings {
-        DvrSettings::Record(_) => DvrConfigureKind::Record,
-        DvrSettings::Playback(_) => DvrConfigureKind::Playback,
-    };
-    Ok(DvrConfigureRequest { kind })
+    match settings {
+        DvrSettings::Record(record) => {
+            validate_dvr_ts_188(record.dataFormat, record.packetSize)?;
+            Ok(DvrConfigureRequest {
+                kind: DvrConfigureKind::Record,
+                status_mask: record.statusMask,
+                low_threshold_bytes: record.lowThreshold,
+                high_threshold_bytes: record.highThreshold,
+            })
+        }
+        DvrSettings::Playback(playback) => {
+            validate_dvr_ts_188(playback.dataFormat, playback.packetSize)?;
+            Ok(DvrConfigureRequest {
+                kind: DvrConfigureKind::Playback,
+                status_mask: playback.statusMask,
+                low_threshold_bytes: playback.lowThreshold,
+                high_threshold_bytes: playback.highThreshold,
+            })
+        }
+    }
+}
+
+fn validate_dvr_ts_188(data_format: DataFormat, packet_size: i64) -> Result<(), HalError> {
+    if data_format != DataFormat::TS {
+        return Err(invalid("DVR dataFormat must be TS"));
+    }
+    if packet_size != DVR_PACKET_SIZE_TS_188 {
+        return Err(invalid("DVR packetSize must be 188"));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn supported_record_status_mask() -> i32 {
+    i32::from(RecordStatus::DATA_READY.0)
+        | i32::from(RecordStatus::LOW_WATER.0)
+        | i32::from(RecordStatus::HIGH_WATER.0)
+        | i32::from(RecordStatus::OVERFLOW.0)
+}
+
+#[cfg(test)]
+pub(crate) fn supported_playback_status_mask() -> i32 {
+    i32::from(PlaybackStatus::SPACE_EMPTY.0)
+        | i32::from(PlaybackStatus::SPACE_ALMOST_EMPTY.0)
+        | i32::from(PlaybackStatus::SPACE_ALMOST_FULL.0)
+        | i32::from(PlaybackStatus::SPACE_FULL.0)
 }
 
 pub fn build_lnb_voltage_request(voltage: LnbVoltage) -> Result<LnbVoltageRequest, HalError> {
@@ -365,6 +407,9 @@ pub(crate) use tests::{
 #[cfg(test)]
 mod tests {
     use super::*;
+    use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
+        PlaybackSettings::PlaybackSettings, RecordSettings::RecordSettings,
+    };
 
     pub(crate) const AIDL_METHOD_CALL_VARIANT_COUNT_FOR_PLAN_COVERAGE: usize = 46;
 
@@ -400,7 +445,9 @@ mod tests {
                 buffer_size: 188 * 1024,
             }),
             AidlMethodCall::DemuxClose,
-            AidlMethodCall::FilterConfigure(RuntimeExecutableRequest::ConfigureFilterByCurrentOpenType),
+            AidlMethodCall::FilterConfigure(
+                RuntimeExecutableRequest::ConfigureFilterByCurrentOpenType,
+            ),
             AidlMethodCall::FilterConfigureAvStreamType(FilterAvStreamTypeRequest {
                 kind: FilterAvStreamKind::Video,
                 stream_type: 1,
@@ -425,6 +472,9 @@ mod tests {
             AidlMethodCall::DvrGetQueueDesc,
             AidlMethodCall::DvrConfigure(DvrConfigureRequest {
                 kind: DvrConfigureKind::Record,
+                status_mask: 0,
+                low_threshold_bytes: 0,
+                high_threshold_bytes: 0,
             }),
             AidlMethodCall::DvrAttachFilter(DvrFilterLinkRequest {
                 filter_id: 2,
@@ -451,5 +501,39 @@ mod tests {
             AidlMethodCall::LnbSendDiseqc(vec![0xe0, 0x10]),
             AidlMethodCall::LnbClose,
         ]
+    }
+
+    #[test]
+    fn build_dvr_configure_request_keeps_thresholds_and_mask() {
+        let request = build_dvr_configure_request(&DvrSettings::Record(RecordSettings {
+            statusMask: supported_record_status_mask(),
+            lowThreshold: 188,
+            highThreshold: 376,
+            dataFormat: DataFormat::TS,
+            packetSize: 188,
+        }))
+        .unwrap();
+        assert_eq!(
+            request,
+            DvrConfigureRequest {
+                kind: DvrConfigureKind::Record,
+                status_mask: supported_record_status_mask(),
+                low_threshold_bytes: 188,
+                high_threshold_bytes: 376,
+            }
+        );
+    }
+
+    #[test]
+    fn build_dvr_configure_request_rejects_non_ts_payload_shape() {
+        let error = build_dvr_configure_request(&DvrSettings::Playback(PlaybackSettings {
+            statusMask: supported_playback_status_mask(),
+            lowThreshold: 0,
+            highThreshold: 0,
+            dataFormat: DataFormat::UNDEFINED,
+            packetSize: 192,
+        }))
+        .unwrap_err();
+        assert!(matches!(error, HalError::InvalidArgument { .. }));
     }
 }

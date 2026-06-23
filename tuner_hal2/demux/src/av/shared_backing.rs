@@ -4,6 +4,9 @@ use super::release_txn::{
     AvHandleReleaseTxn,
 };
 use super::slot::{AvDataId, AvSlotId};
+use std::fs::File;
+use std::os::fd::{AsRawFd, FromRawFd};
+use std::ptr;
 
 pub const DEFAULT_AV_SHARED_SLOT_SIZE_BYTES: usize = 1024 * 1024;
 pub const DEFAULT_AV_SHARED_SLOT_COUNT: usize = 8;
@@ -25,6 +28,20 @@ pub enum AvPayloadDeliveryOutcome {
     DataIdExhausted,
 }
 
+#[derive(Debug)]
+pub struct AvSharedHandleExport {
+    pub file: File,
+    pub size_bytes: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AvSharedBackingError {
+    AllocationFailed,
+    DuplicateFailed,
+    MappingFailed,
+    UnmappingFailed,
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 struct AvSlotState {
     slot_id: AvSlotId,
@@ -40,6 +57,7 @@ pub struct AvSharedBacking {
     slots: Vec<AvSlotState>,
     stale_data_ids: Vec<AvDataId>,
     ever_exported: bool,
+    file: Option<File>,
 }
 
 impl AvSharedBacking {
@@ -65,6 +83,7 @@ impl AvSharedBacking {
             slots,
             stale_data_ids: Vec::new(),
             ever_exported: false,
+            file: None,
         }
     }
 
@@ -96,6 +115,72 @@ impl AvSharedBacking {
     pub fn mark_exported(&mut self) {
         self.state = ClientHandleState::ExportedActive;
         self.ever_exported = true;
+    }
+
+    pub fn export_handle(&mut self) -> Result<AvSharedHandleExport, AvSharedBackingError> {
+        let size_bytes = self
+            .slot_size
+            .checked_mul(self.slots.len())
+            .ok_or(AvSharedBackingError::AllocationFailed)?;
+        if self.file.is_none() {
+            let raw_fd = unsafe { tuner_dmabuf_heap_alloc_system(size_bytes) };
+            if raw_fd < 0 {
+                return Err(AvSharedBackingError::AllocationFailed);
+            }
+            self.file = Some(unsafe { File::from_raw_fd(raw_fd) });
+        }
+        let file = self
+            .file
+            .as_ref()
+            .ok_or(AvSharedBackingError::AllocationFailed)?
+            .try_clone()
+            .map_err(|_| AvSharedBackingError::DuplicateFailed)?;
+        self.mark_exported();
+        Ok(AvSharedHandleExport { file, size_bytes })
+    }
+
+    pub fn allocate_payload_bytes(
+        &mut self,
+        payload: &[u8],
+    ) -> Result<AvPayloadDeliveryOutcome, AvSharedBackingError> {
+        let outcome = self.allocate_payload(payload.len());
+        let AvPayloadDeliveryOutcome::Delivered(descriptor) = outcome else {
+            return Ok(outcome);
+        };
+        let file = self
+            .file
+            .as_ref()
+            .ok_or(AvSharedBackingError::AllocationFailed)?;
+        let map_len = self
+            .slot_size
+            .checked_mul(self.slots.len())
+            .ok_or(AvSharedBackingError::MappingFailed)?;
+        let mapped = unsafe {
+            mmap(
+                ptr::null_mut(),
+                map_len,
+                PROT_READ | PROT_WRITE,
+                MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        if mapped == MAP_FAILED {
+            self.release_slot(descriptor.data_id);
+            return Err(AvSharedBackingError::MappingFailed);
+        }
+        unsafe {
+            ptr::copy_nonoverlapping(
+                payload.as_ptr(),
+                (mapped as *mut u8).add(descriptor.offset),
+                payload.len(),
+            );
+        }
+        if unsafe { munmap(mapped, map_len) } != 0 {
+            self.release_slot(descriptor.data_id);
+            return Err(AvSharedBackingError::UnmappingFailed);
+        }
+        Ok(AvPayloadDeliveryOutcome::Delivered(descriptor))
     }
 
     pub fn mark_client_released(&mut self) {
@@ -222,6 +307,24 @@ impl AvSharedBacking {
             slot.data_length = 0;
         }
     }
+}
+
+const PROT_READ: i32 = 0x1;
+const PROT_WRITE: i32 = 0x2;
+const MAP_SHARED: i32 = 0x01;
+const MAP_FAILED: *mut std::ffi::c_void = !0usize as *mut std::ffi::c_void;
+
+extern "C" {
+    fn mmap(
+        addr: *mut std::ffi::c_void,
+        length: usize,
+        prot: i32,
+        flags: i32,
+        fd: i32,
+        offset: i64,
+    ) -> *mut std::ffi::c_void;
+    fn munmap(addr: *mut std::ffi::c_void, length: usize) -> i32;
+    fn tuner_dmabuf_heap_alloc_system(len: usize) -> i32;
 }
 
 impl Default for AvSharedBacking {

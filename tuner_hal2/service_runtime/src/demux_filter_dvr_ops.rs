@@ -370,6 +370,42 @@ impl TunerServiceRuntime {
         self.flush_filter_runtime(filter_id)
     }
 
+    pub fn export_filter_av_shared_handle_for_object(
+        &mut self,
+        object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
+        generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
+        command_plan: maleicacid_tuner_hal2_domain_request::CommandPlan,
+        executable_request: Option<maleicacid_tuner_hal2_domain_request::RuntimeExecutableRequest>,
+    ) -> Result<maleicacid_tuner_hal2_demux::AvSharedHandleExport, HalError> {
+        let filter_id = self.public_runtime_id_for_object_method(
+            object_id,
+            generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Filter,
+        )?;
+        plan_object_method_dispatch(self, command_plan, executable_request)?;
+        self.demux_filter_dvr_txn()
+            .export_filter_av_shared_handle(filter_id)
+    }
+
+    pub fn release_filter_av_handle_for_object(
+        &mut self,
+        object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
+        generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
+        has_fd: bool,
+        av_data_id: i64,
+        command_plan: maleicacid_tuner_hal2_domain_request::CommandPlan,
+        executable_request: Option<maleicacid_tuner_hal2_domain_request::RuntimeExecutableRequest>,
+    ) -> Result<(), HalError> {
+        let filter_id = self.public_runtime_id_for_object_method(
+            object_id,
+            generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Filter,
+        )?;
+        plan_object_method_dispatch(self, command_plan, executable_request)?;
+        self.demux_filter_dvr_txn()
+            .release_filter_av_handle(filter_id, has_fd, av_data_id)
+    }
+
     pub fn configure_dvr_runtime_for_object(
         &mut self,
         object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
@@ -565,6 +601,34 @@ impl TunerServiceRuntime {
         )?;
         dispatch.plan(self)?;
         self.set_dvr_status_check_interval(dvr_id, interval_ms)
+    }
+
+    pub fn mark_dvr_callback_unhealthy_for_object(
+        &mut self,
+        object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
+        generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
+    ) -> Result<(), HalError> {
+        let dvr_id = self.public_runtime_id_for_object_method(
+            object_id,
+            generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Dvr,
+        )?;
+        self.demux_filter_dvr_txn()
+            .mark_dvr_callback_unhealthy(dvr_id)
+    }
+
+    pub fn mark_filter_callback_unhealthy_for_object(
+        &mut self,
+        object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
+        generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
+    ) -> Result<(), HalError> {
+        let filter_id = self.public_runtime_id_for_object_method(
+            object_id,
+            generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Filter,
+        )?;
+        self.demux_filter_dvr_txn()
+            .mark_filter_callback_unhealthy(filter_id)
     }
 
     pub fn set_filter_delay_hint_for_object(
