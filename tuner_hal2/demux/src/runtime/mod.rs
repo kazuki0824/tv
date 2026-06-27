@@ -4,7 +4,6 @@ pub mod dvr;
 pub mod filter;
 pub mod generation_boundary;
 pub mod queue_runtime;
-pub mod runtime_io;
 pub mod source_boundary;
 
 pub use configure_txn::{
@@ -24,5 +23,4 @@ pub use queue_runtime::{
     QueueDescriptorSnapshot, QueueGrantorDescriptorSnapshot, QueueRuntime, QueueRuntimeError,
     QueueRuntimeErrorKind,
 };
-pub use runtime_io::{RuntimeIoFailureKind, RuntimeIoRegistry};
-pub use source_boundary::{SourceBoundaryOutcome, SourceBoundaryStep, SourceBoundaryTxn};
+pub use source_boundary::{SourceBoundaryOutcome, SourceBoundaryStep};

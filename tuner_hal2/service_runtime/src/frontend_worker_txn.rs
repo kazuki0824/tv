@@ -2,9 +2,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::{
-    method_dispatch::plan_object_method_dispatch,
     object_lifecycle::aidl_public_runtime_id_for_close_cleanup,
-    object_method_txn::ObjectMethodDispatchPreflight, start_frontend_demux_live_pump_from_reader,
+    object_method_txn::ObjectMethodExecutionToken, start_frontend_demux_live_pump_from_reader,
     FrontendRegistryEntry, TunerServiceRuntime,
 };
 use maleicacid_tuner_hal2_common::{
@@ -18,9 +17,7 @@ use maleicacid_tuner_hal2_device::{
     FrontendWorkerContext, FrontendWorkerKind, FrontendWorkerStartError, FrontendWorkerStopOutcome,
     FrontendWorkerStopTicket,
 };
-use maleicacid_tuner_hal2_domain_request::{
-    AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan, RuntimeExecutableRequest,
-};
+use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
 
 pub type FrontendScanEndNotifier =
     Arc<dyn Fn(i32, u64) -> Result<(), HalError> + Send + Sync + 'static>;
@@ -293,13 +290,18 @@ pub fn start_frontend_backend_tune_worker(
     object_generation: AidlObjectGeneration,
     request: FrontendTuneRequest,
     kind: FrontendWorkerKind,
-    dispatch: ObjectMethodDispatchPreflight,
+    dispatch: ObjectMethodExecutionToken,
 ) -> Result<(), HalError> {
     let mut guard = lock_runtime(&runtime, "service runtime lock poisoned")?;
+    dispatch.consume_for_object(
+        &mut guard,
+        object_id,
+        object_generation,
+        AidlObjectKind::Frontend,
+    )?;
     let (frontend_id, _resolved_entry) =
         resolve_frontend_object_for_method(&guard, object_id, object_generation)?;
     let entry = guard.validate_frontend_request_for_id(frontend_id, &request)?;
-    dispatch.plan(&mut guard)?;
     let stop_ticket = request_tune_worker_replacement_stop(&mut guard, frontend_id);
     drop(guard);
     let stop_outcome = stop_ticket.complete();
@@ -597,15 +599,20 @@ pub fn start_frontend_backend_scan_session_worker(
     request: FrontendTuneRequest,
     scan_mode: FrontendScanMode,
     scan_end_notifier: FrontendScanEndNotifier,
-    dispatch: ObjectMethodDispatchPreflight,
+    dispatch: ObjectMethodExecutionToken,
 ) -> Result<(), HalError> {
     let fingerprint = format!("{:?}:{:?}", scan_mode, request);
     let mut guard = lock_runtime(&runtime, "service runtime lock poisoned")?;
+    dispatch.consume_for_object(
+        &mut guard,
+        object_id,
+        object_generation,
+        AidlObjectKind::Frontend,
+    )?;
     let (frontend_id, _resolved_entry) =
         resolve_frontend_object_for_method(&guard, object_id, object_generation)?;
     let entry = guard.validate_frontend_request_for_id(frontend_id, &request)?;
     let candidates = guard.scan_candidates_for_frontend_entry(&entry, &request, scan_mode)?;
-    dispatch.plan(&mut guard)?;
     let stop_ticket = guard.frontend_txn().request_worker_stop_for_join(
         frontend_id,
         FrontendWorkerKind::Scan,
@@ -758,14 +765,18 @@ pub fn stop_frontend_tune_object(
     object_id: AidlObjectId,
     object_generation: AidlObjectGeneration,
     reason: FrontendWorkerCancelReason,
-    command_plan: CommandPlan,
-    executable_request: Option<RuntimeExecutableRequest>,
+    dispatch: ObjectMethodExecutionToken,
 ) -> Result<(), HalError> {
     let frontend_id = {
         let mut guard = lock_runtime(&runtime, "service runtime lock poisoned")?;
+        dispatch.consume_for_object(
+            &mut guard,
+            object_id,
+            object_generation,
+            AidlObjectKind::Frontend,
+        )?;
         let (frontend_id, _) =
             resolve_frontend_object_for_method(&guard, object_id, object_generation)?;
-        plan_object_method_dispatch(&mut guard, command_plan, executable_request)?;
         frontend_id
     };
     let outcome = stop_frontend_worker(
@@ -790,14 +801,18 @@ pub fn stop_frontend_scan_object(
     object_id: AidlObjectId,
     object_generation: AidlObjectGeneration,
     reason: FrontendWorkerCancelReason,
-    command_plan: CommandPlan,
-    executable_request: Option<RuntimeExecutableRequest>,
+    dispatch: ObjectMethodExecutionToken,
 ) -> Result<(), HalError> {
     let frontend_id = {
         let mut guard = lock_runtime(&runtime, "service runtime lock poisoned")?;
+        dispatch.consume_for_object(
+            &mut guard,
+            object_id,
+            object_generation,
+            AidlObjectKind::Frontend,
+        )?;
         let (frontend_id, _) =
             resolve_frontend_object_for_method(&guard, object_id, object_generation)?;
-        plan_object_method_dispatch(&mut guard, command_plan, executable_request)?;
         frontend_id
     };
     stop_frontend_scan_worker(runtime, frontend_id, reason)

@@ -8,14 +8,25 @@ pub struct SourceFilterRef {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct DemuxInputRef {
+    pub demux_id: i32,
+    pub generation: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub enum DescramblerPidSource {
+    SourceFilter(SourceFilterRef),
+    DemuxInput(DemuxInputRef),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct DescramblerPidClaim {
     pid: DescramblerPid,
-    source_filter: SourceFilterRef,
+    source: DescramblerPidSource,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DescramblerPidClaimError {
-    NullSourceFilterUnsupported,
     InvalidPid,
 }
 
@@ -30,22 +41,44 @@ impl DescramblerPidClaim {
         }
         Ok(Self {
             pid: DescramblerPid(pid),
-            source_filter: SourceFilterRef {
+            source: DescramblerPidSource::SourceFilter(SourceFilterRef {
                 filter_id,
                 generation,
-            },
+            }),
         })
     }
 
-    pub fn reject_null_source_filter(_pid: u16) -> Result<Self, DescramblerPidClaimError> {
-        Err(DescramblerPidClaimError::NullSourceFilterUnsupported)
+    pub fn from_demux_input(
+        pid: u16,
+        demux_id: i32,
+        generation: u64,
+    ) -> Result<Self, DescramblerPidClaimError> {
+        if pid > 0x1fff {
+            return Err(DescramblerPidClaimError::InvalidPid);
+        }
+        Ok(Self {
+            pid: DescramblerPid(pid),
+            source: DescramblerPidSource::DemuxInput(DemuxInputRef {
+                demux_id,
+                generation,
+            }),
+        })
     }
 
     pub fn pid(&self) -> DescramblerPid {
         self.pid
     }
-    pub fn source_filter(&self) -> SourceFilterRef {
-        self.source_filter
+    pub fn source_filter_ref(&self) -> Option<SourceFilterRef> {
+        match self.source {
+            DescramblerPidSource::SourceFilter(source) => Some(source),
+            DescramblerPidSource::DemuxInput(_) => None,
+        }
+    }
+    pub fn demux_input(&self) -> Option<DemuxInputRef> {
+        match self.source {
+            DescramblerPidSource::SourceFilter(_) => None,
+            DescramblerPidSource::DemuxInput(source) => Some(source),
+        }
     }
 }
 
@@ -54,11 +87,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn null_source_filter_is_not_current_runtime_target() {
+    fn demux_input_claim_keeps_demux_generation() {
+        let claim = DescramblerPidClaim::from_demux_input(100, 2, 9).unwrap();
+        assert_eq!(claim.pid(), DescramblerPid(100));
         assert_eq!(
-            DescramblerPidClaim::reject_null_source_filter(100).unwrap_err(),
-            DescramblerPidClaimError::NullSourceFilterUnsupported
+            claim.demux_input(),
+            Some(DemuxInputRef {
+                demux_id: 2,
+                generation: 9
+            })
         );
+        assert_eq!(claim.source_filter_ref(), None);
     }
 
     #[test]
@@ -66,11 +105,11 @@ mod tests {
         let claim = DescramblerPidClaim::from_source_filter(100, 4, 9).unwrap();
         assert_eq!(claim.pid(), DescramblerPid(100));
         assert_eq!(
-            claim.source_filter(),
-            SourceFilterRef {
+            claim.source_filter_ref(),
+            Some(SourceFilterRef {
                 filter_id: 4,
                 generation: 9
-            }
+            })
         );
     }
 }

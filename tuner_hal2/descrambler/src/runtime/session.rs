@@ -33,7 +33,7 @@ impl DescramblerSession {
     pub fn is_closed(&self) -> bool {
         self.closed
     }
-    pub fn clear_key(&mut self) -> Option<DescramblerKeyToken> {
+    pub(crate) fn clear_key(&mut self) -> Option<DescramblerKeyToken> {
         let old = self.key_token.take();
         self.key_slot = None;
         old
@@ -57,6 +57,9 @@ impl DescramblerSession {
     pub(crate) fn set_demux_binding(&mut self, demux_id: i32, generation: u64) {
         self.demux_id = Some(demux_id);
         self.demux_generation = Some(generation);
+    }
+    pub(crate) fn clear_pid_claims(&mut self) {
+        self.pid_claims.clear();
     }
     pub(crate) fn set_key(&mut self, token: DescramblerKeyToken, key_slot: DescramblerKeySlotId) {
         self.key_token = Some(token);

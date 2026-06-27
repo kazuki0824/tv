@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::MutexGuard;
 
 use android_hardware_common::aidl::android::hardware::common::NativeHandle::NativeHandle as CommonNativeHandle;
 use android_hardware_common_fmq::aidl::android::hardware::common::fmq::GrantorDescriptor::GrantorDescriptor as CommonGrantorDescriptor;
@@ -48,7 +48,6 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     LnbPosition::LnbPosition,
     LnbTone::LnbTone,
     LnbVoltage::LnbVoltage,
-    Result::Result as TunerResult,
 };
 use binder::{
     BinderFeatures, Interface, ParcelFileDescriptor, Result as BinderResult, Status, Strong,
@@ -58,20 +57,21 @@ use maleicacid_tuner_hal2_binder_adapter::{
     build_dvr_open_request, build_filter_av_stream_type_request, build_filter_delay_hint_request,
     build_filter_summary_for_open_type, build_lnb_satellite_position_request,
     build_lnb_tone_request, build_lnb_voltage_request, build_open_filter_request, AidlApi,
-    AidlMethodAdapter, AidlMethodCall, AidlMethodPlan, AidlObjectGeneration, AidlObjectId,
-    AidlObjectKind, DvrFilterLinkRequest, FilterReleaseAvHandleRequest, FilterSetDataSourceRequest,
+    AidlObjectGeneration, AidlObjectId, AidlObjectKind, DvrFilterLinkRequest,
+    FilterReleaseAvHandleRequest, FilterSetDataSourceRequest,
 };
 use maleicacid_tuner_hal2_common::{
     fail_after_cleanup, japan_isdbt_frequency_contract_range_hz, FrontendBackendKind,
     FrontendSystem, HalError, HalInternalKind,
 };
 use maleicacid_tuner_hal2_demux::QueueDescriptorSnapshot;
-use maleicacid_tuner_hal2_device::{FrontendRuntimeState, FrontendSignalState};
 use maleicacid_tuner_hal2_service_runtime::{
     close_frontend_object_cleanup_use_case, set_frontend_lnb_object_use_case,
     start_frontend_scan_use_case, start_frontend_tune_use_case, stop_frontend_scan_use_case,
-    stop_frontend_tune_use_case, FrontendRegistryEntry, FrontendRuntimeId, LnbRegistryProfile,
-    RuntimeCommandDispatchError, RuntimeCommandDispatchPlan, RuntimeObjectEntry,
+    stop_frontend_tune_use_case, LnbRegistryProfile, ObjectFrontendStatusReadinessValue,
+    ObjectFrontendStatusType, ObjectFrontendStatusValue, ObjectQueryRequest, ObjectQueryResponse,
+    RootCommandRequest, RootDemuxCapabilitiesSnapshot, RootDemuxInfoSnapshot,
+    RootFrontendInfoSnapshot, RootQueryRequest, RootQueryResponse, RuntimeObjectEntry,
     TunerServiceRuntime,
 };
 
@@ -85,7 +85,7 @@ use crate::dvr_callback_delivery::{
     deliver_started_dvr_status, start_dvr_status_notifier, stop_dvr_status_notifier,
 };
 use crate::dvr_object::DvrAidlObject;
-use crate::error_bridge::{service_error, status_from_hal_error, status_unknown_error};
+use crate::error_bridge::{status_from_hal_error, status_unknown_error};
 use crate::filter_callback_delivery::AidlFilterEventDispatcher;
 use crate::filter_object::FilterAidlObject;
 use crate::frontend_callback_delivery::scan_end_notifier;
@@ -99,6 +99,7 @@ use crate::object_runtime::{
     execute_shared_object_runtime_use_case_with_request_builder,
     plan_unavailable_object_method_use_case,
 };
+use crate::service_context::{AidlServiceContext, SharedAidlServiceContext, SharedTunerRuntime};
 
 mod demux_methods;
 mod descrambler_methods;
@@ -108,9 +109,7 @@ mod frontend_methods;
 mod lnb_methods;
 mod support;
 
-use self::support::{
-    plan_tuner_public_api_method, public_api_call, unavailable_after_tuner_method_plan,
-};
+use self::support::{public_api_call, unsupported_public_api_call};
 
 type TunerQueueDesc = CommonMqDescriptor<i8, CommonSynchronizedReadWrite>;
 type TunerNativeHandle = CommonNativeHandle;
@@ -121,13 +120,14 @@ const TUNER_HAL2_DEMUX_MAX_SECTION_FILTERS: i32 = 8;
 const TUNER_HAL2_DEMUX_MAX_AUDIO_FILTERS: i32 = 4;
 const TUNER_HAL2_DEMUX_MAX_VIDEO_FILTERS: i32 = 4;
 const TUNER_HAL2_DEMUX_MAX_PES_FILTERS: i32 = 8;
+const TUNER_HAL2_DEMUX_MAX_PCR_FILTERS: i32 = 4;
 const TUNER_HAL2_MAX_SECTION_FILTER_BYTES: i64 = 16;
 const DEMUX_FILTER_MAIN_TYPE_COUNT: usize = 5;
 const SUPPORTED_DEMUX_FILTER_CAPS: i32 = DemuxFilterMainType::TS.0;
 
 #[derive(Clone)]
 pub struct TunerAidlService {
-    runtime: Arc<Mutex<TunerServiceRuntime>>,
+    context: SharedAidlServiceContext,
 }
 
 impl Interface for TunerAidlService {}
@@ -148,7 +148,7 @@ fn tuner_hal2_demux_capabilities() -> DemuxCapabilities {
         numAudioFilter: TUNER_HAL2_DEMUX_MAX_AUDIO_FILTERS,
         numVideoFilter: TUNER_HAL2_DEMUX_MAX_VIDEO_FILTERS,
         numPesFilter: TUNER_HAL2_DEMUX_MAX_PES_FILTERS,
-        numPcrFilter: 0,
+        numPcrFilter: TUNER_HAL2_DEMUX_MAX_PCR_FILTERS,
         numBytesInSectionFilter: TUNER_HAL2_MAX_SECTION_FILTER_BYTES,
         filterCaps: SUPPORTED_DEMUX_FILTER_CAPS,
         linkCaps: demux_link_caps_for_ts_filter_linkage(),
@@ -159,6 +159,40 @@ fn tuner_hal2_demux_capabilities() -> DemuxCapabilities {
 fn tuner_hal2_demux_info() -> DemuxInfo {
     DemuxInfo {
         filterTypes: SUPPORTED_DEMUX_FILTER_CAPS,
+    }
+}
+
+fn tuner_hal2_demux_capabilities_from_snapshot(
+    snapshot: RootDemuxCapabilitiesSnapshot,
+) -> DemuxCapabilities {
+    DemuxCapabilities {
+        numDemux: snapshot.num_demux,
+        numRecord: snapshot.num_record,
+        numPlayback: snapshot.num_playback,
+        numTsFilter: snapshot.num_ts_filter,
+        numSectionFilter: snapshot.num_section_filter,
+        numAudioFilter: snapshot.num_audio_filter,
+        numVideoFilter: snapshot.num_video_filter,
+        numPesFilter: snapshot.num_pes_filter,
+        numPcrFilter: snapshot.num_pcr_filter,
+        numBytesInSectionFilter: snapshot.num_bytes_in_section_filter,
+        filterCaps: snapshot.filter_caps,
+        linkCaps: snapshot.link_caps,
+        bTimeFilter: snapshot.has_time_filter,
+    }
+}
+
+fn tuner_hal2_demux_info_from_snapshot(snapshot: RootDemuxInfoSnapshot) -> DemuxInfo {
+    DemuxInfo {
+        filterTypes: snapshot.filter_types,
+    }
+}
+
+fn frontend_system_from_type(frontend_type: FrontendType) -> FrontendSystem {
+    match frontend_type {
+        FrontendType::ISDBS => FrontendSystem::IsdbS,
+        FrontendType::ISDBT => FrontendSystem::IsdbT,
+        _ => FrontendSystem::IsdbT,
     }
 }
 
@@ -195,42 +229,43 @@ fn tuner_queue_desc_from_snapshot(snapshot: QueueDescriptorSnapshot) -> TunerQue
 }
 
 impl TunerAidlService {
-    pub fn new(runtime: TunerServiceRuntime) -> Self {
-        maleicacid_tuner_hal2_service_runtime::install_filter_event_dispatcher(Arc::new(
-            AidlFilterEventDispatcher,
-        ));
+    pub fn new(runtime: TunerServiceRuntime) -> Result<Self, HalError> {
+        Self::from_context(AidlServiceContext::shared(runtime))
+    }
+
+    pub fn from_context(context: SharedAidlServiceContext) -> Result<Self, HalError> {
+        {
+            let runtime_handle = context.runtime();
+            let mut runtime = runtime_handle.lock().map_err(|_| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "service runtime lock poisoned while installing filter event dispatcher",
+                )
+            })?;
+            runtime.install_filter_event_dispatcher(std::sync::Arc::new(
+                AidlFilterEventDispatcher::new(&context),
+            ))?;
+        }
+        Ok(Self { context })
+    }
+
+    #[cfg(test)]
+    fn new_without_filter_event_dispatcher_for_test(runtime: TunerServiceRuntime) -> Self {
         Self {
-            runtime: Arc::new(Mutex::new(runtime)),
+            context: AidlServiceContext::shared(runtime),
         }
     }
 
-    pub fn lock_runtime(&self) -> Result<MutexGuard<'_, TunerServiceRuntime>, Status> {
-        self.runtime
-            .lock()
-            .map_err(|_| status_unknown_error("service runtime lock poisoned"))
+    pub(crate) fn context(&self) -> SharedAidlServiceContext {
+        self.context.clone()
     }
 
-    fn frontend_entry(&self, frontend_id: i32) -> BinderResult<FrontendRegistryEntry> {
-        self.lock_runtime()?
-            .frontend_entry(frontend_id)
-            .ok_or_else(|| {
-                service_error(TunerResult::UNAVAILABLE.0, "frontend id is not available")
-            })
+    pub(crate) fn runtime(&self) -> SharedTunerRuntime {
+        self.context.runtime()
     }
 
-    pub fn plan_from_method_plan(
-        &self,
-        method_plan: &AidlMethodPlan,
-    ) -> Result<RuntimeCommandDispatchPlan, RuntimeCommandDispatchError> {
-        match self.runtime.lock() {
-            Ok(mut runtime) => runtime.plan_command_dispatch(
-                method_plan.command_plan,
-                method_plan.command.runtime_executable_request(),
-            ),
-            Err(_) => Err(RuntimeCommandDispatchError::RuntimeLockPoison {
-                transaction: method_plan.command_plan.transaction(),
-            }),
-        }
+    pub(crate) fn lock_runtime(&self) -> Result<MutexGuard<'_, TunerServiceRuntime>, Status> {
+        self.context.lock_runtime()
     }
 
     fn handle_from_runtime_entry(entry: RuntimeObjectEntry) -> AidlObjectHandle {
@@ -242,7 +277,8 @@ impl TunerAidlService {
         entry: RuntimeObjectEntry,
         unregister_runtime: bool,
     ) -> Result<(), HalError> {
-        self.runtime
+        self.context
+            .runtime()
             .lock()
             .map_err(|_| {
                 HalError::internal(
@@ -268,7 +304,7 @@ impl TunerAidlService {
             );
         }
         let handle = Self::handle_from_runtime_entry(entry.clone());
-        match FrontendAidlObject::new(handle, self.runtime.clone()) {
+        match FrontendAidlObject::new(handle, self.context.clone()) {
             Ok(object) => Ok(BnFrontend::new_binder(object, BinderFeatures::default())),
             Err(_) => finish_hal_cleanup_after_primary(
                 "frontend root object construction rollback failed",
@@ -300,7 +336,7 @@ impl TunerAidlService {
             }
         };
         let handle = Self::handle_from_runtime_entry(entry.clone());
-        match DemuxAidlObject::new(handle, self.runtime.clone()) {
+        match DemuxAidlObject::new(handle, self.context.clone()) {
             Ok(object) => Ok((
                 BnDemux::new_binder(object, BinderFeatures::default()),
                 public_id,
@@ -331,7 +367,7 @@ impl TunerAidlService {
             );
         }
         let handle = Self::handle_from_runtime_entry(entry.clone());
-        match DescramblerAidlObject::new(handle, self.runtime.clone()) {
+        match DescramblerAidlObject::new(handle, self.context.clone()) {
             Ok(object) => Ok(BnDescrambler::new_binder(object, BinderFeatures::default())),
             Err(_) => finish_hal_cleanup_after_primary(
                 "descrambler root object construction rollback failed",
@@ -353,7 +389,7 @@ impl TunerAidlService {
             );
         }
         let handle = Self::handle_from_runtime_entry(entry.clone());
-        match LnbAidlObject::new(handle, self.runtime.clone()) {
+        match LnbAidlObject::new(handle, self.context.clone()) {
             Ok(object) => Ok(BnLnb::new_binder(object, BinderFeatures::default())),
             Err(_) => finish_hal_cleanup_after_primary(
                 "LNB root object construction rollback failed",
@@ -377,24 +413,24 @@ fn packed_physical_group_id(tag: i32, major: i32, minor: i32) -> i32 {
     tag | major_bits | minor_bits
 }
 
-fn frontend_type_from_entry(entry: &FrontendRegistryEntry) -> FrontendType {
-    match entry.system {
+fn frontend_type_from_snapshot(snapshot: &RootFrontendInfoSnapshot) -> FrontendType {
+    match snapshot.system {
         FrontendSystem::IsdbT => FrontendType::ISDBT,
         FrontendSystem::IsdbS => FrontendType::ISDBS,
         FrontendSystem::IsdbS3 | FrontendSystem::DvbS => FrontendType::ISDBT,
     }
 }
 
-fn physical_group_id_from_entry(entry: &FrontendRegistryEntry) -> i32 {
-    match entry.backend {
+fn physical_group_id_from_snapshot(snapshot: &RootFrontendInfoSnapshot) -> i32 {
+    match snapshot.backend {
         FrontendBackendKind::LinuxDvb => {
-            let rel = entry.id.0.saturating_sub(DVB_FRONTEND_ID_BASE);
+            let rel = snapshot.id.saturating_sub(DVB_FRONTEND_ID_BASE);
             let adapter = (rel >> 12) & 0xff;
             let frontend_index = (rel >> 4) & 0xff;
             packed_physical_group_id(DVB_PHYSICAL_GROUP_TAG, adapter, frontend_index)
         }
         FrontendBackendKind::Px4CharDevice => {
-            let rel = entry.id.0.saturating_sub(PX4_FRONTEND_ID_BASE);
+            let rel = snapshot.id.saturating_sub(PX4_FRONTEND_ID_BASE);
             let family = rel.div_euclid(10_000);
             let unit = rel.rem_euclid(10_000).div_euclid(10);
             packed_physical_group_id(PX4_PHYSICAL_GROUP_TAG, family, unit)
@@ -418,79 +454,16 @@ fn lnb_profile_status_voltage(profile: Option<LnbRegistryProfile>) -> LnbVoltage
     }
 }
 
-fn frontend_status_caps_for_entry(entry: &FrontendRegistryEntry) -> Vec<FrontendStatusType> {
+fn frontend_status_caps_for_snapshot(
+    snapshot: &RootFrontendInfoSnapshot,
+) -> Vec<FrontendStatusType> {
     // optional telemetryは保守的に扱う。tune/scan backend runtime接続前は決定的な状態fieldだけをadvertiseする。
     // LNB voltageは、systemがISDB-Sであるだけではなく、frontend exportとexported LNBがprobe/registry由来の同じ固定LNB profileを共有する場合だけadvertiseする。
     let mut caps = vec![FrontendStatusType::DEMOD_LOCK];
-    if lnb_profile_supports_voltage_status(entry.lnb_profile) {
+    if lnb_profile_supports_voltage_status(snapshot.lnb_profile) {
         caps.push(FrontendStatusType::LNB_VOLTAGE);
     }
     caps
-}
-
-fn is_supported_frontend_status(
-    entry: &FrontendRegistryEntry,
-    status_type: FrontendStatusType,
-) -> bool {
-    frontend_status_caps_for_entry(entry).contains(&status_type)
-}
-
-fn frontend_status_for_types(
-    entry: &FrontendRegistryEntry,
-    signal_state: FrontendSignalState,
-    status_types: &[FrontendStatusType],
-) -> BinderResult<Vec<FrontendStatus>> {
-    if status_types
-        .iter()
-        .any(|ty| !is_supported_frontend_status(entry, *ty))
-    {
-        return Err(service_error(
-            TunerResult::INVALID_ARGUMENT.0,
-            "unsupported frontend status type requested",
-        ));
-    }
-    Ok(status_types
-        .iter()
-        .map(|ty| match *ty {
-            FrontendStatusType::DEMOD_LOCK => {
-                FrontendStatus::IsDemodLocked(matches!(signal_state, FrontendSignalState::Locked))
-            }
-            FrontendStatusType::LNB_VOLTAGE => {
-                FrontendStatus::LnbVoltage(lnb_profile_status_voltage(entry.lnb_profile))
-            }
-            _ => FrontendStatus::IsDemodLocked(false),
-        })
-        .collect())
-}
-
-fn frontend_readiness_for_types(
-    entry: &FrontendRegistryEntry,
-    runtime_state: FrontendRuntimeState,
-    signal_state: FrontendSignalState,
-    status_types: &[FrontendStatusType],
-) -> Vec<FrontendStatusReadiness> {
-    status_types
-        .iter()
-        .map(|ty| {
-            if !is_supported_frontend_status(entry, *ty) {
-                return FrontendStatusReadiness::UNSUPPORTED;
-            }
-            match runtime_state {
-                FrontendRuntimeState::Idle => FrontendStatusReadiness::STABLE,
-                FrontendRuntimeState::Tuning { .. } | FrontendRuntimeState::Scanning { .. } => {
-                    match signal_state {
-                        FrontendSignalState::Locked => FrontendStatusReadiness::STABLE,
-                        FrontendSignalState::NoSignal
-                        | FrontendSignalState::SignalDetected
-                        | FrontendSignalState::Unknown => FrontendStatusReadiness::UNSTABLE,
-                    }
-                }
-                FrontendRuntimeState::Closing | FrontendRuntimeState::Failed => {
-                    FrontendStatusReadiness::UNAVAILABLE
-                }
-            }
-        })
-        .collect()
 }
 
 fn isdbt_mode_caps() -> i32 {
@@ -543,8 +516,8 @@ fn isdbs_coderate_caps() -> i32 {
         | FrontendIsdbsCoderate::CODERATE_7_8.0
 }
 
-fn frontend_caps_for_entry(entry: &FrontendRegistryEntry) -> FrontendCapabilities {
-    match frontend_type_from_entry(entry) {
+fn frontend_caps_for_snapshot(snapshot: &RootFrontendInfoSnapshot) -> FrontendCapabilities {
+    match frontend_type_from_snapshot(snapshot) {
         FrontendType::ISDBT => FrontendCapabilities::IsdbtCaps(FrontendIsdbtCapabilities {
             modeCap: isdbt_mode_caps(),
             bandwidthCap: isdbt_bandwidth_caps(),
@@ -563,8 +536,8 @@ fn frontend_caps_for_entry(entry: &FrontendRegistryEntry) -> FrontendCapabilitie
     }
 }
 
-fn frontend_frequency_contract(entry: &FrontendRegistryEntry) -> (i64, i64, i64) {
-    match frontend_type_from_entry(entry) {
+fn frontend_frequency_contract(snapshot: &RootFrontendInfoSnapshot) -> (i64, i64, i64) {
+    match frontend_type_from_snapshot(snapshot) {
         FrontendType::ISDBT => {
             let (min_hz, max_hz, tolerance_hz) = japan_isdbt_frequency_contract_range_hz();
             (min_hz as i64, max_hz as i64, tolerance_hz as i64)
@@ -574,41 +547,41 @@ fn frontend_frequency_contract(entry: &FrontendRegistryEntry) -> (i64, i64, i64)
     }
 }
 
-fn frontend_info_from_entry(entry: &FrontendRegistryEntry) -> FrontendInfo {
-    let (min_freq, max_freq, acquire_range) = frontend_frequency_contract(entry);
+fn frontend_info_from_snapshot(snapshot: &RootFrontendInfoSnapshot) -> FrontendInfo {
+    let (min_freq, max_freq, acquire_range) = frontend_frequency_contract(snapshot);
     FrontendInfo {
-        r#type: frontend_type_from_entry(entry),
+        r#type: frontend_type_from_snapshot(snapshot),
         minFrequency: min_freq,
         maxFrequency: max_freq,
         minSymbolRate: 0,
         maxSymbolRate: 0,
         acquireRange: acquire_range,
-        exclusiveGroupId: physical_group_id_from_entry(entry),
-        statusCaps: frontend_status_caps_for_entry(entry),
-        frontendCaps: frontend_caps_for_entry(entry),
+        exclusiveGroupId: physical_group_id_from_snapshot(snapshot),
+        statusCaps: frontend_status_caps_for_snapshot(snapshot),
+        frontendCaps: frontend_caps_for_snapshot(snapshot),
     }
 }
 
 impl ITuner for TunerAidlService {
     fn getFrontendIds(&self) -> BinderResult<Vec<i32>> {
-        plan_tuner_public_api_method(self, AidlApi::TunerGetFrontendIds, None)?;
-        let runtime = self.lock_runtime()?;
-        Ok(runtime.frontend_ids())
+        match self
+            .lock_runtime()?
+            .execute_root_query(RootQueryRequest::FrontendIds)
+            .map_err(status_from_hal_error)?
+        {
+            RootQueryResponse::FrontendIds(ids) => Ok(ids),
+            _ => Err(status_unknown_error(
+                "unexpected root query response for getFrontendIds",
+            )),
+        }
     }
 
     fn openFrontendById(&self, frontend_id: i32) -> BinderResult<Strong<dyn IFrontend>> {
-        let method_plan = AidlMethodAdapter::plan(public_api_call(
-            AidlObjectKind::Tuner,
-            AidlApi::TunerOpenFrontendById,
-            None,
-        ))
-        .map_err(status_from_hal_error)?;
         let entry = self
             .lock_runtime()?
             .open_frontend_root_object_for_id(
                 frontend_id,
-                method_plan.command_plan,
-                method_plan.command.runtime_executable_request(),
+                public_api_call(AidlObjectKind::Tuner, AidlApi::TunerOpenFrontendById, None),
             )
             .map_err(status_from_hal_error)?;
         self.frontend_object_from_entry(entry)
@@ -616,18 +589,13 @@ impl ITuner for TunerAidlService {
 
     fn openDemux(&self, demux_id: &mut Vec<i32>) -> BinderResult<Strong<dyn IDemux>> {
         demux_id.clear();
-        let method_plan = AidlMethodAdapter::plan(public_api_call(
-            AidlObjectKind::Tuner,
-            AidlApi::TunerOpenDemux,
-            None,
-        ))
-        .map_err(status_from_hal_error)?;
         let entry = self
             .lock_runtime()?
-            .open_demux_root_object(
-                method_plan.command_plan,
-                method_plan.command.runtime_executable_request(),
-            )
+            .open_demux_root_object(public_api_call(
+                AidlObjectKind::Tuner,
+                AidlApi::TunerOpenDemux,
+                None,
+            ))
             .map_err(status_from_hal_error)?;
         let (object, id) = self.demux_object_from_entry(entry, true)?;
         demux_id.push(id);
@@ -635,52 +603,64 @@ impl ITuner for TunerAidlService {
     }
 
     fn getDemuxCaps(&self) -> BinderResult<DemuxCapabilities> {
-        plan_tuner_public_api_method(self, AidlApi::TunerGetDemuxCaps, None)?;
-        Ok(tuner_hal2_demux_capabilities())
+        match self
+            .lock_runtime()?
+            .execute_root_query(RootQueryRequest::DemuxCapabilities)
+            .map_err(status_from_hal_error)?
+        {
+            RootQueryResponse::DemuxCapabilities(snapshot) => {
+                Ok(tuner_hal2_demux_capabilities_from_snapshot(snapshot))
+            }
+            _ => Err(status_unknown_error(
+                "unexpected root query response for getDemuxCaps",
+            )),
+        }
     }
 
     fn openDescrambler(&self) -> BinderResult<Strong<dyn IDescrambler>> {
-        let method_plan = AidlMethodAdapter::plan(public_api_call(
-            AidlObjectKind::Tuner,
-            AidlApi::TunerOpenDescrambler,
-            None,
-        ))
-        .map_err(status_from_hal_error)?;
         let entry = self
             .lock_runtime()?
-            .open_descrambler_root_object(
-                method_plan.command_plan,
-                method_plan.command.runtime_executable_request(),
-            )
+            .open_descrambler_root_object(public_api_call(
+                AidlObjectKind::Tuner,
+                AidlApi::TunerOpenDescrambler,
+                None,
+            ))
             .map_err(status_from_hal_error)?;
         self.descrambler_object_from_entry(entry)
     }
 
     fn getFrontendInfo(&self, frontend_id: i32) -> BinderResult<FrontendInfo> {
-        plan_tuner_public_api_method(self, AidlApi::TunerGetFrontendInfo, None)?;
-        let entry = self.frontend_entry(frontend_id)?;
-        Ok(frontend_info_from_entry(&entry))
+        match self
+            .lock_runtime()?
+            .execute_root_query(RootQueryRequest::FrontendInfo { frontend_id })
+            .map_err(status_from_hal_error)?
+        {
+            RootQueryResponse::FrontendInfo(snapshot) => Ok(frontend_info_from_snapshot(&snapshot)),
+            _ => Err(status_unknown_error(
+                "unexpected root query response for getFrontendInfo",
+            )),
+        }
     }
 
     fn getLnbIds(&self) -> BinderResult<Vec<i32>> {
-        plan_tuner_public_api_method(self, AidlApi::TunerGetLnbIds, None)?;
-        let runtime = self.lock_runtime()?;
-        Ok(runtime.lnb_ids())
+        match self
+            .lock_runtime()?
+            .execute_root_query(RootQueryRequest::LnbIds)
+            .map_err(status_from_hal_error)?
+        {
+            RootQueryResponse::LnbIds(ids) => Ok(ids),
+            _ => Err(status_unknown_error(
+                "unexpected root query response for getLnbIds",
+            )),
+        }
     }
 
     fn openLnbById(&self, lnb_id: i32) -> BinderResult<Strong<dyn ILnb>> {
-        let method_plan = AidlMethodAdapter::plan(public_api_call(
-            AidlObjectKind::Tuner,
-            AidlApi::TunerOpenLnbById,
-            None,
-        ))
-        .map_err(status_from_hal_error)?;
         let entry = self
             .lock_runtime()?
             .open_lnb_root_object_for_id(
                 lnb_id,
-                method_plan.command_plan,
-                method_plan.command.runtime_executable_request(),
+                public_api_call(AidlObjectKind::Tuner, AidlApi::TunerOpenLnbById, None),
             )
             .map_err(status_from_hal_error)?;
         self.lnb_object_from_entry(entry)
@@ -692,18 +672,11 @@ impl ITuner for TunerAidlService {
         lnb_id: &mut Vec<i32>,
     ) -> BinderResult<Strong<dyn ILnb>> {
         lnb_id.clear();
-        let method_plan = AidlMethodAdapter::plan(public_api_call(
-            AidlObjectKind::Tuner,
-            AidlApi::TunerOpenLnbByName,
-            None,
-        ))
-        .map_err(status_from_hal_error)?;
         let (id, entry) = self
             .lock_runtime()?
             .open_lnb_root_object_by_name(
                 lnb_name,
-                method_plan.command_plan,
-                method_plan.command.runtime_executable_request(),
+                public_api_call(AidlObjectKind::Tuner, AidlApi::TunerOpenLnbByName, None),
             )
             .map_err(status_from_hal_error)?;
         let object = self.lnb_object_from_entry(entry)?;
@@ -712,7 +685,9 @@ impl ITuner for TunerAidlService {
     }
 
     fn setLna(&self, _b_enable: bool) -> BinderResult<()> {
-        unavailable_after_tuner_method_plan(self, AidlApi::TunerSetLna, None, "LNA is unsupported")
+        self.lock_runtime()?
+            .execute_root_command(RootCommandRequest::SetLna { enabled: _b_enable })
+            .map_err(status_from_hal_error)
     }
 
     fn setMaxNumberOfFrontends(
@@ -720,49 +695,61 @@ impl ITuner for TunerAidlService {
         _frontend_type: FrontendType,
         max_number: i32,
     ) -> BinderResult<()> {
-        let input = None;
-        if max_number == 0 {
-            plan_tuner_public_api_method(self, AidlApi::TunerSetMaxNumberOfFrontends, input)?;
-            Ok(())
-        } else {
-            unavailable_after_tuner_method_plan(
-                self,
-                AidlApi::TunerSetMaxNumberOfFrontends,
-                input,
-                "frontend max override is unavailable without probed frontend",
-            )
-        }
+        self.lock_runtime()?
+            .execute_root_command(RootCommandRequest::SetMaxNumberOfFrontends {
+                frontend_system: frontend_system_from_type(_frontend_type),
+                max_number,
+            })
+            .map_err(status_from_hal_error)
     }
 
     fn getMaxNumberOfFrontends(&self, _frontend_type: FrontendType) -> BinderResult<i32> {
-        plan_tuner_public_api_method(self, AidlApi::TunerGetMaxNumberOfFrontends, None)?;
-        Ok(0)
+        match self
+            .lock_runtime()?
+            .execute_root_query(RootQueryRequest::MaxNumberOfFrontends {
+                frontend_system: frontend_system_from_type(_frontend_type),
+            })
+            .map_err(status_from_hal_error)?
+        {
+            RootQueryResponse::MaxNumberOfFrontends(value) => Ok(value),
+            _ => Err(status_unknown_error(
+                "unexpected root query response for getMaxNumberOfFrontends",
+            )),
+        }
     }
 
     fn isLnaSupported(&self) -> BinderResult<bool> {
-        plan_tuner_public_api_method(self, AidlApi::TunerIsLnaSupported, None)?;
-        Ok(false)
+        match self
+            .lock_runtime()?
+            .execute_root_query(RootQueryRequest::LnaSupported)
+            .map_err(status_from_hal_error)?
+        {
+            RootQueryResponse::LnaSupported(supported) => Ok(supported),
+            _ => Err(status_unknown_error(
+                "unexpected root query response for isLnaSupported",
+            )),
+        }
     }
 
     fn getDemuxIds(&self) -> BinderResult<Vec<i32>> {
-        plan_tuner_public_api_method(self, AidlApi::TunerGetDemuxIds, None)?;
-        let runtime = self.lock_runtime()?;
-        Ok(runtime.demux_ids())
+        match self
+            .lock_runtime()?
+            .execute_root_query(RootQueryRequest::DemuxIds)
+            .map_err(status_from_hal_error)?
+        {
+            RootQueryResponse::DemuxIds(ids) => Ok(ids),
+            _ => Err(status_unknown_error(
+                "unexpected root query response for getDemuxIds",
+            )),
+        }
     }
 
     fn openDemuxById(&self, demux_id: i32) -> BinderResult<Strong<dyn IDemux>> {
-        let method_plan = AidlMethodAdapter::plan(public_api_call(
-            AidlObjectKind::Tuner,
-            AidlApi::TunerOpenDemuxById,
-            None,
-        ))
-        .map_err(status_from_hal_error)?;
         let entry = self
             .lock_runtime()?
             .open_demux_root_object_by_id(
                 demux_id,
-                method_plan.command_plan,
-                method_plan.command.runtime_executable_request(),
+                public_api_call(AidlObjectKind::Tuner, AidlApi::TunerOpenDemuxById, None),
             )
             .map_err(status_from_hal_error)?;
         self.demux_object_from_entry(entry, false)
@@ -770,14 +757,18 @@ impl ITuner for TunerAidlService {
     }
 
     fn getDemuxInfo(&self, demux_id: i32) -> BinderResult<DemuxInfo> {
-        plan_tuner_public_api_method(self, AidlApi::TunerGetDemuxInfo, None)?;
-        let runtime = self.lock_runtime()?;
-        if !runtime.has_demux_id(demux_id) {
-            return Err(status_from_hal_error(HalError::Unsupported(
-                "demux id is not available",
-            )));
+        match self
+            .lock_runtime()?
+            .execute_root_query(RootQueryRequest::DemuxInfo { demux_id })
+            .map_err(status_from_hal_error)?
+        {
+            RootQueryResponse::DemuxInfo(snapshot) => {
+                Ok(tuner_hal2_demux_info_from_snapshot(snapshot))
+            }
+            _ => Err(status_unknown_error(
+                "unexpected root query response for getDemuxInfo",
+            )),
         }
-        Ok(tuner_hal2_demux_info())
     }
 }
 
@@ -800,6 +791,7 @@ mod tests {
         assert_eq!(caps.numAudioFilter, 4);
         assert_eq!(caps.numVideoFilter, 4);
         assert_eq!(caps.numPesFilter, 8);
+        assert_eq!(caps.numPcrFilter, 4);
         assert_eq!(caps.numBytesInSectionFilter, 16);
         assert_eq!(caps.filterCaps, DemuxFilterMainType::TS.0);
         assert_eq!(caps.linkCaps, vec![DemuxFilterMainType::TS.0, 0, 0, 0, 0]);
@@ -816,7 +808,9 @@ mod tests {
 
     #[test]
     fn configure_ip_cid_returns_unavailable_for_any_value() {
-        let service = TunerAidlService::new(TunerServiceRuntime::new());
+        let service = TunerAidlService::new_without_filter_event_dispatcher_for_test(
+            TunerServiceRuntime::new(),
+        );
         let handle = AidlObjectHandle::new(
             AidlObjectKind::Filter,
             AidlObjectId(10),
@@ -834,13 +828,15 @@ mod tests {
                 )
                 .unwrap();
         }
-        let filter = FilterAidlObject::new(handle, service.runtime.clone()).unwrap();
+        let filter = FilterAidlObject::new(handle, service.context.clone()).unwrap();
         assert!(filter.configureIpCid(-1).is_err());
     }
 
     #[test]
     fn configure_monitor_event_zero_succeeds_nonzero_unavailable() {
-        let service = TunerAidlService::new(TunerServiceRuntime::new());
+        let service = TunerAidlService::new_without_filter_event_dispatcher_for_test(
+            TunerServiceRuntime::new(),
+        );
         let handle = AidlObjectHandle::new(
             AidlObjectKind::Filter,
             AidlObjectId(11),
@@ -858,14 +854,16 @@ mod tests {
                 )
                 .unwrap();
         }
-        let filter = FilterAidlObject::new(handle, service.runtime.clone()).unwrap();
+        let filter = FilterAidlObject::new(handle, service.context.clone()).unwrap();
         assert!(filter.configureMonitorEvent(0).is_ok());
         assert!(filter.configureMonitorEvent(1).is_err());
     }
 
     #[test]
     fn dvr_close_is_idempotent_and_closed_object_rejects_start() {
-        let service = TunerAidlService::new(TunerServiceRuntime::new());
+        let service = TunerAidlService::new_without_filter_event_dispatcher_for_test(
+            TunerServiceRuntime::new(),
+        );
         let handle = AidlObjectHandle::new(
             AidlObjectKind::Dvr,
             AidlObjectId(12),
@@ -896,62 +894,10 @@ mod tests {
                 )
                 .unwrap();
         }
-        let dvr = DvrAidlObject::new(handle, service.runtime.clone()).unwrap();
+        let dvr = DvrAidlObject::new(handle, service.context.clone()).unwrap();
 
         assert!(dvr.close().is_ok());
         assert!(dvr.close().is_ok());
         assert!(dvr.start().is_err());
-    }
-
-    #[test]
-    fn frontend_readiness_uses_runtime_and_backend_signal_state() {
-        let entry = FrontendRegistryEntry {
-            id: FrontendRuntimeId(2_000_001),
-            backend: FrontendBackendKind::LinuxDvb,
-            system: FrontendSystem::IsdbS,
-            device_path: std::path::PathBuf::from("/dev/dvb/adapter0/frontend0"),
-            lnb_profile: Some(LnbRegistryProfile::EarthPt1FixedLnb),
-        };
-        let status_types = vec![
-            FrontendStatusType::DEMOD_LOCK,
-            FrontendStatusType::LNB_VOLTAGE,
-        ];
-
-        assert_eq!(
-            frontend_readiness_for_types(
-                &entry,
-                FrontendRuntimeState::Tuning { generation: 1 },
-                FrontendSignalState::Locked,
-                &status_types,
-            ),
-            vec![
-                FrontendStatusReadiness::STABLE,
-                FrontendStatusReadiness::STABLE
-            ]
-        );
-        assert_eq!(
-            frontend_readiness_for_types(
-                &entry,
-                FrontendRuntimeState::Scanning { generation: 2 },
-                FrontendSignalState::Unknown,
-                &status_types,
-            ),
-            vec![
-                FrontendStatusReadiness::UNSTABLE,
-                FrontendStatusReadiness::UNSTABLE
-            ]
-        );
-        assert_eq!(
-            frontend_readiness_for_types(
-                &entry,
-                FrontendRuntimeState::Failed,
-                FrontendSignalState::NoSignal,
-                &status_types,
-            ),
-            vec![
-                FrontendStatusReadiness::UNAVAILABLE,
-                FrontendStatusReadiness::UNAVAILABLE
-            ]
-        );
     }
 }

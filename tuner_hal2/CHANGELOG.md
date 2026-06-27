@@ -1,3 +1,517 @@
+# r50eo62
+
+- Updated DESIGN_JA.md / CODE_CONVENTION.md to follow the r50eo61 type-hardening implementation: clear-key now documents session-clear-before-old-token-release inside the full transaction façade, public prepared/plan/commit split APIs are forbidden, and `ObjectMethodDispatchProof` is documented as an internal proof consumed inside `object_method_txn`.
+- Changed normal object method executor paths to consume `ObjectMethodDispatchProof` inside `object_method_txn` and pass only `ObjectMethodExecutionToken` to AIDL closures and service_runtime `*_for_object` use-cases; shared paths already followed this model.
+- Made `ObjectMethodDispatchProof` crate-private inside `service_runtime::object_method_txn` so it is not externally constructible or passable through public service_runtime surfaces.
+- No Android/Soong build, rustc, cargo, rustfmt, atest, VTS, loom, or device tests were run in this environment.
+
+# r50eo61
+
+- Removed public descrambler clear-key / replace-key phase surfaces from crate exports; public callers can now use only session transaction façades that execute the full clear or replace sequence with a key-table operation trait.
+- Changed descrambler clear-key ordering so the session key is cleared by the transaction before old-token release; callers can no longer observe or manually sequence the old token / key slot capability token.
+- Removed `LnbApplyTxn` from the public LNB crate surface and replaced service-runtime use with the `apply_lnb_state_with_txn()` façade so caller-supplied generation is no longer part of the public apply path.
+- Added `ObjectMethodExecutionToken` for shared object method paths; `ObjectMethodDispatchProof` is now consumed inside the object-method transaction boundary before the shared operation proceeds.
+- Added `PacketPid` / `ValidatedTsPacket` and made packet-path pipeline diagnostics use non-optional PID context for record-DVR, filter-queue, and AV delivery failures.
+- No Android/Soong build, rustc, cargo, rustfmt, atest, VTS, or device tests were run in this environment. `rustfmt` was not available in the container.
+
+# r50eo60
+
+- Removed the public `ObjectMethodTxnTarget::new()` construction surface from AIDL-facing code; object method/query entry points now build the private target inside service_runtime from object id, generation, and kind.
+- Replaced the public clear-key plan / validate / commit split API with a prepared clear-key capability token and commit entry point that revalidates the session snapshot.
+- Removed `PipelineDiagnosticKind` from production diagnostic construction; `PipelineDiagnostic` typed enum variants are now the only diagnostic payload source, and keyless-scrambled filtering uses pattern matching.
+- Updated DESIGN_JA.md / CODE_CONVENTION.md to document the private object target, prepared clear-key boundary, and typed diagnostic enum as the only diagnostic source.
+- No Android/Soong build, rustc, cargo, rustfmt, atest, VTS, or device tests were run in this environment.
+
+# r50eo59
+
+- Replaced root `FrontendInfo` query response registry-entry leakage with `RootFrontendInfoSnapshot` and preserved `frontend_type` in max-frontend root query/command DTOs.
+- Replaced frontend object query registry-entry snapshots with typed frontend status/readiness DTO responses owned by service_runtime.
+- Moved `IDemux.getAvSyncHwId()` local filter binder conversion behind demux object live/generation/kind and dispatch preflight using a dedicated AIDL input conversion boundary.
+- Hardened `DescramblerReplaceKeyPlan` from public enum variants to a private-field plan struct.
+- Split LNB Drop leak from public lifecycle close reason into a dedicated drop-leak lifecycle entry point.
+- Split AV pipeline diagnostics into typed variants and removed `AvDeliveryState { detail: String }` fallback usage.
+- Aligned CODE_CONVENTION.md with DESIGN_JA.md: `transaction_registry.rs` is target mapping only, not target+coverage.
+- No Android/Soong build, rustc, cargo, rustfmt, atest, VTS, or device tests were run in this environment.
+
+# r50eo58
+
+- Updated DESIGN_JA.md / CODE_CONVENTION.md to match the r50eo57 typed root query, object query, transaction visibility, and typed pipeline diagnostic boundaries.
+- Documented `RootQueryRequest` / `RootQueryResponse` / `RootCommandRequest`, `ObjectQueryRequest` / `ObjectQueryResponse`, `root_method_txn`, transaction constructor/commit visibility restrictions, and typed `PipelineDiagnostic` enum requirements.
+- No Rust/Kotlin/Java production code was changed in this release.
+- Android/Soong build, Rust unit tests, atest, VTS, rustfmt, rustc, cargo, and device tests were not run in this environment.
+
+# r50eo57
+
+- Added typed `RootQueryRequest` / `RootQueryResponse` and `RootCommandRequest` dispatch boundaries; AIDL root methods now submit DTO requests and only convert typed service-runtime responses into AIDL return values.
+- Added typed `ObjectQueryRequest` / `ObjectQueryResponse`; object query façades no longer accept arbitrary closures and cannot receive `&mut TunerServiceRuntime` from AIDL query code.
+- Made `SourceBoundaryTxn`, `DescramblerSessionTxn`, and `LnbLifecycleTxn` constructors / commit methods private to their owning modules, replacing external construction with owning-module transaction functions where needed.
+- Replaced the packet pipeline diagnostic context field-bag with typed `PipelineDiagnostic` enum variants so source-filter, record-DVR, filter-queue, and AV failure contexts cannot omit their required typed cause.
+- Removed the unused direct frontend-entry runtime helper from the AIDL tuner service; root/object AIDL query methods now operate through typed DTO request/response boundaries.
+- Android/Soong build, Rust unit tests, atest, VTS, rustfmt, rustc, cargo, and device tests were not run in this environment.
+
+# r50eo56
+
+- Moved root method dispatch preflight out of `boot/query_api.rs` into `service_runtime::root_method_txn`; `query_api.rs` is again limited to `RuntimeQuery` read-only snapshot methods and no longer owns `AidlMethodAdapter::plan()`, `plan_object_method_dispatch()`, unsupported root handling, or root mutating precedence.
+- Replaced root arbitrary read-only closures with typed root method transaction entry points for frontend ids/info, LNB ids, demux ids/info, demux capabilities, max frontend count, and LNA support.
+- Changed object query execution closures to receive `RuntimeQuery<'_>` instead of `&mut TunerServiceRuntime`, so pure object queries are typed as read-only snapshots after dispatch validation.
+- Reworked packet pipeline diagnostics from loose optional target/detail fields into a typed `PipelineDiagnosticContext`, preserving typed `HalError`, `DescrambleFailure`, and `DemuxRuntimeError` causes for source-filter validation, source-filter descramble policy, record-DVR mirror, filter-queue payload delivery, and AV backing failures.
+- Android/Soong build, Rust unit tests, atest, VTS, rustfmt, rustc, cargo, and device tests were not run in this environment.
+
+# r50eo55
+
+- Removed the remaining public root plan-only helper surface and moved root read-only dispatch/query execution to `query_api`-owned façades; AIDL tuner service no longer calls root plan-only support helpers for constants or unavailable root APIs.
+- Changed LNB owner-loss callback cleanup and the generic owner callback cleanup helper to always reconcile runtime callback registry state independently from callback artifact removal count, and to compose callback-store cleanup failures with unhealthy-marking failures.
+- Extended packet pipeline diagnostics with typed `HalError` storage for source-filter descrambler validation failures, and added packet PID context to record-DVR mirror and filter queue payload delivery diagnostics.
+- Android/Soong build, Rust unit tests, atest, VTS, rustfmt, rustc, cargo, and device tests were not run in this environment.
+
+# r50eo54
+
+- Removed the remaining root-planning helper shape that returned `CommandPlan` internally; root plan-only and unavailable status handling now keeps the AIDL API identity inside `service_runtime::root_object_ops` and exposes no `CommandPlan` across the root façade boundary.
+- Rechecked the r50eo53 fixes for object query dispatch validation, root single-lock query façades, bounded diagnostic reset, richer packet pipeline diagnostics, and LNB Drop leak diagnostic detail.
+- Android/Soong build, Rust unit tests, atest, VTS, rustfmt, rustc, cargo, and device tests were not run in this environment.
+
+# r50eo53
+
+- Restored dispatch planning for pure object query helpers without issuing an `ObjectMethodDispatchProof`, so query APIs validate their `RuntimeExecutableRequest` while avoiding proof-token discard.
+- Moved root read-only query planning into service_runtime single-lock root façades and stopped exposing `CommandPlan` from the public root plan-only façade.
+- Cleared all bounded diagnostic stores during runtime reset, including descrambler, child-open rollback, DVR post-commit notification, and filter-callback delivery diagnostics.
+- Extended packet pipeline diagnostics with optional target ids and detail text, and connected source-filter descrambler validation/policy failures, queue enqueue failures, record DVR mirror failures, and AV backing failures to richer pipeline diagnostics.
+- Moved LNB owner-loss callback cleanup to the context-owned callback cleanup boundary and preserved detailed object-table errors for Drop leak LNB public id resolution.
+- Android/Soong build, Rust unit tests, atest, VTS, rustfmt, rustc, cargo, and device tests were not run in this environment.
+
+# r50eo52
+
+- Removed runtime coverage metadata from `transaction_registry`, `dispatch`, and `command_dispatch`, leaving production dispatch target mapping as the single runtime dispatch table.
+- Moved root `ITuner` method planning / executable-request extraction for root open and tuner public API plan-only paths into `service_runtime::root_object_ops`; AIDL tuner service helpers now pass `AidlMethodCall` to service_runtime instead of calling `AidlMethodAdapter::plan()` or `runtime_executable_request()`.
+- Changed pure object query helpers to validate live/generation/kind and AIDL method target without issuing and discarding `ObjectMethodDispatchProof`; query request-builder call sites no longer receive a proof token.
+- Routed AV handle release through `AvHandleReleaseTxn` even when runtime backing is absent for closed / non-AV / stale-release classification, while preserving backing-failure behavior for live AV releases that require a backing.
+- Strengthened descrambler replace-key plan/commit validation and changed post-commit old-token release failure to diagnostic accounting instead of failing a public API after the session has already committed the new key.
+- Made filter callback delivery accounting fail closed when diagnostic recording is blocked by runtime lock poison, and records AIDL event conversion failures before optional unhealthy marking.
+- Rejected oversized filter time-delay hints in service_runtime/demux runtime paths so `Instant::checked_add()` overflow cannot make delayed delivery immediately ready.
+- Android/Soong build, Rust unit tests, atest, VTS, rustfmt, rustc, cargo, and device tests were not run in this environment.
+
+# r50eo50
+
+- Replaced `vendor/maleicacid/tv/tuner_hal2/DESIGN_JA.md` with the user-supplied DESIGN_JA.md revision.
+- Replaced `vendor/maleicacid/tv/開発規則.md` with the user-supplied development rules revision.
+- No Rust/Kotlin/Java production code was changed in this release.
+- Android/Soong build, Rust unit tests, atest, VTS, rustfmt, rustc, cargo, and device tests were not run in this environment.
+
+# r50eo49
+
+- Fixed the r50eo47/r50eo48 dispatch-proof consumption regression where service_runtime `*_for_object` use-cases consumed `ObjectMethodDispatchProof` only after resolving public runtime ids, object entries, frontend/LNB owner relations, source-filter relations, or request-dependent runtime state.
+- Moved proof consumption to the first runtime-critical operation in frontend worker start/stop, frontend setLnb/callback façades, demux/filter/DVR operations, descrambler operations, and LNB operations so ObjectMethodTxn proof is consumed before any object/runtime re-resolution or relation validation.
+- Updated DESIGN_JA.md / CODE_CONVENTION.md to state that a service_runtime use-case receiving `ObjectMethodDispatchProof` must consume it before `public_runtime_id_for_object_method()`, `public_entry_for_object_method()`, frontend entry resolution, owner relation checks, or request-dependent config construction.
+- Android/Soong build, Rust unit tests, atest, VTS, rustfmt, rustc, cargo, and device tests were not run in this environment.
+
+# r50eo48
+
+- Removed dead code left after the r50eo47 dispatch-proof consumption change: the unused `configure_filter_runtime_for_object()` service_runtime façade, the unused Binder-facing `clear_live_lnb_callback_for_public_id()` wrapper, and the unused `ObjectMethodTxnPlan` execute-closure parameter.
+- Narrowed `ObjectMethodTxnPlan::executable_request()` from public to private because it is only consumed inside `service_runtime::object_method_txn`.
+- Fixed the r50eo47 frontend callback clear proof-consumption path to return `Ok(())` after successful `ObjectMethodDispatchProof` consumption.
+- Android/Soong build, Rust unit tests, atest, VTS, rustfmt, rustc, cargo, and device tests were not run in this environment.
+
+# r50eo47
+
+- Fixed the r50eo46 regression where object-method callers received an `ObjectMethodDispatchProof` but still passed `CommandPlan` / `RuntimeExecutableRequest` into service_runtime `*_for_object` use-cases that reran `plan_object_method_dispatch()`.
+- Changed frontend stopTune/stopScan/setLnb, demux setFrontendDataSource, filter configure/start/stop/flush/AV handle release/source disconnect, DVR configure/start/stop/flush, descrambler setDemuxSource/setKeyToken/demux-input PID add/remove, and LNB DiSEqC object methods to consume `ObjectMethodDispatchProof` instead of rerunning dispatch planning.
+- Updated frontend/LNB callback clear paths to use the same proof-consumption boundary after the `execute_object_runtime_use_case()` signature change.
+- Updated DESIGN_JA.md / CODE_CONVENTION.md to state that service_runtime `*_for_object` use-cases receiving a dispatch proof must consume that proof and must not rerun `plan_object_method_dispatch()`.
+- Android/Soong build, Rust unit tests, atest, VTS, rustfmt, rustc, cargo, and device tests were not run in this environment.
+
+# r50eo46
+
+- Completed the request-builder transaction boundary that remained partial in r50eo45: `aidl_service::object_runtime` and `aidl_service::child_object_open` no longer call `AidlMethodAdapter::plan()` or extract `RuntimeExecutableRequest`; `service_runtime::object_method_txn` now owns AIDL method planning, executable-request extraction, live/generation/kind validation, dispatch planning, and proof issue for those paths.
+- Added `object_close_txn` method-call planning so close preflight also keeps AIDL method planning in service_runtime rather than in the AIDL object-runtime helper.
+- Removed the stale command-plan based request-builder helper surface from `service_runtime::object_method_txn` after moving callers to method-call based helpers.
+- Added `BoundedDiagnosticStore::clear()` so service boot reset clears bounded diagnostic stores without falling back to unbounded vectors or compile-time missing methods.
+- Recorded missing filter callback artifacts in the bounded filter callback delivery diagnostic store before returning callback delivery failure.
+- Updated DESIGN_JA.md / CODE_CONVENTION.md to state that AIDL helpers must pass `AidlMethodCall` into the transaction boundary instead of planning or extracting runtime executable requests themselves.
+- Android/Soong build, Rust unit tests, atest, VTS, rustfmt, rustc, cargo, and device tests were not run in this environment.
+
+# r50eo45
+
+- Moved request-builder query/mutating/shared execution and child filter/DVR open execution onto `service_runtime::object_method_txn` helpers so object live/generation/kind validation, request build, runtime request validation, dispatch planning, proof issue, and execution are no longer hand-assembled in `aidl_service::object_runtime` / `child_object_open`.
+- Removed the production public dispatch-proof generation surface from `TunerServiceRuntime` and removed the crate-root `ObjectMethodDispatchProof` re-export; the proof constructor is now private to `object_method_txn`.
+- Replaced target-only dispatch lookup with `dispatch_spec_for()`/`dispatch_spec()` so runtime coverage remains part of the dispatch contract.
+- Converted runtime diagnostic stores for startup, descrambler, child-open rollback, DVR post-commit notification, and filter callback delivery to bounded stores with dropped-record counters.
+- Added bounded filter callback delivery diagnostics for callback binder failure and unhealthy-accounting failure.
+- Changed non-VOID descrambler `setKeyToken()` to use `DescramblerSessionTxn::plan_replace_key()` / `commit_validated_replace_key()`, commit session replacement before old-token release, and rollback-release the newly acquired token on replace failure.
+- Changed AV handle release to fail on missing runtime backing instead of manufacturing a transient backing state.
+- Updated DESIGN_JA.md / CODE_CONVENTION.md to capture these boundaries.
+- Android/Soong build, Rust unit tests, atest, VTS, rustfmt, rustc, cargo, and device tests were not run in this environment.
+
+# r50eo44
+
+- Removed production dead-code surface left after r50eo43: `register_descrambler_key_slot()` is now test-only, and unused `transaction_registry` convenience exports were removed.
+- Kept `RUNTIME_TRANSACTION_SPECS` / `transaction_spec_for()` as the runtime dispatch正本 used by production dispatch; removed only the unused wrapper helpers.
+- Android/Soong build, Rust unit tests, atest, VTS, rustfmt, rustc, cargo, and device tests were not run in this environment.
+
+# r50eo43
+
+- Routed non-VOID descrambler `setKeyToken()` session replacement through `DescramblerSessionTxn::replace_key()` after key acquire / old-token release, and composed rollback-release failure when new-token rollback release fails after old-token release failure.
+- Extended `SourceBoundaryTxn` so non-null source commit is inside the same boundary transaction as queue cleanup, generation reset, downstream disconnect, snapshot rollback, and demux quarantine.
+- Made filter/DVR configure rollback failure paths call `DemuxRuntime::quarantine()` when they report a quarantined outcome.
+- Changed AV shared handle export/release paths so missing backing state is not created with `entry(...).or_default()` merely because a marker or release request exists.
+- Hid `register_descrambler_key_slot()` from production-visible `TunerServiceRuntime` public API surface.
+- Kept object request-builder planning and execution in one runtime critical section for query/mutating helpers and child filter/DVR open request-builder paths.
+- Made runtime transaction dispatch consume registry coverage metadata and updated production-connected transaction specs from stale `NotConnected` to `Connected`, with unsupported public API transactions marked `UnsupportedByDesign`.
+- Updated DESIGN_JA.md / CODE_CONVENTION.md to fix these boundaries.
+- Android/Soong build, Rust unit tests, atest, VTS, rustfmt, rustc, cargo, and device tests were not run in this environment.
+
+# r50eo42
+
+- Updated `DESIGN_JA.md` child object open transaction row so it names only the current request-builder AIDL helpers and the service_runtime child-open / rollback use-case helpers that actually exist.
+- Reworded the child-open ownership description from object-handle based service_runtime façade to owner object id / generation + dispatch proof based service_runtime use-case, keeping `AidlObjectHandle` on the AIDL side.
+- No code changes were made; this release fixes the stale DESIGN_JA.md entity names introduced by the r50eo41 design update.
+- Android/Soong build, Rust unit tests, atest, VTS, rustfmt, rustc, cargo, and device tests were not run in this environment.
+
+# r50eo41
+
+- Changed child filter / DVR open completion so service_runtime returns the typed child runtime id together with the `RuntimeObjectEntry`, and AIDL finalization no longer converts `RuntimeObjectEntry.ledger_id` back into a filter / DVR id after object-table registration.
+- Removed the now-dead child-open runtime-id-conversion rollback helper and the impossible post-registration public-id-conversion failure branches from `aidl_service/src/child_object_open.rs`.
+- Updated `DESIGN_JA.md` and `CODE_CONVENTION.md` to make typed child-open result ownership explicit and to forbid AIDL-side child id reconstruction from `RuntimeObjectEntry.ledger_id`.
+- Android/Soong build, Rust unit tests, atest, VTS, rustfmt, rustc, cargo, and device tests were not run in this environment.
+
+# r50eo40
+
+- Removed production-unconnected `control_core` skeleton types (`WorkerSignal`, lifecycle transaction skeletons, and `StreamBoundaryTxn`) and the unit tests that only exercised those deleted skeletons.
+- Kept `control_core` limited to production-used worker exit/failure classification and `FmqDeliveryTxn` types, and removed unused enum variants / unused `commit_write_and_wake()` helper from that surface.
+- Updated `DESIGN_JA.md` so the stream-boundary正本 is the production-connected `GenerationBoundaryTxn` rather than the removed `StreamBoundaryTxn`.
+- Updated `DESIGN_JA.md` close lifecycle helper names to the current `close_object_after_close_preflight*()` façade names.
+- Added `CODE_CONVENTION.md` rules preventing public production-unconnected transaction skeletons from being retained as common components.
+- Android/Soong build, Rust unit tests, atest, VTS, rustfmt, rustc, cargo, and device tests were not run in this environment.
+
+# r50eo39
+
+- Routed filter queue payload delivery through the `QueueRuntime` / FMQ / EventFlag backing exported by `getQueueDesc()` instead of using a separate production `VecDeque` payload path; retained only a test-only mirror for existing assertions.
+- Changed descrambler unregister / demux owner-loss cleanup so key token release failure is collected but no longer skips `DescramblerSessionTxn::cleanup_all()`.
+- Android/Soong build, Rust unit tests, atest, VTS, rustfmt, rustc, cargo, and device tests were not run in this environment.
+
+# r50eo38
+
+- Recorded every AV shared backing non-delivery outcome as a typed pipeline diagnostic instead of silently dropping `SharedHandleNotExported`, released-client, oversized-payload, no-slot, data-id-exhaustion, or missing-backing cases.
+- Made `DemuxRuntime::restore()` atomic with respect to fallible queue runtime rebuilds by constructing replacement filter/DVR queue runtimes before mutating the live demux state.
+- Narrowed raw `TunerServiceRuntime` registry/object-table/callback-registry accessors to crate scope and added typed read-only façade methods for lifecycle and callback-registration observation.
+- Removed the planless public close helpers from `aidl_service::object_runtime`; close now goes through `close_object_after_close_preflight*()` and `ObjectCloseTxn` dispatch planning.
+- Classified close preflight begin state as `CleanupStep::ReleaseBackend` so public close cleanup state matches the domain cleanup hook phase instead of the descendant worker-stop phase.
+- Android/Soong build, Rust unit tests, atest, VTS, rustfmt, rustc, cargo, and device tests were not run in this environment.
+
+# r50eo37
+
+- Aligned the object query request-builder helper with the pure-query boundary by using plan-only dispatch validation and no longer issuing an `ObjectMethodDispatchProof` for query-only execution.
+- Added explicit media-filter validation for `IDemux.getAvSyncHwId()` so the input filter must be a live audio/video media filter owned by the target demux before returning a live PCR filter id.
+- Removed the child-object-open local Binder-status-to-HAL debug conversion path by adding a HAL-error-returning callback artifact registration helper and composing callback retain failures directly with rollback failures.
+- Fixed frontend scan END and DVR status callback delivery failure handling so Binder delivery failure remains the primary error and unhealthy-marking failure is composed as cleanup failure.
+- Reduced raw service-runtime lifecycle surface by hiding the `object_table`, `callback_registry`, and `registry` modules behind selected re-exports and adding callback-registry façade methods used by AIDL production paths.
+- Android/Soong build, Rust unit tests, atest, VTS, rustfmt, rustc, cargo, and device tests were not run in this environment.
+
+# r50eo36
+
+- Routed `execute_object_query_runtime_call()` through `TunerServiceRuntime::plan_object_method_dispatch_for_object()` so object live / generation / kind validation and command dispatch planning stay on the service_runtime use-case boundary instead of being reassembled inside the AIDL façade private helper.
+- Reworked Drop leak terminalization so quarantine is performed under the runtime lock first, then callback artifacts and DVR notifier artifacts for the quarantined root/descendants are cleared outside the runtime lock, and runtime callback registry state is reconciled afterward.
+- Split Drop leak public-runtime unregister from close finalization by adding Drop-leak-specific validate/unregister entry points and using `unregister_quarantined_public_runtime_entries()` after quarantine, instead of reusing the close-only unregister helper.
+- Updated `tuner_hal2/RELEASE_VERSION` to this release name.
+- Android/Soong build, Rust unit tests, atest, VTS, rustfmt, rustc, cargo, and device tests were not run in this environment.
+
+# r50eo35
+
+- Removed obsolete close-cleanup collector unit tests that only re-tested the generic `FirstErrorCollector<(CleanupStep, HalError)>` behavior after the local `CloseCleanupFailure` helper was deleted in r50eo34. The remaining close-cleanup tests exercise actual close / drop-leak / cascade runtime behavior rather than dead helper behavior.
+- Rechecked the r50eo34 cleanup refactor for stale `CloseCleanupFailure`, `record_close_cleanup_result()`, `close_cleanup_result()`, and `CleanupStep::DomainCleanup` references; no production references remain.
+- Updated `tuner_hal2/RELEASE_VERSION` to this release name.
+- Android/Soong build, Rust unit tests, atest, VTS, rustfmt, rustc, cargo, and device tests were not run in this environment.
+
+# r50eo34
+
+- Replaced the close-cleanup local first-error helper with direct `FirstErrorCollector<(CleanupStep, HalError)>` usage so the close cleanup path follows the common collector boundary while still preserving the failing cleanup phase.
+- Fixed Drop leak callback registry handling so only callback-store cleanup failure drives `RuntimeCallbackRegistry::mark_owner_unhealthy()`; unrelated domain drop-leak record failures no longer convert a successfully cleared callback owner into unhealthy state.
+- Strengthened close finalization helpers so `close_cascade_entries()`, `commit_close_cascade()`, and `mark_cleanup_failed_cascade()` reject an unexpected terminal root before collecting or mutating descendants. This prevents partial descendant state changes when the root is already `Closed` / `Quarantined`.
+- Updated `tuner_hal2/RELEASE_VERSION` to this release name.
+- Android/Soong build, Rust unit tests, atest, VTS, rustfmt, rustc, cargo, and device tests were not run in this environment.
+
+# r50eo33
+
+- Classified pre-finalization close cleanup failures by the actual failing phase without adding a new `CleanupStep`: root / descendant callback artifact cleanup uses `CleanupStep::UnregisterRuntime`, domain cleanup hook failure uses `CleanupStep::ReleaseBackend`, and descendant DVR status notifier stop failure uses `CleanupStep::StopWorker`.
+- Kept r50eo32 close-cascade descendant cleanup and root terminal lifecycle fixes intact.
+- Updated close-cleanup tests so domain cleanup failure and cleanup retry paths expect `ReleaseBackend` rather than `UnregisterRuntime`.
+- Android/Soong build, Rust unit tests, atest, VTS, rustfmt, rustc, cargo, and device tests were not run in this environment.
+
+# r50eo32
+
+- Fixed AIDL close cascade descendant cleanup so demux close now clears descendant Filter / DVR callback artifacts and runtime callback registry entries, and stops descendant DVR status notifiers before public runtime unregister / close commit.
+- Tightened `RuntimeObjectTable::begin_close_cascade()` so an unexpected terminal root (`Closed` / `Quarantined`) is rejected as `InvalidLifecycle`; terminal descendants remain skipped by later finalization helpers.
+- Did not change the pre-finalization cleanup-failure `CleanupStep` classification; the previous note was an improvement candidate, not a fixed implementation plan.
+- Android/Soong build, Rust unit tests, atest, VTS, rustfmt, rustc, cargo, and device tests were not run in this environment.
+
+# r50eo31
+
+- Removed the erroneous `CleanupStep::DomainCleanup` reference from AIDL object close finalization; that variant does not exist in the cleanup ledger and caused a compile failure.
+- Split close finalization failure marking by the actual failing phase: close-cascade entry lookup / close commit failures use `CleanupStep::ReleaseLedger`, while public runtime unregister failures use `CleanupStep::UnregisterRuntime`.
+- This is an internal cleanup-state correction only; no AIDL/VTS-visible API, status contract, capability advertisement, or close idempotency contract was changed.
+- Android/Soong build, Rust unit tests, atest, VTS, rustfmt, rustc, cargo, and device tests were not run in this environment.
+
+# r50eo30
+
+- Fixed close finalization follow-up issues from r50eo29.
+- Passed `SharedTunerRuntime` by reference when recording cleanup-failed state after close cleanup failure.
+- Made close-cascade finalization helpers skip already terminal descendants while still rejecting a terminal root, preserving idempotent close semantics without hiding root cleanup state.
+- Strengthened public runtime unregister preflight for descrambler objects by checking both registry entry and runtime state before destructive unregister.
+- Android/Soong build, Rust unit tests, atest, VTS, rustfmt, rustc, cargo, and device tests were not run in this environment.
+
+# r50eo29
+
+- Frontend close の LNB owner-loss callback cleanup が `SharedTunerRuntime` を `clear_live_lnb_callback_for_public_id_hal()` に渡していた誤接続を修正し、`SharedAidlServiceContext` owned callback store を使う形へ戻した。
+- AIDL object close finalization で public runtime unregister 前に対象 runtime entry の存在を全件 preflight し、preflight failure 時に一部 runtime unregister を開始しないようにした。
+- `RuntimeObjectTable::{mark_cleanup_failed_cascade,close_cascade_entries,commit_close_cascade}` が `Closed` / `Quarantined` descendant を無言 skip しないようにし、close finalization / cleanup-failed marking の内部不整合を `InvalidLifecycle` として表面化するようにした。
+- `DESIGN_JA.md` / `CODE_CONVENTION.md` を、close finalization preflight と context-owned callback cleanup の方針に合わせて更新した。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認、rustfmt、rustc、cargo は未実行。
+
+# r50eo28
+
+- `setKeyToken(VOID)` clear path の release 後 commit failure 形状を解消し、`validate_clear_key_plan()` を release 直前検証、`commit_validated_clear_key()` を release 成功後の infallible session clear commit として分離した。
+- AIDL object close cleanup の public runtime unregister 対象 kind を caller 側で Demux / Filter / Dvr / Descrambler に限定し、`unregister_public_runtime_for_closed_aidl_entry()` は対象外 kind を無言成功にしないようにした。
+- `SourceBoundaryTxn` rollback failure を `SourceBoundaryRollbackFailed` として demux quarantine / cleanup failure へ表面化し、source boundary rollback failure を generic primary error に埋もれさせないようにした。
+- DVR attach / detach filter の owner-demux 検証を `owner_demux_id_for_dvr_filter_relation()` private helper へ集約し、`*_for_object` façade や AIDL method body への低レベル dispatch logic 戻しは行わなかった。
+- `DESIGN_JA.md` / `CODE_CONVENTION.md` を上記の release-before-clear、source boundary rollback、public runtime unregister scope 方針に合わせて更新した。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認、rustfmt、rustc、cargo は未実行。
+
+# r50eo27
+
+- `setKeyToken(VOID)` clear path を再確認し、clear plan を release 直前に検証してから old token release を実行し、その後に session clear を commit する形へ補強した。
+- `DescramblerSessionTxn::plan_clear_key()` は old token だけでなく old key slot も snapshot し、`validate_clear_key_plan()` / `commit_clear_key()` は token と slot の両方を照合するようにした。
+- descrambler cleanup は old token release が成功するまで session `close_all()` を commit しない順序へ変更し、release 失敗時に retry 不能な cleared session を作らないようにした。
+- demux / filter / DVR runtime unregister は owner-loss / owner-demux cleanup を先に成功させてから registry entry を削除する順序へ変更した。
+- public close finalization は closing entries の runtime unregister を先に行い、成功後に object table close commit する順序へ変更した。runtime unregister 失敗時は object table を `Closing` のまま残して cleanup-failed marking へ進める。
+- descrambler `setDemuxSource()` rebind 時は demux id / generation が変わる場合に stale PID claims を clear するようにした。
+- `SourceBoundaryTxn` は mutation 前 snapshot を保持し、generation boundary / downstream disconnect failure 時に rollback、rollback failure 時に demux quarantine するようにした。`setDataSource(null)` も source boundary を通る。
+- `DemuxRuntime::clear_existing_filter_queue()` / `remove_filter()` / `remove_dvr()` の部分更新順序を補正した。
+- r50eo26 の test 残骸（重複 `#[test]` と missing `#[test]`）を修正した。
+- `DESIGN_JA.md` / `CODE_CONVENTION.md` に close finalization / runtime unregister、descrambler cleanup、source boundary rollback の方針を追記した。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認、rustfmt、rustc、cargo は未実行。
+
+# r50eo26
+
+- `DescramblerSessionTxn::commit_clear_key()` に clear plan 検証を追加し、plan 作成時の old token と commit 時の session token が一致しない場合は session を変更せず `ClearKeyPlanMismatch` として失敗するようにした。
+- `setKeyToken(VOID)` の commit failure diagnostic に `ClearKeyPlanMismatch` を追加し、release 成功後でも stale plan 誤用を session clear へ進めないようにした。
+- `service_runtime::object_method_txn` に plan-only helper を追加し、`plan_unavailable_object_method_use_case()` が dispatch planning まで実行しつつ `ObjectMethodDispatchProof` を発行しない形へ変更した。
+- `register_callback_artifact_after_owner_ready()` の未使用 rollback 引数と、それに付随する child callback retain 側の未使用 rollback closure を削除した。
+- `DESIGN_JA.md` / `CODE_CONVENTION.md` に、clear plan 検証と plan-only 経路で dispatch proof を発行しない方針を追記した。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認、rustfmt、rustc、cargo は未実行。
+
+# r50eo25
+
+- `setKeyToken(VOID)` の clear path を `DescramblerSessionTxn::plan_clear_key()` / `commit_clear_key()` に分離し、old token release 成功後にだけ session key clear を commit するようにした。
+- old token release 失敗時は session key / key slot を保持し、`KeyTokenReleaseFailed` diagnostic と `HalError::Internal(InvariantViolation)` を返す形にした。
+- `DescramblerSession::clear_key()` を crate 内部に閉じ、外部 transaction が session clear を direct commit しないようにした。
+- `DESIGN_JA.md` / `CODE_CONVENTION.md` に、descrambler key clear は plan/commit 境界で old token release 成功後に commit する方針を追記した。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認、rustfmt、rustc、cargo は未実行。
+
+# r50eo24
+
+- `ObjectMethodDispatchPreflight` を `ObjectMethodDispatchProof` へ改名し、dispatch planning 完了を表す一回性 proof であることを型名に反映した。
+- single-variant `ObjectMethodDispatchPreflightState::AlreadyPlanned` と内部 `ObjectMethodDispatchPreflightProof` を削除し、`ObjectMethodDispatchProof` が `ObjectMethodTxnTarget` を直接保持する形へ簡素化した。
+- 消費 API を `plan_for_object()` / `plan_for_target()` から `consume_for_object()` / `consume_for_target()` へ改名し、既に完了した dispatch planning proof を対象照合して消費する意味に揃えた。
+- `DESIGN_JA.md` / `CODE_CONVENTION.md` に、dispatch proof は single-variant enum で状態機械を装わず、対象 `AidlObjectId` / generation / kind を直接保持する方針を追記した。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認、rustfmt、rustc、cargo は未実行。
+
+# r50eo23
+
+- Drop から返せない error を保存する `AidlServiceContext` owned drop-leak diagnostic store を bounded `VecDeque` に変更し、上限超過時の dropped count と lock poison 時の record failure count を context-owned counter として観測可能にした。
+- drop-leak diagnostic store の lock poison を `poisoned.into_inner()` で吸収しないようにし、runtime reset 前の diagnostic clear 失敗は `HalError::Internal(InvariantViolation)` として返すようにした。
+- `service_runtime/src/boot/packet_txn.rs` の descrambler source-filter validation failure を `.ok()` で無診断破棄しないようにし、packet pipeline diagnostic に `filter_id` と `HalError` を保持する `PacketSourceFilterInvalid` / `PacketSourceFilterGenerationMismatch` を追加した。
+- `DESIGN_JA.md` / `CODE_CONVENTION.md` に bounded drop-leak diagnostic store、poison failure accounting、packet path source-filter validation diagnostic の方針を追記した。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認、rustfmt、rustc、cargo は未実行。
+
+# r50eo22
+
+- `service_runtime/src/boot.rs` の process-global `FILTER_EVENT_DISPATCHER: OnceLock<...>` と `install_filter_event_dispatcher()` global API を廃止し、filter event dispatcher を `TunerServiceRuntime` instance field として所有する形にした。
+- `FrontendDemuxPacketSink` は runtime instance から取得した dispatcher handle を保持し、service instance をまたぐ dispatcher slot を参照しない。
+- `TunerAidlService::from_context()` は `AidlServiceContext` に対応する runtime instance へ `AidlFilterEventDispatcher` を登録する。`service_runtime` は引き続き Binder `Strong<dyn ...Callback>` を保持しない。
+- `aidl_service/src/object_runtime/drop_leak.rs` の process-global `DROP_LEAK_ERROR_RECORDS` / `DROP_LEAK_ERROR_RECORD_FAILURES` を削除し、Drop から返せない error は `AidlServiceContext` owned drop-leak diagnostic store へ保存するようにした。
+- `AidlServiceContext::reset_runtime_from_probe_results()` は DVR notifier 停止、callback artifact clear、drop-leak diagnostic clear、runtime boot の順に統一した。
+- `DESIGN_JA.md` / `CODE_CONVENTION.md` に、filter event dispatcher bridge と drop-leak diagnostic store を process-global に置かない方針を追加した。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認、rustfmt、rustc、cargo は未実行。
+
+# r50eo21
+
+- r50eo20 の public runtime accessor closure 後に不要になった `AidlServiceContext::stale_context_error()` / `AidlServiceContext::unavailable_status()` を削除した。
+- `AidlCallbackStoreError` と `into_hal_error()` を crate 内部可視性へ落とし、callback artifact store error を AIDL service crate 外の public surface に出さない形へ固定した。
+- `callback_store` / DVR notifier / raw runtime owner closure に関する残存参照を再確認し、production の process-global callback store / DVR notifier store は引き続き存在しないことを確認した。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認、rustfmt、rustc、cargo は未実行。
+
+# r50eo20
+
+- `SharedTunerRuntime` を AIDL service crate の public export から外し、raw runtime handle を crate 外 API へ露出しないようにした。
+- `AidlServiceContext::runtime()` / `AidlServiceContext::lock_runtime()`、`TunerAidlService::runtime()` / `TunerAidlService::lock_runtime()`、各 AIDL object の `runtime()` / `context()` helper を crate 内部可視性へ落とした。
+- `aidl_service` の内部 implementation module を crate-private module に落とし、外部公開 API を `AidlServiceContext` / `SharedAidlServiceContext` / Binder object wrapper / `run_service()` に限定した。
+- callback artifact retain / lookup / clear helper と `AidlCallbackStoreError` の public re-export を外し、callback artifact 操作も crate 内部 API に閉じた。
+- `DESIGN_JA.md` に、runtime reset と callback artifact / DVR notifier cleanup の owner を public API 上も `AidlServiceContext` に固定し、raw runtime accessor を crate 外へ公開しない方針を追記した。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認、rustfmt、rustc、cargo は未実行。
+
+# r50eo19
+
+- r50eo18 の AIDL service context 化で残っていた test 経路の旧 `SharedTunerRuntime` / test-global callback store 呼び出しを `SharedAidlServiceContext` 前提へ更新した。
+- `callback_store.rs` の `#[cfg(test)]` `TEST_CALLBACK_STORE: OnceLock<Mutex<CallbackStore>>` と互換 re-export を削除し、unit test も context-owned callback store を使うようにした。
+- `AidlServiceContext::reset_runtime_from_probe_results()` を追加し、runtime reinit は DVR notifier 全停止、callback artifact 全 clear、`TunerServiceRuntime::boot_from_probe_results()` の順に同一 owner 経由で実行する方針へ固定した。
+- service 起動経路は runtime を直接 boot せず、`AidlServiceContext` 経由の reset API を使うようにした。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認、rustfmt、rustc、cargo は未実行。
+
+# r50eo18
+
+- `AidlServiceContext` を導入し、`TunerServiceRuntime` / Binder callback artifact store / DVR status notifier store を同一 service instance owner に閉じた。
+- production `callback_store` の process-global `OnceLock<Mutex<CallbackStore>>` を廃止し、callback artifact retain / lookup / clear を `SharedAidlServiceContext` 経由へ移した。
+- production `DVR_STATUS_NOTIFIERS` global を廃止し、DVR status notifier の cancel handle / join handle を `AidlServiceContext` owned store へ移した。
+- `FrontendAidlObject` / `DemuxAidlObject` / `FilterAidlObject` / `DvrAidlObject` / `DescramblerAidlObject` / `LnbAidlObject` は `SharedAidlServiceContext + AidlObjectHandle` を保持するようにした。
+- `AidlFilterEventDispatcher` / scan-end notifier / DVR status notifier は callback artifact を context-owned store から取得する。
+- `service_runtime` には Binder `Strong<dyn ...Callback>` を持ち込まず、Binder artifact ownership は AIDL service instance 側に閉じた。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認、rustfmt、rustc、cargo は未実行。
+
+# r50eo17
+
+- `start_dvr_status_notifier()` の notifier store 登録順を補正し、store lock を thread spawn 前に取得して、spawn 済み thread が cancel / join handle 未登録のまま残らないようにした。
+- `ObjectMethodDispatchPreflight` の preflight 済み証跡に対象 `AidlObjectId` / generation / kind を保持させ、消費側 `*_for_object` use-case で同じ対象に対してだけ消費できるようにした。
+- `DESIGN_JA.md` に DVR status notifier の spawn/store ownership 順序と target-bound dispatch preflight proof 方針を追記した。
+- `IFilter.getId()` / `getId64Bit()` は今回の修正対象外。既存の `execute_object_query_use_case()` による live/generation/kind 確認・dispatch planning 共通 façade を使っており、追加 service_runtime façade 化は薄い query wrapper 増殖リスクがあるため別判断とした。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認、rustfmt、rustc、cargo は未実行。
+
+# r50eo16
+
+- production 経路に接続されていなかった `LnbOperationLedger` / `LnbOperationGuard` / `LnbOperationKind` / `LnbOperationFailureRecord` を削除し、`lnb/src/operation_guard.rs` を廃止した。
+- `LnbFailureKind` から operation ledger 専用の `OperationAlreadyActive` / `OperationLockFailed` / `OperationNonceExhausted` を削除し、`service_runtime/src/boot/lnb_txn.rs` の error mapping からも同系統の未使用分岐を削除した。
+- `Android.bp` の `libmaleicacid_tuner_hal2_lnb` / `maleicacid_tuner_hal2_lnb_test` から `lnb/src/operation_guard.rs` を除外した。
+- `DESIGN_JA.md` から LNB operation ledger を production invariant とする記述を削除し、LNB public operation の状態遷移正本を `LnbTxn` / `LnbApplyTxn` / `LnbLifecycleTxn` / `LnbRuntimeState` に固定した。
+- `DescramblerKeyTable` の key slot id fail-closed 修正は production 経路に効くため維持した。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認、rustfmt、rustc、cargo は未実行。
+
+# r50eo15
+
+- `DescramblerKeyTable` の key slot id 採番を `saturating_add()` から fail-closed な `checked_add()` へ変更し、上限到達時に `SlotIdExhausted` を返して token / slot table を部分更新しないようにした。
+- `LnbOperationLedger` の operation nonce 採番を `wrapping_add()` から fail-closed な `checked_add()` へ変更し、nonce 上限到達時に active operation を部分挿入しないようにした。
+- key slot id と LNB operation nonce は同じ汎用 ID allocator へ共通化せず、それぞれの domain owner 内で fail-closed 化する方針を `DESIGN_JA.md` に追記した。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認、rustfmt、rustc、cargo は未実行。
+
+# r50eo14
+
+- CODE_CONVENTION監査で検出した P1 系のうち、error_bridge 外の direct Binder status generation を排除し、`local_filter_handle_from_strong()` / `frontend_entry()` は `status_from_tuner_status()` 経由へ統一した。
+- `IDescrambler.addPid()` / `removePid()` の null-upstream 経路を `execute_object_runtime_use_case_with_request_builder()` へ寄せ、TS PID 変換を object live / generation / kind 確認後の request-builder phase で実行するようにした。
+- `IDemux.getAvSyncHwId()` 用に `execute_object_query_use_case_with_aidl_input_conversion()` を追加し、local filter handle 変換を demux lifecycle / dispatch preflight 後の query request-builder 境界へ移した。
+- DVR status notifier を raw thread の silent termination から、`catch_unwind` + terminal diagnostic accounting 付きの workerに変更し、poll / callback delivery / panic / terminal accounting failure を `DvrPostCommitNotificationDiagnosticRecord` へ接続した。
+- frontend rollback 中の bound demux restore failure を generic `InvariantViolation` へ丸めず、既存 `demux_runtime_error_to_hal()` の分類へ接続した。
+- LNB apply / close / drop-leak / generation overflow quarantine で domain transaction failure と `store_lnb_runtime()` failure が同時に起きる場合、`compose_primary_cleanup_failure()` で両方を保持するようにした。
+- AV shared backing allocation failure を filter failed marking だけで終わらせず、`PipelineDiagnosticKind::AvSharedBackingFailure` として `PipelineReport` へ接続した。
+- `RuntimeIoRegistry` は production 未接続の public surface だったため、demux module / Android.bp / public re-export から削除した。
+- `CODE_CONVENTION.md` と `DESIGN_JA.md` の `demux_filter_dvr_ops.rs` / `transact_*` 方針矛盾を解消し、demux/filter/DVR の単純 operation だけを明示例外として固定した。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認、rustfmt、rustc、cargo は未実行。
+
+# r50eo13
+
+- `record_dvr_post_commit_notification_outcome()` を `Result` 返却へ変更し、DVR post-commit notification failure の accounting 中に service runtime lock poison / callback registry missing / unhealthy marking failure が起きた場合も silent return せず、呼び出し元へ `HalError` として返すようにした。
+- `IDvr.start()` / `IDvr.stop()` は post-commit notification failure 自体では public result を反転しないが、failure accounting 不能は service invariant failure として `Status` へ反映するようにした。
+- `enqueue_queue_payloads_from_generated_events()` の queue enqueue failure discard を廃止し、`PipelineDiagnosticKind::FilterQueuePayloadDeliveryFailure` として `PipelineReport` に接続した。
+- 類似確認として production の `use super::*`, `let _ =`, `.ok();`, `let Ok(..) else { return; }`, `if result.is_err() { continue; }`, `Err(_) => return/continue` を再検索し、今回修正対象以外に同系統の silent discard 修正対象がないことを静的確認した。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認、rustfmt、rustc、cargo は未実行。
+
+# r50eo12
+
+- r50eo11 の P0/P2 確認で残っていた `IDvr.stop()` 後の `stop_dvr_status_notifier()` failure discard を修正し、public `stop()` は反転させず DVR post-commit notification diagnostic / callback unhealthy state へ記録するようにした。
+- `DvrPostCommitNotificationPhase` に `StatusNotifierStop` を追加し、start専用名だった `record_dvr_start_notification_outcome()` を `record_dvr_post_commit_notification_outcome()` へ改名した。
+- `aidl_service/src/object_runtime/drop_leak.rs` の production `use super::*;` を明示 import へ置換した。
+- 類似確認として production top-level `use super::*;` と production `let _ =` を検索し、非fallibleな未使用変数抑制の `let _ = demux_id;` も validation call 化した。今回の修正対象以外に同系統の P0/P2 残件がないことを静的確認した。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認、rustfmt、rustc、cargo は未実行。
+
+# r50eo11
+
+- r50eo10 の P1 確認で見つかった `install_filter_event_dispatcher()` の二重 install 黙殺を修正し、既存 dispatcher がある場合は `HalError` として明示するようにした。AIDL service の既存 unit test は dispatcher install を伴わない test helper へ分離した。
+- P2 として `DemuxFilterDvrTxn` の単純委譲 wrapper を削除し、通常の filter/DVR runtime operation は `demux_filter_dvr_ops.rs` から `transact_*` helper へ直接接続した。child open / rollback 境界だけ `DemuxFilterDvrTxn` に残した。
+- P2 として `aidl_service/src/object_runtime.rs` を `aidl_service/src/object_runtime/mod.rs` と `drop_leak.rs` に分割し、drop leak quarantine / record 処理を façade 本体から切り離した。
+- `Android.bp` の `aidl_service` srcs を新しい `object_runtime/` 配置へ更新した。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認、rustfmt、rustc、cargo は未実行。`rustc` / `rustfmt` はこの環境に存在しなかった。
+
+# r50eo10
+
+- `DemuxRuntime::restore()` を fallible 化し、queue runtime rebuild failure を frontend rollback caller へ返すようにした。
+- playback DVR consume は投入 packet ごとの `PipelineReport` を `PlaybackConsumeReport` に残し、record DVR mirror write failure は `RecordDvrMirrorFailure` diagnostic として `PipelineReport` に接続した。
+- DVR `start()` 後の status callback / notifier 起動 failure は public `start()` を失敗へ反転せず、DVR post-commit notification diagnostic と callback unhealthy state へ記録するようにした。
+- filter event dispatcher install は `Result` を返す境界に変更し、service 起動経路で失敗を明示的に扱うようにした。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認、rustfmt、rustc、cargoは未実行。`rustfmt` はこの環境に存在しなかった。
+
+# r50eo9
+
+- `linkCaps` が TS→TS を広告する場合の `IFilter.setDataSource(source)` 契約を、`TsRaw` sink だけでなく `TsRecord` sink へも拡張した。
+- `TsRaw` source → `TsRecord` sink は、同一 demux / lifecycle / PID 条件を満たす限り sink subtype として拒否しない。
+- source filter origin の TS packet delivery が、source filter を持つ downstream sink を正しく対象にするよう、`PipelineFilterView` の source matching を明示化した。record sink は record index / record DVR mirror の対象にする。
+- `tuner_hal2/DESIGN_JA.md` の `TsRecord` sink 記載を、`tuner_hal/DESIGN_JA.md` の成功セルと整合させた。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認、rustfmt、rustc、cargoは未実行。
+
+# r50eo8
+
+- `linkCaps` が TS→TS を広告し、TS subtype `UNDEFINED` / `TS` を `TsRaw` として開く場合、`IFilter.setDataSource(source)` の sink が `TsRaw` であることを理由に拒否しないよう補正した。
+- record DVR 用 `TsRecord` とその他未分類 sink は引き続き `setDataSource` の sink として unsupported / unavailable 系へ落とす。
+- `tuner_hal2/DESIGN_JA.md` に、TS linkCaps / `UNDEFINED` subtype / `TsRaw` sink の契約境界を明記した。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認、rustfmt、rustc、cargoは未実行。
+
+# r50eo7
+
+- `tuner_hal/DESIGN_JA.md` の `IFrontend.tune()` 同一tune判定補正に合わせ、release version を更新した。
+- `tuner_hal2/DESIGN_JA.md` 本文と Rust実装は変更していない。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認、rustfmt、rustc、cargoは未実行。
+
+# r50eo6
+
+- r50eo5 のリリース物規則確認を継続し、`tuner_hal2/DESIGN_JA.md` に残っていた実装状態・future_work由来に見える表現を現行設計責務へ言い換えた。
+- DVR read/write方向は record=write / playback=read の設計契約として記載し、Rust AIDL binding の現時点の有無を DESIGN_JA.md に書かない形へ修正した。
+- A/V sync節は `future_work` 表現を避け、現行最小契約と後続精度改善境界として整理した。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認、rustfmt、rustc、cargoは未実行。
+
+# r50eo5
+
+- r50eo4 の確認方法を開発規則に合わせて是正した。`tuner_hal2/DESIGN_JA.md` から完了判定・実行ゲート・未完了事項に相当する節を削除し、設計正本には現行責務だけを残した。
+- `r50eo5_rule_compliance_audit.md` に、開発規則上の確認条件、補助検索、ロジック経路、反例、未実行ゲートを分離して記録した。
+- `active_data_ids()` 削除と `source_filter()` panic helper 不在は維持した。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認、rustfmt、rustc、cargoは未実行。
+
+# r50eo4
+
+- r50eo3 で残っていた DESIGN_JA.md 上の `r50unofficial2` / `r50eo2` 由来表現を、現行ランタイム部品の責務表現へ置換した。
+- FMQ queue runtime、filter callback delivery、DVR queue/status notifier、AV shared backing、demux-input descrambler claim、A/V sync 最小契約を、パッチ由来ではなく現行設計責務として記載し直した。
+- demux AV shared backing の未使用 public accessor `active_data_ids()` を削除した。
+- demux-input descrambler claim に対する旧 `source_filter()` panic helper は引き続き存在しないことを確認した。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認、rustfmt、rustc、cargoは未実行。
+
+# r50eo3
+
+- r50eo2 の過大報告を是正し、r50unofficial2 から取り込んだ FMQ queue runtime、filter callback delivery、DVR queue/status notifier、AV shared backing、closed object idempotent close、demux-input descrambler claim、A/V sync PCR 最小契約を `DESIGN_JA.md` に追記した。
+- demux-input descrambler claim に source filter accessor を強制する旧 `source_filter()` panic 前提 helper を削除し、`source_filter_ref()` / `demux_input()` の分岐へ一本化した。
+- `r50unofficial2` の failure composition 共通 helper 規律を弱める文書変更は引き続き不採用。
+- 本版は static correction checkpoint であり、AOSP契約矛盾ゼロ、VTS合格、official FMQ結線完了は宣言しない。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認、rustfmt、rustc、cargoは未実行。
+
+# r50eo2
+
+- r50eo1で暫定受理に留まっていた `IDescrambler.addPid/removePid(..., NULL)` を、source-filter claimとは別のdemux-input PID claimとしてruntime sessionとpacket pathへ接続した。
+- demux-input descrambler claimを `DescramblerPidSource::DemuxInput` として型化し、source-filter generation検証に依存しないdemux input descramble対象PIDとして扱うよう補正した。
+- `IFrontend.setCallback(NULL)` / `ILnb.setCallback(NULL)` のcallback clearを通常object method dispatch/preflight経路へ通したうえで、owner callback storeをclearする流れへ寄せた。
+- A/V syncについて、PCR filter subtypeを `FilterOpenType::TsPcr` として受理し、`getAvSyncHwId()` は同一demux内のlive PCR filter IDを返す最小経路へ補正した。`getAvSyncTime(pcrFilterId)` は同一demuxのlive PCR filter IDであることを検証したうえでpre-PCR時刻未確定値として0を返す。
+- r50eo1で壊れていた `frontend_ops.rs` の関数挿入崩れを修正した。
+- DVR read/writeは、このRust AIDL IDvr実装に公開 `read()` / `write()` methodが存在しないため、r50eo2では追加差分なし。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認、rustfmt、rustc、cargoは未実行。この実行環境にはrustfmt/rustc/cargoが存在しない。
+
+# r50eo1
+
+- r50enでDESIGN_JA.mdへ反映したAOSP-facing契約補正に対し、tuner_hal2実装を追従させた。
+- r50unofficial2から、r50en最小追従にも有効な部品を手動抽出し、FMQ QueueRuntime、filter queue/delay readiness、DVR queue/status notifier、filter/DVR callback delivery、AV shared backingの足場を取り込んだ。
+- `IFilter.setDataSource(NULL)` をdemux inputへ戻す操作として扱い、non-null source filter接続と分岐させた。
+- `IDescrambler.addPid/removePid(..., NULL)` をdemux input PID操作としてAIDL境界で受理する経路を追加した。現時点ではsource-filter claimとは別のpublic contract受理経路であり、実descramble pipelineへの完全接続は後続検証対象。
+- `IFrontend.setCallback(NULL)` / `ILnb.setCallback(NULL)` をcallback clearとして受理する経路を追加した。
+- TS main typeのlinkCaps広告に対し、VTSが生成するTS/UNDEFINED subtypeをraw TS filterとして受理するよう補正した。
+- media/AV filterに対する `setDelayHint()` はunsupportedとして拒否し、non-media filter delay readinessと分離した。
+- `IFrontend.getStatus()` はstatusCaps外typeを呼び出し失敗にせずignoredとし、`getFrontendStatusReadiness()` の要素ごとUNSUPPORTED方針と分離した。
+- DVR record startのfilter attach必須条件を外し、playback DVR attach/detachはunsupported operationへ寄せた。
+- DVR start後のcallback delivery / status notifier開始失敗をpublic `start()` のpost-commit失敗にしないよう、status notificationはbest-effortへ補正した。
+- `IDemux.getAvSyncHwId()` / `getAvSyncTime()` をunavailable固定から外し、pre-PCRでもAPI成功する暫定経路を追加した。PCR filter associationの完全実装は後続検証対象。
+- `r50unofficial2` のfailure composition共通helper規律を弱める文書変更は取り込まず、r50en側のDESIGN_JA.md / CODE_CONVENTION.mdを維持した。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認、rustfmt、rustc、cargoは未実行。この実行環境にはrustfmt/rustc/cargoが存在しない。
+
 # r50ema_wp_r07_filter_delay_queue_runtime_gate
 
 - WP-R07継続として、demux runtime の filter queue に queued-byte と delivery deadline を持たせ、`FilterDelayHint` を queue drain readiness へ接続した。

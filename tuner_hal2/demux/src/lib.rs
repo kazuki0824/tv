@@ -21,7 +21,7 @@ pub enum TsInputOrigin {
 
 impl TsInputOrigin {
     pub const fn allows_record_mirror(self) -> bool {
-        matches!(self, TsInputOrigin::Frontend)
+        !matches!(self, TsInputOrigin::Playback)
     }
 }
 
@@ -41,8 +41,7 @@ pub use runtime::{
     FilterConfigureStep, FilterConfigureTxn, FilterRuntime, FilterRuntimeState,
     GenerationBoundaryTxn, PlaybackConsumeReport, QueueDescriptorQueryError,
     QueueDescriptorSnapshot, QueueGrantorDescriptorSnapshot, QueueRuntime, QueueRuntimeError,
-    QueueRuntimeErrorKind, RuntimeIoRegistry, SourceBoundaryOutcome, SourceBoundaryStep,
-    SourceBoundaryTxn,
+    QueueRuntimeErrorKind, SourceBoundaryOutcome, SourceBoundaryStep,
 };
 
 #[cfg(test)]
@@ -50,6 +49,7 @@ mod tests {
     use super::*;
     use crate::packet_pipeline::{FilterPipelineConfig, PipelineOpenKind};
     use crate::runtime::filter::FilterSource;
+    use crate::runtime::source_boundary::SourceBoundaryTxn;
     use std::os::unix::fs::MetadataExt;
     use std::{thread, time::Duration};
 
@@ -102,8 +102,13 @@ mod tests {
     }
 
     #[test]
-    fn frontend_origin_allows_record_mirror() {
+    fn frontend_and_source_filter_origins_allow_record_mirror() {
         assert!(TsInputOrigin::Frontend.allows_record_mirror());
+        assert!(TsInputOrigin::SourceFilter {
+            source_filter_id: 1,
+            source_filter_generation: 1,
+        }
+        .allows_record_mirror());
         assert!(!TsInputOrigin::Playback.allows_record_mirror());
     }
 
@@ -214,6 +219,86 @@ mod tests {
             sink.source,
             crate::runtime::filter::FilterSource::SourceFilter {
                 source_filter_id: 40,
+                source_filter_generation: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn set_filter_source_non_null_allows_raw_sink_for_ts_linkcap() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime(
+                50,
+                1,
+                PipelineOpenKind::Raw,
+                Some(FilterPipelineConfig {
+                    tpid: Some(0x0100),
+                    raw: true,
+                }),
+            ))
+            .unwrap();
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime(
+                51,
+                1,
+                PipelineOpenKind::Raw,
+                Some(FilterPipelineConfig {
+                    tpid: Some(0x0100),
+                    raw: true,
+                }),
+            ))
+            .unwrap();
+        demux.create_filter_queue(51).unwrap();
+
+        let reset = demux.set_filter_source_non_null(51, 50).unwrap();
+
+        assert!(reset.cleared);
+        let sink = demux.filter(51).unwrap().snapshot();
+        assert_eq!(
+            sink.source,
+            FilterSource::SourceFilter {
+                source_filter_id: 50,
+                source_filter_generation: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn set_filter_source_non_null_allows_record_sink_for_ts_linkcap() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime(
+                52,
+                1,
+                PipelineOpenKind::Raw,
+                Some(FilterPipelineConfig {
+                    tpid: Some(0x0100),
+                    raw: true,
+                }),
+            ))
+            .unwrap();
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime(
+                53,
+                1,
+                PipelineOpenKind::Record,
+                Some(FilterPipelineConfig {
+                    tpid: Some(0x0100),
+                    raw: false,
+                }),
+            ))
+            .unwrap();
+        demux.create_filter_queue(53).unwrap();
+
+        let reset = demux.set_filter_source_non_null(53, 52).unwrap();
+
+        assert!(reset.cleared);
+        let sink = demux.filter(53).unwrap().snapshot();
+        assert_eq!(
+            sink.source,
+            FilterSource::SourceFilter {
+                source_filter_id: 52,
                 source_filter_generation: 1,
             }
         );
@@ -988,7 +1073,7 @@ mod tests {
         let before_identity = first_fd_identity(&before_restore);
         let snapshot = demux.snapshot();
 
-        demux.restore(snapshot);
+        demux.restore(snapshot).unwrap();
         let after_restore = demux.export_filter_queue_descriptor(29).unwrap();
 
         assert_eq!(before_identity, first_fd_identity(&after_restore));

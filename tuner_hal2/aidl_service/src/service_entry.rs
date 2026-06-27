@@ -330,9 +330,17 @@ fn probe_frontends() -> Vec<FrontendProbeOutcome> {
 
 pub fn run_service() {
     binder::ProcessState::start_thread_pool();
-    let mut runtime = TunerServiceRuntime::new();
-    runtime.boot_from_probe_results(probe_frontends());
-    let tuner = TunerAidlService::new(runtime);
+    let context = crate::service_context::AidlServiceContext::shared(TunerServiceRuntime::new());
+    if context
+        .reset_runtime_from_probe_results(probe_frontends())
+        .is_err()
+    {
+        std::process::exit(1);
+    }
+    let tuner = match TunerAidlService::from_context(context) {
+        Ok(tuner) => tuner,
+        Err(_) => std::process::exit(1),
+    };
     let binder = BnTuner::new_binder(tuner, BinderFeatures::default());
     if binder::add_service(TUNER_SERVICE_NAME, binder.as_binder()).is_err() {
         std::process::exit(1);

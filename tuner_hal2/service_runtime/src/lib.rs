@@ -1,5 +1,5 @@
 pub mod boot;
-pub mod callback_registry;
+mod callback_registry;
 pub mod capability_profile;
 pub mod command_dispatch;
 pub mod demux_filter_dvr_ops;
@@ -17,23 +17,22 @@ pub mod method_validation;
 pub mod object_close_txn;
 pub mod object_lifecycle;
 pub mod object_method_txn;
-pub mod object_table;
-pub mod packet_ops;
-pub mod root_object_ops;
-pub use object_method_txn::ObjectMethodDispatchPreflight;
+mod object_table;
 mod open_rollback;
-pub mod registry;
+pub mod packet_ops;
+mod registry;
+pub mod root_method_txn;
+pub mod root_object_ops;
 pub mod transaction_registry;
 
 pub use boot::{
-    install_filter_event_dispatcher, start_frontend_demux_live_pump_from_reader,
-    DvrStatusPollSnapshot, FilterEventDelivery, FilterEventDeliverySnapshot, FilterEventDispatcher,
-    FrontendDemuxPacketSink, FrontendProbeOutcome, RuntimeObjectPublicEntry,
-    RuntimeObjectQueryError, ServiceBootOutcome, TunerServiceRuntime,
+    start_frontend_demux_live_pump_from_reader, DvrChildRuntimeOpen, DvrStatusPollSnapshot,
+    FilterChildRuntimeOpen, FilterEventDelivery, FilterEventDeliverySnapshot,
+    FilterEventDispatcher, FrontendDemuxPacketSink, FrontendProbeOutcome, RuntimeObjectPublicEntry,
+    RuntimeObjectQueryError, RuntimeQuery, ServiceBootOutcome, TunerServiceRuntime,
 };
 pub use callback_registry::{
     CallbackHealthState, CallbackRegistryUpdate, RuntimeCallbackRegistration,
-    RuntimeCallbackRegistry,
 };
 pub use capability_profile::{
     configure_ip_cid_result, configure_monitor_event_result, failure_domain, feature_declared,
@@ -44,10 +43,12 @@ pub use command_dispatch::{
     RuntimeCommandDispatchError, RuntimeCommandDispatchPlan, RuntimeCommandDispatcher,
 };
 pub use diagnostics::{
-    CapabilitySuppressionReason, ChildOpenRollbackDiagnosticRecord, ChildOpenRollbackKind,
-    ChildOpenRollbackPhase, DescramblerDiagnosticKind, DescramblerDiagnosticPhase,
-    DescramblerDiagnosticRecord, StartupDiagnosticKind, StartupDiagnosticPhase,
-    StartupDiagnosticRecord,
+    BoundedDiagnosticStore, CapabilitySuppressionReason, ChildOpenRollbackDiagnosticRecord,
+    ChildOpenRollbackKind, ChildOpenRollbackPhase, DescramblerDiagnosticKind,
+    DescramblerDiagnosticPhase, DescramblerDiagnosticRecord,
+    DvrPostCommitNotificationDiagnosticRecord, DvrPostCommitNotificationPhase,
+    FilterCallbackDeliveryDiagnosticPhase, FilterCallbackDeliveryDiagnosticRecord,
+    StartupDiagnosticKind, StartupDiagnosticPhase, StartupDiagnosticRecord,
 };
 pub use dispatch::{dispatch_target_for, ServiceRuntimeDispatchTarget};
 pub use frontend_ops::set_frontend_lnb_object_use_case;
@@ -59,20 +60,26 @@ pub use frontend_worker_txn::{
     stop_frontend_tune_object as stop_frontend_tune_use_case, FrontendCloseCleanupReport,
     FrontendScanEndNotifier,
 };
+pub use object_method_txn::{
+    ObjectFrontendStatusReadinessValue, ObjectFrontendStatusType, ObjectFrontendStatusValue,
+    ObjectMethodExecutionToken, ObjectQueryRequest, ObjectQueryResponse,
+};
 pub use object_table::{
     RuntimeObjectEntry, RuntimeObjectLifecycle, RuntimeObjectTableError, RuntimeOwnerRelation,
 };
 pub use registry::{
     DemuxRegistryEntry, DemuxRuntimeId, FrontendRegistryEntry, FrontendRuntimeId, LnbRegistryEntry,
-    LnbRegistryProfile, LnbRuntimeId, RegistryCommitError, RuntimeRegistry, RuntimeRegistryKind,
+    LnbRegistryProfile, LnbRuntimeId, RegistryCommitError, RuntimeRegistryKind,
+};
+pub use root_method_txn::{
+    RootCommandRequest, RootDemuxCapabilitiesSnapshot, RootDemuxInfoSnapshot,
+    RootFrontendInfoSnapshot, RootQueryRequest, RootQueryResponse,
 };
 #[cfg(test)]
 mod failure_injection_tests;
 
 pub use transaction_registry::{
-    every_aidl_transaction_has_runtime_spec, runtime_transaction_specs, transaction_spec_for,
-    RuntimeDispatchTarget, RuntimeTransactionCoverage, RuntimeTransactionSpec,
-    RUNTIME_TRANSACTION_SPECS,
+    transaction_spec_for, RuntimeDispatchTarget, RuntimeTransactionSpec, RUNTIME_TRANSACTION_SPECS,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -93,8 +100,8 @@ mod tests {
         FilterConfig, FilterConfigKind, FilterOpenType, OpenFilterRequest, PesSettings,
     };
     use maleicacid_tuner_hal2_descrambler::{
-        multi2_encrypt_payload, test_support::expire_key_token, DescramblerKeySlot,
-        DescramblerKeyToken, Multi2KeyMaterial,
+        multi2_encrypt_payload, runtime::DescramblerKeySlotId, test_support::expire_key_token,
+        DescramblerKeySlot, DescramblerKeyToken, Multi2KeyMaterial,
     };
     use maleicacid_tuner_hal2_domain_request::{
         DvrConfigureKind, DvrConfigureRequest, DvrOpenKind, FilterDelayHintKind,
@@ -103,6 +110,18 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
+
+    struct NoopFilterEventDispatcher;
+
+    impl FilterEventDispatcher for NoopFilterEventDispatcher {
+        fn dispatch(
+            &self,
+            _runtime: &Arc<Mutex<TunerServiceRuntime>>,
+            _events: Vec<FilterEventDeliverySnapshot>,
+        ) -> Result<(), HalError> {
+            Ok(())
+        }
+    }
 
     fn path(name: &str) -> PathBuf {
         PathBuf::from(name)
@@ -488,6 +507,9 @@ mod tests {
                 "/dev/px4video0",
                 None,
             )]);
+            guard
+                .install_filter_event_dispatcher(Arc::new(NoopFilterEventDispatcher))
+                .unwrap();
 
             let tune_generation = guard
                 .frontend_txn()
@@ -717,6 +739,9 @@ mod tests {
                 "/dev/px4video0",
                 None,
             )]);
+            guard
+                .install_filter_event_dispatcher(Arc::new(NoopFilterEventDispatcher))
+                .unwrap();
             let demux = guard.allocate_demux_runtime().unwrap();
             let before = guard
                 .registry()
@@ -1314,6 +1339,47 @@ mod tests {
     }
 
     #[test]
+    fn descrambler_clear_key_token_keeps_session_key_when_release_fails() {
+        let mut runtime = TunerServiceRuntime::new();
+        let descrambler = runtime.allocate_descrambler_runtime().unwrap();
+        let token = DescramblerKeyToken::try_from_bytes(vec![0x41; 8]).unwrap();
+        let key_slot = DescramblerKeySlot::empty()
+            .try_with_even(sample_multi2_key(8))
+            .unwrap();
+
+        runtime
+            .register_descrambler_key_slot(token.clone(), key_slot)
+            .unwrap();
+        runtime
+            .registry_mut_for_test()
+            .descrambler_runtime_mut(descrambler.id)
+            .unwrap()
+            .session_mut()
+            .replace_key(token.clone(), DescramblerKeySlotId(41));
+
+        let err = runtime
+            .set_descrambler_key_token(descrambler.id.0, &[0x00])
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            maleicacid_tuner_hal2_common::HalError::Internal { .. }
+        ));
+        let session = runtime
+            .registry()
+            .descrambler_runtime(descrambler.id)
+            .unwrap()
+            .session();
+        assert_eq!(session.key_token(), Some(&token));
+        assert_eq!(session.key_slot(), Some(DescramblerKeySlotId(41)));
+        assert!(runtime.descrambler_diagnostics().iter().any(|record| {
+            record.kind == DescramblerDiagnosticKind::KeyTokenReleaseFailed
+                && record.phase == DescramblerDiagnosticPhase::SetKeyToken
+                && record.descrambler_id == Some(descrambler.id.0)
+        }));
+    }
+
+    #[test]
     fn descrambler_add_pid_rejects_source_filter_from_other_demux() {
         let mut runtime = TunerServiceRuntime::new();
         let owner_demux = runtime.allocate_demux_runtime().unwrap();
@@ -1519,6 +1585,106 @@ mod tests {
                 && record.phase == DescramblerDiagnosticPhase::PacketPipeline
                 && record.demux_id == Some(demux.id.0)
                 && record.pid == Some(200)
+        }));
+    }
+
+    #[test]
+    fn descrambler_packet_path_records_source_filter_generation_mismatch() {
+        let mut runtime = TunerServiceRuntime::new();
+        runtime.boot_from_probe_results([available(
+            1_000_000,
+            FrontendBackendKind::Px4CharDevice,
+            FrontendSystem::IsdbT,
+            "/dev/px4video0",
+            None,
+        )]);
+        let demux = runtime.allocate_demux_runtime().unwrap();
+        runtime
+            .set_demux_frontend_data_source(demux.id.0, 1_000_000)
+            .unwrap();
+        let filter = runtime.allocate_filter_runtime(demux.id.0).unwrap();
+        runtime
+            .register_demux_filter_runtime(
+                demux.id.0,
+                filter.id.0,
+                &configured_pes_filter_request(),
+            )
+            .unwrap();
+        runtime
+            .configure_filter_runtime_request(filter.id.0, configured_pes_filter_config(200))
+            .unwrap();
+        let descrambler = runtime.allocate_descrambler_runtime().unwrap();
+        runtime
+            .set_descrambler_demux_source(descrambler.id.0, demux.id.0)
+            .unwrap();
+        runtime
+            .add_descrambler_pid_non_null_source(descrambler.id.0, 200, filter.id.0)
+            .unwrap();
+        runtime
+            .configure_filter_runtime_request(filter.id.0, configured_pes_filter_config(200))
+            .unwrap();
+
+        runtime
+            .push_frontend_ts_packet_to_bound_demuxes(1_000_000, &scrambled_payload_packet(200))
+            .unwrap();
+
+        assert!(runtime.descrambler_diagnostics().iter().any(|record| {
+            record.kind == DescramblerDiagnosticKind::PacketSourceFilterGenerationMismatch
+                && record.phase == DescramblerDiagnosticPhase::PacketPipeline
+                && record.demux_id == Some(demux.id.0)
+                && record.pid == Some(200)
+                && record.filter_id == Some(filter.id.0)
+                && record.error.is_some()
+        }));
+    }
+
+    #[test]
+    fn descrambler_packet_path_records_source_filter_validation_failure() {
+        let mut runtime = TunerServiceRuntime::new();
+        runtime.boot_from_probe_results([available(
+            1_000_000,
+            FrontendBackendKind::Px4CharDevice,
+            FrontendSystem::IsdbT,
+            "/dev/px4video0",
+            None,
+        )]);
+        let demux = runtime.allocate_demux_runtime().unwrap();
+        runtime
+            .set_demux_frontend_data_source(demux.id.0, 1_000_000)
+            .unwrap();
+        let filter = runtime.allocate_filter_runtime(demux.id.0).unwrap();
+        runtime
+            .register_demux_filter_runtime(
+                demux.id.0,
+                filter.id.0,
+                &configured_pes_filter_request(),
+            )
+            .unwrap();
+        runtime
+            .configure_filter_runtime_request(filter.id.0, configured_pes_filter_config(200))
+            .unwrap();
+        let descrambler = runtime.allocate_descrambler_runtime().unwrap();
+        runtime
+            .set_descrambler_demux_source(descrambler.id.0, demux.id.0)
+            .unwrap();
+        runtime
+            .add_descrambler_pid_non_null_source(descrambler.id.0, 200, filter.id.0)
+            .unwrap();
+        runtime
+            .configure_filter_runtime_request(filter.id.0, configured_pes_filter_config(201))
+            .unwrap();
+
+        runtime
+            .push_frontend_ts_packet_to_bound_demuxes(1_000_000, &scrambled_payload_packet(200))
+            .unwrap();
+
+        assert!(runtime.descrambler_diagnostics().iter().any(|record| {
+            record.kind == DescramblerDiagnosticKind::PacketSourceFilterInvalid
+                && record.phase == DescramblerDiagnosticPhase::PacketPipeline
+                && record.demux_id == Some(demux.id.0)
+                && record.pid == Some(200)
+                && record.filter_id == Some(filter.id.0)
+                && record.error.is_some()
         }));
     }
 

@@ -16,12 +16,27 @@ pub enum LnbLifecycleStep {
 pub enum LnbLifecycleReason {
     PublicClose,
     OwnerLoss,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LnbLifecycleOutcomeReason {
+    PublicClose,
+    OwnerLoss,
     DropLeak,
+}
+
+impl From<LnbLifecycleReason> for LnbLifecycleOutcomeReason {
+    fn from(reason: LnbLifecycleReason) -> Self {
+        match reason {
+            LnbLifecycleReason::PublicClose => Self::PublicClose,
+            LnbLifecycleReason::OwnerLoss => Self::OwnerLoss,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LnbLifecycleOutcome {
-    pub reason: LnbLifecycleReason,
+    pub reason: LnbLifecycleOutcomeReason,
     pub steps: Vec<LnbLifecycleStep>,
     pub result: Result<(), LnbFailureRecord>,
 }
@@ -32,40 +47,32 @@ pub struct LnbLifecycleTxn {
 }
 
 impl LnbLifecycleTxn {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self { steps: Vec::new() }
     }
     fn record_step(&mut self, step: LnbLifecycleStep) {
         self.steps.push(step);
     }
 
-    pub fn close<B: LnbBackendOps>(
+    fn close<B: LnbBackendOps>(
         mut self,
         runtime: &mut LnbRuntime,
         backend: &mut B,
         reason: LnbLifecycleReason,
     ) -> LnbLifecycleOutcome {
-        if reason == LnbLifecycleReason::DropLeak {
-            self.record_step(LnbLifecycleStep::RecordDropLeak);
-            let record = runtime.record_unclosed_drop();
-            return LnbLifecycleOutcome {
-                reason,
-                steps: self.steps,
-                result: Err(record),
-            };
-        }
+        let outcome_reason = LnbLifecycleOutcomeReason::from(reason);
 
         self.record_step(LnbLifecycleStep::MarkClosing);
         if let Err(record) = runtime.begin_close() {
             return LnbLifecycleOutcome {
-                reason,
+                reason: outcome_reason,
                 steps: self.steps,
                 result: Err(record),
             };
         }
         if runtime.state() == crate::runtime::LnbRuntimeState::Closed {
             return LnbLifecycleOutcome {
-                reason,
+                reason: outcome_reason,
                 steps: self.steps,
                 result: Ok(()),
             };
@@ -81,7 +88,7 @@ impl LnbLifecycleTxn {
                 LnbFailureStep::ApplyBackend,
             );
             return LnbLifecycleOutcome {
-                reason,
+                reason: outcome_reason,
                 steps: self.steps,
                 result: Err(record),
             };
@@ -91,7 +98,7 @@ impl LnbLifecycleTxn {
         self.record_step(LnbLifecycleStep::CommitRegistry);
         if let Err(record) = runtime.commit_registry(safe, LnbFailureStep::CommitRegistry) {
             return LnbLifecycleOutcome {
-                reason,
+                reason: outcome_reason,
                 steps: self.steps,
                 result: Err(record),
             };
@@ -103,10 +110,29 @@ impl LnbLifecycleTxn {
         self.record_step(LnbLifecycleStep::CommitClosed);
         runtime.commit_closed();
         LnbLifecycleOutcome {
-            reason,
+            reason: outcome_reason,
             steps: self.steps,
             result: Ok(()),
         }
+    }
+}
+
+pub fn close_lnb_lifecycle<B: LnbBackendOps>(
+    runtime: &mut LnbRuntime,
+    backend: &mut B,
+    reason: LnbLifecycleReason,
+) -> LnbLifecycleOutcome {
+    LnbLifecycleTxn::new().close(runtime, backend, reason)
+}
+
+pub fn record_lnb_drop_leak_lifecycle(runtime: &mut LnbRuntime) -> LnbLifecycleOutcome {
+    let mut txn = LnbLifecycleTxn::new();
+    txn.record_step(LnbLifecycleStep::RecordDropLeak);
+    let record = runtime.record_unclosed_drop();
+    LnbLifecycleOutcome {
+        reason: LnbLifecycleOutcomeReason::DropLeak,
+        steps: txn.steps,
+        result: Err(record),
     }
 }
 
@@ -177,8 +203,7 @@ mod tests {
     fn drop_path_does_not_apply_backend_cleanup() {
         let mut runtime = LnbRuntime::new(3);
         let mut backend = TestBackend::new();
-        let outcome =
-            LnbLifecycleTxn::new().close(&mut runtime, &mut backend, LnbLifecycleReason::DropLeak);
+        let outcome = record_lnb_drop_leak_lifecycle(&mut runtime);
         assert!(outcome.result.is_err());
         assert_eq!(backend.applied.len(), 0);
         assert_eq!(

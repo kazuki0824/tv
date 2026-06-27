@@ -353,7 +353,13 @@ impl FilterRuntime {
             filter_id: self.filter_id,
             tpid: self.tpid,
             started: self.state.is_started(),
-            has_upstream: !matches!(self.source, FilterSource::DemuxInput),
+            source_filter: match self.source {
+                FilterSource::DemuxInput => None,
+                FilterSource::SourceFilter {
+                    source_filter_id,
+                    source_filter_generation,
+                } => Some((source_filter_id, source_filter_generation)),
+            },
             open_kind: self.open_kind,
             section_raw: self.raw && matches!(self.open_kind, PipelineOpenKind::Section),
             pes_raw: self.raw && matches!(self.open_kind, PipelineOpenKind::Pes),

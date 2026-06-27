@@ -10,14 +10,12 @@ use maleicacid_tuner_hal2_service_runtime::{
     RuntimeObjectLifecycle, RuntimeOwnerRelation, TunerServiceRuntime,
 };
 
-use crate::callback_store::{
-    clear_owner_callbacks, has_callback_for_owner, retain_test_callback_marker,
-};
 use crate::object_handle::AidlObjectHandle;
 use crate::object_runtime::{
-    clear_owner_callback_registration_hal, close_object_with_domain_cleanup,
-    execute_callback_registration_runtime_use_case, SharedTunerRuntime,
+    clear_owner_callback_registration_hal, close_object_after_close_preflight_with_domain_cleanup,
+    execute_callback_registration_runtime_use_case,
 };
+use crate::service_context::{AidlServiceContext, SharedTunerRuntime};
 
 fn shared_runtime_with_live_object(
     kind: AidlObjectKind,
@@ -53,25 +51,29 @@ fn close_domain_cleanup_failure_records_cleanup_failed_state() {
         AidlObjectGeneration(1),
         92_001,
     );
+    let context = AidlServiceContext::from_shared_runtime_for_test(runtime.clone());
 
-    let result = close_object_with_domain_cleanup(&runtime, handle, || {
-        Err(HalError::cleanup_failed(
-            "failure injection domain cleanup",
-            "domain cleanup failed",
-        ))
-    });
+    let result = close_object_after_close_preflight_with_domain_cleanup(
+        &context,
+        handle,
+        AidlMethodCall::FilterClose,
+        || {
+            Err(HalError::cleanup_failed(
+                "failure injection domain cleanup",
+                "domain cleanup failed",
+            ))
+        },
+    );
 
     assert!(result.is_err());
     assert_eq!(
         runtime
             .lock()
             .unwrap()
-            .object_table()
-            .entry(AidlObjectId(92_001))
-            .expect("object remains tracked")
-            .lifecycle,
+            .aidl_object_lifecycle(AidlObjectId(92_001))
+            .unwrap(),
         RuntimeObjectLifecycle::CleanupFailed {
-            step: CleanupStep::UnregisterRuntime
+            step: CleanupStep::ReleaseBackend
         }
     );
 }
@@ -83,43 +85,40 @@ fn callback_domain_failure_rolls_back_retained_callback_and_registry() {
         AidlObjectId(92_002),
         AidlObjectGeneration(1),
     );
-    clear_owner_callbacks(handle).unwrap();
     let runtime = shared_runtime_with_live_object(
         AidlObjectKind::Lnb,
         AidlObjectId(92_002),
         AidlObjectGeneration(1),
         92_002,
     );
+    let context = AidlServiceContext::from_shared_runtime_for_test(runtime.clone());
+    context.clear_owner_callbacks(handle).unwrap();
 
     let result: BinderResult<()> = execute_callback_registration_runtime_use_case(
-        &runtime,
+        &context,
         handle,
         AidlMethodCall::LnbSetCallback,
         || {
-            retain_test_callback_marker(handle, AidlApi::LnbSetCallback)
+            context
+                .retain_test_callback_marker(handle, AidlApi::LnbSetCallback)
                 .map_err(|error| error.into_hal_error("failure injection callback retain"))
         },
         || {
             clear_owner_callback_registration_hal(
-                &runtime,
+                &context,
                 handle,
                 Some(AidlApi::LnbSetCallback),
                 "failure injection callback rollback",
             )
         },
-        |_runtime, _handle, _dispatch_preflight| {
+        |_runtime, _handle, _dispatch_proof| {
             Err(HalError::Unsupported("failure injection domain commit"))
         },
     );
 
     assert!(result.is_err());
-    assert!(!has_callback_for_owner(handle, AidlApi::LnbSetCallback).unwrap());
-    assert_eq!(
-        runtime
-            .lock()
-            .unwrap()
-            .callback_registry()
-            .registration_count(),
-        0
-    );
+    assert!(!context
+        .has_callback_for_owner(handle, AidlApi::LnbSetCallback)
+        .unwrap());
+    assert_eq!(runtime.lock().unwrap().callback_registration_count(), 0);
 }

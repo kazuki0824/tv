@@ -13,11 +13,14 @@ pub use core::{
     DEFAULT_MULTI2_ROUNDS, NULL_PID,
 };
 pub use runtime::{
-    DescramblerCleanupReport, DescramblerKeyLookupError, DescramblerKeyRegistrationError,
-    DescramblerKeyTable, DescramblerKeyToken, DescramblerKeyTokenError, DescramblerPid,
-    DescramblerPidClaim, DescramblerPidClaimError, DescramblerRuntime, DescramblerSession,
-    DescramblerSessionFailure, DescramblerSessionFailureKind, DescramblerSessionTxn,
-    DescramblerSessionTxnStep, SourceFilterRef,
+    add_pid_claim_with_session_txn, bind_demux_with_session_txn, cleanup_all_with_session_txn,
+    clear_key_with_session_txn, remove_pid_claim_with_session_txn, replace_key_with_session_txn,
+    DescramblerCleanupReport, DescramblerClearKeyTxnError, DescramblerKeyLookupError,
+    DescramblerKeyRegistrationError, DescramblerKeyTable, DescramblerKeyToken,
+    DescramblerKeyTokenError, DescramblerKeyTxnOps, DescramblerPid, DescramblerPidClaim,
+    DescramblerPidClaimError, DescramblerReplaceKeyOutcome, DescramblerReplaceKeyTxnError,
+    DescramblerRuntime, DescramblerSession, DescramblerSessionFailure,
+    DescramblerSessionFailureKind, DescramblerSessionTxnStep, SourceFilterRef,
 };
 
 #[doc(hidden)]

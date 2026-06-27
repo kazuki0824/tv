@@ -19,6 +19,7 @@ pub enum DescramblerKeyLookupError {
 pub enum DescramblerKeyRegistrationError {
     EmptySlot,
     DuplicateToken,
+    SlotIdExhausted,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -100,8 +101,12 @@ impl DescramblerKeyTable {
         if self.slots.contains_key(&token) {
             return Err(DescramblerKeyRegistrationError::DuplicateToken);
         }
+        let next_slot_id = self
+            .next_slot_id
+            .checked_add(1)
+            .ok_or(DescramblerKeyRegistrationError::SlotIdExhausted)?;
         let slot_id = DescramblerKeySlotId(self.next_slot_id);
-        self.next_slot_id = self.next_slot_id.saturating_add(1);
+        self.next_slot_id = next_slot_id;
         self.slots.insert(
             token,
             DescramblerKeySlotState {
@@ -180,6 +185,7 @@ impl DescramblerKeyTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::Multi2KeyMaterial;
 
     impl DescramblerKeyTable {
         pub(crate) fn insert_test_key(
@@ -222,6 +228,33 @@ mod tests {
         pub(crate) fn refcount_for_test(&self, token: &DescramblerKeyToken) -> Option<usize> {
             self.slots.get(token).map(|state| state.refcount)
         }
+
+        pub(crate) fn set_next_slot_id_for_test(&mut self, next_slot_id: u64) {
+            self.next_slot_id = next_slot_id;
+        }
+    }
+
+    #[test]
+    fn register_key_slot_fails_closed_when_slot_id_is_exhausted() {
+        let token = DescramblerKeyToken::try_from_bytes(vec![3; 8]).unwrap();
+        let mut table = DescramblerKeyTable::default();
+        table.set_next_slot_id_for_test(u64::MAX);
+
+        let key_slot = DescramblerKeySlot::empty()
+            .try_with_even(Multi2KeyMaterial::new([1; 32], [2; 8], [3; 8]))
+            .unwrap();
+
+        let result = table.register_key_slot(token.clone(), key_slot);
+
+        assert_eq!(
+            result,
+            Err(DescramblerKeyRegistrationError::SlotIdExhausted)
+        );
+        assert_eq!(
+            table.resolve(&token),
+            Err(DescramblerKeyLookupError::UnknownToken)
+        );
+        assert!(table.is_empty());
     }
 
     #[test]

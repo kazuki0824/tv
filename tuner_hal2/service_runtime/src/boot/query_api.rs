@@ -2,8 +2,8 @@ use super::{
     AidlObjectGeneration, AidlObjectId, AidlObjectKind, DemuxRuntimeId, DemuxRuntimeSnapshot,
     DvrRuntimeId, FilterOpenType, FilterRuntimeId, FrontendLiveReaderDescriptor, FrontendRuntimeId,
     FrontendRuntimeSnapshot, FrontendRuntimeState, FrontendSignalState, HalError, HalInternalKind,
-    HalInvalidStateKind, LnbRuntimeId, RuntimeObjectTable, RuntimeObjectTableError,
-    RuntimeOwnerRelation, RuntimeRegistry, TunerServiceRuntime,
+    HalInvalidArgumentKind, HalInvalidStateKind, LnbRuntimeId, RuntimeObjectTable,
+    RuntimeObjectTableError, RuntimeOwnerRelation, RuntimeRegistry, TunerServiceRuntime,
 };
 use maleicacid_tuner_hal2_demux::{
     DvrRuntimeState, DvrStatusEvent, QueueDescriptorQueryError, QueueDescriptorSnapshot,
@@ -62,13 +62,13 @@ pub struct DvrStatusPollSnapshot {
     pub status_reporting_enabled: bool,
 }
 
-pub(crate) struct RuntimeQuery<'a> {
+pub struct RuntimeQuery<'a> {
     registry: &'a RuntimeRegistry,
     object_table: &'a RuntimeObjectTable,
 }
 
 impl TunerServiceRuntime {
-    pub(crate) fn query(&self) -> RuntimeQuery<'_> {
+    pub fn query(&self) -> RuntimeQuery<'_> {
         RuntimeQuery {
             registry: &self.registry,
             object_table: &self.object_table,
@@ -163,6 +163,75 @@ impl TunerServiceRuntime {
 
     pub fn filter_open_type(&self, filter_id: i32) -> Option<FilterOpenType> {
         self.query().filter_open_type(filter_id)
+    }
+
+    pub fn first_pcr_filter_id_for_demux_object(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<Option<i32>, HalError> {
+        let demux_id =
+            self.public_runtime_id_for_object_method(object_id, generation, AidlObjectKind::Demux)?;
+        Ok(self.query().first_pcr_filter_id_for_demux(demux_id))
+    }
+
+    pub fn ensure_media_filter_for_demux_object(
+        &self,
+        demux_object_id: AidlObjectId,
+        demux_generation: AidlObjectGeneration,
+        filter_object_id: AidlObjectId,
+        filter_generation: AidlObjectGeneration,
+    ) -> Result<(), HalError> {
+        self.public_entry_for_object_method(
+            demux_object_id,
+            demux_generation,
+            AidlObjectKind::Demux,
+        )?;
+        let filter_entry = self.public_entry_for_object_method(
+            filter_object_id,
+            filter_generation,
+            AidlObjectKind::Filter,
+        )?;
+        let RuntimeOwnerRelation::Demux { demux, generation } = filter_entry.owner() else {
+            return Err(HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "AV sync filter must be owned by a demux",
+            ));
+        };
+        if demux != demux_object_id || generation != demux_generation {
+            return Err(HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "AV sync filter must belong to the target demux",
+            ));
+        }
+        let open_type = self
+            .filter_open_type(filter_entry.public_id())
+            .ok_or_else(|| {
+                HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "AV sync filter runtime is not live",
+                )
+            })?;
+        if !open_type.is_media_filter() {
+            return Err(HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "AV sync hardware id requires an audio or video media filter",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn is_live_pcr_filter_for_demux_object(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        filter_id: i32,
+    ) -> Result<bool, HalError> {
+        let demux_id =
+            self.public_runtime_id_for_object_method(object_id, generation, AidlObjectKind::Demux)?;
+        Ok(self
+            .query()
+            .is_live_pcr_filter_for_demux(demux_id, filter_id))
     }
 
     pub fn filter_queue_descriptor_snapshot_for_aidl_object(
@@ -268,7 +337,7 @@ fn map_queue_descriptor_query_error(error: QueueDescriptorQueryError) -> HalErro
     }
 }
 impl<'a> RuntimeQuery<'a> {
-    pub(crate) fn filter_queue_descriptor_snapshot_for_aidl_object(
+    pub fn filter_queue_descriptor_snapshot_for_aidl_object(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
@@ -305,7 +374,7 @@ impl<'a> RuntimeQuery<'a> {
             .map_err(map_queue_descriptor_query_error)
     }
 
-    pub(crate) fn dvr_queue_descriptor_snapshot_for_aidl_object(
+    pub fn dvr_queue_descriptor_snapshot_for_aidl_object(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
@@ -342,7 +411,7 @@ impl<'a> RuntimeQuery<'a> {
             .map_err(map_queue_descriptor_query_error)
     }
 
-    pub(crate) fn dvr_status_poll_snapshot_for_aidl_object(
+    pub fn dvr_status_poll_snapshot_for_aidl_object(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
@@ -402,7 +471,7 @@ impl<'a> RuntimeQuery<'a> {
         })
     }
 
-    pub(crate) fn public_entry_for_aidl_object(
+    pub fn public_entry_for_aidl_object(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
@@ -420,7 +489,7 @@ impl<'a> RuntimeQuery<'a> {
         })
     }
 
-    pub(crate) fn public_runtime_id_for_aidl_object(
+    pub fn public_runtime_id_for_aidl_object(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
@@ -430,7 +499,37 @@ impl<'a> RuntimeQuery<'a> {
             .map(|entry| entry.public_id())
     }
 
-    pub(crate) fn frontend_ids(&self) -> Vec<i32> {
+    pub fn public_runtime_id_for_object_method(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        expected_kind: AidlObjectKind,
+    ) -> Result<i32, HalError> {
+        self.public_runtime_id_for_aidl_object(object_id, generation, expected_kind)
+            .map_err(|_| {
+                HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "AIDL object is not live for object method",
+                )
+            })
+    }
+
+    pub fn public_entry_for_object_method(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        expected_kind: AidlObjectKind,
+    ) -> Result<RuntimeObjectPublicEntry, HalError> {
+        self.public_entry_for_aidl_object(object_id, generation, expected_kind)
+            .map_err(|_| {
+                HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "AIDL object is not live for object method",
+                )
+            })
+    }
+
+    pub fn frontend_ids(&self) -> Vec<i32> {
         self.registry
             .frontend_ids()
             .into_iter()
@@ -438,15 +537,15 @@ impl<'a> RuntimeQuery<'a> {
             .collect()
     }
 
-    pub(crate) fn has_frontend_id(&self, id: i32) -> bool {
+    pub fn has_frontend_id(&self, id: i32) -> bool {
         self.registry.frontend(FrontendRuntimeId(id)).is_some()
     }
 
-    pub(crate) fn frontend_entry(&self, id: i32) -> Option<crate::registry::FrontendRegistryEntry> {
+    pub fn frontend_entry(&self, id: i32) -> Option<crate::registry::FrontendRegistryEntry> {
         self.registry.frontend(FrontendRuntimeId(id)).cloned()
     }
 
-    pub(crate) fn frontend_entry_for_aidl_object(
+    pub fn frontend_entry_for_aidl_object(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
@@ -463,7 +562,7 @@ impl<'a> RuntimeQuery<'a> {
             .ok_or_else(|| HalError::Unsupported("frontend runtime entry is not available"))
     }
 
-    pub(crate) fn frontend_runtime_state_for_aidl_object(
+    pub fn frontend_runtime_state_for_aidl_object(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
@@ -481,7 +580,7 @@ impl<'a> RuntimeQuery<'a> {
         Ok(runtime.state())
     }
 
-    pub(crate) fn frontend_signal_state_for_aidl_object(
+    pub fn frontend_signal_state_for_aidl_object(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
@@ -490,7 +589,7 @@ impl<'a> RuntimeQuery<'a> {
         self.frontend_signal_state(entry.id.0)
     }
 
-    pub(crate) fn frontend_status_query_for_aidl_object(
+    pub fn frontend_status_query_for_aidl_object(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
@@ -515,7 +614,7 @@ impl<'a> RuntimeQuery<'a> {
         Ok((entry, runtime.state(), runtime.signal_state()))
     }
 
-    pub(crate) fn demux_ids(&self) -> Vec<i32> {
+    pub fn demux_ids(&self) -> Vec<i32> {
         self.registry
             .demux_ids()
             .into_iter()
@@ -523,23 +622,23 @@ impl<'a> RuntimeQuery<'a> {
             .collect()
     }
 
-    pub(crate) fn has_demux_id(&self, id: i32) -> bool {
+    pub fn has_demux_id(&self, id: i32) -> bool {
         self.registry.demux(DemuxRuntimeId(id)).is_some()
     }
 
-    pub(crate) fn lnb_ids(&self) -> Vec<i32> {
+    pub fn lnb_ids(&self) -> Vec<i32> {
         self.registry.lnb_ids().into_iter().map(|id| id.0).collect()
     }
 
-    pub(crate) fn has_lnb_id(&self, id: i32) -> bool {
+    pub fn has_lnb_id(&self, id: i32) -> bool {
         self.registry.lnb(LnbRuntimeId(id)).is_some()
     }
 
-    pub(crate) fn lnb_id_by_name(&self, name: &str) -> Option<i32> {
+    pub fn lnb_id_by_name(&self, name: &str) -> Option<i32> {
         self.registry.lnb_by_name(name).map(|entry| entry.id.0)
     }
 
-    pub(crate) fn lnb_for_frontend_id(
+    pub fn lnb_for_frontend_id(
         &self,
         frontend_id: i32,
     ) -> Option<crate::registry::LnbRegistryEntry> {
@@ -548,7 +647,7 @@ impl<'a> RuntimeQuery<'a> {
             .cloned()
     }
 
-    pub(crate) fn frontend_runtime_snapshot(
+    pub fn frontend_runtime_snapshot(
         &self,
         frontend_id: i32,
     ) -> Result<FrontendRuntimeSnapshot, HalError> {
@@ -564,7 +663,7 @@ impl<'a> RuntimeQuery<'a> {
         Ok(runtime.snapshot())
     }
 
-    pub(crate) fn bound_demux_runtime_snapshots(
+    pub fn bound_demux_runtime_snapshots(
         &self,
         frontend_id: i32,
     ) -> Result<Vec<(DemuxRuntimeId, DemuxRuntimeSnapshot)>, HalError> {
@@ -583,10 +682,7 @@ impl<'a> RuntimeQuery<'a> {
         Ok(snapshots)
     }
 
-    pub(crate) fn frontend_signal_state(
-        &self,
-        frontend_id: i32,
-    ) -> Result<FrontendSignalState, HalError> {
+    pub fn frontend_signal_state(&self, frontend_id: i32) -> Result<FrontendSignalState, HalError> {
         let runtime = self
             .registry
             .frontend_runtime(crate::registry::FrontendRuntimeId(frontend_id))
@@ -599,7 +695,7 @@ impl<'a> RuntimeQuery<'a> {
         Ok(runtime.signal_state())
     }
 
-    pub(crate) fn frontend_live_reader_descriptor_for_live_pump(
+    pub fn frontend_live_reader_descriptor_for_live_pump(
         &self,
         frontend_id: i32,
     ) -> Result<Option<FrontendLiveReaderDescriptor>, HalError> {
@@ -637,7 +733,7 @@ impl<'a> RuntimeQuery<'a> {
             })
     }
 
-    pub(crate) fn filter_open_type(&self, filter_id: i32) -> Option<FilterOpenType> {
+    pub fn filter_open_type(&self, filter_id: i32) -> Option<FilterOpenType> {
         let entry = self.registry.filter(FilterRuntimeId(filter_id))?;
         let demux = self
             .registry
@@ -645,7 +741,109 @@ impl<'a> RuntimeQuery<'a> {
         demux.filter(filter_id).map(|filter| filter.open_type())
     }
 
-    pub(crate) fn ensure_frontend_demux_sink_ready(
+    pub fn first_pcr_filter_id_for_demux_object(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<Option<i32>, HalError> {
+        let demux_id =
+            self.public_runtime_id_for_object_method(object_id, generation, AidlObjectKind::Demux)?;
+        Ok(self.first_pcr_filter_id_for_demux(demux_id))
+    }
+
+    pub fn ensure_media_filter_for_demux_object(
+        &self,
+        demux_object_id: AidlObjectId,
+        demux_generation: AidlObjectGeneration,
+        filter_object_id: AidlObjectId,
+        filter_generation: AidlObjectGeneration,
+    ) -> Result<(), HalError> {
+        self.public_entry_for_object_method(
+            demux_object_id,
+            demux_generation,
+            AidlObjectKind::Demux,
+        )?;
+        let filter_entry = self.public_entry_for_object_method(
+            filter_object_id,
+            filter_generation,
+            AidlObjectKind::Filter,
+        )?;
+        let RuntimeOwnerRelation::Demux { demux, generation } = filter_entry.owner() else {
+            return Err(HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "AV sync filter must be owned by a demux",
+            ));
+        };
+        if demux != demux_object_id || generation != demux_generation {
+            return Err(HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "AV sync filter must belong to the target demux",
+            ));
+        }
+        let open_type = self
+            .filter_open_type(filter_entry.public_id())
+            .ok_or_else(|| {
+                HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "AV sync filter runtime is not live",
+                )
+            })?;
+        if !open_type.is_media_filter() {
+            return Err(HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "AV sync hardware id requires an audio or video media filter",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn is_live_pcr_filter_for_demux_object(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        filter_id: i32,
+    ) -> Result<bool, HalError> {
+        let demux_id =
+            self.public_runtime_id_for_object_method(object_id, generation, AidlObjectKind::Demux)?;
+        Ok(self.is_live_pcr_filter_for_demux(demux_id, filter_id))
+    }
+
+    pub fn first_pcr_filter_id_for_demux(&self, demux_id: i32) -> Option<i32> {
+        let demux = self.registry.demux_runtime(DemuxRuntimeId(demux_id))?;
+        self.registry
+            .filters_for_demux(demux_id)
+            .into_iter()
+            .map(|entry| entry.id.0)
+            .find(|filter_id| {
+                demux
+                    .filter(*filter_id)
+                    .map(|filter| {
+                        filter.open_type() == FilterOpenType::TsPcr
+                            && !filter.state().is_closed_or_failed()
+                    })
+                    .unwrap_or(false)
+            })
+    }
+
+    pub fn is_live_pcr_filter_for_demux(&self, demux_id: i32, filter_id: i32) -> bool {
+        let Some(entry) = self.registry.filter(FilterRuntimeId(filter_id)) else {
+            return false;
+        };
+        if entry.owner_demux_id != demux_id {
+            return false;
+        }
+        let Some(demux) = self.registry.demux_runtime(DemuxRuntimeId(demux_id)) else {
+            return false;
+        };
+        demux
+            .filter(filter_id)
+            .map(|filter| {
+                filter.open_type() == FilterOpenType::TsPcr && !filter.state().is_closed_or_failed()
+            })
+            .unwrap_or(false)
+    }
+
+    pub fn ensure_frontend_demux_sink_ready(
         &self,
         frontend_id: i32,
     ) -> Result<Vec<DemuxRuntimeId>, HalError> {

@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::sync::{Mutex, OnceLock};
 
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     IDvrCallback::IDvrCallback, IFilterCallback::IFilterCallback,
@@ -49,198 +48,138 @@ enum StoredCallback {
 }
 
 #[derive(Default)]
-struct CallbackStore {
+pub(crate) struct CallbackStore {
     callbacks: BTreeMap<CallbackStoreKey, StoredCallback>,
 }
 
-static CALLBACK_STORE: OnceLock<Mutex<CallbackStore>> = OnceLock::new();
+impl CallbackStore {
+    pub(crate) fn retain_frontend_callback(
+        &mut self,
+        handle: AidlObjectHandle,
+        callback: &Strong<dyn IFrontendCallback>,
+    ) {
+        self.callbacks.insert(
+            CallbackStoreKey::new(handle, AidlApi::FrontendSetCallback),
+            StoredCallback::Frontend(callback.clone()),
+        );
+    }
 
-fn store() -> &'static Mutex<CallbackStore> {
-    CALLBACK_STORE.get_or_init(|| Mutex::new(CallbackStore::default()))
-}
+    pub(crate) fn retain_lnb_callback(
+        &mut self,
+        handle: AidlObjectHandle,
+        callback: &Strong<dyn ILnbCallback>,
+    ) {
+        self.callbacks.insert(
+            CallbackStoreKey::new(handle, AidlApi::LnbSetCallback),
+            StoredCallback::Lnb(callback.clone()),
+        );
+    }
 
-pub fn retain_frontend_callback(
-    handle: AidlObjectHandle,
-    callback: &Strong<dyn IFrontendCallback>,
-) -> Result<(), AidlCallbackStoreError> {
-    let mut store = store()
-        .lock()
-        .map_err(|_| AidlCallbackStoreError::Poisoned)?;
-    store.callbacks.insert(
-        CallbackStoreKey::new(handle, AidlApi::FrontendSetCallback),
-        StoredCallback::Frontend(callback.clone()),
-    );
-    Ok(())
-}
+    pub(crate) fn retain_filter_callback(
+        &mut self,
+        handle: AidlObjectHandle,
+        callback: &Strong<dyn IFilterCallback>,
+    ) {
+        self.callbacks.insert(
+            CallbackStoreKey::new(handle, AidlApi::DemuxOpenFilter),
+            StoredCallback::Filter(callback.clone()),
+        );
+    }
 
-pub fn retain_lnb_callback(
-    handle: AidlObjectHandle,
-    callback: &Strong<dyn ILnbCallback>,
-) -> Result<(), AidlCallbackStoreError> {
-    let mut store = store()
-        .lock()
-        .map_err(|_| AidlCallbackStoreError::Poisoned)?;
-    store.callbacks.insert(
-        CallbackStoreKey::new(handle, AidlApi::LnbSetCallback),
-        StoredCallback::Lnb(callback.clone()),
-    );
-    Ok(())
-}
+    pub(crate) fn retain_dvr_callback(
+        &mut self,
+        handle: AidlObjectHandle,
+        callback: &Strong<dyn IDvrCallback>,
+    ) {
+        self.callbacks.insert(
+            CallbackStoreKey::new(handle, AidlApi::DemuxOpenDvr),
+            StoredCallback::Dvr(callback.clone()),
+        );
+    }
 
-pub fn retain_filter_callback(
-    handle: AidlObjectHandle,
-    callback: &Strong<dyn IFilterCallback>,
-) -> Result<(), AidlCallbackStoreError> {
-    let mut store = store()
-        .lock()
-        .map_err(|_| AidlCallbackStoreError::Poisoned)?;
-    store.callbacks.insert(
-        CallbackStoreKey::new(handle, AidlApi::DemuxOpenFilter),
-        StoredCallback::Filter(callback.clone()),
-    );
-    Ok(())
-}
+    pub(crate) fn clear_owner_callbacks(&mut self, handle: AidlObjectHandle) -> usize {
+        let before = self.callbacks.len();
+        self.callbacks.retain(|key, _| !key.matches_owner(handle));
+        before.saturating_sub(self.callbacks.len())
+    }
 
-pub fn retain_dvr_callback(
-    handle: AidlObjectHandle,
-    callback: &Strong<dyn IDvrCallback>,
-) -> Result<(), AidlCallbackStoreError> {
-    let mut store = store()
-        .lock()
-        .map_err(|_| AidlCallbackStoreError::Poisoned)?;
-    store.callbacks.insert(
-        CallbackStoreKey::new(handle, AidlApi::DemuxOpenDvr),
-        StoredCallback::Dvr(callback.clone()),
-    );
-    Ok(())
-}
+    pub(crate) fn clear_all_callbacks(&mut self) -> usize {
+        let before = self.callbacks.len();
+        self.callbacks.clear();
+        before
+    }
 
-pub fn clear_owner_callbacks(handle: AidlObjectHandle) -> Result<usize, AidlCallbackStoreError> {
-    let mut store = store()
-        .lock()
-        .map_err(|_| AidlCallbackStoreError::Poisoned)?;
-    let before = store.callbacks.len();
-    store.callbacks.retain(|key, _| !key.matches_owner(handle));
-    Ok(before.saturating_sub(store.callbacks.len()))
-}
-
-#[cfg(test)]
-pub(crate) fn has_callback_for_owner(
-    handle: AidlObjectHandle,
-    api: AidlApi,
-) -> Result<bool, AidlCallbackStoreError> {
-    let store = store()
-        .lock()
-        .map_err(|_| AidlCallbackStoreError::Poisoned)?;
-    Ok(store
-        .callbacks
-        .contains_key(&CallbackStoreKey::new(handle, api)))
-}
-
-#[cfg(test)]
-pub(crate) fn retain_test_callback_marker(
-    handle: AidlObjectHandle,
-    api: AidlApi,
-) -> Result<(), AidlCallbackStoreError> {
-    let mut store = store()
-        .lock()
-        .map_err(|_| AidlCallbackStoreError::Poisoned)?;
-    store.callbacks.insert(
-        CallbackStoreKey {
-            owner_kind: handle.object_kind(),
-            owner_id: handle.object_id(),
-            owner_generation: handle.generation(),
-            registration_api: api,
-        },
-        StoredCallback::TestMarker,
-    );
-    Ok(())
-}
-
-pub fn frontend_callback_for_owner(
-    handle: AidlObjectHandle,
-) -> Result<Option<Strong<dyn IFrontendCallback>>, AidlCallbackStoreError> {
-    let store = store()
-        .lock()
-        .map_err(|_| AidlCallbackStoreError::Poisoned)?;
-    Ok(
-        match store
+    pub(crate) fn frontend_callback_for_owner(
+        &self,
+        handle: AidlObjectHandle,
+    ) -> Option<Strong<dyn IFrontendCallback>> {
+        match self
             .callbacks
             .get(&CallbackStoreKey::new(handle, AidlApi::FrontendSetCallback))
         {
             Some(StoredCallback::Frontend(callback)) => Some(callback.clone()),
             _ => None,
-        },
-    )
-}
+        }
+    }
 
-pub fn filter_callback_for_owner(
-    handle: AidlObjectHandle,
-) -> Result<Option<Strong<dyn IFilterCallback>>, AidlCallbackStoreError> {
-    let store = store()
-        .lock()
-        .map_err(|_| AidlCallbackStoreError::Poisoned)?;
-    Ok(
-        match store
+    pub(crate) fn filter_callback_for_owner(
+        &self,
+        handle: AidlObjectHandle,
+    ) -> Option<Strong<dyn IFilterCallback>> {
+        match self
             .callbacks
             .get(&CallbackStoreKey::new(handle, AidlApi::DemuxOpenFilter))
         {
             Some(StoredCallback::Filter(callback)) => Some(callback.clone()),
             _ => None,
-        },
-    )
-}
+        }
+    }
 
-pub fn dvr_callback_for_owner(
-    handle: AidlObjectHandle,
-) -> Result<Option<Strong<dyn IDvrCallback>>, AidlCallbackStoreError> {
-    let store = store()
-        .lock()
-        .map_err(|_| AidlCallbackStoreError::Poisoned)?;
-    Ok(
-        match store
+    pub(crate) fn dvr_callback_for_owner(
+        &self,
+        handle: AidlObjectHandle,
+    ) -> Option<Strong<dyn IDvrCallback>> {
+        match self
             .callbacks
             .get(&CallbackStoreKey::new(handle, AidlApi::DemuxOpenDvr))
         {
             Some(StoredCallback::Dvr(callback)) => Some(callback.clone()),
             _ => None,
-        },
-    )
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_callback_for_owner(&self, handle: AidlObjectHandle, api: AidlApi) -> bool {
+        self.callbacks
+            .contains_key(&CallbackStoreKey::new(handle, api))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retain_test_callback_marker(&mut self, handle: AidlObjectHandle, api: AidlApi) {
+        self.callbacks.insert(
+            CallbackStoreKey {
+                owner_kind: handle.object_kind(),
+                owner_id: handle.object_id(),
+                owner_generation: handle.generation(),
+                registration_api: api,
+            },
+            StoredCallback::TestMarker,
+        );
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AidlCallbackStoreError {
+pub(crate) enum AidlCallbackStoreError {
     Poisoned,
 }
 
 impl AidlCallbackStoreError {
-    pub fn into_hal_error(self, context: &'static str) -> HalError {
+    pub(crate) fn into_hal_error(self, context: &'static str) -> HalError {
         match self {
             Self::Poisoned => HalError::internal(
                 HalInternalKind::InvariantViolation,
                 format!("{context}: callback store lock poisoned"),
             ),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn clear_owner_removes_all_callback_entries_for_generation() {
-        let handle = AidlObjectHandle::new(
-            AidlObjectKind::Frontend,
-            AidlObjectId(9001),
-            AidlObjectGeneration(7),
-        );
-        {
-            let mut store = store().lock().unwrap();
-            store.callbacks.clear();
-        }
-        assert!(!has_callback_for_owner(handle, AidlApi::FrontendSetCallback).unwrap());
-        clear_owner_callbacks(handle).unwrap();
-        assert!(!has_callback_for_owner(handle, AidlApi::FrontendSetCallback).unwrap());
     }
 }

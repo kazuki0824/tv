@@ -1,28 +1,24 @@
-pub mod callback_store;
-pub mod child_object_open;
-pub mod demux_object;
-pub mod descrambler_object;
-pub mod dvr_callback_delivery;
-pub mod dvr_object;
-pub mod error_bridge;
-pub mod filter_callback_delivery;
-pub mod filter_object;
-pub mod frontend_callback_delivery;
-pub mod frontend_object;
-pub mod lnb_object;
-pub mod object_handle;
-pub mod object_runtime;
-pub mod service_entry;
-pub mod tuner_service;
+pub(crate) mod callback_store;
+pub(crate) mod child_object_open;
+pub(crate) mod demux_object;
+pub(crate) mod descrambler_object;
+pub(crate) mod dvr_callback_delivery;
+pub(crate) mod dvr_object;
+pub(crate) mod error_bridge;
+pub(crate) mod filter_callback_delivery;
+pub(crate) mod filter_object;
+pub(crate) mod frontend_callback_delivery;
+pub(crate) mod frontend_object;
+pub(crate) mod lnb_object;
+pub(crate) mod object_handle;
+pub(crate) mod object_runtime;
+pub(crate) mod service_context;
+pub(crate) mod service_entry;
+pub(crate) mod tuner_service;
 
 #[cfg(test)]
 mod failure_injection_tests;
 
-pub use callback_store::{
-    clear_owner_callbacks, dvr_callback_for_owner, filter_callback_for_owner,
-    frontend_callback_for_owner, retain_dvr_callback, retain_filter_callback,
-    retain_frontend_callback, retain_lnb_callback, AidlCallbackStoreError,
-};
 pub use demux_object::DemuxAidlObject;
 pub use descrambler_object::DescramblerAidlObject;
 pub use dvr_object::DvrAidlObject;
@@ -32,7 +28,7 @@ pub use lnb_object::LnbAidlObject;
 pub use object_handle::{
     AidlObjectGeneration, AidlObjectHandle, AidlObjectHandleError, AidlObjectId, AidlObjectKind,
 };
-pub use object_runtime::SharedTunerRuntime;
+pub use service_context::{AidlServiceContext, SharedAidlServiceContext};
 pub use service_entry::run_service;
 pub use tuner_service::TunerAidlService;
 
@@ -48,9 +44,9 @@ mod tests {
                 AidlObjectId(1),
                 AidlObjectGeneration(2),
             ),
-            std::sync::Arc::new(std::sync::Mutex::new(
+            AidlServiceContext::shared(
                 maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::new(),
-            )),
+            ),
         )
         .unwrap();
         assert_eq!(frontend.handle().object_id(), AidlObjectId(1));

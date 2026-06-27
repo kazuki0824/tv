@@ -1,82 +1,41 @@
-use std::sync::{
-    atomic::{AtomicUsize, Ordering},
-    Arc, Mutex, OnceLock,
-};
+use std::sync::{Arc, Mutex};
 
-use binder::{Result as BinderResult, Status};
+use binder::Result as BinderResult;
 use maleicacid_tuner_hal2_binder_adapter::{
-    AidlApi, AidlFailureSource, AidlMethodAdapter, AidlMethodCall, AidlObjectKind,
-    AidlStatusMapper, CommandPlan, RuntimeExecutableRequest, TunerStatusCode,
+    AidlApi, AidlFailureSource, AidlMethodCall, AidlObjectKind, AidlStatusMapper, TunerStatusCode,
 };
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FirstErrorCollector, HalError, HalInternalKind,
-    HalInvalidStateKind,
 };
 use maleicacid_tuner_hal2_resource_ledger::CleanupStep;
 use maleicacid_tuner_hal2_service_runtime::{
     object_close_txn::{
         begin_object_close_cascade, commit_object_close_cascade,
-        mark_object_close_cleanup_failed_cascade, plan_and_begin_object_close_method_dispatch,
-        quarantine_object_cascade,
+        mark_object_close_cleanup_failed_cascade, object_close_cascade_entries,
+        plan_and_begin_object_close_method_call_dispatch, quarantine_object_cascade,
     },
     object_lifecycle::{
         aidl_object_closeable, aidl_object_for_close_cleanup_runtime, aidl_object_live,
-        lnb_public_id_for_live_object, AidlObjectCloseability,
+        lnb_public_id_for_live_object_result, AidlObjectCloseability,
     },
     object_method_txn::{
-        build_and_plan_object_method_request_after_live, ObjectMethodDispatchPreflight,
-        ObjectMethodTxnBuildError, ObjectMethodTxnPlan, ObjectMethodTxnTarget,
+        execute_object_method_call_after_live, execute_object_query_call_after_live,
+        execute_object_query_call_after_live_with_aidl_input_conversion,
+        execute_shared_object_method_call_after_live, preflight_object_method_after_live_plan_only,
+        ObjectMethodExecutionToken, ObjectMethodTxnBuildError, ObjectQueryRequest,
+        ObjectQueryResponse,
     },
     CallbackRegistryUpdate, TunerServiceRuntime,
 };
 
-use crate::callback_store::{clear_owner_callbacks, AidlCallbackStoreError};
+use crate::callback_store::AidlCallbackStoreError;
+use crate::dvr_callback_delivery::stop_dvr_status_notifier;
 use crate::error_bridge::{status_from_hal_error, status_from_tuner_status, status_unknown_error};
 use crate::object_handle::AidlObjectHandle;
-
-pub type SharedTunerRuntime = Arc<Mutex<TunerServiceRuntime>>;
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct DropLeakErrorRecord {
-    object_kind: AidlObjectKind,
-    object_id: maleicacid_tuner_hal2_binder_adapter::AidlObjectId,
-    generation: maleicacid_tuner_hal2_binder_adapter::AidlObjectGeneration,
-    status_debug: String,
-}
-
-static DROP_LEAK_ERROR_RECORDS: OnceLock<Mutex<Vec<DropLeakErrorRecord>>> = OnceLock::new();
-static DROP_LEAK_ERROR_RECORD_FAILURES: AtomicUsize = AtomicUsize::new(0);
+use crate::service_context::{SharedAidlServiceContext, SharedTunerRuntime};
 
 fn callback_store_error_to_hal(error: AidlCallbackStoreError, context: &'static str) -> HalError {
     error.into_hal_error(context)
-}
-
-fn drop_leak_error_records() -> &'static Mutex<Vec<DropLeakErrorRecord>> {
-    DROP_LEAK_ERROR_RECORDS.get_or_init(|| Mutex::new(Vec::new()))
-}
-
-fn record_drop_leak_error(handle: AidlObjectHandle, status: &Status) {
-    match drop_leak_error_records().lock() {
-        Ok(mut records) => {
-            records.push(DropLeakErrorRecord {
-                object_kind: handle.object_kind(),
-                object_id: handle.object_id(),
-                generation: handle.generation(),
-                status_debug: format!("{status:?}"),
-            });
-        }
-        Err(_) => {
-            DROP_LEAK_ERROR_RECORD_FAILURES.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-}
-
-#[cfg(test)]
-fn drop_leak_error_record_count() -> usize {
-    drop_leak_error_records()
-        .lock()
-        .map(|records| records.len())
-        .unwrap_or(0)
 }
 
 fn lock_runtime<'a>(
@@ -90,91 +49,13 @@ fn lock_runtime<'a>(
     })
 }
 
-fn execute_object_runtime_locked_call<T, H, F>(
-    runtime: &SharedTunerRuntime,
-    handle: H,
-    command_plan: CommandPlan,
-    executable_request: Option<RuntimeExecutableRequest>,
-    execute: F,
-) -> Result<T, HalError>
-where
-    F: FnOnce(
-        &mut TunerServiceRuntime,
-        H,
-        CommandPlan,
-        Option<RuntimeExecutableRequest>,
-    ) -> Result<T, HalError>,
-{
-    let mut runtime = lock_runtime(runtime)?;
-    execute(&mut runtime, handle, command_plan, executable_request)
-}
-
-fn execute_shared_object_runtime_call<T, H, F>(
-    runtime: &SharedTunerRuntime,
-    handle: H,
-    command_plan: CommandPlan,
-    executable_request: Option<RuntimeExecutableRequest>,
-    execute: F,
-) -> Result<T, HalError>
-where
-    F: FnOnce(
-        SharedTunerRuntime,
-        H,
-        CommandPlan,
-        Option<RuntimeExecutableRequest>,
-    ) -> Result<T, HalError>,
-{
-    execute(runtime.clone(), handle, command_plan, executable_request)
-}
-
-fn execute_object_query_runtime_call<T, F>(
-    runtime: &SharedTunerRuntime,
-    handle: AidlObjectHandle,
-    object_kind: AidlObjectKind,
-    command_plan: CommandPlan,
-    executable_request: Option<RuntimeExecutableRequest>,
-    execute: F,
-) -> Result<T, HalError>
-where
-    F: FnOnce(&mut TunerServiceRuntime, AidlObjectHandle) -> Result<T, HalError>,
-{
-    if command_plan.object() != object_kind {
-        return Err(HalError::invalid_state(
-            HalInvalidStateKind::InvalidLifecycle,
-            "AIDL query method/object kind mismatch",
-        ));
-    }
-    let mut runtime = lock_runtime(runtime)?;
-    aidl_object_live(
-        &runtime,
-        handle.object_id(),
-        handle.generation(),
-        object_kind,
-    )?;
-    runtime
-        .plan_command_dispatch(command_plan, executable_request)
-        .map_err(|error| error.into_hal_error())?;
-    execute(&mut runtime, handle)
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DropLeakDomainAction {
-    None,
-    RecordLnbDropLeak,
-}
-
 fn clear_runtime_callback_owner_hal(
     runtime: &SharedTunerRuntime,
     handle: AidlObjectHandle,
-    expected_runtime_entry: bool,
 ) -> Result<(), HalError> {
     let mut runtime = lock_runtime(runtime)?;
-    match runtime
-        .callback_registry_mut()
-        .clear_owner(handle.object_id(), handle.generation())
-    {
+    match runtime.clear_callback_registration_owner(handle.object_id(), handle.generation()) {
         CallbackRegistryUpdate::Updated => Ok(()),
-        CallbackRegistryUpdate::Missing if !expected_runtime_entry => Ok(()),
         CallbackRegistryUpdate::Missing => Err(HalError::cleanup_failed(
             "callback registry owner clear",
             "callback registry owner missing while clearing callback registration",
@@ -183,10 +64,12 @@ fn clear_runtime_callback_owner_hal(
 }
 
 fn clear_retained_callback_artifact_hal(
+    context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
     failure_message: &'static str,
 ) -> Result<(), HalError> {
-    clear_owner_callbacks(handle)
+    context
+        .clear_owner_callbacks(handle)
         .map(|_| ())
         .map_err(|error| callback_store_error_to_hal(error, failure_message))
 }
@@ -197,7 +80,7 @@ fn mark_runtime_callback_unhealthy_hal(
     api: AidlApi,
 ) -> Result<(), HalError> {
     let mut runtime = lock_runtime(runtime)?;
-    match runtime.callback_registry_mut().mark_unhealthy(
+    match runtime.mark_callback_registration_unhealthy(
         handle.object_kind(),
         handle.object_id(),
         handle.generation(),
@@ -217,8 +100,7 @@ fn mark_runtime_callback_owner_unhealthy_hal(
 ) -> Result<(), HalError> {
     let mut runtime = lock_runtime(runtime)?;
     match runtime
-        .callback_registry_mut()
-        .mark_owner_unhealthy(handle.object_id(), handle.generation())
+        .mark_callback_registration_owner_unhealthy(handle.object_id(), handle.generation())
     {
         CallbackRegistryUpdate::Updated => Ok(()),
         CallbackRegistryUpdate::Missing => Err(HalError::cleanup_failed(
@@ -229,19 +111,20 @@ fn mark_runtime_callback_owner_unhealthy_hal(
 }
 
 pub(crate) fn clear_owner_callback_registration_hal(
-    runtime: &SharedTunerRuntime,
+    context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
     api: Option<AidlApi>,
     failure_message: &'static str,
 ) -> Result<(), HalError> {
-    match clear_owner_callbacks(handle) {
-        Ok(removed) => clear_runtime_callback_owner_hal(runtime, handle, removed > 0),
+    let runtime = context.runtime();
+    match context.clear_owner_callbacks(handle) {
+        Ok(_) => clear_runtime_callback_owner_hal(&runtime, handle),
         Err(error) => {
             let cleanup_error = callback_store_error_to_hal(error, failure_message);
             match api {
                 Some(api) => {
                     if let Err(mark_error) =
-                        mark_runtime_callback_unhealthy_hal(runtime, handle, api)
+                        mark_runtime_callback_unhealthy_hal(&runtime, handle, api)
                     {
                         return Err(compose_primary_cleanup_failure(
                             "callback cleanup failed and unhealthy marking failed",
@@ -252,7 +135,7 @@ pub(crate) fn clear_owner_callback_registration_hal(
                 }
                 None => {
                     if let Err(mark_error) =
-                        mark_runtime_callback_owner_unhealthy_hal(runtime, handle)
+                        mark_runtime_callback_owner_unhealthy_hal(&runtime, handle)
                     {
                         return Err(compose_primary_cleanup_failure(
                             "callback cleanup failed and owner unhealthy marking failed",
@@ -268,78 +151,54 @@ pub(crate) fn clear_owner_callback_registration_hal(
 }
 
 pub fn clear_owner_callback_registration(
-    runtime: &SharedTunerRuntime,
+    context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
     api: Option<AidlApi>,
     failure_message: &'static str,
 ) -> BinderResult<()> {
-    clear_owner_callback_registration_hal(runtime, handle, api, failure_message)
+    clear_owner_callback_registration_hal(context, handle, api, failure_message)
         .map_err(status_from_hal_error)
 }
 
-pub fn register_callback_artifact_after_owner_ready<Retain, Rollback>(
-    runtime: &SharedTunerRuntime,
+pub(crate) fn register_callback_artifact_after_owner_ready_hal<Retain>(
+    context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
     api: AidlApi,
     retain: Retain,
-    _rollback: &mut Rollback,
-) -> BinderResult<()>
+) -> Result<(), HalError>
 where
     Retain: FnOnce() -> Result<(), HalError>,
-    Rollback: FnMut() -> Result<(), HalError>,
 {
-    retain().map_err(status_from_hal_error)?;
-    if let Err(primary_error) = record_callback_registration(runtime, handle, api) {
+    let runtime = context.runtime();
+    retain()?;
+    if let Err(primary_error) = record_callback_registration(&runtime, handle, api) {
         if let Err(rollback_error) = clear_retained_callback_artifact_hal(
+            context,
             handle,
             "callback artifact rollback failed before runtime registration",
         ) {
-            return Err(status_from_hal_error(compose_primary_cleanup_failure(
+            return Err(compose_primary_cleanup_failure(
                 "callback artifact registration rollback failed",
                 primary_error,
                 rollback_error,
-            )));
+            ));
         }
-        return Err(status_from_hal_error(primary_error));
+        return Err(primary_error);
     }
     Ok(())
 }
 
-fn object_method_txn_target(handle: AidlObjectHandle) -> ObjectMethodTxnTarget {
-    ObjectMethodTxnTarget::new(
-        handle.object_id(),
-        handle.generation(),
-        handle.object_kind(),
-    )
-}
-
-fn object_method_txn_plan(
-    method: AidlMethodCall,
-) -> BinderResult<(CommandPlan, Option<RuntimeExecutableRequest>)> {
-    let method_plan = AidlMethodAdapter::plan(method).map_err(status_from_hal_error)?;
-    Ok((
-        method_plan.command_plan,
-        method_plan.command.runtime_executable_request(),
-    ))
-}
-
-fn build_and_plan_request_after_live<T, F>(
-    runtime: &SharedTunerRuntime,
+pub fn register_callback_artifact_after_owner_ready<Retain>(
+    context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
-    build: F,
-) -> BinderResult<(ObjectMethodTxnPlan, ObjectMethodDispatchPreflight, T)>
+    api: AidlApi,
+    retain: Retain,
+) -> BinderResult<()>
 where
-    F: FnOnce() -> BinderResult<(CommandPlan, Option<RuntimeExecutableRequest>, T)>,
+    Retain: FnOnce() -> Result<(), HalError>,
 {
-    build_and_plan_object_method_request_after_live(
-        runtime,
-        object_method_txn_target(handle),
-        build,
-    )
-    .map_err(|error| match error {
-        ObjectMethodTxnBuildError::Runtime(error) => status_from_hal_error(error),
-        ObjectMethodTxnBuildError::Builder(status) => status,
-    })
+    register_callback_artifact_after_owner_ready_hal(context, handle, api, retain)
+        .map_err(status_from_hal_error)
 }
 
 pub fn execute_object_runtime_use_case<T, F>(
@@ -352,20 +211,21 @@ where
     F: FnOnce(
         &mut TunerServiceRuntime,
         AidlObjectHandle,
-        CommandPlan,
-        Option<RuntimeExecutableRequest>,
+        ObjectMethodExecutionToken,
     ) -> Result<T, HalError>,
 {
-    let method_plan = AidlMethodAdapter::plan(method).map_err(status_from_hal_error)?;
-    let executable_request = method_plan.command.runtime_executable_request();
-    execute_object_runtime_locked_call(
+    execute_object_method_call_after_live(
         runtime,
-        handle,
-        method_plan.command_plan,
-        executable_request,
-        execute,
+        handle.object_id(),
+        handle.generation(),
+        handle.object_kind(),
+        || Ok((method, ())),
+        |runtime, token, ()| execute(runtime, handle, token),
     )
-    .map_err(status_from_hal_error)
+    .map_err(|error| match error {
+        ObjectMethodTxnBuildError::Runtime(error) => status_from_hal_error(error),
+        ObjectMethodTxnBuildError::Builder(status) => status,
+    })
 }
 
 pub fn execute_shared_object_runtime_use_case<T, F>(
@@ -378,42 +238,59 @@ where
     F: FnOnce(
         SharedTunerRuntime,
         AidlObjectHandle,
-        CommandPlan,
-        Option<RuntimeExecutableRequest>,
+        ObjectMethodExecutionToken,
     ) -> Result<T, HalError>,
 {
-    let method_plan = AidlMethodAdapter::plan(method).map_err(status_from_hal_error)?;
-    let executable_request = method_plan.command.runtime_executable_request();
-    execute_shared_object_runtime_call(
+    execute_shared_object_method_call_after_live(
         runtime,
-        handle,
-        method_plan.command_plan,
-        executable_request,
-        execute,
+        handle.object_id(),
+        handle.generation(),
+        handle.object_kind(),
+        || Ok((method, ())),
+        |runtime, token, ()| execute(runtime, handle, token),
+    )
+    .map_err(|error| match error {
+        ObjectMethodTxnBuildError::Runtime(error) => status_from_hal_error(error),
+        ObjectMethodTxnBuildError::Builder(status) => status,
+    })
+}
+
+pub fn execute_object_query_use_case(
+    runtime: &SharedTunerRuntime,
+    handle: AidlObjectHandle,
+    request: ObjectQueryRequest,
+) -> BinderResult<ObjectQueryResponse> {
+    execute_object_query_call_after_live(
+        runtime,
+        handle.object_id(),
+        handle.generation(),
+        handle.object_kind(),
+        request,
     )
     .map_err(status_from_hal_error)
 }
 
-pub fn execute_object_query_use_case<T, F>(
+pub fn execute_object_query_use_case_with_aidl_input_conversion<Build>(
     runtime: &SharedTunerRuntime,
     handle: AidlObjectHandle,
     method: AidlMethodCall,
-    execute: F,
-) -> BinderResult<T>
+    build: Build,
+) -> BinderResult<ObjectQueryResponse>
 where
-    F: FnOnce(&mut TunerServiceRuntime, AidlObjectHandle) -> Result<T, HalError>,
+    Build: FnOnce() -> BinderResult<ObjectQueryRequest>,
 {
-    let method_plan = AidlMethodAdapter::plan(method).map_err(status_from_hal_error)?;
-    let executable_request = method_plan.command.runtime_executable_request();
-    execute_object_query_runtime_call(
+    execute_object_query_call_after_live_with_aidl_input_conversion(
         runtime,
-        handle,
+        handle.object_id(),
+        handle.generation(),
         handle.object_kind(),
-        method_plan.command_plan,
-        executable_request,
-        execute,
+        method,
+        build,
     )
-    .map_err(status_from_hal_error)
+    .map_err(|error| match error {
+        ObjectMethodTxnBuildError::Runtime(error) => status_from_hal_error(error),
+        ObjectMethodTxnBuildError::Builder(status) => status,
+    })
 }
 
 pub fn execute_object_runtime_use_case_with_request_builder<T, B, Build, Execute>(
@@ -427,35 +304,22 @@ where
     Execute: FnOnce(
         &mut TunerServiceRuntime,
         AidlObjectHandle,
-        CommandPlan,
-        Option<RuntimeExecutableRequest>,
-        ObjectMethodDispatchPreflight,
+        ObjectMethodExecutionToken,
         B,
     ) -> Result<T, HalError>,
 {
-    let (txn_plan, dispatch_preflight, built_request) =
-        build_and_plan_request_after_live(runtime, handle, || {
-            let (method, built_request) = build()?;
-            let (command_plan, executable_request) = object_method_txn_plan(method)?;
-            Ok((command_plan, executable_request, built_request))
-        })?;
-    execute_object_runtime_locked_call(
+    execute_object_method_call_after_live(
         runtime,
-        handle,
-        txn_plan.command_plan(),
-        txn_plan.executable_request(),
-        |runtime, handle, command_plan, executable_request| {
-            execute(
-                runtime,
-                handle,
-                command_plan,
-                executable_request,
-                dispatch_preflight,
-                built_request,
-            )
-        },
+        handle.object_id(),
+        handle.generation(),
+        handle.object_kind(),
+        || build(),
+        |runtime, token, built_request| execute(runtime, handle, token, built_request),
     )
-    .map_err(status_from_hal_error)
+    .map_err(|error| match error {
+        ObjectMethodTxnBuildError::Runtime(error) => status_from_hal_error(error),
+        ObjectMethodTxnBuildError::Builder(status) => status,
+    })
 }
 
 pub fn execute_shared_object_runtime_use_case_with_request_builder<T, B, Build, Execute>(
@@ -469,35 +333,22 @@ where
     Execute: FnOnce(
         SharedTunerRuntime,
         AidlObjectHandle,
-        CommandPlan,
-        Option<RuntimeExecutableRequest>,
-        ObjectMethodDispatchPreflight,
+        ObjectMethodExecutionToken,
         B,
     ) -> Result<T, HalError>,
 {
-    let (txn_plan, dispatch_preflight, built_request) =
-        build_and_plan_request_after_live(runtime, handle, || {
-            let (method, built_request) = build()?;
-            let (command_plan, executable_request) = object_method_txn_plan(method)?;
-            Ok((command_plan, executable_request, built_request))
-        })?;
-    execute_shared_object_runtime_call(
+    execute_shared_object_method_call_after_live(
         runtime,
-        handle,
-        txn_plan.command_plan(),
-        txn_plan.executable_request(),
-        |runtime, handle, command_plan, executable_request| {
-            execute(
-                runtime,
-                handle,
-                command_plan,
-                executable_request,
-                dispatch_preflight,
-                built_request,
-            )
-        },
+        handle.object_id(),
+        handle.generation(),
+        handle.object_kind(),
+        || build(),
+        |runtime, token, built_request| execute(runtime, handle, token, built_request),
     )
-    .map_err(status_from_hal_error)
+    .map_err(|error| match error {
+        ObjectMethodTxnBuildError::Runtime(error) => status_from_hal_error(error),
+        ObjectMethodTxnBuildError::Builder(status) => status,
+    })
 }
 
 pub fn plan_unavailable_object_method_use_case<Build>(
@@ -509,25 +360,26 @@ pub fn plan_unavailable_object_method_use_case<Build>(
 where
     Build: FnOnce() -> BinderResult<AidlMethodCall>,
 {
-    let (txn_plan, _dispatch_preflight, ()) =
-        build_and_plan_request_after_live(runtime, handle, || {
-            let method = build()?;
-            let (command_plan, executable_request) = object_method_txn_plan(method)?;
-            Ok((command_plan, executable_request, ()))
-        })?;
+    let api = preflight_object_method_after_live_plan_only(
+        runtime,
+        handle.object_id(),
+        handle.generation(),
+        handle.object_kind(),
+        || build(),
+    )
+    .map_err(|error| match error {
+        ObjectMethodTxnBuildError::Runtime(error) => status_from_hal_error(error),
+        ObjectMethodTxnBuildError::Builder(status) => status,
+    })?;
     let failure = AidlFailureSource::RuntimeDispatch(HalError::Unsupported(message));
     let failures = [failure];
-    let status = AidlStatusMapper::resolve_failure_by_precedence(
-        txn_plan.command_plan().api(),
-        &failures,
-        false,
-    )
-    .unwrap_or(TunerStatusCode::UnknownError);
+    let status = AidlStatusMapper::resolve_failure_by_precedence(api, &failures, false)
+        .unwrap_or(TunerStatusCode::UnknownError);
     Err(status_from_tuner_status(status, message))
 }
 
 pub fn execute_callback_registration_runtime_use_case<T, Retain, Rollback, Execute>(
-    runtime: &SharedTunerRuntime,
+    context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
     method: AidlMethodCall,
     retain: Retain,
@@ -540,31 +392,37 @@ where
     Execute: FnOnce(
         &mut TunerServiceRuntime,
         AidlObjectHandle,
-        ObjectMethodDispatchPreflight,
+        ObjectMethodExecutionToken,
     ) -> Result<T, HalError>,
 {
+    let runtime = context.runtime();
     let api = method.api();
-    let (txn_plan, dispatch_preflight, ()) =
-        build_and_plan_request_after_live(runtime, handle, || {
-            let (command_plan, executable_request) = object_method_txn_plan(method)?;
-            Ok((command_plan, executable_request, ()))
-        })?;
+    let mut callback_retained = false;
     let mut rollback = rollback;
-    register_callback_artifact_after_owner_ready(runtime, handle, api, retain, &mut rollback)?;
-    let result = execute_object_runtime_locked_call(
-        runtime,
-        handle,
-        txn_plan.command_plan(),
-        txn_plan.executable_request(),
-        |runtime, handle, _command_plan, _executable_request| {
-            execute(runtime, handle, dispatch_preflight)
+    let result = execute_object_method_call_after_live(
+        &runtime,
+        handle.object_id(),
+        handle.generation(),
+        handle.object_kind(),
+        || Ok((method, ())),
+        |runtime, dispatch_proof, ()| {
+            retain()?;
+            callback_retained = true;
+            runtime.record_callback_registration_for_object(
+                handle.object_kind(),
+                handle.object_id(),
+                handle.generation(),
+                api,
+            );
+            execute(runtime, handle, dispatch_proof)
         },
     );
     match result {
         Ok(value) => Ok(value),
-        Err(primary_error) => {
+        Err(ObjectMethodTxnBuildError::Builder(status)) => Err(status),
+        Err(ObjectMethodTxnBuildError::Runtime(primary_error)) if callback_retained => {
             if let Err(rollback_error) = rollback() {
-                let cleanup_error = match mark_runtime_callback_unhealthy_hal(runtime, handle, api)
+                let cleanup_error = match mark_runtime_callback_unhealthy_hal(&runtime, handle, api)
                 {
                     Ok(()) => rollback_error,
                     Err(mark_error) => compose_primary_cleanup_failure(
@@ -581,54 +439,131 @@ where
             }
             Err(status_from_hal_error(primary_error))
         }
+        Err(ObjectMethodTxnBuildError::Runtime(error)) => Err(status_from_hal_error(error)),
     }
 }
 
-pub(crate) fn clear_live_lnb_callback_for_public_id_hal(
-    runtime: &SharedTunerRuntime,
-    lnb_id: i32,
-) -> Result<(), HalError> {
-    let handle = {
-        let runtime = lock_runtime(runtime)?;
-        let Some(entry) =
-            aidl_object_for_close_cleanup_runtime(&runtime, AidlObjectKind::Lnb, i64::from(lnb_id))
-        else {
-            return Err(HalError::cleanup_failed(
-                "LNB owner-loss callback cleanup",
-                format!("LNB AIDL object is missing during owner-loss cleanup: id={lnb_id}"),
-            ));
-        };
-        AidlObjectHandle::new(entry.object_kind, entry.object_id, entry.generation)
-    };
-    clear_owner_callback_registration_hal(
-        runtime,
-        handle,
-        Some(AidlApi::LnbSetCallback),
-        "callback store cleanup failed during LNB owner loss",
+fn entry_requires_public_runtime_unregister(
+    entry: &maleicacid_tuner_hal2_service_runtime::RuntimeObjectEntry,
+) -> bool {
+    matches!(
+        entry.object_kind,
+        AidlObjectKind::Demux
+            | AidlObjectKind::Filter
+            | AidlObjectKind::Dvr
+            | AidlObjectKind::Descrambler
     )
-}
-
-pub fn clear_live_lnb_callback_for_public_id(
-    runtime: &SharedTunerRuntime,
-    lnb_id: i32,
-) -> BinderResult<()> {
-    clear_live_lnb_callback_for_public_id_hal(runtime, lnb_id).map_err(status_from_hal_error)
 }
 
 fn unregister_public_runtime_entries(
     runtime: &mut TunerServiceRuntime,
     entries: &[maleicacid_tuner_hal2_service_runtime::RuntimeObjectEntry],
 ) -> Result<(), HalError> {
-    let mut collector = FirstErrorCollector::new();
-    for entry in entries {
-        collector.push_result(runtime.unregister_public_runtime_for_closed_aidl_entry(entry));
+    let public_runtime_entries = entries
+        .iter()
+        .filter(|entry| entry_requires_public_runtime_unregister(entry))
+        .collect::<Vec<_>>();
+    let mut preflight_collector = FirstErrorCollector::new();
+    for entry in &public_runtime_entries {
+        preflight_collector
+            .push_result(runtime.validate_public_runtime_for_closed_aidl_entry(entry));
     }
-    collector.into_result()
+    preflight_collector.into_result()?;
+
+    let mut cleanup_collector = FirstErrorCollector::new();
+    for entry in public_runtime_entries {
+        cleanup_collector
+            .push_result(runtime.unregister_public_runtime_for_closed_aidl_entry(entry));
+    }
+    cleanup_collector.into_result()
+}
+
+fn unregister_quarantined_public_runtime_entries(
+    runtime: &mut TunerServiceRuntime,
+    entries: &[maleicacid_tuner_hal2_service_runtime::RuntimeObjectEntry],
+) -> Result<(), HalError> {
+    let public_runtime_entries = entries
+        .iter()
+        .filter(|entry| entry_requires_public_runtime_unregister(entry))
+        .collect::<Vec<_>>();
+    let mut preflight_collector = FirstErrorCollector::new();
+    for entry in &public_runtime_entries {
+        preflight_collector
+            .push_result(runtime.validate_public_runtime_for_drop_leak_aidl_entry(entry));
+    }
+    preflight_collector.into_result()?;
+
+    let mut cleanup_collector = FirstErrorCollector::new();
+    for entry in public_runtime_entries {
+        cleanup_collector
+            .push_result(runtime.unregister_public_runtime_for_drop_leak_aidl_entry(entry));
+    }
+    cleanup_collector.into_result()
+}
+
+fn handle_from_runtime_entry(
+    entry: &maleicacid_tuner_hal2_service_runtime::RuntimeObjectEntry,
+) -> AidlObjectHandle {
+    AidlObjectHandle::new(entry.object_kind, entry.object_id, entry.generation)
+}
+
+fn run_pre_finalization_close_cleanup<F>(
+    context: &SharedAidlServiceContext,
+    handle: AidlObjectHandle,
+    domain_cleanup: F,
+) -> Result<(), (CleanupStep, HalError)>
+where
+    F: FnOnce() -> Result<(), HalError>,
+{
+    let mut cleanup_collector = FirstErrorCollector::new();
+    if let Err(error) = clear_owner_callback_registration_hal(
+        context,
+        handle,
+        None,
+        "callback store cleanup failed during AIDL object close",
+    ) {
+        cleanup_collector.push_error((CleanupStep::UnregisterRuntime, error));
+    }
+    if let Err(error) = domain_cleanup() {
+        cleanup_collector.push_error((CleanupStep::ReleaseBackend, error));
+    }
+    cleanup_collector.into_result()
+}
+
+fn cleanup_cascade_descendant_owner_artifacts(
+    context: &SharedAidlServiceContext,
+    root_handle: AidlObjectHandle,
+    entries: &[maleicacid_tuner_hal2_service_runtime::RuntimeObjectEntry],
+) -> Result<(), (CleanupStep, HalError)> {
+    let mut cleanup_collector = FirstErrorCollector::new();
+    for entry in entries {
+        if entry.object_id == root_handle.object_id()
+            && entry.generation == root_handle.generation()
+        {
+            continue;
+        }
+        let handle = handle_from_runtime_entry(entry);
+        if let Err(error) = clear_owner_callback_registration_hal(
+            context,
+            handle,
+            None,
+            "callback store cleanup failed during AIDL close cascade",
+        ) {
+            cleanup_collector.push_error((CleanupStep::UnregisterRuntime, error));
+        }
+        if entry.object_kind == AidlObjectKind::Dvr {
+            if let Err(error) = stop_dvr_status_notifier(context, handle) {
+                cleanup_collector.push_error((CleanupStep::StopWorker, error));
+            }
+        }
+    }
+    cleanup_collector.into_result()
 }
 
 fn mark_close_cleanup_failed_hal(
     runtime: &SharedTunerRuntime,
     handle: AidlObjectHandle,
+    step: CleanupStep,
     detail: &'static str,
 ) -> Result<(), HalError> {
     let mut guard = lock_runtime(runtime)?;
@@ -636,40 +571,27 @@ fn mark_close_cleanup_failed_hal(
         &mut guard,
         handle.object_id(),
         handle.generation(),
-        CleanupStep::UnregisterRuntime,
+        step,
         detail,
     )
 }
 
 fn finish_object_close_after_begin_with_domain_cleanup<F>(
-    runtime: &SharedTunerRuntime,
+    context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
     domain_cleanup: F,
 ) -> BinderResult<()>
 where
     F: FnOnce() -> Result<(), HalError>,
 {
-    let mut cleanup_collector = FirstErrorCollector::new();
-    cleanup_collector.push_result(clear_owner_callback_registration_hal(
-        runtime,
-        handle,
-        None,
-        "callback store cleanup failed during AIDL object close",
-    ));
-    cleanup_collector.push_result(domain_cleanup());
-
-    if cleanup_collector.has_error() {
-        let cleanup_error = match cleanup_collector.into_result() {
-            Err(error) => error,
-            Ok(()) => {
-                return Err(status_unknown_error(
-                    "cleanup collector reported an error but returned success",
-                ));
-            }
-        };
+    let runtime = context.runtime();
+    if let Err((cleanup_step, cleanup_error)) =
+        run_pre_finalization_close_cleanup(context, handle, domain_cleanup)
+    {
         return match mark_close_cleanup_failed_hal(
-            runtime,
+            &runtime,
             handle,
+            cleanup_step,
             "AIDL object close cleanup failure could not be recorded",
         ) {
             Ok(()) => Err(status_from_hal_error(cleanup_error)),
@@ -681,156 +603,89 @@ where
         };
     }
 
-    let mut guard = runtime
-        .lock()
-        .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
-    let closed_entries =
-        commit_object_close_cascade(&mut guard, handle.object_id(), handle.generation())
-            .map_err(status_from_hal_error)?;
-    unregister_public_runtime_entries(&mut guard, &closed_entries).map_err(status_from_hal_error)
-}
-
-pub fn close_object_with_domain_cleanup<F>(
-    runtime: &SharedTunerRuntime,
-    handle: AidlObjectHandle,
-    domain_cleanup: F,
-) -> BinderResult<()>
-where
-    F: FnOnce() -> Result<(), HalError>,
-{
-    {
+    let closing_entries = {
         let mut guard = runtime
             .lock()
             .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
-        match aidl_object_closeable(
-            &guard,
-            handle.object_id(),
-            handle.generation(),
-            handle.object_kind(),
-        )
-        .map_err(status_from_hal_error)?
-        {
-            AidlObjectCloseability::BeginClose => {
-                begin_object_close_cascade(
+        match object_close_cascade_entries(&guard, handle.object_id(), handle.generation()) {
+            Ok(entries) => entries,
+            Err(cleanup_error) => {
+                return mark_close_finalization_failed(
                     &mut guard,
-                    handle.object_id(),
-                    handle.generation(),
-                    CleanupStep::StopWorker,
-                )
-                .map_err(status_from_hal_error)?;
+                    handle,
+                    CleanupStep::ReleaseLedger,
+                    cleanup_error,
+                );
             }
-            AidlObjectCloseability::AlreadyClosed => return Ok(()),
-        }
-    }
-    finish_object_close_after_begin_with_domain_cleanup(runtime, handle, domain_cleanup)
-}
-
-pub fn close_object(runtime: &SharedTunerRuntime, handle: AidlObjectHandle) -> BinderResult<()> {
-    close_object_with_domain_cleanup(runtime, handle, || Ok(()))
-}
-
-fn lnb_public_id_for_drop(runtime: &TunerServiceRuntime, handle: AidlObjectHandle) -> Option<i32> {
-    if handle.object_kind() != AidlObjectKind::Lnb {
-        return None;
-    }
-    lnb_public_id_for_live_object(runtime, handle.object_id(), handle.generation())
-}
-
-fn record_domain_drop_leak(
-    runtime: &mut TunerServiceRuntime,
-    handle: AidlObjectHandle,
-    action: DropLeakDomainAction,
-) -> Result<(), HalError> {
-    match action {
-        DropLeakDomainAction::None => Ok(()),
-        DropLeakDomainAction::RecordLnbDropLeak => {
-            let lnb_id = lnb_public_id_for_drop(runtime, handle).ok_or_else(|| {
-                HalError::cleanup_failed(
-                    "drop leak LNB domain record",
-                    "drop leak LNB runtime id is missing",
-                )
-            })?;
-            runtime.record_lnb_drop_leak(lnb_id)
-        }
-    }
-}
-
-pub fn drop_leak_object(
-    runtime: &SharedTunerRuntime,
-    handle: AidlObjectHandle,
-    action: DropLeakDomainAction,
-) -> BinderResult<()> {
-    let callback_store_clear = clear_owner_callbacks(handle);
-    let mut runtime = runtime.lock().map_err(|_| {
-        status_unknown_error("service runtime lock poisoned during drop leak quarantine")
-    })?;
-    let domain_record = record_domain_drop_leak(&mut runtime, handle, action);
-    let mut error_collector = FirstErrorCollector::new();
-    let callback_store_removed = match callback_store_clear {
-        Ok(removed) => Some(removed),
-        Err(error) => {
-            error_collector.push_error(callback_store_error_to_hal(
-                error,
-                "drop leak callback store clear failed",
-            ));
-            None
         }
     };
-    if let Err(error) = domain_record {
-        error_collector.push_error(error);
+
+    if let Err((cleanup_step, cleanup_error)) =
+        cleanup_cascade_descendant_owner_artifacts(context, handle, &closing_entries)
+    {
+        return match mark_close_cleanup_failed_hal(
+            &runtime,
+            handle,
+            cleanup_step,
+            "AIDL close cascade descendant cleanup failure could not be recorded",
+        ) {
+            Ok(()) => Err(status_from_hal_error(cleanup_error)),
+            Err(mark_error) => Err(status_from_hal_error(compose_primary_cleanup_failure(
+                "AIDL close cascade descendant cleanup failed and cleanup-failed marking failed",
+                cleanup_error,
+                mark_error,
+            ))),
+        };
     }
 
-    if !error_collector.has_error() {
-        match runtime
-            .callback_registry_mut()
-            .clear_owner(handle.object_id(), handle.generation())
-        {
-            CallbackRegistryUpdate::Updated => {}
-            CallbackRegistryUpdate::Missing if callback_store_removed == Some(0) => {}
-            CallbackRegistryUpdate::Missing => {
-                error_collector.push_error(HalError::cleanup_failed(
-                    "drop leak callback registry clear",
-                    "callback registry owner missing during clear",
-                ));
-            }
-        }
-    } else {
-        match runtime
-            .callback_registry_mut()
-            .mark_owner_unhealthy(handle.object_id(), handle.generation())
-        {
-            CallbackRegistryUpdate::Updated => {}
-            CallbackRegistryUpdate::Missing => {
-                error_collector.push_error(HalError::cleanup_failed(
-                    "drop leak callback registry unhealthy marking",
-                    "callback registry owner missing while marking unhealthy",
-                ));
-            }
-        }
+    let mut guard = runtime
+        .lock()
+        .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
+    if let Err(cleanup_error) = unregister_public_runtime_entries(&mut guard, &closing_entries) {
+        return mark_close_finalization_failed(
+            &mut guard,
+            handle,
+            CleanupStep::UnregisterRuntime,
+            cleanup_error,
+        );
     }
-
-    match quarantine_object_cascade(&mut runtime, handle.object_id(), handle.generation()) {
-        Ok(entries) => {
-            error_collector.push_result(unregister_public_runtime_entries(&mut runtime, &entries))
-        }
-        Err(error) => error_collector.push_error(error),
+    if let Err(cleanup_error) =
+        commit_object_close_cascade(&mut guard, handle.object_id(), handle.generation()).map(|_| ())
+    {
+        return mark_close_finalization_failed(
+            &mut guard,
+            handle,
+            CleanupStep::ReleaseLedger,
+            cleanup_error,
+        );
     }
-
-    match error_collector.into_result() {
-        Err(error) => Err(status_from_hal_error(error)),
-        Ok(()) => Ok(()),
-    }
+    Ok(())
 }
 
-pub fn drop_leak_object_from_drop(
-    runtime: &SharedTunerRuntime,
+fn mark_close_finalization_failed(
+    runtime: &mut TunerServiceRuntime,
     handle: AidlObjectHandle,
-    action: DropLeakDomainAction,
-) {
-    if let Err(status) = drop_leak_object(runtime, handle, action) {
-        record_drop_leak_error(handle, &status);
+    step: CleanupStep,
+    cleanup_error: HalError,
+) -> BinderResult<()> {
+    match mark_object_close_cleanup_failed_cascade(
+        runtime,
+        handle.object_id(),
+        handle.generation(),
+        step,
+        "AIDL object close finalization failure could not be recorded",
+    ) {
+        Ok(()) => Err(status_from_hal_error(cleanup_error)),
+        Err(mark_error) => Err(status_from_hal_error(compose_primary_cleanup_failure(
+            "AIDL object close finalization failed and cleanup-failed marking failed",
+            cleanup_error,
+            mark_error,
+        ))),
     }
 }
+
+mod drop_leak;
+pub use drop_leak::{drop_leak_object, drop_leak_object_from_drop, DropLeakDomainAction};
 
 pub fn record_callback_registration(
     runtime: &SharedTunerRuntime,
@@ -844,7 +699,7 @@ pub fn record_callback_registration(
         handle.generation(),
         handle.object_kind(),
     )?;
-    runtime.callback_registry_mut().record_registration(
+    runtime.record_callback_registration_for_object(
         handle.object_kind(),
         handle.object_id(),
         handle.generation(),
@@ -854,7 +709,7 @@ pub fn record_callback_registration(
 }
 
 pub fn close_object_after_close_preflight_with_domain_cleanup<F>(
-    runtime: &SharedTunerRuntime,
+    context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
     method: AidlMethodCall,
     domain_cleanup: F,
@@ -862,20 +717,18 @@ pub fn close_object_after_close_preflight_with_domain_cleanup<F>(
 where
     F: FnOnce() -> Result<(), HalError>,
 {
-    let method_plan = AidlMethodAdapter::plan(method).map_err(status_from_hal_error)?;
-    let executable_request = method_plan.command.runtime_executable_request();
+    let runtime = context.runtime();
     {
         let mut runtime = runtime
             .lock()
             .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
-        match plan_and_begin_object_close_method_dispatch(
+        match plan_and_begin_object_close_method_call_dispatch(
             &mut runtime,
             handle.object_id(),
             handle.generation(),
             handle.object_kind(),
-            method_plan.command_plan,
-            executable_request,
-            CleanupStep::StopWorker,
+            method,
+            CleanupStep::ReleaseBackend,
         )
         .map_err(status_from_hal_error)?
         {
@@ -883,21 +736,21 @@ where
             AidlObjectCloseability::AlreadyClosed => return Ok(()),
         }
     }
-    finish_object_close_after_begin_with_domain_cleanup(runtime, handle, domain_cleanup)
+    finish_object_close_after_begin_with_domain_cleanup(context, handle, domain_cleanup)
 }
 
 pub fn close_object_after_close_preflight(
-    runtime: &SharedTunerRuntime,
+    context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
     method: AidlMethodCall,
 ) -> BinderResult<()> {
-    close_object_after_close_preflight_with_domain_cleanup(runtime, handle, method, || Ok(()))
+    close_object_after_close_preflight_with_domain_cleanup(context, handle, method, || Ok(()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::callback_store::{has_callback_for_owner, retain_test_callback_marker};
+    use crate::service_context::AidlServiceContext;
     use maleicacid_tuner_hal2_binder_adapter::{
         AidlApi, AidlMethodCall, AidlObjectGeneration, AidlObjectId, AidlObjectKind,
     };
@@ -927,11 +780,17 @@ mod tests {
         runtime
     }
 
+    fn context_for_runtime(runtime: &SharedTunerRuntime) -> SharedAidlServiceContext {
+        AidlServiceContext::from_shared_runtime_for_test(runtime.clone())
+    }
+
     fn retain_test_callback_marker_as_hal(
+        context: &SharedAidlServiceContext,
         handle: AidlObjectHandle,
         api: AidlApi,
     ) -> Result<(), HalError> {
-        retain_test_callback_marker(handle, api)
+        context
+            .retain_test_callback_marker(handle, api)
             .map_err(|error| error.into_hal_error("test callback marker retain failed"))
     }
 
@@ -943,18 +802,9 @@ mod tests {
             AidlObjectId(91_010),
             AidlObjectGeneration(1),
         );
-        let mut executed = false;
-        let result = execute_object_query_use_case(
-            &runtime,
-            handle,
-            AidlMethodCall::FilterGetId,
-            |_runtime, _handle| {
-                executed = true;
-                Ok(91_010)
-            },
-        );
+        let result =
+            execute_object_query_use_case(&runtime, handle, ObjectQueryRequest::FilterGetId);
         assert!(result.is_err());
-        assert!(!executed);
     }
 
     #[test]
@@ -976,7 +826,12 @@ mod tests {
             panic!("poison runtime for drop leak test");
         }));
 
-        assert!(drop_leak_object(&runtime, handle, DropLeakDomainAction::None).is_err());
+        assert!(drop_leak_object(
+            &context_for_runtime(&runtime),
+            handle,
+            DropLeakDomainAction::None
+        )
+        .is_err());
     }
 
     #[test]
@@ -993,16 +848,16 @@ mod tests {
             91_011,
         );
 
-        let result = drop_leak_object(&runtime, handle, DropLeakDomainAction::RecordLnbDropLeak);
+        let result = drop_leak_object(
+            &context_for_runtime(&runtime),
+            handle,
+            DropLeakDomainAction::RecordLnbDropLeak,
+        );
 
         assert!(result.is_err());
         let runtime = runtime.lock().unwrap();
         assert_eq!(
-            runtime
-                .object_table()
-                .entry(AidlObjectId(91_011))
-                .unwrap()
-                .lifecycle,
+            runtime.aidl_object_lifecycle(AidlObjectId(91_011)).unwrap(),
             RuntimeObjectLifecycle::Quarantined
         );
     }
@@ -1020,20 +875,36 @@ mod tests {
             AidlObjectGeneration(1),
             91_012,
         );
-        let before = drop_leak_error_record_count();
+        let context = context_for_runtime(&runtime);
+        let before = context.drop_leak_error_record_count();
 
-        drop_leak_object_from_drop(&runtime, handle, DropLeakDomainAction::RecordLnbDropLeak);
+        drop_leak_object_from_drop(&context, handle, DropLeakDomainAction::RecordLnbDropLeak);
 
-        assert_eq!(drop_leak_error_record_count(), before + 1);
+        assert_eq!(context.drop_leak_error_record_count(), before + 1);
         let runtime = runtime.lock().unwrap();
         assert_eq!(
-            runtime
-                .object_table()
-                .entry(AidlObjectId(91_012))
-                .unwrap()
-                .lifecycle,
+            runtime.aidl_object_lifecycle(AidlObjectId(91_012)).unwrap(),
             RuntimeObjectLifecycle::Quarantined
         );
+    }
+
+    #[test]
+    fn drop_leak_diagnostic_records_are_bounded_and_dropped_count_is_observable() {
+        let handle = AidlObjectHandle::new(
+            AidlObjectKind::Filter,
+            AidlObjectId(91_013),
+            AidlObjectGeneration(1),
+        );
+        let context = AidlServiceContext::shared(TunerServiceRuntime::new());
+        let status = status_unknown_error("drop leak diagnostic bounded store test");
+
+        for _ in 0..70 {
+            context.record_drop_leak_error(handle, &status);
+        }
+
+        assert_eq!(context.drop_leak_error_record_count(), 64);
+        assert!(context.drop_leak_error_records_dropped_count() > 0);
+        assert_eq!(context.drop_leak_error_record_failure_count(), 0);
     }
 
     #[test]
@@ -1043,79 +914,148 @@ mod tests {
             AidlObjectId(91_001),
             AidlObjectGeneration(1),
         );
-        clear_owner_callbacks(handle).unwrap();
-        retain_test_callback_marker(handle, AidlApi::DemuxOpenFilter).unwrap();
         let runtime = shared_runtime_with_live_object(
             AidlObjectKind::Filter,
             AidlObjectId(91_001),
             AidlObjectGeneration(1),
             91_001,
         );
+        let context = context_for_runtime(&runtime);
+        context.clear_owner_callbacks(handle).unwrap();
+        context
+            .retain_test_callback_marker(handle, AidlApi::DemuxOpenFilter)
+            .unwrap();
         record_callback_registration(&runtime, handle, AidlApi::DemuxOpenFilter).unwrap();
 
-        drop_leak_object(&runtime, handle, DropLeakDomainAction::None).unwrap();
+        drop_leak_object(&context, handle, DropLeakDomainAction::None).unwrap();
 
         let runtime = runtime.lock().unwrap();
-        assert!(!has_callback_for_owner(handle, AidlApi::DemuxOpenFilter).unwrap());
-        assert_eq!(runtime.callback_registry().registration_count(), 0);
+        assert!(!context
+            .has_callback_for_owner(handle, AidlApi::DemuxOpenFilter)
+            .unwrap());
+        assert_eq!(runtime.callback_registration_count(), 0);
         assert_eq!(
-            runtime
-                .object_table()
-                .entry(AidlObjectId(91_001))
-                .unwrap()
-                .lifecycle,
+            runtime.aidl_object_lifecycle(AidlObjectId(91_001)).unwrap(),
             RuntimeObjectLifecycle::Quarantined
         );
     }
 
     #[test]
-    fn drop_leak_returns_error_and_marks_callback_unhealthy_when_domain_drop_record_fails() {
+    fn drop_leak_demux_clears_descendant_filter_callback_and_quarantines_descendant() {
+        let demux_handle = AidlObjectHandle::new(
+            AidlObjectKind::Demux,
+            AidlObjectId(91_020),
+            AidlObjectGeneration(1),
+        );
+        let filter_handle = AidlObjectHandle::new(
+            AidlObjectKind::Filter,
+            AidlObjectId(91_021),
+            AidlObjectGeneration(1),
+        );
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        {
+            let mut guard = runtime.lock().unwrap();
+            guard
+                .register_aidl_object_for_runtime(
+                    AidlObjectKind::Demux,
+                    demux_handle.object_id(),
+                    demux_handle.generation(),
+                    91_020,
+                    RuntimeOwnerRelation::Root,
+                )
+                .unwrap();
+            guard
+                .register_aidl_object_for_runtime(
+                    AidlObjectKind::Filter,
+                    filter_handle.object_id(),
+                    filter_handle.generation(),
+                    91_021,
+                    RuntimeOwnerRelation::Demux {
+                        demux: demux_handle.object_id(),
+                        generation: demux_handle.generation(),
+                    },
+                )
+                .unwrap();
+        }
+        let context = context_for_runtime(&runtime);
+        context
+            .retain_test_callback_marker(filter_handle, AidlApi::DemuxOpenFilter)
+            .unwrap();
+        record_callback_registration(&runtime, filter_handle, AidlApi::DemuxOpenFilter).unwrap();
+
+        let result = drop_leak_object(&context, demux_handle, DropLeakDomainAction::None);
+
+        assert!(result.is_err());
+        let runtime = runtime.lock().unwrap();
+        assert!(!context
+            .has_callback_for_owner(filter_handle, AidlApi::DemuxOpenFilter)
+            .unwrap());
+        assert!(runtime
+            .callback_registration_health(
+                AidlObjectKind::Filter,
+                filter_handle.object_id(),
+                filter_handle.generation(),
+                AidlApi::DemuxOpenFilter,
+            )
+            .is_none());
+        assert_eq!(
+            runtime
+                .aidl_object_lifecycle(demux_handle.object_id())
+                .unwrap(),
+            RuntimeObjectLifecycle::Quarantined
+        );
+        assert_eq!(
+            runtime
+                .aidl_object_lifecycle(filter_handle.object_id())
+                .unwrap(),
+            RuntimeObjectLifecycle::Quarantined
+        );
+    }
+
+    #[test]
+    fn drop_leak_returns_error_without_marking_callback_unhealthy_when_domain_drop_record_fails() {
         let handle = AidlObjectHandle::new(
             AidlObjectKind::Lnb,
             AidlObjectId(91_002),
             AidlObjectGeneration(1),
         );
-        clear_owner_callbacks(handle).unwrap();
-        retain_test_callback_marker(handle, AidlApi::LnbSetCallback).unwrap();
         let runtime = shared_runtime_with_live_object(
             AidlObjectKind::Lnb,
             AidlObjectId(91_002),
             AidlObjectGeneration(1),
             91_002,
         );
+        let context = context_for_runtime(&runtime);
+        context.clear_owner_callbacks(handle).unwrap();
+        context
+            .retain_test_callback_marker(handle, AidlApi::LnbSetCallback)
+            .unwrap();
         record_callback_registration(&runtime, handle, AidlApi::LnbSetCallback).unwrap();
 
         assert!(
-            drop_leak_object(&runtime, handle, DropLeakDomainAction::RecordLnbDropLeak).is_err()
+            drop_leak_object(&context, handle, DropLeakDomainAction::RecordLnbDropLeak).is_err()
         );
 
         let runtime = runtime.lock().unwrap();
-        assert!(!has_callback_for_owner(handle, AidlApi::LnbSetCallback).unwrap());
+        assert!(!context
+            .has_callback_for_owner(handle, AidlApi::LnbSetCallback)
+            .unwrap());
+        assert!(runtime
+            .callback_registration_health(
+                AidlObjectKind::Lnb,
+                AidlObjectId(91_002),
+                AidlObjectGeneration(1),
+                AidlApi::LnbSetCallback,
+            )
+            .is_none());
         assert_eq!(
-            runtime
-                .callback_registry()
-                .registration_for(
-                    AidlObjectKind::Lnb,
-                    AidlObjectId(91_002),
-                    AidlObjectGeneration(1),
-                    AidlApi::LnbSetCallback,
-                )
-                .unwrap()
-                .health,
-            CallbackHealthState::Unhealthy
-        );
-        assert_eq!(
-            runtime
-                .object_table()
-                .entry(AidlObjectId(91_002))
-                .unwrap()
-                .lifecycle,
+            runtime.aidl_object_lifecycle(AidlObjectId(91_002)).unwrap(),
             RuntimeObjectLifecycle::Quarantined
         );
     }
 
     #[test]
-    fn close_object_with_domain_cleanup_runs_hook_after_single_begin_and_commits_closed() {
+    fn close_object_after_preflight_runs_hook_after_single_begin_and_commits_closed() {
         let handle = AidlObjectHandle::new(
             AidlObjectKind::Demux,
             AidlObjectId(91_003),
@@ -1131,32 +1071,29 @@ mod tests {
         let hook_called = Arc::new(Mutex::new(false));
         let hook_called_for_hook = hook_called.clone();
 
-        close_object_with_domain_cleanup(&runtime, handle, || {
-            let guard = runtime_for_hook.lock().unwrap();
-            assert_eq!(
-                guard
-                    .object_table()
-                    .entry(AidlObjectId(91_003))
-                    .expect("object remains tracked")
-                    .lifecycle,
-                RuntimeObjectLifecycle::Closing {
-                    step: CleanupStep::StopWorker
-                }
-            );
-            drop(guard);
-            *hook_called_for_hook.lock().unwrap() = true;
-            Ok(())
-        })
+        close_object_after_close_preflight_with_domain_cleanup(
+            &context_for_runtime(&runtime),
+            handle,
+            AidlMethodCall::DemuxClose,
+            || {
+                let guard = runtime_for_hook.lock().unwrap();
+                assert_eq!(
+                    guard.aidl_object_lifecycle(AidlObjectId(91_003)).unwrap(),
+                    RuntimeObjectLifecycle::Closing {
+                        step: CleanupStep::ReleaseBackend
+                    }
+                );
+                drop(guard);
+                *hook_called_for_hook.lock().unwrap() = true;
+                Ok(())
+            },
+        )
         .expect("close succeeds");
 
         assert!(*hook_called.lock().unwrap());
         let runtime = runtime.lock().unwrap();
         assert_eq!(
-            runtime
-                .object_table()
-                .entry(AidlObjectId(91_003))
-                .expect("object remains tracked")
-                .lifecycle,
+            runtime.aidl_object_lifecycle(AidlObjectId(91_003)).unwrap(),
             RuntimeObjectLifecycle::Closed
         );
     }
@@ -1179,19 +1116,15 @@ mod tests {
         let hook_called_for_hook = hook_called.clone();
 
         close_object_after_close_preflight_with_domain_cleanup(
-            &runtime,
+            &context_for_runtime(&runtime),
             handle,
             AidlMethodCall::FilterClose,
             || {
                 let guard = runtime_for_hook.lock().unwrap();
                 assert_eq!(
-                    guard
-                        .object_table()
-                        .entry(AidlObjectId(91_009))
-                        .expect("object remains tracked")
-                        .lifecycle,
+                    guard.aidl_object_lifecycle(AidlObjectId(91_009)).unwrap(),
                     RuntimeObjectLifecycle::Closing {
-                        step: CleanupStep::StopWorker
+                        step: CleanupStep::ReleaseBackend
                     }
                 );
                 drop(guard);
@@ -1206,10 +1139,8 @@ mod tests {
             runtime
                 .lock()
                 .unwrap()
-                .object_table()
-                .entry(AidlObjectId(91_009))
-                .expect("object remains tracked")
-                .lifecycle,
+                .aidl_object_lifecycle(AidlObjectId(91_009))
+                .unwrap(),
             RuntimeObjectLifecycle::Closed
         );
     }
@@ -1239,7 +1170,7 @@ mod tests {
                 *builder_saw_lock_for_builder.lock().unwrap() = true;
                 Ok((AidlMethodCall::FilterGetId, ()))
             },
-            |_runtime, _handle, _command_plan, _executable_request, _dispatch_preflight, ()| Ok(()),
+            |_runtime, _handle, _dispatch_proof, ()| Ok(()),
         )
         .expect("request-builder method succeeds");
 
@@ -1281,7 +1212,7 @@ mod tests {
                 *builder_called_for_builder.lock().unwrap() = true;
                 Ok((AidlMethodCall::FilterGetId, ()))
             },
-            |_runtime, _handle, _command_plan, _executable_request, _dispatch_preflight, ()| Ok(()),
+            |_runtime, _handle, _dispatch_proof, ()| Ok(()),
         );
 
         assert!(result.is_err());
@@ -1289,7 +1220,7 @@ mod tests {
     }
 
     #[test]
-    fn close_object_with_domain_cleanup_marks_cleanup_failed_when_domain_cleanup_fails() {
+    fn close_object_after_preflight_marks_cleanup_failed_when_domain_cleanup_fails() {
         let handle = AidlObjectHandle::new(
             AidlObjectKind::Filter,
             AidlObjectId(91_004),
@@ -1302,29 +1233,30 @@ mod tests {
             91_004,
         );
 
-        let result = close_object_with_domain_cleanup(&runtime, handle, || {
-            Err(HalError::cleanup_failed(
-                "test domain cleanup",
-                "domain cleanup failed for test",
-            ))
-        });
+        let result = close_object_after_close_preflight_with_domain_cleanup(
+            &context_for_runtime(&runtime),
+            handle,
+            AidlMethodCall::FilterClose,
+            || {
+                Err(HalError::cleanup_failed(
+                    "test domain cleanup",
+                    "domain cleanup failed for test",
+                ))
+            },
+        );
 
         assert!(result.is_err());
         let runtime = runtime.lock().unwrap();
         assert_eq!(
-            runtime
-                .object_table()
-                .entry(AidlObjectId(91_004))
-                .expect("object remains tracked")
-                .lifecycle,
+            runtime.aidl_object_lifecycle(AidlObjectId(91_004)).unwrap(),
             RuntimeObjectLifecycle::CleanupFailed {
-                step: CleanupStep::UnregisterRuntime
+                step: CleanupStep::ReleaseBackend
             }
         );
     }
 
     #[test]
-    fn close_object_with_domain_cleanup_rejects_domain_cleanup_second_begin() {
+    fn close_object_after_preflight_rejects_domain_cleanup_second_begin() {
         let handle = AidlObjectHandle::new(
             AidlObjectKind::Descrambler,
             AidlObjectId(91_005),
@@ -1338,29 +1270,30 @@ mod tests {
         );
         let runtime_for_hook = runtime.clone();
 
-        let result = close_object_with_domain_cleanup(&runtime, handle, || {
-            let mut guard = runtime_for_hook.lock().unwrap();
-            let second_begin = begin_object_close_cascade(
-                &mut guard,
-                AidlObjectId(91_005),
-                AidlObjectGeneration(1),
-                CleanupStep::UnregisterRuntime,
-            );
-            assert!(second_begin.is_err());
-            drop(guard);
-            second_begin
-        });
+        let result = close_object_after_close_preflight_with_domain_cleanup(
+            &context_for_runtime(&runtime),
+            handle,
+            AidlMethodCall::DescramblerClose,
+            || {
+                let mut guard = runtime_for_hook.lock().unwrap();
+                let second_begin = begin_object_close_cascade(
+                    &mut guard,
+                    AidlObjectId(91_005),
+                    AidlObjectGeneration(1),
+                    CleanupStep::UnregisterRuntime,
+                );
+                assert!(second_begin.is_err());
+                drop(guard);
+                second_begin
+            },
+        );
 
         assert!(result.is_err());
         let runtime = runtime.lock().unwrap();
         assert_eq!(
-            runtime
-                .object_table()
-                .entry(AidlObjectId(91_005))
-                .expect("object remains tracked")
-                .lifecycle,
+            runtime.aidl_object_lifecycle(AidlObjectId(91_005)).unwrap(),
             RuntimeObjectLifecycle::CleanupFailed {
-                step: CleanupStep::UnregisterRuntime
+                step: CleanupStep::ReleaseBackend
             }
         );
     }
@@ -1372,32 +1305,21 @@ mod tests {
             AidlObjectId(91_007),
             AidlObjectGeneration(1),
         );
-        clear_owner_callbacks(handle).unwrap();
         let runtime = shared_runtime_with_live_object(
             AidlObjectKind::Filter,
             AidlObjectId(91_007),
             AidlObjectGeneration(1),
             91_007,
         );
+        let context = context_for_runtime(&runtime);
+        context.clear_owner_callbacks(handle).unwrap();
         let runtime_for_retain = runtime.clone();
-        let rollback_called = Arc::new(Mutex::new(false));
-        let rollback_called_for_closure = rollback_called.clone();
-        let mut rollback_callback = || {
-            *rollback_called_for_closure.lock().unwrap() = true;
-            clear_owner_callback_registration_hal(
-                &runtime,
-                handle,
-                Some(AidlApi::DemuxOpenFilter),
-                "callback rollback failed for test",
-            )
-        };
-
         let result = register_callback_artifact_after_owner_ready(
-            &runtime,
+            &context,
             handle,
             AidlApi::DemuxOpenFilter,
             || {
-                retain_test_callback_marker_as_hal(handle, AidlApi::DemuxOpenFilter)?;
+                retain_test_callback_marker_as_hal(&context, handle, AidlApi::DemuxOpenFilter)?;
                 let mut guard = runtime_for_retain.lock().unwrap();
                 begin_object_close_cascade(
                     &mut guard,
@@ -1414,20 +1336,13 @@ mod tests {
                 .unwrap();
                 Ok(())
             },
-            &mut rollback_callback,
         );
 
         assert!(result.is_err());
-        assert!(*rollback_called.lock().unwrap());
-        assert!(!has_callback_for_owner(handle, AidlApi::DemuxOpenFilter).unwrap());
-        assert_eq!(
-            runtime
-                .lock()
-                .unwrap()
-                .callback_registry()
-                .registration_count(),
-            0
-        );
+        assert!(!context
+            .has_callback_for_owner(handle, AidlApi::DemuxOpenFilter)
+            .unwrap());
+        assert_eq!(runtime.lock().unwrap().callback_registration_count(), 0);
     }
 
     #[test]
@@ -1443,6 +1358,7 @@ mod tests {
             AidlObjectGeneration(1),
             91_008,
         );
+        let context = context_for_runtime(&runtime);
         {
             let mut guard = runtime.lock().unwrap();
             begin_object_close_cascade(
@@ -1459,7 +1375,7 @@ mod tests {
         let retain_called_for_closure = retain_called.clone();
 
         let result: BinderResult<()> = execute_callback_registration_runtime_use_case(
-            &runtime,
+            &context,
             handle,
             AidlMethodCall::LnbSetCallback,
             || {
@@ -1467,7 +1383,7 @@ mod tests {
                 Ok(())
             },
             || Ok(()),
-            |_runtime, _handle, _dispatch_preflight| Ok(()),
+            |_runtime, _handle, _dispatch_proof| Ok(()),
         );
 
         assert!(result.is_err());
@@ -1487,11 +1403,12 @@ mod tests {
             AidlObjectGeneration(1),
             91_009,
         );
+        let context = context_for_runtime(&runtime);
         let retain_called = Arc::new(Mutex::new(false));
         let retain_called_for_closure = retain_called.clone();
 
         let result: BinderResult<()> = execute_callback_registration_runtime_use_case(
-            &runtime,
+            &context,
             handle,
             AidlMethodCall::FrontendSetCallback,
             || {
@@ -1499,19 +1416,12 @@ mod tests {
                 Ok(())
             },
             || Ok(()),
-            |_runtime, _handle, _dispatch_preflight| Ok(()),
+            |_runtime, _handle, _dispatch_proof| Ok(()),
         );
 
         assert!(result.is_err());
         assert!(!*retain_called.lock().unwrap());
-        assert_eq!(
-            runtime
-                .lock()
-                .unwrap()
-                .callback_registry()
-                .registration_count(),
-            0
-        );
+        assert_eq!(runtime.lock().unwrap().callback_registration_count(), 0);
     }
 
     #[test]
@@ -1521,51 +1431,52 @@ mod tests {
             AidlObjectId(91_012),
             AidlObjectGeneration(1),
         );
-        clear_owner_callbacks(handle).unwrap();
         let runtime = shared_runtime_with_live_object(
             AidlObjectKind::Lnb,
             AidlObjectId(91_012),
             AidlObjectGeneration(1),
             91_012,
         );
+        let context = context_for_runtime(&runtime);
+        context.clear_owner_callbacks(handle).unwrap();
 
         execute_callback_registration_runtime_use_case(
-            &runtime,
+            &context,
             handle,
             AidlMethodCall::LnbSetCallback,
-            || retain_test_callback_marker_as_hal(handle, AidlApi::LnbSetCallback),
+            || retain_test_callback_marker_as_hal(&context, handle, AidlApi::LnbSetCallback),
             || {
                 clear_owner_callback_registration_hal(
-                    &runtime,
+                    &context,
                     handle,
                     Some(AidlApi::LnbSetCallback),
                     "callback rollback failed for test",
                 )
             },
-            |runtime, handle, dispatch_preflight| {
+            |runtime, handle, dispatch_proof| {
                 runtime.commit_lnb_callback_registration_for_object(
                     handle.object_id(),
                     handle.generation(),
-                    dispatch_preflight,
+                    dispatch_proof,
                 )
             },
         )
         .expect("callback registration succeeds");
 
-        assert!(has_callback_for_owner(handle, AidlApi::LnbSetCallback).unwrap());
+        assert!(context
+            .has_callback_for_owner(handle, AidlApi::LnbSetCallback)
+            .unwrap());
         let runtime = runtime.lock().unwrap();
-        assert_eq!(runtime.callback_registry().registration_count(), 1);
+        assert_eq!(runtime.callback_registration_count(), 1);
         assert_eq!(
             runtime
-                .callback_registry()
-                .registration_for(
+                .callback_registration_health(
                     AidlObjectKind::Lnb,
                     AidlObjectId(91_012),
                     AidlObjectGeneration(1),
                     AidlApi::LnbSetCallback,
                 )
-                .expect("registration recorded")
-                .health,
+                .expect("registration recorded"),
             CallbackHealthState::Registered
         );
     }
@@ -1577,42 +1488,38 @@ mod tests {
             AidlObjectId(91_013),
             AidlObjectGeneration(1),
         );
-        clear_owner_callbacks(handle).unwrap();
         let runtime = shared_runtime_with_live_object(
             AidlObjectKind::Lnb,
             AidlObjectId(91_013),
             AidlObjectGeneration(1),
             91_013,
         );
+        let context = context_for_runtime(&runtime);
+        context.clear_owner_callbacks(handle).unwrap();
 
         let result: BinderResult<()> = execute_callback_registration_runtime_use_case(
-            &runtime,
+            &context,
             handle,
             AidlMethodCall::LnbSetCallback,
-            || retain_test_callback_marker_as_hal(handle, AidlApi::LnbSetCallback),
+            || retain_test_callback_marker_as_hal(&context, handle, AidlApi::LnbSetCallback),
             || {
                 clear_owner_callback_registration_hal(
-                    &runtime,
+                    &context,
                     handle,
                     Some(AidlApi::LnbSetCallback),
                     "callback rollback failed for test",
                 )
             },
-            |_runtime, _handle, _dispatch_preflight| {
+            |_runtime, _handle, _dispatch_proof| {
                 Err(HalError::Unsupported("domain commit failed for test"))
             },
         );
 
         assert!(result.is_err());
-        assert!(!has_callback_for_owner(handle, AidlApi::LnbSetCallback).unwrap());
-        assert_eq!(
-            runtime
-                .lock()
-                .unwrap()
-                .callback_registry()
-                .registration_count(),
-            0
-        );
+        assert!(!context
+            .has_callback_for_owner(handle, AidlApi::LnbSetCallback)
+            .unwrap());
+        assert_eq!(runtime.lock().unwrap().callback_registration_count(), 0);
     }
 
     #[test]
@@ -1622,44 +1529,45 @@ mod tests {
             AidlObjectId(91_015),
             AidlObjectGeneration(1),
         );
-        clear_owner_callbacks(handle).unwrap();
         let runtime = shared_runtime_with_live_object(
             AidlObjectKind::Lnb,
             AidlObjectId(91_015),
             AidlObjectGeneration(1),
             91_015,
         );
+        let context = context_for_runtime(&runtime);
+        context.clear_owner_callbacks(handle).unwrap();
 
         let result: BinderResult<()> = execute_callback_registration_runtime_use_case(
-            &runtime,
+            &context,
             handle,
             AidlMethodCall::LnbSetCallback,
-            || retain_test_callback_marker_as_hal(handle, AidlApi::LnbSetCallback),
+            || retain_test_callback_marker_as_hal(&context, handle, AidlApi::LnbSetCallback),
             || {
                 Err(HalError::cleanup_failed(
                     "callback rollback test",
                     "callback rollback failed for test",
                 ))
             },
-            |_runtime, _handle, _dispatch_preflight| {
+            |_runtime, _handle, _dispatch_proof| {
                 Err(HalError::Unsupported("domain commit failed for test"))
             },
         );
 
         assert!(result.is_err());
-        assert!(has_callback_for_owner(handle, AidlApi::LnbSetCallback).unwrap());
+        assert!(context
+            .has_callback_for_owner(handle, AidlApi::LnbSetCallback)
+            .unwrap());
         let runtime = runtime.lock().unwrap();
         assert_eq!(
             runtime
-                .callback_registry()
-                .registration_for(
+                .callback_registration_health(
                     AidlObjectKind::Lnb,
                     AidlObjectId(91_015),
                     AidlObjectGeneration(1),
                     AidlApi::LnbSetCallback,
                 )
-                .expect("registration remains for unhealthy diagnostic")
-                .health,
+                .expect("registration remains for unhealthy diagnostic"),
             CallbackHealthState::Unhealthy
         );
     }
@@ -1671,23 +1579,23 @@ mod tests {
             AidlObjectId(91_014),
             AidlObjectGeneration(1),
         );
-        clear_owner_callbacks(handle).unwrap();
         let runtime = shared_runtime_with_live_object(
             AidlObjectKind::Lnb,
             AidlObjectId(91_014),
             AidlObjectGeneration(1),
             91_014,
         );
+        let context = context_for_runtime(&runtime);
+        context.clear_owner_callbacks(handle).unwrap();
         let runtime_for_retain = runtime.clone();
         let rollback_called = Arc::new(Mutex::new(false));
         let rollback_called_for_closure = rollback_called.clone();
-
         let result: BinderResult<()> = execute_callback_registration_runtime_use_case(
-            &runtime,
+            &context,
             handle,
             AidlMethodCall::LnbSetCallback,
             || {
-                retain_test_callback_marker_as_hal(handle, AidlApi::LnbSetCallback)?;
+                retain_test_callback_marker_as_hal(&context, handle, AidlApi::LnbSetCallback)?;
                 let mut guard = runtime_for_retain.lock().unwrap();
                 begin_object_close_cascade(
                     &mut guard,
@@ -1707,26 +1615,21 @@ mod tests {
             || {
                 *rollback_called_for_closure.lock().unwrap() = true;
                 clear_owner_callback_registration_hal(
-                    &runtime,
+                    &context,
                     handle,
                     Some(AidlApi::LnbSetCallback),
                     "callback rollback failed for test",
                 )
             },
-            |_runtime, _handle, _dispatch_preflight| Ok(()),
+            |_runtime, _handle, _dispatch_proof| Ok(()),
         );
 
         assert!(result.is_err());
         assert!(*rollback_called.lock().unwrap());
-        assert!(!has_callback_for_owner(handle, AidlApi::LnbSetCallback).unwrap());
-        assert_eq!(
-            runtime
-                .lock()
-                .unwrap()
-                .callback_registry()
-                .registration_count(),
-            0
-        );
+        assert!(!context
+            .has_callback_for_owner(handle, AidlApi::LnbSetCallback)
+            .unwrap());
+        assert_eq!(runtime.lock().unwrap().callback_registration_count(), 0);
     }
 
     #[test]
@@ -1736,13 +1639,14 @@ mod tests {
             AidlObjectId(91_016),
             AidlObjectGeneration(1),
         );
-        clear_owner_callbacks(handle).unwrap();
         let runtime = shared_runtime_with_live_object(
             AidlObjectKind::Lnb,
             AidlObjectId(91_016),
             AidlObjectGeneration(1),
             91_016,
         );
+        let context = context_for_runtime(&runtime);
+        context.clear_owner_callbacks(handle).unwrap();
         {
             let mut guard = runtime.lock().unwrap();
             begin_object_close_cascade(
@@ -1755,36 +1659,18 @@ mod tests {
             commit_object_close_cascade(&mut guard, AidlObjectId(91_016), AidlObjectGeneration(1))
                 .unwrap();
         }
-        let rollback_called = Arc::new(Mutex::new(false));
-        let rollback_called_for_closure = rollback_called.clone();
-
         let result = register_callback_artifact_after_owner_ready(
-            &runtime,
+            &context,
             handle,
             AidlApi::LnbSetCallback,
-            || retain_test_callback_marker_as_hal(handle, AidlApi::LnbSetCallback),
-            &mut || {
-                *rollback_called_for_closure.lock().unwrap() = true;
-                clear_owner_callback_registration_hal(
-                    &runtime,
-                    handle,
-                    Some(AidlApi::LnbSetCallback),
-                    "callback rollback closure should not be used",
-                )
-            },
+            || retain_test_callback_marker_as_hal(&context, handle, AidlApi::LnbSetCallback),
         );
 
         assert!(result.is_err());
-        assert!(!*rollback_called.lock().unwrap());
-        assert!(!has_callback_for_owner(handle, AidlApi::LnbSetCallback).unwrap());
-        assert_eq!(
-            runtime
-                .lock()
-                .unwrap()
-                .callback_registry()
-                .registration_count(),
-            0
-        );
+        assert!(!context
+            .has_callback_for_owner(handle, AidlApi::LnbSetCallback)
+            .unwrap());
+        assert_eq!(runtime.lock().unwrap().callback_registration_count(), 0);
     }
 
     #[test]
@@ -1802,7 +1688,7 @@ mod tests {
         );
 
         let first = close_object_after_close_preflight_with_domain_cleanup(
-            &runtime,
+            &context_for_runtime(&runtime),
             handle,
             AidlMethodCall::FilterClose,
             || {
@@ -1817,17 +1703,15 @@ mod tests {
             runtime
                 .lock()
                 .unwrap()
-                .object_table()
-                .entry(AidlObjectId(91_006))
-                .expect("object remains tracked")
-                .lifecycle,
+                .aidl_object_lifecycle(AidlObjectId(91_006))
+                .unwrap(),
             RuntimeObjectLifecycle::CleanupFailed {
-                step: CleanupStep::UnregisterRuntime
+                step: CleanupStep::ReleaseBackend
             }
         );
 
         close_object_after_close_preflight_with_domain_cleanup(
-            &runtime,
+            &context_for_runtime(&runtime),
             handle,
             AidlMethodCall::FilterClose,
             || Ok(()),
@@ -1838,10 +1722,8 @@ mod tests {
             runtime
                 .lock()
                 .unwrap()
-                .object_table()
-                .entry(AidlObjectId(91_006))
-                .expect("object remains tracked")
-                .lifecycle,
+                .aidl_object_lifecycle(AidlObjectId(91_006))
+                .unwrap(),
             RuntimeObjectLifecycle::Closed
         );
     }
@@ -1861,7 +1743,7 @@ mod tests {
         );
 
         close_object_after_close_preflight_with_domain_cleanup(
-            &runtime,
+            &context_for_runtime(&runtime),
             handle,
             AidlMethodCall::FilterClose,
             || Ok(()),
@@ -1869,7 +1751,7 @@ mod tests {
         .expect("first close succeeds");
 
         close_object_after_close_preflight_with_domain_cleanup(
-            &runtime,
+            &context_for_runtime(&runtime),
             handle,
             AidlMethodCall::FilterClose,
             || panic!("domain cleanup must not run for already closed object"),
@@ -1880,10 +1762,8 @@ mod tests {
             runtime
                 .lock()
                 .unwrap()
-                .object_table()
-                .entry(AidlObjectId(91_011))
-                .expect("object remains tracked")
-                .lifecycle,
+                .aidl_object_lifecycle(AidlObjectId(91_011))
+                .unwrap(),
             RuntimeObjectLifecycle::Closed
         );
     }

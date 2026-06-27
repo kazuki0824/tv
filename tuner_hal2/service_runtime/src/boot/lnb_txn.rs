@@ -1,13 +1,14 @@
 use maleicacid_tuner_hal2_common::{
-    FirstErrorCollector, HalError, HalInternalKind, HalInvalidArgumentKind, HalInvalidStateKind,
+    compose_primary_cleanup_failure, FirstErrorCollector, HalError, HalInternalKind,
+    HalInvalidArgumentKind, HalInvalidStateKind,
 };
 use maleicacid_tuner_hal2_domain_request::{
     LnbSetSatellitePositionRequest, LnbToneRequest, LnbVoltageRequest,
 };
 use maleicacid_tuner_hal2_lnb::{
-    LnbApplyTxn, LnbBackendOps, LnbDiseqcMessage, LnbElectricalState, LnbFailureKind,
-    LnbFailureRecord, LnbLifecycleReason, LnbLifecycleTxn, LnbRuntime, LnbRuntimeState,
-    LnbTone as RuntimeLnbTone, LnbVoltage as RuntimeLnbVoltage,
+    apply_lnb_state_with_txn, close_lnb_lifecycle, record_lnb_drop_leak_lifecycle, LnbBackendOps,
+    LnbDiseqcMessage, LnbElectricalState, LnbFailureKind, LnbFailureRecord, LnbLifecycleReason,
+    LnbRuntime, LnbRuntimeState, LnbTone as RuntimeLnbTone, LnbVoltage as RuntimeLnbVoltage,
 };
 
 use super::TunerServiceRuntime;
@@ -186,6 +187,22 @@ impl<'a> LnbTxn<'a> {
         self.store_lnb_runtime(lnb_key, runtime)
     }
 
+    pub(crate) fn clear_lnb_callback_registration(&mut self, lnb_id: i32) -> Result<(), HalError> {
+        let lnb_key = LnbRuntimeId(lnb_id);
+        if self.runtime.registry().lnb(lnb_key).is_none() {
+            return Err(missing_lnb_error());
+        }
+        let mut runtime = self
+            .runtime
+            .registry()
+            .lnb_runtime(lnb_key)
+            .cloned()
+            .ok_or_else(missing_lnb_error)?;
+        ensure_lnb_open(&runtime)?;
+        runtime.set_callback_registered(false);
+        self.store_lnb_runtime(lnb_key, runtime)
+    }
+
     pub(crate) fn close_lnb_explicit(&mut self, lnb_id: i32) -> Result<(), HalError> {
         self.close_lnb_with_reason(LnbRuntimeId(lnb_id), LnbLifecycleReason::PublicClose)
     }
@@ -233,16 +250,21 @@ impl<'a> LnbTxn<'a> {
         if runtime.state() == LnbRuntimeState::Closed {
             return Ok(());
         }
-        let outcome = {
-            let mut backend =
-                ServiceRuntimeLnbProfileAdapter::new(self.runtime.registry(), lnb_key);
-            LnbLifecycleTxn::new().close(&mut runtime, &mut backend, LnbLifecycleReason::DropLeak)
-        };
-        self.store_lnb_runtime(lnb_key, runtime)?;
-        match outcome.result {
-            Ok(()) => Ok(()),
-            Err(record) if record.kind == LnbFailureKind::DropWithoutClose => Ok(()),
-            Err(record) => Err(map_lnb_failure(record)),
+        let outcome = record_lnb_drop_leak_lifecycle(&mut runtime);
+        let store_result = self.store_lnb_runtime(lnb_key, runtime);
+        match (outcome.result, store_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Ok(()), Err(store_error)) => Err(store_error),
+            (Err(record), Ok(())) if record.kind == LnbFailureKind::DropWithoutClose => Ok(()),
+            (Err(record), Err(store_error)) if record.kind == LnbFailureKind::DropWithoutClose => {
+                Err(store_error)
+            }
+            (Err(record), Ok(())) => Err(map_lnb_failure(record)),
+            (Err(record), Err(store_error)) => Err(compose_primary_cleanup_failure(
+                "LNB drop-leak transaction failed and runtime store failed",
+                map_lnb_failure(record),
+                store_error,
+            )),
         }
     }
 
@@ -252,26 +274,22 @@ impl<'a> LnbTxn<'a> {
         mut runtime: LnbRuntime,
         target: LnbElectricalState,
     ) -> Result<(), HalError> {
-        let next_generation = match runtime.checked_next_generation() {
-            Ok(next) => next,
-            Err(_) => {
-                let record = runtime.quarantine_generation_overflow();
-                self.store_lnb_runtime(lnb_key, runtime)?;
-                return Err(map_lnb_failure(record));
-            }
-        };
         let outcome = {
             let mut backend =
                 ServiceRuntimeLnbProfileAdapter::new(self.runtime.registry(), lnb_key);
-            LnbApplyTxn::new().apply_with_generation(
-                &mut runtime,
-                &mut backend,
-                target,
-                next_generation,
-            )
+            apply_lnb_state_with_txn(&mut runtime, &mut backend, target)
         };
-        self.store_lnb_runtime(lnb_key, runtime)?;
-        outcome.result.map(|_| ()).map_err(map_lnb_failure)
+        let store_result = self.store_lnb_runtime(lnb_key, runtime);
+        match (outcome.result.map(|_| ()), store_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Ok(()), Err(store_error)) => Err(store_error),
+            (Err(record), Ok(())) => Err(map_lnb_failure(record)),
+            (Err(record), Err(store_error)) => Err(compose_primary_cleanup_failure(
+                "LNB apply transaction failed and runtime store failed",
+                map_lnb_failure(record),
+                store_error,
+            )),
+        }
     }
 
     fn close_lnb_with_reason(
@@ -291,10 +309,19 @@ impl<'a> LnbTxn<'a> {
         let outcome = {
             let mut backend =
                 ServiceRuntimeLnbProfileAdapter::new(self.runtime.registry(), lnb_key);
-            LnbLifecycleTxn::new().close(&mut runtime, &mut backend, reason)
+            close_lnb_lifecycle(&mut runtime, &mut backend, reason)
         };
-        self.store_lnb_runtime(lnb_key, runtime)?;
-        outcome.result.map_err(map_lnb_failure)
+        let store_result = self.store_lnb_runtime(lnb_key, runtime);
+        match (outcome.result, store_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Ok(()), Err(store_error)) => Err(store_error),
+            (Err(record), Ok(())) => Err(map_lnb_failure(record)),
+            (Err(record), Err(store_error)) => Err(compose_primary_cleanup_failure(
+                "LNB close transaction failed and runtime store failed",
+                map_lnb_failure(record),
+                store_error,
+            )),
+        }
     }
 
     fn store_lnb_runtime(
@@ -355,8 +382,6 @@ fn map_lnb_failure(record: LnbFailureRecord) -> HalError {
         }
         LnbFailureKind::BackendApplyFailed
         | LnbFailureKind::RegistryCommitFailed
-        | LnbFailureKind::OperationAlreadyActive
-        | LnbFailureKind::OperationLockFailed
         | LnbFailureKind::DropWithoutClose => HalError::internal(
             HalInternalKind::InvariantViolation,
             "LNB transaction failed",

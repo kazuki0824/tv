@@ -24,20 +24,31 @@ pub enum SourceBoundaryOutcome {
 #[derive(Debug)]
 pub struct SourceBoundaryTxn {
     sink_filter_id: i32,
+    next_source: Option<(i32, u64)>,
     steps: Vec<SourceBoundaryStep>,
     outcome: Option<SourceBoundaryOutcome>,
     reset_report: Option<PipelineResetReport>,
 }
 
 impl SourceBoundaryTxn {
-    pub fn new(sink_filter_id: i32) -> Self {
+    pub(crate) fn new(sink_filter_id: i32) -> Self {
         Self {
             sink_filter_id,
+            next_source: None,
             steps: Vec::new(),
             outcome: None,
             reset_report: None,
         }
     }
+    pub(crate) fn with_new_source(
+        mut self,
+        source_filter_id: i32,
+        source_filter_generation: u64,
+    ) -> Self {
+        self.next_source = Some((source_filter_id, source_filter_generation));
+        self
+    }
+
     pub fn record_step(&mut self, step: SourceBoundaryStep) {
         self.steps.push(step);
     }
@@ -51,7 +62,7 @@ impl SourceBoundaryTxn {
         self.reset_report.as_ref()
     }
 
-    pub fn apply(
+    pub(crate) fn apply(
         mut self,
         demux: &mut DemuxRuntime,
     ) -> (Self, Result<SourceBoundaryOutcome, DemuxRuntimeError>) {
@@ -89,6 +100,8 @@ impl SourceBoundaryTxn {
             );
         }
 
+        let rollback_snapshot = demux.snapshot();
+
         self.record_step(SourceBoundaryStep::ClearQueue);
         if let Err(err) = demux.clear_existing_filter_queue(self.sink_filter_id) {
             // 存在しない queue を insert(VecDeque::new()) で作って成功にしてはならない。
@@ -103,6 +116,19 @@ impl SourceBoundaryTxn {
         match demux.reset_generation_boundary() {
             Ok(reset_report) => self.reset_report = Some(reset_report),
             Err(err) => {
+                if demux.restore(rollback_snapshot).is_err() {
+                    demux.quarantine();
+                    let outcome = SourceBoundaryOutcome::Quarantined {
+                        step: SourceBoundaryStep::BumpGeneration,
+                    };
+                    self.outcome = Some(outcome);
+                    return (
+                        self,
+                        Err(DemuxRuntimeError::source_boundary_rollback_failed(
+                            self.sink_filter_id,
+                        )),
+                    );
+                }
                 let outcome = SourceBoundaryOutcome::Failed {
                     step: SourceBoundaryStep::BumpGeneration,
                 };
@@ -112,7 +138,20 @@ impl SourceBoundaryTxn {
         }
 
         self.record_step(SourceBoundaryStep::DisconnectDownstream);
-        if let Err(err) = demux.disconnect_filter_source(self.sink_filter_id) {
+        if let Err(err) = demux.disconnect_filter_source_after_boundary(self.sink_filter_id) {
+            if demux.restore(rollback_snapshot).is_err() {
+                demux.quarantine();
+                let outcome = SourceBoundaryOutcome::Quarantined {
+                    step: SourceBoundaryStep::DisconnectDownstream,
+                };
+                self.outcome = Some(outcome);
+                return (
+                    self,
+                    Err(DemuxRuntimeError::source_boundary_rollback_failed(
+                        self.sink_filter_id,
+                    )),
+                );
+            }
             let outcome = SourceBoundaryOutcome::Failed {
                 step: SourceBoundaryStep::DisconnectDownstream,
             };
@@ -121,6 +160,35 @@ impl SourceBoundaryTxn {
         }
 
         self.record_step(SourceBoundaryStep::Commit);
+        let commit_result = match self.next_source {
+            Some((source_filter_id, source_filter_generation)) => demux
+                .connect_filter_source_after_boundary(
+                    self.sink_filter_id,
+                    source_filter_id,
+                    source_filter_generation,
+                ),
+            None => Ok(()),
+        };
+        if let Err(err) = commit_result {
+            if demux.restore(rollback_snapshot).is_err() {
+                demux.quarantine();
+                let outcome = SourceBoundaryOutcome::Quarantined {
+                    step: SourceBoundaryStep::Commit,
+                };
+                self.outcome = Some(outcome);
+                return (
+                    self,
+                    Err(DemuxRuntimeError::source_boundary_rollback_failed(
+                        self.sink_filter_id,
+                    )),
+                );
+            }
+            let outcome = SourceBoundaryOutcome::Failed {
+                step: SourceBoundaryStep::Commit,
+            };
+            self.outcome = Some(outcome);
+            return (self, Err(err));
+        }
         let outcome = SourceBoundaryOutcome::Committed;
         self.outcome = Some(outcome);
         (self, Ok(outcome))

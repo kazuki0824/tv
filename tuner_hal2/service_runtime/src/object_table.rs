@@ -259,11 +259,14 @@ impl RuntimeObjectTable {
         step: CleanupStep,
     ) -> Result<Vec<RuntimeObjectEntry>, RuntimeObjectTableError> {
         let root = self.entry_checked_any(object_id, generation)?;
-        if matches!(root.lifecycle, RuntimeObjectLifecycle::Closing { .. }) {
-            return Err(RuntimeObjectTableError::InvalidLifecycle {
-                object_id,
-                lifecycle: root.lifecycle,
-            });
+        match root.lifecycle {
+            RuntimeObjectLifecycle::Live | RuntimeObjectLifecycle::CleanupFailed { .. } => {}
+            lifecycle => {
+                return Err(RuntimeObjectTableError::InvalidLifecycle {
+                    object_id,
+                    lifecycle,
+                });
+            }
         }
         let mut targets = self.descendant_object_keys(object_id, generation);
         targets.push((object_id, generation));
@@ -290,28 +293,58 @@ impl RuntimeObjectTable {
         generation: AidlObjectGeneration,
         step: CleanupStep,
     ) -> Result<Vec<RuntimeObjectEntry>, RuntimeObjectTableError> {
-        self.entry_checked_any(object_id, generation)?;
+        self.ensure_root_ready_for_close_finalization(object_id, generation)?;
         let mut targets = self.descendant_object_keys(object_id, generation);
         targets.push((object_id, generation));
         let mut changed = Vec::with_capacity(targets.len());
         for (target_id, target_generation) in targets {
             let entry = self.entry_mut_checked_any(target_id, target_generation)?;
+            let is_root = target_id == object_id && target_generation == generation;
             match entry.lifecycle {
                 RuntimeObjectLifecycle::Closing { .. }
                 | RuntimeObjectLifecycle::CleanupFailed { .. } => {
                     entry.lifecycle = RuntimeObjectLifecycle::CleanupFailed { step };
                     changed.push(entry.clone());
                 }
-                RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined => {}
+                RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined
+                    if !is_root => {}
                 lifecycle => {
                     return Err(RuntimeObjectTableError::InvalidLifecycle {
                         object_id: target_id,
                         lifecycle,
-                    })
+                    });
                 }
             }
         }
         Ok(changed)
+    }
+
+    pub fn close_cascade_entries(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<Vec<RuntimeObjectEntry>, RuntimeObjectTableError> {
+        self.ensure_root_ready_for_close_finalization(object_id, generation)?;
+        let mut targets = self.descendant_object_keys(object_id, generation);
+        targets.push((object_id, generation));
+        let mut entries = Vec::with_capacity(targets.len());
+        for (target_id, target_generation) in targets {
+            let entry = self.entry_checked_any(target_id, target_generation)?;
+            let is_root = target_id == object_id && target_generation == generation;
+            match entry.lifecycle {
+                RuntimeObjectLifecycle::Closing { .. }
+                | RuntimeObjectLifecycle::CleanupFailed { .. } => entries.push(entry.clone()),
+                RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined
+                    if !is_root => {}
+                lifecycle => {
+                    return Err(RuntimeObjectTableError::InvalidLifecycle {
+                        object_id: target_id,
+                        lifecycle,
+                    });
+                }
+            }
+        }
+        Ok(entries)
     }
 
     pub fn commit_close_cascade(
@@ -319,24 +352,26 @@ impl RuntimeObjectTable {
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
     ) -> Result<Vec<RuntimeObjectEntry>, RuntimeObjectTableError> {
-        self.entry_checked_any(object_id, generation)?;
+        self.ensure_root_ready_for_close_finalization(object_id, generation)?;
         let mut targets = self.descendant_object_keys(object_id, generation);
         targets.push((object_id, generation));
         let mut changed = Vec::with_capacity(targets.len());
         for (target_id, target_generation) in targets {
             let entry = self.entry_mut_checked_any(target_id, target_generation)?;
+            let is_root = target_id == object_id && target_generation == generation;
             match entry.lifecycle {
                 RuntimeObjectLifecycle::Closing { .. }
                 | RuntimeObjectLifecycle::CleanupFailed { .. } => {
                     entry.lifecycle = RuntimeObjectLifecycle::Closed;
                     changed.push(entry.clone());
                 }
-                RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined => {}
+                RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined
+                    if !is_root => {}
                 lifecycle => {
                     return Err(RuntimeObjectTableError::InvalidLifecycle {
                         object_id: target_id,
                         lifecycle,
-                    })
+                    });
                 }
             }
         }
@@ -556,6 +591,22 @@ impl RuntimeObjectTable {
         Ok(entry)
     }
 
+    fn ensure_root_ready_for_close_finalization(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<(), RuntimeObjectTableError> {
+        let root = self.entry_checked_any(object_id, generation)?;
+        match root.lifecycle {
+            RuntimeObjectLifecycle::Closing { .. }
+            | RuntimeObjectLifecycle::CleanupFailed { .. } => Ok(()),
+            lifecycle => Err(RuntimeObjectTableError::InvalidLifecycle {
+                object_id,
+                lifecycle,
+            }),
+        }
+    }
+
     fn quarantine_one_if_live_or_nonterminal(
         &mut self,
         object_id: AidlObjectId,
@@ -680,6 +731,104 @@ mod qg_object_lifecycle_tests {
                 .unwrap()
                 .object_id,
             AidlObjectId(21)
+        );
+    }
+
+    #[test]
+    fn commit_close_cascade_rejects_terminal_root_before_mutating_descendants() {
+        let mut table = RuntimeObjectTable::default();
+        table
+            .insert(entry(
+                AidlObjectKind::Demux,
+                30,
+                30,
+                RuntimeOwnerRelation::Root,
+            ))
+            .unwrap();
+        table
+            .insert(entry(
+                AidlObjectKind::Filter,
+                31,
+                31,
+                RuntimeOwnerRelation::Demux {
+                    demux: AidlObjectId(30),
+                    generation: AidlObjectGeneration(1),
+                },
+            ))
+            .unwrap();
+        table.entries.get_mut(&AidlObjectId(30)).unwrap().lifecycle =
+            RuntimeObjectLifecycle::Closed;
+        table.entries.get_mut(&AidlObjectId(31)).unwrap().lifecycle =
+            RuntimeObjectLifecycle::Closing {
+                step: CleanupStep::ReleaseLedger,
+            };
+
+        let err = table
+            .commit_close_cascade(AidlObjectId(30), AidlObjectGeneration(1))
+            .expect_err("terminal root must be rejected before descendant mutation");
+        assert_eq!(
+            err,
+            RuntimeObjectTableError::InvalidLifecycle {
+                object_id: AidlObjectId(30),
+                lifecycle: RuntimeObjectLifecycle::Closed,
+            }
+        );
+        assert_eq!(
+            table.entry(AidlObjectId(31)).unwrap().lifecycle,
+            RuntimeObjectLifecycle::Closing {
+                step: CleanupStep::ReleaseLedger,
+            }
+        );
+    }
+
+    #[test]
+    fn mark_cleanup_failed_cascade_rejects_terminal_root_before_mutating_descendants() {
+        let mut table = RuntimeObjectTable::default();
+        table
+            .insert(entry(
+                AidlObjectKind::Demux,
+                40,
+                40,
+                RuntimeOwnerRelation::Root,
+            ))
+            .unwrap();
+        table
+            .insert(entry(
+                AidlObjectKind::Filter,
+                41,
+                41,
+                RuntimeOwnerRelation::Demux {
+                    demux: AidlObjectId(40),
+                    generation: AidlObjectGeneration(1),
+                },
+            ))
+            .unwrap();
+        table.entries.get_mut(&AidlObjectId(40)).unwrap().lifecycle =
+            RuntimeObjectLifecycle::Quarantined;
+        table.entries.get_mut(&AidlObjectId(41)).unwrap().lifecycle =
+            RuntimeObjectLifecycle::Closing {
+                step: CleanupStep::ReleaseLedger,
+            };
+
+        let err = table
+            .mark_cleanup_failed_cascade(
+                AidlObjectId(40),
+                AidlObjectGeneration(1),
+                CleanupStep::UnregisterRuntime,
+            )
+            .expect_err("terminal root must be rejected before descendant mutation");
+        assert_eq!(
+            err,
+            RuntimeObjectTableError::InvalidLifecycle {
+                object_id: AidlObjectId(40),
+                lifecycle: RuntimeObjectLifecycle::Quarantined,
+            }
+        );
+        assert_eq!(
+            table.entry(AidlObjectId(41)).unwrap().lifecycle,
+            RuntimeObjectLifecycle::Closing {
+                step: CleanupStep::ReleaseLedger,
+            }
         );
     }
 }

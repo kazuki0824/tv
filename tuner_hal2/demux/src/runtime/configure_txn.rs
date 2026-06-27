@@ -116,6 +116,7 @@ impl FilterConfigureTxn {
                     .restore_filter_snapshot(self.filter_id, snapshot)
                     .is_err()
                 {
+                    demux.quarantine();
                     self.record_step(FilterConfigureStep::QuarantineOnRollbackFailure);
                     self.outcome = Some(FilterConfigureOutcome::Quarantined {
                         failed_step: FilterConfigureStep::ClearOldFmq,
@@ -133,11 +134,12 @@ impl FilterConfigureTxn {
             filter.clear_av_backing_marker();
         }
         self.record_step(FilterConfigureStep::DisconnectOldSource);
-        if let Err(err) = demux.disconnect_filter_source(self.filter_id) {
+        if let Err(err) = demux.disconnect_filter_source_after_boundary(self.filter_id) {
             if demux
                 .restore_filter_snapshot(self.filter_id, snapshot)
                 .is_err()
             {
+                demux.quarantine();
                 self.record_step(FilterConfigureStep::QuarantineOnRollbackFailure);
                 self.outcome = Some(FilterConfigureOutcome::Quarantined {
                     failed_step: FilterConfigureStep::DisconnectOldSource,
@@ -162,6 +164,7 @@ impl FilterConfigureTxn {
                 .restore_filter_snapshot(self.filter_id, snapshot)
                 .is_err()
             {
+                demux.quarantine();
                 self.record_step(FilterConfigureStep::QuarantineOnRollbackFailure);
                 self.outcome = Some(FilterConfigureOutcome::Quarantined {
                     failed_step: FilterConfigureStep::ApplySoftDemuxConfig,
@@ -219,6 +222,7 @@ impl DvrConfigureTxn {
         if snapshot.queue_present {
             if let Err(err) = demux.clear_dvr_queue_runtime(self.dvr_id) {
                 if demux.restore_dvr_snapshot(self.dvr_id, snapshot).is_err() {
+                    demux.quarantine();
                     self.record_step(DvrConfigureStep::QuarantineOnRollbackFailure);
                     self.outcome = Some(DvrConfigureOutcome::Quarantined {
                         failed_step: DvrConfigureStep::ClearQueue,
@@ -250,6 +254,7 @@ impl DvrConfigureTxn {
             }
             self.record_step(DvrConfigureStep::RollbackSoftDemuxConfig);
             if demux.restore_dvr_snapshot(self.dvr_id, snapshot).is_err() {
+                demux.quarantine();
                 self.record_step(DvrConfigureStep::QuarantineOnRollbackFailure);
                 self.outcome = Some(DvrConfigureOutcome::Quarantined {
                     failed_step: DvrConfigureStep::ApplySoftDemuxConfig,

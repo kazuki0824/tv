@@ -3,6 +3,64 @@ use std::path::PathBuf;
 use maleicacid_tuner_hal2_common::{FrontendBackendKind, HalError};
 use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
 
+pub const DEFAULT_DIAGNOSTIC_STORE_LIMIT: usize = 128;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoundedDiagnosticStore<T> {
+    records: Vec<T>,
+    dropped_count: u64,
+    limit: usize,
+}
+
+impl<T> BoundedDiagnosticStore<T> {
+    pub fn new(limit: usize) -> Self {
+        Self {
+            records: Vec::new(),
+            dropped_count: 0,
+            limit,
+        }
+    }
+
+    pub fn push(&mut self, record: T) {
+        if self.limit == 0 {
+            self.dropped_count = self.dropped_count.saturating_add(1);
+            return;
+        }
+        if self.records.len() >= self.limit {
+            self.records.remove(0);
+            self.dropped_count = self.dropped_count.saturating_add(1);
+        }
+        self.records.push(record);
+    }
+
+    pub fn as_slice(&self) -> &[T] {
+        &self.records
+    }
+
+    pub const fn dropped_count(&self) -> u64 {
+        self.dropped_count
+    }
+
+    pub const fn limit(&self) -> usize {
+        self.limit
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.records.clear();
+        self.dropped_count = 0;
+    }
+}
+
+impl<T> Default for BoundedDiagnosticStore<T> {
+    fn default() -> Self {
+        Self::new(DEFAULT_DIAGNOSTIC_STORE_LIMIT)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StartupDiagnosticKind {
     DeviceMissing,
@@ -166,6 +224,38 @@ impl ChildOpenRollbackDiagnosticRecord {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DvrPostCommitNotificationPhase {
+    InitialStatusDelivery,
+    StatusNotifierStart,
+    StatusNotifierStop,
+    StatusNotifierRuntimeFailure,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DvrPostCommitNotificationDiagnosticRecord {
+    pub phase: DvrPostCommitNotificationPhase,
+    pub object_id: AidlObjectId,
+    pub generation: AidlObjectGeneration,
+    pub error: HalError,
+}
+
+impl DvrPostCommitNotificationDiagnosticRecord {
+    pub fn new(
+        phase: DvrPostCommitNotificationPhase,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        error: HalError,
+    ) -> Self {
+        Self {
+            phase,
+            object_id,
+            generation,
+            error,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DescramblerDiagnosticKind {
     KeyTokenEmpty,
     KeyTokenInvalidLength,
@@ -174,6 +264,8 @@ pub enum DescramblerDiagnosticKind {
     CasTokenProducerUnavailable,
     SessionClosed,
     KeyTokenReleaseFailed,
+    ClearKeyPlanMismatch,
+    ReplaceKeyPlanMismatch,
     PidClaimRejected,
     PacketDescrambled,
     PacketScrambledWithoutKey,
@@ -190,6 +282,8 @@ pub enum DescramblerDiagnosticKind {
     BadToken,
     Multi2Fail,
     ScrambledWithoutDescrambler,
+    PacketSourceFilterInvalid,
+    PacketSourceFilterGenerationMismatch,
     CleanupKeyReleaseFailed,
 }
 
@@ -261,6 +355,24 @@ impl DescramblerDiagnosticRecord {
         }
     }
 
+    pub fn packet_source_filter_validation(
+        demux_id: i32,
+        pid: u16,
+        filter_id: i32,
+        kind: DescramblerDiagnosticKind,
+        error: HalError,
+    ) -> Self {
+        Self {
+            kind,
+            phase: DescramblerDiagnosticPhase::PacketPipeline,
+            descrambler_id: None,
+            demux_id: Some(demux_id),
+            pid: Some(pid),
+            filter_id: Some(filter_id),
+            error: Some(error),
+        }
+    }
+
     pub fn cleanup_release_failed(descrambler_id: i32, error: HalError) -> Self {
         Self {
             kind: DescramblerDiagnosticKind::CleanupKeyReleaseFailed,
@@ -270,6 +382,37 @@ impl DescramblerDiagnosticRecord {
             pid: None,
             filter_id: None,
             error: Some(error),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FilterCallbackDeliveryDiagnosticPhase {
+    EventDelivery,
+    CallbackRegistryAccounting,
+    RuntimeCallbackAccounting,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FilterCallbackDeliveryDiagnosticRecord {
+    pub phase: FilterCallbackDeliveryDiagnosticPhase,
+    pub object_id: AidlObjectId,
+    pub generation: AidlObjectGeneration,
+    pub error: HalError,
+}
+
+impl FilterCallbackDeliveryDiagnosticRecord {
+    pub fn new(
+        phase: FilterCallbackDeliveryDiagnosticPhase,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        error: HalError,
+    ) -> Self {
+        Self {
+            phase,
+            object_id,
+            generation,
+            error,
         }
     }
 }

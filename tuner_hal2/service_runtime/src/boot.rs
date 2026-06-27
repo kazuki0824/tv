@@ -1,7 +1,8 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::io::Read;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use maleicacid_tuner_hal2_common::{
     FrontendBackendKind, FrontendDevicePath, FrontendSystem, FrontendTuneRequest, HalError,
@@ -12,8 +13,8 @@ use maleicacid_tuner_hal2_demux::config::{
     AvStreamKind, AvStreamTypeConfig, FilterConfig, FilterDelayHint, FilterOpenType,
 };
 use maleicacid_tuner_hal2_demux::packet_pipeline::{
-    PipelineAssemblySuppressionReason, PipelineBoundaryReason, PipelineDiagnosticKind,
-    PipelineReport, PipelineResetReport,
+    PipelineAssemblySuppressionReason, PipelineBoundaryReason, PipelineDiagnostic, PipelineReport,
+    PipelineResetReport,
 };
 use maleicacid_tuner_hal2_demux::runtime::{
     DemuxRuntimeError, DemuxRuntimeErrorKind, DemuxRuntimeState, DvrKind,
@@ -26,12 +27,13 @@ use maleicacid_tuner_hal2_demux::{
     DvrConfigureTxn, DvrRuntime, DvrRuntimeState, FilterConfigureTxn, FilterRuntime,
     FilterRuntimeState, TsInputOrigin,
 };
+#[cfg(test)]
+use maleicacid_tuner_hal2_descrambler::DescramblerKeyRegistrationError;
 use maleicacid_tuner_hal2_descrambler::{
     descramble_ts_packet_in_place, packet_policy_for_descramble_failure, parse_ts_packet_header,
-    DescrambleFailure, DescrambleOutcome, DescramblerKeyLookupError,
-    DescramblerKeyRegistrationError, DescramblerKeySlot, DescramblerKeyToken,
-    DescramblerKeyTokenError, DescramblerPidClaim, DescramblerPidClaimError,
-    DescramblerSessionFailureKind, DescramblerSessionTxn, PacketPolicyAction,
+    DescrambleFailure, DescrambleOutcome, DescramblerKeyLookupError, DescramblerKeySlot,
+    DescramblerKeyToken, DescramblerKeyTokenError, DescramblerPidClaim, DescramblerPidClaimError,
+    DescramblerSessionFailureKind, PacketPolicyAction,
 };
 use maleicacid_tuner_hal2_device::{
     FrontendLivePacketSink, FrontendLivePumpOwner, FrontendLivePumpReport,
@@ -40,19 +42,23 @@ use maleicacid_tuner_hal2_device::{
     FrontendWorkerRegistry, FrontendWorkerStartError, FrontendWorkerStopOutcome,
 };
 use maleicacid_tuner_hal2_domain_request::{
-    AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan, DvrConfigureKind,
+    AidlApi, AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan, DvrConfigureKind,
     DvrConfigureRequest, DvrOpenKind, FilterAvStreamKind, FilterAvStreamTypeRequest,
     FilterDelayHintKind, FilterDelayHintRequest, OpenDvrRequest, RuntimeExecutableRequest,
     RuntimeTransactionName,
 };
 
-use crate::callback_registry::RuntimeCallbackRegistry;
+use crate::callback_registry::{
+    CallbackHealthState, CallbackRegistryUpdate, RuntimeCallbackRegistry,
+};
 use crate::command_dispatch::{
     RuntimeCommandDispatchError, RuntimeCommandDispatchPlan, RuntimeCommandDispatcher,
 };
 use crate::diagnostics::{
-    CapabilitySuppressionReason, ChildOpenRollbackDiagnosticRecord, DescramblerDiagnosticKind,
-    DescramblerDiagnosticPhase, DescramblerDiagnosticRecord, StartupDiagnosticRecord,
+    BoundedDiagnosticStore, CapabilitySuppressionReason, ChildOpenRollbackDiagnosticRecord,
+    DescramblerDiagnosticKind, DescramblerDiagnosticPhase, DescramblerDiagnosticRecord,
+    DvrPostCommitNotificationDiagnosticRecord, FilterCallbackDeliveryDiagnosticRecord,
+    StartupDiagnosticRecord,
 };
 use crate::dispatch::{
     adapter_transactions_are_covered, dispatch_target_for, ServiceRuntimeDispatchTarget,
@@ -78,6 +84,18 @@ mod descrambler_txn;
 mod frontend_txn;
 mod lnb_txn;
 mod packet_txn;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FilterChildRuntimeOpen {
+    pub runtime_entry: RuntimeObjectEntry,
+    pub filter_id: i32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DvrChildRuntimeOpen {
+    pub runtime_entry: RuntimeObjectEntry,
+    pub dvr_id: i32,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FrontendProbeOutcome {
@@ -174,6 +192,7 @@ fn default_lnb_entry_for_frontend(entry: &FrontendRegistryEntry) -> Option<LnbRe
 pub struct FrontendDemuxPacketSink {
     runtime: Arc<Mutex<TunerServiceRuntime>>,
     frontend_id: i32,
+    dispatcher: Arc<dyn FilterEventDispatcher>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -198,17 +217,39 @@ pub trait FilterEventDispatcher: Send + Sync {
     ) -> Result<(), HalError>;
 }
 
-static FILTER_EVENT_DISPATCHER: OnceLock<Arc<dyn FilterEventDispatcher>> = OnceLock::new();
+#[derive(Clone)]
+struct FilterEventDispatcherHandle {
+    dispatcher: Arc<dyn FilterEventDispatcher>,
+}
 
-pub fn install_filter_event_dispatcher(dispatcher: Arc<dyn FilterEventDispatcher>) {
-    let _ = FILTER_EVENT_DISPATCHER.set(dispatcher);
+impl FilterEventDispatcherHandle {
+    fn new(dispatcher: Arc<dyn FilterEventDispatcher>) -> Self {
+        Self { dispatcher }
+    }
+
+    fn dispatcher(&self) -> Arc<dyn FilterEventDispatcher> {
+        Arc::clone(&self.dispatcher)
+    }
+}
+
+impl fmt::Debug for FilterEventDispatcherHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FilterEventDispatcherHandle")
+            .field("dispatcher", &"<filter event dispatcher>")
+            .finish()
+    }
 }
 
 impl FrontendDemuxPacketSink {
-    pub fn new(runtime: Arc<Mutex<TunerServiceRuntime>>, frontend_id: i32) -> Self {
+    pub fn new(
+        runtime: Arc<Mutex<TunerServiceRuntime>>,
+        frontend_id: i32,
+        dispatcher: Arc<dyn FilterEventDispatcher>,
+    ) -> Self {
         Self {
             runtime,
             frontend_id,
+            dispatcher,
         }
     }
 
@@ -233,13 +274,7 @@ impl FrontendLivePacketSink for FrontendDemuxPacketSink {
         if events.is_empty() {
             return Ok(());
         }
-        let dispatcher = FILTER_EVENT_DISPATCHER.get().ok_or_else(|| {
-            HalError::callback_failed(
-                "IFilterCallback.onFilterEvent",
-                "filter event dispatcher is not installed",
-            )
-        })?;
-        dispatcher.dispatch(&self.runtime, events)
+        self.dispatcher.dispatch(&self.runtime, events)
     }
 }
 
@@ -247,11 +282,16 @@ impl FrontendLivePacketSink for FrontendDemuxPacketSink {
 struct ActiveDescramblerSnapshot {
     pids: BTreeSet<u16>,
     key_slot: Option<DescramblerKeySlot>,
+    source_filter_ids_by_pid: BTreeMap<u16, BTreeSet<i32>>,
 }
 
 impl ActiveDescramblerSnapshot {
     fn targets_pid(&self, pid: u16) -> bool {
         self.pids.contains(&pid)
+    }
+
+    fn source_filter_ids_for_pid(&self, pid: u16) -> Option<&BTreeSet<i32>> {
+        self.source_filter_ids_by_pid.get(&pid)
     }
 }
 
@@ -268,9 +308,10 @@ enum DescramblePacketFlow {
 struct DescramblePacketDecision {
     packet: [u8; TS_PACKET_SIZE],
     flow: DescramblePacketFlow,
+    diagnostics: Vec<PipelineDiagnostic>,
 }
 
-fn demux_runtime_error_to_hal(
+pub(super) fn demux_runtime_error_to_hal(
     error: maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeError,
 ) -> HalError {
     match error.kind {
@@ -316,6 +357,12 @@ fn demux_runtime_error_to_hal(
                 "demux runtime pipeline operation failed",
             )
         }
+        maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::SourceBoundaryRollbackFailed => {
+            HalError::cleanup_failed(
+                "demux source boundary rollback",
+                "demux runtime was quarantined after source boundary rollback failure",
+            )
+        }
         maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::QueueRuntimeFailure
         | maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::AvBackingFailure => {
             HalError::internal(
@@ -336,13 +383,13 @@ fn descrambler_session_failure_to_hal(kind: DescramblerSessionFailureKind) -> Ha
             HalInvalidStateKind::InvalidLifecycle,
             "descrambler demux source is not bound",
         ),
-        DescramblerSessionFailureKind::UnknownToken => HalError::invalid_argument(
-            HalInvalidArgumentKind::NumericRange,
-            "descrambler key token is unknown",
+        DescramblerSessionFailureKind::ClearKeyPlanMismatch => HalError::internal(
+            HalInternalKind::InvariantViolation,
+            "descrambler clear-key plan no longer matches session state",
         ),
-        DescramblerSessionFailureKind::ExpiredToken => HalError::invalid_state(
-            HalInvalidStateKind::InvalidLifecycle,
-            "descrambler key token is expired",
+        DescramblerSessionFailureKind::ReplaceKeyPlanMismatch => HalError::internal(
+            HalInternalKind::InvariantViolation,
+            "descrambler replace-key plan no longer matches session state",
         ),
     }
 }
@@ -382,9 +429,6 @@ fn descrambler_key_release_error_to_hal(_error: DescramblerKeyLookupError) -> Ha
 
 fn descrambler_pid_claim_error_to_hal(error: DescramblerPidClaimError) -> HalError {
     match error {
-        DescramblerPidClaimError::NullSourceFilterUnsupported => HalError::Unsupported(
-            "nullable upstream filter is outside the current Rust AIDL boundary scope",
-        ),
         DescramblerPidClaimError::InvalidPid => HalError::invalid_argument(
             HalInvalidArgumentKind::NumericRange,
             "descrambler PID is invalid",
@@ -420,7 +464,7 @@ pub fn start_frontend_demux_live_pump_from_reader(
     frontend_id: i32,
     reader: Box<dyn Read + Send>,
 ) -> Result<FrontendLivePumpOwner, HalError> {
-    {
+    let dispatcher = {
         let guard = runtime.lock().map_err(|_| {
             HalError::internal(
                 HalInternalKind::InvariantViolation,
@@ -430,10 +474,12 @@ pub fn start_frontend_demux_live_pump_from_reader(
         guard
             .query()
             .ensure_frontend_demux_sink_ready(frontend_id)?;
-    }
+        guard.filter_event_dispatcher()?
+    };
     let sink: Box<dyn FrontendLivePacketSink> = Box::new(FrontendDemuxPacketSink::new(
         Arc::clone(&runtime),
         frontend_id,
+        dispatcher,
     ));
     FrontendLivePumpOwner::start(reader, sink)
 }
@@ -443,9 +489,14 @@ pub struct TunerServiceRuntime {
     state: ServiceState,
     registry: RuntimeRegistry,
     object_table: RuntimeObjectTable,
-    diagnostics: Vec<StartupDiagnosticRecord>,
-    descrambler_diagnostics: Vec<DescramblerDiagnosticRecord>,
-    child_open_rollback_diagnostics: Vec<ChildOpenRollbackDiagnosticRecord>,
+    diagnostics: BoundedDiagnosticStore<StartupDiagnosticRecord>,
+    descrambler_diagnostics: BoundedDiagnosticStore<DescramblerDiagnosticRecord>,
+    child_open_rollback_diagnostics: BoundedDiagnosticStore<ChildOpenRollbackDiagnosticRecord>,
+    dvr_post_commit_notification_diagnostics:
+        BoundedDiagnosticStore<DvrPostCommitNotificationDiagnosticRecord>,
+    filter_callback_delivery_diagnostics:
+        BoundedDiagnosticStore<FilterCallbackDeliveryDiagnosticRecord>,
+    filter_event_dispatcher: Option<FilterEventDispatcherHandle>,
     callback_registry: RuntimeCallbackRegistry,
     frontend_workers: FrontendWorkerRegistry,
     next_aidl_generation: u64,
@@ -515,9 +566,12 @@ impl TunerServiceRuntime {
             state: ServiceState::Booting,
             registry: RuntimeRegistry::default(),
             object_table: RuntimeObjectTable::default(),
-            diagnostics: Vec::new(),
-            descrambler_diagnostics: Vec::new(),
-            child_open_rollback_diagnostics: Vec::new(),
+            diagnostics: BoundedDiagnosticStore::default(),
+            descrambler_diagnostics: BoundedDiagnosticStore::default(),
+            child_open_rollback_diagnostics: BoundedDiagnosticStore::default(),
+            dvr_post_commit_notification_diagnostics: BoundedDiagnosticStore::default(),
+            filter_callback_delivery_diagnostics: BoundedDiagnosticStore::default(),
+            filter_event_dispatcher: None,
             callback_registry: RuntimeCallbackRegistry::default(),
             frontend_workers: FrontendWorkerRegistry::default(),
             next_aidl_generation: 0,
@@ -529,7 +583,7 @@ impl TunerServiceRuntime {
         self.state
     }
 
-    pub fn registry(&self) -> &RuntimeRegistry {
+    pub(crate) fn registry(&self) -> &RuntimeRegistry {
         &self.registry
     }
 
@@ -543,18 +597,52 @@ impl TunerServiceRuntime {
     }
 
     pub fn diagnostics(&self) -> &[StartupDiagnosticRecord] {
-        &self.diagnostics
+        self.diagnostics.as_slice()
+    }
+
+    pub fn diagnostics_dropped_count(&self) -> u64 {
+        self.diagnostics.dropped_count()
     }
 
     pub fn descrambler_diagnostics(&self) -> &[DescramblerDiagnosticRecord] {
-        &self.descrambler_diagnostics
+        self.descrambler_diagnostics.as_slice()
+    }
+
+    pub fn descrambler_diagnostics_dropped_count(&self) -> u64 {
+        self.descrambler_diagnostics.dropped_count()
     }
 
     pub fn child_open_rollback_diagnostics(&self) -> &[ChildOpenRollbackDiagnosticRecord] {
-        &self.child_open_rollback_diagnostics
+        self.child_open_rollback_diagnostics.as_slice()
     }
 
-    pub fn register_descrambler_key_slot(
+    pub fn child_open_rollback_diagnostics_dropped_count(&self) -> u64 {
+        self.child_open_rollback_diagnostics.dropped_count()
+    }
+
+    pub fn dvr_post_commit_notification_diagnostics(
+        &self,
+    ) -> &[DvrPostCommitNotificationDiagnosticRecord] {
+        self.dvr_post_commit_notification_diagnostics.as_slice()
+    }
+
+    pub fn dvr_post_commit_notification_diagnostics_dropped_count(&self) -> u64 {
+        self.dvr_post_commit_notification_diagnostics
+            .dropped_count()
+    }
+
+    pub fn filter_callback_delivery_diagnostics(
+        &self,
+    ) -> &[FilterCallbackDeliveryDiagnosticRecord] {
+        self.filter_callback_delivery_diagnostics.as_slice()
+    }
+
+    pub fn filter_callback_delivery_diagnostics_dropped_count(&self) -> u64 {
+        self.filter_callback_delivery_diagnostics.dropped_count()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn register_descrambler_key_slot(
         &mut self,
         token: DescramblerKeyToken,
         key_slot: DescramblerKeySlot,
@@ -572,24 +660,134 @@ impl TunerServiceRuntime {
         self.child_open_rollback_diagnostics.push(record);
     }
 
+    pub fn record_dvr_post_commit_notification_diagnostic(
+        &mut self,
+        record: DvrPostCommitNotificationDiagnosticRecord,
+    ) {
+        self.dvr_post_commit_notification_diagnostics.push(record);
+    }
+
+    pub fn record_filter_callback_delivery_diagnostic(
+        &mut self,
+        record: FilterCallbackDeliveryDiagnosticRecord,
+    ) {
+        self.filter_callback_delivery_diagnostics.push(record);
+    }
+
+    pub fn install_filter_event_dispatcher(
+        &mut self,
+        dispatcher: Arc<dyn FilterEventDispatcher>,
+    ) -> Result<(), HalError> {
+        if self.filter_event_dispatcher.is_some() {
+            return Err(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "filter event dispatcher is already installed for this runtime",
+            ));
+        }
+        self.filter_event_dispatcher = Some(FilterEventDispatcherHandle::new(dispatcher));
+        Ok(())
+    }
+
+    fn filter_event_dispatcher(&self) -> Result<Arc<dyn FilterEventDispatcher>, HalError> {
+        self.filter_event_dispatcher
+            .as_ref()
+            .map(FilterEventDispatcherHandle::dispatcher)
+            .ok_or_else(|| {
+                HalError::callback_failed(
+                    "IFilterCallback.onFilterEvent",
+                    "filter event dispatcher is not installed for this runtime",
+                )
+            })
+    }
+
     fn record_descrambler_diagnostic(&mut self, record: DescramblerDiagnosticRecord) {
         self.descrambler_diagnostics.push(record);
     }
 
-    pub fn object_table(&self) -> &RuntimeObjectTable {
+    pub fn record_callback_registration_for_object(
+        &mut self,
+        owner_kind: AidlObjectKind,
+        owner_id: AidlObjectId,
+        owner_generation: AidlObjectGeneration,
+        registration_api: AidlApi,
+    ) {
+        self.callback_registry.record_registration(
+            owner_kind,
+            owner_id,
+            owner_generation,
+            registration_api,
+        );
+    }
+
+    pub fn mark_callback_registration_unhealthy(
+        &mut self,
+        owner_kind: AidlObjectKind,
+        owner_id: AidlObjectId,
+        owner_generation: AidlObjectGeneration,
+        registration_api: AidlApi,
+    ) -> CallbackRegistryUpdate {
+        self.callback_registry.mark_unhealthy(
+            owner_kind,
+            owner_id,
+            owner_generation,
+            registration_api,
+        )
+    }
+
+    pub fn mark_callback_registration_owner_unhealthy(
+        &mut self,
+        owner_id: AidlObjectId,
+        owner_generation: AidlObjectGeneration,
+    ) -> CallbackRegistryUpdate {
+        self.callback_registry
+            .mark_owner_unhealthy(owner_id, owner_generation)
+    }
+
+    pub fn clear_callback_registration_owner(
+        &mut self,
+        owner_id: AidlObjectId,
+        owner_generation: AidlObjectGeneration,
+    ) -> CallbackRegistryUpdate {
+        self.callback_registry
+            .clear_owner(owner_id, owner_generation)
+    }
+
+    pub(crate) fn object_table(&self) -> &RuntimeObjectTable {
         &self.object_table
     }
 
-    pub fn object_table_mut(&mut self) -> &mut RuntimeObjectTable {
+    pub(crate) fn object_table_mut(&mut self) -> &mut RuntimeObjectTable {
         &mut self.object_table
     }
 
-    pub fn callback_registry(&self) -> &RuntimeCallbackRegistry {
+    pub(crate) fn callback_registry(&self) -> &RuntimeCallbackRegistry {
         &self.callback_registry
     }
 
-    pub fn callback_registry_mut(&mut self) -> &mut RuntimeCallbackRegistry {
+    pub(crate) fn callback_registry_mut(&mut self) -> &mut RuntimeCallbackRegistry {
         &mut self.callback_registry
+    }
+
+    pub fn aidl_object_lifecycle(&self, object_id: AidlObjectId) -> Option<RuntimeObjectLifecycle> {
+        self.object_table
+            .entry(object_id)
+            .map(|entry| entry.lifecycle)
+    }
+
+    pub fn callback_registration_count(&self) -> usize {
+        self.callback_registry.registration_count()
+    }
+
+    pub fn callback_registration_health(
+        &self,
+        owner_kind: AidlObjectKind,
+        owner_id: AidlObjectId,
+        owner_generation: AidlObjectGeneration,
+        registration_api: AidlApi,
+    ) -> Option<CallbackHealthState> {
+        self.callback_registry
+            .registration_for(owner_kind, owner_id, owner_generation, registration_api)
+            .map(|registration| registration.health)
     }
 
     pub fn boot_from_probe_results<I>(&mut self, results: I) -> ServiceBootOutcome
@@ -602,6 +800,10 @@ impl TunerServiceRuntime {
         self.registry.clear_transient_objects();
         self.object_table.clear();
         self.diagnostics.clear();
+        self.descrambler_diagnostics.clear();
+        self.child_open_rollback_diagnostics.clear();
+        self.dvr_post_commit_notification_diagnostics.clear();
+        self.filter_callback_delivery_diagnostics.clear();
         self.callback_registry = RuntimeCallbackRegistry::default();
         self.frontend_workers = FrontendWorkerRegistry::default();
         self.next_aidl_generation = 0;
@@ -772,11 +974,8 @@ impl TunerServiceRuntime {
         self.object_table.remove(object_id, generation)
     }
 
-    pub fn unregister_public_runtime_for_closed_aidl_entry(
-        &mut self,
-        entry: &RuntimeObjectEntry,
-    ) -> Result<(), HalError> {
-        let id = i32::try_from(entry.ledger_id.0).map_err(|_| {
+    fn public_runtime_unregister_id(entry: &RuntimeObjectEntry) -> Result<i32, HalError> {
+        i32::try_from(entry.ledger_id.0).map_err(|_| {
             HalError::internal(
                 HalInternalKind::InvariantViolation,
                 format!(
@@ -784,37 +983,142 @@ impl TunerServiceRuntime {
                     entry.object_kind
                 ),
             )
-        })?;
+        })
+    }
+
+    fn validate_public_runtime_for_terminal_aidl_entry(
+        &self,
+        entry: &RuntimeObjectEntry,
+        context: &'static str,
+        missing_detail: &'static str,
+    ) -> Result<(), HalError> {
+        let id = Self::public_runtime_unregister_id(entry)?;
+        let exists = match entry.object_kind {
+            AidlObjectKind::Demux => {
+                self.registry.demux(DemuxRuntimeId(id)).is_some()
+                    && self.registry.demux_runtime(DemuxRuntimeId(id)).is_some()
+            }
+            AidlObjectKind::Filter => self
+                .registry
+                .filter(FilterRuntimeId(id))
+                .and_then(|entry| {
+                    self.registry
+                        .demux_runtime(DemuxRuntimeId(entry.owner_demux_id))
+                        .map(|demux| demux.filter(id).is_some())
+                })
+                .unwrap_or(false),
+            AidlObjectKind::Dvr => self
+                .registry
+                .dvr(DvrRuntimeId(id))
+                .and_then(|entry| {
+                    self.registry
+                        .demux_runtime(DemuxRuntimeId(entry.owner_demux_id))
+                        .map(|demux| demux.dvr(id).is_some())
+                })
+                .unwrap_or(false),
+            AidlObjectKind::Descrambler => {
+                self.registry
+                    .descrambler(DescramblerRuntimeId(id))
+                    .is_some()
+                    && self
+                        .registry
+                        .descrambler_runtime(DescramblerRuntimeId(id))
+                        .is_some()
+            }
+            _ => {
+                return Err(HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    format!(
+                        "object kind does not own a public runtime unregister entry in this cleanup path: kind={:?} id={id}",
+                        entry.object_kind
+                    ),
+                ));
+            }
+        };
+        if exists {
+            Ok(())
+        } else {
+            Err(HalError::cleanup_failed(
+                context,
+                format!("{missing_detail}: kind={:?} id={id}", entry.object_kind),
+            ))
+        }
+    }
+
+    pub fn validate_public_runtime_for_closed_aidl_entry(
+        &self,
+        entry: &RuntimeObjectEntry,
+    ) -> Result<(), HalError> {
+        self.validate_public_runtime_for_terminal_aidl_entry(
+            entry,
+            "public runtime unregister preflight after AIDL object close",
+            "runtime entry missing before close cleanup commit",
+        )
+    }
+
+    pub fn validate_public_runtime_for_drop_leak_aidl_entry(
+        &self,
+        entry: &RuntimeObjectEntry,
+    ) -> Result<(), HalError> {
+        self.validate_public_runtime_for_terminal_aidl_entry(
+            entry,
+            "public runtime unregister preflight after Drop leak quarantine",
+            "runtime entry missing before Drop leak runtime unregister",
+        )
+    }
+
+    fn unregister_public_runtime_for_terminal_aidl_entry(
+        &mut self,
+        entry: &RuntimeObjectEntry,
+        context: &'static str,
+        missing_detail: &'static str,
+    ) -> Result<(), HalError> {
+        let id = Self::public_runtime_unregister_id(entry)?;
         let removed = match entry.object_kind {
-            AidlObjectKind::Demux => match self.unregister_demux_runtime(id)? {
-                Some(_) => true,
-                None => false,
-            },
-            AidlObjectKind::Filter => match self.unregister_filter_runtime(id)? {
-                Some(_) => true,
-                None => false,
-            },
-            AidlObjectKind::Dvr => match self.unregister_dvr_runtime(id)? {
-                Some(_) => true,
-                None => false,
-            },
-            AidlObjectKind::Descrambler => match self.unregister_descrambler_runtime(id)? {
-                Some(_) => true,
-                None => false,
-            },
-            _ => return Ok(()),
+            AidlObjectKind::Demux => self.unregister_demux_runtime(id)?.is_some(),
+            AidlObjectKind::Filter => self.unregister_filter_runtime(id)?.is_some(),
+            AidlObjectKind::Dvr => self.unregister_dvr_runtime(id)?.is_some(),
+            AidlObjectKind::Descrambler => self.unregister_descrambler_runtime(id)?.is_some(),
+            _ => {
+                return Err(HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    format!(
+                        "object kind does not own a public runtime unregister entry in this cleanup path: kind={:?} id={id}",
+                        entry.object_kind
+                    ),
+                ));
+            }
         };
         if removed {
             Ok(())
         } else {
             Err(HalError::cleanup_failed(
-                "public runtime unregister after AIDL object close",
-                format!(
-                    "runtime entry missing during close cleanup: kind={:?} id={id}",
-                    entry.object_kind
-                ),
+                context,
+                format!("{missing_detail}: kind={:?} id={id}", entry.object_kind),
             ))
         }
+    }
+
+    pub fn unregister_public_runtime_for_closed_aidl_entry(
+        &mut self,
+        entry: &RuntimeObjectEntry,
+    ) -> Result<(), HalError> {
+        self.unregister_public_runtime_for_terminal_aidl_entry(
+            entry,
+            "public runtime unregister after AIDL object close",
+            "runtime entry missing during close cleanup",
+        )
+    }
+
+    pub fn unregister_public_runtime_for_drop_leak_aidl_entry(
+        &mut self,
+        entry: &RuntimeObjectEntry,
+    ) -> Result<(), HalError> {
+        self.unregister_public_runtime_for_terminal_aidl_entry(
+            entry,
+            "public runtime unregister after Drop leak quarantine",
+            "runtime entry missing during Drop leak terminalization",
+        )
     }
     pub fn plan_command_dispatch(
         &mut self,

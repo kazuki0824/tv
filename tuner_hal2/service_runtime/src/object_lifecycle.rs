@@ -82,14 +82,18 @@ pub fn aidl_object_for_close_cleanup_runtime(
         .close_cleanup_entry_for_runtime(expected_kind, LedgerId(public_runtime_id))
 }
 
-pub fn lnb_public_id_for_live_object(
+pub fn lnb_public_id_for_live_object_result(
     runtime: &TunerServiceRuntime,
     object_id: AidlObjectId,
     generation: AidlObjectGeneration,
-) -> Option<i32> {
-    aidl_object_entry_for_kind(runtime, object_id, generation, AidlObjectKind::Lnb)
-        .ok()
-        .and_then(|entry| i32::try_from(entry.ledger_id.0).ok())
+) -> Result<i32, HalError> {
+    let entry = aidl_object_entry_for_kind(runtime, object_id, generation, AidlObjectKind::Lnb)?;
+    i32::try_from(entry.ledger_id.0).map_err(|_| {
+        HalError::internal(
+            HalInternalKind::InvariantViolation,
+            "LNB runtime id is outside i32 range",
+        )
+    })
 }
 
 pub fn aidl_object_entry_for_close_cleanup(

@@ -3,27 +3,31 @@ use super::{
     build_dvr_configure_request, close_object_after_close_preflight_with_domain_cleanup,
     deliver_started_dvr_status, execute_object_query_use_case, execute_object_runtime_use_case,
     execute_object_runtime_use_case_with_request_builder, start_dvr_status_notifier,
-    status_from_hal_error, stop_dvr_status_notifier, tuner_queue_desc_from_snapshot,
-    AidlMethodCall, AidlObjectGeneration, AidlObjectId, BinderResult, DvrAidlObject,
-    DvrFilterLinkRequest, DvrSettings, IDvr, IFilter, Strong, TunerQueueDesc,
+    status_from_hal_error, status_unknown_error, stop_dvr_status_notifier,
+    tuner_queue_desc_from_snapshot, AidlMethodCall, AidlObjectGeneration, AidlObjectId,
+    BinderResult, DvrAidlObject, DvrFilterLinkRequest, DvrSettings, IDvr, IFilter,
+    ObjectQueryRequest, ObjectQueryResponse, Strong, TunerQueueDesc,
 };
+use crate::dvr_callback_delivery::record_dvr_post_commit_notification_outcome;
 use maleicacid_tuner_hal2_common::{HalError, HalInvalidArgumentKind};
+use maleicacid_tuner_hal2_service_runtime::DvrPostCommitNotificationPhase;
 
 impl IDvr for DvrAidlObject {
     fn getQueueDesc(&self, queue: &mut TunerQueueDesc) -> BinderResult<()> {
-        *queue = execute_object_query_use_case(
+        *queue = match execute_object_query_use_case(
             &self.runtime(),
             self.handle(),
-            AidlMethodCall::DvrGetQueueDesc,
-            |runtime, handle| {
-                runtime
-                    .dvr_queue_descriptor_snapshot_for_aidl_object(
-                        handle.object_id(),
-                        handle.generation(),
-                    )
-                    .map(tuner_queue_desc_from_snapshot)
-            },
-        )?;
+            ObjectQueryRequest::DvrGetQueueDesc,
+        )? {
+            ObjectQueryResponse::QueueDescriptor(snapshot) => {
+                tuner_queue_desc_from_snapshot(snapshot)
+            }
+            _ => {
+                return Err(status_unknown_error(
+                    "unexpected object query response for Dvr.getQueueDesc",
+                ))
+            }
+        };
         Ok(())
     }
     fn configure(&self, settings: &DvrSettings) -> BinderResult<()> {
@@ -35,13 +39,12 @@ impl IDvr for DvrAidlObject {
                     build_dvr_configure_request(settings).map_err(status_from_hal_error)?;
                 Ok((AidlMethodCall::DvrConfigure(request.clone()), request))
             },
-            |runtime, handle, command_plan, executable_request, _dispatch_preflight, request| {
+            |runtime, handle, dispatch_proof, request| {
                 runtime.configure_dvr_runtime_for_object(
                     handle.object_id(),
                     handle.generation(),
                     request,
-                    command_plan,
-                    executable_request,
+                    dispatch_proof,
                 )
             },
         )
@@ -58,13 +61,13 @@ impl IDvr for DvrAidlObject {
                 };
                 Ok((AidlMethodCall::DvrAttachFilter(request), request))
             },
-            |runtime, handle, _command_plan, _executable_request, dispatch_preflight, request| {
+            |runtime, handle, dispatch_proof, request| {
                 runtime.attach_dvr_filter_for_object(
                     handle.object_id(),
                     handle.generation(),
                     AidlObjectId(request.filter_id),
                     AidlObjectGeneration(request.filter_generation),
-                    dispatch_preflight,
+                    dispatch_proof,
                 )
             },
         )
@@ -81,13 +84,13 @@ impl IDvr for DvrAidlObject {
                 };
                 Ok((AidlMethodCall::DvrDetachFilter(request), request))
             },
-            |runtime, handle, _command_plan, _executable_request, dispatch_preflight, request| {
+            |runtime, handle, dispatch_proof, request| {
                 runtime.detach_dvr_filter_for_object(
                     handle.object_id(),
                     handle.generation(),
                     AidlObjectId(request.filter_id),
                     AidlObjectGeneration(request.filter_generation),
-                    dispatch_preflight,
+                    dispatch_proof,
                 )
             },
         )
@@ -97,56 +100,68 @@ impl IDvr for DvrAidlObject {
             &self.runtime(),
             self.handle(),
             AidlMethodCall::DvrStart,
-            |runtime, handle, command_plan, executable_request| {
+            |runtime, handle, dispatch_proof| {
                 runtime.start_dvr_for_object(
                     handle.object_id(),
                     handle.generation(),
-                    command_plan,
-                    executable_request,
+                    dispatch_proof,
                 )
             },
         )?;
-        deliver_started_dvr_status(&self.runtime(), self.handle())
-            .map_err(status_from_hal_error)?;
-        start_dvr_status_notifier(&self.runtime(), self.handle()).map_err(status_from_hal_error)
+        record_dvr_post_commit_notification_outcome(
+            &self.runtime(),
+            self.handle(),
+            DvrPostCommitNotificationPhase::InitialStatusDelivery,
+            deliver_started_dvr_status(&self.context(), self.handle()),
+        )
+        .map_err(status_from_hal_error)?;
+        record_dvr_post_commit_notification_outcome(
+            &self.runtime(),
+            self.handle(),
+            DvrPostCommitNotificationPhase::StatusNotifierStart,
+            start_dvr_status_notifier(&self.context(), self.handle()),
+        )
+        .map_err(status_from_hal_error)?;
+        Ok(())
     }
     fn stop(&self) -> BinderResult<()> {
         execute_object_runtime_use_case(
             &self.runtime(),
             self.handle(),
             AidlMethodCall::DvrStop,
-            |runtime, handle, command_plan, executable_request| {
-                runtime.stop_dvr_for_object(
-                    handle.object_id(),
-                    handle.generation(),
-                    command_plan,
-                    executable_request,
-                )
+            |runtime, handle, dispatch_proof| {
+                runtime.stop_dvr_for_object(handle.object_id(), handle.generation(), dispatch_proof)
             },
         )?;
-        stop_dvr_status_notifier(self.handle()).map_err(status_from_hal_error)
+        record_dvr_post_commit_notification_outcome(
+            &self.runtime(),
+            self.handle(),
+            DvrPostCommitNotificationPhase::StatusNotifierStop,
+            stop_dvr_status_notifier(&self.context(), self.handle()),
+        )
+        .map_err(status_from_hal_error)?;
+        Ok(())
     }
     fn flush(&self) -> BinderResult<()> {
         execute_object_runtime_use_case(
             &self.runtime(),
             self.handle(),
             AidlMethodCall::DvrFlush,
-            |runtime, handle, command_plan, executable_request| {
+            |runtime, handle, dispatch_proof| {
                 runtime.flush_dvr_for_object(
                     handle.object_id(),
                     handle.generation(),
-                    command_plan,
-                    executable_request,
+                    dispatch_proof,
                 )
             },
         )
     }
     fn close(&self) -> BinderResult<()> {
         close_object_after_close_preflight_with_domain_cleanup(
-            &self.runtime(),
+            &self.context(),
             self.handle(),
             AidlMethodCall::DvrClose,
-            || stop_dvr_status_notifier(self.handle()),
+            || stop_dvr_status_notifier(&self.context(), self.handle()),
         )
     }
     fn setStatusCheckIntervalHint(&self, milliseconds: i64) -> BinderResult<()> {
@@ -165,17 +180,12 @@ impl IDvr for DvrAidlObject {
                     interval_ms,
                 ))
             },
-            |runtime,
-             handle,
-             _command_plan,
-             _executable_request,
-             dispatch_preflight,
-             interval_ms| {
+            |runtime, handle, dispatch_proof, interval_ms| {
                 runtime.set_dvr_status_check_interval_for_object(
                     handle.object_id(),
                     handle.generation(),
                     interval_ms,
-                    dispatch_preflight,
+                    dispatch_proof,
                 )
             },
         )

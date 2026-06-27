@@ -17,19 +17,19 @@ pub struct LnbApplyOutcome {
 }
 
 #[derive(Debug, Default)]
-pub struct LnbApplyTxn {
+pub(crate) struct LnbApplyTxn {
     steps: Vec<LnbApplyStep>,
 }
 
 impl LnbApplyTxn {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self { steps: Vec::new() }
     }
     fn record_step(&mut self, step: LnbApplyStep) {
         self.steps.push(step);
     }
 
-    pub fn apply<B: LnbBackendOps>(
+    pub(crate) fn apply<B: LnbBackendOps>(
         self,
         runtime: &mut LnbRuntime,
         backend: &mut B,
@@ -48,7 +48,7 @@ impl LnbApplyTxn {
         self.apply_with_generation(runtime, backend, target_state, next_generation)
     }
 
-    pub fn apply_with_generation<B: LnbBackendOps>(
+    pub(crate) fn apply_with_generation<B: LnbBackendOps>(
         mut self,
         runtime: &mut LnbRuntime,
         backend: &mut B,
@@ -102,6 +102,14 @@ impl LnbApplyTxn {
             result: Ok(target_state),
         }
     }
+}
+
+pub fn apply_lnb_state_with_txn<B: LnbBackendOps>(
+    runtime: &mut LnbRuntime,
+    backend: &mut B,
+    target_state: LnbElectricalState,
+) -> LnbApplyOutcome {
+    LnbApplyTxn::new().apply(runtime, backend, target_state)
 }
 
 fn map_backend_failure(kind: LnbFailureKind) -> LnbFailureKind {

@@ -1,3 +1,4 @@
+use maleicacid_tuner_hal2_binder_adapter::{AidlMethodAdapter, AidlMethodCall};
 use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, HalError};
 use maleicacid_tuner_hal2_domain_request::{
     AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan, RuntimeExecutableRequest,
@@ -19,6 +20,26 @@ pub fn plan_object_close_method_dispatch(
 ) -> Result<AidlObjectCloseability, HalError> {
     let closeability = aidl_object_closeable(runtime, object_id, generation, object_kind)?;
     plan_object_method_dispatch(runtime, command_plan, executable_request).map(|_| closeability)
+}
+
+pub fn plan_and_begin_object_close_method_call_dispatch(
+    runtime: &mut TunerServiceRuntime,
+    object_id: AidlObjectId,
+    generation: AidlObjectGeneration,
+    object_kind: AidlObjectKind,
+    method: AidlMethodCall,
+    step: CleanupStep,
+) -> Result<AidlObjectCloseability, HalError> {
+    let method_plan = AidlMethodAdapter::plan(method)?;
+    plan_and_begin_object_close_method_dispatch(
+        runtime,
+        object_id,
+        generation,
+        object_kind,
+        method_plan.command_plan,
+        method_plan.command.runtime_executable_request(),
+        step,
+    )
 }
 
 pub fn plan_and_begin_object_close_method_dispatch(
@@ -78,6 +99,17 @@ pub fn mark_object_close_cleanup_failed_cascade(
                 mapped,
             )
         })
+}
+
+pub fn object_close_cascade_entries(
+    runtime: &TunerServiceRuntime,
+    object_id: AidlObjectId,
+    generation: AidlObjectGeneration,
+) -> Result<Vec<RuntimeObjectEntry>, HalError> {
+    runtime
+        .object_table()
+        .close_cascade_entries(object_id, generation)
+        .map_err(object_table_error_to_hal)
 }
 
 pub fn commit_object_close_cascade(

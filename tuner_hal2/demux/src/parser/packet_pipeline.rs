@@ -2,8 +2,10 @@
 //!
 //! TEI / adaptation field / discontinuity / payload有無を1か所で決定する。
 
+use crate::runtime::DemuxRuntimeError;
 use crate::ts_core::PesDropReason;
-use maleicacid_tuner_hal2_common::{TsPacketCompletionBuffer, TS_PACKET_SIZE};
+use maleicacid_tuner_hal2_common::{HalError, TsPacketCompletionBuffer, TS_PACKET_SIZE};
+use maleicacid_tuner_hal2_descrambler::DescrambleFailure;
 use std::collections::BTreeMap;
 
 const PIPELINE_GENERATION_INITIAL: u64 = 0;
@@ -33,6 +35,37 @@ pub struct TsPacketView<'a> {
     pub adaptation_extension_flag: bool,
     pub payload: Option<&'a [u8]>,
     pub pcr_90khz: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct PacketPid(i32);
+
+impl PacketPid {
+    pub const fn new(pid: i32) -> Self {
+        Self(pid)
+    }
+    pub const fn get(self) -> i32 {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ValidatedTsPacket<'a> {
+    view: TsPacketView<'a>,
+}
+
+impl<'a> ValidatedTsPacket<'a> {
+    pub fn validate(packet: &'a [u8]) -> Result<Self, TsPacketValidationError> {
+        Ok(Self {
+            view: TsPacketView::validate(packet)?,
+        })
+    }
+    pub const fn view(&self) -> TsPacketView<'a> {
+        self.view
+    }
+    pub const fn pid(&self) -> PacketPid {
+        PacketPid::new(self.view.pid)
+    }
 }
 
 impl<'a> TsPacketView<'a> {
@@ -358,24 +391,198 @@ pub enum PipelineGeneratedEvent {
     },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PipelineDiagnosticKind {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PipelineDiagnostic {
     MalformedTsPacket,
-    TeiAssemblySuppressed,
-    DuplicatePacketAssemblySuppressed,
-    NoPayloadAssemblySuppressed,
-    KeylessScrambledAssemblySuppressed,
-    SectionAssemblyDrop,
-    SectionGenerationOverflow,
-    PesGenerationOverflow,
-    PesAssemblerDrop(PesDropReason),
+    TeiAssemblySuppressed {
+        pid: i32,
+    },
+    DuplicatePacketAssemblySuppressed {
+        pid: i32,
+    },
+    NoPayloadAssemblySuppressed {
+        pid: i32,
+    },
+    KeylessScrambledAssemblySuppressed {
+        pid: i32,
+    },
+    SectionAssemblyDrop {
+        pid: i32,
+    },
+    SectionGenerationOverflow {
+        pid: i32,
+    },
+    PesGenerationOverflow {
+        pid: i32,
+    },
+    PesAssemblerDrop {
+        pid: i32,
+        reason: PesDropReason,
+    },
     ResidualBytesDrop,
+    SourceFilterValidationFailure {
+        pid: i32,
+        source_filter_id: i32,
+        error: HalError,
+    },
+    SourceFilterDescramblePolicyFailure {
+        pid: i32,
+        source_filter_id: i32,
+        failure: DescrambleFailure,
+    },
+    RecordDvrMirrorFailure {
+        pid: PacketPid,
+        source_filter_id: i32,
+        dvr_id: i32,
+        error: DemuxRuntimeError,
+    },
+    FilterQueuePayloadDeliveryFailure {
+        pid: PacketPid,
+        filter_id: i32,
+        error: DemuxRuntimeError,
+    },
+    AvSharedBackingFailure {
+        pid: PacketPid,
+        filter_id: i32,
+        error: DemuxRuntimeError,
+    },
+    AvSharedBackingMissing {
+        pid: PacketPid,
+        filter_id: i32,
+    },
+    AvSharedHandleNotExported {
+        pid: PacketPid,
+        filter_id: i32,
+    },
+    AvClientHandleReleased {
+        pid: PacketPid,
+        filter_id: i32,
+    },
+    AvPayloadOversized {
+        pid: PacketPid,
+        filter_id: i32,
+    },
+    AvNoFreeSlot {
+        pid: PacketPid,
+        filter_id: i32,
+    },
+    AvDataIdExhausted {
+        pid: PacketPid,
+        filter_id: i32,
+    },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PipelineDiagnostic {
-    pub kind: PipelineDiagnosticKind,
-    pub pid: Option<i32>,
+impl PipelineDiagnostic {
+    pub const fn pid(&self) -> Option<i32> {
+        match self {
+            Self::RecordDvrMirrorFailure { pid, .. }
+            | Self::FilterQueuePayloadDeliveryFailure { pid, .. }
+            | Self::AvSharedBackingFailure { pid, .. }
+            | Self::AvSharedBackingMissing { pid, .. }
+            | Self::AvSharedHandleNotExported { pid, .. }
+            | Self::AvClientHandleReleased { pid, .. }
+            | Self::AvPayloadOversized { pid, .. }
+            | Self::AvNoFreeSlot { pid, .. }
+            | Self::AvDataIdExhausted { pid, .. } => Some(pid.get()),
+            Self::TeiAssemblySuppressed { pid }
+            | Self::DuplicatePacketAssemblySuppressed { pid }
+            | Self::NoPayloadAssemblySuppressed { pid }
+            | Self::KeylessScrambledAssemblySuppressed { pid }
+            | Self::SectionAssemblyDrop { pid }
+            | Self::SectionGenerationOverflow { pid }
+            | Self::PesGenerationOverflow { pid }
+            | Self::PesAssemblerDrop { pid, .. }
+            | Self::SourceFilterValidationFailure { pid, .. }
+            | Self::SourceFilterDescramblePolicyFailure { pid, .. } => Some(*pid),
+            Self::MalformedTsPacket | Self::ResidualBytesDrop => None,
+        }
+    }
+
+    pub fn source_filter_validation_failure(
+        pid: i32,
+        source_filter_id: i32,
+        error: HalError,
+    ) -> Self {
+        Self::SourceFilterValidationFailure {
+            pid,
+            source_filter_id,
+            error,
+        }
+    }
+
+    pub fn source_filter_descramble_policy_failure(
+        pid: i32,
+        source_filter_id: i32,
+        failure: DescrambleFailure,
+    ) -> Self {
+        Self::SourceFilterDescramblePolicyFailure {
+            pid,
+            source_filter_id,
+            failure,
+        }
+    }
+
+    pub fn record_dvr_mirror_failure(
+        pid: PacketPid,
+        source_filter_id: i32,
+        dvr_id: i32,
+        error: DemuxRuntimeError,
+    ) -> Self {
+        Self::RecordDvrMirrorFailure {
+            pid,
+            source_filter_id,
+            dvr_id,
+            error,
+        }
+    }
+
+    pub fn filter_queue_payload_delivery_failure(
+        pid: PacketPid,
+        filter_id: i32,
+        error: DemuxRuntimeError,
+    ) -> Self {
+        Self::FilterQueuePayloadDeliveryFailure {
+            pid,
+            filter_id,
+            error,
+        }
+    }
+
+    pub fn av_shared_backing_failure(
+        pid: PacketPid,
+        filter_id: i32,
+        error: DemuxRuntimeError,
+    ) -> Self {
+        Self::AvSharedBackingFailure {
+            pid,
+            filter_id,
+            error,
+        }
+    }
+
+    pub fn av_shared_backing_missing(pid: PacketPid, filter_id: i32) -> Self {
+        Self::AvSharedBackingMissing { pid, filter_id }
+    }
+
+    pub fn av_shared_handle_not_exported(pid: PacketPid, filter_id: i32) -> Self {
+        Self::AvSharedHandleNotExported { pid, filter_id }
+    }
+
+    pub fn av_client_handle_released(pid: PacketPid, filter_id: i32) -> Self {
+        Self::AvClientHandleReleased { pid, filter_id }
+    }
+
+    pub fn av_payload_oversized(pid: PacketPid, filter_id: i32) -> Self {
+        Self::AvPayloadOversized { pid, filter_id }
+    }
+
+    pub fn av_no_free_slot(pid: PacketPid, filter_id: i32) -> Self {
+        Self::AvNoFreeSlot { pid, filter_id }
+    }
+
+    pub fn av_data_id_exhausted(pid: PacketPid, filter_id: i32) -> Self {
+        Self::AvDataIdExhausted { pid, filter_id }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -393,7 +600,7 @@ pub struct PipelineFilterView {
     pub filter_id: i32,
     pub tpid: Option<i32>,
     pub started: bool,
-    pub has_upstream: bool,
+    pub source_filter: Option<(i32, u64)>,
     pub open_kind: PipelineOpenKind,
     pub section_raw: bool,
     pub pes_raw: bool,
@@ -401,8 +608,19 @@ pub struct PipelineFilterView {
 }
 
 impl PipelineFilterView {
-    fn accepts_pid(self, pid: i32) -> bool {
-        self.started && !self.has_upstream && self.tpid == Some(pid)
+    fn accepts_pid_from_origin(self, pid: i32, origin: crate::TsInputOrigin) -> bool {
+        if !self.started || self.tpid != Some(pid) {
+            return false;
+        }
+        match origin {
+            crate::TsInputOrigin::Frontend | crate::TsInputOrigin::Playback => {
+                self.source_filter.is_none()
+            }
+            crate::TsInputOrigin::SourceFilter {
+                source_filter_id,
+                source_filter_generation,
+            } => self.source_filter == Some((source_filter_id, source_filter_generation)),
+        }
     }
 }
 
@@ -453,10 +671,9 @@ impl PacketPipeline {
                 report
                     .drop_reasons
                     .push(PipelineDropReason::MalformedPacket);
-                report.diagnostics.push(PipelineDiagnostic {
-                    kind: PipelineDiagnosticKind::MalformedTsPacket,
-                    pid: None,
-                });
+                report
+                    .diagnostics
+                    .push(PipelineDiagnostic::MalformedTsPacket);
                 return report;
             }
         };
@@ -464,10 +681,9 @@ impl PacketPipeline {
             report
                 .assembly_suppression_reasons
                 .push(PipelineAssemblySuppressionReason::TransportErrorIndicator);
-            report.diagnostics.push(PipelineDiagnostic {
-                kind: PipelineDiagnosticKind::TeiAssemblySuppressed,
-                pid: Some(view.pid),
-            });
+            report
+                .diagnostics
+                .push(PipelineDiagnostic::TeiAssemblySuppressed { pid: view.pid });
         }
         if view.discontinuity_indicator {
             self.reset_continuity_pid(origin, view.pid as u16);
@@ -483,10 +699,9 @@ impl PacketPipeline {
             report
                 .assembly_suppression_reasons
                 .push(PipelineAssemblySuppressionReason::DuplicatePacket);
-            report.diagnostics.push(PipelineDiagnostic {
-                kind: PipelineDiagnosticKind::DuplicatePacketAssemblySuppressed,
-                pid: Some(view.pid),
-            });
+            report
+                .diagnostics
+                .push(PipelineDiagnostic::DuplicatePacketAssemblySuppressed { pid: view.pid });
         }
         if matches!(continuity, crate::ts_core::ContinuityOutcome::Discontinuity) {
             self.reset_assembly_for_origin_pid(origin, view.pid);
@@ -495,10 +710,9 @@ impl PacketPipeline {
             report
                 .assembly_suppression_reasons
                 .push(PipelineAssemblySuppressionReason::NoPayload);
-            report.diagnostics.push(PipelineDiagnostic {
-                kind: PipelineDiagnosticKind::NoPayloadAssemblySuppressed,
-                pid: Some(view.pid),
-            });
+            report
+                .diagnostics
+                .push(PipelineDiagnostic::NoPayloadAssemblySuppressed { pid: view.pid });
         }
         report.accepted_packets += 1;
         report
@@ -518,7 +732,7 @@ impl PacketPipeline {
         for filter in filters
             .iter()
             .copied()
-            .filter(|filter| filter.accepts_pid(pid))
+            .filter(|filter| filter.accepts_pid_from_origin(pid, origin))
         {
             match filter.open_kind {
                 PipelineOpenKind::Raw => actions.push(PipelineDeliveryAction::RawPacket {
@@ -542,12 +756,18 @@ impl PacketPipeline {
         actions
     }
 
-    pub fn plan_section_filters(&self, pid: i32, filters: &[PipelineFilterView]) -> Vec<i32> {
+    pub fn plan_section_filters(
+        &self,
+        pid: i32,
+        origin: crate::TsInputOrigin,
+        filters: &[PipelineFilterView],
+    ) -> Vec<i32> {
         filters
             .iter()
             .copied()
             .filter(|filter| {
-                filter.accepts_pid(pid) && filter.open_kind == PipelineOpenKind::Section
+                filter.accepts_pid_from_origin(pid, origin)
+                    && filter.open_kind == PipelineOpenKind::Section
             })
             .map(|filter| filter.filter_id)
             .collect()
@@ -556,13 +776,14 @@ impl PacketPipeline {
     pub fn plan_pes_actions(
         &self,
         pid: i32,
+        origin: crate::TsInputOrigin,
         filters: &[PipelineFilterView],
     ) -> Vec<PipelineDeliveryAction> {
         filters
             .iter()
             .copied()
             .filter(|filter| {
-                filter.accepts_pid(pid)
+                filter.accepts_pid_from_origin(pid, origin)
                     && matches!(
                         filter.open_kind,
                         PipelineOpenKind::Pes | PipelineOpenKind::Av
@@ -580,7 +801,7 @@ impl PacketPipeline {
     }
 
     pub fn plan_pes_filters(&self, pid: i32, filters: &[PipelineFilterView]) -> Vec<i32> {
-        self.plan_pes_actions(pid, filters)
+        self.plan_pes_actions(pid, crate::TsInputOrigin::Frontend, filters)
             .into_iter()
             .filter_map(|action| match action {
                 PipelineDeliveryAction::PesPayload { filter_id }
@@ -602,8 +823,8 @@ impl PacketPipeline {
             .delivery_actions
             .extend(self.plan_packet_delivery(view.pid, origin, filters));
         if view.payload.is_some() {
-            let section_filter_ids = self.plan_section_filters(view.pid, filters);
-            let pes_actions = self.plan_pes_actions(view.pid, filters);
+            let section_filter_ids = self.plan_section_filters(view.pid, origin, filters);
+            let pes_actions = self.plan_pes_actions(view.pid, origin, filters);
             if view.transport_error_indicator {
                 // TEI付きpacketはrecord/raw TSへは届かせるが、破損payloadを
                 // section/PES/AV assembly へ入れない。TEI診断はpreflight側で出す。
@@ -612,10 +833,9 @@ impl PacketPipeline {
                     report.assembly_suppression_reasons.push(
                         PipelineAssemblySuppressionReason::KeylessScrambledWithoutDescrambler,
                     );
-                    report.diagnostics.push(PipelineDiagnostic {
-                        kind: PipelineDiagnosticKind::KeylessScrambledAssemblySuppressed,
-                        pid: Some(view.pid),
-                    });
+                    report.diagnostics.push(
+                        PipelineDiagnostic::KeylessScrambledAssemblySuppressed { pid: view.pid },
+                    );
                 }
             } else {
                 for filter_id in section_filter_ids {
@@ -748,10 +968,9 @@ impl PacketPipeline {
                     if outcome.has_drop_or_discard() {
                         report.dropped_packets += 1;
                         report.drop_reasons.push(PipelineDropReason::AssemblyDrop);
-                        report.diagnostics.push(PipelineDiagnostic {
-                            kind: PipelineDiagnosticKind::SectionAssemblyDrop,
-                            pid: Some(view.pid),
-                        });
+                        report
+                            .diagnostics
+                            .push(PipelineDiagnostic::SectionAssemblyDrop { pid: view.pid });
                     }
                     for section in outcome.sections {
                         report
@@ -769,10 +988,9 @@ impl PacketPipeline {
                 report
                     .drop_reasons
                     .push(PipelineDropReason::SectionGenerationOverflow);
-                report.diagnostics.push(PipelineDiagnostic {
-                    kind: PipelineDiagnosticKind::SectionGenerationOverflow,
-                    pid: Some(view.pid),
-                });
+                report
+                    .diagnostics
+                    .push(PipelineDiagnostic::SectionGenerationOverflow { pid: view.pid });
                 self.reset_assembly_for_origin_pid(origin, view.pid);
             }
         } else {
@@ -797,10 +1015,9 @@ impl PacketPipeline {
                 report
                     .drop_reasons
                     .push(PipelineDropReason::PesGenerationOverflow);
-                report.diagnostics.push(PipelineDiagnostic {
-                    kind: PipelineDiagnosticKind::PesGenerationOverflow,
-                    pid: Some(view.pid),
-                });
+                report
+                    .diagnostics
+                    .push(PipelineDiagnostic::PesGenerationOverflow { pid: view.pid });
                 self.reset_assembly_for_origin_pid(origin, view.pid);
                 return report;
             };
@@ -830,10 +1047,12 @@ impl PacketPipeline {
                     report
                         .drop_reasons
                         .push(PipelineDropReason::PesAssemblerOverflow);
-                    report.diagnostics.push(PipelineDiagnostic {
-                        kind: PipelineDiagnosticKind::PesAssemblerDrop(reason),
-                        pid: Some(view.pid),
-                    });
+                    report
+                        .diagnostics
+                        .push(PipelineDiagnostic::PesAssemblerDrop {
+                            pid: view.pid,
+                            reason,
+                        });
                 }
                 for packet in packets {
                     report
@@ -1141,10 +1360,9 @@ impl PacketPipeline {
         if remainder > 0 {
             report.malformed_packets += remainder;
             report.drop_reasons.push(PipelineDropReason::ResidualBytes);
-            report.diagnostics.push(PipelineDiagnostic {
-                kind: PipelineDiagnosticKind::ResidualBytesDrop,
-                pid: None,
-            });
+            report
+                .diagnostics
+                .push(PipelineDiagnostic::ResidualBytesDrop);
         }
         report
     }
@@ -1421,7 +1639,7 @@ mod tests {
                 filter_id: 1,
                 tpid: Some(0x0100),
                 started: true,
-                has_upstream: false,
+                source_filter: None,
                 open_kind: PipelineOpenKind::Pes,
                 section_raw: false,
                 pes_raw: false,
@@ -1431,7 +1649,7 @@ mod tests {
                 filter_id: 2,
                 tpid: Some(0x0100),
                 started: true,
-                has_upstream: false,
+                source_filter: None,
                 open_kind: PipelineOpenKind::Av,
                 section_raw: false,
                 pes_raw: false,
@@ -1452,6 +1670,54 @@ mod tests {
     }
 
     #[test]
+    fn source_filter_origin_delivers_to_matching_record_sink() {
+        let mut packet = [0xffu8; TS_PACKET_SIZE];
+        packet[0] = 0x47;
+        packet[1] = 0x41;
+        packet[2] = 0x00;
+        packet[3] = 0x10;
+        let view = TsPacketView::validate(&packet).unwrap();
+        let filters = [
+            PipelineFilterView {
+                filter_id: 20,
+                tpid: Some(0x0100),
+                started: true,
+                source_filter: Some((10, 1)),
+                open_kind: PipelineOpenKind::Record,
+                section_raw: false,
+                pes_raw: false,
+                wants_record_index: true,
+            },
+            PipelineFilterView {
+                filter_id: 21,
+                tpid: Some(0x0100),
+                started: true,
+                source_filter: None,
+                open_kind: PipelineOpenKind::Record,
+                section_raw: false,
+                pes_raw: false,
+                wants_record_index: true,
+            },
+        ];
+        let origin = crate::TsInputOrigin::SourceFilter {
+            source_filter_id: 10,
+            source_filter_generation: 1,
+        };
+
+        let report = PacketPipeline::default().plan_ts_packet_report(&view, origin, &filters);
+
+        assert!(report
+            .delivery_actions
+            .contains(&PipelineDeliveryAction::RecordPacket { filter_id: 20 }));
+        assert!(report
+            .delivery_actions
+            .contains(&PipelineDeliveryAction::DvrMirror { dvr_id: 20 }));
+        assert!(!report
+            .delivery_actions
+            .contains(&PipelineDeliveryAction::RecordPacket { filter_id: 21 }));
+    }
+
+    #[test]
     fn plan_report_generates_callback_event_kinds_for_delivery_actions() {
         let mut packet = [0xffu8; TS_PACKET_SIZE];
         packet[0] = 0x47;
@@ -1464,7 +1730,7 @@ mod tests {
                 filter_id: 10,
                 tpid: Some(0x0100),
                 started: true,
-                has_upstream: false,
+                source_filter: None,
                 open_kind: PipelineOpenKind::Raw,
                 section_raw: false,
                 pes_raw: false,
@@ -1474,7 +1740,7 @@ mod tests {
                 filter_id: 11,
                 tpid: Some(0x0100),
                 started: true,
-                has_upstream: false,
+                source_filter: None,
                 open_kind: PipelineOpenKind::Section,
                 section_raw: false,
                 pes_raw: false,
@@ -1484,7 +1750,7 @@ mod tests {
                 filter_id: 12,
                 tpid: Some(0x0100),
                 started: true,
-                has_upstream: false,
+                source_filter: None,
                 open_kind: PipelineOpenKind::Pes,
                 section_raw: false,
                 pes_raw: false,
@@ -1702,7 +1968,7 @@ mod malformed_adaptation_tests {
         assert!(malformed
             .diagnostics
             .iter()
-            .any(|diag| diag.kind == PipelineDiagnosticKind::MalformedTsPacket));
+            .any(|diag| matches!(diag, PipelineDiagnostic::MalformedTsPacket)));
 
         let mut tei = [0xffu8; TS_PACKET_SIZE];
         tei[0] = 0x47;
@@ -1713,9 +1979,10 @@ mod malformed_adaptation_tests {
         assert!(report
             .assembly_suppression_reasons
             .contains(&PipelineAssemblySuppressionReason::TransportErrorIndicator));
-        assert!(report.diagnostics.iter().any(|diag| diag.kind
-            == PipelineDiagnosticKind::TeiAssemblySuppressed
-            && diag.pid == Some(0x10)));
+        assert!(report.diagnostics.iter().any(|diag| matches!(
+            diag,
+            PipelineDiagnostic::TeiAssemblySuppressed { pid: 0x10 }
+        )));
     }
 }
 
@@ -1747,7 +2014,7 @@ mod discontinuity_generation_tests {
             filter_id: 17,
             tpid: Some(pid as i32),
             started: true,
-            has_upstream: false,
+            source_filter: None,
             open_kind: PipelineOpenKind::Section,
             section_raw: true,
             pes_raw: false,
@@ -1876,7 +2143,7 @@ mod record_raw_passthrough_policy_tests {
             filter_id,
             tpid: Some(0x0100),
             started: true,
-            has_upstream: false,
+            source_filter: None,
             open_kind: PipelineOpenKind::Record,
             section_raw: false,
             pes_raw: false,
@@ -1889,7 +2156,7 @@ mod record_raw_passthrough_policy_tests {
             filter_id,
             tpid: Some(0x0100),
             started: true,
-            has_upstream: false,
+            source_filter: None,
             open_kind: PipelineOpenKind::Section,
             section_raw: false,
             pes_raw: false,
@@ -1902,7 +2169,7 @@ mod record_raw_passthrough_policy_tests {
             filter_id,
             tpid: Some(0x0100),
             started: true,
-            has_upstream: false,
+            source_filter: None,
             open_kind: PipelineOpenKind::Raw,
             section_raw: false,
             pes_raw: false,
@@ -2044,7 +2311,7 @@ mod keyless_scrambled_policy_tests {
             filter_id,
             tpid: Some(0x0100),
             started: true,
-            has_upstream: false,
+            source_filter: None,
             open_kind,
             section_raw: false,
             pes_raw: false,

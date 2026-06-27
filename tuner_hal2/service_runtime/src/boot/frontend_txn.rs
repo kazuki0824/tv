@@ -224,7 +224,9 @@ impl<'a> FrontendTxn<'a> {
                         "bound demux runtime is missing while restoring tune rollback snapshot",
                     )
                 })?;
-            demux.restore(snapshot);
+            demux
+                .restore(snapshot)
+                .map_err(super::demux_runtime_error_to_hal)?;
         }
         Ok(())
     }

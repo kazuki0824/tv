@@ -9,11 +9,15 @@ pub use key_table::{
     DescramblerKeyTable,
 };
 pub use pid_claim::{
-    DescramblerPid, DescramblerPidClaim, DescramblerPidClaimError, SourceFilterRef,
+    DemuxInputRef, DescramblerPid, DescramblerPidClaim, DescramblerPidClaimError,
+    DescramblerPidSource, SourceFilterRef,
 };
 pub use session::{DescramblerRuntime, DescramblerSession};
 pub use session_txn::{
-    DescramblerCleanupReport, DescramblerSessionFailure, DescramblerSessionFailureKind,
-    DescramblerSessionTxn, DescramblerSessionTxnStep,
+    add_pid_claim_with_session_txn, bind_demux_with_session_txn, cleanup_all_with_session_txn,
+    clear_key_with_session_txn, remove_pid_claim_with_session_txn, replace_key_with_session_txn,
+    DescramblerCleanupReport, DescramblerClearKeyTxnError, DescramblerKeyTxnOps,
+    DescramblerReplaceKeyOutcome, DescramblerReplaceKeyTxnError, DescramblerSessionFailure,
+    DescramblerSessionFailureKind, DescramblerSessionTxnStep,
 };
 pub use token::{DescramblerKeyToken, DescramblerKeyTokenError, DESCRAMBLER_TOKEN_BYTES};

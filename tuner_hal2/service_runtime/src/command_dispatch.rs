@@ -38,26 +38,12 @@ impl RuntimeCommandDispatchError {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RuntimeCommandDispatcher {
-    covered_transaction_count: usize,
-}
-
-impl Default for RuntimeCommandDispatcher {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RuntimeCommandDispatcher;
 
 impl RuntimeCommandDispatcher {
-    pub fn new() -> Self {
-        Self {
-            covered_transaction_count: crate::transaction_registry::transaction_spec_count(),
-        }
-    }
-
-    pub const fn covered_transaction_count(&self) -> usize {
-        self.covered_transaction_count
+    pub const fn new() -> Self {
+        Self
     }
 
     pub fn plan(

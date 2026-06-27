@@ -8,6 +8,7 @@ use crate::packet_pipeline::{FilterPipelineConfig, PipelineOpenKind};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FilterOpenType {
     TsRaw,
+    TsPcr,
     TsAudio,
     TsVideo,
     TsSection,
@@ -16,9 +17,16 @@ pub enum FilterOpenType {
 }
 
 impl FilterOpenType {
+    pub const fn is_media_filter(self) -> bool {
+        match self {
+            Self::TsAudio | Self::TsVideo => true,
+            _ => false,
+        }
+    }
+
     pub const fn pipeline_open_kind(self) -> PipelineOpenKind {
         match self {
-            Self::TsRaw => PipelineOpenKind::Raw,
+            Self::TsRaw | Self::TsPcr => PipelineOpenKind::Raw,
             Self::TsAudio | Self::TsVideo => PipelineOpenKind::Av,
             Self::TsSection => PipelineOpenKind::Section,
             Self::TsPes => PipelineOpenKind::Pes,

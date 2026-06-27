@@ -6,8 +6,11 @@ use super::{
 };
 
 impl ILnb for LnbAidlObject {
-    fn setCallback(&self, callback: &Strong<dyn ILnbCallback>) -> BinderResult<()> {
-        self.set_callback_transaction(callback)
+    fn setCallback(&self, callback: Option<&Strong<dyn ILnbCallback>>) -> BinderResult<()> {
+        match callback {
+            Some(callback) => self.set_callback_transaction(callback),
+            None => self.clear_callback_transaction(),
+        }
     }
 
     fn setVoltage(&self, voltage: LnbVoltage) -> BinderResult<()> {
@@ -18,12 +21,12 @@ impl ILnb for LnbAidlObject {
                 let request = build_lnb_voltage_request(voltage).map_err(status_from_hal_error)?;
                 Ok((AidlMethodCall::LnbSetVoltage(request.clone()), request))
             },
-            |runtime, handle, _command_plan, _executable_request, dispatch_preflight, request| {
+            |runtime, handle, dispatch_proof, request| {
                 runtime.apply_lnb_voltage_for_object(
                     handle.object_id(),
                     handle.generation(),
                     request,
-                    dispatch_preflight,
+                    dispatch_proof,
                 )
             },
         )
@@ -37,12 +40,12 @@ impl ILnb for LnbAidlObject {
                 let request = build_lnb_tone_request(tone).map_err(status_from_hal_error)?;
                 Ok((AidlMethodCall::LnbSetTone(request.clone()), request))
             },
-            |runtime, handle, _command_plan, _executable_request, dispatch_preflight, request| {
+            |runtime, handle, dispatch_proof, request| {
                 runtime.apply_lnb_tone_for_object(
                     handle.object_id(),
                     handle.generation(),
                     request,
-                    dispatch_preflight,
+                    dispatch_proof,
                 )
             },
         )
@@ -60,12 +63,12 @@ impl ILnb for LnbAidlObject {
                     request,
                 ))
             },
-            |runtime, handle, _command_plan, _executable_request, dispatch_preflight, request| {
+            |runtime, handle, dispatch_proof, request| {
                 runtime.apply_lnb_satellite_position_for_object(
                     handle.object_id(),
                     handle.generation(),
                     request,
-                    dispatch_preflight,
+                    dispatch_proof,
                 )
             },
         )
@@ -76,13 +79,12 @@ impl ILnb for LnbAidlObject {
             &self.runtime(),
             self.handle(),
             AidlMethodCall::LnbSendDiseqc(diseqc_message.to_vec()),
-            |runtime, handle, command_plan, executable_request| {
+            |runtime, handle, dispatch_proof| {
                 runtime.send_lnb_diseqc_for_object(
                     handle.object_id(),
                     handle.generation(),
                     diseqc_message,
-                    command_plan,
-                    executable_request,
+                    dispatch_proof,
                 )
             },
         )
@@ -93,7 +95,7 @@ impl ILnb for LnbAidlObject {
         let runtime_for_cleanup = runtime_for_close.clone();
         let handle = self.handle();
         close_object_after_close_preflight_with_domain_cleanup(
-            &runtime_for_close,
+            &self.context(),
             handle,
             AidlMethodCall::LnbClose,
             || {

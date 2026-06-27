@@ -1,14 +1,11 @@
 pub mod apply_txn;
 pub mod lifecycle_txn;
-pub mod operation_guard;
 pub mod runtime;
 
-pub use apply_txn::{LnbApplyOutcome, LnbApplyStep, LnbApplyTxn};
+pub use apply_txn::{apply_lnb_state_with_txn, LnbApplyOutcome, LnbApplyStep};
 pub use lifecycle_txn::{
-    LnbLifecycleOutcome, LnbLifecycleReason, LnbLifecycleStep, LnbLifecycleTxn,
-};
-pub use operation_guard::{
-    LnbOperationFailureRecord, LnbOperationGuard, LnbOperationKind, LnbOperationLedger,
+    close_lnb_lifecycle, record_lnb_drop_leak_lifecycle, LnbLifecycleOutcome,
+    LnbLifecycleOutcomeReason, LnbLifecycleReason, LnbLifecycleStep,
 };
 pub use runtime::{
     LnbBackendOps, LnbDiseqcMessage, LnbElectricalState, LnbRuntime, LnbRuntimeState, LnbTone,
@@ -18,8 +15,6 @@ pub use runtime::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LnbFailureKind {
     InvalidState,
-    OperationAlreadyActive,
-    OperationLockFailed,
     BackendApplyFailed,
     RegistryCommitFailed,
     DiseqcInvalidMessage,

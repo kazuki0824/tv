@@ -5,7 +5,9 @@ use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem};
 use maleicacid_tuner_hal2_demux::DemuxRuntime;
 use maleicacid_tuner_hal2_descrambler::runtime::DescramblerKeySlotId;
 use maleicacid_tuner_hal2_descrambler::{
-    DescramblerKeyTable, DescramblerPidClaim, DescramblerRuntime,
+    clear_key_with_session_txn, replace_key_with_session_txn, DescramblerClearKeyTxnError,
+    DescramblerKeyLookupError, DescramblerKeyTable, DescramblerKeyToken, DescramblerPidClaim,
+    DescramblerReplaceKeyOutcome, DescramblerReplaceKeyTxnError, DescramblerRuntime,
 };
 use maleicacid_tuner_hal2_device::FrontendRuntime;
 use maleicacid_tuner_hal2_lnb::LnbRuntime;
@@ -433,6 +435,14 @@ impl RuntimeRegistry {
         self.filters.get(&id)
     }
 
+    pub fn filters_for_demux(&self, owner_demux_id: i32) -> Vec<FilterRegistryEntry> {
+        self.filters
+            .values()
+            .filter(|entry| entry.owner_demux_id == owner_demux_id)
+            .cloned()
+            .collect()
+    }
+
     pub fn unregister_filter(&mut self, id: FilterRuntimeId) -> Option<FilterRegistryEntry> {
         self.filters.remove(&id)
     }
@@ -507,6 +517,10 @@ impl RuntimeRegistry {
     ) -> Option<DescramblerRegistryEntry> {
         self.descrambler_runtimes.remove(&id);
         self.descramblers.remove(&id)
+    }
+
+    pub fn descrambler(&self, id: DescramblerRuntimeId) -> Option<&DescramblerRegistryEntry> {
+        self.descramblers.get(&id)
     }
 
     pub fn descrambler_runtime(&self, id: DescramblerRuntimeId) -> Option<&DescramblerRuntime> {
@@ -590,6 +604,48 @@ impl RuntimeRegistry {
                 (runtime.session().demux_id() == Some(demux_id)).then_some(*id)
             })
             .collect()
+    }
+
+    pub fn clear_descrambler_key_with_session_txn(
+        &mut self,
+        descrambler_id: DescramblerRuntimeId,
+    ) -> Result<(), DescramblerClearKeyTxnError<DescramblerKeyLookupError>> {
+        let runtime = self
+            .descrambler_runtimes
+            .get_mut(&descrambler_id)
+            .ok_or(DescramblerClearKeyTxnError::Session(
+            maleicacid_tuner_hal2_descrambler::DescramblerSessionFailure {
+                step: maleicacid_tuner_hal2_descrambler::DescramblerSessionTxnStep::ValidateOpen,
+                kind:
+                    maleicacid_tuner_hal2_descrambler::DescramblerSessionFailureKind::SessionClosed,
+            },
+        ))?;
+        clear_key_with_session_txn(runtime.session_mut(), &mut self.descrambler_key_table)
+    }
+
+    pub fn replace_descrambler_key_with_session_txn(
+        &mut self,
+        descrambler_id: DescramblerRuntimeId,
+        token: DescramblerKeyToken,
+    ) -> Result<
+        DescramblerReplaceKeyOutcome,
+        DescramblerReplaceKeyTxnError<DescramblerKeyLookupError, DescramblerKeyLookupError>,
+    > {
+        let runtime = self
+            .descrambler_runtimes
+            .get_mut(&descrambler_id)
+            .ok_or(DescramblerReplaceKeyTxnError::Session(
+            maleicacid_tuner_hal2_descrambler::DescramblerSessionFailure {
+                step: maleicacid_tuner_hal2_descrambler::DescramblerSessionTxnStep::ValidateOpen,
+                kind:
+                    maleicacid_tuner_hal2_descrambler::DescramblerSessionFailureKind::SessionClosed,
+            },
+        ))?;
+        replace_key_with_session_txn(
+            runtime.session_mut(),
+            &mut self.descrambler_key_table,
+            token,
+        )
     }
 
     pub fn descrambler_key_table(&self) -> &DescramblerKeyTable {

@@ -3,10 +3,9 @@ use crate::error_mapping::{object_table_error_to_hal, registry_commit_error_to_h
 use crate::method_dispatch::plan_object_method_dispatch;
 use crate::open_rollback::finish_open_rollback;
 use crate::{RuntimeObjectEntry, RuntimeOwnerRelation};
+use maleicacid_tuner_hal2_binder_adapter::{AidlMethodAdapter, AidlMethodCall};
 use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, HalError};
-use maleicacid_tuner_hal2_domain_request::{
-    AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan, RuntimeExecutableRequest,
-};
+use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
 
 fn register_root_object(
     runtime: &mut TunerServiceRuntime,
@@ -63,14 +62,25 @@ fn unregister_descrambler_runtime_for_open_rollback(
     }
 }
 
+fn preflight_root_method_dispatch(
+    runtime: &mut TunerServiceRuntime,
+    method: AidlMethodCall,
+) -> Result<(), HalError> {
+    let method_plan = AidlMethodAdapter::plan(method)?;
+    plan_object_method_dispatch(
+        runtime,
+        method_plan.command_plan,
+        method_plan.command.runtime_executable_request(),
+    )
+}
+
 impl TunerServiceRuntime {
     pub fn open_frontend_root_object_for_id(
         &mut self,
         frontend_id: i32,
-        command_plan: CommandPlan,
-        executable_request: Option<RuntimeExecutableRequest>,
+        method: AidlMethodCall,
     ) -> Result<RuntimeObjectEntry, HalError> {
-        plan_object_method_dispatch(self, command_plan, executable_request)?;
+        preflight_root_method_dispatch(self, method)?;
         if !self.has_frontend_id(frontend_id) {
             return Err(HalError::Unsupported("frontend id is not available"));
         }
@@ -79,10 +89,9 @@ impl TunerServiceRuntime {
 
     pub fn open_demux_root_object(
         &mut self,
-        command_plan: CommandPlan,
-        executable_request: Option<RuntimeExecutableRequest>,
+        method: AidlMethodCall,
     ) -> Result<RuntimeObjectEntry, HalError> {
-        plan_object_method_dispatch(self, command_plan, executable_request)?;
+        preflight_root_method_dispatch(self, method)?;
         let entry = self.allocate_demux_runtime().map_err(|error| {
             registry_commit_error_to_hal(error, "demux runtime allocation failed")
         })?;
@@ -108,10 +117,9 @@ impl TunerServiceRuntime {
     pub fn open_demux_root_object_by_id(
         &mut self,
         demux_id: i32,
-        command_plan: CommandPlan,
-        executable_request: Option<RuntimeExecutableRequest>,
+        method: AidlMethodCall,
     ) -> Result<RuntimeObjectEntry, HalError> {
-        plan_object_method_dispatch(self, command_plan, executable_request)?;
+        preflight_root_method_dispatch(self, method)?;
         if !self.has_demux_id(demux_id) {
             return Err(HalError::Unsupported("demux id is not available"));
         }
@@ -120,10 +128,9 @@ impl TunerServiceRuntime {
 
     pub fn open_descrambler_root_object(
         &mut self,
-        command_plan: CommandPlan,
-        executable_request: Option<RuntimeExecutableRequest>,
+        method: AidlMethodCall,
     ) -> Result<RuntimeObjectEntry, HalError> {
-        plan_object_method_dispatch(self, command_plan, executable_request)?;
+        preflight_root_method_dispatch(self, method)?;
         let entry = self.allocate_descrambler_runtime().map_err(|error| {
             registry_commit_error_to_hal(error, "descrambler runtime allocation failed")
         })?;
@@ -149,10 +156,9 @@ impl TunerServiceRuntime {
     pub fn open_lnb_root_object_for_id(
         &mut self,
         lnb_id: i32,
-        command_plan: CommandPlan,
-        executable_request: Option<RuntimeExecutableRequest>,
+        method: AidlMethodCall,
     ) -> Result<RuntimeObjectEntry, HalError> {
-        plan_object_method_dispatch(self, command_plan, executable_request)?;
+        preflight_root_method_dispatch(self, method)?;
         if !self.has_lnb_id(lnb_id) {
             return Err(HalError::Unsupported("LNB id is not available"));
         }
@@ -182,10 +188,9 @@ impl TunerServiceRuntime {
     pub fn open_lnb_root_object_by_name(
         &mut self,
         lnb_name: &str,
-        command_plan: CommandPlan,
-        executable_request: Option<RuntimeExecutableRequest>,
+        method: AidlMethodCall,
     ) -> Result<(i32, RuntimeObjectEntry), HalError> {
-        plan_object_method_dispatch(self, command_plan, executable_request)?;
+        preflight_root_method_dispatch(self, method)?;
         let Some(lnb_id) = self.lnb_id_by_name(lnb_name) else {
             return Err(HalError::Unsupported("LNB name is not available"));
         };

@@ -105,13 +105,6 @@ impl AvSharedBacking {
             .filter(|slot| slot.active_data_id.is_some())
             .count()
     }
-    pub fn active_data_ids(&self) -> Vec<AvDataId> {
-        self.slots
-            .iter()
-            .filter_map(|slot| slot.active_data_id)
-            .collect()
-    }
-
     pub fn mark_exported(&mut self) {
         self.state = ClientHandleState::ExportedActive;
         self.ever_exported = true;

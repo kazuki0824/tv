@@ -51,7 +51,8 @@ pub fn filter_open_type(filter_type: &DemuxFilterType) -> Result<FilterOpenType,
         ));
     }
     match &filter_type.subType {
-        DemuxFilterSubType::TsFilterType(DemuxTsFilterType::TS) => Ok(FilterOpenType::TsRaw),
+        DemuxFilterSubType::TsFilterType(DemuxTsFilterType::UNDEFINED)
+        | DemuxFilterSubType::TsFilterType(DemuxTsFilterType::TS) => Ok(FilterOpenType::TsRaw),
         DemuxFilterSubType::TsFilterType(DemuxTsFilterType::AUDIO) => Ok(FilterOpenType::TsAudio),
         DemuxFilterSubType::TsFilterType(DemuxTsFilterType::VIDEO) => Ok(FilterOpenType::TsVideo),
         DemuxFilterSubType::TsFilterType(DemuxTsFilterType::SECTION) => {
@@ -59,6 +60,7 @@ pub fn filter_open_type(filter_type: &DemuxFilterType) -> Result<FilterOpenType,
         }
         DemuxFilterSubType::TsFilterType(DemuxTsFilterType::PES) => Ok(FilterOpenType::TsPes),
         DemuxFilterSubType::TsFilterType(DemuxTsFilterType::RECORD) => Ok(FilterOpenType::TsRecord),
+        DemuxFilterSubType::TsFilterType(DemuxTsFilterType::PCR) => Ok(FilterOpenType::TsPcr),
         _ => Err(HalError::Unsupported(
             "filter subtype is outside the TS-only tuner_hal2 profile",
         )),
@@ -287,8 +289,8 @@ pub fn build_filter_summary_for_open_type(
     let tpid = ts.tpid;
     match &ts.filterSettings {
         DemuxTsFilterSettingsFilterSettings::Noinit(_) => {
-            if open_type != FilterOpenType::TsRaw {
-                return Err(invalid("noinit settings require TS raw filter"));
+            if open_type != FilterOpenType::TsRaw && open_type != FilterOpenType::TsPcr {
+                return Err(invalid("noinit settings require TS raw/PCR filter"));
             }
             Ok(FilterConfig {
                 open_type,

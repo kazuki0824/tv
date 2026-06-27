@@ -1,14 +1,16 @@
 use super::{
+    add_pid_claim_with_session_txn, bind_demux_with_session_txn, cleanup_all_with_session_txn,
     descrambler_key_lookup_error_to_hal, descrambler_key_release_error_to_hal,
     descrambler_key_token_error_to_hal, descrambler_pid_claim_error_to_hal,
     descrambler_session_failure_to_hal, DemuxRuntimeId, DemuxRuntimeState,
-    DescramblerDiagnosticKind, DescramblerDiagnosticPhase, DescramblerDiagnosticRecord,
-    DescramblerKeyLookupError, DescramblerKeyToken, DescramblerKeyTokenError, DescramblerPidClaim,
-    DescramblerRuntimeId, DescramblerSessionTxn, FilterOpenType, FilterRuntimeId,
+    DescramblerClearKeyTxnError, DescramblerDiagnosticKind, DescramblerDiagnosticPhase,
+    DescramblerDiagnosticRecord, DescramblerKeyLookupError, DescramblerKeyToken,
+    DescramblerKeyTokenError, DescramblerPidClaim, DescramblerReplaceKeyOutcome,
+    DescramblerReplaceKeyTxnError, DescramblerRuntimeId, FilterOpenType, FilterRuntimeId,
     FilterRuntimeState, HalError, HalInvalidArgumentKind, HalInvalidStateKind, RegistryCommitError,
     TunerServiceRuntime,
 };
-use maleicacid_tuner_hal2_common::FirstErrorCollector;
+use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, FirstErrorCollector};
 
 impl TunerServiceRuntime {
     fn transact_allocate_descrambler_runtime(
@@ -150,8 +152,7 @@ impl TunerServiceRuntime {
         }
         let demux_generation = demux_runtime.generation();
         let runtime = self.descrambler_runtime_mut(descrambler_id)?;
-        let mut txn = DescramblerSessionTxn::new();
-        txn.bind_demux(runtime.session_mut(), demux_id, demux_generation)
+        bind_demux_with_session_txn(runtime.session_mut(), demux_id, demux_generation)
             .map_err(|failure| descrambler_session_failure_to_hal(failure.kind))
     }
 
@@ -161,39 +162,30 @@ impl TunerServiceRuntime {
         key_token: &[u8],
     ) -> Result<(), HalError> {
         if key_token == [0x00].as_slice() {
-            let clear_result = {
-                let runtime = self.descrambler_runtime_mut(descrambler_id)?;
-                let mut txn = DescramblerSessionTxn::new();
-                txn.clear_key(runtime.session_mut())
-                    .map_err(|failure| descrambler_session_failure_to_hal(failure.kind))
-            };
-            let old_token = match clear_result {
-                Ok(old_token) => old_token,
-                Err(error) => {
+            return match self
+                .registry
+                .clear_descrambler_key_with_session_txn(DescramblerRuntimeId(descrambler_id))
+            {
+                Ok(()) => Ok(()),
+                Err(DescramblerClearKeyTxnError::Session(failure)) => {
+                    let error = descrambler_session_failure_to_hal(failure.kind);
                     self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::set_key_token(
                         descrambler_id,
                         DescramblerDiagnosticKind::SessionClosed,
                         error.clone(),
                     ));
-                    return Err(error);
+                    Err(error)
                 }
-            };
-            if let Some(old_token) = old_token {
-                if let Err(error) = self
-                    .registry
-                    .descrambler_key_table_mut()
-                    .release(&old_token)
-                    .map_err(descrambler_key_release_error_to_hal)
-                {
+                Err(DescramblerClearKeyTxnError::ReleaseOld(error)) => {
+                    let hal_error = descrambler_key_release_error_to_hal(error);
                     self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::set_key_token(
                         descrambler_id,
                         DescramblerDiagnosticKind::KeyTokenReleaseFailed,
-                        error.clone(),
+                        hal_error.clone(),
                     ));
-                    return Err(error);
+                    Err(hal_error)
                 }
-            }
-            return Ok(());
+            };
         }
         let token = match DescramblerKeyToken::try_from_bytes(key_token.to_vec()) {
             Ok(token) => token,
@@ -213,30 +205,6 @@ impl TunerServiceRuntime {
                 return Err(hal_error);
             }
         };
-        let old_token_result = {
-            let runtime = self.descrambler_runtime_mut(descrambler_id)?;
-            if runtime.session().is_closed() {
-                Err(HalError::invalid_state(
-                    HalInvalidStateKind::InvalidLifecycle,
-                    "descrambler session is closed",
-                ))
-            } else if runtime.session().key_token() == Some(&token) {
-                return Ok(());
-            } else {
-                Ok(runtime.session().key_token().cloned())
-            }
-        };
-        let old_token = match old_token_result {
-            Ok(old_token) => old_token,
-            Err(error) => {
-                self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::set_key_token(
-                    descrambler_id,
-                    DescramblerDiagnosticKind::SessionClosed,
-                    error.clone(),
-                ));
-                return Err(error);
-            }
-        };
         if !self
             .registry
             .descrambler_key_table()
@@ -253,9 +221,24 @@ impl TunerServiceRuntime {
             ));
             return Err(error);
         }
-        let key_slot = match self.registry.descrambler_key_table_mut().acquire(&token) {
-            Ok(key_slot) => key_slot,
-            Err(error) => {
+        match self
+            .registry
+            .replace_descrambler_key_with_session_txn(DescramblerRuntimeId(descrambler_id), token)
+        {
+            Ok(
+                DescramblerReplaceKeyOutcome::AlreadyCurrent
+                | DescramblerReplaceKeyOutcome::Replaced,
+            ) => Ok(()),
+            Err(DescramblerReplaceKeyTxnError::Session(failure)) => {
+                let hal_error = descrambler_session_failure_to_hal(failure.kind);
+                self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::set_key_token(
+                    descrambler_id,
+                    DescramblerDiagnosticKind::SessionClosed,
+                    hal_error.clone(),
+                ));
+                Err(hal_error)
+            }
+            Err(DescramblerReplaceKeyTxnError::Acquire(error)) => {
                 let kind = match error {
                     DescramblerKeyLookupError::UnknownToken => {
                         DescramblerDiagnosticKind::KeyTokenUnknown
@@ -270,35 +253,163 @@ impl TunerServiceRuntime {
                     kind,
                     hal_error.clone(),
                 ));
-                return Err(hal_error);
+                Err(hal_error)
             }
-        };
-        if let Some(old_token) = old_token {
-            if let Err(error) = self
-                .registry
-                .descrambler_key_table_mut()
-                .release(&old_token)
-            {
-                let hal_error = descrambler_key_release_error_to_hal(error);
-                if let Err(rollback_error) =
-                    self.registry.descrambler_key_table_mut().release(&token)
-                {
-                    self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::set_key_token(
-                        descrambler_id,
-                        DescramblerDiagnosticKind::KeyTokenReleaseFailed,
+            Err(DescramblerReplaceKeyTxnError::Commit {
+                failure,
+                rollback_release,
+            }) => {
+                let hal_error = descrambler_session_failure_to_hal(failure.kind);
+                let final_error = match rollback_release {
+                    Some(rollback_error) => compose_primary_cleanup_failure(
+                        "descrambler setKeyToken session replace rollback release",
+                        hal_error.clone(),
                         descrambler_key_release_error_to_hal(rollback_error),
-                    ));
-                }
+                    ),
+                    None => hal_error.clone(),
+                };
+                self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::set_key_token(
+                    descrambler_id,
+                    DescramblerDiagnosticKind::SessionClosed,
+                    final_error.clone(),
+                ));
+                Err(final_error)
+            }
+            Err(DescramblerReplaceKeyTxnError::ReleaseOld(error)) => {
+                let hal_error = descrambler_key_release_error_to_hal(error);
                 self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::set_key_token(
                     descrambler_id,
                     DescramblerDiagnosticKind::KeyTokenReleaseFailed,
                     hal_error.clone(),
                 ));
-                return Err(hal_error);
+                Err(hal_error)
             }
         }
-        let runtime = self.descrambler_runtime_mut(descrambler_id)?;
-        runtime.session_mut().replace_key(token, key_slot);
+    }
+
+    fn transact_add_descrambler_pid_demux_input(
+        &mut self,
+        descrambler_id: i32,
+        pid: u16,
+    ) -> Result<(), HalError> {
+        let (demux_id, demux_generation) = match self.descrambler_bound_demux(descrambler_id) {
+            Ok(bound) => bound,
+            Err(error) => {
+                self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::pid_claim(
+                    DescramblerDiagnosticPhase::AddPid,
+                    descrambler_id,
+                    None,
+                    pid,
+                    -1,
+                    error.clone(),
+                ));
+                return Err(error);
+            }
+        };
+        if self.registry.descrambler_pid_claimed_by_other(
+            DescramblerRuntimeId(descrambler_id),
+            demux_id,
+            demux_generation,
+            pid,
+        ) {
+            let error = HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "descrambler PID is already claimed by another session",
+            );
+            self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::pid_claim(
+                DescramblerDiagnosticPhase::AddPid,
+                descrambler_id,
+                Some(demux_id),
+                pid,
+                -1,
+                error.clone(),
+            ));
+            return Err(error);
+        }
+        let claim = match DescramblerPidClaim::from_demux_input(pid, demux_id, demux_generation) {
+            Ok(claim) => claim,
+            Err(error) => {
+                let hal_error = descrambler_pid_claim_error_to_hal(error);
+                self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::pid_claim(
+                    DescramblerDiagnosticPhase::AddPid,
+                    descrambler_id,
+                    Some(demux_id),
+                    pid,
+                    -1,
+                    hal_error.clone(),
+                ));
+                return Err(hal_error);
+            }
+        };
+        let add_result = {
+            let runtime = self.descrambler_runtime_mut(descrambler_id)?;
+            add_pid_claim_with_session_txn(runtime.session_mut(), claim)
+                .map_err(|failure| descrambler_session_failure_to_hal(failure.kind))
+        };
+        if let Err(error) = add_result {
+            self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::pid_claim(
+                DescramblerDiagnosticPhase::AddPid,
+                descrambler_id,
+                Some(demux_id),
+                pid,
+                -1,
+                error.clone(),
+            ));
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn transact_remove_descrambler_pid_demux_input(
+        &mut self,
+        descrambler_id: i32,
+        pid: u16,
+    ) -> Result<(), HalError> {
+        let (demux_id, demux_generation) = match self.descrambler_bound_demux(descrambler_id) {
+            Ok(bound) => bound,
+            Err(error) => {
+                self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::pid_claim(
+                    DescramblerDiagnosticPhase::RemovePid,
+                    descrambler_id,
+                    None,
+                    pid,
+                    -1,
+                    error.clone(),
+                ));
+                return Err(error);
+            }
+        };
+        let claim = match DescramblerPidClaim::from_demux_input(pid, demux_id, demux_generation) {
+            Ok(claim) => claim,
+            Err(error) => {
+                let hal_error = descrambler_pid_claim_error_to_hal(error);
+                self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::pid_claim(
+                    DescramblerDiagnosticPhase::RemovePid,
+                    descrambler_id,
+                    Some(demux_id),
+                    pid,
+                    -1,
+                    hal_error.clone(),
+                ));
+                return Err(hal_error);
+            }
+        };
+        let remove_result = {
+            let runtime = self.descrambler_runtime_mut(descrambler_id)?;
+            remove_pid_claim_with_session_txn(runtime.session_mut(), claim)
+                .map_err(|failure| descrambler_session_failure_to_hal(failure.kind))
+        };
+        if let Err(error) = remove_result {
+            self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::pid_claim(
+                DescramblerDiagnosticPhase::RemovePid,
+                descrambler_id,
+                Some(demux_id),
+                pid,
+                -1,
+                error.clone(),
+            ));
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -380,8 +491,7 @@ impl TunerServiceRuntime {
             };
         let add_result = {
             let runtime = self.descrambler_runtime_mut(descrambler_id)?;
-            let mut txn = DescramblerSessionTxn::new();
-            txn.add_pid_claim(runtime.session_mut(), claim)
+            add_pid_claim_with_session_txn(runtime.session_mut(), claim)
                 .map_err(|failure| descrambler_session_failure_to_hal(failure.kind))
         };
         if let Err(error) = add_result {
@@ -458,8 +568,13 @@ impl TunerServiceRuntime {
             let runtime = self.descrambler_runtime_mut(descrambler_id)?;
             runtime.session().pid_claims().iter().any(|stored| {
                 stored.pid().0 == pid
-                    && stored.source_filter().filter_id == source_filter_id
-                    && stored.source_filter().generation != source_generation
+                    && stored
+                        .source_filter_ref()
+                        .map(|source| {
+                            source.filter_id == source_filter_id
+                                && source.generation != source_generation
+                        })
+                        .unwrap_or(false)
             })
         };
         if stale_source_generation {
@@ -479,8 +594,7 @@ impl TunerServiceRuntime {
         }
         let remove_result = {
             let runtime = self.descrambler_runtime_mut(descrambler_id)?;
-            let mut txn = DescramblerSessionTxn::new();
-            txn.remove_pid_claim(runtime.session_mut(), claim)
+            remove_pid_claim_with_session_txn(runtime.session_mut(), claim)
                 .map_err(|failure| descrambler_session_failure_to_hal(failure.kind))
         };
         if let Err(error) = remove_result {
@@ -501,11 +615,10 @@ impl TunerServiceRuntime {
         &mut self,
         id: i32,
     ) -> Result<Option<crate::registry::DescramblerRegistryEntry>, HalError> {
-        let cleanup = self.cleanup_descrambler_session(id);
-        let entry = self
+        self.cleanup_descrambler_session(id)?;
+        Ok(self
             .registry
-            .unregister_descrambler(DescramblerRuntimeId(id));
-        cleanup.map(|()| entry)
+            .unregister_descrambler(DescramblerRuntimeId(id)))
     }
 
     fn transact_cleanup_descramblers_for_demux_owner_loss(
@@ -522,24 +635,10 @@ impl TunerServiceRuntime {
 
     fn cleanup_descrambler_session(&mut self, id: i32) -> Result<(), HalError> {
         let mut cleanup_collector = FirstErrorCollector::new();
-        let old_token = if let Some(runtime) = self
+        let old_token = self
             .registry
-            .descrambler_runtime_mut(DescramblerRuntimeId(id))
-        {
-            let mut txn = DescramblerSessionTxn::new();
-            let old_token = runtime.session().key_token().cloned();
-            let cleanup_report = txn.cleanup_all(runtime.session_mut());
-            if let Some(failure) = cleanup_report.failure() {
-                let error = descrambler_session_failure_to_hal(failure.kind);
-                self.record_descrambler_diagnostic(
-                    DescramblerDiagnosticRecord::cleanup_release_failed(id, error.clone()),
-                );
-                cleanup_collector.push_error(error);
-            }
-            old_token
-        } else {
-            None
-        };
+            .descrambler_runtime(DescramblerRuntimeId(id))
+            .and_then(|runtime| runtime.session().key_token().cloned());
         if let Some(old_token) = old_token {
             if let Err(error) = self
                 .registry
@@ -547,6 +646,19 @@ impl TunerServiceRuntime {
                 .release(&old_token)
                 .map_err(descrambler_key_release_error_to_hal)
             {
+                self.record_descrambler_diagnostic(
+                    DescramblerDiagnosticRecord::cleanup_release_failed(id, error.clone()),
+                );
+                cleanup_collector.push_error(error);
+            }
+        }
+        if let Some(runtime) = self
+            .registry
+            .descrambler_runtime_mut(DescramblerRuntimeId(id))
+        {
+            let cleanup_report = cleanup_all_with_session_txn(runtime.session_mut());
+            if let Some(failure) = cleanup_report.failure() {
+                let error = descrambler_session_failure_to_hal(failure.kind);
                 self.record_descrambler_diagnostic(
                     DescramblerDiagnosticRecord::cleanup_release_failed(id, error.clone()),
                 );
@@ -590,6 +702,24 @@ impl<'a> DescramblerTxn<'a> {
     ) -> Result<(), HalError> {
         self.runtime
             .transact_set_descrambler_key_token(descrambler_id, key_token)
+    }
+
+    pub(crate) fn add_descrambler_pid_demux_input(
+        &mut self,
+        descrambler_id: i32,
+        pid: u16,
+    ) -> Result<(), HalError> {
+        self.runtime
+            .transact_add_descrambler_pid_demux_input(descrambler_id, pid)
+    }
+
+    pub(crate) fn remove_descrambler_pid_demux_input(
+        &mut self,
+        descrambler_id: i32,
+        pid: u16,
+    ) -> Result<(), HalError> {
+        self.runtime
+            .transact_remove_descrambler_pid_demux_input(descrambler_id, pid)
     }
 
     pub(crate) fn add_descrambler_pid_non_null_source(

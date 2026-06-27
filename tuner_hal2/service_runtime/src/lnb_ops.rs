@@ -1,6 +1,5 @@
-use crate::method_dispatch::plan_object_method_dispatch;
 use crate::object_lifecycle::aidl_public_runtime_id_for_close_cleanup;
-use crate::object_method_txn::ObjectMethodDispatchPreflight;
+use crate::object_method_txn::ObjectMethodExecutionToken;
 use maleicacid_tuner_hal2_common::HalError;
 use maleicacid_tuner_hal2_domain_request::{
     LnbSetSatellitePositionRequest, LnbToneRequest, LnbVoltageRequest,
@@ -43,6 +42,10 @@ impl TunerServiceRuntime {
 
     pub fn commit_lnb_callback_registration(&mut self, lnb_id: i32) -> Result<(), HalError> {
         self.lnb_txn().commit_lnb_callback_registration(lnb_id)
+    }
+
+    pub fn clear_lnb_callback_registration(&mut self, lnb_id: i32) -> Result<(), HalError> {
+        self.lnb_txn().clear_lnb_callback_registration(lnb_id)
     }
 
     pub fn close_lnb_explicit(&mut self, lnb_id: i32) -> Result<(), HalError> {
@@ -137,14 +140,20 @@ impl TunerServiceRuntime {
         object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
         generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
         request: LnbVoltageRequest,
-        dispatch: ObjectMethodDispatchPreflight,
+        dispatch: ObjectMethodExecutionToken,
     ) -> Result<(), HalError> {
+        dispatch.consume_for_object(
+            self,
+            object_id,
+            generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Lnb,
+        )?;
+
         let lnb_id = self.public_runtime_id_for_object_method(
             object_id,
             generation,
             maleicacid_tuner_hal2_domain_request::AidlObjectKind::Lnb,
         )?;
-        dispatch.plan(self)?;
         self.apply_lnb_voltage(lnb_id, request)
     }
 
@@ -153,14 +162,20 @@ impl TunerServiceRuntime {
         object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
         generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
         request: LnbToneRequest,
-        dispatch: ObjectMethodDispatchPreflight,
+        dispatch: ObjectMethodExecutionToken,
     ) -> Result<(), HalError> {
+        dispatch.consume_for_object(
+            self,
+            object_id,
+            generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Lnb,
+        )?;
+
         let lnb_id = self.public_runtime_id_for_object_method(
             object_id,
             generation,
             maleicacid_tuner_hal2_domain_request::AidlObjectKind::Lnb,
         )?;
-        dispatch.plan(self)?;
         self.apply_lnb_tone(lnb_id, request)
     }
 
@@ -169,14 +184,20 @@ impl TunerServiceRuntime {
         object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
         generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
         request: LnbSetSatellitePositionRequest,
-        dispatch: ObjectMethodDispatchPreflight,
+        dispatch: ObjectMethodExecutionToken,
     ) -> Result<(), HalError> {
+        dispatch.consume_for_object(
+            self,
+            object_id,
+            generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Lnb,
+        )?;
+
         let lnb_id = self.public_runtime_id_for_object_method(
             object_id,
             generation,
             maleicacid_tuner_hal2_domain_request::AidlObjectKind::Lnb,
         )?;
-        dispatch.plan(self)?;
         self.apply_lnb_satellite_position(lnb_id, request)
     }
 
@@ -185,15 +206,20 @@ impl TunerServiceRuntime {
         object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
         generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
         payload: &[u8],
-        command_plan: maleicacid_tuner_hal2_domain_request::CommandPlan,
-        executable_request: Option<maleicacid_tuner_hal2_domain_request::RuntimeExecutableRequest>,
+        dispatch: ObjectMethodExecutionToken,
     ) -> Result<(), HalError> {
+        dispatch.consume_for_object(
+            self,
+            object_id,
+            generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Lnb,
+        )?;
+
         let lnb_id = self.public_runtime_id_for_object_method(
             object_id,
             generation,
             maleicacid_tuner_hal2_domain_request::AidlObjectKind::Lnb,
         )?;
-        plan_object_method_dispatch(self, command_plan, executable_request)?;
         self.send_lnb_diseqc(lnb_id, payload)
     }
 
@@ -201,15 +227,42 @@ impl TunerServiceRuntime {
         &mut self,
         object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
         generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
-        dispatch: ObjectMethodDispatchPreflight,
+        dispatch: ObjectMethodExecutionToken,
     ) -> Result<(), HalError> {
+        dispatch.consume_for_object(
+            self,
+            object_id,
+            generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Lnb,
+        )?;
+
         let lnb_id = self.public_runtime_id_for_object_method(
             object_id,
             generation,
             maleicacid_tuner_hal2_domain_request::AidlObjectKind::Lnb,
         )?;
-        dispatch.plan(self)?;
         self.commit_lnb_callback_registration(lnb_id)
+    }
+
+    pub fn clear_lnb_callback_registration_for_object(
+        &mut self,
+        object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
+        generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
+        dispatch: ObjectMethodExecutionToken,
+    ) -> Result<(), HalError> {
+        dispatch.consume_for_object(
+            self,
+            object_id,
+            generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Lnb,
+        )?;
+
+        let lnb_id = self.public_runtime_id_for_object_method(
+            object_id,
+            generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Lnb,
+        )?;
+        self.clear_lnb_callback_registration(lnb_id)
     }
 
     pub fn close_lnb_explicit_after_object_close_begin(
