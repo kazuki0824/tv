@@ -8,8 +8,8 @@ pub mod frontend_worker;
 pub mod live_pump;
 pub mod reader;
 pub mod scan_session;
-pub mod tune_txn;
 pub(crate) mod thread_result_owner;
+pub mod tune_txn;
 
 pub use backend_worker::{
     run_frontend_backend_tune_worker, run_frontend_backend_tune_worker_with_previous,
@@ -22,8 +22,9 @@ pub use frontend_runtime::{
     FrontendTerminalEventReason,
 };
 pub use frontend_worker::{
-    FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerDetachedJoin, FrontendWorkerKind, FrontendWorkerRegistry,
-    FrontendWorkerStartError, FrontendWorkerStopOutcome, FrontendWorkerStopTicket,
+    FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerDetachedJoin,
+    FrontendWorkerKind, FrontendWorkerRegistry, FrontendWorkerStartError,
+    FrontendWorkerStopOutcome, FrontendWorkerStopTicket,
 };
 pub use live_pump::{
     run_frontend_live_pump, run_frontend_live_pump_limited, FrontendLivePacketSink,

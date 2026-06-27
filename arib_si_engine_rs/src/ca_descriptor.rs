@@ -38,10 +38,14 @@ pub struct CaDescriptorParseResult {
 }
 
 pub fn parse_ca_descriptors(descriptors: &[u8]) -> Vec<CaDescriptor> {
-    parse_ca_descriptors_with_diagnostics(descriptors, CaDescriptorParseContext::default()).descriptors
+    parse_ca_descriptors_with_diagnostics(descriptors, CaDescriptorParseContext::default())
+        .descriptors
 }
 
-pub fn parse_ca_descriptors_with_diagnostics(descriptors: &[u8], context: CaDescriptorParseContext) -> CaDescriptorParseResult {
+pub fn parse_ca_descriptors_with_diagnostics(
+    descriptors: &[u8],
+    context: CaDescriptorParseContext,
+) -> CaDescriptorParseResult {
     let mut out = Vec::new();
     let mut diagnostics = Vec::new();
     let mut cursor = 0usize;
@@ -52,27 +56,58 @@ pub fn parse_ca_descriptors_with_diagnostics(descriptors: &[u8], context: CaDesc
         let body_end = body_start.saturating_add(len);
         if body_end > descriptors.len() {
             if tag == 0x09 {
-                diagnostics.push(malformed_diagnostic(&context, cursor, len, descriptors.len().saturating_sub(body_start), "TRUNCATED_CA_DESCRIPTOR", &descriptors[cursor..]));
+                diagnostics.push(malformed_diagnostic(
+                    &context,
+                    cursor,
+                    len,
+                    descriptors.len().saturating_sub(body_start),
+                    "TRUNCATED_CA_DESCRIPTOR",
+                    &descriptors[cursor..],
+                ));
             }
             break;
         }
         if tag == 0x09 {
             if len >= 4 {
-                let ca_system_id = u16::from_be_bytes([descriptors[body_start], descriptors[body_start + 1]]);
-                let ca_pid = (((descriptors[body_start + 2] & 0x1f) as u16) << 8) | descriptors[body_start + 3] as u16;
+                let ca_system_id =
+                    u16::from_be_bytes([descriptors[body_start], descriptors[body_start + 1]]);
+                let ca_pid = (((descriptors[body_start + 2] & 0x1f) as u16) << 8)
+                    | descriptors[body_start + 3] as u16;
                 let private_data = descriptors[body_start + 4..body_end].to_vec();
                 let raw_descriptor = descriptors[cursor..body_end].to_vec();
-                out.push(CaDescriptor { ca_system_id, ca_pid, private_data, raw_descriptor });
+                out.push(CaDescriptor {
+                    ca_system_id,
+                    ca_pid,
+                    private_data,
+                    raw_descriptor,
+                });
             } else {
-                diagnostics.push(malformed_diagnostic(&context, cursor, len, descriptors.len().saturating_sub(body_start), "SHORT_CA_DESCRIPTOR", &descriptors[cursor..body_end]));
+                diagnostics.push(malformed_diagnostic(
+                    &context,
+                    cursor,
+                    len,
+                    descriptors.len().saturating_sub(body_start),
+                    "SHORT_CA_DESCRIPTOR",
+                    &descriptors[cursor..body_end],
+                ));
             }
         }
         cursor = body_end;
     }
-    CaDescriptorParseResult { descriptors: out, diagnostics }
+    CaDescriptorParseResult {
+        descriptors: out,
+        diagnostics,
+    }
 }
 
-fn malformed_diagnostic(context: &CaDescriptorParseContext, offset: usize, declared_length: usize, actual_remaining_length: usize, reason: &'static str, raw: &[u8]) -> MalformedCaDescriptorDiagnostic {
+fn malformed_diagnostic(
+    context: &CaDescriptorParseContext,
+    offset: usize,
+    declared_length: usize,
+    actual_remaining_length: usize,
+    reason: &'static str,
+    raw: &[u8],
+) -> MalformedCaDescriptorDiagnostic {
     MalformedCaDescriptorDiagnostic {
         pid: context.pid,
         table_id: context.table_id,
@@ -114,7 +149,17 @@ mod tests {
     #[test]
     fn reports_truncated_ca_descriptor() {
         let descriptors = [0x09, 0x06, 0x00, 0x05];
-        let result = parse_ca_descriptors_with_diagnostics(&descriptors, CaDescriptorParseContext { pid: 0x0100, table_id: 0x02, table_id_extension: Some(1), service_id: Some(1), elementary_pid: None, scope: "PMT_PROGRAM" });
+        let result = parse_ca_descriptors_with_diagnostics(
+            &descriptors,
+            CaDescriptorParseContext {
+                pid: 0x0100,
+                table_id: 0x02,
+                table_id_extension: Some(1),
+                service_id: Some(1),
+                elementary_pid: None,
+                scope: "PMT_PROGRAM",
+            },
+        );
         assert!(result.descriptors.is_empty());
         assert_eq!(result.diagnostics.len(), 1);
         assert_eq!(result.diagnostics[0].reason, "TRUNCATED_CA_DESCRIPTOR");

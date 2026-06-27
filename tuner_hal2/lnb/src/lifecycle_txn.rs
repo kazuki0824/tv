@@ -141,7 +141,6 @@ mod tests {
         ) -> Result<(), LnbFailureKind> {
             Err(LnbFailureKind::DiseqcUnsupported)
         }
-
     }
 
     #[test]

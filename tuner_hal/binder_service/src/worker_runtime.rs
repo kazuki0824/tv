@@ -3,9 +3,11 @@
 //! r50dz19 では既存の worker signal 実装をこの module へ移し、
 //! lock / wait 失敗を正常停止やtimeoutに丸めない方針を固定する。
 
-use std::sync::{atomic::{AtomicBool, Ordering}, Condvar, LockResult, Mutex, MutexGuard, WaitTimeoutResult};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Condvar, LockResult, Mutex, MutexGuard, WaitTimeoutResult,
+};
 use std::time::Duration;
-
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkerExit {
@@ -48,20 +50,40 @@ pub struct RuntimeAtomicFlag {
 }
 
 impl Clone for RuntimeAtomicFlag {
-    fn clone(&self) -> Self { Self::new(self.load(Ordering::SeqCst)) }
+    fn clone(&self) -> Self {
+        Self::new(self.load(Ordering::SeqCst))
+    }
 }
 
 impl Default for RuntimeAtomicFlag {
-    fn default() -> Self { Self::new(false) }
+    fn default() -> Self {
+        Self::new(false)
+    }
 }
 
 impl RuntimeAtomicFlag {
-    pub fn new(value: bool) -> Self { Self { _inner: AtomicBool::new(value) } }
-    pub fn load(&self, order: Ordering) -> bool { self._inner.load(order) }
-    pub fn store(&self, value: bool, order: Ordering) { self._inner.store(value, order) }
-    pub fn swap(&self, value: bool, order: Ordering) -> bool { self._inner.swap(value, order) }
+    pub fn new(value: bool) -> Self {
+        Self {
+            _inner: AtomicBool::new(value),
+        }
+    }
+    pub fn load(&self, order: Ordering) -> bool {
+        self._inner.load(order)
+    }
+    pub fn store(&self, value: bool, order: Ordering) {
+        self._inner.store(value, order)
+    }
+    pub fn swap(&self, value: bool, order: Ordering) -> bool {
+        self._inner.swap(value, order)
+    }
     #[cfg(test)]
-    pub fn compare_exchange(&self, current: bool, new: bool, success: Ordering, failure: Ordering) -> Result<bool, bool> {
+    pub fn compare_exchange(
+        &self,
+        current: bool,
+        new: bool,
+        success: Ordering,
+        failure: Ordering,
+    ) -> Result<bool, bool> {
         self._inner.compare_exchange(current, new, success, failure)
     }
 }
@@ -72,19 +94,26 @@ pub struct RuntimeWaitSignal {
 }
 
 impl RuntimeWaitSignal {
-    pub fn new() -> Self { Self { _inner: Condvar::new() } }
+    pub fn new() -> Self {
+        Self {
+            _inner: Condvar::new(),
+        }
+    }
     #[cfg(test)]
-    pub fn notify_all(&self) { self._inner.notify_all(); }
-    pub fn wait_timeout<'a, T>(&self, guard: MutexGuard<'a, T>, dur: Duration) -> LockResult<(MutexGuard<'a, T>, WaitTimeoutResult)> {
+    pub fn notify_all(&self) {
+        self._inner.notify_all();
+    }
+    pub fn wait_timeout<'a, T>(
+        &self,
+        guard: MutexGuard<'a, T>,
+        dur: Duration,
+    ) -> LockResult<(MutexGuard<'a, T>, WaitTimeoutResult)> {
         self._inner.wait_timeout(guard, dur)
     }
 }
 
-
-static WORKER_PANIC_COUNT: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-static WORKER_ERROR_COUNT: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+static WORKER_PANIC_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static WORKER_ERROR_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static WORKER_DIAGNOSTIC_COUNTER_SATURATED: AtomicBool = AtomicBool::new(false);
 
 fn increment_worker_diagnostic_counter(
@@ -158,10 +187,8 @@ fn join_worker_with_diagnostics(handle: ThreadWorkerHandleRaw, name: &'static st
             exit
         }
         Err(_) => {
-            let total = increment_worker_diagnostic_counter(
-                &WORKER_PANIC_COUNT,
-                "worker_panic_count",
-            );
+            let total =
+                increment_worker_diagnostic_counter(&WORKER_PANIC_COUNT, "worker_panic_count");
             eprintln!(
                 "maleicacid-tuner-hal-worker: observed uncaught panic stop during join: worker={} worker_panic_count={}",
                 name, total
@@ -178,7 +205,9 @@ pub trait WorkerSignalRuntimeExit {
 }
 
 impl WorkerSignalRuntimeExit for WorkerExit {
-    fn runtime_failure_exit() -> Self { WorkerExit::RuntimeFailure }
+    fn runtime_failure_exit() -> Self {
+        WorkerExit::RuntimeFailure
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -271,7 +300,10 @@ impl<E: WorkerSignalRuntimeExit> WorkerSignal<E> {
                 state.stop_requested = false;
                 state.active = true;
                 state.exit_reason = None;
-                if Self::advance_work_generation_locked(&mut state, "generation exhausted during start") {
+                if Self::advance_work_generation_locked(
+                    &mut state,
+                    "generation exhausted during start",
+                ) {
                     self.runtime_failure.store(false, Ordering::SeqCst);
                 } else {
                     self.runtime_failure.store(true, Ordering::SeqCst);
@@ -286,7 +318,10 @@ impl<E: WorkerSignalRuntimeExit> WorkerSignal<E> {
         match self.state.lock() {
             Ok(mut state) => {
                 state.stop_requested = true;
-                if !Self::advance_work_generation_locked(&mut state, "generation exhausted during stop request") {
+                if !Self::advance_work_generation_locked(
+                    &mut state,
+                    "generation exhausted during stop request",
+                ) {
                     self.runtime_failure.store(true, Ordering::SeqCst);
                 }
                 self.cv.notify_all();
@@ -298,7 +333,10 @@ impl<E: WorkerSignalRuntimeExit> WorkerSignal<E> {
     pub fn notify_work(&self) {
         match self.state.lock() {
             Ok(mut state) => {
-                if !Self::advance_work_generation_locked(&mut state, "generation exhausted during work notification") {
+                if !Self::advance_work_generation_locked(
+                    &mut state,
+                    "generation exhausted during work notification",
+                ) {
                     self.runtime_failure.store(true, Ordering::SeqCst);
                 }
                 self.cv.notify_all();
@@ -326,7 +364,11 @@ impl<E: WorkerSignalRuntimeExit> WorkerSignal<E> {
 
     #[cfg(test)]
 
-    pub fn wait_until_work_or_stop(&self, observed_generation: &mut u64, timeout: Duration) -> bool {
+    pub fn wait_until_work_or_stop(
+        &self,
+        observed_generation: &mut u64,
+        timeout: Duration,
+    ) -> bool {
         if self.is_runtime_failure() {
             return true;
         }
@@ -408,7 +450,13 @@ impl<E: WorkerSignalRuntimeExit> Default for WorkerSignal<E> {
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum WorkerRuntimeError { SpawnFailed, WakeFailed, JoinFailed, SelfJoin, ExitReasonRecordFailed }
+pub enum WorkerRuntimeError {
+    SpawnFailed,
+    WakeFailed,
+    JoinFailed,
+    SelfJoin,
+    ExitReasonRecordFailed,
+}
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct WorkerOwnerId(pub &'static str, pub i32);
@@ -423,7 +471,11 @@ pub struct WorkerHandle {
 
 impl WorkerHandle {
     #[cfg(test)]
-    fn from_raw(owner_id: WorkerOwnerId, name: &'static str, handle: ThreadWorkerHandleRaw) -> Self {
+    fn from_raw(
+        owner_id: WorkerOwnerId,
+        name: &'static str,
+        handle: ThreadWorkerHandleRaw,
+    ) -> Self {
         Self {
             _owner_id: owner_id,
             name,
@@ -435,22 +487,37 @@ impl WorkerHandle {
 
     #[cfg(test)]
 
-    fn take_raw(mut self) -> Option<ThreadWorkerHandleRaw> { self.handle.take() }
+    fn take_raw(mut self) -> Option<ThreadWorkerHandleRaw> {
+        self.handle.take()
+    }
 
     pub fn is_finished(&self) -> bool {
-        self.handle.as_ref().map(|handle| handle.is_finished()).unwrap_or(true)
+        self.handle
+            .as_ref()
+            .map(|handle| handle.is_finished())
+            .unwrap_or(true)
     }
 
     fn request_stop(&self, _reason: WorkerExitReason) -> Result<(), WorkerRuntimeError> {
         self.signal.request_stop();
-        if self.signal.is_runtime_failure() { Err(WorkerRuntimeError::WakeFailed) } else { Ok(()) }
+        if self.signal.is_runtime_failure() {
+            Err(WorkerRuntimeError::WakeFailed)
+        } else {
+            Ok(())
+        }
     }
     fn wake(&self) -> Result<(), WorkerRuntimeError> {
         self.signal.notify_work();
-        if self.signal.is_runtime_failure() { Err(WorkerRuntimeError::WakeFailed) } else { Ok(()) }
+        if self.signal.is_runtime_failure() {
+            Err(WorkerRuntimeError::WakeFailed)
+        } else {
+            Ok(())
+        }
     }
     fn join_from_owner(&mut self) -> Result<WorkerJoinOutcome, WorkerRuntimeError> {
-        let Some(handle) = self.handle.take() else { return Ok(WorkerJoinOutcome::JoinUnavailable); };
+        let Some(handle) = self.handle.take() else {
+            return Ok(WorkerJoinOutcome::JoinUnavailable);
+        };
         let exit = join_worker_with_diagnostics(handle, self.name);
         let reason = WorkerExitReason::from(exit);
         self.signal.set_exit_reason(exit);
@@ -459,23 +526,42 @@ impl WorkerHandle {
     }
     #[cfg(test)]
     pub fn exit_reason(&self) -> Option<WorkerExitReason> {
-        if self.exit_reason == WorkerExitReason::NotStarted { None } else { Some(self.exit_reason) }
+        if self.exit_reason == WorkerExitReason::NotStarted {
+            None
+        } else {
+            Some(self.exit_reason)
+        }
     }
     #[cfg(test)]
-    pub fn owner_id(&self) -> &WorkerOwnerId { &self._owner_id }
+    pub fn owner_id(&self) -> &WorkerOwnerId {
+        &self._owner_id
+    }
 }
 
 #[derive(Debug, Default)]
 struct WorkerRuntime;
 
 impl WorkerRuntime {
-    fn spawn_owned<F, R>(owner_id: WorkerOwnerId, name: &'static str, body: F) -> Result<WorkerHandle, WorkerRuntimeError>
-    where F: FnOnce(std::sync::Arc<ConcreteWorkerSignal>) -> R + Send + 'static, R: IntoWorkerExit + Send + 'static {
+    fn spawn_owned<F, R>(
+        owner_id: WorkerOwnerId,
+        name: &'static str,
+        body: F,
+    ) -> Result<WorkerHandle, WorkerRuntimeError>
+    where
+        F: FnOnce(std::sync::Arc<ConcreteWorkerSignal>) -> R + Send + 'static,
+        R: IntoWorkerExit + Send + 'static,
+    {
         let signal = std::sync::Arc::new(ConcreteWorkerSignal::new(true));
         let thread_signal = std::sync::Arc::clone(&signal);
         let handle = spawn_worker_with_exit_hook(name, move || body(thread_signal), |_| {})
             .map_err(|_| WorkerRuntimeError::SpawnFailed)?;
-        Ok(WorkerHandle { _owner_id: owner_id, name, signal, handle: Some(handle), exit_reason: WorkerExitReason::NotStarted })
+        Ok(WorkerHandle {
+            _owner_id: owner_id,
+            name,
+            signal,
+            handle: Some(handle),
+            exit_reason: WorkerExitReason::NotStarted,
+        })
     }
 
     fn spawn_owned_with_exit_hook<F, R, H>(
@@ -509,10 +595,7 @@ impl WorkerRuntime {
             exit_reason: WorkerExitReason::NotStarted,
         })
     }
-
 }
-
-
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum WorkerStopJoinError {
@@ -559,7 +642,10 @@ impl WorkerLifecycleTxn {
         handle.wake()
     }
 
-    pub fn request_stop(handle: &WorkerHandle, reason: WorkerExitReason) -> Result<(), WorkerRuntimeError> {
+    pub fn request_stop(
+        handle: &WorkerHandle,
+        reason: WorkerExitReason,
+    ) -> Result<(), WorkerRuntimeError> {
         handle.request_stop(reason)
     }
 
@@ -591,15 +677,11 @@ impl WorkerLifecycleTxn {
         handle
             .request_stop(reason)
             .map_err(WorkerStopJoinError::StopRequestFailed)?;
-        handle
-            .wake()
-            .map_err(WorkerStopJoinError::WakeFailed)?;
+        handle.wake().map_err(WorkerStopJoinError::WakeFailed)?;
         handle
             .join_from_owner()
             .map_err(WorkerStopJoinError::JoinFailed)
     }
-
-
 
     pub fn request_stop_join_slot(
         slot: &mut Option<WorkerHandle>,
@@ -628,9 +710,7 @@ impl WorkerLifecycleTxn {
         worker
             .request_stop(reason)
             .map_err(WorkerStopJoinError::StopRequestFailed)?;
-        worker
-            .wake()
-            .map_err(WorkerStopJoinError::WakeFailed)?;
+        worker.wake().map_err(WorkerStopJoinError::WakeFailed)?;
         let mut handle = slot.take().expect("worker slot checked as Some");
         handle
             .join_from_owner()
@@ -642,8 +722,12 @@ impl WorkerLifecycleTxn {
         match outcome {
             WorkerJoinOutcome::Joined(WorkerExitReason::Normal) => WorkerExit::Normal,
             WorkerJoinOutcome::Joined(WorkerExitReason::StopRequested) => WorkerExit::StopRequested,
-            WorkerJoinOutcome::Joined(WorkerExitReason::RuntimeFailure) => WorkerExit::RuntimeFailure,
-            WorkerJoinOutcome::Joined(WorkerExitReason::PanicOrJoinFailure) => WorkerExit::PanicOrJoinFailure,
+            WorkerJoinOutcome::Joined(WorkerExitReason::RuntimeFailure) => {
+                WorkerExit::RuntimeFailure
+            }
+            WorkerJoinOutcome::Joined(WorkerExitReason::PanicOrJoinFailure) => {
+                WorkerExit::PanicOrJoinFailure
+            }
             WorkerJoinOutcome::Joined(WorkerExitReason::NotStarted) => WorkerExit::RuntimeFailure,
             WorkerJoinOutcome::SkippedSelfJoin => WorkerExit::RuntimeFailure,
             WorkerJoinOutcome::JoinUnavailable => WorkerExit::Normal,
@@ -664,7 +748,12 @@ impl WorkerLifecycleTxn {
 
 impl From<WorkerExit> for WorkerExitReason {
     fn from(exit: WorkerExit) -> Self {
-        match exit { WorkerExit::Normal => WorkerExitReason::Normal, WorkerExit::StopRequested => WorkerExitReason::StopRequested, WorkerExit::RuntimeFailure => WorkerExitReason::RuntimeFailure, WorkerExit::PanicOrJoinFailure => WorkerExitReason::PanicOrJoinFailure }
+        match exit {
+            WorkerExit::Normal => WorkerExitReason::Normal,
+            WorkerExit::StopRequested => WorkerExitReason::StopRequested,
+            WorkerExit::RuntimeFailure => WorkerExitReason::RuntimeFailure,
+            WorkerExit::PanicOrJoinFailure => WorkerExitReason::PanicOrJoinFailure,
+        }
     }
 }
 
@@ -678,7 +767,6 @@ impl Default for WorkerExitReason {
 mod tests {
     use super::*;
 
-
     #[test]
     fn worker_lifecycle_txn_stop_wake_join_mut_returns_stop_requested() {
         let mut handle = WorkerLifecycleTxn::spawn_with_exit_hook(
@@ -686,22 +774,27 @@ mod tests {
             "worker_lifecycle_txn_stop_wake_join_mut_returns_stop_requested",
             |signal| {
                 let mut observed_generation = 0_u64;
-                let stopped = signal.wait_until_work_or_stop(
-                    &mut observed_generation,
-                    Duration::from_millis(100),
-                );
-                if stopped { WorkerExit::StopRequested } else { WorkerExit::RuntimeFailure }
+                let stopped = signal
+                    .wait_until_work_or_stop(&mut observed_generation, Duration::from_millis(100));
+                if stopped {
+                    WorkerExit::StopRequested
+                } else {
+                    WorkerExit::RuntimeFailure
+                }
             },
             |_| {},
-        ).expect("worker spawn");
+        )
+        .expect("worker spawn");
         let outcome = WorkerLifecycleTxn::request_stop_wake_join_mut(
             &mut handle,
             WorkerExitReason::StopRequested,
-        ).expect("worker lifecycle txn stop+wake+join");
-        assert_eq!(outcome, WorkerJoinOutcome::Joined(WorkerExitReason::StopRequested));
+        )
+        .expect("worker lifecycle txn stop+wake+join");
+        assert_eq!(
+            outcome,
+            WorkerJoinOutcome::Joined(WorkerExitReason::StopRequested)
+        );
     }
-
-
 
     #[test]
     fn worker_lifecycle_txn_slot_helper_clears_joined_worker() {
@@ -710,20 +803,27 @@ mod tests {
             "worker_lifecycle_txn_slot_helper_clears_joined_worker",
             |signal| {
                 let mut observed_generation = 0_u64;
-                let stopped = signal.wait_until_work_or_stop(
-                    &mut observed_generation,
-                    Duration::from_millis(100),
-                );
-                if stopped { WorkerExit::StopRequested } else { WorkerExit::RuntimeFailure }
+                let stopped = signal
+                    .wait_until_work_or_stop(&mut observed_generation, Duration::from_millis(100));
+                if stopped {
+                    WorkerExit::StopRequested
+                } else {
+                    WorkerExit::RuntimeFailure
+                }
             },
             |_| {},
-        ).expect("worker spawn");
+        )
+        .expect("worker spawn");
         let mut slot = Some(handle);
         let outcome = WorkerLifecycleTxn::request_stop_wake_join_slot(
             &mut slot,
             WorkerExitReason::StopRequested,
-        ).expect("worker lifecycle txn slot stop+wake+join");
-        assert_eq!(outcome, Some(WorkerJoinOutcome::Joined(WorkerExitReason::StopRequested)));
+        )
+        .expect("worker lifecycle txn slot stop+wake+join");
+        assert_eq!(
+            outcome,
+            Some(WorkerJoinOutcome::Joined(WorkerExitReason::StopRequested))
+        );
         assert!(slot.is_none());
     }
 
@@ -735,11 +835,19 @@ mod tests {
             |signal| {
                 assert!(!signal.is_stop_requested());
                 signal.request_stop();
-                if signal.is_stop_requested() { WorkerExit::StopRequested } else { WorkerExit::RuntimeFailure }
+                if signal.is_stop_requested() {
+                    WorkerExit::StopRequested
+                } else {
+                    WorkerExit::RuntimeFailure
+                }
             },
             |_| {},
-        ).expect("worker spawn");
+        )
+        .expect("worker spawn");
         let outcome = WorkerLifecycleTxn::join(handle).expect("worker join");
-        assert_eq!(outcome, WorkerJoinOutcome::Joined(WorkerExitReason::StopRequested));
+        assert_eq!(
+            outcome,
+            WorkerJoinOutcome::Joined(WorkerExitReason::StopRequested)
+        );
     }
 }

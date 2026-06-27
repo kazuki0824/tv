@@ -65,8 +65,13 @@ impl LnbOperationLedger {
         }
         let nonce = self.next_nonce;
         self.next_nonce = self.next_nonce.wrapping_add(1);
-        self.active.insert(lnb_id, ActiveLnbOperation { kind, nonce });
-        Ok(LnbOperationGuard { lnb_id, kind, nonce })
+        self.active
+            .insert(lnb_id, ActiveLnbOperation { kind, nonce });
+        Ok(LnbOperationGuard {
+            lnb_id,
+            kind,
+            nonce,
+        })
     }
 
     pub fn finish(&mut self, guard: LnbOperationGuard) -> Result<(), LnbOperationFailureRecord> {

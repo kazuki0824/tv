@@ -74,7 +74,6 @@ pub enum FrontendWorkerStopOutcome {
     },
 }
 
-
 #[derive(Debug)]
 pub struct FrontendWorkerDetachedJoin {
     frontend_id: i32,
@@ -276,32 +275,26 @@ impl FrontendWorkerRegistry {
         };
 
         let thread_name: &'static str = "maleicacid-frontend-worker";
-        let thread_result = ThreadResultOwner::start(thread_name, move || {
-            match job(context) {
-                Ok(()) => match worker_cancel_reason.lock() {
-                    Ok(guard) => {
-                        let exit = (*guard)
-                            .map(|reason| WorkerExit::StopRequested(reason.to_worker_stop_reason()))
-                            .unwrap_or(WorkerExit::Normal);
-                        Ok((Ok(()), exit))
-                    }
-                    Err(_) => Ok((
-                        Err(HalError::internal(
-                            HalInternalKind::InvariantViolation,
-                            "frontend worker cancel reason lock poisoned",
-                        )),
-                        WorkerExit::RuntimeFailure(
-                            WorkerFailureDomain::Signal.runtime_failure_kind(),
-                        ),
+        let thread_result = ThreadResultOwner::start(thread_name, move || match job(context) {
+            Ok(()) => match worker_cancel_reason.lock() {
+                Ok(guard) => {
+                    let exit = (*guard)
+                        .map(|reason| WorkerExit::StopRequested(reason.to_worker_stop_reason()))
+                        .unwrap_or(WorkerExit::Normal);
+                    Ok((Ok(()), exit))
+                }
+                Err(_) => Ok((
+                    Err(HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "frontend worker cancel reason lock poisoned",
                     )),
-                },
-                Err(error) => Ok((
-                    Err(error),
-                    WorkerExit::RuntimeFailure(
-                        WorkerFailureDomain::Backend.runtime_failure_kind(),
-                    ),
+                    WorkerExit::RuntimeFailure(WorkerFailureDomain::Signal.runtime_failure_kind()),
                 )),
-            }
+            },
+            Err(error) => Ok((
+                Err(error),
+                WorkerExit::RuntimeFailure(WorkerFailureDomain::Backend.runtime_failure_kind()),
+            )),
         })
         .map_err(|error| FrontendWorkerStartError::SpawnFailed {
             detail: format!("{error:?}"),
@@ -640,10 +633,7 @@ mod tests {
                 FrontendWorkerKind::Tune,
                 FrontendWorkerCancelReason::StopRequested
             ),
-            FrontendWorkerStopOutcome::StopRequestFailed {
-                generation: 6,
-                ..
-            }
+            FrontendWorkerStopOutcome::StopRequestFailed { generation: 6, .. }
         ));
         if let Some(mut slot) = registry.slots.remove(&key) {
             slot.cancel.store(true, Ordering::SeqCst);
@@ -670,11 +660,13 @@ mod tests {
             .unwrap();
         started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         assert!(matches!(
-            registry.request_stop_for_join(
-                12,
-                FrontendWorkerKind::Scan,
-                FrontendWorkerCancelReason::SupersededByNewRequest
-            ).complete(),
+            registry
+                .request_stop_for_join(
+                    12,
+                    FrontendWorkerKind::Scan,
+                    FrontendWorkerCancelReason::SupersededByNewRequest
+                )
+                .complete(),
             FrontendWorkerStopOutcome::Completed {
                 generation: 8,
                 result: Ok(()),
@@ -691,9 +683,14 @@ mod tests {
     fn clear_finished_keeps_failed_worker_for_reporting() {
         let mut registry = FrontendWorkerRegistry::default();
         registry
-            .start(13, FrontendWorkerKind::Tune, 9, |_| -> Result<(), HalError> {
-                panic!("intentional test panic");
-            })
+            .start(
+                13,
+                FrontendWorkerKind::Tune,
+                9,
+                |_| -> Result<(), HalError> {
+                    panic!("intentional test panic");
+                },
+            )
             .unwrap();
         for _ in 0..100 {
             registry.clear_finished();
@@ -733,11 +730,14 @@ mod tests {
             },
         );
 
-        match registry.request_stop_for_join(
-            14,
-            FrontendWorkerKind::Tune,
-            FrontendWorkerCancelReason::StopRequested,
-        ).complete() {
+        match registry
+            .request_stop_for_join(
+                14,
+                FrontendWorkerKind::Tune,
+                FrontendWorkerCancelReason::StopRequested,
+            )
+            .complete()
+        {
             FrontendWorkerStopOutcome::Completed { result, exit, .. } => {
                 assert!(result.is_err());
                 assert_eq!(exit, WorkerExit::PanicOrJoinFailure);
@@ -790,17 +790,19 @@ mod tests {
     fn start_does_not_overwrite_unreported_worker_failure() {
         let mut registry = FrontendWorkerRegistry::default();
         registry
-            .start(16, FrontendWorkerKind::Tune, 12, |_| -> Result<(), HalError> {
-                panic!("intentional pending failure");
-            })
+            .start(
+                16,
+                FrontendWorkerKind::Tune,
+                12,
+                |_| -> Result<(), HalError> {
+                    panic!("intentional pending failure");
+                },
+            )
             .unwrap();
         for _ in 0..100 {
             if matches!(
                 registry.start(16, FrontendWorkerKind::Tune, 13, |_| Ok(())),
-                Err(FrontendWorkerStartError::CompletedFailurePending {
-                    generation: 12,
-                    ..
-                })
+                Err(FrontendWorkerStartError::CompletedFailurePending { generation: 12, .. })
             ) {
                 match registry.take_completed(16, FrontendWorkerKind::Tune) {
                     Some(FrontendWorkerStopOutcome::Completed { result, .. }) => {
@@ -814,5 +816,4 @@ mod tests {
         }
         panic!("pending worker failure was not observed");
     }
-
 }

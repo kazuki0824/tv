@@ -6896,27 +6896,25 @@ impl TunerHal {
 }
 impl Drop for TunerHal {
     fn drop(&mut self) {
-        let mut workers = match lock_mutex_status(
-            &self.diagnostic_workers,
-            "tuner_diagnostic_workers",
-        ) {
-            Ok(workers) => workers,
-            Err(status) => {
-                record_drop_cleanup_counter(
-                    &DEMUX_DROP_CLEANUP_ERROR_COUNT,
-                    "tuner_diagnostic_worker_drop_cleanup_error",
-                    "tuner_diagnostic_worker",
-                    &tuner_service_error(
-                        TunerResult::UNKNOWN_ERROR.0,
-                        "diagnostic_workers_lock_failed",
-                    ),
-                );
-                eprintln!(
+        let mut workers =
+            match lock_mutex_status(&self.diagnostic_workers, "tuner_diagnostic_workers") {
+                Ok(workers) => workers,
+                Err(status) => {
+                    record_drop_cleanup_counter(
+                        &DEMUX_DROP_CLEANUP_ERROR_COUNT,
+                        "tuner_diagnostic_worker_drop_cleanup_error",
+                        "tuner_diagnostic_worker",
+                        &tuner_service_error(
+                            TunerResult::UNKNOWN_ERROR.0,
+                            "diagnostic_workers_lock_failed",
+                        ),
+                    );
+                    eprintln!(
                     "maleicacid-tuner-hal-drop: diagnostic_workers_lock_failed status={status:?}"
                 );
-                return;
-            }
-        };
+                    return;
+                }
+            };
         {
             for worker in workers.iter_mut() {
                 if let Err(err) = WorkerLifecycleTxn::request_stop_wake_join_mut(

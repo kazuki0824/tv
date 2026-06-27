@@ -36,10 +36,12 @@ type AribccContextAlloc = unsafe extern "C" fn() -> *mut c_void;
 type AribccContextFree = unsafe extern "C" fn(*mut c_void);
 type AribccDecoderAlloc = unsafe extern "C" fn(*mut c_void) -> *mut c_void;
 type AribccDecoderFree = unsafe extern "C" fn(*mut c_void);
-type AribccDecoderInitialize = unsafe extern "C" fn(*mut c_void, c_int, c_int, c_int, c_int) -> bool;
+type AribccDecoderInitialize =
+    unsafe extern "C" fn(*mut c_void, c_int, c_int, c_int, c_int) -> bool;
 type AribccDecoderSetProfile = unsafe extern "C" fn(*mut c_void, c_int);
 type AribccDecoderSetCaptionType = unsafe extern "C" fn(*mut c_void, c_int);
-type AribccDecoderDecode = unsafe extern "C" fn(*mut c_void, *const u8, usize, c_longlong, *mut AribccCaption) -> c_int;
+type AribccDecoderDecode =
+    unsafe extern "C" fn(*mut c_void, *const u8, usize, c_longlong, *mut AribccCaption) -> c_int;
 type AribccCaptionCleanup = unsafe extern "C" fn(*mut AribccCaption);
 
 #[link(name = "dl")]
@@ -67,7 +69,9 @@ unsafe impl Sync for AribccApi {}
 
 impl Drop for AribccApi {
     fn drop(&mut self) {
-        unsafe { let _ = dlclose(self.lib); }
+        unsafe {
+            let _ = dlclose(self.lib);
+        }
     }
 }
 
@@ -75,7 +79,11 @@ impl AribccApi {
     fn load_symbol(handle: *mut c_void, name: &str) -> Option<*mut c_void> {
         let c_name = CString::new(name).ok()?;
         let symbol = unsafe { dlsym(handle, c_name.as_ptr()) };
-        if symbol.is_null() { None } else { Some(symbol) }
+        if symbol.is_null() {
+            None
+        } else {
+            Some(symbol)
+        }
     }
 
     unsafe fn load_fn<T: Copy>(handle: *mut c_void, name: &str) -> Option<T> {
@@ -88,7 +96,9 @@ impl AribccApi {
         API.get_or_init(|| unsafe {
             let lib_name = CString::new("libaribcaption.so").ok()?;
             let lib = dlopen(lib_name.as_ptr(), 2);
-            if lib.is_null() { return None; }
+            if lib.is_null() {
+                return None;
+            }
             let api = AribccApi {
                 lib,
                 context_alloc: Self::load_fn(lib, "aribcc_context_alloc")?,
@@ -102,7 +112,8 @@ impl AribccApi {
                 caption_cleanup: Self::load_fn(lib, "aribcc_caption_cleanup")?,
             };
             Some(Arc::new(api))
-        }).clone()
+        })
+        .clone()
     }
 }
 
@@ -134,7 +145,9 @@ impl CaptionDecoder {
         let api = AribccApi::load()?;
         unsafe {
             let context = (api.context_alloc)();
-            if context.is_null() { return None; }
+            if context.is_null() {
+                return None;
+            }
             let decoder = (api.decoder_alloc)(context);
             if decoder.is_null() {
                 (api.context_free)(context);
@@ -152,18 +165,38 @@ impl CaptionDecoder {
                 (api.context_free)(context);
                 return None;
             }
-            Some(Self { api, context, decoder })
+            Some(Self {
+                api,
+                context,
+                decoder,
+            })
         }
     }
 
-    fn decode_pes(&mut self, pes: &[u8], pts_millis: jlong, data_component_id: jint, superimpose: bool) -> Option<String> {
-        if pes.is_empty() || self.decoder.is_null() { return None; }
+    fn decode_pes(
+        &mut self,
+        pes: &[u8],
+        pts_millis: jlong,
+        data_component_id: jint,
+        superimpose: bool,
+    ) -> Option<String> {
+        if pes.is_empty() || self.decoder.is_null() {
+            return None;
+        }
         let profile = match data_component_id {
             0x0012 => ARIBCC_PROFILE_C,
             _ => ARIBCC_PROFILE_A,
         };
-        let caption_type = if superimpose { ARIBCC_CAPTIONTYPE_SUPERIMPOSE } else { ARIBCC_CAPTIONTYPE_CAPTION };
-        let pts = if pts_millis == i64::MIN { ARIBCC_PTS_NOPTS } else { pts_millis as c_longlong };
+        let caption_type = if superimpose {
+            ARIBCC_CAPTIONTYPE_SUPERIMPOSE
+        } else {
+            ARIBCC_CAPTIONTYPE_CAPTION
+        };
+        let pts = if pts_millis == i64::MIN {
+            ARIBCC_PTS_NOPTS
+        } else {
+            pts_millis as c_longlong
+        };
         unsafe {
             (self.api.decoder_set_profile)(self.decoder, profile);
             (self.api.decoder_set_caption_type)(self.decoder, caption_type);
@@ -182,16 +215,24 @@ impl CaptionDecoder {
                 has_builtin_sound: false,
                 builtin_sound_id: 0,
             };
-            let status = (self.api.decoder_decode)(self.decoder, pes.as_ptr(), pes.len(), pts, &mut caption);
+            let status =
+                (self.api.decoder_decode)(self.decoder, pes.as_ptr(), pes.len(), pts, &mut caption);
             if status != ARIBCC_DECODE_STATUS_GOT_CAPTION || caption.text.is_null() {
-                if !caption.text.is_null() || !caption.regions.is_null() || !caption.drcs_map.is_null() {
+                if !caption.text.is_null()
+                    || !caption.regions.is_null()
+                    || !caption.drcs_map.is_null()
+                {
                     (self.api.caption_cleanup)(&mut caption);
                 }
                 return None;
             }
             let text = CStr::from_ptr(caption.text).to_string_lossy().into_owned();
             (self.api.caption_cleanup)(&mut caption);
-            if text.trim().is_empty() { None } else { Some(text) }
+            if text.trim().is_empty() {
+                None
+            } else {
+                Some(text)
+            }
         }
     }
 }
@@ -226,7 +267,9 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribCaptionRende
     _env: JNIEnv<'_>,
     _this: JObject<'_>,
 ) -> jlong {
-    let Some(decoder) = CaptionDecoder::new() else { return 0; };
+    let Some(decoder) = CaptionDecoder::new() else {
+        return 0;
+    };
     match caption_registry().lock() {
         Ok(mut guard) => guard.insert(decoder),
         Err(_) => 0,
@@ -239,7 +282,9 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribCaptionRende
     _this: JObject<'_>,
     handle: jlong,
 ) {
-    if handle == 0 { return; }
+    if handle == 0 {
+        return;
+    }
     if let Ok(mut guard) = caption_registry().lock() {
         let _ = guard.remove(handle);
     }
@@ -255,11 +300,16 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribCaptionRende
     data_component_id: jint,
     superimpose: jboolean,
 ) -> jstring {
-    if handle == 0 { return ptr::null_mut(); }
-    let Ok(bytes) = env.convert_byte_array(pes_data) else { return ptr::null_mut(); };
+    if handle == 0 {
+        return ptr::null_mut();
+    }
+    let Ok(bytes) = env.convert_byte_array(pes_data) else {
+        return ptr::null_mut();
+    };
     let text = match caption_registry().lock() {
-        Ok(mut guard) => guard.decoders.get_mut(&handle)
-            .and_then(|decoder| decoder.decode_pes(&bytes, pts_millis, data_component_id, superimpose != 0)),
+        Ok(mut guard) => guard.decoders.get_mut(&handle).and_then(|decoder| {
+            decoder.decode_pes(&bytes, pts_millis, data_component_id, superimpose != 0)
+        }),
         Err(_) => None,
     };
     match text {
@@ -289,7 +339,11 @@ mod tests {
     #[test]
     fn no_pts_sentinel_uses_libaribcaption_public_value() {
         let pts_millis: jlong = i64::MIN;
-        let pts = if pts_millis == i64::MIN { ARIBCC_PTS_NOPTS } else { pts_millis as c_longlong };
+        let pts = if pts_millis == i64::MIN {
+            ARIBCC_PTS_NOPTS
+        } else {
+            pts_millis as c_longlong
+        };
         assert_eq!(pts, i64::MIN);
     }
 }

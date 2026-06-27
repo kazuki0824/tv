@@ -1,14 +1,19 @@
 use std::collections::VecDeque;
 use std::fmt;
-use std::path::{Path, PathBuf};
 use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
 pub const TUNER_SERVICE_NAME: &str = "android.hardware.tv.tuner.ITuner/default";
 pub const TS_PACKET_SIZE: usize = 188;
 
-fn increment_atomic_counter_with_saturation(counter: &AtomicU64, saturated: Option<&AtomicBool>) -> u64 {
-    match counter.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| value.checked_add(1)) {
+fn increment_atomic_counter_with_saturation(
+    counter: &AtomicU64,
+    saturated: Option<&AtomicBool>,
+) -> u64 {
+    match counter.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
+        value.checked_add(1)
+    }) {
         Ok(previous) => previous + 1,
         Err(_) => {
             if let Some(flag) = saturated {
@@ -40,7 +45,10 @@ pub fn retry_after_interrupted_read_with_saturation(
     loop {
         match f() {
             Err(err) if err.kind() == io::ErrorKind::Interrupted => {
-                let total = increment_atomic_counter_with_saturation(retry_counter, retry_counter_saturated);
+                let total = increment_atomic_counter_with_saturation(
+                    retry_counter,
+                    retry_counter_saturated,
+                );
                 eprintln!(
                     "maleicacid-tuner-hal-read-retry: operation={} error=EINTR action=retry total={}",
                     operation,
@@ -121,13 +129,21 @@ impl TsPacketCompletionBuffer {
                     if self.buf.len() > TS_RESYNC_TAIL_BYTES {
                         let discard = self.buf.len() - TS_RESYNC_TAIL_BYTES;
                         self.buf.drain(..discard);
-                        Self::add_local_malformed(&mut malformed_bytes, discard, &mut local_malformed_saturated);
+                        Self::add_local_malformed(
+                            &mut malformed_bytes,
+                            discard,
+                            &mut local_malformed_saturated,
+                        );
                     }
                     break;
                 };
                 if offset > 0 {
                     self.buf.drain(..offset);
-                    Self::add_local_malformed(&mut malformed_bytes, offset, &mut local_malformed_saturated);
+                    Self::add_local_malformed(
+                        &mut malformed_bytes,
+                        offset,
+                        &mut local_malformed_saturated,
+                    );
                 }
                 self.resync_required = false;
                 continue;
@@ -282,7 +298,6 @@ mod ts_packet_completion_buffer_tests {
         assert_eq!(buffer.tail_len(), TS_PACKET_SIZE);
         assert_eq!(buffer.malformed_bytes(), 0);
     }
-
 
     #[test]
     fn completion_buffer_does_not_resync_on_single_payload_sync_byte() {
@@ -605,7 +620,12 @@ impl fmt::Display for HalError {
                 write!(f, "open に失敗しました {}: {}", path.display(), message)
             }
             HalError::PermissionDenied { path, message } => {
-                write!(f, "permission denied opening {}: {}", path.display(), message)
+                write!(
+                    f,
+                    "permission denied opening {}: {}",
+                    path.display(),
+                    message
+                )
             }
             HalError::Busy { path, message } => {
                 if let Some(path) = path {
@@ -614,7 +634,12 @@ impl fmt::Display for HalError {
                     write!(f, "device busy: {message}")
                 }
             }
-            HalError::IoctlFailed { backend, path, op, errno } => write!(
+            HalError::IoctlFailed {
+                backend,
+                path,
+                op,
+                errno,
+            } => write!(
                 f,
                 "実行時ioctl失敗: backend={} operation={} device_path={} errno={} errno_name={}",
                 backend,
@@ -625,7 +650,13 @@ impl fmt::Display for HalError {
             ),
             HalError::InvalidArgument(message) => write!(f, "不正な引数: {message}"),
             HalError::InvalidState(message) => write!(f, "不正な状態: {message}"),
-            HalError::Io { backend, operation, path, errno, message } => {
+            HalError::Io {
+                backend,
+                operation,
+                path,
+                errno,
+                message,
+            } => {
                 if let Some(errno) = errno {
                     write!(
                         f,
@@ -647,7 +678,7 @@ impl fmt::Display for HalError {
                         message
                     )
                 }
-            },
+            }
             HalError::Internal(message) => write!(f, "内部エラー: {message}"),
             HalError::Unsupported(message) => write!(f, "対象外: {message}"),
         }
@@ -779,6 +810,4 @@ mod r50dz52_g2_15_tests {
         assert_eq!(counter.load(Ordering::SeqCst), u64::MAX);
         assert!(saturated.load(Ordering::SeqCst));
     }
-
 }
-

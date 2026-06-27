@@ -18,7 +18,11 @@ impl IMediaCasService for MediaCasStub {
         Err(StatusCode::NAME_NOT_FOUND.into())
     }
 
-    fn createPlugin(&self, _ca_system_id: i32, _listener: &Strong<dyn ICasListener>) -> BinderResult<Strong<dyn ICas>> {
+    fn createPlugin(
+        &self,
+        _ca_system_id: i32,
+        _listener: &Strong<dyn ICasListener>,
+    ) -> BinderResult<Strong<dyn ICas>> {
         Err(StatusCode::NAME_NOT_FOUND.into())
     }
 
@@ -38,11 +42,14 @@ impl IMediaCasService for MediaCasStub {
 fn main() {
     binder::ProcessState::start_thread_pool();
     let cas_binder = BnMediaCasService::new_binder(MediaCasStub, BinderFeatures::default());
-    binder::add_service(CAS_SERVICE_NAME, cas_binder.as_binder())
-        .unwrap_or_else(|e| panic!("CAS HAL service 登録に失敗しました {}: {:?}", CAS_SERVICE_NAME, e));
+    binder::add_service(CAS_SERVICE_NAME, cas_binder.as_binder()).unwrap_or_else(|e| {
+        panic!(
+            "CAS HAL service 登録に失敗しました {}: {:?}",
+            CAS_SERVICE_NAME, e
+        )
+    });
     binder::ProcessState::join_thread_pool();
 }
-
 
 #[cfg(test)]
 mod cas_placeholder_tests {

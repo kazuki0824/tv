@@ -302,15 +302,24 @@ mod tests {
         packet.start();
         let packet_model = packet.queue_model();
         assert_eq!(packet_model.queue_kind, QueueKind::FilterOutput);
-        assert_eq!(packet_model.discipline, FilterQueueDiscipline::PacketPassthrough);
+        assert_eq!(
+            packet_model.discipline,
+            FilterQueueDiscipline::PacketPassthrough
+        );
         assert_eq!(packet_model.policy.bounded_entries, None);
-        assert_eq!(packet_model.policy.overflow_policy, QueueOverflowPolicy::DropNew);
+        assert_eq!(
+            packet_model.policy.overflow_policy,
+            QueueOverflowPolicy::DropNew
+        );
         packet.stop();
         packet.close();
         assert_eq!(packet.lifecycle, FilterLifecycleState::Closed);
 
         let section = FilterContractSkeleton::new_section_reassembled(2, 4096).queue_model();
-        assert_eq!(section.discipline, FilterQueueDiscipline::SectionReassembled);
+        assert_eq!(
+            section.discipline,
+            FilterQueueDiscipline::SectionReassembled
+        );
         assert_eq!(section.policy.overflow_policy, QueueOverflowPolicy::DropNew);
 
         let av = FilterContractSkeleton::new_av_media(3, 4096).queue_model();
@@ -318,7 +327,10 @@ mod tests {
         assert_eq!(av.policy.overflow_policy, QueueOverflowPolicy::DropOld);
 
         let record = FilterContractSkeleton::new_record_metadata(4, 8).queue_model();
-        assert_eq!(record.discipline, FilterQueueDiscipline::RecordEventMetadata);
+        assert_eq!(
+            record.discipline,
+            FilterQueueDiscipline::RecordEventMetadata
+        );
         assert_eq!(record.policy.bounded_bytes, 0);
         assert_eq!(record.policy.bounded_entries, Some(8));
         assert_eq!(
@@ -334,16 +346,25 @@ mod tests {
         record.start();
         let record_model = record.queue_model();
         assert_eq!(record_model.queue_kind, QueueKind::DvrRecord);
-        assert_eq!(record_model.discipline, DvrQueueDiscipline::PacketPassthrough);
+        assert_eq!(
+            record_model.discipline,
+            DvrQueueDiscipline::PacketPassthrough
+        );
         assert_eq!(record.queue.overflow_policy, QueueOverflowPolicy::DropNew);
-        assert_eq!(record_model.policy.overflow_policy, QueueOverflowPolicy::DropNew);
+        assert_eq!(
+            record_model.policy.overflow_policy,
+            QueueOverflowPolicy::DropNew
+        );
 
         let mut playback = DvrContractSkeleton::new(11, DvrDirection::Playback, 32768);
         playback.configure();
         playback.start();
         let playback_model = playback.queue_model();
         assert_eq!(playback_model.queue_kind, QueueKind::DvrPlayback);
-        assert_eq!(playback_model.discipline, DvrQueueDiscipline::PlaybackReinject);
+        assert_eq!(
+            playback_model.discipline,
+            DvrQueueDiscipline::PlaybackReinject
+        );
         assert_eq!(
             playback.queue.overflow_policy,
             QueueOverflowPolicy::ProducerBackpressure

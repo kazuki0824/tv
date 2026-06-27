@@ -19,7 +19,6 @@ pub enum HalWaitError {
     Timeout,
 }
 
-
 pub fn poisoned_lock_status(name: &'static str) -> Status {
     eprintln!("maleicacid-tuner-hal: mutex poison fail-closed: {name}");
     Status::from(StatusCode::UNKNOWN_ERROR)
@@ -31,7 +30,6 @@ pub fn lock_mutex_status<'a, T>(
 ) -> binder::Result<MutexGuard<'a, T>> {
     mutex.lock().map_err(|_| poisoned_lock_status(name))
 }
-
 
 pub fn lock_mutex_hal<'a, T>(
     mutex: &'a Mutex<T>,
@@ -54,7 +52,10 @@ pub fn lock_mutex_io<'a, T>(
     })
 }
 
-pub fn lock_mutex_option<'a, T>(mutex: &'a Mutex<T>, name: &'static str) -> Option<MutexGuard<'a, T>> {
+pub fn lock_mutex_option<'a, T>(
+    mutex: &'a Mutex<T>,
+    name: &'static str,
+) -> Option<MutexGuard<'a, T>> {
     match mutex.lock() {
         Ok(guard) => Some(guard),
         Err(_) => {
@@ -70,7 +71,9 @@ pub struct HalMutex<T> {
 
 impl<T> HalMutex<T> {
     pub fn new(value: T) -> Self {
-        Self { _inner: Mutex::new(value) }
+        Self {
+            _inner: Mutex::new(value),
+        }
     }
 
     pub fn lock(&self) -> Result<HalMutexGuard<'_, T>, HalLockError> {
@@ -103,7 +106,9 @@ pub struct HalCondvar {
 
 impl HalCondvar {
     pub fn new() -> Self {
-        Self { _inner: Condvar::new() }
+        Self {
+            _inner: Condvar::new(),
+        }
     }
 
     #[cfg(test)]

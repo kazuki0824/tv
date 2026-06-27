@@ -149,7 +149,6 @@ impl LnbRuntime {
         self.force_next_registry_commit_failure = Some(kind);
     }
 
-
     pub fn checked_next_generation(&self) -> Result<u64, LnbFailureRecord> {
         self.generation.checked_add(1).ok_or(LnbFailureRecord {
             lnb_id: self.lnb_id,
@@ -283,7 +282,6 @@ pub trait LnbBackendOps {
         lnb_id: i32,
         message: &LnbDiseqcMessage,
     ) -> Result<(), LnbFailureKind>;
-
 }
 
 #[cfg(test)]
@@ -324,9 +322,7 @@ mod tests {
         ) -> Result<(), LnbFailureKind> {
             Err(LnbFailureKind::DiseqcUnsupported)
         }
-
     }
-
 
     #[test]
     fn diseqc_message_rejects_empty_and_oversized_payloads() {

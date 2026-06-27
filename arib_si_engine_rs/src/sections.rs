@@ -29,20 +29,21 @@ pub fn parse_section_header(section: &[u8], length_field_bits: i32) -> Option<Se
         return None;
     }
     let syntax = (section[1] & 0x80) != 0;
-    let (table_id_extension, version, current_next_indicator, section_number, last_section_number) = if syntax {
-        if total_length < 8 {
-            return None;
-        }
-        (
-            Some(u16::from_be_bytes([section[3], section[4]])),
-            Some((section[5] >> 1) & 0x1f),
-            Some((section[5] & 0x01) != 0),
-            Some(section[6]),
-            Some(section[7]),
-        )
-    } else {
-        (None, None, None, None, None)
-    };
+    let (table_id_extension, version, current_next_indicator, section_number, last_section_number) =
+        if syntax {
+            if total_length < 8 {
+                return None;
+            }
+            (
+                Some(u16::from_be_bytes([section[3], section[4]])),
+                Some((section[5] >> 1) & 0x1f),
+                Some((section[5] & 0x01) != 0),
+                Some(section[6]),
+                Some(section[7]),
+            )
+        } else {
+            (None, None, None, None, None)
+        };
     Some(SectionHeader {
         table_id: section[0],
         syntax,
@@ -138,7 +139,8 @@ impl SectionAssembler {
                 break;
             }
             let Some(header) = parse_section_header(remaining, 12).or_else(|| {
-                let partial_len = 3 + ((((remaining[1] & 0x0f) as usize) << 8) | remaining[2] as usize);
+                let partial_len =
+                    3 + ((((remaining[1] & 0x0f) as usize) << 8) | remaining[2] as usize);
                 Some(SectionHeader {
                     table_id: remaining[0],
                     syntax: (remaining[1] & 0x80) != 0,
@@ -168,7 +170,8 @@ impl SectionAssembler {
     fn try_take_pending(&mut self, out: &mut Vec<Vec<u8>>) {
         loop {
             if self.expected_len.is_none() && self.buf.len() >= 3 {
-                self.expected_len = Some(3 + ((((self.buf[1] & 0x0f) as usize) << 8) | self.buf[2] as usize));
+                self.expected_len =
+                    Some(3 + ((((self.buf[1] & 0x0f) as usize) << 8) | self.buf[2] as usize));
             }
             let Some(expected_len) = self.expected_len else {
                 return;
@@ -221,7 +224,9 @@ mod tests {
         let section = section_with_crc(vec![
             0x00, 0xb0, 0x0d, 0x00, 0x01, 0xc1, 0x00, 0x00, 0x00, 0x01, 0xe1, 0x00,
         ]);
-        let first = vec![0x00, section[0], section[1], section[2], section[3], section[4], section[5]];
+        let first = vec![
+            0x00, section[0], section[1], section[2], section[3], section[4], section[5],
+        ];
         assert!(assembler.push_payload(true, &first).is_empty());
         let mut second = vec![section.len() as u8 - 6];
         second.extend_from_slice(&section[6..]);
@@ -232,8 +237,12 @@ mod tests {
     #[test]
     fn assembler_emits_multiple_sections_from_single_pusi_payload() {
         let mut assembler = SectionAssembler::default();
-        let s1 = section_with_crc(vec![0x00, 0xb0, 0x0d, 0x00, 0x01, 0xc1, 0x00, 0x00, 0x00, 0x01, 0xe1, 0x00]);
-        let s2 = section_with_crc(vec![0x42, 0xf0, 0x0d, 0x00, 0x01, 0xc1, 0x00, 0x00, 0x48, 0x00]);
+        let s1 = section_with_crc(vec![
+            0x00, 0xb0, 0x0d, 0x00, 0x01, 0xc1, 0x00, 0x00, 0x00, 0x01, 0xe1, 0x00,
+        ]);
+        let s2 = section_with_crc(vec![
+            0x42, 0xf0, 0x0d, 0x00, 0x01, 0xc1, 0x00, 0x00, 0x48, 0x00,
+        ]);
         let mut payload = vec![0x00];
         payload.extend_from_slice(&s1);
         payload.extend_from_slice(&s2);
@@ -244,8 +253,12 @@ mod tests {
     #[test]
     fn assembler_finishes_pending_then_emits_following_section() {
         let mut assembler = SectionAssembler::default();
-        let s1 = section_with_crc(vec![0x00, 0xb0, 0x0d, 0x00, 0x01, 0xc1, 0x00, 0x00, 0x00, 0x01, 0xe1, 0x00]);
-        let s2 = section_with_crc(vec![0x42, 0xf0, 0x0d, 0x00, 0x01, 0xc1, 0x00, 0x00, 0x48, 0x00]);
+        let s1 = section_with_crc(vec![
+            0x00, 0xb0, 0x0d, 0x00, 0x01, 0xc1, 0x00, 0x00, 0x00, 0x01, 0xe1, 0x00,
+        ]);
+        let s2 = section_with_crc(vec![
+            0x42, 0xf0, 0x0d, 0x00, 0x01, 0xc1, 0x00, 0x00, 0x48, 0x00,
+        ]);
         let mut first = vec![0x00];
         first.extend_from_slice(&s1[..6]);
         assert!(assembler.push_payload(true, &first).is_empty());
@@ -260,7 +273,9 @@ mod tests {
     fn assembler_resets_on_invalid_pointer_field() {
         let mut assembler = SectionAssembler::default();
         assert!(assembler.push_payload(true, &[0x05, 0x00, 0x01]).is_empty());
-        let section = section_with_crc(vec![0x00, 0xb0, 0x0d, 0x00, 0x01, 0xc1, 0x00, 0x00, 0x00, 0x01, 0xe1, 0x00]);
+        let section = section_with_crc(vec![
+            0x00, 0xb0, 0x0d, 0x00, 0x01, 0xc1, 0x00, 0x00, 0x00, 0x01, 0xe1, 0x00,
+        ]);
         let mut payload = vec![0x00];
         payload.extend_from_slice(&section);
         let out = assembler.push_payload(true, &payload);
@@ -268,14 +283,16 @@ mod tests {
     }
 }
 
-
 #[cfg(test)]
 mod section_header_contract_tests {
     use super::parse_section_header;
 
     #[test]
     fn parses_current_next_indicator() {
-        let section = [0x00, 0xb0, 0x0d, 0x00, 0x01, 0xc0, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
+        let section = [
+            0x00, 0xb0, 0x0d, 0x00, 0x01, 0xc0, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff,
+        ];
         let header = parse_section_header(&section, 12).unwrap();
         assert_eq!(header.version, Some(0));
         assert_eq!(header.current_next_indicator, Some(false));

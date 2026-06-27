@@ -28,7 +28,10 @@ impl ThreadResultFailure {
             ThreadResultFailure::MissingReport => "finished without report",
             ThreadResultFailure::ResultAlreadyCollected => "thread result already collected",
         };
-        HalError::internal(HalInternalKind::InvariantViolation, format!("{name}: {detail}"))
+        HalError::internal(
+            HalInternalKind::InvariantViolation,
+            format!("{name}: {detail}"),
+        )
     }
 }
 
@@ -96,7 +99,8 @@ where
     ) -> Result<Self, HalError> {
         let result = Arc::new(Mutex::new(None));
         let producer_failure = Arc::new(Mutex::new(None));
-        let producer = ThreadResultProducer::new(Arc::clone(&result), Arc::clone(&producer_failure));
+        let producer =
+            ThreadResultProducer::new(Arc::clone(&result), Arc::clone(&producer_failure));
         let join = thread::Builder::new()
             .name(name.to_string())
             .spawn(move || {
@@ -125,10 +129,15 @@ where
     pub(crate) fn collect_if_finished(&mut self) -> ThreadResultPoll<T> {
         if self.collected {
             return ThreadResultPoll::Completed(Err(
-                ThreadResultFailure::ResultAlreadyCollected.into_hal_error(self.name),
+                ThreadResultFailure::ResultAlreadyCollected.into_hal_error(self.name)
             ));
         }
-        if self.join.as_ref().map(|handle| !handle.is_finished()).unwrap_or(false) {
+        if self
+            .join
+            .as_ref()
+            .map(|handle| !handle.is_finished())
+            .unwrap_or(false)
+        {
             return ThreadResultPoll::Running;
         }
         self.join_if_finished();
@@ -144,7 +153,7 @@ where
             }
             Err(_) => {
                 return ThreadResultPoll::Completed(Err(
-                    ThreadResultFailure::ResultLockPoison.into_hal_error(self.name),
+                    ThreadResultFailure::ResultLockPoison.into_hal_error(self.name)
                 ));
             }
         }
@@ -152,11 +161,11 @@ where
             Ok(mut guard) => match guard.take() {
                 Some(result) => ThreadResultPoll::Completed(result),
                 None => ThreadResultPoll::Completed(Err(
-                    ThreadResultFailure::MissingReport.into_hal_error(self.name),
+                    ThreadResultFailure::MissingReport.into_hal_error(self.name)
                 )),
             },
             Err(_) => ThreadResultPoll::Completed(Err(
-                ThreadResultFailure::ResultLockPoison.into_hal_error(self.name),
+                ThreadResultFailure::ResultLockPoison.into_hal_error(self.name)
             )),
         }
     }
@@ -199,9 +208,8 @@ where
         if self.is_thread_finished() {
             if let Some(handle) = self.join.take() {
                 if handle.join().is_err() {
-                    self.join_failure = Some(
-                        ThreadResultFailure::JoinFailure.into_hal_error(self.name),
-                    );
+                    self.join_failure =
+                        Some(ThreadResultFailure::JoinFailure.into_hal_error(self.name));
                 }
             }
         }
@@ -222,7 +230,6 @@ where
             collected: false,
         }
     }
-
 }
 
 #[cfg(test)]
@@ -249,7 +256,10 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        assert!(matches!(owner.collect_if_finished(), ThreadResultPoll::Running));
+        assert!(matches!(
+            owner.collect_if_finished(),
+            ThreadResultPoll::Running
+        ));
         let _ = owner.join_after_stop();
     }
 
@@ -257,7 +267,10 @@ mod tests {
     fn thread_result_owner_collect_completed() {
         let mut owner = ThreadResultOwner::start("completed", || Ok(())).unwrap();
         for _ in 0..100 {
-            if matches!(owner.collect_if_finished(), ThreadResultPoll::Completed(Ok(()))) {
+            if matches!(
+                owner.collect_if_finished(),
+                ThreadResultPoll::Completed(Ok(()))
+            ) {
                 return;
             }
             std::thread::sleep(Duration::from_millis(1));
@@ -269,7 +282,10 @@ mod tests {
     fn thread_result_owner_second_collect_is_not_missing_report() {
         let mut owner = ThreadResultOwner::start("completed_once", || Ok(())).unwrap();
         for _ in 0..100 {
-            if matches!(owner.collect_if_finished(), ThreadResultPoll::Completed(Ok(()))) {
+            if matches!(
+                owner.collect_if_finished(),
+                ThreadResultPoll::Completed(Ok(()))
+            ) {
                 break;
             }
             std::thread::sleep(Duration::from_millis(1));

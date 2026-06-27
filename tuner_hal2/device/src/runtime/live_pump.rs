@@ -81,7 +81,9 @@ impl FrontendLivePumpOwner {
         let thread_result = ThreadResultOwner::start("maleicacid-frontend-live-pump", move || {
             run_frontend_live_pump(&mut reader, &mut sink, &worker_cancel)
         })
-        .map_err(|error| HalError::cleanup_failed("frontend live pump spawn", format!("{error:?}")))?;
+        .map_err(|error| {
+            HalError::cleanup_failed("frontend live pump spawn", format!("{error:?}"))
+        })?;
         Ok(Self {
             cancel,
             thread_result,
@@ -272,11 +274,9 @@ mod tests {
                 panic!("intentional live pump panic");
             }
         }
-        let owner = FrontendLivePumpOwner::start(
-            Box::new(PanickingReader),
-            Box::new(VecSink::default()),
-        )
-        .unwrap();
+        let owner =
+            FrontendLivePumpOwner::start(Box::new(PanickingReader), Box::new(VecSink::default()))
+                .unwrap();
         assert!(owner.join_after_stop().is_err());
     }
 
@@ -316,5 +316,4 @@ mod tests {
         };
         assert!(owner.join_after_stop().is_err());
     }
-
 }
