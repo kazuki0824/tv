@@ -6,6 +6,8 @@
 
 DESIGN_JA.md は責務境界、状態遷移、phase order、failure precedence、resource lifetime を扱う。`let _`、`?`、`Option::None`、`format!(...)` のような具体的な実装規約は `CODE_CONVENTION.md` に置く。
 
+本書に出てくるファイル名、module名、型名は、LLM/作業者が責務正本を取り違えないための実装境界アンカーである。単なる例示ではない。rename / split / merge を行う場合は、同じ変更で本書のアンカーも同期し、状態遷移、戻り値、資源寿命、failure precedence の正本がどこへ移ったかを明記する。ただし、syntax、import、visibility、禁止APIなどの実装規約は `CODE_CONVENTION.md` へ置き、本書へ重複定義しない。
+
 ## 2. レイヤ構造とファイル分割境界
 本節は巨大制御層を再発させないための tuner_hal2 固有の配置規則である。ファイル分割は Rust の通常 `mod` による module 分割を前提とする。
 
@@ -39,7 +41,7 @@ AIDL method body は object handle 取得、service_runtime use-case 呼び出�
 ObjectMethodTxn は全 object method を機械的に包む共通層ではない。ObjectMethodTxn / request-builder helper が必須なのは、AIDL入力変換が失敗し得る method、child open、source relation、callback registration、object pure query、unavailable / unsupported / plan-only など、status precedence を壊しやすい経路である。object pure query は `ObjectQueryRequest` / `ObjectQueryResponse` に閉じ、dispatch preflight 後に `RuntimeQuery<'_>` の read-only snapshot だけを使う。query closure、`&mut TunerServiceRuntime` を受け取る façade、query 用 request-builder façade は置かない。request-builder を持たない単純 mutating method は、service_runtime use-case 側で live/generation/kind 確認、dispatch planning、domain operation の順序を守ればよく、不要に `ObjectMethodTxnPlan` / `ObjectMethodDispatchProof` token へ移行しない。fallible な domain request は object live/generation 検証後、かつ同一 runtime critical section 内で確定する。builder failure では dispatch planning / domain operation を実行せず、dispatch planning failure では domain operation を実行しない。`ObjectMethodDispatchProof` は dispatch planning 完了を示す一回性内部証跡であり、`service_runtime::object_method_txn` が dispatch planning 成功直後に同 module 内で即時消費する。AIDL closure、top-level use-case façade、domain operation へ proof を渡してはならない。後続 domain operation へ渡せるのは `ObjectMethodExecutionToken` だけとし、token は対象 `AidlObjectId` / generation / kind を直接保持する。消費側の統一 `*_for_object` use-case は同じ対象に対してだけ `consume_for_object()` で token を消費する。unavailable / unsupported / plan-only 経路は domain operation を実行しないため、`ObjectMethodTxnPlan` だけを返す plan-only helper を使い、`ObjectMethodDispatchProof` を発行して捨ててはならない。`ObjectMethodTxnPlan` は `object_method_txn` 内で生成され、`AidlMethodCall` から AIDL transaction table を引いて得た `CommandPlan` と `RuntimeExecutableRequest` を束ねる。AIDL 層で `AidlMethodAdapter::plan()` や `runtime_executable_request()` 抽出を呼んではならない。`CommandPlan` は caller が transaction 名を持ち込んで照合する値ではなく、transaction 名は AIDL transaction table 側だけが所有する。plan-unavailable / unsupported 経路も同じ `ObjectMethodTxnPlan` planning 境界を通す。旧 service_runtime 側低レベル executor module は廃止済みである。runtime lock / shared runtime executor は `aidl_service::object_runtime` の private helper とし、個別 AIDL method body や service_runtime public API へ低レベル closure executor として露出しない。
 
 
-ObjectCloseTxn は close 開始遮断の最小共通部品とする。close preflight は `Live | CleanupFailed` のみを closeable とし、`Closing` / `Closed` / `Quarantined` を拒否する。close 開始時点で対象 object cascade を `Closing` へ遷移させ、callback cleanup と domain cleanup hook を実行し、cleanup 成功時に `Closed`、cleanup 失敗時に `CleanupFailed` へ遷移する。callback cleanup や Binder callback は runtime lock 内で実行せず、object table 上の `Closing` によって並行 public method を遮断する。frontend 固有の worker停止 / LNB owner-loss cleanup、および LNB public close の backend/runtime cleanup もこの domain cleanup hook として接続し、service_runtime 側で先に begin close しない。
+ObjectCloseTxn は close 開始遮断の最小共通部品とする。close begin preflight は `Live | CleanupFailed` のみを closeable とし、`Closed` / `Closing` / `Quarantined` を拒否する。`Closed` に対する public `close()` は AOSP-facing API 境界で成功 no-op にせず、close 済み object への再アクセスとして failure を返す。close 開始時点で対象 object cascade を `Closing` へ遷移させ、callback cleanup と domain cleanup hook を実行し、cleanup 成功時に `Closed`、cleanup 失敗時に `CleanupFailed` へ遷移する。callback cleanup や Binder callback は runtime lock 内で実行せず、object table 上の `Closing` によって並行 public method を遮断する。frontend 固有の worker停止 / LNB owner-loss cleanup、および LNB public close の backend/runtime cleanup もこの domain cleanup hook として接続し、service_runtime 側で先に begin close しない。
 
 frontend tune / scan / stop / close / setLnb の境界は、frontend id / registry entry を AIDL 層で先に組み立てる thin wrapper ではなく、service_runtime の public frontend use-case façade へ接続する。AIDL object handle から public runtime id / owner relation / object lifecycle を解決する処理は service_runtime query façade、`object_lifecycle` façade、または object-handle based use-case transaction を通す。
 
@@ -154,7 +156,7 @@ AIDL method body は、fallible な AIDL input -> domain request 変換、callba
 | multi-step cleanup first-error collector | `maleicacid_tuner_hal2_common::FirstErrorCollector` | close / owner-loss / worker stop / scan cancel / callback cleanup など、同一 cleanup phase 内の複数 cleanup step をすべて試行し、最初に発生した cleanup error を保持する共通部品。各 step はこの collector へ結果を投入し、途中 return で後段 cleanup を飛ばしてはならない。collector は状態遷移、診断記録、rollback 本体、primary failure と cleanup failure の合成を所有しない。primary failure が既に存在する経路では、failure composition helper 群で primary と cleanup を合成する。 |
 | root object open transaction | `service_runtime::root_object_ops` と `aidl_service::tuner_service::{*_object_from_entry, rollback_root_object_open_after_aidl_failure}` | ITuner root open (`openFrontendById` / `openDemux` / `openDemuxById` / `openDescrambler` / `openLnbById` / `openLnbByName`) の runtime allocation、availability query、method planning、AIDL object table registration、runtime open、失敗時rollbackを service_runtime の root object open use-case 境界へ寄せる。AIDL側は returned entry から typed Binder object を生成し、Binder object 生成失敗時は service_runtime rollback helper を呼ぶだけにする。rollback は `finish_open_rollback()` を通し、object-table 側 rollback が失敗しても runtime unregister / close を必ず試行する。object table failure は共通 `object_table_error_to_hal()` で `RuntimeObjectTableError` の意味を保ち、duplicate / lifecycle / owner / kind mismatch を `HalError::Internal` に丸めて `UNKNOWN_ERROR` へ落とさない。generation overflow は内部カウンタ枯渇として `Internal` を維持する。runtime registry allocation / commit failure は共通 `registry_commit_error_to_hal()` を使い、duplicate は `INVALID_STATE`、missing/mismatch は対象APIの invalid input、id exhausted は `UNKNOWN_ERROR` へ分離する。`RuntimeObjectEntry` 取得後の public id 変換失敗も後段失敗として root object open rollback 対象にする。 |
 | AIDL object method planning | `aidl_service::object_runtime::{plan_unavailable_object_method_use_case, execute_object_runtime_use_case, execute_object_runtime_use_case_with_request_builder, execute_shared_object_runtime_use_case, execute_shared_object_runtime_use_case_with_request_builder, execute_object_query_use_case}` + `service_runtime::{object_method_txn, method_dispatch}` | AIDL method plan、status precedence、runtime dispatch planning の共通入口。状態変更commit本体は `execute_object_runtime_use_case()` または frontend worker など共有runtime所有の use-case 用 `execute_shared_object_runtime_use_case()` から、`ObjectMethodExecutionToken` を消費する service_runtime 統一 `*_for_object` use-case / domain transaction へ委譲する。object pure query は `ObjectQueryRequest` / `ObjectQueryResponse` の DTO 境界で扱い、query closure や `&mut TunerServiceRuntime` を AIDL 側へ渡さない。AIDL executor は `aidl_service::object_runtime` が所有し、個別 AIDL method body は先行 validation / runtime lock を所有しない。AIDL入力からdomain requestを作る処理が失敗し得る場合は request-builder 版 helper を使い、`service_runtime::object_method_txn` が object live / generation / kind 確認後、かつ同じ runtime critical section 内で builder を実行し、builder 成功後に `RuntimeExecutableRequest` validation と dispatch planning preflight を一度だけ行う。builder failure では dispatch planning / domain operation を実行せず、dispatch planning failure では domain operation を実行しない。dispatch planning 成功後は `ObjectMethodDispatchProof` を `object_method_txn` 内部で即時消費し、service_runtime 統一 `*_for_object` use-case へは `ObjectMethodExecutionToken` だけを渡す。受け側は token を消費してから domain operation に進む。同じ `plan_object_method_dispatch()` を再実行してはならない。unavailable / unsupported / plan-only 経路は `plan_unavailable_object_method_use_case()` へ寄せ、AIDL method body で `ensure_open()` と plan-only status 写像を手書きしない。旧 service_runtime 側低レベル executor module は廃止し、低レベル runtime lock executor は `aidl_service::object_runtime` の private helper に閉じる。これにより status precedence の object lifetime / profile unsupported / input validation / dispatch 順を崩さない |
-| public close helper | `aidl_service::object_runtime::close_object_after_close_preflight()` + `service_runtime::object_close_txn::plan_and_begin_object_close_method_dispatch()` | close系 public method の close preflight と preflight済み close finalization の入口。close preflight は service_runtime 側で object kind / closeable lifecycle（`Live | CleanupFailed`）/ generation / dispatch planning を行い、同じ runtime critical section で close対象 cascade を `Closing` へ遷移させる。通常 method 用の `Live` 限定判定とは分離する。domain runtime cleanup を伴う close は `ObjectCloseTxn` 方針に従い、`Closing` へ遷移した後に runtime lock 外で domain cleanup hook を実行し、cleanup/finalize境界をこの入口に接続する。 |
+| public close helper | `aidl_service::object_runtime::{close_object_after_close_preflight_with_domain_cleanup, close_object_after_close_preflight}` + `service_runtime::object_close_txn` | close系 public method の入口。public `close()` は `Closed` を成功 no-op にせず、close 済み object への再アクセスとして AOSP-facing failure にする。begin close が必要な場合だけ、service_runtime 側で object kind / closeable lifecycle（`Live | CleanupFailed`）/ generation / dispatch planning を行い、同じ runtime critical section で close対象 cascade を `Closing` へ遷移させる。通常 method 用の `Live` 限定判定とは分離する。domain runtime cleanup を伴う close は `ObjectCloseTxn` 方針に従い、`Closing` へ遷移した後に runtime lock 外で domain cleanup hook を実行し、cleanup/finalize境界をこの入口に接続する。 |
 | runtime unregister | `TunerServiceRuntime::unregister_public_runtime_for_closed_aidl_entry()` | close finalization では closing entries の runtime unregister を object table `Closed` commit 前に行い、runtime unregister が成功した後にだけ object table close commit を行う。Drop leak の quarantine terminalization は別経路で扱う。runtime unregister failure 時に object table を `Closed` に進めて retry 不能にしてはならない |
 
 ### 4.1 AIDL method category と責務正本
@@ -401,11 +403,11 @@ AIDL status 変換は次に固定する。
 - production 未接続の bridge / slot / mapper 型は、設計正本に明記して用途を固定しない限り公開境界に置かない。
 - `control_core` は production 接続済みの typed worker result / FMQ delivery transaction に限定する。production 未接続の lifecycle / stream boundary / worker signal skeleton を public 共通部品として置かない。
 
-## 7. 現行ランタイム部品の責務
+## 11. AOSP-facing runtime responsibility anchors
 
-本節は r50en の AOSP-facing 契約補正を実装へ接続するため、現行ランタイム部品の責務を固定する。failure composition 共通 helper 規律は引き続き維持し、primary failure と cleanup / rollback failure の合成責務を局所実装へ戻さない。
+本節は AOSP-facing 契約補正を実装境界へ接続するため、現行ランタイム部品の責務を固定する。failure composition 共通 helper 規律は引き続き維持し、primary failure と cleanup / rollback failure の合成責務を局所実装へ戻さない。
 
-### 7.1 FMQ queue runtime
+### 11.1 FMQ queue runtime
 
 `fmq` / `fmq_shim` / `demux::runtime::queue_runtime` は filter / DVR queue のランタイム境界である。Rust AIDL backend だけで official FMQ 本体を再実装するのではなく、target では `system/libfmq` と接続する薄い native shim を正方向とする。
 
@@ -418,13 +420,13 @@ AIDL status 変換は次に固定する。
 
 queue runtime は AIDL method body に局所実装しない。AIDL 層は descriptor query / queue handle export の façade に留め、実 queue state と drain readiness は demux runtime / service_runtime 側が所有する。
 
-### 7.2 filter delay / callback delivery
+### 11.2 filter delay / callback delivery
 
 filter delay hint は media / AV filter には適用しない。`setDelayHint()` は non-media filter の queue readiness だけに接続する。
 
 `aidl_service/src/filter_callback_delivery.rs` は filter callback delivery の façade であり、pipeline generated event から AIDL event へ変換する境界を所有する。callback failure は filter runtime の unhealthy / diagnostic state へ記録し、domain commit 後の callback failure を public method の post-commit failure として扱わない。callback binder failure、callback registry missing、filter runtime unhealthy marking failure は `TunerServiceRuntime` の bounded filter callback delivery diagnostic store に記録する。
 
-### 7.3 DVR queue / status notifier / callback delivery
+### 11.3 DVR queue / status notifier / callback delivery
 
 `aidl_service/src/dvr_callback_delivery.rs` と DVR queue runtime は、DVR status event と queue descriptor export のランタイム境界である。
 
@@ -433,21 +435,21 @@ filter delay hint は media / AV filter には適用しない。`setDelayHint()`
 - DVR `start()` 後の status callback delivery / notifier 起動 failure は best-effort notification failure とし、started commit 済みの public `start()` を後段 failure へ反転させない。DVR `stop()` 後の notifier 停止 failure も、stopped commit 済みの public `stop()` を後段 failure へ反転させない。ただし、これは failure を捨ててよいという意味ではない。callback delivery failure / notifier 起動 failure / notifier 停止 failure は DVR post-commit notification diagnostic と callback unhealthy state へ記録する。DVR status notifier は `AidlServiceContext` owned notifier store に cancel handle / join handle を登録する。spawn 済み thread を notifier store 未登録のまま残してはならない。notifier store の fallible lock は thread spawn 前に取得し、spawn 成功後は同じ critical section 内で cancel handle / join handle を登録する。DVR post-commit failure の accounting 自体が runtime lock poison / callback registry missing / unhealthy marking failure で成立しない場合は service invariant failure として呼び出し元へ返し、silent return してはならない。
 - pipeline generated event から filter queue payload へ enqueue する境界では、filter queue missing / filter missing などの enqueue failure を捨ててはならない。public packet push 成否と分離する場合でも `PipelineReport` diagnostic へ接続する。
 
-DVR のデータ方向は record DVR = write、playback DVR = read とする。対象 AIDL 境界に `read()` / `write()` が公開される場合はこの方向に従い、逆方向は unsupported / unavailable 系へ落とす。
+AOSP IDvr は `read()` / `write()` method を公開しない。AOSP/VTS 上の DVR データ方向は、record DVR が demux output buffer であり HAL が record FMQ へ生成データを書き、client / VTS callback が読む方向、playback DVR が demux input buffer であり client / VTS callback が playback FMQ へ書き、HAL が読む方向である。したがって HAL 内部の queue operation 名で表す場合は record DVR = HAL write、playback DVR = HAL read とし、client 側 helper 名で表す場合は record DVR = client read、playback DVR = client write と明記する。視点を明記しない `record = write` / `playback = read` のような短縮表現を公開契約として使ってはならない。
 
-### 7.4 AV shared backing
+### 11.4 AV shared backing
 
 AV shared backing は media / AV filter event の shared memory backing を表すランタイム部品である。shared handle 未 export 中に AV payload を通常 MediaEvent として配送してはならない。未 export 中の drop / overflow は診断 counter として保持する。
 
 AV shared backing の slot allocation / release / release_all は、active set と free slot set の片側だけを更新して成功扱いにしてはならない。release 時に backing marker と runtime backing 実体が乖離している場合、transient backing を生成して release outcome を作ってはならず、backing failure として扱う。部分 failure を検出した場合は diagnostic に残し、次回 release / close cleanup で再試行できる状態を保つ。
 
-### 7.5 closed object idempotent close
+### 11.5 closed object public access after close
 
-closed object に対する再 `close()` は AOSP-facing API 境界では idempotent success / no-op として扱う。ただし、`CleanupFailed` と `Closed` を混同してはならない。cleanup が未完了の object は再 close で cleanup を再試行可能でなければならず、Closed no-op によって cleanup retry を隠してはならない。
+closed object に対する public method 呼び出しは、再 `close()` を含めて AOSP-facing API 境界では failure として扱う。特に `IDvr.close()` 後は AOSP `IDvr` 契約に従い、当該 DVR instance の全 method が failure を返す前提で設計する。ただし、`CleanupFailed` と `Closed` を混同してはならない。cleanup が未完了の object は再 close で cleanup を再試行可能でなければならず、Closed failure によって cleanup retry を隠してはならない。
 
 close cascade finalization / cleanup-failed marking では、root object が unexpected terminal lifecycle である場合と、descendant が既に terminal lifecycle である場合を分ける。root が `Closed` / `Quarantined` の状態で finalization helper へ渡された場合は close preflight 境界の不整合として error にする。一方、descendant が既に `Closed` / `Quarantined` の場合は、親 close の再試行や部分 cleanup 後の cascade で起こり得るため、runtime unregister / close commit / cleanup-failed marking 対象から除外する。terminal descendant を理由に root close retry を失敗させてはならない。public runtime unregister preflight は destructive unregister の前に registry entry と runtime state の両方を確認し、descrambler でも registry entry と runtime の片側欠落を cleanup failure として表面化する。
 
-### 7.6 demux-input descrambler PID claim
+### 11.6 demux-input descrambler PID claim
 
 `IDescrambler.addPid(pid, NULL)` / `removePid(pid, NULL)` は、source filter を持たない demux input PID 操作として成功対象である。descrambler PID claim は `SourceFilter` と `DemuxInput` を区別する。
 
@@ -457,7 +459,7 @@ close cascade finalization / cleanup-failed marking では、root object が une
 - demux-input claim に source filter accessor を強制してはならない。source filter を必要とする処理は `source_filter_ref()` の `Some` のみを対象にする。
 - packet path で `SourceFilter` claim を active descrambler PID として拾う場合、source filter の owner demux、demux generation、filter lifecycle、PID、subtype、claim に保存した source filter generation を検証する。検証失敗または generation mismatch は `packet_policy` に丸めず、`PacketPipeline` phase の descrambler diagnostic として `filter_id` と `HalError` を保持する。packet delivery 全体は継続してよいが、該当 claim を active snapshot へ含めてはならない。`.ok()` で source-filter validation failure を無診断破棄してはならない。
 
-### 7.7 A/V sync 最小契約と精度改善境界
+### 11.7 A/V sync 最小契約と精度改善境界
 
 `DemuxTsFilterType::PCR` は `FilterOpenType::TsPcr` として受理する。`getAvSyncHwId(media filter)` は、media filter と同じ demux に属する live PCR filter id を返す。渡された media filter の id を sync id として返してはならない。
 
@@ -473,7 +475,11 @@ close cascade finalization / cleanup-failed marking では、root object が une
 
 PCR filter id association と pre-PCR API success の AOSP-facing 最小契約は現行責務であり、精度改善対象へ先送りしない。
 
-### r50eo59 typed boundary tightening addendum
+## 12. 型付き境界の保守契約
+
+本節は追記メモではなく、2章から11章の責務境界を型付き DTO、capability token、diagnostic 型へ落とすための設計正本である。旧リリース名は履歴識別子として扱い、現行仕様の正本は本節の本文とする。
+
+### 12.1 Root / object query DTO boundary
 
 Root query / command の DTO 境界は次で固定する。`RootQueryResponse::FrontendInfo` は `FrontendRegistryEntry` を返してはならず、`RootFrontendInfoSnapshot` のような専用 snapshot DTO だけを返す。`RootQueryRequest::MaxNumberOfFrontends` と `RootCommandRequest::SetMaxNumberOfFrontends` は AIDL 入力の `frontend_type` を捨てず、service_runtime 側 DTO に保持する。`RootDemuxCapabilitiesSnapshot` と `RootDemuxInfoSnapshot` は `TsOnly` marker だけに縮退せず、AIDL 変換に必要な field を service_runtime 側 snapshot として保持する。AIDL 層は snapshot DTO から AIDL 型へ変換するだけで、registry entry、capability policy、existence policy の正本を所有しない。
 
@@ -491,7 +497,7 @@ Descrambler clear-key / replace-key は plan / validate / prepared token / commi
 
 `service_runtime/src/transaction_registry.rs` は runtime transaction -> dispatch target mapping だけを持つ。coverage、接続済み表示、stale 未接続表示、status precedence はこの表の責務ではない。`RuntimeCommandDispatcher` は dispatch target だけを消費する。
 
-### r50eo62 type hardening follow-up
+### 12.2 Capability token / diagnostic hardening
 
 `ObjectMethodDispatchProof` は `object_method_txn` 内部の proof であり、AIDL closure、top-level `*_ops.rs` façade、domain transaction へ渡してはならない。`execute_object_method_call_after_live()` / `execute_shared_object_method_call_after_live()` は dispatch planning 成功直後に proof を内部消費し、後続には `ObjectMethodExecutionToken` だけを渡す。`*_for_object` use-case は `ObjectMethodExecutionToken` を最初の runtime-critical operation として consume してから public runtime id、owner relation、frontend/descrambler/LNB relation などを解決する。
 

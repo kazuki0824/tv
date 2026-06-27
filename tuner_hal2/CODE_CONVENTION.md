@@ -13,7 +13,7 @@
 - rollback / public close / owner-loss cleanup では `Option::None` / missing target を無言成功扱いしない。missing を許容する処理は read-only query、idempotent stop、best-effort telemetry、defensive unavailable path など、DESIGN_JA.md が許容した範囲に限る。
 - rollback / public close / owner-loss cleanup の正本に void / best-effort-only cleanup を使わない。失敗を表面化できる戻り値を持つ operation に接続する。
 - cleanup-failed marking、callback unhealthy marking、Drop leak quarantine、owner-loss cleanup failed state、scan terminal failure record、Drop から返せない drop-leak error record、packet path の descrambler source-filter validation failure は必須診断として扱い、best-effort log 扱いにしない。
-- `setKeyToken(VOID)` のように session state と token table refcount の両方を変える経路では、session mutation を先に commit してから token release 失敗を返してはならない。release / cleanup が成功した後に session clear を commit する plan/commit 境界に分離し、release 失敗時は元の session key を保持する。clear plan は release 直前に plan 作成時の old token / old key slot と現在の session token / key slot を照合し、別 session / 別 key state への stale plan 誤用を release 前に検出して session を変更しない。key table release 成功後の session clear commit には失敗し得る再検証 step を置かない。
+- `setKeyToken(VOID)` のように session state と token table refcount の両方を変える経路では、clear-key の状態遷移順序を `DESIGN_JA.md` の descrambler transaction 契約へ寄せる。外部 caller が plan / prepared token / commit を個別に組み立てられる public split API を置かず、full transaction façade 内で stale plan 検証、session clear commit、old token release、release failure diagnostic を固定する。old token release failure を理由に session key を旧 token へ戻してはならない。
 - packet count、malformed count、throughput counter、補助ログなどの best-effort telemetry は primary failure を上書きしない。必須診断 store を持つ場合でも、service lifetime 中に unbounded に増える `Vec` を正本にしない。bounded store と observable dropped/failure counter に分離する。
 - Drop は public close の代替にしない。`Drop` 実装は drop-leak 入口だけを呼び、object 種別固有 cleanup を書かない。
 
@@ -112,7 +112,7 @@ Wrapper を置くべきでない条件:
 - `PipelineDiagnostic` は failure 種別ごとの typed enum とし、required context を `Option` field bag で表現しない。typed `HalError` / `DemuxRuntimeError` / descramble policy failure を `format!(...)` 文字列だけに丸めない。
 - transaction 正本の constructor / plan / commit は所有 module 外から独自 phase order を組み立てられる public API にしない。`SourceBoundaryTxn`、`DescramblerSessionTxn`、`LnbLifecycleTxn` の外部 caller は module-level use-case façade を通す。
 
-## r50eo59 typed boundary hardening
+## 8. 型付き境界 hardening
 
 - Root query response は registry entry を AIDL 層へ返してはならない。`FrontendRegistryEntry`、runtime registry entry、object table entry は service_runtime 内部の正本であり、AIDL 層へ返す場合は専用 snapshot DTO に変換する。
 - Object query response は `FrontendRegistryEntry` を返してはならない。frontend status / readiness policy は service_runtime 側 DTO で確定し、AIDL 層は AIDL 型への変換だけを行う。
