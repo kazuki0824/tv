@@ -2207,7 +2207,10 @@ impl DemuxHandle {
         let Some(filter) = self.filters.get_mut(&filter_id) else {
             return Err(DemuxConfigError::NotFound);
         };
-        if !filter.is_configured_for_api() || !filter.is_started_for_api() {
+        if !filter.is_configured_for_api() {
+            return Err(DemuxConfigError::InvalidState);
+        }
+        if !filter.is_started_for_api() {
             record_soft_demux_diagnostic(&FILTER_STOP_IDEMPOTENT_COUNT, "stop_idempotent");
             return Ok(());
         }
@@ -2787,7 +2790,10 @@ impl DemuxHandle {
         let Some(dvr) = self.dvrs.get_mut(&dvr_id) else {
             return Err(DemuxConfigError::NotFound);
         };
-        if !dvr.is_configured_for_api() || !dvr.is_started_for_api() {
+        if !dvr.is_configured_for_api() {
+            return Err(DemuxConfigError::InvalidState);
+        }
+        if !dvr.is_started_for_api() {
             record_soft_demux_diagnostic(&DVR_STOP_IDEMPOTENT_COUNT, "dvr_stop_idempotent");
             return Ok(());
         }

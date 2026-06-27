@@ -14342,7 +14342,7 @@ pub fn nonnegative_i32_to_u32(value: i32) -> Option<u32> {
     u32::try_from(value).ok()
 }
 
-const AOSP_TUNER_INVALID_STREAM_ID: i32 = 0xFFFF;
+const AOSP_TUNER_INVALID_STREAM_ID: i32 = -1;
 
 fn map_isdbs_stream_selector(
     stream_id: i32,

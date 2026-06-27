@@ -1,3 +1,76 @@
+# r50eo51
+
+- `tuner_hal/DESIGN_JA.md` を、ユーザー添付の DESIGN_JA.md 改訂版へ差し替えた。
+- Rust/Kotlin/Java production code は変更していない。
+- Android/Soong build、Rust unit test、atest、VTS、rustfmt、rustc、cargo、実機確認は未実行。
+
+# r50eo9
+
+- `tuner_hal2` の `setDataSource()` record sink 契約補正に合わせ、release version を更新した。
+- `tuner_hal/DESIGN_JA.md` 本文は r50eo8 から変更していない。TS生データfilter → record filter 成功セルを正本として維持する。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認は未実行。
+
+# r50eo8
+
+- `tuner_hal2` の TS linkCaps / `UNDEFINED` subtype / `setDataSource` sink 整合性補正に合わせ、release version を更新した。
+- `tuner_hal/DESIGN_JA.md` 本文は r50eo7 から変更していない。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認は未実行。
+
+# r50eo7
+
+- `tuner_hal/DESIGN_JA.md` 表19の `IFrontend.tune()` 同一tune判定を補正した。
+- 前回tune未完了の場合は、同一正規化設定でも無処理成功にせず、旧tune停止・新generation開始へ進める契約として明記した。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認は未実行。
+
+# r50eo6
+
+- r50eo5 のリリース物規則確認を継続し、`tuner_hal2/DESIGN_JA.md` の文書責務違反リスクを是正した。
+- `tuner_hal/DESIGN_JA.md` 本文は r50en から変更していない。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認は未実行。
+
+# r50eo5
+
+- r50eo4 の確認方法を開発規則に合わせて是正し、完了判定・未実行ゲートを `tuner_hal2/DESIGN_JA.md` からアーカイブ外監査文書へ移した。
+- `tuner_hal/DESIGN_JA.md` 本文は r50en から変更していない。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認は未実行。
+
+# r50eo4
+
+- r50eo3 の静的是正を継続し、`tuner_hal2/DESIGN_JA.md` のパッチ由来・版由来表現を現行設計責務へ整理した。
+- `tuner_hal/DESIGN_JA.md` 本文は r50en から変更していない。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認は未実行。
+
+# r50eo3
+
+- r50eo2 の過大報告を是正し、`tuner_hal2/DESIGN_JA.md` へ imported component の現行責務と未検証事項を追記した。
+- `tuner_hal/DESIGN_JA.md` 本文は r50en から変更していない。
+- 本版は static correction checkpoint であり、AOSP契約矛盾ゼロ、VTS合格は宣言しない。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認は未実行。
+
+# r50eo2
+
+- r50eo1で意図未達だった `tuner_hal2` 実装追従を継続し、r50en設計契約との差分をさらに縮小した。
+- `tuner_hal`側の設計文書本文はr50enから変更していない。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認は未実行。
+
+# r50eo1
+
+- r50enで補正した `tuner_hal/DESIGN_JA.md` のAOSP-facing契約に追従するため、`tuner_hal2`側の実装を更新した。
+- `tuner_hal`側の設計文書本文はr50enから変更していない。
+- Android/Soong build、Rust unit test、atest、VTS、実機確認は未実行。
+
+# r50en
+
+- `tuner_hal/DESIGN_JA.md` の AOSP-facing 契約矛盾を是正した。
+- nullable Binder 境界を現行AOSP契約として扱い、`IFilter.setDataSource(NULL)`、`IDescrambler.addPid/removePid(NULL)`、`IFrontend.setCallback(NULL)`、`ILnb.setCallback(NULL)` を現行対象へ戻した。
+- `linkCaps` は、広告した main type pair について VTS が生成する `UNDEFINED` subtype 接続も成功対象に含める方針へ補正した。
+- media / AV filter に対する `setDelayHint()` を成功扱いから外し、non-media filter の delay hint 成功と分離した。
+- `IFrontend.getStatus()` の `statusCaps` 外 type は ignored、`getFrontendStatusReadiness()` では要素ごとに `UNSUPPORTED` とするよう分離した。
+- DVR record / playback の `start()`、`read()`、`write()`、`attachFilter()`、`detachFilter()` の AOSP/framework 契約を補正した。
+- A/V sync は `getAvSyncHwId(media filter)` が対応 PCR filter ID を返し、PCR 観測前でも `getAvSyncTime()` が API 成功する設計へ補正した。高精度化、jitter smoothing、PLL は後続 future_work のまま維持した。
+- 未完了 tune 中の同一条件再 `tune()` を no-op にせず、旧 tune 停止、新 generation、新 tune 開始へ進める設計へ補正した。
+- コード実装変更なし。Android/Soong build、Rust unit test、atest、VTS、実機確認は未実行。
+
 # r50ei89_doc_responsibility_tuner_docs_fix
 
 - Rewrote `README_JA.md` so the legacy `tuner_hal` role is described as current-state guidance without release-history wording.

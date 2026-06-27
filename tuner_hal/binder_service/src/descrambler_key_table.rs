@@ -5,7 +5,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 const DESCRAMBLER_TOKEN_LEN: usize = 8;
-const DESCRAMBLER_TOKEN_MAX_LEN: usize = 16;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DescramblerKeyRegistrationError {
@@ -73,7 +72,7 @@ impl DescramblerKeyTable {
         if token.is_empty() {
             return Err(DescramblerKeyResolveError::EmptyToken);
         }
-        if token.len() > DESCRAMBLER_TOKEN_MAX_LEN {
+        if token.len() != DESCRAMBLER_TOKEN_LEN {
             return Err(DescramblerKeyResolveError::MalformedToken);
         }
         let slots = lock_mutex_status(&self.slots, "descrambler_key_table_slots")
@@ -128,7 +127,7 @@ impl DescramblerKeyTable {
         if token.is_empty() {
             return Err(DescramblerKeyResolveError::EmptyToken);
         }
-        if token.len() > DESCRAMBLER_TOKEN_MAX_LEN {
+        if token.len() != DESCRAMBLER_TOKEN_LEN {
             return Err(DescramblerKeyResolveError::MalformedToken);
         }
         let mut slots = lock_mutex_status(&self.slots, "descrambler_key_table_slots")
@@ -147,7 +146,7 @@ impl DescramblerKeyTable {
         if token.is_empty() {
             return Err(DescramblerKeyResolveError::EmptyToken);
         }
-        if token.len() > DESCRAMBLER_TOKEN_MAX_LEN {
+        if token.len() != DESCRAMBLER_TOKEN_LEN {
             return Err(DescramblerKeyResolveError::MalformedToken);
         }
         let mut slots = lock_mutex_status(&self.slots, "descrambler_key_table_slots")
@@ -271,14 +270,14 @@ mod tests {
         );
         assert_eq!(
             table
-                .resolve_with_diagnostic(&[0x55; DESCRAMBLER_TOKEN_MAX_LEN + 1])
+                .resolve_with_diagnostic(&[0x55; DESCRAMBLER_TOKEN_LEN + 1])
                 .unwrap_err(),
             DescramblerKeyResolveError::MalformedToken
         );
     }
 
     #[test]
-    fn unknown_valid_length_token_is_resolved_as_unknown() {
+    fn unknown_length_valid_token_is_rejected() {
         let table = DescramblerKeyTable::new();
         assert_eq!(
             table.resolve_with_diagnostic(&[0x42; 8]).unwrap_err(),
@@ -286,7 +285,7 @@ mod tests {
         );
         assert_eq!(
             table.resolve_with_diagnostic(b"placeholder").unwrap_err(),
-            DescramblerKeyResolveError::UnknownToken
+            DescramblerKeyResolveError::MalformedToken
         );
     }
 
