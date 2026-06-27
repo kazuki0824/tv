@@ -449,14 +449,11 @@ closed object に対する public method 呼び出しは、再 `close()` を含�
 
 close cascade finalization / cleanup-failed marking では、root object が unexpected terminal lifecycle である場合と、descendant が既に terminal lifecycle である場合を分ける。root が `Closed` / `Quarantined` の状態で finalization helper へ渡された場合は close preflight 境界の不整合として error にする。一方、descendant が既に `Closed` / `Quarantined` の場合は、親 close の再試行や部分 cleanup 後の cascade で起こり得るため、runtime unregister / close commit / cleanup-failed marking 対象から除外する。terminal descendant を理由に root close retry を失敗させてはならない。public runtime unregister preflight は destructive unregister の前に registry entry と runtime state の両方を確認し、descrambler でも registry entry と runtime の片側欠落を cleanup failure として表面化する。
 
-### 11.6 demux-input descrambler PID claim
+### 11.6 descrambler PID claim
 
-`IDescrambler.addPid(pid, NULL)` / `removePid(pid, NULL)` は、source filter を持たない demux input PID 操作として成功対象である。descrambler PID claim は `SourceFilter` と `DemuxInput` を区別する。
+`IDescrambler.addPid(pid, optionalSourceFilter)` / `removePid(pid, optionalSourceFilter)` は、AOSP AIDL 上は `IFilter` 非 nullable 引数であり、HAL 実装は source filter 付き PID claim のみを受け付ける。NULL source filter を仮定した demux-input PID claim 経路を現行仕様として定義してはならない。
 
 - `SourceFilter` claim は source filter id / generation と PID を保持する。
-- `DemuxInput` claim は owner demux id / demux generation と PID を保持する。
-- packet path は同一 demux generation の `DemuxInput` claim を active descrambler PID として拾う。
-- demux-input claim に source filter accessor を強制してはならない。source filter を必要とする処理は `source_filter_ref()` の `Some` のみを対象にする。
 - packet path で `SourceFilter` claim を active descrambler PID として拾う場合、source filter の owner demux、demux generation、filter lifecycle、PID、subtype、claim に保存した source filter generation を検証する。検証失敗または generation mismatch は `packet_policy` に丸めず、`PacketPipeline` phase の descrambler diagnostic として `filter_id` と `HalError` を保持する。packet delivery 全体は継続してよいが、該当 claim を active snapshot へ含めてはならない。`.ok()` で source-filter validation failure を無診断破棄してはならない。
 
 ### 11.7 A/V sync 最小契約と精度改善境界

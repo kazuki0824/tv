@@ -199,7 +199,7 @@ fn object_frontend_readiness_value(
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug)]
 pub enum ObjectQueryResponse {
     QueueDescriptor(maleicacid_tuner_hal2_demux::QueueDescriptorSnapshot),
     PublicId(i32),
@@ -358,7 +358,7 @@ pub(crate) struct ObjectMethodDispatchProof {
     target: ObjectMethodTxnTarget,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct ObjectMethodExecutionToken {
     target: ObjectMethodTxnTarget,
 }
@@ -368,13 +368,13 @@ impl ObjectMethodExecutionToken {
         Self { target }
     }
 
-    pub const fn object_id(self) -> AidlObjectId {
+    pub const fn object_id(&self) -> AidlObjectId {
         self.target.object_id()
     }
-    pub const fn generation(self) -> AidlObjectGeneration {
+    pub const fn generation(&self) -> AidlObjectGeneration {
         self.target.generation()
     }
-    pub const fn object_kind(self) -> AidlObjectKind {
+    pub const fn object_kind(&self) -> AidlObjectKind {
         self.target.object_kind()
     }
 
@@ -386,7 +386,7 @@ impl ObjectMethodExecutionToken {
         object_kind: AidlObjectKind,
     ) -> Result<(), HalError> {
         if self.target == ObjectMethodTxnTarget::new(object_id, generation, object_kind) {
-            Ok(())
+            aidl_object_live(_runtime, object_id, generation, object_kind)
         } else {
             Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
@@ -401,21 +401,7 @@ impl ObjectMethodDispatchProof {
         Self { target }
     }
 
-    pub(crate) fn consume_for_object(
-        self,
-        _runtime: &mut TunerServiceRuntime,
-        object_id: AidlObjectId,
-        generation: AidlObjectGeneration,
-        object_kind: AidlObjectKind,
-    ) -> Result<(), HalError> {
-        self.consume_for_target(ObjectMethodTxnTarget::new(
-            object_id,
-            generation,
-            object_kind,
-        ))
-    }
-
-    pub(crate) fn consume_for_target(self, target: ObjectMethodTxnTarget) -> Result<(), HalError> {
+    fn consume_for_target(self, target: ObjectMethodTxnTarget) -> Result<(), HalError> {
         if self.target == target {
             Ok(())
         } else {
@@ -424,11 +410,6 @@ impl ObjectMethodDispatchProof {
                 "dispatch proof target does not match object method target",
             ))
         }
-    }
-
-    #[cfg(test)]
-    const fn target(&self) -> ObjectMethodTxnTarget {
-        self.target
     }
 }
 

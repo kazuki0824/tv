@@ -7,7 +7,6 @@ use android_hardware_common_fmq::aidl::android::hardware::common::fmq::Synchroni
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     AvStreamType::AvStreamType,
     DemuxCapabilities::DemuxCapabilities,
-    DemuxFilterMainType::DemuxFilterMainType,
     DemuxFilterSettings::DemuxFilterSettings,
     DemuxFilterType::DemuxFilterType,
     DemuxInfo::DemuxInfo,
@@ -57,7 +56,7 @@ use maleicacid_tuner_hal2_binder_adapter::{
     build_dvr_open_request, build_filter_av_stream_type_request, build_filter_delay_hint_request,
     build_filter_summary_for_open_type, build_lnb_satellite_position_request,
     build_lnb_tone_request, build_lnb_voltage_request, build_open_filter_request, AidlApi,
-    AidlObjectGeneration, AidlObjectId, AidlObjectKind, DvrFilterLinkRequest,
+    AidlMethodCall, AidlObjectGeneration, AidlObjectId, AidlObjectKind, DvrFilterLinkRequest,
     FilterReleaseAvHandleRequest, FilterSetDataSourceRequest,
 };
 use maleicacid_tuner_hal2_common::{
@@ -94,12 +93,13 @@ use crate::lnb_object::LnbAidlObject;
 use crate::object_handle::AidlObjectHandle;
 use crate::object_runtime::{
     close_object_after_close_preflight, close_object_after_close_preflight_with_domain_cleanup,
-    execute_object_query_use_case, execute_object_runtime_use_case,
-    execute_object_runtime_use_case_with_request_builder, execute_shared_object_runtime_use_case,
+    execute_object_query_use_case, execute_object_query_use_case_with_aidl_input_conversion,
+    execute_object_runtime_use_case, execute_object_runtime_use_case_with_request_builder,
+    execute_shared_object_runtime_use_case,
     execute_shared_object_runtime_use_case_with_request_builder,
     plan_unavailable_object_method_use_case,
 };
-use crate::service_context::{AidlServiceContext, SharedAidlServiceContext, SharedTunerRuntime};
+use crate::service_context::{AidlServiceContext, SharedAidlServiceContext};
 
 mod demux_methods;
 mod descrambler_methods;
@@ -109,21 +109,10 @@ mod frontend_methods;
 mod lnb_methods;
 mod support;
 
-use self::support::{public_api_call, unsupported_public_api_call};
+use self::support::public_api_call;
 
 type TunerQueueDesc = CommonMqDescriptor<i8, CommonSynchronizedReadWrite>;
 type TunerNativeHandle = CommonNativeHandle;
-
-const TUNER_HAL2_MAX_LIVE_DEMUXES: i32 = 8;
-const TUNER_HAL2_DEMUX_MAX_TS_FILTERS: i32 = 32;
-const TUNER_HAL2_DEMUX_MAX_SECTION_FILTERS: i32 = 8;
-const TUNER_HAL2_DEMUX_MAX_AUDIO_FILTERS: i32 = 4;
-const TUNER_HAL2_DEMUX_MAX_VIDEO_FILTERS: i32 = 4;
-const TUNER_HAL2_DEMUX_MAX_PES_FILTERS: i32 = 8;
-const TUNER_HAL2_DEMUX_MAX_PCR_FILTERS: i32 = 4;
-const TUNER_HAL2_MAX_SECTION_FILTER_BYTES: i64 = 16;
-const DEMUX_FILTER_MAIN_TYPE_COUNT: usize = 5;
-const SUPPORTED_DEMUX_FILTER_CAPS: i32 = DemuxFilterMainType::TS.0;
 
 #[derive(Clone)]
 pub struct TunerAidlService {
@@ -131,36 +120,6 @@ pub struct TunerAidlService {
 }
 
 impl Interface for TunerAidlService {}
-
-fn demux_link_caps_for_ts_filter_linkage() -> Vec<i32> {
-    let mut link_caps = vec![0; DEMUX_FILTER_MAIN_TYPE_COUNT];
-    link_caps[0] = DemuxFilterMainType::TS.0;
-    link_caps
-}
-
-fn tuner_hal2_demux_capabilities() -> DemuxCapabilities {
-    DemuxCapabilities {
-        numDemux: TUNER_HAL2_MAX_LIVE_DEMUXES,
-        numRecord: TUNER_HAL2_MAX_LIVE_DEMUXES,
-        numPlayback: TUNER_HAL2_MAX_LIVE_DEMUXES,
-        numTsFilter: TUNER_HAL2_DEMUX_MAX_TS_FILTERS,
-        numSectionFilter: TUNER_HAL2_DEMUX_MAX_SECTION_FILTERS,
-        numAudioFilter: TUNER_HAL2_DEMUX_MAX_AUDIO_FILTERS,
-        numVideoFilter: TUNER_HAL2_DEMUX_MAX_VIDEO_FILTERS,
-        numPesFilter: TUNER_HAL2_DEMUX_MAX_PES_FILTERS,
-        numPcrFilter: TUNER_HAL2_DEMUX_MAX_PCR_FILTERS,
-        numBytesInSectionFilter: TUNER_HAL2_MAX_SECTION_FILTER_BYTES,
-        filterCaps: SUPPORTED_DEMUX_FILTER_CAPS,
-        linkCaps: demux_link_caps_for_ts_filter_linkage(),
-        bTimeFilter: false,
-    }
-}
-
-fn tuner_hal2_demux_info() -> DemuxInfo {
-    DemuxInfo {
-        filterTypes: SUPPORTED_DEMUX_FILTER_CAPS,
-    }
-}
 
 fn tuner_hal2_demux_capabilities_from_snapshot(
     snapshot: RootDemuxCapabilitiesSnapshot,
@@ -254,14 +213,6 @@ impl TunerAidlService {
         Self {
             context: AidlServiceContext::shared(runtime),
         }
-    }
-
-    pub(crate) fn context(&self) -> SharedAidlServiceContext {
-        self.context.clone()
-    }
-
-    pub(crate) fn runtime(&self) -> SharedTunerRuntime {
-        self.context.runtime()
     }
 
     pub(crate) fn lock_runtime(&self) -> Result<MutexGuard<'_, TunerServiceRuntime>, Status> {
@@ -443,15 +394,6 @@ fn lnb_profile_supports_voltage_status(profile: Option<LnbRegistryProfile>) -> b
         profile,
         Some(LnbRegistryProfile::Px4Device15VOnly | LnbRegistryProfile::EarthPt1FixedLnb)
     )
-}
-
-fn lnb_profile_status_voltage(profile: Option<LnbRegistryProfile>) -> LnbVoltage {
-    match profile {
-        Some(LnbRegistryProfile::Px4Device15VOnly | LnbRegistryProfile::EarthPt1FixedLnb) => {
-            LnbVoltage::NONE
-        }
-        Some(LnbRegistryProfile::NoPower) | None => LnbVoltage::NONE,
-    }
 }
 
 fn frontend_status_caps_for_snapshot(
@@ -776,35 +718,7 @@ impl ITuner for TunerAidlService {
 mod tests {
     use super::*;
     use maleicacid_tuner_hal2_binder_adapter::{DvrOpenKind, OpenDvrRequest};
-    use maleicacid_tuner_hal2_common::FrontendSystem;
     use maleicacid_tuner_hal2_service_runtime::RuntimeOwnerRelation;
-
-    #[test]
-    fn demux_capabilities_advertise_ts_only_profile() {
-        let caps = tuner_hal2_demux_capabilities();
-
-        assert_eq!(caps.numDemux, TUNER_HAL2_MAX_LIVE_DEMUXES);
-        assert_eq!(caps.numRecord, TUNER_HAL2_MAX_LIVE_DEMUXES);
-        assert_eq!(caps.numPlayback, TUNER_HAL2_MAX_LIVE_DEMUXES);
-        assert_eq!(caps.numTsFilter, 32);
-        assert_eq!(caps.numSectionFilter, 8);
-        assert_eq!(caps.numAudioFilter, 4);
-        assert_eq!(caps.numVideoFilter, 4);
-        assert_eq!(caps.numPesFilter, 8);
-        assert_eq!(caps.numPcrFilter, 4);
-        assert_eq!(caps.numBytesInSectionFilter, 16);
-        assert_eq!(caps.filterCaps, DemuxFilterMainType::TS.0);
-        assert_eq!(caps.linkCaps, vec![DemuxFilterMainType::TS.0, 0, 0, 0, 0]);
-        assert!(!caps.bTimeFilter);
-    }
-
-    #[test]
-    fn demux_info_advertises_same_ts_only_filter_mask() {
-        assert_eq!(
-            tuner_hal2_demux_info().filterTypes,
-            DemuxFilterMainType::TS.0
-        );
-    }
 
     #[test]
     fn configure_ip_cid_returns_unavailable_for_any_value() {

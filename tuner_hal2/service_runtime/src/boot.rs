@@ -13,8 +13,9 @@ use maleicacid_tuner_hal2_demux::config::{
     AvStreamKind, AvStreamTypeConfig, FilterConfig, FilterDelayHint, FilterOpenType,
 };
 use maleicacid_tuner_hal2_demux::packet_pipeline::{
-    PipelineAssemblySuppressionReason, PipelineBoundaryReason, PipelineDiagnostic, PipelineReport,
-    PipelineResetReport,
+    PacketDescramblePolicyFailure, PacketPid, PipelineAssemblySuppressionReason,
+    PipelineBoundaryReason, PipelineDiagnostic, PipelineReport, PipelineResetReport,
+    TsPacketValidationError, ValidatedTsPacket,
 };
 use maleicacid_tuner_hal2_demux::runtime::{
     DemuxRuntimeError, DemuxRuntimeErrorKind, DemuxRuntimeState, DvrKind,
@@ -24,16 +25,19 @@ use maleicacid_tuner_hal2_demux::runtime::{
 };
 use maleicacid_tuner_hal2_demux::OpenFilterRequest;
 use maleicacid_tuner_hal2_demux::{
-    DvrConfigureTxn, DvrRuntime, DvrRuntimeState, FilterConfigureTxn, FilterRuntime,
-    FilterRuntimeState, TsInputOrigin,
+    DvrConfigureOutcome, DvrConfigureTxn, DvrRuntime, DvrRuntimeState, FilterConfigureOutcome,
+    FilterConfigureTxn, FilterRuntime, FilterRuntimeState, TsInputOrigin,
 };
 #[cfg(test)]
 use maleicacid_tuner_hal2_descrambler::DescramblerKeyRegistrationError;
 use maleicacid_tuner_hal2_descrambler::{
-    descramble_ts_packet_in_place, packet_policy_for_descramble_failure, parse_ts_packet_header,
-    DescrambleFailure, DescrambleOutcome, DescramblerKeyLookupError, DescramblerKeySlot,
+    add_pid_claim_with_session_txn, bind_demux_with_session_txn, cleanup_all_with_session_txn,
+    descramble_ts_packet_in_place, packet_policy_for_descramble_failure,
+    remove_pid_claim_with_session_txn, DescrambleFailure, DescrambleOutcome,
+    DescramblerClearKeyTxnError, DescramblerKeyLookupError, DescramblerKeySlot,
     DescramblerKeyToken, DescramblerKeyTokenError, DescramblerPidClaim, DescramblerPidClaimError,
-    DescramblerSessionFailureKind, PacketPolicyAction,
+    DescramblerReplaceKeyOutcome, DescramblerReplaceKeyTxnError, DescramblerSessionFailureKind,
+    PacketPolicyAction,
 };
 use maleicacid_tuner_hal2_device::{
     FrontendLivePacketSink, FrontendLivePumpOwner, FrontendLivePumpReport,
@@ -78,7 +82,9 @@ use maleicacid_tuner_hal2_resource_ledger::{LedgerGeneration, LedgerId};
 // Operation implementations are boot child modules so they can use
 // TunerServiceRuntime private state without widening field visibility.
 mod query_api;
-pub use query_api::{DvrStatusPollSnapshot, RuntimeObjectPublicEntry, RuntimeObjectQueryError};
+pub use query_api::{
+    DvrStatusPollSnapshot, RuntimeObjectPublicEntry, RuntimeObjectQueryError, RuntimeQuery,
+};
 mod demux_filter_dvr_txn;
 mod descrambler_txn;
 mod frontend_txn;
@@ -534,7 +540,7 @@ impl TunerServiceRuntime {
                     } => (
                         *filter_id,
                         FilterEventDelivery::Pes {
-                            stream_id: *pid,
+                            stream_id: pid.get(),
                             data_length: packet.raw_bytes.len(),
                         },
                     ),
@@ -758,14 +764,6 @@ impl TunerServiceRuntime {
 
     pub(crate) fn object_table_mut(&mut self) -> &mut RuntimeObjectTable {
         &mut self.object_table
-    }
-
-    pub(crate) fn callback_registry(&self) -> &RuntimeCallbackRegistry {
-        &self.callback_registry
-    }
-
-    pub(crate) fn callback_registry_mut(&mut self) -> &mut RuntimeCallbackRegistry {
-        &mut self.callback_registry
     }
 
     pub fn aidl_object_lifecycle(&self, object_id: AidlObjectId) -> Option<RuntimeObjectLifecycle> {

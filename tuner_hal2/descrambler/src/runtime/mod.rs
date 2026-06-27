@@ -9,8 +9,7 @@ pub use key_table::{
     DescramblerKeyTable,
 };
 pub use pid_claim::{
-    DemuxInputRef, DescramblerPid, DescramblerPidClaim, DescramblerPidClaimError,
-    DescramblerPidSource, SourceFilterRef,
+    DescramblerPid, DescramblerPidClaim, DescramblerPidClaimError, SourceFilterRef,
 };
 pub use session::{DescramblerRuntime, DescramblerSession};
 pub use session_txn::{

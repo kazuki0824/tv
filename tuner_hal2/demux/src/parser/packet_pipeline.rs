@@ -2,10 +2,10 @@
 //!
 //! TEI / adaptation field / discontinuity / payload有無を1か所で決定する。
 
+use crate::av::AvSharedBackingError;
 use crate::runtime::DemuxRuntimeError;
 use crate::ts_core::PesDropReason;
 use maleicacid_tuner_hal2_common::{HalError, TsPacketCompletionBuffer, TS_PACKET_SIZE};
-use maleicacid_tuner_hal2_descrambler::DescrambleFailure;
 use std::collections::BTreeMap;
 
 const PIPELINE_GENERATION_INITIAL: u64 = 0;
@@ -41,7 +41,7 @@ pub struct TsPacketView<'a> {
 pub struct PacketPid(i32);
 
 impl PacketPid {
-    pub const fn new(pid: i32) -> Self {
+    const fn from_validated_pid(pid: i32) -> Self {
         Self(pid)
     }
     pub const fn get(self) -> i32 {
@@ -64,7 +64,26 @@ impl<'a> ValidatedTsPacket<'a> {
         self.view
     }
     pub const fn pid(&self) -> PacketPid {
-        PacketPid::new(self.view.pid)
+        PacketPid::from_validated_pid(self.view.pid)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PacketDescramblePolicyFailure {
+    NoKey,
+    ScrambledPidNotRegistered,
+    TransportErrorRecord,
+    InvalidTsc,
+    ScrambledNullPid,
+    ScrambledWithoutPayload,
+    BadToken,
+    Multi2Fail,
+    InvalidPacket,
+}
+
+impl<'a> TsPacketView<'a> {
+    pub const fn packet_pid(&self) -> PacketPid {
+        PacketPid::from_validated_pid(self.pid)
     }
 }
 
@@ -379,13 +398,13 @@ pub enum PipelineGeneratedEvent {
     },
     SectionPayloadReady {
         filter_id: i32,
-        pid: i32,
+        pid: PacketPid,
         generation: u64,
         bytes: Vec<u8>,
     },
     PesPacketReady {
         filter_id: i32,
-        pid: i32,
+        pid: PacketPid,
         generation: u64,
         packet: crate::ts_core::PesPacket,
     },
@@ -421,14 +440,14 @@ pub enum PipelineDiagnostic {
     },
     ResidualBytesDrop,
     SourceFilterValidationFailure {
-        pid: i32,
+        pid: PacketPid,
         source_filter_id: i32,
         error: HalError,
     },
     SourceFilterDescramblePolicyFailure {
-        pid: i32,
+        pid: PacketPid,
         source_filter_id: i32,
-        failure: DescrambleFailure,
+        failure: PacketDescramblePolicyFailure,
     },
     RecordDvrMirrorFailure {
         pid: PacketPid,
@@ -444,7 +463,7 @@ pub enum PipelineDiagnostic {
     AvSharedBackingFailure {
         pid: PacketPid,
         filter_id: i32,
-        error: DemuxRuntimeError,
+        error: AvSharedBackingError,
     },
     AvSharedBackingMissing {
         pid: PacketPid,
@@ -491,15 +510,15 @@ impl PipelineDiagnostic {
             | Self::SectionAssemblyDrop { pid }
             | Self::SectionGenerationOverflow { pid }
             | Self::PesGenerationOverflow { pid }
-            | Self::PesAssemblerDrop { pid, .. }
-            | Self::SourceFilterValidationFailure { pid, .. }
-            | Self::SourceFilterDescramblePolicyFailure { pid, .. } => Some(*pid),
+            | Self::PesAssemblerDrop { pid, .. } => Some(*pid),
+            Self::SourceFilterValidationFailure { pid, .. }
+            | Self::SourceFilterDescramblePolicyFailure { pid, .. } => Some(pid.get()),
             Self::MalformedTsPacket | Self::ResidualBytesDrop => None,
         }
     }
 
     pub fn source_filter_validation_failure(
-        pid: i32,
+        pid: PacketPid,
         source_filter_id: i32,
         error: HalError,
     ) -> Self {
@@ -511,9 +530,9 @@ impl PipelineDiagnostic {
     }
 
     pub fn source_filter_descramble_policy_failure(
-        pid: i32,
+        pid: PacketPid,
         source_filter_id: i32,
-        failure: DescrambleFailure,
+        failure: PacketDescramblePolicyFailure,
     ) -> Self {
         Self::SourceFilterDescramblePolicyFailure {
             pid,
@@ -551,7 +570,7 @@ impl PipelineDiagnostic {
     pub fn av_shared_backing_failure(
         pid: PacketPid,
         filter_id: i32,
-        error: DemuxRuntimeError,
+        error: AvSharedBackingError,
     ) -> Self {
         Self::AvSharedBackingFailure {
             pid,
@@ -977,7 +996,7 @@ impl PacketPipeline {
                             .generated_events
                             .push(PipelineGeneratedEvent::SectionPayloadReady {
                                 filter_id,
-                                pid: view.pid,
+                                pid: view.packet_pid(),
                                 generation: section_generation,
                                 bytes: section,
                             });
@@ -1059,7 +1078,7 @@ impl PacketPipeline {
                         .generated_events
                         .push(PipelineGeneratedEvent::PesPacketReady {
                             filter_id,
-                            pid: view.pid,
+                            pid: view.packet_pid(),
                             generation: pes_generation,
                             packet,
                         });
@@ -2055,7 +2074,7 @@ mod discontinuity_generation_tests {
                     pid,
                     bytes,
                     ..
-                } => Some((*filter_id, *pid, bytes.clone())),
+                } => Some((*filter_id, pid.get(), bytes.clone())),
                 _ => None,
             })
             .collect::<Vec<_>>();

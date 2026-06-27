@@ -37,27 +37,6 @@ impl FrontendAidlObject {
         self.context.runtime()
     }
 
-    pub(crate) fn clear_callback_transaction(&self) -> BinderResult<()> {
-        crate::object_runtime::execute_object_runtime_use_case(
-            &self.runtime(),
-            self.handle,
-            AidlMethodCall::FrontendSetCallback,
-            |runtime, handle, dispatch_proof| {
-                runtime.clear_frontend_callback_registration_for_object(
-                    handle.object_id(),
-                    handle.generation(),
-                    dispatch_proof,
-                )
-            },
-        )?;
-        crate::object_runtime::clear_owner_callback_registration(
-            &self.context,
-            self.handle,
-            Some(AidlApi::FrontendSetCallback),
-            "frontend callback clear failed",
-        )
-    }
-
     pub(crate) fn set_callback_transaction(
         &self,
         callback: &Strong<dyn IFrontendCallback>,

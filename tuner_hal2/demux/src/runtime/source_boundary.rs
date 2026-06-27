@@ -122,10 +122,11 @@ impl SourceBoundaryTxn {
                         step: SourceBoundaryStep::BumpGeneration,
                     };
                     self.outcome = Some(outcome);
+                    let sink_filter_id = self.sink_filter_id;
                     return (
                         self,
                         Err(DemuxRuntimeError::source_boundary_rollback_failed(
-                            self.sink_filter_id,
+                            sink_filter_id,
                         )),
                     );
                 }
@@ -145,10 +146,11 @@ impl SourceBoundaryTxn {
                     step: SourceBoundaryStep::DisconnectDownstream,
                 };
                 self.outcome = Some(outcome);
+                let sink_filter_id = self.sink_filter_id;
                 return (
                     self,
                     Err(DemuxRuntimeError::source_boundary_rollback_failed(
-                        self.sink_filter_id,
+                        sink_filter_id,
                     )),
                 );
             }
@@ -176,10 +178,11 @@ impl SourceBoundaryTxn {
                     step: SourceBoundaryStep::Commit,
                 };
                 self.outcome = Some(outcome);
+                let sink_filter_id = self.sink_filter_id;
                 return (
                     self,
                     Err(DemuxRuntimeError::source_boundary_rollback_failed(
-                        self.sink_filter_id,
+                        sink_filter_id,
                     )),
                 );
             }

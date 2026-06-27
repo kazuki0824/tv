@@ -38,95 +38,51 @@ impl IDescrambler for DescramblerAidlObject {
         )
     }
 
-    fn addPid(
-        &self,
-        pid: &DemuxPid,
-        optional_upstream_filter: Option<&Strong<dyn IFilter>>,
-    ) -> BinderResult<()> {
-        match optional_upstream_filter {
-            Some(optional_upstream_filter) => execute_object_runtime_use_case_with_request_builder(
-                &self.runtime(),
-                self.handle(),
-                || {
-                    let pid = ts_pid_from_demux_pid(pid).map_err(status_from_hal_error)?;
-                    let source_handle = local_filter_handle_from_strong(optional_upstream_filter)?;
-                    Ok((AidlMethodCall::DescramblerAddPid(pid), (pid, source_handle)))
-                },
-                |runtime, handle, dispatch_proof, (pid, source_handle)| {
-                    runtime.add_descrambler_pid_for_object(
-                        handle.object_id(),
-                        handle.generation(),
-                        pid,
-                        source_handle.object_id(),
-                        source_handle.generation(),
-                        dispatch_proof,
-                    )
-                },
-            ),
-            None => execute_object_runtime_use_case_with_request_builder(
-                &self.runtime(),
-                self.handle(),
-                || {
-                    let pid = ts_pid_from_demux_pid(pid).map_err(status_from_hal_error)?;
-                    Ok((AidlMethodCall::DescramblerAddPid(pid), pid))
-                },
-                |runtime, handle, dispatch_proof, pid| {
-                    runtime.add_descrambler_pid_for_demux_input_object(
-                        handle.object_id(),
-                        handle.generation(),
-                        pid,
-                        dispatch_proof,
-                    )
-                },
-            ),
-        }
+    fn addPid(&self, pid: &DemuxPid, upstream_filter: &Strong<dyn IFilter>) -> BinderResult<()> {
+        execute_object_runtime_use_case_with_request_builder(
+            &self.runtime(),
+            self.handle(),
+            || {
+                let pid = ts_pid_from_demux_pid(pid).map_err(status_from_hal_error)?;
+                let source_handle = local_filter_handle_from_strong(upstream_filter)?;
+                Ok((AidlMethodCall::DescramblerAddPid(pid), (pid, source_handle)))
+            },
+            |runtime, handle, dispatch_proof, (pid, source_handle)| {
+                runtime.add_descrambler_pid_for_object(
+                    handle.object_id(),
+                    handle.generation(),
+                    pid,
+                    source_handle.object_id(),
+                    source_handle.generation(),
+                    dispatch_proof,
+                )
+            },
+        )
     }
 
-    fn removePid(
-        &self,
-        pid: &DemuxPid,
-        optional_upstream_filter: Option<&Strong<dyn IFilter>>,
-    ) -> BinderResult<()> {
-        match optional_upstream_filter {
-            Some(optional_upstream_filter) => execute_object_runtime_use_case_with_request_builder(
-                &self.runtime(),
-                self.handle(),
-                || {
-                    let pid = ts_pid_from_demux_pid(pid).map_err(status_from_hal_error)?;
-                    let source_handle = local_filter_handle_from_strong(optional_upstream_filter)?;
-                    Ok((
-                        AidlMethodCall::DescramblerRemovePid(pid),
-                        (pid, source_handle),
-                    ))
-                },
-                |runtime, handle, dispatch_proof, (pid, source_handle)| {
-                    runtime.remove_descrambler_pid_for_object(
-                        handle.object_id(),
-                        handle.generation(),
-                        pid,
-                        source_handle.object_id(),
-                        source_handle.generation(),
-                        dispatch_proof,
-                    )
-                },
-            ),
-            None => execute_object_runtime_use_case_with_request_builder(
-                &self.runtime(),
-                self.handle(),
-                || {
-                    let pid = ts_pid_from_demux_pid(pid).map_err(status_from_hal_error)?;
-                    Ok((AidlMethodCall::DescramblerRemovePid(pid), pid))
-                },
-                |runtime, handle, dispatch_proof, pid| {
-                    runtime.remove_descrambler_pid_for_demux_input_object(
-                        handle.object_id(),
-                        handle.generation(),
-                        pid,
-                        dispatch_proof,
-                    )
-                },
-            ),
-        }
+    fn removePid(&self, pid: &DemuxPid, upstream_filter: &Strong<dyn IFilter>) -> BinderResult<()> {
+        execute_object_runtime_use_case_with_request_builder(
+            &self.runtime(),
+            self.handle(),
+            || {
+                let pid = ts_pid_from_demux_pid(pid).map_err(status_from_hal_error)?;
+                let source_handle = local_filter_handle_from_strong(upstream_filter)?;
+                Ok((
+                    AidlMethodCall::DescramblerRemovePid(pid),
+                    (pid, source_handle),
+                ))
+            },
+            |runtime, handle, dispatch_proof, (pid, source_handle)| {
+                runtime.remove_descrambler_pid_for_object(
+                    handle.object_id(),
+                    handle.generation(),
+                    pid,
+                    source_handle.object_id(),
+                    source_handle.generation(),
+                    dispatch_proof,
+                )
+            },
+        )
     }
 
     fn close(&self) -> BinderResult<()> {

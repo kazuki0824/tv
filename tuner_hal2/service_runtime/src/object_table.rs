@@ -195,63 +195,6 @@ impl RuntimeObjectTable {
             .ok_or(RuntimeObjectTableError::MissingObject { object_id })
     }
 
-    pub fn begin_close(
-        &mut self,
-        object_id: AidlObjectId,
-        generation: AidlObjectGeneration,
-        step: CleanupStep,
-    ) -> Result<RuntimeObjectEntry, RuntimeObjectTableError> {
-        let entry = self.entry_mut_checked_allow_cleanup_failed(object_id, generation)?;
-        match entry.lifecycle {
-            RuntimeObjectLifecycle::Live | RuntimeObjectLifecycle::CleanupFailed { .. } => {
-                entry.lifecycle = RuntimeObjectLifecycle::Closing { step };
-                Ok(entry.clone())
-            }
-            lifecycle => Err(RuntimeObjectTableError::InvalidLifecycle {
-                object_id,
-                lifecycle,
-            }),
-        }
-    }
-
-    pub fn mark_cleanup_failed(
-        &mut self,
-        object_id: AidlObjectId,
-        generation: AidlObjectGeneration,
-        step: CleanupStep,
-    ) -> Result<RuntimeObjectEntry, RuntimeObjectTableError> {
-        let entry = self.entry_mut_checked_any(object_id, generation)?;
-        match entry.lifecycle {
-            RuntimeObjectLifecycle::Closing { .. }
-            | RuntimeObjectLifecycle::CleanupFailed { .. } => {
-                entry.lifecycle = RuntimeObjectLifecycle::CleanupFailed { step };
-                Ok(entry.clone())
-            }
-            lifecycle => Err(RuntimeObjectTableError::InvalidLifecycle {
-                object_id,
-                lifecycle,
-            }),
-        }
-    }
-
-    pub fn commit_close(
-        &mut self,
-        object_id: AidlObjectId,
-        generation: AidlObjectGeneration,
-    ) -> Result<RuntimeObjectEntry, RuntimeObjectTableError> {
-        let entry = self.entry_mut_checked_any(object_id, generation)?;
-        match entry.lifecycle {
-            RuntimeObjectLifecycle::Closing { .. } => {
-                entry.lifecycle = RuntimeObjectLifecycle::Closed;
-                Ok(entry.clone())
-            }
-            lifecycle => Err(RuntimeObjectTableError::InvalidLifecycle {
-                object_id,
-                lifecycle,
-            }),
-        }
-    }
-
     pub fn begin_close_cascade(
         &mut self,
         object_id: AidlObjectId,
@@ -434,24 +377,6 @@ impl RuntimeObjectTable {
         Ok(entry)
     }
 
-    pub fn entry_for_owner(
-        &self,
-        object_id: AidlObjectId,
-        generation: AidlObjectGeneration,
-        expected_owner: RuntimeOwnerRelation,
-    ) -> Result<&RuntimeObjectEntry, RuntimeObjectTableError> {
-        let entry = self.entry_checked(object_id, generation)?;
-        if entry.owner != expected_owner {
-            return Err(RuntimeObjectTableError::InvalidOwner {
-                object_id,
-                expected: expected_owner,
-                actual: entry.owner,
-            });
-        }
-        self.ensure_owner_live_for(object_id, entry.owner)?;
-        Ok(entry)
-    }
-
     pub fn live_entry_for_runtime(
         &self,
         kind: AidlObjectKind,
@@ -482,12 +407,6 @@ impl RuntimeObjectTable {
             .cloned()
     }
 
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
     pub fn clear(&mut self) {
         self.entries.clear();
     }
@@ -619,25 +538,6 @@ impl RuntimeObjectTable {
                 entry.lifecycle = RuntimeObjectLifecycle::Quarantined;
                 Ok(Some(entry.clone()))
             }
-        }
-    }
-
-    fn entry_mut_checked_allow_cleanup_failed(
-        &mut self,
-        object_id: AidlObjectId,
-        generation: AidlObjectGeneration,
-    ) -> Result<&mut RuntimeObjectEntry, RuntimeObjectTableError> {
-        let entry = self.entry_mut_checked_any(object_id, generation)?;
-        if matches!(
-            entry.lifecycle,
-            RuntimeObjectLifecycle::Live | RuntimeObjectLifecycle::CleanupFailed { .. }
-        ) {
-            Ok(entry)
-        } else {
-            Err(RuntimeObjectTableError::InvalidLifecycle {
-                object_id,
-                lifecycle: entry.lifecycle,
-            })
         }
     }
 }

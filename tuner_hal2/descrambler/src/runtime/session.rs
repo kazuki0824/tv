@@ -48,12 +48,6 @@ impl DescramblerSession {
         old
     }
 
-    pub(crate) fn snapshot(&self) -> DescramblerSessionSnapshot {
-        DescramblerSessionSnapshot(self.clone())
-    }
-    pub(crate) fn restore(&mut self, snapshot: DescramblerSessionSnapshot) {
-        *self = snapshot.0;
-    }
     pub(crate) fn set_demux_binding(&mut self, demux_id: i32, generation: u64) {
         self.demux_id = Some(demux_id);
         self.demux_generation = Some(generation);
@@ -81,9 +75,6 @@ impl DescramblerSession {
         self.closed = true;
     }
 }
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct DescramblerSessionSnapshot(DescramblerSession);
 
 #[derive(Debug)]
 pub struct DescramblerRuntime {

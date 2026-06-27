@@ -1,5 +1,3 @@
-use std::sync::{Arc, Mutex};
-
 use binder::Result as BinderResult;
 use maleicacid_tuner_hal2_binder_adapter::{
     AidlApi, AidlFailureSource, AidlMethodCall, AidlObjectKind, AidlStatusMapper, TunerStatusCode,
@@ -10,13 +8,12 @@ use maleicacid_tuner_hal2_common::{
 use maleicacid_tuner_hal2_resource_ledger::CleanupStep;
 use maleicacid_tuner_hal2_service_runtime::{
     object_close_txn::{
-        begin_object_close_cascade, commit_object_close_cascade,
-        mark_object_close_cleanup_failed_cascade, object_close_cascade_entries,
-        plan_and_begin_object_close_method_call_dispatch, quarantine_object_cascade,
+        commit_object_close_cascade, mark_object_close_cleanup_failed_cascade,
+        object_close_cascade_entries, plan_and_begin_object_close_method_call_dispatch,
+        quarantine_object_cascade,
     },
     object_lifecycle::{
-        aidl_object_closeable, aidl_object_for_close_cleanup_runtime, aidl_object_live,
-        lnb_public_id_for_live_object_result, AidlObjectCloseability,
+        aidl_object_live, lnb_public_id_for_live_object_result, AidlObjectCloseability,
     },
     object_method_txn::{
         execute_object_method_call_after_live, execute_object_query_call_after_live,
@@ -150,16 +147,6 @@ pub(crate) fn clear_owner_callback_registration_hal(
     }
 }
 
-pub fn clear_owner_callback_registration(
-    context: &SharedAidlServiceContext,
-    handle: AidlObjectHandle,
-    api: Option<AidlApi>,
-    failure_message: &'static str,
-) -> BinderResult<()> {
-    clear_owner_callback_registration_hal(context, handle, api, failure_message)
-        .map_err(status_from_hal_error)
-}
-
 pub(crate) fn register_callback_artifact_after_owner_ready_hal<Retain>(
     context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
@@ -188,6 +175,7 @@ where
     Ok(())
 }
 
+#[cfg(test)]
 pub fn register_callback_artifact_after_owner_ready<Retain>(
     context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
@@ -685,7 +673,7 @@ fn mark_close_finalization_failed(
 }
 
 mod drop_leak;
-pub use drop_leak::{drop_leak_object, drop_leak_object_from_drop, DropLeakDomainAction};
+pub use drop_leak::{drop_leak_object_from_drop, DropLeakDomainAction};
 
 pub fn record_callback_registration(
     runtime: &SharedTunerRuntime,
@@ -749,6 +737,9 @@ pub fn close_object_after_close_preflight(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::drop_leak::drop_leak_object;
     use super::*;
     use crate::service_context::AidlServiceContext;
     use maleicacid_tuner_hal2_binder_adapter::{
@@ -756,7 +747,8 @@ mod tests {
     };
     use maleicacid_tuner_hal2_resource_ledger::CleanupStep;
     use maleicacid_tuner_hal2_service_runtime::{
-        CallbackHealthState, RuntimeObjectLifecycle, RuntimeOwnerRelation,
+        object_close_txn::begin_object_close_cascade, CallbackHealthState, RuntimeObjectLifecycle,
+        RuntimeOwnerRelation,
     };
 
     fn shared_runtime_with_live_object(

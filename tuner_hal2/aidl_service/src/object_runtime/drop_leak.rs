@@ -6,7 +6,7 @@ use super::{
 };
 use crate::callback_store::AidlCallbackStoreError;
 use crate::dvr_callback_delivery::stop_dvr_status_notifier;
-use crate::service_context::{SharedAidlServiceContext, SharedTunerRuntime};
+use crate::service_context::SharedAidlServiceContext;
 use maleicacid_tuner_hal2_binder_adapter::AidlObjectKind;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

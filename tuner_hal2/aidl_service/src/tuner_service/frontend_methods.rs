@@ -1,4 +1,4 @@
-use super::support::{public_api_call, unsupported_public_api_call};
+use super::support::unsupported_public_api_call;
 use super::{
     aidl_frontend_settings_to_request, aidl_scan_type_to_mode,
     close_frontend_object_cleanup_use_case, close_object_after_close_preflight_with_domain_cleanup,
@@ -46,11 +46,8 @@ fn frontend_readiness_from_query_value(
 }
 
 impl IFrontend for FrontendAidlObject {
-    fn setCallback(&self, callback: Option<&Strong<dyn IFrontendCallback>>) -> BinderResult<()> {
-        match callback {
-            Some(callback) => self.set_callback_transaction(callback),
-            None => self.clear_callback_transaction(),
-        }
+    fn setCallback(&self, callback: &Strong<dyn IFrontendCallback>) -> BinderResult<()> {
+        self.set_callback_transaction(callback)
     }
     fn tune(&self, settings: &FrontendSettings) -> BinderResult<()> {
         execute_shared_object_runtime_use_case_with_request_builder(

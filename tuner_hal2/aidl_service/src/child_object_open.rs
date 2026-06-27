@@ -181,7 +181,7 @@ where
             )
         },
     )
-    .map_err(child_open_txn_error)?;
+    .map_err(child_open_txn_error::<maleicacid_tuner_hal2_common::HalError>)?;
     finish_filter_child_open(context, &runtime, runtime_entry, callback)
 }
 
@@ -213,7 +213,7 @@ where
             )
         },
     )
-    .map_err(child_open_txn_error)?;
+    .map_err(child_open_txn_error::<maleicacid_tuner_hal2_common::HalError>)?;
     finish_dvr_child_open(context, &runtime, runtime_entry, callback)
 }
 

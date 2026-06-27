@@ -1,14 +1,13 @@
-use super::support::{local_filter_handle_from_strong, public_api_call};
+use super::support::local_filter_handle_from_strong;
 use super::{
     build_filter_av_stream_type_request, build_filter_delay_hint_request,
     build_filter_summary_for_open_type, close_object_after_close_preflight,
     execute_object_query_use_case, execute_object_runtime_use_case,
     execute_object_runtime_use_case_with_request_builder, plan_unavailable_object_method_use_case,
-    status_from_hal_error, status_unknown_error, tuner_queue_desc_from_snapshot, AidlApi,
-    AidlMethodCall, AidlObjectKind, AvStreamType, BinderResult, DemuxFilterSettings,
-    FilterAidlObject, FilterDelayHint, FilterReleaseAvHandleRequest, FilterSetDataSourceRequest,
-    IFilter, ObjectQueryRequest, ObjectQueryResponse, ParcelFileDescriptor, Strong,
-    TunerNativeHandle, TunerQueueDesc,
+    status_from_hal_error, status_unknown_error, tuner_queue_desc_from_snapshot, AidlMethodCall,
+    AvStreamType, BinderResult, DemuxFilterSettings, FilterAidlObject, FilterDelayHint,
+    FilterReleaseAvHandleRequest, FilterSetDataSourceRequest, IFilter, ObjectQueryRequest,
+    ObjectQueryResponse, ParcelFileDescriptor, Strong, TunerNativeHandle, TunerQueueDesc,
 };
 use maleicacid_tuner_hal2_binder_adapter::RuntimeExecutableRequest;
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
@@ -241,49 +240,33 @@ impl IFilter for FilterAidlObject {
         )
     }
 
-    fn setDataSource(&self, filter: Option<&Strong<dyn IFilter>>) -> BinderResult<()> {
+    fn setDataSource(&self, filter: &Strong<dyn IFilter>) -> BinderResult<()> {
         let sink_handle = self.handle();
-        match filter {
-            Some(filter) => execute_object_runtime_use_case_with_request_builder(
-                &self.runtime(),
-                sink_handle,
-                || {
-                    let source_handle = local_filter_handle_from_strong(filter)?;
-                    Ok((
-                        AidlMethodCall::FilterSetDataSource(FilterSetDataSourceRequest {
-                            source_filter_id: source_handle.object_id().0,
-                            source_filter_generation: source_handle.generation().0,
-                        }),
-                        source_handle,
-                    ))
-                },
-                |runtime, handle, dispatch_proof, source_handle| {
-                    runtime
-                        .set_filter_data_source_for_object(
-                            handle.object_id(),
-                            handle.generation(),
-                            source_handle.object_id(),
-                            source_handle.generation(),
-                            dispatch_proof,
-                        )
-                        .map(|_| ())
-                },
-            ),
-            None => execute_object_runtime_use_case(
-                &self.runtime(),
-                sink_handle,
-                public_api_call(AidlObjectKind::Filter, AidlApi::FilterSetDataSource, None),
-                |runtime, handle, dispatch_proof| {
-                    runtime
-                        .disconnect_filter_data_source_for_object(
-                            handle.object_id(),
-                            handle.generation(),
-                            dispatch_proof,
-                        )
-                        .map(|_| ())
-                },
-            ),
-        }
+        execute_object_runtime_use_case_with_request_builder(
+            &self.runtime(),
+            sink_handle,
+            || {
+                let source_handle = local_filter_handle_from_strong(filter)?;
+                Ok((
+                    AidlMethodCall::FilterSetDataSource(FilterSetDataSourceRequest {
+                        source_filter_id: source_handle.object_id().0,
+                        source_filter_generation: source_handle.generation().0,
+                    }),
+                    source_handle,
+                ))
+            },
+            |runtime, handle, dispatch_proof, source_handle| {
+                runtime
+                    .set_filter_data_source_for_object(
+                        handle.object_id(),
+                        handle.generation(),
+                        source_handle.object_id(),
+                        source_handle.generation(),
+                        dispatch_proof,
+                    )
+                    .map(|_| ())
+            },
+        )
     }
 
     fn setDelayHint(&self, hint: &FilterDelayHint) -> BinderResult<()> {

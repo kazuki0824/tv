@@ -37,27 +37,6 @@ impl LnbAidlObject {
         self.context.runtime()
     }
 
-    pub(crate) fn clear_callback_transaction(&self) -> BinderResult<()> {
-        crate::object_runtime::execute_object_runtime_use_case(
-            &self.runtime(),
-            self.handle,
-            AidlMethodCall::LnbSetCallback,
-            |runtime, handle, dispatch_proof| {
-                runtime.clear_lnb_callback_registration_for_object(
-                    handle.object_id(),
-                    handle.generation(),
-                    dispatch_proof,
-                )
-            },
-        )?;
-        crate::object_runtime::clear_owner_callback_registration(
-            &self.context,
-            self.handle,
-            Some(AidlApi::LnbSetCallback),
-            "LNB callback clear failed",
-        )
-    }
-
     pub(crate) fn set_callback_transaction(
         &self,
         callback: &Strong<dyn ILnbCallback>,

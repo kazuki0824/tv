@@ -4,9 +4,7 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     DemuxFilterEvent::DemuxFilterEvent, DemuxFilterMediaEvent::DemuxFilterMediaEvent,
     DemuxFilterPesEvent::DemuxFilterPesEvent, DemuxFilterSectionEvent::DemuxFilterSectionEvent,
 };
-use maleicacid_tuner_hal2_binder_adapter::{
-    AidlApi, AidlObjectGeneration, AidlObjectId, AidlObjectKind,
-};
+use maleicacid_tuner_hal2_binder_adapter::{AidlApi, AidlObjectKind};
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FirstErrorCollector, HalError, HalInternalKind,
 };
@@ -265,6 +263,7 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use maleicacid_tuner_hal2_binder_adapter::{AidlObjectGeneration, AidlObjectId};
     use maleicacid_tuner_hal2_demux::av::AvMediaEventDescriptor;
     use maleicacid_tuner_hal2_demux::{AvDataId, AvSlotId};
 

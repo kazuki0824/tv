@@ -326,14 +326,14 @@ pub fn bind_demux_with_session_txn(
     DescramblerSessionTxn::new().bind_demux(session, demux_id, generation)
 }
 
-pub(crate) fn plan_replace_key_with_session_txn(
+fn plan_replace_key_with_session_txn(
     session: &DescramblerSession,
     token: &DescramblerKeyToken,
 ) -> Result<DescramblerReplaceKeyPlan, DescramblerSessionFailure> {
     DescramblerSessionTxn::new().plan_replace_key(session, token)
 }
 
-pub(crate) fn commit_replace_key_with_session_txn(
+fn commit_replace_key_with_session_txn(
     session: &mut DescramblerSession,
     plan: DescramblerReplaceKeyPlan,
     token: DescramblerKeyToken,
@@ -462,7 +462,7 @@ pub fn remove_pid_claim_with_session_txn(
     DescramblerSessionTxn::new().remove_pid_claim(session, claim)
 }
 
-pub(crate) fn prepare_clear_key_with_session_txn(
+fn prepare_clear_key_with_session_txn(
     session: &DescramblerSession,
 ) -> Result<PreparedDescramblerClearKey, DescramblerSessionFailure> {
     let mut txn = DescramblerSessionTxn::new();
@@ -471,7 +471,7 @@ pub(crate) fn prepare_clear_key_with_session_txn(
     Ok(PreparedDescramblerClearKey::new(plan))
 }
 
-pub(crate) fn commit_prepared_clear_key_with_session_txn(
+fn commit_prepared_clear_key_with_session_txn(
     session: &mut DescramblerSession,
     prepared: PreparedDescramblerClearKey,
 ) -> Result<(), DescramblerSessionFailure> {

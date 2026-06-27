@@ -2,9 +2,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::{
-    object_lifecycle::aidl_public_runtime_id_for_close_cleanup,
-    object_method_txn::ObjectMethodExecutionToken, start_frontend_demux_live_pump_from_reader,
-    FrontendRegistryEntry, TunerServiceRuntime,
+    object_lifecycle::{aidl_object_live, aidl_public_runtime_id_for_close_cleanup},
+    object_method_txn::ObjectMethodExecutionToken,
+    start_frontend_demux_live_pump_from_reader, FrontendRegistryEntry, TunerServiceRuntime,
 };
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FirstErrorCollector, FrontendBackendKind, FrontendDevicePath,
@@ -172,6 +172,14 @@ fn resolve_frontend_object_for_method(
     Ok((entry.id.0, entry))
 }
 
+fn ensure_frontend_object_still_live(
+    runtime: &TunerServiceRuntime,
+    object_id: AidlObjectId,
+    generation: AidlObjectGeneration,
+) -> Result<(), HalError> {
+    aidl_object_live(runtime, object_id, generation, AidlObjectKind::Frontend)
+}
+
 fn resolve_frontend_object_for_close_cleanup(
     runtime: &TunerServiceRuntime,
     object_id: AidlObjectId,
@@ -312,6 +320,7 @@ pub fn start_frontend_backend_tune_worker(
         &runtime,
         "service runtime lock poisoned after tune worker join",
     )?;
+    ensure_frontend_object_still_live(&guard, object_id, object_generation)?;
     let snapshot = guard.query().frontend_runtime_snapshot(frontend_id)?;
     let demux_snapshots = guard.query().bound_demux_runtime_snapshots(frontend_id)?;
     let generation = guard
@@ -624,6 +633,7 @@ pub fn start_frontend_backend_scan_session_worker(
         &runtime,
         "service runtime lock poisoned after scan worker join",
     )?;
+    ensure_frontend_object_still_live(&guard, object_id, object_generation)?;
     let mut stop_collector = FirstErrorCollector::new();
     if let Some(error) = frontend_worker_stop_failure(&stop_outcome) {
         stop_collector.push_error(error);
@@ -788,6 +798,13 @@ pub fn stop_frontend_tune_object(
     if let Some(error) = frontend_worker_stop_request_failure(&outcome) {
         return Err(error);
     }
+    {
+        let guard = lock_runtime(
+            &runtime,
+            "service runtime lock poisoned after tune worker stop",
+        )?;
+        ensure_frontend_object_still_live(&guard, object_id, object_generation)?;
+    }
     let mut cleanup_collector = FirstErrorCollector::new();
     if let Some(error) = frontend_worker_stop_failure(&outcome) {
         cleanup_collector.push_error(error);
@@ -815,14 +832,6 @@ pub fn stop_frontend_scan_object(
             resolve_frontend_object_for_method(&guard, object_id, object_generation)?;
         frontend_id
     };
-    stop_frontend_scan_worker(runtime, frontend_id, reason)
-}
-
-pub fn stop_frontend_scan_worker(
-    runtime: SharedRuntime,
-    frontend_id: i32,
-    reason: FrontendWorkerCancelReason,
-) -> Result<(), HalError> {
     let outcome = stop_frontend_worker(
         Arc::clone(&runtime),
         frontend_id,
@@ -832,6 +841,31 @@ pub fn stop_frontend_scan_worker(
     if let Some(error) = frontend_worker_stop_request_failure(&outcome) {
         return Err(error);
     }
+    ensure_frontend_object_live_after_stop(
+        &runtime,
+        object_id,
+        object_generation,
+        "service runtime lock poisoned after scan worker stop",
+    )?;
+    finish_frontend_scan_stop(runtime, frontend_id, reason, outcome)
+}
+
+fn ensure_frontend_object_live_after_stop(
+    runtime: &SharedRuntime,
+    object_id: AidlObjectId,
+    object_generation: AidlObjectGeneration,
+    context: &'static str,
+) -> Result<(), HalError> {
+    let guard = lock_runtime(runtime, context)?;
+    ensure_frontend_object_still_live(&guard, object_id, object_generation)
+}
+
+fn finish_frontend_scan_stop(
+    runtime: SharedRuntime,
+    frontend_id: i32,
+    reason: FrontendWorkerCancelReason,
+    outcome: FrontendWorkerStopOutcome,
+) -> Result<(), HalError> {
     let mut cleanup_collector = FirstErrorCollector::new();
     if let Some(error) = frontend_worker_stop_failure(&outcome) {
         cleanup_collector.push_error(error);

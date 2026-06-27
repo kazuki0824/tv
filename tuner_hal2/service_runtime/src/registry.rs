@@ -215,10 +215,6 @@ impl RuntimeRegistry {
         self.frontends.len()
     }
 
-    pub fn demux_count(&self) -> usize {
-        self.demuxes.len()
-    }
-
     pub fn allocate_demux(&mut self) -> Result<DemuxRegistryEntry, RegistryCommitError> {
         let id = DemuxRuntimeId(self.next_demux_id);
         let next = self
@@ -329,10 +325,6 @@ impl RuntimeRegistry {
 
     pub fn lnb(&self, id: LnbRuntimeId) -> Option<&LnbRegistryEntry> {
         self.lnbs.get(&id)
-    }
-
-    pub fn lnb_count(&self) -> usize {
-        self.lnbs.len()
     }
 
     pub fn lnb_for_frontend(&self, frontend_id: FrontendRuntimeId) -> Option<&LnbRegistryEntry> {

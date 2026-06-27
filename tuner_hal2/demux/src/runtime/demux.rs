@@ -174,31 +174,25 @@ fn av_payload_delivery_outcome_diagnostic(
     outcome: AvPayloadDeliveryOutcome,
     pid: crate::packet_pipeline::PacketPid,
     filter_id: i32,
-) -> crate::packet_pipeline::PipelineDiagnostic {
+) -> Option<crate::packet_pipeline::PipelineDiagnostic> {
     match outcome {
-        AvPayloadDeliveryOutcome::Delivered(_) => {
-            crate::packet_pipeline::PipelineDiagnostic::av_shared_backing_failure(
-                pid,
-                filter_id,
-                DemuxRuntimeError::av_backing_failure(filter_id),
-            )
-        }
-        AvPayloadDeliveryOutcome::SharedHandleNotExported => {
+        AvPayloadDeliveryOutcome::Delivered(_) => None,
+        AvPayloadDeliveryOutcome::SharedHandleNotExported => Some(
             crate::packet_pipeline::PipelineDiagnostic::av_shared_handle_not_exported(
                 pid, filter_id,
-            )
-        }
-        AvPayloadDeliveryOutcome::ClientHandleReleased => {
-            crate::packet_pipeline::PipelineDiagnostic::av_client_handle_released(pid, filter_id)
-        }
+            ),
+        ),
+        AvPayloadDeliveryOutcome::ClientHandleReleased => Some(
+            crate::packet_pipeline::PipelineDiagnostic::av_client_handle_released(pid, filter_id),
+        ),
         AvPayloadDeliveryOutcome::PayloadOversized => {
-            crate::packet_pipeline::PipelineDiagnostic::av_payload_oversized(pid, filter_id)
+            Some(crate::packet_pipeline::PipelineDiagnostic::av_payload_oversized(pid, filter_id))
         }
-        AvPayloadDeliveryOutcome::NoFreeSlot => {
-            crate::packet_pipeline::PipelineDiagnostic::av_no_free_slot(pid, filter_id)
-        }
+        AvPayloadDeliveryOutcome::NoFreeSlot => Some(
+            crate::packet_pipeline::PipelineDiagnostic::av_no_free_slot(pid, filter_id),
+        ),
         AvPayloadDeliveryOutcome::DataIdExhausted => {
-            crate::packet_pipeline::PipelineDiagnostic::av_data_id_exhausted(pid, filter_id)
+            Some(crate::packet_pipeline::PipelineDiagnostic::av_data_id_exhausted(pid, filter_id))
         }
     }
 }
@@ -1336,13 +1330,13 @@ impl DemuxRuntime {
                         });
                 }
                 Some(Ok(outcome)) => {
-                    report
-                        .diagnostics
-                        .push(av_payload_delivery_outcome_diagnostic(
-                            outcome,
-                            crate::packet_pipeline::PacketPid::new(view.pid),
-                            filter_id,
-                        ));
+                    if let Some(diagnostic) = av_payload_delivery_outcome_diagnostic(
+                        outcome,
+                        view.packet_pid(),
+                        filter_id,
+                    ) {
+                        report.diagnostics.push(diagnostic);
+                    }
                 }
                 Some(Err(error)) => {
                     if let Some(filter) = self.filters.get_mut(&filter_id) {
@@ -1350,7 +1344,7 @@ impl DemuxRuntime {
                     }
                     report.diagnostics.push(
                         crate::packet_pipeline::PipelineDiagnostic::av_shared_backing_failure(
-                            crate::packet_pipeline::PacketPid::new(view.pid),
+                            view.packet_pid(),
                             filter_id,
                             error,
                         ),
@@ -1359,17 +1353,22 @@ impl DemuxRuntime {
                 None => {
                     report.diagnostics.push(
                         crate::packet_pipeline::PipelineDiagnostic::av_shared_backing_missing(
-                            crate::packet_pipeline::PacketPid::new(view.pid),
+                            view.packet_pid(),
                             filter_id,
                         ),
                     );
                 }
             }
         }
-        let mirror_diagnostics = self.mirror_record_dvr_packets(packet, &report.delivery_actions);
+        let packet_pid = view.packet_pid();
+        let mirror_diagnostics =
+            self.mirror_record_dvr_packets(packet, &report.delivery_actions, packet_pid);
         report.diagnostics.extend(mirror_diagnostics);
-        let queue_payload_diagnostics =
-            self.enqueue_queue_payloads_from_generated_events(packet, &report.generated_events);
+        let queue_payload_diagnostics = self.enqueue_queue_payloads_from_generated_events(
+            packet,
+            &report.generated_events,
+            packet_pid,
+        );
         report.diagnostics.extend(queue_payload_diagnostics);
         report
     }
@@ -1556,18 +1555,6 @@ impl DemuxRuntime {
         Ok(())
     }
 
-    fn filter_should_keep_queue_runtime(&self, filter_id: i32) -> bool {
-        self.filters
-            .get(&filter_id)
-            .is_some_and(Self::should_keep_filter_queue_runtime)
-    }
-
-    fn dvr_should_keep_queue_runtime(&self, dvr_id: i32) -> bool {
-        self.dvrs
-            .get(&dvr_id)
-            .is_some_and(Self::should_keep_dvr_queue_runtime)
-    }
-
     fn should_keep_filter_queue_runtime(filter: &FilterRuntime) -> bool {
         !filter.state().is_closed_or_failed()
             && filter.supports_normal_fmq_queue()
@@ -1578,19 +1565,13 @@ impl DemuxRuntime {
         !dvr.state().is_closed_or_failed() && dvr.buffer_size() > 0
     }
 
-    fn validated_ts_packet_pid(packet: &[u8]) -> crate::packet_pipeline::PacketPid {
-        crate::packet_pipeline::ValidatedTsPacket::validate(packet)
-            .map(|packet| packet.pid())
-            .unwrap_or_else(|_| crate::packet_pipeline::PacketPid::new(0x1fff))
-    }
-
     fn mirror_record_dvr_packets(
         &mut self,
         packet: &[u8],
         delivery_actions: &[PipelineDeliveryAction],
+        pid: crate::packet_pipeline::PacketPid,
     ) -> Vec<crate::packet_pipeline::PipelineDiagnostic> {
         let mut diagnostics = Vec::new();
-        let pid = Self::validated_ts_packet_pid(packet);
         for action in delivery_actions {
             let PipelineDeliveryAction::DvrMirror { dvr_id: filter_id } = *action else {
                 continue;
@@ -1682,6 +1663,7 @@ impl DemuxRuntime {
         &mut self,
         packet: &[u8],
         generated_events: &[PipelineGeneratedEvent],
+        packet_pid: crate::packet_pipeline::PacketPid,
     ) -> Vec<crate::packet_pipeline::PipelineDiagnostic> {
         let mut diagnostics = Vec::new();
         for event in generated_events {
@@ -1689,7 +1671,7 @@ impl DemuxRuntime {
                 PipelineGeneratedEvent::DataReady { filter_id }
                 | PipelineGeneratedEvent::Record { filter_id } => (
                     *filter_id,
-                    Self::validated_ts_packet_pid(packet),
+                    packet_pid,
                     self.enqueue_filter_queue_payload(*filter_id, packet.to_vec()),
                 ),
                 PipelineGeneratedEvent::SectionPayloadReady {
@@ -1699,7 +1681,7 @@ impl DemuxRuntime {
                     ..
                 } => (
                     *filter_id,
-                    crate::packet_pipeline::PacketPid::new(*pid),
+                    *pid,
                     self.enqueue_filter_queue_payload(*filter_id, bytes.clone()),
                 ),
                 PipelineGeneratedEvent::PesPacketReady {
@@ -1709,7 +1691,7 @@ impl DemuxRuntime {
                     ..
                 } => (
                     *filter_id,
-                    crate::packet_pipeline::PacketPid::new(*pid),
+                    *pid,
                     self.enqueue_filter_queue_payload(*filter_id, packet.raw_bytes.clone()),
                 ),
                 PipelineGeneratedEvent::Section { .. }

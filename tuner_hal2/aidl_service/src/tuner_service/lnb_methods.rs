@@ -6,11 +6,8 @@ use super::{
 };
 
 impl ILnb for LnbAidlObject {
-    fn setCallback(&self, callback: Option<&Strong<dyn ILnbCallback>>) -> BinderResult<()> {
-        match callback {
-            Some(callback) => self.set_callback_transaction(callback),
-            None => self.clear_callback_transaction(),
-        }
+    fn setCallback(&self, callback: &Strong<dyn ILnbCallback>) -> BinderResult<()> {
+        self.set_callback_transaction(callback)
     }
 
     fn setVoltage(&self, voltage: LnbVoltage) -> BinderResult<()> {

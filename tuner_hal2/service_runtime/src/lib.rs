@@ -668,7 +668,6 @@ mod tests {
         )]);
 
         assert_eq!(outcome, ServiceBootOutcome::Ready);
-        assert_eq!(runtime.registry().lnb_count(), 1);
         assert_eq!(runtime.query().lnb_ids(), vec![1_020_001]);
         assert!(runtime
             .query()
@@ -941,14 +940,14 @@ mod tests {
             })
             .expect("insert succeeds");
         table
-            .begin_close(
+            .begin_close_cascade(
                 AidlObjectId(44),
                 AidlObjectGeneration(3),
                 CleanupStep::StopWorker,
             )
             .expect("begin close succeeds");
         table
-            .commit_close(AidlObjectId(44), AidlObjectGeneration(3))
+            .commit_close_cascade(AidlObjectId(44), AidlObjectGeneration(3))
             .expect("commit close succeeds");
         let err = table
             .entry_for_kind(
@@ -1087,28 +1086,28 @@ mod tests {
             })
             .expect("insert succeeds");
         table
-            .begin_close(
+            .begin_close_cascade(
                 AidlObjectId(55),
                 AidlObjectGeneration(7),
                 CleanupStep::StopWorker,
             )
             .expect("begin close succeeds");
         table
-            .mark_cleanup_failed(
+            .mark_cleanup_failed_cascade(
                 AidlObjectId(55),
                 AidlObjectGeneration(7),
                 CleanupStep::UnregisterRuntime,
             )
             .expect("mark failed succeeds");
         table
-            .begin_close(
+            .begin_close_cascade(
                 AidlObjectId(55),
                 AidlObjectGeneration(7),
                 CleanupStep::UnregisterRuntime,
             )
             .expect("cleanup failed close can be retried");
         table
-            .commit_close(AidlObjectId(55), AidlObjectGeneration(7))
+            .commit_close_cascade(AidlObjectId(55), AidlObjectGeneration(7))
             .expect("retry close commit succeeds");
     }
 
