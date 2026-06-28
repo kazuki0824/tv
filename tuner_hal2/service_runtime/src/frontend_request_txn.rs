@@ -1,4 +1,5 @@
-use crate::{FrontendRegistryEntry, TunerServiceRuntime};
+use crate::registry::FrontendRegistryEntry;
+use crate::TunerServiceRuntime;
 use maleicacid_tuner_hal2_common::{
     is_japan_bs_if_frequency_hz, is_japan_cs110_if_frequency_hz,
     is_japan_isdbt_frequency_contract_hz, FrontendBackendKind, FrontendScanMode, FrontendSystem,

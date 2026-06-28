@@ -180,6 +180,9 @@ where
                 return Err(ThreadResultFailure::JoinFailure.into_hal_error(self.name));
             }
         }
+        if let Some(error) = self.join_failure.take() {
+            return Err(error);
+        }
         match self.producer_failure.lock() {
             Ok(mut guard) => {
                 if let Some(error) = guard.take() {
@@ -244,8 +247,17 @@ mod tests {
     }
 
     #[test]
-    fn thread_result_owner_join_panic() {
-        let owner = ThreadResultOwner::<u32>::start("panic", || panic!("boom")).unwrap();
+    fn thread_result_owner_recorded_join_failure_is_error() {
+        let owner = ThreadResultOwner::<u32> {
+            result: Arc::new(Mutex::new(Some(Ok(1)))),
+            producer_failure: Arc::new(Mutex::new(None)),
+            join: None,
+            name: "recorded_join_failure",
+            join_failure: Some(
+                ThreadResultFailure::JoinFailure.into_hal_error("recorded_join_failure"),
+            ),
+            collected: false,
+        };
         assert!(owner.join_after_stop().is_err());
     }
 
@@ -314,19 +326,15 @@ mod tests {
     }
 
     #[test]
-    fn thread_result_owner_result_lock_poison() {
-        let result = Arc::new(Mutex::new(None));
-        let poisoned = Arc::clone(&result);
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _guard = poisoned.lock().unwrap();
-            panic!("poison");
-        }));
+    fn thread_result_owner_producer_failure_is_reported() {
         let join = thread::spawn(|| {});
         let owner = ThreadResultOwner::<u32> {
-            result,
-            producer_failure: Arc::new(Mutex::new(None)),
+            result: Arc::new(Mutex::new(None)),
+            producer_failure: Arc::new(Mutex::new(Some(
+                ThreadResultFailure::ResultLockPoison.into_hal_error("producer_failure"),
+            ))),
             join: Some(join),
-            name: "poison",
+            name: "producer_failure",
             join_failure: None,
             collected: false,
         };

@@ -2,8 +2,8 @@ use crate::boot::TunerServiceRuntime;
 use crate::method_dispatch::plan_object_method_dispatch;
 use crate::registry::{FrontendRegistryEntry, LnbRegistryProfile};
 use maleicacid_tuner_hal2_binder_adapter::{AidlMethodAdapter, AidlMethodCall};
-use maleicacid_tuner_hal2_common::HalError;
 use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem};
+use maleicacid_tuner_hal2_common::{HalError, HalInvalidArgumentKind};
 use maleicacid_tuner_hal2_domain_request::{AidlApi, AidlObjectKind};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -73,6 +73,26 @@ fn root_demux_capabilities_snapshot() -> RootDemuxCapabilitiesSnapshot {
         link_caps: vec![ROOT_SUPPORTED_DEMUX_FILTER_CAPS, 0, 0, 0, 0],
         has_time_filter: false,
     }
+}
+
+fn default_max_number_of_frontends_for_system(
+    runtime: &TunerServiceRuntime,
+    frontend_system: FrontendSystem,
+) -> i32 {
+    let query = runtime.query();
+    i32::try_from(
+        query
+            .frontend_ids()
+            .into_iter()
+            .filter(|frontend_id| {
+                query
+                    .frontend_entry(*frontend_id)
+                    .map(|entry| entry.system == frontend_system)
+                    .unwrap_or(false)
+            })
+            .count(),
+    )
+    .unwrap_or(i32::MAX)
 }
 
 fn root_demux_info_snapshot() -> RootDemuxInfoSnapshot {
@@ -198,9 +218,11 @@ impl TunerServiceRuntime {
             RootQueryRequest::DemuxCapabilities => Ok(RootQueryResponse::DemuxCapabilities(
                 root_demux_capabilities_snapshot(),
             )),
-            RootQueryRequest::MaxNumberOfFrontends {
-                frontend_system: _frontend_system,
-            } => Ok(RootQueryResponse::MaxNumberOfFrontends(0)),
+            RootQueryRequest::MaxNumberOfFrontends { frontend_system } => {
+                Ok(RootQueryResponse::MaxNumberOfFrontends(
+                    default_max_number_of_frontends_for_system(self, frontend_system),
+                ))
+            }
             RootQueryRequest::LnaSupported => Ok(RootQueryResponse::LnaSupported(false)),
         }
     }
@@ -212,14 +234,22 @@ impl TunerServiceRuntime {
                 Err(HalError::Unsupported("LNA is unsupported"))
             }
             RootCommandRequest::SetMaxNumberOfFrontends {
-                frontend_system: _frontend_system,
+                frontend_system,
                 max_number,
             } => {
-                if max_number == 0 {
+                if max_number < 0 {
+                    return Err(HalError::invalid_argument(
+                        HalInvalidArgumentKind::NumericRange,
+                        "frontend max number must be non-negative",
+                    ));
+                }
+                let default_max = default_max_number_of_frontends_for_system(self, frontend_system);
+                if max_number <= default_max {
                     Ok(())
                 } else {
-                    Err(HalError::Unsupported(
-                        "frontend max override is unavailable without probed frontend",
+                    Err(HalError::invalid_argument(
+                        HalInvalidArgumentKind::NumericRange,
+                        "frontend max number exceeds available frontend count for this type",
                     ))
                 }
             }

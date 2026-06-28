@@ -101,6 +101,13 @@ impl FilterConfigureTxn {
             return (self, Err(DemuxRuntimeError::invalid_state(filter_id)));
         }
         self.record_step(FilterConfigureStep::ValidateSettings);
+        if config.tpid.is_none() {
+            let filter_id = self.filter_id;
+            self.outcome = Some(FilterConfigureOutcome::RolledBack {
+                failed_step: FilterConfigureStep::ValidateSettings,
+            });
+            return (self, Err(DemuxRuntimeError::invalid_state(filter_id)));
+        }
         if snapshot.open_kind != open_kind {
             let filter_id = self.filter_id;
             self.outcome = Some(FilterConfigureOutcome::RolledBack {

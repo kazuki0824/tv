@@ -1,13 +1,13 @@
 use super::{
     build_lnb_satellite_position_request, build_lnb_tone_request, build_lnb_voltage_request,
-    close_object_after_close_preflight_with_domain_cleanup, execute_object_runtime_use_case,
+    close_object_after_close_preflight, execute_object_runtime_use_case,
     execute_object_runtime_use_case_with_request_builder, status_from_hal_error, AidlMethodCall,
     BinderResult, ILnb, ILnbCallback, LnbAidlObject, LnbPosition, LnbTone, LnbVoltage, Strong,
 };
 
 impl ILnb for LnbAidlObject {
     fn setCallback(&self, callback: &Strong<dyn ILnbCallback>) -> BinderResult<()> {
-        self.set_callback_transaction(callback)
+        self.set_callback_nullable_for_aidl(Some(callback))
     }
 
     fn setVoltage(&self, voltage: LnbVoltage) -> BinderResult<()> {
@@ -88,25 +88,6 @@ impl ILnb for LnbAidlObject {
     }
 
     fn close(&self) -> BinderResult<()> {
-        let runtime_for_close = self.runtime();
-        let runtime_for_cleanup = runtime_for_close.clone();
-        let handle = self.handle();
-        close_object_after_close_preflight_with_domain_cleanup(
-            &self.context(),
-            handle,
-            AidlMethodCall::LnbClose,
-            || {
-                let mut runtime = runtime_for_cleanup.lock().map_err(|_| {
-                    maleicacid_tuner_hal2_common::HalError::internal(
-                        maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                        "service runtime lock poisoned",
-                    )
-                })?;
-                runtime.close_lnb_explicit_after_object_close_begin(
-                    handle.object_id(),
-                    handle.generation(),
-                )
-            },
-        )
+        close_object_after_close_preflight(&self.context(), self.handle(), AidlMethodCall::LnbClose)
     }
 }

@@ -900,12 +900,10 @@ mod tests {
     }
 
     #[test]
-    fn key_preparation_failure_does_not_panic() {
+    fn key_preparation_failure_returns_error() {
         let mut key = sample_key(10);
         key.rounds = 0;
-        let result = std::panic::catch_unwind(|| key.prepare());
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Err(Multi2PrepareError::InvalidRoundsZero));
+        assert_eq!(key.prepare(), Err(Multi2PrepareError::InvalidRoundsZero));
     }
 
     #[test]

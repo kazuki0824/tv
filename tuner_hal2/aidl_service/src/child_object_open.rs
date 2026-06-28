@@ -8,9 +8,7 @@ use binder::{BinderFeatures, Result as BinderResult, Strong};
 use maleicacid_tuner_hal2_binder_adapter::{
     AidlApi, AidlMethodCall, OpenDvrRequest, RuntimeExecutableRequest,
 };
-use maleicacid_tuner_hal2_common::{
-    fail_after_cleanup, FirstErrorCollector, HalError, HalInternalKind,
-};
+use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
 use maleicacid_tuner_hal2_demux::config::OpenFilterRequest;
 use maleicacid_tuner_hal2_service_runtime::object_method_txn::{
     execute_object_method_call_after_live, ObjectMethodTxnBuildError,
@@ -21,7 +19,8 @@ use crate::error_bridge::status_from_hal_error;
 use crate::filter_object::FilterAidlObject;
 use crate::object_handle::AidlObjectHandle;
 use crate::object_runtime::{
-    clear_owner_callback_registration_hal, register_callback_artifact_after_owner_ready_hal,
+    finish_callback_artifact_registration_after_owner_ready_hal,
+    finish_owner_callback_cleanup_outcome,
 };
 use crate::service_context::{SharedAidlServiceContext, SharedTunerRuntime};
 
@@ -41,48 +40,107 @@ where
     }
 }
 
-fn finish_hal_cleanup_after_primary<T>(
-    context: &'static str,
-    primary: HalError,
-    cleanup: Result<(), HalError>,
-) -> BinderResult<T> {
-    fail_after_cleanup(context, primary, cleanup).map_err(status_from_hal_error)
-}
-
-fn rollback_filter_child_open_hal(
+fn finish_filter_child_open_artifact_retain_failure(
     runtime: &SharedTunerRuntime,
     handle: AidlObjectHandle,
     filter_id: i32,
-) -> Result<(), HalError> {
+    primary_error: HalError,
+) -> BinderResult<Strong<dyn IFilter>> {
     runtime
         .lock()
         .map_err(|_| {
-            HalError::internal(
+            status_from_hal_error(HalError::internal(
                 HalInternalKind::InvariantViolation,
                 "service runtime lock poisoned",
-            )
+            ))
         })?
-        .rollback_filter_child_open_after_aidl_failure(
+        .finish_filter_child_open_artifact_retain_failure_use_case(
             handle.object_id(),
             handle.generation(),
             filter_id,
+            primary_error,
         )
+        .map_err(status_from_hal_error)?;
+    Err(status_from_hal_error(HalError::internal(
+        HalInternalKind::InvariantViolation,
+        "filter child artifact retain failure unexpectedly returned success",
+    )))
 }
 
-fn rollback_dvr_child_open_hal(
+fn finish_dvr_child_open_artifact_retain_failure(
     runtime: &SharedTunerRuntime,
     handle: AidlObjectHandle,
     dvr_id: i32,
-) -> Result<(), HalError> {
+    primary_error: HalError,
+) -> BinderResult<Strong<dyn IDvr>> {
     runtime
         .lock()
         .map_err(|_| {
-            HalError::internal(
+            status_from_hal_error(HalError::internal(
                 HalInternalKind::InvariantViolation,
                 "service runtime lock poisoned",
-            )
+            ))
         })?
-        .rollback_dvr_child_open_after_aidl_failure(handle.object_id(), handle.generation(), dvr_id)
+        .finish_dvr_child_open_artifact_retain_failure_use_case(
+            handle.object_id(),
+            handle.generation(),
+            dvr_id,
+            primary_error,
+        )
+        .map_err(status_from_hal_error)?;
+    Err(status_from_hal_error(HalError::internal(
+        HalInternalKind::InvariantViolation,
+        "DVR child artifact retain failure unexpectedly returned success",
+    )))
+}
+
+fn finish_filter_child_object_construction_failure(
+    context: &SharedAidlServiceContext,
+    runtime: &SharedTunerRuntime,
+    handle: AidlObjectHandle,
+    filter_id: i32,
+    primary_error: HalError,
+) -> BinderResult<Strong<dyn IFilter>> {
+    let cleanup =
+        cleanup_filter_child_open_after_object_failure(context, runtime, handle, filter_id);
+    runtime
+        .lock()
+        .map_err(|_| {
+            status_from_hal_error(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "service runtime lock poisoned",
+            ))
+        })?
+        .finish_filter_child_open_object_construction_failure_use_case(primary_error, cleanup)
+        .map_err(status_from_hal_error)?;
+    Err(status_from_hal_error(HalError::internal(
+        HalInternalKind::InvariantViolation,
+        "filter object construction failure unexpectedly returned success",
+    )))
+}
+
+fn finish_dvr_child_object_construction_failure(
+    context: &SharedAidlServiceContext,
+    runtime: &SharedTunerRuntime,
+    handle: AidlObjectHandle,
+    dvr_id: i32,
+    primary_error: HalError,
+) -> BinderResult<Strong<dyn IDvr>> {
+    let cleanup = cleanup_dvr_child_open_after_object_failure(context, runtime, handle, dvr_id);
+    runtime
+        .lock()
+        .map_err(|_| {
+            status_from_hal_error(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "service runtime lock poisoned",
+            ))
+        })?
+        .finish_dvr_child_open_object_construction_failure_use_case(primary_error, cleanup)
+        .map_err(status_from_hal_error)?;
+    Err(status_from_hal_error(HalError::internal(
+        HalInternalKind::InvariantViolation,
+        "DVR object construction failure unexpectedly returned success",
+    )))
 }
 
 fn cleanup_filter_child_open_after_object_failure(
@@ -91,15 +149,20 @@ fn cleanup_filter_child_open_after_object_failure(
     handle: AidlObjectHandle,
     filter_id: i32,
 ) -> Result<(), HalError> {
-    let mut cleanup_collector = FirstErrorCollector::new();
-    cleanup_collector.push_result(clear_owner_callback_registration_hal(
-        context,
-        handle,
-        Some(AidlApi::DemuxOpenFilter),
-        "filter child callback rollback failed",
-    ));
-    cleanup_collector.push_result(rollback_filter_child_open_hal(runtime, handle, filter_id));
-    cleanup_collector.into_result()
+    let outcome = runtime
+        .lock()
+        .map_err(|_| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "service runtime lock poisoned",
+            )
+        })?
+        .begin_filter_child_open_object_failure_cleanup_use_case(
+            handle.object_id(),
+            handle.generation(),
+            filter_id,
+        );
+    finish_owner_callback_cleanup_outcome(context, outcome)
 }
 
 fn cleanup_dvr_child_open_after_object_failure(
@@ -108,15 +171,20 @@ fn cleanup_dvr_child_open_after_object_failure(
     handle: AidlObjectHandle,
     dvr_id: i32,
 ) -> Result<(), HalError> {
-    let mut cleanup_collector = FirstErrorCollector::new();
-    cleanup_collector.push_result(clear_owner_callback_registration_hal(
-        context,
-        handle,
-        Some(AidlApi::DemuxOpenDvr),
-        "DVR child callback rollback failed",
-    ));
-    cleanup_collector.push_result(rollback_dvr_child_open_hal(runtime, handle, dvr_id));
-    cleanup_collector.into_result()
+    let outcome = runtime
+        .lock()
+        .map_err(|_| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "service runtime lock poisoned",
+            )
+        })?
+        .begin_dvr_child_open_object_failure_cleanup_use_case(
+            handle.object_id(),
+            handle.generation(),
+            dvr_id,
+        );
+    finish_owner_callback_cleanup_outcome(context, outcome)
 }
 
 fn retain_filter_child_callback(
@@ -124,15 +192,14 @@ fn retain_filter_child_callback(
     handle: AidlObjectHandle,
     callback: &Strong<dyn IFilterCallback>,
 ) -> Result<(), HalError> {
-    register_callback_artifact_after_owner_ready_hal(
+    let retain_result = context
+        .retain_filter_callback(handle, callback)
+        .map_err(|error| error.into_hal_error("filter callback store retain failed"));
+    finish_callback_artifact_registration_after_owner_ready_hal(
         context,
         handle,
         AidlApi::DemuxOpenFilter,
-        || {
-            context
-                .retain_filter_callback(handle, callback)
-                .map_err(|error| error.into_hal_error("filter callback store retain failed"))
-        },
+        retain_result,
     )
 }
 
@@ -141,11 +208,15 @@ fn retain_dvr_child_callback(
     handle: AidlObjectHandle,
     callback: &Strong<dyn IDvrCallback>,
 ) -> Result<(), HalError> {
-    register_callback_artifact_after_owner_ready_hal(context, handle, AidlApi::DemuxOpenDvr, || {
-        context
-            .retain_dvr_callback(handle, callback)
-            .map_err(|error| error.into_hal_error("DVR callback store retain failed"))
-    })
+    let retain_result = context
+        .retain_dvr_callback(handle, callback)
+        .map_err(|error| error.into_hal_error("DVR callback store retain failed"));
+    finish_callback_artifact_registration_after_owner_ready_hal(
+        context,
+        handle,
+        AidlApi::DemuxOpenDvr,
+        retain_result,
+    )
 }
 
 pub fn open_filter_child_for_owner_object_with_request_builder<Build>(
@@ -226,25 +297,23 @@ fn finish_filter_child_open(
     let child_handle = handle_from_runtime_entry(runtime_open.runtime_entry);
     let filter_id = runtime_open.filter_id;
     if let Err(primary_error) = retain_filter_child_callback(context, child_handle, callback) {
-        return finish_hal_cleanup_after_primary(
-            "filter child callback retain failure rollback failed",
+        return finish_filter_child_open_artifact_retain_failure(
+            runtime,
+            child_handle,
+            filter_id,
             primary_error,
-            rollback_filter_child_open_hal(runtime, child_handle, filter_id),
         );
     }
     match FilterAidlObject::new(child_handle, context.clone()) {
         Ok(object) => Ok(BnFilter::new_binder(object, BinderFeatures::default())),
-        Err(_) => finish_hal_cleanup_after_primary(
-            "filter object construction failure cleanup failed",
+        Err(_) => finish_filter_child_object_construction_failure(
+            context,
+            runtime,
+            child_handle,
+            filter_id,
             HalError::internal(
                 HalInternalKind::InvariantViolation,
                 "filter object kind mismatch",
-            ),
-            cleanup_filter_child_open_after_object_failure(
-                context,
-                runtime,
-                child_handle,
-                filter_id,
             ),
         ),
     }
@@ -259,21 +328,24 @@ fn finish_dvr_child_open(
     let child_handle = handle_from_runtime_entry(runtime_open.runtime_entry);
     let dvr_id = runtime_open.dvr_id;
     if let Err(primary_error) = retain_dvr_child_callback(context, child_handle, callback) {
-        return finish_hal_cleanup_after_primary(
-            "DVR child callback retain failure rollback failed",
+        return finish_dvr_child_open_artifact_retain_failure(
+            runtime,
+            child_handle,
+            dvr_id,
             primary_error,
-            rollback_dvr_child_open_hal(runtime, child_handle, dvr_id),
         );
     }
     match DvrAidlObject::new(child_handle, context.clone()) {
         Ok(object) => Ok(BnDvr::new_binder(object, BinderFeatures::default())),
-        Err(_) => finish_hal_cleanup_after_primary(
-            "DVR object construction failure cleanup failed",
+        Err(_) => finish_dvr_child_object_construction_failure(
+            context,
+            runtime,
+            child_handle,
+            dvr_id,
             HalError::internal(
                 HalInternalKind::InvariantViolation,
                 "DVR object kind mismatch",
             ),
-            cleanup_dvr_child_open_after_object_failure(context, runtime, child_handle, dvr_id),
         ),
     }
 }

@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use crate::registry::{FrontendRegistryEntry, LnbRegistryProfile};
+use crate::registry::LnbRegistryProfile;
 use maleicacid_tuner_hal2_binder_adapter::{AidlMethodAdapter, AidlMethodCall};
 use maleicacid_tuner_hal2_common::{
     HalError, HalInternalKind, HalInvalidArgumentKind, HalInvalidStateKind,
@@ -125,28 +125,6 @@ pub struct ObjectFrontendStatusSnapshot {
     pub signal_state: FrontendSignalState,
 }
 
-impl
-    From<(
-        FrontendRegistryEntry,
-        FrontendRuntimeState,
-        FrontendSignalState,
-    )> for ObjectFrontendStatusSnapshot
-{
-    fn from(
-        value: (
-            FrontendRegistryEntry,
-            FrontendRuntimeState,
-            FrontendSignalState,
-        ),
-    ) -> Self {
-        Self {
-            lnb_profile: value.0.lnb_profile,
-            runtime_state: value.1,
-            signal_state: value.2,
-        }
-    }
-}
-
 fn lnb_profile_supports_voltage_status(profile: Option<LnbRegistryProfile>) -> bool {
     matches!(
         profile,
@@ -241,11 +219,8 @@ fn execute_object_query_request(
             .dvr_queue_descriptor_snapshot_for_aidl_object(target.object_id(), target.generation())
             .map(ObjectQueryResponse::QueueDescriptor),
         ObjectQueryRequest::FrontendGetStatus { status_types } => {
-            let snapshot =
-                ObjectFrontendStatusSnapshot::from(query.frontend_status_query_for_aidl_object(
-                    target.object_id(),
-                    target.generation(),
-                )?);
+            let snapshot = query
+                .frontend_status_query_for_aidl_object(target.object_id(), target.generation())?;
             Ok(ObjectQueryResponse::FrontendStatus(
                 status_types
                     .into_iter()
@@ -254,11 +229,8 @@ fn execute_object_query_request(
             ))
         }
         ObjectQueryRequest::FrontendGetFrontendStatusReadiness { status_types } => {
-            let snapshot =
-                ObjectFrontendStatusSnapshot::from(query.frontend_status_query_for_aidl_object(
-                    target.object_id(),
-                    target.generation(),
-                )?);
+            let snapshot = query
+                .frontend_status_query_for_aidl_object(target.object_id(), target.generation())?;
             Ok(ObjectQueryResponse::FrontendStatusReadiness(
                 status_types
                     .into_iter()
@@ -646,4 +618,58 @@ where
         build().map(|method| (method, ()))
     })?;
     Ok(plan.command_plan().api())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn snapshot(
+        lnb_profile: Option<LnbRegistryProfile>,
+        runtime_state: FrontendRuntimeState,
+        signal_state: FrontendSignalState,
+    ) -> ObjectFrontendStatusSnapshot {
+        ObjectFrontendStatusSnapshot {
+            lnb_profile,
+            runtime_state,
+            signal_state,
+        }
+    }
+
+    #[test]
+    fn frontend_status_value_uses_dto_snapshot_without_registry_entry() {
+        let locked = snapshot(
+            None,
+            FrontendRuntimeState::Idle,
+            FrontendSignalState::Locked,
+        );
+        let unlocked = snapshot(
+            None,
+            FrontendRuntimeState::Idle,
+            FrontendSignalState::NoSignal,
+        );
+
+        assert_eq!(
+            object_frontend_status_value(locked, ObjectFrontendStatusType::DemodLock),
+            Some(ObjectFrontendStatusValue::DemodLocked(true))
+        );
+        assert_eq!(
+            object_frontend_status_value(unlocked, ObjectFrontendStatusType::DemodLock),
+            Some(ObjectFrontendStatusValue::DemodLocked(false))
+        );
+    }
+
+    #[test]
+    fn frontend_readiness_reports_unsupported_lnb_voltage_from_dto_snapshot() {
+        let value = object_frontend_readiness_value(
+            snapshot(
+                None,
+                FrontendRuntimeState::Idle,
+                FrontendSignalState::Locked,
+            ),
+            ObjectFrontendStatusType::LnbVoltage,
+        );
+
+        assert_eq!(value, ObjectFrontendStatusReadinessValue::Unsupported);
+    }
 }

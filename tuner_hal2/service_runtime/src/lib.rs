@@ -3,7 +3,9 @@ mod callback_registry;
 pub mod capability_profile;
 pub mod command_dispatch;
 pub mod demux_filter_dvr_ops;
+mod descrambler_key_table;
 pub mod descrambler_ops;
+mod descrambler_session;
 pub mod diagnostics;
 pub mod dispatch;
 pub mod error_mapping;
@@ -15,6 +17,7 @@ pub mod lnb_ops;
 mod method_dispatch;
 pub mod method_validation;
 pub mod object_close_txn;
+pub mod object_domain_cleanup;
 pub mod object_lifecycle;
 pub mod object_method_txn;
 mod object_table;
@@ -26,10 +29,12 @@ pub mod root_object_ops;
 pub mod transaction_registry;
 
 pub use boot::{
-    start_frontend_demux_live_pump_from_reader, DvrChildRuntimeOpen, DvrStatusPollSnapshot,
-    FilterChildRuntimeOpen, FilterEventDelivery, FilterEventDeliverySnapshot,
-    FilterEventDispatcher, FrontendDemuxPacketSink, FrontendProbeOutcome, RuntimeObjectPublicEntry,
-    RuntimeObjectQueryError, RuntimeQuery, ServiceBootOutcome, TunerServiceRuntime,
+    start_frontend_demux_live_pump_from_reader, CallbackDeliveryFailurePhase,
+    CallbackDeliveryFailureReport, CallbackDeliveryOwnerKind, DvrChildRuntimeOpen,
+    DvrStatusPollSnapshot, FilterChildRuntimeOpen, FilterEventDelivery,
+    FilterEventDeliverySnapshot, FilterEventDispatcher, FrontendDemuxPacketSink,
+    FrontendProbeOutcome, RuntimeObjectPublicEntry, RuntimeObjectQueryError, RuntimeQuery,
+    ServiceBootOutcome, TunerServiceRuntime,
 };
 pub use callback_registry::{
     CallbackHealthState, CallbackRegistryUpdate, RuntimeCallbackRegistration,
@@ -60,6 +65,7 @@ pub use frontend_worker_txn::{
     stop_frontend_tune_object as stop_frontend_tune_use_case, FrontendCloseCleanupReport,
     FrontendScanEndNotifier,
 };
+pub use object_domain_cleanup::{ObjectDomainCleanupCommand, ObjectDomainCleanupExecutor};
 pub use object_method_txn::{
     ObjectFrontendStatusReadinessValue, ObjectFrontendStatusType, ObjectFrontendStatusValue,
     ObjectMethodExecutionToken, ObjectQueryRequest, ObjectQueryResponse,
@@ -68,8 +74,8 @@ pub use object_table::{
     RuntimeObjectEntry, RuntimeObjectLifecycle, RuntimeObjectTableError, RuntimeOwnerRelation,
 };
 pub use registry::{
-    DemuxRegistryEntry, DemuxRuntimeId, FrontendRegistryEntry, FrontendRuntimeId, LnbRegistryEntry,
-    LnbRegistryProfile, LnbRuntimeId, RegistryCommitError, RuntimeRegistryKind,
+    DemuxRegistryEntry, DemuxRuntimeId, FrontendRuntimeId, LnbRegistryEntry, LnbRegistryProfile,
+    LnbRuntimeId, RegistryCommitError, RuntimeRegistryKind,
 };
 pub use root_method_txn::{
     RootCommandRequest, RootDemuxCapabilitiesSnapshot, RootDemuxInfoSnapshot,
@@ -100,8 +106,7 @@ mod tests {
         FilterConfig, FilterConfigKind, FilterOpenType, OpenFilterRequest, PesSettings,
     };
     use maleicacid_tuner_hal2_descrambler::{
-        multi2_encrypt_payload, runtime::DescramblerKeySlotId, test_support::expire_key_token,
-        DescramblerKeySlot, DescramblerKeyToken, Multi2KeyMaterial,
+        multi2_encrypt_payload, DescramblerKeySlot, DescramblerKeyToken, Multi2KeyMaterial,
     };
     use maleicacid_tuner_hal2_domain_request::{
         DvrConfigureKind, DvrConfigureRequest, DvrOpenKind, FilterDelayHintKind,
@@ -763,15 +768,37 @@ mod tests {
         packet[1] = 0x40;
         packet[2] = 0x00;
         packet[3] = 0x10;
-        let reader = Box::new(std::io::Cursor::new(packet.to_vec()));
-        let owner = crate::start_frontend_demux_live_pump_from_reader(
+        let mut stream = Vec::new();
+        stream.extend_from_slice(&packet);
+        stream.extend_from_slice(&packet);
+        stream.extend_from_slice(&packet);
+        let reader = Box::new(std::io::Cursor::new(stream));
+        let mut owner = crate::start_frontend_demux_live_pump_from_reader(
             Arc::clone(&runtime),
             1_000_000,
             reader,
         )
         .unwrap();
-        let report = owner.join_after_stop().unwrap();
-        assert_eq!(report.packets_delivered, 1);
+        let report = {
+            let mut completed = None;
+            for _ in 0..100 {
+                match owner.collect_if_finished() {
+                    maleicacid_tuner_hal2_device::FrontendLivePumpJoinOutcome::Running => {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                    maleicacid_tuner_hal2_device::FrontendLivePumpJoinOutcome::Completed(
+                        result,
+                    ) => {
+                        completed = Some(result);
+                        break;
+                    }
+                }
+            }
+            completed
+                .unwrap_or_else(|| owner.join_after_stop())
+                .unwrap()
+        };
+        assert_eq!(report.packets_delivered, 3);
     }
 
     #[test]
@@ -1328,12 +1355,14 @@ mod tests {
         let session = runtime
             .registry()
             .descrambler_runtime(descrambler.id)
-            .unwrap()
-            .session();
-        assert_eq!(session.demux_id(), Some(demux.id.0));
-        assert_eq!(session.demux_generation(), Some(1));
-        assert_eq!(session.key_slot(), None);
-        assert_eq!(session.pid_claims().len(), 1);
+            .unwrap();
+        assert_eq!(session.demux_binding(), Some((demux.id.0, 1)));
+        let claim_sets = runtime
+            .registry()
+            .resolved_descrambler_claims_for_demux(demux.id.0, 1);
+        assert_eq!(claim_sets.len(), 1);
+        assert!(claim_sets[0].key_slot.is_none());
+        assert_eq!(claim_sets[0].claims.len(), 1);
         assert!(!session.is_closed());
     }
 
@@ -1350,11 +1379,13 @@ mod tests {
             .register_descrambler_key_slot(token.clone(), key_slot)
             .unwrap();
         runtime
+            .set_descrambler_key_token(descrambler.id.0, token.as_binder_token_bytes())
+            .unwrap();
+        runtime
             .registry_mut_for_test()
-            .descrambler_runtime_mut(descrambler.id)
-            .unwrap()
-            .session_mut()
-            .replace_key(token.clone(), DescramblerKeySlotId(41));
+            .descrambler_key_table_mut()
+            .release(&token)
+            .unwrap();
 
         let err = runtime
             .set_descrambler_key_token(descrambler.id.0, &[0x00])
@@ -1367,10 +1398,8 @@ mod tests {
         let session = runtime
             .registry()
             .descrambler_runtime(descrambler.id)
-            .unwrap()
-            .session();
-        assert_eq!(session.key_token(), Some(&token));
-        assert_eq!(session.key_slot(), Some(DescramblerKeySlotId(41)));
+            .unwrap();
+        assert!(session.has_key());
         assert!(runtime.descrambler_diagnostics().iter().any(|record| {
             record.kind == DescramblerDiagnosticKind::KeyTokenReleaseFailed
                 && record.phase == DescramblerDiagnosticPhase::SetKeyToken
@@ -1492,7 +1521,10 @@ mod tests {
         }));
 
         let invalid_len_err = runtime
-            .set_descrambler_key_token(descrambler.id.0, &[1, 2, 3, 4, 5, 6, 7])
+            .set_descrambler_key_token(
+                descrambler.id.0,
+                &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17],
+            )
             .unwrap_err();
         assert!(matches!(
             invalid_len_err,
@@ -1517,10 +1549,10 @@ mod tests {
         runtime
             .register_descrambler_key_slot(token.clone(), key_slot)
             .unwrap();
-        expire_key_token(
-            runtime.registry_mut_for_test().descrambler_key_table_mut(),
-            &token,
-        );
+        runtime
+            .registry_mut_for_test()
+            .descrambler_key_table_mut()
+            .expire_test_key(&token);
 
         let err = runtime
             .set_descrambler_key_token(descrambler.id.0, token.as_binder_token_bytes())
@@ -1787,13 +1819,10 @@ mod tests {
         let session = runtime
             .registry()
             .descrambler_runtime(descrambler.id)
-            .unwrap()
-            .session();
+            .unwrap();
         assert!(session.is_closed());
-        assert_eq!(session.demux_id(), None);
-        assert_eq!(session.demux_generation(), None);
-        assert_eq!(session.key_slot(), None);
-        assert!(session.pid_claims().is_empty());
+        assert_eq!(session.demux_binding(), None);
+        assert!(!session.has_key());
     }
 
     #[test]

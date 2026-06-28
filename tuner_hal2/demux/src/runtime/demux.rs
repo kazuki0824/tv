@@ -12,7 +12,8 @@ use crate::av::{
     ClientHandleState,
 };
 use crate::config::{
-    AvStreamTypeConfig, FilterDelayHint, FilterDelayReadiness, FilterOpenType, OpenFilterRequest,
+    AvStreamTypeConfig, ConfigInputPid, FilterDelayHint, FilterDelayReadiness, FilterOpenType,
+    OpenFilterRequest,
 };
 use crate::packet_pipeline::{
     FilterPipelineConfig, PacketPipeline, PipelineDeliveryAction, PipelineFilterView,
@@ -24,7 +25,7 @@ use crate::TsInputOrigin;
 use super::dvr::{DvrKind, DvrRuntime, DvrRuntimeSnapshot, DvrStatusEvent};
 use super::filter::{FilterRuntime, FilterRuntimeSnapshot, FilterRuntimeState};
 use super::queue_runtime::{QueueDescriptorSnapshot, QueueRuntime, QueueRuntimeError};
-use super::source_boundary::SourceBoundaryTxn;
+use super::source_boundary::apply_filter_source_boundary_change;
 
 const TUNER_EVENT_DATA_READY: u32 = 1 << 0;
 const MAX_FILTER_DELAY_MS: u64 = 10_000;
@@ -782,8 +783,8 @@ impl DemuxRuntime {
             FilterRuntimeState::Configured
             | FilterRuntimeState::Started
             | FilterRuntimeState::Stopped => {
-                let origins = [(snapshot.source.origin(), snapshot.tpid.unwrap_or(-1))];
-                if snapshot.tpid.is_some() {
+                if let Some(tpid) = snapshot.tpid.and_then(ConfigInputPid::validate_tpid) {
+                    let origins = [(snapshot.source.origin(), tpid)];
                     self.pipeline.flush_filter(filter_id, &origins);
                 } else {
                     self.pipeline.clear_filter_state_after_flush(filter_id);
@@ -1174,7 +1175,8 @@ impl DemuxRuntime {
         &mut self,
         sink_filter_id: i32,
     ) -> Result<(), DemuxRuntimeError> {
-        let (_source_boundary, outcome) = SourceBoundaryTxn::new(sink_filter_id).apply(self);
+        let (_source_boundary, outcome) =
+            apply_filter_source_boundary_change(self, sink_filter_id, None);
         outcome.map(|_| ())
     }
 
@@ -1229,9 +1231,11 @@ impl DemuxRuntime {
         {
             return Err(DemuxRuntimeError::pid_mismatch(source_filter_id));
         }
-        let (source_boundary, outcome) = SourceBoundaryTxn::new(sink_filter_id)
-            .with_new_source(source_filter_id, source_snapshot.generation)
-            .apply(self);
+        let (source_boundary, outcome) = apply_filter_source_boundary_change(
+            self,
+            sink_filter_id,
+            Some((source_filter_id, source_snapshot.generation)),
+        );
         outcome?;
         let reset = source_boundary.reset_report().cloned().unwrap_or_default();
         Ok(reset)
@@ -1282,18 +1286,19 @@ impl DemuxRuntime {
                 source_filter_generation,
             },
         };
-        let mut report = self.pipeline.push_ts_packet(packet, kind);
+        let validated = match crate::packet_pipeline::ValidatedTsPacket::validate(packet) {
+            Ok(validated) => validated,
+            Err(_) => return self.pipeline.push_ts_packet(packet, kind),
+        };
+        let mut report = self.pipeline.push_validated_ts_packet(&validated, kind);
         if report.accepted_packets == 0 {
             return report;
         }
-        let Some(view) = self.pipeline.inspect_ts_packet(packet) else {
-            return report;
-        };
         let filters = self.filter_views();
         let downstream = self
             .pipeline
             .plan_and_assemble_ts_packet_report_after_preflight(
-                &view,
+                &validated,
                 origin,
                 &filters,
                 &report.assembly_suppression_reasons,
@@ -1330,11 +1335,9 @@ impl DemuxRuntime {
                         });
                 }
                 Some(Ok(outcome)) => {
-                    if let Some(diagnostic) = av_payload_delivery_outcome_diagnostic(
-                        outcome,
-                        view.packet_pid(),
-                        filter_id,
-                    ) {
+                    if let Some(diagnostic) =
+                        av_payload_delivery_outcome_diagnostic(outcome, validated.pid(), filter_id)
+                    {
                         report.diagnostics.push(diagnostic);
                     }
                 }
@@ -1344,7 +1347,7 @@ impl DemuxRuntime {
                     }
                     report.diagnostics.push(
                         crate::packet_pipeline::PipelineDiagnostic::av_shared_backing_failure(
-                            view.packet_pid(),
+                            validated.pid(),
                             filter_id,
                             error,
                         ),
@@ -1353,14 +1356,14 @@ impl DemuxRuntime {
                 None => {
                     report.diagnostics.push(
                         crate::packet_pipeline::PipelineDiagnostic::av_shared_backing_missing(
-                            view.packet_pid(),
+                            validated.pid(),
                             filter_id,
                         ),
                     );
                 }
             }
         }
-        let packet_pid = view.packet_pid();
+        let packet_pid = validated.pid();
         let mirror_diagnostics =
             self.mirror_record_dvr_packets(packet, &report.delivery_actions, packet_pid);
         report.diagnostics.extend(mirror_diagnostics);

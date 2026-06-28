@@ -3,6 +3,10 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     FilterDelayHint::FilterDelayHint, FilterDelayHintType::FilterDelayHintType,
     LnbPosition::LnbPosition, LnbTone::LnbTone, LnbVoltage::LnbVoltage,
 };
+#[cfg(test)]
+use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
+    PlaybackStatus::PlaybackStatus, RecordStatus::RecordStatus,
+};
 use maleicacid_tuner_hal2_common::{FrontendTuneRequest, HalError, HalInvalidArgumentKind};
 use maleicacid_tuner_hal2_domain_request::{
     DemuxSetFrontendDataSourceRequest, DvrConfigureKind, DvrConfigureRequest, DvrFilterLinkRequest,
@@ -60,6 +64,7 @@ pub enum AidlMethodCall {
     FilterFlush,
     FilterClose,
     FilterSetDataSource(FilterSetDataSourceRequest),
+    FilterSetDataSourceToDemuxInput,
     FilterSetDelayHint(FilterDelayHintRequest),
     DvrGetQueueDesc,
     DvrConfigure(DvrConfigureRequest),
@@ -109,7 +114,9 @@ impl AidlMethodCall {
             Self::FilterStop => crate::AidlApi::FilterStop,
             Self::FilterFlush => crate::AidlApi::FilterFlush,
             Self::FilterClose => crate::AidlApi::FilterClose,
-            Self::FilterSetDataSource(_) => crate::AidlApi::FilterSetDataSource,
+            Self::FilterSetDataSource(_) | Self::FilterSetDataSourceToDemuxInput => {
+                crate::AidlApi::FilterSetDataSource
+            }
             Self::FilterSetDelayHint(_) => crate::AidlApi::FilterSetDelayHint,
             Self::DvrGetQueueDesc => crate::AidlApi::DvrGetQueueDesc,
             Self::DvrConfigure(_) => crate::AidlApi::DvrConfigure,
@@ -195,6 +202,9 @@ impl AidlMethodCall {
                     RuntimeExecutableRequest::FilterSetDataSource(request),
                 ))
             }
+            Self::FilterSetDataSourceToDemuxInput => DomainCommand::Filter(
+                FilterCommand::SetDataSource(RuntimeExecutableRequest::NoPayload),
+            ),
             Self::FilterSetDelayHint(request) => DomainCommand::Filter(
                 FilterCommand::SetDelayHint(RuntimeExecutableRequest::FilterDelayHint(request)),
             ),

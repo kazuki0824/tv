@@ -288,42 +288,6 @@ pub trait LnbBackendOps {
 mod tests {
     use super::*;
 
-    struct TestBackend {
-        applied: Vec<LnbElectricalState>,
-        fail_apply: Option<LnbFailureKind>,
-    }
-
-    impl TestBackend {
-        fn new() -> Self {
-            Self {
-                applied: Vec::new(),
-                fail_apply: None,
-            }
-        }
-    }
-
-    impl LnbBackendOps for TestBackend {
-        fn apply_lnb_state(
-            &mut self,
-            _lnb_id: i32,
-            state: LnbElectricalState,
-        ) -> Result<(), LnbFailureKind> {
-            if let Some(kind) = self.fail_apply.take() {
-                return Err(kind);
-            }
-            self.applied.push(state);
-            Ok(())
-        }
-
-        fn send_diseqc_message(
-            &mut self,
-            _lnb_id: i32,
-            _message: &LnbDiseqcMessage,
-        ) -> Result<(), LnbFailureKind> {
-            Err(LnbFailureKind::DiseqcUnsupported)
-        }
-    }
-
     #[test]
     fn diseqc_message_rejects_empty_and_oversized_payloads() {
         let empty = LnbDiseqcMessage::new(7, &[]).unwrap_err();

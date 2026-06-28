@@ -1,10 +1,11 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::registry::FrontendRegistryEntry;
 use crate::{
     object_lifecycle::{aidl_object_live, aidl_public_runtime_id_for_close_cleanup},
     object_method_txn::ObjectMethodExecutionToken,
-    start_frontend_demux_live_pump_from_reader, FrontendRegistryEntry, TunerServiceRuntime,
+    start_frontend_demux_live_pump_from_reader, TunerServiceRuntime,
 };
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FirstErrorCollector, FrontendBackendKind, FrontendDevicePath,

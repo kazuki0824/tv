@@ -65,13 +65,12 @@ use maleicacid_tuner_hal2_common::{
 };
 use maleicacid_tuner_hal2_demux::QueueDescriptorSnapshot;
 use maleicacid_tuner_hal2_service_runtime::{
-    close_frontend_object_cleanup_use_case, set_frontend_lnb_object_use_case,
-    start_frontend_scan_use_case, start_frontend_tune_use_case, stop_frontend_scan_use_case,
-    stop_frontend_tune_use_case, LnbRegistryProfile, ObjectFrontendStatusReadinessValue,
-    ObjectFrontendStatusType, ObjectFrontendStatusValue, ObjectQueryRequest, ObjectQueryResponse,
-    RootCommandRequest, RootDemuxCapabilitiesSnapshot, RootDemuxInfoSnapshot,
-    RootFrontendInfoSnapshot, RootQueryRequest, RootQueryResponse, RuntimeObjectEntry,
-    TunerServiceRuntime,
+    set_frontend_lnb_object_use_case, start_frontend_scan_use_case, start_frontend_tune_use_case,
+    stop_frontend_scan_use_case, stop_frontend_tune_use_case, LnbRegistryProfile,
+    ObjectFrontendStatusReadinessValue, ObjectFrontendStatusType, ObjectFrontendStatusValue,
+    ObjectQueryRequest, ObjectQueryResponse, RootCommandRequest, RootDemuxCapabilitiesSnapshot,
+    RootDemuxInfoSnapshot, RootFrontendInfoSnapshot, RootQueryRequest, RootQueryResponse,
+    RuntimeObjectEntry, TunerServiceRuntime,
 };
 
 use crate::child_object_open::{
@@ -92,10 +91,9 @@ use crate::frontend_object::FrontendAidlObject;
 use crate::lnb_object::LnbAidlObject;
 use crate::object_handle::AidlObjectHandle;
 use crate::object_runtime::{
-    close_object_after_close_preflight, close_object_after_close_preflight_with_domain_cleanup,
-    execute_object_query_use_case, execute_object_query_use_case_with_aidl_input_conversion,
-    execute_object_runtime_use_case, execute_object_runtime_use_case_with_request_builder,
-    execute_shared_object_runtime_use_case,
+    close_object_after_close_preflight, execute_object_query_use_case,
+    execute_object_query_use_case_with_aidl_input_conversion, execute_object_runtime_use_case,
+    execute_object_runtime_use_case_with_request_builder, execute_shared_object_runtime_use_case,
     execute_shared_object_runtime_use_case_with_request_builder,
     plan_unavailable_object_method_use_case,
 };
@@ -147,11 +145,13 @@ fn tuner_hal2_demux_info_from_snapshot(snapshot: RootDemuxInfoSnapshot) -> Demux
     }
 }
 
-fn frontend_system_from_type(frontend_type: FrontendType) -> FrontendSystem {
+fn frontend_system_from_type(frontend_type: FrontendType) -> Result<FrontendSystem, HalError> {
     match frontend_type {
-        FrontendType::ISDBS => FrontendSystem::IsdbS,
-        FrontendType::ISDBT => FrontendSystem::IsdbT,
-        _ => FrontendSystem::IsdbT,
+        FrontendType::ISDBS => Ok(FrontendSystem::IsdbS),
+        FrontendType::ISDBT => Ok(FrontendSystem::IsdbT),
+        _ => Err(HalError::Unsupported(
+            "frontend type is unsupported by tuner_hal2",
+        )),
     }
 }
 
@@ -639,7 +639,8 @@ impl ITuner for TunerAidlService {
     ) -> BinderResult<()> {
         self.lock_runtime()?
             .execute_root_command(RootCommandRequest::SetMaxNumberOfFrontends {
-                frontend_system: frontend_system_from_type(_frontend_type),
+                frontend_system: frontend_system_from_type(_frontend_type)
+                    .map_err(status_from_hal_error)?,
                 max_number,
             })
             .map_err(status_from_hal_error)
@@ -649,7 +650,8 @@ impl ITuner for TunerAidlService {
         match self
             .lock_runtime()?
             .execute_root_query(RootQueryRequest::MaxNumberOfFrontends {
-                frontend_system: frontend_system_from_type(_frontend_type),
+                frontend_system: frontend_system_from_type(_frontend_type)
+                    .map_err(status_from_hal_error)?,
             })
             .map_err(status_from_hal_error)?
         {
@@ -774,7 +776,7 @@ mod tests {
     }
 
     #[test]
-    fn dvr_close_is_idempotent_and_closed_object_rejects_start() {
+    fn dvr_close_rejects_second_close_and_closed_object_rejects_start() {
         let service = TunerAidlService::new_without_filter_event_dispatcher_for_test(
             TunerServiceRuntime::new(),
         );
@@ -811,7 +813,7 @@ mod tests {
         let dvr = DvrAidlObject::new(handle, service.context.clone()).unwrap();
 
         assert!(dvr.close().is_ok());
-        assert!(dvr.close().is_ok());
+        assert!(dvr.close().is_err());
         assert!(dvr.start().is_err());
     }
 }

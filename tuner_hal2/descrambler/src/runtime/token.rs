@@ -7,7 +7,6 @@ pub enum DescramblerKeyTokenError {
     InvalidLength { len: usize, min: usize, max: usize },
 }
 
-pub const DESCRAMBLER_TOKEN_BYTES: usize = 8;
 pub const DESCRAMBLER_TOKEN_MIN_BYTES: usize = 1;
 pub const DESCRAMBLER_TOKEN_MAX_BYTES: usize = 16;
 

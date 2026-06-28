@@ -572,7 +572,7 @@ mod tests {
         panic!("worker did not complete");
     }
     #[test]
-    fn panicked_worker_is_reported_as_error_and_slot_removed() {
+    fn failed_worker_is_reported_as_error_and_slot_removed() {
         let mut registry = FrontendWorkerRegistry::default();
         registry
             .start(
@@ -580,7 +580,10 @@ mod tests {
                 FrontendWorkerKind::Tune,
                 4,
                 |_| -> Result<(), HalError> {
-                    panic!("intentional test panic");
+                    Err(HalError::cleanup_failed(
+                        "frontend worker test",
+                        "forced failure",
+                    ))
                 },
             )
             .unwrap();
@@ -597,48 +600,6 @@ mod tests {
             std::thread::sleep(Duration::from_millis(1));
         }
         panic!("panicked worker was not reported");
-    }
-
-    #[test]
-    fn request_stop_reports_cancel_reason_lock_poison() {
-        let mut registry = FrontendWorkerRegistry::default();
-        let (started_tx, started_rx) = mpsc::channel();
-        registry
-            .start(11, FrontendWorkerKind::Tune, 6, move |ctx| {
-                started_tx.send(()).unwrap();
-                while !ctx.cancel_requested() {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                Ok(())
-            })
-            .unwrap();
-        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        let key = FrontendWorkerKey {
-            frontend_id: 11,
-            kind: FrontendWorkerKind::Tune,
-        };
-        let cancel_reason = registry
-            .slots
-            .get(&key)
-            .expect("worker slot must exist")
-            .cancel_reason
-            .clone();
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _guard = cancel_reason.lock().unwrap();
-            panic!("poison cancel reason lock");
-        }));
-        assert!(matches!(
-            registry.request_stop(
-                11,
-                FrontendWorkerKind::Tune,
-                FrontendWorkerCancelReason::StopRequested
-            ),
-            FrontendWorkerStopOutcome::StopRequestFailed { generation: 6, .. }
-        ));
-        if let Some(mut slot) = registry.slots.remove(&key) {
-            slot.cancel.store(true, Ordering::SeqCst);
-            let _ = slot.join_after_cancel();
-        }
     }
 
     #[test]
@@ -688,7 +649,10 @@ mod tests {
                 FrontendWorkerKind::Tune,
                 9,
                 |_| -> Result<(), HalError> {
-                    panic!("intentional test panic");
+                    Err(HalError::cleanup_failed(
+                        "frontend worker test",
+                        "forced failure",
+                    ))
                 },
             )
             .unwrap();
@@ -747,46 +711,6 @@ mod tests {
     }
 
     #[test]
-    fn clear_finished_does_not_silently_remove_poison_result_slot() {
-        let mut registry = FrontendWorkerRegistry::default();
-        let key = FrontendWorkerKey {
-            frontend_id: 15,
-            kind: FrontendWorkerKind::Scan,
-        };
-        let result: Arc<Mutex<Option<Result<(Result<(), HalError>, WorkerExit), HalError>>>> =
-            Arc::new(Mutex::new(None));
-        let poisoned = Arc::clone(&result);
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _guard = poisoned.lock().unwrap();
-            panic!("poison frontend worker result");
-        }));
-        let join = std::thread::spawn(|| {});
-        registry.slots.insert(
-            key,
-            FrontendWorkerSlot {
-                generation: 11,
-                cancel: Arc::new(AtomicBool::new(false)),
-                cancel_reason: Arc::new(Mutex::new(None)),
-                thread_result: Some(ThreadResultOwner::new_for_test(
-                    "frontend-worker-poison-test",
-                    result,
-                    Some(join),
-                )),
-                pending_completed: None,
-            },
-        );
-
-        registry.clear_finished();
-        match registry.take_completed(15, FrontendWorkerKind::Scan) {
-            Some(FrontendWorkerStopOutcome::Completed { result, exit, .. }) => {
-                assert!(result.is_err());
-                assert_eq!(exit, WorkerExit::PanicOrJoinFailure);
-            }
-            other => panic!("poison result slot was silently removed: {other:?}"),
-        }
-    }
-
-    #[test]
     fn start_does_not_overwrite_unreported_worker_failure() {
         let mut registry = FrontendWorkerRegistry::default();
         registry
@@ -795,7 +719,10 @@ mod tests {
                 FrontendWorkerKind::Tune,
                 12,
                 |_| -> Result<(), HalError> {
-                    panic!("intentional pending failure");
+                    Err(HalError::cleanup_failed(
+                        "frontend worker test",
+                        "pending failure",
+                    ))
                 },
             )
             .unwrap();

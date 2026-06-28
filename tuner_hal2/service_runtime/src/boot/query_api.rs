@@ -1,10 +1,11 @@
 use super::{
     AidlObjectGeneration, AidlObjectId, AidlObjectKind, DemuxRuntimeId, DemuxRuntimeSnapshot,
     DvrRuntimeId, FilterOpenType, FilterRuntimeId, FrontendLiveReaderDescriptor, FrontendRuntimeId,
-    FrontendRuntimeSnapshot, FrontendRuntimeState, FrontendSignalState, HalError, HalInternalKind,
+    FrontendRuntimeSnapshot, FrontendSignalState, HalError, HalInternalKind,
     HalInvalidArgumentKind, HalInvalidStateKind, LnbRuntimeId, RuntimeObjectTable,
     RuntimeObjectTableError, RuntimeOwnerRelation, RuntimeRegistry, TunerServiceRuntime,
 };
+use crate::object_method_txn::ObjectFrontendStatusSnapshot;
 use maleicacid_tuner_hal2_demux::{
     DvrRuntimeState, DvrStatusEvent, QueueDescriptorQueryError, QueueDescriptorSnapshot,
 };
@@ -83,51 +84,17 @@ impl TunerServiceRuntime {
         self.query().has_frontend_id(id)
     }
 
-    pub fn frontend_entry(&self, id: i32) -> Option<crate::registry::FrontendRegistryEntry> {
+    pub(crate) fn frontend_entry(&self, id: i32) -> Option<crate::registry::FrontendRegistryEntry> {
         self.query().frontend_entry(id)
     }
 
-    pub fn frontend_entry_for_aidl_object(
+    pub(crate) fn frontend_entry_for_aidl_object(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
     ) -> Result<crate::registry::FrontendRegistryEntry, HalError> {
         self.query()
             .frontend_entry_for_aidl_object(object_id, generation)
-    }
-
-    pub fn frontend_runtime_state_for_aidl_object(
-        &self,
-        object_id: AidlObjectId,
-        generation: AidlObjectGeneration,
-    ) -> Result<FrontendRuntimeState, HalError> {
-        self.query()
-            .frontend_runtime_state_for_aidl_object(object_id, generation)
-    }
-
-    pub fn frontend_signal_state_for_aidl_object(
-        &self,
-        object_id: AidlObjectId,
-        generation: AidlObjectGeneration,
-    ) -> Result<FrontendSignalState, HalError> {
-        self.query()
-            .frontend_signal_state_for_aidl_object(object_id, generation)
-    }
-
-    pub fn frontend_status_query_for_aidl_object(
-        &self,
-        object_id: AidlObjectId,
-        generation: AidlObjectGeneration,
-    ) -> Result<
-        (
-            crate::registry::FrontendRegistryEntry,
-            FrontendRuntimeState,
-            FrontendSignalState,
-        ),
-        HalError,
-    > {
-        self.query()
-            .frontend_status_query_for_aidl_object(object_id, generation)
     }
 
     pub fn demux_ids(&self) -> Vec<i32> {
@@ -541,11 +508,11 @@ impl<'a> RuntimeQuery<'a> {
         self.registry.frontend(FrontendRuntimeId(id)).is_some()
     }
 
-    pub fn frontend_entry(&self, id: i32) -> Option<crate::registry::FrontendRegistryEntry> {
+    pub(crate) fn frontend_entry(&self, id: i32) -> Option<crate::registry::FrontendRegistryEntry> {
         self.registry.frontend(FrontendRuntimeId(id)).cloned()
     }
 
-    pub fn frontend_entry_for_aidl_object(
+    pub(crate) fn frontend_entry_for_aidl_object(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
@@ -562,11 +529,11 @@ impl<'a> RuntimeQuery<'a> {
             .ok_or_else(|| HalError::Unsupported("frontend runtime entry is not available"))
     }
 
-    pub fn frontend_runtime_state_for_aidl_object(
+    pub(crate) fn frontend_status_query_for_aidl_object(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
-    ) -> Result<FrontendRuntimeState, HalError> {
+    ) -> Result<ObjectFrontendStatusSnapshot, HalError> {
         let entry = self.frontend_entry_for_aidl_object(object_id, generation)?;
         let runtime = self
             .registry
@@ -577,41 +544,11 @@ impl<'a> RuntimeQuery<'a> {
                     "frontend runtime is missing for advertised frontend",
                 )
             })?;
-        Ok(runtime.state())
-    }
-
-    pub fn frontend_signal_state_for_aidl_object(
-        &self,
-        object_id: AidlObjectId,
-        generation: AidlObjectGeneration,
-    ) -> Result<FrontendSignalState, HalError> {
-        let entry = self.frontend_entry_for_aidl_object(object_id, generation)?;
-        self.frontend_signal_state(entry.id.0)
-    }
-
-    pub fn frontend_status_query_for_aidl_object(
-        &self,
-        object_id: AidlObjectId,
-        generation: AidlObjectGeneration,
-    ) -> Result<
-        (
-            crate::registry::FrontendRegistryEntry,
-            FrontendRuntimeState,
-            FrontendSignalState,
-        ),
-        HalError,
-    > {
-        let entry = self.frontend_entry_for_aidl_object(object_id, generation)?;
-        let runtime = self
-            .registry
-            .frontend_runtime(FrontendRuntimeId(entry.id.0))
-            .ok_or_else(|| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "frontend runtime is missing for advertised frontend",
-                )
-            })?;
-        Ok((entry, runtime.state(), runtime.signal_state()))
+        Ok(ObjectFrontendStatusSnapshot {
+            lnb_profile: entry.lnb_profile,
+            runtime_state: runtime.state(),
+            signal_state: runtime.signal_state(),
+        })
     }
 
     pub fn demux_ids(&self) -> Vec<i32> {

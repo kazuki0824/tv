@@ -12,6 +12,54 @@ use super::{
 use maleicacid_tuner_hal2_binder_adapter::RuntimeExecutableRequest;
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
 
+impl FilterAidlObject {
+    pub(crate) fn set_data_source_nullable_for_aidl(
+        &self,
+        filter: Option<&Strong<dyn IFilter>>,
+    ) -> BinderResult<()> {
+        let sink_handle = self.handle();
+        match filter {
+            Some(filter) => execute_object_runtime_use_case_with_request_builder(
+                &self.runtime(),
+                sink_handle,
+                || {
+                    let source_handle = local_filter_handle_from_strong(filter)?;
+                    Ok((
+                        AidlMethodCall::FilterSetDataSource(FilterSetDataSourceRequest {
+                            source_filter_id: source_handle.object_id().0,
+                            source_filter_generation: source_handle.generation().0,
+                        }),
+                        source_handle,
+                    ))
+                },
+                |runtime, handle, dispatch_proof, source_handle| {
+                    runtime
+                        .set_filter_data_source_for_object(
+                            handle.object_id(),
+                            handle.generation(),
+                            source_handle.object_id(),
+                            source_handle.generation(),
+                            dispatch_proof,
+                        )
+                        .map(|_| ())
+                },
+            ),
+            None => execute_object_runtime_use_case(
+                &self.runtime(),
+                sink_handle,
+                AidlMethodCall::FilterSetDataSourceToDemuxInput,
+                |runtime, handle, dispatch_proof| {
+                    runtime.disconnect_filter_data_source_for_object(
+                        handle.object_id(),
+                        handle.generation(),
+                        dispatch_proof,
+                    )
+                },
+            ),
+        }
+    }
+}
+
 impl IFilter for FilterAidlObject {
     fn getQueueDesc(&self, queue: &mut TunerQueueDesc) -> BinderResult<()> {
         *queue = match execute_object_query_use_case(
@@ -241,32 +289,7 @@ impl IFilter for FilterAidlObject {
     }
 
     fn setDataSource(&self, filter: &Strong<dyn IFilter>) -> BinderResult<()> {
-        let sink_handle = self.handle();
-        execute_object_runtime_use_case_with_request_builder(
-            &self.runtime(),
-            sink_handle,
-            || {
-                let source_handle = local_filter_handle_from_strong(filter)?;
-                Ok((
-                    AidlMethodCall::FilterSetDataSource(FilterSetDataSourceRequest {
-                        source_filter_id: source_handle.object_id().0,
-                        source_filter_generation: source_handle.generation().0,
-                    }),
-                    source_handle,
-                ))
-            },
-            |runtime, handle, dispatch_proof, source_handle| {
-                runtime
-                    .set_filter_data_source_for_object(
-                        handle.object_id(),
-                        handle.generation(),
-                        source_handle.object_id(),
-                        source_handle.generation(),
-                        dispatch_proof,
-                    )
-                    .map(|_| ())
-            },
-        )
+        self.set_data_source_nullable_for_aidl(Some(filter))
     }
 
     fn setDelayHint(&self, hint: &FilterDelayHint) -> BinderResult<()> {

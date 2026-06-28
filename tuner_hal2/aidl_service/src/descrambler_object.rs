@@ -1,5 +1,5 @@
 use crate::object_handle::{AidlObjectHandle, AidlObjectHandleError, AidlObjectKind};
-use crate::object_runtime::{drop_leak_object_from_drop, DropLeakDomainAction};
+use crate::object_runtime::drop_leak_object_from_drop;
 use crate::service_context::{SharedAidlServiceContext, SharedTunerRuntime};
 use binder::Interface;
 
@@ -35,6 +35,6 @@ impl DescramblerAidlObject {
 
 impl Drop for DescramblerAidlObject {
     fn drop(&mut self) {
-        drop_leak_object_from_drop(&self.context, self.handle, DropLeakDomainAction::None);
+        drop_leak_object_from_drop(&self.context, self.handle);
     }
 }

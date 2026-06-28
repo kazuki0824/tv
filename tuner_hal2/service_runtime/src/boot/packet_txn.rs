@@ -236,10 +236,11 @@ impl TunerServiceRuntime {
         let current_pid = packet_pid.get() as u16;
         let claim_sets = self
             .registry
-            .descrambler_claims_for_demux(demux_id, demux_generation);
+            .resolved_descrambler_claims_for_demux(demux_id, demux_generation);
         let mut snapshots = Vec::with_capacity(claim_sets.len());
         let mut diagnostics = Vec::new();
-        for (claims, key_slot_id) in claim_sets {
+        for claim_set in claim_sets {
+            let claims = claim_set.claims;
             let mut pids = BTreeSet::new();
             let mut source_filter_ids_by_pid: BTreeMap<u16, BTreeSet<i32>> = BTreeMap::new();
             for claim in claims {
@@ -247,7 +248,10 @@ impl TunerServiceRuntime {
                 if pid != current_pid {
                     continue;
                 }
-                let source = claim.source_filter_ref();
+                let Some(source) = claim.source_filter_ref() else {
+                    pids.insert(pid);
+                    continue;
+                };
                 match self.validate_descrambler_source_filter(
                     demux_id,
                     demux_generation,
@@ -302,11 +306,9 @@ impl TunerServiceRuntime {
             if pids.is_empty() {
                 continue;
             }
-            let key_slot = key_slot_id
-                .and_then(|slot_id| self.registry.descrambler_key_table().key_slot(slot_id));
             snapshots.push(ActiveDescramblerSnapshot {
                 pids,
-                key_slot,
+                key_slot: claim_set.key_slot,
                 source_filter_ids_by_pid,
             });
         }
@@ -381,7 +383,7 @@ impl TunerServiceRuntime {
         };
         let packet_pid = validated_packet.pid();
         let pid = packet_pid.get() as u16;
-        if validated_packet.view().scrambling_control == 0 {
+        if validated_packet.scrambling_control() == 0 {
             return DescramblePacketDecision {
                 packet: *packet,
                 flow: DescramblePacketFlow::Clear,
@@ -470,13 +472,12 @@ impl TunerServiceRuntime {
                 PipelineDiagnostic::KeylessScrambledAssemblySuppressed { pid } => *pid,
                 _ => return None,
             };
-            u16::try_from(pid).ok()
+            u16::try_from(pid.get()).ok()
         });
         for pid in pids {
             let keyless_claim = self
                 .registry
-                .descrambler_key_slot_for_demux_pid(demux_id, demux_generation, pid)
-                .is_some_and(|key_slot| key_slot.is_none());
+                .descrambler_keyless_claim_exists_for_demux_pid(demux_id, demux_generation, pid);
             if keyless_claim {
                 self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::packet_policy(
                     demux_id,

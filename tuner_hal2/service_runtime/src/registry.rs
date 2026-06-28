@@ -1,13 +1,16 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use crate::descrambler_key_table::{DescramblerKeyLookupError, DescramblerKeyTable};
+use crate::descrambler_session::{
+    DescramblerCleanupReport, DescramblerCleanupTxnError, DescramblerClearKeyTxnError,
+    DescramblerReplaceKeyOutcome, DescramblerReplaceKeyTxnError, DescramblerRuntime,
+    DescramblerSessionFailure, DescramblerSessionFailureKind, DescramblerSessionTxnStep,
+};
 use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem};
 use maleicacid_tuner_hal2_demux::DemuxRuntime;
-use maleicacid_tuner_hal2_descrambler::runtime::DescramblerKeySlotId;
 use maleicacid_tuner_hal2_descrambler::{
-    clear_key_with_session_txn, replace_key_with_session_txn, DescramblerClearKeyTxnError,
-    DescramblerKeyLookupError, DescramblerKeyTable, DescramblerKeyToken, DescramblerPidClaim,
-    DescramblerReplaceKeyOutcome, DescramblerReplaceKeyTxnError, DescramblerRuntime,
+    DescramblerKeySlot, DescramblerKeyToken, DescramblerPidClaim,
 };
 use maleicacid_tuner_hal2_device::FrontendRuntime;
 use maleicacid_tuner_hal2_lnb::LnbRuntime;
@@ -76,6 +79,12 @@ pub struct DvrRegistryEntry {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DescramblerRegistryEntry {
     pub id: DescramblerRuntimeId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedDescramblerClaimSet {
+    pub claims: Vec<DescramblerPidClaim>,
+    pub key_slot: Option<DescramblerKeySlot>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -473,7 +482,7 @@ impl RuntimeRegistry {
         self.dvrs.remove(&id)
     }
 
-    pub fn allocate_descrambler(
+    pub(crate) fn allocate_descrambler(
         &mut self,
     ) -> Result<DescramblerRegistryEntry, RegistryCommitError> {
         let id = DescramblerRuntimeId(self.next_descrambler_id);
@@ -490,7 +499,7 @@ impl RuntimeRegistry {
         Ok(entry)
     }
 
-    pub fn register_descrambler(
+    pub(crate) fn register_descrambler(
         &mut self,
         entry: DescramblerRegistryEntry,
     ) -> Result<(), RegistryCommitError> {
@@ -498,12 +507,12 @@ impl RuntimeRegistry {
             return Err(RegistryCommitError::DuplicateDescramblerId { id: entry.id });
         }
         self.descrambler_runtimes
-            .insert(entry.id, DescramblerRuntime::new(entry.id.0));
+            .insert(entry.id, DescramblerRuntime::new());
         self.descramblers.insert(entry.id, entry);
         Ok(())
     }
 
-    pub fn unregister_descrambler(
+    pub(crate) fn unregister_descrambler(
         &mut self,
         id: DescramblerRuntimeId,
     ) -> Option<DescramblerRegistryEntry> {
@@ -511,22 +520,73 @@ impl RuntimeRegistry {
         self.descramblers.remove(&id)
     }
 
-    pub fn descrambler(&self, id: DescramblerRuntimeId) -> Option<&DescramblerRegistryEntry> {
+    pub(crate) fn descrambler(
+        &self,
+        id: DescramblerRuntimeId,
+    ) -> Option<&DescramblerRegistryEntry> {
         self.descramblers.get(&id)
     }
 
-    pub fn descrambler_runtime(&self, id: DescramblerRuntimeId) -> Option<&DescramblerRuntime> {
+    #[cfg(test)]
+    pub(crate) fn descrambler_runtime(
+        &self,
+        id: DescramblerRuntimeId,
+    ) -> Option<&DescramblerRuntime> {
         self.descrambler_runtimes.get(&id)
     }
 
-    pub fn descrambler_runtime_mut(
-        &mut self,
-        id: DescramblerRuntimeId,
-    ) -> Option<&mut DescramblerRuntime> {
-        self.descrambler_runtimes.get_mut(&id)
+    pub(crate) fn descrambler_runtime_exists(&self, id: DescramblerRuntimeId) -> bool {
+        self.descrambler_runtimes.contains_key(&id)
     }
 
-    pub fn descrambler_pid_claimed_by_other(
+    pub(crate) fn descrambler_bound_demux(&self, id: DescramblerRuntimeId) -> Option<(i32, u64)> {
+        self.descrambler_runtimes.get(&id)?.demux_binding()
+    }
+
+    pub(crate) fn bind_descrambler_demux_use_case(
+        &mut self,
+        id: DescramblerRuntimeId,
+        demux_id: i32,
+        generation: u64,
+    ) -> Result<(), DescramblerSessionFailure> {
+        self.descrambler_runtimes
+            .get_mut(&id)
+            .ok_or(DescramblerSessionFailure {
+                step: DescramblerSessionTxnStep::ValidateOpen,
+                kind: DescramblerSessionFailureKind::SessionClosed,
+            })?
+            .bind_demux_use_case(demux_id, generation)
+    }
+
+    pub(crate) fn add_descrambler_pid_claim_use_case(
+        &mut self,
+        id: DescramblerRuntimeId,
+        claim: DescramblerPidClaim,
+    ) -> Result<(), DescramblerSessionFailure> {
+        self.descrambler_runtimes
+            .get_mut(&id)
+            .ok_or(DescramblerSessionFailure {
+                step: DescramblerSessionTxnStep::ValidateOpen,
+                kind: DescramblerSessionFailureKind::SessionClosed,
+            })?
+            .add_pid_claim_use_case(claim)
+    }
+
+    pub(crate) fn remove_descrambler_pid_claim_use_case(
+        &mut self,
+        id: DescramblerRuntimeId,
+        claim: DescramblerPidClaim,
+    ) -> Result<(), DescramblerSessionFailure> {
+        self.descrambler_runtimes
+            .get_mut(&id)
+            .ok_or(DescramblerSessionFailure {
+                step: DescramblerSessionTxnStep::ValidateOpen,
+                kind: DescramblerSessionFailureKind::SessionClosed,
+            })?
+            .remove_pid_claim_use_case(claim)
+    }
+
+    pub(crate) fn descrambler_pid_claimed_by_other(
         &self,
         current_id: DescramblerRuntimeId,
         demux_id: i32,
@@ -537,85 +597,82 @@ impl RuntimeRegistry {
             .iter()
             .filter(|(id, _)| **id != current_id)
             .any(|(_, runtime)| {
-                let session = runtime.session();
-                !session.is_closed()
-                    && session.demux_id() == Some(demux_id)
-                    && session.demux_generation() == Some(demux_generation)
-                    && session
-                        .pid_claims()
-                        .iter()
-                        .any(|claim| claim.pid().0 == pid)
+                runtime.is_bound_to_demux(demux_id, demux_generation) && runtime.has_pid_claim(pid)
             })
     }
 
-    pub fn descrambler_key_slot_for_demux_pid(
+    pub(crate) fn descrambler_ids_bound_to_demux(
+        &self,
+        demux_id: i32,
+    ) -> Vec<DescramblerRuntimeId> {
+        self.descrambler_runtimes
+            .iter()
+            .filter_map(|(id, runtime)| runtime.is_bound_to_demux_id(demux_id).then_some(*id))
+            .collect()
+    }
+
+    pub(crate) fn descrambler_token_resolution_available(&self) -> bool {
+        self.descrambler_key_table.has_token_resolution_state()
+    }
+
+    pub(crate) fn descrambler_has_stale_source_generation(
+        &self,
+        descrambler_id: DescramblerRuntimeId,
+        pid: u16,
+        source_filter_id: i32,
+        source_generation: u64,
+    ) -> bool {
+        self.descrambler_runtimes
+            .get(&descrambler_id)
+            .is_some_and(|runtime| {
+                runtime.has_stale_source_generation(pid, source_filter_id, source_generation)
+            })
+    }
+
+    pub(crate) fn resolved_descrambler_claims_for_demux(
+        &self,
+        demux_id: i32,
+        demux_generation: u64,
+    ) -> Vec<ResolvedDescramblerClaimSet> {
+        self.descrambler_runtimes
+            .values()
+            .filter_map(|runtime| {
+                let claim_set = runtime.resolved_claim_set_for_demux(
+                    demux_id,
+                    demux_generation,
+                    &self.descrambler_key_table,
+                )?;
+                let (claims, key_slot) = claim_set.into_parts();
+                Some(ResolvedDescramblerClaimSet { claims, key_slot })
+            })
+            .collect()
+    }
+
+    pub(crate) fn descrambler_keyless_claim_exists_for_demux_pid(
         &self,
         demux_id: i32,
         demux_generation: u64,
         pid: u16,
-    ) -> Option<Option<DescramblerKeySlotId>> {
+    ) -> bool {
         self.descrambler_runtimes
             .values()
-            .find(|runtime| {
-                runtime.session().demux_id() == Some(demux_id)
-                    && runtime.session().demux_generation() == Some(demux_generation)
-                    && runtime
-                        .session()
-                        .pid_claims()
-                        .iter()
-                        .any(|claim| claim.pid().0 == pid)
-            })
-            .map(|runtime| runtime.session().key_slot())
+            .any(|runtime| runtime.has_keyless_claim_for_demux_pid(demux_id, demux_generation, pid))
     }
 
-    pub fn descrambler_claims_for_demux(
-        &self,
-        demux_id: i32,
-        demux_generation: u64,
-    ) -> Vec<(Vec<DescramblerPidClaim>, Option<DescramblerKeySlotId>)> {
-        self.descrambler_runtimes
-            .values()
-            .filter_map(|runtime| {
-                let session = runtime.session();
-                if session.is_closed()
-                    || session.demux_id() != Some(demux_id)
-                    || session.demux_generation() != Some(demux_generation)
-                    || session.pid_claims().is_empty()
-                {
-                    return None;
-                }
-                Some((session.pid_claims().to_vec(), session.key_slot()))
-            })
-            .collect()
-    }
-
-    pub fn descrambler_ids_bound_to_demux(&self, demux_id: i32) -> Vec<DescramblerRuntimeId> {
-        self.descrambler_runtimes
-            .iter()
-            .filter_map(|(id, runtime)| {
-                (runtime.session().demux_id() == Some(demux_id)).then_some(*id)
-            })
-            .collect()
-    }
-
-    pub fn clear_descrambler_key_with_session_txn(
+    pub(crate) fn clear_descrambler_key_use_case(
         &mut self,
         descrambler_id: DescramblerRuntimeId,
     ) -> Result<(), DescramblerClearKeyTxnError<DescramblerKeyLookupError>> {
-        let runtime = self
-            .descrambler_runtimes
-            .get_mut(&descrambler_id)
-            .ok_or(DescramblerClearKeyTxnError::Session(
-            maleicacid_tuner_hal2_descrambler::DescramblerSessionFailure {
-                step: maleicacid_tuner_hal2_descrambler::DescramblerSessionTxnStep::ValidateOpen,
-                kind:
-                    maleicacid_tuner_hal2_descrambler::DescramblerSessionFailureKind::SessionClosed,
-            },
-        ))?;
-        clear_key_with_session_txn(runtime.session_mut(), &mut self.descrambler_key_table)
+        let runtime = self.descrambler_runtimes.get_mut(&descrambler_id).ok_or(
+            DescramblerClearKeyTxnError::Session(DescramblerSessionFailure {
+                step: DescramblerSessionTxnStep::ValidateOpen,
+                kind: DescramblerSessionFailureKind::SessionClosed,
+            }),
+        )?;
+        runtime.clear_key_use_case(&mut self.descrambler_key_table)
     }
 
-    pub fn replace_descrambler_key_with_session_txn(
+    pub(crate) fn replace_descrambler_key_use_case(
         &mut self,
         descrambler_id: DescramblerRuntimeId,
         token: DescramblerKeyToken,
@@ -623,28 +680,31 @@ impl RuntimeRegistry {
         DescramblerReplaceKeyOutcome,
         DescramblerReplaceKeyTxnError<DescramblerKeyLookupError, DescramblerKeyLookupError>,
     > {
-        let runtime = self
-            .descrambler_runtimes
-            .get_mut(&descrambler_id)
-            .ok_or(DescramblerReplaceKeyTxnError::Session(
-            maleicacid_tuner_hal2_descrambler::DescramblerSessionFailure {
-                step: maleicacid_tuner_hal2_descrambler::DescramblerSessionTxnStep::ValidateOpen,
-                kind:
-                    maleicacid_tuner_hal2_descrambler::DescramblerSessionFailureKind::SessionClosed,
-            },
-        ))?;
-        replace_key_with_session_txn(
-            runtime.session_mut(),
-            &mut self.descrambler_key_table,
-            token,
-        )
+        let runtime = self.descrambler_runtimes.get_mut(&descrambler_id).ok_or(
+            DescramblerReplaceKeyTxnError::Session(DescramblerSessionFailure {
+                step: DescramblerSessionTxnStep::ValidateOpen,
+                kind: DescramblerSessionFailureKind::SessionClosed,
+            }),
+        )?;
+        runtime.replace_key_use_case(&mut self.descrambler_key_table, token)
     }
 
-    pub fn descrambler_key_table(&self) -> &DescramblerKeyTable {
-        &self.descrambler_key_table
+    pub(crate) fn cleanup_descrambler_use_case(
+        &mut self,
+        descrambler_id: DescramblerRuntimeId,
+    ) -> Result<DescramblerCleanupReport, DescramblerCleanupTxnError<DescramblerKeyLookupError>>
+    {
+        let runtime = self.descrambler_runtimes.get_mut(&descrambler_id).ok_or(
+            DescramblerCleanupTxnError::Session(DescramblerSessionFailure {
+                step: DescramblerSessionTxnStep::ValidateOpen,
+                kind: DescramblerSessionFailureKind::SessionClosed,
+            }),
+        )?;
+        runtime.cleanup_all_use_case(&mut self.descrambler_key_table)
     }
 
-    pub fn descrambler_key_table_mut(&mut self) -> &mut DescramblerKeyTable {
+    #[cfg(test)]
+    pub(crate) fn descrambler_key_table_mut(&mut self) -> &mut DescramblerKeyTable {
         &mut self.descrambler_key_table
     }
 }

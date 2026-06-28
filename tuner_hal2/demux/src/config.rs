@@ -137,6 +137,23 @@ pub enum FilterDelayHint {
     DataSizeDelayBytes(usize),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct ConfigInputPid(i32);
+
+impl ConfigInputPid {
+    pub fn validate_tpid(pid: i32) -> Option<Self> {
+        if (0..=0x1fff).contains(&pid) {
+            Some(Self(pid))
+        } else {
+            None
+        }
+    }
+
+    pub const fn raw(self) -> i32 {
+        self.0
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FilterConfigKind {
     TsRaw,
@@ -160,9 +177,14 @@ pub struct FilterConfig {
 }
 
 impl FilterConfig {
+    pub fn validated_tpid(&self) -> Option<ConfigInputPid> {
+        ConfigInputPid::validate_tpid(self.tpid)
+    }
+
     pub fn pipeline_config(&self) -> FilterPipelineConfig {
+        let tpid = self.validated_tpid();
         FilterPipelineConfig {
-            tpid: Some(self.tpid),
+            tpid: tpid.map(ConfigInputPid::raw),
             raw: match &self.kind {
                 FilterConfigKind::TsSection { raw, .. } => *raw,
                 FilterConfigKind::TsPes(settings) => settings.raw,

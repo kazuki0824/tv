@@ -7,13 +7,13 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     IFrontendCallback::IFrontendCallback, ILnbCallback::ILnbCallback,
 };
 use binder::{Status, Strong};
-use maleicacid_tuner_hal2_binder_adapter::{
-    AidlApi, AidlObjectGeneration, AidlObjectId, AidlObjectKind,
-};
-use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, HalError, HalInternalKind};
+#[cfg(test)]
+use maleicacid_tuner_hal2_binder_adapter::AidlApi;
+use maleicacid_tuner_hal2_binder_adapter::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
+use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
 use maleicacid_tuner_hal2_service_runtime::{
-    object_lifecycle::aidl_object_for_close_cleanup_runtime, CallbackRegistryUpdate,
-    FrontendProbeOutcome, ServiceBootOutcome, TunerServiceRuntime,
+    boot::OwnerCallbackCleanupArtifactCommand, FrontendProbeOutcome, ServiceBootOutcome,
+    TunerServiceRuntime,
 };
 
 use crate::callback_store::{AidlCallbackStoreError, CallbackStore};
@@ -217,95 +217,37 @@ impl AidlServiceContext {
         Ok(())
     }
 
-    pub(crate) fn clear_owner_callbacks(
+    fn clear_owner_callbacks_raw(
         &self,
         handle: AidlObjectHandle,
     ) -> Result<usize, AidlCallbackStoreError> {
         Ok(self.callback_store_lock()?.clear_owner_callbacks(handle))
     }
 
+    #[cfg(test)]
+    pub(crate) fn clear_owner_callbacks_for_test(
+        &self,
+        handle: AidlObjectHandle,
+    ) -> Result<usize, AidlCallbackStoreError> {
+        self.clear_owner_callbacks_raw(handle)
+    }
+
     pub(crate) fn clear_all_callback_artifacts(&self) -> Result<usize, AidlCallbackStoreError> {
         Ok(self.callback_store_lock()?.clear_all_callbacks())
     }
 
-    pub(crate) fn clear_lnb_owner_loss_callback_for_public_id(
+    pub(crate) fn clear_owner_callback_artifacts_bridge(
         &self,
-        lnb_id: i32,
+        command: &OwnerCallbackCleanupArtifactCommand,
     ) -> Result<(), HalError> {
-        let handle = {
-            let runtime = self.runtime.lock().map_err(|_| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "service runtime lock poisoned while resolving LNB callback owner",
-                )
-            })?;
-            let Some(entry) = aidl_object_for_close_cleanup_runtime(
-                &runtime,
-                AidlObjectKind::Lnb,
-                i64::from(lnb_id),
-            ) else {
-                return Err(HalError::cleanup_failed(
-                    "LNB owner-loss callback cleanup",
-                    format!("LNB AIDL object is missing during owner-loss cleanup: id={lnb_id}"),
-                ));
-            };
-            AidlObjectHandle::new(entry.object_kind, entry.object_id, entry.generation)
-        };
-
-        match self.clear_owner_callbacks(handle) {
-            Ok(_) => {
-                let mut runtime = self.runtime.lock().map_err(|_| {
-                    HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "service runtime lock poisoned while clearing LNB callback registry",
-                    )
-                })?;
-                match runtime
-                    .clear_callback_registration_owner(handle.object_id(), handle.generation())
-                {
-                    CallbackRegistryUpdate::Updated => Ok(()),
-                    CallbackRegistryUpdate::Missing => Err(HalError::cleanup_failed(
-                        "LNB owner-loss callback cleanup",
-                        "callback registry owner missing while clearing LNB callback",
-                    )),
-                }
-            }
-            Err(error) => {
-                let cleanup_error =
-                    error.into_hal_error("callback store cleanup failed during LNB owner loss");
-                let mut runtime = match self.runtime.lock() {
-                    Ok(runtime) => runtime,
-                    Err(_) => {
-                        let mark_error = HalError::internal(
-                            HalInternalKind::InvariantViolation,
-                            "service runtime lock poisoned while marking LNB callback unhealthy",
-                        );
-                        return Err(compose_primary_cleanup_failure(
-                            "LNB owner-loss callback cleanup failed and unhealthy marking failed",
-                            cleanup_error,
-                            mark_error,
-                        ));
-                    }
-                };
-                let mark_result = runtime.mark_callback_registration_unhealthy(
-                    AidlObjectKind::Lnb,
-                    handle.object_id(),
-                    handle.generation(),
-                    AidlApi::LnbSetCallback,
-                );
-                match mark_result {
-                    CallbackRegistryUpdate::Updated => Err(cleanup_error),
-                    CallbackRegistryUpdate::Missing => Err(compose_primary_cleanup_failure(
-                        "LNB owner-loss callback cleanup failed and unhealthy marking failed",
-                        cleanup_error,
-                        HalError::cleanup_failed(
-                            "LNB owner-loss callback cleanup",
-                            "callback registry owner missing while marking unhealthy",
-                        ),
-                    )),
-                }
-            }
-        }
+        let handle = AidlObjectHandle::new(
+            command.owner_kind(),
+            command.owner_id(),
+            command.owner_generation(),
+        );
+        self.clear_owner_callbacks_raw(handle)
+            .map(|_| ())
+            .map_err(|error| error.into_hal_error(command.cleanup_failure_message()))
     }
 
     pub(crate) fn frontend_callback_for_owner(

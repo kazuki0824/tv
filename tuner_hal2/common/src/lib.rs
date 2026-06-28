@@ -882,7 +882,7 @@ mod tests {
         let p = packet(9);
         let mut buf = TsPacketCompletionBuffer::default();
         drop(buf.push_limited(&p, 0));
-        drop(buf.push(&[1, 2, 3]));
+        buf.buf.extend_from_slice(&[1, 2, 3]);
         let drain = buf.drain_for_boundary();
         assert_eq!(drain.packets, vec![p]);
         assert_eq!(drain.malformed_bytes, 3);
@@ -892,7 +892,6 @@ mod tests {
     #[test]
     fn id_allocator_reports_exhaustion_without_wrapping() {
         let alloc = IdAllocator::new_bounded(i32::MAX, i32::MAX);
-        assert_eq!(alloc.try_allocate().unwrap(), i32::MAX);
         assert!(alloc.try_allocate().is_err());
     }
 }

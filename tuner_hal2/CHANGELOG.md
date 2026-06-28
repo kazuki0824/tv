@@ -1,3 +1,368 @@
+# r50eo66 callback artifact delivery boundary fix22 drop-leak regression repair static partial
+
+- Reviewed `r50eo66_tuner_hal2_verify_logs_20260630_000801.tar.gz`; VTS candidate scan, tuner HAL service precheck, and Tuner VTS execution remain excluded from the final verdict while their log collection steps remain present.
+- Non-excluded verification had `01` through `07` passing and only `08_atest_run_tuner_hal2_tests` failing.
+- Fixed `object_runtime::tests::drop_leak_registry_missing_is_reported_after_quarantine` by restoring the object-table-only setup. This test intentionally verifies that drop-leak quarantine is committed and a missing public runtime unregister is still reported as an error.
+- Regression classification: this is not a previous repair omission from the immediately preceding log. The same test passed in `r50eo66_tuner_hal2_verify_logs_20260629_235334.tar.gz`; fix21 accidentally changed this drop-leak test from object-table-only setup to live-runtime setup while repairing `close_object_after_close_preflight_rejects_closed_object`.
+- Did not change `DESIGN_JA.md` or `CODE_CONVENTION.md`; the fix restores the existing drop-leak failure-precedence test shape and does not change callback policy ownership, artifact cleanup boundary, delivery failure composition, or close/drop-leak terminalization design.
+- Soong build, rustc, cargo, rustfmt, unit test, atest, loom, VTS, and device-side service verification were not rerun in this environment.
+
+# r50eo66 callback artifact delivery boundary fix21 static partial
+
+- Fixed the remaining non-device atest failures from the 20260629_235334 log while keeping VTS discovery, tuner HAL service precheck, and VTS execution excluded from the final verdict.
+- Fixed `close_object_after_close_preflight_rejects_closed_object` by using a live Filter runtime entry for the first successful close. This is a fix20 follow-up regression: the previous close-test setup cleanup did not convert this success-path test from object-table-only setup to live-runtime setup.
+- Fixed `source_boundary_disconnects_to_demux_input` by recreating the sink filter FMQ queue before the demux-input disconnect boundary. This is a previous repair omission: the source-boundary failure was already present in the prior non-device atest log and was not covered by fix20.
+- Fixed `demux_frontend_data_source_binds_and_live_sink_reaches_demux_runtime` by waiting for the live-pump worker to complete before falling back to stop-and-join. This is a previous repair omission: the live-pump failure was already present in the prior non-device atest log and was not covered by fix20.
+- Did not change `DESIGN_JA.md` or `CODE_CONVENTION.md`; the fixes are test setup and asynchronous test-shape corrections that preserve the existing runtime ownership and callback policy boundaries.
+- Soong build, rustc, cargo, rustfmt, unit test, atest, loom, VTS, and device-side service verification were not rerun in this environment.
+
+# r50eo66 fix20 non-device atest test-shape repair
+
+- Reviewed `r50eo66_tuner_hal2_verify_logs_20260629_233433.tar.gz`; VTS candidate scan, tuner HAL service precheck, and Tuner VTS execution remain excluded from the final verdict while their log collection steps remain present.
+- Fixed the remaining non-excluded `08_atest_run_tuner_hal2_tests` failures without changing callback policy ownership or moving failure composition back into AIDL.
+- Updated AIDL object-runtime drop-leak tests so missing-runtime failure cases use object-table-only setup and live-runtime success cases keep real public runtime entries.
+- Updated the AIDL close cleanup failure injection test to exercise a frontend domain cleanup failure, matching the service-runtime domain cleanup command model and preserving the expected `ReleaseBackend` cleanup step.
+- Updated demux queue-dependent tests to create filters through `OpenFilterRequest` with a positive buffer size before asserting FMQ queue payload delivery, delay readiness, source-boundary disconnect, playback-DVR queue delivery, and frontend-to-demux live sink behavior.
+- Fixed a malformed discontinuity-generation packet test helper by initializing the adaptation-field flags byte to zero when synthetic adaptation padding is present.
+- Updated the TS completion-buffer split-push test to account for malformed-byte accounting on the first resync push and packet delivery on the following confirmed-sync push.
+- Updated the frontend live-pump service-runtime test to provide three TS packets, matching the three-sync resync contract before asserting delivered packet count.
+- Kept DESIGN_JA.md and CODE_CONVENTION.md unchanged because the fixes align tests with the existing runtime contracts and do not alter production design rules.
+- Verification not rerun in this environment.
+
+# r50eo66 fix19 non-device atest failure repair
+
+- Reviewed `r50eo66_tuner_hal2_verify_logs_20260629_225830.tar.gz`; VTS candidate scan, tuner HAL service precheck, and Tuner VTS execution remain excluded from the final verdict while their log collection steps remain present.
+- Fixed non-excluded `08_atest_run_tuner_hal2_tests` failures without moving callback cleanup policy back into AIDL.
+- Relaxed FMQ descriptor fd-size validation only for Android fds that report metadata length zero; positive fd sizes still receive strict grantor range validation.
+- Corrected stale demux parser unit-test vectors that no longer matched strict section/PES/adaptation validation contracts.
+- Updated AIDL object-runtime close tests to create real public runtime entries where close success is under test and to use table-only setup only for missing-runtime cleanup failure cases.
+- Updated callback delivery failure tests to register live AIDL object-table entries before recording runtime callback registrations.
+- Fixed the object close closed-object test setup so the object is actually committed to `Closed` instead of being re-normalized to `Live` by `RuntimeObjectTable::insert()`.
+- Fixed descrambler clear-key transaction ordering so a release failure preserves the session key instead of clearing the session first.
+- Updated the invalid-length descrambler token test to use a token longer than the accepted 1..=16 byte token range.
+- Removed a duplicate `name` property from the binder adapter `rust_library` stanza in `Android.bp`.
+- Kept DESIGN_JA.md and CODE_CONVENTION.md unchanged because the changes preserve the documented service_runtime ownership and close/failure-precedence rules.
+- Verification not rerun in this environment.
+
+# r50eo66 fix18 FMQ static shim shared dependency propagation fix
+
+- Reviewed `r50eo66_tuner_hal2_verify_logs_20260629_224329.tar.gz`; VTS candidate scan, tuner HAL service precheck, and Tuner VTS execution remain excluded from the final verdict while their log collection steps remain present.
+- Fixed the non-excluded Soong link failure introduced by the static FMQ shim path: Rust dylib/test link steps now receive the native shared dependencies required by the static shim archive.
+- Added the FMQ shim native dependency set as `shared_libs` to `libmaleicacid_tuner_hal2_fmq` and to the FMQ-dependent Rust test binaries that directly link `libmaleicacid_tuner_hal2_fmq_shim_static`.
+- Kept `libmaleicacid_tuner_hal2_fmq_shim` and `libmaleicacid_tuner_hal2_fmq_shim_static` as explicit module targets so the verification script target list remains accurate.
+- Kept DESIGN_JA.md and CODE_CONVENTION.md unchanged because this is a Soong linkage repair and does not change callback artifact cleanup, delivery failure composition, or service_runtime policy ownership.
+- Verification not rerun in this environment.
+
+# r50eo66 fix17 FMQ shim test link fix
+
+- Replaced the Rust FMQ shim link path with a static shim variant for the Rust FMQ crate and FMQ-dependent Rust test modules, while keeping the existing shared shim module available for the scripted module target build.
+- Added `libmaleicacid_tuner_hal2_fmq_shim_static` from the same FMQ shim defaults as the shared shim so device-side atest binaries no longer require `libmaleicacid_tuner_hal2_fmq_shim.so` to be deployed next to cached test executables.
+- Removed the fix16 `data_libs` test packaging dependency for FMQ-dependent Rust tests because the test executables no longer need the shim as a runtime shared object.
+- Kept DESIGN_JA.md and CODE_CONVENTION.md unchanged because this is a build/linkage repair that preserves the callback artifact cleanup and delivery failure ownership rules.
+- Verification not rerun in this environment.
+
+# r50eo66 fix16 compile warning and test runtime dependency fix
+
+- Removed the production unused `AidlApi` import from `aidl_service/src/service_context.rs` and moved it behind `#[cfg(test)]` for the test-only callback store helpers.
+- Added `libmaleicacid_tuner_hal2_fmq_shim` as `data_libs` for Rust test modules that link the shim so atest can deploy the native shim next to the device-side test executable.
+- Kept DESIGN_JA.md and CODE_CONVENTION.md unchanged because the fix only closes a compile warning and test packaging dependency without changing callback policy ownership.
+- Verification not rerun in this environment.
+
+# r50eo66 fix15
+
+- Fixed non-device verification build failures reported after fix14 while keeping VTS and tuner-HAL-service device precheck out of the final acceptance scope.
+- Imported `FirstErrorCollector` from the common crate in drop-leak object cleanup instead of the AIDL object runtime module.
+- Updated drop-leak artifact executor construction to match the command-only artifact bridge executor constructor.
+- Removed the unused `CallbackHealthState` test import from AIDL object runtime tests.
+- Converted the DVR Binder-delivery failure path from `Result<(), HalError>` to the surrounding `Result<bool, HalError>` shape without moving failure composition back into AIDL.
+- Fixed the callback artifact bridge boundary test to pass an `i32` filter runtime id to the service-runtime cleanup planner.
+- No `DESIGN_JA.md` or `CODE_CONVENTION.md` change was needed because this change only repairs build-shape mismatches and preserves the existing service-runtime policy boundary.
+
+# r50eo66 callback artifact delivery boundary fix14 static partial
+
+- Removed the unused `ObjectDomainCleanupOutcome::command()` accessor instead of adding a dead-code allowance.
+- Reduced `ObjectDomainCleanupOutcome` to the executed cleanup result because no production or test path consumes the completed command after executor dispatch.
+- Kept `ObjectDomainCleanupCommand` construction, typed executor dispatch, and close/drop-leak cleanup ordering unchanged.
+- Kept `RELEASE_VERSION` unchanged at `r50eo66`; this archive remains static partial until the external verification script is rerun.
+- Verification rerun status for this archive: not executed in this environment.
+
+# r50eo66 fix13 static partial
+
+- Fixed the callback delivery failure finish use-case build break reported by the 20260629_215941 verification logs.
+- Changed `finish_callback_delivery_failure_use_case()` to clone the primary `HalError` before using report metadata, avoiding the Rust E0382 partial-move error in `service_runtime/src/boot.rs`.
+- Kept DESIGN_JA.md and CODE_CONVENTION.md unchanged because this is a Rust ownership/build fix, not a design or convention change.
+- Verification status: not rerun in this environment after this fix; rerun the non-VTS final verification steps on the generated archive.
+
+# r50eo66 callback artifact delivery boundary fix12 static partial
+
+- `r50eo66_tuner_hal2_verify_logs_20260629_213225.tar.gz` を確認し、VTS candidate scan / service precheck / VTS execution は顧客指示により最終検証対象から除外した。
+- 最終検証対象の失敗は `05_build_tuner_hal2_modules` / `06_build_tuner_hal2_test_modules` / `07_atest_build_only_tuner_hal2_tests` / `08_atest_run_tuner_hal2_tests` で、根因は `service_runtime/src/boot.rs` の `DvrPostCommitNotificationPhase` import 欠落だった。
+- `service_runtime/src/boot.rs` の diagnostics import に `DvrPostCommitNotificationPhase` を追加し、`CallbackDeliveryFailureReport::dvr()` と `finish_callback_delivery_failure_use_case()` が同型を参照できるようにした。
+- `DESIGN_JA.md` と `CODE_CONVENTION.md` は変更していない。今回の修正は、既存の callback delivery failure composition 設計を変更せず、build failure を起こしていた import 境界だけを補正した。
+- Soong build / rustc / cargo / rustfmt / unit test / atest / loom / 実機確認は、この環境では未実行。
+- Tuner VTS は顧客指示により今回の最終検証対象外。
+
+# r50eo66 callback artifact delivery boundary fix11 release-rule repair static partial
+
+- Repacked the archive so it extracts to `vendor/maleicacid/tv/...` directly from an AOSP tree root instead of `maleicacid/tv/...`.
+- Removed fix-specific release wording from `tuner_hal2/DESIGN_JA.md`; the callback artifact lookup / delivery failure boundary section now uses permanent design wording.
+- Removed fix-specific release wording from `tuner_hal2/CODE_CONVENTION.md`; the callback delivery failure boundary section now uses permanent convention wording.
+- Kept the fix10 callback artifact delivery boundary implementation and tests unchanged except for release-rule documentation cleanup.
+- Static partial only: Soong build, rustc/cargo, rustfmt, unit test, atest, VTS, loom, and device verification were not run in this environment. RELEASE_VERSION remains r50eo66.
+
+# r50eo66 callback artifact delivery boundary fix10 static partial
+
+- Kept callback artifact lookup failure distinct from Binder delivery failure for DVR callback delivery failure accounting; DVR artifact lookup failure now records diagnostic context without marking callback registry or DVR runtime callback state unhealthy.
+- Added service_runtime callback delivery failure tests for filter artifact lookup, filter Binder delivery with an existing runtime callback registration, DVR artifact lookup, and frontend scan END delivery failure composition.
+- Added an AIDL object_runtime test showing that `clear_owner_callback_artifacts_bridge()` clears only callback artifacts and does not mutate the runtime callback registry directly.
+- Preserved the command-only callback artifact cleanup bridge introduced in fix9; production callback store direct clear remains private raw helper plus test-only helper.
+- Static partial only: Soong build, rustc/cargo, rustfmt, unit test, atest, VTS, loom, and device verification were not run in this environment. RELEASE_VERSION remains r50eo66.
+
+# r50eo66 callback artifact delivery boundary fix9 static partial
+
+- Closed the production direct callback artifact clear surface by making the owner-handle clear helper private and exposing only the `OwnerCallbackCleanupArtifactCommand` bridge for production cleanup.
+- Added `CallbackDeliveryOwnerKind`, `CallbackDeliveryFailurePhase`, and `CallbackDeliveryFailureReport` as service_runtime-owned typed delivery failure inputs.
+- Added `TunerServiceRuntime::finish_callback_delivery_failure_use_case()` as the owner of delivery diagnostic recording, scan-session callback failure marking, runtime callback registry unhealthy marking, filter/DVR runtime callback unhealthy marking, and primary+cleanup failure composition.
+- Moved filter callback artifact missing, filter event conversion failure, and filter Binder callback failure accounting out of `aidl_service/src/filter_callback_delivery.rs` and into the service_runtime finish use-case.
+- Moved DVR Binder callback failure and DVR post-commit notification failure accounting out of `aidl_service/src/dvr_callback_delivery.rs` and into the service_runtime finish use-case.
+- Moved frontend scan END callback artifact missing, callback store failure, and Binder callback failure accounting out of `aidl_service/src/frontend_callback_delivery.rs` and into the service_runtime finish use-case.
+- Replaced callback clear test call sites with `clear_owner_callbacks_for_test()` so production code cannot call owner-handle direct callback store clear.
+- Added service_runtime failure-injection tests for filter and DVR callback delivery failure finish use-case composition and diagnostic recording.
+- Updated DESIGN_JA.md and CODE_CONVENTION.md so callback artifact clear and callback delivery failure accounting are fixed as service_runtime-owned policy, with AIDL delivery modules limited to artifact lookup, event conversion, Binder execution, and primary error forwarding.
+- Static partial only: Soong build, rustc/cargo, rustfmt, unit test, atest, VTS, loom, and device verification were not run in this environment. RELEASE_VERSION remains r50eo66.
+
+# r50eo66 callback policy boundary actual completion fix8 static partial
+
+- Removed the remaining public/direct callback registry mutation surface from AIDL-facing code paths: `record_callback_registration_for_object()` and generic callback unhealthy marking are now private service_runtime internals.
+- Routed frontend/filter/DVR callback delivery failure accounting through service_runtime callback-delivery failure use-cases instead of AIDL delivery modules directly mutating `RuntimeCallbackRegistry` or filter/DVR unhealthy state.
+- Updated DESIGN_JA.md and CODE_CONVENTION.md so callback delivery unhealthy marking is described as service_runtime-owned policy; AIDL delivery modules are limited to Binder delivery and result forwarding.
+- Static partial only: build, atest, VTS, rustfmt, loom, and device verification were not run.
+
+# r50eo66 callback policy boundary actual completion fix6 static partial
+
+- Fixed the remaining setCallback ordering issue: frontend / LNB callback artifact retain bridge is now executed only after `ObjectMethodTxn` live/generation/kind validation and dispatch preflight have succeeded, so preflight failure cannot leave a retained callback artifact outside service_runtime cleanup ownership.
+- Kept rollback command generation, unhealthy marking, and primary+cleanup failure composition in service_runtime; AIDL object_runtime now only carries the callback artifact retain bridge into the post-preflight execution path and returns bridge results to service_runtime outcomes.
+- Updated DESIGN_JA.md / CODE_CONVENTION.md to state that callback artifact retain must not be performed before service_runtime object-method preflight.
+- Verified the unified diff before packaging: the diff contains one Rust ordering fix plus matching design/convention text, not a version-only or script-only change.
+- Not run: Soong build, atest, Tuner VTS, rustfmt, loom, real-device checks.
+
+# r50eo66 callback policy boundary actual completion fix5 static partial
+
+- Clarified current `DESIGN_JA.md` / `CODE_CONVENTION.md` wording so AIDL callback helpers are described only as callback artifact bridge façades, not as callback retain / rollback policy owners; also fixed the callback registration failure table to name service_runtime as the rollback command / failure-composition owner.
+- No Rust code change from fix4; service_runtime remains the owner of callback cleanup command generation, unhealthy marking, and primary+cleanup failure composition for the reviewed callback boundary scope.
+- Verified the unified diff before packaging: the diff is documentation-only and removes the remaining current-design wording that could imply AIDL-owned callback retain / rollback policy.
+- Not run: Soong build, atest, Tuner VTS, rustfmt, loom, real-device checks.
+
+# r50eo66 callback policy boundary actual completion fix4 static partial
+
+- Clarified `DESIGN_JA.md` callback registration / child-open boundary text so the design no longer presents `object_runtime` or `child_object_open.rs` as owning callback rollback policy.
+- Fixed the remaining documentation ambiguity after the previous code-side callback policy boundary migration: AIDL is limited to callback artifact bridge execution and Binder status conversion; service_runtime owns rollback command generation, unhealthy marking, and primary+cleanup failure composition.
+
+# r50eo66 callback policy boundary actual completion follow-up 3 static partial
+
+- Cleaned the remaining ambiguous DESIGN_JA.md wording around callback rollback. The design no longer describes child_object_open.rs as owning typed callback rollback or callback rollback bridge; it now limits AIDL to callback artifact retain bridge / service_runtime-issued cleanup bridge execution results.
+- Verified the unified diff before packaging: the diff is documentation-only, and it removes the residual ambiguous phrases `typed callback retain closure`, `child allocation / callback rollback`, and `callback artifact retain / rollback bridge`.
+- Static partial only. Build, atest, Tuner VTS, rustfmt, loom, and real-device validation are not executed here. RELEASE_VERSION remains r50eo66.
+
+# r50eo66 callback policy boundary actual completion follow-up 2 static partial
+
+- Removed remaining DESIGN_JA.md wording that made child_object_open.rs look like the owner of callback rollback policy. The design now states that AIDL performs callback artifact retain bridge and Binder object construction only, while service_runtime child-open finish use-cases own child rollback command generation and primary+cleanup failure composition.
+- Verified the unified diff before packaging: the diff is documentation-only, and it changes child-open boundary wording from "typed callback retain / rollback" to "typed callback artifact retain bridge" plus service_runtime-owned rollback finish semantics.
+- Static partial only. Build, atest, Tuner VTS, rustfmt, loom, and real-device validation are not executed here. RELEASE_VERSION remains r50eo66.
+
+# r50eo66 callback policy boundary actual completion follow-up static partial
+
+- Moved the remaining child-open artifact-retain-failure rollback composition out of AIDL `child_object_open.rs`: filter/DVR child callback retain failure now calls service_runtime finish use-cases that perform child runtime/object rollback and primary+cleanup failure composition.
+- Moved child-open object-construction failure composition out of AIDL helper code: AIDL still executes the callback artifact bridge cleanup outcome, but service_runtime now performs the final primary+cleanup failure composition.
+- Verified the unified diff before packaging: the diff removes `fail_after_cleanup` / direct rollback helpers from `aidl_service/src/child_object_open.rs` and adds service_runtime child-open failure finish use-cases in `service_runtime/src/boot.rs`.
+- Static partial only. Build, atest, Tuner VTS, rustfmt, loom, and real-device validation are not executed here. `RELEASE_VERSION` remains `r50eo66`.
+
+# r50eo66 callback policy boundary actual completion static partial
+
+- Removed the remaining AIDL-side callback cleanup command planning paths: child-open object-construction rollback now obtains a service_runtime-owned owner callback cleanup outcome, and AIDL executes only the callback artifact bridge result.
+- Embedded service_runtime-owned `OwnerCallbackCleanupArtifactCommand` data inside `ObjectArtifactCleanupCommand` so the AIDL artifact executor no longer calls `plan_owner_callback_cleanup_artifact_command()` or derives callback cleanup policy from object kind/API fields.
+- Kept direct child-open runtime rollback only for artifact-retain failure, where no callback artifact has been retained yet; object-construction failure after retained artifact uses the service_runtime owner callback cleanup outcome.
+- Updated `DESIGN_JA.md` so `child_object_open.rs` is described as Binder construction / artifact bridge glue, not the owner of callback cleanup or rollback policy.
+- Static partial only. Build, atest, Tuner VTS, rustfmt, loom, and real-device validation are not executed here. `RELEASE_VERSION` remains `r50eo66`.
+
+# r50eo66 callback policy boundary completion follow-up static partial
+
+- Moved the remaining callback unregister and callback registration rollback outcome planning out of AIDL `object_runtime`: service_runtime now returns typed callback cleanup / rollback outcomes, while AIDL executes only callback artifact bridge operations and returns those results to service_runtime finish use-cases.
+- Removed the AIDL `service_context` finish orchestration helpers so the context no longer composes callback cleanup policy; it only exposes callback artifact bridge execution.
+- Updated DESIGN_JA.md to clarify that callback unregister and registration rollback command generation / failure composition are service_runtime-owned.
+- Static partial only. Build, atest, Tuner VTS, rustfmt, loom, and real-device validation are not executed here. `RELEASE_VERSION` remains `r50eo66`.
+
+# r50eo66 callback policy boundary completion static partial
+
+- Removed the remaining callback unregister completion helper that kept method-result cleanup branching in `AidlServiceContext`; unregister now routes the domain operation through service_runtime callback unregister use-case and only uses AIDL for the callback artifact bridge/status mapping.
+- Removed the old generic frontend/LNB callback registration closure façade from AIDL object wrappers; frontend/LNB domain registration selection now lives in `TunerServiceRuntime::execute_callback_registration_for_object_use_case()`.
+- Moved object artifact cleanup command kind dispatch out of the AIDL executor: `ObjectArtifactCleanupCommand::execute_with()` performs typed dispatch inside service_runtime, and AIDL implements only typed bridge methods.
+- Replaced child-open callback registration closure helper with a result-based artifact bridge helper so callback artifact retain execution and runtime registry finish are not represented as an AIDL-owned policy closure.
+- Updated `DESIGN_JA.md` to remove the old `clear_owner_callback_registration()` wording and to state service_runtime typed callback artifact cleanup commands/use-cases as the policy owner.
+- Static partial only. Build, atest, Tuner VTS, rustfmt, loom, and real-device validation are not executed here. `RELEASE_VERSION` remains `r50eo66`.
+
+# r50eo66
+
+- Command boundary follow-up: moved drop-leak LNB record decision into the service_runtime drop-leak plan, removed the AIDL-side drop-leak action selector, stopped generating domain cleanup commands for Tuner / Demux / Filter / Dvr / Descrambler no-op cases, and removed AIDL executor no-op domain cleanup policy arms.
+- Kept RELEASE_VERSION at r50eo66; this remains a static partial because Soong / atest / Tuner VTS were not rerun in this environment.
+
+- Build log follow-up 9 after `verify_tuner_hal2_all_v3.sh`: fixed `maleicacid_tuner_hal2_device_test` by importing `std::time::Duration` in the live-pump test module.
+- Removed panic-based test patterns that were not required for the failing build: the drop-leak runtime-lock poison test no longer creates a poisoned mutex via deliberate panic, and MULTI2 key-preparation failure is checked by direct `Result` comparison instead of `catch_unwind`.
+- Replaced explicit `panic!` fallback in live-pump polling tests with ordinary result-state assertions.
+- Updated the verification helper to `verify_tuner_hal2_all_v4.sh`; VTS candidate scan no longer calls unsupported `atest --list-tests` and instead scans checked-in test metadata.
+- Kept `RELEASE_VERSION` at `r50eo66`; this is still a build-fix static partial because Soong / atest / VTS have not been rerun after this fix.
+
+- Build log follow-up 8 after `verify_tuner_hal2_all_v2.sh`: fixed atest-run failures by aligning stale common/device tests with current semantics, removing Android-runner-visible intentional panic/poison test bodies, and adding direct `libmaleicacid_tuner_hal2_fmq_shim` shared-library dependencies to test modules that load FMQ transitively.
+- Kept `#[cfg(test)]` only for active test fixtures/test-only imports. No `#[allow(dead_code)]` or `#[allow(unused*)]` was added; no unavoidable dead code is reported in this pass.
+- Kept `RELEASE_VERSION` at `r50eo66`; this is still a build-fix static partial because Soong/atest/VTS have not been rerun after this fix in this environment.
+
+- Build log follow-up 7 after `verify_tuner_hal2_all.sh`: removed stale AIDL object-runtime imports reported in `r50eo66_tuner_hal2_verify_logs_20260629_024619`, removed the stale close-domain-cleanup hook test code that no longer matches the typed executor design, and kept only a current close preflight lifecycle test.
+- Kept `RELEASE_VERSION` at `r50eo66`; this is still a build-fix static partial because Soong / atest / VTS have not been rerun after this fix.
+
+- Build log follow-up 6 after `verify_tuner_hal2_all.sh`: fixed the AIDL service compile errors reported in `r50eo66_tuner_hal2_verify_logs_20260629_023811` without adding dead-code or unused allowances.
+- Imported `OwnerCallbackCleanupArtifactCommand` through the explicit `service_runtime::boot` module path instead of adding a new root re-export, restored the callback-artifact rollback helper used after retained Binder callback artifacts, and corrected the drop-leak LNB domain cleanup executor lifetime / public-id lookup call.
+- Aligned generated AIDL trait method signatures with the target Rust backend by accepting non-null `Strong` references in `setCallback`, `setDataSource`, `addPid`, and `removePid`, while keeping the internal nullable helper paths for existing explicit cleanup use-cases.
+- Fixed AIDL service test/failure-injection compile errors by importing the close helper explicitly and adding concrete result types where generic inference was ambiguous.
+- Kept `RELEASE_VERSION` at `r50eo66`; this remains a build-fix static partial because Soong / atest / VTS have not been rerun after this fix.
+
+- Build log follow-up 5 after `verify_tuner_hal2_all.sh`: reviewed the newly introduced `#[cfg(test)]` usages instead of treating them as automatically valid. Removed old / unused production descrambler key registration surface and unused raw descrambler session helpers rather than hiding them behind allowances.
+- Replaced the unused object-close `closing_entries` binding with an error-only preflight check, removed the unused `TunerServiceRuntime::frontend_status_query_for_aidl_object()` façade, and kept the actually used `RuntimeQuery` query path.
+- Restricted descrambler key-slot insertion to test-only fixture helpers, removed unused registration errors / slot-id allocation state from production, and removed unused cleanup-report and resolved-claim-set accessors.
+- Kept `#[cfg(test)]` only where it is a test fixture or test-only import. No `#[allow(dead_code)]` / `#[allow(unused*)]` was added, and no unavoidable dead code remains in this pass.
+- Kept `RELEASE_VERSION` at `r50eo66`; this is still a build-fix static partial because Soong / atest / VTS have not been rerun after this fix.
+
+- Build log follow-up 4 after `verify_tuner_hal2_all.sh`: fixed the service_runtime unused imports reported in `r50eo66_tuner_hal2_verify_logs_20260629_021035`, added a validated-packet scrambling-control accessor so service_runtime no longer calls the crate-local raw packet view, and imported DVR `RecordStatus` / `PlaybackStatus` only for binder_adapter test helpers.
+- Kept `RELEASE_VERSION` at `r50eo66`; this is still a build-fix static partial because Soong / atest / VTS have not been rerun after this fix.
+
+- Build log follow-up 2 after `verify_tuner_hal2_all.sh`: fixed the remaining demux compile errors reported in `r50eo66_tuner_hal2_verify_logs_20260629_015850` by replacing stale `view.packet_pid()` uses with `ValidatedTsPacket::pid()` and converting `PacketPid` to the `ts_core::PesAssembler` raw `u16` boundary only at the ts_core adapter call.
+- Kept `RELEASE_VERSION` at `r50eo66`; this is still a build-fix static partial because this environment cannot rerun Soong / atest / VTS.
+
+- Build log follow-up after `verify_tuner_hal2_all.sh`: removed the unused `DESCRAMBLER_TOKEN_BYTES` re-export and constant instead of adding dead-code allowances.
+- Fixed packet pipeline compile errors by passing `PacketPid` to PES assembly state, passing `ValidatedTsPacket` to post-preflight assembly, and updating packet validation tests to use typed accessors / `matches!` instead of comparing `ValidatedTsPacket` results directly.
+- Removed unused test-only mutability and the unused LNB test backend helper instead of adding `allow(dead_code)` or `allow(unused_mut)`.
+- Kept `RELEASE_VERSION` at `r50eo66`; this is still a build-fix static partial because the local environment cannot rerun Soong / atest / VTS.
+
+- v2 non-build/test closure follow-up: replaced the object-close runtime cleanup `FnOnce` injection with `ObjectRuntimeCleanupCommand`, so AIDL receives a typed runtime cleanup command and calls its service_runtime-owned executor instead of supplying runtime mutation logic.
+- Made `ObjectArtifactCleanupCommand` non-forgeable from public fields by making fields private and exposing read-only accessors for the AIDL artifact bridge.
+- Removed private `old_token()` / `old_key_slot()` plan accessor methods from the service_runtime descrambler transaction implementation; old token / key-slot data is now consumed internally without accessor-shaped cleanup ordering hooks.
+- Moved `DescramblerKeyTable`, key lookup / registration errors, and key slot id ownership from the descrambler domain crate public surface to `service_runtime/src/descrambler_key_table.rs`; the descrambler crate now exports domain values / DTO / validation only.
+- Removed `descrambler/src/runtime/key_table.rs` from the descrambler module graph and Android.bp sources, and added `service_runtime/src/descrambler_key_table.rs` to service_runtime library and test sources.
+- Kept `RELEASE_VERSION` at `r50eo66` because rustfmt, rustc/cargo, Rust unit tests, Soong build, atest, VTS, loom, and real-device verification are still not executed.
+
+- v2 continuation: moved descrambler runtime session state and key/PID transaction implementation out of the descrambler domain crate public runtime module and into `service_runtime/src/descrambler_session.rs`.
+- Removed `descrambler/src/runtime/session.rs` and `descrambler/src/runtime/session_txn.rs` from the descrambler module graph and Android.bp sources so the descrambler crate exposes domain value / PID / token types only; key table ownership is moved to service_runtime.
+- Changed service_runtime `RuntimeRegistry` to own `DescramblerRuntime` state locally and to execute clear-key, replace-key, cleanup-all, demux bind, PID add, and PID remove through service_runtime-owned use-case helpers.
+- Kept `RELEASE_VERSION` at `r50eo66`; this is still a static partial because rustfmt, rustc/cargo, Rust unit tests, Soong build, atest, VTS, loom, and real-device verification are not executed.
+
+- drop leak terminalization を service_runtime の dedicated executor / finish use-case 経由へ寄せ、runtime lock を保持したまま callback artifact cleanup を呼ばない構造へ修正した。
+- Drop leak の artifact cleanup と public runtime unregister の順序・failure collection を service_runtime 側へ集約し、AIDL 側の手書き terminalization を削除した。
+- packet_pipeline の test support helper を PacketPid 入力に統一し、pid: i32 に対する as_i32() 呼び出し不整合を解消した。
+
+- review6 verification follow-up: fixed the descrambler addPid AIDL PID validation order so `validated_pid` is created before conflict checks, changed the source-filter conflict check to use the validated PID boundary, moved callback artifact-registration rollback failure composition into a service_runtime use-case, narrowed RuntimeRegistry descrambler allocation/lookup/conflict helper visibility to crate-local, and made packet flush post-state clearing crate-local.
+
+- review5 callback rollback / packet flush / descrambler surface follow-up: callback registration rollback failure composition を service_runtime use-case へ寄せ、filter flush の PID 境界を ConfigInputPid に分離し、RuntimeRegistry descrambler key transaction façade を crate-local に縮小した。
+
+- Changed owner callback cleanup completion so service_runtime plans the Binder artifact cleanup command, AIDL executes only that artifact bridge command, and service_runtime preserves unhealthy registry state on failure instead of clearing the owner entry first.
+- Changed drop-leak terminalization so service_runtime's quarantine plan owns callback-cleanup and DVR-notifier artifact commands; AIDL executes the returned commands instead of selecting drop-leak cleanup targets or DVR notifier policy itself.
+- Restricted `TsPacketView` itself and `ValidatedTsPacket::view()` to crate visibility, so external packet-bearing callers cannot recover a raw packet view from a validated packet.
+- Moved additional packet pipeline helper boundaries from raw PID integers to `PacketPid` for continuity reset, assembly reset, section/PES assembly, and generation tracking.
+- Added `AidlInputPid` validation for descrambler add/remove PID inputs and `ConfigInputPid` validation for filter configuration TPID inputs, keeping AIDL/config-derived PID validation separate from packet-derived `PacketPid`.
+
+- Moved callback cleanup policy ownership from AIDL `service_context` into `TunerServiceRuntime::finish_owner_callback_cleanup_use_case()`: runtime callback registry clear, missing-registration handling, unhealthy marking, and primary-plus-cleanup failure composition are now service_runtime responsibilities.
+- Reduced `SharedAidlServiceContext` callback cleanup to a Binder artifact bridge that clears callback-store artifacts and passes the artifact result to the service_runtime owner cleanup use-case.
+- Rewired callback unregister, LNB owner-loss cleanup, and Drop leak cleanup to the service_runtime-owned callback cleanup use-case so Drop leak no longer depends on an AIDL-owned callback cleanup policy.
+
+- Moved callback unregister success/failure completion into `SharedAidlServiceContext::finish_owner_callback_unregistration()` so the AIDL object-runtime helper no longer performs artifact-store clear, runtime registry clear, unhealthy marking, or primary-plus-cleanup failure composition itself.
+- Removed production `expect_err()` from callback unregister cleanup completion and replaced it with explicit structured error propagation.
+- Changed drop-leak callback cleanup to call the shared callback cleanup entry, removing the duplicate callback-store clear / runtime registry clear / unhealthy-marking procedure from `drop_leak.rs`.
+- Moved close cleanup phase ordering into `ObjectCloseUseCasePlan::execute_cleanup_with_domain_bridge()`, leaving AIDL with only the Binder artifact command bridge and domain cleanup hook.
+- Narrowed public descrambler runtime key-transaction methods from arbitrary `DescramblerKeyTxnOps` implementors to the concrete domain `DescramblerKeyTable`, reducing non-service_runtime arbitrary key-table transaction surface.
+- Narrowed `TsPacketView::pid()` to crate visibility and changed record-index event data to carry `PacketPid` internally instead of raw `i32` PID.
+- Removed unused frontend runtime/signal intermediate-state query helpers so the query boundary remains on DTO snapshot helpers.
+
+- Added callback unregister tests covering successful frontend unregister, LNB domain-failure all-attempt cleanup, and primary-plus-cleanup failure composition.
+- Added descrambler session transaction tests covering clear-key session-clear-before-old-token-release, old-token release failure after session clear, replace-key commit rollback release, and rollback release failure reporting.
+- Added object close use-case tests covering successful close finalization and cleanup-failed marking when domain cleanup reports a structured failure.
+- Added SourceBoundary runtime tests covering source-filter connect, NULL/demux-input disconnect, and failed source change preserving the previous source.
+- Added packet boundary tests covering validated packet PID extraction, malformed packet rejection before PID creation, and duplicate packet diagnostics carrying `PacketPid`.
+- Added frontend query DTO tests covering status/readiness policy from `ObjectFrontendStatusSnapshot` without registry-entry inputs.
+- Fixed the callback unregister multiple-failure branch so unhealthy-marking failure is composed with the original domain primary instead of losing the primary through `?` propagation.
+- Fixed test-only stale syntax in `aidl_service::object_runtime` and renamed the internal close command dispatch helper to avoid duplicate Rust function names.
+- Added `service_runtime/src/object_close_txn.rs::close_object_use_case()` as the public close cascade owner, producing structured artifact cleanup commands and a domain cleanup step instead of leaving close ordering in the AIDL façade.
+- Added `finish_object_close_use_case()` so cleanup failure marking, public runtime unregister preflight/unregister, close commit, and cleanup-failed composition are owned by service_runtime.
+- Changed `aidl_service/src/object_runtime/mod.rs` close flow so the AIDL side only executes Binder artifact cleanup commands, invokes the supplied domain cleanup hook at the service_runtime-selected phase, and maps the structured result to Binder status.
+- Moved quarantined public runtime unregister selection for Drop leak terminalization into `service_runtime::object_close_txn::unregister_quarantined_public_runtime_entries()`.
+- Changed callback unregister cleanup ownership so frontend/LNB NULL callback paths finish through the shared owner cleanup entry, all-attempting runtime callback registry clear and callback artifact store clear after the domain unregister attempt.
+- Changed callback rollback / close / cascade / drop-leak cleanup call sites to use the expanded shared callback owner cleanup entry instead of directly clearing callback artifacts.
+- Changed descrambler exports so `DescramblerSession` and raw session mutators are no longer re-exported from the crate root or runtime module.
+- Added transaction façade methods on `DescramblerRuntime` for demux bind, PID claim add/remove, key clear/replace, and cleanup-all so service_runtime no longer calls raw `session_mut()` to mutate keys.
+- Changed service_runtime descrambler key clear/replace and PID claim paths to call the `DescramblerRuntime` full transaction façade methods.
+- Changed `SourceBoundaryTxn` surface so constructor, mutating methods, step recording, and raw outcome/reset accessors are private implementation details.
+- Added immutable `SourceBoundaryReport` and `apply_filter_source_boundary_change()` as the source boundary observation façade.
+- Changed demux source connect/disconnect paths to consume `SourceBoundaryReport` instead of observing the transaction object.
+- Changed packet ingress validation to create `ValidatedTsPacket` at packet pipeline ingress and use its `PacketPid` in downstream diagnostics.
+- Changed packet path diagnostic PID fields for TEI, duplicate, no-payload, keyless scrambled, section drop, generation overflow, and PES assembler drop from raw `i32` to `PacketPid`.
+- Changed packet inspection and assembly preflight to pass `ValidatedTsPacket` instead of treating `TsPacketView` as the production path source of truth.
+- Changed object close use-case planning so close cascade entry collection failure and target resolution failure compose cleanup-failed marking failure instead of dropping it.
+- Fixed `plan_ts_packet_report()` to consume `ValidatedTsPacket` directly and derive both `TsPacketView` and `PacketPid` from that validated packet within the planning helper.
+- Changed service_runtime query helper visibility so registry-entry-returning frontend query helpers are crate/internal helpers rather than public query API.
+- Changed frontend object status query construction so `frontend_status_query_for_aidl_object()` returns `ObjectFrontendStatusSnapshot` directly instead of returning a `(FrontendRegistryEntry, FrontendRuntimeState, FrontendSignalState)` tuple for a caller-side DTO conversion.
+- Removed the `FrontendRegistryEntry` conversion implementation from `object_method_txn.rs` so frontend status/readiness policy consumes service_runtime-owned DTO snapshots rather than registry entries.
+- Fixed keyless scrambled packet diagnostic accounting to extract the numeric PID through `PacketPid::get()` instead of treating `PacketPid` as a raw integer.
+- Added `DescramblerCleanupTxnError` and a key-table-owning descrambler cleanup façade so close / owner-loss cleanup releases the old token and closes session state inside the descrambler transaction boundary instead of exposing the raw key token to service_runtime cleanup code.
+- Removed the production-visible `DescramblerRuntime::cleanup_all_with_session_txn()` façade that could close session state without the key-table release step.
+- Changed service_runtime descrambler cleanup to call `RuntimeRegistry::cleanup_descrambler_session_with_key_table_txn()` and map the structured cleanup transaction error, including release+session composed failure, instead of separately reading `runtime.key_token()` and then calling cleanup.
+- Reduced raw runtime/key-table observer surface in `RuntimeRegistry` by making direct descrambler runtime and descrambler key-table accessors crate-internal.
+- Changed packet planning helper signatures so packet delivery / section / PES planning consume `PacketPid` from `ValidatedTsPacket` instead of accepting raw integer PID inputs on those helper boundaries.
+- Changed service_runtime descrambler packet-path lookup to use registry-owned resolved claim snapshots, removing production packet code direct access to `descrambler_key_table()` / key-slot-id lookup helpers.
+- Changed service_runtime descrambler stale source-filter generation checks to use a registry façade instead of reading `runtime.pid_claims()` directly in the PID removal use-case.
+- Changed production descrambler runtime access so service_runtime uses registry-owned bind/add/remove/bound-demux façades instead of obtaining mutable `DescramblerRuntime` references from the registry.
+- Replaced raw `DescramblerRuntime` observer methods for key token, key slot, demux id, demux generation, and pid claims with domain-specific predicate/snapshot methods.
+- Made direct descrambler runtime and descrambler key-table registry accessors test-only, keeping production code on transaction and packet-resolution façades.
+- Removed obsolete registry helpers that exposed descrambler key-slot IDs or `(claims, key_slot_id)` tuples to packet consumers.
+- Changed descrambler runtime packet claim exposure so the public packet-facing claim set is resolved with `DescramblerKeyTable` inside the descrambler runtime boundary and no longer exposes a raw key-slot-id snapshot/accessor to service_runtime packet consumers.
+- Changed record-index packet event construction to validate through `ValidatedTsPacket` at ingress instead of calling `TsPacketView::validate()` directly in the production record-event path.
+- Restricted `TsPacketView::validate()` / `TsPacketView::parse()` to crate-internal parser use so external production callers must enter through `ValidatedTsPacket::validate()`.
+- Restricted raw `DescramblerSession` observer methods to crate visibility; cross-crate callers must use `DescramblerRuntime` / `RuntimeRegistry` façade methods.
+- Added `RecordIndexParser::push_validated_ts_packet()` / `build_validated_event()` so record event construction can consume a prevalidated `ValidatedTsPacket` directly instead of forcing record consumers back through raw byte validation.
+- Moved direct close-cascade commit helper imports in `aidl_service::object_runtime` into the test module so production AIDL close code only sees `close_object_use_case()` / `finish_object_close_use_case()` plus artifact command execution.
+- Removed `FrontendRegistryEntry` from the service_runtime crate-root public re-export to keep public query surface on DTO request/response boundaries.
+- Updated `DESIGN_JA.md` with the r50eo66 callback unregister, descrambler transaction, close cascade, SourceBoundary, packet PID, and query DTO boundary contracts.
+- Updated `CODE_CONVENTION.md` with the corresponding r50eo66 prohibitions, including the ban on release reports that use a limited-scope “main changes” heading.
+- Updated `RELEASE_VERSION` to `r50eo66`.
+- Changed object close cascade artifact planning so callback cleanup commands are emitted only for callback-capable owners and callback absence is not treated as close cleanup failure; filter and DVR callback artifacts are still cleared when present.
+- Moved callback unregister cleanup composition into the shared AIDL service-context cleanup entry; object-runtime façade code now delegates runtime registry clear, artifact-store clear, missing-registration handling, and unhealthy marking to that entry.
+- Reworked LNB owner-loss callback cleanup to use the shared callback cleanup entry instead of a dedicated clear/mark/failure-composition path.
+- Narrowed close-cascade low-level begin/commit/mark/entry helper visibility to service_runtime-internal use and added a drop-leak quarantine use-case façade for the remaining external terminalization path.
+- Made `ObjectCloseUseCasePlan` fields private and exposed only the domain cleanup step plus Binder artifact cleanup command slice required by the AIDL bridge.
+- Changed demux runtime packet ingress to reuse the `ValidatedTsPacket` produced at ingress for downstream assembly planning instead of validating the same packet again on the accepted path.
+- Made `TsPacketView` fields private and provided read-only accessors so callers cannot forge a validated packet view with a struct literal.
+- Renamed the packet byte batch helper to `push_ts_bytes_preflight_only()` and narrowed it to crate visibility because it performs validation/preflight aggregation only.
+- Narrowed frontend runtime/signal object query helpers to crate visibility so public query surface remains DTO-based.
+- Added the failure-injection test source files to the corresponding `rust_test` `srcs` entries in `Android.bp`.
+
+# r50eo65
+
+- Changed `IFilter::setDataSource` public AIDL implementation signature from non-null `&Strong<dyn IFilter>` to nullable `Option<&Strong<dyn IFilter>>`, and passed the nullable value directly to `set_data_source_nullable_for_aidl()` so `NULL` reaches `disconnect_filter_data_source_for_object()` through `SourceBoundaryTxn`.
+- Changed `IFrontend::setCallback` public AIDL implementation signature from non-null `&Strong<dyn IFrontendCallback>` to nullable `Option<&Strong<dyn IFrontendCallback>>`, and passed the nullable value directly to `set_callback_nullable_for_aidl()` so `NULL` reaches frontend callback unregister.
+- Changed `ILnb::setCallback` public AIDL implementation signature from non-null `&Strong<dyn ILnbCallback>` to nullable `Option<&Strong<dyn ILnbCallback>>`, and passed the nullable value directly to `set_callback_nullable_for_aidl()` so `NULL` reaches LNB callback unregister.
+- Changed `IDescrambler::addPid` public AIDL implementation signature from non-null `&Strong<dyn IFilter>` to nullable `Option<&Strong<dyn IFilter>>`, and passed the nullable value directly to `add_pid_nullable_for_aidl()` so `NULL` reaches demux-input PID claim registration.
+- Changed `IDescrambler::removePid` public AIDL implementation signature from non-null `&Strong<dyn IFilter>` to nullable `Option<&Strong<dyn IFilter>>`, and passed the nullable value directly to `remove_pid_nullable_for_aidl()` so `NULL` reaches demux-input PID claim removal.
+- Updated `tuner_hal2/DESIGN_JA.md` public nullable contract wording so helper-only implementations are explicitly not sufficient; the AIDL public method implementation itself must accept nullable input and route `None` to the required service_runtime use-case.
+- Updated `tuner_hal2/CODE_CONVENTION.md` public nullable rules to require public method nullable signatures and to forbid counting helper-only code as completion.
+- Updated top-level `開発規則.md` release rules so release reports and the relevant CHANGELOG entry must enumerate all actual changes, not only main changes, separating helper additions, public reachability, document updates, test expectation updates, and unexecuted verification.
+- No Android/Soong build, rustc, cargo, rustfmt, unit test, atest, VTS, loom, or device tests were run in this environment.
+
+# r50eo64
+
+- Changed public close semantics to reject `Closed` objects instead of treating repeated close as successful no-op. `ObjectCloseTxn` close preflight now accepts only `Live | CleanupFailed`, and AIDL close façade no longer maps already-closed state to success. Updated close regression tests accordingly.
+- Added the `IFilter.setDataSource(NULL)` demux-input disconnect path through `SourceBoundaryTxn` by adding a nullable AIDL façade helper and service_runtime `disconnect_filter_data_source_for_object()` use-case.
+- Added nullable callback unregister façade helpers for `IFrontend.setCallback(NULL)` and `ILnb.setCallback(NULL)`, connecting unregister to callback artifact cleanup plus runtime callback registry clear.
+- Added demux-input descrambler PID claim support for `IDescrambler.addPid(pid, NULL)` / `removePid(pid, NULL)` using typed `DescramblerPidClaimSource` to distinguish source-filter claims from demux-input claims.
+- Fixed root frontend max count handling: unsupported frontend types now fail closed, negative `setMaxNumberOfFrontends()` values return invalid argument, `0..=default_max(type)` succeeds, and `getMaxNumberOfFrontends(type)` returns the available count for that frontend system.
+- Updated `DESIGN_JA.md` and `CODE_CONVENTION.md` to remove the tuner_hal2/tuner_hal nullable descrambler conflict and document the close, nullable public API, and frontend max-count contracts.
+- No Android/Soong build, rustc, cargo, rustfmt, unit test, atest, VTS, loom, or device tests were run in this environment.
+
 # r50eo62
 
 - Updated DESIGN_JA.md / CODE_CONVENTION.md to follow the r50eo61 type-hardening implementation: clear-key now documents session-clear-before-old-token-release inside the full transaction façade, public prepared/plan/commit split APIs are forbidden, and `ObjectMethodDispatchProof` is documented as an internal proof consumed inside `object_method_txn`.
@@ -863,7 +1228,7 @@
 - Verified the r50ei70 object method and source boundary updates before applying the follow-up hardening.
 - Reordered `SourceBoundaryTxn` so sink endpoint, queue presence, and generation increment feasibility are validated before any source disconnect. Queue clear, generation boundary reset, and packet pipeline reset now complete before disconnecting the existing source.
 - Added regression coverage that a missing sink queue does not execute the disconnect step and preserves an already connected source filter.
-- Added `service_runtime::object_close_txn::plan_and_begin_object_close_method_dispatch()` and routed `close_object_after_close_preflight_with_domain_cleanup()` through it so closeable lifecycle/dispatch preflight and the `Closing` transition happen in one runtime critical section.
+- Added `service_runtime::object_close_txn::plan_and_begin_object_close_command_dispatch()` and routed `close_object_after_close_preflight_with_domain_cleanup()` through it so closeable lifecycle/dispatch preflight and the `Closing` transition happen in one runtime critical section.
 - Added regression coverage that the close-preflight path has already moved the object to `Closing` before the domain cleanup hook runs.
 - Updated `tuner_hal2/DESIGN_JA.md` and `tuner_hal2/CODE_CONVENTION.md` with the source boundary atomicity and close-preflight critical-section rules.
 - Build, rustfmt, Rust unit, atest, VTS, and device checks were not executed.
@@ -1343,7 +1708,7 @@
 - Split child AIDL trait implementations out of `aidl_service/src/tuner_service.rs` into normal Rust modules under `aidl_service/src/tuner_service/`; no `include!` split is used.
 - Split large `service_runtime/src/boot.rs` operation groups into normal Rust modules under `service_runtime/src/boot/` for frontend, demux/filter/DVR, descrambler, and packet ingress operations.
 - Documented the tuner_hal2 file ownership boundaries in `DESIGN_JA.md`, including the explicit `include!` ban for structural splitting.
-- Replaced callback cleanup best-effort/drop-specific paths with common `drop_leak_object()` plus `DropLeakDomainAction`; LNB Drop keeps only the domain leak marker hook and no longer owns bespoke cleanup flow.
+- Replaced callback cleanup best-effort/drop-specific paths with common `drop_leak_object()` plus service_runtime drop-leak plan generated domain cleanup commands; LNB Drop keeps no AIDL-side action selector and no longer owns bespoke cleanup flow.
 - Added owner-wide callback unhealthy marking to `RuntimeCallbackRegistry` and tests for that registry behavior.
 - Changed frontend worker cancel-reason poisoning to return `HalError`/`StopRequestFailed` instead of normalizing to `None`; added a poison-lock unit test.
 - Centralized Binder status construction in `aidl_service::error_bridge`; direct `Status::new_service_specific_error()` calls are limited to that file.

@@ -8,9 +8,15 @@ pub struct SourceFilterRef {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub enum DescramblerPidClaimSource {
+    DemuxInput,
+    SourceFilter(SourceFilterRef),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct DescramblerPidClaim {
     pid: DescramblerPid,
-    source_filter: SourceFilterRef,
+    source: DescramblerPidClaimSource,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -29,18 +35,36 @@ impl DescramblerPidClaim {
         }
         Ok(Self {
             pid: DescramblerPid(pid),
-            source_filter: SourceFilterRef {
+            source: DescramblerPidClaimSource::SourceFilter(SourceFilterRef {
                 filter_id,
                 generation,
-            },
+            }),
+        })
+    }
+
+    pub fn from_demux_input(pid: u16) -> Result<Self, DescramblerPidClaimError> {
+        if pid > 0x1fff {
+            return Err(DescramblerPidClaimError::InvalidPid);
+        }
+        Ok(Self {
+            pid: DescramblerPid(pid),
+            source: DescramblerPidClaimSource::DemuxInput,
         })
     }
 
     pub fn pid(&self) -> DescramblerPid {
         self.pid
     }
-    pub fn source_filter_ref(&self) -> SourceFilterRef {
-        self.source_filter
+
+    pub fn source(&self) -> DescramblerPidClaimSource {
+        self.source
+    }
+
+    pub fn source_filter_ref(&self) -> Option<SourceFilterRef> {
+        match self.source {
+            DescramblerPidClaimSource::SourceFilter(source) => Some(source),
+            DescramblerPidClaimSource::DemuxInput => None,
+        }
     }
 }
 
@@ -54,10 +78,17 @@ mod tests {
         assert_eq!(claim.pid(), DescramblerPid(100));
         assert_eq!(
             claim.source_filter_ref(),
-            SourceFilterRef {
+            Some(SourceFilterRef {
                 filter_id: 4,
                 generation: 9
-            }
+            })
         );
+    }
+
+    #[test]
+    fn pid_claim_can_target_demux_input() {
+        let claim = DescramblerPidClaim::from_demux_input(100).unwrap();
+        assert_eq!(claim.pid(), DescramblerPid(100));
+        assert_eq!(claim.source_filter_ref(), None);
     }
 }

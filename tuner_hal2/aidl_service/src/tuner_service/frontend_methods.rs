@@ -1,7 +1,6 @@
 use super::support::unsupported_public_api_call;
 use super::{
-    aidl_frontend_settings_to_request, aidl_scan_type_to_mode,
-    close_frontend_object_cleanup_use_case, close_object_after_close_preflight_with_domain_cleanup,
+    aidl_frontend_settings_to_request, aidl_scan_type_to_mode, close_object_after_close_preflight,
     execute_object_query_use_case, execute_shared_object_runtime_use_case,
     execute_shared_object_runtime_use_case_with_request_builder,
     plan_unavailable_object_method_use_case, scan_end_notifier, set_frontend_lnb_object_use_case,
@@ -12,7 +11,6 @@ use super::{
     IFrontendCallback, ObjectFrontendStatusReadinessValue, ObjectFrontendStatusType,
     ObjectFrontendStatusValue, ObjectQueryRequest, ObjectQueryResponse, Strong,
 };
-use maleicacid_tuner_hal2_common::FirstErrorCollector;
 use maleicacid_tuner_hal2_device::{FrontendWorkerCancelReason, FrontendWorkerKind};
 
 fn object_frontend_status_type_from_aidl(
@@ -47,7 +45,7 @@ fn frontend_readiness_from_query_value(
 
 impl IFrontend for FrontendAidlObject {
     fn setCallback(&self, callback: &Strong<dyn IFrontendCallback>) -> BinderResult<()> {
-        self.set_callback_transaction(callback)
+        self.set_callback_nullable_for_aidl(Some(callback))
     }
     fn tune(&self, settings: &FrontendSettings) -> BinderResult<()> {
         execute_shared_object_runtime_use_case_with_request_builder(
@@ -87,33 +85,10 @@ impl IFrontend for FrontendAidlObject {
         )
     }
     fn close(&self) -> BinderResult<()> {
-        let context = self.context();
-        let runtime_for_cleanup = self.runtime();
-        let handle = self.handle();
-        close_object_after_close_preflight_with_domain_cleanup(
-            &context,
-            handle,
+        close_object_after_close_preflight(
+            &self.context(),
+            self.handle(),
             AidlMethodCall::FrontendClose,
-            || {
-                let mut cleanup_collector = FirstErrorCollector::new();
-                match close_frontend_object_cleanup_use_case(
-                    runtime_for_cleanup.clone(),
-                    handle.object_id(),
-                    handle.generation(),
-                    FrontendWorkerCancelReason::FrontendClosing,
-                ) {
-                    Ok(report) => {
-                        cleanup_collector.push_result(report.cleanup_result);
-                        for lnb_id in report.closed_lnb_ids {
-                            cleanup_collector.push_result(
-                                context.clear_lnb_owner_loss_callback_for_public_id(lnb_id),
-                            );
-                        }
-                    }
-                    Err(error) => cleanup_collector.push_error(error),
-                }
-                cleanup_collector.into_result()
-            },
         )
     }
     fn scan(&self, settings: &FrontendSettings, scan_type: FrontendScanType) -> BinderResult<()> {

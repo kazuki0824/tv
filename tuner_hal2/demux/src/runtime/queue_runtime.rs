@@ -233,7 +233,13 @@ fn validate_grantor_ranges_against_fd_sizes(
                 "FMQ descriptor grantor range overflowed",
             ));
         };
-        if end > fd_sizes[grantor.fd_index as usize] {
+        let fd_size = fd_sizes[grantor.fd_index as usize];
+        // Some Android FMQ/ashmem backed fds report metadata len as 0 even though
+        // the native FMQ descriptor carries the valid grantor extent.  Treat a
+        // zero reported fd size as unknown and keep the structural range checks
+        // above; when the platform reports a positive size, keep the strict
+        // grantor-vs-fd bound check.
+        if fd_size > 0 && end > fd_size {
             return Err(QueueRuntimeError::new(
                 QueueRuntimeErrorKind::StructuralDescriptor,
                 "FMQ descriptor grantor range exceeds fd size",

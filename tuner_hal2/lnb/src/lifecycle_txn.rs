@@ -202,7 +202,7 @@ mod tests {
     #[test]
     fn drop_path_does_not_apply_backend_cleanup() {
         let mut runtime = LnbRuntime::new(3);
-        let mut backend = TestBackend::new();
+        let backend = TestBackend::new();
         let outcome = record_lnb_drop_leak_lifecycle(&mut runtime);
         assert!(outcome.result.is_err());
         assert_eq!(backend.applied.len(), 0);

@@ -694,7 +694,7 @@ impl TunerServiceRuntime {
         self.set_dvr_status_check_interval(dvr_id, interval_ms)
     }
 
-    pub fn mark_dvr_callback_unhealthy_for_object(
+    pub(crate) fn mark_dvr_callback_unhealthy_for_object(
         &mut self,
         object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
         generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
@@ -707,7 +707,7 @@ impl TunerServiceRuntime {
         self.transact_mark_dvr_callback_unhealthy(dvr_id)
     }
 
-    pub fn mark_filter_callback_unhealthy_for_object(
+    pub(crate) fn mark_filter_callback_unhealthy_for_object(
         &mut self,
         object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
         generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,

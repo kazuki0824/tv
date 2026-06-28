@@ -49,7 +49,7 @@ mod tests {
     use super::*;
     use crate::packet_pipeline::{FilterPipelineConfig, PipelineOpenKind};
     use crate::runtime::filter::FilterSource;
-    use crate::runtime::source_boundary::SourceBoundaryTxn;
+    use crate::runtime::source_boundary::apply_filter_source_boundary_change;
     use std::os::unix::fs::MetadataExt;
     use std::{thread, time::Duration};
 
@@ -73,10 +73,28 @@ mod tests {
         packet
     }
 
+    fn open_filter_runtime_with_queue(
+        filter_id: i32,
+        generation: u64,
+        open_type: FilterOpenType,
+        config: Option<FilterPipelineConfig>,
+    ) -> FilterRuntime {
+        DemuxRuntime::open_filter_runtime_from_request(
+            filter_id,
+            generation,
+            &OpenFilterRequest {
+                open_type,
+                buffer_size: 4096,
+                callback_present: false,
+            },
+            config,
+        )
+    }
+
     fn started_section_filter_runtime(filter_id: i32) -> DemuxRuntime {
         let mut demux = DemuxRuntime::new(1, 1);
         demux
-            .register_filter(DemuxRuntime::open_filter_runtime_typed(
+            .register_filter(open_filter_runtime_with_queue(
                 filter_id,
                 1,
                 FilterOpenType::TsSection,
@@ -124,18 +142,18 @@ mod tests {
             ))
             .unwrap();
         assert!(!demux.queue_exists(10));
-        let (txn, result) = SourceBoundaryTxn::new(10).apply(&mut demux);
+        let (report, result) = apply_filter_source_boundary_change(&mut demux, 10, None);
         assert!(result.is_err());
         assert_eq!(
-            txn.outcome(),
-            Some(SourceBoundaryOutcome::Failed {
+            report.outcome(),
+            SourceBoundaryOutcome::Failed {
                 step: SourceBoundaryStep::ValidateQueue
-            })
+            }
         );
-        assert!(!txn
+        assert!(!report
             .steps()
             .contains(&SourceBoundaryStep::DisconnectDownstream));
-        assert!(!txn.steps().contains(&SourceBoundaryStep::BumpGeneration));
+        assert!(!report.steps().contains(&SourceBoundaryStep::BumpGeneration));
         assert!(!demux.queue_exists(10));
     }
 
@@ -161,16 +179,16 @@ mod tests {
         demux.filter_mut(41).unwrap().set_source_filter(40, 1);
         assert!(!demux.queue_exists(41));
 
-        let (txn, result) = SourceBoundaryTxn::new(41).apply(&mut demux);
+        let (report, result) = apply_filter_source_boundary_change(&mut demux, 41, None);
 
         assert!(result.is_err());
         assert_eq!(
-            txn.outcome(),
-            Some(SourceBoundaryOutcome::Failed {
+            report.outcome(),
+            SourceBoundaryOutcome::Failed {
                 step: SourceBoundaryStep::ValidateQueue
-            })
+            }
         );
-        assert!(!txn
+        assert!(!report
             .steps()
             .contains(&SourceBoundaryStep::DisconnectDownstream));
         assert_eq!(
@@ -491,10 +509,10 @@ mod tests {
     fn playback_dvr_start_stop_and_flush_follow_state_machine() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux
-            .register_filter(DemuxRuntime::open_filter_runtime(
+            .register_filter(open_filter_runtime_with_queue(
                 34,
                 1,
-                PipelineOpenKind::Raw,
+                FilterOpenType::TsRaw,
                 None,
             ))
             .unwrap();
@@ -509,10 +527,10 @@ mod tests {
             .unwrap();
         demux.start_filter_runtime(34).unwrap();
         demux
-            .register_filter(DemuxRuntime::open_filter_runtime(
+            .register_filter(open_filter_runtime_with_queue(
                 36,
                 1,
-                PipelineOpenKind::Record,
+                FilterOpenType::TsRecord,
                 None,
             ))
             .unwrap();
@@ -641,10 +659,10 @@ mod tests {
     fn record_dvr_attach_detach_and_mirror_follow_runtime_contract() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux
-            .register_filter(DemuxRuntime::open_filter_runtime(
+            .register_filter(open_filter_runtime_with_queue(
                 36,
                 1,
-                PipelineOpenKind::Record,
+                FilterOpenType::TsRecord,
                 None,
             ))
             .unwrap();
@@ -979,10 +997,10 @@ mod tests {
     fn playback_dvr_preserves_partial_packet_across_stop_and_clears_it_on_flush() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux
-            .register_filter(DemuxRuntime::open_filter_runtime(
+            .register_filter(open_filter_runtime_with_queue(
                 48,
                 1,
-                PipelineOpenKind::Raw,
+                FilterOpenType::TsRaw,
                 None,
             ))
             .unwrap();
@@ -1512,10 +1530,10 @@ mod tests {
     fn push_ts_packet_enqueues_raw_filter_queue_payload_for_delay_gating() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux
-            .register_filter(DemuxRuntime::open_filter_runtime(
+            .register_filter(open_filter_runtime_with_queue(
                 34,
                 1,
-                PipelineOpenKind::Raw,
+                FilterOpenType::TsRaw,
                 None,
             ))
             .unwrap();

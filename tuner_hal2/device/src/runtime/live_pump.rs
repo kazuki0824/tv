@@ -200,6 +200,7 @@ mod tests {
     use super::*;
     use std::io::Cursor;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     #[derive(Default)]
     struct VecSink {
@@ -257,27 +258,50 @@ mod tests {
     fn live_pump_owner_collects_report() {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&packet(4));
-        let owner = FrontendLivePumpOwner::start(
+        let mut owner = FrontendLivePumpOwner::start(
             Box::new(Cursor::new(bytes)),
             Box::new(VecSink::default()),
         )
         .unwrap();
-        let report = owner.join_after_stop().unwrap();
-        assert_eq!(report.packets_delivered, 1);
+        let mut completed_report = None;
+        for _ in 0..100 {
+            if let FrontendLivePumpJoinOutcome::Completed(Ok(report)) = owner.collect_if_finished()
+            {
+                completed_report = Some(report);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(
+            completed_report.map(|report| report.packets_delivered),
+            Some(1)
+        );
     }
 
     #[test]
-    fn live_pump_owner_reports_thread_panic() {
-        struct PanickingReader;
-        impl Read for PanickingReader {
+    fn live_pump_owner_reports_reader_failure() {
+        struct FailingReader;
+        impl Read for FailingReader {
             fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
-                panic!("intentional live pump panic");
+                Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "forced reader failure",
+                ))
             }
         }
-        let owner =
-            FrontendLivePumpOwner::start(Box::new(PanickingReader), Box::new(VecSink::default()))
+        let mut owner =
+            FrontendLivePumpOwner::start(Box::new(FailingReader), Box::new(VecSink::default()))
                 .unwrap();
-        assert!(owner.join_after_stop().is_err());
+        let mut completed = false;
+        for _ in 0..100 {
+            if let FrontendLivePumpJoinOutcome::Completed(result) = owner.collect_if_finished() {
+                assert!(result.is_err());
+                completed = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(completed);
     }
 
     #[test]
@@ -297,19 +321,14 @@ mod tests {
     }
 
     #[test]
-    fn live_pump_owner_result_poison_is_error() {
+    fn live_pump_owner_missing_report_is_error_after_join() {
         let result: Arc<Mutex<Option<Result<FrontendLivePumpReport, HalError>>>> =
             Arc::new(Mutex::new(None));
-        let poisoned = Arc::clone(&result);
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _guard = poisoned.lock().unwrap();
-            panic!("poison live pump result");
-        }));
         let join = std::thread::spawn(|| {});
         let owner = FrontendLivePumpOwner {
             cancel: Arc::new(AtomicBool::new(false)),
             thread_result: ThreadResultOwner::new_for_test(
-                "live-pump-poison-test",
+                "live-pump-missing-after-join-test",
                 result,
                 Some(join),
             ),

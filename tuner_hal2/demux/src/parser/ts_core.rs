@@ -365,10 +365,12 @@ mod tests {
         let mut input = vec![0x00, 0x11, 0x22];
         input.extend_from_slice(&make_packet(0x30, 0));
         input.extend_from_slice(&make_packet(0x30, 1));
-        assert!(resync.push(&input).packets.is_empty());
+        let first = resync.push(&input);
+        assert!(first.packets.is_empty());
+        assert_eq!(first.malformed_bytes, 3);
         let tail = resync.push(&make_packet(0x30, 2));
         assert_eq!(tail.packets.len(), 3);
-        assert_eq!(tail.malformed_bytes, 3);
+        assert_eq!(tail.malformed_bytes, 0);
     }
 
     #[test]
@@ -626,7 +628,9 @@ mod pes_boundary_tests {
         assert!(assembler.push(0x0100, false, &[0xaa, 0xbb]).is_empty());
         assert_eq!(assembler.take_drop_diagnostic(), None);
         let pes = vec![0x00, 0x00, 0x01, 0xe0, 0x00, 0x04, 0x80, 0x00, 0x00, 0xde];
-        assert!(assembler.push(0x0100, true, &pes).is_empty());
+        let packets = assembler.push(0x0100, true, &pes);
+        assert_eq!(packets.len(), 1);
+        assert_eq!(packets[0].stream_id, 0xe0);
     }
 }
 
@@ -647,7 +651,9 @@ mod pes_oversized_tests {
         );
 
         let pes = vec![0x00, 0x00, 0x01, 0xe0, 0x00, 0x04, 0x80, 0x00, 0x00, 0xde];
-        assert!(assembler.push(0x0100, true, &pes).is_empty());
+        let packets = assembler.push(0x0100, true, &pes);
+        assert_eq!(packets.len(), 1);
+        assert_eq!(packets[0].stream_id, 0xe0);
     }
 }
 

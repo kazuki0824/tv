@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 #[cfg(test)]
 use std::collections::BTreeSet;
 
-use crate::core::DescramblerKeySlot;
+use maleicacid_tuner_hal2_descrambler::DescramblerKeySlot;
 
-use super::token::DescramblerKeyToken;
+use maleicacid_tuner_hal2_descrambler::DescramblerKeyToken;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct DescramblerKeySlotId(pub u64);
@@ -13,13 +13,6 @@ pub struct DescramblerKeySlotId(pub u64);
 pub enum DescramblerKeyLookupError {
     UnknownToken,
     ExpiredToken,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DescramblerKeyRegistrationError {
-    EmptySlot,
-    DuplicateToken,
-    SlotIdExhausted,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -33,7 +26,6 @@ struct DescramblerKeySlotState {
 #[derive(Debug)]
 pub struct DescramblerKeyTable {
     slots: BTreeMap<DescramblerKeyToken, DescramblerKeySlotState>,
-    next_slot_id: u64,
     #[cfg(test)]
     expired: BTreeSet<DescramblerKeyToken>,
 }
@@ -42,7 +34,6 @@ impl Default for DescramblerKeyTable {
     fn default() -> Self {
         Self {
             slots: BTreeMap::new(),
-            next_slot_id: 1,
             #[cfg(test)]
             expired: BTreeSet::new(),
         }
@@ -50,10 +41,6 @@ impl Default for DescramblerKeyTable {
 }
 
 impl DescramblerKeyTable {
-    pub fn is_empty(&self) -> bool {
-        self.slots.is_empty()
-    }
-
     pub fn has_token_resolution_state(&self) -> bool {
         if !self.slots.is_empty() {
             return true;
@@ -68,55 +55,11 @@ impl DescramblerKeyTable {
         }
     }
 
-    pub fn resolve(
-        &self,
-        token: &DescramblerKeyToken,
-    ) -> Result<DescramblerKeySlotId, DescramblerKeyLookupError> {
-        #[cfg(test)]
-        if self.expired.contains(token) {
-            return Err(DescramblerKeyLookupError::ExpiredToken);
-        }
-        match self.slots.get(token).cloned() {
-            Some(state) if state.expired => Err(DescramblerKeyLookupError::ExpiredToken),
-            Some(state) => Ok(state.slot),
-            None => Err(DescramblerKeyLookupError::UnknownToken),
-        }
-    }
-
     pub fn key_slot(&self, slot_id: DescramblerKeySlotId) -> Option<DescramblerKeySlot> {
         self.slots
             .values()
             .find(|state| state.slot == slot_id && !state.expired)
             .map(|state| state.key_slot.clone())
-    }
-
-    pub fn register_key_slot(
-        &mut self,
-        token: DescramblerKeyToken,
-        key_slot: DescramblerKeySlot,
-    ) -> Result<DescramblerKeySlotId, DescramblerKeyRegistrationError> {
-        if !key_slot.has_any_key() {
-            return Err(DescramblerKeyRegistrationError::EmptySlot);
-        }
-        if self.slots.contains_key(&token) {
-            return Err(DescramblerKeyRegistrationError::DuplicateToken);
-        }
-        let next_slot_id = self
-            .next_slot_id
-            .checked_add(1)
-            .ok_or(DescramblerKeyRegistrationError::SlotIdExhausted)?;
-        let slot_id = DescramblerKeySlotId(self.next_slot_id);
-        self.next_slot_id = next_slot_id;
-        self.slots.insert(
-            token,
-            DescramblerKeySlotState {
-                slot: slot_id,
-                key_slot,
-                refcount: 0,
-                expired: false,
-            },
-        );
-        Ok(slot_id)
     }
 
     pub fn acquire(
@@ -163,30 +106,11 @@ impl DescramblerKeyTable {
         }
         Ok(())
     }
-
-    pub(crate) fn expire_for_test_support(&mut self, token: &DescramblerKeyToken) {
-        #[cfg(test)]
-        {
-            self.expire_test_key(token);
-        }
-        #[cfg(not(test))]
-        {
-            if let Some(state) = self.slots.get_mut(token) {
-                if state.refcount == 0 {
-                    self.slots.remove(token);
-                } else {
-                    state.expired = true;
-                }
-            }
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::Multi2KeyMaterial;
-
     impl DescramblerKeyTable {
         pub(crate) fn insert_test_key(
             &mut self,
@@ -228,33 +152,6 @@ mod tests {
         pub(crate) fn refcount_for_test(&self, token: &DescramblerKeyToken) -> Option<usize> {
             self.slots.get(token).map(|state| state.refcount)
         }
-
-        pub(crate) fn set_next_slot_id_for_test(&mut self, next_slot_id: u64) {
-            self.next_slot_id = next_slot_id;
-        }
-    }
-
-    #[test]
-    fn register_key_slot_fails_closed_when_slot_id_is_exhausted() {
-        let token = DescramblerKeyToken::try_from_bytes(vec![3; 8]).unwrap();
-        let mut table = DescramblerKeyTable::default();
-        table.set_next_slot_id_for_test(u64::MAX);
-
-        let key_slot = DescramblerKeySlot::empty()
-            .try_with_even(Multi2KeyMaterial::new([1; 32], [2; 8], [3; 8]))
-            .unwrap();
-
-        let result = table.register_key_slot(token.clone(), key_slot);
-
-        assert_eq!(
-            result,
-            Err(DescramblerKeyRegistrationError::SlotIdExhausted)
-        );
-        assert_eq!(
-            table.resolve(&token),
-            Err(DescramblerKeyLookupError::UnknownToken)
-        );
-        assert!(table.is_empty());
     }
 
     #[test]
@@ -262,17 +159,18 @@ mod tests {
         let token = DescramblerKeyToken::try_from_bytes(vec![1; 8]).unwrap();
         let mut table = DescramblerKeyTable::default();
         assert_eq!(
-            table.resolve(&token),
+            table.acquire(&token),
             Err(DescramblerKeyLookupError::UnknownToken)
         );
         assert!(!table.has_token_resolution_state());
         table.insert_test_key(token.clone(), DescramblerKeySlotId(7));
         assert!(table.has_token_resolution_state());
-        assert_eq!(table.resolve(&token), Ok(DescramblerKeySlotId(7)));
+        assert_eq!(table.acquire(&token), Ok(DescramblerKeySlotId(7)));
+        assert_eq!(table.release(&token), Ok(()));
         table.expire_test_key(&token);
         assert!(table.has_token_resolution_state());
         assert_eq!(
-            table.resolve(&token),
+            table.acquire(&token),
             Err(DescramblerKeyLookupError::ExpiredToken)
         );
     }
@@ -293,7 +191,7 @@ mod tests {
         assert_eq!(table.release(&token), Ok(()));
         assert_eq!(table.refcount_for_test(&token), None);
         assert_eq!(
-            table.resolve(&token),
+            table.acquire(&token),
             Err(DescramblerKeyLookupError::ExpiredToken)
         );
     }

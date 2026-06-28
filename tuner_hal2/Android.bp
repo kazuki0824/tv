@@ -18,9 +18,8 @@ prebuilt_etc {
 }
 
 
-cc_library_shared {
-    name: "libmaleicacid_tuner_hal2_fmq_shim",
-    vendor: true,
+cc_defaults {
+    name: "maleicacid_tuner_hal2_fmq_shim_defaults",
     srcs: ["fmq_shim/src/tuner_fmq_shim.cpp"],
     export_include_dirs: ["fmq_shim/include"],
     shared_libs: [
@@ -35,6 +34,18 @@ cc_library_shared {
         "android.hardware.common-V2-ndk",
     ],
     cflags: ["-std=c++20"],
+}
+
+cc_library_shared {
+    name: "libmaleicacid_tuner_hal2_fmq_shim",
+    vendor: true,
+    defaults: ["maleicacid_tuner_hal2_fmq_shim_defaults"],
+}
+
+cc_library_static {
+    name: "libmaleicacid_tuner_hal2_fmq_shim_static",
+    vendor: true,
+    defaults: ["maleicacid_tuner_hal2_fmq_shim_defaults"],
 }
 
 rust_library {
@@ -64,7 +75,18 @@ rust_library {
     crate_name: "maleicacid_tuner_hal2_fmq",
     srcs: ["fmq/src/lib.rs"],
     edition: "2021",
-    shared_libs: ["libmaleicacid_tuner_hal2_fmq_shim"],
+    static_libs: ["libmaleicacid_tuner_hal2_fmq_shim_static"],
+    shared_libs: [
+        "libfmq",
+        "libutils",
+        "libcutils",
+        "libbase",
+        "libc++",
+        "libdmabufheap",
+        "libhardware",
+        "android.hardware.common.fmq-V1-ndk",
+        "android.hardware.common-V2-ndk",
+    ],
 }
 
 rust_library {
@@ -138,10 +160,7 @@ rust_library {
         "descrambler/src/core/packet.rs",
         "descrambler/src/runtime/mod.rs",
         "descrambler/src/runtime/token.rs",
-        "descrambler/src/runtime/key_table.rs",
-        "descrambler/src/runtime/session.rs",
         "descrambler/src/runtime/pid_claim.rs",
-        "descrambler/src/runtime/session_txn.rs",
     ],
     edition: "2021",
     rustlibs: ["libmaleicacid_tuner_hal2_common", "libmaleicacid_tuner_hal2_control_core"],
@@ -189,6 +208,8 @@ rust_library {
         "service_runtime/src/error_mapping.rs",
         "service_runtime/src/demux_filter_dvr_ops.rs",
         "service_runtime/src/descrambler_ops.rs",
+        "service_runtime/src/descrambler_key_table.rs",
+        "service_runtime/src/descrambler_session.rs",
         "service_runtime/src/frontend_ops.rs",
         "service_runtime/src/packet_ops.rs",
         "service_runtime/src/root_object_ops.rs",
@@ -197,6 +218,7 @@ rust_library {
         "service_runtime/src/command_dispatch.rs",
         "service_runtime/src/object_table.rs",
         "service_runtime/src/object_close_txn.rs",
+        "service_runtime/src/object_domain_cleanup.rs",
         "service_runtime/src/object_lifecycle.rs",
         "service_runtime/src/object_method_txn.rs",
         "service_runtime/src/method_dispatch.rs",
@@ -333,6 +355,7 @@ rust_test {
     srcs: [
         "common/src/lib.rs",
         "common/src/os_abi.rs",
+        "common/src/failure_injection_tests.rs",
     ],
     edition: "2021",
     auto_gen_config: true,
@@ -356,7 +379,18 @@ rust_test {
     crate_name: "maleicacid_tuner_hal2_fmq_test",
     srcs: ["fmq/src/lib.rs"],
     edition: "2021",
-    shared_libs: ["libmaleicacid_tuner_hal2_fmq_shim"],
+    static_libs: ["libmaleicacid_tuner_hal2_fmq_shim_static"],
+    shared_libs: [
+        "libfmq",
+        "libutils",
+        "libcutils",
+        "libbase",
+        "libc++",
+        "libdmabufheap",
+        "libhardware",
+        "android.hardware.common.fmq-V1-ndk",
+        "android.hardware.common-V2-ndk",
+    ],
     auto_gen_config: true,
     test_suites: ["general-tests"],
 }
@@ -373,10 +407,7 @@ rust_test {
         "descrambler/src/core/packet.rs",
         "descrambler/src/runtime/mod.rs",
         "descrambler/src/runtime/token.rs",
-        "descrambler/src/runtime/key_table.rs",
-        "descrambler/src/runtime/session.rs",
         "descrambler/src/runtime/pid_claim.rs",
-        "descrambler/src/runtime/session_txn.rs",
     ],
     edition: "2021",
     rustlibs: ["libmaleicacid_tuner_hal2_common", "libmaleicacid_tuner_hal2_control_core"],
@@ -442,6 +473,18 @@ rust_test {
     ],
     edition: "2021",
     rustlibs: ["libmaleicacid_tuner_hal2_common", "libmaleicacid_tuner_hal2_fmq", "libmaleicacid_tuner_hal2_control_core"],
+    static_libs: ["libmaleicacid_tuner_hal2_fmq_shim_static"],
+    shared_libs: [
+        "libfmq",
+        "libutils",
+        "libcutils",
+        "libbase",
+        "libc++",
+        "libdmabufheap",
+        "libhardware",
+        "android.hardware.common.fmq-V1-ndk",
+        "android.hardware.common-V2-ndk",
+    ],
     auto_gen_config: true,
     test_suites: ["general-tests"],
 }
@@ -482,6 +525,7 @@ rust_test {
     crate_root: "service_runtime/src/lib.rs",
     srcs: [
         "service_runtime/src/lib.rs",
+        "service_runtime/src/failure_injection_tests.rs",
         "service_runtime/src/boot.rs",
         "service_runtime/src/boot/query_api.rs",
         "service_runtime/src/boot/frontend_txn.rs",
@@ -493,6 +537,8 @@ rust_test {
         "service_runtime/src/error_mapping.rs",
         "service_runtime/src/demux_filter_dvr_ops.rs",
         "service_runtime/src/descrambler_ops.rs",
+        "service_runtime/src/descrambler_key_table.rs",
+        "service_runtime/src/descrambler_session.rs",
         "service_runtime/src/frontend_ops.rs",
         "service_runtime/src/packet_ops.rs",
         "service_runtime/src/root_object_ops.rs",
@@ -501,6 +547,7 @@ rust_test {
         "service_runtime/src/command_dispatch.rs",
         "service_runtime/src/object_table.rs",
         "service_runtime/src/object_close_txn.rs",
+        "service_runtime/src/object_domain_cleanup.rs",
         "service_runtime/src/object_lifecycle.rs",
         "service_runtime/src/object_method_txn.rs",
         "service_runtime/src/method_dispatch.rs",
@@ -524,6 +571,18 @@ rust_test {
         "libmaleicacid_tuner_hal2_descrambler",
         "libmaleicacid_tuner_hal2_lnb",
         "libmaleicacid_tuner_hal2_resource_ledger",
+    ],
+    static_libs: ["libmaleicacid_tuner_hal2_fmq_shim_static"],
+    shared_libs: [
+        "libfmq",
+        "libutils",
+        "libcutils",
+        "libbase",
+        "libc++",
+        "libdmabufheap",
+        "libhardware",
+        "android.hardware.common.fmq-V1-ndk",
+        "android.hardware.common-V2-ndk",
     ],
     auto_gen_config: true,
     test_suites: ["general-tests"],
@@ -564,6 +623,7 @@ rust_test {
     crate_root: "aidl_service/src/lib.rs",
     srcs: [
         "aidl_service/src/lib.rs",
+        "aidl_service/src/failure_injection_tests.rs",
         "aidl_service/src/tuner_service.rs",
         "aidl_service/src/tuner_service/frontend_methods.rs",
         "aidl_service/src/tuner_service/demux_methods.rs",
@@ -603,6 +663,18 @@ rust_test {
         "libmaleicacid_tuner_hal2_demux",
         "libmaleicacid_tuner_hal2_fmq",
         "libmaleicacid_tuner_hal2_resource_ledger",
+    ],
+    static_libs: ["libmaleicacid_tuner_hal2_fmq_shim_static"],
+    shared_libs: [
+        "libfmq",
+        "libutils",
+        "libcutils",
+        "libbase",
+        "libc++",
+        "libdmabufheap",
+        "libhardware",
+        "android.hardware.common.fmq-V1-ndk",
+        "android.hardware.common-V2-ndk",
     ],
     auto_gen_config: true,
     test_suites: ["general-tests"],

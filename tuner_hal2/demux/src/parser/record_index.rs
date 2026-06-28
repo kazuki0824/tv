@@ -2,6 +2,7 @@
 //!
 //! scrambling change、PES timestamp、H.264/H.265/VVC start code全走査をここへ集約する。
 
+use crate::packet_pipeline::{PacketPid, ValidatedTsPacket};
 use crate::ts_core::parse_pes_header_summary;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -40,7 +41,28 @@ impl RecordIndexParser {
         record_state: &mut RecordEventState,
     ) -> Option<TsRecordEventData> {
         self.processed_packets = self.processed_packets.saturating_add(1);
-        build_ts_record_event_data(
+        let validated_packet = ValidatedTsPacket::validate(packet).ok()?;
+        build_ts_record_event_data_from_validated(
+            &validated_packet,
+            cumulative_bytes,
+            configured_ts_index_mask,
+            sc_index_type,
+            configured_sc_index_mask_bits,
+            record_state,
+        )
+    }
+
+    pub fn push_validated_ts_packet(
+        &mut self,
+        packet: &ValidatedTsPacket<'_>,
+        cumulative_bytes: u64,
+        configured_ts_index_mask: i32,
+        sc_index_type: i32,
+        configured_sc_index_mask_bits: i32,
+        record_state: &mut RecordEventState,
+    ) -> Option<TsRecordEventData> {
+        self.processed_packets = self.processed_packets.saturating_add(1);
+        build_ts_record_event_data_from_validated(
             packet,
             cumulative_bytes,
             configured_ts_index_mask,
@@ -60,6 +82,25 @@ impl RecordIndexParser {
         record_state: &mut RecordEventState,
     ) -> Option<TsRecordEventData> {
         self.push_ts_packet(
+            packet,
+            cumulative_bytes,
+            configured_ts_index_mask,
+            sc_index_type,
+            configured_sc_index_mask_bits,
+            record_state,
+        )
+    }
+
+    pub fn build_validated_event(
+        &mut self,
+        packet: &ValidatedTsPacket<'_>,
+        cumulative_bytes: u64,
+        configured_ts_index_mask: i32,
+        sc_index_type: i32,
+        configured_sc_index_mask_bits: i32,
+        record_state: &mut RecordEventState,
+    ) -> Option<TsRecordEventData> {
+        self.push_validated_ts_packet(
             packet,
             cumulative_bytes,
             configured_ts_index_mask,
@@ -193,7 +234,7 @@ fn starts_with_complete_or_partial_pes_prefix(bytes: &[u8]) -> bool {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TsRecordEventData {
-    pub pid: i32,
+    pub pid: PacketPid,
     pub ts_index_mask: i32,
     pub sc_index_type: i32,
     pub sc_index_mask_bits: i32,
@@ -248,6 +289,7 @@ pub fn supported_record_sc_index_mask(sc_index_type: i32) -> i32 {
     }
 }
 
+#[cfg(test)]
 fn build_ts_record_event_data(
     packet: &[u8],
     cumulative_bytes: u64,
@@ -256,57 +298,76 @@ fn build_ts_record_event_data(
     configured_sc_index_mask_bits: i32,
     record_state: &mut RecordEventState,
 ) -> Option<TsRecordEventData> {
-    let packet_view = crate::packet_pipeline::TsPacketView::validate(packet).ok()?;
-    if packet_view.transport_error_indicator {
+    let validated_packet = ValidatedTsPacket::validate(packet).ok()?;
+    build_ts_record_event_data_from_validated(
+        &validated_packet,
+        cumulative_bytes,
+        configured_ts_index_mask,
+        sc_index_type,
+        configured_sc_index_mask_bits,
+        record_state,
+    )
+}
+
+fn build_ts_record_event_data_from_validated(
+    validated_packet: &ValidatedTsPacket<'_>,
+    cumulative_bytes: u64,
+    configured_ts_index_mask: i32,
+    sc_index_type: i32,
+    configured_sc_index_mask_bits: i32,
+    record_state: &mut RecordEventState,
+) -> Option<TsRecordEventData> {
+    let packet_view = validated_packet.view();
+    if packet_view.transport_error_indicator() {
         return None;
     }
-    let packet_payload = packet_view.payload.unwrap_or(&[]);
+    let packet_payload = packet_view.payload().unwrap_or(&[]);
     let mut observed_ts_index = 0i32;
     if cumulative_bytes == 0 {
         observed_ts_index |= DEMUX_TS_INDEX_FIRST_PACKET;
     }
-    if packet_view.payload_unit_start {
+    if packet_view.payload_unit_start() {
         observed_ts_index |= DEMUX_TS_INDEX_PAYLOAD_UNIT_START;
     }
-    if packet_view.priority {
+    if packet_view.priority() {
         observed_ts_index |= DEMUX_TS_INDEX_PRIORITY;
     }
-    if packet_view.discontinuity_indicator {
+    if packet_view.discontinuity_indicator() {
         observed_ts_index |= DEMUX_TS_INDEX_DISCONTINUITY;
         record_state.reset_payload_state();
     }
-    if packet_view.random_access_indicator {
+    if packet_view.random_access_indicator() {
         observed_ts_index |= DEMUX_TS_INDEX_RANDOM_ACCESS;
     }
-    if packet_view.pcr_flag {
+    if packet_view.pcr_flag() {
         observed_ts_index |= DEMUX_TS_INDEX_PCR;
     }
-    if packet_view.opcr_flag {
+    if packet_view.opcr_flag() {
         observed_ts_index |= DEMUX_TS_INDEX_OPCR;
     }
-    if packet_view.splicing_point_flag {
+    if packet_view.splicing_point_flag() {
         observed_ts_index |= DEMUX_TS_INDEX_SPLICING_POINT;
     }
-    if packet_view.private_data_flag {
+    if packet_view.private_data_flag() {
         observed_ts_index |= DEMUX_TS_INDEX_PRIVATE_DATA;
     }
-    if packet_view.adaptation_extension_flag {
+    if packet_view.adaptation_extension_flag() {
         observed_ts_index |= DEMUX_TS_INDEX_ADAPTATION_EXTENSION;
     }
     match record_state
         .last_transport_scrambling_control
-        .replace(packet_view.scrambling_control)
+        .replace(packet_view.scrambling_control())
     {
-        Some(previous) if previous != packet_view.scrambling_control => {
-            observed_ts_index |= match packet_view.scrambling_control {
+        Some(previous) if previous != packet_view.scrambling_control() => {
+            observed_ts_index |= match packet_view.scrambling_control() {
                 0 => DEMUX_TS_INDEX_CHANGE_TO_NOT_SCRAMBLED,
                 2 => DEMUX_TS_INDEX_CHANGE_TO_EVEN_SCRAMBLED,
                 3 => DEMUX_TS_INDEX_CHANGE_TO_ODD_SCRAMBLED,
                 _ => 0,
             };
         }
-        None if packet_view.scrambling_control != 0 => {
-            observed_ts_index |= match packet_view.scrambling_control {
+        None if packet_view.scrambling_control() != 0 => {
+            observed_ts_index |= match packet_view.scrambling_control() {
                 2 => DEMUX_TS_INDEX_CHANGE_TO_EVEN_SCRAMBLED,
                 3 => DEMUX_TS_INDEX_CHANGE_TO_ODD_SCRAMBLED,
                 _ => 0,
@@ -314,9 +375,9 @@ fn build_ts_record_event_data(
         }
         _ => {}
     }
-    let (pts, sc_info) = if packet_view.scrambling_control == 0 {
+    let (pts, sc_info) = if packet_view.scrambling_control() == 0 {
         let pts = record_state
-            .observe_pts(packet_payload, packet_view.payload_unit_start)
+            .observe_pts(packet_payload, packet_view.payload_unit_start())
             .unwrap_or(RECORD_INDEX_PTS_ABSENT);
         let sc_payload = record_state.payload_with_sc_carry(packet_payload);
         (
@@ -338,7 +399,7 @@ fn build_ts_record_event_data(
         return None;
     }
     Some(TsRecordEventData {
-        pid: packet_view.pid,
+        pid: packet_view.packet_pid(),
         ts_index_mask,
         sc_index_type,
         sc_index_mask_bits,
@@ -1059,5 +1120,65 @@ mod scrambled_record_policy_tests {
             &mut state,
         );
         assert!(recovered.is_none());
+    }
+}
+
+#[cfg(test)]
+mod validated_packet_boundary_tests {
+    use super::*;
+    use crate::packet_pipeline::ValidatedTsPacket;
+
+    #[test]
+    fn record_index_accepts_prevalidated_packet_without_revalidating_at_callsite() {
+        let mut packet = [0xffu8; 188];
+        packet[0] = 0x47;
+        packet[1] = 0x40;
+        packet[2] = 0x20;
+        packet[3] = 0x10;
+        let validated = ValidatedTsPacket::validate(&packet).expect("packet validates once");
+        let mut state = RecordEventState::default();
+        let mut parser = RecordIndexParser::new();
+
+        let event = parser.build_validated_event(
+            &validated,
+            0,
+            DEMUX_TS_INDEX_FIRST_PACKET | DEMUX_TS_INDEX_PAYLOAD_UNIT_START,
+            RECORD_SC_TYPE_NONE,
+            0,
+            &mut state,
+        );
+
+        assert!(event.is_some());
+        assert_eq!(parser.processed_packets(), 1);
+    }
+
+    #[test]
+    fn record_index_uses_validated_ts_packet_ingress() {
+        let mut packet = [0xffu8; 188];
+        packet[0] = 0x47;
+        packet[1] = 0x40;
+        packet[2] = 0x20;
+        packet[3] = 0x10;
+        let mut state = RecordEventState::default();
+        let event = build_ts_record_event_data(
+            &packet,
+            0,
+            DEMUX_TS_INDEX_FIRST_PACKET | DEMUX_TS_INDEX_PAYLOAD_UNIT_START,
+            0,
+            0,
+            &mut state,
+        );
+        assert!(event.is_some());
+
+        packet[0] = 0x00;
+        let event = build_ts_record_event_data(
+            &packet,
+            188,
+            DEMUX_TS_INDEX_FIRST_PACKET | DEMUX_TS_INDEX_PAYLOAD_UNIT_START,
+            0,
+            0,
+            &mut state,
+        );
+        assert!(event.is_none());
     }
 }

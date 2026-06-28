@@ -51,6 +51,24 @@ impl TunerServiceRuntime {
             .remove_descrambler_pid_non_null_source(descrambler_id, pid, source_filter_id)
     }
 
+    pub fn add_descrambler_pid_demux_input(
+        &mut self,
+        descrambler_id: i32,
+        pid: u16,
+    ) -> Result<(), HalError> {
+        self.descrambler_txn()
+            .add_descrambler_pid_demux_input(descrambler_id, pid)
+    }
+
+    pub fn remove_descrambler_pid_demux_input(
+        &mut self,
+        descrambler_id: i32,
+        pid: u16,
+    ) -> Result<(), HalError> {
+        self.descrambler_txn()
+            .remove_descrambler_pid_demux_input(descrambler_id, pid)
+    }
+
     pub fn unregister_descrambler_runtime(
         &mut self,
         id: i32,
@@ -110,6 +128,48 @@ impl TunerServiceRuntime {
             maleicacid_tuner_hal2_domain_request::AidlObjectKind::Descrambler,
         )?;
         self.set_descrambler_key_token(descrambler_id, key_token)
+    }
+
+    pub fn add_descrambler_pid_demux_input_for_object(
+        &mut self,
+        object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
+        generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
+        pid: u16,
+        dispatch: ObjectMethodExecutionToken,
+    ) -> Result<(), HalError> {
+        dispatch.consume_for_object(
+            self,
+            object_id,
+            generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Descrambler,
+        )?;
+        let descrambler_id = self.public_runtime_id_for_object_method(
+            object_id,
+            generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Descrambler,
+        )?;
+        self.add_descrambler_pid_demux_input(descrambler_id, pid)
+    }
+
+    pub fn remove_descrambler_pid_demux_input_for_object(
+        &mut self,
+        object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
+        generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
+        pid: u16,
+        dispatch: ObjectMethodExecutionToken,
+    ) -> Result<(), HalError> {
+        dispatch.consume_for_object(
+            self,
+            object_id,
+            generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Descrambler,
+        )?;
+        let descrambler_id = self.public_runtime_id_for_object_method(
+            object_id,
+            generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Descrambler,
+        )?;
+        self.remove_descrambler_pid_demux_input(descrambler_id, pid)
     }
 
     pub fn add_descrambler_pid_for_object(
