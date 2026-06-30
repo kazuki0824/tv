@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
 use maleicacid_tuner_hal2_common::{FrontendBackendKind, HalError};
+use maleicacid_tuner_hal2_demux::packet_pipeline::PacketPid;
+use maleicacid_tuner_hal2_descrambler::DescramblerPid;
 use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
 
 pub const DEFAULT_DIAGNOSTIC_STORE_LIMIT: usize = 128;
@@ -297,14 +299,62 @@ pub enum DescramblerDiagnosticPhase {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DescramblerDiagnosticRecord {
-    pub kind: DescramblerDiagnosticKind,
-    pub phase: DescramblerDiagnosticPhase,
-    pub descrambler_id: Option<i32>,
-    pub demux_id: Option<i32>,
-    pub pid: Option<u16>,
-    pub filter_id: Option<i32>,
-    pub error: Option<HalError>,
+pub enum DescramblerDiagnosticRecord {
+    SetKeyTokenFailure {
+        descrambler_id: i32,
+        kind: DescramblerDiagnosticKind,
+        error: HalError,
+    },
+    PidClaimRejected {
+        phase: DescramblerDiagnosticPhase,
+        descrambler_id: i32,
+        demux_id: i32,
+        pid: DescramblerPid,
+        filter_id: i32,
+        error: HalError,
+    },
+    PidClaimRejectedWithoutDemux {
+        phase: DescramblerDiagnosticPhase,
+        descrambler_id: i32,
+        pid: DescramblerPid,
+        filter_id: i32,
+        error: HalError,
+    },
+    PidClaimRejectedInvalidPid {
+        phase: DescramblerDiagnosticPhase,
+        descrambler_id: i32,
+        demux_id: i32,
+        input_pid: u16,
+        filter_id: i32,
+        error: HalError,
+    },
+    PidClaimRejectedInvalidPidWithoutDemux {
+        phase: DescramblerDiagnosticPhase,
+        descrambler_id: i32,
+        input_pid: u16,
+        filter_id: i32,
+        error: HalError,
+    },
+    PacketPolicy {
+        demux_id: i32,
+        pid: PacketPid,
+        kind: DescramblerDiagnosticKind,
+    },
+    PacketPolicyWithoutPid {
+        demux_id: i32,
+        kind: DescramblerDiagnosticKind,
+    },
+    PacketSourceFilterValidation {
+        demux_id: i32,
+        pid: PacketPid,
+        filter_id: i32,
+        kind: DescramblerDiagnosticKind,
+        error: HalError,
+    },
+    CleanupKeyReleaseFailed {
+        descrambler_id: i32,
+        error: HalError,
+    },
 }
 
 impl DescramblerDiagnosticRecord {
@@ -313,75 +363,221 @@ impl DescramblerDiagnosticRecord {
         kind: DescramblerDiagnosticKind,
         error: HalError,
     ) -> Self {
-        Self {
-            kind,
-            phase: DescramblerDiagnosticPhase::SetKeyToken,
-            descrambler_id: Some(descrambler_id),
-            demux_id: None,
-            pid: None,
-            filter_id: None,
-            error: Some(error),
-        }
+        Self::SetKeyTokenFailure { descrambler_id, kind, error }
     }
 
-    pub fn pid_claim(
+    pub fn pid_claim_with_demux(
         phase: DescramblerDiagnosticPhase,
         descrambler_id: i32,
-        demux_id: Option<i32>,
-        pid: u16,
+        demux_id: i32,
+        pid: DescramblerPid,
         filter_id: i32,
         error: HalError,
     ) -> Self {
-        Self {
-            kind: DescramblerDiagnosticKind::PidClaimRejected,
+        Self::PidClaimRejected {
             phase,
-            descrambler_id: Some(descrambler_id),
+            descrambler_id,
             demux_id,
-            pid: Some(pid),
-            filter_id: Some(filter_id),
-            error: Some(error),
+            pid,
+            filter_id,
+            error,
         }
     }
 
-    pub fn packet_policy(demux_id: i32, pid: u16, kind: DescramblerDiagnosticKind) -> Self {
-        Self {
-            kind,
-            phase: DescramblerDiagnosticPhase::PacketPipeline,
-            descrambler_id: None,
-            demux_id: Some(demux_id),
-            pid: Some(pid),
-            filter_id: None,
-            error: None,
+    pub fn pid_claim_without_demux(
+        phase: DescramblerDiagnosticPhase,
+        descrambler_id: i32,
+        pid: DescramblerPid,
+        filter_id: i32,
+        error: HalError,
+    ) -> Self {
+        Self::PidClaimRejectedWithoutDemux {
+            phase,
+            descrambler_id,
+            pid,
+            filter_id,
+            error,
         }
+    }
+
+    pub fn pid_claim_invalid_pid_with_demux(
+        phase: DescramblerDiagnosticPhase,
+        descrambler_id: i32,
+        demux_id: i32,
+        input_pid: u16,
+        filter_id: i32,
+        error: HalError,
+    ) -> Self {
+        Self::PidClaimRejectedInvalidPid {
+            phase,
+            descrambler_id,
+            demux_id,
+            input_pid,
+            filter_id,
+            error,
+        }
+    }
+
+    pub fn pid_claim_invalid_pid_without_demux(
+        phase: DescramblerDiagnosticPhase,
+        descrambler_id: i32,
+        input_pid: u16,
+        filter_id: i32,
+        error: HalError,
+    ) -> Self {
+        Self::PidClaimRejectedInvalidPidWithoutDemux {
+            phase,
+            descrambler_id,
+            input_pid,
+            filter_id,
+            error,
+        }
+    }
+
+    pub fn packet_policy(demux_id: i32, pid: PacketPid, kind: DescramblerDiagnosticKind) -> Self {
+        Self::PacketPolicy { demux_id, pid, kind }
+    }
+
+    pub fn packet_policy_without_pid(demux_id: i32, kind: DescramblerDiagnosticKind) -> Self {
+        Self::PacketPolicyWithoutPid { demux_id, kind }
     }
 
     pub fn packet_source_filter_validation(
         demux_id: i32,
-        pid: u16,
+        pid: PacketPid,
         filter_id: i32,
         kind: DescramblerDiagnosticKind,
         error: HalError,
     ) -> Self {
-        Self {
-            kind,
-            phase: DescramblerDiagnosticPhase::PacketPipeline,
-            descrambler_id: None,
-            demux_id: Some(demux_id),
-            pid: Some(pid),
-            filter_id: Some(filter_id),
-            error: Some(error),
-        }
+        Self::PacketSourceFilterValidation { demux_id, pid, filter_id, kind, error }
     }
 
     pub fn cleanup_release_failed(descrambler_id: i32, error: HalError) -> Self {
+        Self::CleanupKeyReleaseFailed { descrambler_id, error }
+    }
+
+    pub const fn kind(&self) -> DescramblerDiagnosticKind {
+        match self {
+            Self::SetKeyTokenFailure { kind, .. } => *kind,
+            Self::PidClaimRejected { .. }
+            | Self::PidClaimRejectedWithoutDemux { .. }
+            | Self::PidClaimRejectedInvalidPid { .. }
+            | Self::PidClaimRejectedInvalidPidWithoutDemux { .. } => DescramblerDiagnosticKind::PidClaimRejected,
+            Self::PacketPolicy { kind, .. } | Self::PacketPolicyWithoutPid { kind, .. } => *kind,
+            Self::PacketSourceFilterValidation { kind, .. } => *kind,
+            Self::CleanupKeyReleaseFailed { .. } => DescramblerDiagnosticKind::CleanupKeyReleaseFailed,
+        }
+    }
+
+    pub const fn phase(&self) -> DescramblerDiagnosticPhase {
+        match self {
+            Self::SetKeyTokenFailure { .. } => DescramblerDiagnosticPhase::SetKeyToken,
+            Self::PidClaimRejected { phase, .. }
+            | Self::PidClaimRejectedWithoutDemux { phase, .. }
+            | Self::PidClaimRejectedInvalidPid { phase, .. }
+            | Self::PidClaimRejectedInvalidPidWithoutDemux { phase, .. } => *phase,
+            Self::PacketPolicy { .. } | Self::PacketPolicyWithoutPid { .. } | Self::PacketSourceFilterValidation { .. } => {
+                DescramblerDiagnosticPhase::PacketPipeline
+            }
+            Self::CleanupKeyReleaseFailed { .. } => DescramblerDiagnosticPhase::Cleanup,
+        }
+    }
+
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CallbackArtifactRuntimeSplitPhase {
+    OwnerCleanupFinish,
+    RegistrationRollbackFinish,
+    ObjectCloseCleanupFinish,
+    ServiceBootResetFinish,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CallbackArtifactRuntimeSplitOutcome {
+    ArtifactFailure { artifact_error: HalError },
+    RuntimeFinishFailure { runtime_error: HalError },
+    ArtifactAndRuntimeFailure { artifact_error: HalError, runtime_error: HalError },
+    ServiceBootCallbackArtifactFailure { error: HalError },
+    ServiceBootDropLeakFailure { error: HalError },
+    ServiceBootRuntimeFailure { error: HalError },
+}
+
+impl CallbackArtifactRuntimeSplitOutcome {
+    pub fn from_results(
+        artifact_error: Option<HalError>,
+        runtime_error: Option<HalError>,
+    ) -> Option<Self> {
+        match (artifact_error, runtime_error) {
+            (None, None) => None,
+            (Some(artifact_error), None) => Some(Self::ArtifactFailure { artifact_error }),
+            (None, Some(runtime_error)) => Some(Self::RuntimeFinishFailure { runtime_error }),
+            (Some(artifact_error), Some(runtime_error)) => {
+                Some(Self::ArtifactAndRuntimeFailure { artifact_error, runtime_error })
+            }
+        }
+    }
+
+    pub fn service_boot_reset_from_attempt_results(
+        callback_artifact_result: Result<(), HalError>,
+        drop_leak_result: Result<(), HalError>,
+        runtime_finish_result: Result<(), HalError>,
+    ) -> Vec<Self> {
+        let mut outcomes = Vec::new();
+        if let Err(error) = callback_artifact_result {
+            outcomes.push(Self::ServiceBootCallbackArtifactFailure { error });
+        }
+        if let Err(error) = drop_leak_result {
+            outcomes.push(Self::ServiceBootDropLeakFailure { error });
+        }
+        if let Err(error) = runtime_finish_result {
+            outcomes.push(Self::ServiceBootRuntimeFailure { error });
+        }
+        outcomes
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CallbackArtifactRuntimeSplitTarget {
+    Owner {
+        owner_kind: AidlObjectKind,
+        owner_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    },
+    ServiceBootReset,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CallbackArtifactRuntimeSplitDiagnosticRecord {
+    pub phase: CallbackArtifactRuntimeSplitPhase,
+    pub target: CallbackArtifactRuntimeSplitTarget,
+    pub outcome: CallbackArtifactRuntimeSplitOutcome,
+}
+
+impl CallbackArtifactRuntimeSplitDiagnosticRecord {
+    pub fn owner(
+        phase: CallbackArtifactRuntimeSplitPhase,
+        owner_kind: AidlObjectKind,
+        owner_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        outcome: CallbackArtifactRuntimeSplitOutcome,
+    ) -> Self {
         Self {
-            kind: DescramblerDiagnosticKind::CleanupKeyReleaseFailed,
-            phase: DescramblerDiagnosticPhase::Cleanup,
-            descrambler_id: Some(descrambler_id),
-            demux_id: None,
-            pid: None,
-            filter_id: None,
-            error: Some(error),
+            phase,
+            target: CallbackArtifactRuntimeSplitTarget::Owner {
+                owner_kind,
+                owner_id,
+                generation,
+            },
+            outcome,
+        }
+    }
+
+    pub fn service_boot_reset(outcome: CallbackArtifactRuntimeSplitOutcome) -> Self {
+        Self {
+            phase: CallbackArtifactRuntimeSplitPhase::ServiceBootResetFinish,
+            target: CallbackArtifactRuntimeSplitTarget::ServiceBootReset,
+            outcome,
         }
     }
 }

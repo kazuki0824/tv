@@ -3,8 +3,8 @@ mod callback_registry;
 pub mod capability_profile;
 pub mod command_dispatch;
 pub mod demux_filter_dvr_ops;
-mod descrambler_key_table;
 pub mod descrambler_ops;
+mod descrambler_key_table;
 mod descrambler_session;
 pub mod diagnostics;
 pub mod dispatch;
@@ -31,9 +31,8 @@ pub mod transaction_registry;
 pub use boot::{
     start_frontend_demux_live_pump_from_reader, CallbackDeliveryFailurePhase,
     CallbackDeliveryFailureReport, CallbackDeliveryOwnerKind, DvrChildRuntimeOpen,
-    DvrStatusPollSnapshot, FilterChildRuntimeOpen, FilterEventDelivery,
-    FilterEventDeliverySnapshot, FilterEventDispatcher, FrontendDemuxPacketSink,
-    FrontendProbeOutcome, RuntimeObjectPublicEntry, RuntimeObjectQueryError, RuntimeQuery,
+    DvrStatusPollSnapshot, FilterChildRuntimeOpen, FilterEventDelivery, FilterEventDeliverySnapshot,
+    FilterEventDispatcher, FrontendDemuxPacketSink, FrontendProbeOutcome,
     ServiceBootOutcome, TunerServiceRuntime,
 };
 pub use callback_registry::{
@@ -51,6 +50,7 @@ pub use diagnostics::{
     BoundedDiagnosticStore, CapabilitySuppressionReason, ChildOpenRollbackDiagnosticRecord,
     ChildOpenRollbackKind, ChildOpenRollbackPhase, DescramblerDiagnosticKind,
     DescramblerDiagnosticPhase, DescramblerDiagnosticRecord,
+    CallbackArtifactRuntimeSplitDiagnosticRecord, CallbackArtifactRuntimeSplitOutcome, CallbackArtifactRuntimeSplitPhase, CallbackArtifactRuntimeSplitTarget,
     DvrPostCommitNotificationDiagnosticRecord, DvrPostCommitNotificationPhase,
     FilterCallbackDeliveryDiagnosticPhase, FilterCallbackDeliveryDiagnosticRecord,
     StartupDiagnosticKind, StartupDiagnosticPhase, StartupDiagnosticRecord,
@@ -102,11 +102,11 @@ mod tests {
     use super::*;
     use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem, HalError};
     use maleicacid_tuner_hal2_demux::{
-        packet_pipeline::{PipelineAssemblySuppressionReason, PipelineDeliveryAction},
+        packet_pipeline::{PacketPid, PipelineAssemblySuppressionReason, PipelineDeliveryAction},
         FilterConfig, FilterConfigKind, FilterOpenType, OpenFilterRequest, PesSettings,
     };
     use maleicacid_tuner_hal2_descrambler::{
-        multi2_encrypt_payload, DescramblerKeySlot, DescramblerKeyToken, Multi2KeyMaterial,
+        multi2_encrypt_payload, DescramblerKeySlot, DescramblerKeyToken, DescramblerPid, DescramblerPidClaim, Multi2KeyMaterial,
     };
     use maleicacid_tuner_hal2_domain_request::{
         DvrConfigureKind, DvrConfigureRequest, DvrOpenKind, FilterDelayHintKind,
@@ -115,6 +115,97 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
+
+
+    fn test_descrambler_pid(pid: u16) -> DescramblerPid {
+        DescramblerPidClaim::from_demux_input(pid)
+            .expect("test PID must be valid")
+            .pid()
+    }
+
+    fn test_packet_pid(pid: u16) -> PacketPid {
+        PacketPid::from_descrambler_pid_for_service_runtime_boundary(test_descrambler_pid(pid))
+    }
+
+    fn descrambler_set_key_diagnostic_matches(
+        record: &DescramblerDiagnosticRecord,
+        expected_id: i32,
+        expected_kind: DescramblerDiagnosticKind,
+    ) -> bool {
+        matches!(
+            record,
+            DescramblerDiagnosticRecord::SetKeyTokenFailure {
+                descrambler_id,
+                kind,
+                ..
+            } if *descrambler_id == expected_id && *kind == expected_kind
+        )
+    }
+
+    fn descrambler_pid_claim_with_demux_matches(
+        record: &DescramblerDiagnosticRecord,
+        expected_phase: DescramblerDiagnosticPhase,
+        expected_descrambler_id: i32,
+        expected_demux_id: i32,
+        expected_pid: u16,
+        expected_filter_id: i32,
+    ) -> bool {
+        matches!(
+            record,
+            DescramblerDiagnosticRecord::PidClaimRejected {
+                phase,
+                descrambler_id,
+                demux_id,
+                pid,
+                filter_id,
+                ..
+            } if *phase == expected_phase
+                && *descrambler_id == expected_descrambler_id
+                && *demux_id == expected_demux_id
+                && *pid == test_descrambler_pid(expected_pid)
+                && *filter_id == expected_filter_id
+        )
+    }
+
+    fn descrambler_packet_policy_matches(
+        record: &DescramblerDiagnosticRecord,
+        expected_demux_id: i32,
+        expected_pid: u16,
+        expected_kind: DescramblerDiagnosticKind,
+    ) -> bool {
+        matches!(
+            record,
+            DescramblerDiagnosticRecord::PacketPolicy {
+                demux_id,
+                pid,
+                kind,
+            } if *demux_id == expected_demux_id
+                && *pid == test_packet_pid(expected_pid)
+                && *kind == expected_kind
+        )
+    }
+
+    fn descrambler_source_filter_validation_matches(
+        record: &DescramblerDiagnosticRecord,
+        expected_demux_id: i32,
+        expected_pid: u16,
+        expected_filter_id: i32,
+        expected_kind: DescramblerDiagnosticKind,
+    ) -> bool {
+        matches!(
+            record,
+            DescramblerDiagnosticRecord::PacketSourceFilterValidation {
+                demux_id,
+                pid,
+                filter_id,
+                kind,
+                ..
+            } if *demux_id == expected_demux_id
+                && *pid == test_packet_pid(expected_pid)
+                && *filter_id == expected_filter_id
+                && *kind == expected_kind
+        )
+    }
 
     struct NoopFilterEventDispatcher;
 
@@ -786,9 +877,7 @@ mod tests {
                     maleicacid_tuner_hal2_device::FrontendLivePumpJoinOutcome::Running => {
                         std::thread::sleep(std::time::Duration::from_millis(1));
                     }
-                    maleicacid_tuner_hal2_device::FrontendLivePumpJoinOutcome::Completed(
-                        result,
-                    ) => {
+                    maleicacid_tuner_hal2_device::FrontendLivePumpJoinOutcome::Completed(result) => {
                         completed = Some(result);
                         break;
                     }
@@ -1401,9 +1490,11 @@ mod tests {
             .unwrap();
         assert!(session.has_key());
         assert!(runtime.descrambler_diagnostics().iter().any(|record| {
-            record.kind == DescramblerDiagnosticKind::KeyTokenReleaseFailed
-                && record.phase == DescramblerDiagnosticPhase::SetKeyToken
-                && record.descrambler_id == Some(descrambler.id.0)
+            descrambler_set_key_diagnostic_matches(
+                record,
+                descrambler.id.0,
+                DescramblerDiagnosticKind::KeyTokenReleaseFailed,
+            )
         }));
     }
 
@@ -1436,12 +1527,14 @@ mod tests {
             maleicacid_tuner_hal2_common::HalError::InvalidArgument { .. }
         ));
         assert!(runtime.descrambler_diagnostics().iter().any(|record| {
-            record.kind == DescramblerDiagnosticKind::PidClaimRejected
-                && record.phase == DescramblerDiagnosticPhase::AddPid
-                && record.descrambler_id == Some(descrambler.id.0)
-                && record.demux_id == Some(owner_demux.id.0)
-                && record.pid == Some(200)
-                && record.filter_id == Some(filter.id.0)
+            descrambler_pid_claim_with_demux_matches(
+                record,
+                DescramblerDiagnosticPhase::AddPid,
+                descrambler.id.0,
+                owner_demux.id.0,
+                200,
+                filter.id.0,
+            )
         }));
     }
 
@@ -1496,9 +1589,11 @@ mod tests {
             maleicacid_tuner_hal2_common::HalError::InvalidState { .. }
         ));
         assert!(runtime.descrambler_diagnostics().iter().any(|record| {
-            record.kind == DescramblerDiagnosticKind::CasTokenProducerUnavailable
-                && record.phase == DescramblerDiagnosticPhase::SetKeyToken
-                && record.descrambler_id == Some(descrambler.id.0)
+            descrambler_set_key_diagnostic_matches(
+                record,
+                descrambler.id.0,
+                DescramblerDiagnosticKind::CasTokenProducerUnavailable,
+            )
         }));
     }
 
@@ -1515,25 +1610,26 @@ mod tests {
             maleicacid_tuner_hal2_common::HalError::InvalidArgument { .. }
         ));
         assert!(runtime.descrambler_diagnostics().iter().any(|record| {
-            record.kind == DescramblerDiagnosticKind::KeyTokenEmpty
-                && record.phase == DescramblerDiagnosticPhase::SetKeyToken
-                && record.descrambler_id == Some(descrambler.id.0)
+            descrambler_set_key_diagnostic_matches(
+                record,
+                descrambler.id.0,
+                DescramblerDiagnosticKind::KeyTokenEmpty,
+            )
         }));
 
         let invalid_len_err = runtime
-            .set_descrambler_key_token(
-                descrambler.id.0,
-                &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17],
-            )
+            .set_descrambler_key_token(descrambler.id.0, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17])
             .unwrap_err();
         assert!(matches!(
             invalid_len_err,
             maleicacid_tuner_hal2_common::HalError::InvalidArgument { .. }
         ));
         assert!(runtime.descrambler_diagnostics().iter().any(|record| {
-            record.kind == DescramblerDiagnosticKind::KeyTokenInvalidLength
-                && record.phase == DescramblerDiagnosticPhase::SetKeyToken
-                && record.descrambler_id == Some(descrambler.id.0)
+            descrambler_set_key_diagnostic_matches(
+                record,
+                descrambler.id.0,
+                DescramblerDiagnosticKind::KeyTokenInvalidLength,
+            )
         }));
     }
 
@@ -1562,9 +1658,11 @@ mod tests {
             maleicacid_tuner_hal2_common::HalError::InvalidState { .. }
         ));
         assert!(runtime.descrambler_diagnostics().iter().any(|record| {
-            record.kind == DescramblerDiagnosticKind::KeyTokenExpired
-                && record.phase == DescramblerDiagnosticPhase::SetKeyToken
-                && record.descrambler_id == Some(descrambler.id.0)
+            descrambler_set_key_diagnostic_matches(
+                record,
+                descrambler.id.0,
+                DescramblerDiagnosticKind::KeyTokenExpired,
+            )
         }));
     }
 
@@ -1606,16 +1704,20 @@ mod tests {
             .unwrap();
 
         assert!(runtime.descrambler_diagnostics().iter().any(|record| {
-            record.kind == DescramblerDiagnosticKind::PacketScrambledWithoutKey
-                && record.phase == DescramblerDiagnosticPhase::PacketPipeline
-                && record.demux_id == Some(demux.id.0)
-                && record.pid == Some(200)
+            descrambler_packet_policy_matches(
+                record,
+                demux.id.0,
+                200,
+                DescramblerDiagnosticKind::PacketScrambledWithoutKey,
+            )
         }));
         assert!(runtime.descrambler_diagnostics().iter().any(|record| {
-            record.kind == DescramblerDiagnosticKind::PacketAssemblySuppressed
-                && record.phase == DescramblerDiagnosticPhase::PacketPipeline
-                && record.demux_id == Some(demux.id.0)
-                && record.pid == Some(200)
+            descrambler_packet_policy_matches(
+                record,
+                demux.id.0,
+                200,
+                DescramblerDiagnosticKind::PacketAssemblySuppressed,
+            )
         }));
     }
 
@@ -1660,12 +1762,13 @@ mod tests {
             .unwrap();
 
         assert!(runtime.descrambler_diagnostics().iter().any(|record| {
-            record.kind == DescramblerDiagnosticKind::PacketSourceFilterGenerationMismatch
-                && record.phase == DescramblerDiagnosticPhase::PacketPipeline
-                && record.demux_id == Some(demux.id.0)
-                && record.pid == Some(200)
-                && record.filter_id == Some(filter.id.0)
-                && record.error.is_some()
+            descrambler_source_filter_validation_matches(
+                record,
+                demux.id.0,
+                200,
+                filter.id.0,
+                DescramblerDiagnosticKind::PacketSourceFilterGenerationMismatch,
+            )
         }));
     }
 
@@ -1710,12 +1813,13 @@ mod tests {
             .unwrap();
 
         assert!(runtime.descrambler_diagnostics().iter().any(|record| {
-            record.kind == DescramblerDiagnosticKind::PacketSourceFilterInvalid
-                && record.phase == DescramblerDiagnosticPhase::PacketPipeline
-                && record.demux_id == Some(demux.id.0)
-                && record.pid == Some(200)
-                && record.filter_id == Some(filter.id.0)
-                && record.error.is_some()
+            descrambler_source_filter_validation_matches(
+                record,
+                demux.id.0,
+                200,
+                filter.id.0,
+                DescramblerDiagnosticKind::PacketSourceFilterInvalid,
+            )
         }));
     }
 
@@ -1781,10 +1885,12 @@ mod tests {
             .assembly_suppression_reasons
             .contains(&PipelineAssemblySuppressionReason::KeylessScrambledWithoutDescrambler));
         assert!(runtime.descrambler_diagnostics().iter().any(|record| {
-            record.kind == DescramblerDiagnosticKind::PacketDescrambled
-                && record.phase == DescramblerDiagnosticPhase::PacketPipeline
-                && record.demux_id == Some(demux.id.0)
-                && record.pid == Some(200)
+            descrambler_packet_policy_matches(
+                record,
+                demux.id.0,
+                200,
+                DescramblerDiagnosticKind::PacketDescrambled,
+            )
         }));
     }
 

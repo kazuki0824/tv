@@ -1,3 +1,4 @@
+use super::packet_pipeline::PacketPid;
 use std::collections::BTreeMap;
 
 const MAX_PES_BUFFER_BYTES: usize = 1024 * 1024;
@@ -17,13 +18,13 @@ struct ContinuityState {
 
 #[derive(Clone, Debug, Default)]
 pub struct ContinuityTracker {
-    states: BTreeMap<u16, ContinuityState>,
+    states: BTreeMap<PacketPid, ContinuityState>,
 }
 
 impl ContinuityTracker {
     pub fn observe(
         &mut self,
-        pid: u16,
+        pid: PacketPid,
         continuity_counter: u8,
         has_payload: bool,
     ) -> ContinuityOutcome {
@@ -47,7 +48,7 @@ impl ContinuityTracker {
         }
     }
 
-    pub fn reset_pid(&mut self, pid: u16) {
+    pub fn reset_pid(&mut self, pid: PacketPid) {
         self.states.remove(&pid);
     }
 }
@@ -55,7 +56,7 @@ impl ContinuityTracker {
 // TS byte stream の分割・resync は common の TsPacketCompletionBuffer だけを正とする。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PesPacket {
-    pub pid: u16,
+    pub pid: PacketPid,
     pub stream_id: u8,
     pub pts_90khz: Option<u64>,
     pub dts_90khz: Option<u64>,
@@ -214,7 +215,7 @@ pub enum PesDropReason {
 
 #[derive(Clone, Debug, Default)]
 pub struct PesAssembler {
-    pid: Option<u16>,
+    pid: Option<PacketPid>,
     buf: Vec<u8>,
     expected_len: Option<usize>,
     unbounded_summary: Option<PesHeaderSummary>,
@@ -226,7 +227,7 @@ pub struct PesAssembler {
 }
 
 impl PesAssembler {
-    pub fn push(&mut self, pid: u16, payload_unit_start: bool, payload: &[u8]) -> Vec<PesPacket> {
+    pub fn push(&mut self, pid: PacketPid, payload_unit_start: bool, payload: &[u8]) -> Vec<PesPacket> {
         let mut out = Vec::new();
         if payload_unit_start {
             if self.unbounded_summary.is_some() {
@@ -347,8 +348,15 @@ impl PesAssembler {
 mod tests {
 
     use super::{ContinuityOutcome, ContinuityTracker, PesAssembler};
+    use super::super::packet_pipeline::PacketPid;
+    use crate::config::ConfigInputPid;
     use maleicacid_tuner_hal2_common::TsPacketCompletionBuffer;
     use maleicacid_tuner_hal2_common::TS_PACKET_SIZE;
+
+
+    fn packet_pid(pid: i32) -> PacketPid {
+        PacketPid::from_config_pid(ConfigInputPid::validate_tpid(pid).expect("valid test pid"))
+    }
 
     fn make_packet(pid: u16, cc: u8) -> [u8; TS_PACKET_SIZE] {
         let mut packet = [0xff; TS_PACKET_SIZE];
@@ -394,13 +402,13 @@ mod tests {
     fn continuity_tracker_flags_duplicate_and_gap() {
         let mut tracker = ContinuityTracker::default();
         assert_eq!(
-            tracker.observe(256, 0, true),
+            tracker.observe(packet_pid(256), 0, true),
             ContinuityOutcome::FirstPacket
         );
-        assert_eq!(tracker.observe(256, 1, true), ContinuityOutcome::InOrder);
-        assert_eq!(tracker.observe(256, 1, true), ContinuityOutcome::Duplicate);
+        assert_eq!(tracker.observe(packet_pid(256), 1, true), ContinuityOutcome::InOrder);
+        assert_eq!(tracker.observe(packet_pid(256), 1, true), ContinuityOutcome::Duplicate);
         assert_eq!(
-            tracker.observe(256, 3, true),
+            tracker.observe(packet_pid(256), 3, true),
             ContinuityOutcome::Discontinuity
         );
     }
@@ -409,26 +417,26 @@ mod tests {
     fn continuity_tracker_ignores_adaptation_only_packets() {
         let mut tracker = ContinuityTracker::default();
         assert_eq!(
-            tracker.observe(256, 0, true),
+            tracker.observe(packet_pid(256), 0, true),
             ContinuityOutcome::FirstPacket
         );
-        assert_eq!(tracker.observe(256, 1, false), ContinuityOutcome::InOrder);
-        assert_eq!(tracker.observe(256, 1, true), ContinuityOutcome::InOrder);
+        assert_eq!(tracker.observe(packet_pid(256), 1, false), ContinuityOutcome::InOrder);
+        assert_eq!(tracker.observe(packet_pid(256), 1, true), ContinuityOutcome::InOrder);
 
         let mut tracker = ContinuityTracker::default();
-        assert_eq!(tracker.observe(300, 7, false), ContinuityOutcome::InOrder);
+        assert_eq!(tracker.observe(packet_pid(300), 7, false), ContinuityOutcome::InOrder);
         assert_eq!(
-            tracker.observe(300, 0, true),
+            tracker.observe(packet_pid(300), 0, true),
             ContinuityOutcome::FirstPacket
         );
 
         let mut tracker = ContinuityTracker::default();
         assert_eq!(
-            tracker.observe(301, 0, true),
+            tracker.observe(packet_pid(301), 0, true),
             ContinuityOutcome::FirstPacket
         );
-        assert_eq!(tracker.observe(301, 0, false), ContinuityOutcome::InOrder);
-        assert_eq!(tracker.observe(301, 1, true), ContinuityOutcome::InOrder);
+        assert_eq!(tracker.observe(packet_pid(301), 0, false), ContinuityOutcome::InOrder);
+        assert_eq!(tracker.observe(packet_pid(301), 1, true), ContinuityOutcome::InOrder);
     }
 
     #[test]

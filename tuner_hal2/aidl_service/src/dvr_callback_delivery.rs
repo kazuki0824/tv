@@ -13,8 +13,8 @@ use binder::Strong;
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
 use maleicacid_tuner_hal2_demux::DvrStatusEvent;
 use maleicacid_tuner_hal2_service_runtime::{
-    CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport, DvrPostCommitNotificationPhase,
-    DvrStatusPollSnapshot,
+    CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport,
+    DvrPostCommitNotificationPhase, DvrStatusPollSnapshot,
 };
 
 use crate::object_handle::AidlObjectHandle;
@@ -62,6 +62,42 @@ fn dvr_status_event_to_hal_callback(
     }
 }
 
+#[derive(Clone, Debug)]
+enum DvrCallbackArtifactLookup {
+    Present,
+    Missing,
+    StoreFailure(HalError),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DvrStatusCallbackDeliveryOutcome {
+    Delivered,
+    ArtifactMissing,
+    StoreFailure,
+    BinderFailure,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DvrCallbackNotifierAvailability {
+    Available,
+    Unavailable,
+}
+
+fn dvr_callback_artifact_lookup(
+    context: &SharedAidlServiceContext,
+    handle: AidlObjectHandle,
+    delivery_context: &'static str,
+) -> DvrCallbackArtifactLookup {
+    match context.dvr_callback_for_owner(handle) {
+        Ok(Some(_)) => DvrCallbackArtifactLookup::Present,
+        Ok(None) => DvrCallbackArtifactLookup::Missing,
+        Err(_) => DvrCallbackArtifactLookup::StoreFailure(HalError::internal(
+            HalInternalKind::InvariantViolation,
+            format!("{delivery_context}: callback store lock poisoned"),
+        )),
+    }
+}
+
 fn poll_dvr_status_snapshot(
     runtime: &SharedTunerRuntime,
     handle: AidlObjectHandle,
@@ -75,17 +111,55 @@ fn poll_dvr_status_snapshot(
     guard.dvr_status_poll_snapshot_for_aidl_object(handle.object_id(), handle.generation())
 }
 
-fn dvr_callback_is_available(
+fn record_dvr_artifact_lookup_failure(
     context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
-) -> Result<bool, HalError> {
-    match context.dvr_callback_for_owner(handle) {
-        Ok(Some(_)) => Ok(true),
-        Ok(None) => Ok(false),
-        Err(_) => Err(HalError::internal(
+    dvr_phase: DvrPostCommitNotificationPhase,
+    primary: HalError,
+) -> Result<(), HalError> {
+    match finish_dvr_callback_delivery_failure(
+        &context.runtime(),
+        handle,
+        CallbackDeliveryFailurePhase::CallbackArtifactLookup,
+        dvr_phase,
+        primary,
+    ) {
+        Ok(()) => Ok(()),
+        Err(HalError::ComposedFailure { .. }) => Err(HalError::internal(
             HalInternalKind::InvariantViolation,
-            "callback store lock poisoned while reading DVR callback",
+            "DVR callback artifact lookup diagnostic accounting failed",
         )),
+        Err(_) => Ok(()),
+    }
+}
+
+fn dvr_callback_notifier_availability(
+    context: &SharedAidlServiceContext,
+    handle: AidlObjectHandle,
+) -> Result<DvrCallbackNotifierAvailability, HalError> {
+    match dvr_callback_artifact_lookup(context, handle, "IDvrCallback.notifier_preflight") {
+        DvrCallbackArtifactLookup::Present => Ok(DvrCallbackNotifierAvailability::Available),
+        DvrCallbackArtifactLookup::Missing => {
+            record_dvr_artifact_lookup_failure(
+                context,
+                handle,
+                DvrPostCommitNotificationPhase::StatusNotifierRuntimeFailure,
+                HalError::callback_failed(
+                    "IDvrCallback.notifier_preflight",
+                    "DVR callback artifact missing before notifier start",
+                ),
+            )?;
+            Ok(DvrCallbackNotifierAvailability::Unavailable)
+        }
+        DvrCallbackArtifactLookup::StoreFailure(error) => {
+            record_dvr_artifact_lookup_failure(
+                context,
+                handle,
+                DvrPostCommitNotificationPhase::StatusNotifierRuntimeFailure,
+                error,
+            )?;
+            Ok(DvrCallbackNotifierAvailability::Unavailable)
+        }
     }
 }
 
@@ -117,15 +191,25 @@ fn deliver_dvr_status_event(
     event: DvrStatusEvent,
     delivery_context: &'static str,
     dvr_phase: DvrPostCommitNotificationPhase,
-) -> Result<bool, HalError> {
+) -> Result<DvrStatusCallbackDeliveryOutcome, HalError> {
     let callback = match context.dvr_callback_for_owner(handle) {
         Ok(Some(callback)) => callback,
-        Ok(None) => return Ok(false),
+        Ok(None) => {
+            record_dvr_artifact_lookup_failure(
+                context,
+                handle,
+                dvr_phase,
+                HalError::callback_failed(delivery_context, "DVR callback artifact missing"),
+            )?;
+            return Ok(DvrStatusCallbackDeliveryOutcome::ArtifactMissing);
+        }
         Err(_) => {
-            return Err(HalError::internal(
+            let primary = HalError::internal(
                 HalInternalKind::InvariantViolation,
                 format!("{delivery_context}: callback store lock poisoned"),
-            ));
+            );
+            record_dvr_artifact_lookup_failure(context, handle, dvr_phase, primary)?;
+            return Ok(DvrStatusCallbackDeliveryOutcome::StoreFailure);
         }
     };
     if let Err(error) = dvr_status_event_to_hal_callback(&callback, event) {
@@ -138,9 +222,9 @@ fn deliver_dvr_status_event(
             dvr_phase,
             primary,
         )?;
-        return Ok(false);
+        return Ok(DvrStatusCallbackDeliveryOutcome::BinderFailure);
     }
-    Ok(true)
+    Ok(DvrStatusCallbackDeliveryOutcome::Delivered)
 }
 
 fn dvr_status_notifier_loop(
@@ -267,7 +351,11 @@ pub fn start_dvr_status_notifier(
         || !snapshot.callback_present
         || snapshot.callback_unhealthy
         || !snapshot.status_reporting_enabled
-        || !dvr_callback_is_available(context, handle)?
+    {
+        return Ok(());
+    }
+    if dvr_callback_notifier_availability(context, handle)?
+        != DvrCallbackNotifierAvailability::Available
     {
         return Ok(());
     }
@@ -404,6 +492,7 @@ mod tests {
     fn new_test_callback(state: Arc<CallbackState>) -> Strong<dyn IDvrCallback> {
         BnDvrCallback::new_binder(TestDvrCallback { state }, BinderFeatures::default())
     }
+
 
     fn record_dvr_callback_registration_for_test(
         runtime: &SharedTunerRuntime,

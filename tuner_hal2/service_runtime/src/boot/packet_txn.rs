@@ -22,6 +22,10 @@ fn descramble_failure_for_ts_validation_error(error: TsPacketValidationError) ->
     }
 }
 
+fn packet_pid_from_descrambler_pid(pid: super::DescramblerPid) -> PacketPid {
+    PacketPid::from_descrambler_pid_for_service_runtime_boundary(pid)
+}
+
 fn packet_descramble_policy_failure(failure: DescrambleFailure) -> PacketDescramblePolicyFailure {
     match failure {
         DescrambleFailure::NoKey => PacketDescramblePolicyFailure::NoKey,
@@ -233,7 +237,7 @@ impl TunerServiceRuntime {
         demux_generation: u64,
         packet_pid: PacketPid,
     ) -> (Vec<ActiveDescramblerSnapshot>, Vec<PipelineDiagnostic>) {
-        let current_pid = packet_pid.get() as u16;
+        let current_pid = packet_pid;
         let claim_sets = self
             .registry
             .resolved_descrambler_claims_for_demux(demux_id, demux_generation);
@@ -241,25 +245,29 @@ impl TunerServiceRuntime {
         let mut diagnostics = Vec::new();
         for claim_set in claim_sets {
             let claims = claim_set.claims;
-            let mut pids = BTreeSet::new();
-            let mut source_filter_ids_by_pid: BTreeMap<u16, BTreeSet<i32>> = BTreeMap::new();
+            let mut descrambler_pids = BTreeSet::new();
+            let mut packet_pids = BTreeSet::new();
+            let mut source_filter_ids_by_pid: BTreeMap<PacketPid, BTreeSet<i32>> = BTreeMap::new();
             for claim in claims {
-                let pid = claim.pid().0;
+                let descrambler_pid = claim.pid();
+                let pid = packet_pid_from_descrambler_pid(descrambler_pid);
                 if pid != current_pid {
                     continue;
                 }
                 let Some(source) = claim.source_filter_ref() else {
-                    pids.insert(pid);
+                    descrambler_pids.insert(descrambler_pid);
+                    packet_pids.insert(pid);
                     continue;
                 };
                 match self.validate_descrambler_source_filter(
                     demux_id,
                     demux_generation,
                     source.filter_id,
-                    pid,
+                    descrambler_pid,
                 ) {
                     Ok(generation) if generation == source.generation => {
-                        pids.insert(pid);
+                        descrambler_pids.insert(descrambler_pid);
+                    packet_pids.insert(pid);
                         source_filter_ids_by_pid
                             .entry(pid)
                             .or_default()
@@ -303,11 +311,12 @@ impl TunerServiceRuntime {
                     }
                 }
             }
-            if pids.is_empty() {
+            if packet_pids.is_empty() {
                 continue;
             }
             snapshots.push(ActiveDescramblerSnapshot {
-                pids,
+                descrambler_pids,
+                packet_pids,
                 key_slot: claim_set.key_slot,
                 source_filter_ids_by_pid,
             });
@@ -318,7 +327,7 @@ impl TunerServiceRuntime {
     fn record_descramble_failure_policy(
         &mut self,
         demux_id: i32,
-        pid: u16,
+        pid: PacketPid,
         failure: DescrambleFailure,
     ) -> DescramblePacketFlow {
         self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::packet_policy(
@@ -340,15 +349,36 @@ impl TunerServiceRuntime {
         }
     }
 
+    fn record_descramble_failure_policy_without_pid(
+        &mut self,
+        demux_id: i32,
+        failure: DescrambleFailure,
+    ) -> DescramblePacketFlow {
+        self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::packet_policy_without_pid(
+            demux_id,
+            diagnostic_kind_for_descramble_failure(failure),
+        ));
+        match packet_policy_for_descramble_failure(failure) {
+            PacketPolicyAction::RecordPassThroughAndDropAssembly => {
+                self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::packet_policy_without_pid(
+                    demux_id,
+                    DescramblerDiagnosticKind::PacketAssemblySuppressed,
+                ));
+                DescramblePacketFlow::RecordPassThroughAndDropAssembly
+            }
+            PacketPolicyAction::DropAndDiagnose => DescramblePacketFlow::Drop,
+            PacketPolicyAction::DiagnoseOnly => DescramblePacketFlow::DiagnoseOnly,
+        }
+    }
+
     fn source_filter_descramble_policy_diagnostics(
         snapshots: &[ActiveDescramblerSnapshot],
         packet_pid: PacketPid,
         failure: DescrambleFailure,
     ) -> Vec<PipelineDiagnostic> {
-        let pid = packet_pid.get() as u16;
         snapshots
             .iter()
-            .filter_map(|snapshot| snapshot.source_filter_ids_for_pid(pid))
+            .filter_map(|snapshot| snapshot.source_filter_ids_for_packet_pid(packet_pid))
             .flat_map(|ids| ids.iter().copied())
             .map(|filter_id| {
                 PipelineDiagnostic::source_filter_descramble_policy_failure(
@@ -369,9 +399,8 @@ impl TunerServiceRuntime {
         let validated_packet = match ValidatedTsPacket::validate(packet) {
             Ok(packet) => packet,
             Err(failure) => {
-                let flow = self.record_descramble_failure_policy(
+                let flow = self.record_descramble_failure_policy_without_pid(
                     demux_id,
-                    0,
                     descramble_failure_for_ts_validation_error(failure),
                 );
                 return DescramblePacketDecision {
@@ -382,7 +411,6 @@ impl TunerServiceRuntime {
             }
         };
         let packet_pid = validated_packet.pid();
-        let pid = packet_pid.get() as u16;
         if validated_packet.scrambling_control() == 0 {
             return DescramblePacketDecision {
                 packet: *packet,
@@ -396,18 +424,18 @@ impl TunerServiceRuntime {
         let mut saw_target_descrambler = false;
         for snapshot in snapshots
             .iter()
-            .filter(|snapshot| snapshot.targets_pid(pid))
+            .filter(|snapshot| snapshot.targets_packet_pid(packet_pid))
         {
             saw_target_descrambler = true;
             let Some(key_slot) = snapshot.key_slot.as_ref() else {
                 continue;
             };
             let mut candidate = *packet;
-            match descramble_ts_packet_in_place(&mut candidate, &snapshot.pids, key_slot) {
+            match descramble_ts_packet_in_place(&mut candidate, &snapshot.descrambler_pids, key_slot) {
                 Ok(DescrambleOutcome::Descrambled { .. }) => {
                     self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::packet_policy(
                         demux_id,
-                        pid,
+                        packet_pid,
                         DescramblerDiagnosticKind::PacketDescrambled,
                     ));
                     return DescramblePacketDecision {
@@ -424,7 +452,7 @@ impl TunerServiceRuntime {
                     };
                 }
                 Err(failure) => {
-                    let flow = self.record_descramble_failure_policy(demux_id, pid, failure);
+                    let flow = self.record_descramble_failure_policy(demux_id, packet_pid, failure);
                     let mut diagnostics = validation_diagnostics.clone();
                     diagnostics.extend(Self::source_filter_descramble_policy_diagnostics(
                         &snapshots, packet_pid, failure,
@@ -443,7 +471,7 @@ impl TunerServiceRuntime {
         } else {
             DescrambleFailure::ScrambledPidNotRegistered
         };
-        let flow = self.record_descramble_failure_policy(demux_id, pid, failure);
+        let flow = self.record_descramble_failure_policy(demux_id, packet_pid, failure);
         let mut diagnostics = validation_diagnostics;
         diagnostics.extend(Self::source_filter_descramble_policy_diagnostics(
             &snapshots, packet_pid, failure,
@@ -472,12 +500,12 @@ impl TunerServiceRuntime {
                 PipelineDiagnostic::KeylessScrambledAssemblySuppressed { pid } => *pid,
                 _ => return None,
             };
-            u16::try_from(pid.get()).ok()
+            Some(pid)
         });
         for pid in pids {
             let keyless_claim = self
                 .registry
-                .descrambler_keyless_claim_exists_for_demux_pid(demux_id, demux_generation, pid);
+                .descrambler_keyless_claim_exists_for_demux_packet_pid(demux_id, demux_generation, pid);
             if keyless_claim {
                 self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::packet_policy(
                     demux_id,

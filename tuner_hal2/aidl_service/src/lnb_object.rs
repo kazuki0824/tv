@@ -4,8 +4,8 @@ use maleicacid_tuner_hal2_binder_adapter::AidlMethodCall;
 
 use crate::object_handle::{AidlObjectHandle, AidlObjectHandleError, AidlObjectKind};
 use crate::object_runtime::{
-    drop_leak_object_from_drop, execute_callback_unregistration_runtime_use_case,
-    execute_lnb_callback_registration_runtime_use_case,
+    drop_leak_object_from_drop,
+    execute_callback_unregistration_runtime_use_case, execute_lnb_callback_registration_runtime_use_case,
 };
 use crate::service_context::{SharedAidlServiceContext, SharedTunerRuntime};
 
@@ -37,6 +37,8 @@ impl LnbAidlObject {
         self.context.runtime()
     }
 
+
+
     pub(crate) fn set_callback_nullable_for_aidl(
         &self,
         callback: Option<&Strong<dyn ILnbCallback>>,
@@ -59,7 +61,11 @@ impl LnbAidlObject {
         &self,
         callback: &Strong<dyn ILnbCallback>,
     ) -> BinderResult<()> {
-        execute_lnb_callback_registration_runtime_use_case(&self.context, self.handle, callback)
+        execute_lnb_callback_registration_runtime_use_case(
+            &self.context,
+            self.handle,
+            callback,
+        )
     }
 }
 

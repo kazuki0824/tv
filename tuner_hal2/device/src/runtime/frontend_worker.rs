@@ -96,16 +96,41 @@ impl FrontendWorkerDetachedJoin {
 }
 
 #[derive(Debug)]
-pub enum FrontendWorkerStopTicket {
+enum FrontendWorkerStopTicketKind {
     Immediate(FrontendWorkerStopOutcome),
     Join(FrontendWorkerDetachedJoin),
 }
 
+#[derive(Debug)]
+pub struct FrontendWorkerStopTicket {
+    kind: FrontendWorkerStopTicketKind,
+}
+
 impl FrontendWorkerStopTicket {
+    fn immediate(outcome: FrontendWorkerStopOutcome) -> Self {
+        Self { kind: FrontendWorkerStopTicketKind::Immediate(outcome) }
+    }
+
+    fn join(join: FrontendWorkerDetachedJoin) -> Self {
+        Self { kind: FrontendWorkerStopTicketKind::Join(join) }
+    }
+
+    pub fn worker_generation(&self) -> Option<u64> {
+        match &self.kind {
+            FrontendWorkerStopTicketKind::Immediate(FrontendWorkerStopOutcome::NotRunning) => None,
+            FrontendWorkerStopTicketKind::Immediate(
+                FrontendWorkerStopOutcome::CancelRequested { generation, .. }
+                | FrontendWorkerStopOutcome::Completed { generation, .. }
+                | FrontendWorkerStopOutcome::StopRequestFailed { generation, .. },
+            ) => Some(*generation),
+            FrontendWorkerStopTicketKind::Join(join) => Some(join.generation),
+        }
+    }
+
     pub fn complete(self) -> FrontendWorkerStopOutcome {
-        match self {
-            FrontendWorkerStopTicket::Immediate(outcome) => outcome,
-            FrontendWorkerStopTicket::Join(join) => join.complete(),
+        match self.kind {
+            FrontendWorkerStopTicketKind::Immediate(outcome) => outcome,
+            FrontendWorkerStopTicketKind::Join(join) => join.complete(),
         }
     }
 }
@@ -367,11 +392,11 @@ impl FrontendWorkerRegistry {
     ) -> FrontendWorkerStopTicket {
         let key = FrontendWorkerKey { frontend_id, kind };
         let Some(mut slot) = self.slots.remove(&key) else {
-            return FrontendWorkerStopTicket::Immediate(FrontendWorkerStopOutcome::NotRunning);
+            return FrontendWorkerStopTicket::immediate(FrontendWorkerStopOutcome::NotRunning);
         };
 
         if let Some((result, exit)) = slot.completed_result() {
-            return FrontendWorkerStopTicket::Immediate(FrontendWorkerStopOutcome::Completed {
+            return FrontendWorkerStopTicket::immediate(FrontendWorkerStopOutcome::Completed {
                 frontend_id,
                 kind,
                 generation: slot.generation,
@@ -386,7 +411,7 @@ impl FrontendWorkerRegistry {
             Ok(guard) => guard,
             Err(_) => {
                 self.slots.insert(key, slot);
-                return FrontendWorkerStopTicket::Immediate(
+                return FrontendWorkerStopTicket::immediate(
                     FrontendWorkerStopOutcome::StopRequestFailed {
                         frontend_id,
                         kind,
@@ -404,7 +429,7 @@ impl FrontendWorkerRegistry {
         drop(guard);
         slot.cancel.store(true, Ordering::SeqCst);
 
-        FrontendWorkerStopTicket::Join(FrontendWorkerDetachedJoin {
+        FrontendWorkerStopTicket::join(FrontendWorkerDetachedJoin {
             frontend_id,
             kind,
             generation,
@@ -580,10 +605,7 @@ mod tests {
                 FrontendWorkerKind::Tune,
                 4,
                 |_| -> Result<(), HalError> {
-                    Err(HalError::cleanup_failed(
-                        "frontend worker test",
-                        "forced failure",
-                    ))
+                    Err(HalError::cleanup_failed("frontend worker test", "forced failure"))
                 },
             )
             .unwrap();
@@ -649,10 +671,7 @@ mod tests {
                 FrontendWorkerKind::Tune,
                 9,
                 |_| -> Result<(), HalError> {
-                    Err(HalError::cleanup_failed(
-                        "frontend worker test",
-                        "forced failure",
-                    ))
+                    Err(HalError::cleanup_failed("frontend worker test", "forced failure"))
                 },
             )
             .unwrap();
@@ -719,10 +738,7 @@ mod tests {
                 FrontendWorkerKind::Tune,
                 12,
                 |_| -> Result<(), HalError> {
-                    Err(HalError::cleanup_failed(
-                        "frontend worker test",
-                        "pending failure",
-                    ))
+                    Err(HalError::cleanup_failed("frontend worker test", "pending failure"))
                 },
             )
             .unwrap();

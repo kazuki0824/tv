@@ -8,7 +8,7 @@ use super::{
 use maleicacid_tuner_hal2_device::FrontendWorkerStopTicket;
 
 impl TunerServiceRuntime {
-    pub fn mark_frontend_scan_session_callback_failed(
+    pub(crate) fn mark_frontend_scan_session_callback_failed(
         &mut self,
         frontend_id: i32,
         generation: u64,

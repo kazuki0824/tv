@@ -10,12 +10,12 @@
 - `FirstErrorCollector` を primary + cleanup failure composition の代替にしない。collector は同一 cleanup phase 内の cleanup step 間 first cleanup error を集める部品としてだけ使う。
 - primary + cleanup failure の実装は共通 failure composition helper 群へ寄せる。個別 transaction body で同等の precedence 判定や文字列 detail 合成をコピーしない。
 - post-allocation / post-registration failure path では、object table rollback、runtime cleanup、callback rollback、diagnostic / cleanup-failed marking を可能な限りすべて試行する。途中の `?` で後続 cleanup を飛ばさない。
-- rollback / public close / owner-loss cleanup では `Option::None` / missing target を無言成功扱いしない。missing を許容する処理は read-only query、idempotent stop、best-effort telemetry、defensive unavailable path など、DESIGN_JA.md が許容した範囲に限る。
-- rollback / public close / owner-loss cleanup の正本に void / best-effort-only cleanup を使わない。失敗を表面化できる戻り値を持つ operation に接続する。
-- cleanup-failed marking、callback unhealthy marking、Drop leak quarantine、owner-loss cleanup failed state、scan terminal failure record、Drop から返せない drop-leak error record、packet path の descrambler source-filter validation failure は必須診断として扱い、best-effort log 扱いにしない。
-- `setKeyToken(VOID)` のように session state と token table refcount の両方を変える経路では、clear-key の状態遷移順序を `DESIGN_JA.md` の descrambler transaction 契約へ寄せる。外部 caller が plan / prepared token / commit を個別に組み立てられる public split API を置かず、full transaction façade 内で stale plan 検証、session clear commit、old token release、release failure diagnostic を固定する。old token release failure を理由に session key を旧 token へ戻してはならない。
-- packet count、malformed count、throughput counter、補助ログなどの best-effort telemetry は primary failure を上書きしない。必須診断 store を持つ場合でも、service lifetime 中に unbounded に増える `Vec` を正本にしない。bounded store と observable dropped/failure counter に分離する。
-- Drop は public close の代替にしない。`Drop` 実装は drop-leak 入口だけを呼び、object 種別固有 cleanup を書かない。
+- missing target の意味論は `DESIGN_JA.md` の missing target failure 契約を正とする。実装側では `Option::None` / missing target を空分岐や `.is_some()` だけで無言成功扱いにせず、許容範囲が DESIGN にない場合は failure / diagnostic helper へ接続する。
+- rollback / public close / owner-loss cleanup の実装入口には、失敗を戻り値または diagnostic に接続できる operation を使う。void / best-effort-only helper を必須 cleanup の正本入口にしない。
+- 必須診断と best-effort telemetry の分類は `DESIGN_JA.md` を正とする。必須診断対象の実装では、ログだけ・counter だけ・`.ok()` だけにせず、対応する diagnostic / unhealthy / quarantine / cleanup-failed helper へ接続する。
+- `setKeyToken(VOID)` のように session state と token table refcount の両方を変える経路では、`DESIGN_JA.md` の descrambler transaction 契約を実装正本として参照し、AIDL 層・descrambler crate・個別 helper に同じ phase order を再定義しない。
+- best-effort telemetry は primary failure を上書きしない。必須診断 store を持つ場合でも、service lifetime 中に unbounded に増える `Vec` を正本にせず、bounded store と observable dropped/failure counter に分離する。
+- `Drop` 実装には object 種別固有 cleanup を書かず、`DESIGN_JA.md` の Drop leak 専用入口だけを呼ぶ。public close 相当の cleanup policy を `Drop` 側で再定義しない。
 
 ## 2. AIDL / service_runtime 境界の実装規約
 
@@ -36,8 +36,8 @@
 - unavailable / unsupported / plan-only 経路で、AIDL method body に plan-only public helper や public thin wrapper を残さない。`aidl_service::object_runtime::plan_unavailable_object_method_use_case()` は public façade として維持し、内部では object live / generation / kind、request build、`RuntimeExecutableRequest` validation、dispatch planning までを行う plan-only helper を使う。domain operation を実行しない経路で `ObjectMethodDispatchProof` を発行して捨ててはならない。
 - close method は `ObjectCloseTxn` pattern を使う。close preflight、`Closing` 遷移、typed domain cleanup command、cleanup-failed marking を AIDL method body へ戻さない。
 - close finalization で複数 public runtime entry を unregister する場合は、destructive unregister を開始する前に対象 entry の存在を全件 preflight する。preflight failure がある状態で一部 runtime unregister を始めてはならない。
-- close finalization / cleanup-failed marking の cascade helper では root object の terminal lifecycle と descendant object の terminal lifecycle を混同しない。root の unexpected `Closed` / `Quarantined` は `InvalidLifecycle` として返し、already terminal descendant は親 close retry / finalization 対象から除外する。
-- close cleanup / finalization failure を cleanup-failed marking する場合、存在しない cleanup step 名を追加してはならない。pre-finalization cleanup failure は callback cleanup=`CleanupStep::UnregisterRuntime`、typed domain cleanup command=`CleanupStep::ReleaseBackend`、descendant DVR notifier stop=`CleanupStep::StopWorker` に分類する。object table entry lookup / close commit failure は `CleanupStep::ReleaseLedger`、public runtime unregister failure は `CleanupStep::UnregisterRuntime` として既存 typed step に分類する。
+- close finalization / cleanup-failed marking の cascade helper では、root / descendant lifecycle 判定を `DESIGN_JA.md` の close cascade 契約から派生させる。helper 側で terminal lifecycle の新しい意味論を定義しない。
+- close cleanup / finalization failure を cleanup-failed marking する場合、存在しない cleanup step 名を追加してはならない。step 対応は `DESIGN_JA.md` の close cascade 契約を正とし、helper 側で別表を持たない。
 - callback artifact cleanup helper へ raw `SharedTunerRuntime` を渡さない。frontend owner-loss など domain cleanup 内からも `SharedAidlServiceContext` owned callback store helper を使う。
 - close cleanup 系 helper は `Closing` を許すため、close preflight に使わない。通常 method、close preflight、close cleanup で lifecycle helper を混用しない。
 
@@ -86,61 +86,49 @@ Wrapper を置くべきでない条件:
 - frontend worker の blocking join を `TunerServiceRuntime` lock 保持中に実行しない。runtime lock 内では cancel 設定済み join ticket 取得までに限定し、join は lock 外で行う。
 - worker start 成功後に fallible commit を置く場合、commit failure path で起動済み worker を stop/join し、runtime snapshot / demux snapshot rollback を試行する。
 - `CallbackRegistryUpdate::Missing` は rollback / public close / owner-loss cleanup で空分岐にしない。callback store の削除対象と runtime registry clear 結果を照合する。
-- callback 未登録は Binder delivery failure ではない。AIDL delivery façade は callback artifact absence / store failure を primary error として `finish_callback_delivery_failure_use_case()` へ渡すが、service_runtime はこの phase だけで runtime registry unhealthy marking を行わない。実際に callback `Strong` を取得した後の Binder delivery failure、event conversion failure、post-commit notification failure では、service_runtime の finish use-case が診断・unhealthy marking・failure composition を所有する。
-- callback artifact store clear の production entry は `OwnerCallbackCleanupArtifactCommand` を受ける bridge に限定する。`AidlObjectHandle` を直接受けて callback store を clear する helper は private raw helper または `#[cfg(test)]` helper に限定し、production code から呼ばない。
+- AIDL delivery façade は callback artifact lookup、event conversion、Binder callback execution を phase として区別し、phase meaning は `DESIGN_JA.md` の callback artifact lookup / delivery failure 境界を正とする。delivery module 側で unhealthy marking 条件を再定義しない。
+- callback artifact store clear の production entry は、owner callback cleanup では `OwnerCallbackCleanupArtifactCommand`、service boot reset では `CallbackArtifactResetCommand` を受ける bridge に限定する。`AidlObjectHandle` を直接受けて callback store を clear する helper と all-artifact reset raw helper は private raw helper または `#[cfg(test)]` helper に限定し、production code から直接呼ばない。
 - callback artifact store、DVR notifier store、filter event dispatcher bridge、drop-leak diagnostic store は process-global `OnceLock` / `static Mutex` に置かない。これらは `AidlServiceContext` または `TunerServiceRuntime` instance field の lifetime に閉じる。drop-leak diagnostic store の lock poison は `poisoned.into_inner()` で吸収せず、context-owned failure counter または reset failure として表面化する。
-- `IFilter.setDataSource(source)` の non-null source relation validation は、sink/source object の lifetime / generation / kind 確認後に行う。same-demux 検証と self-source 検証を lifetime check より前に置かない。
-- `DemuxRuntime::set_filter_source_non_null()` と `setDataSource(null)` 相当の source disconnect は `SourceBoundaryTxn` を通す。source boundary を迂回して sink source だけを更新しない。non-null source commit は `SourceBoundaryTxn::apply()` 内に含め、boundary cleanup と commit を別 transaction に分離しない。source boundary mutation 後の failure は snapshot rollback を試行し、rollback failure は demux quarantine と `SourceBoundaryRollbackFailed` / cleanup failure として表面化する。
+- `IFilter.setDataSource(source)` の non-null source relation validation は service_runtime use-case へ置き、AIDL method body に same-demux / self-source / lifecycle precedence を手書きしない。
+- `DemuxRuntime::set_filter_source_non_null()` と `setDataSource(null)` 相当の source disconnect は `SourceBoundaryTxn` を通す。source boundary の状態遷移、rollback、quarantine 条件は `DESIGN_JA.md` を正とし、runtime helper 側で別定義しない。
 
 ## 7. 静的チェックの位置づけ
 
 - 静的チェックは規約違反候補を検出する補助確認であり、build / unit test / atest / VTS / 実機確認の代替にしない。
 - 静的チェックを追加する場合は、何を検出するかを明示し、完了判定の主根拠にしない。
 - テストは公開関数、戻り値、状態、診断を直接検査し、同じソースファイルの文字列検索で完了判定しない。
-- close cascade helper では root object の terminal lifecycle と descendant object の terminal lifecycle を混同しない。root の unexpected terminal は invariant failure とし、already terminal descendant は close retry / finalization 対象から除外する。
+- close cascade helper では root object と descendant object の lifecycle 判定を混同しない。判定の意味論は `DESIGN_JA.md` を正とし、CODE_CONVENTION 側で再定義しない。
 - public runtime unregister preflight は destructive unregister 前に registry entry と runtime state の両方を確認する。片側 missing を `.is_some()` のみで成功扱いにしない。
 
 - `ObjectMethodDispatchProof` の生成口を `service_runtime::object_method_txn` 外へ出さない。`TunerServiceRuntime` の public method や crate root re-export で proof を発行できる surface を置かない。
 - request-builder 経路、child open、callback registration は、owner live / generation / kind 確認、builder 実行、`RuntimeExecutableRequest` validation、dispatch planning、proof 発行を `object_method_txn` helper 境界に閉じる。AIDL helper が `aidl_object_live()`、`AidlMethodAdapter::plan()`、`runtime_executable_request()` 抽出、dispatch proof 発行を手組みしない。
 - 必須診断 store は bounded store と dropped counter を持つ。service lifetime 中に増え続ける startup / descrambler / child open rollback / DVR post-commit / filter callback delivery 診断を無制限 `Vec` へ直接積まない。
-- `setKeyToken(non-VOID)` は session replace 前に old token を release しない。new token acquire 後に session replace を commit し、replace 失敗時は new token rollback release を composed failure として返す。old token release は replace 成功後 cleanup として行う。
-- AV handle release は backing 欠落時に transient backing を生成しない。marker / backing 実体不整合は backing failure として返す。
+- `setKeyToken(non-VOID)` の phase order は `DESIGN_JA.md` の descrambler transaction 契約を正とする。AIDL 層、descrambler crate、個別 helper に同じ順序判定を再定義せず、service_runtime の full transaction use-case へ接続する。
+- AV handle release の backing 欠落・marker 不整合の意味論は `DESIGN_JA.md` の AV shared backing 契約を正とする。実装側では transient backing を生成する個別回避コードを置かず、AV shared backing runtime の outcome / diagnostic helper へ接続する。
 
 - bounded diagnostic store は reset 時にも同じ bounded store 型を使い、`clear()` で records と dropped counter を同時に初期化する。reset 用に unbounded `Vec` へ戻してはならない。
 
 - Dispatch-proof consumption cleanup: after a service_runtime use-case switches from `CommandPlan` / `RuntimeExecutableRequest` to `ObjectMethodExecutionToken`, remove the former command-plan façade and do not pass `ObjectMethodTxnPlan` or `ObjectMethodDispatchProof` through execute closures when the closure does not consume it. Binder-facing wrappers that only map an already-internal HAL helper to `BinderResult` must be removed unless a production AIDL call site uses them.
 - `ObjectMethodExecutionToken` を受け取る service_runtime `*_for_object` use-case は、token を最初の runtime-critical operation として消費してから、`public_runtime_id_for_object_method()`、`public_entry_for_object_method()`、frontend entry 解決、owner relation 検証、source relation 検証、runtime state dependent request build を行う。token 消費前に object/runtime id を再解決しない。AIDL closure や top-level façade へ `ObjectMethodDispatchProof` を渡してはならない。
 
-- root `ITuner` query / command は `RootQueryRequest` / `RootQueryResponse` / `RootCommandRequest` の DTO 境界を使う。`query_api.rs` に planning、unsupported / unavailable helper、mutable precedence、任意 closure executor を置かない。
-- object pure query は `ObjectQueryRequest` / `ObjectQueryResponse` の DTO 境界を使う。query façade は `&mut TunerServiceRuntime` や任意 closure を AIDL 側から受け取ってはならない。frontend status / readiness query helper は `FrontendRegistryEntry` や registry/runtime tuple を返さず、service_runtime 側で `ObjectFrontendStatusSnapshot` を構築して返す。
-- `PipelineDiagnostic` は failure 種別ごとの typed enum とし、required context を `Option` field bag で表現しない。typed `HalError` / `DemuxRuntimeError` / descramble policy failure を `format!(...)` 文字列だけに丸めない。
-- transaction 正本の constructor / plan / commit は所有 module 外から独自 phase order を組み立てられる public API にしない。`SourceBoundaryTxn`、service_runtime-owned descrambler session transaction、`LnbLifecycleTxn` の外部 caller は owning module use-case façade を通す。
+- root `ITuner` query / command、object pure query、packet diagnostic、transaction 正本の具体的な公開契約は `DESIGN_JA.md` の型付き境界契約を正とする。実装側では DTO façade / typed diagnostic constructor / owning-module use-case façade を使い、`query_api.rs` への任意 closure executor 追加、registry entry 返却、`format!(...)` だけの diagnostic 丸め、外部 caller が phase order を組める public constructor / plan / commit 追加を行わない。
 
 ## 8. 型付き境界 hardening
 
-- Root query response は registry entry を AIDL 層へ返してはならない。`FrontendRegistryEntry`、runtime registry entry、object table entry は service_runtime 内部の正本であり、AIDL 層へ返す場合は専用 snapshot DTO に変換する。
-- Object query response は `FrontendRegistryEntry` を返してはならない。frontend status / readiness policy は service_runtime 側 DTO で確定し、AIDL 層は AIDL 型への変換だけを行う。
-- `IDemux.getAvSyncHwId(filter)` のような fallible local Binder downcast は、対象 object live / generation / kind と dispatch preflight の後に実行する AIDL input conversion helper だけで扱う。query façade に arbitrary closure や `&mut TunerServiceRuntime` を渡してはならない。
-- capability token / transaction plan は public enum variant や public field で偽造可能にしない。`DescramblerReplaceKeyPlan` は private fields の struct にし、replace/clear の stale plan 検出を transaction 内で固定する。
-- LNB Drop leak は public close reason として選択可能にしない。Drop leak 専用入口だけから record/quarantine し、通常 close / owner-loss close の代替にしない。
-- `PipelineDiagnostic` に `detail: String` fallback variant を置かない。AV delivery non-delivered outcome も typed variant に分け、PID/filter id/typed error または typed outcome を保持する。
-- `transaction_registry.rs` は dispatch target mapping だけを持つ。coverage 表示・接続済み表示・stale 未接続表示を同じ表に再導入しない。
+- Root / object query、capability token、transaction phase、packet diagnostic、LNB lifecycle reason、transaction registry の意味論は `DESIGN_JA.md` の「型付き境界の保守契約」を正とする。この節では意味論を再定義せず、実装時の禁止形だけを列挙する。
+- AIDL 変換層は registry entry、runtime entry、object table entry を返す helper を新設しない。AIDL 型へ渡す直前は、service_runtime が作成した snapshot DTO だけを入力にする。
+- query façade は `&mut TunerServiceRuntime`、任意 closure、registry/runtime tuple を AIDL 側から受け取らない。fallible local Binder downcast は、object live / generation / kind と dispatch preflight 後の AIDL input conversion helper に限定する。
+- capability token / transaction plan は public enum variant、public field、public constructor で偽造可能にしない。外部 caller へ phase order を組ませる代わりに、owning module use-case façade へ接続する。
+- Drop leak、descrambler clear / replace、LNB apply、source boundary、transaction registry、pipeline diagnostic の個別契約は `DESIGN_JA.md` を参照し、CODE_CONVENTION 側で別の状態名、戻り値、phase order、必須 context を定義しない。
+- `ObjectMethodDispatchProof` を AIDL closure へ渡さない。proof は `object_method_txn` 内で即時消費し、後続の domain use-case には `ObjectMethodExecutionToken` だけを渡す。
+- `PipelineDiagnosticKind` のような kind-only enum、`detail: String` fallback variant、registry entry を返す query helper、coverage / 接続済み表示を持つ transaction registry 表を再導入しない。
 
-- `ObjectMethodTxnTarget` は public constructor を持たせない。AIDL 層から target を直接構築させず、service_runtime の object method/query entry point が object id / generation / kind から private target を生成する。
-- Descrambler clear-key / replace-key は plan / validate / prepared token / commit の public split API を置かない。key table 操作まで含む full transaction façade に限定し、transaction 内で snapshot 再検証、session commit、token release / rollback release を固定する。
-- `PipelineDiagnosticKind` のような kind-only enum を production diagnostic 生成入力にしない。`PipelineDiagnostic` typed enum を正本とし、集計・表示は pattern match で派生させる。
+## public nullable / close / frontend count 実装入口規約
 
-- object method helper は通常 / shared のどちらでも `ObjectMethodDispatchProof` を AIDL closure へ渡さない。proof は `object_method_txn` 内で即時消費し、後続の domain use-case には `ObjectMethodExecutionToken` だけを渡す。
-- LNB apply は `LnbApplyTxn` を crate public re-export せず、caller-supplied generation を受け取る public API を置かない。公開境界は generation 算出を内部化した façade に限定する。
-
-
-## public nullable / close / frontend count 規約
-
-- public close は `Closed` を成功 no-op にしない。`ObjectCloseTxn` の close preflight は `Live | CleanupFailed` のみを許容し、AIDL façade は `AlreadyClosed => Ok(())` のような意味論を持たない。
-- `IFilter.setDataSource(NULL)` は demux input へ戻す disconnect であり、AIDL public method implementation は nullable 引数を受けて `None` を `SourceBoundaryTxn` 経由の service_runtime use-case に到達させる。nullable helper だけを追加し、public method が常に `Some(...)` を渡す構造を完了扱いにしない。
-- `IFrontend.setCallback(NULL)` / `ILnb.setCallback(NULL)` は callback unregister とし、AIDL public method implementation は nullable callback を受けて `None` を unregister 経路に到達させる。callback artifact cleanup と runtime callback registry clear を同期させ、片側失敗を成功扱いにしない。
-- `IDescrambler.addPid(pid, NULL)` / `removePid(pid, NULL)` は demux-input PID claim とし、AIDL public method implementation は nullable source filter を受けて `None` を demux-input claim 経路に到達させる。source filter claim と同じ lifecycle / dispatch / duplicate 検証境界を通し、source filter 由来か demux input 由来かは typed claim source で区別する。
-- `frontend_system_from_type()` は未対応 frontend type を既対応 type へ丸めない。`setMaxNumberOfFrontends()` は負数を `INVALID_ARGUMENT`、`0..=default_max(type)` を成功、範囲外を `INVALID_ARGUMENT` にし、`getMaxNumberOfFrontends()` は type ごとの default max を返す。
+- public nullable API、public close、frontend count API の状態遷移・戻り値・到達条件は `DESIGN_JA.md` の「public nullable / close / frontend count 契約」を正とする。
+- AIDL public method implementation は、nullable 引数を helper 内で非 nullable に潰さず、`None` を service_runtime use-case へ到達させる。
+- AIDL façade は close / callback unregister / demux-input PID claim / frontend count の意味論を再定義せず、service_runtime use-case 呼び出しと Binder status bridge に限定する。
+- `frontend_system_from_type()` のような入力変換 helper は、未対応 type の丸め込みや戻り値 policy を持たず、DESIGN_JA.md の契約に従う service_runtime request/command DTO へ接続する。
 
 ## 共通部品境界禁止規約
 
@@ -148,7 +136,7 @@ Wrapper を置くべきでない条件:
   production helper 内で callback unregister の primary failure を `expect_err()` / panic 前提で保持してはならない。domain result は共通 cleanup entry の戻り値として合成する。
 - raw descrambler session key mutator を crate 外へ公開しない。key clear / replace は full transaction façade だけを public entry にする。
   descrambler runtime の public key transaction façade は arbitrary key table trait を受けない。key table owner は service_runtime registry に限定する。
-- close cascade の cleanup ordering / failure composition policy を AIDL façade に戻さない。public close は `service_runtime::object_close_txn::close_object_use_case()` で plan を作り、`finish_object_close_use_case()` で cleanup result、public runtime unregister、commit / cleanup-failed marking を確定する。AIDL 側で descendant 判定、DVR notifier 要否判定、runtime unregister 対象 kind 判定を再実装しない。
+- close cascade の cleanup ordering / failure composition policy を AIDL façade に戻さない。AIDL 側で descendant 判定、DVR notifier 要否判定、runtime unregister 対象 kind 判定を再実装せず、`DESIGN_JA.md` が定める service_runtime close use-case へ接続する。
   AIDL 側で BeforeDomainCleanup / AfterDomainCleanup を読み分けて phase ordering を実装してはならない。phase ordering は service_runtime の plan executor に置く。
 - `SourceBoundaryTxn` の step recording method を共通部品外へ公開しない。
 - packet path diagnostic に raw `i32` PID を入れない。
@@ -160,17 +148,15 @@ Wrapper を置くべきでない条件:
 - packet descramble / diagnostics path は `RuntimeRegistry::descrambler_key_table()`、key-slot-id lookup helper、raw `(claims, key_slot_id)` tuple を直接使わない。registry-owned resolved claim snapshot / keyless predicate / stale source generation predicate を使い、key table resolution を packet transaction へ漏らさない。
 - descrambler runtime の packet-facing snapshot に raw key-slot id accessor を置かない。packet consumer へ渡す claim set は key table owner が解決した resolved form に限定する。
 - query API で registry entry を public に返さない。
-- リリース報告で「主な修正内容」という見出しを使わない。
 
-- object close cascade は callback 登録を持ち得る object にだけ callback cleanup command を生成する。callback 未登録は close cleanup / unregister cleanup の成功扱いとし、callback store failure だけを cleanup failure として扱う。
-- LNB owner-loss callback cleanup は service_runtime の close cascade plan が生成する callback artifact cleanup command に統合し、個別の runtime registry clear / artifact store clear / unhealthy marking 手順を AIDL 側に持たない。
+- object close cascade の callback cleanup command 生成条件は `DESIGN_JA.md` を正とする。実装側で object kind ごとの callback 要否を AIDL façade に手書きしない。
+- LNB owner-loss callback cleanup は service_runtime plan が生成する callback artifact cleanup command に接続し、AIDL 側に個別の runtime registry clear / artifact store clear / unhealthy marking 手順を持たない。
 - close cascade の低レベル begin / commit / mark / entries helper は service_runtime 内部 helper とし、public API 主経路は close_object_use_case / finish_object_close_use_case に限定する。
 - TsPacketView は forgeable public field 型にしない。packet-bearing ingress は ValidatedTsPacket を正本とし、raw byte 入口は validation 境界または preflight-only に限定する。
 - public query surface は DTO response を正本とし、frontend runtime/signal 中間 state helper を crate public API として公開しない。
-- 追加 failure injection test file は Android.bp の rust_test srcs に明示登録する。
 
 
-- callback cleanup failure 時に registry entry を clear してから unhealthy marking してはならない。artifact cleanup failure など registry に unhealthy 状態を残す必要がある失敗では、service_runtime が mark を先に所有し、clear は成功時に限定する。
+- callback cleanup failure の registry clear / unhealthy marking ordering は `DESIGN_JA.md` を正とする。AIDL helper は service_runtime finish use-case の戻り値を橋渡しし、ordering を再実装しない。
 - Drop leak cleanup の対象列挙・DVR notifier stop 判定を AIDL façade に書かない。service_runtime plan が返す artifact command だけを AIDL bridge が実行する。
 - `ValidatedTsPacket::view()` を crate 外 public API にしない。packet-derived PID は `PacketPid` のまま helper 境界を渡し、raw PID 変換は低レベル parser / assembler 呼び出し直前だけに限定する。
 - AIDL input PID と filter config TPID は packet-derived PID とは別の typed validation boundary を通す。
@@ -189,7 +175,16 @@ Wrapper を置くべきでない条件:
 
 ### callback delivery failure boundary 規約
 
-- callback artifact lookup failure を Binder delivery failure と同じ unhealthy marking path に流さない。
+- callback artifact lookup failure と Binder delivery failure の区別は `DESIGN_JA.md` を正とする。delivery module は phase を保持した primary error を service_runtime finish use-case へ渡すだけにする。
 - `aidl_service/src/*callback_delivery*.rs` は callback delivery failure の primary `HalError` を生成して service_runtime finish use-case へ渡すだけにする。
-- production code から callback artifact store を owner handle で直接 clear しない。production clear は service_runtime 発行 command を受ける artifact bridge だけにする。
+- production code から callback artifact store を owner handle または all-artifact raw helper で直接 clear しない。production clear は service_runtime 発行 command を受ける artifact bridge だけにする。
 - callback artifact bridge は runtime callback registry を mutate しない。runtime callback registry mutation と primary+cleanup failure composition は service_runtime に置く。
+
+## r50eo68 source-only complete 実装規約
+
+- frontend worker の join 前後をまたぐ処理では、join 後の commit / rollback / cleanup を frontend id だけで実行してはならない。runtime lock 内で発行された transition / stop ticket を consume する complete helper だけが runtime mutation を実行する。ticket は public constructor、public fields、Clone、Copy を持ってはならない。blocking join 中に TunerServiceRuntime lock を保持してはならない。
+- DVR status callback missing、notifier unavailable、callback store lock poison を silent success として返してはならない。public start/stop の戻り値を post-commit failure で反転させない場合でも、DVR post-commit notification diagnostic へ typed phase として記録する。bool 戻り値で delivered / missing / skipped を表現しない。
+- callback artifact store mutation と RuntimeCallbackRegistry mutation を別々の AIDL helper 手順として実装してはならない。artifact mutation は runtime が発行した command だけを実行し、結果を runtime finish へ返す。artifact failure、runtime finish failure、registry missing を let _、空分岐、ログだけで捨ててはならない。artifact mutation 成功後の runtime finish failure は callback artifact/runtime split diagnostic に記録し、成功扱いにしてはならない。
+- TunerServiceRuntime の public query surface に registry entry、runtime state、signal state、中間 helper を返す wrapper を追加してはならない。query_api.rs に残せる public façade は RootQuery / ObjectQuery DTO executor だけとする。DTO executor 内部の補助関数は private または crate-private helper とし、crate public API にしない。
+- validated typed id の raw 値 accessor は production mutation / validation / routing path で使ってはならない。PacketPid の raw 値を取り出す production conversion は `to_i32_for_aidl_boundary()` だけとし、AIDL DTO 変換境界に限定する。service_runtime で descrambler claim と packet path を照合する場合は、検証済み `DescramblerPid` から `PacketPid` へ入る一方向 typed bridge だけを使い、`PacketPid` から raw PID を取り出す accessor を追加してはならない。`get()` のような汎用名は禁止する。ログと診断表示は raw accessor ではなく typed diagnostic context から生成する。Display 実装は表示整形専用であり、routing、validation、diagnostic classification に使ってはならない。PipelineDiagnostic::pid() -> Option<i32> のように typed diagnostic を raw Option field bag へ戻す accessor を追加してはならない。
+- diagnostic record に複数の Option field を並べ、kind / phase / optional ids の組み合わせで意味を復元する field bag を追加してはならない。診断種別ごとに必須 context を持つ variant-specific struct / enum を使う。kind-only enum と optional ids で production diagnostic の意味を復元してはならない。

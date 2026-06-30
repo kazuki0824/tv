@@ -1,8 +1,9 @@
+use maleicacid_tuner_hal2_descrambler::{
+    DescramblerKeySlot, DescramblerKeyToken, DescramblerPid, DescramblerPidClaim,
+};
+use maleicacid_tuner_hal2_demux::packet_pipeline::PacketPid;
 use crate::descrambler_key_table::{
     DescramblerKeyLookupError, DescramblerKeySlotId, DescramblerKeyTable,
-};
-use maleicacid_tuner_hal2_descrambler::{
-    DescramblerKeySlot, DescramblerKeyToken, DescramblerPidClaim,
 };
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -112,18 +113,18 @@ impl DescramblerRuntime {
         !self.session.is_closed() && self.session.demux_id() == Some(demux_id)
     }
 
-    pub(crate) fn has_pid_claim(&self, pid: u16) -> bool {
+    pub(crate) fn has_pid_claim(&self, pid: DescramblerPid) -> bool {
         !self.session.is_closed()
             && self
                 .session
                 .pid_claims()
                 .iter()
-                .any(|claim| claim.pid().0 == pid)
+                .any(|claim| claim.pid() == pid)
     }
 
     pub(crate) fn has_stale_source_generation(
         &self,
-        pid: u16,
+        pid: DescramblerPid,
         source_filter_id: i32,
         source_generation: u64,
     ) -> bool {
@@ -132,7 +133,7 @@ impl DescramblerRuntime {
                 let Some(source) = stored.source_filter_ref() else {
                     return false;
                 };
-                stored.pid().0 == pid
+                stored.pid() == pid
                     && source.filter_id == source_filter_id
                     && source.generation != source_generation
             })
@@ -157,19 +158,18 @@ impl DescramblerRuntime {
         ))
     }
 
-    pub(crate) fn has_keyless_claim_for_demux_pid(
+    pub(crate) fn has_keyless_claim_for_demux_packet_pid(
         &self,
         demux_id: i32,
         generation: u64,
-        pid: u16,
+        packet_pid: PacketPid,
     ) -> bool {
         !self.has_key()
             && self.is_bound_to_demux(demux_id, generation)
-            && self
-                .session
-                .pid_claims()
-                .iter()
-                .any(|claim| claim.pid().0 == pid)
+            && self.session.pid_claims().iter().any(|claim| {
+                PacketPid::from_descrambler_pid_for_service_runtime_boundary(claim.pid())
+                    == packet_pid
+            })
     }
 
     pub(crate) fn has_key(&self) -> bool {
@@ -180,6 +180,7 @@ impl DescramblerRuntime {
     pub(crate) fn is_closed(&self) -> bool {
         self.session.is_closed()
     }
+
 
     pub(crate) fn bind_demux_use_case(
         &mut self,
@@ -206,8 +207,7 @@ impl DescramblerRuntime {
     pub(crate) fn cleanup_all_use_case(
         &mut self,
         key_table: &mut DescramblerKeyTable,
-    ) -> Result<DescramblerCleanupReport, DescramblerCleanupTxnError<DescramblerKeyLookupError>>
-    {
+    ) -> Result<DescramblerCleanupReport, DescramblerCleanupTxnError<DescramblerKeyLookupError>> {
         cleanup_all_use_case(&mut self.session, key_table)
     }
 
@@ -229,6 +229,7 @@ impl DescramblerRuntime {
         replace_key_use_case(&mut self.session, key_table, token)
     }
 }
+
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DescramblerSessionTxnStep {
@@ -470,8 +471,7 @@ impl DescramblerSessionTxn {
         plan: &DescramblerClearKeyPlan,
     ) -> Result<(), DescramblerSessionFailure> {
         self.ensure_open(session)?;
-        if session.key_token() != plan.old_token.as_ref() || session.key_slot() != plan.old_key_slot
-        {
+        if session.key_token() != plan.old_token.as_ref() || session.key_slot() != plan.old_key_slot {
             self.record_step(DescramblerSessionTxnStep::Rollback);
             return Err(DescramblerSessionFailure {
                 step: DescramblerSessionTxnStep::CleanupKey,
@@ -590,8 +590,8 @@ pub(crate) fn clear_key_use_case<KeyTable>(
 where
     KeyTable: DescramblerKeyTxnOps,
 {
-    let prepared =
-        prepare_clear_key_use_case(session).map_err(DescramblerClearKeyTxnError::Session)?;
+    let prepared = prepare_clear_key_use_case(session)
+        .map_err(DescramblerClearKeyTxnError::Session)?;
     let old_token = prepared.plan.old_token.clone();
     if let Some(token) = old_token.as_ref() {
         key_table
@@ -626,7 +626,9 @@ where
     let key_slot = key_table
         .acquire_key_slot(&token)
         .map_err(DescramblerReplaceKeyTxnError::Acquire)?;
-    if let Err(failure) = commit_replace_key_use_case(session, plan, token.clone(), key_slot) {
+    if let Err(failure) =
+        commit_replace_key_use_case(session, plan, token.clone(), key_slot)
+    {
         let rollback_release = key_table.release_key_token(&token).err();
         return Err(DescramblerReplaceKeyTxnError::Commit {
             failure,

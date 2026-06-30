@@ -6,7 +6,8 @@ use crate::av::AvSharedBackingError;
 use crate::config::ConfigInputPid;
 use crate::runtime::DemuxRuntimeError;
 use crate::ts_core::PesDropReason;
-use maleicacid_tuner_hal2_common::{HalError, TsPacketCompletionBuffer, TS_PACKET_SIZE};
+use maleicacid_tuner_hal2_common::{HalError, TransportStreamPid, TsPacketCompletionBuffer, TS_PACKET_SIZE};
+use maleicacid_tuner_hal2_descrambler::DescramblerPid;
 use std::collections::BTreeMap;
 
 const PIPELINE_GENERATION_INITIAL: u64 = 0;
@@ -38,63 +39,52 @@ pub(crate) struct TsPacketView<'a> {
 }
 
 impl<'a> TsPacketView<'a> {
-    pub const fn transport_error_indicator(&self) -> bool {
-        self.transport_error_indicator
-    }
-    pub const fn payload_unit_start(&self) -> bool {
-        self.payload_unit_start
-    }
-    pub const fn priority(&self) -> bool {
-        self.priority
-    }
-    pub const fn scrambling_control(&self) -> u8 {
-        self.scrambling_control
-    }
-    pub const fn discontinuity_indicator(&self) -> bool {
-        self.discontinuity_indicator
-    }
-    pub const fn random_access_indicator(&self) -> bool {
-        self.random_access_indicator
-    }
-    pub const fn pcr_flag(&self) -> bool {
-        self.pcr_flag
-    }
-    pub const fn opcr_flag(&self) -> bool {
-        self.opcr_flag
-    }
-    pub const fn splicing_point_flag(&self) -> bool {
-        self.splicing_point_flag
-    }
-    pub const fn private_data_flag(&self) -> bool {
-        self.private_data_flag
-    }
-    pub const fn adaptation_extension_flag(&self) -> bool {
-        self.adaptation_extension_flag
-    }
-    pub const fn payload(&self) -> Option<&'a [u8]> {
-        self.payload
-    }
+    pub const fn transport_error_indicator(&self) -> bool { self.transport_error_indicator }
+    pub const fn payload_unit_start(&self) -> bool { self.payload_unit_start }
+    pub const fn priority(&self) -> bool { self.priority }
+    pub const fn scrambling_control(&self) -> u8 { self.scrambling_control }
+    pub const fn discontinuity_indicator(&self) -> bool { self.discontinuity_indicator }
+    pub const fn random_access_indicator(&self) -> bool { self.random_access_indicator }
+    pub const fn pcr_flag(&self) -> bool { self.pcr_flag }
+    pub const fn opcr_flag(&self) -> bool { self.opcr_flag }
+    pub const fn splicing_point_flag(&self) -> bool { self.splicing_point_flag }
+    pub const fn private_data_flag(&self) -> bool { self.private_data_flag }
+    pub const fn adaptation_extension_flag(&self) -> bool { self.adaptation_extension_flag }
+    pub const fn payload(&self) -> Option<&'a [u8]> { self.payload }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub struct PacketPid(i32);
+pub struct PacketPid(TransportStreamPid);
 
 impl PacketPid {
-    const fn from_validated_pid(pid: i32) -> Self {
-        Self(pid)
-    }
-    pub const fn get(self) -> i32 {
-        self.0
+    fn from_validated_pid(pid: i32) -> Self {
+        Self(TransportStreamPid::validate_i32(pid).expect("validated TS packet PID"))
     }
 
-    pub(crate) const fn as_i32(self) -> i32 {
-        self.0
+    pub const fn to_i32_for_aidl_boundary(self) -> i32 {
+        self.0.to_i32_for_aidl_boundary()
     }
 
-    pub(crate) const fn as_u16(self) -> u16 {
-        self.0 as u16
+    pub const fn from_descrambler_pid_for_service_runtime_boundary(pid: DescramblerPid) -> Self {
+        Self(pid.to_transport_stream_pid_for_packet_pid_bridge())
+    }
+
+    pub(crate) fn from_config_pid(pid: ConfigInputPid) -> Self {
+        Self(TransportStreamPid::validate_i32(pid.raw()).expect("validated filter config PID"))
+    }
+
+    pub(crate) const fn matches_config_tpid(self, tpid: Option<i32>) -> bool {
+        self.0.matches_i32_config(tpid)
+    }
+
+    pub const fn matches_config_tpid_for_service_runtime_boundary(
+        self,
+        tpid: Option<i32>,
+    ) -> bool {
+        self.0.matches_i32_config(tpid)
     }
 }
+
 
 #[derive(Clone, Copy, Debug)]
 pub struct ValidatedTsPacket<'a> {
@@ -110,7 +100,7 @@ impl<'a> ValidatedTsPacket<'a> {
     pub(crate) const fn view(&self) -> TsPacketView<'a> {
         self.view
     }
-    pub const fn pid(&self) -> PacketPid {
+    pub fn pid(&self) -> PacketPid {
         PacketPid::from_validated_pid(self.view.pid)
     }
 
@@ -133,7 +123,7 @@ pub enum PacketDescramblePolicyFailure {
 }
 
 impl<'a> TsPacketView<'a> {
-    pub(crate) const fn packet_pid(&self) -> PacketPid {
+    pub(crate) fn packet_pid(&self) -> PacketPid {
         PacketPid::from_validated_pid(self.pid)
     }
 }
@@ -303,7 +293,7 @@ impl PipelinePesState {
         payload_unit_start: bool,
         payload: &[u8],
     ) -> Vec<crate::ts_core::PesPacket> {
-        self.inner.push(pid.as_u16(), payload_unit_start, payload)
+        self.inner.push(pid, payload_unit_start, payload)
     }
 
     pub fn take_drop_diagnostic(&mut self) -> Option<(PesDropReason, u64)> {
@@ -319,14 +309,14 @@ pub struct PipelineContinuityState {
 impl PipelineContinuityState {
     pub fn observe(
         &mut self,
-        pid: u16,
+        pid: PacketPid,
         continuity_counter: u8,
         has_payload: bool,
     ) -> crate::ts_core::ContinuityOutcome {
         self.inner.observe(pid, continuity_counter, has_payload)
     }
 
-    pub fn reset_pid(&mut self, pid: u16) {
+    pub fn reset_pid(&mut self, pid: PacketPid) {
         self.inner.reset_pid(pid);
     }
 }
@@ -353,12 +343,12 @@ impl PipelineResyncState {
 /// DVR/record配送が同じpacket pipeline状態を共有する。
 #[derive(Clone, Debug, Default)]
 pub struct PacketPipeline {
-    pub(crate) section_assemblers: BTreeMap<(crate::TsInputOrigin, i32, i32), PipelineSectionState>,
-    pub(crate) pes_assemblers: BTreeMap<(crate::TsInputOrigin, i32, i32), PipelinePesState>,
-    pub(crate) section_assembler_generations: BTreeMap<(crate::TsInputOrigin, i32), u64>,
-    pub(crate) pes_assembler_generations: BTreeMap<(crate::TsInputOrigin, i32), u64>,
-    pub(crate) filter_section_flush_generations: BTreeMap<(crate::TsInputOrigin, i32, i32), u64>,
-    pub(crate) filter_pes_flush_generations: BTreeMap<(crate::TsInputOrigin, i32, i32), u64>,
+    pub(crate) section_assemblers: BTreeMap<(crate::TsInputOrigin, PacketPid, i32), PipelineSectionState>,
+    pub(crate) pes_assemblers: BTreeMap<(crate::TsInputOrigin, PacketPid, i32), PipelinePesState>,
+    pub(crate) section_assembler_generations: BTreeMap<(crate::TsInputOrigin, PacketPid), u64>,
+    pub(crate) pes_assembler_generations: BTreeMap<(crate::TsInputOrigin, PacketPid), u64>,
+    pub(crate) filter_section_flush_generations: BTreeMap<(crate::TsInputOrigin, i32, PacketPid), u64>,
+    pub(crate) filter_pes_flush_generations: BTreeMap<(crate::TsInputOrigin, i32, PacketPid), u64>,
     pub(crate) continuity_trackers: BTreeMap<crate::TsInputOrigin, PipelineContinuityState>,
     pub(crate) resync: PipelineResyncState,
 }
@@ -528,8 +518,23 @@ pub enum PipelineDiagnostic {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PipelineDiagnosticPidContext {
+    Present(PacketPid),
+    NotApplicable,
+}
+
+impl PipelineDiagnosticPidContext {
+    pub const fn to_i32_for_aidl_boundary(self) -> Option<i32> {
+        match self {
+            Self::Present(pid) => Some(pid.to_i32_for_aidl_boundary()),
+            Self::NotApplicable => None,
+        }
+    }
+}
+
 impl PipelineDiagnostic {
-    pub const fn pid(&self) -> Option<i32> {
+    pub const fn pid_context(&self) -> PipelineDiagnosticPidContext {
         match self {
             Self::RecordDvrMirrorFailure { pid, .. }
             | Self::FilterQueuePayloadDeliveryFailure { pid, .. }
@@ -539,18 +544,20 @@ impl PipelineDiagnostic {
             | Self::AvClientHandleReleased { pid, .. }
             | Self::AvPayloadOversized { pid, .. }
             | Self::AvNoFreeSlot { pid, .. }
-            | Self::AvDataIdExhausted { pid, .. } => Some(pid.get()),
-            Self::TeiAssemblySuppressed { pid }
+            | Self::AvDataIdExhausted { pid, .. }
+            | Self::TeiAssemblySuppressed { pid }
             | Self::DuplicatePacketAssemblySuppressed { pid }
             | Self::NoPayloadAssemblySuppressed { pid }
             | Self::KeylessScrambledAssemblySuppressed { pid }
             | Self::SectionAssemblyDrop { pid }
             | Self::SectionGenerationOverflow { pid }
             | Self::PesGenerationOverflow { pid }
-            | Self::PesAssemblerDrop { pid, .. } => Some(pid.get()),
-            Self::SourceFilterValidationFailure { pid, .. }
-            | Self::SourceFilterDescramblePolicyFailure { pid, .. } => Some(pid.get()),
-            Self::MalformedTsPacket | Self::ResidualBytesDrop => None,
+            | Self::PesAssemblerDrop { pid, .. }
+            | Self::SourceFilterValidationFailure { pid, .. }
+            | Self::SourceFilterDescramblePolicyFailure { pid, .. } => {
+                PipelineDiagnosticPidContext::Present(*pid)
+            }
+            Self::MalformedTsPacket | Self::ResidualBytesDrop => PipelineDiagnosticPidContext::NotApplicable,
         }
     }
 
@@ -665,7 +672,7 @@ pub struct PipelineFilterView {
 
 impl PipelineFilterView {
     fn accepts_packet_pid_from_origin(self, pid: PacketPid, origin: crate::TsInputOrigin) -> bool {
-        if !self.started || self.tpid != Some(pid.as_i32()) {
+        if !self.started || !pid.matches_config_tpid(self.tpid) {
             return false;
         }
         match origin {
@@ -764,8 +771,12 @@ impl PacketPipeline {
             self.reset_continuity_pid(origin, pid);
             self.reset_assembly_for_origin_pid(origin, pid);
         }
-        let continuity =
-            self.check_continuity(origin, pid, view.continuity_counter, view.payload.is_some());
+        let continuity = self.check_continuity(
+            origin,
+            pid,
+            view.continuity_counter,
+            view.payload.is_some(),
+        );
         if matches!(continuity, crate::ts_core::ContinuityOutcome::Duplicate) {
             report
                 .assembly_suppression_reasons
@@ -1104,7 +1115,7 @@ impl PacketPipeline {
                 );
                 if let Some((reason, _generation)) = self
                     .pes_assemblers
-                    .get_mut(&(origin, pid.as_i32(), filter_id))
+                    .get_mut(&(origin, pid, filter_id))
                     .and_then(|state| state.take_drop_diagnostic())
                 {
                     report.dropped_packets += 1;
@@ -1113,7 +1124,10 @@ impl PacketPipeline {
                         .push(PipelineDropReason::PesAssemblerOverflow);
                     report
                         .diagnostics
-                        .push(PipelineDiagnostic::PesAssemblerDrop { pid, reason });
+                        .push(PipelineDiagnostic::PesAssemblerDrop {
+                            pid,
+                            reason,
+                        });
                 }
                 for packet in packets {
                     report
@@ -1183,36 +1197,32 @@ impl PacketPipeline {
             .sum()
     }
 
-    pub(crate) fn reset_assembly_for_origin_pid(
-        &mut self,
-        origin: crate::TsInputOrigin,
-        pid: PacketPid,
-    ) {
+    pub(crate) fn reset_assembly_for_origin_pid(&mut self, origin: crate::TsInputOrigin, pid: PacketPid) {
         // discontinuity は対象 PID の section/PES assembler だけを破棄する。
         // 無関係な PID の途中 section/PES を同一 origin というだけで破棄してはならない。
         self.section_assemblers
             .retain(|(stored_origin, stored_pid, _), _| {
-                *stored_origin != origin || *stored_pid != pid.as_i32()
+                *stored_origin != origin || *stored_pid != pid
             });
         self.pes_assemblers
             .retain(|(stored_origin, stored_pid, _), _| {
-                *stored_origin != origin || *stored_pid != pid.as_i32()
+                *stored_origin != origin || *stored_pid != pid
             });
         self.section_assembler_generations
             .retain(|(stored_origin, stored_pid), _| {
-                *stored_origin != origin || *stored_pid != pid.as_i32()
+                *stored_origin != origin || *stored_pid != pid
             });
         self.pes_assembler_generations
             .retain(|(stored_origin, stored_pid), _| {
-                *stored_origin != origin || *stored_pid != pid.as_i32()
+                *stored_origin != origin || *stored_pid != pid
             });
         self.filter_section_flush_generations
             .retain(|(stored_origin, _, stored_pid), _| {
-                *stored_origin != origin || *stored_pid != pid.as_i32()
+                *stored_origin != origin || *stored_pid != pid
             });
         self.filter_pes_flush_generations
             .retain(|(stored_origin, _, stored_pid), _| {
-                *stored_origin != origin || *stored_pid != pid.as_i32()
+                *stored_origin != origin || *stored_pid != pid
             });
     }
 
@@ -1220,7 +1230,7 @@ impl PacketPipeline {
         self.continuity_trackers
             .entry(origin)
             .or_default()
-            .reset_pid(pid.as_u16());
+            .reset_pid(pid);
     }
 
     fn check_continuity(
@@ -1231,7 +1241,7 @@ impl PacketPipeline {
         has_payload: bool,
     ) -> crate::ts_core::ContinuityOutcome {
         self.continuity_trackers.entry(origin).or_default().observe(
-            pid.as_u16(),
+            pid,
             continuity_counter,
             has_payload,
         )
@@ -1246,7 +1256,7 @@ impl PacketPipeline {
         payload: &[u8],
     ) -> crate::sections::SectionPushOutcome {
         self.section_assemblers
-            .entry((origin, pid.as_i32(), filter_id))
+            .entry((origin, pid, filter_id))
             .or_default()
             .push_payload_with_outcome(payload_unit_start, payload)
     }
@@ -1260,7 +1270,7 @@ impl PacketPipeline {
         payload: &[u8],
     ) -> Vec<crate::ts_core::PesPacket> {
         self.pes_assemblers
-            .entry((origin, pid.as_i32(), filter_id))
+            .entry((origin, pid, filter_id))
             .or_default()
             .push(pid, payload_unit_start, payload)
     }
@@ -1275,43 +1285,35 @@ impl PacketPipeline {
         if section {
             self.section_assembler_generations
                 .retain(|(stored_origin, stored_pid), _| {
-                    !(*stored_origin == origin && *stored_pid == pid.as_i32())
+                    !(*stored_origin == origin && *stored_pid == pid)
                 });
             self.filter_section_flush_generations
                 .retain(|(stored_origin, _, stored_pid), _| {
-                    !(*stored_origin == origin && *stored_pid == pid.as_i32())
+                    !(*stored_origin == origin && *stored_pid == pid)
                 });
         }
         if pes {
             self.pes_assembler_generations
                 .retain(|(stored_origin, stored_pid), _| {
-                    !(*stored_origin == origin && *stored_pid == pid.as_i32())
+                    !(*stored_origin == origin && *stored_pid == pid)
                 });
             self.filter_pes_flush_generations
                 .retain(|(stored_origin, _, stored_pid), _| {
-                    !(*stored_origin == origin && *stored_pid == pid.as_i32())
+                    !(*stored_origin == origin && *stored_pid == pid)
                 });
         }
     }
 
-    pub(crate) fn current_section_generation(
-        &self,
-        origin: crate::TsInputOrigin,
-        pid: PacketPid,
-    ) -> u64 {
+    pub(crate) fn current_section_generation(&self, origin: crate::TsInputOrigin, pid: PacketPid) -> u64 {
         self.section_assembler_generations
-            .get(&(origin, pid.as_i32()))
+            .get(&(origin, pid))
             .copied()
             .unwrap_or(PIPELINE_GENERATION_INITIAL)
     }
 
-    pub(crate) fn current_pes_generation(
-        &self,
-        origin: crate::TsInputOrigin,
-        pid: PacketPid,
-    ) -> u64 {
+    pub(crate) fn current_pes_generation(&self, origin: crate::TsInputOrigin, pid: PacketPid) -> u64 {
         self.pes_assembler_generations
-            .get(&(origin, pid.as_i32()))
+            .get(&(origin, pid))
             .copied()
             .unwrap_or(PIPELINE_GENERATION_INITIAL)
     }
@@ -1323,7 +1325,7 @@ impl PacketPipeline {
     ) -> Option<u64> {
         let generation = self
             .section_assembler_generations
-            .entry((origin, pid.as_i32()))
+            .entry((origin, pid))
             .or_insert(0);
         let next = generation.checked_add(1)?;
         *generation = next;
@@ -1337,7 +1339,7 @@ impl PacketPipeline {
     ) -> Option<u64> {
         let generation = self
             .pes_assembler_generations
-            .entry((origin, pid.as_i32()))
+            .entry((origin, pid))
             .or_insert(0);
         let next = generation.checked_add(1)?;
         *generation = next;
@@ -1349,8 +1351,9 @@ impl PacketPipeline {
         origin: crate::TsInputOrigin,
         pid: ConfigInputPid,
     ) -> u64 {
+        let pid = PacketPid::from_config_pid(pid);
         self.section_assembler_generations
-            .get(&(origin, pid.raw()))
+            .get(&(origin, pid))
             .copied()
             .unwrap_or(PIPELINE_GENERATION_INITIAL)
     }
@@ -1360,8 +1363,9 @@ impl PacketPipeline {
         origin: crate::TsInputOrigin,
         pid: ConfigInputPid,
     ) -> u64 {
+        let pid = PacketPid::from_config_pid(pid);
         self.pes_assembler_generations
-            .get(&(origin, pid.raw()))
+            .get(&(origin, pid))
             .copied()
             .unwrap_or(PIPELINE_GENERATION_INITIAL)
     }
@@ -1372,12 +1376,13 @@ impl PacketPipeline {
         pid: ConfigInputPid,
         origin: crate::TsInputOrigin,
     ) {
+        let pipeline_pid = PacketPid::from_config_pid(pid);
         self.filter_section_flush_generations.insert(
-            (origin, filter_id, pid.raw()),
+            (origin, filter_id, pipeline_pid),
             self.current_section_generation_for_config_pid(origin, pid),
         );
         self.filter_pes_flush_generations.insert(
-            (origin, filter_id, pid.raw()),
+            (origin, filter_id, pipeline_pid),
             self.current_pes_generation_for_config_pid(origin, pid),
         );
     }
@@ -1470,19 +1475,19 @@ mod test_support {
             self.section_assemblers
                 .retain(|(stored_origin, stored_pid, filter_id), _| {
                     !(*stored_origin == origin
-                        && *stored_pid == pid.as_i32()
+                        && *stored_pid == pid
                         && filter_ids.iter().any(|id| id == filter_id))
                 });
             self.filter_section_flush_generations.retain(
                 |(stored_origin, filter_id, stored_pid), _| {
                     !(*stored_origin == origin
-                        && *stored_pid == pid.as_i32()
+                        && *stored_pid == pid
                         && filter_ids.iter().any(|id| id == filter_id))
                 },
             );
             self.section_assembler_generations
                 .retain(|(stored_origin, stored_pid), _| {
-                    !(*stored_origin == origin && *stored_pid == pid.as_i32())
+                    !(*stored_origin == origin && *stored_pid == pid)
                 });
         }
 
@@ -1495,19 +1500,19 @@ mod test_support {
             self.pes_assemblers
                 .retain(|(stored_origin, stored_pid, filter_id), _| {
                     !(*stored_origin == origin
-                        && *stored_pid == pid.as_i32()
+                        && *stored_pid == pid
                         && filter_ids.iter().any(|id| id == filter_id))
                 });
             self.filter_pes_flush_generations.retain(
                 |(stored_origin, filter_id, stored_pid), _| {
                     !(*stored_origin == origin
-                        && *stored_pid == pid.as_i32()
+                        && *stored_pid == pid
                         && filter_ids.iter().any(|id| id == filter_id))
                 },
             );
             self.pes_assembler_generations
                 .retain(|(stored_origin, stored_pid), _| {
-                    !(*stored_origin == origin && *stored_pid == pid.as_i32())
+                    !(*stored_origin == origin && *stored_pid == pid)
                 });
         }
 
@@ -1518,7 +1523,7 @@ mod test_support {
             filter_id: i32,
         ) {
             self.section_assemblers
-                .entry((origin, pid.as_i32(), filter_id))
+                .entry((origin, pid, filter_id))
                 .or_default();
         }
 
@@ -1529,7 +1534,7 @@ mod test_support {
             filter_id: i32,
         ) {
             self.pes_assemblers
-                .entry((origin, pid.as_i32(), filter_id))
+                .entry((origin, pid, filter_id))
                 .or_default();
         }
     }
@@ -2047,7 +2052,7 @@ mod malformed_adaptation_tests {
             .contains(&PipelineAssemblySuppressionReason::TransportErrorIndicator));
         assert!(report.diagnostics.iter().any(|diag| matches!(
             diag,
-            PipelineDiagnostic::TeiAssemblySuppressed { pid } if pid.get() == 0x10
+            PipelineDiagnostic::TeiAssemblySuppressed { pid } if pid.to_i32_for_aidl_boundary() == 0x10
         )));
     }
 }
@@ -2124,7 +2129,7 @@ mod discontinuity_generation_tests {
                     pid,
                     bytes,
                     ..
-                } => Some((*filter_id, pid.get(), bytes.clone())),
+                } => Some((*filter_id, pid.to_i32_for_aidl_boundary(), bytes.clone())),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -2149,16 +2154,8 @@ mod resync_boundary_tests {
         pipeline.test_seed_pes_for_pid(frontend, PacketPid::from_validated_pid(0x0100), 8);
         pipeline.test_seed_pes_for_pid(source, PacketPid::from_validated_pid(0x0100), 8);
 
-        pipeline.remove_section_for_filter_ids_origin_pid(
-            source,
-            PacketPid::from_validated_pid(0x0100),
-            &[7],
-        );
-        pipeline.remove_pes_for_filter_ids_origin_pid(
-            source,
-            PacketPid::from_validated_pid(0x0100),
-            &[8],
-        );
+        pipeline.remove_section_for_filter_ids_origin_pid(source, PacketPid::from_validated_pid(0x0100), &[7]);
+        pipeline.remove_pes_for_filter_ids_origin_pid(source, PacketPid::from_validated_pid(0x0100), &[8]);
 
         assert!(pipeline
             .section_assemblers
@@ -2182,14 +2179,8 @@ mod resync_boundary_tests {
         pipeline.test_seed_section_for_pid(source, PacketPid::from_validated_pid(0x0100), 7);
         pipeline.test_seed_pes_for_pid(frontend, PacketPid::from_validated_pid(0x0100), 8);
         pipeline.test_seed_pes_for_pid(source, PacketPid::from_validated_pid(0x0100), 8);
-        assert_eq!(
-            pipeline.bump_section_generation(frontend, PacketPid::from_validated_pid(0x0100)),
-            Some(1)
-        );
-        assert_eq!(
-            pipeline.bump_section_generation(source, PacketPid::from_validated_pid(0x0100)),
-            Some(1)
-        );
+        assert_eq!(pipeline.bump_section_generation(frontend, PacketPid::from_validated_pid(0x0100)), Some(1));
+        assert_eq!(pipeline.bump_section_generation(source, PacketPid::from_validated_pid(0x0100)), Some(1));
 
         pipeline.reset_assembly_for_origin_pid(source, PacketPid::from_validated_pid(0x0100));
 
@@ -2201,14 +2192,8 @@ mod resync_boundary_tests {
             .contains_key(&(source, 0x0100, 7)));
         assert!(pipeline.pes_assemblers.contains_key(&(frontend, 0x0100, 8)));
         assert!(!pipeline.pes_assemblers.contains_key(&(source, 0x0100, 8)));
-        assert_eq!(
-            pipeline.current_section_generation(frontend, PacketPid::from_validated_pid(0x0100)),
-            1
-        );
-        assert_eq!(
-            pipeline.current_section_generation(source, PacketPid::from_validated_pid(0x0100)),
-            0
-        );
+        assert_eq!(pipeline.current_section_generation(frontend, PacketPid::from_validated_pid(0x0100)), 1);
+        assert_eq!(pipeline.current_section_generation(source, PacketPid::from_validated_pid(0x0100)), 0);
     }
 }
 
@@ -2489,6 +2474,7 @@ mod keyless_scrambled_policy_tests {
     }
 }
 
+
 #[cfg(test)]
 mod validated_packet_boundary_additional_tests {
     use super::*;
@@ -2509,8 +2495,8 @@ mod validated_packet_boundary_additional_tests {
         let packet = payload_packet(0x0123, 0);
         let validated = ValidatedTsPacket::validate(&packet).unwrap();
 
-        assert_eq!(validated.pid().get(), 0x0123);
-        assert_eq!(validated.view().packet_pid().get(), 0x0123);
+        assert_eq!(validated.pid().to_i32_for_aidl_boundary(), 0x0123);
+        assert_eq!(validated.view().packet_pid().to_i32_for_aidl_boundary(), 0x0123);
     }
 
     #[test]
@@ -2536,7 +2522,7 @@ mod validated_packet_boundary_additional_tests {
 
         assert!(report.diagnostics.iter().any(|diag| matches!(
             diag,
-            PipelineDiagnostic::DuplicatePacketAssemblySuppressed { pid } if pid.get() == 0x0124
+            PipelineDiagnostic::DuplicatePacketAssemblySuppressed { pid } if pid.to_i32_for_aidl_boundary() == 0x0124
         )));
     }
 }

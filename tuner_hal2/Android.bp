@@ -145,7 +145,12 @@ rust_library {
         "demux/src/av/event.rs",
     ],
     edition: "2021",
-    rustlibs: ["libmaleicacid_tuner_hal2_common", "libmaleicacid_tuner_hal2_fmq", "libmaleicacid_tuner_hal2_control_core"],
+    rustlibs: [
+        "libmaleicacid_tuner_hal2_common",
+        "libmaleicacid_tuner_hal2_fmq",
+        "libmaleicacid_tuner_hal2_control_core",
+        "libmaleicacid_tuner_hal2_descrambler",
+    ],
 }
 
 rust_library {
@@ -472,7 +477,12 @@ rust_test {
         "demux/src/av/event.rs",
     ],
     edition: "2021",
-    rustlibs: ["libmaleicacid_tuner_hal2_common", "libmaleicacid_tuner_hal2_fmq", "libmaleicacid_tuner_hal2_control_core"],
+    rustlibs: [
+        "libmaleicacid_tuner_hal2_common",
+        "libmaleicacid_tuner_hal2_fmq",
+        "libmaleicacid_tuner_hal2_control_core",
+        "libmaleicacid_tuner_hal2_descrambler",
+    ],
     static_libs: ["libmaleicacid_tuner_hal2_fmq_shim_static"],
     shared_libs: [
         "libfmq",
@@ -676,6 +686,63 @@ rust_test {
         "android.hardware.common.fmq-V1-ndk",
         "android.hardware.common-V2-ndk",
     ],
+    auto_gen_config: true,
+    test_suites: ["general-tests"],
+}
+
+rust_test {
+    name: "maleicacid_tuner_hal2_service_runtime_source_only_contract_test",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal2_service_runtime_source_only_contract_test",
+    crate_root: "service_runtime/src/source_only_contract_tests.rs",
+    srcs: ["service_runtime/src/source_only_contract_tests.rs"],
+    edition: "2021",
+    rustlibs: [
+        "libmaleicacid_tuner_hal2_common",
+        "libmaleicacid_tuner_hal2_domain_request",
+        "libmaleicacid_tuner_hal2_demux",
+        "libmaleicacid_tuner_hal2_descrambler",
+        "libmaleicacid_tuner_hal2_service_runtime",
+    ],
+    auto_gen_config: true,
+    test_suites: ["general-tests"],
+}
+
+rust_test {
+    name: "maleicacid_tuner_hal2_compile_contract_test",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal2_compile_contract_test",
+    crate_root: "compile_contract/src/lib.rs",
+    srcs: ["compile_contract/src/lib.rs"],
+    edition: "2021",
+    rustlibs: [
+        "libmaleicacid_tuner_hal2_device",
+        "libstatic_assertions",
+    ],
+    auto_gen_config: true,
+    test_suites: ["general-tests"],
+}
+
+rust_test {
+    name: "maleicacid_tuner_hal2_service_runtime_loom_test",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal2_service_runtime_loom_test",
+    crate_root: "service_runtime/src/loom_tests.rs",
+    srcs: ["service_runtime/src/loom_tests.rs"],
+    edition: "2021",
+    defaults: ["maleicacid_tuner_hal2_loom_test_defaults"],
+    auto_gen_config: true,
+    test_suites: ["general-tests"],
+}
+
+rust_test {
+    name: "maleicacid_tuner_hal2_aidl_service_loom_test",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal2_aidl_service_loom_test",
+    crate_root: "aidl_service/src/loom_tests.rs",
+    srcs: ["aidl_service/src/loom_tests.rs"],
+    edition: "2021",
+    defaults: ["maleicacid_tuner_hal2_loom_test_defaults"],
     auto_gen_config: true,
     test_suites: ["general-tests"],
 }

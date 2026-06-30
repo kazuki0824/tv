@@ -65,12 +65,13 @@ use maleicacid_tuner_hal2_common::{
 };
 use maleicacid_tuner_hal2_demux::QueueDescriptorSnapshot;
 use maleicacid_tuner_hal2_service_runtime::{
-    set_frontend_lnb_object_use_case, start_frontend_scan_use_case, start_frontend_tune_use_case,
-    stop_frontend_scan_use_case, stop_frontend_tune_use_case, LnbRegistryProfile,
-    ObjectFrontendStatusReadinessValue, ObjectFrontendStatusType, ObjectFrontendStatusValue,
-    ObjectQueryRequest, ObjectQueryResponse, RootCommandRequest, RootDemuxCapabilitiesSnapshot,
-    RootDemuxInfoSnapshot, RootFrontendInfoSnapshot, RootQueryRequest, RootQueryResponse,
-    RuntimeObjectEntry, TunerServiceRuntime,
+    set_frontend_lnb_object_use_case,
+    start_frontend_scan_use_case, start_frontend_tune_use_case, stop_frontend_scan_use_case,
+    stop_frontend_tune_use_case, LnbRegistryProfile, ObjectFrontendStatusReadinessValue,
+    ObjectFrontendStatusType, ObjectFrontendStatusValue, ObjectQueryRequest, ObjectQueryResponse,
+    RootCommandRequest, RootDemuxCapabilitiesSnapshot, RootDemuxInfoSnapshot,
+    RootFrontendInfoSnapshot, RootQueryRequest, RootQueryResponse, RuntimeObjectEntry,
+    TunerServiceRuntime,
 };
 
 use crate::child_object_open::{
@@ -91,9 +92,10 @@ use crate::frontend_object::FrontendAidlObject;
 use crate::lnb_object::LnbAidlObject;
 use crate::object_handle::AidlObjectHandle;
 use crate::object_runtime::{
-    close_object_after_close_preflight, execute_object_query_use_case,
-    execute_object_query_use_case_with_aidl_input_conversion, execute_object_runtime_use_case,
-    execute_object_runtime_use_case_with_request_builder, execute_shared_object_runtime_use_case,
+    close_object_after_close_preflight,
+    execute_object_query_use_case, execute_object_query_use_case_with_aidl_input_conversion,
+    execute_object_runtime_use_case, execute_object_runtime_use_case_with_request_builder,
+    execute_shared_object_runtime_use_case,
     execute_shared_object_runtime_use_case_with_request_builder,
     plan_unavailable_object_method_use_case,
 };
@@ -149,9 +151,7 @@ fn frontend_system_from_type(frontend_type: FrontendType) -> Result<FrontendSyst
     match frontend_type {
         FrontendType::ISDBS => Ok(FrontendSystem::IsdbS),
         FrontendType::ISDBT => Ok(FrontendSystem::IsdbT),
-        _ => Err(HalError::Unsupported(
-            "frontend type is unsupported by tuner_hal2",
-        )),
+        _ => Err(HalError::Unsupported("frontend type is unsupported by tuner_hal2")),
     }
 }
 
@@ -639,8 +639,7 @@ impl ITuner for TunerAidlService {
     ) -> BinderResult<()> {
         self.lock_runtime()?
             .execute_root_command(RootCommandRequest::SetMaxNumberOfFrontends {
-                frontend_system: frontend_system_from_type(_frontend_type)
-                    .map_err(status_from_hal_error)?,
+                frontend_system: frontend_system_from_type(_frontend_type).map_err(status_from_hal_error)?,
                 max_number,
             })
             .map_err(status_from_hal_error)
@@ -650,8 +649,7 @@ impl ITuner for TunerAidlService {
         match self
             .lock_runtime()?
             .execute_root_query(RootQueryRequest::MaxNumberOfFrontends {
-                frontend_system: frontend_system_from_type(_frontend_type)
-                    .map_err(status_from_hal_error)?,
+                frontend_system: frontend_system_from_type(_frontend_type).map_err(status_from_hal_error)?,
             })
             .map_err(status_from_hal_error)?
         {

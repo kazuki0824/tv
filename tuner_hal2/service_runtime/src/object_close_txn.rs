@@ -1,21 +1,19 @@
 use maleicacid_tuner_hal2_binder_adapter::{AidlMethodAdapter, AidlMethodCall};
-use maleicacid_tuner_hal2_common::{
-    compose_primary_cleanup_failure, FirstErrorCollector, HalError,
-};
+use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, FirstErrorCollector, HalError};
 use maleicacid_tuner_hal2_domain_request::{
-    AidlApi, AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan,
-    RuntimeExecutableRequest,
+    AidlApi, AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan, RuntimeExecutableRequest,
 };
 use maleicacid_tuner_hal2_resource_ledger::CleanupStep;
 
 use crate::boot::OwnerCallbackCleanupArtifactCommand;
 use crate::error_mapping::object_table_error_to_hal;
 use crate::method_dispatch::plan_object_method_dispatch;
+use crate::object_lifecycle::{aidl_object_closeable, AidlObjectCloseability};
 use crate::object_domain_cleanup::{
     ObjectDomainCleanupCommand, ObjectDomainCleanupExecutor, ObjectDomainCleanupKind,
 };
-use crate::object_lifecycle::{aidl_object_closeable, AidlObjectCloseability};
 use crate::{RuntimeObjectEntry, TunerServiceRuntime};
+
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ObjectCloseArtifactCleanupPhase {
@@ -113,9 +111,7 @@ impl ObjectArtifactCleanupCommand {
             ObjectCloseArtifactCleanupKind::LnbOwnerLossCallbackRegistration => {
                 ObjectArtifactCleanupKind::LnbOwnerLossCallbackRegistration
             }
-            ObjectCloseArtifactCleanupKind::DvrStatusNotifier => {
-                ObjectArtifactCleanupKind::DvrStatusNotifier
-            }
+            ObjectCloseArtifactCleanupKind::DvrStatusNotifier => ObjectArtifactCleanupKind::DvrStatusNotifier,
         };
         let owner_callback_cleanup_command = owner_callback_cleanup_command_for_parts(
             kind,
@@ -208,17 +204,16 @@ impl ObjectRuntimeCleanupCommand {
         Self { kind, entries }
     }
 
+
     pub fn execute(
         &self,
         runtime: &mut TunerServiceRuntime,
     ) -> Result<(), ObjectCloseCleanupFailure> {
         match self.kind {
-            ObjectRuntimeCleanupKind::ClosePublicRuntimeUnregister => {
-                unregister_public_runtime_entries_for_close(runtime, &self.entries)
-            }
-            ObjectRuntimeCleanupKind::DropLeakPublicRuntimeUnregister => {
-                unregister_public_runtime_entries_for_drop_leak(runtime, &self.entries)
-            }
+            ObjectRuntimeCleanupKind::ClosePublicRuntimeUnregister =>
+                unregister_public_runtime_entries_for_close(runtime, &self.entries),
+            ObjectRuntimeCleanupKind::DropLeakPublicRuntimeUnregister =>
+                unregister_public_runtime_entries_for_drop_leak(runtime, &self.entries),
         }
     }
 }
@@ -284,32 +279,30 @@ impl ObjectCloseUseCasePlan {
             .artifact_cleanup_commands
             .iter()
             .copied()
-            .filter(|command| {
-                command.phase() == ObjectCloseArtifactCleanupPhase::BeforeDomainCleanup
-            })
+            .filter(|command| command.phase() == ObjectCloseArtifactCleanupPhase::BeforeDomainCleanup)
         {
             cleanup_collector.push_result(
-                ObjectArtifactCleanupCommand::from_close(command).execute_with(artifact_executor),
+                ObjectArtifactCleanupCommand::from_close(command)
+                    .execute_with(artifact_executor),
             );
         }
         for command in self.domain_cleanup_commands.iter().copied() {
             let outcome = command.execute_with(domain_executor);
             cleanup_collector.push_result(
-                outcome.result().map_err(|error| {
-                    ObjectCloseCleanupFailure::new(self.domain_cleanup_step, error)
-                }),
+                outcome
+                    .result()
+                    .map_err(|error| ObjectCloseCleanupFailure::new(self.domain_cleanup_step, error)),
             );
         }
         for command in self
             .artifact_cleanup_commands
             .iter()
             .copied()
-            .filter(|command| {
-                command.phase() == ObjectCloseArtifactCleanupPhase::AfterDomainCleanup
-            })
+            .filter(|command| command.phase() == ObjectCloseArtifactCleanupPhase::AfterDomainCleanup)
         {
             cleanup_collector.push_result(
-                ObjectArtifactCleanupCommand::from_close(command).execute_with(artifact_executor),
+                ObjectArtifactCleanupCommand::from_close(command)
+                    .execute_with(artifact_executor),
             );
         }
         cleanup_collector.push_result(runtime_executor.execute_runtime_cleanup(
@@ -344,12 +337,16 @@ impl ObjectDropLeakQuarantinePlan {
         let mut cleanup_collector = FirstErrorCollector::new();
         for command in self.domain_cleanup_commands.iter().copied() {
             let outcome = command.execute_with(domain_executor);
-            cleanup_collector.push_result(outcome.result().map_err(|error| {
-                ObjectCloseCleanupFailure::new(CleanupStep::ReleaseBackend, error)
-            }));
+            cleanup_collector.push_result(
+                outcome
+                    .result()
+                    .map_err(|error| ObjectCloseCleanupFailure::new(CleanupStep::ReleaseBackend, error)),
+            );
         }
         for command in self.artifact_cleanup_commands.iter().copied() {
-            cleanup_collector.push_result(command.execute_with(artifact_executor));
+            cleanup_collector.push_result(
+                command.execute_with(artifact_executor),
+            );
         }
         cleanup_collector.push_result(runtime_executor.execute_runtime_cleanup(
             ObjectRuntimeCleanupCommand::new(
@@ -435,15 +432,15 @@ fn owner_callback_cleanup_command_for_parts(
     match kind {
         ObjectArtifactCleanupKind::OwnerCallbackRegistration
         | ObjectArtifactCleanupKind::DescendantCallbackRegistration
-        | ObjectArtifactCleanupKind::LnbOwnerLossCallbackRegistration => {
-            Some(OwnerCallbackCleanupArtifactCommand::new(
+        | ObjectArtifactCleanupKind::LnbOwnerLossCallbackRegistration => Some(
+            OwnerCallbackCleanupArtifactCommand::new(
                 object_kind,
                 object_id,
                 generation,
                 callback_registration_api_for_close_parts(object_kind),
                 callback_cleanup_failure_message_for_kind(kind),
-            ))
-        }
+            ),
+        ),
         ObjectArtifactCleanupKind::DvrStatusNotifier => None,
     }
 }
@@ -492,6 +489,7 @@ fn artifact_cleanup_commands_for_close_plan(
     }
     commands
 }
+
 
 fn close_domain_cleanup_command_for_entry(
     entry: &RuntimeObjectEntry,
@@ -696,9 +694,7 @@ pub fn finish_object_close_use_case(
         };
     }
 
-    if let Err(cleanup_error) =
-        commit_object_close_cascade(runtime, object_id, generation).map(|_| ())
-    {
+    if let Err(cleanup_error) = commit_object_close_cascade(runtime, object_id, generation).map(|_| ()) {
         return match mark_object_close_cleanup_failed_cascade(
             runtime,
             object_id,
@@ -829,6 +825,7 @@ pub(crate) fn commit_object_close_cascade(
         .commit_close_cascade(object_id, generation)
         .map_err(object_table_error_to_hal)
 }
+
 
 fn artifact_cleanup_commands_for_drop_leak_plan(
     entries: &[RuntimeObjectEntry],

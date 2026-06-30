@@ -1175,8 +1175,7 @@ impl DemuxRuntime {
         &mut self,
         sink_filter_id: i32,
     ) -> Result<(), DemuxRuntimeError> {
-        let (_source_boundary, outcome) =
-            apply_filter_source_boundary_change(self, sink_filter_id, None);
+        let (_source_boundary, outcome) = apply_filter_source_boundary_change(self, sink_filter_id, None);
         outcome.map(|_| ())
     }
 
@@ -1335,9 +1334,11 @@ impl DemuxRuntime {
                         });
                 }
                 Some(Ok(outcome)) => {
-                    if let Some(diagnostic) =
-                        av_payload_delivery_outcome_diagnostic(outcome, validated.pid(), filter_id)
-                    {
+                    if let Some(diagnostic) = av_payload_delivery_outcome_diagnostic(
+                        outcome,
+                        validated.pid(),
+                        filter_id,
+                    ) {
                         report.diagnostics.push(diagnostic);
                     }
                 }

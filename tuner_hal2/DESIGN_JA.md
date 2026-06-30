@@ -540,7 +540,6 @@ Packet path diagnostic は validated TS packet から得た `PacketPid` を必�
 - close cascade の低レベル begin / commit / mark / entries helper は service_runtime 内部 helper とし、public API 主経路は close_object_use_case / finish_object_close_use_case に限定する。
 - TsPacketView は forgeable public field 型にしない。packet-bearing ingress は ValidatedTsPacket を正本とし、raw byte 入口は validation 境界または preflight-only に限定する。
 - public query surface は DTO response を正本とし、frontend runtime/signal 中間 state helper を crate public API として公開しない。
-- 追加 failure injection test file は Android.bp の rust_test srcs に明示登録する。
 
 
 - callback cleanup は service_runtime が artifact cleanup command を生成し、AIDL は callback artifact bridge の実行結果だけを返す。cleanup failure 時は runtime registry entry を先に clear せず、unhealthy marking が意味を持つ状態を保持する。
@@ -557,4 +556,18 @@ Packet path diagnostic は validated TS packet から得た `PacketPid` を必�
 
 ### callback artifact lookup と delivery failure の境界
 
-callback artifact lookup failure は Binder delivery failure と同一に扱わない。artifact lookup failure は callback artifact が存在しない、または callback artifact store を読めない境界 failure であり、service_runtime は diagnostic を記録するが、Binder callback が失敗した場合と同じ unhealthy marking を実行しない。Binder delivery failure / event conversion failure / post-commit notification failure は、service_runtime の `finish_callback_delivery_failure_use_case()` が diagnostic、unhealthy marking、primary+cleanup failure composition を所有する。AIDL 側 delivery module は Binder artifact lookup、event conversion、Binder callback execution、primary `HalError` 生成だけを行う。callback artifact store の production clear は `OwnerCallbackCleanupArtifactCommand` を受ける artifact bridge だけを許可し、runtime callback registry mutation は service_runtime finish use-case だけが所有する。
+callback artifact lookup failure は Binder delivery failure と同一に扱わない。artifact lookup failure は callback artifact が存在しない、または callback artifact store を読めない境界 failure であり、service_runtime は diagnostic を記録するが、Binder callback が失敗した場合と同じ unhealthy marking を実行しない。Binder delivery failure / event conversion failure / post-commit notification failure は、service_runtime の `finish_callback_delivery_failure_use_case()` が diagnostic、unhealthy marking、primary+cleanup failure composition を所有する。AIDL 側 delivery module は Binder artifact lookup、event conversion、Binder callback execution、primary `HalError` 生成だけを行う。callback artifact store の production clear は owner callback cleanup では `OwnerCallbackCleanupArtifactCommand`、service boot reset では `CallbackArtifactResetCommand` を受ける artifact bridge だけを許可し、runtime callback registry mutation は service_runtime finish use-case だけが所有する。
+
+### r50eo68 source-only complete 境界補強
+
+frontend worker の停止・置換は prepare / external join / complete の三相で扱う。prepare は runtime lock 内で対象 frontend、AIDL object、object generation、worker kind、worker generation を固定した lifecycle ticket を発行する。external join は runtime lock 外で実行する。complete は ticket を消費し、object generation、frontend id、worker generation、live reader、scan session、bound demux snapshot を再検証してから worker install / cleanup / rollback を実行する。join 後に frontend id だけを根拠として runtime mutation してはならない。
+
+DVR status callback delivery では runtime registry 上の callback_present と AidlServiceContext の callback artifact store lookup 結果を照合する。artifact missing、artifact store failure、notifier preflight skip は DVR post-commit notification diagnostic に必ず記録する。artifact missing は Binder delivery failure ではなく、registered callback unhealthy marking 対象にしない。Strong を取得した後の Binder failure だけを unhealthy marking 対象にする。
+
+callback artifact cleanup、callback registration rollback、object close callback cleanup、service boot reset callback cleanup は runtime prepare -> artifact command execution -> runtime finish の all-attempt transaction とする。runtime registry は callback lifecycle accounting の正本であり、artifact mutation command id を発行する。AIDL 層は command を実行し、outcome を runtime finish へ返す。artifact failure、runtime finish failure、registry missing は callback artifact/runtime split diagnostic に必ず保持する。primary failure と cleanup / finish failure が同時に存在する場合は FirstErrorCollector で composed failure を作成し、同時に split diagnostic も記録する。artifact mutation 成功後に runtime finish が失敗した場合も、artifact/runtime split failure として診断に残す。
+
+root/object query は RootQueryRequest / RootQueryResponse / ObjectQueryRequest / ObjectQueryResponse の DTO 境界に集約する。query_api.rs は registry entry、runtime state、signal state、filter open type helper、PCR filter lookup helper を crate public API として返さない。AIDL 層は DTO response から AIDL 型へ変換するだけで、registry entry や runtime state の policy を所有しない。
+
+PacketPid は production packet routing、validation、diagnostic construction では raw integer PID に戻して使わない。raw PID が必要な AIDL 変換は terminal AIDL presentation boundary として扱う。service_runtime が descrambler claim と packet path を照合する場合は、既に検証済みの `DescramblerPid` から `PacketPid` への一方向 typed bridge だけを使い、packet-derived `PacketPid` から raw PID を取り出して照合しない。ログと診断表示は diagnostic typed context から生成する。PacketPid の Display は表示整形だけに限定し、routing、validation、diagnostic classification の入力にしない。PipelineDiagnostic は PID を Option<i32> field bag として返さず、PacketPid を持つ typed accessor と PID非適用を表す typed outcome に分ける。
+
+Descrambler diagnostic は Option field bag を使わず、set-key-token failure、PID claim rejection、packet policy failure、packet source-filter validation failure、cleanup key release failure のような事象別 record として保持する。PID は typed id とし、欠落を Option field で表すのではなく、欠落し得る事象は別 record / typed context として表現する。bounded diagnostic store は維持する。

@@ -43,7 +43,10 @@ pub fn drop_leak_object(
     }
 }
 
-pub fn drop_leak_object_from_drop(context: &SharedAidlServiceContext, handle: AidlObjectHandle) {
+pub fn drop_leak_object_from_drop(
+    context: &SharedAidlServiceContext,
+    handle: AidlObjectHandle,
+) {
     if let Err(status) = drop_leak_object(context, handle) {
         context.record_drop_leak_error(handle, &status);
     }

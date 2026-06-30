@@ -219,8 +219,10 @@ fn execute_object_query_request(
             .dvr_queue_descriptor_snapshot_for_aidl_object(target.object_id(), target.generation())
             .map(ObjectQueryResponse::QueueDescriptor),
         ObjectQueryRequest::FrontendGetStatus { status_types } => {
-            let snapshot = query
-                .frontend_status_query_for_aidl_object(target.object_id(), target.generation())?;
+            let snapshot = query.frontend_status_query_for_aidl_object(
+                target.object_id(),
+                target.generation(),
+            )?;
             Ok(ObjectQueryResponse::FrontendStatus(
                 status_types
                     .into_iter()
@@ -229,8 +231,10 @@ fn execute_object_query_request(
             ))
         }
         ObjectQueryRequest::FrontendGetFrontendStatusReadiness { status_types } => {
-            let snapshot = query
-                .frontend_status_query_for_aidl_object(target.object_id(), target.generation())?;
+            let snapshot = query.frontend_status_query_for_aidl_object(
+                target.object_id(),
+                target.generation(),
+            )?;
             Ok(ObjectQueryResponse::FrontendStatusReadiness(
                 status_types
                     .into_iter()
@@ -619,6 +623,7 @@ where
     })?;
     Ok(plan.command_plan().api())
 }
+
 
 #[cfg(test)]
 mod tests {

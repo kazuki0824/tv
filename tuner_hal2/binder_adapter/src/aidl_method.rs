@@ -202,9 +202,9 @@ impl AidlMethodCall {
                     RuntimeExecutableRequest::FilterSetDataSource(request),
                 ))
             }
-            Self::FilterSetDataSourceToDemuxInput => DomainCommand::Filter(
-                FilterCommand::SetDataSource(RuntimeExecutableRequest::NoPayload),
-            ),
+            Self::FilterSetDataSourceToDemuxInput => {
+                DomainCommand::Filter(FilterCommand::SetDataSource(RuntimeExecutableRequest::NoPayload))
+            }
             Self::FilterSetDelayHint(request) => DomainCommand::Filter(
                 FilterCommand::SetDelayHint(RuntimeExecutableRequest::FilterDelayHint(request)),
             ),

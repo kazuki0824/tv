@@ -1,5 +1,17 @@
+use maleicacid_tuner_hal2_common::TransportStreamPid;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub struct DescramblerPid(pub u16);
+pub struct DescramblerPid(TransportStreamPid);
+
+impl DescramblerPid {
+    pub(crate) fn from_validated_pid_for_descrambler_core(pid: u16) -> Self {
+        Self(TransportStreamPid::validate_u16(pid).expect("validated descrambler PID"))
+    }
+
+    pub const fn to_transport_stream_pid_for_packet_pid_bridge(self) -> TransportStreamPid {
+        self.0
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct SourceFilterRef {
@@ -30,9 +42,8 @@ impl DescramblerPidClaim {
         filter_id: i32,
         generation: u64,
     ) -> Result<Self, DescramblerPidClaimError> {
-        if pid > 0x1fff {
-            return Err(DescramblerPidClaimError::InvalidPid);
-        }
+        let pid = TransportStreamPid::validate_u16(pid)
+            .map_err(|_| DescramblerPidClaimError::InvalidPid)?;
         Ok(Self {
             pid: DescramblerPid(pid),
             source: DescramblerPidClaimSource::SourceFilter(SourceFilterRef {
@@ -43,9 +54,8 @@ impl DescramblerPidClaim {
     }
 
     pub fn from_demux_input(pid: u16) -> Result<Self, DescramblerPidClaimError> {
-        if pid > 0x1fff {
-            return Err(DescramblerPidClaimError::InvalidPid);
-        }
+        let pid = TransportStreamPid::validate_u16(pid)
+            .map_err(|_| DescramblerPidClaimError::InvalidPid)?;
         Ok(Self {
             pid: DescramblerPid(pid),
             source: DescramblerPidClaimSource::DemuxInput,
@@ -72,10 +82,16 @@ impl DescramblerPidClaim {
 mod tests {
     use super::*;
 
+    fn test_descrambler_pid(pid: u16) -> DescramblerPid {
+        DescramblerPidClaim::from_demux_input(pid)
+            .expect("valid test PID")
+            .pid()
+    }
+
     #[test]
     fn pid_claim_keeps_source_filter_generation() {
         let claim = DescramblerPidClaim::from_source_filter(100, 4, 9).unwrap();
-        assert_eq!(claim.pid(), DescramblerPid(100));
+        assert_eq!(claim.pid(), test_descrambler_pid(100));
         assert_eq!(
             claim.source_filter_ref(),
             Some(SourceFilterRef {
@@ -88,7 +104,7 @@ mod tests {
     #[test]
     fn pid_claim_can_target_demux_input() {
         let claim = DescramblerPidClaim::from_demux_input(100).unwrap();
-        assert_eq!(claim.pid(), DescramblerPid(100));
+        assert_eq!(claim.pid(), test_descrambler_pid(100));
         assert_eq!(claim.source_filter_ref(), None);
     }
 }

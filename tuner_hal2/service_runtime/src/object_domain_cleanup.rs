@@ -76,9 +76,7 @@ impl ObjectDomainCleanupCommand {
         let result = match self.cleanup_kind {
             ObjectDomainCleanupKind::Frontend => executor.execute_frontend_cleanup(self),
             ObjectDomainCleanupKind::Lnb => executor.execute_lnb_cleanup(self),
-            ObjectDomainCleanupKind::LnbDropLeakRecord => {
-                executor.execute_lnb_drop_leak_record(self)
-            }
+            ObjectDomainCleanupKind::LnbDropLeakRecord => executor.execute_lnb_drop_leak_record(self),
         };
         ObjectDomainCleanupOutcome::completed(self, result)
     }
@@ -108,7 +106,10 @@ pub trait ObjectDomainCleanupExecutor {
         command: ObjectDomainCleanupCommand,
     ) -> Result<(), HalError>;
 
-    fn execute_lnb_cleanup(&mut self, command: ObjectDomainCleanupCommand) -> Result<(), HalError>;
+    fn execute_lnb_cleanup(
+        &mut self,
+        command: ObjectDomainCleanupCommand,
+    ) -> Result<(), HalError>;
 
     fn execute_lnb_drop_leak_record(
         &mut self,

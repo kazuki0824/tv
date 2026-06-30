@@ -5,13 +5,13 @@ use super::{
     HalInvalidArgumentKind, HalInvalidStateKind, LnbRuntimeId, RuntimeObjectTable,
     RuntimeObjectTableError, RuntimeOwnerRelation, RuntimeRegistry, TunerServiceRuntime,
 };
-use crate::object_method_txn::ObjectFrontendStatusSnapshot;
 use maleicacid_tuner_hal2_demux::{
     DvrRuntimeState, DvrStatusEvent, QueueDescriptorQueryError, QueueDescriptorSnapshot,
 };
+use crate::object_method_txn::ObjectFrontendStatusSnapshot;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RuntimeObjectQueryError {
+pub(crate) enum RuntimeObjectQueryError {
     KindOrOwnerMismatch,
     NotLive,
     PublicIdOutOfRange,
@@ -38,17 +38,17 @@ impl RuntimeObjectQueryError {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RuntimeObjectPublicEntry {
+pub(crate) struct RuntimeObjectPublicEntry {
     public_id: i32,
     owner: RuntimeOwnerRelation,
 }
 
 impl RuntimeObjectPublicEntry {
-    pub fn public_id(&self) -> i32 {
+    pub(crate) fn public_id(&self) -> i32 {
         self.public_id
     }
 
-    pub fn owner(&self) -> RuntimeOwnerRelation {
+    pub(crate) fn owner(&self) -> RuntimeOwnerRelation {
         self.owner
     }
 }
@@ -63,24 +63,24 @@ pub struct DvrStatusPollSnapshot {
     pub status_reporting_enabled: bool,
 }
 
-pub struct RuntimeQuery<'a> {
+pub(crate) struct RuntimeQuery<'a> {
     registry: &'a RuntimeRegistry,
     object_table: &'a RuntimeObjectTable,
 }
 
 impl TunerServiceRuntime {
-    pub fn query(&self) -> RuntimeQuery<'_> {
+    pub(crate) fn query(&self) -> RuntimeQuery<'_> {
         RuntimeQuery {
             registry: &self.registry,
             object_table: &self.object_table,
         }
     }
 
-    pub fn frontend_ids(&self) -> Vec<i32> {
+    pub(crate) fn frontend_ids(&self) -> Vec<i32> {
         self.query().frontend_ids()
     }
 
-    pub fn has_frontend_id(&self, id: i32) -> bool {
+    pub(crate) fn has_frontend_id(&self, id: i32) -> bool {
         self.query().has_frontend_id(id)
     }
 
@@ -97,42 +97,42 @@ impl TunerServiceRuntime {
             .frontend_entry_for_aidl_object(object_id, generation)
     }
 
-    pub fn demux_ids(&self) -> Vec<i32> {
+    pub(crate) fn demux_ids(&self) -> Vec<i32> {
         self.query().demux_ids()
     }
 
-    pub fn has_demux_id(&self, id: i32) -> bool {
+    pub(crate) fn has_demux_id(&self, id: i32) -> bool {
         self.query().has_demux_id(id)
     }
 
-    pub fn lnb_ids(&self) -> Vec<i32> {
+    pub(crate) fn lnb_ids(&self) -> Vec<i32> {
         self.query().lnb_ids()
     }
 
-    pub fn has_lnb_id(&self, id: i32) -> bool {
+    pub(crate) fn has_lnb_id(&self, id: i32) -> bool {
         self.query().has_lnb_id(id)
     }
 
-    pub fn lnb_id_by_name(&self, name: &str) -> Option<i32> {
+    pub(crate) fn lnb_id_by_name(&self, name: &str) -> Option<i32> {
         self.query().lnb_id_by_name(name)
     }
 
-    pub fn lnb_for_frontend_id(
+    pub(crate) fn lnb_for_frontend_id(
         &self,
         frontend_id: i32,
     ) -> Option<crate::registry::LnbRegistryEntry> {
         self.query().lnb_for_frontend_id(frontend_id)
     }
 
-    pub fn frontend_signal_state(&self, frontend_id: i32) -> Result<FrontendSignalState, HalError> {
+    pub(crate) fn frontend_signal_state(&self, frontend_id: i32) -> Result<FrontendSignalState, HalError> {
         self.query().frontend_signal_state(frontend_id)
     }
 
-    pub fn filter_open_type(&self, filter_id: i32) -> Option<FilterOpenType> {
+    pub(crate) fn filter_open_type(&self, filter_id: i32) -> Option<FilterOpenType> {
         self.query().filter_open_type(filter_id)
     }
 
-    pub fn first_pcr_filter_id_for_demux_object(
+    pub(crate) fn first_pcr_filter_id_for_demux_object(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
@@ -142,7 +142,7 @@ impl TunerServiceRuntime {
         Ok(self.query().first_pcr_filter_id_for_demux(demux_id))
     }
 
-    pub fn ensure_media_filter_for_demux_object(
+    pub(crate) fn ensure_media_filter_for_demux_object(
         &self,
         demux_object_id: AidlObjectId,
         demux_generation: AidlObjectGeneration,
@@ -188,7 +188,7 @@ impl TunerServiceRuntime {
         Ok(())
     }
 
-    pub fn is_live_pcr_filter_for_demux_object(
+    pub(crate) fn is_live_pcr_filter_for_demux_object(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
@@ -201,7 +201,7 @@ impl TunerServiceRuntime {
             .is_live_pcr_filter_for_demux(demux_id, filter_id))
     }
 
-    pub fn filter_queue_descriptor_snapshot_for_aidl_object(
+    pub(crate) fn filter_queue_descriptor_snapshot_for_aidl_object(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
@@ -210,7 +210,7 @@ impl TunerServiceRuntime {
             .filter_queue_descriptor_snapshot_for_aidl_object(object_id, generation)
     }
 
-    pub fn dvr_queue_descriptor_snapshot_for_aidl_object(
+    pub(crate) fn dvr_queue_descriptor_snapshot_for_aidl_object(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
@@ -219,7 +219,7 @@ impl TunerServiceRuntime {
             .dvr_queue_descriptor_snapshot_for_aidl_object(object_id, generation)
     }
 
-    pub fn dvr_status_poll_snapshot_for_aidl_object(
+    pub(crate) fn dvr_status_poll_snapshot_for_aidl_object(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
@@ -228,7 +228,7 @@ impl TunerServiceRuntime {
             .dvr_status_poll_snapshot_for_aidl_object(object_id, generation)
     }
 
-    pub fn public_entry_for_aidl_object(
+    pub(crate) fn public_entry_for_aidl_object(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
@@ -238,7 +238,7 @@ impl TunerServiceRuntime {
             .public_entry_for_aidl_object(object_id, generation, expected_kind)
     }
 
-    pub fn public_runtime_id_for_aidl_object(
+    pub(crate) fn public_runtime_id_for_aidl_object(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
@@ -248,7 +248,7 @@ impl TunerServiceRuntime {
             .map(|entry| entry.public_id())
     }
 
-    pub fn public_runtime_id_for_object_method(
+    pub(crate) fn public_runtime_id_for_object_method(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
@@ -263,7 +263,7 @@ impl TunerServiceRuntime {
             })
     }
 
-    pub fn public_entry_for_object_method(
+    pub(crate) fn public_entry_for_object_method(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
@@ -304,7 +304,7 @@ fn map_queue_descriptor_query_error(error: QueueDescriptorQueryError) -> HalErro
     }
 }
 impl<'a> RuntimeQuery<'a> {
-    pub fn filter_queue_descriptor_snapshot_for_aidl_object(
+    pub(crate) fn filter_queue_descriptor_snapshot_for_aidl_object(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
@@ -341,7 +341,7 @@ impl<'a> RuntimeQuery<'a> {
             .map_err(map_queue_descriptor_query_error)
     }
 
-    pub fn dvr_queue_descriptor_snapshot_for_aidl_object(
+    pub(crate) fn dvr_queue_descriptor_snapshot_for_aidl_object(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
@@ -378,7 +378,7 @@ impl<'a> RuntimeQuery<'a> {
             .map_err(map_queue_descriptor_query_error)
     }
 
-    pub fn dvr_status_poll_snapshot_for_aidl_object(
+    pub(crate) fn dvr_status_poll_snapshot_for_aidl_object(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
@@ -438,7 +438,7 @@ impl<'a> RuntimeQuery<'a> {
         })
     }
 
-    pub fn public_entry_for_aidl_object(
+    pub(crate) fn public_entry_for_aidl_object(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
@@ -456,7 +456,7 @@ impl<'a> RuntimeQuery<'a> {
         })
     }
 
-    pub fn public_runtime_id_for_aidl_object(
+    pub(crate) fn public_runtime_id_for_aidl_object(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
@@ -466,7 +466,7 @@ impl<'a> RuntimeQuery<'a> {
             .map(|entry| entry.public_id())
     }
 
-    pub fn public_runtime_id_for_object_method(
+    pub(crate) fn public_runtime_id_for_object_method(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
@@ -481,7 +481,7 @@ impl<'a> RuntimeQuery<'a> {
             })
     }
 
-    pub fn public_entry_for_object_method(
+    pub(crate) fn public_entry_for_object_method(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
@@ -496,7 +496,7 @@ impl<'a> RuntimeQuery<'a> {
             })
     }
 
-    pub fn frontend_ids(&self) -> Vec<i32> {
+    pub(crate) fn frontend_ids(&self) -> Vec<i32> {
         self.registry
             .frontend_ids()
             .into_iter()
@@ -504,7 +504,7 @@ impl<'a> RuntimeQuery<'a> {
             .collect()
     }
 
-    pub fn has_frontend_id(&self, id: i32) -> bool {
+    pub(crate) fn has_frontend_id(&self, id: i32) -> bool {
         self.registry.frontend(FrontendRuntimeId(id)).is_some()
     }
 
@@ -551,7 +551,7 @@ impl<'a> RuntimeQuery<'a> {
         })
     }
 
-    pub fn demux_ids(&self) -> Vec<i32> {
+    pub(crate) fn demux_ids(&self) -> Vec<i32> {
         self.registry
             .demux_ids()
             .into_iter()
@@ -559,23 +559,23 @@ impl<'a> RuntimeQuery<'a> {
             .collect()
     }
 
-    pub fn has_demux_id(&self, id: i32) -> bool {
+    pub(crate) fn has_demux_id(&self, id: i32) -> bool {
         self.registry.demux(DemuxRuntimeId(id)).is_some()
     }
 
-    pub fn lnb_ids(&self) -> Vec<i32> {
+    pub(crate) fn lnb_ids(&self) -> Vec<i32> {
         self.registry.lnb_ids().into_iter().map(|id| id.0).collect()
     }
 
-    pub fn has_lnb_id(&self, id: i32) -> bool {
+    pub(crate) fn has_lnb_id(&self, id: i32) -> bool {
         self.registry.lnb(LnbRuntimeId(id)).is_some()
     }
 
-    pub fn lnb_id_by_name(&self, name: &str) -> Option<i32> {
+    pub(crate) fn lnb_id_by_name(&self, name: &str) -> Option<i32> {
         self.registry.lnb_by_name(name).map(|entry| entry.id.0)
     }
 
-    pub fn lnb_for_frontend_id(
+    pub(crate) fn lnb_for_frontend_id(
         &self,
         frontend_id: i32,
     ) -> Option<crate::registry::LnbRegistryEntry> {
@@ -584,7 +584,7 @@ impl<'a> RuntimeQuery<'a> {
             .cloned()
     }
 
-    pub fn frontend_runtime_snapshot(
+    pub(crate) fn frontend_runtime_snapshot(
         &self,
         frontend_id: i32,
     ) -> Result<FrontendRuntimeSnapshot, HalError> {
@@ -600,7 +600,7 @@ impl<'a> RuntimeQuery<'a> {
         Ok(runtime.snapshot())
     }
 
-    pub fn bound_demux_runtime_snapshots(
+    pub(crate) fn bound_demux_runtime_snapshots(
         &self,
         frontend_id: i32,
     ) -> Result<Vec<(DemuxRuntimeId, DemuxRuntimeSnapshot)>, HalError> {
@@ -619,7 +619,7 @@ impl<'a> RuntimeQuery<'a> {
         Ok(snapshots)
     }
 
-    pub fn frontend_signal_state(&self, frontend_id: i32) -> Result<FrontendSignalState, HalError> {
+    pub(crate) fn frontend_signal_state(&self, frontend_id: i32) -> Result<FrontendSignalState, HalError> {
         let runtime = self
             .registry
             .frontend_runtime(crate::registry::FrontendRuntimeId(frontend_id))
@@ -632,7 +632,7 @@ impl<'a> RuntimeQuery<'a> {
         Ok(runtime.signal_state())
     }
 
-    pub fn frontend_live_reader_descriptor_for_live_pump(
+    pub(crate) fn frontend_live_reader_descriptor_for_live_pump(
         &self,
         frontend_id: i32,
     ) -> Result<Option<FrontendLiveReaderDescriptor>, HalError> {
@@ -670,7 +670,7 @@ impl<'a> RuntimeQuery<'a> {
             })
     }
 
-    pub fn filter_open_type(&self, filter_id: i32) -> Option<FilterOpenType> {
+    pub(crate) fn filter_open_type(&self, filter_id: i32) -> Option<FilterOpenType> {
         let entry = self.registry.filter(FilterRuntimeId(filter_id))?;
         let demux = self
             .registry
@@ -678,7 +678,7 @@ impl<'a> RuntimeQuery<'a> {
         demux.filter(filter_id).map(|filter| filter.open_type())
     }
 
-    pub fn first_pcr_filter_id_for_demux_object(
+    pub(crate) fn first_pcr_filter_id_for_demux_object(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
@@ -688,7 +688,7 @@ impl<'a> RuntimeQuery<'a> {
         Ok(self.first_pcr_filter_id_for_demux(demux_id))
     }
 
-    pub fn ensure_media_filter_for_demux_object(
+    pub(crate) fn ensure_media_filter_for_demux_object(
         &self,
         demux_object_id: AidlObjectId,
         demux_generation: AidlObjectGeneration,
@@ -734,7 +734,7 @@ impl<'a> RuntimeQuery<'a> {
         Ok(())
     }
 
-    pub fn is_live_pcr_filter_for_demux_object(
+    pub(crate) fn is_live_pcr_filter_for_demux_object(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
@@ -745,7 +745,7 @@ impl<'a> RuntimeQuery<'a> {
         Ok(self.is_live_pcr_filter_for_demux(demux_id, filter_id))
     }
 
-    pub fn first_pcr_filter_id_for_demux(&self, demux_id: i32) -> Option<i32> {
+    pub(crate) fn first_pcr_filter_id_for_demux(&self, demux_id: i32) -> Option<i32> {
         let demux = self.registry.demux_runtime(DemuxRuntimeId(demux_id))?;
         self.registry
             .filters_for_demux(demux_id)
@@ -762,7 +762,7 @@ impl<'a> RuntimeQuery<'a> {
             })
     }
 
-    pub fn is_live_pcr_filter_for_demux(&self, demux_id: i32, filter_id: i32) -> bool {
+    pub(crate) fn is_live_pcr_filter_for_demux(&self, demux_id: i32, filter_id: i32) -> bool {
         let Some(entry) = self.registry.filter(FilterRuntimeId(filter_id)) else {
             return false;
         };
@@ -780,7 +780,7 @@ impl<'a> RuntimeQuery<'a> {
             .unwrap_or(false)
     }
 
-    pub fn ensure_frontend_demux_sink_ready(
+    pub(crate) fn ensure_frontend_demux_sink_ready(
         &self,
         frontend_id: i32,
     ) -> Result<Vec<DemuxRuntimeId>, HalError> {

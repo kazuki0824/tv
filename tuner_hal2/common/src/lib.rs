@@ -15,6 +15,38 @@ pub const MAX_ARIB_EIT_SECTION_LENGTH: usize = 4093;
 pub const MAX_ARIB_SECTION_TOTAL_BYTES: usize = 3 + MAX_ARIB_EIT_SECTION_LENGTH;
 pub const MAX_SECTION_PAYLOAD_BYTES: usize = MAX_ARIB_SECTION_TOTAL_BYTES;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct TransportStreamPid(u16);
+
+impl TransportStreamPid {
+    pub fn validate_u16(pid: u16) -> Result<Self, ()> {
+        if pid <= 0x1fff {
+            Ok(Self(pid))
+        } else {
+            Err(())
+        }
+    }
+
+    pub fn validate_i32(pid: i32) -> Result<Self, ()> {
+        if (0..=0x1fff).contains(&pid) {
+            Ok(Self(pid as u16))
+        } else {
+            Err(())
+        }
+    }
+
+    pub const fn to_i32_for_aidl_boundary(self) -> i32 {
+        self.0 as i32
+    }
+
+    pub const fn matches_i32_config(self, tpid: Option<i32>) -> bool {
+        match tpid {
+            Some(config_pid) => config_pid == self.0 as i32,
+            None => false,
+        }
+    }
+}
+
 /// ARIB STD-B10 の table_id 別 section_length 上限を返す。
 /// EIT p/f と EIT schedule は 0x4e..=0x6f、それ以外は短い section として扱う。
 pub fn max_arib_section_length_for_table_id(table_id: u8) -> usize {

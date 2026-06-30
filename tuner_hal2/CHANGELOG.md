@@ -1,3 +1,153 @@
+# r50eo68_source_only_complete_corrected12_unverified
+
+- corrected11 の完了判定では、D 系統の callback artifact/runtime all-attempt finish を完了扱いしていたが、`CallbackArtifactRuntimeSplitOutcome::ServiceBootResetFailure` が `callback_artifact_error: Option<HalError>` / `drop_leak_error: Option<HalError>` / `runtime_error: Option<HalError>` を持つ field bag のまま残っていた。これは Markdown v7 の D が求める split diagnostic / variant-specific outcome への未達であり、前回残件リストに未記載だった。
+- corrected11 では、`finish_owner_callback_cleanup_outcome()` / `finish_callback_registration_artifact_outcome()` / object close callback cleanup executor が artifact bridge 実行後に runtime lock を取得していた。artifact mutation 成功後に runtime lock 取得が失敗すると runtime finish / split diagnostic 記録へ進めないため、runtime prepare -> artifact command execution -> runtime finish の all-attempt transaction として不十分だった。前回は指定箇所の実行順序までコードを読んで判定していなかった。
+- デグレの意図は、artifact bridge の結果を runtime finish に渡す形だけを見て、artifact 実行後に runtime finish へ入れない lock failure 窓を十分に扱わなかったことだった。service boot reset については複数 failure を一つの struct にまとめるために Option field を使ったが、これは split diagnostic を variant-specific にする方針と矛盾していた。
+- `ServiceBootResetFailure { Option<HalError>, ... }` を廃止し、`ServiceBootCallbackArtifactFailure` / `ServiceBootDropLeakFailure` / `ServiceBootRuntimeFailure` の required-error variant に分離した。service boot reset では各失敗を個別 diagnostic record として記録する。
+- `service_boot_reset_from_results()` を `service_boot_reset_from_attempt_results()` に置換し、`Result<(), HalError>` の各 attempt result から diagnostic records を組み立てるよう修正した。service boot reset diagnostic constructor surface に Option field bag を残さない。
+- source-only contract test に、service boot reset の callback artifact failure / drop-leak failure がそれぞれ required-error variant-specific outcome になることを固定する test を追加した。
+- owner callback cleanup、callback registration rollback、object close callback cleanup executor では runtime lock を取得してから artifact bridge を実行し、その同じ runtime guard で finish use-case へ渡す順序へ変更した。これにより artifact mutation 後に runtime finish / split diagnostic へ進めない追加 lock acquisition 窓を閉じた。
+- Source-only static checks performed for this correction: `ServiceBootResetFailure` は存在しない。`callback_artifact_error: Option<HalError>` / `drop_leak_error: Option<HalError>` / `runtime_error: Option<HalError>` の service boot reset field bag は存在しない。指定された object_runtime / service_context の順序は runtime guard acquisition -> artifact attempt -> finish/diagnostic record へ変更済み。Build, rustfmt, rustc, cargo, Soong, atest, VTS, emulator/device boot, adb sanity, and real-broadcast verification were not run in this environment.
+
+# r50eo68_source_only_complete_corrected11_unverified
+
+- corrected10 の完了判定では、`service_runtime/src/source_only_contract_tests.rs` の `matches!` pattern 内で `pid: test_descrambler_pid(...)` という関数呼び出しを pattern として書いていた。これは Rust pattern として成立せず、source-only contract test のコンパイル不能級未達であり、前回残件リストに未記載だった。
+- 前回は `PacketPid` / `DescramblerPid` の型定義と raw accessor の削除確認を中心に見ており、追加 test source の assertion pattern を Rust 構文として読んで判定していなかった。これは Markdown v7 の H「通常 test source 実装」に対する過大報告だった。
+- デグレの意図は、`DescramblerPid` 直接生成を避けるため test helper 経由に直したつもりだったが、pattern 位置で helper を呼ぶ形にしてしまい、実際には test source として成立しないコードを追加したことだった。
+- `PidClaimRejectedWithoutDemux` / `PidClaimRejected` の assertion を、pattern では `pid` binding にし、guard で `pid == test_descrambler_pid(...)` を確認する形へ修正した。
+- Source-only static checks performed for this correction: `source_only_contract_tests.rs` の `pid: test_descrambler_pid(...)` pattern は消えている。Build, rustfmt, rustc, cargo, Soong, atest, VTS, emulator/device boot, adb sanity, and real-broadcast verification were not run in this environment.
+
+# r50eo68_source_only_complete_corrected10_unverified
+
+- corrected9 の完了判定では、`PacketPid` の内部表現を `TransportStreamPid` に変更した後、`PacketPid::from_validated_pid()` が非 const になっているにもかかわらず、`ValidatedTsPacket::pid()` を `pub const fn` のまま残していた。これはコンパイル不能級の未達であり、前回残件リストに未記載だった。前回は `PacketPid` / `DescramblerPid` bridge の raw escape だけを追い、変更後の const 呼び出し制約までコードを読んで判定していなかった。
+- デグレの意図は、`TsPacketView::packet_pid()` の const 指定を外した時点で同種の追従が完了したと誤認し、`ValidatedTsPacket::pid()` 側を同じ観点で見直さなかったことだった。
+- `ValidatedTsPacket::pid()` を通常 `pub fn` に変更し、非 const validation helper を const context から呼ばないよう修正した。
+- Source-only static checks performed for this correction: `ValidatedTsPacket::pid()` is no longer `const`; `PacketPid::get()` / `PacketPid::as_u16()` / `PacketPid::as_i32_for_internal_demux()` / `to_u16_for_packet_pid_bridge()` / tuple-field raw PID access are absent from the checked packet/descrambler path. Build, rustfmt, rustc, cargo, Soong, atest, VTS, emulator/device boot, adb sanity, and real-broadcast verification were not run in this environment.
+
+# r50eo68_source_only_complete_corrected9_unverified
+
+- corrected8 の完了判定では、`DescramblerPid` の tuple field `.0` を閉じたことだけで typed boundary が成立したと扱っていたが、`DescramblerPid::to_u16_for_packet_pid_bridge()` が public raw accessor として残り、`PacketPid::from_descrambler_pid_for_service_runtime_boundary()` がその raw `u16` を使っていた。これは F/G の typed boundary に対する未達であり、前回残件リストに未記載だった。
+- この未達は常識的にあり得る誤判定ではなく、「ちゃんとコードを読んで判定した」とは言えない。関数本体の引数・戻り値と call-site を見れば、raw PID escape が残っていることは直ちに分かるためである。
+- デグレの意図は、`DescramblerPid(…)` / `.0` の直接経路だけを閉じ、cross-crate 変換の都合で raw `u16` bridge を名前付き helper として残したことだった。結果として raw accessor を別名で温存しており、v7 の「検証済み DescramblerPid から PacketPid へ入る一方向 typed bridge」という意図に反していた。
+- `common::TransportStreamPid` を追加し、`DescramblerPid` と `PacketPid` の内側を同一 typed PID に寄せた。`DescramblerPid` から `PacketPid` への bridge は `TransportStreamPid` を渡すだけにし、`u16` raw value を返す public bridge を削除した。
+- `service_runtime/src/source_only_contract_tests.rs` に `PacketPid` import が不足していた。これは corrected8 の H に対するコンパイル不能級未達であり、前回残件リストに未記載だった。前回は test helper の型解決まで読めていなかった。
+- `RuntimeObjectQueryError` の public re-export と public enum を crate-private 化し、query_api の非DTO public surface をさらに閉じた。
+- 未実行: rustfmt / rustc / cargo / Soong build / `m nothing` / test module build / `atest -b` / atest run / Tuner VTS discovery / Tuner VTS run / adb sanity / emulator or device boot / 実波確認。
+
+# r50eo68_source_only_complete_corrected8_unverified
+
+- corrected7 の完了判定では、`DescramblerPid` / `PacketPid` typed boundary の追従を十分に読めていなかった。`PacketPid::from_descrambler_pid_for_service_runtime_boundary()` が raw `u16` を受け取り、`packet_txn.rs` / `descrambler_session.rs` が `claim.pid().0` / `descrambler_pid.0` で raw PID に戻す経路を残していた。これは F/G の typed boundary に対する未達であり、前回残件リストに未記載だった。
+- デグレの意図は、corrected6 で `PacketPid::as_u16()` を消した後も、descrambler claim と packet path の照合を小変更で済ませるため、`DescramblerPid` の tuple field と raw `u16` bridge を温存したことだった。結果として、raw accessor を別経路に移しただけで、v7 の「検証済み DescramblerPid から PacketPid へ入る一方向 typed bridge」にはなっていなかった。
+- `PacketPid::from_descrambler_pid_for_service_runtime_boundary()` は `DescramblerPid` を受け取る typed bridge に変更した。`demux` crate に `descrambler` crate 依存を追加し、`PacketPid` 変換境界でだけ `DescramblerPid` bridge を消費する。
+- `DescramblerPid` の tuple field を非公開化し、外部 crate から `DescramblerPid(…)` / `.0` で raw PID を取り出す経路を閉じた。`DescramblerPidClaim` 経由で検証済み PID を得る形へ source-only contract tests と service_runtime tests を更新した。
+- `validate_descrambler_source_filter()` / stale-source-generation / duplicate-claim check を `DescramblerPid` 受け取りへ変更し、`packet_txn.rs` の `descrambler_pid.0` call-site を削除した。
+- invalid AIDL PID は valid typed PID を作れないため、`PidClaimRejectedInvalidPid` / `PidClaimRejectedInvalidPidWithoutDemux` の event-specific diagnostic に分離した。これは Option field bag ではなく invalid input 専用 variant として扱う。
+- 未実行: rustfmt / rustc / cargo / Soong build / `m nothing` / test module build / `atest -b` / atest run / Tuner VTS discovery / Tuner VTS run / adb sanity / emulator or device boot / 実波確認。
+
+# r50eo68_source_only_complete_corrected7_unverified
+
+- corrected6 でも未達が残っていたため、source-only 修正を継続した。
+- corrected6 の完了判定では、`DescramblerDiagnosticRecord::PacketPolicyWithoutPid` variant を追加したにもかかわらず、対応する `packet_policy_without_pid()` constructor を実装していなかった。`service_runtime/src/boot/packet_txn.rs` と source-only contract test がこの constructor を呼ぶため、これはコンパイル不能級の未達であり、前回残件リストに未記載だった。前回判定時は enum variant と call-site の存在だけを見て、constructor 定義まで読めていなかった。
+- corrected6 の source-only contract test は `PacketPid` と `DescramblerPid` を直接 import しているのに、Android.bp の `maleicacid_tuner_hal2_service_runtime_source_only_contract_test` に `libmaleicacid_tuner_hal2_demux` と `libmaleicacid_tuner_hal2_descrambler` を追加していなかった。これは H の Android.bp / test source 完了条件に対する未達であり、前回残件リストに未記載だった。前回判定時は test source の import と target rustlibs を突合していなかった。
+- `DescramblerDiagnosticRecord::packet_policy_without_pid()` を追加し、PID 欠落時の diagnostic constructor が variant-specific record を生成できるようにした。
+- `maleicacid_tuner_hal2_service_runtime_source_only_contract_test` の rustlibs に `libmaleicacid_tuner_hal2_demux` と `libmaleicacid_tuner_hal2_descrambler` を追加した。
+- これらは corrected6 で追加したコードの追従漏れであり、既存仕様判断の変更ではない。
+- 未実行: rustfmt、rustc/cargo、Soong build、m nothing、test module build、atest -b、atest run、Tuner VTS discovery、Tuner VTS run、adb sanity、emulator/device boot、実波確認。
+
+# r50eo68_source_only_complete_corrected6_unverified
+
+- corrected5 でも未達が残っていたため、source-only 修正を継続した。
+- corrected5 の完了判定では、`PacketPid::as_u16()` を消したことだけを確認し、`service_runtime/src/boot/packet_txn.rs` に残った `packet_pid.as_u16()` call-site と `ActiveDescramblerSnapshot` の `u16` PID key を十分読めていなかった。これはコンパイル不能級の未達かつ F の typed boundary 違反であり、前回残件リストに未記載だった。
+- corrected5 で `PacketPid::as_u16()` を削除した後、call-site まで移行しないまま完了扱いにしたのはデグレ相当である。意図としては、demux packet pipeline 側の raw accessor 定義だけを潰せば十分と誤って考え、service_runtime の descrambler packet policy 経路を後続の照合対象として読めていなかった。
+- `ActiveDescramblerSnapshot` を `u16` PID key から `PacketPid` / `DescramblerPid` typed key へ分離し、packet-derived PID を raw `u16` に戻さず descrambler claim と照合するよう修正した。
+- `descramble_ts_packet_in_place()` の target PID set を `BTreeSet<DescramblerPid>` に変更し、descrambler core 側も raw `u16` target set を受け取らないようにした。
+- `DescramblerDiagnosticRecord::PacketPolicy` / `PacketSourceFilterValidation` を `PacketPid` typed context に変更し、validation failure のように PID を持てない場合は `PacketPolicyWithoutPid` variant へ分離した。
+- `DescramblerPid` と `PacketPid` の照合は、検証済み `DescramblerPid` から `PacketPid` へ入る一方向 typed bridge に限定し、`PacketPid` から raw PID を取り出す accessor は追加していない。
+- source-only contract test に、packet policy diagnostic が `PacketPid` を持つことと、PID欠落時は dedicated variant を使うことを追加した。
+- `DESIGN_JA.md` / `CODE_CONVENTION.md` に、descrambler claim と packet path の typed bridge は一方向であり、packet-derived `PacketPid` から raw PID を取り出さないことを追記した。
+- `#[allow(dead_code)]` / `#[allow(unused*)]` は追加していない。今回確認した範囲で、削除済み raw accessor の呼び出し残りと、旧 `u16` key の dead/obsolete path は除去した。
+- 未実行: rustfmt、rustc/cargo、Soong build、m nothing、test module build、atest -b、atest run、Tuner VTS discovery、Tuner VTS run、adb sanity、emulator/device boot、実波確認。
+
+# r50eo68_source_only_complete_corrected5_unverified
+
+- corrected4 でも未達が残っていたため、source-only 修正を継続した。
+- corrected4 の完了判定では、`PacketPid::get()` / `as_i32_for_internal_demux()` の消滅だけを見て、`PacketPid::as_u16()` が production continuity / PES assembler path に残る点を見落としていた。
+- `PacketPid::as_u16()` は raw accessor の再導入であり、v7 の「PacketPid raw accessor は AIDL presentation boundary のみ」という方針に反するため削除した。
+- `ContinuityTracker` / `PesAssembler` / `PesPacket` を `PacketPid` typed key に寄せ、packet_pipeline から production raw u16 PID conversion を排除した。
+- `PacketPipeline` の section/PES assembler key、generation key、continuity key は `PacketPid` typed key のまま維持した。
+- corrected4 時点で、この未達は残件リストに記載していなかった。前回判定時は `PacketPid` raw accessor の代替面を十分に読まず、`as_u16()` の production use を見落としていた。
+- rustfmt はこの環境に存在しないため未実行。Rust compile、cargo test、Soong build、m nothing、test module build、atest、Tuner VTS、adb sanity、emulator/device boot、実波確認も未実行。
+
+# r50eo68_source_only_complete_corrected4_unverified
+
+- 前回 corrected3_unverified の再照合で、`packet_pipeline.rs` に `PacketPid::as_i32_for_internal_demux()` を追加して production routing / generation map / assembler key へ raw PID を戻していたことを確認した。これは v7 の「PacketPid raw accessor は AIDL presentation boundary だけ」という F の意図に反するデグレであり、前回残件リストに未記載だった。前回は `PacketPid::get()` と `pid.as_i32()` の消滅だけを見ており、代替 raw accessor を導入したことが設計違反である点までコードを読んで判定していなかった。
+- `PacketPid::as_i32_for_internal_demux()` を削除し、`PacketPipeline` の section/PES assembler key と generation key を `PacketPid` typed key に変更した。filter flush generation key も `PacketPid` を保持する形に変更し、config PID からの照合は private conversion と typed comparison helper に閉じた。
+- 前回 corrected3_unverified の再照合で、`DescramblerDiagnosticRecord` を enum 化した後も `descrambler_id() -> Option<i32>` / `demux_id() -> Option<i32>` / `pid() -> Option<u16>` / `filter_id() -> Option<i32>` / `error() -> Option<&HalError>` accessor が残り、diagnostic を再び Option field bag として読み出せる状態だったことを確認した。これは G の variant-specific 化の未達であり、前回残件リストに未記載だった。前回は enum variant 定義部だけを見て、accessor によって Option field bag surface が残る点まで読んでいなかった。
+- `DescramblerDiagnosticRecord` の Option field bag accessor を削除し、service_runtime の通常テストと source-only contract test を enum pattern match に変更した。
+- 未実行: rustfmt、rustc/cargo、Soong build、m nothing、test module build、atest -b、atest run、Tuner VTS discovery、Tuner VTS run、adb sanity、emulator/device boot、実波確認。
+
+# r50eo68_source_only_complete_corrected3_unverified
+
+- 前回 corrected2_unverified の再照合で、DVR callback delivery の Binder failure accounting 呼び出しに `handle` 引数が重複するコンパイル不能級の誤差分が残っていたことを確認した。これは前回残件リストに未記載であり、前回完了判定時に当該差分行を実コードとして十分読んでいなかった。
+- 前回 corrected2_unverified の再照合で、`RuntimeQuery` / `RuntimeObjectPublicEntry` が `service_runtime` public re-export に残り、`RuntimeQuery` の public methods 経由で registry entry / runtime snapshot / signal helper / PCR helper を外部 API として到達可能にしていたことを確認した。これは前回残件リストに未記載であり、前回完了判定時に `query_api.rs` の public surface を grep 断片で見ただけで、re-export と `runtime.query()` 経由の到達性まで読めていなかった。
+- `dvr_callback_delivery.rs` の duplicate `handle` argument を削除し、Binder delivery failure accounting 呼び出しの引数列を `runtime, handle, phase, dvr_phase, primary` に戻した。
+- `RuntimeQuery` と `RuntimeObjectPublicEntry` を crate-private にし、`TunerServiceRuntime::query()` および `RuntimeQuery` helper methods を crate-private に変更した。`service_runtime/src/lib.rs` と `boot.rs` から `RuntimeQuery` / `RuntimeObjectPublicEntry` の public re-export を削除した。
+- `packet_pipeline.rs` に残っていた `pid.as_i32()` 呼び出しを `pid.as_i32_for_internal_demux()` に修正した。`PacketPid::get()` 削除後に残っていた未追従のコンパイル不能級差分であり、これも前回残件リストに未記載だった。前回完了判定時に raw accessor 削除後の全 call-site を読んでいなかった。
+- service boot reset split diagnostic で drop-leak reset failure を runtime finish failure として記録していた誤分類を修正し、callback artifact error / drop-leak error / runtime error を service boot reset 専用 outcome として分けた。boot reset では runtime lock を取得してから callback artifact reset command を発行し、artifact reset / drop-leak reset / runtime boot reset / diagnostic record を同一 runtime finish 区間で扱うよう補正した。
+- 未実行: rustfmt、rustc/cargo、Soong build、m nothing、test module build、atest -b、atest run、Tuner VTS discovery、Tuner VTS run、adb sanity、emulator/device boot、実波確認。
+
+# r50eo68_source_only_complete_corrected2_unverified
+
+- 前回 corrected_unverified の再照合で、frontend worker join ticket が worker generation / runtime snapshot / bound demux snapshot の再検証まで閉じていないこと、DescramblerDiagnosticRecord の pid_claim constructor が Option demux id を受け取っていたことを確認した。
+- frontend worker replacement / stop object ticket に worker generation、frontend runtime snapshot、bound demux generation snapshot を保持させ、external join 後の complete helper で object generation / frontend id / worker generation / live reader / scan session / bound demux generation を再検証するよう補強した。
+- FrontendWorkerStopTicket に public variant を持たせず、single-use ticket の worker_generation accessor だけを追加した。
+- DescramblerDiagnosticRecord の PID claim 診断を demux resolved / demux unresolved の variant に分離し、Option demux id constructor を廃止した。
+- source-only contract test に DescramblerDiagnosticRecord の demux resolved / unresolved variant 固定テストを追加した。
+- 未実行: rustfmt、rustc/cargo、Soong build、m nothing、test module build、atest -b、atest run、Tuner VTS discovery、Tuner VTS run、adb sanity、emulator/device boot、実波確認。
+
+# r50eo68_source_only_complete_corrected_unverified
+
+- Corrected the previous r50eo68_source_only_complete over-report: the earlier archive did not fully satisfy the v7 source-only work plan for frontend worker ticket ownership, frontend scan-end artifact lookup regression, callback artifact/runtime split finish diagnostics, or the claimed source-only regression coverage.
+- Implemented service-runtime frontend worker replacement/stop tickets that bind object id, object generation, frontend id, worker kind, cancel reason, and the underlying device stop ticket; join still occurs outside the runtime lock, and post-join mutation now goes through ticket-consuming complete helpers that revalidate the AIDL object and frontend target.
+- Fixed frontend callback delivery failure accounting so `CallbackArtifactLookup` no longer marks frontend scan session callback failure or runtime callback registration unhealthy; added a regression test for frontend scan-end artifact lookup failure preserving registered callback health.
+- Changed DVR callback artifact lookup diagnostic recording so missing/store-failure post-commit diagnostics are not silently skipped and do not rely on `Ok(false)` delivery reporting.
+- Reworked callback artifact/runtime split diagnostics so owner cleanup, callback registration rollback, object close callback cleanup, and service boot reset use distinct split phases/targets; registry-missing finish is treated as a runtime finish failure diagnostic instead of being ignored.
+- Kept the earlier PacketPid / PipelineDiagnostic typed accessor changes, DescramblerDiagnosticRecord enum conversion, query helper visibility narrowing, and Android.bp test target additions.
+- Source-only static checks performed: no `pub enum FrontendWorkerStopTicket`, service-runtime replacement/stop ticket helpers are present, frontend artifact lookup unhealthy-marking path is phase-gated, `PacketPid::get()` and `PipelineDiagnostic::pid() -> Option<i32>` are absent from the packet pipeline, and the added Android.bp test target names are present.
+- Not run: rustfmt, rustc, cargo, Soong build, `m nothing`, test module build, `atest -b`, atest run, Tuner VTS discovery, Tuner VTS run, adb sanity, emulator/device boot, or real-broadcast verification. This is source-only corrected/unverified, not build verified / atest OK / VTS complete / device verified.
+
+# r50eo68
+
+- Audited `tuner_hal2/DESIGN_JA.md` and `tuner_hal2/CODE_CONVENTION.md` beyond the previous diff-only cleanup for document responsibility split.
+- Reworded remaining CODE_CONVENTION entries that re-stated design contracts for missing-target handling, mandatory diagnostics, Drop leak semantics, descrambler key phase order, AV shared backing failure semantics, root/object query DTO boundaries, packet diagnostic required context, and transaction phase visibility so they now reference `DESIGN_JA.md` as the semantic source of truth and describe only implementation-prohibited forms.
+- Removed the Android.bp failure-injection test registration rule from `CODE_CONVENTION.md`; build/test registration requirements belong to completion evidence / build integration review rather than module coding convention.
+- No Android/Soong build, rustc, cargo, rustfmt, unit test, atest, VTS, loom, or device tests were run in this environment.
+
+# r50eo67
+
+- Rebalanced `tuner_hal2/DESIGN_JA.md` and `tuner_hal2/CODE_CONVENTION.md` according to `開発規則.md` document responsibility rules: public contract / lifecycle / return-value / resource-lifetime semantics remain in DESIGN_JA.md, while CODE_CONVENTION.md now contains implementation-entry and helper-use rules that reference DESIGN_JA.md instead of redefining those semantics.
+- Removed the Android.bp failure-injection-test registration rule from DESIGN_JA.md because build/test registration is an implementation/conformance rule, not a design contract.
+- Removed a release-report wording rule from CODE_CONVENTION.md because release report / changelog wording is governed by `開発規則.md`, not module-local coding convention.
+- No Rust/Soong build, rustc, cargo, rustfmt, unit test, atest, VTS, loom, or device tests were run in this environment.
+
+# r50eo66 callback artifact delivery boundary fix24 callback reset command static partial
+
+- Reviewed fix23 against the original callback artifact clear surface request and found a remaining production all-artifact clear helper on the service boot reset path.
+- Added `CallbackArtifactResetCommand` as the service_runtime-issued command for service boot callback artifact reset.
+- Changed `AidlServiceContext::reset_runtime_from_probe_results()` to obtain the reset command from service_runtime and clear callback artifacts through `clear_callback_artifact_reset_bridge()`.
+- Made the all-callback-store clear implementation a private raw helper behind the reset bridge.
+- Updated DESIGN_JA.md and CODE_CONVENTION.md so production callback artifact clear is command-bridge based for both owner cleanup and service boot reset.
+- Did not change callback delivery failure accounting, callback unhealthy marking ownership, object close cascade ordering, or FMQ linkage.
+- Soong build, rustc, cargo, rustfmt, unit test, atest, loom, VTS, and device-side service verification were not rerun in this environment.
+
+# r50eo66 callback artifact delivery boundary fix23 service-runtime internal mark visibility static partial
+
+- Reviewed fix22 against the original callback artifact clear surface / callback delivery failure composition request.
+- Found that the AIDL delivery modules no longer call the callback unhealthy marking helpers, but the helper methods themselves were still public methods on `TunerServiceRuntime`.
+- Changed `mark_frontend_callback_delivery_failed_use_case()`, `mark_filter_callback_delivery_failed_use_case()`, `mark_dvr_callback_delivery_failed_use_case()`, and `mark_frontend_scan_session_callback_failed()` to `pub(crate)` so the cross-crate service_runtime API exposes `finish_callback_delivery_failure_use_case()` as the callback delivery failure accounting entry point.
+- Did not change `DESIGN_JA.md` or `CODE_CONVENTION.md`; the visibility change makes the implementation match the existing documented service_runtime ownership rule.
+- Soong build, rustc, cargo, rustfmt, unit test, atest, loom, VTS, and device-side service verification were not rerun in this environment. The previous user-provided log showed non-device `01` through `08` passing for fix22; this fix is a narrow visibility correction.
+
 # r50eo66 callback artifact delivery boundary fix22 drop-leak regression repair static partial
 
 - Reviewed `r50eo66_tuner_hal2_verify_logs_20260630_000801.tar.gz`; VTS candidate scan, tuner HAL service precheck, and Tuner VTS execution remain excluded from the final verdict while their log collection steps remain present.

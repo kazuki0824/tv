@@ -1,6 +1,7 @@
 use crate::core::multi2::{
     multi2_decrypt_payload, Multi2KeyMaterial, Multi2PrepareError, PreparedMulti2Key,
 };
+use crate::runtime::DescramblerPid;
 use maleicacid_tuner_hal2_common::TS_PACKET_SIZE;
 use std::collections::BTreeSet;
 
@@ -182,7 +183,7 @@ pub fn parse_ts_packet_header(packet: &[u8]) -> Result<TsPacketHeader, Descrambl
 
 pub fn descramble_ts_packet_in_place(
     packet: &mut [u8],
-    target_pids: &BTreeSet<u16>,
+    target_pids: &BTreeSet<DescramblerPid>,
     key_slot: &DescramblerKeySlot,
 ) -> Result<DescrambleOutcome, DescrambleFailure> {
     let header = parse_ts_packet_header(packet)?;
@@ -217,7 +218,7 @@ pub fn descramble_ts_packet_in_place(
     } else {
         KeyParity::Odd
     };
-    if !target_pids.contains(&header.pid) {
+    if !target_pids.contains(&DescramblerPid::from_validated_pid_for_descrambler_core(header.pid)) {
         return Err(DescrambleFailure::ScrambledPidNotRegistered);
     }
     let Some(payload_offset) = header.payload_offset else {
@@ -245,6 +246,14 @@ mod tests {
     };
     use maleicacid_tuner_hal2_common::TS_PACKET_SIZE;
     use std::collections::BTreeSet;
+
+    fn target_pids(pids: &[u16]) -> BTreeSet<DescramblerPid> {
+        pids
+            .iter()
+            .copied()
+            .map(DescramblerPid::from_validated_pid_for_descrambler_core)
+            .collect()
+    }
 
     fn sample_key(byte: u8) -> Multi2KeyMaterial {
         let mut system_key = [0u8; 32];
@@ -289,7 +298,7 @@ mod tests {
         let original = p;
         let outcome = descramble_ts_packet_in_place(
             &mut p,
-            &BTreeSet::from([100]),
+            &target_pids(&[100]),
             &DescramblerKeySlot::empty(),
         )
         .unwrap();
@@ -309,7 +318,7 @@ mod tests {
         let original = p;
         let outcome = descramble_ts_packet_in_place(
             &mut p,
-            &BTreeSet::from([NULL_PID]),
+            &target_pids(&[NULL_PID]),
             &DescramblerKeySlot::empty(),
         )
         .unwrap();
@@ -330,7 +339,7 @@ mod tests {
         assert_eq!(
             descramble_ts_packet_in_place(
                 &mut p,
-                &BTreeSet::from([NULL_PID]),
+                &target_pids(&[NULL_PID]),
                 &DescramblerKeySlot::empty()
             ),
             Err(DescrambleFailure::InvalidTsc)
@@ -345,7 +354,7 @@ mod tests {
         assert_eq!(
             descramble_ts_packet_in_place(
                 &mut p,
-                &BTreeSet::from([NULL_PID]),
+                &target_pids(&[NULL_PID]),
                 &DescramblerKeySlot::empty()
             ),
             Err(DescrambleFailure::ScrambledNullPid)
@@ -360,7 +369,7 @@ mod tests {
         assert_eq!(
             descramble_ts_packet_in_place(
                 &mut p,
-                &BTreeSet::from([NULL_PID]),
+                &target_pids(&[NULL_PID]),
                 &DescramblerKeySlot::empty()
             ),
             Err(DescrambleFailure::ScrambledNullPid)
@@ -376,7 +385,7 @@ mod tests {
         assert_eq!(
             descramble_ts_packet_in_place(
                 &mut p,
-                &BTreeSet::from([100]),
+                &target_pids(&[100]),
                 &DescramblerKeySlot::empty()
             ),
             Err(DescrambleFailure::ScrambledWithoutPayload)
@@ -391,7 +400,7 @@ mod tests {
         let original = p;
         let outcome = descramble_ts_packet_in_place(
             &mut p,
-            &BTreeSet::from([100]),
+            &target_pids(&[100]),
             &DescramblerKeySlot::empty(),
         )
         .unwrap();
@@ -412,7 +421,7 @@ mod tests {
             assert_eq!(
                 descramble_ts_packet_in_place(
                     &mut p,
-                    &BTreeSet::from([100]),
+                    &target_pids(&[100]),
                     &DescramblerKeySlot::empty()
                 ),
                 Err(DescrambleFailure::InvalidAfc)
@@ -435,7 +444,7 @@ mod tests {
         assert_eq!(
             descramble_ts_packet_in_place(
                 &mut p,
-                &BTreeSet::from([100]),
+                &target_pids(&[100]),
                 &DescramblerKeySlot::empty()
             ),
             Err(DescrambleFailure::TransportErrorRecord)
@@ -455,7 +464,7 @@ mod tests {
         assert_eq!(
             descramble_ts_packet_in_place(
                 &mut p,
-                &BTreeSet::from([100]),
+                &target_pids(&[100]),
                 &DescramblerKeySlot::empty()
             ),
             Err(DescrambleFailure::InvalidTsc)
@@ -470,7 +479,7 @@ mod tests {
         assert_eq!(
             descramble_ts_packet_in_place(
                 &mut p,
-                &BTreeSet::from([100]),
+                &target_pids(&[100]),
                 &DescramblerKeySlot::empty()
             ),
             Err(DescrambleFailure::TransportErrorRecord)
@@ -489,7 +498,7 @@ mod tests {
         let original = p;
         let keys = DescramblerKeySlot::empty().try_with_even(even).unwrap();
         assert_eq!(
-            descramble_ts_packet_in_place(&mut p, &BTreeSet::from([100]), &keys),
+            descramble_ts_packet_in_place(&mut p, &target_pids(&[100]), &keys),
             Err(DescrambleFailure::TransportErrorRecord)
         );
         assert_eq!(p, original);
@@ -503,7 +512,7 @@ mod tests {
         assert_eq!(
             descramble_ts_packet_in_place(
                 &mut p,
-                &BTreeSet::from([100]),
+                &target_pids(&[100]),
                 &DescramblerKeySlot::empty()
             ),
             Err(DescrambleFailure::TransportErrorRecord)
@@ -518,7 +527,7 @@ mod tests {
         assert_eq!(
             descramble_ts_packet_in_place(
                 &mut p,
-                &BTreeSet::from([100]),
+                &target_pids(&[100]),
                 &DescramblerKeySlot::empty()
             ),
             Err(DescrambleFailure::InvalidAfc)
@@ -533,7 +542,7 @@ mod tests {
         assert_eq!(
             descramble_ts_packet_in_place(
                 &mut p,
-                &BTreeSet::from([100]),
+                &target_pids(&[100]),
                 &DescramblerKeySlot::empty()
             ),
             Err(DescrambleFailure::InvalidAdaptationField)
@@ -551,7 +560,7 @@ mod tests {
         assert_eq!(
             descramble_ts_packet_in_place(
                 &mut p,
-                &BTreeSet::from([100]),
+                &target_pids(&[100]),
                 &DescramblerKeySlot::empty()
             ),
             Err(DescrambleFailure::InvalidAdaptationField)
@@ -566,7 +575,7 @@ mod tests {
         assert_eq!(
             descramble_ts_packet_in_place(
                 &mut p,
-                &BTreeSet::from([100]),
+                &target_pids(&[100]),
                 &DescramblerKeySlot::empty()
             ),
             Err(DescrambleFailure::InvalidAdaptationField)
@@ -581,7 +590,7 @@ mod tests {
         assert_eq!(
             descramble_ts_packet_in_place(
                 &mut p,
-                &BTreeSet::from([100]),
+                &target_pids(&[100]),
                 &DescramblerKeySlot::empty()
             ),
             Err(DescrambleFailure::InvalidAdaptationField)
@@ -608,7 +617,7 @@ mod tests {
                 }
                 let result = descramble_ts_packet_in_place(
                     &mut p,
-                    &BTreeSet::from([0x0100 + ((tsc as u16) << 4) + afc as u16]),
+                    &target_pids(&[0x0100 + ((tsc as u16) << 4) + afc as u16]),
                     &keys,
                 );
                 match (tsc, afc) {
@@ -695,7 +704,7 @@ mod tests {
             .try_with_odd(odd)
             .unwrap();
         let outcome =
-            descramble_ts_packet_in_place(&mut scrambled, &BTreeSet::from([100]), &keys).unwrap();
+            descramble_ts_packet_in_place(&mut scrambled, &target_pids(&[100]), &keys).unwrap();
         assert_eq!(
             outcome,
             DescrambleOutcome::Descrambled {
@@ -721,7 +730,7 @@ mod tests {
             .unwrap()
             .try_with_odd(odd)
             .unwrap();
-        descramble_ts_packet_in_place(&mut scrambled, &BTreeSet::from([101]), &keys).unwrap();
+        descramble_ts_packet_in_place(&mut scrambled, &target_pids(&[101]), &keys).unwrap();
         assert_eq!(scrambled[3] >> 6, 0);
         assert_eq!(scrambled, clear);
     }
@@ -733,7 +742,7 @@ mod tests {
         assert_eq!(
             descramble_ts_packet_in_place(
                 &mut p,
-                &BTreeSet::from([100]),
+                &target_pids(&[100]),
                 &DescramblerKeySlot::empty()
             ),
             Err(DescrambleFailure::InvalidTsc)
@@ -748,7 +757,7 @@ mod tests {
         assert_eq!(
             descramble_ts_packet_in_place(
                 &mut p,
-                &BTreeSet::from([100]),
+                &target_pids(&[100]),
                 &DescramblerKeySlot::empty()
             ),
             Err(DescrambleFailure::NoKey)
@@ -762,7 +771,7 @@ mod tests {
         let original = p;
         let outcome = descramble_ts_packet_in_place(
             &mut p,
-            &BTreeSet::from([200]),
+            &target_pids(&[200]),
             &DescramblerKeySlot::empty(),
         )
         .unwrap();
@@ -783,7 +792,7 @@ mod tests {
         assert_eq!(
             descramble_ts_packet_in_place(
                 &mut p,
-                &BTreeSet::from([200]),
+                &target_pids(&[200]),
                 &DescramblerKeySlot::empty()
             ),
             Err(DescrambleFailure::ScrambledPidNotRegistered)
@@ -922,7 +931,7 @@ mod tests {
         let mut scrambled = encrypt_payload_packet(clear, &even_prepared);
         scrambled[3] = (scrambled[3] & 0x3f) | (2 << 6);
         let keys = DescramblerKeySlot::empty().try_with_even(even).unwrap();
-        descramble_ts_packet_in_place(&mut scrambled, &BTreeSet::from([0x123]), &keys).unwrap();
+        descramble_ts_packet_in_place(&mut scrambled, &target_pids(&[0x123]), &keys).unwrap();
         assert_eq!(scrambled, clear);
     }
     #[test]

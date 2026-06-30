@@ -253,9 +253,7 @@ mod tests {
             producer_failure: Arc::new(Mutex::new(None)),
             join: None,
             name: "recorded_join_failure",
-            join_failure: Some(
-                ThreadResultFailure::JoinFailure.into_hal_error("recorded_join_failure"),
-            ),
+            join_failure: Some(ThreadResultFailure::JoinFailure.into_hal_error("recorded_join_failure")),
             collected: false,
         };
         assert!(owner.join_after_stop().is_err());

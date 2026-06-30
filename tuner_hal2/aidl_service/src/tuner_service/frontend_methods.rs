@@ -1,6 +1,7 @@
 use super::support::unsupported_public_api_call;
 use super::{
-    aidl_frontend_settings_to_request, aidl_scan_type_to_mode, close_object_after_close_preflight,
+    aidl_frontend_settings_to_request, aidl_scan_type_to_mode,
+    close_object_after_close_preflight,
     execute_object_query_use_case, execute_shared_object_runtime_use_case,
     execute_shared_object_runtime_use_case_with_request_builder,
     plan_unavailable_object_method_use_case, scan_end_notifier, set_frontend_lnb_object_use_case,

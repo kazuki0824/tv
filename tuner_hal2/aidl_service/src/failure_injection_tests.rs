@@ -48,8 +48,11 @@ fn close_domain_cleanup_failure_records_cleanup_failed_state() {
     );
     let context = AidlServiceContext::from_shared_runtime_for_test(runtime.clone());
 
-    let result =
-        close_object_after_close_preflight(&context, handle, AidlMethodCall::FrontendClose);
+    let result = close_object_after_close_preflight(
+        &context,
+        handle,
+        AidlMethodCall::FrontendClose,
+    );
 
     assert!(result.is_err());
     assert_eq!(
