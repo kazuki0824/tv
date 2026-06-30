@@ -1,6 +1,6 @@
-use std::collections::BTreeMap;
 #[cfg(test)]
 use std::collections::VecDeque;
+use std::collections::{BTreeMap, BTreeSet};
 
 use maleicacid_tuner_hal2_control_core::{
     FmqDeliveryAction, FmqDeliveryTxn, FmqFailureKind, FmqObjectKind,
@@ -205,6 +205,7 @@ pub struct DemuxRuntimeSnapshot {
     pub pipeline: PacketPipeline,
     pub filters: BTreeMap<i32, FilterRuntime>,
     pub dvrs: BTreeMap<i32, DvrRuntime>,
+    pub filter_av_stale_data_ids: BTreeMap<i32, BTreeSet<AvDataId>>,
     #[cfg(test)]
     pub filter_queue_mirror: BTreeMap<i32, VecDeque<Vec<u8>>>,
 }
@@ -222,6 +223,7 @@ pub struct DemuxRuntime {
     filter_queue_runtimes: BTreeMap<i32, QueueRuntime>,
     dvr_queue_runtimes: BTreeMap<i32, QueueRuntime>,
     filter_av_backings: BTreeMap<i32, AvSharedBacking>,
+    filter_av_stale_data_ids: BTreeMap<i32, BTreeSet<AvDataId>>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -256,6 +258,7 @@ impl DemuxRuntime {
             filter_queue_runtimes: BTreeMap::new(),
             dvr_queue_runtimes: BTreeMap::new(),
             filter_av_backings: BTreeMap::new(),
+            filter_av_stale_data_ids: BTreeMap::new(),
         }
     }
     pub fn demux_id(&self) -> i32 {
@@ -340,27 +343,40 @@ impl DemuxRuntime {
         } else {
             AvFilterReleaseState::OpenNonAv
         };
+        let data_id = AvDataId(av_data_id);
+        let known_stale_data_id = self.known_stale_av_data_id(filter_id, data_id);
         if let Some(backing) = self.filter_av_backings.get_mut(&filter_id) {
-            return Ok(backing.apply_release(has_fd, AvDataId(av_data_id), filter_state));
+            let outcome = backing.apply_release(has_fd, data_id, filter_state);
+            if outcome == AvHandleReleaseOutcome::UnknownDataId && known_stale_data_id {
+                return Ok(AvHandleReleaseOutcome::StaleReleaseAccepted { data_id });
+            }
+            return Ok(outcome);
         }
         let fallback_outcome = AvHandleReleaseTxn::classify(AvHandleReleaseInput {
             has_fd,
-            data_id: AvDataId(av_data_id),
+            data_id,
             client_state: ClientHandleState::NotExported,
             filter_state,
             shared_handle_exported: false,
-            data_id_state: match filter_state {
-                AvFilterReleaseState::Closed if av_data_id > 0 => AvDataIdState::Stale,
-                _ => AvDataIdState::Unknown,
+            data_id_state: if known_stale_data_id {
+                AvDataIdState::Stale
+            } else {
+                match filter_state {
+                    AvFilterReleaseState::Closed if av_data_id > 0 => AvDataIdState::Stale,
+                    _ => AvDataIdState::Unknown,
+                }
             },
         });
         match fallback_outcome {
             AvHandleReleaseOutcome::ClientHandleReleaseAfterClose
             | AvHandleReleaseOutcome::StaleReleaseAfterClose { .. }
-            | AvHandleReleaseOutcome::UnavailableForNonAvFilter
             | AvHandleReleaseOutcome::InvalidStateWithoutSharedHandle
             | AvHandleReleaseOutcome::InvalidDataId
             | AvHandleReleaseOutcome::InvalidHandleForSlotRelease => Ok(fallback_outcome),
+            AvHandleReleaseOutcome::UnavailableForNonAvFilter if known_stale_data_id => {
+                Ok(AvHandleReleaseOutcome::StaleReleaseAccepted { data_id })
+            }
+            AvHandleReleaseOutcome::UnavailableForNonAvFilter => Ok(fallback_outcome),
             _ => Err(DemuxRuntimeError::av_backing_failure(filter_id)),
         }
     }
@@ -372,6 +388,7 @@ impl DemuxRuntime {
             pipeline: self.pipeline.clone(),
             filters: self.filters.clone(),
             dvrs: self.dvrs.clone(),
+            filter_av_stale_data_ids: self.filter_av_stale_data_ids.clone(),
             #[cfg(test)]
             filter_queue_mirror: self.filter_queue_mirror.clone(),
         }
@@ -402,6 +419,7 @@ impl DemuxRuntime {
         self.filter_queue_runtimes = filter_queue_runtimes;
         self.dvr_queue_runtimes = dvr_queue_runtimes;
         self.filter_av_backings = filter_av_backings;
+        self.filter_av_stale_data_ids = snapshot.filter_av_stale_data_ids;
         Ok(())
     }
 
@@ -416,6 +434,7 @@ impl DemuxRuntime {
             self.filter_queue_mirror.remove(&filter_id);
         }
         self.filter_av_backings.remove(&filter_id);
+        self.filter_av_stale_data_ids.remove(&filter_id);
         self.filters.insert(filter_id, filter);
         #[cfg(test)]
         {
@@ -446,6 +465,8 @@ impl DemuxRuntime {
         {
             self.filter_queue_mirror.remove(&filter_id);
         }
+        self.filter_av_backings.remove(&filter_id);
+        self.filter_av_stale_data_ids.remove(&filter_id);
         self.filters
             .remove(&filter_id)
             .map(|filter| filter.snapshot())
@@ -641,6 +662,37 @@ impl DemuxRuntime {
         Some(out)
     }
 
+    #[cfg(test)]
+    pub fn mark_filter_av_shared_handle_exported_for_test(
+        &mut self,
+        filter_id: i32,
+    ) -> Result<(), DemuxRuntimeError> {
+        self.filter_av_backings
+            .get_mut(&filter_id)
+            .ok_or(DemuxRuntimeError::av_backing_failure(filter_id))?
+            .mark_exported();
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn allocate_filter_av_payload_for_test(
+        &mut self,
+        filter_id: i32,
+        data_length: usize,
+    ) -> Result<AvPayloadDeliveryOutcome, DemuxRuntimeError> {
+        self.filter_av_backings
+            .get_mut(&filter_id)
+            .ok_or(DemuxRuntimeError::av_backing_failure(filter_id))
+            .map(|backing| backing.allocate_payload(data_length))
+    }
+
+    #[cfg(test)]
+    pub fn filter_av_active_slot_count_for_test(&self, filter_id: i32) -> Option<usize> {
+        self.filter_av_backings
+            .get(&filter_id)
+            .map(AvSharedBacking::active_slot_count)
+    }
+
     pub fn filter_snapshot(
         &self,
         filter_id: i32,
@@ -682,6 +734,7 @@ impl DemuxRuntime {
         filter_id: i32,
         config: FilterPipelineConfig,
     ) -> Result<(), DemuxRuntimeError> {
+        self.drop_filter_av_backing_to_stale(filter_id);
         let av_backing_present = {
             let filter = self
                 .filters
@@ -711,7 +764,8 @@ impl DemuxRuntime {
             }
         }
         if av_backing_present {
-            self.filter_av_backings.entry(filter_id).or_default();
+            self.filter_av_backings
+                .insert(filter_id, AvSharedBacking::default());
         } else {
             self.filter_av_backings.remove(&filter_id);
         }
@@ -799,6 +853,9 @@ impl DemuxRuntime {
                 if let Some(filter) = self.filters.get_mut(&filter_id) {
                     filter.clear_queued_payload_state();
                 }
+                if let Some(backing) = self.filter_av_backings.get_mut(&filter_id) {
+                    backing.flush_slots_keep_exported_handle();
+                }
                 Ok(())
             }
             FilterRuntimeState::Open => Err(DemuxRuntimeError::invalid_state(filter_id)),
@@ -818,6 +875,9 @@ impl DemuxRuntime {
             .get_mut(&filter_id)
             .ok_or(DemuxRuntimeError::filter_missing(filter_id))?
             .set_av_stream_type_hint(config);
+        if let Some(backing) = self.filter_av_backings.get_mut(&filter_id) {
+            backing.flush_slots_keep_exported_handle();
+        }
         Ok(())
     }
 
@@ -1175,7 +1235,8 @@ impl DemuxRuntime {
         &mut self,
         sink_filter_id: i32,
     ) -> Result<(), DemuxRuntimeError> {
-        let (_source_boundary, outcome) = apply_filter_source_boundary_change(self, sink_filter_id, None);
+        let (_source_boundary, outcome) =
+            apply_filter_source_boundary_change(self, sink_filter_id, None);
         outcome.map(|_| ())
     }
 
@@ -1334,11 +1395,9 @@ impl DemuxRuntime {
                         });
                 }
                 Some(Ok(outcome)) => {
-                    if let Some(diagnostic) = av_payload_delivery_outcome_diagnostic(
-                        outcome,
-                        validated.pid(),
-                        filter_id,
-                    ) {
+                    if let Some(diagnostic) =
+                        av_payload_delivery_outcome_diagnostic(outcome, validated.pid(), filter_id)
+                    {
                         report.diagnostics.push(diagnostic);
                     }
                 }
@@ -1557,6 +1616,28 @@ impl DemuxRuntime {
             .map_err(|_| DemuxRuntimeError::queue_runtime_failure(dvr_id))?;
         self.dvr_queue_runtimes.insert(dvr_id, queue);
         Ok(())
+    }
+
+    fn drop_filter_av_backing_to_stale(&mut self, filter_id: i32) {
+        let Some(backing) = self.filter_av_backings.remove(&filter_id) else {
+            return;
+        };
+        let stale_ids = backing.known_data_ids();
+        if stale_ids.is_empty() {
+            return;
+        }
+        self.filter_av_stale_data_ids
+            .entry(filter_id)
+            .or_default()
+            .extend(stale_ids);
+    }
+
+    fn known_stale_av_data_id(&self, filter_id: i32, data_id: AvDataId) -> bool {
+        data_id.0 > 0
+            && self
+                .filter_av_stale_data_ids
+                .get(&filter_id)
+                .is_some_and(|ids| ids.contains(&data_id))
     }
 
     fn should_keep_filter_queue_runtime(filter: &FilterRuntime) -> bool {

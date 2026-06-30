@@ -345,6 +345,11 @@ impl PesAssembler {
 }
 
 #[cfg(test)]
+fn packet_pid_for_test(pid: i32) -> PacketPid {
+    PacketPid::from_config_pid(crate::config::ConfigInputPid::validate_tpid(pid).expect("valid test pid"))
+}
+
+#[cfg(test)]
 mod tests {
 
     use super::{ContinuityOutcome, ContinuityTracker, PesAssembler};
@@ -446,7 +451,7 @@ mod tests {
             0x00, 0x00, 0x01, 0xbd, 0x00, 0x08, 0x84, 0x00, 0x00, b'A', b'R', b'I', b'B', 0x24,
             0x01, 0x02,
         ];
-        let packets = assembler.push(0x0123, true, &pes);
+        let packets = assembler.push(packet_pid(0x0123), true, &pes);
         assert_eq!(packets.len(), 1);
         assert_eq!(packets[0].stream_id, 0xbd);
         assert_eq!(packets[0].payload, b"ARIB$\x01\x02".to_vec());
@@ -455,14 +460,14 @@ mod tests {
 
 #[cfg(test)]
 mod pes_flush_tests {
-    use super::{PesAssembler, PesDropReason};
+    use super::{packet_pid_for_test, PesAssembler, PesDropReason};
 
     #[test]
     fn length_zero_pes_is_discarded_on_lifecycle_boundary() {
         let mut assembler = PesAssembler::default();
         let mut payload = vec![0x00, 0x00, 0x01, 0xe0, 0x00, 0x00, 0x80, 0x00, 0x00];
         payload.extend_from_slice(&[0xaa, 0xbb, 0xcc]);
-        let out = assembler.push(0x100, true, &payload);
+        let out = assembler.push(packet_pid_for_test(0x0100), true, &payload);
         assert!(out.is_empty());
         assert!(assembler.flush().is_none());
         assert_eq!(
@@ -474,7 +479,7 @@ mod pes_flush_tests {
 
 #[cfg(test)]
 mod pes_optional_header_contract_tests {
-    use super::{parse_pes_header, PesAssembler};
+    use super::{packet_pid_for_test, parse_pes_header, PesAssembler};
 
     fn pes_with_optional(
         stream_id: u8,
@@ -607,7 +612,7 @@ mod pes_optional_header_contract_tests {
     fn c09_padding_stream_is_not_rejected_by_optional_marker_in_assembler() {
         let bytes = pes_without_optional(0xbe, &[0x00, 0x11, 0x22]);
         let mut assembler = PesAssembler::default();
-        let packets = assembler.push(0x0100, true, &bytes);
+        let packets = assembler.push(packet_pid_for_test(0x0100), true, &bytes);
         assert_eq!(packets.len(), 1);
         assert_eq!(packets[0].stream_id, 0xbe);
     }
@@ -615,14 +620,14 @@ mod pes_optional_header_contract_tests {
 
 #[cfg(test)]
 mod pes_boundary_tests {
-    use super::{PesAssembler, PesDropReason};
+    use super::{packet_pid_for_test, PesAssembler, PesDropReason};
 
     #[test]
     fn unbounded_pes_is_discarded_on_flush_boundary() {
         let mut assembler = PesAssembler::default();
         let mut pes = vec![0x00, 0x00, 0x01, 0xe0, 0x00, 0x00, 0x80, 0x00, 0x00];
         pes.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
-        assert!(assembler.push(0x0100, true, &pes).is_empty());
+        assert!(assembler.push(packet_pid_for_test(0x0100), true, &pes).is_empty());
         assert!(assembler.flush().is_none());
         assert_eq!(
             assembler.take_drop_diagnostic(),
@@ -633,10 +638,10 @@ mod pes_boundary_tests {
     #[test]
     fn continuation_without_start_is_dropped_until_next_pusi() {
         let mut assembler = PesAssembler::default();
-        assert!(assembler.push(0x0100, false, &[0xaa, 0xbb]).is_empty());
+        assert!(assembler.push(packet_pid_for_test(0x0100), false, &[0xaa, 0xbb]).is_empty());
         assert_eq!(assembler.take_drop_diagnostic(), None);
         let pes = vec![0x00, 0x00, 0x01, 0xe0, 0x00, 0x04, 0x80, 0x00, 0x00, 0xde];
-        let packets = assembler.push(0x0100, true, &pes);
+        let packets = assembler.push(packet_pid_for_test(0x0100), true, &pes);
         assert_eq!(packets.len(), 1);
         assert_eq!(packets[0].stream_id, 0xe0);
     }
@@ -644,14 +649,14 @@ mod pes_boundary_tests {
 
 #[cfg(test)]
 mod pes_oversized_tests {
-    use super::{PesAssembler, PesDropReason, MAX_PES_BUFFER_BYTES};
+    use super::{packet_pid_for_test, PesAssembler, PesDropReason, MAX_PES_BUFFER_BYTES};
 
     #[test]
     fn unbounded_pes_over_limit_is_dropped_and_next_pusi_recovers() {
         let mut assembler = PesAssembler::default();
         let mut oversized = vec![0x00, 0x00, 0x01, 0xe0, 0x00, 0x00, 0x80, 0x00, 0x00];
         oversized.resize(MAX_PES_BUFFER_BYTES + 1, 0xaa);
-        assert!(assembler.push(0x0100, true, &oversized).is_empty());
+        assert!(assembler.push(packet_pid_for_test(0x0100), true, &oversized).is_empty());
         assert_eq!(assembler.overflow_drop_count(), 1);
         assert_eq!(
             assembler.take_drop_diagnostic(),
@@ -659,7 +664,7 @@ mod pes_oversized_tests {
         );
 
         let pes = vec![0x00, 0x00, 0x01, 0xe0, 0x00, 0x04, 0x80, 0x00, 0x00, 0xde];
-        let packets = assembler.push(0x0100, true, &pes);
+        let packets = assembler.push(packet_pid_for_test(0x0100), true, &pes);
         assert_eq!(packets.len(), 1);
         assert_eq!(packets[0].stream_id, 0xe0);
     }
@@ -667,7 +672,7 @@ mod pes_oversized_tests {
 
 #[cfg(test)]
 mod pes_split_and_recovery_tests {
-    use super::{PesAssembler, PesDropReason};
+    use super::{packet_pid_for_test, PesAssembler, PesDropReason};
 
     fn bounded_video_pes(payload: &[u8]) -> Vec<u8> {
         let packet_length = (3 + payload.len()) as u16;
@@ -690,9 +695,9 @@ mod pes_split_and_recovery_tests {
     fn pes_header_split_across_ts_payloads_completes_bounded_packet() {
         let mut assembler = PesAssembler::default();
         let pes = bounded_video_pes(&[0xaa, 0xbb, 0xcc]);
-        assert!(assembler.push(0x0100, true, &pes[..5]).is_empty());
-        assert!(assembler.push(0x0100, false, &pes[5..9]).is_empty());
-        let out = assembler.push(0x0100, false, &pes[9..]);
+        assert!(assembler.push(packet_pid_for_test(0x0100), true, &pes[..5]).is_empty());
+        assert!(assembler.push(packet_pid_for_test(0x0100), false, &pes[5..9]).is_empty());
+        let out = assembler.push(packet_pid_for_test(0x0100), false, &pes[9..]);
 
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].payload, vec![0xaa, 0xbb, 0xcc]);
@@ -702,13 +707,13 @@ mod pes_split_and_recovery_tests {
     fn malformed_pes_resets_and_next_pusi_recovers() {
         let mut assembler = PesAssembler::default();
         let malformed = [0x00, 0x00, 0x02, 0xe0, 0x00, 0x04];
-        assert!(assembler.push(0x0100, true, &malformed).is_empty());
+        assert!(assembler.push(packet_pid_for_test(0x0100), true, &malformed).is_empty());
         assert_eq!(
             assembler.take_drop_diagnostic(),
             Some((PesDropReason::MalformedPes, 1))
         );
 
-        let out = assembler.push(0x0100, true, &bounded_video_pes(&[0x55]));
+        let out = assembler.push(packet_pid_for_test(0x0100), true, &bounded_video_pes(&[0x55]));
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].payload, vec![0x55]);
     }

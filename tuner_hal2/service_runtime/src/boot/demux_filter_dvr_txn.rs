@@ -345,21 +345,23 @@ impl TunerServiceRuntime {
         {
             AvHandleReleaseOutcome::ClientHandleReleased
             | AvHandleReleaseOutcome::ClientHandleReleaseAfterClose
-            | AvHandleReleaseOutcome::ClientHandleAlreadyReleased
             | AvHandleReleaseOutcome::SlotReleased { .. }
             | AvHandleReleaseOutcome::StaleReleaseAccepted { .. }
             | AvHandleReleaseOutcome::StaleReleaseAfterClose { .. } => Ok(()),
-            AvHandleReleaseOutcome::InvalidDataId
+            AvHandleReleaseOutcome::ClientHandleAlreadyReleased
+            | AvHandleReleaseOutcome::InvalidDataId
             | AvHandleReleaseOutcome::InvalidHandleForSlotRelease
             | AvHandleReleaseOutcome::UnknownDataId => Err(HalError::invalid_argument(
                 HalInvalidArgumentKind::NumericRange,
                 "AV handle release input is invalid",
             )),
-            AvHandleReleaseOutcome::UnavailableForNonAvFilter
-            | AvHandleReleaseOutcome::InvalidStateWithoutSharedHandle => {
+            AvHandleReleaseOutcome::UnavailableForNonAvFilter => Err(HalError::Unsupported(
+                "AV shared handle is unavailable for non-AV filter",
+            )),
+            AvHandleReleaseOutcome::InvalidStateWithoutSharedHandle => {
                 Err(HalError::invalid_state(
                     HalInvalidStateKind::InvalidLifecycle,
-                    "AV shared handle is unavailable for this filter state",
+                    "AV shared handle has not been exported for this filter state",
                 ))
             }
         }
@@ -505,22 +507,14 @@ impl TunerServiceRuntime {
                     )
                 })?)
             }
-            FilterDelayHintKind::DataSizeDelayBytes => {
-                if snapshot.open_type == FilterOpenType::TsRecord {
-                    return Err(HalError::invalid_argument(
+            FilterDelayHintKind::DataSizeDelayBytes => FilterDelayHint::DataSizeDelayBytes(
+                usize::try_from(request.value).map_err(|_| {
+                    HalError::invalid_argument(
                         HalInvalidArgumentKind::NumericRange,
-                        "record filters do not accept data-size delay hints",
-                    ));
-                }
-                FilterDelayHint::DataSizeDelayBytes(usize::try_from(request.value).map_err(
-                    |_| {
-                        HalError::invalid_argument(
-                            HalInvalidArgumentKind::NumericRange,
-                            "filter delay hint value is too large",
-                        )
-                    },
-                )?)
-            }
+                        "filter delay hint value is too large",
+                    )
+                })?,
+            ),
         };
         demux_runtime
             .set_filter_delay_hint(filter_id, hint)

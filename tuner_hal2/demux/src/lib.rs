@@ -47,11 +47,16 @@ pub use runtime::{
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::packet_pipeline::{FilterPipelineConfig, PipelineOpenKind};
+    use crate::config::ConfigInputPid;
+    use crate::packet_pipeline::{FilterPipelineConfig, PacketPid, PipelineOpenKind};
     use crate::runtime::filter::FilterSource;
     use crate::runtime::source_boundary::apply_filter_source_boundary_change;
     use std::os::unix::fs::MetadataExt;
     use std::{thread, time::Duration};
+
+    fn packet_pid(pid: i32) -> PacketPid {
+        PacketPid::from_config_pid(ConfigInputPid::validate_tpid(pid).expect("valid test pid"))
+    }
 
     fn pes_start_packet(pid: u16, continuity_counter: u8, payload: &[u8]) -> [u8; 188] {
         let mut packet = [0xffu8; 188];
@@ -1374,6 +1379,101 @@ mod tests {
     }
 
     #[test]
+    fn av_configure_stream_type_stales_active_slots_and_keeps_backing_exported() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime(
+                19,
+                1,
+                PipelineOpenKind::Av,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                19,
+                FilterPipelineConfig {
+                    tpid: Some(401),
+                    raw: false,
+                },
+            )
+            .unwrap();
+        demux
+            .mark_filter_av_shared_handle_exported_for_test(19)
+            .unwrap();
+        let data_id = match demux.allocate_filter_av_payload_for_test(19, 188).unwrap() {
+            AvPayloadDeliveryOutcome::Delivered(event) => event.data_id,
+            other => panic!("unexpected AV allocation outcome: {other:?}"),
+        };
+        assert_eq!(demux.filter_av_active_slot_count_for_test(19), Some(1));
+
+        demux
+            .configure_filter_av_stream_type(
+                19,
+                AvStreamTypeConfig {
+                    kind: AvStreamKind::Video,
+                    stream_type: 27,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(demux.filter_av_active_slot_count_for_test(19), Some(0));
+        assert_eq!(
+            demux
+                .release_filter_av_handle(19, false, data_id.0)
+                .unwrap(),
+            AvHandleReleaseOutcome::StaleReleaseAccepted { data_id }
+        );
+        assert!(matches!(
+            demux.allocate_filter_av_payload_for_test(19, 188).unwrap(),
+            AvPayloadDeliveryOutcome::Delivered(_)
+        ));
+    }
+
+    #[test]
+    fn av_flush_stales_active_slots_without_dropping_shared_handle() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime(
+                20,
+                1,
+                PipelineOpenKind::Av,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                20,
+                FilterPipelineConfig {
+                    tpid: Some(402),
+                    raw: false,
+                },
+            )
+            .unwrap();
+        demux
+            .mark_filter_av_shared_handle_exported_for_test(20)
+            .unwrap();
+        let data_id = match demux.allocate_filter_av_payload_for_test(20, 188).unwrap() {
+            AvPayloadDeliveryOutcome::Delivered(event) => event.data_id,
+            other => panic!("unexpected AV allocation outcome: {other:?}"),
+        };
+
+        demux.flush_filter_runtime(20).unwrap();
+
+        assert_eq!(demux.filter_av_active_slot_count_for_test(20), Some(0));
+        assert_eq!(
+            demux
+                .release_filter_av_handle(20, false, data_id.0)
+                .unwrap(),
+            AvHandleReleaseOutcome::StaleReleaseAccepted { data_id }
+        );
+        assert!(matches!(
+            demux.allocate_filter_av_payload_for_test(20, 188).unwrap(),
+            AvPayloadDeliveryOutcome::Delivered(_)
+        ));
+    }
+
+    #[test]
     fn filter_delay_hint_updates_independent_time_and_data_axes() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux
@@ -1595,7 +1695,7 @@ mod tests {
         assert_eq!(report.accepted_packets, 1);
         assert!(demux.pipeline().pes_assemblers.contains_key(&(
             TsInputOrigin::Frontend,
-            0x0100,
+            packet_pid(0x0100),
             22
         )));
         assert!(demux.queue_exists(22));
@@ -1609,7 +1709,7 @@ mod tests {
         assert!(demux.queue_exists(22));
         assert!(!demux.pipeline().pes_assemblers.contains_key(&(
             TsInputOrigin::Frontend,
-            0x0100,
+            packet_pid(0x0100),
             22
         )));
     }
@@ -1641,7 +1741,7 @@ mod tests {
         assert_eq!(report.accepted_packets, 1);
         assert!(demux.pipeline().pes_assemblers.contains_key(&(
             TsInputOrigin::Frontend,
-            0x0100,
+            packet_pid(0x0100),
             23
         )));
         assert!(demux.queue_exists(23));
@@ -1653,7 +1753,7 @@ mod tests {
         assert!(!demux.queue_exists(23));
         assert!(!demux.pipeline().pes_assemblers.contains_key(&(
             TsInputOrigin::Frontend,
-            0x0100,
+            packet_pid(0x0100),
             23
         )));
     }

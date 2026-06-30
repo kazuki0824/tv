@@ -1,7 +1,7 @@
 use super::{
     AidlObjectGeneration, AidlObjectId, AidlObjectKind, DemuxRuntimeId, DemuxRuntimeSnapshot,
     DvrRuntimeId, FilterOpenType, FilterRuntimeId, FrontendLiveReaderDescriptor, FrontendRuntimeId,
-    FrontendRuntimeSnapshot, FrontendSignalState, HalError, HalInternalKind,
+    FrontendRuntimeSnapshot, HalError, HalInternalKind,
     HalInvalidArgumentKind, HalInvalidStateKind, LnbRuntimeId, RuntimeObjectTable,
     RuntimeObjectTableError, RuntimeOwnerRelation, RuntimeRegistry, TunerServiceRuntime,
 };
@@ -76,10 +76,6 @@ impl TunerServiceRuntime {
         }
     }
 
-    pub(crate) fn frontend_ids(&self) -> Vec<i32> {
-        self.query().frontend_ids()
-    }
-
     pub(crate) fn has_frontend_id(&self, id: i32) -> bool {
         self.query().has_frontend_id(id)
     }
@@ -97,16 +93,8 @@ impl TunerServiceRuntime {
             .frontend_entry_for_aidl_object(object_id, generation)
     }
 
-    pub(crate) fn demux_ids(&self) -> Vec<i32> {
-        self.query().demux_ids()
-    }
-
     pub(crate) fn has_demux_id(&self, id: i32) -> bool {
         self.query().has_demux_id(id)
-    }
-
-    pub(crate) fn lnb_ids(&self) -> Vec<i32> {
-        self.query().lnb_ids()
     }
 
     pub(crate) fn has_lnb_id(&self, id: i32) -> bool {
@@ -124,102 +112,11 @@ impl TunerServiceRuntime {
         self.query().lnb_for_frontend_id(frontend_id)
     }
 
-    pub(crate) fn frontend_signal_state(&self, frontend_id: i32) -> Result<FrontendSignalState, HalError> {
-        self.query().frontend_signal_state(frontend_id)
-    }
-
     pub(crate) fn filter_open_type(&self, filter_id: i32) -> Option<FilterOpenType> {
         self.query().filter_open_type(filter_id)
     }
 
-    pub(crate) fn first_pcr_filter_id_for_demux_object(
-        &self,
-        object_id: AidlObjectId,
-        generation: AidlObjectGeneration,
-    ) -> Result<Option<i32>, HalError> {
-        let demux_id =
-            self.public_runtime_id_for_object_method(object_id, generation, AidlObjectKind::Demux)?;
-        Ok(self.query().first_pcr_filter_id_for_demux(demux_id))
-    }
-
-    pub(crate) fn ensure_media_filter_for_demux_object(
-        &self,
-        demux_object_id: AidlObjectId,
-        demux_generation: AidlObjectGeneration,
-        filter_object_id: AidlObjectId,
-        filter_generation: AidlObjectGeneration,
-    ) -> Result<(), HalError> {
-        self.public_entry_for_object_method(
-            demux_object_id,
-            demux_generation,
-            AidlObjectKind::Demux,
-        )?;
-        let filter_entry = self.public_entry_for_object_method(
-            filter_object_id,
-            filter_generation,
-            AidlObjectKind::Filter,
-        )?;
-        let RuntimeOwnerRelation::Demux { demux, generation } = filter_entry.owner() else {
-            return Err(HalError::invalid_argument(
-                HalInvalidArgumentKind::NumericRange,
-                "AV sync filter must be owned by a demux",
-            ));
-        };
-        if demux != demux_object_id || generation != demux_generation {
-            return Err(HalError::invalid_argument(
-                HalInvalidArgumentKind::NumericRange,
-                "AV sync filter must belong to the target demux",
-            ));
-        }
-        let open_type = self
-            .filter_open_type(filter_entry.public_id())
-            .ok_or_else(|| {
-                HalError::invalid_state(
-                    HalInvalidStateKind::InvalidLifecycle,
-                    "AV sync filter runtime is not live",
-                )
-            })?;
-        if !open_type.is_media_filter() {
-            return Err(HalError::invalid_argument(
-                HalInvalidArgumentKind::NumericRange,
-                "AV sync hardware id requires an audio or video media filter",
-            ));
-        }
-        Ok(())
-    }
-
-    pub(crate) fn is_live_pcr_filter_for_demux_object(
-        &self,
-        object_id: AidlObjectId,
-        generation: AidlObjectGeneration,
-        filter_id: i32,
-    ) -> Result<bool, HalError> {
-        let demux_id =
-            self.public_runtime_id_for_object_method(object_id, generation, AidlObjectKind::Demux)?;
-        Ok(self
-            .query()
-            .is_live_pcr_filter_for_demux(demux_id, filter_id))
-    }
-
-    pub(crate) fn filter_queue_descriptor_snapshot_for_aidl_object(
-        &self,
-        object_id: AidlObjectId,
-        generation: AidlObjectGeneration,
-    ) -> Result<QueueDescriptorSnapshot, HalError> {
-        self.query()
-            .filter_queue_descriptor_snapshot_for_aidl_object(object_id, generation)
-    }
-
-    pub(crate) fn dvr_queue_descriptor_snapshot_for_aidl_object(
-        &self,
-        object_id: AidlObjectId,
-        generation: AidlObjectGeneration,
-    ) -> Result<QueueDescriptorSnapshot, HalError> {
-        self.query()
-            .dvr_queue_descriptor_snapshot_for_aidl_object(object_id, generation)
-    }
-
-    pub(crate) fn dvr_status_poll_snapshot_for_aidl_object(
+    pub fn dvr_status_poll_snapshot_for_aidl_object(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
@@ -617,19 +514,6 @@ impl<'a> RuntimeQuery<'a> {
             snapshots.push((demux_id, demux.snapshot()));
         }
         Ok(snapshots)
-    }
-
-    pub(crate) fn frontend_signal_state(&self, frontend_id: i32) -> Result<FrontendSignalState, HalError> {
-        let runtime = self
-            .registry
-            .frontend_runtime(crate::registry::FrontendRuntimeId(frontend_id))
-            .ok_or_else(|| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "frontend runtime is missing for advertised frontend",
-                )
-            })?;
-        Ok(runtime.signal_state())
     }
 
     pub(crate) fn frontend_live_reader_descriptor_for_live_pump(

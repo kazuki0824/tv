@@ -3,8 +3,8 @@ mod callback_registry;
 pub mod capability_profile;
 pub mod command_dispatch;
 pub mod demux_filter_dvr_ops;
-pub mod descrambler_ops;
 mod descrambler_key_table;
+pub mod descrambler_ops;
 mod descrambler_session;
 pub mod diagnostics;
 pub mod dispatch;
@@ -31,9 +31,9 @@ pub mod transaction_registry;
 pub use boot::{
     start_frontend_demux_live_pump_from_reader, CallbackDeliveryFailurePhase,
     CallbackDeliveryFailureReport, CallbackDeliveryOwnerKind, DvrChildRuntimeOpen,
-    DvrStatusPollSnapshot, FilterChildRuntimeOpen, FilterEventDelivery, FilterEventDeliverySnapshot,
-    FilterEventDispatcher, FrontendDemuxPacketSink, FrontendProbeOutcome,
-    ServiceBootOutcome, TunerServiceRuntime,
+    DvrStatusPollSnapshot, FilterChildRuntimeOpen, FilterEventDelivery,
+    FilterEventDeliverySnapshot, FilterEventDispatcher, FrontendDemuxPacketSink,
+    FrontendProbeOutcome, ServiceBootOutcome, TunerServiceRuntime,
 };
 pub use callback_registry::{
     CallbackHealthState, CallbackRegistryUpdate, RuntimeCallbackRegistration,
@@ -47,10 +47,11 @@ pub use command_dispatch::{
     RuntimeCommandDispatchError, RuntimeCommandDispatchPlan, RuntimeCommandDispatcher,
 };
 pub use diagnostics::{
-    BoundedDiagnosticStore, CapabilitySuppressionReason, ChildOpenRollbackDiagnosticRecord,
-    ChildOpenRollbackKind, ChildOpenRollbackPhase, DescramblerDiagnosticKind,
-    DescramblerDiagnosticPhase, DescramblerDiagnosticRecord,
-    CallbackArtifactRuntimeSplitDiagnosticRecord, CallbackArtifactRuntimeSplitOutcome, CallbackArtifactRuntimeSplitPhase, CallbackArtifactRuntimeSplitTarget,
+    BoundedDiagnosticStore, CallbackArtifactRuntimeSplitDiagnosticRecord,
+    CallbackArtifactRuntimeSplitOutcome, CallbackArtifactRuntimeSplitPhase,
+    CallbackArtifactRuntimeSplitTarget, CapabilitySuppressionReason,
+    ChildOpenRollbackDiagnosticRecord, ChildOpenRollbackKind, ChildOpenRollbackPhase,
+    DescramblerDiagnosticKind, DescramblerDiagnosticPhase, DescramblerDiagnosticRecord,
     DvrPostCommitNotificationDiagnosticRecord, DvrPostCommitNotificationPhase,
     FilterCallbackDeliveryDiagnosticPhase, FilterCallbackDeliveryDiagnosticRecord,
     StartupDiagnosticKind, StartupDiagnosticPhase, StartupDiagnosticRecord,
@@ -106,7 +107,8 @@ mod tests {
         FilterConfig, FilterConfigKind, FilterOpenType, OpenFilterRequest, PesSettings,
     };
     use maleicacid_tuner_hal2_descrambler::{
-        multi2_encrypt_payload, DescramblerKeySlot, DescramblerKeyToken, DescramblerPid, DescramblerPidClaim, Multi2KeyMaterial,
+        multi2_encrypt_payload, DescramblerKeySlot, DescramblerKeyToken, DescramblerPid,
+        DescramblerPidClaim, Multi2KeyMaterial,
     };
     use maleicacid_tuner_hal2_domain_request::{
         DvrConfigureKind, DvrConfigureRequest, DvrOpenKind, FilterDelayHintKind,
@@ -115,7 +117,6 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
-
 
     fn test_descrambler_pid(pid: u16) -> DescramblerPid {
         DescramblerPidClaim::from_demux_input(pid)
@@ -877,7 +878,9 @@ mod tests {
                     maleicacid_tuner_hal2_device::FrontendLivePumpJoinOutcome::Running => {
                         std::thread::sleep(std::time::Duration::from_millis(1));
                     }
-                    maleicacid_tuner_hal2_device::FrontendLivePumpJoinOutcome::Completed(result) => {
+                    maleicacid_tuner_hal2_device::FrontendLivePumpJoinOutcome::Completed(
+                        result,
+                    ) => {
                         completed = Some(result);
                         break;
                     }
@@ -1324,6 +1327,34 @@ mod tests {
     }
 
     #[test]
+    fn record_filter_data_size_delay_hint_is_accepted() {
+        let mut runtime = TunerServiceRuntime::new();
+        let demux = runtime.allocate_demux_runtime().unwrap();
+        let filter = runtime.allocate_filter_runtime(demux.id.0).unwrap();
+        runtime
+            .register_demux_filter_runtime(
+                demux.id.0,
+                filter.id.0,
+                &OpenFilterRequest {
+                    open_type: FilterOpenType::TsRecord,
+                    buffer_size: 4096,
+                    callback_present: false,
+                },
+            )
+            .unwrap();
+
+        runtime
+            .set_filter_delay_hint_request(
+                filter.id.0,
+                FilterDelayHintRequest {
+                    kind: FilterDelayHintKind::DataSizeDelayBytes,
+                    value: 188,
+                },
+            )
+            .unwrap();
+    }
+
+    #[test]
     fn playback_dvr_filter_link_is_typed_unavailable() {
         let mut runtime = TunerServiceRuntime::new();
         let demux = runtime.allocate_demux_runtime().unwrap();
@@ -1618,7 +1649,10 @@ mod tests {
         }));
 
         let invalid_len_err = runtime
-            .set_descrambler_key_token(descrambler.id.0, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17])
+            .set_descrambler_key_token(
+                descrambler.id.0,
+                &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17],
+            )
             .unwrap_err();
         assert!(matches!(
             invalid_len_err,

@@ -240,7 +240,7 @@ impl IFilter for FilterAidlObject {
         })?;
         *av_memory = TunerNativeHandle {
             fds: vec![ParcelFileDescriptor::new(export.file)],
-            ints: Vec::new(),
+            ints: vec![0],
         };
         Ok(size_bytes)
     }

@@ -105,6 +105,17 @@ impl AvSharedBacking {
             .filter(|slot| slot.active_data_id.is_some())
             .count()
     }
+    pub fn known_data_ids(&self) -> Vec<AvDataId> {
+        let mut ids = self.stale_data_ids.clone();
+        for slot in &self.slots {
+            if let Some(data_id) = slot.active_data_id {
+                if !ids.contains(&data_id) {
+                    ids.push(data_id);
+                }
+            }
+        }
+        ids
+    }
     pub fn mark_exported(&mut self) {
         self.state = ClientHandleState::ExportedActive;
         self.ever_exported = true;

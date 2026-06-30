@@ -89,9 +89,8 @@ use maleicacid_tuner_hal2_resource_ledger::{LedgerGeneration, LedgerId};
 // Operation implementations are boot child modules so they can use
 // TunerServiceRuntime private state without widening field visibility.
 mod query_api;
-pub use query_api::{
-    DvrStatusPollSnapshot,
-};
+pub use query_api::DvrStatusPollSnapshot;
+pub(crate) use query_api::RuntimeQuery;
 mod demux_filter_dvr_txn;
 mod descrambler_txn;
 mod frontend_txn;
@@ -1503,7 +1502,6 @@ impl TunerServiceRuntime {
         artifact_cleanup_result: Result<(), HalError>,
     ) -> Result<T, HalError> {
         let artifact_error = artifact_cleanup_result.err();
-        let mut runtime_finish_error = None;
 
         let value = match (primary_result, artifact_error.clone()) {
             (Ok(value), None) => Some(value),
@@ -1556,28 +1554,7 @@ impl TunerServiceRuntime {
             .clear_owner(command.owner_id, command.owner_generation)
         {
             CallbackRegistryUpdate::Updated => Ok(value.expect("value is present for successful cleanup")),
-            CallbackRegistryUpdate::Missing => {
-                let error = HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "callback runtime registry entry missing while finishing artifact cleanup",
-                );
-                runtime_finish_error = Some(error.clone());
-                if let Some(outcome) = CallbackArtifactRuntimeSplitOutcome::from_results(
-                    artifact_error,
-                    runtime_finish_error,
-                ) {
-                    self.record_callback_artifact_runtime_split_diagnostic(
-                        CallbackArtifactRuntimeSplitDiagnosticRecord::owner(
-                            phase,
-                            command.owner_kind,
-                            command.owner_id,
-                            command.owner_generation,
-                            outcome,
-                        ),
-                    );
-                }
-                Err(error)
-            }
+            CallbackRegistryUpdate::Missing => Ok(value.expect("value is present for successful cleanup")),
         }
     }
 

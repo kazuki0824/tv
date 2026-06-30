@@ -1112,54 +1112,6 @@ pub fn stop_frontend_scan_object(
     cleanup_collector.into_result()
 }
 
-fn ensure_frontend_object_live_after_stop(
-    runtime: &SharedRuntime,
-    object_id: AidlObjectId,
-    object_generation: AidlObjectGeneration,
-    context: &'static str,
-) -> Result<(), HalError> {
-    let guard = lock_runtime(runtime, context)?;
-    ensure_frontend_object_still_live(&guard, object_id, object_generation)
-}
-
-fn finish_frontend_scan_stop(
-    runtime: SharedRuntime,
-    frontend_id: i32,
-    reason: FrontendWorkerCancelReason,
-    outcome: FrontendWorkerStopOutcome,
-) -> Result<(), HalError> {
-    let mut cleanup_collector = FirstErrorCollector::new();
-    if let Some(error) = frontend_worker_stop_failure(&outcome) {
-        cleanup_collector.push_error(error);
-    }
-    cleanup_collector.push_result(record_scan_cancelled_from_stop_outcome(
-        &runtime,
-        frontend_id,
-        &outcome,
-        reason,
-    ));
-    if !matches!(outcome, FrontendWorkerStopOutcome::NotRunning) {
-        cleanup_collector.push_result(
-            lock_runtime(&runtime, "service runtime lock poisoned").and_then(|mut runtime| {
-                runtime
-                    .frontend_txn()
-                    .clear_frontend_live_reader_descriptor_and_idle(frontend_id)
-            }),
-        );
-    }
-    cleanup_collector.into_result()
-}
-
-pub fn stop_frontend_live_data_and_unbind(
-    runtime: SharedRuntime,
-    frontend_id: i32,
-) -> Result<(), HalError> {
-    lock_runtime(&runtime, "service runtime lock poisoned")?
-        .frontend_txn()
-        .stop_frontend_live_data_and_unbind(frontend_id)
-        .map(|_| ())
-}
-
 pub fn close_frontend_live_data_and_unbind(
     runtime: SharedRuntime,
     frontend_id: i32,

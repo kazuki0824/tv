@@ -1871,9 +1871,11 @@ mod adaptation_payload_boundary_tests {
         let origin = crate::TsInputOrigin::Frontend;
         let pid = 0x0100u16;
         let other_pid = 0x0101i32;
+        let pid_key = PacketPid::from_validated_pid(pid as i32);
+        let other_pid_key = PacketPid::from_validated_pid(other_pid);
         let mut pipeline = PacketPipeline::default();
-        pipeline.test_seed_section_for_pid(origin, PacketPid::from_validated_pid(pid as i32), 10);
-        pipeline.test_seed_section_for_pid(origin, PacketPid::from_validated_pid(other_pid), 12);
+        pipeline.test_seed_section_for_pid(origin, pid_key, 10);
+        pipeline.test_seed_section_for_pid(origin, other_pid_key, 12);
 
         let packet = packet_with_discontinuity(pid, 0);
         let report = pipeline.push_ts_packet(&packet, PipelineInputKind::Live);
@@ -1881,10 +1883,10 @@ mod adaptation_payload_boundary_tests {
         assert_eq!(report.accepted_packets, 1);
         assert!(!pipeline
             .section_assemblers
-            .contains_key(&(origin, pid as i32, 10)));
+            .contains_key(&(origin, pid_key, 10)));
         assert!(pipeline
             .section_assemblers
-            .contains_key(&(origin, other_pid, 12)));
+            .contains_key(&(origin, other_pid_key, 12)));
     }
 
     #[test]
@@ -1892,9 +1894,11 @@ mod adaptation_payload_boundary_tests {
         let origin = crate::TsInputOrigin::Frontend;
         let pid = 0x0100u16;
         let other_pid = 0x0101i32;
+        let pid_key = PacketPid::from_validated_pid(pid as i32);
+        let other_pid_key = PacketPid::from_validated_pid(other_pid);
         let mut pipeline = PacketPipeline::default();
-        pipeline.test_seed_pes_for_pid(origin, PacketPid::from_validated_pid(pid as i32), 11);
-        pipeline.test_seed_pes_for_pid(origin, PacketPid::from_validated_pid(other_pid), 13);
+        pipeline.test_seed_pes_for_pid(origin, pid_key, 11);
+        pipeline.test_seed_pes_for_pid(origin, other_pid_key, 13);
 
         let packet = packet_with_discontinuity(pid, 0);
         let report = pipeline.push_ts_packet(&packet, PipelineInputKind::Live);
@@ -1902,10 +1906,10 @@ mod adaptation_payload_boundary_tests {
         assert_eq!(report.accepted_packets, 1);
         assert!(!pipeline
             .pes_assemblers
-            .contains_key(&(origin, pid as i32, 11)));
+            .contains_key(&(origin, pid_key, 11)));
         assert!(pipeline
             .pes_assemblers
-            .contains_key(&(origin, other_pid, 13)));
+            .contains_key(&(origin, other_pid_key, 13)));
     }
 
     #[test]
@@ -1913,11 +1917,13 @@ mod adaptation_payload_boundary_tests {
         let origin = crate::TsInputOrigin::Frontend;
         let pid = 0x0100u16;
         let other_pid = 0x0101i32;
+        let pid_key = PacketPid::from_validated_pid(pid as i32);
+        let other_pid_key = PacketPid::from_validated_pid(other_pid);
         let mut pipeline = PacketPipeline::default();
-        pipeline.test_seed_section_for_pid(origin, PacketPid::from_validated_pid(pid as i32), 10);
-        pipeline.test_seed_pes_for_pid(origin, PacketPid::from_validated_pid(pid as i32), 11);
-        pipeline.test_seed_section_for_pid(origin, PacketPid::from_validated_pid(other_pid), 12);
-        pipeline.test_seed_pes_for_pid(origin, PacketPid::from_validated_pid(other_pid), 13);
+        pipeline.test_seed_section_for_pid(origin, pid_key, 10);
+        pipeline.test_seed_pes_for_pid(origin, pid_key, 11);
+        pipeline.test_seed_section_for_pid(origin, other_pid_key, 12);
+        pipeline.test_seed_pes_for_pid(origin, other_pid_key, 13);
 
         let packet = packet_with_discontinuity(pid, 0);
         let report = pipeline.push_ts_packet(&packet, PipelineInputKind::Live);
@@ -1925,16 +1931,16 @@ mod adaptation_payload_boundary_tests {
         assert_eq!(report.accepted_packets, 1);
         assert!(!pipeline
             .section_assemblers
-            .contains_key(&(origin, pid as i32, 10)));
+            .contains_key(&(origin, pid_key, 10)));
         assert!(!pipeline
             .pes_assemblers
-            .contains_key(&(origin, pid as i32, 11)));
+            .contains_key(&(origin, pid_key, 11)));
         assert!(pipeline
             .section_assemblers
-            .contains_key(&(origin, other_pid, 12)));
+            .contains_key(&(origin, other_pid_key, 12)));
         assert!(pipeline
             .pes_assemblers
-            .contains_key(&(origin, other_pid, 13)));
+            .contains_key(&(origin, other_pid_key, 13)));
     }
 }
 
@@ -2159,12 +2165,12 @@ mod resync_boundary_tests {
 
         assert!(pipeline
             .section_assemblers
-            .contains_key(&(frontend, 0x0100, 7)));
+            .contains_key(&(frontend, PacketPid::from_validated_pid(0x0100), 7)));
         assert!(!pipeline
             .section_assemblers
-            .contains_key(&(source, 0x0100, 7)));
-        assert!(pipeline.pes_assemblers.contains_key(&(frontend, 0x0100, 8)));
-        assert!(!pipeline.pes_assemblers.contains_key(&(source, 0x0100, 8)));
+            .contains_key(&(source, PacketPid::from_validated_pid(0x0100), 7)));
+        assert!(pipeline.pes_assemblers.contains_key(&(frontend, PacketPid::from_validated_pid(0x0100), 8)));
+        assert!(!pipeline.pes_assemblers.contains_key(&(source, PacketPid::from_validated_pid(0x0100), 8)));
     }
 
     #[test]
@@ -2186,12 +2192,12 @@ mod resync_boundary_tests {
 
         assert!(pipeline
             .section_assemblers
-            .contains_key(&(frontend, 0x0100, 7)));
+            .contains_key(&(frontend, PacketPid::from_validated_pid(0x0100), 7)));
         assert!(!pipeline
             .section_assemblers
-            .contains_key(&(source, 0x0100, 7)));
-        assert!(pipeline.pes_assemblers.contains_key(&(frontend, 0x0100, 8)));
-        assert!(!pipeline.pes_assemblers.contains_key(&(source, 0x0100, 8)));
+            .contains_key(&(source, PacketPid::from_validated_pid(0x0100), 7)));
+        assert!(pipeline.pes_assemblers.contains_key(&(frontend, PacketPid::from_validated_pid(0x0100), 8)));
+        assert!(!pipeline.pes_assemblers.contains_key(&(source, PacketPid::from_validated_pid(0x0100), 8)));
         assert_eq!(pipeline.current_section_generation(frontend, PacketPid::from_validated_pid(0x0100)), 1);
         assert_eq!(pipeline.current_section_generation(source, PacketPid::from_validated_pid(0x0100)), 0);
     }
@@ -2469,8 +2475,8 @@ mod keyless_scrambled_policy_tests {
             .contains(&PipelineAssemblySuppressionReason::KeylessScrambledWithoutDescrambler));
         assert!(!pipeline
             .section_assemblers
-            .contains_key(&(origin, 0x0100, 2)));
-        assert!(!pipeline.pes_assemblers.contains_key(&(origin, 0x0100, 3)));
+            .contains_key(&(origin, PacketPid::from_validated_pid(0x0100), 2)));
+        assert!(!pipeline.pes_assemblers.contains_key(&(origin, PacketPid::from_validated_pid(0x0100), 3)));
     }
 }
 
