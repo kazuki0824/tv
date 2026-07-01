@@ -4,14 +4,6 @@ use crate::packet_pipeline::{PipelineBoundaryReason, PipelineResetReport};
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct DemuxStreamGeneration(pub u64);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum GenerationBoundaryStep {
-    InvalidateAssembler,
-    ClearContinuity,
-    BumpGeneration,
-    Commit,
-}
-
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct GenerationBoundaryReport {
     pub reason: PipelineBoundaryReason,
@@ -20,51 +12,25 @@ pub struct GenerationBoundaryReport {
 }
 
 #[derive(Debug)]
-pub struct GenerationBoundaryTxn {
-    generation: DemuxStreamGeneration,
+pub(crate) struct GenerationBoundaryTxn {
     reason: PipelineBoundaryReason,
-    steps: Vec<GenerationBoundaryStep>,
 }
 
 impl GenerationBoundaryTxn {
-    pub fn new(generation: DemuxStreamGeneration) -> Self {
-        Self {
-            generation,
-            reason: PipelineBoundaryReason::TuneStart,
-            steps: Vec::new(),
-        }
-    }
-    pub fn for_reason(generation: DemuxStreamGeneration, reason: PipelineBoundaryReason) -> Self {
-        Self {
-            generation,
-            reason,
-            steps: Vec::new(),
-        }
-    }
-    pub fn generation(&self) -> DemuxStreamGeneration {
-        self.generation
-    }
-    pub fn record_step(&mut self, step: GenerationBoundaryStep) {
-        self.steps.push(step);
-    }
-    pub fn steps(&self) -> &[GenerationBoundaryStep] {
-        &self.steps
+    pub(crate) fn for_reason(reason: PipelineBoundaryReason) -> Self {
+        Self { reason }
     }
 
-    pub fn apply(
-        mut self,
+    pub(crate) fn apply(
+        self,
         demux: &mut DemuxRuntime,
     ) -> (Self, Result<GenerationBoundaryReport, DemuxRuntimeError>) {
         let reason = self.reason;
-        self.record_step(GenerationBoundaryStep::InvalidateAssembler);
-        self.record_step(GenerationBoundaryStep::ClearContinuity);
         let reset = match demux.reset_generation_boundary() {
             Ok(reset) => reset,
             Err(err) => return (self, Err(err)),
         };
-        self.record_step(GenerationBoundaryStep::BumpGeneration);
         let next = DemuxStreamGeneration(demux.generation());
-        self.record_step(GenerationBoundaryStep::Commit);
         (
             self,
             Ok(GenerationBoundaryReport {

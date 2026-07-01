@@ -4,7 +4,7 @@ use crate::registry::{
     DemuxRegistryEntry, DvrRegistryEntry, FilterRegistryEntry, RegistryCommitError,
 };
 use maleicacid_tuner_hal2_common::HalError;
-use maleicacid_tuner_hal2_demux::packet_pipeline::PipelineResetReport;
+use maleicacid_tuner_hal2_demux::parser::packet_pipeline::PipelineResetReport;
 use maleicacid_tuner_hal2_demux::{FilterConfig, FilterOpenType, OpenFilterRequest};
 use maleicacid_tuner_hal2_domain_request::{
     DvrConfigureRequest, FilterAvStreamTypeRequest, FilterDelayHintRequest, OpenDvrRequest,

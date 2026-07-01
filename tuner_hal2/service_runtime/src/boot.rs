@@ -13,7 +13,7 @@ use maleicacid_tuner_hal2_demux::av::AvMediaEventDescriptor;
 use maleicacid_tuner_hal2_demux::config::{
     AvStreamKind, AvStreamTypeConfig, FilterConfig, FilterDelayHint, FilterOpenType,
 };
-use maleicacid_tuner_hal2_demux::packet_pipeline::{
+use maleicacid_tuner_hal2_demux::parser::packet_pipeline::{
     PacketDescramblePolicyFailure, PacketPid, PipelineAssemblySuppressionReason,
     PipelineBoundaryReason, PipelineDiagnostic, PipelineReport, PipelineResetReport,
     TsPacketValidationError, ValidatedTsPacket,
@@ -21,9 +21,7 @@ use maleicacid_tuner_hal2_demux::packet_pipeline::{
 use maleicacid_tuner_hal2_demux::runtime::{
     DemuxRuntimeError, DemuxRuntimeErrorKind, DemuxRuntimeState, DvrKind,
 };
-use maleicacid_tuner_hal2_demux::runtime::{
-    DemuxRuntimeSnapshot, DemuxStreamGeneration, GenerationBoundaryReport, GenerationBoundaryTxn,
-};
+use maleicacid_tuner_hal2_demux::runtime::{DemuxRuntimeSnapshot, GenerationBoundaryReport};
 use maleicacid_tuner_hal2_demux::OpenFilterRequest;
 use maleicacid_tuner_hal2_demux::{
     DvrConfigureOutcome, DvrConfigureTxn, DvrRuntime, DvrRuntimeState, FilterConfigureOutcome,
@@ -745,7 +743,7 @@ impl TunerServiceRuntime {
             .iter()
             .flat_map(|report| report.generated_events.iter())
             .filter_map(|event| {
-                use maleicacid_tuner_hal2_demux::packet_pipeline::PipelineGeneratedEvent;
+                use maleicacid_tuner_hal2_demux::parser::packet_pipeline::PipelineGeneratedEvent;
                 let (filter_id, event) = match event {
                     PipelineGeneratedEvent::AvMedia {
                         filter_id,
@@ -1504,7 +1502,7 @@ impl TunerServiceRuntime {
         let artifact_error = artifact_cleanup_result.err();
 
         let value = match (primary_result, artifact_error.clone()) {
-            (Ok(value), None) => Some(value),
+            (Ok(value), None) => value,
             (Ok(_), Some(cleanup_error)) => {
                 if let Some(outcome) =
                     CallbackArtifactRuntimeSplitOutcome::from_results(Some(cleanup_error.clone()), None)
@@ -1553,8 +1551,19 @@ impl TunerServiceRuntime {
             .callback_registry
             .clear_owner(command.owner_id, command.owner_generation)
         {
-            CallbackRegistryUpdate::Updated => Ok(value.expect("value is present for successful cleanup")),
-            CallbackRegistryUpdate::Missing => Ok(value.expect("value is present for successful cleanup")),
+            CallbackRegistryUpdate::Updated => Ok(value),
+            CallbackRegistryUpdate::Missing => {
+                self.record_callback_artifact_runtime_split_diagnostic(
+                    CallbackArtifactRuntimeSplitDiagnosticRecord::owner(
+                        phase,
+                        command.owner_kind,
+                        command.owner_id,
+                        command.owner_generation,
+                        CallbackArtifactRuntimeSplitOutcome::RuntimeRegistryMissing,
+                    ),
+                );
+                Ok(value)
+            }
         }
     }
 

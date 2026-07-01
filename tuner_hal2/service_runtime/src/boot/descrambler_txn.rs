@@ -10,7 +10,7 @@ use super::{
     HalInvalidStateKind, RegistryCommitError, TunerServiceRuntime,
 };
 use crate::descrambler_key_table::DescramblerKeyLookupError;
-use maleicacid_tuner_hal2_demux::packet_pipeline::PacketPid;
+use maleicacid_tuner_hal2_demux::parser::packet_pipeline::PacketPid;
 use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, FirstErrorCollector};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

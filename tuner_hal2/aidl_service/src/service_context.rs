@@ -14,9 +14,9 @@ use maleicacid_tuner_hal2_binder_adapter::{
 use maleicacid_tuner_hal2_binder_adapter::AidlApi;
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
 use maleicacid_tuner_hal2_service_runtime::{
-    boot::{CallbackArtifactResetCommand, OwnerCallbackCleanupArtifactCommand},
-    CallbackArtifactRuntimeSplitDiagnosticRecord, CallbackArtifactRuntimeSplitOutcome,
-    FrontendProbeOutcome, ServiceBootOutcome, TunerServiceRuntime,
+    CallbackArtifactResetCommand, CallbackArtifactRuntimeSplitDiagnosticRecord,
+    CallbackArtifactRuntimeSplitOutcome, FrontendProbeOutcome,
+    OwnerCallbackCleanupArtifactCommand, ServiceBootOutcome, TunerServiceRuntime,
 };
 
 use crate::callback_store::{AidlCallbackStoreError, CallbackStore};

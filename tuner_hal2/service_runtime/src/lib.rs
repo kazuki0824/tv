@@ -1,4 +1,4 @@
-pub mod boot;
+mod boot;
 mod callback_registry;
 pub mod capability_profile;
 pub mod command_dispatch;
@@ -29,11 +29,13 @@ pub mod root_object_ops;
 pub mod transaction_registry;
 
 pub use boot::{
-    start_frontend_demux_live_pump_from_reader, CallbackDeliveryFailurePhase,
-    CallbackDeliveryFailureReport, CallbackDeliveryOwnerKind, DvrChildRuntimeOpen,
-    DvrStatusPollSnapshot, FilterChildRuntimeOpen, FilterEventDelivery,
-    FilterEventDeliverySnapshot, FilterEventDispatcher, FrontendDemuxPacketSink,
-    FrontendProbeOutcome, ServiceBootOutcome, TunerServiceRuntime,
+    start_frontend_demux_live_pump_from_reader, CallbackArtifactResetCommand,
+    CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport, CallbackDeliveryOwnerKind,
+    CallbackRegistrationArtifactOutcome, DvrChildRuntimeOpen, DvrStatusPollSnapshot,
+    FilterChildRuntimeOpen, FilterEventDelivery, FilterEventDeliverySnapshot,
+    FilterEventDispatcher, FrontendDemuxPacketSink, FrontendProbeOutcome,
+    OwnerCallbackCleanupArtifactCommand, OwnerCallbackCleanupUseCaseOutcome, ServiceBootOutcome,
+    TunerServiceRuntime,
 };
 pub use callback_registry::{
     CallbackHealthState, CallbackRegistryUpdate, RuntimeCallbackRegistration,
@@ -102,8 +104,10 @@ pub enum ServiceState {
 mod tests {
     use super::*;
     use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem, HalError};
+    use maleicacid_tuner_hal2_demux::parser::packet_pipeline::{
+        PacketPid, PipelineAssemblySuppressionReason, PipelineDeliveryAction,
+    };
     use maleicacid_tuner_hal2_demux::{
-        packet_pipeline::{PacketPid, PipelineAssemblySuppressionReason, PipelineDeliveryAction},
         FilterConfig, FilterConfigKind, FilterOpenType, OpenFilterRequest, PesSettings,
     };
     use maleicacid_tuner_hal2_descrambler::{

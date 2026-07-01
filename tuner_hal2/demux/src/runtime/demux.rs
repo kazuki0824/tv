@@ -17,8 +17,8 @@ use crate::config::{
 };
 use crate::packet_pipeline::{
     FilterPipelineConfig, PacketPipeline, PipelineDeliveryAction, PipelineFilterView,
-    PipelineGeneratedEvent, PipelineInputKind, PipelineOpenKind, PipelineReport,
-    PipelineResetReport,
+    PipelineBoundaryReason, PipelineGeneratedEvent, PipelineInputKind, PipelineOpenKind,
+    PipelineReport, PipelineResetReport,
 };
 use crate::TsInputOrigin;
 
@@ -1301,7 +1301,7 @@ impl DemuxRuntime {
         Ok(reset)
     }
 
-    pub fn reset_generation_boundary(&mut self) -> Result<PipelineResetReport, DemuxRuntimeError> {
+    pub(crate) fn reset_generation_boundary(&mut self) -> Result<PipelineResetReport, DemuxRuntimeError> {
         let next = match next_generation(self.generation) {
             Ok(next) => next,
             Err(_) => {
@@ -1311,6 +1311,15 @@ impl DemuxRuntime {
         };
         self.generation = next;
         Ok(self.pipeline.reset_boundary())
+    }
+
+    pub fn apply_generation_boundary(
+        &mut self,
+        reason: PipelineBoundaryReason,
+    ) -> Result<super::generation_boundary::GenerationBoundaryReport, DemuxRuntimeError> {
+        let (_, report) =
+            super::generation_boundary::GenerationBoundaryTxn::for_reason(reason).apply(self);
+        report
     }
 
     pub fn quarantine(&mut self) {

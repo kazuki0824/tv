@@ -1402,41 +1402,7 @@ impl PacketPipeline {
         self.clear_filter_state(filter_id);
     }
 
-    pub fn drop_all_pes(&mut self) {
-        self.pes_assemblers.clear();
-        self.pes_assembler_generations.clear();
-        self.filter_pes_flush_generations.clear();
-    }
-
-    pub fn has_pending_pes(&self) -> bool {
-        !self.pes_assemblers.is_empty()
-    }
-
-    pub fn has_pending_section(&self) -> bool {
-        !self.section_assemblers.is_empty()
-    }
-
-    pub fn split_ts_bytes(
-        &mut self,
-        input: &[u8],
-        kind: PipelineInputKind,
-    ) -> Vec<[u8; TS_PACKET_SIZE]> {
-        match kind {
-            PipelineInputKind::Live | PipelineInputKind::SourceFilter { .. } => {
-                self.resync.push(input)
-            }
-            PipelineInputKind::Playback => input
-                .chunks_exact(TS_PACKET_SIZE)
-                .map(|chunk| {
-                    let mut packet = [0u8; TS_PACKET_SIZE];
-                    packet.copy_from_slice(chunk);
-                    packet
-                })
-                .collect(),
-        }
-    }
-
-    pub fn reset_boundary(&mut self) -> PipelineResetReport {
+    pub(crate) fn reset_boundary(&mut self) -> PipelineResetReport {
         let residual = self.resync.drain_for_boundary();
         self.section_assemblers.clear();
         self.pes_assemblers.clear();

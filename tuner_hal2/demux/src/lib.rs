@@ -7,7 +7,7 @@ pub mod config;
 pub mod parser;
 pub mod runtime;
 
-pub use parser::{packet_pipeline, record_index, sections, ts_core};
+pub(crate) use parser::{packet_pipeline, sections, ts_core};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum TsInputOrigin {
@@ -26,9 +26,8 @@ impl TsInputOrigin {
 }
 
 pub use av::{
-    AvDataId, AvDataIdState, AvFilterReleaseState, AvHandleReleaseInput, AvHandleReleaseOutcome,
-    AvHandleReleaseTxn, AvPayloadDeliveryOutcome, AvSharedBacking, AvSharedBackingError,
-    AvSharedHandleExport, AvSlotId, ClientHandleState,
+    AvDataId, AvHandleReleaseOutcome, AvPayloadDeliveryOutcome, AvSharedBacking,
+    AvSharedBackingError, AvSharedHandleExport, AvSlotId, ClientHandleState,
 };
 pub use config::{
     AvSettings, AvStreamKind, AvStreamTypeConfig, FilterConfig, FilterConfigKind, FilterDelayHint,
@@ -39,16 +38,18 @@ pub use runtime::{
     DemuxRuntime, DemuxRuntimeState, DemuxStreamGeneration, DvrConfigureOutcome, DvrConfigureStep,
     DvrConfigureTxn, DvrRuntime, DvrRuntimeState, DvrStatusEvent, FilterConfigureOutcome,
     FilterConfigureStep, FilterConfigureTxn, FilterRuntime, FilterRuntimeState,
-    GenerationBoundaryTxn, PlaybackConsumeReport, QueueDescriptorQueryError,
-    QueueDescriptorSnapshot, QueueGrantorDescriptorSnapshot, QueueRuntime, QueueRuntimeError,
-    QueueRuntimeErrorKind, SourceBoundaryOutcome, SourceBoundaryStep,
+    PlaybackConsumeReport, QueueDescriptorQueryError, QueueDescriptorSnapshot,
+    QueueGrantorDescriptorSnapshot, QueueRuntime, QueueRuntimeError, QueueRuntimeErrorKind,
+    SourceBoundaryOutcome, SourceBoundaryStep,
 };
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::ConfigInputPid;
-    use crate::packet_pipeline::{FilterPipelineConfig, PacketPid, PipelineOpenKind};
+    use crate::packet_pipeline::{
+        FilterPipelineConfig, PacketPid, PipelineBoundaryReason, PipelineOpenKind,
+    };
     use crate::runtime::filter::FilterSource;
     use crate::runtime::source_boundary::apply_filter_source_boundary_change;
     use std::os::unix::fs::MetadataExt;
@@ -1846,8 +1847,7 @@ mod tests {
     #[test]
     fn generation_boundary_overflow_marks_demux_failed() {
         let mut demux = DemuxRuntime::new(1, u64::MAX);
-        let (_, result) =
-            GenerationBoundaryTxn::new(DemuxStreamGeneration(u64::MAX)).apply(&mut demux);
+        let result = demux.apply_generation_boundary(PipelineBoundaryReason::TuneStart);
         assert!(result.is_err());
         assert_eq!(demux.state(), DemuxRuntimeState::Failed);
     }
@@ -1855,8 +1855,9 @@ mod tests {
     #[test]
     fn generation_boundary_resets_pipeline_and_bumps_generation() {
         let mut demux = DemuxRuntime::new(1, 7);
-        let (_, report) = GenerationBoundaryTxn::new(DemuxStreamGeneration(7)).apply(&mut demux);
-        let report = report.unwrap();
+        let report = demux
+            .apply_generation_boundary(PipelineBoundaryReason::TuneStart)
+            .unwrap();
         assert_eq!(report.next_generation, DemuxStreamGeneration(8));
         assert_eq!(demux.generation(), 8);
     }

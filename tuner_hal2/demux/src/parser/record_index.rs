@@ -31,7 +31,8 @@ impl RecordIndexParser {
         self.processed_packets
     }
 
-    pub fn push_ts_packet(
+    #[cfg(test)]
+    pub(crate) fn push_ts_packet(
         &mut self,
         packet: &[u8],
         cumulative_bytes: u64,
@@ -63,25 +64,6 @@ impl RecordIndexParser {
     ) -> Option<TsRecordEventData> {
         self.processed_packets = self.processed_packets.saturating_add(1);
         build_ts_record_event_data_from_validated(
-            packet,
-            cumulative_bytes,
-            configured_ts_index_mask,
-            sc_index_type,
-            configured_sc_index_mask_bits,
-            record_state,
-        )
-    }
-
-    pub fn build_event(
-        &mut self,
-        packet: &[u8],
-        cumulative_bytes: u64,
-        configured_ts_index_mask: i32,
-        sc_index_type: i32,
-        configured_sc_index_mask_bits: i32,
-        record_state: &mut RecordEventState,
-    ) -> Option<TsRecordEventData> {
-        self.push_ts_packet(
             packet,
             cumulative_bytes,
             configured_ts_index_mask,
@@ -409,15 +391,7 @@ fn build_ts_record_event_data_from_validated(
     })
 }
 
-pub fn pes_stream_id(payload: &[u8]) -> Option<i32> {
-    if payload.len() >= 4 && payload[0] == 0x00 && payload[1] == 0x00 && payload[2] == 0x01 {
-        Some(payload[3] as i32)
-    } else {
-        None
-    }
-}
-
-pub fn record_packet_pts(payload: &[u8]) -> Option<i64> {
+pub(crate) fn record_packet_pts(payload: &[u8]) -> Option<i64> {
     if payload.starts_with(&[0x00, 0x00, 0x01]) {
         pes_time_fields(payload).0.map(|value| value as i64)
     } else {
@@ -425,7 +399,7 @@ pub fn record_packet_pts(payload: &[u8]) -> Option<i64> {
     }
 }
 
-pub fn record_sc_info(
+pub(crate) fn record_sc_info(
     payload: &[u8],
     sc_index_type: i32,
     configured_mask: i32,
@@ -673,7 +647,7 @@ impl<'a> BitReader<'a> {
     }
 }
 
-pub fn pes_time_fields(payload: &[u8]) -> (Option<u64>, Option<u64>) {
+pub(crate) fn pes_time_fields(payload: &[u8]) -> (Option<u64>, Option<u64>) {
     let Some(summary) = parse_pes_header_summary(payload) else {
         return (None, None);
     };

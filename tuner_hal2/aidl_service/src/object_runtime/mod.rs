@@ -8,7 +8,6 @@ use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
 use maleicacid_tuner_hal2_resource_ledger::CleanupStep;
 use maleicacid_tuner_hal2_device::FrontendWorkerCancelReason;
 use maleicacid_tuner_hal2_service_runtime::{
-    boot::{CallbackRegistrationArtifactOutcome, OwnerCallbackCleanupUseCaseOutcome},
     close_frontend_object_cleanup_use_case,
     object_close_txn::{
         close_object_use_case, finish_object_close_use_case, ObjectArtifactCleanupCommand,
@@ -24,6 +23,7 @@ use maleicacid_tuner_hal2_service_runtime::{
         ObjectMethodExecutionToken, ObjectMethodTxnBuildError, ObjectQueryRequest,
         ObjectQueryResponse,
     },
+    CallbackRegistrationArtifactOutcome, OwnerCallbackCleanupUseCaseOutcome,
     TunerServiceRuntime,
 };
 

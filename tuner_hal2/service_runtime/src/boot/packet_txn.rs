@@ -1,11 +1,11 @@
 use super::{
     demux_runtime_error_to_hal, descramble_ts_packet_in_place,
     diagnostic_kind_for_descramble_failure, packet_policy_for_descramble_failure,
-    ActiveDescramblerSnapshot, BTreeMap, BTreeSet, DemuxRuntimeId, DemuxStreamGeneration,
-    DescrambleFailure, DescrambleOutcome, DescramblePacketDecision, DescramblePacketFlow,
+    ActiveDescramblerSnapshot, BTreeMap, BTreeSet, DemuxRuntimeId, DescrambleFailure,
+    DescrambleOutcome, DescramblePacketDecision, DescramblePacketFlow,
     DescramblerDiagnosticKind, DescramblerDiagnosticRecord, FrontendRuntimeId,
-    FrontendRuntimeState, GenerationBoundaryReport, GenerationBoundaryTxn, HalError,
-    HalInternalKind, HalInvalidStateKind, PacketDescramblePolicyFailure, PacketPid,
+    FrontendRuntimeState, GenerationBoundaryReport, HalError, HalInternalKind,
+    HalInvalidStateKind, PacketDescramblePolicyFailure, PacketPid,
     PacketPolicyAction, PipelineAssemblySuppressionReason, PipelineBoundaryReason,
     PipelineDiagnostic, PipelineReport, TsInputOrigin, TsPacketValidationError,
     TunerServiceRuntime, ValidatedTsPacket, TS_PACKET_SIZE,
@@ -81,11 +81,9 @@ impl TunerServiceRuntime {
                 "demux runtime is missing",
             ));
         };
-        let generation = DemuxStreamGeneration(demux_runtime.generation());
-        let (_, report) =
-            GenerationBoundaryTxn::for_reason(generation, PipelineBoundaryReason::TuneStart)
-                .apply(demux_runtime);
-        let report = report.map_err(demux_runtime_error_to_hal)?;
+        let report = demux_runtime
+            .apply_generation_boundary(PipelineBoundaryReason::TuneStart)
+            .map_err(demux_runtime_error_to_hal)?;
         self.registry.bind_demux_frontend(demux_key, frontend_key);
         Ok(report)
     }
@@ -109,11 +107,11 @@ impl TunerServiceRuntime {
                     "bound demux runtime is missing during tune boundary reset",
                 ));
             };
-            let generation = DemuxStreamGeneration(demux_runtime.generation());
-            let (_, report) =
-                GenerationBoundaryTxn::for_reason(generation, PipelineBoundaryReason::TuneStart)
-                    .apply(demux_runtime);
-            reports.push(report.map_err(demux_runtime_error_to_hal)?);
+            reports.push(
+                demux_runtime
+                    .apply_generation_boundary(PipelineBoundaryReason::TuneStart)
+                    .map_err(demux_runtime_error_to_hal)?,
+            );
         }
         Ok(reports)
     }
@@ -138,10 +136,11 @@ impl TunerServiceRuntime {
                     "bound demux runtime is missing during frontend unbind",
                 ));
             };
-            let generation = DemuxStreamGeneration(demux_runtime.generation());
-            let (_, report) =
-                GenerationBoundaryTxn::for_reason(generation, reason).apply(demux_runtime);
-            reports.push(report.map_err(demux_runtime_error_to_hal)?);
+            reports.push(
+                demux_runtime
+                    .apply_generation_boundary(reason)
+                    .map_err(demux_runtime_error_to_hal)?,
+            );
         }
         self.registry.unbind_frontend_demuxes(frontend_key);
         Ok(reports)

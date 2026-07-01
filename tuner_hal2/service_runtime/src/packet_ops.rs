@@ -1,7 +1,9 @@
 use crate::boot::TunerServiceRuntime;
 use crate::registry::DemuxRuntimeId;
 use maleicacid_tuner_hal2_common::HalError;
-use maleicacid_tuner_hal2_demux::packet_pipeline::{PipelineBoundaryReason, PipelineReport};
+use maleicacid_tuner_hal2_demux::parser::packet_pipeline::{
+    PipelineBoundaryReason, PipelineReport,
+};
 use maleicacid_tuner_hal2_demux::runtime::GenerationBoundaryReport;
 
 impl TunerServiceRuntime {

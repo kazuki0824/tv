@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use maleicacid_tuner_hal2_common::{FrontendBackendKind, HalError};
-use maleicacid_tuner_hal2_demux::packet_pipeline::PacketPid;
+use maleicacid_tuner_hal2_demux::parser::packet_pipeline::PacketPid;
 use maleicacid_tuner_hal2_descrambler::DescramblerPid;
 use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
 
@@ -498,6 +498,7 @@ pub enum CallbackArtifactRuntimeSplitOutcome {
     ArtifactFailure { artifact_error: HalError },
     RuntimeFinishFailure { runtime_error: HalError },
     ArtifactAndRuntimeFailure { artifact_error: HalError, runtime_error: HalError },
+    RuntimeRegistryMissing,
     ServiceBootCallbackArtifactFailure { error: HalError },
     ServiceBootDropLeakFailure { error: HalError },
     ServiceBootRuntimeFailure { error: HalError },

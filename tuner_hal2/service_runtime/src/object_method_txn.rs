@@ -344,16 +344,6 @@ impl ObjectMethodExecutionToken {
         Self { target }
     }
 
-    pub const fn object_id(&self) -> AidlObjectId {
-        self.target.object_id()
-    }
-    pub const fn generation(&self) -> AidlObjectGeneration {
-        self.target.generation()
-    }
-    pub const fn object_kind(&self) -> AidlObjectKind {
-        self.target.object_kind()
-    }
-
     pub(crate) fn consume_for_object(
         self,
         _runtime: &mut TunerServiceRuntime,

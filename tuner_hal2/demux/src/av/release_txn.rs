@@ -40,19 +40,9 @@ pub enum AvHandleReleaseOutcome {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct AvHandleReleaseTxn {
-    input: AvHandleReleaseInput,
-}
+pub struct AvHandleReleaseTxn;
 
 impl AvHandleReleaseTxn {
-    pub fn new(input: AvHandleReleaseInput) -> Self {
-        Self { input }
-    }
-
-    pub fn input(&self) -> AvHandleReleaseInput {
-        self.input
-    }
-
     pub fn classify(input: AvHandleReleaseInput) -> AvHandleReleaseOutcome {
         // DESIGN_JA.md 表1-C-AVH priority 1.
         if input.data_id.0 < 0 {

@@ -2,7 +2,7 @@ pub mod configure_txn;
 pub mod demux;
 pub mod dvr;
 pub mod filter;
-pub mod generation_boundary;
+mod generation_boundary;
 pub mod queue_runtime;
 pub mod source_boundary;
 
@@ -16,9 +16,7 @@ pub use demux::{
 };
 pub use dvr::{DvrKind, DvrRuntime, DvrRuntimeSnapshot, DvrRuntimeState, DvrStatusEvent};
 pub use filter::{FilterRuntime, FilterRuntimeSnapshot, FilterRuntimeState, FilterSource};
-pub use generation_boundary::{
-    DemuxStreamGeneration, GenerationBoundaryReport, GenerationBoundaryTxn,
-};
+pub use generation_boundary::{DemuxStreamGeneration, GenerationBoundaryReport};
 pub use queue_runtime::{
     QueueDescriptorSnapshot, QueueGrantorDescriptorSnapshot, QueueRuntime, QueueRuntimeError,
     QueueRuntimeErrorKind,
