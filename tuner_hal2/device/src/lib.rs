@@ -7,15 +7,16 @@ pub mod px4;
 pub mod runtime;
 
 pub use runtime::{
-    run_frontend_backend_tune_worker, run_frontend_backend_tune_worker_with_previous,
-    run_frontend_live_pump, run_frontend_live_pump_limited, BackendTuneCommit, BackendTuneOps,
-    BackendTuneOutcome, BackendTuneRollbackFailure, BackendTuneRollbackReport,
-    BackendTuneRollbackStep, BackendTuneStep, BackendTuneTxn, FrontendBackendSession,
+    apply_frontend_backend_lnb_voltage, run_frontend_backend_tune_worker,
+    run_frontend_backend_tune_worker_with_previous, run_frontend_live_pump,
+    run_frontend_live_pump_limited, BackendTuneCommit, BackendTuneOps, BackendTuneOutcome,
+    BackendTuneRollbackFailure, BackendTuneRollbackReport, BackendTuneRollbackStep,
+    BackendTuneStep, BackendTuneTxn, FrontendBackendLnbApplyPlan, FrontendBackendSession,
     FrontendBackendSessionKind, FrontendBackendTunePlan, FrontendLivePacketSink,
     FrontendLivePumpJoinOutcome, FrontendLivePumpOwner, FrontendLivePumpReport,
-    FrontendLiveReaderDescriptor, FrontendLiveReaderDescriptorKind, FrontendRuntime,
-    FrontendRuntimeSnapshot, FrontendRuntimeState, FrontendScanPhase, FrontendScanSession,
-    FrontendScanTerminalReason, FrontendSignalState, FrontendTerminalEvent,
+    FrontendLiveReaderDescriptor, FrontendLiveReaderDescriptorKind, FrontendLnbVoltage,
+    FrontendRuntime, FrontendRuntimeSnapshot, FrontendRuntimeState, FrontendScanPhase,
+    FrontendScanSession, FrontendScanTerminalReason, FrontendSignalState, FrontendTerminalEvent,
     FrontendTerminalEventKind, FrontendTerminalEventReason, FrontendTuneOutcome, FrontendTuneTxn,
     FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerDetachedJoin,
     FrontendWorkerKind, FrontendWorkerRegistry, FrontendWorkerStartError,

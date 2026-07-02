@@ -74,7 +74,7 @@ mod wp_r11_lnb_apply_tests {
     };
     use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem, HalError};
     use maleicacid_tuner_hal2_domain_request::LnbVoltageRequest;
-    use maleicacid_tuner_hal2_lnb::LnbElectricalState;
+    use maleicacid_tuner_hal2_lnb::{LnbElectricalState, LnbRuntimeState};
 
     fn runtime_with_lnb(profile: LnbRegistryProfile) -> TunerServiceRuntime {
         let mut runtime = TunerServiceRuntime::new();
@@ -131,6 +131,42 @@ mod wp_r11_lnb_apply_tests {
         );
         let lnb = runtime.registry().lnb_runtime(LnbRuntimeId(10001)).unwrap();
         assert_eq!(lnb.registry_state(), LnbElectricalState::safe());
+    }
+
+    #[test]
+    fn selected_lnb_backend_failure_keeps_registry_state() {
+        let mut runtime = runtime_with_lnb(LnbRegistryProfile::Px4Device15VOnly);
+        runtime
+            .registry_mut_for_test()
+            .bind_lnb_to_frontend(FrontendRuntimeId(1), LnbRuntimeId(10001))
+            .unwrap();
+
+        let err = runtime
+            .apply_lnb_voltage(10001, LnbVoltageRequest::Voltage15V)
+            .unwrap_err();
+
+        assert!(matches!(err, HalError::Internal { .. }));
+        let lnb = runtime.registry().lnb_runtime(LnbRuntimeId(10001)).unwrap();
+        assert_eq!(lnb.registry_state(), LnbElectricalState::safe());
+        assert_eq!(lnb.state(), LnbRuntimeState::Failed);
+    }
+
+    #[test]
+    fn set_frontend_lnb_backend_failure_does_not_commit_binding() {
+        let mut runtime = runtime_with_lnb(LnbRegistryProfile::Px4Device15VOnly);
+
+        let err = runtime.set_frontend_lnb(1, 10001).unwrap_err();
+
+        assert!(matches!(err, HalError::Internal { .. }));
+        assert_eq!(
+            runtime
+                .registry()
+                .selected_lnb_for_frontend(FrontendRuntimeId(1)),
+            None
+        );
+        let lnb = runtime.registry().lnb_runtime(LnbRuntimeId(10001)).unwrap();
+        assert_eq!(lnb.registry_state(), LnbElectricalState::safe());
+        assert_eq!(lnb.state(), LnbRuntimeState::Failed);
     }
 }
 

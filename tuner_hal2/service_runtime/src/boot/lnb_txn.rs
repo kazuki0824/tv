@@ -53,8 +53,10 @@ impl<'a> LnbTxn<'a> {
             .runtime
             .registry()
             .lnb_runtime(lnb_key)
+            .cloned()
             .ok_or_else(missing_lnb_error)?;
-        ensure_lnb_open(runtime)?;
+        ensure_lnb_open(&runtime)?;
+        self.apply_lnb_state_to_pending_frontend(lnb_key, frontend_key, runtime)?;
         self.runtime
             .registry_mut()
             .bind_lnb_to_frontend(frontend_key, lnb_key)
@@ -286,6 +288,34 @@ impl<'a> LnbTxn<'a> {
             (Err(record), Ok(())) => Err(map_lnb_failure(record)),
             (Err(record), Err(store_error)) => Err(compose_primary_cleanup_failure(
                 "LNB apply transaction failed and runtime store failed",
+                map_lnb_failure(record),
+                store_error,
+            )),
+        }
+    }
+
+    fn apply_lnb_state_to_pending_frontend(
+        &mut self,
+        lnb_key: LnbRuntimeId,
+        frontend_key: FrontendRuntimeId,
+        mut runtime: LnbRuntime,
+    ) -> Result<(), HalError> {
+        let target = runtime.registry_state();
+        let outcome = {
+            let mut backend = ServiceRuntimeLnbProfileAdapter::new_with_pending_frontend(
+                self.runtime.registry(),
+                lnb_key,
+                frontend_key,
+            );
+            apply_lnb_state_with_txn(&mut runtime, &mut backend, target)
+        };
+        let store_result = self.store_lnb_runtime(lnb_key, runtime);
+        match (outcome.result.map(|_| ()), store_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Ok(()), Err(store_error)) => Err(store_error),
+            (Err(record), Ok(())) => Err(map_lnb_failure(record)),
+            (Err(record), Err(store_error)) => Err(compose_primary_cleanup_failure(
+                "LNB setLnb backend apply transaction failed and runtime store failed",
                 map_lnb_failure(record),
                 store_error,
             )),

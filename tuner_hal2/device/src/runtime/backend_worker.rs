@@ -8,7 +8,7 @@ use std::time::Duration;
 use maleicacid_tuner_hal2_common::os_abi::{ioctl, last_errno};
 use maleicacid_tuner_hal2_common::{
     FrontendBackendKind, FrontendDevicePath, FrontendTuneRequest, HalError, HalErrorDetail,
-    HalInternalKind,
+    HalInternalKind, HalInvalidArgumentKind,
 };
 
 use super::reader::{FrontendLiveReaderDescriptor, FrontendLiveReaderDescriptorKind};
@@ -16,11 +16,12 @@ use super::tune_txn::{BackendTuneOps, BackendTuneOutcome, BackendTuneStep, Backe
 use crate::dvb;
 use crate::dvb::abi::{
     DtvProperties, DtvProperty, DTV_CLEAR, FE_HAS_LOCK, FE_HAS_SIGNAL, FE_READ_STATUS,
-    FE_SET_PROPERTY,
+    FE_SET_PROPERTY, FE_SET_VOLTAGE, SEC_VOLTAGE_13, SEC_VOLTAGE_18, SEC_VOLTAGE_OFF,
 };
 use crate::px4;
 use crate::px4::abi::{
-    PtxFreq, PTX_GET_CNR, PTX_SET_CHANNEL, PTX_SET_SYSTEM_MODE, PTX_START_STREAMING,
+    PtxFreq, ERRNO_EINVAL, ERRNO_ENOSYS, ERRNO_ENOTTY, PTXT_SET_LNB_VOLTAGE, PTX_DISABLE_LNB_POWER,
+    PTX_ENABLE_LNB_POWER, PTX_GET_CNR, PTX_SET_CHANNEL, PTX_SET_SYSTEM_MODE, PTX_START_STREAMING,
     PTX_STOP_STREAMING,
 };
 use crate::runtime::{FrontendSignalState, FrontendWorkerContext};
@@ -222,6 +223,153 @@ pub struct FrontendBackendSubmitFailure {
 impl FrontendBackendSubmitFailure {
     pub fn into_error(self) -> HalError {
         self.error
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrontendLnbVoltage {
+    None,
+    Voltage11V,
+    Voltage15V,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FrontendBackendLnbApplyPlan {
+    pub frontend_id: i32,
+    pub backend: FrontendBackendKind,
+    pub device_path: FrontendDevicePath,
+    pub voltage: FrontendLnbVoltage,
+}
+
+impl FrontendBackendLnbApplyPlan {
+    pub fn new(
+        frontend_id: i32,
+        backend: FrontendBackendKind,
+        device_path: FrontendDevicePath,
+        voltage: FrontendLnbVoltage,
+    ) -> Self {
+        Self {
+            frontend_id,
+            backend,
+            device_path,
+            voltage,
+        }
+    }
+}
+
+trait Px4LnbApplyOps {
+    fn set_extended_lnb_voltage(&mut self, voltage: i32) -> Result<(), HalError>;
+    fn set_legacy_lnb_enabled(&mut self, enabled: bool, voltage: i32) -> Result<(), HalError>;
+}
+
+struct RealPx4LnbApplyOps<'a> {
+    fd: i32,
+    path: &'a FrontendDevicePath,
+}
+
+impl<'a> Px4LnbApplyOps for RealPx4LnbApplyOps<'a> {
+    fn set_extended_lnb_voltage(&mut self, voltage: i32) -> Result<(), HalError> {
+        let mut requested = voltage;
+        ioctl_ptr(
+            "px4",
+            Some(self.path.as_path().to_path_buf()),
+            self.fd,
+            PTXT_SET_LNB_VOLTAGE,
+            &mut requested,
+            "PTXT_SET_LNB_VOLTAGE",
+        )
+    }
+
+    fn set_legacy_lnb_enabled(&mut self, enabled: bool, voltage: i32) -> Result<(), HalError> {
+        if enabled {
+            let mut requested = voltage;
+            ioctl_ptr(
+                "px4",
+                Some(self.path.as_path().to_path_buf()),
+                self.fd,
+                PTX_ENABLE_LNB_POWER,
+                &mut requested,
+                "PTX_ENABLE_LNB_POWER",
+            )
+        } else {
+            ioctl_noarg(
+                "px4",
+                Some(self.path.as_path().to_path_buf()),
+                self.fd,
+                PTX_DISABLE_LNB_POWER,
+                "PTX_DISABLE_LNB_POWER",
+            )
+        }
+    }
+}
+
+pub fn apply_frontend_backend_lnb_voltage(
+    plan: &FrontendBackendLnbApplyPlan,
+) -> Result<(), HalError> {
+    let file = open_rw(&plan.device_path)?;
+    match plan.backend {
+        FrontendBackendKind::Px4CharDevice => {
+            let mut ops = RealPx4LnbApplyOps {
+                fd: file.as_raw_fd(),
+                path: &plan.device_path,
+            };
+            apply_px4_lnb_voltage_with_ops(&mut ops, plan.voltage)
+        }
+        FrontendBackendKind::LinuxDvb => {
+            let mode = dvb_lnb_voltage_mode(plan.voltage)?;
+            ioctl_word(
+                "dvb",
+                Some(plan.device_path.as_path().to_path_buf()),
+                file.as_raw_fd(),
+                FE_SET_VOLTAGE,
+                mode,
+                "FE_SET_VOLTAGE",
+            )
+        }
+    }
+}
+
+fn apply_px4_lnb_voltage_with_ops<O: Px4LnbApplyOps>(
+    ops: &mut O,
+    voltage: FrontendLnbVoltage,
+) -> Result<(), HalError> {
+    let requested_voltage = px4_lnb_voltage_value(voltage)?;
+    let extended = ops.set_extended_lnb_voltage(requested_voltage);
+    let should_try_legacy = match &extended {
+        Ok(()) => false,
+        Err(error) => px4_lnb_voltage_fallback_allowed(error),
+    };
+    if !should_try_legacy {
+        return extended;
+    }
+    let legacy_request = if requested_voltage > 0 { 2 } else { 0 };
+    ops.set_legacy_lnb_enabled(requested_voltage > 0, legacy_request)
+}
+
+fn px4_lnb_voltage_value(voltage: FrontendLnbVoltage) -> Result<i32, HalError> {
+    match voltage {
+        FrontendLnbVoltage::None => Ok(0),
+        FrontendLnbVoltage::Voltage15V => Ok(15),
+        FrontendLnbVoltage::Voltage11V => Err(HalError::invalid_argument(
+            HalInvalidArgumentKind::NumericRange,
+            "px4 LNB backend accepts only NONE or 15V",
+        )),
+    }
+}
+
+fn px4_lnb_voltage_fallback_allowed(error: &HalError) -> bool {
+    matches!(
+        error,
+        HalError::IoctlFailed { errno, .. }
+            if *errno == ERRNO_ENOTTY || *errno == ERRNO_EINVAL || *errno == ERRNO_ENOSYS
+    )
+}
+
+fn dvb_lnb_voltage_mode(voltage: FrontendLnbVoltage) -> Result<u32, HalError> {
+    match voltage {
+        FrontendLnbVoltage::None => Ok(SEC_VOLTAGE_OFF),
+        FrontendLnbVoltage::Voltage11V => Ok(SEC_VOLTAGE_13),
+        FrontendLnbVoltage::Voltage15V => Ok(SEC_VOLTAGE_18),
     }
 }
 
@@ -565,10 +713,47 @@ fn ioctl_noarg(
     Ok(())
 }
 
+fn ioctl_word(
+    backend: &'static str,
+    path: Option<PathBuf>,
+    fd: i32,
+    request: u64,
+    arg: u32,
+    op: &'static str,
+) -> Result<(), HalError> {
+    let rc = unsafe { ioctl(fd, request, arg) };
+    if rc < 0 {
+        return Err(HalError::IoctlFailed {
+            backend,
+            path,
+            op,
+            errno: last_errno(),
+        });
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use maleicacid_tuner_hal2_common::{FrontendStreamIdKind, FrontendSystem};
+
+    #[derive(Default)]
+    struct FakePx4LnbOps {
+        extended_result: Option<Result<(), HalError>>,
+        legacy_calls: Vec<(bool, i32)>,
+    }
+
+    impl Px4LnbApplyOps for FakePx4LnbOps {
+        fn set_extended_lnb_voltage(&mut self, _voltage: i32) -> Result<(), HalError> {
+            self.extended_result.take().unwrap_or(Ok(()))
+        }
+
+        fn set_legacy_lnb_enabled(&mut self, enabled: bool, voltage: i32) -> Result<(), HalError> {
+            self.legacy_calls.push((enabled, voltage));
+            Ok(())
+        }
+    }
 
     #[test]
     fn tune_plan_keeps_backend_path_and_request() {
@@ -700,5 +885,50 @@ mod tests {
             }),
         );
         assert_eq!(state, FrontendSignalState::Unknown);
+    }
+
+    #[test]
+    fn px4_lnb_voltage_uses_legacy_fallback_for_old_driver_ioctl() {
+        let mut ops = FakePx4LnbOps {
+            extended_result: Some(Err(HalError::IoctlFailed {
+                backend: "px4",
+                path: None,
+                op: "PTXT_SET_LNB_VOLTAGE",
+                errno: ERRNO_ENOTTY,
+            })),
+            legacy_calls: Vec::new(),
+        };
+
+        apply_px4_lnb_voltage_with_ops(&mut ops, FrontendLnbVoltage::Voltage15V)
+            .expect("legacy fallback succeeds");
+
+        assert_eq!(ops.legacy_calls, vec![(true, 2)]);
+    }
+
+    #[test]
+    fn px4_lnb_voltage_rejects_11v_before_ioctl() {
+        let mut ops = FakePx4LnbOps::default();
+
+        let error =
+            apply_px4_lnb_voltage_with_ops(&mut ops, FrontendLnbVoltage::Voltage11V).unwrap_err();
+
+        assert!(matches!(error, HalError::InvalidArgument { .. }));
+        assert!(ops.legacy_calls.is_empty());
+    }
+
+    #[test]
+    fn dvb_lnb_voltage_maps_fixed_profile_modes() {
+        assert_eq!(
+            dvb_lnb_voltage_mode(FrontendLnbVoltage::None).unwrap(),
+            SEC_VOLTAGE_OFF
+        );
+        assert_eq!(
+            dvb_lnb_voltage_mode(FrontendLnbVoltage::Voltage11V).unwrap(),
+            SEC_VOLTAGE_13
+        );
+        assert_eq!(
+            dvb_lnb_voltage_mode(FrontendLnbVoltage::Voltage15V).unwrap(),
+            SEC_VOLTAGE_18
+        );
     }
 }

@@ -12,8 +12,10 @@ pub(crate) mod thread_result_owner;
 pub mod tune_txn;
 
 pub use backend_worker::{
-    run_frontend_backend_tune_worker, run_frontend_backend_tune_worker_with_previous,
+    apply_frontend_backend_lnb_voltage, run_frontend_backend_tune_worker,
+    run_frontend_backend_tune_worker_with_previous, FrontendBackendLnbApplyPlan,
     FrontendBackendSession, FrontendBackendSessionKind, FrontendBackendTunePlan,
+    FrontendLnbVoltage,
 };
 pub use frontend_runtime::{
     FrontendDiagnosticWriteFailure, FrontendLivePumpDiagnostic, FrontendLivePumpJoinResult,
