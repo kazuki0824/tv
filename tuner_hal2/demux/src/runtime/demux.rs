@@ -735,18 +735,24 @@ impl DemuxRuntime {
         config: FilterPipelineConfig,
     ) -> Result<(), DemuxRuntimeError> {
         self.drop_filter_av_backing_to_stale(filter_id);
+        let next = {
+            let filter = self
+                .filters
+                .get(&filter_id)
+                .ok_or(DemuxRuntimeError::filter_missing(filter_id))?;
+            match next_generation(filter.generation()) {
+                Ok(next) => next,
+                Err(_) => {
+                    self.quarantine();
+                    return Err(DemuxRuntimeError::generation_exhausted(Some(filter_id)));
+                }
+            }
+        };
         let av_backing_present = {
             let filter = self
                 .filters
                 .get_mut(&filter_id)
                 .ok_or(DemuxRuntimeError::filter_missing(filter_id))?;
-            let next = match next_generation(filter.generation()) {
-                Ok(next) => next,
-                Err(_) => {
-                    filter.mark_failed();
-                    return Err(DemuxRuntimeError::generation_exhausted(Some(filter_id)));
-                }
-            };
             filter.configure_with_generation(next, config.clone());
             filter.clear_queued_payload_state();
             filter.av_backing_present()
@@ -897,17 +903,23 @@ impl DemuxRuntime {
     }
 
     pub fn configure_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {
+        let next = {
+            let dvr = self
+                .dvrs
+                .get(&dvr_id)
+                .ok_or(DemuxRuntimeError::dvr_missing(dvr_id))?;
+            match next_generation(dvr.generation()) {
+                Ok(next) => next,
+                Err(_) => {
+                    self.quarantine();
+                    return Err(DemuxRuntimeError::generation_exhausted(Some(dvr_id)));
+                }
+            }
+        };
         let dvr = self
             .dvrs
             .get_mut(&dvr_id)
             .ok_or(DemuxRuntimeError::dvr_missing(dvr_id))?;
-        let next = match next_generation(dvr.generation()) {
-            Ok(next) => next,
-            Err(_) => {
-                dvr.mark_failed();
-                return Err(DemuxRuntimeError::generation_exhausted(Some(dvr_id)));
-            }
-        };
         dvr.configure_with_generation(next);
         self.rebuild_dvr_queue_runtime(dvr_id)?;
         Ok(())
@@ -1381,6 +1393,7 @@ impl DemuxRuntime {
         report.delivery_actions.extend(downstream.delivery_actions);
         report.generated_events.extend(downstream.generated_events);
         report.diagnostics.extend(downstream.diagnostics);
+        self.mark_filters_failed_for_generation_overflow(&report.diagnostics);
         let av_filter_ids: Vec<i32> = report
             .delivery_actions
             .iter()
@@ -1443,6 +1456,30 @@ impl DemuxRuntime {
         );
         report.diagnostics.extend(queue_payload_diagnostics);
         report
+    }
+
+    fn mark_filters_failed_for_generation_overflow(
+        &mut self,
+        diagnostics: &[crate::packet_pipeline::PipelineDiagnostic],
+    ) {
+        for diagnostic in diagnostics {
+            let filter_ids = match diagnostic {
+                crate::packet_pipeline::PipelineDiagnostic::SectionGenerationOverflow {
+                    filter_ids,
+                    ..
+                }
+                | crate::packet_pipeline::PipelineDiagnostic::PesGenerationOverflow {
+                    filter_ids,
+                    ..
+                } => filter_ids,
+                _ => continue,
+            };
+            for filter_id in filter_ids {
+                if let Some(filter) = self.filters.get_mut(filter_id) {
+                    filter.mark_failed();
+                }
+            }
+        }
     }
 
     pub fn open_filter_runtime(

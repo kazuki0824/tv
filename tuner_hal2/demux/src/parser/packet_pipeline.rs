@@ -457,9 +457,11 @@ pub enum PipelineDiagnostic {
     },
     SectionGenerationOverflow {
         pid: PacketPid,
+        filter_ids: Vec<i32>,
     },
     PesGenerationOverflow {
         pid: PacketPid,
+        filter_ids: Vec<i32>,
     },
     PesAssemblerDrop {
         pid: PacketPid,
@@ -550,8 +552,8 @@ impl PipelineDiagnostic {
             | Self::NoPayloadAssemblySuppressed { pid }
             | Self::KeylessScrambledAssemblySuppressed { pid }
             | Self::SectionAssemblyDrop { pid }
-            | Self::SectionGenerationOverflow { pid }
-            | Self::PesGenerationOverflow { pid }
+            | Self::SectionGenerationOverflow { pid, .. }
+            | Self::PesGenerationOverflow { pid, .. }
             | Self::PesAssemblerDrop { pid, .. }
             | Self::SourceFilterValidationFailure { pid, .. }
             | Self::SourceFilterDescramblePolicyFailure { pid, .. } => {
@@ -1018,20 +1020,20 @@ impl PacketPipeline {
             .iter()
             .any(|action| matches!(action, PipelineDeliveryAction::SectionPayload { .. }));
         if has_section_action {
+            let section_filter_ids: Vec<i32> = report
+                .delivery_actions
+                .iter()
+                .filter_map(|action| match action {
+                    PipelineDeliveryAction::SectionPayload { filter_id } => Some(*filter_id),
+                    _ => None,
+                })
+                .collect();
             let section_generation = if view.payload_unit_start {
                 self.bump_section_generation(origin, pid)
             } else {
                 Some(self.current_section_generation(origin, pid))
             };
             if let Some(section_generation) = section_generation {
-                let section_filter_ids: Vec<i32> = report
-                    .delivery_actions
-                    .iter()
-                    .filter_map(|action| match action {
-                        PipelineDeliveryAction::SectionPayload { filter_id } => Some(*filter_id),
-                        _ => None,
-                    })
-                    .collect();
                 for filter_id in section_filter_ids {
                     let outcome = self.assemble_section_for_filter(
                         origin,
@@ -1065,7 +1067,13 @@ impl PacketPipeline {
                     .push(PipelineDropReason::SectionGenerationOverflow);
                 report
                     .diagnostics
-                    .push(PipelineDiagnostic::SectionGenerationOverflow { pid: pid });
+                    .push(PipelineDiagnostic::SectionGenerationOverflow {
+                        pid,
+                        filter_ids: section_filter_ids,
+                    });
+                report.delivery_actions.retain(|action| {
+                    !matches!(action, PipelineDeliveryAction::SectionPayload { .. })
+                });
                 self.reset_assembly_for_origin_pid(origin, pid);
             }
         } else {
@@ -1080,6 +1088,15 @@ impl PacketPipeline {
             )
         });
         if has_pes_action {
+            let pes_filter_ids: Vec<i32> = report
+                .delivery_actions
+                .iter()
+                .filter_map(|action| match action {
+                    PipelineDeliveryAction::PesPayload { filter_id }
+                    | PipelineDeliveryAction::AvPayload { filter_id } => Some(*filter_id),
+                    _ => None,
+                })
+                .collect();
             let pes_generation = if view.payload_unit_start {
                 self.bump_pes_generation(origin, pid)
             } else {
@@ -1092,19 +1109,20 @@ impl PacketPipeline {
                     .push(PipelineDropReason::PesGenerationOverflow);
                 report
                     .diagnostics
-                    .push(PipelineDiagnostic::PesGenerationOverflow { pid: pid });
+                    .push(PipelineDiagnostic::PesGenerationOverflow {
+                        pid,
+                        filter_ids: pes_filter_ids,
+                    });
+                report.delivery_actions.retain(|action| {
+                    !matches!(
+                        action,
+                        PipelineDeliveryAction::PesPayload { .. }
+                            | PipelineDeliveryAction::AvPayload { .. }
+                    )
+                });
                 self.reset_assembly_for_origin_pid(origin, pid);
                 return report;
             };
-            let pes_filter_ids: Vec<i32> = report
-                .delivery_actions
-                .iter()
-                .filter_map(|action| match action {
-                    PipelineDeliveryAction::PesPayload { filter_id }
-                    | PipelineDeliveryAction::AvPayload { filter_id } => Some(*filter_id),
-                    _ => None,
-                })
-                .collect();
             for filter_id in pes_filter_ids {
                 let packets = self.assemble_pes_for_filter(
                     origin,

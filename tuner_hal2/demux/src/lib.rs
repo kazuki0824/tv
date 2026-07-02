@@ -1782,6 +1782,7 @@ mod tests {
             demux.filter(30).unwrap().state(),
             FilterRuntimeState::Failed
         );
+        assert_eq!(demux.state(), DemuxRuntimeState::Quarantined);
     }
 
     #[test]
@@ -1793,6 +1794,7 @@ mod tests {
         let result = demux.configure_dvr_runtime(31);
         assert!(result.is_err());
         assert_eq!(demux.dvr(31).unwrap().state(), DvrRuntimeState::Failed);
+        assert_eq!(demux.state(), DemuxRuntimeState::Quarantined);
     }
 
     #[test]
@@ -1825,6 +1827,7 @@ mod tests {
             demux.filter(32).unwrap().state(),
             FilterRuntimeState::Failed
         );
+        assert_eq!(demux.state(), DemuxRuntimeState::Quarantined);
     }
 
     #[test]
@@ -1842,6 +1845,7 @@ mod tests {
             })
         );
         assert_eq!(demux.dvr(33).unwrap().state(), DvrRuntimeState::Failed);
+        assert_eq!(demux.state(), DemuxRuntimeState::Quarantined);
     }
 
     #[test]
@@ -1850,6 +1854,122 @@ mod tests {
         let result = demux.apply_generation_boundary(PipelineBoundaryReason::TuneStart);
         assert!(result.is_err());
         assert_eq!(demux.state(), DemuxRuntimeState::Failed);
+    }
+
+    #[test]
+    fn section_generation_overflow_marks_target_filter_failed() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(open_filter_runtime_with_queue(
+                35,
+                1,
+                FilterOpenType::TsSection,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                35,
+                FilterPipelineConfig {
+                    tpid: Some(0x0100),
+                    raw: false,
+                },
+            )
+            .unwrap();
+        demux.start_filter_runtime(35).unwrap();
+        demux
+            .register_filter(open_filter_runtime_with_queue(
+                36,
+                1,
+                FilterOpenType::TsRaw,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                36,
+                FilterPipelineConfig {
+                    tpid: Some(0x0100),
+                    raw: false,
+                },
+            )
+            .unwrap();
+        demux.start_filter_runtime(36).unwrap();
+        let pid = packet_pid(0x0100);
+        demux
+            .pipeline_mut()
+            .section_assembler_generations
+            .insert((TsInputOrigin::Frontend, pid), u64::MAX);
+
+        let packet = raw_ts_packet(0x0100, 0, &[0x00, 0x00, 0x01, 0x02]);
+        let report = demux.push_ts_packet_from_origin(&packet, TsInputOrigin::Frontend);
+
+        assert!(report.diagnostics.contains(
+            &packet_pipeline::PipelineDiagnostic::SectionGenerationOverflow {
+                pid,
+                filter_ids: vec![35],
+            }
+        ));
+        assert!(!report
+            .delivery_actions
+            .contains(&packet_pipeline::PipelineDeliveryAction::SectionPayload { filter_id: 35 }));
+        assert_eq!(
+            demux.filter(35).unwrap().state(),
+            FilterRuntimeState::Failed
+        );
+        assert_eq!(
+            demux.filter(36).unwrap().state(),
+            FilterRuntimeState::Started
+        );
+    }
+
+    #[test]
+    fn pes_generation_overflow_marks_target_filter_failed_without_av_delivery() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(open_filter_runtime_with_queue(
+                37,
+                1,
+                FilterOpenType::TsVideo,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                37,
+                FilterPipelineConfig {
+                    tpid: Some(0x0100),
+                    raw: false,
+                },
+            )
+            .unwrap();
+        demux.start_filter_runtime(37).unwrap();
+        let pid = packet_pid(0x0100);
+        demux
+            .pipeline_mut()
+            .pes_assembler_generations
+            .insert((TsInputOrigin::Frontend, pid), u64::MAX);
+
+        let packet = pes_start_packet(0x0100, 0, &[0x00, 0x00, 0x01, 0xe0, 0x00]);
+        let report = demux.push_ts_packet_from_origin(&packet, TsInputOrigin::Frontend);
+
+        assert!(report.diagnostics.contains(
+            &packet_pipeline::PipelineDiagnostic::PesGenerationOverflow {
+                pid,
+                filter_ids: vec![37],
+            }
+        ));
+        assert!(!report
+            .delivery_actions
+            .contains(&packet_pipeline::PipelineDeliveryAction::AvPayload { filter_id: 37 }));
+        assert!(!report.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic,
+            packet_pipeline::PipelineDiagnostic::AvSharedHandleNotExported { filter_id: 37, .. }
+        )));
+        assert_eq!(
+            demux.filter(37).unwrap().state(),
+            FilterRuntimeState::Failed
+        );
     }
 
     #[test]
