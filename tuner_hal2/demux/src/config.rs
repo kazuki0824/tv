@@ -190,6 +190,10 @@ impl FilterConfig {
                 FilterConfigKind::TsPes(settings) => settings.raw,
                 _ => false,
             },
+            record_index: match &self.kind {
+                FilterConfigKind::TsRecord(settings) => Some(settings.clone()),
+                _ => None,
+            },
         }
     }
 }

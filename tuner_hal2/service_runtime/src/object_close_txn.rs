@@ -389,6 +389,15 @@ fn callback_registration_api_for_close_entry(entry: &RuntimeObjectEntry) -> Opti
     callback_registration_api_for_close_parts(entry.object_kind)
 }
 
+fn entry_has_callback_registration(
+    runtime: &TunerServiceRuntime,
+    entry: &RuntimeObjectEntry,
+) -> bool {
+    callback_registration_api_for_close_entry(entry).is_some_and(|api| {
+        runtime.has_callback_registration(entry.object_kind, entry.object_id, entry.generation, api)
+    })
+}
+
 fn callback_cleanup_failure_message_for_kind(kind: ObjectArtifactCleanupKind) -> &'static str {
     match kind {
         ObjectArtifactCleanupKind::OwnerCallbackRegistration => {
@@ -429,11 +438,12 @@ fn owner_callback_cleanup_command_for_parts(
 }
 
 fn artifact_cleanup_commands_for_close_plan(
+    runtime: &TunerServiceRuntime,
     target: &RuntimeObjectEntry,
     entries: &[RuntimeObjectEntry],
 ) -> Vec<ObjectCloseArtifactCleanupCommand> {
     let mut commands = Vec::new();
-    if callback_registration_api_for_close_entry(target).is_some() {
+    if entry_has_callback_registration(runtime, target) {
         commands.push(ObjectCloseArtifactCleanupCommand::new(
             ObjectCloseArtifactCleanupPhase::BeforeDomainCleanup,
             ObjectCloseArtifactCleanupKind::OwnerCallbackRegistration,
@@ -446,7 +456,7 @@ fn artifact_cleanup_commands_for_close_plan(
         if entry.object_id == target.object_id && entry.generation == target.generation {
             continue;
         }
-        if callback_registration_api_for_close_entry(entry).is_some() {
+        if entry_has_callback_registration(runtime, entry) {
             let cleanup_kind = if target.object_kind == AidlObjectKind::Frontend
                 && entry.object_kind == AidlObjectKind::Lnb
             {
@@ -619,7 +629,7 @@ pub fn close_object_use_case(
         }
     };
     let artifact_cleanup_commands =
-        artifact_cleanup_commands_for_close_plan(&target, &cascade_entries);
+        artifact_cleanup_commands_for_close_plan(runtime, &target, &cascade_entries);
     let domain_cleanup_commands = cascade_entries
         .iter()
         .filter_map(close_domain_cleanup_command_for_entry)
@@ -811,11 +821,12 @@ pub(crate) fn commit_object_close_cascade(
 }
 
 fn artifact_cleanup_commands_for_drop_leak_plan(
+    runtime: &TunerServiceRuntime,
     entries: &[RuntimeObjectEntry],
 ) -> Vec<ObjectArtifactCleanupCommand> {
     let mut commands = Vec::new();
     for entry in entries {
-        if callback_registration_api_for_close_entry(entry).is_some() {
+        if entry_has_callback_registration(runtime, entry) {
             commands.push(ObjectArtifactCleanupCommand::new(
                 ObjectArtifactCleanupKind::OwnerCallbackRegistration,
                 entry,
@@ -839,7 +850,8 @@ pub fn quarantine_object_drop_leak_use_case(
     generation: AidlObjectGeneration,
 ) -> Result<ObjectDropLeakQuarantinePlan, HalError> {
     let cascade_entries = quarantine_object_cascade(runtime, object_id, generation)?;
-    let artifact_cleanup_commands = artifact_cleanup_commands_for_drop_leak_plan(&cascade_entries);
+    let artifact_cleanup_commands =
+        artifact_cleanup_commands_for_drop_leak_plan(runtime, &cascade_entries);
     let domain_cleanup_commands = cascade_entries
         .iter()
         .filter_map(drop_leak_domain_cleanup_command_for_entry)

@@ -2,19 +2,16 @@
 //!
 //! scrambling change、PES timestamp、H.264/H.265/VVC start code全走査をここへ集約する。
 
-#[cfg(test)]
 use crate::packet_pipeline::{PacketPid, ValidatedTsPacket};
-#[cfg(test)]
 use crate::ts_core::parse_pes_header_summary;
 
-#[derive(Debug, Default)]
-#[cfg(test)]
+#[derive(Clone, Debug, Default)]
 pub struct RecordIndexParser {
     processed_packets: u64,
 }
 
-#[cfg(test)]
 impl RecordIndexParser {
+    #[cfg(test)]
     pub fn new() -> Self {
         Self::default()
     }
@@ -65,6 +62,7 @@ impl RecordIndexParser {
         )
     }
 
+    #[cfg(test)]
     pub fn build_validated_event(
         &mut self,
         packet: &ValidatedTsPacket<'_>,
@@ -86,17 +84,13 @@ impl RecordIndexParser {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg(test)]
 pub struct RecordStartCodeInfo {
     pub mask: i32,
     pub first_mb_in_slice: i32,
 }
 
-#[cfg(test)]
 pub const INVALID_FIRST_MB_IN_SLICE: i32 = -1;
-#[cfg(test)]
 pub const RECORD_INDEX_PTS_ABSENT: i64 = -1;
-#[cfg(test)]
 pub const SC_INDEX_MASK_ABSENT: i32 = 0;
 pub const AVC_SC_I_SLICE: i32 = 1 << 0;
 pub const AVC_SC_P_SLICE: i32 = 1 << 1;
@@ -139,7 +133,6 @@ pub const DEMUX_TS_INDEX_PRIVATE_DATA: i32 = 1 << 11;
 pub const DEMUX_TS_INDEX_ADAPTATION_EXTENSION: i32 = 1 << 12;
 
 #[derive(Clone, Debug, Default)]
-#[cfg(test)]
 pub struct RecordEventState {
     last_transport_scrambling_control: Option<u8>,
     // scanner/parserはTS payload境界をまたいで状態を保持する。
@@ -147,7 +140,6 @@ pub struct RecordEventState {
     pes_header_carry: Vec<u8>,
 }
 
-#[cfg(test)]
 impl RecordEventState {
     pub fn reset_payload_state(&mut self) {
         self.sc_prefix_carry.clear();
@@ -204,18 +196,15 @@ impl RecordEventState {
     }
 }
 
-#[cfg(test)]
 fn is_pes_start_prefix_fragment(payload: &[u8]) -> bool {
     matches!(payload, [0x00] | [0x00, 0x00])
 }
 
-#[cfg(test)]
 fn starts_with_complete_or_partial_pes_prefix(bytes: &[u8]) -> bool {
     bytes.starts_with(&[0x00, 0x00, 0x01]) || is_pes_start_prefix_fragment(bytes)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg(test)]
 pub struct TsRecordEventData {
     pub pid: PacketPid,
     pub ts_index_mask: i32,
@@ -292,7 +281,6 @@ fn build_ts_record_event_data(
     )
 }
 
-#[cfg(test)]
 fn build_ts_record_event_data_from_validated(
     validated_packet: &ValidatedTsPacket<'_>,
     cumulative_bytes: u64,
@@ -393,7 +381,6 @@ fn build_ts_record_event_data_from_validated(
     })
 }
 
-#[cfg(test)]
 pub(crate) fn record_packet_pts(payload: &[u8]) -> Option<i64> {
     if payload.starts_with(&[0x00, 0x00, 0x01]) {
         pes_time_fields(payload).0.map(|value| value as i64)
@@ -402,7 +389,6 @@ pub(crate) fn record_packet_pts(payload: &[u8]) -> Option<i64> {
     }
 }
 
-#[cfg(test)]
 pub(crate) fn record_sc_info(
     payload: &[u8],
     sc_index_type: i32,
@@ -447,14 +433,12 @@ pub(crate) fn record_sc_info(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg(test)]
 enum PesPayloadKind<'a> {
     NotPes,
     MalformedPes,
     ElementaryStream(&'a [u8]),
 }
 
-#[cfg(test)]
 fn looks_like_record_index_pes_stream(stream_id: u8) -> bool {
     matches!(
         stream_id,
@@ -462,7 +446,6 @@ fn looks_like_record_index_pes_stream(stream_id: u8) -> bool {
     )
 }
 
-#[cfg(test)]
 fn pes_payload_kind(payload: &[u8]) -> PesPayloadKind<'_> {
     if !payload.starts_with(&[0x00, 0x00, 0x01]) {
         return PesPayloadKind::NotPes;
@@ -487,7 +470,6 @@ fn pes_payload_kind(payload: &[u8]) -> PesPayloadKind<'_> {
     }
 }
 
-#[cfg(test)]
 fn find_sc_prefix(bytes: &[u8]) -> Option<(usize, usize)> {
     let mut i = 0usize;
     while i + 3 < bytes.len() {
@@ -504,7 +486,6 @@ fn find_sc_prefix(bytes: &[u8]) -> Option<(usize, usize)> {
     None
 }
 
-#[cfg(test)]
 fn parse_generic_sc_index(nal: &[u8]) -> Option<RecordStartCodeInfo> {
     let code = *nal.first()?;
     let mask = match code {
@@ -526,7 +507,6 @@ fn parse_generic_sc_index(nal: &[u8]) -> Option<RecordStartCodeInfo> {
     })
 }
 
-#[cfg(test)]
 fn parse_avc_sc_index(nal: &[u8]) -> Option<RecordStartCodeInfo> {
     let header = *nal.first()?;
     let nal_type = header & 0x1f;
@@ -551,7 +531,6 @@ fn parse_avc_sc_index(nal: &[u8]) -> Option<RecordStartCodeInfo> {
     })
 }
 
-#[cfg(test)]
 fn parse_hevc_sc_index(nal: &[u8]) -> Option<RecordStartCodeInfo> {
     if nal.len() < 2 {
         return None;
@@ -574,7 +553,6 @@ fn parse_hevc_sc_index(nal: &[u8]) -> Option<RecordStartCodeInfo> {
     })
 }
 
-#[cfg(test)]
 fn parse_vvc_sc_index(nal: &[u8]) -> Option<RecordStartCodeInfo> {
     if nal.len() < 2 {
         return None;
@@ -596,7 +574,6 @@ fn parse_vvc_sc_index(nal: &[u8]) -> Option<RecordStartCodeInfo> {
     })
 }
 
-#[cfg(test)]
 fn nal_to_rbsp(bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len());
     let mut zero_run = 0usize;
@@ -615,13 +592,11 @@ fn nal_to_rbsp(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
-#[cfg(test)]
 struct BitReader<'a> {
     bytes: &'a [u8],
     bit_offset: usize,
 }
 
-#[cfg(test)]
 impl<'a> BitReader<'a> {
     fn new(bytes: &'a [u8]) -> Self {
         Self {
@@ -662,7 +637,6 @@ impl<'a> BitReader<'a> {
     }
 }
 
-#[cfg(test)]
 pub(crate) fn pes_time_fields(payload: &[u8]) -> (Option<u64>, Option<u64>) {
     let Some(summary) = parse_pes_header_summary(payload) else {
         return (None, None);

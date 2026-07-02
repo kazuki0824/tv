@@ -139,6 +139,7 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: Some(0x0020),
                     raw: false,
+                    record_index: None,
                 },
             )
             .unwrap();
@@ -244,6 +245,7 @@ mod tests {
                 Some(FilterPipelineConfig {
                     tpid: Some(0x0100),
                     raw: false,
+                    record_index: None,
                 }),
             ))
             .unwrap();
@@ -255,6 +257,7 @@ mod tests {
                 Some(FilterPipelineConfig {
                     tpid: Some(0x0100),
                     raw: true,
+                    record_index: None,
                 }),
             ))
             .unwrap();
@@ -286,6 +289,7 @@ mod tests {
                 Some(FilterPipelineConfig {
                     tpid: Some(0x0100),
                     raw: true,
+                    record_index: None,
                 }),
             ))
             .unwrap();
@@ -297,6 +301,7 @@ mod tests {
                 Some(FilterPipelineConfig {
                     tpid: Some(0x0100),
                     raw: true,
+                    record_index: None,
                 }),
             ))
             .unwrap();
@@ -326,6 +331,7 @@ mod tests {
                 Some(FilterPipelineConfig {
                     tpid: Some(0x0100),
                     raw: true,
+                    record_index: None,
                 }),
             ))
             .unwrap();
@@ -337,6 +343,7 @@ mod tests {
                 Some(FilterPipelineConfig {
                     tpid: Some(0x0100),
                     raw: false,
+                    record_index: None,
                 }),
             ))
             .unwrap();
@@ -508,6 +515,7 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: Some(0x0123),
                     raw: false,
+                    record_index: None,
                 },
             )
             .1
@@ -557,6 +565,7 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: Some(0x0100),
                     raw: false,
+                    record_index: None,
                 },
             )
             .unwrap();
@@ -575,6 +584,7 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: Some(0x0100),
                     raw: false,
+                    record_index: None,
                 },
             )
             .unwrap();
@@ -707,6 +717,7 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: Some(0x0100),
                     raw: false,
+                    record_index: None,
                 },
             )
             .unwrap();
@@ -768,6 +779,7 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: Some(0x0100),
                     raw: false,
+                    record_index: None,
                 },
             )
             .unwrap();
@@ -1110,6 +1122,7 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: Some(0x0100),
                     raw: false,
+                    record_index: None,
                 },
             )
             .unwrap();
@@ -1208,6 +1221,7 @@ mod tests {
                 Some(FilterPipelineConfig {
                     tpid: Some(100),
                     raw: false,
+                    record_index: None,
                 }),
             ))
             .unwrap();
@@ -1219,6 +1233,7 @@ mod tests {
             FilterPipelineConfig {
                 tpid: Some(101),
                 raw: true,
+                record_index: None,
             },
         );
         assert!(result.is_err());
@@ -1249,6 +1264,7 @@ mod tests {
             FilterPipelineConfig {
                 tpid: Some(100),
                 raw: false,
+                record_index: None,
             },
         );
 
@@ -1262,6 +1278,7 @@ mod tests {
             FilterPipelineConfig {
                 tpid: Some(101),
                 raw: false,
+                record_index: None,
             },
         );
 
@@ -1282,6 +1299,7 @@ mod tests {
                 Some(FilterPipelineConfig {
                     tpid: Some(100),
                     raw: false,
+                    record_index: None,
                 }),
             ))
             .unwrap();
@@ -1294,6 +1312,7 @@ mod tests {
             FilterPipelineConfig {
                 tpid: Some(101),
                 raw: false,
+                record_index: None,
             },
         );
 
@@ -1318,6 +1337,7 @@ mod tests {
                 Some(FilterPipelineConfig {
                     tpid: Some(200),
                     raw: true,
+                    record_index: None,
                 }),
             ))
             .unwrap();
@@ -1396,6 +1416,7 @@ mod tests {
                 Some(FilterPipelineConfig {
                     tpid: Some(300),
                     raw: false,
+                    record_index: None,
                 }),
             ))
             .unwrap();
@@ -1413,6 +1434,7 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: Some(301),
                     raw: false,
+                    record_index: None,
                 },
             )
             .unwrap();
@@ -1437,6 +1459,7 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: Some(400),
                     raw: false,
+                    record_index: None,
                 },
             )
             .unwrap();
@@ -1490,6 +1513,7 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: Some(400),
                     raw: false,
+                    record_index: None,
                 },
             )
             .unwrap();
@@ -1521,6 +1545,7 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: Some(401),
                     raw: false,
+                    record_index: None,
                 },
             )
             .unwrap();
@@ -1573,6 +1598,7 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: Some(402),
                     raw: false,
+                    record_index: None,
                 },
             )
             .unwrap();
@@ -1769,6 +1795,7 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: Some(0x0030),
                     raw: false,
+                    record_index: None,
                 },
             )
             .unwrap();
@@ -1811,6 +1838,7 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: Some(0x0100),
                     raw: false,
+                    record_index: None,
                 },
             )
             .unwrap();
@@ -1857,6 +1885,7 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: Some(0x0100),
                     raw: false,
+                    record_index: None,
                 },
             )
             .unwrap();
@@ -1900,6 +1929,7 @@ mod tests {
             FilterPipelineConfig {
                 tpid: Some(100),
                 raw: false,
+                record_index: None,
             },
         );
         assert!(result.is_err());
@@ -1939,6 +1969,7 @@ mod tests {
             FilterPipelineConfig {
                 tpid: Some(100),
                 raw: false,
+                record_index: None,
             },
         );
         assert!(result.is_err());
@@ -1998,6 +2029,7 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: Some(0x0100),
                     raw: false,
+                    record_index: None,
                 },
             )
             .unwrap();
@@ -2016,6 +2048,7 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: Some(0x0100),
                     raw: false,
+                    record_index: None,
                 },
             )
             .unwrap();
@@ -2065,6 +2098,7 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: Some(0x0100),
                     raw: false,
+                    record_index: None,
                 },
             )
             .unwrap();

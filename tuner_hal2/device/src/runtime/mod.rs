@@ -32,7 +32,3 @@ pub use live_pump::{
 };
 pub use reader::{FrontendLiveReaderDescriptor, FrontendLiveReaderDescriptorKind};
 pub use scan_session::{FrontendScanPhase, FrontendScanSession, FrontendScanTerminalReason};
-pub use tune_txn::{
-    BackendTuneCommit, BackendTuneOutcome, BackendTuneRollbackFailure, BackendTuneRollbackReport,
-    BackendTuneRollbackStep, BackendTuneStep,
-};

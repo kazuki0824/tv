@@ -37,9 +37,11 @@ impl BackendTuneRollbackReport {
         }
     }
 
+    #[cfg(test)]
     pub fn attempted_steps(&self) -> &[BackendTuneRollbackStep] {
         &self.attempted_steps
     }
+    #[cfg(test)]
     pub fn failure(&self) -> Option<&BackendTuneRollbackFailure> {
         self.failure.as_ref()
     }
@@ -57,6 +59,7 @@ pub struct BackendTuneCommit {
 }
 
 impl BackendTuneCommit {
+    #[cfg(test)]
     pub fn completed_steps(&self) -> &[BackendTuneStep] {
         &self.completed_steps
     }
@@ -77,12 +80,6 @@ pub enum BackendTuneOutcome {
         error: HalError,
         rollback: BackendTuneRollbackReport,
     },
-}
-
-impl BackendTuneOutcome {
-    pub fn is_committed(&self) -> bool {
-        matches!(self, Self::Committed { .. })
-    }
 }
 
 pub trait BackendTuneOps {

@@ -1519,10 +1519,6 @@ impl TunerServiceRuntime {
         primary_result: Result<T, HalError>,
         artifact_cleanup_result: Result<CallbackArtifactCleanupResult, HalError>,
     ) -> Result<T, HalError> {
-        let artifact_was_cleared = matches!(
-            artifact_cleanup_result.as_ref(),
-            Ok(CallbackArtifactCleanupResult::Cleared)
-        );
         let artifact_error = artifact_cleanup_result.err();
 
         let value = match (primary_result, artifact_error.clone()) {
@@ -1610,14 +1606,11 @@ impl TunerServiceRuntime {
                         CallbackArtifactRuntimeSplitOutcome::RuntimeRegistryMissing,
                     ),
                 );
-                if artifact_was_cleared {
-                    Err(callback_runtime_registry_missing_error(
-                        &command,
-                        "clearing owner callback runtime registry",
-                    ))
-                } else {
-                    Ok(value)
-                }
+                let registry_error = callback_runtime_registry_missing_error(
+                    &command,
+                    "clearing owner callback runtime registry",
+                );
+                Err(registry_error)
             }
         }
     }
@@ -1677,6 +1670,18 @@ impl TunerServiceRuntime {
 
     pub fn callback_registration_count(&self) -> usize {
         self.callback_registry.registration_count()
+    }
+
+    pub(crate) fn has_callback_registration(
+        &self,
+        owner_kind: AidlObjectKind,
+        owner_id: AidlObjectId,
+        owner_generation: AidlObjectGeneration,
+        registration_api: AidlApi,
+    ) -> bool {
+        self.callback_registry
+            .registration_for(owner_kind, owner_id, owner_generation, registration_api)
+            .is_some()
     }
 
     pub fn callback_registration_health(

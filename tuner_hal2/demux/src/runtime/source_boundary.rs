@@ -263,6 +263,7 @@ mod tests {
             Some(FilterPipelineConfig {
                 tpid: Some(0x0100),
                 raw: false,
+                record_index: None,
             }),
         )
     }

@@ -1864,6 +1864,7 @@ impl DemuxRuntime {
                 ),
                 PipelineGeneratedEvent::Section { .. }
                 | PipelineGeneratedEvent::Pes { .. }
+                | PipelineGeneratedEvent::RecordIndex { .. }
                 | PipelineGeneratedEvent::AvMedia { .. } => continue,
             };
             if let Err(error) = result {
