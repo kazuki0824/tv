@@ -370,15 +370,13 @@ impl DemuxRuntime {
             data_id_state: if known_stale_data_id {
                 AvDataIdState::Stale
             } else {
-                match filter_state {
-                    AvFilterReleaseState::Closed if av_data_id > 0 => AvDataIdState::Stale,
-                    _ => AvDataIdState::Unknown,
-                }
+                AvDataIdState::Unknown
             },
         });
         match fallback_outcome {
             AvHandleReleaseOutcome::ClientHandleReleaseAfterClose
             | AvHandleReleaseOutcome::StaleReleaseAfterClose { .. }
+            | AvHandleReleaseOutcome::UnknownDataId
             | AvHandleReleaseOutcome::InvalidStateWithoutSharedHandle
             | AvHandleReleaseOutcome::InvalidDataId
             | AvHandleReleaseOutcome::InvalidHandleForSlotRelease => Ok(fallback_outcome),

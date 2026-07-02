@@ -1626,6 +1626,54 @@ mod tests {
     }
 
     #[test]
+    fn closed_av_filter_release_rejects_unknown_positive_data_id() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime(
+                21,
+                1,
+                PipelineOpenKind::Av,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                21,
+                FilterPipelineConfig {
+                    tpid: Some(403),
+                    raw: false,
+                    record_index: None,
+                },
+            )
+            .unwrap();
+        demux
+            .mark_filter_av_shared_handle_exported_for_test(21)
+            .unwrap();
+        let stale_data_id = match demux.allocate_filter_av_payload_for_test(21, 188).unwrap() {
+            AvPayloadDeliveryOutcome::Delivered(event) => event.data_id,
+            other => panic!("unexpected AV allocation outcome: {other:?}"),
+        };
+        demux.flush_filter_runtime(21).unwrap();
+        let filter = demux.filter_mut(21).unwrap();
+        let mut snapshot = filter.snapshot();
+        snapshot.state = FilterRuntimeState::Closed;
+        filter.restore(snapshot);
+
+        assert_eq!(
+            demux.release_filter_av_handle(21, false, 999).unwrap(),
+            AvHandleReleaseOutcome::UnknownDataId
+        );
+        assert_eq!(
+            demux
+                .release_filter_av_handle(21, false, stale_data_id.0)
+                .unwrap(),
+            AvHandleReleaseOutcome::StaleReleaseAfterClose {
+                data_id: stale_data_id
+            }
+        );
+    }
+
+    #[test]
     fn filter_delay_hint_updates_independent_time_and_data_axes() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux

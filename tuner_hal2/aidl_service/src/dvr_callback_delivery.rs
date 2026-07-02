@@ -117,6 +117,7 @@ fn record_dvr_artifact_lookup_failure(
     dvr_phase: DvrPostCommitNotificationPhase,
     primary: HalError,
 ) -> Result<(), HalError> {
+    let expected_primary = primary.clone();
     match finish_dvr_callback_delivery_failure(
         &context.runtime(),
         handle,
@@ -125,12 +126,49 @@ fn record_dvr_artifact_lookup_failure(
         primary,
     ) {
         Ok(()) => Ok(()),
-        Err(HalError::ComposedFailure { .. }) => Err(HalError::internal(
-            HalInternalKind::InvariantViolation,
-            "DVR callback artifact lookup diagnostic accounting failed",
-        )),
-        Err(_) => Ok(()),
+        Err(error) if error == expected_primary => Ok(()),
+        Err(error) => Err(error),
     }
+}
+
+fn record_dvr_status_unavailable_if_started(
+    context: &SharedAidlServiceContext,
+    handle: AidlObjectHandle,
+    snapshot: &DvrStatusPollSnapshot,
+    dvr_phase: DvrPostCommitNotificationPhase,
+    delivery_context: &'static str,
+) -> Result<bool, HalError> {
+    if !snapshot.started {
+        return Ok(true);
+    }
+    if !snapshot.callback_present {
+        record_dvr_artifact_lookup_failure(
+            context,
+            handle,
+            dvr_phase,
+            HalError::callback_failed(delivery_context, "DVR callback is not registered"),
+        )?;
+        return Ok(true);
+    }
+    if snapshot.callback_unhealthy {
+        record_dvr_artifact_lookup_failure(
+            context,
+            handle,
+            dvr_phase,
+            HalError::callback_failed(delivery_context, "DVR callback is unhealthy"),
+        )?;
+        return Ok(true);
+    }
+    if !snapshot.status_reporting_enabled {
+        record_dvr_artifact_lookup_failure(
+            context,
+            handle,
+            dvr_phase,
+            HalError::callback_failed(delivery_context, "DVR status reporting is disabled"),
+        )?;
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 fn dvr_callback_notifier_availability(
@@ -143,7 +181,7 @@ fn dvr_callback_notifier_availability(
             record_dvr_artifact_lookup_failure(
                 context,
                 handle,
-                DvrPostCommitNotificationPhase::StatusNotifierRuntimeFailure,
+                DvrPostCommitNotificationPhase::StatusNotifierStart,
                 HalError::callback_failed(
                     "IDvrCallback.notifier_preflight",
                     "DVR callback artifact missing before notifier start",
@@ -155,7 +193,7 @@ fn dvr_callback_notifier_availability(
             record_dvr_artifact_lookup_failure(
                 context,
                 handle,
-                DvrPostCommitNotificationPhase::StatusNotifierRuntimeFailure,
+                DvrPostCommitNotificationPhase::StatusNotifierStart,
                 error,
             )?;
             Ok(DvrCallbackNotifierAvailability::Unavailable)
@@ -234,11 +272,13 @@ fn dvr_status_notifier_loop(
 ) -> Result<(), HalError> {
     let runtime = context.runtime();
     let initial_snapshot = poll_dvr_status_snapshot(&runtime, handle)?;
-    if !initial_snapshot.started
-        || !initial_snapshot.callback_present
-        || initial_snapshot.callback_unhealthy
-        || !initial_snapshot.status_reporting_enabled
-    {
+    if record_dvr_status_unavailable_if_started(
+        &context,
+        handle,
+        &initial_snapshot,
+        DvrPostCommitNotificationPhase::StatusNotifierRuntimeFailure,
+        "IDvrCallback.poll_status.initial",
+    )? {
         return Ok(());
     }
     let mut last_event = initial_snapshot.event;
@@ -248,11 +288,13 @@ fn dvr_status_notifier_loop(
             return Ok(());
         }
         let snapshot = poll_dvr_status_snapshot(&runtime, handle)?;
-        if !snapshot.started
-            || !snapshot.callback_present
-            || snapshot.callback_unhealthy
-            || !snapshot.status_reporting_enabled
-        {
+        if record_dvr_status_unavailable_if_started(
+            &context,
+            handle,
+            &snapshot,
+            DvrPostCommitNotificationPhase::StatusNotifierRuntimeFailure,
+            "IDvrCallback.poll_status.terminal",
+        )? {
             return Ok(());
         }
         if snapshot.event != last_event {
@@ -320,11 +362,13 @@ pub fn deliver_started_dvr_status(
 ) -> Result<(), HalError> {
     let runtime = context.runtime();
     let snapshot = poll_dvr_status_snapshot(&runtime, handle)?;
-    if !snapshot.started
-        || !snapshot.callback_present
-        || snapshot.callback_unhealthy
-        || !snapshot.status_reporting_enabled
-    {
+    if record_dvr_status_unavailable_if_started(
+        context,
+        handle,
+        &snapshot,
+        DvrPostCommitNotificationPhase::InitialStatusDelivery,
+        "IDvrCallback.start_status",
+    )? {
         return Ok(());
     }
     let Some(event) = snapshot.event else {
@@ -347,11 +391,13 @@ pub fn start_dvr_status_notifier(
     stop_dvr_status_notifier(context, handle)?;
     let runtime = context.runtime();
     let snapshot = poll_dvr_status_snapshot(&runtime, handle)?;
-    if !snapshot.started
-        || !snapshot.callback_present
-        || snapshot.callback_unhealthy
-        || !snapshot.status_reporting_enabled
-    {
+    if record_dvr_status_unavailable_if_started(
+        context,
+        handle,
+        &snapshot,
+        DvrPostCommitNotificationPhase::StatusNotifierStart,
+        "IDvrCallback.notifier_start",
+    )? {
         return Ok(());
     }
     if dvr_callback_notifier_availability(context, handle)?

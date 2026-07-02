@@ -852,60 +852,35 @@ impl TunerServiceRuntime {
         &mut self.registry
     }
 
-    pub fn diagnostics(&self) -> &[StartupDiagnosticRecord] {
+    #[cfg(test)]
+    pub(crate) fn diagnostics(&self) -> &[StartupDiagnosticRecord] {
         self.diagnostics.as_slice()
     }
 
-    pub fn diagnostics_dropped_count(&self) -> u64 {
-        self.diagnostics.dropped_count()
-    }
-
-    pub fn descrambler_diagnostics(&self) -> &[DescramblerDiagnosticRecord] {
+    #[cfg(test)]
+    pub(crate) fn descrambler_diagnostics(&self) -> &[DescramblerDiagnosticRecord] {
         self.descrambler_diagnostics.as_slice()
     }
 
-    pub fn descrambler_diagnostics_dropped_count(&self) -> u64 {
-        self.descrambler_diagnostics.dropped_count()
-    }
-
-    pub fn child_open_rollback_diagnostics(&self) -> &[ChildOpenRollbackDiagnosticRecord] {
-        self.child_open_rollback_diagnostics.as_slice()
-    }
-
-    pub fn child_open_rollback_diagnostics_dropped_count(&self) -> u64 {
-        self.child_open_rollback_diagnostics.dropped_count()
-    }
-
-    pub fn dvr_post_commit_notification_diagnostics(
+    #[cfg(test)]
+    pub(crate) fn dvr_post_commit_notification_diagnostics(
         &self,
     ) -> &[DvrPostCommitNotificationDiagnosticRecord] {
         self.dvr_post_commit_notification_diagnostics.as_slice()
     }
 
-    pub fn dvr_post_commit_notification_diagnostics_dropped_count(&self) -> u64 {
-        self.dvr_post_commit_notification_diagnostics
-            .dropped_count()
-    }
-
-    pub fn filter_callback_delivery_diagnostics(
+    #[cfg(test)]
+    pub(crate) fn filter_callback_delivery_diagnostics(
         &self,
     ) -> &[FilterCallbackDeliveryDiagnosticRecord] {
         self.filter_callback_delivery_diagnostics.as_slice()
     }
 
-    pub fn filter_callback_delivery_diagnostics_dropped_count(&self) -> u64 {
-        self.filter_callback_delivery_diagnostics.dropped_count()
-    }
-
-    pub fn callback_artifact_runtime_split_diagnostics(
+    #[cfg(test)]
+    pub(crate) fn callback_artifact_runtime_split_diagnostics(
         &self,
     ) -> &[CallbackArtifactRuntimeSplitDiagnosticRecord] {
         self.callback_artifact_runtime_split_diagnostics.as_slice()
-    }
-
-    pub fn callback_artifact_runtime_split_diagnostics_dropped_count(&self) -> u64 {
-        self.callback_artifact_runtime_split_diagnostics
-            .dropped_count()
     }
 
     #[cfg(test)]
@@ -1360,6 +1335,7 @@ impl TunerServiceRuntime {
         &mut self,
         owner_id: AidlObjectId,
         owner_generation: AidlObjectGeneration,
+        diagnostic_phase: DvrPostCommitNotificationPhase,
     ) -> Result<(), HalError> {
         let mut first_error = None;
         if self.mark_callback_registration_unhealthy(
@@ -1369,13 +1345,30 @@ impl TunerServiceRuntime {
             AidlApi::DemuxOpenDvr,
         ) == CallbackRegistryUpdate::Missing
         {
-            first_error = Some(HalError::internal(
+            let error = HalError::internal(
                 HalInternalKind::InvariantViolation,
                 "DVR callback registry entry missing while marking unhealthy",
-            ));
+            );
+            self.record_dvr_post_commit_notification_diagnostic(
+                DvrPostCommitNotificationDiagnosticRecord::new(
+                    diagnostic_phase,
+                    owner_id,
+                    owner_generation,
+                    error.clone(),
+                ),
+            );
+            first_error = Some(error);
         }
         if let Err(error) = self.mark_dvr_callback_unhealthy_for_object(owner_id, owner_generation)
         {
+            self.record_dvr_post_commit_notification_diagnostic(
+                DvrPostCommitNotificationDiagnosticRecord::new(
+                    diagnostic_phase,
+                    owner_id,
+                    owner_generation,
+                    error.clone(),
+                ),
+            );
             if first_error.is_none() {
                 first_error = Some(error);
             }
@@ -1427,15 +1420,8 @@ impl TunerServiceRuntime {
                     if let Err(error) = self.mark_dvr_callback_delivery_failed_use_case(
                         report.owner_id,
                         report.owner_generation,
+                        phase,
                     ) {
-                        self.record_dvr_post_commit_notification_diagnostic(
-                            DvrPostCommitNotificationDiagnosticRecord::new(
-                                phase,
-                                report.owner_id,
-                                report.owner_generation,
-                                error.clone(),
-                            ),
-                        );
                         failures.push_error(error);
                     }
                 }
@@ -1693,7 +1679,7 @@ impl TunerServiceRuntime {
     ) -> Option<CallbackHealthState> {
         self.callback_registry
             .registration_for(owner_kind, owner_id, owner_generation, registration_api)
-            .map(|registration| registration.health)
+            .map(|registration| registration.health())
     }
 
     pub fn finish_service_boot_reset_after_artifact_result_use_case(

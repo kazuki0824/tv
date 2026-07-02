@@ -80,15 +80,23 @@ impl AidlServiceContext {
         I: IntoIterator<Item = FrontendProbeOutcome>,
     {
         crate::dvr_callback_delivery::stop_all_dvr_status_notifiers(self)?;
+        let callback_reset_command = {
+            let runtime = self.runtime.lock().map_err(|_| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "service runtime lock poisoned while planning callback artifact reset",
+                )
+            })?;
+            runtime.plan_callback_artifact_reset_before_boot_use_case()
+        };
+        let artifact_result = self.clear_callback_artifact_reset_bridge(&callback_reset_command);
+        let drop_leak_result = self.clear_drop_leak_error_records();
         let mut runtime = self.runtime.lock().map_err(|_| {
             HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "service runtime lock poisoned while planning callback artifact reset",
+                "service runtime lock poisoned while finishing service boot reset",
             )
         })?;
-        let callback_reset_command = runtime.plan_callback_artifact_reset_before_boot_use_case();
-        let artifact_result = self.clear_callback_artifact_reset_bridge(&callback_reset_command);
-        let drop_leak_result = self.clear_drop_leak_error_records();
         let outcome = runtime.boot_from_probe_results(results);
         runtime.finish_service_boot_reset_after_artifact_result_use_case(
             outcome,

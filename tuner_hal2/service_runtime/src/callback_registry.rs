@@ -11,22 +11,18 @@ pub enum CallbackHealthState {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RuntimeCallbackRegistration {
-    pub owner_kind: AidlObjectKind,
-    pub owner_id: AidlObjectId,
-    pub owner_generation: AidlObjectGeneration,
-    pub registration_api: AidlApi,
-    pub health: CallbackHealthState,
+pub(crate) struct RuntimeCallbackRegistration {
+    health: CallbackHealthState,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CallbackRegistryUpdate {
+pub(crate) enum CallbackRegistryUpdate {
     Updated,
     Missing,
 }
 
 #[derive(Debug, Default)]
-pub struct RuntimeCallbackRegistry {
+pub(crate) struct RuntimeCallbackRegistry {
     registrations: BTreeMap<
         (AidlObjectKind, AidlObjectId, AidlObjectGeneration, AidlApi),
         RuntimeCallbackRegistration,
@@ -34,7 +30,7 @@ pub struct RuntimeCallbackRegistry {
 }
 
 impl RuntimeCallbackRegistry {
-    pub fn record_registration(
+    pub(crate) fn record_registration(
         &mut self,
         owner_kind: AidlObjectKind,
         owner_id: AidlObjectId,
@@ -45,16 +41,12 @@ impl RuntimeCallbackRegistry {
         self.registrations.insert(
             key,
             RuntimeCallbackRegistration {
-                owner_kind,
-                owner_id,
-                owner_generation,
-                registration_api,
                 health: CallbackHealthState::Registered,
             },
         );
     }
 
-    pub fn mark_unhealthy(
+    pub(crate) fn mark_unhealthy(
         &mut self,
         owner_kind: AidlObjectKind,
         owner_id: AidlObjectId,
@@ -70,7 +62,7 @@ impl RuntimeCallbackRegistry {
         }
     }
 
-    pub fn mark_owner_unhealthy(
+    pub(crate) fn mark_owner_unhealthy(
         &mut self,
         owner_id: AidlObjectId,
         owner_generation: AidlObjectGeneration,
@@ -89,7 +81,7 @@ impl RuntimeCallbackRegistry {
         }
     }
 
-    pub fn clear_owner(
+    pub(crate) fn clear_owner(
         &mut self,
         owner_id: AidlObjectId,
         owner_generation: AidlObjectGeneration,
@@ -104,11 +96,11 @@ impl RuntimeCallbackRegistry {
         }
     }
 
-    pub fn registration_count(&self) -> usize {
+    pub(crate) fn registration_count(&self) -> usize {
         self.registrations.len()
     }
 
-    pub fn registration_for(
+    pub(crate) fn registration_for(
         &self,
         owner_kind: AidlObjectKind,
         owner_id: AidlObjectId,
@@ -117,6 +109,12 @@ impl RuntimeCallbackRegistry {
     ) -> Option<&RuntimeCallbackRegistration> {
         self.registrations
             .get(&(owner_kind, owner_id, owner_generation, registration_api))
+    }
+}
+
+impl RuntimeCallbackRegistration {
+    pub(crate) const fn health(&self) -> CallbackHealthState {
+        self.health
     }
 }
 
@@ -143,7 +141,7 @@ mod tests {
                     AidlApi::LnbSetCallback
                 )
                 .unwrap()
-                .health,
+                .health(),
             CallbackHealthState::Registered
         );
         assert_eq!(
@@ -164,7 +162,7 @@ mod tests {
                     AidlApi::LnbSetCallback
                 )
                 .unwrap()
-                .health,
+                .health(),
             CallbackHealthState::Unhealthy
         );
         assert_eq!(
@@ -212,7 +210,7 @@ mod tests {
                     AidlApi::FrontendSetCallback
                 )
                 .unwrap()
-                .health,
+                .health(),
             CallbackHealthState::Unhealthy
         );
         assert_eq!(
@@ -224,7 +222,7 @@ mod tests {
                     AidlApi::LnbSetCallback
                 )
                 .unwrap()
-                .health,
+                .health(),
             CallbackHealthState::Unhealthy
         );
         assert_eq!(
@@ -236,7 +234,7 @@ mod tests {
                     AidlApi::LnbSetCallback
                 )
                 .unwrap()
-                .health,
+                .health(),
             CallbackHealthState::Registered
         );
     }

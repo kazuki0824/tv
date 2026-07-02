@@ -236,7 +236,6 @@ pub type ObjectCloseUseCaseResult = Result<(), ObjectCloseCleanupFailure>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ObjectCloseUseCasePlan {
-    target: RuntimeObjectEntry,
     cascade_entries: Vec<RuntimeObjectEntry>,
     domain_cleanup_step: CleanupStep,
     artifact_cleanup_commands: Vec<ObjectCloseArtifactCleanupCommand>,
@@ -244,10 +243,6 @@ pub struct ObjectCloseUseCasePlan {
 }
 
 impl ObjectCloseUseCasePlan {
-    pub fn target(&self) -> &RuntimeObjectEntry {
-        &self.target
-    }
-
     pub fn execute_cleanup_with_executor<R, D, A>(
         self,
         runtime_executor: &mut R,
@@ -636,7 +631,6 @@ pub fn close_object_use_case(
         .collect();
 
     Ok(ObjectCloseUseCasePlan {
-        target,
         cascade_entries,
         domain_cleanup_step: CleanupStep::ReleaseBackend,
         artifact_cleanup_commands,

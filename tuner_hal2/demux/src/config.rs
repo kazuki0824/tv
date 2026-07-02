@@ -138,10 +138,10 @@ pub enum FilterDelayHint {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub struct ConfigInputPid(i32);
+pub(crate) struct ConfigInputPid(i32);
 
 impl ConfigInputPid {
-    pub fn validate_tpid(pid: i32) -> Option<Self> {
+    pub(crate) fn validate_tpid(pid: i32) -> Option<Self> {
         if (0..=0x1fff).contains(&pid) {
             Some(Self(pid))
         } else {
@@ -149,7 +149,7 @@ impl ConfigInputPid {
         }
     }
 
-    pub const fn raw(self) -> i32 {
+    pub(crate) const fn raw(self) -> i32 {
         self.0
     }
 }
@@ -177,11 +177,11 @@ pub struct FilterConfig {
 }
 
 impl FilterConfig {
-    pub fn validated_tpid(&self) -> Option<ConfigInputPid> {
+    pub(crate) fn validated_tpid(&self) -> Option<ConfigInputPid> {
         ConfigInputPid::validate_tpid(self.tpid)
     }
 
-    pub fn pipeline_config(&self) -> FilterPipelineConfig {
+    pub(crate) fn pipeline_config(&self) -> FilterPipelineConfig {
         let tpid = self.validated_tpid();
         FilterPipelineConfig {
             tpid: tpid.map(ConfigInputPid::raw),

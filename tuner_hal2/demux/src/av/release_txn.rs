@@ -69,12 +69,12 @@ impl AvHandleReleaseTxn {
 
         // priority 5: close後の遅延releaseは状態を壊さない。
         if input.filter_state == AvFilterReleaseState::Closed {
-            return if input.data_id.0 == 0 {
-                AvHandleReleaseOutcome::ClientHandleReleaseAfterClose
-            } else {
-                AvHandleReleaseOutcome::StaleReleaseAfterClose {
+            return match (input.data_id.0, input.data_id_state) {
+                (0, _) => AvHandleReleaseOutcome::ClientHandleReleaseAfterClose,
+                (_, AvDataIdState::Stale) => AvHandleReleaseOutcome::StaleReleaseAfterClose {
                     data_id: input.data_id,
-                }
+                },
+                _ => AvHandleReleaseOutcome::UnknownDataId,
             };
         }
 
@@ -187,6 +187,26 @@ mod tests {
             AvHandleReleaseTxn::classify(input),
             AvHandleReleaseOutcome::StaleReleaseAccepted {
                 data_id: AvDataId(3)
+            }
+        );
+    }
+
+    #[test]
+    fn closed_filter_accepts_only_known_stale_positive_data_id() {
+        let mut input = open_av_input(5);
+        input.filter_state = AvFilterReleaseState::Closed;
+        input.shared_handle_exported = false;
+        input.client_state = ClientHandleState::NotExported;
+        input.data_id_state = AvDataIdState::Unknown;
+        assert_eq!(
+            AvHandleReleaseTxn::classify(input),
+            AvHandleReleaseOutcome::UnknownDataId
+        );
+        input.data_id_state = AvDataIdState::Stale;
+        assert_eq!(
+            AvHandleReleaseTxn::classify(input),
+            AvHandleReleaseOutcome::StaleReleaseAfterClose {
+                data_id: AvDataId(5)
             }
         );
     }
