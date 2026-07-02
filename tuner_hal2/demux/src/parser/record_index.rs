@@ -5,18 +5,19 @@
 use crate::packet_pipeline::{PacketPid, ValidatedTsPacket};
 use crate::ts_core::parse_pes_header_summary;
 
-#[derive(Clone, Debug, Default)]
-pub struct RecordIndexParser {
+#[derive(Clone, Debug)]
+pub(crate) struct RecordIndexParser {
     processed_packets: u64,
 }
 
 impl RecordIndexParser {
-    #[cfg(test)]
-    pub fn new() -> Self {
-        Self::default()
+    pub(crate) fn new() -> Self {
+        Self {
+            processed_packets: 0,
+        }
     }
 
-    pub fn processed_packets(&self) -> u64 {
+    pub(crate) fn processed_packets(&self) -> u64 {
         self.processed_packets
     }
 
@@ -42,7 +43,7 @@ impl RecordIndexParser {
         )
     }
 
-    pub fn push_validated_ts_packet(
+    pub(crate) fn push_validated_ts_packet(
         &mut self,
         packet: &ValidatedTsPacket<'_>,
         cumulative_bytes: u64,
@@ -61,37 +62,17 @@ impl RecordIndexParser {
             record_state,
         )
     }
-
-    #[cfg(test)]
-    pub fn build_validated_event(
-        &mut self,
-        packet: &ValidatedTsPacket<'_>,
-        cumulative_bytes: u64,
-        configured_ts_index_mask: i32,
-        sc_index_type: i32,
-        configured_sc_index_mask_bits: i32,
-        record_state: &mut RecordEventState,
-    ) -> Option<TsRecordEventData> {
-        self.push_validated_ts_packet(
-            packet,
-            cumulative_bytes,
-            configured_ts_index_mask,
-            sc_index_type,
-            configured_sc_index_mask_bits,
-            record_state,
-        )
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RecordStartCodeInfo {
-    pub mask: i32,
-    pub first_mb_in_slice: i32,
+pub(crate) struct RecordStartCodeInfo {
+    pub(crate) mask: i32,
+    pub(crate) first_mb_in_slice: i32,
 }
 
-pub const INVALID_FIRST_MB_IN_SLICE: i32 = -1;
-pub const RECORD_INDEX_PTS_ABSENT: i64 = -1;
-pub const SC_INDEX_MASK_ABSENT: i32 = 0;
+pub(crate) const INVALID_FIRST_MB_IN_SLICE: i32 = -1;
+pub(crate) const RECORD_INDEX_PTS_ABSENT: i64 = -1;
+pub(crate) const SC_INDEX_MASK_ABSENT: i32 = 0;
 pub const AVC_SC_I_SLICE: i32 = 1 << 0;
 pub const AVC_SC_P_SLICE: i32 = 1 << 1;
 pub const AVC_SC_B_SLICE: i32 = 1 << 2;
@@ -133,7 +114,7 @@ pub const DEMUX_TS_INDEX_PRIVATE_DATA: i32 = 1 << 11;
 pub const DEMUX_TS_INDEX_ADAPTATION_EXTENSION: i32 = 1 << 12;
 
 #[derive(Clone, Debug, Default)]
-pub struct RecordEventState {
+pub(crate) struct RecordEventState {
     last_transport_scrambling_control: Option<u8>,
     // scanner/parserはTS payload境界をまたいで状態を保持する。
     sc_prefix_carry: Vec<u8>,
@@ -141,7 +122,7 @@ pub struct RecordEventState {
 }
 
 impl RecordEventState {
-    pub fn reset_payload_state(&mut self) {
+    pub(crate) fn reset_payload_state(&mut self) {
         self.sc_prefix_carry.clear();
         self.pes_header_carry.clear();
     }
@@ -1075,7 +1056,7 @@ mod validated_packet_boundary_tests {
         let mut state = RecordEventState::default();
         let mut parser = RecordIndexParser::new();
 
-        let event = parser.build_validated_event(
+        let event = parser.push_validated_ts_packet(
             &validated,
             0,
             DEMUX_TS_INDEX_FIRST_PACKET | DEMUX_TS_INDEX_PAYLOAD_UNIT_START,

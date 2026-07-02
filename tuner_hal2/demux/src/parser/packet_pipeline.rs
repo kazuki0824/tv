@@ -1024,7 +1024,10 @@ impl PacketPipeline {
             let Some(settings) = self.record_index_settings.get(&filter_id) else {
                 continue;
             };
-            let parser = self.record_index_parsers.entry(filter_id).or_default();
+            let parser = self
+                .record_index_parsers
+                .entry(filter_id)
+                .or_insert_with(RecordIndexParser::new);
             let byte_number = parser
                 .processed_packets()
                 .saturating_mul(TS_PACKET_SIZE as u64);
@@ -1241,7 +1244,7 @@ impl PacketPipeline {
         if let Some(settings) = config.record_index {
             self.record_index_settings.insert(filter_id, settings);
             self.record_index_parsers
-                .insert(filter_id, RecordIndexParser::default());
+                .insert(filter_id, RecordIndexParser::new());
             self.record_event_states
                 .insert(filter_id, RecordEventState::default());
         } else {
