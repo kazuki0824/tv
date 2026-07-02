@@ -4,7 +4,7 @@
 
 pub mod dvb;
 pub mod px4;
-pub mod runtime;
+mod runtime;
 
 pub use runtime::{
     apply_frontend_backend_lnb_voltage, run_frontend_backend_tune_worker,

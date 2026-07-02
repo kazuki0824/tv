@@ -8,21 +8,16 @@ use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
 use maleicacid_tuner_hal2_device::FrontendWorkerCancelReason;
 use maleicacid_tuner_hal2_resource_ledger::CleanupStep;
 use maleicacid_tuner_hal2_service_runtime::{
-    close_frontend_object_cleanup_use_case,
-    object_close_txn::{
-        close_object_use_case, finish_object_close_use_case, ObjectArtifactCleanupCommand,
-        ObjectArtifactCleanupExecutor, ObjectCloseCleanupFailure, ObjectCloseRuntimeExecutor,
-        ObjectCloseUseCasePlan, ObjectRuntimeCleanupCommand,
-    },
-    object_domain_cleanup::{ObjectDomainCleanupCommand, ObjectDomainCleanupExecutor},
-    object_method_txn::{
-        execute_object_method_call_after_live, execute_object_query_call_after_live,
-        execute_object_query_call_after_live_with_aidl_input_conversion,
-        execute_shared_object_method_call_after_live, preflight_object_method_after_live_plan_only,
-        ObjectMethodExecutionToken, ObjectMethodTxnBuildError, ObjectQueryRequest,
-        ObjectQueryResponse,
-    },
-    CallbackRegistrationArtifactOutcome, OwnerCallbackCleanupUseCaseOutcome, TunerServiceRuntime,
+    close_frontend_object_cleanup_use_case, close_object_use_case,
+    execute_object_method_call_after_live, execute_object_query_call_after_live,
+    execute_object_query_call_after_live_with_aidl_input_conversion,
+    execute_shared_object_method_call_after_live, finish_object_close_use_case,
+    preflight_object_method_after_live_plan_only, CallbackRegistrationArtifactOutcome,
+    ObjectArtifactCleanupCommand, ObjectArtifactCleanupExecutor, ObjectCloseCleanupFailure,
+    ObjectCloseRuntimeExecutor, ObjectCloseUseCasePlan, ObjectDomainCleanupCommand,
+    ObjectDomainCleanupExecutor, ObjectMethodExecutionToken, ObjectMethodTxnBuildError,
+    ObjectQueryRequest, ObjectQueryResponse, ObjectRuntimeCleanupCommand,
+    OwnerCallbackCleanupUseCaseOutcome, TunerServiceRuntime,
 };
 
 use crate::dvr_callback_delivery::stop_dvr_status_notifier;
@@ -84,7 +79,7 @@ pub(crate) fn finish_callback_artifact_registration_after_owner_ready_hal(
     finish_callback_registration_artifact_outcome(context, outcome)
 }
 
-pub fn execute_object_runtime_use_case<T, F>(
+pub(crate) fn execute_object_runtime_use_case<T, F>(
     runtime: &SharedTunerRuntime,
     handle: AidlObjectHandle,
     method: AidlMethodCall,
@@ -111,7 +106,7 @@ where
     })
 }
 
-pub fn execute_shared_object_runtime_use_case<T, F>(
+pub(crate) fn execute_shared_object_runtime_use_case<T, F>(
     runtime: &SharedTunerRuntime,
     handle: AidlObjectHandle,
     method: AidlMethodCall,
@@ -138,7 +133,7 @@ where
     })
 }
 
-pub fn execute_object_query_use_case(
+pub(crate) fn execute_object_query_use_case(
     runtime: &SharedTunerRuntime,
     handle: AidlObjectHandle,
     request: ObjectQueryRequest,
@@ -153,7 +148,7 @@ pub fn execute_object_query_use_case(
     .map_err(status_from_hal_error)
 }
 
-pub fn execute_object_query_use_case_with_aidl_input_conversion<Build>(
+pub(crate) fn execute_object_query_use_case_with_aidl_input_conversion<Build>(
     runtime: &SharedTunerRuntime,
     handle: AidlObjectHandle,
     method: AidlMethodCall,
@@ -176,7 +171,7 @@ where
     })
 }
 
-pub fn execute_object_runtime_use_case_with_request_builder<T, B, Build, Execute>(
+pub(crate) fn execute_object_runtime_use_case_with_request_builder<T, B, Build, Execute>(
     runtime: &SharedTunerRuntime,
     handle: AidlObjectHandle,
     build: Build,
@@ -205,7 +200,7 @@ where
     })
 }
 
-pub fn execute_shared_object_runtime_use_case_with_request_builder<T, B, Build, Execute>(
+pub(crate) fn execute_shared_object_runtime_use_case_with_request_builder<T, B, Build, Execute>(
     runtime: &SharedTunerRuntime,
     handle: AidlObjectHandle,
     build: Build,
@@ -234,7 +229,7 @@ where
     })
 }
 
-pub fn plan_unavailable_object_method_use_case<Build>(
+pub(crate) fn plan_unavailable_object_method_use_case<Build>(
     runtime: &SharedTunerRuntime,
     handle: AidlObjectHandle,
     build: Build,
@@ -588,7 +583,7 @@ fn finish_object_close_plan(
 }
 
 mod drop_leak;
-pub use drop_leak::drop_leak_object_from_drop;
+pub(crate) use drop_leak::drop_leak_object_from_drop;
 
 pub fn close_object_after_close_preflight(
     context: &SharedAidlServiceContext,
@@ -625,7 +620,9 @@ mod tests {
         RuntimeExecutableRequest,
     };
     use maleicacid_tuner_hal2_resource_ledger::CleanupStep;
-    use maleicacid_tuner_hal2_service_runtime::{RuntimeObjectLifecycle, RuntimeOwnerRelation};
+    use maleicacid_tuner_hal2_service_runtime::{
+        AidlObjectLifecycleSnapshot, RuntimeOwnerRelation,
+    };
 
     fn shared_runtime_with_live_object(
         kind: AidlObjectKind,
@@ -645,11 +642,11 @@ mod tests {
                     .unwrap();
                 guard
                     .unregister_aidl_object_after_registration_failure(
-                        entry.object_id,
-                        entry.generation,
+                        entry.object_id(),
+                        entry.generation(),
                     )
                     .unwrap();
-                entry.ledger_id.0
+                entry.public_runtime_id().0
             }
             AidlObjectKind::Filter => {
                 let owner = {
@@ -663,8 +660,8 @@ mod tests {
                 };
                 let runtime_open = execute_object_method_call_after_live(
                     &runtime,
-                    owner.object_id,
-                    owner.generation,
+                    owner.object_id(),
+                    owner.generation(),
                     AidlObjectKind::Demux,
                     || -> Result<_, maleicacid_tuner_hal2_common::HalError> {
                         let request = maleicacid_tuner_hal2_demux::OpenFilterRequest {
@@ -681,8 +678,8 @@ mod tests {
                     },
                     |runtime, dispatch, request| {
                         runtime.open_filter_child_runtime_for_demux_object(
-                            owner.object_id,
-                            owner.generation,
+                            owner.object_id(),
+                            owner.generation(),
                             &request,
                             dispatch,
                         )
@@ -692,8 +689,8 @@ mod tests {
                 let mut guard = runtime.lock().unwrap();
                 guard
                     .unregister_aidl_object_after_registration_failure(
-                        runtime_open.runtime_entry.object_id,
-                        runtime_open.runtime_entry.generation,
+                        runtime_open.runtime_entry.object_id(),
+                        runtime_open.runtime_entry.generation(),
                     )
                     .unwrap();
                 guard
@@ -703,8 +700,8 @@ mod tests {
                         generation,
                         i64::from(runtime_open.filter_id),
                         RuntimeOwnerRelation::Demux {
-                            demux: owner.object_id,
-                            generation: owner.generation,
+                            demux: owner.object_id(),
+                            generation: owner.generation(),
                         },
                     )
                     .unwrap();
@@ -723,8 +720,8 @@ mod tests {
                 };
                 let runtime_open = execute_object_method_call_after_live(
                     &runtime,
-                    owner.object_id,
-                    owner.generation,
+                    owner.object_id(),
+                    owner.generation(),
                     AidlObjectKind::Demux,
                     || -> Result<_, maleicacid_tuner_hal2_common::HalError> {
                         let request = maleicacid_tuner_hal2_binder_adapter::OpenDvrRequest {
@@ -735,8 +732,8 @@ mod tests {
                     },
                     |runtime, dispatch, request| {
                         runtime.open_dvr_child_runtime_for_demux_object(
-                            owner.object_id,
-                            owner.generation,
+                            owner.object_id(),
+                            owner.generation(),
                             request,
                             dispatch,
                         )
@@ -746,8 +743,8 @@ mod tests {
                 let mut guard = runtime.lock().unwrap();
                 guard
                     .unregister_aidl_object_after_registration_failure(
-                        runtime_open.runtime_entry.object_id,
-                        runtime_open.runtime_entry.generation,
+                        runtime_open.runtime_entry.object_id(),
+                        runtime_open.runtime_entry.generation(),
                     )
                     .unwrap();
                 guard
@@ -757,8 +754,8 @@ mod tests {
                         generation,
                         i64::from(runtime_open.dvr_id),
                         RuntimeOwnerRelation::Demux {
-                            demux: owner.object_id,
-                            generation: owner.generation,
+                            demux: owner.object_id(),
+                            generation: owner.generation(),
                         },
                     )
                     .unwrap();
@@ -775,11 +772,11 @@ mod tests {
                     .unwrap();
                 guard
                     .unregister_aidl_object_after_registration_failure(
-                        entry.object_id,
-                        entry.generation,
+                        entry.object_id(),
+                        entry.generation(),
                     )
                     .unwrap();
-                entry.ledger_id.0
+                entry.public_runtime_id().0
             }
             AidlObjectKind::Frontend | AidlObjectKind::Lnb | AidlObjectKind::Tuner => {
                 public_runtime_id
@@ -903,7 +900,7 @@ mod tests {
         let runtime = runtime.lock().unwrap();
         assert_eq!(
             runtime.aidl_object_lifecycle(AidlObjectId(91_011)).unwrap(),
-            RuntimeObjectLifecycle::Quarantined
+            AidlObjectLifecycleSnapshot::Quarantined
         );
     }
 
@@ -929,7 +926,7 @@ mod tests {
         let runtime = runtime.lock().unwrap();
         assert_eq!(
             runtime.aidl_object_lifecycle(AidlObjectId(91_012)).unwrap(),
-            RuntimeObjectLifecycle::Quarantined
+            AidlObjectLifecycleSnapshot::Quarantined
         );
     }
 
@@ -981,7 +978,7 @@ mod tests {
         assert_eq!(runtime.callback_registration_count(), 0);
         assert_eq!(
             runtime.aidl_object_lifecycle(AidlObjectId(91_001)).unwrap(),
-            RuntimeObjectLifecycle::Quarantined
+            AidlObjectLifecycleSnapshot::Quarantined
         );
     }
 
@@ -1047,13 +1044,13 @@ mod tests {
             runtime
                 .aidl_object_lifecycle(demux_handle.object_id())
                 .unwrap(),
-            RuntimeObjectLifecycle::Quarantined
+            AidlObjectLifecycleSnapshot::Quarantined
         );
         assert_eq!(
             runtime
                 .aidl_object_lifecycle(filter_handle.object_id())
                 .unwrap(),
-            RuntimeObjectLifecycle::Quarantined
+            AidlObjectLifecycleSnapshot::Quarantined
         );
     }
 
@@ -1093,7 +1090,7 @@ mod tests {
             .is_none());
         assert_eq!(
             runtime.aidl_object_lifecycle(AidlObjectId(91_002)).unwrap(),
-            RuntimeObjectLifecycle::Quarantined
+            AidlObjectLifecycleSnapshot::Quarantined
         );
     }
 
@@ -1121,7 +1118,7 @@ mod tests {
         let runtime = runtime.lock().unwrap();
         assert_eq!(
             runtime.aidl_object_lifecycle(AidlObjectId(91_003)).unwrap(),
-            RuntimeObjectLifecycle::Closed
+            AidlObjectLifecycleSnapshot::Closed
         );
     }
 
@@ -1212,7 +1209,7 @@ mod tests {
         let runtime = runtime.lock().unwrap();
         assert_eq!(
             runtime.aidl_object_lifecycle(AidlObjectId(91_004)).unwrap(),
-            RuntimeObjectLifecycle::CleanupFailed {
+            AidlObjectLifecycleSnapshot::CleanupFailed {
                 step: CleanupStep::ReleaseBackend
             }
         );
@@ -1393,7 +1390,7 @@ mod tests {
                 .unwrap()
                 .aidl_object_lifecycle(AidlObjectId(91_006))
                 .unwrap(),
-            RuntimeObjectLifecycle::CleanupFailed {
+            AidlObjectLifecycleSnapshot::CleanupFailed {
                 step: CleanupStep::UnregisterRuntime
             }
         );
@@ -1411,7 +1408,7 @@ mod tests {
                 .unwrap()
                 .aidl_object_lifecycle(AidlObjectId(91_006))
                 .unwrap(),
-            RuntimeObjectLifecycle::CleanupFailed {
+            AidlObjectLifecycleSnapshot::CleanupFailed {
                 step: CleanupStep::UnregisterRuntime
             }
         );
@@ -1451,7 +1448,7 @@ mod tests {
                 .unwrap()
                 .aidl_object_lifecycle(AidlObjectId(91_011))
                 .unwrap(),
-            RuntimeObjectLifecycle::Closed
+            AidlObjectLifecycleSnapshot::Closed
         );
     }
 }

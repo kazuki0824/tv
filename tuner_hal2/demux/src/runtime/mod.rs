@@ -1,24 +1,29 @@
-pub mod configure_txn;
-pub mod demux;
-pub mod dvr;
-pub mod filter;
+pub(crate) mod configure_txn;
+pub(crate) mod demux;
+pub(crate) mod dvr;
+pub(crate) mod filter;
 mod generation_boundary;
 mod queue_runtime;
-pub mod source_boundary;
+mod source_boundary;
 
 pub use configure_txn::{
-    DvrConfigureOutcome, DvrConfigureStep, DvrConfigureTxn, FilterConfigureOutcome,
-    FilterConfigureStep, FilterConfigureTxn,
+    configure_dvr_runtime, configure_filter_runtime, DvrConfigureOutcome, DvrConfigureReport,
+    DvrConfigureStep, FilterConfigureOutcome, FilterConfigureReport, FilterConfigureStep,
 };
+#[cfg(test)]
+pub(crate) use configure_txn::{DvrConfigureTxn, FilterConfigureTxn};
 pub use demux::{
     DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind, DemuxRuntimeSnapshot,
     DemuxRuntimeState, PlaybackConsumeReport, QueueDescriptorQueryError,
 };
 pub use dvr::{DvrKind, DvrRuntime, DvrRuntimeSnapshot, DvrRuntimeState, DvrStatusEvent};
-pub use filter::{FilterRuntime, FilterRuntimeSnapshot, FilterRuntimeState, FilterSource};
+pub use filter::{FilterRuntime, FilterRuntimeSnapshot, FilterRuntimeState};
 pub use generation_boundary::{DemuxStreamGeneration, GenerationBoundaryReport};
 pub use queue_runtime::{
     QueueDescriptorSnapshot, QueueGrantorDescriptorSnapshot, QueueRuntimeError,
     QueueRuntimeErrorKind,
 };
-pub use source_boundary::{SourceBoundaryOutcome, SourceBoundaryStep};
+#[cfg(test)]
+pub(crate) use source_boundary::{
+    apply_filter_source_boundary_change, SourceBoundaryOutcome, SourceBoundaryStep,
+};

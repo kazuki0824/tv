@@ -1,6 +1,6 @@
-pub mod apply_txn;
-pub mod lifecycle_txn;
-pub mod runtime;
+mod apply_txn;
+mod lifecycle_txn;
+mod runtime;
 
 pub use apply_txn::{apply_lnb_state_with_txn, LnbApplyOutcome, LnbApplyStep};
 pub use lifecycle_txn::{

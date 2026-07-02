@@ -27,53 +27,72 @@ pub(crate) struct TsPacketView<'a> {
     pid: i32,
     transport_error_indicator: bool,
     payload_unit_start: bool,
+    #[cfg(test)]
     priority: bool,
     scrambling_control: u8,
     continuity_counter: u8,
     discontinuity_indicator: bool,
+    #[cfg(test)]
     random_access_indicator: bool,
+    #[cfg(test)]
     pcr_flag: bool,
+    #[cfg(test)]
     opcr_flag: bool,
+    #[cfg(test)]
     splicing_point_flag: bool,
+    #[cfg(test)]
     private_data_flag: bool,
+    #[cfg(test)]
     adaptation_extension_flag: bool,
     payload: Option<&'a [u8]>,
 }
 
 impl<'a> TsPacketView<'a> {
+    #[cfg(test)]
     pub const fn transport_error_indicator(&self) -> bool {
         self.transport_error_indicator
     }
+    #[cfg(test)]
     pub const fn payload_unit_start(&self) -> bool {
         self.payload_unit_start
     }
+    #[cfg(test)]
     pub const fn priority(&self) -> bool {
         self.priority
     }
+    #[cfg(test)]
     pub const fn scrambling_control(&self) -> u8 {
         self.scrambling_control
     }
+    #[cfg(test)]
     pub const fn discontinuity_indicator(&self) -> bool {
         self.discontinuity_indicator
     }
+    #[cfg(test)]
     pub const fn random_access_indicator(&self) -> bool {
         self.random_access_indicator
     }
+    #[cfg(test)]
     pub const fn pcr_flag(&self) -> bool {
         self.pcr_flag
     }
+    #[cfg(test)]
     pub const fn opcr_flag(&self) -> bool {
         self.opcr_flag
     }
+    #[cfg(test)]
     pub const fn splicing_point_flag(&self) -> bool {
         self.splicing_point_flag
     }
+    #[cfg(test)]
     pub const fn private_data_flag(&self) -> bool {
         self.private_data_flag
     }
+    #[cfg(test)]
     pub const fn adaptation_extension_flag(&self) -> bool {
         self.adaptation_extension_flag
     }
+    #[cfg(test)]
     pub const fn payload(&self) -> Option<&'a [u8]> {
         self.payload
     }
@@ -145,6 +164,7 @@ pub enum PacketDescramblePolicyFailure {
 }
 
 impl<'a> TsPacketView<'a> {
+    #[cfg(test)]
     pub(crate) fn packet_pid(&self) -> PacketPid {
         PacketPid::from_validated_pid(self.pid)
     }
@@ -160,7 +180,7 @@ impl<'a> TsPacketView<'a> {
         }
         let transport_error_indicator = (packet[1] & 0x80) != 0;
         let payload_unit_start = (packet[1] & 0x40) != 0;
-        let priority = (packet[1] & 0x20) != 0;
+        let _priority = (packet[1] & 0x20) != 0;
         let pid = (((packet[1] & 0x1f) as i32) << 8) | packet[2] as i32;
         let scrambling_control = (packet[3] >> 6) & 0x03;
         let adaptation_control = (packet[3] >> 4) & 0x03;
@@ -170,12 +190,12 @@ impl<'a> TsPacketView<'a> {
         }
         let mut offset = 4usize;
         let mut discontinuity_indicator = false;
-        let mut random_access_indicator = false;
-        let mut pcr_flag = false;
-        let mut opcr_flag = false;
-        let mut splicing_point_flag = false;
-        let mut private_data_flag = false;
-        let mut adaptation_extension_flag = false;
+        let mut _random_access_indicator = false;
+        let mut _pcr_flag = false;
+        let mut _opcr_flag = false;
+        let mut _splicing_point_flag = false;
+        let mut _private_data_flag = false;
+        let mut _adaptation_extension_flag = false;
         if adaptation_control == 2 || adaptation_control == 3 {
             if offset >= packet.len() {
                 return Err(TsPacketValidationError::InvalidAdaptationLength);
@@ -187,7 +207,7 @@ impl<'a> TsPacketView<'a> {
             if adaptation_len > 0 {
                 let flags = packet[offset + 1];
                 discontinuity_indicator = (flags & 0x80) != 0;
-                random_access_indicator = (flags & 0x40) != 0;
+                _random_access_indicator = (flags & 0x40) != 0;
                 let adaptation_end = offset + 1 + adaptation_len;
                 let mut cursor = offset + 2;
                 // adaptation field の flag は MPEG-TS の構造境界である。
@@ -197,21 +217,21 @@ impl<'a> TsPacketView<'a> {
                     if cursor + 6 > adaptation_end {
                         return Err(TsPacketValidationError::InvalidAdaptationLength);
                     }
-                    pcr_flag = true;
+                    _pcr_flag = true;
                     cursor += 6;
                 }
                 if (flags & 0x08) != 0 {
                     if cursor + 6 > adaptation_end {
                         return Err(TsPacketValidationError::InvalidAdaptationLength);
                     }
-                    opcr_flag = true;
+                    _opcr_flag = true;
                     cursor += 6;
                 }
                 if (flags & 0x04) != 0 {
                     if cursor >= adaptation_end {
                         return Err(TsPacketValidationError::InvalidAdaptationLength);
                     }
-                    splicing_point_flag = true;
+                    _splicing_point_flag = true;
                     cursor += 1;
                 }
                 if (flags & 0x02) != 0 {
@@ -223,7 +243,7 @@ impl<'a> TsPacketView<'a> {
                     if cursor + private_len > adaptation_end {
                         return Err(TsPacketValidationError::InvalidAdaptationLength);
                     }
-                    private_data_flag = true;
+                    _private_data_flag = true;
                     cursor += private_len;
                 }
                 if (flags & 0x01) != 0 {
@@ -235,7 +255,7 @@ impl<'a> TsPacketView<'a> {
                     if cursor + extension_len > adaptation_end {
                         return Err(TsPacketValidationError::InvalidAdaptationLength);
                     }
-                    adaptation_extension_flag = true;
+                    _adaptation_extension_flag = true;
                 }
             }
             offset += 1 + adaptation_len;
@@ -244,16 +264,23 @@ impl<'a> TsPacketView<'a> {
                     pid,
                     transport_error_indicator,
                     payload_unit_start,
-                    priority,
+                    #[cfg(test)]
+                    priority: _priority,
                     scrambling_control,
                     continuity_counter,
                     discontinuity_indicator,
-                    random_access_indicator,
-                    pcr_flag,
-                    opcr_flag,
-                    splicing_point_flag,
-                    private_data_flag,
-                    adaptation_extension_flag,
+                    #[cfg(test)]
+                    random_access_indicator: _random_access_indicator,
+                    #[cfg(test)]
+                    pcr_flag: _pcr_flag,
+                    #[cfg(test)]
+                    opcr_flag: _opcr_flag,
+                    #[cfg(test)]
+                    splicing_point_flag: _splicing_point_flag,
+                    #[cfg(test)]
+                    private_data_flag: _private_data_flag,
+                    #[cfg(test)]
+                    adaptation_extension_flag: _adaptation_extension_flag,
                     payload: None,
                 });
             }
@@ -262,16 +289,23 @@ impl<'a> TsPacketView<'a> {
             pid,
             transport_error_indicator,
             payload_unit_start,
-            priority,
+            #[cfg(test)]
+            priority: _priority,
             scrambling_control,
             continuity_counter,
             discontinuity_indicator,
-            random_access_indicator,
-            pcr_flag,
-            opcr_flag,
-            splicing_point_flag,
-            private_data_flag,
-            adaptation_extension_flag,
+            #[cfg(test)]
+            random_access_indicator: _random_access_indicator,
+            #[cfg(test)]
+            pcr_flag: _pcr_flag,
+            #[cfg(test)]
+            opcr_flag: _opcr_flag,
+            #[cfg(test)]
+            splicing_point_flag: _splicing_point_flag,
+            #[cfg(test)]
+            private_data_flag: _private_data_flag,
+            #[cfg(test)]
+            adaptation_extension_flag: _adaptation_extension_flag,
             payload: (offset < packet.len()).then(|| &packet[offset..]),
         })
     }
@@ -349,10 +383,6 @@ pub struct PipelineResyncState {
 }
 
 impl PipelineResyncState {
-    pub fn push(&mut self, data: &[u8]) -> Vec<[u8; TS_PACKET_SIZE]> {
-        self.inner.push(data).packets
-    }
-
     pub fn drain_for_boundary(&mut self) -> maleicacid_tuner_hal2_common::TsPacketBufferDrain {
         self.inner.drain_for_boundary()
     }

@@ -453,7 +453,7 @@ mod tests {
         DvrOpenKind, OpenDvrRequest,
     };
     use maleicacid_tuner_hal2_service_runtime::{
-        object_method_txn::execute_object_method_call_after_live, CallbackHealthState,
+        execute_object_method_call_after_live, CallbackHealthState,
     };
     use std::sync::{
         atomic::{AtomicBool, Ordering},
@@ -534,8 +534,8 @@ mod tests {
         };
         let dvr_open = execute_object_method_call_after_live(
             &runtime,
-            demux_entry.object_id,
-            demux_entry.generation,
+            demux_entry.object_id(),
+            demux_entry.generation(),
             AidlObjectKind::Demux,
             || -> Result<_, maleicacid_tuner_hal2_common::HalError> {
                 let request = OpenDvrRequest {
@@ -546,8 +546,8 @@ mod tests {
             },
             |runtime, dispatch, request| {
                 runtime.open_dvr_child_runtime_for_demux_object(
-                    demux_entry.object_id,
-                    demux_entry.generation,
+                    demux_entry.object_id(),
+                    demux_entry.generation(),
                     request,
                     dispatch,
                 )
@@ -556,8 +556,8 @@ mod tests {
         .unwrap();
         let handle = AidlObjectHandle::new(
             AidlObjectKind::Dvr,
-            dvr_open.runtime_entry.object_id,
-            dvr_open.runtime_entry.generation,
+            dvr_open.runtime_entry.object_id(),
+            dvr_open.runtime_entry.generation(),
         );
         execute_object_method_call_after_live(
             &runtime,

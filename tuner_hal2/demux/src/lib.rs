@@ -2,10 +2,10 @@
 //!
 //! parser断片は `parser/` 配下に置く。runtime所有は `runtime/` 配下で再構築し、AV shared memory処理は `av/` 配下へ分ける。
 
-pub mod av;
+mod av;
 pub mod config;
-pub mod parser;
-pub mod runtime;
+mod parser;
+mod runtime;
 
 pub(crate) use parser::{packet_pipeline, sections, ts_core};
 
@@ -26,21 +26,47 @@ impl TsInputOrigin {
 }
 
 pub use av::{
-    AvDataId, AvHandleReleaseOutcome, AvPayloadDeliveryOutcome, AvSharedBacking,
-    AvSharedBackingError, AvSharedHandleExport, AvSlotId, ClientHandleState,
+    AvDataId, AvHandleReleaseOutcome, AvMediaEventDescriptor, AvPayloadDeliveryOutcome,
+    AvSharedBackingError, AvSharedHandleExport, AvSlotId,
 };
 pub use config::{
     AvSettings, AvStreamKind, AvStreamTypeConfig, FilterConfig, FilterConfigKind, FilterDelayHint,
     FilterDelayHints, FilterDelayReadiness, FilterOpenType, OpenFilterRequest, PesSettings,
     RecordIndexSettings, SectionCondition, SectionConditionKind,
 };
+pub use parser::packet_pipeline::{
+    PacketDescramblePolicyFailure, PacketPid, PipelineAssemblySuppressionReason,
+    PipelineBoundaryReason, PipelineDeliveryAction, PipelineDiagnostic,
+    PipelineDiagnosticPidContext, PipelineGeneratedEvent, PipelineReport, PipelineResetReport,
+    TsPacketValidationError, ValidatedTsPacket,
+};
+pub use parser::record_index::{
+    supported_record_sc_index_mask, supported_record_ts_index_mask, AVC_SC_B_SLICE, AVC_SC_I_SLICE,
+    AVC_SC_P_SLICE, AVC_SC_SI_SLICE, AVC_SC_SP_SLICE, DEMUX_TS_INDEX_ADAPTATION_EXTENSION,
+    DEMUX_TS_INDEX_CHANGE_TO_EVEN_SCRAMBLED, DEMUX_TS_INDEX_CHANGE_TO_NOT_SCRAMBLED,
+    DEMUX_TS_INDEX_CHANGE_TO_ODD_SCRAMBLED, DEMUX_TS_INDEX_DISCONTINUITY,
+    DEMUX_TS_INDEX_FIRST_PACKET, DEMUX_TS_INDEX_OPCR, DEMUX_TS_INDEX_PAYLOAD_UNIT_START,
+    DEMUX_TS_INDEX_PCR, DEMUX_TS_INDEX_PRIORITY, DEMUX_TS_INDEX_PRIVATE_DATA,
+    DEMUX_TS_INDEX_RANDOM_ACCESS, DEMUX_TS_INDEX_SPLICING_POINT, HEVC_SC_AUD, HEVC_SC_BLA_N_LP,
+    HEVC_SC_BLA_W_LP, HEVC_SC_BLA_W_RADL, HEVC_SC_IDR_N_LP, HEVC_SC_IDR_W_RADL, HEVC_SC_SPS,
+    HEVC_SC_TRAIL_CRA, RECORD_SC_TYPE_NONE, RECORD_SC_TYPE_SC, RECORD_SC_TYPE_SC_AVC,
+    RECORD_SC_TYPE_SC_HEVC, RECORD_SC_TYPE_SC_VVC, VVC_SC_AUD, VVC_SC_CRA, VVC_SC_GDR,
+    VVC_SC_IDR_N_LP, VVC_SC_IDR_W_RADL, VVC_SC_SPS, VVC_SC_VPS,
+};
+pub use parser::sections::normalize_length_field_bits;
 pub use runtime::{
-    DemuxRuntime, DemuxRuntimeState, DemuxStreamGeneration, DvrConfigureOutcome, DvrConfigureStep,
-    DvrConfigureTxn, DvrRuntime, DvrRuntimeState, DvrStatusEvent, FilterConfigureOutcome,
-    FilterConfigureStep, FilterConfigureTxn, FilterRuntime, FilterRuntimeState,
-    PlaybackConsumeReport, QueueDescriptorQueryError, QueueDescriptorSnapshot,
-    QueueGrantorDescriptorSnapshot, QueueRuntimeError, QueueRuntimeErrorKind,
-    SourceBoundaryOutcome, SourceBoundaryStep,
+    configure_dvr_runtime, configure_filter_runtime, DemuxRuntime, DemuxRuntimeError,
+    DemuxRuntimeErrorKind, DemuxRuntimeSnapshot, DemuxRuntimeState, DemuxStreamGeneration,
+    DvrConfigureOutcome, DvrConfigureReport, DvrConfigureStep, DvrKind, DvrRuntime,
+    DvrRuntimeSnapshot, DvrRuntimeState, DvrStatusEvent, FilterConfigureOutcome,
+    FilterConfigureReport, FilterConfigureStep, FilterRuntime, FilterRuntimeSnapshot,
+    FilterRuntimeState, GenerationBoundaryReport, PlaybackConsumeReport, QueueDescriptorQueryError,
+    QueueDescriptorSnapshot, QueueGrantorDescriptorSnapshot, QueueRuntimeError,
+    QueueRuntimeErrorKind,
+};
+#[cfg(test)]
+pub(crate) use runtime::{
+    DvrConfigureTxn, FilterConfigureTxn, SourceBoundaryOutcome, SourceBoundaryStep,
 };
 
 #[cfg(test)]
@@ -50,8 +76,8 @@ mod tests {
     use crate::packet_pipeline::{
         FilterPipelineConfig, PacketPid, PipelineBoundaryReason, PipelineOpenKind,
     };
+    use crate::runtime::apply_filter_source_boundary_change;
     use crate::runtime::filter::FilterSource;
-    use crate::runtime::source_boundary::apply_filter_source_boundary_change;
     use std::os::unix::fs::MetadataExt;
     use std::{thread, time::Duration};
 
@@ -120,8 +146,9 @@ mod tests {
         demux
     }
 
-    fn first_fd_identity(snapshot: &QueueDescriptorSnapshot) -> (u64, u64) {
-        let metadata = snapshot.fds[0].metadata().unwrap();
+    fn first_fd_identity(snapshot: QueueDescriptorSnapshot) -> (u64, u64) {
+        let (_grantors, fds, _ints, _quantum, _flags) = snapshot.into_parts();
+        let metadata = fds[0].metadata().unwrap();
         (metadata.dev(), metadata.ino())
     }
 
@@ -404,9 +431,10 @@ mod tests {
             .export_filter_queue_descriptor(24)
             .expect("raw filter queue descriptor must exist before configure");
 
-        assert!(!snapshot.grantors.is_empty());
-        assert!(!snapshot.fds.is_empty());
-        assert!(snapshot.quantum > 0);
+        let (grantors, fds, _ints, quantum, _flags) = snapshot.into_parts();
+        assert!(!grantors.is_empty());
+        assert!(!fds.is_empty());
+        assert!(quantum > 0);
     }
 
     #[test]
@@ -451,9 +479,10 @@ mod tests {
         let snapshot = demux
             .export_dvr_queue_descriptor(26)
             .expect("configured DVR queue descriptor must exist");
-        assert!(!snapshot.grantors.is_empty());
-        assert!(!snapshot.fds.is_empty());
-        assert!(snapshot.quantum > 0);
+        let (grantors, fds, _ints, quantum, _flags) = snapshot.into_parts();
+        assert!(!grantors.is_empty());
+        assert!(!fds.is_empty());
+        assert!(quantum > 0);
     }
 
     #[test]
@@ -470,7 +499,7 @@ mod tests {
             ))
             .unwrap();
         let first = demux.export_filter_queue_descriptor(27).unwrap();
-        let first_identity = first_fd_identity(&first);
+        let first_identity = first_fd_identity(first);
 
         FilterConfigureTxn::new(27)
             .configure(
@@ -485,7 +514,7 @@ mod tests {
             .unwrap();
         let second = demux.export_filter_queue_descriptor(27).unwrap();
 
-        assert_eq!(first_identity, first_fd_identity(&second));
+        assert_eq!(first_identity, first_fd_identity(second));
     }
 
     #[test]
@@ -503,12 +532,12 @@ mod tests {
 
         DvrConfigureTxn::new(28).configure(&mut demux).1.unwrap();
         let first = demux.export_dvr_queue_descriptor(28).unwrap();
-        let first_identity = first_fd_identity(&first);
+        let first_identity = first_fd_identity(first);
 
         DvrConfigureTxn::new(28).configure(&mut demux).1.unwrap();
         let second = demux.export_dvr_queue_descriptor(28).unwrap();
 
-        assert_eq!(first_identity, first_fd_identity(&second));
+        assert_eq!(first_identity, first_fd_identity(second));
     }
 
     #[test]
@@ -1159,13 +1188,13 @@ mod tests {
             ))
             .unwrap();
         let before_restore = demux.export_filter_queue_descriptor(29).unwrap();
-        let before_identity = first_fd_identity(&before_restore);
+        let before_identity = first_fd_identity(before_restore);
         let snapshot = demux.snapshot();
 
         demux.restore(snapshot).unwrap();
         let after_restore = demux.export_filter_queue_descriptor(29).unwrap();
 
-        assert_eq!(before_identity, first_fd_identity(&after_restore));
+        assert_eq!(before_identity, first_fd_identity(after_restore));
     }
 
     #[test]

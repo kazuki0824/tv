@@ -10,7 +10,7 @@ use maleicacid_tuner_hal2_binder_adapter::{
 };
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
 use maleicacid_tuner_hal2_demux::config::OpenFilterRequest;
-use maleicacid_tuner_hal2_service_runtime::object_method_txn::{
+use maleicacid_tuner_hal2_service_runtime::{
     execute_object_method_call_after_live, ObjectMethodTxnBuildError,
 };
 
@@ -27,7 +27,7 @@ use crate::service_context::{SharedAidlServiceContext, SharedTunerRuntime};
 fn handle_from_runtime_entry(
     entry: maleicacid_tuner_hal2_service_runtime::RuntimeObjectEntry,
 ) -> AidlObjectHandle {
-    AidlObjectHandle::new(entry.object_kind, entry.object_id, entry.generation)
+    AidlObjectHandle::new(entry.object_kind(), entry.object_id(), entry.generation())
 }
 
 fn child_open_txn_error<E>(error: ObjectMethodTxnBuildError<E>) -> binder::Status

@@ -175,7 +175,7 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
 mod tests {
     use super::*;
     use maleicacid_tuner_hal2_binder_adapter::{AidlObjectGeneration, AidlObjectId};
-    use maleicacid_tuner_hal2_demux::av::AvMediaEventDescriptor;
+    use maleicacid_tuner_hal2_demux::AvMediaEventDescriptor;
     use maleicacid_tuner_hal2_demux::{AvDataId, AvSlotId};
 
     fn snapshot(event: FilterEventDelivery) -> FilterEventDeliverySnapshot {

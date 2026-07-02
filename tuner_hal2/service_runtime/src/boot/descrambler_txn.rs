@@ -5,13 +5,12 @@ use super::{
     DescramblerCleanupTxnError, DescramblerClearKeyTxnError, DescramblerDiagnosticKind,
     DescramblerDiagnosticPhase, DescramblerDiagnosticRecord, DescramblerKeyToken,
     DescramblerKeyTokenError, DescramblerPid, DescramblerPidClaim, DescramblerReplaceKeyOutcome,
-    DescramblerReplaceKeyTxnError, DescramblerRuntimeId, FilterOpenType, FilterRuntimeId,
-    FilterRuntimeState, HalError, HalInvalidArgumentKind, HalInvalidStateKind, RegistryCommitError,
-    TunerServiceRuntime,
+    DescramblerReplaceKeyTxnError, DescramblerRuntimeId, FilterOpenType, FilterRuntimeId, HalError,
+    HalInvalidArgumentKind, HalInvalidStateKind, RegistryCommitError, TunerServiceRuntime,
 };
 use crate::descrambler_key_table::DescramblerKeyLookupError;
 use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, FirstErrorCollector};
-use maleicacid_tuner_hal2_demux::parser::packet_pipeline::PacketPid;
+use maleicacid_tuner_hal2_demux::{FilterRuntimeState, PacketPid};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct AidlInputPid(u16);

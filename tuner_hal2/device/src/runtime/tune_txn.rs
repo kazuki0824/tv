@@ -125,20 +125,8 @@ impl BackendTuneTxn {
     }
 
     #[cfg(test)]
-    pub fn frontend_id(&self) -> i32 {
-        self.frontend_id
-    }
-    #[cfg(test)]
     pub fn generation(&self) -> u64 {
         self.generation
-    }
-    #[cfg(test)]
-    pub fn request(&self) -> &FrontendTuneRequest {
-        &self.request
-    }
-    #[cfg(test)]
-    pub fn completed_steps(&self) -> &[BackendTuneStep] {
-        &self.completed_steps
     }
 
     fn record_step(&mut self, step: BackendTuneStep) {
@@ -387,7 +375,7 @@ impl FrontendTuneTxn {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maleicacid_tuner_hal2_common::{FrontendSystem, HalInvalidArgumentKind};
+    use maleicacid_tuner_hal2_common::{FrontendSystem, HalInternalKind, HalInvalidArgumentKind};
 
     #[derive(Clone, Debug, Eq, PartialEq)]
     struct Snapshot {

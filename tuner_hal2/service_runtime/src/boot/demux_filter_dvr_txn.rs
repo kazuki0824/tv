@@ -1,12 +1,11 @@
 use super::{
     AvStreamKind, AvStreamTypeConfig, DemuxRuntimeError, DemuxRuntimeErrorKind, DemuxRuntimeId,
-    DvrChildRuntimeOpen, DvrConfigureKind, DvrConfigureOutcome, DvrConfigureRequest, DvrKind,
-    DvrOpenKind, DvrRuntime, DvrRuntimeId, FilterAvStreamKind, FilterAvStreamTypeRequest,
-    FilterChildRuntimeOpen, FilterConfig, FilterConfigureOutcome, FilterConfigureTxn,
-    FilterDelayHint, FilterDelayHintKind, FilterDelayHintRequest, FilterOpenType, FilterRuntime,
-    FilterRuntimeId, FilterRuntimeState, HalError, HalInternalKind, HalInvalidArgumentKind,
-    HalInvalidStateKind, OpenDvrRequest, OpenFilterRequest, PipelineResetReport,
-    RegistryCommitError, TunerServiceRuntime,
+    DvrChildRuntimeOpen, DvrConfigureKind, DvrConfigureRequest, DvrKind, DvrOpenKind, DvrRuntime,
+    DvrRuntimeId, FilterAvStreamKind, FilterAvStreamTypeRequest, FilterChildRuntimeOpen,
+    FilterConfig, FilterDelayHint, FilterDelayHintKind, FilterDelayHintRequest, FilterOpenType,
+    FilterRuntimeId, HalError, HalInternalKind, HalInvalidArgumentKind, HalInvalidStateKind,
+    OpenDvrRequest, OpenFilterRequest, PipelineResetReport, RegistryCommitError,
+    TunerServiceRuntime,
 };
 use crate::diagnostics::{
     ChildOpenRollbackDiagnosticRecord, ChildOpenRollbackKind, ChildOpenRollbackPhase,
@@ -15,6 +14,7 @@ use crate::error_mapping::{object_table_error_to_hal, registry_commit_error_to_h
 use crate::object_method_txn::ObjectMethodExecutionToken;
 use crate::open_rollback::finish_open_rollback;
 use maleicacid_tuner_hal2_common::compose_primary_cleanup_failure;
+use maleicacid_tuner_hal2_demux::{FilterRuntime, FilterRuntimeState};
 
 const MAX_FILTER_DELAY_MS: i64 = 10_000;
 
@@ -227,18 +227,15 @@ impl TunerServiceRuntime {
                 "owner demux runtime is missing",
             ));
         };
-        let (txn, result) = FilterConfigureTxn::new(filter_id).configure(
-            demux_runtime,
-            config.open_type.pipeline_open_kind(),
-            config.pipeline_config(),
-        );
+        let (report, result) =
+            maleicacid_tuner_hal2_demux::configure_filter_runtime(demux_runtime, filter_id, config);
         match result {
             Ok(_) => Ok(()),
             Err(error) => {
                 let primary = Self::map_filter_runtime_error(error);
                 if matches!(
-                    txn.outcome(),
-                    Some(FilterConfigureOutcome::Quarantined { .. })
+                    report.outcome(),
+                    Some(maleicacid_tuner_hal2_demux::FilterConfigureOutcome::Quarantined { .. })
                 ) {
                     Err(compose_primary_cleanup_failure(
                         "filter configure failed and rollback failed",
@@ -560,22 +557,22 @@ impl TunerServiceRuntime {
         demux_runtime
             .set_filter_source_non_null(sink_filter_id, source_filter_id)
             .map_err(|err| match err.kind {
-                maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::FilterMissing => {
+                maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::FilterMissing => {
                     HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, "source or sink filter runtime is missing")
                 }
-                maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::SourceLifecycle
-                | maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::SinkLifecycle
-                | maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::InvalidState => {
+                maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::SourceLifecycle
+                | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::SinkLifecycle
+                | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::InvalidState => {
                     HalError::invalid_state(HalInvalidStateKind::InvalidLifecycle, "source or sink filter lifecycle is invalid")
                 }
-                maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::InvalidSourceSubtype
-                | maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::InvalidSinkSubtype => {
+                maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::InvalidSourceSubtype
+                | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::InvalidSinkSubtype => {
                     HalError::Unsupported("source or sink filter subtype is unsupported")
                 }
-                maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::PidMismatch => {
+                maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::PidMismatch => {
                     HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, "source and sink filter PID mismatch")
                 }
-                maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::SourceBoundaryRollbackFailed => {
+                maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::SourceBoundaryRollbackFailed => {
                     HalError::cleanup_failed("filter source boundary rollback", "demux runtime was quarantined after source boundary rollback failure")
                 }
                 _ => HalError::internal(maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation, "filter source boundary failed"),
@@ -611,13 +608,13 @@ impl TunerServiceRuntime {
         demux_runtime
             .disconnect_filter_source(sink_filter_id)
             .map_err(|err| match err.kind {
-                maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::FilterMissing => {
+                maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::FilterMissing => {
                     HalError::invalid_argument(
                         HalInvalidArgumentKind::NumericRange,
                         "sink filter runtime is missing",
                     )
                 }
-                maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::SourceBoundaryRollbackFailed => {
+                maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::SourceBoundaryRollbackFailed => {
                     HalError::cleanup_failed("filter source boundary rollback", "demux runtime was quarantined after source boundary rollback failure")
                 }
                 _ => HalError::internal(
@@ -827,7 +824,8 @@ impl TunerServiceRuntime {
         }
         let (low_threshold, high_threshold) =
             Self::validate_dvr_configure_request(dvr.buffer_size(), request)?;
-        let (txn, result) = super::DvrConfigureTxn::new(dvr_id).configure(demux_runtime);
+        let (report, result) =
+            maleicacid_tuner_hal2_demux::configure_dvr_runtime(demux_runtime, dvr_id);
         match result {
             Ok(_) => {
                 if let Some(dvr) = demux_runtime.dvr_mut(dvr_id) {
@@ -841,7 +839,10 @@ impl TunerServiceRuntime {
             }
             Err(error) => {
                 let primary = Self::map_dvr_runtime_error(error);
-                if matches!(txn.outcome(), Some(DvrConfigureOutcome::Quarantined { .. })) {
+                if matches!(
+                    report.outcome(),
+                    Some(maleicacid_tuner_hal2_demux::DvrConfigureOutcome::Quarantined { .. })
+                ) {
                     Err(compose_primary_cleanup_failure(
                         "DVR configure failed and rollback failed",
                         primary,

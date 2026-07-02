@@ -1,5 +1,5 @@
 use maleicacid_tuner_hal2_common::HalError;
-use maleicacid_tuner_hal2_demux::parser::packet_pipeline::PacketPid;
+use maleicacid_tuner_hal2_demux::PacketPid;
 use maleicacid_tuner_hal2_descrambler::{DescramblerPid, DescramblerPidClaim};
 use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId};
 

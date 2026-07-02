@@ -11,7 +11,7 @@ use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FirstErrorCollector, FrontendBackendKind, FrontendDevicePath,
     FrontendScanMode, FrontendTuneRequest, HalError, HalInternalKind, HalInvalidStateKind,
 };
-use maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeSnapshot;
+use maleicacid_tuner_hal2_demux::DemuxRuntimeSnapshot;
 use maleicacid_tuner_hal2_device::{
     FrontendBackendSession, FrontendBackendTunePlan, FrontendLivePumpJoinOutcome,
     FrontendLivePumpOwner, FrontendRuntimeSnapshot, FrontendWorkerCancelReason,

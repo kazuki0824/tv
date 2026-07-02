@@ -11,7 +11,6 @@ pub enum SourceBoundaryStep {
     BumpGeneration,
     DisconnectDownstream,
     Commit,
-    Quarantine,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -29,9 +28,11 @@ pub struct SourceBoundaryReport {
 }
 
 impl SourceBoundaryReport {
+    #[cfg(test)]
     pub fn steps(&self) -> &[SourceBoundaryStep] {
         &self.steps
     }
+    #[cfg(test)]
     pub const fn outcome(&self) -> SourceBoundaryOutcome {
         self.outcome
     }

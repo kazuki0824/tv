@@ -1,32 +1,32 @@
 mod boot;
 mod callback_registry;
-pub mod capability_profile;
-pub mod command_dispatch;
-pub mod demux_filter_dvr_ops;
+mod capability_profile;
+mod command_dispatch;
+mod demux_filter_dvr_ops;
 mod descrambler_key_table;
-pub mod descrambler_ops;
+mod descrambler_ops;
 mod descrambler_session;
-pub mod diagnostics;
-pub mod dispatch;
-pub mod error_mapping;
-pub mod frontend_ops;
-pub mod frontend_request_txn;
+mod diagnostics;
+mod dispatch;
+mod error_mapping;
+mod frontend_ops;
+mod frontend_request_txn;
 mod frontend_worker_txn;
-pub mod lnb_backend_adapter;
-pub mod lnb_ops;
+mod lnb_backend_adapter;
+mod lnb_ops;
 mod method_dispatch;
-pub mod method_validation;
-pub mod object_close_txn;
-pub mod object_domain_cleanup;
-pub mod object_lifecycle;
-pub mod object_method_txn;
+mod method_validation;
+mod object_close_txn;
+mod object_domain_cleanup;
+mod object_lifecycle;
+mod object_method_txn;
 mod object_table;
 mod open_rollback;
-pub mod packet_ops;
+mod packet_ops;
 mod registry;
-pub mod root_method_txn;
-pub mod root_object_ops;
-pub mod transaction_registry;
+mod root_method_txn;
+mod root_object_ops;
+mod transaction_registry;
 
 pub use boot::{
     start_frontend_demux_live_pump_from_reader, CallbackArtifactCleanupResult,
@@ -68,13 +68,22 @@ pub use frontend_worker_txn::{
     stop_frontend_tune_object as stop_frontend_tune_use_case, FrontendCloseCleanupReport,
     FrontendScanEndNotifier,
 };
+pub use object_close_txn::{
+    close_object_use_case, finish_object_close_use_case, quarantine_object_drop_leak_use_case,
+    ObjectArtifactCleanupCommand, ObjectArtifactCleanupExecutor, ObjectCloseCleanupFailure,
+    ObjectCloseRuntimeExecutor, ObjectCloseUseCasePlan, ObjectRuntimeCleanupCommand,
+};
 pub use object_domain_cleanup::{ObjectDomainCleanupCommand, ObjectDomainCleanupExecutor};
 pub use object_method_txn::{
+    execute_object_method_call_after_live, execute_object_query_call_after_live,
+    execute_object_query_call_after_live_with_aidl_input_conversion,
+    execute_shared_object_method_call_after_live, preflight_object_method_after_live_plan_only,
     ObjectFrontendStatusReadinessValue, ObjectFrontendStatusType, ObjectFrontendStatusValue,
-    ObjectMethodExecutionToken, ObjectQueryRequest, ObjectQueryResponse,
+    ObjectMethodExecutionToken, ObjectMethodTxnBuildError, ObjectQueryRequest, ObjectQueryResponse,
 };
+pub(crate) use object_table::RuntimeObjectLifecycle;
 pub use object_table::{
-    RuntimeObjectEntry, RuntimeObjectLifecycle, RuntimeObjectTableError, RuntimeOwnerRelation,
+    AidlObjectLifecycleSnapshot, RuntimeObjectEntry, RuntimeObjectTableError, RuntimeOwnerRelation,
 };
 pub use registry::{FrontendRuntimeId, LnbRegistryProfile};
 pub use root_method_txn::{
@@ -97,11 +106,9 @@ pub enum ServiceState {
 mod tests {
     use super::*;
     use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem, HalError};
-    use maleicacid_tuner_hal2_demux::parser::packet_pipeline::{
-        PacketPid, PipelineAssemblySuppressionReason, PipelineDeliveryAction,
-    };
     use maleicacid_tuner_hal2_demux::{
-        FilterConfig, FilterConfigKind, FilterOpenType, OpenFilterRequest, PesSettings,
+        FilterConfig, FilterConfigKind, FilterOpenType, OpenFilterRequest, PacketPid, PesSettings,
+        PipelineAssemblySuppressionReason, PipelineDeliveryAction,
     };
     use maleicacid_tuner_hal2_descrambler::{
         multi2_encrypt_payload, DescramblerKeySlot, DescramblerKeyToken, DescramblerPid,

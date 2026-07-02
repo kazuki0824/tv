@@ -28,11 +28,11 @@ use crate::runtime::{FrontendSignalState, FrontendWorkerContext};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FrontendBackendTunePlan {
-    pub frontend_id: i32,
-    pub generation: u64,
-    pub backend: FrontendBackendKind,
-    pub device_path: FrontendDevicePath,
-    pub request: FrontendTuneRequest,
+    frontend_id: i32,
+    generation: u64,
+    backend: FrontendBackendKind,
+    device_path: FrontendDevicePath,
+    request: FrontendTuneRequest,
 }
 
 impl FrontendBackendTunePlan {
@@ -235,10 +235,10 @@ pub enum FrontendLnbVoltage {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FrontendBackendLnbApplyPlan {
-    pub frontend_id: i32,
-    pub backend: FrontendBackendKind,
-    pub device_path: FrontendDevicePath,
-    pub voltage: FrontendLnbVoltage,
+    frontend_id: i32,
+    backend: FrontendBackendKind,
+    device_path: FrontendDevicePath,
+    voltage: FrontendLnbVoltage,
 }
 
 impl FrontendBackendLnbApplyPlan {

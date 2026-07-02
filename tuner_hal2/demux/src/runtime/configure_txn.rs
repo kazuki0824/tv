@@ -1,6 +1,7 @@
 use super::demux::{DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind};
 use super::dvr::DvrRuntimeSnapshot;
 use super::filter::{FilterRuntimeSnapshot, FilterRuntimeState};
+use crate::config::FilterConfig;
 use crate::packet_pipeline::{FilterPipelineConfig, PipelineOpenKind};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -44,38 +45,74 @@ pub enum DvrConfigureOutcome {
     Quarantined { failed_step: DvrConfigureStep },
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FilterConfigureReport {
+    steps: Vec<FilterConfigureStep>,
+    outcome: Option<FilterConfigureOutcome>,
+}
+
+impl FilterConfigureReport {
+    pub fn steps(&self) -> &[FilterConfigureStep] {
+        &self.steps
+    }
+
+    pub const fn outcome(&self) -> Option<FilterConfigureOutcome> {
+        self.outcome
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DvrConfigureReport {
+    steps: Vec<DvrConfigureStep>,
+    outcome: Option<DvrConfigureOutcome>,
+}
+
+impl DvrConfigureReport {
+    pub fn steps(&self) -> &[DvrConfigureStep] {
+        &self.steps
+    }
+
+    pub const fn outcome(&self) -> Option<DvrConfigureOutcome> {
+        self.outcome
+    }
+}
+
 #[derive(Debug, Default)]
-pub struct FilterConfigureTxn {
+pub(crate) struct FilterConfigureTxn {
     filter_id: i32,
     steps: Vec<FilterConfigureStep>,
     outcome: Option<FilterConfigureOutcome>,
 }
 #[derive(Debug, Default)]
-pub struct DvrConfigureTxn {
+pub(crate) struct DvrConfigureTxn {
     dvr_id: i32,
     steps: Vec<DvrConfigureStep>,
     outcome: Option<DvrConfigureOutcome>,
 }
 
 impl FilterConfigureTxn {
-    pub fn new(filter_id: i32) -> Self {
+    pub(crate) fn new(filter_id: i32) -> Self {
         Self {
             filter_id,
             steps: Vec::new(),
             outcome: None,
         }
     }
-    pub fn record_step(&mut self, step: FilterConfigureStep) {
+    fn record_step(&mut self, step: FilterConfigureStep) {
         self.steps.push(step);
     }
-    pub fn steps(&self) -> &[FilterConfigureStep] {
-        &self.steps
-    }
-    pub fn outcome(&self) -> Option<FilterConfigureOutcome> {
+    #[cfg(test)]
+    pub(crate) fn outcome(&self) -> Option<FilterConfigureOutcome> {
         self.outcome
     }
+    fn report(&self) -> FilterConfigureReport {
+        FilterConfigureReport {
+            steps: self.steps.clone(),
+            outcome: self.outcome,
+        }
+    }
 
-    pub fn configure(
+    pub(crate) fn configure(
         mut self,
         demux: &mut DemuxRuntime,
         open_kind: PipelineOpenKind,
@@ -188,24 +225,28 @@ impl FilterConfigureTxn {
 }
 
 impl DvrConfigureTxn {
-    pub fn new(dvr_id: i32) -> Self {
+    pub(crate) fn new(dvr_id: i32) -> Self {
         Self {
             dvr_id,
             steps: Vec::new(),
             outcome: None,
         }
     }
-    pub fn record_step(&mut self, step: DvrConfigureStep) {
+    fn record_step(&mut self, step: DvrConfigureStep) {
         self.steps.push(step);
     }
-    pub fn steps(&self) -> &[DvrConfigureStep] {
-        &self.steps
-    }
-    pub fn outcome(&self) -> Option<DvrConfigureOutcome> {
+    #[cfg(test)]
+    pub(crate) fn outcome(&self) -> Option<DvrConfigureOutcome> {
         self.outcome
     }
+    fn report(&self) -> DvrConfigureReport {
+        DvrConfigureReport {
+            steps: self.steps.clone(),
+            outcome: self.outcome,
+        }
+    }
 
-    pub fn configure(
+    pub(crate) fn configure(
         mut self,
         demux: &mut DemuxRuntime,
     ) -> (Self, Result<DvrConfigureOutcome, DemuxRuntimeError>) {
@@ -274,4 +315,31 @@ impl DvrConfigureTxn {
         self.outcome = Some(outcome);
         (self, Ok(outcome))
     }
+}
+
+pub fn configure_filter_runtime(
+    demux: &mut DemuxRuntime,
+    filter_id: i32,
+    config: FilterConfig,
+) -> (
+    FilterConfigureReport,
+    Result<FilterConfigureOutcome, DemuxRuntimeError>,
+) {
+    let (txn, result) = FilterConfigureTxn::new(filter_id).configure(
+        demux,
+        config.open_type.pipeline_open_kind(),
+        config.pipeline_config(),
+    );
+    (txn.report(), result)
+}
+
+pub fn configure_dvr_runtime(
+    demux: &mut DemuxRuntime,
+    dvr_id: i32,
+) -> (
+    DvrConfigureReport,
+    Result<DvrConfigureOutcome, DemuxRuntimeError>,
+) {
+    let (txn, result) = DvrConfigureTxn::new(dvr_id).configure(demux);
+    (txn.report(), result)
 }

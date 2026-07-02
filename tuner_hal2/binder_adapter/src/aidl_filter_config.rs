@@ -19,9 +19,9 @@ use maleicacid_tuner_hal2_demux::config::{
     AvSettings, FilterConfig, FilterConfigKind, FilterOpenType, OpenFilterRequest, PesSettings,
     RecordIndexSettings, SectionCondition, SectionConditionKind,
 };
-use maleicacid_tuner_hal2_demux::parser::record_index::{
-    AVC_SC_B_SLICE, AVC_SC_I_SLICE, AVC_SC_P_SLICE, AVC_SC_SI_SLICE, AVC_SC_SP_SLICE,
-    DEMUX_TS_INDEX_ADAPTATION_EXTENSION, DEMUX_TS_INDEX_CHANGE_TO_EVEN_SCRAMBLED,
+use maleicacid_tuner_hal2_demux::{
+    normalize_length_field_bits, AVC_SC_B_SLICE, AVC_SC_I_SLICE, AVC_SC_P_SLICE, AVC_SC_SI_SLICE,
+    AVC_SC_SP_SLICE, DEMUX_TS_INDEX_ADAPTATION_EXTENSION, DEMUX_TS_INDEX_CHANGE_TO_EVEN_SCRAMBLED,
     DEMUX_TS_INDEX_CHANGE_TO_NOT_SCRAMBLED, DEMUX_TS_INDEX_CHANGE_TO_ODD_SCRAMBLED,
     DEMUX_TS_INDEX_DISCONTINUITY, DEMUX_TS_INDEX_FIRST_PACKET, DEMUX_TS_INDEX_OPCR,
     DEMUX_TS_INDEX_PAYLOAD_UNIT_START, DEMUX_TS_INDEX_PCR, DEMUX_TS_INDEX_PRIORITY,
@@ -31,7 +31,6 @@ use maleicacid_tuner_hal2_demux::parser::record_index::{
     RECORD_SC_TYPE_SC_AVC, RECORD_SC_TYPE_SC_HEVC, RECORD_SC_TYPE_SC_VVC, VVC_SC_AUD, VVC_SC_CRA,
     VVC_SC_GDR, VVC_SC_IDR_N_LP, VVC_SC_IDR_W_RADL, VVC_SC_SPS, VVC_SC_VPS,
 };
-use maleicacid_tuner_hal2_demux::parser::sections::normalize_length_field_bits;
 
 const PES_STREAM_ID_WILDCARD: i32 = -1;
 const MAX_SECTION_FILTER_BYTES: usize = 16;

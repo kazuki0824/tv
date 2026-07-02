@@ -58,28 +58,8 @@ impl ObjectCloseArtifactCleanupCommand {
         }
     }
 
-    pub fn phase(&self) -> ObjectCloseArtifactCleanupPhase {
+    fn phase(&self) -> ObjectCloseArtifactCleanupPhase {
         self.phase
-    }
-
-    pub fn kind(&self) -> ObjectCloseArtifactCleanupKind {
-        self.kind
-    }
-
-    pub fn object_kind(&self) -> AidlObjectKind {
-        self.object_kind
-    }
-
-    pub fn object_id(&self) -> AidlObjectId {
-        self.object_id
-    }
-
-    pub fn generation(&self) -> AidlObjectGeneration {
-        self.generation
-    }
-
-    pub fn step(&self) -> CleanupStep {
-        self.step
     }
 }
 

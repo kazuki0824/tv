@@ -164,26 +164,22 @@ fn finish_hal_cleanup_after_primary<T>(
 }
 
 fn tuner_queue_desc_from_snapshot(snapshot: QueueDescriptorSnapshot) -> TunerQueueDesc {
+    let (grantors, fds, ints, quantum, flags) = snapshot.into_parts();
     let mut desc = TunerQueueDesc::default();
-    desc.grantors = snapshot
-        .grantors
+    desc.grantors = grantors
         .into_iter()
         .map(|grantor| CommonGrantorDescriptor {
-            fdIndex: grantor.fd_index,
-            offset: grantor.offset,
-            extent: grantor.extent,
+            fdIndex: grantor.fd_index(),
+            offset: grantor.offset(),
+            extent: grantor.extent(),
         })
         .collect();
     desc.handle = CommonNativeHandle {
-        fds: snapshot
-            .fds
-            .into_iter()
-            .map(ParcelFileDescriptor::new)
-            .collect(),
-        ints: snapshot.ints,
+        fds: fds.into_iter().map(ParcelFileDescriptor::new).collect(),
+        ints,
     };
-    desc.quantum = snapshot.quantum;
-    desc.flags = snapshot.flags;
+    desc.quantum = quantum;
+    desc.flags = flags;
     desc
 }
 
@@ -220,7 +216,7 @@ impl TunerAidlService {
     }
 
     fn handle_from_runtime_entry(entry: RuntimeObjectEntry) -> AidlObjectHandle {
-        AidlObjectHandle::new(entry.object_kind, entry.object_id, entry.generation)
+        AidlObjectHandle::new(entry.object_kind(), entry.object_id(), entry.generation())
     }
 
     fn rollback_root_object_entry_after_aidl_failure_hal(
@@ -244,7 +240,7 @@ impl TunerAidlService {
         &self,
         entry: RuntimeObjectEntry,
     ) -> BinderResult<Strong<dyn IFrontend>> {
-        if i32::try_from(entry.ledger_id.0).is_err() {
+        if i32::try_from(entry.public_runtime_id().0).is_err() {
             return finish_hal_cleanup_after_primary(
                 "frontend root object runtime id conversion rollback failed",
                 HalError::internal(
@@ -270,7 +266,7 @@ impl TunerAidlService {
         entry: RuntimeObjectEntry,
         unregister_runtime_on_failure: bool,
     ) -> BinderResult<(Strong<dyn IDemux>, i32)> {
-        let public_id = match i32::try_from(entry.ledger_id.0) {
+        let public_id = match i32::try_from(entry.public_runtime_id().0) {
             Ok(public_id) => public_id,
             Err(_) => {
                 return finish_hal_cleanup_after_primary(
@@ -307,7 +303,7 @@ impl TunerAidlService {
         &self,
         entry: RuntimeObjectEntry,
     ) -> BinderResult<Strong<dyn IDescrambler>> {
-        if i32::try_from(entry.ledger_id.0).is_err() {
+        if i32::try_from(entry.public_runtime_id().0).is_err() {
             return finish_hal_cleanup_after_primary(
                 "descrambler root object runtime id conversion rollback failed",
                 HalError::internal(
@@ -329,7 +325,7 @@ impl TunerAidlService {
     }
 
     fn lnb_object_from_entry(&self, entry: RuntimeObjectEntry) -> BinderResult<Strong<dyn ILnb>> {
-        if i32::try_from(entry.ledger_id.0).is_err() {
+        if i32::try_from(entry.public_runtime_id().0).is_err() {
             return finish_hal_cleanup_after_primary(
                 "LNB root object runtime id conversion rollback failed",
                 HalError::internal(
@@ -721,7 +717,7 @@ mod tests {
     use super::*;
     use maleicacid_tuner_hal2_binder_adapter::{DvrOpenKind, OpenDvrRequest};
     use maleicacid_tuner_hal2_service_runtime::{
-        object_method_txn::execute_object_method_call_after_live, RuntimeOwnerRelation,
+        execute_object_method_call_after_live, RuntimeOwnerRelation,
     };
 
     #[test]
@@ -795,8 +791,8 @@ mod tests {
         };
         let dvr_open = execute_object_method_call_after_live(
             &runtime,
-            demux_entry.object_id,
-            demux_entry.generation,
+            demux_entry.object_id(),
+            demux_entry.generation(),
             AidlObjectKind::Demux,
             || -> Result<_, maleicacid_tuner_hal2_common::HalError> {
                 let request = OpenDvrRequest {
@@ -807,8 +803,8 @@ mod tests {
             },
             |runtime, dispatch, request| {
                 runtime.open_dvr_child_runtime_for_demux_object(
-                    demux_entry.object_id,
-                    demux_entry.generation,
+                    demux_entry.object_id(),
+                    demux_entry.generation(),
                     request,
                     dispatch,
                 )
@@ -817,8 +813,8 @@ mod tests {
         .unwrap();
         let handle = AidlObjectHandle::new(
             AidlObjectKind::Dvr,
-            dvr_open.runtime_entry.object_id,
-            dvr_open.runtime_entry.generation,
+            dvr_open.runtime_entry.object_id(),
+            dvr_open.runtime_entry.generation(),
         );
         let dvr = DvrAidlObject::new(handle, service.context.clone()).unwrap();
 

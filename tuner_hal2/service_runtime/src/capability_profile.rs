@@ -85,10 +85,6 @@ pub fn configure_monitor_event_result(monitor_event_types: i32) -> Result<(), Ha
     }
 }
 
-pub fn unsupported_by_design(_api_name: &'static str) -> HalError {
-    HalError::Unsupported("API is unsupported by product profile")
-}
-
 pub fn failure_domain(error: &HalError) -> RuntimeFailureDomain {
     match error {
         HalError::ComposedFailure { primary, .. } => failure_domain(primary),

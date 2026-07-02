@@ -100,10 +100,6 @@ fn pts_dts_field_value(field: &[u8], expected_prefix: u8) -> Option<u64> {
     Some(value)
 }
 
-pub fn pes_stream_id(bytes: &[u8]) -> Option<i32> {
-    parse_pes_header_summary(bytes).map(|summary| summary.stream_id as i32)
-}
-
 enum PesHeaderParseStatus {
     Incomplete,
     Malformed,
@@ -279,6 +275,7 @@ impl PesAssembler {
         out
     }
 
+    #[cfg(test)]
     pub fn flush(&mut self) -> Option<PesPacket> {
         self.reset_with_drop(PesDropReason::FlushDiscard);
         None
@@ -316,6 +313,7 @@ impl PesAssembler {
             .map(|reason| (reason, self.overflow_generation))
     }
 
+    #[cfg(test)]
     pub fn overflow_drop_count(&self) -> u64 {
         self.overflow_drop_count
     }

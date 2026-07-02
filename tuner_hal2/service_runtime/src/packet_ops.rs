@@ -1,7 +1,7 @@
 use crate::boot::TunerServiceRuntime;
 use maleicacid_tuner_hal2_common::HalError;
-use maleicacid_tuner_hal2_demux::parser::packet_pipeline::PipelineReport;
-use maleicacid_tuner_hal2_demux::runtime::GenerationBoundaryReport;
+use maleicacid_tuner_hal2_demux::GenerationBoundaryReport;
+use maleicacid_tuner_hal2_demux::PipelineReport;
 
 impl TunerServiceRuntime {
     pub(crate) fn set_demux_frontend_data_source(

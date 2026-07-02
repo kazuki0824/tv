@@ -4,7 +4,6 @@ use crate::{
 };
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind, HalInvalidStateKind};
 use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
-use maleicacid_tuner_hal2_resource_ledger::LedgerId;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AidlObjectCloseability {
@@ -68,16 +67,6 @@ pub fn aidl_object_closeable(
             "AIDL object is not closeable",
         )),
     }
-}
-
-pub fn aidl_object_for_close_cleanup_runtime(
-    runtime: &TunerServiceRuntime,
-    expected_kind: AidlObjectKind,
-    public_runtime_id: i64,
-) -> Option<RuntimeObjectEntry> {
-    runtime
-        .object_table()
-        .close_cleanup_entry_for_runtime(expected_kind, LedgerId(public_runtime_id))
 }
 
 pub fn lnb_public_id_for_live_object_result(
@@ -150,7 +139,7 @@ pub fn aidl_public_runtime_id_for_close_cleanup(
 mod closeable_lifecycle_tests {
     use super::*;
     use crate::{RuntimeObjectEntry, RuntimeOwnerRelation};
-    use maleicacid_tuner_hal2_resource_ledger::{CleanupStep, LedgerGeneration};
+    use maleicacid_tuner_hal2_resource_ledger::{CleanupStep, LedgerGeneration, LedgerId};
 
     fn runtime_with_filter() -> TunerServiceRuntime {
         let mut runtime = TunerServiceRuntime::new();

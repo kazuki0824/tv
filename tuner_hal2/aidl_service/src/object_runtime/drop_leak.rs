@@ -5,9 +5,9 @@ use super::{
 };
 use crate::service_context::SharedAidlServiceContext;
 use maleicacid_tuner_hal2_common::FirstErrorCollector;
-use maleicacid_tuner_hal2_service_runtime::object_close_txn::quarantine_object_drop_leak_use_case;
+use maleicacid_tuner_hal2_service_runtime::quarantine_object_drop_leak_use_case;
 
-pub fn drop_leak_object(
+pub(super) fn drop_leak_object(
     context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
 ) -> BinderResult<()> {
@@ -43,7 +43,10 @@ pub fn drop_leak_object(
     }
 }
 
-pub fn drop_leak_object_from_drop(context: &SharedAidlServiceContext, handle: AidlObjectHandle) {
+pub(crate) fn drop_leak_object_from_drop(
+    context: &SharedAidlServiceContext,
+    handle: AidlObjectHandle,
+) {
     if let Err(status) = drop_leak_object(context, handle) {
         context.record_drop_leak_error(handle, &status);
     }

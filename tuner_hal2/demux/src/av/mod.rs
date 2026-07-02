@@ -8,8 +8,6 @@ pub use release_txn::AvHandleReleaseOutcome;
 pub(crate) use release_txn::{
     AvDataIdState, AvFilterReleaseState, AvHandleReleaseInput, AvHandleReleaseTxn,
 };
-pub use shared_backing::{
-    AvPayloadDeliveryOutcome, AvSharedBacking, AvSharedBackingError, AvSharedHandleExport,
-    ClientHandleState, DEFAULT_AV_SHARED_SLOT_COUNT, DEFAULT_AV_SHARED_SLOT_SIZE_BYTES,
-};
+pub use shared_backing::{AvPayloadDeliveryOutcome, AvSharedBackingError, AvSharedHandleExport};
+pub(crate) use shared_backing::{AvSharedBacking, ClientHandleState};
 pub use slot::{AvDataId, AvSlotId};

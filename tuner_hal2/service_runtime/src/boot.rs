@@ -12,23 +12,16 @@ use maleicacid_tuner_hal2_common::{
     FrontendSystem, FrontendTuneRequest, HalError, HalInternalKind, HalInvalidArgumentKind,
     HalInvalidStateKind, TS_PACKET_SIZE,
 };
-use maleicacid_tuner_hal2_demux::av::AvMediaEventDescriptor;
 use maleicacid_tuner_hal2_demux::config::{
     AvStreamKind, AvStreamTypeConfig, FilterConfig, FilterDelayHint, FilterOpenType,
 };
-use maleicacid_tuner_hal2_demux::parser::packet_pipeline::{
-    PacketDescramblePolicyFailure, PacketPid, PipelineAssemblySuppressionReason,
-    PipelineBoundaryReason, PipelineDiagnostic, PipelineReport, PipelineResetReport,
-    TsPacketValidationError, ValidatedTsPacket,
-};
-use maleicacid_tuner_hal2_demux::runtime::{
-    DemuxRuntimeError, DemuxRuntimeErrorKind, DemuxRuntimeState, DvrKind,
-};
-use maleicacid_tuner_hal2_demux::runtime::{DemuxRuntimeSnapshot, GenerationBoundaryReport};
 use maleicacid_tuner_hal2_demux::OpenFilterRequest;
 use maleicacid_tuner_hal2_demux::{
-    DvrConfigureOutcome, DvrConfigureTxn, DvrRuntime, DvrRuntimeState, FilterConfigureOutcome,
-    FilterConfigureTxn, FilterRuntime, FilterRuntimeState, TsInputOrigin,
+    AvMediaEventDescriptor, DemuxRuntimeError, DemuxRuntimeErrorKind, DemuxRuntimeSnapshot,
+    DemuxRuntimeState, DvrKind, DvrRuntime, DvrRuntimeState, GenerationBoundaryReport,
+    PacketDescramblePolicyFailure, PacketPid, PipelineAssemblySuppressionReason,
+    PipelineBoundaryReason, PipelineDiagnostic, PipelineReport, PipelineResetReport, TsInputOrigin,
+    TsPacketValidationError, ValidatedTsPacket,
 };
 use maleicacid_tuner_hal2_descrambler::{
     descramble_ts_packet_in_place, packet_policy_for_descramble_failure, DescrambleFailure,
@@ -73,8 +66,8 @@ use crate::dispatch::{
 use crate::object_lifecycle::aidl_object_live;
 use crate::object_method_txn::ObjectMethodExecutionToken;
 use crate::object_table::{
-    RuntimeObjectEntry, RuntimeObjectLifecycle, RuntimeObjectTable, RuntimeObjectTableError,
-    RuntimeOwnerRelation,
+    AidlObjectLifecycleSnapshot, RuntimeObjectEntry, RuntimeObjectLifecycle, RuntimeObjectTable,
+    RuntimeObjectTableError, RuntimeOwnerRelation,
 };
 use crate::registry::{
     DemuxRuntimeId, DescramblerRuntimeId, DvrRuntimeId, FilterRuntimeId, FrontendRegistryEntry,
@@ -323,59 +316,57 @@ struct DescramblePacketDecision {
 }
 
 pub(super) fn demux_runtime_error_to_hal(
-    error: maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeError,
+    error: maleicacid_tuner_hal2_demux::DemuxRuntimeError,
 ) -> HalError {
     match error.kind {
-        maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::GenerationExhausted => {
+        maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::GenerationExhausted => {
             HalError::internal(
                 HalInternalKind::InvariantViolation,
                 "demux runtime generation exhausted",
             )
         }
-        maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::FilterMissing
-        | maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::DvrMissing
-        | maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::QueueMissing => {
+        maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::FilterMissing
+        | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::DvrMissing
+        | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::QueueMissing => {
             HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
                 "demux runtime object is missing",
             )
         }
-        maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::InvalidState
-        | maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::InvalidDvrFilter
-        | maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::SourceLifecycle
-        | maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::SinkLifecycle => {
+        maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::InvalidState
+        | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::InvalidDvrFilter
+        | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::SourceLifecycle
+        | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::SinkLifecycle => {
             HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
                 "demux runtime lifecycle is invalid",
             )
         }
-        maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::InvalidSourceSubtype
-        | maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::InvalidSinkSubtype => {
+        maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::InvalidSourceSubtype
+        | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::InvalidSinkSubtype => {
             HalError::Unsupported("demux source/sink subtype is unsupported")
         }
-        maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::UnsupportedDvrOperation => {
+        maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::UnsupportedDvrOperation => {
             HalError::Unsupported("DVR operation is unavailable for this DVR kind")
         }
-        maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::PidMismatch => {
+        maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::PidMismatch => {
             HalError::invalid_argument(
                 HalInvalidArgumentKind::NumericRange,
                 "demux source/sink PID mismatch",
             )
         }
-        maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::PipelineFailed => {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "demux runtime pipeline operation failed",
-            )
-        }
-        maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::SourceBoundaryRollbackFailed => {
+        maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::PipelineFailed => HalError::internal(
+            HalInternalKind::InvariantViolation,
+            "demux runtime pipeline operation failed",
+        ),
+        maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::SourceBoundaryRollbackFailed => {
             HalError::cleanup_failed(
                 "demux source boundary rollback",
                 "demux runtime was quarantined after source boundary rollback failure",
             )
         }
-        maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::QueueRuntimeFailure
-        | maleicacid_tuner_hal2_demux::runtime::DemuxRuntimeErrorKind::AvBackingFailure => {
+        maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::QueueRuntimeFailure
+        | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::AvBackingFailure => {
             HalError::internal(
                 HalInternalKind::InvariantViolation,
                 "demux runtime queue operation failed",
@@ -776,7 +767,7 @@ impl TunerServiceRuntime {
             .iter()
             .flat_map(|report| report.generated_events.iter())
             .filter_map(|event| {
-                use maleicacid_tuner_hal2_demux::parser::packet_pipeline::PipelineGeneratedEvent;
+                use maleicacid_tuner_hal2_demux::PipelineGeneratedEvent;
                 let (filter_id, event) = match event {
                     PipelineGeneratedEvent::AvMedia {
                         filter_id,
@@ -1675,10 +1666,13 @@ impl TunerServiceRuntime {
         &mut self.object_table
     }
 
-    pub fn aidl_object_lifecycle(&self, object_id: AidlObjectId) -> Option<RuntimeObjectLifecycle> {
+    pub fn aidl_object_lifecycle(
+        &self,
+        object_id: AidlObjectId,
+    ) -> Option<AidlObjectLifecycleSnapshot> {
         self.object_table
             .entry(object_id)
-            .map(|entry| entry.lifecycle)
+            .map(|entry| entry.lifecycle.into())
     }
 
     pub fn callback_registration_count(&self) -> usize {

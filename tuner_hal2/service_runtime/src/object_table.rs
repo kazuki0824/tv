@@ -80,15 +80,54 @@ impl RuntimeObjectLifecycle {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AidlObjectLifecycleSnapshot {
+    Live,
+    Closing { step: CleanupStep },
+    CleanupFailed { step: CleanupStep },
+    Closed,
+    Quarantined,
+}
+
+impl From<RuntimeObjectLifecycle> for AidlObjectLifecycleSnapshot {
+    fn from(lifecycle: RuntimeObjectLifecycle) -> Self {
+        match lifecycle {
+            RuntimeObjectLifecycle::Live => Self::Live,
+            RuntimeObjectLifecycle::Closing { step } => Self::Closing { step },
+            RuntimeObjectLifecycle::CleanupFailed { step } => Self::CleanupFailed { step },
+            RuntimeObjectLifecycle::Closed => Self::Closed,
+            RuntimeObjectLifecycle::Quarantined => Self::Quarantined,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeObjectEntry {
-    pub object_kind: AidlObjectKind,
-    pub object_id: AidlObjectId,
-    pub generation: AidlObjectGeneration,
-    pub ledger_id: LedgerId,
-    pub ledger_generation: LedgerGeneration,
-    pub owner: RuntimeOwnerRelation,
-    pub lifecycle: RuntimeObjectLifecycle,
+    pub(crate) object_kind: AidlObjectKind,
+    pub(crate) object_id: AidlObjectId,
+    pub(crate) generation: AidlObjectGeneration,
+    pub(crate) ledger_id: LedgerId,
+    pub(crate) ledger_generation: LedgerGeneration,
+    pub(crate) owner: RuntimeOwnerRelation,
+    pub(crate) lifecycle: RuntimeObjectLifecycle,
+}
+
+impl RuntimeObjectEntry {
+    pub const fn object_kind(&self) -> AidlObjectKind {
+        self.object_kind
+    }
+
+    pub const fn object_id(&self) -> AidlObjectId {
+        self.object_id
+    }
+
+    pub const fn generation(&self) -> AidlObjectGeneration {
+        self.generation
+    }
+
+    pub const fn public_runtime_id(&self) -> LedgerId {
+        self.ledger_id
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -388,21 +427,6 @@ impl RuntimeObjectTable {
                 entry.object_kind == kind
                     && entry.ledger_id == ledger_id
                     && entry.lifecycle.is_live()
-            })
-            .cloned()
-    }
-
-    pub fn close_cleanup_entry_for_runtime(
-        &self,
-        kind: AidlObjectKind,
-        ledger_id: LedgerId,
-    ) -> Option<RuntimeObjectEntry> {
-        self.entries
-            .values()
-            .find(|entry| {
-                entry.object_kind == kind
-                    && entry.ledger_id == ledger_id
-                    && !entry.lifecycle.is_terminal()
             })
             .cloned()
     }

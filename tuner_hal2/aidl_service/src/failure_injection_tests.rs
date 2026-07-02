@@ -5,7 +5,7 @@ use maleicacid_tuner_hal2_binder_adapter::{
 };
 use maleicacid_tuner_hal2_resource_ledger::CleanupStep;
 use maleicacid_tuner_hal2_service_runtime::{
-    RuntimeObjectLifecycle, RuntimeOwnerRelation, TunerServiceRuntime,
+    AidlObjectLifecycleSnapshot, RuntimeOwnerRelation, TunerServiceRuntime,
 };
 
 use crate::object_handle::AidlObjectHandle;
@@ -58,7 +58,7 @@ fn close_domain_cleanup_failure_records_cleanup_failed_state() {
             .unwrap()
             .aidl_object_lifecycle(AidlObjectId(92_001))
             .unwrap(),
-        RuntimeObjectLifecycle::CleanupFailed {
+        AidlObjectLifecycleSnapshot::CleanupFailed {
             step: CleanupStep::ReleaseBackend
         }
     );

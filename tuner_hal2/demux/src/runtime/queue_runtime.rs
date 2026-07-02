@@ -6,18 +6,46 @@ use maleicacid_tuner_hal2_fmq::{FmqQueue, FmqQueueError};
 
 #[derive(Debug)]
 pub struct QueueDescriptorSnapshot {
-    pub grantors: Vec<QueueGrantorDescriptorSnapshot>,
-    pub fds: Vec<File>,
-    pub ints: Vec<i32>,
-    pub quantum: i32,
-    pub flags: i32,
+    grantors: Vec<QueueGrantorDescriptorSnapshot>,
+    fds: Vec<File>,
+    ints: Vec<i32>,
+    quantum: i32,
+    flags: i32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct QueueGrantorDescriptorSnapshot {
-    pub fd_index: i32,
-    pub offset: i32,
-    pub extent: i64,
+    fd_index: i32,
+    offset: i32,
+    extent: i64,
+}
+
+impl QueueDescriptorSnapshot {
+    pub fn into_parts(
+        self,
+    ) -> (
+        Vec<QueueGrantorDescriptorSnapshot>,
+        Vec<File>,
+        Vec<i32>,
+        i32,
+        i32,
+    ) {
+        (self.grantors, self.fds, self.ints, self.quantum, self.flags)
+    }
+}
+
+impl QueueGrantorDescriptorSnapshot {
+    pub const fn fd_index(self) -> i32 {
+        self.fd_index
+    }
+
+    pub const fn offset(self) -> i32 {
+        self.offset
+    }
+
+    pub const fn extent(self) -> i64 {
+        self.extent
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
