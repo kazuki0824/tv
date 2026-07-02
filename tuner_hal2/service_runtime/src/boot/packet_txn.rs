@@ -2,10 +2,9 @@ use super::{
     demux_runtime_error_to_hal, descramble_ts_packet_in_place,
     diagnostic_kind_for_descramble_failure, packet_policy_for_descramble_failure,
     ActiveDescramblerSnapshot, BTreeMap, BTreeSet, DemuxRuntimeId, DescrambleFailure,
-    DescrambleOutcome, DescramblePacketDecision, DescramblePacketFlow,
-    DescramblerDiagnosticKind, DescramblerDiagnosticRecord, FrontendRuntimeId,
-    FrontendRuntimeState, GenerationBoundaryReport, HalError, HalInternalKind,
-    HalInvalidStateKind, PacketDescramblePolicyFailure, PacketPid,
+    DescrambleOutcome, DescramblePacketDecision, DescramblePacketFlow, DescramblerDiagnosticKind,
+    DescramblerDiagnosticRecord, FrontendRuntimeId, FrontendRuntimeState, GenerationBoundaryReport,
+    HalError, HalInternalKind, HalInvalidStateKind, PacketDescramblePolicyFailure, PacketPid,
     PacketPolicyAction, PipelineAssemblySuppressionReason, PipelineBoundaryReason,
     PipelineDiagnostic, PipelineReport, TsInputOrigin, TsPacketValidationError,
     TunerServiceRuntime, ValidatedTsPacket, TS_PACKET_SIZE,
@@ -266,7 +265,7 @@ impl TunerServiceRuntime {
                 ) {
                     Ok(generation) if generation == source.generation => {
                         descrambler_pids.insert(descrambler_pid);
-                    packet_pids.insert(pid);
+                        packet_pids.insert(pid);
                         source_filter_ids_by_pid
                             .entry(pid)
                             .or_default()
@@ -359,10 +358,12 @@ impl TunerServiceRuntime {
         ));
         match packet_policy_for_descramble_failure(failure) {
             PacketPolicyAction::RecordPassThroughAndDropAssembly => {
-                self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::packet_policy_without_pid(
-                    demux_id,
-                    DescramblerDiagnosticKind::PacketAssemblySuppressed,
-                ));
+                self.record_descrambler_diagnostic(
+                    DescramblerDiagnosticRecord::packet_policy_without_pid(
+                        demux_id,
+                        DescramblerDiagnosticKind::PacketAssemblySuppressed,
+                    ),
+                );
                 DescramblePacketFlow::RecordPassThroughAndDropAssembly
             }
             PacketPolicyAction::DropAndDiagnose => DescramblePacketFlow::Drop,
@@ -430,7 +431,11 @@ impl TunerServiceRuntime {
                 continue;
             };
             let mut candidate = *packet;
-            match descramble_ts_packet_in_place(&mut candidate, &snapshot.descrambler_pids, key_slot) {
+            match descramble_ts_packet_in_place(
+                &mut candidate,
+                &snapshot.descrambler_pids,
+                key_slot,
+            ) {
                 Ok(DescrambleOutcome::Descrambled { .. }) => {
                     self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::packet_policy(
                         demux_id,
@@ -504,7 +509,11 @@ impl TunerServiceRuntime {
         for pid in pids {
             let keyless_claim = self
                 .registry
-                .descrambler_keyless_claim_exists_for_demux_packet_pid(demux_id, demux_generation, pid);
+                .descrambler_keyless_claim_exists_for_demux_packet_pid(
+                    demux_id,
+                    demux_generation,
+                    pid,
+                );
             if keyless_claim {
                 self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::packet_policy(
                     demux_id,

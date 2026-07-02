@@ -13,8 +13,8 @@ use binder::Strong;
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
 use maleicacid_tuner_hal2_demux::DvrStatusEvent;
 use maleicacid_tuner_hal2_service_runtime::{
-    CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport,
-    DvrPostCommitNotificationPhase, DvrStatusPollSnapshot,
+    CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport, DvrPostCommitNotificationPhase,
+    DvrStatusPollSnapshot,
 };
 
 use crate::object_handle::AidlObjectHandle;
@@ -492,7 +492,6 @@ mod tests {
     fn new_test_callback(state: Arc<CallbackState>) -> Strong<dyn IDvrCallback> {
         BnDvrCallback::new_binder(TestDvrCallback { state }, BinderFeatures::default())
     }
-
 
     fn record_dvr_callback_registration_for_test(
         runtime: &SharedTunerRuntime,

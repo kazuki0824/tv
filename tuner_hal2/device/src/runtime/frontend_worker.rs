@@ -108,11 +108,15 @@ pub struct FrontendWorkerStopTicket {
 
 impl FrontendWorkerStopTicket {
     fn immediate(outcome: FrontendWorkerStopOutcome) -> Self {
-        Self { kind: FrontendWorkerStopTicketKind::Immediate(outcome) }
+        Self {
+            kind: FrontendWorkerStopTicketKind::Immediate(outcome),
+        }
     }
 
     fn join(join: FrontendWorkerDetachedJoin) -> Self {
-        Self { kind: FrontendWorkerStopTicketKind::Join(join) }
+        Self {
+            kind: FrontendWorkerStopTicketKind::Join(join),
+        }
     }
 
     pub fn worker_generation(&self) -> Option<u64> {
@@ -605,7 +609,10 @@ mod tests {
                 FrontendWorkerKind::Tune,
                 4,
                 |_| -> Result<(), HalError> {
-                    Err(HalError::cleanup_failed("frontend worker test", "forced failure"))
+                    Err(HalError::cleanup_failed(
+                        "frontend worker test",
+                        "forced failure",
+                    ))
                 },
             )
             .unwrap();
@@ -671,7 +678,10 @@ mod tests {
                 FrontendWorkerKind::Tune,
                 9,
                 |_| -> Result<(), HalError> {
-                    Err(HalError::cleanup_failed("frontend worker test", "forced failure"))
+                    Err(HalError::cleanup_failed(
+                        "frontend worker test",
+                        "forced failure",
+                    ))
                 },
             )
             .unwrap();
@@ -738,7 +748,10 @@ mod tests {
                 FrontendWorkerKind::Tune,
                 12,
                 |_| -> Result<(), HalError> {
-                    Err(HalError::cleanup_failed("frontend worker test", "pending failure"))
+                    Err(HalError::cleanup_failed(
+                        "frontend worker test",
+                        "pending failure",
+                    ))
                 },
             )
             .unwrap();

@@ -88,12 +88,6 @@ impl ILnb for LnbAidlObject {
     }
 
     fn close(&self) -> BinderResult<()> {
-        close_object_after_close_preflight(
-            &self.context(),
-            self.handle(),
-            AidlMethodCall::LnbClose,
-        )
+        close_object_after_close_preflight(&self.context(), self.handle(), AidlMethodCall::LnbClose)
     }
-
-
 }

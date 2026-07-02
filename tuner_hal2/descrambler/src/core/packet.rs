@@ -218,7 +218,9 @@ pub fn descramble_ts_packet_in_place(
     } else {
         KeyParity::Odd
     };
-    if !target_pids.contains(&DescramblerPid::from_validated_pid_for_descrambler_core(header.pid)) {
+    if !target_pids.contains(&DescramblerPid::from_validated_pid_for_descrambler_core(
+        header.pid,
+    )) {
         return Err(DescrambleFailure::ScrambledPidNotRegistered);
     }
     let Some(payload_offset) = header.payload_offset else {
@@ -248,8 +250,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     fn target_pids(pids: &[u16]) -> BTreeSet<DescramblerPid> {
-        pids
-            .iter()
+        pids.iter()
             .copied()
             .map(DescramblerPid::from_validated_pid_for_descrambler_core)
             .collect()

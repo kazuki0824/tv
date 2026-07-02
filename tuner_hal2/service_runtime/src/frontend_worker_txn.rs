@@ -1,12 +1,12 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
+use crate::registry::FrontendRegistryEntry;
 use crate::{
     object_lifecycle::{aidl_object_live, aidl_public_runtime_id_for_close_cleanup},
     object_method_txn::ObjectMethodExecutionToken,
     start_frontend_demux_live_pump_from_reader, TunerServiceRuntime,
 };
-use crate::registry::FrontendRegistryEntry;
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FirstErrorCollector, FrontendBackendKind, FrontendDevicePath,
     FrontendScanMode, FrontendTuneRequest, HalError, HalInternalKind, HalInvalidStateKind,
@@ -124,18 +124,20 @@ fn ensure_frontend_join_snapshot_still_matches(
     Ok(())
 }
 
-
 fn complete_frontend_worker_replacement_ticket<'a>(
     runtime: &'a SharedRuntime,
     ticket: FrontendWorkerReplacementTicket,
     context: &'static str,
-) -> Result<(
-    MutexGuard<'a, TunerServiceRuntime>,
-    i32,
-    FrontendWorkerStopOutcome,
-    FrontendRuntimeSnapshot,
-    DemuxSnapshotList,
-), HalError> {
+) -> Result<
+    (
+        MutexGuard<'a, TunerServiceRuntime>,
+        i32,
+        FrontendWorkerStopOutcome,
+        FrontendRuntimeSnapshot,
+        DemuxSnapshotList,
+    ),
+    HalError,
+> {
     let FrontendWorkerReplacementTicket {
         object_id,
         object_generation,
@@ -166,8 +168,12 @@ fn complete_frontend_worker_replacement_ticket<'a>(
     }
     if !matches!(stop_outcome, FrontendWorkerStopOutcome::NotRunning) {
         match &stop_outcome {
-            FrontendWorkerStopOutcome::CancelRequested { kind: outcome_kind, .. }
-            | FrontendWorkerStopOutcome::Completed { kind: outcome_kind, .. } => {
+            FrontendWorkerStopOutcome::CancelRequested {
+                kind: outcome_kind, ..
+            }
+            | FrontendWorkerStopOutcome::Completed {
+                kind: outcome_kind, ..
+            } => {
                 if *outcome_kind != kind {
                     return Err(HalError::internal(
                         HalInternalKind::InvariantViolation,
@@ -175,11 +181,18 @@ fn complete_frontend_worker_replacement_ticket<'a>(
                     ));
                 }
             }
-            FrontendWorkerStopOutcome::NotRunning | FrontendWorkerStopOutcome::StopRequestFailed { .. } => {}
+            FrontendWorkerStopOutcome::NotRunning
+            | FrontendWorkerStopOutcome::StopRequestFailed { .. } => {}
         }
     }
     let demux_snapshots = guard.query().bound_demux_runtime_snapshots(frontend_id)?;
-    Ok((guard, frontend_id, stop_outcome, frontend_snapshot, demux_snapshots))
+    Ok((
+        guard,
+        frontend_id,
+        stop_outcome,
+        frontend_snapshot,
+        demux_snapshots,
+    ))
 }
 
 fn prepare_frontend_worker_stop_object_ticket(
@@ -194,9 +207,10 @@ fn prepare_frontend_worker_stop_object_ticket(
     let frontend_snapshot = runtime.query().frontend_runtime_snapshot(frontend_id)?;
     let demux_snapshots = runtime.query().bound_demux_runtime_snapshots(frontend_id)?;
     let bound_demux_generations = bound_demux_generation_snapshot(&demux_snapshots);
-    let stop_ticket = runtime
-        .frontend_txn()
-        .request_worker_stop_for_join(frontend_id, kind, reason);
+    let stop_ticket =
+        runtime
+            .frontend_txn()
+            .request_worker_stop_for_join(frontend_id, kind, reason);
     let worker_generation = stop_ticket.worker_generation();
     Ok(FrontendWorkerStopObjectTicket {
         object_id,
@@ -215,7 +229,15 @@ fn complete_frontend_worker_stop_object_ticket<'a>(
     runtime: &'a SharedRuntime,
     ticket: FrontendWorkerStopObjectTicket,
     context: &'static str,
-) -> Result<(MutexGuard<'a, TunerServiceRuntime>, i32, FrontendWorkerCancelReason, FrontendWorkerStopOutcome), HalError> {
+) -> Result<
+    (
+        MutexGuard<'a, TunerServiceRuntime>,
+        i32,
+        FrontendWorkerCancelReason,
+        FrontendWorkerStopOutcome,
+    ),
+    HalError,
+> {
     let FrontendWorkerStopObjectTicket {
         object_id,
         object_generation,
@@ -247,8 +269,12 @@ fn complete_frontend_worker_stop_object_ticket<'a>(
     }
     if !matches!(stop_outcome, FrontendWorkerStopOutcome::NotRunning) {
         match &stop_outcome {
-            FrontendWorkerStopOutcome::CancelRequested { kind: outcome_kind, .. }
-            | FrontendWorkerStopOutcome::Completed { kind: outcome_kind, .. } => {
+            FrontendWorkerStopOutcome::CancelRequested {
+                kind: outcome_kind, ..
+            }
+            | FrontendWorkerStopOutcome::Completed {
+                kind: outcome_kind, ..
+            } => {
                 if *outcome_kind != kind {
                     return Err(HalError::internal(
                         HalInternalKind::InvariantViolation,
@@ -256,7 +282,8 @@ fn complete_frontend_worker_stop_object_ticket<'a>(
                     ));
                 }
             }
-            FrontendWorkerStopOutcome::NotRunning | FrontendWorkerStopOutcome::StopRequestFailed { .. } => {}
+            FrontendWorkerStopOutcome::NotRunning
+            | FrontendWorkerStopOutcome::StopRequestFailed { .. } => {}
         }
     }
     Ok((guard, frontend_id, reason, stop_outcome))
@@ -560,11 +587,12 @@ pub fn start_frontend_backend_tune_worker(
         stop_ticket,
     };
     drop(guard);
-    let (mut guard, frontend_id, _stop_outcome, snapshot, demux_snapshots) = complete_frontend_worker_replacement_ticket(
-        &runtime,
-        replacement_ticket,
-        "service runtime lock poisoned after tune worker join",
-    )?;
+    let (mut guard, frontend_id, _stop_outcome, snapshot, demux_snapshots) =
+        complete_frontend_worker_replacement_ticket(
+            &runtime,
+            replacement_ticket,
+            "service runtime lock poisoned after tune worker join",
+        )?;
     let entry = guard.validate_frontend_request_for_id(frontend_id, &request)?;
     let generation = guard
         .frontend_txn()
@@ -882,11 +910,12 @@ pub fn start_frontend_backend_scan_session_worker(
         stop_ticket,
     };
     drop(guard);
-    let (mut guard, frontend_id, stop_outcome, snapshot, demux_snapshots) = complete_frontend_worker_replacement_ticket(
-        &runtime,
-        replacement_ticket,
-        "service runtime lock poisoned after scan worker join",
-    )?;
+    let (mut guard, frontend_id, stop_outcome, snapshot, demux_snapshots) =
+        complete_frontend_worker_replacement_ticket(
+            &runtime,
+            replacement_ticket,
+            "service runtime lock poisoned after scan worker join",
+        )?;
     let entry = guard.validate_frontend_request_for_id(frontend_id, &request)?;
     let candidates = guard.scan_candidates_for_frontend_entry(&entry, &request, scan_mode)?;
     let mut stop_collector = FirstErrorCollector::new();

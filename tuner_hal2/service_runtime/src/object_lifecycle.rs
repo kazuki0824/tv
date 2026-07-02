@@ -212,7 +212,6 @@ mod closeable_lifecycle_tests {
         );
     }
 
-
     #[test]
     fn aidl_object_closeable_rejects_closed() {
         let mut runtime = runtime_with_filter();

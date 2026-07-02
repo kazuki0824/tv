@@ -5,14 +5,14 @@ use maleicacid_tuner_hal2_binder_adapter::{
     AidlApi, AidlFailureSource, AidlMethodCall, AidlStatusMapper, TunerStatusCode,
 };
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
-use maleicacid_tuner_hal2_resource_ledger::CleanupStep;
 use maleicacid_tuner_hal2_device::FrontendWorkerCancelReason;
+use maleicacid_tuner_hal2_resource_ledger::CleanupStep;
 use maleicacid_tuner_hal2_service_runtime::{
     close_frontend_object_cleanup_use_case,
     object_close_txn::{
         close_object_use_case, finish_object_close_use_case, ObjectArtifactCleanupCommand,
-        ObjectArtifactCleanupExecutor, ObjectCloseRuntimeExecutor,
-        ObjectCloseCleanupFailure, ObjectCloseUseCasePlan, ObjectRuntimeCleanupCommand,
+        ObjectArtifactCleanupExecutor, ObjectCloseCleanupFailure, ObjectCloseRuntimeExecutor,
+        ObjectCloseUseCasePlan, ObjectRuntimeCleanupCommand,
     },
     object_domain_cleanup::{ObjectDomainCleanupCommand, ObjectDomainCleanupExecutor},
     object_lifecycle::lnb_public_id_for_live_object_result,
@@ -23,8 +23,7 @@ use maleicacid_tuner_hal2_service_runtime::{
         ObjectMethodExecutionToken, ObjectMethodTxnBuildError, ObjectQueryRequest,
         ObjectQueryResponse,
     },
-    CallbackRegistrationArtifactOutcome, OwnerCallbackCleanupUseCaseOutcome,
-    TunerServiceRuntime,
+    CallbackRegistrationArtifactOutcome, OwnerCallbackCleanupUseCaseOutcome, TunerServiceRuntime,
 };
 
 use crate::dvr_callback_delivery::stop_dvr_status_notifier;
@@ -263,7 +262,6 @@ where
     Err(status_from_tuner_status(status, message))
 }
 
-
 pub fn execute_callback_unregistration_runtime_use_case(
     context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
@@ -277,13 +275,15 @@ pub fn execute_callback_unregistration_runtime_use_case(
         handle.generation(),
         handle.object_kind(),
         || Ok((method, ())),
-        |runtime, token, ()| Ok(runtime.execute_callback_unregistration_for_object_use_case(
-            handle.object_kind(),
-            handle.object_id(),
-            handle.generation(),
-            api,
-            token,
-        )),
+        |runtime, token, ()| {
+            Ok(runtime.execute_callback_unregistration_for_object_use_case(
+                handle.object_kind(),
+                handle.object_id(),
+                handle.generation(),
+                api,
+                token,
+            ))
+        },
     )
     .map_err(|error| match error {
         ObjectMethodTxnBuildError::Runtime(error) => status_from_hal_error(error),
@@ -330,14 +330,16 @@ fn execute_callback_registration_after_artifact_bridge(
         || Ok((method.clone(), artifact_retain_bridge)),
         |runtime, token, artifact_retain_bridge| {
             let artifact_retain_result = artifact_retain_bridge.retain(context, handle);
-            Ok(runtime.execute_callback_registration_after_artifact_result_for_object_use_case(
-                handle.object_kind(),
-                handle.object_id(),
-                handle.generation(),
-                api,
-                artifact_retain_result,
-                token,
-            ))
+            Ok(
+                runtime.execute_callback_registration_after_artifact_result_for_object_use_case(
+                    handle.object_kind(),
+                    handle.object_id(),
+                    handle.generation(),
+                    api,
+                    artifact_retain_result,
+                    token,
+                ),
+            )
         },
     )
     .map_err(|error| match error {
@@ -372,7 +374,6 @@ pub fn execute_lnb_callback_registration_runtime_use_case(
         CallbackArtifactRetainBridge::Lnb(callback),
     )
 }
-
 
 struct AidlObjectCloseRuntimeExecutor<'a> {
     context: &'a SharedAidlServiceContext,
@@ -423,13 +424,14 @@ impl<'a> AidlObjectDomainCleanupExecutor<'a> {
     }
 
     fn handle_from_domain_command(command: ObjectDomainCleanupCommand) -> AidlObjectHandle {
-        AidlObjectHandle::new(command.object_kind(), command.object_id(), command.generation())
+        AidlObjectHandle::new(
+            command.object_kind(),
+            command.object_id(),
+            command.generation(),
+        )
     }
 
-    fn cleanup_frontend(
-        &self,
-        command: ObjectDomainCleanupCommand,
-    ) -> Result<(), HalError> {
+    fn cleanup_frontend(&self, command: ObjectDomainCleanupCommand) -> Result<(), HalError> {
         let handle = Self::handle_from_domain_command(command);
         close_frontend_object_cleanup_use_case(
             self.context.runtime(),
@@ -440,10 +442,7 @@ impl<'a> AidlObjectDomainCleanupExecutor<'a> {
         .cleanup_result
     }
 
-    fn cleanup_lnb(
-        &self,
-        command: ObjectDomainCleanupCommand,
-    ) -> Result<(), HalError> {
+    fn cleanup_lnb(&self, command: ObjectDomainCleanupCommand) -> Result<(), HalError> {
         let runtime = self.context.runtime();
         let mut guard = runtime.lock().map_err(|_| {
             HalError::internal(
@@ -451,16 +450,10 @@ impl<'a> AidlObjectDomainCleanupExecutor<'a> {
                 "service runtime lock poisoned during LNB domain cleanup",
             )
         })?;
-        guard.close_lnb_explicit_after_object_close_begin(
-            command.object_id(),
-            command.generation(),
-        )
+        guard.close_lnb_explicit_after_object_close_begin(command.object_id(), command.generation())
     }
 
-    fn record_lnb_drop_leak(
-        &self,
-        command: ObjectDomainCleanupCommand,
-    ) -> Result<(), HalError> {
+    fn record_lnb_drop_leak(&self, command: ObjectDomainCleanupCommand) -> Result<(), HalError> {
         let runtime = self.context.runtime();
         let mut guard = runtime.lock().map_err(|_| {
             HalError::internal(
@@ -485,10 +478,7 @@ impl<'a> ObjectDomainCleanupExecutor for AidlObjectDomainCleanupExecutor<'a> {
         self.cleanup_frontend(command)
     }
 
-    fn execute_lnb_cleanup(
-        &mut self,
-        command: ObjectDomainCleanupCommand,
-    ) -> Result<(), HalError> {
+    fn execute_lnb_cleanup(&mut self, command: ObjectDomainCleanupCommand) -> Result<(), HalError> {
         self.cleanup_lnb(command)
     }
 
@@ -500,8 +490,14 @@ impl<'a> ObjectDomainCleanupExecutor for AidlObjectDomainCleanupExecutor<'a> {
     }
 }
 
-fn handle_from_artifact_cleanup_command(command: &ObjectArtifactCleanupCommand) -> AidlObjectHandle {
-    AidlObjectHandle::new(command.object_kind(), command.object_id(), command.generation())
+fn handle_from_artifact_cleanup_command(
+    command: &ObjectArtifactCleanupCommand,
+) -> AidlObjectHandle {
+    AidlObjectHandle::new(
+        command.object_kind(),
+        command.object_id(),
+        command.generation(),
+    )
 }
 
 impl<'a> AidlObjectArtifactCleanupExecutor<'a> {
@@ -520,9 +516,11 @@ impl<'a> AidlObjectArtifactCleanupExecutor<'a> {
             )
         })?;
         let runtime = self.context.runtime();
-        let mut guard = lock_runtime(&runtime)
-            .map_err(|error| ObjectCloseCleanupFailure::new(step, error))?;
-        let artifact_result = self.context.clear_owner_callback_artifacts_bridge(&owner_command);
+        let mut guard =
+            lock_runtime(&runtime).map_err(|error| ObjectCloseCleanupFailure::new(step, error))?;
+        let artifact_result = self
+            .context
+            .clear_owner_callback_artifacts_bridge(&owner_command);
         guard
             .finish_object_close_callback_cleanup_outcome(owner_command, artifact_result)
             .map(|_| ())
@@ -676,7 +674,9 @@ mod tests {
                     .unwrap();
                 dvr.id.0 as i64
             }
-            AidlObjectKind::Descrambler => guard.allocate_descrambler_runtime().unwrap().id.0 as i64,
+            AidlObjectKind::Descrambler => {
+                guard.allocate_descrambler_runtime().unwrap().id.0 as i64
+            }
             AidlObjectKind::Frontend | AidlObjectKind::Lnb | AidlObjectKind::Tuner => {
                 public_runtime_id
             }
@@ -728,7 +728,6 @@ mod tests {
             .retain_test_callback_marker(handle, api)
             .map_err(|error| error.into_hal_error("test callback marker retain failed"))
     }
-
 
     fn record_callback_registration_for_test(
         runtime: &SharedTunerRuntime,
@@ -973,9 +972,7 @@ mod tests {
             .unwrap();
         record_callback_registration_for_test(&runtime, handle, AidlApi::LnbSetCallback);
 
-        assert!(
-            drop_leak_object(&context, handle).is_err()
-        );
+        assert!(drop_leak_object(&context, handle).is_err());
 
         let runtime = runtime.lock().unwrap();
         assert!(!context
@@ -1131,11 +1128,8 @@ mod tests {
         );
         let context = context_for_runtime(&runtime);
         context.clear_owner_callbacks_for_test(handle).unwrap();
-        let retain_result = retain_test_callback_marker_as_hal(
-            &context,
-            handle,
-            AidlApi::DemuxOpenFilter,
-        );
+        let retain_result =
+            retain_test_callback_marker_as_hal(&context, handle, AidlApi::DemuxOpenFilter);
         close_live_object_for_test(&runtime, handle, AidlMethodCall::FilterClose);
         let result = finish_callback_artifact_registration_after_owner_ready_hal(
             &context,
@@ -1167,11 +1161,8 @@ mod tests {
         let context = context_for_runtime(&runtime);
         context.clear_owner_callbacks_for_test(handle).unwrap();
         close_live_object_for_test(&runtime, handle, AidlMethodCall::LnbClose);
-        let retain_result = retain_test_callback_marker_as_hal(
-            &context,
-            handle,
-            AidlApi::LnbSetCallback,
-        );
+        let retain_result =
+            retain_test_callback_marker_as_hal(&context, handle, AidlApi::LnbSetCallback);
         let result = finish_callback_artifact_registration_after_owner_ready_hal(
             &context,
             handle,
@@ -1185,7 +1176,6 @@ mod tests {
             .unwrap());
         assert_eq!(runtime.lock().unwrap().callback_registration_count(), 0);
     }
-
 
     #[test]
     fn callback_artifact_bridge_clears_store_without_owning_runtime_registry_policy() {
@@ -1249,11 +1239,8 @@ mod tests {
             91_020,
         );
         let context = context_for_runtime(&runtime);
-        let retain_result = retain_test_callback_marker_as_hal(
-            &context,
-            handle,
-            AidlApi::FrontendSetCallback,
-        );
+        let retain_result =
+            retain_test_callback_marker_as_hal(&context, handle, AidlApi::FrontendSetCallback);
         finish_callback_artifact_registration_after_owner_ready_hal(
             &context,
             handle,

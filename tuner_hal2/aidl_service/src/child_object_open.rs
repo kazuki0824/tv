@@ -101,7 +101,8 @@ fn finish_filter_child_object_construction_failure(
     filter_id: i32,
     primary_error: HalError,
 ) -> BinderResult<Strong<dyn IFilter>> {
-    let cleanup = cleanup_filter_child_open_after_object_failure(context, runtime, handle, filter_id);
+    let cleanup =
+        cleanup_filter_child_open_after_object_failure(context, runtime, handle, filter_id);
     runtime
         .lock()
         .map_err(|_| {

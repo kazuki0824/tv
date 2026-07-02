@@ -227,7 +227,12 @@ pub struct PesAssembler {
 }
 
 impl PesAssembler {
-    pub fn push(&mut self, pid: PacketPid, payload_unit_start: bool, payload: &[u8]) -> Vec<PesPacket> {
+    pub fn push(
+        &mut self,
+        pid: PacketPid,
+        payload_unit_start: bool,
+        payload: &[u8],
+    ) -> Vec<PesPacket> {
         let mut out = Vec::new();
         if payload_unit_start {
             if self.unbounded_summary.is_some() {
@@ -346,18 +351,19 @@ impl PesAssembler {
 
 #[cfg(test)]
 fn packet_pid_for_test(pid: i32) -> PacketPid {
-    PacketPid::from_config_pid(crate::config::ConfigInputPid::validate_tpid(pid).expect("valid test pid"))
+    PacketPid::from_config_pid(
+        crate::config::ConfigInputPid::validate_tpid(pid).expect("valid test pid"),
+    )
 }
 
 #[cfg(test)]
 mod tests {
 
-    use super::{ContinuityOutcome, ContinuityTracker, PesAssembler};
     use super::super::packet_pipeline::PacketPid;
+    use super::{ContinuityOutcome, ContinuityTracker, PesAssembler};
     use crate::config::ConfigInputPid;
     use maleicacid_tuner_hal2_common::TsPacketCompletionBuffer;
     use maleicacid_tuner_hal2_common::TS_PACKET_SIZE;
-
 
     fn packet_pid(pid: i32) -> PacketPid {
         PacketPid::from_config_pid(ConfigInputPid::validate_tpid(pid).expect("valid test pid"))
@@ -410,8 +416,14 @@ mod tests {
             tracker.observe(packet_pid(256), 0, true),
             ContinuityOutcome::FirstPacket
         );
-        assert_eq!(tracker.observe(packet_pid(256), 1, true), ContinuityOutcome::InOrder);
-        assert_eq!(tracker.observe(packet_pid(256), 1, true), ContinuityOutcome::Duplicate);
+        assert_eq!(
+            tracker.observe(packet_pid(256), 1, true),
+            ContinuityOutcome::InOrder
+        );
+        assert_eq!(
+            tracker.observe(packet_pid(256), 1, true),
+            ContinuityOutcome::Duplicate
+        );
         assert_eq!(
             tracker.observe(packet_pid(256), 3, true),
             ContinuityOutcome::Discontinuity
@@ -425,11 +437,20 @@ mod tests {
             tracker.observe(packet_pid(256), 0, true),
             ContinuityOutcome::FirstPacket
         );
-        assert_eq!(tracker.observe(packet_pid(256), 1, false), ContinuityOutcome::InOrder);
-        assert_eq!(tracker.observe(packet_pid(256), 1, true), ContinuityOutcome::InOrder);
+        assert_eq!(
+            tracker.observe(packet_pid(256), 1, false),
+            ContinuityOutcome::InOrder
+        );
+        assert_eq!(
+            tracker.observe(packet_pid(256), 1, true),
+            ContinuityOutcome::InOrder
+        );
 
         let mut tracker = ContinuityTracker::default();
-        assert_eq!(tracker.observe(packet_pid(300), 7, false), ContinuityOutcome::InOrder);
+        assert_eq!(
+            tracker.observe(packet_pid(300), 7, false),
+            ContinuityOutcome::InOrder
+        );
         assert_eq!(
             tracker.observe(packet_pid(300), 0, true),
             ContinuityOutcome::FirstPacket
@@ -440,8 +461,14 @@ mod tests {
             tracker.observe(packet_pid(301), 0, true),
             ContinuityOutcome::FirstPacket
         );
-        assert_eq!(tracker.observe(packet_pid(301), 0, false), ContinuityOutcome::InOrder);
-        assert_eq!(tracker.observe(packet_pid(301), 1, true), ContinuityOutcome::InOrder);
+        assert_eq!(
+            tracker.observe(packet_pid(301), 0, false),
+            ContinuityOutcome::InOrder
+        );
+        assert_eq!(
+            tracker.observe(packet_pid(301), 1, true),
+            ContinuityOutcome::InOrder
+        );
     }
 
     #[test]
@@ -627,7 +654,9 @@ mod pes_boundary_tests {
         let mut assembler = PesAssembler::default();
         let mut pes = vec![0x00, 0x00, 0x01, 0xe0, 0x00, 0x00, 0x80, 0x00, 0x00];
         pes.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
-        assert!(assembler.push(packet_pid_for_test(0x0100), true, &pes).is_empty());
+        assert!(assembler
+            .push(packet_pid_for_test(0x0100), true, &pes)
+            .is_empty());
         assert!(assembler.flush().is_none());
         assert_eq!(
             assembler.take_drop_diagnostic(),
@@ -638,7 +667,9 @@ mod pes_boundary_tests {
     #[test]
     fn continuation_without_start_is_dropped_until_next_pusi() {
         let mut assembler = PesAssembler::default();
-        assert!(assembler.push(packet_pid_for_test(0x0100), false, &[0xaa, 0xbb]).is_empty());
+        assert!(assembler
+            .push(packet_pid_for_test(0x0100), false, &[0xaa, 0xbb])
+            .is_empty());
         assert_eq!(assembler.take_drop_diagnostic(), None);
         let pes = vec![0x00, 0x00, 0x01, 0xe0, 0x00, 0x04, 0x80, 0x00, 0x00, 0xde];
         let packets = assembler.push(packet_pid_for_test(0x0100), true, &pes);
@@ -656,7 +687,9 @@ mod pes_oversized_tests {
         let mut assembler = PesAssembler::default();
         let mut oversized = vec![0x00, 0x00, 0x01, 0xe0, 0x00, 0x00, 0x80, 0x00, 0x00];
         oversized.resize(MAX_PES_BUFFER_BYTES + 1, 0xaa);
-        assert!(assembler.push(packet_pid_for_test(0x0100), true, &oversized).is_empty());
+        assert!(assembler
+            .push(packet_pid_for_test(0x0100), true, &oversized)
+            .is_empty());
         assert_eq!(assembler.overflow_drop_count(), 1);
         assert_eq!(
             assembler.take_drop_diagnostic(),
@@ -695,8 +728,12 @@ mod pes_split_and_recovery_tests {
     fn pes_header_split_across_ts_payloads_completes_bounded_packet() {
         let mut assembler = PesAssembler::default();
         let pes = bounded_video_pes(&[0xaa, 0xbb, 0xcc]);
-        assert!(assembler.push(packet_pid_for_test(0x0100), true, &pes[..5]).is_empty());
-        assert!(assembler.push(packet_pid_for_test(0x0100), false, &pes[5..9]).is_empty());
+        assert!(assembler
+            .push(packet_pid_for_test(0x0100), true, &pes[..5])
+            .is_empty());
+        assert!(assembler
+            .push(packet_pid_for_test(0x0100), false, &pes[5..9])
+            .is_empty());
         let out = assembler.push(packet_pid_for_test(0x0100), false, &pes[9..]);
 
         assert_eq!(out.len(), 1);
@@ -707,13 +744,19 @@ mod pes_split_and_recovery_tests {
     fn malformed_pes_resets_and_next_pusi_recovers() {
         let mut assembler = PesAssembler::default();
         let malformed = [0x00, 0x00, 0x02, 0xe0, 0x00, 0x04];
-        assert!(assembler.push(packet_pid_for_test(0x0100), true, &malformed).is_empty());
+        assert!(assembler
+            .push(packet_pid_for_test(0x0100), true, &malformed)
+            .is_empty());
         assert_eq!(
             assembler.take_drop_diagnostic(),
             Some((PesDropReason::MalformedPes, 1))
         );
 
-        let out = assembler.push(packet_pid_for_test(0x0100), true, &bounded_video_pes(&[0x55]));
+        let out = assembler.push(
+            packet_pid_for_test(0x0100),
+            true,
+            &bounded_video_pes(&[0x55]),
+        );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].payload, vec![0x55]);
     }

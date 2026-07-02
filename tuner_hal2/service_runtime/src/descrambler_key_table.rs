@@ -106,7 +106,6 @@ impl DescramblerKeyTable {
         }
         Ok(())
     }
-
 }
 
 #[cfg(test)]

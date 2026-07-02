@@ -13,7 +13,8 @@ fn callback_artifact_then_runtime_finish_interleaving_model_records_both_outcome
         let artifact_for_finish = artifact_done.clone();
         let finish = runtime_finish_seen.clone();
         let runtime_thread = loom::thread::spawn(move || {
-            let _artifact_result_observed = artifact_for_finish.load(loom::sync::atomic::Ordering::SeqCst);
+            let _artifact_result_observed =
+                artifact_for_finish.load(loom::sync::atomic::Ordering::SeqCst);
             finish.store(true, loom::sync::atomic::Ordering::SeqCst);
         });
 

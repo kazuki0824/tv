@@ -363,7 +363,11 @@ impl DescramblerDiagnosticRecord {
         kind: DescramblerDiagnosticKind,
         error: HalError,
     ) -> Self {
-        Self::SetKeyTokenFailure { descrambler_id, kind, error }
+        Self::SetKeyTokenFailure {
+            descrambler_id,
+            kind,
+            error,
+        }
     }
 
     pub fn pid_claim_with_demux(
@@ -435,7 +439,11 @@ impl DescramblerDiagnosticRecord {
     }
 
     pub fn packet_policy(demux_id: i32, pid: PacketPid, kind: DescramblerDiagnosticKind) -> Self {
-        Self::PacketPolicy { demux_id, pid, kind }
+        Self::PacketPolicy {
+            demux_id,
+            pid,
+            kind,
+        }
     }
 
     pub fn packet_policy_without_pid(demux_id: i32, kind: DescramblerDiagnosticKind) -> Self {
@@ -449,11 +457,20 @@ impl DescramblerDiagnosticRecord {
         kind: DescramblerDiagnosticKind,
         error: HalError,
     ) -> Self {
-        Self::PacketSourceFilterValidation { demux_id, pid, filter_id, kind, error }
+        Self::PacketSourceFilterValidation {
+            demux_id,
+            pid,
+            filter_id,
+            kind,
+            error,
+        }
     }
 
     pub fn cleanup_release_failed(descrambler_id: i32, error: HalError) -> Self {
-        Self::CleanupKeyReleaseFailed { descrambler_id, error }
+        Self::CleanupKeyReleaseFailed {
+            descrambler_id,
+            error,
+        }
     }
 
     pub const fn kind(&self) -> DescramblerDiagnosticKind {
@@ -462,10 +479,14 @@ impl DescramblerDiagnosticRecord {
             Self::PidClaimRejected { .. }
             | Self::PidClaimRejectedWithoutDemux { .. }
             | Self::PidClaimRejectedInvalidPid { .. }
-            | Self::PidClaimRejectedInvalidPidWithoutDemux { .. } => DescramblerDiagnosticKind::PidClaimRejected,
+            | Self::PidClaimRejectedInvalidPidWithoutDemux { .. } => {
+                DescramblerDiagnosticKind::PidClaimRejected
+            }
             Self::PacketPolicy { kind, .. } | Self::PacketPolicyWithoutPid { kind, .. } => *kind,
             Self::PacketSourceFilterValidation { kind, .. } => *kind,
-            Self::CleanupKeyReleaseFailed { .. } => DescramblerDiagnosticKind::CleanupKeyReleaseFailed,
+            Self::CleanupKeyReleaseFailed { .. } => {
+                DescramblerDiagnosticKind::CleanupKeyReleaseFailed
+            }
         }
     }
 
@@ -476,13 +497,14 @@ impl DescramblerDiagnosticRecord {
             | Self::PidClaimRejectedWithoutDemux { phase, .. }
             | Self::PidClaimRejectedInvalidPid { phase, .. }
             | Self::PidClaimRejectedInvalidPidWithoutDemux { phase, .. } => *phase,
-            Self::PacketPolicy { .. } | Self::PacketPolicyWithoutPid { .. } | Self::PacketSourceFilterValidation { .. } => {
+            Self::PacketPolicy { .. }
+            | Self::PacketPolicyWithoutPid { .. }
+            | Self::PacketSourceFilterValidation { .. } => {
                 DescramblerDiagnosticPhase::PacketPipeline
             }
             Self::CleanupKeyReleaseFailed { .. } => DescramblerDiagnosticPhase::Cleanup,
         }
     }
-
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -495,13 +517,26 @@ pub enum CallbackArtifactRuntimeSplitPhase {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CallbackArtifactRuntimeSplitOutcome {
-    ArtifactFailure { artifact_error: HalError },
-    RuntimeFinishFailure { runtime_error: HalError },
-    ArtifactAndRuntimeFailure { artifact_error: HalError, runtime_error: HalError },
+    ArtifactFailure {
+        artifact_error: HalError,
+    },
+    RuntimeFinishFailure {
+        runtime_error: HalError,
+    },
+    ArtifactAndRuntimeFailure {
+        artifact_error: HalError,
+        runtime_error: HalError,
+    },
     RuntimeRegistryMissing,
-    ServiceBootCallbackArtifactFailure { error: HalError },
-    ServiceBootDropLeakFailure { error: HalError },
-    ServiceBootRuntimeFailure { error: HalError },
+    ServiceBootCallbackArtifactFailure {
+        error: HalError,
+    },
+    ServiceBootDropLeakFailure {
+        error: HalError,
+    },
+    ServiceBootRuntimeFailure {
+        error: HalError,
+    },
 }
 
 impl CallbackArtifactRuntimeSplitOutcome {
@@ -513,9 +548,10 @@ impl CallbackArtifactRuntimeSplitOutcome {
             (None, None) => None,
             (Some(artifact_error), None) => Some(Self::ArtifactFailure { artifact_error }),
             (None, Some(runtime_error)) => Some(Self::RuntimeFinishFailure { runtime_error }),
-            (Some(artifact_error), Some(runtime_error)) => {
-                Some(Self::ArtifactAndRuntimeFailure { artifact_error, runtime_error })
-            }
+            (Some(artifact_error), Some(runtime_error)) => Some(Self::ArtifactAndRuntimeFailure {
+                artifact_error,
+                runtime_error,
+            }),
         }
     }
 

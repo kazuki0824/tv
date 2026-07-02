@@ -265,7 +265,8 @@ mod tests {
         .unwrap();
         let mut completed_report = None;
         for _ in 0..100 {
-            if let FrontendLivePumpJoinOutcome::Completed(Ok(report)) = owner.collect_if_finished() {
+            if let FrontendLivePumpJoinOutcome::Completed(Ok(report)) = owner.collect_if_finished()
+            {
                 completed_report = Some(report);
                 break;
             }
@@ -282,7 +283,10 @@ mod tests {
         struct FailingReader;
         impl Read for FailingReader {
             fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
-                Err(io::Error::new(io::ErrorKind::Other, "forced reader failure"))
+                Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "forced reader failure",
+                ))
             }
         }
         let mut owner =

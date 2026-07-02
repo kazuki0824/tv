@@ -1,7 +1,7 @@
 use super::support::local_filter_handle_from_strong;
 use super::{
-    build_dvr_configure_request, close_object_after_close_preflight,
-    deliver_started_dvr_status, execute_object_query_use_case, execute_object_runtime_use_case,
+    build_dvr_configure_request, close_object_after_close_preflight, deliver_started_dvr_status,
+    execute_object_query_use_case, execute_object_runtime_use_case,
     execute_object_runtime_use_case_with_request_builder, start_dvr_status_notifier,
     status_from_hal_error, status_unknown_error, stop_dvr_status_notifier,
     tuner_queue_desc_from_snapshot, AidlMethodCall, AidlObjectGeneration, AidlObjectId,
@@ -157,11 +157,7 @@ impl IDvr for DvrAidlObject {
         )
     }
     fn close(&self) -> BinderResult<()> {
-        close_object_after_close_preflight(
-            &self.context(),
-            self.handle(),
-            AidlMethodCall::DvrClose,
-        )
+        close_object_after_close_preflight(&self.context(), self.handle(), AidlMethodCall::DvrClose)
     }
     fn setStatusCheckIntervalHint(&self, milliseconds: i64) -> BinderResult<()> {
         execute_object_runtime_use_case_with_request_builder(

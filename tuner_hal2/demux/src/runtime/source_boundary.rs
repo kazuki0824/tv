@@ -59,11 +59,7 @@ impl SourceBoundaryTxn {
             reset_report: None,
         }
     }
-    fn with_new_source(
-        mut self,
-        source_filter_id: i32,
-        source_filter_generation: u64,
-    ) -> Self {
+    fn with_new_source(mut self, source_filter_id: i32, source_filter_generation: u64) -> Self {
         self.next_source = Some((source_filter_id, source_filter_generation));
         self
     }
@@ -217,12 +213,14 @@ impl SourceBoundaryTxn {
     }
 }
 
-
 pub(crate) fn apply_filter_source_boundary_change(
     demux: &mut DemuxRuntime,
     sink_filter_id: i32,
     next_source: Option<(i32, u64)>,
-) -> (SourceBoundaryReport, Result<SourceBoundaryOutcome, DemuxRuntimeError>) {
+) -> (
+    SourceBoundaryReport,
+    Result<SourceBoundaryOutcome, DemuxRuntimeError>,
+) {
     let txn = SourceBoundaryTxn::new(sink_filter_id);
     let txn = match next_source {
         Some((source_filter_id, source_filter_generation)) => {
@@ -233,7 +231,6 @@ pub(crate) fn apply_filter_source_boundary_change(
     let (txn, result) = txn.apply(demux);
     (txn.report(), result)
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -281,7 +278,10 @@ mod tests {
 
         demux.set_filter_source_non_null(20, 10).unwrap();
 
-        assert_eq!(demux.filter(20).unwrap().pipeline_view().source_filter, Some((10, 1)));
+        assert_eq!(
+            demux.filter(20).unwrap().pipeline_view().source_filter,
+            Some((10, 1))
+        );
     }
 
     #[test]
@@ -298,7 +298,10 @@ mod tests {
 
         demux.disconnect_filter_source(20).unwrap();
 
-        assert_eq!(demux.filter(20).unwrap().pipeline_view().source_filter, None);
+        assert_eq!(
+            demux.filter(20).unwrap().pipeline_view().source_filter,
+            None
+        );
     }
 
     #[test]
@@ -315,6 +318,9 @@ mod tests {
         let result = demux.set_filter_source_non_null(20, 99);
 
         assert!(result.is_err());
-        assert_eq!(demux.filter(20).unwrap().pipeline_view().source_filter, Some((10, 1)));
+        assert_eq!(
+            demux.filter(20).unwrap().pipeline_view().source_filter,
+            Some((10, 1))
+        );
     }
 }

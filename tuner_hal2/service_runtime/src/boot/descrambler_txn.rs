@@ -1,17 +1,17 @@
 use super::{
     descrambler_key_lookup_error_to_hal, descrambler_key_release_error_to_hal,
     descrambler_key_token_error_to_hal, descrambler_pid_claim_error_to_hal,
-    descrambler_session_failure_to_hal, DemuxRuntimeId,
-    DemuxRuntimeState, DescramblerCleanupTxnError, DescramblerClearKeyTxnError, DescramblerDiagnosticKind,
-    DescramblerDiagnosticPhase, DescramblerDiagnosticRecord,
-    DescramblerKeyToken, DescramblerKeyTokenError, DescramblerPid, DescramblerPidClaim,
-    DescramblerReplaceKeyOutcome, DescramblerReplaceKeyTxnError, DescramblerRuntimeId,
-    FilterOpenType, FilterRuntimeId, FilterRuntimeState, HalError, HalInvalidArgumentKind,
-    HalInvalidStateKind, RegistryCommitError, TunerServiceRuntime,
+    descrambler_session_failure_to_hal, DemuxRuntimeId, DemuxRuntimeState,
+    DescramblerCleanupTxnError, DescramblerClearKeyTxnError, DescramblerDiagnosticKind,
+    DescramblerDiagnosticPhase, DescramblerDiagnosticRecord, DescramblerKeyToken,
+    DescramblerKeyTokenError, DescramblerPid, DescramblerPidClaim, DescramblerReplaceKeyOutcome,
+    DescramblerReplaceKeyTxnError, DescramblerRuntimeId, FilterOpenType, FilterRuntimeId,
+    FilterRuntimeState, HalError, HalInvalidArgumentKind, HalInvalidStateKind, RegistryCommitError,
+    TunerServiceRuntime,
 };
 use crate::descrambler_key_table::DescramblerKeyLookupError;
-use maleicacid_tuner_hal2_demux::parser::packet_pipeline::PacketPid;
 use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, FirstErrorCollector};
+use maleicacid_tuner_hal2_demux::parser::packet_pipeline::PacketPid;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct AidlInputPid(u16);
@@ -44,7 +44,6 @@ impl TunerServiceRuntime {
     ) -> Result<crate::registry::DescramblerRegistryEntry, RegistryCommitError> {
         self.registry.allocate_descrambler()
     }
-
 
     fn descrambler_bound_demux(&self, descrambler_id: i32) -> Result<(i32, u64), HalError> {
         self.registry
@@ -288,7 +287,6 @@ impl TunerServiceRuntime {
         }
     }
 
-
     fn transact_add_descrambler_pid_demux_input(
         &mut self,
         descrambler_id: i32,
@@ -329,13 +327,15 @@ impl TunerServiceRuntime {
         let (demux_id, demux_generation) = match self.descrambler_bound_demux(descrambler_id) {
             Ok(bound) => bound,
             Err(error) => {
-                self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::pid_claim_without_demux(
-                    DescramblerDiagnosticPhase::AddPid,
-                    descrambler_id,
-                    claim_pid,
-                    -1,
-                    error.clone(),
-                ));
+                self.record_descrambler_diagnostic(
+                    DescramblerDiagnosticRecord::pid_claim_without_demux(
+                        DescramblerDiagnosticPhase::AddPid,
+                        descrambler_id,
+                        claim_pid,
+                        -1,
+                        error.clone(),
+                    ),
+                );
                 return Err(error);
             }
         };
@@ -417,13 +417,15 @@ impl TunerServiceRuntime {
         let (demux_id, _demux_generation) = match self.descrambler_bound_demux(descrambler_id) {
             Ok(bound) => bound,
             Err(error) => {
-                self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::pid_claim_without_demux(
-                    DescramblerDiagnosticPhase::RemovePid,
-                    descrambler_id,
-                    claim_pid,
-                    -1,
-                    error.clone(),
-                ));
+                self.record_descrambler_diagnostic(
+                    DescramblerDiagnosticRecord::pid_claim_without_demux(
+                        DescramblerDiagnosticPhase::RemovePid,
+                        descrambler_id,
+                        claim_pid,
+                        -1,
+                        error.clone(),
+                    ),
+                );
                 return Err(error);
             }
         };
@@ -484,13 +486,15 @@ impl TunerServiceRuntime {
         let (demux_id, demux_generation) = match self.descrambler_bound_demux(descrambler_id) {
             Ok(bound) => bound,
             Err(error) => {
-                self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::pid_claim_without_demux(
-                    DescramblerDiagnosticPhase::AddPid,
-                    descrambler_id,
-                    diagnostic_pid,
-                    source_filter_id,
-                    error.clone(),
-                ));
+                self.record_descrambler_diagnostic(
+                    DescramblerDiagnosticRecord::pid_claim_without_demux(
+                        DescramblerDiagnosticPhase::AddPid,
+                        descrambler_id,
+                        diagnostic_pid,
+                        source_filter_id,
+                        error.clone(),
+                    ),
+                );
                 return Err(error);
             }
         };
@@ -502,14 +506,16 @@ impl TunerServiceRuntime {
         ) {
             Ok(source_generation) => source_generation,
             Err(error) => {
-                self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::pid_claim_with_demux(
-                    DescramblerDiagnosticPhase::AddPid,
-                    descrambler_id,
-                    demux_id,
-                    diagnostic_pid,
-                    source_filter_id,
-                    error.clone(),
-                ));
+                self.record_descrambler_diagnostic(
+                    DescramblerDiagnosticRecord::pid_claim_with_demux(
+                        DescramblerDiagnosticPhase::AddPid,
+                        descrambler_id,
+                        demux_id,
+                        diagnostic_pid,
+                        source_filter_id,
+                        error.clone(),
+                    ),
+                );
                 return Err(error);
             }
         };
@@ -541,14 +547,16 @@ impl TunerServiceRuntime {
             Ok(claim) => claim,
             Err(error) => {
                 let hal_error = descrambler_pid_claim_error_to_hal(error);
-                self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::pid_claim_with_demux(
-                    DescramblerDiagnosticPhase::AddPid,
-                    descrambler_id,
-                    demux_id,
-                    diagnostic_pid,
-                    source_filter_id,
-                    hal_error.clone(),
-                ));
+                self.record_descrambler_diagnostic(
+                    DescramblerDiagnosticRecord::pid_claim_with_demux(
+                        DescramblerDiagnosticPhase::AddPid,
+                        descrambler_id,
+                        demux_id,
+                        diagnostic_pid,
+                        source_filter_id,
+                        hal_error.clone(),
+                    ),
+                );
                 return Err(hal_error);
             }
         };
@@ -609,13 +617,15 @@ impl TunerServiceRuntime {
         let (demux_id, demux_generation) = match self.descrambler_bound_demux(descrambler_id) {
             Ok(bound) => bound,
             Err(error) => {
-                self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::pid_claim_without_demux(
-                    DescramblerDiagnosticPhase::RemovePid,
-                    descrambler_id,
-                    diagnostic_pid,
-                    source_filter_id,
-                    error.clone(),
-                ));
+                self.record_descrambler_diagnostic(
+                    DescramblerDiagnosticRecord::pid_claim_without_demux(
+                        DescramblerDiagnosticPhase::RemovePid,
+                        descrambler_id,
+                        diagnostic_pid,
+                        source_filter_id,
+                        error.clone(),
+                    ),
+                );
                 return Err(error);
             }
         };
@@ -627,14 +637,16 @@ impl TunerServiceRuntime {
         ) {
             Ok(source_generation) => source_generation,
             Err(error) => {
-                self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::pid_claim_with_demux(
-                    DescramblerDiagnosticPhase::RemovePid,
-                    descrambler_id,
-                    demux_id,
-                    diagnostic_pid,
-                    source_filter_id,
-                    error.clone(),
-                ));
+                self.record_descrambler_diagnostic(
+                    DescramblerDiagnosticRecord::pid_claim_with_demux(
+                        DescramblerDiagnosticPhase::RemovePid,
+                        descrambler_id,
+                        demux_id,
+                        diagnostic_pid,
+                        source_filter_id,
+                        error.clone(),
+                    ),
+                );
                 return Err(error);
             }
         };
@@ -646,14 +658,16 @@ impl TunerServiceRuntime {
             Ok(claim) => claim,
             Err(error) => {
                 let hal_error = descrambler_pid_claim_error_to_hal(error);
-                self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::pid_claim_with_demux(
-                    DescramblerDiagnosticPhase::RemovePid,
-                    descrambler_id,
-                    demux_id,
-                    diagnostic_pid,
-                    source_filter_id,
-                    hal_error.clone(),
-                ));
+                self.record_descrambler_diagnostic(
+                    DescramblerDiagnosticRecord::pid_claim_with_demux(
+                        DescramblerDiagnosticPhase::RemovePid,
+                        descrambler_id,
+                        demux_id,
+                        diagnostic_pid,
+                        source_filter_id,
+                        hal_error.clone(),
+                    ),
+                );
                 return Err(hal_error);
             }
         };
@@ -791,7 +805,6 @@ impl<'a> DescramblerTxn<'a> {
         self.runtime
             .transact_set_descrambler_key_token(descrambler_id, key_token)
     }
-
 
     pub(crate) fn add_descrambler_pid_demux_input(
         &mut self,
