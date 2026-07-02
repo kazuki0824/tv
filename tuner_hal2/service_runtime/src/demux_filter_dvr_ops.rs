@@ -11,32 +11,36 @@ use maleicacid_tuner_hal2_domain_request::{
 };
 
 impl TunerServiceRuntime {
-    pub fn allocate_demux_runtime(&mut self) -> Result<DemuxRegistryEntry, RegistryCommitError> {
+    pub(crate) fn allocate_demux_runtime(
+        &mut self,
+    ) -> Result<DemuxRegistryEntry, RegistryCommitError> {
         self.transact_allocate_demux_runtime()
     }
 
-    pub fn unregister_demux_runtime(
+    pub(crate) fn unregister_demux_runtime(
         &mut self,
         id: i32,
     ) -> Result<Option<DemuxRegistryEntry>, HalError> {
         self.transact_unregister_demux_runtime(id)
     }
 
-    pub fn allocate_filter_runtime(
+    #[cfg(test)]
+    pub(crate) fn allocate_filter_runtime(
         &mut self,
         owner_demux_id: i32,
     ) -> Result<FilterRegistryEntry, RegistryCommitError> {
         self.transact_allocate_filter_runtime(owner_demux_id)
     }
 
-    pub fn unregister_filter_runtime(
+    pub(crate) fn unregister_filter_runtime(
         &mut self,
         id: i32,
     ) -> Result<Option<FilterRegistryEntry>, HalError> {
         self.transact_unregister_filter_runtime(id)
     }
 
-    pub fn register_demux_filter_runtime(
+    #[cfg(test)]
+    pub(crate) fn register_demux_filter_runtime(
         &mut self,
         owner_demux_id: i32,
         filter_id: i32,
@@ -45,7 +49,7 @@ impl TunerServiceRuntime {
         self.transact_register_demux_filter_runtime(owner_demux_id, filter_id, request)
     }
 
-    pub fn configure_filter_runtime_request(
+    pub(crate) fn configure_filter_runtime_request(
         &mut self,
         filter_id: i32,
         config: FilterConfig,
@@ -53,19 +57,19 @@ impl TunerServiceRuntime {
         self.transact_configure_filter_runtime_request(filter_id, config)
     }
 
-    pub fn start_filter_runtime(&mut self, filter_id: i32) -> Result<(), HalError> {
+    pub(crate) fn start_filter_runtime(&mut self, filter_id: i32) -> Result<(), HalError> {
         self.transact_start_filter_runtime(filter_id)
     }
 
-    pub fn stop_filter_runtime(&mut self, filter_id: i32) -> Result<(), HalError> {
+    pub(crate) fn stop_filter_runtime(&mut self, filter_id: i32) -> Result<(), HalError> {
         self.transact_stop_filter_runtime(filter_id)
     }
 
-    pub fn flush_filter_runtime(&mut self, filter_id: i32) -> Result<(), HalError> {
+    pub(crate) fn flush_filter_runtime(&mut self, filter_id: i32) -> Result<(), HalError> {
         self.transact_flush_filter_runtime(filter_id)
     }
 
-    pub fn configure_filter_av_stream_type_request(
+    pub(crate) fn configure_filter_av_stream_type_request(
         &mut self,
         filter_id: i32,
         request: FilterAvStreamTypeRequest,
@@ -73,7 +77,7 @@ impl TunerServiceRuntime {
         self.transact_configure_filter_av_stream_type_request(filter_id, request)
     }
 
-    pub fn set_filter_delay_hint_request(
+    pub(crate) fn set_filter_delay_hint_request(
         &mut self,
         filter_id: i32,
         request: FilterDelayHintRequest,
@@ -81,7 +85,7 @@ impl TunerServiceRuntime {
         self.transact_set_filter_delay_hint_request(filter_id, request)
     }
 
-    pub fn set_filter_data_source_non_null(
+    pub(crate) fn set_filter_data_source_non_null(
         &mut self,
         demux_id: i32,
         sink_filter_id: i32,
@@ -90,7 +94,7 @@ impl TunerServiceRuntime {
         self.transact_set_filter_data_source_non_null(demux_id, sink_filter_id, source_filter_id)
     }
 
-    pub fn disconnect_filter_data_source(
+    pub(crate) fn disconnect_filter_data_source(
         &mut self,
         demux_id: i32,
         sink_filter_id: i32,
@@ -98,21 +102,23 @@ impl TunerServiceRuntime {
         self.transact_disconnect_filter_data_source(demux_id, sink_filter_id)
     }
 
-    pub fn allocate_dvr_runtime(
+    #[cfg(test)]
+    pub(crate) fn allocate_dvr_runtime(
         &mut self,
         owner_demux_id: i32,
     ) -> Result<DvrRegistryEntry, RegistryCommitError> {
         self.transact_allocate_dvr_runtime(owner_demux_id)
     }
 
-    pub fn unregister_dvr_runtime(
+    pub(crate) fn unregister_dvr_runtime(
         &mut self,
         id: i32,
     ) -> Result<Option<DvrRegistryEntry>, HalError> {
         self.transact_unregister_dvr_runtime(id)
     }
 
-    pub fn register_demux_dvr_runtime(
+    #[cfg(test)]
+    pub(crate) fn register_demux_dvr_runtime(
         &mut self,
         owner_demux_id: i32,
         dvr_id: i32,
@@ -122,7 +128,7 @@ impl TunerServiceRuntime {
         self.transact_register_demux_dvr_runtime(owner_demux_id, dvr_id, request, callback_present)
     }
 
-    pub fn configure_dvr_runtime_request(
+    pub(crate) fn configure_dvr_runtime_request(
         &mut self,
         dvr_id: i32,
         request: DvrConfigureRequest,
@@ -130,27 +136,35 @@ impl TunerServiceRuntime {
         self.transact_configure_dvr_runtime_request(dvr_id, request)
     }
 
-    pub fn start_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), HalError> {
+    pub(crate) fn start_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), HalError> {
         self.transact_start_dvr_runtime(dvr_id)
     }
 
-    pub fn attach_dvr_filter(&mut self, dvr_id: i32, filter_id: i32) -> Result<(), HalError> {
+    pub(crate) fn attach_dvr_filter(
+        &mut self,
+        dvr_id: i32,
+        filter_id: i32,
+    ) -> Result<(), HalError> {
         self.transact_attach_dvr_filter(dvr_id, filter_id)
     }
 
-    pub fn detach_dvr_filter(&mut self, dvr_id: i32, filter_id: i32) -> Result<(), HalError> {
+    pub(crate) fn detach_dvr_filter(
+        &mut self,
+        dvr_id: i32,
+        filter_id: i32,
+    ) -> Result<(), HalError> {
         self.transact_detach_dvr_filter(dvr_id, filter_id)
     }
 
-    pub fn stop_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), HalError> {
+    pub(crate) fn stop_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), HalError> {
         self.transact_stop_dvr_runtime(dvr_id)
     }
 
-    pub fn flush_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), HalError> {
+    pub(crate) fn flush_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), HalError> {
         self.transact_flush_dvr_runtime(dvr_id)
     }
 
-    pub fn set_dvr_status_check_interval(
+    pub(crate) fn set_dvr_status_check_interval(
         &mut self,
         dvr_id: i32,
         interval_ms: u64,

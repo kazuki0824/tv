@@ -4,13 +4,13 @@ use crate::registry::{DescramblerRegistryEntry, RegistryCommitError};
 use maleicacid_tuner_hal2_common::HalError;
 
 impl TunerServiceRuntime {
-    pub fn allocate_descrambler_runtime(
+    pub(crate) fn allocate_descrambler_runtime(
         &mut self,
     ) -> Result<DescramblerRegistryEntry, RegistryCommitError> {
         self.descrambler_txn().allocate_descrambler_runtime()
     }
 
-    pub fn set_descrambler_demux_source(
+    pub(crate) fn set_descrambler_demux_source(
         &mut self,
         descrambler_id: i32,
         demux_id: i32,
@@ -19,7 +19,7 @@ impl TunerServiceRuntime {
             .set_descrambler_demux_source(descrambler_id, demux_id)
     }
 
-    pub fn set_descrambler_key_token(
+    pub(crate) fn set_descrambler_key_token(
         &mut self,
         descrambler_id: i32,
         key_token: &[u8],
@@ -28,7 +28,7 @@ impl TunerServiceRuntime {
             .set_descrambler_key_token(descrambler_id, key_token)
     }
 
-    pub fn add_descrambler_pid_non_null_source(
+    pub(crate) fn add_descrambler_pid_non_null_source(
         &mut self,
         descrambler_id: i32,
         pid: u16,
@@ -41,7 +41,7 @@ impl TunerServiceRuntime {
         )
     }
 
-    pub fn remove_descrambler_pid_non_null_source(
+    pub(crate) fn remove_descrambler_pid_non_null_source(
         &mut self,
         descrambler_id: i32,
         pid: u16,
@@ -51,7 +51,7 @@ impl TunerServiceRuntime {
             .remove_descrambler_pid_non_null_source(descrambler_id, pid, source_filter_id)
     }
 
-    pub fn add_descrambler_pid_demux_input(
+    pub(crate) fn add_descrambler_pid_demux_input(
         &mut self,
         descrambler_id: i32,
         pid: u16,
@@ -60,7 +60,7 @@ impl TunerServiceRuntime {
             .add_descrambler_pid_demux_input(descrambler_id, pid)
     }
 
-    pub fn remove_descrambler_pid_demux_input(
+    pub(crate) fn remove_descrambler_pid_demux_input(
         &mut self,
         descrambler_id: i32,
         pid: u16,
@@ -69,7 +69,7 @@ impl TunerServiceRuntime {
             .remove_descrambler_pid_demux_input(descrambler_id, pid)
     }
 
-    pub fn unregister_descrambler_runtime(
+    pub(crate) fn unregister_descrambler_runtime(
         &mut self,
         id: i32,
     ) -> Result<Option<DescramblerRegistryEntry>, HalError> {

@@ -1,4 +1,7 @@
-use crate::object_lifecycle::aidl_public_runtime_id_for_close_cleanup;
+use crate::object_domain_cleanup::ObjectDomainCleanupCommand;
+use crate::object_lifecycle::{
+    aidl_public_runtime_id_for_close_cleanup, lnb_public_id_for_live_object_result,
+};
 use crate::object_method_txn::ObjectMethodExecutionToken;
 use maleicacid_tuner_hal2_common::HalError;
 use maleicacid_tuner_hal2_domain_request::{
@@ -8,11 +11,15 @@ use maleicacid_tuner_hal2_domain_request::{
 use crate::boot::TunerServiceRuntime;
 
 impl TunerServiceRuntime {
-    pub fn set_frontend_lnb(&mut self, frontend_id: i32, lnb_id: i32) -> Result<(), HalError> {
+    pub(crate) fn set_frontend_lnb(
+        &mut self,
+        frontend_id: i32,
+        lnb_id: i32,
+    ) -> Result<(), HalError> {
         self.lnb_txn().set_frontend_lnb(frontend_id, lnb_id)
     }
 
-    pub fn apply_lnb_voltage(
+    pub(crate) fn apply_lnb_voltage(
         &mut self,
         lnb_id: i32,
         request: LnbVoltageRequest,
@@ -20,11 +27,15 @@ impl TunerServiceRuntime {
         self.lnb_txn().apply_lnb_voltage(lnb_id, request)
     }
 
-    pub fn apply_lnb_tone(&mut self, lnb_id: i32, request: LnbToneRequest) -> Result<(), HalError> {
+    pub(crate) fn apply_lnb_tone(
+        &mut self,
+        lnb_id: i32,
+        request: LnbToneRequest,
+    ) -> Result<(), HalError> {
         self.lnb_txn().apply_lnb_tone(lnb_id, request)
     }
 
-    pub fn apply_lnb_satellite_position(
+    pub(crate) fn apply_lnb_satellite_position(
         &mut self,
         lnb_id: i32,
         request: LnbSetSatellitePositionRequest,
@@ -32,27 +43,27 @@ impl TunerServiceRuntime {
         self.lnb_txn().apply_lnb_satellite_position(lnb_id, request)
     }
 
-    pub fn send_lnb_diseqc(&mut self, lnb_id: i32, payload: &[u8]) -> Result<(), HalError> {
+    pub(crate) fn send_lnb_diseqc(&mut self, lnb_id: i32, payload: &[u8]) -> Result<(), HalError> {
         self.lnb_txn().send_lnb_diseqc(lnb_id, payload)
     }
 
-    pub fn open_lnb_for_public_id(&mut self, lnb_id: i32) -> Result<(), HalError> {
+    pub(crate) fn open_lnb_for_public_id(&mut self, lnb_id: i32) -> Result<(), HalError> {
         self.lnb_txn().open_lnb_for_public_id(lnb_id)
     }
 
-    pub fn commit_lnb_callback_registration(&mut self, lnb_id: i32) -> Result<(), HalError> {
+    pub(crate) fn commit_lnb_callback_registration(&mut self, lnb_id: i32) -> Result<(), HalError> {
         self.lnb_txn().commit_lnb_callback_registration(lnb_id)
     }
 
-    pub fn clear_lnb_callback_registration(&mut self, lnb_id: i32) -> Result<(), HalError> {
+    pub(crate) fn clear_lnb_callback_registration(&mut self, lnb_id: i32) -> Result<(), HalError> {
         self.lnb_txn().clear_lnb_callback_registration(lnb_id)
     }
 
-    pub fn close_lnb_explicit(&mut self, lnb_id: i32) -> Result<(), HalError> {
+    pub(crate) fn close_lnb_explicit(&mut self, lnb_id: i32) -> Result<(), HalError> {
         self.lnb_txn().close_lnb_explicit(lnb_id)
     }
 
-    pub fn close_lnb_from_frontend_owner_loss(
+    pub(crate) fn close_lnb_from_frontend_owner_loss(
         &mut self,
         frontend_id: i32,
     ) -> (Vec<i32>, Result<(), HalError>) {
@@ -60,8 +71,17 @@ impl TunerServiceRuntime {
             .close_lnb_from_frontend_owner_loss(frontend_id)
     }
 
-    pub fn record_lnb_drop_leak(&mut self, lnb_id: i32) -> Result<(), HalError> {
+    pub(crate) fn record_lnb_drop_leak(&mut self, lnb_id: i32) -> Result<(), HalError> {
         self.lnb_txn().record_lnb_drop_leak(lnb_id)
+    }
+
+    pub fn record_lnb_drop_leak_after_domain_cleanup_command(
+        &mut self,
+        command: ObjectDomainCleanupCommand,
+    ) -> Result<(), HalError> {
+        let lnb_id =
+            lnb_public_id_for_live_object_result(self, command.object_id(), command.generation())?;
+        self.record_lnb_drop_leak(lnb_id)
     }
 }
 

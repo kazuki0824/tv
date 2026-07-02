@@ -1,4 +1,4 @@
-use maleicacid_tuner_hal2_common::{FrontendTuneRequest, HalError, HalInternalKind};
+use maleicacid_tuner_hal2_common::{FrontendTuneRequest, HalError};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BackendTuneStep {
@@ -101,6 +101,7 @@ pub trait BackendTuneOps {
     ) -> Result<(), HalError>;
 }
 
+#[cfg(test)]
 pub trait TuneWorkerStart {
     fn start_tune_worker(&mut self, frontend_id: i32, generation: u64) -> Result<(), HalError>;
 }
@@ -123,15 +124,19 @@ impl BackendTuneTxn {
         }
     }
 
+    #[cfg(test)]
     pub fn frontend_id(&self) -> i32 {
         self.frontend_id
     }
+    #[cfg(test)]
     pub fn generation(&self) -> u64 {
         self.generation
     }
+    #[cfg(test)]
     pub fn request(&self) -> &FrontendTuneRequest {
         &self.request
     }
+    #[cfg(test)]
     pub fn completed_steps(&self) -> &[BackendTuneStep] {
         &self.completed_steps
     }
@@ -243,6 +248,7 @@ impl BackendTuneTxn {
         }
     }
 
+    #[cfg(test)]
     pub fn apply_with_worker<B: BackendTuneOps, W: TuneWorkerStart>(
         &mut self,
         backend: &mut B,
@@ -340,6 +346,7 @@ fn rollback_backend_tune<B: BackendTuneOps>(
     }
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FrontendTuneOutcome {
     Committed {
@@ -354,11 +361,13 @@ pub enum FrontendTuneOutcome {
     },
 }
 
+#[cfg(test)]
 #[derive(Debug)]
 pub struct FrontendTuneTxn {
     backend: BackendTuneTxn,
 }
 
+#[cfg(test)]
 impl FrontendTuneTxn {
     pub fn new(frontend_id: i32, generation: u64, request: FrontendTuneRequest) -> Self {
         Self {
@@ -373,10 +382,6 @@ impl FrontendTuneTxn {
     ) -> FrontendTuneOutcome {
         self.backend.apply_with_worker(backend, worker)
     }
-}
-
-pub fn invariant_error(detail: impl Into<String>) -> HalError {
-    HalError::internal(HalInternalKind::InvariantViolation, detail)
 }
 
 #[cfg(test)]

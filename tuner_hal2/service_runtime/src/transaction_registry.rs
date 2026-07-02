@@ -1,15 +1,15 @@
 use maleicacid_tuner_hal2_domain_request::RuntimeTransactionName;
 
 use crate::dispatch::ServiceRuntimeDispatchTarget;
-pub type RuntimeDispatchTarget = ServiceRuntimeDispatchTarget;
+pub(crate) type RuntimeDispatchTarget = ServiceRuntimeDispatchTarget;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RuntimeTransactionSpec {
-    pub transaction: RuntimeTransactionName,
-    pub dispatch_target: RuntimeDispatchTarget,
+pub(crate) struct RuntimeTransactionSpec {
+    pub(crate) transaction: RuntimeTransactionName,
+    pub(crate) dispatch_target: RuntimeDispatchTarget,
 }
 
-pub const RUNTIME_TRANSACTION_SPECS: &[RuntimeTransactionSpec] = &[
+pub(crate) const RUNTIME_TRANSACTION_SPECS: &[RuntimeTransactionSpec] = &[
     RuntimeTransactionSpec {
         transaction: RuntimeTransactionName::TunerPublicApiTxn,
         dispatch_target: RuntimeDispatchTarget::Tuner,
@@ -172,16 +172,12 @@ pub const RUNTIME_TRANSACTION_SPECS: &[RuntimeTransactionSpec] = &[
     },
 ];
 
-pub fn transaction_spec_for(
+pub(crate) fn transaction_spec_for(
     transaction: RuntimeTransactionName,
 ) -> Option<&'static RuntimeTransactionSpec> {
     RUNTIME_TRANSACTION_SPECS
         .iter()
         .find(|spec| spec.transaction == transaction)
-}
-
-pub fn transaction_spec_count() -> usize {
-    RUNTIME_TRANSACTION_SPECS.len()
 }
 
 #[cfg(test)]

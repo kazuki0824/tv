@@ -936,21 +936,21 @@ impl TunerServiceRuntime {
         self.child_open_rollback_diagnostics.push(record);
     }
 
-    pub fn record_dvr_post_commit_notification_diagnostic(
+    pub(crate) fn record_dvr_post_commit_notification_diagnostic(
         &mut self,
         record: DvrPostCommitNotificationDiagnosticRecord,
     ) {
         self.dvr_post_commit_notification_diagnostics.push(record);
     }
 
-    pub fn record_filter_callback_delivery_diagnostic(
+    pub(crate) fn record_filter_callback_delivery_diagnostic(
         &mut self,
         record: FilterCallbackDeliveryDiagnosticRecord,
     ) {
         self.filter_callback_delivery_diagnostics.push(record);
     }
 
-    pub fn record_callback_artifact_runtime_split_diagnostic(
+    pub(crate) fn record_callback_artifact_runtime_split_diagnostic(
         &mut self,
         record: CallbackArtifactRuntimeSplitDiagnosticRecord,
     ) {
@@ -1695,6 +1695,34 @@ impl TunerServiceRuntime {
         self.callback_registry
             .registration_for(owner_kind, owner_id, owner_generation, registration_api)
             .map(|registration| registration.health)
+    }
+
+    pub fn finish_service_boot_reset_after_artifact_result_use_case(
+        &mut self,
+        outcome: ServiceBootOutcome,
+        artifact_result: Result<(), HalError>,
+        drop_leak_result: Result<(), HalError>,
+    ) -> Result<ServiceBootOutcome, HalError> {
+        for split_outcome in
+            CallbackArtifactRuntimeSplitOutcome::service_boot_reset_from_attempt_results(
+                artifact_result.clone(),
+                drop_leak_result.clone(),
+                Ok(()),
+            )
+        {
+            self.record_callback_artifact_runtime_split_diagnostic(
+                CallbackArtifactRuntimeSplitDiagnosticRecord::service_boot_reset(split_outcome),
+            );
+        }
+        match (artifact_result, drop_leak_result) {
+            (Ok(()), Ok(())) => Ok(outcome),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Err(primary), Err(cleanup)) => Err(compose_primary_cleanup_failure(
+                "service boot callback artifact/drop-leak reset failed",
+                primary,
+                cleanup,
+            )),
+        }
     }
 
     pub fn boot_from_probe_results<I>(&mut self, results: I) -> ServiceBootOutcome

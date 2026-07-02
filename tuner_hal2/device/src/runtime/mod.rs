@@ -9,7 +9,7 @@ pub mod live_pump;
 pub mod reader;
 pub mod scan_session;
 pub(crate) mod thread_result_owner;
-pub mod tune_txn;
+pub(crate) mod tune_txn;
 
 pub use backend_worker::{
     apply_frontend_backend_lnb_voltage, run_frontend_backend_tune_worker,
@@ -35,7 +35,6 @@ pub use live_pump::{
 pub use reader::{FrontendLiveReaderDescriptor, FrontendLiveReaderDescriptorKind};
 pub use scan_session::{FrontendScanPhase, FrontendScanSession, FrontendScanTerminalReason};
 pub use tune_txn::{
-    BackendTuneCommit, BackendTuneOps, BackendTuneOutcome, BackendTuneRollbackFailure,
-    BackendTuneRollbackReport, BackendTuneRollbackStep, BackendTuneStep, BackendTuneTxn,
-    FrontendTuneOutcome, FrontendTuneTxn, TuneWorkerStart,
+    BackendTuneCommit, BackendTuneOutcome, BackendTuneRollbackFailure, BackendTuneRollbackReport,
+    BackendTuneRollbackStep, BackendTuneStep,
 };

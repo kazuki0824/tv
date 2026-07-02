@@ -76,20 +76,13 @@ pub use object_method_txn::{
 pub use object_table::{
     RuntimeObjectEntry, RuntimeObjectLifecycle, RuntimeObjectTableError, RuntimeOwnerRelation,
 };
-pub use registry::{
-    DemuxRegistryEntry, DemuxRuntimeId, FrontendRuntimeId, LnbRegistryEntry, LnbRegistryProfile,
-    LnbRuntimeId, RegistryCommitError, RuntimeRegistryKind,
-};
+pub use registry::{FrontendRuntimeId, LnbRegistryProfile};
 pub use root_method_txn::{
     RootCommandRequest, RootDemuxCapabilitiesSnapshot, RootDemuxInfoSnapshot,
     RootFrontendInfoSnapshot, RootQueryRequest, RootQueryResponse,
 };
 #[cfg(test)]
 mod failure_injection_tests;
-
-pub use transaction_registry::{
-    transaction_spec_for, RuntimeDispatchTarget, RuntimeTransactionSpec, RUNTIME_TRANSACTION_SPECS,
-};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ServiceState {

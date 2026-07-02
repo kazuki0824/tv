@@ -1,4 +1,4 @@
-use crate::{RegistryCommitError, RuntimeCommandDispatchError, RuntimeObjectTableError};
+use crate::{registry::RegistryCommitError, RuntimeCommandDispatchError, RuntimeObjectTableError};
 use maleicacid_tuner_hal2_common::{
     HalError, HalInternalKind, HalInvalidArgumentKind, HalInvalidStateKind,
 };
@@ -91,7 +91,7 @@ pub(crate) fn registry_commit_error_to_hal(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DemuxRuntimeId, RuntimeRegistryKind};
+    use crate::registry::{DemuxRuntimeId, RuntimeRegistryKind};
 
     #[test]
     fn object_duplicate_runtime_binding_maps_to_invalid_state() {

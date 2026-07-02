@@ -449,10 +449,12 @@ mod tests {
     };
     use binder::{BinderFeatures, Interface, StatusCode};
     use maleicacid_tuner_hal2_binder_adapter::{
-        AidlApi, AidlObjectGeneration, AidlObjectId, AidlObjectKind, DvrConfigureKind,
-        DvrConfigureRequest, DvrOpenKind, OpenDvrRequest,
+        AidlApi, AidlMethodCall, AidlObjectKind, DvrConfigureKind, DvrConfigureRequest,
+        DvrOpenKind, OpenDvrRequest,
     };
-    use maleicacid_tuner_hal2_service_runtime::{CallbackHealthState, RuntimeOwnerRelation};
+    use maleicacid_tuner_hal2_service_runtime::{
+        object_method_txn::execute_object_method_call_after_live, CallbackHealthState,
+    };
     use std::sync::{
         atomic::{AtomicBool, Ordering},
         Mutex,
@@ -521,48 +523,79 @@ mod tests {
         let context = crate::service_context::AidlServiceContext::from_shared_runtime_for_test(
             runtime.clone(),
         );
+        let demux_entry = {
+            let mut guard = runtime.lock().unwrap();
+            guard
+                .open_demux_root_object(AidlMethodCall::PublicApi {
+                    object: AidlObjectKind::Tuner,
+                    api: AidlApi::TunerOpenDemux,
+                })
+                .unwrap()
+        };
+        let dvr_open = execute_object_method_call_after_live(
+            &runtime,
+            demux_entry.object_id,
+            demux_entry.generation,
+            AidlObjectKind::Demux,
+            || -> Result<_, maleicacid_tuner_hal2_common::HalError> {
+                let request = OpenDvrRequest {
+                    kind: DvrOpenKind::Playback,
+                    buffer_size: 188,
+                };
+                Ok((AidlMethodCall::DemuxOpenDvr(request.clone()), request))
+            },
+            |runtime, dispatch, request| {
+                runtime.open_dvr_child_runtime_for_demux_object(
+                    demux_entry.object_id,
+                    demux_entry.generation,
+                    request,
+                    dispatch,
+                )
+            },
+        )
+        .unwrap();
         let handle = AidlObjectHandle::new(
             AidlObjectKind::Dvr,
-            AidlObjectId(99_001),
-            AidlObjectGeneration(1),
+            dvr_open.runtime_entry.object_id,
+            dvr_open.runtime_entry.generation,
         );
-        {
-            let mut guard = runtime.lock().unwrap();
-            let demux = guard.allocate_demux_runtime().unwrap();
-            let dvr = guard.allocate_dvr_runtime(demux.id.0).unwrap();
-            guard
-                .register_demux_dvr_runtime(
-                    demux.id.0,
-                    dvr.id.0,
-                    &OpenDvrRequest {
-                        kind: DvrOpenKind::Playback,
-                        buffer_size: 188,
-                    },
-                    true,
-                )
-                .unwrap();
-            guard
-                .register_aidl_object_for_runtime(
-                    AidlObjectKind::Dvr,
+        execute_object_method_call_after_live(
+            &runtime,
+            handle.object_id(),
+            handle.generation(),
+            handle.object_kind(),
+            || -> Result<_, maleicacid_tuner_hal2_common::HalError> {
+                let request = DvrConfigureRequest {
+                    kind: DvrConfigureKind::Playback,
+                    status_mask: i32::from(PlaybackStatus::SPACE_FULL.0),
+                    low_threshold_bytes: 0,
+                    high_threshold_bytes: 188,
+                };
+                Ok((AidlMethodCall::DvrConfigure(request.clone()), request))
+            },
+            |runtime, dispatch, request| {
+                runtime.configure_dvr_runtime_for_object(
                     handle.object_id(),
                     handle.generation(),
-                    i64::from(dvr.id.0),
-                    RuntimeOwnerRelation::Root,
+                    request,
+                    dispatch,
                 )
-                .unwrap();
-            guard
-                .configure_dvr_runtime_request(
-                    dvr.id.0,
-                    DvrConfigureRequest {
-                        kind: DvrConfigureKind::Playback,
-                        status_mask: i32::from(PlaybackStatus::SPACE_FULL.0),
-                        low_threshold_bytes: 0,
-                        high_threshold_bytes: 188,
-                    },
-                )
-                .unwrap();
-            guard.start_dvr_runtime(dvr.id.0).unwrap();
-        }
+            },
+        )
+        .unwrap();
+        execute_object_method_call_after_live(
+            &runtime,
+            handle.object_id(),
+            handle.generation(),
+            handle.object_kind(),
+            || -> Result<_, maleicacid_tuner_hal2_common::HalError> {
+                Ok((AidlMethodCall::DvrStart, ()))
+            },
+            |runtime, dispatch, ()| {
+                runtime.start_dvr_for_object(handle.object_id(), handle.generation(), dispatch)
+            },
+        )
+        .unwrap();
         (context, runtime, handle)
     }
 

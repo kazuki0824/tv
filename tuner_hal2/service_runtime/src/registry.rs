@@ -126,7 +126,6 @@ pub enum RegistryCommitError {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeRegistryKind {
     Demux,
-    Lnb,
     Filter,
     Dvr,
     Descrambler,

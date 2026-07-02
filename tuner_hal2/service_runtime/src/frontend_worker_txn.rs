@@ -25,9 +25,9 @@ pub type FrontendScanEndNotifier =
 
 type SharedRuntime = Arc<Mutex<TunerServiceRuntime>>;
 
-type DemuxSnapshotList = Vec<(crate::DemuxRuntimeId, DemuxRuntimeSnapshot)>;
+type DemuxSnapshotList = Vec<(crate::registry::DemuxRuntimeId, DemuxRuntimeSnapshot)>;
 
-type BoundDemuxGenerationSnapshot = Vec<(crate::DemuxRuntimeId, u64)>;
+type BoundDemuxGenerationSnapshot = Vec<(crate::registry::DemuxRuntimeId, u64)>;
 
 struct FrontendWorkerReplacementTicket {
     object_id: AidlObjectId,

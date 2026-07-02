@@ -4,10 +4,9 @@ use super::{
     ActiveDescramblerSnapshot, BTreeMap, BTreeSet, DemuxRuntimeId, DescrambleFailure,
     DescrambleOutcome, DescramblePacketDecision, DescramblePacketFlow, DescramblerDiagnosticKind,
     DescramblerDiagnosticRecord, FrontendRuntimeId, FrontendRuntimeState, GenerationBoundaryReport,
-    HalError, HalInternalKind, HalInvalidStateKind, PacketDescramblePolicyFailure, PacketPid,
-    PacketPolicyAction, PipelineAssemblySuppressionReason, PipelineBoundaryReason,
-    PipelineDiagnostic, PipelineReport, TsInputOrigin, TsPacketValidationError,
-    TunerServiceRuntime, ValidatedTsPacket, TS_PACKET_SIZE,
+    HalError, HalInvalidStateKind, PacketDescramblePolicyFailure, PacketPid, PacketPolicyAction,
+    PipelineAssemblySuppressionReason, PipelineBoundaryReason, PipelineDiagnostic, PipelineReport,
+    TsInputOrigin, TsPacketValidationError, TunerServiceRuntime, ValidatedTsPacket, TS_PACKET_SIZE,
 };
 
 fn descramble_failure_for_ts_validation_error(error: TsPacketValidationError) -> DescrambleFailure {
@@ -143,28 +142,6 @@ impl TunerServiceRuntime {
         }
         self.registry.unbind_frontend_demuxes(frontend_key);
         Ok(reports)
-    }
-
-    fn transact_quarantine_frontend_and_bound_demuxes(
-        &mut self,
-        frontend_id: i32,
-        error: HalError,
-    ) -> Result<Vec<DemuxRuntimeId>, HalError> {
-        let frontend_key = FrontendRuntimeId(frontend_id);
-        let demux_ids = self
-            .registry
-            .quarantine_bound_demuxes_for_frontend(frontend_key);
-        let runtime = self
-            .registry
-            .frontend_runtime_mut(frontend_key)
-            .ok_or_else(|| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "frontend runtime is missing for quarantine",
-                )
-            })?;
-        runtime.mark_failed(error);
-        Ok(demux_ids)
     }
 
     fn transact_push_frontend_ts_packet_to_bound_demuxes(
@@ -556,24 +533,6 @@ impl<'a> PacketTxn<'a> {
     ) -> Result<Vec<GenerationBoundaryReport>, HalError> {
         self.runtime
             .transact_reset_bound_demuxes_for_frontend_tune_start(frontend_id)
-    }
-
-    pub(crate) fn reset_and_unbind_bound_demuxes_for_frontend(
-        &mut self,
-        frontend_id: i32,
-        reason: PipelineBoundaryReason,
-    ) -> Result<Vec<GenerationBoundaryReport>, HalError> {
-        self.runtime
-            .transact_reset_and_unbind_bound_demuxes_for_frontend(frontend_id, reason)
-    }
-
-    pub(crate) fn quarantine_frontend_and_bound_demuxes(
-        &mut self,
-        frontend_id: i32,
-        error: HalError,
-    ) -> Result<Vec<DemuxRuntimeId>, HalError> {
-        self.runtime
-            .transact_quarantine_frontend_and_bound_demuxes(frontend_id, error)
     }
 
     pub(crate) fn push_frontend_ts_packet_to_bound_demuxes(

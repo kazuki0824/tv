@@ -12,10 +12,8 @@ use maleicacid_tuner_hal2_binder_adapter::AidlApi;
 use maleicacid_tuner_hal2_binder_adapter::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
 use maleicacid_tuner_hal2_service_runtime::{
-    CallbackArtifactCleanupResult, CallbackArtifactResetCommand,
-    CallbackArtifactRuntimeSplitDiagnosticRecord, CallbackArtifactRuntimeSplitOutcome,
-    FrontendProbeOutcome, OwnerCallbackCleanupArtifactCommand, ServiceBootOutcome,
-    TunerServiceRuntime,
+    CallbackArtifactCleanupResult, CallbackArtifactResetCommand, FrontendProbeOutcome,
+    OwnerCallbackCleanupArtifactCommand, ServiceBootOutcome, TunerServiceRuntime,
 };
 
 use crate::callback_store::{AidlCallbackStoreError, CallbackStore};
@@ -92,28 +90,11 @@ impl AidlServiceContext {
         let artifact_result = self.clear_callback_artifact_reset_bridge(&callback_reset_command);
         let drop_leak_result = self.clear_drop_leak_error_records();
         let outcome = runtime.boot_from_probe_results(results);
-        for split_outcome in
-            CallbackArtifactRuntimeSplitOutcome::service_boot_reset_from_attempt_results(
-                artifact_result.clone(),
-                drop_leak_result.clone(),
-                Ok(()),
-            )
-        {
-            runtime.record_callback_artifact_runtime_split_diagnostic(
-                CallbackArtifactRuntimeSplitDiagnosticRecord::service_boot_reset(split_outcome),
-            );
-        }
-        match (artifact_result, drop_leak_result) {
-            (Ok(()), Ok(())) => Ok(outcome),
-            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-            (Err(primary), Err(cleanup)) => Err(
-                maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
-                    "service boot callback artifact/drop-leak reset failed",
-                    primary,
-                    cleanup,
-                ),
-            ),
-        }
+        runtime.finish_service_boot_reset_after_artifact_result_use_case(
+            outcome,
+            artifact_result,
+            drop_leak_result,
+        )
     }
 
     pub(crate) fn runtime(&self) -> SharedTunerRuntime {

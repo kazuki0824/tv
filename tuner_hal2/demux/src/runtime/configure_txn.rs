@@ -7,7 +7,6 @@ use crate::packet_pipeline::{FilterPipelineConfig, PipelineOpenKind};
 pub enum FilterConfigureStep {
     ValidateState,
     ValidateSettings,
-    StopWorker,
     ClearOldFmq,
     ClearOldAvBacking,
     DisconnectOldSource,
@@ -21,7 +20,6 @@ pub enum FilterConfigureStep {
 pub enum DvrConfigureStep {
     ValidateState,
     ValidateSettings,
-    StopWorker,
     ClearQueue,
     ResetPlaybackAssembler,
     ApplySoftDemuxConfig,
@@ -115,7 +113,6 @@ impl FilterConfigureTxn {
             });
             return (self, Err(DemuxRuntimeError::invalid_state(filter_id)));
         }
-        self.record_step(FilterConfigureStep::StopWorker);
         self.record_step(FilterConfigureStep::ClearOldFmq);
         if snapshot.queue_present {
             if let Err(err) = demux.clear_existing_filter_queue(self.filter_id) {
@@ -224,7 +221,6 @@ impl DvrConfigureTxn {
             }
         };
         self.record_step(DvrConfigureStep::ValidateSettings);
-        self.record_step(DvrConfigureStep::StopWorker);
         self.record_step(DvrConfigureStep::ClearQueue);
         if snapshot.queue_present {
             if let Err(err) = demux.clear_dvr_queue_runtime(self.dvr_id) {

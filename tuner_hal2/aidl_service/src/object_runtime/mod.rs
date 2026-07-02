@@ -15,7 +15,6 @@ use maleicacid_tuner_hal2_service_runtime::{
         ObjectCloseUseCasePlan, ObjectRuntimeCleanupCommand,
     },
     object_domain_cleanup::{ObjectDomainCleanupCommand, ObjectDomainCleanupExecutor},
-    object_lifecycle::lnb_public_id_for_live_object_result,
     object_method_txn::{
         execute_object_method_call_after_live, execute_object_query_call_after_live,
         execute_object_query_call_after_live_with_aidl_input_conversion,
@@ -461,12 +460,7 @@ impl<'a> AidlObjectDomainCleanupExecutor<'a> {
                 "service runtime lock poisoned during LNB drop-leak domain cleanup",
             )
         })?;
-        let lnb_id = lnb_public_id_for_live_object_result(
-            &guard,
-            command.object_id(),
-            command.generation(),
-        )?;
-        guard.record_lnb_drop_leak(lnb_id)
+        guard.record_lnb_drop_leak_after_domain_cleanup_command(command)
     }
 }
 
@@ -628,6 +622,7 @@ mod tests {
     use crate::service_context::AidlServiceContext;
     use maleicacid_tuner_hal2_binder_adapter::{
         AidlApi, AidlMethodCall, AidlObjectGeneration, AidlObjectId, AidlObjectKind,
+        RuntimeExecutableRequest,
     };
     use maleicacid_tuner_hal2_resource_ledger::CleanupStep;
     use maleicacid_tuner_hal2_service_runtime::{RuntimeObjectLifecycle, RuntimeOwnerRelation};
@@ -639,48 +634,158 @@ mod tests {
         public_runtime_id: i64,
     ) -> SharedTunerRuntime {
         let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
-        let mut guard = runtime.lock().unwrap();
         let ledger_id = match kind {
-            AidlObjectKind::Demux => guard.allocate_demux_runtime().unwrap().id.0 as i64,
-            AidlObjectKind::Filter => {
-                let demux = guard.allocate_demux_runtime().unwrap();
-                let filter = guard.allocate_filter_runtime(demux.id.0).unwrap();
+            AidlObjectKind::Demux => {
+                let mut guard = runtime.lock().unwrap();
+                let entry = guard
+                    .open_demux_root_object(AidlMethodCall::PublicApi {
+                        object: AidlObjectKind::Tuner,
+                        api: AidlApi::TunerOpenDemux,
+                    })
+                    .unwrap();
                 guard
-                    .register_demux_filter_runtime(
-                        demux.id.0,
-                        filter.id.0,
-                        &maleicacid_tuner_hal2_demux::OpenFilterRequest {
+                    .unregister_aidl_object_after_registration_failure(
+                        entry.object_id,
+                        entry.generation,
+                    )
+                    .unwrap();
+                entry.ledger_id.0
+            }
+            AidlObjectKind::Filter => {
+                let owner = {
+                    let mut guard = runtime.lock().unwrap();
+                    guard
+                        .open_demux_root_object(AidlMethodCall::PublicApi {
+                            object: AidlObjectKind::Tuner,
+                            api: AidlApi::TunerOpenDemux,
+                        })
+                        .unwrap()
+                };
+                let runtime_open = execute_object_method_call_after_live(
+                    &runtime,
+                    owner.object_id,
+                    owner.generation,
+                    AidlObjectKind::Demux,
+                    || -> Result<_, maleicacid_tuner_hal2_common::HalError> {
+                        let request = maleicacid_tuner_hal2_demux::OpenFilterRequest {
                             open_type: maleicacid_tuner_hal2_demux::FilterOpenType::TsRaw,
                             buffer_size: 4096,
                             callback_present: true,
+                        };
+                        Ok((
+                            AidlMethodCall::DemuxOpenFilter(RuntimeExecutableRequest::OpenFilter(
+                                request.clone(),
+                            )),
+                            request,
+                        ))
+                    },
+                    |runtime, dispatch, request| {
+                        runtime.open_filter_child_runtime_for_demux_object(
+                            owner.object_id,
+                            owner.generation,
+                            &request,
+                            dispatch,
+                        )
+                    },
+                )
+                .unwrap();
+                let mut guard = runtime.lock().unwrap();
+                guard
+                    .unregister_aidl_object_after_registration_failure(
+                        runtime_open.runtime_entry.object_id,
+                        runtime_open.runtime_entry.generation,
+                    )
+                    .unwrap();
+                guard
+                    .register_aidl_object_for_runtime(
+                        kind,
+                        object_id,
+                        generation,
+                        i64::from(runtime_open.filter_id),
+                        RuntimeOwnerRelation::Demux {
+                            demux: owner.object_id,
+                            generation: owner.generation,
                         },
                     )
                     .unwrap();
-                filter.id.0 as i64
+                drop(guard);
+                return runtime;
             }
             AidlObjectKind::Dvr => {
-                let demux = guard.allocate_demux_runtime().unwrap();
-                let dvr = guard.allocate_dvr_runtime(demux.id.0).unwrap();
-                guard
-                    .register_demux_dvr_runtime(
-                        demux.id.0,
-                        dvr.id.0,
-                        &maleicacid_tuner_hal2_binder_adapter::OpenDvrRequest {
+                let owner = {
+                    let mut guard = runtime.lock().unwrap();
+                    guard
+                        .open_demux_root_object(AidlMethodCall::PublicApi {
+                            object: AidlObjectKind::Tuner,
+                            api: AidlApi::TunerOpenDemux,
+                        })
+                        .unwrap()
+                };
+                let runtime_open = execute_object_method_call_after_live(
+                    &runtime,
+                    owner.object_id,
+                    owner.generation,
+                    AidlObjectKind::Demux,
+                    || -> Result<_, maleicacid_tuner_hal2_common::HalError> {
+                        let request = maleicacid_tuner_hal2_binder_adapter::OpenDvrRequest {
                             kind: maleicacid_tuner_hal2_binder_adapter::DvrOpenKind::Record,
                             buffer_size: 4096,
-                        },
-                        true,
+                        };
+                        Ok((AidlMethodCall::DemuxOpenDvr(request.clone()), request))
+                    },
+                    |runtime, dispatch, request| {
+                        runtime.open_dvr_child_runtime_for_demux_object(
+                            owner.object_id,
+                            owner.generation,
+                            request,
+                            dispatch,
+                        )
+                    },
+                )
+                .unwrap();
+                let mut guard = runtime.lock().unwrap();
+                guard
+                    .unregister_aidl_object_after_registration_failure(
+                        runtime_open.runtime_entry.object_id,
+                        runtime_open.runtime_entry.generation,
                     )
                     .unwrap();
-                dvr.id.0 as i64
+                guard
+                    .register_aidl_object_for_runtime(
+                        kind,
+                        object_id,
+                        generation,
+                        i64::from(runtime_open.dvr_id),
+                        RuntimeOwnerRelation::Demux {
+                            demux: owner.object_id,
+                            generation: owner.generation,
+                        },
+                    )
+                    .unwrap();
+                drop(guard);
+                return runtime;
             }
             AidlObjectKind::Descrambler => {
-                guard.allocate_descrambler_runtime().unwrap().id.0 as i64
+                let mut guard = runtime.lock().unwrap();
+                let entry = guard
+                    .open_descrambler_root_object(AidlMethodCall::PublicApi {
+                        object: AidlObjectKind::Tuner,
+                        api: AidlApi::TunerOpenDescrambler,
+                    })
+                    .unwrap();
+                guard
+                    .unregister_aidl_object_after_registration_failure(
+                        entry.object_id,
+                        entry.generation,
+                    )
+                    .unwrap();
+                entry.ledger_id.0
             }
             AidlObjectKind::Frontend | AidlObjectKind::Lnb | AidlObjectKind::Tuner => {
                 public_runtime_id
             }
         };
+        let mut guard = runtime.lock().unwrap();
         guard
             .register_aidl_object_for_runtime(
                 kind,
@@ -1263,7 +1368,7 @@ mod tests {
     }
 
     #[test]
-    fn close_object_after_close_preflight_allows_cleanup_failed_retry() {
+    fn close_object_after_close_preflight_retries_cleanup_failed_object() {
         let handle = AidlObjectHandle::new(
             AidlObjectKind::Demux,
             AidlObjectId(91_006),
@@ -1293,21 +1398,22 @@ mod tests {
             }
         );
 
-        runtime.lock().unwrap().allocate_demux_runtime().unwrap();
-        close_object_after_close_preflight(
+        let second = close_object_after_close_preflight(
             &context_for_runtime(&runtime),
             handle,
             AidlMethodCall::DemuxClose,
-        )
-        .expect("close retry from cleanup failed succeeds");
+        );
 
+        assert!(second.is_err());
         assert_eq!(
             runtime
                 .lock()
                 .unwrap()
                 .aidl_object_lifecycle(AidlObjectId(91_006))
                 .unwrap(),
-            RuntimeObjectLifecycle::Closed
+            RuntimeObjectLifecycle::CleanupFailed {
+                step: CleanupStep::UnregisterRuntime
+            }
         );
     }
 
