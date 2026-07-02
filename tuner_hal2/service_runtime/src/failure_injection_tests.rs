@@ -1,11 +1,14 @@
 use maleicacid_tuner_hal2_common::{HalError, HalInvalidStateKind};
-use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
+use maleicacid_tuner_hal2_domain_request::{
+    AidlApi, AidlObjectGeneration, AidlObjectId, AidlObjectKind,
+};
 use maleicacid_tuner_hal2_resource_ledger::{CleanupStep, LedgerGeneration, LedgerId};
 
 use crate::object_close_txn::mark_object_close_cleanup_failed_cascade;
 use crate::open_rollback::finish_open_rollback;
 use crate::{
-    RuntimeObjectEntry, RuntimeObjectLifecycle, RuntimeOwnerRelation, TunerServiceRuntime,
+    CallbackArtifactCleanupResult, RuntimeObjectEntry, RuntimeObjectLifecycle,
+    RuntimeOwnerRelation, TunerServiceRuntime,
 };
 
 fn primary_failure() -> HalError {
@@ -92,19 +95,21 @@ fn filter_delivery_failure_finish_use_case_owns_diagnostic_and_composition() {
 
     let mut runtime = TunerServiceRuntime::new();
     let primary = HalError::callback_failed("IFilterCallback.onFilterEvent", "binder failure");
-    let result = runtime.finish_callback_delivery_failure_use_case(
-        CallbackDeliveryFailureReport::filter(
+    let result =
+        runtime.finish_callback_delivery_failure_use_case(CallbackDeliveryFailureReport::filter(
             AidlObjectId(94_001),
             AidlObjectGeneration(1),
             CallbackDeliveryFailurePhase::BinderDelivery,
             primary,
-        ),
-    );
+        ));
 
     let Err(error) = result else {
         panic!("expected service_runtime to return callback delivery failure");
     };
-    assert!(matches!(error.primary_error(), HalError::CallbackFailed { .. }));
+    assert!(matches!(
+        error.primary_error(),
+        HalError::CallbackFailed { .. }
+    ));
     assert!(error.cleanup_error().is_some());
     assert!(!runtime.filter_callback_delivery_diagnostics().is_empty());
 }
@@ -116,22 +121,26 @@ fn dvr_delivery_failure_finish_use_case_records_diagnostic_and_composes_marking_
 
     let mut runtime = TunerServiceRuntime::new();
     let primary = HalError::callback_failed("IDvrCallback.onRecordStatus", "binder failure");
-    let result = runtime.finish_callback_delivery_failure_use_case(
-        CallbackDeliveryFailureReport::dvr(
+    let result =
+        runtime.finish_callback_delivery_failure_use_case(CallbackDeliveryFailureReport::dvr(
             AidlObjectId(94_002),
             AidlObjectGeneration(1),
             CallbackDeliveryFailurePhase::BinderDelivery,
             DvrPostCommitNotificationPhase::InitialStatusDelivery,
             primary,
-        ),
-    );
+        ));
 
     let Err(error) = result else {
         panic!("expected service_runtime to return DVR callback delivery failure");
     };
-    assert!(matches!(error.primary_error(), HalError::CallbackFailed { .. }));
+    assert!(matches!(
+        error.primary_error(),
+        HalError::CallbackFailed { .. }
+    ));
     assert!(error.cleanup_error().is_some());
-    assert!(!runtime.dvr_post_commit_notification_diagnostics().is_empty());
+    assert!(!runtime
+        .dvr_post_commit_notification_diagnostics()
+        .is_empty());
 }
 
 fn record_runtime_callback_registration(
@@ -139,7 +148,7 @@ fn record_runtime_callback_registration(
     owner_kind: AidlObjectKind,
     owner_id: AidlObjectId,
     owner_generation: AidlObjectGeneration,
-    api: maleicacid_tuner_hal2_domain_request::AidlApi,
+    api: AidlApi,
 ) {
     runtime
         .register_aidl_object_for_runtime(
@@ -163,10 +172,76 @@ fn record_runtime_callback_registration(
 }
 
 #[test]
+fn owner_callback_cleanup_registry_missing_is_runtime_failure() {
+    use crate::diagnostics::CallbackArtifactRuntimeSplitOutcome;
+
+    let mut runtime = TunerServiceRuntime::new();
+    let owner_id = AidlObjectId(94_020);
+    let owner_generation = AidlObjectGeneration(1);
+    let command = runtime.plan_owner_callback_cleanup_artifact_command(
+        AidlObjectKind::Frontend,
+        owner_id,
+        owner_generation,
+        Some(AidlApi::FrontendSetCallback),
+        "failure injection owner callback cleanup",
+    );
+
+    let result = runtime.finish_owner_callback_cleanup_use_case(
+        command,
+        Ok(()),
+        Ok(CallbackArtifactCleanupResult::Cleared),
+    );
+
+    let Err(error) = result else {
+        panic!("expected runtime registry missing to fail cleanup finish");
+    };
+    assert!(matches!(error.primary_error(), HalError::Internal { .. }));
+    assert!(runtime
+        .callback_artifact_runtime_split_diagnostics()
+        .iter()
+        .any(
+            |record| record.outcome == CallbackArtifactRuntimeSplitOutcome::RuntimeRegistryMissing
+        ));
+}
+
+#[test]
+fn owner_callback_cleanup_marking_missing_is_composed_cleanup_failure() {
+    use crate::diagnostics::CallbackArtifactRuntimeSplitOutcome;
+
+    let mut runtime = TunerServiceRuntime::new();
+    let owner_id = AidlObjectId(94_021);
+    let owner_generation = AidlObjectGeneration(1);
+    let command = runtime.plan_owner_callback_cleanup_artifact_command(
+        AidlObjectKind::Frontend,
+        owner_id,
+        owner_generation,
+        Some(AidlApi::FrontendSetCallback),
+        "failure injection owner callback cleanup",
+    );
+
+    let result =
+        runtime.finish_owner_callback_cleanup_use_case(command, Ok(()), Err(cleanup_failure()));
+
+    let Err(error) = result else {
+        panic!("expected unhealthy marking failure to be composed");
+    };
+    assert!(matches!(
+        error.primary_error(),
+        HalError::CleanupFailed { .. }
+    ));
+    assert!(error.cleanup_error().is_some());
+    assert!(runtime
+        .callback_artifact_runtime_split_diagnostics()
+        .iter()
+        .any(
+            |record| record.outcome == CallbackArtifactRuntimeSplitOutcome::RuntimeRegistryMissing
+        ));
+}
+
+#[test]
 fn filter_callback_artifact_lookup_failure_records_diagnostic_without_unhealthy_marking() {
     use crate::boot::{CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport};
     use crate::CallbackHealthState;
-    use maleicacid_tuner_hal2_domain_request::AidlApi;
 
     let mut runtime = TunerServiceRuntime::new();
     let owner_id = AidlObjectId(94_003);
@@ -179,23 +254,22 @@ fn filter_callback_artifact_lookup_failure_records_diagnostic_without_unhealthy_
         AidlApi::DemuxOpenFilter,
     );
 
-    let primary = HalError::callback_failed(
-        "IFilterCallback.lookup",
-        "callback artifact missing",
-    );
-    let result = runtime.finish_callback_delivery_failure_use_case(
-        CallbackDeliveryFailureReport::filter(
+    let primary = HalError::callback_failed("IFilterCallback.lookup", "callback artifact missing");
+    let result =
+        runtime.finish_callback_delivery_failure_use_case(CallbackDeliveryFailureReport::filter(
             owner_id,
             owner_generation,
             CallbackDeliveryFailurePhase::CallbackArtifactLookup,
             primary,
-        ),
-    );
+        ));
 
     let Err(error) = result else {
         panic!("expected callback artifact lookup failure");
     };
-    assert!(matches!(error.primary_error(), HalError::CallbackFailed { .. }));
+    assert!(matches!(
+        error.primary_error(),
+        HalError::CallbackFailed { .. }
+    ));
     assert!(error.cleanup_error().is_none());
     assert_eq!(
         runtime.callback_registration_health(
@@ -213,7 +287,6 @@ fn filter_callback_artifact_lookup_failure_records_diagnostic_without_unhealthy_
 fn filter_binder_delivery_failure_marks_runtime_callback_unhealthy_when_registry_exists() {
     use crate::boot::{CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport};
     use crate::CallbackHealthState;
-    use maleicacid_tuner_hal2_domain_request::AidlApi;
 
     let mut runtime = TunerServiceRuntime::new();
     let owner_id = AidlObjectId(94_004);
@@ -227,19 +300,21 @@ fn filter_binder_delivery_failure_marks_runtime_callback_unhealthy_when_registry
     );
 
     let primary = HalError::callback_failed("IFilterCallback.onFilterEvent", "binder failure");
-    let result = runtime.finish_callback_delivery_failure_use_case(
-        CallbackDeliveryFailureReport::filter(
+    let result =
+        runtime.finish_callback_delivery_failure_use_case(CallbackDeliveryFailureReport::filter(
             owner_id,
             owner_generation,
             CallbackDeliveryFailurePhase::BinderDelivery,
             primary,
-        ),
-    );
+        ));
 
     let Err(error) = result else {
         panic!("expected binder delivery failure");
     };
-    assert!(matches!(error.primary_error(), HalError::CallbackFailed { .. }));
+    assert!(matches!(
+        error.primary_error(),
+        HalError::CallbackFailed { .. }
+    ));
     assert!(error.cleanup_error().is_some());
     assert_eq!(
         runtime.callback_registration_health(
@@ -272,20 +347,22 @@ fn dvr_callback_artifact_lookup_failure_does_not_mark_registry_unhealthy() {
     );
 
     let primary = HalError::callback_failed("IDvrCallback.lookup", "callback artifact missing");
-    let result = runtime.finish_callback_delivery_failure_use_case(
-        CallbackDeliveryFailureReport::dvr(
+    let result =
+        runtime.finish_callback_delivery_failure_use_case(CallbackDeliveryFailureReport::dvr(
             owner_id,
             owner_generation,
             CallbackDeliveryFailurePhase::CallbackArtifactLookup,
             DvrPostCommitNotificationPhase::InitialStatusDelivery,
             primary,
-        ),
-    );
+        ));
 
     let Err(error) = result else {
         panic!("expected DVR callback artifact lookup failure");
     };
-    assert!(matches!(error.primary_error(), HalError::CallbackFailed { .. }));
+    assert!(matches!(
+        error.primary_error(),
+        HalError::CallbackFailed { .. }
+    ));
     assert!(error.cleanup_error().is_none());
     assert_eq!(
         runtime.callback_registration_health(
@@ -296,7 +373,9 @@ fn dvr_callback_artifact_lookup_failure_does_not_mark_registry_unhealthy() {
         ),
         Some(CallbackHealthState::Registered)
     );
-    assert!(!runtime.dvr_post_commit_notification_diagnostics().is_empty());
+    assert!(!runtime
+        .dvr_post_commit_notification_diagnostics()
+        .is_empty());
 }
 
 #[test]
@@ -304,7 +383,8 @@ fn frontend_scan_end_delivery_failure_composition_is_owned_by_service_runtime() 
     use crate::boot::{CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport};
 
     let mut runtime = TunerServiceRuntime::new();
-    let primary = HalError::callback_failed("IFrontendCallback.onScanMessage(END)", "binder failure");
+    let primary =
+        HalError::callback_failed("IFrontendCallback.onScanMessage(END)", "binder failure");
     let result = runtime.finish_callback_delivery_failure_use_case(
         CallbackDeliveryFailureReport::frontend_scan_end(
             AidlObjectId(94_006),
@@ -319,7 +399,10 @@ fn frontend_scan_end_delivery_failure_composition_is_owned_by_service_runtime() 
     let Err(error) = result else {
         panic!("expected frontend scan end delivery failure");
     };
-    assert!(matches!(error.primary_error(), HalError::CallbackFailed { .. }));
+    assert!(matches!(
+        error.primary_error(),
+        HalError::CallbackFailed { .. }
+    ));
     assert!(error.cleanup_error().is_some());
 }
 
@@ -358,7 +441,10 @@ fn frontend_scan_end_artifact_lookup_failure_does_not_mark_runtime_callback_unhe
     let Err(error) = result else {
         panic!("expected frontend artifact lookup failure");
     };
-    assert!(matches!(error.primary_error(), HalError::CallbackFailed { .. }));
+    assert!(matches!(
+        error.primary_error(),
+        HalError::CallbackFailed { .. }
+    ));
     assert!(error.cleanup_error().is_none());
     assert_eq!(
         runtime.callback_registration_health(

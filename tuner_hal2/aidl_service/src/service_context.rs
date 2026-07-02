@@ -7,16 +7,15 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     IFrontendCallback::IFrontendCallback, ILnbCallback::ILnbCallback,
 };
 use binder::{Status, Strong};
-use maleicacid_tuner_hal2_binder_adapter::{
-    AidlObjectGeneration, AidlObjectId, AidlObjectKind,
-};
 #[cfg(test)]
 use maleicacid_tuner_hal2_binder_adapter::AidlApi;
+use maleicacid_tuner_hal2_binder_adapter::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
 use maleicacid_tuner_hal2_service_runtime::{
-    CallbackArtifactResetCommand, CallbackArtifactRuntimeSplitDiagnosticRecord,
-    CallbackArtifactRuntimeSplitOutcome, FrontendProbeOutcome,
-    OwnerCallbackCleanupArtifactCommand, ServiceBootOutcome, TunerServiceRuntime,
+    CallbackArtifactCleanupResult, CallbackArtifactResetCommand,
+    CallbackArtifactRuntimeSplitDiagnosticRecord, CallbackArtifactRuntimeSplitOutcome,
+    FrontendProbeOutcome, OwnerCallbackCleanupArtifactCommand, ServiceBootOutcome,
+    TunerServiceRuntime,
 };
 
 use crate::callback_store::{AidlCallbackStoreError, CallbackStore};
@@ -93,11 +92,13 @@ impl AidlServiceContext {
         let artifact_result = self.clear_callback_artifact_reset_bridge(&callback_reset_command);
         let drop_leak_result = self.clear_drop_leak_error_records();
         let outcome = runtime.boot_from_probe_results(results);
-        for split_outcome in CallbackArtifactRuntimeSplitOutcome::service_boot_reset_from_attempt_results(
-            artifact_result.clone(),
-            drop_leak_result.clone(),
-            Ok(()),
-        ) {
+        for split_outcome in
+            CallbackArtifactRuntimeSplitOutcome::service_boot_reset_from_attempt_results(
+                artifact_result.clone(),
+                drop_leak_result.clone(),
+                Ok(()),
+            )
+        {
             runtime.record_callback_artifact_runtime_split_diagnostic(
                 CallbackArtifactRuntimeSplitDiagnosticRecord::service_boot_reset(split_outcome),
             );
@@ -105,11 +106,13 @@ impl AidlServiceContext {
         match (artifact_result, drop_leak_result) {
             (Ok(()), Ok(())) => Ok(outcome),
             (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-            (Err(primary), Err(cleanup)) => Err(maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
-                "service boot callback artifact/drop-leak reset failed",
-                primary,
-                cleanup,
-            )),
+            (Err(primary), Err(cleanup)) => Err(
+                maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
+                    "service boot callback artifact/drop-leak reset failed",
+                    primary,
+                    cleanup,
+                ),
+            ),
         }
     }
 
@@ -268,14 +271,20 @@ impl AidlServiceContext {
     pub(crate) fn clear_owner_callback_artifacts_bridge(
         &self,
         command: &OwnerCallbackCleanupArtifactCommand,
-    ) -> Result<(), HalError> {
+    ) -> Result<CallbackArtifactCleanupResult, HalError> {
         let handle = AidlObjectHandle::new(
             command.owner_kind(),
             command.owner_id(),
             command.owner_generation(),
         );
         self.clear_owner_callbacks_raw(handle)
-            .map(|_| ())
+            .map(|removed| {
+                if removed == 0 {
+                    CallbackArtifactCleanupResult::NoArtifact
+                } else {
+                    CallbackArtifactCleanupResult::Cleared
+                }
+            })
             .map_err(|error| error.into_hal_error(command.cleanup_failure_message()))
     }
 

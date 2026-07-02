@@ -4,6 +4,9 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use crate::descrambler_key_table::DescramblerKeyLookupError;
+#[cfg(test)]
+use crate::descrambler_key_table::DescramblerKeySlotId;
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FirstErrorCollector, FrontendBackendKind, FrontendDevicePath,
     FrontendSystem, FrontendTuneRequest, HalError, HalInternalKind, HalInvalidArgumentKind,
@@ -27,9 +30,6 @@ use maleicacid_tuner_hal2_demux::{
     DvrConfigureOutcome, DvrConfigureTxn, DvrRuntime, DvrRuntimeState, FilterConfigureOutcome,
     FilterConfigureTxn, FilterRuntime, FilterRuntimeState, TsInputOrigin,
 };
-use crate::descrambler_key_table::DescramblerKeyLookupError;
-#[cfg(test)]
-use crate::descrambler_key_table::DescramblerKeySlotId;
 use maleicacid_tuner_hal2_descrambler::{
     descramble_ts_packet_in_place, packet_policy_for_descramble_failure, DescrambleFailure,
     DescrambleOutcome, DescramblerKeySlot, DescramblerKeyToken, DescramblerKeyTokenError,
@@ -55,17 +55,17 @@ use crate::command_dispatch::{
     RuntimeCommandDispatchError, RuntimeCommandDispatchPlan, RuntimeCommandDispatcher,
 };
 use crate::descrambler_session::{
-    DescramblerCleanupTxnError, DescramblerClearKeyTxnError,
-    DescramblerReplaceKeyOutcome, DescramblerReplaceKeyTxnError,
-    DescramblerSessionFailureKind,
+    DescramblerCleanupTxnError, DescramblerClearKeyTxnError, DescramblerReplaceKeyOutcome,
+    DescramblerReplaceKeyTxnError, DescramblerSessionFailureKind,
 };
 use crate::diagnostics::{
     BoundedDiagnosticStore, CallbackArtifactRuntimeSplitDiagnosticRecord,
-    CallbackArtifactRuntimeSplitOutcome, CallbackArtifactRuntimeSplitPhase, CapabilitySuppressionReason,
-    ChildOpenRollbackDiagnosticRecord, DescramblerDiagnosticKind, DescramblerDiagnosticPhase,
-    DescramblerDiagnosticRecord, DvrPostCommitNotificationDiagnosticRecord,
-    DvrPostCommitNotificationPhase, FilterCallbackDeliveryDiagnosticPhase,
-    FilterCallbackDeliveryDiagnosticRecord, StartupDiagnosticRecord,
+    CallbackArtifactRuntimeSplitOutcome, CallbackArtifactRuntimeSplitPhase,
+    CapabilitySuppressionReason, ChildOpenRollbackDiagnosticRecord, DescramblerDiagnosticKind,
+    DescramblerDiagnosticPhase, DescramblerDiagnosticRecord,
+    DvrPostCommitNotificationDiagnosticRecord, DvrPostCommitNotificationPhase,
+    FilterCallbackDeliveryDiagnosticPhase, FilterCallbackDeliveryDiagnosticRecord,
+    StartupDiagnosticRecord,
 };
 use crate::dispatch::{
     adapter_transactions_are_covered, dispatch_target_for, ServiceRuntimeDispatchTarget,
@@ -516,7 +516,6 @@ pub struct TunerServiceRuntime {
     next_aidl_object_id: i64,
 }
 
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OwnerCallbackCleanupArtifactCommand {
     owner_kind: AidlObjectKind,
@@ -531,6 +530,11 @@ pub struct CallbackArtifactResetCommand {
     failure_message: &'static str,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CallbackArtifactCleanupResult {
+    Cleared,
+    NoArtifact,
+}
 
 #[derive(Debug)]
 pub struct OwnerCallbackCleanupUseCaseOutcome<T> {
@@ -539,8 +543,14 @@ pub struct OwnerCallbackCleanupUseCaseOutcome<T> {
 }
 
 impl<T> OwnerCallbackCleanupUseCaseOutcome<T> {
-    fn new(command: OwnerCallbackCleanupArtifactCommand, primary_result: Result<T, HalError>) -> Self {
-        Self { command, primary_result }
+    fn new(
+        command: OwnerCallbackCleanupArtifactCommand,
+        primary_result: Result<T, HalError>,
+    ) -> Self {
+        Self {
+            command,
+            primary_result,
+        }
     }
 
     pub fn command(&self) -> &OwnerCallbackCleanupArtifactCommand {
@@ -563,14 +573,22 @@ impl CallbackRegistrationArtifactOutcome {
         rollback_command: Option<OwnerCallbackCleanupArtifactCommand>,
         primary_result: Result<(), HalError>,
     ) -> Self {
-        Self { rollback_command, primary_result }
+        Self {
+            rollback_command,
+            primary_result,
+        }
     }
 
     pub fn rollback_command(&self) -> Option<&OwnerCallbackCleanupArtifactCommand> {
         self.rollback_command.as_ref()
     }
 
-    fn into_parts(self) -> (Option<OwnerCallbackCleanupArtifactCommand>, Result<(), HalError>) {
+    fn into_parts(
+        self,
+    ) -> (
+        Option<OwnerCallbackCleanupArtifactCommand>,
+        Result<(), HalError>,
+    ) {
         (self.rollback_command, self.primary_result)
     }
 }
@@ -720,6 +738,19 @@ impl OwnerCallbackCleanupArtifactCommand {
     }
 }
 
+fn callback_runtime_registry_missing_error(
+    command: &OwnerCallbackCleanupArtifactCommand,
+    action: &'static str,
+) -> HalError {
+    HalError::internal(
+        HalInternalKind::InvariantViolation,
+        format!(
+            "callback runtime registry entry missing while {action}: {:?} {:?} {:?}",
+            command.owner_kind, command.owner_id, command.owner_generation
+        ),
+    )
+}
+
 impl CallbackArtifactResetCommand {
     pub(crate) fn new(failure_message: &'static str) -> Self {
         Self { failure_message }
@@ -731,7 +762,9 @@ impl CallbackArtifactResetCommand {
 }
 
 impl TunerServiceRuntime {
-    pub fn plan_callback_artifact_reset_before_boot_use_case(&self) -> CallbackArtifactResetCommand {
+    pub fn plan_callback_artifact_reset_before_boot_use_case(
+        &self,
+    ) -> CallbackArtifactResetCommand {
         CallbackArtifactResetCommand::new("callback artifact reset failed before runtime boot")
     }
 
@@ -880,7 +913,8 @@ impl TunerServiceRuntime {
     }
 
     pub fn callback_artifact_runtime_split_diagnostics_dropped_count(&self) -> u64 {
-        self.callback_artifact_runtime_split_diagnostics.dropped_count()
+        self.callback_artifact_runtime_split_diagnostics
+            .dropped_count()
     }
 
     #[cfg(test)]
@@ -920,7 +954,8 @@ impl TunerServiceRuntime {
         &mut self,
         record: CallbackArtifactRuntimeSplitDiagnosticRecord,
     ) {
-        self.callback_artifact_runtime_split_diagnostics.push(record);
+        self.callback_artifact_runtime_split_diagnostics
+            .push(record);
     }
 
     pub fn install_filter_event_dispatcher(
@@ -952,7 +987,6 @@ impl TunerServiceRuntime {
     fn record_descrambler_diagnostic(&mut self, record: DescramblerDiagnosticRecord) {
         self.descrambler_diagnostics.push(record);
     }
-
 
     pub fn finish_filter_child_open_artifact_retain_failure_use_case(
         &mut self,
@@ -1045,11 +1079,8 @@ impl TunerServiceRuntime {
         owner_generation: AidlObjectGeneration,
         dvr_id: i32,
     ) -> OwnerCallbackCleanupUseCaseOutcome<()> {
-        let primary_result = self.rollback_dvr_child_open_after_aidl_failure(
-            owner_id,
-            owner_generation,
-            dvr_id,
-        );
+        let primary_result =
+            self.rollback_dvr_child_open_after_aidl_failure(owner_id, owner_generation, dvr_id);
         let command = OwnerCallbackCleanupArtifactCommand::new(
             AidlObjectKind::Dvr,
             owner_id,
@@ -1076,11 +1107,7 @@ impl TunerServiceRuntime {
                     dispatch,
                 ),
             (AidlObjectKind::Lnb, AidlApi::LnbSetCallback) => self
-                .clear_lnb_callback_registration_for_object(
-                    owner_id,
-                    owner_generation,
-                    dispatch,
-                ),
+                .clear_lnb_callback_registration_for_object(owner_id, owner_generation, dispatch),
             _ => Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
                 format!(
@@ -1193,16 +1220,20 @@ impl TunerServiceRuntime {
     pub fn finish_owner_callback_cleanup_outcome<T>(
         &mut self,
         outcome: OwnerCallbackCleanupUseCaseOutcome<T>,
-        artifact_cleanup_result: Result<(), HalError>,
+        artifact_cleanup_result: Result<CallbackArtifactCleanupResult, HalError>,
     ) -> Result<T, HalError> {
         let (command, primary_result) = outcome.into_parts();
-        self.finish_owner_callback_cleanup_use_case(command, primary_result, artifact_cleanup_result)
+        self.finish_owner_callback_cleanup_use_case(
+            command,
+            primary_result,
+            artifact_cleanup_result,
+        )
     }
 
     pub fn finish_object_close_callback_cleanup_outcome(
         &mut self,
         command: OwnerCallbackCleanupArtifactCommand,
-        artifact_cleanup_result: Result<(), HalError>,
+        artifact_cleanup_result: Result<CallbackArtifactCleanupResult, HalError>,
     ) -> Result<(), HalError> {
         self.finish_owner_callback_cleanup_use_case_with_phase(
             CallbackArtifactRuntimeSplitPhase::ObjectCloseCleanupFinish,
@@ -1215,7 +1246,7 @@ impl TunerServiceRuntime {
     pub fn finish_callback_registration_after_artifact_result_use_case(
         &mut self,
         outcome: CallbackRegistrationArtifactOutcome,
-        rollback_result: Option<Result<(), HalError>>,
+        rollback_result: Option<Result<CallbackArtifactCleanupResult, HalError>>,
     ) -> Result<(), HalError> {
         let (rollback_command, primary_result) = outcome.into_parts();
         match rollback_command {
@@ -1313,8 +1344,8 @@ impl TunerServiceRuntime {
             );
             first_error = Some(error);
         }
-        if let Err(error) = self
-            .mark_filter_callback_unhealthy_for_object(owner_id, owner_generation)
+        if let Err(error) =
+            self.mark_filter_callback_unhealthy_for_object(owner_id, owner_generation)
         {
             self.record_filter_callback_delivery_diagnostic(
                 FilterCallbackDeliveryDiagnosticRecord::new(
@@ -1352,8 +1383,7 @@ impl TunerServiceRuntime {
                 "DVR callback registry entry missing while marking unhealthy",
             ));
         }
-        if let Err(error) = self
-            .mark_dvr_callback_unhealthy_for_object(owner_id, owner_generation)
+        if let Err(error) = self.mark_dvr_callback_unhealthy_for_object(owner_id, owner_generation)
         {
             if first_error.is_none() {
                 first_error = Some(error);
@@ -1435,10 +1465,9 @@ impl TunerServiceRuntime {
                             )),
                         };
                     };
-                    if let Err(error) = self.mark_frontend_scan_session_callback_failed(
-                        frontend_id,
-                        scan_generation,
-                    ) {
+                    if let Err(error) = self
+                        .mark_frontend_scan_session_callback_failed(frontend_id, scan_generation)
+                    {
                         failures.push_error(error);
                     }
                     if let Err(error) = self.mark_frontend_callback_delivery_failed_use_case(
@@ -1482,7 +1511,7 @@ impl TunerServiceRuntime {
         &mut self,
         command: OwnerCallbackCleanupArtifactCommand,
         primary_result: Result<T, HalError>,
-        artifact_cleanup_result: Result<(), HalError>,
+        artifact_cleanup_result: Result<CallbackArtifactCleanupResult, HalError>,
     ) -> Result<T, HalError> {
         self.finish_owner_callback_cleanup_use_case_with_phase(
             CallbackArtifactRuntimeSplitPhase::OwnerCleanupFinish,
@@ -1497,16 +1526,21 @@ impl TunerServiceRuntime {
         phase: CallbackArtifactRuntimeSplitPhase,
         command: OwnerCallbackCleanupArtifactCommand,
         primary_result: Result<T, HalError>,
-        artifact_cleanup_result: Result<(), HalError>,
+        artifact_cleanup_result: Result<CallbackArtifactCleanupResult, HalError>,
     ) -> Result<T, HalError> {
+        let artifact_was_cleared = matches!(
+            artifact_cleanup_result.as_ref(),
+            Ok(CallbackArtifactCleanupResult::Cleared)
+        );
         let artifact_error = artifact_cleanup_result.err();
 
         let value = match (primary_result, artifact_error.clone()) {
             (Ok(value), None) => value,
             (Ok(_), Some(cleanup_error)) => {
-                if let Some(outcome) =
-                    CallbackArtifactRuntimeSplitOutcome::from_results(Some(cleanup_error.clone()), None)
-                {
+                if let Some(outcome) = CallbackArtifactRuntimeSplitOutcome::from_results(
+                    Some(cleanup_error.clone()),
+                    None,
+                ) {
                     self.record_callback_artifact_runtime_split_diagnostic(
                         CallbackArtifactRuntimeSplitDiagnosticRecord::owner(
                             phase,
@@ -1517,17 +1551,32 @@ impl TunerServiceRuntime {
                         ),
                     );
                 }
-                self.mark_owner_callback_cleanup_failed(&command);
+                let cleanup_error = match self.mark_owner_callback_cleanup_failed(phase, &command) {
+                    Ok(()) => cleanup_error,
+                    Err(mark_error) => compose_primary_cleanup_failure(
+                        command.cleanup_failure_message,
+                        cleanup_error,
+                        mark_error,
+                    ),
+                };
                 return Err(cleanup_error);
             }
             (Err(primary_error), None) => {
-                self.mark_owner_callback_cleanup_failed(&command);
+                let primary_error = match self.mark_owner_callback_cleanup_failed(phase, &command) {
+                    Ok(()) => primary_error,
+                    Err(mark_error) => compose_primary_cleanup_failure(
+                        command.cleanup_failure_message,
+                        primary_error,
+                        mark_error,
+                    ),
+                };
                 return Err(primary_error);
             }
             (Err(primary_error), Some(cleanup_error)) => {
-                if let Some(outcome) =
-                    CallbackArtifactRuntimeSplitOutcome::from_results(Some(cleanup_error.clone()), None)
-                {
+                if let Some(outcome) = CallbackArtifactRuntimeSplitOutcome::from_results(
+                    Some(cleanup_error.clone()),
+                    None,
+                ) {
                     self.record_callback_artifact_runtime_split_diagnostic(
                         CallbackArtifactRuntimeSplitDiagnosticRecord::owner(
                             phase,
@@ -1538,12 +1587,20 @@ impl TunerServiceRuntime {
                         ),
                     );
                 }
-                self.mark_owner_callback_cleanup_failed(&command);
-                return Err(compose_primary_cleanup_failure(
+                let primary_error = compose_primary_cleanup_failure(
                     command.cleanup_failure_message,
                     primary_error,
                     cleanup_error,
-                ));
+                );
+                let primary_error = match self.mark_owner_callback_cleanup_failed(phase, &command) {
+                    Ok(()) => primary_error,
+                    Err(mark_error) => compose_primary_cleanup_failure(
+                        command.cleanup_failure_message,
+                        primary_error,
+                        mark_error,
+                    ),
+                };
+                return Err(primary_error);
             }
         };
 
@@ -1562,24 +1619,50 @@ impl TunerServiceRuntime {
                         CallbackArtifactRuntimeSplitOutcome::RuntimeRegistryMissing,
                     ),
                 );
-                Ok(value)
+                if artifact_was_cleared {
+                    Err(callback_runtime_registry_missing_error(
+                        &command,
+                        "clearing owner callback runtime registry",
+                    ))
+                } else {
+                    Ok(value)
+                }
             }
         }
     }
 
-    fn mark_owner_callback_cleanup_failed(&mut self, command: &OwnerCallbackCleanupArtifactCommand) {
-        match command.registration_api {
-            Some(api) => {
-                self.callback_registry.mark_unhealthy(
-                    command.owner_kind,
-                    command.owner_id,
-                    command.owner_generation,
-                    api,
+    fn mark_owner_callback_cleanup_failed(
+        &mut self,
+        phase: CallbackArtifactRuntimeSplitPhase,
+        command: &OwnerCallbackCleanupArtifactCommand,
+    ) -> Result<(), HalError> {
+        let update = match command.registration_api {
+            Some(api) => self.callback_registry.mark_unhealthy(
+                command.owner_kind,
+                command.owner_id,
+                command.owner_generation,
+                api,
+            ),
+            None => self
+                .callback_registry
+                .mark_owner_unhealthy(command.owner_id, command.owner_generation),
+        };
+        match update {
+            CallbackRegistryUpdate::Updated => Ok(()),
+            CallbackRegistryUpdate::Missing => {
+                self.record_callback_artifact_runtime_split_diagnostic(
+                    CallbackArtifactRuntimeSplitDiagnosticRecord::owner(
+                        phase,
+                        command.owner_kind,
+                        command.owner_id,
+                        command.owner_generation,
+                        CallbackArtifactRuntimeSplitOutcome::RuntimeRegistryMissing,
+                    ),
                 );
-            }
-            None => {
-                self.callback_registry
-                    .mark_owner_unhealthy(command.owner_id, command.owner_generation);
+                Err(callback_runtime_registry_missing_error(
+                    command,
+                    "marking owner callback runtime registry unhealthy",
+                ))
             }
         }
     }

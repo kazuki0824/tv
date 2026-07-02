@@ -39,7 +39,7 @@ pub use runtime::{
     DvrConfigureTxn, DvrRuntime, DvrRuntimeState, DvrStatusEvent, FilterConfigureOutcome,
     FilterConfigureStep, FilterConfigureTxn, FilterRuntime, FilterRuntimeState,
     PlaybackConsumeReport, QueueDescriptorQueryError, QueueDescriptorSnapshot,
-    QueueGrantorDescriptorSnapshot, QueueRuntime, QueueRuntimeError, QueueRuntimeErrorKind,
+    QueueGrantorDescriptorSnapshot, QueueRuntimeError, QueueRuntimeErrorKind,
     SourceBoundaryOutcome, SourceBoundaryStep,
 };
 
@@ -723,6 +723,71 @@ mod tests {
     }
 
     #[test]
+    fn record_dvr_mirror_overflow_is_diagnostic() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(open_filter_runtime_with_queue(
+                36,
+                1,
+                FilterOpenType::TsRecord,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                36,
+                FilterPipelineConfig {
+                    tpid: Some(0x0100),
+                    raw: false,
+                },
+            )
+            .unwrap();
+        demux.start_filter_runtime(36).unwrap();
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                37,
+                1,
+                crate::runtime::DvrKind::Record,
+                1,
+                true,
+            ))
+            .unwrap();
+        demux.configure_dvr_runtime(37).unwrap();
+        demux.attach_dvr_filter(37, 36).unwrap();
+        demux.start_dvr_runtime(37).unwrap();
+        let packet = raw_ts_packet(0x0100, 0, &[0x01, 0x02, 0x03, 0x04]);
+
+        let report = demux.push_ts_packet_from_origin(&packet, TsInputOrigin::Frontend);
+
+        assert!(report.diagnostics.contains(
+            &crate::packet_pipeline::PipelineDiagnostic::RecordDvrMirrorOverflow {
+                pid: packet_pid(0x0100),
+                source_filter_id: 36,
+                dvr_id: 37,
+            }
+        ));
+        assert!(demux.dvr(37).unwrap().pending_overflow());
+    }
+
+    #[test]
+    fn demux_runtime_malformed_packet_reports_drop_without_accepting_packet() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        let malformed = [0xffu8; 187];
+
+        let report = demux.push_ts_packet_from_origin(&malformed, TsInputOrigin::Frontend);
+
+        assert_eq!(report.accepted_packets, 0);
+        assert_eq!(report.dropped_packets, 1);
+        assert_eq!(report.malformed_packets, 1);
+        assert!(report
+            .drop_reasons
+            .contains(&crate::packet_pipeline::PipelineDropReason::MalformedPacket));
+        assert!(report
+            .diagnostics
+            .contains(&crate::packet_pipeline::PipelineDiagnostic::MalformedTsPacket));
+    }
+
+    #[test]
     fn record_dvr_attach_rejects_non_record_filter() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux
@@ -1377,6 +1442,37 @@ mod tests {
             FilterRuntimeState::Stopped
         );
         assert!(demux.filter(18).unwrap().av_backing_present());
+    }
+
+    #[test]
+    fn av_release_fails_when_marker_has_no_runtime_backing() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime(
+                19,
+                1,
+                PipelineOpenKind::Av,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                19,
+                FilterPipelineConfig {
+                    tpid: Some(400),
+                    raw: false,
+                },
+            )
+            .unwrap();
+        assert!(demux.filter(19).unwrap().av_backing_present());
+        assert!(demux.remove_filter_av_backing_for_test(19));
+
+        let error = demux.release_filter_av_handle(19, false, 0).unwrap_err();
+
+        assert_eq!(
+            error.kind,
+            crate::runtime::DemuxRuntimeErrorKind::AvBackingFailure
+        );
     }
 
     #[test]

@@ -16,8 +16,8 @@ use crate::config::{
     OpenFilterRequest,
 };
 use crate::packet_pipeline::{
-    FilterPipelineConfig, PacketPipeline, PipelineDeliveryAction, PipelineFilterView,
-    PipelineBoundaryReason, PipelineGeneratedEvent, PipelineInputKind, PipelineOpenKind,
+    FilterPipelineConfig, PacketPipeline, PipelineBoundaryReason, PipelineDeliveryAction,
+    PipelineFilterView, PipelineGeneratedEvent, PipelineInputKind, PipelineOpenKind,
     PipelineReport, PipelineResetReport,
 };
 use crate::TsInputOrigin;
@@ -29,6 +29,12 @@ use super::source_boundary::apply_filter_source_boundary_change;
 
 const TUNER_EVENT_DATA_READY: u32 = 1 << 0;
 const MAX_FILTER_DELAY_MS: u64 = 10_000;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RecordDvrMirrorWriteOutcome {
+    Written,
+    Overflow,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DemuxRuntimeState {
@@ -351,6 +357,9 @@ impl DemuxRuntime {
                 return Ok(AvHandleReleaseOutcome::StaleReleaseAccepted { data_id });
             }
             return Ok(outcome);
+        }
+        if filter_state == AvFilterReleaseState::OpenAv {
+            return Err(DemuxRuntimeError::av_backing_failure(filter_id));
         }
         let fallback_outcome = AvHandleReleaseTxn::classify(AvHandleReleaseInput {
             has_fd,
@@ -691,6 +700,11 @@ impl DemuxRuntime {
         self.filter_av_backings
             .get(&filter_id)
             .map(AvSharedBacking::active_slot_count)
+    }
+
+    #[cfg(test)]
+    pub fn remove_filter_av_backing_for_test(&mut self, filter_id: i32) -> bool {
+        self.filter_av_backings.remove(&filter_id).is_some()
     }
 
     pub fn filter_snapshot(
@@ -1313,7 +1327,9 @@ impl DemuxRuntime {
         Ok(reset)
     }
 
-    pub(crate) fn reset_generation_boundary(&mut self) -> Result<PipelineResetReport, DemuxRuntimeError> {
+    pub(crate) fn reset_generation_boundary(
+        &mut self,
+    ) -> Result<PipelineResetReport, DemuxRuntimeError> {
         let next = match next_generation(self.generation) {
             Ok(next) => next,
             Err(_) => {
@@ -1369,7 +1385,18 @@ impl DemuxRuntime {
         };
         let validated = match crate::packet_pipeline::ValidatedTsPacket::validate(packet) {
             Ok(validated) => validated,
-            Err(_) => return self.pipeline.push_ts_packet(packet, kind),
+            Err(_) => {
+                let mut report = PipelineReport::default();
+                report.dropped_packets += 1;
+                report.malformed_packets += 1;
+                report
+                    .drop_reasons
+                    .push(crate::packet_pipeline::PipelineDropReason::MalformedPacket);
+                report
+                    .diagnostics
+                    .push(crate::packet_pipeline::PipelineDiagnostic::MalformedTsPacket);
+                return report;
+            }
         };
         let mut report = self.pipeline.push_validated_ts_packet(&validated, kind);
         if report.accepted_packets == 0 {
@@ -1709,12 +1736,22 @@ impl DemuxRuntime {
             };
             let target_ids = self.record_dvr_target_ids_for_filter(filter_id);
             for dvr_id in target_ids {
-                if let Err(error) = self.try_write_record_dvr_packet(dvr_id, packet) {
-                    diagnostics.push(
-                        crate::packet_pipeline::PipelineDiagnostic::record_dvr_mirror_failure(
-                            pid, filter_id, dvr_id, error,
-                        ),
-                    );
+                match self.try_write_record_dvr_packet(dvr_id, packet) {
+                    Ok(RecordDvrMirrorWriteOutcome::Written) => {}
+                    Ok(RecordDvrMirrorWriteOutcome::Overflow) => {
+                        diagnostics.push(
+                            crate::packet_pipeline::PipelineDiagnostic::record_dvr_mirror_overflow(
+                                pid, filter_id, dvr_id,
+                            ),
+                        );
+                    }
+                    Err(error) => {
+                        diagnostics.push(
+                            crate::packet_pipeline::PipelineDiagnostic::record_dvr_mirror_failure(
+                                pid, filter_id, dvr_id, error,
+                            ),
+                        );
+                    }
                 }
             }
         }
@@ -1737,7 +1774,7 @@ impl DemuxRuntime {
         &mut self,
         dvr_id: i32,
         packet: &[u8],
-    ) -> Result<(), DemuxRuntimeError> {
+    ) -> Result<RecordDvrMirrorWriteOutcome, DemuxRuntimeError> {
         let Some(queue) = self.dvr_queue_runtimes.get(&dvr_id) else {
             if let Some(dvr) = self.dvrs.get_mut(&dvr_id) {
                 dvr.mark_failed();
@@ -1757,7 +1794,7 @@ impl DemuxRuntime {
             if let Some(dvr) = self.dvrs.get_mut(&dvr_id) {
                 dvr.mark_pending_overflow();
             }
-            return Ok(());
+            return Ok(RecordDvrMirrorWriteOutcome::Overflow);
         }
         let result = FmqDeliveryTxn::new(FmqObjectKind::DvrRecord).commit_payload(
             packet.len(),
@@ -1773,13 +1810,13 @@ impl DemuxRuntime {
                 if let Some(dvr) = self.dvrs.get_mut(&dvr_id) {
                     dvr.clear_pending_overflow();
                 }
-                Ok(())
+                Ok(RecordDvrMirrorWriteOutcome::Written)
             }
             FmqDeliveryAction::Overflow => {
                 if let Some(dvr) = self.dvrs.get_mut(&dvr_id) {
                     dvr.mark_pending_overflow();
                 }
-                Ok(())
+                Ok(RecordDvrMirrorWriteOutcome::Overflow)
             }
             FmqDeliveryAction::RuntimeFailed(_) => {
                 if let Some(dvr) = self.dvrs.get_mut(&dvr_id) {

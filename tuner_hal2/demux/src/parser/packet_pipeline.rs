@@ -6,7 +6,9 @@ use crate::av::AvSharedBackingError;
 use crate::config::ConfigInputPid;
 use crate::runtime::DemuxRuntimeError;
 use crate::ts_core::PesDropReason;
-use maleicacid_tuner_hal2_common::{HalError, TransportStreamPid, TsPacketCompletionBuffer, TS_PACKET_SIZE};
+use maleicacid_tuner_hal2_common::{
+    HalError, TransportStreamPid, TsPacketCompletionBuffer, TS_PACKET_SIZE,
+};
 use maleicacid_tuner_hal2_descrambler::DescramblerPid;
 use std::collections::BTreeMap;
 
@@ -39,18 +41,42 @@ pub(crate) struct TsPacketView<'a> {
 }
 
 impl<'a> TsPacketView<'a> {
-    pub const fn transport_error_indicator(&self) -> bool { self.transport_error_indicator }
-    pub const fn payload_unit_start(&self) -> bool { self.payload_unit_start }
-    pub const fn priority(&self) -> bool { self.priority }
-    pub const fn scrambling_control(&self) -> u8 { self.scrambling_control }
-    pub const fn discontinuity_indicator(&self) -> bool { self.discontinuity_indicator }
-    pub const fn random_access_indicator(&self) -> bool { self.random_access_indicator }
-    pub const fn pcr_flag(&self) -> bool { self.pcr_flag }
-    pub const fn opcr_flag(&self) -> bool { self.opcr_flag }
-    pub const fn splicing_point_flag(&self) -> bool { self.splicing_point_flag }
-    pub const fn private_data_flag(&self) -> bool { self.private_data_flag }
-    pub const fn adaptation_extension_flag(&self) -> bool { self.adaptation_extension_flag }
-    pub const fn payload(&self) -> Option<&'a [u8]> { self.payload }
+    pub const fn transport_error_indicator(&self) -> bool {
+        self.transport_error_indicator
+    }
+    pub const fn payload_unit_start(&self) -> bool {
+        self.payload_unit_start
+    }
+    pub const fn priority(&self) -> bool {
+        self.priority
+    }
+    pub const fn scrambling_control(&self) -> u8 {
+        self.scrambling_control
+    }
+    pub const fn discontinuity_indicator(&self) -> bool {
+        self.discontinuity_indicator
+    }
+    pub const fn random_access_indicator(&self) -> bool {
+        self.random_access_indicator
+    }
+    pub const fn pcr_flag(&self) -> bool {
+        self.pcr_flag
+    }
+    pub const fn opcr_flag(&self) -> bool {
+        self.opcr_flag
+    }
+    pub const fn splicing_point_flag(&self) -> bool {
+        self.splicing_point_flag
+    }
+    pub const fn private_data_flag(&self) -> bool {
+        self.private_data_flag
+    }
+    pub const fn adaptation_extension_flag(&self) -> bool {
+        self.adaptation_extension_flag
+    }
+    pub const fn payload(&self) -> Option<&'a [u8]> {
+        self.payload
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -77,14 +103,10 @@ impl PacketPid {
         self.0.matches_i32_config(tpid)
     }
 
-    pub const fn matches_config_tpid_for_service_runtime_boundary(
-        self,
-        tpid: Option<i32>,
-    ) -> bool {
+    pub const fn matches_config_tpid_for_service_runtime_boundary(self, tpid: Option<i32>) -> bool {
         self.0.matches_i32_config(tpid)
     }
 }
-
 
 #[derive(Clone, Copy, Debug)]
 pub struct ValidatedTsPacket<'a> {
@@ -343,11 +365,13 @@ impl PipelineResyncState {
 /// DVR/record配送が同じpacket pipeline状態を共有する。
 #[derive(Clone, Debug, Default)]
 pub struct PacketPipeline {
-    pub(crate) section_assemblers: BTreeMap<(crate::TsInputOrigin, PacketPid, i32), PipelineSectionState>,
+    pub(crate) section_assemblers:
+        BTreeMap<(crate::TsInputOrigin, PacketPid, i32), PipelineSectionState>,
     pub(crate) pes_assemblers: BTreeMap<(crate::TsInputOrigin, PacketPid, i32), PipelinePesState>,
     pub(crate) section_assembler_generations: BTreeMap<(crate::TsInputOrigin, PacketPid), u64>,
     pub(crate) pes_assembler_generations: BTreeMap<(crate::TsInputOrigin, PacketPid), u64>,
-    pub(crate) filter_section_flush_generations: BTreeMap<(crate::TsInputOrigin, i32, PacketPid), u64>,
+    pub(crate) filter_section_flush_generations:
+        BTreeMap<(crate::TsInputOrigin, i32, PacketPid), u64>,
     pub(crate) filter_pes_flush_generations: BTreeMap<(crate::TsInputOrigin, i32, PacketPid), u64>,
     pub(crate) continuity_trackers: BTreeMap<crate::TsInputOrigin, PipelineContinuityState>,
     pub(crate) resync: PipelineResyncState,
@@ -484,6 +508,11 @@ pub enum PipelineDiagnostic {
         dvr_id: i32,
         error: DemuxRuntimeError,
     },
+    RecordDvrMirrorOverflow {
+        pid: PacketPid,
+        source_filter_id: i32,
+        dvr_id: i32,
+    },
     FilterQueuePayloadDeliveryFailure {
         pid: PacketPid,
         filter_id: i32,
@@ -539,6 +568,7 @@ impl PipelineDiagnostic {
     pub const fn pid_context(&self) -> PipelineDiagnosticPidContext {
         match self {
             Self::RecordDvrMirrorFailure { pid, .. }
+            | Self::RecordDvrMirrorOverflow { pid, .. }
             | Self::FilterQueuePayloadDeliveryFailure { pid, .. }
             | Self::AvSharedBackingFailure { pid, .. }
             | Self::AvSharedBackingMissing { pid, .. }
@@ -559,7 +589,9 @@ impl PipelineDiagnostic {
             | Self::SourceFilterDescramblePolicyFailure { pid, .. } => {
                 PipelineDiagnosticPidContext::Present(*pid)
             }
-            Self::MalformedTsPacket | Self::ResidualBytesDrop => PipelineDiagnosticPidContext::NotApplicable,
+            Self::MalformedTsPacket | Self::ResidualBytesDrop => {
+                PipelineDiagnosticPidContext::NotApplicable
+            }
         }
     }
 
@@ -598,6 +630,14 @@ impl PipelineDiagnostic {
             source_filter_id,
             dvr_id,
             error,
+        }
+    }
+
+    pub fn record_dvr_mirror_overflow(pid: PacketPid, source_filter_id: i32, dvr_id: i32) -> Self {
+        Self::RecordDvrMirrorOverflow {
+            pid,
+            source_filter_id,
+            dvr_id,
         }
     }
 
@@ -773,12 +813,8 @@ impl PacketPipeline {
             self.reset_continuity_pid(origin, pid);
             self.reset_assembly_for_origin_pid(origin, pid);
         }
-        let continuity = self.check_continuity(
-            origin,
-            pid,
-            view.continuity_counter,
-            view.payload.is_some(),
-        );
+        let continuity =
+            self.check_continuity(origin, pid, view.continuity_counter, view.payload.is_some());
         if matches!(continuity, crate::ts_core::ContinuityOutcome::Duplicate) {
             report
                 .assembly_suppression_reasons
@@ -1142,10 +1178,7 @@ impl PacketPipeline {
                         .push(PipelineDropReason::PesAssemblerOverflow);
                     report
                         .diagnostics
-                        .push(PipelineDiagnostic::PesAssemblerDrop {
-                            pid,
-                            reason,
-                        });
+                        .push(PipelineDiagnostic::PesAssemblerDrop { pid, reason });
                 }
                 for packet in packets {
                     report
@@ -1215,7 +1248,11 @@ impl PacketPipeline {
             .sum()
     }
 
-    pub(crate) fn reset_assembly_for_origin_pid(&mut self, origin: crate::TsInputOrigin, pid: PacketPid) {
+    pub(crate) fn reset_assembly_for_origin_pid(
+        &mut self,
+        origin: crate::TsInputOrigin,
+        pid: PacketPid,
+    ) {
         // discontinuity は対象 PID の section/PES assembler だけを破棄する。
         // 無関係な PID の途中 section/PES を同一 origin というだけで破棄してはならない。
         self.section_assemblers
@@ -1322,14 +1359,22 @@ impl PacketPipeline {
         }
     }
 
-    pub(crate) fn current_section_generation(&self, origin: crate::TsInputOrigin, pid: PacketPid) -> u64 {
+    pub(crate) fn current_section_generation(
+        &self,
+        origin: crate::TsInputOrigin,
+        pid: PacketPid,
+    ) -> u64 {
         self.section_assembler_generations
             .get(&(origin, pid))
             .copied()
             .unwrap_or(PIPELINE_GENERATION_INITIAL)
     }
 
-    pub(crate) fn current_pes_generation(&self, origin: crate::TsInputOrigin, pid: PacketPid) -> u64 {
+    pub(crate) fn current_pes_generation(
+        &self,
+        origin: crate::TsInputOrigin,
+        pid: PacketPid,
+    ) -> u64 {
         self.pes_assembler_generations
             .get(&(origin, pid))
             .copied()
@@ -1888,9 +1933,7 @@ mod adaptation_payload_boundary_tests {
         let report = pipeline.push_ts_packet(&packet, PipelineInputKind::Live);
 
         assert_eq!(report.accepted_packets, 1);
-        assert!(!pipeline
-            .pes_assemblers
-            .contains_key(&(origin, pid_key, 11)));
+        assert!(!pipeline.pes_assemblers.contains_key(&(origin, pid_key, 11)));
         assert!(pipeline
             .pes_assemblers
             .contains_key(&(origin, other_pid_key, 13)));
@@ -1916,9 +1959,7 @@ mod adaptation_payload_boundary_tests {
         assert!(!pipeline
             .section_assemblers
             .contains_key(&(origin, pid_key, 10)));
-        assert!(!pipeline
-            .pes_assemblers
-            .contains_key(&(origin, pid_key, 11)));
+        assert!(!pipeline.pes_assemblers.contains_key(&(origin, pid_key, 11)));
         assert!(pipeline
             .section_assemblers
             .contains_key(&(origin, other_pid_key, 12)));
@@ -2144,17 +2185,37 @@ mod resync_boundary_tests {
         pipeline.test_seed_pes_for_pid(frontend, PacketPid::from_validated_pid(0x0100), 8);
         pipeline.test_seed_pes_for_pid(source, PacketPid::from_validated_pid(0x0100), 8);
 
-        pipeline.remove_section_for_filter_ids_origin_pid(source, PacketPid::from_validated_pid(0x0100), &[7]);
-        pipeline.remove_pes_for_filter_ids_origin_pid(source, PacketPid::from_validated_pid(0x0100), &[8]);
+        pipeline.remove_section_for_filter_ids_origin_pid(
+            source,
+            PacketPid::from_validated_pid(0x0100),
+            &[7],
+        );
+        pipeline.remove_pes_for_filter_ids_origin_pid(
+            source,
+            PacketPid::from_validated_pid(0x0100),
+            &[8],
+        );
 
-        assert!(pipeline
-            .section_assemblers
-            .contains_key(&(frontend, PacketPid::from_validated_pid(0x0100), 7)));
-        assert!(!pipeline
-            .section_assemblers
-            .contains_key(&(source, PacketPid::from_validated_pid(0x0100), 7)));
-        assert!(pipeline.pes_assemblers.contains_key(&(frontend, PacketPid::from_validated_pid(0x0100), 8)));
-        assert!(!pipeline.pes_assemblers.contains_key(&(source, PacketPid::from_validated_pid(0x0100), 8)));
+        assert!(pipeline.section_assemblers.contains_key(&(
+            frontend,
+            PacketPid::from_validated_pid(0x0100),
+            7
+        )));
+        assert!(!pipeline.section_assemblers.contains_key(&(
+            source,
+            PacketPid::from_validated_pid(0x0100),
+            7
+        )));
+        assert!(pipeline.pes_assemblers.contains_key(&(
+            frontend,
+            PacketPid::from_validated_pid(0x0100),
+            8
+        )));
+        assert!(!pipeline.pes_assemblers.contains_key(&(
+            source,
+            PacketPid::from_validated_pid(0x0100),
+            8
+        )));
     }
 
     #[test]
@@ -2169,21 +2230,45 @@ mod resync_boundary_tests {
         pipeline.test_seed_section_for_pid(source, PacketPid::from_validated_pid(0x0100), 7);
         pipeline.test_seed_pes_for_pid(frontend, PacketPid::from_validated_pid(0x0100), 8);
         pipeline.test_seed_pes_for_pid(source, PacketPid::from_validated_pid(0x0100), 8);
-        assert_eq!(pipeline.bump_section_generation(frontend, PacketPid::from_validated_pid(0x0100)), Some(1));
-        assert_eq!(pipeline.bump_section_generation(source, PacketPid::from_validated_pid(0x0100)), Some(1));
+        assert_eq!(
+            pipeline.bump_section_generation(frontend, PacketPid::from_validated_pid(0x0100)),
+            Some(1)
+        );
+        assert_eq!(
+            pipeline.bump_section_generation(source, PacketPid::from_validated_pid(0x0100)),
+            Some(1)
+        );
 
         pipeline.reset_assembly_for_origin_pid(source, PacketPid::from_validated_pid(0x0100));
 
-        assert!(pipeline
-            .section_assemblers
-            .contains_key(&(frontend, PacketPid::from_validated_pid(0x0100), 7)));
-        assert!(!pipeline
-            .section_assemblers
-            .contains_key(&(source, PacketPid::from_validated_pid(0x0100), 7)));
-        assert!(pipeline.pes_assemblers.contains_key(&(frontend, PacketPid::from_validated_pid(0x0100), 8)));
-        assert!(!pipeline.pes_assemblers.contains_key(&(source, PacketPid::from_validated_pid(0x0100), 8)));
-        assert_eq!(pipeline.current_section_generation(frontend, PacketPid::from_validated_pid(0x0100)), 1);
-        assert_eq!(pipeline.current_section_generation(source, PacketPid::from_validated_pid(0x0100)), 0);
+        assert!(pipeline.section_assemblers.contains_key(&(
+            frontend,
+            PacketPid::from_validated_pid(0x0100),
+            7
+        )));
+        assert!(!pipeline.section_assemblers.contains_key(&(
+            source,
+            PacketPid::from_validated_pid(0x0100),
+            7
+        )));
+        assert!(pipeline.pes_assemblers.contains_key(&(
+            frontend,
+            PacketPid::from_validated_pid(0x0100),
+            8
+        )));
+        assert!(!pipeline.pes_assemblers.contains_key(&(
+            source,
+            PacketPid::from_validated_pid(0x0100),
+            8
+        )));
+        assert_eq!(
+            pipeline.current_section_generation(frontend, PacketPid::from_validated_pid(0x0100)),
+            1
+        );
+        assert_eq!(
+            pipeline.current_section_generation(source, PacketPid::from_validated_pid(0x0100)),
+            0
+        );
     }
 }
 
@@ -2457,13 +2542,18 @@ mod keyless_scrambled_policy_tests {
         assert!(report
             .assembly_suppression_reasons
             .contains(&PipelineAssemblySuppressionReason::KeylessScrambledWithoutDescrambler));
-        assert!(!pipeline
-            .section_assemblers
-            .contains_key(&(origin, PacketPid::from_validated_pid(0x0100), 2)));
-        assert!(!pipeline.pes_assemblers.contains_key(&(origin, PacketPid::from_validated_pid(0x0100), 3)));
+        assert!(!pipeline.section_assemblers.contains_key(&(
+            origin,
+            PacketPid::from_validated_pid(0x0100),
+            2
+        )));
+        assert!(!pipeline.pes_assemblers.contains_key(&(
+            origin,
+            PacketPid::from_validated_pid(0x0100),
+            3
+        )));
     }
 }
-
 
 #[cfg(test)]
 mod validated_packet_boundary_additional_tests {
@@ -2486,7 +2576,10 @@ mod validated_packet_boundary_additional_tests {
         let validated = ValidatedTsPacket::validate(&packet).unwrap();
 
         assert_eq!(validated.pid().to_i32_for_aidl_boundary(), 0x0123);
-        assert_eq!(validated.view().packet_pid().to_i32_for_aidl_boundary(), 0x0123);
+        assert_eq!(
+            validated.view().packet_pid().to_i32_for_aidl_boundary(),
+            0x0123
+        );
     }
 
     #[test]
