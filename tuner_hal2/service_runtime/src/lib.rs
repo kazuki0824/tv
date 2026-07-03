@@ -37,7 +37,8 @@ pub use boot::{
     FrontendProbeOutcome, OwnerCallbackCleanupArtifactCommand, OwnerCallbackCleanupUseCaseOutcome,
     ServiceBootOutcome, TunerServiceRuntime,
 };
-pub use callback_registry::CallbackHealthState;
+#[cfg(test)]
+pub(crate) use callback_registry::CallbackHealthState;
 pub use capability_profile::{
     configure_ip_cid_result, configure_monitor_event_result, failure_domain, feature_declared,
     hal_generates_japanese_scan_plan, open_failed, scan_candidate_owner, transport_declared,
@@ -82,9 +83,7 @@ pub use object_method_txn::{
     ObjectMethodExecutionToken, ObjectMethodTxnBuildError, ObjectQueryRequest, ObjectQueryResponse,
 };
 pub(crate) use object_table::RuntimeObjectLifecycle;
-pub use object_table::{
-    AidlObjectLifecycleSnapshot, RuntimeObjectEntry, RuntimeObjectTableError, RuntimeOwnerRelation,
-};
+pub use object_table::{RuntimeObjectEntry, RuntimeObjectTableError, RuntimeOwnerRelation};
 pub use registry::{FrontendRuntimeId, LnbRegistryProfile};
 pub use root_method_txn::{
     RootCommandRequest, RootDemuxCapabilitiesSnapshot, RootDemuxInfoSnapshot,

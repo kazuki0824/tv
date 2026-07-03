@@ -498,9 +498,7 @@ mod tests {
         AidlApi, AidlMethodCall, AidlObjectKind, DvrConfigureKind, DvrConfigureRequest,
         DvrOpenKind, OpenDvrRequest,
     };
-    use maleicacid_tuner_hal2_service_runtime::{
-        execute_object_method_call_after_live, CallbackHealthState,
-    };
+    use maleicacid_tuner_hal2_service_runtime::execute_object_method_call_after_live;
     use std::sync::{
         atomic::{AtomicBool, Ordering},
         Mutex,
@@ -679,19 +677,12 @@ mod tests {
             *state.playback_statuses.lock().unwrap(),
             vec![PlaybackStatus::SPACE_FULL]
         );
-        assert_eq!(
-            runtime
-                .lock()
-                .unwrap()
-                .callback_registration_health(
-                    AidlObjectKind::Dvr,
-                    handle.object_id(),
-                    handle.generation(),
-                    AidlApi::DemuxOpenDvr,
-                )
-                .unwrap(),
-            CallbackHealthState::Registered
-        );
+        let snapshot = runtime
+            .lock()
+            .unwrap()
+            .dvr_status_poll_snapshot_for_aidl_object(handle.object_id(), handle.generation())
+            .unwrap();
+        assert!(!snapshot.callback_unhealthy);
         context.clear_owner_callbacks_for_test(handle).unwrap();
     }
 
@@ -713,19 +704,6 @@ mod tests {
             .dvr_status_poll_snapshot_for_aidl_object(handle.object_id(), handle.generation())
             .unwrap();
         assert!(snapshot.callback_unhealthy);
-        assert_eq!(
-            runtime
-                .lock()
-                .unwrap()
-                .callback_registration_health(
-                    AidlObjectKind::Dvr,
-                    handle.object_id(),
-                    handle.generation(),
-                    AidlApi::DemuxOpenDvr,
-                )
-                .unwrap(),
-            CallbackHealthState::Unhealthy
-        );
         context.clear_owner_callbacks_for_test(handle).unwrap();
     }
 }

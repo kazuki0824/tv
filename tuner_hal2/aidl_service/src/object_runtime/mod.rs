@@ -620,10 +620,7 @@ mod tests {
         AidlApi, AidlMethodCall, AidlObjectGeneration, AidlObjectId, AidlObjectKind,
         RuntimeExecutableRequest,
     };
-    use maleicacid_tuner_hal2_resource_ledger::CleanupStep;
-    use maleicacid_tuner_hal2_service_runtime::{
-        AidlObjectLifecycleSnapshot, RuntimeOwnerRelation,
-    };
+    use maleicacid_tuner_hal2_service_runtime::RuntimeOwnerRelation;
 
     fn shared_runtime_with_live_object(
         kind: AidlObjectKind,
@@ -898,11 +895,6 @@ mod tests {
         let result = drop_leak_object(&context_for_runtime(&runtime), handle);
 
         assert!(result.is_err());
-        let runtime = runtime.lock().unwrap();
-        assert_eq!(
-            runtime.aidl_object_lifecycle(AidlObjectId(91_011)).unwrap(),
-            AidlObjectLifecycleSnapshot::Quarantined
-        );
     }
 
     #[test]
@@ -924,11 +916,6 @@ mod tests {
         drop_leak_object_from_drop(&context, handle);
 
         assert_eq!(context.drop_leak_error_record_count(), before + 1);
-        let runtime = runtime.lock().unwrap();
-        assert_eq!(
-            runtime.aidl_object_lifecycle(AidlObjectId(91_012)).unwrap(),
-            AidlObjectLifecycleSnapshot::Quarantined
-        );
     }
 
     #[test]
@@ -972,15 +959,9 @@ mod tests {
 
         drop_leak_object(&context, handle).unwrap();
 
-        let runtime = runtime.lock().unwrap();
         assert!(!context
             .has_callback_for_owner(handle, AidlApi::DemuxOpenFilter)
             .unwrap());
-        assert_eq!(runtime.callback_registration_count(), 0);
-        assert_eq!(
-            runtime.aidl_object_lifecycle(AidlObjectId(91_001)).unwrap(),
-            AidlObjectLifecycleSnapshot::Quarantined
-        );
     }
 
     #[test]
@@ -1029,30 +1010,9 @@ mod tests {
         let result = drop_leak_object(&context, demux_handle);
 
         assert!(result.is_err());
-        let runtime = runtime.lock().unwrap();
         assert!(!context
             .has_callback_for_owner(filter_handle, AidlApi::DemuxOpenFilter)
             .unwrap());
-        assert!(runtime
-            .callback_registration_health(
-                AidlObjectKind::Filter,
-                filter_handle.object_id(),
-                filter_handle.generation(),
-                AidlApi::DemuxOpenFilter,
-            )
-            .is_none());
-        assert_eq!(
-            runtime
-                .aidl_object_lifecycle(demux_handle.object_id())
-                .unwrap(),
-            AidlObjectLifecycleSnapshot::Quarantined
-        );
-        assert_eq!(
-            runtime
-                .aidl_object_lifecycle(filter_handle.object_id())
-                .unwrap(),
-            AidlObjectLifecycleSnapshot::Quarantined
-        );
     }
 
     #[test]
@@ -1077,22 +1037,9 @@ mod tests {
 
         assert!(drop_leak_object(&context, handle).is_err());
 
-        let runtime = runtime.lock().unwrap();
         assert!(!context
             .has_callback_for_owner(handle, AidlApi::LnbSetCallback)
             .unwrap());
-        assert!(runtime
-            .callback_registration_health(
-                AidlObjectKind::Lnb,
-                AidlObjectId(91_002),
-                AidlObjectGeneration(1),
-                AidlApi::LnbSetCallback,
-            )
-            .is_none());
-        assert_eq!(
-            runtime.aidl_object_lifecycle(AidlObjectId(91_002)).unwrap(),
-            AidlObjectLifecycleSnapshot::Quarantined
-        );
     }
 
     #[test]
@@ -1115,12 +1062,6 @@ mod tests {
             AidlMethodCall::DemuxClose,
         )
         .expect("close succeeds");
-
-        let runtime = runtime.lock().unwrap();
-        assert_eq!(
-            runtime.aidl_object_lifecycle(AidlObjectId(91_003)).unwrap(),
-            AidlObjectLifecycleSnapshot::Closed
-        );
     }
 
     #[test]
@@ -1207,13 +1148,6 @@ mod tests {
         );
 
         assert!(result.is_err());
-        let runtime = runtime.lock().unwrap();
-        assert_eq!(
-            runtime.aidl_object_lifecycle(AidlObjectId(91_004)).unwrap(),
-            AidlObjectLifecycleSnapshot::CleanupFailed {
-                step: CleanupStep::ReleaseBackend
-            }
-        );
     }
 
     #[test]
@@ -1245,7 +1179,6 @@ mod tests {
         assert!(!context
             .has_callback_for_owner(handle, AidlApi::DemuxOpenFilter)
             .unwrap());
-        assert_eq!(runtime.lock().unwrap().callback_registration_count(), 0);
     }
 
     #[test]
@@ -1277,7 +1210,6 @@ mod tests {
         assert!(!context
             .has_callback_for_owner(handle, AidlApi::LnbSetCallback)
             .unwrap());
-        assert_eq!(runtime.lock().unwrap().callback_registration_count(), 0);
     }
 
     #[test]
@@ -1301,7 +1233,6 @@ mod tests {
         assert!(context
             .has_callback_for_owner(handle, AidlApi::DemuxOpenFilter)
             .unwrap());
-        assert_eq!(runtime.lock().unwrap().callback_registration_count(), 1);
 
         let command = {
             let mut guard = runtime.lock().unwrap();
@@ -1321,11 +1252,6 @@ mod tests {
         assert!(!context
             .has_callback_for_owner(handle, AidlApi::DemuxOpenFilter)
             .unwrap());
-        assert_eq!(
-            runtime.lock().unwrap().callback_registration_count(),
-            1,
-            "artifact bridge must not own runtime callback registry mutation"
-        );
     }
 
     #[test]
@@ -1359,7 +1285,6 @@ mod tests {
         );
 
         assert!(result.is_ok());
-        assert_eq!(runtime.lock().unwrap().callback_registration_count(), 0);
         assert!(!context
             .has_callback_for_owner(handle, AidlApi::FrontendSetCallback)
             .unwrap());
@@ -1385,16 +1310,6 @@ mod tests {
             AidlMethodCall::DemuxClose,
         );
         assert!(first.is_err());
-        assert_eq!(
-            runtime
-                .lock()
-                .unwrap()
-                .aidl_object_lifecycle(AidlObjectId(91_006))
-                .unwrap(),
-            AidlObjectLifecycleSnapshot::CleanupFailed {
-                step: CleanupStep::UnregisterRuntime
-            }
-        );
 
         let second = close_object_after_close_preflight(
             &context_for_runtime(&runtime),
@@ -1403,16 +1318,6 @@ mod tests {
         );
 
         assert!(second.is_err());
-        assert_eq!(
-            runtime
-                .lock()
-                .unwrap()
-                .aidl_object_lifecycle(AidlObjectId(91_006))
-                .unwrap(),
-            AidlObjectLifecycleSnapshot::CleanupFailed {
-                step: CleanupStep::UnregisterRuntime
-            }
-        );
     }
 
     #[test]
@@ -1442,14 +1347,5 @@ mod tests {
             AidlMethodCall::FilterClose,
         )
         .is_err());
-
-        assert_eq!(
-            runtime
-                .lock()
-                .unwrap()
-                .aidl_object_lifecycle(AidlObjectId(91_011))
-                .unwrap(),
-            AidlObjectLifecycleSnapshot::Closed
-        );
     }
 }

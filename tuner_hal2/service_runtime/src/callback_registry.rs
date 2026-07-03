@@ -96,10 +96,6 @@ impl RuntimeCallbackRegistry {
         }
     }
 
-    pub(crate) fn registration_count(&self) -> usize {
-        self.registrations.len()
-    }
-
     pub(crate) fn registration_for(
         &self,
         owner_kind: AidlObjectKind,
@@ -113,6 +109,7 @@ impl RuntimeCallbackRegistry {
 }
 
 impl RuntimeCallbackRegistration {
+    #[cfg(test)]
     pub(crate) const fn health(&self) -> CallbackHealthState {
         self.health
     }
@@ -131,7 +128,7 @@ mod tests {
             AidlObjectGeneration(2),
             AidlApi::LnbSetCallback,
         );
-        assert_eq!(registry.registration_count(), 1);
+        assert_eq!(registry.registrations.len(), 1);
         assert_eq!(
             registry
                 .registration_for(
@@ -169,7 +166,7 @@ mod tests {
             registry.clear_owner(AidlObjectId(10), AidlObjectGeneration(2)),
             CallbackRegistryUpdate::Updated
         );
-        assert_eq!(registry.registration_count(), 0);
+        assert!(registry.registrations.is_empty());
         assert_eq!(
             registry.clear_owner(AidlObjectId(10), AidlObjectGeneration(2)),
             CallbackRegistryUpdate::Missing

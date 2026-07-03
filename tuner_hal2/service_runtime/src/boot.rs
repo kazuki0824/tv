@@ -41,9 +41,9 @@ use maleicacid_tuner_hal2_domain_request::{
     RuntimeTransactionName,
 };
 
-use crate::callback_registry::{
-    CallbackHealthState, CallbackRegistryUpdate, RuntimeCallbackRegistry,
-};
+#[cfg(test)]
+use crate::callback_registry::CallbackHealthState;
+use crate::callback_registry::{CallbackRegistryUpdate, RuntimeCallbackRegistry};
 use crate::command_dispatch::{
     RuntimeCommandDispatchError, RuntimeCommandDispatchPlan, RuntimeCommandDispatcher,
 };
@@ -67,8 +67,8 @@ use crate::dispatch::{
 use crate::object_lifecycle::aidl_object_live;
 use crate::object_method_txn::ObjectMethodExecutionToken;
 use crate::object_table::{
-    AidlObjectLifecycleSnapshot, RuntimeObjectEntry, RuntimeObjectLifecycle, RuntimeObjectTable,
-    RuntimeObjectTableError, RuntimeOwnerRelation,
+    RuntimeObjectEntry, RuntimeObjectLifecycle, RuntimeObjectTable, RuntimeObjectTableError,
+    RuntimeOwnerRelation,
 };
 use crate::registry::{
     DemuxRuntimeId, DescramblerRuntimeId, DvrRuntimeId, FilterRuntimeId, FrontendRegistryEntry,
@@ -1734,19 +1734,6 @@ impl TunerServiceRuntime {
         &mut self.object_table
     }
 
-    pub fn aidl_object_lifecycle(
-        &self,
-        object_id: AidlObjectId,
-    ) -> Option<AidlObjectLifecycleSnapshot> {
-        self.object_table
-            .entry(object_id)
-            .map(|entry| entry.lifecycle.into())
-    }
-
-    pub fn callback_registration_count(&self) -> usize {
-        self.callback_registry.registration_count()
-    }
-
     pub(crate) fn has_callback_registration(
         &self,
         owner_kind: AidlObjectKind,
@@ -1759,7 +1746,8 @@ impl TunerServiceRuntime {
             .is_some()
     }
 
-    pub fn callback_registration_health(
+    #[cfg(test)]
+    pub(crate) fn callback_registration_health(
         &self,
         owner_kind: AidlObjectKind,
         owner_id: AidlObjectId,

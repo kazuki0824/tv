@@ -80,27 +80,6 @@ impl RuntimeObjectLifecycle {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AidlObjectLifecycleSnapshot {
-    Live,
-    Closing { step: CleanupStep },
-    CleanupFailed { step: CleanupStep },
-    Closed,
-    Quarantined,
-}
-
-impl From<RuntimeObjectLifecycle> for AidlObjectLifecycleSnapshot {
-    fn from(lifecycle: RuntimeObjectLifecycle) -> Self {
-        match lifecycle {
-            RuntimeObjectLifecycle::Live => Self::Live,
-            RuntimeObjectLifecycle::Closing { step } => Self::Closing { step },
-            RuntimeObjectLifecycle::CleanupFailed { step } => Self::CleanupFailed { step },
-            RuntimeObjectLifecycle::Closed => Self::Closed,
-            RuntimeObjectLifecycle::Quarantined => Self::Quarantined,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeObjectEntry {
     pub(crate) object_kind: AidlObjectKind,

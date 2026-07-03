@@ -139,17 +139,22 @@ fn lnb_profile_supports_voltage_status(profile: Option<LnbRegistryProfile>) -> b
 fn object_frontend_status_value(
     snapshot: ObjectFrontendStatusSnapshot,
     status_type: ObjectFrontendStatusType,
-) -> Option<ObjectFrontendStatusValue> {
+) -> Result<ObjectFrontendStatusValue, HalError> {
     match status_type {
-        ObjectFrontendStatusType::DemodLock => Some(ObjectFrontendStatusValue::DemodLocked(
+        ObjectFrontendStatusType::DemodLock => Ok(ObjectFrontendStatusValue::DemodLocked(
             matches!(snapshot.signal_state, FrontendSignalState::Locked),
         )),
         ObjectFrontendStatusType::LnbVoltage
             if lnb_profile_supports_voltage_status(snapshot.lnb_profile) =>
         {
-            Some(ObjectFrontendStatusValue::LnbVoltageNone)
+            Ok(ObjectFrontendStatusValue::LnbVoltageNone)
         }
-        ObjectFrontendStatusType::LnbVoltage | ObjectFrontendStatusType::Unsupported => None,
+        ObjectFrontendStatusType::LnbVoltage => Err(HalError::Unsupported(
+            "frontend LNB voltage status is unsupported",
+        )),
+        ObjectFrontendStatusType::Unsupported => {
+            Err(HalError::Unsupported("frontend status type is unsupported"))
+        }
     }
 }
 
@@ -239,10 +244,8 @@ fn prepare_object_query_request(
                 ObjectQueryResponse::FrontendStatus(
                     status_types
                         .into_iter()
-                        .filter_map(|status_type| {
-                            object_frontend_status_value(snapshot, status_type)
-                        })
-                        .collect(),
+                        .map(|status_type| object_frontend_status_value(snapshot, status_type))
+                        .collect::<Result<Vec<_>, _>>()?,
                 ),
             ))
         }
@@ -316,8 +319,8 @@ fn prepare_object_query_request(
                     "AV sync hardware id must refer to a live PCR filter owned by this demux",
                 ));
             }
-            Ok(ObjectQueryExecution::Immediate(
-                ObjectQueryResponse::AvSyncTime(0),
+            Err(HalError::Unsupported(
+                "AV sync timestamp is unavailable until PCR timestamp observation is implemented",
             ))
         }
     }
@@ -687,6 +690,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use maleicacid_tuner_hal2_demux::{FilterOpenType, OpenFilterRequest};
 
     fn snapshot(
         lnb_profile: Option<LnbRegistryProfile>,
@@ -715,12 +719,82 @@ mod tests {
 
         assert_eq!(
             object_frontend_status_value(locked, ObjectFrontendStatusType::DemodLock),
-            Some(ObjectFrontendStatusValue::DemodLocked(true))
+            Ok(ObjectFrontendStatusValue::DemodLocked(true))
         );
         assert_eq!(
             object_frontend_status_value(unlocked, ObjectFrontendStatusType::DemodLock),
-            Some(ObjectFrontendStatusValue::DemodLocked(false))
+            Ok(ObjectFrontendStatusValue::DemodLocked(false))
         );
+    }
+
+    #[test]
+    fn frontend_status_rejects_unsupported_without_shortening_response() {
+        let error = object_frontend_status_value(
+            snapshot(
+                None,
+                FrontendRuntimeState::Idle,
+                FrontendSignalState::Locked,
+            ),
+            ObjectFrontendStatusType::Unsupported,
+        )
+        .expect_err("unsupported frontend status must not be silently dropped");
+
+        assert!(matches!(error, HalError::Unsupported(_)));
+    }
+
+    #[test]
+    fn av_sync_time_rejects_unobserved_timestamp_without_zero_success() {
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        let demux_entry = {
+            let mut guard = runtime.lock().unwrap();
+            guard
+                .open_demux_root_object(AidlMethodCall::PublicApi {
+                    object: AidlObjectKind::Tuner,
+                    api: AidlApi::TunerOpenDemux,
+                })
+                .expect("demux root open succeeds")
+        };
+        let pcr_open = execute_object_method_call_after_live(
+            &runtime,
+            demux_entry.object_id(),
+            demux_entry.generation(),
+            AidlObjectKind::Demux,
+            || -> Result<_, HalError> {
+                let request = OpenFilterRequest {
+                    open_type: FilterOpenType::TsPcr,
+                    buffer_size: 4096,
+                    callback_present: false,
+                };
+                Ok((
+                    AidlMethodCall::DemuxOpenFilter(RuntimeExecutableRequest::OpenFilter(
+                        request.clone(),
+                    )),
+                    request,
+                ))
+            },
+            |runtime, dispatch, request| {
+                runtime.open_filter_child_runtime_for_demux_object(
+                    demux_entry.object_id(),
+                    demux_entry.generation(),
+                    &request,
+                    dispatch,
+                )
+            },
+        )
+        .expect("PCR filter child open succeeds");
+
+        let error = execute_object_query_call_after_live(
+            &runtime,
+            demux_entry.object_id(),
+            demux_entry.generation(),
+            AidlObjectKind::Demux,
+            ObjectQueryRequest::DemuxGetAvSyncTime {
+                av_sync_hw_id: pcr_open.filter_id,
+            },
+        )
+        .expect_err("unobserved AV sync time must not return a zero timestamp");
+
+        assert!(matches!(error, HalError::Unsupported(_)));
     }
 
     #[test]

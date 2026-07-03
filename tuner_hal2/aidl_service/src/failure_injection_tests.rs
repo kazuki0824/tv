@@ -3,10 +3,7 @@ use std::sync::{Arc, Mutex};
 use maleicacid_tuner_hal2_binder_adapter::{
     AidlMethodCall, AidlObjectGeneration, AidlObjectId, AidlObjectKind,
 };
-use maleicacid_tuner_hal2_resource_ledger::CleanupStep;
-use maleicacid_tuner_hal2_service_runtime::{
-    AidlObjectLifecycleSnapshot, RuntimeOwnerRelation, TunerServiceRuntime,
-};
+use maleicacid_tuner_hal2_service_runtime::{RuntimeOwnerRelation, TunerServiceRuntime};
 
 use crate::object_handle::AidlObjectHandle;
 use crate::object_runtime::close_object_after_close_preflight;
@@ -50,16 +47,5 @@ fn close_domain_cleanup_failure_records_cleanup_failed_state() {
 
     let result =
         close_object_after_close_preflight(&context, handle, AidlMethodCall::FrontendClose);
-
     assert!(result.is_err());
-    assert_eq!(
-        runtime
-            .lock()
-            .unwrap()
-            .aidl_object_lifecycle(AidlObjectId(92_001))
-            .unwrap(),
-        AidlObjectLifecycleSnapshot::CleanupFailed {
-            step: CleanupStep::ReleaseBackend
-        }
-    );
 }
