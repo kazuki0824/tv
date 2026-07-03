@@ -60,9 +60,9 @@ pub use runtime::{
     DvrConfigureOutcome, DvrConfigureReport, DvrConfigureStep, DvrKind, DvrRuntime,
     DvrRuntimeSnapshot, DvrRuntimeState, DvrStatusEvent, FilterConfigureOutcome,
     FilterConfigureReport, FilterConfigureStep, FilterRuntime, FilterRuntimeSnapshot,
-    FilterRuntimeState, GenerationBoundaryReport, PlaybackConsumeReport, QueueDescriptorQueryError,
-    QueueDescriptorSnapshot, QueueGrantorDescriptorSnapshot, QueueRuntimeError,
-    QueueRuntimeErrorKind,
+    FilterRuntimeState, GenerationBoundaryReport, PlaybackConsumeReport,
+    QueueDescriptorExportHandle, QueueDescriptorQueryError, QueueDescriptorSnapshot,
+    QueueGrantorDescriptorSnapshot, QueueRuntimeError, QueueRuntimeErrorKind,
 };
 #[cfg(test)]
 pub(crate) use runtime::{

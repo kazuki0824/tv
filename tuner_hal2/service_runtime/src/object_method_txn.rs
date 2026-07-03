@@ -12,9 +12,13 @@ use maleicacid_tuner_hal2_domain_request::{
 };
 
 use crate::{
-    method_dispatch::plan_object_method_dispatch, object_lifecycle::aidl_object_live,
+    boot::{map_queue_descriptor_query_error, QueueDescriptorExportPlan},
+    diagnostics::QueueDescriptorQueryDiagnosticRecord,
+    method_dispatch::plan_object_method_dispatch,
+    object_lifecycle::aidl_object_live,
     TunerServiceRuntime,
 };
+use maleicacid_tuner_hal2_demux::QueueDescriptorQueryError;
 
 pub type SharedObjectMethodRuntime = Arc<Mutex<TunerServiceRuntime>>;
 
@@ -188,25 +192,31 @@ pub enum ObjectQueryResponse {
     AvSyncTime(i64),
 }
 
-fn execute_object_query_request(
+enum ObjectQueryExecution {
+    Immediate(ObjectQueryResponse),
+    QueueDescriptor(QueueDescriptorExportPlan),
+}
+
+fn prepare_object_query_request(
     query: &crate::boot::RuntimeQuery<'_>,
     target: ObjectMethodTxnTarget,
     request: ObjectQueryRequest,
-) -> Result<ObjectQueryResponse, HalError> {
+) -> Result<ObjectQueryExecution, HalError> {
     match request {
         ObjectQueryRequest::FilterGetQueueDesc => query
-            .filter_queue_descriptor_snapshot_for_aidl_object(
+            .filter_queue_descriptor_export_plan_for_aidl_object(
                 target.object_id(),
                 target.generation(),
             )
-            .map(ObjectQueryResponse::QueueDescriptor),
+            .map(ObjectQueryExecution::QueueDescriptor),
         ObjectQueryRequest::FilterGetId => query
             .public_runtime_id_for_object_method(
                 target.object_id(),
                 target.generation(),
                 AidlObjectKind::Filter,
             )
-            .map(ObjectQueryResponse::PublicId),
+            .map(ObjectQueryResponse::PublicId)
+            .map(ObjectQueryExecution::Immediate),
         ObjectQueryRequest::FilterGetId64Bit => query
             .public_runtime_id_for_object_method(
                 target.object_id(),
@@ -214,28 +224,38 @@ fn execute_object_query_request(
                 AidlObjectKind::Filter,
             )
             .map(i64::from)
-            .map(ObjectQueryResponse::PublicId64),
+            .map(ObjectQueryResponse::PublicId64)
+            .map(ObjectQueryExecution::Immediate),
         ObjectQueryRequest::DvrGetQueueDesc => query
-            .dvr_queue_descriptor_snapshot_for_aidl_object(target.object_id(), target.generation())
-            .map(ObjectQueryResponse::QueueDescriptor),
+            .dvr_queue_descriptor_export_plan_for_aidl_object(
+                target.object_id(),
+                target.generation(),
+            )
+            .map(ObjectQueryExecution::QueueDescriptor),
         ObjectQueryRequest::FrontendGetStatus { status_types } => {
             let snapshot = query
                 .frontend_status_query_for_aidl_object(target.object_id(), target.generation())?;
-            Ok(ObjectQueryResponse::FrontendStatus(
-                status_types
-                    .into_iter()
-                    .filter_map(|status_type| object_frontend_status_value(snapshot, status_type))
-                    .collect(),
+            Ok(ObjectQueryExecution::Immediate(
+                ObjectQueryResponse::FrontendStatus(
+                    status_types
+                        .into_iter()
+                        .filter_map(|status_type| {
+                            object_frontend_status_value(snapshot, status_type)
+                        })
+                        .collect(),
+                ),
             ))
         }
         ObjectQueryRequest::FrontendGetFrontendStatusReadiness { status_types } => {
             let snapshot = query
                 .frontend_status_query_for_aidl_object(target.object_id(), target.generation())?;
-            Ok(ObjectQueryResponse::FrontendStatusReadiness(
-                status_types
-                    .into_iter()
-                    .map(|status_type| object_frontend_readiness_value(snapshot, status_type))
-                    .collect(),
+            Ok(ObjectQueryExecution::Immediate(
+                ObjectQueryResponse::FrontendStatusReadiness(
+                    status_types
+                        .into_iter()
+                        .map(|status_type| object_frontend_readiness_value(snapshot, status_type))
+                        .collect(),
+                ),
             ))
         }
         ObjectQueryRequest::DemuxGetAvSyncHwId {
@@ -277,6 +297,7 @@ fn execute_object_query_request(
                     )
                 })
                 .map(ObjectQueryResponse::AvSyncHwId)
+                .map(ObjectQueryExecution::Immediate)
         }
         ObjectQueryRequest::DemuxGetAvSyncTime { av_sync_hw_id } => {
             if av_sync_hw_id < 0 {
@@ -295,7 +316,54 @@ fn execute_object_query_request(
                     "AV sync hardware id must refer to a live PCR filter owned by this demux",
                 ));
             }
-            Ok(ObjectQueryResponse::AvSyncTime(0))
+            Ok(ObjectQueryExecution::Immediate(
+                ObjectQueryResponse::AvSyncTime(0),
+            ))
+        }
+    }
+}
+
+fn finish_object_query_execution(
+    runtime: &SharedObjectMethodRuntime,
+    execution: ObjectQueryExecution,
+) -> Result<ObjectQueryResponse, HalError> {
+    match execution {
+        ObjectQueryExecution::Immediate(response) => Ok(response),
+        ObjectQueryExecution::QueueDescriptor(plan) => {
+            finish_queue_descriptor_export(runtime, plan)
+        }
+    }
+}
+
+fn finish_queue_descriptor_export(
+    runtime: &SharedObjectMethodRuntime,
+    plan: QueueDescriptorExportPlan,
+) -> Result<ObjectQueryResponse, HalError> {
+    let object_kind = plan.object_kind();
+    let object_id = plan.object_id();
+    let generation = plan.generation();
+    let runtime_id = plan.runtime_id();
+    match plan.export_descriptor() {
+        Ok(snapshot) => Ok(ObjectQueryResponse::QueueDescriptor(snapshot)),
+        Err(error) => {
+            let mut guard = runtime.lock().map_err(|_| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "service runtime lock poisoned while recording queue descriptor diagnostic",
+                )
+            })?;
+            guard.record_queue_descriptor_query_diagnostic(
+                QueueDescriptorQueryDiagnosticRecord::new(
+                    object_kind,
+                    object_id,
+                    generation,
+                    runtime_id,
+                    error,
+                ),
+            );
+            Err(map_queue_descriptor_query_error(
+                QueueDescriptorQueryError::Runtime(error),
+            ))
         }
     }
 }
@@ -446,24 +514,27 @@ pub fn execute_object_query_call_after_live(
     request: ObjectQueryRequest,
 ) -> Result<ObjectQueryResponse, HalError> {
     let target = ObjectMethodTxnTarget::new(object_id, generation, object_kind);
-    let mut runtime = runtime.lock().map_err(|_| {
-        HalError::internal(
-            HalInternalKind::InvariantViolation,
-            "service runtime lock poisoned",
-        )
-    })?;
-    aidl_object_live(
-        &runtime,
-        target.object_id(),
-        target.generation(),
-        target.object_kind(),
-    )?;
-    let method = request.method();
-    let plan = plan_aidl_method_call(method)?;
-    validate_plan_target(&plan, target)?;
-    plan_object_method_dispatch(&mut runtime, plan.command_plan(), plan.executable_request())?;
-    let query = runtime.query();
-    execute_object_query_request(&query, target, request)
+    let execution = {
+        let mut runtime = runtime.lock().map_err(|_| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "service runtime lock poisoned",
+            )
+        })?;
+        aidl_object_live(
+            &runtime,
+            target.object_id(),
+            target.generation(),
+            target.object_kind(),
+        )?;
+        let method = request.method();
+        let plan = plan_aidl_method_call(method)?;
+        validate_plan_target(&plan, target)?;
+        plan_object_method_dispatch(&mut runtime, plan.command_plan(), plan.executable_request())?;
+        let query = runtime.query();
+        prepare_object_query_request(&query, target, request)?
+    };
+    finish_object_query_execution(runtime, execution)
 }
 
 pub fn execute_object_query_call_after_live_with_aidl_input_conversion<E, Build>(
@@ -478,27 +549,30 @@ where
     Build: FnOnce() -> Result<ObjectQueryRequest, E>,
 {
     let target = ObjectMethodTxnTarget::new(object_id, generation, object_kind);
-    let mut runtime = runtime.lock().map_err(|_| {
-        ObjectMethodTxnBuildError::Runtime(HalError::internal(
-            HalInternalKind::InvariantViolation,
-            "service runtime lock poisoned",
-        ))
-    })?;
-    aidl_object_live(
-        &runtime,
-        target.object_id(),
-        target.generation(),
-        target.object_kind(),
-    )
-    .map_err(ObjectMethodTxnBuildError::Runtime)?;
-    let request = build().map_err(ObjectMethodTxnBuildError::Builder)?;
-    let plan = plan_aidl_method_call(method).map_err(ObjectMethodTxnBuildError::Runtime)?;
-    validate_plan_target(&plan, target).map_err(ObjectMethodTxnBuildError::Runtime)?;
-    plan_object_method_dispatch(&mut runtime, plan.command_plan(), plan.executable_request())
+    let execution = {
+        let mut runtime = runtime.lock().map_err(|_| {
+            ObjectMethodTxnBuildError::Runtime(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "service runtime lock poisoned",
+            ))
+        })?;
+        aidl_object_live(
+            &runtime,
+            target.object_id(),
+            target.generation(),
+            target.object_kind(),
+        )
         .map_err(ObjectMethodTxnBuildError::Runtime)?;
-    let query = runtime.query();
-    execute_object_query_request(&query, target, request)
-        .map_err(ObjectMethodTxnBuildError::Runtime)
+        let request = build().map_err(ObjectMethodTxnBuildError::Builder)?;
+        let plan = plan_aidl_method_call(method).map_err(ObjectMethodTxnBuildError::Runtime)?;
+        validate_plan_target(&plan, target).map_err(ObjectMethodTxnBuildError::Runtime)?;
+        plan_object_method_dispatch(&mut runtime, plan.command_plan(), plan.executable_request())
+            .map_err(ObjectMethodTxnBuildError::Runtime)?;
+        let query = runtime.query();
+        prepare_object_query_request(&query, target, request)
+            .map_err(ObjectMethodTxnBuildError::Runtime)?
+    };
+    finish_object_query_execution(runtime, execution).map_err(ObjectMethodTxnBuildError::Runtime)
 }
 
 pub fn execute_object_method_call_after_live<T, E, B, Build, Execute>(

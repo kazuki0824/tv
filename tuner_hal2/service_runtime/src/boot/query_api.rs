@@ -7,8 +7,56 @@ use super::{
 };
 use crate::object_method_txn::ObjectFrontendStatusSnapshot;
 use maleicacid_tuner_hal2_demux::{
-    DvrRuntimeState, DvrStatusEvent, QueueDescriptorQueryError, QueueDescriptorSnapshot,
+    DvrRuntimeState, DvrStatusEvent, QueueDescriptorExportHandle, QueueDescriptorQueryError,
+    QueueDescriptorSnapshot, QueueRuntimeError,
 };
+
+#[derive(Debug)]
+pub(crate) struct QueueDescriptorExportPlan {
+    object_kind: AidlObjectKind,
+    object_id: AidlObjectId,
+    generation: AidlObjectGeneration,
+    runtime_id: i32,
+    handle: QueueDescriptorExportHandle,
+}
+
+impl QueueDescriptorExportPlan {
+    const fn new(
+        object_kind: AidlObjectKind,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        runtime_id: i32,
+        handle: QueueDescriptorExportHandle,
+    ) -> Self {
+        Self {
+            object_kind,
+            object_id,
+            generation,
+            runtime_id,
+            handle,
+        }
+    }
+
+    pub(crate) const fn object_kind(&self) -> AidlObjectKind {
+        self.object_kind
+    }
+
+    pub(crate) const fn object_id(&self) -> AidlObjectId {
+        self.object_id
+    }
+
+    pub(crate) const fn generation(&self) -> AidlObjectGeneration {
+        self.generation
+    }
+
+    pub(crate) const fn runtime_id(&self) -> i32 {
+        self.runtime_id
+    }
+
+    pub(crate) fn export_descriptor(self) -> Result<QueueDescriptorSnapshot, QueueRuntimeError> {
+        self.handle.export_descriptor()
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RuntimeObjectQueryError {
@@ -248,7 +296,7 @@ impl TunerServiceRuntime {
     }
 }
 
-fn map_queue_descriptor_query_error(error: QueueDescriptorQueryError) -> HalError {
+pub(crate) fn map_queue_descriptor_query_error(error: QueueDescriptorQueryError) -> HalError {
     match error {
         QueueDescriptorQueryError::FilterMissing(id)
         | QueueDescriptorQueryError::DvrMissing(id)
@@ -263,21 +311,21 @@ fn map_queue_descriptor_query_error(error: QueueDescriptorQueryError) -> HalErro
             HalInternalKind::InvariantViolation,
             format!("queue descriptor runtime is missing: id={id}"),
         ),
-        QueueDescriptorQueryError::Runtime(error) => HalError::internal(
-            HalInternalKind::InvariantViolation,
+        QueueDescriptorQueryError::Runtime(error) => HalError::fmq_failed(
+            "queue_descriptor_export",
             format!(
-                "queue descriptor export failed: kind={:?} detail={}",
+                "queue descriptor export failed: runtime_kind={:?} detail={}",
                 error.kind, error.detail
             ),
         ),
     }
 }
 impl<'a> RuntimeQuery<'a> {
-    pub(crate) fn filter_queue_descriptor_snapshot_for_aidl_object(
+    pub(crate) fn filter_queue_descriptor_export_plan_for_aidl_object(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
-    ) -> Result<QueueDescriptorSnapshot, HalError> {
+    ) -> Result<QueueDescriptorExportPlan, HalError> {
         let filter_id = self
             .public_runtime_id_for_aidl_object(object_id, generation, AidlObjectKind::Filter)
             .map_err(RuntimeObjectQueryError::into_hal_for_object_method)?;
@@ -301,15 +349,24 @@ impl<'a> RuntimeQuery<'a> {
                 )
             })?;
         demux
-            .export_filter_queue_descriptor(filter_id)
+            .filter_queue_descriptor_export_handle(filter_id)
+            .map(|handle| {
+                QueueDescriptorExportPlan::new(
+                    AidlObjectKind::Filter,
+                    object_id,
+                    generation,
+                    filter_id,
+                    handle,
+                )
+            })
             .map_err(map_queue_descriptor_query_error)
     }
 
-    pub(crate) fn dvr_queue_descriptor_snapshot_for_aidl_object(
+    pub(crate) fn dvr_queue_descriptor_export_plan_for_aidl_object(
         &self,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
-    ) -> Result<QueueDescriptorSnapshot, HalError> {
+    ) -> Result<QueueDescriptorExportPlan, HalError> {
         let dvr_id = self
             .public_runtime_id_for_aidl_object(object_id, generation, AidlObjectKind::Dvr)
             .map_err(RuntimeObjectQueryError::into_hal_for_object_method)?;
@@ -333,7 +390,16 @@ impl<'a> RuntimeQuery<'a> {
                 )
             })?;
         demux
-            .export_dvr_queue_descriptor(dvr_id)
+            .dvr_queue_descriptor_export_handle(dvr_id)
+            .map(|handle| {
+                QueueDescriptorExportPlan::new(
+                    AidlObjectKind::Dvr,
+                    object_id,
+                    generation,
+                    dvr_id,
+                    handle,
+                )
+            })
             .map_err(map_queue_descriptor_query_error)
     }
 

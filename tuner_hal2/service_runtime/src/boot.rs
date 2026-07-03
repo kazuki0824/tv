@@ -59,7 +59,7 @@ use crate::diagnostics::{
     DvrPostCommitNotificationDiagnosticRecord, DvrPostCommitNotificationPhase,
     FilterCallbackDeliveryDiagnosticPhase, FilterCallbackDeliveryDiagnosticRecord,
     FrontendCallbackDeliveryDiagnosticPhase, FrontendCallbackDeliveryDiagnosticRecord,
-    StartupDiagnosticRecord,
+    QueueDescriptorQueryDiagnosticRecord, StartupDiagnosticRecord,
 };
 use crate::dispatch::{
     adapter_transactions_are_covered, dispatch_target_for, ServiceRuntimeDispatchTarget,
@@ -82,7 +82,9 @@ use maleicacid_tuner_hal2_resource_ledger::{LedgerGeneration, LedgerId};
 // TunerServiceRuntime private state without widening field visibility.
 mod query_api;
 pub use query_api::DvrStatusPollSnapshot;
-pub(crate) use query_api::RuntimeQuery;
+pub(crate) use query_api::{
+    map_queue_descriptor_query_error, QueueDescriptorExportPlan, RuntimeQuery,
+};
 mod demux_filter_dvr_txn;
 mod descrambler_txn;
 mod frontend_txn;
@@ -497,6 +499,8 @@ pub struct TunerServiceRuntime {
     child_open_rollback_diagnostics: BoundedDiagnosticStore<ChildOpenRollbackDiagnosticRecord>,
     dvr_post_commit_notification_diagnostics:
         BoundedDiagnosticStore<DvrPostCommitNotificationDiagnosticRecord>,
+    queue_descriptor_query_diagnostics:
+        BoundedDiagnosticStore<QueueDescriptorQueryDiagnosticRecord>,
     filter_callback_delivery_diagnostics:
         BoundedDiagnosticStore<FilterCallbackDeliveryDiagnosticRecord>,
     frontend_callback_delivery_diagnostics:
@@ -843,6 +847,7 @@ impl TunerServiceRuntime {
             descrambler_diagnostics: BoundedDiagnosticStore::default(),
             child_open_rollback_diagnostics: BoundedDiagnosticStore::default(),
             dvr_post_commit_notification_diagnostics: BoundedDiagnosticStore::default(),
+            queue_descriptor_query_diagnostics: BoundedDiagnosticStore::default(),
             filter_callback_delivery_diagnostics: BoundedDiagnosticStore::default(),
             frontend_callback_delivery_diagnostics: BoundedDiagnosticStore::default(),
             callback_artifact_runtime_split_diagnostics: BoundedDiagnosticStore::default(),
@@ -886,6 +891,13 @@ impl TunerServiceRuntime {
         &self,
     ) -> &[DvrPostCommitNotificationDiagnosticRecord] {
         self.dvr_post_commit_notification_diagnostics.as_slice()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn queue_descriptor_query_diagnostics(
+        &self,
+    ) -> &[QueueDescriptorQueryDiagnosticRecord] {
+        self.queue_descriptor_query_diagnostics.as_slice()
     }
 
     #[cfg(test)]
@@ -933,6 +945,13 @@ impl TunerServiceRuntime {
         record: DvrPostCommitNotificationDiagnosticRecord,
     ) {
         self.dvr_post_commit_notification_diagnostics.push(record);
+    }
+
+    pub(crate) fn record_queue_descriptor_query_diagnostic(
+        &mut self,
+        record: QueueDescriptorQueryDiagnosticRecord,
+    ) {
+        self.queue_descriptor_query_diagnostics.push(record);
     }
 
     pub(crate) fn record_filter_callback_delivery_diagnostic(

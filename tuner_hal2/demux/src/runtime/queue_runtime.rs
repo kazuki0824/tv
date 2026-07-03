@@ -1,6 +1,7 @@
 use std::fmt;
 use std::fs::File;
 use std::os::fd::FromRawFd;
+use std::sync::Arc;
 
 use maleicacid_tuner_hal2_fmq::{FmqQueue, FmqQueueError};
 
@@ -70,9 +71,26 @@ impl QueueRuntimeError {
 }
 
 pub struct QueueRuntime {
-    queue: FmqQueue,
+    queue: Arc<FmqQueue>,
     capacity_bytes: usize,
     configure_event_flag: bool,
+}
+
+#[derive(Clone)]
+pub struct QueueDescriptorExportHandle {
+    queue: Arc<FmqQueue>,
+}
+
+impl fmt::Debug for QueueDescriptorExportHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("QueueDescriptorExportHandle").finish()
+    }
+}
+
+impl QueueDescriptorExportHandle {
+    pub fn export_descriptor(&self) -> Result<QueueDescriptorSnapshot, QueueRuntimeError> {
+        export_queue_descriptor(&self.queue)
+    }
 }
 
 impl fmt::Debug for QueueRuntime {
@@ -101,7 +119,7 @@ impl QueueRuntime {
         let queue = FmqQueue::create(capacity_bytes, configure_event_flag)
             .map_err(|err| map_create_error(err, "FMQ create failed"))?;
         Ok(Self {
-            queue,
+            queue: Arc::new(queue),
             capacity_bytes,
             configure_event_flag,
         })
@@ -147,99 +165,98 @@ impl QueueRuntime {
             .map_err(|err| map_data_path_error(err, "FMQ wake failed"))
     }
 
-    pub fn export_descriptor(&self) -> Result<QueueDescriptorSnapshot, QueueRuntimeError> {
-        let grantor_count = self
-            .queue
-            .grantor_count_result()
-            .map_err(|err| map_export_error(err, "FMQ grantor count export failed"))?;
-        let mut grantors = Vec::with_capacity(grantor_count);
-        for index in 0..grantor_count {
-            let (fd_index, offset, extent) = self
-                .queue
-                .grantor_at_result(index)
-                .map_err(|err| map_export_error(err, "FMQ grantor export failed"))?;
-            grantors.push(QueueGrantorDescriptorSnapshot {
-                fd_index,
-                offset,
-                extent,
-            });
+    pub fn descriptor_export_handle(&self) -> QueueDescriptorExportHandle {
+        QueueDescriptorExportHandle {
+            queue: Arc::clone(&self.queue),
         }
+    }
+}
 
-        let fd_count = self
-            .queue
-            .fd_count_result()
-            .map_err(|err| map_export_error(err, "FMQ fd count export failed"))?;
-        let mut fds = Vec::with_capacity(fd_count);
-        let mut fd_sizes = Vec::with_capacity(fd_count);
-        for index in 0..fd_count {
-            let fd = self
-                .queue
-                .dup_fd_at_result(index)
-                .map_err(|err| map_export_error(err, "FMQ fd export failed"))?;
-            let file = unsafe { File::from_raw_fd(fd) };
-            let fd_size_u64 = file
-                .metadata()
-                .map_err(|_| {
-                    QueueRuntimeError::new(
-                        QueueRuntimeErrorKind::StructuralDescriptor,
-                        "FMQ descriptor fd metadata failed",
-                    )
-                })?
-                .len();
-            let fd_size = i64::try_from(fd_size_u64).map_err(|_| {
+fn export_queue_descriptor(queue: &FmqQueue) -> Result<QueueDescriptorSnapshot, QueueRuntimeError> {
+    let grantor_count = queue
+        .grantor_count_result()
+        .map_err(|err| map_export_error(err, "FMQ grantor count export failed"))?;
+    let mut grantors = Vec::with_capacity(grantor_count);
+    for index in 0..grantor_count {
+        let (fd_index, offset, extent) = queue
+            .grantor_at_result(index)
+            .map_err(|err| map_export_error(err, "FMQ grantor export failed"))?;
+        grantors.push(QueueGrantorDescriptorSnapshot {
+            fd_index,
+            offset,
+            extent,
+        });
+    }
+
+    let fd_count = queue
+        .fd_count_result()
+        .map_err(|err| map_export_error(err, "FMQ fd count export failed"))?;
+    let mut fds = Vec::with_capacity(fd_count);
+    let mut fd_sizes = Vec::with_capacity(fd_count);
+    for index in 0..fd_count {
+        let fd = queue
+            .dup_fd_at_result(index)
+            .map_err(|err| map_export_error(err, "FMQ fd export failed"))?;
+        let file = unsafe { File::from_raw_fd(fd) };
+        let fd_size_u64 = file
+            .metadata()
+            .map_err(|_| {
                 QueueRuntimeError::new(
                     QueueRuntimeErrorKind::StructuralDescriptor,
-                    "FMQ descriptor fd size overflow",
+                    "FMQ descriptor fd metadata failed",
                 )
-            })?;
-            fd_sizes.push(fd_size);
-            fds.push(file);
-        }
-
-        let int_count = self
-            .queue
-            .int_count_result()
-            .map_err(|err| map_export_error(err, "FMQ int count export failed"))?;
-        if int_count > 4 {
-            return Err(QueueRuntimeError::new(
+            })?
+            .len();
+        let fd_size = i64::try_from(fd_size_u64).map_err(|_| {
+            QueueRuntimeError::new(
                 QueueRuntimeErrorKind::StructuralDescriptor,
-                "FMQ descriptor int count is invalid",
-            ));
-        }
-        let mut ints = Vec::with_capacity(int_count);
-        for index in 0..int_count {
-            ints.push(
-                self.queue
-                    .int_at_result(index)
-                    .map_err(|err| map_export_error(err, "FMQ int export failed"))?,
-            );
-        }
-
-        validate_grantor_ranges_against_fd_sizes(&grantors, &fd_sizes)?;
-
-        let quantum = self
-            .queue
-            .quantum_result()
-            .map_err(|err| map_export_error(err, "FMQ quantum export failed"))?;
-        if quantum <= 0 {
-            return Err(QueueRuntimeError::new(
-                QueueRuntimeErrorKind::StructuralDescriptor,
-                "FMQ descriptor quantum is invalid",
-            ));
-        }
-        let flags = self
-            .queue
-            .flags_result()
-            .map_err(|err| map_export_error(err, "FMQ flags export failed"))?;
-
-        Ok(QueueDescriptorSnapshot {
-            grantors,
-            fds,
-            ints,
-            quantum,
-            flags,
-        })
+                "FMQ descriptor fd size overflow",
+            )
+        })?;
+        fd_sizes.push(fd_size);
+        fds.push(file);
     }
+
+    let int_count = queue
+        .int_count_result()
+        .map_err(|err| map_export_error(err, "FMQ int count export failed"))?;
+    if int_count > 4 {
+        return Err(QueueRuntimeError::new(
+            QueueRuntimeErrorKind::StructuralDescriptor,
+            "FMQ descriptor int count is invalid",
+        ));
+    }
+    let mut ints = Vec::with_capacity(int_count);
+    for index in 0..int_count {
+        ints.push(
+            queue
+                .int_at_result(index)
+                .map_err(|err| map_export_error(err, "FMQ int export failed"))?,
+        );
+    }
+
+    validate_grantor_ranges_against_fd_sizes(&grantors, &fd_sizes)?;
+
+    let quantum = queue
+        .quantum_result()
+        .map_err(|err| map_export_error(err, "FMQ quantum export failed"))?;
+    if quantum <= 0 {
+        return Err(QueueRuntimeError::new(
+            QueueRuntimeErrorKind::StructuralDescriptor,
+            "FMQ descriptor quantum is invalid",
+        ));
+    }
+    let flags = queue
+        .flags_result()
+        .map_err(|err| map_export_error(err, "FMQ flags export failed"))?;
+
+    Ok(QueueDescriptorSnapshot {
+        grantors,
+        fds,
+        ints,
+        quantum,
+        flags,
+    })
 }
 
 fn validate_grantor_ranges_against_fd_sizes(

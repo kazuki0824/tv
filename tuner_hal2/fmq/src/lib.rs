@@ -203,7 +203,7 @@ impl FmqQueue {
                 _ => FmqQueueError::NativeWriteFailed,
             })
     }
-    pub fn clear(&mut self) -> Result<(), FmqQueueError> {
+    pub fn clear(&self) -> Result<(), FmqQueueError> {
         let mut scratch = vec![0u8; 4096];
         while self.native.available_to_read() > 0 {
             let read = self.native.read(&mut scratch);

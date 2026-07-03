@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use maleicacid_tuner_hal2_common::{FrontendBackendKind, HalError};
-use maleicacid_tuner_hal2_demux::PacketPid;
+use maleicacid_tuner_hal2_demux::{PacketPid, QueueRuntimeError};
 use maleicacid_tuner_hal2_descrambler::DescramblerPid;
 use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
 
@@ -239,6 +239,33 @@ pub struct DvrPostCommitNotificationDiagnosticRecord {
     pub object_id: AidlObjectId,
     pub generation: AidlObjectGeneration,
     pub error: HalError,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct QueueDescriptorQueryDiagnosticRecord {
+    pub object_kind: AidlObjectKind,
+    pub object_id: AidlObjectId,
+    pub generation: AidlObjectGeneration,
+    pub runtime_id: i32,
+    pub error: QueueRuntimeError,
+}
+
+impl QueueDescriptorQueryDiagnosticRecord {
+    pub const fn new(
+        object_kind: AidlObjectKind,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        runtime_id: i32,
+        error: QueueRuntimeError,
+    ) -> Self {
+        Self {
+            object_kind,
+            object_id,
+            generation,
+            runtime_id,
+            error,
+        }
+    }
 }
 
 impl DvrPostCommitNotificationDiagnosticRecord {

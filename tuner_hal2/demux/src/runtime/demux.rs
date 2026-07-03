@@ -24,7 +24,9 @@ use crate::TsInputOrigin;
 
 use super::dvr::{DvrKind, DvrRuntime, DvrRuntimeSnapshot, DvrStatusEvent};
 use super::filter::{FilterRuntime, FilterRuntimeSnapshot, FilterRuntimeState};
-use super::queue_runtime::{QueueDescriptorSnapshot, QueueRuntime, QueueRuntimeError};
+use super::queue_runtime::{
+    QueueDescriptorExportHandle, QueueDescriptorSnapshot, QueueRuntime, QueueRuntimeError,
+};
 use super::source_boundary::apply_filter_source_boundary_change;
 
 const TUNER_EVENT_DATA_READY: u32 = 1 << 0;
@@ -1617,6 +1619,15 @@ impl DemuxRuntime {
         &self,
         filter_id: i32,
     ) -> Result<QueueDescriptorSnapshot, QueueDescriptorQueryError> {
+        self.filter_queue_descriptor_export_handle(filter_id)?
+            .export_descriptor()
+            .map_err(QueueDescriptorQueryError::Runtime)
+    }
+
+    pub fn filter_queue_descriptor_export_handle(
+        &self,
+        filter_id: i32,
+    ) -> Result<QueueDescriptorExportHandle, QueueDescriptorQueryError> {
         let snapshot = self
             .filter(filter_id)
             .map(FilterRuntime::snapshot)
@@ -1630,19 +1641,25 @@ impl DemuxRuntime {
         {
             return Err(QueueDescriptorQueryError::Unavailable(filter_id));
         }
-        let queue = self
-            .filter_queue_runtimes
+        self.filter_queue_runtimes
             .get(&filter_id)
-            .ok_or(QueueDescriptorQueryError::RuntimeMissing(filter_id))?;
-        queue
-            .export_descriptor()
-            .map_err(QueueDescriptorQueryError::Runtime)
+            .map(QueueRuntime::descriptor_export_handle)
+            .ok_or(QueueDescriptorQueryError::RuntimeMissing(filter_id))
     }
 
     pub fn export_dvr_queue_descriptor(
         &self,
         dvr_id: i32,
     ) -> Result<QueueDescriptorSnapshot, QueueDescriptorQueryError> {
+        self.dvr_queue_descriptor_export_handle(dvr_id)?
+            .export_descriptor()
+            .map_err(QueueDescriptorQueryError::Runtime)
+    }
+
+    pub fn dvr_queue_descriptor_export_handle(
+        &self,
+        dvr_id: i32,
+    ) -> Result<QueueDescriptorExportHandle, QueueDescriptorQueryError> {
         let snapshot = self
             .dvr(dvr_id)
             .map(DvrRuntime::snapshot)
@@ -1653,13 +1670,10 @@ impl DemuxRuntime {
         if !self.dvr(dvr_id).is_some_and(DvrRuntime::allows_queue_desc) {
             return Err(QueueDescriptorQueryError::InvalidState(dvr_id));
         }
-        let queue = self
-            .dvr_queue_runtimes
+        self.dvr_queue_runtimes
             .get(&dvr_id)
-            .ok_or(QueueDescriptorQueryError::RuntimeMissing(dvr_id))?;
-        queue
-            .export_descriptor()
-            .map_err(QueueDescriptorQueryError::Runtime)
+            .map(QueueRuntime::descriptor_export_handle)
+            .ok_or(QueueDescriptorQueryError::RuntimeMissing(dvr_id))
     }
 
     fn clear_filter_queue_runtime(&mut self, filter_id: i32) -> Result<(), DemuxRuntimeError> {

@@ -55,7 +55,8 @@ pub use diagnostics::{
     DvrPostCommitNotificationDiagnosticRecord, DvrPostCommitNotificationPhase,
     FilterCallbackDeliveryDiagnosticPhase, FilterCallbackDeliveryDiagnosticRecord,
     FrontendCallbackDeliveryDiagnosticPhase, FrontendCallbackDeliveryDiagnosticRecord,
-    StartupDiagnosticKind, StartupDiagnosticPhase, StartupDiagnosticRecord,
+    QueueDescriptorQueryDiagnosticRecord, StartupDiagnosticKind, StartupDiagnosticPhase,
+    StartupDiagnosticRecord,
 };
 pub use dispatch::{dispatch_target_for, ServiceRuntimeDispatchTarget};
 pub use frontend_ops::set_frontend_lnb_object_use_case;
@@ -107,15 +108,17 @@ mod tests {
     use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem, HalError};
     use maleicacid_tuner_hal2_demux::{
         FilterConfig, FilterConfigKind, FilterOpenType, OpenFilterRequest, PacketPid, PesSettings,
-        PipelineAssemblySuppressionReason, PipelineDeliveryAction,
+        PipelineAssemblySuppressionReason, PipelineDeliveryAction, QueueRuntimeError,
+        QueueRuntimeErrorKind,
     };
     use maleicacid_tuner_hal2_descrambler::{
         multi2_encrypt_payload, DescramblerKeySlot, DescramblerKeyToken, DescramblerPid,
         DescramblerPidClaim, Multi2KeyMaterial,
     };
     use maleicacid_tuner_hal2_domain_request::{
-        DvrConfigureKind, DvrConfigureRequest, DvrOpenKind, FilterDelayHintKind,
-        FilterDelayHintRequest, OpenDvrRequest, RuntimeTransactionName, AIDL_TRANSACTION_TABLE,
+        AidlObjectGeneration, AidlObjectId, AidlObjectKind, DvrConfigureKind, DvrConfigureRequest,
+        DvrOpenKind, FilterDelayHintKind, FilterDelayHintRequest, OpenDvrRequest,
+        RuntimeTransactionName, AIDL_TRANSACTION_TABLE,
     };
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
@@ -129,6 +132,35 @@ mod tests {
 
     fn test_packet_pid(pid: u16) -> PacketPid {
         PacketPid::from_descrambler_pid_for_service_runtime_boundary(test_descrambler_pid(pid))
+    }
+
+    #[test]
+    fn queue_descriptor_query_diagnostic_store_records_typed_runtime_error() {
+        let mut runtime = TunerServiceRuntime::default();
+        let error = QueueRuntimeError {
+            kind: QueueRuntimeErrorKind::ExportTransient,
+            detail: "test queue descriptor export failure",
+        };
+        runtime.record_queue_descriptor_query_diagnostic(
+            QueueDescriptorQueryDiagnosticRecord::new(
+                AidlObjectKind::Filter,
+                AidlObjectId(101),
+                AidlObjectGeneration(7),
+                25,
+                error,
+            ),
+        );
+
+        assert_eq!(
+            runtime.queue_descriptor_query_diagnostics(),
+            &[QueueDescriptorQueryDiagnosticRecord::new(
+                AidlObjectKind::Filter,
+                AidlObjectId(101),
+                AidlObjectGeneration(7),
+                25,
+                error,
+            )]
+        );
     }
 
     fn descrambler_set_key_diagnostic_matches(

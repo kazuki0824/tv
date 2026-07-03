@@ -20,8 +20,8 @@ pub use dvr::{DvrKind, DvrRuntime, DvrRuntimeSnapshot, DvrRuntimeState, DvrStatu
 pub use filter::{FilterRuntime, FilterRuntimeSnapshot, FilterRuntimeState};
 pub use generation_boundary::{DemuxStreamGeneration, GenerationBoundaryReport};
 pub use queue_runtime::{
-    QueueDescriptorSnapshot, QueueGrantorDescriptorSnapshot, QueueRuntimeError,
-    QueueRuntimeErrorKind,
+    QueueDescriptorExportHandle, QueueDescriptorSnapshot, QueueGrantorDescriptorSnapshot,
+    QueueRuntimeError, QueueRuntimeErrorKind,
 };
 #[cfg(test)]
 pub(crate) use source_boundary::{
