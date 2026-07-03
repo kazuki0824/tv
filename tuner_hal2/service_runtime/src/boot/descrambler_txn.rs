@@ -5,12 +5,11 @@ use super::{
     DescramblerCleanupTxnError, DescramblerClearKeyTxnError, DescramblerDiagnosticKind,
     DescramblerDiagnosticPhase, DescramblerDiagnosticRecord, DescramblerKeyToken,
     DescramblerKeyTokenError, DescramblerPid, DescramblerPidClaim, DescramblerReplaceKeyOutcome,
-    DescramblerReplaceKeyTxnError, DescramblerRuntimeId, FilterOpenType, FilterRuntimeId, HalError,
-    HalInvalidArgumentKind, HalInvalidStateKind, RegistryCommitError, TunerServiceRuntime,
+    DescramblerReplaceKeyTxnError, DescramblerRuntimeId, HalError, HalInvalidArgumentKind,
+    HalInvalidStateKind, RegistryCommitError, TunerServiceRuntime,
 };
 use crate::descrambler_key_table::DescramblerKeyLookupError;
 use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, FirstErrorCollector};
-use maleicacid_tuner_hal2_demux::{FilterRuntimeState, PacketPid};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct AidlInputPid(u16);
@@ -62,69 +61,12 @@ impl TunerServiceRuntime {
         source_filter_id: i32,
         pid: DescramblerPid,
     ) -> Result<u64, HalError> {
-        let filter_entry = self
-            .registry
-            .filter(FilterRuntimeId(source_filter_id))
-            .ok_or_else(|| {
-                HalError::invalid_argument(
-                    HalInvalidArgumentKind::NumericRange,
-                    "source filter registry entry is missing",
-                )
-            })?;
-        if filter_entry.owner_demux_id != expected_demux_id {
-            return Err(HalError::invalid_argument(
-                HalInvalidArgumentKind::NumericRange,
-                "source filter belongs to another demux",
-            ));
-        }
-        let Some(demux_runtime) = self
-            .registry
-            .demux_runtime(DemuxRuntimeId(filter_entry.owner_demux_id))
-        else {
-            return Err(HalError::invalid_state(
-                HalInvalidStateKind::InvalidLifecycle,
-                "owner demux runtime is missing",
-            ));
-        };
-        if demux_runtime.generation() != expected_demux_generation {
-            return Err(HalError::invalid_state(
-                HalInvalidStateKind::InvalidLifecycle,
-                "descrambler demux generation is stale",
-            ));
-        }
-        let source_snapshot = demux_runtime
-            .filter_snapshot(source_filter_id)
-            .map_err(Self::map_filter_runtime_error)?;
-        if source_snapshot.state == FilterRuntimeState::Open
-            || source_snapshot.state.is_closed_or_failed()
-            || source_snapshot.tpid.is_none()
-        {
-            return Err(HalError::invalid_state(
-                HalInvalidStateKind::InvalidLifecycle,
-                "source filter is not configured",
-            ));
-        }
-        if !PacketPid::from_descrambler_pid_for_service_runtime_boundary(pid)
-            .matches_config_tpid_for_service_runtime_boundary(source_snapshot.tpid)
-        {
-            return Err(HalError::invalid_argument(
-                HalInvalidArgumentKind::NumericRange,
-                "source filter PID does not match descrambler PID",
-            ));
-        }
-        if !matches!(
-            source_snapshot.open_type,
-            FilterOpenType::TsAudio
-                | FilterOpenType::TsVideo
-                | FilterOpenType::TsPes
-                | FilterOpenType::TsRecord
-        ) {
-            return Err(HalError::invalid_argument(
-                HalInvalidArgumentKind::NumericRange,
-                "source filter subtype is not valid for descrambler PID source",
-            ));
-        }
-        Ok(source_snapshot.generation)
+        self.registry.validate_descrambler_source_filter(
+            expected_demux_id,
+            expected_demux_generation,
+            source_filter_id,
+            pid,
+        )
     }
 
     fn transact_set_descrambler_demux_source(

@@ -1515,8 +1515,9 @@ mod tests {
             .registry()
             .resolved_descrambler_claims_for_demux(demux.id.0, 1);
         assert_eq!(claim_sets.len(), 1);
-        assert!(claim_sets[0].key_slot.is_none());
-        assert_eq!(claim_sets[0].claims.len(), 1);
+        let (claims, key_slot) = claim_sets.into_iter().next().unwrap().into_parts();
+        assert!(key_slot.is_none());
+        assert_eq!(claims.len(), 1);
         assert!(!session.is_closed());
     }
 

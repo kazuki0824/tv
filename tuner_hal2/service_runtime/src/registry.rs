@@ -7,9 +7,11 @@ use crate::descrambler_session::{
     DescramblerReplaceKeyOutcome, DescramblerReplaceKeyTxnError, DescramblerRuntime,
     DescramblerSessionFailure, DescramblerSessionFailureKind, DescramblerSessionTxnStep,
 };
-use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem};
-use maleicacid_tuner_hal2_demux::DemuxRuntime;
+use maleicacid_tuner_hal2_common::{
+    FrontendBackendKind, FrontendSystem, HalError, HalInvalidArgumentKind, HalInvalidStateKind,
+};
 use maleicacid_tuner_hal2_demux::PacketPid;
+use maleicacid_tuner_hal2_demux::{DemuxRuntime, FilterOpenType, FilterRuntimeState};
 use maleicacid_tuner_hal2_descrambler::{
     DescramblerKeySlot, DescramblerKeyToken, DescramblerPid, DescramblerPidClaim,
 };
@@ -84,8 +86,14 @@ pub struct DescramblerRegistryEntry {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ResolvedDescramblerClaimSet {
-    pub claims: Vec<DescramblerPidClaim>,
-    pub key_slot: Option<DescramblerKeySlot>,
+    claims: Vec<DescramblerPidClaim>,
+    key_slot: Option<DescramblerKeySlot>,
+}
+
+impl ResolvedDescramblerClaimSet {
+    pub(crate) fn into_parts(self) -> (Vec<DescramblerPidClaim>, Option<DescramblerKeySlot>) {
+        (self.claims, self.key_slot)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -627,6 +635,80 @@ impl RuntimeRegistry {
             .is_some_and(|runtime| {
                 runtime.has_stale_source_generation(pid, source_filter_id, source_generation)
             })
+    }
+
+    pub(crate) fn validate_descrambler_source_filter(
+        &self,
+        expected_demux_id: i32,
+        expected_demux_generation: u64,
+        source_filter_id: i32,
+        pid: DescramblerPid,
+    ) -> Result<u64, HalError> {
+        let filter_entry = self
+            .filter(FilterRuntimeId(source_filter_id))
+            .ok_or_else(|| {
+                HalError::invalid_argument(
+                    HalInvalidArgumentKind::NumericRange,
+                    "source filter registry entry is missing",
+                )
+            })?;
+        if filter_entry.owner_demux_id != expected_demux_id {
+            return Err(HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "source filter belongs to another demux",
+            ));
+        }
+        let Some(demux_runtime) = self.demux_runtime(DemuxRuntimeId(filter_entry.owner_demux_id))
+        else {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "owner demux runtime is missing",
+            ));
+        };
+        if demux_runtime.generation() != expected_demux_generation {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "descrambler demux generation is stale",
+            ));
+        }
+        let source_snapshot = demux_runtime
+            .filter_snapshot(source_filter_id)
+            .map_err(|_| {
+                HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "source filter runtime is not available",
+                )
+            })?;
+        if source_snapshot.state == FilterRuntimeState::Open
+            || source_snapshot.state.is_closed_or_failed()
+            || source_snapshot.tpid.is_none()
+        {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "source filter is not configured",
+            ));
+        }
+        if !PacketPid::from_descrambler_pid_for_service_runtime_boundary(pid)
+            .matches_config_tpid_for_service_runtime_boundary(source_snapshot.tpid)
+        {
+            return Err(HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "source filter PID does not match descrambler PID",
+            ));
+        }
+        if !matches!(
+            source_snapshot.open_type,
+            FilterOpenType::TsAudio
+                | FilterOpenType::TsVideo
+                | FilterOpenType::TsPes
+                | FilterOpenType::TsRecord
+        ) {
+            return Err(HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "source filter subtype is not valid for descrambler PID source",
+            ));
+        }
+        Ok(source_snapshot.generation)
     }
 
     pub(crate) fn resolved_descrambler_claims_for_demux(

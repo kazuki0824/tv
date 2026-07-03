@@ -297,6 +297,18 @@ impl ActiveDescramblerSnapshot {
         self.packet_pids.contains(&pid)
     }
 
+    fn descramble_packet(
+        &self,
+        packet: &[u8; TS_PACKET_SIZE],
+    ) -> Option<Result<([u8; TS_PACKET_SIZE], DescrambleOutcome), DescrambleFailure>> {
+        let key_slot = self.key_slot.as_ref()?;
+        let mut candidate = *packet;
+        Some(
+            descramble_ts_packet_in_place(&mut candidate, &self.descrambler_pids, key_slot)
+                .map(|outcome| (candidate, outcome)),
+        )
+    }
+
     fn source_filter_ids_for_packet_pid(&self, pid: PacketPid) -> Option<&BTreeSet<i32>> {
         self.source_filter_ids_by_pid.get(&pid)
     }

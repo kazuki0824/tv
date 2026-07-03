@@ -1,10 +1,10 @@
 use super::{
-    demux_runtime_error_to_hal, descramble_ts_packet_in_place,
-    diagnostic_kind_for_descramble_failure, packet_policy_for_descramble_failure,
-    ActiveDescramblerSnapshot, BTreeMap, BTreeSet, DemuxRuntimeId, DescrambleFailure,
-    DescrambleOutcome, DescramblePacketDecision, DescramblePacketFlow, DescramblerDiagnosticKind,
-    DescramblerDiagnosticRecord, FrontendRuntimeId, FrontendRuntimeState, GenerationBoundaryReport,
-    HalError, HalInvalidStateKind, PacketDescramblePolicyFailure, PacketPid, PacketPolicyAction,
+    demux_runtime_error_to_hal, diagnostic_kind_for_descramble_failure,
+    packet_policy_for_descramble_failure, ActiveDescramblerSnapshot, BTreeMap, BTreeSet,
+    DemuxRuntimeId, DescrambleFailure, DescrambleOutcome, DescramblePacketDecision,
+    DescramblePacketFlow, DescramblerDiagnosticKind, DescramblerDiagnosticRecord,
+    FrontendRuntimeId, FrontendRuntimeState, GenerationBoundaryReport, HalError,
+    HalInvalidStateKind, PacketDescramblePolicyFailure, PacketPid, PacketPolicyAction,
     PipelineAssemblySuppressionReason, PipelineBoundaryReason, PipelineDiagnostic, PipelineReport,
     TsInputOrigin, TsPacketValidationError, TunerServiceRuntime, ValidatedTsPacket, TS_PACKET_SIZE,
 };
@@ -152,38 +152,34 @@ impl TunerServiceRuntime {
         let demux_ids = self.query().ensure_frontend_demux_sink_ready(frontend_id)?;
         let mut reports = Vec::with_capacity(demux_ids.len());
         for demux_id in demux_ids {
-            let packet_for_demux = match <&[u8; TS_PACKET_SIZE]>::try_from(packet) {
-                Ok(packet) => {
-                    let generation = self
-                        .registry
-                        .demux_runtime(demux_id)
-                        .map(|runtime| runtime.generation())
-                        .ok_or_else(|| {
-                            HalError::invalid_state(
-                                HalInvalidStateKind::InvalidLifecycle,
-                                "bound demux runtime is missing",
-                            )
-                        })?;
-                    let decision = self.decide_descrambled_packet(demux_id.0, generation, packet);
-                    match decision.flow {
-                        DescramblePacketFlow::Drop | DescramblePacketFlow::DiagnoseOnly => {
-                            let mut report = PipelineReport::default();
-                            report.diagnostics.extend(decision.diagnostics);
-                            reports.push(report);
-                            continue;
-                        }
-                        DescramblePacketFlow::Clear
-                        | DescramblePacketFlow::Descrambled
-                        | DescramblePacketFlow::RecordPassThroughAndDropAssembly => {
-                            Some((decision.packet, decision.diagnostics))
-                        }
+            let packet_for_demux = if let Ok(packet) = <&[u8; TS_PACKET_SIZE]>::try_from(packet) {
+                let generation = self
+                    .registry
+                    .demux_runtime(demux_id)
+                    .map(|runtime| runtime.generation())
+                    .ok_or_else(|| {
+                        HalError::invalid_state(
+                            HalInvalidStateKind::InvalidLifecycle,
+                            "bound demux runtime is missing",
+                        )
+                    })?;
+                let decision = self.decide_descrambled_packet(demux_id.0, generation, packet);
+                match decision.flow {
+                    DescramblePacketFlow::Drop | DescramblePacketFlow::DiagnoseOnly => {
+                        let mut report = PipelineReport::default();
+                        report.diagnostics.extend(decision.diagnostics);
+                        reports.push(report);
+                        continue;
+                    }
+                    DescramblePacketFlow::Clear
+                    | DescramblePacketFlow::Descrambled
+                    | DescramblePacketFlow::RecordPassThroughAndDropAssembly => {
+                        Some((decision.packet, decision.diagnostics))
                     }
                 }
-                Err(_) => None,
+            } else {
+                None
             };
-            let packet = packet_for_demux
-                .as_ref()
-                .map_or(packet, |(packet, _)| &packet[..]);
             let pending_descrambler_diagnostics = packet_for_demux
                 .as_ref()
                 .map_or_else(Vec::new, |(_, diagnostics)| diagnostics.clone());
@@ -195,8 +191,19 @@ impl TunerServiceRuntime {
                     ));
                 };
                 let demux_generation = demux_runtime.generation();
-                let report =
-                    demux_runtime.push_ts_packet_from_origin(packet, TsInputOrigin::Frontend);
+                let report = if let Some((packet, _)) = packet_for_demux.as_ref() {
+                    match ValidatedTsPacket::validate(packet) {
+                        Ok(validated) => demux_runtime.push_validated_ts_packet_from_origin(
+                            &validated,
+                            packet,
+                            TsInputOrigin::Frontend,
+                        ),
+                        Err(_) => demux_runtime
+                            .push_ts_packet_from_origin(packet, TsInputOrigin::Frontend),
+                    }
+                } else {
+                    demux_runtime.push_ts_packet_from_origin(packet, TsInputOrigin::Frontend)
+                };
                 (demux_generation, report)
             };
             report.diagnostics.extend(pending_descrambler_diagnostics);
@@ -219,7 +226,7 @@ impl TunerServiceRuntime {
         let mut snapshots = Vec::with_capacity(claim_sets.len());
         let mut diagnostics = Vec::new();
         for claim_set in claim_sets {
-            let claims = claim_set.claims;
+            let (claims, key_slot) = claim_set.into_parts();
             let mut descrambler_pids = BTreeSet::new();
             let mut packet_pids = BTreeSet::new();
             let mut source_filter_ids_by_pid: BTreeMap<PacketPid, BTreeSet<i32>> = BTreeMap::new();
@@ -234,7 +241,7 @@ impl TunerServiceRuntime {
                     packet_pids.insert(pid);
                     continue;
                 };
-                match self.validate_descrambler_source_filter(
+                match self.registry.validate_descrambler_source_filter(
                     demux_id,
                     demux_generation,
                     source.filter_id(),
@@ -292,7 +299,7 @@ impl TunerServiceRuntime {
             snapshots.push(ActiveDescramblerSnapshot {
                 descrambler_pids,
                 packet_pids,
-                key_slot: claim_set.key_slot,
+                key_slot,
                 source_filter_ids_by_pid,
             });
         }
@@ -404,16 +411,11 @@ impl TunerServiceRuntime {
             .filter(|snapshot| snapshot.targets_packet_pid(packet_pid))
         {
             saw_target_descrambler = true;
-            let Some(key_slot) = snapshot.key_slot.as_ref() else {
+            let Some(descramble_result) = snapshot.descramble_packet(packet) else {
                 continue;
             };
-            let mut candidate = *packet;
-            match descramble_ts_packet_in_place(
-                &mut candidate,
-                &snapshot.descrambler_pids,
-                key_slot,
-            ) {
-                Ok(DescrambleOutcome::Descrambled { .. }) => {
+            match descramble_result {
+                Ok((candidate, DescrambleOutcome::Descrambled { .. })) => {
                     self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::packet_policy(
                         demux_id,
                         packet_pid,
@@ -425,7 +427,7 @@ impl TunerServiceRuntime {
                         diagnostics: validation_diagnostics.clone(),
                     };
                 }
-                Ok(DescrambleOutcome::PassedThrough { .. }) => {
+                Ok((_, DescrambleOutcome::PassedThrough { .. })) => {
                     return DescramblePacketDecision {
                         packet: *packet,
                         flow: DescramblePacketFlow::Clear,

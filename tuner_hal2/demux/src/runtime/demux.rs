@@ -1425,6 +1425,21 @@ impl DemuxRuntime {
         packet: &[u8],
         origin: TsInputOrigin,
     ) -> PipelineReport {
+        let validated = match crate::packet_pipeline::ValidatedTsPacket::validate(packet) {
+            Ok(validated) => validated,
+            Err(_) => {
+                return crate::packet_pipeline::PacketPipeline::malformed_ts_packet_report();
+            }
+        };
+        self.push_validated_ts_packet_from_origin(&validated, packet, origin)
+    }
+
+    pub fn push_validated_ts_packet_from_origin(
+        &mut self,
+        validated: &crate::packet_pipeline::ValidatedTsPacket<'_>,
+        packet: &[u8],
+        origin: TsInputOrigin,
+    ) -> PipelineReport {
         let kind = match origin {
             TsInputOrigin::Frontend => PipelineInputKind::Live,
             TsInputOrigin::Playback => PipelineInputKind::Playback,
@@ -1436,22 +1451,7 @@ impl DemuxRuntime {
                 source_filter_generation,
             },
         };
-        let validated = match crate::packet_pipeline::ValidatedTsPacket::validate(packet) {
-            Ok(validated) => validated,
-            Err(_) => {
-                let mut report = PipelineReport::default();
-                report.dropped_packets += 1;
-                report.malformed_packets += 1;
-                report
-                    .drop_reasons
-                    .push(crate::packet_pipeline::PipelineDropReason::MalformedPacket);
-                report
-                    .diagnostics
-                    .push(crate::packet_pipeline::PipelineDiagnostic::MalformedTsPacket);
-                return report;
-            }
-        };
-        let mut report = self.pipeline.push_validated_ts_packet(&validated, kind);
+        let mut report = self.pipeline.push_validated_ts_packet(validated, kind);
         if report.accepted_packets == 0 {
             return report;
         }
@@ -1459,7 +1459,7 @@ impl DemuxRuntime {
         let downstream = self
             .pipeline
             .plan_and_assemble_ts_packet_report_after_preflight(
-                &validated,
+                validated,
                 origin,
                 &filters,
                 &report.assembly_suppression_reasons,

@@ -566,11 +566,11 @@ where
             target.object_kind(),
         )
         .map_err(ObjectMethodTxnBuildError::Runtime)?;
-        let request = build().map_err(ObjectMethodTxnBuildError::Builder)?;
         let plan = plan_aidl_method_call(method).map_err(ObjectMethodTxnBuildError::Runtime)?;
         validate_plan_target(&plan, target).map_err(ObjectMethodTxnBuildError::Runtime)?;
         plan_object_method_dispatch(&mut runtime, plan.command_plan(), plan.executable_request())
             .map_err(ObjectMethodTxnBuildError::Runtime)?;
+        let request = build().map_err(ObjectMethodTxnBuildError::Builder)?;
         let query = runtime.query();
         prepare_object_query_request(&query, target, request)
             .map_err(ObjectMethodTxnBuildError::Runtime)?

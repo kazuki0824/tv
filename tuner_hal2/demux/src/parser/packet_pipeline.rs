@@ -756,6 +756,19 @@ pub enum PipelineBoundaryReason {
 }
 
 impl PacketPipeline {
+    pub fn malformed_ts_packet_report() -> PipelineReport {
+        let mut report = PipelineReport::default();
+        report.dropped_packets += 1;
+        report.malformed_packets += 1;
+        report
+            .drop_reasons
+            .push(PipelineDropReason::MalformedPacket);
+        report
+            .diagnostics
+            .push(PipelineDiagnostic::MalformedTsPacket);
+        report
+    }
+
     pub fn validate_packet(bytes: &[u8]) -> Result<ValidatedTsPacket<'_>, TsPacketValidationError> {
         ValidatedTsPacket::validate(bytes)
     }
@@ -764,16 +777,7 @@ impl PacketPipeline {
         let validated = match Self::validate_packet(packet) {
             Ok(packet) => packet,
             Err(_) => {
-                let mut report = PipelineReport::default();
-                report.dropped_packets += 1;
-                report.malformed_packets += 1;
-                report
-                    .drop_reasons
-                    .push(PipelineDropReason::MalformedPacket);
-                report
-                    .diagnostics
-                    .push(PipelineDiagnostic::MalformedTsPacket);
-                return report;
+                return Self::malformed_ts_packet_report();
             }
         };
         self.accept_validated_ts_packet(&validated, kind)
