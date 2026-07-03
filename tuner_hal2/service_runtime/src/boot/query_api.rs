@@ -12,27 +12,109 @@ use maleicacid_tuner_hal2_demux::{
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RuntimeObjectQueryError {
-    KindOrOwnerMismatch,
-    NotLive,
+    DuplicateObjectId,
+    DuplicateRuntimeBinding,
+    MissingObject,
+    ObjectKindMismatch,
+    GenerationMismatch,
+    InvalidOwner,
+    MissingOwner,
+    OwnerGenerationMismatch,
+    OwnerKindMismatch,
+    OwnerNotLive,
+    InvalidLifecycle,
+    UnsupportedObjectKind,
+    GenerationOverflow,
+    ObjectIdOverflow,
     PublicIdOutOfRange,
 }
 
 impl RuntimeObjectQueryError {
     fn from_object_table_error(error: RuntimeObjectTableError) -> Self {
         match error {
-            RuntimeObjectTableError::ObjectKindMismatch { .. }
-            | RuntimeObjectTableError::InvalidOwner { .. }
-            | RuntimeObjectTableError::OwnerKindMismatch { .. } => Self::KindOrOwnerMismatch,
-            RuntimeObjectTableError::DuplicateObjectId { .. }
-            | RuntimeObjectTableError::DuplicateRuntimeBinding { .. }
-            | RuntimeObjectTableError::MissingObject { .. }
-            | RuntimeObjectTableError::GenerationMismatch { .. }
-            | RuntimeObjectTableError::MissingOwner { .. }
-            | RuntimeObjectTableError::OwnerGenerationMismatch { .. }
-            | RuntimeObjectTableError::OwnerNotLive { .. }
-            | RuntimeObjectTableError::InvalidLifecycle { .. }
-            | RuntimeObjectTableError::UnsupportedObjectKind { .. }
-            | RuntimeObjectTableError::GenerationOverflow => Self::NotLive,
+            RuntimeObjectTableError::DuplicateObjectId { .. } => Self::DuplicateObjectId,
+            RuntimeObjectTableError::DuplicateRuntimeBinding { .. } => {
+                Self::DuplicateRuntimeBinding
+            }
+            RuntimeObjectTableError::MissingObject { .. } => Self::MissingObject,
+            RuntimeObjectTableError::ObjectKindMismatch { .. } => Self::ObjectKindMismatch,
+            RuntimeObjectTableError::GenerationMismatch { .. } => Self::GenerationMismatch,
+            RuntimeObjectTableError::InvalidOwner { .. } => Self::InvalidOwner,
+            RuntimeObjectTableError::MissingOwner { .. } => Self::MissingOwner,
+            RuntimeObjectTableError::OwnerGenerationMismatch { .. } => {
+                Self::OwnerGenerationMismatch
+            }
+            RuntimeObjectTableError::OwnerKindMismatch { .. } => Self::OwnerKindMismatch,
+            RuntimeObjectTableError::OwnerNotLive { .. } => Self::OwnerNotLive,
+            RuntimeObjectTableError::InvalidLifecycle { .. } => Self::InvalidLifecycle,
+            RuntimeObjectTableError::UnsupportedObjectKind { .. } => Self::UnsupportedObjectKind,
+            RuntimeObjectTableError::GenerationOverflow => Self::GenerationOverflow,
+            RuntimeObjectTableError::ObjectIdOverflow => Self::ObjectIdOverflow,
+        }
+    }
+
+    fn into_hal_for_object_method(self) -> HalError {
+        match self {
+            Self::DuplicateObjectId => HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "AIDL object id has a duplicate live registration",
+            ),
+            Self::DuplicateRuntimeBinding => HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "AIDL public runtime id has a duplicate live binding",
+            ),
+            Self::MissingObject => HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "AIDL object is missing for object method",
+            ),
+            Self::ObjectKindMismatch => HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "AIDL object kind mismatch for object method",
+            ),
+            Self::GenerationMismatch => HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "AIDL object generation mismatch for object method",
+            ),
+            Self::InvalidOwner => HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "AIDL object owner relation is invalid for object method",
+            ),
+            Self::MissingOwner => HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "AIDL object owner is missing for object method",
+            ),
+            Self::OwnerGenerationMismatch => HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "AIDL object owner generation mismatch for object method",
+            ),
+            Self::OwnerKindMismatch => HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "AIDL object owner kind mismatch for object method",
+            ),
+            Self::OwnerNotLive => HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "AIDL object owner is not live for object method",
+            ),
+            Self::InvalidLifecycle => HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "AIDL object is not live for object method",
+            ),
+            Self::UnsupportedObjectKind => HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "AIDL object kind is unsupported for object method",
+            ),
+            Self::GenerationOverflow => HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "AIDL object generation overflow while resolving object query",
+            ),
+            Self::ObjectIdOverflow => HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "AIDL object id overflow while resolving object query",
+            ),
+            Self::PublicIdOutOfRange => HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "AIDL public runtime id is out of range for object method",
+            ),
         }
     }
 }
@@ -152,12 +234,7 @@ impl TunerServiceRuntime {
         expected_kind: AidlObjectKind,
     ) -> Result<i32, HalError> {
         self.public_runtime_id_for_aidl_object(object_id, generation, expected_kind)
-            .map_err(|_| {
-                HalError::invalid_state(
-                    HalInvalidStateKind::InvalidLifecycle,
-                    "AIDL object is not live for object method",
-                )
-            })
+            .map_err(RuntimeObjectQueryError::into_hal_for_object_method)
     }
 
     pub(crate) fn public_entry_for_object_method(
@@ -167,12 +244,7 @@ impl TunerServiceRuntime {
         expected_kind: AidlObjectKind,
     ) -> Result<RuntimeObjectPublicEntry, HalError> {
         self.public_entry_for_aidl_object(object_id, generation, expected_kind)
-            .map_err(|_| {
-                HalError::invalid_state(
-                    HalInvalidStateKind::InvalidLifecycle,
-                    "AIDL object is not live for object method",
-                )
-            })
+            .map_err(RuntimeObjectQueryError::into_hal_for_object_method)
     }
 }
 
@@ -208,12 +280,7 @@ impl<'a> RuntimeQuery<'a> {
     ) -> Result<QueueDescriptorSnapshot, HalError> {
         let filter_id = self
             .public_runtime_id_for_aidl_object(object_id, generation, AidlObjectKind::Filter)
-            .map_err(|_| {
-                HalError::invalid_state(
-                    HalInvalidStateKind::InvalidLifecycle,
-                    "filter AIDL object is not live",
-                )
-            })?;
+            .map_err(RuntimeObjectQueryError::into_hal_for_object_method)?;
         let owner_demux_id = self
             .registry
             .filter(FilterRuntimeId(filter_id))
@@ -245,12 +312,7 @@ impl<'a> RuntimeQuery<'a> {
     ) -> Result<QueueDescriptorSnapshot, HalError> {
         let dvr_id = self
             .public_runtime_id_for_aidl_object(object_id, generation, AidlObjectKind::Dvr)
-            .map_err(|_| {
-                HalError::invalid_state(
-                    HalInvalidStateKind::InvalidLifecycle,
-                    "DVR AIDL object is not live",
-                )
-            })?;
+            .map_err(RuntimeObjectQueryError::into_hal_for_object_method)?;
         let owner_demux_id = self
             .registry
             .dvr(DvrRuntimeId(dvr_id))
@@ -282,12 +344,7 @@ impl<'a> RuntimeQuery<'a> {
     ) -> Result<DvrStatusPollSnapshot, HalError> {
         let dvr_id = self
             .public_runtime_id_for_aidl_object(object_id, generation, AidlObjectKind::Dvr)
-            .map_err(|_| {
-                HalError::invalid_state(
-                    HalInvalidStateKind::InvalidLifecycle,
-                    "DVR AIDL object is not live",
-                )
-            })?;
+            .map_err(RuntimeObjectQueryError::into_hal_for_object_method)?;
         let owner_demux_id = self
             .registry
             .dvr(DvrRuntimeId(dvr_id))
@@ -370,12 +427,7 @@ impl<'a> RuntimeQuery<'a> {
         expected_kind: AidlObjectKind,
     ) -> Result<i32, HalError> {
         self.public_runtime_id_for_aidl_object(object_id, generation, expected_kind)
-            .map_err(|_| {
-                HalError::invalid_state(
-                    HalInvalidStateKind::InvalidLifecycle,
-                    "AIDL object is not live for object method",
-                )
-            })
+            .map_err(RuntimeObjectQueryError::into_hal_for_object_method)
     }
 
     pub(crate) fn public_entry_for_object_method(
@@ -385,12 +437,7 @@ impl<'a> RuntimeQuery<'a> {
         expected_kind: AidlObjectKind,
     ) -> Result<RuntimeObjectPublicEntry, HalError> {
         self.public_entry_for_aidl_object(object_id, generation, expected_kind)
-            .map_err(|_| {
-                HalError::invalid_state(
-                    HalInvalidStateKind::InvalidLifecycle,
-                    "AIDL object is not live for object method",
-                )
-            })
+            .map_err(RuntimeObjectQueryError::into_hal_for_object_method)
     }
 
     pub(crate) fn frontend_ids(&self) -> Vec<i32> {
@@ -416,12 +463,7 @@ impl<'a> RuntimeQuery<'a> {
     ) -> Result<crate::registry::FrontendRegistryEntry, HalError> {
         let public_id = self
             .public_runtime_id_for_aidl_object(object_id, generation, AidlObjectKind::Frontend)
-            .map_err(|_| {
-                HalError::invalid_state(
-                    HalInvalidStateKind::InvalidLifecycle,
-                    "frontend AIDL object is not live",
-                )
-            })?;
+            .map_err(RuntimeObjectQueryError::into_hal_for_object_method)?;
         self.frontend_entry(public_id)
             .ok_or_else(|| HalError::Unsupported("frontend runtime entry is not available"))
     }

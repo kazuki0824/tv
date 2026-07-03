@@ -134,8 +134,8 @@ impl DescramblerRuntime {
                     return false;
                 };
                 stored.pid() == pid
-                    && source.filter_id == source_filter_id
-                    && source.generation != source_generation
+                    && source.filter_id() == source_filter_id
+                    && source.generation() != source_generation
             })
     }
 

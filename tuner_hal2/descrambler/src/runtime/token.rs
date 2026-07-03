@@ -24,10 +24,6 @@ impl DescramblerKeyToken {
         }
         Ok(Self(bytes))
     }
-
-    pub fn as_binder_token_bytes(&self) -> &[u8] {
-        &self.0
-    }
 }
 
 #[cfg(test)]

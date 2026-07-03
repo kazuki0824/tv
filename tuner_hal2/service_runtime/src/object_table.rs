@@ -189,6 +189,7 @@ pub enum RuntimeObjectTableError {
         object_kind: AidlObjectKind,
     },
     GenerationOverflow,
+    ObjectIdOverflow,
 }
 
 #[derive(Debug, Default)]

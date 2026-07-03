@@ -649,3 +649,43 @@ impl FilterCallbackDeliveryDiagnosticRecord {
         }
     }
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrontendCallbackDeliveryDiagnosticPhase {
+    CallbackArtifactLookup,
+    ScanEndDelivery,
+    ScanSessionAccounting,
+    CallbackRegistryAccounting,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FrontendCallbackDeliveryDiagnosticRecord {
+    pub phase: FrontendCallbackDeliveryDiagnosticPhase,
+    pub object_id: AidlObjectId,
+    pub generation: AidlObjectGeneration,
+    pub frontend_id: Option<i32>,
+    pub scan_generation: Option<u64>,
+    pub error: HalError,
+}
+
+impl FrontendCallbackDeliveryDiagnosticRecord {
+    pub fn new(
+        phase: FrontendCallbackDeliveryDiagnosticPhase,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        frontend_context: Option<(i32, u64)>,
+        error: HalError,
+    ) -> Self {
+        let (frontend_id, scan_generation) = frontend_context
+            .map(|(frontend_id, scan_generation)| (Some(frontend_id), Some(scan_generation)))
+            .unwrap_or((None, None));
+        Self {
+            phase,
+            object_id,
+            generation,
+            frontend_id,
+            scan_generation,
+            error,
+        }
+    }
+}

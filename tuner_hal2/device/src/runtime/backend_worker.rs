@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use maleicacid_tuner_hal2_common::os_abi::{ioctl, last_errno};
 use maleicacid_tuner_hal2_common::{
-    FrontendBackendKind, FrontendDevicePath, FrontendTuneRequest, HalError, HalErrorDetail,
-    HalInternalKind, HalInvalidArgumentKind,
+    compose_primary_cleanup_failure, FrontendBackendKind, FrontendDevicePath, FrontendTuneRequest,
+    HalError, HalErrorDetail, HalInternalKind, HalInvalidArgumentKind,
 };
 
 use super::reader::{FrontendLiveReaderDescriptor, FrontendLiveReaderDescriptorKind};
@@ -222,7 +222,25 @@ pub struct FrontendBackendSubmitFailure {
 
 impl FrontendBackendSubmitFailure {
     pub fn into_error(self) -> HalError {
-        self.error
+        let Some(step) = self.step else {
+            return self.error;
+        };
+        let rollback_detail = if self.rollback_succeeded {
+            "rollback succeeded"
+        } else {
+            "rollback failed"
+        };
+        compose_primary_cleanup_failure(
+            "frontend backend submit failure",
+            self.error,
+            HalError::cleanup_failed(
+                "frontend backend tune transaction",
+                format!(
+                    "generation={} step={step:?} {rollback_detail}",
+                    self.generation
+                ),
+            ),
+        )
     }
 }
 
@@ -862,8 +880,9 @@ mod tests {
             rollback_succeeded: false,
             step: Some(BackendTuneStep::ApplyChannel),
         };
+        let error = failure.into_error();
         assert!(matches!(
-            failure.into_error(),
+            error.primary_error(),
             HalError::IoctlFailed {
                 backend: "dvb",
                 op: "FE_SET_PROPERTY",
@@ -871,6 +890,7 @@ mod tests {
                 ..
             }
         ));
+        assert!(matches!(error, HalError::ComposedFailure { .. }));
     }
 
     #[test]

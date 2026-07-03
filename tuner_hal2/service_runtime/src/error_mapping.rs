@@ -61,6 +61,10 @@ pub fn object_table_error_to_hal(error: RuntimeObjectTableError) -> HalError {
             HalInternalKind::InvariantViolation,
             "AIDL object generation overflow",
         ),
+        RuntimeObjectTableError::ObjectIdOverflow => HalError::internal(
+            HalInternalKind::InvariantViolation,
+            "AIDL object id overflow",
+        ),
     }
 }
 

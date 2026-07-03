@@ -58,6 +58,7 @@ use crate::diagnostics::{
     DescramblerDiagnosticPhase, DescramblerDiagnosticRecord,
     DvrPostCommitNotificationDiagnosticRecord, DvrPostCommitNotificationPhase,
     FilterCallbackDeliveryDiagnosticPhase, FilterCallbackDeliveryDiagnosticRecord,
+    FrontendCallbackDeliveryDiagnosticPhase, FrontendCallbackDeliveryDiagnosticRecord,
     StartupDiagnosticRecord,
 };
 use crate::dispatch::{
@@ -498,6 +499,8 @@ pub struct TunerServiceRuntime {
         BoundedDiagnosticStore<DvrPostCommitNotificationDiagnosticRecord>,
     filter_callback_delivery_diagnostics:
         BoundedDiagnosticStore<FilterCallbackDeliveryDiagnosticRecord>,
+    frontend_callback_delivery_diagnostics:
+        BoundedDiagnosticStore<FrontendCallbackDeliveryDiagnosticRecord>,
     callback_artifact_runtime_split_diagnostics:
         BoundedDiagnosticStore<CallbackArtifactRuntimeSplitDiagnosticRecord>,
     filter_event_dispatcher: Option<FilterEventDispatcherHandle>,
@@ -689,6 +692,21 @@ impl CallbackDeliveryFailureReport {
             }
         }
     }
+
+    fn frontend_diagnostic_phase(&self) -> FrontendCallbackDeliveryDiagnosticPhase {
+        match self.phase {
+            CallbackDeliveryFailurePhase::CallbackArtifactLookup => {
+                FrontendCallbackDeliveryDiagnosticPhase::CallbackArtifactLookup
+            }
+            CallbackDeliveryFailurePhase::EventConversion
+            | CallbackDeliveryFailurePhase::BinderDelivery
+            | CallbackDeliveryFailurePhase::ScanEndDelivery
+            | CallbackDeliveryFailurePhase::PostCommitNotification
+            | CallbackDeliveryFailurePhase::NotifierTerminal => {
+                FrontendCallbackDeliveryDiagnosticPhase::ScanEndDelivery
+            }
+        }
+    }
 }
 
 impl OwnerCallbackCleanupArtifactCommand {
@@ -826,6 +844,7 @@ impl TunerServiceRuntime {
             child_open_rollback_diagnostics: BoundedDiagnosticStore::default(),
             dvr_post_commit_notification_diagnostics: BoundedDiagnosticStore::default(),
             filter_callback_delivery_diagnostics: BoundedDiagnosticStore::default(),
+            frontend_callback_delivery_diagnostics: BoundedDiagnosticStore::default(),
             callback_artifact_runtime_split_diagnostics: BoundedDiagnosticStore::default(),
             filter_event_dispatcher: None,
             callback_registry: RuntimeCallbackRegistry::default(),
@@ -877,6 +896,13 @@ impl TunerServiceRuntime {
     }
 
     #[cfg(test)]
+    pub(crate) fn frontend_callback_delivery_diagnostics(
+        &self,
+    ) -> &[FrontendCallbackDeliveryDiagnosticRecord] {
+        self.frontend_callback_delivery_diagnostics.as_slice()
+    }
+
+    #[cfg(test)]
     pub(crate) fn callback_artifact_runtime_split_diagnostics(
         &self,
     ) -> &[CallbackArtifactRuntimeSplitDiagnosticRecord] {
@@ -914,6 +940,13 @@ impl TunerServiceRuntime {
         record: FilterCallbackDeliveryDiagnosticRecord,
     ) {
         self.filter_callback_delivery_diagnostics.push(record);
+    }
+
+    pub(crate) fn record_frontend_callback_delivery_diagnostic(
+        &mut self,
+        record: FrontendCallbackDeliveryDiagnosticRecord,
+    ) {
+        self.frontend_callback_delivery_diagnostics.push(record);
     }
 
     pub(crate) fn record_callback_artifact_runtime_split_diagnostic(
@@ -1427,12 +1460,31 @@ impl TunerServiceRuntime {
                 }
             }
             CallbackDeliveryOwnerKind::Frontend => {
+                self.record_frontend_callback_delivery_diagnostic(
+                    FrontendCallbackDeliveryDiagnosticRecord::new(
+                        report.frontend_diagnostic_phase(),
+                        report.owner_id,
+                        report.owner_generation,
+                        report.frontend_scan_context,
+                        primary.clone(),
+                    ),
+                );
                 if report.phase != CallbackDeliveryFailurePhase::CallbackArtifactLookup {
                     let Some((frontend_id, scan_generation)) = report.frontend_scan_context else {
-                        failures.push_error(HalError::internal(
+                        let error = HalError::internal(
                             HalInternalKind::InvariantViolation,
                             "frontend callback delivery failure report missing scan context",
-                        ));
+                        );
+                        self.record_frontend_callback_delivery_diagnostic(
+                            FrontendCallbackDeliveryDiagnosticRecord::new(
+                                FrontendCallbackDeliveryDiagnosticPhase::ScanSessionAccounting,
+                                report.owner_id,
+                                report.owner_generation,
+                                None,
+                                error.clone(),
+                            ),
+                        );
+                        failures.push_error(error);
                         return match failures.into_result() {
                             Ok(()) => Err(primary),
                             Err(cleanup) => Err(compose_primary_cleanup_failure(
@@ -1445,12 +1497,30 @@ impl TunerServiceRuntime {
                     if let Err(error) = self
                         .mark_frontend_scan_session_callback_failed(frontend_id, scan_generation)
                     {
+                        self.record_frontend_callback_delivery_diagnostic(
+                            FrontendCallbackDeliveryDiagnosticRecord::new(
+                                FrontendCallbackDeliveryDiagnosticPhase::ScanSessionAccounting,
+                                report.owner_id,
+                                report.owner_generation,
+                                report.frontend_scan_context,
+                                error.clone(),
+                            ),
+                        );
                         failures.push_error(error);
                     }
                     if let Err(error) = self.mark_frontend_callback_delivery_failed_use_case(
                         report.owner_id,
                         report.owner_generation,
                     ) {
+                        self.record_frontend_callback_delivery_diagnostic(
+                            FrontendCallbackDeliveryDiagnosticRecord::new(
+                                FrontendCallbackDeliveryDiagnosticPhase::CallbackRegistryAccounting,
+                                report.owner_id,
+                                report.owner_generation,
+                                report.frontend_scan_context,
+                                error.clone(),
+                            ),
+                        );
                         failures.push_error(error);
                     }
                 }
@@ -1844,7 +1914,7 @@ impl TunerServiceRuntime {
             .next_aidl_object_id
             .checked_add(1)
             .filter(|value| *value > 0)
-            .ok_or(RuntimeObjectTableError::GenerationOverflow)?;
+            .ok_or(RuntimeObjectTableError::ObjectIdOverflow)?;
         self.next_aidl_object_id = next;
         Ok(AidlObjectId(next))
     }

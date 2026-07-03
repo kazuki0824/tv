@@ -54,6 +54,7 @@ pub use diagnostics::{
     DescramblerDiagnosticKind, DescramblerDiagnosticPhase, DescramblerDiagnosticRecord,
     DvrPostCommitNotificationDiagnosticRecord, DvrPostCommitNotificationPhase,
     FilterCallbackDeliveryDiagnosticPhase, FilterCallbackDeliveryDiagnosticRecord,
+    FrontendCallbackDeliveryDiagnosticPhase, FrontendCallbackDeliveryDiagnosticRecord,
     StartupDiagnosticKind, StartupDiagnosticPhase, StartupDiagnosticRecord,
 };
 pub use dispatch::{dispatch_target_for, ServiceRuntimeDispatchTarget};
@@ -1492,7 +1493,8 @@ mod tests {
     fn descrambler_clear_key_token_keeps_session_key_when_release_fails() {
         let mut runtime = TunerServiceRuntime::new();
         let descrambler = runtime.allocate_descrambler_runtime().unwrap();
-        let token = DescramblerKeyToken::try_from_bytes(vec![0x41; 8]).unwrap();
+        let token_bytes = vec![0x41; 8];
+        let token = DescramblerKeyToken::try_from_bytes(token_bytes.clone()).unwrap();
         let key_slot = DescramblerKeySlot::empty()
             .try_with_even(sample_multi2_key(8))
             .unwrap();
@@ -1501,7 +1503,7 @@ mod tests {
             .register_descrambler_key_slot(token.clone(), key_slot)
             .unwrap();
         runtime
-            .set_descrambler_key_token(descrambler.id.0, token.as_binder_token_bytes())
+            .set_descrambler_key_token(descrambler.id.0, &token_bytes)
             .unwrap();
         runtime
             .registry_mut_for_test()
@@ -1673,7 +1675,8 @@ mod tests {
     fn descrambler_set_key_token_rejects_expired_tokens() {
         let mut runtime = TunerServiceRuntime::new();
         let descrambler = runtime.allocate_descrambler_runtime().unwrap();
-        let token = DescramblerKeyToken::try_from_bytes(vec![9, 9, 9, 9, 9, 9, 9, 9]).unwrap();
+        let token_bytes = vec![9, 9, 9, 9, 9, 9, 9, 9];
+        let token = DescramblerKeyToken::try_from_bytes(token_bytes.clone()).unwrap();
         let key_slot = DescramblerKeySlot::empty()
             .try_with_even(sample_multi2_key(3))
             .unwrap();
@@ -1687,7 +1690,7 @@ mod tests {
             .expire_test_key(&token);
 
         let err = runtime
-            .set_descrambler_key_token(descrambler.id.0, token.as_binder_token_bytes())
+            .set_descrambler_key_token(descrambler.id.0, &token_bytes)
             .unwrap_err();
         assert!(matches!(
             err,
@@ -1889,7 +1892,8 @@ mod tests {
         let key_slot = DescramblerKeySlot::empty()
             .try_with_even(sample_multi2_key(1))
             .unwrap();
-        let token = DescramblerKeyToken::try_from_bytes(vec![0x10; 8]).unwrap();
+        let token_bytes = vec![0x10; 8];
+        let token = DescramblerKeyToken::try_from_bytes(token_bytes.clone()).unwrap();
         runtime
             .register_descrambler_key_slot(token.clone(), key_slot.clone())
             .unwrap();
@@ -1901,7 +1905,7 @@ mod tests {
             .add_descrambler_pid_non_null_source(descrambler.id.0, 200, filter.id.0)
             .unwrap();
         runtime
-            .set_descrambler_key_token(descrambler.id.0, token.as_binder_token_bytes())
+            .set_descrambler_key_token(descrambler.id.0, &token_bytes)
             .unwrap();
 
         let reports = runtime

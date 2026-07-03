@@ -40,10 +40,10 @@ pub(crate) fn finish_owner_callback_cleanup_outcome<T>(
     context: &SharedAidlServiceContext,
     outcome: OwnerCallbackCleanupUseCaseOutcome<T>,
 ) -> Result<T, HalError> {
-    let runtime = context.runtime();
-    let mut guard = lock_runtime(&runtime)?;
     let command = *outcome.command();
     let artifact_cleanup_result = context.clear_owner_callback_artifacts_bridge(&command);
+    let runtime = context.runtime();
+    let mut guard = lock_runtime(&runtime)?;
     guard.finish_owner_callback_cleanup_outcome(outcome, artifact_cleanup_result)
 }
 
@@ -51,11 +51,11 @@ fn finish_callback_registration_artifact_outcome(
     context: &SharedAidlServiceContext,
     outcome: CallbackRegistrationArtifactOutcome,
 ) -> Result<(), HalError> {
-    let runtime = context.runtime();
-    let mut guard = lock_runtime(&runtime)?;
     let rollback_result = outcome
         .rollback_command()
         .map(|command| context.clear_owner_callback_artifacts_bridge(command));
+    let runtime = context.runtime();
+    let mut guard = lock_runtime(&runtime)?;
     guard.finish_callback_registration_after_artifact_result_use_case(outcome, rollback_result)
 }
 
@@ -316,7 +316,7 @@ fn execute_callback_registration_after_artifact_bridge(
 ) -> BinderResult<()> {
     let runtime = context.runtime();
     let api = method.api();
-    let outcome = execute_object_method_call_after_live(
+    let outcome = execute_shared_object_method_call_after_live(
         &runtime,
         handle.object_id(),
         handle.generation(),
@@ -324,8 +324,9 @@ fn execute_callback_registration_after_artifact_bridge(
         || Ok((method.clone(), artifact_retain_bridge)),
         |runtime, token, artifact_retain_bridge| {
             let artifact_retain_result = artifact_retain_bridge.retain(context, handle);
+            let mut guard = lock_runtime(&runtime)?;
             Ok(
-                runtime.execute_callback_registration_after_artifact_result_for_object_use_case(
+                guard.execute_callback_registration_after_artifact_result_for_object_use_case(
                     handle.object_kind(),
                     handle.object_id(),
                     handle.generation(),
@@ -505,11 +506,11 @@ impl<'a> AidlObjectArtifactCleanupExecutor<'a> {
             )
         })?;
         let runtime = self.context.runtime();
-        let mut guard =
-            lock_runtime(&runtime).map_err(|error| ObjectCloseCleanupFailure::new(step, error))?;
         let artifact_result = self
             .context
             .clear_owner_callback_artifacts_bridge(&owner_command);
+        let mut guard =
+            lock_runtime(&runtime).map_err(|error| ObjectCloseCleanupFailure::new(step, error))?;
         guard
             .finish_object_close_callback_cleanup_outcome(owner_command, artifact_result)
             .map(|_| ())

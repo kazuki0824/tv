@@ -237,16 +237,16 @@ impl TunerServiceRuntime {
                 match self.validate_descrambler_source_filter(
                     demux_id,
                     demux_generation,
-                    source.filter_id,
+                    source.filter_id(),
                     descrambler_pid,
                 ) {
-                    Ok(generation) if generation == source.generation => {
+                    Ok(generation) if generation == source.generation() => {
                         descrambler_pids.insert(descrambler_pid);
                         packet_pids.insert(pid);
                         source_filter_ids_by_pid
                             .entry(pid)
                             .or_default()
-                            .insert(source.filter_id);
+                            .insert(source.filter_id());
                     }
                     Ok(_) => {
                         let error = HalError::invalid_state(
@@ -255,14 +255,14 @@ impl TunerServiceRuntime {
                         );
                         diagnostics.push(PipelineDiagnostic::source_filter_validation_failure(
                             packet_pid,
-                            source.filter_id,
+                            source.filter_id(),
                             error.clone(),
                         ));
                         self.record_descrambler_diagnostic(
                             DescramblerDiagnosticRecord::packet_source_filter_validation(
                                 demux_id,
                                 pid,
-                                source.filter_id,
+                                source.filter_id(),
                                 DescramblerDiagnosticKind::PacketSourceFilterGenerationMismatch,
                                 error,
                             ),
@@ -271,14 +271,14 @@ impl TunerServiceRuntime {
                     Err(error) => {
                         diagnostics.push(PipelineDiagnostic::source_filter_validation_failure(
                             packet_pid,
-                            source.filter_id,
+                            source.filter_id(),
                             error.clone(),
                         ));
                         self.record_descrambler_diagnostic(
                             DescramblerDiagnosticRecord::packet_source_filter_validation(
                                 demux_id,
                                 pid,
-                                source.filter_id,
+                                source.filter_id(),
                                 DescramblerDiagnosticKind::PacketSourceFilterInvalid,
                                 error,
                             ),

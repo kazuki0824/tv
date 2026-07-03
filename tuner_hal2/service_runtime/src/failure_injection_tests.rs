@@ -404,6 +404,20 @@ fn frontend_scan_end_delivery_failure_composition_is_owned_by_service_runtime() 
         HalError::CallbackFailed { .. }
     ));
     assert!(error.cleanup_error().is_some());
+    let diagnostics = runtime.frontend_callback_delivery_diagnostics();
+    assert_eq!(diagnostics.len(), 3);
+    assert_eq!(
+        diagnostics[0].phase,
+        crate::FrontendCallbackDeliveryDiagnosticPhase::ScanEndDelivery
+    );
+    assert_eq!(
+        diagnostics[1].phase,
+        crate::FrontendCallbackDeliveryDiagnosticPhase::ScanSessionAccounting
+    );
+    assert_eq!(
+        diagnostics[2].phase,
+        crate::FrontendCallbackDeliveryDiagnosticPhase::CallbackRegistryAccounting
+    );
 }
 
 #[test]
@@ -446,6 +460,12 @@ fn frontend_scan_end_artifact_lookup_failure_does_not_mark_runtime_callback_unhe
         HalError::CallbackFailed { .. }
     ));
     assert!(error.cleanup_error().is_none());
+    let diagnostics = runtime.frontend_callback_delivery_diagnostics();
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(
+        diagnostics[0].phase,
+        crate::FrontendCallbackDeliveryDiagnosticPhase::CallbackArtifactLookup
+    );
     assert_eq!(
         runtime.callback_registration_health(
             AidlObjectKind::Frontend,

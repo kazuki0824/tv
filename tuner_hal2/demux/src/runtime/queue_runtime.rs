@@ -107,6 +107,10 @@ impl QueueRuntime {
         })
     }
 
+    pub(crate) fn capacity_matches_buffer_size(&self, buffer_size: i32) -> bool {
+        usize::try_from(buffer_size).ok() == Some(self.capacity_bytes)
+    }
+
     pub fn clear(&mut self) -> Result<(), QueueRuntimeError> {
         self.queue
             .clear()

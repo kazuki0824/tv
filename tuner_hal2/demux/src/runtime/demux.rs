@@ -746,29 +746,65 @@ impl DemuxRuntime {
         filter_id: i32,
         config: FilterPipelineConfig,
     ) -> Result<(), DemuxRuntimeError> {
-        self.drop_filter_av_backing_to_stale(filter_id);
-        let next = {
+        enum QueueConfigureAction {
+            Remove,
+            ReuseAndClear,
+            Replace(QueueRuntime),
+        }
+
+        let (next, queue_action, av_backing_present) = {
             let filter = self
                 .filters
                 .get(&filter_id)
                 .ok_or(DemuxRuntimeError::filter_missing(filter_id))?;
-            match next_generation(filter.generation()) {
+            let next = match next_generation(filter.generation()) {
                 Ok(next) => next,
                 Err(_) => {
                     self.quarantine();
                     return Err(DemuxRuntimeError::generation_exhausted(Some(filter_id)));
                 }
+            };
+            let queue_action = if filter.supports_normal_fmq_queue() && filter.buffer_size() > 0 {
+                match self.filter_queue_runtimes.get(&filter_id) {
+                    Some(queue) if queue.capacity_matches_buffer_size(filter.buffer_size()) => {
+                        QueueConfigureAction::ReuseAndClear
+                    }
+                    _ => QueueConfigureAction::Replace(
+                        QueueRuntime::new(filter.buffer_size(), true)
+                            .map_err(|_| DemuxRuntimeError::queue_runtime_failure(filter_id))?,
+                    ),
+                }
+            } else {
+                QueueConfigureAction::Remove
+            };
+            (
+                next,
+                queue_action,
+                matches!(filter.open_kind(), PipelineOpenKind::Av),
+            )
+        };
+        let old_pipeline = self.pipeline.clone();
+        if self
+            .pipeline
+            .configure_filter(filter_id, config.clone())
+            .is_err()
+        {
+            self.pipeline = old_pipeline;
+            return Err(DemuxRuntimeError::pipeline_failed());
+        }
+        if let QueueConfigureAction::ReuseAndClear = queue_action {
+            if let Err(error) = self.clear_filter_queue_runtime(filter_id) {
+                self.pipeline = old_pipeline;
+                return Err(error);
             }
-        };
-        let av_backing_present = {
-            let filter = self
-                .filters
-                .get_mut(&filter_id)
-                .ok_or(DemuxRuntimeError::filter_missing(filter_id))?;
-            filter.configure_with_generation(next, config.clone());
-            filter.clear_queued_payload_state();
-            filter.av_backing_present()
-        };
+        }
+        self.drop_filter_av_backing_to_stale(filter_id);
+        let filter = self
+            .filters
+            .get_mut(&filter_id)
+            .ok_or(DemuxRuntimeError::filter_missing(filter_id))?;
+        filter.configure_with_generation(next, config);
+        filter.clear_queued_payload_state();
         #[cfg(test)]
         {
             if self
@@ -787,10 +823,16 @@ impl DemuxRuntime {
         } else {
             self.filter_av_backings.remove(&filter_id);
         }
-        self.rebuild_filter_queue_runtime(filter_id)?;
-        self.pipeline
-            .configure_filter(filter_id, config)
-            .map_err(|_| DemuxRuntimeError::pipeline_failed())
+        match queue_action {
+            QueueConfigureAction::Remove => {
+                self.filter_queue_runtimes.remove(&filter_id);
+            }
+            QueueConfigureAction::ReuseAndClear => {}
+            QueueConfigureAction::Replace(queue) => {
+                self.filter_queue_runtimes.insert(filter_id, queue);
+            }
+        }
+        Ok(())
     }
 
     pub fn start_filter_runtime(&mut self, filter_id: i32) -> Result<(), DemuxRuntimeError> {
@@ -822,10 +864,14 @@ impl DemuxRuntime {
             .ok_or(DemuxRuntimeError::filter_missing(filter_id))?;
         match state.state() {
             FilterRuntimeState::Started => {
+                let old_pipeline = self.pipeline.clone();
                 self.pipeline
                     .stop_filter(filter_id)
                     .map_err(|_| DemuxRuntimeError::pipeline_failed())?;
-                self.clear_filter_queue_runtime(filter_id)?;
+                if let Err(error) = self.clear_filter_queue_runtime(filter_id) {
+                    self.pipeline = old_pipeline;
+                    return Err(error);
+                }
                 #[cfg(test)]
                 {
                     if let Some(queue) = self.filter_queue_mirror.get_mut(&filter_id) {
@@ -855,13 +901,17 @@ impl DemuxRuntime {
             FilterRuntimeState::Configured
             | FilterRuntimeState::Started
             | FilterRuntimeState::Stopped => {
+                let old_pipeline = self.pipeline.clone();
                 if let Some(tpid) = snapshot.tpid.and_then(ConfigInputPid::validate_tpid) {
                     let origins = [(snapshot.source.origin(), tpid)];
                     self.pipeline.flush_filter(filter_id, &origins);
                 } else {
                     self.pipeline.clear_filter_state_after_flush(filter_id);
                 }
-                self.clear_filter_queue_runtime(filter_id)?;
+                if let Err(error) = self.clear_filter_queue_runtime(filter_id) {
+                    self.pipeline = old_pipeline;
+                    return Err(error);
+                }
                 #[cfg(test)]
                 {
                     if let Some(queue) = self.filter_queue_mirror.get_mut(&filter_id) {
@@ -915,25 +965,28 @@ impl DemuxRuntime {
     }
 
     pub fn configure_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {
-        let next = {
+        let (next, replacement_queue) = {
             let dvr = self
                 .dvrs
                 .get(&dvr_id)
                 .ok_or(DemuxRuntimeError::dvr_missing(dvr_id))?;
-            match next_generation(dvr.generation()) {
+            let next = match next_generation(dvr.generation()) {
                 Ok(next) => next,
                 Err(_) => {
                     self.quarantine();
                     return Err(DemuxRuntimeError::generation_exhausted(Some(dvr_id)));
                 }
-            }
+            };
+            let replacement_queue = QueueRuntime::new(dvr.buffer_size(), true)
+                .map_err(|_| DemuxRuntimeError::queue_runtime_failure(dvr_id))?;
+            (next, replacement_queue)
         };
         let dvr = self
             .dvrs
             .get_mut(&dvr_id)
             .ok_or(DemuxRuntimeError::dvr_missing(dvr_id))?;
         dvr.configure_with_generation(next);
-        self.rebuild_dvr_queue_runtime(dvr_id)?;
+        self.dvr_queue_runtimes.insert(dvr_id, replacement_queue);
         Ok(())
     }
 
@@ -1663,7 +1716,11 @@ impl DemuxRuntime {
             self.filter_queue_runtimes.remove(&filter_id);
             return Ok(());
         }
-        if self.filter_queue_runtimes.contains_key(&filter_id) {
+        if self
+            .filter_queue_runtimes
+            .get(&filter_id)
+            .is_some_and(|queue| queue.capacity_matches_buffer_size(filter.buffer_size()))
+        {
             return Ok(());
         }
         let queue = QueueRuntime::new(filter.buffer_size(), true)
@@ -1680,7 +1737,11 @@ impl DemuxRuntime {
             self.dvr_queue_runtimes.remove(&dvr_id);
             return Ok(());
         }
-        if self.dvr_queue_runtimes.contains_key(&dvr_id) {
+        if self
+            .dvr_queue_runtimes
+            .get(&dvr_id)
+            .is_some_and(|queue| queue.capacity_matches_buffer_size(dvr.buffer_size()))
+        {
             return Ok(());
         }
         let queue = QueueRuntime::new(dvr.buffer_size(), true)

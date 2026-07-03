@@ -15,8 +15,18 @@ impl DescramblerPid {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct SourceFilterRef {
-    pub filter_id: i32,
-    pub generation: u64,
+    filter_id: i32,
+    generation: u64,
+}
+
+impl SourceFilterRef {
+    pub fn filter_id(&self) -> i32 {
+        self.filter_id
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -64,10 +74,6 @@ impl DescramblerPidClaim {
 
     pub fn pid(&self) -> DescramblerPid {
         self.pid
-    }
-
-    pub fn source(&self) -> DescramblerPidClaimSource {
-        self.source
     }
 
     pub fn source_filter_ref(&self) -> Option<SourceFilterRef> {
