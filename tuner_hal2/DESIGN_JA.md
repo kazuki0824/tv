@@ -462,7 +462,7 @@ close cascade finalization / cleanup-failed marking では、root object が une
 
 `DemuxTsFilterType::PCR` は `FilterOpenType::TsPcr` として受理する。`getAvSyncHwId(media filter)` は、media filter と同じ demux に属する live PCR filter id を返す。渡された media filter の id を sync id として返してはならない。
 
-`getAvSyncTime(pcrFilterId)` は、指定 id が同じ demux に属する live PCR filter であることを確認したうえで API として成功可能にする。PCR 未観測時は時刻未確定値として `0` を返してよいが、これは高精度 clock を表すものではない。
+`getAvSyncTime(pcrFilterId)` は、指定 id が同じ demux に属する live PCR filter であることを確認したうえで API として成功可能にする。ただし、PCR / hardware A/V sync timestamp をまだ観測していない場合、または timestamp を提供できない場合は、成功値 `0` を時刻未確定値として返してはならない。AOSP framework の `Tuner.INVALID_TIMESTAMP` 到達経路に接続できるよう、HAL method は service-specific failure（原則 `UNAVAILABLE`、id 不正は `INVALID_ARGUMENT`）を返す。`0` は有効な 90kHz PTS 系 timestamp 値としてだけ扱い、未観測・未提供の sentinel として使わない。
 
 以下は後続の精度改善対象であり、現行のAOSP-facing最小契約とは分離する。
 
@@ -494,7 +494,7 @@ public `close()` は `Live | CleanupFailed` のみを close preflight 成功対�
 
 `ITuner.setMaxNumberOfFrontends(type, max_number)` は frontend type を捨てない。未対応 type は fail-closed にし、負数は `INVALID_ARGUMENT`、`0..=default_max(type)` は成功、範囲外は `INVALID_ARGUMENT` とする。`getMaxNumberOfFrontends(type)` は frontend type ごとの default max を返し、未対応 type を ISDB-T として扱ってはならない。
 
-Object query の DTO 境界は次で固定する。`ObjectQueryResponse` は `FrontendRegistryEntry` を返してはならず、frontend status / readiness は `ObjectFrontendStatusSnapshot` を service_runtime 側 query construction で作成したうえで、`ObjectFrontendStatusValue` / `ObjectFrontendStatusReadinessValue` の専用 DTO として policy を確定する。`frontend_status_query_for_aidl_object()` のような object query helper は registry entry と runtime state の tuple を返さず、専用 snapshot DTO だけを返す。AIDL 層は requested status type を `ObjectFrontendStatusType` に変換し、返却 DTO を AIDL 型へ変換するだけに留める。`IDemux.getAvSyncHwId(filter)` の local Binder downcast のような fallible AIDL object conversion は、demux object live / generation / kind 確認と dispatch preflight の後に実行する専用 AIDL input conversion 境界へ置く。これは任意 query closure または `&mut TunerServiceRuntime` を query façade へ渡すことを許すものではない。
+Object query の DTO 境界は次で固定する。`ObjectQueryResponse` は `FrontendRegistryEntry` を返してはならず、frontend status / readiness は `ObjectFrontendStatusSnapshot` を service_runtime 側 query construction で作成したうえで、`ObjectFrontendStatusValue` / `ObjectFrontendStatusReadinessValue` の専用 DTO として policy を確定する。`frontend_status_query_for_aidl_object()` のような object query helper は registry entry と runtime state の tuple を返さず、専用 snapshot DTO だけを返す。AIDL 層は requested status type を `ObjectFrontendStatusType` に変換し、返却 DTO を AIDL 型へ変換するだけに留める。`IFrontend.getStatus(statusTypes)` は AOSP/VTS の statusTypes と response の index 対応を壊してはならない。product profile が `FrontendInfo.statusCaps` に広告した status type については、要求された順序と件数を保って `FrontendStatus` を返す。広告していない status type については、VTS config の `tuneStatusTypes` に入れないことを profile 生成側で保証し、production API では silently drop して件数を縮めるのではなく、unsupported / unavailable を明示できる error または専用 policy に接続する。`getFrontendStatusReadiness(statusTypes)` は全要求要素に対して `STABLE` / `UNSTABLE` / `UNAVAILABLE` / `UNSUPPORTED` のいずれかを返し、入力件数と出力件数を一致させる。`IDemux.getAvSyncHwId(filter)` の local Binder downcast のような fallible AIDL object conversion は、demux object live / generation / kind 確認と dispatch preflight の後に実行する専用 AIDL input conversion 境界へ置く。これは任意 query closure または `&mut TunerServiceRuntime` を query façade へ渡すことを許すものではない。
 
 
 
