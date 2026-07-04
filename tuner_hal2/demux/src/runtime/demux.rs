@@ -11,9 +11,10 @@ use crate::av::{
     AvHandleReleaseTxn, AvPayloadDeliveryOutcome, AvSharedBacking, AvSharedHandleExport,
     ClientHandleState,
 };
+#[cfg(test)]
+use crate::config::FilterOpenType;
 use crate::config::{
-    AvStreamTypeConfig, ConfigInputPid, FilterDelayHint, FilterDelayReadiness, FilterOpenType,
-    OpenFilterRequest,
+    AvStreamTypeConfig, ConfigInputPid, FilterDelayHint, FilterDelayReadiness, OpenFilterRequest,
 };
 use crate::packet_pipeline::{
     FilterPipelineConfig, PacketPipeline, PipelineBoundaryReason, PipelineDeliveryAction,
@@ -25,7 +26,8 @@ use crate::TsInputOrigin;
 use super::dvr::{DvrKind, DvrRuntime, DvrRuntimeSnapshot, DvrStatusEvent};
 use super::filter::{FilterRuntime, FilterRuntimeSnapshot, FilterRuntimeState};
 use super::queue_runtime::{
-    QueueDescriptorExportHandle, QueueDescriptorSnapshot, QueueRuntime, QueueRuntimeError,
+    QueueDescriptorExportPlan, QueueDescriptorExportTarget, QueueDescriptorSnapshot, QueueRuntime,
+    QueueRuntimeError,
 };
 use super::source_boundary::apply_filter_source_boundary_change;
 
@@ -208,14 +210,20 @@ fn av_payload_delivery_outcome_diagnostic(
 
 #[derive(Clone, Debug)]
 pub struct DemuxRuntimeSnapshot {
-    pub state: DemuxRuntimeState,
-    pub generation: u64,
-    pub pipeline: PacketPipeline,
-    pub filters: BTreeMap<i32, FilterRuntime>,
-    pub dvrs: BTreeMap<i32, DvrRuntime>,
-    pub filter_av_stale_data_ids: BTreeMap<i32, BTreeSet<AvDataId>>,
+    state: DemuxRuntimeState,
+    generation: u64,
+    pipeline: PacketPipeline,
+    filters: BTreeMap<i32, FilterRuntime>,
+    dvrs: BTreeMap<i32, DvrRuntime>,
+    filter_av_stale_data_ids: BTreeMap<i32, BTreeSet<AvDataId>>,
     #[cfg(test)]
-    pub filter_queue_mirror: BTreeMap<i32, VecDeque<Vec<u8>>>,
+    filter_queue_mirror: BTreeMap<i32, VecDeque<Vec<u8>>>,
+}
+
+impl DemuxRuntimeSnapshot {
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
 }
 
 #[derive(Debug)]
@@ -284,16 +292,16 @@ impl DemuxRuntime {
     pub fn pipeline_mut(&mut self) -> &mut PacketPipeline {
         &mut self.pipeline
     }
-    pub fn filter(&self, filter_id: i32) -> Option<&FilterRuntime> {
+    pub(crate) fn filter(&self, filter_id: i32) -> Option<&FilterRuntime> {
         self.filters.get(&filter_id)
     }
-    pub fn filter_mut(&mut self, filter_id: i32) -> Option<&mut FilterRuntime> {
+    pub(crate) fn filter_mut(&mut self, filter_id: i32) -> Option<&mut FilterRuntime> {
         self.filters.get_mut(&filter_id)
     }
-    pub fn dvr(&self, dvr_id: i32) -> Option<&DvrRuntime> {
+    pub(crate) fn dvr(&self, dvr_id: i32) -> Option<&DvrRuntime> {
         self.dvrs.get(&dvr_id)
     }
-    pub fn dvr_mut(&mut self, dvr_id: i32) -> Option<&mut DvrRuntime> {
+    pub(crate) fn dvr_mut(&mut self, dvr_id: i32) -> Option<&mut DvrRuntime> {
         self.dvrs.get_mut(&dvr_id)
     }
     pub fn mark_dvr_callback_unhealthy(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {
@@ -432,7 +440,10 @@ impl DemuxRuntime {
         Ok(())
     }
 
-    pub fn register_filter(&mut self, filter: FilterRuntime) -> Result<(), DemuxRuntimeError> {
+    pub(crate) fn register_filter(
+        &mut self,
+        filter: FilterRuntime,
+    ) -> Result<(), DemuxRuntimeError> {
         if filter.state().is_closed_or_failed() {
             return Err(DemuxRuntimeError::invalid_state(filter.filter_id()));
         }
@@ -459,6 +470,18 @@ impl DemuxRuntime {
         Ok(())
     }
 
+    pub fn register_filter_from_open_request(
+        &mut self,
+        filter_id: i32,
+        request: &OpenFilterRequest,
+    ) -> Result<(), DemuxRuntimeError> {
+        self.register_filter(FilterRuntime::new_open_request(
+            filter_id,
+            self.generation(),
+            request,
+        ))
+    }
+
     pub fn remove_filter(
         &mut self,
         filter_id: i32,
@@ -482,7 +505,7 @@ impl DemuxRuntime {
             .ok_or(DemuxRuntimeError::filter_missing(filter_id))
     }
 
-    pub fn register_dvr(&mut self, dvr: DvrRuntime) -> Result<(), DemuxRuntimeError> {
+    pub(crate) fn register_dvr(&mut self, dvr: DvrRuntime) -> Result<(), DemuxRuntimeError> {
         if dvr.state().is_closed_or_failed() {
             return Err(DemuxRuntimeError::invalid_state(dvr.dvr_id()));
         }
@@ -491,6 +514,22 @@ impl DemuxRuntime {
         self.dvrs.insert(dvr_id, dvr);
         self.rebuild_dvr_queue_runtime(dvr_id)?;
         Ok(())
+    }
+
+    pub fn register_dvr_from_open_request(
+        &mut self,
+        dvr_id: i32,
+        kind: DvrKind,
+        buffer_size: i32,
+        callback_present: bool,
+    ) -> Result<(), DemuxRuntimeError> {
+        self.register_dvr(DvrRuntime::new_open_request(
+            dvr_id,
+            kind,
+            self.generation(),
+            buffer_size,
+            callback_present,
+        ))
     }
 
     pub fn remove_dvr(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {
@@ -717,6 +756,13 @@ impl DemuxRuntime {
             .ok_or(DemuxRuntimeError::filter_missing(filter_id))
     }
 
+    pub fn dvr_snapshot(&self, dvr_id: i32) -> Result<DvrRuntimeSnapshot, DemuxRuntimeError> {
+        self.dvrs
+            .get(&dvr_id)
+            .map(DvrRuntime::snapshot)
+            .ok_or(DemuxRuntimeError::dvr_missing(dvr_id))
+    }
+
     pub fn restore_filter_snapshot(
         &mut self,
         filter_id: i32,
@@ -743,7 +789,21 @@ impl DemuxRuntime {
         Ok(())
     }
 
-    pub fn configure_filter_runtime(
+    pub fn configure_dvr_status_reporting(
+        &mut self,
+        dvr_id: i32,
+        status_mask: i32,
+        low_threshold_bytes: usize,
+        high_threshold_bytes: usize,
+    ) -> Result<(), DemuxRuntimeError> {
+        self.dvrs
+            .get_mut(&dvr_id)
+            .ok_or(DemuxRuntimeError::dvr_missing(dvr_id))?
+            .configure_status_reporting(status_mask, low_threshold_bytes, high_threshold_bytes);
+        Ok(())
+    }
+
+    pub(crate) fn configure_filter_runtime(
         &mut self,
         filter_id: i32,
         config: FilterPipelineConfig,
@@ -835,6 +895,17 @@ impl DemuxRuntime {
             }
         }
         Ok(())
+    }
+
+    pub fn configure_filter_runtime_with_report(
+        &mut self,
+        filter_id: i32,
+        config: crate::config::FilterConfig,
+    ) -> (
+        super::configure_txn::FilterConfigureReport,
+        Result<super::configure_txn::FilterConfigureOutcome, DemuxRuntimeError>,
+    ) {
+        super::configure_txn::configure_filter_runtime(self, filter_id, config)
     }
 
     pub fn start_filter_runtime(&mut self, filter_id: i32) -> Result<(), DemuxRuntimeError> {
@@ -966,7 +1037,7 @@ impl DemuxRuntime {
         Ok(())
     }
 
-    pub fn configure_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {
+    pub(crate) fn configure_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {
         let (next, replacement_queue) = {
             let dvr = self
                 .dvrs
@@ -990,6 +1061,16 @@ impl DemuxRuntime {
         dvr.configure_with_generation(next);
         self.dvr_queue_runtimes.insert(dvr_id, replacement_queue);
         Ok(())
+    }
+
+    pub fn configure_dvr_runtime_with_report(
+        &mut self,
+        dvr_id: i32,
+    ) -> (
+        super::configure_txn::DvrConfigureReport,
+        Result<super::configure_txn::DvrConfigureOutcome, DemuxRuntimeError>,
+    ) {
+        super::configure_txn::configure_dvr_runtime(self, dvr_id)
     }
 
     pub fn attach_dvr_filter(
@@ -1420,7 +1501,7 @@ impl DemuxRuntime {
             .collect()
     }
 
-    pub fn push_ts_packet_from_origin(
+    pub(crate) fn push_ts_packet_from_origin(
         &mut self,
         packet: &[u8],
         origin: TsInputOrigin,
@@ -1562,7 +1643,8 @@ impl DemuxRuntime {
         }
     }
 
-    pub fn open_filter_runtime(
+    #[cfg(test)]
+    pub(crate) fn open_filter_runtime(
         filter_id: i32,
         generation: u64,
         kind: PipelineOpenKind,
@@ -1575,7 +1657,8 @@ impl DemuxRuntime {
         runtime
     }
 
-    pub fn open_filter_runtime_typed(
+    #[cfg(test)]
+    pub(crate) fn open_filter_runtime_typed(
         filter_id: i32,
         generation: u64,
         open_type: FilterOpenType,
@@ -1588,7 +1671,8 @@ impl DemuxRuntime {
         runtime
     }
 
-    pub fn open_filter_runtime_from_request(
+    #[cfg(test)]
+    pub(crate) fn open_filter_runtime_from_request(
         filter_id: i32,
         generation: u64,
         request: &OpenFilterRequest,
@@ -1601,11 +1685,13 @@ impl DemuxRuntime {
         runtime
     }
 
-    pub fn open_record_dvr_runtime(dvr_id: i32, generation: u64) -> DvrRuntime {
+    #[cfg(test)]
+    pub(crate) fn open_record_dvr_runtime(dvr_id: i32, generation: u64) -> DvrRuntime {
         DvrRuntime::new(dvr_id, DvrKind::Record, generation)
     }
 
-    pub fn open_dvr_runtime(
+    #[cfg(test)]
+    pub(crate) fn open_dvr_runtime(
         dvr_id: i32,
         generation: u64,
         kind: DvrKind,
@@ -1619,15 +1705,15 @@ impl DemuxRuntime {
         &self,
         filter_id: i32,
     ) -> Result<QueueDescriptorSnapshot, QueueDescriptorQueryError> {
-        self.filter_queue_descriptor_export_handle(filter_id)?
+        self.filter_queue_descriptor_export_plan(filter_id)?
             .export_descriptor()
             .map_err(QueueDescriptorQueryError::Runtime)
     }
 
-    pub fn filter_queue_descriptor_export_handle(
+    pub fn filter_queue_descriptor_export_plan(
         &self,
         filter_id: i32,
-    ) -> Result<QueueDescriptorExportHandle, QueueDescriptorQueryError> {
+    ) -> Result<QueueDescriptorExportPlan, QueueDescriptorQueryError> {
         let snapshot = self
             .filter(filter_id)
             .map(FilterRuntime::snapshot)
@@ -1643,7 +1729,12 @@ impl DemuxRuntime {
         }
         self.filter_queue_runtimes
             .get(&filter_id)
-            .map(QueueRuntime::descriptor_export_handle)
+            .map(|queue| {
+                QueueDescriptorExportPlan::new(
+                    QueueDescriptorExportTarget::Filter { filter_id },
+                    queue.descriptor_export_handle(),
+                )
+            })
             .ok_or(QueueDescriptorQueryError::RuntimeMissing(filter_id))
     }
 
@@ -1651,15 +1742,15 @@ impl DemuxRuntime {
         &self,
         dvr_id: i32,
     ) -> Result<QueueDescriptorSnapshot, QueueDescriptorQueryError> {
-        self.dvr_queue_descriptor_export_handle(dvr_id)?
+        self.dvr_queue_descriptor_export_plan(dvr_id)?
             .export_descriptor()
             .map_err(QueueDescriptorQueryError::Runtime)
     }
 
-    pub fn dvr_queue_descriptor_export_handle(
+    pub fn dvr_queue_descriptor_export_plan(
         &self,
         dvr_id: i32,
-    ) -> Result<QueueDescriptorExportHandle, QueueDescriptorQueryError> {
+    ) -> Result<QueueDescriptorExportPlan, QueueDescriptorQueryError> {
         let snapshot = self
             .dvr(dvr_id)
             .map(DvrRuntime::snapshot)
@@ -1672,7 +1763,12 @@ impl DemuxRuntime {
         }
         self.dvr_queue_runtimes
             .get(&dvr_id)
-            .map(QueueRuntime::descriptor_export_handle)
+            .map(|queue| {
+                QueueDescriptorExportPlan::new(
+                    QueueDescriptorExportTarget::Dvr { dvr_id },
+                    queue.descriptor_export_handle(),
+                )
+            })
             .ok_or(QueueDescriptorQueryError::RuntimeMissing(dvr_id))
     }
 

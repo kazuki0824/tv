@@ -24,7 +24,7 @@ impl TunerServiceRuntime {
     pub(crate) fn push_frontend_ts_packet_to_bound_demuxes(
         &mut self,
         frontend_id: i32,
-        packet: &[u8],
+        packet: &[u8; maleicacid_tuner_hal2_common::TS_PACKET_SIZE],
     ) -> Result<Vec<PipelineReport>, HalError> {
         self.packet_txn()
             .push_frontend_ts_packet_to_bound_demuxes(frontend_id, packet)

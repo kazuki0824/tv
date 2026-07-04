@@ -95,7 +95,8 @@ pub struct FilterRuntime {
 }
 
 impl FilterRuntime {
-    pub fn new(filter_id: i32, generation: u64, open_kind: PipelineOpenKind) -> Self {
+    #[cfg(test)]
+    pub(crate) fn new(filter_id: i32, generation: u64, open_kind: PipelineOpenKind) -> Self {
         let open_type = match open_kind {
             PipelineOpenKind::Raw => FilterOpenType::TsRaw,
             PipelineOpenKind::Av => FilterOpenType::TsVideo,
@@ -125,7 +126,7 @@ impl FilterRuntime {
         }
     }
 
-    pub fn new_typed(filter_id: i32, generation: u64, open_type: FilterOpenType) -> Self {
+    pub(crate) fn new_typed(filter_id: i32, generation: u64, open_type: FilterOpenType) -> Self {
         Self {
             filter_id,
             state: FilterRuntimeState::Open,
@@ -147,7 +148,11 @@ impl FilterRuntime {
         }
     }
 
-    pub fn new_open_request(filter_id: i32, generation: u64, request: &OpenFilterRequest) -> Self {
+    pub(crate) fn new_open_request(
+        filter_id: i32,
+        generation: u64,
+        request: &OpenFilterRequest,
+    ) -> Self {
         let mut runtime = Self::new_typed(filter_id, generation, request.open_type);
         runtime.buffer_size = request.buffer_size;
         runtime.callback_present = request.callback_present;
@@ -163,23 +168,11 @@ impl FilterRuntime {
     pub fn generation(&self) -> u64 {
         self.generation
     }
-    pub fn open_type(&self) -> FilterOpenType {
-        self.open_type
-    }
     pub fn open_kind(&self) -> PipelineOpenKind {
         self.open_kind
     }
     pub fn buffer_size(&self) -> i32 {
         self.buffer_size
-    }
-    pub fn callback_present(&self) -> bool {
-        self.callback_present
-    }
-    pub fn tpid(&self) -> Option<i32> {
-        self.tpid
-    }
-    pub fn source(&self) -> FilterSource {
-        self.source
     }
     pub fn queue_present(&self) -> bool {
         self.queue_present
@@ -208,20 +201,6 @@ impl FilterRuntime {
     pub fn av_backing_present(&self) -> bool {
         self.av_backing_present
     }
-    pub fn av_stream_type_hint(&self) -> Option<AvStreamTypeConfig> {
-        self.av_stream_type_hint
-    }
-    pub fn delay_hints(&self) -> FilterDelayHints {
-        self.delay_hints
-    }
-    pub fn callback_unhealthy(&self) -> bool {
-        self.callback_unhealthy
-    }
-
-    pub fn queued_bytes(&self) -> usize {
-        self.queued_bytes
-    }
-
     pub fn delivery_readiness(&self) -> crate::config::FilterDelayReadiness {
         self.delay_hints.delivery_readiness(
             self.delivery_not_before

@@ -317,7 +317,7 @@ impl DvrConfigureTxn {
     }
 }
 
-pub fn configure_filter_runtime(
+pub(crate) fn configure_filter_runtime(
     demux: &mut DemuxRuntime,
     filter_id: i32,
     config: FilterConfig,
@@ -333,7 +333,7 @@ pub fn configure_filter_runtime(
     (txn.report(), result)
 }
 
-pub fn configure_dvr_runtime(
+pub(crate) fn configure_dvr_runtime(
     demux: &mut DemuxRuntime,
     dvr_id: i32,
 ) -> (

@@ -55,13 +55,12 @@ pub use parser::record_index::{
 };
 pub use parser::sections::normalize_length_field_bits;
 pub use runtime::{
-    configure_dvr_runtime, configure_filter_runtime, DemuxRuntime, DemuxRuntimeError,
-    DemuxRuntimeErrorKind, DemuxRuntimeSnapshot, DemuxRuntimeState, DemuxStreamGeneration,
-    DvrConfigureOutcome, DvrConfigureReport, DvrConfigureStep, DvrKind, DvrRuntime,
-    DvrRuntimeSnapshot, DvrRuntimeState, DvrStatusEvent, FilterConfigureOutcome,
-    FilterConfigureReport, FilterConfigureStep, FilterRuntime, FilterRuntimeSnapshot,
-    FilterRuntimeState, GenerationBoundaryReport, PlaybackConsumeReport,
-    QueueDescriptorExportHandle, QueueDescriptorQueryError, QueueDescriptorSnapshot,
+    DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind, DemuxRuntimeSnapshot,
+    DemuxRuntimeState, DemuxStreamGeneration, DvrConfigureOutcome, DvrConfigureReport,
+    DvrConfigureStep, DvrKind, DvrRuntimeSnapshot, DvrRuntimeState, DvrStatusEvent,
+    FilterConfigureOutcome, FilterConfigureReport, FilterConfigureStep, FilterRuntimeSnapshot,
+    FilterRuntimeState, GenerationBoundaryReport, PlaybackConsumeReport, QueueDescriptorExportPlan,
+    QueueDescriptorExportTarget, QueueDescriptorQueryError, QueueDescriptorSnapshot,
     QueueGrantorDescriptorSnapshot, QueueRuntimeError, QueueRuntimeErrorKind,
 };
 
@@ -73,6 +72,7 @@ mod tests {
         FilterPipelineConfig, PacketPid, PipelineBoundaryReason, PipelineOpenKind,
     };
     use crate::runtime::configure_txn::{DvrConfigureTxn, FilterConfigureTxn};
+    use crate::runtime::filter::FilterRuntime;
     use crate::runtime::filter::FilterSource;
     use crate::runtime::source_boundary::{
         apply_filter_source_boundary_change, SourceBoundaryOutcome, SourceBoundaryStep,
@@ -225,7 +225,7 @@ mod tests {
             .steps()
             .contains(&SourceBoundaryStep::DisconnectDownstream));
         assert_eq!(
-            demux.filter(41).unwrap().source(),
+            demux.filter(41).unwrap().snapshot().source,
             FilterSource::SourceFilter {
                 source_filter_id: 40,
                 source_filter_generation: 1,
@@ -382,12 +382,12 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            demux.filter(20).unwrap().open_type(),
+            demux.filter(20).unwrap().snapshot().open_type,
             FilterOpenType::TsAudio
         );
         assert_eq!(demux.filter(20).unwrap().open_kind(), PipelineOpenKind::Av);
         assert_eq!(
-            demux.filter(21).unwrap().open_type(),
+            demux.filter(21).unwrap().snapshot().open_type,
             FilterOpenType::TsVideo
         );
         assert_eq!(demux.filter(21).unwrap().open_kind(), PipelineOpenKind::Av);
@@ -402,10 +402,10 @@ mod tests {
         };
         let filter = DemuxRuntime::open_filter_runtime_from_request(22, 1, &request, None);
 
-        assert_eq!(filter.open_type(), FilterOpenType::TsSection);
+        assert_eq!(filter.snapshot().open_type, FilterOpenType::TsSection);
         assert_eq!(filter.open_kind(), PipelineOpenKind::Section);
         assert_eq!(filter.buffer_size(), 4096);
-        assert!(filter.callback_present());
+        assert!(filter.snapshot().callback_present);
     }
 
     #[test]
@@ -415,8 +415,8 @@ mod tests {
 
         assert_eq!(dvr.kind(), crate::runtime::DvrKind::Playback);
         assert_eq!(dvr.buffer_size(), 8192);
-        assert!(dvr.callback_present());
-        assert!(dvr.playback_assembler_present());
+        assert!(dvr.snapshot().callback_present);
+        assert!(dvr.snapshot().playback_assembler_present);
     }
 
     #[test]
@@ -806,7 +806,7 @@ mod tests {
                 dvr_id: 37,
             }
         ));
-        assert!(demux.dvr(37).unwrap().pending_overflow());
+        assert!(demux.dvr(37).unwrap().snapshot().pending_overflow);
     }
 
     #[test]
@@ -912,18 +912,27 @@ mod tests {
             .unwrap();
 
         demux.set_dvr_status_check_interval(42, 250).unwrap();
-        assert_eq!(demux.dvr(42).unwrap().status_check_interval_ms(), 250);
+        assert_eq!(
+            demux.dvr(42).unwrap().snapshot().status_check_interval_ms,
+            250
+        );
         assert_eq!(demux.dvr(42).unwrap().state(), DvrRuntimeState::Open);
 
         demux.configure_dvr_runtime(42).unwrap();
         demux.start_dvr_runtime(42).unwrap();
         demux.set_dvr_status_check_interval(42, 500).unwrap();
-        assert_eq!(demux.dvr(42).unwrap().status_check_interval_ms(), 500);
+        assert_eq!(
+            demux.dvr(42).unwrap().snapshot().status_check_interval_ms,
+            500
+        );
         assert_eq!(demux.dvr(42).unwrap().state(), DvrRuntimeState::Started);
 
         demux.stop_dvr_runtime(42).unwrap();
         demux.set_dvr_status_check_interval(42, 750).unwrap();
-        assert_eq!(demux.dvr(42).unwrap().status_check_interval_ms(), 750);
+        assert_eq!(
+            demux.dvr(42).unwrap().snapshot().status_check_interval_ms,
+            750
+        );
         assert_eq!(demux.dvr(42).unwrap().state(), DvrRuntimeState::Stopped);
     }
 
@@ -1284,7 +1293,7 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(txn.outcome(), Some(FilterConfigureOutcome::Committed));
         assert!(demux.queue_exists(12));
-        assert_eq!(demux.filter(12).unwrap().tpid(), Some(101));
+        assert_eq!(demux.filter(12).unwrap().snapshot().tpid, Some(101));
     }
 
     #[test]
@@ -1425,7 +1434,10 @@ mod tests {
             stream_type: 27,
         };
         demux.configure_filter_av_stream_type(16, hint).unwrap();
-        assert_eq!(demux.filter(16).unwrap().av_stream_type_hint(), Some(hint));
+        assert_eq!(
+            demux.filter(16).unwrap().snapshot().av_stream_type_hint,
+            Some(hint)
+        );
 
         demux
             .configure_filter_runtime(
@@ -1437,7 +1449,10 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(demux.filter(16).unwrap().av_stream_type_hint(), None);
+        assert_eq!(
+            demux.filter(16).unwrap().snapshot().av_stream_type_hint,
+            None
+        );
     }
 
     #[test]
@@ -1463,7 +1478,7 @@ mod tests {
             )
             .unwrap();
         assert!(demux.filter(18).unwrap().av_backing_present());
-        assert!(!demux.filter(18).unwrap().queue_present());
+        assert!(!demux.filter(18).unwrap().snapshot().queue_present);
         demux
             .configure_filter_av_stream_type(
                 18,
@@ -1481,7 +1496,7 @@ mod tests {
         );
         assert!(demux.filter(18).unwrap().av_backing_present());
         assert_eq!(
-            demux.filter(18).unwrap().av_stream_type_hint(),
+            demux.filter(18).unwrap().snapshot().av_stream_type_hint,
             Some(AvStreamTypeConfig {
                 kind: AvStreamKind::Video,
                 stream_type: 15
@@ -1690,7 +1705,7 @@ mod tests {
         demux
             .set_filter_delay_hint(17, FilterDelayHint::DataSizeDelayBytes(188))
             .unwrap();
-        let hints = demux.filter(17).unwrap().delay_hints();
+        let hints = demux.filter(17).unwrap().snapshot().delay_hints;
         assert_eq!(hints.time_delay_ms, Some(10));
         assert_eq!(hints.data_size_delay_bytes, Some(188));
 
@@ -1700,7 +1715,7 @@ mod tests {
         demux
             .set_filter_delay_hint(17, FilterDelayHint::DataSizeDelayBytes(0))
             .unwrap();
-        let hints = demux.filter(17).unwrap().delay_hints();
+        let hints = demux.filter(17).unwrap().snapshot().delay_hints;
         assert_eq!(hints.time_delay_ms, None);
         assert_eq!(hints.data_size_delay_bytes, None);
     }

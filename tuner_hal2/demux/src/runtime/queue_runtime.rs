@@ -77,7 +77,7 @@ pub struct QueueRuntime {
 }
 
 #[derive(Clone)]
-pub struct QueueDescriptorExportHandle {
+pub(crate) struct QueueDescriptorExportHandle {
     queue: Arc<FmqQueue>,
 }
 
@@ -88,8 +88,37 @@ impl fmt::Debug for QueueDescriptorExportHandle {
 }
 
 impl QueueDescriptorExportHandle {
-    pub fn export_descriptor(&self) -> Result<QueueDescriptorSnapshot, QueueRuntimeError> {
+    fn export_descriptor(&self) -> Result<QueueDescriptorSnapshot, QueueRuntimeError> {
         export_queue_descriptor(&self.queue)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QueueDescriptorExportTarget {
+    Filter { filter_id: i32 },
+    Dvr { dvr_id: i32 },
+}
+
+#[derive(Clone, Debug)]
+pub struct QueueDescriptorExportPlan {
+    target: QueueDescriptorExportTarget,
+    handle: QueueDescriptorExportHandle,
+}
+
+impl QueueDescriptorExportPlan {
+    pub(crate) fn new(
+        target: QueueDescriptorExportTarget,
+        handle: QueueDescriptorExportHandle,
+    ) -> Self {
+        Self { target, handle }
+    }
+
+    pub const fn target(&self) -> QueueDescriptorExportTarget {
+        self.target
+    }
+
+    pub fn export_descriptor(self) -> Result<QueueDescriptorSnapshot, QueueRuntimeError> {
+        self.handle.export_descriptor()
     }
 }
 
@@ -165,7 +194,7 @@ impl QueueRuntime {
             .map_err(|err| map_data_path_error(err, "FMQ wake failed"))
     }
 
-    pub fn descriptor_export_handle(&self) -> QueueDescriptorExportHandle {
+    pub(crate) fn descriptor_export_handle(&self) -> QueueDescriptorExportHandle {
         QueueDescriptorExportHandle {
             queue: Arc::clone(&self.queue),
         }

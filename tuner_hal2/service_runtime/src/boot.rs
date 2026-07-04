@@ -1,4 +1,3 @@
-use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::Read;
 use std::path::PathBuf;
@@ -18,15 +17,15 @@ use maleicacid_tuner_hal2_demux::config::{
 use maleicacid_tuner_hal2_demux::OpenFilterRequest;
 use maleicacid_tuner_hal2_demux::{
     AvMediaEventDescriptor, DemuxRuntimeError, DemuxRuntimeErrorKind, DemuxRuntimeSnapshot,
-    DemuxRuntimeState, DvrKind, DvrRuntime, DvrRuntimeState, GenerationBoundaryReport,
+    DemuxRuntimeState, DvrKind, DvrRuntimeState, GenerationBoundaryReport,
     PacketDescramblePolicyFailure, PacketPid, PipelineAssemblySuppressionReason,
     PipelineBoundaryReason, PipelineDiagnostic, PipelineReport, PipelineResetReport, TsInputOrigin,
     TsPacketValidationError, ValidatedTsPacket,
 };
 use maleicacid_tuner_hal2_descrambler::{
-    descramble_ts_packet_in_place, packet_policy_for_descramble_failure, DescrambleFailure,
-    DescrambleOutcome, DescramblerKeySlot, DescramblerKeyToken, DescramblerKeyTokenError,
-    DescramblerPid, DescramblerPidClaim, DescramblerPidClaimError, PacketPolicyAction,
+    packet_policy_for_descramble_failure, DescrambleFailure, DescrambleOutcome, DescramblerKeySlot,
+    DescramblerKeyToken, DescramblerKeyTokenError, DescramblerPid, DescramblerPidClaim,
+    DescramblerPidClaimError, PacketPolicyAction,
 };
 use maleicacid_tuner_hal2_device::{
     FrontendLivePacketSink, FrontendLivePumpOwner, FrontendLivePumpReport,
@@ -279,36 +278,6 @@ impl FrontendLivePacketSink for FrontendDemuxPacketSink {
             return Ok(());
         }
         self.dispatcher.dispatch(&self.runtime, events)
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct ActiveDescramblerSnapshot {
-    descrambler_pids: BTreeSet<DescramblerPid>,
-    packet_pids: BTreeSet<PacketPid>,
-    key_slot: Option<DescramblerKeySlot>,
-    source_filter_ids_by_pid: BTreeMap<PacketPid, BTreeSet<i32>>,
-}
-
-impl ActiveDescramblerSnapshot {
-    fn targets_packet_pid(&self, pid: PacketPid) -> bool {
-        self.packet_pids.contains(&pid)
-    }
-
-    fn descramble_packet(
-        &self,
-        packet: &[u8; TS_PACKET_SIZE],
-    ) -> Option<Result<([u8; TS_PACKET_SIZE], DescrambleOutcome), DescrambleFailure>> {
-        let key_slot = self.key_slot.as_ref()?;
-        let mut candidate = *packet;
-        Some(
-            descramble_ts_packet_in_place(&mut candidate, &self.descrambler_pids, key_slot)
-                .map(|outcome| (candidate, outcome)),
-        )
-    }
-
-    fn source_filter_ids_for_packet_pid(&self, pid: PacketPid) -> Option<&BTreeSet<i32>> {
-        self.source_filter_ids_by_pid.get(&pid)
     }
 }
 
@@ -1999,7 +1968,7 @@ impl TunerServiceRuntime {
                 .and_then(|entry| {
                     self.registry
                         .demux_runtime(DemuxRuntimeId(entry.owner_demux_id))
-                        .map(|demux| demux.filter(id).is_some())
+                        .map(|demux| demux.filter_snapshot(id).is_ok())
                 })
                 .unwrap_or(false),
             AidlObjectKind::Dvr => self
@@ -2008,7 +1977,7 @@ impl TunerServiceRuntime {
                 .and_then(|entry| {
                     self.registry
                         .demux_runtime(DemuxRuntimeId(entry.owner_demux_id))
-                        .map(|demux| demux.dvr(id).is_some())
+                        .map(|demux| demux.dvr_snapshot(id).is_ok())
                 })
                 .unwrap_or(false),
             AidlObjectKind::Descrambler => {

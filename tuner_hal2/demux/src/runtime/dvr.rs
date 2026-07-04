@@ -48,6 +48,7 @@ pub enum DvrStatusEvent {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DvrRuntimeSnapshot {
+    pub kind: DvrKind,
     pub state: DvrRuntimeState,
     pub generation: u64,
     pub buffer_size: i32,
@@ -85,10 +86,11 @@ pub struct DvrRuntime {
 }
 
 impl DvrRuntime {
-    pub fn new(dvr_id: i32, kind: DvrKind, generation: u64) -> Self {
+    #[cfg(test)]
+    pub(crate) fn new(dvr_id: i32, kind: DvrKind, generation: u64) -> Self {
         Self::new_open_request(dvr_id, kind, generation, 0, false)
     }
-    pub fn new_open_request(
+    pub(crate) fn new_open_request(
         dvr_id: i32,
         kind: DvrKind,
         generation: u64,
@@ -129,44 +131,14 @@ impl DvrRuntime {
     pub fn buffer_size(&self) -> i32 {
         self.buffer_size
     }
-    pub fn callback_present(&self) -> bool {
-        self.callback_present
-    }
-    pub fn status_check_interval_ms(&self) -> u64 {
-        self.status_check_interval_ms
-    }
-    pub fn queue_present(&self) -> bool {
-        self.queue_present
-    }
     pub fn allows_queue_desc(&self) -> bool {
         matches!(
             self.state,
             DvrRuntimeState::Configured | DvrRuntimeState::Started | DvrRuntimeState::Stopped
         ) && self.queue_present
     }
-    pub fn playback_assembler_present(&self) -> bool {
-        self.playback_assembler_present
-    }
-    pub fn playback_completion(&self) -> &TsPacketCompletionBuffer {
-        &self.playback_completion
-    }
     pub fn attached_record_filters(&self) -> &BTreeSet<i32> {
         &self.attached_record_filters
-    }
-    pub fn has_attached_record_filters(&self) -> bool {
-        !self.attached_record_filters.is_empty()
-    }
-    pub fn pending_overflow(&self) -> bool {
-        self.pending_overflow
-    }
-    pub fn status_mask(&self) -> i32 {
-        self.status_mask
-    }
-    pub fn low_threshold_bytes(&self) -> usize {
-        self.low_threshold_bytes
-    }
-    pub fn high_threshold_bytes(&self) -> usize {
-        self.high_threshold_bytes
     }
     pub fn callback_unhealthy(&self) -> bool {
         self.callback_unhealthy
@@ -174,6 +146,7 @@ impl DvrRuntime {
 
     pub fn snapshot(&self) -> DvrRuntimeSnapshot {
         DvrRuntimeSnapshot {
+            kind: self.kind,
             state: self.state,
             generation: self.generation,
             buffer_size: self.buffer_size,
@@ -192,6 +165,7 @@ impl DvrRuntime {
     }
 
     pub fn restore(&mut self, snapshot: DvrRuntimeSnapshot) {
+        self.kind = snapshot.kind;
         self.state = snapshot.state;
         self.generation = snapshot.generation;
         self.buffer_size = snapshot.buffer_size;

@@ -82,7 +82,7 @@ fn frontend_worker_stop_outcome_generation(outcome: &FrontendWorkerStopOutcome) 
 fn bound_demux_generation_snapshot(snapshots: &DemuxSnapshotList) -> BoundDemuxGenerationSnapshot {
     let mut generations = snapshots
         .iter()
-        .map(|(demux_id, snapshot)| (*demux_id, snapshot.generation))
+        .map(|(demux_id, snapshot)| (*demux_id, snapshot.generation()))
         .collect::<Vec<_>>();
     generations.sort();
     generations

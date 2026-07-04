@@ -1,11 +1,10 @@
 use super::{
     AvStreamKind, AvStreamTypeConfig, DemuxRuntimeError, DemuxRuntimeErrorKind, DemuxRuntimeId,
-    DvrChildRuntimeOpen, DvrConfigureKind, DvrConfigureRequest, DvrKind, DvrOpenKind, DvrRuntime,
-    DvrRuntimeId, FilterAvStreamKind, FilterAvStreamTypeRequest, FilterChildRuntimeOpen,
-    FilterConfig, FilterDelayHint, FilterDelayHintKind, FilterDelayHintRequest, FilterOpenType,
-    FilterRuntimeId, HalError, HalInternalKind, HalInvalidArgumentKind, HalInvalidStateKind,
-    OpenDvrRequest, OpenFilterRequest, PipelineResetReport, RegistryCommitError,
-    TunerServiceRuntime,
+    DvrChildRuntimeOpen, DvrConfigureKind, DvrConfigureRequest, DvrKind, DvrOpenKind, DvrRuntimeId,
+    FilterAvStreamKind, FilterAvStreamTypeRequest, FilterChildRuntimeOpen, FilterConfig,
+    FilterDelayHint, FilterDelayHintKind, FilterDelayHintRequest, FilterOpenType, FilterRuntimeId,
+    HalError, HalInternalKind, HalInvalidArgumentKind, HalInvalidStateKind, OpenDvrRequest,
+    OpenFilterRequest, PipelineResetReport, RegistryCommitError, TunerServiceRuntime,
 };
 use crate::diagnostics::{
     ChildOpenRollbackDiagnosticRecord, ChildOpenRollbackKind, ChildOpenRollbackPhase,
@@ -14,7 +13,7 @@ use crate::error_mapping::{object_table_error_to_hal, registry_commit_error_to_h
 use crate::object_method_txn::ObjectMethodExecutionToken;
 use crate::open_rollback::finish_open_rollback;
 use maleicacid_tuner_hal2_common::compose_primary_cleanup_failure;
-use maleicacid_tuner_hal2_demux::{FilterRuntime, FilterRuntimeState};
+use maleicacid_tuner_hal2_demux::FilterRuntimeState;
 
 const MAX_FILTER_DELAY_MS: i64 = 10_000;
 
@@ -144,11 +143,7 @@ impl TunerServiceRuntime {
             ));
         };
         demux_runtime
-            .register_filter(FilterRuntime::new_open_request(
-                filter_id,
-                demux_runtime.generation(),
-                request,
-            ))
+            .register_filter_from_open_request(filter_id, request)
             .map_err(|_| {
                 HalError::invalid_state(
                     HalInvalidStateKind::InvalidLifecycle,
@@ -228,7 +223,7 @@ impl TunerServiceRuntime {
             ));
         };
         let (report, result) =
-            maleicacid_tuner_hal2_demux::configure_filter_runtime(demux_runtime, filter_id, config);
+            demux_runtime.configure_filter_runtime_with_report(filter_id, config);
         match result {
             Ok(_) => Ok(()),
             Err(error) => {
@@ -679,13 +674,7 @@ impl TunerServiceRuntime {
             DvrOpenKind::Playback => DvrKind::Playback,
         };
         demux_runtime
-            .register_dvr(DvrRuntime::new_open_request(
-                dvr_id,
-                kind,
-                demux_runtime.generation(),
-                request.buffer_size,
-                callback_present,
-            ))
+            .register_dvr_from_open_request(dvr_id, kind, request.buffer_size, callback_present)
             .map_err(|_| {
                 HalError::invalid_state(
                     HalInvalidStateKind::InvalidLifecycle,
@@ -787,13 +776,13 @@ impl TunerServiceRuntime {
                 "owner demux runtime is missing",
             ));
         };
-        let Some(dvr) = demux_runtime.dvr(dvr_id) else {
-            return Err(HalError::invalid_state(
+        let dvr = demux_runtime.dvr_snapshot(dvr_id).map_err(|_| {
+            HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
                 "DVR runtime is missing",
-            ));
-        };
-        let expected_kind = match dvr.kind() {
+            )
+        })?;
+        let expected_kind = match dvr.kind {
             DvrKind::Record => DvrConfigureKind::Record,
             DvrKind::Playback => DvrConfigureKind::Playback,
         };
@@ -803,7 +792,7 @@ impl TunerServiceRuntime {
                 "DVR settings kind does not match opened DVR kind",
             ));
         }
-        let state = dvr.state();
+        let state = dvr.state;
         if state.is_closed_or_failed() {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
@@ -816,25 +805,25 @@ impl TunerServiceRuntime {
                 "DVR cannot be reconfigured while started",
             ));
         }
-        if dvr.callback_unhealthy() {
+        if dvr.callback_unhealthy {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
                 "DVR callback is unhealthy",
             ));
         }
         let (low_threshold, high_threshold) =
-            Self::validate_dvr_configure_request(dvr.buffer_size(), request)?;
-        let (report, result) =
-            maleicacid_tuner_hal2_demux::configure_dvr_runtime(demux_runtime, dvr_id);
+            Self::validate_dvr_configure_request(dvr.buffer_size, request)?;
+        let (report, result) = demux_runtime.configure_dvr_runtime_with_report(dvr_id);
         match result {
             Ok(_) => {
-                if let Some(dvr) = demux_runtime.dvr_mut(dvr_id) {
-                    dvr.configure_status_reporting(
+                demux_runtime
+                    .configure_dvr_status_reporting(
+                        dvr_id,
                         request.status_mask,
                         low_threshold,
                         high_threshold,
-                    );
-                }
+                    )
+                    .map_err(Self::map_dvr_runtime_error)?;
                 Ok(())
             }
             Err(error) => {

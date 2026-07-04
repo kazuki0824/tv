@@ -7,8 +7,9 @@ use super::{
 };
 use crate::object_method_txn::ObjectFrontendStatusSnapshot;
 use maleicacid_tuner_hal2_demux::{
-    DvrRuntimeState, DvrStatusEvent, QueueDescriptorExportHandle, QueueDescriptorQueryError,
-    QueueDescriptorSnapshot, QueueRuntimeError,
+    DvrRuntimeState, DvrStatusEvent, QueueDescriptorExportPlan as DemuxQueueDescriptorExportPlan,
+    QueueDescriptorExportTarget, QueueDescriptorQueryError, QueueDescriptorSnapshot,
+    QueueRuntimeError,
 };
 
 #[derive(Debug)]
@@ -17,17 +18,29 @@ pub(crate) struct QueueDescriptorExportPlan {
     object_id: AidlObjectId,
     generation: AidlObjectGeneration,
     runtime_id: i32,
-    handle: QueueDescriptorExportHandle,
+    handle: DemuxQueueDescriptorExportPlan,
 }
 
 impl QueueDescriptorExportPlan {
-    const fn new(
+    fn new(
         object_kind: AidlObjectKind,
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
         runtime_id: i32,
-        handle: QueueDescriptorExportHandle,
+        handle: DemuxQueueDescriptorExportPlan,
     ) -> Self {
+        debug_assert!(
+            matches!(
+                (object_kind, handle.target()),
+                (
+                    AidlObjectKind::Filter,
+                    QueueDescriptorExportTarget::Filter { filter_id }
+                ) if filter_id == runtime_id
+            ) || matches!(
+                (object_kind, handle.target()),
+                (AidlObjectKind::Dvr, QueueDescriptorExportTarget::Dvr { dvr_id }) if dvr_id == runtime_id
+            )
+        );
         Self {
             object_kind,
             object_id,
@@ -349,7 +362,7 @@ impl<'a> RuntimeQuery<'a> {
                 )
             })?;
         demux
-            .filter_queue_descriptor_export_handle(filter_id)
+            .filter_queue_descriptor_export_plan(filter_id)
             .map(|handle| {
                 QueueDescriptorExportPlan::new(
                     AidlObjectKind::Filter,
@@ -390,7 +403,7 @@ impl<'a> RuntimeQuery<'a> {
                 )
             })?;
         demux
-            .dvr_queue_descriptor_export_handle(dvr_id)
+            .dvr_queue_descriptor_export_plan(dvr_id)
             .map(|handle| {
                 QueueDescriptorExportPlan::new(
                     AidlObjectKind::Dvr,
@@ -430,14 +443,14 @@ impl<'a> RuntimeQuery<'a> {
                     "owner demux runtime is missing for DVR status poll",
                 )
             })?;
-        let dvr = demux.dvr(dvr_id).ok_or_else(|| {
+        let dvr = demux.dvr_snapshot(dvr_id).map_err(|_| {
             HalError::internal(
                 HalInternalKind::InvariantViolation,
                 "DVR runtime is missing for DVR status poll",
             )
         })?;
-        let started = matches!(dvr.state(), DvrRuntimeState::Started);
-        let callback_unhealthy = dvr.callback_unhealthy();
+        let started = matches!(dvr.state, DvrRuntimeState::Started);
+        let callback_unhealthy = dvr.callback_unhealthy;
         let event = if started && !callback_unhealthy {
             demux.dvr_status_event(dvr_id).map_err(|_| {
                 HalError::invalid_state(
@@ -450,11 +463,11 @@ impl<'a> RuntimeQuery<'a> {
         };
         Ok(DvrStatusPollSnapshot {
             event,
-            interval_ms: dvr.status_check_interval_ms(),
+            interval_ms: dvr.status_check_interval_ms,
             started,
-            callback_present: dvr.callback_present(),
+            callback_present: dvr.callback_present,
             callback_unhealthy,
-            status_reporting_enabled: dvr.status_mask() != 0,
+            status_reporting_enabled: dvr.status_mask != 0,
         })
     }
 
@@ -667,7 +680,10 @@ impl<'a> RuntimeQuery<'a> {
         let demux = self
             .registry
             .demux_runtime(DemuxRuntimeId(entry.owner_demux_id))?;
-        demux.filter(filter_id).map(|filter| filter.open_type())
+        demux
+            .filter_snapshot(filter_id)
+            .map(|snapshot| snapshot.open_type)
+            .ok()
     }
 
     pub(crate) fn first_pcr_filter_id_for_demux_object(
@@ -745,10 +761,10 @@ impl<'a> RuntimeQuery<'a> {
             .map(|entry| entry.id.0)
             .find(|filter_id| {
                 demux
-                    .filter(*filter_id)
-                    .map(|filter| {
-                        filter.open_type() == FilterOpenType::TsPcr
-                            && !filter.state().is_closed_or_failed()
+                    .filter_snapshot(*filter_id)
+                    .map(|snapshot| {
+                        snapshot.open_type == FilterOpenType::TsPcr
+                            && !snapshot.state.is_closed_or_failed()
                     })
                     .unwrap_or(false)
             })
@@ -765,9 +781,9 @@ impl<'a> RuntimeQuery<'a> {
             return false;
         };
         demux
-            .filter(filter_id)
-            .map(|filter| {
-                filter.open_type() == FilterOpenType::TsPcr && !filter.state().is_closed_or_failed()
+            .filter_snapshot(filter_id)
+            .map(|snapshot| {
+                snapshot.open_type == FilterOpenType::TsPcr && !snapshot.state.is_closed_or_failed()
             })
             .unwrap_or(false)
     }

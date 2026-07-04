@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use crate::descrambler_key_table::{DescramblerKeyLookupError, DescramblerKeyTable};
@@ -7,13 +7,16 @@ use crate::descrambler_session::{
     DescramblerReplaceKeyOutcome, DescramblerReplaceKeyTxnError, DescramblerRuntime,
     DescramblerSessionFailure, DescramblerSessionFailureKind, DescramblerSessionTxnStep,
 };
+use crate::diagnostics::{DescramblerDiagnosticKind, DescramblerDiagnosticRecord};
+use maleicacid_tuner_hal2_common::TS_PACKET_SIZE;
 use maleicacid_tuner_hal2_common::{
     FrontendBackendKind, FrontendSystem, HalError, HalInvalidArgumentKind, HalInvalidStateKind,
 };
-use maleicacid_tuner_hal2_demux::PacketPid;
 use maleicacid_tuner_hal2_demux::{DemuxRuntime, FilterOpenType, FilterRuntimeState};
+use maleicacid_tuner_hal2_demux::{PacketPid, PipelineDiagnostic};
 use maleicacid_tuner_hal2_descrambler::{
-    DescramblerKeySlot, DescramblerKeyToken, DescramblerPid, DescramblerPidClaim,
+    descramble_ts_packet_in_place, DescrambleFailure, DescrambleOutcome, DescramblerKeySlot,
+    DescramblerKeyToken, DescramblerPid, DescramblerPidClaim,
 };
 use maleicacid_tuner_hal2_device::FrontendRuntime;
 use maleicacid_tuner_hal2_lnb::LnbRuntime;
@@ -93,6 +96,58 @@ pub(crate) struct ResolvedDescramblerClaimSet {
 impl ResolvedDescramblerClaimSet {
     pub(crate) fn into_parts(self) -> (Vec<DescramblerPidClaim>, Option<DescramblerKeySlot>) {
         (self.claims, self.key_slot)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedDescramblerPacketSnapshot {
+    descrambler_pids: BTreeSet<DescramblerPid>,
+    packet_pids: BTreeSet<PacketPid>,
+    key_slot: Option<DescramblerKeySlot>,
+    source_filter_ids_by_pid: BTreeMap<PacketPid, BTreeSet<i32>>,
+}
+
+impl ResolvedDescramblerPacketSnapshot {
+    pub(crate) fn targets_packet_pid(&self, pid: PacketPid) -> bool {
+        self.packet_pids.contains(&pid)
+    }
+
+    pub(crate) fn descramble_packet(
+        &self,
+        packet: &[u8; TS_PACKET_SIZE],
+    ) -> Option<Result<([u8; TS_PACKET_SIZE], DescrambleOutcome), DescrambleFailure>> {
+        let key_slot = self.key_slot.as_ref()?;
+        let mut candidate = *packet;
+        Some(
+            descramble_ts_packet_in_place(&mut candidate, &self.descrambler_pids, key_slot)
+                .map(|outcome| (candidate, outcome)),
+        )
+    }
+
+    pub(crate) fn source_filter_ids_for_packet_pid(
+        &self,
+        pid: PacketPid,
+    ) -> Option<&BTreeSet<i32>> {
+        self.source_filter_ids_by_pid.get(&pid)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedDescramblerPacketMaterial {
+    snapshots: Vec<ResolvedDescramblerPacketSnapshot>,
+    diagnostics: Vec<PipelineDiagnostic>,
+    diagnostic_records: Vec<DescramblerDiagnosticRecord>,
+}
+
+impl ResolvedDescramblerPacketMaterial {
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        Vec<ResolvedDescramblerPacketSnapshot>,
+        Vec<PipelineDiagnostic>,
+        Vec<DescramblerDiagnosticRecord>,
+    ) {
+        (self.snapshots, self.diagnostics, self.diagnostic_records)
     }
 }
 
@@ -728,6 +783,102 @@ impl RuntimeRegistry {
                 Some(ResolvedDescramblerClaimSet { claims, key_slot })
             })
             .collect()
+    }
+
+    pub(crate) fn resolved_descrambler_packet_material_for_demux(
+        &self,
+        demux_id: i32,
+        demux_generation: u64,
+        packet_pid: PacketPid,
+    ) -> ResolvedDescramblerPacketMaterial {
+        let claim_sets = self.resolved_descrambler_claims_for_demux(demux_id, demux_generation);
+        let mut snapshots = Vec::with_capacity(claim_sets.len());
+        let mut diagnostics = Vec::new();
+        let mut diagnostic_records = Vec::new();
+        for claim_set in claim_sets {
+            let (claims, key_slot) = claim_set.into_parts();
+            let mut descrambler_pids = BTreeSet::new();
+            let mut packet_pids = BTreeSet::new();
+            let mut source_filter_ids_by_pid: BTreeMap<PacketPid, BTreeSet<i32>> = BTreeMap::new();
+            for claim in claims {
+                let descrambler_pid = claim.pid();
+                let pid =
+                    PacketPid::from_descrambler_pid_for_service_runtime_boundary(descrambler_pid);
+                if pid != packet_pid {
+                    continue;
+                }
+                let Some(source) = claim.source_filter_ref() else {
+                    descrambler_pids.insert(descrambler_pid);
+                    packet_pids.insert(pid);
+                    continue;
+                };
+                match self.validate_descrambler_source_filter(
+                    demux_id,
+                    demux_generation,
+                    source.filter_id(),
+                    descrambler_pid,
+                ) {
+                    Ok(generation) if generation == source.generation() => {
+                        descrambler_pids.insert(descrambler_pid);
+                        packet_pids.insert(pid);
+                        source_filter_ids_by_pid
+                            .entry(pid)
+                            .or_default()
+                            .insert(source.filter_id());
+                    }
+                    Ok(_) => {
+                        let error = HalError::invalid_state(
+                            HalInvalidStateKind::InvalidLifecycle,
+                            "source filter generation changed before packet descramble",
+                        );
+                        diagnostics.push(PipelineDiagnostic::source_filter_validation_failure(
+                            packet_pid,
+                            source.filter_id(),
+                            error.clone(),
+                        ));
+                        diagnostic_records.push(
+                            DescramblerDiagnosticRecord::packet_source_filter_validation(
+                                demux_id,
+                                pid,
+                                source.filter_id(),
+                                DescramblerDiagnosticKind::PacketSourceFilterGenerationMismatch,
+                                error,
+                            ),
+                        );
+                    }
+                    Err(error) => {
+                        diagnostics.push(PipelineDiagnostic::source_filter_validation_failure(
+                            packet_pid,
+                            source.filter_id(),
+                            error.clone(),
+                        ));
+                        diagnostic_records.push(
+                            DescramblerDiagnosticRecord::packet_source_filter_validation(
+                                demux_id,
+                                pid,
+                                source.filter_id(),
+                                DescramblerDiagnosticKind::PacketSourceFilterInvalid,
+                                error,
+                            ),
+                        );
+                    }
+                }
+            }
+            if packet_pids.is_empty() {
+                continue;
+            }
+            snapshots.push(ResolvedDescramblerPacketSnapshot {
+                descrambler_pids,
+                packet_pids,
+                key_slot,
+                source_filter_ids_by_pid,
+            });
+        }
+        ResolvedDescramblerPacketMaterial {
+            snapshots,
+            diagnostics,
+            diagnostic_records,
+        }
     }
 
     pub(crate) fn descrambler_keyless_claim_exists_for_demux_packet_pid(
