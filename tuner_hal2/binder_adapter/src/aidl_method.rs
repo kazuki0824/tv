@@ -341,7 +341,7 @@ fn validate_dvr_ts_188(data_format: DataFormat, packet_size: i64) -> Result<(), 
 }
 
 #[cfg(test)]
-pub(crate) fn supported_record_status_mask() -> i32 {
+fn supported_record_status_mask() -> i32 {
     i32::from(RecordStatus::DATA_READY.0)
         | i32::from(RecordStatus::LOW_WATER.0)
         | i32::from(RecordStatus::HIGH_WATER.0)
@@ -349,7 +349,7 @@ pub(crate) fn supported_record_status_mask() -> i32 {
 }
 
 #[cfg(test)]
-pub(crate) fn supported_playback_status_mask() -> i32 {
+fn supported_playback_status_mask() -> i32 {
     i32::from(PlaybackStatus::SPACE_EMPTY.0)
         | i32::from(PlaybackStatus::SPACE_ALMOST_EMPTY.0)
         | i32::from(PlaybackStatus::SPACE_ALMOST_FULL.0)
@@ -409,17 +409,13 @@ impl AidlMethodAdapter {
 }
 
 #[cfg(test)]
-pub(crate) use tests::{
-    all_aidl_method_call_variants_for_plan_coverage,
-    AIDL_METHOD_CALL_VARIANT_COUNT_FOR_PLAN_COVERAGE,
-};
-
-#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::AIDL_TRANSACTION_TABLE;
     use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
         PlaybackSettings::PlaybackSettings, RecordSettings::RecordSettings,
     };
+    use maleicacid_tuner_hal2_common::{FrontendStreamIdKind, FrontendSystem};
 
     pub(crate) const AIDL_METHOD_CALL_VARIANT_COUNT_FOR_PLAN_COVERAGE: usize = 46;
 
@@ -513,6 +509,18 @@ mod tests {
         ]
     }
 
+    fn frontend_tune_request_for_test() -> FrontendTuneRequest {
+        FrontendTuneRequest {
+            system: FrontendSystem::IsdbT,
+            frequency: 473_142_857,
+            end_frequency: None,
+            stream_id: None,
+            stream_id_kind: Some(FrontendStreamIdKind::AbsoluteStreamId),
+            bandwidth_hz: Some(6_000_000),
+            symbol_rate: None,
+        }
+    }
+
     #[test]
     fn build_dvr_configure_request_keeps_thresholds_and_mask() {
         let request = build_dvr_configure_request(&DvrSettings::Record(RecordSettings {
@@ -545,5 +553,19 @@ mod tests {
         }))
         .unwrap_err();
         assert!(matches!(error, HalError::InvalidArgument { .. }));
+    }
+
+    #[test]
+    fn all_aidl_method_call_variants_have_command_plan_entries() {
+        let methods =
+            all_aidl_method_call_variants_for_plan_coverage(frontend_tune_request_for_test());
+        assert_eq!(
+            methods.len(),
+            AIDL_METHOD_CALL_VARIANT_COUNT_FOR_PLAN_COVERAGE
+        );
+        for method in methods {
+            let plan = AidlMethodAdapter::plan(method).unwrap();
+            assert!(AIDL_TRANSACTION_TABLE.contains(&plan.command_plan));
+        }
     }
 }

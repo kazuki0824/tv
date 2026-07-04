@@ -37,8 +37,6 @@ pub use boot::{
     FrontendProbeOutcome, OwnerCallbackCleanupArtifactCommand, OwnerCallbackCleanupUseCaseOutcome,
     ServiceBootOutcome, TunerServiceRuntime,
 };
-#[cfg(test)]
-pub(crate) use callback_registry::CallbackHealthState;
 pub use capability_profile::{
     configure_ip_cid_result, configure_monitor_event_result, failure_domain, feature_declared,
     hal_generates_japanese_scan_plan, open_failed, scan_candidate_owner, transport_declared,

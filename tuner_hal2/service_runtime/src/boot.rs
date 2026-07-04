@@ -41,8 +41,6 @@ use maleicacid_tuner_hal2_domain_request::{
     RuntimeTransactionName,
 };
 
-#[cfg(test)]
-use crate::callback_registry::CallbackHealthState;
 use crate::callback_registry::{CallbackRegistryUpdate, RuntimeCallbackRegistry};
 use crate::command_dispatch::{
     RuntimeCommandDispatchError, RuntimeCommandDispatchPlan, RuntimeCommandDispatcher,
@@ -1756,19 +1754,6 @@ impl TunerServiceRuntime {
         self.callback_registry
             .registration_for(owner_kind, owner_id, owner_generation, registration_api)
             .is_some()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn callback_registration_health(
-        &self,
-        owner_kind: AidlObjectKind,
-        owner_id: AidlObjectId,
-        owner_generation: AidlObjectGeneration,
-        registration_api: AidlApi,
-    ) -> Option<CallbackHealthState> {
-        self.callback_registry
-            .registration_for(owner_kind, owner_id, owner_generation, registration_api)
-            .map(|registration| registration.health())
     }
 
     pub fn finish_service_boot_reset_after_artifact_result_use_case(

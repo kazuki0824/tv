@@ -29,11 +29,11 @@ pub struct SourceBoundaryReport {
 
 impl SourceBoundaryReport {
     #[cfg(test)]
-    pub fn steps(&self) -> &[SourceBoundaryStep] {
+    pub(crate) fn steps(&self) -> &[SourceBoundaryStep] {
         &self.steps
     }
     #[cfg(test)]
-    pub const fn outcome(&self) -> SourceBoundaryOutcome {
+    pub(crate) const fn outcome(&self) -> SourceBoundaryOutcome {
         self.outcome
     }
     pub fn reset_report(&self) -> Option<&PipelineResetReport> {

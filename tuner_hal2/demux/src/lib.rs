@@ -64,10 +64,6 @@ pub use runtime::{
     QueueDescriptorExportHandle, QueueDescriptorQueryError, QueueDescriptorSnapshot,
     QueueGrantorDescriptorSnapshot, QueueRuntimeError, QueueRuntimeErrorKind,
 };
-#[cfg(test)]
-pub(crate) use runtime::{
-    DvrConfigureTxn, FilterConfigureTxn, SourceBoundaryOutcome, SourceBoundaryStep,
-};
 
 #[cfg(test)]
 mod tests {
@@ -76,8 +72,11 @@ mod tests {
     use crate::packet_pipeline::{
         FilterPipelineConfig, PacketPid, PipelineBoundaryReason, PipelineOpenKind,
     };
-    use crate::runtime::apply_filter_source_boundary_change;
+    use crate::runtime::configure_txn::{DvrConfigureTxn, FilterConfigureTxn};
     use crate::runtime::filter::FilterSource;
+    use crate::runtime::source_boundary::{
+        apply_filter_source_boundary_change, SourceBoundaryOutcome, SourceBoundaryStep,
+    };
     use std::os::unix::fs::MetadataExt;
     use std::{thread, time::Duration};
 

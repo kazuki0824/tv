@@ -5,7 +5,7 @@ use maleicacid_tuner_hal2_domain_request::{
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CallbackHealthState {
+pub(crate) enum CallbackHealthState {
     Registered,
     Unhealthy,
 }
@@ -108,13 +108,6 @@ impl RuntimeCallbackRegistry {
     }
 }
 
-impl RuntimeCallbackRegistration {
-    #[cfg(test)]
-    pub(crate) const fn health(&self) -> CallbackHealthState {
-        self.health
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,7 +131,7 @@ mod tests {
                     AidlApi::LnbSetCallback
                 )
                 .unwrap()
-                .health(),
+                .health,
             CallbackHealthState::Registered
         );
         assert_eq!(
@@ -159,7 +152,7 @@ mod tests {
                     AidlApi::LnbSetCallback
                 )
                 .unwrap()
-                .health(),
+                .health,
             CallbackHealthState::Unhealthy
         );
         assert_eq!(
@@ -207,7 +200,7 @@ mod tests {
                     AidlApi::FrontendSetCallback
                 )
                 .unwrap()
-                .health(),
+                .health,
             CallbackHealthState::Unhealthy
         );
         assert_eq!(
@@ -219,7 +212,7 @@ mod tests {
                     AidlApi::LnbSetCallback
                 )
                 .unwrap()
-                .health(),
+                .health,
             CallbackHealthState::Unhealthy
         );
         assert_eq!(
@@ -231,7 +224,7 @@ mod tests {
                     AidlApi::LnbSetCallback
                 )
                 .unwrap()
-                .health(),
+                .health,
             CallbackHealthState::Registered
         );
     }

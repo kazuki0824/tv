@@ -662,7 +662,7 @@ impl DemuxRuntime {
     }
 
     #[cfg(test)]
-    pub fn snapshot_filter_queue_bytes(&self, filter_id: i32) -> Option<Vec<u8>> {
+    pub(crate) fn snapshot_filter_queue_bytes(&self, filter_id: i32) -> Option<Vec<u8>> {
         let queue = self.filter_queue_mirror.get(&filter_id)?;
         let mut out = Vec::new();
         for payload in queue {
@@ -672,7 +672,7 @@ impl DemuxRuntime {
     }
 
     #[cfg(test)]
-    pub fn mark_filter_av_shared_handle_exported_for_test(
+    pub(crate) fn mark_filter_av_shared_handle_exported_for_test(
         &mut self,
         filter_id: i32,
     ) -> Result<(), DemuxRuntimeError> {
@@ -684,7 +684,7 @@ impl DemuxRuntime {
     }
 
     #[cfg(test)]
-    pub fn allocate_filter_av_payload_for_test(
+    pub(crate) fn allocate_filter_av_payload_for_test(
         &mut self,
         filter_id: i32,
         data_length: usize,
@@ -696,14 +696,14 @@ impl DemuxRuntime {
     }
 
     #[cfg(test)]
-    pub fn filter_av_active_slot_count_for_test(&self, filter_id: i32) -> Option<usize> {
+    pub(crate) fn filter_av_active_slot_count_for_test(&self, filter_id: i32) -> Option<usize> {
         self.filter_av_backings
             .get(&filter_id)
             .map(AvSharedBacking::active_slot_count)
     }
 
     #[cfg(test)]
-    pub fn remove_filter_av_backing_for_test(&mut self, filter_id: i32) -> bool {
+    pub(crate) fn remove_filter_av_backing_for_test(&mut self, filter_id: i32) -> bool {
         self.filter_av_backings.remove(&filter_id).is_some()
     }
 

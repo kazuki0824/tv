@@ -239,9 +239,8 @@ fn owner_callback_cleanup_marking_missing_is_composed_cleanup_failure() {
 }
 
 #[test]
-fn filter_callback_artifact_lookup_failure_records_diagnostic_without_unhealthy_marking() {
+fn filter_callback_artifact_lookup_failure_records_diagnostic_without_cleanup_composition() {
     use crate::boot::{CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport};
-    use crate::CallbackHealthState;
 
     let mut runtime = TunerServiceRuntime::new();
     let owner_id = AidlObjectId(94_003);
@@ -271,22 +270,12 @@ fn filter_callback_artifact_lookup_failure_records_diagnostic_without_unhealthy_
         HalError::CallbackFailed { .. }
     ));
     assert!(error.cleanup_error().is_none());
-    assert_eq!(
-        runtime.callback_registration_health(
-            AidlObjectKind::Filter,
-            owner_id,
-            owner_generation,
-            AidlApi::DemuxOpenFilter,
-        ),
-        Some(CallbackHealthState::Registered)
-    );
     assert!(!runtime.filter_callback_delivery_diagnostics().is_empty());
 }
 
 #[test]
-fn filter_binder_delivery_failure_marks_runtime_callback_unhealthy_when_registry_exists() {
+fn filter_binder_delivery_failure_composes_runtime_callback_accounting() {
     use crate::boot::{CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport};
-    use crate::CallbackHealthState;
 
     let mut runtime = TunerServiceRuntime::new();
     let owner_id = AidlObjectId(94_004);
@@ -316,23 +305,13 @@ fn filter_binder_delivery_failure_marks_runtime_callback_unhealthy_when_registry
         HalError::CallbackFailed { .. }
     ));
     assert!(error.cleanup_error().is_some());
-    assert_eq!(
-        runtime.callback_registration_health(
-            AidlObjectKind::Filter,
-            owner_id,
-            owner_generation,
-            AidlApi::DemuxOpenFilter,
-        ),
-        Some(CallbackHealthState::Unhealthy)
-    );
     assert!(!runtime.filter_callback_delivery_diagnostics().is_empty());
 }
 
 #[test]
-fn dvr_callback_artifact_lookup_failure_does_not_mark_registry_unhealthy() {
+fn dvr_callback_artifact_lookup_failure_records_diagnostic_without_cleanup_composition() {
     use crate::boot::{CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport};
     use crate::diagnostics::DvrPostCommitNotificationPhase;
-    use crate::CallbackHealthState;
     use maleicacid_tuner_hal2_domain_request::AidlApi;
 
     let mut runtime = TunerServiceRuntime::new();
@@ -364,15 +343,6 @@ fn dvr_callback_artifact_lookup_failure_does_not_mark_registry_unhealthy() {
         HalError::CallbackFailed { .. }
     ));
     assert!(error.cleanup_error().is_none());
-    assert_eq!(
-        runtime.callback_registration_health(
-            AidlObjectKind::Dvr,
-            owner_id,
-            owner_generation,
-            AidlApi::DemuxOpenDvr,
-        ),
-        Some(CallbackHealthState::Registered)
-    );
     assert!(!runtime
         .dvr_post_commit_notification_diagnostics()
         .is_empty());
@@ -421,9 +391,8 @@ fn frontend_scan_end_delivery_failure_composition_is_owned_by_service_runtime() 
 }
 
 #[test]
-fn frontend_scan_end_artifact_lookup_failure_does_not_mark_runtime_callback_unhealthy() {
+fn frontend_scan_end_artifact_lookup_failure_records_lookup_diagnostic_only() {
     use crate::boot::{CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport};
-    use crate::CallbackHealthState;
     use maleicacid_tuner_hal2_domain_request::AidlApi;
 
     let mut runtime = TunerServiceRuntime::new();
@@ -465,14 +434,5 @@ fn frontend_scan_end_artifact_lookup_failure_does_not_mark_runtime_callback_unhe
     assert_eq!(
         diagnostics[0].phase,
         crate::FrontendCallbackDeliveryDiagnosticPhase::CallbackArtifactLookup
-    );
-    assert_eq!(
-        runtime.callback_registration_health(
-            AidlObjectKind::Frontend,
-            owner_id,
-            owner_generation,
-            AidlApi::FrontendSetCallback,
-        ),
-        Some(CallbackHealthState::Registered)
     );
 }

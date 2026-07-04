@@ -174,17 +174,4 @@ mod tests {
             RuntimeTransactionName::FrontendTuneTxnApply
         );
     }
-
-    #[test]
-    fn all_aidl_method_call_variants_have_command_plan_entries() {
-        let methods = aidl_method::all_aidl_method_call_variants_for_plan_coverage(request());
-        assert_eq!(
-            methods.len(),
-            aidl_method::AIDL_METHOD_CALL_VARIANT_COUNT_FOR_PLAN_COVERAGE
-        );
-        for method in methods {
-            let plan = aidl_method::AidlMethodAdapter::plan(method).unwrap();
-            assert!(AIDL_TRANSACTION_TABLE.contains(&plan.command_plan));
-        }
-    }
 }

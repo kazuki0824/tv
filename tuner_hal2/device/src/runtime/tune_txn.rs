@@ -38,11 +38,11 @@ impl BackendTuneRollbackReport {
     }
 
     #[cfg(test)]
-    pub fn attempted_steps(&self) -> &[BackendTuneRollbackStep] {
+    pub(crate) fn attempted_steps(&self) -> &[BackendTuneRollbackStep] {
         &self.attempted_steps
     }
     #[cfg(test)]
-    pub fn failure(&self) -> Option<&BackendTuneRollbackFailure> {
+    pub(crate) fn failure(&self) -> Option<&BackendTuneRollbackFailure> {
         self.failure.as_ref()
     }
     pub fn succeeded(&self) -> bool {
@@ -60,7 +60,7 @@ pub struct BackendTuneCommit {
 
 impl BackendTuneCommit {
     #[cfg(test)]
-    pub fn completed_steps(&self) -> &[BackendTuneStep] {
+    pub(crate) fn completed_steps(&self) -> &[BackendTuneStep] {
         &self.completed_steps
     }
 }
@@ -99,7 +99,7 @@ pub trait BackendTuneOps {
 }
 
 #[cfg(test)]
-pub trait TuneWorkerStart {
+pub(crate) trait TuneWorkerStart {
     fn start_tune_worker(&mut self, frontend_id: i32, generation: u64) -> Result<(), HalError>;
 }
 
@@ -122,7 +122,7 @@ impl BackendTuneTxn {
     }
 
     #[cfg(test)]
-    pub fn generation(&self) -> u64 {
+    pub(crate) fn generation(&self) -> u64 {
         self.generation
     }
 
@@ -234,7 +234,7 @@ impl BackendTuneTxn {
     }
 
     #[cfg(test)]
-    pub fn apply_with_worker<B: BackendTuneOps, W: TuneWorkerStart>(
+    pub(crate) fn apply_with_worker<B: BackendTuneOps, W: TuneWorkerStart>(
         &mut self,
         backend: &mut B,
         worker: &mut W,

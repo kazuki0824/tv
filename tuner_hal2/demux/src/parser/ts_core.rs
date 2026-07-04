@@ -276,7 +276,7 @@ impl PesAssembler {
     }
 
     #[cfg(test)]
-    pub fn flush(&mut self) -> Option<PesPacket> {
+    fn flush(&mut self) -> Option<PesPacket> {
         self.reset_with_drop(PesDropReason::FlushDiscard);
         None
     }
@@ -314,7 +314,7 @@ impl PesAssembler {
     }
 
     #[cfg(test)]
-    pub fn overflow_drop_count(&self) -> u64 {
+    fn overflow_drop_count(&self) -> u64 {
         self.overflow_drop_count
     }
 

@@ -88,11 +88,11 @@ impl AvSharedBacking {
     }
 
     #[cfg(test)]
-    pub fn client_state(&self) -> ClientHandleState {
+    fn client_state(&self) -> ClientHandleState {
         self.state
     }
     #[cfg(test)]
-    pub fn active_slot_count(&self) -> usize {
+    pub(crate) fn active_slot_count(&self) -> usize {
         self.slots
             .iter()
             .filter(|slot| slot.active_data_id.is_some())
@@ -185,7 +185,7 @@ impl AvSharedBacking {
     }
 
     #[cfg(test)]
-    pub fn reactivate_client_handle(&mut self) {
+    fn reactivate_client_handle(&mut self) {
         if self.ever_exported {
             self.state = ClientHandleState::ExportedActive;
         }

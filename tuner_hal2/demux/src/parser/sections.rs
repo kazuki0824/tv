@@ -73,7 +73,7 @@ pub fn parse_section_header(section: &[u8], length_field_bits: i32) -> Option<Se
 }
 
 #[cfg(test)]
-pub fn section_crc_valid(section: &[u8], length_field_bits: i32) -> bool {
+fn section_crc_valid(section: &[u8], length_field_bits: i32) -> bool {
     let Some(header) = parse_section_header(section, length_field_bits) else {
         return false;
     };
@@ -84,7 +84,7 @@ pub fn section_crc_valid(section: &[u8], length_field_bits: i32) -> bool {
 }
 
 #[cfg(test)]
-pub fn crc32_mpeg(bytes: &[u8]) -> u32 {
+fn crc32_mpeg(bytes: &[u8]) -> u32 {
     let mut crc = 0xffff_ffffu32;
     for byte in bytes {
         crc ^= (*byte as u32) << 24;

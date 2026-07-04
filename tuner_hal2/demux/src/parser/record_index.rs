@@ -22,7 +22,7 @@ impl RecordIndexParser {
     }
 
     #[cfg(test)]
-    pub(crate) fn push_ts_packet(
+    fn push_ts_packet(
         &mut self,
         packet: &[u8],
         cumulative_bytes: u64,
