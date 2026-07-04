@@ -11,6 +11,28 @@ DESIGN_JA.md は責務境界、状態遷移、phase order、failure precedence�
 ## 2. レイヤ構造とファイル分割境界
 本節は巨大制御層を再発させないための tuner_hal2 固有の配置規則である。ファイル分割は Rust の通常 `mod` による module 分割を前提とする。
 
+### 2.0 Rust crate 間 domain API と product 公開 API の区別
+
+本書でいう「公開境界」は、Rust の `pub` / `pub(crate)` そのものではなく、状態遷移、phase order、resource lifetime、failure precedence を外部 caller が組み替えられるかどうかを意味する。Rust の crate 分割により `aidl_service`、`service_runtime`、`demux`、`device`、`fmq` などを別 crate として接続する場合、crate 間で必要な domain 型、DTO、typed request、token、one-shot handle、full transaction façade は `pub` であってよい。`pub` であることだけを DESIGN 違反として扱ってはならない。
+
+公開面は次の三層に分ける。
+
+| 層 | 例 | 許可条件 | 禁止事項 |
+|---|---|---|---|
+| AOSP / Binder facing public API | AIDL trait implementation、Binder status bridge | AOSP/AIDL 契約、lifecycle precedence、Binder status mapping を守る | runtime state mutation、rollback policy、domain cleanup policy を AIDL method body へ持つ |
+| crate 間 domain API | `service_runtime` から `demux` / `device` を呼ぶ domain operation、typed request、snapshot DTO、one-shot descriptor export handle | 呼び出し元と責務を文書化し、typed request / token / capability / owner relation / one-shot handle のいずれかで phase order を固定する | forgeable plan、prepared token、raw registry/session mutator、arbitrary closure executor、同名薄 wrapper による正本不明化 |
+| crate 内 helper / test helper | parser primitive、failure injection helper、loom helper | crate 内または test cfg に閉じる。production 経路の正本にしない | production caller が validation / lifecycle / cleanup を迂回できる形で公開する |
+
+`service_runtime` は AIDL object lifecycle、object table、registry、root/object method transaction、failure composition の正本である。`demux` は demux domain runtime、filter/DVR queue、TS packet validation、packet pipeline、record index、AV/shared memory domain の正本である。`service_runtime` が `demux` crate の domain operation を呼ぶために `DemuxRuntime`、domain request、snapshot、queue descriptor export 用の型を `pub` にすることは許容する。ただし、公開された domain operation は次の条件を満たす。
+
+- lifecycle / object generation / owner relation / capability を `service_runtime` 側で検証済みであること、または demux 側 operation が typed request / token によって検証済みであることを型で表す。
+- raw runtime id、registry entry、session map、queue mutable state を任意 caller が直接書き換えられる API にしない。
+- query / descriptor export は DTO または one-shot handle を返す。handle は export 対象、owner、generation、消費済み状態を保持し、同じ descriptor を任意回数 export できる汎用 mutable accessor にしない。
+- low-level primitive を公開する場合は、その primitive が state mutation を行わない、または caller が typed request / token / capability を提示しない限り mutation できない形にする。
+- wrapper を置く場合は、責務名、phase order、failure composition、status precedence のいずれかを固定する場合に限る。名前だけ違う単純委譲 wrapper は置かない。
+
+したがって、`configure_filter_runtime()`、`open_filter_runtime()`、queue descriptor export、packet ingress のような関数は、`pub` か否かではなく、上記の typed boundary を満たしているかで判定する。設計上の違反は「Rust visibility が広いこと」ではなく、「phase-less direct mutation が可能であること」「正本 use-case を迂回できること」「query / export / mutation の責務が同じ public surface に混在すること」である。
+
 ### 2.1 AIDL 層
 
 
@@ -520,6 +542,8 @@ Packet path diagnostic は validated TS packet から得た `PacketPid` を必�
 
 ### 12.3 共通部品境界閉鎖契約
 
+この節の「閉鎖」は Rust visibility の一律縮小を意味しない。crate 間 domain API として必要な `pub` は 2.0 節の条件を満たす限り許容する。閉鎖対象は、外部 caller が transaction phase、runtime state mutation、callback cleanup / rollback、packet policy、descriptor export、key/session material resolution を任意順序で組み替えられる surface である。
+
 - callback cleanup は service_runtime の typed artifact cleanup command / callback registry use-case を正本 entry とし、domain callback state clear、runtime callback registry clear、callback artifact store clear を all-attempt で処理する。
   AIDL object-runtime helper は callback artifact bridge を実行し、その結果を service_runtime の command finish use-case へ返すだけにする。artifact store clear / runtime registry clear / unhealthy marking / primary+cleanup failure composition を AIDL 側 policy として分岐しない。
 - descrambler key clear / replace / cleanup は service_runtime の key table 操作込み full transaction use-case のみを entry とし、descrambler crate は raw runtime/session mutator、old token、old key slot、runtime transaction façade を crate 外へ公開しない。close / owner-loss cleanup では service_runtime が token release と session cleanup を all-attempt で所有する。
@@ -528,8 +552,9 @@ Packet path diagnostic は validated TS packet から得た `PacketPid` を必�
 - service_runtime の descrambler runtime state が packet path 向け claim set を返す場合、raw key-slot-id snapshot を返してはならない。runtime state は key table owner と同じ service_runtime 内で resolved claim set を生成し、packet consumer は resolved key material の有無だけを観測する。
 - object close cascade の policy 判断は service_runtime の `close_object_use_case()` / typed command executor 正本へ寄せる。service_runtime は close preflight、begin close、cascade entries、Binder artifact cleanup command、domain cleanup command、public runtime unregister、commit close、cleanup-failed marking、failure composition を所有する。AIDL façade は executor adapter、Binder artifact bridge、error bridge に限定する。
   Binder artifact cleanup と domain cleanup の phase ordering は service_runtime plan executor が所有し、AIDL façade は domain cleanup closure を注入せず、計画内 phase を読み分岐してはならない。
+- queue descriptor export は service_runtime query use-case から demux domain API へ依頼してよい。低レベル export handle を公開する場合は、対象 queue、owner object、generation、消費状態を保持する one-shot handle とし、queue lifecycle mutation、fd duplication、descriptor 再 export を任意 caller が直接実行できる汎用 accessor にしない。AIDL façade は DTO response への変換だけを行い、queue runtime state や export policy を所有しない。
 - `SourceBoundaryTxn` の constructor / step recording / outcome 操作は module private とし、外部観測は immutable `SourceBoundaryReport` のみにする。
-- packet-bearing production path は `ValidatedTsPacket` を正本にし、packet path diagnostic と packet planning helper は `PacketPid` を required context とする。validation failure は NULL PID へ丸めず、validated packet 由来でない raw PID を delivery / section / PES planning 境界へ渡さない。
+- packet-bearing production path は、demux ingress boundary で raw TS bytes を受けてよい。ただし raw ingress は frontend / DVR / source-filter adapter から demux へ入る最初の境界、resync / malformed packet diagnostic、または preflight-only helper に限定する。ingress 直後に `ValidatedTsPacket` / `PacketPid` へ変換し、以後の delivery / section / PES / record index / AV / descrambler planning は `ValidatedTsPacket` と `PacketPid` を正本にする。validation failure は NULL PID へ丸めず、raw packet boundary が malformed / TEI / length / sync / PID validation diagnostic を所有する。
 - record index event construction も packet-bearing production path として扱い、record event 用の TS parser は `ValidatedTsPacket` ingress を通る。`TsPacketView` の直接 validate / parse は `ValidatedTsPacket` 内部、同一 crate 内 parser primitive、または test に限定し、crate 外の production caller へ公開しない。
   record index 内部 event model は `PacketPid` を保持し、AIDL DTO 変換が必要な境界でだけ数値 PID へ射影する。
   record index parser は raw byte wrapper を持つ場合でも、共通部品間の正本接続では `push_validated_ts_packet()` / `build_validated_event()` のように `ValidatedTsPacket` を直接受け取る入口を使える形にし、record event 構築側で raw `TsPacketView` を再正本化しない。
@@ -538,7 +563,7 @@ Packet path diagnostic は validated TS packet から得た `PacketPid` を必�
 - object close cascade は callback 登録を持ち得る object にだけ callback cleanup command を生成する。callback 未登録は close cleanup / unregister cleanup の成功扱いとし、callback store failure だけを cleanup failure として扱う。
 - LNB owner-loss callback cleanup は service_runtime の close cascade plan が生成する callback artifact cleanup command に統合し、AIDL 側に個別の runtime registry clear / artifact store clear / unhealthy marking 手順を持たない。
 - close cascade の低レベル begin / commit / mark / entries helper は service_runtime 内部 helper とし、public API 主経路は close_object_use_case / finish_object_close_use_case に限定する。
-- TsPacketView は forgeable public field 型にしない。packet-bearing ingress は ValidatedTsPacket を正本とし、raw byte 入口は validation 境界または preflight-only に限定する。
+- `TsPacketView` は forgeable public field 型にしない。raw byte 入口は demux ingress validation 境界、resync / malformed diagnostic 境界、または preflight-only helper に限定する。validation 成功後の production path は `ValidatedTsPacket` を正本とし、raw `TsPacketView` / raw PID を再正本化しない。
 - public query surface は DTO response を正本とし、frontend runtime/signal 中間 state helper を crate public API として公開しない。
 
 
