@@ -201,6 +201,21 @@ impl FilterRuntime {
     pub fn av_backing_present(&self) -> bool {
         self.av_backing_present
     }
+    #[cfg(test)]
+    pub fn delivery_readiness(&self) -> crate::config::FilterDelayReadiness {
+        self.delay_hints.delivery_readiness(
+            self.delivery_not_before
+                .map(|deadline| {
+                    if deadline <= Instant::now() {
+                        u64::MAX
+                    } else {
+                        0
+                    }
+                })
+                .unwrap_or(u64::MAX),
+            self.queued_bytes,
+        )
+    }
     pub fn snapshot(&self) -> FilterRuntimeSnapshot {
         FilterRuntimeSnapshot {
             state: self.state,
