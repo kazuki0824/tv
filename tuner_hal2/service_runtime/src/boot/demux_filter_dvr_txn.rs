@@ -7,15 +7,101 @@ use super::{
     OpenFilterRequest, PipelineResetReport, RegistryCommitError, TunerServiceRuntime,
 };
 use crate::diagnostics::{
-    ChildOpenRollbackDiagnosticRecord, ChildOpenRollbackKind, ChildOpenRollbackPhase,
+    ChildOpenRollbackDiagnosticRecord, ChildOpenRollbackKind, ChildOpenRollbackOutcome, ChildOpenRollbackPhase,
+    DemuxTransactionDiagnosticId, DemuxTransactionDiagnosticRecord,
 };
 use crate::error_mapping::{object_table_error_to_hal, registry_commit_error_to_hal};
 use crate::object_method_txn::ObjectMethodExecutionToken;
 use crate::open_rollback::finish_open_rollback;
 use maleicacid_tuner_hal2_common::compose_primary_cleanup_failure;
-use maleicacid_tuner_hal2_demux::FilterRuntimeState;
+use maleicacid_tuner_hal2_demux::{FilterRuntimeState, SourceBoundaryReport};
 
 const MAX_FILTER_DELAY_MS: i64 = 10_000;
+
+fn format_filter_configure_report(
+    diagnostic_id: DemuxTransactionDiagnosticId,
+    report: &maleicacid_tuner_hal2_demux::FilterConfigureReport,
+) -> String {
+    format!(
+        "demux runtime filter configure failed; diagnostic_id={}; outcome={:?}; steps={:?}; source_boundary_report={:?}",
+        diagnostic_id.value(),
+        report.outcome(),
+        report.steps(),
+        report.source_boundary_report()
+    )
+}
+
+fn format_dvr_configure_report(
+    diagnostic_id: DemuxTransactionDiagnosticId,
+    report: &maleicacid_tuner_hal2_demux::DvrConfigureReport,
+) -> String {
+    format!(
+        "demux runtime DVR configure failed; diagnostic_id={}; outcome={:?}; steps={:?}",
+        diagnostic_id.value(),
+        report.outcome(),
+        report.steps()
+    )
+}
+
+fn format_filter_runtime_operation_report(
+    diagnostic_id: DemuxTransactionDiagnosticId,
+    report: &maleicacid_tuner_hal2_demux::FilterRuntimeOperationReport,
+) -> String {
+    format!(
+        "demux runtime filter operation failed; diagnostic_id={}; operation={:?}; filter_id={}; outcome={:?}; steps={:?}",
+        diagnostic_id.value(),
+        report.operation(),
+        report.filter_id(),
+        report.outcome(),
+        report.steps()
+    )
+}
+
+fn format_source_boundary_report(
+    diagnostic_id: DemuxTransactionDiagnosticId,
+    report: &SourceBoundaryReport,
+) -> String {
+    format!(
+        "source boundary failed; diagnostic_id={}; sink_filter_id={}; source_filter_id={:?}; outcome={:?}; steps={:?}; reset_report={:?}",
+        diagnostic_id.value(),
+        report.sink_filter_id(),
+        report.source_filter_id(),
+        report.outcome(),
+        report.steps(),
+        report.reset_report()
+    )
+}
+
+fn attach_diagnostic_detail_to_public_error(primary: HalError, detail: String) -> HalError {
+    match primary {
+        HalError::InvalidArgument { kind, detail: existing } => HalError::invalid_argument(
+            kind,
+            format!("{}; {detail}", existing.detail),
+        ),
+        HalError::InvalidState { kind, detail: existing } => HalError::invalid_state(
+            kind,
+            format!("{}; {detail}", existing.detail),
+        ),
+        HalError::Internal { kind, detail: existing } => HalError::internal(
+            kind,
+            format!("{}; {detail}", existing.detail),
+        ),
+        HalError::CleanupFailed { resource, detail: existing } => HalError::cleanup_failed(
+            resource,
+            format!("{}; {detail}", existing.detail),
+        ),
+        HalError::Unsupported(feature) => HalError::unsupported_detail(feature, detail),
+        HalError::UnsupportedDetail { feature, detail: existing } => HalError::unsupported_detail(
+            feature,
+            format!("{}; {detail}", existing.detail),
+        ),
+        other => compose_primary_cleanup_failure(
+            "demux transaction diagnostic detail attached through secondary error",
+            other,
+            HalError::internal(HalInternalKind::InvariantViolation, detail),
+        ),
+    }
+}
 
 impl TunerServiceRuntime {
     fn supported_record_status_mask() -> i32 {
@@ -117,8 +203,8 @@ impl TunerServiceRuntime {
                 format!("owner demux runtime is missing while unregistering filter: filter_id={id} owner_demux_id={}", entry_ref.owner_demux_id),
             ));
         };
-        if demux_runtime.remove_filter(id).is_err() {
-            demux_runtime.quarantine();
+        if demux_runtime.remove_filter_from_typed_request(maleicacid_tuner_hal2_demux::FilterRuntimeOperationRequest::new(id)).is_err() {
+            demux_runtime.quarantine_runtime_from_typed_request(maleicacid_tuner_hal2_demux::DemuxRuntimeQuarantineRequest::new());
             return Err(HalError::cleanup_failed(
                 "filter runtime unregister owner cleanup",
                 format!("demux runtime rejected filter removal during unregister: filter_id={id} owner_demux_id={}", entry_ref.owner_demux_id),
@@ -143,7 +229,9 @@ impl TunerServiceRuntime {
             ));
         };
         demux_runtime
-            .register_filter_from_open_request(filter_id, request)
+            .register_filter_from_typed_request(
+                maleicacid_tuner_hal2_demux::FilterRuntimeRegistrationRequest::new(filter_id, request),
+            )
             .map_err(|_| {
                 HalError::invalid_state(
                     HalInvalidStateKind::InvalidLifecycle,
@@ -222,12 +310,23 @@ impl TunerServiceRuntime {
                 "owner demux runtime is missing",
             ));
         };
-        let (report, result) =
-            demux_runtime.configure_filter_runtime_with_report(filter_id, config);
+        let (report, result) = demux_runtime.configure_filter_runtime_with_typed_request(
+            maleicacid_tuner_hal2_demux::FilterRuntimeConfigureRequest::new(filter_id, config),
+        );
         match result {
             Ok(_) => Ok(()),
             Err(error) => {
                 let primary = Self::map_filter_runtime_error(error);
+                let diagnostic_id = self.allocate_demux_transaction_diagnostic_id();
+                self.record_demux_transaction_diagnostic(
+                    DemuxTransactionDiagnosticRecord::filter_configure(
+                        diagnostic_id,
+                        owner_demux_id,
+                        filter_id,
+                        report.clone(),
+                        primary.clone(),
+                    ),
+                );
                 if matches!(
                     report.outcome(),
                     Some(maleicacid_tuner_hal2_demux::FilterConfigureOutcome::Quarantined { .. })
@@ -237,11 +336,14 @@ impl TunerServiceRuntime {
                         primary,
                         HalError::cleanup_failed(
                             "filter configure rollback",
-                            "demux runtime filter snapshot restore failed",
+                            format_filter_configure_report(diagnostic_id, &report),
                         ),
                     ))
                 } else {
-                    Err(primary)
+                    Err(attach_diagnostic_detail_to_public_error(
+                        primary,
+                        format_filter_configure_report(diagnostic_id, &report),
+                    ))
                 }
             }
         }
@@ -259,7 +361,7 @@ impl TunerServiceRuntime {
             ));
         };
         demux_runtime
-            .start_filter_runtime(filter_id)
+            .start_filter_runtime_from_typed_request(maleicacid_tuner_hal2_demux::FilterRuntimeOperationRequest::new(filter_id))
             .map_err(Self::map_filter_runtime_error)
     }
 
@@ -274,9 +376,29 @@ impl TunerServiceRuntime {
                 "owner demux runtime is missing",
             ));
         };
-        demux_runtime
-            .stop_filter_runtime(filter_id)
-            .map_err(Self::map_filter_runtime_error)
+        let (report, result) = demux_runtime.stop_filter_runtime_with_typed_request(
+            maleicacid_tuner_hal2_demux::FilterRuntimeOperationRequest::new(filter_id),
+        );
+        match result {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let primary = Self::map_filter_runtime_error(error);
+                let diagnostic_id = self.allocate_demux_transaction_diagnostic_id();
+                self.record_demux_transaction_diagnostic(
+                    DemuxTransactionDiagnosticRecord::filter_runtime_operation(
+                        diagnostic_id,
+                        owner_demux_id,
+                        filter_id,
+                        report.clone(),
+                        primary.clone(),
+                    ),
+                );
+                Err(attach_diagnostic_detail_to_public_error(
+                    primary,
+                    format_filter_runtime_operation_report(diagnostic_id, &report),
+                ))
+            }
+        }
     }
 
     pub(crate) fn transact_flush_filter_runtime(&mut self, filter_id: i32) -> Result<(), HalError> {
@@ -290,9 +412,29 @@ impl TunerServiceRuntime {
                 "owner demux runtime is missing",
             ));
         };
-        demux_runtime
-            .flush_filter_runtime(filter_id)
-            .map_err(Self::map_filter_runtime_error)
+        let (report, result) = demux_runtime.flush_filter_runtime_with_typed_request(
+            maleicacid_tuner_hal2_demux::FilterRuntimeOperationRequest::new(filter_id),
+        );
+        match result {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let primary = Self::map_filter_runtime_error(error);
+                let diagnostic_id = self.allocate_demux_transaction_diagnostic_id();
+                self.record_demux_transaction_diagnostic(
+                    DemuxTransactionDiagnosticRecord::filter_runtime_operation(
+                        diagnostic_id,
+                        owner_demux_id,
+                        filter_id,
+                        report.clone(),
+                        primary.clone(),
+                    ),
+                );
+                Err(attach_diagnostic_detail_to_public_error(
+                    primary,
+                    format_filter_runtime_operation_report(diagnostic_id, &report),
+                ))
+            }
+        }
     }
 
     pub(crate) fn transact_export_filter_av_shared_handle(
@@ -310,7 +452,7 @@ impl TunerServiceRuntime {
                 )
             })?;
         demux
-            .export_filter_av_shared_handle(filter_id)
+            .export_filter_av_shared_handle_from_typed_request(maleicacid_tuner_hal2_demux::FilterRuntimeOperationRequest::new(filter_id))
             .map_err(Self::map_filter_runtime_error)
     }
 
@@ -332,7 +474,7 @@ impl TunerServiceRuntime {
             })?;
         use maleicacid_tuner_hal2_demux::AvHandleReleaseOutcome;
         match demux
-            .release_filter_av_handle(filter_id, has_fd, av_data_id)
+            .release_filter_av_handle_from_typed_request(maleicacid_tuner_hal2_demux::FilterAvHandleReleaseRequest::new(filter_id, has_fd, av_data_id))
             .map_err(Self::map_filter_runtime_error)?
         {
             AvHandleReleaseOutcome::ClientHandleReleased
@@ -374,7 +516,7 @@ impl TunerServiceRuntime {
                 )
             })?;
         demux
-            .mark_filter_callback_unhealthy(filter_id)
+            .mark_filter_callback_unhealthy_from_typed_request(maleicacid_tuner_hal2_demux::FilterRuntimeOperationRequest::new(filter_id))
             .map_err(Self::map_filter_runtime_error)
     }
 
@@ -442,12 +584,14 @@ impl TunerServiceRuntime {
             ));
         }
         demux_runtime
-            .configure_filter_av_stream_type(
-                filter_id,
-                AvStreamTypeConfig {
-                    kind: requested_kind,
-                    stream_type: request.stream_type,
-                },
+            .configure_filter_av_stream_type_from_typed_request(
+                maleicacid_tuner_hal2_demux::FilterAvStreamTypeRuntimeRequest::new(
+                    filter_id,
+                    AvStreamTypeConfig {
+                        kind: requested_kind,
+                        stream_type: request.stream_type,
+                    },
+                ),
             )
             .map_err(Self::map_filter_runtime_error)
     }
@@ -509,7 +653,7 @@ impl TunerServiceRuntime {
             ),
         };
         demux_runtime
-            .set_filter_delay_hint(filter_id, hint)
+            .set_filter_delay_hint_from_typed_request(maleicacid_tuner_hal2_demux::FilterDelayHintRuntimeRequest::new(filter_id, hint))
             .map_err(Self::map_filter_runtime_error)
     }
 
@@ -549,29 +693,47 @@ impl TunerServiceRuntime {
                 "owner demux runtime is missing",
             ));
         };
-        demux_runtime
-            .set_filter_source_non_null(sink_filter_id, source_filter_id)
-            .map_err(|err| match err.kind {
-                maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::FilterMissing => {
-                    HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, "source or sink filter runtime is missing")
-                }
-                maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::SourceLifecycle
-                | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::SinkLifecycle
-                | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::InvalidState => {
-                    HalError::invalid_state(HalInvalidStateKind::InvalidLifecycle, "source or sink filter lifecycle is invalid")
-                }
-                maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::InvalidSourceSubtype
-                | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::InvalidSinkSubtype => {
-                    HalError::Unsupported("source or sink filter subtype is unsupported")
-                }
-                maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::PidMismatch => {
-                    HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, "source and sink filter PID mismatch")
-                }
-                maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::SourceBoundaryRollbackFailed => {
-                    HalError::cleanup_failed("filter source boundary rollback", "demux runtime was quarantined after source boundary rollback failure")
-                }
-                _ => HalError::internal(maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation, "filter source boundary failed"),
-            })
+        let (report, result) = demux_runtime
+            .set_filter_source_non_null_from_typed_request(maleicacid_tuner_hal2_demux::FilterSourceConnectRequest::new(sink_filter_id, source_filter_id));
+        match result {
+            Ok(reset_report) => Ok(reset_report),
+            Err(err) => {
+                let diagnostic_id = self.allocate_demux_transaction_diagnostic_id();
+                let hal_error = match err.kind {
+                    maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::FilterMissing => {
+                        HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, format!("source or sink filter runtime is missing; {}", format_source_boundary_report(diagnostic_id, &report)))
+                    }
+                    maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::SourceLifecycle
+                    | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::SinkLifecycle
+                    | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::InvalidState => {
+                        HalError::invalid_state(HalInvalidStateKind::InvalidLifecycle, format!("source or sink filter lifecycle is invalid; {}", format_source_boundary_report(diagnostic_id, &report)))
+                    }
+                    maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::InvalidSourceSubtype
+                    | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::InvalidSinkSubtype => {
+                        HalError::unsupported_detail(
+                            "source or sink filter subtype is unsupported",
+                            format_source_boundary_report(diagnostic_id, &report),
+                        )
+                    }
+                    maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::PidMismatch => {
+                        HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, format!("source and sink filter PID mismatch; {}", format_source_boundary_report(diagnostic_id, &report)))
+                    }
+                    maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::SourceBoundaryRollbackFailed => {
+                        HalError::cleanup_failed("filter source boundary rollback", format_source_boundary_report(diagnostic_id, &report))
+                    }
+                    _ => HalError::internal(maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation, format_source_boundary_report(diagnostic_id, &report)),
+                };
+                self.record_demux_transaction_diagnostic(
+                    DemuxTransactionDiagnosticRecord::source_boundary(
+                        diagnostic_id,
+                        demux_id,
+                        report,
+                        hal_error.clone(),
+                    ),
+                );
+                Err(hal_error)
+            }
+        }
     }
 
     pub(crate) fn transact_disconnect_filter_data_source(
@@ -600,23 +762,38 @@ impl TunerServiceRuntime {
                 "owner demux runtime is missing",
             ));
         };
-        demux_runtime
-            .disconnect_filter_source(sink_filter_id)
-            .map_err(|err| match err.kind {
-                maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::FilterMissing => {
-                    HalError::invalid_argument(
-                        HalInvalidArgumentKind::NumericRange,
-                        "sink filter runtime is missing",
-                    )
-                }
-                maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::SourceBoundaryRollbackFailed => {
-                    HalError::cleanup_failed("filter source boundary rollback", "demux runtime was quarantined after source boundary rollback failure")
-                }
-                _ => HalError::internal(
-                    maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                    "filter source disconnect failed",
-                ),
-            })
+        let (report, result) = demux_runtime
+            .disconnect_filter_source_from_typed_request(maleicacid_tuner_hal2_demux::FilterSourceDisconnectRequest::new(sink_filter_id));
+        match result {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                let diagnostic_id = self.allocate_demux_transaction_diagnostic_id();
+                let hal_error = match err.kind {
+                    maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::FilterMissing => {
+                        HalError::invalid_argument(
+                            HalInvalidArgumentKind::NumericRange,
+                            format!("sink filter runtime is missing; {}", format_source_boundary_report(diagnostic_id, &report)),
+                        )
+                    }
+                    maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::SourceBoundaryRollbackFailed => {
+                        HalError::cleanup_failed("filter source boundary rollback", format_source_boundary_report(diagnostic_id, &report))
+                    }
+                    _ => HalError::internal(
+                        maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                        format_source_boundary_report(diagnostic_id, &report),
+                    ),
+                };
+                self.record_demux_transaction_diagnostic(
+                    DemuxTransactionDiagnosticRecord::source_boundary(
+                        diagnostic_id,
+                        demux_id,
+                        report,
+                        hal_error.clone(),
+                    ),
+                );
+                Err(hal_error)
+            }
+        }
     }
 
     pub(crate) fn transact_allocate_dvr_runtime(
@@ -643,8 +820,8 @@ impl TunerServiceRuntime {
                 format!("owner demux runtime is missing while unregistering DVR: dvr_id={id} owner_demux_id={}", entry_ref.owner_demux_id),
             ));
         };
-        if demux_runtime.remove_dvr(id).is_err() {
-            demux_runtime.quarantine();
+        if demux_runtime.remove_dvr_from_typed_request(maleicacid_tuner_hal2_demux::DvrRuntimeOperationRequest::new(id)).is_err() {
+            demux_runtime.quarantine_runtime_from_typed_request(maleicacid_tuner_hal2_demux::DemuxRuntimeQuarantineRequest::new());
             return Err(HalError::cleanup_failed(
                 "DVR runtime unregister owner cleanup",
                 format!("demux runtime rejected DVR removal during unregister: dvr_id={id} owner_demux_id={}", entry_ref.owner_demux_id),
@@ -674,7 +851,14 @@ impl TunerServiceRuntime {
             DvrOpenKind::Playback => DvrKind::Playback,
         };
         demux_runtime
-            .register_dvr_from_open_request(dvr_id, kind, request.buffer_size, callback_present)
+            .register_dvr_from_typed_request(
+                maleicacid_tuner_hal2_demux::DvrRuntimeRegistrationRequest::new(
+                    dvr_id,
+                    kind,
+                    request.buffer_size,
+                    callback_present,
+                ),
+            )
             .map_err(|_| {
                 HalError::invalid_state(
                     HalInvalidStateKind::InvalidLifecycle,
@@ -813,21 +997,72 @@ impl TunerServiceRuntime {
         }
         let (low_threshold, high_threshold) =
             Self::validate_dvr_configure_request(dvr.buffer_size, request)?;
-        let (report, result) = demux_runtime.configure_dvr_runtime_with_report(dvr_id);
+        let (report, result) = demux_runtime.configure_dvr_runtime_with_typed_request(
+            maleicacid_tuner_hal2_demux::DvrRuntimeConfigureRequest::new(dvr_id),
+        );
         match result {
             Ok(_) => {
-                demux_runtime
-                    .configure_dvr_status_reporting(
-                        dvr_id,
-                        request.status_mask,
-                        low_threshold,
-                        high_threshold,
+                if let Err(error) = demux_runtime
+                    .configure_dvr_status_reporting_from_typed_request(
+                        maleicacid_tuner_hal2_demux::DvrStatusReportingRequest::new(
+                            dvr_id,
+                            request.status_mask,
+                            low_threshold,
+                            high_threshold,
+                        ),
                     )
-                    .map_err(Self::map_dvr_runtime_error)?;
+                {
+                    let primary = Self::map_dvr_runtime_error(error);
+                    let diagnostic_id = self.allocate_demux_transaction_diagnostic_id();
+                    let primary = attach_diagnostic_detail_to_public_error(
+                        primary,
+                        format_dvr_configure_report(diagnostic_id, &report),
+                    );
+                    if let Err(rollback_error) =
+                        demux_runtime.restore_dvr_snapshot(dvr_id, dvr.clone())
+                    {
+                        demux_runtime.quarantine();
+                        let composed = compose_primary_cleanup_failure(
+                            "DVR configure status reporting rollback failed",
+                            primary,
+                            Self::map_dvr_runtime_error(rollback_error),
+                        );
+                        self.record_demux_transaction_diagnostic(
+                            DemuxTransactionDiagnosticRecord::dvr_configure(
+                                diagnostic_id,
+                                owner_demux_id,
+                                dvr_id,
+                                report.clone(),
+                                composed.clone(),
+                            ),
+                        );
+                        return Err(composed);
+                    }
+                    self.record_demux_transaction_diagnostic(
+                        DemuxTransactionDiagnosticRecord::dvr_configure(
+                            diagnostic_id,
+                            owner_demux_id,
+                            dvr_id,
+                            report.clone(),
+                            primary.clone(),
+                        ),
+                    );
+                    return Err(primary);
+                }
                 Ok(())
             }
             Err(error) => {
                 let primary = Self::map_dvr_runtime_error(error);
+                let diagnostic_id = self.allocate_demux_transaction_diagnostic_id();
+                self.record_demux_transaction_diagnostic(
+                    DemuxTransactionDiagnosticRecord::dvr_configure(
+                        diagnostic_id,
+                        owner_demux_id,
+                        dvr_id,
+                        report.clone(),
+                        primary.clone(),
+                    ),
+                );
                 if matches!(
                     report.outcome(),
                     Some(maleicacid_tuner_hal2_demux::DvrConfigureOutcome::Quarantined { .. })
@@ -837,11 +1072,14 @@ impl TunerServiceRuntime {
                         primary,
                         HalError::cleanup_failed(
                             "DVR configure rollback",
-                            "demux runtime DVR snapshot restore failed",
+                            format_dvr_configure_report(diagnostic_id, &report),
                         ),
                     ))
                 } else {
-                    Err(primary)
+                    Err(attach_diagnostic_detail_to_public_error(
+                        primary,
+                        format_dvr_configure_report(diagnostic_id, &report),
+                    ))
                 }
             }
         }
@@ -859,7 +1097,7 @@ impl TunerServiceRuntime {
             ));
         };
         demux_runtime
-            .start_dvr_runtime(dvr_id)
+            .start_dvr_runtime_from_typed_request(maleicacid_tuner_hal2_demux::DvrRuntimeOperationRequest::new(dvr_id))
             .map_err(Self::map_dvr_runtime_error)
     }
 
@@ -879,7 +1117,7 @@ impl TunerServiceRuntime {
             ));
         };
         demux_runtime
-            .attach_dvr_filter(dvr_id, filter_id)
+            .attach_dvr_filter_from_typed_request(maleicacid_tuner_hal2_demux::DvrFilterLinkRequest::new(dvr_id, filter_id))
             .map_err(Self::map_dvr_runtime_error)
     }
 
@@ -899,7 +1137,7 @@ impl TunerServiceRuntime {
             ));
         };
         demux_runtime
-            .detach_dvr_filter(dvr_id, filter_id)
+            .detach_dvr_filter_from_typed_request(maleicacid_tuner_hal2_demux::DvrFilterLinkRequest::new(dvr_id, filter_id))
             .map_err(Self::map_dvr_runtime_error)
     }
 
@@ -915,7 +1153,7 @@ impl TunerServiceRuntime {
             ));
         };
         demux_runtime
-            .stop_dvr_runtime(dvr_id)
+            .stop_dvr_runtime_from_typed_request(maleicacid_tuner_hal2_demux::DvrRuntimeOperationRequest::new(dvr_id))
             .map_err(Self::map_dvr_runtime_error)
     }
 
@@ -931,7 +1169,7 @@ impl TunerServiceRuntime {
             ));
         };
         demux_runtime
-            .flush_dvr_runtime(dvr_id)
+            .flush_dvr_runtime_from_typed_request(maleicacid_tuner_hal2_demux::DvrRuntimeOperationRequest::new(dvr_id))
             .map_err(Self::map_dvr_runtime_error)
     }
 
@@ -951,7 +1189,7 @@ impl TunerServiceRuntime {
             ));
         };
         demux_runtime
-            .set_dvr_status_check_interval(dvr_id, interval_ms)
+            .set_dvr_status_check_interval_from_typed_request(maleicacid_tuner_hal2_demux::DvrStatusIntervalRuntimeRequest::new(dvr_id, interval_ms))
             .map_err(Self::map_dvr_runtime_error)
     }
 
@@ -970,7 +1208,7 @@ impl TunerServiceRuntime {
             ));
         };
         demux_runtime
-            .mark_dvr_callback_unhealthy(dvr_id)
+            .mark_dvr_callback_unhealthy_from_typed_request(maleicacid_tuner_hal2_demux::DvrRuntimeOperationRequest::new(dvr_id))
             .map_err(Self::map_dvr_runtime_error)
     }
 }
@@ -1248,39 +1486,38 @@ fn child_open_rollback_diagnostic_record(
     object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
     generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
     runtime_id: i32,
-    object_error: Option<HalError>,
-    runtime_error: Option<HalError>,
+    object_rollback_error: Option<HalError>,
+    runtime_cleanup_failure: Option<HalError>,
 ) -> Option<ChildOpenRollbackDiagnosticRecord> {
-    match (object_error, runtime_error) {
+    match (object_rollback_error, runtime_cleanup_failure) {
         (Some(object_error), Some(runtime_error)) => Some(ChildOpenRollbackDiagnosticRecord::new(
             phase,
-            ChildOpenRollbackKind::BothFailed,
             object_kind,
             object_id,
             generation,
             runtime_id,
-            Some(object_error),
-            Some(runtime_error),
+            ChildOpenRollbackOutcome::BothFailed {
+                object_error,
+                runtime_cleanup_error: runtime_error,
+            },
         )),
         (Some(error), None) => Some(ChildOpenRollbackDiagnosticRecord::new(
             phase,
-            ChildOpenRollbackKind::ObjectRegistrationRollbackFailed,
             object_kind,
             object_id,
             generation,
             runtime_id,
-            Some(error),
-            None,
+            ChildOpenRollbackOutcome::ObjectRegistrationRollbackFailed { object_error: error },
         )),
         (None, Some(error)) => Some(ChildOpenRollbackDiagnosticRecord::new(
             phase,
-            ChildOpenRollbackKind::RuntimeCleanupMissing,
             object_kind,
             object_id,
             generation,
             runtime_id,
-            None,
-            Some(error),
+            ChildOpenRollbackOutcome::RuntimeCleanupMissing {
+                runtime_cleanup_error: error,
+            },
         )),
         (None, None) => None,
     }
@@ -1312,9 +1549,14 @@ mod child_open_rollback_diagnostic_tests {
         )
         .expect("diagnostic is recorded");
 
-        assert_eq!(record.kind, ChildOpenRollbackKind::BothFailed);
-        assert_eq!(record.object_error, Some(object_error));
-        assert_eq!(record.runtime_cleanup_error, Some(runtime_error));
+        assert_eq!(record.kind(), ChildOpenRollbackKind::BothFailed);
+        assert_eq!(
+            record.outcome,
+            ChildOpenRollbackOutcome::BothFailed {
+                object_error,
+                runtime_cleanup_error: runtime_error,
+            }
+        );
     }
 
     #[test]

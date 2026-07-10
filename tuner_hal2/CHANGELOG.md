@@ -1,3 +1,423 @@
+# r50eo80_customer26_followup_design_boundary_impl_recheck_source_static_unverified_v41
+
+- Closed frontend runtime read-only intermediate helper methods (`state`, `signal_state`, active request/session accessors, test-only generation helper) from the crate-public surface; service_runtime query/status paths now use `FrontendRuntimeSnapshot` DTO data instead of direct intermediate helper calls.
+- Reduced demux packet pipeline internals by making `DemuxRuntime::pipeline()` and raw/inspect packet pipeline helpers crate-local, keeping production ingress on the typed demux runtime request/report boundary.
+- Hid descrambler raw TS header parser internals by making `core` private and removing `parse_ts_packet_header` / `TsPacketHeader` from the crate-public API while retaining the typed descramble operation used by service_runtime.
+
+# r50eo80_customer26_followup_design_boundary_impl_recheck_source_static_unverified_v40
+
+- Removed the remaining immediately replaceable test-only wrappers around demux queue descriptor export; descriptor export tests now call the queue descriptor export plan API directly.
+- Removed the object-runtime `close_live_object_for_test` helper and updated tests to call the production close/finish object use-cases directly.
+- Rechecked the remaining `_for_test` helpers after the replacement pass; 21 remain because they are either test-module builders or internal observation/fault-injection hooks that are not directly replaceable by existing production APIs without changing the test scope.
+
+# r50eo80_customer26_followup_design_boundary_impl_recheck_source_static_unverified_v39
+
+- Removed remaining direct demux queue read/write/drain helpers from the production surface by marking them test-only and renaming them with `_for_test`; production descriptor export remains limited to the service_runtime object/query wrapper and demux queue descriptor plan boundary.
+- Rechecked similar queue helper surfaces so direct queue descriptor export, record DVR queue drain, playback queue write/consume, and filter queue drain are not left as production-visible wild helpers when only tests use them.
+
+# r50eo80_customer26_followup_design_boundary_impl_recheck_source_static_unverified_v38
+
+- Removed unused direct demux queue descriptor export helpers instead of leaving them as crate-local production surface; demux tests now exercise the production queue descriptor export plan API directly.
+- Confirmed the remaining demux queue descriptor export plan API is used by service_runtime RuntimeQuery as the production AIDL owner/generation wrapper boundary, not as a standalone direct export helper.
+
+# r50eo80_customer26_followup_design_boundary_impl_recheck_source_static_unverified_v37
+
+- Reduced direct demux queue descriptor export helpers to crate-local visibility so service_runtime object/query use-cases remain the AIDL owner/generation boundary for external descriptor export.
+- Changed shared cleanup and service-runtime diagnostic record failure counters from wrapping fetch_add to saturating increments.
+
+# r50eo80_customer26_followup_design_boundary_impl_recheck_source_static_unverified_v36
+
+- Fixed callback/drop-leak fallback record-failure counters to use saturating atomic increments, giving long-running/fuzz scenarios fixed overflow semantics instead of platform-dependent wrap/debug behavior.
+
+# r50eo80_customer26_followup_design_boundary_impl_recheck_source_static_unverified_v35
+
+- Fixed frontend tune/scan backend rollback diagnostics to reuse the already-acquired cleanup diagnostic sink when post-start rollback or backend-failure marking cannot reacquire the runtime lock.
+- Fixed tune commit rollback diagnostics to use the pre-cloned cleanup diagnostic sink instead of reacquiring the runtime lock solely to obtain the sink.
+- Preserved queue descriptor object-liveness across descriptor export by revalidating and exporting under the object-method runtime lock, and recording descriptor export failure through the same locked diagnostic path.
+- Aligned filter/frontend callback runtime-lock fallback phase mapping with the service_runtime delivery-failure mapping and made filter callback dispatch all-attempt across snapshot entries.
+- Prevented record-index parsing from running on TEI / duplicate / no-payload / keyless-scrambled suppressed TS packets while retaining byte-preserving raw/record delivery behavior.
+- Reduced record DVR queue drain visibility to the demux crate boundary.
+
+# r50eo80_customer26_followup_design_boundary_impl_recheck_source_static_unverified_v34
+
+- Fixed frontend tune/scan rollback cleanup diagnostics so the diagnostic record `public_error` carries the primary failure, or the primary+rollback composed failure, instead of only the rollback cleanup error. This keeps the rollback-triggering primary failure visible in typed cleanup snapshots when rollback itself succeeds.
+
+# r50eo80_customer26_followup_design_boundary_impl_recheck_source_static_unverified_v33
+
+- Fixed continued frontend replacement cleanup diagnostic record-failure handling: tune/scan replacement stop reports now surface record failure through the public cleanup result instead of shrinking to the shared counter only.
+- Propagated replacement context into tune commit rollback and tune/scan backend rollback-state restore diagnostics so stopped old-worker generation and new generation candidate remain visible in typed rollback records.
+- Added `CompleteStopObject` frontend worker cleanup step so tune/scan object stop completion failures after external join retain the stop outcome and completion primary failure in the diagnostic record.
+- Reused the pre-cloned frontend cleanup diagnostic sink during frontend close owner-loss worker/live-data cleanup, recorded scan-cancel skip when scan stop fails, and added production drop-leak error diagnostic snapshot access to records/dropped count.
+- Attached demux transaction diagnostic details to DVR configure status-reporting failure public errors and records rollback failure as the diagnostic record error when rollback fails.
+
+# r50eo80_customer26_followup_design_boundary_impl_recheck_source_static_unverified_v32
+
+- DESIGN_JA.md / CODE_CONVENTION.md: frontend worker replacement の new worker generation を「予約済み generation」ではなく「stop 前に算出した generation candidate」として明確化。runtime state への commit は post-complete install / begin step で行い、candidate 失効は start rollback diagnostic に CompleteReplacement context として残す。
+- RELEASE_VERSION: v32 へ更新。
+
+# r50eo80_customer26_followup_design_boundary_impl_recheck_source_static_unverified_v31
+
+- Clarified DESIGN_JA.md frontend-worker replacement boundary: post-stop install/begin may commit a pre-reserved generation, but post-stop generation reservation / rollback-token preparation / request preflight remains forbidden.
+- Updated frontend_worker_txn.rs so post-complete install/begin/worker-start rollback diagnostics carry the replacement context through a CompleteReplacement step with stopped-worker generation and reserved new-worker generation.
+
+# r50eo80_customer26_followup_design_boundary_impl_recheck_source_static_unverified_v30
+
+- Rechecked DESIGN_JA.md frontend-worker replacement wording for self-consistency and clarified that the ticket carries a reserved new-worker generation while the generation commit occurs only in the later install step.
+- Completed the v28/v29 implementation follow-up by recording post-stop replacement completion failures as `public_error` in the same frontend-worker cleanup diagnostic record as the old-worker stop outcome.
+- Confirmed tune/scan replacement still performs request validation, scan candidate calculation, new-generation reservation, and bound-demux rollback-token preparation before requesting old-worker stop/join.
+
+# r50eo80_customer26_followup_design_boundary_impl_source_static_unverified_v29
+
+- Implemented the v28 frontend worker replacement design boundary: tune/scan replacement now reserves the new worker generation and prepares bound-demux rollback tokens before requesting the old worker stop/join.
+- Clarified DESIGN_JA.md / CODE_CONVENTION.md so the replacement lifecycle ticket explicitly carries stopped-worker generation, reserved new-worker generation, and bound-demux rollback-token preparation.
+- Extended the service-runtime replacement ticket so it carries the pre-stop new worker generation and demux rollback tokens through external join completion instead of running first-time fallible generation preparation after the old worker has stopped.
+- Updated the service-runtime source test name/body so the static test expectation matches the new generation-before-stop replacement contract.
+
+# r50eo80_customer26_followup_design_boundary_fix_source_static_unverified_v28
+
+- Updated DESIGN_JA.md / CODE_CONVENTION.md for frontend worker replacement: destructive old-worker stop/join must not be followed by first-time fallible generation/pre-start preparation unless the stopped-old/new-not-started outcome and rollback/no-restart decision are retained as typed diagnostics.
+- This is a design-only follow-up for the previous rebutted tune/scan generation-prepare failure items; code changes for the new requirement were not applied in this archive.
+
+# r50eo80_customer26_followup_fix_source_static_unverified_v27
+
+- Updated the release identifier for the follow-up artifact and recorded the follow-up diagnostic-policy changes so archive names, RELEASE_VERSION, and CHANGELOG remain traceable.
+- Added callback delivery snapshot metadata for merged runtime/fallback diagnostics: runtime snapshot omission, fallback record counts, fallback dropped counts, and fallback record-failure counts are now observable from the production snapshot.
+- Reset callback fallback counters only after their corresponding bounded fallback store is actually cleared, and reset drop-leak bounded diagnostics with dropped-count and record-failure lifecycle reset.
+- Added record-failure accounting to shared cleanup diagnostics so frontend worker replacement stop report record failures are visible in cleanup snapshots even when the cleanup itself succeeded.
+- Recorded DVR configure status-reporting failures as demux transaction diagnostics before rollback, preserving a diagnostic id for the successful-rollback failure path.
+
+# r50eo80_customer26_valid_fix_source_static_unverified_v26
+
+- Continued the previously unaddressed frontend cleanup items by recording frontend tune/scan rollback cleanup steps through the shared `CleanupExecutionReport`/`SharedCleanupDiagnostics` path instead of collapsing snapshot/demux rollback with `FirstErrorCollector` only.
+- Added frontend close owner-loss cleanup reporting: per-LNB close outcomes plus the worker/live-data cleanup result are now recorded as a close-level cleanup diagnostic report.
+- Added runtime-lock-poison fallback diagnostics for frontend scan-end and filter callback delivery failures so non-DVR callback delivery accounting is no longer lost when the service runtime lock cannot be reacquired.
+- Updated DESIGN_JA.md / CODE_CONVENTION.md to require rollback, frontend close owner-loss, and non-DVR callback delivery fallback diagnostics to follow the same typed diagnostic retention policy.
+
+# r50eo80_customer26_valid_fix_source_static_unverified_v25
+
+- Added production diagnostic snapshots with dropped-count access for startup, descrambler, child-open rollback, queue descriptor query, filter callback delivery, and frontend callback delivery stores.
+- Extended DVR post-commit diagnostic snapshots with a shared record-failure counter so fallback diagnostic-store failures are observable outside tests.
+- Split DVR status notifier cleanup startup diagnostics from DVR post-commit notification diagnostics and added lifecycle records for notifier terminal and supersede cleanup outcomes.
+- Recorded frontend tune/scan replacement stop and scan-cancel outcomes through the shared frontend worker cleanup diagnostic store.
+- Updated DESIGN_JA.md / CODE_CONVENTION.md to require these production snapshots and lifecycle cleanup diagnostics.
+
+# r50eo80_customer26_valid_fix_source_static_unverified_v24
+
+- Rechecked the v23 cleanup commonization and fixed the remaining adapter-shape mismatch: object cleanup and frontend worker cleanup step outcomes now use variant-specific target/step records instead of nullable field-bag structs.
+- Added `ObjectCleanupObjectTarget`, `FrontendWorkerCleanupTarget`, and `FrontendWorkerCleanupWorkerGeneration` so domain-specific context is typed while the generic cleanup execution report/snapshot/shared-store primitives remain shared.
+- Updated DESIGN_JA.md / CODE_CONVENTION.md to make variant-specific cleanup adapters part of the required commonization pattern and to forbid nullable field-bag adapters for cleanup execution diagnostics.
+
+# r50eo80_customer26_valid_fix_source_static_unverified_v23
+
+- Added the generic cleanup execution primitives `CleanupExecutionReport<TStepOutcome, TFailure>`, `CleanupExecutionDiagnosticSnapshot<TRecord>`, and `SharedCleanupDiagnostics<TRecord>` as the common basis for all-attempt cleanup reports, first-error projection, bounded diagnostic snapshots, and shared diagnostic sinks.
+- Rebased object close / drop-leak cleanup diagnostics onto the generic cleanup execution primitives while preserving typed object-specific step outcomes and diagnostic records.
+- Added frontend worker cleanup reports and diagnostics for tune stop, scan stop, and frontend close worker/live-data cleanup paths, using the same generic cleanup execution and shared bounded diagnostic primitives as object cleanup.
+- Updated DESIGN_JA.md / CODE_CONVENTION.md to require cleanup execution pattern commonization without collapsing object-specific and frontend-worker-specific typed adapters into an `Option` field bag.
+
+# r50eo80_customer26_valid_fix_source_static_unverified_v22
+
+- Removed dead `TunerServiceRuntime::stop_filter_runtime()` / `flush_filter_runtime()` convenience wrappers after v19/v20 routed production object-method stop/flush through `transact_stop_filter_runtime()` / `transact_flush_filter_runtime()` and test-only demux wrappers were already restricted to `#[cfg(test)]`.
+- Rechecked the v21 improvement-only items against DESIGN_JA.md / CODE_CONVENTION.md and kept them as non-required improvements rather than changing design: validation reason granularity, post-stop worker restoration, frontend worker cleanup per-step diagnostics, and non-DVR callback shared fallback do not contradict the current required design boundary.
+
+# r50eo80_customer26_valid_fix_source_static_unverified_v21
+
+- Made DVR post-commit status delivery/notifier accounting non-reversing across initial delivery, runtime-policy skip, Binder delivery, notifier preflight, notifier terminal, and cleanup paths by routing accounting failure through the AIDL-context shared DVR post-commit diagnostic fallback instead of returning it to public `IDvr.start()`.
+- Moved frontend tune/scan request validation and scan candidate calculation before superseding existing frontend workers, so invalid public tune/scan requests do not stop an existing worker before failing.
+- Added rollback for DVR status-reporting configuration failure after a successful DVR configure transaction by restoring the pre-configure DVR snapshot and quarantining the demux if rollback fails.
+- Clarified DESIGN_JA.md / CODE_CONVENTION.md for non-reversing DVR post-commit accounting fallback, frontend worker replacement validation-before-stop, and DVR status-reporting rollback after configure commit.
+
+# r50eo80_customer26_valid_fix_source_static_unverified_v20
+
+- Removed the now-dead raw `stop_filter_runtime_from_typed_request()` and `flush_filter_runtime_from_typed_request()` demux runtime helpers after object-method stop/flush were routed through the service_runtime transaction façade in v19.
+- Restricted raw `stop_filter_runtime()` / `flush_filter_runtime()` convenience wrappers to `#[cfg(test)]` so production code cannot bypass `FilterRuntimeOperationReport` diagnostics while existing demux unit tests keep their local mutation helper surface.
+- Performed non-fail-fast source-static checks for remaining stop/flush raw-helper references, transaction façade use sites, and v20 package versioning.
+
+# r50eo80_customer26_valid_fix_source_static_unverified_v19
+
+- Routed object-method `IFilter.stop()` / `IFilter.flush()` through the service_runtime filter runtime transaction façade so queue-clear failures preserve `FilterRuntimeOperationReport` diagnostics instead of discarding reports via raw demux runtime helpers.
+- Added `DemuxTransactionDiagnosticSnapshot` with records and dropped-count access so the bounded demux transaction diagnostic store has production overflow observability consistent with DESIGN_JA.md/CODE_CONVENTION.md.
+- Clarified DESIGN_JA.md/CODE_CONVENTION.md that demux transaction diagnostics require dropped-count snapshots and that AIDL filter object methods must not bypass the typed report transaction façade.
+
+# r50eo80_customer26_valid_fix_source_static_unverified_v18
+- Added typed `FilterRuntimeOperationReport` coverage for filter stop/flush partial-phase outcomes, including queue clear failure, pipeline rollback, queued payload clear, AV backing flush, and skipped phase decisions.
+- Connected filter runtime operation failures to the demux transaction diagnostic store with diagnostic ids and public error detail correlation.
+- Updated DESIGN_JA.md / CODE_CONVENTION.md so filter stop/flush multi-step runtime operations cannot fall back to string-only or result-only diagnostics.
+
+# r50eo80_customer26_valid_fix_source_static_unverified_v17
+- Reworked DVR post-commit fallback accounting so shared-sink record failure increments a context-local record-failure counter instead of disappearing behind `let _ =`.
+- Changed public `IDvr.stop()` notifier cleanup accounting to use the AIDL context fallback path, preserving post-commit non-reversal while surfacing accounting failures.
+- Added structured DVR status notifier reset cleanup diagnostics with per-notifier success/failure records and dropped-count snapshots.
+- Made service reset recover a poisoned DVR notifier store guard for reset cleanup, take the remaining notifiers, and attempt join/diagnostic recording before reporting the poison as reset failure.
+- Added production snapshots with dropped counters for DVR post-commit diagnostics and callback artifact runtime split diagnostics.
+
+# r50eo80_customer26_valid_fix_source_static_unverified_v16
+- Added a shared DVR post-commit notification diagnostic sink so superseded notifier cleanup accounting failure does not silently disappear when the service runtime lock cannot be reacquired.
+- Updated `record_superseded_dvr_notifier_cleanup_failure()` to preserve both the notifier cleanup primary error and the accounting failure in the shared diagnostic fallback instead of swallowing the accounting failure.
+- Kept public start/stop post-commit non-reversal while making the accounting failure observable.
+
+# r50eo80_customer26_valid_fix_source_static_unverified_v15
+- Narrowed test-only frontend tune transaction visibility: `FrontendTuneOutcome`, `FrontendTuneTxn`, and its test-only constructor/apply façade are now crate-private instead of public, matching the production-hidden `device::runtime::tune_txn` module boundary and CODE_CONVENTION test-only surface guidance.
+- Kept `BackendTuneTxn::new` production-visible because production backend worker paths instantiate it directly.
+- Added `DvrPostCommitNotificationFailureKind` and `CallbackDeliveryFailurePhase::NotifierPreflight` so DVR post-commit diagnostics distinguish runtime policy skip / notifier preflight / cleanup / Binder delivery without relying only on the broad notifier phase.
+
+# r50eo80_customer26_valid_fix_source_static_unverified_v14
+- Fixed the test-only `AidlServiceContext::from_shared_runtime_for_test()` initializer to clone and store the shared object-cleanup diagnostic sink, matching the production context fields added by the v10/v11 object-cleanup diagnostic work.
+- Verified that v13 configure outcome changes, demux diagnostic-id lifecycle wording, service reset all-attempt flow, diagnostic clear failure composition, and object-cleanup dropped-count accessor are present and aligned with DESIGN_JA.md / CODE_CONVENTION.md.
+- Performed non-fail-fast source-static checks for DESIGN_JA.md responsibility consistency, residual-target coverage, old fail-fast reset paths, and generated a v14 source package.
+
+# r50eo80_customer26_valid_fix_source_static_unverified_v13
+
+- Fixed residual service boot reset diagnostic-recording fail-fast by attempting every split diagnostic record and composing recording failures afterward.
+- Fixed filter/DVR configure public error correlation for non-quarantine failures without fabricating synthetic cleanup failures.
+- Refined filter/DVR configure outcomes so validation-only failures are `Failed` and successful rollback outcomes carry the rollback step.
+- Added production object cleanup diagnostic snapshots with dropped-count visibility.
+- Propagated boot reset diagnostic-store clear failures through service reset result composition after all attempts.
+
+# r50eo80_customer26_valid_fix_source_static_unverified_v12
+- Rechecked v11 non-fail-fast for implementation conformance.
+- Removed the remaining runtime-lock-planning fail-fast in service reset: callback artifact reset planning failure is now captured as that attempt's result, while drop-leak diagnostic clear and runtime boot finish are still attempted and recorded through service boot split diagnostics.
+- Source-static checks performed: service reset all-attempt path, boot diagnostic clear list, shared object cleanup diagnostic sink call-sites, demux diagnostic-id public detail call-sites, and residual fail-fast pattern search. rustfmt, rustc/cargo, Soong build, unit tests, loom, atest, VTS, and device validation were not run.
+
+# r50eo80_customer26_valid_fix_source_static_unverified_v11
+- Made service boot reset all-attempt across DVR notifier cleanup, callback artifact reset, drop-leak diagnostic clear, and runtime boot finish; DVR notifier cleanup failure is now recorded through the service boot split diagnostic path with notifier object/generation context instead of failing before later reset steps.
+- Cleared queue descriptor query, frontend callback delivery, demux transaction, and object cleanup diagnostics during runtime boot reset so post-reset runtime state is not mixed with stale bounded diagnostic records.
+- Changed object cleanup diagnostics to use a shared service-runtime diagnostic sink so close/drop-leak cleanup reports can be recorded before reacquiring the runtime lock; runtime lock poison no longer discards the report before finish/terminalization result composition.
+- Added diagnostic-id-bearing public detail for non-quarantine filter/DVR configure failures by composing the primary public error with a diagnostic summary while keeping the typed report in the bounded production diagnostic store.
+- Updated DESIGN_JA.md and CODE_CONVENTION.md to require service reset all-attempt behavior, boot-reset diagnostic clearing, and shared-sink fallback for object cleanup report recording.
+
+# r50eo80_customer26_valid_fix_source_static_unverified_v10
+
+- Rechecked v9 non-fail-fast for DESIGN_JA.md self-consistency and implementation conformance.
+- Added `ObjectCleanupDiagnosticRecord` / `ObjectCleanupDiagnosticKind` and a production `TunerServiceRuntime::object_cleanup_diagnostics()` accessor so `ObjectCleanupExecutionReport` is not discarded at the AIDL façade after first-error projection.
+- Recorded object close and drop-leak terminalization cleanup reports into the service_runtime bounded diagnostic store before converting them to public `BinderResult` / first-error status.
+- Added `HalError::UnsupportedDetail` so source-boundary subtype failures keep the AOSP Unavailable/unsupported public status while still carrying the demux transaction diagnostic id in dynamic public detail.
+- Updated DESIGN_JA.md / CODE_CONVENTION.md to make the production object-cleanup diagnostic store and dynamic unsupported detail variant explicit.
+- Source-static checks performed: DESIGN_JA.md/CODE_CONVENTION.md wording search, object cleanup report retention call-site review, demux diagnostic id public error review, and diff generation. rustfmt, rustc/cargo, Soong build, unit tests, loom, atest, VTS, and device validation were not run.
+
+# r50eo80_customer26_valid_fix_source_static_unverified_v9
+
+- Adopted the higher-quality design instead of treating per-step cleanup audit and diagnostic correlation as non-required future work.
+- Added `ObjectCleanupExecutionReport` / `ObjectCleanupStepOutcome` as the common object close/drop-leak cleanup result component. Object close and drop-leak terminalization now collect artifact/domain/runtime per-step outcomes first and derive the public first-error result from that report.
+- Extended `ObjectDomainCleanupOutcome` to carry command identity (`object_kind`, `object_id`, `generation`, `cleanup_kind`) and exposed cleanup execution kind/detail accessors for structured audit.
+- Added `DemuxTransactionDiagnosticId` and assigned monotonic diagnostic ids before recording source-boundary/filter-configure/DVR-configure diagnostics; source-boundary and rollback public error detail now carries the diagnostic id where dynamic detail is available.
+- Updated DESIGN_JA.md / CODE_CONVENTION.md to make diagnostic correlation and object cleanup per-step report mandatory for the current design, removing the previous ambiguous "current non-required / future extension" wording.
+- Source-static checks performed: residual search for ambiguous future/non-required wording in the edited design sections, diagnostic constructor call-site review, object cleanup report call-site review, and diff generation. rustfmt, rustc/cargo, Soong build, unit tests, loom, atest, VTS, and device validation were not run.
+
+# r50eo80_customer26_valid_fix_source_static_unverified_v8
+
+- Rechecked the v7 implementation non-fail-fast against the customer follow-up: the v7 production demux transaction diagnostic accessor/re-export is present and no additional source code patch is required for the v7 intended fix.
+- Revised DESIGN_JA.md / CODE_CONVENTION.md to remove ambiguity around DVR notifier cleanup: notifier cleanup / policy skip / artifact lookup failures are diagnostic-only phases and must not be treated as current callback unhealthy marking; `JoinHandle::join()` consumes the handle, so retryable-handle retention after terminal join failure is not a design requirement.
+- Clarified demux transaction diagnostics: `SourceBoundaryReport` / `FilterConfigureReport` / `DvrConfigureReport` must be stored in a bounded production-accessible typed diagnostic store; public `HalError` detail may still be a status bridge and does not by itself carry all typed fields or a diagnostic id.
+- Clarified object close cleanup diagnostics: current design requires all-attempt cleanup and first-error composition, not a per-step success outcome vector, unless a later design explicitly adds audit-vector diagnostics.
+- Source-static checks performed: version/changelog, demux transaction diagnostic accessor/re-export, SourceBoundaryReport constructor surface, DVR notifier phase mapping, object cleanup outcome requirements, and duplicate-line false positive recheck. rustfmt, rustc/cargo, Soong build, unit tests, loom, atest, VTS, and device validation were not run.
+
+# r50eo80_customer26_valid_fix_source_static_unverified_v7
+
+- Exposed demux transaction diagnostics through a non-test runtime accessor and re-exported the typed diagnostic record/kind so `SourceBoundaryReport` / `FilterConfigureReport` / `DvrConfigureReport` records are retrievable in production code, not only through `#[cfg(test)]` helpers.
+- Rechecked DVR notifier retry claims against Rust `JoinHandle::join()` ownership: terminal join/thread failure cannot be made retryable with the same handle after `join()` consumes it, so those claims remain rebutted rather than patched.
+- Source-static checks performed: targeted review of the customer v7 follow-up ranges, residual search for test-only demux transaction diagnostic accessors, and review of DVR notifier remove/join ownership semantics. rustfmt, rustc/cargo, Soong build, unit tests, loom, atest, VTS, and device validation were not run.
+
+# r50eo80_customer26_valid_fix_source_static_unverified_v6
+
+- Added typed service-runtime demux transaction diagnostics for source-boundary, filter-configure, and DVR-configure failures so `SourceBoundaryReport` / `FilterConfigureReport` / `DvrConfigureReport` are no longer only carried through formatted `HalError` detail.
+- Extended `SourceBoundaryReport` with sink/source filter ids, removed the public rejected-report constructor escape hatch, and kept endpoint validation owned by `SourceBoundaryTxn`.
+- Tightened DVR notifier supersede ordering: old notifier is removed and restored on spawn failure, the old notifier is cancelled before the new notifier is inserted, and old cleanup accounting remains separated from current notifier unhealthy marking.
+- Preserved source-boundary reset/report detail in service-runtime formatting while recording the typed report in the bounded diagnostic store.
+- Source-static checks performed: targeted review of the customer v6 follow-up ranges, residual search for `SourceBoundaryReport::rejected`, `HalError::Unsupported(format!(...))`, and boolean DVR status preflight in the touched files. rustfmt, rustc/cargo, Soong build, unit tests, loom, atest, VTS, and device validation were not run.
+
+# r50eo80_customer26_valid_fix_source_static_unverified_v5
+
+- Separated explicit/superseded DVR notifier cleanup accounting from current notifier post-commit status: cleanup accounting failures no longer return public start/stop errors after the start/stop commit has already succeeded.
+- Moved source-filter connect endpoint validation into the source-boundary transaction path and split endpoint validation steps into sink/source/lifecycle/subtype/PID phases.
+- Included source-boundary reset detail in source-boundary formatting, and included nested source-boundary report detail in filter configure failure formatting.
+- Source-static checks performed: targeted review of the customer v5 follow-up ranges, residual search for manual `SourceBoundaryReport::rejected` construction in `demux.rs`, DVR notifier cleanup phase review, and archive traceability update. rustfmt, rustc/cargo, Soong build, unit tests, loom, atest, VTS, and device validation were not run.
+
+# r50eo80_customer26_valid_fix_source_static_unverified_v4
+
+- Separated superseded DVR notifier cleanup failures from current notifier start accounting: old notifier stop/join failure is now recorded with `CallbackDeliveryFailurePhase::NotifierCleanup` and no longer marks the currently running notifier callback unhealthy.
+- Added `RuntimePolicySkip` callback-delivery phase for DVR status preflight skips caused by already-unhealthy callback state or disabled status reporting, keeping them separate from artifact lookup failure.
+- Made the DVR status notifier loop consume `DvrStatusCallbackDeliveryOutcome` semantically and terminate on artifact-missing, store-failure, or binder-failure outcomes instead of discarding the outcome and continuing.
+- Extended `SourceBoundaryOutcome::Failed` with `primary_error`, and updated rejected source-boundary reports to retain typed failure cause.
+- Connected filter configure source-boundary detail into `FilterConfigureReport` and recorded `RollbackSoftDemuxConfig` for rollback-success paths after ClearOldFmq / DisconnectOldSource / DVR ClearQueue failures.
+- Source-static checks performed: targeted review of the customer follow-up ranges, residual search for old `SourceBoundaryOutcome::Failed { step }` patterns, callback phase match exhaustiveness review, and archive traceability update. rustfmt, rustc/cargo, Soong build, unit tests, loom, atest, VTS, and device validation were not run.
+
+# r50eo80_customer26_valid_fix_source_static_unverified_v3
+
+- Updated `RELEASE_VERSION` and this changelog so the customer26/v3 source-static artifact is externally traceable.
+- Moved DVR post-commit callback artifact lookup policy back into `service_runtime`: DVR post-commit notification failures now record diagnostics/accounting without relying on an AIDL-side expected-primary swallow.
+- Replaced the DVR status-notifier `Result<bool, HalError>` preflight helper with a typed `DvrStatusNotificationPreflight` outcome, and connected start/notifier-loop handling to that outcome.
+- Made `deliver_started_dvr_status()` consume `DvrStatusCallbackDeliveryOutcome` explicitly instead of discarding it through `?` and `Ok(())`.
+- Extended `SourceBoundaryOutcome` with rollback-attempt/success and rollback-error detail so rollback-success and rollback-failure outcomes are distinguishable from pre-mutation failures.
+- Source-static checks performed: targeted review of the customer26 follow-up ranges, residual search for `Result<bool, HalError>` in DVR status notification preflight, release/changelog verification, and source-boundary rollback outcome review. rustfmt, rustc/cargo, Soong build, unit tests, loom, atest, VTS, and device validation were not run.
+
+# r50eo80_common_helper_cleanup_source_static_unverified
+
+- Replaced the remaining hand-written first-error collection in `mark_filter_callback_delivery_failed_use_case()`, `mark_dvr_callback_delivery_failed_use_case()`, and `stop_all_dvr_status_notifiers()` with `FirstErrorCollector`, keeping the existing diagnostic recording side effects intact.
+- Routed the drop-leak diagnostic record buffer through the shared `BoundedDiagnosticStore<DropLeakErrorRecord>` instead of a private `VecDeque` plus duplicated dropped counter. Added `clear_records_preserving_dropped_count()` so service boot reset clears records without reintroducing the old dropped-counter reset regression.
+- Centralized the LNB voltage-status profile predicate by exporting `lnb_profile_supports_voltage_status()` from `service_runtime` and removing the duplicate AIDL-side definition.
+- Replaced the service boot `let _ = callback_artifact_runtime_split_diagnostics.clear()` discard with a startup diagnostic record when the split diagnostic store clear fails.
+- Source-static checks performed: targeted residual searches for the removed `let mut first_error` patterns, drop-leak `VecDeque` store, duplicate LNB predicate, and callback split diagnostic clear discard. `rustfmt` was attempted but unavailable in this environment; rustc/cargo, Soong build, unit tests, loom, atest, VTS, and device validation were not run.
+
+# r50eo79_descrambler_clear_key_cleanup_outcome_source_static_unverified
+
+- Fixed descrambler clear-key transaction order to match `DESIGN_JA.md`: validate/prepare, commit the session clear, then release the old key token.
+- Added `DescramblerClearKeyOutcome` with `ClearedWithOldKeyReleaseFailure` so old-token release failure after a successful session clear is recorded as a cleanup diagnostic without returning an API failure that contradicts the committed no-key session state.
+- Updated the clear-key release-failure source-only test to assert API success, session key cleared, and `KeyTokenReleaseFailed` diagnostic recording.
+- Source-static checks performed: r50eo78→r50eo79 unified diff review, clear-key path order review, residual `DescramblerClearKeyTxnError::ReleaseOld` search, nullable-target unchanged check, and no lock-poison side sink addition check. rustfmt, rustc/cargo, Soong build, unit tests, loom, atest, VTS, and device validation were not run.
+
+# r50eo78_descrambler_replace_key_cleanup_outcome_source_static_unverified
+
+- Corrected the omitted E item from the r50eo75/r50eo77 plan: `setKeyToken(non-VOID)` replacement now reports old-token release failure as a cleanup diagnostic while keeping the AIDL API success when the session has already committed the new key.
+- Added `DescramblerReplaceKeyOutcome::ReplacedWithOldKeyReleaseFailure` so the session state and API result no longer diverge as an error after successful replacement.
+- Kept the lock-poison separate-sink exclusion unchanged; nullable AIDL future-work files remain untouched.
+- Source-static checks performed: direct r50eo77 → r50eo78 diff read, replace-key path read, residual search for `DescramblerReplaceKeyTxnError::ReleaseOld` in replace-key flow, and unchanged nullable target files. rustfmt, rustc/cargo, Soong build, unit tests, loom, atest, VTS, and device validation were not run.
+
+# r50eo77_static_completion_audit_cleanup_source_static_unverified
+
+- Redid static completion review by reading unified diffs and current call paths instead of treating negative grep as the primary proof.
+- Removed the unnecessary `lnb_backend_adapter.rs` private-field rename that had been introduced only to avoid a broad grep false positive; behavior is unchanged.
+- Kept nullable AIDL files unchanged and did not add a lock-poison alternate diagnostic sink.
+- Source-static checks only: unified diff review, logic-path inspection, negative counterexample search, and non-target file comparison. rustfmt, rustc/cargo, Soong build, unit tests, loom, atest, VTS, and device validation were not run.
+
+# r50eo76_static_completion_path_followup_source_static_unverified
+
+- Tightened the previous r50eo75 static-completion follow-up by replacing the remaining phase-driven `FrontendCallbackDeliveryDiagnosticRecord::new(...)` constructor with variant-specific constructors.
+- Removed `CallbackDeliveryFailureReport::dvr_post_commit_phase() -> Option<_>` so callback delivery post-commit context is checked by matching the DVR report variant instead of reconstructing optional context.
+- Updated the source-only contract test to pattern-match the DVR variant.
+- No nullable AIDL files were changed. No runtime-lock-poison fallback sink was added.
+- Source-static checks performed: old Option field names remain absent, `FrontendCallbackDeliveryDiagnosticRecord::new` is absent, `dvr_post_commit_phase() -> Option` is absent, and `validated_pid.raw()` remains absent from `descrambler_txn.rs`. rustfmt, rustc/cargo, Soong build, unit tests, loom, atest, VTS, and device validation were not run.
+
+# r50eo75_diagnostic_and_pid_claim_boundary_cleanup_source_static_unverified
+
+- Replaced remaining diagnostic field-bag records in the agreed scope with variant-specific records: callback delivery failure reports, startup diagnostics, child-open rollback diagnostics, and frontend callback delivery diagnostics no longer encode their meaning through unrelated `Option` field combinations.
+- Structured drop-leak Binder status capture with `DropLeakStatusSnapshot` instead of storing only an unstructured debug string; the context-owned bounded store, dropped counter, record-failure counter, and lock-poison behavior remain unchanged, and no secondary sink was added.
+- Removed validated-PID raw extraction from `service_runtime/src/boot/descrambler_txn.rs` by routing validated AIDL PIDs through helper methods that produce `DescramblerPidClaim` directly. This is a typed-boundary cleanup, not a nullable AIDL change.
+- Renamed the private LNB pending-frontend field without behavior change so the broad `frontend_id: Option` static check does not produce an unrelated false positive.
+- Source-static checks performed: targeted searches confirm the planned field-bag signatures and validated-PID raw extraction call sites are gone from the target files. rustfmt, rustc/cargo, Soong build, unit tests, loom, atest, VTS, and device validation were not run.
+
+# r50eo74_non_design_residual_cleanup_source_static_unverified
+
+- Continued the r50eo73 customer finding triage without changing nullable AIDL future-work.
+- Source boundary rollback diagnostics now preserve both the primary source-boundary failure step/error and the rollback restore failure step in `SourceBoundaryOutcome::Quarantined`, instead of collapsing the report to a single rollback failure.
+- Service boot drop-leak record clearing no longer resets the dropped/failure counters; boot reset clears bounded records only and preserves lifetime diagnostic failure counters.
+- `DescramblerClearKeyPlan` was changed from an `Option` field pair to a variant-specific `NoKey` / `ClearExisting { token, key_slot }` plan, fixing the weak token/slot pairing without changing public API semantics.
+- No nullable AIDL files were changed. rustfmt, rustc/cargo, Soong build, unit tests, loom, atest, VTS, and device validation were not run.
+
+# r50eo73_boundary_report_detail_source_static_unverified
+
+- Rebutted the stale quarantine `let _` findings by keeping the r50eo72 infallible quarantine API shape; no nullable AIDL future-work files were changed.
+- Connected `FilterConfigureReport` / `DvrConfigureReport` rollback details into service_runtime cleanup failure text instead of collapsing quarantined rollback to fixed wording.
+- Returned `SourceBoundaryReport` from source connect/disconnect typed demux boundary calls and included source-boundary outcome/steps in service_runtime error mapping for connect/disconnect failures.
+- Source-static checks performed: targeted grep confirmed the source-boundary typed calls are handled only in service_runtime and that the three quarantine typed calls have no `let _` discard. rustfmt, rustc/cargo, Soong build, unit tests, loom, atest, VTS, and device validation were not run.
+
+# r50eo72_quarantine_result_boundary_fix_source_static_unverified
+
+- Removed the three remaining `let _ = quarantine_runtime_from_typed_request(...)` call sites in `service_runtime`, leaving nullable AIDL future-work untouched.
+- Made `DemuxRuntime::quarantine_runtime_from_typed_request()` explicitly infallible (`()`) because the operation only transitions the runtime and descendants to `Quarantined`; callers no longer discard a fallible-looking result.
+- Source-static checks performed: targeted search confirms no `let _ = .*quarantine_runtime_from_typed_request` remains and exactly three production call sites call the typed quarantine façade without discarding a `Result`. rustfmt, rustc/cargo, Soong build, unit tests, loom, atest, VTS, and device validation were not run.
+
+# r50eo71_doc_responsibility_boundary_cleanup_source_static_unverified
+
+- Reworked the r50eo70 typed-request boundary clarification so `DESIGN_JA.md` stays on responsibility boundaries, state transitions, failure precedence, and resource lifetime. Rust visibility / constructor / import / Clone / Copy / module-private style rules are kept in `CODE_CONVENTION.md`.
+- Renamed the release-specific `r50eo68 source-only complete` design/convention sections to generic worker / callback / query / packet boundary sections. This removes a release-status phrase from design rules while preserving the actual lifecycle and cleanup contracts.
+- Clarified that `FirstErrorCollector` owns only all-attempt cleanup-step first-error collection; primary+cleanup composed failure creation is owned by the failure composition helper group.
+- Reworded typed request conditions so the violation is bypassing `service_runtime` transaction authority, not the request being a thin DTO.
+- This is a document-responsibility cleanup. Rust source, generated code, build files, tests, and future_work documents were not changed. rustfmt, rustc/cargo, Soong build, unit tests, loom, atest, VTS, and device validation were not run.
+
+# r50eo70_typed_request_boundary_design_clarification_source_static_unverified
+
+- Clarified `tuner_hal2/DESIGN_JA.md` and `CODE_CONVENTION.md` so demux crate typed request DTOs are not mistaken for capability tokens / transaction proofs. Public crate-to-crate typed request constructors remain allowed when `service_runtime` owns object live/generation/owner validation, AIDL/binder/domain_request cannot call demux mutation façade directly, and forging the request cannot create a rollback token, queue export handle, snapshot body, registry entry, session map, or reusable restore authority.
+- Clarified rollback prepare request, read-only filter/DVR snapshots, and queue descriptor DTO / export plan boundaries. Demux-local queue export plans hold demux target + non-Clone handle; AIDL object/generation/owner relation is held by the service_runtime wrapper plan.
+- This is a DESIGN/CODE_CONVENTION clarification and rebuttal to false-positive regression claims against No.1-23/26. Rust source, generated code, build files, and future_work documents were not changed.
+- Source-static checks performed: Rust source diff is empty; docs changed only in `tuner_hal2/DESIGN_JA.md`, `tuner_hal2/CODE_CONVENTION.md`, `tuner_hal2/CHANGELOG.md`, and `tuner_hal2/RELEASE_VERSION`; targeted source searches confirm demux rollback token has no snapshot body and no Clone/Copy, queue export handle/plan remain non-Clone, direct demux mutation calls from AIDL/binder/domain_request are absent, and packet_txn legacy keyless/source-filter terms are absent. rustfmt, rustc/cargo, Soong build, unit tests, loom, atest, VTS, and device validation were not run.
+
+# r50eo69_design_packet_bytes_boundary_source_static_unverified
+
+- Updated `DESIGN_JA.md` for the No.24/No.25 packet-byte boundary: `ValidatedTsPacket` may expose the original TS packet bytes only for output/mirror/FMQ/diagnostic-prefix use, while validation/PID/policy/section-PES planning must remain based on `ValidatedTsPacket` / `PacketPid` and must not reconstitute `TsPacketView` from raw bytes.
+- This is a DESIGN-only source-static revision. Rust source, generated code, build files, tests, and future_work documents were not changed.
+- Checks performed: text diff and targeted grep for `ValidatedTsPacket` / `packet_bytes` wording. rustfmt, rustc/cargo, Soong build, unit tests, loom, atest, VTS, and device validation were not run.
+
+# r50eo68_wp1_5_repair15_source_static_unverified
+
+- Fixed a repair14 WP-5 static-completion miss: callback registration artifact failure without a rollback command is now recorded in callback artifact/runtime split diagnostics, and runtime finish lock failure after such an artifact failure composes the artifact failure with the runtime/record failure instead of returning only the runtime error.
+- Avoided taking a runtime finish lock for successful callback registration outcomes that have no rollback work, preventing a false failure after an already-complete registration.
+- Re-ran source-static WP-1〜WP-5 checks; rustfmt, rustc/cargo, Soong build, unit tests, loom, atest, VTS, and device validation are not executed in this environment.
+
+# r50eo68_wp1_5_repair14_source_static_unverified
+
+- Fixed a repair13 source-static miss: callback registration artifact bridge now returns `(AidlMethodCall, request_tuple)` to `execute_shared_object_method_call_after_live` instead of a three-element tuple, so the typed request builder shape matches the transaction helper contract.
+- Re-ran source-static WP-1〜WP-5 checks; rustfmt, rustc/cargo, Soong build, unit tests, loom, atest, VTS, and device validation are not executed in this environment.
+
+# r50eo68_wp1_5_repair13_source_static_unverified
+
+- Fixed a repair12 WP-5 static-completion miss: callback registration runtime-finish-lock failure now records rollback cleanup failure in the shared callback artifact/runtime split diagnostic record instead of returning it only as a composed error.
+- Added `RuntimeFinishAndArtifactCleanupFailure` to the callback artifact/runtime split diagnostic outcome so artifact-retain success + runtime-finish-lock failure + rollback cleanup failure remains visible in all-attempt diagnostics.
+- `repair13` remains source-static only; rustfmt, rustc/cargo, Soong build, unit tests, loom, atest, VTS, and device validation are not executed in this environment.
+
+# r50eo68_wp1_5_repair12_source_static_unverified
+
+- Fixed a repair11 WP-5 static-completion miss: production AIDL code no longer clears owner callback artifacts by raw `AidlObjectHandle` after callback registration finish-lock failure.
+- Added a service_runtime-owned cleanup command façade for callback registration runtime-finish-lock failure and routed the AIDL rollback bridge through `OwnerCallbackCleanupArtifactCommand`.
+- Removed the production handle-based callback artifact clear bridge so callback artifact store clear remains command-owned as required by `DESIGN_JA.md` / `CODE_CONVENTION.md`.
+- Re-ran source-level static checks for WP-1〜WP-5. rustfmt, rustc/cargo, Soong build, unit tests, loom, atest, VTS, and device/real-broadcast tests were not run in this environment.
+
+# r50eo68_wp1_5_repair11_source_static_unverified
+
+- Fixed a repair10 WP-5 static-completion miss: `TunerServiceRuntime::record_callback_artifact_runtime_split_diagnostic()` no longer discards diagnostic-sink failures with `let _ =`.
+- Propagated split-diagnostic record failures through owner callback cleanup finish, runtime registry missing accounting, and service boot reset finish composition instead of treating those record attempts as success.
+- Added AIDL-side rollback of a retained callback artifact when runtime registration finish lock fails after artifact retain succeeds, so the callback store is not left with an owner artifact that the runtime never recorded.
+- Re-ran source-level static checks for WP-1〜WP-5. rustfmt, rustc/cargo, Soong build, unit tests, loom, atest, VTS, and device/real-broadcast tests were not run in this environment.
+
+# r50eo68_wp1_5_repair10_source_static_unverified
+
+- Fixed a repair9 source-static miss in `aidl_service/src/object_runtime/mod.rs`: `OwnerCallbackCleanupArtifactCommand` was used in the runtime-finish-lock-failure helper but was not imported from service_runtime, making repair9 compile-breaking at source level.
+- Tightened the WP-5 runtime-finish-lock-failure diagnostic path: AIDL-side split-diagnostic recording now returns `Result<(), HalError>` instead of silently discarding diagnostic sink failures with `let _ =`; record failures are composed with the runtime-finish-lock failure rather than being treated as success.
+- Re-ran source-level static checks for WP-1〜WP-5. rustfmt, rustc/cargo, Soong build, unit tests, loom, atest, VTS, and device/real-broadcast tests were not run in this environment.
+
+# r50eo68_wp1_5_repair9_source_static_unverified
+
+- Fixed the repair8 WP-1 compile-breaking re-export gap by re-exporting DemuxRuntime typed request façade types from `demux/src/runtime/mod.rs`, matching the crate-root `demux/src/lib.rs` public surface used by service_runtime.
+- Advanced WP-5 callback artifact/runtime split handling: artifact bridge execution remains outside the `TunerServiceRuntime` lock, while artifact-success/runtime-finish-lock-failure paths now record `CallbackArtifactRuntimeSplitDiagnosticRecord` through a service_runtime-owned shared diagnostic sink instead of silently losing the artifact attempt result.
+- Added service boot reset runtime-finish-lock-failure recording using the same service_runtime-owned split diagnostic sink, including callback artifact reset and drop-leak clear attempt outcomes.
+- Source-only checks performed: runtime re-export surface matches crate-root re-export; old DemuxRuntime mutation token / arbitrary closure executor remains absent; DemuxRuntime public direct `&mut self` mutation surface remains absent; QueueDescriptorExportHandle / QueueDescriptorExportPlan remain non-Clone; validated packet ingress remains typed-request based; packet_txn old keyless/source-filter ownership remnants remain absent; callback artifact bridge is not executed while holding the runtime lock and post-artifact runtime finish lock failures have a diagnostic record path. rustfmt, rustc/cargo, Soong build, unit tests, loom, atest, VTS, and device/real-broadcast tests were not run.
+
+# r50eo68_wp1_5_repair8_source_static_unverified
+
+- Updated the WP-1 DemuxRuntime rollback boundary to the v30 Rust visibility interpretation: crate-to-crate `pub` typed façade is allowed, but rollback tokens no longer carry snapshots, are non-Clone/non-Copy opaque ids, and restore consumes the runtime-internal rollback ledger once.
+- Added restore-side snapshot generation verification. service_runtime rollback tokens are now shared through an internal `Arc<Mutex<Option<...>>>` one-shot holder where both the worker thread and the starting thread can race to consume the same rollback authority without cloning the token list.
+- Renamed service_runtime rollback variables from snapshot to token to prevent the source from documenting a snapshot-carrying rollback token.
+- Synchronized DESIGN_JA.md and CODE_CONVENTION.md so public typed request constructors are not treated as capability-token forgery by themselves; the required property is forge-safety, one-shot ledger consumption, no snapshot body export, and no direct AIDL/product API entry.
+- Source-only checks performed: old mutation token / arbitrary closure executor remains absent; rollback token has no Clone/Copy derive; restore consumes the internal ledger and rejects demux-id, ledger-missing/reuse, and snapshot-generation mismatch; AIDL/binder_adapter/domain_request do not call DemuxRuntime rollback prepare/restore façade directly. rustfmt, rustc/cargo, Soong build, unit tests, atest, VTS, and device/real-broadcast tests were not run.
+
+# r50eo68 repair6 partial unverified
+
+- Continued WP-1 repair from repair5. Converted the remaining DemuxRuntime public direct mutation surface for callback unhealthy marking, AV shared handle export/release, filter/DVR removal, filter/DVR start-stop-flush, AV stream type, delay hint, DVR filter link, DVR status interval, filter source connect/disconnect, quarantine, and validated packet ingress into typed-request public facades.
+- Made the corresponding raw mutation helpers crate-local so service_runtime production callers can no longer call those direct mutation methods by name.
+- Updated service_runtime demux mutation call-sites that target DemuxRuntime directly to use the typed-request facades.
+- Static check result: public DemuxRuntime methods taking &mut self now use typed-request-style method names; no standalone with_mutation_token / DemuxRuntimeMutationToken / mutation_token factory exists. This is still source-only and unverified; build/rustfmt/rustc/cargo/Soong/unit/loom/atest/VTS/device checks were not run.
+
+# r50eo68 repair5 partial unverified
+
+- repair5 is still a partial WP-1 correction, not a completion release. The prior repair4 answer did not sufficiently report the exact static-completion check locations and method.
+- Moved DemuxRuntime rollback token prepare/restore away from direct public rollback_token()/restore_from_rollback_token() calls by adding typed request wrappers and updating service_runtime rollback call-sites.
+- Static check result remains NG overall: DemuxRuntime still has public direct &mut self mutation methods for callback unhealthy marking, AV shared-handle operations, remove/start/stop/flush/source/quarantine/packet-ingress paths.
+- Build, rustfmt, rustc/cargo, Soong, unit/loom/atest/VTS/device checks were not run.
+
+# r50eo68_wp1_5_repair4_partial_unverified
+
+- repair3 の静的完了条件確認は、`DemuxRuntime::with_mutation_token()` が public arbitrary mutation closure executor である点を見落としていたため不成立だった。これは担当者差ではなく、同一担当による確認実態不足である。
+- repair4 では `with_mutation_token()` と `DemuxRuntimeMutationToken` の public surface を削除し、service_runtime call-site を具体的な demux domain API 呼び出しへ戻した。これにより、任意 closure で token と `&mut DemuxRuntime` を外部 caller に同時貸与する抜け道は消した。
+- ただし、repair4 は WP-1 の完了版ではない。`DemuxRuntime` には `start_filter_runtime()` / `stop_filter_runtime()` / `remove_filter()` / `push_validated_ts_packet_from_origin()` などの public `&mut self` domain mutation method が残っており、v29 計画が要求する「typed request / capability token / transaction proof なし mutation 禁止」を全件満たすところまでは到達していない。
+- WP-2 / WP-3 / WP-4 / WP-5 については、repair3 時点の主要静的成立状態を維持しているかを補助確認した。build, rustfmt, rustc, cargo, Soong, atest, VTS, emulator/device boot, adb sanity, and real-broadcast verification were not run in this environment.
+
+# r50eo68_source_only_complete_corrected13_unverified
+
+- corrected12 / repair2 の完了判定では、WP-1 の `DemuxRuntime` public mutation surface 全体を確認せず、`mutation_token()` / `ensure_mutation_token()` の存在と一部 call-site の typed request 化だけをもって静的完了条件OKと誤判定していた。実際には token なし public `&mut self` API が残り、`mutation_token()` も任意 caller が呼べる forgeable token factory だった。
+- `DemuxRuntime::mutation_token()` を削除し、`with_mutation_token()` の scoped closure 内だけで `DemuxRuntimeMutationToken` を借用できる形に変更した。public mutation API は `DemuxRuntimeMutationToken` を必須引数にし、token なし public `&mut self` mutation surface を閉じた。
+- service_runtime の demux/filter/DVR/packet/frontend rollback call-site は `with_mutation_token()` 経由へ更新した。demux crate 内部 helper と test-only helper は crate-local surface に閉じ、production caller が token なしに DemuxRuntime mutation を直接呼ばない形へ寄せた。
+- corrected12 の callback artifact/runtime finish 記述は、artifact bridge 実行後に runtime lock を取得する窓を閉じる目的で runtime lock 中 artifact 実行へ寄せていたが、WP-5 計画上はこれ自体が未完了条件だった。repair2 で artifact bridge を runtime lock 外へ戻した状態を維持し、artifact result を service_runtime finish use-case へ渡す構造として扱う。
+- Source-only static checks performed for this correction: public `DemuxRuntime` `&mut self` method without `DemuxRuntimeMutationToken` is absent; standalone `mutation_token()` factory is absent; service_runtime demux mutation call-sites use `with_mutation_token()`; `QueueDescriptorExportHandle` / `QueueDescriptorExportPlan` remain non-Clone; `push_validated_ts_packet_from_origin()` has no raw packet separate argument; packet_txn old keyless/source-filter policy ownership remnants are absent; callback artifact bridge is executed before runtime finish lock acquisition in the checked owner-cleanup, registration rollback, object-close, and service boot reset paths. Build, rustfmt, rustc, cargo, Soong, atest, VTS, emulator/device boot, adb sanity, and real-broadcast verification were not run in this environment.
+
 # r50eo68_source_only_complete_corrected12_unverified
 
 - corrected11 の完了判定では、D 系統の callback artifact/runtime all-attempt finish を完了扱いしていたが、`CallbackArtifactRuntimeSplitOutcome::ServiceBootResetFailure` が `callback_artifact_error: Option<HalError>` / `drop_leak_error: Option<HalError>` / `runtime_error: Option<HalError>` を持つ field bag のまま残っていた。これは Markdown v7 の D が求める split diagnostic / variant-specific outcome への未達であり、前回残件リストに未記載だった。

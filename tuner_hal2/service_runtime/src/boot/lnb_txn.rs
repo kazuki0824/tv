@@ -209,10 +209,10 @@ impl<'a> LnbTxn<'a> {
         self.close_lnb_with_reason(LnbRuntimeId(lnb_id), LnbLifecycleReason::PublicClose)
     }
 
-    pub(crate) fn close_lnb_from_frontend_owner_loss(
+    pub(crate) fn close_lnb_from_frontend_owner_loss_report(
         &mut self,
         frontend_id: i32,
-    ) -> (Vec<i32>, Result<(), HalError>) {
+    ) -> Vec<(i32, Result<(), HalError>)> {
         let frontend_key = FrontendRuntimeId(frontend_id);
         let owned_lnb_ids: Vec<LnbRuntimeId> = self
             .runtime
@@ -227,15 +227,13 @@ impl<'a> LnbTxn<'a> {
                     .unwrap_or(false)
             })
             .collect();
-        let mut closed = Vec::with_capacity(owned_lnb_ids.len());
-        let mut cleanup_collector = FirstErrorCollector::new();
-        for lnb_key in owned_lnb_ids {
-            match self.close_lnb_with_reason(lnb_key, LnbLifecycleReason::OwnerLoss) {
-                Ok(()) => closed.push(lnb_key.0),
-                Err(error) => cleanup_collector.push_error(error),
-            }
-        }
-        (closed, cleanup_collector.into_result())
+        owned_lnb_ids
+            .into_iter()
+            .map(|lnb_key| {
+                let result = self.close_lnb_with_reason(lnb_key, LnbLifecycleReason::OwnerLoss);
+                (lnb_key.0, result)
+            })
+            .collect()
     }
 
     pub(crate) fn record_lnb_drop_leak(&mut self, lnb_id: i32) -> Result<(), HalError> {

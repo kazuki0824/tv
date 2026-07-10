@@ -63,12 +63,12 @@ impl TunerServiceRuntime {
         self.lnb_txn().close_lnb_explicit(lnb_id)
     }
 
-    pub(crate) fn close_lnb_from_frontend_owner_loss(
+    pub(crate) fn close_lnb_from_frontend_owner_loss_report(
         &mut self,
         frontend_id: i32,
-    ) -> (Vec<i32>, Result<(), HalError>) {
+    ) -> Vec<(i32, Result<(), HalError>)> {
         self.lnb_txn()
-            .close_lnb_from_frontend_owner_loss(frontend_id)
+            .close_lnb_from_frontend_owner_loss_report(frontend_id)
     }
 
     pub(crate) fn record_lnb_drop_leak(&mut self, lnb_id: i32) -> Result<(), HalError> {

@@ -65,12 +65,12 @@ use maleicacid_tuner_hal2_common::{
 };
 use maleicacid_tuner_hal2_demux::QueueDescriptorSnapshot;
 use maleicacid_tuner_hal2_service_runtime::{
-    set_frontend_lnb_object_use_case, start_frontend_scan_use_case, start_frontend_tune_use_case,
-    stop_frontend_scan_use_case, stop_frontend_tune_use_case, LnbRegistryProfile,
-    ObjectFrontendStatusReadinessValue, ObjectFrontendStatusType, ObjectFrontendStatusValue,
-    ObjectQueryRequest, ObjectQueryResponse, RootCommandRequest, RootDemuxCapabilitiesSnapshot,
-    RootDemuxInfoSnapshot, RootFrontendInfoSnapshot, RootQueryRequest, RootQueryResponse,
-    RuntimeObjectEntry, TunerServiceRuntime,
+    lnb_profile_supports_voltage_status, set_frontend_lnb_object_use_case,
+    start_frontend_scan_use_case, start_frontend_tune_use_case, stop_frontend_scan_use_case,
+    stop_frontend_tune_use_case, ObjectFrontendStatusReadinessValue, ObjectFrontendStatusType,
+    ObjectFrontendStatusValue, ObjectQueryRequest, ObjectQueryResponse, RootCommandRequest,
+    RootDemuxCapabilitiesSnapshot, RootDemuxInfoSnapshot, RootFrontendInfoSnapshot,
+    RootQueryRequest, RootQueryResponse, RuntimeObjectEntry, TunerServiceRuntime,
 };
 
 use crate::child_object_open::{
@@ -385,12 +385,6 @@ fn physical_group_id_from_snapshot(snapshot: &RootFrontendInfoSnapshot) -> i32 {
     }
 }
 
-fn lnb_profile_supports_voltage_status(profile: Option<LnbRegistryProfile>) -> bool {
-    matches!(
-        profile,
-        Some(LnbRegistryProfile::Px4Device15VOnly | LnbRegistryProfile::EarthPt1FixedLnb)
-    )
-}
 
 fn frontend_status_caps_for_snapshot(
     snapshot: &RootFrontendInfoSnapshot,

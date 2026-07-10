@@ -214,7 +214,10 @@ impl DescramblerRuntime {
     pub(crate) fn clear_key_use_case(
         &mut self,
         key_table: &mut DescramblerKeyTable,
-    ) -> Result<(), DescramblerClearKeyTxnError<DescramblerKeyLookupError>> {
+    ) -> Result<
+        DescramblerClearKeyOutcome<DescramblerKeyLookupError>,
+        DescramblerClearKeyTxnError,
+    > {
         clear_key_use_case(&mut self.session, key_table)
     }
 
@@ -223,7 +226,7 @@ impl DescramblerRuntime {
         key_table: &mut DescramblerKeyTable,
         token: DescramblerKeyToken,
     ) -> Result<
-        DescramblerReplaceKeyOutcome,
+        DescramblerReplaceKeyOutcome<DescramblerKeyLookupError>,
         DescramblerReplaceKeyTxnError<DescramblerKeyLookupError, DescramblerKeyLookupError>,
     > {
         replace_key_use_case(&mut self.session, key_table, token)
@@ -277,9 +280,30 @@ impl DescramblerCleanupReport {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct DescramblerClearKeyPlan {
-    old_token: Option<DescramblerKeyToken>,
-    old_key_slot: Option<DescramblerKeySlotId>,
+enum DescramblerClearKeyPlan {
+    NoKey,
+    ClearExisting {
+        token: DescramblerKeyToken,
+        key_slot: DescramblerKeySlotId,
+    },
+}
+
+impl DescramblerClearKeyPlan {
+    fn old_token(&self) -> Option<&DescramblerKeyToken> {
+        match self {
+            Self::NoKey => None,
+            Self::ClearExisting { token, .. } => Some(token),
+        }
+    }
+
+    fn matches_session(&self, session: &DescramblerSession) -> bool {
+        match self {
+            Self::NoKey => session.key_token().is_none() && session.key_slot().is_none(),
+            Self::ClearExisting { token, key_slot } => {
+                session.key_token() == Some(token) && session.key_slot() == Some(*key_slot)
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -458,10 +482,17 @@ impl DescramblerSessionTxn {
     ) -> Result<DescramblerClearKeyPlan, DescramblerSessionFailure> {
         self.ensure_open(session)?;
         self.record_step(DescramblerSessionTxnStep::CleanupKey);
-        Ok(DescramblerClearKeyPlan {
-            old_token: session.key_token().cloned(),
-            old_key_slot: session.key_slot(),
-        })
+        match (session.key_token().cloned(), session.key_slot()) {
+            (None, None) => Ok(DescramblerClearKeyPlan::NoKey),
+            (Some(token), Some(key_slot)) => Ok(DescramblerClearKeyPlan::ClearExisting {
+                token,
+                key_slot,
+            }),
+            _ => Err(DescramblerSessionFailure {
+                step: DescramblerSessionTxnStep::CleanupKey,
+                kind: DescramblerSessionFailureKind::ClearKeyPlanMismatch,
+            }),
+        }
     }
 
     fn validate_clear_key_plan(
@@ -470,8 +501,7 @@ impl DescramblerSessionTxn {
         plan: &DescramblerClearKeyPlan,
     ) -> Result<(), DescramblerSessionFailure> {
         self.ensure_open(session)?;
-        if session.key_token() != plan.old_token.as_ref() || session.key_slot() != plan.old_key_slot
-        {
+        if !plan.matches_session(session) {
             self.record_step(DescramblerSessionTxnStep::Rollback);
             return Err(DescramblerSessionFailure {
                 step: DescramblerSessionTxnStep::CleanupKey,
@@ -551,9 +581,17 @@ impl DescramblerKeyTxnOps for DescramblerKeyTable {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub(crate) enum DescramblerClearKeyTxnError<ReleaseError> {
+pub(crate) enum DescramblerClearKeyTxnError {
     Session(DescramblerSessionFailure),
-    ReleaseOld(ReleaseError),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum DescramblerClearKeyOutcome<ReleaseError> {
+    AlreadyClear,
+    Cleared,
+    ClearedWithOldKeyReleaseFailure {
+        release_old: ReleaseError,
+    },
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -574,33 +612,38 @@ pub(crate) enum DescramblerReplaceKeyTxnError<AcquireError, ReleaseError> {
         failure: DescramblerSessionFailure,
         rollback_release: Option<ReleaseError>,
     },
-    ReleaseOld(ReleaseError),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum DescramblerReplaceKeyOutcome {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum DescramblerReplaceKeyOutcome<ReleaseError> {
     AlreadyCurrent,
     Replaced,
+    ReplacedWithOldKeyReleaseFailure {
+        release_old: ReleaseError,
+    },
 }
 
 pub(crate) fn clear_key_use_case<KeyTable>(
     session: &mut DescramblerSession,
     key_table: &mut KeyTable,
-) -> Result<(), DescramblerClearKeyTxnError<KeyTable::LookupError>>
+) -> Result<DescramblerClearKeyOutcome<KeyTable::LookupError>, DescramblerClearKeyTxnError>
 where
     KeyTable: DescramblerKeyTxnOps,
 {
     let prepared =
         prepare_clear_key_use_case(session).map_err(DescramblerClearKeyTxnError::Session)?;
-    let old_token = prepared.plan.old_token.clone();
-    if let Some(token) = old_token.as_ref() {
-        key_table
-            .release_key_token(token)
-            .map_err(DescramblerClearKeyTxnError::ReleaseOld)?;
-    }
+    let old_token = prepared.plan.old_token().cloned();
     commit_prepared_clear_key_use_case(session, prepared)
         .map_err(DescramblerClearKeyTxnError::Session)?;
-    Ok(())
+    let Some(token) = old_token.as_ref() else {
+        return Ok(DescramblerClearKeyOutcome::AlreadyClear);
+    };
+    if let Err(release_old) = key_table.release_key_token(token) {
+        return Ok(DescramblerClearKeyOutcome::ClearedWithOldKeyReleaseFailure {
+            release_old,
+        });
+    }
+    Ok(DescramblerClearKeyOutcome::Cleared)
 }
 
 pub(crate) fn replace_key_use_case<KeyTable>(
@@ -608,7 +651,7 @@ pub(crate) fn replace_key_use_case<KeyTable>(
     key_table: &mut KeyTable,
     token: DescramblerKeyToken,
 ) -> Result<
-    DescramblerReplaceKeyOutcome,
+    DescramblerReplaceKeyOutcome<KeyTable::LookupError>,
     DescramblerReplaceKeyTxnError<KeyTable::LookupError, KeyTable::LookupError>,
 >
 where
@@ -634,9 +677,11 @@ where
         });
     }
     if let Some(old_token) = old_token.as_ref() {
-        key_table
-            .release_key_token(old_token)
-            .map_err(DescramblerReplaceKeyTxnError::ReleaseOld)?;
+        if let Err(release_old) = key_table.release_key_token(old_token) {
+            return Ok(DescramblerReplaceKeyOutcome::ReplacedWithOldKeyReleaseFailure {
+                release_old,
+            });
+        }
     }
     Ok(DescramblerReplaceKeyOutcome::Replaced)
 }

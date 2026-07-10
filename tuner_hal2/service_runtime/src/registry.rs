@@ -3,8 +3,9 @@ use std::path::PathBuf;
 
 use crate::descrambler_key_table::{DescramblerKeyLookupError, DescramblerKeyTable};
 use crate::descrambler_session::{
-    DescramblerCleanupReport, DescramblerCleanupTxnError, DescramblerClearKeyTxnError,
-    DescramblerReplaceKeyOutcome, DescramblerReplaceKeyTxnError, DescramblerRuntime,
+    DescramblerCleanupReport, DescramblerCleanupTxnError, DescramblerClearKeyOutcome,
+    DescramblerClearKeyTxnError, DescramblerReplaceKeyOutcome,
+    DescramblerReplaceKeyTxnError, DescramblerRuntime,
     DescramblerSessionFailure, DescramblerSessionFailureKind, DescramblerSessionTxnStep,
 };
 use crate::diagnostics::{DescramblerDiagnosticKind, DescramblerDiagnosticRecord};
@@ -13,10 +14,11 @@ use maleicacid_tuner_hal2_common::{
     FrontendBackendKind, FrontendSystem, HalError, HalInvalidArgumentKind, HalInvalidStateKind,
 };
 use maleicacid_tuner_hal2_demux::{DemuxRuntime, FilterOpenType, FilterRuntimeState};
-use maleicacid_tuner_hal2_demux::{PacketPid, PipelineDiagnostic};
+use maleicacid_tuner_hal2_demux::{PacketDescramblePolicyFailure, PacketPid, PipelineDiagnostic, PipelineReport};
 use maleicacid_tuner_hal2_descrambler::{
-    descramble_ts_packet_in_place, DescrambleFailure, DescrambleOutcome, DescramblerKeySlot,
-    DescramblerKeyToken, DescramblerPid, DescramblerPidClaim,
+    descramble_ts_packet_in_place, packet_policy_for_descramble_failure, DescrambleFailure,
+    DescrambleOutcome, DescramblerKeySlot, DescramblerKeyToken, DescramblerPid,
+    DescramblerPidClaim, PacketPolicyAction,
 };
 use maleicacid_tuner_hal2_device::FrontendRuntime;
 use maleicacid_tuner_hal2_lnb::LnbRuntime;
@@ -107,6 +109,55 @@ pub(crate) struct ResolvedDescramblerPacketSnapshot {
     source_filter_ids_by_pid: BTreeMap<PacketPid, BTreeSet<i32>>,
 }
 
+
+fn packet_descramble_policy_failure_for_registry_boundary(
+    failure: DescrambleFailure,
+) -> PacketDescramblePolicyFailure {
+    match failure {
+        DescrambleFailure::NoKey => PacketDescramblePolicyFailure::NoKey,
+        DescrambleFailure::ScrambledPidNotRegistered => {
+            PacketDescramblePolicyFailure::ScrambledPidNotRegistered
+        }
+        DescrambleFailure::TransportErrorRecord => PacketDescramblePolicyFailure::TransportErrorRecord,
+        DescrambleFailure::InvalidTsc => PacketDescramblePolicyFailure::InvalidTsc,
+        DescrambleFailure::ScrambledNullPid => PacketDescramblePolicyFailure::ScrambledNullPid,
+        DescrambleFailure::ScrambledWithoutPayload => {
+            PacketDescramblePolicyFailure::ScrambledWithoutPayload
+        }
+        DescrambleFailure::BadToken => PacketDescramblePolicyFailure::BadToken,
+        DescrambleFailure::Multi2Fail => PacketDescramblePolicyFailure::Multi2Fail,
+        DescrambleFailure::InvalidPacketSize
+        | DescrambleFailure::BadSyncByte
+        | DescrambleFailure::InvalidAfc
+        | DescrambleFailure::InvalidAdaptationField => PacketDescramblePolicyFailure::InvalidPacket,
+    }
+}
+
+fn descrambler_diagnostic_kind_for_registry_boundary(
+    failure: DescrambleFailure,
+) -> DescramblerDiagnosticKind {
+    match failure {
+        DescrambleFailure::InvalidPacketSize => DescramblerDiagnosticKind::InvalidPacketSize,
+        DescrambleFailure::BadSyncByte => DescramblerDiagnosticKind::BadSyncByte,
+        DescrambleFailure::InvalidAfc => DescramblerDiagnosticKind::InvalidAfc,
+        DescrambleFailure::InvalidAdaptationField => {
+            DescramblerDiagnosticKind::InvalidAdaptationField
+        }
+        DescrambleFailure::InvalidTsc => DescramblerDiagnosticKind::InvalidTsc,
+        DescrambleFailure::TransportErrorRecord => DescramblerDiagnosticKind::TransportErrorRecord,
+        DescrambleFailure::ScrambledNullPid => DescramblerDiagnosticKind::ScrambledNullPid,
+        DescrambleFailure::ScrambledWithoutPayload => {
+            DescramblerDiagnosticKind::ScrambledWithoutPayload
+        }
+        DescrambleFailure::NoKey => DescramblerDiagnosticKind::PacketScrambledWithoutKey,
+        DescrambleFailure::BadToken => DescramblerDiagnosticKind::BadToken,
+        DescrambleFailure::Multi2Fail => DescramblerDiagnosticKind::Multi2Fail,
+        DescrambleFailure::ScrambledPidNotRegistered => {
+            DescramblerDiagnosticKind::ScrambledWithoutDescrambler
+        }
+    }
+}
+
 impl ResolvedDescramblerPacketSnapshot {
     pub(crate) fn targets_packet_pid(&self, pid: PacketPid) -> bool {
         self.packet_pids.contains(&pid)
@@ -124,12 +175,47 @@ impl ResolvedDescramblerPacketSnapshot {
         )
     }
 
-    pub(crate) fn source_filter_ids_for_packet_pid(
+    pub(crate) fn source_filter_descramble_policy_diagnostics(
         &self,
         pid: PacketPid,
-    ) -> Option<&BTreeSet<i32>> {
-        self.source_filter_ids_by_pid.get(&pid)
+        failure: DescrambleFailure,
+    ) -> Vec<PipelineDiagnostic> {
+        self.source_filter_ids_by_pid
+            .get(&pid)
+            .into_iter()
+            .flat_map(|ids| ids.iter().copied())
+            .map(|filter_id| {
+                PipelineDiagnostic::source_filter_descramble_policy_failure(
+                    pid,
+                    filter_id,
+                    packet_descramble_policy_failure_for_registry_boundary(failure),
+                )
+            })
+            .collect()
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ResolvedDescramblerPacketFlow {
+    Clear,
+    Descrambled,
+    RecordPassThroughAndDropAssembly,
+    Drop,
+    DiagnoseOnly,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedDescramblerPacketDecision {
+    pub(crate) packet: [u8; TS_PACKET_SIZE],
+    pub(crate) flow: ResolvedDescramblerPacketFlow,
+    pub(crate) diagnostics: Vec<PipelineDiagnostic>,
+    pub(crate) diagnostic_records: Vec<DescramblerDiagnosticRecord>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedDescramblerPacketFailureDecision {
+    pub(crate) flow: ResolvedDescramblerPacketFlow,
+    pub(crate) diagnostic_records: Vec<DescramblerDiagnosticRecord>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -140,14 +226,120 @@ pub(crate) struct ResolvedDescramblerPacketMaterial {
 }
 
 impl ResolvedDescramblerPacketMaterial {
-    pub(crate) fn into_parts(
+    fn flow_for_descramble_failure(failure: DescrambleFailure) -> ResolvedDescramblerPacketFlow {
+        match packet_policy_for_descramble_failure(failure) {
+            PacketPolicyAction::RecordPassThroughAndDropAssembly => {
+                ResolvedDescramblerPacketFlow::RecordPassThroughAndDropAssembly
+            }
+            PacketPolicyAction::DropAndDiagnose => ResolvedDescramblerPacketFlow::Drop,
+            PacketPolicyAction::DiagnoseOnly => ResolvedDescramblerPacketFlow::DiagnoseOnly,
+        }
+    }
+
+    fn failure_records(
+        demux_id: i32,
+        packet_pid: PacketPid,
+        failure: DescrambleFailure,
+    ) -> Vec<DescramblerDiagnosticRecord> {
+        let mut records = Vec::new();
+        if matches!(
+            packet_policy_for_descramble_failure(failure),
+            PacketPolicyAction::RecordPassThroughAndDropAssembly
+        ) {
+            records.push(DescramblerDiagnosticRecord::packet_policy(
+                demux_id,
+                packet_pid,
+                DescramblerDiagnosticKind::PacketAssemblySuppressed,
+            ));
+        }
+        records.push(DescramblerDiagnosticRecord::packet_policy(
+            demux_id,
+            packet_pid,
+            descrambler_diagnostic_kind_for_registry_boundary(failure),
+        ));
+        records
+    }
+
+    fn failure_diagnostics(
+        &self,
+        packet_pid: PacketPid,
+        failure: DescrambleFailure,
+    ) -> Vec<PipelineDiagnostic> {
+        self.snapshots
+            .iter()
+            .flat_map(|snapshot| {
+                snapshot.source_filter_descramble_policy_diagnostics(packet_pid, failure)
+            })
+            .collect()
+    }
+
+    pub(crate) fn decide_descrambled_packet(
         self,
-    ) -> (
-        Vec<ResolvedDescramblerPacketSnapshot>,
-        Vec<PipelineDiagnostic>,
-        Vec<DescramblerDiagnosticRecord>,
-    ) {
-        (self.snapshots, self.diagnostics, self.diagnostic_records)
+        demux_id: i32,
+        packet_pid: PacketPid,
+        packet: &[u8; TS_PACKET_SIZE],
+    ) -> ResolvedDescramblerPacketDecision {
+        let mut diagnostic_records = self.diagnostic_records.clone();
+        let mut saw_target_descrambler = false;
+        for snapshot in self
+            .snapshots
+            .iter()
+            .filter(|snapshot| snapshot.targets_packet_pid(packet_pid))
+        {
+            saw_target_descrambler = true;
+            let Some(descramble_result) = snapshot.descramble_packet(packet) else {
+                continue;
+            };
+            match descramble_result {
+                Ok((candidate, DescrambleOutcome::Descrambled { .. })) => {
+                    diagnostic_records.push(DescramblerDiagnosticRecord::packet_policy(
+                        demux_id,
+                        packet_pid,
+                        DescramblerDiagnosticKind::PacketDescrambled,
+                    ));
+                    return ResolvedDescramblerPacketDecision {
+                        packet: candidate,
+                        flow: ResolvedDescramblerPacketFlow::Descrambled,
+                        diagnostics: self.diagnostics,
+                        diagnostic_records,
+                    };
+                }
+                Ok((_, DescrambleOutcome::PassedThrough { .. })) => {
+                    return ResolvedDescramblerPacketDecision {
+                        packet: *packet,
+                        flow: ResolvedDescramblerPacketFlow::Clear,
+                        diagnostics: self.diagnostics,
+                        diagnostic_records,
+                    };
+                }
+                Err(failure) => {
+                    diagnostic_records.extend(Self::failure_records(demux_id, packet_pid, failure));
+                    let mut diagnostics = self.diagnostics;
+                    diagnostics.extend(self.failure_diagnostics(packet_pid, failure));
+                    return ResolvedDescramblerPacketDecision {
+                        packet: *packet,
+                        flow: Self::flow_for_descramble_failure(failure),
+                        diagnostics,
+                        diagnostic_records,
+                    };
+                }
+            }
+        }
+
+        let failure = if saw_target_descrambler {
+            DescrambleFailure::NoKey
+        } else {
+            DescrambleFailure::ScrambledPidNotRegistered
+        };
+        diagnostic_records.extend(Self::failure_records(demux_id, packet_pid, failure));
+        let mut diagnostics = self.diagnostics;
+        diagnostics.extend(self.failure_diagnostics(packet_pid, failure));
+        ResolvedDescramblerPacketDecision {
+            packet: *packet,
+            flow: Self::flow_for_descramble_failure(failure),
+            diagnostics,
+            diagnostic_records,
+        }
     }
 }
 
@@ -361,7 +553,7 @@ impl RuntimeRegistry {
         let demux_ids = self.frontend_bound_demux_ids(frontend_id);
         for demux_id in &demux_ids {
             if let Some(runtime) = self.demux_runtimes.get_mut(demux_id) {
-                runtime.quarantine();
+                runtime.quarantine_runtime_from_typed_request(maleicacid_tuner_hal2_demux::DemuxRuntimeQuarantineRequest::new());
             }
         }
         demux_ids
@@ -881,21 +1073,92 @@ impl RuntimeRegistry {
         }
     }
 
-    pub(crate) fn descrambler_keyless_claim_exists_for_demux_packet_pid(
+    pub(crate) fn keyless_assembly_suppression_records_for_demux_packet_pid(
         &self,
         demux_id: i32,
         demux_generation: u64,
         packet_pid: PacketPid,
-    ) -> bool {
-        self.descrambler_runtimes.values().any(|runtime| {
+    ) -> Vec<DescramblerDiagnosticRecord> {
+        let mut records = Vec::new();
+        let keyless_claim = self.descrambler_runtimes.values().any(|runtime| {
             runtime.has_keyless_claim_for_demux_packet_pid(demux_id, demux_generation, packet_pid)
-        })
+        });
+        if keyless_claim {
+            records.push(DescramblerDiagnosticRecord::packet_policy(
+                demux_id,
+                packet_pid,
+                DescramblerDiagnosticKind::PacketScrambledWithoutKey,
+            ));
+        }
+        records.push(DescramblerDiagnosticRecord::packet_policy(
+            demux_id,
+            packet_pid,
+            DescramblerDiagnosticKind::PacketAssemblySuppressed,
+        ));
+        records
+    }
+
+    pub(crate) fn packet_pipeline_diagnostic_records_for_demux_report(
+        &self,
+        demux_id: i32,
+        demux_generation: u64,
+        report: &PipelineReport,
+    ) -> Vec<DescramblerDiagnosticRecord> {
+        if !report
+            .assembly_suppression_reasons
+            .contains(&maleicacid_tuner_hal2_demux::PipelineAssemblySuppressionReason::KeylessScrambledWithoutDescrambler)
+        {
+            return Vec::new();
+        }
+        report
+            .diagnostics
+            .iter()
+            .filter_map(|diagnostic| match diagnostic {
+                PipelineDiagnostic::KeylessScrambledAssemblySuppressed { pid } => Some(*pid),
+                _ => None,
+            })
+            .flat_map(|pid| {
+                self.keyless_assembly_suppression_records_for_demux_packet_pid(
+                    demux_id,
+                    demux_generation,
+                    pid,
+                )
+            })
+            .collect()
+    }
+
+    pub(crate) fn descrambler_validation_failure_without_pid_decision(
+        &self,
+        demux_id: i32,
+        failure: DescrambleFailure,
+    ) -> ResolvedDescramblerPacketFailureDecision {
+        let mut diagnostic_records = Vec::new();
+        if matches!(
+            packet_policy_for_descramble_failure(failure),
+            PacketPolicyAction::RecordPassThroughAndDropAssembly
+        ) {
+            diagnostic_records.push(DescramblerDiagnosticRecord::packet_policy_without_pid(
+                demux_id,
+                DescramblerDiagnosticKind::PacketAssemblySuppressed,
+            ));
+        }
+        diagnostic_records.push(DescramblerDiagnosticRecord::packet_policy_without_pid(
+            demux_id,
+            descrambler_diagnostic_kind_for_registry_boundary(failure),
+        ));
+        ResolvedDescramblerPacketFailureDecision {
+            flow: ResolvedDescramblerPacketMaterial::flow_for_descramble_failure(failure),
+            diagnostic_records,
+        }
     }
 
     pub(crate) fn clear_descrambler_key_use_case(
         &mut self,
         descrambler_id: DescramblerRuntimeId,
-    ) -> Result<(), DescramblerClearKeyTxnError<DescramblerKeyLookupError>> {
+    ) -> Result<
+        DescramblerClearKeyOutcome<DescramblerKeyLookupError>,
+        DescramblerClearKeyTxnError,
+    > {
         let runtime = self.descrambler_runtimes.get_mut(&descrambler_id).ok_or(
             DescramblerClearKeyTxnError::Session(DescramblerSessionFailure {
                 step: DescramblerSessionTxnStep::ValidateOpen,
@@ -910,7 +1173,7 @@ impl RuntimeRegistry {
         descrambler_id: DescramblerRuntimeId,
         token: DescramblerKeyToken,
     ) -> Result<
-        DescramblerReplaceKeyOutcome,
+        DescramblerReplaceKeyOutcome<DescramblerKeyLookupError>,
         DescramblerReplaceKeyTxnError<DescramblerKeyLookupError, DescramblerKeyLookupError>,
     > {
         let runtime = self.descrambler_runtimes.get_mut(&descrambler_id).ok_or(

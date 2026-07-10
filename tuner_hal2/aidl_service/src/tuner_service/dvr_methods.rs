@@ -8,7 +8,9 @@ use super::{
     BinderResult, DvrAidlObject, DvrFilterLinkRequest, DvrSettings, IDvr, IFilter,
     ObjectQueryRequest, ObjectQueryResponse, Strong, TunerQueueDesc,
 };
-use crate::dvr_callback_delivery::record_dvr_post_commit_notification_outcome;
+use crate::dvr_callback_delivery::{
+    record_dvr_notifier_cleanup_outcome, record_dvr_post_commit_notification_outcome,
+};
 use maleicacid_tuner_hal2_common::{HalError, HalInvalidArgumentKind};
 use maleicacid_tuner_hal2_service_runtime::DvrPostCommitNotificationPhase;
 
@@ -109,19 +111,17 @@ impl IDvr for DvrAidlObject {
             },
         )?;
         record_dvr_post_commit_notification_outcome(
-            &self.runtime(),
+            &self.context(),
             self.handle(),
             DvrPostCommitNotificationPhase::InitialStatusDelivery,
             deliver_started_dvr_status(&self.context(), self.handle()),
-        )
-        .map_err(status_from_hal_error)?;
+        );
         record_dvr_post_commit_notification_outcome(
-            &self.runtime(),
+            &self.context(),
             self.handle(),
             DvrPostCommitNotificationPhase::StatusNotifierStart,
             start_dvr_status_notifier(&self.context(), self.handle()),
-        )
-        .map_err(status_from_hal_error)?;
+        );
         Ok(())
     }
     fn stop(&self) -> BinderResult<()> {
@@ -133,13 +133,12 @@ impl IDvr for DvrAidlObject {
                 runtime.stop_dvr_for_object(handle.object_id(), handle.generation(), dispatch_proof)
             },
         )?;
-        record_dvr_post_commit_notification_outcome(
-            &self.runtime(),
+        record_dvr_notifier_cleanup_outcome(
+            &self.context(),
             self.handle(),
             DvrPostCommitNotificationPhase::StatusNotifierStop,
             stop_dvr_status_notifier(&self.context(), self.handle()),
-        )
-        .map_err(status_from_hal_error)?;
+        );
         Ok(())
     }
     fn flush(&self) -> BinderResult<()> {

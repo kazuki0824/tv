@@ -119,7 +119,9 @@ impl AidlStatusMapper {
             HalError::ComposedFailure { primary, .. } => Self::map_error(primary),
             HalError::InvalidArgument { .. } => TunerStatusCode::InvalidArgument,
             HalError::InvalidState { .. } => TunerStatusCode::InvalidState,
-            HalError::Unsupported(_) => TunerStatusCode::Unavailable,
+            HalError::Unsupported(_) | HalError::UnsupportedDetail { .. } => {
+                TunerStatusCode::Unavailable
+            }
             HalError::DeviceMissing(_)
             | HalError::OpenFailed { .. }
             | HalError::PermissionDenied { .. }

@@ -11,8 +11,18 @@ pub use configure_txn::{
     FilterConfigureReport, FilterConfigureStep,
 };
 pub use demux::{
-    DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind, DemuxRuntimeSnapshot,
-    DemuxRuntimeState, PlaybackConsumeReport, QueueDescriptorQueryError,
+    DemuxGenerationBoundaryRequest, DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind,
+    DemuxRuntimeQuarantineRequest, DemuxRuntimeRollbackRestoreRequest,
+    DemuxRuntimeRollbackToken, DemuxRuntimeRollbackTokenPrepareRequest, DemuxRuntimeSnapshot,
+    DemuxRuntimeState, DvrRuntimeConfigureRequest, DvrRuntimeRegistrationRequest,
+    DvrFilterLinkRequest, DvrRuntimeOperationRequest, DvrStatusReportingRequest,
+    DvrStatusIntervalRuntimeRequest, FilterAvHandleReleaseRequest,
+    FilterAvStreamTypeRuntimeRequest, FilterDelayHintRuntimeRequest, FilterRuntimeConfigureRequest,
+    FilterRuntimeOperationKind, FilterRuntimeOperationOutcome, FilterRuntimeOperationReport,
+    FilterRuntimeOperationRequest, FilterRuntimeOperationSkipReason, FilterRuntimeOperationStep,
+    FilterRuntimeOperationStepOutcome, FilterRuntimeRegistrationRequest, FilterSourceConnectRequest,
+    FilterSourceDisconnectRequest, PlaybackConsumeReport, QueueDescriptorQueryError,
+    ValidatedPacketIngressRequest,
 };
 pub use dvr::{DvrKind, DvrRuntimeSnapshot, DvrRuntimeState, DvrStatusEvent};
 pub use filter::{FilterRuntimeSnapshot, FilterRuntimeState};
@@ -21,3 +31,4 @@ pub use queue_runtime::{
     QueueDescriptorExportPlan, QueueDescriptorExportTarget, QueueDescriptorSnapshot,
     QueueGrantorDescriptorSnapshot, QueueRuntimeError, QueueRuntimeErrorKind,
 };
+pub use source_boundary::{SourceBoundaryOutcome, SourceBoundaryReport, SourceBoundaryStep};

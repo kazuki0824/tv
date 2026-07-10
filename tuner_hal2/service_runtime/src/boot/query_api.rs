@@ -1,5 +1,5 @@
 use super::{
-    AidlObjectGeneration, AidlObjectId, AidlObjectKind, DemuxRuntimeId, DemuxRuntimeSnapshot,
+    AidlObjectGeneration, AidlObjectId, AidlObjectKind, DemuxRuntimeId, DemuxRuntimeRollbackToken, DemuxRuntimeSnapshot,
     DvrRuntimeId, FilterOpenType, FilterRuntimeId, FrontendLiveReaderDescriptor, FrontendRuntimeId,
     FrontendRuntimeSnapshot, HalError, HalInternalKind, HalInvalidArgumentKind,
     HalInvalidStateKind, LnbRuntimeId, RuntimeObjectTable, RuntimeObjectTableError,
@@ -7,7 +7,8 @@ use super::{
 };
 use crate::object_method_txn::ObjectFrontendStatusSnapshot;
 use maleicacid_tuner_hal2_demux::{
-    DvrRuntimeState, DvrStatusEvent, QueueDescriptorExportPlan as DemuxQueueDescriptorExportPlan,
+    DemuxRuntimeRollbackTokenPrepareRequest, DvrRuntimeState, DvrStatusEvent,
+    QueueDescriptorExportPlan as DemuxQueueDescriptorExportPlan,
     QueueDescriptorExportTarget, QueueDescriptorQueryError, QueueDescriptorSnapshot,
     QueueRuntimeError,
 };
@@ -217,6 +218,32 @@ impl TunerServiceRuntime {
             registry: &self.registry,
             object_table: &self.object_table,
         }
+    }
+
+    pub(crate) fn prepare_bound_demux_runtime_rollback_tokens(
+        &mut self,
+        frontend_id: i32,
+    ) -> Result<Vec<(DemuxRuntimeId, DemuxRuntimeRollbackToken)>, HalError> {
+        let frontend_key = FrontendRuntimeId(frontend_id);
+        let demux_ids = self.registry.frontend_bound_demux_ids(frontend_key);
+        let mut tokens = Vec::with_capacity(demux_ids.len());
+        for demux_id in demux_ids {
+            let demux = self.registry.demux_runtime_mut(demux_id).ok_or_else(|| {
+                HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "bound demux runtime is missing while preparing tune rollback token",
+                )
+            })?;
+            tokens.push((
+                demux_id,
+                demux
+                    .rollback_token_from_typed_request(
+                        DemuxRuntimeRollbackTokenPrepareRequest::new(demux_id.0),
+                    )
+                    .map_err(super::demux_runtime_error_to_hal)?,
+            ));
+        }
+        Ok(tokens)
     }
 
     pub(crate) fn has_frontend_id(&self, id: i32) -> bool {
@@ -562,10 +589,11 @@ impl<'a> RuntimeQuery<'a> {
                     "frontend runtime is missing for advertised frontend",
                 )
             })?;
+        let snapshot = runtime.snapshot();
         Ok(ObjectFrontendStatusSnapshot {
             lnb_profile: entry.lnb_profile,
-            runtime_state: runtime.state(),
-            signal_state: runtime.signal_state(),
+            runtime_state: snapshot.state,
+            signal_state: snapshot.signal_state,
         })
     }
 
@@ -618,23 +646,23 @@ impl<'a> RuntimeQuery<'a> {
         Ok(runtime.snapshot())
     }
 
-    pub(crate) fn bound_demux_runtime_snapshots(
+    pub(crate) fn bound_demux_runtime_generations(
         &self,
         frontend_id: i32,
-    ) -> Result<Vec<(DemuxRuntimeId, DemuxRuntimeSnapshot)>, HalError> {
+    ) -> Result<Vec<(DemuxRuntimeId, u64)>, HalError> {
         let frontend_key = FrontendRuntimeId(frontend_id);
         let demux_ids = self.registry.frontend_bound_demux_ids(frontend_key);
-        let mut snapshots = Vec::with_capacity(demux_ids.len());
+        let mut generations = Vec::with_capacity(demux_ids.len());
         for demux_id in demux_ids {
             let demux = self.registry.demux_runtime(demux_id).ok_or_else(|| {
                 HalError::invalid_state(
                     HalInvalidStateKind::InvalidLifecycle,
-                    "bound demux runtime is missing while taking tune rollback snapshot",
+                    "bound demux runtime is missing while reading tune rollback generation",
                 )
             })?;
-            snapshots.push((demux_id, demux.snapshot()));
+            generations.push((demux_id, demux.snapshot().generation()));
         }
-        Ok(snapshots)
+        Ok(generations)
     }
 
     pub(crate) fn frontend_live_reader_descriptor_for_live_pump(

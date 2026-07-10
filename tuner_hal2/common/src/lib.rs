@@ -614,6 +614,10 @@ pub enum HalError {
         detail: HalErrorDetail,
     },
     Unsupported(&'static str),
+    UnsupportedDetail {
+        feature: &'static str,
+        detail: HalErrorDetail,
+    },
 }
 
 impl HalError {
@@ -662,6 +666,13 @@ impl HalError {
     pub fn cleanup_failed(resource: &'static str, detail: impl Into<String>) -> Self {
         Self::CleanupFailed {
             resource,
+            detail: HalErrorDetail::new(detail),
+        }
+    }
+
+    pub fn unsupported_detail(feature: &'static str, detail: impl Into<String>) -> Self {
+        Self::UnsupportedDetail {
+            feature,
             detail: HalErrorDetail::new(detail),
         }
     }
@@ -819,6 +830,9 @@ impl fmt::Display for HalError {
                 write!(f, "internal error: kind={kind:?} detail={}", detail.detail)
             }
             HalError::Unsupported(feature) => write!(f, "unsupported feature: {feature}"),
+            HalError::UnsupportedDetail { feature, detail } => {
+                write!(f, "unsupported feature: {feature}: {}", detail.detail)
+            }
         }
     }
 }

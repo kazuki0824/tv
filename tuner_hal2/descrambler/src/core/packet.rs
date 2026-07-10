@@ -127,7 +127,7 @@ pub enum DescrambleOutcome {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct TsPacketHeader {
+struct TsPacketHeader {
     pub pid: u16,
     pub transport_error_indicator: bool,
     pub payload_unit_start: bool,
@@ -137,7 +137,7 @@ pub struct TsPacketHeader {
     pub payload_offset: Option<usize>,
 }
 
-pub fn parse_ts_packet_header(packet: &[u8]) -> Result<TsPacketHeader, DescrambleFailure> {
+fn parse_ts_packet_header(packet: &[u8]) -> Result<TsPacketHeader, DescrambleFailure> {
     if packet.len() != TS_PACKET_SIZE {
         return Err(DescrambleFailure::InvalidPacketSize);
     }

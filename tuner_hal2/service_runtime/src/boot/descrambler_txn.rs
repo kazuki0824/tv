@@ -2,8 +2,9 @@ use super::{
     descrambler_key_lookup_error_to_hal, descrambler_key_release_error_to_hal,
     descrambler_key_token_error_to_hal, descrambler_pid_claim_error_to_hal,
     descrambler_session_failure_to_hal, DemuxRuntimeId, DemuxRuntimeState,
-    DescramblerCleanupTxnError, DescramblerClearKeyTxnError, DescramblerDiagnosticKind,
-    DescramblerDiagnosticPhase, DescramblerDiagnosticRecord, DescramblerKeyToken,
+    DescramblerCleanupTxnError, DescramblerClearKeyOutcome, DescramblerClearKeyTxnError,
+    DescramblerDiagnosticKind, DescramblerDiagnosticPhase, DescramblerDiagnosticRecord,
+    DescramblerKeyToken,
     DescramblerKeyTokenError, DescramblerPid, DescramblerPidClaim, DescramblerReplaceKeyOutcome,
     DescramblerReplaceKeyTxnError, DescramblerRuntimeId, HalError, HalInvalidArgumentKind,
     HalInvalidStateKind, RegistryCommitError, TunerServiceRuntime,
@@ -25,12 +26,22 @@ impl AidlInputPid {
         Ok(Self(pid))
     }
 
-    pub(crate) const fn raw(self) -> u16 {
-        self.0
+    pub(crate) fn to_demux_input_claim(
+        self,
+    ) -> Result<DescramblerPidClaim, maleicacid_tuner_hal2_descrambler::DescramblerPidClaimError> {
+        DescramblerPidClaim::from_demux_input(self.0)
+    }
+
+    pub(crate) fn to_source_filter_claim(
+        self,
+        source_filter_id: i32,
+        generation: u64,
+    ) -> Result<DescramblerPidClaim, maleicacid_tuner_hal2_descrambler::DescramblerPidClaimError> {
+        DescramblerPidClaim::from_source_filter(self.0, source_filter_id, generation)
     }
 
     pub(crate) fn to_descrambler_pid(self) -> Result<DescramblerPid, HalError> {
-        DescramblerPidClaim::from_demux_input(self.0)
+        self.to_demux_input_claim()
             .map(|claim| claim.pid())
             .map_err(|error| descrambler_pid_claim_error_to_hal(error))
     }
@@ -111,7 +122,21 @@ impl TunerServiceRuntime {
                 .registry
                 .clear_descrambler_key_use_case(DescramblerRuntimeId(descrambler_id))
             {
-                Ok(()) => Ok(()),
+                Ok(
+                    DescramblerClearKeyOutcome::AlreadyClear
+                    | DescramblerClearKeyOutcome::Cleared,
+                ) => Ok(()),
+                Ok(DescramblerClearKeyOutcome::ClearedWithOldKeyReleaseFailure {
+                    release_old,
+                }) => {
+                    let hal_error = descrambler_key_release_error_to_hal(release_old);
+                    self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::set_key_token(
+                        descrambler_id,
+                        DescramblerDiagnosticKind::KeyTokenReleaseFailed,
+                        hal_error,
+                    ));
+                    Ok(())
+                }
                 Err(DescramblerClearKeyTxnError::Session(failure)) => {
                     let error = descrambler_session_failure_to_hal(failure.kind);
                     self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::set_key_token(
@@ -120,15 +145,6 @@ impl TunerServiceRuntime {
                         error.clone(),
                     ));
                     Err(error)
-                }
-                Err(DescramblerClearKeyTxnError::ReleaseOld(error)) => {
-                    let hal_error = descrambler_key_release_error_to_hal(error);
-                    self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::set_key_token(
-                        descrambler_id,
-                        DescramblerDiagnosticKind::KeyTokenReleaseFailed,
-                        hal_error.clone(),
-                    ));
-                    Err(hal_error)
                 }
             };
         }
@@ -170,6 +186,15 @@ impl TunerServiceRuntime {
                 DescramblerReplaceKeyOutcome::AlreadyCurrent
                 | DescramblerReplaceKeyOutcome::Replaced,
             ) => Ok(()),
+            Ok(DescramblerReplaceKeyOutcome::ReplacedWithOldKeyReleaseFailure { release_old }) => {
+                let hal_error = descrambler_key_release_error_to_hal(release_old);
+                self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::set_key_token(
+                    descrambler_id,
+                    DescramblerDiagnosticKind::KeyTokenReleaseFailed,
+                    hal_error,
+                ));
+                Ok(())
+            }
             Err(DescramblerReplaceKeyTxnError::Session(failure)) => {
                 let hal_error = descrambler_session_failure_to_hal(failure.kind);
                 self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::set_key_token(
@@ -216,15 +241,6 @@ impl TunerServiceRuntime {
                 ));
                 Err(final_error)
             }
-            Err(DescramblerReplaceKeyTxnError::ReleaseOld(error)) => {
-                let hal_error = descrambler_key_release_error_to_hal(error);
-                self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::set_key_token(
-                    descrambler_id,
-                    DescramblerDiagnosticKind::KeyTokenReleaseFailed,
-                    hal_error.clone(),
-                ));
-                Err(hal_error)
-            }
         }
     }
 
@@ -248,7 +264,7 @@ impl TunerServiceRuntime {
                 return Err(hal_error);
             }
         };
-        let claim = match DescramblerPidClaim::from_demux_input(validated_pid.raw()) {
+        let claim = match validated_pid.to_demux_input_claim() {
             Ok(claim) => claim,
             Err(error) => {
                 let hal_error = descrambler_pid_claim_error_to_hal(error);
@@ -338,7 +354,7 @@ impl TunerServiceRuntime {
                 return Err(hal_error);
             }
         };
-        let claim = match DescramblerPidClaim::from_demux_input(validated_pid.raw()) {
+        let claim = match validated_pid.to_demux_input_claim() {
             Ok(claim) => claim,
             Err(error) => {
                 let hal_error = descrambler_pid_claim_error_to_hal(error);
@@ -480,11 +496,7 @@ impl TunerServiceRuntime {
             ));
             return Err(error);
         }
-        let claim = match DescramblerPidClaim::from_source_filter(
-            validated_pid.raw(),
-            source_filter_id,
-            source_generation,
-        ) {
+        let claim = match validated_pid.to_source_filter_claim(source_filter_id, source_generation) {
             Ok(claim) => claim,
             Err(error) => {
                 let hal_error = descrambler_pid_claim_error_to_hal(error);
@@ -591,11 +603,7 @@ impl TunerServiceRuntime {
                 return Err(error);
             }
         };
-        let claim = match DescramblerPidClaim::from_source_filter(
-            validated_pid.raw(),
-            source_filter_id,
-            source_generation,
-        ) {
+        let claim = match validated_pid.to_source_filter_claim(source_filter_id, source_generation) {
             Ok(claim) => claim,
             Err(error) => {
                 let hal_error = descrambler_pid_claim_error_to_hal(error);

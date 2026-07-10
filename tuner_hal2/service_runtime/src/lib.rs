@@ -1,6 +1,7 @@
 mod boot;
 mod callback_registry;
 mod capability_profile;
+mod cleanup_execution;
 mod command_dispatch;
 mod demux_filter_dvr_ops;
 mod descrambler_key_table;
@@ -31,7 +32,7 @@ mod transaction_registry;
 pub use boot::{
     start_frontend_demux_live_pump_from_reader, CallbackArtifactCleanupResult,
     CallbackArtifactResetCommand, CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport,
-    CallbackDeliveryOwnerKind, CallbackRegistrationArtifactOutcome, DvrChildRuntimeOpen,
+    CallbackRegistrationArtifactOutcome, DvrChildRuntimeOpen,
     DvrStatusPollSnapshot, FilterChildRuntimeOpen, FilterEventDelivery,
     FilterEventDeliverySnapshot, FilterEventDispatcher, FrontendDemuxPacketSink,
     FrontendProbeOutcome, OwnerCallbackCleanupArtifactCommand, OwnerCallbackCleanupUseCaseOutcome,
@@ -42,20 +43,29 @@ pub use capability_profile::{
     hal_generates_japanese_scan_plan, open_failed, scan_candidate_owner, transport_declared,
     ProfileFeature, RuntimeFailureDomain, ScanCandidateOwner, TransportCapability,
 };
+pub use cleanup_execution::{
+    CleanupExecutionDiagnosticSnapshot, CleanupExecutionReport, CleanupExecutionStepOutcome,
+    SharedCleanupDiagnostics,
+};
 pub use command_dispatch::{
     RuntimeCommandDispatchError, RuntimeCommandDispatchPlan, RuntimeCommandDispatcher,
 };
 pub use diagnostics::{
-    BoundedDiagnosticStore, CallbackArtifactRuntimeSplitDiagnosticRecord,
-    CallbackArtifactRuntimeSplitOutcome, CallbackArtifactRuntimeSplitPhase,
-    CallbackArtifactRuntimeSplitTarget, CapabilitySuppressionReason,
-    ChildOpenRollbackDiagnosticRecord, ChildOpenRollbackKind, ChildOpenRollbackPhase,
-    DescramblerDiagnosticKind, DescramblerDiagnosticPhase, DescramblerDiagnosticRecord,
-    DvrPostCommitNotificationDiagnosticRecord, DvrPostCommitNotificationPhase,
-    FilterCallbackDeliveryDiagnosticPhase, FilterCallbackDeliveryDiagnosticRecord,
-    FrontendCallbackDeliveryDiagnosticPhase, FrontendCallbackDeliveryDiagnosticRecord,
-    QueueDescriptorQueryDiagnosticRecord, StartupDiagnosticKind, StartupDiagnosticPhase,
-    StartupDiagnosticRecord,
+    BoundedDiagnosticStore, DiagnosticSnapshot, CallbackArtifactRuntimeSplitDiagnosticRecord,
+    CallbackArtifactRuntimeSplitDiagnosticSnapshot, CallbackArtifactRuntimeSplitOutcome,
+    CallbackArtifactRuntimeSplitPhase, CallbackArtifactRuntimeSplitTarget, CapabilitySuppressionReason,
+    SharedCallbackArtifactRuntimeSplitDiagnostics, SharedDvrPostCommitNotificationDiagnostics,
+    SharedDvrStatusNotifierCleanupDiagnostics, ChildOpenRollbackDiagnosticRecord,
+    ChildOpenRollbackDiagnosticSnapshot, ChildOpenRollbackKind, ChildOpenRollbackOutcome, ChildOpenRollbackPhase,
+    DemuxTransactionDiagnosticId, DemuxTransactionDiagnosticKind, DemuxTransactionDiagnosticRecord, DemuxTransactionDiagnosticSnapshot,
+    DescramblerDiagnosticKind, DescramblerDiagnosticPhase, DescramblerDiagnosticRecord, DescramblerDiagnosticSnapshot,
+    DvrPostCommitNotificationDiagnosticRecord, DvrPostCommitNotificationDiagnosticSnapshot,
+    DvrPostCommitNotificationFailureKind, DvrPostCommitNotificationPhase,
+    DvrStatusNotifierCleanupDiagnosticRecord, DvrStatusNotifierCleanupDiagnosticSnapshot,
+    FilterCallbackDeliveryDiagnosticPhase, FilterCallbackDeliveryDiagnosticRecord, FilterCallbackDeliveryDiagnosticSnapshot,
+    FrontendCallbackDeliveryDiagnosticPhase, FrontendCallbackDeliveryDiagnosticRecord, FrontendCallbackDeliveryDiagnosticSnapshot,
+    QueueDescriptorQueryDiagnosticRecord, QueueDescriptorQueryDiagnosticSnapshot, StartupDiagnosticKind, StartupDiagnosticPhase,
+    StartupDiagnosticRecord, StartupDiagnosticSnapshot,
 };
 pub use dispatch::{dispatch_target_for, ServiceRuntimeDispatchTarget};
 pub use frontend_ops::set_frontend_lnb_object_use_case;
@@ -65,19 +75,32 @@ pub use frontend_worker_txn::{
     start_frontend_backend_tune_worker as start_frontend_tune_use_case,
     stop_frontend_scan_object as stop_frontend_scan_use_case,
     stop_frontend_tune_object as stop_frontend_tune_use_case, FrontendCloseCleanupReport,
-    FrontendScanEndNotifier,
+    FrontendScanEndNotifier, FrontendWorkerCleanupDiagnosticKind,
+    FrontendWorkerCleanupDiagnosticRecord, FrontendWorkerCleanupDiagnosticSnapshot,
+    FrontendWorkerCleanupExecutionReport, FrontendWorkerCleanupStep,
+    FrontendWorkerCleanupStepOutcome, FrontendWorkerCleanupTarget,
+    FrontendWorkerCleanupWorkerGeneration, SharedFrontendWorkerCleanupDiagnostics,
 };
 pub use object_close_txn::{
     close_object_use_case, finish_object_close_use_case, quarantine_object_drop_leak_use_case,
-    ObjectArtifactCleanupCommand, ObjectArtifactCleanupExecutor, ObjectCloseCleanupFailure,
-    ObjectCloseRuntimeExecutor, ObjectCloseUseCasePlan, ObjectRuntimeCleanupCommand,
+    ObjectArtifactCleanupCommand, ObjectArtifactCleanupExecutor, ObjectArtifactCleanupKind,
+    ObjectCleanupDiagnosticKind, ObjectCleanupDiagnosticRecord, ObjectCleanupDiagnosticSnapshot,
+    ObjectCleanupExecutionKind, ObjectCleanupExecutionReport, ObjectCleanupObjectTarget,
+    ObjectCleanupStepOutcome, ObjectCloseCleanupFailure,
+    SharedObjectCleanupDiagnostics,
+    ObjectCloseRuntimeExecutor, ObjectCloseUseCasePlan,
+    ObjectRuntimeCleanupCommand, ObjectRuntimeCleanupKind,
 };
-pub use object_domain_cleanup::{ObjectDomainCleanupCommand, ObjectDomainCleanupExecutor};
+pub use object_domain_cleanup::{
+    ObjectDomainCleanupCommand, ObjectDomainCleanupExecutor, ObjectDomainCleanupKind,
+    ObjectDomainCleanupOutcome,
+};
 pub use object_method_txn::{
     execute_object_method_call_after_live, execute_object_query_call_after_live,
     execute_object_query_call_after_live_with_aidl_input_conversion,
     execute_shared_object_method_call_after_live, preflight_object_method_after_live_plan_only,
-    ObjectFrontendStatusReadinessValue, ObjectFrontendStatusType, ObjectFrontendStatusValue,
+    lnb_profile_supports_voltage_status, ObjectFrontendStatusReadinessValue,
+    ObjectFrontendStatusType, ObjectFrontendStatusValue,
     ObjectMethodExecutionToken, ObjectMethodTxnBuildError, ObjectQueryRequest, ObjectQueryResponse,
 };
 pub(crate) use object_table::RuntimeObjectLifecycle;
@@ -296,7 +319,7 @@ mod tests {
         assert_eq!(runtime.state(), ServiceState::Degraded);
         assert_eq!(runtime.registry().frontend_count(), 0);
         assert_eq!(
-            runtime.diagnostics()[0].kind,
+            runtime.diagnostics()[0].kind(),
             StartupDiagnosticKind::DeviceMissing
         );
     }
@@ -417,7 +440,7 @@ mod tests {
             .frontend_runtime(FrontendRuntimeId(1_000_000))
             .unwrap();
         assert_eq!(
-            frontend.state(),
+            frontend.snapshot().state,
             maleicacid_tuner_hal2_device::FrontendRuntimeState::Failed
         );
         assert!(matches!(
@@ -427,7 +450,7 @@ mod tests {
     }
 
     #[test]
-    fn identical_tune_request_stops_worker_before_new_generation() {
+    fn tune_replacement_reserves_new_generation_before_stopping_old_worker() {
         let mut runtime = TunerServiceRuntime::new();
         runtime.boot_from_probe_results([available(
             1_000_000,
@@ -477,6 +500,24 @@ mod tests {
             )
             .unwrap();
 
+        let reserved_generation = runtime
+            .frontend_txn()
+            .prepare_frontend_worker_replacement_generation(
+                1_000_000,
+                maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
+            )
+            .unwrap();
+        assert_eq!(reserved_generation, generation + 1);
+        assert_eq!(
+            runtime
+                .registry()
+                .frontend_runtime(FrontendRuntimeId(1_000_000))
+                .unwrap()
+                .generation(),
+            generation,
+            "replacement generation reservation must not commit before old worker stop",
+        );
+
         let outcome = crate::frontend_worker_txn::request_tune_worker_replacement_stop(
             &mut runtime,
             1_000_000,
@@ -495,18 +536,9 @@ mod tests {
                 .registry()
                 .frontend_runtime(FrontendRuntimeId(1_000_000))
                 .unwrap()
-                .active_tune_request(),
-            Some(&request)
-        );
-        assert_eq!(
-            runtime
-                .frontend_txn()
-                .prepare_frontend_worker_generation(
-                    1_000_000,
-                    maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
-                )
-                .unwrap(),
-            generation + 1
+                .snapshot()
+                .active_tune_request,
+            Some(request)
         );
     }
 
@@ -542,7 +574,7 @@ mod tests {
             .unwrap();
         assert_eq!(frontend.generation(), generation);
         assert_eq!(
-            frontend.state(),
+            frontend.snapshot().state,
             maleicacid_tuner_hal2_device::FrontendRuntimeState::Tuning { generation }
         );
         assert!(frontend.live_reader_descriptor().is_some());
@@ -556,7 +588,7 @@ mod tests {
             .frontend_runtime(FrontendRuntimeId(1_000_000))
             .unwrap();
         assert_eq!(
-            frontend.state(),
+            frontend.snapshot().state,
             maleicacid_tuner_hal2_device::FrontendRuntimeState::Idle
         );
         assert!(frontend.live_reader_descriptor().is_none());
@@ -618,7 +650,7 @@ mod tests {
             .frontend_runtime(FrontendRuntimeId(1_000_000))
             .unwrap();
         assert_eq!(
-            frontend.state(),
+            frontend.snapshot().state,
             maleicacid_tuner_hal2_device::FrontendRuntimeState::Idle
         );
     }
@@ -850,7 +882,7 @@ mod tests {
         assert!(runtime
             .diagnostics()
             .iter()
-            .any(|record| record.kind == StartupDiagnosticKind::DuplicateFrontendId));
+            .any(|record| record.kind() == StartupDiagnosticKind::DuplicateFrontendId));
     }
 
     #[test]
@@ -1520,7 +1552,7 @@ mod tests {
     }
 
     #[test]
-    fn descrambler_clear_key_token_keeps_session_key_when_release_fails() {
+    fn descrambler_clear_key_token_reports_old_release_failure_without_api_failure() {
         let mut runtime = TunerServiceRuntime::new();
         let descrambler = runtime.allocate_descrambler_runtime().unwrap();
         let token_bytes = vec![0x41; 8];
@@ -1541,19 +1573,62 @@ mod tests {
             .release(&token)
             .unwrap();
 
-        let err = runtime
+        runtime
             .set_descrambler_key_token(descrambler.id.0, &[0x00])
-            .unwrap_err();
-
-        assert!(matches!(
-            err,
-            maleicacid_tuner_hal2_common::HalError::Internal { .. }
-        ));
+            .unwrap();
         let session = runtime
             .registry()
             .descrambler_runtime(descrambler.id)
             .unwrap();
-        assert!(session.has_key());
+        assert!(!session.has_key());
+        assert!(runtime.descrambler_diagnostics().iter().any(|record| {
+            descrambler_set_key_diagnostic_matches(
+                record,
+                descrambler.id.0,
+                DescramblerDiagnosticKind::KeyTokenReleaseFailed,
+            )
+        }));
+    }
+
+    #[test]
+    fn descrambler_replace_key_token_reports_old_release_failure_without_api_failure() {
+        let mut runtime = TunerServiceRuntime::new();
+        let descrambler = runtime.allocate_descrambler_runtime().unwrap();
+        let old_token_bytes = vec![0x42; 8];
+        let old_token = DescramblerKeyToken::try_from_bytes(old_token_bytes.clone()).unwrap();
+        let old_key_slot = DescramblerKeySlot::empty()
+            .try_with_even(sample_multi2_key(9))
+            .unwrap();
+        let new_token_bytes = vec![0x43; 8];
+        let new_token = DescramblerKeyToken::try_from_bytes(new_token_bytes.clone()).unwrap();
+        let new_key_slot = DescramblerKeySlot::empty()
+            .try_with_even(sample_multi2_key(10))
+            .unwrap();
+
+        runtime
+            .register_descrambler_key_slot(old_token.clone(), old_key_slot)
+            .unwrap();
+        runtime
+            .register_descrambler_key_slot(new_token.clone(), new_key_slot)
+            .unwrap();
+        runtime
+            .set_descrambler_key_token(descrambler.id.0, &old_token_bytes)
+            .unwrap();
+        runtime
+            .registry_mut_for_test()
+            .descrambler_key_table_mut()
+            .release(&old_token)
+            .unwrap();
+
+        runtime
+            .set_descrambler_key_token(descrambler.id.0, &new_token_bytes)
+            .unwrap();
+
+        let session = runtime
+            .registry()
+            .descrambler_runtime(descrambler.id)
+            .unwrap();
+        assert_eq!(session.key_token(), Some(&new_token));
         assert!(runtime.descrambler_diagnostics().iter().any(|record| {
             descrambler_set_key_diagnostic_matches(
                 record,

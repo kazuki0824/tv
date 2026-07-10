@@ -1,7 +1,5 @@
 use maleicacid_tuner_hal2_binder_adapter::{AidlMethodAdapter, AidlMethodCall};
-use maleicacid_tuner_hal2_common::{
-    compose_primary_cleanup_failure, FirstErrorCollector, HalError,
-};
+use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, FirstErrorCollector, HalError};
 use maleicacid_tuner_hal2_domain_request::{
     AidlApi, AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan,
     RuntimeExecutableRequest,
@@ -9,10 +7,15 @@ use maleicacid_tuner_hal2_domain_request::{
 use maleicacid_tuner_hal2_resource_ledger::CleanupStep;
 
 use crate::boot::OwnerCallbackCleanupArtifactCommand;
+use crate::cleanup_execution::{
+    CleanupExecutionDiagnosticSnapshot, CleanupExecutionReport, CleanupExecutionStepOutcome,
+    SharedCleanupDiagnostics,
+};
 use crate::error_mapping::object_table_error_to_hal;
 use crate::method_dispatch::plan_object_method_dispatch;
 use crate::object_domain_cleanup::{
     ObjectDomainCleanupCommand, ObjectDomainCleanupExecutor, ObjectDomainCleanupKind,
+    ObjectDomainCleanupOutcome,
 };
 use crate::object_lifecycle::{aidl_object_closeable, AidlObjectCloseability};
 use crate::{RuntimeObjectEntry, TunerServiceRuntime};
@@ -31,7 +34,7 @@ pub enum ObjectCloseArtifactCleanupKind {
     DvrStatusNotifier,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct ObjectCloseArtifactCleanupCommand {
     phase: ObjectCloseArtifactCleanupPhase,
     kind: ObjectCloseArtifactCleanupKind,
@@ -64,14 +67,14 @@ impl ObjectCloseArtifactCleanupCommand {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ObjectArtifactCleanupKind {
+pub enum ObjectArtifactCleanupKind {
     OwnerCallbackRegistration,
     DescendantCallbackRegistration,
     LnbOwnerLossCallbackRegistration,
     DvrStatusNotifier,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct ObjectArtifactCleanupCommand {
     kind: ObjectArtifactCleanupKind,
     object_kind: AidlObjectKind,
@@ -146,15 +149,24 @@ impl ObjectArtifactCleanupCommand {
         self.step
     }
 
+    pub fn kind(&self) -> ObjectArtifactCleanupKind {
+        self.kind
+    }
+
     pub fn owner_callback_cleanup_command(&self) -> Option<&OwnerCallbackCleanupArtifactCommand> {
         self.owner_callback_cleanup_command.as_ref()
     }
 
-    pub fn execute_with<E: ObjectArtifactCleanupExecutor>(
+    pub fn execute_outcome_with<E: ObjectArtifactCleanupExecutor>(
         self,
         executor: &mut E,
-    ) -> Result<(), ObjectCloseCleanupFailure> {
-        match self.kind {
+    ) -> ObjectCleanupStepOutcome {
+        let kind = self.kind;
+        let object_kind = self.object_kind;
+        let object_id = self.object_id;
+        let generation = self.generation;
+        let step = self.step;
+        let result = match kind {
             ObjectArtifactCleanupKind::OwnerCallbackRegistration => {
                 executor.execute_owner_callback_cleanup(self)
             }
@@ -167,17 +179,32 @@ impl ObjectArtifactCleanupCommand {
             ObjectArtifactCleanupKind::DvrStatusNotifier => {
                 executor.execute_dvr_status_notifier_cleanup(self)
             }
-        }
+        };
+        ObjectCleanupStepOutcome::artifact(
+            kind,
+            object_kind,
+            object_id,
+            generation,
+            step,
+            result,
+        )
+    }
+
+    pub fn execute_with<E: ObjectArtifactCleanupExecutor>(
+        self,
+        executor: &mut E,
+    ) -> Result<(), ObjectCloseCleanupFailure> {
+        self.execute_outcome_with(executor).into_result()
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ObjectRuntimeCleanupKind {
+pub enum ObjectRuntimeCleanupKind {
     ClosePublicRuntimeUnregister,
     DropLeakPublicRuntimeUnregister,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct ObjectRuntimeCleanupCommand {
     kind: ObjectRuntimeCleanupKind,
     entries: Vec<RuntimeObjectEntry>,
@@ -188,8 +215,16 @@ impl ObjectRuntimeCleanupCommand {
         Self { kind, entries }
     }
 
+    pub fn kind(&self) -> ObjectRuntimeCleanupKind {
+        self.kind
+    }
+
+    pub fn entries(&self) -> &[RuntimeObjectEntry] {
+        &self.entries
+    }
+
     pub fn execute(
-        &self,
+        self,
         runtime: &mut TunerServiceRuntime,
     ) -> Result<(), ObjectCloseCleanupFailure> {
         match self.kind {
@@ -200,6 +235,16 @@ impl ObjectRuntimeCleanupCommand {
                 unregister_public_runtime_entries_for_drop_leak(runtime, &self.entries)
             }
         }
+    }
+
+    pub fn execute_outcome_with<E: ObjectCloseRuntimeExecutor>(
+        self,
+        executor: &mut E,
+    ) -> ObjectCleanupStepOutcome {
+        let kind = self.kind;
+        let entries = self.entries.clone();
+        let result = executor.execute_runtime_cleanup(self);
+        ObjectCleanupStepOutcome::runtime(kind, entries, result)
     }
 }
 
@@ -232,9 +277,268 @@ pub trait ObjectArtifactCleanupExecutor {
     ) -> Result<(), ObjectCloseCleanupFailure>;
 }
 
-pub type ObjectCloseUseCaseResult = Result<(), ObjectCloseCleanupFailure>;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ObjectCleanupExecutionKind {
+    Artifact(ObjectArtifactCleanupKind),
+    Domain(ObjectDomainCleanupKind),
+    Runtime(ObjectRuntimeCleanupKind),
+}
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ObjectCleanupObjectTarget {
+    object_kind: AidlObjectKind,
+    object_id: AidlObjectId,
+    generation: AidlObjectGeneration,
+}
+
+impl ObjectCleanupObjectTarget {
+    const fn new(
+        object_kind: AidlObjectKind,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Self {
+        Self {
+            object_kind,
+            object_id,
+            generation,
+        }
+    }
+
+    pub const fn object_kind(&self) -> AidlObjectKind {
+        self.object_kind
+    }
+
+    pub const fn object_id(&self) -> AidlObjectId {
+        self.object_id
+    }
+
+    pub const fn generation(&self) -> AidlObjectGeneration {
+        self.generation
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum ObjectCleanupStepOutcome {
+    Artifact {
+        kind: ObjectArtifactCleanupKind,
+        target: ObjectCleanupObjectTarget,
+        step: CleanupStep,
+        result: Result<(), ObjectCloseCleanupFailure>,
+    },
+    Domain {
+        kind: ObjectDomainCleanupKind,
+        target: ObjectCleanupObjectTarget,
+        step: CleanupStep,
+        result: Result<(), ObjectCloseCleanupFailure>,
+    },
+    Runtime {
+        kind: ObjectRuntimeCleanupKind,
+        cascade_entries: Vec<RuntimeObjectEntry>,
+        result: Result<(), ObjectCloseCleanupFailure>,
+    },
+}
+
+impl ObjectCleanupStepOutcome {
+    fn artifact(
+        kind: ObjectArtifactCleanupKind,
+        object_kind: AidlObjectKind,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        step: CleanupStep,
+        result: Result<(), ObjectCloseCleanupFailure>,
+    ) -> Self {
+        Self::Artifact {
+            kind,
+            target: ObjectCleanupObjectTarget::new(object_kind, object_id, generation),
+            step,
+            result,
+        }
+    }
+
+    fn domain(step: CleanupStep, outcome: ObjectDomainCleanupOutcome) -> Self {
+        let result = outcome
+            .result()
+            .map_err(|error| ObjectCloseCleanupFailure::new(step, error));
+        Self::Domain {
+            kind: outcome.cleanup_kind(),
+            target: ObjectCleanupObjectTarget::new(
+                outcome.object_kind(),
+                outcome.object_id(),
+                outcome.generation(),
+            ),
+            step,
+            result,
+        }
+    }
+
+    fn runtime(
+        kind: ObjectRuntimeCleanupKind,
+        cascade_entries: Vec<RuntimeObjectEntry>,
+        result: Result<(), ObjectCloseCleanupFailure>,
+    ) -> Self {
+        Self::Runtime {
+            kind,
+            cascade_entries,
+            result,
+        }
+    }
+
+    pub const fn execution_kind(&self) -> ObjectCleanupExecutionKind {
+        match self {
+            Self::Artifact { kind, .. } => ObjectCleanupExecutionKind::Artifact(*kind),
+            Self::Domain { kind, .. } => ObjectCleanupExecutionKind::Domain(*kind),
+            Self::Runtime { kind, .. } => ObjectCleanupExecutionKind::Runtime(*kind),
+        }
+    }
+
+    pub fn object_target(&self) -> Option<ObjectCleanupObjectTarget> {
+        match self {
+            Self::Artifact { target, .. } | Self::Domain { target, .. } => Some(*target),
+            Self::Runtime { .. } => None,
+        }
+    }
+
+    pub fn object_kind(&self) -> Option<AidlObjectKind> {
+        match self.object_target() {
+            Some(target) => Some(target.object_kind()),
+            None => None,
+        }
+    }
+
+    pub fn object_id(&self) -> Option<AidlObjectId> {
+        match self.object_target() {
+            Some(target) => Some(target.object_id()),
+            None => None,
+        }
+    }
+
+    pub fn generation(&self) -> Option<AidlObjectGeneration> {
+        match self.object_target() {
+            Some(target) => Some(target.generation()),
+            None => None,
+        }
+    }
+
+    pub fn cascade_entries(&self) -> &[RuntimeObjectEntry] {
+        match self {
+            Self::Runtime { cascade_entries, .. } => cascade_entries,
+            Self::Artifact { .. } | Self::Domain { .. } => &[],
+        }
+    }
+
+    pub fn step(&self) -> CleanupStep {
+        match self {
+            Self::Artifact { step, .. } | Self::Domain { step, .. } => *step,
+            Self::Runtime { .. } => CleanupStep::UnregisterRuntime,
+        }
+    }
+
+    pub fn result(&self) -> Result<(), ObjectCloseCleanupFailure> {
+        match self {
+            Self::Artifact { result, .. }
+            | Self::Domain { result, .. }
+            | Self::Runtime { result, .. } => result.clone(),
+        }
+    }
+
+    pub fn into_result(self) -> Result<(), ObjectCloseCleanupFailure> {
+        match self {
+            Self::Artifact { result, .. }
+            | Self::Domain { result, .. }
+            | Self::Runtime { result, .. } => result,
+        }
+    }
+}
+
+impl CleanupExecutionStepOutcome for ObjectCleanupStepOutcome {
+    type Failure = ObjectCloseCleanupFailure;
+
+    fn result(&self) -> Result<(), Self::Failure> {
+        ObjectCleanupStepOutcome::result(self)
+    }
+
+    fn into_result(self) -> Result<(), Self::Failure> {
+        ObjectCleanupStepOutcome::into_result(self)
+    }
+}
+
+pub type ObjectCleanupExecutionReport =
+    CleanupExecutionReport<ObjectCleanupStepOutcome, ObjectCloseCleanupFailure>;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ObjectCleanupDiagnosticKind {
+    Close,
+    DropLeakTerminalization,
+}
+
+#[derive(Clone, Debug)]
+pub struct ObjectCleanupDiagnosticRecord {
+    kind: ObjectCleanupDiagnosticKind,
+    object_id: AidlObjectId,
+    generation: AidlObjectGeneration,
+    report: ObjectCleanupExecutionReport,
+    public_error: Option<HalError>,
+}
+
+
+
+pub type ObjectCleanupDiagnosticSnapshot =
+    CleanupExecutionDiagnosticSnapshot<ObjectCleanupDiagnosticRecord>;
+pub type SharedObjectCleanupDiagnostics = SharedCleanupDiagnostics<ObjectCleanupDiagnosticRecord>;
+
+impl ObjectCleanupDiagnosticRecord {
+    pub fn close(
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        report: ObjectCleanupExecutionReport,
+        public_error: Option<HalError>,
+    ) -> Self {
+        Self {
+            kind: ObjectCleanupDiagnosticKind::Close,
+            object_id,
+            generation,
+            report,
+            public_error,
+        }
+    }
+
+    pub fn drop_leak_terminalization(
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        report: ObjectCleanupExecutionReport,
+        public_error: Option<HalError>,
+    ) -> Self {
+        Self {
+            kind: ObjectCleanupDiagnosticKind::DropLeakTerminalization,
+            object_id,
+            generation,
+            report,
+            public_error,
+        }
+    }
+
+    pub fn kind(&self) -> ObjectCleanupDiagnosticKind {
+        self.kind
+    }
+
+    pub fn object_id(&self) -> AidlObjectId {
+        self.object_id
+    }
+
+    pub fn generation(&self) -> AidlObjectGeneration {
+        self.generation
+    }
+
+    pub fn report(&self) -> &ObjectCleanupExecutionReport {
+        &self.report
+    }
+
+    pub fn public_error(&self) -> Option<&HalError> {
+        self.public_error.as_ref()
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
 pub struct ObjectCloseUseCasePlan {
     cascade_entries: Vec<RuntimeObjectEntry>,
     domain_cleanup_step: CleanupStep,
@@ -243,61 +547,60 @@ pub struct ObjectCloseUseCasePlan {
 }
 
 impl ObjectCloseUseCasePlan {
-    pub fn execute_cleanup_with_executor<R, D, A>(
+    pub fn execute_cleanup_report_with_executor<R, D, A>(
         self,
         runtime_executor: &mut R,
         domain_executor: &mut D,
         artifact_executor: &mut A,
-    ) -> ObjectCloseUseCaseResult
+    ) -> ObjectCleanupExecutionReport
     where
         R: ObjectCloseRuntimeExecutor,
         D: ObjectDomainCleanupExecutor,
         A: ObjectArtifactCleanupExecutor,
     {
-        let mut cleanup_collector = FirstErrorCollector::new();
-        for command in self
-            .artifact_cleanup_commands
-            .iter()
-            .copied()
-            .filter(|command| {
-                command.phase() == ObjectCloseArtifactCleanupPhase::BeforeDomainCleanup
-            })
-        {
-            cleanup_collector.push_result(
-                ObjectArtifactCleanupCommand::from_close(command).execute_with(artifact_executor),
+        let Self {
+            cascade_entries,
+            domain_cleanup_step,
+            artifact_cleanup_commands,
+            domain_cleanup_commands,
+        } = self;
+        let mut report = ObjectCleanupExecutionReport::new();
+        let mut before_domain = Vec::new();
+        let mut after_domain = Vec::new();
+        for command in artifact_cleanup_commands {
+            match command.phase() {
+                ObjectCloseArtifactCleanupPhase::BeforeDomainCleanup => before_domain.push(command),
+                ObjectCloseArtifactCleanupPhase::AfterDomainCleanup => after_domain.push(command),
+            }
+        }
+        for command in before_domain {
+            report.push(
+                ObjectArtifactCleanupCommand::from_close(command)
+                    .execute_outcome_with(artifact_executor),
             );
         }
-        for command in self.domain_cleanup_commands.iter().copied() {
+        for command in domain_cleanup_commands {
             let outcome = command.execute_with(domain_executor);
-            cleanup_collector.push_result(
-                outcome.result().map_err(|error| {
-                    ObjectCloseCleanupFailure::new(self.domain_cleanup_step, error)
-                }),
+            report.push(ObjectCleanupStepOutcome::domain(domain_cleanup_step, outcome));
+        }
+        for command in after_domain {
+            report.push(
+                ObjectArtifactCleanupCommand::from_close(command)
+                    .execute_outcome_with(artifact_executor),
             );
         }
-        for command in self
-            .artifact_cleanup_commands
-            .iter()
-            .copied()
-            .filter(|command| {
-                command.phase() == ObjectCloseArtifactCleanupPhase::AfterDomainCleanup
-            })
-        {
-            cleanup_collector.push_result(
-                ObjectArtifactCleanupCommand::from_close(command).execute_with(artifact_executor),
-            );
-        }
-        cleanup_collector.push_result(runtime_executor.execute_runtime_cleanup(
+        report.push(
             ObjectRuntimeCleanupCommand::new(
                 ObjectRuntimeCleanupKind::ClosePublicRuntimeUnregister,
-                self.cascade_entries.clone(),
-            ),
-        ));
-        cleanup_collector.into_result()
+                cascade_entries,
+            )
+            .execute_outcome_with(runtime_executor),
+        );
+        report
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct ObjectDropLeakQuarantinePlan {
     cascade_entries: Vec<RuntimeObjectEntry>,
     artifact_cleanup_commands: Vec<ObjectArtifactCleanupCommand>,
@@ -305,34 +608,38 @@ pub struct ObjectDropLeakQuarantinePlan {
 }
 
 impl ObjectDropLeakQuarantinePlan {
-    pub fn execute_terminalization_with_executor<R, D, A>(
-        &self,
+    pub fn execute_terminalization_report_with_executor<R, D, A>(
+        self,
         runtime_executor: &mut R,
         domain_executor: &mut D,
         artifact_executor: &mut A,
-    ) -> Result<(), ObjectCloseCleanupFailure>
+    ) -> ObjectCleanupExecutionReport
     where
         R: ObjectCloseRuntimeExecutor,
         D: ObjectDomainCleanupExecutor,
         A: ObjectArtifactCleanupExecutor,
     {
-        let mut cleanup_collector = FirstErrorCollector::new();
-        for command in self.domain_cleanup_commands.iter().copied() {
+        let Self {
+            cascade_entries,
+            artifact_cleanup_commands,
+            domain_cleanup_commands,
+        } = self;
+        let mut report = ObjectCleanupExecutionReport::new();
+        for command in domain_cleanup_commands {
             let outcome = command.execute_with(domain_executor);
-            cleanup_collector.push_result(outcome.result().map_err(|error| {
-                ObjectCloseCleanupFailure::new(CleanupStep::ReleaseBackend, error)
-            }));
+            report.push(ObjectCleanupStepOutcome::domain(CleanupStep::ReleaseBackend, outcome));
         }
-        for command in self.artifact_cleanup_commands.iter().copied() {
-            cleanup_collector.push_result(command.execute_with(artifact_executor));
+        for command in artifact_cleanup_commands {
+            report.push(command.execute_outcome_with(artifact_executor));
         }
-        cleanup_collector.push_result(runtime_executor.execute_runtime_cleanup(
+        report.push(
             ObjectRuntimeCleanupCommand::new(
                 ObjectRuntimeCleanupKind::DropLeakPublicRuntimeUnregister,
-                self.cascade_entries.clone(),
-            ),
-        ));
-        cleanup_collector.into_result()
+                cascade_entries,
+            )
+            .execute_outcome_with(runtime_executor),
+        );
+        report
     }
 }
 

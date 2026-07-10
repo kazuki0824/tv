@@ -100,7 +100,7 @@ pub fn failure_domain(error: &HalError) -> RuntimeFailureDomain {
         HalError::CleanupFailed { .. } => RuntimeFailureDomain::Cleanup,
         HalError::InvalidArgument { .. } => RuntimeFailureDomain::ClientArgument,
         HalError::InvalidState { .. } => RuntimeFailureDomain::ObjectState,
-        HalError::Unsupported(_) => RuntimeFailureDomain::UnsupportedByDesign,
+        HalError::Unsupported(_) | HalError::UnsupportedDetail { .. } => RuntimeFailureDomain::UnsupportedByDesign,
         HalError::Internal { .. } => RuntimeFailureDomain::InternalInvariant,
     }
 }
@@ -133,7 +133,7 @@ mod tests {
         assert!(configure_monitor_event_result(0).is_ok());
         assert!(matches!(
             configure_monitor_event_result(1),
-            Err(HalError::Unsupported(_))
+            Err(HalError::Unsupported(_) | HalError::UnsupportedDetail { .. })
         ));
     }
 
@@ -141,11 +141,11 @@ mod tests {
     fn ip_cid_is_never_accepted_as_save_only_success() {
         assert!(matches!(
             configure_ip_cid_result(0),
-            Err(HalError::Unsupported(_))
+            Err(HalError::Unsupported(_) | HalError::UnsupportedDetail { .. })
         ));
         assert!(matches!(
             configure_ip_cid_result(-1),
-            Err(HalError::Unsupported(_))
+            Err(HalError::Unsupported(_) | HalError::UnsupportedDetail { .. })
         ));
     }
 

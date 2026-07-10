@@ -38,10 +38,13 @@ fn dvr_callback_artifact_lookup_report_keeps_post_commit_context() {
         report.phase(),
         CallbackDeliveryFailurePhase::CallbackArtifactLookup,
     );
-    assert_eq!(
-        report.dvr_post_commit_phase(),
-        Some(DvrPostCommitNotificationPhase::InitialStatusDelivery),
-    );
+    assert!(matches!(
+        report,
+        CallbackDeliveryFailureReport::Dvr {
+            dvr_post_commit_phase: DvrPostCommitNotificationPhase::InitialStatusDelivery,
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -146,6 +149,7 @@ fn service_boot_reset_split_outcomes_are_variant_specific_records() {
     use maleicacid_tuner_hal2_service_runtime::CallbackArtifactRuntimeSplitOutcome;
 
     let records = CallbackArtifactRuntimeSplitOutcome::service_boot_reset_from_attempt_results(
+        Ok(()),
         Err(HalError::internal(
             maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
             "callback artifact reset failed",
@@ -154,6 +158,8 @@ fn service_boot_reset_split_outcomes_are_variant_specific_records() {
             maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
             "drop leak reset failed",
         )),
+        Ok(()),
+        Ok(()),
         Ok(()),
     );
 

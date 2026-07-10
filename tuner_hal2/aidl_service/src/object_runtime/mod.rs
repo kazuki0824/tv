@@ -4,7 +4,7 @@ use binder::{Result as BinderResult, Strong};
 use maleicacid_tuner_hal2_binder_adapter::{
     AidlApi, AidlFailureSource, AidlMethodCall, AidlStatusMapper, TunerStatusCode,
 };
-use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
+use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, HalError, HalInternalKind};
 use maleicacid_tuner_hal2_device::FrontendWorkerCancelReason;
 use maleicacid_tuner_hal2_resource_ledger::CleanupStep;
 use maleicacid_tuner_hal2_service_runtime::{
@@ -13,10 +13,13 @@ use maleicacid_tuner_hal2_service_runtime::{
     execute_object_query_call_after_live_with_aidl_input_conversion,
     execute_shared_object_method_call_after_live, finish_object_close_use_case,
     preflight_object_method_after_live_plan_only, CallbackRegistrationArtifactOutcome,
-    ObjectArtifactCleanupCommand, ObjectArtifactCleanupExecutor, ObjectCloseCleanupFailure,
-    ObjectCloseRuntimeExecutor, ObjectCloseUseCasePlan, ObjectDomainCleanupCommand,
+    ObjectArtifactCleanupCommand, ObjectArtifactCleanupExecutor, ObjectCleanupDiagnosticRecord,
+    ObjectCleanupExecutionReport, ObjectCloseCleanupFailure, ObjectCloseRuntimeExecutor,
+    ObjectCloseUseCasePlan, ObjectDomainCleanupCommand,
     ObjectDomainCleanupExecutor, ObjectMethodExecutionToken, ObjectMethodTxnBuildError,
-    ObjectQueryRequest, ObjectQueryResponse, ObjectRuntimeCleanupCommand,
+    CallbackArtifactCleanupResult, CallbackArtifactRuntimeSplitDiagnosticRecord,
+    CallbackArtifactRuntimeSplitOutcome, CallbackArtifactRuntimeSplitPhase, ObjectQueryRequest,
+    ObjectQueryResponse, ObjectRuntimeCleanupCommand, OwnerCallbackCleanupArtifactCommand,
     OwnerCallbackCleanupUseCaseOutcome, TunerServiceRuntime,
 };
 
@@ -36,6 +39,140 @@ fn lock_runtime<'a>(
     })
 }
 
+fn callback_artifact_runtime_finish_lock_failure_error(
+    context: &SharedAidlServiceContext,
+    phase: CallbackArtifactRuntimeSplitPhase,
+    command: OwnerCallbackCleanupArtifactCommand,
+    artifact_result: &Result<CallbackArtifactCleanupResult, HalError>,
+    runtime_error: HalError,
+) -> HalError {
+    let artifact_error = artifact_result.as_ref().err().cloned();
+    let mut runtime_or_record_error = runtime_error.clone();
+    if let Some(outcome) = CallbackArtifactRuntimeSplitOutcome::from_results(
+        artifact_error.clone(),
+        Some(runtime_error),
+    ) {
+        if let Err(record_error) = context.record_callback_artifact_runtime_split_finish_lock_failure(
+            CallbackArtifactRuntimeSplitDiagnosticRecord::owner(
+                phase,
+                command.owner_kind(),
+                command.owner_id(),
+                command.owner_generation(),
+                outcome,
+            ),
+        ) {
+            runtime_or_record_error = compose_primary_cleanup_failure(
+                "callback artifact/runtime split diagnostic record failed after runtime finish lock failure",
+                runtime_or_record_error,
+                record_error,
+            );
+        }
+    }
+    match artifact_error {
+        Some(artifact_error) => compose_primary_cleanup_failure(
+            command.cleanup_failure_message(),
+            artifact_error,
+            runtime_or_record_error,
+        ),
+        None => runtime_or_record_error,
+    }
+}
+
+fn callback_artifact_registration_runtime_lock_failure_error(
+    context: &SharedAidlServiceContext,
+    command: OwnerCallbackCleanupArtifactCommand,
+    artifact_result: &Result<(), HalError>,
+    runtime_error: HalError,
+) -> HalError {
+    let artifact_error = artifact_result.as_ref().err().cloned();
+    let mut runtime_or_record_error = runtime_error.clone();
+    let mut rollback_cleanup_error = None;
+    if artifact_error.is_none() {
+        if let Err(cleanup_error) = context.clear_owner_callback_artifacts_bridge(&command) {
+            runtime_or_record_error = compose_primary_cleanup_failure(
+                command.cleanup_failure_message(),
+                runtime_or_record_error,
+                cleanup_error.clone(),
+            );
+            rollback_cleanup_error = Some(cleanup_error);
+        }
+    }
+    let split_outcome = match rollback_cleanup_error.clone() {
+        Some(cleanup_error) => Some(
+            CallbackArtifactRuntimeSplitOutcome::runtime_finish_and_artifact_cleanup_failure(
+                runtime_error.clone(),
+                cleanup_error,
+            ),
+        ),
+        None => CallbackArtifactRuntimeSplitOutcome::from_results(
+            artifact_error.clone(),
+            Some(runtime_error.clone()),
+        ),
+    };
+    if let Some(outcome) = split_outcome {
+        if let Err(record_error) = context.record_callback_artifact_runtime_split_finish_lock_failure(
+            CallbackArtifactRuntimeSplitDiagnosticRecord::owner(
+                CallbackArtifactRuntimeSplitPhase::RegistrationRollbackFinish,
+                command.owner_kind(),
+                command.owner_id(),
+                command.owner_generation(),
+                outcome,
+            ),
+        ) {
+            runtime_or_record_error = compose_primary_cleanup_failure(
+                "callback artifact/runtime split diagnostic record failed after registration finish lock failure",
+                runtime_or_record_error,
+                record_error,
+            );
+        }
+    }
+    match artifact_error {
+        Some(artifact_error) => compose_primary_cleanup_failure(
+            "callback artifact retain failed before runtime registration finish lock failed",
+            artifact_error,
+            runtime_or_record_error,
+        ),
+        None => runtime_or_record_error,
+    }
+}
+
+fn callback_registration_finish_runtime_lock_failure_error(
+    context: &SharedAidlServiceContext,
+    command: OwnerCallbackCleanupArtifactCommand,
+    primary_error: Option<HalError>,
+    runtime_error: HalError,
+) -> HalError {
+    let mut runtime_or_record_error = runtime_error.clone();
+    if let Some(outcome) = CallbackArtifactRuntimeSplitOutcome::from_results(
+        primary_error.clone(),
+        Some(runtime_error),
+    ) {
+        if let Err(record_error) = context.record_callback_artifact_runtime_split_finish_lock_failure(
+            CallbackArtifactRuntimeSplitDiagnosticRecord::owner(
+                CallbackArtifactRuntimeSplitPhase::RegistrationRollbackFinish,
+                command.owner_kind(),
+                command.owner_id(),
+                command.owner_generation(),
+                outcome,
+            ),
+        ) {
+            runtime_or_record_error = compose_primary_cleanup_failure(
+                "callback artifact/runtime split diagnostic record failed after registration finish lock failure",
+                runtime_or_record_error,
+                record_error,
+            );
+        }
+    }
+    match primary_error {
+        Some(primary_error) => compose_primary_cleanup_failure(
+            "callback artifact registration finish failed after artifact failure",
+            primary_error,
+            runtime_or_record_error,
+        ),
+        None => runtime_or_record_error,
+    }
+}
+
 pub(crate) fn finish_owner_callback_cleanup_outcome<T>(
     context: &SharedAidlServiceContext,
     outcome: OwnerCallbackCleanupUseCaseOutcome<T>,
@@ -43,7 +180,18 @@ pub(crate) fn finish_owner_callback_cleanup_outcome<T>(
     let command = *outcome.command();
     let artifact_cleanup_result = context.clear_owner_callback_artifacts_bridge(&command);
     let runtime = context.runtime();
-    let mut guard = lock_runtime(&runtime)?;
+    let mut guard = match lock_runtime(&runtime) {
+        Ok(guard) => guard,
+        Err(runtime_error) => {
+            return Err(callback_artifact_runtime_finish_lock_failure_error(
+                context,
+                CallbackArtifactRuntimeSplitPhase::OwnerCleanupFinish,
+                command,
+                &artifact_cleanup_result,
+                runtime_error,
+            ));
+        }
+    };
     guard.finish_owner_callback_cleanup_outcome(outcome, artifact_cleanup_result)
 }
 
@@ -51,11 +199,37 @@ fn finish_callback_registration_artifact_outcome(
     context: &SharedAidlServiceContext,
     outcome: CallbackRegistrationArtifactOutcome,
 ) -> Result<(), HalError> {
-    let rollback_result = outcome
-        .rollback_command()
+    if !outcome.requires_runtime_finish() {
+        return outcome.into_primary_result();
+    }
+
+    let finish_lock_failure_command = outcome.finish_lock_failure_command();
+    let primary_error = outcome.primary_error().cloned();
+    let rollback_command = outcome.rollback_command().copied();
+    let rollback_result = rollback_command
+        .as_ref()
         .map(|command| context.clear_owner_callback_artifacts_bridge(command));
     let runtime = context.runtime();
-    let mut guard = lock_runtime(&runtime)?;
+    let mut guard = match lock_runtime(&runtime) {
+        Ok(guard) => guard,
+        Err(runtime_error) => {
+            if let (Some(command), Some(ref artifact_result)) = (rollback_command, rollback_result.as_ref()) {
+                return Err(callback_artifact_runtime_finish_lock_failure_error(
+                    context,
+                    CallbackArtifactRuntimeSplitPhase::RegistrationRollbackFinish,
+                    command,
+                    artifact_result,
+                    runtime_error,
+                ));
+            }
+            return Err(callback_registration_finish_runtime_lock_failure_error(
+                context,
+                finish_lock_failure_command,
+                primary_error,
+                runtime_error,
+            ));
+        }
+    };
     guard.finish_callback_registration_after_artifact_result_use_case(outcome, rollback_result)
 }
 
@@ -316,15 +490,37 @@ fn execute_callback_registration_after_artifact_bridge(
 ) -> BinderResult<()> {
     let runtime = context.runtime();
     let api = method.api();
+    let registration_finish_lock_failure_command = {
+        let guard = lock_runtime(&runtime).map_err(status_from_hal_error)?;
+        guard.plan_callback_registration_runtime_finish_lock_failure_cleanup_command(
+            handle.object_kind(),
+            handle.object_id(),
+            handle.generation(),
+            api,
+        )
+    };
     let outcome = execute_shared_object_method_call_after_live(
         &runtime,
         handle.object_id(),
         handle.generation(),
         handle.object_kind(),
-        || Ok((method.clone(), artifact_retain_bridge)),
-        |runtime, token, artifact_retain_bridge| {
+        || Ok((
+            method.clone(),
+            (artifact_retain_bridge, registration_finish_lock_failure_command),
+        )),
+        |runtime, token, (artifact_retain_bridge, registration_finish_lock_failure_command)| {
             let artifact_retain_result = artifact_retain_bridge.retain(context, handle);
-            let mut guard = lock_runtime(&runtime)?;
+            let mut guard = match lock_runtime(&runtime) {
+                Ok(guard) => guard,
+                Err(runtime_error) => {
+                    return Err(callback_artifact_registration_runtime_lock_failure_error(
+                        context,
+                        registration_finish_lock_failure_command,
+                        &artifact_retain_result,
+                        runtime_error,
+                    ));
+                }
+            };
             Ok(
                 guard.execute_callback_registration_after_artifact_result_for_object_use_case(
                     handle.object_kind(),
@@ -509,8 +705,19 @@ impl<'a> AidlObjectArtifactCleanupExecutor<'a> {
         let artifact_result = self
             .context
             .clear_owner_callback_artifacts_bridge(&owner_command);
-        let mut guard =
-            lock_runtime(&runtime).map_err(|error| ObjectCloseCleanupFailure::new(step, error))?;
+        let mut guard = match lock_runtime(&runtime) {
+            Ok(guard) => guard,
+            Err(runtime_error) => {
+                let error = callback_artifact_runtime_finish_lock_failure_error(
+                    self.context,
+                    CallbackArtifactRuntimeSplitPhase::ObjectCloseCleanupFinish,
+                    owner_command,
+                    &artifact_result,
+                    runtime_error,
+                );
+                return Err(ObjectCloseCleanupFailure::new(step, error));
+            }
+        };
         guard
             .finish_object_close_callback_cleanup_outcome(owner_command, artifact_result)
             .map(|_| ())
@@ -554,11 +761,11 @@ impl<'a> ObjectArtifactCleanupExecutor for AidlObjectArtifactCleanupExecutor<'a>
 fn execute_close_cleanup_plan_with_executor(
     context: &SharedAidlServiceContext,
     plan: ObjectCloseUseCasePlan,
-) -> Result<(), ObjectCloseCleanupFailure> {
+) -> ObjectCleanupExecutionReport {
     let mut runtime_executor = AidlObjectCloseRuntimeExecutor::new(context);
     let mut domain_executor = AidlObjectDomainCleanupExecutor::new(context);
     let mut artifact_executor = AidlObjectArtifactCleanupExecutor::new(context);
-    plan.execute_cleanup_with_executor(
+    plan.execute_cleanup_report_with_executor(
         &mut runtime_executor,
         &mut domain_executor,
         &mut artifact_executor,
@@ -568,19 +775,44 @@ fn execute_close_cleanup_plan_with_executor(
 fn finish_object_close_plan(
     context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
-    cleanup_result: Result<(), ObjectCloseCleanupFailure>,
+    cleanup_report: ObjectCleanupExecutionReport,
 ) -> BinderResult<()> {
+    let cleanup_result = cleanup_report.clone().into_result();
+    let public_error = cleanup_result
+        .clone()
+        .err()
+        .map(ObjectCloseCleanupFailure::into_error);
+    let record_result = context.record_object_cleanup_diagnostic_fallback(
+        ObjectCleanupDiagnosticRecord::close(
+            handle.object_id(),
+            handle.generation(),
+            cleanup_report,
+            public_error,
+        ),
+    );
     let runtime = context.runtime();
-    let mut guard = runtime
-        .lock()
-        .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
-    finish_object_close_use_case(
-        &mut guard,
-        handle.object_id(),
-        handle.generation(),
-        cleanup_result,
-    )
-    .map_err(status_from_hal_error)
+    let finish_result = match runtime.lock() {
+        Ok(mut guard) => finish_object_close_use_case(
+            &mut guard,
+            handle.object_id(),
+            handle.generation(),
+            cleanup_result,
+        ),
+        Err(_) => Err(HalError::internal(
+            HalInternalKind::InvariantViolation,
+            "service runtime lock poisoned while finishing object close",
+        )),
+    };
+    let result = match (finish_result, record_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(primary), Err(cleanup)) => Err(compose_primary_cleanup_failure(
+            "object close diagnostic record failed after finish failure",
+            primary,
+            cleanup,
+        )),
+    };
+    result.map_err(status_from_hal_error)
 }
 
 mod drop_leak;
@@ -605,8 +837,8 @@ pub fn close_object_after_close_preflight(
         )
         .map_err(status_from_hal_error)?
     };
-    let cleanup_result = execute_close_cleanup_plan_with_executor(context, close_plan);
-    finish_object_close_plan(context, handle, cleanup_result)
+    let cleanup_report = execute_close_cleanup_plan_with_executor(context, close_plan);
+    finish_object_close_plan(context, handle, cleanup_report)
 }
 
 #[cfg(test)]
@@ -845,24 +1077,6 @@ mod tests {
         guard
             .finish_callback_registration_after_artifact_result_use_case(outcome, None)
             .unwrap();
-    }
-
-    fn close_live_object_for_test(
-        runtime: &SharedTunerRuntime,
-        handle: AidlObjectHandle,
-        method: AidlMethodCall,
-    ) {
-        let mut guard = runtime.lock().unwrap();
-        close_object_use_case(
-            &mut guard,
-            handle.object_id(),
-            handle.generation(),
-            handle.object_kind(),
-            method,
-        )
-        .expect("public close use-case begins close");
-        finish_object_close_use_case(&mut guard, handle.object_id(), handle.generation(), Ok(()))
-            .expect("public close use-case commits close");
     }
 
     #[test]
@@ -1109,7 +1323,24 @@ mod tests {
             AidlObjectGeneration(1),
             91_011,
         );
-        close_live_object_for_test(&runtime, handle, AidlMethodCall::FilterClose);
+        {
+            let mut guard = runtime.lock().unwrap();
+            close_object_use_case(
+                &mut guard,
+                handle.object_id(),
+                handle.generation(),
+                handle.object_kind(),
+                AidlMethodCall::FilterClose,
+            )
+            .expect("public close use-case begins close");
+            finish_object_close_use_case(
+                &mut guard,
+                handle.object_id(),
+                handle.generation(),
+                Ok(()),
+            )
+            .expect("public close use-case commits close");
+        }
         let builder_called = Arc::new(Mutex::new(false));
         let builder_called_for_builder = builder_called.clone();
 
@@ -1167,7 +1398,24 @@ mod tests {
         context.clear_owner_callbacks_for_test(handle).unwrap();
         let retain_result =
             retain_test_callback_marker_as_hal(&context, handle, AidlApi::DemuxOpenFilter);
-        close_live_object_for_test(&runtime, handle, AidlMethodCall::FilterClose);
+        {
+            let mut guard = runtime.lock().unwrap();
+            close_object_use_case(
+                &mut guard,
+                handle.object_id(),
+                handle.generation(),
+                handle.object_kind(),
+                AidlMethodCall::FilterClose,
+            )
+            .expect("public close use-case begins close");
+            finish_object_close_use_case(
+                &mut guard,
+                handle.object_id(),
+                handle.generation(),
+                Ok(()),
+            )
+            .expect("public close use-case commits close");
+        }
         let result = finish_callback_artifact_registration_after_owner_ready_hal(
             &context,
             handle,
@@ -1196,7 +1444,24 @@ mod tests {
         );
         let context = context_for_runtime(&runtime);
         context.clear_owner_callbacks_for_test(handle).unwrap();
-        close_live_object_for_test(&runtime, handle, AidlMethodCall::LnbClose);
+        {
+            let mut guard = runtime.lock().unwrap();
+            close_object_use_case(
+                &mut guard,
+                handle.object_id(),
+                handle.generation(),
+                handle.object_kind(),
+                AidlMethodCall::LnbClose,
+            )
+            .expect("public close use-case begins close");
+            finish_object_close_use_case(
+                &mut guard,
+                handle.object_id(),
+                handle.generation(),
+                Ok(()),
+            )
+            .expect("public close use-case commits close");
+        }
         let retain_result =
             retain_test_callback_marker_as_hal(&context, handle, AidlApi::LnbSetCallback);
         let result = finish_callback_artifact_registration_after_owner_ready_hal(

@@ -111,18 +111,28 @@ impl PacketPid {
 
 #[derive(Clone, Copy, Debug)]
 pub struct ValidatedTsPacket<'a> {
+    packet: &'a [u8; TS_PACKET_SIZE],
     view: TsPacketView<'a>,
 }
 
 impl<'a> ValidatedTsPacket<'a> {
     pub fn validate(packet: &'a [u8]) -> Result<Self, TsPacketValidationError> {
+        let packet_ref: &'a [u8; TS_PACKET_SIZE] = packet
+            .try_into()
+            .map_err(|_| TsPacketValidationError::WrongLength)?;
         Ok(Self {
-            view: TsPacketView::validate(packet)?,
+            packet: packet_ref,
+            view: TsPacketView::validate(packet_ref)?,
         })
     }
     pub(crate) const fn view(&self) -> TsPacketView<'a> {
         self.view
     }
+
+    pub const fn packet_bytes(&self) -> &'a [u8; TS_PACKET_SIZE] {
+        self.packet
+    }
+
     pub fn pid(&self) -> PacketPid {
         PacketPid::from_validated_pid(self.view.pid)
     }
@@ -773,7 +783,7 @@ impl PacketPipeline {
         ValidatedTsPacket::validate(bytes)
     }
 
-    pub fn push_ts_packet(&mut self, packet: &[u8], kind: PipelineInputKind) -> PipelineReport {
+    pub(crate) fn push_ts_packet(&mut self, packet: &[u8], kind: PipelineInputKind) -> PipelineReport {
         let validated = match Self::validate_packet(packet) {
             Ok(packet) => packet,
             Err(_) => {
@@ -783,7 +793,7 @@ impl PacketPipeline {
         self.accept_validated_ts_packet(&validated, kind)
     }
 
-    pub fn push_validated_ts_packet(
+    pub(crate) fn push_validated_ts_packet(
         &mut self,
         validated: &ValidatedTsPacket<'_>,
         kind: PipelineInputKind,
@@ -847,7 +857,7 @@ impl PacketPipeline {
         report
     }
 
-    pub fn inspect_ts_packet<'a>(&self, packet: &'a [u8]) -> Option<ValidatedTsPacket<'a>> {
+    pub(crate) fn inspect_ts_packet<'a>(&self, packet: &'a [u8]) -> Option<ValidatedTsPacket<'a>> {
         Self::validate_packet(packet).ok()
     }
 
@@ -1016,38 +1026,6 @@ impl PacketPipeline {
         let view = packet.view();
         let pid = packet.pid();
         let mut report = self.plan_ts_packet_report(packet, origin, filters);
-        let record_filter_ids: Vec<i32> = report
-            .delivery_actions
-            .iter()
-            .filter_map(|action| match action {
-                PipelineDeliveryAction::RecordPacket { filter_id } => Some(*filter_id),
-                _ => None,
-            })
-            .collect();
-        for filter_id in record_filter_ids {
-            let Some(settings) = self.record_index_settings.get(&filter_id) else {
-                continue;
-            };
-            let parser = self
-                .record_index_parsers
-                .entry(filter_id)
-                .or_insert_with(RecordIndexParser::new);
-            let byte_number = parser
-                .processed_packets()
-                .saturating_mul(TS_PACKET_SIZE as u64);
-            if let Some(data) = parser.push_validated_ts_packet(
-                packet,
-                byte_number,
-                settings.ts_index_mask,
-                settings.sc_index_type,
-                settings.sc_index_mask,
-                self.record_event_states.entry(filter_id).or_default(),
-            ) {
-                report
-                    .generated_events
-                    .push(PipelineGeneratedEvent::RecordIndex { filter_id, data });
-            }
-        }
         let preflight_tei = preflight_suppression_reasons.iter().any(|reason| {
             matches!(
                 reason,
@@ -1090,6 +1068,39 @@ impl PacketPipeline {
                 self.reset_assembly_for_origin_pid(origin, pid);
             }
             return report;
+        }
+
+        let record_filter_ids: Vec<i32> = report
+            .delivery_actions
+            .iter()
+            .filter_map(|action| match action {
+                PipelineDeliveryAction::RecordPacket { filter_id } => Some(*filter_id),
+                _ => None,
+            })
+            .collect();
+        for filter_id in record_filter_ids {
+            let Some(settings) = self.record_index_settings.get(&filter_id) else {
+                continue;
+            };
+            let parser = self
+                .record_index_parsers
+                .entry(filter_id)
+                .or_insert_with(RecordIndexParser::new);
+            let byte_number = parser
+                .processed_packets()
+                .saturating_mul(TS_PACKET_SIZE as u64);
+            if let Some(data) = parser.push_validated_ts_packet(
+                packet,
+                byte_number,
+                settings.ts_index_mask,
+                settings.sc_index_type,
+                settings.sc_index_mask,
+                self.record_event_states.entry(filter_id).or_default(),
+            ) {
+                report
+                    .generated_events
+                    .push(PipelineGeneratedEvent::RecordIndex { filter_id, data });
+            }
         }
 
         let has_section_action = report

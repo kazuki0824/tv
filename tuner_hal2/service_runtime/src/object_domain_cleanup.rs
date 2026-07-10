@@ -2,7 +2,7 @@ use maleicacid_tuner_hal2_common::HalError;
 use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ObjectDomainCleanupKind {
+pub enum ObjectDomainCleanupKind {
     Frontend,
     Lnb,
     LnbDropLeakRecord,
@@ -34,7 +34,7 @@ impl ObjectDomainCleanupKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct ObjectDomainCleanupCommand {
     object_kind: AidlObjectKind,
     object_id: AidlObjectId,
@@ -69,32 +69,75 @@ impl ObjectDomainCleanupCommand {
         self.generation
     }
 
+    pub fn cleanup_kind(&self) -> ObjectDomainCleanupKind {
+        self.cleanup_kind
+    }
+
     pub(crate) fn execute_with<E>(self, executor: &mut E) -> ObjectDomainCleanupOutcome
     where
         E: ObjectDomainCleanupExecutor,
     {
-        let result = match self.cleanup_kind {
+        let object_kind = self.object_kind;
+        let object_id = self.object_id;
+        let generation = self.generation;
+        let cleanup_kind = self.cleanup_kind;
+        let result = match cleanup_kind {
             ObjectDomainCleanupKind::Frontend => executor.execute_frontend_cleanup(self),
             ObjectDomainCleanupKind::Lnb => executor.execute_lnb_cleanup(self),
             ObjectDomainCleanupKind::LnbDropLeakRecord => {
                 executor.execute_lnb_drop_leak_record(self)
             }
         };
-        ObjectDomainCleanupOutcome::completed(self, result)
+        ObjectDomainCleanupOutcome::completed(
+            object_kind,
+            object_id,
+            generation,
+            cleanup_kind,
+            result,
+        )
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ObjectDomainCleanupOutcome {
+pub struct ObjectDomainCleanupOutcome {
+    object_kind: AidlObjectKind,
+    object_id: AidlObjectId,
+    generation: AidlObjectGeneration,
+    cleanup_kind: ObjectDomainCleanupKind,
     result: Result<(), HalError>,
 }
 
 impl ObjectDomainCleanupOutcome {
     pub(crate) fn completed(
-        _command: ObjectDomainCleanupCommand,
+        object_kind: AidlObjectKind,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        cleanup_kind: ObjectDomainCleanupKind,
         result: Result<(), HalError>,
     ) -> Self {
-        Self { result }
+        Self {
+            object_kind,
+            object_id,
+            generation,
+            cleanup_kind,
+            result,
+        }
+    }
+
+    pub fn object_kind(&self) -> AidlObjectKind {
+        self.object_kind
+    }
+
+    pub fn object_id(&self) -> AidlObjectId {
+        self.object_id
+    }
+
+    pub fn generation(&self) -> AidlObjectGeneration {
+        self.generation
+    }
+
+    pub fn cleanup_kind(&self) -> ObjectDomainCleanupKind {
+        self.cleanup_kind
     }
 
     pub(crate) fn result(&self) -> Result<(), HalError> {

@@ -129,7 +129,7 @@ pub struct ObjectFrontendStatusSnapshot {
     pub signal_state: FrontendSignalState,
 }
 
-fn lnb_profile_supports_voltage_status(profile: Option<LnbRegistryProfile>) -> bool {
+pub fn lnb_profile_supports_voltage_status(profile: Option<LnbRegistryProfile>) -> bool {
     matches!(
         profile,
         Some(LnbRegistryProfile::Px4Device15VOnly | LnbRegistryProfile::EarthPt1FixedLnb)
@@ -346,22 +346,23 @@ fn finish_queue_descriptor_export(
     let object_id = plan.object_id();
     let generation = plan.generation();
     let runtime_id = plan.runtime_id();
+    let mut guard = runtime.lock().map_err(|_| {
+        HalError::internal(
+            HalInternalKind::InvariantViolation,
+            "service runtime lock poisoned while exporting queue descriptor",
+        )
+    })?;
+    aidl_object_live(&guard, object_id, generation, object_kind)?;
     match plan.export_descriptor() {
         Ok(snapshot) => Ok(ObjectQueryResponse::QueueDescriptor(snapshot)),
         Err(error) => {
-            let mut guard = runtime.lock().map_err(|_| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "service runtime lock poisoned while recording queue descriptor diagnostic",
-                )
-            })?;
             guard.record_queue_descriptor_query_diagnostic(
                 QueueDescriptorQueryDiagnosticRecord::new(
                     object_kind,
                     object_id,
                     generation,
                     runtime_id,
-                    error,
+                    error.clone(),
                 ),
             );
             Err(map_queue_descriptor_query_error(

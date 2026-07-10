@@ -76,15 +76,9 @@ pub struct QueueRuntime {
     configure_event_flag: bool,
 }
 
-#[derive(Clone)]
+#[derive(Debug)]
 pub(crate) struct QueueDescriptorExportHandle {
     queue: Arc<FmqQueue>,
-}
-
-impl fmt::Debug for QueueDescriptorExportHandle {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("QueueDescriptorExportHandle").finish()
-    }
 }
 
 impl QueueDescriptorExportHandle {
@@ -99,7 +93,7 @@ pub enum QueueDescriptorExportTarget {
     Dvr { dvr_id: i32 },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct QueueDescriptorExportPlan {
     target: QueueDescriptorExportTarget,
     handle: QueueDescriptorExportHandle,

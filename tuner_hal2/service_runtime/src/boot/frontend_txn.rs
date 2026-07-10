@@ -1,10 +1,11 @@
 use super::{
-    live_reader_descriptor_for_frontend_entry, DemuxRuntimeId, DemuxRuntimeSnapshot,
+    live_reader_descriptor_for_frontend_entry, DemuxRuntimeId, DemuxRuntimeRollbackToken,
     FrontendLivePumpReport, FrontendRuntimeSnapshot, FrontendSignalState, FrontendTuneRequest,
     FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind,
     FrontendWorkerStartError, FrontendWorkerStopOutcome, GenerationBoundaryReport, HalError,
     HalInternalKind, HalInvalidStateKind, PipelineBoundaryReason, TunerServiceRuntime,
 };
+use maleicacid_tuner_hal2_demux::DemuxRuntimeRollbackRestoreRequest;
 use maleicacid_tuner_hal2_device::FrontendWorkerStopTicket;
 
 impl TunerServiceRuntime {
@@ -209,11 +210,11 @@ impl<'a> FrontendTxn<'a> {
         Ok(())
     }
 
-    pub(crate) fn restore_bound_demux_runtime_snapshots(
+    pub(crate) fn restore_bound_demux_runtime_rollback_tokens(
         &mut self,
-        snapshots: Vec<(DemuxRuntimeId, DemuxRuntimeSnapshot)>,
+        tokens: Vec<(DemuxRuntimeId, DemuxRuntimeRollbackToken)>,
     ) -> Result<(), HalError> {
-        for (demux_id, snapshot) in snapshots {
+        for (demux_id, token) in tokens {
             let demux = self
                 .runtime
                 .registry
@@ -225,7 +226,7 @@ impl<'a> FrontendTxn<'a> {
                     )
                 })?;
             demux
-                .restore(snapshot)
+                .restore_from_rollback_request(DemuxRuntimeRollbackRestoreRequest::new(token))
                 .map_err(super::demux_runtime_error_to_hal)?;
         }
         Ok(())
@@ -284,10 +285,11 @@ impl<'a> FrontendTxn<'a> {
         )
     }
 
-    pub(crate) fn prepare_frontend_worker_generation(
+    fn prepare_frontend_worker_generation_with_running_policy(
         &mut self,
         frontend_id: i32,
         kind: FrontendWorkerKind,
+        allow_running_replacement: bool,
     ) -> Result<u64, HalError> {
         if let Some(FrontendWorkerStopOutcome::Completed {
             generation,
@@ -307,11 +309,12 @@ impl<'a> FrontendTxn<'a> {
                     .transact_mark_frontend_scan_session_backend_failed(frontend_id, generation)?,
             }
         }
-        if self
-            .runtime
-            .frontend_workers
-            .running_generation(frontend_id, kind)
-            .is_some()
+        if !allow_running_replacement
+            && self
+                .runtime
+                .frontend_workers
+                .running_generation(frontend_id, kind)
+                .is_some()
         {
             return Err(HalError::invalid_state(
                 maleicacid_tuner_hal2_common::HalInvalidStateKind::InvalidLifecycle,
@@ -329,6 +332,22 @@ impl<'a> FrontendTxn<'a> {
                 )
             })?;
         runtime.checked_next_generation()
+    }
+
+    pub(crate) fn prepare_frontend_worker_generation(
+        &mut self,
+        frontend_id: i32,
+        kind: FrontendWorkerKind,
+    ) -> Result<u64, HalError> {
+        self.prepare_frontend_worker_generation_with_running_policy(frontend_id, kind, false)
+    }
+
+    pub(crate) fn prepare_frontend_worker_replacement_generation(
+        &mut self,
+        frontend_id: i32,
+        kind: FrontendWorkerKind,
+    ) -> Result<u64, HalError> {
+        self.prepare_frontend_worker_generation_with_running_policy(frontend_id, kind, true)
     }
 
     pub(crate) fn install_frontend_live_reader_descriptor_for_generation(

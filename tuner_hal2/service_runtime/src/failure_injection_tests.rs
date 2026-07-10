@@ -140,6 +140,8 @@ fn dvr_delivery_failure_finish_use_case_records_diagnostic_and_composes_marking_
     assert!(error.cleanup_error().is_some());
     assert!(!runtime
         .dvr_post_commit_notification_diagnostics()
+        .expect("DVR post-commit diagnostics snapshot should be available")
+        .records()
         .is_empty());
 }
 
@@ -198,6 +200,8 @@ fn owner_callback_cleanup_registry_missing_is_runtime_failure() {
     assert!(matches!(error.primary_error(), HalError::Internal { .. }));
     assert!(runtime
         .callback_artifact_runtime_split_diagnostics()
+        .expect("callback artifact runtime split diagnostics snapshot should be available")
+        .records()
         .iter()
         .any(
             |record| record.outcome == CallbackArtifactRuntimeSplitOutcome::RuntimeRegistryMissing
@@ -232,6 +236,8 @@ fn owner_callback_cleanup_marking_missing_is_composed_cleanup_failure() {
     assert!(error.cleanup_error().is_some());
     assert!(runtime
         .callback_artifact_runtime_split_diagnostics()
+        .expect("callback artifact runtime split diagnostics snapshot should be available")
+        .records()
         .iter()
         .any(
             |record| record.outcome == CallbackArtifactRuntimeSplitOutcome::RuntimeRegistryMissing
@@ -345,6 +351,8 @@ fn dvr_callback_artifact_lookup_failure_records_diagnostic_without_cleanup_compo
     assert!(error.cleanup_error().is_none());
     assert!(!runtime
         .dvr_post_commit_notification_diagnostics()
+        .expect("DVR post-commit diagnostics snapshot should be available")
+        .records()
         .is_empty());
 }
 
@@ -377,15 +385,15 @@ fn frontend_scan_end_delivery_failure_composition_is_owned_by_service_runtime() 
     let diagnostics = runtime.frontend_callback_delivery_diagnostics();
     assert_eq!(diagnostics.len(), 3);
     assert_eq!(
-        diagnostics[0].phase,
+        diagnostics[0].phase(),
         crate::FrontendCallbackDeliveryDiagnosticPhase::ScanEndDelivery
     );
     assert_eq!(
-        diagnostics[1].phase,
+        diagnostics[1].phase(),
         crate::FrontendCallbackDeliveryDiagnosticPhase::ScanSessionAccounting
     );
     assert_eq!(
-        diagnostics[2].phase,
+        diagnostics[2].phase(),
         crate::FrontendCallbackDeliveryDiagnosticPhase::CallbackRegistryAccounting
     );
 }
@@ -432,7 +440,7 @@ fn frontend_scan_end_artifact_lookup_failure_records_lookup_diagnostic_only() {
     let diagnostics = runtime.frontend_callback_delivery_diagnostics();
     assert_eq!(diagnostics.len(), 1);
     assert_eq!(
-        diagnostics[0].phase,
+        diagnostics[0].phase(),
         crate::FrontendCallbackDeliveryDiagnosticPhase::CallbackArtifactLookup
     );
 }

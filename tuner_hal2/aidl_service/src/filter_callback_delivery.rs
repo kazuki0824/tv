@@ -5,10 +5,11 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     DemuxFilterPesEvent::DemuxFilterPesEvent, DemuxFilterSectionEvent::DemuxFilterSectionEvent,
 };
 use maleicacid_tuner_hal2_binder_adapter::AidlObjectKind;
-use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
+use maleicacid_tuner_hal2_common::{FirstErrorCollector, HalError, HalInternalKind};
 use maleicacid_tuner_hal2_service_runtime::{
-    CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport, FilterEventDelivery,
-    FilterEventDeliverySnapshot, FilterEventDispatcher, TunerServiceRuntime,
+    CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport,
+    FilterCallbackDeliveryDiagnosticPhase, FilterCallbackDeliveryDiagnosticRecord,
+    FilterEventDelivery, FilterEventDeliverySnapshot, FilterEventDispatcher, TunerServiceRuntime,
 };
 
 use crate::object_handle::AidlObjectHandle;
@@ -81,24 +82,59 @@ fn event_from_snapshot(
     }
 }
 
+fn filter_callback_diagnostic_phase(
+    phase: CallbackDeliveryFailurePhase,
+) -> FilterCallbackDeliveryDiagnosticPhase {
+    match phase {
+        CallbackDeliveryFailurePhase::CallbackArtifactLookup
+        | CallbackDeliveryFailurePhase::RuntimePolicySkip
+        | CallbackDeliveryFailurePhase::NotifierCleanup
+        | CallbackDeliveryFailurePhase::NotifierPreflight => {
+            FilterCallbackDeliveryDiagnosticPhase::CallbackRegistryAccounting
+        }
+        CallbackDeliveryFailurePhase::EventConversion
+        | CallbackDeliveryFailurePhase::BinderDelivery
+        | CallbackDeliveryFailurePhase::ScanEndDelivery
+        | CallbackDeliveryFailurePhase::PostCommitNotification
+        | CallbackDeliveryFailurePhase::NotifierTerminal => {
+            FilterCallbackDeliveryDiagnosticPhase::EventDelivery
+        }
+    }
+}
+
 fn finish_filter_callback_delivery_failure(
+    context: &SharedAidlServiceContext,
     runtime: &Arc<Mutex<TunerServiceRuntime>>,
     handle: AidlObjectHandle,
     phase: CallbackDeliveryFailurePhase,
     primary: HalError,
 ) -> Result<(), HalError> {
-    let mut runtime = runtime.lock().map_err(|_| {
-        HalError::internal(
-            HalInternalKind::InvariantViolation,
-            "service runtime lock poisoned while finishing filter callback delivery failure",
-        )
-    })?;
-    runtime.finish_callback_delivery_failure_use_case(CallbackDeliveryFailureReport::filter(
-        handle.object_id(),
-        handle.generation(),
-        phase,
-        primary,
-    ))
+    match runtime.lock() {
+        Ok(mut runtime) => runtime.finish_callback_delivery_failure_use_case(
+            CallbackDeliveryFailureReport::filter(
+                handle.object_id(),
+                handle.generation(),
+                phase,
+                primary,
+            ),
+        ),
+        Err(_) => {
+            let record = FilterCallbackDeliveryDiagnosticRecord::new(
+                filter_callback_diagnostic_phase(phase),
+                handle.object_id(),
+                handle.generation(),
+                primary.clone(),
+            );
+            match context.record_filter_callback_delivery_failure_fallback(record) {
+                Ok(()) => Err(primary),
+                Err(record_error) => Err(maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
+                    "filter callback delivery fallback diagnostic record failed",
+                    primary,
+                    record_error,
+                )),
+            }
+        }
+    }
 }
 
 impl FilterEventDispatcher for AidlFilterEventDispatcher {
@@ -107,18 +143,23 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
         runtime: &Arc<Mutex<TunerServiceRuntime>>,
         snapshots: Vec<FilterEventDeliverySnapshot>,
     ) -> Result<(), HalError> {
+        let mut failures = FirstErrorCollector::new();
         for snapshot in snapshots {
             let handle = AidlObjectHandle::new(
                 AidlObjectKind::Filter,
                 snapshot.object_id,
                 snapshot.generation,
             );
-            let context = self.context.upgrade().ok_or_else(|| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "AIDL service context is not available for filter callback delivery",
-                )
-            })?;
+            let context = match self.context.upgrade() {
+                Some(context) => context,
+                None => {
+                    failures.push_error(HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "AIDL service context is not available for filter callback delivery",
+                    ));
+                    continue;
+                }
+            };
             let callback = match context.filter_callback_for_owner(handle) {
                 Ok(Some(callback)) => callback,
                 Ok(None) => {
@@ -126,32 +167,38 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
                         "IFilterCallback.onFilterEvent",
                         "filter callback artifact is not registered",
                     );
-                    return finish_filter_callback_delivery_failure(
+                    failures.push_result(finish_filter_callback_delivery_failure(
+                        &context,
                         runtime,
                         handle,
                         CallbackDeliveryFailurePhase::CallbackArtifactLookup,
                         primary,
-                    );
+                    ));
+                    continue;
                 }
                 Err(error) => {
                     let primary = error.into_hal_error("IFilterCallback.onFilterEvent");
-                    return finish_filter_callback_delivery_failure(
+                    failures.push_result(finish_filter_callback_delivery_failure(
+                        &context,
                         runtime,
                         handle,
                         CallbackDeliveryFailurePhase::CallbackArtifactLookup,
                         primary,
-                    );
+                    ));
+                    continue;
                 }
             };
             let event = match event_from_snapshot(snapshot) {
                 Ok(event) => event,
                 Err(primary) => {
-                    return finish_filter_callback_delivery_failure(
+                    failures.push_result(finish_filter_callback_delivery_failure(
+                        &context,
                         runtime,
                         handle,
                         CallbackDeliveryFailurePhase::EventConversion,
                         primary,
-                    );
+                    ));
+                    continue;
                 }
             };
             if let Err(error) = callback.onFilterEvent(&[event]) {
@@ -159,15 +206,16 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
                     "IFilterCallback.onFilterEvent",
                     format!("binder failure: {error:?}"),
                 );
-                return finish_filter_callback_delivery_failure(
+                failures.push_result(finish_filter_callback_delivery_failure(
+                    &context,
                     runtime,
                     handle,
                     CallbackDeliveryFailurePhase::BinderDelivery,
                     primary,
-                );
+                ));
             }
         }
-        Ok(())
+        failures.into_result()
     }
 }
 

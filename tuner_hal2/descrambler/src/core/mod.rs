@@ -6,7 +6,7 @@ pub use multi2::{
     PreparedMulti2Key, DEFAULT_MULTI2_ROUNDS,
 };
 pub use packet::{
-    descramble_ts_packet_in_place, packet_policy_for_descramble_failure, parse_ts_packet_header,
-    DescrambleFailure, DescrambleOutcome, DescramblerKeySlot, KeyParity, PacketPolicyAction,
-    PassThroughReason, TsPacketHeader, NULL_PID,
+    descramble_ts_packet_in_place, packet_policy_for_descramble_failure, DescrambleFailure,
+    DescrambleOutcome, DescramblerKeySlot, KeyParity, PacketPolicyAction, PassThroughReason,
+    NULL_PID,
 };

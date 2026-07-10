@@ -172,7 +172,7 @@ impl FrontendRuntime {
     pub fn backend_kind(&self) -> FrontendBackendKind {
         self.backend_kind
     }
-    pub fn state(&self) -> FrontendRuntimeState {
+    pub(crate) fn state(&self) -> FrontendRuntimeState {
         self.state
     }
     pub fn generation(&self) -> u64 {
@@ -220,13 +220,13 @@ impl FrontendRuntime {
     pub fn diagnostic_write_failures(&self) -> &[FrontendDiagnosticWriteFailure] {
         &self.diagnostic_write_failures
     }
-    pub fn active_scan_session(&self) -> Option<&FrontendScanSession> {
+    pub(crate) fn active_scan_session(&self) -> Option<&FrontendScanSession> {
         self.scan_session.as_ref()
     }
-    pub fn active_tune_request(&self) -> Option<&FrontendTuneRequest> {
+    pub(crate) fn active_tune_request(&self) -> Option<&FrontendTuneRequest> {
         self.active_tune_request.as_ref()
     }
-    pub fn signal_state(&self) -> FrontendSignalState {
+    pub(crate) fn signal_state(&self) -> FrontendSignalState {
         self.signal_state
     }
     pub fn snapshot(&self) -> FrontendRuntimeSnapshot {
@@ -523,7 +523,8 @@ impl FrontendRuntime {
         Ok(())
     }
 
-    pub fn next_generation(&mut self) -> Result<u64, HalError> {
+    #[cfg(test)]
+    pub(crate) fn next_generation(&mut self) -> Result<u64, HalError> {
         let next = self.checked_next_generation()?;
         self.generation = next;
         Ok(next)

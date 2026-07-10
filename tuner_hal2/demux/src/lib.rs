@@ -55,13 +55,25 @@ pub use parser::record_index::{
 };
 pub use parser::sections::normalize_length_field_bits;
 pub use runtime::{
-    DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind, DemuxRuntimeSnapshot,
+    DemuxGenerationBoundaryRequest, DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind,
+    DemuxRuntimeQuarantineRequest, DemuxRuntimeRollbackRestoreRequest,
+    DemuxRuntimeRollbackToken, DemuxRuntimeRollbackTokenPrepareRequest, DemuxRuntimeSnapshot,
     DemuxRuntimeState, DemuxStreamGeneration, DvrConfigureOutcome, DvrConfigureReport,
-    DvrConfigureStep, DvrKind, DvrRuntimeSnapshot, DvrRuntimeState, DvrStatusEvent,
-    FilterConfigureOutcome, FilterConfigureReport, FilterConfigureStep, FilterRuntimeSnapshot,
-    FilterRuntimeState, GenerationBoundaryReport, PlaybackConsumeReport, QueueDescriptorExportPlan,
+    DvrConfigureStep, DvrFilterLinkRequest, DvrKind, DvrRuntimeConfigureRequest,
+    DvrRuntimeOperationRequest, DvrRuntimeRegistrationRequest, DvrRuntimeSnapshot,
+    DvrRuntimeState, DvrStatusEvent, DvrStatusIntervalRuntimeRequest,
+    DvrStatusReportingRequest, FilterAvHandleReleaseRequest,
+    FilterAvStreamTypeRuntimeRequest, FilterConfigureOutcome, FilterConfigureReport,
+    FilterConfigureStep, FilterDelayHintRuntimeRequest, FilterRuntimeConfigureRequest,
+    FilterRuntimeOperationKind, FilterRuntimeOperationOutcome, FilterRuntimeOperationReport,
+    FilterRuntimeOperationRequest, FilterRuntimeOperationSkipReason, FilterRuntimeOperationStep,
+    FilterRuntimeOperationStepOutcome, FilterRuntimeRegistrationRequest, FilterRuntimeSnapshot,
+    FilterRuntimeState, FilterSourceConnectRequest, FilterSourceDisconnectRequest,
+    GenerationBoundaryReport, PlaybackConsumeReport, QueueDescriptorExportPlan,
     QueueDescriptorExportTarget, QueueDescriptorQueryError, QueueDescriptorSnapshot,
     QueueGrantorDescriptorSnapshot, QueueRuntimeError, QueueRuntimeErrorKind,
+    SourceBoundaryOutcome, SourceBoundaryReport, SourceBoundaryStep,
+    ValidatedPacketIngressRequest,
 };
 
 #[cfg(test)]
@@ -79,6 +91,114 @@ mod tests {
     };
     use std::os::unix::fs::MetadataExt;
     use std::{thread, time::Duration};
+
+    trait DemuxRuntimeTestMutationExt {
+        fn start_filter_runtime(&mut self, filter_id: i32) -> Result<(), DemuxRuntimeError>;
+        fn stop_filter_runtime(&mut self, filter_id: i32) -> Result<(), DemuxRuntimeError>;
+        fn flush_filter_runtime(&mut self, filter_id: i32) -> Result<(), DemuxRuntimeError>;
+        fn configure_filter_av_stream_type(
+            &mut self,
+            filter_id: i32,
+            config: AvStreamTypeConfig,
+        ) -> Result<(), DemuxRuntimeError>;
+        fn set_filter_delay_hint(
+            &mut self,
+            filter_id: i32,
+            hint: FilterDelayHint,
+        ) -> Result<(), DemuxRuntimeError>;
+        fn release_filter_av_handle(
+            &mut self,
+            filter_id: i32,
+            has_fd: bool,
+            av_data_id: i64,
+        ) -> Result<AvHandleReleaseOutcome, DemuxRuntimeError>;
+        fn set_dvr_status_check_interval(
+            &mut self,
+            dvr_id: i32,
+            interval_ms: u64,
+        ) -> Result<(), DemuxRuntimeError>;
+        fn mark_dvr_callback_unhealthy(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError>;
+        fn attach_dvr_filter(&mut self, dvr_id: i32, filter_id: i32) -> Result<(), DemuxRuntimeError>;
+        fn detach_dvr_filter(&mut self, dvr_id: i32, filter_id: i32) -> Result<(), DemuxRuntimeError>;
+        fn start_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError>;
+        fn stop_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError>;
+        fn flush_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError>;
+        fn set_filter_source_non_null(
+            &mut self,
+            sink_filter_id: i32,
+            source_filter_id: i32,
+        ) -> Result<PipelineResetReport, DemuxRuntimeError>;
+        fn remove_filter(&mut self, filter_id: i32) -> Result<FilterRuntimeSnapshot, DemuxRuntimeError>;
+    }
+
+    impl DemuxRuntimeTestMutationExt for DemuxRuntime {
+        fn start_filter_runtime(&mut self, filter_id: i32) -> Result<(), DemuxRuntimeError> {
+            self.start_filter_runtime(filter_id)
+        }
+        fn stop_filter_runtime(&mut self, filter_id: i32) -> Result<(), DemuxRuntimeError> {
+            self.stop_filter_runtime(filter_id)
+        }
+        fn flush_filter_runtime(&mut self, filter_id: i32) -> Result<(), DemuxRuntimeError> {
+            self.flush_filter_runtime(filter_id)
+        }
+        fn configure_filter_av_stream_type(
+            &mut self,
+            filter_id: i32,
+            config: AvStreamTypeConfig,
+        ) -> Result<(), DemuxRuntimeError> {
+            self.configure_filter_av_stream_type(filter_id, config)
+        }
+        fn set_filter_delay_hint(
+            &mut self,
+            filter_id: i32,
+            hint: FilterDelayHint,
+        ) -> Result<(), DemuxRuntimeError> {
+            self.set_filter_delay_hint(filter_id, hint)
+        }
+        fn release_filter_av_handle(
+            &mut self,
+            filter_id: i32,
+            has_fd: bool,
+            av_data_id: i64,
+        ) -> Result<AvHandleReleaseOutcome, DemuxRuntimeError> {
+            self.release_filter_av_handle(filter_id, has_fd, av_data_id)
+        }
+        fn set_dvr_status_check_interval(
+            &mut self,
+            dvr_id: i32,
+            interval_ms: u64,
+        ) -> Result<(), DemuxRuntimeError> {
+            self.set_dvr_status_check_interval(dvr_id, interval_ms)
+        }
+        fn mark_dvr_callback_unhealthy(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {
+            self.mark_dvr_callback_unhealthy(dvr_id)
+        }
+        fn attach_dvr_filter(&mut self, dvr_id: i32, filter_id: i32) -> Result<(), DemuxRuntimeError> {
+            self.attach_dvr_filter(dvr_id, filter_id)
+        }
+        fn detach_dvr_filter(&mut self, dvr_id: i32, filter_id: i32) -> Result<(), DemuxRuntimeError> {
+            self.detach_dvr_filter(dvr_id, filter_id)
+        }
+        fn start_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {
+            self.start_dvr_runtime(dvr_id)
+        }
+        fn stop_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {
+            self.stop_dvr_runtime(dvr_id)
+        }
+        fn flush_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {
+            self.flush_dvr_runtime(dvr_id)
+        }
+        fn set_filter_source_non_null(
+            &mut self,
+            sink_filter_id: i32,
+            source_filter_id: i32,
+        ) -> Result<PipelineResetReport, DemuxRuntimeError> {
+            self.set_filter_source_non_null(sink_filter_id, source_filter_id).1
+        }
+        fn remove_filter(&mut self, filter_id: i32) -> Result<FilterRuntimeSnapshot, DemuxRuntimeError> {
+            self.remove_filter(filter_id)
+        }
+    }
 
     fn packet_pid(pid: i32) -> PacketPid {
         PacketPid::from_config_pid(ConfigInputPid::validate_tpid(pid).expect("valid test pid"))
@@ -180,7 +300,8 @@ mod tests {
         assert_eq!(
             report.outcome(),
             SourceBoundaryOutcome::Failed {
-                step: SourceBoundaryStep::ValidateQueue
+                step: SourceBoundaryStep::ValidateQueue,
+                primary_error: DemuxRuntimeErrorKind::QueueMissing,
             }
         );
         assert!(!report
@@ -218,7 +339,8 @@ mod tests {
         assert_eq!(
             report.outcome(),
             SourceBoundaryOutcome::Failed {
-                step: SourceBoundaryStep::ValidateQueue
+                step: SourceBoundaryStep::ValidateQueue,
+                primary_error: DemuxRuntimeErrorKind::QueueMissing,
             }
         );
         assert!(!report
@@ -263,7 +385,7 @@ mod tests {
         demux.create_filter_queue(41).unwrap();
         assert!(demux.filter(41).unwrap().snapshot().queue_present);
 
-        let reset = demux.set_filter_source_non_null(41, 40).unwrap();
+        let reset = demux.set_filter_source_non_null(41, 40).1.unwrap();
 
         assert!(reset.cleared);
         let sink = demux.filter(41).unwrap().snapshot();
@@ -306,7 +428,7 @@ mod tests {
             .unwrap();
         demux.create_filter_queue(51).unwrap();
 
-        let reset = demux.set_filter_source_non_null(51, 50).unwrap();
+        let reset = demux.set_filter_source_non_null(51, 50).1.unwrap();
 
         assert!(reset.cleared);
         let sink = demux.filter(51).unwrap().snapshot();
@@ -348,7 +470,7 @@ mod tests {
             .unwrap();
         demux.create_filter_queue(53).unwrap();
 
-        let reset = demux.set_filter_source_non_null(53, 52).unwrap();
+        let reset = demux.set_filter_source_non_null(53, 52).1.unwrap();
 
         assert!(reset.cleared);
         let sink = demux.filter(53).unwrap().snapshot();
@@ -434,7 +556,8 @@ mod tests {
             .unwrap();
 
         let snapshot = demux
-            .export_filter_queue_descriptor(24)
+            .filter_queue_descriptor_export_plan(24)
+            .and_then(|plan| plan.export_descriptor().map_err(QueueDescriptorQueryError::Runtime))
             .expect("raw filter queue descriptor must exist before configure");
 
         let (grantors, fds, _ints, quantum, _flags) = snapshot.into_parts();
@@ -458,7 +581,9 @@ mod tests {
             .unwrap();
 
         assert!(matches!(
-            demux.export_filter_queue_descriptor(25),
+            demux
+                .filter_queue_descriptor_export_plan(25)
+                .and_then(|plan| plan.export_descriptor().map_err(QueueDescriptorQueryError::Runtime)),
             Err(QueueDescriptorQueryError::Unavailable(25))
         ));
     }
@@ -477,13 +602,16 @@ mod tests {
             .unwrap();
 
         assert!(matches!(
-            demux.export_dvr_queue_descriptor(26),
+            demux
+                .dvr_queue_descriptor_export_plan(26)
+                .and_then(|plan| plan.export_descriptor().map_err(QueueDescriptorQueryError::Runtime)),
             Err(QueueDescriptorQueryError::InvalidState(26))
         ));
 
         demux.configure_dvr_runtime(26).unwrap();
         let snapshot = demux
-            .export_dvr_queue_descriptor(26)
+            .dvr_queue_descriptor_export_plan(26)
+            .and_then(|plan| plan.export_descriptor().map_err(QueueDescriptorQueryError::Runtime))
             .expect("configured DVR queue descriptor must exist");
         let (grantors, fds, _ints, quantum, _flags) = snapshot.into_parts();
         assert!(!grantors.is_empty());
@@ -504,7 +632,10 @@ mod tests {
                 27, 1, &request, None,
             ))
             .unwrap();
-        let first = demux.export_filter_queue_descriptor(27).unwrap();
+        let first = demux
+            .filter_queue_descriptor_export_plan(27)
+            .and_then(|plan| plan.export_descriptor().map_err(QueueDescriptorQueryError::Runtime))
+            .unwrap();
         let first_identity = first_fd_identity(first);
 
         FilterConfigureTxn::new(27)
@@ -519,7 +650,10 @@ mod tests {
             )
             .1
             .unwrap();
-        let second = demux.export_filter_queue_descriptor(27).unwrap();
+        let second = demux
+            .filter_queue_descriptor_export_plan(27)
+            .and_then(|plan| plan.export_descriptor().map_err(QueueDescriptorQueryError::Runtime))
+            .unwrap();
 
         assert_eq!(first_identity, first_fd_identity(second));
     }
@@ -538,11 +672,17 @@ mod tests {
             .unwrap();
 
         DvrConfigureTxn::new(28).configure(&mut demux).1.unwrap();
-        let first = demux.export_dvr_queue_descriptor(28).unwrap();
+        let first = demux
+            .dvr_queue_descriptor_export_plan(28)
+            .and_then(|plan| plan.export_descriptor().map_err(QueueDescriptorQueryError::Runtime))
+            .unwrap();
         let first_identity = first_fd_identity(first);
 
         DvrConfigureTxn::new(28).configure(&mut demux).1.unwrap();
-        let second = demux.export_dvr_queue_descriptor(28).unwrap();
+        let second = demux
+            .dvr_queue_descriptor_export_plan(28)
+            .and_then(|plan| plan.export_descriptor().map_err(QueueDescriptorQueryError::Runtime))
+            .unwrap();
 
         assert_eq!(first_identity, first_fd_identity(second));
     }
@@ -616,30 +756,30 @@ mod tests {
         let first_packet = raw_ts_packet(0x0100, 0, &[0x01, 0x02, 0x03, 0x04]);
         assert_eq!(
             demux
-                .write_playback_dvr_queue_bytes(35, &first_packet)
+                .write_playback_dvr_queue_bytes_for_test(35, &first_packet)
                 .unwrap(),
             188
         );
         assert_eq!(
-            demux.consume_playback_dvr_queue(35).unwrap(),
+            demux.consume_playback_dvr_queue_for_test(35).unwrap(),
             crate::runtime::PlaybackConsumeReport::default()
         );
         assert_eq!(
-            demux.snapshot_filter_queue_bytes(34).unwrap(),
+            demux.snapshot_filter_queue_bytes_for_test(34).unwrap(),
             Vec::<u8>::new()
         );
 
         demux.start_dvr_runtime(35).unwrap();
         assert_eq!(demux.dvr(35).unwrap().state(), DvrRuntimeState::Started);
-        let first_consume = demux.consume_playback_dvr_queue(35).unwrap();
+        let first_consume = demux.consume_playback_dvr_queue_for_test(35).unwrap();
         assert_eq!(first_consume.bytes_read, 188);
         assert_eq!(first_consume.completed_packets, 1);
         assert_eq!(
-            demux.snapshot_filter_queue_bytes(34).unwrap(),
+            demux.snapshot_filter_queue_bytes_for_test(34).unwrap(),
             first_packet.to_vec()
         );
         assert_eq!(
-            demux.read_record_dvr_queue_bytes(37).unwrap(),
+            demux.read_record_dvr_queue_bytes_for_test(37).unwrap(),
             Vec::<u8>::new()
         );
 
@@ -649,16 +789,16 @@ mod tests {
         let second_packet = raw_ts_packet(0x0100, 1, &[0x05, 0x06, 0x07, 0x08]);
         assert_eq!(
             demux
-                .write_playback_dvr_queue_bytes(35, &second_packet)
+                .write_playback_dvr_queue_bytes_for_test(35, &second_packet)
                 .unwrap(),
             188
         );
         demux.start_dvr_runtime(35).unwrap();
-        let second_consume = demux.consume_playback_dvr_queue(35).unwrap();
+        let second_consume = demux.consume_playback_dvr_queue_for_test(35).unwrap();
         assert_eq!(second_consume.bytes_read, 188);
         assert_eq!(second_consume.completed_packets, 1);
         assert_eq!(
-            demux.snapshot_filter_queue_bytes(34).unwrap(),
+            demux.snapshot_filter_queue_bytes_for_test(34).unwrap(),
             [first_packet.to_vec(), second_packet.to_vec()].concat()
         );
 
@@ -667,13 +807,13 @@ mod tests {
         let third_packet = raw_ts_packet(0x0100, 2, &[0x09, 0x0a, 0x0b, 0x0c]);
         assert_eq!(
             demux
-                .write_playback_dvr_queue_bytes(35, &third_packet)
+                .write_playback_dvr_queue_bytes_for_test(35, &third_packet)
                 .unwrap(),
             188
         );
         demux.flush_dvr_runtime(35).unwrap();
         demux.start_dvr_runtime(35).unwrap();
-        let after_flush = demux.consume_playback_dvr_queue(35).unwrap();
+        let after_flush = demux.consume_playback_dvr_queue_for_test(35).unwrap();
         assert_eq!(after_flush.bytes_read, 0);
         assert_eq!(after_flush.completed_packets, 0);
     }
@@ -745,14 +885,14 @@ mod tests {
             .delivery_actions
             .contains(&crate::packet_pipeline::PipelineDeliveryAction::DvrMirror { dvr_id: 36 }));
         assert_eq!(
-            demux.read_record_dvr_queue_bytes(37).unwrap(),
+            demux.read_record_dvr_queue_bytes_for_test(37).unwrap(),
             packet.to_vec()
         );
 
         demux.stop_dvr_runtime(37).unwrap();
         assert_eq!(demux.dvr(37).unwrap().state(), DvrRuntimeState::Stopped);
         assert_eq!(
-            demux.read_record_dvr_queue_bytes(37).unwrap(),
+            demux.read_record_dvr_queue_bytes_for_test(37).unwrap(),
             Vec::<u8>::new()
         );
 
@@ -984,7 +1124,7 @@ mod tests {
             Some(crate::runtime::DvrStatusEvent::PlaybackSpaceFull)
         );
         assert_eq!(
-            demux.write_playback_dvr_queue_bytes(421, &packet).unwrap(),
+            demux.write_playback_dvr_queue_bytes_for_test(421, &packet).unwrap(),
             188
         );
         assert_eq!(
@@ -1026,12 +1166,12 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(
-            demux.read_record_dvr_queue_bytes(43).unwrap_err().kind,
+            demux.read_record_dvr_queue_bytes_for_test(43).unwrap_err().kind,
             crate::runtime::DemuxRuntimeErrorKind::InvalidState
         );
         demux.configure_dvr_runtime(43).unwrap();
         assert_eq!(
-            demux.read_record_dvr_queue_bytes(43).unwrap(),
+            demux.read_record_dvr_queue_bytes_for_test(43).unwrap(),
             Vec::<u8>::new()
         );
 
@@ -1046,7 +1186,7 @@ mod tests {
             .unwrap();
         demux.configure_dvr_runtime(44).unwrap();
         assert_eq!(
-            demux.read_record_dvr_queue_bytes(44).unwrap_err().kind,
+            demux.read_record_dvr_queue_bytes_for_test(44).unwrap_err().kind,
             crate::runtime::DemuxRuntimeErrorKind::InvalidState
         );
     }
@@ -1067,7 +1207,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             demux
-                .write_playback_dvr_queue_bytes(45, &packet)
+                .write_playback_dvr_queue_bytes_for_test(45, &packet)
                 .unwrap_err()
                 .kind,
             crate::runtime::DemuxRuntimeErrorKind::InvalidState
@@ -1085,7 +1225,7 @@ mod tests {
         demux.configure_dvr_runtime(46).unwrap();
         assert_eq!(
             demux
-                .write_playback_dvr_queue_bytes(46, &packet)
+                .write_playback_dvr_queue_bytes_for_test(46, &packet)
                 .unwrap_err()
                 .kind,
             crate::runtime::DemuxRuntimeErrorKind::InvalidState
@@ -1108,7 +1248,7 @@ mod tests {
         demux.configure_dvr_runtime(47).unwrap();
 
         assert_eq!(
-            demux.write_playback_dvr_queue_bytes(47, &packet).unwrap(),
+            demux.write_playback_dvr_queue_bytes_for_test(47, &packet).unwrap(),
             0
         );
     }
@@ -1150,48 +1290,48 @@ mod tests {
         let packet = raw_ts_packet(0x0100, 0, &[0x01, 0x02, 0x03, 0x04]);
         assert_eq!(
             demux
-                .write_playback_dvr_queue_bytes(49, &packet[..100])
+                .write_playback_dvr_queue_bytes_for_test(49, &packet[..100])
                 .unwrap(),
             100
         );
-        let first = demux.consume_playback_dvr_queue(49).unwrap();
+        let first = demux.consume_playback_dvr_queue_for_test(49).unwrap();
         assert_eq!(first.completed_packets, 0);
         assert_eq!(
-            demux.snapshot_filter_queue_bytes(48).unwrap(),
+            demux.snapshot_filter_queue_bytes_for_test(48).unwrap(),
             Vec::<u8>::new()
         );
 
         demux.stop_dvr_runtime(49).unwrap();
         assert_eq!(
             demux
-                .write_playback_dvr_queue_bytes(49, &packet[100..])
+                .write_playback_dvr_queue_bytes_for_test(49, &packet[100..])
                 .unwrap(),
             88
         );
         demux.start_dvr_runtime(49).unwrap();
-        let second = demux.consume_playback_dvr_queue(49).unwrap();
+        let second = demux.consume_playback_dvr_queue_for_test(49).unwrap();
         assert_eq!(second.completed_packets, 1);
         assert_eq!(
-            demux.snapshot_filter_queue_bytes(48).unwrap(),
+            demux.snapshot_filter_queue_bytes_for_test(48).unwrap(),
             packet.to_vec()
         );
 
         assert_eq!(
             demux
-                .write_playback_dvr_queue_bytes(49, &packet[..100])
+                .write_playback_dvr_queue_bytes_for_test(49, &packet[..100])
                 .unwrap(),
             100
         );
-        let third = demux.consume_playback_dvr_queue(49).unwrap();
+        let third = demux.consume_playback_dvr_queue_for_test(49).unwrap();
         assert_eq!(third.completed_packets, 0);
         demux.flush_dvr_runtime(49).unwrap();
         assert_eq!(
             demux
-                .write_playback_dvr_queue_bytes(49, &packet[100..])
+                .write_playback_dvr_queue_bytes_for_test(49, &packet[100..])
                 .unwrap(),
             88
         );
-        let after_flush = demux.consume_playback_dvr_queue(49).unwrap();
+        let after_flush = demux.consume_playback_dvr_queue_for_test(49).unwrap();
         assert_eq!(after_flush.completed_packets, 0);
     }
 
@@ -1208,12 +1348,18 @@ mod tests {
                 29, 1, &request, None,
             ))
             .unwrap();
-        let before_restore = demux.export_filter_queue_descriptor(29).unwrap();
+        let before_restore = demux
+            .filter_queue_descriptor_export_plan(29)
+            .and_then(|plan| plan.export_descriptor().map_err(QueueDescriptorQueryError::Runtime))
+            .unwrap();
         let before_identity = first_fd_identity(before_restore);
         let snapshot = demux.snapshot();
 
         demux.restore(snapshot).unwrap();
-        let after_restore = demux.export_filter_queue_descriptor(29).unwrap();
+        let after_restore = demux
+            .filter_queue_descriptor_export_plan(29)
+            .and_then(|plan| plan.export_descriptor().map_err(QueueDescriptorQueryError::Runtime))
+            .unwrap();
 
         assert_eq!(before_identity, first_fd_identity(after_restore));
     }
@@ -1247,7 +1393,7 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             txn.outcome(),
-            Some(FilterConfigureOutcome::RolledBack {
+            Some(FilterConfigureOutcome::Failed {
                 failed_step: FilterConfigureStep::ValidateSettings
             })
         );
@@ -1327,7 +1473,7 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             txn.outcome(),
-            Some(FilterConfigureOutcome::RolledBack {
+            Some(FilterConfigureOutcome::Failed {
                 failed_step: FilterConfigureStep::ValidateState
             })
         );
@@ -1752,16 +1898,16 @@ mod tests {
             .enqueue_filter_queue_payload(30, vec![1, 2, 3])
             .unwrap();
         assert_eq!(
-            demux.filter_delivery_readiness(30).unwrap(),
+            demux.filter_delivery_readiness_for_test(30).unwrap(),
             FilterDelayReadiness::WaitingForTime
         );
         thread::sleep(Duration::from_millis(25));
         assert_eq!(
-            demux.filter_delivery_readiness(30).unwrap(),
+            demux.filter_delivery_readiness_for_test(30).unwrap(),
             FilterDelayReadiness::Ready
         );
         assert_eq!(
-            demux.drain_filter_queue_for_delivery(30).unwrap(),
+            demux.drain_filter_queue_for_delivery_for_test(30).unwrap(),
             vec![vec![1, 2, 3]]
         );
 
@@ -1769,7 +1915,7 @@ mod tests {
             .enqueue_filter_queue_payload(30, vec![4, 5, 6])
             .unwrap();
         assert_eq!(
-            demux.filter_delivery_readiness(30).unwrap(),
+            demux.filter_delivery_readiness_for_test(30).unwrap(),
             FilterDelayReadiness::WaitingForTime
         );
     }
@@ -1785,17 +1931,17 @@ mod tests {
             .enqueue_filter_queue_payload(31, vec![1, 2, 3])
             .unwrap();
         assert_eq!(
-            demux.filter_delivery_readiness(31).unwrap(),
+            demux.filter_delivery_readiness_for_test(31).unwrap(),
             FilterDelayReadiness::WaitingForDataSize
         );
 
         demux.enqueue_filter_queue_payload(31, vec![4, 5]).unwrap();
         assert_eq!(
-            demux.filter_delivery_readiness(31).unwrap(),
+            demux.filter_delivery_readiness_for_test(31).unwrap(),
             FilterDelayReadiness::Ready
         );
         assert_eq!(
-            demux.snapshot_filter_queue_bytes(31).unwrap(),
+            demux.snapshot_filter_queue_bytes_for_test(31).unwrap(),
             vec![1, 2, 3, 4, 5]
         );
     }
@@ -1814,7 +1960,7 @@ mod tests {
             .enqueue_filter_queue_payload(32, vec![1, 2, 3])
             .unwrap();
         assert_eq!(
-            demux.filter_delivery_readiness(32).unwrap(),
+            demux.filter_delivery_readiness_for_test(32).unwrap(),
             FilterDelayReadiness::Ready
         );
 
@@ -1830,12 +1976,12 @@ mod tests {
             .enqueue_filter_queue_payload(33, vec![1, 2, 3])
             .unwrap();
         assert_eq!(
-            demux.filter_delivery_readiness(33).unwrap(),
+            demux.filter_delivery_readiness_for_test(33).unwrap(),
             FilterDelayReadiness::WaitingForTime
         );
         thread::sleep(Duration::from_millis(25));
         assert_eq!(
-            demux.filter_delivery_readiness(33).unwrap(),
+            demux.filter_delivery_readiness_for_test(33).unwrap(),
             FilterDelayReadiness::Ready
         );
     }
@@ -1874,11 +2020,11 @@ mod tests {
             .generated_events
             .contains(&packet_pipeline::PipelineGeneratedEvent::DataReady { filter_id: 34 }));
         assert_eq!(
-            demux.filter_delivery_readiness(34).unwrap(),
+            demux.filter_delivery_readiness_for_test(34).unwrap(),
             FilterDelayReadiness::Ready
         );
         assert_eq!(
-            demux.snapshot_filter_queue_bytes(34).unwrap(),
+            demux.snapshot_filter_queue_bytes_for_test(34).unwrap(),
             packet.to_vec()
         );
     }

@@ -333,7 +333,7 @@ fn rollback_backend_tune<B: BackendTuneOps>(
 
 #[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum FrontendTuneOutcome {
+pub(crate) enum FrontendTuneOutcome {
     Committed {
         commit: BackendTuneCommit,
     },
@@ -348,19 +348,19 @@ pub enum FrontendTuneOutcome {
 
 #[cfg(test)]
 #[derive(Debug)]
-pub struct FrontendTuneTxn {
+pub(crate) struct FrontendTuneTxn {
     backend: BackendTuneTxn,
 }
 
 #[cfg(test)]
 impl FrontendTuneTxn {
-    pub fn new(frontend_id: i32, generation: u64, request: FrontendTuneRequest) -> Self {
+    pub(crate) fn new(frontend_id: i32, generation: u64, request: FrontendTuneRequest) -> Self {
         Self {
             backend: BackendTuneTxn::new(frontend_id, generation, request),
         }
     }
 
-    pub fn apply<B: BackendTuneOps, W: TuneWorkerStart>(
+    pub(crate) fn apply<B: BackendTuneOps, W: TuneWorkerStart>(
         &mut self,
         backend: &mut B,
         worker: &mut W,
