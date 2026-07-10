@@ -172,6 +172,7 @@ impl FrontendRuntime {
     pub fn backend_kind(&self) -> FrontendBackendKind {
         self.backend_kind
     }
+    #[cfg(test)]
     pub(crate) fn state(&self) -> FrontendRuntimeState {
         self.state
     }
@@ -220,14 +221,9 @@ impl FrontendRuntime {
     pub fn diagnostic_write_failures(&self) -> &[FrontendDiagnosticWriteFailure] {
         &self.diagnostic_write_failures
     }
+    #[cfg(test)]
     pub(crate) fn active_scan_session(&self) -> Option<&FrontendScanSession> {
         self.scan_session.as_ref()
-    }
-    pub(crate) fn active_tune_request(&self) -> Option<&FrontendTuneRequest> {
-        self.active_tune_request.as_ref()
-    }
-    pub(crate) fn signal_state(&self) -> FrontendSignalState {
-        self.signal_state
     }
     pub fn snapshot(&self) -> FrontendRuntimeSnapshot {
         FrontendRuntimeSnapshot {
