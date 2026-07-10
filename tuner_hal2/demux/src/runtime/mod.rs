@@ -12,7 +12,8 @@ pub use configure_txn::{
 };
 pub use demux::{
     DemuxGenerationBoundaryRequest, DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind,
-    DemuxRuntimeQuarantineRequest, DemuxRuntimeRollbackRestoreRequest, DemuxRuntimeRollbackToken,
+    DemuxRuntimeQuarantineRequest, DemuxRuntimeRollbackCommitRequest,
+    DemuxRuntimeRollbackRestoreRequest, DemuxRuntimeRollbackToken,
     DemuxRuntimeRollbackTokenPrepareRequest, DemuxRuntimeSnapshot, DemuxRuntimeState,
     DvrFilterLinkRequest, DvrRuntimeConfigureRequest, DvrRuntimeOperationRequest,
     DvrRuntimeRegistrationRequest, DvrStatusIntervalRuntimeRequest, DvrStatusReportingRequest,

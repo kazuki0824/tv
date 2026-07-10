@@ -378,6 +378,17 @@ impl DemuxRuntimeRollbackRestoreRequest {
     }
 }
 
+#[derive(Debug)]
+pub struct DemuxRuntimeRollbackCommitRequest {
+    token: DemuxRuntimeRollbackToken,
+}
+
+impl DemuxRuntimeRollbackCommitRequest {
+    pub const fn new(token: DemuxRuntimeRollbackToken) -> Self {
+        Self { token }
+    }
+}
+
 impl DemuxRuntimeSnapshot {
     pub fn generation(&self) -> u64 {
         self.generation
@@ -865,6 +876,25 @@ impl DemuxRuntime {
         request: DemuxRuntimeRollbackRestoreRequest,
     ) -> Result<(), DemuxRuntimeError> {
         self.restore_from_rollback_token(request.token)
+    }
+
+    pub fn commit_rollback_request(
+        &mut self,
+        request: DemuxRuntimeRollbackCommitRequest,
+    ) -> Result<(), DemuxRuntimeError> {
+        let token = request.token;
+        if token.demux_id != self.demux_id {
+            return Err(DemuxRuntimeError::invalid_state(token.demux_id));
+        }
+        let snapshot = self
+            .rollback_snapshots
+            .remove(&token.token_id)
+            .ok_or(DemuxRuntimeError::invalid_state(self.demux_id))?;
+        if snapshot.generation != token.generation {
+            self.rollback_snapshots.clear();
+            return Err(DemuxRuntimeError::invalid_state(self.demux_id));
+        }
+        Ok(())
     }
 
     pub(crate) fn restore_from_rollback_token(

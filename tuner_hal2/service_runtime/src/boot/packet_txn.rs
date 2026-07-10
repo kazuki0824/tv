@@ -1,9 +1,8 @@
 use super::{
     demux_runtime_error_to_hal, DemuxRuntimeId, DescrambleFailure, DescramblePacketDecision,
     DescramblePacketFlow, FrontendRuntimeId, FrontendRuntimeState, GenerationBoundaryReport,
-    HalError, HalInvalidStateKind, PacketPid, PipelineBoundaryReason, PipelineDiagnostic,
-    PipelineReport, TsInputOrigin, TsPacketValidationError, TunerServiceRuntime, ValidatedTsPacket,
-    TS_PACKET_SIZE,
+    HalError, HalInvalidStateKind, PipelineBoundaryReason, PipelineReport, TsInputOrigin,
+    TsPacketValidationError, TunerServiceRuntime, ValidatedTsPacket, TS_PACKET_SIZE,
 };
 use crate::registry::ResolvedDescramblerPacketFlow;
 fn descramble_failure_for_ts_validation_error(error: TsPacketValidationError) -> DescrambleFailure {

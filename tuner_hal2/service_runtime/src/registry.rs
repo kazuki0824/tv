@@ -317,8 +317,9 @@ impl ResolvedDescramblerPacketMaterial {
                 }
                 Err(failure) => {
                     diagnostic_records.extend(Self::failure_records(demux_id, packet_pid, failure));
+                    let failure_diagnostics = self.failure_diagnostics(packet_pid, failure);
                     let mut diagnostics = self.diagnostics;
-                    diagnostics.extend(self.failure_diagnostics(packet_pid, failure));
+                    diagnostics.extend(failure_diagnostics);
                     return ResolvedDescramblerPacketDecision {
                         packet: *packet,
                         flow: Self::flow_for_descramble_failure(failure),
@@ -335,8 +336,9 @@ impl ResolvedDescramblerPacketMaterial {
             DescrambleFailure::ScrambledPidNotRegistered
         };
         diagnostic_records.extend(Self::failure_records(demux_id, packet_pid, failure));
+        let failure_diagnostics = self.failure_diagnostics(packet_pid, failure);
         let mut diagnostics = self.diagnostics;
-        diagnostics.extend(self.failure_diagnostics(packet_pid, failure));
+        diagnostics.extend(failure_diagnostics);
         ResolvedDescramblerPacketDecision {
             packet: *packet,
             flow: Self::flow_for_descramble_failure(failure),

@@ -16,18 +16,16 @@ use maleicacid_tuner_hal2_demux::config::{
 };
 use maleicacid_tuner_hal2_demux::OpenFilterRequest;
 use maleicacid_tuner_hal2_demux::{
-    AvMediaEventDescriptor, DemuxGenerationBoundaryRequest, DemuxRuntimeError,
-    DemuxRuntimeErrorKind, DemuxRuntimeRollbackToken, DemuxRuntimeSnapshot, DemuxRuntimeState,
-    DvrKind, DvrRuntimeConfigureRequest, DvrRuntimeRegistrationRequest, DvrRuntimeState,
-    DvrStatusReportingRequest, FilterRuntimeConfigureRequest, FilterRuntimeRegistrationRequest,
-    GenerationBoundaryReport, PacketDescramblePolicyFailure, PacketPid,
-    PipelineAssemblySuppressionReason, PipelineBoundaryReason, PipelineDiagnostic, PipelineReport,
-    PipelineResetReport, TsInputOrigin, TsPacketValidationError, ValidatedTsPacket,
+    AvMediaEventDescriptor, DemuxRuntimeError, DemuxRuntimeErrorKind, DemuxRuntimeRollbackToken,
+    DemuxRuntimeState, DvrKind, DvrRuntimeState, GenerationBoundaryReport, PipelineBoundaryReason,
+    PipelineDiagnostic, PipelineReport, PipelineResetReport, TsInputOrigin,
+    TsPacketValidationError, ValidatedTsPacket,
 };
+#[cfg(test)]
+use maleicacid_tuner_hal2_descrambler::DescramblerKeySlot;
 use maleicacid_tuner_hal2_descrambler::{
-    packet_policy_for_descramble_failure, DescrambleFailure, DescrambleOutcome, DescramblerKeySlot,
-    DescramblerKeyToken, DescramblerKeyTokenError, DescramblerPid, DescramblerPidClaim,
-    DescramblerPidClaimError, PacketPolicyAction,
+    DescrambleFailure, DescramblerKeyToken, DescramblerKeyTokenError, DescramblerPid,
+    DescramblerPidClaim, DescramblerPidClaimError,
 };
 use maleicacid_tuner_hal2_device::{
     FrontendLivePacketSink, FrontendLivePumpOwner, FrontendLivePumpReport,
@@ -60,13 +58,13 @@ use crate::diagnostics::{
     DescramblerDiagnosticRecord, DescramblerDiagnosticSnapshot,
     DvrPostCommitNotificationDiagnosticRecord, DvrPostCommitNotificationDiagnosticSnapshot,
     DvrPostCommitNotificationFailureKind, DvrPostCommitNotificationPhase,
-    DvrStatusNotifierCleanupDiagnosticRecord, DvrStatusNotifierCleanupDiagnosticSnapshot,
-    FilterCallbackDeliveryDiagnosticPhase, FilterCallbackDeliveryDiagnosticRecord,
-    FilterCallbackDeliveryDiagnosticSnapshot, FrontendCallbackDeliveryDiagnosticPhase,
-    FrontendCallbackDeliveryDiagnosticRecord, FrontendCallbackDeliveryDiagnosticSnapshot,
-    QueueDescriptorQueryDiagnosticRecord, QueueDescriptorQueryDiagnosticSnapshot,
-    SharedCallbackArtifactRuntimeSplitDiagnostics, SharedDvrPostCommitNotificationDiagnostics,
-    SharedDvrStatusNotifierCleanupDiagnostics, StartupDiagnosticRecord, StartupDiagnosticSnapshot,
+    DvrStatusNotifierCleanupDiagnosticSnapshot, FilterCallbackDeliveryDiagnosticPhase,
+    FilterCallbackDeliveryDiagnosticRecord, FilterCallbackDeliveryDiagnosticSnapshot,
+    FrontendCallbackDeliveryDiagnosticPhase, FrontendCallbackDeliveryDiagnosticRecord,
+    FrontendCallbackDeliveryDiagnosticSnapshot, QueueDescriptorQueryDiagnosticRecord,
+    QueueDescriptorQueryDiagnosticSnapshot, SharedCallbackArtifactRuntimeSplitDiagnostics,
+    SharedDvrPostCommitNotificationDiagnostics, SharedDvrStatusNotifierCleanupDiagnostics,
+    StartupDiagnosticRecord, StartupDiagnosticSnapshot,
 };
 use crate::dispatch::{
     adapter_transactions_are_covered, dispatch_target_for, ServiceRuntimeDispatchTarget,
@@ -433,29 +431,6 @@ fn descrambler_pid_claim_error_to_hal(error: DescramblerPidClaimError) -> HalErr
             HalInvalidArgumentKind::NumericRange,
             "descrambler PID is invalid",
         ),
-    }
-}
-
-fn diagnostic_kind_for_descramble_failure(failure: DescrambleFailure) -> DescramblerDiagnosticKind {
-    match failure {
-        DescrambleFailure::InvalidPacketSize => DescramblerDiagnosticKind::InvalidPacketSize,
-        DescrambleFailure::BadSyncByte => DescramblerDiagnosticKind::BadSyncByte,
-        DescrambleFailure::InvalidAfc => DescramblerDiagnosticKind::InvalidAfc,
-        DescrambleFailure::InvalidAdaptationField => {
-            DescramblerDiagnosticKind::InvalidAdaptationField
-        }
-        DescrambleFailure::InvalidTsc => DescramblerDiagnosticKind::InvalidTsc,
-        DescrambleFailure::TransportErrorRecord => DescramblerDiagnosticKind::TransportErrorRecord,
-        DescrambleFailure::ScrambledNullPid => DescramblerDiagnosticKind::ScrambledNullPid,
-        DescrambleFailure::ScrambledWithoutPayload => {
-            DescramblerDiagnosticKind::ScrambledWithoutPayload
-        }
-        DescrambleFailure::NoKey => DescramblerDiagnosticKind::PacketScrambledWithoutKey,
-        DescrambleFailure::BadToken => DescramblerDiagnosticKind::BadToken,
-        DescrambleFailure::Multi2Fail => DescramblerDiagnosticKind::Multi2Fail,
-        DescrambleFailure::ScrambledPidNotRegistered => {
-            DescramblerDiagnosticKind::ScrambledWithoutDescrambler
-        }
     }
 }
 
@@ -1136,19 +1111,6 @@ impl TunerServiceRuntime {
         if let Err(error) = self.dvr_post_commit_notification_diagnostics.record(record) {
             self.diagnostics.push(
                 StartupDiagnosticRecord::dvr_post_commit_notification_diagnostic_record_failed(
-                    error,
-                ),
-            );
-        }
-    }
-
-    pub(crate) fn record_dvr_status_notifier_cleanup_diagnostic(
-        &mut self,
-        record: DvrStatusNotifierCleanupDiagnosticRecord,
-    ) {
-        if let Err(error) = self.dvr_status_notifier_cleanup_diagnostics.record(record) {
-            self.diagnostics.push(
-                StartupDiagnosticRecord::dvr_status_notifier_cleanup_diagnostic_record_failed(
                     error,
                 ),
             );

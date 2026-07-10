@@ -1,6 +1,6 @@
 use maleicacid_tuner_hal2_common::{
-    compose_primary_cleanup_failure, FirstErrorCollector, HalError, HalInternalKind,
-    HalInvalidArgumentKind, HalInvalidStateKind,
+    compose_primary_cleanup_failure, HalError, HalInternalKind, HalInvalidArgumentKind,
+    HalInvalidStateKind,
 };
 use maleicacid_tuner_hal2_domain_request::{
     LnbSetSatellitePositionRequest, LnbToneRequest, LnbVoltageRequest,

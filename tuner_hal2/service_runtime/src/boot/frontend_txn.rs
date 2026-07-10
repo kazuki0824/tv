@@ -334,6 +334,7 @@ impl<'a> FrontendTxn<'a> {
         runtime.checked_next_generation()
     }
 
+    #[cfg(test)]
     pub(crate) fn prepare_frontend_worker_generation(
         &mut self,
         frontend_id: i32,

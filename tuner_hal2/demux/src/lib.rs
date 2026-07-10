@@ -56,7 +56,8 @@ pub use parser::record_index::{
 pub use parser::sections::normalize_length_field_bits;
 pub use runtime::{
     DemuxGenerationBoundaryRequest, DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind,
-    DemuxRuntimeQuarantineRequest, DemuxRuntimeRollbackRestoreRequest, DemuxRuntimeRollbackToken,
+    DemuxRuntimeQuarantineRequest, DemuxRuntimeRollbackCommitRequest,
+    DemuxRuntimeRollbackRestoreRequest, DemuxRuntimeRollbackToken,
     DemuxRuntimeRollbackTokenPrepareRequest, DemuxRuntimeSnapshot, DemuxRuntimeState,
     DemuxStreamGeneration, DvrConfigureOutcome, DvrConfigureReport, DvrConfigureStep,
     DvrFilterLinkRequest, DvrKind, DvrRuntimeConfigureRequest, DvrRuntimeOperationRequest,

@@ -2293,6 +2293,7 @@ pub fn cleanup_frontend_object_after_close_begin(
     })
 }
 
+#[cfg(test)]
 pub fn close_frontend_workers_and_live_data(
     runtime: SharedRuntime,
     frontend_id: i32,

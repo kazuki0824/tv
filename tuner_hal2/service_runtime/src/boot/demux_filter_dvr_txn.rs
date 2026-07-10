@@ -6,9 +6,11 @@ use super::{
     HalError, HalInternalKind, HalInvalidArgumentKind, HalInvalidStateKind, OpenDvrRequest,
     OpenFilterRequest, PipelineResetReport, RegistryCommitError, TunerServiceRuntime,
 };
+#[cfg(test)]
+use crate::diagnostics::ChildOpenRollbackKind;
 use crate::diagnostics::{
-    ChildOpenRollbackDiagnosticRecord, ChildOpenRollbackKind, ChildOpenRollbackOutcome,
-    ChildOpenRollbackPhase, DemuxTransactionDiagnosticId, DemuxTransactionDiagnosticRecord,
+    ChildOpenRollbackDiagnosticRecord, ChildOpenRollbackOutcome, ChildOpenRollbackPhase,
+    DemuxTransactionDiagnosticId, DemuxTransactionDiagnosticRecord,
 };
 use crate::error_mapping::{object_table_error_to_hal, registry_commit_error_to_hal};
 use crate::object_method_txn::ObjectMethodExecutionToken;
@@ -1030,6 +1032,13 @@ impl TunerServiceRuntime {
         }
         let (low_threshold, high_threshold) =
             Self::validate_dvr_configure_request(dvr.buffer_size, request)?;
+        let rollback_token = demux_runtime
+            .rollback_token_from_typed_request(
+                maleicacid_tuner_hal2_demux::DemuxRuntimeRollbackTokenPrepareRequest::new(
+                    owner_demux_id,
+                ),
+            )
+            .map_err(Self::map_dvr_runtime_error)?;
         let (report, result) = demux_runtime.configure_dvr_runtime_with_typed_request(
             maleicacid_tuner_hal2_demux::DvrRuntimeConfigureRequest::new(dvr_id),
         );
@@ -1044,15 +1053,22 @@ impl TunerServiceRuntime {
                     ),
                 ) {
                     let primary = Self::map_dvr_runtime_error(error);
+                    let rollback_result = demux_runtime.restore_from_rollback_request(
+                        maleicacid_tuner_hal2_demux::DemuxRuntimeRollbackRestoreRequest::new(
+                            rollback_token,
+                        ),
+                    );
+                    if rollback_result.is_err() {
+                        demux_runtime.quarantine_runtime_from_typed_request(
+                            maleicacid_tuner_hal2_demux::DemuxRuntimeQuarantineRequest::new(),
+                        );
+                    }
                     let diagnostic_id = self.allocate_demux_transaction_diagnostic_id();
                     let primary = attach_diagnostic_detail_to_public_error(
                         primary,
                         format_dvr_configure_report(diagnostic_id, &report),
                     );
-                    if let Err(rollback_error) =
-                        demux_runtime.restore_dvr_snapshot(dvr_id, dvr.clone())
-                    {
-                        demux_runtime.quarantine();
+                    if let Err(rollback_error) = rollback_result {
                         let composed = compose_primary_cleanup_failure(
                             "DVR configure status reporting rollback failed",
                             primary,
@@ -1080,9 +1096,29 @@ impl TunerServiceRuntime {
                     );
                     return Err(primary);
                 }
-                Ok(())
+                demux_runtime
+                    .commit_rollback_request(
+                        maleicacid_tuner_hal2_demux::DemuxRuntimeRollbackCommitRequest::new(
+                            rollback_token,
+                        ),
+                    )
+                    .map_err(Self::map_dvr_runtime_error)
             }
             Err(error) => {
+                if let Err(commit_error) = demux_runtime.commit_rollback_request(
+                    maleicacid_tuner_hal2_demux::DemuxRuntimeRollbackCommitRequest::new(
+                        rollback_token,
+                    ),
+                ) {
+                    demux_runtime.quarantine_runtime_from_typed_request(
+                        maleicacid_tuner_hal2_demux::DemuxRuntimeQuarantineRequest::new(),
+                    );
+                    return Err(compose_primary_cleanup_failure(
+                        "DVR configure rollback token cleanup failed",
+                        Self::map_dvr_runtime_error(error),
+                        Self::map_dvr_runtime_error(commit_error),
+                    ));
+                }
                 let primary = Self::map_dvr_runtime_error(error);
                 let diagnostic_id = self.allocate_demux_transaction_diagnostic_id();
                 self.record_demux_transaction_diagnostic(

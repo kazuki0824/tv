@@ -11,15 +11,17 @@ use binder::{Status, Strong};
 use maleicacid_tuner_hal2_binder_adapter::AidlApi;
 use maleicacid_tuner_hal2_binder_adapter::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
 use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, HalError, HalInternalKind};
+#[cfg(test)]
+use maleicacid_tuner_hal2_service_runtime::DiagnosticSnapshot;
 use maleicacid_tuner_hal2_service_runtime::{
     BoundedDiagnosticStore, CallbackArtifactCleanupResult, CallbackArtifactResetCommand,
     CallbackArtifactRuntimeSplitDiagnosticRecord, CallbackArtifactRuntimeSplitOutcome,
-    DiagnosticSnapshot, FilterCallbackDeliveryDiagnosticRecord,
-    FilterCallbackDeliveryDiagnosticSnapshot, FrontendCallbackDeliveryDiagnosticRecord,
-    FrontendCallbackDeliveryDiagnosticSnapshot, FrontendProbeOutcome,
-    ObjectCleanupDiagnosticRecord, OwnerCallbackCleanupArtifactCommand, ServiceBootOutcome,
-    SharedCallbackArtifactRuntimeSplitDiagnostics, SharedDvrPostCommitNotificationDiagnostics,
-    SharedDvrStatusNotifierCleanupDiagnostics, SharedObjectCleanupDiagnostics, TunerServiceRuntime,
+    FilterCallbackDeliveryDiagnosticRecord, FilterCallbackDeliveryDiagnosticSnapshot,
+    FrontendCallbackDeliveryDiagnosticRecord, FrontendCallbackDeliveryDiagnosticSnapshot,
+    FrontendProbeOutcome, ObjectCleanupDiagnosticRecord, OwnerCallbackCleanupArtifactCommand,
+    ServiceBootOutcome, SharedCallbackArtifactRuntimeSplitDiagnostics,
+    SharedDvrPostCommitNotificationDiagnostics, SharedDvrStatusNotifierCleanupDiagnostics,
+    SharedObjectCleanupDiagnostics, TunerServiceRuntime,
 };
 
 use crate::callback_store::{AidlCallbackStoreError, CallbackStore};
@@ -45,14 +47,12 @@ pub(crate) struct DropLeakStatusSnapshot {
 
 impl DropLeakStatusSnapshot {
     fn from_status(status: &Status) -> Self {
-        let exception_message = status.exception_message();
+        let description = status.get_description();
         Self {
             exception_code: format!("{:?}", status.exception_code()),
             service_specific_error_code: status.service_specific_error(),
             transaction_error: format!("{:?}", status.transaction_error()),
-            message: exception_message
-                .as_ref()
-                .map(|message| format!("{message:?}")),
+            message: Some(description),
             debug_fallback: format!("{status:?}"),
         }
     }
@@ -516,6 +516,7 @@ impl AidlServiceContext {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn drop_leak_error_diagnostic_snapshot(
         &self,
     ) -> Result<DiagnosticSnapshot<DropLeakErrorRecord>, HalError> {

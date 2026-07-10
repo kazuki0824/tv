@@ -99,6 +99,10 @@ impl DescramblerRuntime {
             session: DescramblerSession::new(),
         }
     }
+    #[cfg(test)]
+    pub(crate) fn key_token(&self) -> Option<&DescramblerKeyToken> {
+        self.session.key_token()
+    }
     pub(crate) fn demux_binding(&self) -> Option<(i32, u64)> {
         Some((self.session.demux_id()?, self.session.demux_generation()?))
     }

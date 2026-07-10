@@ -57,6 +57,7 @@ impl TunerServiceRuntime {
         self.transact_configure_filter_runtime_request(filter_id, config)
     }
 
+    #[cfg(test)]
     pub(crate) fn start_filter_runtime(&mut self, filter_id: i32) -> Result<(), HalError> {
         self.transact_start_filter_runtime(filter_id)
     }
@@ -128,10 +129,6 @@ impl TunerServiceRuntime {
         self.transact_configure_dvr_runtime_request(dvr_id, request)
     }
 
-    pub(crate) fn start_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), HalError> {
-        self.transact_start_dvr_runtime(dvr_id)
-    }
-
     pub(crate) fn attach_dvr_filter(
         &mut self,
         dvr_id: i32,
@@ -146,22 +143,6 @@ impl TunerServiceRuntime {
         filter_id: i32,
     ) -> Result<(), HalError> {
         self.transact_detach_dvr_filter(dvr_id, filter_id)
-    }
-
-    pub(crate) fn stop_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), HalError> {
-        self.transact_stop_dvr_runtime(dvr_id)
-    }
-
-    pub(crate) fn flush_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), HalError> {
-        self.transact_flush_dvr_runtime(dvr_id)
-    }
-
-    pub(crate) fn set_dvr_status_check_interval(
-        &mut self,
-        dvr_id: i32,
-        interval_ms: u64,
-    ) -> Result<(), HalError> {
-        self.transact_set_dvr_status_check_interval(dvr_id, interval_ms)
     }
 }
 
@@ -336,9 +317,7 @@ impl TunerServiceRuntime {
             generation,
             maleicacid_tuner_hal2_domain_request::AidlObjectKind::Filter,
         )?;
-        self.start_filter_runtime_from_typed_request(
-            maleicacid_tuner_hal2_demux::FilterRuntimeOperationRequest::new(filter_id),
-        )
+        self.transact_start_filter_runtime(filter_id)
     }
 
     pub fn stop_filter_for_object(
@@ -507,9 +486,7 @@ impl TunerServiceRuntime {
             generation,
             maleicacid_tuner_hal2_domain_request::AidlObjectKind::Dvr,
         )?;
-        self.start_dvr_runtime_from_typed_request(
-            maleicacid_tuner_hal2_demux::DvrRuntimeOperationRequest::new(dvr_id),
-        )
+        self.transact_start_dvr_runtime(dvr_id)
     }
 
     pub fn attach_dvr_filter_for_object(
@@ -658,9 +635,7 @@ impl TunerServiceRuntime {
             generation,
             maleicacid_tuner_hal2_domain_request::AidlObjectKind::Dvr,
         )?;
-        self.stop_dvr_runtime_from_typed_request(
-            maleicacid_tuner_hal2_demux::DvrRuntimeOperationRequest::new(dvr_id),
-        )
+        self.transact_stop_dvr_runtime(dvr_id)
     }
 
     pub fn flush_dvr_for_object(
@@ -681,9 +656,7 @@ impl TunerServiceRuntime {
             generation,
             maleicacid_tuner_hal2_domain_request::AidlObjectKind::Dvr,
         )?;
-        self.flush_dvr_runtime_from_typed_request(
-            maleicacid_tuner_hal2_demux::DvrRuntimeOperationRequest::new(dvr_id),
-        )
+        self.transact_flush_dvr_runtime(dvr_id)
     }
 
     pub fn set_dvr_status_check_interval_for_object(
@@ -705,9 +678,7 @@ impl TunerServiceRuntime {
             generation,
             maleicacid_tuner_hal2_domain_request::AidlObjectKind::Dvr,
         )?;
-        self.set_dvr_status_check_interval_from_typed_request(
-            maleicacid_tuner_hal2_demux::DvrStatusIntervalRuntimeRequest::new(dvr_id, interval_ms),
-        )
+        self.transact_set_dvr_status_check_interval(dvr_id, interval_ms)
     }
 
     pub(crate) fn mark_dvr_callback_unhealthy_for_object(
