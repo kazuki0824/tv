@@ -1,5 +1,7 @@
 use maleicacid_tuner_hal2_binder_adapter::{AidlMethodAdapter, AidlMethodCall};
-use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, FirstErrorCollector, HalError};
+use maleicacid_tuner_hal2_common::{
+    compose_primary_cleanup_failure, FirstErrorCollector, HalError,
+};
 use maleicacid_tuner_hal2_domain_request::{
     AidlApi, AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan,
     RuntimeExecutableRequest,
@@ -180,14 +182,7 @@ impl ObjectArtifactCleanupCommand {
                 executor.execute_dvr_status_notifier_cleanup(self)
             }
         };
-        ObjectCleanupStepOutcome::artifact(
-            kind,
-            object_kind,
-            object_id,
-            generation,
-            step,
-            result,
-        )
+        ObjectCleanupStepOutcome::artifact(kind, object_kind, object_id, generation, step, result)
     }
 
     pub fn execute_with<E: ObjectArtifactCleanupExecutor>(
@@ -421,7 +416,9 @@ impl ObjectCleanupStepOutcome {
 
     pub fn cascade_entries(&self) -> &[RuntimeObjectEntry] {
         match self {
-            Self::Runtime { cascade_entries, .. } => cascade_entries,
+            Self::Runtime {
+                cascade_entries, ..
+            } => cascade_entries,
             Self::Artifact { .. } | Self::Domain { .. } => &[],
         }
     }
@@ -479,8 +476,6 @@ pub struct ObjectCleanupDiagnosticRecord {
     report: ObjectCleanupExecutionReport,
     public_error: Option<HalError>,
 }
-
-
 
 pub type ObjectCleanupDiagnosticSnapshot =
     CleanupExecutionDiagnosticSnapshot<ObjectCleanupDiagnosticRecord>;
@@ -581,7 +576,10 @@ impl ObjectCloseUseCasePlan {
         }
         for command in domain_cleanup_commands {
             let outcome = command.execute_with(domain_executor);
-            report.push(ObjectCleanupStepOutcome::domain(domain_cleanup_step, outcome));
+            report.push(ObjectCleanupStepOutcome::domain(
+                domain_cleanup_step,
+                outcome,
+            ));
         }
         for command in after_domain {
             report.push(
@@ -627,7 +625,10 @@ impl ObjectDropLeakQuarantinePlan {
         let mut report = ObjectCleanupExecutionReport::new();
         for command in domain_cleanup_commands {
             let outcome = command.execute_with(domain_executor);
-            report.push(ObjectCleanupStepOutcome::domain(CleanupStep::ReleaseBackend, outcome));
+            report.push(ObjectCleanupStepOutcome::domain(
+                CleanupStep::ReleaseBackend,
+                outcome,
+            ));
         }
         for command in artifact_cleanup_commands {
             report.push(command.execute_outcome_with(artifact_executor));

@@ -32,11 +32,11 @@ mod transaction_registry;
 pub use boot::{
     start_frontend_demux_live_pump_from_reader, CallbackArtifactCleanupResult,
     CallbackArtifactResetCommand, CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport,
-    CallbackRegistrationArtifactOutcome, DvrChildRuntimeOpen,
-    DvrStatusPollSnapshot, FilterChildRuntimeOpen, FilterEventDelivery,
-    FilterEventDeliverySnapshot, FilterEventDispatcher, FrontendDemuxPacketSink,
-    FrontendProbeOutcome, OwnerCallbackCleanupArtifactCommand, OwnerCallbackCleanupUseCaseOutcome,
-    ServiceBootOutcome, TunerServiceRuntime,
+    CallbackRegistrationArtifactOutcome, DvrChildRuntimeOpen, DvrStatusPollSnapshot,
+    FilterChildRuntimeOpen, FilterEventDelivery, FilterEventDeliverySnapshot,
+    FilterEventDispatcher, FrontendDemuxPacketSink, FrontendProbeOutcome,
+    OwnerCallbackCleanupArtifactCommand, OwnerCallbackCleanupUseCaseOutcome, ServiceBootOutcome,
+    TunerServiceRuntime,
 };
 pub use capability_profile::{
     configure_ip_cid_result, configure_monitor_event_result, failure_domain, feature_declared,
@@ -51,21 +51,25 @@ pub use command_dispatch::{
     RuntimeCommandDispatchError, RuntimeCommandDispatchPlan, RuntimeCommandDispatcher,
 };
 pub use diagnostics::{
-    BoundedDiagnosticStore, DiagnosticSnapshot, CallbackArtifactRuntimeSplitDiagnosticRecord,
+    BoundedDiagnosticStore, CallbackArtifactRuntimeSplitDiagnosticRecord,
     CallbackArtifactRuntimeSplitDiagnosticSnapshot, CallbackArtifactRuntimeSplitOutcome,
-    CallbackArtifactRuntimeSplitPhase, CallbackArtifactRuntimeSplitTarget, CapabilitySuppressionReason,
-    SharedCallbackArtifactRuntimeSplitDiagnostics, SharedDvrPostCommitNotificationDiagnostics,
-    SharedDvrStatusNotifierCleanupDiagnostics, ChildOpenRollbackDiagnosticRecord,
-    ChildOpenRollbackDiagnosticSnapshot, ChildOpenRollbackKind, ChildOpenRollbackOutcome, ChildOpenRollbackPhase,
-    DemuxTransactionDiagnosticId, DemuxTransactionDiagnosticKind, DemuxTransactionDiagnosticRecord, DemuxTransactionDiagnosticSnapshot,
-    DescramblerDiagnosticKind, DescramblerDiagnosticPhase, DescramblerDiagnosticRecord, DescramblerDiagnosticSnapshot,
-    DvrPostCommitNotificationDiagnosticRecord, DvrPostCommitNotificationDiagnosticSnapshot,
-    DvrPostCommitNotificationFailureKind, DvrPostCommitNotificationPhase,
-    DvrStatusNotifierCleanupDiagnosticRecord, DvrStatusNotifierCleanupDiagnosticSnapshot,
-    FilterCallbackDeliveryDiagnosticPhase, FilterCallbackDeliveryDiagnosticRecord, FilterCallbackDeliveryDiagnosticSnapshot,
-    FrontendCallbackDeliveryDiagnosticPhase, FrontendCallbackDeliveryDiagnosticRecord, FrontendCallbackDeliveryDiagnosticSnapshot,
-    QueueDescriptorQueryDiagnosticRecord, QueueDescriptorQueryDiagnosticSnapshot, StartupDiagnosticKind, StartupDiagnosticPhase,
-    StartupDiagnosticRecord, StartupDiagnosticSnapshot,
+    CallbackArtifactRuntimeSplitPhase, CallbackArtifactRuntimeSplitTarget,
+    CapabilitySuppressionReason, ChildOpenRollbackDiagnosticRecord,
+    ChildOpenRollbackDiagnosticSnapshot, ChildOpenRollbackKind, ChildOpenRollbackOutcome,
+    ChildOpenRollbackPhase, DemuxTransactionDiagnosticId, DemuxTransactionDiagnosticKind,
+    DemuxTransactionDiagnosticRecord, DemuxTransactionDiagnosticSnapshot,
+    DescramblerDiagnosticKind, DescramblerDiagnosticPhase, DescramblerDiagnosticRecord,
+    DescramblerDiagnosticSnapshot, DiagnosticSnapshot, DvrPostCommitNotificationDiagnosticRecord,
+    DvrPostCommitNotificationDiagnosticSnapshot, DvrPostCommitNotificationFailureKind,
+    DvrPostCommitNotificationPhase, DvrStatusNotifierCleanupDiagnosticRecord,
+    DvrStatusNotifierCleanupDiagnosticSnapshot, FilterCallbackDeliveryDiagnosticPhase,
+    FilterCallbackDeliveryDiagnosticRecord, FilterCallbackDeliveryDiagnosticSnapshot,
+    FrontendCallbackDeliveryDiagnosticPhase, FrontendCallbackDeliveryDiagnosticRecord,
+    FrontendCallbackDeliveryDiagnosticSnapshot, QueueDescriptorQueryDiagnosticRecord,
+    QueueDescriptorQueryDiagnosticSnapshot, SharedCallbackArtifactRuntimeSplitDiagnostics,
+    SharedDvrPostCommitNotificationDiagnostics, SharedDvrStatusNotifierCleanupDiagnostics,
+    StartupDiagnosticKind, StartupDiagnosticPhase, StartupDiagnosticRecord,
+    StartupDiagnosticSnapshot,
 };
 pub use dispatch::{dispatch_target_for, ServiceRuntimeDispatchTarget};
 pub use frontend_ops::set_frontend_lnb_object_use_case;
@@ -86,10 +90,9 @@ pub use object_close_txn::{
     ObjectArtifactCleanupCommand, ObjectArtifactCleanupExecutor, ObjectArtifactCleanupKind,
     ObjectCleanupDiagnosticKind, ObjectCleanupDiagnosticRecord, ObjectCleanupDiagnosticSnapshot,
     ObjectCleanupExecutionKind, ObjectCleanupExecutionReport, ObjectCleanupObjectTarget,
-    ObjectCleanupStepOutcome, ObjectCloseCleanupFailure,
+    ObjectCleanupStepOutcome, ObjectCloseCleanupFailure, ObjectCloseRuntimeExecutor,
+    ObjectCloseUseCasePlan, ObjectRuntimeCleanupCommand, ObjectRuntimeCleanupKind,
     SharedObjectCleanupDiagnostics,
-    ObjectCloseRuntimeExecutor, ObjectCloseUseCasePlan,
-    ObjectRuntimeCleanupCommand, ObjectRuntimeCleanupKind,
 };
 pub use object_domain_cleanup::{
     ObjectDomainCleanupCommand, ObjectDomainCleanupExecutor, ObjectDomainCleanupKind,
@@ -98,10 +101,10 @@ pub use object_domain_cleanup::{
 pub use object_method_txn::{
     execute_object_method_call_after_live, execute_object_query_call_after_live,
     execute_object_query_call_after_live_with_aidl_input_conversion,
-    execute_shared_object_method_call_after_live, preflight_object_method_after_live_plan_only,
-    lnb_profile_supports_voltage_status, ObjectFrontendStatusReadinessValue,
-    ObjectFrontendStatusType, ObjectFrontendStatusValue,
-    ObjectMethodExecutionToken, ObjectMethodTxnBuildError, ObjectQueryRequest, ObjectQueryResponse,
+    execute_shared_object_method_call_after_live, lnb_profile_supports_voltage_status,
+    preflight_object_method_after_live_plan_only, ObjectFrontendStatusReadinessValue,
+    ObjectFrontendStatusType, ObjectFrontendStatusValue, ObjectMethodExecutionToken,
+    ObjectMethodTxnBuildError, ObjectQueryRequest, ObjectQueryResponse,
 };
 pub(crate) use object_table::RuntimeObjectLifecycle;
 pub use object_table::{RuntimeObjectEntry, RuntimeObjectTableError, RuntimeOwnerRelation};

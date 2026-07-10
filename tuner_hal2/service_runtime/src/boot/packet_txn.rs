@@ -1,9 +1,9 @@
 use super::{
-    demux_runtime_error_to_hal, DemuxRuntimeId,
-    DescrambleFailure, DescramblePacketDecision, DescramblePacketFlow, FrontendRuntimeId,
-    FrontendRuntimeState, GenerationBoundaryReport, HalError, HalInvalidStateKind, PacketPid,
-    PipelineBoundaryReason, PipelineDiagnostic, PipelineReport, TsInputOrigin, TsPacketValidationError,
-    TunerServiceRuntime, ValidatedTsPacket, TS_PACKET_SIZE,
+    demux_runtime_error_to_hal, DemuxRuntimeId, DescrambleFailure, DescramblePacketDecision,
+    DescramblePacketFlow, FrontendRuntimeId, FrontendRuntimeState, GenerationBoundaryReport,
+    HalError, HalInvalidStateKind, PacketPid, PipelineBoundaryReason, PipelineDiagnostic,
+    PipelineReport, TsInputOrigin, TsPacketValidationError, TunerServiceRuntime, ValidatedTsPacket,
+    TS_PACKET_SIZE,
 };
 use crate::registry::ResolvedDescramblerPacketFlow;
 fn descramble_failure_for_ts_validation_error(error: TsPacketValidationError) -> DescrambleFailure {
@@ -51,7 +51,9 @@ impl TunerServiceRuntime {
         };
         let report = demux_runtime
             .apply_generation_boundary_from_typed_request(
-                maleicacid_tuner_hal2_demux::DemuxGenerationBoundaryRequest::new(PipelineBoundaryReason::TuneStart),
+                maleicacid_tuner_hal2_demux::DemuxGenerationBoundaryRequest::new(
+                    PipelineBoundaryReason::TuneStart,
+                ),
             )
             .map_err(demux_runtime_error_to_hal)?;
         self.registry.bind_demux_frontend(demux_key, frontend_key);
@@ -80,7 +82,9 @@ impl TunerServiceRuntime {
             reports.push(
                 demux_runtime
                     .apply_generation_boundary_from_typed_request(
-                        maleicacid_tuner_hal2_demux::DemuxGenerationBoundaryRequest::new(PipelineBoundaryReason::TuneStart),
+                        maleicacid_tuner_hal2_demux::DemuxGenerationBoundaryRequest::new(
+                            PipelineBoundaryReason::TuneStart,
+                        ),
                     )
                     .map_err(demux_runtime_error_to_hal)?,
             );
@@ -167,8 +171,12 @@ impl TunerServiceRuntime {
                         "descrambler produced an invalid TS packet",
                     )
                 })?;
-                let report = demux_runtime
-                    .push_validated_ts_packet_from_typed_request(maleicacid_tuner_hal2_demux::ValidatedPacketIngressRequest::new(&validated, TsInputOrigin::Frontend));
+                let report = demux_runtime.push_validated_ts_packet_from_typed_request(
+                    maleicacid_tuner_hal2_demux::ValidatedPacketIngressRequest::new(
+                        &validated,
+                        TsInputOrigin::Frontend,
+                    ),
+                );
                 (demux_generation, report)
             };
             report.diagnostics.extend(pending_descrambler_diagnostics);
@@ -198,12 +206,16 @@ impl TunerServiceRuntime {
                     packet: *packet,
                     flow: match decision.flow {
                         ResolvedDescramblerPacketFlow::Clear => DescramblePacketFlow::Clear,
-                        ResolvedDescramblerPacketFlow::Descrambled => DescramblePacketFlow::Descrambled,
+                        ResolvedDescramblerPacketFlow::Descrambled => {
+                            DescramblePacketFlow::Descrambled
+                        }
                         ResolvedDescramblerPacketFlow::RecordPassThroughAndDropAssembly => {
                             DescramblePacketFlow::RecordPassThroughAndDropAssembly
                         }
                         ResolvedDescramblerPacketFlow::Drop => DescramblePacketFlow::Drop,
-                        ResolvedDescramblerPacketFlow::DiagnoseOnly => DescramblePacketFlow::DiagnoseOnly,
+                        ResolvedDescramblerPacketFlow::DiagnoseOnly => {
+                            DescramblePacketFlow::DiagnoseOnly
+                        }
                     },
                     diagnostics: Vec::new(),
                 };

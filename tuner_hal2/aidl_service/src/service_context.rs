@@ -13,14 +13,13 @@ use maleicacid_tuner_hal2_binder_adapter::{AidlObjectGeneration, AidlObjectId, A
 use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, HalError, HalInternalKind};
 use maleicacid_tuner_hal2_service_runtime::{
     BoundedDiagnosticStore, CallbackArtifactCleanupResult, CallbackArtifactResetCommand,
-    DiagnosticSnapshot,
     CallbackArtifactRuntimeSplitDiagnosticRecord, CallbackArtifactRuntimeSplitOutcome,
-    FilterCallbackDeliveryDiagnosticRecord, FilterCallbackDeliveryDiagnosticSnapshot,
-    FrontendCallbackDeliveryDiagnosticRecord, FrontendCallbackDeliveryDiagnosticSnapshot,
-    FrontendProbeOutcome, ObjectCleanupDiagnosticRecord, OwnerCallbackCleanupArtifactCommand,
-    ServiceBootOutcome, SharedCallbackArtifactRuntimeSplitDiagnostics,
-    SharedDvrPostCommitNotificationDiagnostics, SharedDvrStatusNotifierCleanupDiagnostics,
-    SharedObjectCleanupDiagnostics, TunerServiceRuntime,
+    DiagnosticSnapshot, FilterCallbackDeliveryDiagnosticRecord,
+    FilterCallbackDeliveryDiagnosticSnapshot, FrontendCallbackDeliveryDiagnosticRecord,
+    FrontendCallbackDeliveryDiagnosticSnapshot, FrontendProbeOutcome,
+    ObjectCleanupDiagnosticRecord, OwnerCallbackCleanupArtifactCommand, ServiceBootOutcome,
+    SharedCallbackArtifactRuntimeSplitDiagnostics, SharedDvrPostCommitNotificationDiagnostics,
+    SharedDvrStatusNotifierCleanupDiagnostics, SharedObjectCleanupDiagnostics, TunerServiceRuntime,
 };
 
 use crate::callback_store::{AidlCallbackStoreError, CallbackStore};
@@ -109,8 +108,12 @@ impl AidlServiceContext {
             dvr_post_commit_notification_diagnostics,
             dvr_status_notifier_cleanup_diagnostics,
             object_cleanup_diagnostics,
-            filter_callback_delivery_fallback_diagnostics: Mutex::new(BoundedDiagnosticStore::default()),
-            frontend_callback_delivery_fallback_diagnostics: Mutex::new(BoundedDiagnosticStore::default()),
+            filter_callback_delivery_fallback_diagnostics: Mutex::new(
+                BoundedDiagnosticStore::default(),
+            ),
+            frontend_callback_delivery_fallback_diagnostics: Mutex::new(
+                BoundedDiagnosticStore::default(),
+            ),
             filter_callback_delivery_fallback_record_failures: AtomicUsize::new(0),
             frontend_callback_delivery_fallback_record_failures: AtomicUsize::new(0),
         }
@@ -152,8 +155,12 @@ impl AidlServiceContext {
             dvr_post_commit_notification_diagnostics,
             dvr_status_notifier_cleanup_diagnostics,
             object_cleanup_diagnostics,
-            filter_callback_delivery_fallback_diagnostics: Mutex::new(BoundedDiagnosticStore::default()),
-            frontend_callback_delivery_fallback_diagnostics: Mutex::new(BoundedDiagnosticStore::default()),
+            filter_callback_delivery_fallback_diagnostics: Mutex::new(
+                BoundedDiagnosticStore::default(),
+            ),
+            frontend_callback_delivery_fallback_diagnostics: Mutex::new(
+                BoundedDiagnosticStore::default(),
+            ),
             filter_callback_delivery_fallback_record_failures: AtomicUsize::new(0),
             frontend_callback_delivery_fallback_record_failures: AtomicUsize::new(0),
         })
@@ -228,12 +235,12 @@ impl AidlServiceContext {
             .map_err(|_| crate::error_bridge::status_unknown_error("service runtime lock poisoned"))
     }
 
-
     pub(crate) fn record_callback_artifact_runtime_split_finish_lock_failure(
         &self,
         record: CallbackArtifactRuntimeSplitDiagnosticRecord,
     ) -> Result<(), HalError> {
-        self.callback_artifact_runtime_split_diagnostics.record(record)
+        self.callback_artifact_runtime_split_diagnostics
+            .record(record)
     }
 
     pub(crate) fn record_dvr_post_commit_notification_diagnostic_fallback(
@@ -256,7 +263,6 @@ impl AidlServiceContext {
     ) -> Result<(), HalError> {
         self.object_cleanup_diagnostics.record(record)
     }
-
 
     pub(crate) fn record_filter_callback_delivery_failure_fallback(
         &self,
@@ -299,7 +305,6 @@ impl AidlServiceContext {
             }
         }
     }
-
 
     pub fn filter_callback_delivery_diagnostic_snapshot(
         &self,
@@ -359,16 +364,17 @@ impl AidlServiceContext {
         let fallback_dropped_count = fallback.dropped_count();
         records.extend_from_slice(fallback.as_slice());
         dropped_count = dropped_count.saturating_add(fallback_dropped_count);
-        Ok(FrontendCallbackDeliveryDiagnosticSnapshot::new_with_metadata(
-            records,
-            dropped_count,
-            runtime_snapshot_missing,
-            fallback_record_count,
-            fallback_dropped_count,
-            self.frontend_callback_delivery_fallback_record_failure_count() as u64,
-        ))
+        Ok(
+            FrontendCallbackDeliveryDiagnosticSnapshot::new_with_metadata(
+                records,
+                dropped_count,
+                runtime_snapshot_missing,
+                fallback_record_count,
+                fallback_dropped_count,
+                self.frontend_callback_delivery_fallback_record_failure_count() as u64,
+            ),
+        )
     }
-
 
     pub fn filter_callback_delivery_fallback_record_failure_count(&self) -> usize {
         self.filter_callback_delivery_fallback_record_failures
@@ -464,7 +470,10 @@ impl AidlServiceContext {
 
     pub(crate) fn take_dvr_status_notifiers_for_reset(
         &self,
-    ) -> (BTreeMap<DvrStatusNotifierKey, DvrStatusNotifier>, Result<(), HalError>) {
+    ) -> (
+        BTreeMap<DvrStatusNotifierKey, DvrStatusNotifier>,
+        Result<(), HalError>,
+    ) {
         match self.dvr_status_notifiers.lock() {
             Ok(mut store) => (std::mem::take(&mut *store), Ok(())),
             Err(poisoned) => {
@@ -502,7 +511,8 @@ impl AidlServiceContext {
             )
         })?;
         records.clear();
-        self.drop_leak_error_record_failures.store(0, Ordering::Relaxed);
+        self.drop_leak_error_record_failures
+            .store(0, Ordering::Relaxed);
         Ok(())
     }
 

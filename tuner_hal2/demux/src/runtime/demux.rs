@@ -12,12 +12,10 @@ use crate::av::{
     ClientHandleState,
 };
 #[cfg(test)]
-use crate::config::FilterOpenType;
-#[cfg(test)]
 use crate::config::FilterDelayReadiness;
-use crate::config::{
-    AvStreamTypeConfig, ConfigInputPid, FilterDelayHint, OpenFilterRequest,
-};
+#[cfg(test)]
+use crate::config::FilterOpenType;
+use crate::config::{AvStreamTypeConfig, ConfigInputPid, FilterDelayHint, OpenFilterRequest};
 use crate::packet_pipeline::{
     FilterPipelineConfig, PacketPipeline, PipelineBoundaryReason, PipelineDeliveryAction,
     PipelineFilterView, PipelineGeneratedEvent, PipelineInputKind, PipelineOpenKind,
@@ -32,7 +30,8 @@ use super::queue_runtime::{
     QueueRuntimeError,
 };
 use super::source_boundary::{
-    apply_filter_source_boundary_change, connect_filter_source_boundary_change, SourceBoundaryReport,
+    apply_filter_source_boundary_change, connect_filter_source_boundary_change,
+    SourceBoundaryReport,
 };
 
 const TUNER_EVENT_DATA_READY: u32 = 1 << 0;
@@ -79,7 +78,6 @@ pub struct DemuxRuntimeError {
     pub kind: DemuxRuntimeErrorKind,
     pub id: Option<i32>,
 }
-
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FilterRuntimeOperationKind {
@@ -164,7 +162,11 @@ impl FilterRuntimeOperationReport {
             .push(FilterRuntimeOperationStepOutcome::Failed { step, error });
     }
 
-    fn skipped(&mut self, step: FilterRuntimeOperationStep, reason: FilterRuntimeOperationSkipReason) {
+    fn skipped(
+        &mut self,
+        step: FilterRuntimeOperationStep,
+        reason: FilterRuntimeOperationSkipReason,
+    ) {
         self.steps
             .push(FilterRuntimeOperationStepOutcome::Skipped { step, reason });
     }
@@ -334,7 +336,6 @@ pub struct DemuxRuntimeSnapshot {
     filter_queue_mirror: BTreeMap<i32, VecDeque<Vec<u8>>>,
 }
 
-
 #[derive(Debug, Eq, PartialEq)]
 pub struct DemuxRuntimeRollbackToken {
     demux_id: i32,
@@ -405,12 +406,7 @@ pub struct DvrRuntimeRegistrationRequest {
 }
 
 impl DvrRuntimeRegistrationRequest {
-    pub const fn new(
-        dvr_id: i32,
-        kind: DvrKind,
-        buffer_size: i32,
-        callback_present: bool,
-    ) -> Self {
+    pub const fn new(dvr_id: i32, kind: DvrKind, buffer_size: i32, callback_present: bool) -> Self {
         Self {
             dvr_id,
             kind,
@@ -477,7 +473,6 @@ impl DemuxGenerationBoundaryRequest {
         Self { reason }
     }
 }
-
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FilterRuntimeOperationRequest {
@@ -562,7 +557,10 @@ pub struct DvrStatusIntervalRuntimeRequest {
 
 impl DvrStatusIntervalRuntimeRequest {
     pub const fn new(dvr_id: i32, interval_ms: u64) -> Self {
-        Self { dvr_id, interval_ms }
+        Self {
+            dvr_id,
+            interval_ms,
+        }
     }
 }
 
@@ -845,13 +843,13 @@ impl DemuxRuntime {
             return Err(DemuxRuntimeError::invalid_state(request.demux_id));
         }
         let token_id = self.next_rollback_token_id;
-        self.next_rollback_token_id = self
-            .next_rollback_token_id
-            .checked_add(1)
-            .ok_or(DemuxRuntimeError {
-                kind: DemuxRuntimeErrorKind::GenerationExhausted,
-                id: Some(self.demux_id),
-            })?;
+        self.next_rollback_token_id =
+            self.next_rollback_token_id
+                .checked_add(1)
+                .ok_or(DemuxRuntimeError {
+                    kind: DemuxRuntimeErrorKind::GenerationExhausted,
+                    id: Some(self.demux_id),
+                })?;
         let snapshot = self.snapshot();
         let generation = snapshot.generation;
         self.rollback_snapshots.insert(token_id, snapshot);
@@ -888,7 +886,10 @@ impl DemuxRuntime {
         self.restore(snapshot)
     }
 
-    pub(crate) fn restore(&mut self, snapshot: DemuxRuntimeSnapshot) -> Result<(), DemuxRuntimeError> {
+    pub(crate) fn restore(
+        &mut self,
+        snapshot: DemuxRuntimeSnapshot,
+    ) -> Result<(), DemuxRuntimeError> {
         let filter_queue_runtimes =
             Self::build_filter_queue_runtimes_for_snapshot(&snapshot.filters)?;
         let dvr_queue_runtimes = Self::build_dvr_queue_runtimes_for_snapshot(&snapshot.dvrs)?;
@@ -1042,10 +1043,7 @@ impl DemuxRuntime {
         self.remove_dvr(request.dvr_id)
     }
 
-    pub(crate) fn remove_dvr(
-        &mut self,
-        dvr_id: i32,
-    ) -> Result<(), DemuxRuntimeError> {
+    pub(crate) fn remove_dvr(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {
         if !self.dvrs.contains_key(&dvr_id) {
             return Err(DemuxRuntimeError::dvr_missing(dvr_id));
         }
@@ -1076,7 +1074,10 @@ impl DemuxRuntime {
             .is_some_and(FilterRuntime::queue_present)
     }
 
-    pub(crate) fn clear_existing_filter_queue(&mut self, filter_id: i32) -> Result<(), DemuxRuntimeError> {
+    pub(crate) fn clear_existing_filter_queue(
+        &mut self,
+        filter_id: i32,
+    ) -> Result<(), DemuxRuntimeError> {
         if !self.queue_exists(filter_id) {
             return Err(DemuxRuntimeError::queue_missing(filter_id));
         }
@@ -1436,10 +1437,7 @@ impl DemuxRuntime {
         self.start_filter_runtime(request.filter_id)
     }
 
-    pub(crate) fn start_filter_runtime(
-        &mut self,
-        filter_id: i32,
-    ) -> Result<(), DemuxRuntimeError> {
+    pub(crate) fn start_filter_runtime(&mut self, filter_id: i32) -> Result<(), DemuxRuntimeError> {
         let snapshot = self.filter_snapshot(filter_id)?;
         match snapshot.state {
             FilterRuntimeState::Configured | FilterRuntimeState::Stopped => {
@@ -1473,10 +1471,7 @@ impl DemuxRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn stop_filter_runtime(
-        &mut self,
-        filter_id: i32,
-    ) -> Result<(), DemuxRuntimeError> {
+    pub(crate) fn stop_filter_runtime(&mut self, filter_id: i32) -> Result<(), DemuxRuntimeError> {
         self.stop_filter_runtime_report(filter_id).1
     }
 
@@ -1484,7 +1479,8 @@ impl DemuxRuntime {
         &mut self,
         filter_id: i32,
     ) -> (FilterRuntimeOperationReport, Result<(), DemuxRuntimeError>) {
-        let mut report = FilterRuntimeOperationReport::new(FilterRuntimeOperationKind::Stop, filter_id);
+        let mut report =
+            FilterRuntimeOperationReport::new(FilterRuntimeOperationKind::Stop, filter_id);
         let snapshot = match self.filter_snapshot(filter_id) {
             Ok(snapshot) => {
                 report.succeeded(FilterRuntimeOperationStep::ValidateState);
@@ -1608,10 +1604,7 @@ impl DemuxRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn flush_filter_runtime(
-        &mut self,
-        filter_id: i32,
-    ) -> Result<(), DemuxRuntimeError> {
+    pub(crate) fn flush_filter_runtime(&mut self, filter_id: i32) -> Result<(), DemuxRuntimeError> {
         self.flush_filter_runtime_report(filter_id).1
     }
 
@@ -1619,7 +1612,8 @@ impl DemuxRuntime {
         &mut self,
         filter_id: i32,
     ) -> (FilterRuntimeOperationReport, Result<(), DemuxRuntimeError>) {
-        let mut report = FilterRuntimeOperationReport::new(FilterRuntimeOperationKind::Flush, filter_id);
+        let mut report =
+            FilterRuntimeOperationReport::new(FilterRuntimeOperationKind::Flush, filter_id);
         let snapshot = match self.filter_snapshot(filter_id) {
             Ok(snapshot) => {
                 report.succeeded(FilterRuntimeOperationStep::ValidateState);
@@ -1913,10 +1907,7 @@ impl DemuxRuntime {
         self.start_dvr_runtime(request.dvr_id)
     }
 
-    pub(crate) fn start_dvr_runtime(
-        &mut self,
-        dvr_id: i32,
-    ) -> Result<(), DemuxRuntimeError> {
+    pub(crate) fn start_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {
         let snapshot = self.dvr_snapshot(dvr_id)?;
         if snapshot.callback_unhealthy {
             return Err(DemuxRuntimeError::invalid_state(dvr_id));
@@ -1975,10 +1966,7 @@ impl DemuxRuntime {
         self.stop_dvr_runtime(request.dvr_id)
     }
 
-    pub(crate) fn stop_dvr_runtime(
-        &mut self,
-        dvr_id: i32,
-    ) -> Result<(), DemuxRuntimeError> {
+    pub(crate) fn stop_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {
         let state = self
             .dvrs
             .get(&dvr_id)
@@ -2010,10 +1998,7 @@ impl DemuxRuntime {
         self.flush_dvr_runtime(request.dvr_id)
     }
 
-    pub(crate) fn flush_dvr_runtime(
-        &mut self,
-        dvr_id: i32,
-    ) -> Result<(), DemuxRuntimeError> {
+    pub(crate) fn flush_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {
         let state = self
             .dvrs
             .get(&dvr_id)
@@ -2241,7 +2226,10 @@ impl DemuxRuntime {
     pub fn set_filter_source_non_null_from_typed_request(
         &mut self,
         request: FilterSourceConnectRequest,
-    ) -> (SourceBoundaryReport, Result<PipelineResetReport, DemuxRuntimeError>) {
+    ) -> (
+        SourceBoundaryReport,
+        Result<PipelineResetReport, DemuxRuntimeError>,
+    ) {
         self.set_filter_source_non_null(request.sink_filter_id, request.source_filter_id)
     }
 
@@ -2249,7 +2237,10 @@ impl DemuxRuntime {
         &mut self,
         sink_filter_id: i32,
         source_filter_id: i32,
-    ) -> (SourceBoundaryReport, Result<PipelineResetReport, DemuxRuntimeError>) {
+    ) -> (
+        SourceBoundaryReport,
+        Result<PipelineResetReport, DemuxRuntimeError>,
+    ) {
         let (source_boundary, outcome) =
             connect_filter_source_boundary_change(self, sink_filter_id, source_filter_id);
         let result = outcome.map(|_| source_boundary.reset_report().cloned().unwrap_or_default());

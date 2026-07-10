@@ -56,13 +56,12 @@ pub use parser::record_index::{
 pub use parser::sections::normalize_length_field_bits;
 pub use runtime::{
     DemuxGenerationBoundaryRequest, DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind,
-    DemuxRuntimeQuarantineRequest, DemuxRuntimeRollbackRestoreRequest,
-    DemuxRuntimeRollbackToken, DemuxRuntimeRollbackTokenPrepareRequest, DemuxRuntimeSnapshot,
-    DemuxRuntimeState, DemuxStreamGeneration, DvrConfigureOutcome, DvrConfigureReport,
-    DvrConfigureStep, DvrFilterLinkRequest, DvrKind, DvrRuntimeConfigureRequest,
-    DvrRuntimeOperationRequest, DvrRuntimeRegistrationRequest, DvrRuntimeSnapshot,
-    DvrRuntimeState, DvrStatusEvent, DvrStatusIntervalRuntimeRequest,
-    DvrStatusReportingRequest, FilterAvHandleReleaseRequest,
+    DemuxRuntimeQuarantineRequest, DemuxRuntimeRollbackRestoreRequest, DemuxRuntimeRollbackToken,
+    DemuxRuntimeRollbackTokenPrepareRequest, DemuxRuntimeSnapshot, DemuxRuntimeState,
+    DemuxStreamGeneration, DvrConfigureOutcome, DvrConfigureReport, DvrConfigureStep,
+    DvrFilterLinkRequest, DvrKind, DvrRuntimeConfigureRequest, DvrRuntimeOperationRequest,
+    DvrRuntimeRegistrationRequest, DvrRuntimeSnapshot, DvrRuntimeState, DvrStatusEvent,
+    DvrStatusIntervalRuntimeRequest, DvrStatusReportingRequest, FilterAvHandleReleaseRequest,
     FilterAvStreamTypeRuntimeRequest, FilterConfigureOutcome, FilterConfigureReport,
     FilterConfigureStep, FilterDelayHintRuntimeRequest, FilterRuntimeConfigureRequest,
     FilterRuntimeOperationKind, FilterRuntimeOperationOutcome, FilterRuntimeOperationReport,
@@ -72,8 +71,7 @@ pub use runtime::{
     GenerationBoundaryReport, PlaybackConsumeReport, QueueDescriptorExportPlan,
     QueueDescriptorExportTarget, QueueDescriptorQueryError, QueueDescriptorSnapshot,
     QueueGrantorDescriptorSnapshot, QueueRuntimeError, QueueRuntimeErrorKind,
-    SourceBoundaryOutcome, SourceBoundaryReport, SourceBoundaryStep,
-    ValidatedPacketIngressRequest,
+    SourceBoundaryOutcome, SourceBoundaryReport, SourceBoundaryStep, ValidatedPacketIngressRequest,
 };
 
 #[cfg(test)]
@@ -118,8 +116,16 @@ mod tests {
             interval_ms: u64,
         ) -> Result<(), DemuxRuntimeError>;
         fn mark_dvr_callback_unhealthy(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError>;
-        fn attach_dvr_filter(&mut self, dvr_id: i32, filter_id: i32) -> Result<(), DemuxRuntimeError>;
-        fn detach_dvr_filter(&mut self, dvr_id: i32, filter_id: i32) -> Result<(), DemuxRuntimeError>;
+        fn attach_dvr_filter(
+            &mut self,
+            dvr_id: i32,
+            filter_id: i32,
+        ) -> Result<(), DemuxRuntimeError>;
+        fn detach_dvr_filter(
+            &mut self,
+            dvr_id: i32,
+            filter_id: i32,
+        ) -> Result<(), DemuxRuntimeError>;
         fn start_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError>;
         fn stop_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError>;
         fn flush_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError>;
@@ -128,7 +134,10 @@ mod tests {
             sink_filter_id: i32,
             source_filter_id: i32,
         ) -> Result<PipelineResetReport, DemuxRuntimeError>;
-        fn remove_filter(&mut self, filter_id: i32) -> Result<FilterRuntimeSnapshot, DemuxRuntimeError>;
+        fn remove_filter(
+            &mut self,
+            filter_id: i32,
+        ) -> Result<FilterRuntimeSnapshot, DemuxRuntimeError>;
     }
 
     impl DemuxRuntimeTestMutationExt for DemuxRuntime {
@@ -173,10 +182,18 @@ mod tests {
         fn mark_dvr_callback_unhealthy(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {
             self.mark_dvr_callback_unhealthy(dvr_id)
         }
-        fn attach_dvr_filter(&mut self, dvr_id: i32, filter_id: i32) -> Result<(), DemuxRuntimeError> {
+        fn attach_dvr_filter(
+            &mut self,
+            dvr_id: i32,
+            filter_id: i32,
+        ) -> Result<(), DemuxRuntimeError> {
             self.attach_dvr_filter(dvr_id, filter_id)
         }
-        fn detach_dvr_filter(&mut self, dvr_id: i32, filter_id: i32) -> Result<(), DemuxRuntimeError> {
+        fn detach_dvr_filter(
+            &mut self,
+            dvr_id: i32,
+            filter_id: i32,
+        ) -> Result<(), DemuxRuntimeError> {
             self.detach_dvr_filter(dvr_id, filter_id)
         }
         fn start_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {
@@ -193,9 +210,13 @@ mod tests {
             sink_filter_id: i32,
             source_filter_id: i32,
         ) -> Result<PipelineResetReport, DemuxRuntimeError> {
-            self.set_filter_source_non_null(sink_filter_id, source_filter_id).1
+            self.set_filter_source_non_null(sink_filter_id, source_filter_id)
+                .1
         }
-        fn remove_filter(&mut self, filter_id: i32) -> Result<FilterRuntimeSnapshot, DemuxRuntimeError> {
+        fn remove_filter(
+            &mut self,
+            filter_id: i32,
+        ) -> Result<FilterRuntimeSnapshot, DemuxRuntimeError> {
             self.remove_filter(filter_id)
         }
     }
@@ -557,7 +578,10 @@ mod tests {
 
         let snapshot = demux
             .filter_queue_descriptor_export_plan(24)
-            .and_then(|plan| plan.export_descriptor().map_err(QueueDescriptorQueryError::Runtime))
+            .and_then(|plan| {
+                plan.export_descriptor()
+                    .map_err(QueueDescriptorQueryError::Runtime)
+            })
             .expect("raw filter queue descriptor must exist before configure");
 
         let (grantors, fds, _ints, quantum, _flags) = snapshot.into_parts();
@@ -583,7 +607,9 @@ mod tests {
         assert!(matches!(
             demux
                 .filter_queue_descriptor_export_plan(25)
-                .and_then(|plan| plan.export_descriptor().map_err(QueueDescriptorQueryError::Runtime)),
+                .and_then(|plan| plan
+                    .export_descriptor()
+                    .map_err(QueueDescriptorQueryError::Runtime)),
             Err(QueueDescriptorQueryError::Unavailable(25))
         ));
     }
@@ -604,14 +630,19 @@ mod tests {
         assert!(matches!(
             demux
                 .dvr_queue_descriptor_export_plan(26)
-                .and_then(|plan| plan.export_descriptor().map_err(QueueDescriptorQueryError::Runtime)),
+                .and_then(|plan| plan
+                    .export_descriptor()
+                    .map_err(QueueDescriptorQueryError::Runtime)),
             Err(QueueDescriptorQueryError::InvalidState(26))
         ));
 
         demux.configure_dvr_runtime(26).unwrap();
         let snapshot = demux
             .dvr_queue_descriptor_export_plan(26)
-            .and_then(|plan| plan.export_descriptor().map_err(QueueDescriptorQueryError::Runtime))
+            .and_then(|plan| {
+                plan.export_descriptor()
+                    .map_err(QueueDescriptorQueryError::Runtime)
+            })
             .expect("configured DVR queue descriptor must exist");
         let (grantors, fds, _ints, quantum, _flags) = snapshot.into_parts();
         assert!(!grantors.is_empty());
@@ -634,7 +665,10 @@ mod tests {
             .unwrap();
         let first = demux
             .filter_queue_descriptor_export_plan(27)
-            .and_then(|plan| plan.export_descriptor().map_err(QueueDescriptorQueryError::Runtime))
+            .and_then(|plan| {
+                plan.export_descriptor()
+                    .map_err(QueueDescriptorQueryError::Runtime)
+            })
             .unwrap();
         let first_identity = first_fd_identity(first);
 
@@ -652,7 +686,10 @@ mod tests {
             .unwrap();
         let second = demux
             .filter_queue_descriptor_export_plan(27)
-            .and_then(|plan| plan.export_descriptor().map_err(QueueDescriptorQueryError::Runtime))
+            .and_then(|plan| {
+                plan.export_descriptor()
+                    .map_err(QueueDescriptorQueryError::Runtime)
+            })
             .unwrap();
 
         assert_eq!(first_identity, first_fd_identity(second));
@@ -674,14 +711,20 @@ mod tests {
         DvrConfigureTxn::new(28).configure(&mut demux).1.unwrap();
         let first = demux
             .dvr_queue_descriptor_export_plan(28)
-            .and_then(|plan| plan.export_descriptor().map_err(QueueDescriptorQueryError::Runtime))
+            .and_then(|plan| {
+                plan.export_descriptor()
+                    .map_err(QueueDescriptorQueryError::Runtime)
+            })
             .unwrap();
         let first_identity = first_fd_identity(first);
 
         DvrConfigureTxn::new(28).configure(&mut demux).1.unwrap();
         let second = demux
             .dvr_queue_descriptor_export_plan(28)
-            .and_then(|plan| plan.export_descriptor().map_err(QueueDescriptorQueryError::Runtime))
+            .and_then(|plan| {
+                plan.export_descriptor()
+                    .map_err(QueueDescriptorQueryError::Runtime)
+            })
             .unwrap();
 
         assert_eq!(first_identity, first_fd_identity(second));
@@ -1124,7 +1167,9 @@ mod tests {
             Some(crate::runtime::DvrStatusEvent::PlaybackSpaceFull)
         );
         assert_eq!(
-            demux.write_playback_dvr_queue_bytes_for_test(421, &packet).unwrap(),
+            demux
+                .write_playback_dvr_queue_bytes_for_test(421, &packet)
+                .unwrap(),
             188
         );
         assert_eq!(
@@ -1166,7 +1211,10 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(
-            demux.read_record_dvr_queue_bytes_for_test(43).unwrap_err().kind,
+            demux
+                .read_record_dvr_queue_bytes_for_test(43)
+                .unwrap_err()
+                .kind,
             crate::runtime::DemuxRuntimeErrorKind::InvalidState
         );
         demux.configure_dvr_runtime(43).unwrap();
@@ -1186,7 +1234,10 @@ mod tests {
             .unwrap();
         demux.configure_dvr_runtime(44).unwrap();
         assert_eq!(
-            demux.read_record_dvr_queue_bytes_for_test(44).unwrap_err().kind,
+            demux
+                .read_record_dvr_queue_bytes_for_test(44)
+                .unwrap_err()
+                .kind,
             crate::runtime::DemuxRuntimeErrorKind::InvalidState
         );
     }
@@ -1248,7 +1299,9 @@ mod tests {
         demux.configure_dvr_runtime(47).unwrap();
 
         assert_eq!(
-            demux.write_playback_dvr_queue_bytes_for_test(47, &packet).unwrap(),
+            demux
+                .write_playback_dvr_queue_bytes_for_test(47, &packet)
+                .unwrap(),
             0
         );
     }
@@ -1350,7 +1403,10 @@ mod tests {
             .unwrap();
         let before_restore = demux
             .filter_queue_descriptor_export_plan(29)
-            .and_then(|plan| plan.export_descriptor().map_err(QueueDescriptorQueryError::Runtime))
+            .and_then(|plan| {
+                plan.export_descriptor()
+                    .map_err(QueueDescriptorQueryError::Runtime)
+            })
             .unwrap();
         let before_identity = first_fd_identity(before_restore);
         let snapshot = demux.snapshot();
@@ -1358,7 +1414,10 @@ mod tests {
         demux.restore(snapshot).unwrap();
         let after_restore = demux
             .filter_queue_descriptor_export_plan(29)
-            .and_then(|plan| plan.export_descriptor().map_err(QueueDescriptorQueryError::Runtime))
+            .and_then(|plan| {
+                plan.export_descriptor()
+                    .map_err(QueueDescriptorQueryError::Runtime)
+            })
             .unwrap();
 
         assert_eq!(before_identity, first_fd_identity(after_restore));

@@ -385,7 +385,6 @@ fn physical_group_id_from_snapshot(snapshot: &RootFrontendInfoSnapshot) -> i32 {
     }
 }
 
-
 fn frontend_status_caps_for_snapshot(
     snapshot: &RootFrontendInfoSnapshot,
 ) -> Vec<FrontendStatusType> {

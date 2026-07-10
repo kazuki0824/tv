@@ -10,10 +10,10 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     IDvrCallback::IDvrCallback, PlaybackStatus::PlaybackStatus, RecordStatus::RecordStatus,
 };
 use binder::Strong;
+use maleicacid_tuner_hal2_binder_adapter::{AidlObjectGeneration, AidlObjectId};
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FirstErrorCollector, HalError, HalInternalKind,
 };
-use maleicacid_tuner_hal2_binder_adapter::{AidlObjectGeneration, AidlObjectId};
 use maleicacid_tuner_hal2_demux::DvrStatusEvent;
 use maleicacid_tuner_hal2_service_runtime::{
     CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport,
@@ -48,15 +48,12 @@ pub(crate) struct DvrStatusNotifier {
 fn stop_joined_dvr_status_notifier(notifier: DvrStatusNotifier) -> Result<(), HalError> {
     notifier.cancel.store(true, Ordering::Relaxed);
     notifier.join.thread().unpark();
-    notifier
-        .join
-        .join()
-        .map_err(|_| {
-            HalError::cleanup_failed(
-                "DVR status notifier join",
-                "DVR status notifier thread panicked",
-            )
-        })?
+    notifier.join.join().map_err(|_| {
+        HalError::cleanup_failed(
+            "DVR status notifier join",
+            "DVR status notifier thread panicked",
+        )
+    })?
 }
 
 fn dvr_status_event_to_hal_callback(
@@ -279,11 +276,8 @@ fn record_post_commit_accounting_failure_fallback(
     accounting_context: &'static str,
     accounting_error: HalError,
 ) {
-    let fallback_error = compose_primary_cleanup_failure(
-        accounting_context,
-        primary,
-        accounting_error,
-    );
+    let fallback_error =
+        compose_primary_cleanup_failure(accounting_context, primary, accounting_error);
     let fallback_record_result = context.record_dvr_post_commit_notification_diagnostic_fallback(
         DvrPostCommitNotificationDiagnosticRecord::new(
             phase,
@@ -412,7 +406,9 @@ fn dvr_status_notifier_loop(
     if initial_preflight.should_skip_delivery() {
         return Err(HalError::callback_failed(
             "IDvrCallback.poll_status.initial",
-            format!("DVR status notifier terminated during initial preflight: {initial_preflight:?}"),
+            format!(
+                "DVR status notifier terminated during initial preflight: {initial_preflight:?}"
+            ),
         ));
     }
     let mut last_event = initial_snapshot.event;
@@ -595,7 +591,11 @@ pub fn start_dvr_status_notifier(
                 handle.generation().0
             ))
             .spawn(move || {
-                run_dvr_status_notifier_with_terminal_diagnostic(thread_context, handle, thread_cancel)
+                run_dvr_status_notifier_with_terminal_diagnostic(
+                    thread_context,
+                    handle,
+                    thread_cancel,
+                )
             });
         let join = match spawn_result {
             Ok(join) => join,

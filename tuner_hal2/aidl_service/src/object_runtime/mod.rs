@@ -12,14 +12,14 @@ use maleicacid_tuner_hal2_service_runtime::{
     execute_object_method_call_after_live, execute_object_query_call_after_live,
     execute_object_query_call_after_live_with_aidl_input_conversion,
     execute_shared_object_method_call_after_live, finish_object_close_use_case,
-    preflight_object_method_after_live_plan_only, CallbackRegistrationArtifactOutcome,
+    preflight_object_method_after_live_plan_only, CallbackArtifactCleanupResult,
+    CallbackArtifactRuntimeSplitDiagnosticRecord, CallbackArtifactRuntimeSplitOutcome,
+    CallbackArtifactRuntimeSplitPhase, CallbackRegistrationArtifactOutcome,
     ObjectArtifactCleanupCommand, ObjectArtifactCleanupExecutor, ObjectCleanupDiagnosticRecord,
     ObjectCleanupExecutionReport, ObjectCloseCleanupFailure, ObjectCloseRuntimeExecutor,
-    ObjectCloseUseCasePlan, ObjectDomainCleanupCommand,
-    ObjectDomainCleanupExecutor, ObjectMethodExecutionToken, ObjectMethodTxnBuildError,
-    CallbackArtifactCleanupResult, CallbackArtifactRuntimeSplitDiagnosticRecord,
-    CallbackArtifactRuntimeSplitOutcome, CallbackArtifactRuntimeSplitPhase, ObjectQueryRequest,
-    ObjectQueryResponse, ObjectRuntimeCleanupCommand, OwnerCallbackCleanupArtifactCommand,
+    ObjectCloseUseCasePlan, ObjectDomainCleanupCommand, ObjectDomainCleanupExecutor,
+    ObjectMethodExecutionToken, ObjectMethodTxnBuildError, ObjectQueryRequest, ObjectQueryResponse,
+    ObjectRuntimeCleanupCommand, OwnerCallbackCleanupArtifactCommand,
     OwnerCallbackCleanupUseCaseOutcome, TunerServiceRuntime,
 };
 
@@ -52,15 +52,17 @@ fn callback_artifact_runtime_finish_lock_failure_error(
         artifact_error.clone(),
         Some(runtime_error),
     ) {
-        if let Err(record_error) = context.record_callback_artifact_runtime_split_finish_lock_failure(
-            CallbackArtifactRuntimeSplitDiagnosticRecord::owner(
-                phase,
-                command.owner_kind(),
-                command.owner_id(),
-                command.owner_generation(),
-                outcome,
-            ),
-        ) {
+        if let Err(record_error) = context
+            .record_callback_artifact_runtime_split_finish_lock_failure(
+                CallbackArtifactRuntimeSplitDiagnosticRecord::owner(
+                    phase,
+                    command.owner_kind(),
+                    command.owner_id(),
+                    command.owner_generation(),
+                    outcome,
+                ),
+            )
+        {
             runtime_or_record_error = compose_primary_cleanup_failure(
                 "callback artifact/runtime split diagnostic record failed after runtime finish lock failure",
                 runtime_or_record_error,
@@ -110,15 +112,17 @@ fn callback_artifact_registration_runtime_lock_failure_error(
         ),
     };
     if let Some(outcome) = split_outcome {
-        if let Err(record_error) = context.record_callback_artifact_runtime_split_finish_lock_failure(
-            CallbackArtifactRuntimeSplitDiagnosticRecord::owner(
-                CallbackArtifactRuntimeSplitPhase::RegistrationRollbackFinish,
-                command.owner_kind(),
-                command.owner_id(),
-                command.owner_generation(),
-                outcome,
-            ),
-        ) {
+        if let Err(record_error) = context
+            .record_callback_artifact_runtime_split_finish_lock_failure(
+                CallbackArtifactRuntimeSplitDiagnosticRecord::owner(
+                    CallbackArtifactRuntimeSplitPhase::RegistrationRollbackFinish,
+                    command.owner_kind(),
+                    command.owner_id(),
+                    command.owner_generation(),
+                    outcome,
+                ),
+            )
+        {
             runtime_or_record_error = compose_primary_cleanup_failure(
                 "callback artifact/runtime split diagnostic record failed after registration finish lock failure",
                 runtime_or_record_error,
@@ -147,15 +151,17 @@ fn callback_registration_finish_runtime_lock_failure_error(
         primary_error.clone(),
         Some(runtime_error),
     ) {
-        if let Err(record_error) = context.record_callback_artifact_runtime_split_finish_lock_failure(
-            CallbackArtifactRuntimeSplitDiagnosticRecord::owner(
-                CallbackArtifactRuntimeSplitPhase::RegistrationRollbackFinish,
-                command.owner_kind(),
-                command.owner_id(),
-                command.owner_generation(),
-                outcome,
-            ),
-        ) {
+        if let Err(record_error) = context
+            .record_callback_artifact_runtime_split_finish_lock_failure(
+                CallbackArtifactRuntimeSplitDiagnosticRecord::owner(
+                    CallbackArtifactRuntimeSplitPhase::RegistrationRollbackFinish,
+                    command.owner_kind(),
+                    command.owner_id(),
+                    command.owner_generation(),
+                    outcome,
+                ),
+            )
+        {
             runtime_or_record_error = compose_primary_cleanup_failure(
                 "callback artifact/runtime split diagnostic record failed after registration finish lock failure",
                 runtime_or_record_error,
@@ -213,7 +219,9 @@ fn finish_callback_registration_artifact_outcome(
     let mut guard = match lock_runtime(&runtime) {
         Ok(guard) => guard,
         Err(runtime_error) => {
-            if let (Some(command), Some(ref artifact_result)) = (rollback_command, rollback_result.as_ref()) {
+            if let (Some(command), Some(ref artifact_result)) =
+                (rollback_command, rollback_result.as_ref())
+            {
                 return Err(callback_artifact_runtime_finish_lock_failure_error(
                     context,
                     CallbackArtifactRuntimeSplitPhase::RegistrationRollbackFinish,
@@ -504,10 +512,15 @@ fn execute_callback_registration_after_artifact_bridge(
         handle.object_id(),
         handle.generation(),
         handle.object_kind(),
-        || Ok((
-            method.clone(),
-            (artifact_retain_bridge, registration_finish_lock_failure_command),
-        )),
+        || {
+            Ok((
+                method.clone(),
+                (
+                    artifact_retain_bridge,
+                    registration_finish_lock_failure_command,
+                ),
+            ))
+        },
         |runtime, token, (artifact_retain_bridge, registration_finish_lock_failure_command)| {
             let artifact_retain_result = artifact_retain_bridge.retain(context, handle);
             let mut guard = match lock_runtime(&runtime) {
@@ -782,14 +795,13 @@ fn finish_object_close_plan(
         .clone()
         .err()
         .map(ObjectCloseCleanupFailure::into_error);
-    let record_result = context.record_object_cleanup_diagnostic_fallback(
-        ObjectCleanupDiagnosticRecord::close(
+    let record_result =
+        context.record_object_cleanup_diagnostic_fallback(ObjectCleanupDiagnosticRecord::close(
             handle.object_id(),
             handle.generation(),
             cleanup_report,
             public_error,
-        ),
-    );
+        ));
     let runtime = context.runtime();
     let finish_result = match runtime.lock() {
         Ok(mut guard) => finish_object_close_use_case(

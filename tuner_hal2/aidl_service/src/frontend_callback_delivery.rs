@@ -76,11 +76,13 @@ fn finish_frontend_scan_end_delivery_failure(
             );
             match context.record_frontend_callback_delivery_failure_fallback(record) {
                 Ok(()) => Err(primary),
-                Err(record_error) => Err(maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
-                    "frontend callback delivery fallback diagnostic record failed",
-                    primary,
-                    record_error,
-                )),
+                Err(record_error) => Err(
+                    maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
+                        "frontend callback delivery fallback diagnostic record failed",
+                        primary,
+                        record_error,
+                    ),
+                ),
             }
         }
     }

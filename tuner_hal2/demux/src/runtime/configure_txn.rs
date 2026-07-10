@@ -1,7 +1,7 @@
 use super::demux::{DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind};
-use super::source_boundary::SourceBoundaryReport;
 use super::dvr::DvrRuntimeSnapshot;
 use super::filter::{FilterRuntimeSnapshot, FilterRuntimeState};
+use super::source_boundary::SourceBoundaryReport;
 use crate::config::FilterConfig;
 use crate::packet_pipeline::{FilterPipelineConfig, PipelineOpenKind};
 
@@ -33,7 +33,9 @@ pub enum DvrConfigureStep {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FilterConfigureOutcome {
     Committed,
-    Failed { failed_step: FilterConfigureStep },
+    Failed {
+        failed_step: FilterConfigureStep,
+    },
     RolledBack {
         failed_step: FilterConfigureStep,
         rollback_step: FilterConfigureStep,
@@ -48,7 +50,9 @@ pub enum FilterConfigureOutcome {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DvrConfigureOutcome {
     Committed,
-    Failed { failed_step: DvrConfigureStep },
+    Failed {
+        failed_step: DvrConfigureStep,
+    },
     RolledBack {
         failed_step: DvrConfigureStep,
         rollback_step: DvrConfigureStep,
@@ -192,9 +196,7 @@ impl FilterConfigureTxn {
         if snapshot.queue_present {
             if let Err(err) = demux.clear_existing_filter_queue(self.filter_id) {
                 self.record_step(FilterConfigureStep::RollbackSoftDemuxConfig);
-                if let Err(rollback_err) =
-                    demux.restore_filter_snapshot(self.filter_id, snapshot)
-                {
+                if let Err(rollback_err) = demux.restore_filter_snapshot(self.filter_id, snapshot) {
                     demux.quarantine();
                     self.record_step(FilterConfigureStep::QuarantineOnRollbackFailure);
                     self.outcome = Some(FilterConfigureOutcome::Quarantined {
@@ -216,13 +218,12 @@ impl FilterConfigureTxn {
             filter.clear_av_backing_marker();
         }
         self.record_step(FilterConfigureStep::DisconnectOldSource);
-        let (source_boundary_report, disconnect_result) = demux.disconnect_filter_source(self.filter_id);
+        let (source_boundary_report, disconnect_result) =
+            demux.disconnect_filter_source(self.filter_id);
         self.source_boundary_report = Some(source_boundary_report);
         if let Err(err) = disconnect_result {
             self.record_step(FilterConfigureStep::RollbackSoftDemuxConfig);
-            if let Err(rollback_err) =
-                demux.restore_filter_snapshot(self.filter_id, snapshot)
-            {
+            if let Err(rollback_err) = demux.restore_filter_snapshot(self.filter_id, snapshot) {
                 demux.quarantine();
                 self.record_step(FilterConfigureStep::QuarantineOnRollbackFailure);
                 self.outcome = Some(FilterConfigureOutcome::Quarantined {
@@ -247,9 +248,7 @@ impl FilterConfigureTxn {
                 return (self, Err(err));
             }
             self.record_step(FilterConfigureStep::RollbackSoftDemuxConfig);
-            if let Err(rollback_err) =
-                demux.restore_filter_snapshot(self.filter_id, snapshot)
-            {
+            if let Err(rollback_err) = demux.restore_filter_snapshot(self.filter_id, snapshot) {
                 demux.quarantine();
                 self.record_step(FilterConfigureStep::QuarantineOnRollbackFailure);
                 self.outcome = Some(FilterConfigureOutcome::Quarantined {

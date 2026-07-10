@@ -783,7 +783,11 @@ impl PacketPipeline {
         ValidatedTsPacket::validate(bytes)
     }
 
-    pub(crate) fn push_ts_packet(&mut self, packet: &[u8], kind: PipelineInputKind) -> PipelineReport {
+    pub(crate) fn push_ts_packet(
+        &mut self,
+        packet: &[u8],
+        kind: PipelineInputKind,
+    ) -> PipelineReport {
         let validated = match Self::validate_packet(packet) {
             Ok(packet) => packet,
             Err(_) => {

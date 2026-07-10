@@ -12,8 +12,8 @@ use crate::{
     start_frontend_demux_live_pump_from_reader, TunerServiceRuntime,
 };
 use maleicacid_tuner_hal2_common::{
-    compose_primary_cleanup_failure, FrontendBackendKind, FrontendDevicePath,
-    FrontendScanMode, FrontendTuneRequest, HalError, HalInternalKind, HalInvalidStateKind,
+    compose_primary_cleanup_failure, FrontendBackendKind, FrontendDevicePath, FrontendScanMode,
+    FrontendTuneRequest, HalError, HalInternalKind, HalInvalidStateKind,
 };
 use maleicacid_tuner_hal2_demux::DemuxRuntimeRollbackToken;
 use maleicacid_tuner_hal2_device::{
@@ -31,7 +31,6 @@ type SharedRuntime = Arc<Mutex<TunerServiceRuntime>>;
 
 type DemuxRollbackTokenList = Vec<(crate::registry::DemuxRuntimeId, DemuxRuntimeRollbackToken)>;
 type SharedDemuxRollbackTokenList = Arc<Mutex<Option<DemuxRollbackTokenList>>>;
-
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FrontendWorkerCleanupDiagnosticKind {
@@ -313,7 +312,11 @@ impl FrontendWorkerCleanupStepOutcome {
         lnb_id: i32,
         result: Result<(), HalError>,
     ) -> Self {
-        Self::CloseOwnedLnb { target, lnb_id, result }
+        Self::CloseOwnedLnb {
+            target,
+            lnb_id,
+            result,
+        }
     }
 
     fn close_frontend_workers_and_live_data(
@@ -404,14 +407,16 @@ impl FrontendWorkerCleanupStepOutcome {
             Self::ClearLiveReaderDescriptor { .. } => {
                 FrontendWorkerCleanupStep::ClearLiveReaderDescriptor
             }
-            Self::StopLiveDataAndUnbind { .. } => {
-                FrontendWorkerCleanupStep::StopLiveDataAndUnbind
-            }
+            Self::StopLiveDataAndUnbind { .. } => FrontendWorkerCleanupStep::StopLiveDataAndUnbind,
             Self::CloseLiveDataAndUnbind { .. } => {
                 FrontendWorkerCleanupStep::CloseLiveDataAndUnbind
             }
-            Self::RestoreFrontendSnapshot { .. } => FrontendWorkerCleanupStep::RestoreFrontendSnapshot,
-            Self::TakeDemuxRollbackTokens { .. } => FrontendWorkerCleanupStep::TakeDemuxRollbackTokens,
+            Self::RestoreFrontendSnapshot { .. } => {
+                FrontendWorkerCleanupStep::RestoreFrontendSnapshot
+            }
+            Self::TakeDemuxRollbackTokens { .. } => {
+                FrontendWorkerCleanupStep::TakeDemuxRollbackTokens
+            }
             Self::RestoreBoundDemuxes { .. } => FrontendWorkerCleanupStep::RestoreBoundDemuxes,
             Self::CompleteReplacement { worker_kind, .. } => {
                 FrontendWorkerCleanupStep::CompleteReplacement(*worker_kind)
@@ -549,12 +554,9 @@ fn take_demux_rollback_tokens(
             "demux rollback token list lock poisoned",
         )
     })?;
-    guard.take().ok_or_else(|| {
-        HalError::internal(
-            HalInternalKind::InvariantViolation,
-            context,
-        )
-    })
+    guard
+        .take()
+        .ok_or_else(|| HalError::internal(HalInternalKind::InvariantViolation, context))
 }
 
 struct FrontendWorkerReplacementTicket {
@@ -569,7 +571,6 @@ struct FrontendWorkerReplacementTicket {
     bound_demux_generations: BoundDemuxGenerationSnapshot,
     stop_ticket: FrontendWorkerStopTicket,
 }
-
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct FrontendWorkerReplacementRollbackContext {
@@ -617,7 +618,9 @@ fn frontend_worker_stop_outcome_generation(outcome: &FrontendWorkerStopOutcome) 
     }
 }
 
-fn bound_demux_generation_snapshot(tokens: &DemuxRollbackTokenList) -> BoundDemuxGenerationSnapshot {
+fn bound_demux_generation_snapshot(
+    tokens: &DemuxRollbackTokenList,
+) -> BoundDemuxGenerationSnapshot {
     let mut generations = tokens
         .iter()
         .map(|(demux_id, token)| (*demux_id, token.generation()))
@@ -826,37 +829,38 @@ fn complete_frontend_worker_stop_object_ticket<'a>(
     } = ticket;
     let stop_outcome = stop_ticket.complete();
     let target = FrontendWorkerCleanupTarget::object(frontend_id, object_id, object_generation);
-    let record_stop_outcome_for_failure = |primary: HalError, include_complete_step: bool| -> HalError {
-        let mut report = FrontendWorkerCleanupExecutionReport::new();
-        report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
-            target,
-            kind,
-            frontend_worker_stop_outcome_generation(&stop_outcome),
-            frontend_worker_stop_result_from_outcome(&stop_outcome),
-        ));
-        if include_complete_step {
-            report.push(FrontendWorkerCleanupStepOutcome::complete_stop_object(
+    let record_stop_outcome_for_failure =
+        |primary: HalError, include_complete_step: bool| -> HalError {
+            let mut report = FrontendWorkerCleanupExecutionReport::new();
+            report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
                 target,
                 kind,
                 frontend_worker_stop_outcome_generation(&stop_outcome),
-                Err(primary.clone()),
+                frontend_worker_stop_result_from_outcome(&stop_outcome),
             ));
-        }
-        let record = FrontendWorkerCleanupDiagnosticRecord::new(
-            diagnostic_kind,
-            target,
-            report,
-            Some(primary.clone()),
-        );
-        match cleanup_diagnostic_sink.record(record) {
-            Ok(()) => primary,
-            Err(record_error) => compose_frontend_worker_cleanup_record_failure(
-                "frontend worker stop object diagnostic record failed after stop failure",
-                primary,
-                record_error,
-            ),
-        }
-    };
+            if include_complete_step {
+                report.push(FrontendWorkerCleanupStepOutcome::complete_stop_object(
+                    target,
+                    kind,
+                    frontend_worker_stop_outcome_generation(&stop_outcome),
+                    Err(primary.clone()),
+                ));
+            }
+            let record = FrontendWorkerCleanupDiagnosticRecord::new(
+                diagnostic_kind,
+                target,
+                report,
+                Some(primary.clone()),
+            );
+            match cleanup_diagnostic_sink.record(record) {
+                Ok(()) => primary,
+                Err(record_error) => compose_frontend_worker_cleanup_record_failure(
+                    "frontend worker stop object diagnostic record failed after stop failure",
+                    primary,
+                    record_error,
+                ),
+            }
+        };
     if let Some(error) = frontend_worker_stop_request_failure(&stop_outcome) {
         return Err(record_stop_outcome_for_failure(error, false));
     }
@@ -1068,10 +1072,12 @@ fn restore_frontend_state_after_primary_failure_with_shared_demux_tokens(
                     Ok(()),
                 ));
             }
-            report.push(FrontendWorkerCleanupStepOutcome::take_demux_rollback_tokens(
-                target,
-                Err(take_error.clone()),
-            ));
+            report.push(
+                FrontendWorkerCleanupStepOutcome::take_demux_rollback_tokens(
+                    target,
+                    Err(take_error.clone()),
+                ),
+            );
             finish_frontend_worker_rollback_report(
                 Ok(guard.frontend_worker_cleanup_diagnostic_sink()),
                 kind,
@@ -1167,14 +1173,18 @@ fn frontend_worker_stop_request_failure(outcome: &FrontendWorkerStopOutcome) -> 
     }
 }
 
-fn frontend_worker_stop_result(outcome: &Result<FrontendWorkerStopOutcome, HalError>) -> Result<(), HalError> {
+fn frontend_worker_stop_result(
+    outcome: &Result<FrontendWorkerStopOutcome, HalError>,
+) -> Result<(), HalError> {
     match outcome {
         Ok(outcome) => frontend_worker_stop_failure(outcome).map_or(Ok(()), Err),
         Err(error) => Err(error.clone()),
     }
 }
 
-fn frontend_worker_stop_result_from_outcome(outcome: &FrontendWorkerStopOutcome) -> Result<(), HalError> {
+fn frontend_worker_stop_result_from_outcome(
+    outcome: &FrontendWorkerStopOutcome,
+) -> Result<(), HalError> {
     frontend_worker_stop_failure(outcome).map_or(Ok(()), Err)
 }
 
@@ -1211,7 +1221,6 @@ fn finish_frontend_worker_cleanup_report(
     let record_result = sink.and_then(|sink| sink.record(record));
     compose_frontend_worker_cleanup_finish_result(cleanup_result, record_result)
 }
-
 
 fn build_frontend_worker_replacement_stop_report(
     target: FrontendWorkerCleanupTarget,
@@ -1251,24 +1260,20 @@ fn record_frontend_worker_replacement_stop_diagnostic(
         stop_outcome,
         scan_cancel_result,
     );
-    let public_error = if let Some((stopped_generation, new_generation, primary)) = post_stop_failure {
-        report.push(FrontendWorkerCleanupStepOutcome::complete_replacement(
-            target,
-            worker_kind,
-            stopped_generation,
-            new_generation,
-            Err(primary.clone()),
-        ));
-        Some(primary)
-    } else {
-        report.clone().into_result().err()
-    };
-    let record = FrontendWorkerCleanupDiagnosticRecord::new(
-        kind,
-        target,
-        report,
-        public_error,
-    );
+    let public_error =
+        if let Some((stopped_generation, new_generation, primary)) = post_stop_failure {
+            report.push(FrontendWorkerCleanupStepOutcome::complete_replacement(
+                target,
+                worker_kind,
+                stopped_generation,
+                new_generation,
+                Err(primary.clone()),
+            ));
+            Some(primary)
+        } else {
+            report.clone().into_result().err()
+        };
+    let record = FrontendWorkerCleanupDiagnosticRecord::new(kind, target, report, public_error);
     sink.record(record)
 }
 
@@ -1288,12 +1293,7 @@ fn record_frontend_worker_replacement_stop_report(
     );
     let cleanup_result = report.clone().into_result();
     let public_error = cleanup_result.clone().err();
-    let record = FrontendWorkerCleanupDiagnosticRecord::new(
-        kind,
-        target,
-        report,
-        public_error,
-    );
+    let record = FrontendWorkerCleanupDiagnosticRecord::new(kind, target, report, public_error);
     let record_result = sink.record(record);
     compose_frontend_worker_cleanup_finish_result(cleanup_result, record_result)
 }
@@ -1423,10 +1423,12 @@ fn rollback_started_tune_worker_after_commit_failure(
             );
             match take_result {
                 Ok(tokens) => {
-                    report.push(FrontendWorkerCleanupStepOutcome::take_demux_rollback_tokens(
-                        target,
-                        Ok(()),
-                    ));
+                    report.push(
+                        FrontendWorkerCleanupStepOutcome::take_demux_rollback_tokens(
+                            target,
+                            Ok(()),
+                        ),
+                    );
                     let demux_restore_result = guard
                         .frontend_txn()
                         .restore_bound_demux_runtime_rollback_tokens(tokens);
@@ -1436,10 +1438,12 @@ fn rollback_started_tune_worker_after_commit_failure(
                     ));
                 }
                 Err(error) => {
-                    report.push(FrontendWorkerCleanupStepOutcome::take_demux_rollback_tokens(
-                        target,
-                        Err(error),
-                    ));
+                    report.push(
+                        FrontendWorkerCleanupStepOutcome::take_demux_rollback_tokens(
+                            target,
+                            Err(error),
+                        ),
+                    );
                 }
             }
         }
@@ -1533,33 +1537,37 @@ pub fn start_frontend_backend_tune_worker(
         None,
     )?;
     if let Err(error) = guard.reset_bound_demuxes_for_frontend_tune_start(frontend_id) {
-        return Err(restore_frontend_state_after_primary_failure_with_shared_demux_tokens(
-            &mut guard,
-            frontend_id,
-            snapshot,
-            &demux_rollback_tokens,
-            error,
-            "frontend tune start reset rollback",
-            FrontendWorkerCleanupDiagnosticKind::TuneStartRollback,
-            target,
-            replacement_context,
-        ));
+        return Err(
+            restore_frontend_state_after_primary_failure_with_shared_demux_tokens(
+                &mut guard,
+                frontend_id,
+                snapshot,
+                &demux_rollback_tokens,
+                error,
+                "frontend tune start reset rollback",
+                FrontendWorkerCleanupDiagnosticKind::TuneStartRollback,
+                target,
+                replacement_context,
+            ),
+        );
     }
     if let Err(error) = guard
         .frontend_txn()
         .install_frontend_live_reader_descriptor_for_generation(frontend_id, kind, generation)
     {
-        return Err(restore_frontend_state_after_primary_failure_with_shared_demux_tokens(
-            &mut guard,
-            frontend_id,
-            snapshot,
-            &demux_rollback_tokens,
-            error,
-            "frontend tune live reader install rollback",
-            FrontendWorkerCleanupDiagnosticKind::TuneStartRollback,
-            target,
-            replacement_context,
-        ));
+        return Err(
+            restore_frontend_state_after_primary_failure_with_shared_demux_tokens(
+                &mut guard,
+                frontend_id,
+                snapshot,
+                &demux_rollback_tokens,
+                error,
+                "frontend tune live reader install rollback",
+                FrontendWorkerCleanupDiagnosticKind::TuneStartRollback,
+                target,
+                replacement_context,
+            ),
+        );
     }
     let plan = FrontendBackendTunePlan::new(
         frontend_id,
@@ -1791,17 +1799,19 @@ fn run_frontend_backend_scan_session_worker(
                         ));
                     }
                 };
-                return Err(restore_frontend_state_after_primary_failure_with_shared_demux_tokens(
-                    &mut guard,
-                    ctx.frontend_id(),
-                    frontend_snapshot.clone(),
-                    &demux_rollback_tokens,
-                    primary,
-                    "frontend scan backend rollback state restore",
-                    FrontendWorkerCleanupDiagnosticKind::ScanBackendRollbackStateRestore,
-                    target_for_worker,
-                    replacement_context,
-                ));
+                return Err(
+                    restore_frontend_state_after_primary_failure_with_shared_demux_tokens(
+                        &mut guard,
+                        ctx.frontend_id(),
+                        frontend_snapshot.clone(),
+                        &demux_rollback_tokens,
+                        primary,
+                        "frontend scan backend rollback state restore",
+                        FrontendWorkerCleanupDiagnosticKind::ScanBackendRollbackStateRestore,
+                        target_for_worker,
+                        replacement_context,
+                    ),
+                );
             }
             Err(failure) => {
                 let primary = failure.error;
@@ -1951,17 +1961,19 @@ pub fn start_frontend_backend_scan_session_worker(
         Some(scan_cancel_result),
     )?;
     if let Err(error) = guard.reset_bound_demuxes_for_frontend_tune_start(frontend_id) {
-        return Err(restore_frontend_state_after_primary_failure_with_shared_demux_tokens(
-            &mut guard,
-            frontend_id,
-            snapshot,
-            &demux_rollback_tokens,
-            error,
-            "frontend scan start reset rollback",
-            FrontendWorkerCleanupDiagnosticKind::ScanStartRollback,
-            target,
-            replacement_context,
-        ));
+        return Err(
+            restore_frontend_state_after_primary_failure_with_shared_demux_tokens(
+                &mut guard,
+                frontend_id,
+                snapshot,
+                &demux_rollback_tokens,
+                error,
+                "frontend scan start reset rollback",
+                FrontendWorkerCleanupDiagnosticKind::ScanStartRollback,
+                target,
+                replacement_context,
+            ),
+        );
     }
     if let Err(error) = guard
         .frontend_txn()
@@ -1971,17 +1983,19 @@ pub fn start_frontend_backend_scan_session_worker(
             generation,
         )
     {
-        return Err(restore_frontend_state_after_primary_failure_with_shared_demux_tokens(
-            &mut guard,
-            frontend_id,
-            snapshot,
-            &demux_rollback_tokens,
-            error,
-            "frontend scan live reader install rollback",
-            FrontendWorkerCleanupDiagnosticKind::ScanStartRollback,
-            target,
-            replacement_context,
-        ));
+        return Err(
+            restore_frontend_state_after_primary_failure_with_shared_demux_tokens(
+                &mut guard,
+                frontend_id,
+                snapshot,
+                &demux_rollback_tokens,
+                error,
+                "frontend scan live reader install rollback",
+                FrontendWorkerCleanupDiagnosticKind::ScanStartRollback,
+                target,
+                replacement_context,
+            ),
+        );
     }
     if let Err(error) = guard.frontend_txn().begin_frontend_scan_session(
         frontend_id,
@@ -1989,17 +2003,19 @@ pub fn start_frontend_backend_scan_session_worker(
         fingerprint,
         candidates.clone(),
     ) {
-        return Err(restore_frontend_state_after_primary_failure_with_shared_demux_tokens(
-            &mut guard,
-            frontend_id,
-            snapshot,
-            &demux_rollback_tokens,
-            error,
-            "frontend scan session begin rollback",
-            FrontendWorkerCleanupDiagnosticKind::ScanStartRollback,
-            target,
-            replacement_context,
-        ));
+        return Err(
+            restore_frontend_state_after_primary_failure_with_shared_demux_tokens(
+                &mut guard,
+                frontend_id,
+                snapshot,
+                &demux_rollback_tokens,
+                error,
+                "frontend scan session begin rollback",
+                FrontendWorkerCleanupDiagnosticKind::ScanStartRollback,
+                target,
+                replacement_context,
+            ),
+        );
     }
     let previous_tune_for_worker = snapshot.active_tune_request.clone();
     let target_for_worker = target;
@@ -2031,17 +2047,19 @@ pub fn start_frontend_backend_scan_session_worker(
         },
     ) {
         let primary = map_frontend_worker_start_error(error);
-        return Err(restore_frontend_state_after_primary_failure_with_shared_demux_tokens(
-            &mut guard,
-            frontend_id,
-            snapshot,
-            &demux_rollback_tokens,
-            primary,
-            "frontend scan worker start rollback",
-            FrontendWorkerCleanupDiagnosticKind::ScanWorkerStartRollback,
-            target,
-            replacement_context,
-        ));
+        return Err(
+            restore_frontend_state_after_primary_failure_with_shared_demux_tokens(
+                &mut guard,
+                frontend_id,
+                snapshot,
+                &demux_rollback_tokens,
+                primary,
+                "frontend scan worker start rollback",
+                FrontendWorkerCleanupDiagnosticKind::ScanWorkerStartRollback,
+                target,
+                replacement_context,
+            ),
+        );
     }
     Ok(())
 }
@@ -2185,12 +2203,8 @@ pub fn stop_frontend_scan_object(
         frontend_worker_stop_outcome_generation(&outcome),
         frontend_worker_stop_result_from_outcome(&outcome),
     ));
-    let scan_cancel_result = record_scan_cancelled_from_stop_outcome_locked(
-        &mut guard,
-        frontend_id,
-        &outcome,
-        reason,
-    );
+    let scan_cancel_result =
+        record_scan_cancelled_from_stop_outcome_locked(&mut guard, frontend_id, &outcome, reason);
     report.push(FrontendWorkerCleanupStepOutcome::record_scan_cancelled(
         target,
         frontend_worker_stop_outcome_generation(&outcome),
@@ -2200,10 +2214,9 @@ pub fn stop_frontend_scan_object(
         let clear_result = guard
             .frontend_txn()
             .clear_frontend_live_reader_descriptor_and_idle(frontend_id);
-        report.push(FrontendWorkerCleanupStepOutcome::clear_live_reader_descriptor(
-            target,
-            clear_result,
-        ));
+        report.push(
+            FrontendWorkerCleanupStepOutcome::clear_live_reader_descriptor(target, clear_result),
+        );
     }
     let public_error = report.first_error();
     let record = FrontendWorkerCleanupDiagnosticRecord::new(
@@ -2247,9 +2260,7 @@ pub fn cleanup_frontend_object_after_close_begin(
             closed_lnb_ids.push(lnb_id);
         }
         report.push(FrontendWorkerCleanupStepOutcome::close_owned_lnb(
-            target,
-            lnb_id,
-            result,
+            target, lnb_id, result,
         ));
     }
     let worker_cleanup_result = close_frontend_workers_and_live_data_with_sink(
@@ -2258,10 +2269,12 @@ pub fn cleanup_frontend_object_after_close_begin(
         reason,
         Ok(cleanup_diagnostic_sink.clone()),
     );
-    report.push(FrontendWorkerCleanupStepOutcome::close_frontend_workers_and_live_data(
-        target,
-        worker_cleanup_result,
-    ));
+    report.push(
+        FrontendWorkerCleanupStepOutcome::close_frontend_workers_and_live_data(
+            target,
+            worker_cleanup_result,
+        ),
+    );
     let cleanup_result = report.clone().into_result();
     let public_error = cleanup_result.clone().err();
     let record = FrontendWorkerCleanupDiagnosticRecord::new(
@@ -2271,7 +2284,8 @@ pub fn cleanup_frontend_object_after_close_begin(
         public_error,
     );
     let record_result = cleanup_diagnostic_sink.record(record);
-    let cleanup_result = compose_frontend_worker_cleanup_finish_result(cleanup_result, record_result);
+    let cleanup_result =
+        compose_frontend_worker_cleanup_finish_result(cleanup_result, record_result);
     Ok(FrontendCloseCleanupReport {
         frontend_id,
         closed_lnb_ids,
@@ -2331,12 +2345,8 @@ fn close_frontend_workers_and_live_data_with_sink(
         frontend_worker_stop_result(&scan_outcome),
     ));
     if let Ok(outcome) = &scan_outcome {
-        let scan_cancel_result = record_scan_cancelled_from_stop_outcome(
-            &runtime,
-            frontend_id,
-            outcome,
-            reason,
-        );
+        let scan_cancel_result =
+            record_scan_cancelled_from_stop_outcome(&runtime, frontend_id, outcome, reason);
         report.push(FrontendWorkerCleanupStepOutcome::record_scan_cancelled(
             target,
             frontend_worker_stop_outcome_generation(outcome),
@@ -2354,14 +2364,8 @@ fn close_frontend_workers_and_live_data_with_sink(
             )),
         ));
     }
-    let close_result = close_frontend_live_data_and_unbind(
-        Arc::clone(&runtime),
-        frontend_id,
-    );
-    report.push(FrontendWorkerCleanupStepOutcome::close_live_data_and_unbind(
-        target,
-        close_result,
-    ));
+    let close_result = close_frontend_live_data_and_unbind(Arc::clone(&runtime), frontend_id);
+    report.push(FrontendWorkerCleanupStepOutcome::close_live_data_and_unbind(target, close_result));
     let public_error = report.first_error();
     let record = FrontendWorkerCleanupDiagnosticRecord::new(
         FrontendWorkerCleanupDiagnosticKind::FrontendClose,

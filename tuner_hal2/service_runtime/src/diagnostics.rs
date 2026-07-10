@@ -1,5 +1,8 @@
 use std::path::PathBuf;
-use std::sync::{atomic::{AtomicU64, Ordering}, Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc, Mutex,
+};
 
 use maleicacid_tuner_hal2_common::{FrontendBackendKind, HalError, HalInternalKind};
 use maleicacid_tuner_hal2_demux::{
@@ -76,7 +79,6 @@ impl<T> Default for BoundedDiagnosticStore<T> {
     }
 }
 
-
 #[derive(Clone, Debug)]
 pub struct DiagnosticSnapshot<TRecord> {
     records: Vec<TRecord>,
@@ -85,7 +87,10 @@ pub struct DiagnosticSnapshot<TRecord> {
 
 impl<TRecord> DiagnosticSnapshot<TRecord> {
     pub fn new(records: Vec<TRecord>, dropped_count: u64) -> Self {
-        Self { records, dropped_count }
+        Self {
+            records,
+            dropped_count,
+        }
     }
 
     pub fn records(&self) -> &[TRecord] {
@@ -954,7 +959,6 @@ impl DescramblerDiagnosticRecord {
     }
 }
 
-
 #[derive(Clone, Debug)]
 pub struct CallbackArtifactRuntimeSplitDiagnosticSnapshot {
     records: Vec<CallbackArtifactRuntimeSplitDiagnosticRecord>,
@@ -1310,7 +1314,9 @@ impl FrontendCallbackDeliveryDiagnosticRecord {
             Self::CallbackArtifactLookup { .. } => {
                 FrontendCallbackDeliveryDiagnosticPhase::CallbackArtifactLookup
             }
-            Self::ScanEndDelivery { .. } => FrontendCallbackDeliveryDiagnosticPhase::ScanEndDelivery,
+            Self::ScanEndDelivery { .. } => {
+                FrontendCallbackDeliveryDiagnosticPhase::ScanEndDelivery
+            }
             Self::ScanSessionAccounting { .. } => {
                 FrontendCallbackDeliveryDiagnosticPhase::ScanSessionAccounting
             }
@@ -1320,7 +1326,6 @@ impl FrontendCallbackDeliveryDiagnosticRecord {
         }
     }
 }
-
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct DemuxTransactionDiagnosticId(pub u64);
@@ -1341,8 +1346,10 @@ pub enum DemuxTransactionDiagnosticKind {
 
 pub type StartupDiagnosticSnapshot = DiagnosticSnapshot<StartupDiagnosticRecord>;
 pub type DescramblerDiagnosticSnapshot = DiagnosticSnapshot<DescramblerDiagnosticRecord>;
-pub type ChildOpenRollbackDiagnosticSnapshot = DiagnosticSnapshot<ChildOpenRollbackDiagnosticRecord>;
-pub type QueueDescriptorQueryDiagnosticSnapshot = DiagnosticSnapshot<QueueDescriptorQueryDiagnosticRecord>;
+pub type ChildOpenRollbackDiagnosticSnapshot =
+    DiagnosticSnapshot<ChildOpenRollbackDiagnosticRecord>;
+pub type QueueDescriptorQueryDiagnosticSnapshot =
+    DiagnosticSnapshot<QueueDescriptorQueryDiagnosticRecord>;
 #[derive(Clone, Debug)]
 pub struct FilterCallbackDeliveryDiagnosticSnapshot {
     records: Vec<FilterCallbackDeliveryDiagnosticRecord>,
@@ -1467,7 +1474,10 @@ pub struct DemuxTransactionDiagnosticSnapshot {
 
 impl DemuxTransactionDiagnosticSnapshot {
     pub(crate) fn new(records: Vec<DemuxTransactionDiagnosticRecord>, dropped_count: u64) -> Self {
-        Self { records, dropped_count }
+        Self {
+            records,
+            dropped_count,
+        }
     }
 
     pub fn records(&self) -> &[DemuxTransactionDiagnosticRecord] {

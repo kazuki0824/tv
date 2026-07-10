@@ -4,9 +4,9 @@ use std::path::PathBuf;
 use crate::descrambler_key_table::{DescramblerKeyLookupError, DescramblerKeyTable};
 use crate::descrambler_session::{
     DescramblerCleanupReport, DescramblerCleanupTxnError, DescramblerClearKeyOutcome,
-    DescramblerClearKeyTxnError, DescramblerReplaceKeyOutcome,
-    DescramblerReplaceKeyTxnError, DescramblerRuntime,
-    DescramblerSessionFailure, DescramblerSessionFailureKind, DescramblerSessionTxnStep,
+    DescramblerClearKeyTxnError, DescramblerReplaceKeyOutcome, DescramblerReplaceKeyTxnError,
+    DescramblerRuntime, DescramblerSessionFailure, DescramblerSessionFailureKind,
+    DescramblerSessionTxnStep,
 };
 use crate::diagnostics::{DescramblerDiagnosticKind, DescramblerDiagnosticRecord};
 use maleicacid_tuner_hal2_common::TS_PACKET_SIZE;
@@ -14,7 +14,9 @@ use maleicacid_tuner_hal2_common::{
     FrontendBackendKind, FrontendSystem, HalError, HalInvalidArgumentKind, HalInvalidStateKind,
 };
 use maleicacid_tuner_hal2_demux::{DemuxRuntime, FilterOpenType, FilterRuntimeState};
-use maleicacid_tuner_hal2_demux::{PacketDescramblePolicyFailure, PacketPid, PipelineDiagnostic, PipelineReport};
+use maleicacid_tuner_hal2_demux::{
+    PacketDescramblePolicyFailure, PacketPid, PipelineDiagnostic, PipelineReport,
+};
 use maleicacid_tuner_hal2_descrambler::{
     descramble_ts_packet_in_place, packet_policy_for_descramble_failure, DescrambleFailure,
     DescrambleOutcome, DescramblerKeySlot, DescramblerKeyToken, DescramblerPid,
@@ -109,7 +111,6 @@ pub(crate) struct ResolvedDescramblerPacketSnapshot {
     source_filter_ids_by_pid: BTreeMap<PacketPid, BTreeSet<i32>>,
 }
 
-
 fn packet_descramble_policy_failure_for_registry_boundary(
     failure: DescrambleFailure,
 ) -> PacketDescramblePolicyFailure {
@@ -118,7 +119,9 @@ fn packet_descramble_policy_failure_for_registry_boundary(
         DescrambleFailure::ScrambledPidNotRegistered => {
             PacketDescramblePolicyFailure::ScrambledPidNotRegistered
         }
-        DescrambleFailure::TransportErrorRecord => PacketDescramblePolicyFailure::TransportErrorRecord,
+        DescrambleFailure::TransportErrorRecord => {
+            PacketDescramblePolicyFailure::TransportErrorRecord
+        }
         DescrambleFailure::InvalidTsc => PacketDescramblePolicyFailure::InvalidTsc,
         DescrambleFailure::ScrambledNullPid => PacketDescramblePolicyFailure::ScrambledNullPid,
         DescrambleFailure::ScrambledWithoutPayload => {
@@ -553,7 +556,9 @@ impl RuntimeRegistry {
         let demux_ids = self.frontend_bound_demux_ids(frontend_id);
         for demux_id in &demux_ids {
             if let Some(runtime) = self.demux_runtimes.get_mut(demux_id) {
-                runtime.quarantine_runtime_from_typed_request(maleicacid_tuner_hal2_demux::DemuxRuntimeQuarantineRequest::new());
+                runtime.quarantine_runtime_from_typed_request(
+                    maleicacid_tuner_hal2_demux::DemuxRuntimeQuarantineRequest::new(),
+                );
             }
         }
         demux_ids
@@ -1155,10 +1160,8 @@ impl RuntimeRegistry {
     pub(crate) fn clear_descrambler_key_use_case(
         &mut self,
         descrambler_id: DescramblerRuntimeId,
-    ) -> Result<
-        DescramblerClearKeyOutcome<DescramblerKeyLookupError>,
-        DescramblerClearKeyTxnError,
-    > {
+    ) -> Result<DescramblerClearKeyOutcome<DescramblerKeyLookupError>, DescramblerClearKeyTxnError>
+    {
         let runtime = self.descrambler_runtimes.get_mut(&descrambler_id).ok_or(
             DescramblerClearKeyTxnError::Session(DescramblerSessionFailure {
                 step: DescramblerSessionTxnStep::ValidateOpen,

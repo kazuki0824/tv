@@ -151,11 +151,13 @@ where
                 "cleanup diagnostic store lock poisoned while snapshotting",
             )
         })?;
-        Ok(CleanupExecutionDiagnosticSnapshot::new_with_record_failure_count(
-            records.as_slice().to_vec(),
-            records.dropped_count(),
-            self.record_failure_count.load(Ordering::Relaxed),
-        ))
+        Ok(
+            CleanupExecutionDiagnosticSnapshot::new_with_record_failure_count(
+                records.as_slice().to_vec(),
+                records.dropped_count(),
+                self.record_failure_count.load(Ordering::Relaxed),
+            ),
+        )
     }
 
     pub fn clear(&self) -> Result<(), HalError> {

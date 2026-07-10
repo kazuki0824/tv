@@ -100,7 +100,9 @@ pub fn failure_domain(error: &HalError) -> RuntimeFailureDomain {
         HalError::CleanupFailed { .. } => RuntimeFailureDomain::Cleanup,
         HalError::InvalidArgument { .. } => RuntimeFailureDomain::ClientArgument,
         HalError::InvalidState { .. } => RuntimeFailureDomain::ObjectState,
-        HalError::Unsupported(_) | HalError::UnsupportedDetail { .. } => RuntimeFailureDomain::UnsupportedByDesign,
+        HalError::Unsupported(_) | HalError::UnsupportedDetail { .. } => {
+            RuntimeFailureDomain::UnsupportedByDesign
+        }
         HalError::Internal { .. } => RuntimeFailureDomain::InternalInvariant,
     }
 }

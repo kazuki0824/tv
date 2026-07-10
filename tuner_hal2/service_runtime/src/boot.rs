@@ -17,13 +17,12 @@ use maleicacid_tuner_hal2_demux::config::{
 use maleicacid_tuner_hal2_demux::OpenFilterRequest;
 use maleicacid_tuner_hal2_demux::{
     AvMediaEventDescriptor, DemuxGenerationBoundaryRequest, DemuxRuntimeError,
-    DemuxRuntimeErrorKind, DemuxRuntimeRollbackToken, DemuxRuntimeSnapshot,
-    DemuxRuntimeState, DvrKind, DvrRuntimeConfigureRequest, DvrRuntimeRegistrationRequest,
-    DvrRuntimeState, DvrStatusReportingRequest, FilterRuntimeConfigureRequest,
-    FilterRuntimeRegistrationRequest, GenerationBoundaryReport,
-    PacketDescramblePolicyFailure, PacketPid, PipelineAssemblySuppressionReason,
-    PipelineBoundaryReason, PipelineDiagnostic, PipelineReport, PipelineResetReport, TsInputOrigin,
-    TsPacketValidationError, ValidatedTsPacket,
+    DemuxRuntimeErrorKind, DemuxRuntimeRollbackToken, DemuxRuntimeSnapshot, DemuxRuntimeState,
+    DvrKind, DvrRuntimeConfigureRequest, DvrRuntimeRegistrationRequest, DvrRuntimeState,
+    DvrStatusReportingRequest, FilterRuntimeConfigureRequest, FilterRuntimeRegistrationRequest,
+    GenerationBoundaryReport, PacketDescramblePolicyFailure, PacketPid,
+    PipelineAssemblySuppressionReason, PipelineBoundaryReason, PipelineDiagnostic, PipelineReport,
+    PipelineResetReport, TsInputOrigin, TsPacketValidationError, ValidatedTsPacket,
 };
 use maleicacid_tuner_hal2_descrambler::{
     packet_policy_for_descramble_failure, DescrambleFailure, DescrambleOutcome, DescramblerKeySlot,
@@ -55,16 +54,19 @@ use crate::diagnostics::{
     BoundedDiagnosticStore, CallbackArtifactRuntimeSplitDiagnosticRecord,
     CallbackArtifactRuntimeSplitDiagnosticSnapshot, CallbackArtifactRuntimeSplitOutcome,
     CallbackArtifactRuntimeSplitPhase, CapabilitySuppressionReason,
-    SharedCallbackArtifactRuntimeSplitDiagnostics, ChildOpenRollbackDiagnosticRecord, ChildOpenRollbackDiagnosticSnapshot,
-    DemuxTransactionDiagnosticId, DemuxTransactionDiagnosticRecord, DemuxTransactionDiagnosticSnapshot, DescramblerDiagnosticKind,
-    DescramblerDiagnosticPhase, DescramblerDiagnosticRecord, DescramblerDiagnosticSnapshot,
+    ChildOpenRollbackDiagnosticRecord, ChildOpenRollbackDiagnosticSnapshot,
+    DemuxTransactionDiagnosticId, DemuxTransactionDiagnosticRecord,
+    DemuxTransactionDiagnosticSnapshot, DescramblerDiagnosticKind, DescramblerDiagnosticPhase,
+    DescramblerDiagnosticRecord, DescramblerDiagnosticSnapshot,
     DvrPostCommitNotificationDiagnosticRecord, DvrPostCommitNotificationDiagnosticSnapshot,
     DvrPostCommitNotificationFailureKind, DvrPostCommitNotificationPhase,
     DvrStatusNotifierCleanupDiagnosticRecord, DvrStatusNotifierCleanupDiagnosticSnapshot,
-    SharedDvrPostCommitNotificationDiagnostics, SharedDvrStatusNotifierCleanupDiagnostics,
-    FilterCallbackDeliveryDiagnosticPhase, FilterCallbackDeliveryDiagnosticRecord, FilterCallbackDeliveryDiagnosticSnapshot,
-    FrontendCallbackDeliveryDiagnosticPhase, FrontendCallbackDeliveryDiagnosticRecord, FrontendCallbackDeliveryDiagnosticSnapshot,
-    QueueDescriptorQueryDiagnosticRecord, QueueDescriptorQueryDiagnosticSnapshot, StartupDiagnosticRecord, StartupDiagnosticSnapshot,
+    FilterCallbackDeliveryDiagnosticPhase, FilterCallbackDeliveryDiagnosticRecord,
+    FilterCallbackDeliveryDiagnosticSnapshot, FrontendCallbackDeliveryDiagnosticPhase,
+    FrontendCallbackDeliveryDiagnosticRecord, FrontendCallbackDeliveryDiagnosticSnapshot,
+    QueueDescriptorQueryDiagnosticRecord, QueueDescriptorQueryDiagnosticSnapshot,
+    SharedCallbackArtifactRuntimeSplitDiagnostics, SharedDvrPostCommitNotificationDiagnostics,
+    SharedDvrStatusNotifierCleanupDiagnostics, StartupDiagnosticRecord, StartupDiagnosticSnapshot,
 };
 use crate::dispatch::{
     adapter_transactions_are_covered, dispatch_target_for, ServiceRuntimeDispatchTarget,
@@ -930,8 +932,10 @@ impl TunerServiceRuntime {
             diagnostics: BoundedDiagnosticStore::default(),
             descrambler_diagnostics: BoundedDiagnosticStore::default(),
             child_open_rollback_diagnostics: BoundedDiagnosticStore::default(),
-            dvr_post_commit_notification_diagnostics: SharedDvrPostCommitNotificationDiagnostics::default(),
-            dvr_status_notifier_cleanup_diagnostics: SharedDvrStatusNotifierCleanupDiagnostics::default(),
+            dvr_post_commit_notification_diagnostics:
+                SharedDvrPostCommitNotificationDiagnostics::default(),
+            dvr_status_notifier_cleanup_diagnostics:
+                SharedDvrStatusNotifierCleanupDiagnostics::default(),
             queue_descriptor_query_diagnostics: BoundedDiagnosticStore::default(),
             filter_callback_delivery_diagnostics: BoundedDiagnosticStore::default(),
             frontend_callback_delivery_diagnostics: BoundedDiagnosticStore::default(),
@@ -939,7 +943,8 @@ impl TunerServiceRuntime {
             object_cleanup_diagnostics: SharedObjectCleanupDiagnostics::default(),
             frontend_worker_cleanup_diagnostics: SharedFrontendWorkerCleanupDiagnostics::default(),
             next_demux_transaction_diagnostic_id: 1,
-            callback_artifact_runtime_split_diagnostics: SharedCallbackArtifactRuntimeSplitDiagnostics::default(),
+            callback_artifact_runtime_split_diagnostics:
+                SharedCallbackArtifactRuntimeSplitDiagnostics::default(),
             filter_event_dispatcher: None,
             callback_registry: RuntimeCallbackRegistry::default(),
             frontend_workers: FrontendWorkerRegistry::default(),
@@ -1027,7 +1032,9 @@ impl TunerServiceRuntime {
         self.queue_descriptor_query_diagnostics.as_slice()
     }
 
-    pub fn queue_descriptor_query_diagnostic_snapshot(&self) -> QueueDescriptorQueryDiagnosticSnapshot {
+    pub fn queue_descriptor_query_diagnostic_snapshot(
+        &self,
+    ) -> QueueDescriptorQueryDiagnosticSnapshot {
         QueueDescriptorQueryDiagnosticSnapshot::new(
             self.queue_descriptor_query_diagnostics.as_slice().to_vec(),
             self.queue_descriptor_query_diagnostics.dropped_count(),
@@ -1041,9 +1048,13 @@ impl TunerServiceRuntime {
         self.filter_callback_delivery_diagnostics.as_slice()
     }
 
-    pub fn filter_callback_delivery_diagnostic_snapshot(&self) -> FilterCallbackDeliveryDiagnosticSnapshot {
+    pub fn filter_callback_delivery_diagnostic_snapshot(
+        &self,
+    ) -> FilterCallbackDeliveryDiagnosticSnapshot {
         FilterCallbackDeliveryDiagnosticSnapshot::new(
-            self.filter_callback_delivery_diagnostics.as_slice().to_vec(),
+            self.filter_callback_delivery_diagnostics
+                .as_slice()
+                .to_vec(),
             self.filter_callback_delivery_diagnostics.dropped_count(),
         )
     }
@@ -1055,9 +1066,13 @@ impl TunerServiceRuntime {
         self.frontend_callback_delivery_diagnostics.as_slice()
     }
 
-    pub fn frontend_callback_delivery_diagnostic_snapshot(&self) -> FrontendCallbackDeliveryDiagnosticSnapshot {
+    pub fn frontend_callback_delivery_diagnostic_snapshot(
+        &self,
+    ) -> FrontendCallbackDeliveryDiagnosticSnapshot {
         FrontendCallbackDeliveryDiagnosticSnapshot::new(
-            self.frontend_callback_delivery_diagnostics.as_slice().to_vec(),
+            self.frontend_callback_delivery_diagnostics
+                .as_slice()
+                .to_vec(),
             self.frontend_callback_delivery_diagnostics.dropped_count(),
         )
     }
@@ -1083,7 +1098,9 @@ impl TunerServiceRuntime {
         self.frontend_worker_cleanup_diagnostics.snapshot()
     }
 
-    pub fn frontend_worker_cleanup_diagnostic_sink(&self) -> SharedFrontendWorkerCleanupDiagnostics {
+    pub fn frontend_worker_cleanup_diagnostic_sink(
+        &self,
+    ) -> SharedFrontendWorkerCleanupDiagnostics {
         self.frontend_worker_cleanup_diagnostics.clone()
     }
 
@@ -1188,7 +1205,8 @@ impl TunerServiceRuntime {
         &mut self,
         record: CallbackArtifactRuntimeSplitDiagnosticRecord,
     ) -> Result<(), HalError> {
-        self.callback_artifact_runtime_split_diagnostics.record(record)
+        self.callback_artifact_runtime_split_diagnostics
+            .record(record)
     }
 
     pub fn callback_artifact_runtime_split_diagnostic_sink(
@@ -1519,13 +1537,11 @@ impl TunerServiceRuntime {
             }
             None => match primary_result {
                 Ok(()) => Ok(()),
-                Err(artifact_error) => {
-                    Err(self.record_callback_artifact_cleanup_split_failure(
-                        CallbackArtifactRuntimeSplitPhase::RegistrationRollbackFinish,
-                        &finish_command,
-                        artifact_error,
-                    ))
-                }
+                Err(artifact_error) => Err(self.record_callback_artifact_cleanup_split_failure(
+                    CallbackArtifactRuntimeSplitPhase::RegistrationRollbackFinish,
+                    &finish_command,
+                    artifact_error,
+                )),
             },
         }
     }
@@ -1790,8 +1806,8 @@ impl TunerServiceRuntime {
                     },
                 );
                 if phase != CallbackDeliveryFailurePhase::CallbackArtifactLookup {
-                    if let Err(error) =
-                        self.mark_frontend_scan_session_callback_failed(frontend_id, scan_generation)
+                    if let Err(error) = self
+                        .mark_frontend_scan_session_callback_failed(frontend_id, scan_generation)
                     {
                         self.record_frontend_callback_delivery_diagnostic(
                             FrontendCallbackDeliveryDiagnosticRecord::scan_session_accounting(
@@ -1804,10 +1820,9 @@ impl TunerServiceRuntime {
                         );
                         failures.push_error(error);
                     }
-                    if let Err(error) = self.mark_frontend_callback_delivery_failed_use_case(
-                        owner_id,
-                        owner_generation,
-                    ) {
+                    if let Err(error) = self
+                        .mark_frontend_callback_delivery_failed_use_case(owner_id, owner_generation)
+                    {
                         self.record_frontend_callback_delivery_diagnostic(
                             FrontendCallbackDeliveryDiagnosticRecord::callback_registry_accounting(
                                 owner_id,
@@ -1966,10 +1981,9 @@ impl TunerServiceRuntime {
         command: &OwnerCallbackCleanupArtifactCommand,
         cleanup_error: HalError,
     ) -> HalError {
-        let Some(outcome) = CallbackArtifactRuntimeSplitOutcome::from_results(
-            Some(cleanup_error.clone()),
-            None,
-        ) else {
+        let Some(outcome) =
+            CallbackArtifactRuntimeSplitOutcome::from_results(Some(cleanup_error.clone()), None)
+        else {
             return cleanup_error;
         };
         match self.record_callback_artifact_runtime_split_diagnostic(
@@ -2125,7 +2139,8 @@ impl TunerServiceRuntime {
     where
         I: IntoIterator<Item = FrontendProbeOutcome>,
     {
-        self.boot_from_probe_results_with_diagnostic_clear_result(results).0
+        self.boot_from_probe_results_with_diagnostic_clear_result(results)
+            .0
     }
 
     pub fn boot_from_probe_results_with_diagnostic_clear_result<I>(
@@ -2172,7 +2187,9 @@ impl TunerServiceRuntime {
         }
         if let Err(error) = self.frontend_worker_cleanup_diagnostics.clear() {
             self.diagnostics.push(
-                StartupDiagnosticRecord::frontend_worker_cleanup_diagnostic_clear_failed(error.clone()),
+                StartupDiagnosticRecord::frontend_worker_cleanup_diagnostic_clear_failed(
+                    error.clone(),
+                ),
             );
             diagnostic_clear_failures.push_error(error);
         }
