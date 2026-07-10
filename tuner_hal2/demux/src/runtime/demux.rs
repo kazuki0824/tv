@@ -677,6 +677,7 @@ impl DemuxRuntime {
     pub fn generation(&self) -> u64 {
         self.generation
     }
+    #[cfg(test)]
     pub(crate) fn pipeline(&self) -> &PacketPipeline {
         &self.pipeline
     }
@@ -1051,6 +1052,7 @@ impl DemuxRuntime {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn create_filter_queue(&mut self, filter_id: i32) -> Result<(), DemuxRuntimeError> {
         let filter = self
             .filters
@@ -1416,17 +1418,6 @@ impl DemuxRuntime {
         Result<super::configure_txn::FilterConfigureOutcome, DemuxRuntimeError>,
     ) {
         super::configure_txn::configure_filter_runtime(self, request.filter_id, request.config)
-    }
-
-    pub(crate) fn configure_filter_runtime_with_report(
-        &mut self,
-        filter_id: i32,
-        config: crate::config::FilterConfig,
-    ) -> (
-        super::configure_txn::FilterConfigureReport,
-        Result<super::configure_txn::FilterConfigureOutcome, DemuxRuntimeError>,
-    ) {
-        super::configure_txn::configure_filter_runtime(self, filter_id, config)
     }
 
     pub fn start_filter_runtime_from_typed_request(
@@ -1801,16 +1792,6 @@ impl DemuxRuntime {
         Result<super::configure_txn::DvrConfigureOutcome, DemuxRuntimeError>,
     ) {
         super::configure_txn::configure_dvr_runtime(self, request.dvr_id)
-    }
-
-    pub(crate) fn configure_dvr_runtime_with_report(
-        &mut self,
-        dvr_id: i32,
-    ) -> (
-        super::configure_txn::DvrConfigureReport,
-        Result<super::configure_txn::DvrConfigureOutcome, DemuxRuntimeError>,
-    ) {
-        super::configure_txn::configure_dvr_runtime(self, dvr_id)
     }
 
     pub fn attach_dvr_filter_from_typed_request(
@@ -2300,6 +2281,7 @@ impl DemuxRuntime {
             .collect()
     }
 
+    #[cfg(test)]
     pub(crate) fn push_ts_packet_from_origin(
         &mut self,
         packet: &[u8],

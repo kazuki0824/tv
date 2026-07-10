@@ -72,14 +72,6 @@ pub struct FilterConfigureReport {
 }
 
 impl FilterConfigureReport {
-    pub(crate) fn rejected() -> Self {
-        Self {
-            steps: Vec::new(),
-            outcome: None,
-            source_boundary_report: None,
-        }
-    }
-
     pub fn steps(&self) -> &[FilterConfigureStep] {
         &self.steps
     }
@@ -100,13 +92,6 @@ pub struct DvrConfigureReport {
 }
 
 impl DvrConfigureReport {
-    pub(crate) fn rejected() -> Self {
-        Self {
-            steps: Vec::new(),
-            outcome: None,
-        }
-    }
-
     pub fn steps(&self) -> &[DvrConfigureStep] {
         &self.steps
     }

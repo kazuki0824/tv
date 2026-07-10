@@ -163,6 +163,7 @@ impl QueueRuntime {
             .map_err(|err| map_data_path_error(err, "FMQ clear failed"))
     }
 
+    #[cfg(test)]
     pub fn available_to_read(&self) -> Result<usize, QueueRuntimeError> {
         self.queue
             .available_to_read_result()
@@ -175,6 +176,7 @@ impl QueueRuntime {
             .map_err(|err| map_data_path_error(err, "FMQ available_to_write failed"))
     }
 
+    #[cfg(test)]
     pub fn read_into(&self, data: &mut [u8]) -> Result<usize, QueueRuntimeError> {
         self.queue
             .read_into(data)

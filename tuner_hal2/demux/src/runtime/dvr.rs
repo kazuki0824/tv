@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 
-use maleicacid_tuner_hal2_common::{TsPacketBufferDrain, TsPacketCompletionBuffer};
+#[cfg(test)]
+use maleicacid_tuner_hal2_common::TsPacketBufferDrain;
+use maleicacid_tuner_hal2_common::TsPacketCompletionBuffer;
 
 const DVR_STATUS_BIT_0: i32 = 1 << 0;
 const DVR_STATUS_BIT_1: i32 = 1 << 1;
@@ -140,10 +142,6 @@ impl DvrRuntime {
     pub fn attached_record_filters(&self) -> &BTreeSet<i32> {
         &self.attached_record_filters
     }
-    pub fn callback_unhealthy(&self) -> bool {
-        self.callback_unhealthy
-    }
-
     pub fn snapshot(&self) -> DvrRuntimeSnapshot {
         DvrRuntimeSnapshot {
             kind: self.kind,
@@ -204,6 +202,7 @@ impl DvrRuntime {
         self.playback_completion = TsPacketCompletionBuffer::default();
         had
     }
+    #[cfg(test)]
     pub fn push_playback_bytes(&mut self, data: &[u8]) -> TsPacketBufferDrain {
         self.playback_completion.push(data)
     }

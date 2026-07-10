@@ -304,14 +304,6 @@ impl PipelineSectionState {
         self.inner
             .push_payload_with_outcome(payload_unit_start, payload)
     }
-
-    pub fn oversized_section_drops(&self) -> u64 {
-        self.inner.oversized_section_drops()
-    }
-
-    pub fn stale_partial_section_discards(&self) -> u64 {
-        self.inner.stale_partial_section_discards()
-    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -750,11 +742,7 @@ pub struct FilterPipelineConfig {
     pub record_index: Option<RecordIndexSettings>,
 }
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum PipelineError {
-    InvalidState,
-    InvalidPacket,
-    Internal,
-}
+pub enum PipelineError {}
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum PipelineBoundaryReason {
     TuneStart,
@@ -766,6 +754,7 @@ pub enum PipelineBoundaryReason {
 }
 
 impl PacketPipeline {
+    #[cfg(test)]
     pub fn malformed_ts_packet_report() -> PipelineReport {
         let mut report = PipelineReport::default();
         report.dropped_packets += 1;
@@ -779,10 +768,12 @@ impl PacketPipeline {
         report
     }
 
+    #[cfg(test)]
     pub fn validate_packet(bytes: &[u8]) -> Result<ValidatedTsPacket<'_>, TsPacketValidationError> {
         ValidatedTsPacket::validate(bytes)
     }
 
+    #[cfg(test)]
     pub(crate) fn push_ts_packet(
         &mut self,
         packet: &[u8],
@@ -861,6 +852,7 @@ impl PacketPipeline {
         report
     }
 
+    #[cfg(test)]
     pub(crate) fn inspect_ts_packet<'a>(&self, packet: &'a [u8]) -> Option<ValidatedTsPacket<'a>> {
         Self::validate_packet(packet).ok()
     }
@@ -1286,13 +1278,6 @@ impl PacketPipeline {
         self.record_index_settings.remove(&filter_id);
         Ok(())
     }
-    pub fn reset_boundary_for_reason(
-        &mut self,
-        _reason: PipelineBoundaryReason,
-    ) -> Result<PipelineResetReport, PipelineError> {
-        Ok(self.reset_boundary())
-    }
-
     pub fn clear_filter_state(&mut self, filter_id: i32) {
         self.section_assemblers
             .retain(|(_, _, stored_filter_id), _| *stored_filter_id != filter_id);
@@ -1302,20 +1287,6 @@ impl PacketPipeline {
             .retain(|(_, id, _), _| *id != filter_id);
         self.filter_pes_flush_generations
             .retain(|(_, id, _), _| *id != filter_id);
-    }
-
-    pub fn oversized_section_drop_count(&self) -> u64 {
-        self.section_assemblers
-            .values()
-            .map(|assembler| assembler.oversized_section_drops())
-            .sum()
-    }
-
-    pub fn stale_partial_section_discard_count(&self) -> u64 {
-        self.section_assemblers
-            .values()
-            .map(|assembler| assembler.stale_partial_section_discards())
-            .sum()
     }
 
     pub(crate) fn reset_assembly_for_origin_pid(
