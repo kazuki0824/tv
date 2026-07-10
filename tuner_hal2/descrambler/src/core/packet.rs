@@ -181,7 +181,15 @@ fn parse_ts_packet_header(packet: &[u8]) -> Result<TsPacketHeader, DescrambleFai
     })
 }
 
-pub fn descramble_ts_packet_in_place(
+pub fn descramble_validated_ts_packet_in_place(
+    packet: &mut [u8; TS_PACKET_SIZE],
+    target_pids: &BTreeSet<DescramblerPid>,
+    key_slot: &DescramblerKeySlot,
+) -> Result<DescrambleOutcome, DescrambleFailure> {
+    descramble_ts_packet_in_place(packet.as_mut_slice(), target_pids, key_slot)
+}
+
+pub(crate) fn descramble_ts_packet_in_place(
     packet: &mut [u8],
     target_pids: &BTreeSet<DescramblerPid>,
     key_slot: &DescramblerKeySlot,

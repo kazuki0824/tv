@@ -50,8 +50,7 @@ impl TunerServiceRuntime {
                     "frontend runtime is missing for advertised frontend",
                 )
             })?;
-        runtime.clear_live_reader_descriptor();
-        runtime.mark_idle();
+        runtime.clear_live_reader_and_mark_idle();
         self.transact_reset_and_unbind_bound_demuxes_for_frontend(
             frontend_id,
             PipelineBoundaryReason::FrontendUnbind,
@@ -72,8 +71,7 @@ impl TunerServiceRuntime {
                     "frontend runtime is missing for advertised frontend",
                 )
             })?;
-        runtime.clear_live_reader_descriptor();
-        runtime.mark_closing();
+        runtime.clear_live_reader_and_mark_closing();
         self.transact_reset_and_unbind_bound_demuxes_for_frontend(
             frontend_id,
             PipelineBoundaryReason::FrontendClose,
@@ -206,7 +204,7 @@ impl<'a> FrontendTxn<'a> {
                     "frontend runtime is missing for advertised frontend",
                 )
             })?;
-        runtime.restore_snapshot(snapshot);
+        runtime.restore_from_rollback_snapshot(snapshot);
         Ok(())
     }
 
@@ -379,13 +377,7 @@ impl<'a> FrontendTxn<'a> {
                     "frontend runtime is missing for advertised frontend",
                 )
             })?;
-        runtime.commit_generation(generation)?;
-        runtime.set_live_reader_descriptor(reader);
-        match kind {
-            FrontendWorkerKind::Tune => runtime.mark_tuning(generation),
-            FrontendWorkerKind::Scan => runtime.mark_scanning(generation),
-        }
-        Ok(())
+        runtime.install_live_reader_for_worker_generation(generation, reader, kind)
     }
 
     pub(crate) fn clear_frontend_live_reader_descriptor_and_idle(
@@ -402,8 +394,7 @@ impl<'a> FrontendTxn<'a> {
                     "frontend runtime is missing for advertised frontend",
                 )
             })?;
-        runtime.clear_live_reader_descriptor();
-        runtime.mark_idle();
+        runtime.clear_live_reader_and_mark_idle();
         Ok(())
     }
 

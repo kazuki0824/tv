@@ -4,7 +4,7 @@ use maleicacid_tuner_hal2_common::{
 
 use super::{
     FrontendLivePumpReport, FrontendLiveReaderDescriptor, FrontendScanSession,
-    FrontendWorkerCancelReason,
+    FrontendWorkerCancelReason, FrontendWorkerKind,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -192,7 +192,7 @@ impl FrontendRuntime {
             })
     }
 
-    pub fn commit_generation(&mut self, generation: u64) -> Result<(), HalError> {
+    pub(crate) fn commit_generation(&mut self, generation: u64) -> Result<(), HalError> {
         if generation <= self.generation {
             return Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
@@ -241,7 +241,7 @@ impl FrontendRuntime {
         }
     }
 
-    pub fn restore_snapshot(&mut self, snapshot: FrontendRuntimeSnapshot) {
+    pub fn restore_from_rollback_snapshot(&mut self, snapshot: FrontendRuntimeSnapshot) {
         self.state = snapshot.state;
         self.generation = snapshot.generation;
         self.live_reader_descriptor = snapshot.live_reader_descriptor;
@@ -253,6 +253,31 @@ impl FrontendRuntime {
         self.last_error = snapshot.last_error;
         self.active_tune_request = snapshot.active_tune_request;
         self.signal_state = snapshot.signal_state;
+    }
+
+    pub fn install_live_reader_for_worker_generation(
+        &mut self,
+        generation: u64,
+        reader: FrontendLiveReaderDescriptor,
+        kind: FrontendWorkerKind,
+    ) -> Result<(), HalError> {
+        self.commit_generation(generation)?;
+        self.set_live_reader_descriptor(reader);
+        match kind {
+            FrontendWorkerKind::Tune => self.mark_tuning(generation),
+            FrontendWorkerKind::Scan => self.mark_scanning(generation),
+        }
+        Ok(())
+    }
+
+    pub fn clear_live_reader_and_mark_idle(&mut self) {
+        self.clear_live_reader_descriptor();
+        self.mark_idle();
+    }
+
+    pub fn clear_live_reader_and_mark_closing(&mut self) {
+        self.clear_live_reader_descriptor();
+        self.mark_closing();
     }
 
     pub fn record_signal_state(
@@ -526,27 +551,27 @@ impl FrontendRuntime {
         Ok(next)
     }
 
-    pub fn mark_tuning(&mut self, generation: u64) {
+    pub(crate) fn mark_tuning(&mut self, generation: u64) {
         self.terminal_event_min_generation = generation;
         self.state = FrontendRuntimeState::Tuning { generation };
     }
-    pub fn mark_scanning(&mut self, generation: u64) {
+    pub(crate) fn mark_scanning(&mut self, generation: u64) {
         self.terminal_event_min_generation = generation;
         self.state = FrontendRuntimeState::Scanning { generation };
     }
-    pub fn mark_idle(&mut self) {
+    pub(crate) fn mark_idle(&mut self) {
         self.state = FrontendRuntimeState::Idle;
     }
-    pub fn mark_closing(&mut self) {
+    pub(crate) fn mark_closing(&mut self) {
         self.state = FrontendRuntimeState::Closing;
     }
-    pub fn set_live_reader_descriptor(&mut self, reader: FrontendLiveReaderDescriptor) {
+    pub(crate) fn set_live_reader_descriptor(&mut self, reader: FrontendLiveReaderDescriptor) {
         self.live_reader_descriptor = Some(reader);
     }
-    pub fn clear_live_reader_descriptor(&mut self) {
+    pub(crate) fn clear_live_reader_descriptor(&mut self) {
         self.live_reader_descriptor = None;
     }
-    pub fn mark_failed(&mut self, error: HalError) {
+    pub(crate) fn mark_failed(&mut self, error: HalError) {
         self.last_error = Some(error);
         self.state = FrontendRuntimeState::Failed;
     }

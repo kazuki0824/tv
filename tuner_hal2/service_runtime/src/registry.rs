@@ -18,8 +18,8 @@ use maleicacid_tuner_hal2_demux::{
     PacketDescramblePolicyFailure, PacketPid, PipelineDiagnostic, PipelineReport,
 };
 use maleicacid_tuner_hal2_descrambler::{
-    descramble_ts_packet_in_place, packet_policy_for_descramble_failure, DescrambleFailure,
-    DescrambleOutcome, DescramblerKeySlot, DescramblerKeyToken, DescramblerPid,
+    descramble_validated_ts_packet_in_place, packet_policy_for_descramble_failure,
+    DescrambleFailure, DescrambleOutcome, DescramblerKeySlot, DescramblerKeyToken, DescramblerPid,
     DescramblerPidClaim, PacketPolicyAction,
 };
 use maleicacid_tuner_hal2_device::FrontendRuntime;
@@ -173,8 +173,12 @@ impl ResolvedDescramblerPacketSnapshot {
         let key_slot = self.key_slot.as_ref()?;
         let mut candidate = *packet;
         Some(
-            descramble_ts_packet_in_place(&mut candidate, &self.descrambler_pids, key_slot)
-                .map(|outcome| (candidate, outcome)),
+            descramble_validated_ts_packet_in_place(
+                &mut candidate,
+                &self.descrambler_pids,
+                key_slot,
+            )
+            .map(|outcome| (candidate, outcome)),
         )
     }
 
