@@ -63,7 +63,7 @@ impl RuntimeOwnerRelation {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RuntimeObjectLifecycle {
+pub(crate) enum RuntimeObjectLifecycle {
     Live,
     Closing { step: CleanupStep },
     CleanupFailed { step: CleanupStep },
@@ -172,12 +172,12 @@ pub enum RuntimeObjectTableError {
 }
 
 #[derive(Debug, Default)]
-pub struct RuntimeObjectTable {
+pub(crate) struct RuntimeObjectTable {
     entries: BTreeMap<AidlObjectId, RuntimeObjectEntry>,
 }
 
 impl RuntimeObjectTable {
-    pub fn insert(&mut self, mut entry: RuntimeObjectEntry) -> Result<(), RuntimeObjectTableError> {
+    pub(crate) fn insert(&mut self, mut entry: RuntimeObjectEntry) -> Result<(), RuntimeObjectTableError> {
         if let Some(existing) = self.entries.get(&entry.object_id) {
             if !existing.lifecycle.is_terminal() {
                 return Err(RuntimeObjectTableError::DuplicateObjectId {
@@ -359,7 +359,7 @@ impl RuntimeObjectTable {
         Ok(changed)
     }
 
-    pub fn entry(&self, object_id: AidlObjectId) -> Option<&RuntimeObjectEntry> {
+    pub(crate) fn entry(&self, object_id: AidlObjectId) -> Option<&RuntimeObjectEntry> {
         self.entries.get(&object_id)
     }
 

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt;
 use std::io::Read;
 use std::path::PathBuf;
@@ -18,7 +19,7 @@ use maleicacid_tuner_hal2_demux::OpenFilterRequest;
 use maleicacid_tuner_hal2_demux::{
     AvMediaEventDescriptor, DemuxRuntimeError, DemuxRuntimeErrorKind, DemuxRuntimeRollbackToken,
     DemuxRuntimeState, DvrKind, DvrRuntimeState, GenerationBoundaryReport, PipelineBoundaryReason,
-    PipelineDiagnostic, PipelineReport, PipelineResetReport, TsInputOrigin,
+    PacketPid, PipelineDiagnostic, PipelineReport, PipelineResetReport, TsInputOrigin,
     TsPacketValidationError, ValidatedTsPacket,
 };
 #[cfg(test)]
@@ -28,10 +29,15 @@ use maleicacid_tuner_hal2_descrambler::{
     DescramblerPidClaim, DescramblerPidClaimError,
 };
 use maleicacid_tuner_hal2_device::{
-    FrontendLivePacketSink, FrontendLivePumpOwner, FrontendLivePumpReport,
-    FrontendLiveReaderDescriptor, FrontendRuntimeSnapshot, FrontendRuntimeState,
-    FrontendSignalState, FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind,
-    FrontendWorkerRegistry, FrontendWorkerStartError, FrontendWorkerStopOutcome,
+    FrontendLiveDataCompletion, FrontendLivePacketSink, FrontendLivePumpCompletionRequest,
+    FrontendLivePumpOwner, FrontendLivePumpReport, FrontendLiveReaderDescriptor,
+    FrontendRuntimeRollbackCapture, FrontendRuntimeRollbackToken, FrontendRuntimeState,
+    FrontendScanStartRequest, FrontendScanTransitionOutcome, FrontendScanTransitionRequest,
+    FrontendSignalRecordRequest,
+    FrontendSignalState, FrontendTuneCommitRequest, FrontendTuneWorkerFailureRequest,
+    FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerInstallRequest,
+    FrontendWorkerKind, FrontendWorkerRegistry, FrontendWorkerStartError,
+    FrontendWorkerStopOutcome,
 };
 use maleicacid_tuner_hal2_domain_request::{
     AidlApi, AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan, DvrConfigureKind,
@@ -56,14 +62,16 @@ use crate::diagnostics::{
     DemuxTransactionDiagnosticId, DemuxTransactionDiagnosticRecord,
     DemuxTransactionDiagnosticSnapshot, DescramblerDiagnosticKind, DescramblerDiagnosticPhase,
     DescramblerDiagnosticRecord, DescramblerDiagnosticSnapshot,
-    DvrPostCommitNotificationDiagnosticRecord, DvrPostCommitNotificationDiagnosticSnapshot,
+    DvrPlaybackConsumeDiagnosticRecord, DvrPostCommitNotificationDiagnosticRecord,
+    DvrPostCommitNotificationDiagnosticSnapshot,
     DvrPostCommitNotificationFailureKind, DvrPostCommitNotificationPhase,
     DvrStatusNotifierCleanupDiagnosticSnapshot, FilterCallbackDeliveryDiagnosticPhase,
     FilterCallbackDeliveryDiagnosticRecord, FilterCallbackDeliveryDiagnosticSnapshot,
     FrontendCallbackDeliveryDiagnosticPhase, FrontendCallbackDeliveryDiagnosticRecord,
     FrontendCallbackDeliveryDiagnosticSnapshot, QueueDescriptorQueryDiagnosticRecord,
     QueueDescriptorQueryDiagnosticSnapshot, SharedCallbackArtifactRuntimeSplitDiagnostics,
-    SharedDvrPostCommitNotificationDiagnostics, SharedDvrStatusNotifierCleanupDiagnostics,
+    SharedDvrPlaybackWorkerCleanupDiagnostics, SharedDvrPostCommitNotificationDiagnostics,
+    SharedDvrStatusNotifierCleanupDiagnostics,
     StartupDiagnosticRecord, StartupDiagnosticSnapshot,
 };
 use crate::dispatch::{
@@ -92,7 +100,7 @@ use maleicacid_tuner_hal2_resource_ledger::{LedgerGeneration, LedgerId};
 // Operation implementations are boot child modules so they can use
 // TunerServiceRuntime private state without widening field visibility.
 mod query_api;
-pub use query_api::DvrStatusPollSnapshot;
+pub use query_api::{DvrStatusPollSnapshot, DvrStatusReadySnapshot};
 pub(crate) use query_api::{
     map_queue_descriptor_query_error, QueueDescriptorExportPlan, RuntimeQuery,
 };
@@ -223,7 +231,7 @@ pub struct FilterEventDeliverySnapshot {
 pub enum FilterEventDelivery {
     Media(AvMediaEventDescriptor),
     Section { data_length: usize },
-    Pes { stream_id: i32, data_length: usize },
+    Pes { packet_pid: PacketPid, data_length: usize },
 }
 
 pub trait FilterEventDispatcher: Send + Sync {
@@ -314,7 +322,7 @@ struct DescramblePacketDecision {
 pub(super) fn demux_runtime_error_to_hal(
     error: maleicacid_tuner_hal2_demux::DemuxRuntimeError,
 ) -> HalError {
-    match error.kind {
+    match error.kind() {
         maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::GenerationExhausted => {
             HalError::internal(
                 HalInternalKind::InvariantViolation,
@@ -469,6 +477,9 @@ pub struct TunerServiceRuntime {
     child_open_rollback_diagnostics: BoundedDiagnosticStore<ChildOpenRollbackDiagnosticRecord>,
     dvr_post_commit_notification_diagnostics: SharedDvrPostCommitNotificationDiagnostics,
     dvr_status_notifier_cleanup_diagnostics: SharedDvrStatusNotifierCleanupDiagnostics,
+    dvr_playback_worker_cleanup_diagnostics: SharedDvrPlaybackWorkerCleanupDiagnostics,
+    dvr_playback_consume_diagnostics:
+        BoundedDiagnosticStore<DvrPlaybackConsumeDiagnosticRecord>,
     queue_descriptor_query_diagnostics:
         BoundedDiagnosticStore<QueueDescriptorQueryDiagnosticRecord>,
     filter_callback_delivery_diagnostics:
@@ -872,7 +883,7 @@ impl TunerServiceRuntime {
                     } => (
                         *filter_id,
                         FilterEventDelivery::Pes {
-                            stream_id: pid.to_i32_for_aidl_boundary(),
+                            packet_pid: *pid,
                             data_length: packet.raw_bytes.len(),
                         },
                     ),
@@ -911,6 +922,9 @@ impl TunerServiceRuntime {
                 SharedDvrPostCommitNotificationDiagnostics::default(),
             dvr_status_notifier_cleanup_diagnostics:
                 SharedDvrStatusNotifierCleanupDiagnostics::default(),
+            dvr_playback_worker_cleanup_diagnostics:
+                SharedDvrPlaybackWorkerCleanupDiagnostics::default(),
+            dvr_playback_consume_diagnostics: BoundedDiagnosticStore::default(),
             queue_descriptor_query_diagnostics: BoundedDiagnosticStore::default(),
             filter_callback_delivery_diagnostics: BoundedDiagnosticStore::default(),
             frontend_callback_delivery_diagnostics: BoundedDiagnosticStore::default(),
@@ -1000,6 +1014,18 @@ impl TunerServiceRuntime {
         self.dvr_status_notifier_cleanup_diagnostics.clone()
     }
 
+    pub fn dvr_playback_worker_cleanup_diagnostics(
+        &self,
+    ) -> Result<crate::diagnostics::DvrPlaybackWorkerCleanupDiagnosticSnapshot, HalError> {
+        self.dvr_playback_worker_cleanup_diagnostics.snapshot()
+    }
+
+    pub fn dvr_playback_worker_cleanup_diagnostic_sink(
+        &self,
+    ) -> SharedDvrPlaybackWorkerCleanupDiagnostics {
+        self.dvr_playback_worker_cleanup_diagnostics.clone()
+    }
+
     #[cfg(test)]
     pub(crate) fn queue_descriptor_query_diagnostics(
         &self,
@@ -1053,9 +1079,21 @@ impl TunerServiceRuntime {
     }
 
     pub fn demux_transaction_diagnostics(&self) -> DemuxTransactionDiagnosticSnapshot {
+        let rollback_token_drop_failure_count = self
+            .registry
+            .demux_ids()
+            .into_iter()
+            .filter_map(|demux_id| self.registry.demux_runtime(demux_id))
+            .map(|runtime| {
+                runtime
+                    .diagnostic_snapshot()
+                    .rollback_token_drop_failure_count()
+            })
+            .fold(0u64, u64::saturating_add);
         DemuxTransactionDiagnosticSnapshot::new(
             self.demux_transaction_diagnostics.as_slice().to_vec(),
             self.demux_transaction_diagnostics.dropped_count(),
+            rollback_token_drop_failure_count,
         )
     }
 
@@ -1201,6 +1239,74 @@ impl TunerServiceRuntime {
                     "filter event dispatcher is not installed for this runtime",
                 )
             })
+    }
+
+    pub fn dvr_playback_consume_diagnostic_snapshot(
+        &self,
+    ) -> crate::diagnostics::DiagnosticSnapshot<DvrPlaybackConsumeDiagnosticRecord> {
+        crate::diagnostics::DiagnosticSnapshot::new(
+            self.dvr_playback_consume_diagnostics.as_slice().to_vec(),
+            self.dvr_playback_consume_diagnostics.dropped_count(),
+        )
+    }
+
+    fn record_dvr_playback_consume_report(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        report: &maleicacid_tuner_hal2_demux::PlaybackConsumeReport,
+        packet_failures: &[crate::diagnostics::DvrPlaybackPacketFailureOutcome],
+    ) {
+        if let Some(record) = self
+            .dvr_playback_consume_diagnostics
+            .as_mut_slice()
+            .iter_mut()
+            .find(|record| record.object_id == object_id && record.generation == generation)
+        {
+            record.record(report, packet_failures);
+            return;
+        }
+        let mut record = DvrPlaybackConsumeDiagnosticRecord::new(object_id, generation);
+        record.record(report, packet_failures);
+        self.dvr_playback_consume_diagnostics.push(record);
+    }
+
+    pub(crate) fn remove_dvr_playback_consume_diagnostic(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) {
+        self.dvr_playback_consume_diagnostics.retain(|record| {
+            record.object_id != object_id || record.generation != generation
+        });
+    }
+
+    pub fn consume_playback_dvr_queue_for_object_and_filter_events(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<(
+        maleicacid_tuner_hal2_demux::PlaybackConsumeReport,
+        Vec<FilterEventDeliverySnapshot>,
+        Arc<dyn FilterEventDispatcher>,
+        Option<HalError>,
+    ), HalError> {
+        let dispatcher = self.filter_event_dispatcher()?;
+        let dvr_id = self.public_runtime_id_for_object_method(
+            object_id,
+            generation,
+            AidlObjectKind::Dvr,
+        )?;
+        let (report, packet_failures, processing_error) =
+            self.transact_consume_playback_dvr_queue(dvr_id)?;
+        self.record_dvr_playback_consume_report(
+            object_id,
+            generation,
+            &report,
+            &packet_failures,
+        );
+        let events = self.filter_event_delivery_snapshots(&report.packet_reports);
+        Ok((report, events, dispatcher, processing_error))
     }
 
     fn record_descrambler_diagnostic(&mut self, record: DescramblerDiagnosticRecord) {
@@ -1697,13 +1803,7 @@ impl TunerServiceRuntime {
                         primary.clone(),
                     ),
                 );
-                if !matches!(
-                    phase,
-                    CallbackDeliveryFailurePhase::CallbackArtifactLookup
-                        | CallbackDeliveryFailurePhase::RuntimePolicySkip
-                        | CallbackDeliveryFailurePhase::NotifierCleanup
-                        | CallbackDeliveryFailurePhase::NotifierPreflight
-                ) {
+                if phase == CallbackDeliveryFailurePhase::BinderDelivery {
                     if let Err(error) = self.mark_dvr_callback_delivery_failed_use_case(
                         owner_id,
                         owner_generation,
@@ -2046,6 +2146,7 @@ impl TunerServiceRuntime {
         &mut self,
         outcome: ServiceBootOutcome,
         dvr_notifier_result: Result<(), HalError>,
+        playback_worker_report: crate::diagnostics::DvrPlaybackWorkerCleanupExecutionReport,
         artifact_result: Result<(), HalError>,
         drop_leak_result: Result<(), HalError>,
         callback_fallback_clear_result: Result<(), HalError>,
@@ -2055,6 +2156,7 @@ impl TunerServiceRuntime {
         for split_outcome in
             CallbackArtifactRuntimeSplitOutcome::service_boot_reset_from_attempt_results(
                 dvr_notifier_result.clone(),
+                playback_worker_report.clone(),
                 artifact_result.clone(),
                 drop_leak_result.clone(),
                 callback_fallback_clear_result.clone(),
@@ -2077,6 +2179,7 @@ impl TunerServiceRuntime {
         }
         let mut reset_failures = FirstErrorCollector::new();
         reset_failures.push_result(dvr_notifier_result);
+        reset_failures.push_result(playback_worker_report.result());
         reset_failures.push_result(artifact_result);
         reset_failures.push_result(drop_leak_result);
         reset_failures.push_result(callback_fallback_clear_result);
@@ -2137,6 +2240,15 @@ impl TunerServiceRuntime {
             );
             diagnostic_clear_failures.push_error(error);
         }
+        if let Err(error) = self.dvr_playback_worker_cleanup_diagnostics.clear() {
+            self.diagnostics.push(
+                StartupDiagnosticRecord::dvr_playback_worker_cleanup_diagnostic_clear_failed(
+                    error.clone(),
+                ),
+            );
+            diagnostic_clear_failures.push_error(error);
+        }
+        self.dvr_playback_consume_diagnostics.clear();
         self.queue_descriptor_query_diagnostics.clear();
         self.filter_callback_delivery_diagnostics.clear();
         self.frontend_callback_delivery_diagnostics.clear();

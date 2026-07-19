@@ -4,6 +4,7 @@ pub(crate) mod demux_object;
 pub(crate) mod descrambler_object;
 pub(crate) mod dvr_callback_delivery;
 pub(crate) mod dvr_object;
+pub(crate) mod dvr_playback_worker;
 pub(crate) mod error_bridge;
 pub(crate) mod filter_callback_delivery;
 pub(crate) mod filter_object;

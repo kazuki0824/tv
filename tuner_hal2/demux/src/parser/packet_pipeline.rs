@@ -100,12 +100,8 @@ impl PacketPid {
         Self(TransportStreamPid::validate_i32(pid.raw()).expect("validated filter config PID"))
     }
 
-    pub(crate) const fn matches_config_tpid(self, tpid: Option<i32>) -> bool {
-        self.0.matches_i32_config(tpid)
-    }
-
-    pub const fn matches_config_tpid_for_service_runtime_boundary(self, tpid: Option<i32>) -> bool {
-        self.0.matches_i32_config(tpid)
+    pub fn matches_config_input_pid(self, pid: ConfigInputPid) -> bool {
+        self == Self::from_config_pid(pid)
     }
 }
 
@@ -561,14 +557,6 @@ pub enum PipelineDiagnosticPidContext {
     NotApplicable,
 }
 
-impl PipelineDiagnosticPidContext {
-    pub const fn to_i32_for_aidl_boundary(self) -> Option<i32> {
-        match self {
-            Self::Present(pid) => Some(pid.to_i32_for_aidl_boundary()),
-            Self::NotApplicable => None,
-        }
-    }
-}
 
 impl PipelineDiagnostic {
     pub const fn pid_context(&self) -> PipelineDiagnosticPidContext {
@@ -707,20 +695,42 @@ pub enum PipelineOpenKind {
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub struct PipelineFilterView {
-    pub filter_id: i32,
-    pub tpid: Option<i32>,
-    pub started: bool,
-    pub source_filter: Option<(i32, u64)>,
-    pub open_kind: PipelineOpenKind,
-    pub section_raw: bool,
-    pub pes_raw: bool,
-    pub wants_record_index: bool,
+pub(crate) struct PipelineSourceFilterRef {
+    filter_id: i32,
+    generation: u64,
+}
+
+impl PipelineSourceFilterRef {
+    pub(crate) const fn new(filter_id: i32, generation: u64) -> Self {
+        Self {
+            filter_id,
+            generation,
+        }
+    }
+
+    const fn matches_origin(self, filter_id: i32, generation: u64) -> bool {
+        self.filter_id == filter_id && self.generation == generation
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) struct PipelineFilterView {
+    pub(crate) filter_id: i32,
+    pub(crate) tpid: Option<ConfigInputPid>,
+    pub(crate) started: bool,
+    pub(crate) source_filter: Option<PipelineSourceFilterRef>,
+    pub(crate) open_kind: PipelineOpenKind,
+    pub(crate) section_raw: bool,
+    pub(crate) pes_raw: bool,
+    pub(crate) wants_record_index: bool,
 }
 
 impl PipelineFilterView {
     fn accepts_packet_pid_from_origin(self, pid: PacketPid, origin: crate::TsInputOrigin) -> bool {
-        if !self.started || !pid.matches_config_tpid(self.tpid) {
+        let Some(config_pid) = self.tpid else {
+            return false;
+        };
+        if !self.started || !pid.matches_config_input_pid(config_pid) {
             return false;
         }
         match origin {
@@ -730,19 +740,20 @@ impl PipelineFilterView {
             crate::TsInputOrigin::SourceFilter {
                 source_filter_id,
                 source_filter_generation,
-            } => self.source_filter == Some((source_filter_id, source_filter_generation)),
+            } => self
+                .source_filter
+                .map(|source| source.matches_origin(source_filter_id, source_filter_generation))
+                .unwrap_or(false),
         }
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Default)]
-pub struct FilterPipelineConfig {
-    pub tpid: Option<i32>,
-    pub raw: bool,
-    pub record_index: Option<RecordIndexSettings>,
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub(crate) struct FilterPipelineConfig {
+    pub(crate) tpid: ConfigInputPid,
+    pub(crate) raw: bool,
+    pub(crate) record_index: Option<RecordIndexSettings>,
 }
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum PipelineError {}
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum PipelineBoundaryReason {
     TuneStart,
@@ -755,7 +766,7 @@ pub enum PipelineBoundaryReason {
 
 impl PacketPipeline {
     #[cfg(test)]
-    pub fn malformed_ts_packet_report() -> PipelineReport {
+    pub(crate) fn malformed_ts_packet_report() -> PipelineReport {
         let mut report = PipelineReport::default();
         report.dropped_packets += 1;
         report.malformed_packets += 1;
@@ -769,7 +780,7 @@ impl PacketPipeline {
     }
 
     #[cfg(test)]
-    pub fn validate_packet(bytes: &[u8]) -> Result<ValidatedTsPacket<'_>, TsPacketValidationError> {
+    pub(crate) fn validate_packet(bytes: &[u8]) -> Result<ValidatedTsPacket<'_>, TsPacketValidationError> {
         ValidatedTsPacket::validate(bytes)
     }
 
@@ -1250,7 +1261,7 @@ impl PacketPipeline {
         &mut self,
         filter_id: i32,
         config: FilterPipelineConfig,
-    ) -> Result<(), PipelineError> {
+    ) {
         self.clear_filter_state(filter_id);
         if let Some(settings) = config.record_index {
             self.record_index_settings.insert(filter_id, settings);
@@ -1263,20 +1274,29 @@ impl PacketPipeline {
             self.record_index_parsers.remove(&filter_id);
             self.record_event_states.remove(&filter_id);
         }
-        Ok(())
     }
-    pub fn start_filter(&mut self, _filter_id: i32) -> Result<(), PipelineError> {
-        Ok(())
+    pub(crate) fn restore_control_plane_preserving_data_plane(&mut self, snapshot: &Self) {
+        let current_settings = self.record_index_settings.clone();
+        self.record_index_settings = snapshot.record_index_settings.clone();
+        self.record_index_parsers.retain(|filter_id, _| {
+            current_settings.get(filter_id) == self.record_index_settings.get(filter_id)
+        });
+        self.record_event_states.retain(|filter_id, _| {
+            current_settings.get(filter_id) == self.record_index_settings.get(filter_id)
+        });
+        // A parser whose settings changed cannot be retained, and synthesizing a replacement
+        // would restart byte numbering and discard PES/start-code carry. Leave it absent so the
+        // caller can fail closed instead of silently manufacturing a corrupt index continuation.
+        // Section/PES assemblers, continuity, resync and in-flight record parser state are
+        // current data-plane progress. An internal transaction rollback must not resurrect
+        // old TS fragments or rewind packet diagnostics.
     }
-    pub fn stop_filter(&mut self, _filter_id: i32) -> Result<(), PipelineError> {
-        Ok(())
-    }
-    pub fn remove_filter(&mut self, filter_id: i32) -> Result<(), PipelineError> {
+
+    pub fn remove_filter(&mut self, filter_id: i32) {
         self.clear_filter_state(filter_id);
         self.record_index_parsers.remove(&filter_id);
         self.record_event_states.remove(&filter_id);
         self.record_index_settings.remove(&filter_id);
-        Ok(())
     }
     pub fn clear_filter_state(&mut self, filter_id: i32) {
         self.section_assemblers
@@ -1780,7 +1800,7 @@ mod tests {
         let filters = [
             PipelineFilterView {
                 filter_id: 1,
-                tpid: Some(0x0100),
+                tpid: Some(ConfigInputPid::for_test(0x0100)),
                 started: true,
                 source_filter: None,
                 open_kind: PipelineOpenKind::Pes,
@@ -1790,7 +1810,7 @@ mod tests {
             },
             PipelineFilterView {
                 filter_id: 2,
-                tpid: Some(0x0100),
+                tpid: Some(ConfigInputPid::for_test(0x0100)),
                 started: true,
                 source_filter: None,
                 open_kind: PipelineOpenKind::Av,
@@ -1823,9 +1843,9 @@ mod tests {
         let filters = [
             PipelineFilterView {
                 filter_id: 20,
-                tpid: Some(0x0100),
+                tpid: Some(ConfigInputPid::for_test(0x0100)),
                 started: true,
-                source_filter: Some((10, 1)),
+                source_filter: Some(PipelineSourceFilterRef::new(10, 1)),
                 open_kind: PipelineOpenKind::Record,
                 section_raw: false,
                 pes_raw: false,
@@ -1833,7 +1853,7 @@ mod tests {
             },
             PipelineFilterView {
                 filter_id: 21,
-                tpid: Some(0x0100),
+                tpid: Some(ConfigInputPid::for_test(0x0100)),
                 started: true,
                 source_filter: None,
                 open_kind: PipelineOpenKind::Record,
@@ -1871,7 +1891,7 @@ mod tests {
         let filters = [
             PipelineFilterView {
                 filter_id: 10,
-                tpid: Some(0x0100),
+                tpid: Some(ConfigInputPid::for_test(0x0100)),
                 started: true,
                 source_filter: None,
                 open_kind: PipelineOpenKind::Raw,
@@ -1881,7 +1901,7 @@ mod tests {
             },
             PipelineFilterView {
                 filter_id: 11,
-                tpid: Some(0x0100),
+                tpid: Some(ConfigInputPid::for_test(0x0100)),
                 started: true,
                 source_filter: None,
                 open_kind: PipelineOpenKind::Section,
@@ -1891,7 +1911,7 @@ mod tests {
             },
             PipelineFilterView {
                 filter_id: 12,
-                tpid: Some(0x0100),
+                tpid: Some(ConfigInputPid::for_test(0x0100)),
                 started: true,
                 source_filter: None,
                 open_kind: PipelineOpenKind::Pes,
@@ -2161,7 +2181,7 @@ mod discontinuity_generation_tests {
         let pid = 0x0123u16;
         let filter = PipelineFilterView {
             filter_id: 17,
-            tpid: Some(pid as i32),
+            tpid: Some(ConfigInputPid::for_test(pid as i32)),
             started: true,
             source_filter: None,
             open_kind: PipelineOpenKind::Section,
@@ -2334,7 +2354,7 @@ mod record_raw_passthrough_policy_tests {
     fn record_filter(filter_id: i32) -> PipelineFilterView {
         PipelineFilterView {
             filter_id,
-            tpid: Some(0x0100),
+            tpid: Some(ConfigInputPid::for_test(0x0100)),
             started: true,
             source_filter: None,
             open_kind: PipelineOpenKind::Record,
@@ -2347,7 +2367,7 @@ mod record_raw_passthrough_policy_tests {
     fn section_filter(filter_id: i32) -> PipelineFilterView {
         PipelineFilterView {
             filter_id,
-            tpid: Some(0x0100),
+            tpid: Some(ConfigInputPid::for_test(0x0100)),
             started: true,
             source_filter: None,
             open_kind: PipelineOpenKind::Section,
@@ -2360,7 +2380,7 @@ mod record_raw_passthrough_policy_tests {
     fn raw_filter(filter_id: i32) -> PipelineFilterView {
         PipelineFilterView {
             filter_id,
-            tpid: Some(0x0100),
+            tpid: Some(ConfigInputPid::for_test(0x0100)),
             started: true,
             source_filter: None,
             open_kind: PipelineOpenKind::Raw,
@@ -2506,7 +2526,7 @@ mod keyless_scrambled_policy_tests {
     fn filter(filter_id: i32, open_kind: PipelineOpenKind) -> PipelineFilterView {
         PipelineFilterView {
             filter_id,
-            tpid: Some(0x0100),
+            tpid: Some(ConfigInputPid::for_test(0x0100)),
             started: true,
             source_filter: None,
             open_kind,
@@ -2571,7 +2591,7 @@ mod keyless_scrambled_policy_tests {
             .configure_filter(
                 1,
                 FilterPipelineConfig {
-                    tpid: Some(0x0100),
+                    tpid: ConfigInputPid::for_test(0x0100),
                     raw: false,
                     record_index: Some(RecordIndexSettings {
                         ts_index_mask: DEMUX_TS_INDEX_FIRST_PACKET

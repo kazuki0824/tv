@@ -16,7 +16,7 @@ pub enum DvrCommand {
 }
 
 impl DvrCommand {
-    pub fn plan(&self) -> Result<CommandPlan, HalError> {
+    pub(super) fn plan(&self) -> Result<CommandPlan, HalError> {
         match self {
             Self::GetQueueDesc => {
                 CommandPlan::for_api(AidlObjectKind::Dvr, AidlApi::DvrGetQueueDesc)

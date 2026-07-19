@@ -16,9 +16,10 @@ impl TunerServiceRuntime {
     pub(crate) fn reset_bound_demuxes_for_frontend_tune_start(
         &mut self,
         frontend_id: i32,
+        rollback_tokens: &[(crate::registry::DemuxRuntimeId, maleicacid_tuner_hal2_demux::DemuxRuntimeRollbackToken)],
     ) -> Result<Vec<GenerationBoundaryReport>, HalError> {
         self.packet_txn()
-            .reset_bound_demuxes_for_frontend_tune_start(frontend_id)
+            .reset_bound_demuxes_for_frontend_tune_start(frontend_id, rollback_tokens)
     }
 
     pub(crate) fn push_frontend_ts_packet_to_bound_demuxes(

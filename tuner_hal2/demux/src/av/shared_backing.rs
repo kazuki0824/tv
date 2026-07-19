@@ -7,9 +7,16 @@ use super::slot::{AvDataId, AvSlotId};
 use std::fs::File;
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::ptr;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const DEFAULT_AV_SHARED_SLOT_SIZE_BYTES: usize = 1024 * 1024;
 pub const DEFAULT_AV_SHARED_SLOT_COUNT: usize = 8;
+
+static NEXT_AV_BACKING_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_av_backing_instance_id() -> u64 {
+    NEXT_AV_BACKING_INSTANCE_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClientHandleState {
@@ -49,8 +56,19 @@ struct AvSlotState {
     data_length: usize,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct AvSharedBackingRollbackState {
+    instance_id: u64,
+    state: ClientHandleState,
+    next_data_id: i64,
+    slot_size: usize,
+    slots: Vec<AvSlotState>,
+    stale_data_ids: Vec<AvDataId>,
+    ever_exported: bool,
+}
+
 pub struct AvSharedBacking {
+    instance_id: u64,
     state: ClientHandleState,
     next_data_id: i64,
     slot_size: usize,
@@ -77,6 +95,7 @@ impl AvSharedBacking {
             })
             .collect();
         Self {
+            instance_id: next_av_backing_instance_id(),
             state: ClientHandleState::NotExported,
             next_data_id: 1,
             slot_size,
@@ -84,6 +103,26 @@ impl AvSharedBacking {
             stale_data_ids: Vec::new(),
             ever_exported: false,
             file: None,
+        }
+    }
+
+    pub(crate) const fn instance_id(&self) -> u64 {
+        self.instance_id
+    }
+
+    pub(crate) const fn rollback_identity(&self) -> u64 {
+        self.instance_id
+    }
+
+    pub(crate) fn rollback_state(&self) -> AvSharedBackingRollbackState {
+        AvSharedBackingRollbackState {
+            instance_id: self.instance_id,
+            state: self.state,
+            next_data_id: self.next_data_id,
+            slot_size: self.slot_size,
+            slots: self.slots.clone(),
+            stale_data_ids: self.stale_data_ids.clone(),
+            ever_exported: self.ever_exported,
         }
     }
 

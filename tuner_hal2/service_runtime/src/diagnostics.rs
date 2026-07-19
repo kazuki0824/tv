@@ -6,10 +6,17 @@ use std::sync::{
 
 use maleicacid_tuner_hal2_common::{FrontendBackendKind, HalError, HalInternalKind};
 use maleicacid_tuner_hal2_demux::{
-    DvrConfigureReport, FilterConfigureReport, PacketPid, QueueRuntimeError, SourceBoundaryReport,
+    DvrConfigureReport, FilterConfigureReport, PacketPid, PipelineAssemblySuppressionReason,
+    PipelineDeliveryAction, PipelineDiagnostic, PipelineDropReason, PipelineReport,
+    QueueRuntimeError, SourceBoundaryReport, SourceBoundaryTarget,
 };
 use maleicacid_tuner_hal2_descrambler::DescramblerPid;
 use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
+
+use crate::cleanup_execution::{
+    CleanupExecutionDiagnosticSnapshot, CleanupExecutionReport, CleanupExecutionStepOutcome,
+    SharedCleanupDiagnostics,
+};
 
 pub const DEFAULT_DIAGNOSTIC_STORE_LIMIT: usize = 128;
 
@@ -49,6 +56,14 @@ impl<T> BoundedDiagnosticStore<T> {
 
     pub fn as_slice(&self) -> &[T] {
         &self.records
+    }
+
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        &mut self.records
+    }
+
+    pub fn retain(&mut self, mut predicate: impl FnMut(&T) -> bool) {
+        self.records.retain(|record| predicate(record));
     }
 
     pub const fn dropped_count(&self) -> u64 {
@@ -114,6 +129,7 @@ pub enum StartupDiagnosticKind {
     DvrPostCommitNotificationDiagnosticRecordFailed,
     DvrStatusNotifierCleanupDiagnosticClearFailed,
     DvrStatusNotifierCleanupDiagnosticRecordFailed,
+    DvrPlaybackWorkerCleanupDiagnosticClearFailed,
     ObjectCleanupDiagnosticClearFailed,
     FrontendWorkerCleanupDiagnosticClearFailed,
     RuntimeDispatchMissing,
@@ -174,6 +190,9 @@ pub enum StartupDiagnosticRecord {
         error: HalError,
     },
     DvrStatusNotifierCleanupDiagnosticRecordFailed {
+        error: HalError,
+    },
+    DvrPlaybackWorkerCleanupDiagnosticClearFailed {
         error: HalError,
     },
     ObjectCleanupDiagnosticClearFailed {
@@ -253,6 +272,10 @@ impl StartupDiagnosticRecord {
         Self::DvrStatusNotifierCleanupDiagnosticRecordFailed { error }
     }
 
+    pub fn dvr_playback_worker_cleanup_diagnostic_clear_failed(error: HalError) -> Self {
+        Self::DvrPlaybackWorkerCleanupDiagnosticClearFailed { error }
+    }
+
     pub fn object_cleanup_diagnostic_clear_failed(error: HalError) -> Self {
         Self::ObjectCleanupDiagnosticClearFailed { error }
     }
@@ -287,6 +310,9 @@ impl StartupDiagnosticRecord {
             Self::DvrStatusNotifierCleanupDiagnosticRecordFailed { .. } => {
                 StartupDiagnosticKind::DvrStatusNotifierCleanupDiagnosticRecordFailed
             }
+            Self::DvrPlaybackWorkerCleanupDiagnosticClearFailed { .. } => {
+                StartupDiagnosticKind::DvrPlaybackWorkerCleanupDiagnosticClearFailed
+            }
             Self::ObjectCleanupDiagnosticClearFailed { .. } => {
                 StartupDiagnosticKind::ObjectCleanupDiagnosticClearFailed
             }
@@ -310,6 +336,7 @@ impl StartupDiagnosticRecord {
             | Self::DvrPostCommitNotificationDiagnosticRecordFailed { .. }
             | Self::DvrStatusNotifierCleanupDiagnosticClearFailed { .. }
             | Self::DvrStatusNotifierCleanupDiagnosticRecordFailed { .. }
+            | Self::DvrPlaybackWorkerCleanupDiagnosticClearFailed { .. }
             | Self::ObjectCleanupDiagnosticClearFailed { .. }
             | Self::FrontendWorkerCleanupDiagnosticClearFailed { .. } => {
                 StartupDiagnosticPhase::DiagnosticReset
@@ -398,6 +425,8 @@ pub enum DvrPostCommitNotificationPhase {
     StatusNotifierStart,
     StatusNotifierStop,
     StatusNotifierRuntimeFailure,
+    PlaybackWorkerRuntimeFailure,
+    PlaybackWorkerArtifactCleanup,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -409,6 +438,8 @@ pub enum DvrPostCommitNotificationFailureKind {
     PostCommitNotification,
     NotifierTerminal,
     NotifierCleanup,
+    PlaybackWorkerTerminal,
+    PlaybackWorkerCleanup,
     NotifierPreflight,
     CallbackRegistryAccounting,
 }
@@ -452,23 +483,30 @@ pub enum DvrStatusNotifierCleanupDiagnosticKind {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DvrStatusNotifierCleanupDiagnosticRecord {
-    pub kind: DvrStatusNotifierCleanupDiagnosticKind,
-    pub phase: DvrPostCommitNotificationPhase,
-    pub object_id: Option<AidlObjectId>,
-    pub generation: Option<AidlObjectGeneration>,
-    pub result: Result<(), HalError>,
+pub enum DvrStatusNotifierCleanupDiagnosticRecord {
+    ResetStoreRecoveredAfterPoison {
+        error: HalError,
+    },
+    ResetNotifierCleanup {
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        result: Result<(), HalError>,
+    },
+    WorkerTerminal {
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        result: Result<(), HalError>,
+    },
+    SupersedeCleanup {
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        result: Result<(), HalError>,
+    },
 }
 
 impl DvrStatusNotifierCleanupDiagnosticRecord {
     pub fn reset_store_recovered_after_poison(error: HalError) -> Self {
-        Self {
-            kind: DvrStatusNotifierCleanupDiagnosticKind::ResetStoreRecoveredAfterPoison,
-            phase: DvrPostCommitNotificationPhase::StatusNotifierStop,
-            object_id: None,
-            generation: None,
-            result: Err(error),
-        }
+        Self::ResetStoreRecoveredAfterPoison { error }
     }
 
     pub fn reset_notifier_cleanup(
@@ -476,11 +514,9 @@ impl DvrStatusNotifierCleanupDiagnosticRecord {
         generation: AidlObjectGeneration,
         result: Result<(), HalError>,
     ) -> Self {
-        Self {
-            kind: DvrStatusNotifierCleanupDiagnosticKind::ResetNotifierCleanup,
-            phase: DvrPostCommitNotificationPhase::StatusNotifierStop,
-            object_id: Some(object_id),
-            generation: Some(generation),
+        Self::ResetNotifierCleanup {
+            object_id,
+            generation,
             result,
         }
     }
@@ -490,11 +526,9 @@ impl DvrStatusNotifierCleanupDiagnosticRecord {
         generation: AidlObjectGeneration,
         result: Result<(), HalError>,
     ) -> Self {
-        Self {
-            kind: DvrStatusNotifierCleanupDiagnosticKind::WorkerTerminal,
-            phase: DvrPostCommitNotificationPhase::StatusNotifierRuntimeFailure,
-            object_id: Some(object_id),
-            generation: Some(generation),
+        Self::WorkerTerminal {
+            object_id,
+            generation,
             result,
         }
     }
@@ -504,12 +538,52 @@ impl DvrStatusNotifierCleanupDiagnosticRecord {
         generation: AidlObjectGeneration,
         result: Result<(), HalError>,
     ) -> Self {
-        Self {
-            kind: DvrStatusNotifierCleanupDiagnosticKind::SupersedeCleanup,
-            phase: DvrPostCommitNotificationPhase::StatusNotifierStop,
-            object_id: Some(object_id),
-            generation: Some(generation),
+        Self::SupersedeCleanup {
+            object_id,
+            generation,
             result,
+        }
+    }
+
+
+    pub const fn kind(&self) -> DvrStatusNotifierCleanupDiagnosticKind {
+        match self {
+            Self::ResetStoreRecoveredAfterPoison { .. } => {
+                DvrStatusNotifierCleanupDiagnosticKind::ResetStoreRecoveredAfterPoison
+            }
+            Self::ResetNotifierCleanup { .. } => {
+                DvrStatusNotifierCleanupDiagnosticKind::ResetNotifierCleanup
+            }
+            Self::WorkerTerminal { .. } => DvrStatusNotifierCleanupDiagnosticKind::WorkerTerminal,
+            Self::SupersedeCleanup { .. } => {
+                DvrStatusNotifierCleanupDiagnosticKind::SupersedeCleanup
+            }
+        }
+    }
+
+    pub const fn phase(&self) -> DvrPostCommitNotificationPhase {
+        match self {
+            Self::WorkerTerminal { .. } => {
+                DvrPostCommitNotificationPhase::StatusNotifierRuntimeFailure
+            }
+            Self::ResetStoreRecoveredAfterPoison { .. }
+            | Self::ResetNotifierCleanup { .. }
+            | Self::SupersedeCleanup { .. }
+            => {
+                DvrPostCommitNotificationPhase::StatusNotifierStop
+            }
+        }
+    }
+
+    pub fn result(&self) -> Result<(), &HalError> {
+        match self {
+            Self::ResetStoreRecoveredAfterPoison { error } => Err(error),
+            Self::ResetNotifierCleanup { result, .. }
+            | Self::WorkerTerminal { result, .. }
+            | Self::SupersedeCleanup { result, .. }
+            => {
+                result.as_ref().map(|_| ()).map_err(|error| error)
+            }
         }
     }
 }
@@ -1032,6 +1106,205 @@ impl Default for SharedCallbackArtifactRuntimeSplitDiagnostics {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DvrPlaybackPipelineDiagnosticSummary {
+    pub accepted_packets: usize,
+    pub dropped_packets: usize,
+    pub malformed_packets: usize,
+    pub drop_reasons: Vec<PipelineDropReason>,
+    pub assembly_suppression_reasons: Vec<PipelineAssemblySuppressionReason>,
+    pub delivery_actions: Vec<PipelineDeliveryAction>,
+    pub diagnostics: Vec<PipelineDiagnostic>,
+}
+
+impl DvrPlaybackPipelineDiagnosticSummary {
+    pub fn from_report(report: &PipelineReport) -> Self {
+        Self {
+            accepted_packets: report.accepted_packets,
+            dropped_packets: report.dropped_packets,
+            malformed_packets: report.malformed_packets,
+            drop_reasons: report.drop_reasons.clone(),
+            assembly_suppression_reasons: report.assembly_suppression_reasons.clone(),
+            delivery_actions: report.delivery_actions.clone(),
+            diagnostics: report.diagnostics.clone(),
+        }
+    }
+
+    pub fn is_anomalous(&self) -> bool {
+        self.dropped_packets != 0
+            || self.malformed_packets != 0
+            || !self.drop_reasons.is_empty()
+            || !self.assembly_suppression_reasons.is_empty()
+            || !self.diagnostics.is_empty()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DvrPlaybackPacketFailurePhase {
+    RegistryLifecycle,
+    DescramblerResolution,
+    PacketValidation,
+    PipelineDelivery,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DvrPlaybackPacketFailureOutcome {
+    pub packet_index: usize,
+    pub pid: Option<u16>,
+    pub phase: DvrPlaybackPacketFailurePhase,
+    pub error: HalError,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DvrPlaybackConsumeDiagnosticRecord {
+    pub object_id: AidlObjectId,
+    pub generation: AidlObjectGeneration,
+    pub total_bytes_read: u64,
+    pub total_completed_packets: u64,
+    pub total_malformed_bytes: u64,
+    pub consume_count: u64,
+    pub data_consumed_wake_failure_count: u64,
+    pub total_packet_transaction_failures: u64,
+    pub last_packet_transaction_failures: Vec<DvrPlaybackPacketFailureOutcome>,
+    pub last_packet_transaction_failure_omitted_count: u64,
+    pub last_anomalous_pipeline_reports: Vec<DvrPlaybackPipelineDiagnosticSummary>,
+    pub last_anomalous_pipeline_report_omitted_count: u64,
+}
+
+impl DvrPlaybackConsumeDiagnosticRecord {
+    pub fn new(object_id: AidlObjectId, generation: AidlObjectGeneration) -> Self {
+        Self {
+            object_id,
+            generation,
+            total_bytes_read: 0,
+            total_completed_packets: 0,
+            total_malformed_bytes: 0,
+            consume_count: 0,
+            data_consumed_wake_failure_count: 0,
+            total_packet_transaction_failures: 0,
+            last_packet_transaction_failures: Vec::new(),
+            last_packet_transaction_failure_omitted_count: 0,
+            last_anomalous_pipeline_reports: Vec::new(),
+            last_anomalous_pipeline_report_omitted_count: 0,
+        }
+    }
+
+    pub fn record(
+        &mut self,
+        report: &maleicacid_tuner_hal2_demux::PlaybackConsumeReport,
+        packet_failures: &[DvrPlaybackPacketFailureOutcome],
+    ) {
+        self.total_bytes_read = self
+            .total_bytes_read
+            .saturating_add(u64::try_from(report.bytes_read).unwrap_or(u64::MAX));
+        self.total_completed_packets = self
+            .total_completed_packets
+            .saturating_add(u64::try_from(report.completed_packets).unwrap_or(u64::MAX));
+        self.total_malformed_bytes = self
+            .total_malformed_bytes
+            .saturating_add(u64::try_from(report.malformed_bytes).unwrap_or(u64::MAX));
+        self.consume_count = self.consume_count.saturating_add(1);
+        if report.data_consumed_wake_failed {
+            self.data_consumed_wake_failure_count =
+                self.data_consumed_wake_failure_count.saturating_add(1);
+        }
+        self.total_packet_transaction_failures = self
+            .total_packet_transaction_failures
+            .saturating_add(u64::try_from(packet_failures.len()).unwrap_or(u64::MAX));
+        const MAX_PACKET_FAILURES_PER_RECORD: usize = 64;
+        const MAX_ANOMALOUS_REPORTS_PER_RECORD: usize = 64;
+        if !packet_failures.is_empty() {
+            self.last_packet_transaction_failures = packet_failures
+                .iter()
+                .take(MAX_PACKET_FAILURES_PER_RECORD)
+                .cloned()
+                .collect();
+            self.last_packet_transaction_failure_omitted_count = u64::try_from(
+                packet_failures.len().saturating_sub(MAX_PACKET_FAILURES_PER_RECORD),
+            )
+            .unwrap_or(u64::MAX);
+        }
+        let anomalous_reports: Vec<_> = report
+            .packet_reports
+            .iter()
+            .map(DvrPlaybackPipelineDiagnosticSummary::from_report)
+            .filter(DvrPlaybackPipelineDiagnosticSummary::is_anomalous)
+            .take(MAX_ANOMALOUS_REPORTS_PER_RECORD)
+            .collect();
+        let total_anomalous_reports = report
+            .packet_reports
+            .iter()
+            .map(DvrPlaybackPipelineDiagnosticSummary::from_report)
+            .filter(DvrPlaybackPipelineDiagnosticSummary::is_anomalous)
+            .count();
+        if !anomalous_reports.is_empty() {
+            self.last_anomalous_pipeline_reports = anomalous_reports;
+            self.last_anomalous_pipeline_report_omitted_count = u64::try_from(
+                total_anomalous_reports.saturating_sub(MAX_ANOMALOUS_REPORTS_PER_RECORD),
+            )
+            .unwrap_or(u64::MAX);
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DvrPlaybackWorkerCleanupOperation {
+    Replacement,
+    PublicStop,
+    ObjectClose,
+    ServiceReset,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DvrPlaybackWorkerCleanupPhase {
+    AttemptIdAllocation,
+    LifecycleLock,
+    StoreAccess,
+    DiagnosticRecord,
+    Wake,
+    Join,
+    Terminal,
+    AttemptComplete,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DvrPlaybackWorkerCleanupTarget {
+    Worker {
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    },
+    Store,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DvrPlaybackWorkerCleanupStepOutcome {
+    pub attempt_id: Option<u64>,
+    pub operation: DvrPlaybackWorkerCleanupOperation,
+    pub target: DvrPlaybackWorkerCleanupTarget,
+    pub phase: DvrPlaybackWorkerCleanupPhase,
+    pub expected_step_count: Option<u16>,
+    pub result: Result<(), HalError>,
+}
+
+impl CleanupExecutionStepOutcome for DvrPlaybackWorkerCleanupStepOutcome {
+    type Failure = HalError;
+
+    fn result(&self) -> Result<(), Self::Failure> {
+        self.result.clone()
+    }
+
+    fn into_result(self) -> Result<(), Self::Failure> {
+        self.result
+    }
+}
+
+pub type DvrPlaybackWorkerCleanupExecutionReport =
+    CleanupExecutionReport<DvrPlaybackWorkerCleanupStepOutcome, HalError>;
+pub type DvrPlaybackWorkerCleanupDiagnosticSnapshot =
+    CleanupExecutionDiagnosticSnapshot<DvrPlaybackWorkerCleanupStepOutcome>;
+pub type SharedDvrPlaybackWorkerCleanupDiagnostics =
+    SharedCleanupDiagnostics<DvrPlaybackWorkerCleanupStepOutcome>;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CallbackArtifactRuntimeSplitPhase {
     OwnerCleanupFinish,
@@ -1059,6 +1332,14 @@ pub enum CallbackArtifactRuntimeSplitOutcome {
     RuntimeRegistryMissing,
     ServiceBootDvrNotifierFailure {
         error: HalError,
+    },
+    ServiceBootPlaybackWorkerStep {
+        attempt_id: Option<u64>,
+        operation: DvrPlaybackWorkerCleanupOperation,
+        target: DvrPlaybackWorkerCleanupTarget,
+        phase: DvrPlaybackWorkerCleanupPhase,
+        expected_step_count: Option<u16>,
+        result: Result<(), HalError>,
     },
     ServiceBootCallbackArtifactFailure {
         error: HalError,
@@ -1105,6 +1386,7 @@ impl CallbackArtifactRuntimeSplitOutcome {
 
     pub fn service_boot_reset_from_attempt_results(
         dvr_notifier_result: Result<(), HalError>,
+        playback_worker_report: DvrPlaybackWorkerCleanupExecutionReport,
         callback_artifact_result: Result<(), HalError>,
         drop_leak_result: Result<(), HalError>,
         callback_fallback_clear_result: Result<(), HalError>,
@@ -1114,6 +1396,16 @@ impl CallbackArtifactRuntimeSplitOutcome {
         let mut outcomes = Vec::new();
         if let Err(error) = dvr_notifier_result {
             outcomes.push(Self::ServiceBootDvrNotifierFailure { error });
+        }
+        for worker_outcome in playback_worker_report.outcomes().iter().cloned() {
+            outcomes.push(Self::ServiceBootPlaybackWorkerStep {
+                attempt_id: worker_outcome.attempt_id,
+                operation: worker_outcome.operation,
+                target: worker_outcome.target,
+                phase: worker_outcome.phase,
+                expected_step_count: worker_outcome.expected_step_count,
+                result: worker_outcome.result,
+            });
         }
         if let Err(error) = callback_artifact_result {
             outcomes.push(Self::ServiceBootCallbackArtifactFailure { error });
@@ -1342,6 +1634,7 @@ pub enum DemuxTransactionDiagnosticKind {
     FilterConfigure,
     DvrConfigure,
     FilterRuntimeOperation,
+    DvrFlush,
 }
 
 pub type StartupDiagnosticSnapshot = DiagnosticSnapshot<StartupDiagnosticRecord>;
@@ -1470,13 +1763,19 @@ impl FrontendCallbackDeliveryDiagnosticSnapshot {
 pub struct DemuxTransactionDiagnosticSnapshot {
     records: Vec<DemuxTransactionDiagnosticRecord>,
     dropped_count: u64,
+    rollback_token_drop_failure_count: u64,
 }
 
 impl DemuxTransactionDiagnosticSnapshot {
-    pub(crate) fn new(records: Vec<DemuxTransactionDiagnosticRecord>, dropped_count: u64) -> Self {
+    pub(crate) fn new(
+        records: Vec<DemuxTransactionDiagnosticRecord>,
+        dropped_count: u64,
+        rollback_token_drop_failure_count: u64,
+    ) -> Self {
         Self {
             records,
             dropped_count,
+            rollback_token_drop_failure_count,
         }
     }
 
@@ -1487,15 +1786,26 @@ impl DemuxTransactionDiagnosticSnapshot {
     pub const fn dropped_count(&self) -> u64 {
         self.dropped_count
     }
+
+    pub const fn rollback_token_drop_failure_count(&self) -> u64 {
+        self.rollback_token_drop_failure_count
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DemuxTransactionDiagnosticRecord {
-    SourceBoundary {
+    SourceBoundaryConnect {
         diagnostic_id: DemuxTransactionDiagnosticId,
         demux_id: i32,
         sink_filter_id: i32,
-        source_filter_id: Option<i32>,
+        source_filter_id: i32,
+        report: SourceBoundaryReport,
+        error: HalError,
+    },
+    SourceBoundaryDisconnect {
+        diagnostic_id: DemuxTransactionDiagnosticId,
+        demux_id: i32,
+        sink_filter_id: i32,
         report: SourceBoundaryReport,
         error: HalError,
     },
@@ -1520,6 +1830,13 @@ pub enum DemuxTransactionDiagnosticRecord {
         report: maleicacid_tuner_hal2_demux::FilterRuntimeOperationReport,
         error: HalError,
     },
+    DvrFlush {
+        diagnostic_id: DemuxTransactionDiagnosticId,
+        demux_id: i32,
+        dvr_id: i32,
+        report: maleicacid_tuner_hal2_demux::DvrFlushReport,
+        error: HalError,
+    },
 }
 
 impl DemuxTransactionDiagnosticRecord {
@@ -1529,15 +1846,27 @@ impl DemuxTransactionDiagnosticRecord {
         report: SourceBoundaryReport,
         error: HalError,
     ) -> Self {
-        let sink_filter_id = report.sink_filter_id();
-        let source_filter_id = report.source_filter_id();
-        Self::SourceBoundary {
-            diagnostic_id,
-            demux_id,
-            sink_filter_id,
-            source_filter_id,
-            report,
-            error,
+        match report.target() {
+            SourceBoundaryTarget::Connect {
+                sink_filter_id,
+                source_filter_id,
+            } => Self::SourceBoundaryConnect {
+                diagnostic_id,
+                demux_id,
+                sink_filter_id,
+                source_filter_id,
+                report,
+                error,
+            },
+            SourceBoundaryTarget::Disconnect { sink_filter_id } => {
+                Self::SourceBoundaryDisconnect {
+                    diagnostic_id,
+                    demux_id,
+                    sink_filter_id,
+                    report,
+                    error,
+                }
+            }
         }
     }
 
@@ -1589,23 +1918,45 @@ impl DemuxTransactionDiagnosticRecord {
         }
     }
 
+    pub fn dvr_flush(
+        diagnostic_id: DemuxTransactionDiagnosticId,
+        demux_id: i32,
+        dvr_id: i32,
+        report: maleicacid_tuner_hal2_demux::DvrFlushReport,
+        error: HalError,
+    ) -> Self {
+        Self::DvrFlush {
+            diagnostic_id,
+            demux_id,
+            dvr_id,
+            report,
+            error,
+        }
+    }
+
     pub const fn diagnostic_id(&self) -> DemuxTransactionDiagnosticId {
         match self {
-            Self::SourceBoundary { diagnostic_id, .. }
+            Self::SourceBoundaryConnect { diagnostic_id, .. }
+            | Self::SourceBoundaryDisconnect { diagnostic_id, .. }
             | Self::FilterConfigure { diagnostic_id, .. }
             | Self::DvrConfigure { diagnostic_id, .. }
-            | Self::FilterRuntimeOperation { diagnostic_id, .. } => *diagnostic_id,
+            | Self::FilterRuntimeOperation { diagnostic_id, .. }
+            | Self::DvrFlush { diagnostic_id, .. } => *diagnostic_id,
         }
     }
 
     pub const fn kind(&self) -> DemuxTransactionDiagnosticKind {
         match self {
-            Self::SourceBoundary { .. } => DemuxTransactionDiagnosticKind::SourceBoundary,
+            Self::SourceBoundaryConnect { .. }
+            | Self::SourceBoundaryDisconnect { .. } => {
+                DemuxTransactionDiagnosticKind::SourceBoundary
+            },
             Self::FilterConfigure { .. } => DemuxTransactionDiagnosticKind::FilterConfigure,
             Self::DvrConfigure { .. } => DemuxTransactionDiagnosticKind::DvrConfigure,
             Self::FilterRuntimeOperation { .. } => {
                 DemuxTransactionDiagnosticKind::FilterRuntimeOperation
             }
+            Self::DvrFlush { .. } => DemuxTransactionDiagnosticKind::DvrFlush,
         }
     }
 }

@@ -8,7 +8,7 @@ use maleicacid_tuner_hal2_common::{FrontendTuneRequest, HalError, HalInternalKin
 use super::FrontendWorkerCancelReason;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FrontendScanPhase {
+pub(super) enum FrontendScanPhase {
     Running,
     Completed,
     Cancelled,
@@ -18,11 +18,11 @@ pub enum FrontendScanPhase {
 }
 
 impl FrontendScanPhase {
-    pub const fn is_terminal(self) -> bool {
+    pub(super) const fn is_terminal(self) -> bool {
         !matches!(self, Self::Running)
     }
 
-    pub const fn is_failed(self) -> bool {
+    pub(super) const fn is_failed(self) -> bool {
         matches!(
             self,
             Self::FailedBackend | Self::FailedCallback | Self::FailedPanic
@@ -31,7 +31,7 @@ impl FrontendScanPhase {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FrontendScanTerminalReason {
+pub(super) enum FrontendScanTerminalReason {
     End,
     StopRequested,
     SupersededByNewRequest,
@@ -52,7 +52,7 @@ impl From<FrontendWorkerCancelReason> for FrontendScanTerminalReason {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FrontendScanSession {
+pub(super) struct FrontendScanSession {
     generation: u64,
     fingerprint: String,
     candidates: Vec<FrontendTuneRequest>,
@@ -62,7 +62,7 @@ pub struct FrontendScanSession {
 }
 
 impl FrontendScanSession {
-    pub fn start(
+    pub(super) fn start(
         generation: u64,
         fingerprint: impl Into<String>,
         candidates: Vec<FrontendTuneRequest>,
@@ -89,33 +89,33 @@ impl FrontendScanSession {
         })
     }
 
-    pub const fn generation(&self) -> u64 {
+    pub(super) const fn generation(&self) -> u64 {
         self.generation
     }
-    pub fn fingerprint(&self) -> &str {
+    pub(super) fn fingerprint(&self) -> &str {
         &self.fingerprint
     }
-    pub const fn phase(&self) -> FrontendScanPhase {
+    pub(super) const fn phase(&self) -> FrontendScanPhase {
         self.phase
     }
-    pub const fn terminal_reason(&self) -> Option<FrontendScanTerminalReason> {
+    pub(super) const fn terminal_reason(&self) -> Option<FrontendScanTerminalReason> {
         self.terminal_reason
     }
-    pub const fn current_index(&self) -> usize {
+    pub(super) const fn current_index(&self) -> usize {
         self.current_index
     }
-    pub fn candidates(&self) -> &[FrontendTuneRequest] {
+    pub(super) fn candidates(&self) -> &[FrontendTuneRequest] {
         &self.candidates
     }
 
-    pub fn current_candidate(&self) -> Option<&FrontendTuneRequest> {
+    pub(super) fn current_candidate(&self) -> Option<&FrontendTuneRequest> {
         if self.phase.is_terminal() {
             return None;
         }
         self.candidates.get(self.current_index)
     }
 
-    pub fn advance_after_candidate(&mut self) -> Result<Option<&FrontendTuneRequest>, HalError> {
+    pub(super) fn advance_after_candidate(&mut self) -> Result<Option<&FrontendTuneRequest>, HalError> {
         self.ensure_running()?;
         let next = self.current_index.checked_add(1).ok_or_else(|| {
             HalError::internal(
@@ -131,7 +131,7 @@ impl FrontendScanSession {
         Ok(self.candidates.get(self.current_index))
     }
 
-    pub fn cancel(&mut self, reason: FrontendWorkerCancelReason) {
+    pub(super) fn cancel(&mut self, reason: FrontendWorkerCancelReason) {
         if self.phase.is_failed() {
             return;
         }
@@ -139,22 +139,22 @@ impl FrontendScanSession {
         self.terminal_reason = Some(reason.into());
     }
 
-    pub fn fail_backend(&mut self) {
+    pub(super) fn fail_backend(&mut self) {
         self.phase = FrontendScanPhase::FailedBackend;
         self.terminal_reason = Some(FrontendScanTerminalReason::BackendFailure);
     }
 
-    pub fn fail_callback(&mut self) {
+    pub(super) fn fail_callback(&mut self) {
         self.phase = FrontendScanPhase::FailedCallback;
         self.terminal_reason = Some(FrontendScanTerminalReason::CallbackFailure);
     }
 
-    pub fn fail_panic_or_join(&mut self) {
+    pub(super) fn fail_panic_or_join(&mut self) {
         self.phase = FrontendScanPhase::FailedPanic;
         self.terminal_reason = Some(FrontendScanTerminalReason::PanicOrJoinFailure);
     }
 
-    pub fn complete(&mut self) {
+    pub(super) fn complete(&mut self) {
         if self.phase.is_failed() {
             return;
         }

@@ -1,11 +1,17 @@
 use super::{
     AidlObjectGeneration, AidlObjectId, AidlObjectKind, DemuxRuntimeId, DemuxRuntimeRollbackToken,
     DvrRuntimeId, FilterOpenType, FilterRuntimeId, FrontendLiveReaderDescriptor, FrontendRuntimeId,
-    FrontendRuntimeSnapshot, HalError, HalInternalKind, HalInvalidArgumentKind,
+    FrontendRuntimeRollbackToken, HalError, HalInternalKind, HalInvalidArgumentKind,
     HalInvalidStateKind, LnbRuntimeId, RuntimeObjectTable, RuntimeObjectTableError,
     RuntimeOwnerRelation, RuntimeRegistry, TunerServiceRuntime,
 };
+use crate::frontend_worker_txn::{
+    BoundDemuxRollbackExecutionReport, BoundDemuxRollbackPhase,
+    BoundDemuxRollbackPreparation, BoundDemuxRollbackPreparationFailure,
+    BoundDemuxRollbackStepOutcome,
+};
 use crate::object_method_txn::ObjectFrontendStatusSnapshot;
+use maleicacid_tuner_hal2_common::compose_primary_cleanup_failure;
 use maleicacid_tuner_hal2_demux::{
     DemuxRuntimeRollbackTokenPrepareRequest, DvrRuntimeState, DvrStatusEvent,
     QueueDescriptorExportPlan as DemuxQueueDescriptorExportPlan, QueueDescriptorExportTarget,
@@ -197,13 +203,28 @@ impl RuntimeObjectPublicEntry {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DvrStatusPollSnapshot {
-    pub event: Option<DvrStatusEvent>,
-    pub interval_ms: u64,
-    pub started: bool,
-    pub callback_present: bool,
-    pub callback_unhealthy: bool,
-    pub status_reporting_enabled: bool,
+pub struct DvrStatusReadySnapshot {
+    event: Option<DvrStatusEvent>,
+    interval_ms: u64,
+}
+
+impl DvrStatusReadySnapshot {
+    pub const fn event(self) -> Option<DvrStatusEvent> {
+        self.event
+    }
+
+    pub const fn interval_ms(self) -> u64 {
+        self.interval_ms
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DvrStatusPollSnapshot {
+    Ready(DvrStatusReadySnapshot),
+    NotStarted,
+    CallbackMissing,
+    CallbackUnhealthy,
+    StatusReportingDisabled,
 }
 
 pub(crate) struct RuntimeQuery<'a> {
@@ -219,30 +240,121 @@ impl TunerServiceRuntime {
         }
     }
 
+    pub(crate) fn bound_demux_runtime_rollback_tokens_match(
+        &self,
+        tokens: &[(DemuxRuntimeId, DemuxRuntimeRollbackToken)],
+    ) -> Result<bool, HalError> {
+        for (demux_id, token) in tokens {
+            let Some(demux) = self.registry.demux_runtime(*demux_id) else {
+                return Ok(false);
+            };
+            if !demux
+                .matches_rollback_token(token)
+                .map_err(super::demux_runtime_error_to_hal)?
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     pub(crate) fn prepare_bound_demux_runtime_rollback_tokens(
         &mut self,
         frontend_id: i32,
-    ) -> Result<Vec<(DemuxRuntimeId, DemuxRuntimeRollbackToken)>, HalError> {
+    ) -> Result<BoundDemuxRollbackPreparation, BoundDemuxRollbackPreparationFailure> {
         let frontend_key = FrontendRuntimeId(frontend_id);
         let demux_ids = self.registry.frontend_bound_demux_ids(frontend_key);
         let mut tokens = Vec::with_capacity(demux_ids.len());
+        let mut report = BoundDemuxRollbackExecutionReport::new();
+        let mut primary_error = None;
+
         for demux_id in demux_ids {
-            let demux = self.registry.demux_runtime_mut(demux_id).ok_or_else(|| {
-                HalError::invalid_state(
-                    HalInvalidStateKind::InvalidLifecycle,
-                    "bound demux runtime is missing while preparing tune rollback token",
-                )
-            })?;
-            tokens.push((
-                demux_id,
-                demux
+            let prepare_result = match self.registry.demux_runtime_mut(demux_id) {
+                Some(demux) => demux
                     .rollback_token_from_typed_request(
                         DemuxRuntimeRollbackTokenPrepareRequest::new(demux_id.0),
                     )
-                    .map_err(super::demux_runtime_error_to_hal)?,
-            ));
+                    .map_err(super::demux_runtime_error_to_hal),
+                None => Err(HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    format!(
+                        "bound demux runtime is missing while preparing tune rollback token: demux_id={}",
+                        demux_id.0
+                    ),
+                )),
+            };
+            match prepare_result {
+                Ok(token) => {
+                    report.push(BoundDemuxRollbackStepOutcome {
+                        target: crate::frontend_worker_txn::BoundDemuxRollbackTarget::Demux(demux_id.0),
+                        phase: BoundDemuxRollbackPhase::PrepareAuthority,
+                        result: Ok(()),
+                    });
+                    tokens.push((demux_id, token));
+                }
+                Err(error) => {
+                    if primary_error.is_none() {
+                        primary_error = Some(error.clone());
+                    }
+                    report.push(BoundDemuxRollbackStepOutcome {
+                        target: crate::frontend_worker_txn::BoundDemuxRollbackTarget::Demux(demux_id.0),
+                        phase: BoundDemuxRollbackPhase::PrepareAuthority,
+                        result: Err(error),
+                    });
+                }
+            }
         }
-        Ok(tokens)
+
+        let Some(primary_error) = primary_error else {
+            return Ok(BoundDemuxRollbackPreparation::new(tokens, report));
+        };
+
+        for (demux_id, token) in tokens {
+            let discard_result = token
+                .discard_without_runtime()
+                .map_err(super::demux_runtime_error_to_hal);
+            report.push(BoundDemuxRollbackStepOutcome {
+                target: crate::frontend_worker_txn::BoundDemuxRollbackTarget::Demux(demux_id.0),
+                phase: BoundDemuxRollbackPhase::DiscardAuthority,
+                result: discard_result,
+            });
+        }
+        let error = match crate::frontend_worker_txn::first_bound_demux_error_for_phase(&report, BoundDemuxRollbackPhase::DiscardAuthority) {
+            Some(cleanup_error) => compose_primary_cleanup_failure(
+                "bound demux rollback authority preparation failed and authority discard failed",
+                primary_error,
+                cleanup_error,
+            ),
+            None => primary_error,
+        };
+        Err(BoundDemuxRollbackPreparationFailure::new(error, report))
+    }
+
+    pub(crate) fn discard_bound_demux_rollback_preparation(
+        &mut self,
+        preparation: BoundDemuxRollbackPreparation,
+        primary_error: HalError,
+    ) -> BoundDemuxRollbackPreparationFailure {
+        let (tokens, mut report) = preparation.into_parts();
+        for (demux_id, token) in tokens {
+            let discard_result = token
+                .discard_without_runtime()
+                .map_err(super::demux_runtime_error_to_hal);
+            report.push(BoundDemuxRollbackStepOutcome {
+                target: crate::frontend_worker_txn::BoundDemuxRollbackTarget::Demux(demux_id.0),
+                phase: BoundDemuxRollbackPhase::DiscardAuthority,
+                result: discard_result,
+            });
+        }
+        let error = match crate::frontend_worker_txn::first_bound_demux_error_for_phase(&report, BoundDemuxRollbackPhase::DiscardAuthority) {
+            Some(cleanup_error) => compose_primary_cleanup_failure(
+                "frontend rollback authority preparation failed and bound demux authority discard failed",
+                primary_error,
+                cleanup_error,
+            ),
+            None => primary_error,
+        };
+        BoundDemuxRollbackPreparationFailure::new(error, report)
     }
 
     pub(crate) fn has_frontend_id(&self, id: i32) -> bool {
@@ -475,26 +587,28 @@ impl<'a> RuntimeQuery<'a> {
                 "DVR runtime is missing for DVR status poll",
             )
         })?;
-        let started = matches!(dvr.state, DvrRuntimeState::Started);
-        let callback_unhealthy = dvr.callback_unhealthy;
-        let event = if started && !callback_unhealthy {
-            demux.dvr_status_event(dvr_id).map_err(|_| {
-                HalError::invalid_state(
-                    HalInvalidStateKind::InvalidLifecycle,
-                    "DVR status event is not available",
-                )
-            })?
-        } else {
-            None
-        };
-        Ok(DvrStatusPollSnapshot {
+        if !matches!(dvr.state, DvrRuntimeState::Started) {
+            return Ok(DvrStatusPollSnapshot::NotStarted);
+        }
+        if !dvr.callback_present {
+            return Ok(DvrStatusPollSnapshot::CallbackMissing);
+        }
+        if dvr.callback_unhealthy {
+            return Ok(DvrStatusPollSnapshot::CallbackUnhealthy);
+        }
+        if dvr.status_mask == 0 {
+            return Ok(DvrStatusPollSnapshot::StatusReportingDisabled);
+        }
+        let event = demux.dvr_status_event(dvr_id).map_err(|_| {
+            HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "DVR status event is not available",
+            )
+        })?;
+        Ok(DvrStatusPollSnapshot::Ready(DvrStatusReadySnapshot {
             event,
             interval_ms: dvr.status_check_interval_ms,
-            started,
-            callback_present: dvr.callback_present,
-            callback_unhealthy,
-            status_reporting_enabled: dvr.status_mask != 0,
-        })
+        }))
     }
 
     pub(crate) fn public_entry_for_aidl_object(
@@ -588,11 +702,11 @@ impl<'a> RuntimeQuery<'a> {
                     "frontend runtime is missing for advertised frontend",
                 )
             })?;
-        let snapshot = runtime.snapshot();
+        let snapshot = runtime.query().status_snapshot();
         Ok(ObjectFrontendStatusSnapshot {
             lnb_profile: entry.lnb_profile,
-            runtime_state: snapshot.state,
-            signal_state: snapshot.signal_state,
+            runtime_state: snapshot.state(),
+            signal_state: snapshot.signal_state(),
         })
     }
 
@@ -629,10 +743,11 @@ impl<'a> RuntimeQuery<'a> {
             .cloned()
     }
 
-    pub(crate) fn frontend_runtime_snapshot(
+    pub(crate) fn frontend_runtime_matches_rollback_token(
         &self,
         frontend_id: i32,
-    ) -> Result<FrontendRuntimeSnapshot, HalError> {
+        token: &FrontendRuntimeRollbackToken,
+    ) -> Result<bool, HalError> {
         let runtime = self
             .registry
             .frontend_runtime(crate::registry::FrontendRuntimeId(frontend_id))
@@ -642,7 +757,7 @@ impl<'a> RuntimeQuery<'a> {
                     "frontend runtime is missing for advertised frontend",
                 )
             })?;
-        Ok(runtime.snapshot())
+        Ok(runtime.query().matches_rollback_token(token))
     }
 
     pub(crate) fn bound_demux_runtime_generations(
@@ -659,7 +774,7 @@ impl<'a> RuntimeQuery<'a> {
                     "bound demux runtime is missing while reading tune rollback generation",
                 )
             })?;
-            generations.push((demux_id, demux.snapshot().generation()));
+            generations.push((demux_id, demux.generation()));
         }
         Ok(generations)
     }
@@ -691,8 +806,7 @@ impl<'a> RuntimeQuery<'a> {
                 )
             })?;
         runtime
-            .live_reader_descriptor()
-            .cloned()
+            .query().live_reader_descriptor_for_live_pump()
             .map(Some)
             .ok_or_else(|| {
                 HalError::invalid_state(
@@ -720,7 +834,7 @@ impl<'a> RuntimeQuery<'a> {
     ) -> Result<Option<i32>, HalError> {
         let demux_id =
             self.public_runtime_id_for_object_method(object_id, generation, AidlObjectKind::Demux)?;
-        Ok(self.first_pcr_filter_id_for_demux(demux_id))
+        self.first_pcr_filter_id_for_demux(demux_id)
     }
 
     pub(crate) fn ensure_media_filter_for_demux_object(
@@ -777,42 +891,71 @@ impl<'a> RuntimeQuery<'a> {
     ) -> Result<bool, HalError> {
         let demux_id =
             self.public_runtime_id_for_object_method(object_id, generation, AidlObjectKind::Demux)?;
-        Ok(self.is_live_pcr_filter_for_demux(demux_id, filter_id))
+        self.is_live_pcr_filter_for_demux(demux_id, filter_id)
     }
 
-    pub(crate) fn first_pcr_filter_id_for_demux(&self, demux_id: i32) -> Option<i32> {
-        let demux = self.registry.demux_runtime(DemuxRuntimeId(demux_id))?;
-        self.registry
-            .filters_for_demux(demux_id)
-            .into_iter()
-            .map(|entry| entry.id.0)
-            .find(|filter_id| {
-                demux
-                    .filter_snapshot(*filter_id)
-                    .map(|snapshot| {
-                        snapshot.open_type == FilterOpenType::TsPcr
-                            && !snapshot.state.is_closed_or_failed()
-                    })
-                    .unwrap_or(false)
-            })
+    pub(crate) fn first_pcr_filter_id_for_demux(
+        &self,
+        demux_id: i32,
+    ) -> Result<Option<i32>, HalError> {
+        let demux = self
+            .registry
+            .demux_runtime(DemuxRuntimeId(demux_id))
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    format!("PCR query demux runtime is missing: demux_id={demux_id}"),
+                )
+            })?;
+        for entry in self.registry.filters_for_demux(demux_id) {
+            let filter_id = entry.id.0;
+            let snapshot = demux.filter_snapshot(filter_id).map_err(|error| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    format!(
+                        "PCR query filter snapshot failed: demux_id={demux_id} filter_id={filter_id} error={error:?}"
+                    ),
+                )
+            })?;
+            if snapshot.open_type == FilterOpenType::TsPcr
+                && !snapshot.state.is_closed_or_failed()
+            {
+                return Ok(Some(filter_id));
+            }
+        }
+        Ok(None)
     }
 
-    pub(crate) fn is_live_pcr_filter_for_demux(&self, demux_id: i32, filter_id: i32) -> bool {
+    pub(crate) fn is_live_pcr_filter_for_demux(
+        &self,
+        demux_id: i32,
+        filter_id: i32,
+    ) -> Result<bool, HalError> {
         let Some(entry) = self.registry.filter(FilterRuntimeId(filter_id)) else {
-            return false;
+            return Ok(false);
         };
         if entry.owner_demux_id != demux_id {
-            return false;
+            return Ok(false);
         }
-        let Some(demux) = self.registry.demux_runtime(DemuxRuntimeId(demux_id)) else {
-            return false;
-        };
-        demux
-            .filter_snapshot(filter_id)
-            .map(|snapshot| {
-                snapshot.open_type == FilterOpenType::TsPcr && !snapshot.state.is_closed_or_failed()
-            })
-            .unwrap_or(false)
+        let demux = self
+            .registry
+            .demux_runtime(DemuxRuntimeId(demux_id))
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    format!("PCR query demux runtime is missing: demux_id={demux_id}"),
+                )
+            })?;
+        let snapshot = demux.filter_snapshot(filter_id).map_err(|error| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                format!(
+                    "PCR query filter snapshot failed: demux_id={demux_id} filter_id={filter_id} error={error:?}"
+                ),
+            )
+        })?;
+        Ok(snapshot.open_type == FilterOpenType::TsPcr
+            && !snapshot.state.is_closed_or_failed())
     }
 
     pub(crate) fn ensure_frontend_demux_sink_ready(

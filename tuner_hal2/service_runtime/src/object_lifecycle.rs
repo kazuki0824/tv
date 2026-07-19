@@ -6,7 +6,7 @@ use maleicacid_tuner_hal2_common::{HalError, HalInternalKind, HalInvalidStateKin
 use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AidlObjectCloseability {
+pub(crate) enum AidlObjectCloseability {
     BeginClose,
 }
 

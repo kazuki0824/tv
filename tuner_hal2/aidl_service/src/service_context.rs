@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
@@ -20,12 +20,14 @@ use maleicacid_tuner_hal2_service_runtime::{
     FrontendCallbackDeliveryDiagnosticRecord, FrontendCallbackDeliveryDiagnosticSnapshot,
     FrontendProbeOutcome, ObjectCleanupDiagnosticRecord, OwnerCallbackCleanupArtifactCommand,
     ServiceBootOutcome, SharedCallbackArtifactRuntimeSplitDiagnostics,
+    DvrPlaybackWorkerCleanupExecutionReport, SharedDvrPlaybackWorkerCleanupDiagnostics,
     SharedDvrPostCommitNotificationDiagnostics, SharedDvrStatusNotifierCleanupDiagnostics,
     SharedObjectCleanupDiagnostics, TunerServiceRuntime,
 };
 
 use crate::callback_store::{AidlCallbackStoreError, CallbackStore};
 use crate::dvr_callback_delivery::{DvrStatusNotifier, DvrStatusNotifierKey};
+use crate::dvr_playback_worker::DvrPlaybackWorkerMap;
 use crate::object_handle::AidlObjectHandle;
 
 const MAX_DROP_LEAK_ERROR_RECORDS: usize = 64;
@@ -72,12 +74,17 @@ pub type SharedAidlServiceContext = Arc<AidlServiceContext>;
 pub struct AidlServiceContext {
     runtime: SharedTunerRuntime,
     callback_store: Mutex<CallbackStore>,
+    dvr_status_notifier_lifecycle: Mutex<()>,
     dvr_status_notifiers: Mutex<BTreeMap<DvrStatusNotifierKey, DvrStatusNotifier>>,
+    dvr_playback_worker_lifecycle: Mutex<()>,
+    dvr_playback_workers: Mutex<DvrPlaybackWorkerMap>,
+    dvr_playback_worker_cleanup_next_attempt_id: AtomicU64,
     drop_leak_error_records: Mutex<BoundedDiagnosticStore<DropLeakErrorRecord>>,
     drop_leak_error_record_failures: AtomicUsize,
     callback_artifact_runtime_split_diagnostics: SharedCallbackArtifactRuntimeSplitDiagnostics,
     dvr_post_commit_notification_diagnostics: SharedDvrPostCommitNotificationDiagnostics,
     dvr_status_notifier_cleanup_diagnostics: SharedDvrStatusNotifierCleanupDiagnostics,
+    dvr_playback_worker_cleanup_diagnostics: SharedDvrPlaybackWorkerCleanupDiagnostics,
     object_cleanup_diagnostics: SharedObjectCleanupDiagnostics,
     filter_callback_delivery_fallback_diagnostics:
         Mutex<BoundedDiagnosticStore<FilterCallbackDeliveryDiagnosticRecord>>,
@@ -95,11 +102,17 @@ impl AidlServiceContext {
             runtime.dvr_post_commit_notification_diagnostic_sink();
         let dvr_status_notifier_cleanup_diagnostics =
             runtime.dvr_status_notifier_cleanup_diagnostic_sink();
+        let dvr_playback_worker_cleanup_diagnostics =
+            runtime.dvr_playback_worker_cleanup_diagnostic_sink();
         let object_cleanup_diagnostics = runtime.object_cleanup_diagnostic_sink();
         Self {
             runtime: Arc::new(Mutex::new(runtime)),
             callback_store: Mutex::new(CallbackStore::default()),
+            dvr_status_notifier_lifecycle: Mutex::new(()),
             dvr_status_notifiers: Mutex::new(BTreeMap::new()),
+            dvr_playback_worker_lifecycle: Mutex::new(()),
+            dvr_playback_workers: Mutex::new(BTreeMap::new()),
+            dvr_playback_worker_cleanup_next_attempt_id: AtomicU64::new(1),
             drop_leak_error_records: Mutex::new(BoundedDiagnosticStore::new(
                 MAX_DROP_LEAK_ERROR_RECORDS,
             )),
@@ -107,6 +120,7 @@ impl AidlServiceContext {
             callback_artifact_runtime_split_diagnostics,
             dvr_post_commit_notification_diagnostics,
             dvr_status_notifier_cleanup_diagnostics,
+            dvr_playback_worker_cleanup_diagnostics,
             object_cleanup_diagnostics,
             filter_callback_delivery_fallback_diagnostics: Mutex::new(
                 BoundedDiagnosticStore::default(),
@@ -131,6 +145,7 @@ impl AidlServiceContext {
             callback_artifact_runtime_split_diagnostics,
             dvr_post_commit_notification_diagnostics,
             dvr_status_notifier_cleanup_diagnostics,
+            dvr_playback_worker_cleanup_diagnostics,
             object_cleanup_diagnostics,
         ) = {
             let runtime_guard = runtime
@@ -140,13 +155,18 @@ impl AidlServiceContext {
                 runtime_guard.callback_artifact_runtime_split_diagnostic_sink(),
                 runtime_guard.dvr_post_commit_notification_diagnostic_sink(),
                 runtime_guard.dvr_status_notifier_cleanup_diagnostic_sink(),
+                runtime_guard.dvr_playback_worker_cleanup_diagnostic_sink(),
                 runtime_guard.object_cleanup_diagnostic_sink(),
             )
         };
         Arc::new(Self {
             runtime,
             callback_store: Mutex::new(CallbackStore::default()),
+            dvr_status_notifier_lifecycle: Mutex::new(()),
             dvr_status_notifiers: Mutex::new(BTreeMap::new()),
+            dvr_playback_worker_lifecycle: Mutex::new(()),
+            dvr_playback_workers: Mutex::new(BTreeMap::new()),
+            dvr_playback_worker_cleanup_next_attempt_id: AtomicU64::new(1),
             drop_leak_error_records: Mutex::new(BoundedDiagnosticStore::new(
                 MAX_DROP_LEAK_ERROR_RECORDS,
             )),
@@ -154,6 +174,7 @@ impl AidlServiceContext {
             callback_artifact_runtime_split_diagnostics,
             dvr_post_commit_notification_diagnostics,
             dvr_status_notifier_cleanup_diagnostics,
+            dvr_playback_worker_cleanup_diagnostics,
             object_cleanup_diagnostics,
             filter_callback_delivery_fallback_diagnostics: Mutex::new(
                 BoundedDiagnosticStore::default(),
@@ -173,7 +194,10 @@ impl AidlServiceContext {
     where
         I: IntoIterator<Item = FrontendProbeOutcome>,
     {
-        let dvr_notifier_result = crate::dvr_callback_delivery::stop_all_dvr_status_notifiers(self);
+        let playback_worker_report =
+            crate::dvr_playback_worker::stop_all_dvr_playback_workers(self);
+        let dvr_notifier_result =
+            crate::dvr_callback_delivery::stop_all_dvr_status_notifiers(self);
         let artifact_result = match self.runtime.lock() {
             Ok(runtime) => {
                 let callback_reset_command =
@@ -196,6 +220,7 @@ impl AidlServiceContext {
                 );
                 let record_result = self.record_service_boot_reset_finish_lock_failure(
                     dvr_notifier_result.clone(),
+                    playback_worker_report.clone(),
                     artifact_result,
                     drop_leak_result,
                     callback_fallback_clear_result,
@@ -216,11 +241,30 @@ impl AidlServiceContext {
         runtime.finish_service_boot_reset_after_artifact_result_use_case(
             outcome,
             dvr_notifier_result,
+            playback_worker_report,
             artifact_result,
             drop_leak_result,
             callback_fallback_clear_result,
             diagnostic_clear_result,
         )
+    }
+
+    pub(crate) fn next_dvr_playback_worker_cleanup_attempt_id(
+        &self,
+    ) -> (Option<u64>, Result<(), HalError>) {
+        match self
+            .dvr_playback_worker_cleanup_next_attempt_id
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| value.checked_add(1))
+        {
+            Ok(attempt_id) => (Some(attempt_id), Ok(())),
+            Err(_) => (
+                None,
+                Err(HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "DVR playback worker cleanup attempt id exhausted",
+                )),
+            ),
+        }
     }
 
     pub(crate) fn runtime(&self) -> SharedTunerRuntime {
@@ -416,6 +460,7 @@ impl AidlServiceContext {
     pub(crate) fn record_service_boot_reset_finish_lock_failure(
         &self,
         dvr_notifier_result: Result<(), HalError>,
+        playback_worker_report: maleicacid_tuner_hal2_service_runtime::DvrPlaybackWorkerCleanupExecutionReport,
         artifact_result: Result<(), HalError>,
         drop_leak_result: Result<(), HalError>,
         callback_fallback_clear_result: Result<(), HalError>,
@@ -424,6 +469,7 @@ impl AidlServiceContext {
         let mut record_error: Option<HalError> = None;
         for outcome in CallbackArtifactRuntimeSplitOutcome::service_boot_reset_from_attempt_results(
             dvr_notifier_result,
+            playback_worker_report,
             artifact_result,
             drop_leak_result,
             callback_fallback_clear_result,
@@ -449,12 +495,119 @@ impl AidlServiceContext {
         }
     }
 
+    pub(crate) fn record_dvr_playback_worker_cleanup_report(
+        &self,
+        report: &DvrPlaybackWorkerCleanupExecutionReport,
+    ) {
+        for outcome in report.outcomes().iter().cloned() {
+            let record_failed = self
+                .dvr_playback_worker_cleanup_diagnostics
+                .record(outcome)
+                .is_err();
+            if record_failed {
+                // SharedCleanupDiagnostics increments its saturating record-failure counter.
+                // Diagnostic-store availability must not change worker lifecycle outcome.
+            }
+        }
+    }
+
+    pub(crate) fn dvr_playback_worker_cleanup_diagnostic_snapshot(
+        &self,
+    ) -> Result<maleicacid_tuner_hal2_service_runtime::DvrPlaybackWorkerCleanupDiagnosticSnapshot, HalError> {
+        self.dvr_playback_worker_cleanup_diagnostics.snapshot()
+    }
+
     pub(crate) fn callback_store_lock(
         &self,
     ) -> Result<MutexGuard<'_, CallbackStore>, AidlCallbackStoreError> {
         self.callback_store
             .lock()
             .map_err(|_| AidlCallbackStoreError::Poisoned)
+    }
+
+    pub(crate) fn dvr_playback_worker_lifecycle_lock(
+        &self,
+    ) -> Result<MutexGuard<'_, ()>, HalError> {
+        self.dvr_playback_worker_lifecycle.lock().map_err(|_| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "DVR playback worker lifecycle lock poisoned",
+            )
+        })
+    }
+
+    pub(crate) fn dvr_playback_worker_lifecycle_lock_for_cleanup(
+        &self,
+    ) -> (MutexGuard<'_, ()>, Result<(), HalError>) {
+        match self.dvr_playback_worker_lifecycle.lock() {
+            Ok(guard) => (guard, Ok(())),
+            Err(poisoned) => (
+                poisoned.into_inner(),
+                Err(HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "DVR playback worker lifecycle lock poisoned during cleanup",
+                )),
+            ),
+        }
+    }
+
+    pub(crate) fn dvr_playback_workers_lock(
+        &self,
+    ) -> Result<MutexGuard<'_, DvrPlaybackWorkerMap>, HalError> {
+        self.dvr_playback_workers.lock().map_err(|_| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "DVR playback worker store lock poisoned",
+            )
+        })
+    }
+
+    pub(crate) fn take_dvr_playback_worker_for_cleanup(
+        &self,
+        key: crate::dvr_playback_worker::DvrPlaybackWorkerKey,
+    ) -> (Option<crate::dvr_playback_worker::DvrPlaybackWorker>, Result<(), HalError>) {
+        match self.dvr_playback_workers.lock() {
+            Ok(mut store) => (store.remove(&key), Ok(())),
+            Err(poisoned) => {
+                let mut store = poisoned.into_inner();
+                (
+                    store.remove(&key),
+                    Err(HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "DVR playback worker store lock poisoned during cleanup",
+                    )),
+                )
+            }
+        }
+    }
+
+    pub(crate) fn take_dvr_playback_workers_for_reset(
+        &self,
+    ) -> (DvrPlaybackWorkerMap, Result<(), HalError>) {
+        match self.dvr_playback_workers.lock() {
+            Ok(mut store) => (std::mem::take(&mut *store), Ok(())),
+            Err(poisoned) => {
+                let mut store = poisoned.into_inner();
+                (
+                    std::mem::take(&mut *store),
+                    Err(HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "DVR playback worker store lock poisoned during reset",
+                    )),
+                )
+            }
+        }
+    }
+
+    pub(crate) fn dvr_status_notifier_lifecycle_lock(
+        &self,
+    ) -> Result<MutexGuard<'_, ()>, HalError> {
+        self.dvr_status_notifier_lifecycle.lock().map_err(|_| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "DVR status notifier lifecycle lock poisoned",
+            )
+        })
     }
 
     pub(crate) fn dvr_status_notifiers_lock(

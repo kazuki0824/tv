@@ -1,9 +1,11 @@
 use std::fmt;
 use std::fs::File;
 use std::os::fd::FromRawFd;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use maleicacid_tuner_hal2_fmq::{FmqQueue, FmqQueueError};
+use maleicacid_tuner_hal2_fmq::{
+    FmqDescriptorHandle, FmqQueueError, FmqReader, FmqWaitOutcome, FmqWaiter, FmqWriter,
+};
 
 #[derive(Debug)]
 pub struct QueueDescriptorSnapshot {
@@ -39,11 +41,9 @@ impl QueueGrantorDescriptorSnapshot {
     pub const fn fd_index(self) -> i32 {
         self.fd_index
     }
-
     pub const fn offset(self) -> i32 {
         self.offset
     }
-
     pub const fn extent(self) -> i64 {
         self.extent
     }
@@ -53,6 +53,7 @@ impl QueueGrantorDescriptorSnapshot {
 pub enum QueueRuntimeErrorKind {
     InvalidCapacity,
     NativeCreateFailed,
+    RoleViolation,
     ExportTransient,
     DataPathFailure,
     StructuralDescriptor,
@@ -70,14 +71,70 @@ impl QueueRuntimeError {
     }
 }
 
+static NEXT_QUEUE_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_queue_instance_id() -> Result<u64, QueueRuntimeError> {
+    NEXT_QUEUE_INSTANCE_ID
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| value.checked_add(1))
+        .map_err(|_| QueueRuntimeError::new(
+            QueueRuntimeErrorKind::NativeCreateFailed,
+            "FMQ queue instance id exhausted",
+        ))
+}
+
+enum QueueEndpoint {
+    HalWriter(FmqWriter),
+    HalReader(FmqReader),
+}
+
 pub struct QueueRuntime {
-    queue: Arc<FmqQueue>,
+    instance_id: u64,
+    endpoint: QueueEndpoint,
     capacity_bytes: usize,
     configure_event_flag: bool,
 }
 
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct QueueRuntimeRollbackState {
+    pub instance_id: u64,
+    pub current_fill: usize,
+}
+
 pub(crate) struct QueueDescriptorExportHandle {
-    queue: Arc<FmqQueue>,
+    handle: FmqDescriptorHandle,
+}
+
+/// playback worker 用に別 map した EventFlag endpoint。wait 中に HAL-reader endpoint の
+/// mutex を保持しない。
+pub struct QueueWaitHandle {
+    waiter: FmqWaiter,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QueueWaitResult {
+    Signaled(u32),
+    TimedOut,
+}
+
+impl QueueWaitHandle {
+    pub fn wait(
+        &self,
+        event_mask: u32,
+        timeout_ns: i64,
+    ) -> Result<QueueWaitResult, QueueRuntimeError> {
+        match self.waiter.wait(event_mask, timeout_ns) {
+            Ok(FmqWaitOutcome::Signaled(state)) => Ok(QueueWaitResult::Signaled(state)),
+            Ok(FmqWaitOutcome::TimedOut) => Ok(QueueWaitResult::TimedOut),
+            Err(err) => Err(map_data_path_error(err, "FMQ EventFlag wait failed")),
+        }
+    }
+
+    pub fn wake(&self, event_mask: u32) -> Result<(), QueueRuntimeError> {
+        self.waiter
+            .wake(event_mask)
+            .map_err(|err| map_data_path_error(err, "FMQ EventFlag wake failed"))
+    }
 }
 
 impl fmt::Debug for QueueDescriptorExportHandle {
@@ -88,7 +145,7 @@ impl fmt::Debug for QueueDescriptorExportHandle {
 
 impl QueueDescriptorExportHandle {
     fn export_descriptor(&self) -> Result<QueueDescriptorSnapshot, QueueRuntimeError> {
-        export_queue_descriptor(&self.queue)
+        export_queue_descriptor(&self.handle)
     }
 }
 
@@ -123,7 +180,13 @@ impl QueueDescriptorExportPlan {
 
 impl fmt::Debug for QueueRuntime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let role = match &self.endpoint {
+            QueueEndpoint::HalWriter(_) => "hal-writer",
+            QueueEndpoint::HalReader(_) => "hal-reader",
+        };
         f.debug_struct("QueueRuntime")
+            .field("instance_id", &self.instance_id)
+            .field("role", &role)
             .field("capacity_bytes", &self.capacity_bytes)
             .field("configure_event_flag", &self.configure_event_flag)
             .finish()
@@ -131,7 +194,7 @@ impl fmt::Debug for QueueRuntime {
 }
 
 impl QueueRuntime {
-    pub fn new(buffer_size: i32, configure_event_flag: bool) -> Result<Self, QueueRuntimeError> {
+    fn checked_capacity(buffer_size: i32) -> Result<usize, QueueRuntimeError> {
         let capacity_bytes = usize::try_from(buffer_size).map_err(|_| {
             QueueRuntimeError::new(
                 QueueRuntimeErrorKind::InvalidCapacity,
@@ -144,65 +207,187 @@ impl QueueRuntime {
                 "queue buffer size must be positive",
             ));
         }
-        let queue = FmqQueue::create(capacity_bytes, configure_event_flag)
-            .map_err(|err| map_create_error(err, "FMQ create failed"))?;
+        Ok(capacity_bytes)
+    }
+
+    pub(crate) fn new_writer(
+        buffer_size: i32,
+        configure_event_flag: bool,
+    ) -> Result<Self, QueueRuntimeError> {
+        let capacity_bytes = Self::checked_capacity(buffer_size)?;
+        let writer = FmqWriter::create(capacity_bytes, configure_event_flag)
+            .map_err(|err| map_create_error(err, "FMQ writer create failed"))?;
         Ok(Self {
-            queue: Arc::new(queue),
+            instance_id: next_queue_instance_id()?,
+            endpoint: QueueEndpoint::HalWriter(writer),
             capacity_bytes,
             configure_event_flag,
         })
+    }
+
+    pub(crate) fn new_reader(
+        buffer_size: i32,
+        configure_event_flag: bool,
+    ) -> Result<Self, QueueRuntimeError> {
+        let capacity_bytes = Self::checked_capacity(buffer_size)?;
+        let reader = FmqReader::create(capacity_bytes, configure_event_flag)
+            .map_err(|err| map_create_error(err, "FMQ reader create failed"))?;
+        Ok(Self {
+            instance_id: next_queue_instance_id()?,
+            endpoint: QueueEndpoint::HalReader(reader),
+            capacity_bytes,
+            configure_event_flag,
+        })
+    }
+
+    pub(crate) const fn instance_id(&self) -> u64 {
+        self.instance_id
     }
 
     pub(crate) fn capacity_matches_buffer_size(&self, buffer_size: i32) -> bool {
         usize::try_from(buffer_size).ok() == Some(self.capacity_bytes)
     }
 
-    pub fn clear(&mut self) -> Result<(), QueueRuntimeError> {
-        self.queue
-            .clear()
-            .map_err(|err| map_data_path_error(err, "FMQ clear failed"))
+    pub(crate) const fn is_hal_writer(&self) -> bool {
+        matches!(&self.endpoint, QueueEndpoint::HalWriter(_))
     }
 
-    #[cfg(test)]
-    pub fn available_to_read(&self) -> Result<usize, QueueRuntimeError> {
-        self.queue
-            .available_to_read_result()
-            .map_err(|err| map_data_path_error(err, "FMQ available_to_read failed"))
+    pub(crate) const fn is_hal_reader(&self) -> bool {
+        matches!(&self.endpoint, QueueEndpoint::HalReader(_))
+    }
+
+    pub(crate) const fn rollback_identity(&self) -> u64 {
+        self.instance_id
+    }
+
+    pub(crate) fn current_fill(&self) -> Result<usize, QueueRuntimeError> {
+        match &self.endpoint {
+            QueueEndpoint::HalWriter(writer) => writer.current_fill(),
+            QueueEndpoint::HalReader(reader) => reader.current_fill(),
+        }
+        .map_err(|err| map_data_path_error(err, "FMQ fill query failed"))
+    }
+
+
+    pub(crate) fn rollback_state(&self) -> Result<QueueRuntimeRollbackState, QueueRuntimeError> {
+        Ok(QueueRuntimeRollbackState {
+            instance_id: self.instance_id,
+            current_fill: self.current_fill()?,
+        })
+    }
+
+    pub(crate) fn available_to_read(&self) -> Result<usize, QueueRuntimeError> {
+        match &self.endpoint {
+            QueueEndpoint::HalReader(reader) => reader
+                .available_to_read()
+                .map_err(|err| map_data_path_error(err, "FMQ available_to_read failed")),
+            QueueEndpoint::HalWriter(_) => Err(QueueRuntimeError::new(
+                QueueRuntimeErrorKind::RoleViolation,
+                "HAL writer endpoint cannot read FMQ data",
+            )),
+        }
     }
 
     pub fn available_to_write(&self) -> Result<usize, QueueRuntimeError> {
-        self.queue
-            .available_to_write_result()
-            .map_err(|err| map_data_path_error(err, "FMQ available_to_write failed"))
+        match &self.endpoint {
+            QueueEndpoint::HalWriter(writer) => writer
+                .available_to_write()
+                .map_err(|err| map_data_path_error(err, "FMQ available_to_write failed")),
+            QueueEndpoint::HalReader(_) => Err(QueueRuntimeError::new(
+                QueueRuntimeErrorKind::RoleViolation,
+                "HAL reader endpoint cannot write FMQ data",
+            )),
+        }
     }
 
-    #[cfg(test)]
-    pub fn read_into(&self, data: &mut [u8]) -> Result<usize, QueueRuntimeError> {
-        self.queue
-            .read_into(data)
-            .map_err(|err| map_data_path_error(err, "FMQ read failed"))
+    pub(crate) fn read_into(&self, data: &mut [u8]) -> Result<usize, QueueRuntimeError> {
+        match &self.endpoint {
+            QueueEndpoint::HalReader(reader) => reader
+                .read_into(data)
+                .map_err(|err| map_data_path_error(err, "FMQ read failed")),
+            QueueEndpoint::HalWriter(_) => Err(QueueRuntimeError::new(
+                QueueRuntimeErrorKind::RoleViolation,
+                "HAL writer endpoint cannot read FMQ data",
+            )),
+        }
     }
 
     pub fn write_checked(&self, data: &[u8]) -> Result<usize, QueueRuntimeError> {
-        self.queue
-            .write_checked(data)
-            .map_err(|err| map_data_path_error(err, "FMQ write failed"))
+        match &self.endpoint {
+            QueueEndpoint::HalWriter(writer) => writer
+                .write_checked(data)
+                .map_err(|err| map_data_path_error(err, "FMQ write failed")),
+            QueueEndpoint::HalReader(_) => Err(QueueRuntimeError::new(
+                QueueRuntimeErrorKind::RoleViolation,
+                "HAL reader endpoint cannot write FMQ data",
+            )),
+        }
     }
 
     pub fn wake(&self, event_mask: u32) -> Result<(), QueueRuntimeError> {
-        self.queue
-            .wake(event_mask)
-            .map_err(|err| map_data_path_error(err, "FMQ wake failed"))
+        match &self.endpoint {
+            QueueEndpoint::HalWriter(writer) => writer.wake(event_mask),
+            QueueEndpoint::HalReader(reader) => reader.wake(event_mask),
+        }
+        .map_err(|err| map_data_path_error(err, "FMQ wake failed"))
+    }
+
+    pub(crate) fn wait_handle(&self) -> Result<QueueWaitHandle, QueueRuntimeError> {
+        let descriptor = match &self.endpoint {
+            QueueEndpoint::HalWriter(writer) => writer.descriptor_handle(),
+            QueueEndpoint::HalReader(reader) => reader.descriptor_handle(),
+        };
+        let waiter = descriptor
+            .open_waiter()
+            .map_err(|err| map_data_path_error(err, "FMQ waiter mapping failed"))?;
+        Ok(QueueWaitHandle { waiter })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn peer_read_for_test(
+        &self,
+        data: &mut [u8],
+    ) -> Result<usize, QueueRuntimeError> {
+        let QueueEndpoint::HalWriter(writer) = &self.endpoint else {
+            return Err(QueueRuntimeError::new(
+                QueueRuntimeErrorKind::RoleViolation,
+                "framework reader peer requires a HAL writer queue",
+            ));
+        };
+        writer
+            .descriptor_handle()
+            .open_peer_reader()
+            .and_then(|reader| reader.read_into(data))
+            .map_err(|err| map_data_path_error(err, "FMQ framework peer read failed"))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn peer_write_for_test(&self, data: &[u8]) -> Result<usize, QueueRuntimeError> {
+        let QueueEndpoint::HalReader(reader) = &self.endpoint else {
+            return Err(QueueRuntimeError::new(
+                QueueRuntimeErrorKind::RoleViolation,
+                "framework writer peer requires a HAL reader queue",
+            ));
+        };
+        reader
+            .descriptor_handle()
+            .open_peer_writer()
+            .and_then(|writer| writer.write_checked(data))
+            .map_err(|err| map_data_path_error(err, "FMQ framework peer write failed"))
     }
 
     pub(crate) fn descriptor_export_handle(&self) -> QueueDescriptorExportHandle {
-        QueueDescriptorExportHandle {
-            queue: Arc::clone(&self.queue),
-        }
+        let handle = match &self.endpoint {
+            QueueEndpoint::HalWriter(writer) => writer.descriptor_handle(),
+            QueueEndpoint::HalReader(reader) => reader.descriptor_handle(),
+        };
+        QueueDescriptorExportHandle { handle }
     }
 }
 
-fn export_queue_descriptor(queue: &FmqQueue) -> Result<QueueDescriptorSnapshot, QueueRuntimeError> {
+fn export_queue_descriptor(
+    queue: &FmqDescriptorHandle,
+) -> Result<QueueDescriptorSnapshot, QueueRuntimeError> {
     let grantor_count = queue
         .grantor_count_result()
         .map_err(|err| map_export_error(err, "FMQ grantor count export failed"))?;
@@ -348,7 +533,10 @@ fn map_export_error(err: FmqQueueError, detail: &'static str) -> QueueRuntimeErr
 
 fn map_data_path_error(err: FmqQueueError, detail: &'static str) -> QueueRuntimeError {
     let kind = match err {
-        FmqQueueError::NativeReadZero
+        FmqQueueError::NativeReadFailed
+        | FmqQueueError::NativeReadInvalidArgument
+        | FmqQueueError::NativeResetFailed
+        | FmqQueueError::NativeLockPoisoned
         | FmqQueueError::NativeWriteFailed
         | FmqQueueError::NativeWriteInvalidArgument
         | FmqQueueError::NativeWakeFailed => QueueRuntimeErrorKind::DataPathFailure,

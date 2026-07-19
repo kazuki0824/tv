@@ -1,7 +1,6 @@
-use super::demux::{DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind};
-use super::dvr::DvrRuntimeSnapshot;
+use super::demux::{DemuxRuntime, DemuxRuntimeError};
 use super::filter::{FilterRuntimeSnapshot, FilterRuntimeState};
-use super::source_boundary::SourceBoundaryReport;
+use super::source_boundary::{SourceBoundaryOutcome, SourceBoundaryReport, SourceBoundaryStep};
 use crate::config::FilterConfig;
 use crate::packet_pipeline::{FilterPipelineConfig, PipelineOpenKind};
 
@@ -9,12 +8,11 @@ use crate::packet_pipeline::{FilterPipelineConfig, PipelineOpenKind};
 pub enum FilterConfigureStep {
     ValidateState,
     ValidateSettings,
-    ClearOldFmq,
-    ClearOldAvBacking,
-    DisconnectOldSource,
     ApplySoftDemuxConfig,
+    DisconnectOldSource,
+    ResetQueue,
     Commit,
-    RollbackSoftDemuxConfig,
+    RestoreSnapshot,
     QuarantineOnRollbackFailure,
 }
 
@@ -22,11 +20,11 @@ pub enum FilterConfigureStep {
 pub enum DvrConfigureStep {
     ValidateState,
     ValidateSettings,
-    ClearQueue,
-    ResetPlaybackAssembler,
     ApplySoftDemuxConfig,
+    ApplyStatusReporting,
+    ResetQueue,
     Commit,
-    RollbackSoftDemuxConfig,
+    RestoreSnapshot,
     QuarantineOnRollbackFailure,
 }
 
@@ -35,15 +33,23 @@ pub enum FilterConfigureOutcome {
     Committed,
     Failed {
         failed_step: FilterConfigureStep,
+        primary_error: DemuxRuntimeError,
     },
     RolledBack {
         failed_step: FilterConfigureStep,
+        primary_error: DemuxRuntimeError,
         rollback_step: FilterConfigureStep,
     },
     Quarantined {
         failed_step: FilterConfigureStep,
+        primary_error: DemuxRuntimeError,
         rollback_step: FilterConfigureStep,
-        rollback_error: DemuxRuntimeErrorKind,
+        rollback_error: DemuxRuntimeError,
+    },
+    PartialEffectQuarantined {
+        failed_step: FilterConfigureStep,
+        primary_error: DemuxRuntimeError,
+        partial_effect_step: FilterConfigureStep,
     },
 }
 
@@ -52,15 +58,23 @@ pub enum DvrConfigureOutcome {
     Committed,
     Failed {
         failed_step: DvrConfigureStep,
+        primary_error: DemuxRuntimeError,
     },
     RolledBack {
         failed_step: DvrConfigureStep,
+        primary_error: DemuxRuntimeError,
         rollback_step: DvrConfigureStep,
     },
     Quarantined {
         failed_step: DvrConfigureStep,
+        primary_error: DemuxRuntimeError,
         rollback_step: DvrConfigureStep,
-        rollback_error: DemuxRuntimeErrorKind,
+        rollback_error: DemuxRuntimeError,
+    },
+    PartialEffectQuarantined {
+        failed_step: DvrConfigureStep,
+        primary_error: DemuxRuntimeError,
+        partial_effect_step: DvrConfigureStep,
     },
 }
 
@@ -124,18 +138,50 @@ impl FilterConfigureTxn {
             source_boundary_report: None,
         }
     }
+
     fn record_step(&mut self, step: FilterConfigureStep) {
         self.steps.push(step);
     }
+
     #[cfg(test)]
     pub(crate) fn outcome(&self) -> Option<FilterConfigureOutcome> {
         self.outcome
     }
+
     fn report(&self) -> FilterConfigureReport {
         FilterConfigureReport {
             steps: self.steps.clone(),
             outcome: self.outcome,
             source_boundary_report: self.source_boundary_report.clone(),
+        }
+    }
+
+    fn restore_after_failure(
+        &mut self,
+        demux: &mut DemuxRuntime,
+        snapshot: super::demux::DemuxRuntimeSnapshot,
+        failed_step: FilterConfigureStep,
+        primary_error: DemuxRuntimeError,
+    ) {
+        self.record_step(FilterConfigureStep::RestoreSnapshot);
+        match demux.restore(snapshot) {
+            Ok(()) => {
+                self.outcome = Some(FilterConfigureOutcome::RolledBack {
+                    failed_step,
+                    primary_error,
+                    rollback_step: FilterConfigureStep::RestoreSnapshot,
+                });
+            }
+            Err(rollback_error) => {
+                demux.quarantine();
+                self.record_step(FilterConfigureStep::QuarantineOnRollbackFailure);
+                self.outcome = Some(FilterConfigureOutcome::Quarantined {
+                    failed_step,
+                    primary_error,
+                    rollback_step: FilterConfigureStep::RestoreSnapshot,
+                    rollback_error,
+                });
+            }
         }
     }
 
@@ -146,109 +192,104 @@ impl FilterConfigureTxn {
         config: FilterPipelineConfig,
     ) -> (Self, Result<FilterConfigureOutcome, DemuxRuntimeError>) {
         self.record_step(FilterConfigureStep::ValidateState);
-        let snapshot: FilterRuntimeSnapshot = match demux.filter_snapshot(self.filter_id) {
+        let filter_snapshot: FilterRuntimeSnapshot = match demux.filter_snapshot(self.filter_id) {
             Ok(snapshot) => snapshot,
-            Err(err) => {
+            Err(error) => {
                 self.outcome = Some(FilterConfigureOutcome::Failed {
                     failed_step: FilterConfigureStep::ValidateState,
+                    primary_error: error,
                 });
-                return (self, Err(err));
+                return (self, Err(error));
             }
         };
-        if snapshot.state.is_closed_or_failed() || snapshot.state == FilterRuntimeState::Started {
-            let filter_id = self.filter_id;
+        if filter_snapshot.state.is_closed_or_failed()
+            || filter_snapshot.state == FilterRuntimeState::Started
+        {
+            let error = DemuxRuntimeError::invalid_state(self.filter_id);
             self.outcome = Some(FilterConfigureOutcome::Failed {
                 failed_step: FilterConfigureStep::ValidateState,
+                primary_error: error,
             });
-            return (self, Err(DemuxRuntimeError::invalid_state(filter_id)));
+            return (self, Err(error));
         }
+
         self.record_step(FilterConfigureStep::ValidateSettings);
-        if config.tpid.is_none() {
-            let filter_id = self.filter_id;
+        if filter_snapshot.open_kind != open_kind {
+            let error = DemuxRuntimeError::invalid_state(self.filter_id);
             self.outcome = Some(FilterConfigureOutcome::Failed {
                 failed_step: FilterConfigureStep::ValidateSettings,
+                primary_error: error,
             });
-            return (self, Err(DemuxRuntimeError::invalid_state(filter_id)));
+            return (self, Err(error));
         }
-        if snapshot.open_kind != open_kind {
-            let filter_id = self.filter_id;
-            self.outcome = Some(FilterConfigureOutcome::Failed {
-                failed_step: FilterConfigureStep::ValidateSettings,
-            });
-            return (self, Err(DemuxRuntimeError::invalid_state(filter_id)));
-        }
-        self.record_step(FilterConfigureStep::ClearOldFmq);
-        if snapshot.queue_present {
-            if let Err(err) = demux.clear_existing_filter_queue(self.filter_id) {
-                self.record_step(FilterConfigureStep::RollbackSoftDemuxConfig);
-                if let Err(rollback_err) = demux.restore_filter_snapshot(self.filter_id, snapshot) {
-                    demux.quarantine();
-                    self.record_step(FilterConfigureStep::QuarantineOnRollbackFailure);
-                    self.outcome = Some(FilterConfigureOutcome::Quarantined {
-                        failed_step: FilterConfigureStep::ClearOldFmq,
-                        rollback_step: FilterConfigureStep::RollbackSoftDemuxConfig,
-                        rollback_error: rollback_err.kind,
-                    });
-                } else {
-                    self.outcome = Some(FilterConfigureOutcome::RolledBack {
-                        failed_step: FilterConfigureStep::ClearOldFmq,
-                        rollback_step: FilterConfigureStep::RollbackSoftDemuxConfig,
-                    });
-                }
-                return (self, Err(err));
+
+        let rollback_snapshot = match demux.snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                self.outcome = Some(FilterConfigureOutcome::Failed {
+                    failed_step: FilterConfigureStep::ValidateState,
+                    primary_error: error,
+                });
+                return (self, Err(error));
             }
+        };
+        self.record_step(FilterConfigureStep::ApplySoftDemuxConfig);
+        if let Err(error) = demux.configure_filter_runtime(self.filter_id, config) {
+            self.restore_after_failure(
+                demux,
+                rollback_snapshot,
+                FilterConfigureStep::ApplySoftDemuxConfig,
+                error,
+            );
+            return (self, Err(error));
         }
-        self.record_step(FilterConfigureStep::ClearOldAvBacking);
-        if let Some(filter) = demux.filter_mut(self.filter_id) {
-            filter.clear_av_backing_marker();
-        }
+
+        // source-boundary commit と generation/pipeline reset を最終操作にする。
+        // queue identity は維持し、export 済み queue が非空または不一致なら、
+        // shared pointer reset や queue instance 置換を行わず失敗させる。
         self.record_step(FilterConfigureStep::DisconnectOldSource);
         let (source_boundary_report, disconnect_result) =
             demux.disconnect_filter_source(self.filter_id);
+        let source_outcome = source_boundary_report.outcome();
         self.source_boundary_report = Some(source_boundary_report);
-        if let Err(err) = disconnect_result {
-            self.record_step(FilterConfigureStep::RollbackSoftDemuxConfig);
-            if let Err(rollback_err) = demux.restore_filter_snapshot(self.filter_id, snapshot) {
-                demux.quarantine();
-                self.record_step(FilterConfigureStep::QuarantineOnRollbackFailure);
-                self.outcome = Some(FilterConfigureOutcome::Quarantined {
-                    failed_step: FilterConfigureStep::DisconnectOldSource,
-                    rollback_step: FilterConfigureStep::RollbackSoftDemuxConfig,
-                    rollback_error: rollback_err.kind,
-                });
-            } else {
-                self.outcome = Some(FilterConfigureOutcome::RolledBack {
-                    failed_step: FilterConfigureStep::DisconnectOldSource,
-                    rollback_step: FilterConfigureStep::RollbackSoftDemuxConfig,
-                });
+        if let Err(error) = disconnect_result {
+            match source_outcome {
+                SourceBoundaryOutcome::PartialEffectQuarantined {
+                    failed_step: SourceBoundaryStep::ClearQueue,
+                    ..
+                } => {
+                    self.record_step(FilterConfigureStep::ResetQueue);
+                    demux.quarantine();
+                    self.outcome = Some(FilterConfigureOutcome::PartialEffectQuarantined {
+                        failed_step: FilterConfigureStep::ResetQueue,
+                        primary_error: error,
+                        partial_effect_step: FilterConfigureStep::ResetQueue,
+                    });
+                }
+                SourceBoundaryOutcome::Quarantined {
+                    primary_error,
+                    rollback_error,
+                    ..
+                } => {
+                    demux.quarantine();
+                    self.outcome = Some(FilterConfigureOutcome::Quarantined {
+                        failed_step: FilterConfigureStep::DisconnectOldSource,
+                        primary_error,
+                        rollback_step: FilterConfigureStep::RestoreSnapshot,
+                        rollback_error,
+                    });
+                }
+                _ => self.restore_after_failure(
+                    demux,
+                    rollback_snapshot,
+                    FilterConfigureStep::DisconnectOldSource,
+                    error,
+                ),
             }
-            return (self, Err(err));
+            return (self, Err(error));
         }
-        self.record_step(FilterConfigureStep::ApplySoftDemuxConfig);
-        if let Err(err) = demux.configure_filter_runtime(self.filter_id, config) {
-            if err.kind == DemuxRuntimeErrorKind::GenerationExhausted {
-                self.outcome = Some(FilterConfigureOutcome::Failed {
-                    failed_step: FilterConfigureStep::ApplySoftDemuxConfig,
-                });
-                return (self, Err(err));
-            }
-            self.record_step(FilterConfigureStep::RollbackSoftDemuxConfig);
-            if let Err(rollback_err) = demux.restore_filter_snapshot(self.filter_id, snapshot) {
-                demux.quarantine();
-                self.record_step(FilterConfigureStep::QuarantineOnRollbackFailure);
-                self.outcome = Some(FilterConfigureOutcome::Quarantined {
-                    failed_step: FilterConfigureStep::ApplySoftDemuxConfig,
-                    rollback_step: FilterConfigureStep::RollbackSoftDemuxConfig,
-                    rollback_error: rollback_err.kind,
-                });
-            } else {
-                self.outcome = Some(FilterConfigureOutcome::RolledBack {
-                    failed_step: FilterConfigureStep::ApplySoftDemuxConfig,
-                    rollback_step: FilterConfigureStep::RollbackSoftDemuxConfig,
-                });
-            }
-            return (self, Err(err));
-        }
+
+        self.record_step(FilterConfigureStep::ResetQueue);
         self.record_step(FilterConfigureStep::Commit);
         let outcome = FilterConfigureOutcome::Committed;
         self.outcome = Some(outcome);
@@ -264,13 +305,16 @@ impl DvrConfigureTxn {
             outcome: None,
         }
     }
+
     fn record_step(&mut self, step: DvrConfigureStep) {
         self.steps.push(step);
     }
+
     #[cfg(test)]
     pub(crate) fn outcome(&self) -> Option<DvrConfigureOutcome> {
         self.outcome
     }
+
     fn report(&self) -> DvrConfigureReport {
         DvrConfigureReport {
             steps: self.steps.clone(),
@@ -278,77 +322,92 @@ impl DvrConfigureTxn {
         }
     }
 
-    pub(crate) fn configure(
-        mut self,
+    fn restore_after_failure(
+        &mut self,
         demux: &mut DemuxRuntime,
-    ) -> (Self, Result<DvrConfigureOutcome, DemuxRuntimeError>) {
-        self.record_step(DvrConfigureStep::ValidateState);
-        let snapshot: DvrRuntimeSnapshot = match demux.dvr(self.dvr_id).map(|dvr| dvr.snapshot()) {
-            Some(snapshot) => snapshot,
-            None => {
-                let dvr_id = self.dvr_id;
-                self.outcome = Some(DvrConfigureOutcome::Failed {
-                    failed_step: DvrConfigureStep::ValidateState,
+        snapshot: super::demux::DemuxRuntimeSnapshot,
+        failed_step: DvrConfigureStep,
+        primary_error: DemuxRuntimeError,
+    ) {
+        self.record_step(DvrConfigureStep::RestoreSnapshot);
+        match demux.restore(snapshot) {
+            Ok(()) => {
+                self.outcome = Some(DvrConfigureOutcome::RolledBack {
+                    failed_step,
+                    primary_error,
+                    rollback_step: DvrConfigureStep::RestoreSnapshot,
                 });
-                return (self, Err(DemuxRuntimeError::dvr_missing(dvr_id)));
             }
-        };
-        self.record_step(DvrConfigureStep::ValidateSettings);
-        self.record_step(DvrConfigureStep::ClearQueue);
-        if snapshot.queue_present {
-            if let Err(err) = demux.clear_dvr_queue_runtime(self.dvr_id) {
-                self.record_step(DvrConfigureStep::RollbackSoftDemuxConfig);
-                if let Err(rollback_err) = demux.restore_dvr_snapshot(self.dvr_id, snapshot) {
-                    demux.quarantine();
-                    self.record_step(DvrConfigureStep::QuarantineOnRollbackFailure);
-                    self.outcome = Some(DvrConfigureOutcome::Quarantined {
-                        failed_step: DvrConfigureStep::ClearQueue,
-                        rollback_step: DvrConfigureStep::RollbackSoftDemuxConfig,
-                        rollback_error: rollback_err.kind,
-                    });
-                } else {
-                    self.outcome = Some(DvrConfigureOutcome::RolledBack {
-                        failed_step: DvrConfigureStep::ClearQueue,
-                        rollback_step: DvrConfigureStep::RollbackSoftDemuxConfig,
-                    });
-                }
-                return (self, Err(err));
-            }
-            if let Some(dvr) = demux.dvr_mut(self.dvr_id) {
-                dvr.clear_queue_marker();
-            }
-        }
-        self.record_step(DvrConfigureStep::ResetPlaybackAssembler);
-        if snapshot.playback_assembler_present {
-            if let Some(dvr) = demux.dvr_mut(self.dvr_id) {
-                dvr.reset_playback_assembler_marker();
-            }
-        }
-        self.record_step(DvrConfigureStep::ApplySoftDemuxConfig);
-        if let Err(err) = demux.configure_dvr_runtime(self.dvr_id) {
-            if err.kind == DemuxRuntimeErrorKind::GenerationExhausted {
-                self.outcome = Some(DvrConfigureOutcome::Failed {
-                    failed_step: DvrConfigureStep::ApplySoftDemuxConfig,
-                });
-                return (self, Err(err));
-            }
-            self.record_step(DvrConfigureStep::RollbackSoftDemuxConfig);
-            if let Err(rollback_err) = demux.restore_dvr_snapshot(self.dvr_id, snapshot) {
+            Err(rollback_error) => {
                 demux.quarantine();
                 self.record_step(DvrConfigureStep::QuarantineOnRollbackFailure);
                 self.outcome = Some(DvrConfigureOutcome::Quarantined {
-                    failed_step: DvrConfigureStep::ApplySoftDemuxConfig,
-                    rollback_step: DvrConfigureStep::RollbackSoftDemuxConfig,
-                    rollback_error: rollback_err.kind,
-                });
-            } else {
-                self.outcome = Some(DvrConfigureOutcome::RolledBack {
-                    failed_step: DvrConfigureStep::ApplySoftDemuxConfig,
-                    rollback_step: DvrConfigureStep::RollbackSoftDemuxConfig,
+                    failed_step,
+                    primary_error,
+                    rollback_step: DvrConfigureStep::RestoreSnapshot,
+                    rollback_error,
                 });
             }
-            return (self, Err(err));
         }
+    }
+
+    pub(crate) fn configure(
+        mut self,
+        demux: &mut DemuxRuntime,
+        status_mask: i32,
+        low_threshold_bytes: usize,
+        high_threshold_bytes: usize,
+    ) -> (Self, Result<DvrConfigureOutcome, DemuxRuntimeError>) {
+        self.record_step(DvrConfigureStep::ValidateState);
+        let _snapshot = match demux.dvr_snapshot(self.dvr_id) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                self.outcome = Some(DvrConfigureOutcome::Failed {
+                    failed_step: DvrConfigureStep::ValidateState,
+                    primary_error: error,
+                });
+                return (self, Err(error));
+            }
+        };
+        self.record_step(DvrConfigureStep::ValidateSettings);
+        let rollback_snapshot = match demux.snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                self.outcome = Some(DvrConfigureOutcome::Failed {
+                    failed_step: DvrConfigureStep::ValidateState,
+                    primary_error: error,
+                });
+                return (self, Err(error));
+            }
+        };
+
+        self.record_step(DvrConfigureStep::ApplySoftDemuxConfig);
+        if let Err(error) = demux.configure_dvr_runtime(self.dvr_id) {
+            self.restore_after_failure(
+                demux,
+                rollback_snapshot,
+                DvrConfigureStep::ApplySoftDemuxConfig,
+                error,
+            );
+            return (self, Err(error));
+        }
+
+        self.record_step(DvrConfigureStep::ApplyStatusReporting);
+        if let Err(error) = demux.configure_dvr_status_reporting(
+            self.dvr_id,
+            status_mask,
+            low_threshold_bytes,
+            high_threshold_bytes,
+        ) {
+            self.restore_after_failure(
+                demux,
+                rollback_snapshot,
+                DvrConfigureStep::ApplyStatusReporting,
+                error,
+            );
+            return (self, Err(error));
+        }
+
         self.record_step(DvrConfigureStep::Commit);
         let outcome = DvrConfigureOutcome::Committed;
         self.outcome = Some(outcome);
@@ -375,10 +434,18 @@ pub(crate) fn configure_filter_runtime(
 pub(crate) fn configure_dvr_runtime(
     demux: &mut DemuxRuntime,
     dvr_id: i32,
+    status_mask: i32,
+    low_threshold_bytes: usize,
+    high_threshold_bytes: usize,
 ) -> (
     DvrConfigureReport,
     Result<DvrConfigureOutcome, DemuxRuntimeError>,
 ) {
-    let (txn, result) = DvrConfigureTxn::new(dvr_id).configure(demux);
+    let (txn, result) = DvrConfigureTxn::new(dvr_id).configure(
+        demux,
+        status_mask,
+        low_threshold_bytes,
+        high_threshold_bytes,
+    );
     (txn.report(), result)
 }

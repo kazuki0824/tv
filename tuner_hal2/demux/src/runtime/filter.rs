@@ -1,7 +1,10 @@
 use crate::config::{
-    AvStreamTypeConfig, FilterDelayHint, FilterDelayHints, FilterOpenType, OpenFilterRequest,
+    AvStreamTypeConfig, ConfigInputPid, FilterDelayHint, FilterDelayHints, FilterOpenType,
+    OpenFilterRequest,
 };
-use crate::packet_pipeline::{FilterPipelineConfig, PipelineFilterView, PipelineOpenKind};
+use crate::packet_pipeline::{
+    FilterPipelineConfig, PipelineFilterView, PipelineOpenKind, PipelineSourceFilterRef,
+};
 use crate::TsInputOrigin;
 use std::time::{Duration, Instant};
 
@@ -61,7 +64,7 @@ pub struct FilterRuntimeSnapshot {
     pub open_kind: PipelineOpenKind,
     pub buffer_size: i32,
     pub callback_present: bool,
-    pub tpid: Option<i32>,
+    pub tpid: Option<ConfigInputPid>,
     pub raw: bool,
     pub source: FilterSource,
     pub queue_present: bool,
@@ -73,6 +76,22 @@ pub struct FilterRuntimeSnapshot {
     pub callback_unhealthy: bool,
 }
 
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct FilterRuntimeRollbackIdentity {
+    state: FilterRuntimeState,
+    generation: u64,
+    open_type: FilterOpenType,
+    open_kind: PipelineOpenKind,
+    buffer_size: i32,
+    tpid: Option<ConfigInputPid>,
+    raw: bool,
+    source: FilterSource,
+    queue_present: bool,
+    av_backing_present: bool,
+    av_stream_type_hint: Option<AvStreamTypeConfig>,
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct FilterRuntime {
     filter_id: i32,
@@ -82,7 +101,7 @@ pub struct FilterRuntime {
     open_kind: PipelineOpenKind,
     buffer_size: i32,
     callback_present: bool,
-    tpid: Option<i32>,
+    tpid: Option<ConfigInputPid>,
     raw: bool,
     source: FilterSource,
     queue_present: bool,
@@ -159,6 +178,42 @@ impl FilterRuntime {
         runtime
     }
 
+    pub(crate) fn rollback_identity(&self) -> FilterRuntimeRollbackIdentity {
+        FilterRuntimeRollbackIdentity {
+            state: self.state,
+            generation: self.generation,
+            open_type: self.open_type,
+            open_kind: self.open_kind,
+            buffer_size: self.buffer_size,
+            tpid: self.tpid,
+            raw: self.raw,
+            source: self.source,
+            queue_present: self.queue_present,
+            av_backing_present: self.av_backing_present,
+            av_stream_type_hint: self.av_stream_type_hint,
+        }
+    }
+
+
+    pub(crate) fn restore_control_plane_preserving_volatile(
+        &mut self,
+        snapshot: FilterRuntimeSnapshot,
+    ) {
+        self.state = snapshot.state;
+        self.generation = snapshot.generation;
+        self.open_type = snapshot.open_type;
+        self.open_kind = snapshot.open_kind;
+        self.buffer_size = snapshot.buffer_size;
+        self.tpid = snapshot.tpid;
+        self.raw = snapshot.raw;
+        self.source = snapshot.source;
+        self.queue_present = snapshot.queue_present;
+        self.av_backing_present = snapshot.av_backing_present;
+        self.av_stream_type_hint = snapshot.av_stream_type_hint;
+        // callback presence, delay hints/deadline, queued bytes and callback health may
+        // legitimately change while a transaction is in flight and are not rolled back.
+    }
+
     pub fn filter_id(&self) -> i32 {
         self.filter_id
     }
@@ -202,7 +257,7 @@ impl FilterRuntime {
         self.av_backing_present
     }
     #[cfg(test)]
-    pub fn delivery_readiness(&self) -> crate::config::FilterDelayReadiness {
+    pub(crate) fn delivery_readiness(&self) -> crate::config::FilterDelayReadiness {
         self.delay_hints.delivery_readiness(
             self.delivery_not_before
                 .map(|deadline| {
@@ -258,7 +313,7 @@ impl FilterRuntime {
 
     pub fn configure_with_generation(&mut self, generation: u64, config: FilterPipelineConfig) {
         self.generation = generation;
-        self.tpid = config.tpid;
+        self.tpid = Some(config.tpid);
         self.raw = config.raw;
         self.source = FilterSource::DemuxInput;
         self.queue_present = self.supports_normal_fmq_queue();
@@ -315,12 +370,6 @@ impl FilterRuntime {
         };
     }
 
-    pub fn clear_queue_marker(&mut self) -> bool {
-        let had_queue = self.queue_present;
-        self.queue_present = false;
-        had_queue
-    }
-
     pub fn clear_av_backing_marker(&mut self) -> bool {
         let had_backing = self.av_backing_present;
         self.av_backing_present = false;
@@ -337,7 +386,10 @@ impl FilterRuntime {
                 FilterSource::SourceFilter {
                     source_filter_id,
                     source_filter_generation,
-                } => Some((source_filter_id, source_filter_generation)),
+                } => Some(PipelineSourceFilterRef::new(
+                    source_filter_id,
+                    source_filter_generation,
+                )),
             },
             open_kind: self.open_kind,
             section_raw: self.raw && matches!(self.open_kind, PipelineOpenKind::Section),

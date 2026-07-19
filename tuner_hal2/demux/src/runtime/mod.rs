@@ -12,11 +12,11 @@ pub use configure_txn::{
 };
 pub use demux::{
     DemuxGenerationBoundaryRequest, DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind,
-    DemuxRuntimeQuarantineRequest, DemuxRuntimeRollbackCommitRequest,
+    DemuxRuntimeDiagnosticSnapshot, DemuxRuntimeQuarantineRequest, DemuxRuntimeRollbackCommitRequest,
     DemuxRuntimeRollbackRestoreRequest, DemuxRuntimeRollbackToken,
     DemuxRuntimeRollbackTokenPrepareRequest, DemuxRuntimeSnapshot, DemuxRuntimeState,
-    DvrFilterLinkRequest, DvrRuntimeConfigureRequest, DvrRuntimeOperationRequest,
-    DvrRuntimeRegistrationRequest, DvrStatusIntervalRuntimeRequest, DvrStatusReportingRequest,
+    DvrFilterLinkRequest, DvrFlushOutcome, DvrFlushReport, DvrFlushStep, DvrFlushStepOutcome, DvrRuntimeConfigureRequest, DvrRuntimeOperationRequest,
+    DvrRuntimeRegistrationRequest, DvrStatusIntervalRuntimeRequest,
     FilterAvHandleReleaseRequest, FilterAvStreamTypeRuntimeRequest, FilterDelayHintRuntimeRequest,
     FilterRuntimeConfigureRequest, FilterRuntimeOperationKind, FilterRuntimeOperationOutcome,
     FilterRuntimeOperationReport, FilterRuntimeOperationRequest, FilterRuntimeOperationSkipReason,
@@ -26,9 +26,13 @@ pub use demux::{
 };
 pub use dvr::{DvrKind, DvrRuntimeSnapshot, DvrRuntimeState, DvrStatusEvent};
 pub use filter::{FilterRuntimeSnapshot, FilterRuntimeState};
-pub use generation_boundary::{DemuxStreamGeneration, GenerationBoundaryReport};
+pub use generation_boundary::{
+    DemuxGenerationBoundaryAuthorization, DemuxStreamGeneration, GenerationBoundaryReport,
+};
 pub use queue_runtime::{
     QueueDescriptorExportPlan, QueueDescriptorExportTarget, QueueDescriptorSnapshot,
-    QueueGrantorDescriptorSnapshot, QueueRuntimeError, QueueRuntimeErrorKind,
+    QueueGrantorDescriptorSnapshot, QueueRuntimeError, QueueRuntimeErrorKind, QueueWaitHandle, QueueWaitResult,
 };
-pub use source_boundary::{SourceBoundaryOutcome, SourceBoundaryReport, SourceBoundaryStep};
+pub use source_boundary::{
+    SourceBoundaryOutcome, SourceBoundaryReport, SourceBoundaryStep, SourceBoundaryTarget,
+};

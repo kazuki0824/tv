@@ -383,9 +383,31 @@ pub fn build_lnb_satellite_position_request(
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AidlMethodPlan {
-    pub api: crate::AidlApi,
-    pub command: DomainCommand,
-    pub command_plan: CommandPlan,
+    api: crate::AidlApi,
+    command: DomainCommand,
+    command_plan: CommandPlan,
+}
+
+impl AidlMethodPlan {
+    pub const fn api(&self) -> crate::AidlApi {
+        self.api
+    }
+
+    pub fn command(&self) -> &DomainCommand {
+        &self.command
+    }
+
+    pub const fn command_plan(&self) -> CommandPlan {
+        self.command_plan
+    }
+
+    pub fn executable_request(&self) -> Option<RuntimeExecutableRequest> {
+        self.command.runtime_executable_request()
+    }
+
+    pub fn into_parts(self) -> (crate::AidlApi, DomainCommand, CommandPlan) {
+        (self.api, self.command, self.command_plan)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -403,7 +425,8 @@ impl AidlMethodAdapter {
         })
     }
 
-    pub fn frontend_tune(request: FrontendTuneRequest) -> Result<AidlMethodPlan, HalError> {
+    #[cfg(test)]
+    pub(crate) fn frontend_tune(request: FrontendTuneRequest) -> Result<AidlMethodPlan, HalError> {
         Self::plan(AidlMethodCall::FrontendTune(request))
     }
 }
@@ -565,7 +588,7 @@ mod tests {
         );
         for method in methods {
             let plan = AidlMethodAdapter::plan(method).unwrap();
-            assert!(AIDL_TRANSACTION_TABLE.contains(&plan.command_plan));
+            assert!(AIDL_TRANSACTION_TABLE.contains(&plan.command_plan()));
         }
     }
 }

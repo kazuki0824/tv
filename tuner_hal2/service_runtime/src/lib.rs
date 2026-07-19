@@ -29,10 +29,12 @@ mod root_method_txn;
 mod root_object_ops;
 mod transaction_registry;
 
+pub use demux_filter_dvr_ops::DvrStartTransition;
 pub use boot::{
     start_frontend_demux_live_pump_from_reader, CallbackArtifactCleanupResult,
     CallbackArtifactResetCommand, CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport,
     CallbackRegistrationArtifactOutcome, DvrChildRuntimeOpen, DvrStatusPollSnapshot,
+    DvrStatusReadySnapshot,
     FilterChildRuntimeOpen, FilterEventDelivery, FilterEventDeliverySnapshot,
     FilterEventDispatcher, FrontendDemuxPacketSink, FrontendProbeOutcome,
     OwnerCallbackCleanupArtifactCommand, OwnerCallbackCleanupUseCaseOutcome, ServiceBootOutcome,
@@ -60,8 +62,15 @@ pub use diagnostics::{
     DemuxTransactionDiagnosticRecord, DemuxTransactionDiagnosticSnapshot,
     DescramblerDiagnosticKind, DescramblerDiagnosticPhase, DescramblerDiagnosticRecord,
     DescramblerDiagnosticSnapshot, DiagnosticSnapshot, DvrPostCommitNotificationDiagnosticRecord,
+    DvrPlaybackConsumeDiagnosticRecord, DvrPlaybackPacketFailureOutcome,
+    DvrPlaybackPacketFailurePhase, DvrPlaybackPipelineDiagnosticSummary,
     DvrPostCommitNotificationDiagnosticSnapshot, DvrPostCommitNotificationFailureKind,
-    DvrPostCommitNotificationPhase, DvrStatusNotifierCleanupDiagnosticRecord,
+    DvrPostCommitNotificationPhase, DvrPlaybackWorkerCleanupDiagnosticSnapshot,
+    DvrPlaybackWorkerCleanupExecutionReport, DvrPlaybackWorkerCleanupOperation,
+    DvrPlaybackWorkerCleanupPhase,
+    DvrPlaybackWorkerCleanupStepOutcome, DvrPlaybackWorkerCleanupTarget,
+    SharedDvrPlaybackWorkerCleanupDiagnostics,
+    DvrStatusNotifierCleanupDiagnosticRecord,
     DvrStatusNotifierCleanupDiagnosticSnapshot, FilterCallbackDeliveryDiagnosticPhase,
     FilterCallbackDeliveryDiagnosticRecord, FilterCallbackDeliveryDiagnosticSnapshot,
     FrontendCallbackDeliveryDiagnosticPhase, FrontendCallbackDeliveryDiagnosticRecord,
@@ -81,7 +90,9 @@ pub use frontend_worker_txn::{
     stop_frontend_tune_object as stop_frontend_tune_use_case, FrontendCloseCleanupReport,
     FrontendScanEndNotifier, FrontendWorkerCleanupDiagnosticKind,
     FrontendWorkerCleanupDiagnosticRecord, FrontendWorkerCleanupDiagnosticSnapshot,
-    FrontendWorkerCleanupExecutionReport, FrontendWorkerCleanupStep,
+    FrontendWorkerCleanupPublicOutcome,
+    BoundDemuxRollbackPhase, BoundDemuxRollbackTarget, FrontendWorkerCleanupExecutionReport,
+    FrontendWorkerCleanupStep,
     FrontendWorkerCleanupStepOutcome, FrontendWorkerCleanupTarget,
     FrontendWorkerCleanupWorkerGeneration, SharedFrontendWorkerCleanupDiagnostics,
 };
@@ -89,6 +100,7 @@ pub use object_close_txn::{
     close_object_use_case, finish_object_close_use_case, quarantine_object_drop_leak_use_case,
     ObjectArtifactCleanupCommand, ObjectArtifactCleanupExecutor, ObjectArtifactCleanupKind,
     ObjectCleanupDiagnosticKind, ObjectCleanupDiagnosticRecord, ObjectCleanupDiagnosticSnapshot,
+    ObjectCleanupPublicOutcome,
     ObjectCleanupExecutionKind, ObjectCleanupExecutionReport, ObjectCleanupObjectTarget,
     ObjectCleanupStepOutcome, ObjectCloseCleanupFailure, ObjectCloseRuntimeExecutor,
     ObjectCloseUseCasePlan, ObjectRuntimeCleanupCommand, ObjectRuntimeCleanupKind,
@@ -375,6 +387,8 @@ mod tests {
                 .registry()
                 .frontend_runtime(FrontendRuntimeId(1_000_000))
                 .unwrap()
+                .query()
+                .status_snapshot()
                 .generation(),
             0,
             "prepare must not fake-commit a tune state",
@@ -443,11 +457,11 @@ mod tests {
             .frontend_runtime(FrontendRuntimeId(1_000_000))
             .unwrap();
         assert_eq!(
-            frontend.snapshot().state,
+            frontend.query().status_snapshot().state(),
             maleicacid_tuner_hal2_device::FrontendRuntimeState::Failed
         );
         assert!(matches!(
-            frontend.last_error(),
+            frontend.query().diagnostic_snapshot().last_error(),
             Some(HalError::Internal { .. })
         ));
     }
@@ -516,6 +530,8 @@ mod tests {
                 .registry()
                 .frontend_runtime(FrontendRuntimeId(1_000_000))
                 .unwrap()
+                .query()
+                .status_snapshot()
                 .generation(),
             generation,
             "replacement generation reservation must not commit before old worker stop",
@@ -534,15 +550,12 @@ mod tests {
                 ..
             }
         ));
-        assert_eq!(
-            runtime
-                .registry()
-                .frontend_runtime(FrontendRuntimeId(1_000_000))
-                .unwrap()
-                .snapshot()
-                .active_tune_request,
-            Some(request)
-        );
+        let (_, active_tune_request) = runtime
+            .frontend_txn()
+            .prepare_frontend_runtime_rollback_capture(1_000_000)
+            .unwrap()
+            .into_replacement_parts();
+        assert_eq!(active_tune_request, Some(request));
     }
 
     #[test]
@@ -575,12 +588,12 @@ mod tests {
             .registry()
             .frontend_runtime(FrontendRuntimeId(1_000_000))
             .unwrap();
-        assert_eq!(frontend.generation(), generation);
+        assert_eq!(frontend.query().status_snapshot().generation(), generation);
         assert_eq!(
-            frontend.snapshot().state,
+            frontend.query().status_snapshot().state(),
             maleicacid_tuner_hal2_device::FrontendRuntimeState::Tuning { generation }
         );
-        assert!(frontend.live_reader_descriptor().is_some());
+        assert!(frontend.query().live_reader_descriptor_for_live_pump().is_some());
 
         runtime
             .frontend_txn()
@@ -591,10 +604,10 @@ mod tests {
             .frontend_runtime(FrontendRuntimeId(1_000_000))
             .unwrap();
         assert_eq!(
-            frontend.snapshot().state,
+            frontend.query().status_snapshot().state(),
             maleicacid_tuner_hal2_device::FrontendRuntimeState::Idle
         );
-        assert!(frontend.live_reader_descriptor().is_none());
+        assert!(frontend.query().live_reader_descriptor_for_live_pump().is_none());
     }
 
     #[test]
@@ -624,19 +637,29 @@ mod tests {
             )
             .unwrap();
         runtime
-            .registry_mut_for_test()
-            .frontend_runtime_mut(FrontendRuntimeId(1_000_000))
-            .unwrap()
-            .record_scan_cancelled(
+            .frontend_txn()
+            .begin_frontend_scan_session(
+                1_000_000,
+                generation,
+                "scan-cancel-test".to_string(),
+                vec![isdbt_request(473_000_000)],
+            )
+            .unwrap();
+        runtime
+            .frontend_txn()
+            .cancel_frontend_scan_session(
+                1_000_000,
                 generation,
                 maleicacid_tuner_hal2_device::FrontendWorkerCancelReason::StopRequested,
             )
             .unwrap();
-        let events = runtime
+        let diagnostics = runtime
             .registry()
             .frontend_runtime(FrontendRuntimeId(1_000_000))
             .unwrap()
-            .terminal_events();
+            .query()
+            .diagnostic_snapshot();
+        let events = diagnostics.terminal_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].generation, generation);
         assert_eq!(
@@ -653,7 +676,7 @@ mod tests {
             .frontend_runtime(FrontendRuntimeId(1_000_000))
             .unwrap();
         assert_eq!(
-            frontend.snapshot().state,
+            frontend.query().status_snapshot().state(),
             maleicacid_tuner_hal2_device::FrontendRuntimeState::Idle
         );
     }
@@ -808,7 +831,8 @@ mod tests {
             .registry()
             .frontend_runtime(FrontendRuntimeId(2_000_000))
             .unwrap()
-            .live_reader_descriptor()
+            .query()
+            .live_reader_descriptor_for_live_pump()
             .unwrap();
         match &reader.kind {
             maleicacid_tuner_hal2_device::FrontendLiveReaderDescriptorKind::DvbDvrDevice {
@@ -985,10 +1009,10 @@ mod tests {
         let plan =
             RuntimeCommandDispatcher::plan(command_plan, None).expect("dispatch target exists");
         assert_eq!(
-            plan.command_plan.transaction(),
+            plan.command_plan().transaction(),
             RuntimeTransactionName::FrontendTuneTxnApply
         );
-        assert_eq!(plan.target, ServiceRuntimeDispatchTarget::Frontend);
+        assert_eq!(plan.target(), ServiceRuntimeDispatchTarget::Frontend);
     }
 
     #[test]
@@ -1308,7 +1332,8 @@ mod tests {
     fn configured_pes_filter_config(pid: i32) -> FilterConfig {
         FilterConfig {
             open_type: FilterOpenType::TsPes,
-            tpid: pid,
+            tpid: maleicacid_tuner_hal2_demux::ConfigInputPid::validate_tpid(pid)
+                .expect("test filter PID must be valid"),
             kind: FilterConfigKind::TsPes(PesSettings {
                 stream_id: 0,
                 raw: false,

@@ -11,7 +11,7 @@ pub enum DemuxCommand {
 }
 
 impl DemuxCommand {
-    pub fn plan(&self) -> Result<CommandPlan, HalError> {
+    pub(super) fn plan(&self) -> Result<CommandPlan, HalError> {
         match self {
             Self::SetFrontendDataSource(_) => {
                 CommandPlan::for_api(AidlObjectKind::Demux, AidlApi::DemuxSetFrontendDataSource)

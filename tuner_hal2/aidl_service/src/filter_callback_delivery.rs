@@ -64,7 +64,7 @@ fn event_from_snapshot(
             }))
         }
         FilterEventDelivery::Pes {
-            stream_id,
+            packet_pid,
             data_length,
         } => {
             let data_length = i32::try_from(data_length).map_err(|_| {
@@ -74,7 +74,7 @@ fn event_from_snapshot(
                 )
             })?;
             Ok(DemuxFilterEvent::Pes(DemuxFilterPesEvent {
-                streamId: stream_id,
+                streamId: packet_pid.to_i32_for_aidl_boundary(),
                 dataLength: data_length,
                 ..Default::default()
             }))
@@ -265,8 +265,16 @@ mod tests {
             DemuxFilterEvent::Section(DemuxFilterSectionEvent { dataLength: 64, .. })
         ));
 
+        let mut packet = [0xff_u8; maleicacid_tuner_hal2_common::TS_PACKET_SIZE];
+        packet[0] = 0x47;
+        packet[1] = 0x01;
+        packet[2] = 0x00;
+        packet[3] = 0x10;
+        let packet_pid = maleicacid_tuner_hal2_demux::ValidatedTsPacket::validate(&packet)
+            .unwrap()
+            .pid();
         let pes = event_from_snapshot(snapshot(FilterEventDelivery::Pes {
-            stream_id: 256,
+            packet_pid,
             data_length: 1024,
         }))
         .unwrap();

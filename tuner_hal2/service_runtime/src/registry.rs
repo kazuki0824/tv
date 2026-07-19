@@ -13,7 +13,10 @@ use maleicacid_tuner_hal2_common::TS_PACKET_SIZE;
 use maleicacid_tuner_hal2_common::{
     FrontendBackendKind, FrontendSystem, HalError, HalInvalidArgumentKind, HalInvalidStateKind,
 };
-use maleicacid_tuner_hal2_demux::{DemuxRuntime, FilterOpenType, FilterRuntimeState};
+use maleicacid_tuner_hal2_demux::{
+    DemuxGenerationBoundaryAuthorization, DemuxRuntime, DemuxRuntimeError, FilterOpenType,
+    FilterRuntimeState, GenerationBoundaryReport, PipelineBoundaryReason,
+};
 use maleicacid_tuner_hal2_demux::{
     PacketDescramblePolicyFailure, PacketPid, PipelineDiagnostic, PipelineReport,
 };
@@ -353,7 +356,7 @@ impl ResolvedDescramblerPacketMaterial {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RegistryCommitError {
+pub(crate) enum RegistryCommitError {
     DuplicateFrontendId {
         id: FrontendRuntimeId,
     },
@@ -488,7 +491,7 @@ impl RuntimeRegistry {
         self.frontends.len()
     }
 
-    pub fn allocate_demux(&mut self) -> Result<DemuxRegistryEntry, RegistryCommitError> {
+    pub(crate) fn allocate_demux(&mut self) -> Result<DemuxRegistryEntry, RegistryCommitError> {
         let id = DemuxRuntimeId(self.next_demux_id);
         let next = self
             .next_demux_id
@@ -503,7 +506,7 @@ impl RuntimeRegistry {
         Ok(entry)
     }
 
-    pub fn register_demux(&mut self, entry: DemuxRegistryEntry) -> Result<(), RegistryCommitError> {
+    pub(crate) fn register_demux(&mut self, entry: DemuxRegistryEntry) -> Result<(), RegistryCommitError> {
         if self.demuxes.contains_key(&entry.id) {
             return Err(RegistryCommitError::DuplicateDemuxId { id: entry.id });
         }
@@ -513,7 +516,7 @@ impl RuntimeRegistry {
         Ok(())
     }
 
-    pub fn unregister_demux(&mut self, id: DemuxRuntimeId) -> Option<DemuxRegistryEntry> {
+    pub(crate) fn unregister_demux(&mut self, id: DemuxRuntimeId) -> Option<DemuxRegistryEntry> {
         self.demux_frontend_bindings.remove(&id);
         self.demux_runtimes.remove(&id);
         self.demuxes.remove(&id)
@@ -525,6 +528,35 @@ impl RuntimeRegistry {
 
     pub fn demux_runtime_mut(&mut self, id: DemuxRuntimeId) -> Option<&mut DemuxRuntime> {
         self.demux_runtimes.get_mut(&id)
+    }
+
+    pub(crate) fn commit_authorized_demux_generation_boundaries(
+        &mut self,
+        authorizations: Vec<(DemuxRuntimeId, DemuxGenerationBoundaryAuthorization)>,
+        reason: PipelineBoundaryReason,
+    ) -> Result<Vec<GenerationBoundaryReport>, DemuxRuntimeError> {
+        let expected_count = authorizations.len();
+        let mut authorization_by_id = BTreeMap::new();
+        for (demux_id, authorization) in authorizations {
+            if authorization_by_id.insert(demux_id, authorization).is_some() {
+                return Err(DemuxRuntimeError::invalid_state(demux_id.0));
+            }
+            if !self.demux_runtimes.contains_key(&demux_id) {
+                return Err(DemuxRuntimeError::invalid_state(demux_id.0));
+            }
+        }
+        let mut reports = Vec::with_capacity(expected_count);
+        for (demux_id, authorization) in authorization_by_id {
+            let runtime = self
+                .demux_runtimes
+                .get_mut(&demux_id)
+                .ok_or_else(|| DemuxRuntimeError::invalid_state(demux_id.0))?;
+            reports.push(runtime.commit_authorized_generation_boundary(authorization, reason)?);
+        }
+        if reports.len() != expected_count {
+            return Err(DemuxRuntimeError::invalid_state(-1));
+        }
+        Ok(reports)
     }
 
     pub fn bind_demux_frontend(
@@ -558,16 +590,30 @@ impl RuntimeRegistry {
     pub fn quarantine_bound_demuxes_for_frontend(
         &mut self,
         frontend_id: FrontendRuntimeId,
-    ) -> Vec<DemuxRuntimeId> {
+    ) -> Result<Vec<DemuxRuntimeId>, HalError> {
         let demux_ids = self.frontend_bound_demux_ids(frontend_id);
+        let mut missing_runtime_ids = Vec::new();
         for demux_id in &demux_ids {
-            if let Some(runtime) = self.demux_runtimes.get_mut(demux_id) {
-                runtime.quarantine_runtime_from_typed_request(
-                    maleicacid_tuner_hal2_demux::DemuxRuntimeQuarantineRequest::new(),
-                );
+            match self.demux_runtimes.get_mut(demux_id) {
+                Some(runtime) => {
+                    runtime.quarantine_runtime_from_typed_request(
+                        maleicacid_tuner_hal2_demux::DemuxRuntimeQuarantineRequest::new(),
+                    );
+                }
+                None => missing_runtime_ids.push(*demux_id),
             }
         }
-        demux_ids
+        if missing_runtime_ids.is_empty() {
+            Ok(demux_ids)
+        } else {
+            Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                format!(
+                    "bound demux runtime is missing during frontend quarantine: frontend_id={}, missing_demux_runtime_ids={:?}",
+                    frontend_id.0, missing_runtime_ids
+                ),
+            ))
+        }
     }
 
     pub fn demux_ids(&self) -> Vec<DemuxRuntimeId> {
@@ -659,7 +705,7 @@ impl RuntimeRegistry {
         Ok(())
     }
 
-    pub fn register_lnb(&mut self, entry: LnbRegistryEntry) -> Result<(), RegistryCommitError> {
+    pub(crate) fn register_lnb(&mut self, entry: LnbRegistryEntry) -> Result<(), RegistryCommitError> {
         if self.lnbs.contains_key(&entry.id) || self.lnb_runtimes.contains_key(&entry.id) {
             return Err(RegistryCommitError::DuplicateLnbId { id: entry.id });
         }
@@ -710,7 +756,7 @@ impl RuntimeRegistry {
             .collect()
     }
 
-    pub fn unregister_filter(&mut self, id: FilterRuntimeId) -> Option<FilterRegistryEntry> {
+    pub(crate) fn unregister_filter(&mut self, id: FilterRuntimeId) -> Option<FilterRegistryEntry> {
         self.filters.remove(&id)
     }
 
@@ -732,7 +778,7 @@ impl RuntimeRegistry {
         Ok(entry)
     }
 
-    pub fn register_dvr(&mut self, entry: DvrRegistryEntry) -> Result<(), RegistryCommitError> {
+    pub(crate) fn register_dvr(&mut self, entry: DvrRegistryEntry) -> Result<(), RegistryCommitError> {
         if self.dvrs.contains_key(&entry.id) {
             return Err(RegistryCommitError::DuplicateDvrId { id: entry.id });
         }
@@ -744,7 +790,7 @@ impl RuntimeRegistry {
         self.dvrs.get(&id)
     }
 
-    pub fn unregister_dvr(&mut self, id: DvrRuntimeId) -> Option<DvrRegistryEntry> {
+    pub(crate) fn unregister_dvr(&mut self, id: DvrRuntimeId) -> Option<DvrRegistryEntry> {
         self.dvrs.remove(&id)
     }
 
@@ -939,15 +985,20 @@ impl RuntimeRegistry {
             })?;
         if source_snapshot.state == FilterRuntimeState::Open
             || source_snapshot.state.is_closed_or_failed()
-            || source_snapshot.tpid.is_none()
         {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
                 "source filter is not configured",
             ));
         }
+        let Some(source_pid) = source_snapshot.tpid else {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "configured source filter PID is missing",
+            ));
+        };
         if !PacketPid::from_descrambler_pid_for_service_runtime_boundary(pid)
-            .matches_config_tpid_for_service_runtime_boundary(source_snapshot.tpid)
+            .matches_config_input_pid(source_pid)
         {
             return Err(HalError::invalid_argument(
                 HalInvalidArgumentKind::NumericRange,

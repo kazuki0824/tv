@@ -41,6 +41,10 @@ impl<TStepOutcome, TFailure> CleanupExecutionReport<TStepOutcome, TFailure> {
     pub fn outcomes(&self) -> &[TStepOutcome] {
         &self.outcomes
     }
+
+    pub fn extend(&mut self, other: Self) {
+        self.outcomes.extend(other.outcomes);
+    }
 }
 
 impl<TStepOutcome, TFailure> CleanupExecutionReport<TStepOutcome, TFailure>
@@ -53,6 +57,10 @@ where
             .iter()
             .filter_map(|outcome| outcome.result().err())
             .next()
+    }
+
+    pub fn result(&self) -> Result<(), TFailure> {
+        self.first_error().map_or(Ok(()), Err)
     }
 
     pub fn into_result(self) -> Result<(), TFailure> {
@@ -142,6 +150,12 @@ where
         };
         records.push(record);
         Ok(())
+    }
+
+    pub fn record_nonblocking(&self, record: TRecord) {
+        // The failure counter is updated by `record`; lifecycle transitions must not be
+        // aborted solely because the bounded diagnostic store is unavailable.
+        let _record_result = self.record(record);
     }
 
     pub fn snapshot(&self) -> Result<CleanupExecutionDiagnosticSnapshot<TRecord>, HalError> {

@@ -138,10 +138,10 @@ pub enum FilterDelayHint {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub(crate) struct ConfigInputPid(i32);
+pub struct ConfigInputPid(i32);
 
 impl ConfigInputPid {
-    pub(crate) fn validate_tpid(pid: i32) -> Option<Self> {
+    pub fn validate_tpid(pid: i32) -> Option<Self> {
         if (0..=0x1fff).contains(&pid) {
             Some(Self(pid))
         } else {
@@ -151,6 +151,11 @@ impl ConfigInputPid {
 
     pub(crate) const fn raw(self) -> i32 {
         self.0
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(pid: i32) -> Self {
+        Self::validate_tpid(pid).expect("test filter PID must be valid")
     }
 }
 
@@ -172,19 +177,14 @@ pub enum FilterConfigKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FilterConfig {
     pub open_type: FilterOpenType,
-    pub tpid: i32,
+    pub tpid: ConfigInputPid,
     pub kind: FilterConfigKind,
 }
 
 impl FilterConfig {
-    pub(crate) fn validated_tpid(&self) -> Option<ConfigInputPid> {
-        ConfigInputPid::validate_tpid(self.tpid)
-    }
-
     pub(crate) fn pipeline_config(&self) -> FilterPipelineConfig {
-        let tpid = self.validated_tpid();
         FilterPipelineConfig {
-            tpid: tpid.map(ConfigInputPid::raw),
+            tpid: self.tpid,
             raw: match &self.kind {
                 FilterConfigKind::TsSection { raw, .. } => *raw,
                 FilterConfigKind::TsPes(settings) => settings.raw,

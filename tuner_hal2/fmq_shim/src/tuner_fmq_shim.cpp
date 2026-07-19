@@ -17,6 +17,7 @@
 using aidl::android::hardware::common::fmq::SynchronizedReadWrite;
 using android::AidlMessageQueue;
 using QueueType = AidlMessageQueue<int8_t, SynchronizedReadWrite>;
+using DescriptorType = decltype(std::declval<QueueType>().dupeDesc());
 
 struct cached_fmq_descriptor {
     int32_t quantum = 0;
@@ -42,8 +43,17 @@ struct tuner_fmq_queue {
     android::hardware::EventFlag* event_flag = nullptr;
     bool valid = false;
 
-    tuner_fmq_queue(size_t num_bytes, bool configure_event_flag)
+    explicit tuner_fmq_queue(size_t num_bytes, bool configure_event_flag)
         : queue(num_bytes, configure_event_flag) {
+        initialize(configure_event_flag);
+    }
+
+    explicit tuner_fmq_queue(const DescriptorType& descriptor)
+        : queue(descriptor, false) {
+        initialize(queue.getEventFlagWord() != nullptr);
+    }
+
+    void initialize(bool configure_event_flag) {
         if (!queue.isValid()) {
             return;
         }
@@ -102,6 +112,18 @@ extern "C" tuner_fmq_queue* tuner_fmq_queue_create(size_t num_bytes, bool config
     return q;
 }
 
+extern "C" tuner_fmq_queue* tuner_fmq_queue_clone(const tuner_fmq_queue* source) {
+    if (source == nullptr || !source->valid) return nullptr;
+    auto descriptor = source->queue.dupeDesc();
+    auto* q = new (std::nothrow) tuner_fmq_queue(descriptor);
+    if (q == nullptr) return nullptr;
+    if (!q->valid) {
+        delete q;
+        return nullptr;
+    }
+    return q;
+}
+
 extern "C" void tuner_fmq_queue_destroy(tuner_fmq_queue* queue) {
     delete queue;
 }
@@ -136,13 +158,30 @@ extern "C" int tuner_fmq_queue_write_checked(
 }
 
 
-extern "C" size_t tuner_fmq_queue_read(tuner_fmq_queue* queue, uint8_t* data, size_t size) {
-    if (queue == nullptr || data == nullptr || size == 0) return 0;
-    size_t avail = queue->queue.availableToRead();
-    size_t to_read = avail < size ? avail : size;
-    if (to_read == 0) return 0;
-    if (!queue->queue.read(reinterpret_cast<int8_t*>(data), to_read)) return 0;
-    return to_read;
+extern "C" int tuner_fmq_queue_read_checked(
+        tuner_fmq_queue* queue, uint8_t* data, size_t capacity, size_t* out_read) {
+    if (out_read != nullptr) {
+        *out_read = 0;
+    }
+    if (queue == nullptr || out_read == nullptr) {
+        return -1;
+    }
+    if (capacity == 0) {
+        return 0;
+    }
+    if (data == nullptr) {
+        return -1;
+    }
+    const size_t available = queue->queue.availableToRead();
+    const size_t to_read = available < capacity ? available : capacity;
+    if (to_read == 0) {
+        return 0;
+    }
+    if (!queue->queue.read(reinterpret_cast<int8_t*>(data), to_read)) {
+        return -2;
+    }
+    *out_read = to_read;
+    return 0;
 }
 
 extern "C" int tuner_fmq_queue_wake(tuner_fmq_queue* queue, uint32_t bits) {
