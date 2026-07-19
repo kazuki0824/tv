@@ -855,11 +855,11 @@ impl TunerServiceRuntime {
 
     fn filter_event_delivery_snapshots(
         &self,
-        reports: &[PipelineReport],
+        reports: &[maleicacid_tuner_hal2_demux::PlaybackPacketReport],
     ) -> Vec<FilterEventDeliverySnapshot> {
         reports
             .iter()
-            .flat_map(|report| report.generated_events.iter())
+            .flat_map(|packet_report| packet_report.report.generated_events.iter())
             .filter_map(|event| {
                 use maleicacid_tuner_hal2_demux::PipelineGeneratedEvent;
                 let (filter_id, event) = match event {

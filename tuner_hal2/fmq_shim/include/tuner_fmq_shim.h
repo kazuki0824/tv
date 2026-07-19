@@ -27,6 +27,10 @@ int tuner_fmq_queue_write_checked(tuner_fmq_queue* queue, const uint8_t* data,
 // and -2 when libfmq read fails.
 int tuner_fmq_queue_read_checked(tuner_fmq_queue* queue, uint8_t* data,
                                  size_t capacity, size_t* out_read);
+// Drains readable bytes through the existing reader endpoint.
+int tuner_fmq_queue_clear(tuner_fmq_queue* queue, size_t* out_discarded);
+// Resets shared pointers only for an explicit peer-coordinated public flush.
+int tuner_fmq_queue_reset_pointers(tuner_fmq_queue* queue);
 int tuner_fmq_queue_wake(tuner_fmq_queue* queue, uint32_t bits);
 int tuner_fmq_queue_wait(tuner_fmq_queue* queue, uint32_t bits, int64_t timeout_ns, uint32_t* state);
 int32_t tuner_fmq_queue_quantum(const tuner_fmq_queue* queue);

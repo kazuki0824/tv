@@ -3,7 +3,9 @@
 //! TEI / adaptation field / discontinuity / payload有無を1か所で決定する。
 
 use crate::av::AvSharedBackingError;
-use crate::config::{ConfigInputPid, RecordIndexSettings};
+use crate::config::{
+    ConfigInputPid, RecordIndexSettings, SectionCondition, SectionConditionKind,
+};
 use crate::parser::record_index::{RecordEventState, RecordIndexParser, TsRecordEventData};
 use crate::runtime::DemuxRuntimeError;
 use crate::ts_core::PesDropReason;
@@ -11,7 +13,7 @@ use maleicacid_tuner_hal2_common::{
     HalError, TransportStreamPid, TsPacketCompletionBuffer, TS_PACKET_SIZE,
 };
 use maleicacid_tuner_hal2_descrambler::DescramblerPid;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 const PIPELINE_GENERATION_INITIAL: u64 = 0;
 
@@ -372,6 +374,8 @@ pub struct PacketPipeline {
     pub(crate) record_index_parsers: BTreeMap<i32, RecordIndexParser>,
     pub(crate) record_event_states: BTreeMap<i32, RecordEventState>,
     pub(crate) record_index_settings: BTreeMap<i32, RecordIndexSettings>,
+    pub(crate) filter_configs: BTreeMap<i32, FilterPipelineConfig>,
+    pub(crate) section_one_shot_delivered: BTreeSet<i32>,
     pub(crate) resync: PipelineResyncState,
 }
 
@@ -434,14 +438,6 @@ pub enum PipelineGeneratedEvent {
     DataReady {
         filter_id: i32,
     },
-    Section {
-        filter_id: i32,
-        raw: bool,
-    },
-    Pes {
-        filter_id: i32,
-        raw: bool,
-    },
     Record {
         filter_id: i32,
     },
@@ -479,6 +475,12 @@ pub enum PipelineDiagnostic {
         pid: PacketPid,
     },
     SectionAssemblyDrop {
+        pid: PacketPid,
+    },
+    SectionMalformedPointer {
+        pid: PacketPid,
+    },
+    SectionCounterSaturated {
         pid: PacketPid,
     },
     SectionGenerationOverflow {
@@ -576,6 +578,8 @@ impl PipelineDiagnostic {
             | Self::NoPayloadAssemblySuppressed { pid }
             | Self::KeylessScrambledAssemblySuppressed { pid }
             | Self::SectionAssemblyDrop { pid }
+            | Self::SectionMalformedPointer { pid }
+            | Self::SectionCounterSaturated { pid }
             | Self::SectionGenerationOverflow { pid, .. }
             | Self::PesGenerationOverflow { pid, .. }
             | Self::PesAssemblerDrop { pid, .. }
@@ -749,9 +753,25 @@ impl PipelineFilterView {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
+pub(crate) struct SectionPipelineSettings {
+    pub(crate) check_crc: bool,
+    pub(crate) repeat: bool,
+    pub(crate) length_field_bits: i32,
+    pub(crate) condition: SectionCondition,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub(crate) struct PesPipelineSettings {
+    /// -1 means wildcard; otherwise 0..=255.
+    pub(crate) stream_id: i32,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) struct FilterPipelineConfig {
     pub(crate) tpid: ConfigInputPid,
     pub(crate) raw: bool,
+    pub(crate) section: Option<SectionPipelineSettings>,
+    pub(crate) pes: Option<PesPipelineSettings>,
     pub(crate) record_index: Option<RecordIndexSettings>,
 }
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -902,6 +922,78 @@ impl PacketPipeline {
         actions
     }
 
+    fn section_matches_filter(&self, filter_id: i32, section: &[u8]) -> bool {
+        let Some(settings) = self
+            .filter_configs
+            .get(&filter_id)
+            .and_then(|config| config.section.as_ref())
+        else {
+            return false;
+        };
+        let Some(header) = crate::sections::parse_section_header(
+            section,
+            settings.length_field_bits,
+        ) else {
+            return false;
+        };
+        if settings.check_crc
+            && !crate::sections::section_crc_valid(section, settings.length_field_bits)
+        {
+            return false;
+        }
+        match settings.condition.kind {
+            SectionConditionKind::TableInfo => {
+                if settings
+                    .condition
+                    .table_id
+                    .is_some_and(|table_id| table_id != i32::from(header.table_id))
+                {
+                    return false;
+                }
+                if settings
+                    .condition
+                    .version
+                    .is_some_and(|version| header.version != u8::try_from(version).ok())
+                {
+                    return false;
+                }
+                true
+            }
+            SectionConditionKind::SectionBits => {
+                let condition = &settings.condition;
+                let count = condition
+                    .filter
+                    .len()
+                    .max(condition.mask.len())
+                    .max(condition.mode.len());
+                if section.len() < count {
+                    return false;
+                }
+                (0..count).all(|index| {
+                    let expected = condition.filter.get(index).copied().unwrap_or(0);
+                    let mask = condition.mask.get(index).copied().unwrap_or(0);
+                    let negative_mask = condition.mode.get(index).copied().unwrap_or(0) & mask;
+                    let positive_mask = mask & !negative_mask;
+                    let difference = section[index] ^ expected;
+                    let positive_match = (difference & positive_mask) == 0;
+                    // Mode bits select negative matching. At least one selected negative bit must
+                    // differ; requiring every selected bit to differ would reject valid sections.
+                    let negative_match = negative_mask == 0 || (difference & negative_mask) != 0;
+                    positive_match && negative_match
+                })
+            }
+        }
+    }
+
+    fn pes_stream_matches_filter(&self, filter_id: i32, stream_id: u8) -> bool {
+        self.filter_configs
+            .get(&filter_id)
+            .and_then(|config| config.pes.as_ref())
+            .map_or(true, |settings| {
+                settings.stream_id == -1 || settings.stream_id == i32::from(stream_id)
+            })
+    }
+
     pub(crate) fn plan_section_filters(
         &self,
         pid: PacketPid,
@@ -914,6 +1006,7 @@ impl PacketPipeline {
             .filter(|filter| {
                 filter.accepts_packet_pid_from_origin(pid, origin)
                     && filter.open_kind == PipelineOpenKind::Section
+                    && !self.section_one_shot_delivered.contains(&filter.filter_id)
             })
             .map(|filter| filter.filter_id)
             .collect()
@@ -995,28 +1088,11 @@ impl PacketPipeline {
                         .generated_events
                         .push(PipelineGeneratedEvent::Record { filter_id });
                 }
-                PipelineDeliveryAction::SectionPayload { filter_id } => {
-                    report
-                        .generated_events
-                        .push(PipelineGeneratedEvent::Section {
-                            filter_id,
-                            raw: filters
-                                .iter()
-                                .find(|filter| filter.filter_id == filter_id)
-                                .map(|filter| filter.section_raw)
-                                .unwrap_or(false),
-                        });
-                }
-                PipelineDeliveryAction::PesPayload { filter_id }
-                | PipelineDeliveryAction::AvPayload { filter_id } => {
-                    report.generated_events.push(PipelineGeneratedEvent::Pes {
-                        filter_id,
-                        raw: filters
-                            .iter()
-                            .find(|filter| filter.filter_id == filter_id)
-                            .map(|filter| filter.pes_raw)
-                            .unwrap_or(false),
-                    });
+                PipelineDeliveryAction::SectionPayload { .. }
+                | PipelineDeliveryAction::PesPayload { .. }
+                | PipelineDeliveryAction::AvPayload { .. } => {
+                    // Actual section/PES events are emitted only after successful assembly and
+                    // configured condition/stream-id validation.
                 }
                 PipelineDeliveryAction::DvrMirror { .. } => {}
             }
@@ -1142,9 +1218,25 @@ impl PacketPipeline {
                         report.drop_reasons.push(PipelineDropReason::AssemblyDrop);
                         report
                             .diagnostics
-                            .push(PipelineDiagnostic::SectionAssemblyDrop { pid: pid });
+                            .push(PipelineDiagnostic::SectionAssemblyDrop { pid });
+                    }
+                    if outcome.malformed_pointer_drop_delta > 0 {
+                        report
+                            .diagnostics
+                            .push(PipelineDiagnostic::SectionMalformedPointer { pid });
+                    }
+                    if outcome.oversized_section_counter_saturated
+                        || outcome.stale_partial_counter_saturated
+                        || outcome.malformed_pointer_counter_saturated
+                    {
+                        report
+                            .diagnostics
+                            .push(PipelineDiagnostic::SectionCounterSaturated { pid });
                     }
                     for section in outcome.sections {
+                        if !self.section_matches_filter(filter_id, &section) {
+                            continue;
+                        }
                         report
                             .generated_events
                             .push(PipelineGeneratedEvent::SectionPayloadReady {
@@ -1153,6 +1245,15 @@ impl PacketPipeline {
                                 generation: section_generation,
                                 bytes: section,
                             });
+                        if self
+                            .filter_configs
+                            .get(&filter_id)
+                            .and_then(|config| config.section.as_ref())
+                            .is_some_and(|settings| !settings.repeat)
+                        {
+                            self.section_one_shot_delivered.insert(filter_id);
+                            break;
+                        }
                     }
                 }
             } else {
@@ -1240,6 +1341,9 @@ impl PacketPipeline {
                         .push(PipelineDiagnostic::PesAssemblerDrop { pid, reason });
                 }
                 for packet in packets {
+                    if !self.pes_stream_matches_filter(filter_id, packet.stream_id) {
+                        continue;
+                    }
                     report
                         .generated_events
                         .push(PipelineGeneratedEvent::PesPacketReady {
@@ -1257,12 +1361,12 @@ impl PacketPipeline {
         report
     }
 
-    pub fn configure_filter(
-        &mut self,
-        filter_id: i32,
-        config: FilterPipelineConfig,
-    ) {
+    pub fn configure_filter(&mut self, filter_id: i32, config: FilterPipelineConfig) {
+        // This is the transaction commit point. No fallible source/queue operation may follow it,
+        // because clearing assembler/index state is intentionally irreversible data-plane work.
         self.clear_filter_state(filter_id);
+        self.section_one_shot_delivered.remove(&filter_id);
+        self.filter_configs.insert(filter_id, config.clone());
         if let Some(settings) = config.record_index {
             self.record_index_settings.insert(filter_id, settings);
             self.record_index_parsers
@@ -1275,21 +1379,29 @@ impl PacketPipeline {
             self.record_event_states.remove(&filter_id);
         }
     }
+
     pub(crate) fn restore_control_plane_preserving_data_plane(&mut self, snapshot: &Self) {
-        let current_settings = self.record_index_settings.clone();
-        self.record_index_settings = snapshot.record_index_settings.clone();
-        self.record_index_parsers.retain(|filter_id, _| {
-            current_settings.get(filter_id) == self.record_index_settings.get(filter_id)
-        });
-        self.record_event_states.retain(|filter_id, _| {
-            current_settings.get(filter_id) == self.record_index_settings.get(filter_id)
-        });
-        // A parser whose settings changed cannot be retained, and synthesizing a replacement
-        // would restart byte numbering and discard PES/start-code carry. Leave it absent so the
-        // caller can fail closed instead of silently manufacturing a corrupt index continuation.
-        // Section/PES assemblers, continuity, resync and in-flight record parser state are
-        // current data-plane progress. An internal transaction rollback must not resurrect
-        // old TS fragments or rewind packet diagnostics.
+        // Record-index settings and parser carry form one data-plane bundle. Replacing only the
+        // settings with a snapshot while retaining the current parser would combine an old config
+        // with a parser whose byte/PES/start-code state was built for another config. Filter
+        // configure commits this bundle only after all fallible steps, so internal rollback keeps
+        // the current bundle intact and restores only unrelated control-plane configuration.
+        let current_record_configs: BTreeMap<_, _> = self
+            .record_index_settings
+            .keys()
+            .filter_map(|filter_id| {
+                self.filter_configs
+                    .get(filter_id)
+                    .cloned()
+                    .map(|config| (*filter_id, config))
+            })
+            .collect();
+        self.filter_configs = snapshot.filter_configs.clone();
+        for (filter_id, config) in current_record_configs {
+            self.filter_configs.insert(filter_id, config);
+        }
+        self.section_one_shot_delivered
+            .retain(|filter_id| self.filter_configs.contains_key(filter_id));
     }
 
     pub fn remove_filter(&mut self, filter_id: i32) {
@@ -1297,6 +1409,8 @@ impl PacketPipeline {
         self.record_index_parsers.remove(&filter_id);
         self.record_event_states.remove(&filter_id);
         self.record_index_settings.remove(&filter_id);
+        self.filter_configs.remove(&filter_id);
+        self.section_one_shot_delivered.remove(&filter_id);
     }
     pub fn clear_filter_state(&mut self, filter_id: i32) {
         self.section_assemblers
@@ -1928,18 +2042,12 @@ mod tests {
         assert!(report
             .generated_events
             .contains(&PipelineGeneratedEvent::DataReady { filter_id: 10 }));
-        assert!(report
-            .generated_events
-            .contains(&PipelineGeneratedEvent::Section {
-                filter_id: 11,
-                raw: false
-            }));
-        assert!(report
-            .generated_events
-            .contains(&PipelineGeneratedEvent::Pes {
-                filter_id: 12,
-                raw: false
-            }));
+        assert!(report.delivery_actions.contains(
+            &PipelineDeliveryAction::SectionPayload { filter_id: 11 }
+        ));
+        assert!(report.delivery_actions.contains(
+            &PipelineDeliveryAction::PesPayload { filter_id: 12 }
+        ));
     }
 }
 
@@ -2593,6 +2701,8 @@ mod keyless_scrambled_policy_tests {
                 FilterPipelineConfig {
                     tpid: ConfigInputPid::for_test(0x0100),
                     raw: false,
+                    section: None,
+                    pes: None,
                     record_index: Some(RecordIndexSettings {
                         ts_index_mask: DEMUX_TS_INDEX_FIRST_PACKET
                             | DEMUX_TS_INDEX_PAYLOAD_UNIT_START,

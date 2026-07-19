@@ -71,7 +71,7 @@ pub use runtime::{
     FilterRuntimeOperationRequest, FilterRuntimeOperationSkipReason, FilterRuntimeOperationStep,
     FilterRuntimeOperationStepOutcome, FilterRuntimeRegistrationRequest, FilterRuntimeSnapshot,
     FilterRuntimeState, FilterSourceConnectRequest, FilterSourceDisconnectRequest,
-    GenerationBoundaryReport, PlaybackConsumeReport, QueueDescriptorExportPlan,
+    GenerationBoundaryReport, PlaybackConsumeReport, PlaybackPacketReport, QueueDescriptorExportPlan,
     QueueDescriptorExportTarget, QueueDescriptorQueryError, QueueDescriptorSnapshot,
     QueueGrantorDescriptorSnapshot, QueueRuntimeError, QueueRuntimeErrorKind, QueueWaitHandle, QueueWaitResult,
     SourceBoundaryOutcome, SourceBoundaryReport, SourceBoundaryStep, ValidatedPacketIngressRequest,
@@ -282,6 +282,8 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: ConfigInputPid::for_test(0x0020),
                     raw: false,
+                    section: None,
+                    pes: None,
                     record_index: None,
                 },
             )
@@ -390,6 +392,8 @@ mod tests {
                 Some(FilterPipelineConfig {
                     tpid: ConfigInputPid::for_test(0x0100),
                     raw: false,
+                    section: None,
+                    pes: None,
                     record_index: None,
                 }),
             ))
@@ -402,6 +406,8 @@ mod tests {
                 Some(FilterPipelineConfig {
                     tpid: ConfigInputPid::for_test(0x0100),
                     raw: true,
+                    section: None,
+                    pes: None,
                     record_index: None,
                 }),
             ))
@@ -434,6 +440,8 @@ mod tests {
                 Some(FilterPipelineConfig {
                     tpid: ConfigInputPid::for_test(0x0100),
                     raw: true,
+                    section: None,
+                    pes: None,
                     record_index: None,
                 }),
             ))
@@ -446,6 +454,8 @@ mod tests {
                 Some(FilterPipelineConfig {
                     tpid: ConfigInputPid::for_test(0x0100),
                     raw: true,
+                    section: None,
+                    pes: None,
                     record_index: None,
                 }),
             ))
@@ -476,6 +486,8 @@ mod tests {
                 Some(FilterPipelineConfig {
                     tpid: ConfigInputPid::for_test(0x0100),
                     raw: true,
+                    section: None,
+                    pes: None,
                     record_index: None,
                 }),
             ))
@@ -488,6 +500,8 @@ mod tests {
                 Some(FilterPipelineConfig {
                     tpid: ConfigInputPid::for_test(0x0100),
                     raw: false,
+                    section: None,
+                    pes: None,
                     record_index: None,
                 }),
             ))
@@ -682,6 +696,8 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: ConfigInputPid::for_test(0x0123),
                     raw: false,
+                    section: None,
+                    pes: None,
                     record_index: None,
                 },
             )
@@ -750,6 +766,8 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: ConfigInputPid::for_test(0x0100),
                     raw: false,
+                    section: None,
+                    pes: None,
                     record_index: None,
                 },
             )
@@ -769,6 +787,8 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: ConfigInputPid::for_test(0x0100),
                     raw: false,
+                    section: None,
+                    pes: None,
                     record_index: None,
                 },
             )
@@ -902,6 +922,8 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: ConfigInputPid::for_test(0x0100),
                     raw: false,
+                    section: None,
+                    pes: None,
                     record_index: None,
                 },
             )
@@ -964,6 +986,8 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: ConfigInputPid::for_test(0x0100),
                     raw: false,
+                    section: None,
+                    pes: None,
                     record_index: None,
                 },
             )
@@ -1326,6 +1350,8 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: ConfigInputPid::for_test(0x0100),
                     raw: false,
+                    section: None,
+                    pes: None,
                     record_index: None,
                 },
             )
@@ -1437,6 +1463,8 @@ mod tests {
                 Some(FilterPipelineConfig {
                     tpid: ConfigInputPid::for_test(100),
                     raw: false,
+                    section: None,
+                    pes: None,
                     record_index: None,
                 }),
             ))
@@ -1449,6 +1477,8 @@ mod tests {
             FilterPipelineConfig {
                 tpid: ConfigInputPid::for_test(101),
                 raw: true,
+                    section: None,
+                    pes: None,
                 record_index: None,
             },
         );
@@ -1481,6 +1511,8 @@ mod tests {
             FilterPipelineConfig {
                 tpid: ConfigInputPid::for_test(100),
                 raw: false,
+                    section: None,
+                    pes: None,
                 record_index: None,
             },
         );
@@ -1495,6 +1527,8 @@ mod tests {
             FilterPipelineConfig {
                 tpid: ConfigInputPid::for_test(101),
                 raw: false,
+                    section: None,
+                    pes: None,
                 record_index: None,
             },
         );
@@ -1518,6 +1552,8 @@ mod tests {
                 Some(FilterPipelineConfig {
                     tpid: ConfigInputPid::for_test(100),
                     raw: false,
+                    section: None,
+                    pes: None,
                     record_index: None,
                 }),
             ))
@@ -1531,6 +1567,8 @@ mod tests {
             FilterPipelineConfig {
                 tpid: ConfigInputPid::for_test(101),
                 raw: false,
+                    section: None,
+                    pes: None,
                 record_index: None,
             },
         );
@@ -1557,6 +1595,8 @@ mod tests {
                 Some(FilterPipelineConfig {
                     tpid: ConfigInputPid::for_test(200),
                     raw: true,
+                    section: None,
+                    pes: None,
                     record_index: None,
                 }),
             ))
@@ -1636,6 +1676,8 @@ mod tests {
                 Some(FilterPipelineConfig {
                     tpid: ConfigInputPid::for_test(300),
                     raw: false,
+                    section: None,
+                    pes: None,
                     record_index: None,
                 }),
             ))
@@ -1657,6 +1699,8 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: ConfigInputPid::for_test(301),
                     raw: false,
+                    section: None,
+                    pes: None,
                     record_index: None,
                 },
             )
@@ -1685,6 +1729,8 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: ConfigInputPid::for_test(400),
                     raw: false,
+                    section: None,
+                    pes: None,
                     record_index: None,
                 },
             )
@@ -1739,6 +1785,8 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: ConfigInputPid::for_test(400),
                     raw: false,
+                    section: None,
+                    pes: None,
                     record_index: None,
                 },
             )
@@ -1771,6 +1819,8 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: ConfigInputPid::for_test(401),
                     raw: false,
+                    section: None,
+                    pes: None,
                     record_index: None,
                 },
             )
@@ -1824,6 +1874,8 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: ConfigInputPid::for_test(402),
                     raw: false,
+                    section: None,
+                    pes: None,
                     record_index: None,
                 },
             )
@@ -1868,6 +1920,8 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: ConfigInputPid::for_test(403),
                     raw: false,
+                    section: None,
+                    pes: None,
                     record_index: None,
                 },
             )
@@ -2069,6 +2123,8 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: ConfigInputPid::for_test(0x0030),
                     raw: false,
+                    section: None,
+                    pes: None,
                     record_index: None,
                 },
             )
@@ -2112,6 +2168,8 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: ConfigInputPid::for_test(0x0100),
                     raw: false,
+                    section: None,
+                    pes: None,
                     record_index: None,
                 },
             )
@@ -2159,6 +2217,8 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: ConfigInputPid::for_test(0x0100),
                     raw: false,
+                    section: None,
+                    pes: None,
                     record_index: None,
                 },
             )
@@ -2203,6 +2263,8 @@ mod tests {
             FilterPipelineConfig {
                 tpid: ConfigInputPid::for_test(100),
                 raw: false,
+                    section: None,
+                    pes: None,
                 record_index: None,
             },
         );
@@ -2243,6 +2305,8 @@ mod tests {
             FilterPipelineConfig {
                 tpid: ConfigInputPid::for_test(100),
                 raw: false,
+                    section: None,
+                    pes: None,
                 record_index: None,
             },
         );
@@ -2309,6 +2373,8 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: ConfigInputPid::for_test(0x0100),
                     raw: false,
+                    section: None,
+                    pes: None,
                     record_index: None,
                 },
             )
@@ -2328,6 +2394,8 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: ConfigInputPid::for_test(0x0100),
                     raw: false,
+                    section: None,
+                    pes: None,
                     record_index: None,
                 },
             )
@@ -2378,6 +2446,8 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: ConfigInputPid::for_test(0x0100),
                     raw: false,
+                    section: None,
+                    pes: None,
                     record_index: None,
                 },
             )

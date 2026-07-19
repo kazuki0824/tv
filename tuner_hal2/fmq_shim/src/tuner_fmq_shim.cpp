@@ -184,6 +184,39 @@ extern "C" int tuner_fmq_queue_read_checked(
     return 0;
 }
 
+extern "C" int tuner_fmq_queue_clear(
+        tuner_fmq_queue* queue, size_t* out_discarded) {
+    if (out_discarded != nullptr) {
+        *out_discarded = 0;
+    }
+    if (queue == nullptr || !queue->valid || out_discarded == nullptr) {
+        return -1;
+    }
+    std::vector<int8_t> scratch(4096);
+    size_t total = 0;
+    while (true) {
+        const size_t available = queue->queue.availableToRead();
+        if (available == 0) {
+            *out_discarded = total;
+            return 0;
+        }
+        const size_t chunk = available < scratch.size() ? available : scratch.size();
+        if (!queue->queue.read(scratch.data(), chunk)) {
+            return -2;
+        }
+        total += chunk;
+    }
+}
+
+extern "C" int tuner_fmq_queue_reset_pointers(tuner_fmq_queue* queue) {
+    if (queue == nullptr || !queue->valid) {
+        return -1;
+    }
+    auto descriptor = queue->queue.dupeDesc();
+    QueueType resetter(descriptor, true);
+    return resetter.isValid() ? 0 : -2;
+}
+
 extern "C" int tuner_fmq_queue_wake(tuner_fmq_queue* queue, uint32_t bits) {
     if (queue == nullptr || queue->event_flag == nullptr) return -1;
     return queue->event_flag->wake(bits);

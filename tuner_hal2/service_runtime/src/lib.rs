@@ -66,6 +66,7 @@ pub use diagnostics::{
     DvrPlaybackPacketFailurePhase, DvrPlaybackPipelineDiagnosticSummary,
     DvrPostCommitNotificationDiagnosticSnapshot, DvrPostCommitNotificationFailureKind,
     DvrPostCommitNotificationPhase, DvrPlaybackWorkerCleanupDiagnosticSnapshot,
+    DvrPlaybackWorkerCleanupAttemptDiagnosticRecord,
     DvrPlaybackWorkerCleanupExecutionReport, DvrPlaybackWorkerCleanupOperation,
     DvrPlaybackWorkerCleanupPhase,
     DvrPlaybackWorkerCleanupStepOutcome, DvrPlaybackWorkerCleanupTarget,

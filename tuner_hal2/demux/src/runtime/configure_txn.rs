@@ -234,19 +234,21 @@ impl FilterConfigureTxn {
             }
         };
         self.record_step(FilterConfigureStep::ApplySoftDemuxConfig);
-        if let Err(error) = demux.configure_filter_runtime(self.filter_id, config) {
-            self.restore_after_failure(
-                demux,
-                rollback_snapshot,
-                FilterConfigureStep::ApplySoftDemuxConfig,
-                error,
-            );
-            return (self, Err(error));
-        }
+        let prepared_config = match demux.prepare_filter_runtime_configuration(self.filter_id, config) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.outcome = Some(FilterConfigureOutcome::Failed {
+                    failed_step: FilterConfigureStep::ApplySoftDemuxConfig,
+                    primary_error: error,
+                });
+                return (self, Err(error));
+            }
+        };
 
-        // source-boundary commit と generation/pipeline reset を最終操作にする。
-        // queue identity は維持し、export 済み queue が非空または不一致なら、
-        // shared pointer reset や queue instance 置換を行わず失敗させる。
+        // Source/queue boundary is the final fallible operation. The irreversible assembler,
+        // continuity and record-index reset is committed only after this succeeds.
+        // queue identity は維持し、export 済み queue の未読 payload は同じ FMQ instance
+        // 上で drain する。role/capacity/instance identity の不一致だけを失敗とする。
         self.record_step(FilterConfigureStep::DisconnectOldSource);
         let (source_boundary_report, disconnect_result) =
             demux.disconnect_filter_source(self.filter_id);
@@ -291,6 +293,17 @@ impl FilterConfigureTxn {
 
         self.record_step(FilterConfigureStep::ResetQueue);
         self.record_step(FilterConfigureStep::Commit);
+        if let Err(error) = demux.commit_filter_runtime_configuration(prepared_config) {
+            demux.quarantine();
+            self.record_step(FilterConfigureStep::QuarantineOnRollbackFailure);
+            self.outcome = Some(FilterConfigureOutcome::Quarantined {
+                failed_step: FilterConfigureStep::Commit,
+                primary_error: error,
+                rollback_step: FilterConfigureStep::Commit,
+                rollback_error: error,
+            });
+            return (self, Err(error));
+        }
         let outcome = FilterConfigureOutcome::Committed;
         self.outcome = Some(outcome);
         (self, Ok(outcome))

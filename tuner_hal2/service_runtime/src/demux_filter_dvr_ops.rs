@@ -692,7 +692,7 @@ impl TunerServiceRuntime {
         self.dvr_started_for_object(object_id, generation)
     }
 
-    pub(crate) fn rollback_started_dvr_after_playback_worker_failure(
+    pub fn rollback_started_dvr_after_playback_worker_failure(
         &mut self,
         object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
         generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
@@ -703,6 +703,19 @@ impl TunerServiceRuntime {
             maleicacid_tuner_hal2_domain_request::AidlObjectKind::Dvr,
         )?;
         self.transact_stop_dvr_runtime(dvr_id)
+    }
+
+    pub fn mark_dvr_failed_after_playback_worker_cleanup_failure(
+        &mut self,
+        object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
+        generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
+    ) -> Result<(), HalError> {
+        let dvr_id = self.public_runtime_id_for_object_method(
+            object_id,
+            generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Dvr,
+        )?;
+        self.transact_mark_dvr_failed_runtime(dvr_id)
     }
 
     pub fn stop_dvr_for_object(

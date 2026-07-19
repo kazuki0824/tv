@@ -105,13 +105,17 @@ pub struct SectionPushOutcome {
     pub sections: Vec<Vec<u8>>,
     pub oversized_section_drop_delta: u64,
     pub stale_partial_discard_delta: u64,
+    pub malformed_pointer_drop_delta: u64,
     pub oversized_section_counter_saturated: bool,
     pub stale_partial_counter_saturated: bool,
+    pub malformed_pointer_counter_saturated: bool,
 }
 
 impl SectionPushOutcome {
     pub fn has_drop_or_discard(&self) -> bool {
-        self.oversized_section_drop_delta > 0 || self.stale_partial_discard_delta > 0
+        self.oversized_section_drop_delta > 0
+            || self.stale_partial_discard_delta > 0
+            || self.malformed_pointer_drop_delta > 0
     }
 }
 
@@ -121,8 +125,10 @@ pub struct SectionAssembler {
     buf: Vec<u8>,
     oversized_section_drops: u64,
     stale_partial_section_discards: u64,
+    malformed_pointer_drops: u64,
     oversized_section_drop_counter_saturated: bool,
     stale_partial_section_discard_counter_saturated: bool,
+    malformed_pointer_drop_counter_saturated: bool,
 }
 
 impl SectionAssembler {
@@ -155,6 +161,13 @@ impl SectionAssembler {
         }
     }
 
+    fn increment_malformed_pointer_drops(&mut self) {
+        match self.malformed_pointer_drops.checked_add(1) {
+            Some(next) => self.malformed_pointer_drops = next,
+            None => self.malformed_pointer_drop_counter_saturated = true,
+        }
+    }
+
     pub(crate) fn set_expected_len_or_drop(&mut self, expected_len: usize) -> bool {
         if expected_len > MAX_SECTION_PAYLOAD_BYTES {
             self.increment_oversized_section_drops();
@@ -172,8 +185,10 @@ impl SectionAssembler {
     ) -> SectionPushOutcome {
         let oversized_before = self.oversized_section_drops;
         let stale_before = self.stale_partial_section_discards;
+        let malformed_pointer_before = self.malformed_pointer_drops;
         let oversized_saturated_before = self.oversized_section_drop_counter_saturated;
         let stale_saturated_before = self.stale_partial_section_discard_counter_saturated;
+        let malformed_pointer_saturated_before = self.malformed_pointer_drop_counter_saturated;
         let sections = self.push_payload(payload_unit_start, payload);
         SectionPushOutcome {
             sections,
@@ -183,10 +198,15 @@ impl SectionAssembler {
             stale_partial_discard_delta: self
                 .stale_partial_section_discards
                 .saturating_sub(stale_before),
+            malformed_pointer_drop_delta: self
+                .malformed_pointer_drops
+                .saturating_sub(malformed_pointer_before),
             oversized_section_counter_saturated: !oversized_saturated_before
                 && self.oversized_section_drop_counter_saturated,
             stale_partial_counter_saturated: !stale_saturated_before
                 && self.stale_partial_section_discard_counter_saturated,
+            malformed_pointer_counter_saturated: !malformed_pointer_saturated_before
+                && self.malformed_pointer_drop_counter_saturated,
         }
     }
 
@@ -204,6 +224,7 @@ impl SectionAssembler {
         if payload_unit_start {
             let pointer = payload[0] as usize;
             if 1 + pointer > payload.len() {
+                self.increment_malformed_pointer_drops();
                 self.reset();
                 return out;
             }

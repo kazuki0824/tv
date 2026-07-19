@@ -256,7 +256,6 @@ impl FilterRuntime {
     pub fn av_backing_present(&self) -> bool {
         self.av_backing_present
     }
-    #[cfg(test)]
     pub(crate) fn delivery_readiness(&self) -> crate::config::FilterDelayReadiness {
         self.delay_hints.delivery_readiness(
             self.delivery_not_before
@@ -271,6 +270,14 @@ impl FilterRuntime {
             self.queued_bytes,
         )
     }
+    pub(crate) fn delivery_deadline(&self) -> Option<Instant> {
+        self.delivery_not_before
+    }
+
+    pub(crate) fn has_queued_payload(&self) -> bool {
+        self.queued_bytes > 0
+    }
+
     pub fn snapshot(&self) -> FilterRuntimeSnapshot {
         FilterRuntimeSnapshot {
             state: self.state,

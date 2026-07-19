@@ -1195,14 +1195,24 @@ impl TunerServiceRuntime {
                 &packet,
                 maleicacid_tuner_hal2_demux::TsInputOrigin::Playback,
             ) {
-                Ok(packet_report) => report.packet_reports.push(packet_report),
+                Ok(packet_report) => report.packet_reports.push(
+                    maleicacid_tuner_hal2_demux::PlaybackPacketReport {
+                        packet_index,
+                        report: packet_report,
+                    },
+                ),
                 Err(failure) => {
-                    let pid = (packet[0] == 0x47).then(|| {
-                        (u16::from(packet[1] & 0x1f) << 8) | u16::from(packet[2])
-                    });
+                    let packet_context = match maleicacid_tuner_hal2_demux::ValidatedTsPacket::validate(&packet) {
+                        Ok(validated) => crate::diagnostics::DvrPlaybackPacketContext::Validated {
+                            pid: validated.pid(),
+                        },
+                        Err(error) => crate::diagnostics::DvrPlaybackPacketContext::ValidationFailed {
+                            error,
+                        },
+                    };
                     packet_failures.push(crate::diagnostics::DvrPlaybackPacketFailureOutcome {
                         packet_index,
-                        pid,
+                        packet_context,
                         phase: failure.phase,
                         error: failure.error,
                     });
@@ -1277,6 +1287,24 @@ impl TunerServiceRuntime {
         };
         demux_runtime
             .stop_dvr_runtime_from_typed_request(
+                maleicacid_tuner_hal2_demux::DvrRuntimeOperationRequest::new(dvr_id),
+            )
+            .map_err(Self::map_dvr_runtime_error)
+    }
+
+    pub(crate) fn transact_mark_dvr_failed_runtime(&mut self, dvr_id: i32) -> Result<(), HalError> {
+        let owner_demux_id = self.owner_demux_id_for_dvr(dvr_id)?;
+        let Some(demux_runtime) = self
+            .registry
+            .demux_runtime_mut(DemuxRuntimeId(owner_demux_id))
+        else {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "owner demux runtime is missing while marking DVR failed",
+            ));
+        };
+        demux_runtime
+            .mark_dvr_failed_from_typed_request(
                 maleicacid_tuner_hal2_demux::DvrRuntimeOperationRequest::new(dvr_id),
             )
             .map_err(Self::map_dvr_runtime_error)

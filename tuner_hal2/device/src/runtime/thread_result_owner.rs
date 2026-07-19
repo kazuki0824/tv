@@ -5,8 +5,9 @@
 //! the caller.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
 
@@ -17,6 +18,7 @@ enum ThreadResultFailure {
     ResultLockPoison,
     MissingReport,
     ResultAlreadyCollected,
+    JoinTimeout,
 }
 
 impl ThreadResultFailure {
@@ -27,6 +29,7 @@ impl ThreadResultFailure {
             ThreadResultFailure::ResultLockPoison => "thread result lock poisoned",
             ThreadResultFailure::MissingReport => "finished without report",
             ThreadResultFailure::ResultAlreadyCollected => "thread result already collected",
+            ThreadResultFailure::JoinTimeout => "thread did not terminate before the bounded join deadline",
         };
         HalError::internal(
             HalInternalKind::InvariantViolation,
@@ -42,13 +45,13 @@ pub(crate) enum ThreadResultPoll<T> {
 
 struct ThreadResultProducer<T> {
     result: Arc<Mutex<Option<Result<T, HalError>>>>,
-    producer_failure: Arc<Mutex<Option<HalError>>>,
+    producer_failure: Arc<OnceLock<HalError>>,
 }
 
 impl<T> ThreadResultProducer<T> {
     fn new(
         result: Arc<Mutex<Option<Result<T, HalError>>>>,
-        producer_failure: Arc<Mutex<Option<HalError>>>,
+        producer_failure: Arc<OnceLock<HalError>>,
     ) -> Self {
         Self {
             result,
@@ -63,9 +66,7 @@ impl<T> ThreadResultProducer<T> {
             }
             Err(_) => {
                 let error = ThreadResultFailure::ResultLockPoison.into_hal_error(name);
-                if let Ok(mut guard) = self.producer_failure.lock() {
-                    *guard = Some(error);
-                }
+                drop(self.producer_failure.set(error));
             }
         }
     }
@@ -73,7 +74,7 @@ impl<T> ThreadResultProducer<T> {
 
 pub(crate) struct ThreadResultOwner<T> {
     result: Arc<Mutex<Option<Result<T, HalError>>>>,
-    producer_failure: Arc<Mutex<Option<HalError>>>,
+    producer_failure: Arc<OnceLock<HalError>>,
     join: Option<JoinHandle<()>>,
     name: &'static str,
     join_failure: Option<HalError>,
@@ -98,7 +99,7 @@ where
         run: impl FnOnce() -> Result<T, HalError> + Send + 'static,
     ) -> Result<Self, HalError> {
         let result = Arc::new(Mutex::new(None));
-        let producer_failure = Arc::new(Mutex::new(None));
+        let producer_failure = Arc::new(OnceLock::new());
         let producer =
             ThreadResultProducer::new(Arc::clone(&result), Arc::clone(&producer_failure));
         let join = thread::Builder::new()
@@ -145,17 +146,8 @@ where
         if let Some(error) = self.join_failure.take() {
             return ThreadResultPoll::Completed(Err(error));
         }
-        match self.producer_failure.lock() {
-            Ok(mut guard) => {
-                if let Some(error) = guard.take() {
-                    return ThreadResultPoll::Completed(Err(error));
-                }
-            }
-            Err(_) => {
-                return ThreadResultPoll::Completed(Err(
-                    ThreadResultFailure::ResultLockPoison.into_hal_error(self.name)
-                ));
-            }
+        if let Some(error) = self.producer_failure.get() {
+            return ThreadResultPoll::Completed(Err(error.clone()));
         }
         match self.result.lock() {
             Ok(mut guard) => match guard.take() {
@@ -170,7 +162,51 @@ where
         }
     }
 
-    pub(crate) fn join_after_stop(mut self) -> Result<T, HalError> {
+    pub(crate) fn join_after_stop(self) -> Result<T, HalError> {
+        self.join_after_stop_with_timeout(Duration::from_secs(5))
+    }
+
+    pub(crate) fn join_after_stop_with_timeout(self, timeout: Duration) -> Result<T, HalError> {
+        let deadline = Instant::now().checked_add(timeout).unwrap_or_else(Instant::now);
+        while self
+            .join
+            .as_ref()
+            .map(|handle| !handle.is_finished())
+            .unwrap_or(false)
+        {
+            if Instant::now() >= deadline {
+                let name = self.name;
+                let owner = Arc::new(Mutex::new(Some(self)));
+                let watcher_owner = Arc::clone(&owner);
+                let spawn_result = thread::Builder::new()
+                    .name(format!("{name}-join-watchdog"))
+                    .spawn(move || {
+                        if let Ok(mut guard) = watcher_owner.lock() {
+                            if let Some(owner) = guard.take() {
+                                // The public caller has already received JoinTimeout. The watchdog
+                                // retains ownership until the backend thread actually terminates.
+                                drop(owner.join_after_stop_blocking());
+                            }
+                        }
+                    });
+                if let Err(spawn_error) = spawn_result {
+                    // Never fall back to an unbounded join: that would recreate the public
+                    // lifecycle hang this path is meant to prevent. Dropping the retained owner
+                    // detaches the still-running thread; callers fail-close the owning runtime.
+                    drop(owner);
+                    return Err(HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        format!("{name}: join timed out and join watchdog spawn failed: {spawn_error}"),
+                    ));
+                }
+                return Err(ThreadResultFailure::JoinTimeout.into_hal_error(name));
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        self.join_after_stop_blocking()
+    }
+
+    fn join_after_stop_blocking(mut self) -> Result<T, HalError> {
         if self.collected {
             return Err(ThreadResultFailure::ResultAlreadyCollected.into_hal_error(self.name));
         }
@@ -183,13 +219,8 @@ where
         if let Some(error) = self.join_failure.take() {
             return Err(error);
         }
-        match self.producer_failure.lock() {
-            Ok(mut guard) => {
-                if let Some(error) = guard.take() {
-                    return Err(error);
-                }
-            }
-            Err(_) => return Err(ThreadResultFailure::ResultLockPoison.into_hal_error(self.name)),
+        if let Some(error) = self.producer_failure.get() {
+            return Err(error.clone());
         }
         match self.result.lock() {
             Ok(mut guard) => match guard.take() {
@@ -226,7 +257,7 @@ where
     ) -> Self {
         Self {
             result,
-            producer_failure: Arc::new(Mutex::new(None)),
+            producer_failure: Arc::new(OnceLock::new()),
             join,
             name,
             join_failure: None,
@@ -250,7 +281,7 @@ mod tests {
     fn thread_result_owner_recorded_join_failure_is_error() {
         let owner = ThreadResultOwner::<u32> {
             result: Arc::new(Mutex::new(Some(Ok(1)))),
-            producer_failure: Arc::new(Mutex::new(None)),
+            producer_failure: Arc::new(OnceLock::new()),
             join: None,
             name: "recorded_join_failure",
             join_failure: Some(
@@ -316,7 +347,7 @@ mod tests {
         let join = thread::spawn(|| {});
         let owner = ThreadResultOwner::<u32> {
             result,
-            producer_failure: Arc::new(Mutex::new(None)),
+            producer_failure: Arc::new(OnceLock::new()),
             join: Some(join),
             name: "missing",
             join_failure: None,
@@ -328,11 +359,13 @@ mod tests {
     #[test]
     fn thread_result_owner_producer_failure_is_reported() {
         let join = thread::spawn(|| {});
+        let producer_failure = Arc::new(OnceLock::new());
+        let _ = producer_failure.set(
+            ThreadResultFailure::ResultLockPoison.into_hal_error("producer_failure"),
+        );
         let owner = ThreadResultOwner::<u32> {
             result: Arc::new(Mutex::new(None)),
-            producer_failure: Arc::new(Mutex::new(Some(
-                ThreadResultFailure::ResultLockPoison.into_hal_error("producer_failure"),
-            ))),
+            producer_failure,
             join: Some(join),
             name: "producer_failure",
             join_failure: None,

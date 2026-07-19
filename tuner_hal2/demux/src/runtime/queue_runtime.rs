@@ -324,6 +324,48 @@ impl QueueRuntime {
         }
     }
 
+    /// Cleanup without peer-coordinated public-flush authority. A HAL reader may drain through
+    /// its existing endpoint; a HAL writer may only prove the queue is already empty.
+    pub(crate) fn clear(&self) -> Result<usize, QueueRuntimeError> {
+        match &self.endpoint {
+            QueueEndpoint::HalReader(reader) => reader
+                .clear()
+                .map_err(|err| map_data_path_error(err, "FMQ reader clear failed")),
+            QueueEndpoint::HalWriter(writer) => {
+                let fill = writer
+                    .current_fill()
+                    .map_err(|err| map_data_path_error(err, "FMQ writer fill query failed"))?;
+                if fill == 0 {
+                    Ok(0)
+                } else {
+                    Err(QueueRuntimeError::new(
+                        QueueRuntimeErrorKind::RoleViolation,
+                        "HAL writer cannot drain a non-empty synchronized FMQ",
+                    ))
+                }
+            }
+        }
+    }
+
+    /// Explicit public flush authority. A HAL reader drains through its existing endpoint;
+    /// a HAL writer resets shared pointers because the framework initiated this flush boundary.
+    pub(crate) fn flush(&self) -> Result<usize, QueueRuntimeError> {
+        match &self.endpoint {
+            QueueEndpoint::HalReader(reader) => reader
+                .clear()
+                .map_err(|err| map_data_path_error(err, "FMQ reader flush failed")),
+            QueueEndpoint::HalWriter(writer) => {
+                let discarded = writer
+                    .current_fill()
+                    .map_err(|err| map_data_path_error(err, "FMQ writer fill query failed"))?;
+                writer
+                    .reset_pointers_for_flush()
+                    .map_err(|err| map_data_path_error(err, "FMQ writer pointer reset failed"))?;
+                Ok(discarded)
+            }
+        }
+    }
+
     pub fn wake(&self, event_mask: u32) -> Result<(), QueueRuntimeError> {
         match &self.endpoint {
             QueueEndpoint::HalWriter(writer) => writer.wake(event_mask),

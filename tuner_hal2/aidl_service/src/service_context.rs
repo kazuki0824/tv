@@ -33,9 +33,9 @@ use crate::object_handle::AidlObjectHandle;
 const MAX_DROP_LEAK_ERROR_RECORDS: usize = 64;
 
 fn saturating_increment_atomic_usize(counter: &AtomicUsize) {
-    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+    drop(counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
         Some(value.saturating_add(1))
-    });
+    }));
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -78,7 +78,8 @@ pub struct AidlServiceContext {
     dvr_status_notifiers: Mutex<BTreeMap<DvrStatusNotifierKey, DvrStatusNotifier>>,
     dvr_playback_worker_lifecycle: Mutex<()>,
     dvr_playback_workers: Mutex<DvrPlaybackWorkerMap>,
-    dvr_playback_worker_cleanup_next_attempt_id: AtomicU64,
+    dvr_playback_worker_cleanup_next_attempt_id: Mutex<u128>,
+    dvr_playback_worker_next_run_id: Mutex<u128>,
     drop_leak_error_records: Mutex<BoundedDiagnosticStore<DropLeakErrorRecord>>,
     drop_leak_error_record_failures: AtomicUsize,
     callback_artifact_runtime_split_diagnostics: SharedCallbackArtifactRuntimeSplitDiagnostics,
@@ -112,7 +113,8 @@ impl AidlServiceContext {
             dvr_status_notifiers: Mutex::new(BTreeMap::new()),
             dvr_playback_worker_lifecycle: Mutex::new(()),
             dvr_playback_workers: Mutex::new(BTreeMap::new()),
-            dvr_playback_worker_cleanup_next_attempt_id: AtomicU64::new(1),
+            dvr_playback_worker_cleanup_next_attempt_id: Mutex::new(1),
+            dvr_playback_worker_next_run_id: Mutex::new(1),
             drop_leak_error_records: Mutex::new(BoundedDiagnosticStore::new(
                 MAX_DROP_LEAK_ERROR_RECORDS,
             )),
@@ -166,7 +168,8 @@ impl AidlServiceContext {
             dvr_status_notifiers: Mutex::new(BTreeMap::new()),
             dvr_playback_worker_lifecycle: Mutex::new(()),
             dvr_playback_workers: Mutex::new(BTreeMap::new()),
-            dvr_playback_worker_cleanup_next_attempt_id: AtomicU64::new(1),
+            dvr_playback_worker_cleanup_next_attempt_id: Mutex::new(1),
+            dvr_playback_worker_next_run_id: Mutex::new(1),
             drop_leak_error_records: Mutex::new(BoundedDiagnosticStore::new(
                 MAX_DROP_LEAK_ERROR_RECORDS,
             )),
@@ -251,20 +254,55 @@ impl AidlServiceContext {
 
     pub(crate) fn next_dvr_playback_worker_cleanup_attempt_id(
         &self,
-    ) -> (Option<u64>, Result<(), HalError>) {
-        match self
+    ) -> Result<u128, HalError> {
+        let mut next = self
             .dvr_playback_worker_cleanup_next_attempt_id
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| value.checked_add(1))
-        {
-            Ok(attempt_id) => (Some(attempt_id), Ok(())),
-            Err(_) => (
-                None,
-                Err(HalError::internal(
+            .lock()
+            .map_err(|_| {
+                HalError::internal(
                     HalInternalKind::InvariantViolation,
-                    "DVR playback worker cleanup attempt id exhausted",
-                )),
-            ),
-        }
+                    "DVR playback worker cleanup attempt id lock poisoned",
+                )
+            })?;
+        let attempt_id = *next;
+        *next = next.checked_add(1).ok_or_else(|| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "DVR playback worker cleanup attempt id exhausted",
+            )
+        })?;
+        Ok(attempt_id)
+    }
+
+    pub(crate) fn next_dvr_playback_worker_run_id(&self) -> Result<u128, HalError> {
+        let mut next = self.dvr_playback_worker_next_run_id.lock().map_err(|_| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "DVR playback worker run id lock poisoned",
+            )
+        })?;
+        let run_id = *next;
+        *next = next.checked_add(1).ok_or_else(|| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "DVR playback worker run id exhausted",
+            )
+        })?;
+        Ok(run_id)
+    }
+
+    pub(crate) fn dvr_playback_worker_is_current(
+        &self,
+        key: crate::dvr_playback_worker::DvrPlaybackWorkerKey,
+        run_id: u128,
+    ) -> Result<bool, HalError> {
+        let store = self.dvr_playback_workers.lock().map_err(|_| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "DVR playback worker store lock poisoned while validating run ownership",
+            )
+        })?;
+        Ok(store.get(&key).is_some_and(|worker| worker.run_id() == run_id))
     }
 
     pub(crate) fn runtime(&self) -> SharedTunerRuntime {
@@ -499,16 +537,11 @@ impl AidlServiceContext {
         &self,
         report: &DvrPlaybackWorkerCleanupExecutionReport,
     ) {
-        for outcome in report.outcomes().iter().cloned() {
-            let record_failed = self
-                .dvr_playback_worker_cleanup_diagnostics
-                .record(outcome)
-                .is_err();
-            if record_failed {
-                // SharedCleanupDiagnostics increments its saturating record-failure counter.
-                // Diagnostic-store availability must not change worker lifecycle outcome.
-            }
-        }
+        let record = maleicacid_tuner_hal2_service_runtime::DvrPlaybackWorkerCleanupAttemptDiagnosticRecord::from_report(report);
+        // Insert the complete attempt as one bounded-store record. Overflow can evict only whole
+        // attempts; it cannot leave an uncorrelated Wake/Join/Terminal fragment behind.
+        self.dvr_playback_worker_cleanup_diagnostics
+            .record_nonblocking(record);
     }
 
     pub(crate) fn dvr_playback_worker_cleanup_diagnostic_snapshot(
@@ -560,6 +593,21 @@ impl AidlServiceContext {
                 "DVR playback worker store lock poisoned",
             )
         })
+    }
+
+    pub(crate) fn dvr_playback_workers_lock_for_recovery(
+        &self,
+    ) -> (MutexGuard<'_, DvrPlaybackWorkerMap>, Result<(), HalError>) {
+        match self.dvr_playback_workers.lock() {
+            Ok(guard) => (guard, Ok(())),
+            Err(poisoned) => (
+                poisoned.into_inner(),
+                Err(HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "DVR playback worker store lock poisoned during ownership recovery",
+                )),
+            ),
+        }
     }
 
     pub(crate) fn take_dvr_playback_worker_for_cleanup(

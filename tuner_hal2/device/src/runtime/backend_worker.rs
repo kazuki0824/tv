@@ -1,11 +1,14 @@
 use std::fs::{File, OpenOptions};
-use std::io::Read;
+use std::io::{self, Read};
 use std::os::fd::AsRawFd;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 
-use maleicacid_tuner_hal2_common::os_abi::{ioctl, last_errno};
+use maleicacid_tuner_hal2_common::os_abi::{
+    ioctl, last_errno, poll, PollFd, POLLERR, POLLHUP, POLLIN, POLLNVAL,
+};
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FrontendBackendKind, FrontendDevicePath, FrontendTuneRequest,
     HalError, HalErrorDetail, HalInternalKind, HalInvalidArgumentKind,
@@ -16,7 +19,8 @@ use super::tune_txn::{BackendTuneOps, BackendTuneOutcome, BackendTuneStep, Backe
 use crate::dvb;
 use crate::dvb::abi::{
     DtvProperties, DtvProperty, DTV_CLEAR, FE_HAS_LOCK, FE_HAS_SIGNAL, FE_READ_STATUS,
-    FE_SET_PROPERTY, FE_SET_VOLTAGE, SEC_VOLTAGE_13, SEC_VOLTAGE_18, SEC_VOLTAGE_OFF,
+    FE_SET_PROPERTY, FE_SET_VOLTAGE, O_NONBLOCK, SEC_VOLTAGE_13, SEC_VOLTAGE_18,
+    SEC_VOLTAGE_OFF,
 };
 use crate::px4;
 use crate::px4::abi::{
@@ -25,6 +29,59 @@ use crate::px4::abi::{
     PTX_STOP_STREAMING,
 };
 use crate::runtime::{FrontendSignalState, FrontendWorkerContext};
+
+
+const FRONTEND_LIVE_READ_POLL_TIMEOUT_MS: i32 = 100;
+
+struct PollingFrontendReader {
+    file: File,
+}
+
+impl PollingFrontendReader {
+    fn new(file: File) -> Self {
+        Self { file }
+    }
+}
+
+impl Read for PollingFrontendReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        let mut poll_fd = PollFd {
+            fd: self.file.as_raw_fd(),
+            events: POLLIN,
+            revents: 0,
+        };
+        loop {
+            // 安全性: `poll_fd` はこの呼出し中有効な単一要素配列で、fdはself.fileが所有する。
+            let rc = unsafe { poll(&mut poll_fd, 1, FRONTEND_LIVE_READ_POLL_TIMEOUT_MS) };
+            if rc < 0 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(error);
+            }
+            if rc == 0 {
+                return Err(io::Error::from(io::ErrorKind::WouldBlock));
+            }
+            if (poll_fd.revents & POLLNVAL) != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "frontend live reader poll reported invalid fd",
+                ));
+            }
+            if (poll_fd.revents & (POLLIN | POLLERR | POLLHUP)) != 0 {
+                return self.file.read(buf);
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "frontend live reader poll returned no actionable state",
+            ));
+        }
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FrontendBackendTunePlan {
@@ -163,19 +220,23 @@ impl FrontendBackendSession {
                 let file = self.file.try_clone().map_err(|error| {
                     HalError::cleanup_failed("px4 live reader fd duplication", error.to_string())
                 })?;
-                Ok(Box::new(file))
+                Ok(Box::new(PollingFrontendReader::new(file)))
             }
             (
                 FrontendBackendSessionKind::Dvb { .. },
                 FrontendLiveReaderDescriptorKind::DvbDvrDevice { dvr_path },
             ) => {
-                let file = File::open(dvr_path.as_path()).map_err(|error| {
-                    HalError::cleanup_failed(
-                        "dvb live dvr reader open",
-                        format!("{}: {error}", dvr_path.display()),
-                    )
-                })?;
-                Ok(Box::new(file))
+                let file = OpenOptions::new()
+                    .read(true)
+                    .custom_flags(O_NONBLOCK)
+                    .open(dvr_path.as_path())
+                    .map_err(|error| {
+                        HalError::cleanup_failed(
+                            "dvb live dvr reader open",
+                            format!("{}: {error}", dvr_path.display()),
+                        )
+                    })?;
+                Ok(Box::new(PollingFrontendReader::new(file)))
             }
             _ => Err(HalError::internal(
                 maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,

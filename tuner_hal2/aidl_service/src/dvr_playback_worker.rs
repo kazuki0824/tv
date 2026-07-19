@@ -4,13 +4,15 @@ use std::sync::{
     Arc,
 };
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, HalError, HalInternalKind,
 };
 use maleicacid_tuner_hal2_demux::{DvrKind, QueueWaitHandle, QueueWaitResult};
 use maleicacid_tuner_hal2_service_runtime::{
-    DvrPlaybackWorkerCleanupExecutionReport, DvrPlaybackWorkerCleanupOperation,
+    CleanupExecutionStepOutcome, DvrPlaybackWorkerCleanupExecutionReport,
+    DvrPlaybackWorkerCleanupOperation, DvrStartTransition,
     DvrPlaybackWorkerCleanupPhase, DvrPlaybackWorkerCleanupStepOutcome,
     DvrPlaybackWorkerCleanupTarget,
     DvrPostCommitNotificationDiagnosticRecord,
@@ -24,6 +26,7 @@ use crate::service_context::{AidlServiceContext, SharedAidlServiceContext};
 
 const TUNER_EVENT_DATA_READY: u32 = 1;
 const PLAYBACK_WAIT_TIMEOUT_NS: i64 = 100_000_000;
+const PLAYBACK_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct DvrPlaybackWorkerKey {
@@ -41,11 +44,19 @@ impl DvrPlaybackWorkerKey {
 }
 
 pub(crate) struct DvrPlaybackWorker {
+    run_id: u128,
+    start_gate: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
     waiter: Arc<QueueWaitHandle>,
     terminal: Arc<AtomicBool>,
     runtime_fail_closed: Arc<AtomicBool>,
     join: JoinHandle<Result<(), HalError>>,
+}
+
+impl DvrPlaybackWorker {
+    pub(crate) const fn run_id(&self) -> u128 {
+        self.run_id
+    }
 }
 
 fn run_playback_worker(
@@ -115,6 +126,7 @@ fn run_playback_worker_with_terminal_diagnostic(
     start_gate: Arc<AtomicBool>,
     terminal: Arc<AtomicBool>,
     runtime_fail_closed: Arc<AtomicBool>,
+    run_id: u128,
 ) -> Result<(), HalError> {
     let result = run_playback_worker(
         Arc::clone(&context),
@@ -125,20 +137,48 @@ fn run_playback_worker_with_terminal_diagnostic(
     );
     terminal.store(true, Ordering::Release);
     if let Err(error) = &result {
-        let runtime_failure_result = context.runtime().lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "service runtime lock poisoned while terminalizing playback DVR worker",
-            )
-        }).and_then(|mut runtime| {
-            runtime.rollback_started_dvr_after_playback_worker_failure(
-                handle.object_id(),
-                handle.generation(),
-            )
-        });
+        let key = DvrPlaybackWorkerKey::new(handle);
+        // Do not hold the lifecycle cleanup lock while joining or terminalizing.
+        // A terminating worker may race with replacement/stop; the run id stored in
+        // the worker store is the ownership token, and the runtime mutex serializes
+        // the final fail-close transition.
+        let ownership_result = context.dvr_playback_worker_is_current(key, run_id);
+        let owns_runtime = matches!(&ownership_result, Ok(true));
+        let runtime_failure_result = match ownership_result {
+            Ok(true) => match context.runtime().lock() {
+                Ok(mut runtime) => runtime.rollback_started_dvr_after_playback_worker_failure(
+                    handle.object_id(),
+                    handle.generation(),
+                ),
+                Err(poisoned) => {
+                    let lock_error = HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "service runtime lock was poisoned while terminalizing playback DVR worker",
+                    );
+                    let mut runtime = poisoned.into_inner();
+                    match runtime.rollback_started_dvr_after_playback_worker_failure(
+                        handle.object_id(),
+                        handle.generation(),
+                    ) {
+                        Ok(()) => Err(lock_error),
+                        Err(rollback_error) => Err(compose_primary_cleanup_failure(
+                            "runtime lock was poisoned and playback DVR terminal fail-close failed",
+                            lock_error,
+                            rollback_error,
+                        )),
+                    }
+                }
+            },
+            Ok(false) => Ok(()),
+            Err(error) => Err(error),
+        };
         let mut terminal_error = error.clone();
         match runtime_failure_result {
-            Ok(()) => runtime_fail_closed.store(true, Ordering::Release),
+            Ok(()) => {
+                if owns_runtime {
+                    runtime_fail_closed.store(true, Ordering::Release);
+                }
+            }
             Err(runtime_error) => {
                 terminal_error = compose_primary_cleanup_failure(
                     "playback DVR worker failed and runtime terminalization failed",
@@ -168,139 +208,193 @@ fn run_playback_worker_with_terminal_diagnostic(
     result
 }
 
+fn push_cleanup_step(
+    report: &mut DvrPlaybackWorkerCleanupExecutionReport,
+    attempt_id: Option<u128>,
+    operation: DvrPlaybackWorkerCleanupOperation,
+    target: DvrPlaybackWorkerCleanupTarget,
+    phase: DvrPlaybackWorkerCleanupPhase,
+    result: Result<(), HalError>,
+) {
+    match attempt_id {
+        Some(attempt_id) => report.push(DvrPlaybackWorkerCleanupStepOutcome::Step {
+            attempt_id,
+            operation,
+            target,
+            phase,
+            result,
+        }),
+        None => report.push(DvrPlaybackWorkerCleanupStepOutcome::EmergencyStep {
+            operation,
+            target,
+            phase,
+            result,
+        }),
+    }
+}
+
+fn join_playback_worker_bounded(
+    join: JoinHandle<Result<(), HalError>>,
+) -> (Result<(), HalError>, Result<(), HalError>) {
+    let deadline = Instant::now()
+        .checked_add(PLAYBACK_JOIN_TIMEOUT)
+        .unwrap_or_else(Instant::now);
+    while !join.is_finished() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(5));
+    }
+    if join.is_finished() {
+        return match join.join() {
+            Ok(result) => (Ok(()), result),
+            Err(_) => (
+                Err(HalError::cleanup_failed(
+                    "playback DVR worker join",
+                    "playback DVR worker thread panicked",
+                )),
+                Err(HalError::cleanup_failed(
+                    "playback DVR worker terminal result",
+                    "terminal result is unavailable because playback DVR worker thread panicked",
+                )),
+            ),
+        };
+    }
+
+    let holder = Arc::new(std::sync::Mutex::new(Some(join)));
+    let watcher_holder = Arc::clone(&holder);
+    let watcher = thread::Builder::new()
+        .name("tuner-hal2-dvr-playback-join-watchdog".to_string())
+        .spawn(move || {
+            if let Ok(mut guard) = watcher_holder.lock() {
+                if let Some(join) = guard.take() {
+                    // The synchronous cleanup report already contains JoinTimeout. Keep ownership
+                    // here until the thread terminates; the late terminal result cannot alter the
+                    // completed public lifecycle outcome.
+                    drop(join.join());
+                }
+            }
+        });
+    if let Err(spawn_error) = watcher {
+        // Do not recreate an unbounded public stop by synchronously joining after watchdog spawn
+        // failure. Detach the retained handle and return an explicit ownership-cleanup failure;
+        // the caller fail-closes the DVR runtime.
+        drop(holder);
+        return (
+            Err(HalError::cleanup_failed(
+                "playback DVR worker join watchdog",
+                format!("join timed out and watchdog spawn failed: {spawn_error}"),
+            )),
+            Err(HalError::cleanup_failed(
+                "playback DVR worker terminal result",
+                "terminal result is unavailable after join timeout and watchdog spawn failure",
+            )),
+        );
+    }
+    (
+        Err(HalError::cleanup_failed(
+            "playback DVR worker join timeout",
+            "playback DVR worker did not terminate before the bounded join deadline",
+        )),
+        Err(HalError::cleanup_failed(
+            "playback DVR worker terminal result",
+            "terminal result is pending in the join watchdog after timeout",
+        )),
+    )
+}
+
 fn stop_joined_playback_worker(
-    attempt_id: Option<u64>,
+    attempt_id: Option<u128>,
     operation: DvrPlaybackWorkerCleanupOperation,
     handle: AidlObjectHandle,
     worker: DvrPlaybackWorker,
 ) -> (bool, bool, DvrPlaybackWorkerCleanupExecutionReport) {
-    worker.cancel.store(true, Ordering::Release);
-    let wake_result = worker.waiter.wake(TUNER_EVENT_DATA_READY).map_err(|_| {
+    let DvrPlaybackWorker {
+        run_id: _,
+        start_gate: _,
+        cancel,
+        waiter,
+        terminal,
+        runtime_fail_closed,
+        join,
+    } = worker;
+    cancel.store(true, Ordering::Release);
+    let wake_result = waiter.wake(TUNER_EVENT_DATA_READY).map_err(|_| {
         HalError::cleanup_failed(
             "playback DVR worker wake",
             "failed to wake playback DVR worker for cancellation",
         )
     });
-    worker.join.thread().unpark();
-    let (join_result, terminal_result) = match worker.join.join() {
-        Ok(result) => (Ok(()), result),
-        Err(_) => {
-            let join_error = HalError::cleanup_failed(
-                "playback DVR worker join",
-                "playback DVR worker thread panicked",
-            );
-            let terminal_error = HalError::cleanup_failed(
-                "playback DVR worker terminal result",
-                "terminal result is unavailable because playback DVR worker thread panicked",
-            );
-            (Err(join_error), Err(terminal_error))
-        }
-    };
-    let was_terminal = worker.terminal.load(Ordering::Acquire);
-    let runtime_fail_closed = worker.runtime_fail_closed.load(Ordering::Acquire);
+    join.thread().unpark();
+    let (join_result, terminal_result) = join_playback_worker_bounded(join);
+    let was_terminal = terminal.load(Ordering::Acquire);
+    let runtime_fail_closed = runtime_fail_closed.load(Ordering::Acquire);
     let mut report = DvrPlaybackWorkerCleanupExecutionReport::new();
-    report.push(DvrPlaybackWorkerCleanupStepOutcome {
+    let target = DvrPlaybackWorkerCleanupTarget::Worker {
+        object_id: handle.object_id(),
+        generation: handle.generation(),
+    };
+    push_cleanup_step(
+        &mut report,
         attempt_id,
         operation,
-        target: DvrPlaybackWorkerCleanupTarget::Worker {
-            object_id: handle.object_id(),
-            generation: handle.generation(),
-        },
-        phase: DvrPlaybackWorkerCleanupPhase::Wake,
-        expected_step_count: None,
-        result: wake_result,
-    });
-    report.push(DvrPlaybackWorkerCleanupStepOutcome {
+        target,
+        DvrPlaybackWorkerCleanupPhase::Wake,
+        wake_result,
+    );
+    let join_phase = if join_result.is_err()
+        && !terminal.load(Ordering::Acquire)
+    {
+        DvrPlaybackWorkerCleanupPhase::JoinTimeout
+    } else {
+        DvrPlaybackWorkerCleanupPhase::Join
+    };
+    push_cleanup_step(
+        &mut report,
         attempt_id,
         operation,
-        target: DvrPlaybackWorkerCleanupTarget::Worker {
-            object_id: handle.object_id(),
-            generation: handle.generation(),
-        },
-        phase: DvrPlaybackWorkerCleanupPhase::Join,
-        expected_step_count: None,
-        result: join_result,
-    });
-    report.push(DvrPlaybackWorkerCleanupStepOutcome {
+        target,
+        join_phase,
+        join_result,
+    );
+    push_cleanup_step(
+        &mut report,
         attempt_id,
         operation,
-        target: DvrPlaybackWorkerCleanupTarget::Worker {
-            object_id: handle.object_id(),
-            generation: handle.generation(),
-        },
-        phase: DvrPlaybackWorkerCleanupPhase::Terminal,
-        expected_step_count: None,
-        result: terminal_result,
-    });
+        target,
+        DvrPlaybackWorkerCleanupPhase::Terminal,
+        terminal_result,
+    );
     (was_terminal, runtime_fail_closed, report)
-}
-
-fn replacement_cleanup_result(
-    report: &DvrPlaybackWorkerCleanupExecutionReport,
-    was_terminal: bool,
-    runtime_fail_closed: bool,
-) -> Result<(), HalError> {
-    let join_succeeded = report.outcomes().iter().any(|outcome| {
-        outcome.phase == DvrPlaybackWorkerCleanupPhase::Join && outcome.result.is_ok()
-    });
-    let terminal_succeeded = report.outcomes().iter().any(|outcome| {
-        outcome.phase == DvrPlaybackWorkerCleanupPhase::Terminal && outcome.result.is_ok()
-    });
-    report
-        .outcomes()
-        .iter()
-        .filter(|outcome| {
-            // EventFlag wake is an auxiliary cancellation nudge. If the worker joined and its
-            // terminal result was collected, wake failure must remain diagnostic-only.
-            if outcome.phase == DvrPlaybackWorkerCleanupPhase::Wake
-                && join_succeeded
-                && terminal_succeeded
-            {
-                return false;
-            }
-            // A terminal worker failure is already owned by its terminalization path only when
-            // that worker itself successfully fail-closed the corresponding runtime.
-            !(was_terminal
-                && runtime_fail_closed
-                && outcome.phase == DvrPlaybackWorkerCleanupPhase::Terminal)
-        })
-        .find_map(|outcome| outcome.result.clone().err())
-        .map_or(Ok(()), Err)
 }
 
 fn complete_cleanup_attempt(
     report: &mut DvrPlaybackWorkerCleanupExecutionReport,
-    attempt_id: Option<u64>,
+    attempt_id: Option<u128>,
     operation: DvrPlaybackWorkerCleanupOperation,
 ) {
-    let expected_step_count = u16::try_from(report.outcomes().len().saturating_add(1))
-        .unwrap_or(u16::MAX);
-    report.push(DvrPlaybackWorkerCleanupStepOutcome {
-        attempt_id,
-        operation,
-        target: DvrPlaybackWorkerCleanupTarget::Store,
-        phase: DvrPlaybackWorkerCleanupPhase::AttemptComplete,
-        expected_step_count: Some(expected_step_count),
-        result: Ok(()),
-    });
+    if let Some(attempt_id) = attempt_id {
+        let expected_step_count = report.outcomes().len().saturating_add(1);
+        report.push(DvrPlaybackWorkerCleanupStepOutcome::AttemptComplete {
+            attempt_id,
+            operation,
+            expected_step_count,
+        });
+    }
 }
 
 fn begin_cleanup_attempt(
     context: &AidlServiceContext,
     operation: DvrPlaybackWorkerCleanupOperation,
-) -> (Option<u64>, DvrPlaybackWorkerCleanupExecutionReport) {
-    let (attempt_id, allocation_result) =
-        context.next_dvr_playback_worker_cleanup_attempt_id();
+) -> (Option<u128>, DvrPlaybackWorkerCleanupExecutionReport) {
     let mut report = DvrPlaybackWorkerCleanupExecutionReport::new();
-    report.push(DvrPlaybackWorkerCleanupStepOutcome {
-        attempt_id,
-        operation,
-        target: DvrPlaybackWorkerCleanupTarget::Store,
-        phase: DvrPlaybackWorkerCleanupPhase::AttemptIdAllocation,
-        expected_step_count: None,
-        result: allocation_result,
-    });
-    (attempt_id, report)
+    match context.next_dvr_playback_worker_cleanup_attempt_id() {
+        Ok(attempt_id) => (Some(attempt_id), report),
+        Err(error) => {
+            report.push(DvrPlaybackWorkerCleanupStepOutcome::AttemptIdentityFailure {
+                operation,
+                error,
+            });
+            (None, report)
+        }
+    }
 }
 
 fn record_cleanup_report(
@@ -310,101 +404,233 @@ fn record_cleanup_report(
     context.record_dvr_playback_worker_cleanup_report(report);
 }
 
+fn fail_close_started_runtime_after_unrecoverable_replacement(
+    context: &AidlServiceContext,
+    handle: AidlObjectHandle,
+    primary: HalError,
+) -> HalError {
+    let runtime_handle = context.runtime();
+    let (mut runtime, lock_error) = match runtime_handle.lock() {
+        Ok(runtime) => (runtime, None),
+        Err(poisoned) => (
+            poisoned.into_inner(),
+            Some(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "service runtime lock poisoned while fail-closing unrecoverable playback replacement",
+            )),
+        ),
+    };
+    let fail_close_result = runtime.rollback_started_dvr_after_playback_worker_failure(
+        handle.object_id(),
+        handle.generation(),
+    );
+    let mut error = primary;
+    if let Some(lock_error) = lock_error {
+        error = compose_primary_cleanup_failure(
+            "playback worker replacement failed and fail-close lock was poisoned",
+            error,
+            lock_error,
+        );
+    }
+    if let Err(fail_close_error) = fail_close_result {
+        error = compose_primary_cleanup_failure(
+            "playback worker replacement failed and runtime fail-close failed",
+            error,
+            fail_close_error,
+        );
+    }
+    error
+}
+
 pub(crate) fn start_dvr_playback_worker(
     context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
+    start_transition: DvrStartTransition,
 ) -> Result<(), HalError> {
     let _lifecycle = context.dvr_playback_worker_lifecycle_lock()?;
-    let kind = {
-        let mut runtime = context.runtime().lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "service runtime lock poisoned while preparing playback DVR worker",
-            )
-        })?;
-        runtime.dvr_kind_for_object(handle.object_id(), handle.generation())?
+    let key = DvrPlaybackWorkerKey::new(handle);
+
+    // An active committed worker makes start idempotent. Terminal or never-opened gated workers are
+    // removed as a reversible ownership handoff. Until the replacement thread is committed, every
+    // failure path restores this old entry instead of destroying an AlreadyStarted session.
+    let mut old_worker = {
+        let mut store = context.dvr_playback_workers_lock()?;
+        if let Some(worker) = store.get(&key) {
+            if !worker.terminal.load(Ordering::Acquire)
+                && worker.start_gate.load(Ordering::Acquire)
+            {
+                return Ok(());
+            }
+        }
+        store.remove(&key)
+    };
+
+    let recover_precommit_failure = |primary: HalError,
+                                     old_worker: &mut Option<DvrPlaybackWorker>|
+     -> HalError {
+        let old_is_terminal = old_worker
+            .as_ref()
+            .is_some_and(|worker| worker.terminal.load(Ordering::Acquire));
+        if !old_is_terminal {
+            let (mut store, lock_result) = context.dvr_playback_workers_lock_for_recovery();
+            let mut error = primary;
+            if let Err(lock_error) = lock_result {
+                error = compose_primary_cleanup_failure(
+                    "playback worker replacement failed and store recovery lock was poisoned",
+                    error,
+                    lock_error,
+                );
+            }
+            if store.contains_key(&key) {
+                return compose_primary_cleanup_failure(
+                    "playback worker replacement failed and old ownership could not be restored",
+                    error,
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "playback worker store changed during serialized ownership recovery",
+                    ),
+                );
+            }
+            if let Some(worker) = old_worker.take() {
+                store.insert(key, worker);
+                return error;
+            }
+            if start_transition != DvrStartTransition::AlreadyStarted {
+                return error;
+            }
+            drop(store);
+            return fail_close_started_runtime_after_unrecoverable_replacement(
+                context,
+                handle,
+                error,
+            );
+        }
+
+        let mut error = primary;
+        if let Some(worker) = old_worker.take() {
+            let (attempt_id, mut report) =
+                begin_cleanup_attempt(context, DvrPlaybackWorkerCleanupOperation::Replacement);
+            let (_, _, worker_report) = stop_joined_playback_worker(
+                attempt_id,
+                DvrPlaybackWorkerCleanupOperation::Replacement,
+                handle,
+                worker,
+            );
+            report.extend(worker_report);
+            complete_cleanup_attempt(
+                &mut report,
+                attempt_id,
+                DvrPlaybackWorkerCleanupOperation::Replacement,
+            );
+            if let Err(cleanup_error) = playback_worker_cleanup_ownership_result(&report) {
+                error = compose_primary_cleanup_failure(
+                    "playback worker replacement failed and terminal old worker cleanup failed",
+                    error,
+                    cleanup_error,
+                );
+            }
+            record_cleanup_report(context, &report);
+        }
+        fail_close_started_runtime_after_unrecoverable_replacement(context, handle, error)
+    };
+
+    // Acquire fresh runtime state and FMQ endpoint after revoking old store ownership. The old run
+    // therefore cannot fail-close a later run, while any pre-commit failure remains reversible by
+    // restoring its retained store entry.
+    let mut runtime_guard = match context.runtime().lock() {
+        Ok(runtime) => runtime,
+        Err(poisoned) => {
+            drop(poisoned.into_inner());
+            return Err(recover_precommit_failure(
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "service runtime lock poisoned while preparing playback DVR replacement",
+                ),
+                &mut old_worker,
+            ));
+        }
+    };
+    let kind = match runtime_guard.dvr_kind_for_object(handle.object_id(), handle.generation()) {
+        Ok(kind) => kind,
+        Err(error) => {
+            drop(runtime_guard);
+            return Err(recover_precommit_failure(error, &mut old_worker));
+        }
     };
     if kind != DvrKind::Playback {
+        drop(runtime_guard);
+        if let Some(worker) = old_worker {
+            let (attempt_id, mut report) =
+                begin_cleanup_attempt(context, DvrPlaybackWorkerCleanupOperation::Replacement);
+            let (_, _, worker_report) = stop_joined_playback_worker(
+                attempt_id,
+                DvrPlaybackWorkerCleanupOperation::Replacement,
+                handle,
+                worker,
+            );
+            report.extend(worker_report);
+            complete_cleanup_attempt(
+                &mut report,
+                attempt_id,
+                DvrPlaybackWorkerCleanupOperation::Replacement,
+            );
+            record_cleanup_report(context, &report);
+        }
         return Ok(());
     }
-
-    let key = DvrPlaybackWorkerKey::new(handle);
-    let terminal_worker = {
-        let mut store = context.dvr_playback_workers_lock()?;
-        match store.get(&key) {
-            Some(worker) if !worker.terminal.load(Ordering::Acquire) => return Ok(()),
-            Some(_) => store.remove(&key),
-            None => None,
+    let started = match runtime_guard
+        .dvr_started_for_playback_worker(handle.object_id(), handle.generation())
+    {
+        Ok(started) => started,
+        Err(error) => {
+            drop(runtime_guard);
+            return Err(recover_precommit_failure(error, &mut old_worker));
         }
     };
-    let terminal_cleanup = terminal_worker.map(|worker| {
-        let (attempt_id, mut report) =
-            begin_cleanup_attempt(context, DvrPlaybackWorkerCleanupOperation::Replacement);
-        let (was_terminal, runtime_fail_closed, worker_report) = stop_joined_playback_worker(
-            attempt_id,
-            DvrPlaybackWorkerCleanupOperation::Replacement,
-            handle,
-            worker,
-        );
-        report.extend(worker_report);
-        complete_cleanup_attempt(
-            &mut report,
-            attempt_id,
-            DvrPlaybackWorkerCleanupOperation::Replacement,
-        );
-        record_cleanup_report(context, &report);
-        (was_terminal, runtime_fail_closed, report)
-    });
-
-    // Acquire a fresh waiter only after old-worker cleanup, and keep the runtime lock until
-    // the gated worker has been inserted. Configure/stop cannot replace the queue endpoint
-    // between waiter acquisition and worker commit.
-    let mut runtime_guard = context.runtime().lock().map_err(|_| {
-        HalError::internal(
-            HalInternalKind::InvariantViolation,
-            "service runtime lock poisoned while revalidating playback DVR worker start",
-        )
-    })?;
-    let runtime_still_started = runtime_guard
-        .dvr_started_for_playback_worker(handle.object_id(), handle.generation())?;
-
-    if let Some((was_terminal, runtime_fail_closed, old_report)) = terminal_cleanup {
-        if let Err(cleanup_error) =
-            replacement_cleanup_result(&old_report, was_terminal, runtime_fail_closed)
-        {
-            let runtime_rollback_result =
-                runtime_guard.rollback_started_dvr_after_playback_worker_failure(
-                    handle.object_id(),
-                    handle.generation(),
-                );
-            return Err(match runtime_rollback_result {
-                Ok(()) => cleanup_error,
-                Err(rollback_error) => compose_primary_cleanup_failure(
-                    "terminal playback worker cleanup failed and DVR runtime fail-close failed",
-                    cleanup_error,
-                    rollback_error,
-                ),
-            });
-        }
-    }
-
-    if !runtime_still_started {
-        return Err(HalError::invalid_state(
-            maleicacid_tuner_hal2_common::HalInvalidStateKind::InvalidLifecycle,
-            "playback DVR runtime is no longer started before worker commit",
+    if !started {
+        drop(runtime_guard);
+        return Err(recover_precommit_failure(
+            HalError::invalid_state(
+                maleicacid_tuner_hal2_common::HalInvalidStateKind::InvalidLifecycle,
+                "playback DVR runtime is no longer started before worker commit",
+            ),
+            &mut old_worker,
         ));
     }
-    let waiter = runtime_guard.playback_dvr_wait_handle_for_object(
+    let waiter = match runtime_guard.playback_dvr_wait_handle_for_object(
         handle.object_id(),
         handle.generation(),
-    )?;
+    ) {
+        Ok(waiter) => waiter,
+        Err(error) => {
+            drop(runtime_guard);
+            return Err(recover_precommit_failure(error, &mut old_worker));
+        }
+    };
+    let run_id = match context.next_dvr_playback_worker_run_id() {
+        Ok(run_id) => run_id,
+        Err(error) => {
+            drop(runtime_guard);
+            return Err(recover_precommit_failure(error, &mut old_worker));
+        }
+    };
 
-    let mut store = context.dvr_playback_workers_lock()?;
+    // Keep the store guard from before spawn through insertion. No fallible store acquisition exists
+    // after spawn, so a closed-gate thread cannot become detached.
+    let (mut store, store_lock_result) = context.dvr_playback_workers_lock_for_recovery();
+    if let Err(error) = store_lock_result {
+        drop(store);
+        drop(runtime_guard);
+        return Err(recover_precommit_failure(error, &mut old_worker));
+    }
     if store.contains_key(&key) {
-        return Err(HalError::internal(
-            HalInternalKind::InvariantViolation,
-            "playback DVR worker appeared during serialized start",
-        ));
+        let primary = HalError::invalid_state(
+            maleicacid_tuner_hal2_common::HalInvalidStateKind::InvalidLifecycle,
+            "playback worker store changed during serialized replacement",
+        );
+        drop(store);
+        drop(runtime_guard);
+        return Err(recover_precommit_failure(primary, &mut old_worker));
     }
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -420,9 +646,10 @@ pub(crate) fn start_dvr_playback_worker(
     let thread_context = Arc::clone(context);
     let join = match thread::Builder::new()
         .name(format!(
-            "tuner-hal2-dvr-playback-{}-{}",
+            "tuner-hal2-dvr-playback-{}-{}-{}",
             handle.object_id().0,
-            handle.generation().0
+            handle.generation().0,
+            run_id,
         ))
         .spawn(move || {
             run_playback_worker_with_terminal_diagnostic(
@@ -433,43 +660,78 @@ pub(crate) fn start_dvr_playback_worker(
                 thread_gate,
                 thread_terminal,
                 thread_runtime_fail_closed,
+                run_id,
             )
         }) {
         Ok(join) => join,
-        Err(error) => {
-            let spawn_error = HalError::internal(
-                HalInternalKind::InvariantViolation,
-                format!("failed to spawn playback DVR worker: {error}"),
-            );
-            let fail_close_result =
-                runtime_guard.rollback_started_dvr_after_playback_worker_failure(
-                    handle.object_id(),
-                    handle.generation(),
-                );
-            return Err(match fail_close_result {
-                Ok(()) => spawn_error,
-                Err(fail_close_error) => compose_primary_cleanup_failure(
-                    "playback DVR worker spawn failed and runtime fail-close failed",
-                    spawn_error,
-                    fail_close_error,
+        Err(spawn_error) => {
+            drop(store);
+            drop(runtime_guard);
+            return Err(recover_precommit_failure(
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    format!("failed to spawn playback DVR worker: {spawn_error}"),
                 ),
-            });
+                &mut old_worker,
+            ));
         }
     };
     let thread = join.thread().clone();
-    let new_worker = DvrPlaybackWorker {
-        cancel,
-        waiter,
-        terminal,
-        runtime_fail_closed,
-        join,
-    };
-    store.insert(key, new_worker);
+    store.insert(
+        key,
+        DvrPlaybackWorker {
+            run_id,
+            start_gate: Arc::clone(&start_gate),
+            cancel,
+            waiter,
+            terminal,
+            runtime_fail_closed,
+            join,
+        },
+    );
     drop(store);
     drop(runtime_guard);
     start_gate.store(true, Ordering::Release);
     thread.unpark();
+
+    // Replacement commit is complete. Old terminal/gated cleanup is now post-commit artifact
+    // cleanup: record all outcomes but never tear down the newly committed worker or runtime.
+    if let Some(worker) = old_worker {
+        let (attempt_id, mut report) =
+            begin_cleanup_attempt(context, DvrPlaybackWorkerCleanupOperation::Replacement);
+        let (_, _, worker_report) = stop_joined_playback_worker(
+            attempt_id,
+            DvrPlaybackWorkerCleanupOperation::Replacement,
+            handle,
+            worker,
+        );
+        report.extend(worker_report);
+        complete_cleanup_attempt(
+            &mut report,
+            attempt_id,
+            DvrPlaybackWorkerCleanupOperation::Replacement,
+        );
+        record_cleanup_report(context, &report);
+    }
     Ok(())
+}
+
+pub(crate) fn playback_worker_cleanup_ownership_result(
+    report: &DvrPlaybackWorkerCleanupExecutionReport,
+) -> Result<(), HalError> {
+    report
+        .outcomes()
+        .iter()
+        .filter(|outcome| {
+            matches!(
+                outcome.phase(),
+                Some(DvrPlaybackWorkerCleanupPhase::Join)
+                    | Some(DvrPlaybackWorkerCleanupPhase::JoinTimeout)
+                    | Some(DvrPlaybackWorkerCleanupPhase::Terminal)
+            )
+        })
+        .find_map(|outcome| outcome.result().err())
+        .map_or(Ok(()), Err)
 }
 
 pub(crate) fn stop_dvr_playback_worker(
@@ -479,24 +741,24 @@ pub(crate) fn stop_dvr_playback_worker(
 ) -> DvrPlaybackWorkerCleanupExecutionReport {
     let (attempt_id, mut report) = begin_cleanup_attempt(context, operation);
     let (_lifecycle, lifecycle_result) = context.dvr_playback_worker_lifecycle_lock_for_cleanup();
-    report.push(DvrPlaybackWorkerCleanupStepOutcome {
+    push_cleanup_step(
+        &mut report,
         attempt_id,
         operation,
-        target: DvrPlaybackWorkerCleanupTarget::Store,
-        phase: DvrPlaybackWorkerCleanupPhase::LifecycleLock,
-        expected_step_count: None,
-        result: lifecycle_result,
-    });
+        DvrPlaybackWorkerCleanupTarget::Store,
+        DvrPlaybackWorkerCleanupPhase::LifecycleLock,
+        lifecycle_result,
+    );
     let (worker, store_result) =
         context.take_dvr_playback_worker_for_cleanup(DvrPlaybackWorkerKey::new(handle));
-    report.push(DvrPlaybackWorkerCleanupStepOutcome {
+    push_cleanup_step(
+        &mut report,
         attempt_id,
         operation,
-        target: DvrPlaybackWorkerCleanupTarget::Store,
-        phase: DvrPlaybackWorkerCleanupPhase::StoreAccess,
-        expected_step_count: None,
-        result: store_result,
-    });
+        DvrPlaybackWorkerCleanupTarget::Store,
+        DvrPlaybackWorkerCleanupPhase::StoreAccess,
+        store_result,
+    );
     if let Some(worker) = worker {
         let (_, _, worker_report) =
             stop_joined_playback_worker(attempt_id, operation, handle, worker);
@@ -513,23 +775,23 @@ pub(crate) fn stop_all_dvr_playback_workers(
     let operation = DvrPlaybackWorkerCleanupOperation::ServiceReset;
     let (attempt_id, mut report) = begin_cleanup_attempt(context, operation);
     let (_lifecycle, lifecycle_result) = context.dvr_playback_worker_lifecycle_lock_for_cleanup();
-    report.push(DvrPlaybackWorkerCleanupStepOutcome {
+    push_cleanup_step(
+        &mut report,
         attempt_id,
         operation,
-        target: DvrPlaybackWorkerCleanupTarget::Store,
-        phase: DvrPlaybackWorkerCleanupPhase::LifecycleLock,
-        expected_step_count: None,
-        result: lifecycle_result,
-    });
+        DvrPlaybackWorkerCleanupTarget::Store,
+        DvrPlaybackWorkerCleanupPhase::LifecycleLock,
+        lifecycle_result,
+    );
     let (workers, store_result) = context.take_dvr_playback_workers_for_reset();
-    report.push(DvrPlaybackWorkerCleanupStepOutcome {
+    push_cleanup_step(
+        &mut report,
         attempt_id,
         operation,
-        target: DvrPlaybackWorkerCleanupTarget::Store,
-        phase: DvrPlaybackWorkerCleanupPhase::StoreAccess,
-        expected_step_count: None,
-        result: store_result,
-    });
+        DvrPlaybackWorkerCleanupTarget::Store,
+        DvrPlaybackWorkerCleanupPhase::StoreAccess,
+        store_result,
+    );
     for (key, worker) in workers {
         let handle = AidlObjectHandle::new(
             AidlObjectKind::Dvr,

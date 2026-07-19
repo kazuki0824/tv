@@ -275,11 +275,11 @@ impl Drop for FrontendRuntimeRollbackToken {
                 }
             }
             Err(_) => {
-                let _ = self.ledger_failure_count.fetch_update(
+                drop(self.ledger_failure_count.fetch_update(
                     Ordering::Relaxed,
                     Ordering::Relaxed,
                     |value| Some(value.saturating_add(1)),
-                );
+                ));
             }
         }
         self.armed = false;
