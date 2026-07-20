@@ -87,7 +87,6 @@ impl Default for DescramblerSession {
     }
 }
 
-
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct DescramblerCloseSnapshot {
     pub demux_id: Option<i32>,
@@ -110,13 +109,19 @@ impl DescramblerSession {
         if self.demux_id.is_some() || self.pending_demux_binding.is_some() {
             return false;
         }
-        self.pending_demux_binding = Some(PendingDemuxBinding { demux_id, demux_generation });
+        self.pending_demux_binding = Some(PendingDemuxBinding {
+            demux_id,
+            demux_generation,
+        });
         true
     }
 
     pub fn commit_pending_demux_binding(&mut self, demux_id: i32, demux_generation: u64) -> bool {
         if self.pending_demux_binding
-            != Some(PendingDemuxBinding { demux_id, demux_generation })
+            != Some(PendingDemuxBinding {
+                demux_id,
+                demux_generation,
+            })
             || self.demux_id.is_some()
         {
             return false;
@@ -128,7 +133,12 @@ impl DescramblerSession {
     }
 
     pub fn rollback_pending_demux_binding(&mut self, demux_id: i32, demux_generation: u64) {
-        if self.pending_demux_binding == Some(PendingDemuxBinding { demux_id, demux_generation }) {
+        if self.pending_demux_binding
+            == Some(PendingDemuxBinding {
+                demux_id,
+                demux_generation,
+            })
+        {
             self.pending_demux_binding = None;
         }
     }
@@ -140,7 +150,11 @@ impl DescramblerSession {
         self.pid_registrations.clear();
     }
 
-    pub fn set_resolved_key(&mut self, token: Vec<u8>, slot: DescramblerKeySlot) -> Option<Vec<u8>> {
+    pub fn set_resolved_key(
+        &mut self,
+        token: Vec<u8>,
+        slot: DescramblerKeySlot,
+    ) -> Option<Vec<u8>> {
         let old = self.key_token.replace(token.clone());
         self.key_slot = Some(slot);
         old
@@ -241,7 +255,11 @@ impl DescramblerSession {
 
     #[cfg(test)]
     pub fn pending_cleanup_names(&self) -> Vec<&'static str> {
-        self.pending_cleanup.iter().copied().map(DescramblerCleanupItem::as_str).collect()
+        self.pending_cleanup
+            .iter()
+            .copied()
+            .map(DescramblerCleanupItem::as_str)
+            .collect()
     }
 
     #[cfg(test)]
@@ -265,7 +283,13 @@ mod tests {
     #[test]
     fn descrambler_session_allows_pid_without_key() {
         let mut session = DescramblerSession::new();
-        session.add_pid(PidBinding { pid: 100 }, SourceFilterBinding { filter_id: -1, generation: 0 });
+        session.add_pid(
+            PidBinding { pid: 100 },
+            SourceFilterBinding {
+                filter_id: -1,
+                generation: 0,
+            },
+        );
         assert!(session.has_pid(PidBinding { pid: 100 }));
     }
 
@@ -325,7 +349,6 @@ mod tests {
         session.complete_close_after_cleanup();
         assert!(session.is_closed());
     }
-
 }
 
 #[cfg(test)]
@@ -338,7 +361,13 @@ mod r50ea7_descrambler_session_completion_tests {
         assert!(session.begin_pending_demux_binding(10, 33));
         assert_eq!(session.demux_id, None);
         assert_eq!(session.demux_generation, None);
-        assert_eq!(session.pending_demux_binding, Some(PendingDemuxBinding { demux_id: 10, demux_generation: 33 }));
+        assert_eq!(
+            session.pending_demux_binding,
+            Some(PendingDemuxBinding {
+                demux_id: 10,
+                demux_generation: 33
+            })
+        );
         assert!(session.commit_pending_demux_binding(10, 33));
         assert_eq!(session.demux_id, Some(10));
         assert_eq!(session.demux_generation, Some(33));
@@ -362,7 +391,13 @@ mod r50ea7_descrambler_session_completion_tests {
         assert!(!session.begin_pending_demux_binding(2, 202));
         assert_eq!(session.demux_id, None);
         assert_eq!(session.demux_generation, None);
-        assert_eq!(session.pending_demux_binding, Some(PendingDemuxBinding { demux_id: 1, demux_generation: 101 }));
+        assert_eq!(
+            session.pending_demux_binding,
+            Some(PendingDemuxBinding {
+                demux_id: 1,
+                demux_generation: 101
+            })
+        );
     }
 
     #[test]
@@ -400,8 +435,6 @@ mod r50ea7_descrambler_session_completion_tests {
         assert_eq!(session.key_token, Some(vec![9]));
         assert!(session.has_pending_cleanup(DescramblerCleanupItem::KeyRelease));
     }
-
-
 
     #[test]
     fn descrambler_set_demux_source_ledger_live_and_session_bound_are_not_split() {

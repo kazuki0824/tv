@@ -1,6 +1,6 @@
 # MaleicacidTvInput 統合手順
 
-この文書は `tis/` の product 統合条件を固定する。Tuner HAL 側の統合手順は `tuner_hal/INTEGRATION.md` を正とし、この文書には重複して記載しない。
+この文書は `tis/` の product 統合条件を固定する。Tuner HAL 側の統合手順は `tuner_hal2/INTEGRATION.md` を正とし、この文書には重複して記載しない。
 
 ## product package
 
@@ -103,11 +103,11 @@ adb shell dumpsys tv_input | grep -i Maleicacid
 
 ### Soong モジュールビルド
 
-AOSP root で次を実行する。
+LineageOS ソースツリーのルートで次を実行する。
 
 ```bash
 source build/envsetup.sh
-lunch <your_android_tv_14_product>-userdebug
+breakfast virtio_x86_64_tv_grub
 m nothing
 m \
   libaribcaption \

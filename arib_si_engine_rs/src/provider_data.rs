@@ -465,16 +465,27 @@ pub fn build_program_key(onid: i32, tsid: i32, sid: i32, event_id: i32) -> Strin
         "transportStreamId": tsid,
         "serviceId": sid,
         "eventId": event_id,
-    }).to_string()
+    })
+    .to_string()
 }
 
 pub fn build_program_provider_data(request_json: &str) -> ProviderDataResult {
     let request = match serde_json::from_str::<ProgramProviderDataRequestV1>(request_json) {
         Ok(request) => request,
-        Err(err) => return failure_result("PROGRAM_REQUEST_PARSE_FAILED", format!("Program provider-data request JSON parse failed: {err}"), PROVIDER_SCHEMA_VERSION),
+        Err(err) => {
+            return failure_result(
+                "PROGRAM_REQUEST_PARSE_FAILED",
+                format!("Program provider-data request JSON parse failed: {err}"),
+                PROVIDER_SCHEMA_VERSION,
+            )
+        }
     };
     let Some(data) = program_data_from_request(request) else {
-        return failure_result("PROGRAM_REQUEST_INVALID", "Program provider-data request did not satisfy schema v1 invariants".to_string(), PROVIDER_SCHEMA_VERSION);
+        return failure_result(
+            "PROGRAM_REQUEST_INVALID",
+            "Program provider-data request did not satisfy schema v1 invariants".to_string(),
+            PROVIDER_SCHEMA_VERSION,
+        );
     };
     finalize_program(data)
 }
@@ -482,10 +493,20 @@ pub fn build_program_provider_data(request_json: &str) -> ProviderDataResult {
 pub fn build_channel_provider_data(request_json: &str) -> ProviderDataResult {
     let request = match serde_json::from_str::<ChannelProviderDataRequestV1>(request_json) {
         Ok(request) => request,
-        Err(err) => return failure_result("CHANNEL_REQUEST_PARSE_FAILED", format!("Channel provider-data request JSON parse failed: {err}"), CHANNEL_SCHEMA_VERSION),
+        Err(err) => {
+            return failure_result(
+                "CHANNEL_REQUEST_PARSE_FAILED",
+                format!("Channel provider-data request JSON parse failed: {err}"),
+                CHANNEL_SCHEMA_VERSION,
+            )
+        }
     };
     let Some(data) = channel_data_from_request(request) else {
-        return failure_result("CHANNEL_REQUEST_INVALID", "Channel provider-data request did not satisfy schema v1 invariants".to_string(), CHANNEL_SCHEMA_VERSION);
+        return failure_result(
+            "CHANNEL_REQUEST_INVALID",
+            "Channel provider-data request did not satisfy schema v1 invariants".to_string(),
+            CHANNEL_SCHEMA_VERSION,
+        );
     };
     finalize_channel(data)
 }
@@ -493,41 +514,94 @@ pub fn build_channel_provider_data(request_json: &str) -> ProviderDataResult {
 pub fn normalize_program_provider_data(raw_bytes: &[u8]) -> ProviderDataResult {
     let text = match std::str::from_utf8(raw_bytes) {
         Ok(text) => text,
-        Err(err) => return failure_result("PROGRAM_PROVIDER_DATA_UTF8_FAILED", format!("Program provider-data is not UTF-8: {err}"), PROVIDER_SCHEMA_VERSION),
+        Err(err) => {
+            return failure_result(
+                "PROGRAM_PROVIDER_DATA_UTF8_FAILED",
+                format!("Program provider-data is not UTF-8: {err}"),
+                PROVIDER_SCHEMA_VERSION,
+            )
+        }
     };
     let raw_value = match serde_json::from_str::<serde_json::Value>(text.trim()) {
         Ok(value) => value,
-        Err(err) => return failure_result("PROGRAM_PROVIDER_DATA_PARSE_FAILED", format!("Program provider-data JSON parse failed: {err}"), PROVIDER_SCHEMA_VERSION),
+        Err(err) => {
+            return failure_result(
+                "PROGRAM_PROVIDER_DATA_PARSE_FAILED",
+                format!("Program provider-data JSON parse failed: {err}"),
+                PROVIDER_SCHEMA_VERSION,
+            )
+        }
     };
     let data = match serde_json::from_value::<ProgramProviderDataV1>(raw_value.clone()) {
         Ok(data) => data,
-        Err(err) => return failure_result("PROGRAM_PROVIDER_DATA_SCHEMA_FAILED", format!("Program provider-data JSON v1 schema parse failed: {err}"), PROVIDER_SCHEMA_VERSION),
+        Err(err) => {
+            return failure_result(
+                "PROGRAM_PROVIDER_DATA_SCHEMA_FAILED",
+                format!("Program provider-data JSON v1 schema parse failed: {err}"),
+                PROVIDER_SCHEMA_VERSION,
+            )
+        }
     };
     let data = normalize_program_extensions(data, Some(&raw_value));
     if !valid_program_provider_data(&data) {
-        return failure_result("PROGRAM_PROVIDER_DATA_INVALID", "Program provider-data JSON v1 invariants failed".to_string(), PROVIDER_SCHEMA_VERSION);
+        return failure_result(
+            "PROGRAM_PROVIDER_DATA_INVALID",
+            "Program provider-data JSON v1 invariants failed".to_string(),
+            PROVIDER_SCHEMA_VERSION,
+        );
     }
     finalize_program(data)
 }
 
-pub fn append_current_program_diagnostics(raw_bytes: &[u8], overlap_count: i64, selected_program_id: i64, selection_rule: &str) -> ProviderDataResult {
+pub fn append_current_program_diagnostics(
+    raw_bytes: &[u8],
+    overlap_count: i64,
+    selected_program_id: i64,
+    selection_rule: &str,
+) -> ProviderDataResult {
     let text = match std::str::from_utf8(raw_bytes) {
         Ok(text) => text,
-        Err(err) => return failure_result("PROGRAM_PROVIDER_DATA_UTF8_FAILED", format!("Program provider-data is not UTF-8: {err}"), PROVIDER_SCHEMA_VERSION),
+        Err(err) => {
+            return failure_result(
+                "PROGRAM_PROVIDER_DATA_UTF8_FAILED",
+                format!("Program provider-data is not UTF-8: {err}"),
+                PROVIDER_SCHEMA_VERSION,
+            )
+        }
     };
     let raw_value = match serde_json::from_str::<serde_json::Value>(text.trim()) {
         Ok(value) => value,
-        Err(err) => return failure_result("PROGRAM_PROVIDER_DATA_PARSE_FAILED", format!("Program provider-data JSON parse failed: {err}"), PROVIDER_SCHEMA_VERSION),
+        Err(err) => {
+            return failure_result(
+                "PROGRAM_PROVIDER_DATA_PARSE_FAILED",
+                format!("Program provider-data JSON parse failed: {err}"),
+                PROVIDER_SCHEMA_VERSION,
+            )
+        }
     };
     let data = match serde_json::from_value::<ProgramProviderDataV1>(raw_value.clone()) {
         Ok(data) => data,
-        Err(err) => return failure_result("PROGRAM_PROVIDER_DATA_SCHEMA_FAILED", format!("Program provider-data JSON v1 schema parse failed: {err}"), PROVIDER_SCHEMA_VERSION),
+        Err(err) => {
+            return failure_result(
+                "PROGRAM_PROVIDER_DATA_SCHEMA_FAILED",
+                format!("Program provider-data JSON v1 schema parse failed: {err}"),
+                PROVIDER_SCHEMA_VERSION,
+            )
+        }
     };
     let mut data = normalize_program_extensions(data, Some(&raw_value));
     if !valid_program_provider_data(&data) {
-        return failure_result("PROGRAM_PROVIDER_DATA_INVALID", "Program provider-data JSON v1 invariants failed".to_string(), PROVIDER_SCHEMA_VERSION);
+        return failure_result(
+            "PROGRAM_PROVIDER_DATA_INVALID",
+            "Program provider-data JSON v1 invariants failed".to_string(),
+            PROVIDER_SCHEMA_VERSION,
+        );
     }
-    data.diagnostics.current_program = Some(CurrentProgramDiagnosticsV1 { overlap_count: overlap_count.max(0), selected_program_id, selection_rule: selection_rule.to_string() });
+    data.diagnostics.current_program = Some(CurrentProgramDiagnosticsV1 {
+        overlap_count: overlap_count.max(0),
+        selected_program_id,
+        selection_rule: selection_rule.to_string(),
+    });
     finalize_program(data)
 }
 
@@ -538,7 +612,9 @@ pub fn program_provider_data_signature(raw_bytes: &[u8]) -> String {
 pub fn extract_program_key_result(raw_bytes: &[u8]) -> Option<ProgramKeyResult> {
     let text = std::str::from_utf8(raw_bytes).ok()?;
     let data = serde_json::from_str::<ProgramProviderDataV1>(text.trim()).ok()?;
-    if !valid_program_provider_data(&data) { return None; }
+    if !valid_program_provider_data(&data) {
+        return None;
+    }
     Some(ProgramKeyResult {
         original_network_id: data.program_key.original_network_id,
         transport_stream_id: data.program_key.transport_stream_id,
@@ -553,16 +629,34 @@ pub fn extract_program_key(raw_bytes: &[u8]) -> Option<String> {
 }
 
 pub fn extract_channel_tune_key(provider_data: &str) -> String {
-    let Ok(data) = serde_json::from_str::<ChannelProviderDataV1>(provider_data.trim()) else { return String::new(); };
-    if !valid_channel_provider_data(&data) { return String::new(); }
+    let Ok(data) = serde_json::from_str::<ChannelProviderDataV1>(provider_data.trim()) else {
+        return String::new();
+    };
+    if !valid_channel_provider_data(&data) {
+        return String::new();
+    }
     serde_json::to_string(&data).unwrap_or_default()
 }
 
-fn program_data_from_request(request: ProgramProviderDataRequestV1) -> Option<ProgramProviderDataV1> {
-    if request.schema != PROGRAM_REQUEST_SCHEMA_NAME || request.schema_version != PROVIDER_SCHEMA_VERSION { return None; }
-    if request.program_key.kind != "arib-event-v1" { return None; }
-    if request.service_key.original_network_id != request.program_key.original_network_id || request.service_key.transport_stream_id != request.program_key.transport_stream_id || request.service_key.service_id != request.program_key.service_id { return None; }
-    let descriptor_diagnostics = parse_descriptor_diagnostics(&request.diagnostics.descriptor_diagnostics_canonical_json)?;
+fn program_data_from_request(
+    request: ProgramProviderDataRequestV1,
+) -> Option<ProgramProviderDataV1> {
+    if request.schema != PROGRAM_REQUEST_SCHEMA_NAME
+        || request.schema_version != PROVIDER_SCHEMA_VERSION
+    {
+        return None;
+    }
+    if request.program_key.kind != "arib-event-v1" {
+        return None;
+    }
+    if request.service_key.original_network_id != request.program_key.original_network_id
+        || request.service_key.transport_stream_id != request.program_key.transport_stream_id
+        || request.service_key.service_id != request.program_key.service_id
+    {
+        return None;
+    }
+    let descriptor_diagnostics =
+        parse_descriptor_diagnostics(&request.diagnostics.descriptor_diagnostics_canonical_json)?;
     let data = ProgramProviderDataV1 {
         schema: PROGRAM_SCHEMA_NAME.to_string(),
         schema_version: PROVIDER_SCHEMA_VERSION,
@@ -592,15 +686,22 @@ fn program_data_from_request(request: ProgramProviderDataRequestV1) -> Option<Pr
             provider_data_hard_limit_bytes: None,
             provider_data_soft_limit_bytes: None,
             provider_data_dropped_count: None,
-            malformed_ca_descriptor_count: (request.malformed_ca_descriptor_count > 0).then_some(request.malformed_ca_descriptor_count),
+            malformed_ca_descriptor_count: (request.malformed_ca_descriptor_count > 0)
+                .then_some(request.malformed_ca_descriptor_count),
         },
         extensions: serde_json::Map::new(),
     };
     valid_program_provider_data(&data).then_some(data)
 }
 
-fn channel_data_from_request(request: ChannelProviderDataRequestV1) -> Option<ChannelProviderDataV1> {
-    if request.schema != CHANNEL_REQUEST_SCHEMA_NAME || request.schema_version != CHANNEL_SCHEMA_VERSION { return None; }
+fn channel_data_from_request(
+    request: ChannelProviderDataRequestV1,
+) -> Option<ChannelProviderDataV1> {
+    if request.schema != CHANNEL_REQUEST_SCHEMA_NAME
+        || request.schema_version != CHANNEL_SCHEMA_VERSION
+    {
+        return None;
+    }
     let data = ChannelProviderDataV1 {
         schema: CHANNEL_SCHEMA_NAME.to_string(),
         schema_version: CHANNEL_SCHEMA_VERSION,
@@ -612,84 +713,449 @@ fn channel_data_from_request(request: ChannelProviderDataRequestV1) -> Option<Ch
     valid_channel_provider_data(&data).then_some(data)
 }
 
-fn normalize_program_extensions(mut data: ProgramProviderDataV1, raw_value: Option<&serde_json::Value>) -> ProgramProviderDataV1 {
+fn normalize_program_extensions(
+    mut data: ProgramProviderDataV1,
+    raw_value: Option<&serde_json::Value>,
+) -> ProgramProviderDataV1 {
     let extensions = std::mem::take(&mut data.extensions);
     for (key, value) in extensions {
-        data.diagnostics.raw_provider_data_extensions.push(RawProviderDataExtensionV1 { key, value });
+        data.diagnostics
+            .raw_provider_data_extensions
+            .push(RawProviderDataExtensionV1 { key, value });
     }
     if let Some(raw) = raw_value {
         let mut nested = Vec::new();
         collect_program_unknown_extensions(raw, &mut nested);
         for extension in nested {
-            if !data.diagnostics.raw_provider_data_extensions.iter().any(|existing| existing.key == extension.key) {
-                data.diagnostics.raw_provider_data_extensions.push(extension);
+            if !data
+                .diagnostics
+                .raw_provider_data_extensions
+                .iter()
+                .any(|existing| existing.key == extension.key)
+            {
+                data.diagnostics
+                    .raw_provider_data_extensions
+                    .push(extension);
             }
         }
     }
     data
 }
 
-fn collect_program_unknown_extensions(raw: &serde_json::Value, out: &mut Vec<RawProviderDataExtensionV1>) {
-    collect_object_unknown(raw, "", &["schema", "schemaVersion", "programKey", "serviceKey", "timing", "source", "cas", "ratings", "genres", "series", "relatedItems", "linkage", "freeCaMode", "audioLanguages", "audio", "video", "extendedItems", "components", "diagnostics"], out);
-    collect_object_unknown(raw.get("programKey").unwrap_or(&serde_json::Value::Null), "programKey", &["kind", "originalNetworkId", "transportStreamId", "serviceId", "eventId"], out);
-    collect_object_unknown(raw.get("serviceKey").unwrap_or(&serde_json::Value::Null), "serviceKey", &["originalNetworkId", "transportStreamId", "serviceId"], out);
-    collect_object_unknown(raw.get("timing").unwrap_or(&serde_json::Value::Null), "timing", &["startUtcMillis", "endUtcMillis", "durationMillis"], out);
-    collect_object_unknown(raw.get("source").unwrap_or(&serde_json::Value::Null), "source", &["pid", "tableId", "version", "sectionNumber", "lastSectionNumber"], out);
-    collect_object_unknown(raw.get("cas").unwrap_or(&serde_json::Value::Null), "cas", &["requiresCas", "unsupportedCas", "clearLivePlaybackSupported", "source"], out);
-    collect_array_unknown(raw.get("ratings").unwrap_or(&serde_json::Value::Null), "ratings", &["countryCode", "ratingValue", "rawRatingByte", "supported", "mappedTvContentRating", "parseStatus"], out);
-    collect_array_unknown(raw.get("genres").unwrap_or(&serde_json::Value::Null), "genres", &["level1", "level2", "userNibble", "aribName", "unmappedReason", "parseStatus"], out);
-    collect_object_unknown(raw.get("series").unwrap_or(&serde_json::Value::Null), "series", &["seriesId", "repeatLabel", "programPattern", "expireDateValid", "expireDate", "episodeNumber", "lastEpisodeNumber", "name", "parseStatus"], out);
-    collect_array_unknown(raw.get("relatedItems").unwrap_or(&serde_json::Value::Null), "relatedItems", &["kind", "groupType", "originalNetworkId", "transportStreamId", "serviceId", "eventId", "parseStatus"], out);
-    collect_array_unknown(raw.get("linkage").unwrap_or(&serde_json::Value::Null), "linkage", &["transportStreamId", "originalNetworkId", "serviceId", "linkageType", "privateDataPrefixHex", "parseStatus"], out);
-    collect_object_unknown(raw.get("freeCaMode").unwrap_or(&serde_json::Value::Null), "freeCaMode", &["raw", "scrambled", "text", "parseStatus"], out);
-    collect_array_unknown(raw.get("audioLanguages").unwrap_or(&serde_json::Value::Null), "audioLanguages", &["language", "source", "parseStatus"], out);
-    collect_object_unknown(raw.get("audio").unwrap_or(&serde_json::Value::Null), "audio", &["esPid", "componentTag", "codec", "language", "text", "parseStatus"], out);
-    collect_object_unknown(raw.get("video").unwrap_or(&serde_json::Value::Null), "video", &["esPid", "componentTag", "codec", "format", "width", "height", "parseStatus"], out);
-    collect_array_unknown(raw.get("extendedItems").unwrap_or(&serde_json::Value::Null), "extendedItems", &["description", "text", "parseStatus"], out);
+fn collect_program_unknown_extensions(
+    raw: &serde_json::Value,
+    out: &mut Vec<RawProviderDataExtensionV1>,
+) {
+    collect_object_unknown(
+        raw,
+        "",
+        &[
+            "schema",
+            "schemaVersion",
+            "programKey",
+            "serviceKey",
+            "timing",
+            "source",
+            "cas",
+            "ratings",
+            "genres",
+            "series",
+            "relatedItems",
+            "linkage",
+            "freeCaMode",
+            "audioLanguages",
+            "audio",
+            "video",
+            "extendedItems",
+            "components",
+            "diagnostics",
+        ],
+        out,
+    );
+    collect_object_unknown(
+        raw.get("programKey").unwrap_or(&serde_json::Value::Null),
+        "programKey",
+        &[
+            "kind",
+            "originalNetworkId",
+            "transportStreamId",
+            "serviceId",
+            "eventId",
+        ],
+        out,
+    );
+    collect_object_unknown(
+        raw.get("serviceKey").unwrap_or(&serde_json::Value::Null),
+        "serviceKey",
+        &["originalNetworkId", "transportStreamId", "serviceId"],
+        out,
+    );
+    collect_object_unknown(
+        raw.get("timing").unwrap_or(&serde_json::Value::Null),
+        "timing",
+        &["startUtcMillis", "endUtcMillis", "durationMillis"],
+        out,
+    );
+    collect_object_unknown(
+        raw.get("source").unwrap_or(&serde_json::Value::Null),
+        "source",
+        &[
+            "pid",
+            "tableId",
+            "version",
+            "sectionNumber",
+            "lastSectionNumber",
+        ],
+        out,
+    );
+    collect_object_unknown(
+        raw.get("cas").unwrap_or(&serde_json::Value::Null),
+        "cas",
+        &[
+            "requiresCas",
+            "unsupportedCas",
+            "clearLivePlaybackSupported",
+            "source",
+        ],
+        out,
+    );
+    collect_array_unknown(
+        raw.get("ratings").unwrap_or(&serde_json::Value::Null),
+        "ratings",
+        &[
+            "countryCode",
+            "ratingValue",
+            "rawRatingByte",
+            "supported",
+            "mappedTvContentRating",
+            "parseStatus",
+        ],
+        out,
+    );
+    collect_array_unknown(
+        raw.get("genres").unwrap_or(&serde_json::Value::Null),
+        "genres",
+        &[
+            "level1",
+            "level2",
+            "userNibble",
+            "aribName",
+            "unmappedReason",
+            "parseStatus",
+        ],
+        out,
+    );
+    collect_object_unknown(
+        raw.get("series").unwrap_or(&serde_json::Value::Null),
+        "series",
+        &[
+            "seriesId",
+            "repeatLabel",
+            "programPattern",
+            "expireDateValid",
+            "expireDate",
+            "episodeNumber",
+            "lastEpisodeNumber",
+            "name",
+            "parseStatus",
+        ],
+        out,
+    );
+    collect_array_unknown(
+        raw.get("relatedItems").unwrap_or(&serde_json::Value::Null),
+        "relatedItems",
+        &[
+            "kind",
+            "groupType",
+            "originalNetworkId",
+            "transportStreamId",
+            "serviceId",
+            "eventId",
+            "parseStatus",
+        ],
+        out,
+    );
+    collect_array_unknown(
+        raw.get("linkage").unwrap_or(&serde_json::Value::Null),
+        "linkage",
+        &[
+            "transportStreamId",
+            "originalNetworkId",
+            "serviceId",
+            "linkageType",
+            "privateDataPrefixHex",
+            "parseStatus",
+        ],
+        out,
+    );
+    collect_object_unknown(
+        raw.get("freeCaMode").unwrap_or(&serde_json::Value::Null),
+        "freeCaMode",
+        &["raw", "scrambled", "text", "parseStatus"],
+        out,
+    );
+    collect_array_unknown(
+        raw.get("audioLanguages")
+            .unwrap_or(&serde_json::Value::Null),
+        "audioLanguages",
+        &["language", "source", "parseStatus"],
+        out,
+    );
+    collect_object_unknown(
+        raw.get("audio").unwrap_or(&serde_json::Value::Null),
+        "audio",
+        &[
+            "esPid",
+            "componentTag",
+            "codec",
+            "language",
+            "text",
+            "parseStatus",
+        ],
+        out,
+    );
+    collect_object_unknown(
+        raw.get("video").unwrap_or(&serde_json::Value::Null),
+        "video",
+        &[
+            "esPid",
+            "componentTag",
+            "codec",
+            "format",
+            "width",
+            "height",
+            "parseStatus",
+        ],
+        out,
+    );
+    collect_array_unknown(
+        raw.get("extendedItems").unwrap_or(&serde_json::Value::Null),
+        "extendedItems",
+        &["description", "text", "parseStatus"],
+        out,
+    );
     if let Some(components) = raw.get("components") {
-        collect_object_unknown(components, "components", &["video", "audio", "subtitle", "data"], out);
-        collect_array_unknown(components.get("video").unwrap_or(&serde_json::Value::Null), "components.video", &["esPid", "streamType", "componentTag", "componentType", "codec", "resolution", "scan", "aspect", "profileLevel", "sourceDescriptor", "r51PlaybackSupported", "liveViewableClaim", "diagnosticCode", "parseStatus"], out);
-        collect_array_unknown(components.get("audio").unwrap_or(&serde_json::Value::Null), "components.audio", &["esPid", "streamType", "componentTag", "componentType", "codec", "language", "channelConfiguration", "samplingInfo", "sourceDescriptor", "r51PlaybackSupported", "liveViewableClaim", "diagnosticCode", "parseStatus"], out);
-        collect_array_unknown(components.get("subtitle").unwrap_or(&serde_json::Value::Null), "components.subtitle", &["esPid", "componentTag", "dataComponentId", "language", "trackId", "captionServiceKind", "parseStatus"], out);
-        collect_array_unknown(components.get("data").unwrap_or(&serde_json::Value::Null), "components.data", &["esPid", "componentTag", "dataComponentId", "componentType", "parseStatus"], out);
+        collect_object_unknown(
+            components,
+            "components",
+            &["video", "audio", "subtitle", "data"],
+            out,
+        );
+        collect_array_unknown(
+            components.get("video").unwrap_or(&serde_json::Value::Null),
+            "components.video",
+            &[
+                "esPid",
+                "streamType",
+                "componentTag",
+                "componentType",
+                "codec",
+                "resolution",
+                "scan",
+                "aspect",
+                "profileLevel",
+                "sourceDescriptor",
+                "r51PlaybackSupported",
+                "liveViewableClaim",
+                "diagnosticCode",
+                "parseStatus",
+            ],
+            out,
+        );
+        collect_array_unknown(
+            components.get("audio").unwrap_or(&serde_json::Value::Null),
+            "components.audio",
+            &[
+                "esPid",
+                "streamType",
+                "componentTag",
+                "componentType",
+                "codec",
+                "language",
+                "channelConfiguration",
+                "samplingInfo",
+                "sourceDescriptor",
+                "r51PlaybackSupported",
+                "liveViewableClaim",
+                "diagnosticCode",
+                "parseStatus",
+            ],
+            out,
+        );
+        collect_array_unknown(
+            components
+                .get("subtitle")
+                .unwrap_or(&serde_json::Value::Null),
+            "components.subtitle",
+            &[
+                "esPid",
+                "componentTag",
+                "dataComponentId",
+                "language",
+                "trackId",
+                "captionServiceKind",
+                "parseStatus",
+            ],
+            out,
+        );
+        collect_array_unknown(
+            components.get("data").unwrap_or(&serde_json::Value::Null),
+            "components.data",
+            &[
+                "esPid",
+                "componentTag",
+                "dataComponentId",
+                "componentType",
+                "parseStatus",
+            ],
+            out,
+        );
     }
     if let Some(diagnostics) = raw.get("diagnostics") {
-        collect_object_unknown(diagnostics, "diagnostics", &["descriptorDiagnostics", "publishDiagnostics", "parserDiagnostics", "currentProgram", "rawProviderDataExtensions", "providerDataTruncated", "providerDataHardLimitBytes", "providerDataSoftLimitBytes", "providerDataDroppedCount", "malformedCaDescriptorCount"], out);
-        collect_descriptor_diagnostic_unknown(diagnostics.get("descriptorDiagnostics").unwrap_or(&serde_json::Value::Null), out);
-        collect_array_unknown(diagnostics.get("publishDiagnostics").unwrap_or(&serde_json::Value::Null), "diagnostics.publishDiagnostics", &["code", "message", "severity"], out);
-        collect_array_unknown(diagnostics.get("parserDiagnostics").unwrap_or(&serde_json::Value::Null), "diagnostics.parserDiagnostics", &["code", "message", "severity"], out);
-        collect_object_unknown(diagnostics.get("currentProgram").unwrap_or(&serde_json::Value::Null), "diagnostics.currentProgram", &["overlapCount", "selectedProgramId", "selectionRule"], out);
+        collect_object_unknown(
+            diagnostics,
+            "diagnostics",
+            &[
+                "descriptorDiagnostics",
+                "publishDiagnostics",
+                "parserDiagnostics",
+                "currentProgram",
+                "rawProviderDataExtensions",
+                "providerDataTruncated",
+                "providerDataHardLimitBytes",
+                "providerDataSoftLimitBytes",
+                "providerDataDroppedCount",
+                "malformedCaDescriptorCount",
+            ],
+            out,
+        );
+        collect_descriptor_diagnostic_unknown(
+            diagnostics
+                .get("descriptorDiagnostics")
+                .unwrap_or(&serde_json::Value::Null),
+            out,
+        );
+        collect_array_unknown(
+            diagnostics
+                .get("publishDiagnostics")
+                .unwrap_or(&serde_json::Value::Null),
+            "diagnostics.publishDiagnostics",
+            &["code", "message", "severity"],
+            out,
+        );
+        collect_array_unknown(
+            diagnostics
+                .get("parserDiagnostics")
+                .unwrap_or(&serde_json::Value::Null),
+            "diagnostics.parserDiagnostics",
+            &["code", "message", "severity"],
+            out,
+        );
+        collect_object_unknown(
+            diagnostics
+                .get("currentProgram")
+                .unwrap_or(&serde_json::Value::Null),
+            "diagnostics.currentProgram",
+            &["overlapCount", "selectedProgramId", "selectionRule"],
+            out,
+        );
     }
 }
 
-
-fn collect_descriptor_diagnostic_unknown(value: &serde_json::Value, out: &mut Vec<RawProviderDataExtensionV1>) {
-    let Some(items) = value.as_array() else { return; };
+fn collect_descriptor_diagnostic_unknown(
+    value: &serde_json::Value,
+    out: &mut Vec<RawProviderDataExtensionV1>,
+) {
+    let Some(items) = value.as_array() else {
+        return;
+    };
     for (index, item) in items.iter().enumerate() {
         let base = format!("diagnostics.descriptorDiagnostics[{}]", index);
-        collect_object_unknown(item, &base, &["schema", "schemaVersion", "severity", "code", "scope", "descriptor", "message"], out);
+        collect_object_unknown(
+            item,
+            &base,
+            &[
+                "schema",
+                "schemaVersion",
+                "severity",
+                "code",
+                "scope",
+                "descriptor",
+                "message",
+            ],
+            out,
+        );
         if let Some(scope) = item.get("scope") {
-            collect_object_unknown(scope, &format!("{}.scope", base), &["pid", "tableId", "tableIdExtension", "version", "sectionNumber", "originalNetworkId", "transportStreamId", "serviceId", "eventId"], out);
+            collect_object_unknown(
+                scope,
+                &format!("{}.scope", base),
+                &[
+                    "pid",
+                    "tableId",
+                    "tableIdExtension",
+                    "version",
+                    "sectionNumber",
+                    "originalNetworkId",
+                    "transportStreamId",
+                    "serviceId",
+                    "eventId",
+                ],
+                out,
+            );
         }
         if let Some(descriptor) = item.get("descriptor") {
-            collect_object_unknown(descriptor, &format!("{}.descriptor", base), &["tag", "name", "offset", "declaredLength", "actualRemainingLength", "parseStatus", "rawPrefixHex"], out);
+            collect_object_unknown(
+                descriptor,
+                &format!("{}.descriptor", base),
+                &[
+                    "tag",
+                    "name",
+                    "offset",
+                    "declaredLength",
+                    "actualRemainingLength",
+                    "parseStatus",
+                    "rawPrefixHex",
+                ],
+                out,
+            );
         }
     }
 }
 
-fn collect_array_unknown(value: &serde_json::Value, path: &str, known_keys: &[&str], out: &mut Vec<RawProviderDataExtensionV1>) {
-    let Some(items) = value.as_array() else { return; };
+fn collect_array_unknown(
+    value: &serde_json::Value,
+    path: &str,
+    known_keys: &[&str],
+    out: &mut Vec<RawProviderDataExtensionV1>,
+) {
+    let Some(items) = value.as_array() else {
+        return;
+    };
     for (index, item) in items.iter().enumerate() {
         collect_object_unknown(item, &format!("{}[{}]", path, index), known_keys, out);
     }
 }
 
-fn collect_object_unknown(value: &serde_json::Value, path: &str, known_keys: &[&str], out: &mut Vec<RawProviderDataExtensionV1>) {
-    let Some(object) = value.as_object() else { return; };
+fn collect_object_unknown(
+    value: &serde_json::Value,
+    path: &str,
+    known_keys: &[&str],
+    out: &mut Vec<RawProviderDataExtensionV1>,
+) {
+    let Some(object) = value.as_object() else {
+        return;
+    };
     for (key, value) in object {
         if !known_keys.iter().any(|known| *known == key) {
-            let full_key = if path.is_empty() { key.clone() } else { format!("{}.{}", path, key) };
-            out.push(RawProviderDataExtensionV1 { key: full_key, value: value.clone() });
+            let full_key = if path.is_empty() {
+                key.clone()
+            } else {
+                format!("{}.{}", path, key)
+            };
+            out.push(RawProviderDataExtensionV1 {
+                key: full_key,
+                value: value.clone(),
+            });
         }
     }
 }
@@ -722,82 +1188,229 @@ fn channel_truncation_dropped_count(data: &ChannelProviderDataV1) -> i64 {
 fn provider_data_truncated_item(dropped_count: i64) -> DiagnosticItemV1 {
     DiagnosticItemV1 {
         code: "PROVIDER_DATA_TRUNCATED".to_string(),
-        message: format!("provider-data hard limit exceeded; droppedCount={}", dropped_count),
+        message: format!(
+            "provider-data hard limit exceeded; droppedCount={}",
+            dropped_count
+        ),
         severity: Some("warning".to_string()),
     }
 }
 
 fn parse_descriptor_diagnostics(text: &str) -> Option<Vec<DescriptorDiagnosticV1>> {
     let items = serde_json::from_str::<Vec<DescriptorDiagnosticV1>>(text).ok()?;
-    if items.iter().all(valid_descriptor_diagnostic) { Some(items) } else { None }
+    if items.iter().all(valid_descriptor_diagnostic) {
+        Some(items)
+    } else {
+        None
+    }
 }
 
 fn valid_descriptor_diagnostic(item: &DescriptorDiagnosticV1) -> bool {
-    item.schema == "maleicacid.tv.descriptorDiagnostic" &&
-        item.schema_version == 1 &&
-        !item.severity.is_empty() &&
-        !item.code.is_empty() &&
-        item.descriptor.tag >= 0 && item.descriptor.tag <= 255 &&
-        item.descriptor.offset >= 0 &&
-        item.descriptor.declared_length >= 0 && item.descriptor.declared_length <= 255 &&
-        item.descriptor.actual_remaining_length >= 0 &&
-        !item.descriptor.parse_status.is_empty()
+    item.schema == "maleicacid.tv.descriptorDiagnostic"
+        && item.schema_version == 1
+        && !item.severity.is_empty()
+        && !item.code.is_empty()
+        && item.descriptor.tag >= 0
+        && item.descriptor.tag <= 255
+        && item.descriptor.offset >= 0
+        && item.descriptor.declared_length >= 0
+        && item.descriptor.declared_length <= 255
+        && item.descriptor.actual_remaining_length >= 0
+        && !item.descriptor.parse_status.is_empty()
 }
 
 fn valid_program_provider_data(data: &ProgramProviderDataV1) -> bool {
-    data.schema == PROGRAM_SCHEMA_NAME &&
-        data.schema_version == PROVIDER_SCHEMA_VERSION &&
-        data.program_key.kind == "arib-event-v1" &&
-        in_u16(data.program_key.original_network_id) && in_u16(data.program_key.transport_stream_id) && in_u16(data.program_key.service_id) && in_u16(data.program_key.event_id) &&
-        data.service_key.original_network_id == data.program_key.original_network_id &&
-        data.service_key.transport_stream_id == data.program_key.transport_stream_id &&
-        data.service_key.service_id == data.program_key.service_id &&
-        data.timing.start_utc_millis >= 0 && data.timing.duration_millis >= 0 && data.timing.end_utc_millis == data.timing.start_utc_millis.saturating_add(data.timing.duration_millis) &&
-        data.source.pid >= 0 && data.source.pid <= 8191 && data.source.table_id >= 0 && data.source.table_id <= 255 && data.source.version >= 0 && data.source.version <= 31 && data.source.section_number >= 0 && data.source.section_number <= 255 && data.source.last_section_number >= data.source.section_number && data.source.last_section_number <= 255 &&
-        !data.cas.source.is_empty() &&
-        data.ratings.iter().all(valid_rating) &&
-        data.genres.iter().all(valid_genre) &&
-        data.series.as_ref().map(valid_series).unwrap_or(true) &&
-        data.related_items.iter().all(valid_related_item) &&
-        data.linkage.iter().all(valid_linkage) &&
-        data.free_ca_mode.as_ref().map(valid_free_ca_mode).unwrap_or(true) &&
-        data.audio_languages.iter().all(valid_audio_language) &&
-        data.audio.as_ref().map(valid_audio_metadata).unwrap_or(true) &&
-        data.video.as_ref().map(valid_video_metadata).unwrap_or(true) &&
-        data.extended_items.iter().all(valid_extended_item) &&
-        valid_components(&data.components) &&
-        data.diagnostics.descriptor_diagnostics.iter().all(valid_descriptor_diagnostic) &&
-        data.diagnostics.publish_diagnostics.iter().all(valid_diagnostic_item) &&
-        data.diagnostics.parser_diagnostics.iter().all(valid_diagnostic_item)
+    data.schema == PROGRAM_SCHEMA_NAME
+        && data.schema_version == PROVIDER_SCHEMA_VERSION
+        && data.program_key.kind == "arib-event-v1"
+        && in_u16(data.program_key.original_network_id)
+        && in_u16(data.program_key.transport_stream_id)
+        && in_u16(data.program_key.service_id)
+        && in_u16(data.program_key.event_id)
+        && data.service_key.original_network_id == data.program_key.original_network_id
+        && data.service_key.transport_stream_id == data.program_key.transport_stream_id
+        && data.service_key.service_id == data.program_key.service_id
+        && data.timing.start_utc_millis >= 0
+        && data.timing.duration_millis >= 0
+        && data.timing.end_utc_millis
+            == data
+                .timing
+                .start_utc_millis
+                .saturating_add(data.timing.duration_millis)
+        && data.source.pid >= 0
+        && data.source.pid <= 8191
+        && data.source.table_id >= 0
+        && data.source.table_id <= 255
+        && data.source.version >= 0
+        && data.source.version <= 31
+        && data.source.section_number >= 0
+        && data.source.section_number <= 255
+        && data.source.last_section_number >= data.source.section_number
+        && data.source.last_section_number <= 255
+        && !data.cas.source.is_empty()
+        && data.ratings.iter().all(valid_rating)
+        && data.genres.iter().all(valid_genre)
+        && data.series.as_ref().map(valid_series).unwrap_or(true)
+        && data.related_items.iter().all(valid_related_item)
+        && data.linkage.iter().all(valid_linkage)
+        && data
+            .free_ca_mode
+            .as_ref()
+            .map(valid_free_ca_mode)
+            .unwrap_or(true)
+        && data.audio_languages.iter().all(valid_audio_language)
+        && data
+            .audio
+            .as_ref()
+            .map(valid_audio_metadata)
+            .unwrap_or(true)
+        && data
+            .video
+            .as_ref()
+            .map(valid_video_metadata)
+            .unwrap_or(true)
+        && data.extended_items.iter().all(valid_extended_item)
+        && valid_components(&data.components)
+        && data
+            .diagnostics
+            .descriptor_diagnostics
+            .iter()
+            .all(valid_descriptor_diagnostic)
+        && data
+            .diagnostics
+            .publish_diagnostics
+            .iter()
+            .all(valid_diagnostic_item)
+        && data
+            .diagnostics
+            .parser_diagnostics
+            .iter()
+            .all(valid_diagnostic_item)
 }
 
 fn valid_channel_provider_data(data: &ChannelProviderDataV1) -> bool {
-    data.schema == CHANNEL_SCHEMA_NAME && data.schema_version == CHANNEL_SCHEMA_VERSION &&
-        in_u16(data.service_key.original_network_id) && in_u16(data.service_key.transport_stream_id) && in_u16(data.service_key.service_id) &&
-        !data.tune.input_id.is_empty() && !data.tune.display_name.is_empty() && !data.tune.delivery_system.is_empty() && data.tune.frequency_hz > 0 &&
-        matches!(data.tune.stream_id_type.as_str(), "NONE" | "TSID" | "RELATIVE") &&
-        (if data.tune.stream_id_type == "NONE" { data.tune.stream_id.is_none() } else { data.tune.stream_id.map(in_u16).unwrap_or(false) }) &&
-        !data.diagnostics.publish_state_source.is_empty()
+    data.schema == CHANNEL_SCHEMA_NAME
+        && data.schema_version == CHANNEL_SCHEMA_VERSION
+        && in_u16(data.service_key.original_network_id)
+        && in_u16(data.service_key.transport_stream_id)
+        && in_u16(data.service_key.service_id)
+        && !data.tune.input_id.is_empty()
+        && !data.tune.display_name.is_empty()
+        && !data.tune.delivery_system.is_empty()
+        && data.tune.frequency_hz > 0
+        && matches!(
+            data.tune.stream_id_type.as_str(),
+            "NONE" | "TSID" | "RELATIVE"
+        )
+        && (if data.tune.stream_id_type == "NONE" {
+            data.tune.stream_id.is_none()
+        } else {
+            data.tune.stream_id.map(in_u16).unwrap_or(false)
+        })
+        && !data.diagnostics.publish_state_source.is_empty()
 }
 
-fn in_u16(v: i64) -> bool { (0..=0xffff).contains(&v) }
-fn nonempty(s: &str) -> bool { !s.is_empty() }
-fn valid_rating(v: &RatingV1) -> bool { nonempty(&v.country_code) && (0..=255).contains(&v.rating_value) && (0..=255).contains(&v.raw_rating_byte) && nonempty(&v.parse_status) }
-fn valid_genre(v: &GenreV1) -> bool { (0..=15).contains(&v.level1) && (0..=15).contains(&v.level2) && (0..=15).contains(&v.user_nibble) && nonempty(&v.parse_status) }
-fn valid_series(v: &SeriesV1) -> bool { in_u16(v.series_id) && (0..=15).contains(&v.repeat_label) && (0..=7).contains(&v.program_pattern) && (0..=4095).contains(&v.episode_number) && (0..=4095).contains(&v.last_episode_number) && nonempty(&v.parse_status) }
-fn valid_related_item(v: &RelatedItemV1) -> bool { nonempty(&v.kind) && in_u16(v.original_network_id) && in_u16(v.transport_stream_id) && in_u16(v.service_id) && in_u16(v.event_id) && nonempty(&v.parse_status) }
-fn valid_linkage(v: &LinkageV1) -> bool { in_u16(v.original_network_id) && in_u16(v.transport_stream_id) && in_u16(v.service_id) && (0..=255).contains(&v.linkage_type) && nonempty(&v.parse_status) }
-fn valid_free_ca_mode(v: &FreeCaModeV1) -> bool { (0..=1).contains(&v.raw) && nonempty(&v.parse_status) }
-fn valid_audio_language(v: &AudioLanguageV1) -> bool { nonempty(&v.language) && nonempty(&v.source) && nonempty(&v.parse_status) }
-fn valid_audio_metadata(v: &AudioMetadataV1) -> bool { nonempty(&v.codec) && nonempty(&v.parse_status) }
-fn valid_video_metadata(v: &VideoMetadataV1) -> bool { nonempty(&v.codec) && nonempty(&v.parse_status) }
-fn valid_extended_item(v: &ExtendedItemV1) -> bool { nonempty(&v.text) && nonempty(&v.parse_status) }
-fn valid_diagnostic_item(v: &DiagnosticItemV1) -> bool { nonempty(&v.code) && nonempty(&v.message) }
-fn valid_components(v: &ComponentsV1) -> bool { v.video.iter().all(valid_video_component) && v.audio.iter().all(valid_audio_component) && v.subtitle.iter().all(valid_subtitle_component) && v.data.iter().all(valid_data_component) }
-fn valid_video_component(v: &VideoComponentV1) -> bool { v.es_pid > 0 && v.es_pid <= 8191 && (0..=255).contains(&v.stream_type) && (0..=255).contains(&v.component_tag) && (0..=255).contains(&v.component_type) && nonempty(&v.codec) && nonempty(&v.parse_status) }
-fn valid_audio_component(v: &AudioComponentV1) -> bool { v.es_pid > 0 && v.es_pid <= 8191 && (0..=255).contains(&v.stream_type) && (0..=255).contains(&v.component_tag) && (0..=255).contains(&v.component_type) && nonempty(&v.codec) && nonempty(&v.language) && nonempty(&v.parse_status) }
-fn valid_subtitle_component(v: &SubtitleComponentV1) -> bool { v.es_pid > 0 && v.es_pid <= 8191 && (0..=255).contains(&v.component_tag) && nonempty(&v.language) && nonempty(&v.track_id) && nonempty(&v.caption_service_kind) && nonempty(&v.parse_status) }
-fn valid_data_component(v: &DataComponentV1) -> bool { v.es_pid > 0 && v.es_pid <= 8191 && (0..=255).contains(&v.component_tag) && (0..=65535).contains(&v.data_component_id) && (0..=255).contains(&v.component_type) && nonempty(&v.parse_status) }
+fn in_u16(v: i64) -> bool {
+    (0..=0xffff).contains(&v)
+}
+fn nonempty(s: &str) -> bool {
+    !s.is_empty()
+}
+fn valid_rating(v: &RatingV1) -> bool {
+    nonempty(&v.country_code)
+        && (0..=255).contains(&v.rating_value)
+        && (0..=255).contains(&v.raw_rating_byte)
+        && nonempty(&v.parse_status)
+}
+fn valid_genre(v: &GenreV1) -> bool {
+    (0..=15).contains(&v.level1)
+        && (0..=15).contains(&v.level2)
+        && (0..=15).contains(&v.user_nibble)
+        && nonempty(&v.parse_status)
+}
+fn valid_series(v: &SeriesV1) -> bool {
+    in_u16(v.series_id)
+        && (0..=15).contains(&v.repeat_label)
+        && (0..=7).contains(&v.program_pattern)
+        && (0..=4095).contains(&v.episode_number)
+        && (0..=4095).contains(&v.last_episode_number)
+        && nonempty(&v.parse_status)
+}
+fn valid_related_item(v: &RelatedItemV1) -> bool {
+    nonempty(&v.kind)
+        && in_u16(v.original_network_id)
+        && in_u16(v.transport_stream_id)
+        && in_u16(v.service_id)
+        && in_u16(v.event_id)
+        && nonempty(&v.parse_status)
+}
+fn valid_linkage(v: &LinkageV1) -> bool {
+    in_u16(v.original_network_id)
+        && in_u16(v.transport_stream_id)
+        && in_u16(v.service_id)
+        && (0..=255).contains(&v.linkage_type)
+        && nonempty(&v.parse_status)
+}
+fn valid_free_ca_mode(v: &FreeCaModeV1) -> bool {
+    (0..=1).contains(&v.raw) && nonempty(&v.parse_status)
+}
+fn valid_audio_language(v: &AudioLanguageV1) -> bool {
+    nonempty(&v.language) && nonempty(&v.source) && nonempty(&v.parse_status)
+}
+fn valid_audio_metadata(v: &AudioMetadataV1) -> bool {
+    nonempty(&v.codec) && nonempty(&v.parse_status)
+}
+fn valid_video_metadata(v: &VideoMetadataV1) -> bool {
+    nonempty(&v.codec) && nonempty(&v.parse_status)
+}
+fn valid_extended_item(v: &ExtendedItemV1) -> bool {
+    nonempty(&v.text) && nonempty(&v.parse_status)
+}
+fn valid_diagnostic_item(v: &DiagnosticItemV1) -> bool {
+    nonempty(&v.code) && nonempty(&v.message)
+}
+fn valid_components(v: &ComponentsV1) -> bool {
+    v.video.iter().all(valid_video_component)
+        && v.audio.iter().all(valid_audio_component)
+        && v.subtitle.iter().all(valid_subtitle_component)
+        && v.data.iter().all(valid_data_component)
+}
+fn valid_video_component(v: &VideoComponentV1) -> bool {
+    v.es_pid > 0
+        && v.es_pid <= 8191
+        && (0..=255).contains(&v.stream_type)
+        && (0..=255).contains(&v.component_tag)
+        && (0..=255).contains(&v.component_type)
+        && nonempty(&v.codec)
+        && nonempty(&v.parse_status)
+}
+fn valid_audio_component(v: &AudioComponentV1) -> bool {
+    v.es_pid > 0
+        && v.es_pid <= 8191
+        && (0..=255).contains(&v.stream_type)
+        && (0..=255).contains(&v.component_tag)
+        && (0..=255).contains(&v.component_type)
+        && nonempty(&v.codec)
+        && nonempty(&v.language)
+        && nonempty(&v.parse_status)
+}
+fn valid_subtitle_component(v: &SubtitleComponentV1) -> bool {
+    v.es_pid > 0
+        && v.es_pid <= 8191
+        && (0..=255).contains(&v.component_tag)
+        && nonempty(&v.language)
+        && nonempty(&v.track_id)
+        && nonempty(&v.caption_service_kind)
+        && nonempty(&v.parse_status)
+}
+fn valid_data_component(v: &DataComponentV1) -> bool {
+    v.es_pid > 0
+        && v.es_pid <= 8191
+        && (0..=255).contains(&v.component_tag)
+        && (0..=65535).contains(&v.data_component_id)
+        && (0..=255).contains(&v.component_type)
+        && nonempty(&v.parse_status)
+}
 
 fn failure_result(code: &str, message: String, schema_version: i64) -> ProviderDataResult {
     ProviderDataResult {
@@ -812,7 +1425,12 @@ fn failure_result(code: &str, message: String, schema_version: i64) -> ProviderD
     }
 }
 
-fn success_result(json: String, schema_version: i64, truncated: bool, diagnostics_dropped_count: i64) -> ProviderDataResult {
+fn success_result(
+    json: String,
+    schema_version: i64,
+    truncated: bool,
+    diagnostics_dropped_count: i64,
+) -> ProviderDataResult {
     ProviderDataResult {
         success: true,
         signature: sha256_hex(json.as_bytes()),
@@ -827,11 +1445,21 @@ fn success_result(json: String, schema_version: i64, truncated: bool, diagnostic
 
 fn finalize_program(data: ProgramProviderDataV1) -> ProviderDataResult {
     if !valid_program_provider_data(&data) {
-        return failure_result("PROGRAM_PROVIDER_DATA_INVALID", "Program provider-data JSON v1 invariants failed".to_string(), PROVIDER_SCHEMA_VERSION);
+        return failure_result(
+            "PROGRAM_PROVIDER_DATA_INVALID",
+            "Program provider-data JSON v1 invariants failed".to_string(),
+            PROVIDER_SCHEMA_VERSION,
+        );
     }
     let mut text = match serde_json::to_string(&data) {
         Ok(text) => text,
-        Err(err) => return failure_result("PROGRAM_PROVIDER_DATA_SERIALIZE_FAILED", format!("Program provider-data serialization failed: {err}"), PROVIDER_SCHEMA_VERSION),
+        Err(err) => {
+            return failure_result(
+                "PROGRAM_PROVIDER_DATA_SERIALIZE_FAILED",
+                format!("Program provider-data serialization failed: {err}"),
+                PROVIDER_SCHEMA_VERSION,
+            )
+        }
     };
     let mut truncated_flag = false;
     let mut dropped_count = 0i64;
@@ -842,10 +1470,19 @@ fn finalize_program(data: ProgramProviderDataV1) -> ProviderDataResult {
         truncated.diagnostics.provider_data_hard_limit_bytes = Some(HARD_LIMIT_BYTES as i64);
         truncated.diagnostics.provider_data_soft_limit_bytes = Some(SOFT_LIMIT_BYTES as i64);
         truncated.diagnostics.provider_data_dropped_count = Some(dropped_count);
-        truncated.diagnostics.publish_diagnostics.push(provider_data_truncated_item(dropped_count));
+        truncated
+            .diagnostics
+            .publish_diagnostics
+            .push(provider_data_truncated_item(dropped_count));
         text = match serde_json::to_string(&truncated) {
             Ok(text) => text,
-            Err(err) => return failure_result("PROGRAM_PROVIDER_DATA_SERIALIZE_FAILED", format!("Truncated program provider-data serialization failed: {err}"), PROVIDER_SCHEMA_VERSION),
+            Err(err) => {
+                return failure_result(
+                    "PROGRAM_PROVIDER_DATA_SERIALIZE_FAILED",
+                    format!("Truncated program provider-data serialization failed: {err}"),
+                    PROVIDER_SCHEMA_VERSION,
+                )
+            }
         };
         truncated_flag = true;
     }
@@ -854,11 +1491,21 @@ fn finalize_program(data: ProgramProviderDataV1) -> ProviderDataResult {
 
 fn finalize_channel(data: ChannelProviderDataV1) -> ProviderDataResult {
     if !valid_channel_provider_data(&data) {
-        return failure_result("CHANNEL_PROVIDER_DATA_INVALID", "Channel provider-data JSON v1 invariants failed".to_string(), CHANNEL_SCHEMA_VERSION);
+        return failure_result(
+            "CHANNEL_PROVIDER_DATA_INVALID",
+            "Channel provider-data JSON v1 invariants failed".to_string(),
+            CHANNEL_SCHEMA_VERSION,
+        );
     }
     let mut text = match serde_json::to_string(&data) {
         Ok(text) => text,
-        Err(err) => return failure_result("CHANNEL_PROVIDER_DATA_SERIALIZE_FAILED", format!("Channel provider-data serialization failed: {err}"), CHANNEL_SCHEMA_VERSION),
+        Err(err) => {
+            return failure_result(
+                "CHANNEL_PROVIDER_DATA_SERIALIZE_FAILED",
+                format!("Channel provider-data serialization failed: {err}"),
+                CHANNEL_SCHEMA_VERSION,
+            )
+        }
     };
     let mut truncated_flag = false;
     let mut dropped_count = 0i64;
@@ -869,10 +1516,17 @@ fn finalize_channel(data: ChannelProviderDataV1) -> ProviderDataResult {
         truncated.diagnostics.provider_data_hard_limit_bytes = Some(HARD_LIMIT_BYTES as i64);
         truncated.diagnostics.provider_data_soft_limit_bytes = Some(SOFT_LIMIT_BYTES as i64);
         truncated.diagnostics.provider_data_dropped_count = Some(dropped_count);
-        truncated.diagnostics.provider_data_truncation_code = Some("PROVIDER_DATA_TRUNCATED".to_string());
+        truncated.diagnostics.provider_data_truncation_code =
+            Some("PROVIDER_DATA_TRUNCATED".to_string());
         text = match serde_json::to_string(&truncated) {
             Ok(text) => text,
-            Err(err) => return failure_result("CHANNEL_PROVIDER_DATA_SERIALIZE_FAILED", format!("Truncated channel provider-data serialization failed: {err}"), CHANNEL_SCHEMA_VERSION),
+            Err(err) => {
+                return failure_result(
+                    "CHANNEL_PROVIDER_DATA_SERIALIZE_FAILED",
+                    format!("Truncated channel provider-data serialization failed: {err}"),
+                    CHANNEL_SCHEMA_VERSION,
+                )
+            }
         };
         truncated_flag = true;
     }
@@ -899,7 +1553,10 @@ fn truncated_program_value(data: &ProgramProviderDataV1) -> ProgramProviderDataV
         video: None,
         extended_items: Vec::new(),
         components: ComponentsV1::default(),
-        diagnostics: DiagnosticsV1 { malformed_ca_descriptor_count: data.diagnostics.malformed_ca_descriptor_count, ..DiagnosticsV1::default() },
+        diagnostics: DiagnosticsV1 {
+            malformed_ca_descriptor_count: data.diagnostics.malformed_ca_descriptor_count,
+            ..DiagnosticsV1::default()
+        },
         extensions: serde_json::Map::new(),
     }
 }
@@ -928,50 +1585,90 @@ fn truncated_channel_value(data: &ChannelProviderDataV1) -> ChannelProviderDataV
 fn sha256_hex(data: &[u8]) -> String {
     let digest = sha256(data);
     let mut out = String::with_capacity(64);
-    for b in digest { out.push_str(&format!("{:02x}", b)); }
+    for b in digest {
+        out.push_str(&format!("{:02x}", b));
+    }
     out
 }
 
 fn sha256(data: &[u8]) -> [u8; 32] {
-    const H0: [u32; 8] = [0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
+    const H0: [u32; 8] = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+        0x5be0cd19,
+    ];
     const K: [u32; 64] = [
-        0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
-        0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
-        0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
-        0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
-        0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
-        0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
-        0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
-        0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
+        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
+        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
+        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
+        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+        0xc67178f2,
+    ];
     let mut msg = data.to_vec();
     let bit_len = (msg.len() as u64) * 8;
     msg.push(0x80);
-    while (msg.len() % 64) != 56 { msg.push(0); }
+    while (msg.len() % 64) != 56 {
+        msg.push(0);
+    }
     msg.extend_from_slice(&bit_len.to_be_bytes());
     let mut h = H0;
     for chunk in msg.chunks(64) {
         let mut w = [0u32; 64];
-        for i in 0..16 { w[i] = u32::from_be_bytes([chunk[i*4], chunk[i*4+1], chunk[i*4+2], chunk[i*4+3]]); }
-        for i in 16..64 {
-            let s0 = w[i-15].rotate_right(7) ^ w[i-15].rotate_right(18) ^ (w[i-15] >> 3);
-            let s1 = w[i-2].rotate_right(17) ^ w[i-2].rotate_right(19) ^ (w[i-2] >> 10);
-            w[i] = w[i-16].wrapping_add(s0).wrapping_add(w[i-7]).wrapping_add(s1);
+        for i in 0..16 {
+            w[i] = u32::from_be_bytes([
+                chunk[i * 4],
+                chunk[i * 4 + 1],
+                chunk[i * 4 + 2],
+                chunk[i * 4 + 3],
+            ]);
         }
-        let (mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh) = (h[0],h[1],h[2],h[3],h[4],h[5],h[6],h[7]);
+        for i in 16..64 {
+            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16]
+                .wrapping_add(s0)
+                .wrapping_add(w[i - 7])
+                .wrapping_add(s1);
+        }
+        let (mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh) =
+            (h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]);
         for i in 0..64 {
             let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
             let ch = (e & f) ^ ((!e) & g);
-            let temp1 = hh.wrapping_add(s1).wrapping_add(ch).wrapping_add(K[i]).wrapping_add(w[i]);
+            let temp1 = hh
+                .wrapping_add(s1)
+                .wrapping_add(ch)
+                .wrapping_add(K[i])
+                .wrapping_add(w[i]);
             let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
             let maj = (a & b) ^ (a & c) ^ (b & c);
             let temp2 = s0.wrapping_add(maj);
-            hh = g; g = f; f = e; e = d.wrapping_add(temp1); d = c; c = b; b = a; a = temp1.wrapping_add(temp2);
+            hh = g;
+            g = f;
+            f = e;
+            e = d.wrapping_add(temp1);
+            d = c;
+            c = b;
+            b = a;
+            a = temp1.wrapping_add(temp2);
         }
-        h[0]=h[0].wrapping_add(a); h[1]=h[1].wrapping_add(b); h[2]=h[2].wrapping_add(c); h[3]=h[3].wrapping_add(d);
-        h[4]=h[4].wrapping_add(e); h[5]=h[5].wrapping_add(f); h[6]=h[6].wrapping_add(g); h[7]=h[7].wrapping_add(hh);
+        h[0] = h[0].wrapping_add(a);
+        h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c);
+        h[3] = h[3].wrapping_add(d);
+        h[4] = h[4].wrapping_add(e);
+        h[5] = h[5].wrapping_add(f);
+        h[6] = h[6].wrapping_add(g);
+        h[7] = h[7].wrapping_add(hh);
     }
     let mut out = [0u8; 32];
-    for (i, v) in h.iter().enumerate() { out[i*4..i*4+4].copy_from_slice(&v.to_be_bytes()); }
+    for (i, v) in h.iter().enumerate() {
+        out[i * 4..i * 4 + 4].copy_from_slice(&v.to_be_bytes());
+    }
     out
 }
 
@@ -980,7 +1677,8 @@ mod provider_data_tests {
     use super::*;
 
     fn minimal_program_json(extra_top_level: &str) -> String {
-        format!(r#"{{
+        format!(
+            r#"{{
             "schema":"maleicacid.tv.program",
             "schemaVersion":1,
             "programKey":{{"kind":"arib-event-v1","originalNetworkId":4,"transportStreamId":16400,"serviceId":101,"eventId":12345}},
@@ -1001,21 +1699,31 @@ mod provider_data_tests {
             "components":{{"video":[],"audio":[],"subtitle":[],"data":[]}},
             "diagnostics":{{"descriptorDiagnostics":[],"publishDiagnostics":[],"parserDiagnostics":[]}}
             {}
-        }}"#, extra_top_level)
+        }}"#,
+            extra_top_level
+        )
     }
 
     #[test]
     fn extended_event_item_allows_empty_description_when_text_exists() {
-        let item = ExtendedItemV1 { description: String::new(), text: "本文".to_string(), parse_status: "OK".to_string() };
+        let item = ExtendedItemV1 {
+            description: String::new(),
+            text: "本文".to_string(),
+            parse_status: "OK".to_string(),
+        };
         assert!(valid_extended_item(&item));
     }
 
     #[test]
     fn normalize_program_provider_data_preserves_top_level_unknown_key() {
-        let result = normalize_program_provider_data(minimal_program_json(",\"futureVendorKey\":{\"x\":1}").as_bytes());
+        let result = normalize_program_provider_data(
+            minimal_program_json(",\"futureVendorKey\":{\"x\":1}").as_bytes(),
+        );
         assert!(result.success, "{}", result.error_message);
         let value: serde_json::Value = serde_json::from_str(&result.json).unwrap();
-        let extensions = value["diagnostics"]["rawProviderDataExtensions"].as_array().unwrap();
+        let extensions = value["diagnostics"]["rawProviderDataExtensions"]
+            .as_array()
+            .unwrap();
         assert_eq!(extensions[0]["key"], "futureVendorKey");
         assert_eq!(extensions[0]["value"]["x"], 1);
         assert!(value.get("futureVendorKey").is_none());
@@ -1023,16 +1731,29 @@ mod provider_data_tests {
 
     #[test]
     fn oversized_program_provider_data_records_truncation_diagnostic() {
-        let mut data: ProgramProviderDataV1 = serde_json::from_str(&minimal_program_json("")).unwrap();
+        let mut data: ProgramProviderDataV1 =
+            serde_json::from_str(&minimal_program_json("")).unwrap();
         data.extended_items = (0..200)
-            .map(|i| ExtendedItemV1 { description: String::new(), text: format!("{}{}", i, "x".repeat(512)), parse_status: "OK".to_string() })
+            .map(|i| ExtendedItemV1 {
+                description: String::new(),
+                text: format!("{}{}", i, "x".repeat(512)),
+                parse_status: "OK".to_string(),
+            })
             .collect();
         let result = finalize_program(data);
         assert!(result.success, "{}", result.error_message);
         let value: serde_json::Value = serde_json::from_str(&result.json).unwrap();
         assert_eq!(value["diagnostics"]["providerDataTruncated"], true);
-        assert_eq!(value["diagnostics"]["publishDiagnostics"][0]["code"], "PROVIDER_DATA_TRUNCATED");
-        assert!(value["diagnostics"]["providerDataDroppedCount"].as_i64().unwrap() > 0);
+        assert_eq!(
+            value["diagnostics"]["publishDiagnostics"][0]["code"],
+            "PROVIDER_DATA_TRUNCATED"
+        );
+        assert!(
+            value["diagnostics"]["providerDataDroppedCount"]
+                .as_i64()
+                .unwrap()
+                > 0
+        );
     }
 
     #[test]

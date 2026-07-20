@@ -125,7 +125,11 @@ impl NativeFmqQueue {
         let ok = unsafe {
             native_queue_grantor_at(self.queue, index, &mut fd_index, &mut offset, &mut extent)
         };
-        if ok { Some((fd_index, offset, extent)) } else { None }
+        if ok {
+            Some((fd_index, offset, extent))
+        } else {
+            None
+        }
     }
 
     pub(crate) fn fd_count(&self) -> usize {
@@ -143,7 +147,11 @@ impl NativeFmqQueue {
     pub(crate) fn int_at(&self, index: usize) -> Option<i32> {
         let mut value = 0i32;
         let ok = unsafe { native_queue_int_at(self.queue, index, &mut value) };
-        if ok { Some(value) } else { None }
+        if ok {
+            Some(value)
+        } else {
+            None
+        }
     }
 }
 
@@ -155,9 +163,13 @@ impl Drop for NativeFmqQueue {
 
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum FmqClearOutcome { Cleared }
+pub enum FmqClearOutcome {
+    Cleared,
+}
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum FmqFillStatus { Bytes(usize) }
+pub enum FmqFillStatus {
+    Bytes(usize),
+}
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum FmqQueueError {
@@ -193,16 +205,30 @@ impl FmqQueueError {
     }
 }
 
-pub struct FmqQueue { native: Option<NativeFmqQueue>, test_fill: usize }
+pub struct FmqQueue {
+    native: Option<NativeFmqQueue>,
+    test_fill: usize,
+}
 
 impl FmqQueue {
-    pub fn new() -> Self { Self { native: None, test_fill: 0 } }
+    pub fn new() -> Self {
+        Self {
+            native: None,
+            test_fill: 0,
+        }
+    }
     pub fn create(num_bytes: usize, configure_event_flag: bool) -> Result<Self, FmqQueueError> {
-        let native = NativeFmqQueue::create(num_bytes, configure_event_flag).ok_or(FmqQueueError::NativeCreateFailed)?;
-        Ok(Self { native: Some(native), test_fill: 0 })
+        let native = NativeFmqQueue::create(num_bytes, configure_event_flag)
+            .ok_or(FmqQueueError::NativeCreateFailed)?;
+        Ok(Self {
+            native: Some(native),
+            test_fill: 0,
+        })
     }
     pub(crate) fn read_into(&self, data: &mut [u8]) -> Result<usize, FmqQueueError> {
-        let Some(native) = &self.native else { return Ok(0); };
+        let Some(native) = &self.native else {
+            return Ok(0);
+        };
         let available = native.available_to_read();
         let read = native.read(data);
         if available > 0 && !data.is_empty() && read == 0 {
@@ -235,12 +261,23 @@ impl FmqQueue {
         Ok(FmqClearOutcome::Cleared)
     }
     fn fill_status(&self) -> Result<FmqFillStatus, FmqQueueError> {
-        match &self.native { Some(native) => Ok(native.fill_status()), None => Ok(FmqFillStatus::Bytes(self.test_fill)) }
+        match &self.native {
+            Some(native) => Ok(native.fill_status()),
+            None => Ok(FmqFillStatus::Bytes(self.test_fill)),
+        }
     }
-    pub fn current_fill(&self) -> Result<FmqFillStatus, FmqQueueError> { self.fill_status() }
+    pub fn current_fill(&self) -> Result<FmqFillStatus, FmqQueueError> {
+        self.fill_status()
+    }
     pub(crate) fn wake(&self, event_mask: u32) -> Result<(), FmqQueueError> {
-        let Some(native) = &self.native else { return Err(FmqQueueError::NoNativeQueue); };
-        if native.wake(event_mask) == 0 { Ok(()) } else { Err(FmqQueueError::NativeWakeFailed) }
+        let Some(native) = &self.native else {
+            return Err(FmqQueueError::NoNativeQueue);
+        };
+        if native.wake(event_mask) == 0 {
+            Ok(())
+        } else {
+            Err(FmqQueueError::NativeWakeFailed)
+        }
     }
     fn native_ref(&self) -> Result<&NativeFmqQueue, FmqQueueError> {
         self.native.as_ref().ok_or(FmqQueueError::NoNativeQueue)
@@ -257,38 +294,67 @@ impl FmqQueue {
         Ok(self.native_ref()?.available_to_write())
     }
 
-    pub(crate) fn quantum_result(&self) -> Result<i32, FmqQueueError> { Ok(self.native_ref()?.quantum()) }
-    pub(crate) fn flags_result(&self) -> Result<i32, FmqQueueError> { Ok(self.native_ref()?.flags()) }
-    pub(crate) fn grantor_count_result(&self) -> Result<usize, FmqQueueError> { Ok(self.native_ref()?.grantor_count()) }
-    pub(crate) fn grantor_at_result(&self, index: usize) -> Result<(i32,i32,i64), FmqQueueError> {
-        self.native_ref()?.grantor_at(index).ok_or(FmqQueueError::DescriptorGrantorUnavailable)
+    pub(crate) fn quantum_result(&self) -> Result<i32, FmqQueueError> {
+        Ok(self.native_ref()?.quantum())
     }
-    pub(crate) fn fd_count_result(&self) -> Result<usize, FmqQueueError> { Ok(self.native_ref()?.fd_count()) }
+    pub(crate) fn flags_result(&self) -> Result<i32, FmqQueueError> {
+        Ok(self.native_ref()?.flags())
+    }
+    pub(crate) fn grantor_count_result(&self) -> Result<usize, FmqQueueError> {
+        Ok(self.native_ref()?.grantor_count())
+    }
+    pub(crate) fn grantor_at_result(&self, index: usize) -> Result<(i32, i32, i64), FmqQueueError> {
+        self.native_ref()?
+            .grantor_at(index)
+            .ok_or(FmqQueueError::DescriptorGrantorUnavailable)
+    }
+    pub(crate) fn fd_count_result(&self) -> Result<usize, FmqQueueError> {
+        Ok(self.native_ref()?.fd_count())
+    }
     pub(crate) fn dup_fd_at_result(&self, index: usize) -> Result<i32, FmqQueueError> {
         let fd = self.native_ref()?.dup_fd_at(index);
-        if fd < 0 { Err(FmqQueueError::DescriptorFdDupFailed) } else { Ok(fd) }
+        if fd < 0 {
+            Err(FmqQueueError::DescriptorFdDupFailed)
+        } else {
+            Ok(fd)
+        }
     }
-    pub(crate) fn int_count_result(&self) -> Result<usize, FmqQueueError> { Ok(self.native_ref()?.int_count()) }
+    pub(crate) fn int_count_result(&self) -> Result<usize, FmqQueueError> {
+        Ok(self.native_ref()?.int_count())
+    }
     pub(crate) fn int_at_result(&self, index: usize) -> Result<i32, FmqQueueError> {
-        self.native_ref()?.int_at(index).ok_or(FmqQueueError::DescriptorIntUnavailable)
+        self.native_ref()?
+            .int_at(index)
+            .ok_or(FmqQueueError::DescriptorIntUnavailable)
     }
 }
-impl Default for FmqQueue { fn default() -> Self { Self::new() } }
+impl Default for FmqQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-#[cfg(test)] mod tests {
+#[cfg(test)]
+mod tests {
     use super::*;
 
     #[test]
-    fn fmq_queue_reports_fill_as_result(){
-        let queue=FmqQueue::new();
-        assert_eq!(queue.current_fill(),Ok(FmqFillStatus::Bytes(0)));
+    fn fmq_queue_reports_fill_as_result() {
+        let queue = FmqQueue::new();
+        assert_eq!(queue.current_fill(), Ok(FmqFillStatus::Bytes(0)));
     }
 
     #[test]
     fn native_metadata_accessors_do_not_round_missing_queue_to_zero() {
         let queue = FmqQueue::new();
-        assert_eq!(queue.available_to_write_result(), Err(FmqQueueError::NoNativeQueue));
-        assert_eq!(queue.grantor_count_result(), Err(FmqQueueError::NoNativeQueue));
+        assert_eq!(
+            queue.available_to_write_result(),
+            Err(FmqQueueError::NoNativeQueue)
+        );
+        assert_eq!(
+            queue.grantor_count_result(),
+            Err(FmqQueueError::NoNativeQueue)
+        );
         assert_eq!(queue.fd_count_result(), Err(FmqQueueError::NoNativeQueue));
         assert_eq!(queue.int_count_result(), Err(FmqQueueError::NoNativeQueue));
         assert_eq!(queue.quantum_result(), Err(FmqQueueError::NoNativeQueue));
@@ -296,12 +362,14 @@ impl Default for FmqQueue { fn default() -> Self { Self::new() } }
     }
 }
 
-
 #[cfg(test)]
 mod r50dz52_g3_11_tests {
     use super::*;
 
-    fn clear_probe_for_test(mut available: usize, reads: &[usize]) -> Result<FmqClearOutcome, FmqQueueError> {
+    fn clear_probe_for_test(
+        mut available: usize,
+        reads: &[usize],
+    ) -> Result<FmqClearOutcome, FmqQueueError> {
         let mut pos = 0usize;
         while available > 0 {
             let read = reads.get(pos).copied().unwrap_or(0);
@@ -316,8 +384,14 @@ mod r50dz52_g3_11_tests {
 
     #[test]
     fn native_read_zero_is_not_reported_as_cleared() {
-        assert_eq!(clear_probe_for_test(188, &[0]), Err(FmqQueueError::NativeReadZero));
-        assert_eq!(clear_probe_for_test(188, &[188]), Ok(FmqClearOutcome::Cleared));
+        assert_eq!(
+            clear_probe_for_test(188, &[0]),
+            Err(FmqQueueError::NativeReadZero)
+        );
+        assert_eq!(
+            clear_probe_for_test(188, &[188]),
+            Ok(FmqClearOutcome::Cleared)
+        );
     }
 }
 

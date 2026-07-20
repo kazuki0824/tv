@@ -41,72 +41,157 @@ pub struct LifecycleTxn {
 }
 
 impl LifecycleTxn {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     pub fn validate<F, E>(&mut self, name: &'static str, f: F) -> Result<(), E>
-    where F: FnOnce() -> Result<(), E> { self.run_stage(LifecycleStage::Validate, name, f) }
+    where
+        F: FnOnce() -> Result<(), E>,
+    {
+        self.run_stage(LifecycleStage::Validate, name, f)
+    }
     pub fn prepare<F, E>(&mut self, name: &'static str, f: F) -> Result<(), E>
-    where F: FnOnce() -> Result<(), E> { self.run_stage(LifecycleStage::Prepare, name, f) }
+    where
+        F: FnOnce() -> Result<(), E>,
+    {
+        self.run_stage(LifecycleStage::Prepare, name, f)
+    }
     pub fn apply<F, E>(&mut self, name: &'static str, f: F) -> Result<(), E>
-    where F: FnOnce() -> Result<(), E> { self.run_stage(LifecycleStage::Apply, name, f) }
+    where
+        F: FnOnce() -> Result<(), E>,
+    {
+        self.run_stage(LifecycleStage::Apply, name, f)
+    }
     pub fn commit<F, E>(&mut self, name: &'static str, f: F) -> Result<(), E>
-    where F: FnOnce() -> Result<(), E> { self.run_stage(LifecycleStage::Commit, name, f) }
+    where
+        F: FnOnce() -> Result<(), E>,
+    {
+        self.run_stage(LifecycleStage::Commit, name, f)
+    }
     pub fn rollback<F, E>(&mut self, name: &'static str, f: F) -> Result<(), E>
-    where F: FnOnce() -> Result<(), E> { self.run_stage(LifecycleStage::Rollback, name, f) }
+    where
+        F: FnOnce() -> Result<(), E>,
+    {
+        self.run_stage(LifecycleStage::Rollback, name, f)
+    }
     pub fn cleanup<F, E>(&mut self, name: &'static str, f: F) -> Result<(), E>
-    where F: FnOnce() -> Result<(), E> {
+    where
+        F: FnOnce() -> Result<(), E>,
+    {
         let result = self.run_stage(LifecycleStage::Cleanup, name, f);
-        self.cleanup_outcome = if result.is_ok() { CleanupOutcome::Success } else { CleanupOutcome::Failed };
+        self.cleanup_outcome = if result.is_ok() {
+            CleanupOutcome::Success
+        } else {
+            CleanupOutcome::Failed
+        };
         result
     }
     pub fn cleanup_value<F, T, E>(&mut self, name: &'static str, f: F) -> Result<T, E>
-    where F: FnOnce() -> Result<T, E> {
+    where
+        F: FnOnce() -> Result<T, E>,
+    {
         let result = self.run_stage_value(LifecycleStage::Cleanup, name, f);
-        self.cleanup_outcome = if result.is_ok() { CleanupOutcome::Success } else { CleanupOutcome::Failed };
+        self.cleanup_outcome = if result.is_ok() {
+            CleanupOutcome::Success
+        } else {
+            CleanupOutcome::Failed
+        };
         result
     }
     pub fn prepare_value<F, T, E>(&mut self, name: &'static str, f: F) -> Result<T, E>
-    where F: FnOnce() -> Result<T, E> { self.run_stage_value(LifecycleStage::Prepare, name, f) }
+    where
+        F: FnOnce() -> Result<T, E>,
+    {
+        self.run_stage_value(LifecycleStage::Prepare, name, f)
+    }
     pub fn apply_value<F, T, E>(&mut self, name: &'static str, f: F) -> Result<T, E>
-    where F: FnOnce() -> Result<T, E> { self.run_stage_value(LifecycleStage::Apply, name, f) }
+    where
+        F: FnOnce() -> Result<T, E>,
+    {
+        self.run_stage_value(LifecycleStage::Apply, name, f)
+    }
     pub fn commit_value<F, T, E>(&mut self, name: &'static str, f: F) -> Result<T, E>
-    where F: FnOnce() -> Result<T, E> { self.run_stage_value(LifecycleStage::Commit, name, f) }
+    where
+        F: FnOnce() -> Result<T, E>,
+    {
+        self.run_stage_value(LifecycleStage::Commit, name, f)
+    }
 
     fn run_stage<F, E>(&mut self, stage: LifecycleStage, name: &'static str, f: F) -> Result<(), E>
-    where F: FnOnce() -> Result<(), E> {
+    where
+        F: FnOnce() -> Result<(), E>,
+    {
         self.steps.push(TxnStep { stage, name });
         match f() {
             Ok(()) => Ok(()),
-            Err(e) => { self.record_error_once_at(stage, name); Err(e) }
+            Err(e) => {
+                self.record_error_once_at(stage, name);
+                Err(e)
+            }
         }
     }
 
-    fn run_stage_value<F, T, E>(&mut self, stage: LifecycleStage, name: &'static str, f: F) -> Result<T, E>
-    where F: FnOnce() -> Result<T, E> {
+    fn run_stage_value<F, T, E>(
+        &mut self,
+        stage: LifecycleStage,
+        name: &'static str,
+        f: F,
+    ) -> Result<T, E>
+    where
+        F: FnOnce() -> Result<T, E>,
+    {
         self.steps.push(TxnStep { stage, name });
         match f() {
             Ok(value) => Ok(value),
-            Err(e) => { self.record_error_once_at(stage, name); Err(e) }
+            Err(e) => {
+                self.record_error_once_at(stage, name);
+                Err(e)
+            }
         }
     }
     pub fn record_error_once_at(&mut self, stage: LifecycleStage, step: &'static str) {
-        if self.first_error.is_none() { self.first_error = Some(FirstError { stage, step }); }
+        if self.first_error.is_none() {
+            self.first_error = Some(FirstError { stage, step });
+        }
     }
     #[cfg(test)]
-    pub fn first_error(&self) -> Option<&FirstError> { self.first_error.as_ref() }
+    pub fn first_error(&self) -> Option<&FirstError> {
+        self.first_error.as_ref()
+    }
     #[cfg(test)]
-    pub fn steps(&self) -> &[TxnStep] { &self.steps }
+    pub fn steps(&self) -> &[TxnStep] {
+        &self.steps
+    }
     #[cfg(test)]
-    pub fn cleanup_outcome(&self) -> CleanupOutcome { self.cleanup_outcome }
+    pub fn cleanup_outcome(&self) -> CleanupOutcome {
+        self.cleanup_outcome
+    }
 }
 
-impl Default for CleanupOutcome { fn default() -> Self { Self::NotRun } }
+impl Default for CleanupOutcome {
+    fn default() -> Self {
+        Self::NotRun
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LifecycleCleanupStepResult { Success, SafeNoOp, Failed, Unknown }
-impl LifecycleCleanupStepResult { pub fn is_complete(self) -> bool { matches!(self, Self::Success | Self::SafeNoOp) } }
-impl Default for LifecycleCleanupStepResult { fn default() -> Self { Self::Unknown } }
-
+pub enum LifecycleCleanupStepResult {
+    Success,
+    SafeNoOp,
+    Failed,
+    Unknown,
+}
+impl LifecycleCleanupStepResult {
+    pub fn is_complete(self) -> bool {
+        matches!(self, Self::Success | Self::SafeNoOp)
+    }
+}
+impl Default for LifecycleCleanupStepResult {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
 
 /// Common close-step runner for resumable resource cleanup.
 ///
@@ -123,8 +208,12 @@ impl<Step> CloseStepTxn<Step>
 where
     Step: Copy + Ord,
 {
-    pub fn new(current: Step) -> Self { Self { current } }
-    pub fn current_step(&self) -> Step { self.current }
+    pub fn new(current: Step) -> Self {
+        Self { current }
+    }
+    pub fn current_step(&self) -> Step {
+        self.current
+    }
 
     pub fn run_required<F, M, R, E>(
         &mut self,
@@ -178,6 +267,9 @@ mod tests {
         assert_eq!(rollback, Ok(()));
         assert_eq!(txn.first_error().unwrap().stage, LifecycleStage::Apply);
         assert_eq!(txn.first_error().unwrap().step, "apply");
-        assert!(txn.steps().iter().any(|step| step.stage == LifecycleStage::Rollback && step.name == "rollback"));
+        assert!(txn
+            .steps()
+            .iter()
+            .any(|step| step.stage == LifecycleStage::Rollback && step.name == "rollback"));
     }
 }

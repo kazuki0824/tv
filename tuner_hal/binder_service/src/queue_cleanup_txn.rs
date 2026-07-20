@@ -13,7 +13,11 @@ pub(crate) struct QueueCleanupTxn {
 
 impl QueueCleanupTxn {
     pub(crate) fn new(owner_kind: &'static str, owner_id: i32, phase: &'static str) -> Self {
-        Self { owner_kind, owner_id, phase }
+        Self {
+            owner_kind,
+            owner_id,
+            phase,
+        }
     }
 
     fn record_failure(&self, step: &'static str, counter: &AtomicU64, status: &Status) {
@@ -33,7 +37,12 @@ impl QueueCleanupTxn {
         }
     }
 
-    pub(crate) fn required<F>(&self, step: &'static str, counter: &AtomicU64, f: F) -> BinderResult<()>
+    pub(crate) fn required<F>(
+        &self,
+        step: &'static str,
+        counter: &AtomicU64,
+        f: F,
+    ) -> BinderResult<()>
     where
         F: FnOnce() -> BinderResult<()>,
     {
@@ -56,10 +65,16 @@ impl QueueCleanupTxn {
     where
         R: QueueCleanupResource + ?Sized,
     {
-        self.required(step, counter, || owner.cleanup_queue_resource(resource, self.phase))
+        self.required(step, counter, || {
+            owner.cleanup_queue_resource(resource, self.phase)
+        })
     }
 }
 
 pub(crate) trait QueueCleanupResource {
-    fn cleanup_queue_resource(&self, resource: &'static str, reason: &'static str) -> BinderResult<()>;
+    fn cleanup_queue_resource(
+        &self,
+        resource: &'static str,
+        reason: &'static str,
+    ) -> BinderResult<()>;
 }

@@ -27,7 +27,13 @@ pub struct AribStringDecodeDiagnosticEntry {
 }
 
 impl AribStringDecodeDiagnostic {
-    fn record_entry(&mut self, offset: usize, code_set_or_control: &str, reason: &str, replacement_emitted: bool) {
+    fn record_entry(
+        &mut self,
+        offset: usize,
+        code_set_or_control: &str,
+        reason: &str,
+        replacement_emitted: bool,
+    ) {
         self.entries.push(AribStringDecodeDiagnosticEntry {
             offset,
             code_set_or_control: code_set_or_control.to_string(),
@@ -37,15 +43,20 @@ impl AribStringDecodeDiagnostic {
     }
 
     pub fn summary(&self) -> String {
-        let entries = self.entries.iter().map(|entry| {
-            format!(
-                "{{offset:{} code:{} reason:{} replacement:{}}}",
-                entry.offset,
-                entry.code_set_or_control,
-                entry.reason,
-                entry.replacement_emitted
-            )
-        }).collect::<Vec<_>>().join(",");
+        let entries = self
+            .entries
+            .iter()
+            .map(|entry| {
+                format!(
+                    "{{offset:{} code:{} reason:{} replacement:{}}}",
+                    entry.offset,
+                    entry.code_set_or_control,
+                    entry.reason,
+                    entry.replacement_emitted
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
         format!(
             "scope={} replacement_count={} unsupported_escape_count={} truncated_escape_count={} truncated_graphic_count={} entries=[{}]",
             ARIB_STRING_DECODER_SCOPE,
@@ -92,19 +103,31 @@ impl Default for InvocationState {
     }
 }
 
-fn decode_single_shift(set: GraphicSet, bytes: &[u8], index: usize) -> Result<(String, usize), AribStringDecodeError> {
-    let first = *bytes.get(index + 1).ok_or(AribStringDecodeError::TruncatedGraphic)?;
+fn decode_single_shift(
+    set: GraphicSet,
+    bytes: &[u8],
+    index: usize,
+) -> Result<(String, usize), AribStringDecodeError> {
+    let first = *bytes
+        .get(index + 1)
+        .ok_or(AribStringDecodeError::TruncatedGraphic)?;
     let value = match set {
         GraphicSet::Alnum => (first as char).to_string(),
         GraphicSet::Hiragana => map_hiragana(first).to_string(),
         GraphicSet::Katakana => map_katakana(first).to_string(),
         GraphicSet::Kanji => {
-            let second = *bytes.get(index + 2).ok_or(AribStringDecodeError::TruncatedGraphic)?;
+            let second = *bytes
+                .get(index + 2)
+                .ok_or(AribStringDecodeError::TruncatedGraphic)?;
             map_kanji(first, second).to_string()
         }
         GraphicSet::Macro => "�".to_string(),
     };
-    let consumed_after_control = if matches!(set, GraphicSet::Kanji) { 2 } else { 1 };
+    let consumed_after_control = if matches!(set, GraphicSet::Kanji) {
+        2
+    } else {
+        1
+    };
     Ok((value, consumed_after_control))
 }
 
@@ -131,19 +154,19 @@ pub fn decode_arib_string(bytes: &[u8]) -> Result<String, AribStringDecodeError>
                 index += consumed.saturating_sub(1);
             }
             0x20 => out.push(' '),
-            0x21..=0x7e => {
-                match state.gl {
-                    GraphicSet::Alnum => out.push(byte as char),
-                    GraphicSet::Hiragana => out.push_str(map_hiragana(byte)),
-                    GraphicSet::Katakana => out.push_str(map_katakana(byte)),
-                    GraphicSet::Kanji => {
-                        let next = *bytes.get(index + 1).ok_or(AribStringDecodeError::TruncatedGraphic)?;
-                        out.push_str(map_kanji(byte, next));
-                        index += 1;
-                    }
-                    GraphicSet::Macro => out.push('�'),
+            0x21..=0x7e => match state.gl {
+                GraphicSet::Alnum => out.push(byte as char),
+                GraphicSet::Hiragana => out.push_str(map_hiragana(byte)),
+                GraphicSet::Katakana => out.push_str(map_katakana(byte)),
+                GraphicSet::Kanji => {
+                    let next = *bytes
+                        .get(index + 1)
+                        .ok_or(AribStringDecodeError::TruncatedGraphic)?;
+                    out.push_str(map_kanji(byte, next));
+                    index += 1;
                 }
-            }
+                GraphicSet::Macro => out.push('�'),
+            },
             0xa1..=0xfe => {
                 let normalized = byte & 0x7f;
                 match state.gr {
@@ -151,7 +174,10 @@ pub fn decode_arib_string(bytes: &[u8]) -> Result<String, AribStringDecodeError>
                     GraphicSet::Hiragana => out.push_str(map_hiragana(normalized)),
                     GraphicSet::Katakana => out.push_str(map_katakana(normalized)),
                     GraphicSet::Kanji => {
-                        let next = *bytes.get(index + 1).ok_or(AribStringDecodeError::TruncatedGraphic)? & 0x7f;
+                        let next = *bytes
+                            .get(index + 1)
+                            .ok_or(AribStringDecodeError::TruncatedGraphic)?
+                            & 0x7f;
                         out.push_str(map_kanji(normalized, next));
                         index += 1;
                     }
@@ -171,7 +197,9 @@ pub fn decode_arib_string_lossy(bytes: &[u8]) -> String {
     decode_arib_string_lossy_with_diagnostic(bytes).0
 }
 
-pub fn decode_arib_string_lossy_with_diagnostic(bytes: &[u8]) -> (String, AribStringDecodeDiagnostic) {
+pub fn decode_arib_string_lossy_with_diagnostic(
+    bytes: &[u8],
+) -> (String, AribStringDecodeDiagnostic) {
     let mut out = String::new();
     let mut diagnostic = AribStringDecodeDiagnostic::default();
     let mut state = InvocationState::default();
@@ -187,53 +215,65 @@ pub fn decode_arib_string_lossy_with_diagnostic(bytes: &[u8]) -> (String, AribSt
                 match decode_single_shift(set, bytes, index) {
                     Ok((value, consumed)) => {
                         if matches!(set, GraphicSet::Macro) {
-                            diagnostic.unsupported_escape_count = diagnostic.unsupported_escape_count.saturating_add(1);
-                            diagnostic.replacement_count = diagnostic.replacement_count.saturating_add(1);
+                            diagnostic.unsupported_escape_count =
+                                diagnostic.unsupported_escape_count.saturating_add(1);
+                            diagnostic.replacement_count =
+                                diagnostic.replacement_count.saturating_add(1);
                             diagnostic.record_entry(index, "SS3/Macro", "unsupported_macro", true);
                         }
                         out.push_str(&value);
                         index += consumed;
                     }
                     Err(AribStringDecodeError::TruncatedGraphic) => {
-                        diagnostic.truncated_graphic_count = diagnostic.truncated_graphic_count.saturating_add(1);
-                        diagnostic.replacement_count = diagnostic.replacement_count.saturating_add(1);
+                        diagnostic.truncated_graphic_count =
+                            diagnostic.truncated_graphic_count.saturating_add(1);
+                        diagnostic.replacement_count =
+                            diagnostic.replacement_count.saturating_add(1);
                         diagnostic.record_entry(index, "graphic", "truncated_graphic", true);
                         out.push('�');
                         break;
                     }
-                    Err(AribStringDecodeError::TruncatedEscape) | Err(AribStringDecodeError::UnsupportedEscape) => {
-                        diagnostic.replacement_count = diagnostic.replacement_count.saturating_add(1);
-                        diagnostic.record_entry(index, "single_shift", "unsupported_or_truncated_single_shift", true);
+                    Err(AribStringDecodeError::TruncatedEscape)
+                    | Err(AribStringDecodeError::UnsupportedEscape) => {
+                        diagnostic.replacement_count =
+                            diagnostic.replacement_count.saturating_add(1);
+                        diagnostic.record_entry(
+                            index,
+                            "single_shift",
+                            "unsupported_or_truncated_single_shift",
+                            true,
+                        );
                         out.push('�');
                         break;
                     }
                 }
             }
-            0x1b => {
-                match apply_escape(&mut state, &bytes[index..]) {
-                    Ok(consumed) => index += consumed.saturating_sub(1),
-                    Err(AribStringDecodeError::TruncatedEscape) => {
-                        diagnostic.truncated_escape_count = diagnostic.truncated_escape_count.saturating_add(1);
-                        diagnostic.replacement_count = diagnostic.replacement_count.saturating_add(1);
-                        diagnostic.record_entry(index, "ESC", "truncated_escape", true);
-                        out.push('�');
-                        break;
-                    }
-                    Err(AribStringDecodeError::TruncatedGraphic) => {
-                        diagnostic.truncated_graphic_count = diagnostic.truncated_graphic_count.saturating_add(1);
-                        diagnostic.replacement_count = diagnostic.replacement_count.saturating_add(1);
-                        diagnostic.record_entry(index, "ESC/graphic", "truncated_graphic", true);
-                        out.push('�');
-                        break;
-                    }
-                    Err(AribStringDecodeError::UnsupportedEscape) => {
-                        diagnostic.unsupported_escape_count = diagnostic.unsupported_escape_count.saturating_add(1);
-                        diagnostic.replacement_count = diagnostic.replacement_count.saturating_add(1);
-                        diagnostic.record_entry(index, "ESC", "unsupported_escape", true);
-                        out.push('�');
-                    }
+            0x1b => match apply_escape(&mut state, &bytes[index..]) {
+                Ok(consumed) => index += consumed.saturating_sub(1),
+                Err(AribStringDecodeError::TruncatedEscape) => {
+                    diagnostic.truncated_escape_count =
+                        diagnostic.truncated_escape_count.saturating_add(1);
+                    diagnostic.replacement_count = diagnostic.replacement_count.saturating_add(1);
+                    diagnostic.record_entry(index, "ESC", "truncated_escape", true);
+                    out.push('�');
+                    break;
                 }
-            }
+                Err(AribStringDecodeError::TruncatedGraphic) => {
+                    diagnostic.truncated_graphic_count =
+                        diagnostic.truncated_graphic_count.saturating_add(1);
+                    diagnostic.replacement_count = diagnostic.replacement_count.saturating_add(1);
+                    diagnostic.record_entry(index, "ESC/graphic", "truncated_graphic", true);
+                    out.push('�');
+                    break;
+                }
+                Err(AribStringDecodeError::UnsupportedEscape) => {
+                    diagnostic.unsupported_escape_count =
+                        diagnostic.unsupported_escape_count.saturating_add(1);
+                    diagnostic.replacement_count = diagnostic.replacement_count.saturating_add(1);
+                    diagnostic.record_entry(index, "ESC", "unsupported_escape", true);
+                    out.push('�');
+                }
+            },
             0x20 => out.push(' '),
             0x21..=0x7e => match state.gl {
                 GraphicSet::Alnum => out.push(byte as char),
@@ -241,14 +281,17 @@ pub fn decode_arib_string_lossy_with_diagnostic(bytes: &[u8]) -> (String, AribSt
                 GraphicSet::Katakana => out.push_str(map_katakana(byte)),
                 GraphicSet::Kanji => {
                     let Some(next) = bytes.get(index + 1).copied() else {
-                        diagnostic.truncated_graphic_count = diagnostic.truncated_graphic_count.saturating_add(1);
-                        diagnostic.replacement_count = diagnostic.replacement_count.saturating_add(1);
+                        diagnostic.truncated_graphic_count =
+                            diagnostic.truncated_graphic_count.saturating_add(1);
+                        diagnostic.replacement_count =
+                            diagnostic.replacement_count.saturating_add(1);
                         diagnostic.record_entry(index, "GL/Kanji", "truncated_graphic", true);
                         out.push('�');
                         break;
                     };
                     if !(0x21..=0x7e).contains(&next) {
-                        diagnostic.replacement_count = diagnostic.replacement_count.saturating_add(1);
+                        diagnostic.replacement_count =
+                            diagnostic.replacement_count.saturating_add(1);
                         diagnostic.record_entry(index, "GL/Kanji", "不正な2バイト目", true);
                         out.push('�');
                     } else {
@@ -257,7 +300,8 @@ pub fn decode_arib_string_lossy_with_diagnostic(bytes: &[u8]) -> (String, AribSt
                     }
                 }
                 GraphicSet::Macro => {
-                    diagnostic.unsupported_escape_count = diagnostic.unsupported_escape_count.saturating_add(1);
+                    diagnostic.unsupported_escape_count =
+                        diagnostic.unsupported_escape_count.saturating_add(1);
                     diagnostic.replacement_count = diagnostic.replacement_count.saturating_add(1);
                     diagnostic.record_entry(index, "GL/Macro", "unsupported_macro", true);
                     out.push('�');
@@ -271,14 +315,17 @@ pub fn decode_arib_string_lossy_with_diagnostic(bytes: &[u8]) -> (String, AribSt
                     GraphicSet::Katakana => out.push_str(map_katakana(normalized)),
                     GraphicSet::Kanji => {
                         let Some(next) = bytes.get(index + 1).copied() else {
-                            diagnostic.truncated_graphic_count = diagnostic.truncated_graphic_count.saturating_add(1);
-                            diagnostic.replacement_count = diagnostic.replacement_count.saturating_add(1);
+                            diagnostic.truncated_graphic_count =
+                                diagnostic.truncated_graphic_count.saturating_add(1);
+                            diagnostic.replacement_count =
+                                diagnostic.replacement_count.saturating_add(1);
                             diagnostic.record_entry(index, "GR/Kanji", "truncated_graphic", true);
                             out.push('�');
                             break;
                         };
                         if !(0xa1..=0xfe).contains(&next) && !(0x21..=0x7e).contains(&next) {
-                            diagnostic.replacement_count = diagnostic.replacement_count.saturating_add(1);
+                            diagnostic.replacement_count =
+                                diagnostic.replacement_count.saturating_add(1);
                             diagnostic.record_entry(index, "GR/Kanji", "不正な2バイト目", true);
                             out.push('�');
                         } else {
@@ -287,8 +334,10 @@ pub fn decode_arib_string_lossy_with_diagnostic(bytes: &[u8]) -> (String, AribSt
                         }
                     }
                     GraphicSet::Macro => {
-                        diagnostic.unsupported_escape_count = diagnostic.unsupported_escape_count.saturating_add(1);
-                        diagnostic.replacement_count = diagnostic.replacement_count.saturating_add(1);
+                        diagnostic.unsupported_escape_count =
+                            diagnostic.unsupported_escape_count.saturating_add(1);
+                        diagnostic.replacement_count =
+                            diagnostic.replacement_count.saturating_add(1);
                         diagnostic.record_entry(index, "GR/Macro", "unsupported_macro", true);
                         out.push('�');
                     }
@@ -310,31 +359,104 @@ fn apply_escape(state: &mut InvocationState, bytes: &[u8]) -> Result<usize, Arib
         return Err(AribStringDecodeError::TruncatedEscape);
     }
     let consumed = match bytes[1] {
-        b'n' => { state.gl = state.g2; 2 } // LS2
-        b'o' => { state.gl = state.g3; 2 } // LS3
-        b'~' => { state.gr = state.g1; 2 } // LS1R
-        b'}' => { state.gr = state.g2; 2 } // LS2R
-        b'|' => { state.gr = state.g3; 2 } // LS3R
+        b'n' => {
+            state.gl = state.g2;
+            2
+        } // LS2
+        b'o' => {
+            state.gl = state.g3;
+            2
+        } // LS3
+        b'~' => {
+            state.gr = state.g1;
+            2
+        } // LS1R
+        b'}' => {
+            state.gr = state.g2;
+            2
+        } // LS2R
+        b'|' => {
+            state.gr = state.g3;
+            2
+        } // LS3R
         _ => {
-            if bytes.len() < 3 { return Err(AribStringDecodeError::TruncatedEscape); }
+            if bytes.len() < 3 {
+                return Err(AribStringDecodeError::TruncatedEscape);
+            }
             match (bytes[1], bytes[2]) {
-                (b'(', b'B' | b'J') => { state.g0 = GraphicSet::Alnum; state.gl = state.g0; 3 }
-                (b'(', b'I') => { state.g0 = GraphicSet::Katakana; state.gl = state.g0; 3 }
-                (b'(', b'0') => { state.g0 = GraphicSet::Hiragana; state.gl = state.g0; 3 }
-                (b')', b'B' | b'J') => { state.g1 = GraphicSet::Alnum; 3 }
-                (b')', b'I') => { state.g1 = GraphicSet::Katakana; 3 }
-                (b')', b'0') => { state.g1 = GraphicSet::Hiragana; 3 }
-                (b'*', b'B' | b'J') => { state.g2 = GraphicSet::Alnum; 3 }
-                (b'*', b'I') => { state.g2 = GraphicSet::Katakana; 3 }
-                (b'*', b'0') => { state.g2 = GraphicSet::Hiragana; 3 }
-                (b'+', b'B' | b'J') => { state.g3 = GraphicSet::Alnum; 3 }
-                (b'+', b'I') => { state.g3 = GraphicSet::Katakana; 3 }
-                (b'+', b'0') => { state.g3 = GraphicSet::Hiragana; 3 }
-                (b'$', b'B') => { state.g0 = GraphicSet::Kanji; state.gl = state.g0; 3 }
-                (b'$', b'(') if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@') => { state.g0 = GraphicSet::Kanji; state.gl = state.g0; 4 }
-                (b'$', b')') if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@') => { state.g1 = GraphicSet::Kanji; 4 }
-                (b'$', b'*') if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@') => { state.g2 = GraphicSet::Kanji; 4 }
-                (b'$', b'+') if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@') => { state.g3 = GraphicSet::Kanji; 4 }
+                (b'(', b'B' | b'J') => {
+                    state.g0 = GraphicSet::Alnum;
+                    state.gl = state.g0;
+                    3
+                }
+                (b'(', b'I') => {
+                    state.g0 = GraphicSet::Katakana;
+                    state.gl = state.g0;
+                    3
+                }
+                (b'(', b'0') => {
+                    state.g0 = GraphicSet::Hiragana;
+                    state.gl = state.g0;
+                    3
+                }
+                (b')', b'B' | b'J') => {
+                    state.g1 = GraphicSet::Alnum;
+                    3
+                }
+                (b')', b'I') => {
+                    state.g1 = GraphicSet::Katakana;
+                    3
+                }
+                (b')', b'0') => {
+                    state.g1 = GraphicSet::Hiragana;
+                    3
+                }
+                (b'*', b'B' | b'J') => {
+                    state.g2 = GraphicSet::Alnum;
+                    3
+                }
+                (b'*', b'I') => {
+                    state.g2 = GraphicSet::Katakana;
+                    3
+                }
+                (b'*', b'0') => {
+                    state.g2 = GraphicSet::Hiragana;
+                    3
+                }
+                (b'+', b'B' | b'J') => {
+                    state.g3 = GraphicSet::Alnum;
+                    3
+                }
+                (b'+', b'I') => {
+                    state.g3 = GraphicSet::Katakana;
+                    3
+                }
+                (b'+', b'0') => {
+                    state.g3 = GraphicSet::Hiragana;
+                    3
+                }
+                (b'$', b'B') => {
+                    state.g0 = GraphicSet::Kanji;
+                    state.gl = state.g0;
+                    3
+                }
+                (b'$', b'(') if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@') => {
+                    state.g0 = GraphicSet::Kanji;
+                    state.gl = state.g0;
+                    4
+                }
+                (b'$', b')') if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@') => {
+                    state.g1 = GraphicSet::Kanji;
+                    4
+                }
+                (b'$', b'*') if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@') => {
+                    state.g2 = GraphicSet::Kanji;
+                    4
+                }
+                (b'$', b'+') if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@') => {
+                    state.g3 = GraphicSet::Kanji;
+                    4
+                }
                 _ => return Err(AribStringDecodeError::UnsupportedEscape),
             }
         }
@@ -344,24 +466,34 @@ fn apply_escape(state: &mut InvocationState, bytes: &[u8]) -> Result<usize, Arib
 
 fn map_hiragana(byte: u8) -> &'static str {
     const TABLE: &[&str] = &[
-        "ぁ","あ","ぃ","い","ぅ","う","ぇ","え","ぉ","お","か","が","き","ぎ","く","ぐ","け","げ","こ","ご",
-        "さ","ざ","し","じ","す","ず","せ","ぜ","そ","ぞ","た","だ","ち","ぢ","っ","つ","づ","て","で","と",
-        "ど","な","に","ぬ","ね","の","は","ば","ぱ","ひ","び","ぴ","ふ","ぶ","ぷ","へ","べ","ぺ","ほ","ぼ",
-        "ぽ","ま","み","む","め","も","ゃ","や","ゅ","ゆ","ょ","よ","ら","り","る","れ","ろ","ゎ","わ","ゐ",
-        "ゑ","を","ん","ゔ","ゕ","ゖ","。","「","」","、","・","ー","ゝ","ゞ"
+        "ぁ", "あ", "ぃ", "い", "ぅ", "う", "ぇ", "え", "ぉ", "お", "か", "が", "き", "ぎ", "く",
+        "ぐ", "け", "げ", "こ", "ご", "さ", "ざ", "し", "じ", "す", "ず", "せ", "ぜ", "そ", "ぞ",
+        "た", "だ", "ち", "ぢ", "っ", "つ", "づ", "て", "で", "と", "ど", "な", "に", "ぬ", "ね",
+        "の", "は", "ば", "ぱ", "ひ", "び", "ぴ", "ふ", "ぶ", "ぷ", "へ", "べ", "ぺ", "ほ", "ぼ",
+        "ぽ", "ま", "み", "む", "め", "も", "ゃ", "や", "ゅ", "ゆ", "ょ", "よ", "ら", "り", "る",
+        "れ", "ろ", "ゎ", "わ", "ゐ", "ゑ", "を", "ん", "ゔ", "ゕ", "ゖ", "。", "「", "」", "、",
+        "・", "ー", "ゝ", "ゞ",
     ];
-    TABLE.get((byte.saturating_sub(0x21)) as usize).copied().unwrap_or("�")
+    TABLE
+        .get((byte.saturating_sub(0x21)) as usize)
+        .copied()
+        .unwrap_or("�")
 }
 
 fn map_katakana(byte: u8) -> &'static str {
     const TABLE: &[&str] = &[
-        "ァ","ア","ィ","イ","ゥ","ウ","ェ","エ","ォ","オ","カ","ガ","キ","ギ","ク","グ","ケ","ゲ","コ","ゴ",
-        "サ","ザ","シ","ジ","ス","ズ","セ","ゼ","ソ","ゾ","タ","ダ","チ","ヂ","ッ","ツ","ヅ","テ","デ","ト",
-        "ド","ナ","ニ","ヌ","ネ","ノ","ハ","バ","パ","ヒ","ビ","ピ","フ","ブ","プ","ヘ","ベ","ペ","ホ","ボ",
-        "ポ","マ","ミ","ム","メ","モ","ャ","ヤ","ュ","ユ","ョ","ヨ","ラ","リ","ル","レ","ロ","ヮ","ワ","ヰ",
-        "ヱ","ヲ","ン","ヴ","ヵ","ヶ","。","「","」","、","・","ー","ヽ","ヾ"
+        "ァ", "ア", "ィ", "イ", "ゥ", "ウ", "ェ", "エ", "ォ", "オ", "カ", "ガ", "キ", "ギ", "ク",
+        "グ", "ケ", "ゲ", "コ", "ゴ", "サ", "ザ", "シ", "ジ", "ス", "ズ", "セ", "ゼ", "ソ", "ゾ",
+        "タ", "ダ", "チ", "ヂ", "ッ", "ツ", "ヅ", "テ", "デ", "ト", "ド", "ナ", "ニ", "ヌ", "ネ",
+        "ノ", "ハ", "バ", "パ", "ヒ", "ビ", "ピ", "フ", "ブ", "プ", "ヘ", "ベ", "ペ", "ホ", "ボ",
+        "ポ", "マ", "ミ", "ム", "メ", "モ", "ャ", "ヤ", "ュ", "ユ", "ョ", "ヨ", "ラ", "リ", "ル",
+        "レ", "ロ", "ヮ", "ワ", "ヰ", "ヱ", "ヲ", "ン", "ヴ", "ヵ", "ヶ", "。", "「", "」", "、",
+        "・", "ー", "ヽ", "ヾ",
     ];
-    TABLE.get((byte.saturating_sub(0x21)) as usize).copied().unwrap_or("�")
+    TABLE
+        .get((byte.saturating_sub(0x21)) as usize)
+        .copied()
+        .unwrap_or("�")
 }
 
 fn map_kanji(first: u8, second: u8) -> &'static str {
@@ -400,7 +532,10 @@ mod tests {
 
     #[test]
     fn arib_string_decodes_mixed_katakana_kanji_service_name() {
-        let bytes = [0x1b, b'$', b'B', b'#', b'N', b'#', b'H', b'#', b'K', b'A', b'm', b'9', b'g', 0x1b, b'(', b'B'];
+        let bytes = [
+            0x1b, b'$', b'B', b'#', b'N', b'#', b'H', b'#', b'K', b'A', b'm', b'9', b'g', 0x1b,
+            b'(', b'B',
+        ];
         assert_eq!(decode_arib_string_lossy(&bytes), "ＮＨＫ総合");
     }
 
@@ -409,16 +544,23 @@ mod tests {
         assert_eq!(decode_arib_string_lossy(&[0xff, 0xfe]), "��");
     }
 
-
-
     #[test]
     fn arib_string_decoder_scope_excludes_caption_renderer_claim() {
-        assert_eq!(ARIB_STRING_DECODER_SCOPE, "mirakc_scope_non_caption_si_epg_only");
-        assert_eq!(decode_arib_string_lossy(&[0x1b, b'(', b'B', b'E', b'P', b'G']), "EPG");
+        assert_eq!(
+            ARIB_STRING_DECODER_SCOPE,
+            "mirakc_scope_non_caption_si_epg_only"
+        );
+        assert_eq!(
+            decode_arib_string_lossy(&[0x1b, b'(', b'B', b'E', b'P', b'G']),
+            "EPG"
+        );
     }
     #[test]
     fn arib_string_lossy_preserves_prefix_on_truncated_escape() {
-        assert_eq!(decode_arib_string_lossy(&[0x1b, b'(', b'B', b'A', 0x1b, b'(']), "A�");
+        assert_eq!(
+            decode_arib_string_lossy(&[0x1b, b'(', b'B', b'A', 0x1b, b'(']),
+            "A�"
+        );
     }
 
     #[test]
@@ -428,7 +570,8 @@ mod tests {
     }
     #[test]
     fn arib_string_reports_non_caption_diagnostic_counts() {
-        let (_decoded, diagnostic) = super::decode_arib_string_lossy_with_diagnostic(&[0x1b, b'$', b'X', b'A']);
+        let (_decoded, diagnostic) =
+            super::decode_arib_string_lossy_with_diagnostic(&[0x1b, b'$', b'X', b'A']);
         assert_eq!(diagnostic.unsupported_escape_count, 1);
         assert!(diagnostic.replacement_count >= 1);
         assert!(diagnostic.summary().contains(ARIB_STRING_DECODER_SCOPE));
@@ -452,15 +595,14 @@ mod tests {
         assert_eq!(decode_arib_string_lossy(&bytes), "AあB");
     }
 
-
     #[test]
     fn arib_string_diagnostic_entries_include_offset_reason_and_replacement_flag() {
-        let (_decoded, diagnostic) = super::decode_arib_string_lossy_with_diagnostic(&[0x1b, b'$', b'X']);
+        let (_decoded, diagnostic) =
+            super::decode_arib_string_lossy_with_diagnostic(&[0x1b, b'$', b'X']);
         assert_eq!(diagnostic.entries.len(), 1);
         assert_eq!(diagnostic.entries[0].offset, 0);
         assert_eq!(diagnostic.entries[0].code_set_or_control, "ESC");
         assert_eq!(diagnostic.entries[0].reason, "unsupported_escape");
         assert!(diagnostic.entries[0].replacement_emitted);
     }
-
 }

@@ -6,6 +6,7 @@
 
 ### 基本方針
 
+DESIGN_JA.mdに共通部品化している処理を、あえてその共通部品を使用せずに手書き実装したり、機能の似た劣化コピーの部品を勝手に作ってそれを使用して実装してはならない。
 Rust の `panic` は通常のエラー処理として使わない。利用者入力、デバイス入力、放送ストリーム、ファイル I/O、スレッドスケジューリング、ロック失敗、FFI失敗、Binder失敗、ハードウェア失敗 から到達し得る経路では、`panic` ではなく `Result`、`Option`、ドメインエラー、明示的な状態遷移に変換する。
 
 リリース実行時経路では次を禁止する。
@@ -189,6 +190,57 @@ Rust実行時コード では次を守る。
 - コールバックペイロードは ロック内で snapshot 化し、ロック解放後に送る
 - 複数ロック が必要なら ロック順序 を文書化する
 ```
+
+
+### Rust module import
+
+production code では `use super::*;` を禁止する。親 module から名前を取り込む場合は、依存対象を明示する。
+
+許可例:
+
+```rust
+use super::{DropLeakDomainAction, TunerServiceRuntime};
+use crate::error_bridge::status_from_hal_error;
+```
+
+禁止例:
+
+```rust
+use super::*;
+```
+
+禁止理由は、module 分割後の依存関係を隠し、巨大 module 化、未使用依存の温存、責務境界の曖昧化を再発させるためである。
+
+例外として、`#[cfg(test)]` の `tests` module 内では、対象 module の private helper をまとめて検査する目的に限り `use super::*;` を許可する。ただし production code 側へ同じ import を持ち出してはならない。
+
+### Rust test / loom test の分担
+
+Rustで実装し Android.bp を持つモジュールは、通常の Rust 単体テストと loom テストを分ける。
+
+通常の Rust 単体テスト:
+
+- Soong の rust_test として定義する。
+- atest で実行可能にする。
+- parser、AIDL入力変換、resource ledger、runtime state、status mapping、公開関数の戻り値と状態遷移を検査する。
+- cfg(loom) を有効にしない。
+- libloom に依存しない。
+- Android.bp に存在しない #[test] を完了条件に数えない。
+
+loom テスト:
+
+- 並行性、lock順序、interleaving、race 条件の検査だけを対象にする。
+- ビルドホスト側で実行する。
+- 通常の rust_test に混ぜない。
+- target device 上の atest、VTS、実機確認の代替にしない。
+- cfg(loom) と libloom 依存は loom 専用 test module に限定する。
+- loom 専用 test module は通常の rust_test module と名前を分ける。
+- production module に loom defaults を適用しない。
+
+禁止:
+
+- 通常 rust_test に cfg(loom) を混ぜること。
+- loom テストを atest / VTS / 実機確認の代替完了条件にすること。
+- 同じテストを通常 rust_test と loom test の両方の正本にすること。
 
 ### 実装規約レビューの補助確認
 

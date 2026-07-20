@@ -235,70 +235,43 @@ Public Binder method の error mapping は、入力不正を `INVALID_ARGUMENT`�
 
 release HAL path の静的確認では、non-test runtime から `unwrap()` / `expect()` / `panic!()` / `unreachable!()` / `thread::spawn` 直接呼び出し / silent `join()` を禁止する。`#[cfg(test)]` と `tests/` 配下は対象外とする。`WorkerRuntime::spawn_owned*` と `WorkerHandle::join_from_owner()` は、ワーカー policy を実装する runtime ラッパーとして許可する。
 
-## r50dz17: 共通部品経由の実装規約
+## 12. 共通部品経由の実装規約
 
-Tuner HALのrelease HAL pathでは、次の直接実装を禁止する。
+Tuner HAL の release HAL path では、次の直接実装を禁止する。
 
-- `std::sync::Mutex::lock()` を公開AIDL実装、worker、runtime objectから直接呼ぶこと。同期処理は `hal_sync` へ集約する。
-- `PoisonError::into_inner()` によりmutex汚染から通常復旧すること。
+- `std::sync::Mutex::lock()` を公開AIDL実装、worker、runtime object から直接呼ぶこと。同期処理は `hal_sync` へ集約する。
+- `PoisonError::into_inner()` により mutex汚染から通常復旧すること。
 - lock失敗、wait失敗、join失敗、FMQ操作失敗を、正常停止、空queue、timeout、0 byte、no-op successへ丸めること。
-- 各HAL objectが`JoinHandle`、`Condvar`、`AtomicBool`を直接組み合わせてworker制御すること。worker制御は `worker_runtime` へ集約する。
-- open、close、configure、rollback、cleanupで、台帳更新とruntime登録を各APIが分散して手書きすること。状態変更は `lifecycle_txn` と `registry_ledger` へ集約する。
-- Drop限定のbest-effort処理をpublic API主経路へ流用すること。
-- HAL objectから`fmq_shim`を直接呼ぶこと。FMQ操作は `fmq_queue` へ集約する。
-- binder_service内に新しいTS/PES/start-code parserを追加すること。TS/PES/record event処理は `packet_pipeline` と `record_index` へ集約する。
+- 各HAL objectが `JoinHandle`、`Condvar`、`AtomicBool` を直接組み合わせて worker 制御すること。worker制御は `worker_runtime` へ集約する。
+- open、close、configure、rollback、cleanupで、台帳更新と runtime 登録を各APIが分散して手書きすること。状態変更は `lifecycle_txn` と `registry_ledger` へ集約する。
+- Drop限定の best-effort 処理を public API 主経路へ流用すること。
+- HAL object から `fmq_shim` を直接呼ぶこと。FMQ操作は `fmq_queue` へ集約する。
+- binder_service 内に新しい TS/PES/start-code parser を追加すること。TS/PES/record event 処理は `packet_pipeline` と `record_index` へ集約する。
 
-r50dz17では共通部品骨格の追加だけを行い、既存実行経路は変更しない。既存経路の置換は、以後の作業でテストを追加しながら行う。
+### 12.1 共通部品化後の残存禁止事項
 
-
-### r50dz19: 共通部品化後の残存禁止事項
-
-- `tuner_hal.rs` から `tuner_fmq_*` FFI symbol を直接参照してはならない。FMQ 接続は `fmq_queue.rs` だけに置く。
-- `PoisonError::into_inner()` による通常復旧を追加してはならない。
+- `tuner_hal.rs` から `tuner_fmq_*`、`fmq_queue_*`、`TunerFmqQueue` を直接参照してはならない。FMQ 接続は `fmq_queue.rs` に置く。
+- `tuner_hal.rs` 内に `poisoned_lock_status`、`lock_mutex_status`、`lock_mutex_hal`、`lock_mutex_io`、`lock_mutex_option` の実装を置いてはならない。これらは `hal_sync` 側へ置く。
 - worker signal の lock / wait 失敗を `true`、`false`、timeout、normal wake へ丸めてはならない。
-- FMQ fill 取得失敗を `0 byte` として返してはならない。
-- record event 用の PES timestamp / start-code scanner を binder service 側へ再追加してはならない。追加する場合は `record_index` へ移す。
-
-
-### r50dz20: lock guard破棄後再使用の禁止
-
-- `drop(guard)` で明示破棄したlock guardを同一scopeで再使用してはならない。
-- 台帳修復処理でguardを保持する必要がある場合は、scopeを分けずに同一guard上で修復を完了する。
-
-## r50dz21: WP-04 補修後の追加禁止事項
-
-- `current_fill_bytes()` は `usize` を直接返してはならない。失敗を `BinderResult<usize>` で返す。
+- FMQ fill 取得失敗を `0 byte` として返してはならない。`current_fill_bytes()` は失敗を戻り値で表現する。
+- DVR callback wake で `Mutex::lock().expect()` を使わない。wake failure は公開経路では戻り値、best-effort 経路では診断ログで扱う。
+- record event 用の PES timestamp / start-code scanner を binder_service 側へ再追加してはならない。追加する場合は `record_index` へ移す。
+- `tuner_hal.rs` に worker join 実装、worker handle wrapper、worker exit enum を再追加してはならない。worker制御は `worker_runtime.rs` に置く。
+- DVR callback worker 用に `Arc<(Mutex<bool>, Condvar)>` の専用 wake flag を追加してはならない。owner `WorkerHandle` / `ConcreteWorkerSignal` を使う。
+- LNB操作ロック台帳を `tuner_hal.rs` に再追加してはならない。LNB ID とロックの対応は `registry_ledger.rs` の `LnbLedger` で管理する。
 - LNB 操作ロック台帳の取得で `expect()` / `unwrap()` を使ってはならない。
 - `soft_demux/src/lib.rs` に `TsPacketView` を再定義してはならない。TS packet view は `packet_pipeline.rs` の定義を使う。
-- malformed TS のみを読み取った DVR playback 入力を成功消費として扱ってはならない。
-
-## r50dz22: WP-04 補修後の追加実装規約
-
-- `worker_runtime.rs` 内でも release HAL path の `expect()` / `panic` を使わない。worker signal の lock / wait 失敗は `runtime_failure` として記録する。
-- DVR callback wake で `Mutex::lock().expect()` を使わない。wake failure は公開経路では戻り値、best-effort 経路では診断ログで扱う。
 - record event のために binder_service 側へ `TsPacketRecordView`、`StartCodeInfo`、`BitReader`、start-code scanner、PES timestamp decoder を置かない。
 - TS packet view の拡張は `packet_pipeline.rs` で行う。
 - record index parser の拡張は `record_index.rs` で行う。
-
-### r50dz23: WP-04 補修後の残存禁止
-
-- `tuner_hal.rs` に worker join 実装、worker handle wrapper、worker exit enum を再追加してはならない。worker制御は `worker_runtime.rs` に置く。
-- LNB操作ロック台帳を `tuner_hal.rs` に再追加してはならない。LNB ID とロックの対応は `registry_ledger.rs` の `LnbLedger` で管理する。
+- malformed TS のみを読み取った DVR playback 入力を成功消費として扱ってはならない。
 - `configure_filter_with_summary_result()` では、失敗し得る採番・容量検証を状態変更後に置いてはならない。
 - playback入力は、入力が全て破棄された場合に成功扱いとしてはならない。
+- `drop(guard)` で明示破棄した lock guard を同一 scope で再使用してはならない。台帳修復処理で guard を保持する必要がある場合は、同一 guard 上で修復を完了する。
 
-## r50dz24: WP-04 補修後の残存禁止
+### 12.2 直接 lock 検査の test 例外
 
-- `tuner_hal.rs`から`fmq_queue_*`、`tuner_fmq_*`、`TunerFmqQueue`を直接参照してはならない。
-- `tuner_hal.rs`内に`poisoned_lock_status`、`lock_mutex_status`、`lock_mutex_hal`、`lock_mutex_io`、`lock_mutex_option`の実装を置いてはならない。これらは`hal_sync`側へ置く。
-- live pumpおよびDVR callback waitでmutex汚染・condvar wait失敗を`return`だけで正常扱いしてはならない。
-
-- DVR callback worker用に`Arc<(Mutex<bool>, Condvar)>`の専用wake flagを追加してはならない。owner `WorkerHandle` / `ConcreteWorkerSignal` を使う。
-
-
-## WP-04 直接 lock 検査の例外
-
-`WP-04-2-5` の直接 `lock()` 検査で `#[cfg(test)]` 配下の単体テストだけが検出される場合、その検出は public API 主経路の残存とは扱わない。
+直接 `lock()` 検査で `#[cfg(test)]` 配下の単体テストだけが検出される場合、その検出は public API 主経路の残存とは扱わない。
 
 例外条件は次に限定する。
 
@@ -307,14 +280,14 @@ r50dz17では共通部品骨格の追加だけを行い、既存実行経路は�
 - テスト内の `lock().unwrap()` はテスト fixture の観測・準備専用であり、mutex 汚染を production 成功扱いへ丸める根拠にしてはならない。
 - production ファイルで直接 `lock()` が必要になった場合は、この例外へ含めず、対象関数、理由、失敗時の扱いを個別に追記する。
 
-## 12. 失敗領域の混同禁止
+## 13. 失敗領域の混同禁止
 
 - callback未登録、callback Binder error、scan通知失敗を frontend backend failure として扱ってはならない。
 - FMQ / AV shared backing の水位取得失敗を、queue破損またはdata path破損と同一視してはならない。
 - backend ioctl/read/tune/stop失敗だけを backend failure として扱う。
 - lifecycle違反、owner不一致、foreign object、closed object は対象APIの `INVALID_STATE` / `INVALID_ARGUMENT` に写像し、backend failureへ昇格させない。
 
-## 13. public API transaction 実装規約
+## 14. public API transaction 実装規約
 
 - public Binder method は、validate → prepare → commit の順に実装する。
 - validate段階で公開状態を変更してはならない。
@@ -323,21 +296,21 @@ r50dz17では共通部品骨格の追加だけを行い、既存実行経路は�
 - commit後に失敗した場合は、成功扱いで継続せず、対象objectをquarantineまたはFailedClosingへ移す。
 - public API内で `let _ = cleanup...` により critical cleanup 失敗を握りつぶしてはならない。
 
-## 14. 同一条件 no-op guard
+## 15. 同一条件 no-op guard
 
 - `setFrontendDataSource()` は、現在と同一frontend/generationなら stream boundary reset を呼ばない。
 - `tune()` は、現在と同一 normalized tune settings なら backend stop、live pump停止、demux boundary reset を呼ばない。
 - `configure()` は、現在設定と同一なら queue / AV backing / DVR backing を破棄しない。
 - no-op guard は破壊的処理の前に置く。
 
-## 15. best-effort 使用制限
+## 16. best-effort 使用制限
 
 - `best_effort` と名付けた関数を public API の主経路で使ってはならない。
 - Drop / teardown 以外で `best_effort` を使う場合は、失敗が public API の戻り値・状態遷移に影響しない補助診断に限る。
 - queue clear、registry unregister、backend stop、token release、worker join は best-effort で沈黙させない。
 - 失敗を返せない場所では、診断名、対象ID、失敗段階を必ず記録する。
 
-## 16. 寿命ID / generation / token 実装規約
+## 17. 寿命ID / generation / token 実装規約
 
 - lifetime ID、generation、worker wake generation、token ID に `saturating_add()` を使ってはならない。
 - wrap可能な `fetch_add()` を release HAL path に追加してはならない。
@@ -345,13 +318,13 @@ r50dz17では共通部品骨格の追加だけを行い、既存実行経路は�
 - expired token は保持目的が明示されない限り table から削除する。
 - 0、負値、予約値を通常発行IDとして使ってはならない。
 
-## 17. backend診断分離
+## 18. backend診断分離
 
 - DVB backend の失敗を px4 診断構造へ記録してはならない。
 - px4 backend の失敗を DVB 診断構造へ記録してはならない。
 - frontend共通処理から backend failure を記録する場合は、backend種別を引数として受け取り、対応する診断名前空間だけを更新する。
 
-## 18. source filter 実装規約
+## 19. source filter 実装規約
 
 - source filter downstream は `DESIGN_JA.md` の source filter downstream 契約表にある組み合わせだけを実装する。
 - 未対応の downstream 組み合わせを成功 no-op にしてはならない。
