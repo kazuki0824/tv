@@ -1,0 +1,10 @@
+input_id,required_input,decision_rule,status
+VTS-ENV-01,AOSP branch and Tuner VTS configuration schema/version,Bind only to the exact target VTS loader/schema; no cross-version assumption,UNDECLARED_DESIGN_HOLD
+VTS-ENV-02,Frontend source and tune/scan parameters,"Declare hardware or software source, frequency, stream ID/type and signal availability before selecting XML",UNDECLARED_DESIGN_HOLD
+VTS-ENV-03,Audio/video/record PIDs and enabled data flows,Only flows with an available source and supported HAL path may be present,UNDECLARED_DESIGN_HOLD
+VTS-ENV-04,Filter and DVR buffer sizes,Use exact declared static-variant values as a startup resource vector; do not infer them from object counts,UNDECLARED_DESIGN_HOLD
+VTS-ENV-05,Product process-memory and FMQ allocation budget,Reserve the complete declared queue vector atomically before service/VTS startup or reject the profile,UNDECLARED_DESIGN_HOLD
+VTS-ENV-06,Static variant filename/module and ro.vendor.vts_tuner_configuration_variant,Install/select only the declared variant before the VTS process starts; runtime renderer is forbidden,UNDECLARED_DESIGN_HOLD
+VTS-STATE-UNBOUND,No complete VtsEnvironmentProfile,Do not select/install XML or module; scenario is null; runtime C1 remains allowed independently,DESIGN_HOLD
+VTS-STATE-BOUND,All six inputs declared; object demand fits C1; exact queue vector reserved,Select exactly one declared pre-start static variant; no automatic fallback,BOUND_STATIC_VARIANT
+VTS-STATE-REJECTED,Object demand exceeds C1 or queue reservation fails,Reject profile; preserve runtime CapabilitySnapshot; do not choose C1/default XML as fallback,PROFILE_REJECTED

@@ -1,0 +1,10 @@
+backend,immutable_commit,frontend,setting,accepted_input,driver_observation,result,invalid_input_result
+px4_drv,c2a031db8771ddd6e3e0b3b4a712b64ec384139b,ISDB-T,frequency,valid backend range,programmed by r850_set_frequency,SUPPORTED,invalid range -> INVALID_ARGUMENT
+px4_drv,c2a031db8771ddd6e3e0b3b4a712b64ec384139b,ISDB-T,modulation/coderate/guard/interleave,AUTO,no caller-selectable programming path,AUTO_ONLY,any concrete value -> INVALID_ARGUMENT
+px4_drv,c2a031db8771ddd6e3e0b3b4a712b64ec384139b,ISDB-S,frequency,valid backend range,programmed by rt710_set_params,SUPPORTED,invalid range -> INVALID_ARGUMENT
+px4_drv,c2a031db8771ddd6e3e0b3b4a712b64ec384139b,ISDB-S,RELATIVE_STREAM_NUMBER,0..11,TMCC slot resolves to TSID,SUPPORTED,outside 0..11 invalid for relative selector
+px4_drv,c2a031db8771ddd6e3e0b3b4a712b64ec384139b,ISDB-S,STREAM_ID,12..65535,used as absolute TSID,SUPPORTED_WITH_LOW_RANGE_AMBIGUITY_REJECTED,0..11 absolute -> INVALID_ARGUMENT
+px4_drv,c2a031db8771ddd6e3e0b3b4a712b64ec384139b,ISDB-S,modulation/coderate/rolloff/symbol-rate,AUTO/fixed,fixed 28860/mode4; no caller mapping,AUTO_OR_FIXED_ONLY,arbitrary concrete -> INVALID_ARGUMENT
+earth_pt1,ffc253263a1375a65fa6c9f62a893e9767fbebfa,ISDB-T,frequency,supported channel-derived frequencies,driver tunes channel/frequency path,SUPPORTED,out-of-domain -> INVALID_ARGUMENT
+earth_pt1,ffc253263a1375a65fa6c9f62a893e9767fbebfa,ISDB-T,modulation/coderate/guard/interleave,AUTO,no AIDL concrete programming proof in pinned pt1.c,AUTO_ONLY,any concrete value -> INVALID_ARGUMENT
+earth_pt1,ffc253263a1375a65fa6c9f62a893e9767fbebfa,ISDB-S,frequency/TS selector,driver-supported path only,no generic concrete modulation/coderate programming proof,SUPPORTED_FOR_PROVEN_FIELDS_ONLY,unproven concrete field -> INVALID_ARGUMENT

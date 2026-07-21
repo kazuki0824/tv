@@ -293,3 +293,14 @@ Channel provider-data の正形式は JSON v1 のみとし、schema は `maleica
 ## free_CA_mode / 音声言語 / 視聴年齢制限の構造化契約
 
 EIT `free_CA_mode` は CAS 権利状態ではなく番組の暗号化有無として保持し、TIS が TvProvider scrambled 判定へ投影する。音声 ISO639 language は PMT / 音声コンポーネントdescriptor 等から取得できる値だけを保持し、取得不能時に推測しない。視聴年齢制限 は既存レーティングドメイン へ変換できる構造化値と、未対応・不正・reserved の診断情報を分離して保持する。
+
+## PSI/SI table-id規則と意味責務
+
+Tuner HAL は generic MPEG-TS section transport（payload抽出、section framing、宣言長検査、任意CRC検査、filter matching、queue/FMQ配送、transport診断）だけを所有する。PAT、CAT、PMT、NIT、SDT、BAT、EIT、TDT、TOT、BIT、NBIT、LDT、CDT、PCAT、SDTT、AIT、AMTを含むtable固有の意味解析、正規化、複数section集約、semantic object生成は `arib_si_engine_rs` とTIS側が所有し、Tuner HALへ戻さない。
+
+table_id/rangeごとのsyntax上限と意味所有者の正本は、次の閉じた設計表とする。
+
+- `tuner_hal2/design/decisions/arib_table_section_length_registry.csv`
+- `tuner_hal2/design/decisions/psi_si_semantic_ownership.csv`
+
+1021-classは `section_length <= 1021` かつsection全体 `<= 1024`、extended-classは `section_length <= 4093` かつsection全体 `<= 4096` とする。reserved、unassigned、private、外部所有のtable_idをARIB SIの型付き意味objectとして推測しない。ただし、Tuner SDK/TIS側が有効なsection filterで選択したgeneric raw sectionは、意味未対応だけを理由にTuner HALが破棄してはならず、本crateは入力されたpayloadをregistryに従って型付き解析するか、unsupported/unknownとして構造を保持する。
