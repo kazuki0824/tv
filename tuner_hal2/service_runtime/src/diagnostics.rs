@@ -21,9 +21,9 @@ use crate::cleanup_execution::{
 pub const DEFAULT_DIAGNOSTIC_STORE_LIMIT: usize = 128;
 
 fn saturating_increment_atomic_u64(counter: &AtomicU64) {
-    drop(counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
         Some(value.saturating_add(1))
-    }));
+    });
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1108,71 +1108,25 @@ impl Default for SharedCallbackArtifactRuntimeSplitDiagnostics {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DvrPlaybackPipelineDiagnosticSummary {
-    pub packet_index: usize,
     pub accepted_packets: usize,
     pub dropped_packets: usize,
     pub malformed_packets: usize,
     pub drop_reasons: Vec<PipelineDropReason>,
-    pub drop_reason_omitted_count: usize,
     pub assembly_suppression_reasons: Vec<PipelineAssemblySuppressionReason>,
-    pub assembly_suppression_omitted_count: usize,
     pub delivery_actions: Vec<PipelineDeliveryAction>,
-    pub delivery_action_omitted_count: usize,
     pub diagnostics: Vec<PipelineDiagnostic>,
-    pub diagnostic_omitted_count: usize,
 }
 
 impl DvrPlaybackPipelineDiagnosticSummary {
-    pub fn from_packet_report(
-        packet_report: &maleicacid_tuner_hal2_demux::PlaybackPacketReport,
-    ) -> Self {
-        const MAX_DETAILS_PER_CATEGORY: usize = 16;
-        let report = &packet_report.report;
+    pub fn from_report(report: &PipelineReport) -> Self {
         Self {
-            packet_index: packet_report.packet_index,
             accepted_packets: report.accepted_packets,
             dropped_packets: report.dropped_packets,
             malformed_packets: report.malformed_packets,
-            drop_reasons: report
-                .drop_reasons
-                .iter()
-                .take(MAX_DETAILS_PER_CATEGORY)
-                .copied()
-                .collect(),
-            drop_reason_omitted_count: report
-                .drop_reasons
-                .len()
-                .saturating_sub(MAX_DETAILS_PER_CATEGORY),
-            assembly_suppression_reasons: report
-                .assembly_suppression_reasons
-                .iter()
-                .take(MAX_DETAILS_PER_CATEGORY)
-                .copied()
-                .collect(),
-            assembly_suppression_omitted_count: report
-                .assembly_suppression_reasons
-                .len()
-                .saturating_sub(MAX_DETAILS_PER_CATEGORY),
-            delivery_actions: report
-                .delivery_actions
-                .iter()
-                .take(MAX_DETAILS_PER_CATEGORY)
-                .cloned()
-                .collect(),
-            delivery_action_omitted_count: report
-                .delivery_actions
-                .len()
-                .saturating_sub(MAX_DETAILS_PER_CATEGORY),
-            diagnostics: report
-                .diagnostics
-                .iter()
-                .take(MAX_DETAILS_PER_CATEGORY)
-                .cloned()
-                .collect(),
-            diagnostic_omitted_count: report
-                .diagnostics
-                .len()
-                .saturating_sub(MAX_DETAILS_PER_CATEGORY),
+            drop_reasons: report.drop_reasons.clone(),
+            assembly_suppression_reasons: report.assembly_suppression_reasons.clone(),
+            delivery_actions: report.delivery_actions.clone(),
+            diagnostics: report.diagnostics.clone(),
         }
     }
 
@@ -1194,27 +1148,11 @@ pub enum DvrPlaybackPacketFailurePhase {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DvrPlaybackPacketContext {
-    Validated { pid: maleicacid_tuner_hal2_demux::PacketPid },
-    ValidationFailed { error: maleicacid_tuner_hal2_demux::TsPacketValidationError },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DvrPlaybackPacketFailureOutcome {
     pub packet_index: usize,
-    pub packet_context: DvrPlaybackPacketContext,
+    pub pid: Option<u16>,
     pub phase: DvrPlaybackPacketFailurePhase,
     pub error: HalError,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DvrPlaybackConsumeCounter {
-    TotalBytesRead,
-    TotalCompletedPackets,
-    TotalMalformedBytes,
-    ConsumeCount,
-    DataConsumedWakeFailureCount,
-    TotalPacketTransactionFailures,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1231,7 +1169,6 @@ pub struct DvrPlaybackConsumeDiagnosticRecord {
     pub last_packet_transaction_failure_omitted_count: u64,
     pub last_anomalous_pipeline_reports: Vec<DvrPlaybackPipelineDiagnosticSummary>,
     pub last_anomalous_pipeline_report_omitted_count: u64,
-    pub saturated_counters: Vec<DvrPlaybackConsumeCounter>,
 }
 
 impl DvrPlaybackConsumeDiagnosticRecord {
@@ -1249,24 +1186,6 @@ impl DvrPlaybackConsumeDiagnosticRecord {
             last_packet_transaction_failure_omitted_count: 0,
             last_anomalous_pipeline_reports: Vec::new(),
             last_anomalous_pipeline_report_omitted_count: 0,
-            saturated_counters: Vec::new(),
-        }
-    }
-
-    fn add_counter(
-        value: &mut u64,
-        delta: u64,
-        counter: DvrPlaybackConsumeCounter,
-        saturated_counters: &mut Vec<DvrPlaybackConsumeCounter>,
-    ) {
-        match value.checked_add(delta) {
-            Some(next) => *value = next,
-            None => {
-                *value = u64::MAX;
-                if !saturated_counters.contains(&counter) {
-                    saturated_counters.push(counter);
-                }
-            }
         }
     }
 
@@ -1275,44 +1194,23 @@ impl DvrPlaybackConsumeDiagnosticRecord {
         report: &maleicacid_tuner_hal2_demux::PlaybackConsumeReport,
         packet_failures: &[DvrPlaybackPacketFailureOutcome],
     ) {
-        Self::add_counter(
-            &mut self.total_bytes_read,
-            u64::try_from(report.bytes_read).unwrap_or(u64::MAX),
-            DvrPlaybackConsumeCounter::TotalBytesRead,
-            &mut self.saturated_counters,
-        );
-        Self::add_counter(
-            &mut self.total_completed_packets,
-            u64::try_from(report.completed_packets).unwrap_or(u64::MAX),
-            DvrPlaybackConsumeCounter::TotalCompletedPackets,
-            &mut self.saturated_counters,
-        );
-        Self::add_counter(
-            &mut self.total_malformed_bytes,
-            u64::try_from(report.malformed_bytes).unwrap_or(u64::MAX),
-            DvrPlaybackConsumeCounter::TotalMalformedBytes,
-            &mut self.saturated_counters,
-        );
-        Self::add_counter(
-            &mut self.consume_count,
-            1,
-            DvrPlaybackConsumeCounter::ConsumeCount,
-            &mut self.saturated_counters,
-        );
+        self.total_bytes_read = self
+            .total_bytes_read
+            .saturating_add(u64::try_from(report.bytes_read).unwrap_or(u64::MAX));
+        self.total_completed_packets = self
+            .total_completed_packets
+            .saturating_add(u64::try_from(report.completed_packets).unwrap_or(u64::MAX));
+        self.total_malformed_bytes = self
+            .total_malformed_bytes
+            .saturating_add(u64::try_from(report.malformed_bytes).unwrap_or(u64::MAX));
+        self.consume_count = self.consume_count.saturating_add(1);
         if report.data_consumed_wake_failed {
-            Self::add_counter(
-                &mut self.data_consumed_wake_failure_count,
-                1,
-                DvrPlaybackConsumeCounter::DataConsumedWakeFailureCount,
-                &mut self.saturated_counters,
-            );
+            self.data_consumed_wake_failure_count =
+                self.data_consumed_wake_failure_count.saturating_add(1);
         }
-        Self::add_counter(
-            &mut self.total_packet_transaction_failures,
-            u64::try_from(packet_failures.len()).unwrap_or(u64::MAX),
-            DvrPlaybackConsumeCounter::TotalPacketTransactionFailures,
-            &mut self.saturated_counters,
-        );
+        self.total_packet_transaction_failures = self
+            .total_packet_transaction_failures
+            .saturating_add(u64::try_from(packet_failures.len()).unwrap_or(u64::MAX));
         const MAX_PACKET_FAILURES_PER_RECORD: usize = 64;
         const MAX_ANOMALOUS_REPORTS_PER_RECORD: usize = 64;
         if !packet_failures.is_empty() {
@@ -1329,14 +1227,14 @@ impl DvrPlaybackConsumeDiagnosticRecord {
         let anomalous_reports: Vec<_> = report
             .packet_reports
             .iter()
-            .map(DvrPlaybackPipelineDiagnosticSummary::from_packet_report)
+            .map(DvrPlaybackPipelineDiagnosticSummary::from_report)
             .filter(DvrPlaybackPipelineDiagnosticSummary::is_anomalous)
             .take(MAX_ANOMALOUS_REPORTS_PER_RECORD)
             .collect();
         let total_anomalous_reports = report
             .packet_reports
             .iter()
-            .map(DvrPlaybackPipelineDiagnosticSummary::from_packet_report)
+            .map(DvrPlaybackPipelineDiagnosticSummary::from_report)
             .filter(DvrPlaybackPipelineDiagnosticSummary::is_anomalous)
             .count();
         if !anomalous_reports.is_empty() {
@@ -1359,13 +1257,14 @@ pub enum DvrPlaybackWorkerCleanupOperation {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DvrPlaybackWorkerCleanupPhase {
+    AttemptIdAllocation,
     LifecycleLock,
     StoreAccess,
     DiagnosticRecord,
     Wake,
     Join,
-    JoinTimeout,
     Terminal,
+    AttemptComplete,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1378,163 +1277,33 @@ pub enum DvrPlaybackWorkerCleanupTarget {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DvrPlaybackWorkerCleanupStepOutcome {
-    Step {
-        attempt_id: u128,
-        operation: DvrPlaybackWorkerCleanupOperation,
-        target: DvrPlaybackWorkerCleanupTarget,
-        phase: DvrPlaybackWorkerCleanupPhase,
-        result: Result<(), HalError>,
-    },
-    AttemptIdentityFailure {
-        operation: DvrPlaybackWorkerCleanupOperation,
-        error: HalError,
-    },
-    EmergencyStep {
-        operation: DvrPlaybackWorkerCleanupOperation,
-        target: DvrPlaybackWorkerCleanupTarget,
-        phase: DvrPlaybackWorkerCleanupPhase,
-        result: Result<(), HalError>,
-    },
-    AttemptComplete {
-        attempt_id: u128,
-        operation: DvrPlaybackWorkerCleanupOperation,
-        expected_step_count: usize,
-    },
-}
-
-impl DvrPlaybackWorkerCleanupStepOutcome {
-    pub const fn operation(&self) -> DvrPlaybackWorkerCleanupOperation {
-        match self {
-            Self::Step { operation, .. }
-            | Self::AttemptIdentityFailure { operation, .. }
-            | Self::EmergencyStep { operation, .. }
-            | Self::AttemptComplete { operation, .. } => *operation,
-        }
-    }
-
-    pub const fn attempt_id(&self) -> Option<u128> {
-        match self {
-            Self::Step { attempt_id, .. } | Self::AttemptComplete { attempt_id, .. } => {
-                Some(*attempt_id)
-            }
-            Self::AttemptIdentityFailure { .. } | Self::EmergencyStep { .. } => None,
-        }
-    }
-
-    pub const fn phase(&self) -> Option<DvrPlaybackWorkerCleanupPhase> {
-        match self {
-            Self::Step { phase, .. } | Self::EmergencyStep { phase, .. } => Some(*phase),
-            Self::AttemptIdentityFailure { .. } | Self::AttemptComplete { .. } => None,
-        }
-    }
-
-    pub const fn target(&self) -> Option<DvrPlaybackWorkerCleanupTarget> {
-        match self {
-            Self::Step { target, .. } | Self::EmergencyStep { target, .. } => Some(*target),
-            Self::AttemptIdentityFailure { .. } | Self::AttemptComplete { .. } => None,
-        }
-    }
-
-    pub const fn expected_step_count(&self) -> Option<usize> {
-        match self {
-            Self::AttemptComplete {
-                expected_step_count,
-                ..
-            } => Some(*expected_step_count),
-            Self::Step { .. }
-            | Self::AttemptIdentityFailure { .. }
-            | Self::EmergencyStep { .. } => None,
-        }
-    }
+pub struct DvrPlaybackWorkerCleanupStepOutcome {
+    pub attempt_id: Option<u64>,
+    pub operation: DvrPlaybackWorkerCleanupOperation,
+    pub target: DvrPlaybackWorkerCleanupTarget,
+    pub phase: DvrPlaybackWorkerCleanupPhase,
+    pub expected_step_count: Option<u16>,
+    pub result: Result<(), HalError>,
 }
 
 impl CleanupExecutionStepOutcome for DvrPlaybackWorkerCleanupStepOutcome {
     type Failure = HalError;
 
     fn result(&self) -> Result<(), Self::Failure> {
-        match self {
-            Self::Step { result, .. } | Self::EmergencyStep { result, .. } => result.clone(),
-            Self::AttemptIdentityFailure { error, .. } => Err(error.clone()),
-            Self::AttemptComplete { .. } => Ok(()),
-        }
+        self.result.clone()
     }
 
     fn into_result(self) -> Result<(), Self::Failure> {
-        match self {
-            Self::Step { result, .. } | Self::EmergencyStep { result, .. } => result,
-            Self::AttemptIdentityFailure { error, .. } => Err(error),
-            Self::AttemptComplete { .. } => Ok(()),
-        }
+        self.result
     }
 }
 
 pub type DvrPlaybackWorkerCleanupExecutionReport =
     CleanupExecutionReport<DvrPlaybackWorkerCleanupStepOutcome, HalError>;
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DvrPlaybackWorkerCleanupAttemptDiagnosticRecord {
-    Complete {
-        attempt_id: u128,
-        operation: DvrPlaybackWorkerCleanupOperation,
-        expected_step_count: usize,
-        outcomes: Vec<DvrPlaybackWorkerCleanupStepOutcome>,
-    },
-    Incomplete {
-        attempt_id: u128,
-        operation: DvrPlaybackWorkerCleanupOperation,
-        outcomes: Vec<DvrPlaybackWorkerCleanupStepOutcome>,
-    },
-    IdentityFailure {
-        operation: DvrPlaybackWorkerCleanupOperation,
-        outcomes: Vec<DvrPlaybackWorkerCleanupStepOutcome>,
-    },
-}
-
-impl DvrPlaybackWorkerCleanupAttemptDiagnosticRecord {
-    pub fn from_report(report: &DvrPlaybackWorkerCleanupExecutionReport) -> Self {
-        let outcomes = report.outcomes().to_vec();
-        if let Some((attempt_id, operation, expected_step_count)) = outcomes.iter().find_map(|outcome| {
-            match outcome {
-                DvrPlaybackWorkerCleanupStepOutcome::AttemptComplete {
-                    attempt_id,
-                    operation,
-                    expected_step_count,
-                } => Some((*attempt_id, *operation, *expected_step_count)),
-                _ => None,
-            }
-        }) {
-            return Self::Complete {
-                attempt_id,
-                operation,
-                expected_step_count,
-                outcomes,
-            };
-        }
-        if let Some((attempt_id, operation)) = outcomes.iter().find_map(|outcome| {
-            outcome.attempt_id().map(|attempt_id| (attempt_id, outcome.operation()))
-        }) {
-            return Self::Incomplete {
-                attempt_id,
-                operation,
-                outcomes,
-            };
-        }
-        let operation = outcomes
-            .first()
-            .map(DvrPlaybackWorkerCleanupStepOutcome::operation)
-            .unwrap_or(DvrPlaybackWorkerCleanupOperation::ServiceReset);
-        Self::IdentityFailure {
-            operation,
-            outcomes,
-        }
-    }
-}
-
 pub type DvrPlaybackWorkerCleanupDiagnosticSnapshot =
-    CleanupExecutionDiagnosticSnapshot<DvrPlaybackWorkerCleanupAttemptDiagnosticRecord>;
+    CleanupExecutionDiagnosticSnapshot<DvrPlaybackWorkerCleanupStepOutcome>;
 pub type SharedDvrPlaybackWorkerCleanupDiagnostics =
-    SharedCleanupDiagnostics<DvrPlaybackWorkerCleanupAttemptDiagnosticRecord>;
+    SharedCleanupDiagnostics<DvrPlaybackWorkerCleanupStepOutcome>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CallbackArtifactRuntimeSplitPhase {
@@ -1565,7 +1334,12 @@ pub enum CallbackArtifactRuntimeSplitOutcome {
         error: HalError,
     },
     ServiceBootPlaybackWorkerStep {
-        outcome: DvrPlaybackWorkerCleanupStepOutcome,
+        attempt_id: Option<u64>,
+        operation: DvrPlaybackWorkerCleanupOperation,
+        target: DvrPlaybackWorkerCleanupTarget,
+        phase: DvrPlaybackWorkerCleanupPhase,
+        expected_step_count: Option<u16>,
+        result: Result<(), HalError>,
     },
     ServiceBootCallbackArtifactFailure {
         error: HalError,
@@ -1625,7 +1399,12 @@ impl CallbackArtifactRuntimeSplitOutcome {
         }
         for worker_outcome in playback_worker_report.outcomes().iter().cloned() {
             outcomes.push(Self::ServiceBootPlaybackWorkerStep {
-                outcome: worker_outcome,
+                attempt_id: worker_outcome.attempt_id,
+                operation: worker_outcome.operation,
+                target: worker_outcome.target,
+                phase: worker_outcome.phase,
+                expected_step_count: worker_outcome.expected_step_count,
+                result: worker_outcome.result,
             });
         }
         if let Err(error) = callback_artifact_result {

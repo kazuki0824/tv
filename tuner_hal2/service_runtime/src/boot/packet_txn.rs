@@ -91,87 +91,43 @@ impl TunerServiceRuntime {
         // capabilities. No pipeline state is mutated until all bound demuxes have accepted the
         // same boundary attempt, avoiding a fail-fast partial reset across the set.
         let mut authorizations = Vec::with_capacity(demux_ids.len());
-        let mut authorized_tokens = Vec::with_capacity(demux_ids.len());
-        let preparation_result: Result<(), HalError> = (|| {
-            for demux_id in &demux_ids {
-                let token = rollback_tokens
-                    .iter()
-                    .find_map(|(id, token)| (*id == *demux_id).then_some(token))
-                    .ok_or_else(|| {
-                        HalError::invalid_state(
-                            HalInvalidStateKind::InvalidLifecycle,
-                            "bound demux rollback token is missing during tune boundary reset",
-                        )
-                    })?;
-                let demux_runtime = self.registry.demux_runtime_mut(*demux_id).ok_or_else(|| {
+        for demux_id in &demux_ids {
+            let token = rollback_tokens
+                .iter()
+                .find_map(|(id, token)| (*id == *demux_id).then_some(token))
+                .ok_or_else(|| {
                     HalError::invalid_state(
                         HalInvalidStateKind::InvalidLifecycle,
-                        "bound demux runtime is missing during tune boundary reset",
+                        "bound demux rollback token is missing during tune boundary reset",
                     )
                 })?;
-                let expected_generation = demux_runtime
-                    .generation()
-                    .checked_add(1)
-                    .ok_or_else(|| {
-                        HalError::invalid_state(
-                            HalInvalidStateKind::InvalidLifecycle,
-                            "bound demux generation exhausted during tune boundary preparation",
-                        )
-                    })?;
-                let authorization = demux_runtime
-                    .authorize_rollback_post_generation(token, expected_generation)
-                    .map_err(demux_runtime_error_to_hal)?;
-                authorizations.push((*demux_id, authorization));
-                authorized_tokens.push((*demux_id, token));
-            }
-            Ok(())
-        })();
-        if let Err(primary) = preparation_result {
-            let mut error = primary;
-            for (demux_id, token) in authorized_tokens.into_iter().rev() {
-                let revoke_result = self
-                    .registry
-                    .demux_runtime_mut(demux_id)
-                    .ok_or_else(|| {
-                        HalError::invalid_state(
-                            HalInvalidStateKind::InvalidLifecycle,
-                            "bound demux runtime disappeared while revoking boundary authorization",
-                        )
-                    })
-                    .and_then(|runtime| {
-                        runtime
-                            .revoke_rollback_post_generation_authorization(token)
-                            .map_err(demux_runtime_error_to_hal)
-                    });
-                if let Err(revoke_error) = revoke_result {
-                    error = maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
-                        "tune boundary preparation failed and authorization revocation failed",
-                        error,
-                        revoke_error,
-                    );
-                }
-            }
-            return Err(error);
+            let demux_runtime = self.registry.demux_runtime_mut(*demux_id).ok_or_else(|| {
+                HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "bound demux runtime is missing during tune boundary reset",
+                )
+            })?;
+            let expected_generation = demux_runtime
+                .generation()
+                .checked_add(1)
+                .ok_or_else(|| {
+                    HalError::invalid_state(
+                        HalInvalidStateKind::InvalidLifecycle,
+                        "bound demux generation exhausted during tune boundary preparation",
+                    )
+                })?;
+            let authorization = demux_runtime
+                .authorize_rollback_post_generation(token, expected_generation)
+                .map_err(demux_runtime_error_to_hal)?;
+            authorizations.push((*demux_id, authorization));
         }
 
-        match self.registry.commit_authorized_demux_generation_boundaries(
-            authorizations,
-            PipelineBoundaryReason::TuneStart,
-        ) {
-            Ok(reports) => Ok(reports),
-            Err(commit_error) => {
-                // Commit is preceded by complete release-build validation. If an invariant still
-                // fails, no mixed usable set may escape; quarantine every bound demux.
-                for demux_id in demux_ids {
-                    if let Some(runtime) = self.registry.demux_runtime_mut(demux_id) {
-                        runtime.quarantine_runtime_from_typed_request(
-                            maleicacid_tuner_hal2_demux::DemuxRuntimeQuarantineRequest::new(),
-                        );
-                    }
-                }
-                Err(demux_runtime_error_to_hal(commit_error))
-            }
-        }
+        self.registry
+            .commit_authorized_demux_generation_boundaries(
+                authorizations,
+                PipelineBoundaryReason::TuneStart,
+            )
+            .map_err(demux_runtime_error_to_hal)
     }
 
     pub(super) fn transact_reset_and_unbind_bound_demuxes_for_frontend(
@@ -186,58 +142,21 @@ impl TunerServiceRuntime {
             ));
         }
         let demux_ids = self.registry.frontend_bound_demux_ids(frontend_key);
-        // Preflight the complete set before applying any destructive boundary.
-        for demux_id in &demux_ids {
-            let runtime = self.registry.demux_runtime(*demux_id).ok_or_else(|| {
-                HalError::invalid_state(
-                    HalInvalidStateKind::InvalidLifecycle,
-                    "bound demux runtime is missing during frontend unbind preflight",
-                )
-            })?;
-            runtime.generation().checked_add(1).ok_or_else(|| {
-                HalError::invalid_state(
-                    HalInvalidStateKind::InvalidLifecycle,
-                    "bound demux generation exhausted during frontend unbind preflight",
-                )
-            })?;
-        }
         let mut reports = Vec::with_capacity(demux_ids.len());
-        let mut first_error = None;
         for demux_id in &demux_ids {
-            let result = self
-                .registry
-                .demux_runtime_mut(*demux_id)
-                .ok_or_else(|| {
-                    HalError::invalid_state(
-                        HalInvalidStateKind::InvalidLifecycle,
-                        "bound demux runtime disappeared during frontend unbind commit",
+            let Some(demux_runtime) = self.registry.demux_runtime_mut(*demux_id) else {
+                return Err(HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "bound demux runtime is missing during frontend unbind",
+                ));
+            };
+            reports.push(
+                demux_runtime
+                    .apply_generation_boundary_from_typed_request(
+                        maleicacid_tuner_hal2_demux::DemuxGenerationBoundaryRequest::new(reason),
                     )
-                })
-                .and_then(|runtime| {
-                    runtime
-                        .apply_generation_boundary_from_typed_request(
-                            maleicacid_tuner_hal2_demux::DemuxGenerationBoundaryRequest::new(reason),
-                        )
-                        .map_err(demux_runtime_error_to_hal)
-                });
-            match result {
-                Ok(report) => reports.push(report),
-                Err(error) => {
-                    if first_error.is_none() {
-                        first_error = Some(error);
-                    }
-                }
-            }
-        }
-        if let Some(error) = first_error {
-            for demux_id in demux_ids {
-                if let Some(runtime) = self.registry.demux_runtime_mut(demux_id) {
-                    runtime.quarantine_runtime_from_typed_request(
-                        maleicacid_tuner_hal2_demux::DemuxRuntimeQuarantineRequest::new(),
-                    );
-                }
-            }
-            return Err(error);
+                    .map_err(demux_runtime_error_to_hal)?,
+            );
         }
         self.registry.unbind_frontend_demuxes(frontend_key);
         Ok(reports)
@@ -317,35 +236,17 @@ impl TunerServiceRuntime {
     ) -> Result<Vec<PipelineReport>, HalError> {
         let demux_ids = self.query().ensure_frontend_demux_sink_ready(frontend_id)?;
         let mut reports = Vec::with_capacity(demux_ids.len());
-        let mut first_error = None;
-        for demux_id in &demux_ids {
-            match self.transact_push_ts_packet_to_demux(
-                *demux_id,
-                packet,
-                TsInputOrigin::Frontend,
-            ) {
-                Ok(report) => reports.push(report),
-                Err(failure) => {
-                    if first_error.is_none() {
-                        first_error = Some(failure.error);
-                    }
-                }
-            }
+        for demux_id in demux_ids {
+            reports.push(
+                self.transact_push_ts_packet_to_demux(
+                    demux_id,
+                    packet,
+                    TsInputOrigin::Frontend,
+                )
+                .map_err(|failure| failure.error)?,
+            );
         }
-        if let Some(error) = first_error {
-            // Packet delivery cannot be rolled back after one sink accepted it. Do not expose a
-            // mixed-position bound set as usable: quarantine every sink in the fan-out attempt.
-            for demux_id in demux_ids {
-                if let Some(runtime) = self.registry.demux_runtime_mut(demux_id) {
-                    runtime.quarantine_runtime_from_typed_request(
-                        maleicacid_tuner_hal2_demux::DemuxRuntimeQuarantineRequest::new(),
-                    );
-                }
-            }
-            Err(error)
-        } else {
-            Ok(reports)
-        }
+        Ok(reports)
     }
 
     fn decide_descrambled_packet(

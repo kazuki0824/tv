@@ -119,9 +119,9 @@ pub struct SharedCleanupDiagnostics<TRecord> {
 }
 
 fn saturating_increment_atomic_u64(counter: &AtomicU64) {
-    drop(counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
         Some(value.saturating_add(1))
-    }));
+    });
 }
 
 impl<TRecord> SharedCleanupDiagnostics<TRecord> {

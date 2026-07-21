@@ -3,9 +3,7 @@
 //! AIDL生成union / enumは `tuner_hal2/binder_adapter/src/aidl_filter_config.rs` で
 //! これらの型へ直接変換する。Debug文字列や文字列field list表現をruntime正本にしない。
 
-use crate::packet_pipeline::{
-    FilterPipelineConfig, PesPipelineSettings, PipelineOpenKind, SectionPipelineSettings,
-};
+use crate::packet_pipeline::{FilterPipelineConfig, PipelineOpenKind};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FilterOpenType {
@@ -48,7 +46,7 @@ impl FilterOpenType {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SectionConditionKind {
     SectionBits,
     TableInfo,
@@ -191,27 +189,6 @@ impl FilterConfig {
                 FilterConfigKind::TsSection { raw, .. } => *raw,
                 FilterConfigKind::TsPes(settings) => settings.raw,
                 _ => false,
-            },
-            section: match &self.kind {
-                FilterConfigKind::TsSection {
-                    check_crc,
-                    repeat,
-                    length_field_bits,
-                    condition,
-                    ..
-                } => Some(SectionPipelineSettings {
-                    check_crc: *check_crc,
-                    repeat: *repeat,
-                    length_field_bits: *length_field_bits,
-                    condition: condition.clone(),
-                }),
-                _ => None,
-            },
-            pes: match &self.kind {
-                FilterConfigKind::TsPes(settings) => Some(PesPipelineSettings {
-                    stream_id: settings.stream_id,
-                }),
-                _ => None,
             },
             record_index: match &self.kind {
                 FilterConfigKind::TsRecord(settings) => Some(settings.clone()),

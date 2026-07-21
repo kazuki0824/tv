@@ -153,16 +153,13 @@ where
             )
         })?;
 
-        let read_len = match retry_after_interrupted_read_with_saturation(
+        let read_len = retry_after_interrupted_read_with_saturation(
             "frontend live pump read",
             &retry_counter,
             Some(&retry_counter_saturated),
             || reader.read(&mut buf),
-        ) {
-            Ok(read_len) => read_len,
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
-            Err(error) => return Err(io_error_to_hal("read", error)),
-        };
+        )
+        .map_err(|error| io_error_to_hal("read", error))?;
 
         if read_len == 0 {
             report.reached_eof = true;

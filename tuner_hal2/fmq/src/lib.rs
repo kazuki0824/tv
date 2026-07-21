@@ -33,10 +33,6 @@ extern "C" {
         capacity: usize,
         out_read: *mut usize,
     ) -> i32;
-    #[link_name = "tuner_fmq_queue_clear"]
-    fn native_queue_clear(queue: *mut TunerFmqQueue, out_discarded: *mut usize) -> i32;
-    #[link_name = "tuner_fmq_queue_reset_pointers"]
-    fn native_queue_reset_pointers(queue: *mut TunerFmqQueue) -> i32;
     #[link_name = "tuner_fmq_queue_wake"]
     fn native_queue_wake(queue: *mut TunerFmqQueue, bits: u32) -> i32;
     #[link_name = "tuner_fmq_queue_wait"]
@@ -118,17 +114,6 @@ impl NativeFmqQueue {
         };
         let status = unsafe { native_queue_read_checked(self.queue, ptr, capacity, &mut read) };
         (status == 0).then_some(read).ok_or(status)
-    }
-
-    fn clear(&mut self) -> Result<usize, i32> {
-        let mut discarded = 0usize;
-        let status = unsafe { native_queue_clear(self.queue, &mut discarded) };
-        (status == 0).then_some(discarded).ok_or(status)
-    }
-
-    fn reset_pointers(&mut self) -> Result<(), i32> {
-        let status = unsafe { native_queue_reset_pointers(self.queue) };
-        (status == 0).then_some(()).ok_or(status)
     }
 
     fn wake(&mut self, bits: u32) -> i32 {
@@ -295,13 +280,6 @@ impl FmqWriter {
         Ok(self.core.capacity_bytes.saturating_sub(available_to_write))
     }
 
-    pub fn reset_pointers_for_flush(&self) -> Result<(), FmqQueueError> {
-        self.core
-            .lock()?
-            .reset_pointers()
-            .map_err(|_| FmqQueueError::NativeWriteFailed)
-    }
-
     pub fn wake(&self, event_mask: u32) -> Result<(), FmqQueueError> {
         if self.core.lock()?.wake(event_mask) == 0 {
             Ok(())
@@ -340,13 +318,6 @@ impl FmqReader {
 
     pub fn current_fill(&self) -> Result<usize, FmqQueueError> {
         self.available_to_read()
-    }
-
-    pub fn clear(&self) -> Result<usize, FmqQueueError> {
-        self.core
-            .lock()?
-            .clear()
-            .map_err(|_| FmqQueueError::NativeReadFailed)
     }
 
     pub fn wake(&self, event_mask: u32) -> Result<(), FmqQueueError> {

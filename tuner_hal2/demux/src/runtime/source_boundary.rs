@@ -463,8 +463,6 @@ mod tests {
             Some(FilterPipelineConfig {
                 tpid: ConfigInputPid::for_test(0x0100),
                 raw: false,
-                    section: None,
-                    pes: None,
                 record_index: None,
             }),
         )
