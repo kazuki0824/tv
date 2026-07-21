@@ -1467,7 +1467,7 @@ Base selector matrix: Linux DVB accepts ISDB-S STREAM_ID values 0..65534 and pas
 selector typeを正として判定し、値域推測を廃止する。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
 
 
-この px4 BS `STREAM_ID` direct-slot 契約は、対象 kernel driver が本プロジェクトで採用する px4_drv `feat/android-ddk` 系、すなわち BS legacy `slot >= 8` reject が無効化され、`slot` 値を absolute TSID として `set_stream_id()` へ渡せる実装であることを前提にする。公開 `nns779/px4_drv` develop 相当のように BS `slot >= 8` reject が有効な driver では、absolute TSID direct-slot 経路は使用不可であり、その product で px4 BS `STREAM_ID` 対応を 対応宣言 してはならない。HAL は互換 代替処理 として TSID→relative slot 変換表を復活させない。driver 前提が満たせない場合は、TIS/profile/VTS 設定側で px4 BS absolute TSID 経路を使わない構成にする。
+px4 BSのabsolute `STREAM_ID` direct-slot経路は、driver branchの分岐が存在するだけでは対応能力にならない。exact backend/device catalog entryがabsolute selectorを検証済みかつrelease-eligibleとして宣言した場合だけ`0..65534`をprogramできる。現在のtarget px4 catalogはrelative `0..7`だけを有効にするため、absolute `STREAM_ID 0..65534`は`UNAVAILABLE`でbackendを変更せず、`65535`はselectorとしては`INVALID_ARGUMENT`とする。将来absolute entryを追加する場合も`0..11`を数値衝突だけで拒否せず、ProductProfileやVTS設定でcatalogにない経路を作らない。HALはTSID→relative slot変換表を互換処理として復活させない。
 
 CATV も TIS の製品 scan 候補表に実装データとして追加する。CATV候補表は C13〜C63 に固定する。MID band は C13〜C22、SHB band は C23〜C63 とし、中心周波数は ARIB STD-B21 Appendix 10 の `+1/7 MHz` オフセット込みで保持する。C22 は `167 + 1/7 MHz`、C23 は `225 + 1/7 MHz` であり、C21からC22、C22からC23は単純な6MHz連続として計算しない。地上UHF候補表とCATV候補表はどちらもTIS側が正であり、Tuner HAL はCATV scan planを自前生成しない。TIS はCATV候補を 明示選局候補 としてHALへ渡し、px4 backend は渡されたCATV frequencyをlegacy `freq_no/addfreq` へ変換するだけにする。
 
@@ -2561,6 +2561,20 @@ Descrambler/TS failure behavior is governed by the failure-scope taxonomy. Infra
 - ARIB B10 5.13-E1 supplies the table-specific 1021/4093 section limits and B32 3.11-E1 Part 3 supplies TS/PES/Section carriage and PES syntax; B32 is not used as an independent 4093 limit authority. B25 uses the pinned English 6.7-E1 full text. Part 1 clauses 4.9 and 4.10 require at least one odd/even key pair per tuner and at least 12 simultaneously processed PIDs; capacity claims are separately advertised and enforced.
 - Target-driver and upstream-Linux evidence are separate authorities from AOSP contracts.
 
+### ARIB current-version bridge
+
+旧英文版は句のlocatorと精読可能なbaselineとして使い、現行日本語版を無視したり、英文baselineと現行日本語全文の同一性を主張したりしない。現行版への適用は次表の公式改定情報とのbridgeに限定し、未取得範囲へ主張を拡張しない。
+
+| standard | reviewed baseline | current Japanese edition | design use and claim boundary |
+|---|---|---|---|
+| STD-B10 | 5.13-E1 English | 5.14 | table-specific section長とtable allocationは英文baselineおよび5.10〜5.14の公式改定履歴を照合して用いる。参照句へ影響する改定が判明した場合はbridgeを更新するまで該当主張を保留する。 |
+| STD-B20 | none | 3.0 | 日本語3.0をprimary sourceとしてrelative TS numberとTS_IDの別domainを用いる。 |
+| STD-B25 | 6.7-E1 English | 7.0 | DP-162対象句は英文6.7-E1全文で精読し、7.0の公式改定情報を併用する。7.0日本語全文との同一性は主張しない。 |
+| STD-B31 | 2.2-E1 English | 2.3 | DP-084〜086は英文baselineと公式2.3改定概要・sampleを照合し、対象parameter構造への既知影響なしとして用いる。2.3全文同一性は主張しない。 |
+| STD-B32 | 3.11-E1 Part 3 English fascicle | 4.1 | 取得済みPart 3、H.222.0参照および公式改定履歴の範囲でTS/PES/Section carriageとPES syntaxを用いる。未取得fascicleまたは未照合句へ主張を拡張しない。 |
+
+本文・表に旧英文版番号が残る箇所はbaseline locatorであり、現行版を旧版へ固定する規定ではない。公式改定情報が参照句の意味を変更する場合は、上表のbridgeと依存する設計規則を先に更新し、解決前に該当capabilityまたは準拠を宣言しない。
+
 
 ## VTS environment と ARIB B31 境界
 
@@ -2627,17 +2641,18 @@ Descrambler/TS failure behavior is governed by the failure-scope taxonomy. Infra
 
 ### Frontend setting programming matrix
 
-| backend | immutable_commit | frontend | setting | accepted_input | driver_observation | result | invalid_input_result |
-|---|---|---|---|---|---|---|---|
-| px4_drv | c2a031db8771ddd6e3e0b3b4a712b64ec384139b | ISDB-T | frequency | valid backend range | programmed by r850_set_frequency | SUPPORTED | invalid range -> INVALID_ARGUMENT |
-| px4_drv | c2a031db8771ddd6e3e0b3b4a712b64ec384139b | ISDB-T | modulation/coderate/guard/interleave | AUTO | no caller-selectable programming path | AUTO_ONLY | any concrete value -> INVALID_ARGUMENT |
-| px4_drv | c2a031db8771ddd6e3e0b3b4a712b64ec384139b | ISDB-S | frequency | valid backend range | programmed by rt710_set_params | SUPPORTED | invalid range -> INVALID_ARGUMENT |
-| px4_drv | c2a031db8771ddd6e3e0b3b4a712b64ec384139b | ISDB-S | RELATIVE_STREAM_NUMBER | 0..11 | TMCC slot resolves to TSID | SUPPORTED | outside 0..11 invalid for relative selector |
-| px4_drv | c2a031db8771ddd6e3e0b3b4a712b64ec384139b | ISDB-S | STREAM_ID | 12..65535 | used as absolute TSID | SUPPORTED_WITH_LOW_RANGE_AMBIGUITY_REJECTED | 0..11 absolute -> INVALID_ARGUMENT |
-| px4_drv | c2a031db8771ddd6e3e0b3b4a712b64ec384139b | ISDB-S | modulation/coderate/rolloff/symbol-rate | AUTO/fixed | fixed 28860/mode4; no caller mapping | AUTO_OR_FIXED_ONLY | arbitrary concrete -> INVALID_ARGUMENT |
-| earth_pt1 | ffc253263a1375a65fa6c9f62a893e9767fbebfa | ISDB-T | frequency | supported channel-derived frequencies | driver tunes channel/frequency path | SUPPORTED | out-of-domain -> INVALID_ARGUMENT |
-| earth_pt1 | ffc253263a1375a65fa6c9f62a893e9767fbebfa | ISDB-T | modulation/coderate/guard/interleave | AUTO | no AIDL concrete programming proof in pinned pt1.c | AUTO_ONLY | any concrete value -> INVALID_ARGUMENT |
-| earth_pt1 | ffc253263a1375a65fa6c9f62a893e9767fbebfa | ISDB-S | frequency/TS selector | driver-supported path only | no generic concrete modulation/coderate programming proof | SUPPORTED_FOR_PROVEN_FIELDS_ONLY | unproven concrete field -> INVALID_ARGUMENT |
+本表は `CD-bda34cbad6d1`、`CD-926c6165abfb`、`CD-eec1d09349d6`、`CD-ecab28a4133a`、`CD-b0d4ada43334`、`CD-e605d48c671e`、`CD-041de602bb3a`、`CD-ee2559d5330c` を同じ入力分類へ投影した正本である。known-validだが現在のexact backend/device capabilityでprogramできない値は `UNAVAILABLE`、malformed tag・予約値・規格値域外は `INVALID_ARGUMENT` とし、どちらもbackendと直前requestを変更しない。
+
+| backend / capability fact | frontend | setting | accepted input | success action | known-valid but unsupported | malformed / out-of-domain |
+|---|---|---|---|---|---|---|
+| exact eligible px4 entry | ISDB-T | frequency | verified backend range | program the verified frequency path | value valid in another profile: `UNAVAILABLE` | `INVALID_ARGUMENT` |
+| exact eligible px4/earth_pt1 entry | ISDB-T | bandwidth | `AUTO` or `BANDWIDTH_6MHZ` | program/use the verified 6 MHz path | other known bandwidth: `UNAVAILABLE` | `INVALID_ARGUMENT` |
+| target px4/earth_pt1 | ISDB-T | mode / modulation / code rate / guard interval / time interleave | `AUTO` | use backend auto detection | every known concrete value: `UNAVAILABLE` | `INVALID_ARGUMENT` |
+| exact relative-selector-eligible px4 entry | ISDB-S | `RELATIVE_STREAM_NUMBER` | `0..7` | program the verified relative-slot path | `STREAM_ID 0..65534`: `UNAVAILABLE` unless a separate exact absolute-selector fact is eligible | relative value outside `0..7`, or `STREAM_ID=65535`: `INVALID_ARGUMENT` |
+| exact absolute-selector-eligible Linux DVB entry | ISDB-S | `STREAM_ID` | `0..65534` | pass unchanged to `DTV_STREAM_ID` | `RELATIVE_STREAM_NUMBER 0..7`: `UNAVAILABLE` unless a separate exact relative-selector fact is eligible | `STREAM_ID=65535` or relative value outside `0..7`: `INVALID_ARGUMENT` |
+| target px4/earth_pt1 | ISDB-S | modulation / code rate | `AUTO` | use backend auto detection | every known concrete value: `UNAVAILABLE` | `INVALID_ARGUMENT` |
+
+selector capabilityはexact `SupportedBackendIdentity`、driver repository/commit、device identity、revision scopeに一致し、かつ`selector_capability_release_eligible=true`のcatalog entryだけが作れる。現在のtarget px4 catalogはrelative selectorだけを有効にし、absolute `STREAM_ID`を有効にしない。空・不一致・ineligible entryはselectorを広告せず、ProductProfileはeligible subsetを抑止できるだけで新設・拡張できない。absolute `0..11`をrelative値域との数値衝突だけで`INVALID_ARGUMENT`にしてはならない。 CS110の`STREAM_ID=INVALID_STREAM_ID(65535)`はselectorなしを表すAOSP defaultとして別扱いであり、本表のselector値`65535`拒否と混同しない。
 
 ### LNB device resource contract
 

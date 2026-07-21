@@ -300,6 +300,8 @@ Tuner HALはgeneric MPEG-TS section transport（payload抽出、section framing�
 
 1021-classは`section_length <= 1021`かつsection全体`<= 1024`、extended-classは`section_length <= 4093`かつsection全体`<= 4096`とする。reserved、unassigned、private、外部所有のtable_idをARIB SIの型付き意味objectとして推測しない。ただし、Tuner SDK/TIS側が有効なsection filterで選択したgeneric raw sectionは、意味未対応だけを理由にTuner HALが破棄してはならず、本crateは入力されたpayloadを次表に従って型付き解析するか、unsupported/unknownとして構造を保持する。
 
+下表の`STD-B10 5.13-E1`は英文baselineの句locatorである。現行STD-B10 5.14は`../tuner_hal/DESIGN_JA.md`「ARIB current-version bridge」に従い、5.10〜5.14の公式改定履歴との連続性を適用する。英文baselineと5.14日本語全文の同一性、または未照合句への拡張は主張しない。
+
 ### TableId section-length registry
 
 | standard | table_id_or_range | table_name | section_length_max | total_section_bytes_max | parser_owner | primary_locator | delivery_class |

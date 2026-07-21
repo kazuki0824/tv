@@ -654,4 +654,5 @@ Cleanup diagnostics are internal only. Each owner stores one bounded in-memory a
 - All normative references use stable design paths; release-versioned artifact names are forbidden.
 - DVR VTS admission is forbidden while VtsEnvironmentProfile is UNBOUND; no default C1/XML/module fallback exists.
 - DP-137 adoption uses a three-way merge and preserves all newer DVR playback-worker cleanup obligations; the service-critical predicate is additive, not replacing cleanup.
-- DP-162 uses the pinned STD-B25 6.7-E1 English full text under the allowed English fallback; Japanese 7.0 full-text equivalence is not claimed.
+- ARIB baseline/current-edition handling is governed by `tuner_hal/DESIGN_JA.md`「ARIB current-version bridge」: B10 5.13-E1→5.14、B20 current 3.0、B25 6.7-E1→7.0、B31 2.2-E1→2.3、B32 3.11-E1 Part 3→4.1。旧英文版は精読baseline/locatorであり、現行日本語全文との同一性や未取得範囲を主張しない。
+- DP-162 uses the pinned STD-B25 6.7-E1 English full text under the allowed English fallback and the common current-version bridge; Japanese 7.0 full-text equivalence is not claimed.
