@@ -1,3 +1,0 @@
-backend,immutable_commit,aosp_surface,driver_fact,design_contract,resource_rule,source_locator
-px4_drv feat/android-ddk,c2a031db8771ddd6e3e0b3b4a712b64ec384139b,ILnb.setVoltage / ITuner.openLnb,0 or 15 V only,Expose OFF and 15V-capable path only; reject unsupported mappings,device-scoped shared voltage state serialized/reference-counted,driver/px4_device.c blob cfed72f...; driver/ptx_chrdev.c blob 18f074...
-earth_pt1 Linux v6.6,ffc253263a1375a65fa6c9f62a893e9767fbebfa,ILnb.setVoltage,pt1.c maps SEC_VOLTAGE_13 to 11V and SEC_VOLTAGE_18 to 15V,Backend-specific mapping only; no global voltage assumption,device-scoped LNB endpoint,drivers/media/pci/pt1/pt1.c at Linux v6.6 commit

@@ -62,8 +62,9 @@ Tuner HAL の capability / VTS profile では TS 入力だけを宣言する。�
 Tuner HAL が framework へ export する frontend ID は backend の単純な numeric index だけに依存しない。`px4video0` と `pxmlt5video0` のように異なる device family が同じ unit index を持つ場合でも、HAL の frontend ID と physical group ID は衝突してはならない。device family code と unit index を組み合わせ、1,000,000 番台の px4 frontend ID として export する。DVB frontend ID はハッシュではなく固定ビット割当で生成し、`2,000,000 + (adapter_id << 12) + (frontend_index << 4) + variant` とする。`adapter_id` と `frontend_index` は 8 bit、`variant` は 4 bit で、variant は ISDB-T=0、ISDB-S=1 に固定する。範囲外の DVB probe は export しない。生成後の duplicate ID 検出は最終保険として残す。px4 frontend の `exclusiveGroupId` は unit index 単独値ではなく、device family code と unit index を含む packed physical group id として返す。
 
 
-> **V55 canonical reference** — clauses `DR-0029`; original source lines 64-64 are superseded.
-> - Normative rule reference: `CD-1b216b960772` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-1b216b960772`（`DP-079;DP-164`、規範）**
+
+DvrLeasePool is a view of the committed immutable CapabilitySnapshot and is the sole source for getDemuxCaps and openDvr admission. Global playback/record counts are snapshot.playback_count and snapshot.record_count; per-demux limits are one playback and one record DVR. Admission validates lifecycle/arguments, atomically reserves direction and per-demux leases, then prepares caller-requested FMQ and the exact notifier slot budget. Failure rolls back every provisional lease and publishes no partial object. CleanupPending/Quarantined objects remain counted until terminal release. Tuner VTS is environment-bound rather than a default C1 promise: until a pre-start VtsEnvironmentProfile declares source, PIDs, flows, queue sizes and memory budget, VTS is DESIGN_HOLD and no XML is installed. A bound static variant must fit C1 and reserve its exact queue-byte demand.
 
 
 ### VTS profile / capability / 実装済み機能 対応表
@@ -84,15 +85,19 @@ VTS XML/profileで使う機能、capabilityで宣言する機能、実装済み�
 
 - CS110 は周波数のみで選局する。ISDB-S settings で `streamIdType=UNDEFINED` かつ `streamId=0` の明示未指定、または AOSP SDK の default 表現である `streamIdType=STREAM_ID` かつ `streamId=INVALID_STREAM_ID(0xFFFF)` だけを selector なしとして扱う。CS110 tune request に TSID / relative stream-number selector が指定された場合は `INVALID_ARGUMENT` とする。`streamIdType=RELATIVE_STREAM_NUMBER` の負値、`streamIdType=UNDEFINED` の負値、その他の負値 selector は未指定へ丸めない。
 
-> **V55 canonical reference** — clauses `DR-0039`; original source lines 83-83 are superseded.
-> - Normative rule reference: `CD-ee2559d5330c` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-ee2559d5330c`（`DP-112`、規範）**
+
+ISDB-S selector support is created only by a capability-domain-eligible fact in an exact SupportedDeviceCapabilityCatalog entry keyed by SupportedBackendIdentity, driver repository/commit, exact USB VID/PID or equivalent device identity, and revision scope. With no matching verified entry, or when selector_capability_release_eligible is false, no ISDB-S selector capability is advertised and no tune object for that selector is created. An eligible entry may advertise RELATIVE_STREAM_NUMBER 0..7 when the exact adapter path is proven; an absolute STREAM_ID request is then UNAVAILABLE without backend mutation. A separately proven entry may advertise absolute TSID 0..65534; 65535 is INVALID_ARGUMENT and there is no special 0..11 rejection. ProductProfile may suppress an eligible selector fact but cannot create or widen one. Runtime reads only immutable EffectiveCapabilities.
+
 
 - コールバック失敗、ワーカー異常終了、FMQ / EventFlag 失敗の状態遷移、診断、後続処理停止条件は表7・表8を正とする。本節では再定義しない。
 - DVR 状態 interval はコールバックワーカーの周期にだけ使う。ワーカーの wait は stop signal で wake 可能な cancellable wait とし、close / Drop / shutdown は interval 満了を待たない。
 - `getAvSharedHandle()`、AV filter `start()`、`releaseAvHandle()` の状態別契約は、本書の「表4. AV共有メモリ資源寿命表」を正とする。
 
-> **V55 canonical reference** — clauses `DR-0043`; original source lines 87-87 are superseded.
-> - Normative rule reference: `CD-f5a3c9aad0f5` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-f5a3c9aad0f5`（`DP-117`、規範）**
+
+backend error mappingを固定する。client malformed/range=INVALID_ARGUMENT、Missing/Busy/Capacity/valid-but-unsupported=UNAVAILABLE、wrong lifecycle=INVALID_STATE、dependency未初期化=NOT_INITIALIZED、allocation=OUT_OF_MEMORY、permission/I/O/config corruption/invariant=UNKNOWN_ERROR。
+
 
 - filter monitor event は profile / capability 依存とする。monitor event 非対応 profile では `configureMonitorEvent(0)` のみ成功し、非0 mask は `UNAVAILABLE` とする。monitor event 対応 profile で `monitorEventTypes > 0` を使う場合は、`configureMonitorEvent(nonzero)` を成功させ、要求 mask に対応する monitor event を配送する。通常の `DATA_READY` / `OVERFLOW` / `onFilterEvent()` delivery は monitor mask で抑止しない。
 - soft demux の section / PES assembler と filter `stop()` / `flush()` / `configure()` / `close()` の状態別契約は、本書の「表1. IFilter 状態表」を正とする。
@@ -109,8 +114,9 @@ AOSP意味論として NULL binder 入力を持つ境界は、`IFilter.setDataSo
 ### Android 14 AIDL filter source 境界の現行処理
 
 
-> **V55 canonical reference** — clauses `DR-0050`; original source lines 102-102 are superseded.
-> - Normative rule reference: `CD-7dce44077973` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-7dce44077973`（`DP-004`、規範）**
+
+configure()はsource bindingを変更しない。新settingsが既存bindingと非互換ならINVALID_STATEで拒否し、旧settings/bindingを保持する。切断はsetDataSource(null)で明示する。malformed settingsはINVALID_ARGUMENT。
 
 
 `IDescrambler.addPid()` / `removePid()` は、`optionalSourceFilter == NULL` を demux input 全体に対する PID 登録 / 解除として扱い、`optionalSourceFilter != NULL` を指定 filter output、すなわち upper stream に対する PID 登録 / 解除として扱う。NULL 経路は現行AOSP契約上の成功対象であり、実装済み対象に含める。non-null source filter 経路は、本書の「表D-1. IDescrambler PID 操作表」を正とし、同一 demux、非閉鎖、世代一致を検証する。
@@ -121,8 +127,9 @@ AOSP意味論として NULL binder 入力を持つ境界は、`IFilter.setDataSo
 `IFilter`、`IDvr`、`IFrontend`、`IDemux`、`ILnb`、`IDescrambler` の 公開メソッド は、AIDL HAL の契約面として close 後状態を必ず検査する。状態別の戻り値、次状態、維持する内部状態、破棄・無効化する内部状態は、本書の「Tuner HAL 状態遷移表SSOT」を正とする。
 
 
-> **V55 canonical reference** — clauses `DR-0053`; original source lines 111-111 are superseded.
-> - Normative rule reference: `CD-a625b795dfe0` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-a625b795dfe0`（`DP-100;DP-150`、規範）**
+
+`IFrontend.getStatus(statusTypes)` and `getFrontendStatusReadiness(statusTypes)` have distinct cardinality contracts. `getStatus` rejects an unknown enum representation with `INVALID_ARGUMENT` and no output. For known values it emits one `FrontendStatus` only for each requested type advertised in `FrontendInfo.statusCaps`, preserving relative order and duplicates among emitted advertised types; known-unadvertised types are ignored, so an all-unadvertised request succeeds with an empty vector. It never fabricates type-specific not-available sentinels. Failure to obtain any advertised requested value atomically returns `UNAVAILABLE` and no partial vector. The HAL performs this filter because the public framework/JNI forwards the request while the SDK contract says unadvertised types are ignored. `getFrontendStatusReadiness` also rejects unknown representations, but for every known requested type returns exactly one result in request order: advertised types are `UNAVAILABLE`, `UNSTABLE` or `STABLE`; unadvertised types are `UNSUPPORTED`. The APIs may share enum validation but not an output-cardinality helper.
 
 
 `IFilter.setDataSource(source)` は、AOSP意味論どおり `source != NULL` の場合に指定 filter output を入力元とし、`source == NULL` の場合に sink filter の入力元を demux input へ戻す。`setDataSource(NULL)` は実装済み対象に含める。AOSP frozen/stable AIDL の vendor 独自改変、raw Binder transaction parser による公開契約を通さない実装は採用しない。non-null source filter 経路では、旧 `SourceFilter(filter_id, generation)` origin に属する section / PES assembler、continuity、flush generation、downstream partial state を切断し、旧 source 由来の未完了 payload を新 source 由来 payload へ連結してはならない。
@@ -136,10 +143,6 @@ AOSP意味論として NULL binder 入力を持つ境界は、`IFilter.setDataSo
 DVB / earth_pt1 backend では、`DTV_CLEAR` は明示的な tune 停止操作である `stop_tune()` の責務とする。DVB backend の `close()` は reader stop と fd release を行うが、`DTV_CLEAR` の実行を close の必須条件とはしない。したがって、DVB `close()` が `DTV_CLEAR` を発行しないことを release blocker または bug と扱わない。
 
 `IFrontend.removeOutputPid(pid)` は、frontend 出力段で PID を除去できる実装が存在しない限り `UNAVAILABLE` とする。soft demux 後段の block list だけで PID を捨てる実装は、frontend-level output PID removal を実装したことにしない。
-
-
-> **V55 canonical reference** — clauses `DR-0060`; original source lines 125-125 are superseded.
-> - Normative rule reference: `CD-1b216b960772` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 
 ### DVR playback status の空き領域基準
@@ -205,7 +208,10 @@ rollback不能、cleanup不能、正本不一致、backend実状態とregistry�
 | packet pipeline | `PacketPipeline` | `soft_demux` | continuity、origin、generationを複数箇所で更新しない |
 | AV shared memory | `AvSharedBacking` | `FilterHal` | fd番号一致をshared handle同一性条件にしない。fd付きhandle + `avDataId == 0` はclient側shared handle使用終了通知として扱う |
 
-> - Normative rule reference: `CD-cbde311bfcd9` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-cbde311bfcd9`（`DP-123`、規範）**
+
+Shared and event-local fd identity is never numeric-fd equality. On export/allocation HAL records `backing_id`, transport mode, handle integer payload, expected size and fstat identity `{st_dev, st_ino}`. Duplicated fds for the same backing resolve to the same identity. Shared-handle release validates the recorded shared backing. Event-local release validates the fd identity and full allocation tuple. `empty+dataId` validates the ledger identity without an fd. A mismatched handle/dataId/backing pair is `INVALID_ARGUMENT` and cannot release another allocation. Registry/fstat failure is `UNKNOWN_ERROR` and fences uncertain storage.
+
 
 #### 0-S-3. 公開API transaction（状態遷移）契約
 
@@ -226,8 +232,10 @@ validate
 | prepare | ワーカー生成準備、コールバック経路準備、rollback snapshot取得 | 旧公開状態の破壊 |
 | apply | backend / soft_demux / queue / registry への変更 | commit不能な変更をsnapshotなしに行うこと |
 
-> **V55 canonical reference** — clauses `DR-0105`; original source lines 208-208 are superseded.
-> - Normative rule reference: `CD-de1ca7f6a3b9` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-de1ca7f6a3b9`（`DP-152`、規範）**
+
+各operationをPrepare→CommitCritical→PostCommitへ統一する。CommitCriticalは正本state/ownership/backend apply、PostCommitはcallback、status wake、diagnostic、cleanup accounting。PostCommit失敗はtyped secondary outcomeとして保存し、primary Resultを変更しない。
+
 
 | rollback | commit前変更の取り消し | 失敗を握りつぶして通常状態へ戻すこと |
 | quarantine | rollback不能資源の隔離 | 成功扱いで通常操作を許すこと |
@@ -238,8 +246,9 @@ commit前失敗では、成功戻りを返してはならない。commit後clean
 #### 0-S-3A. 共通部品適用表
 
 
-> **V55 canonical reference** — clauses `DR-0109`; original source lines 217-217 are superseded.
-> - Normative rule reference: `CD-73adc4b61306` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-73adc4b61306`（`DP-118`、規範）**
+
+共有primitive/invariantのみ共通化し、interface-specific orchestrationを許容。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
 
 
 | 対象処理 | 所有共通部品 | 必ず通す経路 | 禁止する実装 |
@@ -247,15 +256,11 @@ commit前失敗では、成功戻りを返してはならない。commit後clean
 | Filter / DVR `start()` の commit 後 コールバック失敗 | `PostCommitCallbackFailureTxn` | start commit 後の callback 失敗は rollback せず `callback_unhealthy` に固定。既存実装名が異なる場合でも、この責務を単一の callback health 正本へ移管する | APIごとに `stop_*()` を直接呼んで rollback すること、またはAPI別に同型の コールバック失敗 処理を再実装すること |
 | Filter / DVR `flush()` の queue cleanup | `QueueCleanupTxn` | demux flush 後の FMQ / AV / playback cleanup 失敗を runtime failed または cleanup failed に接続 | `clear_best_effort()` で 公開API 成功に丸めること |
 
-> **V55 canonical reference** — clauses `DR-0113`; original source lines 223-223 are superseded.
-> - Normative rule reference: `CD-73adc4b61306` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | ワーカー起動 / 停止 / join / wake | `WorkerFailureClassifier` | ワーカー制御失敗、コールバック失敗、backend failure を enum / domain error で分類 | `reason.contains(...)` など文字列分類で失敗種別を決めること |
 | frontend / demux / source filter / flush 境界 | `StreamBoundaryTxn` / `SourceBoundaryTxn` | origin、generation、assembler、FMQ、AV shared、record queue を対象単位で処理 | 各APIが assembler / queue / generation を個別に直接操作すること |
 | descrambler demux / PID / key cleanup | `DescramblerSessionCleanupTxn` / `DescramblerKeyTxn` | session と key table の更新・release・失敗集約を一体で扱う | 1件の stale cleanup 失敗で後続 session を未処理のまま抜けること |
 
-> **V55 canonical reference** — clauses `DR-0117`; original source lines 227-227 are superseded.
-> - Normative rule reference: `CD-73adc4b61306` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | DVR playback read / inject | `PlaybackConsumeTxn` | FMQ read、TS parse、注入結果、消費確定を1つの状態機械で扱う | read済み入力を 注入結果未確認のまま一律消費済みにすること |
 
@@ -266,15 +271,18 @@ commit前失敗では、成功戻りを返してはならない。commit後clean
 |---|---|---|---|---|
 | クライアント誤用 | 引数不正、owner不一致 | `INVALID_ARGUMENT` | 呼び出し対象のみ | backend/データ経路 failureへ昇格しない |
 
-> **V55 canonical reference** — clauses `DR-0121`; original source lines 236-236 are superseded.
-> - Normative rule reference: `CD-23d2e1c35c4f` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-23d2e1c35c4f`（`DP-003;DP-017;DP-115;DP-153`、規範）**
+
+Public close semantics use one interface×logical-lifecycle×cleanup-state table. A first close on a Live object commits LogicalClosed before all-attempt cleanup and rejects every non-recovery method. `IFrontend.close()` and `ILnb.close()` may be called more than once: LogicalClosed+CleanupComplete returns SUCCESS without rerunning completed cleanup. `IDvr.close()` and `IFilter.close()` on LogicalClosed+CleanupComplete return INVALID_STATE; IDvr's other methods also fail, and IFilter late `releaseAvHandle()` remains a separate release-ledger operation. For every interface, LogicalClosed+CleanupPending exposes close only as a recovery retry: it runs only pending cleanup steps, returns SUCCESS only when they complete, otherwise returns the operation-specific cleanup failure and remains CleanupPending. Quarantined rejects public close with INVALID_STATE and is serviced only by internal cleanup/reaper authority. LogicalClosed, CleanupPending, CleanupComplete and Quarantined are orthogonal axes.
+
 
 | unsupported | capability外、恒久非対応 | `UNAVAILABLE` | なし | callback/ワーカー状態を先に見て別エラーにしない |
 | コールバック失敗 | Binder コールバック失敗 | API表に従う | コールバック所有者 | データ経路全体を即failedにしない |
 
-> **V55 canonical reference** — clauses `DR-0124, DR-0125`; original source lines 239-240 are superseded.
-> - Normative rule reference: `CD-49b9ecfb3112` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-f5a3c9aad0f5` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-49b9ecfb3112`（`DP-020`、規範）**
+
+WorkerPanic、JoinFailure、StopWakeFailure、EventFlagWakeFailureを別variantへ分ける。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
+
 
 | データ経路 failure | FMQ/shared memory破損 | `UNKNOWN_ERROR` | 対象filter/DVR/AV | frontend backend failureと混同しない |
 | ledger failure | 正本台帳不整合 | `UNKNOWN_ERROR` | 対象資源 | 通常状態に戻さない |
@@ -300,8 +308,10 @@ commit前失敗では、成功戻りを返してはならない。commit後clean
 Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時波及範囲を以下の設計契約として固定する。
 
 
-> **V55 canonical reference** — clauses `DR-0140`; original source lines 264-264 are superseded.
-> - Normative rule reference: `CD-780d0b462c25` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-780d0b462c25`（`DP-021`、規範）**
+
+public Result表を固定する。不存在/foreign ID=INVALID_ARGUMENT、closed local object=INVALID_STATE、capacity/resource absence=UNAVAILABLE、未初期化dependency=NOT_INITIALIZED、内部不整合/破損=UNKNOWN_ERROR。phantom objectや自動quarantineは作らない。
+
 
 - filter ID は HAL 外部へ返す値を demux-local ID のまま維持する。DVR attach/detach、filter データ入力元、AV sync ID 取得では、渡された filter オブジェクト の内部 owner demux を検証し、owner demux が一致しない filter を `INVALID_ARGUMENT` で拒否する。
 - ワーカー は handle 保存先の mutex を確保してから spawn する。保存先を確保できない場合は spawn しない。ワーカー `panic` は `WorkerHandle::join_from_owner()` 経由で診断へ残し、detached ワーカーを作らない。
@@ -309,19 +319,24 @@ Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時�
 
 - 現行仕様で管理対象となる長寿命ワーカーは、`WorkerHandle` が owner id、`JoinHandle`、owner `ConcreteWorkerSignal` を所有し、owner signal の `Mutex<WorkerSignalState> + Condvar` で stop/work generation を wake する。`WorkerExit` は `Normal` / `StopRequested` / `RuntimeFailure` / `PanicOrJoinFailure` を正式名とする。
 
-> **V55 canonical reference** — clauses `DR-0145, DR-0146`; original source lines 270-271 are superseded.
-> - Normative rule reference: `CD-b25dddb0e92b` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-d2a67d36ae9b` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-b25dddb0e92b`（`DP-119`、規範）**
+
+Worker cleanup is event-driven under the Worker termination contract in this document and has no TargetDriverTimingProfile or normative millisecond bound. Cancellation sends all available stop/wake signals once. Already-complete workers are collected immediately. A running worker is owner-generation-revoked and mutation-fenced before one-time transfer to bounded ReaperSupervisor and quarantine; the public caller never blocks on join. Lease consumption continues until actual termination and residual cleanup. Reaper capacity is derived from enforced live-worker ceilings and creates no retry timer jobs. Only typed evidence of unfenced global mutation, exclusive unfenceable global resource, or replacement race permits service-critical escalation; a fully fenced owner-local residual cannot stop unrelated capabilities.
+
+**Canonical rule `CD-d2a67d36ae9b`（`DP-120`、規範）**
+
+Failure propagation is owner×generation×dependency-local by default; a new spawn/callback/request failure must not destroy healthy siblings. A residual worker is service-critical iff, after owner-generation revocation, it can still mutate a service-global registry/backend, holds an exclusive service-global singleton/FD/queue, cannot be fenced by owner/generation/dependency tokens, or would race a new boot for the same resource. If none applies, quarantine is owner×generation×dependency-local and unrelated owners remain available.Escalation to service quarantine requires an explicit predicate witness in the typed diagnostic.
+
 
 - frontend source transition は transactional に扱い、new bind / old unbind / record更新 / stream 境界 reset の途中失敗時には新 binding をrollbackし、rollback不能なら demux を 異常時閉鎖済み にする。
 
-> **V55 canonical reference** — clauses `DR-0148`; original source lines 273-273 are superseded.
-> - Normative rule reference: `CD-23d2e1c35c4f` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 - DVR start は 状態 interval 分だけ Binder thread を sleep しない。状態 interval は コールバック ワーカー の周期だけに使う。
 
-> **V55 canonical reference** — clauses `DR-0150`; original source lines 275-275 are superseded.
-> - Normative rule reference: `CD-538d0251a7a1` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-538d0251a7a1`（`DP-022`、規範）**
+
+Every queue/device/packet read outcome is classified by the Failure scope taxonomy in this document. Nonblocking empty/WouldBlock is `NoData`; EINTR is `Interrupted` and retries without state change; explicit stop/owned EOF is `Closed`. `InfrastructureCorrupt` is limited to FMQ descriptor/control/transaction invariants and quarantines the affected path. A malformed 188-byte TS packet is packet-local drop and typed diagnostic, not infrastructure corruption. TEI is preserved on raw/record output and excluded from semantic assembly. Continuity discontinuity preserves raw/record bytes and resets only PID-local semantic assemblers. Section/PES parse failure drops the semantic unit and restarts at a legal boundary. Permanent owned I/O failure terminates only the affected runtime unless a typed witness proves unfenced global mutation. No Corrupt/Fatal branch is silently mapped to NoData.
+
 
 - px4 close は control FD だけでなく TS reader FD と reader state も解放する。
 - px4 の CNR 取得は optional telemetry であり、`PTX_GET_CNR` 失敗だけで ロック/状態 query を fatal error にしない。
@@ -333,18 +348,24 @@ Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時�
 - `IFilter.setDataSource(source)` の non-null source 経路は 同一demux内のfilter接続グラフ の接続だけを正式対象とする。`linkCaps` は同一 demux 内で開いた source / sink filter の main type 対応可否を表し、別 demux に属する filter を source に指定する経路を capability / VTS profile 対象に含めない。source / sink object の lifetime、generation、kind を先に確認し、その後に owner demux 不一致と自己参照を `INVALID_ARGUMENT` で拒否する。AOSP API 文面上の「another filter」は本製品では同一 demux の filter graph 内の別 filter として扱い、別demux間のfilter接続グラフは作らない。
 - `IFilter.getQueueDesc()` の成否は configure 済みかどうかではなく、open時フィルタ種別が通常FMQを持つかどうかで決める。通常FMQ対象フィルタは未configureでも記述子取得を成功させる。
 
-> **V55 canonical reference** — clauses `DR-0160`; original source lines 285-285 are superseded.
-> - Normative rule reference: `CD-0235ec29ab63` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-0235ec29ab63`（`DP-121`、規範）**
+
+health gate表を固定する。callback sink failure: domain operation継続可・新callback配送停止。diagnostic store failure: domain継続可・fallback counterのみ。backend unavailable: query/close可、mutation=UNAVAILABLE。registry corruption:当該domain mutation=UNKNOWN_ERROR、close/query可。FMQ corruption:当該object start/write不可、flush/close可。
+
 
 - `IDescrambler.addPid()` / `removePid()` の source filter は AOSP意味論では optional であり、`NULL` は demux 入力全体の PID 指定である。NULL 経路は現行AOSP契約上の成功対象として扱い、実装済み対象に含める。
 
-> **V55 canonical reference** — clauses `DR-0162`; original source lines 287-287 are superseded.
-> - Normative rule reference: `CD-6a647f1fda89` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-6a647f1fda89`（`DP-023;DP-033;DP-034;DP-056;DP-057;DP-126`、規範）**
+
+Capability publication is derived from one immutable CapabilitySnapshot selected after device probing. F=successful_frontend_count and L=successful_lnb_count are fixed first. The ordered runtime candidates C8, C4, C2 and C1 are enumerated in the CapabilitySnapshot candidates table in this document with numeric demux/filter/DVR/AV values and exact F/L formulas. For each candidate the service provisionally reserves the complete runtime vector, rolls back the whole vector on any component failure and commits the largest successful candidate exactly once. C1 is mandatory for ITuner publication and contains one audio plus one video AV filter, av_filter_count=2, av_ledger_entries_total=16 and av_reserved_bytes_total=16777216. The committed snapshot is the sole authority for getDemuxCaps(), admission, cleanup accounting and terminal release. VTS is not an unconditional part of C1: the AOSP branch, frontend source, tune parameters/PIDs, enabled flows, Filter/DVR buffer sizes and product memory budget form a pre-start VtsEnvironmentProfile. Until declared, VTS is DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED, no default V1 XML is installed and no VTS-success claim is made. A bound static variant must fit C1 and atomically reserve its exact queue-byte vector before service/VTS startup.
+
 
 - 入力値不正は `INVALID_ARGUMENT`、未対応 capability は `UNAVAILABLE`、オブジェクト state 不整合は `INVALID_STATE`、mutex汚染 や内部整合性崩壊は `UNKNOWN_ERROR` / `HalError::Internal` に写像する。
 
-> **V55 canonical reference** — clauses `DR-0164`; original source lines 289-289 are superseded.
-> - Normative rule reference: `CD-2e715668ecfe` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-2e715668ecfe`（`DP-109`、規範）**
+
+source comment言語規則を`CODE_CONVENTION.md`へ移し、DESIGN_JA.mdから削除する。設計文書にはAPI・状態・資源寿命だけを残す。
+
 
 - AV filter の `start()`、shared backing、MediaEvent、`releaseAvHandle()` の状態別契約は、本書の「表4. AV共有メモリ資源寿命表」を正とする。
 - A/V sync の状態別契約は本書の「A/V sync 方針」と「A/V sync 非採用範囲」を正とする。
@@ -360,8 +381,10 @@ Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時�
 | ライブAV正式経路 | non-passthrough `MediaEvent` + 共有メモリ + `dataId` 経路だけを正式対応とする |
 | AVペイロードとFMQ | AVペイロードは通常FMQへ書き込まない。EventFlag は FMQ対象経路の通知にだけ使う |
 
-> **V55 canonical reference** — clauses `DR-0171`; original source lines 303-303 are superseded.
-> - Normative rule reference: `CD-f2a57e6a5c98` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-f2a57e6a5c98`（`DP-010`、規範）**
+
+`releaseAvHandle()` is classified only by the `releaseAvHandle()` matrix in this document, which covers both shared-arena and event-local-FD `MediaEvent` modes. Negative dataId is `INVALID_ARGUMENT`. `empty handle + 0` is a success no-op. A returned shared handle + 0 releases only the client shared-handle lease; a known duplicate finalization is success no-op, while foreign/mismatched identity is `INVALID_ARGUMENT`. `empty handle + positive dataId` releases a matching active shared or event-local allocation and is success no-op for a known already-released issued ID. An event-local fd-bearing handle + matching positive dataId releases that event-local allocation; fd-bearing + 0 closes only the received event-handle lease when the allocation is retained by another framework reference. Unknown/never-issued/foreign/mismatched tuples are `INVALID_ARGUMENT`. Registry or fstat classification failure is `UNKNOWN_ERROR` with no uncertain free/reassignment. Release remains available after logical close for issued allocation identities; quarantined cleanup is internal only.
+
 
 | AV passthrough | 本製品では恒久的に対応しない。passthrough capability は宣言せず、passthrough要求は configure時 `UNAVAILABLE` とする |
 | 監視イベント配送 | profile / capability 依存とする。非対応 profile では `configureMonitorEvent(0)` は成功、非0マスク値は `UNAVAILABLE`。対応 profile で `monitorEventTypes > 0` を使う場合は非0マスク値も成功し、要求eventを配送する |
@@ -394,8 +417,9 @@ Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時�
 | `tuner_hal/CHANGELOG.md` | 変更履歴、リリース履歴、過去の作業理由 | 現行設計の正本として扱うこと。CHANGELOG にしかない方針で実装を正当化すること |
 
 
-> **V55 canonical reference** — clauses `DR-0191`; original source lines 334-334 are superseded.
-> - Normative rule reference: `CD-d6a10d6f3d8f` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-d6a10d6f3d8f`（`DP-110`、規範）**
+
+曖昧な「表1/表4等」を廃止し、各移動規則にstable anchor IDを付ける。状態契約=STATE-FE-01/STATE-FILTER-01/STATE-DVR-01、Result precedence=RESULT-01、cleanup=LC-01、AV release=AV-01。本文はanchor IDだけを参照する。
 
 
 ### 表0-F. IFrontend scan 状態表
@@ -419,17 +443,25 @@ Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時�
 |---|---|---|
 | F0 | 未設定 | `openFilter()` 後、`configure()` 未完了 |
 
-> **V55 canonical reference** — clauses `DR-0202`; original source lines 356-356 are superseded.
-> - Normative rule reference: `CD-5f092381c515` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-5f092381c515`（`DP-006`、規範）**
+
+Filter normal-FMQ payload, DVR record stream, and TS/MMTP record callback metadata are three distinct planes. TS/MMTP record filters do not expose a normal filter FMQ. Their payload is written only to the attached Record DVR FMQ, while PID/index/byte-number/PTS/start-code metadata is delivered by DemuxFilterTsRecordEvent/DemuxFilterMmtpRecordEvent callbacks. Section, PES and raw TS payload filters may use the normal filter FMQ according to their subtype table.
+
 
 | F2 | FMQ開始済み | FMQ対象フィルタが start 済み |
 | F3 | FMQ停止済み | FMQ対象フィルタが stop 済み |
 
-> **V55 canonical reference** — clauses `DR-0205, DR-0206, DR-0207, DR-0208, DR-0209, DR-0210, DR-0211, DR-0212, DR-0213, DR-0214, DR-0215, DR-0216, DR-0217, DR-0218, DR-0219, DR-0220, DR-0221`; original source lines 359-375 are superseded.
-> - Normative rule reference: `CD-784341f0278c` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-f90c09663c36` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-c0c3b6c7452d` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-23d2e1c35c4f` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-784341f0278c`（`DP-005`、規範）**
+
+payload planeとmonitor mask/event planeを分離し、対応profileでは初回状態と変化eventをcallback配送。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
+
+**Canonical rule `CD-f90c09663c36`（`DP-024`、規範）**
+
+PCR等の実行状態とmonitor mask/event配送状態を別軸にする。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
+
+**Canonical rule `CD-c0c3b6c7452d`（`DP-122`、規範）**
+
+run_state、hint、handle_export、generationを直交型へ分離し、不可能組合せだけ型で禁止。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
 
 
 AV filter の audio/video routing 種別は open subtype を正とする。TsAudio は Audio、TsVideo は Video である。`configureAvStreamType()` は codec / stream type hint を保存する補助APIであり、未実行であっても `setDataSource()`、`start()`、PES/AV routing、MediaEvent 配送の必須条件にはしない。
@@ -440,39 +472,43 @@ AV filter の audio/video routing 種別は open subtype を正とする。TsAud
 |---:|---|---|---|---|---|---|---|
 | F-B-001 | `configure()` FMQ対象設定 | F0 | 成功 | F1 | queue世代を更新し旧一過性状態を消去 | `filter_configure_success` | 未設定からFMQ対象へ進む |
 
-> **V55 canonical reference** — clauses `DR-0225`; original source lines 384-384 are superseded.
-> - Normative rule reference: `CD-2a23a0328beb` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-2a23a0328beb`（`DP-025`、規範）**
+
+queue非公開とcallback event無効を分離する。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
+
 
 | F-B-003 | `configure()` live AV non-passthrough | F0 | 成功 | A0 | AV世代を進め、旧AV資源を全破棄。TsAudio は Audio、TsVideo は Video の routing 種別を open subtype から導出する | `filter_configure_success` | AVはハンドル未公開で開始する。`configureAvStreamType()` 未実行でも routing 種別は存在する |
 | F-B-004 | `configure()` AV passthrough | F0 | `UNAVAILABLE` | F0 | なし | `unsupported_passthrough_configure` を増やす | 本製品では passthrough を恒久非対応とする |
 | F-B-005 | `configure()` MMTP / TLV / ALP / IP CID | F0 | `UNAVAILABLE` | F0 | なし | `unsupported_filter_configure` を増やす | Tuner HAL capability / VTS profile では宣言しない方式を成功扱いにしない |
 | F-B-006 | `configure()` 再設定 | F1, F3 | 成功 | F1 | queue世代を更新し旧データを破棄 | `filter_reconfigure_success` | 開始中でない FMQ対象状態は再設定に関して同値 |
 
-> **V55 canonical reference** — clauses `DR-0230, DR-0231`; original source lines 389-390 are superseded.
-> - Normative rule reference: `CD-ff9722480885` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-ca5c89902839` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-ff9722480885`（`DP-026`、規範）**
+
+Reset semantics use independent filter_delivery_generation and parser_state_generation axes; DVR queues additionally use queue_epoch. configure() success increments filter_delivery_generation and parser_state_generation, resets parser/PCR/startId state, and preserves queue backing/identity, source binding, callback, monitor mask and hints unless the configure contract explicitly changes them. Filter/SharedFilter flush enters FilterProducerDrainGate Draining, rejects new linear permits, wakes the service-owned worker and waits for the finite nonblocking permit set without holding locks needed by release. Permit scope begins only after blocking read/wait/staging and ends after FMQ commit or pending-event enqueue; Binder callbacks and external I/O are outside it. Flush then atomically discards unconsumed FMQ bytes and not-yet-dispatched event entries, preserves dequeued/in-flight callbacks and delivered AV allocations, resets parser state, increments only parser_state_generation and returns Open. Any failure before clear commit leaves pointers, content, pending events and all generations unchanged; poison or impossible partial commit closes/quarantines. DVR flush follows QueueEpochProtocol and advances only queue_epoch after its begin/commit transaction fence drains. stop() preserves queue bytes and identity while discarding partial parser state; source replacement increments both filter and parser generations at one atomic boundary; close fences all axes.
+
+**Canonical rule `CD-ca5c89902839`（`DP-027`、規範）**
+
+current generationから切り離してもretired backingとrelease台帳を保持し、UAF/slot再利用衝突を防ぐ。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
+
 
 | F-B-009 | `configure()` 開始中 | F2, F5, A4, A5, A6, A7 | `INVALID_STATE` | 入力状態を維持 | なし | `configure_while_started` を増やす | 開始中再設定を禁止する |
 | F-B-010 | `start()` FMQ対象 | F1, F3 | 成功 | F2 | FMQ作業スレッドを開始し、停止済みなら再開 | `filter_start_success` | F1 と F3 は start に関して戻り値、副作用、次状態が同一 |
 
-> **V55 canonical reference** — clauses `DR-0234`; original source lines 393-393 are superseded.
-> - Normative rule reference: `CD-784341f0278c` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | F-B-012 | `start()` AV | A0, A1, A2, A3, A8, A9, A10, A11 | 成功 | 実行状態軸だけ開始済みに変更。他軸は維持 | 新規配送可能状態へ進む。ハンドル未公開中はAVペイロードを配送しない | `filter_start_success` | 戻り値、診断、状態軸変換規則、資源寿命が同一。配送可否はハンドル軸から導出する |
 | F-B-013 | `start()` 既に開始済み | F2, F5, A4, A5, A6, A7 | 成功 | 入力状態を維持 | なし | `start_idempotent` を増やす | 重複 start は冪等成功 |
 | F-B-014 | `start()` 未設定 | F0 | `INVALID_STATE` | F0 | なし | `start_invalid_state` を増やす | 未設定では開始対象が存在しない |
 | F-B-015 | `stop()` FMQ対象 | F2 | 成功 | F3 | 新規FMQ書き込みを停止 | `filter_stop_success` | FMQ開始状態を停止状態へ進める |
 
-> **V55 canonical reference** — clauses `DR-0239`; original source lines 398-398 are superseded.
-> - Normative rule reference: `CD-784341f0278c` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | F-B-017 | `stop()` AV | A4, A5, A6, A7 | 成功 | 実行状態軸だけ停止済みに変更。他軸は維持 | 新規AV配送を停止。既存 `dataId` は release / flush / close まで維持 | `filter_stop_success` | 戻り値、診断、状態軸変換規則、資源寿命が同一 |
 | F-B-018 | `stop()` 非開始設定済み状態 | F1, F3, F4, F6, A0, A1, A2, A3, A8, A9, A10, A11 | 成功 | 入力状態を維持 | なし | `stop_idempotent` を増やす | 停止済み相当の状態で stop は冪等成功 |
 | F-B-019 | `stop()` 未設定 | F0 | 成功 | F0 | なし | `stop_idempotent` を増やす | AOSP SDK 契約に合わせ、未開始 filter stop は no-op 成功とする |
 | F-B-020 | `close()` | 全非閉鎖状態 | 表5に従う | 表5に従う | 後片付け開始 | 表5に従う | close の戻り値と後片付け完了判定は表5を正とする |
 
-> **V55 canonical reference** — clauses `DR-0244`; original source lines 403-403 are superseded.
-> - Normative rule reference: `CD-c175c4d6b7f4` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-c175c4d6b7f4`（`DP-029;DP-075;DP-108;DP-154;DP-156`、規範）**
+
+the AV allocation profile in this document and the `releaseAvHandle()` matrix in this document are the sole AV SSOTs. Shared and exact-size event-local transport use one ledger per AV filter generation with a resource-safety ceiling of 8 live entries and 8 MiB. The service reserves snapshot.av_filter_count times that budget during CapabilitySnapshot selection; C1 has two AV filters and therefore reserves 16 entries and 16777216 bytes. Shared slots and event-local descriptors consume the same per-filter ledger. Allocation is allowed only when an entry is free, request_bytes <= 8388608 and the exact allocation fits remaining bytes. Oversize, exhaustion or allocator failure is rejected before callback/dataId publication; only that event is dropped and no live allocation is evicted. avDataId is positive signed-63-bit and never reused. Flush, reconfigure and logical close retain delivered allocations as ReleaseOnly. Active/ReleaseOnly release succeeds once; known finalized IDs are success no-op; unknown, foreign or tuple mismatch is INVALID_ARGUMENT; registry uncertainty is UNKNOWN_ERROR with storage fencing.
 
 
 #### 表1-C. IFilter 補助API状態契約
@@ -482,54 +518,67 @@ AV filter の audio/video routing 種別は open subtype を正とする。TsAud
 | F-C-001 | `getQueueDesc()` | F0 かつ open時フィルタ種別が通常FMQ対象、F1, F2, F3 | 成功 | 入力状態を維持 | 通常FMQ記述子を返す | `queue_desc_success` | `getQueueDesc()` の成否は configure 済みではなく通常FMQ有無で決める |
 | F-C-002 | `getQueueDesc()` | F0 かつ open時フィルタ種別が通常FMQ非対象 | `UNAVAILABLE` | F0 | なし | `queue_desc_unavailable` を増やす | 未configureでも非FMQ対象は記述子を公開しない |
 
-> **V55 canonical reference** — clauses `DR-0248`; original source lines 411-411 are superseded.
-> - Normative rule reference: `CD-a3ed070a2132` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-a3ed070a2132`（`DP-028`、規範）**
+
+The FMQ table is subtype-specific. Section/PES/raw-TS payload filters use the normal filter FMQ. TS/MMTP record filters have no normal filter FMQ: payload goes to Record DVR FMQ and indexing metadata goes to callback events. Audio/Video media filters use AV shared memory plus MediaEvent, not normal FMQ. PCR/monitor/startId and other callback-only events have no payload FMQ. Record DVR owns record FMQ and Playback DVR owns playback FMQ. Valid-but-unsupported subtypes return UNAVAILABLE at openFilter.
+
 
 | F-C-004 | `configureAvStreamType()` 正常入力 | A0, A1, A8, A9 | 成功 | 補助種別軸を設定済みに変更。他軸は維持 | stream type hint を指定値で保存する。TsAudio には Audio、TsVideo には Video だけを許可する | `av_stream_type_configured` | ハンドル未公開の非開始AV状態として同値。routing 種別は open subtype 由来であり、このAPIの有無に依存しない |
 
-> **V55 canonical reference** — clauses `DR-0250`; original source lines 413-413 are superseded.
-> - Normative rule reference: `CD-c175c4d6b7f4` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | F-C-006 | `configureAvStreamType()` 開始中 | A4, A5, A6, A7 | `INVALID_STATE` | 入力状態を維持 | なし | `av_stream_type_while_started` を増やす | 開始中の種別変更は禁止 |
 
-> **V55 canonical reference** — clauses `DR-0252`; original source lines 415-415 are superseded.
-> - Normative rule reference: `CD-f6050e1fda11` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-f6050e1fda11`（`DP-007`、規範）**
+
+IFilter.configureAvStreamType() is valid only for an open audio/video filter. In OpenUnconfigured or ConfiguredStopped state it returns SUCCESS and atomically replaces the AV stream-type hint; repeating the same value is a SUCCESS no-op. In Started state it returns INVALID_STATE and changes no state, source binding, backing, dataId or queue generation. A non-AV filter returns INVALID_ARGUMENT. A logically closed filter returns INVALID_STATE; closed-state precedence applies even when runtime_failed is also true.
+
 
 | F-C-008 | `configureAvStreamType()` 非AV | F1, F2, F3, F4, F5, F6 | `UNAVAILABLE` | 入力状態を維持 | なし | `av_stream_type_unavailable` を増やす | 非AV状態は全て同値 |
 | F-C-009 | `configureAvStreamType()` passthrough要求 | A0, A1, A2, A3, A8, A9, A10, A11 | `UNAVAILABLE` | 入力状態を維持 | なし | `unsupported_passthrough_configure` を増やす | 本製品では passthrough を恒久非対応とする |
 | F-C-010 | `getAvSharedHandle()` 初回 | A0, A1, A4, A5, A8, A9 | 成功 | 共有ハンドル軸だけ公開済みに変更。他軸は維持 | shared backing を生成しハンドルを返す | `av_shared_memory_create` を増やす | 種別軸と実行状態軸を維持し、ハンドル軸だけ変更する |
 
-> **V55 canonical reference** — clauses `DR-0256, DR-0257`; original source lines 419-420 are superseded.
-> - Normative rule reference: `CD-d3650ae4aad6` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-715d65f37498` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-d3650ae4aad6`（`DP-155`、規範）**
+
+handle_exportedとclient_handle_activeを分離しfresh dup再取得遷移を追加。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
+
+**Canonical rule `CD-715d65f37498`（`DP-008`、規範）**
+
+open済みAV filterではconfigure前でも成功。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
+
 
 | F-C-013 | `getAvSharedHandle()` 非AV | F1, F2, F3, F4, F5, F6 | `UNAVAILABLE` | 入力状態を維持 | なし | `av_handle_unavailable` を増やす | 非AV状態は全て同値 |
 
-> **V55 canonical reference** — clauses `DR-0259`; original source lines 422-422 are superseded.
-> - Normative rule reference: `CD-c175c4d6b7f4` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | F-C-020 | `flush()` FMQ対象 | F1, F2, F3 | 成功 | 入力状態を維持 | FMQ未消費データと一過性状態を破棄 | `filter_flush_success` | FMQ対象状態は flush に関して同値 |
 
-> **V55 canonical reference** — clauses `DR-0261`; original source lines 424-424 are superseded.
-> - Normative rule reference: `CD-fc8b02c41794` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-fc8b02c41794`（`DP-030`、規範）**
+
+flush対象からmonitor mask、callback registration、PCR identityを除外して明記する。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
+
 
 | F-C-022 | `flush()` AVハンドル未公開 | A0, A1, A4, A5, A8, A9 | 成功 | 入力状態を維持 | 一過性状態を破棄 | `filter_flush_success` | ハンドル未公開AV状態では共有ハンドル資源を触らない |
 
-> **V55 canonical reference** — clauses `DR-0263`; original source lines 426-426 are superseded.
-> - Normative rule reference: `CD-0a54541fd508` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-0a54541fd508`（`DP-016`、規範）**
+
+pending-undelivered dataとdelivered/in-use slotを分け、後者はreleaseAvHandleまで保持する。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
+
 
 | F-C-024 | `flush()` 未設定 | F0 | `INVALID_STATE` | F0 | なし | `filter_flush_invalid_state` を増やす | 未設定では破棄対象が存在しない |
 
-> **V55 canonical reference** — clauses `DR-0265`; original source lines 428-428 are superseded.
-> - Normative rule reference: `CD-18477953ae56` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-18477953ae56`（`DP-009`、規範）**
+
+maskを0へcommitし監視停止・再設定時初回通知を定義。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
+
 
 | F-C-026 | `configureMonitorEvent(nonzero)` | F0, F1, F2, F3, F4, F5, F6, A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11 | profile 非対応では `UNAVAILABLE`、profile 対応では成功 | 入力状態を維持 | profile 対応では要求 mask を保存し monitor event 配送対象にする | `monitor_event_unavailable` または `monitor_event_configured` を増やす | VTS/profile で `monitorEventTypes > 0` を使う場合は成功と event 配送を必須とする |
 | F-C-027 | `configureIpCid()` | F0, F1, F2, F3, F4, F5, F6, A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11 | `UNAVAILABLE` | 入力状態を維持 | なし | `ip_cid_unavailable` を増やす | IP CID は Tuner HAL の視聴経路 / capability 対象外 |
 | F-C-028 | `setDelayHint()` 正常入力 / non-media filter | F0, F1, F2, F3, F4, F5, F6 | 成功 | 入力状態を維持 | hint 値だけ保存 | `delay_hint_set` | 資源寿命を変えない。media / AV filter は対象外 |
 | F-C-028a | `setDelayHint()` media / AV filter | A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11 | `UNAVAILABLE` | 入力状態を維持 | なし | `delay_hint_media_unavailable` を増やす | `FilterDelayHint` は media filter に非適用であり、成功扱いにしない |
 
-> **V55 canonical reference** — clauses `DR-0270`; original source lines 433-433 are superseded.
-> - Normative rule reference: `CD-da05e7b16091` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-da05e7b16091`（`DP-031`、規範）**
+
+All time hints are signed milliseconds. Negative is INVALID_ARGUMENT; zero disables/resets the hint; every positive value is accepted if conversion to the internal duration is representable. Checked conversion overflow is INVALID_ARGUMENT. No arbitrary ProductProfile maximum is defined; internal counters use saturating arithmetic and never reverse a committed public result.
+
 
 | F-C-030 | `getId()` / `getId64Bit()` | F0, F1, F2, F3, F4, F5, F6, A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11 | 成功 | 入力状態を維持 | IDを返す | なし | 読み取り専用APIで資源寿命を変えない |
 | F-C-031 | `setDataSource()` 成功組み合わせ | 表1-Dで成功と定義した組み合わせ | 成功 | 入力状態を維持 | source 参照を保持 | `set_data_source_success` | 詳細は表1-Dを正とする |
@@ -537,28 +586,26 @@ AV filter の audio/video routing 種別は open subtype を正とする。TsAud
 
 ##### 表1-C-AVH. `releaseAvHandle()` 全域判定表
 
-> **V55 canonical reference** — clauses `DR-0275, DR-0278, DR-0283, DR-0285, DR-0293, DR-0303, DR-0304, DR-0305`; obsolete AVH rows are superseded.
-> - Normative rule references: `CD-cbde311bfcd9`, `CD-c175c4d6b7f4`, `CD-f2a57e6a5c98` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+shared-handle lease、event-local handle lease、個別AV allocationは別の寿命であり、数値fd一致ではなく記録済みbacking/allocation identityで、次の優先順に分類する。
 
-`releaseAvHandle(avMemory, avDataId)` は `tuner_hal2/design/decisions/av_release_state_matrix.csv` を唯一の正本とする。shared-handle lease、event-local handle lease、個別 AV allocation は別の寿命であり、数値 fd 一致ではなく記録済み backing/allocation identity で分類する。
-
-| No | handle kind | registry state | dataId | AIDL戻り値 | 資源変化 |
-|---|---|---|---:|---|---|
-| AVH-001 | any | any | negative | `INVALID_ARGUMENT` | なし |
-| AVH-002 | malformed / unsupported fd shape | any | 0 or positive | `INVALID_ARGUMENT` | なし |
-| AVH-003 | returned shared handle | active client lease | 0 | 成功 | client shared-handle leaseだけを解放。backing/dataIdは維持 |
-| AVH-004 | returned shared handle | known released lease | 0 | 成功扱いの無処理 | 遅延/重複finalizeを吸収 |
-| AVH-005 | returned shared handle | foreign/mismatched | 0 | `INVALID_ARGUMENT` | なし |
-| AVH-006 | empty handle | any | 0 | 成功扱いの無処理 | backing、handle lease、dataIdを変更しない |
-| AVH-007 | empty handle | active shared/event-local allocationまたはReleaseOnly | positive | 成功 | allocation bytes/leaseを一度解放しKnownReleased化 |
-| AVH-008 | empty handle | known issued and released | positive | 成功扱いの無処理 | ID非再利用により遅延/重複releaseを吸収 |
-| AVH-009 | empty handle | never-issued/foreign/wrong tuple | positive | `INVALID_ARGUMENT` | なし |
-| AVH-010 | event-local fd handle | active matching allocation | positive | 成功 | fd handle leaseとallocationを一度解放 |
-| AVH-011 | event-local fd handle | active allocation retained by別framework reference | 0 | 成功 | 受領handle leaseだけ閉じ、allocationはempty+dataIdで後から解放可能 |
-| AVH-012 | event-local fd handle | known terminal component | 0 or positive | 成功扱いの無処理 | 遅延/重複finalizeを吸収 |
-| AVH-013 | event-local fd handle | never-issued/foreign/wrong pair | 0 or positive | `INVALID_ARGUMENT` | なし |
-| AVH-014 | any valid shape | registry/fstat failure | 0 or positive | `UNKNOWN_ERROR` | 不確実な資源を保持・fence |
-| AVH-015 | any | quarantined | 0 or positive | `INVALID_STATE` | internal reaperだけがcleanup |
+| precedence | matrix_id | handle_kind | filter_lifecycle | registry_state | data_id_class | identity_condition | aidl_result | state_after | allocation_effect | notes |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | AVH-001 | ANY | ANY | ANY | NEGATIVE | not evaluated | INVALID_ARGUMENT | UNCHANGED | NONE | negative dataId precedence |
+| 2 | AVH-002 | MALFORMED_OR_UNSUPPORTED_FD_SHAPE | OPEN_OR_LOGICAL_CLOSED | ANY | ZERO_OR_POSITIVE | shape cannot be classified | INVALID_ARGUMENT | UNCHANGED | NONE | do not release by numeric fd equality |
+| 3 | AVH-003 | RETURNED_SHARED_HANDLE | OPEN_OR_LOGICAL_CLOSED | RegistryFailure | ZERO | backing identity cannot be classified | UNKNOWN_ERROR | RegistryFailure | retain/fence uncertain storage | no uncertain free |
+| 4 | AVH-004 | RETURNED_SHARED_HANDLE | OPEN_OR_LOGICAL_CLOSED | ActiveSharedHandleLease | ZERO | fstat + exported payload resolve current shared backing | SUCCESS | SharedHandleLeaseRemoved | release client shared-handle lease only | allocations/backing retained; later getAvSharedHandle may reacquire lease |
+| 5 | AVH-005 | RETURNED_SHARED_HANDLE | OPEN_OR_LOGICAL_CLOSED | KnownReleasedSharedHandleLease | ZERO | same exported backing and lease already released | SUCCESS | UNCHANGED | NONE | idempotent delayed/duplicate finalization |
+| 6 | AVH-006 | RETURNED_SHARED_HANDLE | OPEN_OR_LOGICAL_CLOSED | UnknownOrForeignSharedHandle | ZERO | foreign/mismatched backing identity | INVALID_ARGUMENT | UNCHANGED | NONE | malformed/foreign is not stale-known |
+| 7 | AVH-007 | EMPTY | OPEN_OR_LOGICAL_CLOSED | ANY | ZERO | event finalization with no allocation release | SUCCESS | UNCHANGED | NONE | no-op; never clears backing/lease/allocations |
+| 8 | AVH-008 | EMPTY | OPEN_OR_LOGICAL_CLOSED | ActiveCurrentOrReleaseOnly | POSITIVE | issued range and full allocation tuple identify active allocation | SUCCESS | KnownReleased | free bytes and allocation lease exactly once | works after flush/reconfigure/logical close |
+| 9 | AVH-009 | EMPTY | OPEN_OR_LOGICAL_CLOSED | KnownReleased | POSITIVE | ID is within this filter generation issued range but no active allocation remains | SUCCESS | KnownReleased | NONE | idempotent delayed/duplicate release; ID is never reused |
+| 10 | AVH-010 | EMPTY | OPEN_OR_LOGICAL_CLOSED | UnknownOrForeign | POSITIVE | never issued for this service/filter identity or wrong tuple | INVALID_ARGUMENT | UNCHANGED | NONE | unknown is distinct from known stale |
+| 11 | AVH-011 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | RegistryFailure | ZERO_OR_POSITIVE | event-local fd identity cannot be classified | UNKNOWN_ERROR | RegistryFailure | retain/fence uncertain allocation | no uncertain close/free |
+| 12 | AVH-012 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | ActiveEventLocal | POSITIVE | fstat {st_dev,st_ino,size} and ledger tuple match allocation | SUCCESS | KnownReleased | close event-local handle lease and free allocation once | exact MediaEvent finalize release |
+| 13 | AVH-013 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | ActiveEventLocal | ZERO | allocation retained by outstanding LinearBlock reference | SUCCESS | ActiveEventLocalHandleFinalized | close only received handle lease; allocation remains releasable by empty+dataId | matches finalize when dataId refcount remains nonzero |
+| 14 | AVH-014 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | KnownReleasedOrHandleFinalized | ZERO_OR_POSITIVE | same issued tuple already terminal for requested component | SUCCESS | UNCHANGED | NONE | idempotent delayed finalization |
+| 15 | AVH-015 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | UnknownOrForeign | ZERO_OR_POSITIVE | fd/dataId tuple never issued or mismatched | INVALID_ARGUMENT | UNCHANGED | NONE | foreign pair cannot release another allocation |
+| 16 | AVH-016 | ANY | QUARANTINED | ANY | ZERO_OR_POSITIVE | public ledger not safely classifiable | INVALID_STATE | UNCHANGED | NONE | internal reaper owns quarantine cleanup |
 
 受け入れ条件:
 
@@ -586,9 +633,13 @@ AV filter の audio/video routing 種別は open subtype を正とする。TsAud
 | 8 | 上記に該当しない | 表1-D-3に従う | 表1-D-3に従う | 通常の種別互換判定を行う |
 
 
-> **V55 canonical reference** — clauses `DR-0323`; original source lines 505-505 are superseded.
-> - Normative rule reference: `CD-1a3afe124d5f` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-be1cd667d295` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-1a3afe124d5f`（`DP-011`、規範）**
+
+open済み未configureを有効source/sinkへ含め、全広告pairでVTS SetFilterLinkage同等試験を通す。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
+
+**Canonical rule `CD-be1cd667d295`（`DP-124`、規範）**
+
+TS→TS linkCapsとnon-null `setDataSource()` graphを維持する。open済み未configureのUNDEFINED/TS endpointをVTS用`TsRaw`として接続可能にし、具体subtypeのvalid-but-unsupportedは`UNAVAILABLE`へ写像する。製品利用要件を正本へ記載し、linkCaps撤回案は採用しない。
 
 
 ##### 表1-D-2. `setDataSource()` endpoint分類表
@@ -601,11 +652,6 @@ AV filter の audio/video routing 種別は open subtype を正とする。TsAud
 | TS生データフィルタ | TS raw payload を出す FMQ対象フィルタ | あり | なし | `SourceFilter` 経由で再投入できる唯一の source 種別。下流として成功させるのは TS生データフィルタと record フィルタだけである |
 | AV フィルタ | live audio / video フィルタ | なし | あり | source にはしない。SourceFilter 経由の AV sink としても扱わない |
 
-> **V55 canonical reference** — clauses `DR-0330, DR-0331`; original source lines 516-517 are superseded.
-> - Normative rule reference: `CD-5f092381c515` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-be1cd667d295` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-784341f0278c` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-
 
 ##### 表1-D-3. `setDataSource()` 通常組み合わせ行列
 
@@ -614,22 +660,15 @@ AV filter の audio/video routing 種別は open subtype を正とする。TsAud
 | source \ sink | section フィルタ | PES フィルタ | TS生データフィルタ | AV フィルタ | record フィルタ | ペイロードなしフィルタ |
 |---|---|---|---|---|---|---|
 
-> **V55 canonical reference** — clauses `DR-0334, DR-0335`; original source lines 525-526 are superseded.
-> - Normative rule reference: `CD-be1cd667d295` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-89c7c4a029c5` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-89c7c4a029c5`（`DP-157`、規範）**
+
+Result表を固定する。null/foreign/wrong-demux object=INVALID_ARGUMENT、closed/wrong lifecycle=INVALID_STATE、validだがunsupported subtype/capability=UNAVAILABLE、TPID/tag mismatch=INVALID_ARGUMENT、resource capacity=UNAVAILABLE、internal corruption=UNKNOWN_ERROR。
+
 
 | TS生データフィルタ | `UNAVAILABLE` | `UNAVAILABLE` | 成功 | `UNAVAILABLE` | 成功 | `INVALID_ARGUMENT` |
 
-> **V55 canonical reference** — clauses `DR-0337, DR-0338`; original source lines 528-529 are superseded.
-> - Normative rule reference: `CD-be1cd667d295` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-89c7c4a029c5` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | ペイロードなしフィルタ | `INVALID_ARGUMENT` | `INVALID_ARGUMENT` | `INVALID_ARGUMENT` | `INVALID_ARGUMENT` | `INVALID_ARGUMENT` | `INVALID_ARGUMENT` |
-
-
-> **V55 canonical reference** — clauses `DR-0340`; original source lines 532-532 are superseded.
-> - Normative rule reference: `CD-be1cd667d295` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-89c7c4a029c5` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 
 ##### 表1-D-4. `setDataSource()` 行列セルの副作用
@@ -639,19 +678,8 @@ AV filter の audio/video routing 種別は open subtype を正とする。TsAud
 | demux input 復帰 | 成功 | sink 状態を維持 | AOSP契約に従い既存 source 参照を解除し、sink の入力元を demux input に戻す | `set_data_source_demux_input` | source が `NULL` で、sink が非閉鎖かつ非開始である |
 | 成功 | 成功 | sink 状態を維持 | sink が source 参照を保持する。登録済み source がある場合は新しい source 参照で置換する | `set_data_source_success` | source / sink の組み合わせが表1-D-3の成功セルに一致する |
 
-> **V55 canonical reference** — clauses `DR-0344`; original source lines 540-540 are superseded.
-> - Normative rule reference: `CD-be1cd667d295` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-89c7c4a029c5` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-
-
 
 ### Filter data source の source lifecycle エラー
-
-
-> **V55 canonical reference** — clauses `DR-0345`; original source lines 545-545 are superseded.
-> - Normative rule reference: `CD-be1cd667d295` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-89c7c4a029c5` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-
 
 
 ### 表2. IDvr 状態表
@@ -670,9 +698,6 @@ AV filter の audio/video routing 種別は open subtype を正とする。TsAud
 | D6 | 再生停止済み | playback DVR が stop 済み |
 | D7 | 閉鎖済み | `close()` 後片付け完了済み |
 
-> **V55 canonical reference** — clauses `DR-0356`; original source lines 563-563 are superseded.
-> - Normative rule reference: `CD-23d2e1c35c4f` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-
 
 #### 表2-B. IDvr API別状態契約
 
@@ -685,8 +710,10 @@ AV filter の audio/video routing 種別は open subtype を正とする。TsAud
 | DVR-005 | `configure()` 開始中 | D2, D5 | `INVALID_STATE` | 入力状態を維持 | なし | `dvr_configure_while_started` を増やす | 開始中再設定を禁止 |
 | DVR-006 | `getQueueDesc()` | D1, D2, D3, D4, D5, D6 | 成功 | 入力状態を維持 | DVR FMQ記述子を返す | `dvr_queue_desc_success` | configured DVR は種別に関係なく記述子を持つ |
 
-> **V55 canonical reference** — clauses `DR-0364`; original source lines 575-575 are superseded.
-> - Normative rule reference: `CD-e3aff2aeb4fa` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-e3aff2aeb4fa`（`DP-012`、規範）**
+
+open済みrecord/playback DVRではconfigure前も同一queue descriptorを返す。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
+
 
 | DVR-008 | `start()` record / record filter attach 済み | D1, D3 | 成功 | D2 | 録画作業スレッドを開始 | `dvr_start_success` | record DVR は attached record filter を入力源として録画を開始する |
 | DVR-008a | `start()` record / record filter 未attach | D1, D3 | 成功 | D2 | 録画作業スレッドを開始。filter未attach中は実データ配送なし | `dvr_start_without_record_filter` を増やす | record DVR は filter未attachでも start() 自体を成功させる。後続attachまたはstatus通知でデータ経路を接続する |
@@ -698,33 +725,39 @@ AV filter の audio/video routing 種別は open subtype を正とする。TsAud
 | DVR-014 | `stop()` 設定済み非開始 | D1, D3, D4, D6 | 成功 | 入力状態を維持 | なし | `dvr_stop_idempotent` を増やす | 非開始設定済み状態で stop は冪等成功 |
 | DVR-015 | `stop()` 未設定 | D0R, D0P | 成功 | 入力状態を維持 | なし | `dvr_stop_idempotent` を増やす | AOSP SDK 契約に合わせ、未開始 DVR stop は no-op 成功とする |
 
-> **V55 canonical reference** — clauses `DR-0374`; original source lines 585-585 are superseded.
-> - Normative rule reference: `CD-6484d4ea4ac8` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-6484d4ea4ac8`（`DP-013`、規範）**
+
+record DVRの`flush()`はstarted中`INVALID_STATE`、stopped/configured中は成功とする。playback DVRの`flush()`はstarted中も成功し、未読inputを既存queue上で破棄する。record/playbackを別セルへ分離する。
+
 
 | DVR-017 | `flush()` 未設定 | D0R, D0P | `INVALID_STATE` | 入力状態を維持 | なし | `dvr_flush_invalid_state` を増やす | 未設定DVRでは破棄対象が存在しない |
 
-> **V55 canonical reference** — clauses `DR-0376, DR-0377, DR-0378, DR-0379, DR-0380, DR-0381, DR-0382, DR-0383`; original source lines 587-594 are superseded.
-> - Normative rule reference: `CD-a0871e161a83` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-a0871e161a83`（`DP-014`、規範）**
+
+read/writeをSDK/JNI wrapper契約へ移し、playback readはsource→playback FMQ、record writeはrecord FMQ→destinationとしてbyte countで定義する。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
+
 
 | DVR-024 | `attachFilter()` valid filter | D1, D2, D3 | 成功 | 入力状態を維持 | 未登録なら登録する | `dvr_attach_filter_success` | record DVR だけ filter attach を受ける |
 | DVR-025 | `attachFilter()` 同一filter重複 | D1, D2, D3 | 成功 | 入力状態を維持 | 登録数を増やさない | `dvr_attach_filter_idempotent` を増やす | 重複attachは冪等成功 |
 
-> **V55 canonical reference** — clauses `DR-0386`; original source lines 597-597 are superseded.
-> - Normative rule reference: `CD-744c7a6b8d38` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-744c7a6b8d38`（`DP-125`、規範）**
+
+open済みrecord DVRでconfigure前もattach/detachを許可する。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
+
 
 | DVR-027 | `attachFilter()` playback DVR | D0P, D4, D5, D6 | `UNAVAILABLE` | 入力状態を維持 | なし | `dvr_attach_unavailable` を増やす | attachFilter は record DVR 用操作であり、playback DVRでは未対応APIとして扱う |
 | DVR-028 | `attachFilter()` 不正filter | D1, D2, D3 | `INVALID_ARGUMENT` | 入力状態を維持 | なし | `dvr_attach_invalid_filter` を増やす | 閉鎖済み、別demux、録画非対応filterを attach しない |
 | DVR-029 | `detachFilter()` 登録済みfilter | D1, D2, D3 | 成功 | 入力状態を維持 | 登録を解除する | `dvr_detach_filter_success` | record DVR だけ filter detach を受ける |
 | DVR-030 | `detachFilter()` 未登録filter | D1, D2, D3 | 成功 | 入力状態を維持 | なし | `dvr_detach_filter_idempotent` を増やす | 未登録 detach は冪等成功 |
 
-> **V55 canonical reference** — clauses `DR-0391`; original source lines 602-602 are superseded.
-> - Normative rule reference: `CD-744c7a6b8d38` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | DVR-032 | `detachFilter()` playback DVR | D0P, D4, D5, D6 | `UNAVAILABLE` | 入力状態を維持 | なし | `dvr_detach_unavailable` を増やす | detachFilter は record DVR 用操作であり、playback DVRでは未対応APIとして扱う |
 | DVR-033 | `setStatusCheckIntervalHint()` 正常入力 | D0R, D0P, D1, D2, D3, D4, D5, D6 | 成功 | 入力状態を維持 | hint 値だけ保存 | `dvr_status_hint_set` | 資源寿命を変えない |
 
-> **V55 canonical reference** — clauses `DR-0394`; original source lines 605-605 are superseded.
-> - Normative rule reference: `CD-93c614a55615` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-93c614a55615`（`DP-032`、規範）**
+
+size/count/offset入力は負値=INVALID_ARGUMENT。0はAPIごとの明示意味に限定し、bufferSize=0とread/write size=0はINVALID_ARGUMENT、offset=0は有効、status interval=0は既定値復帰。size+offset overflowまたはusize変換不能=INVALID_ARGUMENT、allocation不能=OUT_OF_MEMORY。
+
 
 | DVR-035 | `close()` | 全非閉鎖状態 | 表5に従う | 表5に従う | 後片付け開始 | 表5に従う | close の戻り値と後片付け完了判定は表5を正とする |
 | DVR-036 | 閉鎖後の公開API | D7, D8 | `INVALID_STATE` | 入力状態を維持 | なし | `dvr_closed_access` を増やす | 閉鎖後は `close()` 以外の公開APIを成功させない |
@@ -739,15 +772,11 @@ configure 非受理後は IFilter 状態が F0 のままである。その後に
 | DP-002 | PES | 受理 | 宣言する | 成功 | 表1の FMQ対象状態に従う | 通常FMQ | 字幕、音声補助、検査用途に必要 |
 | DP-003 | TS生データ | 受理 | 宣言する | 成功 | 表1の FMQ対象状態に従う | 通常FMQ | lab / raw TS 検査用 |
 
-> **V55 canonical reference** — clauses `DR-0402`; original source lines 618-618 are superseded.
-> - Normative rule reference: `CD-5f092381c515` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | DP-005 | live AV audio/video non-passthrough | 受理 | AV filter と共有メモリ経路を宣言する。通常FMQからのAVペイロード読み出しを VTS profile に入れない | 成功 | 表1の AV状態に従う | `MediaEvent` + 共有メモリ + `dataId` | 本製品のライブAV正式経路 |
 | DP-006 | AV passthrough | 恒久非対応 | 宣言しない | `UNAVAILABLE` | 状態は未設定のまま。後続APIは F0 に従う | なし | 本製品では対応しない |
 | DP-007 | PCR / AV同期用情報 | 内部状態として受理 | payload queue として宣言しない | 成功 | 表1のペイロードなし状態に従う | ペイロードなし。AV同期内部状態へ反映 | PCRを通常FMQへ出さない |
 
-> **V55 canonical reference** — clauses `DR-0406`; original source lines 622-622 are superseded.
-> - Normative rule reference: `CD-784341f0278c` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | DP-009 | MMTP / TLV / ALP | Tuner HAL capability / VTS profile 対象外 | 宣言しない | `UNAVAILABLE` | 状態は未設定のまま。後続APIは F0 に従う | なし | 製品全体の入力方式スコープは `開発規則.md` を正とし、本書では Tuner HAL の返却値だけを固定する |
 | DP-010 | IP CID | Tuner HAL capability / VTS profile 対象外 | 宣言しない | `configureIpCid()` は `UNAVAILABLE` | 入力状態を維持 | なし | IP filter を Tuner HAL の視聴経路に含めない |
@@ -756,33 +785,15 @@ configure 非受理後は IFilter 状態が F0 のままである。その後に
 #### raw section / raw PES event 生成契約
 
 
-> **V55 canonical reference** — clauses `DR-0409`; original source lines 629-629 are superseded.
-> - Normative rule reference: `CD-d4d379f3a2ab` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-d4d379f3a2ab`（`DP-015`、規範）**
 
-
-
-> **V55 canonical reference** — clauses `DR-0410`; original source lines 631-631 are superseded.
-> - Normative rule reference: `CD-d4d379f3a2ab` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+Section/PES processing has two independent planes. Envelope extraction proves a complete bounded block without reading outside the TS/PES/section length; semantic validation proves metadata fields are meaningful. For a raw filter, an envelope-extractable block is enqueued byte-for-byte even when semantic validation fails; no Section/Pes semantic event is emitted and a typed malformed diagnostic is recorded. For a non-raw filter, both byte delivery and semantic event require semantic validation. If the envelope is incomplete, length-impossible, over configured bound, or cannot be delimited, neither plane delivers data. No path fabricates tableId, version, streamId, PTS/DTS or dataLength metadata. Raw byte delivery and semantic event delivery have separate counters and acceptance tests.
 
 
 ### raw section / raw PES event の metadata
 
 
-> **V55 canonical reference** — clauses `DR-0411`; original source lines 635-635 are superseded.
-> - Normative rule reference: `CD-d4d379f3a2ab` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-
-
-
-> **V55 canonical reference** — clauses `DR-0412`; original source lines 637-637 are superseded.
-> - Normative rule reference: `CD-d4d379f3a2ab` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-
-
-
 ### 表4. AV共有メモリ資源寿命表
-
-
-> **V55 canonical reference** — clauses `DR-0413`; original source lines 642-642 are superseded.
-> - Normative rule reference: `CD-f2a57e6a5c98` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 
 #### 表4-A. AV共有メモリ容量固定表
@@ -792,13 +803,9 @@ AV共有メモリの slot size は filter `bufferSize` から算出してはな�
 | 項目 | 固定内容 |
 |---|---|
 
-> **V55 canonical reference** — clauses `DR-0416, DR-0417`; original source lines 650-651 are superseded.
-> - Normative rule reference: `CD-6a647f1fda89` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | `bufferSize` との関係 | filter `bufferSize` を AV slot size に流用しない |
 
-> **V55 canonical reference** — clauses `DR-0419`; original source lines 653-653 are superseded.
-> - Normative rule reference: `CD-6a647f1fda89` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | MediaEvent 発行条件 | payload が slot に収まり、共有ハンドル公開済み、client release未済みで、有効な `dataId` を発行できる場合だけ発行する |
 | VTS/profile 条件 | AVペイロードの通常FMQ読み出しを前提にしない |
@@ -809,28 +816,18 @@ AV共有メモリの slot size は filter `bufferSize` から算出してはな�
 |---:|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | AVM-001 | `configure(AV)` | F0 | 成功 | 未生成 | 未公開 | なし | 未発行 | `configureAvStreamType()` hint を消去し、routing 種別を open subtype から導出 | `av_generation` を進める | 不可 | A0 | configure 境界で旧AV資源が残らないこと。TsAudio/TsVideo は hint 未設定でも routing 可能であること | AV初期状態を一意にする |
 
-> **V55 canonical reference** — clauses `DR-0424, DR-0425, DR-0426`; original source lines 662-664 are superseded.
-> - Normative rule reference: `CD-f6050e1fda11` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-0a54541fd508` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-715d65f37498` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | AVM-005 | `getAvSharedHandle()` 再取得 | A2, A3, A6, A7, A10, A11 | 成功 | 維持 | 公開済み | 維持 | 維持 | client release済みなら未済みに戻す | `av_shared_handle_reuse` を増やす | 開始済み状態だけ可 | 入力状態を維持 | 再取得で既存資源を維持し、client release 後の配送を再開可能にすること | 再取得は配送再開の合図として扱う |
 
-> **V55 canonical reference** — clauses `DR-0428, DR-0429`; original source lines 666-667 are superseded.
-> - Normative rule reference: `CD-6a647f1fda89` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | AVM-008 | AV payload 到着 | A6, A7 + client release未済み | 公開APIなし | 維持 | 公開済み | 割当 | 発行 | MediaEvent 生成 | `av_delivered` を増やす | 可 | 入力状態を維持 | `dataId` と共有メモリ領域が対応すること | ハンドル公開済み開始済みかつ client release未済み状態は同値 |
 | AVM-008B | AV payload 到着 | A6, A7 + client release済み | 公開APIなし | 維持 | 公開済み | 作らない | 発行しない | drop状態更新 | `av_shared_handle_client_released_drop` を増やす | 不可 | 入力状態を維持 | 利用者側使用終了後に MediaEvent を出さないこと | 再取得されるまで配送しない |
 
-> **V55 canonical reference** — clauses `DR-0432`; original source lines 670-670 are superseded.
-> - Normative rule reference: `CD-f2a57e6a5c98` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | AVM-010 | `releaseAvHandle(active dataId)` | A2, A3, A6, A7, A10, A11 | 成功 | 維持 | shared/event-local modeに従う | 指定領域だけ破棄 | 指定`dataId`をKnownReleased化 | なし | `av_data_id_release` を増やす | logical close後もrelease ledger経由で可 | 入力状態を維持 | 指定allocationだけが一度解放されること | modeとfilter stateを直交させる |
 | AVM-011 | `releaseAvHandle(known released dataId)` | A2, A3, A6, A7, A10, A11 | 成功扱いの無処理 | 維持 | modeに従う | 維持 | KnownReleasedを維持 | なし | `av_data_id_stale_release` を増やす | 入力状態に従う | 入力状態を維持 | 既知stale releaseが状態を壊さないこと | AOSP framework/JNIの遅延finalizeを吸収 |
 | AVM-012 | `flush()` | A0, A1, A4, A5, A8, A9 | 成功 | 未生成 | 未公開 | なし | 未発行 | 消去 | 累積値維持 | 入力状態に従う | 入力状態を維持 | ハンドル未取得で flush が失敗しないこと | ハンドル未公開AV状態は同値 |
 
-> **V55 canonical reference** — clauses `DR-0436`; original source lines 674-674 are superseded.
-> - Normative rule reference: `CD-0a54541fd508` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | AVM-014 | `stop()` | A4, A5, A6, A7 | 成功 | 維持 | 入力状態のハンドル軸に従う | 維持 | 維持 | なし | `av_stop` を増やす | 不可 | 実行状態軸だけ停止済みに変更。他軸は維持 | 停止しても既存`dataId`は release / flush / close まで維持 | 戻り値、診断、状態軸変換規則、資源寿命が同一 |
 | AVM-015 | `close()` | 全AV状態 | 表5に従う | 解放 | 無効化 | 全破棄 | 全無効化 | 消去 | close診断へ反映 | 不可 | 表5に従う | close後にAV資源が残らないこと | close は表5を正とする |
@@ -846,8 +843,6 @@ AV共有メモリの slot size は filter `bufferSize` から算出してはな�
 |---|---|---|
 | fd付き handle + `avDataId == 0` | 成功 | client側 shared AV handle 使用終了通知 |
 
-> **V55 canonical reference** — clauses `DR-0443`; original source lines 688-688 are superseded.
-> - Normative rule reference: `CD-f2a57e6a5c98` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | empty handle + active `avDataId > 0` | 成功 | MediaEvent slot release |
 | empty handle + known released `avDataId > 0` | 成功扱いの無処理 | 遅延/重複finalize吸収。never-issuedは`INVALID_ARGUMENT` |
@@ -856,8 +851,9 @@ AV共有メモリの slot size は filter `bufferSize` から算出してはな�
 | 任意handle + `avDataId < 0` | `INVALID_ARGUMENT` | 不正dataId |
 
 
-> **V55 canonical reference** — clauses `DR-0449`; original source lines 695-695 are superseded.
-> - Normative rule reference: `CD-14dbc0361d74` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-14dbc0361d74`（`DP-035`、規範）**
+
+Backing identity validation precedes the release-state lookup in the `releaseAvHandle()` matrix in this document. A duplicated fd is accepted when the complete backing tuple matches; fd number is never identity. A generation mismatch with a known unreleased delivered token classifies as ReleaseOnly, not INVALID_STATE. Tuple mismatch or foreign handle classifies as UnknownOrForeign/INVALID_ARGUMENT. Internal fstat/registry failure returns UNKNOWN_ERROR and quarantines the affected registry without freeing uncertain memory.
 
 
 fd付きhandle + `avDataId == 0` の成功は、shared backing、公開済みhandle、既存slot、active `avDataId` を破棄することを意味しない。以後のAV payload配送を継続するには、client release済み状態を解除するために `getAvSharedHandle()` 再取得を必要としてよい。
@@ -869,23 +865,17 @@ fd付きhandle + `avDataId == 0` の成功は、shared backing、公開済みhan
 |---:|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | CL-001 | Filter / DVR | 公開`close()`開始 | 公開API遮断開始 | 公開API遮断 | true | false | 後続手順結果で決定 | 該当なし | 後片付け未完の間は再試行対象 | `close()`以外は`INVALID_STATE` | close開始 | `close()`開始直後から他APIが成功しないこと | 閉鎖ゲートと後片付け完了を分離 |
 
-> **V55 canonical reference** — clauses `DR-0453, DR-0454, DR-0455`; original source lines 705-707 are superseded.
-> - Normative rule reference: `CD-b25dddb0e92b` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-607c3aafef57` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-23d2e1c35c4f` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-607c3aafef57`（`DP-127`、規範）**
+
+Drop/owner-lossで非blocking cleanupを起動し、blocking joinはreaperへ委譲する。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
+
 
 | CL-005 | Filter / DVR | 公開`close()` | 未生成資源の解放 | 安全な無処理成功 | true | 既存値を維持 | 成功扱い | 該当なし | 不要 | `close()`以外は`INVALID_STATE` | 安全な無処理成功手順 | 未生成資源の解放が`close()`失敗にならないこと | lazy allocation と整合 |
 
-> **V55 canonical reference** — clauses `DR-0457`; original source lines 709-709 are superseded.
-> - Normative rule reference: `CD-607c3aafef57` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-23d2e1c35c4f` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | CL-007 | Filter / DVR | 公開`close()`全手順成功 | 完了確定 | 完了確定 | true | true | 成功 | Dropで何もしない | 不要 | `close()`以外は`INVALID_STATE`。二重`close()`は CL-009 に従う | close成功 | cleanup_complete が true になること | 完全閉鎖 |
 | CL-008 | Filter / DVR | 公開`close()`致命的手順失敗 | 未完確定 | 異常時閉鎖 | true | false | `UNKNOWN_ERROR` | Dropでは通常後片付けを再試行しない。DropLeakTxnへ未完診断を記録 | 失敗手順が残る間 | `close()`以外は`INVALID_STATE`。二重`close()`は CL-010 に従う | `failed_step`, `error_kind`, `remaining_steps` | 失敗が成功扱いにならないこと | fail-closed |
 
-> **V55 canonical reference** — clauses `DR-0460`; original source lines 712-712 are superseded.
-> - Normative rule reference: `CD-23d2e1c35c4f` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-607c3aafef57` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | CL-010 | Filter / DVR | 二重`close()` | 後片付け未完 | 再試行 | true | false | 再試行結果に従う | Dropでは通常後片付けを再試行しない。DropLeakTxnへ未完診断を記録 | 失敗手順が残る間 | `close()`以外は`INVALID_STATE` | `close_retry` | 未完cleanupを成功扱いで隠さないこと | cleanup_complete を正にする |
 
@@ -895,29 +885,14 @@ fd付きhandle + `avDataId == 0` の成功は、shared backing、公開済みhan
 #### 表5-A. close開始遮断 実装所有表
 
 
-> **V55 canonical reference** — clauses `DR-0462`; original source lines 718-718 are superseded.
-> - Normative rule reference: `CD-73adc4b61306` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-23d2e1c35c4f` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-
-
 | Resource | close開始時の状態 | close中に許可する操作 | close中に拒否する操作 | cleanup失敗時状態 | 再試行条件 |
 |---|---|---|---|---|---|
 
-> **V55 canonical reference** — clauses `DR-0464, DR-0465, DR-0466`; original source lines 722-724 are superseded.
-> - Normative rule reference: `CD-23d2e1c35c4f` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-a0871e161a83` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | Frontend | `closing=true`, `cleanup_complete=false` | `close()` の再試行、所有者喪失 cleanup | `tune/scan/stopTune/stopScan/setCallback/linkLnb` | `cleanup_failed` または failed | `close()` または 所有者喪失 経路で再試行 |
 
-> **V55 canonical reference** — clauses `DR-0468`; original source lines 726-726 are superseded.
-> - Normative rule reference: `CD-23d2e1c35c4f` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | Descrambler | `closing=true`, `cleanup_complete=false` | `close()` の再試行 | `setDemuxSource/setKeyToken/addPid/removePid` | `cleanup_failed` | `close()` 再試行可 |
-
-
-> **V55 canonical reference** — clauses `DR-0470`; original source lines 729-729 are superseded.
-> - Normative rule reference: `CD-607c3aafef57` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-
 
 
 ### 表6. FMQ / EventFlag / 接続層失敗写像表
@@ -925,36 +900,46 @@ fd付きhandle + `avDataId == 0` の成功は、shared backing、公開済みhan
 | No | 発生箇所 | 発生文脈 | 失敗条件 | 失敗分類 | 対象 | AIDL戻り値 | 作業スレッド挙動 | 一過性状態 | 累積カウンタ | あふれ通知 | 異常時閉鎖条件 | 再試行可否 | ペイロード扱い | 設計上の成立条件 | 固定根拠 |
 |---:|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 
-> **V55 canonical reference** — clauses `DR-0472`; original source lines 736-736 are superseded.
-> - Normative rule reference: `CD-18392effc3b5` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-18392effc3b5`（`DP-036`、規範）**
+
+Typed error mapping is: InvalidInput/Range/ForeignObject=INVALID_ARGUMENT; WrongLifecycle/Closed/AlreadyActive=INVALID_STATE; MissingResource/Busy/Capacity/UnsupportedValidInput=UNAVAILABLE; DependencyNotInitialized=NOT_INITIALIZED; AllocatorFailure=OUT_OF_MEMORY; Io/Permission/Corruption/InvariantViolation=UNKNOWN_ERROR. This table applies only where the interface-specific method contract does not override it. In particular, repeated `IFrontend.close()`/`ILnb.close()` use DP-003 SUCCESS semantics, while DVR/Filter repeated close use DP-003 INVALID_STATE semantics.
+
 
 | FMQ-002 | 記述子公開 | 公開API | ファイル記述子複製失敗 | 記述子生成失敗 | Filter / DVR | `UNKNOWN_ERROR` | 該当なし | なし | `descriptor_fd_error` を増やす | なし | なし | 可 | ペイロード未公開 | ファイル記述子複製失敗後に再取得を試せること | 一時失敗扱い |
 
-> **V55 canonical reference** — clauses `DR-0474`; original source lines 738-738 are superseded.
-> - Normative rule reference: `CD-61d48d942c35` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-61d48d942c35`（`DP-037`、規範）**
+
+Object lifecycle has independent public_closed and runtime_failed axes; cleanup_pending is a third internal axis. Normal (false,false) permits the interface methods. runtime_failed only permits diagnostics/snapshot and close; mutating or data methods return UNKNOWN_ERROR without mutation. public_closed permits only the interface-specific idempotent close contract; all other methods return INVALID_STATE. When both axes are true, public_closed has precedence for non-close methods and close remains interface-specific. Closing the public surface does not falsely claim cleanup completion; cleanup_pending may continue under the service cleanup supervisor.
+
 
 | FMQ-003A | FMQ生成 | 内部初期化 | AidlMessageQueue が無効、EventFlag word取得失敗、EventFlag生成失敗 | FMQ生成失敗 | Filter / DVR | `UNKNOWN_ERROR` | 該当なし | 作成失敗 | `fmq_create_error` を増やす | なし | 公開前なので対象なし | 再試行可 | 記述子未公開 | 無効queueをRust側に返さないこと | native薄層は create 成功条件として `isValid()` と EventFlag生成成功を確認する |
 
-> **V55 canonical reference** — clauses `DR-0476, DR-0477, DR-0478, DR-0479, DR-0480, DR-0481, DR-0482`; original source lines 740-746 are superseded.
-> - Normative rule reference: `CD-5f092381c515` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-3ccd79b1315f` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-c126cb6caa91` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-a3b8c049b896` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-a0871e161a83` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-3ccd79b1315f`（`DP-128`、規範）**
+
+queue commit後のEventFlag wake失敗はpost-commit diagnostic。committed dataはqueueに保持しrollbackしない。producerを停止し、flushは破棄、closeは破棄、再wake成功後はdrain再開を許可する。public commit済みoperation結果は反転しない。
+
+**Canonical rule `CD-a3b8c049b896`（`DP-039`、規範）**
+
+QueueFull/Backpressureは非破損としてpublic methodではUNAVAILABLE、running worker内ではstatus/counterだけ更新する。DescriptorMismatch/PointerCorruption/ImpossibleRegionはUNKNOWN_ERRORとし当該queueだけquarantine。service全体は閉鎖しない。
+
 
 | FMQ-011 | EventFlag wait timeout | 作業スレッド | 待機timeout | 通常待機timeout | Filter / DVR | 公開APIなし | 継続 | なし | 増やさない | なし | なし | 可 | なし | timeoutが異常診断を汚さないこと | 採用済み方針 |
 
-> **V55 canonical reference** — clauses `DR-0484, DR-0485`; original source lines 748-749 are superseded.
-> - Normative rule reference: `CD-b5b5ff3e8a44` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-7c3b864016b3` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-b5b5ff3e8a44`（`DP-140`、規範）**
+
+wait outcomeをtimeout/retryable interruption/fatal corruptionへ型分けする。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
+
+**Canonical rule `CD-7c3b864016b3`（`DP-141`、規範）**
+
+capacity/oversize/allocation/corruptionを別variantとfailure scopeへ分ける。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
+
 
 | FMQ-014 | AV共有メモリ破損 | 作業スレッド | backing破損、offset範囲外、領域管理不整合 | 致命的AV資源破損 | live AV | 公開APIなし | 作業スレッド致命停止 | 致命的状態 | `av_shared_memory_internal_error` を増やす | なし | 1回で異常時閉鎖済み | 不可 | 対象AVペイロード破棄 | 不正offsetをMediaEventで出さないこと | 安全性優先 |
 
 
-> **V55 canonical reference** — clauses `DR-0487`; original source lines 752-752 are superseded.
-> - Normative rule reference: `CD-0a54541fd508` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-5c05f634918b` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-5c05f634918b`（`DP-130`、規範）**
 
+Common transaction framework requires all fallible prepare work before an operation-specific linearization point. Replacement tune is an explicit exception with two domain commits defined only by DP-134: Commit A terminalizes old stream state before the fallible new backend submit; Commit B activates the new generation after submit succeeds. DP-130 must not collapse or reorder these commits and non-tune operations do not inherit tune boundary reset semantics.
 
 
 #### checked FMQ shim 入力契約
@@ -968,12 +953,17 @@ fd付きhandle + `avDataId == 0` の成功は、shared backing、公開済みhan
 |---|---|---|---|---|---|
 | FMQ descriptor export | grantor / fd / ints / flags の検証 | descriptor を AIDL へ返す直前 | fd duplicate 失敗、grantor配置不整合 | transient export failure は Err 後も再取得可。structural failure は runtime failed | 表6 FMQ-001〜003 に従う |
 
-> **V55 canonical reference** — clauses `DR-0491, DR-0492, DR-0493, DR-0494`; original source lines 765-768 are superseded.
-> - Normative rule reference: `CD-3ccd79b1315f` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-b6feea518693` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-31def4318a93` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-286d4d848914` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-b6feea518693`（`DP-040;DP-042`、規範）**
 
+CleanupPending is owner-local, dependency-typed and event-driven under the Worker termination contract in this document; it contains no normative millisecond schedule. The initiating operation attempts every immediately available cleanup step once. Completed dependencies release their leases. Retryable incomplete non-running dependencies remain CleanupPending and resume only on repeated close, owner-death supervision, dependency-completion notification or service reset, coalesced by owner/generation/dependency. A still-running worker is generation-revoked and fenced before one-time transfer to the bounded ReaperSupervisor and immediate quarantine; the public caller never waits on join. Leases remain consumed until actual termination and residual cleanup. Transfer/fencing failure or typed unfenced-global-mutation witness is service-critical; a fully fenced owner-local residual cannot stop unrelated ITuner capabilities. Public results preserve primary operation precedence and typed aggregate cleanup evidence.
+
+**Canonical rule `CD-31def4318a93`（`DP-129`、規範）**
+
+FMQ bytesをowned stagingへcopy後、commitReadしてFMQ_CONSUMEDへ遷移する。backend inject成功時DEMUX_INJECTED。inject失敗はstagingからretryし、stop/close時残存はexplicit loss diagnostic。
+
+**Canonical rule `CD-286d4d848914`（`DP-041`、規範）**
+
+EINTR is retried while stop/cancel is not set and the existing operation deadline has not expired. There is no retry-count parameter. Cancellation returns the typed Cancelled outcome; deadline expiry returns Timeout; fatal wait errors retain errno in diagnostics and map through the method result table.
 
 
 checked FMQ shim は、`queue == null` または `out_written == null` を `INVALID_ARGUMENT` とする。`size == 0` は `data == null` でも成功扱いの無処理 とする。`size > 0 && data == null` は `INVALID_ARGUMENT` とする。この契約は FMQ 実体の read/write 契約より前に適用する。
@@ -985,30 +975,28 @@ checked FMQ shim は、`queue == null` または `out_written == null` を `INVA
 | No | 操作 / 事象 | 変更順序 | 成功の確定点 | 確定点前の失敗 | 巻き戻し不能時の対象 | 公開戻り値 / 作業スレッド終了 | 設計上の成立条件 |
 |---:|---|---|---|---|---|---|---|
 
-> **V55 canonical reference** — clauses `DR-0498, DR-0499, DR-0500, DR-0501, DR-0502, DR-0503, DR-0504, DR-0505, DR-0506, DR-0507`; original source lines 779-788 are superseded.
-> - Normative rule reference: `CD-26c7896fa081` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-756d4401c071` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-100ea74f7c46` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-ee4cbaef9d3a` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-0a54541fd508` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-5c05f634918b` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-3ccd79b1315f` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-31def4318a93` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-b6feea518693` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-a698e84336b0` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-26c7896fa081`（`DP-134`、規範）**
+
+Replacement tune has two explicitly distinct linearization points. Phase A: validate and dormant-prepare; acquire frontend transaction lock; stop old backend; quiesce old worker. Commit A (old-generation terminalization commit) atomically marks the old generation terminal and resets bound demux/assembler boundary state. Then submit the new backend tune. On submit success, Commit B (new-generation activation commit) publishes the new generation and activates the prepared worker. On submit failure, release prepared state and remain Untuned/Failed; never restore the old tune. Commit A and Commit B must not be described as one commit, and boundary reset must occur in Commit A before backend submit.
+
+**Canonical rule `CD-756d4401c071`（`DP-142`、規範）**
+
+pre-commit callback registration/delivery failureはbackendを停止しgenerationをTerminalFailedへ遷移、以後callbackを抑止、bound demux boundaryをresetしpublic operationはUNKNOWN_ERROR。post-commit callback delivery failureはdomain状態を維持しpublic結果を反転せずdiagnostic/fallback accountingへ記録。
+
+**Canonical rule `CD-100ea74f7c46`（`DP-160`、規範）**
+
+Store terminal_reason and end_delivery_outcome as orthogonal fields. terminal_reason is one of Completed, Cancelled, FailedBackend, FailedPanic and is never overwritten by END delivery. end_delivery_outcome is Delivered, CallbackMissing, StoreFailure or BinderFailure. Backend stop and generation terminalization occur exactly once; delivery failure is secondary diagnostic/accounting only.
+
+**Canonical rule `CD-ee4cbaef9d3a`（`DP-131`、規範）**
+
+callback healthを独立軸にし、callback依存operationだけへ波及を限定する。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
+
+**Canonical rule `CD-a698e84336b0`（`DP-143`、規範）**
+
+`addPid/removePid`はbackend packet routeをprepareし、成功後にPID claim ledgerをcommitする。backendがprepare APIを持たない場合はidempotent applyと補償rollbackを同一transaction内で完了し、rollback失敗時だけdescramblerをquarantineする。
+
 
 | AT-011 | `ILnb.setVoltage()` / `setTone()` / `setSatellitePosition()` | `operation_lock`取得 → 旧状態取得 → 新状態候補作成 → backend反映 → registry確定 | backend反映と registry確定が両方成功した時点 | backend反映失敗では registry を変更しない。registry確定失敗時に backend rollback apply は行わない | LNB、関連 satellite frontend | `UNKNOWN_ERROR`、LNBは失敗状態。以後の公開制御APIも `UNKNOWN_ERROR` | registryとbackendの二重巻き戻し失敗を作らない |
-
-> **V55 canonical reference** — clauses `DR-0509, DR-0510, DR-0511`; original source lines 790-792 are superseded.
-> - Normative rule reference: `CD-607c3aafef57` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-b25dddb0e92b` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-ee4cbaef9d3a` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-
-
-
-> **V55 canonical reference** — clauses `DR-0512`; original source lines 794-794 are superseded.
-> - Normative rule reference: `CD-ee4cbaef9d3a` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-de1ca7f6a3b9` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 
 ### 表8. 資源寿命・所有権・破棄失敗表
@@ -1018,32 +1006,25 @@ checked FMQ shim は、`queue == null` または `out_written == null` を `INVA
 | No | 資源 | 所有者 | 作成 / 取得 | 通常破棄 | 異常時破棄契機 | 破棄失敗時 | 設計上の成立条件 |
 |---:|---|---|---|---|---|---|---|
 
-> **V55 canonical reference** — clauses `DR-0515`; original source lines 802-802 are superseded.
-> - Normative rule reference: `CD-d2a67d36ae9b` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | RL-002 | scan / tune generation | `FrontendHal` | `tune()` / `scan()` | stopTune / stopScan / close / 次generation | コールバック失敗、ワーカー異常 | 古いgenerationの通知を捨て、現generationを失敗状態にする | 古いワーカーが新状態を上書きしない |
 | RL-003 | demux generation | `DemuxHal` | demux open / stream boundary reset | demux close | frontend tune boundary、demux fail-closed | demuxを閉鎖側失敗。診断に失敗対象を残す | closed demux向けの後続配送が残らない |
 
-> **V55 canonical reference** — clauses `DR-0518, DR-0519, DR-0520, DR-0521`; original source lines 805-808 are superseded.
-> - Normative rule reference: `CD-ad630d6e167a` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-a0871e161a83` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-b25dddb0e92b` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-607c3aafef57` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-d2a67d36ae9b` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-ee4cbaef9d3a` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-ad630d6e167a`（`DP-018`、規範）**
+
+open時生成・close時破棄へ統一し、flushは内容clear、configureはsettings更新に限定する。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
 
 
+**Canonical rule `CD-f45e7fb8ca5c`（`DP-144;DP-146`、規範）**
 
-> **V55 canonical reference** — clauses `DR-0522, DR-0523, DR-0524, DR-0525`; original source lines 810-813 are superseded.
-> - Normative rule reference: `CD-ee4cbaef9d3a` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-0a54541fd508` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-d2a67d36ae9b` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-f45e7fb8ca5c` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+A token with no active registry entry is INVALID_ARGUMENT; this includes unknown, foreign, expired, revoked or previously released tokens because no persistent expired/revoked tombstone is retained. A currently registered token whose active entry cannot be used in the requested session/lifecycle is INVALID_STATE. VOID token returns SUCCESS and unlinks the session key. Registry lock timeout is UNAVAILABLE. Registry corruption is UNKNOWN_ERROR and quarantines the registry. Client token rejection alone never closes or poisons the descrambler object.
+
 
 | RL-011 | LNB registry state | `LnbRegistry` / `LnbHal` | LNB open / set系API | `ILnb.close()` | backend反映失敗、registry確定失敗、mutex汚染 | LNBを失敗状態。関連frontendへ診断反映 | registry状態とbackend状態を成功扱いで乖離させない |
 
-> **V55 canonical reference** — clauses `DR-0527`; original source lines 815-815 are superseded.
-> - Normative rule reference: `CD-007dd3e15a9e` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-007dd3e15a9e`（`DP-043`、規範）**
+
+hardware state unknownとfrontend operational stateを分離する。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
 
 
 ### 表9. 固定表現要約表
@@ -1059,17 +1040,12 @@ checked FMQ shim は、`queue == null` または `out_written == null` を `INVA
 | 5 | `getQueueDesc()` は横断gateに該当しない通常可用状態で、対象オブジェクトが通常FMQ記述子を持つ場合だけ成功する。IFilterでは configure 済みかどうかではなく open時フィルタ種別の通常FMQ有無を正とする | IFilter / DVR状態表 |
 | 6 | `flush()` は共有ハンドル未公開のAVフィルタでも成功する。共有ハンドル未公開中は無処理成功として扱う | AV flush 説明 |
 
-> **V55 canonical reference** — clauses `DR-0536`; original source lines 829-829 are superseded.
-> - Normative rule reference: `CD-f2a57e6a5c98` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | 8 | Filter / DVR の `close()` は、公開API遮断ゲートと後片付け完了状態を分離する。致命的な後片付け失敗は `UNKNOWN_ERROR` と異常時閉鎖済み状態に反映する | close説明 |
 | 9 | ABI不整合、関数シグネチャ不整合、リンク不整合は実行時状態表に入れない | FMQ / 接続層説明 |
 | 10 | 状態行を圧縮してよいのは、対象状態集合、戻り値、次状態関数、副作用、診断、資源寿命の同値性を表内に明記できる場合だけとする | 表の記載規則 |
 | 11 | EventFlag はペイロード格納先ではない。EventFlag は FMQ対象経路の通知機構として扱う | EventFlag説明 |
 
-> **V55 canonical reference** — clauses `DR-0541, DR-0542`; original source lines 834-835 are superseded.
-> - Normative rule reference: `CD-23d2e1c35c4f` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-0a54541fd508` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | 14 | `setDataSource(NULL)` は AOSP意味論として sink の入力元を demux input に戻し、現行AOSP契約として成功対象に含める | setDataSource説明 / nullable Binder 境界 |
 
@@ -1080,22 +1056,19 @@ checked FMQ shim は、`queue == null` または `out_written == null` を `INVA
 | 1 | 未固定語検査 | 設計値セルに未固定語が残っていない。互換表の種別名では具体種別名を列挙する |
 | 2 | 選択式表現検査 | 戻り値セルと次状態セルに二者択一の表現がない |
 
-> **V55 canonical reference** — clauses `DR-0547`; original source lines 844-844 are superseded.
-> - Normative rule reference: `CD-0512afc37228` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-0512afc37228`（`DP-158`、規範）**
+
+自己検査を宣言だけでなく実際の表へ適用し、各NGセルを修正してから完了条件を満たす。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
+
 
 | 4 | 同値圧縮検査 | 圧縮行には対象状態集合と同値性根拠がある |
 | 5 | capability整合検査 | 未対応機能が capability と VTS profile に宣言されていない |
 
-> **V55 canonical reference** — clauses `DR-0550`; original source lines 847-847 are superseded.
-> - Normative rule reference: `CD-0512afc37228` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | 7 | AV経路検査 | AVペイロードを通常FMQへ書き込む経路が表に存在しない |
 | 8 | EventFlag表現検査 | EventFlag をペイロード格納先として扱う表現がない |
 | 9 | close検査 | `closed` と `cleanup_complete` が分離され、致命的後片付け失敗を成功扱いにしていない |
 
-> **V55 canonical reference** — clauses `DR-0554`; original source lines 851-851 are superseded.
-> - Normative rule reference: `CD-f2a57e6a5c98` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-0512afc37228` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | 11 | AOSP setDataSource 検査 | `setDataSource(NULL)` は demux input 復帰として成功対象に含める |
 | 12 | 実装反映検査 | 表1〜表8の各行に対応する単体テストや状態遷移テストを作成できる |
@@ -1117,9 +1090,9 @@ checked FMQ shim は、`queue == null` または `out_written == null` を `INVA
 | `IFrontend.tune(settings)` | normalized tune settings が現在条件と同一、かつ前回tuneが完了済みで安定状態 | backend stop、live pump停止、demux boundary reset を行わない | 前回tune未完了なら同一条件でも旧tune停止、新generation、新tune投入、boundary reset |
 | `IFilter.configure(settings)` | 現在設定と同一 | queue / AV backing を破棄しない | validate後にcommitし、必要時だけqueue境界処理 |
 
-> **V55 canonical reference** — clauses `DR-0564`; original source lines 871-871 are superseded.
-> - Normative rule reference: `CD-ad630d6e167a` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-d1438a6d3709` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-d1438a6d3709`（`DP-019`、規範）**
+
+configureのkind変更分岐を削除し、open時kindと異なるsettings unionはINVALID_ARGUMENTにする。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
 
 
 ### 表12. 公開API transaction（状態遷移）契約
@@ -1131,10 +1104,6 @@ checked FMQ shim は、`queue == null` または `out_written == null` を `INVA
 ### 表13. best-effort 使用範囲
 
 `best_effort` の使用範囲は、「0-S-3. 公開API transaction（状態遷移）契約」と「0-S-4. 失敗分類と波及範囲」を正本とする。本節では表を重複定義しない。
-
-
-> **V55 canonical reference** — clauses `DR-0568`; original source lines 883-883 are superseded.
-> - Normative rule reference: `CD-607c3aafef57` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 
 ### 表14. 寿命ID・世代ID・token 規則
@@ -1149,8 +1118,9 @@ checked FMQ shim は、`queue == null` または `out_written == null` を `INVA
 | LNB state generation | `checked_add(1)` | 対象LNBをquarantine | 世代固定化 |
 | AV `avDataId` | 正数だけ発行。0と負数は予約 | AV経路 failed | wrapして負値IDを発行 |
 
-> **V55 canonical reference** — clauses `DR-0576`; original source lines 896-896 are superseded.
-> - Normative rule reference: `CD-bb523f266dc2` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-bb523f266dc2`（`DP-132`、規範）**
+
+OpaqueKeyToken、TokenEntryId、ResolvedKeyMaterial、CAS validityを別型・別寿命に分離する。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
 
 
 ### 表15. backend state model
@@ -1186,10 +1156,6 @@ key token は HAL 内部では refcount 付き共有資源として管理する�
 HAL 内 refcount は、HAL が保持する token 解決結果の寿命だけを管理する。CAS session の本来の寿命、CAS HAL 側の失効、ECM更新方針を代替しない。
 
 
-> **V55 canonical reference** — clauses `DR-0595`; original source lines 930-930 are superseded.
-> - Normative rule reference: `CD-bb523f266dc2` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-
-
 | No | 操作 | 入力状態 | AIDL戻り値 | key table 変更 | session 変更 | 設計上の成立条件 |
 |---:|---|---|---|---|---|---|
 | KT-001 | `setKeyToken(non-VOID)` | token malformed | `INVALID_ARGUMENT` | なし | なし | 長さ・形式不正を未知tokenと混同しない |
@@ -1210,9 +1176,14 @@ HAL 内 refcount は、HAL が保持する token 解決結果の寿命だけを�
 |---|---|---|---|---|---|
 | `setKeyToken(non-VOID)` validate | session未変更 | 新key ref取得 | 取得失敗ならsession変更なし | 継続 | `DescramblerKeyTxn` |
 
-> **V55 canonical reference** — clauses `DR-0608, DR-0609, DR-0610`; original source lines 951-953 are superseded.
-> - Normative rule reference: `CD-7ebca776dbd1` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-7e20ddf99cc0` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-7ebca776dbd1`（`DP-145`、規範）**
+
+old token entryを使用不可のcleanup_pendingへ移し、close/resetから再試行できるrelease authorityを保存する。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
+
+**Canonical rule `CD-7e20ddf99cc0`（`DP-133`、規範）**
+
+snapshot queryを純粋読取にし、stale cleanupを明示transactionへ分離する。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
+
 
 | `invalidate_demux()` | 全affected sessionを走査 | key release/expire | 1件失敗しても全件試行 | 失敗一覧を返す | `DescramblerSessionCleanupTxn` |
 | `close()` | closing gate | key release | 失敗時 cleanup_failed、再close可能 | retry可 | `CloseLifecycleTxn` |
@@ -1249,8 +1220,6 @@ source filter は配送元であり、downstream filter の continuity / assembl
 | SF-003 | source filter raw TS delivery | `TsInputOrigin::SourceFilter(filter_id, generation)` | 接続済みdownstreamに限り、そのdownstream用状態を更新 | downstream未接続時のassembler更新 | 未接続なら状態を汚染しない |
 | SF-004 | source filter flush | source filter + downstream接続表 | source origin generation更新、接続済みdownstream partial破棄 | 古いpartialの保持 | flush後の旧payloadを配送しない |
 
-> **V55 canonical reference** — clauses `DR-0623`; original source lines 988-988 are superseded.
-> - Normative rule reference: `CD-7dce44077973` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | SF-006 | source filter close | source filter | downstream接続解除、source origin破棄 | downstreamに閉鎖済みsourceを残す | close後source由来配送なし |
 
@@ -1258,8 +1227,10 @@ source filter は配送元であり、downstream filter の continuity / assembl
 |---|---|---:|---|---|---|---|
 | raw TS packet | raw TS filter | 可 | 同一TS packet view | downstream raw TS filter | source origin generation更新 | - |
 
-> **V55 canonical reference** — clauses `DR-0627`; original source lines 994-994 are superseded.
-> - Normative rule reference: `CD-bb0b7b1493e9` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-bb0b7b1493e9`（`DP-044`、規範）**
+
+record data/eventの経路を分離して明記する。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
+
 
 | raw TS packet | section filter | 不可 | 再parse section は行わない | なし | なし | `UNAVAILABLE` |
 | raw TS packet | PES filter | 不可 | 再parse PES は行わない | なし | なし | `UNAVAILABLE` |
@@ -1275,13 +1246,17 @@ source filter boundary は downstream lifecycle、queued payload、pending event
 | 操作 | downstream lifecycle | queued payload | pending event | assembler state | DVR attach | public状態 |
 |---|---|---|---|---|---|---|
 
-> **V55 canonical reference** — clauses `DR-0635, DR-0636`; original source lines 1008-1009 are superseded.
-> - Normative rule reference: `CD-a06efdfafb1e` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-a06efdfafb1e`（`DP-159`、規範）**
+
+started中の`setDataSource(non-null/null)`は常に`INVALID_STATE`とする。source接続・切断はopen/configured/stopped中だけ許可し、hot-switchは実装しない。境界表の`started維持`行を削除する。
+
 
 | source filter close | downstreamは source lost 境界を観測 | source由来queueは `SourceBoundaryTxn` が物理破棄できるentryを破棄し、残るentryを旧generationとして配送禁止にする。この組み合わせを唯一の共通方針とし、API別に分岐させない | source由来event抑止 | source origin reset | DVR attach解除は `FilterUnregisterTxn` / `SourceBoundaryTxn` が診断へ残す | downstreamを自動failedにしない。閉鎖済みsourceを参照する再配送だけ拒否 |
 
-> **V55 canonical reference** — clauses `DR-0638`; original source lines 1011-1011 are superseded.
-> - Normative rule reference: `CD-5b813c7ca8ac` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-5b813c7ca8ac`（`DP-045`、規範）**
+
+Record DVR attach/detach表を固定する。duplicate attach=SUCCESS no-op、未attach detach=INVALID_STATE、foreign/wrong-demux/wrong-kind/playback DVRへのattach=INVALID_ARGUMENT、attachment capacity=UNAVAILABLE、backend failure=UNKNOWN_ERROR。attach順序は結果に影響しない。
+
 
 | upstream generation mismatch | 変更しない | 配送しない | event抑止 | reset | 変更なし | runtime failedにはしない |
 
@@ -1293,24 +1268,18 @@ source filter boundary は downstream lifecycle、queued payload、pending event
 validate には、settings型、周波数範囲、frontend capability、LNB候補を含める。prepare には、ワーカー生成準備、コールバック経路 準備可能性、バックエンドロールバック経路 準備可能性を含める。
 
 
-> **V55 canonical reference** — clauses `DR-0642`; original source lines 1021-1021 are superseded.
-> - Normative rule reference: `CD-26c7896fa081` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-
-
 ワーカー生成 失敗時に `LOCKED` / `NO_SIGNAL` / scan message を送ってはならない。
 
 | No | 段階 | 処理 | 失敗時 | 旧tune維持 |
 |---:|---|---|---|---:|
 
-> **V55 canonical reference** — clauses `DR-0645, DR-0646`; original source lines 1027-1028 are superseded.
-> - Normative rule reference: `CD-dc79dedcdd71` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-f5a3c9aad0f5` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-dc79dedcdd71`（`DP-046`、規範）**
+
+malformed/range違反はINVALID_ARGUMENT、構文上validだが当該frontend/profileが非対応ならUNAVAILABLE。例: 負周波数/不正enum/selector型不一致=INVALID_ARGUMENT、対応外delivery system/帯域/機能=UNAVAILABLE。
+
 
 | TN-003 | pre-boundary | 同一tune判定。前回tune完了済みかつ安定中なら無処理成功可。前回tune未完了なら旧tune停止・新generation開始へ進む | 未完了同一tuneをno-opにしない | 完了済み同一tuneのみ維持 |
 
-> **V55 canonical reference** — clauses `DR-0648, DR-0649, DR-0650, DR-0651`; original source lines 1030-1033 are superseded.
-> - Normative rule reference: `CD-5c05f634918b` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-26c7896fa081` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | TN-008 | worker起動成功 | 非同期LOCK/NO_SIGNAL待ち | 成功 | 新tuneへ遷移 |
 
@@ -1322,16 +1291,12 @@ flowchart TD
     C --> D{same tune and completed/stable?}
     D -->|yes| E[無処理成功]
 
-> **V55 canonical reference** — clauses `DR-1509, DR-1510`; original source lines 1043-1044 are superseded.
-> - Normative rule reference: `CD-26c7896fa081` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
     F -->|submit fail| G[rollback old tune attempt]
     F -->|submit ok| H[start tune worker]
     H -->|ok| I[new tune pending]
     H -->|spawn fail| G
 
-> **V55 canonical reference** — clauses `DR-1515, DR-1516`; original source lines 1049-1050 are superseded.
-> - Normative rule reference: `CD-26c7896fa081` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 ```
 
@@ -1346,17 +1311,20 @@ flowchart TD
 | 分類 | 対象 | 加算規則 | overflow時 | データ経路 への波及 | 禁止事項 |
 |---|---|---|---|---|---|
 
-> **V55 canonical reference** — clauses `DR-0657`; original source lines 1063-1063 are superseded.
-> - Normative rule reference: `CD-97ffaaad87a9` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-97ffaaad87a9`（`DP-135`、規範）**
+
+対象filterの新規operation拒否に限定し、demux quarantineは共有ledger corruption時だけにする。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
+
 
 | 寿命ID | section generation | `checked_add(1)` | filter failed | あり | wrap / saturating reuse |
 | 寿命ID | PES generation | `checked_add(1)` | filter failed | あり | wrap / saturating reuse |
 | 寿命ID | source filter origin generation | `checked_add(1)` | source filter failed | あり | wrap / saturating reuse |
 | 寿命ID | AV `avDataId` | 正数範囲で `checked_add(1)` | AV経路 failed | あり | 0 / 負数発行、wrap |
 
-> **V55 canonical reference** — clauses `DR-0662, DR-0663`; original source lines 1068-1069 are superseded.
-> - Normative rule reference: `CD-bb523f266dc2` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-af4d5a96cfa9` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-af4d5a96cfa9`（`DP-047`、規範）**
+
+wake generation overflow時は当該workerだけを停止し、新しいepochを持つworkerへ再生成する。worker再生成に失敗した場合だけownerをquarantineし、generation overflowだけでowner全体をfailedにしない。
+
 
 | 診断counter | malformed packet count | `saturating_add(1)` | saturated flag 記録 | なし | wrap、panic、データ経路停止 |
 | 診断counter | drop count | `saturating_add(1)` | saturated flag 記録 | なし | wrap、panic、データ経路停止 |
@@ -1370,8 +1338,10 @@ flowchart TD
 | `counter_saturated` | `true` |
 | `last_increment_result` | `Saturated` |
 
-> **V55 canonical reference** — clauses `DR-0673`; original source lines 1081-1081 are superseded.
-> - Normative rule reference: `CD-94ebd39c8e98` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-94ebd39c8e98`（`DP-048`、規範）**
+
+diagnostic counterのsaturation/dropは、diagnostic取得APIを除く全business APIの戻り値を変更しない。例外は設けない。
+
 
 | 本体状態 | 維持 |
 | 追加診断 | `diagnostic_counter_saturated:<counter_name>` |
@@ -1385,8 +1355,10 @@ scan ワーカー は次の terminal reason を保持する。
 
 ```text
 
-> **V55 canonical reference** — clauses `DR-1517`; original source lines 1093-1093 are superseded.
-> - Normative rule reference: `CD-4f095fd17166` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-4f095fd17166`（`DP-111`、規範）**
+
+Runningをscan lifecycle stateへ分離し、terminal reason enumはCompleted/Cancelled/Failed*だけに限定する。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
+
 
 Completed
 Cancelled
@@ -1406,15 +1378,8 @@ scan ワーカー 内の `END` 通知は、`PROGRESS_PERCENT`、`FREQUENCY`、`L
 
 - `END` 通知成功時だけ、scan terminal 通知済みとして扱う。
 
-> **V55 canonical reference** — clauses `DR-0682`; original source lines 1111-1111 are superseded.
-> - Normative rule reference: `CD-ee4cbaef9d3a` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-100ea74f7c46` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 - 失敗理由は コールバック失敗 診断に記録する。コールバック失敗 だけで `mark_live_path_failed()` を呼んではならない。
-
-> **V55 canonical reference** — clauses `DR-0684, DR-0685`; original source lines 1113-1114 are superseded.
-> - Normative rule reference: `CD-ee4cbaef9d3a` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-100ea74f7c46` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 
 この固定は HAL 内部の失敗伝播であり、AOSP AIDL 公開面は変更しない。
@@ -1448,18 +1413,19 @@ Tuner HALは、日本向けscan候補表、BS TSID表、CATV周波数表、servi
 `IDescrambler`、`IFilter.setDataSource()`、Filter / DVR / Frontend / LNB の状態別 エラー写像 は、本書の「Tuner HAL 状態遷移表SSOT」を正とする。本節では、表セルだけでは表現しきれない診断保持、scan terminal 保存、section overflow 通知、DVR cleanup 補助関数 の補足だけを固定する。
 
 
-> **V55 canonical reference** — clauses `DR-0702`; original source lines 1146-1146 are superseded.
-> - Normative rule reference: `CD-ca940c603a45` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-ca940c603a45`（`DP-049`、規範）**
+
+terminal reasonとcallback delivery outcomeを別軸にする。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
 
 
+**Canonical rule `CD-507707a73419`（`DP-147`、規範）**
 
-> **V55 canonical reference** — clauses `DR-0703`; original source lines 1148-1148 are superseded.
-> - Normative rule reference: `CD-507707a73419` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+Malformed/OversizeSection、StalePartialDiscard、QueueOverflowを別result/counter/statusへ分ける。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
 
 
+**Canonical rule `CD-87d41c6451bf`（`DP-050`、規範）**
 
-> **V55 canonical reference** — clauses `DR-0704`; original source lines 1150-1150 are superseded.
-> - Normative rule reference: `CD-87d41c6451bf` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+owner-lossで非blocking cleanupを起動しreaperへ委譲する。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
 
 
 ## lab profile のサービス対応
@@ -1477,9 +1443,9 @@ Tuner HALは、日本向けscan候補表、BS TSID表、CATV周波数表、servi
 ## BS と CS110 の選局契約
 
 
-> **V55 canonical reference** — clauses `DR-0711`; original source lines 1166-1166 are superseded.
-> - Normative rule reference: `CD-f8549eabc707` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-f8549eabc707`（`DP-051`、規範）**
 
+STREAM_IDとRELATIVE_STREAM_NUMBERを別validationにし、absolute 0..11特別拒否を削除する。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
 
 
 ## scan / tune の責務分担
@@ -1491,13 +1457,14 @@ Tuner HAL は、TIS が生成した 明示選局候補 を検証・変換・実�
 日本向け周波数表、CATV周波数表、BS/CS110のTSID表、channel key、サービス検出 の実装データ保持者は TIS とする。選局対象、周波数帯、BS/CS110 selector 境界、CATV 候補範囲の設計契約は tv 直下の開発規則.mdを正とする。Tuner HAL は HAL-generated Japanese scan plan を持たず、TIS が作った explicit candidate を `Tuner.tune()` で受ける。HAL の `scan()` は AOSP/VTS互換の最小実装に限定し、製品の通常 channel scan は TIS の周波数表 + `tune()` ループに寄せる。
 
 
-> **V55 canonical reference** — clauses `DR-0715`; original source lines 1177-1177 are superseded.
-> - Normative rule reference: `CD-bda34cbad6d1` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-bda34cbad6d1`（`DP-052`、規範）**
+
+Base selector matrix: Linux DVB accepts ISDB-S STREAM_ID values 0..65534 and passes them unchanged to DTV_STREAM_ID; 65535 (`Constant.INVALID_STREAM_ID`) is rejected. Legacy unmodified px4 accepts RELATIVE_STREAM_NUMBER 0..7 only. The target `kazuki0824/px4_drv` `feat/android-ddk` backend advertises only selector modes that are release-eligible in the exact SupportedDeviceCapabilityCatalog entry; the current catalog enables RELATIVE_STREAM_NUMBER and does not enable STREAM_ID because values 0..11 collide with relative-slot semantics. Empty, unmatched, or selector-ineligible entries advertise no ISDB-S selector. ISDB-T/CATV/CS110 use no ISDB-S selector.
 
 
+**Canonical rule `CD-877bdf6adf13`（`DP-053`、規範）**
 
-> **V55 canonical reference** — clauses `DR-0716`; original source lines 1179-1179 are superseded.
-> - Normative rule reference: `CD-877bdf6adf13` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+selector typeを正として判定し、値域推測を廃止する。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
 
 
 この px4 BS `STREAM_ID` direct-slot 契約は、対象 kernel driver が本プロジェクトで採用する px4_drv `feat/android-ddk` 系、すなわち BS legacy `slot >= 8` reject が無効化され、`slot` 値を absolute TSID として `set_stream_id()` へ渡せる実装であることを前提にする。公開 `nns779/px4_drv` develop 相当のように BS `slot >= 8` reject が有効な driver では、absolute TSID direct-slot 経路は使用不可であり、その product で px4 BS `STREAM_ID` 対応を 対応宣言 してはならない。HAL は互換 代替処理 として TSID→relative slot 変換表を復活させない。driver 前提が満たせない場合は、TIS/profile/VTS 設定側で px4 BS absolute TSID 経路を使わない構成にする。
@@ -1530,9 +1497,9 @@ VTS / lab profile は代表点だけでよく、全 CATV 候補の実波存在�
 `bitWidthOfLengthField` は本製品の TS 入力対象では `0` と `12` だけを受理し、内部的に `12` へ正規化する。その他の値は `INVALID_ARGUMENT` として configure 時点で拒否する。section assembly、CRC、section condition 判定は同じ正規化済み length フィールド width を使い、condition 判定だけが隠れ 12bit 固定になる実装を残してはならない。
 
 
+**Canonical rule `CD-5cdd4307b4a3`（`DP-054;DP-055;DP-103;DP-104;DP-105;DP-161`、規範）**
 
-> **V55 canonical reference** — clauses `DR-0731`; original source lines 1211-1211 are superseded.
-> - Normative rule reference: `CD-5cdd4307b4a3` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+Tuner HAL owns generic MPEG-TS section transport only: TS payload extraction, section framing, declared-length enforcement, optional CRC checking, filter matching, queue/FMQ delivery, and transport diagnostics. It must not perform table-specific semantic parsing, normalization, cross-section aggregation, database updates, or semantic-object construction for any PSI/SI table. This applies uniformly to PAT, CAT, PMT, NIT, SDT, BAT, EIT, TDT, TOT, BIT, NBIT, LDT, CDT, PCAT, SDTT, AIT, AMT, and other standard-defined, private, reserved, or future table IDs. A client such as TIS configures the generic section filter and owns table semantics above the HAL boundary; a reusable SI parser library may be used only in that client layer, not as Tuner-HAL policy. For every matched section, Tuner HAL either delivers the complete generic section and metadata under the configured filter contract or reports a generic transport/framing/CRC failure; it must not silently discard a matched EIT, TOT, AMT, or other PSI/SI section merely because HAL does not understand its semantics. The closed registry records syntax bounds and the semantic owner above HAL for each table_id/range. Registered 1021-class tables have section_length at most 1021 and total section size at most 1024; registered extended-class tables have section_length at most 4093 and total section size at most 4096. Reserved, unassigned, private, and externally owned IDs are never inferred as typed ARIB SI by Tuner HAL, but still remain eligible for generic raw-section delivery when selected by a valid client filter. The closed section-length registry and semantic-ownership table are defined in `arib_si_engine_rs/DESIGN_JA.md`「PSI/SI table-id規則と意味責務」.
 
 
 ### PSI/SI section CRC_32
@@ -1548,10 +1515,6 @@ PUSI到達時の `pointer_field` は、直前の未完了sectionに対して poi
 
 
 ### ARIB section validator 契約
-
-
-> **V55 canonical reference** — clauses `DR-0736`; original source lines 1227-1227 are superseded.
-> - Normative rule reference: `CD-5cdd4307b4a3` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 
 section length field 周辺および version byte 周辺の reserved bit は、ARIB / MPEG-TS の reserved bit として検証する。reserved bit が仕様値から外れる section は malformed として扱う。`isCheckCrc=false` の場合でも、長さ・reserved bit・syntax構造の検証を省略してはならない。
@@ -1579,15 +1542,10 @@ filter runtime state と DVR runtime state は pending overflow を持つ。コ�
 | 項目 | 固定内容 |
 |---|---|
 
-> **V55 canonical reference** — clauses `DR-0751`; original source lines 1253-1253 are superseded.
-> - Normative rule reference: `CD-6a647f1fda89` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | slot size と `bufferSize` | AV shared memory slot size は framework が渡す filter `bufferSize` だけから縮小算出しない。product profile の下限を下回ってはならない |
 | oversize 診断 | slot size 超過は `DroppedOversizePayload` とし、malformed / empty payload と混同しない |
 | overflow 状態 | oversize drop は `pending_overflow` または AV 専用 overflow pending を立て、次 callback 周期で `OVERFLOW` を通知する |
-
-> **V55 canonical reference** — clauses `DR-0755`; original source lines 1257-1257 are superseded.
-> - Normative rule reference: `CD-6a647f1fda89` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 
 AV payload delivery result は、少なくとも `Delivered`、`DroppedBeforeHandleExport`、`DroppedNoFreeSlot`、`DroppedOversizePayload`、`DroppedMalformedPayload` を区別する。slot size 超過を `DroppedInvalidPayload` に丸めてはならない。
@@ -1624,8 +1582,10 @@ boundary処理は `StreamBoundaryTxn` を正本とする。各APIが個別に FM
 | FMQ | 旧generation payloadは `StreamBoundaryTxn` が破棄する。物理破棄前に観測されるentryはgeneration判定で無効化し、配送しない |
 | EventFlag | wake失敗を診断 |
 
-> **V55 canonical reference** — clauses `DR-0764`; original source lines 1292-1292 are superseded.
-> - Normative rule reference: `CD-269afeb9ba9e` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-269afeb9ba9e`（`DP-058`、規範）**
+
+delivered-in-use slotはreleaseAvHandleまで保持する。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
+
 
 | section assembler | 対象origin/PID/generationだけ破棄 |
 | PES assembler | 対象origin/PID/generationだけ破棄 |
@@ -1645,12 +1605,21 @@ boundary処理は `StreamBoundaryTxn` を正本とする。各APIが個別に FM
 |---|---|---|---|---|---|
 | 全件成功 | boundary generation 更新済み | なし | `OK` | 通常継続 | boundary success |
 
-> **V55 canonical reference** — clauses `DR-0775, DR-0776, DR-0777, DR-0778`; original source lines 1310-1313 are superseded.
-> - Normative rule reference: `CD-e4bc78b405ad` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-c4a1397ad849` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-c11d68a79f3d` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-6b38a338ba5e` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-e4bc78b405ad`（`DP-059`、規範）**
 
+複数demux boundaryで一部成功した場合、public operationはerrorを返す。commit済みdemuxは新generationで継続し、失敗demuxはmutation前失敗なら旧状態を維持、mutation後で実状態不明ならそのdemuxだけquarantineする。依存childへのfailure波及も失敗demux配下だけに限定する。
+
+**Canonical rule `CD-c4a1397ad849`（`DP-060`、規範）**
+
+全demux失敗時も一律quarantineしない。各demuxをstep outcomeで判定し、precondition/prepare失敗は旧状態維持、mutation後の実状態不明だけをquarantineする。frontendはoperation failureを返すが、健全な旧generationを保持できるdemuxは再試行可能とする。
+
+**Canonical rule `CD-c11d68a79f3d`（`DP-061`、規範）**
+
+retryable lock failureとregistry corruptionを分離する。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
+
+**Canonical rule `CD-6b38a338ba5e`（`DP-062`、規範）**
+
+boundary transaction内部失敗では、commit済みdemuxを維持し、未処理demuxは未変更のまま再試行対象へ残す。quarantineはmutation開始後にcompletion不明となったdemuxだけに限定し、未処理対象を自動quarantineしない。
 
 
 ## Packet pipeline 正本契約
@@ -1702,7 +1671,6 @@ record index は、TS packet境界をまたぐ以下の構造を検出できな�
 record indexは、現在payload単体だけで完結する前提にしてはならない。必要な最小carry stateをrecord index側が持つ。
 
 
-
 ### filter delivery delay 条件
 
 `FilterDelayHint` は、コールバック配送頻度を抑制するための遅延ヒントである。media filter には適用しない。
@@ -1734,8 +1702,10 @@ soft demux に入る TS packet の入力元は次の三種類だけとする。
 |---|---|---|
 | `Frontend` | frontend backend から来るライブ TS | `Frontend(frontend_generation)` |
 
-> **V55 canonical reference** — clauses `DR-0809`; original source lines 1396-1396 are superseded.
-> - Normative rule reference: `CD-e09f67bd54a2` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-e09f67bd54a2`（`DP-063;DP-070`、規範）**
+
+IDvr has no AIDL read/write methods. Remove read/write from every AIDL lifecycle/result/worker table. Describe SDK/JNI beginRead/commitRead and beginWrite/commitWrite byte-count helpers in a separate DVR FMQ data-plane section, with static AIDL-surface and integration cases.
+
 
 | `SourceFilter` | `IFilter.setDataSource()` により、上流 filter の raw TS 出力を下流 filter へ再投入する TS | `SourceFilter(filter_id, filter_generation)` |
 
@@ -1744,8 +1714,9 @@ soft demux に入る TS packet の入力元は次の三種類だけとする。
 section assembler と PES assembler は、上記の世代キー単位で flush generation を保持する。`flush()`、`setDataSource()`、filter close、source unlink、stream boundary reset のいずれかが発生した場合、対象入力元の assembler state と carry state を破棄し、flush generation を更新する。古い generation で組み立て開始された section / PES は配送しない。新しい generation で開始された section / PES だけを配送する。
 
 
-> **V55 canonical reference** — clauses `DR-0813`; original source lines 1403-1403 are superseded.
-> - Normative rule reference: `CD-2f9cb4c25252` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-2f9cb4c25252`（`DP-064`、規範）**
+
+DP-004と同一規則へ統合する。非互換reconfigureはINVALID_STATEで旧settings/bindingを保持し、切断はsetDataSource(null)またはsource closeだけ。
 
 
 本製品の多段 filter は、上流の raw TS filter から `SourceFilter` 経由で raw TS packet を再投入し、下流の TS raw / record filter へ配送する経路だけを正式対応とする。
@@ -1781,8 +1752,9 @@ PES assembler は正常 PES だけを配送対象とする。malformed PES、con
 | flush / stop / close / source unlink | boundary | state 破棄 | 未完了 PES は配送しない |
 
 
-> **V55 canonical reference** — clauses `DR-0828`; original source lines 1437-1437 are superseded.
-> - Normative rule reference: `CD-f0bf306d0422` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-f0bf306d0422`（`DP-065`、規範）**
+
+PES assembly is scoped per PID. For PES_packet_length > 0, completion occurs only after exactly the declared number of PES bytes has been collected; an early same-PID PUSI is corruption and the incomplete bounded PES is discarded. For PES_packet_length == 0, completion occurs only immediately before a later same-PID TS payload whose payload_unit_start_indicator is 1 and whose payload begins with a structurally valid 0x000001 PES start-code prefix and minimally valid PES header. The boundary packet starts the next PES and is never appended to the previous PES. A 0x000001 elementary-stream start code occurring without a same-PID PUSI and valid PES header never terminates the current PES. A same-PID PUSI without a structurally valid PES start/header is transport corruption: discard the incomplete current PES, record a typed diagnostic, and do not emit it as complete. A PUSI on another PID has no effect. TEI, continuity discontinuity, flush, stop, or close each independently discards any incomplete PES and records the corresponding typed diagnostic; none emits a complete PES. The bounded/unbounded claims above are normative for this design.
 
 
 ### ワーカー失敗と所有権境界
@@ -1799,18 +1771,19 @@ PES assembler は正常 PES だけを配送対象とする。malformed PES、con
 ```
 
 
-> **V55 canonical reference** — clauses `DR-0831`; original source lines 1452-1452 are superseded.
-> - Normative rule reference: `CD-bb476146a101` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-bb476146a101`（`DP-066`、規範）**
+
+closeとowner-lossが同じcleanup正本へ入るよう修正する。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
 
 
+**Canonical rule `CD-b3bc6ffe7012`（`DP-067`、規範）**
 
-> **V55 canonical reference** — clauses `DR-0832`; original source lines 1454-1454 are superseded.
-> - Normative rule reference: `CD-b3bc6ffe7012` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+Every deferred cleanup job is keyed by owner_id, owner_generation, dependency_kind and dependency_id. States are Queued, Running, WaitingForTrigger, Released, Quarantined and Complete. Duplicate enqueue coalesces. No timer, retry offset, TTL, deadline or acknowledgement protocol exists. Cleanup is attempted on enqueue and on explicit lifecycle triggers only. Success releases then completes. A retryable failure moves to WaitingForTrigger while retaining the lease. An unfenced or indeterminate dependency moves to Quarantined while retaining the lease; completion notification may later resume residual cleanup. Owner death transfers the linear authority to the service cleanup supervisor. The maximum number of queued/running/quarantined jobs is bounded by the same advertised object/worker ceilings.
 
 
+**Canonical rule `CD-6c1cdb71a895`（`DP-068`、規範）**
 
-> **V55 canonical reference** — clauses `DR-0833`; original source lines 1456-1456 are superseded.
-> - Normative rule reference: `CD-6c1cdb71a895` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+owner-loss cleanupを追加する。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
 
 
 ワーカー失敗 後の公開 API 動作は次に固定する。
@@ -1820,9 +1793,10 @@ PES assembler は正常 PES だけを配送対象とする。malformed PES、con
 | `start()` | `INVALID_STATE` |
 | `stop()` | 停止可能な範囲で停止し、後片付け失敗時は cleanup failed |
 
-> **V55 canonical reference** — clauses `DR-0838, DR-0839`; original source lines 1464-1465 are superseded.
-> - Normative rule reference: `CD-755c21bee4a2` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-e09f67bd54a2` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-755c21bee4a2`（`DP-069`、規範）**
+
+worker failure後の`flush()`はpending-undelivered payloadとparser partialだけを破棄する。FMQ descriptor/backing、monitor設定、delivered AV slotは維持する。clear失敗時はruntime_failedへ移し、close/reaperだけを許可する。
+
 
 | `close()` | 必ず cleanup 経路へ進む。ワーカー失敗 済みでも直接成功扱いしない |
 
@@ -1835,13 +1809,9 @@ close は、公開 object の lifetime を閉じる唯一の正規経路であ�
 ```text
 1. FilterLedger begin_close
 
-> **V55 canonical reference** — clauses `DR-1554`; original source lines 1476-1476 are superseded.
-> - Normative rule reference: `CD-b25dddb0e92b` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 3. runtime unregister
 
-> **V55 canonical reference** — clauses `DR-1556`; original source lines 1478-1478 are superseded.
-> - Normative rule reference: `CD-0a54541fd508` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 5. demux.unregister_filter(filter_id, generation)
 6. FilterLedger commit_close
@@ -1854,8 +1824,9 @@ close は、公開 object の lifetime を閉じる唯一の正規経路であ�
 |---|---|
 | runtime に `pre_unregistered_by_worker_failure` がある | close 継続可能 |
 
-> **V55 canonical reference** — clauses `DR-0846`; original source lines 1489-1489 are superseded.
-> - Normative rule reference: `CD-acc8220a0d1d` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-acc8220a0d1d`（`DP-071`、規範）**
+
+close/unregister失敗は`cleanup_pending`へ記録して再試行可能にする。quarantineはdevice/queue/registryへmutation済みで実状態を確定できない場合だけに限定し、その他のcleanup failureを一律quarantineしない。
 
 
 `IDvr.close()` は次の順序で処理する。
@@ -1863,8 +1834,6 @@ close は、公開 object の lifetime を閉じる唯一の正規経路であ�
 ```text
 1. DvrLedger begin_close
 
-> **V55 canonical reference** — clauses `DR-1561`; original source lines 1495-1495 are superseded.
-> - Normative rule reference: `CD-b25dddb0e92b` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 3. queue clear
 4. demux.unregister_dvr(dvr_id, generation)
@@ -1878,8 +1847,9 @@ close は、公開 object の lifetime を閉じる唯一の正規経路であ�
 |---|---|
 | runtime に `pre_unregistered_by_worker_failure` がある | close 継続可能 |
 
-> **V55 canonical reference** — clauses `DR-0851`; original source lines 1507-1507 are superseded.
-> - Normative rule reference: `CD-45e91720cae1` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-45e91720cae1`（`DP-072`、規範）**
+
+child unregister/closeの未完了stepはdependency別`cleanup_pending`へ保存する。quarantineは共有state corruptionまたはmutation結果不明の対象だけに適用し、通常のremove failureは再試行対象とする。
 
 
 cleanup failed になった object は quarantine 状態に遷移する。quarantine 状態の object は通常 API では利用不可とする。同じ generation の close retry は許可する。新規 open は同じ ID / generation を再利用しない。
@@ -1894,8 +1864,6 @@ cleanup failed になった object は quarantine 状態に遷移する。quaran
 1. 対象 frontend に接続された demux 一覧を確定する
 2. backend stop を実行する
 
-> **V55 canonical reference** — clauses `DR-1568`; original source lines 1520-1520 are superseded.
-> - Normative rule reference: `CD-b25dddb0e92b` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 4. 各 demux に stream boundary reset を実行する
 5. 全 demux reset 成功後、frontend state を Idle にする
@@ -1908,16 +1876,13 @@ backend stop 成功後、demux boundary reset が失敗した場合の動作は�
 - backend は停止済みとして扱う
 - reset 失敗した demux は quarantine へ遷移する
 
-> **V55 canonical reference** — clauses `DR-1574`; original source lines 1531-1531 are superseded.
-> - Normative rule reference: `CD-0a54541fd508` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-ed2607ed14ad` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-ed2607ed14ad`（`DP-073`、規範）**
+
+新規配送停止とclient-held backing寿命を分離する。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
+
 
 - 該当 demux の close retry は許可する
 ```
-
-
-> **V55 canonical reference** — clauses `DR-0856`; original source lines 1535-1535 are superseded.
-> - Normative rule reference: `CD-ed2607ed14ad` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 
 backend stop が失敗した場合、demux boundary reset は実行しない。frontend state は backend 実状態と一致する状態へ残し、`stopTune()` は backend error を返す。
@@ -1946,8 +1911,10 @@ AvSharedState {
 |---|---|
 | lock 取得失敗 | Err を返す。状態は不変 |
 
-> **V55 canonical reference** — clauses `DR-0864`; original source lines 1562-1562 are superseded.
-> - Normative rule reference: `CD-4fe2b10cfb21` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-4fe2b10cfb21`（`DP-074`、規範）**
+
+pendingとdelivered-in-useを分離しactiveはrelease時のみfree化する。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
+
 
 | generation 枯渇 | Err を返す。状態は不変 |
 
@@ -1957,16 +1924,14 @@ AvSharedState {
 |---|---|
 | lock 取得失敗 | Err。状態不変 |
 
-> **V55 canonical reference** — clauses `DR-0869`; original source lines 1570-1570 are superseded.
-> - Normative rule reference: `CD-c175c4d6b7f4` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | active に存在する | active から削除し、同一 commit で free へ戻す |
 | free 復帰に失敗 | 状態不変で Err |
 
 
-> **V55 canonical reference** — clauses `DR-0872`; original source lines 1574-1574 are superseded.
-> - Normative rule reference: `CD-9828932a3560` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-9828932a3560`（`DP-076`、規範）**
 
+Resource lifetime is explicit and dual-mode. FMQ descriptor/backing is queue-runtime-owned, survives flush and is released only after logical close plus zero admitted transactions. AV shared backing is filter-generation-owned and event-local backing is allocation-owned. Delivered avDataId allocations remain client-held across flush, reconfigure and logical close until releaseAvHandle() or internal terminal quarantine. Each AV filter generation owns one 8-entry/8-MiB ledger; service reservation is the sum across snapshot.av_filter_count, so C1 reserves 16 entries and 16 MiB for its audio and video filters. Oversize, exhaustion and allocation failure occur before callback/dataId publication and never evict a live allocation. Worker handles remain service-worker-store/reaper-owned until actual termination. Queue epoch, filter delivery generation and parser generation reset logical state but never destroy exported/client-held backing.
 
 
 ### TS continuity / adaptation-only packet 固定
@@ -1986,10 +1951,6 @@ filter の `stop()`、`flush()`、`configure()`、上流フィルタ登録解除
 CAS HAL / TIS / Tuner HAL のリリース段階ごとのスクランブル解除スコープは `開発規則.md` を正とする。本節では、CAS 本体未接続時でも Tuner HAL の `IDescrambler` AIDL面、key token検証、PID登録、packet単位デスクランブル中核、診断境界をどう扱うかだけを固定する。
 
 
-> **V55 canonical reference** — clauses `DR-0878`; original source lines 1593-1593 are superseded.
-> - Normative rule reference: `CD-f45e7fb8ca5c` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-
-
 ## descramble 失敗時 packet policy
 
 対象 PID の descramble に失敗した場合でも、DVR / raw TS 録画経路 では scrambled TS packet を後段へ pass-through してよい。これは録画済み TS を後からデスクランブルできるようにするための意図的な設計である。
@@ -2006,8 +1967,9 @@ Live/AV経路、診断、recording メタデータ、VTS 判定では、scramble
 ## px4_drv ロック 方針
 
 
-> **V55 canonical reference** — clauses `DR-0886`; original source lines 1610-1610 are superseded.
-> - Normative rule reference: `CD-e76e00542742` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-e76e00542742`（`DP-077`、規範）**
+
+lock観測不能ならDEMOD_LOCKをadvertise/true化せず、別の内部TuneSubmitted状態にする。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
 
 
 この方針は px4 の frontend 状態 だけの設計であり、視聴可能状態の判定ではない。TIS は `notifyVideoAvailable()` を出す前に、section 到達、PMT/ES PID 解決、AV filter data、decoder/surface の成立を別途確認する。px4 backend は `RF_LOCK` を advertise しない。
@@ -2019,37 +1981,35 @@ px4_drv の legacy chardev は同一 device node の二重 open を許さない�
 px4 backend は control fd を一度だけ open し、ライブ TS reader はその `File` を `try_clone()` / fd duplicate 相当で複製して使う。TS pump は nonblocking fd と `poll()` の組み合わせで動かし、reader 作成のために同じ chardev path を再 open しない。これにより、px4_drv の single-open 制約下でも tune 後に ライブ TS、section、AV、record/DVR経路 へ packet を流せることを保証する。
 
 
-> **V55 canonical reference** — clauses `DR-0890`; original source lines 1620-1620 are superseded.
-> - Normative rule reference: `CD-f4c611431b0b` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-f4c611431b0b`（`DP-078`、規範）**
+
+Frontend existence/capability is derived only from the device/driver catalog and is never suppressed because a measured lock timeout is absent. Tune is asynchronous: a successful backend tune request remains active until lock or terminal status callback, explicit stop, retune, close or backend fatal failure. No fixed elapsed-time deadline may reverse a successful tune or remove frontend advertisement. A service diagnostic may report elapsed-lock-time threshold crossings, but it cannot alter the public Result, capability or state. Any backend operation deadline used solely to prevent a stuck ioctl/read is an internal bounded-I/O policy, not a device capability.
 
 
 ## DVR 方針
 
 
-> **V55 canonical reference** — clauses `DR-0891`; original source lines 1624-1624 are superseded.
-> - Normative rule reference: `CD-1b216b960772` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-fa92b03abef6`（`DP-080`、規範）**
+
+DVR concurrency is defined by the committed CapabilitySnapshot: P=snapshot.playback_count, R=snapshot.record_count, P_d=1 and R_d=1. A scenario is admitted only when its global direction and per-demux lease are available and requested queue plus the exact notifier slot are prepared transactionally. Validation order is lifecycle/argument, direction capacity, per-demux limit, then fallible preparation. Failure returns INVALID_ARGUMENT, UNAVAILABLE or UNKNOWN_ERROR as appropriate with no committed mutation. Capability reporting, admission, cleanup and terminal release read the same snapshot. VTS has no generated runtime configuration and no unconditional default XML. A pre-start environment profile may select a static V1 variant only after source/flows/PIDs/queue budgets are declared and the exact queue vector fits C1; otherwise VTS remains DESIGN_HOLD without weakening runtime service guarantees.
 
 
+**Canonical rule `CD-f19898c24226`（`DP-081`、規範）**
 
-> **V55 canonical reference** — clauses `DR-0892`; original source lines 1626-1626 are superseded.
-> - Normative rule reference: `CD-fa92b03abef6` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-
-
-
-> **V55 canonical reference** — clauses `DR-0893`; original source lines 1628-1628 are superseded.
-> - Normative rule reference: `CD-f19898c24226` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+Compile all active Record-DVR-attached record-filter predicates into one immutable union predicate at the demux ingress generation. Evaluate each arriving 188-byte TS packet once; if it matches any attached record predicate, write it exactly once to the Record DVR in arrival order. Maintain per-filter index/callback state separately. Attach/detach/configuration transactionally replaces the union predicate at a generation boundary. Do not fan out then globally sort, deduplicate or infer gaps with an ingress_sequence.
 
 
+**Canonical rule `CD-84285ae93e78`（`DP-082`、規範）**
 
-> **V55 canonical reference** — clauses `DR-0894`; original source lines 1630-1630 are superseded.
-> - Normative rule reference: `CD-84285ae93e78` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+started中のrecord filter attach/detachはrecord route lock下で次の188-byte packet境界にcommitする。重複attachは冪等成功、未attach filterのdetachは`INVALID_STATE`、detach boundary以後のpacketは配送しない。route generationで重複・遅延配送を抑止する。
 
 
 record DVR / raw TS filter経路 は受信した 188-byte TS packet を製品の録画品質方針として保持する。TEI が立った packet、duplicate continuity counter の packet、scrambled pass-through packet は、録画・診断・後段デスクランブルのために 録画経路 へ到達させる。一方で、section / PES / AV assembly は破損 packet や duplicate packet による二重組み立てを避けるため、TEI packet と duplicate continuity packet を assembly 入力から除外する。これは AOSP が TEI / duplicate の drop/keep policy を明示しているためではなく、日本向け製品の録画品質と parser 安定性を両立するための固定設計である。
 
 
-> **V55 canonical reference** — clauses `DR-0896`; original source lines 1634-1634 are superseded.
-> - Normative rule reference: `CD-19a0feba3093` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-19a0feba3093`（`DP-165`、規範）**
+
+playback inputを通常demux routingへ流し、attach済みrecord filter/DVRへの配送を許可。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
 
 
 playback 専用 stats は少なくとも injected bytes、injected packets、malformed packets、dropped bytes を持つ。malformed TS は drop + 診断 を標準方針とし、1 packet の malformed input で playback stream 全体を fail させない。playback input FMQ の `PlaybackStatus` は start 直後・周期 コールバック ともに playback input FMQ の実 fill / unused write space を唯一の水位 source とし、record/output queue の `queued_bytes` を流用しない。playback consumer ワーカー は `WorkerHandle` / owner `ConcreteWorkerSignal` に接続し、close / Drop / 異常時閉鎖済み で `request_stop()` → `wake()` → `join_from_owner()` の順に停止する。
@@ -2066,16 +2026,17 @@ playback input FMQ の stream 境界 方針は次のとおり固定する。star
 | valid TS + delivery成功 | 成功 | 成功 | `Consumed` | 消費済み | 正常 |
 | valid TS + delivery先なし | 成功 | 成功 | `ConsumedNoDelivery` | 設計上、診断付き消費済み可 | no delivery diagnostic。filter未接続/未startedをfatalにしない |
 
-> **V55 canonical reference** — clauses `DR-0903`; original source lines 1649-1649 are superseded.
-> - Normative rule reference: `CD-e4bafb2c9420` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-e4bafb2c9420`（`DP-166`、規範）**
+
+attached sink/filterが1つ以上startedになるまでplayback consumerはFMQを読まない。別staging queueは導入せず、FMQ自体のbackpressureで待機する。sink停止でconsumerを再pauseし、queue容量超過は通常FMQ statusで通知する。
+
 
 | malformed TS | 成功 | malformed | `MalformedOnly` | 消費済み可 | malformed diagnostic。1 packet でstream全体をfailしない |
 | partial TS | 成功 | pending | 未commit | residual保持 | 次readへ持ち越し |
 
-> **V55 canonical reference** — clauses `DR-0906`; original source lines 1652-1652 are superseded.
-> - Normative rule reference: `CD-4138be949451` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-4138be949451`（`DP-083`、規範）**
 
-
+Playback consumption uses one owned staging buffer bounded by the configured playback FMQ capacity and one cursor per queue generation. FMQ beginRead/commit transfers bytes exactly once into staging; after commit, retry operates only from staging. The inject cursor advances only for bytes accepted by the backend and is monotonic, preventing duplicates. A new FMQ batch is not consumed until staging is empty. Retryable backend errors retain the remaining suffix. Fatal error, stop or close records the exact remaining-byte loss and terminal reason before discarding; no silent loss occurs. Generation change invalidates an empty cursor only; non-empty staging must be completed or explicitly terminalized first.
 
 
 ### playback consumer ワーカー 起動順序
@@ -2087,8 +2048,9 @@ DVR playback consumer ワーカー は、DVR が soft demux と `RuntimeIoRegist
 ## Frontend capability / 状態 方針
 
 
-> **V55 canonical reference** — clauses `DR-0909`; original source lines 1664-1664 are superseded.
-> - Normative rule reference: `CD-926c6165abfb` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-926c6165abfb`（`DP-084`、規範）**
+
+ISDB-T enum domains follow reviewed ARIB STD-B31 2.2 clauses and official 2.2-E1 translation provenance. Domain validity and target-driver programmability are separate. The target backend advertises/accepts AUTO for mode, modulation, code rate, guard interval and time interleave unless the TARGET_DRIVER evidence proves a concrete value is programmed and honored.
 
 
 `RF_LOCK` は backend が RF/carrier acquisition を別途取得できる場合だけ advertise する。DVB / earth_pt1 backend は Linux DVB `FE_READ_STATUS` が返す `FE_HAS_CARRIER` を `RF_LOCK`、`FE_HAS_LOCK` を `DEMOD_LOCK` に対応させる。px4_drv backend は RF/carrier ロックを返す API を持たないため、px4 の擬似 ロック は `DEMOD_LOCK` のみに使い、`RF_LOCK` には使わない。
@@ -2100,10 +2062,12 @@ DVR playback consumer ワーカー は、DVR が soft demux と `RuntimeIoRegist
 
 ### frontend settings validation の固定方針
 
-Frontend capability、AIDL input acceptance、ProductProfile、VTS tune inputは `tuner_hal2/design/decisions/frontend_setting_programming_matrix.csv` から生成する。ARIBが定義する放送パラメータ集合と、target backendが明示programできる入力集合を混同しない。具体値をadvertise/acceptできるのはdriverへprogramまたはread-back verifyする経路が存在する場合だけである。値をvalidationだけしてbackend requestから捨てる成功経路は禁止する。
+Frontend capability、AIDL input acceptance、ProductProfile、VTS tune inputは 本書「Frontend setting programming matrix」 から生成する。ARIBが定義する放送パラメータ集合と、target backendが明示programできる入力集合を混同しない。具体値をadvertise/acceptできるのはdriverへprogramまたはread-back verifyする経路が存在する場合だけである。値をvalidationだけしてbackend requestから捨てる成功経路は禁止する。
 
-> **V55 canonical reference** — clauses `DR-0914`; original source lines 1677-1677 are superseded.
-> - Normative rule reference: `CD-eec1d09349d6` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-eec1d09349d6`（`DP-085`、規範）**
+
+For target px4/earth_pt1 ISDB-T, frequency and 6 MHz/AUTO bandwidth are supported as defined by the programming matrix. Mode, layer modulation, layer code rate, guard interval and layer time interleave are AUTO-only because the current `FrontendTuneRequest`/px4 tune mapping does not carry or program concrete values. AUTO succeeds. Every concrete known value for those fields returns `UNAVAILABLE` and leaves backend and previous request unchanged. Invalid tags/ranges return `INVALID_ARGUMENT`. Capability, AIDL validation, ProductProfile and VTS tune inputs are generated from the same matrix. ARIB STD-B31 v2.2 pages 20 and 24 define the broadcast parameter domain; the AUTO-only subset is the truthful implementation capability, not an ARIB restriction.
+
 
 explicit範囲scanはISDB-T / ISDB-S共通で対応宣言しない。`endFrequency`が`frequency`と異なる場合は`UNAVAILABLE`とし、既存tune/scan stateを変更しない。
 
@@ -2115,10 +2079,10 @@ explicit範囲scanはISDB-T / ISDB-S共通で対応宣言しない。`endFrequen
 - 上記AUTO-only fieldの既知具体値は`UNAVAILABLE`、malformed union/rangeは`INVALID_ARGUMENT`とし、backend/previous requestを変更しない。
 - blind scanは`UNAVAILABLE`とする。
 
-> **V55 canonical references**
-> - `CD-926c6165abfb` programming authority
-> - `CD-eec1d09349d6` target ISDB-T matrix
-> - `CD-ecab28a4133a` ISDB-T AUTO-only contract
+**Canonical rule `CD-ecab28a4133a`（`DP-086`、規範）**
+
+ISDB-T setting validity follows the reviewed ARIB STD-B31 domain and official translation provenance. Target-driver programmability is independently authoritative. For mode, modulation, code rate, guard interval and time interleave, the target backend advertises and accepts AUTO only unless TARGET_DRIVER evidence proves that a concrete value is programmed and honored. Concrete domain values may be represented internally for parsing/testing but must not be advertised or accepted as controllable settings without that proof.
+
 
 ARIB STD-B31 v2.2のPDF page 20および24はmode、carrier modulation、inner code rate、guard interval、time interleaveの放送パラメータdomainを定義する。現backendのAUTO-onlyはARIB上の値を否定するものではなく、明示program経路がないtarget capabilityを過大広告しないためのsubsetである。
 
@@ -2129,10 +2093,18 @@ ARIB STD-B31 v2.2のPDF page 20および24はmode、carrier modulation、inner c
 - modulationとcodeRateは`AUTO`だけをadvertise・受理し、既知具体値は`UNAVAILABLE`、malformed値は`INVALID_ARGUMENT`とする。
 - blind scanは`UNAVAILABLE`とする。
 
-> **V55 canonical references**
-> - `CD-b0d4ada43334` ISDB-S matrix
-> - `CD-e605d48c671e` modulation AUTO-only
-> - `CD-041de602bb3a` code-rate AUTO-only
+**Canonical rule `CD-b0d4ada43334`（`DP-087`、規範）**
+
+For target px4/earth_pt1 ISDB-S, modulation and code rate are AUTO-only unless a future exact driver/device entry proves a concrete programmer. AUTO succeeds; concrete known enum values return `UNAVAILABLE` with no mutation; malformed values return `INVALID_ARGUMENT`. Frequency and relative/absolute selector behavior remain separately governed by the selector programming matrix and ARIB B20/B21 evidence.
+
+**Canonical rule `CD-e605d48c671e`（`DP-088`、規範）**
+
+ISDB-S modulation is AUTO-only for the target backend. BPSK/QPSK/TC8PSK explicit input returns `UNAVAILABLE` without mutation until a concrete programmer and capability evidence are added.
+
+**Canonical rule `CD-041de602bb3a`（`DP-089`、規範）**
+
+ISDB-S code rate is AUTO-only for the target backend. Every explicit code rate returns `UNAVAILABLE` without mutation until a concrete programmer and capability evidence are added.
+
 
 共通validationはbinder層のrequest変換とservice_runtime preflightで実施するが、matrixのprogramming authorityを持たない層が具体値を成功扱いにしてはならない。validation済みrequestだけをbackendへ渡し、unsupported入力では旧worker/tune stateを破壊しない。
 
@@ -2146,11 +2118,11 @@ VTS/profileでは、AV filterを使用する場合でも `isPassthrough=false` �
 
 AV filter の状態別契約、shared backing、公開済みハンドル、使用中領域、`dataId`、`releaseAvHandle()`、`flush()`、`configure()`、`close()` の副作用は、本書の「表4. AV共有メモリ資源寿命表」を正とする。本節では、allocator、NativeHandle形式、payload配置、診断方針だけを補足する。
 
-Android framework/JNIが受理する`MediaEvent` representationは `tuner_hal2/design/decisions/av_allocation_profile.csv` を正とする。shared modeでは`IFilter.getAvSharedHandle()`が一個のdma-buf/ION系fdを持つhandleを返し、各eventの`avMemory`はempty、positive `avDataId`と`offset/dataLength`がshared arena内の半開区間を識別する。event-local modeでは各eventがexact-size一個fdの`avMemory`とpositive `avDataId`を持つ。event-localはshared handle未取得/lease release済み、free fitting slotなし、またはAUがslot sizeを超える場合の正式fallbackであり、oversizeをdropしてdual-mode capabilityと矛盾させてはならない。
+Android framework/JNIが受理する`MediaEvent` representationは 本書「AV allocation profile」 を正とする。shared modeでは`IFilter.getAvSharedHandle()`が一個のdma-buf/ION系fdを持つhandleを返し、各eventの`avMemory`はempty、positive `avDataId`と`offset/dataLength`がshared arena内の半開区間を識別する。event-local modeでは各eventがexact-size一個fdの`avMemory`とpositive `avDataId`を持つ。event-localはshared handle未取得/lease release済み、free fitting slotなし、またはAUがslot sizeを超える場合の正式fallbackであり、oversizeをdropしてdual-mode capabilityと矛盾させてはならない。
 
 両modeの`avDataId`は同じbounded allocation lease poolから発行する。allocationはmemory、ledger、MediaEvent準備が全て成功してからcommitし、失敗時はcallback/dataIdを公開しない。`offset + dataLength <= backing size`を正常境界とし、overflow-safe checked additionを使う。zero-lengthはmalformedとしてeventを出さない。`isSecureMemory=false`に固定する。
 
-release形状、known-stale no-op、unknown rejection、fd identity validation、logical close後releaseは表1-C-AVHと`release_state_matrix_v55`を正とする。`releaseAvHandle(fd,0)`をshared backing全体破棄と解釈してはならず、event-local modeではframework reference状態に応じて受領handle leaseだけを閉じる場合がある。
+release形状、known-stale no-op、unknown rejection、fd identity validation、logical close後releaseは表1-C-AVHと本書「表1-C-AVH. `releaseAvHandle()` 全域判定表」を正とする。`releaseAvHandle(fd,0)`をshared backing全体破棄と解釈してはならず、event-local modeではframework reference状態に応じて受領handle leaseだけを閉じる場合がある。
 
 ### AV shared handle の `NativeHandle` 形式
 
@@ -2189,17 +2161,10 @@ AV filterを対応宣言する demux は AOSP の `getAvSyncHwId(Filter)` と `g
 `getAvSyncHwId()` は、対象 media filter に対応する PCR filter が configure 済みであれば、PCR 観測前でもその PCR filter ID を返す。PCR 観測済みかどうかを sync ID 返却の前提にしない。PCR 未観測状態は `getAvSyncTime(id)` の戻り値側で未確定値として表現する。
 
 
-> **V55 canonical reference** — clauses `DR-0950`; original source lines 1749-1749 are superseded.
-> - Normative rule reference: `CD-832bb65be403` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-
-
 ## A/V sync 非採用範囲
 
 AV filter の `start()`、共有ハンドル、MediaEvent、`releaseAvHandle()` の状態別契約は、本書の「表4. AV共有メモリ資源寿命表」を正とする。本節では A/V sync の現行境界と非採用範囲だけを固定する。
 
-
-> **V55 canonical reference** — clauses `DR-0952`; original source lines 1755-1755 are superseded.
-> - Normative rule reference: `CD-832bb65be403` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 - PTS は current A/V sync clock の 代替処理 として使わない。
 - PCR と monotonic clock の対応付けによる最小 wallclock 補間は維持する。
@@ -2217,8 +2182,9 @@ AV filter の `start()`、共有ハンドル、MediaEvent、`releaseAvHandle()` 
 ## LNB 固定 profile
 
 
-> **V55 canonical reference** — clauses `DR-0963`; original source lines 1771-1771 are superseded.
-> - Normative rule reference: `CD-a58fa66e5923` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-a58fa66e5923`（`DP-113`、規範）**
+
+LNB is a device-scoped endpoint resource governed solely by the LNB device resource contract in this document and the event-driven worker termination contract, not a static ServiceResourcePlan pool or TargetDriverTimingProfile. `getLnbIds()` enumerates successfully probed eligible endpoints. `openLnb()` acquires one endpoint lease; unknown ID returns `INVALID_ARGUMENT`; leased, CleanupPending or Quarantined endpoint returns `UNAVAILABLE` without mutation. First close commits LogicalClosed, rejects new public work, and attempts all immediate cleanup. Retryable incomplete dependencies remain CleanupPending; running workers are fenced and transferred once to ReaperSupervisor. The lease is returned exactly once only after backend and worker cleanup complete; quarantine retains it. ProductProfile may suppress LNB but cannot fabricate endpoint or voltage capability.
 
 
 LNB は satellite frontend の所有物として扱い、shared LNB の余地は置かない。`setLnb(lnb_id)` は当該 satellite frontend に紐付いた LNB ID だけを受け付け、別 frontend の LNB ID、地上波 frontend への LNB attach、不明な LNB ID は失敗させる。
@@ -2226,22 +2192,22 @@ LNB は satellite frontend の所有物として扱い、shared LNB の余地は
 `ILnb.setCallback(callback)` は、受け取ったコールバック実体を `LnbHal` 内に保持する。`callback == NULL` は AOSP契約上の callback 登録解除として成功対象に含め、保持中の callback 実体を解放する。再設定時は新しいコールバック実体で置換する。`ILnb.close()` と未閉鎖 `LnbHal` の破棄経路では保持中のコールバック実体を解放する。AOSP frozen/stable AIDL の vendor 独自改変、生の Binder transaction 解析器による公開契約を通さない実装は採用しない。
 
 
-> **V55 canonical reference** — clauses `DR-0966`; original source lines 1777-1777 are superseded.
-> - Normative rule reference: `CD-e33f02576328` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-e33f02576328`（`DP-092`、規範）**
+
+BackendApplyOutcome={Applied,Rejected,Indeterminate,RollbackFailed}。Applied→commit、Rejected→旧状態維持、Indeterminate→対象resource quarantine+UNKNOWN_ERROR、RollbackFailed→quarantine+UNKNOWN_ERROR。retryは新operation IDでだけ許可。
 
 
+**Canonical rule `CD-0035f501335a`（`DP-093`、規範）**
 
-> **V55 canonical reference** — clauses `DR-0967`; original source lines 1779-1779 are superseded.
-> - Normative rule reference: `CD-0035f501335a` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-
+Drop/owner-lossで非blocking safe-state cleanupを起動する。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
 
 
 ### LNB 状態更新の失敗時整合性
 
 
-> **V55 canonical reference** — clauses `DR-0968`; original source lines 1784-1784 are superseded.
-> - Normative rule reference: `CD-5abddd905719` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-5abddd905719`（`DP-094`、規範）**
 
+LNB backend apply後にregistry commitが失敗した場合、diagnosticへrequested state、backend apply outcome、最後に確認できたhardware state、registry errorを原子的に保存する。当該LNBをquarantineし、close/reaperで安全状態を再適用してcleanupする。
 
 
 ## 復号鍵台帳
@@ -2257,8 +2223,9 @@ LNB は satellite frontend の所有物として扱い、shared LNB の余地は
 | `RegistryUnavailable` | 台帳 lock 失敗、内部状態破損、CAS bridge registry 不在などで解決不能 | `RegistryUnavailable` または AIDL `UNKNOWN_ERROR` 相当 | 不可 | 内部障害を復号成功にしない |
 
 
-> **V55 canonical reference** — clauses `DR-0975`; original source lines 1799-1799 are superseded.
-> - Normative rule reference: `CD-ea31a3f44c02` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-ea31a3f44c02`（`DP-095`、規範）**
+
+revokeで即時invalid化し、新規/既存resolveを停止してkey materialを使用不可にする。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
 
 
 ## デスクランブル gate
@@ -2277,8 +2244,10 @@ AOSP意味論では、`IDescrambler.addPid(pid, optionalSourceFilter)` および
 | DS-001 | `addPid(pid, NULL)` | なし | valid PID、descrambler非閉鎖、demux設定済み、PID未衝突 | 成功 | demux input 全体に対する PID として登録 | NULL filter は demux input を表す。source filter id / generation は持たない |
 | DS-002 | `addPid(pid, filter)` | あり | filter が同一 demux、非閉鎖、generation 有効、pid valid | 成功 | source filter に紐づく PID として登録 | source filter id と generation を保存する |
 
-> **V55 canonical reference** — clauses `DR-0981`; original source lines 1816-1816 are superseded.
-> - Normative rule reference: `CD-17a78fc72be2` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-17a78fc72be2`（`DP-096`、規範）**
+
+closed local objectをINVALID_STATEへ統一する。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
+
 
 | DS-004 | `addPid(pid, filter)` | あり | invalid PID | `INVALID_ARGUMENT` | なし | PID 範囲外を登録しない |
 | DS-005 | `addPid(pid, filter)` | あり | descrambler 閉鎖済み、demux 未設定、別 active descrambler が同一 demux generation / PID を所有 | `INVALID_STATE` | なし | 状態衝突を引数不正として扱わない。key token 未設定は PID 登録拒否条件ではない |
@@ -2289,15 +2258,18 @@ AOSP意味論では、`IDescrambler.addPid(pid, optionalSourceFilter)` および
 | DS-010 | `addPid()` / `removePid()` | あり/なし | unsupported `DemuxPid` variant | `UNAVAILABLE` | なし | product capability 未対応に限定する。NULL filterかどうかではなくPID variantで判定する |
 
 
-> **V55 canonical reference** — clauses `DR-0989`; original source lines 1825-1825 are superseded.
-> - Normative rule reference: `CD-c3fca9bd0cfb` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-c3fca9bd0cfb`（`DP-097`、規範）**
+
+`addPid(pid, source)`は完全同一のdemux generation・PID・source filter generation tupleだけ冪等成功とする。sourceが異なる既存登録には`INVALID_STATE`を返し、変更には先行`removePid()`を必須とする。
 
 
 エラー写像:
 - `INVALID_STATE`: descrambler 閉鎖済み、demux 未設定、demux generation 消失、再検査時 state 不整合、別 active descrambler による同一 demux / demux generation / PID 所有衝突。key token 未設定は `addPid()` / `removePid()` の `INVALID_STATE` 理由にしない。
 
-> **V55 canonical reference** — clauses `DR-0992`; original source lines 1829-1829 are superseded.
-> - Normative rule reference: `CD-18226a3350a0` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-18226a3350a0`（`DP-098`、規範）**
+
+閉鎖済みsource filterは`INVALID_STATE`へ統一し、`INVALID_ARGUMENT`行を削除する。
+
 
 - `UNAVAILABLE`: unsupported `DemuxPid` variant、product capability 未対応に限定する。
 
@@ -2369,11 +2341,6 @@ LNB profile は sysfs `DEVNAME` または `/dev` basename と earth_pt1 の sysf
 | `isdbt2071video*` | `NoPower` | `NONE` |
 
 
-
-> **V55 canonical reference** — clauses `DR-1027`; original source lines 1900-1900 are superseded.
-> - Normative rule reference: `CD-a58fa66e5923` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-
-
 DVB frontend は sysfs driver basename が `earth-pt1` の場合だけ `EarthPt1FixedLnb` として採用する。frontend name に `tc90522` が含まれるだけでは採用しない。
 
 `EarthPt1FixedLnb` は `NONE`、`11V`、`15V` だけを成功にする。`13V`、`18V`、tone、DiSEqC、satellite position switching は成功扱いしない。
@@ -2384,8 +2351,9 @@ DVB frontend は sysfs driver basename が `earth-pt1` の場合だけ `EarthPt1
 ### Filter / DVR 開始 commit 境界
 
 
-> **V55 canonical reference** — clauses `DR-1030`; original source lines 1911-1911 are superseded.
-> - Normative rule reference: `CD-0996803849af` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-0996803849af`（`DP-099`、規範）**
+
+AIDL surfaceを正しcallback依存操作だけへ制限する。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
 
 
 ### PES 解析境界
@@ -2452,13 +2420,13 @@ px4 probe prefix を変更する場合は、frontend_px4系実装、`tuner_hal2/
 | T-AOSP-26 | AV `isPassthrough=false` | shared memory AV経路成功 |
 | T-AOSP-27 | AV `isPassthrough=true` | `UNAVAILABLE` |
 
-> **V55 canonical reference** — clauses `DR-1067`; original source lines 1976-1976 are superseded.
-> - Normative rule reference: `CD-a625b795dfe0` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | T-AOSP-29 | `getFrontendStatusReadiness()` 要求順・同長 | AIDL配列契約 |
 
-> **V55 canonical reference** — clauses `DR-1069`; original source lines 1978-1978 are superseded.
-> - Normative rule reference: `CD-89a38be520eb` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-89a38be520eb`（`DP-101`、規範）**
+
+SSOT修正後にtest期待値を更新する。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
+
 
 | T-AOSP-30b | `getFrontendStatusReadiness()` unsupported status type | 要求順・同長で要素ごとにUNSUPPORTED |
 | T-AOSP-31 | `tune()` 中の再`tune()` | 旧tune停止、新tune開始 |
@@ -2472,8 +2440,10 @@ px4 probe prefix を変更する場合は、frontend_px4系実装、`tuner_hal2/
 | T-AOSP-39 | `FilterDelayHint` dataのみ | data条件 |
 | T-AOSP-40 | `FilterDelayHint` time+data | OR条件 |
 
-> **V55 canonical reference** — clauses `DR-1081`; original source lines 1990-1990 are superseded.
-> - Normative rule reference: `CD-37b6e0fd27ba` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-37b6e0fd27ba`（`DP-102`、規範）**
+
+For non-close public methods, precedence is LogicalClosed→InvalidArgument→WrongLifecycle→ResourceUnavailable→BackendFailure→Success. The result of `close()` itself is not defined by this generic precedence: it is delegated exclusively to the DP-003 interface-specific close table. Late `IFilter.releaseAvHandle()` follows the AV release ledger and is not a generic post-close method.
+
 
 | T-AOSP-42 | VTS XML/profile full run | `VtsHalTvTunerTargetTest` |
 | T-AOSP-43 | VTS config audit | monitor / descrambler / AV shared / linkCaps / passthrough整合 |
@@ -2486,8 +2456,10 @@ px4 probe prefix を変更する場合は、frontend_px4系実装、`tuner_hal2/
 | T-TS-2 | 187/189 byte | reject |
 | T-TS-3 | TEI set packet | section/PES/AV assemblyへ入れない |
 
-> **V55 canonical reference** — clauses `DR-1088`; original source lines 2001-2001 are superseded.
-> - Normative rule reference: `CD-5c2a8939c31b` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-5c2a8939c31b`（`DP-163`、規範）**
+
+A complete 188-byte TS packet with TEI=1 is preserved in raw-TS and TS-record output in ingress order. The HAL increments a saturating TEI counter and keeps record byteNumber relative to bytes actually written. Section/PES/AV and other semantic consumers discard or resynchronize on that packet and emit no parsed event. Malformed sync/length is a distinct packet-local drop. Continuity discontinuity is a distinct assembler reset. None of these broadcast packet variants quarantines the queue/path; only infrastructure corruption may do so. Error-stripped raw/record output requires a separate explicit ProductProfile with its own byte-number contract.
+
 
 | T-TS-5 | adaptation_field_control reserved | reject |
 | T-TS-6 | adaptation length overflow | reject |
@@ -2514,15 +2486,14 @@ px4 probe prefix を変更する場合は、frontend_px4系実装、`tuner_hal2/
 | T-SEC-7 | EIT `section_length == 4093` | accept |
 | T-SEC-8 | EIT `section_length == 4094` | reject |
 
-> **V55 canonical reference** — clauses `DR-1109, DR-1110, DR-1111, DR-1112`; original source lines 2026-2029 are superseded.
-> - Normative rule reference: `CD-5cdd4307b4a3` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | T-SEC-13 | `SectionBits repeat=false` | one-shot |
 | T-SEC-14 | `TableInfo repeat=false` | 1 table / 1 version |
 | T-SEC-15 | `repeat=true` version更新 | 継続監視 |
 
-> **V55 canonical reference** — clauses `DR-1116`; original source lines 2033-2033 are superseded.
-> - Normative rule reference: `CD-f11f9b437f06` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-f11f9b437f06`（`DP-106`、規範）**
+
+Raw section uses the two-plane contract. A complete section envelope requires pointer/section_length bounds and a complete byte extent. If the envelope is complete but table syntax, reserved bits, CRC or semantic fields are invalid, raw bytes may be delivered only to a raw filter, no DemuxFilterSectionEvent is emitted, and a typed section-parse diagnostic is recorded. Non-raw section filters drop the block. An invalid or incomplete envelope is dropped for every filter.
 
 
 ### PES / record index 系
@@ -2544,8 +2515,9 @@ px4 probe prefix を変更する場合は、frontend_px4系実装、`tuner_hal2/
 | T-PES-13 | start code `00 00 01` TS packet境界分割 | record index検出 |
 | T-PES-14 | malformed PES後の復帰 | 次PUSIから正常復帰 |
 
-> **V55 canonical reference** — clauses `DR-1132`; original source lines 2053-2053 are superseded.
-> - Normative rule reference: `CD-29afb20f7bfd` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-29afb20f7bfd`（`DP-107`、規範）**
+
+PES uses the two-plane contract. A complete PES envelope supports valid bounded PES and packet_length=0, including headers split across TS packets. Semantic event emission additionally requires prefix, stream_id-specific optional-header form, flags, marker bits, header_data_length and PTS/DTS validation. Semantic failure suppresses DemuxFilterPesEvent; an envelope-complete raw PES filter may still receive exact bytes with a typed diagnostic. Envelope failure drops all output.
 
 
 ### MULTI2 / B25 descrambler 系
@@ -2559,43 +2531,29 @@ px4 probe prefix を変更する場合は、frontend_px4系実装、`tuner_hal2/
 | T-B25-5 | key未設定 | record pass-through + 診断 |
 | T-B25-6 | bad token | `INVALID_ARGUMENT` / 診断 |
 
-> **V55 canonical reference** — clauses `DR-1140`; original source lines 2065-2065 are superseded.
-> - Normative rule reference: `CD-c175c4d6b7f4` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | T-B25-8 | 復号成功 | scrambling_control clear |
 
-> **V55 canonical reference** — clauses `DR-1142`; original source lines 2067-2067 are superseded.
-> - Normative rule reference: `CD-e7e1b35f2ec1` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-e7e1b35f2ec1`（`DP-162`、規範）**
+
+Descrambler/TS failure behavior is governed by the failure-scope taxonomy. Infrastructure framing corruption alone quarantines the affected path. Malformed TS is packet-local drop; TEI and continuity remain path-specific; valid still-scrambled packets may remain on raw/record paths but never produce decoded semantic events. ARIB STD-B25 6.7-E1 Part 1 clauses 2.2.2.4, 2.2.2.10-2.2.2.11, 3.1.5-3.1.7, 3.2.3-3.2.4, 4.3.3.3 Tables 4-11 to 4-14, 4.8, 4.9 and 4.10 are the pinned review baseline. Those clauses establish TS-payload/per-packet scrambling, receiver-side ECM/EMM transfer to the CA module, Ks return to the receiver, scrambling detection, at least one odd/even key pair per tuner, and at least 12 simultaneous PIDs. These capacity obligations must be separately advertised and enforced. The no-public-ECM/EMM/Ks boundary is justified by the AOSP public Tuner HAL surface and least-exposure design, not asserted as verbatim STD-B25 text. HAL quarantine/error mapping remains an AOSP/internal design decision.
+
 
 | T-B25-10 | ECM/EMM/card I/O不在 | Tuner HALへ持ち込まない |
 
 
-## Canonical registry incorporation
-
-`tuner_hal2/design/canonical_rule_registry.md` is incorporated by normative reference. It is the only location containing complete `CD-*` rule text. All `V55 canonical reference` blocks in this document are non-duplicating references.
-
-
-## Capability-local authority amendment
+## Capability-local authority
 
 - Device facts are resolved by `DeviceProbeCapability`; only successfully probed frontend/LNB instances are published.
-- Demux/filter/DVR counts are defined by `tuner_hal2/design/decisions/service_object_ceiling_profile.csv` and must be enforced by the same lease ledgers.
-- AV transport/allocation/release are defined jointly by `tuner_hal2/design/decisions/av_allocation_profile.csv` and `tuner_hal2/design/decisions/av_release_state_matrix.csv`; shared arena is an optimization and exact-size event-local FD is the formal fallback. Known delayed finalization is idempotent; unknown/foreign identity is rejected.
-- Worker/LNB stop and cleanup are defined by `tuner_hal2/design/decisions/worker_termination_contract.md` and `tuner_hal2/design/decisions/lnb_device_resource_contract.csv`; no TargetDriverTimingProfile or public-path unbounded join is permitted.
-- Packet/infrastructure failure scope is defined by `tuner_hal2/design/decisions/failure_scope_taxonomy.csv`; malformed TS/TEI/continuity never inherit infrastructure quarantine.
-- Frontend advertised/accepted values are defined by `tuner_hal2/design/decisions/frontend_setting_programming_matrix.csv`, with ARIB B31 parameter-domain evidence in `tuner_hal2/design/decisions/arib_revision_bridge.csv`.
+- Demux/filter/DVR counts are defined by 本書「Service object ceiling profile」 and must be enforced by the same lease ledgers.
+- AV transport/allocation/release are defined jointly by 本書「AV allocation profile」 and 本書「表1-C-AVH. `releaseAvHandle()` 全域判定表」; shared arena is an optimization and exact-size event-local FD is the formal fallback. Known delayed finalization is idempotent; unknown/foreign identity is rejected.
+- Worker/LNB stop and cleanup are defined by 本書「Worker termination contract」 and 本書「LNB device resource contract」; no TargetDriverTimingProfile or public-path unbounded join is permitted.
+- Packet/infrastructure failure scope is defined by 本書「Failure scope taxonomy」; malformed TS/TEI/continuity never inherit infrastructure quarantine.
+- Frontend advertised/accepted values are defined by 本書「Frontend setting programming matrix」, with ARIB B31 parameter-domain evidence in 本書「VTS environment と ARIB B31 境界」.
 - A local capability failure suppresses or rejects only that capability/request. It does not block unrelated ITuner publication.
 
-> **V55 canonical references**
-> - `CD-6a647f1fda89` capability authority
-> - `CD-c175c4d6b7f4` AV allocation/release
-> - `CD-b6feea518693` CleanupPending
-> - `CD-b3bc6ffe7012` cleanup job lifecycle
-> - `CD-1b216b960772` DVR lease pool
-> - `CD-fa92b03abef6` DVR concurrency
-> - `CD-b25dddb0e92b` worker termination
 
-
-## Audit-remediation amendment
+## Capability・queue・ARIB境界の補強
 
 - Filter and SharedFilter use the HAL-internal `FilterProducerDrainGate`: a linear RAII permit is acquired only after blocking backend read/FMQ wait/parser staging and immediately before nonblocking in-memory FMQ commit or pending-event enqueue. A permit never spans Binder callback, backend I/O, FMQ/condition wait, or acquisition outside the declared lock order. Flush enters Draining without holding locks needed by permit release, rejects new permits, wakes the service-owned worker, waits for the finite nonblocking permit set to reach zero, discards unconsumed FMQ bytes and not-yet-dispatched event entries, and preserves already committed/in-flight callbacks and delivered AV allocations. Worker exit/panic releases the guard; detected poison or unfenced terminal failure closes and quarantines the filter. `QueueEpochProtocol` remains DVR-only.
 - Demux/filter/DVR capacities come from one atomically reserved C8/C4/C2/C1 `CapabilitySnapshot` evaluated after frontend/LNB probe. For each tuple, filter/object/AV values are numeric and worker/callback/reaper/cleanup slots are exact formulas over `F=successful frontend count` and `L=successful LNB count`; unresolved prose formulas are forbidden. The committed tuple is the sole caps/admission/cleanup authority and C1 is the mandatory runtime-service minimum. C1 contains one audio AV filter plus one video AV filter, therefore `av_filter_count=2`, `av_ledger_entries_total=16` and `av_reserved_bytes_total=16777216`. Tuner VTS is a separate pre-start environment binding: until the AOSP branch, frontend source, tune parameters/PIDs, enabled flows, filter/DVR queue sizes and product memory budget are declared, VTS execution is `DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED`, no default V1 XML is installed and no VTS-success claim is made. A selected static variant must fit C1 object counts and atomically reserve its exact queue-byte vector before service/VTS startup.
@@ -2604,9 +2562,171 @@ px4 probe prefix を変更する場合は、frontend_px4系実装、`tuner_hal2/
 - Target-driver and upstream-Linux evidence are separate authorities from AOSP contracts.
 
 
-## VTS environment and ARIB B31 closure
+## VTS environment と ARIB B31 境界
 
 - `VtsEnvironmentProfile=UNBOUND` installs/selects no XML or module and has no scenario. Runtime C1 remains a service minimum only.
 - `BOUND` selects exactly one declared pre-start static variant after C1 fit and exact queue-vector reservation.
 - `REJECTED` does not fall back to C1/default V1.
 - ISDB-T parameter domains for DP-084..086 use the packaged official English STD-B31 2.2-E1 under the user-approved fallback. The official 2.3 summary/sample produced no identified impact to the relevant section structure; full 2.3 text equivalence is not claimed.
+
+<!-- BEGIN INLINE CANONICAL DESIGN TABLES -->
+## Canonical design tables and protocols
+
+本章の表と状態機械は本書内の正本であり、外部の提案bundleや版番号付き成果物を実行時・設計時の参照先にしない。
+
+### CapabilitySnapshot candidates
+
+| candidate_id | rank | demux_count | filter_ts | filter_section | filter_audio | filter_video | filter_pes | filter_pcr | filter_total_slots | playback_count | record_count | dvr_total_slots | av_filter_count | av_entries_per_filter | av_bytes_per_filter | av_ledger_entries_total | av_reserved_bytes_total | tuple_worker_slots | probe_worker_slots_formula | callback_slots_formula | reaper_handle_slots_formula | cleanup_authority_slots_formula | formula_variables | selection_status | vts_profile_binding_status | vts_filter_queue_bytes_total | vts_dvr_queue_bytes_total | vts_environment_profile_id |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| C8 | 1 | 8 | 32 | 8 | 4 | 4 | 8 | 4 | 60 | 8 | 8 | 16 | 8 | 8 | 8388608 | 64 | 67108864 | 16 | 2*F | F+L+60+16 | 2*F+16 | F+L+8+60+16 | F=successful_frontend_count;L=successful_lnb_count | ORDERED_EXPLICIT_EVALUABLE_RUNTIME_CANDIDATE;VTS_ENVIRONMENT_SEPARATE | DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED | UNBOUND_ENVIRONMENT_INPUT | UNBOUND_ENVIRONMENT_INPUT | UNBOUND |
+| C4 | 2 | 4 | 16 | 4 | 2 | 2 | 4 | 2 | 30 | 4 | 4 | 8 | 4 | 8 | 8388608 | 32 | 33554432 | 8 | 2*F | F+L+30+8 | 2*F+8 | F+L+4+30+8 | F=successful_frontend_count;L=successful_lnb_count | ORDERED_EXPLICIT_EVALUABLE_RUNTIME_CANDIDATE;VTS_ENVIRONMENT_SEPARATE | DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED | UNBOUND_ENVIRONMENT_INPUT | UNBOUND_ENVIRONMENT_INPUT | UNBOUND |
+| C2 | 3 | 2 | 8 | 2 | 1 | 1 | 2 | 1 | 15 | 2 | 2 | 4 | 2 | 8 | 8388608 | 16 | 16777216 | 4 | 2*F | F+L+15+4 | 2*F+4 | F+L+2+15+4 | F=successful_frontend_count;L=successful_lnb_count | ORDERED_EXPLICIT_EVALUABLE_RUNTIME_CANDIDATE;VTS_ENVIRONMENT_SEPARATE | DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED | UNBOUND_ENVIRONMENT_INPUT | UNBOUND_ENVIRONMENT_INPUT | UNBOUND |
+| C1 | 4 | 1 | 4 | 1 | 1 | 1 | 1 | 1 | 9 | 1 | 1 | 2 | 2 | 8 | 8388608 | 16 | 16777216 | 2 | 2*F | F+L+9+2 | 2*F+2 | F+L+1+9+2 | F=successful_frontend_count;L=successful_lnb_count | ORDERED_EXPLICIT_EVALUABLE_RUNTIME_CANDIDATE;VTS_ENVIRONMENT_SEPARATE | DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED | UNBOUND_ENVIRONMENT_INPUT | UNBOUND_ENVIRONMENT_INPUT | UNBOUND |
+
+### Service object ceiling profile
+
+| resource | scope | candidate_max | advertised_count | minimum_release_count | per_owner_limit | selection_rule | enforcement | non_guarantee |
+|---|---|---|---|---|---|---|---|---|
+| LIVE_DEMUX | SERVICE_GLOBAL | 8 | CAPABILITY_SNAPSHOT_FIELD | 1 | N/A | Atomically reserve one complete explicit C8/C4/C2/C1 resource vector; commit the largest fully reserved tuple; rollback the whole provisional vector on any component failure; C1 is mandatory. | The immutable CapabilitySnapshot is the sole caps/admission/cleanup authority; CleanupPending and Quarantined remain counted until terminal release. | Caller-requested FMQ bytes are not implied by object count and remain transactional. |
+| FILTER_TS | SERVICE_GLOBAL | 32 | CAPABILITY_SNAPSHOT_FIELD | 1 | N/A | Atomically reserve one complete explicit C8/C4/C2/C1 resource vector; commit the largest fully reserved tuple; rollback the whole provisional vector on any component failure; C1 is mandatory. | The immutable CapabilitySnapshot is the sole caps/admission/cleanup authority; CleanupPending and Quarantined remain counted until terminal release. | Caller-requested FMQ bytes are not implied by object count and remain transactional. |
+| FILTER_SECTION | SERVICE_GLOBAL | 8 | CAPABILITY_SNAPSHOT_FIELD | 1 | N/A | Atomically reserve one complete explicit C8/C4/C2/C1 resource vector; commit the largest fully reserved tuple; rollback the whole provisional vector on any component failure; C1 is mandatory. | The immutable CapabilitySnapshot is the sole caps/admission/cleanup authority; CleanupPending and Quarantined remain counted until terminal release. | Caller-requested FMQ bytes are not implied by object count and remain transactional. |
+| FILTER_AUDIO | SERVICE_GLOBAL | 4 | CAPABILITY_SNAPSHOT_FIELD | 1 | N/A | Atomically reserve one complete explicit C8/C4/C2/C1 resource vector; commit the largest fully reserved tuple; rollback the whole provisional vector on any component failure; C1 is mandatory. | The immutable CapabilitySnapshot is the sole caps/admission/cleanup authority; CleanupPending and Quarantined remain counted until terminal release. | Each published AV filter additionally owns 8 ledger entries and 8 MiB reserved AV budget; no live eviction. |
+| FILTER_VIDEO | SERVICE_GLOBAL | 4 | CAPABILITY_SNAPSHOT_FIELD | 1 | N/A | Atomically reserve one complete explicit C8/C4/C2/C1 resource vector; commit the largest fully reserved tuple; rollback the whole provisional vector on any component failure; C1 is mandatory. | The immutable CapabilitySnapshot is the sole caps/admission/cleanup authority; CleanupPending and Quarantined remain counted until terminal release. | Each published AV filter additionally owns 8 ledger entries and 8 MiB reserved AV budget; no live eviction. |
+| FILTER_PES | SERVICE_GLOBAL | 8 | CAPABILITY_SNAPSHOT_FIELD | 1 | N/A | Atomically reserve one complete explicit C8/C4/C2/C1 resource vector; commit the largest fully reserved tuple; rollback the whole provisional vector on any component failure; C1 is mandatory. | The immutable CapabilitySnapshot is the sole caps/admission/cleanup authority; CleanupPending and Quarantined remain counted until terminal release. | Caller-requested FMQ bytes are not implied by object count and remain transactional. |
+| FILTER_PCR | SERVICE_GLOBAL | 4 | CAPABILITY_SNAPSHOT_FIELD | 1 | N/A | Atomically reserve one complete explicit C8/C4/C2/C1 resource vector; commit the largest fully reserved tuple; rollback the whole provisional vector on any component failure; C1 is mandatory. | The immutable CapabilitySnapshot is the sole caps/admission/cleanup authority; CleanupPending and Quarantined remain counted until terminal release. | Caller-requested FMQ bytes are not implied by object count and remain transactional. |
+| DVR_PLAYBACK | SERVICE_GLOBAL | 8 | CAPABILITY_SNAPSHOT_FIELD | 1 | 1 per demux | Atomically reserve one complete explicit C8/C4/C2/C1 resource vector; commit the largest fully reserved tuple; rollback the whole provisional vector on any component failure; C1 is mandatory. | The immutable CapabilitySnapshot is the sole caps/admission/cleanup authority; CleanupPending and Quarantined remain counted until terminal release. | When VtsEnvironmentProfile is UNBOUND, no XML/module/scenario is selected and VTS admission is forbidden. When BOUND, requested queue bytes come only from the declared static variant and remain transactional; no C1/default fallback. |
+| DVR_RECORD | SERVICE_GLOBAL | 8 | CAPABILITY_SNAPSHOT_FIELD | 1 | 1 per demux | Atomically reserve one complete explicit C8/C4/C2/C1 resource vector; commit the largest fully reserved tuple; rollback the whole provisional vector on any component failure; C1 is mandatory. | The immutable CapabilitySnapshot is the sole caps/admission/cleanup authority; CleanupPending and Quarantined remain counted until terminal release. | When VtsEnvironmentProfile is UNBOUND, no XML/module/scenario is selected and VTS admission is forbidden. When BOUND, requested queue bytes come only from the declared static variant and remain transactional; no C1/default fallback. |
+
+### AV allocation profile
+
+| parameter | value | scope | authority | behavior |
+|---|---|---|---|---|
+| transport_profile | DUAL_SHARED_PLUS_EVENT_LOCAL | per AV filter generation | AOSP MediaEvent/JNI dual representation | shared fitting slot preferred; event-local exact-size fallback consumes same budget |
+| combined_live_entry_ceiling | 8 | per AV filter generation | source-derived shared backing capacity + single ledger | shared and event-local allocations both consume one entry; no reuse before terminal release |
+| combined_live_byte_budget | 8388608 | per AV filter generation | resource-safety bound derived from existing 8 x 1 MiB backing; not codec AU maximum | shared/event-local live bytes charged together; no lossless-delivery guarantee |
+| service_reserved_byte_budget | snapshot.av_filter_count * 8388608 | service instance | CapabilitySnapshot | C1 evaluates to 2 * 8388608 = 16777216; reserved atomically with runtime candidate tuple |
+| shared_slot_count | 8 | per AV filter | source-derived allocator | implementation optimization; consumes combined entries/bytes |
+| shared_slot_size_bytes | 1048576 | per shared slot | source-derived allocator | fitting free slot preferred; not a codec maximum |
+| event_local_max_bytes | remaining per-filter budget, at most 8388608 | per allocation | combined byte ledger | exact-size only when request <= 8388608 and fits remaining budget; 8388609 is rejected before publication |
+| allocation_failure | UNAVAILABLE_OR_TYPED_OVERFLOW_BEFORE_CALLBACK | per event | allocation transaction | drop event; publish no dataId; never evict live allocation; oversize and exhaustion are distinguishable diagnostics |
+| data_id | CHECKED_POSITIVE_SIGNED_63_BIT_NEVER_REUSED | service lifetime | AV ledger | exhaustion rejects allocation |
+| delivered_lifetime | ACTIVE_OR_RELEASE_ONLY_UNTIL_RELEASE | allocation | release matrix | flush/reconfigure/logical close never reclaim delivered storage |
+
+### Failure scope taxonomy
+
+| variant | detection_boundary | examples | raw_ts | record_ts | semantic_section_pes_av | worker_or_path_state | public_result | diagnostic | quarantine_rule |
+|---|---|---|---|---|---|---|---|---|---|
+| InfrastructureCorrupt | FMQ/native transaction/control plane | descriptor grantor out of range; impossible transaction length; queue control block invariant failure; EventFlag object corruption | not applicable/stop affected path | not applicable/stop affected path | stop affected path | fence and quarantine affected queue/path | UNKNOWN_ERROR or operation-specific infrastructure failure | typed InfrastructureCorrupt with identity/epoch/direction | REQUIRED for the affected infrastructure path; service/global quarantine is permitted only for InfrastructureCorrupt or FatalUnfencedGlobalMutation. FatalOwnedIo may use owner/path-local quarantine only when its own cleanup is incomplete. |
+| PacketMalformed | 188-byte TS ingress validation | length != 188; sync != 0x47; reserved adaptation_control; adaptation length overflow | drop malformed packet | drop malformed packet; byteNumber counts bytes actually written | drop; reset only affected partial assembler when required | continue | no per-packet AIDL failure | saturating malformed_ts counter + typed reason | FORBIDDEN |
+| TransportErrorIndicator | validated 188-byte TS header | TEI=1 | preserve in arrival order | preserve; byteNumber tracks actual bytes | discard/resynchronize; emit no parsed event | continue | none | tei_packets_observed and per-semantic TEI discard | FORBIDDEN |
+| ContinuityDiscontinuity | PID continuity/adaptation discontinuity | CC gap; discontinuity_indicator | preserve | preserve | reset PID-local assemblers/generation; no cross-boundary concatenation | continue | none | typed PID/generation discontinuity | FORBIDDEN |
+| SemanticParseFailure | section/PES/record-index parser | bad section length/CRC/reserved bits; malformed PES header/PTS marker | preserve validated TS | preserve validated TS | drop affected semantic unit and restart at legal boundary | continue | none | typed parser reason and PID | FORBIDDEN |
+| NoUsableDescramblerKey | descrambler policy | scrambled packet without active matching key | preserve scrambled packet | preserve scrambled packet | emit no decoded semantic event | continue | none | scrambled_without_key saturating counter | FORBIDDEN |
+| FatalOwnedIo | owned source/driver/EventFlag runtime | permanent read/ioctl failure; closed required device; unrecoverable owned EventFlag failure | stop affected path | stop affected path | stop affected path | terminal failed for owner-local runtime | UNKNOWN_ERROR/UNAVAILABLE by operation boundary | typed primary failure | owner/path-local quarantine only if that owner cleanup is incomplete; never infrastructure/service-global without a FatalUnfencedGlobalMutation witness |
+| FatalUnfencedGlobalMutation | cleanup/reaper supervision | residual worker can mutate global state after generation revoke | not applicable | not applicable | not applicable | service-critical evidence; block only affected authority unless global mutation proven | service-critical projection | typed witness of unfenced global mutation | REQUIRED for the proven unfenced authority; service/global escalation requires an explicit global-mutation witness |
+
+### Frontend setting programming matrix
+
+| backend | immutable_commit | frontend | setting | accepted_input | driver_observation | result | invalid_input_result |
+|---|---|---|---|---|---|---|---|
+| px4_drv | c2a031db8771ddd6e3e0b3b4a712b64ec384139b | ISDB-T | frequency | valid backend range | programmed by r850_set_frequency | SUPPORTED | invalid range -> INVALID_ARGUMENT |
+| px4_drv | c2a031db8771ddd6e3e0b3b4a712b64ec384139b | ISDB-T | modulation/coderate/guard/interleave | AUTO | no caller-selectable programming path | AUTO_ONLY | any concrete value -> INVALID_ARGUMENT |
+| px4_drv | c2a031db8771ddd6e3e0b3b4a712b64ec384139b | ISDB-S | frequency | valid backend range | programmed by rt710_set_params | SUPPORTED | invalid range -> INVALID_ARGUMENT |
+| px4_drv | c2a031db8771ddd6e3e0b3b4a712b64ec384139b | ISDB-S | RELATIVE_STREAM_NUMBER | 0..11 | TMCC slot resolves to TSID | SUPPORTED | outside 0..11 invalid for relative selector |
+| px4_drv | c2a031db8771ddd6e3e0b3b4a712b64ec384139b | ISDB-S | STREAM_ID | 12..65535 | used as absolute TSID | SUPPORTED_WITH_LOW_RANGE_AMBIGUITY_REJECTED | 0..11 absolute -> INVALID_ARGUMENT |
+| px4_drv | c2a031db8771ddd6e3e0b3b4a712b64ec384139b | ISDB-S | modulation/coderate/rolloff/symbol-rate | AUTO/fixed | fixed 28860/mode4; no caller mapping | AUTO_OR_FIXED_ONLY | arbitrary concrete -> INVALID_ARGUMENT |
+| earth_pt1 | ffc253263a1375a65fa6c9f62a893e9767fbebfa | ISDB-T | frequency | supported channel-derived frequencies | driver tunes channel/frequency path | SUPPORTED | out-of-domain -> INVALID_ARGUMENT |
+| earth_pt1 | ffc253263a1375a65fa6c9f62a893e9767fbebfa | ISDB-T | modulation/coderate/guard/interleave | AUTO | no AIDL concrete programming proof in pinned pt1.c | AUTO_ONLY | any concrete value -> INVALID_ARGUMENT |
+| earth_pt1 | ffc253263a1375a65fa6c9f62a893e9767fbebfa | ISDB-S | frequency/TS selector | driver-supported path only | no generic concrete modulation/coderate programming proof | SUPPORTED_FOR_PROVEN_FIELDS_ONLY | unproven concrete field -> INVALID_ARGUMENT |
+
+### LNB device resource contract
+
+| backend | immutable_commit | aosp_surface | driver_fact | design_contract | resource_rule | source_locator |
+|---|---|---|---|---|---|---|
+| px4_drv feat/android-ddk | c2a031db8771ddd6e3e0b3b4a712b64ec384139b | ILnb.setVoltage / ITuner.openLnb | 0 or 15 V only | Expose OFF and 15V-capable path only; reject unsupported mappings | device-scoped shared voltage state serialized/reference-counted | driver/px4_device.c blob cfed72f...; driver/ptx_chrdev.c blob 18f074... |
+| earth_pt1 Linux v6.6 | ffc253263a1375a65fa6c9f62a893e9767fbebfa | ILnb.setVoltage | pt1.c maps SEC_VOLTAGE_13 to 11V and SEC_VOLTAGE_18 to 15V | Backend-specific mapping only; no global voltage assumption | device-scoped LNB endpoint | drivers/media/pci/pt1/pt1.c at Linux v6.6 commit |
+
+### VTS environment design hold
+
+| input_id | required_input | decision_rule | status |
+|---|---|---|---|
+| VTS-ENV-01 | AOSP branch and Tuner VTS configuration schema/version | Bind only to the exact target VTS loader/schema; no cross-version assumption | UNDECLARED_DESIGN_HOLD |
+| VTS-ENV-02 | Frontend source and tune/scan parameters | Declare hardware or software source, frequency, stream ID/type and signal availability before selecting XML | UNDECLARED_DESIGN_HOLD |
+| VTS-ENV-03 | Audio/video/record PIDs and enabled data flows | Only flows with an available source and supported HAL path may be present | UNDECLARED_DESIGN_HOLD |
+| VTS-ENV-04 | Filter and DVR buffer sizes | Use exact declared static-variant values as a startup resource vector; do not infer them from object counts | UNDECLARED_DESIGN_HOLD |
+| VTS-ENV-05 | Product process-memory and FMQ allocation budget | Reserve the complete declared queue vector atomically before service/VTS startup or reject the profile | UNDECLARED_DESIGN_HOLD |
+| VTS-ENV-06 | Static variant filename/module and ro.vendor.vts_tuner_configuration_variant | Install/select only the declared variant before the VTS process starts; runtime renderer is forbidden | UNDECLARED_DESIGN_HOLD |
+| VTS-STATE-UNBOUND | No complete VtsEnvironmentProfile | Do not select/install XML or module; scenario is null; runtime C1 remains allowed independently | DESIGN_HOLD |
+| VTS-STATE-BOUND | All six inputs declared; object demand fits C1; exact queue vector reserved | Select exactly one declared pre-start static variant; no automatic fallback | BOUND_STATIC_VARIANT |
+| VTS-STATE-REJECTED | Object demand exceeds C1 or queue reservation fails | Reject profile; preserve runtime CapabilitySnapshot; do not choose C1/default XML as fallback | PROFILE_REJECTED |
+
+### Queue and producer private protocols
+
+#### Scope
+
+Stable Tuner AIDL is unchanged. `QueueEpochProtocol` is DVR-only. `FilterProducerDrainGate` is process-local to Filter/SharedFilter and creates no Binder endpoint, parcelable token or shared-memory control plane.
+
+#### FilterProducerDrainGate
+
+State is exactly `Open`, `Draining`, or `Closed`. The gate stores checked `filter_delivery_generation`, `parser_state_generation`, `admitted_producer_count`, and a bounded service-owned pending-event queue. A nonparcelable linear `FilterProducerPermit(g)` is RAII-owned and released exactly once.
+
+##### Permit scope and finite drain
+
+1. Blocking backend reads, FMQ waits, parser input accumulation and all external I/O occur before permit acquisition.
+2. The permit is acquired immediately before the nonblocking in-memory commit that writes FMQ bytes or enqueues an immutable callback artifact. It may cover only declared object-local locks in the established lock order.
+3. It never spans a Binder callback, backend/device I/O, FMQ wait, condition-variable wait, thread join, allocator operation that may block, or acquisition of a service lock needed by flush.
+4. Binder invocation consumes an immutable artifact after permit release. A dequeued/in-flight callback is already committed; flush does not cancel or wait for the Binder call. A pending artifact not yet dequeued is unconsumed and may be discarded by flush.
+5. Worker exit, panic unwind and cancellation own the RAII guard and therefore release the permit. The service-owned nonblocking critical section gives structural finite drain without an arbitrary timer. Lock poison, owner-terminal failure or evidence of an unfenced holder is a typed invariant failure: the object transitions to `Closed`, waiters wake, and the filter is quarantined.
+6. Flush waits without holding any lock that permit release requires.
+
+##### Flush
+
+1. Validate descriptor identity and transition `Open -> Draining`.
+2. Reject new permits and wake/cancel the service-owned delivery worker.
+3. Wait for `admitted_producer_count == 0` under the finite-scope rules above.
+4. Prepare an identity-preserving libfmq clear; do not mutate pointers or generations during preparation.
+5. Atomically clear unconsumed FMQ bytes and not-yet-dispatched pending event artifacts. Preserve dequeued/in-flight callbacks, callback registration, monitor/hint state, source binding, descriptor identity and all delivered AV allocations.
+6. Reset parser/PCR/startId state, increment only `parser_state_generation`, preserve `filter_delivery_generation`, transition `Draining -> Open`, and wake waiters.
+
+A pre-commit drain/identity/clear failure restores `Open` with content, pointers, events and generations unchanged. An impossible partial infrastructure commit is `InfrastructureCorrupt`, closes and quarantines the object, and is never reported as successful rollback.
+
+##### Close and owner loss
+
+`Open|Draining -> Closed`; no new permit or event enqueue is admitted. Pending undelivered artifacts are discarded, dequeued/in-flight callbacks remain already committed, waiters wake, and terminal cleanup owns remaining resources. Checked generation exhaustion closes the gate and returns `UNAVAILABLE`; generations are never reused.
+
+#### QueueEpochProtocol for DVR
+
+State is exactly `Open(g)`, `Draining(g)` or `Closed`. `beginRead/beginWrite` returns a nonparcelable one-shot token containing queue identity, checked queue epoch, direction and reservation. `commit/cancel` consumes it exactly once. Flush enters `Draining`, rejects new transactions, waits for admitted transactions of epoch g, atomically clears the DVR queue, advances to checked g+1 and returns to `Open`. Failure preserves pointers/content and epoch. Close/owner death closes the identity, makes all tokens stale and wakes waiters. Descriptor replacement closes the old identity and creates a distinct identity at epoch zero.
+
+#### Independent axes
+
+`queue_epoch`, `filter_delivery_generation`, and `parser_state_generation` are never aliases or advanced as one bundled generation.
+
+### Worker termination contract
+
+This contract is event-driven. It contains no retry interval, join grace, or terminal millisecond deadline.
+
+#### States
+
+`Running(owner_generation)`, `StopSignalled(owner_generation)`, `Completed(report)`, `CleanupPending(dependencies)`, `Quarantined(fenced_generation,reaper_lease)`, `Released`, and `ServiceCritical(witness)`.
+
+#### Transition rules
+
+1. Stop/close sends every available cancellation and wake primitive once and records each outcome.
+2. If completion is already observable, the caller collects the report, performs all residual cleanup, and releases the lease.
+3. A retryable incomplete non-running dependency becomes `CleanupPending`; only repeated close, owner-death supervision, dependency-completion notification, or service reset may resume it. Triggers coalesce by `{owner_kind, owner_id, owner_generation, dependency}`.
+4. A worker that is still running is generation-revoked and mutation-fenced before transfer. It becomes `Quarantined` and its join handle is transferred exactly once to `ReaperSupervisor`. The public caller never blocks on join.
+5. The worker/resource/LNB endpoint lease remains consumed while CleanupPending or Quarantined. Reaper completion performs residual cleanup and releases the lease exactly once.
+6. Reaper capacity is statically bounded by enforced live-worker ceilings. It does not create retry timer jobs; it waits on actual termination/service-reset events.
+7. Transfer failure, failure to establish fencing, or a typed witness that the worker can still mutate unfenced global state becomes `ServiceCritical`. A fully fenced owner-local residual cannot shut down unrelated ITuner capabilities.
+8. Public operation result preserves the primary operation result; later cleanup failures are returned only where the interface cleanup contract requires them and are always recorded in the typed aggregate cleanup report.
+
+#### Filter drain connection
+
+Filter producer permits are short nonblocking RAII scopes and are not reaper-owned worker lifetimes. A delivery worker may be cancelled/woken by flush, but flush waits only for permit release, never for Binder callback completion or an unbounded thread join. A terminal worker failure releases any guard during unwind; lock poison or an unfenced terminal report closes/quarantines the filter.
+
+#### LNB connection
+
+LNB logical close uses the same transitions. `LogicalClosed+CleanupPending` allows close only as a recovery retry. `Quarantined` is internal-reaper-owned. The endpoint lease is not returned to `openLnb()` admission until terminal cleanup is complete.
+
+<!-- END INLINE CANONICAL DESIGN TABLES -->

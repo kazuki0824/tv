@@ -1,6 +1,5 @@
 # tuner_hal2 DESIGN_JA.md
 
-> **V48R4 trace policy (non-normative)** — `V55 canonical reference` blockquotes are mapping/audit annotations only. Normative meaning is owned by the canonical rule registry, the explicit state tables, and the non-quoted contract paragraphs in this document. Duplicate trace blocks never create an additional rule or exception.
 
 ## 1. 文書スコープと既存契約との関係
 
@@ -77,13 +76,6 @@ AIDL method body は object handle 取得、service_runtime use-case 呼び出�
 状態変更を伴う AIDL method では、AIDL 層で `ensure_open()` → public id 解決 → runtime validate → plan-only status 写像 → commit を別々に組み立ててはならない。object wrapper / tuner service に plan-only public helper や public thin wrapper を置かず、object method executor の正本は `aidl_service::object_runtime` façade に限定する。unavailable / unsupported 経路は `plan_unavailable_object_method_use_case()`、object pure query は `ObjectQueryRequest` / `ObjectQueryResponse` を使う `execute_object_query_use_case()`、root query / command は `RootQueryRequest` / `RootQueryResponse` / `RootCommandRequest` を使う `service_runtime::root_method_txn` へ寄せる。supported mutating method は object handle / generation、domain request または domain request builder、`service_runtime::object_method_txn` が dispatch planning成功後に直接発行した単一の `ObjectMethodExecutionToken` を service_runtime の object-handle based use-case façade へ渡す。service_runtime の統一 `*_for_object` use-case は token を消費して domain operation へ進み、同じ `plan_object_method_dispatch()` を再実行しない。object live/generation 検証、method planning、runtime validate、dispatch planning は `object_method_txn` または root method transaction 境界で一度だけ行い、domain use-case は state reservation、commit/rollback/quarantine を所有する。fallible request-builder は object live/generation 検証と同一 runtime critical section 内で実行する。AIDL入力のdomain変換に現在runtime stateが必要な場合（例: `IFilter.configure()` の current open type）は、AIDL層で先にruntime queryを行わず、service_runtime use-case へ純粋な変換closureまたは marker request を渡し、runtime state取得とdomain request確定を同一 method transaction 内で行う。callback rollback だけを包む wrapper、profile validation だけを包む wrapper、close helper だけを包む wrapper も同じ非許容類型とする。
 
 ObjectMethodTxn は全 object method を機械的に包む共通層ではない。ObjectMethodTxn / request-builder helper が必須なのは、AIDL入力変換が失敗し得る method、child open、source relation、callback registration、object pure query、unavailable / unsupported / plan-only など、status precedence を壊しやすい経路である。object pure query は `ObjectQueryRequest` / `ObjectQueryResponse` に閉じ、dispatch preflight 後に `RuntimeQuery<'_>` の read-only snapshot だけを使う。query closure、`&mut TunerServiceRuntime` を受け取る façade、query 用 request-builder façade は置かない。request-builder を持たない単純 mutating method は、service_runtime use-case 側で live/generation/kind 確認、dispatch planning、domain operation の順序を守ればよく、不要に `ObjectMethodTxnPlan` / `ObjectMethodExecutionToken` へ移行しない。fallible な domain request は object live/generation 検証後、かつ同一 runtime critical section 内で確定する。builder failure では dispatch planning / domain operation を実行せず、dispatch planning failure では domain operation を実行しない。dispatch planning成功後、`service_runtime::object_method_txn` はvalidation/reservation lock内で単一のnon-Clone `ObjectMethodExecutionToken`を直接生成する。AIDL closure、top-level use-case façade、domain operationへ別のproof/authorityを渡してはならない。token は対象 `AidlObjectId` / generation / kind を直接保持する。消費側の統一 `*_for_object` use-case は同じ対象に対してだけ `consume_for_object()` で token を消費する。unavailable / unsupported / plan-only 経路は domain operation を実行しないため、`ObjectMethodTxnPlan` だけを返す plan-only helper を使い、`ObjectMethodExecutionToken` を発行して捨ててはならない。`ObjectMethodTxnPlan` は `object_method_txn` 内で生成され、`AidlMethodCall` から AIDL transaction table を引いて得た `CommandPlan` と `RuntimeExecutableRequest` を束ねる。AIDL 層で `AidlMethodAdapter::plan()` や `runtime_executable_request()` 抽出を呼んではならない。`CommandPlan` は caller が transaction 名を持ち込んで照合する値ではなく、transaction 名は AIDL transaction table 側だけが所有する。plan-unavailable / unsupported 経路も同じ `ObjectMethodTxnPlan` planning 境界を通す。旧 service_runtime 側低レベル executor module は廃止済みである。runtime lock / shared runtime executor は `aidl_service::object_runtime` の内部実行境界とし、個別 AIDL method body や service_runtime use-case 境界へ低レベル closure executor として露出しない。
-
-
-> - Normative rule reference: `CD-23d2e1c35c4f` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-
-
-> **V55 canonical reference** — clauses `DR-1185`; original source lines 82-82 are superseded.
-> - Normative rule reference: `CD-23d2e1c35c4f` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 
 通常の supported public API planning は `AidlMethodCall::PublicApi` を使う。unsupported-by-design API の戻り値生成だけ `AidlMethodCall::UnsupportedPublicApi` を使う。query / open / 状態取得系の supported API を unsupported planning に流用しない。
@@ -201,29 +193,25 @@ AIDL method body は、fallible な AIDL input -> domain request 変換、callba
 
 | 既存契約上の境界 | tuner_hal2の実体 | 既存契約との関係 |
 |---|---|---|
-| public close lifecycle / ObjectCloseTxn | `aidl_service::object_runtime::{close_object_after_close_preflight}` と `service_runtime::object_close_txn` | canonical rule `CD-23d2e1c35c4f` (registry) |
-| Drop leak terminalization | `aidl_service::object_runtime::drop_leak_object()` と `RuntimeObjectTable::quarantine_cascade()` | canonical rule `CD-607c3aafef57` (registry) |
 
-> **V55 canonical reference** — clauses `DR-1248, DR-1249`; original source lines 188-189 are superseded.
-> - Normative rule reference: `CD-23d2e1c35c4f` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-607c3aafef57` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | callback registration transaction | `object_runtime` façade、callback artifact bridge、service_runtime callback registration / cleanup use-case、`callback_store`、`RuntimeCallbackRegistry`、domain runtime callback commit | setCallback 主経路は `object_runtime` の AIDL façade 入口を通る。ただし AIDL façade が行うのは typed callback Strong の artifact retain / clear bridge と Binder status 変換だけであり、artifact retain bridge は service_runtime の object-method live / dispatch preflight 後にだけ実行する。`RuntimeCallbackRegistry` registration、domain runtime commit、rollback command 生成、unhealthy marking、primary+cleanup failure composition は service_runtime の callback registration / cleanup use-case が所有する。child object open は child runtime/object registration 成功後、typed AIDL object 生成前に callback artifact bridge 結果を service_runtime finish use-case へ渡す。callback artifact retain failure 時または typed Binder object 生成 failure 時の child open rollback 要否と failure composition は service_runtime child-open finish use-case が決める |
-| child object open transaction | `aidl_service::child_object_open::{open_filter_child_for_owner_object_with_request_builder, open_dvr_child_for_owner_object_with_request_builder}` + `service_runtime::{open_filter_child_runtime_for_demux_object, open_dvr_child_runtime_for_demux_object, rollback_filter_child_open_after_aidl_failure, rollback_dvr_child_open_after_aidl_failure}` | canonical rule `CD-62c3099decc5` (registry) |
+**Canonical rule `CD-62c3099decc5`（`DP-136`、規範）**
+
+reservation/preflightと外部prepareを分け、lock内をowner再検証とcommitへ限定する。この規則を唯一のSSOTとし、旧分岐・重複表・例外規則を削除する。
+
 | open rollback completion | `service_runtime::open_rollback` | root / child object open の post-registration failure は、object-table rollback が失敗しても runtime unregister / close を必ず試行し、primary failure と cleanup failure を composed failure 方針で扱う。各 open transaction はこの方針に接続し、独自に早期 return して後続 cleanup を飛ばしてはならない。 |
 
-> **V55 canonical reference** — clauses `DR-1253`; original source lines 193-193 are superseded.
-> - Normative rule reference: `CD-62c3099decc5` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 | cleanup execution report / shared cleanup diagnostics | `service_runtime::cleanup_execution::{CleanupExecutionReport<TStepOutcome, TFailure>, CleanupExecutionDiagnosticSnapshot<TRecord>, SharedCleanupDiagnostics<TRecord>}` | cleanup 系 top-level use-case が all-attempt step outcome を保持し、public failure 用 first-error projection、bounded diagnostic snapshot、dropped count、shared diagnostic sink を共通化する上位部品。object close / drop-leak terminalization と frontend worker cleanup はこの pattern に接続する。共通化するのは report/snapshot/shared-store の execution pattern であり、対象 id、generation、step kind、domain failure 型は domain-specific typed adapter に残す。object cleanup は `ObjectCleanupStepOutcome::{Artifact,Domain,Runtime}` と `ObjectCleanupObjectTarget`、frontend worker cleanup は `FrontendWorkerCleanupStepOutcome` の step-specific variants と `FrontendWorkerCleanupTarget` / `FrontendWorkerCleanupWorkerGeneration` で context を表現し、`Option` field bag や `String` detail へ丸めて object cleanup と frontend worker cleanup を無理に同一 record 化してはならない。 |
 | multi-step cleanup first-error collector | `maleicacid_tuner_hal2_common::FirstErrorCollector` | owner-loss / callback cleanup など、cleanup execution report の leaf step 内で必要になる複数 cleanup stepをすべて試行し、最初に発生した cleanup error を保持する補助部品。object close / drop-leak terminalization および frontend worker cleanup の top-level step 集約は `CleanupExecutionReport<_, _>` が所有し、FirstErrorCollector はその top-level report の代替にならない。collector は状態遷移、診断記録、rollback 本体、primary failure と cleanup failure の合成を所有しない。primary failure が既に存在する経路では、failure composition helper 群で primary と cleanup を合成する。 |
 | root object open transaction | `service_runtime::root_object_ops` と `aidl_service::tuner_service::{*_object_from_entry, rollback_root_object_open_after_aidl_failure}` | ITuner root open (`openFrontendById` / `openDemux` / `openDemuxById` / `openDescrambler` / `openLnbById` / `openLnbByName`) の runtime allocation、availability query、method planning、AIDL object table registration、runtime open、失敗時rollbackを service_runtime の root object open use-case 境界へ寄せる。AIDL側は returned entry から typed Binder object を生成し、Binder object 生成失敗時は service_runtime rollback helper を呼ぶだけにする。rollback は `finish_open_rollback()` を通し、object-table 側 rollback が失敗しても runtime unregister / close を必ず試行する。object table failure は共通 `object_table_error_to_hal()` で `RuntimeObjectTableError` の意味を保ち、duplicate / lifecycle / owner / kind mismatch を `HalError::Internal` に丸めて `UNKNOWN_ERROR` へ落とさない。generation overflow は内部カウンタ枯渇として `Internal` を維持する。runtime registry allocation / commit failure は共通 `registry_commit_error_to_hal()` を使い、duplicate は `INVALID_STATE`、missing/mismatch は対象APIの invalid input、id exhausted は `UNKNOWN_ERROR` へ分離する。`RuntimeObjectEntry` 取得後の public id 変換失敗も後段失敗として root object open rollback 対象にする。 |
-| AIDL object method planning | `aidl_service::object_runtime::{plan_unavailable_object_method_use_case, execute_object_runtime_use_case, execute_object_runtime_use_case_with_request_builder, execute_shared_object_runtime_use_case, execute_shared_object_runtime_use_case_with_request_builder, execute_object_query_use_case}` + `service_runtime::{object_method_txn, method_dispatch}` | canonical rule `CD-de39c931c827` (registry) |
+**Canonical rule `CD-de39c931c827`（`DP-138`、規範）**
+
+Dispatch and execution use one non-Clone one-shot ExecutionToken containing object_id, object_generation, owner_id, method_domain and nonce. It is created under the validation/reservation lock in Prepared state, transferred exactly once to the executor, and consumed exactly once immediately before the first externally visible side effect. States are Prepared, Transferred, Consumed, Cancelled and Invalidated. Duplicate consume, stale generation, wrong owner or method returns a typed authority error with no side effect. Cancellation before consumption invalidates the token. Owner death and object close invalidate all unconsumed tokens. After execution failure the token is never returned; retry requires a new validation and token. No second proof/execution authority exists outside this state machine.
+
 | public close helper | `aidl_service::object_runtime::{close_object_after_close_preflight}` + `service_runtime::object_close_txn` | `CD-23d2e1c35c4f`と上記public close state tableを唯一のSSOTとする。Liveではlogical closeを先にcommitしてall-attempt cleanupを実行する。LogicalClosed+CleanupPendingではpending stepだけを回復再試行する。LogicalClosed+CleanupCompleteではFrontend/LNBのみSUCCESS no-op、DVR/FilterはINVALID_STATE。Quarantinedはpublic closeを拒否し、内部reaperだけがcleanup authorityを持つ |
 
-> **V55 canonical reference** — clauses `DR-1259, DR-1260`; original source lines 199-200 are superseded.
-> - Normative rule reference: `CD-de39c931c827` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-23d2e1c35c4f` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 ### 4.1 AIDL method category と責務正本
 | AIDL method category | Required 正本 | 備考 |
@@ -266,9 +254,10 @@ Lifecycle helper の用途は次に固定する。
 source 切替の demux runtime 内処理は `SourceBoundaryTxn` を通す。`SourceBoundaryTxn` は sink endpoint、queue 存在、generation 増分可能性を検証した後に sink queue clear、demux generation boundary、packet pipeline reset を行い、その後で既存 upstream を disconnect する。既存 upstream disconnect、sink filter queue clear、demux generation boundary、packet pipeline reset を `set_filter_source_non_null()` に手書きしない。source boundary 失敗時は sink source を新 source へ commit せず、precondition / generation validation failure では既存 source も disconnect しない。mutation 開始後の generation boundary / downstream disconnect failure では boundary 開始前 snapshot へ rollback し、rollback failure 時は demux を quarantine する。`setDataSource(null)` も source boundary を通し、queue clear / generation boundary / packet pipeline reset と source disconnect を同じ source boundary として扱う。
 TS main type の `linkCaps` を広告するため、AIDL/VTS が TS subtype `UNDEFINED` または `TS` で開いた filter は `TsRaw` として扱う。`setDataSource(source)` の non-null source 経路では、source が `TsRaw` であり、sink が `TsRaw` または `TsRecord` の場合、同一 demux / lifecycle / PID 条件を満たす限り sink subtype として拒否してはならない。`TsRecord` sink は record DVR へ attach される終端 sink として扱い、source filter origin からの TS packet も record index / record DVR mirror の対象にする。その他未分類 sink は `setDataSource` の sink として unsupported / unavailable 系へ落とす。
 
-> **V55 canonical reference** — clauses `DR-1287`; original source lines 241-242 are superseded.
-> - Normative rule reference: `CD-c126cb6caa91` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-1a3afe124d5f` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-c126cb6caa91`（`DP-002;DP-038;DP-149`、規範）**
+
+Stable Tuner AIDL is unchanged. DVR playback and record alone use the process-local QueueEpochProtocol because their FMQ begin/commit reservations can span a public flush boundary. Filter and SharedFilter use the HAL-internal FilterProducerDrainGate. Its state is Open, Draining or Closed and every FMQ write or pending-event enqueue requires a nonparcelable linear RAII permit with checked filter_delivery_generation. A permit is acquired only after blocking backend read, FMQ wait and parser staging and immediately before a nonblocking in-memory commit; it never spans Binder callback, backend/device I/O, FMQ/condition wait, thread join, fallible blocking allocation or an out-of-order service lock. Binder invocation consumes an immutable artifact after permit release. Draining rejects new permits, wakes the service-owned worker and waits without holding locks required by permit release. The finite permit set is structural: worker exit/panic/cancellation releases the guard; lock poison, owner-terminal failure or an unfenced holder closes and quarantines the filter. Successful flush clears unconsumed FMQ bytes and not-yet-dispatched event artifacts, resets parser/PCR/startId state, increments parser_state_generation and preserves filter_delivery_generation, descriptor identity, source/callback/monitor/hint state, already dequeued/in-flight callbacks and delivered AV allocations. Pre-commit failure preserves content, pointers, events and generations; impossible partial infrastructure commit is InfrastructureCorrupt and quarantines. Close/owner loss closes the gate and wakes waiters. queue_epoch, filter_delivery_generation and parser_state_generation remain independent.
+
 
 - 単一 object quarantine を外部公開入口として残さない。
 - Drop 経路で public close と同じ通常 cleanup を実行しない。
@@ -330,15 +319,13 @@ Diagnostic failure は、必須診断と best-effort telemetry に分ける。
 | post-commit delivery / accounting | callback delivery、`end_delivery_outcome`、diagnostic text | committed public resultを反転させない。saturating counterとimplementation-local bounded typed ringへ記録する |
 | best-effort telemetry | 統計、packet count、補助ログ、観測用 counter など、状態正本に影響しない記録 | primary failure を上書きしない。失敗しても telemetry diagnostic に留める |
 
-> **V55 canonical reference** — clauses `DR-1323`; original source lines 301-301 are superseded.
-> - Normative rule reference: `CD-3b8012881358` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-3b8012881358`（`DP-116;DP-151`、規範）**
 
-> - Normative rule reference: `CD-3b8012881358` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+Commit-critical state is limited to generation, lifecycle, source binding, backend ownership, PID ledger, cleanup authority and queue-pointer commit. Callback delivery/accounting and diagnostic text are post-commit; storage failure never reverses a committed public result. Diagnostics use saturating counters and one implementation-local bounded ring of typed callback failures. Capacity is at least one and is derived from the diagnostic memory slice and accepted failure burst, not fixed by DESIGN or ProductProfile. Full insertion overwrites oldest and increments saturating overwritten_record_count; reads are non-destructive. No persistent report, operation ID, TTL, acknowledge/delete or public HAL API is introduced.
+
 
 ### 5.3 missing target failure の適用範囲
 
-> **V55 canonical reference** — clauses `DR-1325`; original source lines 304-304 are superseded.
-> - Normative rule reference: `CD-3b8012881358` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 missing target を全域で機械的に failure 化しない。rollback、public close、owner-loss cleanup では missing target を failure として扱う。これらの範囲では、対象 missing が state corruption、二重 cleanup、owner relation 破損、cleanup 漏れを意味し得るためである。
 
@@ -361,8 +348,10 @@ callback registration は複数の正本に分かれる。`object_runtime` は A
 runtime 再初期化は `TunerServiceRuntime::boot_from_probe_results()` を AIDL service entry から直接呼んではならない。AIDL service 側で runtime を再構成する場合は `AidlServiceContext::reset_runtime_from_probe_results()` を唯一の入口とする。boot 前 cleanup は DVR notifier / worker 停止、callback artifact clear、drop-leak diagnostic clear を all-attempt で最後まで実行し、各 step outcome を `ServiceResetPreflightReport` に保持する。ただし all-attempt は新 runtime boot の無条件継続を意味しない。全 cleanup attempt 後に owner generation を revoke/fence し、残存 worker / notifier が service-global registry/backend を変更できる、exclusive service-global singleton/FD/queue を保持する、owner/generation/dependency token でfence不能である、または同一resourceの新bootと競合する、のいずれかをtyped witnessで満たす場合だけ service-critical とする。service-critical witnessがある場合は `boot_from_probe_results()` を呼ばずserviceをquarantineする。witnessがない残存failureはowner×generation×dependency-localへquarantineし、unrelated ownerを維持したうえでbootを続行できる。callback artifact / diagnostic clear failureだけではservice-criticalとせず、該当diagnostic namespaceをquarantineしてpreflight reportへ残す。結果は `boot_not_started` / `boot_committed` とcleanup failureを直交fieldで保持し、first-error projectionでboot commit有無を失ってはならない。DVR notifier store lock poisonでは `poisoned.into_inner()` で既存notifier停止を試行しつつpoison errorをreportへ含める。drop-leak diagnostic clearのlock poisonも吸収せずreportへ含める。testはproductionと同じcontext-owned callback store / drop-leak diagnostic storeを使い、test-only global storeを置いてはならない。
 
 
-> **V55 canonical reference** — clauses `DR-1335`; original source lines 325-325 are superseded.
-> - Normative rule reference: `CD-49748cef4071` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-49748cef4071`（`DP-137`、規範）**
+
+After all-attempt cleanup, apply the service-critical predicate. A residual worker is service-critical iff, after owner-generation revocation, it can still mutate a service-global registry/backend, holds an exclusive service-global singleton/FD/queue, cannot be fenced by owner/generation/dependency tokens, or would race a new boot for the same resource. If none applies, quarantine is owner×generation×dependency-local and unrelated owners remain available. Abort new service boot and quarantine the service only when the predicate is true; otherwise quarantine the DVR owner/generation and permit unrelated service owners to continue. Integration/rebase rule: when applied to a newer main branch, preserve every current DVR playback worker cleanup, notifier cleanup, callback-clear, owner-generation revocation and reaper transfer obligation. The proposal may refine only the escalation predicate; it must not replace or delete newer cleanup steps. A three-way merge conflict is a hard adoption gate.
+
 
 frontend close の LNB owner-loss callback cleanup を含む callback artifact cleanup は、service_runtime の close cascade plan が生成する typed artifact cleanup command に接続する。AIDL は `SharedAidlServiceContext` 上の callback artifact bridge を実行して結果を返すだけにし、runtime lock / domain cleanup 用に取得した raw runtime handle を callback artifact cleanup API へ渡してはならない。
 
@@ -390,31 +379,13 @@ object live / generation / kind check
 | callback 未登録 / callback store failure | callback artifact absence / store failureを`end_delivery_outcome`とaccountingへ記録するだけとし、scan `terminal_reason`を上書きしない。callback `Strong`を取得してBinder invocationを実行した場合だけBinder failureとしてregistered callback healthへ反映する。callback非依存operation、runtime registry、primary public resultへ波及させない |
 | close / Drop leak | callback artifact clear と runtime registry entry removal / unhealthy を同期する。片方失敗時は必ず unhealthy / quarantine / diagnostic / returned error のいずれかへ落とす。`CallbackRegistryUpdate::Missing` を空分岐で吸収してはならない。Drop leak では object quarantine を必ず試行した後、registry missing を戻り値または診断で表面化する |
 
-> **V55 canonical reference** — clauses `DR-1345`; original source lines 351-351 are superseded.
-> - Normative rule reference: `CD-ee4cbaef9d3a` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-100ea74f7c46` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-
-> - Normative rule reference: `CD-ee4cbaef9d3a` (defined once in `tuner_hal2/design/canonical_rule_registry.md`). canonical rule `CD-100ea74f7c46` (registry)
 
 ## 7. Drop leak / callback cleanup の共通部品境界
 
-> **V55 canonical reference** — clauses `DR-1347`; original source lines 354-354 are superseded.
-> - Normative rule reference: `CD-ee4cbaef9d3a` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-100ea74f7c46` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-
-> - Normative rule reference: `CD-607c3aafef57` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-
-
-> **V55 canonical reference** — clauses `DR-1348`; original source lines 357-357 are superseded.
-> - Normative rule reference: `CD-607c3aafef57` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-
 
 - public close / rollback では service_runtime の typed callback artifact cleanup command / owner callback cleanup use-case を使う。AIDL は callback artifact bridge を実行して結果を返すだけにし、callback store cleanup 失敗、runtime registry clear、unhealthy marking、primary+cleanup failure composition の policy 分岐を持たない。
-- canonical rule `CD-607c3aafef57` (registry)
 - AIDL object wrapper には、状態・寿命・phase order・rollback・error precedence を所有しない public thin wrapper を置かない。許容するのは constructor、object identity / runtime accessor、callback artifact bridge result を service_runtime use-case へ渡す非薄い façade に限る。具体的な実装規約は `CODE_CONVENTION.md` に置く。
 
-> **V55 canonical reference** — clauses `DR-1351`; original source lines 362-362 are superseded.
-> - Normative rule reference: `CD-607c3aafef57` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 - LNB だけを例外にして Drop cleanup 手順を持たせない。LNB固有の drop leak 記録は domain hook として表現する。
 
@@ -444,8 +415,6 @@ object live / generation / kind check
 
 ### 8.3 live path構造差分
 
-> **V55 canonical reference** — clauses `DR-1368`; original source lines 389-389 are superseded.
-> - Normative rule reference: `CD-100ea74f7c46` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 `tuner_hal2` では、device側descriptor、pump owner、packet sinkを分ける。
 
@@ -522,11 +491,6 @@ queue runtime は AIDL method body に局所実装しない。AIDL 層は descri
 ### 11.2 filter delay / callback delivery
 
 
-> **V55 canonical reference** — clauses `DR-1406`; original source lines 464-464 are superseded.
-> - Normative rule reference: `CD-c126cb6caa91` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-ad630d6e167a` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-
-
 `aidl_service/src/filter_callback_delivery.rs` は filter callback delivery の façade であり、pipeline generated event から AIDL event へ変換する境界を所有する。callback failure は service_runtime の callback delivery failure use-case へ渡し、filter runtime の unhealthy / diagnostic state へ記録する。domain commit 後の callback failure を public method の post-commit failure として扱わない。callback binder failure、callback registry missing、filter runtime unhealthy marking failure は `TunerServiceRuntime` の bounded filter callback delivery diagnostic store に記録する。runtime lock poison により service_runtime finish use-case に到達できない場合も、AIDL service context 側の fallback bounded diagnostic store へ typed diagnostic record を残し、記録不能を silent return しない。
 
 ### 11.3 DVR queue / status notifier / callback delivery
@@ -548,7 +512,6 @@ AV shared backing の slot allocation / release / release_all は、active set �
 
 ### 11.5 closed object public access after close
 
-> - Normative rule reference: `CD-23d2e1c35c4f` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 close cascade finalization / cleanup-failed marking では、root object が unexpected terminal lifecycle である場合と、descendant が既に terminal lifecycle である場合を分ける。root が `Closed` / `Quarantined` の状態で finalization helper へ渡された場合は close preflight 境界の不整合として error にする。一方、descendant が既に `Closed` / `Quarantined` の場合は、親 close の再試行や部分 cleanup 後の cascade で起こり得るため、runtime unregister / close commit / cleanup-failed marking 対象から除外する。terminal descendant を理由に root close retry を失敗させてはならない。public runtime unregister preflight は destructive unregister の前に registry entry と runtime state の両方を確認し、descrambler でも registry entry と runtime の片側欠落を cleanup failure として表面化する。
 
@@ -556,8 +519,6 @@ close cascade finalization / cleanup-failed marking では、root object が une
 
 `IDescrambler.addPid(pid, optionalSourceFilter)` / `removePid(pid, optionalSourceFilter)` は、source filter が指定された場合は source-filter PID claim として扱い、NULL source filter は demux-input PID claim として扱う。AIDL Rust 生成 trait が non-null `Strong<dyn IFilter>` 形で表面化する場合でも、HAL 設計上は nullable 契約を免責理由にしてはならない。AIDL public façade には nullable helper を置き、NULL path は service_runtime の demux-input descrambler claim use-case へ接続する。source filter path と demux-input path は同じ PID duplicate / demux binding / lifecycle / dispatch planning 境界を通し、claim source を型で区別する。
 
-> **V55 canonical reference** — clauses `DR-1419`; original source lines 494-494 are superseded.
-> - Normative rule reference: `CD-23d2e1c35c4f` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 - `SourceFilter` claim は source filter id / generation と PID を保持する。
 - packet path で `SourceFilter` claim を active descrambler PID として拾う場合、source filter の owner demux、demux generation、filter lifecycle、PID、subtype、claim に保存した source filter generation を検証する。検証失敗または generation mismatch は `packet_policy` に丸めず、`PacketPipeline` phase の descrambler diagnostic として `filter_id` と `HalError` を保持する。packet delivery 全体は継続してよいが、該当 claim を active snapshot へ含めてはならない。`.ok()` で source-filter validation failure を無診断破棄してはならない。
@@ -566,7 +527,10 @@ close cascade finalization / cleanup-failed marking では、root object が une
 
 `DemuxTsFilterType::PCR` は `FilterOpenType::TsPcr` として受理する。`getAvSyncHwId(media filter)` は、media filter と同じ demux に属する live PCR filter id を返す。渡された media filter の id を sync id として返してはならない。
 
-> - Normative rule reference: `CD-832bb65be403` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-832bb65be403`（`DP-001;DP-090;DP-091;DP-148`、規範）**
+
+同一demuxに属するlive PCR filterの有効AV sync IDでは、PCR未観測でも`getAvSyncTime()`を成功させ、値は`Tuner.INVALID_TIMESTAMP`を返す。最初の有効PCR観測後は90kHz系の最新観測timestampを返す。foreign/non-PCR/closed/unknown IDは`INVALID_ARGUMENT`とする。値0を未観測sentinelとして公開しない。
+
 
 以下は後続の精度改善対象であり、現行のAOSP-facing最小契約とは分離する。
 
@@ -574,12 +538,9 @@ close cascade finalization / cleanup-failed marking では、root object が une
 - PCR timestamp 抽出と monotonic clock 補間
 - jitter smoothing
 
-> **V55 canonical reference** — clauses `DR-1425`; original source lines 509-509 are superseded.
-> - Normative rule reference: `CD-832bb65be403` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 - 複数 clock source の品質評価
 
-> - Normative rule reference: `CD-832bb65be403` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 ## 12. 型付き境界の保守契約
 
@@ -587,14 +548,11 @@ close cascade finalization / cleanup-failed marking では、root object が une
 
 ### 12.1 Root / object query DTO boundary
 
-> **V55 canonical reference** — clauses `DR-1432`; original source lines 519-519 are superseded.
-> - Normative rule reference: `CD-832bb65be403` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 Root query / command の DTO 境界は次で固定する。`RootQueryResponse::FrontendInfo` は `FrontendRegistryEntry` を返してはならず、`RootFrontendInfoSnapshot` のような専用 snapshot DTO だけを返す。`RootQueryRequest::MaxNumberOfFrontends` と `RootCommandRequest::SetMaxNumberOfFrontends` は AIDL 入力の `frontend_type` を捨てず、service_runtime 側 DTO に保持する。`RootDemuxCapabilitiesSnapshot` と `RootDemuxInfoSnapshot` は `TsOnly` marker だけに縮退せず、AIDL 変換に必要な field を service_runtime 側 snapshot として保持する。AIDL 層は snapshot DTO から AIDL 型へ変換するだけで、registry entry、capability policy、existence policy の正本を所有しない。
 
 ### public nullable / close / frontend count 契約
 
-> - Normative rule reference: `CD-23d2e1c35c4f` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 `IFilter.setDataSource(NULL)` は demux input へ戻す public disconnect 操作であり、`SourceBoundaryTxn` を通す。AIDL public method implementation は nullable 引数をそのまま受け取り、`None` を service_runtime の `disconnect_filter_data_source_for_object()` へ到達させる。nullable helper を置くだけで public trait implementation が常に `Some(...)` を渡す構造は未達とする。
 
@@ -602,13 +560,10 @@ Root query / command の DTO 境界は次で固定する。`RootQueryResponse::F
 
 `IDescrambler.addPid(pid, NULL)` / `removePid(pid, NULL)` は demux-input PID claim の登録 / 解除として扱う。AIDL public method implementation は nullable source filter をそのまま受け取り、`None` を demux-input PID claim 経路へ到達させる。source filter 付き claim と demux-input claim は `DescramblerPidClaimSource` で型として区別し、packet path では source filter claim だけ source filter generation validation を要求する。
 
-> **V55 canonical reference** — clauses `DR-1435`; original source lines 531-531 are superseded.
-> - Normative rule reference: `CD-23d2e1c35c4f` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 `ITuner.setMaxNumberOfFrontends(type, max_number)` は frontend type を捨てない。未対応 type は fail-closed にし、負数は `INVALID_ARGUMENT`、`0..=default_max(type)` は成功、範囲外は `INVALID_ARGUMENT` とする。`getMaxNumberOfFrontends(type)` は frontend type ごとの default max を返し、未対応 type を ISDB-T として扱ってはならない。
 
 Object query の DTO 境界は次で固定する。`ObjectQueryResponse` は `FrontendRegistryEntry` を返してはならず、frontend status / readiness は `ObjectFrontendStatusSnapshot` を service_runtime 側 query construction で作成したうえで、`ObjectFrontendStatusValue` / `ObjectFrontendStatusReadinessValue` の専用 DTO として policy を確定する。`frontend_status_query_for_aidl_object()` のような object query helper は registry entry と runtime state の tuple を返さず、専用 snapshot DTO だけを返す。AIDL 層は requested status type を `ObjectFrontendStatusType` に変換し、返却 DTO を AIDL 型へ変換するだけに留める。`IFrontend.getStatus(statusTypes)` はunknown enum representationを`INVALID_ARGUMENT`とし、known-unadvertised typeをAOSP SDK契約どおりignoreする。advertised typeだけを要求相対順・重複を保って返し、all-unadvertisedは成功empty vectorとする。advertised typeの取得失敗は`UNAVAILABLE`かつpartial outputなしとする。framework/JNIが入力をそのままHALへforwardするため、このfilterはHAL/service_runtime query policyが所有する。`getFrontendStatusReadiness(statusTypes)` はunknownを`INVALID_ARGUMENT`、known type全件を入力順で返し、unadvertisedは`UNSUPPORTED`とする。両APIがoutput cardinality helperを共有してはならない。`IDemux.getAvSyncHwId(filter)` の local Binder downcast のような fallible AIDL object conversion は、demux object live / generation / kind 確認と dispatch preflight の後に実行する専用 AIDL input conversion 境界へ置く。これは任意 query closure または `&mut TunerServiceRuntime` を query façade へ渡すことを許すものではない。
-
 
 
 `ObjectMethodTxnTarget` は service_runtime が生成・所有する transaction target とし、AIDL façade が target construction を所有しない。AIDL 層は object id / generation / kind を DTO 入力として渡すだけにし、target construction、live/generation/kind 確認、method planning、dispatch validation は `ObjectMethodTxn` 内で行う。
@@ -623,7 +578,6 @@ Descrambler clear-key / replace-key は plan / validate / prepared token / commi
 
 ### 12.2 Capability token / diagnostic hardening
 
-> - Normative rule reference: `CD-de39c931c827` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 Descrambler clear-key / replace-key の公開境界は service_runtime の key table 操作込み full transaction use-case に限定する。clear-key は stale plan 検証後に session clear を commit し、その後に old token release を行う。外部 caller は old token / old key slot を観測できない。具体的な helper 公開範囲と module 接続規約は `CODE_CONVENTION.md` に置く。
 
@@ -631,8 +585,6 @@ LNB apply の公開境界は service_runtime-owned transaction に限定し、ca
 
 Packet path diagnostic は validated TS packet から得た `PacketPid` を必須 context として保持する。validated packet path で PID を `Option` として扱う場合は、診断格納前に validation failure として扱い、record-DVR / filter-queue / AV delivery diagnostic の required PID を欠落させてはならない。
 
-> **V55 canonical reference** — clauses `DR-1446`; original source lines 557-557 are superseded.
-> - Normative rule reference: `CD-de39c931c827` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 ### 12.3 共通部品境界閉鎖契約
 
@@ -656,10 +608,6 @@ Packet path diagnostic は validated TS packet から得た `PacketPid` を必�
   record index 内部 event model は `PacketPid` を保持し、AIDL DTO 変換が必要な境界でだけ数値 PID へ射影する。
   record index parser は raw byte wrapper を持つ場合でも、共通部品間の正本接続では `push_validated_ts_packet()` / `build_validated_event()` のように `ValidatedTsPacket` を直接受け取る入口を使える形にし、record event 構築側で raw `TsPacketView` を再正本化しない。
 
-> **V55 canonical reference** — clauses `DR-1461`; original source lines 579-579 are superseded.
-> - Normative rule reference: `CD-c126cb6caa91` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-> - Normative rule reference: `CD-ad630d6e167a` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
-
 
 - object close cascade は callback 登録を持ち得る object にだけ callback cleanup command を生成する。callback 未登録は close cleanup / unregister cleanup の成功扱いとし、callback store failure だけを cleanup failure として扱う。
 - LNB owner-loss callback cleanup は service_runtime の close cascade plan が生成する callback artifact cleanup command に統合し、AIDL 側に個別の runtime registry clear / artifact store clear / unhealthy marking 手順を持たない。
@@ -669,16 +617,10 @@ Packet path diagnostic は validated TS packet から得た `PacketPid` を必�
 
 
 - callback cleanup は service_runtime が artifact cleanup command を生成し、AIDL は callback artifact bridge の実行結果だけを返す。cleanup failure 時は runtime registry entry を先に clear せず、unhealthy marking が意味を持つ状態を保持する。
-- canonical rule `CD-607c3aafef57` (registry)
-- canonical rule `CD-607c3aafef57` (registry)
 - LNB Drop leak の記録要否は AIDL object の `Drop` 実装や AIDL 側 action enum で選ばない。service_runtime の drop-leak quarantine plan が `LnbDropLeakRecord` typed domain cleanup command を生成した場合だけ、AIDL executor adapter がその command を実行する。
 - `ValidatedTsPacket` は crate 外に `TsPacketView` を返さない。packet-bearing helper の production 境界は `PacketPid` を受け、raw `i32` / `u16` PID は ts_core など低レベル部品への最終変換点に限定する。元 TS packet bytes の accessor は output 用 payload 参照としてのみ許可し、PID / policy / validation の再正本化入口にしてはならない。
 - AIDL input / filter config 由来 PID は packet-derived `PacketPid` と混同せず、`AidlInputPid` / `ConfigInputPid` の validation boundary を通す。
 
-
-
-> **V55 canonical reference** — clauses `DR-1473, DR-1474`; original source lines 596-597 are superseded.
-> - Normative rule reference: `CD-607c3aafef57` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
 
 - RuntimeRegistry の descrambler key/session transaction façade は crate-local とし、外部 crate から registry transaction を分解して呼べる surface を広げない。
 
@@ -702,50 +644,9 @@ PacketPid は production packet routing、validation、diagnostic construction �
 
 Descrambler diagnostic は Option field bag を使わず、set-key-token failure、PID claim rejection、packet policy failure、packet source-filter validation failure、cleanup key release failure のような事象別 record として保持する。PID は typed id とし、欠落を Option field で表すのではなく、欠落し得る事象は別 record / typed context として表現する。bounded diagnostic store は維持する。
 
-> **V55 canonical reference** — clauses `DR-1485`; original source lines 619-619 are superseded.
-> - Normative rule reference: `CD-c27eef50e6e1` (defined once in `tuner_hal2/design/canonical_rule_registry.md`).
+**Canonical rule `CD-c27eef50e6e1`（`DP-114;DP-139`、規範）**
 
-
-## Canonical registry reference
-
-Complete `CD-*` normative text is defined only in `tuner_hal2/design/canonical_rule_registry.md`; this delta document contains references only.
-
-
-## Capability-local authority amendment
-
-- Device facts are resolved by `DeviceProbeCapability`; only successfully probed frontend/LNB instances are published.
-- Demux/filter/DVR counts are defined by `tuner_hal2/design/decisions/service_object_ceiling_profile.csv` and must be enforced by the same lease ledgers.
-- AV transport/allocation/release are jointly defined by `tuner_hal2/design/decisions/av_allocation_profile.csv` and `tuner_hal2/design/decisions/av_release_state_matrix.csv`; shared arena and event-local FD are both formal modes under one lease/identity model.
-- Worker/LNB stop and cleanup are defined by `tuner_hal2/design/decisions/worker_termination_contract.md` and `tuner_hal2/design/decisions/lnb_device_resource_contract.csv`; no TargetDriverTimingProfile or public-path unbounded join is permitted.
-- Failure isolation is defined by `tuner_hal2/design/decisions/failure_scope_taxonomy.csv`; infrastructure corruption and broadcast packet errors are distinct variants.
-- Frontend acceptance/advertisement is defined by `tuner_hal2/design/decisions/frontend_setting_programming_matrix.csv`; ignored concrete fields are AUTO-only.
-- A local capability failure suppresses or rejects only that capability/request. It does not block unrelated ITuner publication.
-
-> **V55 canonical references**
-> - `CD-6a647f1fda89` capability authority
-> - `CD-c175c4d6b7f4` AV allocation/release
-> - `CD-b6feea518693` CleanupPending
-> - `CD-b3bc6ffe7012` cleanup job lifecycle
-> - `CD-1b216b960772` DVR lease pool
-> - `CD-fa92b03abef6` DVR concurrency
-> - `CD-b25dddb0e92b` worker termination
-
-
-## Audit-remediation amendment
-
-- Filter and SharedFilter use the HAL-internal `FilterProducerDrainGate`: a linear RAII permit is acquired only after blocking backend read/FMQ wait/parser staging and immediately before nonblocking in-memory FMQ commit or pending-event enqueue. A permit never spans Binder callback, backend I/O, FMQ/condition wait, or acquisition outside the declared lock order. Flush enters Draining without holding locks needed by permit release, rejects new permits, wakes the service-owned worker, waits for the finite nonblocking permit set to reach zero, discards unconsumed FMQ bytes and not-yet-dispatched event entries, and preserves already committed/in-flight callbacks and delivered AV allocations. Worker exit/panic releases the guard; detected poison or unfenced terminal failure closes and quarantines the filter. `QueueEpochProtocol` remains DVR-only.
-- Demux/filter/DVR capacities come from one atomically reserved C8/C4/C2/C1 `CapabilitySnapshot` evaluated after frontend/LNB probe. For each tuple, filter/object/AV values are numeric and worker/callback/reaper/cleanup slots are exact formulas over `F=successful frontend count` and `L=successful LNB count`; unresolved prose formulas are forbidden. The committed tuple is the sole caps/admission/cleanup authority and C1 is the mandatory runtime-service minimum. C1 contains one audio AV filter plus one video AV filter, therefore `av_filter_count=2`, `av_ledger_entries_total=16` and `av_reserved_bytes_total=16777216`. Tuner VTS is a separate pre-start environment binding: until the AOSP branch, frontend source, tune parameters/PIDs, enabled flows, filter/DVR queue sizes and product memory budget are declared, VTS execution is `DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED`, no default V1 XML is installed and no VTS-success claim is made. A selected static variant must fit C1 object counts and atomically reserve its exact queue-byte vector before service/VTS startup.
-- AV shared and event-local transports share one resource-safety budget per filter generation: 8 live entries and 8 MiB, derived from the existing 8 x 1 MiB backing layout. This is not a codec access-unit maximum or a lossless-delivery guarantee. A request larger than the per-filter budget or remaining budget is rejected before callback/dataId publication with typed overflow/unavailable diagnostics; no live allocation is evicted. A larger product bound requires a new startup reservation, candidate tuple and boundary tests.
-- ARIB B10 5.13-E1 supplies the table-specific 1021/4093 section limits and B32 3.11-E1 Part 3 supplies TS/PES/Section carriage and PES syntax; B32 is not used as an independent 4093 limit authority. B25 uses the pinned English 6.7-E1 full text. Part 1 clauses 4.9 and 4.10 require at least one odd/even key pair per tuner and at least 12 simultaneously processed PIDs; capacity claims are separately advertised and enforced.
-- Target-driver and upstream-Linux evidence are separate authorities from AOSP contracts.
-
-
-## VTS environment and ARIB B31 closure
-
-- `VtsEnvironmentProfile=UNBOUND` installs/selects no XML or module and has no scenario. Runtime C1 remains a service minimum only.
-- `BOUND` selects exactly one declared pre-start static variant after C1 fit and exact queue-vector reservation.
-- `REJECTED` does not fall back to C1/default V1.
-- ISDB-T parameter domains for DP-084..086 use the packaged official English STD-B31 2.2-E1 under the user-approved fallback. The official 2.3 summary/sample produced no identified impact to the relevant section structure; full 2.3 text equivalence is not claimed.
+Cleanup diagnostics are internal only. Each owner stores one bounded in-memory aggregate snapshot for the latest cleanup attempt. The normative design fixes atomic replacement, typed primary/cleanup failures, saturating omitted_failure_count and non-destructive reads; it does not fix a record count. The implementation-local capacity is at least one and is selected from the approved diagnostic memory slice, with overwrite/omission behavior independent of public results. There is no persistence, operation ID, TTL, acknowledge/delete protocol or ProductProfile capacity.
 
 
 ## Integration rules

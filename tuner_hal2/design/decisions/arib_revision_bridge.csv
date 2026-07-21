@@ -1,6 +1,0 @@
-standard,english_baseline,japanese_current,primary_source,decision,status
-STD-B10,5.13-E1,5.14,ARIB_STD-B10_v5_13-E1_EN.pdf + official revision history,Use English baseline under fallback rule; screen official 5.14 amendments against referenced clauses,BRIDGED_WITH_AMENDMENT_SCREEN_REQUIRED
-STD-B20,NONE,3.0,ARIB_STD-B20_v3_0_JP.pdf,Use Japanese primary source; no English alternative exists,DIRECT_JAPANESE_PRIMARY
-STD-B25,6.7-E1,7.0,ARIB_STD-B25_v6_7-E1_EN.pdf + official 7.0 amendment history,English 6.7-E1 full text reviewed for DP-162; Japanese 7.0 full-text equivalence not claimed,FULL_ENGLISH_BASELINE_REVIEWED_CURRENT_JAPANESE_SUMMARY_SCREEN_REQUIRED
-STD-B31,2.2-E1,2.3,ARIB_STD-B31_v2_2-E1_EN.pdf + v59 impact assessment,Use English baseline; no identified impact to DP-084..086 from available 2.3 material,BRIDGED_LIMITED
-STD-B32,3.11-E1,4.1,ARIB_STD-B32_v3_11_Fascicle3_EN.pdf + official revision history,Use available English fascicle and official amendment history; claims outside acquired fascicle remain held,PARTIAL_ENGLISH_FASCICLE
