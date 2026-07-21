@@ -1,51 +1,12 @@
 use super::{
     live_reader_descriptor_for_frontend_entry, DemuxRuntimeId, DemuxRuntimeRollbackToken,
-    FrontendLiveDataCompletion, FrontendLiveDataCompletionRequest, FrontendLivePumpCompletionRequest, FrontendLivePumpReport,
-    FrontendRollbackFailureRequest, FrontendRuntimeRollbackCapture, FrontendRuntimeRollbackToken, FrontendScanStartRequest,
-    FrontendScanTransitionOutcome, FrontendScanTransitionRequest, FrontendSignalRecordRequest,
-    FrontendSignalState,
-    FrontendTuneCommitRequest, FrontendTuneRequest, FrontendTuneWorkerFailureRequest,
-    FrontendWorkerInstallRequest,
+    FrontendLivePumpReport, FrontendRuntimeSnapshot, FrontendSignalState, FrontendTuneRequest,
     FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind,
     FrontendWorkerStartError, FrontendWorkerStopOutcome, GenerationBoundaryReport, HalError,
     HalInternalKind, HalInvalidStateKind, PipelineBoundaryReason, TunerServiceRuntime,
 };
-use maleicacid_tuner_hal2_common::compose_primary_cleanup_failure;
-use maleicacid_tuner_hal2_demux::{
-    DemuxRuntimeQuarantineRequest, DemuxRuntimeRollbackCommitRequest,
-    DemuxRuntimeRollbackRestoreRequest,
-};
+use maleicacid_tuner_hal2_demux::DemuxRuntimeRollbackRestoreRequest;
 use maleicacid_tuner_hal2_device::FrontendWorkerStopTicket;
-use crate::frontend_worker_txn::{
-    BoundDemuxRollbackExecutionReport, BoundDemuxRollbackPhase,
-    BoundDemuxRollbackStepOutcome,
-};
-
-fn live_data_completion_request(
-    runtime: &TunerServiceRuntime,
-    frontend_id: i32,
-    expected_worker: Option<(u64, FrontendWorkerKind)>,
-    completion: FrontendLiveDataCompletion,
-) -> Result<FrontendLiveDataCompletionRequest, HalError> {
-    match expected_worker {
-        Some((generation, kind)) => Ok(FrontendLiveDataCompletionRequest::worker(
-            generation,
-            kind,
-            completion,
-        )),
-        None => {
-            let snapshot = runtime
-                .frontend_runtime(frontend_id)?
-                .query()
-                .status_snapshot();
-            Ok(FrontendLiveDataCompletionRequest::no_worker(
-                snapshot.generation(),
-                snapshot.state(),
-                completion,
-            ))
-        }
-    }
-}
 
 impl TunerServiceRuntime {
     pub(crate) fn mark_frontend_scan_session_callback_failed(
@@ -73,24 +34,13 @@ impl TunerServiceRuntime {
                     "frontend runtime is missing for advertised frontend",
                 )
             })?;
-        runtime.record_live_pump_completion(FrontendLivePumpCompletionRequest::new(
-            generation,
-            report,
-            cancel_reason,
-        ))
+        runtime.record_live_pump_report(generation, report, cancel_reason)
     }
 
     fn transact_stop_frontend_live_data_and_unbind(
         &mut self,
         frontend_id: i32,
-        expected_worker: Option<(u64, FrontendWorkerKind)>,
     ) -> Result<Vec<GenerationBoundaryReport>, HalError> {
-        let request = live_data_completion_request(
-            self,
-            frontend_id,
-            expected_worker,
-            FrontendLiveDataCompletion::Idle,
-        )?;
         let runtime = self
             .registry
             .frontend_runtime_mut(crate::registry::FrontendRuntimeId(frontend_id))
@@ -100,7 +50,7 @@ impl TunerServiceRuntime {
                     "frontend runtime is missing for advertised frontend",
                 )
             })?;
-        runtime.complete_live_data(request)?;
+        runtime.clear_live_reader_and_mark_idle();
         self.transact_reset_and_unbind_bound_demuxes_for_frontend(
             frontend_id,
             PipelineBoundaryReason::FrontendUnbind,
@@ -110,14 +60,7 @@ impl TunerServiceRuntime {
     fn transact_close_frontend_live_data_and_unbind(
         &mut self,
         frontend_id: i32,
-        expected_worker: Option<(u64, FrontendWorkerKind)>,
     ) -> Result<Vec<GenerationBoundaryReport>, HalError> {
-        let request = live_data_completion_request(
-            self,
-            frontend_id,
-            expected_worker,
-            FrontendLiveDataCompletion::Closing,
-        )?;
         let frontend_key = crate::registry::FrontendRuntimeId(frontend_id);
         let runtime = self
             .registry
@@ -128,7 +71,7 @@ impl TunerServiceRuntime {
                     "frontend runtime is missing for advertised frontend",
                 )
             })?;
-        runtime.complete_live_data(request)?;
+        runtime.clear_live_reader_and_mark_closing();
         self.transact_reset_and_unbind_bound_demuxes_for_frontend(
             frontend_id,
             PipelineBoundaryReason::FrontendClose,
@@ -151,11 +94,7 @@ impl TunerServiceRuntime {
                     "frontend runtime is missing for advertised frontend",
                 )
             })?;
-        runtime.start_scan(FrontendScanStartRequest::new(
-            generation,
-            fingerprint,
-            candidates,
-        ))
+        runtime.begin_scan_session(generation, fingerprint, candidates)
     }
 
     fn transact_cancel_frontend_scan_session(
@@ -173,9 +112,7 @@ impl TunerServiceRuntime {
                     "frontend runtime is missing for advertised frontend",
                 )
             })?;
-        runtime
-            .apply_scan_transition(FrontendScanTransitionRequest::cancel(generation, reason))
-            .map(|_| ())
+        runtime.cancel_scan_session(generation, reason)
     }
 
     fn transact_advance_frontend_scan_session_after_candidate(
@@ -192,17 +129,7 @@ impl TunerServiceRuntime {
                     "frontend runtime is missing for advertised frontend",
                 )
             })?;
-        match runtime
-            .apply_scan_transition(FrontendScanTransitionRequest::advance_after_candidate(
-                generation,
-            ))?
-        {
-            FrontendScanTransitionOutcome::CandidateAdvanced { has_next } => Ok(has_next),
-            FrontendScanTransitionOutcome::Applied => Err(HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "frontend scan advance returned a non-advance outcome",
-            )),
-        }
+        runtime.advance_scan_session_after_candidate(generation)
     }
 
     fn transact_mark_frontend_tune_worker_failed(
@@ -221,14 +148,10 @@ impl TunerServiceRuntime {
                         "frontend runtime is missing for advertised frontend",
                     )
                 })?;
-            runtime
-                .record_tune_worker_failure(FrontendTuneWorkerFailureRequest::new(
-                    generation,
-                    error,
-                ))?;
+            runtime.mark_tune_worker_failed(generation, error)?;
         }
         self.registry
-            .quarantine_bound_demuxes_for_frontend(crate::registry::FrontendRuntimeId(frontend_id))?;
+            .quarantine_bound_demuxes_for_frontend(crate::registry::FrontendRuntimeId(frontend_id));
         Ok(())
     }
 
@@ -247,12 +170,10 @@ impl TunerServiceRuntime {
                         "frontend runtime is missing for advertised frontend",
                     )
                 })?;
-            runtime
-                .apply_scan_transition(FrontendScanTransitionRequest::backend_failed(generation))
-                .map(|_| ())?;
+            runtime.mark_scan_session_backend_failed(generation)?;
         }
         self.registry
-            .quarantine_bound_demuxes_for_frontend(crate::registry::FrontendRuntimeId(frontend_id))?;
+            .quarantine_bound_demuxes_for_frontend(crate::registry::FrontendRuntimeId(frontend_id));
         Ok(())
     }
 }
@@ -268,86 +189,10 @@ impl TunerServiceRuntime {
 }
 
 impl<'a> FrontendTxn<'a> {
-    pub(crate) fn commit_frontend_tune_rollback_expected_post_state(
+    pub(crate) fn restore_frontend_runtime_snapshot(
         &mut self,
         frontend_id: i32,
-        token: &FrontendRuntimeRollbackToken,
-        generation: u64,
-        request: FrontendTuneRequest,
-    ) -> Result<(), HalError> {
-        let entry = self
-            .runtime
-            .registry
-            .frontend(crate::registry::FrontendRuntimeId(frontend_id))
-            .cloned()
-            .ok_or_else(|| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "frontend registry entry is missing while committing tune rollback expected post state",
-                )
-            })?;
-        let reader = live_reader_descriptor_for_frontend_entry(&entry)?;
-        let runtime = self
-            .runtime
-            .registry
-            .frontend_runtime_mut(crate::registry::FrontendRuntimeId(frontend_id))
-            .ok_or_else(|| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "frontend runtime is missing while committing tune rollback expected post state",
-                )
-            })?;
-        runtime.commit_tune_worker_rollback_expected_post_state(
-            token,
-            generation,
-            reader,
-            request,
-        )
-    }
-
-    pub(crate) fn begin_frontend_scan_rollback_expected_post_state(
-        &mut self,
-        frontend_id: i32,
-        token: &FrontendRuntimeRollbackToken,
-        generation: u64,
-        fingerprint: String,
-        candidates: Vec<FrontendTuneRequest>,
-    ) -> Result<(), HalError> {
-        let entry = self
-            .runtime
-            .registry
-            .frontend(crate::registry::FrontendRuntimeId(frontend_id))
-            .cloned()
-            .ok_or_else(|| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "frontend registry entry is missing while beginning scan rollback expected post state",
-                )
-            })?;
-        let reader = live_reader_descriptor_for_frontend_entry(&entry)?;
-        let runtime = self
-            .runtime
-            .registry
-            .frontend_runtime_mut(crate::registry::FrontendRuntimeId(frontend_id))
-            .ok_or_else(|| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "frontend runtime is missing while beginning scan rollback expected post state",
-                )
-            })?;
-        runtime.begin_scan_worker_rollback_expected_post_state(
-            token,
-            generation,
-            reader,
-            fingerprint,
-            candidates,
-        )
-    }
-
-    pub(crate) fn restore_frontend_runtime_rollback_token(
-        &mut self,
-        frontend_id: i32,
-        token: &mut FrontendRuntimeRollbackToken,
+        snapshot: FrontendRuntimeSnapshot,
     ) -> Result<(), HalError> {
         let runtime = self
             .runtime
@@ -359,122 +204,30 @@ impl<'a> FrontendTxn<'a> {
                     "frontend runtime is missing for advertised frontend",
                 )
             })?;
-        runtime.restore_worker_rollback(token)
+        runtime.restore_from_rollback_snapshot(snapshot);
+        Ok(())
     }
 
     pub(crate) fn restore_bound_demux_runtime_rollback_tokens(
         &mut self,
         tokens: Vec<(DemuxRuntimeId, DemuxRuntimeRollbackToken)>,
-    ) -> BoundDemuxRollbackExecutionReport {
-        let mut report = BoundDemuxRollbackExecutionReport::new();
-        for (demux_id, mut token) in tokens {
-            match self.runtime.registry.demux_runtime_mut(demux_id) {
-                Some(demux) => match demux.restore_from_rollback_request(
-                    DemuxRuntimeRollbackRestoreRequest::new(&mut token),
-                ) {
-                    Ok(()) => report.push(BoundDemuxRollbackStepOutcome {
-                        target: crate::frontend_worker_txn::BoundDemuxRollbackTarget::Demux(demux_id.0),
-                        phase: BoundDemuxRollbackPhase::Restore,
-                        result: Ok(()),
-                    }),
-                    Err(restore_error) => {
-                        let restore_error = super::demux_runtime_error_to_hal(restore_error);
-                        report.push(BoundDemuxRollbackStepOutcome {
-                            target: crate::frontend_worker_txn::BoundDemuxRollbackTarget::Demux(demux_id.0),
-                            phase: BoundDemuxRollbackPhase::Restore,
-                            result: Err(restore_error.clone()),
-                        });
-                        demux.quarantine_runtime_from_typed_request(
-                            DemuxRuntimeQuarantineRequest::new(),
-                        );
-                        report.push(BoundDemuxRollbackStepOutcome {
-                            target: crate::frontend_worker_txn::BoundDemuxRollbackTarget::Demux(demux_id.0),
-                            phase: BoundDemuxRollbackPhase::Quarantine,
-                            result: Ok(()),
-                        });
-                        let discard_result = demux
-                            .commit_rollback_request(DemuxRuntimeRollbackCommitRequest::new(token))
-                            .map_err(super::demux_runtime_error_to_hal);
-                        report.push(BoundDemuxRollbackStepOutcome {
-                            target: crate::frontend_worker_txn::BoundDemuxRollbackTarget::Demux(demux_id.0),
-                            phase: BoundDemuxRollbackPhase::DiscardAuthority,
-                            result: discard_result,
-                        });
-                    }
-                },
-                None => {
-                    report.push(BoundDemuxRollbackStepOutcome {
-                        target: crate::frontend_worker_txn::BoundDemuxRollbackTarget::Demux(demux_id.0),
-                        phase: BoundDemuxRollbackPhase::Restore,
-                        result: Err(HalError::invalid_state(
-                            HalInvalidStateKind::InvalidLifecycle,
-                            format!(
-                                "bound demux runtime is missing while restoring tune rollback token: demux_id={}",
-                                demux_id.0
-                            ),
-                        )),
-                    });
-                    report.push(BoundDemuxRollbackStepOutcome {
-                        target: crate::frontend_worker_txn::BoundDemuxRollbackTarget::Demux(demux_id.0),
-                        phase: BoundDemuxRollbackPhase::Quarantine,
-                        result: Err(HalError::invalid_state(
-                            HalInvalidStateKind::InvalidLifecycle,
-                            format!(
-                                "bound demux runtime is missing and cannot be quarantined: demux_id={}",
-                                demux_id.0
-                            ),
-                        )),
-                    });
-                    let discard_result = token
-                        .discard_without_runtime()
-                        .map_err(super::demux_runtime_error_to_hal);
-                    report.push(BoundDemuxRollbackStepOutcome {
-                        target: crate::frontend_worker_txn::BoundDemuxRollbackTarget::Demux(demux_id.0),
-                        phase: BoundDemuxRollbackPhase::DiscardAuthority,
-                        result: discard_result,
-                    });
-                }
-            }
+    ) -> Result<(), HalError> {
+        for (demux_id, token) in tokens {
+            let demux = self
+                .runtime
+                .registry
+                .demux_runtime_mut(demux_id)
+                .ok_or_else(|| {
+                    HalError::invalid_state(
+                        HalInvalidStateKind::InvalidLifecycle,
+                        "bound demux runtime is missing while restoring tune rollback snapshot",
+                    )
+                })?;
+            demux
+                .restore_from_rollback_request(DemuxRuntimeRollbackRestoreRequest::new(token))
+                .map_err(super::demux_runtime_error_to_hal)?;
         }
-        report
-    }
-
-    pub(crate) fn discard_frontend_runtime_rollback_token(
-        &mut self,
-        frontend_id: i32,
-        token: &mut FrontendRuntimeRollbackToken,
-    ) -> Result<(), HalError> {
-        let runtime = self
-            .runtime
-            .registry
-            .frontend_runtime_mut(crate::registry::FrontendRuntimeId(frontend_id))
-            .ok_or_else(|| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "frontend runtime is missing while discarding rollback authority",
-                )
-            })?;
-        runtime.discard_worker_rollback(token)
-    }
-
-    pub(crate) fn quarantine_frontend_after_rollback_failure(
-        &mut self,
-        frontend_id: i32,
-        token: &mut FrontendRuntimeRollbackToken,
-        error: HalError,
-    ) -> Result<(), HalError> {
-        let runtime = self
-            .runtime
-            .registry
-            .frontend_runtime_mut(crate::registry::FrontendRuntimeId(frontend_id))
-            .ok_or_else(|| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "frontend runtime is missing while quarantining rollback failure",
-                )
-            })?;
-        runtime.quarantine_rollback_failure(FrontendRollbackFailureRequest::new(error));
-        runtime.discard_worker_rollback(token)
+        Ok(())
     }
 
     pub(crate) fn commit_frontend_active_tune_request(
@@ -493,8 +246,7 @@ impl<'a> FrontendTxn<'a> {
                     "frontend runtime is missing for advertised frontend",
                 )
             })?;
-        runtime
-            .commit_tune(FrontendTuneCommitRequest::new(generation, request))
+        runtime.commit_active_tune_request(generation, request)
     }
 
     pub(crate) fn record_frontend_signal_state(
@@ -513,8 +265,7 @@ impl<'a> FrontendTxn<'a> {
                     "frontend runtime is missing for advertised frontend",
                 )
             })?;
-        runtime
-            .record_signal(FrontendSignalRecordRequest::new(generation, signal_state))
+        runtime.record_signal_state(generation, signal_state)
     }
 
     pub(crate) fn record_live_pump_report(
@@ -530,23 +281,6 @@ impl<'a> FrontendTxn<'a> {
             report,
             cancel_reason,
         )
-    }
-
-    pub(crate) fn prepare_frontend_runtime_rollback_capture(
-        &mut self,
-        frontend_id: i32,
-    ) -> Result<FrontendRuntimeRollbackCapture, HalError> {
-        let runtime = self
-            .runtime
-            .registry
-            .frontend_runtime_mut(crate::registry::FrontendRuntimeId(frontend_id))
-            .ok_or_else(|| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "frontend runtime is missing for advertised frontend",
-                )
-            })?;
-        runtime.prepare_worker_rollback()
     }
 
     fn prepare_frontend_worker_generation_with_running_policy(
@@ -595,7 +329,7 @@ impl<'a> FrontendTxn<'a> {
                     "frontend runtime is missing for advertised frontend",
                 )
             })?;
-        runtime.checked_next_worker_generation()
+        runtime.checked_next_generation()
     }
 
     #[cfg(test)]
@@ -643,24 +377,13 @@ impl<'a> FrontendTxn<'a> {
                     "frontend runtime is missing for advertised frontend",
                 )
             })?;
-        runtime.install_worker(FrontendWorkerInstallRequest::new(
-            generation,
-            reader,
-            kind,
-        ))
+        runtime.install_live_reader_for_worker_generation(generation, reader, kind)
     }
 
     pub(crate) fn clear_frontend_live_reader_descriptor_and_idle(
         &mut self,
         frontend_id: i32,
-        expected_worker: Option<(u64, FrontendWorkerKind)>,
     ) -> Result<(), HalError> {
-        let request = live_data_completion_request(
-            self.runtime,
-            frontend_id,
-            expected_worker,
-            FrontendLiveDataCompletion::Idle,
-        )?;
         let runtime = self
             .runtime
             .registry
@@ -671,25 +394,24 @@ impl<'a> FrontendTxn<'a> {
                     "frontend runtime is missing for advertised frontend",
                 )
             })?;
-        runtime.complete_live_data(request)
+        runtime.clear_live_reader_and_mark_idle();
+        Ok(())
     }
 
     pub(crate) fn stop_frontend_live_data_and_unbind(
         &mut self,
         frontend_id: i32,
-        expected_worker: Option<(u64, FrontendWorkerKind)>,
     ) -> Result<Vec<GenerationBoundaryReport>, HalError> {
         self.runtime
-            .transact_stop_frontend_live_data_and_unbind(frontend_id, expected_worker)
+            .transact_stop_frontend_live_data_and_unbind(frontend_id)
     }
 
     pub(crate) fn close_frontend_live_data_and_unbind(
         &mut self,
         frontend_id: i32,
-        expected_worker: Option<(u64, FrontendWorkerKind)>,
     ) -> Result<Vec<GenerationBoundaryReport>, HalError> {
         self.runtime
-            .transact_close_frontend_live_data_and_unbind(frontend_id, expected_worker)
+            .transact_close_frontend_live_data_and_unbind(frontend_id)
     }
 
     pub(crate) fn begin_frontend_scan_session(
@@ -760,9 +482,7 @@ impl<'a> FrontendTxn<'a> {
                     "frontend runtime is missing for advertised frontend",
                 )
             })?;
-        runtime
-            .apply_scan_transition(FrontendScanTransitionRequest::callback_failed(generation))
-            .map(|_| ())
+        runtime.mark_scan_session_callback_failed(generation)
     }
 
     pub(crate) fn start_worker<F>(

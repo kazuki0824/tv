@@ -15,7 +15,7 @@ pub enum FrontendCommand {
 }
 
 impl FrontendCommand {
-    pub(super) fn plan(&self) -> Result<CommandPlan, HalError> {
+    pub fn plan(&self) -> Result<CommandPlan, HalError> {
         match self {
             Self::Tune(_) => CommandPlan::for_api(AidlObjectKind::Frontend, AidlApi::FrontendTune),
             Self::SetLnb(_) => {

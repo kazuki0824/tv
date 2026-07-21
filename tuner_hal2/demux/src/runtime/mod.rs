@@ -12,11 +12,11 @@ pub use configure_txn::{
 };
 pub use demux::{
     DemuxGenerationBoundaryRequest, DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind,
-    DemuxRuntimeDiagnosticSnapshot, DemuxRuntimeQuarantineRequest, DemuxRuntimeRollbackCommitRequest,
+    DemuxRuntimeQuarantineRequest, DemuxRuntimeRollbackCommitRequest,
     DemuxRuntimeRollbackRestoreRequest, DemuxRuntimeRollbackToken,
     DemuxRuntimeRollbackTokenPrepareRequest, DemuxRuntimeSnapshot, DemuxRuntimeState,
-    DvrFilterLinkRequest, DvrFlushOutcome, DvrFlushReport, DvrFlushStep, DvrFlushStepOutcome, DvrRuntimeConfigureRequest, DvrRuntimeOperationRequest,
-    DvrRuntimeRegistrationRequest, DvrStatusIntervalRuntimeRequest,
+    DvrFilterLinkRequest, DvrRuntimeConfigureRequest, DvrRuntimeOperationRequest,
+    DvrRuntimeRegistrationRequest, DvrStatusIntervalRuntimeRequest, DvrStatusReportingRequest,
     FilterAvHandleReleaseRequest, FilterAvStreamTypeRuntimeRequest, FilterDelayHintRuntimeRequest,
     FilterRuntimeConfigureRequest, FilterRuntimeOperationKind, FilterRuntimeOperationOutcome,
     FilterRuntimeOperationReport, FilterRuntimeOperationRequest, FilterRuntimeOperationSkipReason,
@@ -26,13 +26,9 @@ pub use demux::{
 };
 pub use dvr::{DvrKind, DvrRuntimeSnapshot, DvrRuntimeState, DvrStatusEvent};
 pub use filter::{FilterRuntimeSnapshot, FilterRuntimeState};
-pub use generation_boundary::{
-    DemuxGenerationBoundaryAuthorization, DemuxStreamGeneration, GenerationBoundaryReport,
-};
+pub use generation_boundary::{DemuxStreamGeneration, GenerationBoundaryReport};
 pub use queue_runtime::{
     QueueDescriptorExportPlan, QueueDescriptorExportTarget, QueueDescriptorSnapshot,
-    QueueGrantorDescriptorSnapshot, QueueRuntimeError, QueueRuntimeErrorKind, QueueWaitHandle, QueueWaitResult,
+    QueueGrantorDescriptorSnapshot, QueueRuntimeError, QueueRuntimeErrorKind,
 };
-pub use source_boundary::{
-    SourceBoundaryOutcome, SourceBoundaryReport, SourceBoundaryStep, SourceBoundaryTarget,
-};
+pub use source_boundary::{SourceBoundaryOutcome, SourceBoundaryReport, SourceBoundaryStep};

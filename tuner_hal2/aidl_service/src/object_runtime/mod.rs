@@ -1,7 +1,6 @@
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::IFrontendCallback::IFrontendCallback;
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::ILnbCallback::ILnbCallback;
 use binder::{Result as BinderResult, Strong};
-use maleicacid_tuner_hal2_service_runtime::DvrPlaybackWorkerCleanupOperation;
 use maleicacid_tuner_hal2_binder_adapter::{
     AidlApi, AidlFailureSource, AidlMethodCall, AidlStatusMapper, TunerStatusCode,
 };
@@ -16,7 +15,7 @@ use maleicacid_tuner_hal2_service_runtime::{
     preflight_object_method_after_live_plan_only, CallbackArtifactCleanupResult,
     CallbackArtifactRuntimeSplitDiagnosticRecord, CallbackArtifactRuntimeSplitOutcome,
     CallbackArtifactRuntimeSplitPhase, CallbackRegistrationArtifactOutcome,
-    ObjectArtifactCleanupCommand, ObjectArtifactCleanupExecutor, ObjectCleanupDiagnosticRecord, ObjectCleanupPublicOutcome,
+    ObjectArtifactCleanupCommand, ObjectArtifactCleanupExecutor, ObjectCleanupDiagnosticRecord,
     ObjectCleanupExecutionReport, ObjectCloseCleanupFailure, ObjectCloseRuntimeExecutor,
     ObjectCloseUseCasePlan, ObjectDomainCleanupCommand, ObjectDomainCleanupExecutor,
     ObjectMethodExecutionToken, ObjectMethodTxnBuildError, ObjectQueryRequest, ObjectQueryResponse,
@@ -25,7 +24,6 @@ use maleicacid_tuner_hal2_service_runtime::{
 };
 
 use crate::dvr_callback_delivery::stop_dvr_status_notifier;
-use crate::dvr_playback_worker::stop_dvr_playback_worker;
 use crate::error_bridge::{status_from_hal_error, status_from_tuner_status, status_unknown_error};
 use crate::object_handle::AidlObjectHandle;
 use crate::service_context::{SharedAidlServiceContext, SharedTunerRuntime};
@@ -762,21 +760,6 @@ impl<'a> ObjectArtifactCleanupExecutor for AidlObjectArtifactCleanupExecutor<'a>
         self.execute_callback_cleanup_command(command)
     }
 
-    fn execute_dvr_playback_worker_cleanup(
-        &mut self,
-        command: ObjectArtifactCleanupCommand,
-    ) -> Result<(), ObjectCloseCleanupFailure> {
-        let step = command.step();
-        let handle = handle_from_artifact_cleanup_command(&command);
-        stop_dvr_playback_worker(
-            self.context,
-            handle,
-            DvrPlaybackWorkerCleanupOperation::ObjectClose,
-        )
-            .result()
-            .map_err(|error| ObjectCloseCleanupFailure::new(step, error))
-    }
-
     fn execute_dvr_status_notifier_cleanup(
         &mut self,
         command: ObjectArtifactCleanupCommand,
@@ -808,17 +791,16 @@ fn finish_object_close_plan(
     cleanup_report: ObjectCleanupExecutionReport,
 ) -> BinderResult<()> {
     let cleanup_result = cleanup_report.clone().into_result();
-    let public_outcome = ObjectCleanupPublicOutcome::from_result(
-        cleanup_result
-            .clone()
-            .map_err(ObjectCloseCleanupFailure::into_error),
-    );
+    let public_error = cleanup_result
+        .clone()
+        .err()
+        .map(ObjectCloseCleanupFailure::into_error);
     let record_result =
         context.record_object_cleanup_diagnostic_fallback(ObjectCleanupDiagnosticRecord::close(
             handle.object_id(),
             handle.generation(),
             cleanup_report,
-            public_outcome,
+            public_error,
         ));
     let runtime = context.runtime();
     let finish_result = match runtime.lock() {

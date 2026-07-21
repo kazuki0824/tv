@@ -16,8 +16,7 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
 };
 use maleicacid_tuner_hal2_common::{HalError, HalInvalidArgumentKind};
 use maleicacid_tuner_hal2_demux::config::{
-    AvSettings, ConfigInputPid, FilterConfig, FilterConfigKind, FilterOpenType, OpenFilterRequest,
-    PesSettings,
+    AvSettings, FilterConfig, FilterConfigKind, FilterOpenType, OpenFilterRequest, PesSettings,
     RecordIndexSettings, SectionCondition, SectionConditionKind,
 };
 use maleicacid_tuner_hal2_demux::{
@@ -82,9 +81,12 @@ pub fn build_open_filter_request(
     })
 }
 
-fn validate_ts_pid(pid: i32) -> Result<ConfigInputPid, HalError> {
-    ConfigInputPid::validate_tpid(pid)
-        .ok_or_else(|| invalid("TS PID must be 0..=0x1fff"))
+pub fn validate_ts_pid(pid: i32) -> Result<(), HalError> {
+    if (0..=0x1fff).contains(&pid) {
+        Ok(())
+    } else {
+        Err(invalid("TS PID must be 0..=0x1fff"))
+    }
 }
 
 pub fn normalize_pes_stream_id(stream_id: i32) -> Result<i32, HalError> {
@@ -255,7 +257,7 @@ pub fn validate_record_index_settings(
 
 fn build_section_config(
     open_type: FilterOpenType,
-    tpid: ConfigInputPid,
+    tpid: i32,
     settings: &DemuxFilterSectionSettings,
 ) -> Result<FilterConfig, HalError> {
     let length_field_bits = normalize_length_field_bits(settings.bitWidthOfLengthField)
@@ -282,7 +284,8 @@ pub fn build_filter_summary_for_open_type(
             "filter settings root is outside the TS-only tuner_hal2 profile",
         ));
     };
-    let tpid = validate_ts_pid(ts.tpid)?;
+    validate_ts_pid(ts.tpid)?;
+    let tpid = ts.tpid;
     match &ts.filterSettings {
         DemuxTsFilterSettingsFilterSettings::Noinit(_) => {
             if open_type != FilterOpenType::TsRaw && open_type != FilterOpenType::TsPcr {

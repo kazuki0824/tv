@@ -19,7 +19,7 @@ use maleicacid_tuner_hal2_service_runtime::{
     CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport,
     DvrPostCommitNotificationDiagnosticRecord, DvrPostCommitNotificationFailureKind,
     DvrPostCommitNotificationPhase, DvrStatusNotifierCleanupDiagnosticRecord,
-    DvrStatusPollSnapshot, DvrStatusReadySnapshot,
+    DvrStatusPollSnapshot,
 };
 
 use crate::object_handle::AidlObjectHandle;
@@ -43,32 +43,6 @@ impl DvrStatusNotifierKey {
 pub(crate) struct DvrStatusNotifier {
     cancel: Arc<AtomicBool>,
     join: JoinHandle<Result<(), HalError>>,
-}
-
-struct DvrStatusNotifierStartGate {
-    opened: AtomicBool,
-}
-
-impl DvrStatusNotifierStartGate {
-    fn new() -> Self {
-        Self {
-            opened: AtomicBool::new(false),
-        }
-    }
-
-    fn wait_until_opened(&self, cancel: &AtomicBool) -> bool {
-        while !self.opened.load(Ordering::Acquire) {
-            if cancel.load(Ordering::Relaxed) {
-                return false;
-            }
-            thread::park();
-        }
-        true
-    }
-
-    fn open(&self) {
-        self.opened.store(true, Ordering::Release);
-    }
 }
 
 fn stop_joined_dvr_status_notifier(notifier: DvrStatusNotifier) -> Result<(), HalError> {
@@ -122,17 +96,22 @@ enum DvrStatusCallbackDeliveryOutcome {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DvrCallbackNotifierAvailability {
     Available,
-    ArtifactMissing,
-    StoreFailure,
+    Unavailable,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DvrStatusNotificationPreflight {
-    Ready(DvrStatusReadySnapshot),
+    Ready,
     NotStarted,
     CallbackMissing,
     CallbackUnhealthy,
     StatusReportingDisabled,
+}
+
+impl DvrStatusNotificationPreflight {
+    fn should_skip_delivery(self) -> bool {
+        !matches!(self, Self::Ready)
+    }
 }
 
 fn dvr_callback_artifact_lookup(
@@ -181,46 +160,43 @@ fn record_dvr_artifact_lookup_failure(
 fn dvr_status_notification_preflight(
     context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
-    snapshot: DvrStatusPollSnapshot,
+    snapshot: &DvrStatusPollSnapshot,
     dvr_phase: DvrPostCommitNotificationPhase,
     delivery_context: &'static str,
 ) -> Result<DvrStatusNotificationPreflight, HalError> {
-    match snapshot {
-        DvrStatusPollSnapshot::Ready(ready) => {
-            Ok(DvrStatusNotificationPreflight::Ready(ready))
-        }
-        DvrStatusPollSnapshot::NotStarted => Ok(DvrStatusNotificationPreflight::NotStarted),
-        DvrStatusPollSnapshot::CallbackMissing => {
-            record_dvr_callback_delivery_failure(
-                context,
-                handle,
-                CallbackDeliveryFailurePhase::RuntimePolicySkip,
-                dvr_phase,
-                HalError::callback_failed(delivery_context, "DVR callback is not registered"),
-            );
-            Ok(DvrStatusNotificationPreflight::CallbackMissing)
-        }
-        DvrStatusPollSnapshot::CallbackUnhealthy => {
-            record_dvr_callback_delivery_failure(
-                context,
-                handle,
-                CallbackDeliveryFailurePhase::RuntimePolicySkip,
-                dvr_phase,
-                HalError::callback_failed(delivery_context, "DVR callback is unhealthy"),
-            );
-            Ok(DvrStatusNotificationPreflight::CallbackUnhealthy)
-        }
-        DvrStatusPollSnapshot::StatusReportingDisabled => {
-            record_dvr_callback_delivery_failure(
-                context,
-                handle,
-                CallbackDeliveryFailurePhase::RuntimePolicySkip,
-                dvr_phase,
-                HalError::callback_failed(delivery_context, "DVR status reporting is disabled"),
-            );
-            Ok(DvrStatusNotificationPreflight::StatusReportingDisabled)
-        }
+    if !snapshot.started {
+        return Ok(DvrStatusNotificationPreflight::NotStarted);
     }
+    if !snapshot.callback_present {
+        record_dvr_artifact_lookup_failure(
+            context,
+            handle,
+            dvr_phase,
+            HalError::callback_failed(delivery_context, "DVR callback is not registered"),
+        );
+        return Ok(DvrStatusNotificationPreflight::CallbackMissing);
+    }
+    if snapshot.callback_unhealthy {
+        record_dvr_callback_delivery_failure(
+            context,
+            handle,
+            CallbackDeliveryFailurePhase::RuntimePolicySkip,
+            dvr_phase,
+            HalError::callback_failed(delivery_context, "DVR callback is unhealthy"),
+        );
+        return Ok(DvrStatusNotificationPreflight::CallbackUnhealthy);
+    }
+    if !snapshot.status_reporting_enabled {
+        record_dvr_callback_delivery_failure(
+            context,
+            handle,
+            CallbackDeliveryFailurePhase::RuntimePolicySkip,
+            dvr_phase,
+            HalError::callback_failed(delivery_context, "DVR status reporting is disabled"),
+        );
+        return Ok(DvrStatusNotificationPreflight::StatusReportingDisabled);
+    }
+    Ok(DvrStatusNotificationPreflight::Ready)
 }
 
 fn dvr_callback_notifier_availability(
@@ -240,7 +216,7 @@ fn dvr_callback_notifier_availability(
                     "DVR callback artifact missing before notifier start",
                 ),
             );
-            Ok(DvrCallbackNotifierAvailability::ArtifactMissing)
+            Ok(DvrCallbackNotifierAvailability::Unavailable)
         }
         DvrCallbackArtifactLookup::StoreFailure(error) => {
             record_dvr_callback_delivery_failure(
@@ -250,7 +226,7 @@ fn dvr_callback_notifier_availability(
                 DvrPostCommitNotificationPhase::StatusNotifierStart,
                 error,
             );
-            Ok(DvrCallbackNotifierAvailability::StoreFailure)
+            Ok(DvrCallbackNotifierAvailability::Unavailable)
         }
     }
 }
@@ -321,28 +297,22 @@ fn record_dvr_status_notifier_lifecycle_outcome(
     context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
     record: DvrStatusNotifierCleanupDiagnosticRecord,
-) -> Result<(), HalError> {
-    let phase = record.phase();
-    let primary = record.result().err().cloned().unwrap_or_else(|| {
-        HalError::cleanup_failed(
-            "DVR status notifier lifecycle diagnostic",
-            "recording successful notifier termination failed",
-        )
-    });
-    context
-        .record_dvr_status_notifier_cleanup_diagnostic(record)
-        .map_err(|record_error| {
-            record_post_commit_accounting_failure_fallback(
-                context,
-                handle,
-                phase,
-                DvrPostCommitNotificationFailureKind::NotifierCleanup,
-                primary.clone(),
-                "DVR status notifier lifecycle diagnostic failed",
-                record_error.clone(),
-            );
-            record_error
-        })
+) {
+    let phase = record.phase;
+    if let Err(error) = context.record_dvr_status_notifier_cleanup_diagnostic(record) {
+        record_post_commit_accounting_failure_fallback(
+            context,
+            handle,
+            phase,
+            DvrPostCommitNotificationFailureKind::NotifierCleanup,
+            error,
+            "DVR status notifier lifecycle diagnostic failed",
+            HalError::cleanup_failed(
+                "DVR status notifier lifecycle diagnostic",
+                "recording failed",
+            ),
+        );
+    }
 }
 
 fn record_superseded_dvr_notifier_cleanup_failure(
@@ -429,18 +399,19 @@ fn dvr_status_notifier_loop(
     let initial_preflight = dvr_status_notification_preflight(
         &context,
         handle,
-        initial_snapshot,
+        &initial_snapshot,
         DvrPostCommitNotificationPhase::StatusNotifierRuntimeFailure,
         "IDvrCallback.poll_status.initial",
     )?;
-    let initial_ready = match initial_preflight {
-        DvrStatusNotificationPreflight::Ready(ready) => ready,
-        DvrStatusNotificationPreflight::NotStarted
-        | DvrStatusNotificationPreflight::CallbackMissing
-        | DvrStatusNotificationPreflight::CallbackUnhealthy
-        | DvrStatusNotificationPreflight::StatusReportingDisabled => return Ok(()),
-    };
-    let mut last_event = initial_ready.event();
+    if initial_preflight.should_skip_delivery() {
+        return Err(HalError::callback_failed(
+            "IDvrCallback.poll_status.initial",
+            format!(
+                "DVR status notifier terminated during initial preflight: {initial_preflight:?}"
+            ),
+        ));
+    }
+    let mut last_event = initial_snapshot.event;
 
     loop {
         if cancel.load(Ordering::Relaxed) {
@@ -450,19 +421,18 @@ fn dvr_status_notifier_loop(
         let preflight = dvr_status_notification_preflight(
             &context,
             handle,
-            snapshot,
+            &snapshot,
             DvrPostCommitNotificationPhase::StatusNotifierRuntimeFailure,
             "IDvrCallback.poll_status.terminal",
         )?;
-        let ready = match preflight {
-            DvrStatusNotificationPreflight::Ready(ready) => ready,
-            DvrStatusNotificationPreflight::NotStarted
-            | DvrStatusNotificationPreflight::CallbackMissing
-            | DvrStatusNotificationPreflight::CallbackUnhealthy
-            | DvrStatusNotificationPreflight::StatusReportingDisabled => return Ok(()),
-        };
-        if ready.event() != last_event {
-            if let Some(event) = ready.event() {
+        if preflight.should_skip_delivery() {
+            return Err(HalError::callback_failed(
+                "IDvrCallback.poll_status.terminal",
+                format!("DVR status notifier terminated during preflight: {preflight:?}"),
+            ));
+        }
+        if snapshot.event != last_event {
+            if let Some(event) = snapshot.event {
                 let delivery_outcome = deliver_dvr_status_event(
                     &context,
                     handle,
@@ -473,18 +443,18 @@ fn dvr_status_notifier_loop(
                 match delivery_outcome {
                     DvrStatusCallbackDeliveryOutcome::Delivered => {}
                     DvrStatusCallbackDeliveryOutcome::ArtifactMissing
-                    | DvrStatusCallbackDeliveryOutcome::StoreFailure => return Ok(()),
-                    DvrStatusCallbackDeliveryOutcome::BinderFailure => {
+                    | DvrStatusCallbackDeliveryOutcome::StoreFailure
+                    | DvrStatusCallbackDeliveryOutcome::BinderFailure => {
                         return Err(HalError::callback_failed(
                             "IDvrCallback.poll_status",
-                            "DVR status notifier terminated after Binder delivery failure",
+                            format!("DVR status notifier terminated after delivery outcome: {delivery_outcome:?}"),
                         ));
                     }
                 }
             }
-            last_event = ready.event();
+            last_event = snapshot.event;
         }
-        thread::park_timeout(Duration::from_millis(ready.interval_ms().max(1)));
+        thread::park_timeout(Duration::from_millis(snapshot.interval_ms.max(1)));
     }
 }
 
@@ -494,34 +464,45 @@ fn run_dvr_status_notifier_with_terminal_diagnostic(
     cancel: Arc<AtomicBool>,
 ) -> Result<(), HalError> {
     let context_for_loop = Arc::clone(&context);
-    let terminal_result = match catch_unwind(AssertUnwindSafe(|| {
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
         dvr_status_notifier_loop(context_for_loop, handle, cancel)
-    })) {
-        Ok(result) => result,
-        Err(_) => Err(HalError::internal(
+    }));
+    let terminal_error = match outcome {
+        Ok(Ok(())) => {
+            record_dvr_status_notifier_lifecycle_outcome(
+                &context,
+                handle,
+                DvrStatusNotifierCleanupDiagnosticRecord::worker_terminal(
+                    handle.object_id(),
+                    handle.generation(),
+                    Ok(()),
+                ),
+            );
+            return Ok(());
+        }
+        Ok(Err(error)) => error,
+        Err(_) => HalError::internal(
             HalInternalKind::InvariantViolation,
             "DVR status notifier thread panicked",
-        )),
+        ),
     };
-    let record_result = record_dvr_status_notifier_lifecycle_outcome(
+    record_dvr_status_notifier_lifecycle_outcome(
         &context,
         handle,
         DvrStatusNotifierCleanupDiagnosticRecord::worker_terminal(
             handle.object_id(),
             handle.generation(),
-            terminal_result.clone(),
+            Err(terminal_error.clone()),
         ),
     );
-    match (terminal_result, record_result) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Ok(()), Err(record_error)) => Err(record_error),
-        (Err(primary), Ok(())) => Err(primary),
-        (Err(primary), Err(record_error)) => Err(compose_primary_cleanup_failure(
-            "DVR status notifier terminal diagnostic failed",
-            primary,
-            record_error,
-        )),
-    }
+    record_dvr_callback_delivery_failure(
+        &context,
+        handle,
+        CallbackDeliveryFailurePhase::NotifierTerminal,
+        DvrPostCommitNotificationPhase::StatusNotifierRuntimeFailure,
+        terminal_error,
+    );
+    Ok(())
 }
 
 pub fn record_dvr_post_commit_notification_outcome(
@@ -551,18 +532,14 @@ pub fn deliver_started_dvr_status(
     let preflight = dvr_status_notification_preflight(
         context,
         handle,
-        snapshot,
+        &snapshot,
         DvrPostCommitNotificationPhase::InitialStatusDelivery,
         "IDvrCallback.start_status",
     )?;
-    let ready = match preflight {
-        DvrStatusNotificationPreflight::Ready(ready) => ready,
-        DvrStatusNotificationPreflight::NotStarted
-        | DvrStatusNotificationPreflight::CallbackMissing
-        | DvrStatusNotificationPreflight::CallbackUnhealthy
-        | DvrStatusNotificationPreflight::StatusReportingDisabled => return Ok(()),
-    };
-    let Some(event) = ready.event() else {
+    if preflight.should_skip_delivery() {
+        return Ok(());
+    }
+    let Some(event) = snapshot.event else {
         return Ok(());
     };
     match deliver_dvr_status_event(
@@ -583,67 +560,65 @@ pub fn start_dvr_status_notifier(
     context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
 ) -> Result<(), HalError> {
-    let _lifecycle = context.dvr_status_notifier_lifecycle_lock()?;
-    let key = DvrStatusNotifierKey::new(handle);
-
     let runtime = context.runtime();
     let snapshot = poll_dvr_status_snapshot(&runtime, handle)?;
-    match dvr_status_notification_preflight(
+    let preflight = dvr_status_notification_preflight(
         context,
         handle,
-        snapshot,
+        &snapshot,
         DvrPostCommitNotificationPhase::StatusNotifierStart,
         "IDvrCallback.notifier_start",
-    )? {
-        DvrStatusNotificationPreflight::Ready(_) => {}
-        DvrStatusNotificationPreflight::NotStarted
-        | DvrStatusNotificationPreflight::CallbackMissing
-        | DvrStatusNotificationPreflight::CallbackUnhealthy
-        | DvrStatusNotificationPreflight::StatusReportingDisabled => return Ok(()),
+    )?;
+    if preflight.should_skip_delivery() {
+        return Ok(());
     }
-    match dvr_callback_notifier_availability(context, handle)? {
-        DvrCallbackNotifierAvailability::Available => {}
-        DvrCallbackNotifierAvailability::ArtifactMissing
-        | DvrCallbackNotifierAvailability::StoreFailure => return Ok(()),
+    if dvr_callback_notifier_availability(context, handle)?
+        != DvrCallbackNotifierAvailability::Available
+    {
+        return Ok(());
     }
-
-    // spawn 前に store 所有権を確保する。新 worker は start gate で待機するため、
-    // supersede 対象の旧 worker と競合しない。
-    let mut store = context.dvr_status_notifiers_lock()?;
-    let cancel = Arc::new(AtomicBool::new(false));
-    let thread_cancel = Arc::clone(&cancel);
-    let start_gate = Arc::new(DvrStatusNotifierStartGate::new());
-    let thread_gate = Arc::clone(&start_gate);
-    let thread_context = Arc::clone(context);
-    let join = thread::Builder::new()
-        .name(format!(
-            "tuner-hal2-dvr-status-{}-{}",
-            handle.object_id().0,
-            handle.generation().0
-        ))
-        .spawn(move || {
-            if !thread_gate.wait_until_opened(&thread_cancel) {
-                return Ok(());
+    let old_notifier = {
+        let mut store = context.dvr_status_notifiers_lock()?;
+        let key = DvrStatusNotifierKey::new(handle);
+        let mut old_notifier = store.remove(&key);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let thread_cancel = Arc::clone(&cancel);
+        let thread_context = Arc::clone(context);
+        let spawn_result = thread::Builder::new()
+            .name(format!(
+                "tuner-hal2-dvr-status-{}-{}",
+                handle.object_id().0,
+                handle.generation().0
+            ))
+            .spawn(move || {
+                run_dvr_status_notifier_with_terminal_diagnostic(
+                    thread_context,
+                    handle,
+                    thread_cancel,
+                )
+            });
+        let join = match spawn_result {
+            Ok(join) => join,
+            Err(error) => {
+                if let Some(old_notifier) = old_notifier.take() {
+                    store.insert(key, old_notifier);
+                }
+                return Err(HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    format!("failed to spawn DVR status notifier: {error}"),
+                ));
             }
-            run_dvr_status_notifier_with_terminal_diagnostic(
-                thread_context,
-                handle,
-                thread_cancel,
-            )
-        })
-        .map_err(|error| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                format!("failed to spawn DVR status notifier: {error}"),
-            )
-        })?;
-    let thread = join.thread().clone();
-    let old_notifier = store.insert(key, DvrStatusNotifier { cancel, join });
-    drop(store);
-
+        };
+        if let Some(old_notifier) = old_notifier.as_ref() {
+            old_notifier.cancel.store(true, Ordering::Relaxed);
+            old_notifier.join.thread().unpark();
+        }
+        store.insert(key, DvrStatusNotifier { cancel, join });
+        old_notifier
+    };
     if let Some(notifier) = old_notifier {
         let cleanup_result = stop_joined_dvr_status_notifier(notifier);
-        let record_result = record_dvr_status_notifier_lifecycle_outcome(
+        record_dvr_status_notifier_lifecycle_outcome(
             context,
             handle,
             DvrStatusNotifierCleanupDiagnosticRecord::supersede_cleanup(
@@ -655,13 +630,7 @@ pub fn start_dvr_status_notifier(
         if let Err(error) = cleanup_result {
             record_superseded_dvr_notifier_cleanup_failure(context, handle, error);
         }
-        if let Err(error) = record_result {
-            record_superseded_dvr_notifier_cleanup_failure(context, handle, error);
-        }
     }
-
-    start_gate.open();
-    thread.unpark();
     Ok(())
 }
 
@@ -669,7 +638,6 @@ pub fn stop_dvr_status_notifier(
     context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
 ) -> Result<(), HalError> {
-    let _lifecycle = context.dvr_status_notifier_lifecycle_lock()?;
     let notifier = context
         .dvr_status_notifiers_lock()?
         .remove(&DvrStatusNotifierKey::new(handle));
@@ -682,7 +650,6 @@ pub fn stop_dvr_status_notifier(
 pub fn stop_all_dvr_status_notifiers(
     context: &crate::service_context::AidlServiceContext,
 ) -> Result<(), HalError> {
-    let _lifecycle = context.dvr_status_notifier_lifecycle_lock()?;
     let (notifiers, take_result) = context.take_dvr_status_notifiers_for_reset();
     let mut failures = FirstErrorCollector::new();
     if let Err(error) = take_result {
@@ -930,12 +897,12 @@ mod tests {
             .unwrap()
             .dvr_status_poll_snapshot_for_aidl_object(handle.object_id(), handle.generation())
             .unwrap();
-        assert!(matches!(snapshot, DvrStatusPollSnapshot::Ready(_)));
+        assert!(!snapshot.callback_unhealthy);
         context.clear_owner_callbacks_for_test(handle).unwrap();
     }
 
     #[test]
-    fn deliver_started_dvr_status_keeps_post_commit_public_result_success_on_binder_failure() {
+    fn deliver_started_dvr_status_marks_unhealthy_on_binder_failure() {
         let (context, runtime, handle) = build_started_playback_dvr_context();
         let state = Arc::new(CallbackState::default());
         state.fail_delivery.store(true, Ordering::Relaxed);
@@ -944,14 +911,14 @@ mod tests {
         context.retain_dvr_callback(handle, &callback).unwrap();
         record_dvr_callback_registration_for_test(&runtime, handle);
 
-        deliver_started_dvr_status(&context, handle).unwrap();
+        assert!(deliver_started_dvr_status(&context, handle).is_err());
 
         let snapshot = runtime
             .lock()
             .unwrap()
             .dvr_status_poll_snapshot_for_aidl_object(handle.object_id(), handle.generation())
             .unwrap();
-        assert_eq!(snapshot, DvrStatusPollSnapshot::CallbackUnhealthy);
+        assert!(snapshot.callback_unhealthy);
         context.clear_owner_callbacks_for_test(handle).unwrap();
     }
 }

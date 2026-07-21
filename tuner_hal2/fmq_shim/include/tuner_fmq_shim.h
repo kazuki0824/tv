@@ -11,22 +11,16 @@ extern "C" {
 typedef struct tuner_fmq_queue tuner_fmq_queue;
 
 tuner_fmq_queue* tuner_fmq_queue_create(size_t num_bytes, bool configure_event_flag);
-// shared pointer を reset せず、同一 descriptor 上に別の libfmq endpoint を作る。
-tuner_fmq_queue* tuner_fmq_queue_clone(const tuner_fmq_queue* source);
 void tuner_fmq_queue_destroy(tuner_fmq_queue* queue);
 size_t tuner_fmq_queue_available_to_read(const tuner_fmq_queue* queue);
 size_t tuner_fmq_queue_available_to_write(const tuner_fmq_queue* queue);
 // FMQ write checked API.
 // Returns 0 on success, -1 on invalid arguments, -2 when libfmq write fails.
-// On success, out_written receives the requested byte count. A zero-sized write succeeds
-// with out_written == 0.
+// On success, out_written receives the requested byte count; size == 0 is a
+// 成功時でも out_written == 0 の場合は書き込みなしとして扱う。
 int tuner_fmq_queue_write_checked(tuner_fmq_queue* queue, const uint8_t* data,
                                   size_t size, size_t* out_written);
-// Performs availability selection and read as one native operation.
-// Returns 0 on success (including an empty queue), -1 on invalid arguments,
-// and -2 when libfmq read fails.
-int tuner_fmq_queue_read_checked(tuner_fmq_queue* queue, uint8_t* data,
-                                 size_t capacity, size_t* out_read);
+size_t tuner_fmq_queue_read(tuner_fmq_queue* queue, uint8_t* data, size_t size);
 int tuner_fmq_queue_wake(tuner_fmq_queue* queue, uint32_t bits);
 int tuner_fmq_queue_wait(tuner_fmq_queue* queue, uint32_t bits, int64_t timeout_ns, uint32_t* state);
 int32_t tuner_fmq_queue_quantum(const tuner_fmq_queue* queue);

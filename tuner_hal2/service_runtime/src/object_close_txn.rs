@@ -23,22 +23,21 @@ use crate::object_lifecycle::{aidl_object_closeable, AidlObjectCloseability};
 use crate::{RuntimeObjectEntry, TunerServiceRuntime};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ObjectCloseArtifactCleanupPhase {
+pub enum ObjectCloseArtifactCleanupPhase {
     BeforeDomainCleanup,
     AfterDomainCleanup,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ObjectCloseArtifactCleanupKind {
+pub enum ObjectCloseArtifactCleanupKind {
     OwnerCallbackRegistration,
     DescendantCallbackRegistration,
     LnbOwnerLossCallbackRegistration,
-    DvrPlaybackWorker,
     DvrStatusNotifier,
 }
 
 #[derive(Debug, Eq, PartialEq)]
-struct ObjectCloseArtifactCleanupCommand {
+pub struct ObjectCloseArtifactCleanupCommand {
     phase: ObjectCloseArtifactCleanupPhase,
     kind: ObjectCloseArtifactCleanupKind,
     object_kind: AidlObjectKind,
@@ -74,7 +73,6 @@ pub enum ObjectArtifactCleanupKind {
     OwnerCallbackRegistration,
     DescendantCallbackRegistration,
     LnbOwnerLossCallbackRegistration,
-    DvrPlaybackWorker,
     DvrStatusNotifier,
 }
 
@@ -99,9 +97,6 @@ impl ObjectArtifactCleanupCommand {
             }
             ObjectCloseArtifactCleanupKind::LnbOwnerLossCallbackRegistration => {
                 ObjectArtifactCleanupKind::LnbOwnerLossCallbackRegistration
-            }
-            ObjectCloseArtifactCleanupKind::DvrPlaybackWorker => {
-                ObjectArtifactCleanupKind::DvrPlaybackWorker
             }
             ObjectCloseArtifactCleanupKind::DvrStatusNotifier => {
                 ObjectArtifactCleanupKind::DvrStatusNotifier
@@ -164,7 +159,7 @@ impl ObjectArtifactCleanupCommand {
         self.owner_callback_cleanup_command.as_ref()
     }
 
-    pub(crate) fn execute_outcome_with<E: ObjectArtifactCleanupExecutor>(
+    pub fn execute_outcome_with<E: ObjectArtifactCleanupExecutor>(
         self,
         executor: &mut E,
     ) -> ObjectCleanupStepOutcome {
@@ -183,9 +178,6 @@ impl ObjectArtifactCleanupCommand {
             ObjectArtifactCleanupKind::LnbOwnerLossCallbackRegistration => {
                 executor.execute_lnb_owner_loss_callback_cleanup(self)
             }
-            ObjectArtifactCleanupKind::DvrPlaybackWorker => {
-                executor.execute_dvr_playback_worker_cleanup(self)
-            }
             ObjectArtifactCleanupKind::DvrStatusNotifier => {
                 executor.execute_dvr_status_notifier_cleanup(self)
             }
@@ -193,7 +185,7 @@ impl ObjectArtifactCleanupCommand {
         ObjectCleanupStepOutcome::artifact(kind, object_kind, object_id, generation, step, result)
     }
 
-    pub(crate) fn execute_with<E: ObjectArtifactCleanupExecutor>(
+    pub fn execute_with<E: ObjectArtifactCleanupExecutor>(
         self,
         executor: &mut E,
     ) -> Result<(), ObjectCloseCleanupFailure> {
@@ -218,11 +210,11 @@ impl ObjectRuntimeCleanupCommand {
         Self { kind, entries }
     }
 
-    fn kind(&self) -> ObjectRuntimeCleanupKind {
+    pub fn kind(&self) -> ObjectRuntimeCleanupKind {
         self.kind
     }
 
-    fn entries(&self) -> &[RuntimeObjectEntry] {
+    pub fn entries(&self) -> &[RuntimeObjectEntry] {
         &self.entries
     }
 
@@ -240,7 +232,7 @@ impl ObjectRuntimeCleanupCommand {
         }
     }
 
-    pub(crate) fn execute_outcome_with<E: ObjectCloseRuntimeExecutor>(
+    pub fn execute_outcome_with<E: ObjectCloseRuntimeExecutor>(
         self,
         executor: &mut E,
     ) -> ObjectCleanupStepOutcome {
@@ -270,11 +262,6 @@ pub trait ObjectArtifactCleanupExecutor {
     ) -> Result<(), ObjectCloseCleanupFailure>;
 
     fn execute_lnb_owner_loss_callback_cleanup(
-        &mut self,
-        command: ObjectArtifactCleanupCommand,
-    ) -> Result<(), ObjectCloseCleanupFailure>;
-
-    fn execute_dvr_playback_worker_cleanup(
         &mut self,
         command: ObjectArtifactCleanupCommand,
     ) -> Result<(), ObjectCloseCleanupFailure>;
@@ -481,28 +468,13 @@ pub enum ObjectCleanupDiagnosticKind {
     DropLeakTerminalization,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ObjectCleanupPublicOutcome {
-    NoPublicError,
-    PublicError(HalError),
-}
-
-impl ObjectCleanupPublicOutcome {
-    pub fn from_result(result: Result<(), HalError>) -> Self {
-        match result {
-            Ok(()) => Self::NoPublicError,
-            Err(error) => Self::PublicError(error),
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct ObjectCleanupDiagnosticRecord {
     kind: ObjectCleanupDiagnosticKind,
     object_id: AidlObjectId,
     generation: AidlObjectGeneration,
     report: ObjectCleanupExecutionReport,
-    public_outcome: ObjectCleanupPublicOutcome,
+    public_error: Option<HalError>,
 }
 
 pub type ObjectCleanupDiagnosticSnapshot =
@@ -514,14 +486,14 @@ impl ObjectCleanupDiagnosticRecord {
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
         report: ObjectCleanupExecutionReport,
-        public_outcome: ObjectCleanupPublicOutcome,
+        public_error: Option<HalError>,
     ) -> Self {
         Self {
             kind: ObjectCleanupDiagnosticKind::Close,
             object_id,
             generation,
             report,
-            public_outcome,
+            public_error,
         }
     }
 
@@ -529,14 +501,14 @@ impl ObjectCleanupDiagnosticRecord {
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
         report: ObjectCleanupExecutionReport,
-        public_outcome: ObjectCleanupPublicOutcome,
+        public_error: Option<HalError>,
     ) -> Self {
         Self {
             kind: ObjectCleanupDiagnosticKind::DropLeakTerminalization,
             object_id,
             generation,
             report,
-            public_outcome,
+            public_error,
         }
     }
 
@@ -556,8 +528,8 @@ impl ObjectCleanupDiagnosticRecord {
         &self.report
     }
 
-    pub fn public_outcome(&self) -> &ObjectCleanupPublicOutcome {
-        &self.public_outcome
+    pub fn public_error(&self) -> Option<&HalError> {
+        self.public_error.as_ref()
     }
 }
 
@@ -740,9 +712,6 @@ fn callback_cleanup_failure_message_for_kind(kind: ObjectArtifactCleanupKind) ->
         ObjectArtifactCleanupKind::LnbOwnerLossCallbackRegistration => {
             "callback store cleanup failed during LNB owner-loss cleanup"
         }
-        ObjectArtifactCleanupKind::DvrPlaybackWorker => {
-            "DVR playback worker cleanup failed during object cleanup"
-        }
         ObjectArtifactCleanupKind::DvrStatusNotifier => {
             "DVR status notifier cleanup failed during object cleanup"
         }
@@ -767,8 +736,7 @@ fn owner_callback_cleanup_command_for_parts(
                 callback_cleanup_failure_message_for_kind(kind),
             ))
         }
-        ObjectArtifactCleanupKind::DvrPlaybackWorker
-        | ObjectArtifactCleanupKind::DvrStatusNotifier => None,
+        ObjectArtifactCleanupKind::DvrStatusNotifier => None,
     }
 }
 
@@ -807,12 +775,6 @@ fn artifact_cleanup_commands_for_close_plan(
             ));
         }
         if entry.object_kind == AidlObjectKind::Dvr {
-            commands.push(ObjectCloseArtifactCleanupCommand::new(
-                ObjectCloseArtifactCleanupPhase::AfterDomainCleanup,
-                ObjectCloseArtifactCleanupKind::DvrPlaybackWorker,
-                entry,
-                CleanupStep::StopWorker,
-            ));
             commands.push(ObjectCloseArtifactCleanupCommand::new(
                 ObjectCloseArtifactCleanupPhase::AfterDomainCleanup,
                 ObjectCloseArtifactCleanupKind::DvrStatusNotifier,
@@ -869,11 +831,8 @@ fn unregister_public_runtime_entries_for_close(
 
     let mut cleanup_collector = FirstErrorCollector::new();
     for entry in public_runtime_entries {
-        let result = runtime.unregister_public_runtime_for_closed_aidl_entry(entry);
-        if result.is_ok() && entry.object_kind == AidlObjectKind::Dvr {
-            runtime.remove_dvr_playback_consume_diagnostic(entry.object_id, entry.generation);
-        }
-        cleanup_collector.push_result(result);
+        cleanup_collector
+            .push_result(runtime.unregister_public_runtime_for_closed_aidl_entry(entry));
     }
     cleanup_collector
         .into_result()
@@ -900,11 +859,8 @@ fn unregister_public_runtime_entries_for_drop_leak(
 
     let mut cleanup_collector = FirstErrorCollector::new();
     for entry in public_runtime_entries {
-        let result = runtime.unregister_public_runtime_for_drop_leak_aidl_entry(entry);
-        if result.is_ok() && entry.object_kind == AidlObjectKind::Dvr {
-            runtime.remove_dvr_playback_consume_diagnostic(entry.object_id, entry.generation);
-        }
-        cleanup_collector.push_result(result);
+        cleanup_collector
+            .push_result(runtime.unregister_public_runtime_for_drop_leak_aidl_entry(entry));
     }
     cleanup_collector
         .into_result()
@@ -1080,8 +1036,8 @@ pub(crate) fn plan_and_begin_object_close_method_call_dispatch(
         object_id,
         generation,
         object_kind,
-        method_plan.command_plan(),
-        method_plan.executable_request(),
+        method_plan.command_plan,
+        method_plan.command.runtime_executable_request(),
         step,
     )
 }
@@ -1180,11 +1136,6 @@ fn artifact_cleanup_commands_for_drop_leak_plan(
             ));
         }
         if entry.object_kind == AidlObjectKind::Dvr {
-            commands.push(ObjectArtifactCleanupCommand::new(
-                ObjectArtifactCleanupKind::DvrPlaybackWorker,
-                entry,
-                CleanupStep::StopWorker,
-            ));
             commands.push(ObjectArtifactCleanupCommand::new(
                 ObjectArtifactCleanupKind::DvrStatusNotifier,
                 entry,

@@ -11,24 +11,6 @@ pub struct GenerationBoundaryReport {
     pub next_generation: DemuxStreamGeneration,
 }
 
-
-#[derive(Debug)]
-pub struct DemuxGenerationBoundaryAuthorization {
-    pub(crate) demux_id: i32,
-    pub(crate) token_id: u64,
-    pub(crate) expected_generation: u64,
-}
-
-impl DemuxGenerationBoundaryAuthorization {
-    pub(crate) fn new(demux_id: i32, token_id: u64, expected_generation: u64) -> Self {
-        Self {
-            demux_id,
-            token_id,
-            expected_generation,
-        }
-    }
-}
-
 #[derive(Debug)]
 pub(crate) struct GenerationBoundaryTxn {
     reason: PipelineBoundaryReason,

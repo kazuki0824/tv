@@ -59,27 +59,15 @@ fn format_filter_runtime_operation_report(
     )
 }
 
-fn format_dvr_flush_report(
-    diagnostic_id: DemuxTransactionDiagnosticId,
-    report: &maleicacid_tuner_hal2_demux::DvrFlushReport,
-) -> String {
-    format!(
-        "demux runtime DVR flush failed; diagnostic_id={}; dvr_id={}; outcome={:?}; steps={:?}",
-        diagnostic_id.value(),
-        report.dvr_id(),
-        report.outcome(),
-        report.steps()
-    )
-}
-
 fn format_source_boundary_report(
     diagnostic_id: DemuxTransactionDiagnosticId,
     report: &SourceBoundaryReport,
 ) -> String {
     format!(
-        "source boundary failed; diagnostic_id={}; target={:?}; outcome={:?}; steps={:?}; reset_report={:?}",
+        "source boundary failed; diagnostic_id={}; sink_filter_id={}; source_filter_id={:?}; outcome={:?}; steps={:?}; reset_report={:?}",
         diagnostic_id.value(),
-        report.target(),
+        report.sink_filter_id(),
+        report.source_filter_id(),
         report.outcome(),
         report.steps(),
         report.reset_report()
@@ -264,7 +252,7 @@ impl TunerServiceRuntime {
     }
 
     pub(super) fn map_filter_runtime_error(error: DemuxRuntimeError) -> HalError {
-        match error.kind() {
+        match error.kind {
             DemuxRuntimeErrorKind::FilterMissing => HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
                 "filter runtime is missing",
@@ -352,10 +340,7 @@ impl TunerServiceRuntime {
                 );
                 if matches!(
                     report.outcome(),
-                    Some(
-                        maleicacid_tuner_hal2_demux::FilterConfigureOutcome::Quarantined { .. }
-                            | maleicacid_tuner_hal2_demux::FilterConfigureOutcome::PartialEffectQuarantined { .. }
-                    )
+                    Some(maleicacid_tuner_hal2_demux::FilterConfigureOutcome::Quarantined { .. })
                 ) {
                     Err(compose_primary_cleanup_failure(
                         "filter configure failed and rollback failed",
@@ -741,7 +726,7 @@ impl TunerServiceRuntime {
             Ok(reset_report) => Ok(reset_report),
             Err(err) => {
                 let diagnostic_id = self.allocate_demux_transaction_diagnostic_id();
-                let hal_error = match err.kind() {
+                let hal_error = match err.kind {
                     maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::FilterMissing => {
                         HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, format!("source or sink filter runtime is missing; {}", format_source_boundary_report(diagnostic_id, &report)))
                     }
@@ -811,7 +796,7 @@ impl TunerServiceRuntime {
             Ok(()) => Ok(()),
             Err(err) => {
                 let diagnostic_id = self.allocate_demux_transaction_diagnostic_id();
-                let hal_error = match err.kind() {
+                let hal_error = match err.kind {
                     maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::FilterMissing => {
                         HalError::invalid_argument(
                             HalInvalidArgumentKind::NumericRange,
@@ -954,7 +939,7 @@ impl TunerServiceRuntime {
     }
 
     fn map_dvr_runtime_error(error: DemuxRuntimeError) -> HalError {
-        match error.kind() {
+        match error.kind {
             DemuxRuntimeErrorKind::DvrMissing => HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
                 "DVR runtime is missing",
@@ -1047,32 +1032,122 @@ impl TunerServiceRuntime {
         }
         let (low_threshold, high_threshold) =
             Self::validate_dvr_configure_request(dvr.buffer_size, request)?;
+        let rollback_token = demux_runtime
+            .rollback_token_from_typed_request(
+                maleicacid_tuner_hal2_demux::DemuxRuntimeRollbackTokenPrepareRequest::new(
+                    owner_demux_id,
+                ),
+            )
+            .map_err(Self::map_dvr_runtime_error)?;
         let (report, result) = demux_runtime.configure_dvr_runtime_with_typed_request(
-            maleicacid_tuner_hal2_demux::DvrRuntimeConfigureRequest::new(
-                dvr_id,
-                request.status_mask,
-                low_threshold,
-                high_threshold,
-            ),
+            maleicacid_tuner_hal2_demux::DvrRuntimeConfigureRequest::new(dvr_id),
         );
         match result {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                if let Err(error) = demux_runtime.configure_dvr_status_reporting_from_typed_request(
+                    maleicacid_tuner_hal2_demux::DvrStatusReportingRequest::new(
+                        dvr_id,
+                        request.status_mask,
+                        low_threshold,
+                        high_threshold,
+                    ),
+                ) {
+                    let primary = Self::map_dvr_runtime_error(error);
+                    let rollback_result = demux_runtime.restore_from_rollback_request(
+                        maleicacid_tuner_hal2_demux::DemuxRuntimeRollbackRestoreRequest::new(
+                            rollback_token,
+                        ),
+                    );
+                    if rollback_result.is_err() {
+                        demux_runtime.quarantine_runtime_from_typed_request(
+                            maleicacid_tuner_hal2_demux::DemuxRuntimeQuarantineRequest::new(),
+                        );
+                    }
+                    let diagnostic_id = self.allocate_demux_transaction_diagnostic_id();
+                    let primary = attach_diagnostic_detail_to_public_error(
+                        primary,
+                        format_dvr_configure_report(diagnostic_id, &report),
+                    );
+                    if let Err(rollback_error) = rollback_result {
+                        let composed = compose_primary_cleanup_failure(
+                            "DVR configure status reporting rollback failed",
+                            primary,
+                            Self::map_dvr_runtime_error(rollback_error),
+                        );
+                        self.record_demux_transaction_diagnostic(
+                            DemuxTransactionDiagnosticRecord::dvr_configure(
+                                diagnostic_id,
+                                owner_demux_id,
+                                dvr_id,
+                                report.clone(),
+                                composed.clone(),
+                            ),
+                        );
+                        return Err(composed);
+                    }
+                    self.record_demux_transaction_diagnostic(
+                        DemuxTransactionDiagnosticRecord::dvr_configure(
+                            diagnostic_id,
+                            owner_demux_id,
+                            dvr_id,
+                            report.clone(),
+                            primary.clone(),
+                        ),
+                    );
+                    return Err(primary);
+                }
+                demux_runtime
+                    .commit_rollback_request(
+                        maleicacid_tuner_hal2_demux::DemuxRuntimeRollbackCommitRequest::new(
+                            rollback_token,
+                        ),
+                    )
+                    .map_err(Self::map_dvr_runtime_error)
+            }
             Err(error) => {
+                if let Err(commit_error) = demux_runtime.commit_rollback_request(
+                    maleicacid_tuner_hal2_demux::DemuxRuntimeRollbackCommitRequest::new(
+                        rollback_token,
+                    ),
+                ) {
+                    demux_runtime.quarantine_runtime_from_typed_request(
+                        maleicacid_tuner_hal2_demux::DemuxRuntimeQuarantineRequest::new(),
+                    );
+                    return Err(compose_primary_cleanup_failure(
+                        "DVR configure rollback token cleanup failed",
+                        Self::map_dvr_runtime_error(error),
+                        Self::map_dvr_runtime_error(commit_error),
+                    ));
+                }
+                let primary = Self::map_dvr_runtime_error(error);
                 let diagnostic_id = self.allocate_demux_transaction_diagnostic_id();
-                let public_error = attach_diagnostic_detail_to_public_error(
-                    Self::map_dvr_runtime_error(error),
-                    format_dvr_configure_report(diagnostic_id, &report),
-                );
                 self.record_demux_transaction_diagnostic(
                     DemuxTransactionDiagnosticRecord::dvr_configure(
                         diagnostic_id,
                         owner_demux_id,
                         dvr_id,
-                        report,
-                        public_error.clone(),
+                        report.clone(),
+                        primary.clone(),
                     ),
                 );
-                Err(public_error)
+                if matches!(
+                    report.outcome(),
+                    Some(maleicacid_tuner_hal2_demux::DvrConfigureOutcome::Quarantined { .. })
+                ) {
+                    Err(compose_primary_cleanup_failure(
+                        "DVR configure failed and rollback failed",
+                        primary,
+                        HalError::cleanup_failed(
+                            "DVR configure rollback",
+                            format_dvr_configure_report(diagnostic_id, &report),
+                        ),
+                    ))
+                } else {
+                    Err(attach_diagnostic_detail_to_public_error(
+                        primary,
+                        format_dvr_configure_report(diagnostic_id, &report),
+                    ))
+                }
             }
         }
     }
@@ -1139,131 +1214,6 @@ impl TunerServiceRuntime {
             .map_err(Self::map_dvr_runtime_error)
     }
 
-    pub(crate) fn transact_playback_dvr_wait_handle(
-        &mut self,
-        dvr_id: i32,
-    ) -> Result<maleicacid_tuner_hal2_demux::QueueWaitHandle, HalError> {
-        let owner_demux_id = self.owner_demux_id_for_dvr(dvr_id)?;
-        let demux_runtime = self
-            .registry
-            .demux_runtime(DemuxRuntimeId(owner_demux_id))
-            .ok_or_else(|| {
-                HalError::invalid_state(
-                    HalInvalidStateKind::InvalidLifecycle,
-                    "owner demux runtime is missing",
-                )
-            })?;
-        demux_runtime
-            .playback_dvr_wait_handle_from_typed_request(
-                maleicacid_tuner_hal2_demux::DvrRuntimeOperationRequest::new(dvr_id),
-            )
-            .map_err(Self::map_dvr_runtime_error)
-    }
-
-    pub(crate) fn transact_consume_playback_dvr_queue(
-        &mut self,
-        dvr_id: i32,
-    ) -> Result<(
-        maleicacid_tuner_hal2_demux::PlaybackConsumeReport,
-        Vec<crate::diagnostics::DvrPlaybackPacketFailureOutcome>,
-        Option<HalError>,
-    ), HalError> {
-        let owner_demux_id = self.owner_demux_id_for_dvr(dvr_id)?;
-        let mut report = {
-            let demux_runtime = self
-                .registry
-                .demux_runtime_mut(DemuxRuntimeId(owner_demux_id))
-                .ok_or_else(|| {
-                    HalError::invalid_state(
-                        HalInvalidStateKind::InvalidLifecycle,
-                        "owner demux runtime is missing",
-                    )
-                })?;
-            demux_runtime
-                .consume_playback_dvr_queue_from_typed_request(
-                    maleicacid_tuner_hal2_demux::DvrRuntimeOperationRequest::new(dvr_id),
-                )
-                .map_err(Self::map_dvr_runtime_error)?
-        };
-        let completed_packet_bytes = std::mem::take(&mut report.completed_packet_bytes);
-        report.packet_reports.reserve(completed_packet_bytes.len());
-        let mut processing_error: Option<HalError> = None;
-        let mut packet_failures = Vec::new();
-        for (packet_index, packet) in completed_packet_bytes.into_iter().enumerate() {
-            match self.transact_push_ts_packet_to_demux(
-                DemuxRuntimeId(owner_demux_id),
-                &packet,
-                maleicacid_tuner_hal2_demux::TsInputOrigin::Playback,
-            ) {
-                Ok(packet_report) => report.packet_reports.push(packet_report),
-                Err(failure) => {
-                    let pid = (packet[0] == 0x47).then(|| {
-                        (u16::from(packet[1] & 0x1f) << 8) | u16::from(packet[2])
-                    });
-                    packet_failures.push(crate::diagnostics::DvrPlaybackPacketFailureOutcome {
-                        packet_index,
-                        pid,
-                        phase: failure.phase,
-                        error: failure.error,
-                    });
-                }
-            }
-        }
-        let wake_result = {
-            let demux_runtime = self
-                .registry
-                .demux_runtime_mut(DemuxRuntimeId(owner_demux_id))
-                .ok_or_else(|| {
-                    HalError::invalid_state(
-                        HalInvalidStateKind::InvalidLifecycle,
-                        "owner demux runtime is missing while waking playback producer",
-                    )
-                })?;
-            let mut last_error = None;
-            for _ in 0..3 {
-                match demux_runtime.wake_playback_dvr_data_consumed_from_typed_request(
-                    maleicacid_tuner_hal2_demux::DvrRuntimeOperationRequest::new(dvr_id),
-                ) {
-                    Ok(()) => {
-                        last_error = None;
-                        break;
-                    }
-                    Err(error) => last_error = Some(Self::map_dvr_runtime_error(error)),
-                }
-            }
-            last_error.map_or(Ok(()), Err)
-        };
-        if let Err(error) = wake_result {
-            report.data_consumed_wake_failed = true;
-            processing_error = Some(match processing_error {
-                Some(primary) => compose_primary_cleanup_failure(
-                    "playback DVR packet processing failed and DATA_CONSUMED wake failed",
-                    primary,
-                    error,
-                ),
-                None => error,
-            });
-        }
-        Ok((report, packet_failures, processing_error))
-    }
-
-    pub(crate) fn transact_dvr_kind(&self, dvr_id: i32) -> Result<maleicacid_tuner_hal2_demux::DvrKind, HalError> {
-        let owner_demux_id = self.owner_demux_id_for_dvr(dvr_id)?;
-        let demux_runtime = self
-            .registry
-            .demux_runtime(DemuxRuntimeId(owner_demux_id))
-            .ok_or_else(|| {
-                HalError::invalid_state(
-                    HalInvalidStateKind::InvalidLifecycle,
-                    "owner demux runtime is missing",
-                )
-            })?;
-        demux_runtime
-            .dvr_snapshot(dvr_id)
-            .map(|snapshot| snapshot.kind())
-            .map_err(Self::map_dvr_runtime_error)
-    }
-
     pub(crate) fn transact_stop_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), HalError> {
         let owner_demux_id = self.owner_demux_id_for_dvr(dvr_id)?;
         let Some(demux_runtime) = self
@@ -1293,29 +1243,11 @@ impl TunerServiceRuntime {
                 "owner demux runtime is missing",
             ));
         };
-        let (report, result) = demux_runtime.flush_dvr_runtime_from_typed_request(
-            maleicacid_tuner_hal2_demux::DvrRuntimeOperationRequest::new(dvr_id),
-        );
-        match result {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                let primary = Self::map_dvr_runtime_error(error);
-                let diagnostic_id = self.allocate_demux_transaction_diagnostic_id();
-                self.record_demux_transaction_diagnostic(
-                    DemuxTransactionDiagnosticRecord::dvr_flush(
-                        diagnostic_id,
-                        owner_demux_id,
-                        dvr_id,
-                        report.clone(),
-                        primary.clone(),
-                    ),
-                );
-                Err(attach_diagnostic_detail_to_public_error(
-                    primary,
-                    format_dvr_flush_report(diagnostic_id, &report),
-                ))
-            }
-        }
+        demux_runtime
+            .flush_dvr_runtime_from_typed_request(
+                maleicacid_tuner_hal2_demux::DvrRuntimeOperationRequest::new(dvr_id),
+            )
+            .map_err(Self::map_dvr_runtime_error)
     }
 
     pub(crate) fn transact_set_dvr_status_check_interval(

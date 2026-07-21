@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 
-use maleicacid_tuner_hal2_common::{TsPacketBufferDrain, TsPacketCompletionBuffer};
+#[cfg(test)]
+use maleicacid_tuner_hal2_common::TsPacketBufferDrain;
+use maleicacid_tuner_hal2_common::TsPacketCompletionBuffer;
 
 const DVR_STATUS_BIT_0: i32 = 1 << 0;
 const DVR_STATUS_BIT_1: i32 = 1 << 1;
@@ -65,18 +67,6 @@ pub struct DvrRuntimeSnapshot {
     pub callback_unhealthy: bool,
 }
 
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct DvrRuntimeRollbackIdentity {
-    kind: DvrKind,
-    state: DvrRuntimeState,
-    generation: u64,
-    buffer_size: i32,
-    queue_present: bool,
-    playback_assembler_present: bool,
-    attached_record_filters: BTreeSet<i32>,
-}
-
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct DvrRuntime {
     dvr_id: i32,
@@ -128,18 +118,6 @@ impl DvrRuntime {
             callback_unhealthy: false,
         }
     }
-    pub(crate) fn rollback_identity(&self) -> DvrRuntimeRollbackIdentity {
-        DvrRuntimeRollbackIdentity {
-            kind: self.kind,
-            state: self.state,
-            generation: self.generation,
-            buffer_size: self.buffer_size,
-            queue_present: self.queue_present,
-            playback_assembler_present: self.playback_assembler_present,
-            attached_record_filters: self.attached_record_filters.clone(),
-        }
-    }
-
     pub fn dvr_id(&self) -> i32 {
         self.dvr_id
     }
@@ -202,22 +180,6 @@ impl DvrRuntime {
         self.callback_unhealthy = snapshot.callback_unhealthy;
     }
 
-
-    pub(crate) fn restore_control_plane_preserving_volatile(
-        &mut self,
-        snapshot: DvrRuntimeSnapshot,
-    ) {
-        self.kind = snapshot.kind;
-        self.state = snapshot.state;
-        self.generation = snapshot.generation;
-        self.buffer_size = snapshot.buffer_size;
-        self.queue_present = snapshot.queue_present;
-        self.playback_assembler_present = snapshot.playback_assembler_present;
-        self.attached_record_filters = snapshot.attached_record_filters;
-        // callback configuration/health, status interval/thresholds, pending overflow and
-        // partial playback assembly are current data-plane or observer state and are preserved.
-    }
-
     pub fn configure_with_generation(&mut self, generation: u64) {
         self.generation = generation;
         self.queue_present = true;
@@ -228,13 +190,20 @@ impl DvrRuntime {
         self.state = DvrRuntimeState::Configured;
     }
 
+    pub fn clear_queue_marker(&mut self) -> bool {
+        let had_queue = self.queue_present;
+        self.queue_present = false;
+        had_queue
+    }
+
     pub fn reset_playback_assembler_marker(&mut self) -> bool {
         let had = self.playback_assembler_present;
         self.playback_assembler_present = false;
         self.playback_completion = TsPacketCompletionBuffer::default();
         had
     }
-    pub(crate) fn push_playback_bytes(&mut self, data: &[u8]) -> TsPacketBufferDrain {
+    #[cfg(test)]
+    pub fn push_playback_bytes(&mut self, data: &[u8]) -> TsPacketBufferDrain {
         self.playback_completion.push(data)
     }
     pub fn clear_playback_completion(&mut self) {

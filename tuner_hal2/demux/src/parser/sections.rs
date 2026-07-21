@@ -49,9 +49,6 @@ pub fn parse_section_header(section: &[u8], length_field_bits: i32) -> Option<Se
             if (section[5] & 0xc0) != 0xc0 {
                 return None;
             }
-            if section[6] > section[7] {
-                return None;
-            }
             (
                 Some(u16::from_be_bytes([section[3], section[4]])),
                 Some((section[5] >> 1) & 0x1f),
@@ -75,7 +72,8 @@ pub fn parse_section_header(section: &[u8], length_field_bits: i32) -> Option<Se
     })
 }
 
-pub(crate) fn section_crc_valid(section: &[u8], length_field_bits: i32) -> bool {
+#[cfg(test)]
+fn section_crc_valid(section: &[u8], length_field_bits: i32) -> bool {
     let Some(header) = parse_section_header(section, length_field_bits) else {
         return false;
     };
@@ -85,6 +83,7 @@ pub(crate) fn section_crc_valid(section: &[u8], length_field_bits: i32) -> bool 
     crc32_mpeg(&section[..header.total_length]) == 0
 }
 
+#[cfg(test)]
 fn crc32_mpeg(bytes: &[u8]) -> u32 {
     let mut crc = 0xffff_ffffu32;
     for byte in bytes {
@@ -132,12 +131,12 @@ impl SectionAssembler {
     }
 
     #[cfg(test)]
-    pub(crate) fn oversized_section_drops(&self) -> u64 {
+    pub fn oversized_section_drops(&self) -> u64 {
         self.oversized_section_drops
     }
 
     #[cfg(test)]
-    pub(crate) fn stale_partial_section_discards(&self) -> u64 {
+    pub fn stale_partial_section_discards(&self) -> u64 {
         self.stale_partial_section_discards
     }
 

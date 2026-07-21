@@ -30,14 +30,13 @@ pub use av::{
     AvSharedBackingError, AvSharedHandleExport, AvSlotId,
 };
 pub use config::{
-    AvSettings, AvStreamKind, AvStreamTypeConfig, ConfigInputPid, FilterConfig, FilterConfigKind,
-    FilterDelayHint, FilterDelayHints, FilterDelayReadiness, FilterOpenType, OpenFilterRequest,
-    PesSettings,
+    AvSettings, AvStreamKind, AvStreamTypeConfig, FilterConfig, FilterConfigKind, FilterDelayHint,
+    FilterDelayHints, FilterDelayReadiness, FilterOpenType, OpenFilterRequest, PesSettings,
     RecordIndexSettings, SectionCondition, SectionConditionKind,
 };
 pub use parser::packet_pipeline::{
     PacketDescramblePolicyFailure, PacketPid, PipelineAssemblySuppressionReason,
-    PipelineBoundaryReason, PipelineDeliveryAction, PipelineDiagnostic, PipelineDropReason,
+    PipelineBoundaryReason, PipelineDeliveryAction, PipelineDiagnostic,
     PipelineDiagnosticPidContext, PipelineGeneratedEvent, PipelineReport, PipelineResetReport,
     TsPacketValidationError, ValidatedTsPacket,
 };
@@ -56,15 +55,14 @@ pub use parser::record_index::{
 };
 pub use parser::sections::normalize_length_field_bits;
 pub use runtime::{
-    DemuxGenerationBoundaryAuthorization, DemuxGenerationBoundaryRequest, DemuxGenerationTarget, DemuxRuntime, DemuxRuntimeError,
-    DemuxRuntimeErrorKind,
-    DemuxRuntimeDiagnosticSnapshot, DemuxRuntimeQuarantineRequest, DemuxRuntimeRollbackCommitRequest,
+    DemuxGenerationBoundaryRequest, DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind,
+    DemuxRuntimeQuarantineRequest, DemuxRuntimeRollbackCommitRequest,
     DemuxRuntimeRollbackRestoreRequest, DemuxRuntimeRollbackToken,
     DemuxRuntimeRollbackTokenPrepareRequest, DemuxRuntimeSnapshot, DemuxRuntimeState,
     DemuxStreamGeneration, DvrConfigureOutcome, DvrConfigureReport, DvrConfigureStep,
-    DvrFilterLinkRequest, DvrFlushOutcome, DvrFlushReport, DvrFlushStep, DvrFlushStepOutcome, DvrKind, DvrRuntimeConfigureRequest, DvrRuntimeOperationRequest,
+    DvrFilterLinkRequest, DvrKind, DvrRuntimeConfigureRequest, DvrRuntimeOperationRequest,
     DvrRuntimeRegistrationRequest, DvrRuntimeSnapshot, DvrRuntimeState, DvrStatusEvent,
-    DvrStatusIntervalRuntimeRequest, FilterAvHandleReleaseRequest,
+    DvrStatusIntervalRuntimeRequest, DvrStatusReportingRequest, FilterAvHandleReleaseRequest,
     FilterAvStreamTypeRuntimeRequest, FilterConfigureOutcome, FilterConfigureReport,
     FilterConfigureStep, FilterDelayHintRuntimeRequest, FilterRuntimeConfigureRequest,
     FilterRuntimeOperationKind, FilterRuntimeOperationOutcome, FilterRuntimeOperationReport,
@@ -73,7 +71,7 @@ pub use runtime::{
     FilterRuntimeState, FilterSourceConnectRequest, FilterSourceDisconnectRequest,
     GenerationBoundaryReport, PlaybackConsumeReport, QueueDescriptorExportPlan,
     QueueDescriptorExportTarget, QueueDescriptorQueryError, QueueDescriptorSnapshot,
-    QueueGrantorDescriptorSnapshot, QueueRuntimeError, QueueRuntimeErrorKind, QueueWaitHandle, QueueWaitResult,
+    QueueGrantorDescriptorSnapshot, QueueRuntimeError, QueueRuntimeErrorKind,
     SourceBoundaryOutcome, SourceBoundaryReport, SourceBoundaryStep, ValidatedPacketIngressRequest,
 };
 
@@ -206,7 +204,7 @@ mod tests {
             self.stop_dvr_runtime(dvr_id)
         }
         fn flush_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {
-            self.flush_dvr_runtime(dvr_id).1
+            self.flush_dvr_runtime(dvr_id)
         }
         fn set_filter_source_non_null(
             &mut self,
@@ -280,7 +278,7 @@ mod tests {
             .configure_filter_runtime(
                 filter_id,
                 FilterPipelineConfig {
-                    tpid: ConfigInputPid::for_test(0x0020),
+                    tpid: Some(0x0020),
                     raw: false,
                     record_index: None,
                 },
@@ -325,7 +323,7 @@ mod tests {
             report.outcome(),
             SourceBoundaryOutcome::Failed {
                 step: SourceBoundaryStep::ValidateQueue,
-                primary_error: DemuxRuntimeError::queue_missing(10),
+                primary_error: DemuxRuntimeErrorKind::QueueMissing,
             }
         );
         assert!(!report
@@ -364,7 +362,7 @@ mod tests {
             report.outcome(),
             SourceBoundaryOutcome::Failed {
                 step: SourceBoundaryStep::ValidateQueue,
-                primary_error: DemuxRuntimeError::queue_missing(41),
+                primary_error: DemuxRuntimeErrorKind::QueueMissing,
             }
         );
         assert!(!report
@@ -388,7 +386,7 @@ mod tests {
                 1,
                 PipelineOpenKind::Raw,
                 Some(FilterPipelineConfig {
-                    tpid: ConfigInputPid::for_test(0x0100),
+                    tpid: Some(0x0100),
                     raw: false,
                     record_index: None,
                 }),
@@ -400,7 +398,7 @@ mod tests {
                 1,
                 PipelineOpenKind::Pes,
                 Some(FilterPipelineConfig {
-                    tpid: ConfigInputPid::for_test(0x0100),
+                    tpid: Some(0x0100),
                     raw: true,
                     record_index: None,
                 }),
@@ -432,7 +430,7 @@ mod tests {
                 1,
                 PipelineOpenKind::Raw,
                 Some(FilterPipelineConfig {
-                    tpid: ConfigInputPid::for_test(0x0100),
+                    tpid: Some(0x0100),
                     raw: true,
                     record_index: None,
                 }),
@@ -444,7 +442,7 @@ mod tests {
                 1,
                 PipelineOpenKind::Raw,
                 Some(FilterPipelineConfig {
-                    tpid: ConfigInputPid::for_test(0x0100),
+                    tpid: Some(0x0100),
                     raw: true,
                     record_index: None,
                 }),
@@ -474,7 +472,7 @@ mod tests {
                 1,
                 PipelineOpenKind::Raw,
                 Some(FilterPipelineConfig {
-                    tpid: ConfigInputPid::for_test(0x0100),
+                    tpid: Some(0x0100),
                     raw: true,
                     record_index: None,
                 }),
@@ -486,7 +484,7 @@ mod tests {
                 1,
                 PipelineOpenKind::Record,
                 Some(FilterPipelineConfig {
-                    tpid: ConfigInputPid::for_test(0x0100),
+                    tpid: Some(0x0100),
                     raw: false,
                     record_index: None,
                 }),
@@ -680,7 +678,7 @@ mod tests {
                 &mut demux,
                 PipelineOpenKind::Raw,
                 FilterPipelineConfig {
-                    tpid: ConfigInputPid::for_test(0x0123),
+                    tpid: Some(0x0123),
                     raw: false,
                     record_index: None,
                 },
@@ -711,7 +709,7 @@ mod tests {
             ))
             .unwrap();
 
-        DvrConfigureTxn::new(28).configure(&mut demux, 0, 0, 0).1.unwrap();
+        DvrConfigureTxn::new(28).configure(&mut demux).1.unwrap();
         let first = demux
             .dvr_queue_descriptor_export_plan(28)
             .and_then(|plan| {
@@ -721,7 +719,7 @@ mod tests {
             .unwrap();
         let first_identity = first_fd_identity(first);
 
-        DvrConfigureTxn::new(28).configure(&mut demux, 0, 0, 0).1.unwrap();
+        DvrConfigureTxn::new(28).configure(&mut demux).1.unwrap();
         let second = demux
             .dvr_queue_descriptor_export_plan(28)
             .and_then(|plan| {
@@ -748,7 +746,7 @@ mod tests {
             .configure_filter_runtime(
                 34,
                 FilterPipelineConfig {
-                    tpid: ConfigInputPid::for_test(0x0100),
+                    tpid: Some(0x0100),
                     raw: false,
                     record_index: None,
                 },
@@ -767,7 +765,7 @@ mod tests {
             .configure_filter_runtime(
                 36,
                 FilterPipelineConfig {
-                    tpid: ConfigInputPid::for_test(0x0100),
+                    tpid: Some(0x0100),
                     raw: false,
                     record_index: None,
                 },
@@ -857,7 +855,7 @@ mod tests {
                 .unwrap(),
             188
         );
-        demux.flush_dvr_runtime(35).1.unwrap();
+        demux.flush_dvr_runtime(35).unwrap();
         demux.start_dvr_runtime(35).unwrap();
         let after_flush = demux.consume_playback_dvr_queue_for_test(35).unwrap();
         assert_eq!(after_flush.bytes_read, 0);
@@ -900,7 +898,7 @@ mod tests {
             .configure_filter_runtime(
                 36,
                 FilterPipelineConfig {
-                    tpid: ConfigInputPid::for_test(0x0100),
+                    tpid: Some(0x0100),
                     raw: false,
                     record_index: None,
                 },
@@ -962,7 +960,7 @@ mod tests {
             .configure_filter_runtime(
                 36,
                 FilterPipelineConfig {
-                    tpid: ConfigInputPid::for_test(0x0100),
+                    tpid: Some(0x0100),
                     raw: false,
                     record_index: None,
                 },
@@ -1037,7 +1035,7 @@ mod tests {
 
         let error = demux.attach_dvr_filter(39, 38).unwrap_err();
         assert_eq!(
-            error.kind(),
+            error.kind,
             crate::runtime::DemuxRuntimeErrorKind::InvalidDvrFilter
         );
     }
@@ -1064,22 +1062,22 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            demux.attach_dvr_filter(41, 999).unwrap_err().kind(),
+            demux.attach_dvr_filter(41, 999).unwrap_err().kind,
             crate::runtime::DemuxRuntimeErrorKind::UnsupportedDvrOperation,
         );
         assert_eq!(
-            demux.detach_dvr_filter(41, 999).unwrap_err().kind(),
+            demux.detach_dvr_filter(41, 999).unwrap_err().kind,
             crate::runtime::DemuxRuntimeErrorKind::UnsupportedDvrOperation,
         );
 
         demux.configure_dvr_runtime(41).unwrap();
 
         assert_eq!(
-            demux.attach_dvr_filter(41, 40).unwrap_err().kind(),
+            demux.attach_dvr_filter(41, 40).unwrap_err().kind,
             crate::runtime::DemuxRuntimeErrorKind::UnsupportedDvrOperation,
         );
         assert_eq!(
-            demux.detach_dvr_filter(41, 40).unwrap_err().kind(),
+            demux.detach_dvr_filter(41, 40).unwrap_err().kind,
             crate::runtime::DemuxRuntimeErrorKind::UnsupportedDvrOperation,
         );
     }
@@ -1196,7 +1194,7 @@ mod tests {
         demux.configure_dvr_runtime(422).unwrap();
         demux.mark_dvr_callback_unhealthy(422).unwrap();
         assert_eq!(
-            demux.start_dvr_runtime(422).unwrap_err().kind(),
+            demux.start_dvr_runtime(422).unwrap_err().kind,
             crate::runtime::DemuxRuntimeErrorKind::InvalidState
         );
     }
@@ -1217,7 +1215,7 @@ mod tests {
             demux
                 .read_record_dvr_queue_bytes_for_test(43)
                 .unwrap_err()
-                .kind(),
+                .kind,
             crate::runtime::DemuxRuntimeErrorKind::InvalidState
         );
         demux.configure_dvr_runtime(43).unwrap();
@@ -1240,7 +1238,7 @@ mod tests {
             demux
                 .read_record_dvr_queue_bytes_for_test(44)
                 .unwrap_err()
-                .kind(),
+                .kind,
             crate::runtime::DemuxRuntimeErrorKind::InvalidState
         );
     }
@@ -1263,7 +1261,7 @@ mod tests {
             demux
                 .write_playback_dvr_queue_bytes_for_test(45, &packet)
                 .unwrap_err()
-                .kind(),
+                .kind,
             crate::runtime::DemuxRuntimeErrorKind::InvalidState
         );
 
@@ -1281,7 +1279,7 @@ mod tests {
             demux
                 .write_playback_dvr_queue_bytes_for_test(46, &packet)
                 .unwrap_err()
-                .kind(),
+                .kind,
             crate::runtime::DemuxRuntimeErrorKind::InvalidState
         );
     }
@@ -1324,7 +1322,7 @@ mod tests {
             .configure_filter_runtime(
                 48,
                 FilterPipelineConfig {
-                    tpid: ConfigInputPid::for_test(0x0100),
+                    tpid: Some(0x0100),
                     raw: false,
                     record_index: None,
                 },
@@ -1380,7 +1378,7 @@ mod tests {
         );
         let third = demux.consume_playback_dvr_queue_for_test(49).unwrap();
         assert_eq!(third.completed_packets, 0);
-        demux.flush_dvr_runtime(49).1.unwrap();
+        demux.flush_dvr_runtime(49).unwrap();
         assert_eq!(
             demux
                 .write_playback_dvr_queue_bytes_for_test(49, &packet[100..])
@@ -1412,7 +1410,7 @@ mod tests {
             })
             .unwrap();
         let before_identity = first_fd_identity(before_restore);
-        let snapshot = demux.snapshot().unwrap();
+        let snapshot = demux.snapshot();
 
         demux.restore(snapshot).unwrap();
         let after_restore = demux
@@ -1435,7 +1433,7 @@ mod tests {
                 1,
                 PipelineOpenKind::Raw,
                 Some(FilterPipelineConfig {
-                    tpid: ConfigInputPid::for_test(100),
+                    tpid: Some(100),
                     raw: false,
                     record_index: None,
                 }),
@@ -1447,7 +1445,7 @@ mod tests {
             &mut demux,
             PipelineOpenKind::Pes,
             FilterPipelineConfig {
-                tpid: ConfigInputPid::for_test(101),
+                tpid: Some(101),
                 raw: true,
                 record_index: None,
             },
@@ -1456,8 +1454,7 @@ mod tests {
         assert_eq!(
             txn.outcome(),
             Some(FilterConfigureOutcome::Failed {
-                failed_step: FilterConfigureStep::ValidateSettings,
-                primary_error: DemuxRuntimeError::invalid_state(11),
+                failed_step: FilterConfigureStep::ValidateSettings
             })
         );
         assert_eq!(demux.filter(11).unwrap().snapshot(), before);
@@ -1479,7 +1476,7 @@ mod tests {
             &mut demux,
             PipelineOpenKind::Raw,
             FilterPipelineConfig {
-                tpid: ConfigInputPid::for_test(100),
+                tpid: Some(100),
                 raw: false,
                 record_index: None,
             },
@@ -1493,7 +1490,7 @@ mod tests {
             &mut demux,
             PipelineOpenKind::Raw,
             FilterPipelineConfig {
-                tpid: ConfigInputPid::for_test(101),
+                tpid: Some(101),
                 raw: false,
                 record_index: None,
             },
@@ -1502,9 +1499,7 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(txn.outcome(), Some(FilterConfigureOutcome::Committed));
         assert!(demux.queue_exists(12));
-        let snapshot = demux.filter(12).unwrap().snapshot();
-        assert!(snapshot.queue_present);
-        assert_eq!(snapshot.tpid, Some(ConfigInputPid::for_test(101)));
+        assert_eq!(demux.filter(12).unwrap().snapshot().tpid, Some(101));
     }
 
     #[test]
@@ -1516,7 +1511,7 @@ mod tests {
                 1,
                 PipelineOpenKind::Raw,
                 Some(FilterPipelineConfig {
-                    tpid: ConfigInputPid::for_test(100),
+                    tpid: Some(100),
                     raw: false,
                     record_index: None,
                 }),
@@ -1529,7 +1524,7 @@ mod tests {
             &mut demux,
             PipelineOpenKind::Raw,
             FilterPipelineConfig {
-                tpid: ConfigInputPid::for_test(101),
+                tpid: Some(101),
                 raw: false,
                 record_index: None,
             },
@@ -1539,8 +1534,7 @@ mod tests {
         assert_eq!(
             txn.outcome(),
             Some(FilterConfigureOutcome::Failed {
-                failed_step: FilterConfigureStep::ValidateState,
-                primary_error: DemuxRuntimeError::invalid_state(13),
+                failed_step: FilterConfigureStep::ValidateState
             })
         );
         assert_eq!(demux.filter(13).unwrap().snapshot(), before);
@@ -1555,7 +1549,7 @@ mod tests {
                 1,
                 PipelineOpenKind::Pes,
                 Some(FilterPipelineConfig {
-                    tpid: ConfigInputPid::for_test(200),
+                    tpid: Some(200),
                     raw: true,
                     record_index: None,
                 }),
@@ -1634,7 +1628,7 @@ mod tests {
                 1,
                 PipelineOpenKind::Av,
                 Some(FilterPipelineConfig {
-                    tpid: ConfigInputPid::for_test(300),
+                    tpid: Some(300),
                     raw: false,
                     record_index: None,
                 }),
@@ -1655,7 +1649,7 @@ mod tests {
             .configure_filter_runtime(
                 16,
                 FilterPipelineConfig {
-                    tpid: ConfigInputPid::for_test(301),
+                    tpid: Some(301),
                     raw: false,
                     record_index: None,
                 },
@@ -1683,7 +1677,7 @@ mod tests {
             .configure_filter_runtime(
                 18,
                 FilterPipelineConfig {
-                    tpid: ConfigInputPid::for_test(400),
+                    tpid: Some(400),
                     raw: false,
                     record_index: None,
                 },
@@ -1737,7 +1731,7 @@ mod tests {
             .configure_filter_runtime(
                 19,
                 FilterPipelineConfig {
-                    tpid: ConfigInputPid::for_test(400),
+                    tpid: Some(400),
                     raw: false,
                     record_index: None,
                 },
@@ -1749,7 +1743,7 @@ mod tests {
         let error = demux.release_filter_av_handle(19, false, 0).unwrap_err();
 
         assert_eq!(
-            error.kind(),
+            error.kind,
             crate::runtime::DemuxRuntimeErrorKind::AvBackingFailure
         );
     }
@@ -1769,7 +1763,7 @@ mod tests {
             .configure_filter_runtime(
                 19,
                 FilterPipelineConfig {
-                    tpid: ConfigInputPid::for_test(401),
+                    tpid: Some(401),
                     raw: false,
                     record_index: None,
                 },
@@ -1822,7 +1816,7 @@ mod tests {
             .configure_filter_runtime(
                 20,
                 FilterPipelineConfig {
-                    tpid: ConfigInputPid::for_test(402),
+                    tpid: Some(402),
                     raw: false,
                     record_index: None,
                 },
@@ -1866,7 +1860,7 @@ mod tests {
             .configure_filter_runtime(
                 21,
                 FilterPipelineConfig {
-                    tpid: ConfigInputPid::for_test(403),
+                    tpid: Some(403),
                     raw: false,
                     record_index: None,
                 },
@@ -2067,7 +2061,7 @@ mod tests {
             .configure_filter_runtime(
                 34,
                 FilterPipelineConfig {
-                    tpid: ConfigInputPid::for_test(0x0030),
+                    tpid: Some(0x0030),
                     raw: false,
                     record_index: None,
                 },
@@ -2110,7 +2104,7 @@ mod tests {
             .configure_filter_runtime(
                 22,
                 FilterPipelineConfig {
-                    tpid: ConfigInputPid::for_test(0x0100),
+                    tpid: Some(0x0100),
                     raw: false,
                     record_index: None,
                 },
@@ -2157,7 +2151,7 @@ mod tests {
             .configure_filter_runtime(
                 23,
                 FilterPipelineConfig {
-                    tpid: ConfigInputPid::for_test(0x0100),
+                    tpid: Some(0x0100),
                     raw: false,
                     record_index: None,
                 },
@@ -2201,7 +2195,7 @@ mod tests {
         let result = demux.configure_filter_runtime(
             30,
             FilterPipelineConfig {
-                tpid: ConfigInputPid::for_test(100),
+                tpid: Some(100),
                 raw: false,
                 record_index: None,
             },
@@ -2241,7 +2235,7 @@ mod tests {
             &mut demux,
             PipelineOpenKind::Raw,
             FilterPipelineConfig {
-                tpid: ConfigInputPid::for_test(100),
+                tpid: Some(100),
                 raw: false,
                 record_index: None,
             },
@@ -2250,10 +2244,7 @@ mod tests {
         assert_eq!(
             txn.outcome(),
             Some(FilterConfigureOutcome::Failed {
-                failed_step: FilterConfigureStep::ApplySoftDemuxConfig,
-                primary_error: DemuxRuntimeError::generation_exhausted(
-                    DemuxGenerationTarget::Filter(32),
-                ),
+                failed_step: FilterConfigureStep::ApplySoftDemuxConfig
             })
         );
         assert_eq!(
@@ -2269,15 +2260,12 @@ mod tests {
         demux
             .register_dvr(DemuxRuntime::open_record_dvr_runtime(33, u64::MAX))
             .unwrap();
-        let (txn, result) = DvrConfigureTxn::new(33).configure(&mut demux, 0, 0, 0);
+        let (txn, result) = DvrConfigureTxn::new(33).configure(&mut demux);
         assert!(result.is_err());
         assert_eq!(
             txn.outcome(),
             Some(DvrConfigureOutcome::Failed {
-                failed_step: DvrConfigureStep::ApplySoftDemuxConfig,
-                primary_error: DemuxRuntimeError::generation_exhausted(
-                    DemuxGenerationTarget::Dvr(33),
-                ),
+                failed_step: DvrConfigureStep::ApplySoftDemuxConfig
             })
         );
         assert_eq!(demux.dvr(33).unwrap().state(), DvrRuntimeState::Failed);
@@ -2307,7 +2295,7 @@ mod tests {
             .configure_filter_runtime(
                 35,
                 FilterPipelineConfig {
-                    tpid: ConfigInputPid::for_test(0x0100),
+                    tpid: Some(0x0100),
                     raw: false,
                     record_index: None,
                 },
@@ -2326,7 +2314,7 @@ mod tests {
             .configure_filter_runtime(
                 36,
                 FilterPipelineConfig {
-                    tpid: ConfigInputPid::for_test(0x0100),
+                    tpid: Some(0x0100),
                     raw: false,
                     record_index: None,
                 },
@@ -2376,7 +2364,7 @@ mod tests {
             .configure_filter_runtime(
                 37,
                 FilterPipelineConfig {
-                    tpid: ConfigInputPid::for_test(0x0100),
+                    tpid: Some(0x0100),
                     raw: false,
                     record_index: None,
                 },
@@ -2409,75 +2397,6 @@ mod tests {
             demux.filter(37).unwrap().state(),
             FilterRuntimeState::Failed
         );
-    }
-
-    #[test]
-    fn rollback_authority_is_single_owner_and_drop_releases_it() {
-        let mut demux = DemuxRuntime::new(1, 7);
-        let first = demux
-            .rollback_token_from_typed_request(DemuxRuntimeRollbackTokenPrepareRequest::new(1))
-            .unwrap();
-        assert!(demux
-            .rollback_token_from_typed_request(DemuxRuntimeRollbackTokenPrepareRequest::new(1))
-            .is_err());
-        assert_eq!(demux.rollback_snapshot_count_for_test(), 1);
-
-        drop(first);
-        assert_eq!(demux.rollback_snapshot_count_for_test(), 0);
-
-        let second = demux
-            .rollback_token_from_typed_request(DemuxRuntimeRollbackTokenPrepareRequest::new(1))
-            .unwrap();
-        demux
-            .commit_rollback_request(DemuxRuntimeRollbackCommitRequest::new(second))
-            .unwrap();
-        assert_eq!(demux.rollback_snapshot_count_for_test(), 0);
-    }
-
-    #[test]
-    fn successful_restore_releases_authority_for_the_next_transaction() {
-        let mut demux = DemuxRuntime::new(1, 7);
-        let mut first = demux
-            .rollback_token_from_typed_request(DemuxRuntimeRollbackTokenPrepareRequest::new(1))
-            .unwrap();
-
-        demux
-            .restore_from_rollback_request(DemuxRuntimeRollbackRestoreRequest::new(&mut first))
-            .unwrap();
-        assert_eq!(demux.rollback_snapshot_count_for_test(), 0);
-
-        let second = demux
-            .rollback_token_from_typed_request(DemuxRuntimeRollbackTokenPrepareRequest::new(1))
-            .unwrap();
-        demux
-            .commit_rollback_request(DemuxRuntimeRollbackCommitRequest::new(second))
-            .unwrap();
-        assert_eq!(demux.rollback_snapshot_count_for_test(), 0);
-    }
-
-    #[test]
-    fn rollback_after_generation_boundary_restores_control_generation_without_requiring_pipeline_snapshot_equality() {
-        let mut demux = DemuxRuntime::new(1, 7);
-        let mut token = demux
-            .rollback_token_from_typed_request(DemuxRuntimeRollbackTokenPrepareRequest::new(1))
-            .unwrap();
-        let authorization = demux
-            .authorize_rollback_post_generation(&token, 8)
-            .unwrap();
-        let boundary = demux
-            .commit_authorized_generation_boundary(
-                authorization,
-                PipelineBoundaryReason::TuneStart,
-            )
-            .unwrap();
-        assert_eq!(boundary.next_generation, DemuxStreamGeneration(8));
-
-        demux
-            .restore_from_rollback_request(DemuxRuntimeRollbackRestoreRequest::new(&mut token))
-            .unwrap();
-
-        assert_eq!(demux.generation(), 7);
-        assert_eq!(demux.rollback_snapshot_count_for_test(), 0);
     }
 
     #[test]

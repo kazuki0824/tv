@@ -7,23 +7,9 @@ use crate::dispatch::{dispatch_target_for, ServiceRuntimeDispatchTarget};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeCommandDispatchPlan {
-    command_plan: CommandPlan,
-    target: ServiceRuntimeDispatchTarget,
-    executable_request: Option<RuntimeExecutableRequest>,
-}
-
-impl RuntimeCommandDispatchPlan {
-    pub const fn command_plan(&self) -> CommandPlan {
-        self.command_plan
-    }
-
-    pub const fn target(&self) -> ServiceRuntimeDispatchTarget {
-        self.target
-    }
-
-    pub fn executable_request(&self) -> Option<RuntimeExecutableRequest> {
-        self.executable_request.clone()
-    }
+    pub command_plan: CommandPlan,
+    pub target: ServiceRuntimeDispatchTarget,
+    pub executable_request: Option<RuntimeExecutableRequest>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

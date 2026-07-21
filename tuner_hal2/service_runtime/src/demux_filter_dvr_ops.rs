@@ -3,18 +3,12 @@ use crate::object_method_txn::ObjectMethodExecutionToken;
 use crate::registry::{
     DemuxRegistryEntry, DvrRegistryEntry, FilterRegistryEntry, RegistryCommitError,
 };
-use maleicacid_tuner_hal2_common::{HalError, HalInvalidStateKind};
+use maleicacid_tuner_hal2_common::HalError;
 use maleicacid_tuner_hal2_demux::PipelineResetReport;
 use maleicacid_tuner_hal2_demux::{FilterConfig, FilterOpenType, OpenFilterRequest};
 use maleicacid_tuner_hal2_domain_request::{
     DvrConfigureRequest, FilterAvStreamTypeRequest, FilterDelayHintRequest, OpenDvrRequest,
 };
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DvrStartTransition {
-    StartedNow,
-    AlreadyStarted,
-}
 
 impl TunerServiceRuntime {
     pub(crate) fn allocate_demux_runtime(
@@ -479,7 +473,7 @@ impl TunerServiceRuntime {
         object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
         generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
         dispatch: ObjectMethodExecutionToken,
-    ) -> Result<DvrStartTransition, HalError> {
+    ) -> Result<(), HalError> {
         dispatch.consume_for_object(
             self,
             object_id,
@@ -492,13 +486,7 @@ impl TunerServiceRuntime {
             generation,
             maleicacid_tuner_hal2_domain_request::AidlObjectKind::Dvr,
         )?;
-        let was_started = self.dvr_started_for_object(object_id, generation)?;
-        self.transact_start_dvr_runtime(dvr_id)?;
-        Ok(if was_started {
-            DvrStartTransition::AlreadyStarted
-        } else {
-            DvrStartTransition::StartedNow
-        })
+        self.transact_start_dvr_runtime(dvr_id)
     }
 
     pub fn attach_dvr_filter_for_object(
@@ -627,82 +615,6 @@ impl TunerServiceRuntime {
             ));
         }
         self.detach_dvr_filter(dvr_entry.public_id(), filter_entry.public_id())
-    }
-
-    pub(crate) fn playback_dvr_wait_handle_for_object(
-        &mut self,
-        object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
-        generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
-    ) -> Result<maleicacid_tuner_hal2_demux::QueueWaitHandle, HalError> {
-        let dvr_id = self.public_runtime_id_for_object_method(
-            object_id,
-            generation,
-            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Dvr,
-        )?;
-        self.transact_playback_dvr_wait_handle(dvr_id)
-    }
-
-    pub(crate) fn dvr_kind_for_object(
-        &self,
-        object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
-        generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
-    ) -> Result<maleicacid_tuner_hal2_demux::DvrKind, HalError> {
-        let dvr_id = self.public_runtime_id_for_object_method(
-            object_id,
-            generation,
-            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Dvr,
-        )?;
-        self.transact_dvr_kind(dvr_id)
-    }
-
-    pub(crate) fn dvr_started_for_object(
-        &self,
-        object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
-        generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
-    ) -> Result<bool, HalError> {
-        let dvr_id = self.public_runtime_id_for_object_method(
-            object_id,
-            generation,
-            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Dvr,
-        )?;
-        let owner_demux_id = self.owner_demux_id_for_dvr(dvr_id)?;
-        let demux_runtime = self
-            .registry()
-            .demux_runtime(crate::registry::DemuxRuntimeId(owner_demux_id))
-            .ok_or_else(|| {
-                HalError::invalid_state(
-                    HalInvalidStateKind::InvalidLifecycle,
-                    "owner demux runtime is missing",
-                )
-            })?;
-        Ok(matches!(
-            demux_runtime
-                .dvr_snapshot(dvr_id)
-                .map_err(Self::map_dvr_runtime_error)?
-                .state,
-            maleicacid_tuner_hal2_demux::DvrRuntimeState::Started
-        ))
-    }
-
-    pub fn dvr_started_for_playback_worker(
-        &self,
-        object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
-        generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
-    ) -> Result<bool, HalError> {
-        self.dvr_started_for_object(object_id, generation)
-    }
-
-    pub(crate) fn rollback_started_dvr_after_playback_worker_failure(
-        &mut self,
-        object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
-        generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
-    ) -> Result<(), HalError> {
-        let dvr_id = self.public_runtime_id_for_object_method(
-            object_id,
-            generation,
-            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Dvr,
-        )?;
-        self.transact_stop_dvr_runtime(dvr_id)
     }
 
     pub fn stop_dvr_for_object(

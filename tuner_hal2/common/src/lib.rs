@@ -39,6 +39,12 @@ impl TransportStreamPid {
         self.0 as i32
     }
 
+    pub const fn matches_i32_config(self, tpid: Option<i32>) -> bool {
+        match tpid {
+            Some(config_pid) => config_pid == self.0 as i32,
+            None => false,
+        }
+    }
 }
 
 /// ARIB STD-B10 の table_id 別 section_length 上限を返す。

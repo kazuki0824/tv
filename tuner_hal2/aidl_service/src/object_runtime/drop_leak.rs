@@ -6,7 +6,7 @@ use super::{
 use crate::service_context::SharedAidlServiceContext;
 use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, FirstErrorCollector};
 use maleicacid_tuner_hal2_service_runtime::{
-    quarantine_object_drop_leak_use_case, ObjectCleanupDiagnosticRecord, ObjectCleanupPublicOutcome,
+    quarantine_object_drop_leak_use_case, ObjectCleanupDiagnosticRecord,
 };
 
 pub(super) fn drop_leak_object(
@@ -37,14 +37,13 @@ pub(super) fn drop_leak_object(
                     .clone()
                     .into_result()
                     .map_err(ObjectCloseCleanupFailure::into_error);
-                let public_outcome =
-                    ObjectCleanupPublicOutcome::from_result(terminalization_result.clone());
+                let public_error = terminalization_result.clone().err();
                 let record_result = context.record_object_cleanup_diagnostic_fallback(
                     ObjectCleanupDiagnosticRecord::drop_leak_terminalization(
                         handle.object_id(),
                         handle.generation(),
                         report,
-                        public_outcome,
+                        public_error,
                     ),
                 );
                 match (terminalization_result, record_result) {

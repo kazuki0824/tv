@@ -20,7 +20,7 @@ use crate::{
 };
 use maleicacid_tuner_hal2_demux::QueueDescriptorQueryError;
 
-pub(crate) type SharedObjectMethodRuntime = Arc<Mutex<TunerServiceRuntime>>;
+pub type SharedObjectMethodRuntime = Arc<Mutex<TunerServiceRuntime>>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ObjectMethodTxnTarget {
@@ -45,7 +45,7 @@ impl ObjectMethodTxnTarget {
     pub const fn object_id(self) -> AidlObjectId {
         self.object_id
     }
-    pub(crate) const fn generation(self) -> AidlObjectGeneration {
+    pub const fn generation(self) -> AidlObjectGeneration {
         self.generation
     }
     pub const fn object_kind(self) -> AidlObjectKind {
@@ -124,9 +124,9 @@ pub enum ObjectFrontendStatusReadinessValue {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ObjectFrontendStatusSnapshot {
-    pub(crate) lnb_profile: Option<LnbRegistryProfile>,
-    pub(crate) runtime_state: FrontendRuntimeState,
-    pub(crate) signal_state: FrontendSignalState,
+    pub lnb_profile: Option<LnbRegistryProfile>,
+    pub runtime_state: FrontendRuntimeState,
+    pub signal_state: FrontendSignalState,
 }
 
 pub fn lnb_profile_supports_voltage_status(profile: Option<LnbRegistryProfile>) -> bool {
@@ -476,8 +476,8 @@ fn validate_plan_target(
 fn plan_aidl_method_call(method: AidlMethodCall) -> Result<ObjectMethodTxnPlan, HalError> {
     let method_plan = AidlMethodAdapter::plan(method)?;
     Ok(build_plan(
-        method_plan.command_plan(),
-        method_plan.executable_request(),
+        method_plan.command_plan,
+        method_plan.command.runtime_executable_request(),
     ))
 }
 

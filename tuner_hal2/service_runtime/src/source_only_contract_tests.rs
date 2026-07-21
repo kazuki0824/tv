@@ -146,13 +146,10 @@ fn descrambler_packet_validation_without_pid_uses_dedicated_variant() {
 
 #[test]
 fn service_boot_reset_split_outcomes_are_variant_specific_records() {
-    use maleicacid_tuner_hal2_service_runtime::{
-        CallbackArtifactRuntimeSplitOutcome, DvrPlaybackWorkerCleanupExecutionReport,
-    };
+    use maleicacid_tuner_hal2_service_runtime::CallbackArtifactRuntimeSplitOutcome;
 
     let records = CallbackArtifactRuntimeSplitOutcome::service_boot_reset_from_attempt_results(
         Ok(()),
-        DvrPlaybackWorkerCleanupExecutionReport::new(),
         Err(HalError::internal(
             maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
             "callback artifact reset failed",

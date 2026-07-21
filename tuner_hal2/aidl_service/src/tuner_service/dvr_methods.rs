@@ -11,15 +11,8 @@ use super::{
 use crate::dvr_callback_delivery::{
     record_dvr_notifier_cleanup_outcome, record_dvr_post_commit_notification_outcome,
 };
-use maleicacid_tuner_hal2_common::{
-    compose_primary_cleanup_failure, HalError, HalInternalKind, HalInvalidArgumentKind,
-};
-use crate::dvr_playback_worker::{
-    start_dvr_playback_worker, stop_dvr_playback_worker,
-};
-use maleicacid_tuner_hal2_service_runtime::{
-    DvrPlaybackWorkerCleanupOperation, DvrPostCommitNotificationPhase, DvrStartTransition,
-};
+use maleicacid_tuner_hal2_common::{HalError, HalInvalidArgumentKind};
+use maleicacid_tuner_hal2_service_runtime::DvrPostCommitNotificationPhase;
 
 impl IDvr for DvrAidlObject {
     fn getQueueDesc(&self, queue: &mut TunerQueueDesc) -> BinderResult<()> {
@@ -105,7 +98,7 @@ impl IDvr for DvrAidlObject {
         )
     }
     fn start(&self) -> BinderResult<()> {
-        let start_transition = execute_object_runtime_use_case(
+        execute_object_runtime_use_case(
             &self.runtime(),
             self.handle(),
             AidlMethodCall::DvrStart,
@@ -117,33 +110,6 @@ impl IDvr for DvrAidlObject {
                 )
             },
         )?;
-        if let Err(worker_error) = start_dvr_playback_worker(&self.context(), self.handle()) {
-            if start_transition == DvrStartTransition::AlreadyStarted {
-                return Err(status_from_hal_error(worker_error));
-            }
-            let rollback_result = self
-                .runtime()
-                .lock()
-                .map_err(|_| {
-                    status_from_hal_error(HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "service runtime lock poisoned while rolling back playback worker start failure",
-                    ))
-                })?
-                .rollback_started_dvr_after_playback_worker_failure(
-                    self.handle().object_id(),
-                    self.handle().generation(),
-                );
-            let error = match rollback_result {
-                Ok(()) => worker_error,
-                Err(rollback_error) => compose_primary_cleanup_failure(
-                    "playback DVR worker start failed and runtime rollback failed",
-                    worker_error,
-                    rollback_error,
-                ),
-            };
-            return Err(status_from_hal_error(error));
-        }
         record_dvr_post_commit_notification_outcome(
             &self.context(),
             self.handle(),
@@ -167,19 +133,6 @@ impl IDvr for DvrAidlObject {
                 runtime.stop_dvr_for_object(handle.object_id(), handle.generation(), dispatch_proof)
             },
         )?;
-        let playback_cleanup = stop_dvr_playback_worker(
-            &self.context(),
-            self.handle(),
-            DvrPlaybackWorkerCleanupOperation::PublicStop,
-        );
-        if let Err(playback_error) = playback_cleanup.result() {
-            record_dvr_post_commit_notification_outcome(
-                &self.context(),
-                self.handle(),
-                DvrPostCommitNotificationPhase::PlaybackWorkerArtifactCleanup,
-                Err(playback_error),
-            );
-        }
         record_dvr_notifier_cleanup_outcome(
             &self.context(),
             self.handle(),

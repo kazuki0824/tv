@@ -11,7 +11,7 @@ pub enum DescramblerCommand {
 }
 
 impl DescramblerCommand {
-    pub(super) fn plan(&self) -> Result<CommandPlan, HalError> {
+    pub fn plan(&self) -> Result<CommandPlan, HalError> {
         match self {
             Self::SetDemuxSource(_) => CommandPlan::for_api(
                 AidlObjectKind::Descrambler,

@@ -5,21 +5,6 @@ use super::{
     TsPacketValidationError, TunerServiceRuntime, ValidatedTsPacket, TS_PACKET_SIZE,
 };
 use crate::registry::ResolvedDescramblerPacketFlow;
-
-#[derive(Clone, Debug)]
-pub(super) struct PacketTransactionFailure {
-    pub phase: crate::diagnostics::DvrPlaybackPacketFailurePhase,
-    pub error: HalError,
-}
-
-impl PacketTransactionFailure {
-    fn new(
-        phase: crate::diagnostics::DvrPlaybackPacketFailurePhase,
-        error: HalError,
-    ) -> Self {
-        Self { phase, error }
-    }
-}
 fn descramble_failure_for_ts_validation_error(error: TsPacketValidationError) -> DescrambleFailure {
     match error {
         TsPacketValidationError::WrongLength => DescrambleFailure::InvalidPacketSize,
@@ -45,7 +30,7 @@ impl TunerServiceRuntime {
                 "frontend id is not available for demux source binding",
             ));
         };
-        match frontend_runtime.query().status_snapshot().state() {
+        match frontend_runtime.snapshot().state {
             FrontendRuntimeState::Closing | FrontendRuntimeState::Failed => {
                 return Err(HalError::invalid_state(
                     HalInvalidStateKind::InvalidLifecycle,
@@ -77,7 +62,6 @@ impl TunerServiceRuntime {
     fn transact_reset_bound_demuxes_for_frontend_tune_start(
         &mut self,
         frontend_id: i32,
-        rollback_tokens: &[(DemuxRuntimeId, maleicacid_tuner_hal2_demux::DemuxRuntimeRollbackToken)],
     ) -> Result<Vec<GenerationBoundaryReport>, HalError> {
         let frontend_key = FrontendRuntimeId(frontend_id);
         if self.registry.frontend(frontend_key).is_none() {
@@ -86,48 +70,25 @@ impl TunerServiceRuntime {
             ));
         }
         let demux_ids = self.registry.frontend_bound_demux_ids(frontend_key);
-
-        // First validate every runtime/token pair and mint one-shot boundary commit
-        // capabilities. No pipeline state is mutated until all bound demuxes have accepted the
-        // same boundary attempt, avoiding a fail-fast partial reset across the set.
-        let mut authorizations = Vec::with_capacity(demux_ids.len());
-        for demux_id in &demux_ids {
-            let token = rollback_tokens
-                .iter()
-                .find_map(|(id, token)| (*id == *demux_id).then_some(token))
-                .ok_or_else(|| {
-                    HalError::invalid_state(
-                        HalInvalidStateKind::InvalidLifecycle,
-                        "bound demux rollback token is missing during tune boundary reset",
-                    )
-                })?;
-            let demux_runtime = self.registry.demux_runtime_mut(*demux_id).ok_or_else(|| {
-                HalError::invalid_state(
+        let mut reports = Vec::with_capacity(demux_ids.len());
+        for demux_id in demux_ids {
+            let Some(demux_runtime) = self.registry.demux_runtime_mut(demux_id) else {
+                return Err(HalError::invalid_state(
                     HalInvalidStateKind::InvalidLifecycle,
                     "bound demux runtime is missing during tune boundary reset",
-                )
-            })?;
-            let expected_generation = demux_runtime
-                .generation()
-                .checked_add(1)
-                .ok_or_else(|| {
-                    HalError::invalid_state(
-                        HalInvalidStateKind::InvalidLifecycle,
-                        "bound demux generation exhausted during tune boundary preparation",
+                ));
+            };
+            reports.push(
+                demux_runtime
+                    .apply_generation_boundary_from_typed_request(
+                        maleicacid_tuner_hal2_demux::DemuxGenerationBoundaryRequest::new(
+                            PipelineBoundaryReason::TuneStart,
+                        ),
                     )
-                })?;
-            let authorization = demux_runtime
-                .authorize_rollback_post_generation(token, expected_generation)
-                .map_err(demux_runtime_error_to_hal)?;
-            authorizations.push((*demux_id, authorization));
+                    .map_err(demux_runtime_error_to_hal)?,
+            );
         }
-
-        self.registry
-            .commit_authorized_demux_generation_boundaries(
-                authorizations,
-                PipelineBoundaryReason::TuneStart,
-            )
-            .map_err(demux_runtime_error_to_hal)
+        Ok(reports)
     }
 
     pub(super) fn transact_reset_and_unbind_bound_demuxes_for_frontend(
@@ -162,73 +123,6 @@ impl TunerServiceRuntime {
         Ok(reports)
     }
 
-    pub(super) fn transact_push_ts_packet_to_demux(
-        &mut self,
-        demux_id: DemuxRuntimeId,
-        packet: &[u8; TS_PACKET_SIZE],
-        origin: TsInputOrigin,
-    ) -> Result<PipelineReport, PacketTransactionFailure> {
-        let generation = self
-            .registry
-            .demux_runtime(demux_id)
-            .map(|runtime| runtime.generation())
-            .ok_or_else(|| {
-                PacketTransactionFailure::new(
-                    crate::diagnostics::DvrPlaybackPacketFailurePhase::RegistryLifecycle,
-                    HalError::invalid_state(
-                        HalInvalidStateKind::InvalidLifecycle,
-                        "demux runtime is missing while routing TS packet",
-                    ),
-                )
-            })?;
-        let decision = self.decide_descrambled_packet(demux_id.0, generation, packet);
-        let packet_for_demux = match decision.flow {
-            DescramblePacketFlow::Drop | DescramblePacketFlow::DiagnoseOnly => {
-                let mut report = PipelineReport::default();
-                report.diagnostics.extend(decision.diagnostics);
-                self.record_descrambler_packet_diagnostics(demux_id.0, generation, &report);
-                return Ok(report);
-            }
-            DescramblePacketFlow::Clear
-            | DescramblePacketFlow::Descrambled
-            | DescramblePacketFlow::RecordPassThroughAndDropAssembly => {
-                (decision.packet, decision.diagnostics)
-            }
-        };
-        let pending_descrambler_diagnostics = packet_for_demux.1;
-        let (demux_generation, mut report) = {
-            let demux_runtime = self.registry.demux_runtime_mut(demux_id).ok_or_else(|| {
-                PacketTransactionFailure::new(
-                    crate::diagnostics::DvrPlaybackPacketFailurePhase::RegistryLifecycle,
-                    HalError::invalid_state(
-                        HalInvalidStateKind::InvalidLifecycle,
-                        "demux runtime is missing while delivering TS packet",
-                    ),
-                )
-            })?;
-            let demux_generation = demux_runtime.generation();
-            let validated = ValidatedTsPacket::validate(&packet_for_demux.0).map_err(|_| {
-                PacketTransactionFailure::new(
-                    crate::diagnostics::DvrPlaybackPacketFailurePhase::PacketValidation,
-                    HalError::internal(
-                        super::HalInternalKind::InvariantViolation,
-                        "descrambler produced an invalid TS packet",
-                    ),
-                )
-            })?;
-            let report = demux_runtime.push_validated_ts_packet_from_typed_request(
-                maleicacid_tuner_hal2_demux::ValidatedPacketIngressRequest::new(
-                    &validated,
-                    origin,
-                ),
-            );
-            (demux_generation, report)
-        };
-        report.diagnostics.extend(pending_descrambler_diagnostics);
-        self.record_descrambler_packet_diagnostics(demux_id.0, demux_generation, &report);
-        Ok(report)
-    }
-
     fn transact_push_frontend_ts_packet_to_bound_demuxes(
         &mut self,
         frontend_id: i32,
@@ -237,14 +131,56 @@ impl TunerServiceRuntime {
         let demux_ids = self.query().ensure_frontend_demux_sink_ready(frontend_id)?;
         let mut reports = Vec::with_capacity(demux_ids.len());
         for demux_id in demux_ids {
-            reports.push(
-                self.transact_push_ts_packet_to_demux(
-                    demux_id,
-                    packet,
-                    TsInputOrigin::Frontend,
-                )
-                .map_err(|failure| failure.error)?,
-            );
+            let generation = self
+                .registry
+                .demux_runtime(demux_id)
+                .map(|runtime| runtime.generation())
+                .ok_or_else(|| {
+                    HalError::invalid_state(
+                        HalInvalidStateKind::InvalidLifecycle,
+                        "bound demux runtime is missing",
+                    )
+                })?;
+            let decision = self.decide_descrambled_packet(demux_id.0, generation, packet);
+            let packet_for_demux = match decision.flow {
+                DescramblePacketFlow::Drop | DescramblePacketFlow::DiagnoseOnly => {
+                    let mut report = PipelineReport::default();
+                    report.diagnostics.extend(decision.diagnostics);
+                    reports.push(report);
+                    continue;
+                }
+                DescramblePacketFlow::Clear
+                | DescramblePacketFlow::Descrambled
+                | DescramblePacketFlow::RecordPassThroughAndDropAssembly => {
+                    (decision.packet, decision.diagnostics)
+                }
+            };
+            let pending_descrambler_diagnostics = packet_for_demux.1.clone();
+            let (demux_generation, mut report) = {
+                let Some(demux_runtime) = self.registry.demux_runtime_mut(demux_id) else {
+                    return Err(HalError::invalid_state(
+                        HalInvalidStateKind::InvalidLifecycle,
+                        "bound demux runtime is missing",
+                    ));
+                };
+                let demux_generation = demux_runtime.generation();
+                let validated = ValidatedTsPacket::validate(&packet_for_demux.0).map_err(|_| {
+                    HalError::internal(
+                        super::HalInternalKind::InvariantViolation,
+                        "descrambler produced an invalid TS packet",
+                    )
+                })?;
+                let report = demux_runtime.push_validated_ts_packet_from_typed_request(
+                    maleicacid_tuner_hal2_demux::ValidatedPacketIngressRequest::new(
+                        &validated,
+                        TsInputOrigin::Frontend,
+                    ),
+                );
+                (demux_generation, report)
+            };
+            report.diagnostics.extend(pending_descrambler_diagnostics);
+            self.record_descrambler_packet_diagnostics(demux_id.0, demux_generation, &report);
+            reports.push(report);
         }
         Ok(reports)
     }
@@ -357,10 +293,9 @@ impl<'a> PacketTxn<'a> {
     pub(crate) fn reset_bound_demuxes_for_frontend_tune_start(
         &mut self,
         frontend_id: i32,
-        rollback_tokens: &[(DemuxRuntimeId, maleicacid_tuner_hal2_demux::DemuxRuntimeRollbackToken)],
     ) -> Result<Vec<GenerationBoundaryReport>, HalError> {
         self.runtime
-            .transact_reset_bound_demuxes_for_frontend_tune_start(frontend_id, rollback_tokens)
+            .transact_reset_bound_demuxes_for_frontend_tune_start(frontend_id)
     }
 
     pub(crate) fn push_frontend_ts_packet_to_bound_demuxes(

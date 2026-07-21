@@ -185,8 +185,8 @@ fn preflight_root_method_dispatch(
     let method_plan = AidlMethodAdapter::plan(method)?;
     plan_object_method_dispatch(
         runtime,
-        method_plan.command_plan(),
-        method_plan.executable_request(),
+        method_plan.command_plan,
+        method_plan.command.runtime_executable_request(),
     )
 }
 

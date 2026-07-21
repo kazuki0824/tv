@@ -18,12 +18,7 @@ pub use backend_worker::{
     FrontendLnbVoltage,
 };
 pub use frontend_runtime::{
-    FrontendLiveDataCompletion, FrontendLiveDataCompletionRequest, FrontendLivePumpCompletionRequest, FrontendRuntime,
-    FrontendRuntimeDiagnosticSnapshot, FrontendRuntimeRollbackCapture,
-    FrontendRollbackFailureRequest, FrontendRuntimeQuery, FrontendRuntimeRollbackToken, FrontendRuntimeState,
-    FrontendRuntimeStatusSnapshot, FrontendScanStartRequest, FrontendScanTransitionOutcome,
-    FrontendScanTransitionRequest, FrontendSignalRecordRequest, FrontendSignalState,
-    FrontendTuneCommitRequest, FrontendTuneWorkerFailureRequest, FrontendWorkerInstallRequest,
+    FrontendRuntime, FrontendRuntimeSnapshot, FrontendRuntimeState, FrontendSignalState,
     FrontendTerminalEvent, FrontendTerminalEventKind, FrontendTerminalEventReason,
 };
 pub use frontend_worker::{
@@ -36,3 +31,4 @@ pub use live_pump::{
     FrontendLivePumpJoinOutcome, FrontendLivePumpOwner, FrontendLivePumpReport,
 };
 pub use reader::{FrontendLiveReaderDescriptor, FrontendLiveReaderDescriptorKind};
+pub use scan_session::{FrontendScanPhase, FrontendScanSession, FrontendScanTerminalReason};

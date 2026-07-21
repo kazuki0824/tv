@@ -235,8 +235,6 @@ impl PesAssembler {
                 if let Some(packet) = self.take_completed() {
                     out.push(packet);
                 }
-            } else if self.pid.is_some() && !self.buf.is_empty() {
-                self.reset_with_drop(PesDropReason::FlushDiscard);
             }
             self.reset_state_only();
             self.pid = Some(pid);
@@ -328,15 +326,12 @@ impl PesAssembler {
                 return None;
             }
         }
-        let completed_len = summary.expected_len.unwrap_or(self.buf.len()).min(self.buf.len());
-        let completed = &self.buf[..completed_len];
-        let payload = if completed.starts_with(&[0x00, 0x00, 0x01]) {
-            completed[summary.payload_offset.min(completed.len())..].to_vec()
+        let payload = if self.buf.starts_with(&[0x00, 0x00, 0x01]) {
+            self.buf[summary.payload_offset.min(self.buf.len())..].to_vec()
         } else {
-            completed.to_vec()
+            self.buf.clone()
         };
-        let raw_bytes = completed.to_vec();
-        self.buf.drain(..completed_len);
+        let raw_bytes = std::mem::take(&mut self.buf);
         self.expected_len = None;
         self.unbounded_summary = None;
         self.pid = None;

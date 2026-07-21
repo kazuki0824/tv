@@ -13,7 +13,7 @@ pub enum LnbCommand {
 }
 
 impl LnbCommand {
-    pub(super) fn plan(&self) -> Result<CommandPlan, HalError> {
+    pub fn plan(&self) -> Result<CommandPlan, HalError> {
         match self {
             Self::SetCallback(_) => {
                 CommandPlan::for_api(AidlObjectKind::Lnb, AidlApi::LnbSetCallback)

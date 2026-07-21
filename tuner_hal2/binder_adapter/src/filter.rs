@@ -20,7 +20,7 @@ pub enum FilterCommand {
 }
 
 impl FilterCommand {
-    pub(super) fn plan(&self) -> Result<CommandPlan, HalError> {
+    pub fn plan(&self) -> Result<CommandPlan, HalError> {
         match self {
             Self::Configure(_) => {
                 CommandPlan::for_api(AidlObjectKind::Filter, AidlApi::FilterConfigure)

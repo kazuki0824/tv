@@ -259,8 +259,8 @@ pub(crate) enum DescramblerSessionFailureKind {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DescramblerSessionFailure {
-    pub(crate) step: DescramblerSessionTxnStep,
-    pub(crate) kind: DescramblerSessionFailureKind,
+    pub step: DescramblerSessionTxnStep,
+    pub kind: DescramblerSessionFailureKind,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -270,7 +270,7 @@ pub(crate) struct DescramblerCleanupReport {
 }
 
 impl DescramblerCleanupReport {
-    pub(crate) fn complete(steps: Vec<DescramblerSessionTxnStep>) -> Self {
+    pub fn complete(steps: Vec<DescramblerSessionTxnStep>) -> Self {
         Self {
             steps,
             failed: None,
