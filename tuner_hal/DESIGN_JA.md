@@ -198,7 +198,7 @@ rollback不能、cleanup不能、正本不一致、backend実状態とregistry�
 | packet pipeline | `PacketPipeline` | `soft_demux` | continuity、origin、generationを複数箇所で更新しない |
 | AV shared memory | `AvSharedBacking` | `FilterHal` | fd番号一致をshared handle同一性条件にしない。fd付きhandle + `avDataId == 0` はclient側shared handle使用終了通知として扱う |
 
-共有ファイル記述子とイベント固有ファイル記述子の同一性を、記述子番号の一致だけで判定してはならない。公開または割り当て時に、HALは `backing_id`、転送方式、ハンドルの整数値、想定容量、`fstat` で得た `{st_dev, st_ino}` を記録する。同じ記憶領域から複製したファイル記述子は同一の記憶領域として扱う。共有ハンドルの解放では記録済みの共有領域を検証し、イベント固有領域の解放ではファイル記述子の同一性と割り当て情報の組全体を検証する。`empty+dataId` ではファイル記述子を使わず台帳上の識別情報を検証する。ハンドル、`dataId`、記憶領域の組が一致しない場合は `INVALID_ARGUMENT` とし、別の割り当てを解放してはならない。台帳または `fstat` の失敗には `UNKNOWN_ERROR` を返し、安全を確認できない記憶領域を隔離する。
+AV領域の正本となる同一性情報は、HALが発行時に台帳へ記録する`{owner_filter_id, filter_generation, transfer_kind, backing_id, allocation_id, avDataId, lease_state}`とする。ファイル記述子番号や`fstat`の`{st_dev, st_ino, size}`を正本となる同一性情報にしてはならない。`fstat`などの記述子メタデータは、採用した記憶領域実装で同一性が保証される場合だけ補助検証と診断に用いる。共有ハンドルの`dataId=0`解放は、呼出先IFilterが所有する有効なクライアント使用権を対象とし、イベント固有領域の正の`dataId`解放は、当該IFilterの台帳で使用中の割り当てと転送方式を特定して行う。`empty+dataId`ではファイル記述子を使わず台帳上の識別情報を検証する。所有者、世代、転送方式、`dataId`が一致しない場合は`INVALID_ARGUMENT`とし、別の割り当てを解放してはならない。台帳の信頼性を確認できない場合は`UNKNOWN_ERROR`とし、安全を確認できない記憶領域を隔離する。
 
 
 #### 0-S-3. 公開API transaction（状態遷移）契約
@@ -299,7 +299,7 @@ Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時�
 
 - 現行仕様で管理対象となる長寿命ワーカーは、`WorkerHandle` が owner id、`JoinHandle`、owner `ConcreteWorkerSignal` を所有し、owner signal の `Mutex<WorkerSignalState> + Condvar` で stop/work generation を wake する。`WorkerExit` は `Normal` / `StopRequested` / `RuntimeFailure` / `PanicOrJoinFailure` を正式名とする。
 
-ワーカーの後片付けは、本書のワーカー終了契約に従って事象駆動で行い、`TargetDriverTimingProfile` や固定ミリ秒の期限を設けない。取り消し時は、利用可能な停止・起床通知を各1回送る。終了済みのワーカーは直ちに回収する。実行中のワーカーは、所有者世代を無効化して状態変更を遮断した後、有界の `ReaperSupervisor` へ一度だけ移して隔離する。公開APIの呼び出し元を `join` 待ちで停止させない。実際の終了と残りの後片付けが完了するまで、使用枠は返却しない。回収機構の容量は、強制している同時稼働ワーカー数の上限から導出し、再試行用のタイマー処理を増設しない。遮断されていない全体状態の変更、遮断不能な全体専有資源、または置換処理との競合を示す型付き証跡がある場合に限り、サービス全体へ影響する障害として扱う。所有者内に隔離済みの残存処理によって、無関係な能力を停止してはならない。
+ワーカーの後片付けは、本書のワーカー終了契約に従って事象駆動で行い、選局成否を固定時間で覆す`TargetDriverTimingProfile`は設けない。停止を待つ各バックエンド操作は、停止通知またはファイル記述子の閉鎖で必ず復帰することを検証済み契約として持つ、ドライバーまたはカーネルの契約から導いた内部I/O期限内に復帰する、または別プロセスへ隔離して`ReaperSupervisor`が終端またはサービス再起動を行える、のいずれかを満たさなければならない。いずれも証明できないバックエンド経路は能力として公開しない。取り消し時は、利用可能な停止・起床通知を各1回送る。終了済みのワーカーは直ちに回収する。実行中のワーカーは、所有者世代を無効化して状態変更を遮断した後、有界の`ReaperSupervisor`へ一度だけ移して隔離する。公開APIの呼び出し元を`join`待ちで停止させない。実際の終了と残りの後片付けが完了するまで、使用枠は返却しない。回収機構の容量は、強制している同時稼働ワーカー数の上限から導出する。停止待ち操作が取消要求または内部I/O期限に反して終了しない場合、`ReaperSupervisor`は型付きの進行保証違反を確定し、局所終端が不可能ならサービス再起動を要求する。遮断されていない全体状態の変更、遮断不能な全体専有資源、または置換処理との競合を示す型付き証跡がある場合に限り、サービス全体へ影響する障害として扱う。所有者内に隔離済みの残存処理によって、無関係な能力を停止してはならない。
 
 失敗の影響範囲は、既定では所有者、世代、依存資源の組に限定する。ワーカー生成、コールバック、要求処理の失敗によって、正常な同階層の処理を破壊してはならない。残存ワーカーをサービス全体に影響するものと判定できるのは、所有者世代を無効化した後もサービス全体の台帳またはバックエンドを変更できる、サービス全体で専有する単一資源・ファイル記述子・キューを保持する、所有者・世代・依存資源のトークンで遮断できない、または同一資源の再起動と競合する、のいずれかを満たす場合に限る。いずれにも該当しない場合は、所有者、世代、依存資源の組だけを隔離し、無関係な所有者は利用可能なままとする。サービス全体を隔離するには、型付き診断に判定根拠を明記する。
 
@@ -317,7 +317,7 @@ Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時�
 - セクションフィルター は condition の必要 byte 幅が payload 長を超える場合に match しない。prefix だけ一致した短い payload を match としない。
 - セクションフィルターの `repeat=false` は重複抑止ではなく、同一 `start()` 世代内の配送停止条件である。`SectionBits` は最初に一致した section を1件配送した後、version や section number が異なる後続 section も配送しない。`TableInfo` は最初に一致した table id / table id extension / version を処理対象 table として固定し、その table の `0..last_section_number` を1回ずつ配送して table 完了後に停止する。table 完了前の別 version は配送しない。`repeat=true` の場合だけ同一条件の section / table を繰り返し配送する。section filter の配送可否状態は demux 入力から直接組み立てた section にだけ適用する。source filter 経由で section payload を再配送する経路は本製品では対応しない。この配送停止は公開 `IFilter.stop()` 呼び出しと同じ状態遷移ではない。filter object の公開状態は Started のまま維持し、利用側が明示的に `stop()` / `flush()` / `configure()` / `close()` を呼べる状態を保つ。
 - `TableInfo.version` は `-1` または `0..31` だけを受け付ける。`-1` は wildcard、範囲外は `INVALID_ARGUMENT` とする。
-- PES `streamId` は `0..=255` を明示 `stream_id` として照合し、`-1` だけを wildcard として扱う。その他の負値と `256` 以上は `INVALID_ARGUMENT` とする。`streamId=0` は wildcard ではなく、8-bit 値 `0x00` の明示照合である。
+- PES `streamId` は `0..=255` を明示 `stream_id` として照合し、AOSP `Constant.INVALID_STREAM_ID` の `0xFFFF` だけをwildcardとして扱う。負値、`256..=65534`、`65536`以上は`INVALID_ARGUMENT`とする。`streamId=0`はwildcardではなく、8-bit値`0x00`の明示照合である。
 - `IFilter.setDataSource()` の互換性は本書の「表1-D. `setDataSource()` 互換表」を正とする。`setDataSource(NULL)` は demux input 復帰として成功対象に含める。filter source を指定する場合は、表1-D-3の subtype 別成立条件を正とする。source filter として指定できるのは TS生データフィルタだけである。下流として成功させるのは TS生データフィルタと record フィルタだけである。section / PES / AV への raw TS 再parse chain、および section payload、PES payload、AV payload、record payload を直接 source として再配送する経路は作らない。非対応の linkage は `UNAVAILABLE` とし、ペイロードなしフィルタを source または sink にする接続は `INVALID_ARGUMENT` とする。`linkCaps` に広告した main type pair はVTS生成の `UNDEFINED` subtype接続も成功させる。
 - `IFilter.setDataSource(source)` の non-null source 経路は 同一demux内のfilter接続グラフ の接続だけを正式対象とする。`linkCaps` は同一 demux 内で開いた source / sink filter の main type 対応可否を表し、別 demux に属する filter を source に指定する経路を capability / VTS profile 対象に含めない。source / sink object の lifetime、generation、kind を先に確認し、その後に owner demux 不一致と自己参照を `INVALID_ARGUMENT` で拒否する。AOSP API 文面上の「another filter」は本製品では同一 demux の filter graph 内の別 filter として扱い、別demux間のfilter接続グラフは作らない。
 - `IFilter.getQueueDesc()` の成否は configure 済みかどうかではなく、open時フィルタ種別が通常FMQを持つかどうかで決める。通常FMQ対象フィルタは未configureでも記述子取得を成功させる。
@@ -346,7 +346,7 @@ Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時�
 | ライブAV正式経路 | non-passthrough `MediaEvent`を使用し、共有領域+`dataId`を第一選択、イベント固有fd+`dataId`を正式な代替方式とする |
 | AVペイロードとFMQ | AVペイロードは通常FMQへ書き込まない。EventFlag は FMQ対象経路の通知にだけ使う |
 
-`releaseAvHandle()` の判定は、本書の `releaseAvHandle()` 判定表だけを根拠とする。この表は共有領域方式と、イベントごとにファイル記述子を渡す `MediaEvent` 方式の両方を扱う。負の `dataId` は `INVALID_ARGUMENT` とする。空ハンドルと0の組は、状態を変えず成功する。返却済み共有ハンドルと0の組では、クライアント側の共有ハンドル使用権だけを解放する。解放済みであることを確認できる重複終了は状態を変えず成功し、別領域または識別情報不一致には `INVALID_ARGUMENT` を返す。空ハンドルと正の `dataId` の組では、一致する使用中の共有領域またはイベント固有領域を解放する。発行済みで解放済みと確認できるIDへの重複要求は、状態を変えず成功する。イベント固有ファイル記述子を含むハンドルと一致する正の `dataId` では、そのイベント固有領域を解放する。同ハンドルと0の組では、別のフレームワーク参照が割り当てを保持している場合に限り、受け取ったイベントハンドルの使用権だけを閉じる。未発行、不明、別所有者、識別情報不一致の組には `INVALID_ARGUMENT` を返す。台帳または `fstat` の判定に失敗した場合は `UNKNOWN_ERROR` とし、安全を確認できない領域を解放または再割り当てしない。発行済みの割り当ては論理閉鎖後も解放できるようにし、隔離状態の後片付けは内部処理だけで行う。
+`releaseAvHandle()`の判定は、本書の`releaseAvHandle()`判定表だけを根拠とする。この表は共有領域方式と、イベントごとにファイル記述子を渡す`MediaEvent`方式の両方を扱う。負の`dataId`は`INVALID_ARGUMENT`とする。空ハンドルと0の組は、状態を変えず成功する。返却済み共有ハンドルと0の組では、呼出先IFilterの台帳にあるクライアント側共有ハンドル使用権だけを解放する。解放済みであることを確認できる重複終了は状態を変えず成功し、所有者、世代、転送方式、識別情報の不一致には`INVALID_ARGUMENT`を返す。空ハンドルと正の`dataId`の組では、一致する使用中の共有領域またはイベント固有領域を解放する。発行済みで解放済みと確認できるIDへの重複要求は、状態を変えず成功する。イベント固有ファイル記述子を含むハンドルと一致する正の`dataId`では、そのイベント固有領域を解放する。同ハンドルと0の組では、台帳上のイベント固有ハンドル使用権だけを終了し、割り当ては後続の正の`dataId`解放まで維持する。フレームワークまたはCodec2の参照数を判定条件にしない。未発行、不明、別所有者、識別情報不一致の組には`INVALID_ARGUMENT`を返す。台帳上の同一性情報を分類できない場合は`UNKNOWN_ERROR`とし、安全を確認できない領域を解放または再割り当てしない。ファイル記述子のメタデータは補助検証と診断に限定する。発行済みの割り当ては論理閉鎖後も解放できるようにし、隔離状態の後片付けは内部処理だけで行う。
 
 
 | 項目 | 固定内容 |
@@ -456,9 +456,10 @@ AV filter の audio/video routing 種別は open subtype を正とする。TsAud
 | F-B-003 | `configure()` live AV non-passthrough | A8, A9, A10, A11 | 成功 | 設定状態だけ設定済みに変更。他軸は維持 | AV世代を進め、未配送の旧一過性状態を破棄。TsAudio は Audio、TsVideo は Video の routing 種別を open subtype から導出する | `filter_configure_success` | 未設定のAV状態だけを受理し、補助種別と共有ハンドル軸を維持する |
 | F-B-004 | `configure()` AV passthrough | A8, A9, A10, A11 | `UNAVAILABLE` | 入力状態を維持 | なし | `unsupported_passthrough_configure` を増やす | 本製品ではpassthroughを恒久非対応とする |
 | F-B-005 | `configure()` MMTP / TLV / ALP / IP CID | F0 | `UNAVAILABLE` | F0 | なし | `unsupported_filter_configure` を増やす | Tuner HAL capability / VTS profile では宣言しない方式を成功扱いにしない |
-| F-B-006 | `configure()` 再設定 | F1, F3 | 成功 | F1 | queue世代を更新し旧データを破棄 | `filter_reconfigure_success` | 開始中でない FMQ対象状態は再設定に関して同値 |
+| F-B-006 | `configure()` 同一設定の再指定 | F1, F3 | 成功 | 入力状態を維持 | キュー識別子、キュー内容、各世代、組み立て状態、診断を維持する | `filter_configure_idempotent` を増やす | 同じ正規化済み設定の再指定は無処理とする |
+| F-B-006a | `configure()` 異なる設定への再設定 | F1, F3 | 成功 | F1 | キュー識別子は維持し、配送世代と解析状態世代を更新して旧データ、組み立て状態、PCR、`startId`状態を破棄する | `filter_reconfigure_success` | 設定差分を確定した後にだけ再設定境界を進める |
 
-初期化時の世代管理では、`filter_delivery_generation` と `parser_state_generation` を独立させ、DVRキューではさらに `queue_epoch` を使用する。`configure()` の成功時は、フィルター配送世代と解析状態世代を進め、解析器、PCR、`startId` の状態を初期化する。設定契約で明示的に変更するものを除き、キューの記憶領域と識別子、入力元の関連付け、コールバック、監視マスク、ヒントは維持する。FilterまたはSharedFilterの `flush()` は `FilterProducerDrainGate` を `Draining` に移し、新しい線形許可を拒否して、サービス所有ワーカーを起床させる。許可の解放に必要なロックを保持せず、有限個の非ブロッキング許可がすべて返るまで待つ。許可の有効範囲は、ブロッキング読み取り・待機・一時保持の後から、FMQへの確定書き込みまたは保留イベントの追加までに限定し、Binderコールバックと外部入出力を含めない。その後、未消費のFMQデータと未配送イベントを一括で破棄し、取り出し済みまたは配送中のコールバックと、配送済みAV領域は維持する。解析状態を初期化し、解析状態世代だけを進めて `Open` に戻す。消去確定前に失敗した場合は、ポインター、内容、保留イベント、すべての世代を変更しない。ロック汚染または部分的確定という不可能状態が生じた場合は、対象を閉鎖して隔離する。DVRの `flush()` は `QueueEpochProtocol` に従い、開始・確定トランザクションがすべて終了した後に `queue_epoch` だけを進める。`stop()` はキュー内容と識別子を維持して解析途中状態だけを破棄する。入力元の置換ではフィルター配送世代と解析状態世代を同じ確定点で進め、`close()` ではすべての世代軸を遮断する。
+初期化時の世代管理では、`filter_delivery_generation` と `parser_state_generation` を独立させ、DVRキューではさらに `queue_epoch` を使用する。異なる設定への`configure()`が成功した場合だけ、フィルター配送世代と解析状態世代を進め、解析器、PCR、`startId`の状態を初期化する。同じ正規化済み設定の再指定では、これらの世代と状態を維持する。設定契約で明示的に変更するものを除き、キューの記憶領域と識別子、入力元の関連付け、コールバック、監視マスク、ヒントは維持する。FilterまたはSharedFilterの `flush()` は `FilterProducerDrainGate` を `Draining` に移し、新しい線形許可を拒否して、サービス所有ワーカーを起床させる。許可の解放に必要なロックを保持せず、有限個の非ブロッキング許可がすべて返るまで待つ。許可の有効範囲は、ブロッキング読み取り・待機・一時保持の後から、FMQへの確定書き込みまたは保留イベントの追加までに限定し、Binderコールバックと外部入出力を含めない。その後、未消費のFMQデータと未配送イベントを一括で破棄し、取り出し済みまたは配送中のコールバックと、配送済みAV領域は維持する。解析状態を初期化し、解析状態世代だけを進めて `Open` に戻す。消去確定前に失敗した場合は、ポインター、内容、保留イベント、すべての世代を変更しない。ロック汚染または部分的確定という不可能状態が生じた場合は、対象を閉鎖して隔離する。DVRの `flush()` は `QueueEpochProtocol` に従い、開始・確定トランザクションがすべて終了した後に `queue_epoch` だけを進める。`stop()` はキュー内容と識別子を維持して解析途中状態だけを破棄する。入力元の置換ではフィルター配送世代と解析状態世代を同じ確定点で進め、`close()` ではすべての世代軸を遮断する。
 
 現在の世代から切り離した後も、解放待ちの記憶領域と解放台帳を保持し、解放後使用と枠の再利用競合を防ぐ。
 
@@ -558,7 +559,7 @@ shared-handle lease、event-local handle lease、個別AV allocationは別の寿
 | 1 | AVH-001 | ANY | ANY | ANY | NEGATIVE | 評価しない | INVALID_ARGUMENT | UNCHANGED | NONE | 負の `dataId` を最優先で拒否 |
 | 2 | AVH-002 | MALFORMED_OR_UNSUPPORTED_FD_SHAPE | OPEN_OR_LOGICAL_CLOSED | ANY | ZERO_OR_POSITIVE | 形状を分類できない | INVALID_ARGUMENT | UNCHANGED | NONE | ファイル記述子番号の一致だけで解放しない |
 | 3 | AVH-003 | RETURNED_SHARED_HANDLE | OPEN_OR_LOGICAL_CLOSED | RegistryFailure | ZERO | 記憶領域の同一性を判定できない | UNKNOWN_ERROR | RegistryFailure | 不確実な領域を保持・隔離 | 不確実な解放を行わない |
-| 4 | AVH-004 | RETURNED_SHARED_HANDLE | OPEN_OR_LOGICAL_CLOSED | ActiveSharedHandleLease | ZERO | `fstat`と公開済み情報から現行共有領域を確認 | SUCCESS | SharedHandleLeaseRemoved | クライアントの共有ハンドル使用権だけを解放 | 割り当てと共有領域は維持し、後続の `getAvSharedHandle()` で再取得可 |
+| 4 | AVH-004 | RETURNED_SHARED_HANDLE | OPEN_OR_LOGICAL_CLOSED | ActiveSharedHandleLease | ZERO | 呼出先IFilterの台帳に有効な共有ハンドル使用権が1件あり、入力ハンドルの形状が共有方式と一致 | SUCCESS | SharedHandleLeaseRemoved | クライアントの共有ハンドル使用権だけを解放 | ファイル記述子のメタデータは補助診断に限定。割り当てと共有領域は維持し、後続の`getAvSharedHandle()`で再取得可 |
 | 5 | AVH-005 | RETURNED_SHARED_HANDLE | OPEN_OR_LOGICAL_CLOSED | KnownReleasedSharedHandleLease | ZERO | 同じ公開済み領域で使用権は解放済み | SUCCESS | UNCHANGED | NONE | 遅延または重複終了を状態を変えず受理 |
 | 6 | AVH-006 | RETURNED_SHARED_HANDLE | OPEN_OR_LOGICAL_CLOSED | UnknownOrForeignSharedHandle | ZERO | 別所有者または記憶領域の同一性不一致 | INVALID_ARGUMENT | UNCHANGED | NONE | 不正・別所有者を既知の解放済みと扱わない |
 | 7 | AVH-007 | EMPTY | OPEN_OR_LOGICAL_CLOSED | ANY | ZERO | 割り当て解放を伴わないイベント終了 | SUCCESS | UNCHANGED | NONE | 状態を変えず、共有領域・使用権・割り当てを消去しない |
@@ -566,8 +567,8 @@ shared-handle lease、event-local handle lease、個別AV allocationは別の寿
 | 9 | AVH-009 | EMPTY | OPEN_OR_LOGICAL_CLOSED | KnownReleased | POSITIVE | 当該フィルター世代の発行範囲内だが使用中割り当てなし | SUCCESS | KnownReleased | NONE | 遅延・重複解放を状態を変えず受理し、IDは再利用しない |
 | 10 | AVH-010 | EMPTY | OPEN_OR_LOGICAL_CLOSED | UnknownOrForeign | POSITIVE | 当該サービス・フィルターに未発行または情報の組が不一致 | INVALID_ARGUMENT | UNCHANGED | NONE | 不明IDと既知の解放済みIDを区別 |
 | 11 | AVH-011 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | RegistryFailure | ZERO_OR_POSITIVE | イベント固有ファイル記述子の同一性を判定できない | UNKNOWN_ERROR | RegistryFailure | 不確実な割り当てを保持・隔離 | 不確実な閉鎖・解放を行わない |
-| 12 | AVH-012 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | ActiveEventLocal | POSITIVE | `fstat {st_dev,st_ino,size}` と台帳情報が一致 | SUCCESS | KnownReleased | イベント固有ハンドルの使用権を閉じ、割り当てを1回解放 | `MediaEvent` の通常終了 |
-| 13 | AVH-013 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | ActiveEventLocal | ZERO | 未解放の `LinearBlock` 参照が割り当てを保持 | SUCCESS | ActiveEventLocalHandleFinalized | 受け取ったハンドル使用権だけを閉じ、空ハンドル+`dataId`による解放は維持 | `dataId` 参照数が0でない終了に対応 |
+| 12 | AVH-012 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | ActiveEventLocal | POSITIVE | 台帳の所有者、世代、転送方式、`avDataId`が使用中の割り当てを一意に特定し、入力ハンドルの形状がイベント固有方式と一致 | SUCCESS | KnownReleased | イベント固有ハンドルの使用権を閉じ、割り当てを1回解放 | ファイル記述子のメタデータは既知の不一致検出と診断だけに用いる |
+| 13 | AVH-013 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | ActiveEventLocal | ZERO | 台帳に有効なイベント固有ハンドル使用権があり、入力ハンドルの形状が当該使用権と一致 | SUCCESS | ActiveEventLocalHandleFinalized | 受け取ったハンドル使用権だけを閉じ、割り当てと後続の空ハンドル+正の`dataId`解放を維持 | フレームワークやCodec2の参照数を判定条件にしない |
 | 14 | AVH-014 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | KnownReleasedOrHandleFinalized | ZERO_OR_POSITIVE | 同じ発行済み情報の要求対象部分が終了済み | SUCCESS | UNCHANGED | NONE | 遅延終了を状態を変えず受理 |
 | 15 | AVH-015 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | UnknownOrForeign | ZERO_OR_POSITIVE | ファイル記述子と`dataId`の組が未発行または不一致 | INVALID_ARGUMENT | UNCHANGED | NONE | 別所有者の組で他の割り当てを解放しない |
 | 16 | AVH-016 | ANY | QUARANTINED | ANY | ZERO_OR_POSITIVE | 公開台帳を安全に分類できない | INVALID_STATE | UNCHANGED | NONE | 隔離後の後片付けは内部回収機構が所有 |
@@ -578,7 +579,7 @@ shared-handle lease、event-local handle lease、個別AV allocationは別の寿
 - 既知staleは同一service/filter generationのissued range/high-watermarkと非再利用で判定し、allocationごとの無制限tombstoneを要求しない。
 - flush、reconfigure、logical closeは配送済み未解放allocationを`ReleaseOnly`として保持する。
 - unknown/foreign/never-issued/wrong-generation/wrong-backingは`INVALID_ARGUMENT`であり、既知released/duplicateとは区別する。
-- 台帳、`fstat`、記憶領域の処理に失敗した場合は`UNKNOWN_ERROR`とし、状態を確定できない資源を解放または再割り当てしない。
+- 台帳または記憶領域の処理に失敗し、所有者、世代、転送方式、使用権を分類できない場合は`UNKNOWN_ERROR`とし、状態を確定できない資源を解放または再割り当てしない。補助的なファイル記述子メタデータを取得できないことだけで、台帳上の同一性情報を別の割り当てへ対応付けない。
 
 #### 表1-D. `setDataSource()` 互換表
 
@@ -617,9 +618,6 @@ TSからTSへの`linkCaps`と、NULL以外を渡す`setDataSource()`の接続関
 ##### 表1-D-3. `setDataSource()` 通常組み合わせ行列
 
 この行列は、表1-D-1の優先1〜7を通過した場合だけ適用する。つまり、sink は非閉鎖かつ非開始、source は非閉鎖、同一 demux 所属、source と sink は別 object である。source が `NULL` の場合は AOSP契約上は優先4の対象であり、この行列には入らない。
-
-| source \ sink | section フィルタ | PES フィルタ | TS生データフィルタ | AV フィルタ | record フィルタ | ペイロードなしフィルタ |
-|---|---|---|---|---|---|---|
 
 戻り値は、NULL・別所有者・別demuxのオブジェクトを`INVALID_ARGUMENT`、閉鎖済み・不正なライフサイクルを`INVALID_STATE`、規格上は有効だが未対応のsubtype・能力を`UNAVAILABLE`、TPID・tagの不一致を`INVALID_ARGUMENT`、資源不足を`UNAVAILABLE`、内部破損を`UNKNOWN_ERROR`とする。
 
@@ -692,6 +690,10 @@ record DVRの`flush()`は、開始中には`INVALID_STATE`、停止中または�
 
 | 番号 | API / 入力 | 対象状態集合 | AIDL戻り値 | 次状態関数 | 副作用 | 診断 | 同値性根拠 / 設計上の成立条件 |
 |---:|---|---|---|---|---|---|---|
+| DVR-016 | `flush()` record・非開始 | D1, D3 | 成功 | 入力状態を維持 | record出力FMQの未消費データ、record assembler、record statsを破棄し、接続関係は維持する | `dvr_record_flush_success` | 設定済み・停止済みの録画DVRは同じ消去境界を持つ |
+| DVR-016a | `flush()` record・開始中 | D2 | `INVALID_STATE` | D2 | なし | `dvr_record_flush_while_started` を増やす | 録画生成中に出力キューを消去しない |
+| DVR-016b | `flush()` playback・非開始 | D4, D6 | 成功 | 入力状態を維持 | playback入力FMQの未読データ、packet assembler、playback statsを破棄し、接続関係は維持する | `dvr_playback_flush_success` | 設定済み・停止済みの再生DVRは同じ消去境界を持つ |
+| DVR-016c | `flush()` playback・開始中 | D5 | 成功 | D5 | 新しい読取確定を止め、受付済みtokenを完了または取消した後、playback入力FMQの未読データ、packet assembler、playback statsを破棄する | `dvr_playback_flush_success` | 開始状態を維持したまま、確定済み読取との競合をなくして消去する |
 | DVR-017 | `flush()` 未設定 | D0R, D0P | `INVALID_STATE` | 入力状態を維持 | なし | `dvr_flush_invalid_state` を増やす | 未設定DVRでは破棄対象が存在しない |
 
 DVRの読み書きはSDK・JNIの補助処理として扱う。playbackの読み取りは入力元からplayback FMQへの転送、recordの書き込みはrecord FMQから出力先への転送とし、いずれもバイト数で定義する。
@@ -707,11 +709,12 @@ open済みのrecord DVRでは、`configure()`前もfilterの接続と切断を�
 
 | 番号 | API / 入力 | 対象状態集合 | AIDL戻り値 | 次状態関数 | 副作用 | 診断 | 同値性根拠 / 設計上の成立条件 |
 |---:|---|---|---|---|---|---|---|
-| DVR-027 | `attachFilter()` playback DVR | D0P, D4, D5, D6 | `UNAVAILABLE` | 入力状態を維持 | なし | `dvr_attach_unavailable` を増やす | attachFilter は record DVR 用操作であり、playback DVRでは未対応APIとして扱う |
-| DVR-028 | `attachFilter()` 不正filter | D0R, D1, D2, D3 | `INVALID_ARGUMENT` | 入力状態を維持 | なし | `dvr_attach_invalid_filter` を増やす | 閉鎖済み、別demux、録画非対応filterをattachしない |
+| DVR-027 | `attachFilter()` playback DVR | D0P, D4, D5, D6 | `INVALID_ARGUMENT` | 入力状態を維持 | なし | `dvr_attach_wrong_dvr_kind` を増やす | `attachFilter()`は録画DVRだけの操作であり、DVR種別不一致として扱う |
+| DVR-028 | `attachFilter()` 閉鎖済みfilter | D0R, D1, D2, D3 | `INVALID_STATE` | 入力状態を維持 | なし | `dvr_attach_closed_filter` を増やす | 同一サービス内で寿命を終えたobjectはライフサイクル不整合として扱う |
+| DVR-028a | `attachFilter()` 別所有者、別demux、録画非対応filter | D0R, D1, D2, D3 | `INVALID_ARGUMENT` | 入力状態を維持 | なし | `dvr_attach_invalid_filter` を増やす | owner、demux、filter種別の不一致を閉鎖状態と混同しない |
 | DVR-029 | `detachFilter()` 登録済みfilter | D0R, D1, D2, D3 | 成功 | 入力状態を維持 | 登録を解除する | `dvr_detach_filter_success` | record DVRだけfilter detachを受ける |
 | DVR-030 | `detachFilter()` 未登録filter | D0R, D1, D2, D3 | 成功 | 入力状態を維持 | なし | `dvr_detach_filter_idempotent` を増やす | 未登録detachは状態を変えず成功する |
-| DVR-032 | `detachFilter()` playback DVR | D0P, D4, D5, D6 | `UNAVAILABLE` | 入力状態を維持 | なし | `dvr_detach_unavailable` を増やす | detachFilter は record DVR 用操作であり、playback DVRでは未対応APIとして扱う |
+| DVR-032 | `detachFilter()` playback DVR | D0P, D4, D5, D6 | `INVALID_ARGUMENT` | 入力状態を維持 | なし | `dvr_detach_wrong_dvr_kind` を増やす | `detachFilter()`は録画DVRだけの操作であり、DVR種別不一致として扱う |
 | DVR-033 | `setStatusCheckIntervalHint()` 正常入力 | D0R, D0P, D1, D2, D3, D4, D5, D6 | 成功 | 入力状態を維持 | hint 値だけ保存 | `dvr_status_hint_set` | 資源寿命を変えない |
 
 長さ、件数、位置の入力が負値の場合は`INVALID_ARGUMENT`を返す。0はAPIごとに定めた意味に限定し、バッファー長0と読み書き長0には`INVALID_ARGUMENT`を返す。位置0は有効とし、状態通知間隔0は既定値への復帰とする。長さと位置の加算が上限を超える場合、`usize`へ変換できない場合は`INVALID_ARGUMENT`、割り当て不能時は`OUT_OF_MEMORY`を返す。
@@ -741,7 +744,17 @@ configure 非受理後は IFilter 状態が F0 のままである。その後に
 #### raw section / raw PES event 生成契約
 
 
-Section/PES処理は、外形の抽出と意味検証を独立した2つの段階として扱う。外形の抽出では、TS、PES、sectionの長さを越えて読み取らず、上限内の完全なデータ塊であることを確認する。意味検証では、メタデータの各値が有効であることを確認する。rawフィルターでは、外形を抽出できれば、意味検証に失敗しても元のバイト列をそのままキューへ入れる。この場合は推測値を含むSection/PESイベントを生成せず、FMQの`DATA_READY`通知またはEventFlag起床によって上位へ到着を通知し、型付きの不正データ診断を記録する。上位はrawバイト列の宣言長から意味単位を復元する。raw以外のフィルターでは、バイト列の配送と意味イベントの通知の両方に意味検証の成功を必要とする。外形が不完全、長さとして成立しない、設定上限を超える、または境界を特定できない場合は、どちらの段階からもデータを配送しない。`tableId`、`version`、`streamId`、PTS/DTS、`dataLength`を推測で生成してはならない。rawバイト列の配送、到着通知、意味イベントの配送は、別々のカウンターと受け入れ試験で確認する。
+Section/PES処理は、外形の抽出、設定されたCRC検査、型付きevent生成に必要な意味検証を独立した段階として扱う。外形の抽出では、TS、PES、sectionの宣言長を越えて読み取らず、上限内の完全なデータ塊であることを確認する。raw sectionでは、`isCheckCrc=true`のCRC検査だけを配送条件へ追加し、予約ビットや表固有構文の検証結果を生バイト列の配送条件にしない。raw以外では、型付きメタデータを安全に生成できる構文検証の成功を必要とする。外形が不完全、長さとして成立しない、設定上限を超える、または境界を特定できない場合は配送しない。`tableId`、`version`、`streamId`、PTS/DTS、`dataLength`を推測で生成してはならない。rawバイト列の配送、到着通知、型付きeventの配送、破棄理由は、別々のカウンターと受け入れ試験で確認する。
+
+| filter出力 | `isCheckCrc` | 入力 | FMQ配送 | status通知 | 型付きevent | 診断 |
+|---|---:|---|---|---|---|---|
+| raw section | 任意 | 外形不完全、宣言長不成立、境界不明 | しない | データ到着としては通知しない | 生成しない | 外形破棄理由を記録 |
+| raw section | true | 外形完全、CRC一致 | 元のsection全体を配送 | `DATA_READY`またはEventFlag起床 | 生成しない | 正常配送を記録 |
+| raw section | true | 外形完全、CRC不一致またはCRC検査に必要な末尾不足 | しない | データ到着としては通知しない | 生成しない | CRC破棄を記録し、overflowへ写像しない |
+| raw section | false | 外形完全。CRC、予約ビット、表固有構文のいずれかが不正 | 元のsection全体を配送 | `DATA_READY`またはEventFlag起床 | 生成しない | 不正内容とraw配送を併記 |
+| non-raw section | true | 外形完全、CRC不一致 | しない | データ到着としては通知しない | 生成しない | CRC破棄を記録し、overflowへ写像しない |
+| non-raw section | false | 外形完全、CRC不一致、型付きevent生成に必要な構文は正常 | 配送する | event配送規則に従う | 検証済みメタデータだけで生成 | CRC未検査設定であることを記録してよい |
+| non-raw section | 任意 | 外形完全だが予約ビットまたは型付きevent生成に必要な構文が不正 | しない | データ到着としては通知しない | 生成しない | 構文破棄理由を記録 |
 
 
 ### 生section・生PESイベントのメタデータ
@@ -793,7 +806,7 @@ AV共有メモリの slot size は filter `bufferSize` から算出してはな�
 | 任意handle + `avDataId < 0` | `INVALID_ARGUMENT` | 不正dataId |
 
 
-`releaseAvHandle()` 判定表では、解放状態を調べる前に記憶領域の同一性を検証する。記憶領域を表す情報の組全体が一致する場合は、複製されたファイル記述子も受け付ける。ファイル記述子番号だけを同一性の根拠にしてはならない。未解放で配送済みと確認できるトークンの世代だけが不一致の場合は、`INVALID_STATE` ではなく `ReleaseOnly` として扱う。情報の組が一致しない場合、または別所有者のハンドルである場合は `UnknownOrForeign` と分類して `INVALID_ARGUMENT` を返す。内部の `fstat` または台帳に失敗した場合は `UNKNOWN_ERROR` を返し、安全を確認できないメモリーを解放せず、影響を受けた台帳を隔離する。
+`releaseAvHandle()`判定表では、呼出先IFilter、台帳上の所有者、世代、転送方式、`avDataId`、使用権の状態を先に検証する。ファイル記述子番号を同一性の根拠にせず、ファイル記述子のメタデータは採用した記憶領域実装で保証できる補助検証に限定する。未解放で配送済みと確認できるトークンの世代だけが不一致の場合は、`INVALID_STATE`ではなく`ReleaseOnly`として扱う。台帳上の同一性情報が一致しない場合、または別所有者のハンドルである場合は`UnknownOrForeign`と分類して`INVALID_ARGUMENT`を返す。台帳の障害によって同一性情報を分類できない場合は`UNKNOWN_ERROR`を返し、安全を確認できない記憶領域を解放せず、影響を受けた台帳を隔離する。
 
 
 fd付きhandle + `avDataId == 0` の成功は、shared backing、公開済みhandle、既存slot、active `avDataId` を破棄することを意味しない。以後のAV payload配送を継続するには、client release済み状態を解除するために `getAvSharedHandle()` 再取得を必要としてよい。
@@ -830,9 +843,6 @@ fd付きhandle + `avDataId == 0` の成功は、shared backing、公開済みhan
 
 
 ### 表6. FMQ / EventFlag / 接続層失敗写像表
-
-| 番号 | 発生箇所 | 発生文脈 | 失敗条件 | 失敗分類 | 対象 | AIDL戻り値 | 作業スレッド挙動 | 一過性状態 | 累積カウンタ | あふれ通知 | 異常時閉鎖条件 | 再試行可否 | ペイロード扱い | 設計上の成立条件 | 固定根拠 |
-|---:|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 
 型付きエラーは次のようにAIDLの結果へ写像する。`InvalidInput`、`Range`、`ForeignObject` は `INVALID_ARGUMENT`、`WrongLifecycle`、`Closed`、`AlreadyActive` は `INVALID_STATE`、`MissingResource`、`Busy`、`Capacity`、`UnsupportedValidInput` は `UNAVAILABLE`、`DependencyNotInitialized` は `NOT_INITIALIZED`、`AllocatorFailure` は `OUT_OF_MEMORY`、`Io`、`Permission`、`Corruption`、`InvariantViolation` は `UNKNOWN_ERROR` とする。ただし、各インターフェースのメソッド契約に個別の定めがある場合は、その定めを優先する。特に `IFrontend.close()` と `ILnb.close()` の重複呼び出しは成功とし、DVRとFilterの重複 `close()` は `INVALID_STATE` とする。
 
@@ -880,6 +890,9 @@ queueへの確定後に`EventFlag`による起床へ失敗した場合は、確�
 | 処理 | commit前 | commit点 | commit後失敗 | 公開API戻り値 / worker挙動 | 内部状態 |
 |---|---|---|---|---|---|
 | FMQ descriptor export | grantor / fd / ints / flags の検証 | descriptor を AIDL へ返す直前 | fd duplicate 失敗、grantor配置不整合 | transient export failure は Err 後も再取得可。structural failure は runtime failed | 表6 FMQ-001〜003 に従う |
+| payload write | queue世代、空き領域、線形生産許可、payload長を検証し、queue位置を変更しない | payload全体の書き込み位置をFMQへ確定する | EventFlag起床失敗 | payloadは再書き込みせずqueueへ保持する。確定済みの公開結果は維持し、workerは追加取込みを止めて、当該queue runtimeが定めた再起床事象だけで起床を再試行する | write位置とpayloadは確定済み。保留起床、診断、overflow状態だけを更新する |
+| clear / `flush()` | 新規transactionを遮断し、受付済みtokenを完了または取消する。queue位置、内容、世代はまだ変更しない | 未消費領域の破棄と`queue_epoch`または解析状態世代の更新を同一排他区間で確定する | 診断記録または再起床失敗 | commit前失敗は状態不変で再試行可。commit後は消去成功を維持し、旧世代を復元しない | queue identityとdescriptorは維持し、内容、対象assembler、statsをAPI別規則に従って更新する |
+| playback read | `beginRead()`で得た範囲を検証し、所有権付き処理中領域を準備する。read位置は未確定 | 対象バイト列を処理中領域へ1回だけ移し、同じ範囲の`commitRead()`を成功させる | backend注入の一部受理、再試行可能失敗、致命的失敗 | commit後はFMQから再読せず処理中領域からだけ再試行する。停止・閉鎖・致命的失敗では残存バイト数と理由を記録して終端する | `FMQ_CONSUMED`と`DEMUX_INJECTED`を別状態で持ち、投入カーソルを受理済みバイト数だけ進める |
 
 `CleanupPending` は、本書のワーカー終了契約に従い、所有者内に閉じた依存資源別の事象駆動状態とする。固定ミリ秒の実行予定は設けない。開始元の操作は、その時点で実行可能な後片付け手順をすべて1回ずつ試す。完了した依存資源の使用枠は返却する。再試行可能だが未完了で、実行中ではない依存資源は `CleanupPending` に残し、再 `close()`、所有者消滅の監視、依存資源の完了通知、サービス初期化のいずれかでだけ再開する。再開要求は所有者、世代、依存資源の組ごとにまとめる。実行中のワーカーは所有者世代を無効化して変更を遮断し、有界の `ReaperSupervisor` へ一度だけ移して直ちに隔離する。公開APIの呼び出し元は `join` を待たない。実際の終了と残りの後片付けが完了するまで使用枠を返却しない。移管失敗、遮断失敗、または全体状態への変更を遮断できないことを示す型付き証跡がある場合は、サービス全体に影響する障害として扱う。所有者内に完全に隔離できた残存処理で、無関係な `ITuner` の能力を停止してはならない。公開結果では主処理の結果を優先し、後片付けの型付き集約診断を別に保持する。
 
@@ -892,10 +905,17 @@ checked FMQ shim は、`queue == null` または `out_written == null` を `INVA
 
 ### 表7. 操作別 確定点 / 巻き戻し / 閉鎖側失敗表
 
-本表は、公開APIまたは作業スレッドが複数資源を変更する場合の確定点を固定する。成功を返すには、確定点までに列挙した変更が全て完了していなければならない。確定点前の失敗は、表に記載した巻き戻しを実施する。巻き戻せない場合は、表に記載した対象を閉鎖側失敗へ遷移させる。
+本表は、複数の所有者または外部副作用をまたぐ操作について、個別状態表に重複記載しない確定点の所在を固定する索引である。単一object内で完結する戻り値と状態遷移は表1、表2、表4、表5、表D-1を正とし、本表へ複製しない。成功を返すには、索引先で定めた確定点までの変更が全て完了していなければならない。確定点前の失敗、巻き戻し不能時の対象、閉鎖側失敗は索引先の規則に従う。
 
 | 番号 | 操作 / 事象 | 変更順序 | 成功の確定点 | 確定点前の失敗 | 巻き戻し不能時の対象 | 公開戻り値 / 作業スレッド終了 | 設計上の成立条件 |
 |---:|---|---|---|---|---|---|---|
+| AT-001 | `IFrontend.tune()` / 再選局 | 表19のvalidate・prepare・確定A・backend要求・確定B | 新規要求受理時は確定B。同一安定設定の無処理成功は表19の判定完了時 | 確定A前は旧選局維持。確定A後は旧選局を復元しない | frontend、旧世代、失敗したdemux境界 | 表19の失敗分類に従う | 2確定点を1つへ圧縮しない |
+| AT-002 | `IFrontend.stopTune()` | 対象確定・旧世代遮断・backend停止・demux境界終端 | backend停止と全対象demux境界の終端が確定した時点 | 旧世代遮断前は状態不変。遮断後は旧選局を復元しない | frontendと失敗したdemux | 「`IFrontend.stopTune()`の失敗時状態」に従う | 停止成功後に旧配送が残らない |
+| AT-003 | `IDemux.setFrontendDataSource()` | 入力検証・新関連の準備・旧関連の終端・新関連の確定 | frontend関連とdemux入力世代を同時に確定した時点 | 確定前は旧関連を維持。外部適用後の不確定は当該demuxを隔離 | demuxとその入力境界 | 表SB-1とstream boundary契約に従う | 片方向関連を公開しない |
+| AT-004 | Filter / DVR configure・start・flush | 表1または表2の状態検証後、表6-Aと内部キュープロトコルを適用 | API別状態とqueue世代または実行状態を同一commitで確定した時点 | 表6-Aに従い、commit前は状態不変 | 当該FilterまたはDVR | 表1、表2、表6-Aに従う | queue identityを設定更新と混同しない |
+| AT-005 | Filter / DVR / Demux close | 表5の公開遮断・実行権限無効化・登録解除・資源回収 | 表5のcleanup完了条件を満たした時点 | 未完手順と一回性権限を`CleanupPending`または回収機構へ移管 | 当該objectと未完依存資源 | 表5に従う | public closeと物理解放を分離する |
+| AT-006 | callback登録 | callback artifact準備・runtime登録・domain確定 | 三者の関連が確定した時点 | 準備済みartifactとruntime登録を逆順で戻す | callback registryと所有object | 0-S-3とcallback ownership契約に従う | 登録の片側だけを残さない |
+| AT-007 | 複数demux stream boundary | 対象一覧固定後、demuxごとに独立した境界transactionを実行 | 各demuxのcommitを個別に記録し、全対象を処理した時点 | 未処理対象は変更せず、commit済み対象を巻き戻さない | 変更結果を確定できないdemuxだけ | 表SB-1に従う | 一部成功を全体rollbackで隠さない |
 
 再選局には、明確に分離した2つの確定点を設ける。段階Aでは、入力検証と未稼働状態の準備を行い、フロントエンドのトランザクションロックを取得して、旧バックエンドを停止し、旧ワーカーを静止させる。確定Aでは、旧世代を終端として一括確定し、関連付け済みdemuxと組み立て処理の境界状態を初期化する。その後、新しい選局要求をバックエンドへ送る。要求に成功した場合は、確定Bで新世代を公開し、準備済みワーカーを有効化する。新しいバックエンド要求が通常の受理失敗となった場合は準備済み状態を解放して`Untuned`へ移す。停止、世代遮断、境界初期化、または準備資源の解放結果を確定できない場合は`Failed`へ移す。どちらの場合も旧選局を復元しない。確定Aと確定Bを1つの確定処理として記述してはならず、境界状態の初期化はバックエンド要求より前の確定Aで行う。
 
@@ -915,12 +935,20 @@ callbackの健全性は独立した状態軸とし、障害の影響はcallback�
 
 ### 表8. 資源寿命・所有権・破棄失敗表
 
-本表は、Tuner HAL 内の資源について、所有者、通常破棄、異常時破棄、破棄失敗時の扱いを固定する。表7の操作別契約と矛盾する場合は、表7の操作別契約を優先し、本表を更新する。
+本表は、公開objectの状態表だけでは寿命を表せない長寿命資源について、所有者、通常破棄、異常時破棄、破棄失敗時の扱いを固定する。短命な局所変数と、単一APIの排他区間だけで生存する準備物は対象外とする。表7の操作別契約と矛盾する場合は、表7の操作別契約を優先し、本表を更新する。
 
 | 番号 | 資源 | 所有者 | 作成 / 取得 | 通常破棄 | 異常時破棄契機 | 破棄失敗時 | 設計上の成立条件 |
 |---:|---|---|---|---|---|---|---|
 | RL-002 | scan / tune generation | `FrontendHal` | `tune()` / `scan()` | stopTune / stopScan / close / 次generation | コールバック失敗、ワーカー異常 | 古いgenerationの通知を捨て、現generationを失敗状態にする | 古いワーカーが新状態を上書きしない |
 | RL-003 | demux generation | `DemuxHal` | demux open / stream boundary reset | demux close | frontend tune boundary、demux fail-closed | demuxを閉鎖側失敗。診断に失敗対象を残す | closed demux向けの後続配送が残らない |
+| RL-004 | Filter / DVR FMQとdescriptor | `FilterHal` / `DvrHal` | object open時にqueueを生成し、descriptor取得時に複製を公開 | cleanup authorityが新規transactionを遮断し、受付済みtokenを完了または取消した後に破棄 | queue破損、EventFlag回復不能障害 | 当該queueを隔離し、descriptorとqueue領域を再利用しない | configureでqueue identityを置換しない |
+| RL-005 | AV backing、event-local allocation、client lease | `AvSharedBacking`とFilter別割り当て台帳 | shared handle公開またはMediaEvent準備 | `releaseAvHandle()`でleaseまたはallocationを1回解放。論理close後も配送済みallocationは`ReleaseOnly`で保持 | 台帳破損、identity検証不能、allocator破損 | 対象領域を保持して隔離し、別allocationへ再利用しない | client lease、allocation、backingの寿命を分離する |
+| RL-006 | callback artifactとregistry entry | callback registryと所有object | callback保持成功後にruntime登録し、domain状態へ確定 | runtime unregister成功後にだけdomain entryを閉じ、artifactを解放 | Binder死亡、unregister失敗、registry破損 | 再試行可能なら`CleanupPending`、破損時は当該registry entryをunhealthy化 | domainだけを閉じてcallbackを残さない |
+| RL-007 | workerとreaper lease | 所有object、移管後は`ReaperSupervisor` | worker開始時に稼働枠と回収枠を同じ台帳から予約 | 終了報告回収と依存資源の後片付け完了後に1回返却 | panic、取消不能、終了証明不能 | 世代遮断後に回収機構へ1回移管し、遮断不能なら`ServiceCritical` | 実終了前に枠、FD、endpointを再利用しない |
+| RL-008 | descrambler key、token、PID claim | key tableと`DescramblerSession` | 鍵登録、token発行、PID追加の各transaction | 参照数0、session close、PID解除時に1回解放 | backend解除失敗、token台帳破損 | sessionまたはkey tableを隔離し、残存参照を再割当てしない | key material、opaque token、PID claimを別寿命にする |
+| RL-009 | backend FDとdevice endpoint | frontend / LNB / demuxのbackend adapter | probe成功後、対応objectのreservation確定時 | worker停止とbackend closeの完了後 | close/ioctl失敗、残存workerによる使用 | 使用権を保持して局所隔離し、共有変更を遮断できなければ`ServiceCritical` | 実終了前に同じ専有endpointを新世代へ渡さない |
+| RL-010 | `CloseCleanupAuthority` | 最初に`begin_close`へ成功した経路 | public close、所有者消滅、Dropのいずれかが一回だけ取得 | 全後片付け完了時に消費済みとして終了 | 所有者が完了前に消滅 | 権限と未完依存資源を`CleanupPending`または回収機構へ移管 | 複数経路が同じ後片付けを並行実行しない |
+| RL-010a | 容量reservation | `CapabilitySnapshot`に対応するresource ledger | 公開objectまたはworkerの準備段階 | 公開失敗のrollbackまたは最終cleanupで1回返却 | rollback失敗、台帳不整合 | 対象reservationを隔離し、容量へ戻さない | 公開能力と受付容量を同じ台帳で拘束する |
 
 資源はopen時に生成し、close時に破棄する。`flush()`は内容の消去、`configure()`は設定の更新だけを行う。
 
@@ -991,7 +1019,7 @@ hardware状態が不明であることと、frontendの動作状態は分けて�
 
 公開API transaction の共通契約は、本書冒頭の「0-S-3. 公開API transaction（状態遷移）契約」を正本とする。本節では validate / reserve / prepare / apply / commit / rollback / quarantine を再定義しない。
 
-個別APIの確定点と巻き戻し対象は「表7. 操作別 確定点 / 巻き戻し / 閉鎖側失敗表」を正とする。表7が0-S-3と矛盾する場合は、0-S-3の原則に合わせて表7を更新する。
+個別APIの戻り値と状態遷移は各API状態表を正とし、複数所有者または外部副作用をまたぐ操作の確定点と巻き戻し対象は「表7. 操作別 確定点 / 巻き戻し / 閉鎖側失敗表」の索引先を正とする。表7が0-S-3と矛盾する場合は、0-S-3の原則に合わせて表7を更新する。
 
 ### 表13. best-effort 使用範囲
 
@@ -1132,20 +1160,20 @@ source filter boundary は downstream lifecycle、queued payload、pending event
 
 | 操作 | downstream lifecycle | queued payload | pending event | assembler state | DVR attach | public状態 |
 |---|---|---|---|---|---|---|
+| `setDataSource(NULL)` | downstreamを維持し、入力元をdemux inputへ戻す | 旧source由来entryは物理破棄できるものを破棄し、残るentryを旧generationとして配送禁止にする | 旧source由来eventを抑止 | 旧source originをresetし、demux inputの新generationを開始 | downstream filterのRecord DVR接続は維持 | 非開始状態を維持して成功。開始中は`INVALID_STATE` |
+| non-null sourceの新規接続 | sourceとsinkの寿命、owner、demux、kindを検証して関連を確定 | 接続前originの未配送entryを旧generationとして配送禁止にする | 接続前originのeventを抑止 | 新しい`SourceFilter(filter_id,generation)` originで初期化 | sinkのRecord DVR接続は維持 | 非開始状態を維持して成功。開始中は`INVALID_STATE` |
+| non-null sourceの置換 | 旧sourceとの関連を切断して新sourceを同一transactionで確定 | 旧source由来entryを破棄または旧generationとして配送禁止にする | 旧source由来eventを抑止 | 旧originをresetし、新source originを初期化 | sinkのRecord DVR接続は維持 | 確定前失敗は旧関連を維持。確定後は新関連だけを公開 |
+| source filter `flush()` | downstreamの公開lifecycleと接続を維持 | 当該source由来entryを破棄または旧generationとして配送禁止にする | 当該source由来eventを抑止 | source origin generationを進めてpartialをreset | 変更なし | downstreamを自動停止・失敗にしない |
+| source filter再設定 | downstreamの接続を維持し、互換性を再検証する | 旧設定世代のentryを破棄または配送禁止にする | 旧設定世代のeventを抑止 | source origin generationを進めてpartialをreset | 変更なし | source開始中の再設定は拒否。非開始時の確定前失敗は旧設定を維持 |
+| source filter実行失敗 | downstreamはsource lost境界を観測 | source由来entryを破棄または配送禁止にする | source由来eventを抑止 | source originをreset | 変更なし | downstreamを自動failedにせず、再配送だけを止める |
+| source filter close / unlink | 接続を解除し、downstreamはsource lost境界を観測 | source由来entryを破棄または旧generationとして配送禁止にする | source由来eventを抑止 | source originをreset | source自身のRecord DVR接続は`FilterUnregisterTxn`で解除し、sink側接続は維持 | downstreamを自動failedにしない。閉鎖済みsourceの再指定は`INVALID_STATE` |
+| downstream `stop()` | source接続を維持 | 未配送entryを維持するが、停止中は新規配送しない | 未配送eventを維持し、停止中は通知しない | partialを破棄 | 変更なし | stopの状態表に従う |
+| downstream `close()` | source接続を解除 | downstream所有entryを破棄 | downstream所有eventを破棄 | downstream assemblerを破棄 | downstream自身のRecord DVR接続を解除 | 表5に従う |
+| upstream generation mismatch | 変更しない | 配送しない | eventを抑止 | 当該旧originのpartialをreset | 変更なし | runtime failedにはしない |
 
 開始中の`setDataSource()`には、引数がNULLかどうかにかかわらず`INVALID_STATE`を返す。入力元の接続と切断は、open済み、設定済み、または停止済みの場合だけ許可し、動作中の切り替えは行わない。
 
-
-| 操作 | downstream lifecycle | queued payload | pending event | assembler state | DVR attach | public状態 |
-|---|---|---|---|---|---|---|
-| source filter close | downstreamは source lost 境界を観測 | source由来queueは `SourceBoundaryTxn` が物理破棄できるentryを破棄し、残るentryを旧generationとして配送禁止にする。この組み合わせを唯一の共通方針とし、API別に分岐させない | source由来event抑止 | source origin reset | DVR attach解除は `FilterUnregisterTxn` / `SourceBoundaryTxn` が診断へ残す | downstreamを自動failedにしない。閉鎖済みsourceを参照する再配送だけ拒否 |
-
-録画DVRの接続・切断規則を次表で定める。重複接続と未接続フィルターの切断は状態を変えず`SUCCESS`、別所有者・別デマルチプレクサ・異なる種類・再生DVRへの接続は`INVALID_ARGUMENT`、接続容量の不足は`UNAVAILABLE`、バックエンドの失敗は`UNKNOWN_ERROR`とする。接続順序によって結果を変えてはならない。
-
-
-| 操作 | downstream lifecycle | queued payload | pending event | assembler state | DVR attach | public状態 |
-|---|---|---|---|---|---|---|
-| upstream generation mismatch | 変更しない | 配送しない | event抑止 | reset | 変更なし | runtime failedにはしない |
+録画DVRの接続・切断規則は表2を正とする。重複接続と未接続フィルターの切断は状態を変えず`SUCCESS`、別所有者・別デマルチプレクサ・異なる種類・再生DVRへの操作は`INVALID_ARGUMENT`、閉鎖済みfilterは`INVALID_STATE`、接続容量の不足は`UNAVAILABLE`、バックエンドの失敗は`UNKNOWN_ERROR`とする。接続順序によって結果を変えてはならない。
 
 
 ### 表19. `IFrontend.tune()` transaction（状態遷移）契約
@@ -1159,14 +1187,17 @@ validate には、settings型、周波数範囲、frontend capability、LNB候�
 
 | 番号 | 段階 | 処理 | 失敗時 | 旧tune維持 |
 |---:|---|---|---|---:|
+| TN-001 | validate | settings型、値域、frontend capability、LNB関連、閉鎖状態を検証する | malformed、範囲外、不正enum、selector型不一致は`INVALID_ARGUMENT`。有効だが非対応のdelivery system、帯域、機能は`UNAVAILABLE` | 維持 |
+| TN-002 | prepare | 新worker枠、callback経路、backend要求、境界処理、失敗時回収に必要な資源を旧状態へ触れず準備する | 準備物を逆順に解放し、原因別のエラーを返す。解放不能時は当該準備資源を隔離する | 維持 |
+| TN-003 | same-setting decision | 正規化設定が同一で、前回tuneが完了済みかつ安定中なら無処理成功とする | 未完了の同一tuneを無処理成功にせずTN-004へ進める | 完了済み同一tuneだけ維持 |
+| TN-004 | revalidate under transaction lock | frontend、LNB、旧worker、接続demuxのIDとgenerationを再検証し、対象一覧を固定する | 準備物を解放して状態を変えず失敗する | 維持 |
+| TN-005 | commit A | 旧generationへのcallback・queue・backend確定権限を遮断し、旧workerを停止または回収機構へ移し、旧backendを停止して、全対象demuxの境界を終端する | 変更前失敗は旧状態を維持。変更後の状態を確定できないfrontendまたはdemuxだけを`Failed`または`Quarantined`へ移す | 確定A後は維持しない |
+| TN-006 | backend request | 新しい選局要求をbackendへ正確に1回送る | 通常の受理失敗は準備物を解放して`Untuned`。backend状態または解放結果が不明なら`Failed`とし、専有資源を隔離する | 維持しない |
+| TN-007 | commit B | backend受理を記録し、新generation、worker、callback許可、demuxへの新入力世代を一括で公開する | 新backendを停止し、新generationを公開しない。停止または回収を確定できなければ`Failed`または`Quarantined` | 維持しない |
+| TN-008 | async run | 非同期workerがLOCKED、NO_SIGNAL、取消、backend失敗のいずれかを現generationへ確定する | worker異常は現generationを終端し、古いgenerationの通知を抑止する | 新tuneへ遷移済み |
+| TN-009 | callback delivery after commit B | 現generationの確定済みeventだけをcallbackへ配送する | callback失敗はdomain状態を戻さず、callback healthと診断を更新する | 新tuneを維持 |
 
-malformed/range違反はINVALID_ARGUMENT、構文上validだが当該frontend/profileが非対応ならUNAVAILABLE。例: 負周波数/不正enum/selector型不一致=INVALID_ARGUMENT、対応外delivery system/帯域/機能=UNAVAILABLE。
-
-
-| 番号 | 段階 | 処理 | 失敗時 | 旧tune維持 |
-|---:|---|---|---|---:|
-| TN-003 | pre-boundary | 同一tune判定。前回tune完了済みかつ安定中なら無処理成功可。前回tune未完了なら旧tune停止・新generation開始へ進む | 未完了同一tuneをno-opにしない | 完了済み同一tuneのみ維持 |
-| TN-008 | worker起動成功 | 非同期LOCK/NO_SIGNAL待ち | 成功 | 新tuneへ遷移 |
+malformed/range違反は`INVALID_ARGUMENT`、構文上validだが当該frontend/profileが非対応なら`UNAVAILABLE`とする。例えば、負周波数、不正enum、selector型不一致は`INVALID_ARGUMENT`、対応外delivery system、帯域、機能は`UNAVAILABLE`である。
 
 ```mermaid
 flowchart TD
@@ -1191,9 +1222,6 @@ flowchart TD
 診断counterは `saturating_add()` を許可する。ただし、上限到達時は `diagnostic_counter_saturated` を記録し、本体データ経路を停止しない。
 
 診断counter overflowを、filter / DVR / demux / frontend の runtime failure に昇格してはならない。診断counterは成功/失敗判定に使ってはならない。
-
-| 分類 | 対象 | 加算規則 | overflow時 | データ経路 への波及 | 禁止事項 |
-|---|---|---|---|---|---|
 
 障害時の拒否は対象filterの新しい操作に限定する。demuxの隔離は、共有台帳の破損が確認された場合だけ行う。
 
@@ -1363,7 +1391,7 @@ VTS / lab profile は代表点だけでよく、全 CATV 候補の実波存在�
 
 `numBytesInSectionFilter` は section payload の最大長ではなく、セクションフィルター condition の byte幅として扱う。mask / filter byte 幅は16 bytesを維持する。
 
-`bitWidthOfLengthField` は本製品の TS 入力対象では `0` と `12` だけを受理し、内部的に `12` へ正規化する。その他の値は `INVALID_ARGUMENT` として configure 時点で拒否する。section assembly、CRC、section condition 判定は同じ正規化済み length フィールド width を使い、condition 判定だけが隠れ 12bit 固定になる実装を残してはならない。
+`bitWidthOfLengthField`はISO/IEC 23008-1のMMTP section message用であり、MPEG-TSの`section_length`幅を指定する入力ではない。本製品はMMTPを公開しないため、この値をTSのsection assembly、CRC、condition判定へ使用しない。TSの`section_length`はISO/IEC 13818-1およびARIB STD-B10に従う12ビットとして固定し、MMTP用入力値の違いでTS処理を変えてはならない。
 
 
 Tuner HALは、TSペイロードの抽出、sectionの区切り、宣言長の検査、任意のCRC検査、フィルター照合、queueまたはFMQへの配送、および伝送診断から成る汎用MPEG-TS section転送だけを担当する。PAT、CAT、PMT、NIT、SDT、BAT、EIT、TDT、TOT、BIT、NBIT、LDT、CDT、PCAT、SDTT、AIT、AMTを含む各PSI/SI表について、表固有の意味解析、正規化、複数sectionの集約、データベース更新、意味オブジェクトの生成を行ってはならない。TISなどの要求元が汎用sectionフィルターを設定し、HALより上位で表の意味解釈を担当する。再利用可能なSI解析ライブラリーも、その上位層だけで使用する。
@@ -1377,7 +1405,7 @@ CRC_32 は MPEG-2 PSI/SI section CRC_32 を用いる。CRC対象範囲は `table
 
 CRC計算の初期値、生成多項式、bit order は ISO/IEC 13818-1 / ARIB STD-B10 の PSI/SI section CRC_32 に従う。
 
-`isCheckCrc=false` の場合でも、section length、reserved bit、syntax構造検証は省略しない。CRC不一致はdelivery不成立であり、queue overflowに写像しない。
+`isCheckCrc=true`では、CRC不一致をdelivery不成立とし、queue overflowへ写像しない。`isCheckCrc=false`ではCRC一致を配送条件にしない。section lengthによる外形検査は常に行う。reserved bitとsyntax構造の検証は型付きevent生成の条件であり、raw sectionの生バイト列配送条件にはしない。
 
 
 PUSI到達時の `pointer_field` は、直前の未完了sectionに対して pointer バイト列の範囲だけを合法なtailとして扱う。pointer bytesで直前sectionが完了しない場合、または `pointer_field == 0` で未完了sectionが残っている場合は、旧partial sectionを新section本文へ連結してはならない。旧partial sectionは破棄し、stale partial discard 診断counterへ記録してから `1 + pointer_field` の位置を新section開始として扱う。
@@ -1386,7 +1414,7 @@ PUSI到達時の `pointer_field` は、直前の未完了sectionに対して poi
 ### ARIB section validator 契約
 
 
-section length field 周辺および version byte 周辺の reserved bit は、ARIB / MPEG-TS の reserved bit として検証する。reserved bit が仕様値から外れる section は malformed として扱う。`isCheckCrc=false` の場合でも、長さ・reserved bit・syntax構造の検証を省略してはならない。
+section length field周辺およびversion byte周辺のreserved bitは、ARIB / MPEG-TSの型付きsection解析で検証する。reserved bitが仕様値から外れるsectionは意味解析上のmalformedとして扱い、non-rawの型付きeventを生成しない。raw sectionは外形が完全で、設定されたCRC検査に合格する限り、元のバイト列を配送できる。
 
 ## queue overflow / drop 通知方針
 
@@ -1471,6 +1499,11 @@ boundary処理は `StreamBoundaryTxn` を正本とする。各APIが個別に FM
 | 状態 | 成功demux | 失敗demux | 公開API戻り値 | 後続操作 | 診断 |
 |---|---|---|---|---|---|
 | 全件成功 | boundary generation 更新済み | なし | `OK` | 通常継続 | boundary success |
+| 一部成功・変更前失敗 | commit済みのdemuxは新generationを維持 | 検証、予約、排他取得の段階で失敗したdemuxは旧generationを維持 | 原因別エラー | 失敗demuxだけ再試行可。成功demuxを巻き戻さない | demux別のcommit有無と変更前失敗理由 |
+| 一部成功・変更後状態不明 | commit済みのdemuxは新generationを維持 | 外部適用開始後に実状態を確定できないdemuxだけ隔離 | `UNKNOWN_ERROR` | 隔離demuxは内部回収またはclose。健全なdemuxは継続 | 最終確認済み段階、外部副作用、隔離根拠 |
+| 全件失敗・全て変更前 | なし | 全demuxが旧generationを維持 | 最初の主失敗を返す | 全対象を再試行可 | demux別の変更未開始証跡 |
+| 全件失敗・変更後状態不明を含む | なし | 状態不明のdemuxだけ隔離し、変更前失敗demuxは旧generationを維持 | `UNKNOWN_ERROR` | 状態別に再試行または内部回収 | demux別の失敗段階と状態確定可否 |
+| 未処理対象あり | 処理済みcommitは維持 | 未処理demuxは変更しない | 先行する主失敗を返す | 未処理demuxは再試行対象として残す | 処理済み、失敗、未処理の集合を別々に記録 |
 
 複数のデマルチプレクサ境界で一部だけ成功した場合、公開操作はエラーを返す。確定済みのデマルチプレクサは新しい世代で継続する。失敗したデマルチプレクサは、変更開始前の失敗なら以前の状態を維持し、変更開始後に実状態を確定できない場合だけ当該デマルチプレクサを隔離する。子オブジェクトへの失敗の波及も、失敗したデマルチプレクサの配下に限定する。
 
@@ -1707,11 +1740,10 @@ close は、公開 object の lifetime を閉じる唯一の正規経路であ�
 
 ```text
 1. 対象 frontend に接続された demux 一覧を確定する
-2. backend stop を実行する
-
-
-4. 各 demux に stream boundary reset を実行する
-5. 全 demux reset 成功後、frontend state を Idle にする
+2. frontend を Stopping にし、旧 tune / live worker generation の callback、queue確定、backend状態確定の権限を遮断する
+3. 旧workerへ停止・起床を通知し、backend stopを実行する。実行中workerはワーカー終了契約に従って回収機構へ移す
+4. backend停止の確定後、各demuxにstream boundary resetを実行する
+5. 全demux resetと旧workerの遮断が確定した後、frontend stateをIdleにする
 ```
 
 backend stop 成功後、demux boundary reset が失敗した場合の動作は次に固定する。
@@ -1719,16 +1751,17 @@ backend stop 成功後、demux boundary reset が失敗した場合の動作は�
 ```text
 - stopTune() は失敗を返す
 - backend は停止済みとして扱う
-- reset 失敗した demux は quarantine へ遷移する
+- reset前に失敗したdemuxは旧境界を配送不能のまま維持して再試行対象とし、reset開始後に状態を確定できないdemuxだけquarantineへ遷移する
+- frontendは`FailedBoundary`とし、旧generationを再有効化しない
+- 該当 demux の close retry は許可する
+```
 
 新しい配送の停止と、クライアントが保持する記憶領域の存続期間は分けて管理する。
 
 
-- 該当 demux の close retry は許可する
-```
-
-
 backend stop が失敗した場合、demux boundary reset は実行しない。frontend state は backend 実状態と一致する状態へ残し、`stopTune()` は backend error を返す。
+
+backend stop失敗時も、段階2で遮断した旧generationのcallbackとqueue確定権限を再有効化しない。backendが動作中と確認できる場合はfrontendを`FailedBackend`として専有資源を保持し、再`stopTune()`または`close()`だけで回収を再試行する。backend実状態を確定できない場合はfrontendと当該endpointを`Quarantined`へ移す。いずれの場合も新しいtune、scan、demux配送を受け付けず、旧選局へ成功状態として戻さない。
 
 ### AV 共有メモリの原子性不変条件
 
@@ -2272,15 +2305,17 @@ px4 probe prefix を変更する場合は、frontend_px4系実装、`tuner_hal2/
 | T-SEC-2 | syntaxあり最小長不足 | reject |
 | T-SEC-3 | reserved bit不正 | reject |
 | T-SEC-4 | CRC good | accept |
-| T-SEC-5 | CRC bad | reject / overflowに写像しない |
-| T-SEC-6 | `isCheckCrc=false` + reserved bit不正 | CRC無効でも構文不正はreject |
+| T-SEC-5 | `isCheckCrc=true` + CRC bad | reject / overflowに写像しない |
+| T-SEC-5a | `isCheckCrc=false` + CRC bad + 構文正常 | CRCを配送条件にせず、rawはFMQ配送と`DATA_READY`またはEventFlag通知、non-rawは型付きevent規則に従う |
+| T-SEC-6 | raw + `isCheckCrc=false` + reserved bit不正 | 生バイト列を配送し、型付きeventは生成しない |
+| T-SEC-6a | non-raw + reserved bit不正 | reject |
 | T-SEC-7 | EIT `section_length == 4093` | accept |
 | T-SEC-8 | EIT `section_length == 4094` | reject |
 | T-SEC-13 | `SectionBits repeat=false` | one-shot |
 | T-SEC-14 | `TableInfo repeat=false` | 1 table / 1 version |
 | T-SEC-15 | `repeat=true` version更新 | 継続監視 |
 
-raw sectionは、外形と意味検証を分ける2段階契約に従う。完全なsection外形には、ポインターと`section_length`が範囲内であり、宣言範囲の全バイトが揃っていることを必要とする。外形が完全でも、表の構文、予約ビット、CRC、意味項目が不正な場合は、rawフィルターに限り元のバイト列を配送してよい。この場合は推測値を含む`DemuxFilterSectionEvent`を通知せず、`DATA_READY`またはEventFlagでFMQ到着を通知し、型付きのsection解析診断を記録する。raw以外のsectionフィルターでは対象データを破棄する。外形が不正または不完全な場合は、すべてのフィルターで破棄する。
+raw sectionは、外形、設定されたCRC検査、意味検証を分ける契約に従う。完全なsection外形には、ポインターと`section_length`が範囲内であり、宣言範囲の全バイトが揃っていることを必要とする。外形が完全でも表の構文、予約ビット、意味項目が不正な場合は、rawフィルターに限り元のバイト列を配送してよい。CRC不一致のraw sectionを配送できるのは`isCheckCrc=false`の場合だけとし、`isCheckCrc=true`では破棄する。配送時は推測値を含む`DemuxFilterSectionEvent`を通知せず、`DATA_READY`またはEventFlagでFMQ到着を通知し、型付きのsection解析診断を記録する。raw以外のsectionフィルターでは対象データを破棄する。外形が不正または不完全な場合は、すべてのフィルターで破棄する。
 
 
 ### PES / record index 系
@@ -2418,7 +2453,7 @@ C8、C4、C2、C1の順に資源一式を原子的に予約し、全項目を予
 | PacketMalformed | 188バイトTSの入口検証 | 長さが188以外、syncが0x47以外、予約済み`adaptation_control`、adaptation長超過 | 不正packetを破棄 | 不正packetを破棄し、`byteNumber`は実際の書き込みバイト数だけを数える | 破棄し、必要な場合だけ影響する組み立て途中の状態を戻す | 継続 | packetごとのAIDL失敗は返さない | 上限付き`malformed_ts`計数と理由 | 隔離しない |
 | TransportErrorIndicator | 検証済み188バイトTS header | `TEI=1` | 到着順のまま保持 | 保持し、`byteNumber`は実際のバイト数を数える | 破棄して再同期し、解析イベントを出さない | 継続 | なし | `tei_packets_observed`と意味処理別のTEI破棄記録 | 隔離しない |
 | ContinuityDiscontinuity | PIDの連続性とadaptation discontinuity | CC欠落、`discontinuity_indicator` | 保持 | 保持 | PID単位のassemblerと世代を戻し、境界をまたいで連結しない | 継続 | なし | PIDと世代を含む不連続診断 | 隔離しない |
-| `SemanticParseFailure` | section、PES、録画索引の解析器 | section長、CRC、予約bitの異常、PESヘッダーまたはPTSマーカーの異常 | 検証済みTSを保持 | 検証済みTSを保持 | 影響する意味単位を破棄し、正しい境界から再開 | 継続 | なし | 解析器の理由とPID | 隔離しない |
+| `SemanticParseFailure` | section、PES、録画索引の解析器 | section長、設定時のCRC検査、予約bit、PESヘッダーまたはPTSマーカーの異常 | 検証済みTSを保持 | 検証済みTSを保持 | non-rawの影響する意味単位を破棄する。raw sectionは上記行列で配送可能な完全バイト列を保持し、型付きeventだけを抑止する | 継続 | なし | 解析器の理由とPID、raw配送有無 | 隔離しない |
 | NoUsableDescramblerKey | descrambler方針 | 対応する有効な鍵がないscrambled packet | scrambled packetを保持 | scrambled packetを保持 | 復号済みの意味イベントを出さない | 継続 | なし | 上限付き`scrambled_without_key`計数 | 隔離しない |
 | FatalOwnedIo | 所有する入力元・driver・`EventFlag`の実行時処理 | 永続的なreadまたはioctl失敗、必須deviceのclose、所有する`EventFlag`の回復不能障害 | 影響経路を停止 | 影響経路を停止 | 影響経路を停止 | 所有者単位の実行処理を失敗終了 | 操作境界に応じて`UNKNOWN_ERROR`または`UNAVAILABLE` | 型付きの主障害 | 所有者の後片付けが未完了の場合だけ、所有者または経路単位で隔離する。`FatalUnfencedGlobalMutation`の証拠なしに基盤またはサービス全体を隔離しない。 |
 | FatalUnfencedGlobalMutation | cleanupとreaperの監視 | 世代を無効化した後も残存workerが全体状態を変更できる | 対象外 | 対象外 | 対象外 | サービス継続に重大な証拠として、全体変更が証明されない限り影響する権限だけを止める | サービス継続に重大な失敗として公開 | 遮断できていない全体変更の証拠 | 証明された権限を必ず隔離する。サービス全体への拡大には、全体変更の明示的な証拠を必要とする。 |
@@ -2503,7 +2538,7 @@ C8、C4、C2、C1の順に資源一式を原子的に予約し、全項目を予
 
 ### ワーカー終了契約
 
-この契約は事象駆動とし、再試行間隔、`join` の猶予時間、終端までの固定ミリ秒期限を設けない。
+この契約は事象駆動とし、公開選局結果を変える再試行間隔、`join`の猶予時間、任意の固定時間期限を設けない。停止を待つバックエンド操作自身の復帰を保証する内部I/O期限と`ReaperSupervisor`の進行保証監視は別契約であり、無期限の停止を許可するものではない。
 
 #### 状態
 
@@ -2516,8 +2551,8 @@ C8、C4、C2、C1の順に資源一式を原子的に予約し、全項目を予
 3. 再試行可能だが未完了で、実行中ではない依存資源は `CleanupPending` へ移す。再 `close()`、所有者消滅の監視、依存資源の完了通知、サービス初期化のいずれかでだけ再開する。再開要求は `{owner_kind, owner_id, owner_generation, dependency}` ごとにまとめる。
 4. 実行中のワーカーは、移管前に所有者世代を無効化して状態変更を遮断する。`Quarantined` へ移し、`JoinHandle` を `ReaperSupervisor` へ正確に1回移管する。公開APIの呼び出し元を `join` 待ちで停止させない。
 5. `CleanupPending` または `Quarantined` の間は、ワーカー、資源、LNB終端の使用枠を返却しない。回収完了時に残りの後片付けを行い、使用枠を正確に1回返却する。
-6. 回収機構の容量は、強制している同時稼働ワーカー数の上限から静的に導出する。再試行用タイマー処理を作らず、実際の終了事象またはサービス初期化事象を待つ。
-7. 移管失敗、遮断の確立失敗、またはワーカーが遮断されていない全体状態を変更できることを示す型付き証跡がある場合は `ServiceCritical` とする。所有者内に完全に隔離できた残存処理によって、無関係な `ITuner` の能力を停止してはならない。
+6. 回収機構の容量は、強制している同時稼働ワーカー数の上限から静的に導出する。各ワーカーが実行中の停止待ち操作について、取消可能性、内部I/O期限、または別プロセス終端のいずれを使うかを台帳に記録する。回収機構は、終了事象、取消完了、内部I/O期限超過、`ReaperSupervisor`による終端のいずれかを必ず観測する。
+7. 移管失敗、遮断の確立失敗、停止待ち操作の進行保証違反、またはワーカーが遮断されていない全体状態を変更できることを示す型付き証跡がある場合は`ServiceCritical`とする。同一プロセス内で安全に終端できないワーカーはサービス再起動へ移す。所有者内に完全に隔離して終端できる障害によって、無関係な`ITuner`の能力を停止してはならない。
 8. 公開操作の結果では主処理の結果を維持する。後から判明した後片付け失敗を戻り値へ反映するのは、当該インターフェースの後片付け契約が要求する場合に限る。失敗は常に型付き集約診断へ記録する。
 
 `ReaperSupervisor`の枠は公開可能な同時稼働ワーカー数と同数以上を起動前に予約し、ワーカー作成枠と回収枠を同じ台帳で移し替える。したがって、受付済みワーカーの移管時に回収枠不足を通常の容量失敗として発生させない。台帳不整合などにより移管先を確保できない場合は`JoinHandle`を破棄せず、所有者内で世代遮断と資源leaseを維持したまま`ServiceCritical`へ遷移する。
