@@ -1,2572 +1,430 @@
-# Tuner HAL 設計判断
-
-
-## DESIGN_JA.md の責務境界
-
-`DESIGN_JA.md` は Tuner HAL の設計正本である。本書は、AOSP 公開契約、ARIB/ISDB 入力処理、本製品の対応範囲、状態所有者、資源寿命、失敗時遷移、quarantine 条件、未対応機能の返却方針を定義する。
-
-本書は、作業履歴、リリース履歴、ビルド手順、atest手順、VTS手順、静的検索手順、成果物命名規則、完了宣言テンプレートを定義しない。それらは `開発規則.md`、`タスク完了判定の実施方法.md`、`CHANGELOG.md`、各作業計画を正とする。
-
-本書と他文書で、状態遷移、資源寿命、戻り値、capability、失敗時波及範囲が矛盾する場合は、本書を正として他文書を修正する。ただし、作業完了判定、成果物名、build / atest / VTS 手順については `タスク完了判定の実施方法.md` を正とする。
-
-
-### 共通部品の定義条件
-
-本書で共通部品と呼ぶものは、単なる関数名・ファイル名・薄い委譲 wrapper ではない。共通部品として設計正本へ置く場合は、次を定義する。
-
-| 項目 | 必須内容 |
-|---|---|
-| 論理契約名 | 例: `ObjectCloseTxn`、`ObjectMethodTxn`、`StreamBoundaryTxn` |
-| 実装正本 | 状態・寿命・失敗時遷移を所有する module / file / type |
-| 公開入口 | AIDL層または service_runtime 層から呼んでよい entry point |
-| 所有する状態 | lifecycle、registry、callback、worker、FMQ、packet assembler など、当該部品が正本として変更する状態 |
-| 所有しない状態 | 呼び出し元または別 transaction が所有する状態 |
-| phase order | lifetime / request build / validation / dispatch / commit / rollback / quarantine の順序 |
-| 失敗時処理 | 戻り値、rollback、cleanup継続、cleanup failed、quarantine の扱い |
-| 呼び出し許可層 | AIDL method body、object wrapper、service_runtime façade、domain transaction のうち許可する層 |
-| 呼び出し禁止層 | 誤用を避けるため直接呼んではならない層 |
-| 最低テスト | status precedence、rollback、retry、cleanup failure、quarantine などを固定する test |
-
-上記を満たさないものは、共通部品ではなく helper、façade、adapter、または implementation detail と呼ぶ。helper / façade が transaction 正本を名乗ってはならない。
-
-`transaction` という名前は、少なくとも状態変更の開始条件、commit、rollback または cleanup failure / quarantine のいずれかを所有する部品にだけ使う。runtime lock を取って closure を呼ぶだけの部品、引数を同名 method へ横流しするだけの wrapper、domain naming を隠さない薄い façade は transaction ではない。
-
-
-## 外部文書参照: no-panic / 劣化起動 / 閉鎖側失敗境界
-
-この項目は実装規約であるため、詳細な禁止事項、エラー写像、劣化起動、mutex汚染、ワーカー生成・join 方針は `tuner_hal/CODE_CONVENTION.md` を正とする。本書では Tuner HAL が no-`panic` / 劣化起動 / 閉鎖側失敗 を設計上必須とすることだけを固定する。
-
-
-## 正本・移動済み情報の読み方
-
-本書の正本階層は次の順とする。
-
-1. `DESIGN_JA.md の責務境界`、`製品スコープ / AOSP capability / VTS profile 境界`、`AIDL 契約境界`、`Tuner HAL 状態遷移表SSOT` を最上位正本とする。
-2. `0-S. 状態所有・寿命・失敗時遷移設計`、`表1`〜`表20`、`ARIB/ISDB入力処理契約`、`Stream boundary 契約`、`Packet pipeline 正本契約`、`AV shared handle 入出力契約` を、現在の設計契約の正本とする。
-3. 旧 `補足契約:` 章は本体正本章へ吸収済みであり、本書内に二重正本として残さない。
-4. 個別リリースの履歴、作業経緯、ビルド/atest/VTS/静的検索/成果物命名/完了宣言は本書では定義しない。履歴は `CHANGELOG.md`、完了判定は `タスク完了判定の実施方法.md` を正とする。
-
-削除・移動した旧記載の追跡表は現行リリース物に置かない。現行仕様は本書、実装規約は `tuner_hal/CODE_CONVENTION.md`、統合手順は `tuner_hal2/INTEGRATION.md`、変更履歴は `tuner_hal/CHANGELOG.md` を正とする。存在しない trace 文書を正本参照にしてはならない。
-
-## 製品スコープ / AOSP capability / VTS profile 境界
-
-製品全体のリリース到達点、日本向け scan 候補、サービス検出、channel key の実装データ保持者は tv 直下の `開発規則.md` を正とする。本節では、Tuner HAL の capability、VTS/profile、AIDL戻り値に閉じる境界だけを固定する。HAL は渡された tune request を処理し、BLIND_SCAN や HAL-generated Japanese scan plan は capability / VTS profile で対応宣言しない。
-
-Tuner VTS用XMLは実行環境に依存する静的構成であり、既定では導入しない。`config/tuner_vts_config_aidl_V1.reference_isdbs_lab.xml`は参考構成に過ぎない。AOSPのブランチ、受信元、周波数、ストリームID、PID、実行手順、フィルターおよびDVRのqueue容量、製品のメモリー予算を宣言し、必要な全資源を起動前に予約できる場合だけ、`ro.vendor.vts_tuner_configuration_variant=reference_isdbs_lab`と対応モジュールを製品へ導入する。環境未確定時は`DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED`とし、VTS成功を宣言しない。デスクランブラーのAIDLオブジェクトを実装していても、この参考構成では本番のスクランブル解除成功を宣言しない。
-
-Tuner HAL の capability / VTS profile では TS 入力だけを宣言する。製品全体の TS-only スコープは `開発規則.md` を正とし、本書では Tuner HAL の宣言値と返却値を固定する。MMTP、TLV、ALP、IP CID は capability と VTS profile に宣言しない。`IFilter.configureIpCid()` は filter種別にかかわらず `UNAVAILABLE` とする。CID を保存だけして 照合、経路制御、配送 に使わない成功扱いの無処理 を残してはならない。
-
-
-### export ID と VTS profile の固定
-
-Tuner HAL が framework へ export する frontend ID は backend の単純な numeric index だけに依存しない。`px4video0` と `pxmlt5video0` のように異なる device family が同じ unit index を持つ場合でも、HAL の frontend ID と physical group ID は衝突してはならない。device family code と unit index を組み合わせ、1,000,000 番台の px4 frontend ID として export する。DVB frontend ID はハッシュではなく固定ビット割当で生成し、`2,000,000 + (adapter_id << 12) + (frontend_index << 4) + variant` とする。`adapter_id` と `frontend_index` は 8 bit、`variant` は 4 bit で、variant は ISDB-T=0、ISDB-S=1 に固定する。範囲外の DVB probe は export しない。生成後の duplicate ID 検出は最終保険として残す。px4 frontend の `exclusiveGroupId` は unit index 単独値ではなく、device family code と unit index を含む packed physical group id として返す。
-
-
-`DvrLeasePool` は、確定済みで不変の `CapabilitySnapshot` を参照する仕組みとし、`getDemuxCaps()` の応答と `openDvr()` の受付可否を決める唯一の情報源とする。再生用DVRと記録用DVRの全体上限は、それぞれ `snapshot.playback_count` と `snapshot.record_count` とする。demuxごとの上限は、再生用1個、記録用1個とする。受付時はライフサイクルと引数を検証し、用途別およびdemux別の使用枠を一括予約してから、要求されたFMQと通知用の枠を準備する。途中で失敗した場合は仮予約をすべて取り消し、不完全なオブジェクトを公開しない。`CleanupPending` または `Quarantined` のオブジェクトは、最終解放まで使用中として数える。Tuner VTSはC1で無条件に保証せず、起動前の `VtsEnvironmentProfile` に入力元、PID、使用経路、キュー容量、メモリー予算が定義されるまで `DESIGN_HOLD` とし、XMLを組み込まない。使用する静的設定はC1の範囲内に収め、必要なキュー容量を正確に予約する。
-
-
-### VTS profile / capability / 実装済み機能 対応表
-
-VTS XML/profileで使う機能、capabilityで宣言する機能、実装済み機能は一致させる。VTS profileで使用する機能をcapability非宣言または未実装扱いにしてはならない。capabilityで宣言する機能をVTS/profileから到達不能にして検査を回避してはならない。
-
-| 領域 | capability / profile 方針 | 設計契約 |
-|---|---|---|
-| `setDataSource(NULL)` | AOSP意味論として存在し、現行AOSP契約として成功対象に含める | sink filter の入力元を demux input へ戻す。生成trait上の非nullable表現を理由に現行対象外へ落とさない |
-| `IDescrambler.addPid/removePid(NULL)` | AOSP意味論として存在し、現行AOSP契約として成功対象に含める | demux input 全体に対する PID 登録 / 解除として扱う。生成trait上の非nullable表現を理由に現行対象外へ落とさない |
-| AV shared handle release | media filter shared memory profileでは到達する | `releaseAvHandle(fd付き handle, 0)` を成功させる |
-| monitor event | `monitorEventTypes > 0` を使うprofileだけ対応宣言 | 非対応profileでは非0 mask を使わない |
-| AV passthrough | 対応宣言しない | profileでは `isPassthrough=false` に固定する |
-| `linkCaps` | main type 粒度 | 広告した main type pair は VTS が生成する subtype `UNDEFINED` 接続も成功対象に含める。成功させない pair は広告しない |
-
-
-### Tuner HAL 固定境界
-
-- CS110 は周波数のみで選局する。ISDB-S settings で `streamIdType=UNDEFINED` かつ `streamId=0` の明示未指定、または AOSP SDK の default 表現である `streamIdType=STREAM_ID` かつ `streamId=INVALID_STREAM_ID(0xFFFF)` だけを selector なしとして扱う。CS110 tune request に TSID / relative stream-number selector が指定された場合は `INVALID_ARGUMENT` とする。`streamIdType=RELATIVE_STREAM_NUMBER` の負値、`streamIdType=UNDEFINED` の負値、その他の負値 selector は未指定へ丸めない。
-
-ISDB-Sのセレクター対応能力は、`SupportedBackendIdentity`、ドライバーのリポジトリとコミット、USB VID/PIDまたは同等の機器識別子、対象リビジョンがすべて一致する `SupportedDeviceCapabilityCatalog` の検証済み項目からだけ生成する。一致する検証済み項目がない場合、または `selector_capability_release_eligible` が偽の場合は、セレクター対応能力を公開せず、そのセレクターを使う選局オブジェクトも生成しない。アダプター経路が確認済みの項目では、`RELATIVE_STREAM_NUMBER` の `0..7` を公開してよい。この項目だけが有効な場合、絶対値の `STREAM_ID` 要求にはバックエンドを変更せず `UNAVAILABLE` を返す。絶対TSID経路を別途確認済みの項目では `0..65534` を公開してよく、`65535` には `INVALID_ARGUMENT` を返す。この場合、`0..11` だけを特別に拒否しない。`ProductProfile` は確認済み能力を抑止できるが、新設または拡張してはならない。実行時は不変の `EffectiveCapabilities` だけを参照する。
-
-
-- コールバック失敗、ワーカー異常終了、FMQ / EventFlag 失敗の状態遷移、診断、後続処理停止条件は表7・表8を正とする。本節では再定義しない。
-- DVR 状態 interval はコールバックワーカーの周期にだけ使う。ワーカーの wait は stop signal で wake 可能な cancellable wait とし、close / Drop / shutdown は interval 満了を待たない。
-- `getAvSharedHandle()`、AV filter `start()`、`releaseAvHandle()` の状態別契約は、本書の「表4. AV共有メモリ資源寿命表」を正とする。
-
-backendのエラーは、呼び出し側の不正値・値域違反を`INVALID_ARGUMENT`、不存在・使用中・容量不足・規格上は有効だが未対応を`UNAVAILABLE`、不正なライフサイクルを`INVALID_STATE`、依存資源の未初期化を`NOT_INITIALIZED`、割り当て失敗を`OUT_OF_MEMORY`、権限・入出力・設定破損・不変条件違反を`UNKNOWN_ERROR`へ対応付ける。
-
-
-- filter monitor event は profile / capability 依存とする。monitor event 非対応 profile では `configureMonitorEvent(0)` のみ成功し、非0 mask は `UNAVAILABLE` とする。monitor event 対応 profile で `monitorEventTypes > 0` を使う場合は、`configureMonitorEvent(nonzero)` を成功させ、要求 mask に対応する monitor event を配送する。通常の `DATA_READY` / `OVERFLOW` / `onFilterEvent()` delivery は monitor mask で抑止しない。
-- soft demux の section / PES assembler と filter `stop()` / `flush()` / `configure()` / `close()` の状態別契約は、本書の「表1. IFilter 状態表」を正とする。
-- `setMaxNumberOfFrontends()` は `0 <= max_number <= default_max` だけを成功させる。負値と `default_max` 超過はどちらも `INVALID_ARGUMENT` とする。
-- 製品実行時 の frontend registry は実在 probe できた backendエントリ だけで構成する。probe 失敗は 診断情報レコード に残し、劣化 frontendエントリ / テスト劣化補助関数 / 診断劣化補助関数 は作らない。
-
-
-### nullable Binder 境界
-
-AOSP意味論として NULL binder 入力を持つ境界は、`IFilter.setDataSource(NULL)`、`IDescrambler.addPid(NULL)`、`IDescrambler.removePid(NULL)`、`IFrontend.setCallback(NULL)`、`ILnb.setCallback(NULL)` とする。これらは現行AOSP契約として扱い、生成trait上の表現差を理由に実装済み対象外へ落とさない。`setDataSource(NULL)` は demux input 復帰、`IDescrambler` の NULL filter は demux input 全体の PID 操作、callback NULL は登録解除として成功対象に含める。
-
-この境界は本書で管理する。`future_work` を現行リリース契約の正本として参照してはならない。NULL 経路と non-null 経路の状態遷移、戻り値、資源寿命、失敗時遷移は本書の各表を正とする。nullable binder 入力をAOSP契約どおり受けるための実装方式は公開AIDL契約を改変せずに実装する。
-
-### Android 14 AIDL filter source 境界の現行処理
-
-
-`configure()`は入力元との接続を変更しない。新しい設定が既存の接続と両立しない場合は`INVALID_STATE`で拒否し、以前の設定と接続を保持する。切断は`setDataSource(null)`で明示する。不正な設定には`INVALID_ARGUMENT`を返す。
-
-
-`IDescrambler.addPid()` / `removePid()` は、`optionalSourceFilter == NULL` を demux input 全体に対する PID 登録 / 解除として扱い、`optionalSourceFilter != NULL` を指定 filter output、すなわち upper stream に対する PID 登録 / 解除として扱う。NULL 経路は現行AOSP契約上の成功対象であり、実装済み対象に含める。non-null source filter 経路は、本書の「表D-1. IDescrambler PID 操作表」を正とし、同一 demux、非閉鎖、世代一致を検証する。
-
-
-## AIDL 契約境界
-
-`IFilter`、`IDvr`、`IFrontend`、`IDemux`、`ILnb`、`IDescrambler` の 公開メソッド は、AIDL HAL の契約面として close 後状態を必ず検査する。状態別の戻り値、次状態、維持する内部状態、破棄・無効化する内部状態は、本書の「Tuner HAL 状態遷移表SSOT」を正とする。
-
-
-`IFrontend.getStatus(statusTypes)` と `getFrontendStatusReadiness(statusTypes)` では、返却件数の契約が異なる。`getStatus()` は未知の列挙値を `INVALID_ARGUMENT` として拒否し、結果を返さない。既知の値については、`FrontendInfo.statusCaps` で公開した種類だけを要求順に返し、公開済み種類の重複も維持する。既知だが未公開の種類は無視するため、要求がすべて未公開種類であれば空の配列を返して成功する。種類ごとの「取得不能」を表す架空値を生成してはならない。要求された公開済み種類の取得に1件でも失敗した場合は、部分結果を返さず `UNAVAILABLE` とする。公開フレームワークとJNIは要求をそのままHALへ渡す一方、SDKは未公開種類を無視するよう定めているため、この選別はHALが行う。`getFrontendStatusReadiness()` も未知の列挙値を拒否するが、既知の要求にはすべて要求順で1件ずつ返す。公開済み種類には `UNAVAILABLE`、`UNSTABLE`、`STABLE` のいずれか、未公開種類には `UNSUPPORTED` を返す。列挙値の検証処理は共用してよいが、出力件数を決める処理は共用しない。
-
-
-`IFilter.setDataSource(source)` は、AOSP意味論どおり `source != NULL` の場合に指定 filter output を入力元とし、`source == NULL` の場合に sink filter の入力元を demux input へ戻す。`setDataSource(NULL)` は実装済み対象に含める。AOSP frozen/stable AIDL の vendor 独自改変、raw Binder transaction parser による公開契約を通さない実装は採用しない。non-null source filter 経路では、旧 `SourceFilter(filter_id, generation)` origin に属する section / PES assembler、continuity、flush generation、downstream partial state を切断し、旧 source 由来の未完了 payload を新 source 由来 payload へ連結してはならない。
-
-`IFrontend.tune()` は binder thread 上で ロック 完了まで待ち続けない。前回 tune / scan の ワーカーを generation で無効化し、backend へ tune request を投入し、非同期 ワーカー が ロック timeout と event 通知を行う。`stopTune()`、`close()`、次回 `tune()`、`scan()` は該当 generation を cancel し、古い ワーカー からの `LOCKED` / `NO_SIGNAL` 通知を捨てる。
-
-`IFrontend.scan()` は、同一条件の再 scan であっても成功扱いの無処理 にしない。AOSP 契約に従い、未完了の scan がある場合は既存 scan generation を停止し、新しい scan generation を開始する。既存 scan の callback から来る古い terminal event は generation mismatch として捨てる。
-
-`IFrontend.close()` は frontend backend の critical cleanup を成功扱いで握り潰さない。公開 close では、scan cancel、tune ワーカー stop、ライブ pump stop、backend close、コールバック解除、demux unbind、frontend lease release を step runner として扱い、途中 step が失敗しても後続 cleanup を継続し、最初に観測した critical error を AIDL 状態 として返す。cleanup failure 後の frontend オブジェクト は通常操作へ戻さず、close retry だけを通常の復旧経路として許可する。戻り値を返せない Drop 経路は通常 cleanup の代替にせず、未 close または cleanup 未完了を DropLeakTxn に記録し、対象を漏えい診断 / 隔離診断へ落とす。
-
-DVB / earth_pt1 backend では、`DTV_CLEAR` は明示的な tune 停止操作である `stop_tune()` の責務とする。DVB backend の `close()` は reader stop と fd release を行うが、`DTV_CLEAR` の実行を close の必須条件とはしない。したがって、DVB `close()` が `DTV_CLEAR` を発行しないことを release blocker または bug と扱わない。
-
-`IFrontend.removeOutputPid(pid)` は、frontend 出力段で PID を除去できる実装が存在しない限り `UNAVAILABLE` とする。soft demux 後段の block list だけで PID を捨てる実装は、frontend-level output PID removal を実装したことにしない。
-
-
-### DVR playback status の空き領域基準
-
-DVR playback status は playback input buffer の空き領域、すなわち space を基準に判定する。
-
-| PlaybackStatus | 意味 |
-|---|---|
-| `SPACE_EMPTY` | playback input buffer の空き領域が空、すなわち書き込み余地がない |
-| `SPACE_ALMOST_EMPTY` | 空き領域が少ない |
-| `SPACE_ALMOST_FULL` | 空き領域が多い |
-| `SPACE_FULL` | 空き領域が満杯、すなわち buffer は空に近い |
-
-使用済み量基準と空き領域基準を混同してはならない。
-
-
-## Tuner HAL 状態遷移表SSOT
-
-本節の表は、Tuner HAL の状態を持つ公開API、内部事象、資源寿命、戻り値、副作用のSSOTである。表に記載した状態別契約は、後続の散文で再定義しない。後続本文は、表だけでは読み取れない背景、製品方針、能力宣言、実装上の補足に限定する。
-
-
-### 0-S. 状態所有・寿命・失敗時遷移設計
-
-#### 0-S-1. 設計原則
-
-Tuner HAL は、内部状態の正本を1つに固定する。複数の構造体が同じ状態を独立に保持してはならない。
-
-公開API 主経路は、必ず正本所有者を経由する。共通部品を追加しただけ、一部経路が共通部品を呼ぶだけ、旧名が消えただけでは、設計適合とはみなさない。
-
-各APIは次を固定する。
-
-| 項目 | 内容 |
-|---|---|
-| 状態所有者 | どの構造体が正本か |
-| 成功時commit | 何が確定するか |
-| 失敗時rollback | 何を戻すか |
-| rollback失敗時 | quarantine / failed / retry のどれに落とすか |
-| cleanup失敗時 | 再試行可能に残すか、quarantineするか |
-| Drop時動作 | Dropで何をしてよいか |
-| 診断 | 何を残すか |
-| 公開API戻り値 | どのAIDL状態を返すか |
-
-rollback不能、cleanup不能、正本不一致、backend実状態とregistry不一致、ワーカー状態不一致は、通常状態として扱ってはならない。通常状態へ戻せない場合は quarantine または failed 状態へ落とす。
-
-#### 0-S-2. 状態所有者表
-
-| 資源 / 状態 | 正本所有者 | 補助所有者 | 禁止事項 |
-|---|---|---|---|
-| service lifecycle | `TunerHal` | なし | 子資源が service 全体状態を直接変更しない |
-| frontend lease | `FrontendLedger` | `FrontendRuntime` | open count、physical group、runtime binding を別々に確定しない |
-| frontend backend state | `FrontendRuntime` | backend adapter | backend実状態とruntime状態を通常状態で乖離させない |
-| demux id / refcount | `DemuxLedger` | `DemuxHal` | live id、registry record、refcount を別々に確定しない |
-| demux データ経路 | `DemuxRuntime` | `RuntimeIoRegistry` | FMQ/DVR/AV境界処理をAPIごとに重複実装しない |
-| filter lifecycle | `FilterLedger` | `FilterHal`, `soft_demux` | soft demux filter record と binder object の片方だけを残さない |
-| filter queue | `FilterQueueBacking` | `FilterHal` | write成功後のwake失敗を完全失敗として黙殺しない |
-| DVR lifecycle | `DvrLedger` | `DvrHal`, `soft_demux` | DVR object と soft demux DVR record の片方だけを残さない |
-| playback queue | `PlaybackQueueBacking` | playback ワーカー | ワーカー失敗だけでDVRをclosed扱いにしない |
-| descrambler session | `DescramblerSession` | `DescramblerLedger` | demux binding、PID、source filter、key tokenを別々に閉じない |
-| key token | `DescramblerKeyTable` | `DescramblerSession` | refcount不整合のまま成功扱いしない |
-| LNB state | `LnbRegistry` | backend adapter | backend状態とregistry状態の乖離を通常状態にしない |
-| ワーカー | `WorkerRuntime` | 所有オブジェクト | 所有者不明ワーカーを作らない |
-| stream boundary | `StreamBoundaryTxn` | demux/filter/DVR/AV | tune/scan/source切替で境界処理を重複実装しない |
-| packet pipeline | `PacketPipeline` | `soft_demux` | continuity、origin、generationを複数箇所で更新しない |
-| AV shared memory | `AvSharedBacking` | `FilterHal` | fd番号一致をshared handle同一性条件にしない。fd付きhandle + `avDataId == 0` はclient側shared handle使用終了通知として扱う |
-
-AV領域の正本となる同一性情報は、HALが発行時に台帳へ記録する`{owner_filter_id, filter_generation, transfer_kind, backing_id, allocation_id, avDataId, lease_state}`とする。ファイル記述子番号や`fstat`の`{st_dev, st_ino, size}`を正本となる同一性情報にしてはならない。`fstat`などの記述子メタデータは、採用した記憶領域実装で同一性が保証される場合だけ補助検証と診断に用いる。共有ハンドルの`dataId=0`解放は、呼出先IFilterが所有する有効なクライアント使用権を対象とし、イベント固有領域の正の`dataId`解放は、当該IFilterの台帳で使用中の割り当てと転送方式を特定して行う。`empty+dataId`ではファイル記述子を使わず台帳上の識別情報を検証する。所有者、世代、転送方式、`dataId`が一致しない場合は`INVALID_ARGUMENT`とし、別の割り当てを解放してはならない。台帳の信頼性を確認できない場合は`UNKNOWN_ERROR`とし、安全を確認できない記憶領域を隔離する。
-
-
-#### 0-S-3. 公開API transaction（状態遷移）契約
-
-公開API の状態変更は、原則として次の段階で扱う。
-
-```text
-validate
-  -> reserve
-  -> prepare
-  -> apply
-  -> commit
-```
-
-| 段階 | 許可 | 禁止 |
-|---|---|---|
-| validate | 引数、状態、capability、owner一致、closed状態の確認 | 状態変更 |
-| reserve | ledger / id / slot / ワーカーslot の仮確保 | backend実状態の変更 |
-| prepare | ワーカー生成準備、コールバック経路準備、rollback snapshot取得 | 旧公開状態の破壊 |
-| apply | backend / soft_demux / queue / registry への変更 | commit不能な変更をsnapshotなしに行うこと |
-
-各操作は準備、主要状態の確定、確定後処理の順に実行する。主要状態の確定では正本状態、所有権、backendへの反映を扱い、確定後処理ではcallback、状態通知、診断、後片付けの集計を扱う。確定後処理の失敗は型付きの副次結果として保存し、主処理の戻り値を変更しない。ただし、API別状態表がコールバック経路の準備または登録を成功確定条件に含める操作では、その処理を確定前に実行する。この共通則を使ってAPI別の成功条件を確定後処理へ移してはならない。
-
-
-| 段階 | 許可 | 禁止 |
-|---|---|---|
-| rollback | commit前変更の取り消し | 失敗を握りつぶして通常状態へ戻すこと |
-| quarantine | rollback不能資源の隔離 | 成功扱いで通常操作を許すこと |
-
-commit前失敗では、成功戻りを返してはならない。commit後cleanup失敗では、APIの戻り値方針を各API表で固定し、必ず診断に残す。rollback失敗時は、対象資源を quarantine または failed 状態へ落とす。
-
-
-#### 0-S-3A. 共通部品適用表
-
-
-共通化するのは共有可能な基本処理と不変条件だけとし、インターフェース固有の処理順序は個別に定める。
-
-
-| 対象処理 | 所有共通部品 | 必ず通す経路 | 禁止する実装 |
-|---|---|---|---|
-| Filter / DVR `start()` の commit 後 コールバック失敗 | `PostCommitCallbackFailureTxn` | start commit 後の callback 失敗は rollback せず `callback_unhealthy` に固定。既存実装名が異なる場合でも、この責務を単一の callback health 正本へ移管する | APIごとに `stop_*()` を直接呼んで rollback すること、またはAPI別に同型の コールバック失敗 処理を再実装すること |
-| Filter / DVR `flush()` の queue cleanup | `QueueCleanupTxn` | demux flush 後の FMQ / AV / playback cleanup 失敗を runtime failed または cleanup failed に接続 | `clear_best_effort()` で 公開API 成功に丸めること |
-| ワーカー起動 / 停止 / join / wake | `WorkerFailureClassifier` | ワーカー制御失敗、コールバック失敗、backend failure を enum / domain error で分類 | `reason.contains(...)` など文字列分類で失敗種別を決めること |
-| frontend / demux / source filter / flush 境界 | `StreamBoundaryTxn` / `SourceBoundaryTxn` | origin、generation、assembler、FMQ、AV shared、record queue を対象単位で処理 | 各APIが assembler / queue / generation を個別に直接操作すること |
-| descrambler demux / PID / key cleanup | `DescramblerSessionCleanupTxn` / `DescramblerKeyTxn` | session と key table の更新・release・失敗集約を一体で扱う | 1件の stale cleanup 失敗で後続 session を未処理のまま抜けること |
-| DVR playback read / inject | `PlaybackConsumeTxn` | FMQ read、TS parse、注入結果、消費確定を1つの状態機械で扱う | read済み入力を 注入結果未確認のまま一律消費済みにすること |
-
-
-#### 0-S-4. 失敗分類と波及範囲
-
-| 失敗種別 | 例 | 戻り値 | 波及範囲 | 禁止事項 |
-|---|---|---|---|---|
-| クライアント誤用 | 引数不正、owner不一致 | `INVALID_ARGUMENT` | 呼び出し対象のみ | backend/データ経路 failureへ昇格しない |
-
-公開 `close()` の意味は、インターフェース、論理ライフサイクル、後片付け状態を組み合わせた単一の表で定める。`Live` オブジェクトに対する最初の `close()` は、すべての後片付けを試す前に `LogicalClosed` を確定し、回復処理以外のメソッドを拒否する。`IFrontend.close()` と `ILnb.close()` は複数回呼び出せる。`LogicalClosed+CleanupComplete` では、完了済みの後片付けを再実行せず `SUCCESS` を返す。`IDvr.close()` と `IFilter.close()` は、同じ状態で `INVALID_STATE` を返す。IDvrのその他のメソッドも失敗とし、IFilterの遅延した `releaseAvHandle()` は別の解放台帳操作として扱う。どのインターフェースでも、`LogicalClosed+CleanupPending` の `close()` は未完手順の回復再試行に限定し、未完手順だけを実行する。完了時だけ `SUCCESS` を返し、失敗時はその操作に対応する後片付けエラーを返して `CleanupPending` を維持する。`Quarantined` では公開 `close()` に `INVALID_STATE` を返し、内部の後片付け管理機構だけが処理する。論理ライフサイクル軸は`Live`または`LogicalClosed`、後片付け軸は`NotStarted`、`CleanupPending`、`CleanupComplete`、`Quarantined`のいずれか一つとする。`Live+NotStarted`、`LogicalClosed+CleanupPending`、`LogicalClosed+CleanupComplete`、`LogicalClosed+Quarantined`だけを有効な組み合わせとし、`CleanupPending+CleanupComplete`や`Quarantined+CleanupComplete`は成立させない。
-
-
-| 失敗種別 | 例 | 戻り値 | 波及範囲 | 禁止事項 |
-|---|---|---|---|---|
-| unsupported | capability外、恒久非対応 | `UNAVAILABLE` | なし | callback/ワーカー状態を先に見て別エラーにしない |
-| コールバック失敗 | Binder コールバック失敗 | API表に従う | コールバック所有者 | データ経路全体を即failedにしない |
-
-ワーカーの異常は、`WorkerPanic`、`JoinFailure`、`StopWakeFailure`、`EventFlagWakeFailure`として区別する。
-
-
-| 失敗種別 | 例 | 戻り値 | 波及範囲 | 禁止事項 |
-|---|---|---|---|---|
-| データ経路 failure | FMQ/shared memory破損 | `UNKNOWN_ERROR` | 対象filter/DVR/AV | frontend backend failureと混同しない |
-| ledger failure | 正本台帳不整合 | `UNKNOWN_ERROR` | 対象資源 | 通常状態に戻さない |
-| rollback failure | 旧状態復元失敗 | `UNKNOWN_ERROR` | 対象資源をquarantine | 成功扱いにしない |
-| cleanup failure | close/drop後片付け失敗 | API表に従う | 対象資源 | Dropだけに逃がさない |
-
-#### 0-S-5. API別設計適合条件
-
-各API表は、少なくとも次の列を持つ。既存表に同じ情報が分散している場合も、各項目への対応を追跡できることを必須とする。
-
-| 項目 | 必須理由 |
-|---|---|
-| 事前状態 | closed / closing / failed / quarantined を区別するため |
-| validate内容 | 引数不正と状態不正を分けるため |
-| commit対象 | 成功時に何が確定するかを固定するため |
-| rollback対象 | 失敗時に何を戻すかを固定するため |
-| cleanup失敗時 | close / Drop / best-effort の扱いを固定するため |
-| 次状態 | API戻り値と内部状態を一致させるため |
-| 診断 | 失敗原因を追跡するため |
-
-### Tuner HAL runtime 設計契約
-
-Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時波及範囲を以下の設計契約として固定する。
-
-
-公開APIの戻り値は、不存在または別所有者のIDを`INVALID_ARGUMENT`、同一サービス内の閉鎖済みオブジェクトを`INVALID_STATE`、容量不足または資源不足を`UNAVAILABLE`、依存資源の未初期化を`NOT_INITIALIZED`、内部不整合または破損を`UNKNOWN_ERROR`とする。実体のないオブジェクトを生成せず、自動的な隔離も行わない。
-
-
-- filter ID は HAL 外部へ返す値を demux-local ID のまま維持する。DVR attach/detach、filter データ入力元、AV sync ID 取得では、渡された filter オブジェクト の内部 owner demux を検証し、owner demux が一致しない filter を `INVALID_ARGUMENT` で拒否する。
-- ワーカー は handle 保存先の mutex を確保してから spawn する。保存先を確保できない場合は spawn しない。ワーカー `panic` は `WorkerHandle::join_from_owner()` 経由で診断へ残し、detached ワーカーを作らない。
-- 長寿命 ワーカー の待機は `Mutex` + `Condvar` を基本とし、stop request → wake → join の順で停止する。`AtomicBool` は close済み / stop要求 / export済みなどの単純 flag に限定し、複合状態同期の代替にしない。`loom` は テスト専用 候補であり、通常 単体テスト と静的ロジック確認の代替にはしない。
-
-- 現行仕様で管理対象となる長寿命ワーカーは、`WorkerHandle` が owner id、`JoinHandle`、owner `ConcreteWorkerSignal` を所有し、owner signal の `Mutex<WorkerSignalState> + Condvar` で stop/work generation を wake する。`WorkerExit` は `Normal` / `StopRequested` / `RuntimeFailure` / `PanicOrJoinFailure` を正式名とする。
-
-ワーカーの後片付けは、本書のワーカー終了契約に従って事象駆動で行い、選局成否を固定時間で覆す`TargetDriverTimingProfile`は設けない。停止を待つ各バックエンド操作は、停止通知またはファイル記述子の閉鎖で必ず復帰することを検証済み契約として持つ、ドライバーまたはカーネルの契約から導いた内部I/O期限内に復帰する、または別プロセスへ隔離して`ReaperSupervisor`が終端またはサービス再起動を行える、のいずれかを満たさなければならない。いずれも証明できないバックエンド経路は能力として公開しない。取り消し時は、利用可能な停止・起床通知を各1回送る。終了済みのワーカーは直ちに回収する。実行中のワーカーは、所有者世代を無効化して状態変更を遮断した後、有界の`ReaperSupervisor`へ一度だけ移して隔離する。公開APIの呼び出し元を`join`待ちで停止させない。実際の終了と残りの後片付けが完了するまで、使用枠は返却しない。回収機構の容量は、強制している同時稼働ワーカー数の上限から導出する。停止待ち操作が取消要求または内部I/O期限に反して終了しない場合、`ReaperSupervisor`は型付きの進行保証違反を確定し、局所終端が不可能ならサービス再起動を要求する。遮断されていない全体状態の変更、遮断不能な全体専有資源、または置換処理との競合を示す型付き証跡がある場合に限り、サービス全体へ影響する障害として扱う。所有者内に隔離済みの残存処理によって、無関係な能力を停止してはならない。
-
-失敗の影響範囲は、既定では所有者、世代、依存資源の組に限定する。ワーカー生成、コールバック、要求処理の失敗によって、正常な同階層の処理を破壊してはならない。残存ワーカーをサービス全体に影響するものと判定できるのは、所有者世代を無効化した後もサービス全体の台帳またはバックエンドを変更できる、サービス全体で専有する単一資源・ファイル記述子・キューを保持する、所有者・世代・依存資源のトークンで遮断できない、または同一資源の再起動と競合する、のいずれかを満たす場合に限る。いずれにも該当しない場合は、所有者、世代、依存資源の組だけを隔離し、無関係な所有者は利用可能なままとする。サービス全体を隔離するには、型付き診断に判定根拠を明記する。
-
-
-- frontend source transition は transactional に扱い、new bind / old unbind / record更新 / stream 境界 reset の途中失敗時には新 binding をrollbackし、rollback不能なら demux を 異常時閉鎖済み にする。
-
-
-- DVR start は 状態 interval 分だけ Binder thread を sleep しない。状態 interval は コールバック ワーカー の周期だけに使う。
-
-キュー、機器、パケットの各読み取り結果は、本書の失敗影響範囲表に従って分類する。非ブロッキング読み取りでデータがない場合と `WouldBlock` は `NoData`、`EINTR` は `Interrupted` とし、状態を変えずに再試行する。明示的な停止または所有中の入力に対するEOFは `Closed` とする。`InfrastructureCorrupt` はFMQの記述子、制御情報、トランザクションの不変条件違反に限定し、影響を受ける経路を隔離する。不正な188バイトTSパケットは、そのパケットだけを破棄して型付き診断を残し、基盤破損として扱わない。TEI付きパケットはTS生データ出力と記録出力には保持し、意味解析には使用しない。連続性の不連続ではTS生データと記録データを保持し、そのPIDの意味解析組み立てだけを初期化する。SectionまたはPESの解析失敗では対象の意味単位を破棄し、正しい境界から再開する。所有中の入出力に恒久障害が生じても、遮断されていない全体状態の変更を示す型付き証跡がない限り、影響を受けるランタイムだけを終了する。破損または致命的失敗を無言で `NoData` に変換してはならない。
-
-
-- px4 close は control FD だけでなく TS reader FD と reader state も解放する。
-- px4 の CNR 取得は optional telemetry であり、`PTX_GET_CNR` 失敗だけで ロック/状態 query を fatal error にしない。
-- セクションフィルター は condition の必要 byte 幅が payload 長を超える場合に match しない。prefix だけ一致した短い payload を match としない。
-- セクションフィルターの `repeat=false` は重複抑止ではなく、同一 `start()` 世代内の配送停止条件である。`SectionBits` は最初に一致した section を1件配送した後、version や section number が異なる後続 section も配送しない。`TableInfo` は最初に一致した table id / table id extension / version を処理対象 table として固定し、その table の `0..last_section_number` を1回ずつ配送して table 完了後に停止する。table 完了前の別 version は配送しない。`repeat=true` の場合だけ同一条件の section / table を繰り返し配送する。section filter の配送可否状態は demux 入力から直接組み立てた section にだけ適用する。source filter 経由で section payload を再配送する経路は本製品では対応しない。この配送停止は公開 `IFilter.stop()` 呼び出しと同じ状態遷移ではない。filter object の公開状態は Started のまま維持し、利用側が明示的に `stop()` / `flush()` / `configure()` / `close()` を呼べる状態を保つ。
-- `TableInfo.version` は `-1` または `0..31` だけを受け付ける。`-1` は wildcard、範囲外は `INVALID_ARGUMENT` とする。
-- PES `streamId` は `0..=255` を明示 `stream_id` として照合し、AOSP `Constant.INVALID_STREAM_ID` の `0xFFFF` だけをwildcardとして扱う。負値、`256..=65534`、`65536`以上は`INVALID_ARGUMENT`とする。`streamId=0`はwildcardではなく、8-bit値`0x00`の明示照合である。
-- `IFilter.setDataSource()` の互換性は本書の「表1-D. `setDataSource()` 互換表」を正とする。`setDataSource(NULL)` は demux input 復帰として成功対象に含める。filter source を指定する場合は、表1-D-3の subtype 別成立条件を正とする。source filter として指定できるのは TS生データフィルタだけである。下流として成功させるのは TS生データフィルタと record フィルタだけである。section / PES / AV への raw TS 再parse chain、および section payload、PES payload、AV payload、record payload を直接 source として再配送する経路は作らない。非対応の linkage は `UNAVAILABLE` とし、ペイロードなしフィルタを source または sink にする接続は `INVALID_ARGUMENT` とする。`linkCaps` に広告した main type pair はVTS生成の `UNDEFINED` subtype接続も成功させる。
-- `IFilter.setDataSource(source)` の non-null source 経路は 同一demux内のfilter接続グラフ の接続だけを正式対象とする。`linkCaps` は同一 demux 内で開いた source / sink filter の main type 対応可否を表し、別 demux に属する filter を source に指定する経路を capability / VTS profile 対象に含めない。source / sink object の lifetime、generation、kind を先に確認し、その後に owner demux 不一致と自己参照を `INVALID_ARGUMENT` で拒否する。AOSP API 文面上の「another filter」は本製品では同一 demux の filter graph 内の別 filter として扱い、別demux間のfilter接続グラフは作らない。
-- `IFilter.getQueueDesc()` の成否は configure 済みかどうかではなく、open時フィルタ種別が通常FMQを持つかどうかで決める。通常FMQ対象フィルタは未configureでも記述子取得を成功させる。
-
-健全性による操作制限は次のとおりとする。callbackの配送先に障害がある場合はdomain処理を継続し、新しいcallback配送だけを停止する。診断格納先の障害ではdomain処理を継続し、代替の計数値だけを更新する。backendが利用不能の場合は問い合わせとcloseを許可し、状態変更には`UNAVAILABLE`を返す。registryが破損した場合は対象domainの状態変更に`UNKNOWN_ERROR`を返し、closeと問い合わせは許可する。FMQが破損した場合は対象オブジェクトの開始と書き込みを拒否し、`flush()`と`close()`は許可する。
-
-
-- `IDescrambler.addPid()` / `removePid()` の source filter は AOSP意味論では optional であり、`NULL` は demux 入力全体の PID 指定である。NULL 経路は現行AOSP契約上の成功対象として扱い、実装済み対象に含める。
-
-公開する対応能力は、機器検出後に選択して以後変更しない1個の `CapabilitySnapshot` から導出する。最初に `F=successful_frontend_count` と `L=successful_lnb_count` を確定する。実行時の候補C8、C4、C2、C1は優先順を持ち、本書の候補表でdemux、フィルター、DVR、AVの数値とF/Lに対する式を明示する。各候補について必要資源全体を仮予約し、いずれかの構成要素で失敗した場合は仮予約全体を取り消す。予約に成功した最大の候補を一度だけ確定する。C1は `ITuner` の公開に必要な最小構成とし、音声AVフィルター1個と映像AVフィルター1個を含む。このため `av_filter_count=2`、`av_ledger_entries_total=16`、`av_reserved_bytes_total=16777216` とする。確定済みスナップショットを、`getDemuxCaps()`、受付可否、後片付け時の資源集計、最終解放の唯一の根拠とする。VTSはC1に無条件では含めない。AOSPブランチ、フロントエンド入力元、選局値とPID、使用経路、Filter/DVRのバッファー容量、製品のメモリー予算を、起動前の `VtsEnvironmentProfile` として定義する。未定義の間は `DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED` とし、既定のV1 XMLを組み込まず、VTS成功を表明しない。使用する静的設定はC1に収まり、サービスまたはVTSの起動前に必要なキュー容量全体を一括予約できなければならない。
-
-
-- 入力値不正は `INVALID_ARGUMENT`、未対応 capability は `UNAVAILABLE`、オブジェクト state 不整合は `INVALID_STATE`、mutex汚染 や内部整合性崩壊は `UNKNOWN_ERROR` / `HalError::Internal` に写像する。
-
-- AV filter の `start()`、shared backing、MediaEvent、`releaseAvHandle()` の状態別契約は、本書の「表4. AV共有メモリ資源寿命表」を正とする。
-- A/V sync の状態別契約は本書の「A/V sync 方針」と「A/V sync 非採用範囲」を正とする。
-
-
-### 0. 総則
-
-#### 0.1 本製品の固定方針
-
-| 項目 | 固定内容 |
-|---|---|
-| 入力範囲 | 製品全体の入力方式スコープは `開発規則.md` を正とする。本書では Tuner HAL の capability / VTS profile として TS 入力だけを宣言し、MMTP、TLV、ALP、IP CID を宣言しないことを固定する |
-| ライブAV正式経路 | non-passthrough `MediaEvent`を使用し、共有領域+`dataId`を第一選択、イベント固有fd+`dataId`を正式な代替方式とする |
-| AVペイロードとFMQ | AVペイロードは通常FMQへ書き込まない。EventFlag は FMQ対象経路の通知にだけ使う |
-
-`releaseAvHandle()`の判定は、本書の`releaseAvHandle()`判定表だけを根拠とする。この表は共有領域方式と、イベントごとにファイル記述子を渡す`MediaEvent`方式の両方を扱う。負の`dataId`は`INVALID_ARGUMENT`とする。空ハンドルと0の組は、状態を変えず成功する。返却済み共有ハンドルと0の組では、呼出先IFilterの台帳にあるクライアント側共有ハンドル使用権だけを解放する。解放済みであることを確認できる重複終了は状態を変えず成功し、所有者、世代、転送方式、識別情報の不一致には`INVALID_ARGUMENT`を返す。空ハンドルと正の`dataId`の組では、一致する使用中の共有領域またはイベント固有領域を解放する。発行済みで解放済みと確認できるIDへの重複要求は、状態を変えず成功する。イベント固有ファイル記述子を含むハンドルと一致する正の`dataId`では、そのイベント固有領域を解放する。同ハンドルと0の組では、台帳上のイベント固有ハンドル使用権だけを終了し、割り当ては後続の正の`dataId`解放まで維持する。フレームワークまたはCodec2の参照数を判定条件にしない。未発行、不明、別所有者、識別情報不一致の組には`INVALID_ARGUMENT`を返す。台帳上の同一性情報を分類できない場合は`UNKNOWN_ERROR`とし、安全を確認できない領域を解放または再割り当てしない。ファイル記述子のメタデータは補助検証と診断に限定する。発行済みの割り当ては論理閉鎖後も解放できるようにし、隔離状態の後片付けは内部処理だけで行う。
-
-
-| 項目 | 固定内容 |
-|---|---|
-| AV passthrough | 本製品では恒久的に対応しない。passthrough capability は宣言せず、passthrough要求は configure時 `UNAVAILABLE` とする |
-| 監視イベント配送 | profile / capability 依存とする。非対応 profile では `configureMonitorEvent(0)` は成功、非0マスク値は `UNAVAILABLE`。対応 profile で `monitorEventTypes > 0` を使う場合は非0マスク値も成功し、要求eventを配送する |
-| PCR | ペイロードキューとして公開しない。AV同期の内部状態として扱う |
-| 未対応機能 | capability と VTS profile に宣言しない。要求された場合は configure時、専用API呼び出し時、対応する公開API呼び出し時のいずれかで `UNAVAILABLE` とする |
-| close | `closed` は公開API遮断ゲート、`cleanup_complete` は後片付け完了根拠として別管理する |
-| ABI不整合 | AIDL ABI、Rust/C 接続層の関数シグネチャ、リンク不整合は実行時状態表に入れない。ビルド、リンク、AIDL確認、VINTF確認で弾く対象とする |
-
-#### 0.2 状態圧縮の許可条件
-
-状態遷移表で複数の状態を1行へ圧縮してよいのは、次の4条件を全て満たす場合だけである。
-
-| 条件 | 固定内容 |
-|---|---|
-| 条件1 | 選択式の戻り値、選択式の次状態、未固定語をセル内に書かない |
-| 条件2 | 対象状態集合を表内に明記し、集合のヌケモレを許さない |
-| 条件3 | 戻り値、次状態関数、副作用、診断、資源寿命が対象状態集合内で完全に同じである |
-| 条件4 | 同値性根拠を表内に明記する |
-
-次状態は固定値だけでなく、`入力状態を維持`、`共有ハンドル軸だけ公開済みに変更` のような関数で固定してよい。関数で固定する場合は、変更する状態軸と維持する状態軸を表内に書く。
-
-#### 0.3 文書間の責務境界
-
-| 文書 | 正とする内容 | 禁止事項 |
-|---|---|---|
-| `tuner_hal/DESIGN_JA.md` | Tuner HAL の公開API状態、内部事象、資源寿命、戻り値、副作用、確定点、巻き戻し、閉鎖側失敗の対象 | 同じ状態遷移契約を他文書で再定義すること |
-| `tuner_hal/CODE_CONVENTION.md` | Tuner HAL 固有の実装規約、禁止構文、補助関数 使用規則、静的確認観点 | DESIGN_JA.md の状態遷移、戻り値、資源寿命を別内容で定義すること |
-| `GLOBAL_CODE_CONVENTION.md` | Rust / Kotlin 全体に共通する実装規約 | Tuner HAL 固有の状態遷移を定義すること |
-| `タスク完了判定の実施方法.md` | 検査手順、証跡の取り方、判定時の確認順序 | 設計契約や実装規約を新規定義すること |
-| `tuner_hal/CHANGELOG.md` | 変更履歴、リリース履歴、過去の作業理由 | 現行設計の正本として扱うこと。CHANGELOG にしかない方針で実装を正当化すること |
-
-
-### 表0-F. IFrontend scan 状態表
-
-`scan()` が成功した場合は、常に新しい scan generation を開始する。同一条件の再 scan を成功扱いの無処理 にしてはならない。
-
-| 番号 | 事前状態 | 呼び出し | AIDL戻り値 | 次状態 | 副作用 | 設計上の成立条件 |
-|---:|---|---|---|---|---|---|
-| FR-001 | Idle | `scan(settings, type)` | 成功 | Scanning(generation+1) | 新 scan generation を開始 | backend へ新 scan request が投入される |
-| FR-002 | Scanning | `scan(same settings, same type)` | 成功 | Scanning(generation+1) | 既存 scan を停止し、新 scan を開始 | 同一条件でも 無処理 にならない |
-| FR-003 | Scanning | `scan(different settings/type)` | 成功 | Scanning(generation+1) | 既存 scan を停止し、新 scan を開始 | 古い callback は generation mismatch で捨てる |
-| FR-004 | Scanning | `stopScan()` | 成功 | Idle | 現 scan generation を停止 | terminal reason を Cancelled として診断へ残す |
-| FR-005 | Idle | `stopScan()` | 成功 | Idle | なし | 重複 stop は冪等成功 |
-| FR-006 | Closing / Closed | `scan(...)` | `INVALID_STATE` | 入力状態を維持 | なし | 閉鎖中または閉鎖後に scan を開始しない |
-
-### 表1. IFilter 状態表
-
-#### 表1-A. IFilter 状態コード
-
-| 状態コード | 状態名 | 意味 |
-|---|---|---|
-| F0 | 非AV未設定 | 非AVフィルターの`openFilter()`後、`configure()`未完了 |
-| F1 | FMQ設定済み | FMQ対象フィルターが設定済みかつ未開始 |
-| F2 | FMQ開始済み | FMQ対象フィルターが開始済み |
-| F3 | FMQ停止済み | FMQ対象フィルターが開始後に停止済み |
-| F4 | コールバック設定済み | 通常FMQを持たない非AVフィルターが設定済みかつ未開始 |
-| F5 | コールバック開始済み | 通常FMQを持たない非AVフィルターが開始済み |
-| F6 | コールバック停止済み | 通常FMQを持たない非AVフィルターが開始後に停止済み |
-
-フィルターの通常FMQペイロード、DVR記録ストリーム、TS/MMTP記録コールバックのメタデータは、互いに独立した3つの経路として扱う。TS/MMTP記録フィルターは通常のフィルターFMQを公開しない。ペイロードは接続先のRecord DVR FMQだけへ書き込み、PID、索引、バイト番号、PTS、開始コードのメタデータは `DemuxFilterTsRecordEvent` または `DemuxFilterMmtpRecordEvent` のコールバックで通知する。Section、PES、TS生データの各ペイロードフィルターは、サブタイプ表に従って通常のフィルターFMQを使用してよい。
-
-
-AVフィルターの状態コードは、AOSP `IFilter`が`configureAvStreamType()`と`getAvSharedHandle()`を`configure()`とは独立したメソッドとして公開することに合わせ、設定状態、実行状態、補助種別、共有ハンドルの各軸から次のとおり導出する。
-
-| 状態コード | 設定・実行状態 | 補助種別 | 共有ハンドル |
-|---|---|---|---|
-| A0 | 設定済み・停止中 | 未設定 | 未公開 |
-| A1 | 設定済み・停止中 | 設定済み | 未公開 |
-| A2 | 設定済み・停止中 | 未設定 | 公開済み |
-| A3 | 設定済み・停止中 | 設定済み | 公開済み |
-| A4 | 設定済み・開始中 | 未設定 | 未公開 |
-| A5 | 設定済み・開始中 | 設定済み | 未公開 |
-| A6 | 設定済み・開始中 | 未設定 | 公開済み |
-| A7 | 設定済み・開始中 | 設定済み | 公開済み |
-| A8 | 未設定 | 未設定 | 未公開 |
-| A9 | 未設定 | 設定済み | 未公開 |
-| A10 | 未設定 | 未設定 | 公開済み |
-| A11 | 未設定 | 設定済み | 公開済み |
-
-状態コードは上表の直積を短縮した表記であり、正本状態は各軸で保持する。例えば`start()`は設定済みのA0..A3だけをA4..A7へ移し、A8..A11には`INVALID_STATE`を返す。`stop()`、`configureAvStreamType()`、`getAvSharedHandle()`は、各API表で明示した軸だけを変更する。
-
-`openFilter()`で音声または映像サブタイプを開いた直後はA8とする。補助種別の設定でA9、共有ハンドルの取得でA10、両方を実施した場合はA11へ移る。`configure()`は設定軸だけを変更し、A8→A0、A9→A1、A10→A2、A11→A3とする。
-
-ペイロードの配送経路と監視マスク・監視イベントの配送経路は分離する。対応するprofileでは、初回状態と状態変化をcallbackで通知する。
-
-PCRなどの実行状態と、監視マスク・監視イベントの配送状態は別の状態軸で管理する。
-
-実行状態、hint、handleの公開状態、世代は互いに独立した型で表し、成立しない組み合わせだけを型で禁止する。
-
-
-AV filter の audio/video routing 種別は open subtype を正とする。TsAudio は Audio、TsVideo は Video である。`configureAvStreamType()` は codec / stream type hint を保存する補助APIであり、未実行であっても `setDataSource()`、`start()`、PES/AV routing、MediaEvent 配送の必須条件にはしない。
-
-#### 表1-B. IFilter 基本API状態契約
-
-| 番号 | API / 入力 | 対象状態集合 | AIDL戻り値 | 次状態関数 | 副作用 | 診断 | 同値性根拠 / 設計上の成立条件 |
-|---:|---|---|---|---|---|---|---|
-| F-B-001 | `configure()` FMQ対象設定 | F0 | 成功 | F1 | queue世代を更新し旧一過性状態を消去 | `filter_configure_success` | 未設定からFMQ対象へ進む |
-
-キューを公開しない状態とcallbackイベントを無効にする状態は分けて管理する。
-
-
-| 番号 | API / 入力 | 対象状態集合 | AIDL戻り値 | 次状態関数 | 副作用 | 診断 | 同値性根拠 / 設計上の成立条件 |
-|---:|---|---|---|---|---|---|---|
-| F-B-003 | `configure()` live AV non-passthrough | A8, A9, A10, A11 | 成功 | 設定状態だけ設定済みに変更。他軸は維持 | AV世代を進め、未配送の旧一過性状態を破棄。TsAudio は Audio、TsVideo は Video の routing 種別を open subtype から導出する | `filter_configure_success` | 未設定のAV状態だけを受理し、補助種別と共有ハンドル軸を維持する |
-| F-B-004 | `configure()` AV passthrough | A8, A9, A10, A11 | `UNAVAILABLE` | 入力状態を維持 | なし | `unsupported_passthrough_configure` を増やす | 本製品ではpassthroughを恒久非対応とする |
-| F-B-005 | `configure()` MMTP / TLV / ALP / IP CID | F0 | `UNAVAILABLE` | F0 | なし | `unsupported_filter_configure` を増やす | Tuner HAL capability / VTS profile では宣言しない方式を成功扱いにしない |
-| F-B-006 | `configure()` 同一設定の再指定 | F1, F3 | 成功 | 入力状態を維持 | キュー識別子、キュー内容、各世代、組み立て状態、診断を維持する | `filter_configure_idempotent` を増やす | 同じ正規化済み設定の再指定は無処理とする |
-| F-B-006a | `configure()` 異なる設定への再設定 | F1, F3 | 成功 | F1 | キュー識別子は維持し、配送世代と解析状態世代を更新して旧データ、組み立て状態、PCR、`startId`状態を破棄する | `filter_reconfigure_success` | 設定差分を確定した後にだけ再設定境界を進める |
-
-初期化時の世代管理では、`filter_delivery_generation` と `parser_state_generation` を独立させ、DVRキューではさらに `queue_epoch` を使用する。異なる設定への`configure()`が成功した場合だけ、フィルター配送世代と解析状態世代を進め、解析器、PCR、`startId`の状態を初期化する。同じ正規化済み設定の再指定では、これらの世代と状態を維持する。設定契約で明示的に変更するものを除き、キューの記憶領域と識別子、入力元の関連付け、コールバック、監視マスク、ヒントは維持する。FilterまたはSharedFilterの `flush()` は `FilterProducerDrainGate` を `Draining` に移し、新しい線形許可を拒否して、サービス所有ワーカーを起床させる。許可の解放に必要なロックを保持せず、有限個の非ブロッキング許可がすべて返るまで待つ。許可の有効範囲は、ブロッキング読み取り・待機・一時保持の後から、FMQへの確定書き込みまたは保留イベントの追加までに限定し、Binderコールバックと外部入出力を含めない。その後、未消費のFMQデータと未配送イベントを一括で破棄し、取り出し済みまたは配送中のコールバックと、配送済みAV領域は維持する。解析状態を初期化し、解析状態世代だけを進めて `Open` に戻す。消去確定前に失敗した場合は、ポインター、内容、保留イベント、すべての世代を変更しない。ロック汚染または部分的確定という不可能状態が生じた場合は、対象を閉鎖して隔離する。DVRの `flush()` は `QueueEpochProtocol` に従い、開始・確定トランザクションがすべて終了した後に `queue_epoch` だけを進める。`stop()` はキュー内容と識別子を維持して解析途中状態だけを破棄する。入力元の置換ではフィルター配送世代と解析状態世代を同じ確定点で進め、`close()` ではすべての世代軸を遮断する。
-
-現在の世代から切り離した後も、解放待ちの記憶領域と解放台帳を保持し、解放後使用と枠の再利用競合を防ぐ。
-
-
-| 番号 | API / 入力 | 対象状態集合 | AIDL戻り値 | 次状態関数 | 副作用 | 診断 | 同値性根拠 / 設計上の成立条件 |
-|---:|---|---|---|---|---|---|---|
-| F-B-009 | `configure()` 開始中 | F2, F5, A4, A5, A6, A7 | `INVALID_STATE` | 入力状態を維持 | なし | `configure_while_started` を増やす | 開始中再設定を禁止する |
-| F-B-010 | `start()` FMQ対象 | F1, F3 | 成功 | F2 | FMQ作業スレッドを開始し、停止済みなら再開 | `filter_start_success` | F1 と F3 は start に関して戻り値、副作用、次状態が同一 |
-| F-B-012 | `start()` AV | A0, A1, A2, A3 | 成功 | 実行状態軸だけ開始済みに変更。他軸は維持 | 新規配送可能状態へ進む。ハンドル未公開中はAVペイロードを配送しない | `filter_start_success` | 設定済みのAV状態だけを開始し、配送可否はハンドル軸から導出する |
-| F-B-012a | `start()` 未設定AV | A8, A9, A10, A11 | `INVALID_STATE` | 入力状態を維持 | なし | `start_invalid_state` を増やす | `configure()`未完了では開始対象が存在しない |
-| F-B-013 | `start()` 既に開始済み | F2, F5, A4, A5, A6, A7 | 成功 | 入力状態を維持 | なし | `start_idempotent` を増やす | 重複 start は冪等成功 |
-| F-B-014 | `start()` 未設定 | F0 | `INVALID_STATE` | F0 | なし | `start_invalid_state` を増やす | 未設定では開始対象が存在しない |
-| F-B-015 | `stop()` FMQ対象 | F2 | 成功 | F3 | 新規FMQ書き込みを停止 | `filter_stop_success` | FMQ開始状態を停止状態へ進める |
-| F-B-017 | `stop()` AV | A4, A5, A6, A7 | 成功 | 実行状態軸だけ停止済みに変更。他軸は維持 | 新規AV配送を停止。既存 `dataId` は release / flush / close まで維持 | `filter_stop_success` | 戻り値、診断、状態軸変換規則、資源寿命が同一 |
-| F-B-018 | `stop()` 非開始設定済み状態 | F1, F3, F4, F6, A0, A1, A2, A3, A8, A9, A10, A11 | 成功 | 入力状態を維持 | なし | `stop_idempotent` を増やす | 停止済み相当の状態で stop は冪等成功 |
-| F-B-019 | `stop()` 未設定 | F0 | 成功 | F0 | なし | `stop_idempotent` を増やす | AOSP SDK 契約に合わせ、未開始 filter stop は no-op 成功とする |
-| F-B-020 | `close()` | 全非閉鎖状態 | 表5に従う | 表5に従う | 後片付け開始 | 表5に従う | close の戻り値と後片付け完了判定は表5を正とする |
-
-AV割り当てについては、本書のAV割り当てプロファイルと `releaseAvHandle()` 判定表だけを正とする。共有方式と実サイズのイベント固有方式は、AVフィルターの世代ごとに同じ台帳を使用し、使用中項目8件、合計8 MiBを安全上限とする。サービスは `CapabilitySnapshot` の選択時に、この予算へ `snapshot.av_filter_count` を乗じた量を予約する。C1はAVフィルター2個を持つため、16項目、16,777,216バイトを予約する。共有領域のスロットとイベント固有の記述子は、同じフィルター別台帳を消費する。空き項目があり、`request_bytes <= 8388608` で、要求量全体が残容量に収まる場合だけ割り当てる。上限超過、容量枯渇、割り当て処理の失敗は、コールバックと `dataId` の公開前に拒否する。破棄するのは当該イベントだけとし、使用中の割り当てを追い出してはならない。`avDataId` は符号付き63ビットの正数とし、再利用しない。`flush()`、再設定、論理閉鎖の後も、配送済みの割り当てを `ReleaseOnly` として保持する。`Active` または `ReleaseOnly` の解放は1回だけ資源を返して成功する。終了済みと確認できるIDへの重複解放は状態を変えず成功し、不明ID、別所有者、組の不一致には `INVALID_ARGUMENT` を返す。台帳の信頼性を確認できない場合は `UNKNOWN_ERROR` とし、対象記憶領域を隔離する。
-
-
-#### 表1-C. IFilter 補助API状態契約
-
-| 番号 | API / 入力 | 対象状態集合 | AIDL戻り値 | 次状態関数 | 副作用 | 診断 | 同値性根拠 / 設計上の成立条件 |
-|---:|---|---|---|---|---|---|---|
-| F-C-001 | `getQueueDesc()` | F0 かつ open時フィルタ種別が通常FMQ対象、F1, F2, F3 | 成功 | 入力状態を維持 | 通常FMQ記述子を返す | `queue_desc_success` | `getQueueDesc()` の成否は configure 済みではなく通常FMQ有無で決める |
-| F-C-002 | `getQueueDesc()` | F0 かつ open時フィルタ種別が通常FMQ非対象 | `UNAVAILABLE` | F0 | なし | `queue_desc_unavailable` を増やす | 未configureでも非FMQ対象は記述子を公開しない |
-| F-C-002a | `getQueueDesc()` | A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11 | `UNAVAILABLE` | 入力状態を維持 | なし | `queue_desc_unavailable` を増やす | AVペイロードは通常FMQではなく、共有領域またはイベント固有fdを参照する`MediaEvent`を使用する |
-
-FMQの使用方法はフィルターのサブタイプごとに定める。Section、PES、TS生データのペイロードフィルターは通常のフィルターFMQを使用する。TS/MMTP記録フィルターには通常のフィルターFMQを設けず、ペイロードはRecord DVR FMQへ、索引メタデータはコールバックイベントへ送る。音声・映像メディアフィルターは通常FMQではなく、共有領域またはイベント固有fdを参照する`MediaEvent`を使用する。PCR、監視、`startId`などコールバックだけで通知するイベントには、ペイロードFMQを設けない。Record DVRは記録FMQを、Playback DVRは再生FMQを所有する。規格上有効だが未対応のサブタイプには、`openFilter()`で`UNAVAILABLE`を返す。
-
-
-| 番号 | API / 入力 | 対象状態集合 | AIDL戻り値 | 次状態関数 | 副作用 | 診断 | 同値性根拠 / 設計上の成立条件 |
-|---:|---|---|---|---|---|---|---|
-| F-C-004 | `configureAvStreamType()` 正常入力 | A0, A1, A2, A3, A8, A9, A10, A11 | 成功 | 補助種別軸を設定済みに変更。他軸は維持 | stream type hint を指定値で保存する。TsAudio には Audio、TsVideo には Video だけを許可する | `av_stream_type_configured` | 非開始AV状態として同値。routing 種別はopen subtype由来であり、共有ハンドル公開状態に依存しない |
-| F-C-006 | `configureAvStreamType()` 開始中 | A4, A5, A6, A7 | `INVALID_STATE` | 入力状態を維持 | なし | `av_stream_type_while_started` を増やす | 開始中の種別変更は禁止 |
-
-`IFilter.configureAvStreamType()` は、閉鎖されていない音声または映像フィルターだけで受け付ける。`OpenUnconfigured` または `ConfiguredStopped` では、AVストリーム種別のヒントを一括で置き換えて `SUCCESS` を返す。同じ値の再指定は、状態を変えず `SUCCESS` とする。`Started` では `INVALID_STATE` を返し、状態、入力元の関連付け、記憶領域、`dataId`、キュー世代を変更しない。AV以外のフィルターには `INVALID_ARGUMENT`、論理閉鎖済みのフィルターには `INVALID_STATE` を返す。`runtime_failed` も真の場合でも、閉鎖済みの判定を優先する。
-
-
-| 番号 | API / 入力 | 対象状態集合 | AIDL戻り値 | 次状態関数 | 副作用 | 診断 | 同値性根拠 / 設計上の成立条件 |
-|---:|---|---|---|---|---|---|---|
-| F-C-008 | `configureAvStreamType()` 非AV | F1, F2, F3, F4, F5, F6 | `UNAVAILABLE` | 入力状態を維持 | なし | `av_stream_type_unavailable` を増やす | 非AV状態は全て同値 |
-| F-C-009 | `configureAvStreamType()` passthrough要求 | A0, A1, A2, A3, A8, A9, A10, A11 | `UNAVAILABLE` | 入力状態を維持 | なし | `unsupported_passthrough_configure` を増やす | 本製品では passthrough を恒久非対応とする |
-| F-C-010 | `getAvSharedHandle()` 初回 | A0, A1, A4, A5, A8, A9 | 成功 | 共有ハンドル軸だけ公開済みに変更。他軸は維持 | shared backing を生成しハンドルを返す | `av_shared_memory_create` を増やす | 種別軸と実行状態軸を維持し、ハンドル軸だけ変更する |
-
-handleの公開状態とクライアント側の使用状態は分けて管理し、複製した新しいhandleを再取得する遷移を設ける。
-
-open済みのAV filterでは、`configure()`前でも成功させる。
-
-
-| 番号 | API / 入力 | 対象状態集合 | AIDL戻り値 | 次状態関数 | 副作用 | 診断 | 同値性根拠 / 設計上の成立条件 |
-|---:|---|---|---|---|---|---|---|
-| F-C-013 | `getAvSharedHandle()` 非AV | F1, F2, F3, F4, F5, F6 | `UNAVAILABLE` | 入力状態を維持 | なし | `av_handle_unavailable` を増やす | 非AV状態は全て同値 |
-| F-C-020 | `flush()` FMQ対象 | F1, F2, F3 | 成功 | 入力状態を維持 | FMQ未消費データと一過性状態を破棄 | `filter_flush_success` | FMQ対象状態は flush に関して同値 |
-
-`flush()`では、監視マスク、callback登録、PCRの識別情報を変更しない。
-
-
-| 番号 | API / 入力 | 対象状態集合 | AIDL戻り値 | 次状態関数 | 副作用 | 診断 | 同値性根拠 / 設計上の成立条件 |
-|---:|---|---|---|---|---|---|---|
-| F-C-022 | `flush()` AVハンドル未公開 | A0, A1, A4, A5, A8, A9 | 成功 | 入力状態を維持 | 一過性状態を破棄 | `filter_flush_success` | ハンドル未公開AV状態では共有ハンドル資源を触らない |
-
-未配送データと配送済み使用中領域を分け、配送済み使用中領域は`releaseAvHandle()`まで保持する。
-
-
-| 番号 | API / 入力 | 対象状態集合 | AIDL戻り値 | 次状態関数 | 副作用 | 診断 | 同値性根拠 / 設計上の成立条件 |
-|---:|---|---|---|---|---|---|---|
-| F-C-024 | `flush()` 未設定 | F0 | `INVALID_STATE` | F0 | なし | `filter_flush_invalid_state` を増やす | 未設定では破棄対象が存在しない |
-
-監視を停止する場合はマスク0を確定し、再設定時は初回状態を通知する。
-
-
-| 番号 | API / 入力 | 対象状態集合 | AIDL戻り値 | 次状態関数 | 副作用 | 診断 | 同値性根拠 / 設計上の成立条件 |
-|---:|---|---|---|---|---|---|---|
-| F-C-026a | `configureMonitorEvent(nonzero)` / profile非対応 | F0, F1, F2, F3, F4, F5, F6, A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11 | `UNAVAILABLE` | 入力状態を維持 | なし | `monitor_event_unavailable` を増やす | 非対応能力を成功扱いにしない |
-| F-C-026b | `configureMonitorEvent(nonzero)` / profile対応 | F0, F1, F2, F3, F4, F5, F6, A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11 | 成功 | 入力状態を維持 | 要求maskを保存しmonitor event配送対象にする | `monitor_event_configured` を増やす | `monitorEventTypes > 0`を公開したprofileでは要求eventを配送する |
-| F-C-027 | `configureIpCid()` | F0, F1, F2, F3, F4, F5, F6, A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11 | `UNAVAILABLE` | 入力状態を維持 | なし | `ip_cid_unavailable` を増やす | IP CID は Tuner HAL の視聴経路 / capability 対象外 |
-| F-C-028 | `setDelayHint()` 正常入力 / non-media filter | F0, F1, F2, F3, F4, F5, F6 | 成功 | 入力状態を維持 | hint 値だけ保存 | `delay_hint_set` | 資源寿命を変えない。media / AV filter は対象外 |
-| F-C-028a | `setDelayHint()` media / AV filter | A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11 | `UNAVAILABLE` | 入力状態を維持 | なし | `delay_hint_media_unavailable` を増やす | `FilterDelayHint` は media filter に非適用であり、成功扱いにしない |
-
-時間に関するヒント値は、すべて符号付きミリ秒で扱う。負値には `INVALID_ARGUMENT` を返し、0はヒントの無効化または初期化とする。正値は、内部の時間型へ表現可能な範囲であればすべて受け付ける。検査付き変換であふれが発生する場合は `INVALID_ARGUMENT` とする。`ProductProfile` に恣意的な上限を設けない。内部カウンターは飽和演算を使い、確定済みの公開結果を後から覆してはならない。
-
-
-| 番号 | API / 入力 | 対象状態集合 | AIDL戻り値 | 次状態関数 | 副作用 | 診断 | 同値性根拠 / 設計上の成立条件 |
-|---:|---|---|---|---|---|---|---|
-| F-C-030 | `getId()` / `getId64Bit()` | F0, F1, F2, F3, F4, F5, F6, A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11 | 成功 | 入力状態を維持 | IDを返す | なし | 読み取り専用APIで資源寿命を変えない |
-| F-C-031 | `setDataSource()` 成功組み合わせ | 表1-Dで成功と定義した組み合わせ | 成功 | 入力状態を維持 | source 参照を保持 | `set_data_source_success` | 詳細は表1-Dを正とする |
-| F-C-032 | `setDataSource()` 拒否組み合わせ | 表1-Dで拒否と定義した組み合わせ | 表1-Dに従う | 入力状態を維持 | なし | 表1-Dに従う | 詳細は表1-Dを正とする |
-
-##### 表1-C-AVH. `releaseAvHandle()` 全域判定表
-
-shared-handle lease、event-local handle lease、個別AV allocationは別の寿命であり、数値fd一致ではなく記録済みbacking/allocation identityで、次の優先順に分類する。
-
-| 優先順 | 判定ID | ハンドル種別 | フィルター状態 | 台帳状態 | `dataId`区分 | 同一性条件 | AIDL結果 | 処理後状態 | 割り当てへの作用 | 補足 |
-|---|---|---|---|---|---|---|---|---|---|---|
-| 1 | AVH-001 | ANY | ANY | ANY | NEGATIVE | 評価しない | INVALID_ARGUMENT | UNCHANGED | NONE | 負の `dataId` を最優先で拒否 |
-| 2 | AVH-002 | MALFORMED_OR_UNSUPPORTED_FD_SHAPE | OPEN_OR_LOGICAL_CLOSED | ANY | ZERO_OR_POSITIVE | 形状を分類できない | INVALID_ARGUMENT | UNCHANGED | NONE | ファイル記述子番号の一致だけで解放しない |
-| 3 | AVH-003 | RETURNED_SHARED_HANDLE | OPEN_OR_LOGICAL_CLOSED | RegistryFailure | ZERO | 記憶領域の同一性を判定できない | UNKNOWN_ERROR | RegistryFailure | 不確実な領域を保持・隔離 | 不確実な解放を行わない |
-| 4 | AVH-004 | RETURNED_SHARED_HANDLE | OPEN_OR_LOGICAL_CLOSED | ActiveSharedHandleLease | ZERO | 呼出先IFilterの台帳に有効な共有ハンドル使用権が1件あり、入力ハンドルの形状が共有方式と一致 | SUCCESS | SharedHandleLeaseRemoved | クライアントの共有ハンドル使用権だけを解放 | ファイル記述子のメタデータは補助診断に限定。割り当てと共有領域は維持し、後続の`getAvSharedHandle()`で再取得可 |
-| 5 | AVH-005 | RETURNED_SHARED_HANDLE | OPEN_OR_LOGICAL_CLOSED | KnownReleasedSharedHandleLease | ZERO | 同じ公開済み領域で使用権は解放済み | SUCCESS | UNCHANGED | NONE | 遅延または重複終了を状態を変えず受理 |
-| 6 | AVH-006 | RETURNED_SHARED_HANDLE | OPEN_OR_LOGICAL_CLOSED | UnknownOrForeignSharedHandle | ZERO | 別所有者または記憶領域の同一性不一致 | INVALID_ARGUMENT | UNCHANGED | NONE | 不正・別所有者を既知の解放済みと扱わない |
-| 7 | AVH-007 | EMPTY | OPEN_OR_LOGICAL_CLOSED | ANY | ZERO | 割り当て解放を伴わないイベント終了 | SUCCESS | UNCHANGED | NONE | 状態を変えず、共有領域・使用権・割り当てを消去しない |
-| 8 | AVH-008 | EMPTY | OPEN_OR_LOGICAL_CLOSED | ActiveCurrentOrReleaseOnly | POSITIVE | 発行範囲と割り当て情報の組全体が使用中割り当てを特定 | SUCCESS | KnownReleased | バイト容量と割り当て使用権を正確に1回解放 | `flush()`、再設定、論理閉鎖後も可 |
-| 9 | AVH-009 | EMPTY | OPEN_OR_LOGICAL_CLOSED | KnownReleased | POSITIVE | 当該フィルター世代の発行範囲内だが使用中割り当てなし | SUCCESS | KnownReleased | NONE | 遅延・重複解放を状態を変えず受理し、IDは再利用しない |
-| 10 | AVH-010 | EMPTY | OPEN_OR_LOGICAL_CLOSED | UnknownOrForeign | POSITIVE | 当該サービス・フィルターに未発行または情報の組が不一致 | INVALID_ARGUMENT | UNCHANGED | NONE | 不明IDと既知の解放済みIDを区別 |
-| 11 | AVH-011 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | RegistryFailure | ZERO_OR_POSITIVE | イベント固有ファイル記述子の同一性を判定できない | UNKNOWN_ERROR | RegistryFailure | 不確実な割り当てを保持・隔離 | 不確実な閉鎖・解放を行わない |
-| 12 | AVH-012 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | ActiveEventLocal | POSITIVE | 台帳の所有者、世代、転送方式、`avDataId`が使用中の割り当てを一意に特定し、入力ハンドルの形状がイベント固有方式と一致 | SUCCESS | KnownReleased | イベント固有ハンドルの使用権を閉じ、割り当てを1回解放 | ファイル記述子のメタデータは既知の不一致検出と診断だけに用いる |
-| 13 | AVH-013 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | ActiveEventLocal | ZERO | 台帳に有効なイベント固有ハンドル使用権があり、入力ハンドルの形状が当該使用権と一致 | SUCCESS | ActiveEventLocalHandleFinalized | 受け取ったハンドル使用権だけを閉じ、割り当てと後続の空ハンドル+正の`dataId`解放を維持 | フレームワークやCodec2の参照数を判定条件にしない |
-| 14 | AVH-014 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | KnownReleasedOrHandleFinalized | ZERO_OR_POSITIVE | 同じ発行済み情報の要求対象部分が終了済み | SUCCESS | UNCHANGED | NONE | 遅延終了を状態を変えず受理 |
-| 15 | AVH-015 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | UnknownOrForeign | ZERO_OR_POSITIVE | ファイル記述子と`dataId`の組が未発行または不一致 | INVALID_ARGUMENT | UNCHANGED | NONE | 別所有者の組で他の割り当てを解放しない |
-| 16 | AVH-016 | ANY | QUARANTINED | ANY | ZERO_OR_POSITIVE | 公開台帳を安全に分類できない | INVALID_STATE | UNCHANGED | NONE | 隔離後の後片付けは内部回収機構が所有 |
-
-受け入れ条件:
-
-- `avDataId` は1..=`I64_MAX`のchecked monotonic IDで、service instance内で再利用しない。
-- 既知staleは同一service/filter generationのissued range/high-watermarkと非再利用で判定し、allocationごとの無制限tombstoneを要求しない。
-- flush、reconfigure、logical closeは配送済み未解放allocationを`ReleaseOnly`として保持する。
-- unknown/foreign/never-issued/wrong-generation/wrong-backingは`INVALID_ARGUMENT`であり、既知released/duplicateとは区別する。
-- 台帳または記憶領域の処理に失敗し、所有者、世代、転送方式、使用権を分類できない場合は`UNKNOWN_ERROR`とし、状態を確定できない資源を解放または再割り当てしない。補助的なファイル記述子メタデータを取得できないことだけで、台帳上の同一性情報を別の割り当てへ対応付けない。
-
-#### 表1-D. `setDataSource()` 互換表
-
-`setDataSource()` は sink 側公開APIである。実装は、表1-D-1の判定順序を先に適用し、通常の source / sink 種別互換は表1-D-3の行列で判定する。
-
-##### 表1-D-1. `setDataSource()` 判定順序表
-
-| 優先 | 条件 | AIDL戻り値 | 次状態 | 固定理由 |
-|---:|---|---|---|---|
-| 1 | sink が閉鎖済み | `INVALID_STATE` | sink 状態を維持 | `setDataSource()` は sink 側公開APIであり、sink 自身の閉鎖状態を最優先で判定する |
-| 2 | sink が実行時失敗状態 | `INVALID_STATE` | sink 状態を維持 | fail-closed 状態の filter は再配線しない |
-| 3 | sink が開始中 | `INVALID_STATE` | sink 状態を維持 | 開始中に入力元参照を変更しない |
-| 4 | source が `NULL` | 成功 | sink 状態を維持 | sink filter の入力元を demux input へ戻す。filter object ではないため自己参照・source閉鎖・別demux所属の判定対象にしない |
-| 5 | source と sink が同一 object | `INVALID_ARGUMENT` | sink 状態を維持 | 自己参照を禁止する |
-| 6 | source が閉鎖済みまたは実行時失敗状態 | `INVALID_STATE` | sink 状態を維持 | source の lifecycle 異常であり、引数形式不正として扱わない |
-| 7 | source が別 demux 所属 | `INVALID_ARGUMENT` | sink 状態を維持 | demux 境界をまたいだ接続を禁止する |
-| 8 | 上記に該当しない | 表1-D-3に従う | 表1-D-3に従う | 通常の種別互換判定を行う |
-
-
-open済みで未設定のfilterも有効な入力元・配送先に含め、公開するすべての組み合わせがVTSの`SetFilterLinkage`相当の要求を満たすことを前提とする。
-
-TSからTSへの`linkCaps`と、NULL以外を渡す`setDataSource()`の接続関係を維持する。open済みで未設定の`UNDEFINED`またはTSの端点は、VTS用の`TsRaw`として接続可能にする。規格上は有効だが未対応の具体的なsubtypeには`UNAVAILABLE`を返す。
-
-
-##### 表1-D-2. `setDataSource()` endpoint分類表
-
-| 分類名 | 含むもの | 通常FMQ payload | AV共有メモリ | 備考 |
-|---|---|---:|---:|---|
-| demux input | source が `NULL` の場合のAOSP契約上の標準入力元 | 対象sinkに従う | 対象sinkに従う | filter object ではない。sink filter を demux input へ戻す成功経路として扱う |
-| section フィルタ | section payload を出す FMQ対象フィルタ | あり | なし | source にはしない。SourceFilter 経由の section sink としても扱わない |
-| PES フィルタ | PES payload を出す FMQ対象フィルタ | あり | なし | source にはしない。SourceFilter 経由の PES sink としても扱わない |
-| TS生データフィルタ | TS raw payload を出す FMQ対象フィルタ | あり | なし | `SourceFilter` 経由で再投入できる唯一の source 種別。下流として成功させるのは TS生データフィルタと record フィルタだけである |
-| AV フィルタ | live audio / video フィルタ | なし | あり | source にはしない。SourceFilter 経由の AV sink としても扱わない |
-
-
-##### 表1-D-3. `setDataSource()` 通常組み合わせ行列
-
-この行列は、表1-D-1の優先1〜7を通過した場合だけ適用する。つまり、sink は非閉鎖かつ非開始、source は非閉鎖、同一 demux 所属、source と sink は別 object である。source が `NULL` の場合は AOSP契約上は優先4の対象であり、この行列には入らない。
-
-戻り値は、NULL・別所有者・別demuxのオブジェクトを`INVALID_ARGUMENT`、閉鎖済み・不正なライフサイクルを`INVALID_STATE`、規格上は有効だが未対応のsubtype・能力を`UNAVAILABLE`、TPID・tagの不一致を`INVALID_ARGUMENT`、資源不足を`UNAVAILABLE`、内部破損を`UNKNOWN_ERROR`とする。
-
-
-| source \ sink | section フィルタ | PES フィルタ | TS生データフィルタ | AV フィルタ | record フィルタ | ペイロードなしフィルタ |
-|---|---|---|---|---|---|---|
-| TS生データフィルタ | `UNAVAILABLE` | `UNAVAILABLE` | 成功 | `UNAVAILABLE` | 成功 | `INVALID_ARGUMENT` |
-| ペイロードなしフィルタ | `INVALID_ARGUMENT` | `INVALID_ARGUMENT` | `INVALID_ARGUMENT` | `INVALID_ARGUMENT` | `INVALID_ARGUMENT` | `INVALID_ARGUMENT` |
-
-
-##### 表1-D-4. `setDataSource()` 行列セルの副作用
-
-| 行列結果 | AIDL戻り値 | 次状態 | 副作用 | 診断 | 設計上の成立条件 |
-|---|---|---|---|---|---|
-| demux input 復帰 | 成功 | sink 状態を維持 | AOSP契約に従い既存 source 参照を解除し、sink の入力元を demux input に戻す | `set_data_source_demux_input` | source が `NULL` で、sink が非閉鎖かつ非開始である |
-| 成功 | 成功 | sink 状態を維持 | sink が source 参照を保持する。登録済み source がある場合は新しい source 参照で置換する | `set_data_source_success` | source / sink の組み合わせが表1-D-3の成功セルに一致する |
-
-
-### Filter data source の source lifecycle エラー
-
-
-### 表2. IDvr 状態表
-
-#### 表2-A. IDvr 状態コード
-
-| 状態コード | 状態名 | 意味 |
-|---|---|---|
-| D0R | 録画DVR未設定 | `openDvr(record)` 後、`configure()` 未完了 |
-| D0P | 再生DVR未設定 | `openDvr(playback)` 後、`configure()` 未完了 |
-| D1 | 録画設定済み | record DVR が configure 済み |
-| D2 | 録画開始済み | record DVR が start 済み |
-| D3 | 録画停止済み | record DVR が stop 済み |
-| D4 | 再生設定済み | playback DVR が configure 済み |
-| D5 | 再生開始済み | playback DVR が start 済み |
-| D6 | 再生停止済み | playback DVR が stop 済み |
-| D7 | 閉鎖済み | `close()` 後片付け完了済み |
-| D8 | 閉鎖済み・後片付け待ち | 論理閉鎖済みで、再試行可能な後片付けが残る |
-
-
-#### 表2-B. IDvr API別状態契約
-
-| 番号 | API / 入力 | 対象状態集合 | AIDL戻り値 | 次状態関数 | 副作用 | 診断 | 同値性根拠 / 設計上の成立条件 |
-|---:|---|---|---|---|---|---|---|
-| DVR-001 | `configure(record settings)` | D0R | 成功 | D1 | open時に作成済みのqueue identityを維持し、録画しきい値などの設定を確定 | `dvr_configure_success` | DVR種別とsettings種別が一致 |
-| DVR-002 | `configure(playback settings)` | D0P | 成功 | D4 | open時に作成済みのqueue identityを維持し、再生しきい値などの設定を確定 | `dvr_configure_success` | DVR種別とsettings種別が一致 |
-| DVR-003 | `configure()` 種別不一致 | D0R, D1, D3, D0P, D4, D6 | `INVALID_ARGUMENT` | 入力状態を維持 | なし | `dvr_configure_kind_mismatch` を増やす | 対象は record DVR への playback settings と playback DVR への record settings とする |
-| DVR-004 | `configure()` 同一DVR種別の非開始再設定 | D1, D3, D4, D6 | 成功 | record DVR は D1、playback DVR は D4 | queue identityとfilter接続を維持し、設定世代だけを更新 | `dvr_reconfigure_success` | 同一DVR種別の非開始再設定として同値 |
-| DVR-005 | `configure()` 開始中 | D2, D5 | `INVALID_STATE` | 入力状態を維持 | なし | `dvr_configure_while_started` を増やす | 開始中再設定を禁止 |
-| DVR-006 | `getQueueDesc()` | D0R, D0P, D1, D2, D3, D4, D5, D6 | 成功 | 入力状態を維持 | open時に確保したDVR FMQ記述子を返す | `dvr_queue_desc_success` | AOSP `IDvr.getQueueDesc()`は設定処理ではなく、open時に生成済みのキュー記述子を返す |
-
-open済みのrecord DVRとplayback DVRでは、`configure()`前も同じキュー記述子を返す。
-
-DVR FMQは`openDvr()`の`bufferSize`から作成し、`configure()`はAOSPの`DvrSettings`に含まれるしきい値などを設定する。`configure()`または再設定でFMQの識別子、容量、記述子を置換しない。設定失敗では設定世代、queue位置、接続済みfilterを変更しない。再設定成功でも接続関係を維持する。接続関係を変更できるのは`attachFilter()`、`detachFilter()`、filterまたはDVRの閉鎖だけとする。
-
-
-| 番号 | API / 入力 | 対象状態集合 | AIDL戻り値 | 次状態関数 | 副作用 | 診断 | 同値性根拠 / 設計上の成立条件 |
-|---:|---|---|---|---|---|---|---|
-| DVR-008 | `start()` record / record filter attach 済み | D1, D3 | 成功 | D2 | 録画作業スレッドを開始 | `dvr_start_success` | record DVR は attached record filter を入力源として録画を開始する |
-| DVR-008a | `start()` record / record filter 未attach | D1, D3 | 成功 | D2 | 録画作業スレッドを開始。filter未attach中は実データ配送なし | `dvr_start_without_record_filter` を増やす | record DVR は filter未attachでも start() 自体を成功させる。後続attachまたはstatus通知でデータ経路を接続する |
-| DVR-009 | `start()` playback | D4, D6 | 成功 | D5 | 再生入力受付を開始 | `dvr_start_success` | playback DVR の非開始状態は start に関して同値 |
-| DVR-010 | `start()` 開始済み | D2, D5 | 成功 | 入力状態を維持 | なし | `dvr_start_idempotent` を増やす | 重複 start は冪等成功 |
-| DVR-011 | `start()` 未設定 | D0R, D0P | `INVALID_STATE` | 入力状態を維持 | なし | `dvr_start_invalid_state` を増やす | 未設定DVRでは開始対象が存在しない |
-| DVR-012 | `stop()` record | D2 | 成功 | D3 | 録画作業スレッドを停止 | `dvr_stop_success` | record開始済みを停止済みにする |
-| DVR-013 | `stop()` playback | D5 | 成功 | D6 | 再生入力受付を停止 | `dvr_stop_success` | playback開始済みを停止済みにする |
-| DVR-014 | `stop()` 設定済み非開始 | D1, D3, D4, D6 | 成功 | 入力状態を維持 | なし | `dvr_stop_idempotent` を増やす | 非開始設定済み状態で stop は冪等成功 |
-| DVR-015 | `stop()` 未設定 | D0R, D0P | 成功 | 入力状態を維持 | なし | `dvr_stop_idempotent` を増やす | AOSP SDK 契約に合わせ、未開始 DVR stop は no-op 成功とする |
-
-record DVRの`flush()`は、開始中には`INVALID_STATE`、停止中または設定済みの非開始状態では成功とする。playback DVRの`flush()`は開始中も成功し、未読入力を既存キュー上で破棄する。recordとplaybackは別の規則として扱う。
-
-
-| 番号 | API / 入力 | 対象状態集合 | AIDL戻り値 | 次状態関数 | 副作用 | 診断 | 同値性根拠 / 設計上の成立条件 |
-|---:|---|---|---|---|---|---|---|
-| DVR-016 | `flush()` record・非開始 | D1, D3 | 成功 | 入力状態を維持 | record出力FMQの未消費データ、record assembler、record statsを破棄し、接続関係は維持する | `dvr_record_flush_success` | 設定済み・停止済みの録画DVRは同じ消去境界を持つ |
-| DVR-016a | `flush()` record・開始中 | D2 | `INVALID_STATE` | D2 | なし | `dvr_record_flush_while_started` を増やす | 録画生成中に出力キューを消去しない |
-| DVR-016b | `flush()` playback・非開始 | D4, D6 | 成功 | 入力状態を維持 | playback入力FMQの未読データ、packet assembler、playback statsを破棄し、接続関係は維持する | `dvr_playback_flush_success` | 設定済み・停止済みの再生DVRは同じ消去境界を持つ |
-| DVR-016c | `flush()` playback・開始中 | D5 | 成功 | D5 | 新しい読取確定を止め、受付済みtokenを完了または取消した後、playback入力FMQの未読データ、packet assembler、playback statsを破棄する | `dvr_playback_flush_success` | 開始状態を維持したまま、確定済み読取との競合をなくして消去する |
-| DVR-017 | `flush()` 未設定 | D0R, D0P | `INVALID_STATE` | 入力状態を維持 | なし | `dvr_flush_invalid_state` を増やす | 未設定DVRでは破棄対象が存在しない |
-
-DVRの読み書きはSDK・JNIの補助処理として扱う。playbackの読み取りは入力元からplayback FMQへの転送、recordの書き込みはrecord FMQから出力先への転送とし、いずれもバイト数で定義する。
-
-
-| 番号 | API / 入力 | 対象状態集合 | AIDL戻り値 | 次状態関数 | 副作用 | 診断 | 同値性根拠 / 設計上の成立条件 |
-|---:|---|---|---|---|---|---|---|
-| DVR-024 | `attachFilter()` valid filter | D0R, D1, D2, D3 | 成功 | 入力状態を維持 | 未登録なら登録する | `dvr_attach_filter_success` | record DVRは設定前からfilter接続関係を保持できる |
-| DVR-025 | `attachFilter()` 同一filter重複 | D0R, D1, D2, D3 | 成功 | 入力状態を維持 | 登録数を増やさない | `dvr_attach_filter_idempotent` を増やす | 重複attachは冪等成功 |
-
-open済みのrecord DVRでは、`configure()`前もfilterの接続と切断を許可する。
-
-
-| 番号 | API / 入力 | 対象状態集合 | AIDL戻り値 | 次状態関数 | 副作用 | 診断 | 同値性根拠 / 設計上の成立条件 |
-|---:|---|---|---|---|---|---|---|
-| DVR-027 | `attachFilter()` playback DVR | D0P, D4, D5, D6 | `INVALID_ARGUMENT` | 入力状態を維持 | なし | `dvr_attach_wrong_dvr_kind` を増やす | `attachFilter()`は録画DVRだけの操作であり、DVR種別不一致として扱う |
-| DVR-028 | `attachFilter()` 閉鎖済みfilter | D0R, D1, D2, D3 | `INVALID_STATE` | 入力状態を維持 | なし | `dvr_attach_closed_filter` を増やす | 同一サービス内で寿命を終えたobjectはライフサイクル不整合として扱う |
-| DVR-028a | `attachFilter()` 別所有者、別demux、録画非対応filter | D0R, D1, D2, D3 | `INVALID_ARGUMENT` | 入力状態を維持 | なし | `dvr_attach_invalid_filter` を増やす | owner、demux、filter種別の不一致を閉鎖状態と混同しない |
-| DVR-029 | `detachFilter()` 登録済みfilter | D0R, D1, D2, D3 | 成功 | 入力状態を維持 | 登録を解除する | `dvr_detach_filter_success` | record DVRだけfilter detachを受ける |
-| DVR-030 | `detachFilter()` 未登録filter | D0R, D1, D2, D3 | 成功 | 入力状態を維持 | なし | `dvr_detach_filter_idempotent` を増やす | 未登録detachは状態を変えず成功する |
-| DVR-032 | `detachFilter()` playback DVR | D0P, D4, D5, D6 | `INVALID_ARGUMENT` | 入力状態を維持 | なし | `dvr_detach_wrong_dvr_kind` を増やす | `detachFilter()`は録画DVRだけの操作であり、DVR種別不一致として扱う |
-| DVR-033 | `setStatusCheckIntervalHint()` 正常入力 | D0R, D0P, D1, D2, D3, D4, D5, D6 | 成功 | 入力状態を維持 | hint 値だけ保存 | `dvr_status_hint_set` | 資源寿命を変えない |
-
-長さ、件数、位置の入力が負値の場合は`INVALID_ARGUMENT`を返す。0はAPIごとに定めた意味に限定し、バッファー長0と読み書き長0には`INVALID_ARGUMENT`を返す。位置0は有効とし、状態通知間隔0は既定値への復帰とする。長さと位置の加算が上限を超える場合、`usize`へ変換できない場合は`INVALID_ARGUMENT`、割り当て不能時は`OUT_OF_MEMORY`を返す。
-
-
-| 番号 | API / 入力 | 対象状態集合 | AIDL戻り値 | 次状態関数 | 副作用 | 診断 | 同値性根拠 / 設計上の成立条件 |
-|---:|---|---|---|---|---|---|---|
-| DVR-035 | `close()` | 全非閉鎖状態 | 表5に従う | 表5に従う | 後片付け開始 | 表5に従う | close の戻り値と後片付け完了判定は表5を正とする |
-| DVR-036 | 閉鎖後の公開API | D7, D8 | `INVALID_STATE` | 入力状態を維持 | なし | `dvr_closed_access` を増やす | 閉鎖後は `close()` 以外の公開APIを成功させない |
-
-### 表3. フィルタ種別別データ経路表
-
-configure 非受理後は IFilter 状態が F0 のままである。その後に `getQueueDesc()` が呼ばれた場合は open時フィルタ種別の通常FMQ有無に従い、`start()`、`flush()` 等が呼ばれた場合は表1の F0 行に従う。
-
-| 番号 | フィルタ種別 / 要求 | 本製品での扱い | capability / VTS profile | configure時 / 専用API戻り値 | 後続公開APIの扱い | ペイロード配送 | 固定根拠 |
-|---:|---|---|---|---|---|---|---|
-| 1 | section | 受理 | 宣言する | 成功 | 表1のFMQ対象状態に従う | 通常FMQ | PSI/SI sectionの取得に必要 |
-| 2 | PES | 受理 | 宣言する | 成功 | 表1のFMQ対象状態に従う | 通常FMQ | 字幕、音声補助、検査用途に必要 |
-| 3 | TS生データ | 受理 | 宣言する | 成功 | 表1のFMQ対象状態に従う | 通常FMQ | 試験用の生TS取得に必要 |
-| 4 | パススルーではないライブAV音声・映像 | 受理 | AVフィルターと2つの`MediaEvent`方式を宣言する。通常FMQからのAVペイロード読み出しをVTS構成に入れない | 成功 | 表1のAV状態に従う | 共有領域+`dataId`、またはイベント固有fd+`dataId` | 本製品のライブAV正式経路 |
-| 5 | AVパススルー | 恒久非対応 | 宣言しない | `UNAVAILABLE` | AVの未設定状態を維持。後続APIは表1のA8..A11に従う | なし | 本製品では対応しない |
-| 6 | PCRおよびAV同期用情報 | 内部状態として受理 | ペイロードqueueとして宣言しない | 成功 | 表1のペイロードなし状態に従う | ペイロードなし。AV同期の内部状態へ反映 | PCRを通常FMQへ出さない |
-| 7 | MMTP、TLV、ALP | Tuner HALの対応能力およびVTS構成の対象外 | 宣言しない | `UNAVAILABLE` | 状態は未設定のまま。後続APIはF0に従う | なし | 製品全体の入力方式は`開発規則.md`を正とし、本書ではTuner HALの返却値だけを定める |
-| 8 | IP CID | Tuner HALの対応能力およびVTS構成の対象外 | 宣言しない | `configureIpCid()`は`UNAVAILABLE` | 入力状態を維持 | なし | IPフィルターをTuner HALの視聴経路に含めない |
-
-
-#### raw section / raw PES event 生成契約
-
-
-Section/PES処理は、外形の抽出、設定されたCRC検査、型付きevent生成に必要な意味検証を独立した段階として扱う。外形の抽出では、TS、PES、sectionの宣言長を越えて読み取らず、上限内の完全なデータ塊であることを確認する。raw sectionでは、`isCheckCrc=true`のCRC検査だけを配送条件へ追加し、予約ビットや表固有構文の検証結果を生バイト列の配送条件にしない。raw以外では、型付きメタデータを安全に生成できる構文検証の成功を必要とする。外形が不完全、長さとして成立しない、設定上限を超える、または境界を特定できない場合は配送しない。`tableId`、`version`、`streamId`、PTS/DTS、`dataLength`を推測で生成してはならない。rawバイト列の配送、到着通知、型付きeventの配送、破棄理由は、別々のカウンターと受け入れ試験で確認する。
-
-| filter出力 | `isCheckCrc` | 入力 | FMQ配送 | status通知 | 型付きevent | 診断 |
-|---|---:|---|---|---|---|---|
-| raw section | 任意 | 外形不完全、宣言長不成立、境界不明 | しない | データ到着としては通知しない | 生成しない | 外形破棄理由を記録 |
-| raw section | true | 外形完全、CRC一致 | 元のsection全体を配送 | `DATA_READY`またはEventFlag起床 | 生成しない | 正常配送を記録 |
-| raw section | true | 外形完全、CRC不一致またはCRC検査に必要な末尾不足 | しない | データ到着としては通知しない | 生成しない | CRC破棄を記録し、overflowへ写像しない |
-| raw section | false | 外形完全。CRC、予約ビット、表固有構文のいずれかが不正 | 元のsection全体を配送 | `DATA_READY`またはEventFlag起床 | 生成しない | 不正内容とraw配送を併記 |
-| non-raw section | true | 外形完全、CRC不一致 | しない | データ到着としては通知しない | 生成しない | CRC破棄を記録し、overflowへ写像しない |
-| non-raw section | false | 外形完全、CRC不一致、型付きevent生成に必要な構文は正常 | 配送する | event配送規則に従う | 検証済みメタデータだけで生成 | CRC未検査設定であることを記録してよい |
-| non-raw section | 任意 | 外形完全だが予約ビットまたは型付きevent生成に必要な構文が不正 | しない | データ到着としては通知しない | 生成しない | 構文破棄理由を記録 |
-
-
-### 生section・生PESイベントのメタデータ
-
-
-### 表4. AV共有メモリ資源寿命表
-
-
-#### 表4-A. AV共有メモリ容量固定表
-
-AV共有メモリの slot size は filter `bufferSize` から算出してはならない。`bufferSize` は通常FMQ対象フィルタの queue 容量であり、AV共有メモリの単位領域サイズとは別定数にする。
-
-| 項目 | 固定内容 |
-|---|---|
-| `bufferSize` との関係 | filter `bufferSize` を AV slot size に流用しない |
-| MediaEvent 発行条件 | payload が slot に収まり、共有ハンドル公開済み、client release未済みで、有効な `dataId` を発行できる場合だけ発行する |
-| VTS/profile 条件 | AVペイロードの通常FMQ読み出しを前提にしない |
-
-#### 表4-B. AV共有メモリ資源寿命表
-
-| 番号 | 操作 / 事象 | 対象状態集合 | AIDL戻り値 | shared backing | 公開済みハンドル | 使用中領域 | `dataId` | 一過性状態 | 累積カウンタ | 新規配送可否 | 次状態関数 | 設計上の成立条件 | 同値性根拠 |
-|---:|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| AVM-001 | `configure(AV)` | A8, A9, A10, A11 | 成功 | 入力状態を維持 | 入力状態を維持 | なし | 未発行 | 補助種別を維持し、routing種別をopen subtypeから導出 | `av_generation`を進める | 不可 | 設定状態軸だけ設定済みに変更 | 設定前に取得可能な共有ハンドルを無効化せず、TsAudio/TsVideoは補助種別未設定でもrouting可能 | 設定状態以外の軸を維持する |
-| AVM-005 | `getAvSharedHandle()` 再取得 | A2, A3, A6, A7, A10, A11 | 成功 | 維持 | 公開済み | 維持 | 維持 | client release済みなら未済みに戻す | `av_shared_handle_reuse` を増やす | 開始済み状態だけ可 | 入力状態を維持 | 再取得で既存資源を維持し、client release 後の配送を再開可能にすること | 再取得は配送再開の合図として扱う |
-| AVM-008 | AV payload 到着 | A6, A7 + client release未済み | 公開APIなし | 維持 | 公開済み | 割当 | 発行 | MediaEvent 生成 | `av_delivered` を増やす | 可 | 入力状態を維持 | `dataId` と共有メモリ領域が対応すること | ハンドル公開済み開始済みかつ client release未済み状態は同値 |
-| AVM-008B | AV payload到着 / 2方式とも割当不能 | A4, A5, A6, A7 | 公開APIなし | 維持 | 入力状態に従う | 作らない | 発行しない | drop・overflow状態更新 | `av_allocation_drop`を増やす | 不可 | 入力状態を維持 | 使用中領域を追い出さず、2方式とも安全に割り当てられないイベントだけを破棄する | 実体のない`MediaEvent`を公開しない |
-| AVM-008C | AV payload到着 / 共有方式を使用不能 | A4, A5, A6, A7 | 公開APIなし | 入力状態に従う | 入力状態に従う | イベント固有領域を割当 | 発行 | イベント固有fdを持つ`MediaEvent`生成 | `av_event_local_delivered`を増やす | 可 | 入力状態を維持 | 正確なpayload長の領域と正の`dataId`を同じ台帳へ登録してから公開する | 共有ハンドル未取得、使用権解放済み、共有領域不足、過大AUの正式な代替方式 |
-| AVM-010 | `releaseAvHandle(active dataId)` | A2, A3, A6, A7, A10, A11 | 成功 | 維持 | shared/event-local modeに従う | 指定領域だけ破棄 | 指定`dataId`をKnownReleased化 | なし | `av_data_id_release` を増やす | logical close後もrelease ledger経由で可 | 入力状態を維持 | 指定allocationだけが一度解放されること | modeとfilter stateを直交させる |
-| AVM-011 | `releaseAvHandle(known released dataId)` | A2, A3, A6, A7, A10, A11 | 成功扱いの無処理 | 維持 | modeに従う | 維持 | KnownReleasedを維持 | なし | `av_data_id_stale_release` を増やす | 入力状態に従う | 入力状態を維持 | 既知stale releaseが状態を壊さないこと | AOSP framework/JNIの遅延finalizeを吸収 |
-| AVM-012 | `flush()` | A0, A1, A4, A5, A8, A9 | 成功 | 未生成 | 未公開 | なし | 未発行 | 消去 | 累積値維持 | 入力状態に従う | 入力状態を維持 | ハンドル未取得で flush が失敗しないこと | ハンドル未公開AV状態は同値 |
-| AVM-014 | `stop()` | A4, A5, A6, A7 | 成功 | 維持 | 入力状態のハンドル軸に従う | 維持 | 維持 | なし | `av_stop` を増やす | 不可 | 実行状態軸だけ停止済みに変更。他軸は維持 | 停止しても既存`dataId`は release / flush / close まで維持 | 戻り値、診断、状態軸変換規則、資源寿命が同一 |
-| AVM-015 | `close()` | 全AV状態 | 表5に従う | 新規配送用backingを閉じる | 新規取得不可 | 未配送領域を破棄し、配送済み未解放領域を`ReleaseOnly`へ移す | 未配送IDを無効化し、配送済みIDの解放台帳を維持 | 消去 | close診断へ反映 | 不可 | 表5に従う | 論理閉鎖後もAOSP/JNIから遅延する`releaseAvHandle()`を受理し、解放後使用を防ぐ | 新規配送の閉鎖と配送済み領域の寿命を分離する |
-
-
-### AV shared handle 入出力契約
-
-`getAvSharedHandle()` は、AV shared memory を表す fd付き `NativeHandle` と共有メモリ総サイズを返す。client は、共有ハンドル使用終了時に、`getAvSharedHandle()` で受け取った fd付き `NativeHandle` を `releaseAvHandle(avMemory, 0)` に渡してよい。
-
-`releaseAvHandle()` の正規入力は次に固定する。
-
-| 入力 | 結果 | 意味 |
-|---|---|---|
-| fd付き handle + `avDataId == 0` | 成功 | client側 shared AV handle 使用終了通知 |
-| empty handle + active `avDataId > 0` | 成功 | MediaEvent slot release |
-| empty handle + known released `avDataId > 0` | 成功扱いの無処理 | 遅延/重複finalize吸収。never-issuedは`INVALID_ARGUMENT` |
-| empty handle + unknown `avDataId > 0` | `INVALID_ARGUMENT` | 不正dataId |
-| イベント固有fd付きhandle + 一致するactive `avDataId > 0` | 成功 | イベント固有領域とハンドル使用権を1回解放 |
-| 共有fd付きhandle、別領域fd、または不一致のfd付きhandle + `avDataId > 0` | `INVALID_ARGUMENT` | 別の割り当てを解放しない |
-| 任意handle + `avDataId < 0` | `INVALID_ARGUMENT` | 不正dataId |
-
-
-`releaseAvHandle()`判定表では、呼出先IFilter、台帳上の所有者、世代、転送方式、`avDataId`、使用権の状態を先に検証する。ファイル記述子番号を同一性の根拠にせず、ファイル記述子のメタデータは採用した記憶領域実装で保証できる補助検証に限定する。未解放で配送済みと確認できるトークンの世代だけが不一致の場合は、`INVALID_STATE`ではなく`ReleaseOnly`として扱う。台帳上の同一性情報が一致しない場合、または別所有者のハンドルである場合は`UnknownOrForeign`と分類して`INVALID_ARGUMENT`を返す。台帳の障害によって同一性情報を分類できない場合は`UNKNOWN_ERROR`を返し、安全を確認できない記憶領域を解放せず、影響を受けた台帳を隔離する。
-
-
-fd付きhandle + `avDataId == 0` の成功は、shared backing、公開済みhandle、既存slot、active `avDataId` を破棄することを意味しない。以後のAV payload配送を継続するには、client release済み状態を解除するために `getAvSharedHandle()` 再取得を必要としてよい。
-
-
-### 表5. `close()` / 後片付け完了状態表
-
-| 番号 | 対象 | 呼び出し元 / 事象 | 後片付け手順 | 手順分類 | 閉鎖ゲート | 後片付け完了フラグ | 公開API戻り値 | Drop挙動 | 再試行条件 | 後続公開API | 診断保持 | 設計上の成立条件 | 固定根拠 |
-|---:|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| CL-001 | Filter / DVR | 公開`close()`開始 | 公開API遮断開始 | 公開API遮断 | true | false | 後続手順結果で決定 | 該当なし | 後片付け未完の間は再試行対象 | `close()`以外は`INVALID_STATE` | close開始 | `close()`開始直後から他APIが成功しないこと | 閉鎖ゲートと後片付け完了を分離 |
-
-`Drop`または所有者消滅では、待機を伴わない後片付けを開始し、待機を伴う`join`は回収機構へ委ねる。
-
-後片付け権限は`CloseCleanupAuthority`の一回限りの所有権で表す。公開`close()`が`begin_close`に成功した時点で同権限を取得し、Dropと所有者消滅処理は同じ権限を取得できない限り新しい後片付けを開始しない。公開`close()`が完了前に戻る場合は、未完の依存資源と権限を`CleanupPending`または内部回収機構へ移管する。Dropは権限が未取得の漏えいだけを終端化し、公開`close()`と同じ手順を並行実行しない。
-
-
-| 番号 | 対象 | 呼び出し元 / 事象 | 後片付け手順 | 手順分類 | 閉鎖ゲート | 後片付け完了フラグ | 公開API戻り値 | Drop挙動 | 再試行条件 | 後続公開API | 診断保持 | 設計上の成立条件 | 固定根拠 |
-|---:|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| CL-005 | Filter / DVR | 公開`close()` | 未生成資源の解放 | 安全な無処理成功 | true | 既存値を維持 | 成功扱い | 該当なし | 不要 | `close()`以外は`INVALID_STATE` | 安全な無処理成功手順 | 未生成資源の解放が`close()`失敗にならないこと | lazy allocation と整合 |
-| CL-007 | Filter / DVR | 公開`close()`全手順成功 | 完了確定 | 完了確定 | true | true | 成功 | Dropで何もしない | 不要 | `close()`以外は`INVALID_STATE`。二重`close()`は CL-009 に従う | close成功 | cleanup_complete が true になること | 完全閉鎖 |
-| CL-008 | Filter / DVR | 公開`close()`致命的手順失敗 | 未完確定 | 異常時閉鎖 | true | false | `UNKNOWN_ERROR` | Dropでは通常後片付けを再試行しない。DropLeakTxnへ未完診断を記録 | 失敗手順が残る間 | `close()`以外は`INVALID_STATE`。二重`close()`は CL-010 に従う | `failed_step`, `error_kind`, `remaining_steps` | 失敗が成功扱いにならないこと | fail-closed |
-| CL-010 | Filter / DVR | 二重`close()` | 後片付け未完 | 再試行 | true | false | 再試行結果に従う | Dropでは通常後片付けを再試行しない。DropLeakTxnへ未完診断を記録 | 失敗手順が残る間 | `close()`以外は`INVALID_STATE` | `close_retry` | 未完cleanupを成功扱いで隠さないこと | cleanup_complete を正にする |
-
-`CleanupPending`では、すべてのインターフェースの`close()`が未完了の後片付けだけを再試行する。`CleanupComplete`では、FrontendとLNBの`close()`は状態を変えず成功し、DVRとFilterの`close()`は`INVALID_STATE`を返す。Filterの使用中AV台帳は、`close()`の再試行または再度の`close()`で解放済みとして扱わない。
-
-
-#### 表5-A. close開始遮断 実装所有表
-
-
-| Resource | close開始時の状態 | close中に許可する操作 | close中に拒否する操作 | cleanup失敗時状態 | 再試行条件 |
-|---|---|---|---|---|---|
-| Frontend | `closing=true`, `cleanup_complete=false` | `close()` の再試行、所有者喪失 cleanup | `tune/scan/stopTune/stopScan/setCallback/linkLnb` | `cleanup_failed` または failed | `close()` または 所有者喪失 経路で再試行 |
-| Descrambler | `closing=true`, `cleanup_complete=false` | `close()` の再試行 | `setDemuxSource/setKeyToken/addPid/removePid` | `cleanup_failed` | `close()` 再試行可 |
-
-
-### 表6. FMQ / EventFlag / 接続層失敗写像表
-
-型付きエラーは次のようにAIDLの結果へ写像する。`InvalidInput`、`Range`、`ForeignObject` は `INVALID_ARGUMENT`、`WrongLifecycle`、`Closed`、`AlreadyActive` は `INVALID_STATE`、`MissingResource`、`Busy`、`Capacity`、`UnsupportedValidInput` は `UNAVAILABLE`、`DependencyNotInitialized` は `NOT_INITIALIZED`、`AllocatorFailure` は `OUT_OF_MEMORY`、`Io`、`Permission`、`Corruption`、`InvariantViolation` は `UNKNOWN_ERROR` とする。ただし、各インターフェースのメソッド契約に個別の定めがある場合は、その定めを優先する。特に `IFrontend.close()` と `ILnb.close()` の重複呼び出しは成功とし、DVRとFilterの重複 `close()` は `INVALID_STATE` とする。
-
-
-| 番号 | 発生箇所 | 発生文脈 | 失敗条件 | 失敗分類 | 対象 | AIDL戻り値 | 作業スレッド挙動 | 一過性状態 | 累積カウンタ | あふれ通知 | 異常時閉鎖条件 | 再試行可否 | ペイロード扱い | 設計上の成立条件 | 固定根拠 |
-|---:|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| FMQ-002 | 記述子公開 | 公開API | ファイル記述子複製失敗 | 記述子生成失敗 | Filter / DVR | `UNKNOWN_ERROR` | 該当なし | なし | `descriptor_fd_error` を増やす | なし | なし | 可 | ペイロード未公開 | ファイル記述子複製失敗後に再取得を試せること | 一時失敗扱い |
-
-オブジェクトのライフサイクルでは、`public_closed` と `runtime_failed` を独立した状態軸とし、`cleanup_pending` を3つ目の内部状態軸とする。`public_closed=false` かつ `runtime_failed=false` の通常状態では、インターフェースの各メソッドを受け付ける。`runtime_failed=true` では診断、スナップショット取得、`close()`だけを許可し、状態変更またはデータ処理を行うメソッドには、状態を変えず`UNKNOWN_ERROR`を返す。`public_closed=true`では、インターフェース固有の再`close()`契約だけを許可し、その他のメソッドには`INVALID_STATE`を返す。ただし、`IFilter.releaseAvHandle()`はクライアントが既に保持するAV領域の解放台帳操作であり、通常の公開メソッド判定から除外して表1-C-AVHを適用する。両方が真の場合、同解放操作以外では`public_closed`を優先し、`close()`はインターフェース固有の契約に従う。公開面を閉じても後片付け完了を意味するものではなく、`cleanup_pending`の処理はサービスの後片付け管理機構で継続してよい。
-
-
-| 番号 | 発生箇所 | 発生文脈 | 失敗条件 | 失敗分類 | 対象 | AIDL戻り値 | 作業スレッド挙動 | 一過性状態 | 累積カウンタ | あふれ通知 | 異常時閉鎖条件 | 再試行可否 | ペイロード扱い | 設計上の成立条件 | 固定根拠 |
-|---:|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| FMQ-003A | FMQ生成 | 内部初期化 | AidlMessageQueue が無効、EventFlag word取得失敗、EventFlag生成失敗 | FMQ生成失敗 | Filter / DVR | `UNKNOWN_ERROR` | 該当なし | 作成失敗 | `fmq_create_error` を増やす | なし | 公開前なので対象なし | 再試行可 | 記述子未公開 | 無効queueをRust側に返さないこと | native薄層は create 成功条件として `isValid()` と EventFlag生成成功を確認する |
-
-queueへの確定後に`EventFlag`による起床へ失敗した場合は、確定後診断へ記録する。確定済みデータはqueueに保持し、巻き戻さない。生成側を停止し、`flush()`および`close()`ではデータを破棄する。再起床の所有者は当該queue runtimeとし、クライアントの次回読み書き通知、`start()`、出力先の開始、または同runtimeの明示的な再開事象で、保留データがある場合に1回だけ再起床を試す。成功後は排出処理を再開し、失敗中に追加のデータを取り込まない。確定済みの公開操作の結果は変更しない。
-
-`QueueFull`と`Backpressure`は破損ではないものとして扱う。公開メソッドでは`UNAVAILABLE`を返し、実行中のワーカーでは状態と計数だけを更新する。`DescriptorMismatch`、`PointerCorruption`、`ImpossibleRegion`は`UNKNOWN_ERROR`とし、該当するqueueだけを隔離する。サービス全体は閉鎖しない。
-
-
-| 番号 | 発生箇所 | 発生文脈 | 失敗条件 | 失敗分類 | 対象 | AIDL戻り値 | 作業スレッド挙動 | 一過性状態 | 累積カウンタ | あふれ通知 | 異常時閉鎖条件 | 再試行可否 | ペイロード扱い | 設計上の成立条件 | 固定根拠 |
-|---:|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| FMQ-011 | EventFlag wait timeout | 作業スレッド | 待機timeout | 通常待機timeout | Filter / DVR | 公開APIなし | 継続 | なし | 増やさない | なし | なし | 可 | なし | timeoutが異常診断を汚さないこと | 採用済み方針 |
-
-待機結果は、時間切れ、再試行可能な割り込み、回復不能な破損として型で区別する。
-
-容量不足、上限超過、割り当て失敗、破損は別の種別とし、失敗の影響範囲も分ける。
-
-
-| 番号 | 発生箇所 | 発生文脈 | 失敗条件 | 失敗分類 | 対象 | AIDL戻り値 | 作業スレッド挙動 | 一過性状態 | 累積カウンタ | あふれ通知 | 異常時閉鎖条件 | 再試行可否 | ペイロード扱い | 設計上の成立条件 | 固定根拠 |
-|---:|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| FMQ-014 | AV共有メモリ破損 | 作業スレッド | backing破損、offset範囲外、領域管理不整合 | 致命的AV資源破損 | live AV | 公開APIなし | 作業スレッド致命停止 | 致命的状態 | `av_shared_memory_internal_error` を増やす | なし | 1回で異常時閉鎖済み | 不可 | 対象AVペイロード破棄 | 不正offsetをMediaEventで出さないこと | 安全性優先 |
-
-
-共通トランザクションでは、失敗し得る準備処理を、操作固有の確定点より前に完了する。再選局だけは明示的な例外とし、2つのドメイン確定点を持つ。確定Aでは、失敗し得る新しいバックエンド要求より前に、旧ストリーム状態を終端させる。確定Bでは、バックエンド要求の成功後に新世代を有効化する。この2つの確定点を1つにまとめたり、順序を入れ替えたりしてはならない。また、選局以外の操作に選局境界の初期化規則を適用してはならない。
-
-
-#### checked FMQ shim 入力契約
-
-
-#### 表6-A. FMQ / EventFlag commit 細分表
-
-表6の失敗写像を実装へ落とすため、FMQ delivery の commit 点を次で固定する。記述子公開、payload write、clear、playback read は同じ成功条件で扱わない。
-
-| 処理 | commit前 | commit点 | commit後失敗 | 公開API戻り値 / worker挙動 | 内部状態 |
-|---|---|---|---|---|---|
-| FMQ descriptor export | grantor / fd / ints / flags の検証 | descriptor を AIDL へ返す直前 | fd duplicate 失敗、grantor配置不整合 | transient export failure は Err 後も再取得可。structural failure は runtime failed | 表6 FMQ-001〜003 に従う |
-| payload write | queue世代、空き領域、線形生産許可、payload長を検証し、queue位置を変更しない | payload全体の書き込み位置をFMQへ確定する | EventFlag起床失敗 | payloadは再書き込みせずqueueへ保持する。確定済みの公開結果は維持し、workerは追加取込みを止めて、当該queue runtimeが定めた再起床事象だけで起床を再試行する | write位置とpayloadは確定済み。保留起床、診断、overflow状態だけを更新する |
-| clear / `flush()` | 新規transactionを遮断し、受付済みtokenを完了または取消する。queue位置、内容、世代はまだ変更しない | 未消費領域の破棄と`queue_epoch`または解析状態世代の更新を同一排他区間で確定する | 診断記録または再起床失敗 | commit前失敗は状態不変で再試行可。commit後は消去成功を維持し、旧世代を復元しない | queue identityとdescriptorは維持し、内容、対象assembler、statsをAPI別規則に従って更新する |
-| playback read | `beginRead()`で得た範囲を検証し、所有権付き処理中領域を準備する。read位置は未確定 | 対象バイト列を処理中領域へ1回だけ移し、同じ範囲の`commitRead()`を成功させる | backend注入の一部受理、再試行可能失敗、致命的失敗 | commit後はFMQから再読せず処理中領域からだけ再試行する。停止・閉鎖・致命的失敗では残存バイト数と理由を記録して終端する | `FMQ_CONSUMED`と`DEMUX_INJECTED`を別状態で持ち、投入カーソルを受理済みバイト数だけ進める |
-
-`CleanupPending` は、本書のワーカー終了契約に従い、所有者内に閉じた依存資源別の事象駆動状態とする。固定ミリ秒の実行予定は設けない。開始元の操作は、その時点で実行可能な後片付け手順をすべて1回ずつ試す。完了した依存資源の使用枠は返却する。再試行可能だが未完了で、実行中ではない依存資源は `CleanupPending` に残し、再 `close()`、所有者消滅の監視、依存資源の完了通知、サービス初期化のいずれかでだけ再開する。再開要求は所有者、世代、依存資源の組ごとにまとめる。実行中のワーカーは所有者世代を無効化して変更を遮断し、有界の `ReaperSupervisor` へ一度だけ移して直ちに隔離する。公開APIの呼び出し元は `join` を待たない。実際の終了と残りの後片付けが完了するまで使用枠を返却しない。移管失敗、遮断失敗、または全体状態への変更を遮断できないことを示す型付き証跡がある場合は、サービス全体に影響する障害として扱う。所有者内に完全に隔離できた残存処理で、無関係な `ITuner` の能力を停止してはならない。公開結果では主処理の結果を優先し、後片付けの型付き集約診断を別に保持する。
-
-FMQのバイト列を所有権付きの一時領域へ複製した後、`commitRead()`を行って`FMQ_CONSUMED`へ遷移する。バックエンドへの投入に成功した場合は`DEMUX_INJECTED`へ遷移する。投入失敗時は一時領域から再試行し、停止または閉鎖時に残存するデータは明示的な損失診断へ記録する。
-
-`EINTR` は、停止または取り消しが要求されておらず、当該操作の既存期限も超えていない間だけ再試行する。再試行回数を別の設定値として設けない。取り消し時は型付きの `Cancelled`、期限超過時は `Timeout` を返す。待機中の致命的エラーは `errno` を診断に保持し、メソッド別の戻り値表に従って変換する。
-
-
-checked FMQ shim は、`queue == null` または `out_written == null` を `INVALID_ARGUMENT` とする。`size == 0` は `data == null` でも成功扱いの無処理 とする。`size > 0 && data == null` は `INVALID_ARGUMENT` とする。この契約は FMQ 実体の read/write 契約より前に適用する。
-
-### 表7. 操作別 確定点 / 巻き戻し / 閉鎖側失敗表
-
-本表は、複数の所有者または外部副作用をまたぐ操作について、個別状態表に重複記載しない確定点の所在を固定する索引である。単一object内で完結する戻り値と状態遷移は表1、表2、表4、表5、表D-1を正とし、本表へ複製しない。成功を返すには、索引先で定めた確定点までの変更が全て完了していなければならない。確定点前の失敗、巻き戻し不能時の対象、閉鎖側失敗は索引先の規則に従う。
-
-| 番号 | 操作 / 事象 | 変更順序 | 成功の確定点 | 確定点前の失敗 | 巻き戻し不能時の対象 | 公開戻り値 / 作業スレッド終了 | 設計上の成立条件 |
-|---:|---|---|---|---|---|---|---|
-| AT-001 | `IFrontend.tune()` / 再選局 | 表19のvalidate・prepare・確定A・backend要求・確定B | 新規要求受理時は確定B。同一安定設定の無処理成功は表19の判定完了時 | 確定A前は旧選局維持。確定A後は旧選局を復元しない | frontend、旧世代、失敗したdemux境界 | 表19の失敗分類に従う | 2確定点を1つへ圧縮しない |
-| AT-002 | `IFrontend.stopTune()` | 対象確定・旧世代遮断・backend停止・demux境界終端 | backend停止と全対象demux境界の終端が確定した時点 | 旧世代遮断前は状態不変。遮断後は旧選局を復元しない | frontendと失敗したdemux | 「`IFrontend.stopTune()`の失敗時状態」に従う | 停止成功後に旧配送が残らない |
-| AT-003 | `IDemux.setFrontendDataSource()` | 入力検証・新関連の準備・旧関連の終端・新関連の確定 | frontend関連とdemux入力世代を同時に確定した時点 | 確定前は旧関連を維持。外部適用後の不確定は当該demuxを隔離 | demuxとその入力境界 | 表SB-1とstream boundary契約に従う | 片方向関連を公開しない |
-| AT-004 | Filter / DVR configure・start・flush | 表1または表2の状態検証後、表6-Aと内部キュープロトコルを適用 | API別状態とqueue世代または実行状態を同一commitで確定した時点 | 表6-Aに従い、commit前は状態不変 | 当該FilterまたはDVR | 表1、表2、表6-Aに従う | queue identityを設定更新と混同しない |
-| AT-005 | Filter / DVR / Demux close | 表5の公開遮断・実行権限無効化・登録解除・資源回収 | 表5のcleanup完了条件を満たした時点 | 未完手順と一回性権限を`CleanupPending`または回収機構へ移管 | 当該objectと未完依存資源 | 表5に従う | public closeと物理解放を分離する |
-| AT-006 | callback登録 | callback artifact準備・runtime登録・domain確定 | 三者の関連が確定した時点 | 準備済みartifactとruntime登録を逆順で戻す | callback registryと所有object | 0-S-3とcallback ownership契約に従う | 登録の片側だけを残さない |
-| AT-007 | 複数demux stream boundary | 対象一覧固定後、demuxごとに独立した境界transactionを実行 | 各demuxのcommitを個別に記録し、全対象を処理した時点 | 未処理対象は変更せず、commit済み対象を巻き戻さない | 変更結果を確定できないdemuxだけ | 表SB-1に従う | 一部成功を全体rollbackで隠さない |
-| AT-008 | `IFrontend.scan()` / `stopScan()` | 入力検証・worker枠とcallback経路の準備・旧scan世代の終端・新世代の確定 | backend受理、新世代、worker、callback許可を一括で公開した時点 | 旧世代終端前は状態不変。終端後は旧scanを復元しない | frontend、scan worker、callback経路 | scan終了理由とcallback配送結果の規則に従う | scan終了理由とEND通知結果を分離する |
-| AT-009 | `IFilter.setDataSource()` | 表1-Dの検証・新しい関連の準備・旧関連の終端・source境界と新関連の確定 | source/sink関連とsink入力世代を同一確定点で公開した時点 | 確定前は旧関連を維持。確定後の不確定は当該sinkと関連だけを隔離 | source/sink関連とsink入力境界 | 表1-Dと表18-Bに従う | source側とsink側の片方だけを公開しない |
-| AT-010 | `IDescrambler.setKeyToken()` / `addPid()` / `removePid()` | tokenと所有者の検証・backend適用準備・backend反映・鍵またはPID台帳の確定 | backendと台帳の両方が同じ要求を確定した時点 | backend反映前は台帳を変更しない。反映後に台帳を確定できない場合は当該descramblerを隔離 | descrambler session、鍵使用権、PID claim | token/PID状態表と失敗分類に従う | backendと台帳の不一致を成功扱いにしない |
-| AT-010a | Frontend / Demux / Filter / DVR / Descrambler / LNB open | 能力と容量の検証・資源予約・runtime object準備・registry登録・公開 | registry登録と所有者台帳を確定し、objectを呼出元へ返す時点 | 公開前の準備物を逆順に解放する。解放結果を確定できない資源は`CleanupPending`または隔離へ移す | 準備中objectと予約済み資源 | 原因別のopenエラーを返し、objectを公開しない | 公開失敗後に半登録objectや消費済み容量を残さない |
-
-再選局には、明確に分離した2つの確定点を設ける。段階Aでは、入力検証と未稼働状態の準備を行い、フロントエンドのトランザクションロックを取得して、旧バックエンドを停止し、旧ワーカーを静止させる。確定Aでは、旧世代を終端として一括確定し、関連付け済みdemuxと組み立て処理の境界状態を初期化する。その後、新しい選局要求をバックエンドへ送る。要求に成功した場合は、確定Bで新世代を公開し、準備済みワーカーを有効化する。新しいバックエンド要求が通常の受理失敗となった場合は準備済み状態を解放して`Untuned`へ移す。停止、世代遮断、境界初期化、または準備資源の解放結果を確定できない場合は`Failed`へ移す。どちらの場合も旧選局を復元しない。確定Aと確定Bを1つの確定処理として記述してはならず、境界状態の初期化はバックエンド要求より前の確定Aで行う。
-
-確定前にコールバックの登録または配送に失敗した場合は、バックエンドを停止し、世代を`TerminalFailed`へ遷移させ、以後のコールバックを抑止する。接続済みデマルチプレクサの境界を初期化し、公開操作は`UNKNOWN_ERROR`を返す。確定後のコールバック配送に失敗した場合は、ドメイン状態と公開結果を維持し、診断または代替の記録先へ記録する。
-
-`terminal_reason` と `end_delivery_outcome` は、互いに独立した項目として保持する。`terminal_reason` は `Completed`、`Cancelled`、`FailedBackend`、`FailedPanic` のいずれかとし、END通知の結果で上書きしない。`end_delivery_outcome` は `Delivered`、`CallbackMissing`、`StoreFailure`、`BinderFailure` のいずれかとする。バックエンド停止と世代終端は各1回だけ行い、通知失敗は副次的な診断・集計情報として扱う。
-
-callbackの健全性は独立した状態軸とし、障害の影響はcallbackに依存する操作だけに限定する。
-
-`addPid()`と`removePid()`はバックエンドのパケット経路を準備し、成功後にPID登録台帳を確定する。バックエンドが準備用APIを持たない場合は、冪等な適用と補償用の巻き戻しを同一トランザクション内で完了する。巻き戻しに失敗した場合だけデスクランブラーを隔離する。
-
-
-| 番号 | 操作 / 事象 | 変更順序 | 成功の確定点 | 確定点前の失敗 | 巻き戻し不能時の対象 | 公開戻り値 / 作業スレッド終了 | 設計上の成立条件 |
-|---:|---|---|---|---|---|---|---|
-| AT-011 | `ILnb.setVoltage()` / `setTone()` / `setSatellitePosition()` | `operation_lock`取得 → 旧状態取得 → 新状態候補作成 → backend反映 → registry確定 | backend反映と registry確定が両方成功した時点 | backend反映失敗では registry を変更しない。registry確定失敗時に backend rollback apply は行わない | LNB、関連 satellite frontend | `UNKNOWN_ERROR`、LNBは失敗状態。以後の公開制御APIも `UNKNOWN_ERROR` | registryとbackendの二重巻き戻し失敗を作らない |
-
-
-### 表8. 資源寿命・所有権・破棄失敗表
-
-本表は、公開objectの状態表だけでは寿命を表せない長寿命資源について、所有者、通常破棄、異常時破棄、破棄失敗時の扱いを固定する。短命な局所変数と、単一APIの排他区間だけで生存する準備物は対象外とする。表7の操作別契約と矛盾する場合は、表7の操作別契約を優先し、本表を更新する。
-
-| 番号 | 資源 | 所有者 | 作成 / 取得 | 通常破棄 | 異常時破棄契機 | 破棄失敗時 | 設計上の成立条件 |
-|---:|---|---|---|---|---|---|---|
-| RL-002 | scan / tune generation | `FrontendHal` | `tune()` / `scan()` | stopTune / stopScan / close / 次generation | コールバック失敗、ワーカー異常 | 古いgenerationの通知を捨て、現generationを失敗状態にする | 古いワーカーが新状態を上書きしない |
-| RL-003 | demux generation | `DemuxHal` | demux open / stream boundary reset | demux close | frontend tune boundary、demux fail-closed | demuxを閉鎖側失敗。診断に失敗対象を残す | closed demux向けの後続配送が残らない |
-| RL-004 | Filter / DVR FMQとdescriptor | `FilterHal` / `DvrHal` | object open時にqueueを生成し、descriptor取得時に複製を公開 | cleanup authorityが新規transactionを遮断し、受付済みtokenを完了または取消した後に破棄 | queue破損、EventFlag回復不能障害 | 当該queueを隔離し、descriptorとqueue領域を再利用しない | configureでqueue identityを置換しない |
-| RL-005 | AV backing、event-local allocation、client lease | `AvSharedBacking`とFilter別割り当て台帳 | shared handle公開またはMediaEvent準備 | `releaseAvHandle()`でleaseまたはallocationを1回解放。論理close後も配送済みallocationは`ReleaseOnly`で保持 | 台帳破損、identity検証不能、allocator破損 | 対象領域を保持して隔離し、別allocationへ再利用しない | client lease、allocation、backingの寿命を分離する |
-| RL-006 | callback artifactとregistry entry | callback registryと所有object | callback保持成功後にruntime登録し、domain状態へ確定 | runtime unregister成功後にだけdomain entryを閉じ、artifactを解放 | Binder死亡、unregister失敗、registry破損 | 再試行可能なら`CleanupPending`、破損時は当該registry entryをunhealthy化 | domainだけを閉じてcallbackを残さない |
-| RL-007 | workerとreaper lease | 所有object、移管後は`ReaperSupervisor` | worker開始時に稼働枠と回収枠を同じ台帳から予約 | 終了報告回収と依存資源の後片付け完了後に1回返却 | panic、取消不能、終了証明不能 | 世代遮断後に回収機構へ1回移管し、遮断不能なら`ServiceCritical` | 実終了前に枠、FD、endpointを再利用しない |
-| RL-008 | descrambler key、token、PID claim | key tableと`DescramblerSession` | 鍵登録、token発行、PID追加の各transaction | 参照数0、session close、PID解除時に1回解放 | backend解除失敗、token台帳破損 | sessionまたはkey tableを隔離し、残存参照を再割当てしない | key material、opaque token、PID claimを別寿命にする |
-| RL-009 | backend FDとdevice endpoint | frontend / LNB / demuxのbackend adapter | probe成功後、対応objectのreservation確定時 | worker停止とbackend closeの完了後 | close/ioctl失敗、残存workerによる使用 | 使用権を保持して局所隔離し、共有変更を遮断できなければ`ServiceCritical` | 実終了前に同じ専有endpointを新世代へ渡さない |
-| RL-010 | `CloseCleanupAuthority` | 最初に`begin_close`へ成功した経路 | public close、所有者消滅、Dropのいずれかが一回だけ取得 | 全後片付け完了時に消費済みとして終了 | 所有者が完了前に消滅 | 権限と未完依存資源を`CleanupPending`または回収機構へ移管 | 複数経路が同じ後片付けを並行実行しない |
-| RL-010a | 容量reservation | `CapabilitySnapshot`に対応するresource ledger | 公開objectまたはworkerの準備段階 | 公開失敗のrollbackまたは最終cleanupで1回返却 | rollback失敗、台帳不整合 | 対象reservationを隔離し、容量へ戻さない | 公開能力と受付容量を同じ台帳で拘束する |
-
-資源はopen時に生成し、close時に破棄する。`flush()`は内容の消去、`configure()`は設定の更新だけを行う。
-
-
-有効な台帳項目がないトークンには `INVALID_ARGUMENT` を返す。期限切れまたは失効済みの印を永続保持しないため、不明、別所有者、期限切れ、失効済み、解放済みのトークンはすべてこの分類に含める。台帳には登録済みだが、要求されたセッションまたはライフサイクルでは使用できないトークンには `INVALID_STATE` を返す。`VOID` トークンには `SUCCESS` を返し、セッションの鍵との関連付けを解除する。台帳ロックの期限超過には `UNAVAILABLE`、台帳破損には `UNKNOWN_ERROR` を返して台帳を隔離する。クライアントのトークンを拒否したことだけを理由に、descramblerオブジェクトを閉鎖または汚染状態にしてはならない。
-
-
-| 番号 | 資源 | 所有者 | 作成 / 取得 | 通常破棄 | 異常時破棄契機 | 破棄失敗時 | 設計上の成立条件 |
-|---:|---|---|---|---|---|---|---|
-| RL-011 | LNB registry state | `LnbRegistry` / `LnbHal` | LNB open / set系API | `ILnb.close()` | backend反映失敗、registry確定失敗、mutex汚染 | LNBを失敗状態。関連frontendへ診断反映 | registry状態とbackend状態を成功扱いで乖離させない |
-
-hardware状態が不明であることと、frontendの動作状態は分けて管理する。
-
-
-### 表9. 固定表現要約表
-
-本表は、表1から表8に固定した主要事項の要約である。状態遷移、戻り値、資源寿命、閉鎖側失敗対象は表1から表8を正とし、本表だけを根拠に実装完了と判定してはならない。
-
-| 番号 | 固定表現 | 関連箇所 |
-|---:|---|---|
-| 1 | 製品全体の入力方式スコープは `開発規則.md` を正とする。本書では Tuner HAL の capability / VTS profile として TS入力だけを宣言し、MMTP、TLV、ALP、IP CID を宣言しないことを固定する | 方式・capability 説明 |
-| 2 | 本製品のライブAVフィルタはnon-passthrough `MediaEvent`を使用し、共有領域方式とイベント固有fd方式の両方を正式対応とする | AV経路説明 |
-| 3 | AVペイロードは通常FMQへ書き込まない。EventFlag は FMQ対象経路の通知にだけ使う | AV / FMQ 説明 |
-| 4 | 本製品では AV passthrough を恒久的に対応しない。passthrough capability は宣言せず、passthrough要求は configure時 `UNAVAILABLE` とする | AV passthrough 説明 |
-| 5 | `getQueueDesc()` は横断gateに該当しない通常可用状態で、対象オブジェクトが通常FMQ記述子を持つ場合だけ成功する。IFilterでは configure 済みかどうかではなく open時フィルタ種別の通常FMQ有無を正とする | IFilter / DVR状態表 |
-| 6 | `flush()` は共有ハンドル未公開のAVフィルタでも成功する。共有ハンドル未公開中は無処理成功として扱う | AV flush 説明 |
-| 8 | Filter / DVR の `close()` は、公開API遮断ゲートと後片付け完了状態を分離する。致命的な後片付け失敗は `UNKNOWN_ERROR` と異常時閉鎖済み状態に反映する | close説明 |
-| 9 | ABI不整合、関数シグネチャ不整合、リンク不整合は実行時状態表に入れない | FMQ / 接続層説明 |
-| 10 | 状態行を圧縮してよいのは、対象状態集合、戻り値、次状態関数、副作用、診断、資源寿命の同値性を表内に明記できる場合だけとする | 表の記載規則 |
-| 11 | EventFlag はペイロード格納先ではない。EventFlag は FMQ対象経路の通知機構として扱う | EventFlag説明 |
-| 14 | `setDataSource(NULL)` は AOSP意味論として sink の入力元を demux input に戻し、現行AOSP契約として成功対象に含める | setDataSource説明 / nullable Binder 境界 |
-
-### 10. 設計表の自己整合条件
-
-| 番号 | 整合観点 | 設計上の条件 |
-|---:|---|---|
-| 1 | 未固定語検査 | 設計値セルに未固定語が残っていない。互換表の種別名では具体種別名を列挙する |
-| 2 | 選択式表現検査 | 戻り値セルと次状態セルに二者択一の表現がない |
-| 4 | 同値圧縮検査 | 圧縮行には対象状態集合と同値性根拠がある |
-| 5 | capability整合検査 | 未対応機能が capability と VTS profile に宣言されていない |
-| 7 | AV経路検査 | AVペイロードを通常FMQへ書き込む経路が表に存在しない |
-| 8 | EventFlag表現検査 | EventFlag をペイロード格納先として扱う表現がない |
-| 9 | close検査 | `closed` と `cleanup_complete` が分離され、致命的後片付け失敗を成功扱いにしていない |
-| 11 | AOSP setDataSource 検査 | `setDataSource(NULL)` は demux input 復帰として成功対象に含める |
-| 12 | 実装反映検査 | 表1〜表8の各行に対応する単体テストや状態遷移テストを作成できる |
-
-
-### 表10. 失敗領域と波及範囲
-
-失敗分類と波及範囲は、本書冒頭の「0-S-4. 失敗分類と波及範囲」を正本とする。本節では再定義しない。
-
-各API表で異なる戻り値または波及範囲を採る場合は、API表側にその差分だけを記載する。コールバック失敗、ワーカー失敗、backend failure、データ経路 failure、ledger failure、rollback failure、cleanup failure を同じ失敗として丸めてはならない。
-
-### 表11. 同一条件呼び出し 無処理 契約
-
-同一条件の再指定は、破壊的操作にしてはならない。破壊的操作が必要な場合は、状態比較により条件差分を確定してから実行する。
-
-| API | 同一条件 | 破壊的処理の可否 | 異なる条件 |
-|---|---|---:|---|
-| `IDemux.setFrontendDataSource(frontend)` | 現在と同じ frontend / generation | stream boundary reset を行わない | 旧frontend unbind、新frontend bind、boundary reset |
-| `IFrontend.tune(settings)` | normalized tune settings が現在条件と同一、かつ前回tuneが完了済みで安定状態 | backend stop、live pump停止、demux boundary reset を行わない | 前回tune未完了なら同一条件でも旧tune停止、新generation、新tune投入、boundary reset |
-| `IFilter.configure(settings)` | 現在設定と同一 | queue / AV backing を破棄しない | validate後にcommitし、必要時だけqueue境界処理 |
-
-`configure()`で種別を変更してはならない。open時の種別と異なるsettings unionには`INVALID_ARGUMENT`を返す。
-
-
-### 表12. 公開API transaction（状態遷移）契約
-
-公開API transaction の共通契約は、本書冒頭の「0-S-3. 公開API transaction（状態遷移）契約」を正本とする。本節では validate / reserve / prepare / apply / commit / rollback / quarantine を再定義しない。
-
-個別APIの戻り値と状態遷移は各API状態表を正とし、複数所有者または外部副作用をまたぐ操作の確定点と巻き戻し対象は「表7. 操作別 確定点 / 巻き戻し / 閉鎖側失敗表」の索引先を正とする。表7が0-S-3と矛盾する場合は、0-S-3の原則に合わせて表7を更新する。
-
-### 表13. best-effort 使用範囲
-
-`best_effort` の使用範囲は、「0-S-3. 公開API transaction（状態遷移）契約」と「0-S-4. 失敗分類と波及範囲」を正本とする。本節では表を重複定義しない。
-
-
-### 表14. 寿命ID・世代ID・token 規則
-
-寿命ID、世代ID、token ID に `saturating_add()` を使って固定値で継続してはならない。上限到達時は対象を失敗状態へ移すか、新規発行を失敗させる。
-
-| 対象 | 加算規則 | 上限到達時 | 禁止事項 |
-|---|---|---|---|
-| filter delivery generation | `checked_add(1)` | 対象filterをquarantine | `saturating_add()` で固定値継続 |
-| section / PES assembler generation | `checked_add(1)` | 対象filterをquarantine | flush判定不能なまま継続 |
-| ワーカー signal generation | `checked_add(1)` | 対象ワーカーをfailed停止 | wake generation固定化 |
-| LNB state generation | `checked_add(1)` | 対象LNBをquarantine | 世代固定化 |
-| AV `avDataId` | 正数だけ発行。0と負数は予約 | AV経路 failed | wrapして負値IDを発行 |
-
-`OpaqueKeyToken`、`TokenEntryId`、`ResolvedKeyMaterial`、CASの有効性は、別の型と別の存続期間で管理する。
-
-
-### 表15. backend state model
-
-DVB と px4 の状態、診断名前空間、失敗扱いは分離する。DVB backend failure を px4 診断へ記録してはならず、px4 backend failure を DVB 診断へ記録してはならない。
-
-| backend | 状態 | 意味 | 診断名前空間 |
-|---|---|---|---|
-| DVB | `Idle` | fdあり、tuneなし | DVB |
-| DVB | `Tuning` | tune ioctl中 | DVB |
-| DVB | `Locked` | lock確認済み、reader稼働可 | DVB |
-| DVB | `Stopping` | `stop_tune()` 中 | DVB |
-| DVB | `Closed` | reader停止、fd release済み | DVB |
-| DVB | `Failed` | ioctl/read/clear等で復旧不能 | DVB |
-| px4 | `Idle` | device open済み、streamingなし | px4 |
-| px4 | `Streaming` | px4 streaming中 | px4 |
-| px4 | `Stopping` | streaming停止中 | px4 |
-| px4 | `Closed` | device release済み | px4 |
-| px4 | `Failed` | px4固有ioctl/read失敗 | px4 |
-
-frontend 共通処理から backend failure を記録する場合は、backend種別を受け取り、対応する診断名前空間だけへ記録する。
-
-### 表16. source filter downstream 契約
-
-source filter downstream の対応範囲は、「表18. source filter origin / downstream 状態所有契約」を正本とする。本節では同じ行列を重複定義しない。
-
-本製品の source filter linkage は raw TS packet を下流 raw TS / record 系へ配送する範囲だけを正式対応とする。section payload / PES payload / AV payload / record payload を別filterへ直接再投入する linkage は対応しない。非対応組み合わせは成功扱いの無処理 にせず、設定時または接続時に `UNAVAILABLE` とする。
-
-### 表17. key token 所有権・参照カウント契約
-
-key token は HAL 内部では refcount 付き共有資源として管理する。同一 token bytes を複数 `IDescrambler` が `setKeyToken()` してよい。
-
-HAL 内 refcount は、HAL が保持する token 解決結果の寿命だけを管理する。CAS session の本来の寿命、CAS HAL 側の失効、ECM更新方針を代替しない。
-
-
-| 番号 | 操作 | 入力状態 | AIDL戻り値 | key table 変更 | session 変更 | 設計上の成立条件 |
-|---:|---|---|---|---|---|---|
-| KT-001 | `setKeyToken(non-VOID)` | token malformed | `INVALID_ARGUMENT` | なし | なし | 長さ・形式不正を未知tokenと混同しない |
-| KT-002 | `setKeyToken(non-VOID)` | token unknown / expired / revoked / releasedで台帳項目なし | `INVALID_ARGUMENT` | なし | なし | 入力トークンで参照できる項目が存在しない |
-| KT-002a | `setKeyToken(non-VOID)` | 台帳項目は存在するが現在のsessionでは利用不能 | `INVALID_STATE` | なし | なし | sessionのライフサイクル不整合として扱う |
-| KT-003 | `setKeyToken(non-VOID)` | 現在tokenなし、新token有効 | 成功 | 新token refcount +1 | sessionに新token設定 | key material解決とrefcount増加が両方成功 |
-| KT-004 | `setKeyToken(non-VOID)` | 現在token A、新token A | 成功 | 変更なし | 変更なし | 同一token再設定は 無処理。release しない |
-| KT-005 | `setKeyToken(non-VOID)` | 現在token A、新token B | 成功 | B refcount +1 後に A refcount -1 | sessionをBへ変更 | B確保成功前にAを失効しない |
-| KT-006 | `setKeyToken(VOID)` | 現在token A | 成功 | A refcount -1 | session keyを空へ変更 | refcount減少とsession clearが両方完了 |
-| KT-007 | descrambler close | 現在token A | close表に従う | A refcount -1 | session closed | key release失敗時はdescramblerを異常時閉鎖へ移す |
-| KT-008 | token refcount 0 | active sessionなし | - | token slot削除 | - | expired tokenを永久保持しない |
-
-
-#### 表17-B. Descrambler cleanup / key lifetime transaction（状態遷移）表
-
-`DescramblerSession` と `DescramblerKeyTable` の更新は `DescramblerKeyTxn` / `DescramblerSessionCleanupTxn` が所有する。session と key table をAPIごとに別々に個別更新してはならない。cleanup 中に1件失敗しても、同じ demux / close 対象に属する後続 session の cleanup を未試行のまま終了してはならない。
-
-| 操作 | session更新順序 | key table更新順序 | 失敗時 | 後続session処理 | 共通部品 |
-|---|---|---|---|---|---|
-| `setKeyToken(non-VOID)` validate | session未変更 | 新key ref取得 | 取得失敗ならsession変更なし | 継続 | `DescramblerKeyTxn` |
-
-以前のtoken項目は使用不能な`CleanupPending`へ移し、closeまたはresetから解放を再試行できる権限を保持する。
-
-snapshotの問い合わせは読み取りだけとし、古い資源の後片付けは明示的なトランザクションへ分離する。
-
-
-| 操作 | session更新順序 | key table更新順序 | 失敗時 | 後続session処理 | 共通部品 |
-|---|---|---|---|---|---|
-| `invalidate_demux()` | 全affected sessionを走査 | key release/expire | 1件失敗しても全件試行 | 失敗一覧を返す | `DescramblerSessionCleanupTxn` |
-| `close()` | closing gate | key release | 失敗時 cleanup_failed、再close可能 | retry可 | `CloseLifecycleTxn` |
-
-
-```mermaid
-flowchart LR
-    CAS[CAS bridge / token issuer] -->|token register| KT[Key Token Table]
-    KT -->|resolved key material| DS[Descrambler Session]
-    DS -->|PID claim + key ref| DR[Descrambler Runtime]
-    DR -->|descramble| TS[TS packet経路]
-
-    DS -->|close / set VOID| REL[release ref]
-    REL -->|refcount > 0| KT
-    REL -->|refcount = 0| DEL[token slot delete]
-```
-
-### 表18. source filter origin / downstream 状態所有契約
-
-Tuner HAL は AOSP Tuner HAL の filter linkage 構造のうち、capability と本表で固定した範囲だけを受理する。
-
-本製品の source filter linkage は、raw TS packet を下流 raw TS / record 系へ配送する範囲だけを正式対応とする。section payload / PES payload / AV payload を別filterへ直接再投入する linkage は対応しない。
-
-AOSP `DemuxCapabilities.linkCaps` は main type 粒度であり、VTS は広告された main type pair について subtype `UNDEFINED` の filter 接続を生成し得る。そのため本製品は、実際に成功させない main type pair を `linkCaps` に広告しない。TS→TS main type linkage を広告する場合は、VTS が生成する `UNDEFINED` subtype source / sink の `setDataSource()` 接続と demux input 復帰を成功対象に含める。
-
-VTS は linkCaps の main type bit から subtype `UNDEFINED` の `DemuxFilterType` を生成し得る。そのため、TS→TS main type linkage を宣言する場合、`UNDEFINED` subtype による source filter 接続要求は成功対象として扱う。`UNDEFINED` subtype を成功させない方針を採る場合は、対応する main type pair を `linkCaps` に広告しない。
-
-source filter は配送元であり、downstream filter の continuity / assembler 状態を未接続時に進めてはならない。source filter flush / reconfigure / close では、source origin generation を進め、接続済みdownstreamのpartial stateを破棄する。
-
-| 番号 | 事象 | 状態所有者 | 許可する副作用 | 禁止する副作用 | 設計上の成立条件 |
-|---:|---|---|---|---|---|
-| SF-001 | frontend input TS | `TsInputOrigin::Frontend` | frontend origin の continuity / assembler 更新 | source filter origin への混入 | frontend直入力として処理 |
-| SF-002 | DVR playback input TS | `TsInputOrigin::Playback(dvr_id)` | playback origin の continuity / assembler 更新 | frontend origin への混入 | playback入力として処理 |
-| SF-003 | source filter raw TS delivery | `TsInputOrigin::SourceFilter(filter_id, generation)` | 接続済みdownstreamに限り、そのdownstream用状態を更新 | downstream未接続時のassembler更新 | 未接続なら状態を汚染しない |
-| SF-004 | source filter flush | source filter + downstream接続表 | source origin generation更新、接続済みdownstream partial破棄 | 古いpartialの保持 | flush後の旧payloadを配送しない |
-| SF-006 | source filter close | source filter | downstream接続解除、source origin破棄 | downstreamに閉鎖済みsourceを残す | close後source由来配送なし |
-
-| source filter 出力 | downstream | 対応 | 配送内容 | 状態所有者 | flush時処理 | 非対応時 |
-|---|---|---:|---|---|---|---|
-| raw TS packet | raw TS filter | 可 | 同一TS packet view | downstream raw TS filter | source origin generation更新 | - |
-
-recordのデータ経路とイベント経路は分離する。
-
-
-| source filter 出力 | downstream | 対応 | 配送内容 | 状態所有者 | flush時処理 | 非対応時 |
-|---|---|---:|---|---|---|---|
-| raw TS packet | section filter | 不可 | 再parse section は行わない | なし | なし | `UNAVAILABLE` |
-| raw TS packet | PES filter | 不可 | 再parse PES は行わない | なし | なし | `UNAVAILABLE` |
-| section payload | 任意downstream | 不可 | 直接再配送しない | なし | なし | `UNAVAILABLE` |
-| PES payload | 任意downstream | 不可 | 直接再配送しない | なし | なし | `UNAVAILABLE` |
-| AV payload | 任意downstream | 不可 | 直接再配送しない | なし | なし | `UNAVAILABLE` |
-
-
-#### 表18-B. source filter boundary 補足表
-
-source filter boundary は downstream lifecycle、queued payload、pending event、assembler state、DVR attach を分けて扱う。source filter の接続変更だけで downstream filter の公開 lifecycle を暗黙に stopped / failed へ変えてはならない。failed 化する条件は本表または表6/表5に明記された異常に限定する。
-
-| 操作 | downstream lifecycle | queued payload | pending event | assembler state | DVR attach | public状態 |
-|---|---|---|---|---|---|---|
-| `setDataSource(NULL)` | downstreamを維持し、入力元をdemux inputへ戻す | 旧source由来entryは物理破棄できるものを破棄し、残るentryを旧generationとして配送禁止にする | 旧source由来eventを抑止 | 旧source originをresetし、demux inputの新generationを開始 | downstream filterのRecord DVR接続は維持 | 非開始状態を維持して成功。開始中は`INVALID_STATE` |
-| non-null sourceの新規接続 | sourceとsinkの寿命、owner、demux、kindを検証して関連を確定 | 接続前originの未配送entryを旧generationとして配送禁止にする | 接続前originのeventを抑止 | 新しい`SourceFilter(filter_id,generation)` originで初期化 | sinkのRecord DVR接続は維持 | 非開始状態を維持して成功。開始中は`INVALID_STATE` |
-| non-null sourceの置換 | 旧sourceとの関連を切断して新sourceを同一transactionで確定 | 旧source由来entryを破棄または旧generationとして配送禁止にする | 旧source由来eventを抑止 | 旧originをresetし、新source originを初期化 | sinkのRecord DVR接続は維持 | 確定前失敗は旧関連を維持。確定後は新関連だけを公開 |
-| source filter `flush()` | downstreamの公開lifecycleと接続を維持 | 当該source由来entryを破棄または旧generationとして配送禁止にする | 当該source由来eventを抑止 | source origin generationを進めてpartialをreset | 変更なし | downstreamを自動停止・失敗にしない |
-| source filter再設定 | downstreamの接続を維持し、互換性を再検証する | 旧設定世代のentryを破棄または配送禁止にする | 旧設定世代のeventを抑止 | source origin generationを進めてpartialをreset | 変更なし | source開始中の再設定は拒否。非開始時の確定前失敗は旧設定を維持 |
-| source filter実行失敗 | downstreamはsource lost境界を観測 | source由来entryを破棄または配送禁止にする | source由来eventを抑止 | source originをreset | 変更なし | downstreamを自動failedにせず、再配送だけを止める |
-| source filter close / unlink | 接続を解除し、downstreamはsource lost境界を観測 | source由来entryを破棄または旧generationとして配送禁止にする | source由来eventを抑止 | source originをreset | source自身のRecord DVR接続は`FilterUnregisterTxn`で解除し、sink側接続は維持 | downstreamを自動failedにしない。閉鎖済みsourceの再指定は`INVALID_STATE` |
-| downstream `stop()` | source接続を維持 | 未配送entryを維持するが、停止中は新規配送しない | 未配送eventを維持し、停止中は通知しない | partialを破棄 | 変更なし | stopの状態表に従う |
-| downstream `close()` | source接続を解除 | downstream所有entryを破棄 | downstream所有eventを破棄 | downstream assemblerを破棄 | downstream自身のRecord DVR接続を解除 | 表5に従う |
-| upstream generation mismatch | 変更しない | 配送しない | eventを抑止 | 当該旧originのpartialをreset | 変更なし | runtime failedにはしない |
-
-開始中の`setDataSource()`には、引数がNULLかどうかにかかわらず`INVALID_STATE`を返す。入力元の接続と切断は、open済み、設定済み、または停止済みの場合だけ許可し、動作中の切り替えは行わない。
-
-録画DVRの接続・切断規則は表2を正とする。重複接続と未接続フィルターの切断は状態を変えず`SUCCESS`、別所有者・別デマルチプレクサ・異なる種類・再生DVRへの操作は`INVALID_ARGUMENT`、閉鎖済みfilterは`INVALID_STATE`、接続容量の不足は`UNAVAILABLE`、バックエンドの失敗は`UNKNOWN_ERROR`とする。接続順序によって結果を変えてはならない。
-
-
-### 表19. `IFrontend.tune()` transaction（状態遷移）契約
-
-`IFrontend.tune()` は、validate / prepare が完了するまで旧tune状態を破壊しない。同一正規化設定の再 `tune()` であっても、前回 `tune()` が未完了の場合は無処理成功にしてはならず、AIDL契約に従って前回 `tune()` を停止し、新generationで再開始する。
-
-validate には、settings型、周波数範囲、frontend capability、LNB候補を含める。prepare には、ワーカー生成準備、コールバック経路 準備可能性、バックエンドロールバック経路 準備可能性を含める。
-
-
-ワーカー生成 失敗時に `LOCKED` / `NO_SIGNAL` / scan message を送ってはならない。
-
-| 番号 | 段階 | 処理 | 失敗時 | 旧tune維持 |
-|---:|---|---|---|---:|
-| TN-001 | validate | settings型、値域、frontend capability、LNB関連、閉鎖状態を検証する | malformed、範囲外、不正enum、selector型不一致は`INVALID_ARGUMENT`。有効だが非対応のdelivery system、帯域、機能は`UNAVAILABLE` | 維持 |
-| TN-002 | prepare | 新worker枠、callback経路、backend要求、境界処理、失敗時回収に必要な資源を旧状態へ触れず準備する | 準備物を逆順に解放し、原因別のエラーを返す。解放不能時は当該準備資源を隔離する | 維持 |
-| TN-003 | same-setting decision | 正規化設定が同一で、前回tuneが完了済みかつ安定中なら無処理成功とする | 未完了の同一tuneを無処理成功にせずTN-004へ進める | 完了済み同一tuneだけ維持 |
-| TN-004 | revalidate under transaction lock | frontend、LNB、旧worker、接続demuxのIDとgenerationを再検証し、対象一覧を固定する | 準備物を解放して状態を変えず失敗する | 維持 |
-| TN-005 | commit A | 旧generationへのcallback・queue・backend確定権限を遮断し、旧workerを停止または回収機構へ移し、旧backendを停止して、全対象demuxの境界を終端する | 変更前失敗は旧状態を維持。変更後の状態を確定できないfrontendまたはdemuxだけを`Failed`または`Quarantined`へ移す | 確定A後は維持しない |
-| TN-006 | backend request | 新しい選局要求をbackendへ正確に1回送る | 通常の受理失敗は準備物を解放して`Untuned`。backend状態または解放結果が不明なら`Failed`とし、専有資源を隔離する | 維持しない |
-| TN-007 | commit B | backend受理を記録し、新generation、worker、callback許可、demuxへの新入力世代を一括で公開する | 新backendを停止し、新generationを公開しない。停止または回収を確定できなければ`Failed`または`Quarantined` | 維持しない |
-| TN-008 | async run | 非同期workerがLOCKED、NO_SIGNAL、取消、backend失敗のいずれかを現generationへ確定する | worker異常は現generationを終端し、古いgenerationの通知を抑止する | 新tuneへ遷移済み |
-| TN-009 | callback delivery after commit B | 現generationの確定済みeventだけをcallbackへ配送する | callback失敗はdomain状態を戻さず、callback healthと診断を更新する | 新tuneを維持 |
-
-malformed/range違反は`INVALID_ARGUMENT`、構文上validだが当該frontend/profileが非対応なら`UNAVAILABLE`とする。例えば、負周波数、不正enum、selector型不一致は`INVALID_ARGUMENT`、対応外delivery system、帯域、機能は`UNAVAILABLE`である。
-
-```mermaid
-flowchart TD
-    A[設定とLNB候補を検証] -->|失敗| B[エラーを返し、旧tuneを維持]
-    A --> C[ワーカー・コールバック・巻き戻し経路を準備]
-    C -->|失敗| B
-    C --> D{同じtuneが完了済みで安定中か}
-    D -->|はい| E[無処理で成功]
-    D -->|いいえ| F[旧tuneを停止し旧世代を終端]
-    F --> G[demux境界を初期化]
-    G --> H[新しいtune要求を送信]
-    H -->|送信成功| I[新世代を公開してworkerを有効化]
-    H -->|送信失敗| J[準備資源を解放してUntuned]
-
-
-```
-
-### 表20. counter / generation overflow 契約
-
-寿命IDは wrap / saturating reuse を禁止し、`checked_add()` 失敗時に対象を failed / quarantine する。
-
-診断counterは `saturating_add()` を許可する。ただし、上限到達時は `diagnostic_counter_saturated` を記録し、本体データ経路を停止しない。
-
-診断counter overflowを、filter / DVR / demux / frontend の runtime failure に昇格してはならない。診断counterは成功/失敗判定に使ってはならない。
-
-障害時の拒否は対象filterの新しい操作に限定する。demuxの隔離は、共有台帳の破損が確認された場合だけ行う。
-
-
-| 分類 | 対象 | 加算規則 | overflow時 | データ経路 への波及 | 禁止事項 |
-|---|---|---|---|---|---|
-| 寿命ID | section generation | `checked_add(1)` | filter failed | あり | wrap / saturating reuse |
-| 寿命ID | PES generation | `checked_add(1)` | filter failed | あり | wrap / saturating reuse |
-| 寿命ID | source filter origin generation | `checked_add(1)` | source filter failed | あり | wrap / saturating reuse |
-| 寿命ID | AV `avDataId` | 正数範囲で `checked_add(1)` | AV経路 failed | あり | 0 / 負数発行、wrap |
-
-起床世代が上限を超えた場合は、該当するワーカーだけを停止し、新しい世代番号を持つワーカーを生成する。再生成に失敗した場合だけ所有者を隔離し、世代番号の上限超過だけを理由に所有者全体を失敗状態へ移してはならない。
-
-
-| 分類 | 対象 | 加算規則 | overflow時 | データ経路 への波及 | 禁止事項 |
-|---|---|---|---|---|---|
-| 診断counter | malformed packet count | `saturating_add(1)` | saturated flag 記録 | なし | wrap、panic、データ経路停止 |
-| 診断counter | drop count | `saturating_add(1)` | saturated flag 記録 | なし | wrap、panic、データ経路停止 |
-| 診断counter | ioctl error count | `saturating_add(1)` | saturated flag 記録 | なし | wrap、panic、データ経路停止 |
-| 診断counter | queue clear failure count | `saturating_add(1)` | saturated flag 記録 | なし | wrap、panic、データ経路停止 |
-| debug統計 | dump用累計 | `saturating_add(1)` | saturated表示 | なし | 成功/失敗判定に使う |
-
-| 表示項目 | 値 |
-|---|---|
-| `counter_value` | `u64::MAX` |
-| `counter_saturated` | `true` |
-| `last_increment_result` | `Saturated` |
-
-diagnostic counterのsaturation/dropは、diagnostic取得APIを除く全business APIの戻り値を変更しない。例外は設けない。
-
-
-| 表示項目 | 値 |
-|---|---|
-| 本体状態 | 維持 |
-| 追加診断 | `diagnostic_counter_saturated:<counter_name>` |
-
-
-## ワーカー abnormal exit と scan terminal state の固定方針
-
-ワーカー `panic` はログ-only にしない。`WorkerRuntime::spawn_owned_with_exit_hook()` / `WorkerHandle::join_from_owner()` が `WorkerExitReason` を返し、`panic` は診断情報と表7・表8で定義した対象状態へ反映する。公開API経路で `stop_tune_worker()` または `stop_live_pump()` が `RuntimeFailure` / `PanicOrJoinFailure` を観測した場合は、表7・表8に従って戻り値と次状態を決め、次の tune / scan / stopTune 処理へ進まない。best-effort 経路では戻り値を返せないが、異常を成功扱いにせず実行時診断へ残す。
-
-scan ワーカー は次の terminal reason を保持する。
-
-```text
-
-実行中状態はscanのライフサイクル状態として分離し、終端理由の列挙値は`Completed`、`Cancelled`、`Failed*`だけに限定する。
-
-
-Completed
-Cancelled
-FailedBackend
-FailedPanic
-```
-
-scan の normal / stopScan / backend error / `panic` は終端理由として区別する。コールバック登録済みでscanが開始済みの場合、terminal時に可能な限りENDを送る。ENDの配送結果は`Delivered`、`CallbackMissing`、`StoreFailure`、`BinderFailure`の別軸へ保存し、終端理由を上書きしない。
-
-### scan END 通知失敗の固定
-
-scan END 通知失敗は コールバック失敗 の固定契約であり、Stream boundary / データ経路 failure の正本を変更しない。
-
-scan ワーカー 内の `END` 通知は、`PROGRESS_PERCENT`、`FREQUENCY`、`LOCKED`、`INPUT_STREAM_IDS`、`LOCKED` / `NO_SIGNAL` event と同じく callback 契約の一部として扱う。
-`notify_scan_end_with_callback()` の戻り値を `let _ = ...` で捨ててはならない。
-
-- `END` 通知成功時だけ、scan terminal 通知済みとして扱う。
-
-
-- 失敗理由は コールバック失敗 診断に記録する。コールバック失敗 だけで `mark_live_path_failed()` を呼んではならない。
-
-
-この固定は HAL 内部の失敗伝播であり、AOSP AIDL 公開面は変更しない。
-
-
-## ARIB/ISDB入力処理契約
-
-本書は、Tuner HALが扱うARIB/ISDB入力処理のうち、HAL内に置く処理だけを固定する。
-
-| 項目 | 所有者 |
-|---|---|
-| 日本向けscan候補表 | TIS |
-| channel key / service候補 | TIS |
-| 明示選局要求の検証 | Tuner HAL |
-| TS packet validation | Tuner HAL `PacketPipeline` |
-| section/PES assembly | Tuner HAL `soft_demux` |
-| record index | Tuner HAL `soft_demux` |
-| MULTI2 payload復号中核 | Tuner HAL descrambler |
-| ECM/EMM処理 | CAS HAL / CAS bridge |
-| card I/O | CAS HAL / CAS bridge |
-| EPG / SI意味解釈 | TIS / arib_si_engine_rs |
-
-Tuner HALは、日本向けscan候補表、BS TSID表、CATV周波数表、service candidate tableを独自生成しない。TISが生成した 明示選局候補 を検証・変換・実行する。
-
-### HAL責務境界
-
-モジュール間の責務境界は `開発規則.md` を正とする。本章の設計は、AOSP Tuner HAL の公開契約に対し、Tuner HAL 内部の寿命、所有権、失敗時状態、配送境界、capability、AIDL戻り値だけを固定する。
-
-## エラー写像 / scan lifecycle / section overflow / DVR close の契約
-
-`IDescrambler`、`IFilter.setDataSource()`、Filter / DVR / Frontend / LNB の状態別 エラー写像 は、本書の「Tuner HAL 状態遷移表SSOT」を正とする。本節では、表セルだけでは表現しきれない診断保持、scan terminal 保存、section overflow 通知、DVR cleanup 補助関数 の補足だけを固定する。
-
-
-終端理由とcallback配送結果は別の状態軸で管理する。
-
-
-`Malformed`、`OversizeSection`、`StalePartialDiscard`、`QueueOverflow`は、それぞれ別の結果、計数値、状態として扱う。
-
-
-所有者消滅では待機を伴わない後片付けを開始し、残りは回収機構へ委ねる。
-
-
-## lab profile のサービス対応
-
-代表ゲートは次の サービス 対応で固定する。
-
-| 系統 | frontend | 周波数 | ONID | TSID | service_id | PMT PID | PCR PID | video PID | audio PID | record PID |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| ISDB-T | `FE_ISDBT_0` | 557142857 Hz | 32736 | 32736 | 1024 | 256 | 272 | 272 | 273 | 272 |
-| BS | `FE_ISDBS_0` | 1049480000 Hz | 4 | 16400 | 101 | 256 | 272 | 272 | 273 | 272 |
-| CS110 | `FE_ISDBS_0` | 1613000000 Hz | 6 | 0 | 301 | 256 | 272 | 272 | 273 | 272 |
-
-固定 PID は lab profile の代表値であり、実機検証時は同じ サービス 対応表に合わせる。製品 scan では PMT から得た PID を使う。
-
-## BS と CS110 の選局契約
-
-
-`STREAM_ID`と`RELATIVE_STREAM_NUMBER`は別々に検証する。absolute selectorの`0..11`を数値だけを理由に特別拒否しない。
-
-
-## scan / tune の責務分担
-
-この節は Tuner HAL から見た責務分担を説明するものであり、日本向け scan 候補表のSSOTではない。選局対象範囲と除外条件の設計契約は tv 直下の `開発規則.md`、候補表の具体値と実行時候補生成は TIS の実装データを正とする。
-
-Tuner HAL は、TIS が生成した 明示選局候補 を検証・変換・実行するだけであり、日本向け候補表、BS TSID 表、CATV周波数表、サービス candidate table を独自に生成せず保持しない。
-
-日本向け周波数表、CATV周波数表、BS/CS110のTSID表、channel key、サービス検出 の実装データ保持者は TIS とする。選局対象、周波数帯、BS/CS110 selector 境界、CATV 候補範囲の設計契約は tv 直下の開発規則.mdを正とする。Tuner HAL は HAL-generated Japanese scan plan を持たず、TIS が作った explicit candidate を `Tuner.tune()` で受ける。HAL の `scan()` は AOSP/VTS互換の最小実装に限定し、製品の通常 channel scan は TIS の周波数表 + `tune()` ループに寄せる。
-
-
-セレクターの基本対応は次のとおりとする。Linux DVBはISDB-Sの `STREAM_ID` として `0..65534` を受け付け、値を変更せず `DTV_STREAM_ID` へ渡す。`65535`（`Constant.INVALID_STREAM_ID`）は拒否する。未変更の従来版px4は `RELATIVE_STREAM_NUMBER` の `0..7` だけを受け付ける。対象の `kazuki0824/px4_drv` `feat/android-ddk` バックエンドが公開できるセレクター方式は、完全一致する `SupportedDeviceCapabilityCatalog` 項目でリリース対象とされたものに限る。現行項目では、`0..11` が相対スロットの意味と衝突するため、`RELATIVE_STREAM_NUMBER` だけを有効にし、`STREAM_ID` は有効にしない。項目が空、一致しない、またはセレクター公開対象外の場合は、ISDB-Sのセレクター対応能力を公開しない。ISDB-T、CATV、CS110ではISDB-S用セレクターを使用しない。
-
-
-selectorの種類を正として判定し、数値域から種類を推測しない。
-
-
-px4 BSで絶対値の`STREAM_ID`をslotへ直接渡す経路は、ドライバーのブランチに分岐が存在するだけでは対応能力として扱わない。バックエンドと機器の組み合わせを示す台帳項目が絶対値の選択子を検証済みかつリリース可能と宣言した場合だけ、`0..65534`を設定できる。現在のpx4台帳では相対値`0..7`だけを有効とするため、絶対値の`STREAM_ID 0..65534`には`UNAVAILABLE`を返してバックエンドを変更せず、選択子の`65535`には`INVALID_ARGUMENT`を返す。将来絶対値用の項目を追加する場合も、`0..11`を数値の重複だけを理由に拒否してはならない。`ProductProfile`やVTS設定から、台帳にない経路を作ってはならない。HALはTSIDから相対slotへの変換表を互換処理として復活させない。
-
-CATV も TIS の製品 scan 候補表に実装データとして追加する。CATV候補表は C13〜C63 に固定する。MID band は C13〜C22、SHB band は C23〜C63 とし、中心周波数は ARIB STD-B21 Appendix 10 の `+1/7 MHz` オフセット込みで保持する。C22 は `167 + 1/7 MHz`、C23 は `225 + 1/7 MHz` であり、C21からC22、C22からC23は単純な6MHz連続として計算しない。地上UHF候補表とCATV候補表はどちらもTIS側が正であり、Tuner HAL はCATV scan planを自前生成しない。TIS はCATV候補を 明示選局候補 としてHALへ渡し、px4 backend は渡されたCATV frequencyをlegacy `freq_no/addfreq` へ変換するだけにする。
-
-この節に現れる UHF、CATV、BS、CS110 の範囲説明は、Tuner HAL の独立した候補表定義ではない。値の更新が必要になった場合は、まず `開発規則.md` の設計契約と TIS の候補表実装を更新し、Tuner HAL 側は 明示選局要求 の validation と backend adapter だけを追従させる。
-
-
-CATVをスコープに含めるため、TIS の製品 scan table は地上UHFだけを前提にしてはならず、CATV C13〜C63 も候補として保持する。
-
-Tuner HAL 側に置いてよい周波数・サービス関連データは、次に限定する。
-
-- VTS / lab profile 用の代表点
-- TIS から渡された 明示選局要求 を backend ioctl へ落とすための backend adapter
-- px4 legacy API 用の `freq_no / slot / addfreq` 変換
-- 明示選局要求 の validation に必要な最小境界値
-
-これらは product scan candidate table、サービス検出 SSOT、channel display number、BS/CS110 TSID table、TvProvider メタデータの SSOT ではない。製品 scan 候補表、BS/CS110 TSID 表、CATV 中心周波数表、display number、channel key、TvProvider 登録用 メタデータは TIS 側を正とする。
-
-VTS / lab profile は代表点だけでよく、全 CATV 候補の実波存在を VTS pass 条件にはしない。
-
-`Tuner.scan(AUTO_SCAN)` を実装する場合も、HALが日本向け候補列を生成しない。TISが明示した1候補に対する一回限りのscanとして扱い、継続探索はTISが次のcandidateを投入する。
-
-
-## セクションフィルターの条件幅とsection長上限
-
-`numBytesInSectionFilter` は section payload の最大長ではなく、セクションフィルター condition の byte幅として扱う。mask / filter byte 幅は16 bytesを維持する。
-
-`bitWidthOfLengthField`はISO/IEC 23008-1のMMTP section message用であり、MPEG-TSの`section_length`幅を指定する入力ではない。本製品はMMTPを公開しないため、この値をTSのsection assembly、CRC、condition判定へ使用しない。TSの`section_length`はISO/IEC 13818-1およびARIB STD-B10に従う12ビットとして固定し、MMTP用入力値の違いでTS処理を変えてはならない。
-
-
-Tuner HALは、TSペイロードの抽出、sectionの区切り、宣言長の検査、任意のCRC検査、フィルター照合、queueまたはFMQへの配送、および伝送診断から成る汎用MPEG-TS section転送だけを担当する。PAT、CAT、PMT、NIT、SDT、BAT、EIT、TDT、TOT、BIT、NBIT、LDT、CDT、PCAT、SDTT、AIT、AMTを含む各PSI/SI表について、表固有の意味解析、正規化、複数sectionの集約、データベース更新、意味オブジェクトの生成を行ってはならない。TISなどの要求元が汎用sectionフィルターを設定し、HALより上位で表の意味解釈を担当する。再利用可能なSI解析ライブラリーも、その上位層だけで使用する。
-
-条件に一致したsectionは、設定済みフィルターの契約に従って完全なsectionとメタデータを配送するか、汎用の伝送・外形・CRCエラーを報告する。HALが意味を解釈できないことだけを理由に、EIT、TOT、AMTなどのPSI/SI sectionを無言で破棄してはならない。1021区分は`section_length`を1021以下かつsection全体を1024バイト以下、拡張区分は`section_length`を4093以下かつsection全体を4096バイト以下とする。予約済み、未割り当て、private、外部所有のTable IDを型付きARIB SIとして推測しない。ただし、有効なフィルターで選択された場合は、汎用の生sectionとして配送対象にできる。長さ上限と意味解釈の責務は`arib_si_engine_rs/DESIGN_JA.md`の「PSI/SIのTable ID規則と意味解釈の責務」を正とする。
-
-
-### PSI/SI section CRC_32
-
-CRC_32 は MPEG-2 PSI/SI section CRC_32 を用いる。CRC対象範囲は `table_id` から CRC_32 直前までとし、受信section末尾4 byteを期待CRCとして比較する。
-
-CRC計算の初期値、生成多項式、bit order は ISO/IEC 13818-1 / ARIB STD-B10 の PSI/SI section CRC_32 に従う。
-
-`isCheckCrc=true`では、CRC不一致をdelivery不成立とし、queue overflowへ写像しない。`isCheckCrc=false`ではCRC一致を配送条件にしない。section lengthによる外形検査は常に行う。reserved bitとsyntax構造の検証は型付きevent生成の条件であり、raw sectionの生バイト列配送条件にはしない。
-
-
-PUSI到達時の `pointer_field` は、直前の未完了sectionに対して pointer バイト列の範囲だけを合法なtailとして扱う。pointer bytesで直前sectionが完了しない場合、または `pointer_field == 0` で未完了sectionが残っている場合は、旧partial sectionを新section本文へ連結してはならない。旧partial sectionは破棄し、stale partial discard 診断counterへ記録してから `1 + pointer_field` の位置を新section開始として扱う。
-
-
-### ARIB section validator 契約
-
-
-section length field周辺およびversion byte周辺のreserved bitは、ARIB / MPEG-TSの型付きsection解析で検証する。reserved bitが仕様値から外れるsectionは意味解析上のmalformedとして扱い、non-rawの型付きeventを生成しない。raw sectionは外形が完全で、設定されたCRC検査に合格する限り、元のバイト列を配送できる。
-
-## queue overflow / drop 通知方針
-
-internal queue overflow を first-class event として扱う。soft demux 内部 queue、filter delivery queue、DVR record output queue、AV shared buffer、FMQ write のいずれで payload drop または write failure が起きても、無通知破棄 にしてはならない。queue push API は成功、旧データ破棄、新データ破棄、full/backpressure、閉鎖済み を区別できる結果型を返し、破棄バイト数 / drop packets を診断カウンター に必ず反映する。
-
-filter runtime state と DVR runtime state は pending overflow を持つ。コールバック ワーカー は FMQ write failure だけでなく internal queue drop も overflow 通知対象にし、次回 コールバック 周期で `OVERFLOW` / overflow 状態 を必ず上位へ通知する。section / PES / record / DVR raw TS で payload が欠落した場合、上位から欠落を観測できない正常短縮として扱ってはならない。
-
-用途別 drop policy は次で固定する。
-
-| path | 方針 |
-|---|---|
-| ライブ AV | 低遅延優先。filter queue overflow では古い AV payload の 旧データ破棄 を許容する。ただし overflow event と drop counter は必須。shared memory slot 不足では active slot を eviction せず overflow 診断に落とす。 |
-| TS raw | filter FMQ payload は新データ破棄方針とする。古い TS raw payload を暗黙に捨てて時系列を詰めてはならない。 |
-| section | 新データ破棄方針とし、overflow event と drop counter を必須にする。EIT / PMT / CAT 等の欠落を上位が検知可能にする。 |
-| PES | 新データ破棄方針とし、overflow event と診断カウンター を必須にする。raw PES と ES payload の表現を混在させてはならない。 |
-| record metadata event | filter FMQ payload bytes は0とし、entry数上限を持つ新データ破棄方針とする。`TsRecordEvent` 生成用の 188 byte TS packet は metadata として保持し、通常 FMQ watermark / data-size delay の対象にしない。 |
-| record / DVR raw TS | 大容量化して極力 drop を避ける。DVR record output queue は新データ破棄方針とし、drop した場合は record 状態 / 診断情報に必ず出す。 |
-| DVR playback input | framework producer から playback input FMQ へ書き込まれ、HAL consumer が再注入する入力方向である。HAL 内部の drop-old queue として扱わず、producer-backpressure / no-eviction として model 化する。 |
-
-ライブ AV shared memory slot size と oversized payload の分類は次で固定する。
-
-| 項目 | 固定内容 |
-|---|---|
-| slot size と `bufferSize` | AV shared memory slot size は framework が渡す filter `bufferSize` だけから縮小算出しない。product profile の下限を下回ってはならない |
-| oversize 診断 | slot size 超過は `DroppedOversizePayload` とし、malformed / empty payload と混同しない |
-| overflow 状態 | oversize drop は `pending_overflow` または AV 専用 overflow pending を立て、次 callback 周期で `OVERFLOW` を通知する |
-
-
-AV payload delivery result は、少なくとも `Delivered`、`DroppedBeforeHandleExport`、`DroppedNoFreeSlot`、`DroppedOversizePayload`、`DroppedMalformedPayload` を区別する。slot size 超過を `DroppedInvalidPayload` に丸めてはならない。
-
-queue 容量は profile 依存にできる構造にする。VTS/lab profile の小容量で overflow test を行えることと、product profile で record / DVR raw TS を大容量化できることの両方を満たす。overflow 時に古いデータを捨てるか新しいデータを捨てるかは用途別に固定し、ライブ AV の 旧データ破棄 方針を TS raw / section / PES / 録画経路 に流用してはならない。`filter_queue_model()`、`dvr_queue_model()`、`QueuePolicy.overflow_policy`、`QueuePolicy.bounded_entries` はこの用途別方針を診断モデルとしてそのまま表す。未公開リリース候補のため、後方互換目的の alias、boolean 互換 field、旧モデル API は残さず削除する。`QueueOverflowPolicy` を唯一の overflow 方針表現とする。
-
-
-`QueuePushOutcome` は 受理バイト数、破棄バイト数、破棄要素数、旧データ破棄/新データ破棄、overflow を区別する。filter queue で overflow した場合は runtime state の `pending_overflow` を立て、コールバック ワーカー が payload 有無にかかわらず次周期で `DemuxFilterStatus::OVERFLOW` を通知する。record DVR output queue は 1サービスTS録画 用に 新データ破棄 方針を採り、full 時に新規 TS packet を 無通知破棄 せず `RecordStatus::OVERFLOW` へ伝播する。
-
-
-## Stream boundary 契約
-
-stream boundary は、次の事象で発生する。
-
-```text
-tune
-stopTune
-scan candidate 切替
-frontend close
-frontend unbind
-setFrontendDataSource
-setDataSource
-filter flush
-DVR flush
-filter close
-DVR close
-descrambler demux/key/PID invalidate
-```
-
-boundary処理は `StreamBoundaryTxn` を正本とする。各APIが個別に FMQ、AV shared memory、section/PES assembler、DVR queue、callback generation を直接処理してはならない。
-
-| 対象 | 処理 |
-|---|---|
-| FMQ | 旧generation payloadは `StreamBoundaryTxn` が破棄する。物理破棄前に観測されるentryはgeneration判定で無効化し、配送しない |
-| EventFlag | wake失敗を診断 |
-
-配送済みで使用中の領域は`releaseAvHandle()`まで保持する。
-
-
-| 対象 | 処理 |
-|---|---|
-| section assembler | 対象origin/PID/generationだけ破棄 |
-| PES assembler | 対象origin/PID/generationだけ破棄 |
-| continuity tracker | 対象origin/PIDだけreset |
-| source filter origin | frontend/playback/source-filterを混在させない |
-| record queue | 旧boundary payloadを新boundaryとして扱わない |
-| callback | old generationのコールバックを抑止 |
-
-1つのfilter flushが、同じsource origin/PIDを共有する無関係なfilterのassemblerまたはcontinuityを壊してはならない。
-
-
-#### 表SB-1. 複数 demux boundary 一部失敗表
-
-複数 demux を跨ぐ stream boundary は、全体成功/全体失敗だけでなく、demux 単位の一部成功を第一級状態として扱う。成功済み demux を rollback して通常状態へ戻そうとしてはならない。
-
-| 状態 | 成功demux | 失敗demux | 公開API戻り値 | 後続操作 | 診断 |
-|---|---|---|---|---|---|
-| 全件成功 | boundary generation 更新済み | なし | `OK` | 通常継続 | boundary success |
-| 一部成功・変更前失敗 | commit済みのdemuxは新generationを維持 | 検証、予約、排他取得の段階で失敗したdemuxは旧generationを維持 | 原因別エラー | 失敗demuxだけ再試行可。成功demuxを巻き戻さない | demux別のcommit有無と変更前失敗理由 |
-| 一部成功・変更後状態不明 | commit済みのdemuxは新generationを維持 | 外部適用開始後に実状態を確定できないdemuxだけ隔離 | `UNKNOWN_ERROR` | 隔離demuxは内部回収またはclose。健全なdemuxは継続 | 最終確認済み段階、外部副作用、隔離根拠 |
-| 全件失敗・全て変更前 | なし | 全demuxが旧generationを維持 | 最初の主失敗を返す | 全対象を再試行可 | demux別の変更未開始証跡 |
-| 全件失敗・変更後状態不明を含む | なし | 状態不明のdemuxだけ隔離し、変更前失敗demuxは旧generationを維持 | `UNKNOWN_ERROR` | 状態別に再試行または内部回収 | demux別の失敗段階と状態確定可否 |
-| 未処理対象あり | 処理済みcommitは維持 | 未処理demuxは変更しない | 先行する主失敗を返す | 未処理demuxは再試行対象として残す | 処理済み、失敗、未処理の集合を別々に記録 |
-
-複数のデマルチプレクサ境界で一部だけ成功した場合、公開操作はエラーを返す。確定済みのデマルチプレクサは新しい世代で継続する。失敗したデマルチプレクサは、変更開始前の失敗なら以前の状態を維持し、変更開始後に実状態を確定できない場合だけ当該デマルチプレクサを隔離する。子オブジェクトへの失敗の波及も、失敗したデマルチプレクサの配下に限定する。
-
-すべてのデマルチプレクサが失敗した場合も一律に隔離しない。各デマルチプレクサを処理段階ごとの結果で判定し、事前条件または準備の失敗では以前の状態を維持する。変更開始後に実状態を確定できない場合だけ隔離する。フロントエンドは操作失敗を返すが、健全な以前の世代を維持できるデマルチプレクサでは再試行を許可する。
-
-再試行可能なlock失敗とregistryの破損は別の失敗として扱う。
-
-境界トランザクションの内部で失敗した場合は、確定済みのデマルチプレクサを維持し、未処理のデマルチプレクサを変更せず再試行対象として残す。変更開始後に完了状態を確定できないデマルチプレクサだけを隔離し、未処理の対象を自動的に隔離してはならない。
-
-
-## Packet pipeline 正本契約
-
-### TS resync buffer 末尾 packet 契約
-
-TS resync buffer は、入力末尾に完全な188 byte packetがある場合、次入力のsync byteを待たずにそのpacketを返す。次入力のsync byte確認が必要なのは resync候補が完全packet境界として確定できない場合だけである。
-
-完全な188 byte packetを次入力待ちで保留し続けてはならない。DVR playback / chunked input の最後のpacketを永久保留しないことを設計契約とする。
-
-
-`PacketPipeline` は、次を正本として持つ。
-
-```text
-TS packet validation
-source origin
-PID continuity
-discontinuity
-section generation
-PES generation
-filter delivery generation
-flush generation
-record index input
-```
-
-source origin は次の名前空間で分離する。
-
-| origin | 意味 |
-|---|---|
-| Frontend | backend live TS |
-| PlaybackDvr | playback DVR input |
-| SourceFilter(filter_id, generation) | source filterからのraw TS再投入 |
-
-Frontend と SourceFilter を同じ continuity / generation 名前空間に入れてはならない。
-
-malformed TS、TEI、adaptation field不整合、PES header不整合、section長不整合は正常payloadとして配送しない。dropしたpacketを投入成功として数えない。
-
-### record index packet boundary 契約
-
-record index は、TS packet境界をまたぐ以下の構造を検出できなければならない。
-
-| 構造 | 要件 |
-|---|---|
-| `00 00 01` start code prefix | 3 byte prefixがTS packet境界で分割されても検出する |
-| PES header | headerがTS packet境界で分割されても継続解析する |
-| PTS field | PTS 5 byteがTS packet境界で分割されても抽出する |
-| malformed PES後の復帰 | 次PUSIまたは次start codeから復帰する |
-
-record indexは、現在payload単体だけで完結する前提にしてはならない。必要な最小carry stateをrecord index側が持つ。
-
-
-### filter delivery delay 条件
-
-`FilterDelayHint` は、コールバック配送頻度を抑制するための遅延ヒントである。media filter には適用しない。
-
-有効な時間条件と有効な byte 数条件が両方ある場合、どちらか一方を満たした時点で配送可能とする。すなわち、time delay と data-size delay は OR 条件である。
-
-| 条件 | 配送可能条件 |
-|---|---|
-| time delayのみ有効 | 指定時間経過 |
-| data-size delayのみ有効 | 指定byte数以上 |
-| time delay + data-size delay | 指定時間経過、または指定byte数以上 |
-| 両方無効 | delayなし |
-
-時間条件は queue-empty から non-empty へ遷移した payload のまとまりごとに再armする。巨大な時間値は `Instant::checked_add()` で検証し、overflow する値を受理しない。
-
-### unbounded PES の上限超過境界
-
-`PES_packet_length == 0` の unbounded PES は、次の payload unit start indicator 付き TS packet で前PESを完成できる範囲だけ正式対応とする。assembler の保持量が `MAX_PES_BUFFER_BYTES` を超えた場合は 上限超過 PES として当該 PID / 入力元世代キーの PES assembler state を破棄し、診断 counter を増やす。上限超過した PES を配送単位として分割配送する経路は作らない。flush、stop、close、source unlink 境界では未完了 unbounded PES を完成扱いにしない。
-
-## 失敗時状態・境界処理の設計固定
-
-この節は、Tuner HAL の公開 API、soft demux、frontend backend、worker、Filter / DVR close、AV 共有メモリの間で、成功時状態、失敗時状態、再試行条件を一意に固定する。ここに記載する処理は、Tuner HAL の TS packet processing、section assembly、PES / AV / DVR delivery、FMQ / EventFlag、callback、backend I/O、資源寿命 の範囲に閉じる。SI/EIT 意味解析、EPG生成、TvProvider反映、予約追従判断は Tuner HAL の責務ではない。
-
-### TS 入力元と flush 境界
-
-soft demux に入る TS packet の入力元は次の三種類だけとする。
-
-| 入力元 | 意味 | 世代キー |
-|---|---|---|
-| `Frontend` | frontend backend から来るライブ TS | `Frontend(frontend_generation)` |
-
-`IDvr` のAIDLには `read` / `write` メソッドがない。AIDLのライフサイクル表、戻り値表、ワーカー表に `read` / `write` を記載してはならない。SDK/JNIの `beginRead` / `commitRead` と `beginWrite` / `commitWrite` に対応するバイト数補助処理は、DVR FMQのデータ経路を定める節に分離して記載し、AIDL公開面が変わらないことと接続条件を明示する。
-
-
-| 入力元 | 意味 | 世代キー |
-|---|---|---|
-| `SourceFilter` | `IFilter.setDataSource()` により、上流 filter の raw TS 出力を下流 filter へ再投入する TS | `SourceFilter(filter_id, filter_generation)` |
-
-`SourceFilter` は raw TS packet の再投入経路だけを表す。section payload、PES payload、AV payload、record payload を `SourceFilter` 経由で再配送する経路は作らない。上流 filter が raw TS を出力できない種別である場合、`setDataSource()` は接続を拒否する。
-
-section assembler と PES assembler は、上記の世代キー単位で flush generation を保持する。`flush()`、`setDataSource()`、filter close、source unlink、stream boundary reset のいずれかが発生した場合、対象入力元の assembler state と carry state を破棄し、flush generation を更新する。古い generation で組み立て開始された section / PES は配送しない。新しい generation で開始された section / PES だけを配送する。
-
-
-互換性のない再設定は`INVALID_STATE`とし、以前の設定と接続を維持する。切断は`setDataSource(null)`または入力元filterの`close()`だけで行う。
-
-
-本製品の多段 filter は、上流の raw TS filter から `SourceFilter` 経由で raw TS packet を再投入し、下流の TS raw / record filter へ配送する経路だけを正式対応とする。
-
-```text
-Frontend / Playback -> raw TS filter -> SourceFilter -> TS raw / record filter
-```
-
-この制限は暫定的なリリース範囲ではなく、本製品の正式仕様である。次の経路は非対応とし、`setDataSource()` 時点で `UNAVAILABLE` として拒否する。
-
-```text
-section filter -> SourceFilter -> 任意 filter
-PES filter     -> SourceFilter -> 任意 filter
-AV filter      -> SourceFilter -> 任意 filter
-record filter  -> SourceFilter -> 任意 filter
-```
-
-### PES assembler の異常系状態表
-
-PES assembler は正常 PES だけを配送対象とする。malformed PES、continuation-only PES、上限超過 PES は配送しない。異常検出時は、当該 PID と入力元世代キーに対応する PES assembler state を破棄し、次の payload unit start indicator 付き TS packet から再同期する。
-
-| 入力状態 | 判定 | assembler 動作 | 配送 |
-|---|---|---|---|
-| PUSI あり、PES start code 正常 | 新規 PES 開始 | 既存未完了 PES を破棄し、新規 PES を開始 | まだ配送しない |
-| PUSI なし、既存 PES あり | continuation | buffer へ追加 | 完成条件を満たせば配送 |
-| PUSI なし、既存 PES なし | continuation-only | state 破棄 | 配送しない |
-| PES start code 不正 | malformed | state 破棄 | 配送しない |
-| optional header marker 不正 | malformed | state 破棄 | 配送しない |
-| `PTS_DTS_flags == 0b01` | malformed | state 破棄 | 配送しない |
-| PTS / DTS marker bit 不正 | malformed | state 破棄 | 配送しない |
-| `PES_packet_length` と header 長が矛盾 | malformed | state 破棄 | 配送しない |
-| buffer が `MAX_PES_BUFFER_BYTES` を超過 | oversized | state 破棄 | 配送しない |
-| flush / stop / close / source unlink | boundary | state 破棄 | 未完了 PES は配送しない |
-
-
-PESの組み立て状態はPIDごとに分離する。`PES_packet_length > 0` の場合は、宣言されたPESバイト数を正確に収集した時点だけを完了とする。同じPIDで宣言長に達する前にPUSIを受信した場合は破損とし、未完のPESを破棄する。`PES_packet_length == 0` の場合は、同じPIDの後続TSペイロードで `payload_unit_start_indicator=1` かつ、ペイロード先頭に構造上有効な `0x000001` のPES開始コードと最低限有効なPESヘッダーがある場合に限り、その直前で現在のPESを完了する。境界となるパケットは次のPESの先頭とし、前のPESへ追加しない。同じPIDのPUSIと有効なPESヘッダーを伴わないエレメンタリーストリーム内の `0x000001` 開始コードによって、現在のPESを終了してはならない。同じPIDのPUSIがあってもPES開始部またはヘッダーが構造上不正な場合は、伝送破損として未完PESを破棄し、型付き診断を記録して、完了PESとして通知しない。別PIDのPUSIは影響させない。TEI、連続性の不連続、`flush()`、`stop()`、`close()` は、それぞれ独立して未完PESを破棄し、対応する型付き診断を記録する。いずれの場合も完了PESとして通知しない。
-
-
-### ワーカー失敗と所有権境界
-
-ワーカー はデータ処理と通知だけを担当し、資源寿命 の所有者ではない。ワーカー失敗 発生時、ワーカー は demux、filter、DVR、descrambler を直接 unregister してはならない。
-
-ワーカー が行ってよい処理は次だけとする。
-
-```text
-- runtime failure reason の記録
-- 対象 object の ワーカー unhealthy 状態設定
-- waiters / コールバック待機 の起床
-- 診断 counter の更新
-```
-
-
-closeと所有者消滅は、同じ後片付けの状態機械で処理する。
-
-
-延期した後片付け処理は、`owner_id`、`owner_generation`、`dependency_kind`、`dependency_id` の組で識別する。状態は `Queued`、`Running`、`WaitingForTrigger`、`Released`、`Quarantined`、`Complete` とする。同じ組の重複追加は1件にまとめる。タイマー、再試行間隔、有効期限、締切、確認応答手順は設けない。後片付けを試すのは、処理の追加時と明示的なライフサイクル事象の発生時だけとする。成功時は使用枠を返却して `Complete` へ進む。再試行可能な失敗時は使用枠を保持して `WaitingForTrigger` へ進む。遮断できない、または状態を確定できない依存資源は、使用枠を保持して `Quarantined` へ進む。後続の完了通知によって、残りの後片付けを再開してよい。所有者が消滅した場合は、一回性の処理権限をサービスの後片付け管理機構へ移す。`Queued`、`Running`、`Quarantined` の処理数上限は、公開済みのオブジェクト数・ワーカー数の上限から導出する。
-
-
-所有者消滅時も後片付けを開始する。
-
-
-ワーカー失敗 後の公開 API 動作は次に固定する。
-
-| API | 動作 |
-|---|---|
-| `start()` | `INVALID_STATE` |
-| `stop()` | 停止可能な範囲で停止し、後片付け失敗時は cleanup failed |
-
-ワーカーの失敗後に行う`flush()`は、未配送の保留ペイロードと解析途中のデータだけを破棄する。FMQの記述子と記憶領域、監視設定、配送済みのAV領域は維持する。消去に失敗した場合は`runtime_failed`へ移し、閉鎖または回収処理だけを許可する。
-
-
-| API | 動作 |
-|---|---|
-| `close()` | 必ず cleanup 経路へ進む。ワーカー失敗 済みでも直接成功扱いしない |
-
-### close / unregister / quarantine 条件
-
-close は、公開 object の lifetime を閉じる唯一の正規経路である。close 中に demux 側 unregister が missing を返した場合、通常は成功扱いしない。missing を成功扱いできるのは、同じ object の runtime failure 経路で事前 unregister 済みと明示記録されている場合だけである。
-
-`IFilter.close()` は次の順序で処理する。
-
-```text
-1. FilterLedger begin_close
-2. 新しい配送許可を遮断し、実行中ワーカーを停止または回収機構へ移管
-3. 未配送queue・保留eventを消去し、配送済みAV割り当てをReleaseOnly台帳へ移す
-4. source/downstream接続とRecord DVR接続を解除
-5. demux.unregister_filter(filter_id, generation)
-6. runtime object tableから登録解除
-7. FilterLedger commit_close
-8. cleanup_complete = true
-```
-
-`demux.unregister_filter()` が missing を返した場合の動作は次に固定する。
-
-| 条件 | 動作 |
-|---|---|
-| runtime に `pre_unregistered_by_worker_failure` がある | close 継続可能 |
-
-閉鎖または登録解除の失敗は`cleanup_pending`へ記録し、再試行可能にする。機器、queue、台帳を変更した後で実状態を確定できない場合だけ隔離し、その他の後片付け失敗を一律に隔離してはならない。
-
-
-`IDvr.close()` は次の順序で処理する。
-
-```text
-1. DvrLedger begin_close
-2. 新しいキュートランザクションを遮断し、実行中ワーカーを停止または回収機構へ移管
-3. 接続済みfilterを解除
-4. queue clear
-5. demux.unregister_dvr(dvr_id, generation)
-6. runtime object tableから登録解除
-7. DvrLedger commit_close
-8. cleanup_complete = true
-```
-
-`demux.unregister_dvr()` が missing を返した場合の動作は次に固定する。
-
-| 条件 | 動作 |
-|---|---|
-| runtime に `pre_unregistered_by_worker_failure` がある | close 継続可能 |
-
-子オブジェクトの登録解除または閉鎖で未完了となった処理は、依存資源ごとに`cleanup_pending`へ保存する。共有状態の破損、または変更結果を確定できない対象だけを隔離し、通常の削除失敗は再試行対象とする。
-
-
-再試行可能で実状態を確定できる後片付け失敗は`CleanupPending`へ遷移し、同じgenerationの`close()`で未完手順だけを再試行できる。共有状態の破損、または変更結果を確定できない場合だけ`Quarantined`へ遷移し、公開`close()`を含むすべての公開操作を拒否して内部回収機構へ委ねる。新規openは同じIDまたはgenerationを再利用しない。
-
-### `IFrontend.stopTune()` の失敗時状態
-
-`IFrontend.stopTune()` は backend tune を停止し、当該 frontend に接続された demux の stream boundary を閉じる操作である。backend stop 後に demux boundary reset が失敗した場合、古いデータが通常配送可能状態として残ってはならない。
-
-`stopTune()` は次の順序に固定する。
-
-```text
-1. 対象 frontend に接続された demux 一覧を確定する
-2. frontend を Stopping にし、旧 tune / live worker generation の callback、queue確定、backend状態確定の権限を遮断する
-3. 旧workerへ停止・起床を通知し、backend stopを実行する。実行中workerはワーカー終了契約に従って回収機構へ移す
-4. backend停止の確定後、各demuxにstream boundary resetを実行する
-5. 全demux resetと旧workerの遮断が確定した後、frontend stateをIdleにする
-```
-
-backend stop 成功後、demux boundary reset が失敗した場合の動作は次に固定する。
-
-```text
-- stopTune() は失敗を返す
-- backend は停止済みとして扱う
-- reset前に失敗したdemuxは旧境界を配送不能のまま維持して再試行対象とし、reset開始後に状態を確定できないdemuxだけquarantineへ遷移する
-- frontendは`FailedBoundary`とし、旧generationを再有効化しない
-- 該当 demux の close retry は許可する
-```
-
-新しい配送の停止と、クライアントが保持する記憶領域の存続期間は分けて管理する。
-
-
-backend stop が失敗した場合、demux boundary reset は実行しない。frontend state は backend 実状態と一致する状態へ残し、`stopTune()` は backend error を返す。
-
-backend stop失敗時も、段階2で遮断した旧generationのcallbackとqueue確定権限を再有効化しない。backendが動作中と確認できる場合はfrontendを`FailedBackend`として専有資源を保持し、再`stopTune()`または`close()`だけで回収を再試行する。backend実状態を確定できない場合はfrontendと当該endpointを`Quarantined`へ移す。いずれの場合も新しいtune、scan、demux配送を受け付けず、旧選局へ成功状態として戻さない。
-
-### AV 共有メモリの原子性不変条件
-
-AV shared backing は、MediaEvent 用 shared memory slot の lifetime を所有する。slot の `active`、`reserved`、`free`、`next_generation` は、一つの原子的状態として扱う。
-
-`clear_result()`、`release()`、`release_all()` は、失敗時に部分更新してはならない。内部状態は次を一つの mutex 配下に置く。
-
-```text
-AvSharedState {
-  active_slots
-  reserved_slots
-  free_slots
-  next_generation
-  diagnostics
-}
-```
-
-複数 mutex に分けて順次更新してはならない。lock 取得に失敗した場合、状態は呼び出し前から変化しない。
-
-`clear_result()` の動作は次に固定する。
-
-| 条件 | 動作 |
-|---|---|
-| lock 取得失敗 | Err を返す。状態は不変 |
-
-未配送状態と配送済み使用中状態を分け、使用中の領域は解放要求時だけ空き状態へ移す。
-
-
-| 条件 | 動作 |
-|---|---|
-| generation 枯渇 | Err を返す。状態は不変 |
-
-`release(avDataId)` の動作は次に固定する。
-
-| 条件 | 動作 |
-|---|---|
-| lock 取得失敗 | Err。状態不変 |
-| active に存在する | active から削除し、同一 commit で free へ戻す |
-| free 復帰に失敗 | 状態不変で Err |
-
-
-資源の寿命と所有者を明示し、FMQとAV領域で分けて管理する。FMQの記述子と記憶領域はキューランタイムが所有し、`flush()` 後も維持する。論理閉鎖済みで、受付済みトランザクションが0件になった後にだけ解放する。AV共有領域はフィルター世代が、イベント固有領域は個々の割り当てが所有する。配送済みの `avDataId` に対応する割り当ては、`flush()`、再設定、論理閉鎖をまたいでクライアント保持中とし、`releaseAvHandle()` または内部の最終隔離処理まで維持する。AVフィルターの各世代は、8項目・8 MiBの台帳を1個所有する。サービス全体の予約量は `snapshot.av_filter_count` 個分の合計とし、C1では音声・映像フィルター用に16項目・16 MiBを予約する。要求量超過、容量枯渇、割り当て失敗は、コールバックと `dataId` の公開前に確定させ、使用中の割り当てを追い出してはならない。ワーカーハンドルは、実際に終了するまでサービスのワーカー保管領域または回収機構が所有する。キュー世代、フィルター配送世代、解析器世代を進める処理は論理状態だけを初期化し、公開済みまたはクライアント保持中の記憶領域を破棄しない。
-
-
-### TS continuity / adaptation-only packet 固定
-
-- adaptation-only packet は MPEG-TS continuity counter の組立進行条件に含めない。payloadなし packet は continuity tracker の次期待値を進めず、section/PES assembler へ入力しない。
-- adaptation-only packet に `discontinuity_indicator` が立つ場合だけ、当該 PID の continuity 状態と section/PES assembler を切断する。
-
-
-## フィルタ状態破棄境界と遅延通知方針
-
-filter の `stop()`、`flush()`、`configure()`、上流フィルタ登録解除の状態別契約は、本書の「表1. IFilter 状態表」を正とする。本節では、遅延通知の再arm条件だけを補足する。
-
-`FilterDelayHint::時間遅延指定` は queue-empty → non-empty の各まとまりごとに再armする。start/configure直後の1回限りdelayではない。payload queue が空の filter に新規 payload が入った時点で期限を再設定し、最初のまとまり delivery 後に queue が空になった場合、次まとまりは再び time delay を受ける。time delay と data-size delay が両方有効な場合は OR 条件であり、どちらか一方を満たした時点でコールバック配送可能とする。
-
-## CAS と descrambler の境界
-
-CAS HAL / TIS / Tuner HAL のリリース段階ごとのスクランブル解除スコープは `開発規則.md` を正とする。本節では、CAS 本体未接続時でも Tuner HAL の `IDescrambler` AIDL面、key token検証、PID登録、packet単位デスクランブル中核、診断境界をどう扱うかだけを固定する。
-
-
-## descramble 失敗時 packet policy
-
-対象 PID の descramble に失敗した場合でも、DVR / raw TS 録画経路 では scrambled TS packet を後段へ pass-through してよい。これは録画済み TS を後からデスクランブルできるようにするための意図的な設計である。
-
-ただし pass-through は 平文 成功ではない。packet経路 は少なくとも次を区別する。
-
-- 平文 packet
-- descrambled packet
-- scrambled pass-through packet
-- descramble 失敗 packet
-
-Live/AV経路、診断、recording メタデータ、VTS 判定では、scrambled pass-through を `notifyVideoAvailable()` や 平文 success と混同しない。診断カウンター は `NO_KEY`、`BAD_TOKEN`、`CAS_BRIDGE_UNCONNECTED`、`INVALID_TSC`、`MULTI2_FAIL`、`SCRAMBLED_PASSTHROUGH`、`SCRAMBLED_WITHOUT_DESCRAMBLER` を分離し、debug dump 文字列で demux/PID ごとに観測できるようにする。
-
-## px4_drv ロック 方針
-
-
-lockを観測できない場合は`DEMOD_LOCK`を公開せず、trueにもせず、内部の`TuneSubmitted`状態として扱う。
-
-
-この方針は px4 の frontend 状態 だけの設計であり、視聴可能状態の判定ではない。TIS は `notifyVideoAvailable()` を出す前に、section 到達、PMT/ES PID 解決、AV filter data、decoder/surface の成立を別途確認する。px4 backend は `RF_LOCK` を advertise しない。
-
-## px4_drv chardev open / ライブ TS reader 方針
-
-px4_drv の legacy chardev は同一 device node の二重 open を許さないため、px4 backend は control 用 fd と ライブ TS reader 用 fd を別々に `open()` してはならない。`/dev/px4video*` family は `PTX_SET_SYSTEM_MODE`、`PTX_SET_CHANNEL`、`PTX_START_STREAMING`、TS read を同一 open instance から扱う前提にする。
-
-px4 backend は control fd を一度だけ open し、ライブ TS reader はその `File` を `try_clone()` / fd duplicate 相当で複製して使う。TS pump は nonblocking fd と `poll()` の組み合わせで動かし、reader 作成のために同じ chardev path を再 open しない。これにより、px4_drv の single-open 制約下でも tune 後に ライブ TS、section、AV、record/DVR経路 へ packet を流せることを保証する。
-
-
-フロントエンドの存在と対応能力は、機器・ドライバーカタログだけから導出する。ロック取得時間の実測上限がないことを理由に、フロントエンドを非公開にしてはならない。選局は非同期操作とし、バックエンドが選局要求を受理した後は、ロック通知または終端状態の通知、明示的停止、再選局、閉鎖、バックエンドの致命的失敗のいずれかまで要求を有効とする。固定経過時間を理由に成功済みの選局要求を覆したり、フロントエンドの能力公開を取り消したりしてはならない。サービス診断としてロック待ち時間のしきい値超過を記録してよいが、公開結果、対応能力、状態を変更してはならない。停止した `ioctl` または読み取りから復帰するためだけに設けるバックエンド操作期限は、内部の有界入出力方針であり、機器の対応能力ではない。
-
-
-## DVR 方針
-
-
-DVRの同時利用上限は、確定済みの `CapabilitySnapshot` で定める。`P=snapshot.playback_count`、`R=snapshot.record_count`、demuxごとの再生用上限 `P_d=1`、記録用上限 `R_d=1` とする。用途別の全体使用枠とdemux別使用枠に空きがあり、要求されたキューと正確な通知用枠をトランザクションとして準備できる場合だけ受け付ける。検証順序は、ライフサイクルと引数、用途別容量、demux別上限、失敗し得る準備処理とする。失敗時は内容に応じて `INVALID_ARGUMENT`、`UNAVAILABLE`、`UNKNOWN_ERROR` を返し、確定状態を変更しない。対応能力の報告、受付、後片付け、最終解放は同じスナップショットを参照する。VTS用の設定を実行時に生成せず、無条件の既定XMLも設けない。起動前の環境プロファイルで入力元、使用経路、PID、キュー予算が定義され、必要なキュー全体がC1に収まる場合だけ静的なV1設定を1つ選ぶ。それ以外では、実行時サービスの保証を弱めることなくVTSを `DESIGN_HOLD` とする。
-
-
-demux入力世代ごとに、Record DVRへ接続中の全記録フィルター条件を、変更不能な1個の和集合条件へまとめる。到着した188バイトTSパケットは1回だけ評価し、いずれかの記録条件に一致した場合は、到着順にRecord DVRへ正確に1回書き込む。フィルターごとの索引状態とコールバック状態は別々に保持する。接続、切断、設定変更では、世代境界で和集合条件をトランザクションとして置き換える。各フィルターへ一度分配してから全体を並べ替える、重複排除する、または `ingress_sequence` で欠落を推測する構成にしてはならない。
-
-
-開始済みの録画フィルターを接続または切断する場合は、録画経路のロックを保持し、次の188バイトパケット境界で確定する。重複接続と未接続フィルターの切断は状態を変えず成功する。切断境界以後のパケットは配送せず、経路世代によって重複配送と遅延配送を抑止する。
-
-
-record DVR / raw TS filter経路 は受信した 188-byte TS packet を製品の録画品質方針として保持する。TEI が立った packet、duplicate continuity counter の packet、scrambled pass-through packet は、録画・診断・後段デスクランブルのために 録画経路 へ到達させる。一方で、section / PES / AV assembly は破損 packet や duplicate packet による二重組み立てを避けるため、TEI packet と duplicate continuity packet を assembly 入力から除外する。これは AOSP が TEI / duplicate の drop/keep policy を明示しているためではなく、日本向け製品の録画品質と parser 安定性を両立するための固定設計である。
-
-
-playback入力は`TsInputOrigin::Playback(dvr_id, generation)`を付けて通常のdemux配送経路へ流し、接続済みのrecord filterとrecord DVRへ配送できるようにする。録画対象はfrontend入力とplayback入力を同時に合流させず、demuxの現在入力元に属する188バイトpacketだけを到着順に1回評価する。playbackを録画する構成では`recorded_from_playback`を診断へ記録し、同じ`{origin, generation, ingress_sequence}`を二重にrecord DVRへ投入しない。統計はplayback入力の消費・注入とrecord出力を別々に計数する。
-
-
-playback 専用 stats は少なくとも injected bytes、injected packets、malformed packets、dropped bytes を持つ。malformed TS は drop + 診断 を標準方針とし、1 packet の malformed input で playback stream 全体を fail させない。playback input FMQ の `PlaybackStatus` は start 直後・周期 コールバック ともに playback input FMQ の実 fill / unused write space を唯一の水位 source とし、record/output queue の `queued_bytes` を流用しない。playback consumer ワーカー は `WorkerHandle` / owner `ConcreteWorkerSignal` に接続し、close / Drop / 異常時閉鎖済み で `request_stop()` → `wake()` → `join_from_owner()` の順に停止する。
-
-playback input FMQ の stream 境界 方針は次のとおり固定する。start 前に client が prefill した bytes は保持し、start 後に playback TS として読む。started=false 中は ワーカー が FMQ を読まない。stop 時は playback input FMQ と packet assembler residual を維持し、次 start で既存 stream の続きとして読む。flush 時は playback input FMQ と packet assembler residual を drain/discard し、dropped bytes 診断カウンター と ログ に記録する。flush 後に client が新たに書いた bytes は started=false 中には読まず、直前の flush で既存 stream 境界が drain 済みであることを前提に、次 start の prefill として扱う。playback flush は playback input FMQ、packet assembler、playback stats だけを reset し、record/output queue を破壊しない。record DVR flush は record output queue と record stats だけを reset し、playback input queue と playback stats を破壊しない。
-
-
-### playback consumer commit（消費確定）表
-
-本表は `ConsumedNoDelivery` と内部注入失敗を混同しないための補足である。DVR playback は入力方向のFMQであり、filter未接続や未startedによる配送先なしを即時致命失敗にしてはならない。一方で、TS parse後の内部注入処理そのものが失敗した場合は、FMQ read 済み入力を成功消費扱いにしてはならない。
-
-| 入力状態 | FMQ read | TS parse | 注入結果 | 消費扱い | public/diagnostic |
-|---|---|---|---|---|---|
-| valid TS + delivery成功 | 成功 | 成功 | `Consumed` | 消費済み | 正常 |
-| valid TS + preflight後にdelivery先が消滅 | 成功 | 成功 | `ConsumedNoDelivery` | 診断付き消費済み | 出力先の停止・切断がpreflightと注入確定の間に起きた競合だけを対象とし、定常的な出力先なしではFMQを読まない |
-
-接続済みの出力先またはフィルターが1個以上開始状態になるまで、再生側の読み取り処理はFMQを読まない。FMQと同等の蓄積キューは追加せず、FMQ自体の背圧で待機する。出力先の停止時は読み取り処理を再び待機させ、queue容量の超過は通常のFMQ状態として通知する。
-
-
-| 入力状態 | FMQ read | TS parse | 注入結果 | 消費扱い | public/diagnostic |
-|---|---|---|---|---|---|
-| malformed TS | 成功 | malformed | `MalformedOnly` | 消費済み可 | malformed diagnostic。1 packet でstream全体をfailしない |
-| partial TS | 成功 | pending | 未commit | residual保持 | 次readへ持ち越し |
-
-再生データの取り込みには、1回のFMQ読取トランザクションだけを所有する処理中バッファーと、キュー世代ごとのカーソルを使用する。これは第二の待ち行列ではなく、`commitRead()`後のバイト列を再試行中も所有するためのトランザクション領域である。同時に1件だけ存在し、上限は`min(現在の連続読取可能量, 設定済みPlayback DVR FMQ容量)`とし、同容量を別途常時確保しない。FMQの`beginRead` / `commitRead`では、バイト列をこの領域へ正確に1回だけ移す。確定後の再試行は処理中領域だけを入力とする。投入カーソルはバックエンドが受理したバイト数だけ単調に進め、重複投入を防ぐ。処理中領域が空になるまで次のFMQデータを取り込まない。再試行可能なバックエンドエラーでは未投入部分を保持する。致命的エラー、停止、閉鎖では、残りの正確な消失バイト数と終端理由を記録してから破棄し、無診断で失わない。世代変更で無効化できるのは空のカーソルだけとし、処理中領域にデータがある場合は、その処理を完了するか、明示的に終端させてから世代を変更する。
-
-
-### playback consumer ワーカー 起動順序
-
-DVR playback consumer ワーカー は、DVR が soft demux と `RuntimeIoRegistry` の両方へ登録され、queue と ワーカー signal の所有権が `DvrHal` へ確定した後にだけ開始する。登録前に playback ワーカー が DVR state を観測してはならない。
-
-ワーカー生成 後に registry commit する構造は禁止する。spawn 後に後段登録が失敗した場合は、ワーカー stop / join、queue cleanup、soft demux unregister、ledger rollback を一体で行う。
-
-## フロントエンドの対応能力と状態
-
-
-ISDB-Tの列挙値域は、精読済みのARIB STD-B31 2.2の条項と、公式2.2-E1英訳の出典に従う。規格上の有効値と対象ドライバーで設定可能な値は分けて扱う。`TARGET_DRIVER` の証跡によって具体値が設定され、機器で有効になることを確認できない限り、対象バックエンドがモード、変調方式、符号化率、ガードインターバル、時間インターリーブについて公開し受け付ける値は `AUTO` だけとする。
-
-
-`RF_LOCK` は backend が RF/carrier acquisition を別途取得できる場合だけ advertise する。DVB / earth_pt1 backend は Linux DVB `FE_READ_STATUS` が返す `FE_HAS_CARRIER` を `RF_LOCK`、`FE_HAS_LOCK` を `DEMOD_LOCK` に対応させる。px4_drv backend は RF/carrier ロックを返す API を持たないため、px4 の擬似 ロック は `DEMOD_LOCK` のみに使い、`RF_LOCK` には使わない。
-
-`SNR` と `SIGNAL_STRENGTH` は、現行Tuner HAL capability / VTS profile では `statusCaps` に含めない。DVB / earth_pt1 の `FE_READ_SNR` と `FE_READ_SIGNAL_STRENGTH`、px4 の `PTX_GET_CNR` は target driver / device 状態によって read 時に失敗し得る optional telemetry であり、起動時列挙時点で frontendエントリ の固定 capability として証明できないためである。これらの optional telemetry は 診断内部値として保持してよいが、AOSP statusCaps 上の supported 状態として advertise してはならない。
-
-`SIGNAL_QUALITY` は、backend ごとに根拠ある合成値を返せる場合だけ `statusCaps` に含める。DVB / earth_pt1 backend の `SIGNAL_QUALITY` は Linux DVB `FE_READ_STATUS` 状態 bit の ロック 進捗を 0〜100 に正規化した値とする。px4 backend は `PTX_GET_CNR` を安定取得できることを frontendエントリ の capability として固定できない限り、`SNR` と `SIGNAL_QUALITY` を advertise しない。いずれも `DEMOD_LOCK` や `RF_LOCK` の代替ではなく、UI/診断 用の合成指標である。未取得 telemetry を `SIGNAL_QUALITY=0` として成功返却してはならない。
-
-
-### frontend settings validation の固定方針
-
-フロントエンドの対応能力、AIDL入力の受付可否、`ProductProfile`、VTSの選局入力は、本書の「フロントエンド設定表」から生成する。ARIBが定義する放送パラメーター集合と、対象バックエンドが明示的に設定できる入力集合を混同しない。具体値を対応可能として公開または受理できるのは、ドライバーへ設定する経路、または読み戻して検証する経路が存在する場合だけとする。値を検証するだけでバックエンドへの要求から捨て、成功を返す経路は禁止する。
-
-対象のpx4/earth_pt1によるISDB-Tでは、設定表に従い、周波数と6 MHzまたは `AUTO` の帯域幅に対応する。現在の `FrontendTuneRequest` とpx4の選局変換は具体値を保持・設定しないため、モード、階層ごとの変調方式と符号化率、ガードインターバル、階層ごとの時間インターリーブは `AUTO` だけに対応する。`AUTO` は成功とし、これらの項目に規格上既知の具体値が指定された場合は `UNAVAILABLE` を返して、バックエンドと直前の要求を変更しない。不正なタグまたは値域には `INVALID_ARGUMENT` を返す。対応能力、AIDL入力検証、`ProductProfile`、VTS選局入力は同じ設定表から生成する。ARIB STD-B31 2.2の20ページおよび24ページは放送パラメーターの値域を定めるが、`AUTO` のみという制限はARIB上の制約ではなく、現行実装が正しく表明できる対応能力である。
-
-
-explicit範囲scanはISDB-T / ISDB-S共通で対応宣言しない。`endFrequency`が`frequency`と異なる場合は`UNAVAILABLE`とし、既存tune/scan stateを変更しない。
-
-### ISDB-T validation
-
-- `frequency`はtarget channel mappingへ変換可能な値だけを受け付ける。
-- `bandwidth`は`AUTO`または`BANDWIDTH_6MHZ`を受け付ける。
-- `mode`、layer `modulation`、layer `codeRate`、`guardInterval`、layer `timeInterleave`は`AUTO`だけをadvertise・受理する。
-- 上記のAUTO専用項目に指定された既知の具体値は`UNAVAILABLE`、unionまたは値域が不正な入力は`INVALID_ARGUMENT`とし、バックエンドと直前の要求を変更しない。
-- blind scanは`UNAVAILABLE`とする。
-
-ISDB-T設定値の規格上の妥当性は、精読済みのARIB STD-B31の値域と公式英訳の出典に従う。一方、対象ドライバーで設定可能かどうかは独立した根拠で判定する。`TARGET_DRIVER` の証跡で具体値の設定と反映を確認できない限り、対象バックエンドがモード、変調方式、符号化率、ガードインターバル、時間インターリーブについて公開し受け付ける値は `AUTO` だけとする。規格上の具体値を解析や試験のため内部表現に保持してよいが、証跡なしに制御可能な設定として公開または受理してはならない。
-
-
-ARIB STD-B31 2.2版のPDF 20ページおよび24ページは、モード、搬送波変調、内符号化率、ガードインターバル、時間インターリーブの放送パラメーターを定義する。現在のバックエンドでAUTOだけを受け付けることは、ARIB上の値を否定するものではない。明示的な設定経路がない対象について、対応能力を過大に表明しないための制限である。
-
-### ISDB-S validation
-
-- public settingsの`symbolRate`は`0` / 未指定相当のみ成功とする。
-- BSは有効なstream selectorを必須とする。CS110はfixed-slot profileに従いselectorを制限する。
-- modulationとcodeRateは`AUTO`だけをadvertise・受理し、既知具体値は`UNAVAILABLE`、malformed値は`INVALID_ARGUMENT`とする。
-- blind scanは`UNAVAILABLE`とする。
-
-対象のpx4/earth_pt1によるISDB-Sでは、ドライバーと機器が完全一致するカタログ項目によって具体値の設定機能を確認できない限り、変調方式と符号化率は `AUTO` だけに対応する。`AUTO` は成功とし、規格上既知の具体値には状態を変えず `UNAVAILABLE`、不正値には `INVALID_ARGUMENT` を返す。周波数と相対・絶対セレクターの動作は、セレクター設定表とARIB B20/B21の根拠に従って別に定める。
-
-対象バックエンドのISDB-S変調方式は `AUTO` だけに対応する。具体値を設定できる処理と対応能力の証跡が追加されるまで、BPSK、QPSK、TC8PSKの明示指定には状態を変えず `UNAVAILABLE` を返す。
-
-対象バックエンドのISDB-S符号化率は `AUTO` だけに対応する。具体値を設定できる処理と対応能力の証跡が追加されるまで、符号化率の明示指定には状態を変えず `UNAVAILABLE` を返す。
-
-
-共通検証はBinder層の要求変換と`service_runtime`の事前確認で実施する。ただし、設定権限を持たない層が具体値を成功扱いにしてはならない。検証済みの要求だけをバックエンドへ渡し、未対応の入力では以前のワーカーと選局状態を破壊しない。
-
-## ライブ AV filter / FMQ 方針
-
-ライブAVフィルターを正式な対象範囲に含める。本製品は、パススルーではない`MediaEvent`について2種類の伝送方式に対応する。第一選択は公開済みの共有領域と正の`dataId`の組、代替方式はイベント固有の正確な長さを持つ1個のファイル記述子と正の`dataId`の組とする。AVペイロードは通常のFMQへ書き込まない。`EventFlag`はFMQを使用する経路の通知だけに使用する。
-
-AV passthrough は本製品では恒久的に対応しない。`DemuxFilterAvSettings.isPassthrough=true` は configure 時点で `UNAVAILABLE` とし、passthrough capability は宣言しない。成功扱いの無処理 または無配送の AV filter として受け入れてはならない。
-
-VTS/profileでは、AV filterを使用する場合でも `isPassthrough=false` に固定する。`isPassthrough=true` を含むprofileは本製品の対応profileとして扱わない。
-
-AV filter の状態別契約、shared backing、公開済みハンドル、使用中領域、`dataId`、`releaseAvHandle()`、`flush()`、`configure()`、`close()` の副作用は、本書の「表4. AV共有メモリ資源寿命表」を正とする。本節では、allocator、NativeHandle形式、payload配置、診断方針だけを補足する。
-
-AndroidフレームワークとJNIが受理する`MediaEvent`の表現は、本書の「AV割り当て方式」を正とする。共有モードでは、`IFilter.getAvSharedHandle()`がdma-bufまたはION系のファイル記述子1個を持つハンドルを返す。各イベントの`avMemory`は空とし、正の`avDataId`と`offset/dataLength`で共有領域内の半開区間を識別する。イベント固有モードでは、各イベントが正確な長さのファイル記述子1個を持つ`avMemory`と、正の`avDataId`を持つ。共有ハンドルの未取得、使用権の解放済み、収容可能な空き領域なし、またはAUが領域長を超える場合は、イベント固有モードを正式な代替方式とする。過大なAUを破棄して、2方式対応という能力表明と矛盾させてはならない。
-
-両モードの`avDataId`は、同じ上限付き割り当て台帳から発行する。メモリー、台帳、`MediaEvent`の準備がすべて成功した後に割り当てを確定し、失敗時はコールバックまたは`dataId`を公開しない。`offset + dataLength <= backing size`を正常範囲とし、上限超過を検出できる加算を用いる。長さ0は不正としてイベントを発行しない。`isSecureMemory=false`に固定する。
-
-解放要求の形状、既知の古い要求を状態変更なしで受理する条件、不明な要求の拒否、ファイル記述子の同一性検証、論理閉鎖後の解放は、表1-C-AVHと本書の「表1-C-AVH. `releaseAvHandle()` 全域判定表」を正とする。`releaseAvHandle(fd,0)`を共有記憶領域全体の破棄と解釈してはならない。イベント固有モードでは、フレームワーク側の参照状態に応じ、受領したハンドルの使用権だけを閉じる場合がある。
-
-### AV shared handle の `NativeHandle` 形式
-
-| 項目 | 固定値 | 理由 |
-|---|---|---|
-| fd数 | 1 | shared backing fd を framework/JNI へ渡すため |
-| ints数 | 1 | Android framework/JNI が参照する memory index だけを公開するため |
-| `ints[0]` | 0 | 単一 shared memory の index。HAL内部識別子ではない |
-| `ints[1..]` | 出さない | HAL内部識別子を framework/JNI へ公開しないため |
-| `slot_size` / `slot_count` | 出さない | HAL内部の領域管理値であり、`NativeHandle.ints` ではないため |
-| magic / generation / filter id | 出さない | JNI が int を memory index として読むため |
-
-### AV転送方式とクライアント側の存続期間
-
-| 状態 | AV payload到着時の動作 |
-|---|---|
-| 共有ハンドル公開済み、クライアント使用権が有効、収容可能な空き領域あり | 共有領域へ配置し、空のハンドルと正の`dataId`を持つ`MediaEvent`を発行する |
-| 共有ハンドル未取得、またはクライアント使用権を解放済み | イベント固有の正確な長さを持つファイル記述子を割り当て、当該ハンドルと正の`dataId`を持つ`MediaEvent`を発行する |
-| shared slotなしまたはAU > slot size | event-local exact-size fdへfallbackする |
-| allocation lease pool exhausted | `OVERFLOW`を通知し、既存allocationをevictしない |
-| イベント固有領域の割り当て失敗 | `UNAVAILABLE`または型付きの割り当て失敗を返す。実体のない`MediaEvent`または`dataId`を公開しない |
-| `getAvSharedHandle()`再取得 | 新規または現在の共有クライアント使用権を有効にし、後続イベントで共有モードを再選択できるようにする |
-
-## A/V sync 方針
-
-
-### AV sync hardware ID 所有契約
-
-AV sync hardware ID は `filter_id & 0xffff` から導出しない。demux 内の `filter_id -> hw_id` と `hw_id -> filter_id` の双方向表で固定し、filter ID 65536周期の衝突を禁止する。
-
-filter unregister、non-AV configure、AV filter close、demux close では、双方向表の両方向を同一commitで削除する。片方向だけ残る場合は demux の AV sync 状態を通常状態として扱わない。
-
-
-AV filterを対応宣言する demux は AOSP の `getAvSyncHwId(Filter)` と `getAvSyncTime(int)` の契約に沿って A/V sync ID と 90kHz timestamp を返す。`getAvSyncHwId(media filter)` は AV filter 固有IDではなく、対応する PCR filter ID を返す。section、PES、record、閉鎖済み filter、対応する PCR filter が存在しない media filter には契約に従った失敗を返す。
-
-`getAvSyncHwId()` は、対象 media filter に対応する PCR filter が configure 済みであれば、PCR 観測前でもその PCR filter ID を返す。PCR 観測済みかどうかを sync ID 返却の前提にしない。PCR 未観測状態は `getAvSyncTime(id)` の戻り値側で未確定値として表現する。
-
-同一demuxに属する稼働中のPCRフィルターを示す有効なA/V同期IDについては、PCR未観測でも `getAvSyncTime()` を成功させ、`Tuner.INVALID_TIMESTAMP` を返す。最初の有効なPCRを観測した後は、90 kHz系の最新観測時刻を返す。別demuxのID、PCR以外のフィルターID、閉鎖済みID、不明なIDには `INVALID_ARGUMENT` を返す。値0を未観測時の特別値として公開してはならない。
-
-
-## A/V sync 非採用範囲
-
-AV filter の `start()`、共有ハンドル、MediaEvent、`releaseAvHandle()` の状態別契約は、本書の「表4. AV共有メモリ資源寿命表」を正とする。本節では A/V sync の現行境界と非採用範囲だけを固定する。
-
-
-- PTS は current A/V sync clock の 代替処理 として使わない。
-- PCR と monotonic clock の対応付けによる最小 wallclock 補間は維持する。
-- PCR PID 明示管理、サービス clock、jitter smoothing、PLL / clock discipline を追加する場合は、clock source、reset 条件、戻り値、診断、実機確認条件を本書へ固定してから扱う。
-
-以下は現行実装範囲外にする。
-
-- PCR PID 明示管理。
-- サービス clock モデル。
-- jitter smoothing。
-- PLL / clock discipline。
-- 複数 clock source の品質評価。
-- より厳密な CTS / VTS / 実波ベース補正。
-
-## LNB 固定 profile
-
-
-LNBは機器単位の終端資源とし、本書のLNB機器資源契約と事象駆動のワーカー終了契約だけで管理する。静的な `ServiceResourcePlan` の共有枠や `TargetDriverTimingProfile` では管理しない。`getLnbIds()` は、検出に成功して使用条件を満たす終端だけを列挙する。`openLnb()` は終端1個の使用権を取得する。不明なIDには `INVALID_ARGUMENT`、使用中、`CleanupPending`、`Quarantined` の終端には、状態を変えず `UNAVAILABLE` を返す。最初の `close()` では `LogicalClosed` を確定して新しい公開処理を拒否し、その時点で実行可能な後片付けをすべて試す。再試行可能な未完の依存資源は `CleanupPending` に残す。実行中のワーカーは変更を遮断し、`ReaperSupervisor` へ一度だけ移す。バックエンドとワーカーの後片付けが完了した後に限り、終端の使用権を正確に1回返却する。隔離中は使用権を保持する。`ProductProfile` はLNBを抑止できるが、存在しない終端や電圧能力を生成してはならない。
-
-
-公開するLNB IDはsatellite frontendへ接続できる論理endpointとして扱い、1個のendpoint leaseを複数frontendへ同時接続しない。`setLnb(lnb_id)`は当該satellite frontendへ接続可能なLNB IDだけを受け付け、別の物理機器に属するLNB ID、地上波frontendへのLNB接続、不明なLNB IDは失敗させる。同一px4機器内で複数の論理endpointが共有する物理電圧レールは機器単位で直列化し、互換な電圧要求だけを参照数で共有する。
-
-`ILnb.setCallback(callback)` は、受け取ったコールバック実体を `LnbHal` 内に保持する。`callback == NULL` は AOSP契約上の callback 登録解除として成功対象に含め、保持中の callback 実体を解放する。再設定時は新しいコールバック実体で置換する。`ILnb.close()` と未閉鎖 `LnbHal` の破棄経路では保持中のコールバック実体を解放する。AOSP frozen/stable AIDL の vendor 独自改変、生の Binder transaction 解析器による公開契約を通さない実装は採用しない。
-
-
-`BackendApplyOutcome`は`Applied`、`Rejected`、`Indeterminate`、`RollbackFailed`の4種類とする。`Applied`では確定し、`Rejected`では以前の状態を維持する。`Indeterminate`では対象資源を隔離して`UNKNOWN_ERROR`を返し、`RollbackFailed`でも隔離して`UNKNOWN_ERROR`を返す。再試行は新しい操作IDでだけ許可する。
-
-
-`Drop`または所有者消滅では、待機を伴わず安全状態へ戻す後片付けを開始する。
-
-
-### LNB 状態更新の失敗時整合性
-
-
-LNBへのバックエンド適用後に台帳の確定へ失敗した場合は、要求状態、バックエンドの適用結果、最後に確認できた機器状態、台帳エラーを1個の診断として保存する。当該LNBを隔離し、閉鎖または回収処理で安全状態を再適用して後片付けする。
-
-
-## 復号鍵台帳
-
-`IDescrambler.setKeyToken()` が受け取る値は復号鍵そのものではなく、不透明な参照値である。Tuner HAL はこの参照値で復号鍵台帳を引き、内部の `DescramblerKeySlot` に変換する。Binder 境界を越える バイト列に MULTI2 の system key、CBC 初期値、偶数鍵、奇数鍵を入れてはならない。
-
-復号鍵台帳の key slot 状態は次で固定する。
-
-| 状態 | 意味 | resolve結果 | 復号可否 | 設計上の成立条件 |
-|---|---|---|---|---|
-| `Registered` | CAS bridge または test 専用登録により、内部鍵参照が有効である。refcount は 0 以上 | 成功 | 可 | `setKeyToken()` が acquire ref に成功し、packet経路 が key slot を参照できる |
-| `Unknown` | 台帳に存在しない token。未登録、refcount 0 到達による削除、refcount 0 の未使用 slot revoke 済みを含む | `UnknownToken` | 不可 | 削除済み token を復号可能として扱わない |
-| `RegistryUnavailable` | 台帳 lock 失敗、内部状態破損、CAS bridge registry 不在などで解決不能 | `RegistryUnavailable` または AIDL `UNKNOWN_ERROR` 相当 | 不可 | 内部障害を復号成功にしない |
-
-
-失効時は直ちに無効化し、新規および既存の解決処理を停止して鍵素材を使用不能にする。
-
-
-## デスクランブル gate
-
-VTS/lab config には descrambling flow を置かない。VTS 用 XML に ECM filter や `<descramblers>` を生成せず、平文ライブ視聴 / DVR / 明示選局 の接続確認に限定する。Tuner HAL は PMT/CAT/SDT/ECM/EMM 等の section payload delivery、`IDescrambler`、`setKeyToken()`、`addPid()` / `removePid()`、トークン lookup 境界、未接続・bad トークン・expired トークン 診断までを確認対象とする。本番経路スクランブル解除成功のリリーススコープと、CA情報 / サービス メタデータの意味解析、ECM/EMM filter 開始方針、MediaCas/CAS bridge 呼び出し、不透明な参照値の取得試行、Tuner descrambler への接続判断、未接続診断の上位制御の責務境界は `開発規則.md` を正とする。Tuner HAL の packet 単位のデスクランブル中核は、単体テスト内で復号鍵台帳へ既知鍵を登録して確認する。
-
-
-## IDescrambler optionalSourceFilter 境界
-
-AOSP意味論では、`IDescrambler.addPid(pid, optionalSourceFilter)` および `removePid(pid, optionalSourceFilter)` の `optionalSourceFilter == NULL` は demux input 全体に対する PID 登録 / 解除である。NULL経路は現行AOSP契約上の成功対象として扱う。non-null 経路は指定 filter output、すなわち upper stream を対象にした PID 登録 / 解除であり、source filter検証後に成功対象とする。
-
-### 表D-1. IDescrambler PID 操作表
-
-| 番号 | API | source filter | 条件 | AIDL戻り値 | 副作用 | 設計上の成立条件 |
-|---:|---|---|---|---|---|---|
-| DS-001 | `addPid(pid, NULL)` | なし | valid PID、descrambler非閉鎖、demux設定済み、PID未衝突 | 成功 | demux input 全体に対する PID として登録 | NULL filter は demux input を表す。source filter id / generation は持たない |
-| DS-002 | `addPid(pid, filter)` | あり | filter が同一 demux、非閉鎖、generation 有効、pid valid | 成功 | source filter に紐づく PID として登録 | source filter id と generation を保存する |
-
-同一サービス内の閉鎖済みオブジェクトには`INVALID_STATE`を返す。
-
-
-| 番号 | API | source filter | 条件 | AIDL戻り値 | 副作用 | 設計上の成立条件 |
-|---:|---|---|---|---|---|---|
-| DS-004 | `addPid(pid, filter)` | あり | invalid PID | `INVALID_ARGUMENT` | なし | PID 範囲外を登録しない |
-| DS-005 | `addPid(pid, filter)` | あり | descrambler 閉鎖済み、demux 未設定、別 active descrambler が同一 demux generation / PID を所有 | `INVALID_STATE` | なし | 状態衝突を引数不正として扱わない。key token 未設定は PID 登録拒否条件ではない |
-| DS-006 | `removePid(pid, NULL)` | なし | demux input 全体に登録済みPID、または未登録PID | 成功 | demux input 全体に対する PID 登録を解除。未登録なら無処理 | NULL filter は demux input を表す。cleanup として冪等成功にする |
-| DS-007 | `removePid(pid, filter)` | あり | 登録済み source-filter 紐づき PID | 成功 | 紐づく PID 登録を解除 | source filter id と generation が一致する登録だけ解除する |
-| DS-008 | `removePid(pid, filter)` | あり | 未登録 PID | 成功 | なし | cleanup として冪等成功にする |
-| DS-009 | `removePid(pid, filter)` | あり | invalid PID | `INVALID_ARGUMENT` | なし | PID 範囲外を解除対象にしない |
-| DS-010 | `addPid()` / `removePid()` | あり/なし | unsupported `DemuxPid` variant | `UNAVAILABLE` | なし | product capability 未対応に限定する。NULL filterかどうかではなくPID variantで判定する |
-
-
-`addPid(pid, source)`は完全同一のdemux generation・PID・source filter generation tupleだけ冪等成功とする。sourceが異なる既存登録には`INVALID_STATE`を返し、変更には先行`removePid()`を必須とする。
-
-
-エラー写像:
-- `INVALID_STATE`: descrambler 閉鎖済み、demux 未設定、demux generation 消失、再検査時 state 不整合、別 active descrambler による同一 demux / demux generation / PID 所有衝突。key token 未設定は `addPid()` / `removePid()` の `INVALID_STATE` 理由にしない。
-
-閉鎖済みの入力元filterには`INVALID_STATE`を返す。
-
-
-- `UNAVAILABLE`: unsupported `DemuxPid` variant、product capability 未対応に限定する。
-
-## DVB backend の対応表
-
-DVB backend は frontend index と同じ demux index / dvr index を使う。`adapterN/frontendM` は `adapterN/demuxM` と `adapterN/dvrM` に対応する。demux が別 frontend の TS を読む構成は advertise しない。source 選択 ioctl が失敗した場合は tune / scan / record を成功扱いにしない。
-
-## 診断可観測性の固定
-
-本番経路トークンの用語、リリース段階、TIS から `setKeyToken()` へ渡してよい値のスコープは `開発規則.md` を正とする。本節では、Tuner HAL が受け取ったトークンの検証、AIDL戻り値、診断、副作用だけを固定する。`register_from_cas_bridge()` は CAS bridge 接続口であり、非 test product 経路からの到達可否は `開発規則.md` の本番経路スコープに従う。
-
-`IDescrambler.setKeyToken()` に到達する non-VOID トークン は、HAL key token table が発行した 8 byte の opaque byte array だけを有効とする。Android 14 系の `Tuner.VOID_KEYTOKEN` は 1 byte トークン `[0x00]` として扱い、current key removal 用の有効 トークン とする。空 トークン `[]` は VOID トークン ではなく、常に `INVALID_ARGUMENT` と内部診断 `BAD_TOKEN` に落とす。non-VOID で 8 byte 以外の トークン は registry lookup 前に `INVALID_ARGUMENT` / `BAD_TOKEN` とする。
-
-`maleicacid-cas-desc-token-*`、`maleicacid-placeholder-desc-token*`、既存 TIS 側の `maleicacid-kari-token-*` は、設計文書上の診断名またはログ上のラベルであり、Tuner SDK API 経由で渡す実 トークン ではない。単体テスト、fake CAS、診断注入で同等のケースを表現する場合も、`setKeyToken()` に渡す non-VOID byte array は HAL key token table が発行した 8 byte fixed テストトークン とし、長い診断名は テストケース 名、lookup table の説明、診断 dump の表示名に限定する。
-
-これらの診断 トークン origin を受け取った場合は、復号成功ではなく `CAS_BRIDGE_UNCONNECTED`、`BAD_TOKEN`、`EXPIRED_KEY_SLOT` など該当する診断へ落とす。
-
-`IDescrambler.setKeyToken()` は、最初に `[0x00]` を `Tuner.VOID_KEYTOKEN` として処理し、registry lookup に流さず current key slot のみ解除する。PID 登録は維持する。次に空 トークン `[]` と 8 byte 以外の non-VOID トークン を registry lookup 前に拒否し、`INVALID_ARGUMENT` と内部診断 `BAD_TOKEN` に固定する。8 byte だが未登録の トークン と CAS bridge 未接続 トークン は通常 トークン として registry lookup 後に区別して診断する。診断を通さない トークン 解決 API は 本番経路へ公開しない。
-
-`IDescrambler.setKeyToken()` の失敗時は、現在の鍵スロット、現在のトークン、demux 紐付け、PID登録を変更しない。空 トークン、長さ超過、未登録、失効済み、台帳異常のどれで失敗しても、成功扱いにせず固定された AIDL 戻り値と診断だけを返す。PID 登録を消す操作は `removePid()` だけであり、`VOID_KEYTOKEN` と 鍵参照の解決失敗は PID 登録削除を伴わない。
-
-デスクランブル診断は、`dump_descrambler_diagnostics_for_debug()` の dump 文字列と `maleicacid-tuner-hal-descrambler-diagnostic` ログで観測する。dump には demux、PID、`CLEAR_PACKET`、`DESCRAMBLED`、`SCRAMBLED_PASSTHROUGH_FOR_RECORDING`、`MALFORMED_PACKET_FOR_RECORDING`、`DESCRAMBLE_FAILED`、`INVALID_PACKET_SIZE`、`BAD_SYNC_BYTE`、`INVALID_AFC`、`INVALID_ADAPTATION_FIELD`、`INVALID_TSC`、`SCRAMBLED_WITHOUT_PAYLOAD`、`NO_KEY`、`BAD_TOKEN`、`CAS_BRIDGE_UNCONNECTED`、`EXPIRED_KEY_SLOT`、`MULTI2_FAIL`、`SCRAMBLED_WITHOUT_DESCRAMBLER` を含める。`SCRAMBLED_PASSTHROUGH_FOR_RECORDING` は後段デスクランブル可能な録画 TS を残すための pass-through であり、平文 成功を意味しない。malformed / undefined な TS-frame-like packet の録画保存は `MALFORMED_PACKET_FOR_RECORDING` で別管理し、`InvalidPacketSize` / `BadSyncByte` は record-DVR raw TS に保存しない。
-
-`MALEICACID_TUNER_HAL_DESCRAMBLER_DIAGNOSTIC_FILE` を設定した デバッグビルドまたは立ち上げ検証環境では、Tuner HAL サービスが 5 秒間隔で同じ descrambler 診断 dump を指定ファイルへ書き出す。Stable AIDL には vendor 独自メソッドを追加しない。
-
-
-### 失効 トークン 診断
-
-`maleicacid-expired-desc-token-*` は診断名であり、`setKeyToken()` に渡す実 トークン ではない。現行仕様では persistent expired state を持たないため、失効または revoke 済み token の `setKeyToken()` は unknown token として扱う。`EXPIRED_KEY_SLOT` は stale release / refcount underflow 検出用の診断名としてだけ使う。
-
-`setKeyToken()` は、空 トークン、8 byte 以外の non-VOID トークン、未登録 トークン、CAS bridge 未接続 トークン を区別して診断カウンターに記録する。`[0x00]` は `Tuner.VOID_KEYTOKEN` として扱い、`BAD_TOKEN`、unknown トークン、CAS bridge 未接続には混ぜず、key 未設定状態でも 成功扱いの無処理 とする。空 トークン `[]` は registry lookup、current key slot 変更、PID 登録変更を行わない。
-
-## B25 packet デスクランブル中核の範囲
-
-現行 Tuner HAL は、libaribb25 相当の B25 全体実装であるとは主張しない。Tuner HAL に実装済みなのは、188 byte TS packet の payload に対する MULTI2 復号中核、odd/even key 選択、adaptation フィールドを壊さない payload offset 判定、復号成功時の scrambling_control 正規化、復号失敗時の録画向け scrambled pass-through 診断である。
-
-### MULTI2 / B25 境界
-
-Tuner HAL の descrambler は、key token で与えられた鍵を用いて、188 byte TS packet の payload 部分だけを復号する。
-
-| 項目 | 契約 |
-|---|---|
-| TS header | 変更しない |
-| adaptation field | 変更しない |
-| PCR / OPCR | 変更しない |
-| continuity counter | 変更しない |
-| payload | MULTI2復号対象 |
-| scrambling_control | 復号成功時に clear 化する |
-| odd/even key | scrambling_control に従い選択する |
-
-ECM / EMM、CAS権利判定、card I/O、CW取得は Tuner HAL の責務ではない。CAS HAL または CAS bridge が責務を持つ。Tuner HAL は、取得済み key token を使う payload 復号中核だけを担当する。
-
-
-ECM / EMM 処理、カード I/O、CAS 権利判定、CW 取得、不透明 トークン 発行、B25 system key / CBC 初期値 / data key を CAS 側から安全に供給する経路は CAS HAL または CAS bridge の責務である。CAS / TIS / Tuner HAL のリリース段階ごとの統合スコープは `開発規則.md` を正とする。本節の OK 判定は「Tuner HAL の packet 単位のデスクランブル中核と診断境界が静的に整った」という意味であり、「CAS 通信部だけを除いて libaribb25 の TS→TS B25 処理系が全て完成した」という意味ではない。
-
-## LNB profile 判定表
-
-LNB profile は sysfs `DEVNAME` または `/dev` basename と earth_pt1 の sysfs driver basename で決定する。HAL は以下の表を実装に持つ。
-
-| device node prefix | LNB profile | 成功する voltage |
-|---|---|---|
-| `px4video*` | `Px4Device15VOnly` | `NONE`, `15V` |
-| `pxmlt5video*` | `NoPower` | `NONE` |
-| `pxmlt8video*` | `NoPower` | `NONE` |
-| `isdb6014video*` | `NoPower` | `NONE` |
-| `isdb2056video*` | `NoPower` | `NONE` |
-| `pxm1urvideo*` | `NoPower` | `NONE` |
-| `pxs1urvideo*` | `NoPower` | `NONE` |
-| `isdbt2071video*` | `NoPower` | `NONE` |
-
-
-DVB frontend は sysfs driver basename が `earth-pt1` の場合だけ `EarthPt1FixedLnb` として採用する。frontend name に `tc90522` が含まれるだけでは採用しない。
-
-`EarthPt1FixedLnb` は `NONE`、`11V`、`15V` だけを成功にする。`13V`、`18V`、tone、DiSEqC、satellite position switching は成功扱いしない。
-
-
-## 恒久仕様
-
-### Filter / DVR 開始 commit 境界
-
-
-AIDLの公開面は、callbackに依存する操作だけがcallback状態の影響を受けるようにする。
-
-
-### PES 解析境界
-
-record index は、PES と raw elementary stream を区別する。共有 PES parser が PES 形式として拒否した入力を、元 payload 全体の raw elementary stream として再走査してはならない。raw elementary stream として扱うのは、PES stream id として解釈しない入力だけとする。
-
-### packet origin
-
-source filter 由来の TS packet は frontend 由来の TS packet と同じ packet pipeline を通る。ただし origin namespace は frontend と source filter で分離し、assembler generation、carry state、flush state を相互に消してはならない。
-
-### ワーカー 停止失敗
-
-scan ワーカー と tune ワーカー は、join 失敗時に ワーカーslot を破棄してはならない。停止失敗は診断に残し、後続 close または stop で再試行できる状態を保持する。
-
-### AV shared backing
-
-AV shared backing は、検証が成功するまで旧 backing を保持する。設定変更の後段失敗で旧 backing、公開済み handle、stream type を破棄してはならない。release、flush、clear は active/free map を中間不整合のまま公開してはならない。
-
-### test と release API の境界
-
-テストの都合で release経路 の API 可視性を広げない。テスト補助関数は `#[cfg(test)]` 内に閉じる。旧 補助関数、互換 alias、互換 wrapper を release経路 に戻してはならない。
-
-
-## product 統合手順
-
-product makefile、BoardConfig、ueventd、SELinux、VINTF/init、VTS設定、通常 vendor binary 統合、二重登録禁止の具体手順は `tuner_hal2/INTEGRATION.md` を正とする。本書には統合手順を重複定義せず、Tuner HAL の設計判断だけを置く。旧 `tuner_hal` は参照用ソースであり、product default serviceとして組み込まない。
-
-px4 probe prefix を変更する場合は、frontend_px4系実装、`tuner_hal2/config/ueventd.tuner_hal2.rc`、`tuner_hal2/sepolicy/file_contexts` を同時に更新し、静的確認 と ロジック確認で一致を確認する。この整合条件の実機組込手順は `tuner_hal2/INTEGRATION.md` に従う。
-
-
-## 契約確認観点
-
-本節は設計契約に対する確認観点を列挙する。実行手順、atest名、VTSコマンド、成果物名、完了判定は `タスク完了判定の実施方法.md` または個別テスト計画を正とし、本書では定義しない。
-
-### AOSP / AIDL / VTS 系
-
-| 番号 | 確認観点 | 目的 |
-|---:|---|---|
-| T-AOSP-1 | `setDataSource(sourceFilter)` 成功 | 同一 demux 内の source filter接続 |
-| T-AOSP-2 | `setDataSource(nullptr)` | demux input 復帰として成功 |
-| T-AOSP-3 | `setDataSource(nullptr)` 後の再start/data出力 | demux inputからの再start/data出力成功 |
-| T-AOSP-4 | source filter owner demux不一致 | `INVALID_ARGUMENT` |
-| T-AOSP-5 | source filter closed/failed | `INVALID_STATE` |
-| T-AOSP-6 | unsupported source/sink subtype | `UNAVAILABLE` |
-| T-AOSP-7 | `addPid(pid, nullptr)` | AOSP意味論確認。demux input 全体へのPID登録として成功 |
-| T-AOSP-8 | `removePid(pid, nullptr)` | AOSP意味論確認。demux input 全体へのPID解除として成功 |
-| T-AOSP-9 | `addPid(pid, sourceFilter)` 成功 | upper stream識別ありPID登録 |
-| T-AOSP-10 | `removePid(pid, sourceFilter)` 成功 | upper stream識別ありPID解除 |
-| T-AOSP-11 | optionalSourceFilter owner demux不一致 | `INVALID_ARGUMENT` |
-| T-AOSP-12 | optionalSourceFilter closed/failed | `INVALID_STATE` |
-| T-AOSP-13 | `linkCaps` main type matrix | 広告したmain type pairはVTS生成のUNDEFINED subtype接続も成功 |
-| T-AOSP-14 | `linkCaps`非宣言main type接続 | `UNAVAILABLE` |
-| T-AOSP-15 | TS main type `UNDEFINED` subtype source filter | linkCapsでTS→TSを広告する場合は接続成功 |
-| T-AOSP-16 | `getAvSharedHandle()` 成功 | fd付きNativeHandleとsize取得 |
-| T-AOSP-17 | `releaseAvHandle(fd付きhandle, 0)` 成功 | VTS互換shared handle release |
-| T-AOSP-18 | `releaseAvHandle(empty, 0)` | fdなし通知経路 |
-| T-AOSP-19 | `releaseAvHandle(empty, activeAvDataId)` | MediaEvent slot release |
-| T-AOSP-20 | `releaseAvHandle(event-local fd handle, matching activeAvDataId)` | 成功。foreign/mismatchは`INVALID_ARGUMENT` |
-| T-AOSP-21 | `releaseAvHandle(any, negativeAvDataId)` | `INVALID_ARGUMENT` |
-| T-AOSP-22 | `getAvSharedHandle()` 複数回取得 + release | fd duplicate寿命確認 |
-| T-AOSP-23 | `configureMonitorEvent(0)` | 成功、通常event抑止なし |
-| T-AOSP-24 | `configureMonitorEvent(nonzero)` profile有効時 | monitor event発生 |
-| T-AOSP-25 | `configureMonitorEvent(nonzero)` profile無効時 | `UNAVAILABLE` |
-| T-AOSP-26 | AV `isPassthrough=false` | shared memory AV経路成功 |
-| T-AOSP-27 | AV `isPassthrough=true` | `UNAVAILABLE` |
-| T-AOSP-29 | `getFrontendStatusReadiness()` 要求順・同長 | AIDL配列契約 |
-| T-AOSP-30b | `getFrontendStatusReadiness()` unsupported status type | 要求順・同長で要素ごとにUNSUPPORTED |
-| T-AOSP-31 | `tune()` 中の再`tune()` | 旧tune停止、新tune開始 |
-| T-AOSP-32 | `scan()` 中の再`scan()` | 旧scan停止、新scan開始 |
-| T-AOSP-33 | `stopTune()` | tune停止、attached demuxへdata停止 |
-| T-AOSP-34 | `stopScan()` | scan停止 |
-| T-AOSP-35 | active scan中の`stopTune()` | 製品設計通りの挙動固定 |
-| T-AOSP-36 | DVR playback watermark | 空き領域基準 |
-| T-AOSP-37 | DVR record watermark | record callback基準 |
-| T-AOSP-38 | `FilterDelayHint` timeのみ | time条件 |
-| T-AOSP-39 | `FilterDelayHint` dataのみ | data条件 |
-| T-AOSP-40 | `FilterDelayHint` time+data | OR条件 |
-
-`close()` 以外の公開メソッドでは、`LogicalClosed`、`InvalidArgument`、`WrongLifecycle`、`ResourceUnavailable`、`BackendFailure`、`Success` の順で判定を優先する。`close()` 自体の結果はこの共通優先順位で決めず、インターフェース別の `close()` 表だけに従う。遅延して呼ばれる `IFilter.releaseAvHandle()` はAV解放台帳に従う独立操作であり、閉鎖後の共通メソッドとして扱わない。
-
-
-| 番号 | 確認観点 | 目的 |
-|---:|---|---|
-| T-AOSP-42 | VTS XML/profile full run | `VtsHalTvTunerTargetTest` |
-| T-AOSP-43 | VTS config audit | monitor / descrambler / AV shared / linkCaps / passthrough整合 |
-
-### ARIB TS packet 系
-
-| 番号 | 確認観点 | 目的 |
-|---:|---|---|
-| T-TS-1 | sync byte不正 | reject |
-| T-TS-2 | 187/189 byte | reject |
-| T-TS-3 | TEI set packet | section/PES/AV assemblyへ入れない |
-
-188バイトで構造上完全なTSパケットに `TEI=1` が設定されている場合、TS生データ出力とTS記録出力には入力順のまま保持する。HALはTEIカウンターを飽和加算し、記録の `byteNumber` は実際に書き込んだバイト数を基準に進める。Section、PES、AVなどの意味解析側では当該パケットを破棄または再同期し、解析済みイベントを通知しない。同期バイトまたは長さの不正は、TEIとは別のパケット単位破棄とする。連続性の不連続は、さらに別の組み立て状態初期化とする。これらの放送パケット上の異常だけを理由にキューまたは経路を隔離してはならず、隔離は基盤破損の場合に限る。エラーパケットを除いたTS生データまたは記録データを公開する場合は、バイト番号の契約を含む明示的な `ProductProfile` を別に定義する。
-
-
-| 番号 | 確認観点 | 目的 |
-|---:|---|---|
-| T-TS-5 | adaptation_field_control reserved | reject |
-| T-TS-6 | adaptation length overflow | reject |
-| T-TS-7 | PCR flagありPCR不足 | reject |
-| T-TS-8 | OPCR flagありOPCR不足 | reject |
-| T-TS-9 | splicing/private/extension長不足 | reject |
-| T-TS-10 | duplicate CC | assemblyへ入れない |
-| T-TS-11 | discontinuity_indicator | continuity/assembler reset |
-| T-TS-12 | adaptation-only packet | continuityを進めない |
-| T-TS-13 | TS resync末尾完全188byte | 次入力sync待ちせず返す |
-| T-TS-14 | false `0x47` resync | 誤同期しない |
-| T-TS-15 | scrambling_control set + keyなし | record pass-through / assembly drop |
-
-### ARIB section 系
-
-| 番号 | 確認観点 | 目的 |
-|---:|---|---|
-| T-SEC-1 | section_length最小未満 | reject |
-| T-SEC-2 | syntaxあり最小長不足 | reject |
-| T-SEC-3 | reserved bit不正 | reject |
-| T-SEC-4 | CRC good | accept |
-| T-SEC-5 | `isCheckCrc=true` + CRC bad | reject / overflowに写像しない |
-| T-SEC-5a | `isCheckCrc=false` + CRC bad + 構文正常 | CRCを配送条件にせず、rawはFMQ配送と`DATA_READY`またはEventFlag通知、non-rawは型付きevent規則に従う |
-| T-SEC-6 | raw + `isCheckCrc=false` + reserved bit不正 | 生バイト列を配送し、型付きeventは生成しない |
-| T-SEC-6a | non-raw + reserved bit不正 | reject |
-| T-SEC-7 | EIT `section_length == 4093` | accept |
-| T-SEC-8 | EIT `section_length == 4094` | reject |
-| T-SEC-13 | `SectionBits repeat=false` | one-shot |
-| T-SEC-14 | `TableInfo repeat=false` | 1 table / 1 version |
-| T-SEC-15 | `repeat=true` version更新 | 継続監視 |
-
-raw sectionは、外形、設定されたCRC検査、意味検証を分ける契約に従う。完全なsection外形には、ポインターと`section_length`が範囲内であり、宣言範囲の全バイトが揃っていることを必要とする。外形が完全でも表の構文、予約ビット、意味項目が不正な場合は、rawフィルターに限り元のバイト列を配送してよい。CRC不一致のraw sectionを配送できるのは`isCheckCrc=false`の場合だけとし、`isCheckCrc=true`では破棄する。配送時は推測値を含む`DemuxFilterSectionEvent`を通知せず、`DATA_READY`またはEventFlagでFMQ到着を通知し、型付きのsection解析診断を記録する。raw以外のsectionフィルターでは対象データを破棄する。外形が不正または不完全な場合は、すべてのフィルターで破棄する。
-
-
-### PES / record index 系
-
-| 番号 | 確認観点 | 目的 |
-|---:|---|---|
-| T-PES-1 | PES start code不正 | malformed |
-| T-PES-2 | optional header marker不正 | malformed |
-| T-PES-3 | `PTS_DTS_flags == 0b01` | malformed |
-| T-PES-4 | PTS marker bit不正 | malformed |
-| T-PES-5 | DTS marker bit不正 | malformed |
-| T-PES-6 | `PES_packet_length` とheader長矛盾 | malformed |
-| T-PES-7 | bounded PES complete | delivery |
-| T-PES-8 | unbounded PES next PUSI | 前PES完成 |
-| T-PES-9 | unbounded PES flush/stop/close | 未完成を完成扱いしない |
-| T-PES-10 | `MAX_PES_BUFFER_BYTES` 超過 | oversized drop + reset |
-| T-PES-11 | PES header TS packet境界分割 | 正しく組立 |
-| T-PES-12 | PTS field TS packet境界分割 | PTS抽出 |
-| T-PES-13 | start code `00 00 01` TS packet境界分割 | record index検出 |
-| T-PES-14 | malformed PES後の復帰 | 次PUSIから正常復帰 |
-
-PESは、外形と意味検証を分ける2段階契約に従う。完全なPES外形として、宣言長を持つ有効なPESと `packet_length=0` のPESを扱い、ヘッダーが複数TSパケットに分割される場合にも対応する。意味イベントの通知には、接頭辞、`stream_id` ごとのオプションヘッダー形式、フラグ、マーカービット、`header_data_length`、PTS/DTSの検証にも成功しなければならない。意味検証に失敗した場合は `DemuxFilterPesEvent` を通知しない。外形が完全なraw PESフィルターには、型付き診断とともに元のバイト列を配送してよい。外形の検証に失敗した場合は、すべての出力を破棄する。
-
-
-### MULTI2 / B25 descrambler 系
-
-| 番号 | 確認観点 | 目的 |
-|---:|---|---|
-| T-B25-1 | MULTI2既知ベクトル | 復号中核確認 |
-| T-B25-2 | payload-only復号 | TS header/adaptation/PCR/CC非破壊 |
-| T-B25-3 | even key `10` | even key選択 |
-| T-B25-4 | odd key `11` | odd key選択 |
-| T-B25-5 | key未設定 | record pass-through + 診断 |
-| T-B25-6 | bad token | `INVALID_ARGUMENT` / 診断 |
-| T-B25-8 | 復号成功 | scrambling_control clear |
-
-デスクランブラーとTS経路の失敗は、失敗影響範囲表に従って扱う。影響経路を隔離するのは、データ枠を管理する基盤が破損した場合に限る。不正TSはパケット単位で破棄し、TEIと連続性異常は各経路の規則に従う。構造上有効だがスクランブルが残るパケットはTS生データ経路と記録経路に残してよいが、復号済みの意味イベントを生成してはならない。ARIB STD-B25 6.7-E1 第1部の2.2.2.4、2.2.2.10〜2.2.2.11、3.1.5〜3.1.7、3.2.3〜3.2.4、4.3.3.3の表4-11〜4-14、4.8、4.9、4.10を精読基準とする。これらの条項から、TSペイロードをパケット単位でスクランブルすること、受信側でECMとEMMをCAモジュールへ渡すこと、Ksを受信側へ返すこと、スクランブル状態の検出、チューナーごとに奇数・偶数鍵の組を1組以上処理すること、12個以上のPIDを同時処理することを設計条件とする。容量条件は対応能力として別に公開し、実際の受付でも強制する。ECM、EMM、KsをTuner HALの公開面へ出さない境界は、AOSPの公開面と情報露出を最小化する設計から定めるものであり、STD-B25の文言そのものとは主張しない。HAL内部の隔離方法とエラー対応は、AOSP契約に基づく内部設計とする。
-
-
-| 番号 | 確認観点 | 目的 |
-|---:|---|---|
-| T-B25-10 | ECM/EMM/card I/O不在 | Tuner HALへ持ち込まない |
-
-
-## 対応能力ごとの設計正本
-
-- 機器の事実は `DeviceProbeCapability` で確定し、検出に成功したfrontendとLNBだけを公開する。
-- demux、filter、DVRの個数は本書「サービスオブジェクト上限表」で定め、同じ使用権台帳で強制する。
-- AVの転送、割り当て、解放は、本書「AV割り当て表」と「表1-C-AVH. `releaseAvHandle()` 全域判定表」で定める。共有領域方式は最適化手段とし、要求サイズどおりのイベント固有ファイル記述子方式を正式な代替経路とする。遅延終了済みと確認できる要求は状態を変えず成功し、不明または別所有者の識別情報は拒否する。
-- ワーカーとLNBの停止・後片付けは、本書「ワーカー終了契約」と「LNB機器資源契約」で定める。`TargetDriverTimingProfile` や、公開経路で上限なく `join` を待つ処理を設けない。
-- パケット異常と基盤異常の影響範囲は、本書「失敗影響範囲表」で定める。不正TS、TEI、連続性異常を基盤隔離へ昇格させない。
-- frontendで公開・受理する値は、本書「フロントエンド設定表」で定める。ARIB B31の値域根拠は本書「VTS環境とARIB B31の境界」に置く。
-- 個別の対応能力で失敗した場合は、その能力または要求だけを抑止・拒否する。無関係な `ITuner` の公開を妨げない。
-
-
-## 対応能力・キュー・ARIB境界
-
-- フィルターと`SharedFilter`では、HAL内部の`FilterProducerDrainGate`を使用する。ブロッキングするバックエンド読み取り、FMQ待機、解析器の一時保持が終わった後、FMQへの確定書き込みまたは保留イベント追加の直前にだけ配送許可を取得する。Binderコールバック、バックエンド入出力、FMQまたは条件変数の待機、規定外順序のロック取得を許可の有効範囲に含めない。`flush()`は`Draining`へ移り、新しい許可を拒否し、サービス所有のワーカーを起床させ、許可が0件になるまで待つ。未消費のFMQデータと未配送イベントを破棄し、確定済みまたは配送中のコールバックと配送済みAV領域を維持する。ワーカー終了またはpanic時は保護子を解放する。ロック汚染または遮断されていない終端失敗を検出した場合は、フィルターを閉鎖して隔離する。`QueueEpochProtocol`はDVRだけで使用する。
-- デマルチプレクサ、フィルター、DVRの容量は、フロントエンドとLNBの検出後に評価するC8、C4、C2、C1の`CapabilitySnapshot`候補から、一括予約によって決める。各候補のフィルター、オブジェクト、AVの値は数値とし、ワーカー、コールバック、回収、後片付けの枠は`F=検出に成功したフロントエンド数`と`L=検出に成功したLNB数`の式で明示する。確定した候補を、対応能力、受付、後片付けの唯一の根拠とする。C1を実行時サービスの必須最小構成とし、音声AVフィルター1個と映像AVフィルター1個を含めるため、`av_filter_count=2`、`av_ledger_entries_total=16`、`av_reserved_bytes_total=16777216`とする。Tuner VTSは起動前に別途環境へ結び付ける。AOSPブランチ、フロントエンド入力元、選局値とPID、使用経路、フィルターとDVRのqueue容量、製品メモリー予算が定義されるまで`DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED`とし、既定のV1 XMLを組み込まず、VTS成功を表明しない。使用する静的設定はC1のオブジェクト数に収まり、サービスまたはVTS起動前に必要なqueue容量全体を一括予約できなければならない。
-- AVの共有方式とイベント固有方式は、フィルター世代ごとに8項目・8 MiBの安全予算を共有する。この値は既存の1 MiB×8領域から導出した資源上限であり、コーデックのアクセスユニット最大値や無損失配送の保証ではない。フィルター別予算または残容量を超える要求は、コールバックと `dataId` の公開前に、上限超過または利用不能を区別する型付き診断とともに拒否する。使用中の割り当てを追い出してはならない。製品上限を拡大する場合は、起動時予約、候補構成、境界試験を追加する。
-- ARIB B10 5.13-E1を表ごとのsection上限1021/4093の根拠とし、B32 3.11-E1第3部をTS、PES、Sectionの伝送とPES構文の根拠とする。B32を4093の独立した上限根拠として使用しない。B25は公式英訳6.7-E1全文を精読基準とする。第1部の4.9および4.10に従い、チューナーごとに奇数・偶数鍵の組を1組以上、PIDを12個以上同時処理できることを容量条件とする。容量は対応能力として別に公開し、実際の受付でも強制する。
-- 対象ドライバーと上流Linuxの証跡は、AOSP契約とは独立した根拠として扱う。
-
-### ARIB現行版との対応
-
-旧英語版は、参照箇所を特定して精読するための基準として使用する。現行日本語版を無視したり、旧英語版と現行日本語版の全文が同一であると主張したりしてはならない。現行版との対応付けは次表の公式改定情報の範囲に限定し、未取得・未照合の範囲へ主張を拡張しない。
-
-| 規格 | 精読基準 | 現行日本語版 | 設計で使用する範囲 |
-|---|---|---|---|
-| STD-B10 | 5.13-E1英語版 | 5.14 | 表別のsection長と表の割り当ては、英語版と5.10から5.14までの公式改定履歴を照合して用いる。参照箇所へ影響する改定が判明した場合は、対応付けを更新するまで該当する主張を保留する。 |
-| STD-B20 | なし | 3.0 | 日本語版3.0を一次資料とし、相対TS番号と`TS_ID`を別の値域として扱う。 |
-| STD-B25 | 6.7-E1英語版 | 7.0 | 本書が参照する条項は英語版6.7-E1全文で精読し、7.0の公式改定情報を併用する。7.0日本語版の全文との同一性は主張しない。 |
-| STD-B31 | 2.2-E1英語版 | 2.3 | 本書が参照するISDB-Tパラメーターは、英語版2.2-E1と公式2.3改定概要・見本を照合し、対象構造への既知の影響がない範囲で用いる。2.3日本語版の全文との同一性は主張しない。 |
-| STD-B32 | 3.11-E1英語版Part 3 | 4.1 | 取得済みPart 3、H.222.0の参照、および公式改定履歴の範囲でTS・PES・sectionの伝送とPES構文を用いる。未取得の分冊または未照合の記述へ主張を拡張しない。 |
-
-本文・表に記載した英語版の版番号は参照箇所を特定するための基準であり、準拠対象の版を固定するものではない。公式改定情報によって参照条項の意味が変わる場合は、上表と依存する設計規則を先に更新する。解決するまで、該当する対応能力または準拠を表明しない。
-
-
-## VTS環境とARIB B31の境界
-
-- `VtsEnvironmentProfile=UNBOUND` ではXMLまたはモジュールを組み込まず、選択もしない。試験シナリオも設定しない。実行時のC1はサービスの最小構成としてだけ扱う。
-- `BOUND` では、C1に収まることと必要なキュー容量全体の予約を確認した後、起動前に宣言済みの静的設定を正確に1つ選ぶ。
-- `REJECTED` では、C1または既定のV1設定へ切り替えない。
-- ISDB-Tのパラメーター値域は、公式英訳STD-B31 2.2-E1を精読基準とし、公式2.3の改定概要・見本を併用する。参照する構造への既知の影響がない範囲で使用し、2.3日本語版の全文との同一性は主張しない。
-
-## 設計表と内部プロトコル
-
-本章の表と状態機械を設計正本とし、実行時と設計時は本書の安定した節名を参照する。
-
-### `CapabilitySnapshot` 候補
-
-| 候補ID | 優先順位 | demux数 | TS filter数 | section filter数 | audio filter数 | video filter数 | PES filter数 | PCR filter数 | filter総枠数 | playback数 | record数 | DVR総枠数 | AV filter数 | AV filter当たりの台帳項目数 | AV filter当たりのバイト数 | AV台帳の総項目数 | AV予約総バイト数 | tuple worker枠数 | probe worker枠数 | callback枠数 | reaper handle枠数 | cleanup authority枠数 | 式の変数 | 選択状態 | VTS設定との対応状態 | VTS filterキュー総バイト数 | VTS DVRキュー総バイト数 | VTS環境設定ID |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| C8 | 1 | 8 | 32 | 8 | 4 | 4 | 8 | 4 | 60 | 8 | 8 | 16 | 8 | 8 | 8388608 | 64 | 67108864 | 16 | 2*F | F+L+60+16 | 2*F+16 | F+L+8+60+16 | F=正常確認済みfrontend数、L=正常確認済みLNB数 | ORDERED_EXPLICIT_EVALUABLE_RUNTIME_CANDIDATE;VTS_ENVIRONMENT_SEPARATE | DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED | UNBOUND_ENVIRONMENT_INPUT | UNBOUND_ENVIRONMENT_INPUT | UNBOUND |
-| C4 | 2 | 4 | 16 | 4 | 2 | 2 | 4 | 2 | 30 | 4 | 4 | 8 | 4 | 8 | 8388608 | 32 | 33554432 | 8 | 2*F | F+L+30+8 | 2*F+8 | F+L+4+30+8 | F=正常確認済みfrontend数、L=正常確認済みLNB数 | ORDERED_EXPLICIT_EVALUABLE_RUNTIME_CANDIDATE;VTS_ENVIRONMENT_SEPARATE | DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED | UNBOUND_ENVIRONMENT_INPUT | UNBOUND_ENVIRONMENT_INPUT | UNBOUND |
-| C2 | 3 | 2 | 8 | 2 | 1 | 1 | 2 | 1 | 15 | 2 | 2 | 4 | 2 | 8 | 8388608 | 16 | 16777216 | 4 | 2*F | F+L+15+4 | 2*F+4 | F+L+2+15+4 | F=正常確認済みfrontend数、L=正常確認済みLNB数 | ORDERED_EXPLICIT_EVALUABLE_RUNTIME_CANDIDATE;VTS_ENVIRONMENT_SEPARATE | DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED | UNBOUND_ENVIRONMENT_INPUT | UNBOUND_ENVIRONMENT_INPUT | UNBOUND |
-| C1 | 4 | 1 | 4 | 1 | 1 | 1 | 1 | 1 | 9 | 1 | 1 | 2 | 2 | 8 | 8388608 | 16 | 16777216 | 2 | 2*F | F+L+9+2 | 2*F+2 | F+L+1+9+2 | F=正常確認済みfrontend数、L=正常確認済みLNB数 | ORDERED_EXPLICIT_EVALUABLE_RUNTIME_CANDIDATE;VTS_ENVIRONMENT_SEPARATE | DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED | UNBOUND_ENVIRONMENT_INPUT | UNBOUND_ENVIRONMENT_INPUT | UNBOUND |
-
-### サービスオブジェクトの上限
-
-C8、C4、C2、C1の順に資源一式を原子的に予約し、全項目を予約できた最大の候補だけを確定する。一項目でも失敗した候補は予約全体を元に戻し、C1も確保できない場合はサービスを開始しない。変更不能な`CapabilitySnapshot`を能力公開、受付判定、後片付けの唯一の正本とし、`CleanupPending`または`Quarantined`の資源は解放完了まで使用中として数える。
-
-| 資源 | 範囲 | 候補の最大数 | 公開数 | 最小解放数 | 所有者別上限 | 保証しない事項 |
-|---|---|---:|---|---:|---|---|
-| LIVE_DEMUX | サービス全体 | 8 | `CapabilitySnapshot`の値 | 1 | なし | オブジェクト数だけでは呼び出し側指定のFMQ容量を保証しない。FMQ容量は別のトランザクションで予約する。 |
-| FILTER_TS | サービス全体 | 32 | `CapabilitySnapshot`の値 | 1 | なし | オブジェクト数だけでは呼び出し側指定のFMQ容量を保証しない。FMQ容量は別のトランザクションで予約する。 |
-| FILTER_SECTION | サービス全体 | 8 | `CapabilitySnapshot`の値 | 1 | なし | オブジェクト数だけでは呼び出し側指定のFMQ容量を保証しない。FMQ容量は別のトランザクションで予約する。 |
-| FILTER_AUDIO | サービス全体 | 4 | `CapabilitySnapshot`の値 | 1 | なし | 公開済みAV filterごとに台帳8項目と8 MiBのAV予約枠を追加で専有し、使用中の割り当てを追い出さない。 |
-| FILTER_VIDEO | サービス全体 | 4 | `CapabilitySnapshot`の値 | 1 | なし | 公開済みAV filterごとに台帳8項目と8 MiBのAV予約枠を追加で専有し、使用中の割り当てを追い出さない。 |
-| FILTER_PES | サービス全体 | 8 | `CapabilitySnapshot`の値 | 1 | なし | オブジェクト数だけでは呼び出し側指定のFMQ容量を保証しない。FMQ容量は別のトランザクションで予約する。 |
-| FILTER_PCR | サービス全体 | 4 | `CapabilitySnapshot`の値 | 1 | なし | オブジェクト数だけでは呼び出し側指定のFMQ容量を保証しない。FMQ容量は別のトランザクションで予約する。 |
-| DVR_PLAYBACK | サービス全体 | 8 | `CapabilitySnapshot`の値 | 1 | demux当たり1 | `VtsEnvironmentProfile`が`UNBOUND`ならXML、モジュール、試験シナリオを選択しない。`BOUND`なら宣言済み静的設定のキュー容量だけを原子的に予約し、C1または既定値へ切り替えない。 |
-| DVR_RECORD | サービス全体 | 8 | `CapabilitySnapshot`の値 | 1 | demux当たり1 | `VtsEnvironmentProfile`が`UNBOUND`ならXML、モジュール、試験シナリオを選択しない。`BOUND`なら宣言済み静的設定のキュー容量だけを原子的に予約し、C1または既定値へ切り替えない。 |
-
-### AV割り当て
-
-| 項目 | 値 | 範囲 | 設計根拠 | 動作 |
-|---|---|---|---|---|
-| transport_profile | DUAL_SHARED_PLUS_EVENT_LOCAL | AV filterの世代ごと | AOSPの`MediaEvent`とJNIの二重表現 | 収容可能な共有枠を優先し、収まらない場合は同じ予算からイベント専用の正確なサイズを確保する。 |
-| combined_live_entry_ceiling | 8 | AV filterの世代ごと | 共有領域の容量と単一台帳 | 共有領域とイベント専用領域の割り当てを各1項目として数え、最終解放まで再利用しない。 |
-| combined_live_byte_budget | 8388608 | AV filterの世代ごと | 既存の1 MiB×8枠から定めた資源安全上限。codecのAU上限ではない | 共有領域とイベント専用領域の使用量を合算し、無損失配送は保証しない。 |
-| service_reserved_byte_budget | snapshot.av_filter_count * 8388608 | サービスインスタンス | `CapabilitySnapshot` | C1では2 * 8388608 = 16777216とし、実行時候補の資源一式と同時に原子的に予約する。 |
-| shared_slot_count | 8 | AV filterごと | 既存実装のallocator | 実装上の最適化であり、合算した項目数とバイト数を消費する。 |
-| shared_slot_size_bytes | 1048576 | 共有枠ごと | 既存実装のallocator | 収容可能な空き枠を優先する。codecの上限ではない。 |
-| event_local_max_bytes | filterごとの残量。最大8388608 | 割り当てごと | バイト数の共通台帳 | 要求が8388608以下で残量に収まる場合だけ正確なサイズを確保し、8388609以上は公開前に拒否する。 |
-| allocation_failure | UNAVAILABLE_OR_TYPED_OVERFLOW_BEFORE_CALLBACK | イベントごと | 割り当てトランザクション | イベントを破棄し、`dataId`を公開せず、使用中の割り当てを追い出さない。上限超過と枯渇は診断で区別する。 |
-| data_id | CHECKED_POSITIVE_SIGNED_63_BIT_NEVER_REUSED | サービスの存続期間 | AV台帳 | IDを発行できない場合は割り当てを拒否する。 |
-| delivered_lifetime | ACTIVE_OR_RELEASE_ONLY_UNTIL_RELEASE | 割り当てごと | 解放規則 | 配送済み領域はflush、再設定、論理closeでは回収せず、解放要求まで保持する。 |
-
-### 失敗影響範囲
-
-| 種別 | 検出境界 | 例 | raw TS | record TS | section・PES・AVの意味処理 | workerまたは経路の状態 | 公開APIの結果 | 診断 | 隔離規則 |
-|---|---|---|---|---|---|---|---|---|---|
-| InfrastructureCorrupt | FMQ・ネイティブトランザクション・制御面 | descriptor grantorの範囲外、成立しないトランザクション長、キュー制御ブロックの不変条件違反、`EventFlag`オブジェクト破損 | 対象外または影響経路を停止 | 対象外または影響経路を停止 | 影響経路を停止 | 影響するキューまたは経路を遮断して隔離 | `UNKNOWN_ERROR`または操作固有の基盤障害 | 識別子・世代・方向を含む`InfrastructureCorrupt` | 影響する基盤経路を必ず隔離する。サービス全体の隔離は`InfrastructureCorrupt`または`FatalUnfencedGlobalMutation`の場合だけ許可する。`FatalOwnedIo`は自身の後片付けが未完了の場合だけ所有者または経路単位で隔離できる。 |
-| PacketMalformed | 188バイトTSの入口検証 | 長さが188以外、syncが0x47以外、予約済み`adaptation_control`、adaptation長超過 | 不正packetを破棄 | 不正packetを破棄し、`byteNumber`は実際の書き込みバイト数だけを数える | 破棄し、必要な場合だけ影響する組み立て途中の状態を戻す | 継続 | packetごとのAIDL失敗は返さない | 上限付き`malformed_ts`計数と理由 | 隔離しない |
-| TransportErrorIndicator | 検証済み188バイトTS header | `TEI=1` | 到着順のまま保持 | 保持し、`byteNumber`は実際のバイト数を数える | 破棄して再同期し、解析イベントを出さない | 継続 | なし | `tei_packets_observed`と意味処理別のTEI破棄記録 | 隔離しない |
-| ContinuityDiscontinuity | PIDの連続性とadaptation discontinuity | CC欠落、`discontinuity_indicator` | 保持 | 保持 | PID単位のassemblerと世代を戻し、境界をまたいで連結しない | 継続 | なし | PIDと世代を含む不連続診断 | 隔離しない |
-| `SemanticParseFailure` | section、PES、録画索引の解析器 | section長、設定時のCRC検査、予約bit、PESヘッダーまたはPTSマーカーの異常 | 検証済みTSを保持 | 検証済みTSを保持 | non-rawの影響する意味単位を破棄する。raw sectionは上記行列で配送可能な完全バイト列を保持し、型付きeventだけを抑止する | 継続 | なし | 解析器の理由とPID、raw配送有無 | 隔離しない |
-| NoUsableDescramblerKey | descrambler方針 | 対応する有効な鍵がないscrambled packet | scrambled packetを保持 | scrambled packetを保持 | 復号済みの意味イベントを出さない | 継続 | なし | 上限付き`scrambled_without_key`計数 | 隔離しない |
-| FatalOwnedIo | 所有する入力元・driver・`EventFlag`の実行時処理 | 永続的なreadまたはioctl失敗、必須deviceのclose、所有する`EventFlag`の回復不能障害 | 影響経路を停止 | 影響経路を停止 | 影響経路を停止 | 所有者単位の実行処理を失敗終了 | 操作境界に応じて`UNKNOWN_ERROR`または`UNAVAILABLE` | 型付きの主障害 | 所有者の後片付けが未完了の場合だけ、所有者または経路単位で隔離する。`FatalUnfencedGlobalMutation`の証拠なしに基盤またはサービス全体を隔離しない。 |
-| FatalUnfencedGlobalMutation | cleanupとreaperの監視 | 世代を無効化した後も残存workerが全体状態を変更できる | 対象外 | 対象外 | 対象外 | サービス継続に重大な証拠として、全体変更が証明されない限り影響する権限だけを止める | サービス継続に重大な失敗として公開 | 遮断できていない全体変更の証拠 | 証明された権限を必ず隔離する。サービス全体への拡大には、全体変更の明示的な証拠を必要とする。 |
-
-### フロントエンド設定の反映表
-
-本表をfrontend設定とselectorに関する入力分類の正本とする。規格上は有効だが、対象のbackendとdeviceで反映できない値は`UNAVAILABLE`、不正なtag、予約値、規格値域外は`INVALID_ARGUMENT`とし、どちらの場合もbackendと直前の要求を変更しない。
-
-| backendと対応能力 | frontend | 設定項目 | 受理する入力 | 成功時の動作 | 規格上は有効だが未対応 | 不正または値域外 |
-|---|---|---|---|---|---|---|
-| 条件に完全一致するpx4の対応項目 | ISDB-T | 周波数 | backendで検証済みの値域 | 検証済みの周波数設定経路へ反映 | 別のprofileでは有効な値：`UNAVAILABLE` | `INVALID_ARGUMENT` |
-| 条件に完全一致するpx4またはearth_pt1の対応項目 | ISDB-T | 帯域幅 | `AUTO`または`BANDWIDTH_6MHZ` | 検証済みの6 MHz設定経路を使用 | その他の既知の帯域幅：`UNAVAILABLE` | `INVALID_ARGUMENT` |
-| 対象のpx4またはearth_pt1 | ISDB-T | モード、変調、符号化率、ガードインターバル、時間インターリーブ | `AUTO` | バックエンドの自動検出を使用 | 既知の具体値：`UNAVAILABLE` | `INVALID_ARGUMENT` |
-| 相対selectorに対応するpx4の完全一致項目 | ISDB-S | `RELATIVE_STREAM_NUMBER` | `0..7` | 検証済みの相対枠設定経路へ反映 | 独立したabsolute selectorの完全一致項目がない場合、`STREAM_ID 0..65534`は`UNAVAILABLE` | `0..7`以外の相対値または`STREAM_ID=65535`：`INVALID_ARGUMENT` |
-| absolute selectorに対応するLinux DVBの完全一致項目 | ISDB-S | `STREAM_ID` | `0..65534` | 値を変更せず`DTV_STREAM_ID`へ渡す | 独立したrelative selectorの完全一致項目がない場合、`RELATIVE_STREAM_NUMBER 0..7`は`UNAVAILABLE` | `STREAM_ID=65535`または`0..7`以外の相対値：`INVALID_ARGUMENT` |
-| 対象のpx4またはearth_pt1 | ISDB-S | modulation・code rate | `AUTO` | backendの自動検出を使用 | 既知の具体値：`UNAVAILABLE` | `INVALID_ARGUMENT` |
-
-選択子の対応能力は、`SupportedBackendIdentity`、ドライバーのリポジトリとコミット、機器識別情報、改訂の適用範囲が完全に一致し、かつ`selector_capability_release_eligible=true`である台帳項目だけから作る。現在のpx4台帳では相対選択子だけを有効とし、絶対値の`STREAM_ID`は有効にしない。項目が空、不一致、または使用不可の場合は選択子を公開しない。`ProductProfile`は使用可能な部分集合を抑止できるだけで、対応能力を新設または拡張できない。絶対値`0..11`を相対値域との数値の重複だけを理由に`INVALID_ARGUMENT`としてはならない。CS110の`STREAM_ID=INVALID_STREAM_ID(65535)`は、選択子なしを表すAOSPの既定値として別に扱い、本表で選択子値`65535`を拒否する規則と混同しない。
-
-### LNB機器の資源規則
-
-| backend | 固定commit | AOSPの公開API | driverの事実 | 設計規則 | 資源規則 | 根拠箇所 |
-|---|---|---|---|---|---|---|
-| px4_drv feat/android-ddk | c2a031db8771ddd6e3e0b3b4a712b64ec384139b | `ILnb.setVoltage` / `ITuner.openLnb` | 0 Vまたは15 Vのみ | OFFと15 V対応経路だけを公開し、未対応の対応付けは拒否する | device単位の共有電圧状態を直列化し、参照数で管理する | `driver/px4_device.c`のblob cfed72f...、`driver/ptx_chrdev.c`のblob 18f074... |
-| earth_pt1 Linux v6.6 | ffc253263a1375a65fa6c9f62a893e9767fbebfa | `ILnb.setVoltage` | `pt1.c`では`SEC_VOLTAGE_13`を11 V、`SEC_VOLTAGE_18`を15 Vに対応付ける | backend固有の対応付けだけを使用し、全backend共通の電圧を仮定しない | device単位のLNB endpoint | Linux v6.6 commitの`drivers/media/pci/pt1/pt1.c` |
-
-### VTS環境に関する設計保留
-
-| 入力ID | 必要な入力 | 判断規則 | 状態 |
-|---|---|---|---|
-| VTS-ENV-01 | AOSPブランチとTuner VTS設定のschemaおよび版 | 対象のVTS読み込み処理とschemaが完全に一致する場合だけ対応付け、版をまたいで推定しない | UNDECLARED_DESIGN_HOLD |
-| VTS-ENV-02 | フロントエンドの入力元と選局・走査パラメーター | XML選択前に機器またはソフトウェアの入力元、周波数、ストリームID・種類、信号の有無を宣言する | UNDECLARED_DESIGN_HOLD |
-| VTS-ENV-03 | audio・video・recordのPIDと有効なdata flow | 使用可能な入力元と対応済みHAL経路の両方があるflowだけを含める | UNDECLARED_DESIGN_HOLD |
-| VTS-ENV-04 | filterとDVRのbuffer size | 宣言済みの静的設定値を起動時の資源一式としてそのまま使い、オブジェクト数から推定しない | UNDECLARED_DESIGN_HOLD |
-| VTS-ENV-05 | productのprocess memoryとFMQ割り当て予算 | serviceまたはVTSの起動前に宣言済みキュー一式を原子的に予約し、失敗した設定は拒否する | UNDECLARED_DESIGN_HOLD |
-| VTS-ENV-06 | 静的設定のfilename・moduleと`ro.vendor.vts_tuner_configuration_variant` | VTS process開始前に宣言済み設定だけをinstall・選択し、実行時に生成しない | UNDECLARED_DESIGN_HOLD |
-| VTS-STATE-UNBOUND | 完全な`VtsEnvironmentProfile`がない | XMLまたはmoduleを選択・installせず、試験scenarioを設定しない。実行時のC1は独立して使用できる | DESIGN_HOLD |
-| VTS-STATE-BOUND | 6入力がすべて宣言済みで、object要求がC1以内に収まり、キュー一式の予約に成功 | 起動前に宣言済みの静的設定を正確に1つ選び、自動的に別設定へ切り替えない | BOUND_STATIC_VARIANT |
-| VTS-STATE-REJECTED | object要求がC1を超える、またはキュー予約に失敗 | 設定を拒否し、実行時の`CapabilitySnapshot`を維持する。C1または既定XMLへ切り替えない | PROFILE_REJECTED |
-
-### キューと生産側の内部プロトコル
-
-#### 適用範囲
-
-安定版Tuner AIDLは変更しない。`QueueEpochProtocol` はDVRだけで使用する。`FilterProducerDrainGate` はFilterとSharedFilterのプロセス内だけで使用し、Binder終端、Parcelableトークン、共有メモリー上の制御面を追加しない。
-
-#### `FilterProducerDrainGate`
-
-状態は `Open`、`Draining`、`Closed` の3種類だけとする。ゲートは、検査付きの `filter_delivery_generation`、`parser_state_generation`、`admitted_producer_count` と、サービスが所有する有界の保留イベントキューを保持する。Parcelableではない線形の `FilterProducerPermit(g)` はRAIIで所有し、正確に1回解放する。
-
-##### 許可の有効範囲と有限時間での排出
-
-1. ブロッキングするバックエンド読み取り、FMQ待機、解析器入力の蓄積、その他すべての外部入出力は、許可の取得前に行う。
-2. FMQへのバイト列書き込みまたは変更不能なコールバック情報のキュー追加を、非ブロッキングのメモリー内処理として確定する直前に許可を取得する。許可の保持中に取得できるのは、宣言済みのオブジェクト内ロックだけとし、定められた順序を守る。
-3. Binderコールバック、バックエンド・機器入出力、FMQ待機、条件変数待機、スレッドの `join`、ブロッキングし得る割り当て処理、`flush()` が必要とするサービスロックの取得を、許可の有効範囲に含めない。
-4. Binder呼び出しは、許可の解放後に変更不能なコールバック情報を消費して行う。キューから取り出し済みまたは配送中のコールバックは確定済みとし、`flush()` で取り消したり、Binder呼び出しの完了を待ったりしない。まだ取り出していない保留情報は未消費として、`flush()` で破棄してよい。
-5. ワーカー終了、panicによる巻き戻し、取り消しでもRAII保護子を所有させ、許可を確実に解放する。サービス所有の非ブロッキング区間によって、恣意的なタイマーを使わず有限時間で排出できる構造にする。ロック汚染、所有者の終端失敗、遮断されていない保持者の証跡は、型付きの不変条件違反とする。オブジェクトを `Closed` へ移し、待機者を起床させ、フィルターを隔離する。
-6. `flush()` は、許可の解放に必要なロックを保持せずに待機する。
-
-##### `flush()`
-
-1. 記述子の同一性を検証し、`Open -> Draining` へ遷移する。
-2. 新しい許可を拒否し、サービス所有の配送ワーカーを起床または取り消す。
-3. 上記の有限範囲規則に従い、`admitted_producer_count == 0` になるまで待つ。
-4. 記述子の同一性を維持したままlibfmqを消去する準備を行う。準備中はポインターと世代を変更しない。
-5. 未消費のFMQデータと、まだ配送していない保留イベントを一括で消去する。取り出し済みまたは配送中のコールバック、コールバック登録、監視・ヒント状態、入力元の関連付け、記述子の同一性、配送済みAV領域は維持する。
-6. 解析器、PCR、`startId` の状態を初期化し、`parser_state_generation` だけを進める。`filter_delivery_generation` は維持し、`Draining -> Open` へ戻して待機者を起床させる。
-
-消去確定前に排出、同一性検証、消去準備のいずれかで失敗した場合は、内容、ポインター、イベント、世代を変更せず `Open` へ戻す。基盤の一部だけが確定するという不可能状態は `InfrastructureCorrupt` とし、オブジェクトを閉鎖して隔離する。ロールバック成功として報告してはならない。
-
-##### 閉鎖と所有者消滅
-
-`Open` または `Draining` から `Closed` へ遷移し、新しい許可とイベント追加を拒否する。未配送の保留情報は破棄し、取り出し済みまたは配送中のコールバックは確定済みとして維持する。待機者を起床させ、残資源は終端後片付け処理へ移す。検査付き世代値が枯渇した場合はゲートを閉じて `UNAVAILABLE` を返す。世代値を再利用しない。
-
-#### DVR用 `QueueEpochProtocol`
-
-状態は `Open(g)`、`Draining(g)`、`Closed` の3種類だけとする。`beginRead` / `beginWrite` は、キュー識別子、検査済みキュー世代、方向、予約情報を持つParcelableではない一回限りのRAIIトークンを返す。`commit` / `cancel` はこのトークンを正確に1回消費する。未消費トークンの所有者が通常return、エラーreturn、取り消し、またはpanicでスコープを離れた場合は`Drop`が`cancel`と同じ予約解除を行い、受付中件数を減らして待機者を起床させる。`flush()`は`Draining`へ移り、新しいトランザクションを拒否して、世代gで受付済みのトランザクションがすべてcommit、cancel、またはRAII取消になるまで待つ。その後、DVRキューを一括消去し、検査済みのg+1へ進めて`Open`に戻る。失敗時はポインター、内容、世代を維持する。閉鎖または所有者消滅ではキュー識別子を閉じ、すべてのトークンを古いものとして無効化し、待機者を起床させる。記述子の置換では旧識別子を閉じ、世代0の別識別子を生成する。
-
-#### 独立した世代軸
-
-`queue_epoch`、`filter_delivery_generation`、`parser_state_generation` を同じ値の別名にしたり、1個の世代としてまとめて進めたりしてはならない。
-
-### ワーカー終了契約
-
-この契約は事象駆動とし、公開選局結果を変える再試行間隔、`join`の猶予時間、任意の固定時間期限を設けない。停止を待つバックエンド操作自身の復帰を保証する内部I/O期限と`ReaperSupervisor`の進行保証監視は別契約であり、無期限の停止を許可するものではない。
-
-#### 状態
-
-状態は`Running(owner_generation)`、`StopSignalled(owner_generation)`、`Completed(report)`、`CleanupPending(dependencies)`、`Quarantined(fenced_generation,reaper_lease)`、`Released`、`ServiceCritical(witness)`の7種類とする。
-
-#### 遷移規則
-
-1. 停止または閉鎖時は、所有者signalのmutex内で`stop_requested=true`とgenerationを確定してから、利用可能な取り消し・起床手段を各1回実行し、その結果をすべて記録する。ワーカーは待機前後に同じpredicateを検査するため、通知が待機開始より先行しても停止要求を見失わない。
-2. 終了済みであることを確認できる場合は、報告を回収して残りの後片付けをすべて行い、使用枠を返却する。
-3. 再試行可能だが未完了で、実行中ではない依存資源は `CleanupPending` へ移す。再 `close()`、所有者消滅の監視、依存資源の完了通知、サービス初期化のいずれかでだけ再開する。再開要求は `{owner_kind, owner_id, owner_generation, dependency}` ごとにまとめる。
-4. 実行中のワーカーは、移管前に所有者世代を無効化して状態変更を遮断する。`Quarantined` へ移し、`JoinHandle` を `ReaperSupervisor` へ正確に1回移管する。公開APIの呼び出し元を `join` 待ちで停止させない。
-5. `CleanupPending` または `Quarantined` の間は、ワーカー、資源、LNB終端の使用枠を返却しない。回収完了時に残りの後片付けを行い、使用枠を正確に1回返却する。
-6. 回収機構の容量は、強制している同時稼働ワーカー数の上限から静的に導出する。各ワーカーが実行中の停止待ち操作について、取消可能性、内部I/O期限、または別プロセス終端のいずれを使うかを台帳に記録する。回収機構は、終了事象、取消完了、内部I/O期限超過、`ReaperSupervisor`による終端のいずれかを必ず観測する。
-7. 移管失敗、遮断の確立失敗、停止待ち操作の進行保証違反、またはワーカーが遮断されていない全体状態を変更できることを示す型付き証跡がある場合は`ServiceCritical`とする。同一プロセス内で安全に終端できないワーカーはサービス再起動へ移す。所有者内に完全に隔離して終端できる障害によって、無関係な`ITuner`の能力を停止してはならない。
-8. 公開操作の結果では主処理の結果を維持する。後から判明した後片付け失敗を戻り値へ反映するのは、当該インターフェースの後片付け契約が要求する場合に限る。失敗は常に型付き集約診断へ記録する。
-
-`ReaperSupervisor`の枠は公開可能な同時稼働ワーカー数と同数以上を起動前に予約し、ワーカー作成枠と回収枠を同じ台帳で移し替える。したがって、受付済みワーカーの移管時に回収枠不足を通常の容量失敗として発生させない。台帳不整合などにより移管先を確保できない場合は`JoinHandle`を破棄せず、所有者内で世代遮断と資源leaseを維持したまま`ServiceCritical`へ遷移する。
-
-世代遮断は、古いワーカーからruntime台帳、queue確定、callback配送、backend状態確定への書き込みを拒否する。実行中ワーカーが保持するファイル記述子、機器endpoint、queue、LNB電圧leaseは実際の終了まで再利用せず、新世代へ同じ専有資源を渡さない。遮断後も古いワーカーが共有backendまたは外部副作用を変更できる場合は局所隔離の成立条件を満たさないため`ServiceCritical`とする。
-
-#### フィルターの排出処理との接続
-
-Filter生産側の許可は、短い非ブロッキング処理だけを覆うRAIIの有効範囲であり、回収機構が所有するワーカー寿命ではない。`flush()` は配送ワーカーを取り消しまたは起床してよいが、待機対象は許可の解放だけとする。Binderコールバックの完了や上限のないスレッド `join` を待たない。ワーカーが終端失敗した場合は巻き戻し中に保護子を解放する。ロック汚染または遮断されていない終端報告を検出した場合は、フィルターを閉鎖して隔離する。
-
-#### LNBとの接続
-
-LNBの論理閉鎖にも同じ遷移を適用する。`LogicalClosed+CleanupPending` の `close()` は回復再試行だけを許可する。`Quarantined` は内部回収機構が所有する。終端後片付けが完了するまで、LNB終端の使用枠を `openLnb()` の受付へ戻してはならない。
+Y��x-���jם��i��+��j[h��ܢ���Nz�赩h��n�X�z�H�[�\�S:*+z*"9b)9��B�����T�QӗҐK�Y8�k�,�9b�yh���c��T�QӗҐK�Y8�k�[�\�S8�k�*+z*"9�h��+8�i��`���� ��+9��8�k�� PS��9ak:e��idy�!8� PT�P��T��9aiyb��a��!�� y�+:(�yd�x�k�k�o�9��9f�� y⭹�b��`9�"z !x� z,����9k��dox� yi,y�e��`�`m����� \]X\�[�[�H9�hy.��� y�*�k�o�9�g� �x�k�/�9cm9��za�xहk���x�fx��� ����+9��8�k�� y/g9�kyliy�m8� x������8�yliy�m8� x��������y�b�h!�� X]\�9�b�h!�� U���b�h!�� zgfy�9�'9�(��b�h!�� y�$9��9�jydoyd#z)��ba�� yk�9.��k��* 8����������8��8��8हk���x�e��j��a8� ��gx�8�x�k�:e���n�)��ba˛Y8� X8���x��k�9.��b)9k���k�k����y��y��K�Y8� X�S��S�˛Y8� yd!9/g9�kz*"9�.�ह�h��j8�fx��� ����+9��8�j9.幥����8�i�� y⭹�b�`m����� z,����9k��dox� y�.�ࢹ`)8� X�\X�[]x� yi,y�e��`���c���9f��c9������fx��h-9d"8�k�� y�+9��8ह�h��j8�e��i�.幥����8ह/빫h��fx��� ��g��h8�e�� y/g9�kyk�9.��b)9k��� y�$9��9�jyd#x� X�Z[�]\����9�b�h!��j��i8�a8�i��k�8���x��k�9.��b)9k���k�k����y��y��K�Y8ह�h��j8�fx��� �������9alz`&�`�9d�x�k�k���y�hy.킂��+9��8�i�alz`&�`�9d�x�j9do8�m�࠸�k��k�� ycf8�j���e���l9d#x�����x�x�8���d#x���%�8�a9i�:+l�ܘ\\�8�i��k��j��a8� �alz`&�`�9d�x�j8�e��i�*+z*"9�h��+8�n9�k��c�h-9d"8�k�� y�(xहk���x�fx��� ���:h!y��9o�zh"9a�yk�H�KK_KK_�:*��!�idy�!9d#H9/�Έؚ�X����U�8� Xؚ�X�Y]��8� X��X[P��[�\�U��9k��(�y�h��+9⭹�b����k��dox���i,y�e��`�`m����ह�`9�"x�fx��[�[H��[H�\H�9ak:e��aiyc��RQ9li8�o��g��k��\��X�Wܝ[�[YH9li8�b��ydo8���i��8�a[��H�[��9�`9�"x�fx��⭹�b�Y�X�X�x� \�Y�\��x� X�[�X��� ]�ܚ�\�� Q�Tx� \X��]\��[X�\�8�j��jx� yod�*l�`�9d�x�c9�h��+8�j8�e��i�i"y��8�fx��⭹�b��9�`9�"x�e��j��a9⭹�b�9do8�l�a��e�a`��o��g��k�b)H�[��X�[ۈ8�c9�`9�"x�fx��⭹�b��\�Hܙ\�Y�][YH��\]Y\��Z[��[Y][ۈ�\�]����[Z]����X���]X\�[�[�H8�k�h!�n���9i,y�e��`�a��!�9�.�ࢹ`)8� \���X��� X�X[�\9��y���� X�X[�\�Z[Y8� \]X\�[�[�H8�k��lx�a�9do8�l�a��e�*,yc��liRQY]���x� [ؚ�X�ܘ\\�� \�\��X�Wܝ[�[YH�p��Yx� Y�XZ[��[��X�[ۈ8�k��a��hz*,yc���fx��li�9do8�l�a��e��y�h�li:*�9�*8ऺ`o��dx���g��y��9��ydo8���i��k��j��x�j��a9li�9� 9/c����x���]\��X�Y[��x� \���X��� \�]�x� X�X[�\�Z[\�x� \]X\�[�[�H8�j��jxहf�k���fx��\���."�*&8ह��8�g��ex�j��a8࠸�k��k�� yalz`&�`�9d�x�i��k��j��c�[\�� Y�p��Yx� XY\\�� x�o��g��k�[\[Y[�][ۈ]Z[8�j9do8�m�� �[\���p��YH8�c�[��X�[ۈ9�h��+8हd#y.e��h��i��k��j��x�j��a8� ����[��X�[ۘ8�j8�a8�a�d#ybcx�k�� yl$x�j��c��j8࠹⭹�b�i"y��8�k�e��i���hy.��� X��[Z]8� \���X��8�o��g��k��X[�\�Z[\�H�]X\�[�[�H8�k��a8�f��8�b�ह�`9�"x�fx��`�9d�x�j��h8�dy/o��a�� ��[�[YH���8हc��h��i����\�H8हdo8�m��h8�dx�k�`�9d�x� yo%y�l8हd#9d#HY]�8�n9�*��`x�e��fx���h8�dx�k�ܘ\\�� Y�XZ[��[Z[��8ऺf�8�ex�j��a:%�8�a�p��YH8�k��[��X�[ۈ8�i��k��j��a8� ������9i%�`�9�����9c��iΈ��\[�X��9b��c%�-m�b�H�:e�zc��`m9i,y�e�h���c���d��k�h!y���k�k��(�z)���!8�i��`����g��x� z*l��,8�j��y�h�.��h!x� x�8��x��9a�y`��� yb��c%�-m�b�x� []]^9�f����� x�����8����9�'��$8��ڛ�[�9��za�x�k�[�\��[���W��ӕ�S�SӋ�Y8ह�h��j8�fx��� ��+9��8�i��k�[�\�S8�c��X[�X��9b��c%�-m�b�H�:e�zc��`m9i,y�e�8ऺ*+z*"9."�o�zh"8�j8�fx���d��j8�h8�dxहf�k���fx��� ������9�h��+8������b�y�"8�o���yh,x�k�*�x�o���B���+9��8�k��h��+:f��li8�k��(x�k�h!��j8�fx��� ���K�T�QӗҐK�Y8�k�,�9b�yh���c8� X:(�yd�x�x����8����S���\X�[]H����ٚ[H9h���c8� XRQ9idy�!9h���c8� X[�\�S9⭹�b�`m����(j���8ह� 9."�/cy�h��+8�j8�fx��� ����Tˈ9⭹�b��`9�"x���k��dox���i,y�e��`�`m����*+z*"8� X:(jX8�':(j�8� XT�P��T��aiyb��a��!�idy�!8� X��X[H��[�\�H9idy�!8� XX��]\[[�H9�h��+9idy�!8� XU��\�Y[�H9aiya�b��idy�!8स� y��g*8�k�*+z*"9idy�!8�k��h��+8�j8�fx��� ��ˈ9���:(�:-��idy�!�9��8�k��+9/d��h��+9��8�n9d.9c㹮"8�o��i��`�ࢸ� y�+9��9a�x�j�.�:a�y�h��+8�j8�e��i�����ex�j��a8� ���9`"�b)x������8�x�k�liy�m8� y/g9�ky�c9���� x��������K�]\�Օ��gfy�9�'9�(���$9��9�jydoyd#K�k�9.��k��* 8�k��+9��8�i��k�k���x�e��j��a8� �liy�m8�k��S��S�˛Y8� yk�9.��b)9k���k�8���x��k�9.��b)9k���k�k����y��y��K�Y8ह�h��j8�fx��� ���bb�fi8������b�x�e��g����*&:/"x�k�/�z-�z(j8�k���(c8������8�y�jx�j��k��b��j��a8� ���(c9.�y��8�k��+9��8� yk��(�z)���!8�k�[�\��[���W��ӕ�S�SӋ�Y8� y�lyd"9�b�h!��k�[�\��[��S�QԐUSӋ�Y8� yi"y��9liy�m8�k�[�\��[��S��S�˛Y8ह�h��j8�fx��� �kf9g*8�e��j��a�X�H9�����8ह�h��+9c��i��j��e��i��k��j��x�j��a8� �����:(�yd�x�x����8����S���\X�[]H����ٚ[H9h���c��(�yd�yaj9/d��k�������8�yb,:`e9�x� y��y�+9d$x�dH��[�9`&z(�8� x�x��8����y�'9a�� X�[��[�^H8�k�k��(�x�����8��/�y� z !x�k��9��9."��k�:e���n�)��ba˛Y8ह�h��j8�fx��� ��+9��8�i��k�� U[�\�S8�k��\X�[]x� U����ٚ[x� PRQ9�.�ࢹ`)8�j�e�x�f8��h���c8�h8�dxहf�k���fx��� �S8�k��(x�ex�8�g�[�H�\]Y\�8हa��!��e�� P�S����S�8�SY�[�\�]Y�\[�\�H��[�[�8�k��\X�[]H����ٚ[H8�i�k�o�9k��* 8�e��j��a8� ���[�\����*S8�k�k��(c9�9h���j�/�ykf8�fx��gfy�9����$8�i��`�ࢸ� y��k���i��k�l#�aix�e��j��a8� ��ۙ�Y��[�\�ݝ���ۙ�Y��ZYՌK��Y�\�[��W�\����X��[8�k�c�  �����$8�j�`c��c��j��a8� �S��8�k�����x�����x� yc��/�ya`�� ydj9�蹥l8� x�x��8����8��Q8� TQ8� yk��(c9�b�h!�� x��x���������8�b��8�l����k�]Y]Yyk�za��� z(�yd�x�k���x������9.�9��हk��* 8�e�� yo�z)�x�j�aj:,����8ऺ-m�b�ybcx�j�.�9�!8�i��cx��h-9d"8�h8�dx� X�˝�[�܋����[�\���ۙ�Y�\�][ۗݘ\�X[�\�Y�\�[��W�\����X�8�j9k�o�8���8��x��8���ऺ(�yd�x�n9l#�aix�fx��� ��9h���*�讹k���`��k�T�Qӗ��Օ��S��T�ӓQS��S�P�T�Q8�j8�e�� U���$9b��हk��* 8�e��j��a8� �����x����x�������x��8�k�RQ8સ���8������8हk��(�x�e��i��a8�i�࠸� x�d��k�c�  �����$8�i��k��+9�j��k��x����x��������)��fi9�$9b��हk��* 8�e��j��a8� ���[�\�S8�k��\X�[]H����ٚ[H8�i��k��9aiyb���h8�dxहk��* 8�fx��� �(�yd�yaj9/d��k��[ۛH8�x����8����k�:e���n�)��ba˛Y8ह�h��j8�e�� y�+9��8�i��k�[�\�S8�k�k��* 9`)8�j:/�9cm9`)8हf�k���fx��� �SU8� U�� PS8� RT�Q8�k��\X�[]H8�j���ٚ[H8�j�k��* 8�e��j��a8� �Q�[\���ۙ�Y�\�R\�Y
+
+X8�k��[\��+�b)x�j��b��b����x�f�S�U�RSP�X8�j8�fx��� ��Q8ह/�ykf8�h8�dx�e��i�9�i�d"8� y�c:-��b-�o�x� zacz` H8�j�/o����j��a9�$9b���lx�a8�k��(ya��!�8ह����e��i��k��j��x�j��a8� �������^ܝQ8�j���ٚ[H8�k�f�k����[�\�S8�c��[Y]�ܚ�8�n^ܝ8�fx����۝[�Q8�k��X��[�8�k�cf9�%8�j��[Y\�X�[�^8�h8�dx�j�/�ykf8�e��j��a8� ��Y[�8�j[]�Y[�8�k��8�a��j��l8�j���]�X�H�[Z[H8�c9d#8�f[�][�^8ह� x�i9h-9d"8�i�࠸� RS8�k���۝[�Q8�j\�X�[ܛ�\Q8�k�(gy�x�e��i��k��j��x�j��a8� �]�X�H�[Z[H��H8�j[�][�^8ह�a8�o�d"8���f�� LK9�j�c�8�k���۝[�Q8�j8�e��i�^ܝ8�fx��� �����۝[�Q8�k�����������x�i��k��j��c�f�k����������9bl�od��i��'��$8�e�� X�
+�
+Y\\��YL�H
+�
+��۝[��[�^
+H
+��\�X[�8�j8�fx��� �Y\\��Y8�j��۝[��[�^8�k��]8� X�\�X[�8�k��]8�i�� ]�\�X[�8�k�T��UL8� RT��T�LH8�j�f�k���fx��� ���9f�i%��k����ؙH8�k�^ܝ8�e��j��a8� ��'��$9o�8�k�\X�]HQ9�'9a��k�� 9�`�/�zfn��j8�e��i�����fx� ���۝[�8�k�^�\�]�Qܛ�\Y8�k�[�][�^9cf9��9`)8�i��k��j��c�� Y]�X�H�[Z[H��H8�j[�][�^8हd*��X��Y\�X�[ܛ�\Y8�j8�e��i�/�8�fx� ������X\�T��8�k�� y讹k���"8�o��i�.#yi"x�k��\X�[]Tۘ\��8हc��i��fx��.�y�a8�o��j8�e�� X�][]^�\�
+X8�k�o�9�e8�j�[���
+X8�k�c��.�9c��d)�ह�n��x��e+�. 8�k���yh,y��8�j8�fx��� �a�y�'��*���j:*&:c,��*���k�aj9/d�."�fd8�k�� x�gx�8�g��ۘ\���^X�X�����[�8�jۘ\����X�ܙ���[�8�j8�fx��� �[]^8�e8�j8�k�."�fd8�k�� ya�y�'��*y`"�� z*&:c,��*y`"��j8�fx��� �c��.�9�`��k���x�8��x�x�8������j9o%y�l8ह�':*/8�e�� y�*:`%9b)x�b��8�l�[]^9b)x�k�/o��*9��8ह. 9��9.�9�!8�e��i��b��x� z)�y�`��ex�8�gѓTx�j:`&���y�*8�k���8ह���`�x�fx��� �`%9.+x�i�i,y�e��e��g�h-9d"8�k�.�.�9�!8स�fx�nx�i�c�ࢹ��8�e�� y.#yk�9aj8�j�સ���8������8हak:e���e��j��a8� ��X[�\[�[��8�o��g��k�]X\�[�[�Y8�k�સ���8������8�k�� y� 9�`�)���/��o��i�/o��*9.+x�j8�e��i��l8�b8��� �[�\����k��x�i��(y�hy.���j�/�z*/8�f��f�� z-m�b�ybcx�k���[��\�ۛY[��ٚ[X8�j�aiyb��a`�� TQ8� y/o��*9�c:-��� x�x��x��9k�za��� x��x������9.�9���c9k���x�ex�8���o��i�T�Qӗ��8�j8�e�� VS8ह�a8�o�/�8�o��j��a8� �/o��*8�fx��gfy�:*+yk���k��x�k���9f�a�x�j�c��x� yo�z)�x�j��x��x��9k�za��ह�h�许�j�.�9�!8�fx��� ����������ٚ[H��\X�[]H�9k��(�y�"8�o��g� �H9k�o�:(j����S��ٚ[x�i�/o��a��g� �x� X�\X�[]x�i�k��* 8�fx���g� �x� yk��(�y�"8�o��g� �x�k�. :!�8�ex�f���� ����ٚ[x�i�/o��*8�fx���g� �xघ�\X�[]zgg�k��* 8�o��g��k��*�k��(�y�lx�a8�j��e��i��k��j��x�j��a8� ��\X�[]x�i�k��* 8�fx���g� �xक����ٚ[x�b��yb,:`e9.#z �x�j��e��i��'9���हf�`o��e��i��k��j��x�j��a8� ���:h&9g���\X�[]H��ٚ[H9��za�H:*+z*"9idy�!�KK_KK_KK_��]]T��\��J�S
+XS��9�#�dl�*��j8�e��i�kf9g*8�e�� y��(cS��9idy�!8�j8�e��i��$9b��k�,hx�j�d*��x���[���[\�8�k�aiyb��a`�ई[]^[�]8�n9�.��fx� ��'��$�Z]9."��k�gg��[X�z(j9��ह�!��,x�j���(c9k�,hyi%��n:$/x�j8�ex�j��a�Q\�ܘ[X�\��YYܙ[[ݙTY
+�S
+XS��9�#�dl�*��j8�e��i�kf9g*8�e�� y��(cS��9idy�!8�j8�e��i��$9b��k�,hx�j�d*��x��[]^[�]9aj9/d��j�k��fx��Q9�n�c,��:)��fi8�j8�e��i��lx�a�� ��'��$�Z]9."��k�gg��[X�z(j9��ह�!��,x�j���(c9k�,hyi%��n:$/x�j8�ex�j��a�U��\�Y[�H�[X\�HYYXH�[\��\�YY[[ܞH�ٚ[x�i��k�b,:`e8�fx���[X\�P]�[�J�9.�8�cH[�K
+X8ह�$9b���ex�f����[ۚ]܈]�[�[ۚ]ܑ]�[�\\��8ह/o��a��ٚ[x�h8�dyk�o�9k��* :gg�k�o��ٚ[x�i��k�gg�X\��8ह/o����j��a�U�\����Y�9k�o�9k��* 8�e��j��a�ٚ[x�i��k�\�\����Y�Y�[�X8�j�f�k���fx���[���\�XZ[�\H9줹n��9n��db��e��g�XZ[�\HZ\�8�k���8�c9�'��$8�fx���X�\HS�Q�S�Q9��y���࠹�$9b��k�,hx�j�d*��x��� ��$9b���ex�f��j��aZ\�8�k�n��db��e��j��a������[�\�S9f�k��h���c��H��LL8�k�dj9�蹥l8�k��o��i�`n9l`8�fx��� �T��T��][���8�i���X[RY\OUS�Q�S�Q8�b��i��X[RYL8�k��#��.��*��!�k��� x�o��g��k�S����8�k�Y�][:(j9���i��`�����X[RY\OT��PSW�Q8�b��i��X[RYRS��SQ���PSW�Q
+����X8�h8�dxई�[X�܈8�j��e��j8�e��i��lx�a�� ���LL[�H�\]Y\�8�j��Q��[]]�H��X[K[�[X�\��[X�܈8�c9�!�k���ex�8�g�h-9d"8�k�S��SQ�T��SQS�8�j8�fx��� ���X[RY\OT�SUU�W���PSWӕSP�T�8�k�,�9`)8� X��X[RY\OUS�Q�S�Q8�k�,�9`)8� x�gx�k�.��k�,�9`)�[X�܈8�k��*��!�k���n9..8�x�j��a8� ���T��T��k�����8������9k�o�: �yb���k�� X�\ܝY�X��[�Y[�]X8� x��x��x�8��8��8�k�����x�8��8���j8����������8� UTЈ�Q�Q8�o��g��k�d#9�bx�k��g�fj:+f9b)ykd8� yk�,hx������8�������c8�fx�nx�i�. :!�8�fx���\ܝY]�X�P�\X�[]P�][��8�k��':*/9�"8�o�h!y���b��x�h8�dy�'��$8�fx��� �. :!�8�fx���':*/9�"8�o�h!y���c8�j��a9h-9d"8� x�o��g��k��[X�ܗ��\X�[]Wܙ[X\�W�[Y�X�X8�c9`ox�k�h-9d"8�k�� x����8������9k�o�: �yb��हak:e���f��f�� x�gx�k�����8������8ह/o��a�`n9l`8સ���8������8࠹�'��$8�e��j��a8� �ਸ��8�������9�c:-���c9论*�y�"8�o��k�h!y���i��k�� X�SUU�W���PSWӕSP�T�8�k����8हak:e���e��i��8�a8� ��d��k�h!y���h8�dx�c9�"yb�x�j�h-9d"8� y�m�k�`)8�k���PSW�Q:)�y�`��j��k���8������8�����xहi"y��8�f��f�S�U�RSP�X8ऺ/�8�fx� ��m�k��Q9�c:-��हb)z`%9论*�y�"8�o��k�h!y���i��k����ML�8हak:e���e��i��8�c�� X�ML�X8�j��k�S��SQ�T��SQS�8ऺ/�8�fx� ��d��k�h-9d"8� X��LX8�h8�dxह�nyb)x�j���d)��e��j��a8� ���X��ٚ[X8�k�论*�y�"8�o� �yb��ह��y�h��i��cx���c8� y��:*+x�o��g��k���yo-x�e��i��k��j��x�j��a8� �k��(c9�`��k�.#yi"x�k�Y��X�]�P�\X�[]Y\�8�h8�dxहc��i��fx��� ����H8����8�����8�����i,y�e�� x�����8����9�l9n.9�`�.��� Q�TH�]�[��Y�9i,y�e��k�⭹�b�`m����� z*.���x� yo�9���a��!�`g9�h��hy.���k�(j����(j8ह�h��j8�fx��� ��+9��8�i��k�a�yk���x�e��j��a8� ��H��9⭹�b�[�\��[8�k�����8�����8����������8����8�k�dj9�'��j��h8�dy/o��a�� ������8����8�k��Z]8�k����Yۘ[8�i��Z�H9c�� �x�j��[��[X�H�Z]8�j8�e�� X���H�����]�ۈ8�k�[�\��[9��9.��हo�x�g��j��a8� ��H�]]��\�Y[�J
+X8� PU��[\��\�
+
+X8� X�[X\�P]�[�J
+X8�k�⭹�b�b)yidy�!8�k�� y�+9��8�k��#:(j�U�aly�"x��x����,����9k��doz(j8�#xह�h��j8�fx��� ����X��[�8�k��8��x��8�k�� ydo8�l�a��e�`m8�k�.#y�h�`)8���`)9g��`eyc�xघS��SQ�T��SQS�8� y.#ykf9g*8���/o��*9.+x���k�za��.#z-�����)���/9."��k��"yb�x�h8�c9�*�k�o�8घS�U�RSP�X8� y.#y�h��j���x�8��x�x�8�����घS��SQ��UX8� y/�ykf:,����8�k��*�b'y�'�c%�घ���S�UPSV�Q8� ybl�ࢹod��i�i,y�e�घ�U�ї�QSSԖX8� y�*zfd8���aiya�b�����*+yk���-9�#x���.#yi"y�hy.��`eyc�xघS�ӓ�ӗ�T��Ԙ8�n9k�o�9.�8�dx��� ����H�[\�[ۚ]܈]�[�8�k��ٚ[H��\X�[]H9/�ykf8�j8�fx��� �[ۚ]܈]�[�:gg�k�o��ٚ[H8�i��k��ۙ�Y�\�S[ۚ]ܑ]�[�
+
+X8�k��o��$9b���e�� zgg�X\��8�k�S�U�RSP�X8�j8�fx��� �[ۚ]܈]�[�9k�o��ٚ[H8�i�[ۚ]ܑ]�[�\\��8ह/o��a�h-9d"8�k�� X�ۙ�Y�\�S[ۚ]ܑ]�[�
+�۞�\��X8ह�$9b���ex�f�� z)�y�`�X\��8�j�k�o�8�fx��[ۚ]܈]�[�8ऺacz` x�fx��� �`&�n.8�k�UWԑPQX�ՑT�����ۑ�[\�]�[�
+
+X[]�\�H8�k�[ۚ]܈X\��8�i���y�h��e��j��a8� ��H�ٝ[]^8�k��X�[ۈ�T�\��[X�\�8�j�[\���
+
+X��\�
+
+X��ۙ�Y�\�J
+X����J
+X8�k�⭹�b�b)yidy�!8�k�� y�+9��8�k��#:(jK�Q�[\�9⭹�b�(j8�#xह�h��j8�fx��� ��H�]X^�[X�\�ّ��۝[��\KX^�[X�\�X8�k�d#8�f��۝[�\X8�k�HX^�[X�\�HY�][X^
+\JX8�h8�dxह�$9b���ex�f���� �,�9`)8� y�*���]\x� yd#\x�k���k��."�fd:-�z`c��k�S��SQ�T��SQS�8�j8�e�� yb)]\x�k�."�fd8हi"y��8�e��j��a8� ��H:(�yd�yk��(c9�`�8�k���۝[��Y�\��H8�k�k��g*�ؙH8�i��cx�g��X��[�8�8�����8��8�h8�dx�i�����$8�fx��� ��ؙH9i,y�e��k�:*.���y��yh,x��8����8��H8�j�����e�� yb��c%���۝[�8�8�����8���8���x��9b��c%�(�9b�ze���l�:*.���yb��c%�(�9b�ze���l8�k�/g8�x�j��a8� ��������[X�H�[�\�9h���c��S��9�#�dl�*��j8�e��i��S�[�\�9aiyb��ह� x�i9h���c8�k�� XQ�[\���]]T��\��J�S
+X8� XQ\�ܘ[X�\��YY
+�S
+X8� XQ\�ܘ[X�\���[[ݙTY
+�S
+X8� XQ��۝[���]�[�X���S
+X8� XS����]�[�X���S
+X8�j8�fx��� ��d��8�x�k���(cS��9idy�!8�j8�e��i��lx�a8� y�'��$�Z]9."��k�(j9��m�ह�!��,x�j�k��(�y�"8�o�k�,hyi%��n:$/x�j8�ex�j��a8� ��]]T��\��J�S
+X8�k�[]^[�]9o�yn,8� XQ\�ܘ[X�\�8�k��S�[\�8�k�[]^[�]9aj9/d��k�Q9��y/g8� X�[�X���S8�k��n�c,�)��fi8�j8�e��i��$9b��k�,hx�j�d*��x��� ����d��k�h���c8�k��+9��8�i��y�!��fx��� ��]\�W��ܚ�8ह��(c8������8�yidy�!8�k��h��+8�j8�e��i�c��i��e��i��k��j��x�j��a8� ��S9�c:-���j�ۋ[�[9�c:-���k�⭹�b�`m����� y�.�ࢹ`)8� z,����9k��dox� yi,y�e��`�`m�����k��+9��8�k�d!:(j8ह�h��j8�fx��� ��[X�H�[�\�9aiyb��ऐS��9idy�!8�jx�b�ࢹc���dx���g��x�k�k��(�y��yo#��k�ak:e��RQ9idy�!8ह�.yi"x�f��f��j�k��(�x�fx��� ������[���YMRQ�[\���\��H9h���c8�k���(c9a��!�����ۙ�Y�\�J
+X8�k�aiyb��a`��j8�k���y���हi"y��8�e��j��a8� ���8�e��a:*+yk���c9��kf8�k���y����j9.(y����e��j��a9h-9d"8�k�S��SQ��UX8�i���d)��e�� y.�ybcx�k�*+yk���j9��y���ह/�y� x�fx��� �b!���x�k��]]T��\��J�[
+X8�i��#��.��fx��� �.#y�h��j�*+yk���j��k�S��SQ�T��SQS�8ऺ/�8�fx� ����Q\�ܘ[X�\��YY
+
+X��[[ݙTY
+
+X8�k�� X�[ۘ[��\��Q�[\�OH�S8ई[]^[�]9aj9/d��j�k��fx��Q9�n�c,��:)��fi8�j8�e��i��lx�a8� X�[ۘ[��\��Q�[\�OH�S8ह�!�k���[\��]]8� x�fx�j����hH\\���X[H8�j�k��fx��Q9�n�c,��:)��fi8�j8�e��i��lx�a�� ��S9�c:-���k���(cS��9idy�!9."��k��$9b��k�,hx�i��`�ࢸ� yk��(�y�"8�o�k�,hx�j�d*��x��� ��ۋ[�[��\��H�[\�9�c:-���k�� y�+9��8�k��#:(jLK�Q\�ܘ[X�\�Q9��y/g:(j8�#xह�h��j8�e�� yd#9. []^8� zgg�e�zc��� y.%�.��. :!�8ह�':*/8�fx��� ������RQ9idy�!9h���c��Q�[\�8� XQ��8� XQ��۝[�8� XQ[]^8� XS��8� XQ\�ܘ[X�\�8�k�9ak:e����x�x�����H8�k�� PRQS8�k�idy�!:gh��j8�e��i����H9o�9⭹�b�हo�x�f��'9����fx��� �⭹�b�b)x�k��.�ࢹ`)8� y�(y⭹�b�� y��y� x�fx��a�z`�9⭹�b�� y�-9��8����(yb�yc%��fx��a�z`�9⭹�b��k�� y�+9��8�k��#[�\�S9⭹�b�`m����(j���8�#xह�h��j8�fx��� ������U[�\������8��Tx�k�f�k��idy�!��TH9�$9b���hy.���j9�d9��9i,y�e��`��KK_KK_KK_��][]^Y�
+X:-m�b�y�`��j�讹k���e��g�[]^Q8ह�!�h!��i�/�8�fx� �Q:f�d"8�k��x��8����y.%�.��.+y.#yi"x�j8�fx��ۘ\��8ऺ*�x�o�a��f��j��a9a�z`�:f�9k���k�S�ӓ�ӗ�T��Ԙ8� z`�9b!��d9��8�k�/�8�ex�j��a��[�[]^�RY
+Y
+X9ak:e���"8�o�Q8�i�/o��*9��8ह.�9�!8�i��cx�g�h-9d"8�j�� x�gx�k�Q8�k�[]^8�jQ8ह. 9��8�e��i�/�8�fH9�*�ak:e��Q8�k�S��SQ�T��SQS�8� yak:e���"8�o��h8�c9/o��*9.+x�o��g��k�k�za��.#z-���k�S�U�RSP�X8� yo�9��y���`�yi,y�e��i��k�.�9�!8ह�.��e��i�ؚ�X�8ऺ/�8�ex�j��a��][]^[���Y
+X9ak:e���"8�o�Q8�j�k�o�8�fx��.#yi"x�k�[]^[���8ऺ/�8�fH9�*�ak:e��Q8�k�S��SQ�T��SQS�8� ya�z`�ۘ\��:f�9k���k�S�ӓ�ӗ�T��Ԙ��[����S�[YJ�[YJX9�+:(�yd�x�k�d#ybcy.�8�cyi%�`���हak:e���e��j��a9�n����ke��k�S��SQ�T��SQS�8� x�gx�k�.��k�d#ybcx�k�S�U�RSP�X8� ���Q8� [ؚ�X�8� [X\�xह�'��$8�e��j��a�\��T�\ܝY
+
+X�[�X8ऺ/�8�fH9a�z`�9⭹�b��n9/�ykf8�ex�f��j��a��]�J[�X�JX9�+:(�yd�x�k��yb-�o�xहak:e���e��j��aS�U�RSP�X8� ���۝[�8� X�X��[�8� X�\X�[]xहi"y��8�e��j��a���]X^�[X�\�ّ��۝[��\KX^�[X�\�X8�k�."�fd8�k���۝[�\X8�e8�j8�j���9����e��i�/�y� x�fx��� �Y�][X^
+\JX8�k�-m�b�y�`��ؙx�j��$9b���e�� zgg��n��k�\��\�H[����o��i����`�x�i��cx�g�d#8�f\x�k���۝[�9�l8� X�\��[�X^
+\JX8�k��gx�k�b'y�'�`)8ह� x�i8� ��*���x�k�\x� z,�9`)8� XY�][X^
+\JX:-�z`c��k�S��SQ�T��SQS�8�j8�fx��� ���Y�][X^
+\JX8�n8�k�i"y��8�k��$9b���e�� y��kfX\�xहo-�b-����x�e��j��a8� ���:)���[��h8�dxघX�]�SX\�P��[�
+\JH�\��[�X^
+\JX8�i�b-�fd8�e�� L8�i��k�d#\x�k���:)���[�घS�U�RSP�X8�j8�fx��� ��]X^�[X�\�ّ��۝[��\JX8�k�d#8�f\x�k��\��[�X^8ऺ/�8�fx� ��]��۝[�Y�
+X8�k�.#yi"x�j��g�fjQ:f�d"8�k�."�fd9i"y��8�i�h���&��ex�f��j��a8� ������:gg�k�o�8�k�[YQ�[\��j�H�SB���+:(�yd�x�k�[]^�\X�[]Y\˘�[YQ�[\�8�k��[�X8�j�f�k���fx��� �Q[]^��[�[YQ�[\�
+X8�k�[]^8�c:e�zc���"8�o��j��XS��SQ��UX8� x�gx�9.�yi%��i��k�S�U�RSP�X8ऺ/�8�e�� XU[YQ�[\�ؚ�X�8� [X\�x� ]�ܚ�\�ह�'��$8�e��j��a8� ��e��g��c8�h��i��][YT�[\
+
+X8� X�X\�[YT�[\
+
+X8� X�][YT�[\
+
+X8� X�]��\��U[YJ
+X8� X���J
+X8�n9b,:`e9c�� �x�j�ak:e��ؚ�X�8�k�kf9g*8�e��j��a8� �����(�yd�z*+yk���k��[��ۛ�X���P�[X8�k��[�X8�j�f�k���fx��� �Q��۝[��[���P�[J
+X8� X[�[���P�[J
+X8� XQ[]^��ۛ�X��P�[J
+X8� X\��ۛ�X��P�[J
+X8�k�� ze�zc���"8�o�ؚ�X�8�j��k�S��SQ��UX8� z,�8�k��SHQ8�j��k�S��SQ�T��SQS�8� x�gx�9.�yi%��j��k�S�U�RSP�X8ऺ/�8�fx� ��SHQ8� y��y���⭹�b�� X�X��[�9⭹�b�हi"y��8�e��j��a8� �k�o�8�e��j��a9�g� �xह�$9b���lx�a8�k��(ya��!��j��e��i��k��j��x�j��a8� ������Q��۝[���]\��\�R[���
+X��ak:e���fx�ٜ�۝[�8�k�� \�ؙy�`��j�gg��n��k�\��\�H[������ke�b%�ह讹k���i��cx�g�࠸�k��j�fd8��� ����ke�b%��kؘX��[�9�+�b)x� y�jy�!��g�fj:+f9b)ykd8� Y�]�\��]�\�[۸�j��jx� y��9kṠ�yh,xहd*��o��j��a9.#yi"y��yh,x�b��y�'��$8�e�� yd#8�f��۝[�ؚ�X�8�k�k��doy.+x�k�d#8�f9`)8ऺ/�8�fx� �ؚ�X�8�c]�x�j��yo�x�f��$9b���e��i�gg��n�`)8ऺ/�8�e�� z`�9b!�`)8�9�n����ke�ऺ/�8�ex�j��a8� �e�zc��e��i��o�8�k�S��SQ��UX8�j8�fx��� ��ؙy�`��j��'��$8�i��cx�j��a��۝[�8�k��]��۝[�Y�
+X8�n9ak:e���f��f�� U���c�[��"8�oٜ�۝[�8�i�i,y�e��fx��⭹�b�ह/g8�x�j��a8� ����Q��۝[���]�]\��]\�\\�X8�j�]��۝[��]\ԙXY[�\���]\�\\�X8�i��k�� z/�9cm9.���l8�k�idy�!8�c9�l8�j���� ��]�]\�
+X8�k��*���x�k�b%��&y`)8ईS��SQ�T��SQS�8�j8�e��i���d)��e�� y�d9��8ऺ/�8�ex�j��a8� �����x�k�`)8�j��i8�a8�i��k�� X��۝[�[��˜�]\��\�8�i�ak:e���e��g��+�hg��h8�dxऺ)�y�`�h!��j�/�8�e�� yak:e���"8�o��+�hg��k�a�z)!�࠹��y� x�fx��� �����x�h8�c9�*�ak:e���k��+�hg��k��(z)���fx���g��x� z)�y�`��c8�fx�nx�i��*�ak:e���+�hg��i��`��8�l9�n��k�acyb%�ऺ/�8�e��i��$9b���fx��� ��+�hg��e8�j8�k��#9c�o��.#z �x�#xऺ(j8�fy����n�`)8ह�'��$8�e��i��k��j��x�j��a8� �)�y�`��ex�8�g�ak:e���"8�o��+�hg��k�c�o���j�y.���i�࠹i,y�e��e��g�h-9d"8�k�� z`�9b!��d9��8ऺ/�8�ex�f�S�U�RSP�X8�j8�fx��� �ak:e����x��8��8��8�����8���j��x�k�)�y�`�स�gx�k��o��o�S8�n9�(x�fy. 9��x� T���k��*�ak:e���+�hg�ह�(z)���fx���8�a�k���x�i��a8���g��x� x�d��k�`n9b)x�k�S8�c:(c8�a�� ��]��۝[��]\ԙXY[�\��
+X8࠹�*���x�k�b%��&y`)8ह��d)��fx���c8� y����x�k�)�y�`��j��k��fx�nx�i�)�y�`�h!��i�y.���f��i:/�8�fx� �ak:e���"8�o��+�hg��j��k�S�U�RSP�X8� XS��P�X8� X�P�X8�k��a8�f��8�b�� y�*�ak:e���+�hg��j��k�S��TԕQ8ऺ/�8�fx� �b%��&y`)8�k��':*/9a��!��k�aly�*8�e��i��8�a8�c8� ya�b��.���l8ह�n��x��a��!��k�aly�*8�e��j��a8� ����Q�[\���]]T��\��J��\��JX8�k�� PS��9�#�dl�*��jx�b�࢈��\��HOH�S8�k�h-9d"8�j��!�k���[\��]]8हaiyb��a`��j8�e�� X��\��HOH�S8�k�h-9d"8�j��[���[\�8�k�aiyb��a`�ई[]^[�]8�n9�.��fx� ��]]T��\��J�S
+X8�k�k��(�y�"8�o�k�,hx�j�d*��x��� �S����ޙ[���X�HRQ8�k��[�܈9��:!깥.yi"x� \�]��[�\��[��X�[ۈ\��\�8�j��8��ak:e��idy�!8ऺ`&��ex�j��a9k��(�x�k���y�*8�e��j��a8� ��ۋ[�[��\��H�[\�9�c:-���i��k�� y�����\��Q�[\��[\��Y�[�\�][ۊXܚY�[�8�j�lg��fx���X�[ۈ�T�\��[X�\�� X�۝[�Z]x� Y�\��[�\�][۸� Y�ۜ��X[H\�X[�]H8हb!���x�e�� y�����\��H9�,y�ix�k��*�k�9.��^[�Y8ह����\��H9�,y�iH^[�Y8�n:`(��d8�e��i��k��j��x�j��a8� ���Q��۝[��[�J
+X8�k��[�\��XY9."��i�8��x�����9k�9.���o��i�o�x�hy����dx�j��a8� �bcyf�[�H���[�8�k�8�����8����8ई�[�\�][ۈ8�i��(yb�yc%��e�� X�X��[�8�n[�H�\]Y\�8ह��yaix�e�� zgg�d#9�'�8�����8����8�c8��x�����[Y[�]8�j]�[�:`&���xऺ(c8�a�� ���[�J
+X8� X���J
+X8� y�(yf�[�J
+X8� X��[�
+X8�k�*l�od��[�\�][ۈ8ई�[��[8�e�� yc�8�a8�����8����8�b��x�k����Q�����QӐS:`&���xह�j8�i���� ���Q��۝[����[�
+X8�k�� yd#9. 9�hy.���k�a�H��[�8�i��`��h��i�࠹�$9b���lx�a8�k��(ya��!�8�j��e��j��a8� �S��9idy�!8�j�o���a8� y�*�k�9.���k���[�8�c8�`���h-9d"8�k���kf��[��[�\�][ۈ8ह`g9�h��e�� y��8�e��a��[��[�\�][ۈ8ऺe��i���fx��� ���kf��[�8�k��[�X��8�b��y�ix��c�8�a\�Z[�[]�[�8�k��[�\�][ۈZ\�X]�8�j8�e��i��j8�i���� ���Q��۝[�����J
+X8�k���۝[��X��[�8�k�ܚ]X�[�X[�\8ह�$9b���lx�a8�i���xࢹ�l8�ex�j��a8� �ak:e�����H8�i��k�� \��[��[��[8� ][�H8�����8������8� x��x�8��[\��8� X�X��[����x� x����8�����8�����)��fi8� Y[]^[��[�8� Y��۝[�X\�H�[X\�H8ई�\�[��\�8�j8�e��i��lx�a8� z`%9.+H�\8�c9i,y�e��e��i�࠹o�9����X[�\8ह��y����e�� y� 9b'x�j�)���+8�e��g�ܚ]X�[\��܈8ईRQ9⭹�b�8�j8�e��i�/�8�fx� ��X[�\�Z[\�H9o�8�k���۝[�8સ���8������8�k�`&�n.9��y/g8�n9�.��ex�f�� X���H�]�H8�h8�dxऺ`&�n.8�k�o�y����c:-���j8�e��i�*,yc���fx��� ��.�ࢹ`)8ऺ/�8�f��j��a��9�c:-���k�`&�n.�X[�\8�k�.������j��f��f�� y�*����H8�o��g��k��X[�\9�*�k�9.��ई��XZ��8�j�*&:c,��e�� yk�,hxह�#��b8�a:*.���H�:f�:f�*.���x�n:$/x�j8�fx� ������X\��H�X��[�8�i��k�� X���PT�8�k��#��.��8�j�[�H9`g9�h���y/g8�i��`������[�J
+X8�k�,�9b�x�j8�fx��� ����X��[�8�k����J
+X8�k��XY\���8�j��[X\�H8ऺ(c8�a��c8� X���PT�8�k�k��(c8ई���H8�k�o�zh"9�hy.���j8�k��e��j��a8� ��e��g��c8�h��i�� Q�����J
+X8�c���PT�8ह�n�(c8�e��j��a8�d��j8ई�[X\�H����\�8�o��g��k��Y�8�j9�lx���j��a8� ���Q��۝[���[[ݙS�]]Y
+Y
+X8�k�� Y��۝[�9a�b����x�i�Q8ऺfi9c���i��cx��k��(�x�c9kf9g*8�e��j��a:fd8࢈S�U�RSP�X8�j8�fx��� ��ٝ[]^9o�9��x�k�����\�8�h8�dx�i�Q8ह�j8�i���k��(�x�k�� Y��۝[�[]�[�]]Q�[[ݘ[8हk��(�x�e��g��d��j8�j��e��j��a8� ���������^X�X���]\�8�k��n��czh&9g��g������^X�X���]\�8�k�^X�X��[�]�Y��\�8�k��n��czh&9g��� x�fx�j����hH�X�H8हg���j�b)9k���fx��� ���^X�X���]\�9�#�dl��KK_KK_��P�W�STX^X�X��[�]�Y��\�8�k��n��czh&9g���c9�n�� x�fx�j����hy��8�cz/�8�o�/fyg,8�c8�j��a��P�W�SS���STX9�n��czh&9g���c9l$x�j��a��P�W�SS��ѕS9�n��czh&9g���c9i&��a��P�WѕS9�n��czh&9g���c9��9�k�� x�fx�j����hH�Y��\�8�k��n��j�/�x�a��/o��*9�"8�o�a��g���j9�n��czh&9g��g��ह���d#8�e��i��k��j��x�j��a8� ������[�\�S9⭹�b�`m����(j������+9��8�k�(j8�k�� U[�\�S8�k�⭹�b�ह� x�i9ak:e��Tx� ya�z`�9.��,hx� z,����9k��dox� y�.�ࢹ`)8� ybk�/g9�*8�k����8�i��`���� �(j8�j�*&:/"x�e��g�⭹�b�b)yidy�!8�k�� yo�9����k��h�����i�a�yk���x�e��j��a8� �o�9����+9����k�� z(j8�h8�dx�i��k�*�x�o�c��8�j��a: �9�k�� z(�yd�y��za�x� z �yb��k��* 8� yk��(�y."��k�(�:-���j�fd9k���fx��� �������Tˈ9⭹�b��`9�"x���k��dox���i,y�e��`�`m����*+z*"������T�LK�:*+z*"9c��ba�[�\�S8�k�� ya�z`�9⭹�b��k��h��+8ऌx�i8�j�f�k���fx��� �)!��l8�k����`(9/d��c9d#8�f9⭹�b�ह��9����j�/�y� x�e��i��k��j��x�j��a8� ���ak:e��TH9..��c:-���k�� yo�x�f��h��+9�`9�"z !xह�c9�,x�fx��� �alz`&�`�9d�xऺ/�yb�8�e��g��h8�dx� y. :`�9�c:-���c9alz`&�`�9d�xहdo8�m��h8�dx� y���d#x�c9��8�b8�g��h8�dx�i��k�� z*+z*":`jyd"8�j8�k��o��j��ex�j��a8� ���d!Tx�k��(xहf�k���fx��� ���:h!y��9a�yk�H�KK_KK_�9⭹�b��`9�"z !H8�jx�k����`(9/d��c9�h��+8�b��9�$9b���`���[Z]9/ex�c9讹k���fx���b��9i,y�e��`����X��9/exह�.��fx�b�����X��i,y�e��`�]X\�[�[�H��Z[Y��]�H8�k��jx�8�j�$/x�j8�fx�b���X[�\9i,y�e��`�9a�z*i�(c9c�� �x�j�����fx�b�� \]X\�[�[�x�fx���b����9�`�b�y/g��8�i�/exस�e��i��8�a8�b��:*.���H9/exह����fx�b��9ak:e��Ty�.�ࢹ`)8�jx�k�RQ9⭹�b�ऺ/�8�fx�b������X��.#z �x� X�X[�\9.#z �x� y�h��+9.#y. :!�8� X�X��[�9k��⭹�b��j�Y�\��y.#y. :!�8� x�����8����9⭹�b�.#y. :!�8�k�� z`&�n.9⭹�b��j8�e��i��lx�h��i��k��j��x�j��a8� �`&�n.9⭹�b��n9�.��f��j��a9h-9d"8�k�]X\�[�[�H8�o��g��k��Z[Y9⭹�b��n:$/x�j8�fx� �������T�L��9⭹�b��`9�"z !z(j��:,�����9⭹�b�9�h��+9�`9�"z !H:(�9b�y�`9�"z !H9�y�h�.��h!H�KK_KK_KK_KK_��\��X�HY�X�X�H[�\�[8�j��e�9kd:,����8�c�\��X�H9aj9/d�⭹�b�ह��9��yi"y��8�e��j��a���۝[�X\�H��۝[�Y�\���۝[��[�[YX�[���[�8� \\�X�[ܛ�\8� \�[�[YH�[�[��8हb)x�!x�j�讹k���e��j��a���۝[��X��[��]H��۝[��[�[YX�X��[�Y\\��X��[�9k��⭹�b��j�[�[Yy⭹�b�ऺ`&�n.9⭹�b��i�.e�f��ex�f��j��a�[]^Y��Y���[�[]^Y�\�[]^[]�HY8� \�Y�\��H�X�ܙ8� \�Y���[�8हb)x�!x�j�讹k���e��j��a�[]^8�����8���c:-��[]^�[�[YX�[�[YR[ԙY�\��X�TK����U�h���c9a��!�ऐTx�e8�j8�j�a�z)!�k��(�x�e��j��a��[\�Y�X�X�H�[\�Y�\��[\�[�ٝ�[]^�ٝ[]^�[\��X�ܙ8�j�[�\�ؚ�X�8�k��a���x�h8�dxह����ex�j��a��[\�]Y]YH�[\�]Y]YP�X��[���[\�[ܚ]y�$9b��o�8�k��Z�yi,y�e�हk�9aj9i,y�e��j8�e��i�n�y����e��j��a���Y�X�X�H��Y�\���[�ٝ�[]^��ؚ�X�8�j�ٝ[]^���X�ܙ8�k��a���x�h8�dxह����ex�j��a�^X�X��]Y]YH^X�X��]Y]YP�X��[��^X�X��8�����8����8�����8����9i,y�e��h8�dx�i���घ���Y9�lx�a8�j��e��j��a�\�ܘ[X�\��\��[ۈ\�ܘ[X�\��\��[ۘ\�ܘ[X�\�Y�\�[]^�[�[��� TQ8� \��\��H�[\�� Z�^H��[�हb)x�!x�j�e�x�f8�j��a��^H��[�\�ܘ[X�\��^UX�X\�ܘ[X�\��\��[ۘ�Y���[�9.#y�m9d"8�k��o��o��$9b���lx�a8�e��j��a����]H���Y�\��X�X��[�Y\\��X��[�9⭹�b��j�Y�\��y⭹�b��k�.e�f�ऺ`&�n.9⭹�b��j��e��j��a�8�����8�����ܚ�\��[�[YX9�`9�"xસ���8������9�`9�"z !y.#y�#������8����8ह/g8�x�j��a���X[H��[�\�H��X[P��[�\�U�[]^ٚ[\�����U�[�K���[����\��yb!�����i�h���c9a��!�ऺa�z)!�k��(�x�e��j��a�X��]\[[�HX��]\[[�X�ٝ�[]^�۝[�Z]x� [ܚY�[�� Y�[�\�][۸ऺ)!��l9���`8�i���9��8�e��j��a�U��\�YY[[ܞH]��\�Y�X��[���[\�[�9�j�c��. :!�8ज�\�Y[�yd#9. 9�)��hy.���j��e��j��a8� ��9.�8�cZ[�H
+�]�]RYOH8�k��Y[�9`m�\�Y[�y/o��*9�`�.��`&���x�j8�e��i��lx�a���U�h&9g���k��h��+8�j8�j���d#9. 9�)���yh,x�k�� RS8�c9�n�(c9�`��j�c�9n,��n:*&:c,��fx����ۙ\�ٚ[\��Y�[\���[�\�][ۋ�[�ٙ\���[��X��[���Y[��][ۗ�Y]�]RYX\�W��]_X8�j8�fx��� ���x�x�8���*&:/�9kd9�j�c�����]8�k����]���[���^�_X8ह�h��+8�j8�j���d#9. 9�)���yh,x�j��e��i��k��j��x�j��a8� ���]8�j��jx�k�*&:/�9kd8��x�������8���k�� y��y�*8�e��g�*&9���h&9g��k��(�x�i�d#9. 9�)��c9/�z*/8�ex�8��h-9d"8�h8�dz(�9b�y�':*/8�j:*.���x�j��*8�a8��� �aly�"x��������x����k�]RYL:)���/��k�� ydo9a�abQ�[\��c9�`9�"x�fx���"yb�x�j�����x�8ਸ�����9/o��*9�*xहk�,hx�j8�e�� x�8��x�����9f"zh&9g���k��h��k�]RY:)���/��k�� yod�*l�Q�[\��k�c�9n,��i�/o��*9.+x�k�bl�ࢹod��i��j:.�` y��yo#�ह�nyk���e��i�(c8�a�� �[\J�]RY8�i��k���x�x�8���*&:/�9kd8ह/o����f�c�9n,�."��k�+f9b)y��yh,xह�':*/8�fx��� ��`9�"z !x� y.%�.��� z.�` y��yo#�� X]RY8�c9. :!�8�e��j��a9h-9d"8�k�S��SQ�T��SQS�8�j8�e�� yb)x�k�bl�ࢹod��i�ऺ)���/��e��i��k��j��x�j��a8� �c�9n,��k�/�zh/9�)�ह论*�x�i��cx�j��a9h-9d"8�k�S�ӓ�ӗ�T��Ԙ8�j8�e�� yk�yaj8ह论*�x�i��cx�j��a:*&9���h&9g��ऺf�:f��fx��� ��������T�Lˈ9ak:e��TH�[��X�[ۻ�"9⭹�b�`m�����"yidy�!��ak:e��TH8�k�⭹�b�i"y��8�k�� yc��ba��j8�e��i��(x�k���zf���i��lx�a�� ���^��[Y]B�O��\�\��B�O��\\�B�O�\B�O���[Z]���9��zf��:*,yc��9�y�h��KK_KK_KK_��[Y]H9o%y�l8� y⭹�b�� X�\X�[]x� [�ۙ\�. :!�8� X���Y9⭹�b��k�论*�H9⭹�b�i"y����\�\��HY�\��Y����8�����8������8�k�.�讹/�H�X��[�9k��⭹�b��k�i"y����\\�H8�����8����9�'��$9���`�x� x����8�����8������c:-�����`�x� \���X��ۘ\��9c�o��9���ak:e��⭹�b��k��-9h��\H�X��[���ٝ�[]^�]Y]YH��Y�\��H8�n8�k�i"y����[Z]9.#z �x�j�i"y��8जۘ\��8�j��e��j�(c8�a��d��j��d!9��y/g8�k����`�x� y..�)�y⭹�b��k�讹k��� y讹k��o�9a��!��k�h!��j�k��(c8�fx��� �..�)�y⭹�b��k�讹k���i��k��h��+9⭹�b�� y�`9�"y�*x� X�X��[�8�n8�k�c�y�(8ह�lx�a8� y讹k��o�9a��!��i��k��[�X��� y⭹�b�`&���x� z*.���x� yo�9�a�.�8�dx�k�f�*"8ह�lx�a�� �讹k��o�9a��!��k�i,y�e��k�g��.�8�cx�k�bk��(y�d9��8�j8�e��i�/�ykf8�e�� y..�a��!��k��.�ࢹ`)8हi"y��8�e��j��a8� ��g��h8�e�� PTyb)y⭹�b�(j8�c8����8�����8������c:-���k����`�x�o��g��k��n�c,�ह�$9b��讹k���hy.���j�d*��x����y/g8�i��k�� x�gx�k�a��!�ह讹k��bcx�j�k��(c8�fx��� ��d��k�alz`&�ba�ह/o��h��i�Tyb)x�k��$9b���hy.��ह讹k��o�9a��!��n9����e��i��k��j��x�j��a8� ����9��zf��:*,yc��9�y�h��KK_KK_KK_����X����[Z]9bcyi"y��8�k�c�ࢹ��8�e�9i,y�e�ह��xࢸ�i8�m��e��i�`&�n.9⭹�b��n9�.��fx�d��j�]X\�[�[�H���X��.#z �z,����8�k�f�:f�9�$9b���lx�a8�i�`&�n.9��y/g8ऺ*,x�fx�d��j����[Z]9bcyi,y�e��i��k�� y�$9b���.�ࢸऺ/�8�e��i��k��j��x�j��a8� ���[Z]9o��X[�\9i,y�e��i��k�� PTx�k��.�ࢹ`)9��za�xहd!Tz(j8�i�f�k���e�� yo�x�f�*.���x�j�����fx� ����X��i,y�e��`��k�� yk�,hz,����8ई]X\�[�[�H8�o��g��k��Z[Y9⭹�b��n:$/x�j8�fx� ��������T�L�K�9alz`&�`�9d�z`jy�*:(j���alz`&�c%��fx���k��k�aly�"yc�� �x�j�g+9a��!��j9.#yi"y�hy.���h8�dx�j8�e�� x�8�������8��x����8�yf"x�k�a��!�h!�n���k�`"�b)x�j�k���x��� ����9k�,hya��!�9�`9�"yalz`&�`�9d�H9o�x�f�`&��fy�c:-��9�y�h��fx��k��(�H�KK_KK_KK_KK_��[\�����\�
+
+X8�k���[Z]9o�8����8�����8�����i,y�e�����[Z]�[�X�јZ[\�U��\���[Z]9o�8�k��[�X��9i,y�e��k����X��8�f��f��[�X���[�X[X8�j�f�k��� ���kf9k��(�yd#x�c9�l8�j���h-9d"8�i�࠸� x�d��k�,�9b�xहcf9. 8�k��[�X��X[9�h��+8�n9����x�fx��Tx�e8�j8�j���ʊ
+X8ह��9��ydo8���i����X��8�fx���d��j8� x�o��g��k�Tyb)x�j�d#9g���k�8����8�����8�����i,y�e�9a��!�हa�yk��(�x�fx���d��j��[\�����\�
+
+X8�k�]Y]YH�X[�\]Y]YP�X[�\�[]^�\�9o�8�k��TH�U��^X�X���X[�\9i,y�e�ई�[�[YH�Z[Y8�o��g��k��X[�\�Z[Y8�j���y����X\�ؙ\��Y��ܝ
+
+X8�i�9ak:e��TH9�$9b���j�..8�x���d��j�8�����8����:-m�b�H�9`g9�h����[���Z�H�ܚ�\��Z[\�P�\��Y�Y\�8�����8����9b-�o�yi,y�e�� x����8�����8�����i,y�e�� X�X��[��Z[\�H8ई[�[H��XZ[�\��܈8�i�b!�hg��X\�ۋ��۝Z[�����X8�j��jy���ke�b%�b!�hg��i�i,y�e��+�b)xह�n��x���d��j���۝[��[]^���\��H�[\���\�9h���c��X[P��[�\�U����\��P��[�\�U�ܚY�[�� Y�[�\�][۸� X\��[X�\�� Q�Tx� PU��\�Y8� \�X�ܙ]Y]YH8हk�,hycf9/cx�i�a��!�9d!Tx�c\��[X�\��]Y]YH��[�\�][ۈ8ह`"�b)x�j���9��y��y/g8�fx���d��j�\�ܘ[X�\�[]^�Q��^H�X[�\\�ܘ[X�\��\��[ې�X[�\��\�ܘ[X�\��^U��\��[ۈ8�j�^HX�H8�k���9��8��ܙ[X\�x���i,y�e�f��!8ह. 9/d��i��lx�a�y.���k��[H�X[�\9i,y�e��i�o�9����\��[ۈ8ह�*�a��!��k��o��o���8�dx���d��j���^X�X���XY�[��X�^X�X���ۜ�[YU��TH�XY8� U�\��x� y��9aiy�d9��8� y��:,��讹k��ऌx�i8�k�⭹�b��g���8�i��lx�a��XY9�"8�o�aiyb��ई9��9aiy�d9��9�*�论*�x�k��o��o�. 9o����:,���"8�o��j��fx���d��j�������T�M�9i,y�e�b!�hg��j9��c���9f삂�9i,y�e��+�b)H9/��9�.�ࢹ`)9��c���9f�9�y�h�.��h!H�KK_KK_KK_KK_KK_�8����x�8ਸ�����:*�9�*9o%y�l9.#y�h�� [�ۙ\�.#y. :!�S��SQ�T��SQS�9do8�l�a��e�k�,hx�k��o��X��[�������8���c:-���Z[\�x�n9�!��/8�e��j��a��ak:e�����J
+X8�k��#�dl��k�� x�8�������8��x����8�x� z*��!���x�8��x�x�8������ yo�9�a�.�8�dy⭹�b�ह�a8�o�d"8���f��g�cf9. 8�k�(j8�i�k���x��� �]�X8સ���8������8�j�k��fx��� 9b'x�k����J
+X8�k�� x�fx�nx�i��k�o�9�a�.�8�dxऺ*i��fybcx�j���X�[���Y8ह讹k���e�� yf�o�ya��!�.�yi%��k���x�x�����xह��d)��fx��� �Q��۝[�����J
+X8�jS������J
+X8�k�)!��l9f�do8�l�a��f���� ���X�[���Y
+��X[�\��\]X8�i��k�� yk�9.���"8�o��k�o�9�a�.�8�dxहa�yk��(c8�f��f��P��T��8ऺ/�8�fx� �Q������J
+X8�jQ�[\�����J
+X8�k�� yd#8�f9⭹�b��i�S��SQ��UX8ऺ/�8�fx� �Q���k��gx�k�.��k���x�x�����x࠹i,y�e��j8�e�� RQ�[\��k�`ayn���e��g��[X\�P]�[�J
+X8�k�b)x�k�)���/�c�9n,���y/g8�j8�e��i��lx�a�� ��jx�k��8�������8��x����8�x�i�࠸� X��X�[���Y
+��X[�\[�[��8�k����J
+X8�k��*�k�9�b�h!��k�f�o�ya�z*i�(c8�j�fd9k���e�� y�*�k�9�b�h!��h8�dxहk��(c8�fx��� �k�9.���`��h8�dH�P��T��8ऺ/�8�e�� yi,y�e��`��k��gx�k���y/g8�j�k�o�8�fx��o�9�a�.�8�dx�8��x��8ऺ/�8�e��i��X[�\[�[��8ह��y� x�fx��� �]X\�[�[�Y8�i��k�ak:e�����J
+X8�j�S��SQ��UX8ऺ/�8�e�� ya�z`�8�k�o�9�a�.�8�dy�y�!��g�����h8�dx�c9a��!��fx��� �*��!���x�8��x�x�8�����.�8�k�]�X8�o��g��k���X�[���Y8� yo�9�a�.�8�dz.�8�k����\�Y8� X�X[�\[�[��8� X�X[�\��\]X8� X]X\�[�[�Y8�k��a8�f��8�b�. 8�i8�j8�fx��� �]�Jӛ��\�Y8� X��X�[���Y
+��X[�\[�[��8� X��X�[���Y
+��X[�\��\]X8� X��X�[���Y
+�]X\�[�[�Y8�h8�dxह�"yb�x�j��a8�o�d"8���f��j8�e�� X�X[�\[�[����X[�\��\]X8�]X\�[�[�Y
+��X[�\��\]X8�k��$9����ex�f��j��a8� ����9i,y�e��+�b)H9/��9�.�ࢹ`)9��c���9f�9�y�h�.��h!H�KK_KK_KK_KK_KK_�[��\ܝY�\X�[]yi%�� y�d�.azgg�k�o�S�U�RSP�X8�j��e��[�X��������8����9⭹�b�हab8�j�)���i�b)x�8��x��8�j��e��j��a�8����8�����8�����i,y�e��[�\�8����8�����8�����i,y�e�Tz(j8�j�o���a�8����8�����8������`9�"z !H8�����8���c:-��aj9/d�हcl٘Z[Y8�j��e��j��a�������8����8�k��l9n.8�k�� X�ܚ�\�[�X�8� X��[��Z[\�X8� X���Z�Q�Z[\�X8� X]�[��Y��Z�Q�Z[\�X8�j8�e��i�c.�b)x�fx��� ����9i,y�e��+�b)H9/��9�.�ࢹ`)9��c���9f�9�y�h�.��h!H�KK_KK_KK_KK_KK_�8�����8���c:-���Z[\�H�TK��\�YY[[ܞy�-9�#HS�ӓ�ӗ�T��Ԙ9k�,hY�[\�����U���۝[��X��[��Z[\�x�j9���d#8�e��j��a�Y�\��Z[\�H9�h��+9c�9n,�.#y�m9d"S�ӓ�ӗ�T��Ԙ9k�,hz,����:`&�n.9⭹�b��j��.��ex�j��a����X���Z[\�H9���⭹�b�o�ya`�i,y�e�S�ӓ�ӗ�T��Ԙ9k�,hz,����8ज]X\�[�[�H9�$9b���lx�a8�j��e��j��a��X[�\�Z[\�H���K���9o�9�a�.�8�dyi,y�e�Tz(j8�j�o���a�9k�,hz,������8�h8�dx�j�` ��c8�ex�j��a������T�MK�Tyb)z*+z*":`jyd"9�hy.킂�d!Tz(j8�k�� yl$x�j��c��j8࠹�(x�k�b%�ह� x�i8� ���kf:(j8�j�d#8�f9��yh,x�c9b!��h��e��i��a8��h-9d"8࠸� yd!:h!y���n8�k�k�o�8ऺ/�z-�x�i��cx���d��j8हo�zh"8�j8�fx��� ���:h!y��9o�zh"9�!��,H�KK_KK_�9.��bcy⭹�b����Y����[����Z[Y�]X\�[�[�Y8हc.�b)x�fx���g��H��[Y]ya�yk�H9o%y�l9.#y�h��j9⭹�b�.#y�h�हb!��dx���g��H���[Z]9k�,hH9�$9b���`��j�/ex�c9讹k���fx���b�हf�k���fx���g��H����X��k�,hH9i,y�e��`��j�/exह�.��fx�b�हf�k���fx���g��H��X[�\9i,y�e��`����H�����\�YY��ܝ8�k��lx�a8हf�k���fx���g��H�9�(y⭹�b�Ty�.�ࢹ`)8�j9a�z`�9⭹�b�ह. :!�8�ex�f����g��H�:*.���H9i,y�e�c��f�8ऺ/�z-�x�fx���g��H�����[�\�S�[�[YH:*+z*"9idy�!��[�\�S�[�[YH8�k�ak:e��Ty⭹�b�� ya�z`�9.��,hx� z,����9k��dox� yi,y�e��`���c���9f�ह.�y."��k�*+z*"9idy�!8�j8�e��i�f�k���fx��� ����ak:e��Tx�k��.�ࢹ`)8�k�� y.#ykf9g*8�o��g��k�b)y�`9�"z !x�k�Q8घS��SQ�T��SQS�8� yd#9. 8�x��8����ya�x�k�e�zc���"8�o�સ���8������8घS��SQ��UX8� yk�za��.#z-���o��g��k�,����9.#z-��घS�U�RSP�X8� y/�ykf:,����8�k��*�b'y�'�c%�घ���S�UPSV�Q8� ya�z`�9.#y�m9d"8�o��g��k��-9�#xघS�ӓ�ӗ�T��Ԙ8�j8�fx��� �k��/d��k��j��a8સ���8������8ह�'��$8�f��f�� z!�b�y�8�j�f�:f�࠺(c8���j��a8� ����H�[\�Q8�k�S9i%�`�8�n:/�8�fy`)8ई[]^[��[Q8�k��o��o���y� x�fx��� ���]X��]X�8� Y�[\�8�����8��aiyb��a`�� PU��[��Q9c�o���i��k�� y�(x�ex�8�g��[\�8સ���8������8�k�a�z`��ۙ\�[]^8ह�':*/8�e�� [�ۙ\�[]^8�c9. :!�8�e��j��a�[\�8ईS��SQ�T��SQS�8�i���d)��fx��� ��H8�����8����8�k�[�H9/�ykf9ab8�k�]]^8ह讹/�x�e��i��b��H�]ۈ8�fx��� �/�ykf9ab8ह讹/�x�i��cx�j��a9h-9d"8�k��]ۈ8�e��j��a8� ������8����[�X�8�k��ܚ�\�[�N����[�ٜ��W��ۙ\�
+X9�c9�,x�i�*.���x�n9����e�� Y]X�Y8�����8����8ह/g8�x�j��a8� ��H:em�k��doH8�����8����8�k�o�y�g��k�]]^
+��ۙ�\�8हg+8�j8�e�� \���\]Y\�8����Z�H8�����[�8�k�h!��i�`g9�h��fx��� �]�ZXЛ��8�k����y�"8�o����:)�y�`��^ܝ9�"8�o��j��jx�k�cf9�%�Y�8�j�fd9k���e�� z)!�d"9⭹�b�d#9�'��k�.������j��e��j��a8� ���X8�k�8���x��9l ��*9`&z(�8�i��`�ࢸ� z`&�n.9cf9/d����x��8�j:gfy�8��x�8�����论*�x�k�.������j��k��e��j��a8� ���H9��(c9.�y��8�i��y�!�k�,hx�j8�j���em�k��dox�����8����8�k�� X�ܚ�\�[�X8�c�ۙ\�Y8� X��[�[�X8� [�ۙ\��ۘܙ]U�ܚ�\��Yۘ[8ह�`9�"x�e�� [�ۙ\��Yۘ[8�k�]]^�ܚ�\��Yۘ[�]O�
+��ۙ�\�8�i�����ܚ��[�\�][ۈ8ई�Z�H8�fx��� ��ܚ�\�^]8�k��ܛX[����\]Y\�Y��[�[YQ�Z[\�X�[�X�ܒ��[��Z[\�X8ह�h�o#�d#x�j8�fx��� ��������8����8�k�o�9�a�.�8�dx�k�� y�+9��8�k������8����9�`�.��idy�!8�j�o���h��i�.��,hzi�b�x�i�(c8�a8� z`n9l`9�$9d)�हf�k���`�e���i�)���fX\��]�]�\�[Z[���ٚ[X8�k�*+x�dx�j��a8� �`g9�h�हo�x�i9d!8��8������8�����y��y/g8�k�� y`g9�h�`&���x�o��g��k���x�x�8���*&:/�9kd8�k�e�zc���i�o�x�f�o�yn,8�fx���d��j8ह�':*/9�"8�o�idy�!8�j8�e��i�� x�i8� x��x��x�8��8��8�o��g��k�����8��x����k�idy�!8�b��yl#��a8�g�a�z`�K���'�fd9a�x�j�o�yn,8�fx��� x�o��g��k�b)x�����x���x�n:f�:f��e��i��X\\��\\��\�ܘ8�c9�`�����o��g��k��x��8����ya�z-m�b�xऺ(c8�b8��� x�k��a8�f��8�b�ह��8�g��ex�j��dx�8�l8�j��x�j��a8� ��a8�f��8࠺*/9�#��i��cx�j��a8��8������8�����y�c:-���k� �yb���j8�e��i�ak:e���e��j��a8� �c�ࢹ��8�e��`��k�� yb*y�*9c�� �x�j�`g9�h����-m�n��`&���xहd!yf�` x��� ��`�.���"8�o��k������8����8�k���8�hx�j�f�c��fx��� �k��(c9.+x�k������8����8�k�� y�`9�"z !y.%�.��ह�(yb�yc%��e��i�⭹�b�i"y��8ऺ`k���x�e��g�o�8� y�"y�c8�k��X\\��\\��\�ܘ8�n9. 9n���h8�dy����e��i�f�:f��fx��� �ak:e��Tx�k�do8�l�a��e�a`�घ��[�9o�x�hx�i�`g9�h��ex�f��j��a8� �k��f���k��`�.���j9���ࢸ�k�o�9�a�.�8�dx�c9k�9.���fx���o��i�� y/o��*9��8�k�/�9cm8�e��j��a8� �f�c㹪g�����k�k�za���k�� yo-�b-��e��i��a8��d#9�`��/9`�x�����8����9�l8�k�."�fd8�b��yl#�a��fx��� �`g9�h�o�x�hy��y/g8�c9c幭�:)�y�`��o��g��k�a�z`�K���'�fd8�j�c�x�e��i��`�.���e��j��a9h-9d"8� X�X\\��\\��\�ܘ8�k�g��.�8�cx�k�`,�(c9/�z*/:`eyc�xह讹k���e�� yl`9�`9�`�����c9.#yc�� �x�j��x�x��8����ya�z-m�b�xऺ)�y�`��fx��� �`k���x�ex�8�i��a8�j��a9aj9/d�⭹�b��k�i"y��8� z`k���y.#z �x�j�aj9/d�l ��"z,����8� x�o��g��k��k����a��!��j8�k����d"8ह�.��fyg��.�8�cz*/:-�x�c8�`���h-9d"8�j�fd8ࢸ� x�x��8����yaj9/d��n9olzg���fx��f�9k���j8�e��i��lx�a�� ��`9�"z !ya�x�j�f�:f蹮"8�o��k����kf9a��!��j��8�h��i�� y�(ze��/��j� �yb��ह`g9�h��e��i��k��j��x�j��a8� ���i,y�e��k�olzg����9f��k�� y��k���i��k��`9�"z !x� y.%�.��� y/�ykf:,����8�k��a8�j�fd9k���fx��� ������8����9�'��$8� x����8�����8������ z)�y�`�a��!��k�i,y�e��j��8�h��i�� y�h�n.8�j�d#:f��li8�k�a��!�ह�-9h��e��i��k��j��x�j��a8� ����kf8�����8����8स�x��8����yaj9/d��j�olzg���fx��࠸�k��j9b)9k���i��cx���k��k�� y�`9�"z !y.%�.��ह�(yb�yc%��e��g�o�8࠸�x��8����yaj9/d��k�c�9n,��o��g��k���8������8�����xहi"y��8�i��cx��� x�x��8����yaj9/d��i�l ��"x�fx��cf9. :,����8�����x�x�8���*&:/�9kd8����x��x��8ह/�y� x�fx��� y�`9�"z !x���.%�.�����/�ykf:,����8�k���8��8������i�`k���x�i��cx�j��a8� x�o��g��k�d#9. :,����8�k�a�z-m�b�x�j9���d"8�fx��� x�k��a8�f��8�b�ह��8�g��fyh-9d"8�j�fd8��� ��a8�f��8�j�࠺*l�od��e��j��a9h-9d"8�k�� y�`9�"z !x� y.%�.��� y/�ykf:,����8�k��a8�h8�dxऺf�:f��e�� y�(ze��/��j��`9�"z !x�k�b*y�*9c�� �x�j��o��o��j8�fx��� ��x��8����yaj9/d�ऺf�:f��fx���j��k�� yg��.�8�cz*.���x�j�b)9k���.y��8ह�#�*&8�fx��� ����H��۝[���\��H�[��][ۈ8�k��[��X�[ۘ[8�j��lx�a8� [�]��[���[��[���X�ܙ9��9�����X[H9h���c�\�]8�k�`%9.+yi,y�e��`��j��k����[�[��8ज���X���e�� \���X��.#z �x�j��H[]^8ई9�l9n.9�`�e�zc���"8�o�8�j��fx��� ����H���\�8�k�9⭹�b�[�\��[9b!��h8�dH�[�\��XY8ई�Y\8�e��j��a8� �⭹�b�[�\��[8�k�8����8�����8�����8�����8����8�k�dj9�'��h8�dx�j�/o��a�� ����x��x��8� y�g�fj8� x��x�x�����8�k�d!:*�x�o�c�ࢹ�d9��8�k�� y�+9��8�k�i,y�e�olzg����9f�(j8�j�o���h��i�b!�hg��fx��� �gg�����x����x����:*�x�o�c�ࢸ�i������8���c8�j��a9h-9d"8�j��[����8�k���]X8� XRS��8�k�[�\��\Y8�j8�e�� y⭹�b�हi"x�b8�f��j�a�z*i�(c8�fx��� ��#��.��8�j�`g9�h��o��g��k��`9�"y.+x�k�aiyb���j�k��fx��SѸ�k����Y8�j8�fx��� �[���\��X�\�P�ܜ�\8�kѓTx�k�*&:/�9kd8� yb-�o�y��yh,x� x��8��x���୸�����������k�.#yi"y�hy.��`eyc�x�j�fd9k���e�� yolzg��हc���dx���c:-��ऺf�:f��fx��� �.#y�h��j�N8��8�8�����x�x�����8�k�� x�gx�k���x�x�����8�h8�dxह�-9��8�e��i�g��.�8�cz*.���xह����e�� yg���9�-9�#x�j8�e��i��lx���j��a8� �Ry.�8�cx��x�x�����8�k���'������8��a�b���j:*&:c,�a�b���j��k�/�y� x�e�� y�#�dl�)����8�j��k�/o��*8�e��j��a8� �`(�����)��k�.#z`(�����i��k���'������8���j:*&:c,������8��ह/�y� x�e�� x�gx�k�Q8�k��#�dl�)����9�a8�o�����i��h8�dxहb'y�'�c%��fx��� ��X�[۸�o��g��k�T��k�)����9i,y�e��i��k�k�,hx�k��#�dl�cf9/cxह�-9��8�e�� y�h��e��a9h���c8�b��ya�ze���fx��� ��`9�"y.+x�k�aiya�b���j��d�.azf�9k���c9�'��f8�i�࠸� z`k���x�ex�8�i��a8�j��a9aj9/d�⭹�b��k�i"y��8ह�.��fyg��.�8�cz*/:-�x�c8�j��a:fd8ࢸ� yolzg��हc���dx����x������8��8�h8�dxह�`�.���fx��� ��-9�#x�o��g��k�!�9doy�9i,y�e�ह�(z* 8�i���]X8�j�i"y����e��i��k��j��x�j��a8� ����H���H8�k��۝���8�h8�dx�i��j��c���XY\��8�j�XY\��]H8࠺)���/��fx��� ��H8�k�Ӕ�9c�o���k��[ۘ[[[Y]�H8�i��`�ࢸ� X��U�Ӕ�9i,y�e��h8�dx�i�8��x������⭹�b�]Y\�H8ई�][\��܈8�j��e��j��a8� ��H8��������������x���������8�k��ۙ][ۈ8�k�o�z)�H�]H9nax�c^[�Y:em�ऺ-�x�b8��h-9d"8�j�X]�8�e��j��a8� ��Y�^8�h8�dy. :!�8�e��g���x�a^[�Y8ईX]�8�j8�e��j��a8� ��H8��������������x���������8�k��\X]Y�[�X8�k�a�z)!���y�h��i��k��j��c�� yd#9. �\�
+
+X9.%�.��a�x�k�acz` y`g9�h��hy.���i��`���� ��X�[ې�]�8�k�� 9b'x�j�. :!�8�e��g��X�[ۈ8ऌy.��acz` x�e��g�o�8� ]�\��[ۈ8��X�[ۈ�[X�\�8�c9�l8�j���o�9����X�[ۈ8࠺acz` x�e��j��a8� �X�R[���8�k�ak:e��*+yk���j�kf9g*8�fx��X�HY8�j�\��[ۈ8�h8�dxह�i�d"9�hy.���j8�e�� XX�W�Y�^[��[ۘ8ह�i�d"9�hy.���o��g��k�k�9.��f�d"8�k��x��8�j�b�8�b8�j��a8� �� 9b'x�j�c���!��e��g��X�[ۈ8�k�\���X�[ۗ۝[X�\�8�i���\���X�[ۗ۝[X�\�8�k�k�9.��f�d"8हf�k���e�� z*+yk���e��g�X�HY��\��[ۈ8�j�. :!�8�fx��d!�X�[ۗ۝[X�\�8ऌyf��f��i:acz` x�e��i�f�d"9k�9.��o�8�j�`g9�h��fx��� �X�H9k�9.��bcx�k�b)H�\��[ۈ8�k�acz` x�e��j��a8� �X�W�Y�^[��[ۘ8�k�acz` x�fx���X�[ۈ8�k�. :`�8�i��`�ࢸ� y."�/cyli8�c9�#�dl�)����8�j�/o��b8���c8� RS8�k�`g9�h��hy.���j��k�/o����j��a8� ��\X]]�YX8�k�h-9d"8�h8�dyd#9. 9�hy.���k��X�[ۈ�X�H8ह�l8ࢺ/�8�e�acz` x�fx��� ��X�[ۈ�[\�8�k�acz` yc��d)�⭹�b��k�[]^9aiyb���b��y��9��y�a8�o�����i��g��X�[ۈ8�j��h8�dz`jy�*8�fx��� ���\��H�[\�9�c9�,x�i��X�[ۈ^[�Y8हa�zacz` x�fx���c:-���k��+:(�yd�x�i��k�k�o�8�e��j��a8� ��d��k�acz` y`g9�h��k�ak:e��Q�[\����
+
+X9do8�l�a��e��j9d#8�f9⭹�b�`m�����i��k��j��a8� ��[\�ؚ�X�8�k�ak:e��⭹�b��k��\�Y8�k��o��o���y� x�e�� yb*y�*9`m8�c9�#��.��8�j���
+
+X��\�
+
+X��ۙ�Y�\�J
+X����J
+X8हdo8�nx��⭹�b�ह/�x�i8� ��HX�R[��˝�\��[ۘ8�k�LX8�o��g��k����X8�h8�dxहc���dy.�8�dx��� �LX8�k��[�\�8� y��9f�i%��k�S��SQ�T��SQS�8�j8�fx��� ��HT���X[RY8�k���L�MX8ह�#��.���X[W�Y8�j8�e��i��i�d"8�e�� PS���ۜ�[��S��SQ���PSW�Q8�k�����8�h8�dxझ�[�\�8�j8�e��i��lx�a�� �,�9`)8� X�M���M�ML�8� X�ML͘9.�y."��k�S��SQ�T��SQS�8�j8�fx��� ���X[RYL8�k��[�\�8�i��k��j��c�� NX�]9`)8�k��#��.��i�d"8�i��`���� ��HQ�[\���]]T��\��J
+X8�k�.������)��k��+9��8�k��#:(jKQ��]]T��\��J
+X9.�����(j8�#xह�h��j8�fx��� ��]]T��\��J�S
+X8�k�[]^[�]9o�yn,8�j8�e��i��$9b��k�,hx�j�d*��x��� ��[\���\��H8ह�!�k���fx��h-9d"8�k�� z(jKQL��k��X�\H9b)y�$9����hy.��ह�h��j8�fx��� ���\��H�[\�8�j8�e��i��!�k���i��cx���k��k���'������8����x��������h8�dx�i��`���� �."��`x�j8�e��i��$9b���ex�f����k��k���'������8����x��������j�X�ܙ8��x��������h8�dx�i��`���� ��X�[ۈ�T��U�8�n8�k��]��9a�\\��H�Z[�� x�b��8�l��X�[ۈ^[�Y8� TT�^[�Y8� PU�^[�Y8� \�X�ܙ^[�Y8ह��9��H��\��H8�j8�e��i�a�zacz` x�fx���c:-���k�/g8�x�j��a8� �gg�k�o�8�k�[��Y�H8�k�S�U�RSP�X8�j8�e�� x���8��x��8��x�j��e���x�������ई��\��H8�o��g��k��[��8�j��fx����y����k�S��SQ�T��SQS�8�j8�fx��� �[���\�8�j�n��db��e��g�XZ[�\HZ\�8�kՕ��'��$8�k�S�Q�S�Q�X�\y��y���࠹�$9b���ex�f���� ��HQ�[\���]]T��\��J��\��JX8�k��ۋ[�[��\��H9�c:-���k�9d#9. []^9a�x�k��[\���y����8��x��H8�k���y����h8�dxह�h�o#�k�,hx�j8�fx��� �[���\�8�k�d#9. []^9a�x�i�e���a8�g���\��H��[���[\�8�k�XZ[�\H9k�o�9c��d)�ऺ(j8�e�� yb)H[]^8�j�lg��fx���[\�8ई��\��H8�j��!�k���fx���c:-��ई�\X�[]H����ٚ[H9k�,hx�j�d*��x�j��a8� ���\��H��[��ؚ�X�8�k�Y�][Yx� Y�[�\�][۸� Z�[�8हab8�j�论*�x�e�� x�gx�k�o�8�j��ۙ\�[]^9.#y. :!�8�j:!�m�yc��i�ईS��SQ�T��SQS�8�i���d)��fx��� �S��TH9���gh�."��k��#[��\��[\��#x�k��+:(�yd�x�i��k�d#9. []^8�k��[\�ܘ\9a�x�k�b)H�[\�8�j8�e��i��lx�a8� yb)Y[]^:e���k��[\���y����8��x��x�k�/g8�x�j��a8� ��HQ�[\���]]Y]YQ\��
+X8�k��$9d)��k��ۙ�Y�\�H9�"8�o��b��jx�a��b��i��k��j��c�� [�[��`���x��������+�b)x�c:`&�n.�Txह� x�i8�b��jx�a��b��i��n��x��� �`&�n.�Tyk�,hx��x��������k��*��ۙ�Y�\�x�i�࠺*&:/�9kd9c�o��ह�$9b���ex�f���� ���`iyaj9�)��j��8����y/g9b-�fd8�k��(x�k��j8�b�ࢸ�j8�fx��� ��[�X���k�acz` yab8�j�f�9k���c8�`���h-9d"8�k��XZ[�a��!�ह��y����e�� y��8�e��a�[�X��acz` x�h8�dxह`g9�h��fx��� �*.���y�/9�#yab8�k�f�9k���i��k��XZ[�a��!�ह��y����e�� y.������k�*"9�l9`)8�h8�dxह��9��8�fx��� ��X��[�8�c9b*y�*9.#z �x�k�h-9d"8�k�ec��a9d"8���f��j���xऺ*,yc���e�� y⭹�b�i"y��8�j��k�S�U�RSP�X8ऺ/�8�fx� ��Y�\��x�c9�-9�#x�e��g�h-9d"8�k�k�,hY�XZ[��k�⭹�b�i"y��8�j�S�ӓ�ӗ�T��Ԙ8ऺ/�8�e�� X���x�j9ec��a9d"8���f��k�*,yc���fx��� ��Tx�c9�-9�#x�e��g�h-9d"8�k�k�,hxસ���8������8�k�e��i���j9��8�cz/�8�o�ह��d)��e�� X�\�
+
+X8�j���J
+X8�k�*,yc���fx��� ����HQ\�ܘ[X�\��YY
+
+X��[[ݙTY
+
+X8�k���\��H�[\�8�k�S��9�#�dl�*��i��k��[ۘ[8�i��`�ࢸ� X�S8�k�[]^9aiyb��aj9/d��k�Q9�!�k���i��`���� ��S9�c:-���k���(cS��9idy�!9."��k��$9b��k�,hx�j8�e��i��lx�a8� yk��(�y�"8�o�k�,hx�j�d*��x��� ���ak:e���fx��k�o�: �yb���k�� y�g�fj9�'9a�o�8�j�`n9����e��i�.�yo�9i"y��8�e��j��ay`"��k��\X�[]Tۘ\��8�b��yl#�a��fx��� �� 9b'x�j��\�X��\�ٝ[ٜ�۝[����[�8�j\�X��\�ٝ[������[�8ह讹k���fx��� �k��(c9�`��k�`&z(��8� P�8� P̸� P�x�k�a*�ab:h!�ह� x�hx� y�+9��8�k�`&z(�:(j8�i�[]^8� x��x���������8� Q��� PU��k�સ���8������9�l8�j��8�j�k��fx��o#�ह�#��.��fx��� �d!9`&z(�8�j��i8�a8�i�સ���8������9c�9n,��j9k��(c9�*zfd9��8ह.�.�9�!8�e�� x�a8�f��8�b��k�����$:)�y�(8�i�i,y�e��e��g�h-9d"8�k�.�.�9�!9aj9/d�हc�ࢹ��8�fx� �.�9�!8�j��$9b���e��g�� 9i)��k�`&z(�8ह. 9n���h8�dy讹k���fx��� ��x�k�U[�\�9ak:e���j�o�z)�x�j�� 9l#�સ���8������9����$8�j8�e�� zg��h�U���x���������y`"��j9�(9`��U���x���������y`"�हd*��8�c8� PU�^[�Y:h&9g���k�-m�b�y�`��j�ab9c�ࢸ�e��j��a8� �讹k���"8�o��x������������������8घ�][]^�\�
+X8� xસ���8������9c��.�8� yo�9�a�.�8�dy�`��k�`"��l:f�*"8�k��.y��8�j8�fx��� �do8�l�a��e�`m8�c9�!�k���fx�ѓTyk�za��� TT�\��[X�\�.�9��� PU��k�k���x�8ஹbl�ࢹod��i��k�� [�[��o��g��k�acz` y�`��j���X��ٚ[X8�k�k��(c9�`���x������9.�9���n9b)]�[��X�[۸�i�.�9�!8�fx��� ����k��x�j��(y�hy.���i��k�d*��x�j��a8� �S��8����x�����x� x��x��x�����8�8�����yaiyb��a`�� z`n9l`9`)8�jQ8� y/o��*9�c:-��� Q�[\�����k���8�����x�x��9k�za��� z(�yd�x�k���x������9.�9��स� z-m�b�ybcx�k���[��\�ۛY[��ٚ[X8�j8�e��i�k���x�fx��� ��*�k���x�k�e���k�T�Qӗ��Օ��S��T�ӓQS��S�P�T�Q8�j8�e�� y��k���k��HS8ह�a8�o�/�8�o��f�� U���$9b��ऺ(j9�#��e��j��a8� ����H9aiyb��`)9.#y�h��k�S��SQ�T��SQS�8� y�*�k�o��\X�[]H8�k�S�U�RSP�X8� xસ���8�������]H9.#y�m9d"8�k�S��SQ��UX8� []]^9�f����8�9a�z`�9�m9d"9�)�m*yh��k�S�ӓ�ӗ�T��Ԙ�[\��܎��[�\��[8�j�a�y`���fx��� ���HU��[\�8�k��\�
+
+X8� \�\�Y�X��[��� SYYXQ]�[�8� X�[X\�P]�[�J
+X8�k�⭹�b�b)yidy�!8�k�� y�+9��8�k��#:(j�U�aly�"x��x����,����9k��doz(j8�#xह�h��j8�fx��� ��HKՈ�[��8�k�⭹�b�b)yidy�!8�k��+9��8�k��#KՈ�[��9��za�x�#x�j8�#KՈ�[��:gg���y�*9��9f��#xह�h��j8�fx��� ��������9���ba������H9�+:(�yd�x�k�f�k����za�B��:h!y��9f�k��a�yk�H�KK_KK_�9aiyb����9f�:(�yd�yaj9/d��k�aiyb����yo#��x����8����k�:e���n�)��ba˛Y8ह�h��j8�fx��� ��+9��8�i��k�[�\�S8�k��\X�[]H����ٚ[H8�j8�e��i��9aiyb���h8�dxहk��* 8�e�� SSU8� U�� PS8� RT�Q8हk��* 8�e��j��a8�d��j8हf�k���fx���8��x�8��U��h�o#��c:-���ۋ\\����Y�YYXQ]�[�8ह/o��*8�e�� yaly�"zh&9g���]RY8ह�+9. :`n9���� x�8��x�����9f"Y�
+�]RY8ह�h�o#��j�.�������yo#��j8�fx���U����8��x��8��x�j�THU����8��x��8��x�k�`&�n.�Tx�n9��8�cz/�8�o��j��a8� �]�[��Y�8�k��Tyk�,hy�c:-���k�`&���x�j��h8�dy/o��a����[X\�P]�[�J
+X8�k�b)9k���k�� y�+9��8�k��[X\�P]�[�J
+X9b)9k��(j8�h8�dxह�.y��8�j8�fx��� ��d��k�(j8�k�aly�"zh&9g����yo#��j8� x�8��x�����8�e8�j8�j���x�x�8���*&:/�9kd8ह�(x�fXYYXQ]�[�9��yo#��k�.(y��xह�lx�a�� �,�8�k�]RY8�k�S��SQ�T��SQS�8�j8�fx��� ��n���������x����j8�k��a8�k�� y⭹�b�हi"x�b8�f��$9b���fx��� �/�9cm9�"8�o�aly�"x��������x����j8�k��a8�i��k�� ydo9a�abQ�[\��k�c�9n,��j��`�������x�8ਸ�����9`m9aly�"x��������x���/o��*9�*x�h8�dxऺ)���/��fx��� �)���/��"8�o��i��`����d��j8ह论*�x�i��cx��a�z)!��`�.���k�⭹�b�हi"x�b8�f��$9b���e�� y�`9�"z !x� y.%�.��� z.�` y��yo#�� z+f9b)y��yh,x�k�.#y. :!�8�j��k�S��SQ�T��SQS�8ऺ/�8�fx� ��n���������x����j9�h��k�]RY8�k��a8�i��k�� y. :!�8�fx��/o��*9.+x�k�aly�"zh&9g���o��g��k��8��x�����9f"zh&9g��ऺ)���/��fx��� ��n�(c9�"8�o��i�)���/��"8�o��j9论*�x�i��cx��Q8�n8�k�a�z)!�)�y�`��k�� y⭹�b�हi"x�b8�f��$9b���fx��� ��8��x�����9f"x��x�x�8���*&:/�9kd8हd*��8��������x����j9. :!�8�fx���h��k�]RY8�i��k�� x�gx�k��8��x�����9f"zh&9g��ऺ)���/��fx��� �d#8��������x����j8�k��a8�i��k�� yc�9n,�."��k��8��x�����9f"x��������x���/o��*9�*x�h8�dxह�`�.���e�� ybl�ࢹod��i��k�o�9����k��h��k�]RY:)���/��o��i���y� x�fx��� ���x��8��8��8�����8���o��g��k���X̸�k�c��i��l8हb)9k���hy.���j��e��j��a8� ��*��n�(c8� y.#y�#�� yb)y�`9�"z !x� z+f9b)y��yh,y.#y. :!�8�k��a8�j��k�S��SQ�T��SQS�8ऺ/�8�fx� �c�9n,�."��k�d#9. 9�)���yh,xहb!�hg��i��cx�j��a9h-9d"8�k�S�ӓ�ӗ�T��Ԙ8�j8�e�� yk�yaj8ह论*�x�i��cx�j��a:h&9g��ऺ)���/��o��g��k�a�ybl�ࢹod��i��e��j��a8� ���x�x�8���*&:/�9kd8�k���x�������8���k�(�9b�y�':*/8�j:*.���x�j�fd9k���fx��� ��n�(c9�"8�o��k�bl�ࢹod��i��k�*��!�e�zc��o�8࠺)���/��i��cx���8�a��j��e�� zf�:f�⭹�b��k�o�9�a�.�8�dx�k�a�z`�9a��!��h8�dx�i�(c8�a�� ����:h!y��9f�k��a�yk�H�KK_KK_�U�\����Y�9�+:(�yd�x�i��k��d�.ay�8�j�k�o�8�e��j��a8� �\����Y��\X�[]H8�k�k��* 8�f��f�� \\����Y�:)�y�`��k��ۙ�Y�\�y�`�S�U�RSP�X8�j8�fx���9���)���8��x�����:acz` H�ٚ[H��\X�[]H9/�ykf8�j8�fx��� �gg�k�o��ٚ[H8�i��k��ۙ�Y�\�S[ۚ]ܑ]�[�
+
+X8�k��$9b��� zgg�8���x��`)8�k�S�U�RSP�X8� �k�o��ٚ[H8�i�[ۚ]ܑ]�[�\\��8ह/o��a�h-9d"8�k�gg�8���x��`)8࠹�$9b���e�� z)�y�`�]�[�8ऺacz` x�fx���Ԉ8���8��x��8��x�x��x��8�j8�e��i�ak:e���e��j��a8� �U�d#9�'��k�a�z`�9⭹�b��j8�e��i��lx�a��9�*�k�o�9�g� �H�\X�[]H8�j���ٚ[H8�j�k��* 8�e��j��a8� �)�y�`��ex�8�g�h-9d"8�k��ۙ�Y�\�y�`�� yl ��*Tydo8�l�a��e��`�� yk�o�8�fx��ak:e��Tydo8�l�a��e��`��k��a8�f��8�b��i�S�U�RSP�X8�j8�fx������H���Y8�k�ak:e��Tz`k���xସ��8��8� X�X[�\���\]X8�k�o�9�a�.�8�dyk�9.���.y��8�j8�e��i�b)y�y�!��fx���P�y.#y�m9d"RQP�x� T�\���9��y���li8�k�e���l8���8��x��x���� x�������.#y�m9d"8�k�k��(c9�`�⭹�b�(j8�j�aix�8�j��a8� ���������x� x�������� PRQ9论*�x� U�S��论*�x�i�o/��c�k�,hx�j8�fx����������9⭹�b�g)��+��k�*,yc���hy.킂�⭹�b�`m����(j8�i�)!��l8�k�⭹�b�ऌz(c8�n9g)��+��e��i��8�a8�k��k�� y�(x�k�9�hy.��हaj8�i���8�g��fyh-9d"8�h8�dx�i��`���� ���9�hy.�9f�k��a�yk�H�KK_KK_�9�hy.�H:`n9���o#��k��.�ࢹ`)8� z`n9���o#��k��(y⭹�b�� y�*�f�k��*��स�����a�x�j���8�b��j��a�9�hy.팈9k�,hy⭹�b�f�d"8ऺ(j9a�x�j��#�*&8�e�� zf�d"8�k���8�x����8ऺ*,x�ex�j��a�9�hy.��9�.�ࢹ`)8� y�(y⭹�b�e���l8� ybk�/g9�*8� z*.���x� z,����9k��dox�c9k�,hy⭹�b�f�d"9a�x�i�k�9aj8�j�d#8�f8�i��`����9�hy.�9d#9`)9�)��.y��8ऺ(j9a�x�j��#�*&8�fx�����(y⭹�b��k�f�k��`)8�h8�dx�i��j��c�� X9aiyb��⭹�b�ह��y� X8� X9aly�"x��������x���.�8�h8�dyak:e���"8�o��j�i"y��8�k��8�a��j�e���l8�i�f�k���e��i��8�a8� �e���l8�i�f�k���fx��h-9d"8�k�� yi"y��8�fx��⭹�b�.�8�j9��y� x�fx��⭹�b�.�8ऺ(j9a�x�j���8�c�� ���������9�����:e���k�,�9b�yh���c��9�����9�h��j8�fx��a�yk�H9�y�h�.��h!H�KK_KK_KK_�[�\��[�T�QӗҐK�Y[�\�S8�k�ak:e��Ty⭹�b�� ya�z`�9.��,hx� z,����9k��dox� y�.�ࢹ`)8� ybk�/g9�*8� y讹k���x� ym���cy�.��e�� ze�zc��`m9i,y�e��k�k�,hH9d#8�f9⭹�b�`m����idy�!8ह.幥����8�i�a�yk���x�fx���d��j�[�\��[���W��ӕ�S�SӋ�Y[�\�S9f"x�k�k��(�z)���!8� y�y�h�������� z(�9b�ze���l9/o��*:)��ba�� zgfy�9论*�z)���HT�QӗҐK�Y8�k�⭹�b�`m����� y�.�ࢹ`)8� z,����9k��doxहb)ya�yk�x�i�k���x�fx���d��j��АS���W��ӕ�S�SӋ�Y�\����[�9aj9/d��j�alz`&��fx��k��(�z)���![�\�S9f"x�k�⭹�b�`m����हk���x�fx���d��j�8���x��k�9.��b)9k���k�k����y��y��K�Y9�'9����b�h!�� z*/:-�x�k�c�ࢹ��x� yb)9k���`��k�论*�zh!�n��:*+z*"9idy�!8�9k��(�z)���!8ह��:)��k���x�fx���d��j�[�\��[��S��S�˛Y9i"y��9liy�m8� x������8�yliy�m8� z`c�c���k�/g9�ky�!��,H9��(c:*+z*"8�k��h��+8�j8�e��i��lx�a��d��j8� ��S��S��8�j��e��b��j��a9��za�x�i�k��(�xह�h�od�c%��fx���d��j������:(jQ��Q��۝[�[�H���[�9�lyd"9⭹�b�(j��[�J
+X8�j��[�
+X8�k�d#8�f��۝[��X��[�8�j9.%�.��हaly�"x�fx��� ���8�e��a9��y/g8�n9�����bcx�j�� y���d"8�fx�������y/g8ह`g9�h��e�� y����[�\�][۸�k��[�X���*zfd8ह�(yb�yc%��fx��� �`g9�h��j�i,y�e��e��g�h-9d"8�k���9��y/g8ऺe��i���e��j��a8� ���[�
+X8�c9�$9b���e��g�h-9d"8�k�� yd#9. 9�hy.���i�࠹n.8�j���8�e��a��[��[�\�][۸ऺe��i���fx��� ���9�j�c��9.��bcy⭹�b�9do8�l�a��e�RQ9�.�ࢹ`)9�(y⭹�b�9bk�/g9�*�KKN�KK_KK_KK_KK_KK_���LHYH[�J�][���X9�$9b��[�[���[�\�][ۊ�JH9��[�xऺe��i�����L�[�[������Y[�J�][���X9�$9b��[�[���[�\�][ۊ�Jx� x�g��h8�e�k�9.���"8�o�d#9. :*+yk���k����Y9��y� yc��9�*�k�9.���o��g��k��l8�j������[�xह`g9�h��e��i���[�xऺe��i�����L���[��[��[�J�][���X9�$9b��[�[���[�\�][ۊ�JH��[�ऐ�[��[Y8�i��`�����e��i��b��y��[�xऺe��i�����LYH��[��][���\JX9�$9b����[��[���[�\�][ۊ�JH9����[�ऺe��i�����LH[�[������Y��[��][���\JX9�$9b����[��[���[�\�][ۊ�JH[�xह`g9�h��e��i��b��y����[�ऺe��i�����L���[��[����[��][���\JX9�$9b����[��[���[�\�][ۊ�JH9�hy.���k�d#9�l8�j��b��b����x�f������[�ह`g9�h��e��i�����[�ऺe��i�����L�[�[������Y��[�J
+X9�$9b��YH[�y.%�.��ह�`�����e�� y��y���[]^8�k�h���c8ऺe�x�f8�����LYH���[��[����[�J
+X9�$9b��9aiyb��⭹�b�ह��y� HX�]�H[�x�c8�j��a8�g��y�(ya��!�� ���[��k�`g9�h��e��j��a���LH��[��[������[�
+X9�$9b��YH��[�ऐ�[��[Y8�i��`�������LLYH�[�[������Y����[�
+X9�$9b��9aiyb��⭹�b�ह��y� HX�]�H��[��c8�j��a8�g��y�(ya��!�� �[�x�k�`g9�h��e��j��a���LLH�Z[Y�X��[���Z[Y��[�\�H[�J
+X���[�
+XS��SQ��UX9aiyb��⭹�b�ह��y� H9f�c�bcx�j���9��y/g8ऺe��i���e��j��a���LL��Z[Y�X��[���Z[Y��[�\�H��[�J
+X�����[�
+X9f�c�k�,hx�j�k�o�8�fx��`g9�h��d9��9�$9b���`�Yx� yi,y�e��`��k�aiyb��⭹�b�ह��y� x�o��g��k�]X\�[�[�Y9i,y�e�ह�'��f8�g������y/g8�h8�dxहf�c��e�� yb)y��y/g8�k��$9b��⭹�b��n9`oz(�x�e��j��a���LL����[������Y�]X\�[�[�Y[�J
+X���[�
+X���[�J
+X�����[�
+XS��SQ��UX9aiyb��⭹�b�ह��y� H9ak:e����y/g8हk��(c8�e��j��a�������y/g8�k�`g9�h��c9i,y�e��e��g�h-9d"8�k�� yc��f�9b)x�8��x��8ऺ/�8�e�� z(jNx�jQ��۝[����[�J
+X8�k�i,y�e�)��ba��j�o���h��i��Z[Y�X��[�8� X�Z[Y��[�\�X8� x�o��g��k�]X\�[�[�Y8�n9����fx� ����[�x�o��g��k������[�हo�ya`��f��f�� y��8�e��a�X��[�:)�y�`�� ]�ܚ�\�� X�[�X���[�\�][۸हak:e���e��j��a8� ������:(jK�Q�[\�9⭹�b�(j������:(jKPK�Q�[\�9⭹�b�����8��B��9⭹�b�����8��H9⭹�b�d#H9�#�dl��KK_KK_KK_��:gg�U��*�*+yk��:gg�U���x���������8�k��[��[\�
+X9o�8� X�ۙ�Y�\�J
+X9�*�k�9.����H�Tz*+yk���"8�o��Tyk�,hx��x���������8�c:*+yk���"8�o��b��i9�*�e��i������Tze��i���"8�o��Tyk�,hx��x���������8�c:e��i���"8�o�����Ty`g9�h��"8�o��Tyk�,hx��x���������8�c:e��i��o�8�j�`g9�h��"8�o���8����8�����8�����*+yk���"8�o�:`&�n.�Txह� x�g��j��a:gg�U���x���������8�c:*+yk���"8�o��b��i9�*�e��i����H8����8�����8�����e��i���"8�o�:`&�n.�Txह� x�g��j��a:gg�U���x���������8�c:e��i���"8�o����8����8�����8�����`g9�h��"8�o�:`&�n.�Txह� x�g��j��a:gg�U���x���������8�c:e��i��o�8�j�`g9�h��"8�o�����x���������8�k�`&�n.�Tx���8��x��8��x� Q��*&:c,��x��8����8��8� U��SU:*&:c,�����8�����8������k���x�������8���k�� y.���a8�j���9����e��g���i8�k��c:-���j8�e��i��lx�a�� ���SU:*&:c,���x���������8�k�`&�n.8�k���x����������Txहak:e���e��j��a8� ����8��x��8��x�k���y���ab8�k��X�ܙ���Tx�h8�dx�n9��8�cz/�8�o�� TQ8� y�(�o%x� x��8�8��9�j�c��� T�� ze��i������8��x�k���x�������8���k�[]^�[\�ԙX�ܙ]�[�8�o��g��k�[]^�[\�[]�X�ܙ]�[�8�k�����8�����8������i�`&���x�fx��� ��X�[۸� TT�� U��'������8���k�d!8���8��x��8��x��x���������8�k�� x�x�����8���(j8�j�o���h��i�`&�n.8�k���x����������Txह/o��*8�e��i��8�a8� ����U���x���������8�k�⭹�b�����8��x�k�� PS��Q�[\�8�c�ۙ�Y�\�P]���X[U\J
+X8�j�]]��\�Y[�J
+X8घ�ۙ�Y�\�J
+X8�j8�k���9����e��g���x�x�����x�j8�e��i�ak:e���fx���d��j8�j�d"8���f�� z*+yk��⭹�b�� yk��(c9⭹�b�� z(�9b�y�+�b)x� yaly�"x��������x����k�d!:.�8�b��y�(x�k��j8�b�ࢹl#�a��fx��� ���9⭹�b�����8��H:*+yk�����k��(c9⭹�b�:(�9b�y�+�b)H9aly�"x��������x����KK_KK_KK_KK_�L:*+yk���"8�o����`g9�h�.+H9�*�*+yk��9�*�ak:e���LH:*+yk���"8�o����`g9�h�.+H:*+yk���"8�o�9�*�ak:e���L�:*+yk���"8�o����`g9�h�.+H9�*�*+yk��9ak:e���"8�o��L�:*+yk���"8�o����`g9�h�.+H:*+yk���"8�o�9ak:e���"8�o��M:*+yk���"8�o����e��i��.+H9�*�*+yk��9�*�ak:e���MH:*+yk���"8�o����e��i��.+H:*+yk���"8�o�9�*�ak:e���M�:*+yk���"8�o����e��i��.+H9�*�*+yk��9ak:e���"8�o��M�:*+yk���"8�o����e��i��.+H:*+yk���"8�o�9ak:e���"8�o��N9�*�*+yk��9�*�*+yk��9�*�ak:e���NH9�*�*+yk��:*+yk���"8�o�9�*�ak:e���LL9�*�*+yk��9�*�*+yk��9ak:e���"8�o��LLH9�*�*+yk��:*+yk���"8�o�9ak:e���"8�o���⭹�b�����8��x�k�."�(j8�k���9�cxह��y�+��e��g�(j:*&8�i��`�ࢸ� y�h��+9⭹�b��k�d!:.�8�i�/�y� x�fx��� �/���b8�l�\�
+
+X8�k�*+yk���"8�o��k�L��L��h8�dxऐM��M��n9����e�� PN��LLx�j��k�S��SQ��UX8ऺ/�8�fx� ���
+
+X8� X�ۙ�Y�\�P]���X[U\J
+X8� X�]]��\�Y[�J
+X8�k�� yd!Tz(j8�i��#��.��e��g�.�8�h8�dxहi"y��8�fx��� ����[��[\�
+X8�i�g��h�8�o��g��k��(9`���x�����8���ऺe���a8�g���9o�8�k�N8�j8�fx��� �(�9b�y�+�b)x�k�*+yk���i�Nx� yaly�"x��������x����k�c�o���i�LL8� y.(y��xहk����x�e��g�h-9d"8�k�LLx�n9������ ��ۙ�Y�\�J
+X8�k�*+yk��.�8�h8�dxहi"y��8�e�� PN8���L8� PNx���Lx� PLL8���L�� PLLx���L��j8�fx��� ������8��x��8��x�k�acz` y�c:-���j9���)�����x��������)���8��x�����8�k�acz` y�c:-���k�b!�f��fx��� �k�o�8�fx���ٚ[x�i��k�� yb'yf�⭹�b��j9⭹�b�i"yc%�घ�[�X���i�`&���x�fx��� ���Ը�j��jx�k�k��(c9⭹�b��j8� y���)�����x��������)���8��x�����8�k�acz` y⭹�b��k�b)x�k�⭹�b�.�8�i��y�!��fx��� ���k��(c9⭹�b�� Z[�8� Z[�x�k�ak:e��⭹�b�� y.%�.���k�.���a8�j���9����e��g�g���i�(j8�e�� y�$9����e��j��a9�a8�o�d"8���f��h8�dxहg���i��y�h��fx��� ����U��[\�8�k�]Y[�ݚY[���][��9�+�b)x�k��[��X�\H8ह�h��j8�fx��� ��]Y[�8�k�]Y[�� U՚Y[�8�k��Y[�8�i��`���� ��ۙ�Y�\�P]���X[U\J
+X8�k���X����X[H\H[�8ह/�ykf8�fx��(�9b�PTx�i��`�ࢸ� y�*�k��(c8�i��`��h��i�ࠈ�]]T��\��J
+X8� X�\�
+
+X8� TT��U���][��� SYYXQ]�[�:acz` x�k�o�zh"9�hy.���j��k��e��j��a8� �������:(jKP��Q�[\�9g+Ty⭹�b�idy�!��9�j�c��TH�9aiyb��9k�,hy⭹�b�f�d"RQ9�.�ࢹ`)9�(y⭹�b�e���l9bk�/g9�*:*.���H9d#9`)9�)��.y���:*+z*"9."��k��$9����hy.��KKN�KK_KK_KK_KK_KK_KK_KK_��P�LH�ۙ�Y�\�J
+X�Tyk�,hz*+yk���9�$9b���H]Y]Yy.%�.��ह��9��8�e����. :`c��)�⭹�b�ह��9c���[\���ۙ�Y�\�W��X��\��9�*�*+yk���b��Q�Tyk�,hx�n:`,�����x��x��8हak:e���e��j��a9⭹�b��j�[�X���8��x�����8ह�(yb�x�j��fx��⭹�b��k�b!��dx�i��y�!��fx��� ����9�j�c��TH�9aiyb��9k�,hy⭹�b�f�d"RQ9�.�ࢹ`)9�(y⭹�b�e���l9bk�/g9�*:*.���H9d#9`)9�)��.y���:*+z*"9."��k��$9����hy.��KKN�KK_KK_KK_KK_KK_KK_KK_��P�L��ۙ�Y�\�J
+X]�HU��ۋ\\����Y�NNKLLLLH9�$9b��:*+yk��⭹�b��h8�dz*+yk���"8�o��j�i"y��8� �.�.�8�k���y� HU�.%�.��ऺ`,��x� y�*�acz` x�k����. :`c��)�⭹�b�ह�-9��8� ��]Y[�8�k�]Y[�� U՚Y[�8�k��Y[�8�k���][��9�+�b)xई�[��X�\H8�b��yl#�a��fx���[\���ۙ�Y�\�W��X��\��9�*�*+yk���k�U�⭹�b��h8�dxहc���!��e�� z(�9b�y�+�b)x�j9aly�"x��������x���.�8ह��y� x�fx����P�L�ۙ�Y�\�J
+XU�\����Y�NNKLLLLHS�U�RSP�X9aiyb��⭹�b�ह��y� H8�j��e�[��\ܝY�\����Y���ۙ�Y�\�X8हh���8�fH9�+:(�yd�x�i��k�\����Y�8ह�d�.azgg�k�o�8�j8�fx����P�LH�ۙ�Y�\�J
+X8�i�� [�[��`��k�XZ[�\x�j9�l8�j���[�[ۈY�ह�!�k���S��SQ�T��SQS��8�j��e��[\��XZ[��\W�Z\�X]�8हh���8�fH9�*�k�o�XZ[�\x�k��[��[\�
+X8�i�S�U�RSP�X8�j8�e��i���d)��ex�8� xસ���8������8�c9kf9g*8�e��j��a8� ���kf8સ���8������8�k�g��.#y. :!�8�k�aiyb��idy�!:`eyc�x�j8�e��i�c.�b)x�fx����P�L��ۙ�Y�\�J
+X9d#9. :*+yk���k�a�y�!�k���K��9�$9b��9aiyb��⭹�b�ह��y� H8�x��x��:+f9b)ykd8� x�x��x��9a�yk�x� yd!9.%�.��� y�a8�o�����i�⭹�b�� z*.���xह��y� x�fx���[\���ۙ�Y�\�W�Y[\�[�8हh���8�fH9d#8�f9�h�)��c%��"8�o�*+yk���k�a�y�!�k���k��(ya��!��j8�fx����P�L�H�ۙ�Y�\�J
+X9�l8�j���*+yk���n8�k�a�z*+yk���K��9�$9b���H8�x��x��:+f9b)ykd8�k���y� x�e�� zacz` y.%�.���j:)����9⭹�b�.%�.��ह��9��8�e��i���������8��� y�a8�o�����i�⭹�b�� TԸ� X�\�Y9⭹�b�ह�-9��8�fx���[\�ܙX�ۙ�Y�\�W��X��\��:*+yk��m�b!�ह讹k���e��g�o�8�j��h8�dya�z*+yk��h���c8ऺ`,��x����b'y�'�c%��`��k�.%�.���y�!��i��k�� X�[\��[]�\�W��[�\�][ۘ8�j\��\���]W��[�\�][ۘ8ह��9����ex�f�� Q���x��x��8�i��k��ex�x�j�]Y]YW�\��8ह/o��*8�fx��� ��l8�j���*+yk���n8�k��ۙ�Y�\�J
+X8�c9�$9b���e��g�h-9d"8�h8�dx� x��x���������:acz` y.%�.���j:)����9⭹�b�.%�.��ऺ`,��x� z)����9fj8� TԸ� X�\�Y8�k�⭹�b�हb'y�'�c%��fx��� �d#8�f9�h�)��c%��"8�o�*+yk���k�a�y�!�k���i��k�� x�d��8�x�k�.%�.���j9⭹�b�ह��y� x�fx��� �*+yk��idy�!8�i��#��.��8�j�i"y��8�fx��࠸�k�ऺfi8�cx� x�x��x��8�k�*&9���h&9g���j:+f9b)ykd8� yaiyb��a`��k�e��`(�.�8�dx� x����8�����8������ y���)�����x��� x�������8�k���y� x�fx��� ��[\��o��g��k��\�Y�[\��k��\�
+
+X8�k��[\���X�\��Z[��]X8ई�Z[�[��8�j�����e�� y��8�e��a9��oh�*,yc��ह��d)��e��i�� x�x��8����y�`9�"x�����8����8ऺ-m�n���ex�f���� �*,yc���k�)���/��j�o�z)�x�j���x�����ह/�y� x�f��f�� y�"zfd9`"��k�gg�����x����x����:*,yc���c8�fx�nx�i�/�8���o��i�o�x�i8� �*,yc���k��"yb�y��9f��k�� x����x����x����:*�x�o�c�ࢸ���o�y�g����. 9�`�/�y� x�k�o�8�b��x� Q�Tx�n8�k�讹k����8�cz/�8�o��o��g��k�/�y�fx�8��x�����8�k�/�yb�8�o��i��j�fd9k���e�� P�[�\�����8�����8������j9i%�`�9aiya�b��हd*��x�j��a8� ��gx�k�o�8� y�*���:,���k��Tx�����8���j9�*�acz` x�8��x�����8ह. 9��8�i��-9��8�e�� yc�ࢹa��e��"8�o��o��g��k�acz` y.+x�k�����8�����8������j8� zacz` y�"8�o�U�h&9g���k���y� x�fx��� �)����9⭹�b�हb'y�'�c%��e�� z)����9⭹�b�.%�.���h8�dxऺ`,��x�i��[�8�j��.��fx� ���9c��讹k��bcx�j�i,y�e��e��g�h-9d"8�k�� x��x�8�������8� ya�yk�x� y/�y�fx�8��x�����8� x�fx�nx�i��k�.%�.��हi"y��8�e��j��a8� ���x������f�����o��g��k�`�9b!��9讹k���j8�a8�a�.#yc�� �y⭹�b��c9�'��f8�g�h-9d"8�k�� yk�,hxऺe�zc���e��i�f�:f��fx��� ����k��\�
+
+X8�k�]Y]YQ\�������8�j�o���a8� ze��i�����讹k����8��x���୸�����������c8�fx�nx�i��`�.���e��g�o�8�j�]Y]YW�\��8�h8�dxऺ`,��x��� ���
+
+X8�k��x��x��9a�yk�x�j:+f9b)ykd8ह��y� x�e��i�)����:`%9.+y⭹�b��h8�dxह�-9��8�fx��� �aiyb��a`��k��k�����i��k���x���������:acz` y.%�.���j:)����9⭹�b�.%�.��हd#8�f9讹k���x�i�`,��x� X���J
+X8�i��k��fx�nx�i��k�.%�.��.�8ऺ`k���x�fx��� �����g*8�k�.%�.���b��yb!�ࢺf��e��g�o�8࠸� z)���/�o�x�hx�k�*&9���h&9g���j:)���/�c�9n,�ह/�y� x�e�� z)���/�o�9/o��*8�j9��8�k�a�yb*y�*9���d"8ऺf,��d8� ����9�j�c��TH�9aiyb��9k�,hy⭹�b�f�d"RQ9�.�ࢹ`)9�(y⭹�b�e���l9bk�/g9�*:*.���H9d#9`)9�)��.y���:*+z*"9."��k��$9����hy.��KKN�KK_KK_KK_KK_KK_KK_KK_��P�LH�ۙ�Y�\�J
+X:e��i��.+H���KMMKM�M�S��SQ��UX9aiyb��⭹�b�ह��y� H8�j��e��ۙ�Y�\�W��[W��\�Y8हh���8�fH:e��i��.+ya�z*+yk��ह�y�h��fx����P�LL�\�
+
+X�Tyk�,hH�K��9�$9b�����Ty/g9�kx�x��8�����xऺe��i���e�� y`g9�h��"8�o��j��ya�ze���[\���\���X��\���H8�j��8�k��\�8�j�e���e��i��.�ࢹ`)8� ybk�/g9�*8� y�(y⭹�b��c9d#9. ��P�LL��\�
+
+XU�LLKL�L�9�$9b��9k��(c9⭹�b�.�8�h8�dze��i���"8�o��j�i"y��8� �.�.�8�k���y� H9��:)��acz` yc�� �y⭹�b��n:`,��8� ���������x����*�ak:e��.+x�k�U����8��x��8��xऺacz` x�e��j��a�[\���\���X��\��:*+yk���"8�o��k�U�⭹�b��h8�dxऺe��i���e�� zacz` yc��d)��k���������x���.�8�b��yl#�a��fx����P�LL�H�\�
+
+X9�*�*+yk��U�NNKLLLLHS��SQ��UX9aiyb��⭹�b�ह��y� H8�j��e��\��[��[Y��]X8हh���8�fH�ۙ�Y�\�J
+X9�*�k�9.���i��k�e��i��k�,hx�c9kf9g*8�e��j��a��P�LL��\�
+
+X9���j�e��i���"8�o����KMMKM�M�9�$9b��9aiyb��⭹�b�ह��y� H8�j��e��\��Y[\�[�8हh���8�fH:a�z)!��\�8�k�a���by�$9b����P�LM�\�
+
+X9�*�*+yk���S��SQ��UX�8�j��e��\��[��[Y��]X8हh���8�fH9�*�*+yk���i��k�e��i��k�,hx�c9kf9g*8�e��j��a��P�LMH��
+
+X�Tyk�,hH��9�$9b����9��:)�ѓTy��8�cz/�8�o�ह`g9�h��[\������X��\���Tze��i��⭹�b�ह`g9�h�⭹�b��n:`,��x����P�LM���
+
+XU�MMKM�M�9�$9b��9k��(c9⭹�b�.�8�h8�dy`g9�h��"8�o��j�i"y��8� �.�.�8�k���y� H9��:)��U�acz` xह`g9�h�� ���kf]RY8�k��[X\�H��\�����H8�o��i���y� H�[\������X��\��9�.�ࢹ`)8� z*.���x� y⭹�b�.�9i"y���)��ba�� z,����9k��dox�c9d#9. ��P�LN��
+
+X:gg�e��i��*+yk���"8�o�⭹�b��K�����LLKL�L�NNKLLLLH9�$9b��9aiyb��⭹�b�ह��y� H8�j��e����Y[\�[�8हh���8�fH9`g9�h��"8�o���9od��k�⭹�b��i���8�k�a���by�$9b����P�LNH��
+
+X9�*�*+yk���9�$9b���8�j��e����Y[\�[�8हh���8�fHS����9idy�!8�j�d"8���f�� y�*�e��i���[\���8�k���[�9�$9b���j8�fx����P�L����J
+X9aj:gg�e�zc��⭹�b�:(jx�j�o���a�:(jx�j�o���a�9o�9�a�.�8�dze��i��:(jx�j�o���a����H8�k��.�ࢹ`)8�j9o�9�a�.�8�dyk�9.��b)9k���k�(jxह�h��j8�fx����U�bl�ࢹod��i��j��i8�a8�i��k�� y�+9��8�k�U�bl�ࢹod��i�(j8�j�[X\�P]�[�J
+X9b)9k��(j8�h8�dxह�h��j8�fx��� ��[��[\��Y��\��^�JX8�k��h��k��Tyk�za��ह�':*/8�e�� PU�ؚ�X�8�j]Y]Yx��x�������8���h8�dxह.�9�!8�fx��� �U�^[�Y:h&9g���k��8��x�����8�e8�j8�k�)�y�`��x�8ஸ�i�bl�ࢹod��i�� Y�[\�b)x�k��*�)���/�d":*"8�c�[��`��k��Y��\��^�X8� x�x��8����yaj9/d��k��*�)���/�d":*"8�c��X��ٚ[K�]��[�[YP�Y�]�]\�8ऺ-�x�b8�j��a9h-9d"8�h8�dy讹k���fx��� �aly�"y��yo#��j8�8��x�����9f"y��yo#��k�d#8�f9k��(c9�`�c�9n,�ह��:,���e�� z-m�b�y�`��o��g��k��\X�[]Tۘ\��:`n9����`��j�^[�Y:h&9g��हab9c�ࢸ�e��j��a8� �."�fd:-�z`c�� yk�za������!�� ybl�ࢹod��i�a��!��k�i,y�e��k�� x����8�����8������j]RY8�k�ak:e��bcx�j���d)��fx��� ��-9��8�fx���k��k�od�*l��8��x�����8�h8�dx�j8�e�� y/o��*9.+x�k�bl�ࢹod��i�ऺ/�x�a9a��e��i��k��j��x�j��a8� �]�]RY8�k��)�c��.�8�cM����������8�k��h��l8�j8�e�� ya�yb*y�*8�e��j��a8� ��\�
+
+X8� ya�z*+yk��� z*��!�e�zc���k�o�8࠸� zacz` y�"8�o��k�bl�ࢹod��i�घ�[X\�SۛX8�j8�e��i�/�y� x�fx��� �X�]�X8�o��g��k��[X\�SۛX8�k�)���/��k�yf��h8�dz,����8ऺ/�8�e��i��$9b���fx��� ��`�.���"8�o��j9论*�x�i��cx��Q8�n8�k�a�z)!�)���/��k�⭹�b�हi"x�b8�f��$9b���e�� y.#y�#�Q8� yb)y�`9�"z !x� y�a8�k�.#y. :!�8�j��k�S��SQ�T��SQS�8ऺ/�8�fx� �c�9n,��k�/�zh/9�)�ह论*�x�i��cx�j��a9h-9d"8�k�S�ӓ�ӗ�T��Ԙ8�j8�e�� yk�,hz*&9���h&9g��ऺf�:f��fx��� ��������:(jKPˈQ�[\�:(�9b�PTy⭹�b�idy�!��9�j�c��TH�9aiyb��9k�,hy⭹�b�f�d"RQ9�.�ࢹ`)9�(y⭹�b�e���l9bk�/g9�*:*.���H9d#9`)9�)��.y���:*+z*"9."��k��$9����hy.��KKN�KK_KK_KK_KK_KK_KK_KK_��P�LH�]]Y]YQ\��
+X�8�b��i�[��`���x��������+�b)x�c:`&�n.�Tyk�,hx� Q�K����9�$9b��9aiyb��⭹�b�ह��y� H:`&�n.�Tz*&:/�9kd8ऺ/�8�fH]Y]YW�\����X��\���]]Y]YQ\��
+X8�k��$9d)��k��ۙ�Y�\�H9�"8�o��i��k��j��c�`&�n.�Ty�"y�(x�i��n��x����P�L��]]Y]YQ\��
+X�8�b��i�[��`���x��������+�b)x�c:`&�n.�Tzgg�k�,hHS�U�RSP�X�8�j��e�]Y]YW�\���[�]�Z[X�X8हh���8�fH9�*��ۙ�Y�\�x�i�࠺gg��Tyk�,hx�k�*&:/�9kd8हak:e���e��j��a��P�L�H�]]Y]YQ\��
+XLLKL�L�MMKM�M�NNKLLLLHS�U�RSP�X9aiyb��⭹�b�ह��y� H8�j��e�]Y]YW�\���[�]�Z[X�X8हh���8�fHU����8��x��8��x�k�`&�n.�Tx�i��k��j��c�� yaly�"zh&9g���o��g��k��8��x�����9f"Y�8हc��i��fx��YYXQ]�[�8ह/o��*8�fx�����Tx�k�/o��*9��y��x�k���x���������8�k��x�����8����e8�j8�j�k���x��� ��X�[۸� TT�� U��'������8���k����8��x��8��x��x���������8�k�`&�n.8�k���x����������Txह/o��*8�fx��� ���SU:*&:c,���x���������8�j��k�`&�n.8�k���x����������Txऺ*+x�dx�f�� x���8��x��8��x�kԙX�ܙ���Tx�n8� y�(�o%x��x�������8���k�����8�����8������8��x�����8�n:` x��� �g��h�8����(9`����x�����ਸ��x���������8�k�`&�n.�Tx�i��k��j��c�� yaly�"zh&9g���o��g��k��8��x�����9f"Y�8हc��i��fx��YYXQ]�[�8ह/o��*8�fx��� �Ը� y���)��� X�\�Y8�j��jx����8�����8������h8�dx�i�`&���x�fx���8��x�����8�j��k�� x���8��x��8��Q�Txऺ*+x�dx�j��a8� ��X�ܙ���k�*&:c,��Txस� T^X�X�����k�a�y�'ѓTxह�`9�"x�fx��� ��*�k�o�8�k�XZ[�\x�o��g��k�)���/9."��"yb�x�h8�c9�*�k�o�8�k��X�\x�k��[��[\�
+X8�i�S�U�RSP�X8ऺ/�8�e�� Y�[\�ؚ�X�8� \]Y]Yx� y/o��*9��8ह�'��$8�e��j��a8� ����9�j�c��TH�9aiyb��9k�,hy⭹�b�f�d"RQ9�.�ࢹ`)9�(y⭹�b�e���l9bk�/g9�*:*.���H9d#9`)9�)��.y���:*+z*"9."��k��$9����hy.��KKN�KK_KK_KK_KK_KK_KK_KK_��P�L�ۙ�Y�\�P]���X[U\J
+X9�h�n.9aiyb��LLKL�L�NNKLLLLH9�$9b��:(�9b�y�+�b)z.�8ऺ*+yk���"8�o��j�i"y��8� �.�.�8�k���y� H��X[H\H[�8ह�!�k��`)8�i�/�ykf8�fx��� ��]Y[�8�j��k�]Y[�� U՚Y[�8�j��k��Y[�8�h8�dxऺ*,yc���fx��]����X[W�\W��ۙ�Y�\�Y:gg�e��i��U�⭹�b��j8�e��i�d#9`)8� ���][��9�+�b)x�k��[��X�\y�,y�ix�i��`�ࢸ� yaly�"x��������x���ak:e��⭹�b��j�/�ykf8�e��j��a��P�L��ۙ�Y�\�P]���X[U\J
+X:e��i��.+HMMKM�M�S��SQ��UX9aiyb��⭹�b�ह��y� H8�j��e�]����X[W�\W��[W��\�Y8हh���8�fH:e��i��.+x�k��+�b)yi"y��8�k��y�h���Q�[\���ۙ�Y�\�P]���X[U\J
+X8�k�� ze�zc���ex�8�i��a8�j��a:g��h�8�o��g��k��(9`����x���������8�h8�dx�i�c���dy.�8�dx��� ��[�[��ۙ�Y�\�Y8�o��g��k��ۙ�Y�\�Y��Y8�i��k�� PU��x��8����8��9�+�b)x�k��������8ह. 9��8�i��k��cy����b8�i��P��T��8ऺ/�8�fx� �d#8�f9`)8�k�a�y�!�k���k�� y⭹�b�हi"x�b8�f��P��T��8�j8�fx��� ��\�Y8�i��k�S��SQ��UX8ऺ/�8�e�� y⭹�b�� yaiyb��a`��k�e��`(�.�8�dx� z*&9���h&9g��� X]RY8� x�x��x��9.%�.��हi"y��8�e��j��a8� �U�.�yi%��k���x���������8�j��k�S��SQ�T��SQS�8� z*��!�e�zc���"8�o��k���x���������8�j��k�S��SQ��UX8ऺ/�8�fx� ��[�[YW٘Z[Y8࠹�'��k�h-9d"8�i�࠸� ze�zc���"8�o��k�b)9k��हa*�ab8�fx��� ����9�j�c��TH�9aiyb��9k�,hy⭹�b�f�d"RQ9�.�ࢹ`)9�(y⭹�b�e���l9bk�/g9�*:*.���H9d#9`)9�)��.y���:*+z*"9."��k��$9����hy.��KKN�KK_KK_KK_KK_KK_KK_KK_��P�L�ۙ�Y�\�P]���X[U\J
+X:gg�U��K������K��S�U�RSP�X9aiyb��⭹�b�ह��y� H8�j��e�]����X[W�\W�[�]�Z[X�X8हh���8�fH:gg�U�⭹�b��k�aj8�i�d#9`)��P�LH�ۙ�Y�\�P]���X[U\J
+X\����Y�:)�y�`�LLKL�L�NNKLLLLHS�U�RSP�X9aiyb��⭹�b�ह��y� H8�j��e�[��\ܝY�\����Y���ۙ�Y�\�X8हh���8�fH9�+:(�yd�x�i��k�\����Y�8ह�d�.azgg�k�o�8�j8�fx����P�LL�]]��\�Y[�J
+X9b'yf�LLKMMKNNH9�$9b��9aly�"x��������x���.�8�h8�dyak:e���"8�o��j�i"y��8� �.�.�8�k���y� H�\�Y�X��[��8ह�'��$8�e���������x���ऺ/�8�fH]���\�Y�Y[[ܞW�ܙX]X8हh���8�fH9�+�b)z.�8�j9k��(c9⭹�b�.�8ह��y� x�e�� x��������x���.�8�h8�dyi"y��8�fx����[�x�k�ak:e��⭹�b��j8����x�8ਸ�����9`m8�k�/o��*9⭹�b��k�b!��dx�i��y�!��e�� z)!�(�x�e��g���8�e��a[�xहa�yc�o���fx��`m����ऺ*+x�dx��� ����[��"8�o��k�U��[\��i��k�� X�ۙ�Y�\�J
+X9bcx�i�࠹�$9b���ex�f���� ����9�j�c��TH�9aiyb��9k�,hy⭹�b�f�d"RQ9�.�ࢹ`)9�(y⭹�b�e���l9bk�/g9�*:*.���H9d#9`)9�)��.y���:*+z*"9."��k��$9����hy.��KKN�KK_KK_KK_KK_KK_KK_KK_��P�LL��]]��\�Y[�J
+X:gg�U��K������K��S�U�RSP�X9aiyb��⭹�b�ह��y� H8�j��e�]��[�W�[�]�Z[X�X8हh���8�fH:gg�U�⭹�b��k�aj8�i�d#9`)��P�L��\�
+
+X�Tyk�,hH�K����9�$9b��9aiyb��⭹�b�ह��y� H�Ty�*���:,�������8���j9. :`c��)�⭹�b�ह�-9���[\�ٛ\���X��\���Tyk�,hy⭹�b��k��\�8�j�e���e��i�d#9`)���\�
+
+X8�i��k�� y���)�����x��� X�[�X���n�c,�� TԸ�k�+f9b)y��yh,xहi"y��8�e��j��a8� ����9�j�c��TH�9aiyb��9k�,hy⭹�b�f�d"RQ9�.�ࢹ`)9�(y⭹�b�e���l9bk�/g9�*:*.���H9d#9`)9�)��.y���:*+z*"9."��k��$9����hy.��KKN�KK_KK_KK_KK_KK_KK_KK_��P�L���\�
+
+XU���������x����*�ak:e��LLKMMKNNH9�$9b��9aiyb��⭹�b�ह��y� H9. :`c��)�⭹�b�ह�-9���[\�ٛ\���X��\��8��������x����*�ak:e��U�⭹�b��i��k�aly�"x��������x���,����8ऺ)��x�j��a���*�acz` x�����8���j:acz` y�"8�o�/o��*9.+zh&9g��हb!��dx� zacz` y�"8�o�/o��*9.+zh&9g���k��[X\�P]�[�J
+X8�o��i�/�y� x�fx��� ����9�j�c��TH�9aiyb��9k�,hy⭹�b�f�d"RQ9�.�ࢹ`)9�(y⭹�b�e���l9bk�/g9�*:*.���H9d#9`)9�)��.y���:*+z*"9."��k��$9����hy.��KKN�KK_KK_KK_KK_KK_KK_KK_��P�L��\�
+
+X9�*�*+yk���S��SQ��UX�8�j��e��[\�ٛ\��[��[Y��]X8हh���8�fH9�*�*+yk���i��k��-9��9k�,hx�c9kf9g*8�e��j��a�����)��ह`g9�h��fx��h-9d"8�k����x��8ह讹k���e�� ya�z*+yk���`��k�b'yf�⭹�b�ऺ`&���x�fx��� ����9�j�c��TH�9aiyb��9k�,hy⭹�b�f�d"RQ9�.�ࢹ`)9�(y⭹�b�e���l9bk�/g9�*:*.���H9d#9`)9�)��.y���:*+z*"9."��k��$9����hy.��KKN�KK_KK_KK_KK_KK_KK_KK_��P�L��H�ۙ�Y�\�S[ۚ]ܑ]�[�
+�۞�\��X��ٚ[zgg�k�o���K������K��LLKL�L�MMKM�M�NNKLLLLHS�U�RSP�X9aiyb��⭹�b�ह��y� H8�j��e�[ۚ]ܗ�]�[��[�]�Z[X�X8हh���8�fH:gg�k�o�: �yb��ह�$9b���lx�a8�j��e��j��a��P�L����ۙ�Y�\�S[ۚ]ܑ]�[�
+�۞�\��X��ٚ[yk�o���K������K��LLKL�L�MMKM�M�NNKLLLLH9�$9b��9aiyb��⭹�b�ह��y� H:)�y�`�X\��ह/�ykf8�e�[ۚ]܈]�[�:acz` yk�,hx�j��fx��[ۚ]ܗ�]�[���ۙ�Y�\�Y8हh���8�fH[ۚ]ܑ]�[�\\��8हak:e���e��g��ٚ[x�i��k�)�y�`�]�[�8ऺacz` x�fx����P�L���ۙ�Y�\�R\�Y
+
+X��K������K��LLKL�L�MMKM�M�NNKLLLLHS�U�RSP�X9aiyb��⭹�b�ह��y� H8�j��e�\��Y�[�]�Z[X�X8हh���8�fHT�Q8�k�[�\�S8�k�)�� m9�c:-����\X�[]H9k�,hyi%���P�L��][^R[�
+
+X9�h�n.9aiyb����ۋ[YYXH�[\���K������K��9�$9b��9aiyb��⭹�b�ह��y� H[�9`)8�h8�dy/�ykf[^W�[���]:,����9k��doxहi"x�b8�j��a8� �YYXH�U��[\�8�k�k�,hyi%���P�L�H�][^R[�
+
+XYYXH�U��[\�LLKL�L�MMKM�M�NNKLLLLHS�U�RSP�X9aiyb��⭹�b�ह��y� H8�j��e�[^W�[��YYXW�[�]�Z[X�X8हh���8�fH�[\�[^R[�8�k�YYXH�[\�8�j�gg�`jy�*8�i��`�ࢸ� y�$9b���lx�a8�j��e��j��a���`�e���j�e���fx���������9`)8�k�� x�fx�nx�i��)�c��.�8�cx��������i��lx�a�� �,�9`)8�j��k�S��SQ�T��SQS�8ऺ/�8�e�� L8�k��������8�k��(yb�yc%��o��g��k�b'y�'�c%��j8�fx��� ��h�`)8�k�� ya�z`�8�k��`�e��g���n:(j9��c�� �x�j���9f��i��`��8�l8�fx�nx�i�c���dy.�8�dx��� ��'9���.�8�cyi"y����i��`��mx�8�c9�n��'��fx��h-9d"8�k�S��SQ�T��SQS�8�j8�fx��� ���X��ٚ[X8�j��h��#��8�j�."�fd8ऺ*+x�dx�j��a8� �a�z`�8��੸�������8�k�h�yd�9�%9��ह/o��a8� y讹k���"8�o��k�ak:e���d9��8हo�8�b��z)���e��i��k��j��x�j��a8� ����9�j�c��TH�9aiyb��9k�,hy⭹�b�f�d"RQ9�.�ࢹ`)9�(y⭹�b�e���l9bk�/g9�*:*.���H9d#9`)9�)��.y���:*+z*"9."��k��$9����hy.��KKN�KK_KK_KK_KK_KK_KK_KK_��P�L��]Y
+
+X��]Y��]
+
+X��K������K��LLKL�L�MMKM�M�NNKLLLLH9�$9b��9aiyb��⭹�b�ह��y� HQ8ऺ/�8�fH8�j��e�:*�x�o�c�ࢹl ��*Tx�i�,����9k��doxहi"x�b8�j��a��P�L�H�]]T��\��J
+X9�$9b���a8�o�d"8���f�:(jKQ8�i��$9b���j9k���x�e��g��a8�o�d"8���f�9�$9b��9aiyb��⭹�b�ह��y� H��\��H9c��i�ह/�y� H�]�]W���\��W��X��\��:*l��,8�k�(jKQ8ह�h��j8�fx����P�L̈�]]T��\��J
+X9��d)��a8�o�d"8���f�:(jKQ8�i���d)��j9k���x�e��g��a8�o�d"8���f�:(jKQ8�j�o���a�9aiyb��⭹�b�ह��y� H8�j��e�:(jKQ8�j�o���a�:*l��,8�k�(jKQ8ह�h��j8�fx���������:(jKP�PU���[X\�P]�[�J
+X9aj9g��b)9k��(j���\�YZ[�HX\�x� Y]�[�[��[[�HX\�x� y`"�b)PU�[��][۸�k�b)x�k�k��dox�i��`�ࢸ� y�l9`)�9. :!�8�i��k��j��c�*&:c,��"8�oؘX��[���[��][ۈY[�]x�i�� y�(x�k�a*�ab:h!��j�b!�hg��fx��� ���9a*�ab:h!�9b)9k��Q8��������x����+�b)H8��x���������9⭹�b�9c�9n,�⭹�b�]RY9c.�b!�9d#9. 9�)��hy.�RQ9�d9��9a��!�o�9⭹�b�9bl�ࢹod��i��n8�k�/g9�*:(�:-���KK_KK_KK_KK_KK_KK_KK_KK_KK_KK_KK_�HU�LHS�HS�HS�H�Q�UU�H:*ey/�x�e��j��aS��SQ�T��SQS�S��S��Q�ӑH:,�8�k�]RY8ह� 9a*�ab8�i���d)���U�L�PS�ԓQQ�ԗ�S��TԕQё��TH�S��ԗ���P�S����QS�H�T���ԗ���UU�H9oh�⭸हb!�hg��i��cx�j��aS��SQ�T��SQS�S��S��Q�ӑH8��x�x�8���*&:/�9kd9�j�c���k�. :!�8�h8�dx�i�)���/��e��j��a��U�L��UT��Q��T�Q�S�H�S��ԗ���P�S����Q�Y�\��Q�Z[\�H�T��:*&9���h&9g���k�d#9. 9�)�हb)9k���i��cx�j��aS�ӓ�ӗ�T��Ԉ�Y�\��Q�Z[\�H9.#y讹k���j�h&9g��ह/�y� x���f�:f�9.#y讹k���j�)���/�ऺ(c8���j��a�U�L�UT��Q��T�Q�S�H�S��ԗ���P�S����QX�]�T�\�Y[�SX\�H�T��9do9a�abQ�[\��k�c�9n,��j��"yb�x�j�aly�"x��������x���/o��*9�*x�cy.���`�ࢸ� yaiyb����������x����k�oh�⭸�c9aly�"y��yo#��j9. :!��P��T���\�Y[�SX\�T�[[ݙY8����x�8ਸ�����8�k�aly�"x��������x���/o��*9�*x�h8�dxऺ)���/�8��x�x�8���*&:/�9kd8�k���x�������8���k�(�9b�z*.���x�j�fd9k��� �bl�ࢹod��i��j9aly�"zh&9g���k���y� x�e�� yo�9����k��]]��\�Y[�J
+X8�i�a�yc�o��c���HU�LH�UT��Q��T�Q�S�H�S��ԗ���P�S����Qۛ�۔�[X\�Y�\�Y[�SX\�H�T��9d#8�f9ak:e���"8�o�h&9g���i�/o��*9�*x�k�)���/��"8�o��P��T��S��S��Q�ӑH:`ayn���o��g��k�a�z)!��`�.��ह⭹�b�हi"x�b8�f�c���!���U�L��UT��Q��T�Q�S�H�S��ԗ���P�S����Q[�ۛ�ۓܑ�ܙZY۔�\�Y[�H�T��9b)y�`9�"z !x�o��g��k�*&9���h&9g���k�d#9. 9�)�.#y. :!�S��SQ�T��SQS�S��S��Q�ӑH9.#y�h����b)y�`9�"z !xह����x�k�)���/��"8�o��j9�lx���j��a��U�L�STH�S��ԗ���P�S����QS�H�T��9bl�ࢹod��i�)���/�ह/-8���j��a8�8��x�����9�`�.���P��T��S��S��Q�ӑH9⭹�b�हi"x�b8�f�� yaly�"zh&9g�����/o��*9�*x���bl�ࢹod��i�ह��9c���e��j��a�U�LSTH�S��ԗ���P�S����QX�]�P�\��[�ܔ�[X\�SۛH��UU�H9�n�(c9��9f��j9bl�ࢹod��i���yh,x�k��a9aj9/d��c9/o��*9.+ybl�ࢹod��i�ह�nyk���P��T��ۛ�۔�[X\�Y8��8�8��9k�za���j9bl�ࢹod��i�/o��*9�*xह�h�许�j�yf�)���/��\�
+
+X8� ya�z*+yk��� z*��!�e�zc��o�8࠹c���HU�LHSTH�S��ԗ���P�S����Qۛ�۔�[X\�Y��UU�H9od�*l���x���������9.%�.���k��n�(c9��9f�a�x�h8�c9/o��*9.+ybl�ࢹod��i��j��e��P��T��ۛ�۔�[X\�Y�ӑH:`ayn�����a�z)!�)���/�ह⭹�b�हi"x�b8�f�c���!��e�� RQ8�k�a�yb*y�*8�e��j��a�LU�LLSTH�S��ԗ���P�S����Q[�ۛ�ۓܑ�ܙZYۈ��UU�H9od�*l��x��8����x�����x���������8�j��*��n�(c8�o��g��k���yh,x�k��a8�c9.#y. :!�S��SQ�T��SQS�S��S��Q�ӑH9.#y�#�Q8�j9����x�k�)���/��"8�o�Q8हc.�b)H�LHU�LLHU�S����S�S�H�S��ԗ���P�S����Q�Y�\��Q�Z[\�H�T���ԗ���UU�H8�8��x�����9f"x��x�x�8���*&:/�9kd8�k�d#9. 9�)�हb)9k���i��cx�j��aS�ӓ�ӗ�T��Ԉ�Y�\��Q�Z[\�H9.#y讹k���j�bl�ࢹod��i�ह/�y� x���f�:f�9.#y讹k���j�e�zc�����)���/�ऺ(c8���j��a�L�U�LL�U�S����S�S�H�S��ԗ���P�S����QX�]�Q]�[���[��UU�H9c�9n,��k��`9�"z !x� y.%�.��� z.�` y��yo#�� X]�]RY8�c9/o��*9.+x�k�bl�ࢹod��i�ह. 9�#��j��nyk���e�� yaiyb����������x����k�oh�⭸�c8�8��x�����9f"y��yo#��j9. :!��P��T��ۛ�۔�[X\�Y8�8��x�����9f"x��������x����k�/o��*9�*xऺe�x�f8� ybl�ࢹod��i�ऌyf�)���/�8��x�x�8���*&:/�9kd8�k���x�������8���k�����x�k�.#y. :!�9�'9a��j:*.���x�h8�dx�j��*8�a8���L�U�LL�U�S����S�S�H�S��ԗ���P�S����QX�]�Q]�[���[�T��9c�9n,��j��"yb�x�j��8��x�����9f"x��������x���/o��*9�*x�c8�`�ࢸ� yaiyb����������x����k�oh�⭸�c9od�*l�/o��*9�*x�j9. :!��P��T��X�]�Q]�[���[[�Q�[�[^�Y9c���dyc��h��g���������x���/o��*9�*x�h8�dxऺe�x�f8� ybl�ࢹod��i��j9o�9����k��n���������x�����h��k�]RY:)���/�ह��y� H8��x��8��8��8�����8�����X̸�k�c��i��l8हb)9k���hy.���j��e��j��a�MU�LMU�S����S�S�H�S��ԗ���P�S����Qۛ�۔�[X\�Yܒ[�Q�[�[^�Y�T���ԗ���UU�H9d#8�f9�n�(c9�"8�o���yh,x�k�)�y�`�k�,hz`�9b!��c9�`�.���"8�o��P��T��S��S��Q�ӑH:`ayn���`�.��ह⭹�b�हi"x�b8�f�c���!��MHU�LMHU�S����S�S�H�S��ԗ���P�S����Q[�ۛ�ۓܑ�ܙZYۈ�T���ԗ���UU�H8��x�x�8���*&:/�9kd8�j]RY8�k��a8�c9�*��n�(c8�o��g��k�.#y. :!�S��SQ�T��SQS�S��S��Q�ӑH9b)y�`9�"z !x�k��a8�i�.��k�bl�ࢹod��i�ऺ)���/��e��j��a�M�U�LM�S�HUPT�S�S�QS�H�T���ԗ���UU�H9ak:e��c�9n,�हk�yaj8�j�b!�hg��i��cx�j��aS��SQ��UHS��S��Q�ӑH:f�:f�o�8�k�o�9�a�.�8�dx�k�a�z`�9f�c㹪g�����c9�`9�"H��c���dyaix�9�hy.펂��H]�]RY8�k�K��XM��PV8�k��X��Y[ۛ�ۚX�Q8�i�� \�\��X�H[��[��ya�x�i�a�yb*y�*8�e��j��a8� ��H9����\�[x�k�d#9. �\��X�Kٚ[\��[�\�][۸�k�\��YY�[��K�Y�]�]\�X\���j:gg�a�yb*y�*8�i�b)9k���e�� X[��][۸�e8�j8�k��(yb-�fd�X��ۙxऺ)�y�`��e��j��a8� ��H�\�8� \�X�ۙ�Y�\�x� [��X�[���x�k�acz` y�"8�o��*�)���/�[��][۸घ�[X\�SۛX8�j8�e��i�/�y� x�fx��� ��H[�ۛ�ۋٛܙZYۋۙ]�\�Z\��YY�ܛۙ�Y�[�\�][ۋ�ܛۙ�X�X��[���k�S��SQ�T��SQS�8�i��`�ࢸ� y����\�[X\�Y�\X�]x�j8�k�c.�b)x�fx��� ��H9c�9n,��o��g��k�*&9���h&9g���k�a��!��j�i,y�e��e�� y�`9�"z !x� y.%�.��� z.�` y��yo#�� y/o��*9�*xहb!�hg��i��cx�j��a9h-9d"8�k�S�ӓ�ӗ�T��Ԙ8�j8�e�� y⭹�b�ह讹k���i��cx�j��a:,����8ऺ)���/��o��g��k�a�ybl�ࢹod��i��e��j��a8� �(�9b�y�8�j���x�x�8���*&:/�9kd8��x�������8��हc�o���i��cx�j��a8�d��j8�h8�dx�i�� yc�9n,�."��k�d#9. 9�)���yh,xहb)x�k�bl�ࢹod��i��n9k�o�9.�8�dx�j��a8� �������:(jKQ��]]T��\��J
+X9.�����(j���]]T��\��J
+X8�k��[��9`m9ak:e��Tx�i��`���� �k��(�x�k�� z(jKQLx�k�b)9k��h!�n��हab8�j�`jy�*8�e�� z`&�n.8�k���\��H��[��9�+�b)y.������k�(jKQL��k�(c9b%��i�b)9k���fx��� ��������:(jKQLK��]]T��\��J
+X9b)9k��h!�n��(j��9a*�ab9�hy.�RQ9�.�ࢹ`)9�(y⭹�b�9f�k���!��,H�KKN�KK_KK_KK_KK_�H�[��8�c:e�zc���"8�o�S��SQ��UX�[��9⭹�b�ह��y� H�]]T��\��J
+X8�k��[��9`m9ak:e��Tx�i��`�ࢸ� \�[��:!�.���k�e�zc��⭹�b�ह� 9a*�ab8�i�b)9k���fx�����[��8�c9k��(c9�`�i,y�e�⭹�b�S��SQ��UX�[��9⭹�b�ह��y� H�Z[X���Y9⭹�b��k��[\�8�k�a�zacy���e��j��a���[��8�c:e��i��.+HS��SQ��UX�[��9⭹�b�ह��y� H:e��i��.+x�j�aiyb��a`�c��i�हi"y��8�e��j��a���\��H8�c�S9�$9b���[��9⭹�b�ह��y� H�[���[\�8�k�aiyb��a`�ई[]^[�]8�n9�.��fx� ��[\�ؚ�X�8�i��k��j��a8�g��z!�m�yc��i������\��ze�zc�����b)Y[]^9�`9lg��k�b)9k��k�,hx�j��e��j��a�H��\��H8�j�[��8�c9d#9. ؚ�X�S��SQ�T��SQS��[��9⭹�b�ह��y� H:!�m�yc��i�ह�y�h��fx������\��H8�c:e�zc���"8�o��o��g��k�k��(c9�`�i,y�e�⭹�b�S��SQ��UX�[��9⭹�b�ह��y� H��\��H8�k�Y�X�X�H9�l9n.8�i��`�ࢸ� yo%y�l9oh�o#�.#y�h��j8�e��i��lx���j��a����\��H8�c9b)H[]^9�`9lg�S��SQ�T��SQS��[��9⭹�b�ह��y� H[]^9h���c8स�o��g��a8�h9��y���ह�y�h��fx���9."�*&8�j�*l�od��e��j��a:(jKQL��j�o���a�:(jKQL��j�o���a�:`&�n.8�k��+�b)y.�����b)9k��ऺ(c8�a�����[��"8�o��i��*�*+yk���k��[\�࠹�"yb�x�j�aiyb��a`����acz` yab8�j�d*��x� yak:e���fx���fx�nx�i��k��a8�o�d"8���f��c���k��]�[\�[��Y�X9��9od��k�)�y�`�ह��8�g��fx�d��j8हbcy��8�j8�fx��� �����b��U��n8�k�[���\�8�j8� S�S9.�yi%�ह�(x�fX�]]T��\��J
+X8�k���y���e��/�ह��y� x�fx��� ��[��"8�o��i��*�*+yk���k�S�Q�S�Q8�o��g��k���k�����x�k�� U���*8�k�Ԙ]�8�j8�e��i���y���c�� �x�j��fx��� �)���/9."��k��"yb�x�h8�c9�*�k�o�8�k�am�/d��8�j��X�\x�j��k�S�U�RSP�X8ऺ/�8�fx� ���������:(jKQL���]]T��\��J
+X[��[�9b!�hg�(j��9b!�hg�d#H9d*��8࠸�k�:`&�n.�TH^[�YU�aly�"x��x����9`�z  ��KK_KK_KKN�KKN�KK_�[]^[�]��\��H8�c�S8�k�h-9d"8�k�S��9idy�!9."��k��&y���aiyb��a`�9k�,h\�[���j�o���a�9k�,h\�[���j�o���a��[\�ؚ�X�8�i��k��j��a8� ��[���[\�8ई[]^[�]8�n9�.��fy�$9b���c:-���j8�e��i��lx�a���X�[ۈ8��x��������X�[ۈ^[�Y8हa��fH�Tyk�,hx��x�������8�`�࢈8�j��e���\��H8�j��k��e��j��a8� ���\��Q�[\�9�c9�,x�k��X�[ۈ�[��8�j8�e��i�࠹�lx���j��a�T�8��x�������T�^[�Y8हa��fH�Tyk�,hx��x�������8�`�࢈8�j��e���\��H8�j��k��e��j��a8� ���\��Q�[\�9�c9�,x�k�T��[��8�j8�e��i�࠹�lx���j��a���'������8����x���������]�^[�Y8हa��fH�Tyk�,hx��x�������8�`�࢈8�j��e���\��Q�[\�9�c9�,x�i�a�y��yaix�i��cx��e+�. 8�k���\��H9�+�b)x� �."��`x�j8�e��i��$9b���ex�f����k��k���'������8����x��������j�X�ܙ8��x��������h8�dx�i��`����U�8��x�������]�H]Y[���Y[�8��x�������8�j��e�8�`�࢈��\��H8�j��k��e��j��a8� ���\��Q�[\�9�c9�,x�k�U��[��8�j8�e��i�࠹�lx���j��a��������:(jKQLˈ�]]T��\��J
+X:`&�n.9�a8�o�d"8���f�(c9b%��d��k�(c9b%��k�� z(jKQLx�k�a*�abx�'�ऺ`&�`c��e��g�h-9d"8�h8�dz`jy�*8�fx��� ��i8�o�ࢸ� \�[��8�k�gg�e�zc���b��i:gg�e��i��� \��\��H8�k�gg�e�zc��� yd#9. []^9�`9lg�� \��\��H8�j�[��8�k�b)Hؚ�X�8�i��`���� ���\��H8�c�S8�k�h-9d"8�k�S��9idy�!9."��k�a*�ab8�k�k�,hx�i��`�ࢸ� x�d��k�(c9b%��j��k�aix�x�j��a8� ����.�ࢹ`)8�k�� S�S8���b)y�`9�"z !x���b)Y[]^8�k�સ���8������8घS��SQ�T��SQS�8� ze�zc���"8�o����.#y�h��j���x�8��x�x�8�����घS��SQ��UX8� z)���8�9����k�w��X][ۋ[�ܙ\����\]Y[��_X8ह.�:a�x�jܙX�ܙ���n9��yaix�e��j��a8� ��lz*"8�k�^X�X��aiyb���k���:,�������9aix�j�X�ܙ9a�b��हb)x�!x�j�*"9�l8�fx��� ����^X�X��9l ��*�]�8�k�l$x�j��c��j8ࠈ[��X�Y�]\�� Z[��X�YX��]�� [X[�ܛYYX��]�� Y��Y�]\�8ह� x�i8� �X[�ܛYY�8�k���
+�:*.���H8ह�&y�����za�x�j8�e�� LHX��]8�k�X[�ܛYY[�]8�i�^X�X����X[H9aj9/d�ई�Z[8�ex�f��j��a8� �^X�X��[�]�TH8�k�^X�X���]\�8�k��\�9��9o�8���dj9�'�8����8�����8�����8�j8࠸�j�^X�X��[�]�TH8�k�k���[�[�\�Yܚ]H�X�H8हe+�. 8�k��-9/cH��\��H8�j8�e�� \�X�ܙ��]]]Y]YH8�k�]Y]YY؞]\�8ह�`y�*8�e��j��a8� �^X�X���ۜ�[Y\�8�����8����8�k��ܚ�\�[�X��ۙ\��ۘܙ]U�ܚ�\��Yۘ[8�j���y����e�� X���H����9�l9n.9�`�e�zc���"8�o�8�i��\]Y\����
+
+X8����Z�J
+X8�����[�ٜ��W��ۙ\�
+X8�k�h!��j�`g9�h��fx��� ���^X�X��[�]�TH8�k���X[H9h���c9��za�x�k��(x�k��j8�b�ࢹf�k���fx��� ��\�9bcx�j��Y[�8�c�Y�[8�e��g��]\�8�k�/�y� x�e�� \�\�9o�8�j�^X�X���8�j8�e��i�*�x�8� ��\�YY�[�H9.+x�k�8�����8����8�c�TH8ऺ*�x�o��j��a8� ���9�`��k�^X�X��[�]�TH8�jX��]\��[X�\��\�YX[8ह��y� x�e�� y�(H�\�8�i���kf��X[H8�k�����cx�j8�e��i�*�x�8� ��\�9�`��k�^X�X��[�]�TH8�jX��]\��[X�\��\�YX[8ई�Z[��\��\�8�e�� Y��Y�]\�:*.���x��੸�������8�j8��x�8�j�*&:c,��fx��� ��\�9o�8�j��Y[�8�c9��8�g��j���8�a8�g��]\�8�k��\�YY�[�H9.+x�j��k�*�x�o��f�� y��9bcx�k��\�8�i���kf��X[H9h���c8�c�Z[�9�"8�o��i��`����d��j8हbcy��8�j�� y�(H�\�8�k��Y�[8�j8�e��i��lx�a�� �^X�X���\�8�k�^X�X��[�]�Tx� \X��]\��[X�\�� \^X�X���]�8�h8�dxई�\�]8�e�� \�X�ܙ��]]]Y]YH8ह�-9h��e��j��a8� ��X�ܙ���\�8�k��X�ܙ�]]]Y]YH8�j�X�ܙ�]�8�h8�dxई�\�]8�e�� \^X�X��[�]]Y]YH8�j^X�X���]�8ह�-9h��e��j��a8� �������^X�X���ۜ�[Y\���[Z];�"9��:,��讹k���"z(j���+:(j8�k��ۜ�[YY��[]�\�X8�j9a�z`�9��9aiyi,y�e�ह���d#8�e��j��a8�g��x�k�(�:-���i��`���� ���^X�X��8�k�aiyb����yd$x�k��Tx�i��`�ࢸ� Y�[\��*���y����9�*��\�Y8�j��8��acz` yab8�j��e�हcl��`�!�9doyi,y�e��j��e��i��k��j��x�j��a8� �. 9��x�i�� U�\��yo�8�k�a�z`�9��9aiya��!��gx�k�࠸�k��c9i,y�e��e��g�h-9d"8�k�� Q�TH�XY9�"8�o�aiyb��ह�$9b����:,���lx�a8�j��e��i��k��j��x�j��a8� ���9aiyb��⭹�b��TH�XY�\��H9��9aiy�d9��9��:,���lx�aX�X��XYۛ��X��KK_KK_KK_KK_KK_KK_��[Y�
+�[]�\�y�$9b��9�$9b��9�$9b���ۜ�[YY9��:,���"8�o�9�h�n.��[Y�
+��Y�Y�9o�8�j�[]�\�yab8�c9��9��H9�$9b��9�$9b���ۜ�[YY��[]�\�X:*.���y.�8�cy��:,���"8�o�9a�b��ab8�k�`g9�h����b!���x�c�Y�Y�8�j9��9aiy讹k���k�e���j�-m��cx�g����d"8�h8�dxहk�,hx�j8�e�� yk��n.9�8�j�a�b��ab8�j��e��i��kѓTxऺ*�x�o��j��a����y����"8�o��k�a�b��ab8�o��g��k���x���������8�cy`"�.�y."�e��i��⭹�b��j��j����o��i�� ya�y�'�`m8�k�*�x�o�c�ࢹa��!��kѓTxऺ*�x�o��j��a8� ��Tx�j9d#9�bx�k�$�9�cx�x��x��8�k�/�yb�8�f��f�� Q�Tz!�/d��k� �9g)��i�o�y�g��fx��� �a�b��ab8�k�`g9�h��`��k�*�x�o�c�ࢹa��!�हa�x�l�o�y�g��ex�f�� \]Y]Yyk�za���k�-�z`c��k�`&�n.8�k��Ty⭹�b��j8�e��i�`&���x�fx��� ����9aiyb��⭹�b��TH�XY�\��H9��9aiy�d9��9��:,���lx�aX�X��XYۛ��X��KK_KK_KK_KK_KK_KK_�X[�ܛYY�9�$9b��X[�ܛYYX[�ܛYYۛX9��:,���"8�o�c��X[�ܛYYXYۛ��X�� �HX��]8�i���X[yaj9/d�ङ�Z[8�e��j��a�\�X[�9�$9b��[�[��9�*���[Z]�\�YX[9/�y� H9�(\�XY8�n9� x�hz-���e���a�y�'������8���k�c�ࢺ/�8�o��j��k�� Lyf��k��Tz*�yc���8��x���୸�����������h8�dxह�`9�"x�fx��a��!�.+x��8�����x�x��8�j8� x�x��x��9.%�.���e8�j8�k�����8�x���ह/o��*8�fx��� ��d��8�k��+9.�8�k�o�x�hz(c9b%��i��k��j��c�� X��[Z]�XY
+
+X9o�8�k���8�8��9b%�हa�z*i�(c9.+x࠹�`9�"x�fx���g��x�k���8��x���୸����������h&9g���i��`���� �d#9�`��j�y.���h8�dykf9g*8�e�� y."�fd8�k�Z[�9��g*8�k�`(����*�yc�c�� �za��:*+yk���"8�o�^X�X�����Tyk�za��X8�j8�e�� yd#9k�za��हb)z`%9n.9�`�讹/�x�e��j��a8� ��Tx�k��Y�[��XY���[Z]�XY8�i��k�� x��8�8��9b%�स�d��k�h&9g���n9�h�许�j�yf��h8�dy����fx� �讹k��o�8�k�a�z*i�(c8�k�a��!�.+zh&9g���h8�dxहaiyb���j8�fx��� ���yaix����8�x����k���8������8�����x�c9c���!��e��g���8�8��9�l8�h8�dycf:*���j�`,��x� za�z)!���yaixऺf,��d8� �a��!�.+zh&9g���c9�n��j��j����o��i��(x�k��Tx�����8��हc�ࢺ/�8�o��j��a8� �a�z*i�(c9c�� �x�j���8������8�����x�8��x��8�i��k��*���yaiz`�9b!�ह/�y� x�fx��� �!�9doy�8�8��x��8� y`g9�h�� ze�zc���i��k�� y���ࢸ�k��h�许�j���9i,x��8�8��9�l8�j9�`�����!��,xऺ*&:c,��e��i��b��y�-9��8�e�� y�(z*.���x�i�i,x���j��a8� �.%�.��i"y��8�i��(yb�yc%��i��cx���k��k��n��k�����8�x����h8�dx�j8�e�� ya��!�.+zh&9g���j������8���c8�`���h-9d"8�k�� x�gx�k�a��!�हk�9.���fx���b�� y�#��.��8�j��`�����ex�f��i��b��y.%�.��हi"y��8�fx��� �������^X�X���ۜ�[Y\�8�����8����:-m�b�zh!�n����^X�X���ۜ�[Y\�8�����8����8�k�� Q��8�c�ٝ[]^8�j�[�[YR[ԙY�\��X8�k�.(y��x�n9�n�c,��ex�8� \]Y]YH8�j8�����8�����Yۘ[8�k��`9�"y�*x�c��[8�n9讹k���e��g�o�8�j��h8�dze��i���fx��� ��n�c,�bcx�j�^X�X��8�����8����8�c���]H8ऺ)���+8�e��i��k��j��x�j��a8� ��������8����9�'��$9o�8�j��Y�\��H��[Z]8�fx�����`(8�k��y�h��fx��� ��]ۈ9o�8�j�o�9��y�n�c,��c9i,y�e��e��g�h-9d"8�k�� x�����8���������[�� \]Y]YH�X[�\8� \�ٝ[]^[��Y�\�\�� [Y�\����X��8ह. 9/d��i�(c8�a�� �����8��x��x�����8�8�����x�k�k�o�: �yb���j9⭹�b��T��U8�k�b%��&y`)9g���k�� y쯺*�y�"8�o��k�T�P��P��H����k��hzh!x�j8� yak9o#̋��QLz"�z*,��k�a�an8�j�o���a�� �)���/9."��k��"yb�y`)8�j9k�,hx��x��x�8��8��8�i�*+yk��c�� �x�j�`)8�k�b!��dx�i��lx�a�� �T��U��U�T�8�k�*/:-�x�j��8�h��i�am�/d�`)8�c:*+yk���ex�8� y�g�fj8�i��"yb�x�j��j����d��j8ह论*�x�i��cx�j��a:fd8ࢸ� yk�,hx��8������8�����x�c8����8��x� yi"z*����yo#�� y�)�c��c%���� x�8��8��x�8�������8��8���� y�`�e���8�������8����8���j��i8�a8�i�ak:e���e�c���dy.�8�dx��`)8�k�UU�8�h8�dx�j8�fx��� ����������8�k��X��[�8�c����\��Y\�X�]Z\�][ۈ8हb)z`%9c�o���i��cx��h-9d"8�h8�dHY�\�\�H8�fx��� ����X\��H�X��[�8�k�[�^���WԑPQ��UT�8�c:/�8�fH�W�T���T��QT�8ई������8� X�W�T�����8ईSS�����8�j�k�o�8�ex�f���� �����X��[�8�k�����\��Y\�8��x�����ऺ/�8�fHTH8ह� x�g��j��a8�g��x� \8�k���9//8��x�����8�k�SS�����8�k��o��j�/o��a8� X������8�j��k�/o����j��a8� ���Ӕ�8�j�QӐS���S��8�k�� y��(c[�\�S�\X�[]H����ٚ[H8�i��k��]\��\�8�j�d*��x�j��a8� ����X\��H8�k��WԑPQ�Ӕ�8�j�WԑPQ��QӐS���S��8� \8�k���U�Ӕ�8�k�\��]�]�\��]�X�H9⭹�b��j��8�h��i��XY9�`��j�i,y�e��e�o�����[ۘ[[[Y]�H8�i��`�ࢸ� z-m�b�y�`�b%��&y�`��x�i���۝[�8�8�����8��8�k�f�k���\X�[]H8�j8�e��i�*/9�#��i��cx�j��a8�g��x�i��`���� ��d��8�x�k��[ۘ[[[Y]�H8�k�:*.���ya�z`�9`)8�j8�e��i�/�y� x�e��i��8�a8�c8� PS���]\��\�9."��k��\ܝY9⭹�b��j8�e��i�Y�\�\�H8�e��i��k��j��x�j��a8� ����QӐS�UPSUX8�k�� X�X��[�8�e8�j8�j��.y��8�`���d"9�$9`)8ऺ/�8�f���h-9d"8�h8�dH�]\��\�8�j�d*��x��� ����X\��H�X��[�8�k��QӐS�UPSUX8�k�[�^���WԑPQ��UT�9⭹�b��]8�k�8��x�����:`,��e�ई8�'L8�j��h�)��c%��e��g�`)8�j8�fx��� ��X��[�8�k���U�Ӕ�8हk�yk��c�o���i��cx���d��j8ई��۝[�8�8�����8��8�k��\X�[]H8�j8�e��i�f�k���i��cx�j��a:fd8ࢸ� XӔ�8�j�QӐS�UPSUX8ईY�\�\�H8�e��j��a8� ��a8�f��8ࠈSS�����8�������8�k�.������i��k��j��c�� URK�*.���H9�*8�k�d"9�$9�!��&x�i��`���� ��*�c�o��[[Y]�H8ई�QӐS�UPSUOL8�j8�e��i��$9b��/�9cm8�e��i��k��j��x�j��a8� ���������۝[��][����[Y][ۈ8�k�f�k����za�B����x��x�����8�8�����x�k�k�o�: �yb��� PRQ9aiyb���k�c��.�9c��d)�� X��X��ٚ[X8� U���k�`n9l`9aiyb���k�� y�+9��8�k��#8��x��x�����8�8�����z*+yk��(j8�#x�b��y�'��$8�fx��� �T�P��c9k���x�fx���/�` x��x��x��x��8����:f�d"8�j8� yk�,hx��8������8�����x�c9�#��.��8�j�*+yk���i��cx��aiyb��f�d"8ह���d#8�e��j��a8� �am�/d�`)8हk�o�9c�� �x�j8�e��i�ak:e���o��g��k�c���!��i��cx���k��k�� x��x��x�8��8��8�n:*+yk���fx���c:-��� x�o��g��k�*�x�o��.��e��i��':*/8�fx���c:-���c9kf9g*8�fx��h-9d"8�h8�dx�j8�fx��� �`)8ह�':*/8�fx���h8�dx�i���8������8�����x�n8�k�)�y�`��b��y�j8�i�� y�$9b��ऺ/�8�fy�c:-���k��y�h��fx��� ���k�,hx�k��X\��x�j��8��T��U8�i��k�� z*+yk��(j8�j�o���a8� ydj9�蹥l8�j�R��o��g��k�UU�8�k�n+�g��nax�j�k�o�8�fx��� ���g*8�k���۝[�[�T�\]Y\�8�j8�k�`n9l`9i"y����k�am�/d�`)8ह/�y� x���*+yk���e��j��a8�g��x� x����8��x� zf��li8�e8�j8�k�i"z*����yo#��j9�)�c��c%���� x�8��8��x�8�������8��8���� zf��li8�e8�j8�k��`�e���8�������8����8���k�UU�8�h8�dx�j�k�o�8�fx��� �UU�8�k��$9b���j8�e�� x�d��8�x�k�h!y���j�)���/9."�����x�k�am�/d�`)8�c9�!�k���ex�8�g�h-9d"8�k�S�U�RSP�X8ऺ/�8�e��i�� x��8������8�����x�j9��9bcx�k�)�y�`�हi"y��8�e��j��a8� �.#y�h��j����8�o��g��k�`)9g���j��k�S��SQ�T��SQS�8ऺ/�8�fx� �k�o�: �yb��� PRQ9aiyb���':*/8� X��X��ٚ[X8� U��`n9l`9aiyb���k�d#8�f:*+yk��(j8�b��y�'��$8�fx��� �T�P��P��H����k��8����8�8�b��8�l̍8����8�8�k��/�` x��x��x��x��8����8�k�`)9g��हk���x���c8� XUU�8�k��o��j8�a8�a�b-�fd8�k�T�P�."��k�b-��!8�i��k��j��c�� y��(c9k��(�x�c9�h��e��c�(j9�#��i��cx��k�o�: �yb���i��`���� ����^X�]9��9f���[��k�T��U�T��T�alz`&��i�k�o�9k��* 8�e��j��a8� �[���\]Y[��X8�c��\]Y[��X8�j9�l8�j���h-9d"8�k�S�U�RSP�X8�j8�e�� y��kf[�K���[��]xहi"y��8�e��j��a8� ������T��U�[Y][ۂ��H��\]Y[��X8�k�\��]�[��[X\[���n9i"y���c�� �x�j�`)8�h8�dxहc���dy.�8�dx��� ��H�[��Y8�k�UU�8�o��g��k��S��Q͓R�8हc���dy.�8�dx��� ��H[�X8� [^Y\�[�[][ۘ8� [^Y\���T�]X8� X�X\�[�\��[8� [^Y\�[YR[�\�X]�X8�k�UU�8�h8�dxघY�\�\�x���c���!��fx��� ��H9."�*&8�k�UU�l ��*:h!y���j��!�k���ex�8�g�����x�k�am�/d�`)8�k�S�U�RSP�X8� ][�[۸�o��g��k�`)9g���c9.#y�h��j�aiyb���k�S��SQ�T��SQS�8�j8�e�� x��8������8�����x�j9��9bcx�k�)�y�`�हi"y��8�e��j��a8� ��H�[���[��k�S�U�RSP�X8�j8�fx��� ���T��U:*+yk��`)8�k�)���/9."��k�i�yod��)��k�� y쯺*�y�"8�o��k�T�P��P��x�k�`)9g���j9ak9o#�"�z*,��k�a�an8�j�o���a�� �. 9��x� yk�,hx��x��x�8��8��8�i�*+yk��c�� �x�b��jx�a��b��k���9����e��g��.y��8�i�b)9k���fx��� �T��U��U�T�8�k�*/:-�x�i�am�/d�`)8�k�*+yk���j9c�y�(8ह论*�x�i��cx�j��a:fd8ࢸ� yk�,hx��8������8�����x�c8����8��x� yi"z*����yo#�� y�)�c��c%���� x�8��8��x�8�������8��8���� y�`�e���8�������8����8���j��i8�a8�i�ak:e���e�c���dy.�8�dx��`)8�k�UU�8�h8�dx�j8�fx��� �)���/9."��k�am�/d�`)8ऺ)����8�:*i�j$��k��g��ya�z`�:(j9���j�/�y� x�e��i��8�a8�c8� z*/:-�x�j��e��j�b-�o�yc�� �x�j�*+yk���j8�e��i�ak:e���o��g��k�c���!��e��i��k��j��x�j��a8� ����T�P��P��H����b8�k���8����8�8�b��8�l̍8����8�8�k�� x����8��x� y�+:` y��i"z*��� ya�y�)�c��c%���� x�8��8��x�8�������8��8���� y�`�e���8�������8����8���k��/�` x��x��x��x��8����8हk���x�fx��� ���g*8�k���8������8�����x�i�UU��h8�dxहc���dy.�8�dx���d��j8�k�� PT�P�."��k�`)8हd)�k���fx��࠸�k��i��k��j��a8� ��#��.��8�j�*+yk���c:-���c8�j��a9k�,hx�j��i8�a8�i�� yk�o�: �yb��ऺ`c�i)��j�(j9�#��e��j��a8�g��x�k�b-�fd8�i��`���� ������T��T��[Y][ۂ��HX�X��][����k��[X���]X8�k��9�*��!�k����9od��k��o��$9b���j8�fx��� ��H���k��"yb�x�j���X[H�[X�ܸहo�zh"8�j8�fx��� ���LL8�kٚ^Y\���ٚ[x�j�o���a�[X�ܸहb-�fd8�fx��� ��H[�[][۸�j��T�]x�k�UU�8�h8�dxघY�\�\�x���c���!��e�� y����yam�/d�`)8�k�S�U�RSP�X8� [X[�ܛYY9`)8�k�S��SQ�T��SQS�8�j8�fx��� ��H�[���[��k�S�U�RSP�X8�j8�fx��� ���k�,hx�k��X\��x�j��8��T��T��i��k�� x��x��x�8��8��8�j9�g�fj8�c9k�9aj9. :!�8�fx��������x�:h!y���j��8�h��i�am�/d�`)8�k�*+yk���g� �xह论*�x�i��cx�j��a:fd8ࢸ� yi"z*����yo#��j9�)�c��c%����k�UU�8�h8�dx�j�k�o�8�fx��� �UU�8�k��$9b���j8�e�� z)���/9."�����x�k�am�/d�`)8�j��k�⭹�b�हi"x�b8�f�S�U�RSP�X8� y.#y�h�`)8�j��k�S��SQ�T��SQS�8ऺ/�8�fx� �dj9�蹥l8�j9��9k�����m�k�����8������8�k�b�y/g8�k�� x����8������:*+yk��(j8�jT�P���Ќ�x�k��.y��8�j�o���h��i�b)x�j�k���x��� ���k�,hx��8������8�����x�k�T��T�i"z*����yo#��k�UU�8�h8�dx�j�k�o�8�fx��� �am�/d�`)8ऺ*+yk���i��cx��a��!��j9k�o�: �yb���k�*/:-�x�c:/�yb�8�ex�8���o��i�� P���� TT��� U����k��#��.��!�k���j��k�⭹�b�हi"x�b8�f�S�U�RSP�X8ऺ/�8�fx� ���k�,hx��8������8�����x�k�T��T��)�c��c%����k�UU�8�h8�dx�j�k�o�8�fx��� �am�/d�`)8ऺ*+yk���i��cx��a��!��j9k�o�: �yb���k�*/:-�x�c:/�yb�8�ex�8���o��i�� y�)�c��c%����k��#��.��!�k���j��k�⭹�b�हi"x�b8�f�S�U�RSP�X8ऺ/�8�fx� ����alz`&��':*/8�kК[�\�li8�k�)�y�`�i"y����j�\��X�Wܝ[�[YX8�k�.��bcy论*�x�i�k����x�fx��� ��g��h8�e�� z*+yk���*zfd8ह� x�g��j��a9li8�c9am�/d�`)8ह�$9b���lx�a8�j��e��i��k��j��x�j��a8� ��':*/9�"8�o��k�)�y�`��h8�dxस��8������8�����x�n9�(x�e�� y�*�k�o�8�k�aiyb���i��k�.�ybcx�k������8����8�j:`n9l`9⭹�b�ह�-9h��e��j��a8� �����8��x�8��U��[\���TH9��za�B����x�8��U���x���������8ह�h�o#��j�k�,hy��9f��j�d*��x��� ��+:(�yd�x�k�� x��x�x�x�����8�i��k��j��aYYXQ]�[�8�j��i8�a8�i���+�hg��k�/'z` y��yo#��j�k�o�8�fx��� ��+9. :`n9����k�ak:e���"8�o��k�aly�"zh&9g���j9�h��k�]RY8�k��a8� y.�������yo#��k��8��x�����9f"x�k��h�许�j�em��exह� x�iy`"��k���x�x�8���*&:/�9kd8�j9�h��k�]RY8�k��a8�j8�fx��� �U����8��x��8��x�k�`&�n.8�k��Tx�n9��8�cz/�8�o��j��a8� �]�[��Y�8�kѓTxह/o��*8�fx���c:-���k�`&���x�h8�dx�j�/o��*8�fx��� ���U�\����Y�8�k��+:(�yd�x�i��k��d�.ay�8�j�k�o�8�e��j��a8� �[]^�[\�]��][��˚\�\����Y�]�YX8�k��ۙ�Y�\�H9�`��x�i�S�U�RSP�X8�j8�e�� \\����Y��\X�[]H8�k�k��* 8�e��j��a8� ��$9b���lx�a8�k��(ya��!�8�o��g��k��(zacz` x�k�U��[\�8�j8�e��i�c���dyaix�8�i��k��j��x�j��a8� �������ٚ[x�i��k�� PU��[\�ह/o��*8�fx��h-9d"8�i�ࠈ\�\����Y�Y�[�X8�j�f�k���fx��� �\�\����Y�]�YX8हd*���ٚ[x�k��+:(�yd�x�k�k�o��ٚ[x�j8�e��i��lx���j��a8� ���U��[\�8�k�⭹�b�b)yidy�!8� \�\�Y�X��[��� yak:e���"8�o���������x���� y/o��*9.+zh&9g��� X]RY8� X�[X\�P]�[�J
+X8� X�\�
+
+X8� X�ۙ�Y�\�J
+X8� X���J
+X8�k�bk�/g9�*8�k�� y�+9��8�k��#:(j�U�aly�"x��x����,����9k��doz(j8�#xह�h��j8�fx��� ��+9��8�i��k�� X[��]ܸ� S�]]�R[�yoh�o#�� \^[�Y:acy�k�� z*.���y��za�x�h8�dxऺ(�:-���fx��� ���[���Y8��x��8��8��8�����8���j��x�c9c���!��fx��YYXQ]�[�8�k�(j9���k�� y�+9��8�k��#U�bl�ࢹod��i���yo#��#xह�h��j8�fx��� �aly�"x����8��x�i��k�� XQ�[\���]]��\�Y[�J
+X8�cXKX�Y��o��g��k�Sӹ����k���x�x�8���*&:/�9kdy`"�ह� x�i8��������x���ऺ/�8�fx� �d!8�8��x�����8�k�]�Y[[ܞX8�k��n��j8�e�� y�h��k�]�]RY8�jٙ��]�]S[��8�i�aly�"zh&9g��a�x�k�cb�e��c.�e��ऺ+f9b)x�fx��� ��8��x�����9f"x����8��x�i��k�� yd!8�8��x�����8�c9�h�许�j�em��ex�k���x�x�8���*&:/�9kdy`"�ह� x�i]�Y[[ܞX8�j8� y�h��k�]�]RY8ह� x�i8� �aly�"x��������x����k��*�c�o��� y/o��*9�*x�k�)���/��"8�o�� yc�k�yc�� �x�j��n��czh&9g���j��e�� x�o��g��k�Ux�c:h&9g��em�ऺ-�x�b8��h-9d"8�k�� x�8��x�����9f"x����8��xह�h�o#��j�.�������yo#��j8�fx��� �`c�i)��j�Uxह�-9��8�e��i�� L���yo#�k�o�8�j8�a8�a� �yb��(j9�#��j9������ex�f��i��k��j��x�j��a8� ���.(x����8��x�k�]�]RY8�k�� yd#8�f9."�fd9.�8�cybl�ࢹod��i�c�9n,��b��y�n�(c8�fx��� ���x������8� yc�9n,�� XYYXQ]�[�8�k����`�x�c8�fx�nx�i��$9b���e��g�o�8�j�bl�ࢹod��i�ह讹k���e�� yi,y�e��`��k�����8�����8������o��g��k�]RY8हak:e���e��j��a8� �ٙ��]
+�]S[��H�X��[���^�X8ह�h�n.9��9f��j8�e�� y."�fd:-�z`c�ह�'9a��i��cx��b�9��ह�*8�a8��� �em��eL8�k�.#y�h��j8�e��i��8��x�����8ह�n�(c8�e��j��a8� �\��X�\�SY[[ܞOY�[�X8�j�f�k���fx��� ���)���/�)�y�`��k�oh�⭸� y����x�k�c�8�a:)�y�`�ह⭹�b�i"y��8�j��e��i�c���!��fx���hy.��� y.#y�#��j�)�y�`��k���d)�� x��x�x�8���*&:/�9kd8�k�d#9. 9�)��':*/8� z*��!�e�zc��o�8�k�)���/��k�� z(jKP�PU�8�j9�+9��8�k��#:(jKP�PU���[X\�P]�[�J
+X9aj9g��b)9k��(j8�#xह�h��j8�fx��� ��[X\�P]�[�J�
+X8हaly�"z*&9���h&9g��aj9/d��k��-9��8�j:)��a�8�e��i��k��j��x�j��a8� ��8��x�����9f"x����8��x�i��k�� x��x��8��8��8�����8��`m8�k�c��i�⭹�b��j�o�8�f8� yc��h&8�e��g���������x����k�/o��*9�*x�h8�dxऺe�x�f8��h-9d"8�c8�`���� ������U��\�Y[�H8�k��]]�R[�X9oh�o#�:h!y��9f�k��`)9�!��,H�KK_KK_KK_��9�lH�\�Y�X��[���8ई��[Y]�ܚ�ғ�H8�n9�(x�fx�g��H�[���lH[���Y��[Y]�ܚ�ғ�H8�c9c��i��fx��Y[[ܞH[�^8�h8�dxहak:e���fx���g��H�[���X9cf9. �\�YY[[ܞH8�k�[�^8� �S9a�z`�:+f9b)ykd8�i��k��j��a�[���K��X9a��ex�j��aS9a�z`�:+f9b)ykd8ई��[Y]�ܚ�ғ�H8�n9ak:e���e��j��a8�g��H�����^�X������[�9a��ex�j��aS9a�z`�8�k�h&9g���y�!�`)8�i��`�ࢸ� X�]]�R[�K�[��8�i��k��j��a8�g��H�XY�X���[�\�][ۈ��[\�Y9a��ex�j��a��H8�c[�8ईY[[ܞH[�^8�j8�e��i�*�x�8�g��H�����U�.�` y��yo#��j8����x�8ਸ�����9`m8�k�kf9����'�e��9⭹�b�U�^[�Y9b,9�`9�`��k�b�y/g�KK_KK_�9aly�"x��������x���ak:e���"8�o�� x����x�8ਸ�����9/o��*9�*x�c9�"yb�x� yc�k�yc�� �x�j��n��czh&9g���`�࢈9aly�"zh&9g���n:acy�k��e�� y�n��k���������x����j9�h��k�]RY8ह� x�iYYXQ]�[�8ह�n�(c8�fx���9aly�"x��������x����*�c�o��� x�o��g��k�����x�8ਸ�����9/o��*9�*xऺ)���/��"8�o�8�8��x�����9f"x�k��h�许�j�em��exह� x�i8��x�x�8���*&:/�9kd8हbl�ࢹod��i�� yod�*l���������x����j9�h��k�]RY8ह� x�iYYXQ]�[�8ह�n�(c8�fx����\�Y��8�j��e��o��g��k�UH����^�H]�[�[��[^X�\�^�H�8�n�[�X���fx���[��][ۈX\�H��^]\�YՑT����8ऺ`&���x�e�� y��kf[��][۸ङ]�X�8�e��j��a�8�8��x�����9f"zh&9g���k�bl�ࢹod��i�i,y�e�S�U�RSP�X8�o��g��k�g��.�8�cx�k�bl�ࢹod��i�i,y�e�ऺ/�8�fx� �k��/d��k��j��aYYXQ]�[�8�o��g��k�]RY8हak:e���e��j��a��]]��\�Y[�J
+X9a�yc�o��9��:)���o��g��k���g*8�k�aly�"x����x�8ਸ�����9/o��*9�*xह�"yb�x�j��e�� yo�9����8��x�����8�i�aly�"x����8��xहa�z`n9����i��cx���8�a��j��fx������KՈ�[��9��za�B������U��[��\��\�HQ9�`9�"yidy�!��U��[��\��\�HQ8�k��[\��Y	�����8�b��yl#�a��e��j��a8� �[]^9a�x�k��[\��YO���Y8�j��YO��[\��Y8�k�c�9��yd$z(j8�i�f�k���e�� Y�[\�Q�ML͹dj9�'��k�(gy�xह�y�h��fx��� ����[\�[��Y�\�\�� [�ۋPU��ۙ�Y�\�x� PU��[\����x� Y[]^���H8�i��k�� yc�9��yd$z(j8�k�.(y��yd$xहd#9. ��[Z]8�i�bb�fi8�fx��� ��a���yd$x�h8�dy�����h-9d"8�k�[]^8�k�U��[��9⭹�b�ऺ`&�n.9⭹�b��j8�e��i��lx���j��a8� ����U��[\�हk�o�9k��* 8�fx��[]^8�k�S��8�k��]]��[���Y
+�[\�X8�j�]]��[��[YJ[�
+X8�k�idy�!8�j�����h��i�KՈ�[��Q8�jL��[Y\�[\8ऺ/�8�fx� ��]]��[���Y
+YYXH�[\�X8�k�U��[\�9f"RQ8�i��k��j��c�� yk�o�8�fx��Ԉ�[\�Q8ऺ/�8�fx� ��X�[۸� TT�� \�X�ܙ8� ze�zc���"8�o��[\�� yk�o�8�fx��Ԉ�[\�8�c9kf9g*8�e��j��aYYXH�[\�8�j��k�idy�!8�j�o���h��g�i,y�e�ऺ/�8�fx� ����]]��[���Y
+
+X8�k�� yk�,hHYYXH�[\�8�j�k�o�8�fx��Ԉ�[\�8�c�ۙ�Y�\�H9�"8�o��i��`��8�l8� TԈ:)���+9bcx�i�࠸�gx�k�Ԉ�[\�Q8ऺ/�8�fx� �Ԉ:)���+9�"8�o��b��jx�a��b�ई�[��Q:/�9cm8�k�bcy��8�j��e��j��a8� �Ԉ9�*�)���+9⭹�b��k��]]��[��[YJY
+X8�k��.�ࢹ`)9`m8�i��*�讹k��`)8�j8�e��i�(j9���fx��� ���d#9. []^8�j�lg��fx���/9`�y.+x�k�Ը��x���������8ह�.��fy�"yb�x�j�Kչd#9�'�Q8�j��i8�a8�i��k�� TԹ�*�)���+8�i�ࠈ�]]��[��[YJ
+X8ह�$9b���ex�f�� X[�\��S��SQ�SQT�ST8ऺ/�8�fx� �� 9b'x�k��"yb�x�j�Ըऺ)���+8�e��g�o�8�k�� NL������k�� 9��:)���+9�`�b.�ऺ/�8�fx� �b)Y[]^8�k�Q8� TԹ.�yi%��k���x���������Q8� ze�zc���"8�o�Q8� y.#y�#��j�Q8�j��k�S��SQ�T��SQS�8ऺ/�8�fx� �`)8ह�*�)���+9�`��k��nyb)y`)8�j8�e��i�ak:e���e��i��k��j��x�j��a8� ������KՈ�[��:gg���y�*9��9f삂�U��[\�8�k��\�
+
+X8� yaly�"x��������x���� SYYXQ]�[�8� X�[X\�P]�[�J
+X8�k�⭹�b�b)yidy�!8�k�� y�+9��8�k��#:(j�U�aly�"x��x����,����9k��doz(j8�#xह�h��j8�fx��� ��+9��8�i��k�KՈ�[��8�k���(c9h���c8�j:gg���y�*9��9f��h8�dxहf�k���fx��� ����H�8�k��\��[�KՈ�[������8�k�9.�����a��!�8�j8�e��i�/o����j��a8� ��HԈ8�j[ۛ�ۚX�����8�k�k�o�9.�8�dx�j��8��� 9l#��[����:(�:e���k���y� x�fx��� ��HԈQ9�#��.��y�!�� x�x��8����H����� Z�]\��[��[��� T�����\��\[�H8ऺ/�yb�8�fx��h-9d"8�k�� X������\��x� \�\�]9�hy.��� y�.�ࢹ`)8� z*.���x� yk���g�论*�y�hy.��ह�+9��8�n9f�k���e��i��b��y�lx�a�� ���.�y."��k���(c9k��(�y��9f�i%��j��fx��� ���HԈQ9�#��.��y�!�� ��H8�x��8����H����8��������� ��H�]\��[��[��� ��H�����\��\[�x� ��H:)!��l������\��H8�k�d�z,�*ey/�x� ��H8�8ࢹc��k��j�������9k������x��8�z(�9�h�� �������9f�k���ٚ[B������k��g�fj9cf9/cx�k��`����,����8�j8�e�� y�+9��8�k����g�fj:,����9idy�!8�j9.��,hzi�b�x�k������8����9�`�.��idy�!8�h8�dx�i��y�!��fx��� �gfy�8�j��\��X�T�\��\��T[�8�k�aly�"y��8�\��]�]�\�[Z[���ٚ[X8�i��k��y�!��e��j��a8� ��]��Y�
+X8�k�� y�'9a��j��$9b���e��i�/o��*9�hy.��ह��8�g��fy�`�����h8�dxहb%��&x�fx��� ��[���
+X8�k��`����y`"��k�/o��*9�*xहc�o���fx��� �.#y�#��j�Q8�j��k�S��SQ�T��SQS�8� y/o��*9.+x� X�X[�\[�[��8� X]X\�[�[�Y8�k��`�����j��k�� y⭹�b�हi"x�b8�f�S�U�RSP�X8ऺ/�8�fx� �� 9b'x�k����J
+X8�i��k���X�[���Y8ह讹k���e��i���8�e��a9ak:e��a��!�ह��d)��e�� x�gx�k��`��x�i�k��(c9c�� �x�j�o�9�a�.�8�dxस�fx�nx�i�*i��fx� �a�z*i�(c9c�� �x�j��*�k�8�k�/�ykf:,����8�k��X[�\[�[��8�j�����fx� �k��(c9.+x�k������8����8�k�i"y��8ऺ`k���x�e�� X�X\\��\\��\�ܘ8�n9. 9n���h8�dy����fx� ���8������8�����x�j8�����8����8�k�o�9�a�.�8�dx�c9k�9.���e��g�o�8�j�fd8ࢸ� y�`�����k�/o��*9�*xह�h�许�j�yf�/�9cm8�fx��� �f�:f�.+x�k�/o��*9�*xह/�y� x�fx��� ���X��ٚ[X8�k���ह��y�h��i��cx���c8� ykf9g*8�e��j��a9�`�����:f��g)� �yb��ह�'��$8�e��i��k��j��x�j��a8� ����ak:e���fx����Q8�k��][]H��۝[�8�n9��y����i��cx��*��!�[��[�8�j8�e��i��lx�a8� Ly`"��k�[��[�X\�xऺ)!��l��۝[�8�n9d#9�`���y����e��j��a8� ��]�����Y
+X8�k�od�*l��][]H��۝[�8�n9��y���c�� �x�j���Q8�h8�dxहc���dy.�8�dx� yb)x�k��jy�!��g�fj8�j�lg��fx����Q8� yg,9."��虜�۝[�8�n8�k�����y���� y.#y�#��j���Q8�k�i,y�e��ex�f���� �d#9. 9�g�fj9a�x�i�)!��l8�k�*��!�[��[�8�c9aly�"x�fx���jy�!�f��g)���8��8����k��g�fj9cf9/cx�i���9b%�c%��e�� y.������j�f��g)�)�y�`��h8�dxहc��i��l8�i�aly�"x�fx��� ���S����]�[�X���[�X��X8�k�� yc���dyc��h��g�����8�����8�����k��/d�ई��[9a�x�j�/�y� x�fx��� ��[�X��OH�S8�k�S��9idy�!9."��k��[�X��9�n�c,�)��fi8�j8�e��i��$9b��k�,hx�j�d*��x� y/�y� y.+x�k��[�X��9k��/d�ऺ)���/��fx��� �a�z*+yk���`��k���8�e��a8����8�����8�����k��/d��i��k�����fx��� �S������J
+X8�j9�*�e�zc����[8�k��-9��9�c:-���i��k�/�y� y.+x�k�����8�����8�����k��/d�ऺ)���/��fx��� �S����ޙ[���X�HRQ8�k��[�܈9��:!깥.yi"x� y�'��k��[�\��[��X�[ۈ:)����9fj8�j��8��ak:e��idy�!8ऺ`&��ex�j��a9k��(�x�k���y�*8�e��j��a8� ������S��ak:e����y/g��ak:e����y/g8�k�� ze�zc��⭹�b�� yaiyb��i�yod��)�� z(�yd�yk�o�: �yb��� X�X��[�:`jy�*8�k�h!��j�b)9k���fx��� ���TH9�"yb�yaiyb��9�+:(�yd�x�k��d9���X��[�9i,y�e��`��KK_KK_KK_KK_��]��Y�J��Y�JXRQ9b%��&y`)8�i��`�ࢸ� yk�,h\�ٚ[x�k�k�o�:f��g)�9k�o�:(j8�j�o���h��i�`jy�*8�fx��� ��ٚ[zgg�k�o�8�k��"yb�zf��g)��k�S�U�RSP�X9⭹�b��c9�*�i"y��8�j9论*�x�i��cx�8�lS�ӓ�ӗ�T��Ԙ8�i����⭹�b���y� x� yk��⭹�b�.#y�#��j��yk�,hS��ऺf�:f���]ۙJۙJXRQ8�k��"yb�yb%��&y`)S�U�RSP�X8� y⭹�b�.#yi"H�X��[�8�n9b,:`e8�e��j��a��]�][]T��][ۊ��][ۊXRQ8�k��"yb�yb%��&y`)S�U�RSP�X8� y⭹�b�.#yi"H�X��[�8�n9b,:`e8�e��j��a��[�\�\X�Y\��Y�JY\��Y�JXˋ����8�8��S�U�RSP�X8� y⭹�b�.#yi"H�X��[�8�n9b,:`e8�e��j��a��e�zc��e��i��o�8�k�aj9��y/g8घS��SQ��UX8�j8�fx��� �.#y�#��j�b%��&y`)8� x�o��g��k������8�8��8������8�8��9.�y."��k�T�\P���x�������8�8�k�S��SQ�T��SQS�8�j8�fx��� ��n���x�������8�8ह�(ya��!��$9b���j��e��j��a8� �i�yod��h8�c:(�yd�zgg�k�o�8�k���y/g8�k�S�U�RSP�X8�j8�e�� X�[�X��� zf��g)�� Y��۝[�9��y���� X�X��[�8�n9bk�/g9�*8ह.#��b8�j��a8� �����X��[�\S�]��YX8�k�\YY8� X�Z�X�Y8� X[�]\�Z[�]X8� X���X�јZ[Y8�k�9�+�hg��j8�fx��� �\YY8�i��k�讹k���e�� X�Z�X�Y8�i��k�.�ybcx�k�⭹�b�ह��y� x�fx��� �[�]\�Z[�]X8�i��k�k�,hz,����8ऺf�:f��e��i�S�ӓ�ӗ�T��Ԙ8ऺ/�8�e�� X���X�јZ[Y8�i�࠺f�:f��e��i�S�ӓ�ӗ�T��Ԙ8ऺ/�8�fx� �a�z*i�(c8�k���8�e��a9��y/gQ8�i��h8�dz*,yc���fx��� ������8�o��g��k��`9�"z !y��9��x�i��k�� yo�y�g�ह/-8���f�k�yaj9⭹�b��n9�.��fyo�9�a�.�8�dxऺe��i���fx��� ���������9⭹�b���9��8�k�i,y�e��`��m9d"9�)�����n8�k���8������8�����z`jy�*9o�8�j�c�9n,��k�讹k���n9i,y�e��e��g�h-9d"8�k�� z)�y�`�⭹�b�� x��8������8�����x�k�`jy�*9�d9��8� y� 9o�8�j�论*�x�i��cx�g��g�fj9⭹�b�� yc�9n,��8��x��8ऌy`"��k�*.���x�j8�e��i�/�ykf8�fx��� �od�*l���ऺf�:f��e�� ze�zc���o��g��k�f�c�a��!��i�k�yaj9⭹�b�हa�z`jy�*8�e��i�o�9�a�.�8�dx�fx��� ������9o�yc��cmyc�9n,�Q\�ܘ[X�\���]�^U��[�
+X8�c9c���dyc���`)8�k�o�yc��cmx�gx�k�࠸�k��i��k��j��c�� y.#z`#��#��j�c��i�`)8�i��`���� �[�\�S8�k��d��k�c��i�`)8�i�o�yc��cmyc�9n,�हo%x�cx� ya�z`�8�k�\�ܘ[X�\��^T��8�j�i"y����fx��� ��[�\�9h���c8ऺ-���b8��8��8�8��9b%��j�USL�8�k��\�[H�^x� PА�9b'y�'�`)8� y`m��l:cmx� yia��l:cmxहaix�8�i��k��j��x�j��a8� ���o�yc��cmyc�9n,��k��^H��9⭹�b��k��(x�i�f�k���fx��� ���9⭹�b�9�#�dl��\���y�d9��9o�yc��c��d)�:*+z*"9."��k��$9����hy.��KK_KK_KK_KK_KK_��Y�\�\�Y�T���Y�H8�o��g��k�\�9l ��*9�n�c,��j��8ࢸ� ya�z`�:cmyc��i��c9�"yb�x�i��`���� ��Y���[�8�k�9.�y."�9�$9b��9c���]�^U��[�
+X8�cX�]Z\�H�Y�8�j��$9b���e�� \X��]9�c:-��8�c�^H��8हc��i��i��cx���[�ۛ�ۘ9c�9n,��j�kf9g*8�e��j��a��[�� ��*��n�c,�� \�Y���[�9b,:`e8�j��8��bb�fi8� \�Y���[�8�k��*�/o��*���]���H9�"8�o�हd*��[�ۛ�ە��[�9.#yc��9bb�fi9�"8�o���[�8हo�yc��c�� �x�j8�e��i��lx���j��a��Y�\��U[�]�Z[X�X9c�9n,����9i,y�e�� ya�z`�9⭹�b��-9�#x� P�T���Y�H�Y�\��H9.#yg*8�j��jx�i�)���n�.#z �H�Y�\��U[�]�Z[X�X8�o��g��k�RQS�ӓ�ӗ�T��Ԙ9��9od�9.#yc��9a�z`�:f�9k��हo�yc���$9b���j��e��j��a���i,yb�y�`��k���8�hx�j��(yb�yc%��e�� y��:)���b��8�l���kf8�k�)���n�a��!�ह`g9�h��e��i�cmy�(9�d8ह/o��*9.#z �x�j��fx��� ������8����x����x���������]B������P��yk�za��c�9n,�T�P��P��x�c9c��/�y`m8�j��`��x��� 9l#�a��!� �yb���j�d"8���f�� yak:e���fx��d!Q\�ܘ[X�\�8�k�� yia��l8���`m��l:cmx�k��a8ऌy�a8�j8� yd#9�`�Q�Z[xऌL�.���o��i�/�y� x�i��cx�j��dx�8�l8�j��x�j��a8� �S��8�k�[]^�\X�[]Y\�8�j��k�cmy�l8�o��g��k�Q9�l8�k�ak:e���!8�c8�j��a8�g��x� y����n��k��\X�[]H�Y[8�k�/�yb�8�f��f�� yc��.�8�j9a�z`�9c�9n,��i��m9d"8ह/�z*/8�fx��� ���9.��,hH9c�9n,���y/g9�d9���KK_KK_KK_��[�\�ܘ[X�\�
+Xzcmy�a��8�jL�Q�Z[H��8हd#8�f�[��X�[۸�i�.�9�!9aj9��8ह.�9�!8�i��cx�g�h-9d"8�h8�d[ؚ�X�8हak:e���fx��� �.�9�!9.#z �x�k�S�U�RSP�X8�i�ؚ�X�8ऺ/�8�ex�j��a��]�^U��[��ۋU��Q
+X9.�9�!9�"8�o�cmy�a��8�k�c��i�ह�k�����X��[�:`jy�*8�j9c�9n,�讹k���k�.(y��x�c9�$9b���e��g�h-9d"8�h8�dy����[�हak:e���fx���YY
+
+X9.�9�!9�"8�o�L���8�b��Ly.��ह讹k��L�.�����k�S�U�RSP�X8� y��kf9�n�c,��j9⭹�b��k���y� H��[[ݙTY
+
+X9k�,hTQ�Z[xऺ)��fi8�e��i�d#8�f\�ܘ[X�\��k�.�9�!9��8�n9�.��fH9�*��n�c,��k�a���by�$9b��� y.�ؚ�X�8�n9��8ह����ex�j��a����J
+X�[]^9�(yb�yc%��X��[�:)��fi8हaj9.��*i�(c8�e�� zcmyc��i�� TQ�Z[x� y.�9�!9��8ऺ)���/�9o�9�a�.�8�dyk�9.���`��h8�dy��8हa�yb*y�*8�e�� X�X[�\[�[��8�o��g��k�f�:f�.+x�k�/o��*9.+x�j8�e��i��l8�b8�����x��8����z-m�b�y�`��j�Hؚ�X�9b!��k�� 9l#���8�fx�y/�z*/8�i��cx�j��a:(�yd�y����$8�i��k�� X�[�\�ܘ[X�\�
+X8हn.8�j�S�U�RSP�X8�j8�e�� U��(�yd�z*+yk���n\�ܘ[X�[�����हd*��x�j��a8� �`�9b!��8�j�Q9k�o�8�j��jxऔ�P��yk�o�8�j8�e��i�ak:e���e��j��a8� �cmy�(9�d8�k���9�l8�h8�dxहc�9n,�c%��e�� yak:e��RQ8�o��g��k�*.���x�n9a��ex�j��a8� ������X��ۙ�Y�8�j��k�\�ܘ[X�[�����8ह�k��b��j��a8� ���9�*S8�j�P�H�[\�8�\�ܘ[X�\�Ϙ8ह�'��$8�f��f�� ynl������x�8��)�� m����9�#��.�`n9l`8�k���y���论*�x�j�fd9k���fx��� �[�\�S8�k�U��U���P�K�SSH9�bx�k��X�[ۈ^[�Y[]�\�x� XQ\�ܘ[X�\�8� X�]�^U��[�
+X8� XYY
+
+X��[[ݙTY
+
+X8� x��8��8��������\9h���c8� y�*���y�����ؘY8��8��8��������^\�Y8��8��8�����:*.���x�o��i�ह论*�yk�,hx�j8�fx��� ��+9�j��c:-���x����x��������)��fi9�$9b���k�������8�x�x����8����j8� P�y��yh,H�8�x��8����H8��x�������8���k��#�dl�)����8� QP�K�SSH�[\�:e��i����za�x� SYYXP�\���T���Y�H9do8�l�a��e�� y.#z`#��#��j�c��i�`)8�k�c�o��*i�(c8� U[�\�\�ܘ[X�\�8�n8�k���y���b)9��x� y�*���y���*.���x�k�."�/cyb-�o�x�k�,�9b�yh���c8�k�:e���n�)��ba˛Y8ह�h��j8�fx��� �[�\�S8�k�X��]9cf9/cx�k�����x����x��������.+y�.8�k�� ycf9/d����x��9a�x�i�o�yc��cmyc�9n,��n9����zcmxह�n�c,��e��i�论*�x�fx��� ������Q\�ܘ[X�\��[ۘ[��\��Q�[\�9h���c��S��9�#�dl�*��i��k�� XQ\�ܘ[X�\��YY
+Y�[ۘ[��\��Q�[\�X8�b��8�l��[[ݙTY
+Y�[ۘ[��\��Q�[\�X8�k��[ۘ[��\��Q�[\�OH�S8�k�[]^[�]9aj9/d��j�k��fx��Q9�n�c,��:)��fi8�i��`���� ��S9�c:-���k���(cS��9idy�!9."��k��$9b��k�,hx�j8�e��i��lx�a�� ��ۋ[�[9�c:-���k��!�k���[\��]]8� x�fx�j����hH\\���X[H8हk�,hx�j��e��g�Q9�n�c,��:)��fi8�i��`�ࢸ� \��\��H�[\��':*/9o�8�j��$9b��k�,hx�j8�fx��� ������:(jLK�Q\�ܘ[X�\�Q9��y/g:(j��9�j�c��TH��\��H�[\�9�hy.�RQ9�.�ࢹ`)9bk�/g9�*:*+z*"9."��k��$9����hy.��KKN�KK_KK_KK_KK_KK_KK_��LHYY
+Y�S
+X8�j��e��[YQ8� Y\�ܘ[X�\�gg�e�zc��� Y[]^:*+yk���"8�o�� TQ9�*�(gy�H9�$9b��[]^[�]9aj9/d��j�k��fx��Q8�j8�e��i��n�c,��S�[\�8�k�[]^[�]8ऺ(j8�fx� ���\��H�[\�Y��[�\�][ۈ8�k�� x�g��j��a��L�YY
+Y�[\�X8�`�࢈�[\�8�c9d#9. []^8� zgg�e�zc��� Y�[�\�][ۈ9�"yb�x� \Y�[Y9�$9b����\��H�[\�8�j��$8�ix�c�Q8�j8�e��i��n�c,���\��H�[\�Y8�j�[�\�][ۈ8ह/�ykf8�fx����d#9. 8�x��8����ya�x�k�e�zc���"8�o�સ���8������8�j��k�S��SQ��UX8ऺ/�8�fx� ����9�j�c��TH��\��H�[\�9�hy.�RQ9�.�ࢹ`)9bk�/g9�*:*+z*"9."��k��$9����hy.��KKN�KK_KK_KK_KK_KK_KK_��LYY
+Y�[\�X8�`�࢈[��[YQS��SQ�T��SQS�8�j��e�Q9��9f�i%�ह�n�c,��e��j��a��LHYY
+Y�[\�X8�`�࢈\�ܘ[X�\�:e�zc���"8�o�� Y[]^9�*�*+yk��� yb)HX�]�H\�ܘ[X�\�8�c9d#9. []^�[�\�][ۈ�Q8ह�`9�"HS��SQ��UX8�j��e�9⭹�b�(gy�xहo%y�l9.#y�h��j8�e��i��lx���j��a8� ��^H��[�9�*�*+yk���k�Q9�n�c,���d)��hy.���i��k��j��a��L��[[ݙTY
+Y�S
+X8�j��e�[]^[�]9aj9/d��j��n�c,��"8�o�Q8� x�o��g��k��*��n�c,�Q9�$9b��[]^[�]9aj9/d��j�k��fx��Q9�n�c,�ऺ)��fi8� ��*��n�c,��j��y�(ya��!��S�[\�8�k�[]^[�]8ऺ(j8�fx� ��X[�\8�j8�e��i�a���by�$9b���j��fx����L��[[ݙTY
+Y�[\�X8�`�࢈9�n�c,��"8�o���\��KY�[\�9�$8�ix�cHQ9�$9b��9�$8�ix�c�Q9�n�c,�ऺ)��fi��\��H�[\�Y8�j�[�\�][ۈ8�c9. :!�8�fx���n�c,��h8�dz)��fi8�fx����L�[[ݙTY
+Y�[\�X8�`�࢈9�*��n�c,�Q9�$9b��8�j��e��X[�\8�j8�e��i�a���by�$9b���j��fx����LH�[[ݙTY
+Y�[\�X8�`�࢈[��[YQS��SQ�T��SQS�8�j��e�Q9��9f�i%�ऺ)��fi9k�,hx�j��e��j��a��LLYY
+
+X��[[ݙTY
+
+X8�`�ࢋ��j��e�[��\ܝY[]^Y�\�X[�S�U�RSP�X8�j��e���X��\X�[]H9�*�k�o�8�j�fd9k���fx��� ��S�[\��b��jx�a��b��i��k��j��c�Q�\�X[�8�i�b)9k���fx�����YY
+Y��\��JX8�k�k�9aj9d#9. 8�k�[]^�[�\�][۸���Q8�����\��H�[\��[�\�][ۈ\x�h8�dya���by�$9b���j8�fx��� ���\��x�c9�l8�j�����kf9�n�c,��j��k�S��SQ��UX8ऺ/�8�e�� yi"y��8�j��k�ab:(c�[[ݙTY
+
+X8हo�zh"8�j8�fx��� �����8��x��9a�y`�΂�HS��SQ��UX�\�ܘ[X�\�:e�zc���"8�o�� Y[]^9�*�*+yk��� Y[]^�[�\�][ۈ9��9i,x� ya�y�'9����`��]H9.#y�m9d"8� yb)HX�]�H\�ܘ[X�\�8�j��8��d#9. []^�[]^�[�\�][ۈ�Q9�`9�"z(gy�x� ��^H��[�9�*�*+yk���k�YY
+
+X��[[ݙTY
+
+X8�k�S��SQ��UX9�!��,x�j��e��j��a8� ���e�zc���"8�o��k�aiyb��a`ٚ[\��j��k�S��SQ��UX8ऺ/�8�fx� ����HS�U�RSP�X�[��\ܝY[]^Y�\�X[�8� \��X��\X�[]H9�*�k�o�8�j�fd9k���fx��� ��������X��[�8�k�k�o�:(j�����X��[�8�k���۝[�[�^8�j9d#8�f[]^[�^���[�^8ह/o��a�� �Y\\��ٜ�۝[�X8�k�Y\\���[]^X8�jY\\�����X8�j�k�o�8�fx��� �[]^8�c9b)H��۝[�8�k��8ऺ*�x�9����$8�k�Y�\�\�H8�e��j��a8� ���\��H:`n9���[��8�c9i,y�e��e��g�h-9d"8�k�[�H���[���X�ܙ8ह�$9b���lx�a8�j��e��j��a8� �����:*.���yc��)���+9�)��k�f�k�����+9�j��c:-����8��8������k��*:*��� x������8�y��zf��� UT�8�b��H�]�^U��[�
+X8�n9�(x�e��i��8�a9`)8�k��x����8����k�:e���n�)��ba˛Y8ह�h��j8�fx��� ��+9��8�i��k�� U[�\�S8�c9c���dyc��h��g���8��8������k��':*/8� PRQ9�.�ࢹ`)8� z*.���x� ybk�/g9�*8�h8�dxहf�k���fx��� ��Y�\�\�ٜ��W��\�؜�Y�J
+X8�k��T���Y�H9��y���c���i��`�ࢸ� zgg�\���X�9�c:-���b��x�k�b,:`e9c��d)��k�:e���n�)��ba˛Y8�k��+9�j��c:-���x����8����j�o���a�� ���Q\�ܘ[X�\���]�^U��[�
+X8�j�b,:`e8�fx���ۋU��Q8��8��8�����8�k�� RS�^H��[�X�H8�c9�n�(c8�e��g��]H8�k��\]YH�]H\��^H8�h8�dxह�"yb�x�j8�fx��� �[���YM9����k�[�\����Q��VU��S�8�k�H�]H8��8��8������X8�j8�e��i��lx�a8� X�\��[��^H�[[ݘ[9�*8�k��"yb�H8��8��8�����8�j8�fx��� ��n�8��8��8������X8�k���Q8��8��8�����8�i��k��j��c�� yn.8�j�S��SQ�T��SQS�8�j9a�z`�:*.���H�Q���S�8�j�$/x�j8�fx� ��ۋU��Q8�i��]H9.�yi%��k�8��8��8�����8�k��Y�\��H���\9bcx�j�S��SQ�T��SQS���Q���S�8�j8�fx��� ���X[ZX�X�YX�\�Y\��]��[�J�8� XX[ZX�X�Y\X�Z�\�Y\��]��[��8� y��kfT�9`m8�k�X[ZX�X�YZ�\�K]��[�J�8�k�� z*+z*"9�����9."��k�*.���yd#x�o��g��k���x�9."��k���x��x����i��`�ࢸ� U[�\���TH9�c9�,x�i��(x�fyk��8��8��8�����8�i��k��j��a8� �cf9/d����x��8� Y�Z�H�T�� z*.���y��9aix�i�d#9�bx�k��x��8�xऺ(j9���fx��h-9d"8࠸� X�]�^U��[�
+X8�j��(x�fH�ۋU��Q�]H\��^H8�k�S�^H��[�X�H8�c9�n�(c8�e��g��]H�^Y8���x��8��8��8�����8�j8�e�� zem��a:*.���yd#x�k�8���x��8�x��8�H9d#x� [���\X�H8�k�*�9�#�� z*.���H[\8�k�(j9�.�d#x�j�fd9k���fx��� ����d��8�x�k�*.���H8��8��8�����ܚY�[�8हc���dyc��h��g�h-9d"8�k�� yo�yc���$9b���i��k��j��c��T�Д�Q�W�S��ӓ�P�Q8� X�Q���S�8� XVT�Q��VW���8�j��jz*l�od��fx��*.���x�n:$/x�j8�fx� ���Q\�ܘ[X�\���]�^U��[�
+X8�k�� y� 9b'x�j��X8ई[�\����Q��VU��S�8�j8�e��i�a��!��e�� \�Y�\��H���\8�j��`x�ex�f��\��[��^H��8�k��o�)��fi8�fx��� �Q9�n�c,��k���y� x�fx��� ��(x�j��n�8��8��8������X8�j�]H9.�yi%��k��ۋU��Q8��8��8�����8ई�Y�\��H���\9bcx�j���d)��e�� XS��SQ�T��SQS�8�j9a�z`�:*.���H�Q���S�8�j�f�k���fx��� ��]H8�h8�c9�*��n�c,��k�8��8��8�����8�j�T���Y�H9�*���y���8��8��8�����8�k�`&�n.8��8��8�����8�j8�e��i��Y�\��H���\9o�8�j�c.�b)x�e��i�*.���x�fx��� �*.���xऺ`&��ex�j��a8��8��8�����:)���n�TH8�k�9�+9�j��c:-���n9ak:e���e��j��a8� ���Q\�ܘ[X�\���]�^U��[�
+X8�k�i,y�e��`��k�� y��g*8�k�cmx�x��x�����8� y��g*8�k���8��8������ Y[]^9�$9.�8�dx� TQ9�n�c,�हi"y��8�e��j��a8� ��n�8��8��8������ zem��ez-�z`c�� y�*��n�c,�� yi,yb�y�"8�o�� yc�9n,��l9n.8�k��jx�8�i�i,y�e��e��i�࠸� y�$9b���lx�a8�j��f��f�f�k���ex�8�g�RQ9�.�ࢹ`)8�j:*.���x�h8�dxऺ/�8�fx� �Q9�n�c,�ह��8�fy��y/g8�k��[[ݙTY
+
+X8�h8�dx�i��`�ࢸ� X��Q��VU��S�8�j:cmyc��i��k�)���n�i,y�e��k�Q9�n�c,�bb�fi8ह/-8���j��a8� �������x����x��������*.���x�k�� X[\�\�ܘ[X�\��XYۛ��X��ٛܗ�X�Y�
+X8�k�[\9���ke�b%��jX[ZX�X�Y][�\�Z[Y\�ܘ[X�\�YXYۛ��X�8��x�8�i�)���+8�fx��� �[\8�j��k�[]^8� TQ8� X�PT��P��U8� XT�ԐSP�Q8� X�ԐSP�Q�T����Q�ѓԗԑP�ԑS��8� XPS�ԓQQ�P��UѓԗԑP�ԑS��8� XT�ԐSP�WѐRSQ8� XS��SQ�P��U��V�X8� X�Q��S��ЖUX8� XS��SQ�Q��8� XS��SQ�QTUSӗђQS8� XS��SQ���8� X�ԐSP�Q��U�U�VS�Q8� X����VX8� X�Q���S�8� X�T�Д�Q�W�S��ӓ�P�Q8� XVT�Q��VW���8� XUSL�ѐRS8� X�ԐSP�Q��U�U�T�ԐSP�T�8हd*��x��� ��ԐSP�Q�T����Q�ѓԗԑP�ԑS��8�k�o�9��x����x����x��������c�� �x�j�c,��.��8ह����fx�g��x�k�\��]��Y�8�i��`�ࢸ� ynl����9�$9b��ह�#�dl��e��j��a8� �X[�ܛYY�[�Y�[�Y8�j��Y��[YK[Z�HX��]8�k�c,��.�/�ykf8�k�PS�ԓQQ�P��UѓԗԑP�ԑS��8�i�b)y�y�!��e�� X[��[YX��]�^�X��Y�[�О]X8�k��X�ܙQ���]��8�j�/�ykf8�e��j��a8� ���PSRP�P�Q�S�T��S�T�ԐSP�T��PQӓ��P�ђSX8ऺ*+yk���e��g�8�����8����8��������x�o��g��k�����hy."��d��':*/9�9h���i��k�� U[�\�S8�x��8����x�cH9��e��f�8�i�d#8�f\�ܘ[X�\�:*.���H[\8ह�!�k����x�x�8����n9��8�cya��fx� ��X�HRQ8�j��k��[�܈9��:!���x�x�����xऺ/�yb�8�e��j��a8� �������9i,yb�H8��8��8�����:*.���B��X[ZX�X�YY^\�YY\��]��[�J�8�k�*.���yd#x�i��`�ࢸ� X�]�^U��[�
+X8�j��(x�fyk��8��8��8�����8�i��k��j��a8� ���(c9.�y��8�i��k�\��\�[�^\�Y�]H8ह� x�g��j��a8�g��x� yi,yb�x�o��g��k��]���H9�"8�o���[�8�k��]�^U��[�
+X8�k�[�ۛ�ۈ��[�8�j8�e��i��lx�a�� �VT�Q��VW���8�k��[H�[X\�H��Y���[�[�\����9�'9a��*8�k�*.���yd#x�j8�e��i��h8�dy/o��a�� ����]�^U��[�
+X8�k�� y�n�8��8��8������ N�]H9.�yi%��k��ۋU��Q8��8��8������ y�*��n�c,�8��8��8������ P�T���Y�H9�*���y���8��8��8�����8हc.�b)x�e��i�*.���x��੸�������8�j�*&:c,��fx��� ��X8�k�[�\����Q��VU��S�8�j8�e��i��lx�a8� X�Q���S�8� ][�ۛ�ۈ8��8��8������ P�T���Y�H9�*���y����j��k�����g8�f�� Z�^H9�*�*+yk��⭹�b��i�ࠈ9�$9b���lx�a8�k��(ya��!�8�j8�fx��� ��n�8��8��8������X8�k��Y�\��H���\8� X�\��[��^H��9i"y��8� TQ9�n�c,�i"y��8ऺ(c8���j��a8� �������HX��]8����x����x��������.+y�.8�k���9f삂���(c[�\�S8�k�� [X�\�X���H9��9od��k���H9aj9/d�k��(�x�i��`����j8�k�..�o-x�e��j��a8� �[�\�S8�j�k��(�y�"8�o��j��k��k�� LN�]H�X��]8�k�^[�Y8�j�k��fx��USL�9o�yc��.+y�.8� [��]�[��^H:`n9���� XY\][ۈ8��x����8�����xहh��ex�j��a^[�Yٙ��]9b)9k��� yo�yc���$9b���`��k��ܘ[X�[����۝��9�h�)��c%�� yo�yc��i,y�e��`��k�c,��.�d$x�dH�ܘ[X�Y\��]��Y�:*.���x�i��`���� ������USL����H9h���c��[�\�S8�k�\�ܘ[X�\�8�k�� Z�^H��[�8�i�.#��b8�x�8�g�cmxह�*8�a8�i�� LN�]H�X��]8�k�^[�Y:`�9b!��h8�dxहo�yc���fx��� ���:h!y��9idy�!�KK_KK_��XY\�9i"y��8�e��j��a�Y\][ۈ�Y[9i"y��8�e��j��a�Ԉ��Ԉ9i"y��8�e��j��a��۝[�Z]H��[�\�9i"y��8�e��j��a�^[�YUSL�o�yc��k�,hH��ܘ[X�[����۝��9o�yc���$9b���`��j��X\�9c%��fx�����]�[��^H�ܘ[X�[����۝��8�j�o���a:`n9����fx����P�H�SSx� P�T��*yb*yb)9k��� X�\�K��� P��c�o���k�[�\�S8�k�,�9b�x�i��k��j��a8� ��T�S8�o��g��k��T���Y�H8�c:,�9b�xह� x�i8� �[�\�S8�k�� yc�o���"8�o��^H��[�8ह/o��a�^[�Y9o�yc��.+y�.8�h8�dxह��yod��fx��� ����P�H�SSH9a��!�� x����8��HK��� P�T�9�*yb*yb)9k��� P��9c�o��� y.#z`#��#�8��8��8�����9�n�(c8� P��H�\�[H�^H�А�9b'y�'�`)�]H�^H8ई�T�9`m8�b��yk�yaj8�j�/���i��fx���c:-���k��T�S8�o��g��k��T���Y�H8�k�,�9b�x�i��`���� ��T��T��[�\�S8�k�������8�y��zf���e8�j8�k��lyd"8�x����8����k�:e���n�)��ba˛Y8ह�h��j8�fx��� ��+9��8�k���9b)9k���k��#[�\�S8�k�X��]9cf9/cx�k�����x����x��������.+y�.8�j:*.���yh���c8�c:gfy�8�j��m8�h��g��#x�j8�a8�a��#�dl��i��`�ࢸ� x�#�T�:`&�/�z`�8�h8�dxऺfi8�a8�i�X�\�X���H8�k��������H9a��!�����c9aj8�i�k�9�$8�e��g��#x�j8�a8�a��#�dl��i��k��j��a8� ��������ٚ[H9b)9k��(j�����ٚ[H8�k��\ٜ�U��SQX8�o��g��k��]��\�[�[YH8�jX\��H8�k��\ٜ��]�\��\�[�[YH8�i��n�k���fx��� �S8�k�.�y."��k�(j8हk��(�x�j�� x�i8� ���]�X�H��H�Y�^���ٚ[H9�$9b���fx����Y�H�KK_KK_KK_��Y[ʘ]�X�LMU�ۛX�ӑXMU��[]�Y[ʘ����\��ӑX�[�Y[ʘ����\��ӑX�\���M�Y[ʘ����\��ӑX�\���M��Y[ʘ����\��ӑX�L]\��Y[ʘ����\��ӑX��]\��Y[ʘ����\��ӑX�\����]�Y[ʘ����\��ӑX�������۝[�8�k��\ٜ��]�\��\�[�[YH8�cX\�\X8�k�h-9d"8�h8�dHX\�Q�^Y��8�j8�e��i���y�*8�fx��� ���۝[��[YH8�j��LL��8�c9d*��o��8���h8�dx�i��k���y�*8�e��j��a8� ���X\�Q�^Y��8�k��ӑX8� XLU�8� XMU�8�h8�dxह�$9b���j��fx��� �L՘8� XN�8� ]ۙx� QT�\P�� \�][]H��][ۈ��]�[��8�k��$9b���lx�a8�e��j��a8� ������9�d�.ay.�y��������[\����:e��i����[Z]9h���c���RQ8�k�ak:e��gh��k�� X�[�X���j�/�ykf8�fx����y/g8�h8�dx�c�[�X��⭹�b��k�olzg��हc���dx���8�a��j��fx��� �������T�:)����9h���c���X�ܙ[�^8�k�� TT�8�j�]�[[Y[�\�H��X[H8हc.�b)x�fx��� �aly�"HT�\��\�8�cT�9oh�o#��j8�e��i���d)��e��g�aiyb��स� ya`�^[�Y9aj9/d��k��]�[[Y[�\�H��X[H8�j8�e��i�a�z-l9����e��i��k��j��x�j��a8� ��]�[[Y[�\�H��X[H8�j8�e��i��lx�a��k��k�� TT���X[HY8�j8�e��i�)��a�8�e��j��a9aiyb���h8�dx�j8�fx��� ������X��]ܚY�[�����\��H�[\�9�,y�ix�k��X��]8�k���۝[�9�,y�ix�k��X��]8�j9d#8�fX��]\[[�H8ऺ`&���� ��g��h8�e�ܚY�[��[Y\�X�H8�k���۝[�8�j��\��H�[\�8�i�b!�f��e�� X\��[X�\��[�\�][۸� X�\��H�]x� Y�\��]H8ह��9.���j���8�e��i��k��j��x�j��a8� ������8�����8����9`g9�h�i,y�e���[�8�����8����8�j[�H8�����8����8�k�� Z��[�9i,y�e��`��j�8�����8������8ह�-9��8�e��i��k��j��x�j��a8� �`g9�h�i,y�e��k�*.���x�j�����e�� yo�9������H8�o��g��k���8�i�a�z*i�(c8�i��cx��⭹�b�ह/�y� x�fx��� ������U��\�Y�X��[��U��\�Y�X��[��8�k�� y�':*/8�c9�$9b���fx���o��i�����X��[��8ह/�y� x�fx��� �*+yk��i"y��8�k�o�9��yi,y�e��i�����X��[��� yak:e���"8�o�[�x� \��X[H\H8ह�-9��8�e��i��k��j��x�j��a8� ��[X\�x� Y�\�8� X�X\�8�k�X�]�Kٜ�YHX\8ह.+ze��.#y�m9d"8�k��o��o�ak:e���e��i��k��j��x�j��a8� ������\�8�j�[X\�HTH8�k�h���c�����x��8�k�`�yd"8�i��[X\�y�c:-��8�k�TH9c��)���)�हn���d��j��a8� ����x��:(�9b�ze���l8�k���ٙ�\�
+WX9a�x�j�e�x�f8��� ����:(�9b�ze���l8� y.�����[X\�� y.�����ܘ\\�8ई�[X\�y�c:-��8�j��.��e��i��k��j��x�j��a8� ��������X�9�lyd"9�b�h!�����X�XZ�Y�[x� P��\��ۙ�Y�� ]Y]�[�8� T�S[�^8� U�S���[�]8� U��*+yk��� z`&�n.�[�܈�[�\�H9�lyd"8� y.�:a�y�n�c,��y�h��k�am�/d��b�h!��k�[�\��[��S�QԐUSӋ�Y8ह�h��j8�fx��� ��+9��8�j��k��lyd"9�b�h!�ऺa�z)!�k���x�f��f�� U[�\�S8�k�*+z*"9b)9��x�h8�dxह�k��c�� ����[�\��[8�k�c��i��*8�x��8�x�i��`�ࢸ� \��X�Y�][�\��X�x�j8�e��i��a8�o�/�8�o��j��a8� ����ؙH�Y�^8हi"y��8�fx��h-9d"8�k�� Y��۝[��9���k��(�x� X[�\��[���ۙ�Y��Y]�[��[�\��[����8� X[�\��[���\�X�Kٚ[W��۝^�8हd#9�`��j���9��8�e�� zgfy�9论*�H8�j8��x�8�����论*�x�i�. :!�8ह论*�x�fx��� ��d��k��m9d"9�hy.���k�k���g��a:/�9�b�h!��k�[�\��[��S�QԐUSӋ�Y8�j�o���a�� ������9idy�!9论*�z)���B���+9��8�k�*+z*"9idy�!8�j�k��fx��论*�z)���xहb%��&x�fx��� �k��(c9�b�h!�� X]\�9d#x� U�����������x� y�$9��9�jyd#x� yk�9.��b)9k���k�8���x��k�9.��b)9k���k�k����y��y��K�Y8�o��g��k�`"�b)x���x��:*"9�.�ह�h��j8�e�� y�+9��8�i��k�k���x�e��j��a8� ������S���RQ���9���9�j�c��9论*�z)���H9����KKN�KK_KK_�PS��LH�]]T��\��J��\��Q�[\�X9�$9b��9d#9. []^9a�x�k���\��H�[\���y����PS��L��]]T��\��J�[�X[]^[�]9o�yn,8�j8�e��i��$9b���PS��L��]]T��\��J�[�X9o�8�k�a�\�\��]ya�b��[]^[�]8�b��x�k�a�\�\��]ya�b���$9b���PS��M��\��H�[\��ۙ\�[]^9.#y. :!�S��SQ�T��SQS��PS��MH��\��H�[\����Y٘Z[YS��SQ��UX�PS��M�[��\ܝY��\��K��[���X�\HS�U�RSP�X�PS��M�YY
+Y�[�XS��9�#�dl�*�论*�x� �[]^[�]9aj9/d��n8�k�Q9�n�c,��j8�e��i��$9b���PS��N�[[ݙTY
+Y�[�XS��9�#�dl�*�论*�x� �[]^[�]9aj9/d��n8�k�Q:)��fi8�j8�e��i��$9b���PS��NHYY
+Y��\��Q�[\�X9�$9b��\\���X[z+f9b)x�`�࢔Q9�n�c,��PS��LL�[[ݙTY
+Y��\��Q�[\�X9�$9b��\\���X[z+f9b)x�`�࢔Q:)��fi�PS��LLH�[ۘ[��\��Q�[\��ۙ\�[]^9.#y. :!�S��SQ�T��SQS��PS��LL��[ۘ[��\��Q�[\����Y٘Z[YS��SQ��UX�PS��LL�[���\�XZ[�\HX]�^9n��db��e��g�XZ[�\HZ\��kՕ��'��$8�k�S�Q�S�Q�X�\y��y���࠹�$9b���PS��LM[���\�:gg�k��* XZ[�\y��y���S�U�RSP�X�PS��LMH�XZ[�\HS�Q�S�Q�X�\H��\��H�[\�[���\��i������हn��db��fx��h-9d"8�k���y����$9b���PS��LM��]]��\�Y[�J
+X9�$9b���9.�8�cS�]]�R[�x�j�^�yc�o���PS��LM��[X\�P]�[�J�9.�8�cZ[�K
+X9�$9b����.������\�Y[�H�[X\�H�PS��LN�[X\�P]�[�J[\K
+X�8�j��e�`&���y�c:-���PS��LNH�[X\�P]�[�J[\KX�]�P]�]RY
+XYYXQ]�[����[X\�H�PS��L��[X\�P]�[�J]�[�[��[�[�KX]�[��X�]�P]�]RY
+X9�$9b��� ��ܙZYۋ�Z\�X]�8�k�S��SQ�T��SQS��PS��L�H�[X\�P]�[�J[�K�Y�]]�P]�]RY
+XS��SQ�T��SQS��PS��L���]]��\�Y[�J
+X:)!��l9f�c�o��
+��[X\�H�\X�]yk��doy论*�H�PS��L���ۙ�Y�\�S[ۚ]ܑ]�[�
+
+X9�$9b��� z`&�n.]�[�9��y�h��j��e��PS��L��ۙ�Y�\�S[ۚ]ܑ]�[�
+�۞�\��X�ٚ[y�"yb�y�`�[ۚ]܈]�[�9�n��'��PS��L�H�ۙ�Y�\�S[ۚ]ܑ]�[�
+�۞�\��X�ٚ[y�(yb�y�`�S�U�RSP�X�PS��L��U�\�\����Y�Y�[�X�\�YY[[ܞHU��c:-���$9b���PS��L��U�\�\����Y�]�YXS�U�RSP�X�PS��L�H�]��۝[��]\ԙXY[�\��
+X:)�y�`�h!����d#:em�RQ:acyb%�idy�!�PS��L���]��۝[��]\ԙXY[�\��
+X[��\ܝY�]\�\H:)�y�`�h!����d#:em��i�)�y�(8�e8�j8�j�S��TԕQ�PS��L�H[�J
+X9.+x�k�a�X[�J
+X9���[�y`g9�h�� y��[�ze��i���PS��L̈��[�
+X9.+x�k�a�X��[�
+X9�����[�`g9�h�� y����[�e��i���PS��L����[�J
+X[�y`g9�h�� X]X�Y[]^8�n]y`g9�h��PS��L�����[�
+X��[�`g9�h��PS��L�HX�]�H��[�.+x�k���[�J
+X:(�yd�z*+z*":`&�ࢸ�k��&yb�yf�k���PS��L͈��^X�X���]\�X\��9�n��czh&9g��g���PS��L�����X�ܙ�]\�X\���X�ܙ�[�X��g���PS��L��[\�[^R[�[Yx�k��o�[Yy�hy.��PS��L�H�[\�[^R[�]x�k��o�]y�hy.��PS��M�[\�[^R[�[YJ�]HԹ�hy.������J
+X9.�yi%��k�ak:e����x�x�����x�i��k�� X��X�[���Y8� X[��[Y\��[Y[�8� Xܛۙ�Y�X�X�X8� X�\��\��U[�]�Z[X�X8� X�X��[��Z[\�X8� X�X��\��8�k�h!��i�b)9k��हa*�ab8�fx��� ����J
+X:!�/d��k��d9��8�k��d��k�alz`&�a*�ab:h!�/cx�i��n��x�f�� x�8�������8��x����8�yb)x�k����J
+X:(j8�h8�dx�j�o���a�� �`ayn���e��i�do8�l8�8��Q�[\���[X\�P]�[�J
+X8�k�U�)���/�c�9n,��j�o���a���9�����y/g8�i��`�ࢸ� ze�zc��o�8�k�alz`&���x�x�����x�j8�e��i��lx���j��a8� ����9�j�c��9论*�z)���H9����KKN�KK_KK_�PS��M���S��ٚ[H�[�[���[�[�\�\��]\��PS��M����ۙ�Y�]Y][ۚ]܈�\�ܘ[X�\��U��\�Y�[���\��\����Y�9�m9d"�����T�P��X��]9���9�j�c��9论*�z)���H9����KKN�KK_KK_�U�LH�[���]y.#y�h��Z�X��U�L�N��NH�]H�Z�X��U�L�RH�]X��]�X�[ۋ�T��U�\��[X�x�n9aix�8�j��a��N8��8�8��8�i����`(9."�k�9aj8�j����x�x�����8�j�ROLX8�c:*+yk���ex�8�i��a8��h-9d"8� U��'������8��a�b���j�*&:c,�a�b���j��k�aiyb��h!��k��o��o�/�y� x�fx��� �S8�k�Rx��੸�������8ऺh�yd�9b�9���e�� z*&:c,��k��]S�[X�\�8�k�k��f���j���8�cz/�8���h8��8�8��9�l8हg���j�`,��x��� ��X�[۸� TT�� PU��j��jx�k��#�dl�)����9`m8�i��k�od�*l���x�x�����8ह�-9��8�o��g��k�a�yd#9�'��e�� z)����9�"8�o��8��x�����8ऺ`&���x�e��j��a8� �d#9�'���8�8��8�o��g��k�em��ex�k�.#y�h��k�� URx�j8�k�b)x�k���x�x�����9cf9/cy�-9��8�j8�fx��� �`(�����)��k�.#z`(�����k�� x�ex�x�j�b)x�k��a8�o�����i�⭹�b�b'y�'�c%��j8�fx��� ��d��8�x�k��/�` x��x�x�����9."��k��l9n.8�h8�dxह�!��,x�j��x��x��8�o��g��k��c:-��ऺf�:f��e��i��k��j��x�f�� zf�:f��k�g���9�-9�#x�k�h-9d"8�j�fd8��� ��8��x��8��x�x�����8ऺfi8�a8�g���'������8���o��g��k�*&:c,������8��हak:e���fx��h-9d"8�k�� x��8�8��9�j�c���k�idy�!8हd*��9�#��.��8�j���X��ٚ[X8हb)x�j�k���x�fx��� ����9�j�c��9论*�z)���H9����KKN�KK_KK_�U�MHY\][ۗٚY[��۝���\�\��Y�Z�X��U�M�Y\][ۈ[��ݙ\�����Z�X��U�M�Ԉ�Y��`�࢔Թ.#z-���Z�X��U�N�Ԉ�Y��`�࢓�Թ.#z-���Z�X��U�NH�X�[����]�]K�^[��[ۺem�.#z-���Z�X��U�LL9d#9. �����N8��8�8��9aj9. :!��]�ܙX�ܙ8�n9/�y� x�e�� X\��[X�x�n8�k�aix�8�j��a�U�LLH9d#9. �����X��]9.#y. :!��]�ܙX�ܙ8�n9/�y� x�e�� TQ8�k�\��[X�xज�\�]�U�LLH\��۝[�Z]W�[�X�]܈�۝[�Z]K�\��[X�\��\�]�U�LL�Y\][ۋ[ۛHX��]�۝[�Z]xऺ`,��x�j��a�U�LL���\�[���*�l/�k�9ajN�]H9�(yaiyb���[��o�x�hx�f��f�/�8�fH�U�LM�[�H��\�[��:*�9d#9�'��e��j��a�U�LMH�ܘ[X�[����۝���]
+��^x�j��e��X�ܙ\��]��Y��\��[X�H�������T�P��X�[ۈ9���9�j�c��9论*�z)���H9����KKN�KK_KK_�T�P�LH�X�[ۗ�[��9� 9l#��*����Z�X��T�P�L��[�^8�`�ࢹ� 9l#�em�.#z-���Z�X��T�P�L��\�\��Y�]9.#y�h��Z�X��T�P�MԐ����X��\�T�P�MH\��X��ܘ�]�YX
+�Ԑ��Y�Z�X��ݙ\�����j�a�y`���e��j��a�T�P�MXH\��X��ܘ�Y�[�X
+�Ԑ��Y
+�9�������h�n.Ԑ�ऺacz` y�hy.���j��f��f�� \�]��kѓTzacz` x�jUWԑPQX8�o��g��k�]�[��Y�`&���x� [�ۋ\�]��k�g��.�8�cY]�[�:)��ba��j�o���a��T�P�M��]�
+�\��X��ܘ�Y�[�X
+��\�\��Y�]9.#y�h�9�'���8�8��9b%�ऺacz` x�e�� yg��.�8�cY]�[�8�k��'��$8�e��j��a�T�P�M�H�ۋ\�]�
+��\�\��Y�]9.#y�h��Z�X��T�P�M�RU�X�[ۗ�[��OHL�X��\�T�P�NRU�X�[ۗ�[��OHM�Z�X��T�P�LL��X�[ې�]��\X]Y�[�XۙK\���T�P�LMX�R[����\X]Y�[�XX�HY��\��[۸�j��\���X�[ۗ۝[X�\�8�h8�dx�i�k�9.���e�� Y^[��[۸स�x��8�j��e��j��a�T�P�LMH�\X]]�YX�\��[۹��9��9��y������)�����]��X�[۸�k�� yi%�oh�� z*+yk���ex�8�g�Ԑ��'9���� y�#�dl��':*/8हb!��dx��idy�!8�j�o���a�� �k�9aj8�j��X�[۹i%�oh��j��k�� x��x�8�������8�j�X�[ۗ�[��8�c9��9f�a�x�i��`�ࢸ� yk��* 9��9f��k�aj8��8�8��8�c9����h��i��a8���d��j8हo�z)�x�j8�fx��� �i%�oh��c9k�9aj8�i�࠺(j8�k�������� y.�9�!8��������8� y�#�dl�h!y���c9.#y�h��j�h-9d"8�k�� \�]���x���������8�j�fd8ࢹa`��k���8�8��9b%�ऺacz` x�e��i��8�a8� �Ԑ�.#y. :!�8�k��]��X�[۸ऺacz` x�i��cx���k��k�\��X��ܘ�Y�[�X8�k�h-9d"8�h8�dx�j8�e�� X\��X��ܘ�]�YX8�i��k��-9��8�fx��� �acz` y�`��k���9�+9`)8हd*��[]^�[\��X�[ۑ]�[�8ऺ`&���x�f��f�� XUWԑPQX8�o��g��k�]�[��Y��iѓTyb,9�`8ऺ`&���x�e�� yg��.�8�cx�k��X�[ۺ)����:*.���xऺ*&:c,��fx��� ��]�.�yi%��k��X�[۸��x���������8�i��k�k�,hx�����8��ह�-9��8�fx��� �i%�oh��c9.#y�h��o��g��k�.#yk�9aj8�j�h-9d"8�k�� x�fx�nx�i��k���x���������8�i��-9��8�fx��� �������T���X�ܙ[�^9���9�j�c��9论*�z)���H9����KKN�KK_KK_�TT�LHT��\���y.#y�h�X[�ܛYY�TT�L��[ۘ[XY\�X\��\�.#y�h�X[�ܛYY�TT�L����ٛY��OH�XX[�ܛYY�TT�M�X\��\��]9.#y�h�X[�ܛYY�TT�MH�X\��\��]9.#y�h�X[�ܛYY�TT�M�T��X��]�[��8�jXY\�em������X[�ܛYY�TT�M���[�YT���\]H[]�\�H�TT�N[���[�YT��^T�H9bcTT�k�9�$�TT�NH[���[�YT��\��������H9�*�k�9�$8हk�9�$9�lx�a8�e��j��a�TT�LLPV�T�ЕQ��T�ЖUT�:-�z`c�ݙ\��^�Y��
+��\�]�TT�LLHT�XY\��X��]9h���c9b!�bl�9�h��e��c��a9����TT�LL���Y[�X��]9h���c9b!�bl����ya��TT�LL��\���HX�X��]9h���c9b!�bl��X�ܙ[�^9�'9a��TT�LMX[�ܛYYT�o�8�k�o�yn,9�(TT�x�b��y�h�n.9o�yn,�TT�LMH9�(9`��.�yi%��k���X[W�Y8�i�T��X��]�[��LX[�ܛYY8�j8�e��i��-9����T��k�� yi%�oh��j9�#�dl��':*/8हb!��dx�̹��zf��idy�!8�j�o���a�� �k�9aj8�j�T�i%�oh��j8�e��i�� yk��* :em�ह� x�i9�"yb�x�j�T��j8� y�(9`����X[W�YL��Q�8�j�fd9k���e��g�X��]�[��L8�k�T�ह�lx�a8� x��8�����8��8�c:)!��l���x�x�����8�j�b!�bl��ex�8��h-9d"8�j�࠹k�o�8�fx��� ��#�dl��8��x�����8�k�`&���x�j��k�� y��zh+z/��� X��X[W�Y8�e8�j8�k�સ�������������8�����8��9oh�o#�� x��x��x�8� x����8����8��������8� XXY\��]W�[��8� T����k��':*/8�j�࠹�$9b���e��j��dx�8�l8�j��x�j��a8� ��#�dl��':*/8�j�i,y�e��e��g�h-9d"8�k�[]^�[\�\�]�[�8ऺ`&���x�e��j��a8� �i%�oh��c9k�9aj8�j��]�T���x���������8�j��k�� yg��.�8�cz*.���x�j8�j8࠸�j�a`��k���8�8��9b%�ऺacz` x�e��i��8�a8� �i%�oh��k��':*/8�j�i,y�e��e��g�h-9d"8�k�� x�fx�nx�i��k�a�b��ह�-9��8�fx��� �������USL����H\�ܘ[X�\�9���9�j�c��9论*�z)���H9����KKN�KK_KK_�P��KLHUSL�����x��x����8���9o�yc��.+y�.9论*�H�P��KL�^[�Y[ۛyo�yc���XY\��Y\][ۋ�ԋ���gg��-9h��P��KL�]�[��^HL]�[��^z`n9����P��KM��^HLX��^z`n9����P��KMH�^y�*�*+yk���X�ܙ\��]��Y�
+�:*.���H�P��KM��Y��[�S��SQ�T��SQS��:*.���H�P��KN9o�yc���$9b���ܘ[X�[����۝���X\�������x����x�������x��8�j��c:-���k�i,y�e��k�� yi,y�e�olzg����9f�(j8�j�o���h��i��lx�a�� �olzg���c:-��ऺf�:f��fx���k��k�� x�����8����8ह�y�!��fx��g���8�c9�-9�#x�e��g�h-9d"8�j�fd8��� �.#y�h���k���x�x�����9cf9/cx�i��-9��8�e�� URx�j:`(�����)��l9n.8�k�d!9�c:-���k�)��ba��j�o���a�� ����`(9."��"yb�x�h8�c8�x����x���������c9�������x�x�����8�k���'������8���c:-���j:*&:c,��c:-���j�����e��i��8�a8�c8� yo�yc���"8�o��k��#�dl��8��x�����8ह�'��$8�e��i��k��j��x�j��a8� �T�P��P��H���QLH9�+z`�8�k�������8� L������L8�'������Lx� LˌK�x�'ˌK��� Lˌ����'ˌ��8� M�ˌˌ��k�(jLLx�'LM8� M�8� M�x� M�L8ह쯺*�yg���j8�fx��� ��d��8�x�k��hzh!x�b��x� U����8��x��8��xस��x�x�����9cf9/cx�i��x����x���������fx���d��j8� yc��/�y`m8�i�P�x�jSSxऐ�x���8��x��8����n9�(x�fx�d��j8� R��हc��/�y`m8�n:/�8�fx�d��j8� x�x����x��������⭹�b��k��'9a�� x��x��x��8����8�e8�j8�j�ia��l8���`m��l:cmx�k��a8ऌy�a9.�y."�a��!��fx���d��j8� LL�`"�.�y."��k�Q8हd#9�`�a��!��fx���d��j8ऺ*+z*"9�hy.���j8�fx��� �S��8�k�[]^�\X�[]Y\�8�j��k�k�o�8�fx��ak:e���!8�c8�j��a8�g��x� yk�za���k��P��yk�za��c�9n,��i�.�9�!8���c��.�8���)���/�हo-�b-��e�� y.#z-���`��k��[�\�ܘ[X�\�
+X8हak:e���e��j��a8� �P�x� QSSx� R��क[�\�S8�k�ak:e��gh��n9a��ex�j��a9h���c8�k�� PS��8�k�ak:e��gh��j9��yh,zg,�a�ह� 9l#�c%��fx��*+z*"8�b��yk���x��࠸�k��i��`�ࢸ� T�P��x�k����* 8�gx�k�࠸�k��j8�k�..�o-x�e��j��a8� �S9a�z`�8�k�f�:f蹥�y��x�j8�8��x��9k�o�8�k�� PS��9idy�!8�j�g��ix�c�a�z`�:*+z*"8�j8�fx��� ����9�j�c��9论*�z)���H9����KKN�KK_KK_�P��KLLP�K�SSK��\�K��.#yg*[�\�S8�n9� x�hz/�8�o��j��a�����9k�o�: �yb���e8�j8�k�*+z*"9�h��+��H9�g�fj8�k�.��k���k�]�X�T�ؙP�\X�[]X8�i�讹k���e�� y�'9a��j��$9b���e��gٜ�۝[�8�j���h8�dxहak:e���fx��� ��H[]^8� Y�[\�� Q���k�`"��l8�k��+9��8�#8�x��8����xસ���8������9."�fd:(j8�#x�i�k���x� yd#8�f9/o��*9�*yc�9n,��i�o-�b-��fx��� ��HU��k�.�` x� ybl�ࢹod��i�� z)���/��k�� y�+9��8�#U�bl�ࢹod��i�(j8�#x�j8�#:(jKP�PU���[X\�P]�[�J
+X9aj9g��b)9k��(j8�#x�i�k���x��� �aly�"zh&9g����yo#��k�� :`jyc%��b���x�j8�e�� z)�y�`��x�8ஸ�jx�b�ࢸ�k��8��x�����9f"x��x�x�8���*&:/�9kd9��yo#�ह�h�o#��j�.������c:-���j8�fx��� �`ayn���`�.���"8�o��j9论*�x�i��cx��)�y�`��k�⭹�b�हi"x�b8�f��$9b���e�� y.#y�#��o��g��k�b)y�`9�"z !x�k�+f9b)y��yh,x�k���d)��fx��� ��H8�����8����8�j���k�`g9�h����o�9�a�.�8�dx�k�� y�+9��8�#8�����8����9�`�.��idy�!8�#x�j8�#���g�fj:,����9idy�!8�#x�i�k���x��� �\��]�]�\�[Z[���ٚ[X8�8� yak:e���c:-���i�."�fd8�j��c���[�8हo�x�i9a��!�ऺ*+x�dx�j��a8� ��H8��x�x�����9�l9n.8�j9g���9�l9n.8�k�olzg����9f��k�� y�+9��8�#9i,y�e�olzg����9f�(j8�#x�i�k���x��� �.#y�h��� URx� z`(�����)��l9n.8हg���:f�:f��n9�!��/8�ex�f��j��a8� ��H��۝[�8�i�ak:e�����c���!��fx��`)8�k�� y�+9��8�#8��x��x�����8�8�����z*+yk��(j8�#x�i�k���x��� �T�P���x�k�`)9g���.y��8�k��+9��8�#���9h���jT�P���x�k�h���c8�#x�j��k��c�� ��H9`"�b)x�k�k�o�: �yb���i�i,y�e��e��g�h-9d"8�k�� x�gx�k� �yb���o��g��k�)�y�`��h8�dxह��y�h������d)��fx��� ��(ze��/��j�U[�\�8�k�ak:e��हi�8�d��j��a8� ������9k�o�: �yb������x��x��8���T�P�h���c��H8��x���������8�j�\�Y�[\�8�i��k�� RS9a�z`�8�k��[\���X�\��Z[��]X8ह/o��*8�fx��� �����x����x����8�fx����8������8�����z*�x�o�c�ࢸ� Q�Tyo�y�g�� z)����9fj8�k�. 9�`�/�y� x�c9�`����h��g�o�8� Q�Tx�n8�k�讹k����8�cz/�8�o��o��g��k�/�y�fx�8��x�����:/�yb�8�k���9bcx�j��h8�dzacz` z*,yc��हc�o���fx��� ��[�\�����8�����8������ x��8������8�����yaiya�b��� Q�Tx�o��g��k��hy.��i"y�l8�k�o�y�g�� z)��k��i%�h!�n���k���x�����c�o��ऺ*,yc���k��"yb�y��9f��j�d*��x�j��a8� ��\�
+
+X8�k��Z[�[��8�n9���ࢸ� y��8�e��a:*,yc��ह��d)��e�� x�x��8����y�`9�"x�k������8����8ऺ-m�n���ex�f�� z*,yc���c9.���j��j����o��i�o�x�i8� ��*���:,���k��Tx�����8���j9�*�acz` x�8��x�����8ह�-9��8�e�� y讹k���"8�o��o��g��k�acz` y.+x�k�����8�����8������j:acz` y�"8�o�U�h&9g��ह��y� x�fx��� ������8����9�`�.���o��g��k�[�X��`��k�/�z+m�kd8ऺ)���/��fx��� ���x������f�����o��g��k�`k���x�ex�8�i��a8�j��a9�`����i,y�e�ह�'9a��e��g�h-9d"8�k�� x��x���������8ऺe�zc���e��i�f�:f��fx��� �]Y]YQ\�������8�k����h8�dx�i�/o��*8�fx��� ��H8����������x�����8���x� x��x���������8� Q���k�`"��l8�k�� x��x��x�����8�8�����x�j���k��'9a�o�8�j�*ey/�x�fx���8� P�8� P̸� P�x�k��\X�[]Tۘ\��9`&z(�8�b��y�n��x��� �d!9`&z(�8�k�સ���8������9�l8� x�����8����8� x����8�����8������ yf�c�� yo�9�a�.�8�dx�k���8�h8�dxह. 9��9.�9�!8�fx��� �U�^[�Y8� TT�\��[X�\�� ydo8�l�a��e�`m9�!�k���Tx�k���8�8��9.�9���k�ۘ\��8�n9���g*8�ex�f��f�� [�[��o��g��k�acz` y�`��j�(�yd�yaj9/d��k�k��(c9�`���x������9c�9n,��n9.�9�!8�fx��� �[�\����k�-m�b�ybcx�j�b)z`%9�9h���n9�d8�l�.�8�dx� yaiyb��a`�� TQ8� y/o��*9�c:-��� \]Y]Yyk�za��� z(�yd�x��x������9.�9���c9k���x�ex�8���o��i�T�Qӗ��Օ��S��T�ӓQS��S�P�T�Q8�j8�fx��� ��HU��k�aly�"y��yo#��j8�8��x�����9f"y��yo#��k�� yd#8�f9k��(c9�`�c�9n,�हaly�"x�fx��� �d!�[\��i��k��[��`��k��Y��\��^�X8� x�x��8����yaj9/d��i��k���X��ٚ[K�]��[�[YP�Y�]�]\�8ह�*�)���/���8�8��9�l8�k�."�fd8�j8�e�� x�8��x�����8�k�k���x�8ஸ�h8�dxहbl�ࢹod��i���� �f�k���x��x�����9�l8�HZP�cf9/cxऐS��8�o��g��k�����8��������."�fd8�j8�e��i�)����9c%��f��f�� y/o��*9.+x�k�bl�ࢹod��i�ऺ/�x�a9a��ex�j��a8� ��HT�P��LK�L�QLxऺ(j8�e8�j8�k��X�[۹."�fdL�K�L��k��.y��8�j8�e�� P�̈ˌLKQLy�+�`�8क�� TT�� T�X�[۸�k�/'z` x�jT��������k��.y��8�j8�fx��� ��̸ऍL��k���9����e��g�."�fd9�.y��8�j8�e��i�/o��*8�e��j��a8� ���x�k�ak9o#�"�z*,͋��QLyaj9���ह쯺*�yg���j8�fx��� ��+z`�8�k��x�b��8�l��L8�j�o���a8� x��x��x��8����8�e8�j8�j�ia��l8���`m��l:cmx�k��a8ऌy�a9.�y."�� TQ8ऌL�`"�.�y."�d#9�`�a��!��i��cx���d��j8हk�za���hy.���j8�fx��� �S��8�j�ak:e���!8�k�/�yb�8�f��f�� yd#8�f9a�z`�9c�9n,��i��[�� yc��.�8� z)���/�हo-�b-��fx��� ��H9k�,hx��x��x�8��8��8�j9."��`S[�^8�k�*/:-�x�k�� PS��9idy�!8�j8�k���9����e��g��.y��8�j8�e��i��lx�a�� ������T�P���(c9�b8�j8�k�k�o������"�z*���b8�k�� yc��i����`8ह�nyk���e��i�쯺*�x�fx���g��x�k�g���j8�e��i�/o��*8�fx��� ���(c9��y�+:*���b8ह�(z)���e��g�ࢸ� y���"�z*���b8�j9��(c9��y�+:*���b8�k�aj9����c9d#9. 8�i��`����j9..�o-x�e��g�ࢸ�e��i��k��j��x�j��a8� ���(c9�b8�j8�k�k�o�9.�8�dx�k��(z(j8�k�ak9o#��.yk����yh,x�k���9f��j�fd9k���e�� y�*�c�o������*��i�d"8�k���9f��n9..�o-xह��yo-x�e��j��a8� ���:)���/9쯺*�yg��9��(c9��y�+:*���b:*+z*"8�i�/o��*8�fx����9f��KK_KK_KK_KK_��P�LK�L�QLz"�z*���bK�M:(j9b)x�k��X�[ۺem��j:(j8�k�bl�ࢹod��i��k�� z"�z*���b8�jK�L8�b��MK�M8�o��i��k�ak9o#��.yk��liy�m8ह�i�d"8�e��i��*8�a8��� �c��i����`8�n9olzg���fx���.yk���c9b)9�#��e��g�h-9d"8�k�� yk�o�9.�8�dxह��9��8�fx���o��i�*l�od��fx��..�o-xह/�y�fx�fx��� ���P��8�j��e�ˌ9��y�+:*���bˌ8ह. 9�(z,����x�j8�e�� y��9k���j�c���j��Q8हb)x�k�`)9g���j8�e��i��lx�a�� ���P��HK�L�QL�"�z*���bK�M�U��L��'͌��j\[�^L8�k�.+yo��dj9�蹥l8�k�K�L�QL�ह쯺*�yg���j8�fx��� �ak9o#��.yk�����)�x�j��8�8�lK�L��k��T��*:*���j9� y.�9k�o�8� MK�M8�k��\�\�a�b��)��k���k�`b��*:)��k��c%��i��`�ࢸ� yod�*l�dj9�蹥l:(j8�n8�k�i"y��8�k��.��ex�8�i��a8�j��a8� �K�M9��y�+:*���b9aj9����j8�k�d#9. 9�)��k�..�o-x�e��j��a8� ���P��H���QLz"�z*���bˌ9�+9��8�c9c��i��fx���hzh!x�k�"�z*���b���QLyaj9����i�쯺*�x�e�� Mˌ8�k�ak9o#��.yk����yh,xह/my�*8�fx��� �ˌ9��y�+:*���b8�k�aj9����j8�k�d#9. 9�)��k�..�o-x�e��j��a8� ���P��H���QLz"�z*���b���9�+9��8�c9c��i��fx��T��U8��x��x��x��8����8�k�� z"�z*���b���QLx�j9ak9o#̋���.yk�����)�x���)���+8ह�i�d"8�e�� yk�,hy���`(8�n8�k�����x�k�olzg���c8�j��a9��9f��i��*8�a8��� ������y�+:*���b8�k�aj9����j8�k�d#9. 9�)��k�..�o-x�e��j��a8� ���P�̈ˌLKQLz"�z*���b\���H9c�o���"8�o�\��� R�����8�k�c��i�� x�b��8�l�ak9o#��.yk��liy�m8�k���9f��i�����T�����X�[۸�k�/'z` x�jT�������ह�*8�a8��� ��*�c�o���k�b!�a���o��g��k��*��i�d"8�k�*&:/�8�n9..�o-xह��yo-x�e��j��a8� ����+9������(j8�j�*&:/"x�e��g�"�z*���b8�k��b9�j�c���k�c��i����`8ह�nyk���fx���g��x�k�g���i��`�ࢸ� y�����9k�,hx�k��b8हf�k���fx��࠸�k��i��k��j��a8� �ak9o#��.yk����yh,x�j��8�h��i�c��i��hzh!x�k��#�dl��c9i"x����h-9d"8�k�� y."�(j8�j9/�ykf8�fx��*+z*":)��ba�हab8�j���9��8�fx��� �)���n��fx���o��i�� z*l�od��fx��k�o�: �yb���o��g��k������8ऺ(j9�#��e��j��a8� ���������9h���jT�P���x�k�h���c��H��[��\�ۛY[��ٚ[OUS���S�8�i��k�S8�o��g��k����8��x��8���ह�a8�o�/�8�o��f�� z`n9���࠸�e��j��a8� �*i�j$�������સ࠺*+yk���e��j��a8� �k��(c9�`��k��x�k��x��8����x�k�� 9l#�����$8�j8�e��i��h8�dy�lx�a�� ��H��S�8�i��k�� P�x�j�c��o����d��j8�j9o�z)�x�j��x��x��9k�za��aj9/d��k�.�9�!8ह论*�x�e��g�o�8� z-m�b�ybcx�j�k��* 9�"8�o��k�gfy�:*+yk��ह�h�许�j�x�i:`n8�m�� ��H�R�P�Q8�i��k�� P�x�o��g��k���k���k��z*+yk���n9b!�ࢹ����b8�j��a8� ��HT��U8�k���x��x��x��8����9`)9g���k�� yak9o#�"�z*,��P��H���QLxह쯺*�yg���j8�e�� yak9o#̋���k��.yk�����)�x���)���+8ह/my�*8�fx��� �c��i��fx�����`(8�n8�k�����x�k�olzg���c8�j��a9��9f��i�/o��*8�e�� L�����y�+:*���b8�k�aj9����j8�k�d#9. 9�)��k�..�o-x�e��j��a8� �����:*+z*":(j8�j9a�z`�8�����x��8������+9��8�k�(j8�j9⭹�b��g���8ऺ*+z*"9�h��+8�j8�e�� yk��(c9�`��j:*+z*"9�`��k��+9��8�k�k�yk���e��g���9d#xहc��i��fx��� �������\X�[]Tۘ\��9`&z(���9`&z(�Q9a*�ab:h!�/cH[]^9�l��[\��l�X�[ۈ�[\��l]Y[��[\��l�Y[��[\��lT��[\��lԈ�[\��l�[\������9�l^X�X���l�X�ܙ9�l�������9�l\H�ܚ�\���9�l�ؙH�ܚ�\���9�l�[�X����9�l�X\\�[�y��9�l�X[�\]]ܚ]y��9�l9o#��k�i"y�l�KK_KKN�KKN�KKN�KKN�KKN�KKN�KKN�KKN�KKN�KKN�KKN�KKN�KKN�KKN�KKN�KKN�KKN�KK_��H̈�M�M������
+͌
+�M�����M���
+�
+͌
+�M��y�h�n.9论*�y�"8�oٜ�۝[�9�l8� Sy�h�n.9论*�y�"8�o����l���M����������
+��
+�������
+�
+��
+��y�h�n.9论*�y�"8�oٜ�۝[�9�l8� Sy�h�n.9论*�y�"8�o����l�̈���HH�HMH�������
+�MJ�������
+̊�MJ��y�h�n.9论*�y�"8�oٜ�۝[�9�l8� Sy�h�n.9论*�y�"8�o����l��HHHHHHHHHH�������
+�J̈���̈��
+�J�J̈�y�h�n.9论*�y�"8�oٜ�۝[�9�l8� Sy�h�n.9论*�y�"8�o����l�����8�x��8����xસ���8������8�k�."�fd���8� P�8� P̸� P�x�k�h!��j�સ���8������9c�9n,��j9k��(c9�*zfd9��8हc��kd9�8�j�.�9�!8�e�� yaj:h!y��ह.�9�!8�i��cx�g�� 9i)��k�`&z(�8�h8�dxह讹k���fx��� �. :h!y���i�࠹i,y�e��e��g�`&z(�8�k�.�9�!9aj9/d�हa`��j��.��e�� P�x࠹讹/�x�i��cx�j��a9h-9d"8�k��x��8����xऺe��i���e��j��a8� �i"y��9.#z �x�j��\X�[]Tۘ\��8ह`"��l: �yb���j8સ���8������9c��.�8�k��h��+8�j8�e�� x��8�8��9k�za���k�d!�[��o��g��k�bl�ࢹod��i��[��X�[۸�k�k��(c9�`�c�9n,�ह�h��j8�fx��� ��X[�\[�[��8�o��g��k�]X\�[�[�Y8�k�,����8�k�)���/�k�9.���o��i�/o��*9.+x�j8�e��i��l8�b8��� ���:,����9��9f�9`&z(�8�k�� 9i)��l9ak:e���l9� 9l#�)���/��l9�`9�"z !yb)y."�fd9/�z*/8�e��j��a9.��h!H�KK_KK_KKN�KK_KKN�KK_KK_�U�W�SUV8�x��8����yaj9/d��\X�[]Tۘ\��8�k�`)H8�j��e�8સ���8������9�l8�h8�dx�i��k�do8�l�a��e�`m9�!�k���k��Tyk�za��ह/�z*/8�e��j��a8� ��Tyk�za���k�b)x�k���8��x���୸�����������i�.�9�!8�fx��� ���ST���8�x��8����yaj9/d�̈�\X�[]Tۘ\��8�k�`)H8�j��e�8સ���8������9�l8�h8�dx�i��k�do8�l�a��e�`m9�!�k���k��Tyk�za��ह/�z*/8�e��j��a8� ��Tyk�za���k�b)x�k���8��x���୸�����������i�.�9�!8�fx��� ���ST���P�Sӈ8�x��8����yaj9/d��\X�[]Tۘ\��8�k�`)H8�j��e�8સ���8������9�l8�h8�dx�i��k�do8�l�a��e�`m9�!�k���k��Tyk�za��ह/�z*/8�e��j��a8� ��Tyk�za���k�b)x�k���8��x���୸�����������i�.�9�!8�fx��� ���ST��UQS�8�x��8����yaj9/d��\X�[]Tۘ\��8�k�`)H8�j��e��Y��\��^�X9b!��k��[\�b)y."�fd8ऺ*+yk���e�� yk��^[�Y8�h8�dxघ��X��ٚ[K�]��[�[YP�Y�]�]\�8�b��ybl�ࢹod��i���� �-m�b�y�`�.�9�!8�k��e��j��a8� ���ST�ՒQS�8�x��8����yaj9/d��\X�[]Tۘ\��8�k�`)H8�j��e��Y��\��^�X9b!��k��[\�b)y."�fd8ऺ*+yk���e�� yk��^[�Y8�h8�dxघ��X��ٚ[K�]��[�[YP�Y�]�]\�8�b��ybl�ࢹod��i���� �-m�b�y�`�.�9�!8�k��e��j��a8� ���ST��T�8�x��8����yaj9/d��\X�[]Tۘ\��8�k�`)H8�j��e��Tyk�za���j8�k�b)x�j�PV�T�ЕQ��T�ЖUT�N��8छ�[��`��j�a�z`�\��[X�\�.�9���n9.�9�!8�fx��� �.�9�!9.#z �x�j��[ؚ�X�8हak:e���e��j��a8� ���ST��Ԉ8�x��8����yaj9/d��\X�[]Tۘ\��8�k�`)H8�j��e�8સ���8������9�l8�h8�dx�i��k�do8�l�a��e�`m9�!�k���k��Tyk�za��ह/�z*/8�e��j��a8� ��Tyk�za���k�b)x�k���8��x���୸�����������i�.�9�!8�fx��� �����VP�P��8�x��8����yaj9/d��\X�[]Tۘ\��8�k�`)H[]^9od��g�ࢌH��[��\�ۛY[��ٚ[X8�cS���S�8�j��VS8� x���8��x��8���� z*i�j$�������સऺ`n9����e��j��a8� ���S�8�j��yk��* 9�"8�o�gfy�:*+yk���k��x��x��9k�za���h8�dxहc��kd9�8�j�.�9�!8�e�� P�x�o��g��k���k��`)8�n9b!�ࢹ����b8�j��a8� ����ԑP�ԑ8�x��8����yaj9/d��\X�[]Tۘ\��8�k�`)H[]^9od��g�ࢌH��[��\�ۛY[��ٚ[X8�cS���S�8�j��VS8� x���8��x��8���� z*i�j$�������સऺ`n9����e��j��a8� ���S�8�j��yk��* 9�"8�o�gfy�:*+yk���k��x��x��9k�za���h8�dxहc��kd9�8�j�.�9�!8�e�� P�x�o��g��k���k��`)8�n9b!�ࢹ����b8�j��a8� ������U�bl�ࢹod��i���:h!y��9`)9��9f�:*+z*"9�.y��9b�y/g�KK_KK_KK_KK_KK_��[��ܝ��ٚ[HPS��T�Q�T��U�S����SU��[\��k�.%�.���e8�jS��8�k�YYXQ]�[�8�j��x�k�.�:a�z(j9��9aly�"zh&9g���j8�8��x�����9l ��*:h&9g���k�d#8�f9k��(c9�`���8�8��9c�9n,�ह/o��*8�fx��� ���[\��]�W؞]W؝Y�]�[��[\��Y��\��^�JX8�k��Y��\��^�XU��[\��k�.%�.���e8�jS���[�)�y�`�9�h�`)8�h8�dxहc���!��e�� yod�*l��[\��k��*�)���/�^[�Y9d":*"9."�fd8�j8�fx��� ��Tzh&9g���j^[�Y:h&9g���k�k��bl�ࢹod��i��k�b)x�j��l8�b8��� ���\��X�W�]�W؞]W؝Y�]��X��ٚ[K�]��[�[YP�Y�]�]\�8�x��8����x�8����x������H:(�yd�x��x������9.�9��:-m�b�y�`��j�h&9g��हab9c�ࢸ�f��f�� yajU��[\��k��*�)���/�k���x�8ஹd":*"8ह."�fd9.�y."��j�/�x�i8� ��[��][ۗ��^�H8�8��x�����8�k�k��^[�Y8��8�8��9�l9bl�ࢹod��i��e8�jYYXQ]�[�^[�Y�[\�b)y���a���j8�x��8����yaj9/d����a���k�.(y��x�j�c��o���h-9d"8�h8�dy�h�许�j��x�8ஸह讹/�x�fx��� ��[\[Y[�][ۗ���:gg�)����[��]ܹa�z`�9�)� �y� :`jyc%�9f�k����9�l8������^�x�k�k��(�z*l��,8�i��`�ࢸ� yak:e�� �yb��� PUy."�fd8� z*+z*"9i"y��9b)9k���n9/o����j��a8� ��[��][ۗ٘Z[\�HS�U�RSP�W�ԗ�TQ�ՑT����БQ�ԑW��S�P��8�8��x�����8�e8�j9bl�ࢹod��i���8��x���୸����������8�8��x�����8ह�-9��8�e�� X]RY8हak:e���f��f�� y/o��*9.+x�k�bl�ࢹod��i�ऺ/�x�a9a��ex�j��a8� �."�fd:-�z`c��j9����!��k�*.���x�i�c.�b)x�fx��� ��]W�Y�P��Q���UU�W��QӑQ͌�ВUӑU�T�ԑUT�Q8�x��8����x�k�kf9����'�e��U�c�9n,�Q8ह�n�(c8�i��cx�j��a9h-9d"8�k�bl�ࢹod��i�ह��d)��fx��� ��[]�\�Y�Y�][YHP�U�W�ԗԑSPT�W�ӓW�S�SԑSPT�H9bl�ࢹod��i��e8�j:)���/�)��ba�:acz` y�"8�o�h&9g���kٛ\�8� ya�z*+yk��� z*��!����x�i��k�f�c��f��f�� z)���/�)�y�`��o��i�/�y� x�fx��� ������9i,y�e�olzg����9f삂�9�+�b)H9�'9a�h���c9/���]���X�ܙ��X�[۸���T����U��k��#�dl�a��!��ܚ�\��o��g��k��c:-���k�⭹�b�9ak:e��Tx�k��d9��:*.���H:f�:f�)��ba��KK_KK_KK_KK_KK_KK_KK_KK_KK_KK_�[���\��X�\�P�ܜ�\�Tx�����x�8��������8��x���୸�������������b-�o�zgh�\�ܚ\܈ܘ[�ܸ�k���9f�i%�� y�$9����e��j��a8��8��x���୸����������em�� x�x��x��9b-�o�x����x������k�.#yi"y�hy.��`eyc�x� X]�[��Y�8સ���8������9�-9�#H9k�,hyi%��o��g��k�olzg���c:-��ह`g9�h�9k�,hyi%��o��g��k�olzg���c:-��ह`g9�h�9olzg���c:-��ह`g9�h�9olzg���fx���x��x��8�o��g��k��c:-��ऺ`k���x�e��i�f�:f�S�ӓ�ӗ�T��Ԙ8�o��g��k���y/g9f"x�k�g���:f�9k��:+f9b)ykd8���.%�.�������yd$xहd*��[���\��X�\�P�ܜ�\9olzg���fx��g���9�c:-��हo�x�f�f�:f��fx��� ��x��8����yaj9/d��k�f�:f��k�[���\��X�\�P�ܜ�\8�o��g��k��][[��[��Y�ؘ[]]][ۘ8�k�h-9d"8�h8�dz*,yc���fx��� ��][�ۙY[�8�k�!�.���k�o�9�a�.�8�dx�c9�*�k�9.���k�h-9d"8�h8�dy�`9�"z !x�o��g��k��c:-��cf9/cx�i�f�:f��i��cx��� ��X��]X[�ܛYYN8��8�8����k�aiyc���':*/:em��ex�cN9.�yi%�� \�[���c�.�yi%�� y.�9�!9�"8�o�Y\][ۗ��۝��8� XY\][ۺem�-�z`c�9.#y�h�X��]8ह�-9��9.#y�h�X��]8ह�-9��8�e�� X�]S�[X�\�8�k�k��f���k���8�cz/�8�o���8�8��9�l8�h8�dxह�l8�b8��9�-9��8�e�� yo�z)�x�j�h-9d"8�h8�dyolzg���fx���a8�o�����i�`%9.+x�k�⭹�b�ह�.��fH9��y���X��]8�e8�j8�k�RQ9i,y�e��k�/�8�ex�j��a9."�fd9.�8�cXX[�ܛYY��:*"9�l8�j9�!��,H:f�:f��e��j��a��[��ܝ\��ܒ[�X�]܈9�':*/9�"8�o�N8��8�8���XY\�ROLX9b,9�`:h!��k��o��o�/�y� H9/�y� x�e�� X�]S�[X�\�8�k�k��f���k���8�8��9�l8ह�l8�b8��9�-9��8�e��i�a�yd#9�'��e�� z)����8�8��x�����8हa��ex�j��a9��y���8�j��e�ZW�X��]��؜�\��Y8�j9�#�dl�a��!�b)x�k�Ry�-9��:*&:c,�:f�:f��e��j��a��۝[�Z]Q\��۝[�Z]HQ8�k�`(�����)��jY\][ۈ\��۝[�Z]H���(:$/x� yd#8�f���i�N8��8�8���X��]8�c9.#y. :!�8� X\��۝[�Z]W�[�X�]ܘ9/�y� H9/�y� HQ9cf9/cx�k�\��[X�\��j9.%�.��ह�.��e�� yh���c8स�o��g��a8�i�`(��d8�e��j��a9��y���8�j��e�Q8�j9.%�.��हd*��9.#z`(����*.���H:f�:f��e��j��a��[X[�X�\��Q�Z[\�X�X�[۸� TT�� zc,��.��(�o%x�k�)����9fj�X�[ۺem�� z*+yk���`��k�Ԑ��'9���� y.�9�!�]8� TT���8�����8��8�o��g��k������8����8�k��l9n.9�':*/9�"8�o��ह/�y� H9�':*/9�"8�o��ह/�y� H�ۋ\�]��k�olzg���fx���#�dl�cf9/cxह�-9��8�fx��� ��]��X�[۸�k�."�*&:(c9b%��i�acz` yc�� �x�j�k�9aj8��8�8��9b%�ह/�y� x�e�� yg��.�8�cY]�[�8�h8�dxह��y�h��fx��9��y���8�j��e�:)����9fj8�k��!��,x�jQ8� \�]�acz` y�"y�(H:f�:f��e��j��a���\�X�Q\�ܘ[X�\��^H\�ܘ[X�\���za�H9k�o�8�fx���"yb�x�j�cmx�c8�j��a�ܘ[X�YX��]�ܘ[X�YX��]8ह/�y� H�ܘ[X�YX��]8ह/�y� H9o�yc���"8�o��k��#�dl��8��x�����8हa��ex�j��a9��y���8�j��e�9."�fd9.�8�cX�ܘ[X�Y��]�]��^X:*"9�l:f�:f��e��j��a��][�ۙY[�9�`9�"x�fx��aiyb��a`�����]�\����]�[��Y�8�k�k��(c9�`�a��!�9�.9����8�j��XY8�o��g��k�[��9i,y�e�� yo�zh"]�X�x�k����x� y�`9�"x�fx��]�[��Y�8�k�f�o�y.#z �zf�9k��9olzg���c:-��ह`g9�h�9olzg���c:-��ह`g9�h�9olzg���c:-��ह`g9�h�9�`9�"z !ycf9/cx�k�k��(c9a��!�हi,y�e��`�.��9��y/g9h���c8�j�o�8�f8�i�S�ӓ�ӗ�T��Ԙ8�o��g��k�S�U�RSP�X9g��.�8�cx�k�..�f�9k��9�`9�"z !x�k�o�9�a�.�8�dx�c9�*�k�9.���k�h-9d"8�h8�dx� y�`9�"z !x�o��g��k��c:-��cf9/cx�i�f�:f��fx��� ��][[��[��Y�ؘ[]]][ۘ8�k�*/9��8�j��e��j�g���8�o��g��k��x��8����yaj9/d�ऺf�:f��e��j��a8� ���][[��[��Y�ؘ[]]][ۈ�X[�\8�j�X\\��k����)��9.%�.��ह�(yb�yc%��e��g�o�8࠹���kf�ܚ�\��c9aj9/d�⭹�b�हi"y��8�i��cx��9k�,hyi%�9k�,hyi%�9k�,hyi%�8�x��8����y��y����j�a�yi)��j�*/9��8�j8�e��i�� yaj9/d�i"y��8�c:*/9�#��ex�8�j��a:fd8ࢹolzg���fx���*zfd8�h8�dxह�h��x��8�x��8����y��y����j�a�yi)��j�i,y�e��j8�e��i�ak:e��:`k���x�i��cx�i��a8�j��a9aj9/d�i"y��8�k�*/9��:*/9�#��ex�8�g��*zfd8हo�x�f�f�:f��fx��� ��x��8����yaj9/d��n8�k���yi)��j��k�� yaj9/d�i"y��8�k��#��.��8�j�*/9��8हo�z)�x�j8�fx��� ������8��x��x�����8�8�����z*+yk���k�c�y�(:(j���+:(j8ङ��۝[�:*+yk���j�[X�ܸ�j�e���fx��aiyb��b!�hg��k��h��+8�j8�fx��� �)���/9."��k��"yb�x�h8�c8� yk�,hx�k��X��[�8�j]�X�x�i�c�y�(8�i��cx�j��a9`)8�k�S�U�RSP�X8� y.#y�h��j�Y�� y.�9�!9`)8� z)���/9`)9g��i%��k�S��SQ�T��SQS�8�j8�e�� x�jx�hx�x�k�h-9d"8࠘�X��[�8�j9��9bcx�k�)�y�`�हi"y��8�e��j��a8� ����X��[�8�j9k�o�: �yb����۝[�:*+yk��h!y��9c���!��fx��aiyb��9�$9b���`��k�b�y/g:)���/9."��k��"yb�x�h8�c9�*�k�o�9.#y�h��o��g��k�`)9g��i%��KK_KK_KK_KK_KK_KK_KK_�9�hy.���j�k�9aj9. :!�8�fx��8�k�k�o�:h!y��T��U9dj9�蹥l�X��[�8�i��':*/9�"8�o��k�`)9g��9�':*/9�"8�o��k�dj9�蹥l:*+yk���c:-���n9c�y�(9b)x�k��ٚ[x�i��k��"yb�x�j�`);�&�S�U�RSP�XS��SQ�T��SQS��9�hy.���j�k�9aj9. :!�8�fx��8�o��g��k�X\��x�k�k�o�:h!y��T��U9n+�g��naHUU�8�o��g��k��S��Q͓R�9�':*/9�"8�o��k��R�*+yk���c:-��ह/o��*8�gx�k�.��k�����x�k�n+�g��na{�&�S�U�RSP�XS��SQ�T��SQS��9k�,hx�k�8�o��g��k�X\��HT��U8����8��x� yi"z*��� y�)�c��c%���� x�8��8��x�8�������8��8���� y�`�e���8�������8����8��UU�8��8������8�����x�k�!�b�y�'9a�ह/o��*9����x�k�am�/d�`);�&�S�U�RSP�XS��SQ�T��SQS��9��9k��[X�ܸ�j�k�o�8�fx��8�k�k�9aj9. :!�:h!y��T��T��SUU�W���PSWӕSP�T����9�':*/9�"8�o��k���9k﹧�:*+yk���c:-���n9c�y�(9��9����e��g�X���]H�[X�ܸ�k�k�9aj9. :!�:h!y���c8�j��a9h-9d"8� X��PSW�Q���ML�8�k�S�U�RSP�X���9.�yi%��k���9k�`)8�o��g��k���PSW�QM�ML�X;�&�S��SQ�T��SQS��X���]H�[X�ܸ�j�k�o�8�fx��[�^���k�k�9aj9. :!�:h!y��T��T���PSW�Q���ML�9`)8हi"y��8�f��f�����PSW�Q8�n9�(x�fH9��9����e��gܙ[]]�H�[X�ܸ�k�k�9aj9. :!�:h!y���c8�j��a9h-9d"8� X�SUU�W���PSWӕSP�T����8�k�S�U�RSP�X��PSW�QM�ML�X8�o��g��k����9.�yi%��k���9k�`);�&�S��SQ�T��SQS��9k�,hx�k�8�o��g��k�X\��HT��T�[�[][۸�����H�]HUU��X��[�8�k�!�b�y�'9a�ह/o��*9����x�k�am�/d�`);�&�S�U�RSP�XS��SQ�T��SQS���`n9���kd8�k�k�o�: �yb���k�� X�\ܝY�X��[�Y[�]X8� x��x��x�8��8��8�k�����x�8��8���j8����������8� y�g�fj:+f9b)y��yh,x� y�.z* ��k�`jy�*9��9f��c9k�9aj8�j�. :!�8�e�� x�b��i�[X�ܗ��\X�[]Wܙ[X\�W�[Y�X�O]�YX8�i��`���c�9n,�h!y���h8�dx�b��y/g8��� ���g*8�k�9c�9n,��i��k���9k�`n9���kd8�h8�dxह�"yb�x�j8�e�� y�m�k�`)8�k���PSW�Q8�k��"yb�x�j��e��j��a8� �h!y���c9�n�� y.#y. :!�8� x�o��g��k�/o��*9.#yc���k�h-9d"8�k�`n9���kd8हak:e���e��j��a8� ���X��ٚ[X8�k�/o��*9c�� �x�j�`�9b!�f�d"8ह��y�h��i��cx���h8�dx�i�� yk�o�: �yb��ह��:*+x�o��g��k���yo-x�i��cx�j��a8� ��m�k�`)��LX8ह��9k�`)9g���j8�k��l9`)8�k�a�z)!��h8�dxह�!��,x�j�S��SQ�T��SQS�8�j8�e��i��k��j��x�j��a8� ���LL8�k���PSW�QRS��SQ���PSW�Q
+�ML�JX8�k�� z`n9���kd8�j��e�ऺ(j8�fPS��8�k���k��`)8�j8�e��i�b)x�j��lx�a8� y�+:(j8�i�`n9���kd9`)�ML�X8ह��d)��fx��)��ba��j9���d#8�e��j��a8� ���������g�fj8�k�,����:)��ba��X��[�9f�k����[Z]S��8�k�ak:e��TH�]�\��k�.��k��:*+z*":)��ba�:,����:)��ba�9�.y��9���`�KK_KK_KK_KK_KK_KK_KK_�����X]�[���YY�̘L�Y���Y�L�L�؍M�L���X��L�X�S����]��Y�X�U[�\���[�����o��g��k�MH��k��o�ё��jMH�k�o�9�c:-���h8�dxहak:e���e�� y�*�k�o�8�k�k�o�9.�8�dx�k���d)��fx��]�X�ycf9/cx�k�aly�"zf��g)�⭹�b�ह��9b%�c%��e�� yc��i��l8�i��y�!��fx���]�\���]�X�K��8�k��؈ٙY̙����� X�]�\�����]���8�k��؈N������X\��H[�^������̍L̍��LL��XM�Y�M��Y���NL�NM͍٘�X��HS����]��Y�XK��8�i��k��P�Փ�Q�W�L�8ऌLH�� X�P�Փ�Q�W�N8ऌMH��j�k�o�9.�8�dx���X��[�9f"x�k�k�o�9.�8�dx�h8�dxह/o��*8�e�� yaj�X��[�9alz`&��k�f��g)�ह.�k���e��j��a]�X�ycf9/cx�k���[��[�[�^������[Z]8�k��]�\���YYXK��K�K�K����������9h���j�e���fx��*+z*"9/�y�fB��9aiyb��Q9o�z)�x�j�aiyb��9b)9��z)��ba�9⭹�b��KK_KK_KK_KK_���QS��LHS��8����x�����x�j[�\���*+yk���k���[Xx�b��8�l��b9k�,hx�k���*�x�o�/�8�o�a��!��j��[Xx�c9k�9aj8�j�. :!�8�fx��h-9d"8�h8�dyk�o�9.�8�dx� y�b8स�o��g��a8�i���9k���e��j��aS�P�T�Q�T�Qӗ�����QS��L�8��x��x�����8�8�����x�k�aiyb��a`��j:`n9l`8���-l9�����x��x��x��8����S:`n9���bcx�j��g�fj8�o��g��k��x��x��8੸��ਸ�k�aiyb��a`�� ydj9�蹥l8� x�x��8����8��Q8����+�hg�� y/�yc���k��"y�(xहk��* 8�fx��S�P�T�Q�T�Qӗ�����QS��L�]Y[���ݚY[���ܙX�ܙ8�k�Q8�j9�"yb�x�j�]H���9/o��*9c�� �x�j�aiyb��a`��j9k�o�9�"8�o�S9�c:-���k�.(y��x�c8�`��ٛ���h8�dxहd*��x��S�P�T�Q�T�Qӗ�����QS��L�[\��j���k��Y��\��^�H9k��* 9�"8�o��k�gfy�:*+yk��`)8ऺ-m�b�y�`��k�,����9. 9o#��j8�e��i��gx�k��o��o�/o��a8� xસ���8������9�l8�b��y��9k���e��j��aS�P�T�Q�T�Qӗ�����QS��LH��X�8�k����\��Y[[ܞx�j�Tybl�ࢹod��i�.�9���\��X�x�o��g��kՕ��k�-m�b�ybcx�j�k��* 9�"8�o��x��x��9. 9o#�हc��kd9�8�j�.�9�!8�e�� yi,y�e��e��g�*+yk���k���d)��fx��S�P�T�Q�T�Qӗ�����QS��L�:gfy�:*+yk���k��[[�[Yx���[�[x�j�˝�[�܋����[�\���ۙ�Y�\�][ۗݘ\�X[������\��e��i��bcx�j�k��* 9�"8�o�*+yk���h8�dxच[��[8���`n9����e�� yk��(c9�`��j��'��$8�e��j��aS�P�T�Q�T�Qӗ�����T�UKUS���S�9k�9aj8�j���[��\�ۛY[��ٚ[X8�c8�j��aS8�o��g��k�[�[xऺ`n9������[��[8�f��f�� z*i�j$���[�\�[�ऺ*+yk���e��j��a8� �k��(c9�`��k��x�k���9����e��i�/o��*8�i��cx��T�Qӗ�����T�UKP��S��aiyb���c8�fx�nx�i�k��* 9�"8�o��i�� [ؚ�X�:)�y�`��c�y.�ya�x�j�c��o�ࢸ� x�x��x��9. 9o#��k�.�9�!8�j��$9b��:-m�b�ybcx�j�k��* 9�"8�o��k�gfy�:*+yk��ह�h�许�j�x�i:`n8�l�� z!�b�y�8�j�b)z*+yk���n9b!�ࢹ����b8�j��a��S���UP�ՐT�PS����T�UKT�R�P�Qؚ�X�:)�y�`��c�xऺ-�x�b8��� x�o��g��k��x��x��9.�9�!8�j�i,y�e�:*+yk��ह��d)��e�� yk��(c9�`��k��\X�[]Tۘ\��8ह��y� x�fx��� ��x�o��g��k���k��S8�n9b!�ࢹ����b8�j��a�ђSWԑR�P�Q�����8�x��x��8�j9�'��(�`m8�k�a�z`�8�����x��8���������:`jy�*9��9f삂�k�yk���b[�\�RQ8�k�i"y��8�e��j��a8� �]Y]YQ\�������8�k����h8�dx�i�/o��*8�fx��� ��[\���X�\��Z[��]X8�kњ[\��j�\�Y�[\��k������x���ya�x�h8�dx�i�/o��*8�e�� P�[�\��`����� T\��[X�x��8��8������ yaly�"x��x������9."��k�b-�o�zgh�ऺ/�yb�8�e��j��a8� ��������[\���X�\��Z[��]X��⭹�b��k��[�8� X�Z[�[��8� X���Y8�k���+�hg��h8�dx�j8�fx��� �ସ��8��8�k�� y�'9���.�8�cx�k��[\��[]�\�W��[�\�][ۘ8� X\��\���]W��[�\�][ۘ8� XYZ]Y���X�\����[�8�j8� x�x��8����x�c9�`9�"x�fx���"y�c8�k�/�y�fx�8��x�����8�x��x��8ह/�y� x�fx��� �\��[X�x�i��k��j��a9��oh��k��[\���X�\�\�Z]
+�X8�kԐRRx�i��`9�"x�e�� y�h�许�j�yf�)���/��fx��� ��������:*,yc���k��"yb�y��9f��j9�"zfd9�`�e���i��k����a�K�8����x����x����8�fx����8������8�����z*�x�o�c�ࢸ� Q�Tyo�y�g�� z)����9fj9aiyb���k�$�9�cx� x�gx�k�.��fx�nx�i��k�i%�`�9aiya�b���k�� z*,yc���k�c�o��bcx�j�(c8�a�� �����Tx�n8�k���8�8��9b%���8�cz/�8�o��o��g��k�i"y��9.#z �x�j�����8�����8�������yh,x�k��x��x��:/�yb�8स� zgg�����x����x����8�k���x������9a�ya��!��j8�e��i�讹k���fx����9bcx�j�*,yc��हc�o���fx��� �*,yc���k�/�y� y.+x�j�c�o���i��cx���k��k�� yk��* 9�"8�o��k�સ���8������9a�x��x������h8�dx�j8�e�� yk���x�x�8�g�h!�n��हk�8��� ��ˈ�[�\�����8�����8������ x��8������8�����x����g�fj9aiya�b��� Q�Tyo�y�g�� y�hy.��i"y�l9o�y�g�� x�x��8�����x�k���[�8� x����x����x����8�e�o����bl�ࢹod��i�a��!�� X�\�
+
+X8�c9o�z)�x�j8�fx���x��8����x��x������k�c�o��स� z*,yc���k��"yb�y��9f��j�d*��x�j��a8� ����[�\�do8�l�a��e��k�� z*,yc���k�)���/�o�8�j�i"y��9.#z �x�j�����8�����8�������yh,xह��:,���e��i�(c8�a�� ��x��x��8�b��yc�ࢹa��e��"8�o��o��g��k�acz` y.+x�k�����8�����8������k�讹k���"8�o��j8�e�� X�\�
+
+X8�i�c�ࢹ��8�e��g�ࢸ� P�[�\�do8�l�a��e��k�k�9.��हo�x�h��g�ࢸ�e��j��a8� ��o��h9c�ࢹa��e��i��a8�j��a9/�y�fy��yh,x�k��*���:,���j8�e��i�� X�\�
+
+X8�i��-9��8�e��i��8�a8� ��K�8�����8����9�`�.��� \[�X��j��8��m���cy�.��e�� yc�ࢹ��8�e��i�ࠔ�RRy/�z+m�kd8ह�`9�"x�ex�f�� z*,yc��ह讹k���j�)���/��fx��� ��x��8����y�`9�"x�k�gg�����x����x����9c.�e���j��8�h��i�� y�h��#��8�j����8����8ह/o����f��"zfd9�`�e���i����a��i��cx�����`(8�j��fx��� ���x������f����� y�`9�"z !x�k��`����i,y�e�� z`k���x�ex�8�i��a8�j��a9/�y� z !x�k�*/:-�x�k�� yg��.�8�cx�k�.#yi"y�hy.��`eyc�x�j8�fx��� �સ���8������8ई���Y8�n9����e�� yo�y�g� !xऺ-m�n���ex�f�� x��x���������8ऺf�:f��fx��� �����\�
+
+X8�k�� z*,yc���k�)���/��j�o�z)�x�j���x�����ह/�y� x�f��f��j�o�y�g��fx��� ���������\�
+
+X��K�:*&:/�9kd8�k�d#9. 9�)�ह�':*/8�e�� X�[�O��Z[�[��8�n:`m�����fx��� ����9��8�e��a:*,yc��ह��d)��e�� x�x��8����y�`9�"x�k�acz` x�����8����8ऺ-m�n���o��g��k�c�ࢹ��8�fx� ��ˈ9."�*&8�k��"zfd9��9f�)��ba��j�o���a8� XYZ]Y���X�\����[�OH8�j��j����o��i�o�x�i8� ���:*&:/�9kd8�k�d#9. 9�)�ह��y� x�e��g��o��o�X��\xह��9c���fx�����`�xऺ(c8�a�� ����`�y.+x�k���x�8�������8�j9.%�.��हi"y��8�e��j��a8� ��K�9�*���:,���k��Tx�����8���j8� x�o��h:acz` x�e��i��a8�j��a9/�y�fx�8��x�����8ह. 9��8�i���9c���fx��� �c�ࢹa��e��"8�o��o��g��k�acz` y.+x�k�����8�����8������ x����8�����8������n�c,�� y���)������������9⭹�b�� yaiyb��a`��k�e��`(�.�8�dx� z*&:/�9kd8�k�d#9. 9�)�� zacz` y�"8�o�U�h&9g���k���y� x�fx��� ����:)����9fj8� TԸ� X�\�Y8�k�⭹�b�हb'y�'�c%��e�� X\��\���]W��[�\�][ۘ8�h8�dxऺ`,��x��� ��[\��[]�\�W��[�\�][ۘ8�k���y� x�e�� X�Z[�[��O��[�8�n9�.��e��i�o�y�g� !xऺ-m�n���ex�f���� �����9c��讹k��bcx�j����a�� yd#9. 9�)��':*/8� y��9c�����`�x�k��a8�f��8�b��i�i,y�e��e��g�h-9d"8�k�� ya�yk�x� x��x�8�������8� x�8��x�����8� y.%�.��हi"y��8�f��f��[�8�n9�.��fx� �g���8�k�. :`�8�h8�dx�c9讹k���fx���j8�a8�a�.#yc�� �y⭹�b��k�[���\��X�\�P�ܜ�\8�j8�e�� xસ���8������8ऺe�zc���e��i�f�:f��fx��� ���x��8�����8������$9b���j8�e��i�h,ydb��e��i��k��j��x�j��a8� ��������:e�zc���j9�`9�"z !y��9��B���[�8�o��g��k��Z[�[��8�b��H���Y8�n:`m�����e�� y��8�e��a:*,yc���j8�8��x�����:/�yb�8ह��d)��fx��� ��*�acz` x�k�/�y�fy��yh,x�k��-9��8�e�� yc�ࢹa��e��"8�o��o��g��k�acz` y.+x�k�����8�����8������k�讹k���"8�o��j8�e��i���y� x�fx��� �o�y�g� !xऺ-m�n���ex�f�� y���,����8�k��`����o�9�a�.�8�dya��!��n9����fx� ��'9���.�8�cy.%�.��`)8�c9����!��e��g�h-9d"8�k�ସ��8��8ऺe�x�f8�i�S�U�RSP�X8ऺ/�8�fx� �.%�.��`)8हa�yb*y�*8�e��j��a8� ����������*]Y]YQ\���������⭹�b��k��[��X8� X�Z[�[���X8� X���Y8�k���+�hg��h8�dx�j8�fx��� ��Y�[��XY��Y�[�ܚ]X8�k�� x�x��x��:+f9b)ykd8� y�'9����"8�o��x��x��9.%�.��� y��yd$x� y.�9�!9��yh,xह� x�i\��[X�x�i��k��j��a9. 9f�fd8ࢸ�k��RRx��8��8�����ऺ/�8�fx� ���[Z]��[��[8�k��d��k���8��8�����ह�h�许�j�yf繭�:,���fx��� ��*���:,����8��8������k��`9�"z !x�c:`&�n.�]\��� x�8��x���]\��� yc�ࢹ��8�e�� x�o��g��k�[�X��i��x����8���ऺf��8�g�h-9d"8�k���8�c�[��[8�j9d#8�f9.�9�!:)��fi8ऺ(c8�a8� yc��.�9.+y.���l8ह�&��x�e��i�o�y�g� !xऺ-m�n���ex�f���� ��\�
+
+X8�k��Z[�[��8�n9���ࢸ� y��8�e��a8��8��x���୸����������ह��d)��e��i�� y.%�.����i�c��.�9�"8�o��k���8��x���୸�����������c8�fx�nx�i���[Z]8� X�[��[8� x�o��g��kԐRRyc幭�8�j��j����o��i�o�x�i8� ��gx�k�o�8� Q���x��x��8ह. 9��9��9c���e�� y�'9����"8�o��k���x�n:`,��x�i��[�8�j��.���� �i,y�e��`��k���x�8�������8� ya�yk�x� y.%�.��ह��y� x�fx��� �e�zc���o��g��k��`9�"z !y��9��x�i��k��x��x��:+f9b)ykd8ऺe�x�f8� x�fx�nx�i��k���8��8�����हc�8�a8࠸�k��j8�e��i��(yb�yc%��e�� yo�y�g� !xऺ-m�n���ex�f���� �*&:/�9kd8�k��k�����i��k����+f9b)ykd8ऺe�x�f8� y.%�.��8�k�b)z+f9b)ykd8ह�'��$8�fx��� �������9��9����e��g�.%�.��.���]Y]YW�\��8� X�[\��[]�\�W��[�\�][ۘ8� X\��\���]W��[�\�][ۘ8हd#8�f9`)8�k�b)yd#x�j��e��g�ࢸ� Ly`"��k�.%�.���j8�e��i��o��j8�x�i�`,��x�g�ࢸ�e��i��k��j��x�j��a8� ������8�����8����9�`�.��idy�!���d��k�idy�!8�k�.��,hzi�b�x�j8�e�� yak:e��`n9l`9�d9��8हi"x�b8��a�z*i�(c:e��f�8� X��[�8�k��-�.�9�`�e��� y.���#��k�f�k���`�e���'�fd8ऺ*+x�dx�j��a8� �`g9�h�हo�x�i8��8������8�����y��y/g:!�.���k�o�yn,8ह/�z*/8�fx��a�z`�K���'�fd8�j�X\\��\\��\�ܘ8�k�`,�(c9/�z*/9���)���k�b)yidy�!8�i��`�ࢸ� y�(y�'�fd8�k�`g9�h�ऺ*,yc���fx��࠸�k��i��k��j��a8� �������9⭹�b�⭹�b��k��[��[���ۙ\���[�\�][ۊX8� X���Yۘ[Y
+�ۙ\���[�\�][ۊX8� X��\]Y
+�\ܝ
+X8� X�X[�\[�[��\[�[��Y\�X8� X]X\�[�[�Y
+�[��Y��[�\�][ۋ�X\\��X\�JX8� X�[X\�Y8� X�\��X�Pܚ]X�[
+�]�\��X8�k���+�hg��j8�fx��� �������:`m����)��ba�K�9`g9�h��o��g��k�e�zc���`��k�� y�`9�"z !\�Yۘ[8�k�]]^9a�x�i���ܙ\]Y\�Y]�YX8�j�[�\�][۸ह讹k���e��i��b��x� yb*y�*9c�� �x�j�c�ࢹ��8�e����-m�n���b���xहd!yf�k��(c8�e�� x�gx�k��d9��8स�fx�nx�i�*&:c,��fx��� ������8����8�k�o�y�g�bcyo�8�j�d#8�f�YX�]xह�'9����fx���g��x� z`&���x�c9o�y�g�e��i���8ࢹab:(c8�e��i�࠹`g9�h�)�y�`�ऺ)��i,x���j��a8� ����9�`�.���"8�o��i��`����d��j8ह论*�x�i��cx��h-9d"8�k�� yh,ydb�हf�c��e��i����ࢸ�k�o�9�a�.�8�dxस�fx�nx�i�(c8�a8� y/o��*9��8ऺ/�9cm8�fx��� ��ˈ9a�z*i�(c9c�� �x�h8�c9�*�k�9.���i�� yk��(c9.+x�i��k��j��a9/�ykf:,����8�k��X[�\[�[��8�n9����fx� �a�H���J
+X8� y�`9�"z !y��9��x�k����)��� y/�ykf:,����8�k�k�9.��`&���x� x�x��8����yb'y�'�c%��k��a8�f��8�b��i��h8�dya�ze���fx��� �a�ze��)�y�`��k���ۙ\���[��ۙ\��Y�ۙ\���[�\�][ۋ\[�[��_X8�e8�j8�j��o��j8�x��� ���9k��(c9.+x�k������8����8�k�� y����ybcx�j��`9�"z !y.%�.��ह�(yb�yc%��e��i�⭹�b�i"y��8ऺ`k���x�fx��� �]X\�[�[�Y8�n9����e�� X��[�[�X8ई�X\\��\\��\�ܘ8�n9�h�许�j�yf�����x�fx��� �ak:e��Tx�k�do8�l�a��e�a`�ई��[�9o�x�hx�i�`g9�h��ex�f��j��a8� ��K��X[�\[�[��8�o��g��k�]X\�[�[�Y8�k�e���k�� x�����8����8� z,����8� S���`�����k�/o��*9��8ऺ/�9cm8�e��j��a8� �f�c�k�9.���`��j����ࢸ�k�o�9�a�.�8�dxऺ(c8�a8� y/o��*9��8ह�h�许�j�yf�/�9cm8�fx��� ����9f�c㹪g�����k�k�za���k�� yo-�b-��e��i��a8��d#9�`��/9`�x�����8����9�l8�k�."�fd8�b��zgfy�8�j�l#�a��fx��� �d!8�����8����8�c9k��(c9.+x�k�`g9�h�o�x�hy��y/g8�j��i8�a8�i�� yc幭�9c�� �y�)�� ya�z`�K���'�fd8� x�o��g��k�b)x�����x���y�`�����k��a8�f��8ह/o��a��b�हc�9n,��j�*&:c,��fx��� �f�c㹪g�����k�� y�`�.��.��,hx� yc幭�9k�9.��� ya�z`�K���'�fd:-�z`c�� X�X\\��\\��\�ܘ8�j��8���`�����k��a8�f��8�b�हo�x�f�)���+8�fx��� ��ˈ9����yi,y�e�� z`k���x�k�讹���i,y�e�� y`g9�h�o�x�hy��y/g8�k�`,�(c9/�z*/:`eyc�x� x�o��g��k������8����8�c:`k���x�ex�8�i��a8�j��a9aj9/d�⭹�b�हi"y��8�i��cx���d��j8ह�.��fyg��.�8�cz*/:-�x�c8�`���h-9d"8�k��\��X�Pܚ]X�[8�j8�fx��� �d#9. 8�����x���ya�x�i�k�yaj8�j��`�����i��cx�j��a8�����8����8�k��x��8����ya�z-m�b�x�n9����fx� ��`9�"z !ya�x�j�k�9aj8�j�f�:f��e��i��`�����i��cx��f�9k���j��8�h��i�� y�(ze��/��j�U[�\�8�k� �yb��ह`g9�h��e��i��k��j��x�j��a8� ���9ak:e����y/g8�k��d9��8�i��k�..�a��!��k��d9��8ह��y� x�fx��� �o�8�b��yb)9�#��e��g�o�9�a�.�8�dyi,y�e�ह�.�ࢹ`)8�n9c�y�(8�fx���k��k�� yod�*l��8�������8��x����8�x�k�o�9�a�.�8�dyidy�!8�c:)�y�`��fx��h-9d"8�j�fd8��� �i,y�e��k�n.8�j�g��.�8�czf��!:*.���x�n:*&:c,��fx��� ����X\\��\\��\�ܘ8�k���8�k�ak:e��c�� �x�j�d#9�`��/9`�x�����8����9�l8�j9d#9�l9.�y."�ऺ-m�b�ybcx�j�.�9�!8�e�� x�����8����9/g9�$9��8�j9f�c㹧�8हd#8�f9c�9n,��i�����e�����b8��� ��e��g��c8�h��i�� yc��.�9�"8�o������8����8�k�����y�`��j�f�c㹧�9.#z-��ऺ`&�n.8�k�k�za��i,y�e��j8�e��i��n��'��ex�f��j��a8� �c�9n,�.#y�m9d"8�j��jx�j��8ࢹ����yab8ह讹/�x�i��cx�j��a9h-9d"8�k���[�[�X8ह�-9��8�f��f�� y�`9�"z !ya�x�i�.%�.��`k���x�j:,����X\�xह��y� x�e��g��o��o��\��X�Pܚ]X�[8�n:`m�����fx��� ���.%�.��`k���x�k�� yc�8�a8�����8����8�b��\�[�[Yyc�9n,�� \]Y]Yy讹k��� X�[�X��acz` x� X�X��[�9⭹�b�讹k���n8�k���8�cz/�8�o�ह��d)��fx��� �k��(c9.+x�����8����8�c9/�y� x�fx����x�x�8���*&:/�9kd8� y�g�fj[��[�8� \]Y]Yx� S��f��g)�X\�x�k�k��f���k��`�.���o��i�a�yb*y�*8�f��f�� y��9.%�.���n9d#8�f9l ��"z,����8ह�(x�ex�j��a8� �`k���yo�8࠹c�8�a8�����8����8�c9aly�"X�X��[�8�o��g��k�i%�`�9bk�/g9�*8हi"y��8�i��cx��h-9d"8�k�l`9�`:f�:f��k��$9����hy.��ह��8�g��ex�j��a8�g��X�\��X�Pܚ]X�[8�j8�fx��� �������8��x���������8�k����a�a��!��j8�k���y������[\��'��(�`m8�k�*,yc���k�� y��x�a:gg�����x����x����9a��!��h8�dxऺ)���a��RRx�k��"yb�y��9f��i��`�ࢸ� yf�c㹪g�����c9�`9�"x�fx�������8����9k��dox�i��k��j��a8� ��\�
+
+X8�k�acz` x�����8����8हc�ࢹ��8�e��o��g��k�-m�n���e��i��8�a8�c8� yo�y�g�k�,hx�k�*,yc���k�)���/��h8�dx�j8�fx��� ��[�\�����8�����8������k�k�9.���9."�fd8�k��j��a8�x��8�����H��[�8हo�x�g��j��a8� ������8����8�c9�`����i,y�e��e��g�h-9d"8�k�m���cy�.��e�.+x�j�/�z+m�kd8ऺ)���/��fx��� ���x������f�����o��g��k�`k���x�ex�8�i��a8�j��a9�`����h,ydb�ह�'9a��e��g�h-9d"8�k�� x��x���������8ऺe�zc���e��i�f�:f��fx��� ����������j8�k���y��������k�*��!�e�zc���j�࠹d#8�f:`m����ऺ`jy�*8�fx��� ���X�[���Y
+��X[�\[�[��8�k����J
+X8�k�f�o�ya�z*i�(c8�h8�dxऺ*,yc���fx��� �]X\�[�[�Y8�k�a�z`�9f�c㹪g�����c9�`9�"x�fx��� ��`����o�9�a�.�8�dx�c9k�9.���fx���o��i�� S���`�����k�/o��*9��8ई�[���
+X8�k�c��.�8�n9�.��e��i��k��j��x�j��a8� �

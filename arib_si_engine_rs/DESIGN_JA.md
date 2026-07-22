@@ -298,32 +298,7 @@ EIT `free_CA_mode` は CAS 権利状態ではなく番組の暗号化有無と�
 
 Tuner HALは汎用的なMPEG-TS sectionの伝送処理（ペイロード抽出、sectionの区切り、宣言長の検査、任意のCRC検査、フィルター照合、queueまたはFMQへの配送、伝送診断）だけを担当する。PAT、CAT、PMT、NIT、SDT、BAT、EIT、TDT、TOT、BIT、NBIT、LDT、CDT、PCAT、SDTT、AIT、AMTを含む表固有の意味解析、正規化、複数sectionの集約、意味オブジェクトの生成は`arib_si_engine_rs`とTISが担当し、Tuner HALへ戻さない。
 
-1021区分は`section_length <= 1021`かつsection全体`<= 1024`、拡張区分は`section_length <= 4093`かつsection全体`<= 4096`とする。予約済み、未割り当て、私用、外部所有の`table_id`をARIB SIの型付き意味オブジェクトとして推測しない。ただし、Tuner SDKまたはTISが有効なsectionフィルターで選択した汎用の生sectionは、意味解析が未対応であることだけを理由にTuner HALが破棄してはならない。本crateは入力されたペイロードを次表に従って型付きで解析するか、未対応または不明な構造として保持する。
-
-下表の`STD-B10 5.13-E1`は、英語版で参照箇所を特定するための基準である。現行STD-B10 5.14との対応は、`../tuner_hal/DESIGN_JA.md`の「ARIB現行版との対応」に従い、5.10から5.14までの公式改定履歴を照合する。英語版と5.14日本語版全文の同一性、および未照合箇所への適用は主張しない。
-
-### Table ID別section長上限
-
-| 規格 | `table_id`または範囲 | 表名 | `section_length`上限 | section全体の上限バイト数 | 解析責務 | 根拠箇所 | 配送区分 |
-|---|---|---|---|---|---|---|---|
-| STD-B10 5.13-E1 | 0x40-0x41 | NIT actual/other | 1021 | 1024 | TISまたはTuner HALより上位の要求元 | 5.2.4、`section_length`の定義、PDF印刷ページ89〜90 | 汎用section配送、意味解釈は要求元が所有 |
-| STD-B10 5.13-E1 | 0x4A | BAT | 1021 | 1024 | TISまたはTuner HALより上位の要求元 | 5.2.5、PDF印刷ページ92〜93 | 汎用section配送、意味解釈は要求元が所有 |
-| STD-B10 5.13-E1 | 0x42,0x46 | SDT actual/other | 1021 | 1024 | TISまたはTuner HALより上位の要求元 | 5.2.6、PDF印刷ページ95〜97 | 汎用section配送、意味解釈は要求元が所有 |
-| STD-B10 5.13-E1 | 0x4E-0x6F | EIT p/f、schedule | 4093 | 4096 | TISまたはTuner HALより上位の要求元 | 5.2.7、PDF印刷ページ98〜101 | 汎用section配送、意味解釈は要求元が所有 |
-| STD-B10 5.13-E1 | 0x70 | TDT | 5 | 8 | TISまたはTuner HALより上位の要求元 | 5.2.8、表5-8 | 汎用section配送、意味解釈は要求元が所有 |
-| STD-B10 5.13-E1 | 0x71 | RST | 1021 | 1024 | TISまたはTuner HALより上位の要求元 | 5.2.10、PDF印刷ページ103〜104 | 汎用section配送、意味解釈は要求元が所有 |
-| STD-B10 5.13-E1 | 0x72 | ST | 4093 | 4096 | TISまたはTuner HALより上位の要求元 | 5.2.11、PDF印刷ページ104〜105 | 汎用section配送、意味解釈は要求元が所有 |
-| STD-B10 5.13-E1 | 0xC2 | PCAT | 4093 | 4096 | TISまたはTuner HALより上位の要求元 | 5.2.12、PDF印刷ページ106〜108 | 汎用section配送、意味解釈は要求元が所有 |
-| STD-B10 5.13-E1 | 0xC4 | BIT | 4093 | 4096 | TISまたはTuner HALより上位の要求元 | 5.2.13、PDF印刷ページ109〜110 | 汎用section配送、意味解釈は要求元が所有 |
-| STD-B10 5.13-E1 | 0xC5-0xC6 | NBIT本体/参照 | 4093 | 4096 | TISまたはTuner HALより上位の要求元 | 5.2.14、PDF印刷ページ110〜114 | 汎用section配送、意味解釈は要求元が所有 |
-| STD-B10 5.13-E1 | 0xC7 | LDT | 4093 | 4096 | TISまたはTuner HALより上位の要求元 | 5.2.15、PDF印刷ページ114〜116 | 汎用section配送、意味解釈は要求元が所有 |
-| STD-B10 5.13-E1 | 0xD0 | LIT | 4093 | 4096 | TISまたはTuner HALより上位の要求元 | Part 3 5.1.1、LITの `section_length` 定義 | 汎用section配送、意味解釈は要求元が所有 |
-| STD-B10 5.13-E1 | 0xD1 | ERT | 4093 | 4096 | TISまたはTuner HALより上位の要求元 | Part 3 5.1.2、ERTの `section_length` 定義 | 汎用section配送、意味解釈は要求元が所有 |
-| STD-B10 5.13-E1 | 0xD2 | ITT | 4093 | 4096 | TISまたはTuner HALより上位の要求元 | Part 3 5.1.3、ITTの `section_length` 定義 | 汎用section配送、意味解釈は要求元が所有 |
-| STD-B10 5.13-E1 | 0x4C | INT | 4093 | 4096 | TISまたはTuner HALより上位の要求元 | 5.2.17、`section_length` の定義、PDF印刷ページ118〜121 | 汎用section配送、意味解釈は要求元が所有 |
-| STD-B10と本設計 | 0x73 | TOT | 1021 | 1024 | TISまたはTuner HALより上位の要求元 | STD-B10の表割り当て、意味責務は下表 | 汎用section配送、意味解釈は要求元が所有 |
-| STD-B10と本設計 | 0xFE | AMT | 4093 | 4096 | TISまたはTuner HALより上位の要求元 | STD-B10の表割り当て、意味責務は下表 | 汎用section配送、意味解釈は要求元が所有 |
-| STD-B10 5.13-E1 | その他、予約済み、private | Tuner HALに型付きの意味責務を置かない | 構文上の長さだけを検証 | 12ビット長の絶対上限4096 | TISまたはTuner HALより上位の要求元 | 表の割り当てだけを用い、意味を推測しない | 汎用section配送、意味解釈は要求元が所有 |
+TSの伝送構文、`table_id`別のsection長上限、CRCとraw配送条件、公開フィルター状態は`../tuner_hal/DESIGN_JA.md`の「セクションフィルターの条件幅とsection長上限」を正とする。本crateは、それらの条件を満たして上位から入力されたsectionについてだけ、次表の意味解釈を担当する。予約済み、未割り当て、私用、外部所有の`table_id`を型付き意味オブジェクトとして推測しない。
 
 ### 意味解釈の責務
 
