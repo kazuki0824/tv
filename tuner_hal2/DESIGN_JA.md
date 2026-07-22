@@ -92,6 +92,8 @@ AIDLメソッドは、対象オブジェクトの識別情報とAIDL入力を`se
 
 段階4から戻った後に、objectだけでなくowner demux、source/sink filter、callback registration、queue identity、予約済み資源の各generationを再検証する。いずれかが変化していればtokenを`Cancelled`または`Invalidated`へ移し、準備済みartifactを解放して段階5へ進まない。
 
+`ExecutionToken`の正本台帳は`service_runtime::object_method_txn`が所有する`ExecutionTokenLedger`とする。nonceはサービスインスタンス内の検査付き単調増加値から発行し、上限到達時は新しいtokenを発行せず`UNKNOWN_ERROR`を返す。既存tokenのnonceを再利用しない。台帳はobject、owner、依存資源の各IDとgenerationから未消費tokenを列挙できる索引を持つ。objectの閉鎖、ownerの消滅、依存資源の世代変更では、該当索引から`Prepared`または`Transferred`のtokenを`Invalidated`へ移し、予約済み資源を正確に1回返却して待機者を起床させる。`Consumed`、`Cancelled`、`Invalidated`のtokenを再度実行または解放しない。
+
 
 通常の supported public API planning は `AidlMethodCall::PublicApi` を使う。unsupported-by-design API の戻り値生成だけ `AidlMethodCall::UnsupportedPublicApi` を使う。query / open / 状態取得系の supported API を unsupported planning に流用しない。
 
