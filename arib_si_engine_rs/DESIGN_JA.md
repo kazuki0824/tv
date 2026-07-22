@@ -294,41 +294,41 @@ Channel provider-data の正形式は JSON v1 のみとし、schema は `maleica
 
 EIT `free_CA_mode` は CAS 権利状態ではなく番組の暗号化有無として保持し、TIS が TvProvider scrambled 判定へ投影する。音声 ISO639 language は PMT / 音声コンポーネントdescriptor 等から取得できる値だけを保持し、取得不能時に推測しない。視聴年齢制限 は既存レーティングドメイン へ変換できる構造化値と、未対応・不正・reserved の診断情報を分離して保持する。
 
-## PSI/SI table-id規則と意味責務
+## PSI/SIのTable ID規則と意味解釈の責務
 
-Tuner HALはgeneric MPEG-TS section transport（payload抽出、section framing、宣言長検査、任意CRC検査、filter matching、queue/FMQ配送、transport診断）だけを所有する。PAT、CAT、PMT、NIT、SDT、BAT、EIT、TDT、TOT、BIT、NBIT、LDT、CDT、PCAT、SDTT、AIT、AMTを含むtable固有の意味解析、正規化、複数section集約、semantic object生成は`arib_si_engine_rs`とTIS側が所有し、Tuner HALへ戻さない。
+Tuner HALは汎用的なMPEG-TS sectionの伝送処理（ペイロード抽出、sectionの区切り、宣言長の検査、任意のCRC検査、フィルター照合、queueまたはFMQへの配送、伝送診断）だけを担当する。PAT、CAT、PMT、NIT、SDT、BAT、EIT、TDT、TOT、BIT、NBIT、LDT、CDT、PCAT、SDTT、AIT、AMTを含む表固有の意味解析、正規化、複数sectionの集約、意味オブジェクトの生成は`arib_si_engine_rs`とTISが担当し、Tuner HALへ戻さない。
 
-1021-classは`section_length <= 1021`かつsection全体`<= 1024`、extended-classは`section_length <= 4093`かつsection全体`<= 4096`とする。reserved、unassigned、private、外部所有のtable_idをARIB SIの型付き意味objectとして推測しない。ただし、Tuner SDK/TIS側が有効なsection filterで選択したgeneric raw sectionは、意味未対応だけを理由にTuner HALが破棄してはならず、本crateは入力されたpayloadを次表に従って型付き解析するか、unsupported/unknownとして構造を保持する。
+1021区分は`section_length <= 1021`かつsection全体`<= 1024`、拡張区分は`section_length <= 4093`かつsection全体`<= 4096`とする。予約済み、未割り当て、私用、外部所有の`table_id`をARIB SIの型付き意味オブジェクトとして推測しない。ただし、Tuner SDKまたはTISが有効なsectionフィルターで選択した汎用の生sectionは、意味解析が未対応であることだけを理由にTuner HALが破棄してはならない。本crateは入力されたペイロードを次表に従って型付きで解析するか、未対応または不明な構造として保持する。
 
-下表の`STD-B10 5.13-E1`は英文baselineの句locatorである。現行STD-B10 5.14は`../tuner_hal/DESIGN_JA.md`「ARIB current-version bridge」に従い、5.10〜5.14の公式改定履歴との連続性を適用する。英文baselineと5.14日本語全文の同一性、または未照合句への拡張は主張しない。
+下表の`STD-B10 5.13-E1`は、英語版で参照箇所を特定するための基準である。現行STD-B10 5.14との対応は、`../tuner_hal/DESIGN_JA.md`の「ARIB現行版との対応」に従い、5.10から5.14までの公式改定履歴を照合する。英語版と5.14日本語版全文の同一性、および未照合箇所への適用は主張しない。
 
-### TableId section-length registry
+### Table ID別section長上限
 
-| standard | table_id_or_range | table_name | section_length_max | total_section_bytes_max | parser_owner | primary_locator | delivery_class |
+| 規格 | `table_id`または範囲 | 表名 | `section_length`上限 | section全体の上限バイト数 | 解析責務 | 根拠箇所 | 配送区分 |
 |---|---|---|---|---|---|---|---|
-| STD-B10 5.13-E1 | 0x40-0x41 | NIT actual/other | 1021 | 1024 | TIS or requesting framework/client above Tuner HAL | 5.2.4; section_length semantics; PDF printed pp.89-90 | generic-section-delivery; client-owned-semantics |
-| STD-B10 5.13-E1 | 0x4A | BAT | 1021 | 1024 | TIS or requesting framework/client above Tuner HAL | 5.2.5; printed pp.92-93 | generic-section-delivery; client-owned-semantics |
-| STD-B10 5.13-E1 | 0x42,0x46 | SDT actual/other | 1021 | 1024 | TIS or requesting framework/client above Tuner HAL | 5.2.6; printed pp.95-97 | generic-section-delivery; client-owned-semantics |
-| STD-B10 5.13-E1 | 0x4E-0x6F | EIT p/f and schedule | 4093 | 4096 | TIS or requesting framework/client above Tuner HAL | 5.2.7; printed pp.98-101 | generic-section-delivery; client-owned-semantics |
-| STD-B10 5.13-E1 | 0x70 | TDT | 5 | 8 | TIS or requesting framework/client above Tuner HAL | 5.2.8; Table 5-8 | generic-section-delivery; client-owned-semantics |
-| STD-B10 5.13-E1 | 0x71 | RST | 1021 | 1024 | TIS or requesting framework/client above Tuner HAL | 5.2.10; printed pp.103-104 | generic-section-delivery; client-owned-semantics |
-| STD-B10 5.13-E1 | 0x72 | ST | 4093 | 4096 | TIS or requesting framework/client above Tuner HAL | 5.2.11; printed pp.104-105 | generic-section-delivery; client-owned-semantics |
-| STD-B10 5.13-E1 | 0xC2 | PCAT | 4093 | 4096 | TIS or requesting framework/client above Tuner HAL | 5.2.12; printed pp.106-108 | generic-section-delivery; client-owned-semantics |
-| STD-B10 5.13-E1 | 0xC4 | BIT | 4093 | 4096 | TIS or requesting framework/client above Tuner HAL | 5.2.13; printed pp.109-110 | generic-section-delivery; client-owned-semantics |
-| STD-B10 5.13-E1 | 0xC5-0xC6 | NBIT body/reference | 4093 | 4096 | TIS or requesting framework/client above Tuner HAL | 5.2.14; printed pp.110-114 | generic-section-delivery; client-owned-semantics |
-| STD-B10 5.13-E1 | 0xC7 | LDT | 4093 | 4096 | TIS or requesting framework/client above Tuner HAL | 5.2.15; printed pp.114-116 | generic-section-delivery; client-owned-semantics |
-| STD-B10 5.13-E1 | 0xD0 | LIT | 4093 | 4096 | TIS or requesting framework/client above Tuner HAL | Part 3 5.1.1; LIT section_length semantics | generic-section-delivery; client-owned-semantics |
-| STD-B10 5.13-E1 | 0xD1 | ERT | 4093 | 4096 | TIS or requesting framework/client above Tuner HAL | Part 3 5.1.2; ERT section_length semantics | generic-section-delivery; client-owned-semantics |
-| STD-B10 5.13-E1 | 0xD2 | ITT | 4093 | 4096 | TIS or requesting framework/client above Tuner HAL | Part 3 5.1.3; ITT section_length semantics | generic-section-delivery; client-owned-semantics |
-| STD-B10 5.13-E1 | 0x4C | INT | 4093 | 4096 | TIS or requesting framework/client above Tuner HAL | 5.2.17; section_length semantics; printed pp.118-121 | generic-section-delivery; client-owned-semantics |
-| STD-B10 / architecture decision | 0x73 | TOT | 1021 | 1024 | TIS or requesting framework/client above Tuner HAL | STD-B10 table allocation; semantic ownership fixed by the ownership table below | generic-section-delivery; client-owned-semantics |
-| STD-B10 / architecture decision | 0xFE | AMT | 4093 | 4096 | TIS or requesting framework/client above Tuner HAL | STD-B10 table allocation; semantic ownership fixed by the ownership table below | generic-section-delivery; client-owned-semantics |
-| STD-B10 5.13-E1 | all other/reserved/private | No Tuner HAL typed owner | syntax-field bounded only | 4096 absolute 12-bit envelope | TIS or requesting framework/client above Tuner HAL | Table allocation; no inference | generic-section-delivery; client-owned-semantics |
+| STD-B10 5.13-E1 | 0x40-0x41 | NIT actual/other | 1021 | 1024 | TISまたはTuner HALより上位の要求元 | 5.2.4、`section_length`の定義、PDF印刷ページ89〜90 | 汎用section配送、意味解釈は要求元が所有 |
+| STD-B10 5.13-E1 | 0x4A | BAT | 1021 | 1024 | TISまたはTuner HALより上位の要求元 | 5.2.5、PDF印刷ページ92〜93 | 汎用section配送、意味解釈は要求元が所有 |
+| STD-B10 5.13-E1 | 0x42,0x46 | SDT actual/other | 1021 | 1024 | TISまたはTuner HALより上位の要求元 | 5.2.6、PDF印刷ページ95〜97 | 汎用section配送、意味解釈は要求元が所有 |
+| STD-B10 5.13-E1 | 0x4E-0x6F | EIT p/f、schedule | 4093 | 4096 | TISまたはTuner HALより上位の要求元 | 5.2.7、PDF印刷ページ98〜101 | 汎用section配送、意味解釈は要求元が所有 |
+| STD-B10 5.13-E1 | 0x70 | TDT | 5 | 8 | TISまたはTuner HALより上位の要求元 | 5.2.8、表5-8 | 汎用section配送、意味解釈は要求元が所有 |
+| STD-B10 5.13-E1 | 0x71 | RST | 1021 | 1024 | TISまたはTuner HALより上位の要求元 | 5.2.10、PDF印刷ページ103〜104 | 汎用section配送、意味解釈は要求元が所有 |
+| STD-B10 5.13-E1 | 0x72 | ST | 4093 | 4096 | TISまたはTuner HALより上位の要求元 | 5.2.11、PDF印刷ページ104〜105 | 汎用section配送、意味解釈は要求元が所有 |
+| STD-B10 5.13-E1 | 0xC2 | PCAT | 4093 | 4096 | TISまたはTuner HALより上位の要求元 | 5.2.12、PDF印刷ページ106〜108 | 汎用section配送、意味解釈は要求元が所有 |
+| STD-B10 5.13-E1 | 0xC4 | BIT | 4093 | 4096 | TISまたはTuner HALより上位の要求元 | 5.2.13、PDF印刷ページ109〜110 | 汎用section配送、意味解釈は要求元が所有 |
+| STD-B10 5.13-E1 | 0xC5-0xC6 | NBIT本体/参照 | 4093 | 4096 | TISまたはTuner HALより上位の要求元 | 5.2.14、PDF印刷ページ110〜114 | 汎用section配送、意味解釈は要求元が所有 |
+| STD-B10 5.13-E1 | 0xC7 | LDT | 4093 | 4096 | TISまたはTuner HALより上位の要求元 | 5.2.15、PDF印刷ページ114〜116 | 汎用section配送、意味解釈は要求元が所有 |
+| STD-B10 5.13-E1 | 0xD0 | LIT | 4093 | 4096 | TISまたはTuner HALより上位の要求元 | Part 3 5.1.1、LITの `section_length` 定義 | 汎用section配送、意味解釈は要求元が所有 |
+| STD-B10 5.13-E1 | 0xD1 | ERT | 4093 | 4096 | TISまたはTuner HALより上位の要求元 | Part 3 5.1.2、ERTの `section_length` 定義 | 汎用section配送、意味解釈は要求元が所有 |
+| STD-B10 5.13-E1 | 0xD2 | ITT | 4093 | 4096 | TISまたはTuner HALより上位の要求元 | Part 3 5.1.3、ITTの `section_length` 定義 | 汎用section配送、意味解釈は要求元が所有 |
+| STD-B10 5.13-E1 | 0x4C | INT | 4093 | 4096 | TISまたはTuner HALより上位の要求元 | 5.2.17、`section_length` の定義、PDF印刷ページ118〜121 | 汎用section配送、意味解釈は要求元が所有 |
+| STD-B10と本設計 | 0x73 | TOT | 1021 | 1024 | TISまたはTuner HALより上位の要求元 | STD-B10の表割り当て、意味責務は下表 | 汎用section配送、意味解釈は要求元が所有 |
+| STD-B10と本設計 | 0xFE | AMT | 4093 | 4096 | TISまたはTuner HALより上位の要求元 | STD-B10の表割り当て、意味責務は下表 | 汎用section配送、意味解釈は要求元が所有 |
+| STD-B10 5.13-E1 | その他、予約済み、private | Tuner HALに型付きの意味責務を置かない | 構文上の長さだけを検証 | 12ビット長の絶対上限4096 | TISまたはTuner HALより上位の要求元 | 表の割り当てだけを用い、意味を推測しない | 汎用section配送、意味解釈は要求元が所有 |
 
-### Semantic ownership
+### 意味解釈の責務
 
-| scope | representative_table_ids | semantic_owner | tuner_hal_behavior | delivery_rule | forbidden_behavior | rationale |
+| 対象 | 主なtable ID | 意味解釈の責務 | Tuner HALの処理 | 配送規則 | 禁止事項 | 理由 |
 |---|---|---|---|---|---|---|
-| ALL_PSI_SI | PAT 0x00; CAT 0x01; PMT 0x02; NIT 0x40/0x41; SDT 0x42/0x46; BAT 0x4A; EIT 0x4E-0x6F; TDT 0x70; TOT 0x73; BIT 0xC4; AMT 0xFE; private/future IDs | TIS or requesting framework/client layer above Tuner HAL | generic section filter matching, framing, declared-length/CRC processing, metadata and byte delivery only | deliver every matched complete section to the requesting valid client path; do not silently discard based on table_id | table-specific semantic parsing/normalization/object creation; EPG/time/application database updates; hard-coded EIT/TOT/AMT discard; semantic routing policy in HAL | AOSP Tuner HAL section APIs expose generic section transport rather than PSI/SI table semantic APIs. |
-| EIT_EXPLICIT_CONFIRMATION | 0x4E-0x6F | TIS/EPG client above HAL | generic section delivery under configured filter; no event/service/time interpretation | matched EIT is delivered, not skipped; malformed framing/CRC follows generic section error policy | event parsing, schedule aggregation, EPG object creation, or table-id-based discard in HAL | EIT is not an exception to the generic section boundary. |
-| TOT_AMT_CORRECTION | TOT 0x73; AMT 0xFE | TIS or requesting client above HAL | same generic section behavior as other PSI/SI tables | matched sections are delivered generically; unmatched sections naturally do not reach the client | wording that reads past/discards solely because semantic parsing is outside HAL | absence of HAL semantics does not cancel a valid client section-filter request. |
+| すべてのPSI/SI | PAT 0x00、CAT 0x01、PMT 0x02、NIT 0x40/0x41、SDT 0x42/0x46、BAT 0x4A、EIT 0x4E-0x6F、TDT 0x70、TOT 0x73、BIT 0xC4、AMT 0xFE、私用・将来用ID | TISまたはTuner HALより上位の要求元 | 汎用sectionフィルターの照合、外形処理、宣言長・CRC処理、メタデータとバイト列の配送だけ | 条件に一致する完全なsectionは、要求元の有効な経路へすべて配送する。`table_id`を理由に無言で破棄しない | 表ごとの意味解析・正規化・オブジェクト生成、EPG・時刻・アプリケーションDBの更新、EIT/TOT/AMTの固定破棄、HAL内の意味別振り分け | AOSP Tuner HALのsection APIは、PSI/SI表ごとの意味APIではなく、汎用のsection転送を公開しているため |
+| EITの明示確認 | 0x4E-0x6F | HALより上位のTIS/EPG処理 | 設定済みフィルターによる汎用section配送だけとし、イベント・サービス・時刻を解釈しない | 条件に一致するEITは省略せず配送する。外形またはCRCの不正は汎用sectionエラー規則に従う | HAL内でのイベント解析、放送予定の集約、EPGオブジェクト生成、Table IDによる破棄 | EITも汎用section境界の例外ではないため |
+| TOT/AMTの扱い | TOT 0x73、AMT 0xFE | TISまたはHALより上位の要求元 | その他のPSI/SI表と同じ汎用section処理 | 条件に一致するsectionを汎用配送する。条件に一致しないsectionは要求元へ届かない | HALが意味解析を行わないことだけを理由に読み飛ばす、または破棄する処理 | HALが意味解釈を持たなくても、クライアントの有効なsectionフィルター要求は失効しないため |
