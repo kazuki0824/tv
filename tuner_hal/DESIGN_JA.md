@@ -1328,7 +1328,7 @@ VTS / lab profile は代表点だけでよく、全 CATV 候補の実波存在�
 `Tuner.scan(AUTO_SCAN)` を実装する場合も、HALが日本向け候補列を生成しない。TISが明示した1候補に対する一回限りのscanとして扱い、継続探索はTISが次のcandidateを投入する。
 
 
-## セクションフィルター / EIT schedule 上限
+## セクションフィルターの条件幅とsection長上限
 
 `numBytesInSectionFilter` は section payload の最大長ではなく、セクションフィルター condition の byte幅として扱う。mask / filter byte 幅は16 bytesを維持する。
 
