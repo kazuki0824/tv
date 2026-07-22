@@ -916,6 +916,10 @@ checked FMQ shim は、`queue == null` または `out_written == null` を `INVA
 | AT-005 | Filter / DVR / Demux close | 表5の公開遮断・実行権限無効化・登録解除・資源回収 | 表5のcleanup完了条件を満たした時点 | 未完手順と一回性権限を`CleanupPending`または回収機構へ移管 | 当該objectと未完依存資源 | 表5に従う | public closeと物理解放を分離する |
 | AT-006 | callback登録 | callback artifact準備・runtime登録・domain確定 | 三者の関連が確定した時点 | 準備済みartifactとruntime登録を逆順で戻す | callback registryと所有object | 0-S-3とcallback ownership契約に従う | 登録の片側だけを残さない |
 | AT-007 | 複数demux stream boundary | 対象一覧固定後、demuxごとに独立した境界transactionを実行 | 各demuxのcommitを個別に記録し、全対象を処理した時点 | 未処理対象は変更せず、commit済み対象を巻き戻さない | 変更結果を確定できないdemuxだけ | 表SB-1に従う | 一部成功を全体rollbackで隠さない |
+| AT-008 | `IFrontend.scan()` / `stopScan()` | 入力検証・worker枠とcallback経路の準備・旧scan世代の終端・新世代の確定 | backend受理、新世代、worker、callback許可を一括で公開した時点 | 旧世代終端前は状態不変。終端後は旧scanを復元しない | frontend、scan worker、callback経路 | scan終了理由とcallback配送結果の規則に従う | scan終了理由とEND通知結果を分離する |
+| AT-009 | `IFilter.setDataSource()` | 表1-Dの検証・新しい関連の準備・旧関連の終端・source境界と新関連の確定 | source/sink関連とsink入力世代を同一確定点で公開した時点 | 確定前は旧関連を維持。確定後の不確定は当該sinkと関連だけを隔離 | source/sink関連とsink入力境界 | 表1-Dと表18-Bに従う | source側とsink側の片方だけを公開しない |
+| AT-010 | `IDescrambler.setKeyToken()` / `addPid()` / `removePid()` | tokenと所有者の検証・backend適用準備・backend反映・鍵またはPID台帳の確定 | backendと台帳の両方が同じ要求を確定した時点 | backend反映前は台帳を変更しない。反映後に台帳を確定できない場合は当該descramblerを隔離 | descrambler session、鍵使用権、PID claim | token/PID状態表と失敗分類に従う | backendと台帳の不一致を成功扱いにしない |
+| AT-010a | Frontend / Demux / Filter / DVR / Descrambler / LNB open | 能力と容量の検証・資源予約・runtime object準備・registry登録・公開 | registry登録と所有者台帳を確定し、objectを呼出元へ返す時点 | 公開前の準備物を逆順に解放する。解放結果を確定できない資源は`CleanupPending`または隔離へ移す | 準備中objectと予約済み資源 | 原因別のopenエラーを返し、objectを公開しない | 公開失敗後に半登録objectや消費済み容量を残さない |
 
 再選局には、明確に分離した2つの確定点を設ける。段階Aでは、入力検証と未稼働状態の準備を行い、フロントエンドのトランザクションロックを取得して、旧バックエンドを停止し、旧ワーカーを静止させる。確定Aでは、旧世代を終端として一括確定し、関連付け済みdemuxと組み立て処理の境界状態を初期化する。その後、新しい選局要求をバックエンドへ送る。要求に成功した場合は、確定Bで新世代を公開し、準備済みワーカーを有効化する。新しいバックエンド要求が通常の受理失敗となった場合は準備済み状態を解放して`Untuned`へ移す。停止、世代遮断、境界初期化、または準備資源の解放結果を確定できない場合は`Failed`へ移す。どちらの場合も旧選局を復元しない。確定Aと確定Bを1つの確定処理として記述してはならず、境界状態の初期化はバックエンド要求より前の確定Aで行う。
 
