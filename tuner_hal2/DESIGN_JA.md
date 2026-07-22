@@ -61,7 +61,7 @@ Snapshot は read-only query DTO として許容する。rollback token は snap
 |---|---|---|
 | `aidl_service/src/tuner_service.rs` | `TunerAidlService`、`ITuner`、root open/query/command の DTO 変換、service_runtime root façade 呼び出し、AIDL 型変換 | root method planning、dispatch preflight、unsupported / unavailable status precedence、read-only snapshot 本体、child trait 実装、service-level helper を戻さない |
 | `aidl_service/src/tuner_service/support.rs` | AIDL object lookup、local binder downcast、AIDL method call DTO 生成、source filter owner/public id helper | AIDL trait 実装、root method planning、unsupported / unavailable status precedence、runtime状態遷移、Binder status helper再定義を置かない |
-| `aidl_service/src/child_object_open.rs` | デマルチプレクサ配下のフィルターまたはDVRを開く際のBinderオブジェクト生成、コールバック実体の保持、`service_runtime`への接続 | 子オブジェクトの割り当て、コールバックの後片付け、巻き戻し、状態確定は`service_runtime::object_method_txn`が一括して担当する。AIDL層は`ObjectMethodExecutionToken`を生成せず、Binderオブジェクトの生成結果とコールバック実体の操作結果だけを渡す |
+| `aidl_service/src/child_object_open.rs` | デマルチプレクサ配下のフィルターまたはDVRを開く際のBinderオブジェクト生成、コールバック実体の保持、`service_runtime`への接続 | 子オブジェクトの割り当て、コールバックの後片付け、巻き戻し、状態確定は`service_runtime::object_method_txn`が一括して担当する。AIDL層は`ExecutionToken`を生成せず、Binderオブジェクトの生成結果とコールバック実体の操作結果だけを渡す |
 | `aidl_service/src/tuner_service/frontend_methods.rs` | `impl IFrontend for FrontendAidlObject` | runtime registry の直接所有を増やさない |
 | `aidl_service/src/tuner_service/demux_methods.rs` | `impl IDemux for DemuxAidlObject` | filter/DVR/descrambler 状態遷移を直接所有しない |
 | `aidl_service/src/tuner_service/filter_methods.rs` | `impl IFilter for FilterAidlObject` | callback/FMQ/AV cleanup failure を空消費しない |
@@ -69,15 +69,28 @@ Snapshot は read-only query DTO として許容する。rollback token は snap
 | `aidl_service/src/tuner_service/descrambler_methods.rs` | `impl IDescrambler for DescramblerAidlObject` | token / PID lifetime を AIDL 層で所有しない |
 | `aidl_service/src/tuner_service/lnb_methods.rs` | `impl ILnb for LnbAidlObject` | LNB backend safe-state apply を Drop 経路へ戻さない |
 
-AIDLメソッドは、対象オブジェクトの識別情報とAIDL入力を`service_runtime`へ渡し、返却結果をBinder状態へ変換する。生存、世代、種類、入力変換、実行可否、状態変更、巻き戻しの順序は、`service_runtime::object_method_txn`が1個のトランザクションとして担当する。状態変更を許可する`ObjectMethodExecutionToken`も同トランザクションが発行し、対象の処理で一度だけ消費する。AIDL層は別の実行権限や状態遷移を設けない。
+AIDLメソッドは、対象オブジェクトの識別情報とAIDL入力を`service_runtime`へ渡し、返却結果をBinder状態へ変換する。生存、世代、種類、入力変換、実行可否、状態変更、巻き戻しの順序は、`service_runtime::object_method_txn`が1個のトランザクションとして担当する。状態変更を許可する`ExecutionToken`も同トランザクションが発行し、対象の処理で一度だけ消費する。AIDL層は別の実行権限や状態遷移を設けない。
 
-ルート問い合わせと命令は`RootQueryRequest`、`RootQueryResponse`、`RootCommandRequest`を介し、`service_runtime::root_method_txn`が実行可否と戻り値の優先順位を決める。オブジェクト問い合わせは`ObjectQueryRequest`と`ObjectQueryResponse`を介し、`RuntimeQuery<'_>`から読み取り専用のスナップショットを生成する。問い合わせ処理では`ObjectMethodExecutionToken`を発行しない。
+ルート問い合わせと命令は`RootQueryRequest`、`RootQueryResponse`、`RootCommandRequest`を介し、`service_runtime::root_method_txn`が実行可否と戻り値の優先順位を決める。オブジェクト問い合わせは`ObjectQueryRequest`と`ObjectQueryResponse`を介し、`RuntimeQuery<'_>`から読み取り専用のスナップショットを生成する。問い合わせ処理では`ExecutionToken`を発行しない。
 
 `IFilter.setDataSource(source)`では、AIDL層がローカルBinderオブジェクトをドメイン要求へ変換する。入力元と出力先の資源寿命、世代、種類、所有デマルチプレクサ、自己参照、実行可否、確定、巻き戻しは、`service_runtime`のデマルチプレクサ、フィルター、DVR用トランザクションが担当する。所有デマルチプレクサの不一致または自己参照は、出力先オブジェクトの生存と世代を確認した後に判定する。
 
 状態変更を伴うAIDLメソッドでは、生存確認、公開IDの解決、入力変換、実行可否の判定、状態確定をAIDL層で分割して組み立てない。`aidl_service::object_runtime`をAIDL側の入口とし、`service_runtime::object_method_txn`が同一の排他区間で検証、予約、確定、巻き戻し、隔離を担当する。現在の実行時状態が入力変換に必要な場合も、その取得と要求の確定を同じトランザクション内で行う。
 
-`ObjectMethodTxn`は、入力変換が失敗し得る操作、子オブジェクトの生成、入力元との関連付け、コールバック登録など、戻り値の優先順位が競合し得る操作に使用する。単純な状態変更処理まで機械的に包まない。トランザクションは検証後に複製不能な`ObjectMethodExecutionToken`を1個だけ発行し、対象ID、世代、種類が一致する処理で一度だけ消費する。未対応または利用不能として拒否する経路と、読み取り専用の問い合わせ経路では同トークンを発行しない。
+`ObjectMethodTxn`は、入力変換が失敗し得る操作、子オブジェクトの生成、入力元との関連付け、コールバック登録など、戻り値の優先順位が競合し得る操作に使用する。単純な状態変更処理まで機械的に包まない。トランザクションは検証後に複製不能な`ExecutionToken`を1個だけ発行し、対象ID、世代、種類が一致する処理で一度だけ消費する。未対応または利用不能として拒否する経路と、読み取り専用の問い合わせ経路では同トークンを発行しない。
+
+`ObjectMethodTxn`の段階とロック境界は次のとおり固定する。
+
+| 段階 | 実行内容 | ロックと外部処理 |
+|---|---|---|
+| 1. 入力変換 | AIDL値を副作用のない型へ変換 | runtimeロック取得前。Binder、FFI、機器I/Oを行わない |
+| 2. 検証・予約 | object、owner、generation、kind、依存objectを同一snapshotで検証し、必要枠を予約 | service_runtimeの規定順序のロック内。外部呼び出し禁止 |
+| 3. 権限移管 | snapshotの全依存世代を保持する`ExecutionToken`を`Prepared`から`Transferred`へ移す | ロック内で一度だけ実行 |
+| 4. 外部準備 | Binder artifact保持、FMQ/FD複製、backend準備など失敗し得る外部処理 | runtimeロック外。tokenは未消費で、対象・owner・依存世代を固定する |
+| 5. 再検証・確定 | 固定済み世代を再検証し、最初の外部可視副作用直前にtokenを消費してdomain commit | 不一致なら副作用なしで取消。commit中にBinder callbackを呼ばない |
+| 6. 確定後処理 | callback配送、診断、不要な予約の解放 | runtimeロック外。失敗は確定済み主結果を上書きしない |
+
+段階4から戻った後に、objectだけでなくowner demux、source/sink filter、callback registration、queue identity、予約済み資源の各generationを再検証する。いずれかが変化していればtokenを`Cancelled`または`Invalidated`へ移し、準備済みartifactを解放して段階5へ進まない。
 
 
 通常の supported public API planning は `AidlMethodCall::PublicApi` を使う。unsupported-by-design API の戻り値生成だけ `AidlMethodCall::UnsupportedPublicApi` を使う。query / open / 状態取得系の supported API を unsupported planning に流用しない。
@@ -193,7 +206,7 @@ AIDL method body は、fallible な AIDL input -> domain request 変換、callba
 | cleanup execution report / shared cleanup diagnostics | `service_runtime::cleanup_execution::{CleanupExecutionReport<TStepOutcome, TFailure>, CleanupExecutionDiagnosticSnapshot<TRecord>, SharedCleanupDiagnostics<TRecord>}` | cleanup 系 top-level use-case が all-attempt step outcome を保持し、public failure 用 first-error projection、bounded diagnostic snapshot、dropped count、shared diagnostic sink を共通化する上位部品。object close / drop-leak terminalization と frontend worker cleanup はこの pattern に接続する。共通化するのは report/snapshot/shared-store の execution pattern であり、対象 id、generation、step kind、domain failure 型は domain-specific typed adapter に残す。object cleanup は `ObjectCleanupStepOutcome::{Artifact,Domain,Runtime}` と `ObjectCleanupObjectTarget`、frontend worker cleanup は `FrontendWorkerCleanupStepOutcome` の step-specific variants と `FrontendWorkerCleanupTarget` / `FrontendWorkerCleanupWorkerGeneration` で context を表現し、`Option` field bag や `String` detail へ丸めて object cleanup と frontend worker cleanup を無理に同一 record 化してはならない。 |
 | multi-step cleanup first-error collector | `maleicacid_tuner_hal2_common::FirstErrorCollector` | owner-loss / callback cleanup など、cleanup execution report の leaf step 内で必要になる複数 cleanup stepをすべて試行し、最初に発生した cleanup error を保持する補助部品。object close / drop-leak terminalization および frontend worker cleanup の top-level step 集約は `CleanupExecutionReport<_, _>` が所有し、FirstErrorCollector はその top-level report の代替にならない。collector は状態遷移、診断記録、rollback 本体、primary failure と cleanup failure の合成を所有しない。primary failure が既に存在する経路では、failure composition helper 群で primary と cleanup を合成する。 |
 | root object open transaction | `service_runtime::root_object_ops` と `aidl_service::tuner_service::{*_object_from_entry, rollback_root_object_open_after_aidl_failure}` | ITuner root open (`openFrontendById` / `openDemux` / `openDemuxById` / `openDescrambler` / `openLnbById` / `openLnbByName`) の runtime allocation、availability query、method planning、AIDL object table registration、runtime open、失敗時rollbackを service_runtime の root object open use-case 境界へ寄せる。AIDL側は returned entry から typed Binder object を生成し、Binder object 生成失敗時は service_runtime rollback helper を呼ぶだけにする。rollback は `finish_open_rollback()` を通し、object-table 側 rollback が失敗しても runtime unregister / close を必ず試行する。object table failure は共通 `object_table_error_to_hal()` で `RuntimeObjectTableError` の意味を保ち、duplicate / lifecycle / owner / kind mismatch を `HalError::Internal` に丸めて `UNKNOWN_ERROR` へ落とさない。generation overflow は内部カウンタ枯渇として `Internal` を維持する。runtime registry allocation / commit failure は共通 `registry_commit_error_to_hal()` を使い、duplicate は `INVALID_STATE`、missing/mismatch は対象APIの invalid input、id exhausted は `UNKNOWN_ERROR` へ分離する。`RuntimeObjectEntry` 取得後の public id 変換失敗も後段失敗として root object open rollback 対象にする。 |
-振り分けから実行までの権限は、複製できない一回限りの `ExecutionToken` で表す。このトークンは `object_id`、`object_generation`、`owner_id`、`method_domain`、`nonce` を保持する。検証・予約用ロックの保持中に `Prepared` 状態で生成し、実行部へ一度だけ移し、外部から観測可能な最初の副作用の直前に一度だけ消費する。状態は `Prepared`、`Transferred`、`Consumed`、`Cancelled`、`Invalidated` とする。二重消費、古い世代、所有者またはメソッドの不一致は、副作用を生じさせず型付きの権限エラーとして返す。消費前の取り消し、所有者の消滅、オブジェクトの閉鎖では未消費トークンを無効化する。実行失敗後にトークンを戻してはならず、再試行時は検証からやり直して新しいトークンを発行する。この状態機械とは別の実行権限を設けない。
+振り分けから実行までの権限は、複製できない一回限りの`ExecutionToken`で表す。このトークンは`object_id`、`object_generation`、`owner_id`、`owner_generation`、`method_domain`、`nonce`に加え、操作が参照するsource/sink object、callback registration、queue identity、予約済み資源の識別子とgenerationを保持する。検証・予約用ロックの保持中に`Prepared`状態で生成し、実行部へ一度だけ移し、外部から観測可能な最初の副作用の直前に一度だけ消費する。状態は`Prepared`、`Transferred`、`Consumed`、`Cancelled`、`Invalidated`とする。二重消費、古い世代、所有者、依存資源、またはメソッドの不一致は、副作用を生じさせず型付きの権限エラーとして返す。消費前の取り消し、所有者の消滅、オブジェクトの閉鎖では未消費トークンを無効化する。実行失敗後にトークンを戻してはならず、再試行時は検証からやり直して新しいトークンを発行する。この状態機械とは別の実行権限を設けない。
 
 | 既存契約上の境界 | tuner_hal2の実体 | 既存契約との関係 |
 |---|---|---|
@@ -209,7 +222,7 @@ AIDL method body は、fallible な AIDL input -> domain request 変換、callba
 | 子オブジェクトの生成 | `child_object_open`と`service_runtime`の子オブジェクト生成完了処理 | 所有者の生存確認、実行可否の事前確認、実行時の子オブジェクト生成、コールバック実体の保持、`service_runtime`が担当する巻き戻し完了処理 |
 | close | `ObjectCloseTxn` | close preflight / closing cascade / domain cleanup / commit or cleanup failed |
 | ルートオブジェクトの生成 | `root_object_ops`と`open_rollback` | ルートオブジェクトの登録、実行時資源の割り当て、巻き戻し |
-| object pure query | `ObjectQueryRequest` / `ObjectQueryResponse` + `ObjectMethodTxn` query path | object live / generation / kind、method planning、runtime validate、dispatch preflight を通し、proof は発行せず、`RuntimeQuery<'_>` だけで read-only snapshot を作る |
+| object pure query | `ObjectQueryRequest` / `ObjectQueryResponse` + read-only query path | object live / generation / kind、method planning、runtime validate、dispatch preflightを通し、tokenは発行せず、`RuntimeQuery<'_>`だけでread-only snapshotを作る |
 | root read-only query | `RootQueryRequest` / `RootQueryResponse` + `root_method_txn` + `RuntimeQuery<'_>` | root method planning と dispatch preflight 後に single-lock read-only snapshot を返す。query_api.rs は planning を所有しない |
 | unavailable / unsupported | `plan_unavailable_object_method_use_case` | 実行しないが public API method として lifecycle / dispatch を記録する |
 
