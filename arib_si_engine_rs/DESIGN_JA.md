@@ -329,6 +329,4 @@ Tuner HALは汎用的なMPEG-TS sectionの伝送処理（ペイロード抽出�
 
 | 対象 | 主なtable ID | 意味解釈の責務 | Tuner HALの処理 | 配送規則 | 禁止事項 | 理由 |
 |---|---|---|---|---|---|---|
-| すべてのPSI/SI | PAT 0x00、CAT 0x01、PMT 0x02、NIT 0x40/0x41、SDT 0x42/0x46、BAT 0x4A、EIT 0x4E-0x6F、TDT 0x70、TOT 0x73、BIT 0xC4、AMT 0xFE、私用・将来用ID | TISまたはTuner HALより上位の要求元 | 汎用sectionフィルターの照合、外形処理、宣言長・CRC処理、メタデータとバイト列の配送だけ | 条件に一致する完全なsectionは、要求元の有効な経路へすべて配送する。`table_id`を理由に無言で破棄しない | 表ごとの意味解析・正規化・オブジェクト生成、EPG・時刻・アプリケーションDBの更新、EIT/TOT/AMTの固定破棄、HAL内の意味別振り分け | AOSP Tuner HALのsection APIは、PSI/SI表ごとの意味APIではなく、汎用のsection転送を公開しているため |
-| EITの明示確認 | 0x4E-0x6F | HALより上位のTIS/EPG処理 | 設定済みフィルターによる汎用section配送だけとし、イベント・サービス・時刻を解釈しない | 条件に一致するEITは省略せず配送する。外形またはCRCの不正は汎用sectionエラー規則に従う | HAL内でのイベント解析、放送予定の集約、EPGオブジェクト生成、Table IDによる破棄 | EITも汎用section境界の例外ではないため |
-| TOT/AMTの扱い | TOT 0x73、AMT 0xFE | TISまたはHALより上位の要求元 | その他のPSI/SI表と同じ汎用section処理 | 条件に一致するsectionを汎用配送する。条件に一致しないsectionは要求元へ届かない | HALが意味解析を行わないことだけを理由に読み飛ばす、または破棄する処理 | HALが意味解釈を持たなくても、クライアントの有効なsectionフィルター要求は失効しないため |
+| すべてのPSI/SI | PAT 0x00、CAT 0x01、PMT 0x02、NIT 0x40/0x41、SDT 0x42/0x46、BAT 0x4A、EIT 0x4E-0x6F、TDT 0x70、TOT 0x73、BIT 0xC4、AMT 0xFE、私用・将来用ID | TISまたはTuner HALより上位の要求元 | 汎用sectionフィルターの照合、外形処理、宣言長・CRC処理、メタデータとバイト列の配送だけ | 条件に一致する完全なsectionは、要求元の有効な経路へすべて配送する。条件に一致しないsectionだけを配送対象外とし、`table_id`を理由に無言で破棄しない | 表ごとの意味解析・正規化・オブジェクト生成、EPG・時刻・アプリケーションDBの更新、特定の`table_id`に対する固定破棄、HAL内の意味別振り分け | AOSP Tuner HALのsection APIは、PSI/SI表ごとの意味APIではなく、汎用のsection転送を公開しているため |
