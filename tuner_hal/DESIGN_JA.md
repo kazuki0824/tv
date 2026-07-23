@@ -340,7 +340,7 @@ Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時�
 - セクションフィルター は condition の必要 byte 幅が payload 長を超える場合に match しない。prefix だけ一致した短い payload を match としない。
 - セクションフィルターの `repeat=false` は重複抑止ではなく、同一 `start()` 世代内の配送停止条件である。`SectionBits` は最初に一致した section を1件配送した後、version や section number が異なる後続 section も配送しない。`TableInfo` は公開設定のtable idとversionで候補sectionを照合し、最初に受理したsectionの`table_id`、`table_id_extension`、version、`last_section_number`を1個の完了キーとして固定する。以後は同じキーの`section_number=0..last_section_number`を1回ずつ配送し、集合完了後に停止する。完了前に届いた別extension、別version、異なる`last_section_number`のsectionは同じ完了集合へ混ぜず配送しない。versionがwildcardの場合も、最初に受理したversionへ固定する。`repeat=true` の場合だけ同一条件の section / table を繰り返し配送する。section filter の配送可否状態は demux 入力から直接組み立てた section にだけ適用する。source filter 経由で section payload を再配送する経路は本製品では対応しない。この配送停止は公開 `IFilter.stop()` 呼び出しと同じ状態遷移ではない。filter object の公開状態は Started のまま維持し、利用側が明示的に `stop()` / `flush()` / `configure()` / `close()` を呼べる状態を保つ。
 - `TableInfo.version` は `-1` または `0..31` だけを受け付ける。`-1` は wildcard、範囲外は `INVALID_ARGUMENT` とする。
-- PES `streamId` は `0..=255` を明示 `stream_id` として照合し、AOSP `Constant.INVALID_STREAM_ID` の `0xFFFF` だけをwildcardとして扱う。負値、`256..=65534`、`65536`以上は`INVALID_ARGUMENT`とする。`streamId=0`はwildcardではなく、8-bit値`0x00`の明示照合である。
+- PES `streamId` は `0..=255` を明示 `stream_id` として照合し、AOSP `Constant.INVALID_STREAM_ID` の `0xFFFF` だけをwildcardとして扱う。負値、`256..=65534`、`65536`以上は`INVALID_ARGUMENT`とする。`streamId=0`はwildcardではなく、8-bit値`0x00`の明示照合である。現行製品profileで成功させるPES設定はARIB字幕用の明示`0xBD`だけとし、wildcardおよび他の有効なstream IDは`UNAVAILABLE`とする。これはAOSP列挙値の妥当性判定と製品対応範囲を分離する規則であり、`0xFFFF`を不正値として扱うものではない。
 - `IFilter.setDataSource()` の互換性は本書の「表1-D. `setDataSource()` 互換表」を正とする。`setDataSource(NULL)` は demux input 復帰として成功対象に含める。filter source を指定する場合は、表1-D-3の subtype 別成立条件を正とする。source filter として指定できるのは TS生データフィルタだけである。下流として成功させるのは TS生データフィルタと record フィルタだけである。section / PES / AV への raw TS 再parse chain、および section payload、PES payload、AV payload、record payload を直接 source として再配送する経路は作らない。非対応の linkage は `UNAVAILABLE` とし、ペイロードなしフィルタを source または sink にする接続は `INVALID_ARGUMENT` とする。`linkCaps` に広告した main type pair はVTS生成の `UNDEFINED` subtype接続も成功させる。
 - `IFilter.setDataSource(source)` の non-null source 経路は 同一demux内のfilter接続グラフ の接続だけを正式対象とする。`linkCaps` は同一 demux 内で開いた source / sink filter の main type 対応可否を表し、別 demux に属する filter を source に指定する経路を capability / VTS profile 対象に含めない。source / sink object の lifetime、generation、kind を先に確認し、その後に owner demux 不一致と自己参照を `INVALID_ARGUMENT` で拒否する。AOSP API 文面上の「another filter」は本製品では同一 demux の filter graph 内の別 filter として扱い、別demux間のfilter接続グラフは作らない。
 - `IFilter.getQueueDesc()` の成否は configure 済みかどうかではなく、open時フィルタ種別が通常FMQを持つかどうかで決める。通常FMQ対象フィルタは未configureでも記述子取得を成功させる。
@@ -350,7 +350,7 @@ Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時�
 
 - `IDescrambler.addPid()` / `removePid()` の source filter は AOSP意味論では optional であり、`NULL` は demux 入力全体の PID 指定である。NULL 経路は現行AOSP契約上の成功対象として扱い、実装済み対象に含める。
 
-公開する対応能力は、機器検出後に選択して以後変更しない1個の `CapabilitySnapshot` から導出する。最初に `F=successful_frontend_count` と `L=aidl_baseline_eligible_lnb_count` を確定する。実行時の候補C8、C4、C2、C1は優先順を持ち、本書の候補表でdemux、フィルター、DVR、AVのオブジェクト数とF/Lに対する式を明示する。各候補についてオブジェクト台帳と実行権限枠を仮予約し、いずれかの構成要素で失敗した場合は仮予約全体を取り消す。予約に成功した最大の候補を一度だけ確定する。C1は`ITuner`公開に必要な最小オブジェクト構成とし、音声AVフィルター1個と映像AVフィルター1個を含むが、AV payload領域は起動時に先取りしない。確定済みスナップショットを`getDemuxCaps()`、オブジェクト受付、後片付け時の個数集計の根拠とする。呼び出し側が指定するFMQ容量とAVの実サイズ割り当ては、openまたは配送時に`ProductProfile`の実行時メモリー予算へ別transactionで予約する。PES filterは共有予算と長さ0 PESの保持方式が未設計であるためsnapshotへ公開しない。VTSはC1に無条件では含めない。AOSPブランチ、フロントエンド入力元、選局値とPID、使用経路、Filter/DVRのバッファー容量、製品のメモリー予算を、起動前の`VtsEnvironmentProfile`として定義する。未定義の間は`DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED`とし、既定のV1 XMLを組み込まず、VTS成功を表明しない。
+公開する対応能力は、機器検出後に選択して以後変更しない1個の `CapabilitySnapshot` から導出する。最初に `F=successful_frontend_count` と `L=aidl_baseline_eligible_lnb_count` を確定する。実行時の候補C8、C4、C2、C1は優先順を持ち、本書の候補表でdemux、フィルター、DVR、AVのオブジェクト数とF/Lに対する式を明示する。各候補についてオブジェクト台帳と実行権限枠を仮予約し、いずれかの構成要素で失敗した場合は仮予約全体を取り消す。予約に成功した最大の候補を一度だけ確定する。C1は`ITuner`公開に必要な最小オブジェクト構成とし、音声AVフィルター1個と映像AVフィルター1個を含むが、AV payload領域は起動時に先取りしない。確定済みスナップショットを`getDemuxCaps()`、オブジェクト受付、後片付け時の個数集計の根拠とする。呼び出し側が指定するFMQ容量とAVの実サイズ割り当ては、openまたは配送時に`ProductProfile`の実行時メモリー予算へ別transactionで予約する。PES filterはARIB字幕経路に必要なbounded PESだけをsnapshotへ公開する。現行profileで成功させる設定は明示`streamId=0xBD`（`private_stream_1`）に限定し、`PES_packet_length > 0`の完全なPESを通常FMQへ配送する。各filterは同時に1個のassemblerだけを持ち、先頭6 byteから宣言長を確定した時点で`PES_packet_length + 6` byte（最大65,541 byte）をservice共通の`ProductProfile.pesBoundedRuntimeBudgetBytes`からclaimし、完了、破棄、`flush()`、`stop()`、`close()`で返却する。予算は`65_541 * CapabilitySnapshot.pesFilterCount`以上とし、実bufferはPES開始時に必要量だけ確保する。長さ0のvideo PESはライブ映像のAV filter経路に任せ、PES subtypeでは対応宣言しない。VTSはC1に無条件では含めない。AOSPブランチ、フロントエンド入力元、選局値とPID、使用経路、Filter/DVRのバッファー容量、製品のメモリー予算を、起動前の`VtsEnvironmentProfile`として定義する。未定義の間は`DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED`とし、既定のV1 XMLを組み込まず、VTS成功を表明しない。
 
 
 - 入力値不正は `INVALID_ARGUMENT`、未対応 capability は `UNAVAILABLE`、オブジェクト state 不整合は `INVALID_STATE`、mutex汚染 や内部整合性崩壊は `UNKNOWN_ERROR` / `HalError::Internal` に写像する。
@@ -441,7 +441,7 @@ Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時�
 | F5 | コールバック開始済み | 通常FMQを持たない非AVフィルターが開始済み |
 | F6 | コールバック停止済み | 通常FMQを持たない非AVフィルターが開始後に停止済み |
 
-フィルターの通常FMQペイロード、DVR記録ストリーム、TS/MMTP記録コールバックのメタデータは、互いに独立した3つの経路として扱う。TS/MMTP記録フィルターは通常のフィルターFMQを公開しない。ペイロードは接続先のRecord DVR FMQだけへ書き込み、PID、索引、バイト番号、PTS、開始コードのメタデータは `DemuxFilterTsRecordEvent` または `DemuxFilterMmtpRecordEvent` のコールバックで通知する。SectionとTS生データのペイロードフィルターは通常のフィルターFMQを使用する。PESペイロードフィルターは予算設計の保留中であり公開しない。
+フィルターの通常FMQペイロード、DVR記録ストリーム、TS/MMTP記録コールバックのメタデータは、互いに独立した3つの経路として扱う。TS/MMTP記録フィルターは通常のフィルターFMQを公開しない。ペイロードは接続先のRecord DVR FMQだけへ書き込み、PID、索引、バイト番号、PTS、開始コードのメタデータは `DemuxFilterTsRecordEvent` または `DemuxFilterMmtpRecordEvent` のコールバックで通知する。SectionとTS生データのペイロードフィルターは通常のフィルターFMQを使用する。PESペイロードフィルターはARIB字幕用の明示`streamId=0xBD`かつbounded PESに限定して公開し、通常FMQを使用する。長さ0のvideo PESは公開対象にしない。
 
 
 AVフィルターの状態コードは、AOSP `IFilter`が`configureAvStreamType()`と`getAvSharedHandle()`を`configure()`とは独立したメソッドとして公開することに合わせ、設定状態、実行状態、補助種別、共有ハンドルの各軸から次のとおり導出する。
@@ -521,7 +521,7 @@ AV割り当てについては、本書のAV割り当て表と`releaseAvHandle()`
 | F-C-002 | `getQueueDesc()` | F0 かつ open時フィルタ種別が通常FMQ非対象 | `UNAVAILABLE` | F0 | なし | `queue_desc_unavailable` を増やす | 未configureでも非FMQ対象は記述子を公開しない |
 | F-C-002a | `getQueueDesc()` | A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11 | `UNAVAILABLE` | 入力状態を維持 | なし | `queue_desc_unavailable` を増やす | AVペイロードは通常FMQではなく、共有領域またはイベント固有fdを参照する`MediaEvent`を使用する |
 
-FMQの使用方法はフィルターのサブタイプごとに定める。SectionとTS生データのペイロードフィルターは通常のフィルターFMQを使用する。PESは公開保留中のsubtypeであり、`openFilter()`で`UNAVAILABLE`を返す。TS/MMTP記録フィルターには通常のフィルターFMQを設けず、ペイロードはRecord DVR FMQへ、索引メタデータはコールバックイベントへ送る。音声・映像メディアフィルターは通常FMQではなく、共有領域またはイベント固有fdを参照する`MediaEvent`を使用する。PCR、監視、`startId`などコールバックだけで通知するイベントには、ペイロードFMQを設けない。Record DVRは記録FMQを、Playback DVRは再生FMQを所有する。未対応のmain typeまたは規格上有効だが未対応のsubtypeは`openFilter()`で`UNAVAILABLE`を返し、filter object、queue、使用枠を生成しない。
+FMQの使用方法はフィルターのサブタイプごとに定める。SectionとTS生データのペイロードフィルターは通常のフィルターFMQを使用する。PESはARIB字幕用bounded PESに限定して通常FMQを使用する。PES subtypeの`openFilter()`は個数枠とFMQ容量を予約して成功させ、`configure()`は明示`streamId=0xBD`だけを成功させる。長さ0のvideo PES、wildcard、その他のstream IDは`configure()`で`UNAVAILABLE`とし、設定前状態を維持する。TS/MMTP記録フィルターには通常のフィルターFMQを設けず、ペイロードはRecord DVR FMQへ、索引メタデータはコールバックイベントへ送る。音声・映像メディアフィルターは通常FMQではなく、共有領域またはイベント固有fdを参照する`MediaEvent`を使用する。PCR、監視、`startId`などコールバックだけで通知するイベントには、ペイロードFMQを設けない。Record DVRは記録FMQを、Playback DVRは再生FMQを所有する。未対応のmain typeまたは規格上有効だが未対応のsubtypeは`openFilter()`で`UNAVAILABLE`を返し、filter object、queue、使用枠を生成しない。
 
 
 | 番号 | API / 入力 | 対象状態集合 | AIDL戻り値 | 次状態関数 | 副作用 | 診断 | 同値性根拠 / 設計上の成立条件 |
@@ -764,7 +764,7 @@ configure 非受理後は IFilter 状態が F0 のままである。その後に
 | 番号 | フィルタ種別 / 要求 | 本製品での扱い | capability / VTS profile | configure時 / 専用API戻り値 | 後続公開APIの扱い | ペイロード配送 | 固定根拠 |
 |---:|---|---|---|---|---|---|---|
 | 1 | section | 受理 | 宣言する | 成功 | 表1のFMQ対象状態に従う | 通常FMQ | PSI/SI sectionの取得に必要 |
-| 2 | PES | 受理 | 宣言する | 成功 | 表1のFMQ対象状態に従う | 通常FMQ | 字幕、音声補助、検査用途に必要 |
+| 2 | PES | ARIB字幕用bounded PESだけ受理 | `streamId=0xBD`のPES能力を宣言する | `openFilter()`は成功。`configure()`は明示`0xBD`だけ成功し、wildcard、他stream ID、長さ0 video PES用途は`UNAVAILABLE` | 表1のFMQ対象状態に従う | 通常FMQ + `DemuxFilterPesEvent` | TISのARIB字幕経路が使用する。video/audio本体はAV filter経路を使用 |
 | 3 | TS生データ | 受理 | 宣言する | 成功 | 表1のFMQ対象状態に従う | 通常FMQ | 試験用の生TS取得に必要 |
 | 4 | パススルーではないライブAV音声・映像 | 受理 | AVフィルターと2つの`MediaEvent`方式を宣言する。通常FMQからのAVペイロード読み出しをVTS構成に入れない | 成功 | 表1のAV状態に従う | 共有領域+`dataId`、またはイベント固有fd+`dataId` | 本製品のライブAV正式経路 |
 | 5 | AVパススルー | 恒久非対応 | 宣言しない | `UNAVAILABLE` | AVの未設定状態を維持。後続APIは表1のA8..A11に従う | なし | 本製品では対応しない |
@@ -1636,11 +1636,11 @@ record indexは、現在payload単体だけで完結する前提にしてはな�
 
 時間条件は queue-empty から non-empty へ遷移した payload のまとまりごとに再armする。巨大な時間値は `Instant::checked_add()` で検証し、overflow する値を受理しない。
 
-### unbounded PES の上限超過境界
+### bounded字幕PESとunbounded video PESの境界
 
-`PES_packet_length == 0` を映像`stream_id 0xE0..0xEF`で使用できることは伝送構文から確認できるが、そのことから1 filter当たり8 MiBの保持量は導けない。現時点では、サービス全体で共有するPES byte予算、PIDごとの同時assembler数、長さ0 video PESを全量保持するかchunk/streaming処理するか、保持上限超過時の公開結果が未設計である。したがって`MAX_PES_BUFFER_BYTES`と`ProductProfile.pesRuntimeBudgetBytes`を定義せず、`CapabilitySnapshot`のPES filter数を0とし、PES subtypeの`openFilter()`は`UNAVAILABLE`を返してobject、FMQ、assembler予算を生成しない。
+現行製品profileのPES filterは、TISのARIB字幕経路が実際に要求する明示`streamId=0xBD`（`private_stream_1`）だけを成功対象とする。このstream IDで`PES_packet_length == 0`は伝送構文上の正常入力ではないため、対応対象は宣言長付きPESだけで閉じる。先頭6 byteを検証後、assemblerは`PES_packet_length + 6` byteだけをservice共通台帳からclaimする。16 bit宣言長から導かれる1 PESの最大保持量は65,541 byteであり、任意の8 MiB上限を設けない。`ProductProfile.pesBoundedRuntimeBudgetBytes`は`65_541 * CapabilitySnapshot.pesFilterCount`以上とし、各filterは同時に1 assemblerだけを所有するため、対応範囲内の同時入力を個数上限まで受理できる。
 
-PES filterを有効化する設計変更では、少なくとも製品全体の共有byte予算、所有者別claim、bounded PESの宣言長に対する確保方法、長さ0 video PESのchunk/streamingまたは有界保持方式、複数PID・複数demux間の公平性、overflow時の破棄・再同期・診断、close時の返却を先に固定しなければならない。規格値ではない任意の定数をPES長上限として採用する場合は、対象codec・入力・メモリー予算・試験ベクトルから導いた製品根拠を併記する。
+`PES_packet_length == 0`を許す映像`stream_id 0xE0..0xEF`については、全量保持、chunk/streaming、共有予算、公平性、overflow時の再同期が未設計である。しかし本製品の映像本体はAV filterと`MediaEvent`の経路を使用し、PES filterへ映像を要求しない。したがって未設計範囲はPES能力全体を0にせず、PES `configure()`でwildcardと`0xE0..0xEF`を`UNAVAILABLE`として拒否する境界に閉じる。将来unbounded video PESを有効化する場合だけ、共有byte予算、chunk/streamingまたは有界保持、複数PID・複数demux間の公平性、overflow時の破棄・再同期・診断、close時の返却を先に固定する。
 
 ## 失敗時状態・境界処理の設計固定
 
@@ -1686,7 +1686,7 @@ record filter  -> SourceFilter -> 任意 filter
 
 ### PES assembler の異常系状態表
 
-次表はPES filter能力を再開する設計変更で満たすべき構文・再同期条件であり、現行の公開能力を表さない。共有byte予算と長さ0 video PESの保持方式が未設計の間はPES filterをopenせず、assemblerも生成しない。
+次表は現行のARIB字幕用bounded PES filterが満たす構文・再同期条件を表す。`streamId=0xBD`の宣言長付きPESだけを公開能力とし、長さ0 video PESに固有の行は将来拡張の禁止境界を表す。
 
 | 入力状態 | 判定 | assembler 動作 | 配送 |
 |---|---|---|---|
@@ -1699,7 +1699,8 @@ record filter  -> SourceFilter -> 任意 filter
 | PTS / DTS marker bit 不正 | malformed | state 破棄 | 配送しない |
 | `PES_packet_length` と header 長が矛盾 | malformed | state 破棄 | 配送しない |
 | 映像以外の`stream_id`で`PES_packet_length == 0` | malformed | state 破棄 | 配送しない |
-| 未設計の共有PES予算を要する入力 | design hold | 公開PES filterを開始しない | 配送しない |
+| `stream_id=0xBD`かつ`PES_packet_length > 0` | supported bounded PES | 宣言長+6 byteを共通台帳からclaimし、1 filter 1 assemblerで収集 | 完全長と意味検証成功時だけ配送 |
+| `stream_id=0xE0..0xEF`またはwildcard設定 | unsupported unbounded-video scope | `configure()`を`UNAVAILABLE`として設定前状態を維持 | 配送しない |
 | flush / stop / close / source unlink | boundary | state 破棄 | 未完了 PES は配送しない |
 
 
@@ -2427,16 +2428,16 @@ raw sectionは、外形、設定されたCRC検査、意味検証を分ける契
 | T-PES-5 | DTS marker bit不正 | malformed |
 | T-PES-6 | `PES_packet_length` とheader長矛盾 | malformed |
 | T-PES-7 | bounded PES complete | delivery |
-| T-PES-8 | unbounded PES next PUSI | 前PES完成 |
-| T-PES-9 | unbounded PES flush/stop/close | 未完成を完成扱いしない |
-| T-PES-10 | 共有PES予算と長さ0 video PES保持方式が未確定 | PES filter能力を0とし、`openFilter()`は`UNAVAILABLE` |
+| T-PES-8 | bounded字幕PESが宣言長到達前に次PUSI | 未完PESを破棄し、次PESから再開 |
+| T-PES-9 | bounded字幕PESのflush/stop/close | 未完成を完成扱いせず、claimを返却 |
+| T-PES-10 | 同時PES filterが各65,541 byteをclaim | `pesBoundedRuntimeBudgetBytes`内で全filterを受理 |
 | T-PES-11 | PES header TS packet境界分割 | 正しく組立 |
 | T-PES-12 | PTS field TS packet境界分割 | PTS抽出 |
 | T-PES-13 | start code `00 00 01` TS packet境界分割 | record index検出 |
 | T-PES-14 | malformed PES後の復帰 | 次PUSIから正常復帰 |
 | T-PES-15 | 映像以外の`stream_id`で`PES_packet_length=0` | malformedとして破棄 |
 
-PES filter能力を再開する場合は、外形と意味検証を分ける2段階契約に従う。完全なPES外形として、宣言長を持つ有効なPESと、映像`stream_id 0xE0..0xEF`に限定した`packet_length=0`のPESを扱い、ヘッダーが複数TSパケットに分割される場合にも対応する。意味イベントの通知には、接頭辞、`stream_id`ごとのオプションヘッダー形式、フラグ、マーカービット、`header_data_length`、PTS/DTSの検証にも成功しなければならない。現行profileはPES filterを公開せず、`DemuxFilterPesEvent`またはraw PES payloadを通知しない。
+現行PES filterは、外形と意味検証を分ける2段階契約に従う。完全なPES外形として明示`streamId=0xBD`かつ宣言長を持つ有効なPESを扱い、ヘッダーが複数TSパケットに分割される場合にも対応する。意味イベントの通知には、接頭辞、オプションヘッダー形式、フラグ、マーカービット、`header_data_length`、PTS/DTSの検証にも成功しなければならない。完全PES bytesを通常FMQへ書き込み、対応する`DemuxFilterPesEvent`で`dataLength`とPTS有無を通知する。長さ0 video PESは設定段階で`UNAVAILABLE`とし、raw PES payloadも通知しない。
 
 
 ### MULTI2 / B25 descrambler 系
@@ -2473,7 +2474,7 @@ PES filter能力を再開する場合は、外形と意味検証を分ける2段
 ## 対応能力・キュー・ARIB境界
 
 - フィルターと`SharedFilter`では、HAL内部の`FilterProducerDrainGate`を使用する。ブロッキングするバックエンド読み取り、FMQ待機、解析器の一時保持が終わった後、FMQへの確定書き込みまたは保留イベント追加の直前にだけ配送許可を取得する。Binderコールバック、バックエンド入出力、FMQまたは条件変数の待機、規定外順序のロック取得を許可の有効範囲に含めない。`flush()`は`Draining`へ移り、新しい許可を拒否し、サービス所有のワーカーを起床させ、許可が0件になるまで待つ。未消費のFMQデータと未配送イベントを破棄し、確定済みまたは配送中のコールバックと配送済みAV領域を維持する。ワーカー終了またはpanic時は保護子を解放する。ロック汚染または遮断されていない終端失敗を検出した場合は、フィルターを閉鎖して隔離する。`QueueEpochProtocol`はDVRだけで使用する。
-- デマルチプレクサ、フィルター、DVRの個数は、フロントエンドと公開可能LNBの検出後に評価するC8、C4、C2、C1の`CapabilitySnapshot`候補から決める。各候補はオブジェクト数、ワーカー、コールバック、回収、後片付けの枠だけを一括予約する。AV payloadと呼び出し側指定FMQのバイト予算はsnapshotへ混在させず、openまたは配送時に製品全体の実行時メモリー台帳へ予約する。PES assemblerは共有予算と保持方式が未設計なので能力を公開しない。Tuner VTSは起動前に別途環境へ結び付け、入力元、PID、使用経路、queue容量、製品メモリー予算が定義されるまで`DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED`とする。
+- デマルチプレクサ、フィルター、DVRの個数は、フロントエンドと公開可能LNBの検出後に評価するC8、C4、C2、C1の`CapabilitySnapshot`候補から決める。各候補はオブジェクト数、ワーカー、コールバック、回収、後片付けの枠だけを一括予約する。AV payloadと呼び出し側指定FMQのバイト予算はsnapshotへ混在させず、openまたは配送時に製品全体の実行時メモリー台帳へ予約する。PES assemblerはARIB字幕用bounded PESだけを公開し、最大65,541 byte/active filterの共通実行時予算で保持する。unbounded video PESは能力公開しない。Tuner VTSは起動前に別途環境へ結び付け、入力元、PID、使用経路、queue容量、製品メモリー予算が定義されるまで`DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED`とする。
 - AVの共有方式とイベント固有方式は、同じ実行時台帳を共有する。各filterでは`ProductProfile.avPerFilterLiveBytes`、サービス全体では`ProductProfile.avRuntimeBudgetBytes`を未解放payloadバイト数の上限とし、イベントの実サイズだけを割り当てる。`openFilter(bufferSize)`はFMQ容量として別に予約する。固定スロット数や1 MiB単位をAOSPまたはコーデック上限として規範化せず、使用中の割り当てを追い出さない。
 - ARIB B10 5.13-E1を表ごとのsection上限1021/4093の根拠とし、B32 3.11-E1第3部をTS、PES、Sectionの伝送とPES構文の根拠とする。B32を4093の独立した上限根拠として使用しない。B25は公式英訳6.7-E1全文を精読基準とする。第1部の4.9および4.10に従い、物理tuner/backend復号経路ごとの共有poolで奇数・偶数鍵の組を1組以上、PIDを12個以上同時処理できることを容量条件とする。AOSPに公開欄は追加せず、session間で共有する同じ内部台帳で受付と解放を強制する。
 - 対象ドライバーと上流Linuxの証跡は、AOSP契約とは独立した根拠として扱う。
@@ -2509,10 +2510,10 @@ PES filter能力を再開する場合は、外形と意味検証を分ける2段
 
 | 候補ID | 優先順位 | demux数 | TS filter数 | section filter数 | audio filter数 | video filter数 | PES filter数 | PCR filter数 | filter総枠数 | playback数 | record数 | DVR総枠数 | tuple worker枠数 | probe worker枠数 | callback枠数 | reaper handle枠数 | cleanup authority枠数 | 式の変数 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| C8 | 1 | 8 | 32 | 8 | 4 | 4 | 0 | 4 | 52 | 8 | 8 | 16 | 16 | 2*F | F+L+52+16 | 2*F+16 | F+L+8+52+16 | F=正常確認済みfrontend数、L=AIDL基礎操作対応LNB数 |
-| C4 | 2 | 4 | 16 | 4 | 2 | 2 | 0 | 2 | 26 | 4 | 4 | 8 | 8 | 2*F | F+L+26+8 | 2*F+8 | F+L+4+26+8 | F=正常確認済みfrontend数、L=AIDL基礎操作対応LNB数 |
-| C2 | 3 | 2 | 8 | 2 | 1 | 1 | 0 | 1 | 13 | 2 | 2 | 4 | 4 | 2*F | F+L+13+4 | 2*F+4 | F+L+2+13+4 | F=正常確認済みfrontend数、L=AIDL基礎操作対応LNB数 |
-| C1 | 4 | 1 | 4 | 1 | 1 | 1 | 0 | 1 | 8 | 1 | 1 | 2 | 2 | 2*F | F+L+8+2 | 2*F+2 | F+L+1+8+2 | F=正常確認済みfrontend数、L=AIDL基礎操作対応LNB数 |
+| C8 | 1 | 8 | 32 | 8 | 4 | 4 | 4 | 4 | 56 | 8 | 8 | 16 | 16 | 2*F | F+L+56+16 | 2*F+16 | F+L+8+56+16 | F=正常確認済みfrontend数、L=AIDL基礎操作対応LNB数 |
+| C4 | 2 | 4 | 16 | 4 | 2 | 2 | 2 | 2 | 28 | 4 | 4 | 8 | 8 | 2*F | F+L+28+8 | 2*F+8 | F+L+4+28+8 | F=正常確認済みfrontend数、L=AIDL基礎操作対応LNB数 |
+| C2 | 3 | 2 | 8 | 2 | 1 | 1 | 1 | 1 | 14 | 2 | 2 | 4 | 4 | 2*F | F+L+14+4 | 2*F+4 | F+L+2+14+4 | F=正常確認済みfrontend数、L=AIDL基礎操作対応LNB数 |
+| C1 | 4 | 1 | 4 | 1 | 1 | 1 | 1 | 1 | 9 | 1 | 1 | 2 | 2 | 2*F | F+L+9+2 | 2*F+2 | F+L+1+9+2 | F=正常確認済みfrontend数、L=AIDL基礎操作対応LNB数 |
 
 ### サービスオブジェクトの上限
 
@@ -2525,7 +2526,7 @@ C8、C4、C2、C1の順にオブジェクト台帳と実行権限枠を原子的
 | FILTER_SECTION | サービス全体 | 8 | `CapabilitySnapshot`の値 | 1 | なし | オブジェクト数だけでは呼び出し側指定のFMQ容量を保証しない。FMQ容量は別のトランザクションで予約する。 |
 | FILTER_AUDIO | サービス全体 | 4 | `CapabilitySnapshot`の値 | 1 | なし | FMQの`bufferSize`とは別に、実payloadを`ProductProfile.avPerFilterLiveBytes`と`avRuntimeBudgetBytes`の両方から割り当てる。起動時予約はしない。 |
 | FILTER_VIDEO | サービス全体 | 4 | `CapabilitySnapshot`の値 | 1 | なし | FMQの`bufferSize`とは別に、実payloadを`ProductProfile.avPerFilterLiveBytes`と`avRuntimeBudgetBytes`の両方から割り当てる。起動時予約はしない。 |
-| FILTER_PES | サービス全体 | 0 | 0 | 0 | なし | 共有byte予算、長さ0 video PESの保持方式、overflow契約が未設計のため公開しない。PES subtypeの`openFilter()`は`UNAVAILABLE`。 |
+| FILTER_PES | サービス全体 | 4 | `CapabilitySnapshot`の値 | 1 | demux当たり1 | ARIB字幕用`streamId=0xBD`のbounded PESだけを公開する。`pesBoundedRuntimeBudgetBytes >= 65_541 * 公開数`とし、PES開始時に宣言長+6 byteだけをclaimする。wildcard、他stream ID、長さ0 video PESは`configure()`で`UNAVAILABLE`。 |
 | FILTER_PCR | サービス全体 | 4 | `CapabilitySnapshot`の値 | 1 | なし | オブジェクト数だけでは呼び出し側指定のFMQ容量を保証しない。FMQ容量は別のトランザクションで予約する。 |
 | DVR_PLAYBACK | サービス全体 | 8 | `CapabilitySnapshot`の値 | 1 | demux当たり1 | `VtsEnvironmentProfile`が`UNBOUND`ならXML、モジュール、試験シナリオを選択しない。`BOUND`なら宣言済み静的設定のキュー容量だけを原子的に予約し、C1または既定値へ切り替えない。 |
 | DVR_RECORD | サービス全体 | 8 | `CapabilitySnapshot`の値 | 1 | demux当たり1 | `VtsEnvironmentProfile`が`UNBOUND`ならXML、モジュール、試験シナリオを選択しない。`BOUND`なら宣言済み静的設定のキュー容量だけを原子的に予約し、C1または既定値へ切り替えない。 |
