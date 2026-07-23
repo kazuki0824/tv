@@ -53,7 +53,7 @@ BSの通常実行時候補生成はTISが持つBS TSID表だけを正とする�
 
 現行仕様は EIT p/f を主経路として使う。scan/setup 後に `TvProvider.Programs` へ出す最低限の Programs だけ EIT schedule actual `0x50..0x5F` から短期補完として拾う。schedule actual を常時・長期 EPG 収集として扱わず、EIT schedule other `0x60..0x6F`、長期 schedule window、サービス横断更新は現行 product 対象外とする。Programs の `internal_provider_data` には JSON v1 の stable `programKey`、timing、CAS state、長形式イベント項目、component/audio メタデータ、series 完全構造、イベントグループ `relatedItems`、linkage、free_CA_mode、音声言語、レーティング、診断 JSON を TIS 内部データとして保存する。TvProvider の標準 column には title / short description / long description、broadcast genre、明示写像できる canonical genre、series id、episode display number、item count、scrambled、audio language、コンテンツレーティング など自然対応できる範囲だけ反映する。
 
-TvProvider標準列への投影判断は tv 直下の `ARIB_SI_EPG_TvProvider投影方針.md` を正とする。`internal_provider_data` の schema、canonical encode、署名、保存上限、診断 schema は `arib_si_engine_rs/DESIGN_JA.md` と Rust serde 構造体を正とする。本書は TIS runtime における取得、書き込み契機、retry、現在番組解決、視聴セッションでの利用だけを定義する。
+TvProvider標準列への投影判断は tv 直下の `ARIB_SI_EPG_TvProvider投影方針.md` を正とする。`internal_provider_data` の schema、canonical encode、保存上限、診断 schema は `arib_si_engine_rs/DESIGN_JA.md` と Rust serde 構造体を正とする。本書は TIS runtime における取得、書き込み契機、retry、現在番組解決、視聴セッションでの利用だけを定義する。
 
 ## 字幕表示の責務
 
@@ -92,7 +92,7 @@ TvProvider公開モードは `PublishMode` で channel row 追加を setup scan 
 
 ## ARIB SI/EPG のTvProvider投影
 
-ARIB SI/EPG の標準列投影は tv直下の `ARIB_SI_EPG_TvProvider投影方針.md` を正とし、`internal_provider_data` の具体 schema / canonical encode / 署名 は `arib_si_engine_rs` の Rust provider-data serde構造体を SSOT とする。TISは、同文書で標準列投影が固定された項目だけを TvProvider 標準列へ出し、標準列へ自然対応しない項目は JSON v1 `internal_provider_data` のみに構造化保存する。
+ARIB SI/EPG の標準列投影は tv直下の `ARIB_SI_EPG_TvProvider投影方針.md` を正とし、`internal_provider_data` の具体 schema / canonical encode は `arib_si_engine_rs` の Rust provider-data serde構造体を SSOT とする。TISは、同文書で標準列投影が固定された項目だけを TvProvider 標準列へ出し、標準列へ自然対応しない項目は JSON v1 `internal_provider_data` のみに構造化保存する。
 
 `Programs.COLUMN_CANONICAL_GENRE` については、TIS が直接設定する値と、Android TvProvider が `Programs.COLUMN_BROADCAST_GENRE` から内部補完した読み出し結果を区別する。現行仕様では `ARIB_SI_EPG_TvProvider投影方針.md` の明示写像表に一致する分類だけを `ContentValues` に直接設定する。写像不能分類、reserved、extension、others、user_nibble 由来分類は直接設定しない。
 
@@ -157,36 +157,36 @@ Descrambler API の `setKeyToken()`、`addPid()`、`removePid()` は戻り値が
 
 ## TvProvider failure semantics
 
-TvProvider query failure と channel なしは別状態として扱う。既存 channel query が失敗した場合は `skippedNoChannel` として扱わず、failure 診断とし、署名 更新・pending 平文 の根拠に使わない。
+TvProvider query failure と channel なしは別状態として扱う。既存 channel query が失敗した場合は `skippedNoChannel` として扱わず、failure 診断とし、publish fingerprint更新・pending平文 の根拠に使わない。
 
-TvProvider query は 必須問い合わせ と 任意問い合わせ を区別する。チャンネル・番組の追加または更新、廃止行削除、既存チャンネル・番組検索、provider-data代替参照、Direct Boot準備完了 判定に使う query は 必須問い合わせ とする。必須問い合わせ で `ContentResolver.query()` が null cursor を返した場合は `TvProviderQueryFailure` とし、empty result とみなさない。`TvProviderQueryFailure` が発生した サービス/window では channel insert、program insert/update、廃止行削除、署名キャッシュ更新、Direct Boot保留解除 に進まず、再試行区間 を保持する。
+TvProvider query は 必須問い合わせ と 任意問い合わせ を区別する。チャンネル・番組の追加または更新、廃止行削除、既存チャンネル・番組検索、provider-data代替参照、Direct Boot準備完了 判定に使う query は 必須問い合わせ とする。必須問い合わせ で `ContentResolver.query()` が null cursor を返した場合は `TvProviderQueryFailure` とし、empty result とみなさない。`TvProviderQueryFailure` が発生した サービス/window では channel insert、program insert/update、廃止行削除、publish fingerprint cache更新、Direct Boot保留解除 に進まず、再試行区間 を保持する。
 
-Programs publish/delete が provider failure になった場合は、`ProgramPublishCoordinator` の process-local retry queue に `ServiceKey + updateWindow + failureClass` を key として enqueue する。backoff は 1分、5分、15分、60分、以後最大60分、jitter ±20%、最大10回、保持期間24時間または次回正常 snapshot までとする。次回 `publishLiveProgramsForCurrentService()`、boot EPG sync、background maintenance の publish entrypoint 先頭で retry queue を drain する。成功した key は削除し、失敗した key は保持する。process restart では retry queue を破棄し、boot/background sync による再収集を正とする。provider failure 時は 廃止行削除、署名 update、pending 平文 に進まない。
+Programs publish/delete が provider failure になった場合は、`ProgramPublishCoordinator` の process-local retry queue に `ServiceKey + updateWindow + failureClass` を key として enqueue する。backoff は 1分、5分、15分、60分、以後最大60分、jitter ±20%、最大10回、保持期間24時間または次回正常 snapshot までとする。次回 `publishLiveProgramsForCurrentService()`、boot EPG sync、background maintenance の publish entrypoint 先頭で retry queue を drain する。成功した key は削除し、失敗した key は保持する。process restart では retry queue を破棄し、boot/background sync による再収集を正とする。provider failure 時は 廃止行削除、publish fingerprint更新、pending平文 に進まない。
 
 retry queue は全体上限 512 windows、ServiceKey ごと上限 32 windows とする。超過時は古い順に破棄し、ServiceKey 別 `droppedRetryWindowCount` を加算する。process restart 後は counter を 0 に戻す。
 
 SDT-other / NIT-other / BAT 由来で現在 candidate の actual transport に解決できない サービスは、現在 candidate の物理情報で channel insert しない。未登録で Program row が存在しない unresolved transport は scan/maintenance 診断情報に `skippedUnresolvedTransportCount` として記録し、Program provider-data には書かない。publish 済み Program には自 サービスの `skippedUnresolvedTransport=false` を入れる。
 
-## provider-data 利用境界 / 署名
+## provider-data 利用境界 / publish fingerprint
 
-`Programs.COLUMN_INTERNAL_PROVIDER_DATA` / `Channels.COLUMN_INTERNAL_PROVIDER_DATA` の具体 schema、正規化、署名、安定キー抽出、保存上限は `arib_si_engine_rs/DESIGN_JA.md` の「provider-data / diagnostics Rust SSOT」と `arib_si_engine_rs/schema/*.schema.json` を正とする。TIS は保存 schema を再定義しない。
+`Programs.COLUMN_INTERNAL_PROVIDER_DATA` / `Channels.COLUMN_INTERNAL_PROVIDER_DATA` の具体 schema、正規化、安定キー抽出、保存上限は `arib_si_engine_rs/DESIGN_JA.md` の「provider-data / diagnostics Rust SSOT」と `arib_si_engine_rs/schema/*.schema.json` を正とする。TIS は保存 schema を再定義しない。
 
-TIS Kotlin は provider-data JSON を `JSONObject.put()` や文字列連結で直接構築してはならない。TIS Kotlin は Rust JNI の build / 正規化 / 署名 / key extraction API で得た bytes と署名を TvProvider に書く。TIS が JNI へ渡す JSON は Rust builder への入力 DTO であり、TvProvider に保存する provider-data schema ではない。
+TIS Kotlin は provider-data JSON を `JSONObject.put()` や文字列連結で直接構築してはならない。TIS Kotlin は Rust JNI の build / 正規化 / key extraction API で得たbytesをTvProviderに書く。TIS が JNI へ渡す JSON は Rust builder への入力 DTO であり、TvProvider に保存する provider-data schema ではない。
 
-Program provider-data の top-level envelope、必須フィールド、検証規則、正規化、署名、安定キー抽出は TIS では再定義しない。正本は `arib_si_engine_rs/DESIGN_JA.md`、`arib_si_engine_rs/schema/program_provider_data_v1.schema.json`、`arib_si_engine_rs/schema/descriptor_diagnostic_v1.schema.json`、`arib_si_engine_rs/testdata/program_provider_data_v1/minimal_clear_program.json` とする。TIS instrumentation テスト用の期待値 JSON を置く場合は Rust 側テストデータとバイト単位で同一に保つ。
+Program provider-data の top-level envelope、必須フィールド、検証規則、正規化、安定キー抽出は TIS では再定義しない。正本は `arib_si_engine_rs/DESIGN_JA.md`、`arib_si_engine_rs/schema/program_provider_data_v1.schema.json`、`arib_si_engine_rs/schema/descriptor_diagnostic_v1.schema.json`、`arib_si_engine_rs/testdata/program_provider_data_v1/minimal_clear_program.json` とする。TIS instrumentation テスト用の期待値 JSON を置く場合は Rust 側テストデータとバイト単位で同一に保つ。
 
 TIS は `components.video[]`、`components.audio[]`、`components.subtitle[]`、`components.data[]` を provider-data schema として再定義しない。TIS は TvProvider 標準列、`TvTrackInfo`、MediaFormat / AudioTrack / 字幕表示経路へ接続する接着層に限定する。`audio` / `video` が `null` の場合は主 track 未選択または未確定を意味し、空オブジェクトと同義に扱ってはならない。
 
-Program 署名は TvProvider に実際に書く `ContentValues` と Rust JNI が返した provider-data bytes から生成する。署名入力は固定 column list 順に `<columnName>\0<byteLength>\0<bytes>` で連結し、そのバイト列の SHA-256 lowercase hex とする。`ContentValues` の iteration order には依存しない。insert 後に provider-data を再生成した場合、cache する signature は再生成後に実際に書いたバイト列の signature とする。
+Program publish fingerprintは、同一process内で同じ公開transactionをTvProviderへ重複書き込みしないためだけに使用する。TvProviderへ実際に書く`ContentValues`（provider-data bytesを含む）と更新windowを、固定column list順の`<columnName>\0<byteLength>\0<bytes>`へ直列化し、そのSHA-256 lowercase hexをprocess-local cacheにだけ保持する。TvProvider rowやprovider-dataには保存せず、診断、真正性、改ざん検出、永続identityには使用しない。insert後にprovider-dataを再生成した場合は、実際に書いた最終bytesからfingerprintを再生成する。この行全体fingerprintがprovider-data bytesの同一性も包含するため、provider-data単体のdigestは生成しない。
 
-`selectedProgramId` のような TvProvider row id 依存値は stable provider-data 署名の構成要素にしてはならない。必要な場合は補助診断として扱い、署名 skip 判定を壊さない。
+`selectedProgramId` のような TvProvider row id 依存値は publish fingerprintの構成要素にしてはならない。必要な場合は補助診断として扱い、publish skip判定を壊さない。
 
 
 ## 現在番組 選択
 
 現在番組 resolver は TvProvider query 時点で `START_TIME_UTC_MILLIS <= now AND END_TIME_UTC_MILLIS > now` に絞る。sort order は `START_TIME_UTC_MILLIS DESC, END_TIME_UTC_MILLIS ASC, _ID DESC` に固定する。overlap がある場合も cursor 返却順には依存せず、この selection rule で1件を選ぶ。
 
-provider-data 診断情報は `diagnostics.currentProgram` 配下に保存する。`selectionRule` は `START_DESC_END_ASC_ID_DESC` とする。対象なしの場合は empty string とする。`overlapCount` と `selectedProgramId` は補助診断として扱い、stable 署名の意味上の identity にしない。ARIB `event_id` は `COLUMN_EVENT_ID` と JSON v1 `programKey.eventId` で扱う。
+provider-data 診断情報は `diagnostics.currentProgram` 配下に保存する。`selectionRule` は `START_DESC_END_ASC_ID_DESC` とする。対象なしの場合は empty string とする。`overlapCount` と `selectedProgramId` は補助診断として扱い、publish fingerprintの意味上のidentity にしない。ARIB `event_id` は `COLUMN_EVENT_ID` と JSON v1 `programKey.eventId` で扱う。
 
 ## CA descriptor / provider-data 直列化
 
@@ -204,24 +204,22 @@ TIS Kotlin は provider-data JSON を解釈せず、以下の Rust JNI API 相�
 object NativeProviderData {
     external fun buildProgramProviderData(inputJson: String): ProviderDataResult
     external fun normalizeProgramProviderData(rawBytes: ByteArray): ProviderDataResult
-    external fun programProviderDataSignature(rawBytes: ByteArray): String
     external fun extractProgramKey(rawBytes: ByteArray): ProgramKeyResult?
 }
 
 data class ProviderDataResult(
     val bytes: ByteArray,
-    val signature: String,
     val schemaVersion: Int,
     val truncated: Boolean,
     val diagnosticsDroppedCount: Int,
 )
 ```
 
-`inputJson` は Rust builder への入力 DTO であり、TvProvider に保存する provider-data schema ではない。最終JSONバイト列、署名、正規化、安定キー抽出は Rust が行う。
+`inputJson` は Rust builder への入力 DTO であり、TvProvider に保存する provider-data schema ではない。最終JSONバイト列、正規化、安定キー抽出はRustが行う。provider-data単体のdigestまたはsignatureは返さない。
 
 `rawBytes` は任意バイナリではなく、既存 TvProvider に保存済みの JSON v1 UTF-8 バイト列を指す。Kotlin は `String(rawBytes)` などで再解釈してから Rust へ渡してはならず、TvProvider から取得した `COLUMN_INTERNAL_PROVIDER_DATA` の BLOB バイト列をそのまま Rust JNI 境界へ渡す。TvProvider が文字列として返した場合の互換補助は、UTF-8 バイト列へ戻すだけに限定し、Kotlin 側で JSON 構造を解釈・再構築してはならない。
 
-`normalizeProgramProviderData(rawBytes)`、`programProviderDataSignature(rawBytes)`、`extractProgramKey(rawBytes)`、`appendCurrentProgramDiagnostics(rawBytes, ...)` は、invalid UTF-8 または malformed JSON を Kotlin 側で修復しない。Rust は診断付き空結果または空文字列相当へ落とし、通常実行経路で例外や panic に変換しない。`programProviderDataSignature(rawBytes)` は、引数として渡された provider-data UTF-8 バイト列そのものの SHA-256 lowercase hex を返す。`buildProgramProviderData(inputJson)` と `normalizeProgramProviderData(rawBytes)` が返す `ProviderDataResult.signature` は、Rust が返す canonical provider-data bytes に対する署名とする。
+`normalizeProgramProviderData(rawBytes)`、`extractProgramKey(rawBytes)`、`appendCurrentProgramDiagnostics(rawBytes, ...)`は、invalid UTF-8またはmalformed JSONをKotlin側で修復しない。Rustは診断付き失敗またはkey抽出失敗へ落とし、通常実行経路で例外やpanicに変換しない。provider-data bytesだけのdigest APIと`ProviderDataResult.signature` / `contentDigest`は設けない。
 
 ### 診断情報 schema
 
@@ -229,7 +227,7 @@ Descriptor診断 の機械検証規則は `arib_si_engine_rs/schema/descriptor_d
 
 ### provider-data 保存上限
 
-provider-data の soft limit / hard limit、診断情報・長文補助情報の切り詰め規則、切り詰め時の診断 key は `arib_si_engine_rs/DESIGN_JA.md` と Rust provider-data 実装を正とする。TIS は保存前に Rust JNI が返した bytes と 署名 をそのまま扱い、Kotlin 側で独自の切り詰め schema を定義しない。
+provider-data の soft limit / hard limit、診断情報・長文補助情報の切り詰め規則、切り詰め時の診断 key は `arib_si_engine_rs/DESIGN_JA.md` と Rust provider-data 実装を正とする。TISは保存前にRust JNIが返したbytesをそのまま扱い、Kotlin側で独自の切り詰めschemaを定義しない。
 
 
 ### SectionEvent 入力上限
@@ -323,7 +321,7 @@ Boot EPG sync / background maintenance の開始条件は、`activeLiveSessionCo
 
 ### Provider-data SSOT
 
-`TvContract.Channels/Programs.COLUMN_INTERNAL_PROVIDER_DATA` の新規書き込みは `arib_si_engine_rs` の provider-data JNI API が返す JSON v1 bytes をそのまま保存する。TIS Kotlin は TvProvider 標準列を詰める接着層であり、provider-data 本体、program stable key、descriptor 診断情報 schema、provider-data 署名 を独自 JSON schema として再構築してはならない。
+`TvContract.Channels/Programs.COLUMN_INTERNAL_PROVIDER_DATA` の新規書き込みは `arib_si_engine_rs` の provider-data JNI API が返す JSON v1 bytes をそのまま保存する。TIS Kotlin は TvProvider 標準列を詰める接着層であり、provider-data 本体、program stable key、descriptor 診断情報 schema、provider-data digestまたは署名を独自JSON schema として再構築してはならない。
 
 Channel provider-data の新規書き込み・読み取り正形式は JSON v1 のみとする。`key=value;...` 形式、旧 flat provider-data、旧 provider-data 断片は読み取り互換入力としても残さない。JSON v1 は `schema="maleicacid.tv.channel"` / `schemaVersion=1` を持ち、channel tune 復元に必要な inputId、物理選局情報、ONID / TSID / service_id、表示名、登録可能性診断を Rust provider-data API 由来の構造として保存する。
 
@@ -337,7 +335,7 @@ TIS は `nativeSnapshotBulkJson()` と provider-data JNI API を通常境界と�
 
 Program publish retry queue は現行仕様では process-local とする。process death 後の retry 永続化は行わず、boot/background scan による再収集を正とする。ただし、process-local queue であっても retry key は `ServiceKey + updateWindow + failureClass`、entry は `attempt / nextAttemptAtMillis / firstFailureAtMillis / lastFailureAtMillis` を持ち、1/5/15/60分 backoff、決定的 jitter ±20%、最大10回、24時間 retention を適用する。
 
-Provider 必須問い合わせ failure、Program insert/update failure、廃止行削除 failure、署名 build failure では 署名キャッシュ 更新と Direct Boot保留解除 に進まない。廃止行削除 は `deletionAuthoritative=true` の 更新区間 でのみ実行する。
+Provider 必須問い合わせ failure、Program insert/update failure、廃止行削除 failure、publish fingerprint build failureではpublish fingerprint cache更新と Direct Boot保留解除 に進まない。廃止行削除 は `deletionAuthoritative=true` の 更新区間 でのみ実行する。
 
 ### AttributionSource
 
@@ -383,15 +381,15 @@ AC-3、Enhanced AC-3、MPEG-H 3D Audio、DTS、DTS-HD、Dolby TrueHD は、今�
 
 TIS は TvProvider 標準列への投影を担当する。TIS は `Programs.COLUMN_INTERNAL_PROVIDER_DATA` / `Channels.COLUMN_INTERNAL_PROVIDER_DATA` に保存される最終 JSON を直接生成してはならない。
 
-TIS が JNI へ渡す JSON は、保存形式ではなく Rust へ値を渡すための受け渡し用形式である。この受け渡し用形式の型、必須項目、欠落時の扱い、旧形式拒否、値域検査は Rust の serde 型を正とする。TIS はこの受け渡し用 JSON を provider-data schema の Kotlin 実装、保存形式、正規形、署名対象として扱ってはならない。
+TIS が JNI へ渡す JSON は、保存形式ではなく Rust へ値を渡すための受け渡し用形式である。この受け渡し用形式の型、必須項目、欠落時の扱い、旧形式拒否、値域検査は Rust の serde 型を正とする。TIS はこの受け渡し用 JSON を provider-data schema の Kotlin 実装、保存形式または正規形として扱ってはならない。
 
 受け渡し用形式の schema 名は `maleicacid.tv.programRequest` / `maleicacid.tv.channelRequest` とし、保存用 schema 名 `maleicacid.tv.program` / `maleicacid.tv.channel` を名乗らない。
 
-Rust は受け渡し用 JSON を serde 型へ読み込み、検査し、保存用 JSON、署名、識別子、切り詰め診断を生成する。TIS は Rust が返した保存用 JSON をそのまま TvProvider の `internal_provider_data` に保存する。TIS は Rust が返した署名、識別子、診断結果だけを使う。
+Rust は受け渡し用 JSON を serde 型へ読み込み、検査し、保存用JSON、識別子、切り詰め診断を生成する。TIS は Rustが返した保存用JSONをそのままTvProviderの`internal_provider_data`に保存する。TISはRustが返した識別子と診断結果だけを使う。
 
-TIS は保存データの型、正規化、必須項目判定、欠落補完、旧形式互換、署名、識別子抽出、サイズ上限処理を実装してはならない。TIS 側で `0`、`false`、`jpn`、`UNKNOWN`、空文字などを使って必須項目欠落を補い、provider-data を成立させてはならない。
+TIS は保存データの型、正規化、必須項目判定、欠落補完、旧形式互換、識別子抽出、サイズ上限処理を実装してはならない。TIS 側で `0`、`false`、`jpn`、`UNKNOWN`、空文字などを使って必須項目欠落を補い、provider-data を成立させてはならない。
 
 `DescriptorDiagnosticV1` は Rust が生成した正規 JSON を正とする。TIS は `DescriptorDiagnosticV1` を項目ごとに再構築してはならない。TIS が保持する場合は、Rust 生成の正規 JSON を不透明な文字列として透過保持する。
 
-TIS の試験は、受け渡し用 JSON の細部を保存形式として検査しない。検査対象は Rust provider-data builder が返した保存用 JSON、署名、識別子、拒否診断に寄せる。
+TIS の試験は、受け渡し用 JSON の細部を保存形式として検査しない。検査対象は Rust provider-data builder が返した保存用JSON、識別子、拒否診断に寄せる。
 
