@@ -12,7 +12,22 @@
 未対応の SI/EPG 文字・escape は `panic` させず、置換文字または 診断によって安定動作させる。字幕 payload を `decode_arib_string_lossy()` に渡す経路は禁止する。字幕本文処理は TIS 側の libaribcaption 経路だけで行う。
 `arib_si_engine_rs` は libaribcaption ラッパー を所有しない。libaribcaption は TIS 側の字幕 path から Rust JNI boundary と 安全なRustラッパー 経由で呼ぶ。
 
-ARIB文字列decoderの初期状態は ARIB STD-B24 の SI/EPG 前提に合わせ、G0=Kanji、G1=Alphanumeric、G2=Hiragana、G3=Macro、GL=LS0(G0)、GR=LS2R(G2) とする。ESCによるdesignation/invocation、LS0/LS1/LS2/LS3、LS1R/LS2R/LS3R、SS2/SS3 は、字幕ではなくSI/EPG文字列の安定復号に必要な範囲で扱う。
+規範の精読基準は、ARIB公式に全文が公開されているSTD-B24 6.4-E1英語版Fascicle 1のうち、公式改定履歴がVolume 1 Part 2の文字符号化方式として参照する8単位符号、文字集合、designation、invocation、Macro、DRCS、UCSの条項とする。現行日本語版は6.5である。公式改定概要で確認できる6.5の変更範囲を併用するが、未取得の6.5本文との全文同一性や、STD-B24のFascicle 1全体・他Fascicle・字幕への適合は主張しない。
+
+本decoderの適合主張は、字幕ではないSI/EPG文字列について、次の境界に限定する。
+
+| 項目 | 対応境界 |
+|---|---|
+| 初期状態 | G0=Kanji、G1=Alphanumeric、G2=Hiragana、G3=Macro、GL=LS0(G0)、GR=LS2R(G2) |
+| 文字集合 | SI/EPGで使用するKanji、Alphanumeric、Hiragana、Katakanaと、実装・試験で対応を確認した追加記号だけを文字として出力する |
+| designation / invocation | ESCによるdesignation、LS0/LS1/LS2/LS3、LS1R/LS2R/LS3R、SS2/SS3を、対応済み文字集合とMacroの選択に使用する |
+| Macro | STD-B24 6.4-E1で定義された既定Macroだけを展開し、再帰・入力消費量に上限を設ける。未定義Macroは置換と診断にする |
+| DRCS・外字 | 自前で字形を生成しない。SI/EPG用の明示的な外字辞書に一致する場合だけ変換し、それ以外は置換と診断にする |
+| UCS | UCS符号方式を現行の対応能力として主張しない。UCS切替を検出した場合は、その文字列を未対応符号方式として置換と診断にする |
+| 不明・切詰めescape | `U+FFFD`へ置換し、offset、入力prefix、理由を診断へ記録する。`panic`、無言の脱落、推測による状態遷移を禁止する |
+| lossy境界 | 置換を許すAPIは`decode_arib_string_lossy()`だけとし、置換数と理由を返す。strict APIは未対応または不正な符号列をエラーにする |
+
+この表にない文字集合、制御機能、字幕、BML、組版、DRCS字形レンダリング、UCS符号方式は未対応である。対応を追加する場合は、参照するSTD-B24の版・分冊・条項、入力状態、出力、置換規則、試験ベクトルを先に更新する。
 
 
 ## EIT 範囲
@@ -21,11 +36,11 @@ ARIB文字列decoderの初期状態は ARIB STD-B24 の SI/EPG 前提に合わ�
 
 ## descriptor 変換
 
-表示・保存対象として扱う EIT descriptor は現行仕様で構造化変換する。TvProvider 標準列への投影は tv 直下の `ARIB_SI_EPG_TvProvider投影方針.md` を正とし、`internal_provider_data` の具体 schema / canonical encode / 署名 は本 crate の Rust provider-data serde構造体を SSOT とする。同文書で標準列投影が固定されている component、音声コンポーネント、コンテンツジャンル、Android canonical genre、free_CA_mode、視聴年齢制限、series id、episode number、last episode number、音声言語は provider 用 フィールドとして出せる。series の完全構造、イベントグループ、linkage、unknown、診断JSON など標準列へ自然対応しない項目は、JSON v1 `internal_provider_data` に構造化保存し、同時に診断 API でも観測できるようにする。
+表示・保存対象として扱う EIT descriptor は現行仕様で構造化変換する。TvProvider 標準列への投影は tv 直下の `ARIB_SI_EPG_TvProvider投影方針.md` を正とし、`internal_provider_data` の具体 schema / canonical encode / 内容ダイジェスト は本 crate の Rust provider-data serde構造体を SSOT とする。同文書で標準列投影が固定されている component、音声コンポーネント、コンテンツジャンル、Android canonical genre、free_CA_mode、視聴年齢制限、series id、episode number、last episode number、音声言語は provider 用 フィールドとして出せる。series の完全構造、イベントグループ、linkage、unknown、診断JSON など標準列へ自然対応しない項目は、JSON v1 `internal_provider_data` に構造化保存し、同時に診断 API でも観測できるようにする。
 
 `arib_si_engine_rs` は Android canonical genre の写像表をSSOTとして所有しない。
 
-本 crate は provider-data schema、canonical encode、署名、保存上限、診断 schema の正本を所有する。TvProvider標準列への投影判断は `ARIB_SI_EPG_TvProvider投影方針.md`、TIS runtime での書き込み契機、retry、現在番組解決、視聴セッション利用は `tis/DESIGN_JA.md` を正とする。
+本 crate は provider-data schema、canonical encode、内容ダイジェスト、保存上限、診断 schema の正本を所有する。TvProvider標準列への投影判断は `ARIB_SI_EPG_TvProvider投影方針.md`、TIS runtime での書き込み契機、retry、現在番組解決、視聴セッション利用は `tis/DESIGN_JA.md` を正とする。
 
 content_descriptor 由来のARIB分類、表示文字列、user_nibble を構造化して出力し、TIS が `ARIB_SI_EPG_TvProvider投影方針.md` の明示写像表に基づいて `Programs.COLUMN_CANONICAL_GENRE` へ入れる値を決定する。
 
@@ -53,7 +68,7 @@ parental_rating_descriptor:
 
 BS と CS110 の complete 判定には BAT、SDT other、NIT other を含める。これらは table_id だけの global 完了ではなく、table_extension と NIT/BAT transport loop から得た ONID/TSID scope を使って transport 単位で判定する。リモコンキー が得られない場合は service_id を表示番号の代替値 とする。
 
-partial snapshot は サービス単位の登録可能判定に使ってよい。ただし partial snapshot を無条件に channel 登録へ出してはならない。global complete 判定だけで publish 可否を決めず、サービス / transport 単位の `publishability_by_service` と 登録可能判定で、service_id、TSID、ONID、PMT、PCR、必要 table、現行ライブ視聴対応 video ES の欠落理由を分離する。登録可能サービスは、ONID / TSID / SID、PMT PID と PMT、有効 PCR、現行ライブ視聴対応 video ES、後続更新可能な internal key を持つ サービスに限定する。audio は必須ではなく、video-only サービスは登録可能として扱い、audio absent / unsupported を診断に残す。audio-only サービスは AOSP/TIF 上は `VIDEO_UNAVAILABLE_REASON_AUDIO_ONLY` に該当するため、登録可能snapshot には含めない。scrambled サービスは 登録可能 として channel 登録してよいが、現行の平文ライブ視聴成功対応宣言対象にはしない。登録可能未満の partial snapshot は 診断情報 / ライブ更新 / debugに限定し、channel insert に使わない。
+partial snapshot は サービス単位の登録可能判定に使ってよい。ただし partial snapshot を無条件に channel 登録へ出してはならない。global complete 判定だけで publish 可否を決めず、サービス / transport 単位の `publishability_by_service` と 登録可能判定で、service_id、TSID、ONID、PMT、PCR、必要 table、対応するaudioまたはvideo ESの欠落理由を分離する。登録可能サービスは、ONID / TSID / SID、PMT PID と PMT、有効 PCR、後続更新可能な internal key、および現行ライブ視聴で対応するaudioまたはvideo ESを持つサービスとする。video-onlyサービスは`TvContract.Channels.SERVICE_TYPE_AUDIO_VIDEO`、audio-onlyサービスは`SERVICE_TYPE_AUDIO`として登録可能にする。audio-onlyの視聴セッションでは`VIDEO_UNAVAILABLE_REASON_AUDIO_ONLY`を通知できるが、この値をchannel登録の禁止理由に使わない。音声・映像の欠落または未対応はtrack別診断に残す。scrambled サービスは 登録可能 として channel 登録してよいが、現行の平文ライブ視聴成功対応宣言対象にはしない。登録可能未満の partial snapshot は 診断情報 / ライブ更新 / debugに限定し、channel insert に使わない。
 
 ## section 更新
 
@@ -127,9 +142,9 @@ Rust 側に `com.android.tv` や `ISDB_<age>` の Android domain 決定文字列
 
 TIS が JNI へ渡す JSON は、保存形式ではなく Rust serde 型へ値を渡すための受け渡し用形式である。受け渡し用形式の型、必須項目、欠落時の扱い、旧形式拒否、値域検査は Rust 側の serde 型を正とする。
 
-Rust provider-data builder は、受け渡し用 JSON を serde 型へ読み込み、必須項目、型、値域、旧形式混入を検査する。検査に通った入力だけから、保存用 JSON、署名、識別子、切り詰め診断を生成する。
+Rust provider-data builder は、受け渡し用 JSON を serde 型へ読み込み、必須項目、型、値域、旧形式混入を検査する。検査に通った入力だけから、保存用 JSON、内容ダイジェスト、識別子、切り詰め診断を生成する。
 
-保存用 JSON の schema、正規化、署名、識別子抽出、サイズ上限処理は Rust が単独で所有する。TIS は保存用 JSON を直接生成してはならない。
+保存用 JSON の schema、正規化、内容ダイジェスト、識別子抽出、サイズ上限処理は Rust が単独で所有する。TIS は保存用 JSON を直接生成してはならない。
 
 受け渡し用形式の schema 名は `maleicacid.tv.programRequest` / `maleicacid.tv.channelRequest` とし、保存用 schema 名 `maleicacid.tv.program` / `maleicacid.tv.channel` と分離する。
 
@@ -140,11 +155,11 @@ required field 欠落時に `0`、`false`、`jpn`、`UNKNOWN`、空文字で補�
 `DescriptorDiagnosticV1` は Rust が生成した正規 JSON を正とする。TIS から戻ってくる場合も、TIS が項目単位で再構築した JSON ではなく、Rust が生成した正規 JSON を透過保持したものだけを受ける。
 
 
-`arib_si_engine_rs` は SI/EIT 意味解析 に加えて、TvProvider `internal_provider_data` JSON v1 の構造 SSOT を持つ。実装上は `provider_data` module に Rust `serde` struct を置き、JSON canonical encode、正規化、署名、安定キー抽出 をこの module に閉じる。
+`arib_si_engine_rs` は SI/EIT 意味解析 に加えて、TvProvider `internal_provider_data` JSON v1 の構造 SSOT を持つ。実装上は `provider_data` module に Rust `serde` struct を置き、JSON canonical encode、正規化、内容ダイジェスト、安定キー抽出 をこの module に閉じる。
 
 Programs の `internal_provider_data` には、`requiresCas`, `unsupportedCas`, `clearLivePlaybackSupported`, `channelRegistrationReady`, `epgPublishable`, `publishStateSource` 相当の CAS / 準備状態を `cas` または診断情報に保存する。視聴年齢制限については `countryCode`, `ratingValue`, `rawRatingByte`, `supported`, `parseStatus`, `mappedTvContentRating` 相当の情報を `ratings` または診断情報に保存する。現在の診断情報が完全であれば、その値を Programs CAS 状態の正とする。診断情報が欠落または不完全な場合、既存 channel の `internal_provider_data` から CAS / 準備状態を代替参照して Programs 側に保存する。channel 側だけに保存して Programs 側を false に落としてはならない。
 
-provider-data 全体は 16 KiB を目安上限、32 KiB を絶対上限とする。絶対上限を超える場合は、識別子、時刻、CAS 状態、レーティングを保持し、診断情報と長文補助情報を切り詰める。切り詰め時は `DIAGNOSTICS_TRUNCATED` または `PROVIDER_DATA_TRUNCATED` 診断と dropped count を必ず保存する。
+provider-data 全体は canonical UTF-8で16 KiBを目安上限、32 KiBを絶対上限とする。絶対上限を超える場合は、各操作後にcanonical encodeし直してサイズを測りながら、`diagnostics.rawProviderDataExtensions`、`diagnostics.descriptorDiagnostics`、`diagnostics.publishDiagnostics`、`extendedItems`の順に配列末尾から要素を除く。最後に長文フィールドをUTF-8 scalar境界で末尾から短縮する。それでも32 KiB以下にならない場合はprovider-data生成を失敗させ、識別子、時刻、CAS状態、レーティングを欠落させた結果を保存しない。切り詰めた結果には`PROVIDER_DATA_TRUNCATED`、種類別dropped count、短縮前後のbyte数を必ず保存する。この診断自体を加えた後にも再度32 KiB以下であることを検証する。
 
 TIS Kotlin は provider-data schema を定義しない。TIS は Rust JNI が返す JSON bytes を `Programs.COLUMN_INTERNAL_PROVIDER_DATA` へ保存し、標準列用の値だけを `ARIB_SI_EPG_TvProvider投影方針.md` に従って `ContentValues` へ詰める。
 
@@ -236,9 +251,9 @@ pub struct DescriptorDiagnosticV1 {
 
 `DescriptorScopeV1` は tag、name、offset、declared_length、actual_remaining_length、parse_status、raw_prefix_hex を持つ。`raw_prefix_hex` は最大64 bytes相当までとする。JSON Schema では tag、offset、declaredLength、actualRemainingLength、parseStatus、rawPrefixHex を必須最小フィールドとする。name は未知 descriptor で決定できないため任意フィールドとし、parseStatus は診断分類の根拠であるため必須フィールドとする。
 
-### canonical JSON / 署名
+### canonical JSON / 内容ダイジェスト
 
-canonical JSON は Rust `serde_json` で生成し、struct フィールド順序 と `BTreeMap` により出力順序を固定する。provider-data 署名 は TvProvider に実際に書く UTF-8 JSON バイト列の SHA-256 lowercase hex とする。
+canonical JSON は Rust `serde_json` で生成し、struct フィールド順序 と `BTreeMap` により出力順序を固定する。`schemaVersion=1`のcanonical UTF-8バイト列に対してSHA-256 lowercase hexを計算し、`contentDigest`として返す。これは同一内容の検出と診断に使う非秘密の内容ダイジェストであり、暗号学的署名、MAC、真正性、送信者認証、改ざん防止を意味しない。鍵、信頼境界、攻撃者モデルを持たないため、`signature`という名称と適合主張は使用しない。
 
 ### JNI boundary
 
@@ -248,21 +263,21 @@ Rust は少なくとも以下の JNI API 相当を提供する。
 buildProgramProviderData(inputJson) -> ProviderDataResult
 normalizeProgramProviderData(rawBytes) -> ProviderDataResult
 appendCurrentProgramDiagnostics(rawBytes, overlapCount, selectedProgramId, selectionRule) -> ProviderDataResult
-programProviderDataSignature(rawBytes) -> String
+programProviderDataDigest(rawBytes) -> String
 extractProgramKey(rawBytes) -> ProgramKeyResult?
 ```
 
-`inputJson` は Rust builder への入力 DTO であり、TvProvider 保存 schema ではない。最終 provider-data bytes と 署名 は Rust が返す。
+`inputJson` は Rust builder への入力 DTO であり、TvProvider 保存 schema ではない。最終provider-data bytesと`contentDigest`はRustが返す。`ProviderDataResult`に`signature`フィールドを設けない。
 
 `rawBytes` は任意バイナリではなく、既存 TvProvider に保存済みの JSON v1 UTF-8 バイト列を指す。JNI 呼び出し元は provider-data を `String` 化して渡してはならず、保存済み BLOB バイト列をそのまま渡す。互換上 TvProvider が文字列として返す場合も、呼び出し元は UTF-8 バイト列へ戻すだけに限定し、provider-data JSON を Kotlin 側で解釈・再構築しない。
 
-Rust は `rawBytes` が invalid UTF-8 または malformed JSON の場合、通常実行経路では panic せず、`ProviderDataResult` の空結果または key 抽出失敗へ落とす。`programProviderDataSignature(rawBytes)` は入力 `rawBytes` そのものの SHA-256 lowercase hex を返す。`buildProgramProviderData(inputJson)` と `normalizeProgramProviderData(rawBytes)` が返す `ProviderDataResult.signature` は、返却する canonical provider-data bytes に対する署名であり、入力 raw bytes の署名ではない。
+Rust は `rawBytes` が invalid UTF-8 または malformed JSON の場合、通常実行経路では panic せず、`ProviderDataResult` の失敗または key 抽出失敗へ落とす。`programProviderDataDigest(rawBytes)` は入力`rawBytes`そのものではなく、検証・正規化・上限制御を通過したcanonical provider-data bytesのSHA-256 lowercase hexを返す。`buildProgramProviderData(inputJson)`と`normalizeProgramProviderData(rawBytes)`が返す`ProviderDataResult.contentDigest`も、同じ返却bytesに対する内容ダイジェストとする。
 
 
 
 ### current-program 診断情報
 
-現在番組選択の診断情報は `ProgramProviderDataV1.diagnostics.currentProgram` にだけ保存する。構造は少なくとも `overlapCount`、`selectedProgramId`、`selectionRule` を持つ。`selectedProgramId` は補助診断であり、provider-data 署名の意味上の identity には使わない。`appendCurrentProgramDiagnostics()` は JSON の末尾を削る文字列連結ではなく、Rust `serde` 構造体へ読み戻して `diagnostics.currentProgram` を更新し、canonical JSON として再出力する。
+現在番組選択の診断情報は `ProgramProviderDataV1.diagnostics.currentProgram` にだけ保存する。構造は少なくとも `overlapCount`、`selectedProgramId`、`selectionRule` を持つ。`selectedProgramId` は補助診断であり、provider-data identityには使わない。`appendCurrentProgramDiagnostics()` は JSON の末尾を削る文字列連結ではなく、Rust `serde` 構造体へ読み戻して `diagnostics.currentProgram` を更新し、canonical JSONとして再出力した後、内容ダイジェストを再計算する。
 
 ### ChannelProviderDataV1
 
@@ -280,7 +295,7 @@ Channel provider-data の正形式は JSON v1 のみとし、schema は `maleica
 
 ### 現行実装との関係
 
-文書上の正式 schema は本節を正とする。既存実装に flat JSON 生成、`eventGroupText`、`freeCaText`、`seriesName`、`canonicalGenres`、indexed JNI getter などの旧境界が残っている場合、それは実装未達であり、完成済み仕様として扱わない。旧境界は互換経路として残さず削除する。本節は文書・schema・schema 整合確認データの整合を固定する。`provider_data.rs` は serde_json ベースの ProgramProviderDataV1 / ChannelProviderDataV1 構造を通常経路とし、canonical JSON 生成、署名、安定キー抽出をこの境界へ閉じる。既存 JSON 断片の raw 流用、flat event DTO、indexed JNI getter は実装未達として扱い、リリース物へ残してはならない。
+文書上の正式 schema は本節を正とする。既存実装に flat JSON 生成、`eventGroupText`、`freeCaText`、`seriesName`、`canonicalGenres`、indexed JNI getter などの旧境界が残っている場合、それは実装未達であり、完成済み仕様として扱わない。旧境界は互換経路として残さず削除する。本節は文書・schema・schema 整合確認データの整合を固定する。`provider_data.rs` は serde_json ベースの ProgramProviderDataV1 / ChannelProviderDataV1 構造を通常経路とし、canonical JSON生成、内容ダイジェスト、安定キー抽出をこの境界へ閉じる。既存の`signature`名称、JSON断片のraw流用、flat event DTO、indexed JNI getterは実装未達として扱い、リリース物へ残してはならない。
 
 ## event_group_descriptor の provider-data 契約
 
