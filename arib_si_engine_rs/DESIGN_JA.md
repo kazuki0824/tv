@@ -36,11 +36,11 @@
 
 ## descriptor 変換
 
-表示・保存対象として扱う EIT descriptor は現行仕様で構造化変換する。TvProvider 標準列への投影は tv 直下の `ARIB_SI_EPG_TvProvider投影方針.md` を正とし、`internal_provider_data` の具体 schema / canonical encode / 内容ダイジェスト は本 crate の Rust provider-data serde構造体を SSOT とする。同文書で標準列投影が固定されている component、音声コンポーネント、コンテンツジャンル、Android canonical genre、free_CA_mode、視聴年齢制限、series id、episode number、last episode number、音声言語は provider 用 フィールドとして出せる。series の完全構造、イベントグループ、linkage、unknown、診断JSON など標準列へ自然対応しない項目は、JSON v1 `internal_provider_data` に構造化保存し、同時に診断 API でも観測できるようにする。
+表示・保存対象として扱う EIT descriptor は現行仕様で構造化変換する。TvProvider 標準列への投影は tv 直下の `ARIB_SI_EPG_TvProvider投影方針.md` を正とし、`internal_provider_data` の具体 schema / canonical encode は本 crate の Rust provider-data serde構造体を SSOT とする。同文書で標準列投影が固定されている component、音声コンポーネント、コンテンツジャンル、Android canonical genre、free_CA_mode、視聴年齢制限、series id、episode number、last episode number、音声言語は provider 用 フィールドとして出せる。series の完全構造、イベントグループ、linkage、unknown、診断JSON など標準列へ自然対応しない項目は、JSON v1 `internal_provider_data` に構造化保存し、同時に診断 API でも観測できるようにする。
 
 `arib_si_engine_rs` は Android canonical genre の写像表をSSOTとして所有しない。
 
-本 crate は provider-data schema、canonical encode、内容ダイジェスト、保存上限、診断 schema の正本を所有する。TvProvider標準列への投影判断は `ARIB_SI_EPG_TvProvider投影方針.md`、TIS runtime での書き込み契機、retry、現在番組解決、視聴セッション利用は `tis/DESIGN_JA.md` を正とする。
+本 crate は provider-data schema、canonical encode、保存上限、診断 schema の正本を所有する。TvProvider標準列への投影判断は `ARIB_SI_EPG_TvProvider投影方針.md`、TIS runtime での書き込み契機、retry、現在番組解決、視聴セッション利用は `tis/DESIGN_JA.md` を正とする。
 
 content_descriptor 由来のARIB分類、表示文字列、user_nibble を構造化して出力し、TIS が `ARIB_SI_EPG_TvProvider投影方針.md` の明示写像表に基づいて `Programs.COLUMN_CANONICAL_GENRE` へ入れる値を決定する。
 
@@ -142,9 +142,9 @@ Rust 側に `com.android.tv` や `ISDB_<age>` の Android domain 決定文字列
 
 TIS が JNI へ渡す JSON は、保存形式ではなく Rust serde 型へ値を渡すための受け渡し用形式である。受け渡し用形式の型、必須項目、欠落時の扱い、旧形式拒否、値域検査は Rust 側の serde 型を正とする。
 
-Rust provider-data builder は、受け渡し用 JSON を serde 型へ読み込み、必須項目、型、値域、旧形式混入を検査する。検査に通った入力だけから、保存用 JSON、内容ダイジェスト、識別子、切り詰め診断を生成する。
+Rust provider-data builder は、受け渡し用 JSON を serde 型へ読み込み、必須項目、型、値域、旧形式混入を検査する。検査に通った入力だけから、保存用 JSON、識別子、切り詰め診断を生成する。
 
-保存用 JSON の schema、正規化、内容ダイジェスト、識別子抽出、サイズ上限処理は Rust が単独で所有する。TIS は保存用 JSON を直接生成してはならない。
+保存用 JSON の schema、正規化、識別子抽出、サイズ上限処理は Rust が単独で所有する。TIS は保存用 JSON を直接生成してはならない。
 
 受け渡し用形式の schema 名は `maleicacid.tv.programRequest` / `maleicacid.tv.channelRequest` とし、保存用 schema 名 `maleicacid.tv.program` / `maleicacid.tv.channel` と分離する。
 
@@ -155,7 +155,7 @@ required field 欠落時に `0`、`false`、`jpn`、`UNKNOWN`、空文字で補�
 `DescriptorDiagnosticV1` は Rust が生成した正規 JSON を正とする。TIS から戻ってくる場合も、TIS が項目単位で再構築した JSON ではなく、Rust が生成した正規 JSON を透過保持したものだけを受ける。
 
 
-`arib_si_engine_rs` は SI/EIT 意味解析 に加えて、TvProvider `internal_provider_data` JSON v1 の構造 SSOT を持つ。実装上は `provider_data` module に Rust `serde` struct を置き、JSON canonical encode、正規化、内容ダイジェスト、安定キー抽出 をこの module に閉じる。
+`arib_si_engine_rs` は SI/EIT 意味解析 に加えて、TvProvider `internal_provider_data` JSON v1 の構造 SSOT を持つ。実装上は `provider_data` module に Rust `serde` struct を置き、JSON canonical encode、正規化、安定キー抽出 をこの module に閉じる。
 
 Programs の `internal_provider_data` には、`requiresCas`, `unsupportedCas`, `clearLivePlaybackSupported`, `channelRegistrationReady`, `epgPublishable`, `publishStateSource` 相当の CAS / 準備状態を `cas` または診断情報に保存する。視聴年齢制限については `countryCode`, `ratingValue`, `rawRatingByte`, `supported`, `parseStatus`, `mappedTvContentRating` 相当の情報を `ratings` または診断情報に保存する。現在の診断情報が完全であれば、その値を Programs CAS 状態の正とする。診断情報が欠落または不完全な場合、既存 channel の `internal_provider_data` から CAS / 準備状態を代替参照して Programs 側に保存する。channel 側だけに保存して Programs 側を false に落としてはならない。
 
@@ -251,9 +251,9 @@ pub struct DescriptorDiagnosticV1 {
 
 `DescriptorScopeV1` は tag、name、offset、declared_length、actual_remaining_length、parse_status、raw_prefix_hex を持つ。`raw_prefix_hex` は最大64 bytes相当までとする。JSON Schema では tag、offset、declaredLength、actualRemainingLength、parseStatus、rawPrefixHex を必須最小フィールドとする。name は未知 descriptor で決定できないため任意フィールドとし、parseStatus は診断分類の根拠であるため必須フィールドとする。
 
-### canonical JSON / 内容ダイジェスト
+### canonical JSON
 
-canonical JSON は Rust `serde_json` で生成し、struct フィールド順序 と `BTreeMap` により出力順序を固定する。`schemaVersion=1`のcanonical UTF-8バイト列に対してSHA-256 lowercase hexを計算し、`contentDigest`として返す。これは同一内容の検出と診断に使う非秘密の内容ダイジェストであり、暗号学的署名、MAC、真正性、送信者認証、改ざん防止を意味しない。鍵、信頼境界、攻撃者モデルを持たないため、`signature`という名称と適合主張は使用しない。
+canonical JSON は Rust `serde_json` で生成し、struct フィールド順序と`BTreeMap`により出力順序を固定する。これは保存bytesの決定性、32 KiB上限制御、schema整合確認データとのbyte比較のために必要である。provider-data単体の同一内容判定には、TISがTvProvider更新抑止用に計算する行全体のpublish fingerprintが既にprovider-data bytesを含むため、別のSHA-256値を生成・返却・保存しない。provider-dataの暗号学的署名、MAC、真正性、送信者認証、改ざん防止も要件としない。
 
 ### JNI boundary
 
@@ -263,21 +263,20 @@ Rust は少なくとも以下の JNI API 相当を提供する。
 buildProgramProviderData(inputJson) -> ProviderDataResult
 normalizeProgramProviderData(rawBytes) -> ProviderDataResult
 appendCurrentProgramDiagnostics(rawBytes, overlapCount, selectedProgramId, selectionRule) -> ProviderDataResult
-programProviderDataDigest(rawBytes) -> String
 extractProgramKey(rawBytes) -> ProgramKeyResult?
 ```
 
-`inputJson` は Rust builder への入力 DTO であり、TvProvider 保存 schema ではない。最終provider-data bytesと`contentDigest`はRustが返す。`ProviderDataResult`に`signature`フィールドを設けない。
+`inputJson` は Rust builder への入力 DTO であり、TvProvider 保存 schema ではない。Rustは最終provider-data bytes、schema version、切り詰め結果、診断件数を返す。`ProviderDataResult`に`signature`または`contentDigest`フィールドを設けない。
 
 `rawBytes` は任意バイナリではなく、既存 TvProvider に保存済みの JSON v1 UTF-8 バイト列を指す。JNI 呼び出し元は provider-data を `String` 化して渡してはならず、保存済み BLOB バイト列をそのまま渡す。互換上 TvProvider が文字列として返す場合も、呼び出し元は UTF-8 バイト列へ戻すだけに限定し、provider-data JSON を Kotlin 側で解釈・再構築しない。
 
-Rust は `rawBytes` が invalid UTF-8 または malformed JSON の場合、通常実行経路では panic せず、`ProviderDataResult` の失敗または key 抽出失敗へ落とす。`programProviderDataDigest(rawBytes)` は入力`rawBytes`そのものではなく、検証・正規化・上限制御を通過したcanonical provider-data bytesのSHA-256 lowercase hexを返す。`buildProgramProviderData(inputJson)`と`normalizeProgramProviderData(rawBytes)`が返す`ProviderDataResult.contentDigest`も、同じ返却bytesに対する内容ダイジェストとする。
+Rust は `rawBytes` が invalid UTF-8 または malformed JSON の場合、通常実行経路では panic せず、`ProviderDataResult` の失敗または key 抽出失敗へ落とす。provider-data bytesだけのdigest APIは設けない。同一公開内容の抑止判定はTISの行全体publish fingerprintを正とし、Rust builderの責務へ重複させない。
 
 
 
 ### current-program 診断情報
 
-現在番組選択の診断情報は `ProgramProviderDataV1.diagnostics.currentProgram` にだけ保存する。構造は少なくとも `overlapCount`、`selectedProgramId`、`selectionRule` を持つ。`selectedProgramId` は補助診断であり、provider-data identityには使わない。`appendCurrentProgramDiagnostics()` は JSON の末尾を削る文字列連結ではなく、Rust `serde` 構造体へ読み戻して `diagnostics.currentProgram` を更新し、canonical JSONとして再出力した後、内容ダイジェストを再計算する。
+現在番組選択の診断情報は `ProgramProviderDataV1.diagnostics.currentProgram` にだけ保存する。構造は少なくとも `overlapCount`、`selectedProgramId`、`selectionRule` を持つ。`selectedProgramId` は補助診断であり、provider-data identityには使わない。`appendCurrentProgramDiagnostics()` は JSON の末尾を削る文字列連結ではなく、Rust `serde` 構造体へ読み戻して `diagnostics.currentProgram` を更新し、canonical JSONとして再出力する。
 
 ### ChannelProviderDataV1
 
@@ -295,7 +294,7 @@ Channel provider-data の正形式は JSON v1 のみとし、schema は `maleica
 
 ### 現行実装との関係
 
-文書上の正式 schema は本節を正とする。既存実装に flat JSON 生成、`eventGroupText`、`freeCaText`、`seriesName`、`canonicalGenres`、indexed JNI getter などの旧境界が残っている場合、それは実装未達であり、完成済み仕様として扱わない。旧境界は互換経路として残さず削除する。本節は文書・schema・schema 整合確認データの整合を固定する。`provider_data.rs` は serde_json ベースの ProgramProviderDataV1 / ChannelProviderDataV1 構造を通常経路とし、canonical JSON生成、内容ダイジェスト、安定キー抽出をこの境界へ閉じる。既存の`signature`名称、JSON断片のraw流用、flat event DTO、indexed JNI getterは実装未達として扱い、リリース物へ残してはならない。
+文書上の正式 schema は本節を正とする。既存実装に flat JSON 生成、`eventGroupText`、`freeCaText`、`seriesName`、`canonicalGenres`、indexed JNI getter などの旧境界が残っている場合、それは実装未達であり、完成済み仕様として扱わない。旧境界は互換経路として残さず削除する。本節は文書・schema・schema 整合確認データの整合を固定する。`provider_data.rs` は serde_json ベースの ProgramProviderDataV1 / ChannelProviderDataV1 構造を通常経路とし、canonical JSON生成と安定キー抽出をこの境界へ閉じる。既存のprovider-data `signature`フィールド/API、SHA-256計算、JSON断片のraw流用、flat event DTO、indexed JNI getterは実装未達として扱い、リリース物へ残してはならない。
 
 ## event_group_descriptor の provider-data 契約
 
