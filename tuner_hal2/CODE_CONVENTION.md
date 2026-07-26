@@ -1,6 +1,20 @@
 # Tuner HAL2 コーディング規則
 
-この文書は `tuner_hal2` 固有の実装規約を書く。公開契約、状態遷移、戻り値、capability/profile、VTS/product profile 方針、資源寿命、WorkerExit / WorkerFailureClassifier / ScanSessionTxn 論理契約、composed failure の意味は `tuner_hal2/DESIGN_JA.md` を正とする。
+この文書は `tuner_hal2` 固有の実装規約を書く。公開契約、状態遷移、戻り値、capability/profile、VTS/product profile 方針、資源寿命、WorkerExit / WorkerFailureClassifier / ScanSessionTxn / SourceBoundaryTxn 論理契約、missing target、必須診断、descrambler transaction、Drop leak、close cascade、callback artifact、public nullable / close / frontend count、composed failure の意味は `../tuner_hal/DESIGN_JA.md` を正とする。以下で節名だけを示して`DESIGN_JA.md`と書く場合も、正本は`../tuner_hal/DESIGN_JA.md`であり、本ディレクトリの構造設計書を指さない。
+
+旧文書で使っていた論理名は、次の正本箇所へ読み替える。存在しない節名を参照先として残さない。
+
+| 論理名 | `../tuner_hal/DESIGN_JA.md`の正本箇所 |
+|---|---|
+| missing target / public close / Drop leak / close cascade | 表5、表7、表8、`close / unregister / quarantine 条件` |
+| 必須診断 / best-effort telemetry / composed failure | 表6、表7、表13、`失敗影響範囲と局所隔離` |
+| descrambler transaction | 表17、表17-B |
+| `WorkerExit` / `WorkerFailureClassifier` | `ランタイム設計`、`worker 異常終了`、`worker 終了と保留 cleanup` |
+| `ScanSessionTxn` | 表0-F、表19、`scan terminal event と callback cleanup` |
+| `SourceBoundaryTxn` | 表18、表18-B、`Stream boundary` |
+| callback artifact | 表7、表8、表0-S-3A |
+| public nullable / frontend count | `nullable Binder 境界`、表1-D、`ITuner ルート API の固定契約` |
+| 型付き境界 | 表0-S-3、表0-S-3A |
 
 ## 1. failure / rollback / cleanup の実装規約
 
@@ -11,7 +25,7 @@
 - cleanup 系 top-level use-case は `CleanupExecutionReport<TStepOutcome, TFailure>` / `CleanupExecutionDiagnosticSnapshot<TRecord>` / `SharedCleanupDiagnostics<TRecord>` を共通部品として使い、all-attempt した per-step outcome を保持してから public failure 用 first-error を射影する。object close / drop-leak terminalization は `ObjectCleanupStepOutcome` / `ObjectCleanupDiagnosticRecord` adapter、frontend worker cleanup は `FrontendWorkerCleanupStepOutcome` / `FrontendWorkerCleanupDiagnosticRecord` adapter で接続する。report を `.into_result()` だけで破棄せず、shared cleanup diagnostic sink に保存してから public failure へ射影する。report 記録失敗と finish/terminalization/worker cleanup failure は composition で両方表面化する。cleanup diagnostic の production accessor は records と dropped count を同時に返し、overflow を観測不能にしない。個別 plan body で outcome vector なしの first-error collection へ戻さない。domain-specific context を `Option` field bag や `String` detail へ丸めて共通化しない。object cleanup は artifact/domain/runtime variants、frontend worker cleanup は target/step-specific variants で context を保持する。frontend tune/scan rollback cleanup と frontend close owner-loss cleanup も同じ shared cleanup execution path に載せ、snapshot restore、bound demux rollback、owned LNB close、worker/live-data cleanup outcome を `FirstErrorCollector` だけで潰してはならない。
 - primary + cleanup failure の実装は共通 failure composition helper 群へ寄せる。個別 transaction body で同等の precedence 判定や文字列 detail 合成をコピーしない。
 - post-allocation / post-registration failure path では、object table rollback、runtime cleanup、callback rollback、diagnostic / cleanup-failed marking を可能な限りすべて試行する。途中の `?` で後続 cleanup を飛ばさない。
-- missing target の意味論は `DESIGN_JA.md` の missing target failure 契約を正とする。実装側では `Option::None` / missing target を空分岐や `.is_some()` だけで無言成功扱いにせず、許容範囲が DESIGN にない場合は failure / diagnostic helper へ接続する。
+- missing target の意味論は `DESIGN_JA.md` の表5、表7、表8と`close / unregister / quarantine 条件`を正とする。実装側では `Option::None` / missing target を空分岐や `.is_some()` だけで無言成功扱いにせず、許容範囲が DESIGN にない場合は failure / diagnostic helper へ接続する。
 - rollback / public close / owner-loss cleanup の実装入口には、失敗を戻り値または diagnostic に接続できる operation を使う。void / best-effort-only helper を必須 cleanup の正本入口にしない。
 - 必須診断と best-effort telemetry の分類は `DESIGN_JA.md` を正とする。必須診断対象の実装では、ログだけ・counter だけ・`.ok()` だけにせず、対応する diagnostic / unhealthy / quarantine / cleanup-failed helper へ接続する。
 - `setKeyToken(VOID)` のように session state と token table refcount の両方を変える経路では、`DESIGN_JA.md` の descrambler transaction 契約を実装正本として参照し、AIDL 層・descrambler crate・個別 helper に同じ phase order を再定義しない。
@@ -123,7 +137,7 @@ Wrapper を置くべきでない条件:
 
 ## 8. 型付き境界 hardening
 
-- Root / object query、capability token、transaction phase、packet diagnostic、LNB lifecycle reason、transaction registry の意味論は `DESIGN_JA.md` の「型付き境界の保守契約」を正とする。この節では意味論を再定義せず、実装時の禁止形だけを列挙する。
+- Root / object query、capability token、transaction phase、packet diagnostic、LNB lifecycle reason、transaction registry の意味論は `DESIGN_JA.md` の表0-S-3、表0-S-3Aと各公開API状態表を正とする。この節では意味論を再定義せず、実装時の禁止形だけを列挙する。
 - AIDL 変換層は registry entry、runtime entry、object table entry を返す helper を新設しない。AIDL 型へ渡す直前は、service_runtime が作成した snapshot DTO だけを入力にする。
 - query façade は `&mut TunerServiceRuntime`、任意 closure、registry/runtime tuple を AIDL 側から受け取らない。fallible local Binder downcast は、object live / generation / kind と dispatch preflight 後の AIDL input conversion helper に限定する。
 - capability token / transaction plan は public enum variant、public field、public constructor で偽造可能にしない。外部 caller へ phase order を組ませる代わりに、owning module use-case façade へ接続する。crate 間 domain API の typed request はこの禁止対象ではないが、request 単体で capability token や rollback snapshot 本体を構築できる形にしない。
@@ -133,7 +147,7 @@ Wrapper を置くべきでない条件:
 
 ## public nullable / close / frontend count 実装入口規約
 
-- public nullable API、public close、frontend count API の状態遷移・戻り値・到達条件は `DESIGN_JA.md` の「public nullable / close / frontend count 契約」を正とする。
+- public nullable API、public close、frontend count API の状態遷移・戻り値・到達条件は `DESIGN_JA.md` の`nullable Binder 境界`、表1-D、表5、`ITuner ルート API の固定契約`を正とする。
 - AIDL public method implementation は、nullable 引数を helper 内で非 nullable に潰さず、`None` を service_runtime use-case へ到達させる。
 - AIDL façade は close / callback unregister / demux-input PID claim / frontend count の意味論を再定義せず、service_runtime use-case 呼び出しと Binder status bridge に限定する。
 - `frontend_system_from_type()` のような入力変換 helper は、未対応 type の丸め込みや戻り値 policy を持たず、DESIGN_JA.md の契約に従う service_runtime request/command DTO へ接続する。

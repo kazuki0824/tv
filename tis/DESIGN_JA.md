@@ -59,6 +59,8 @@ TvProvider標準列への投影判断は tv 直下の `ARIB_SI_EPG_TvProvider投
 
 ARIB 字幕は TIS 側の字幕 path で `libaribcaption` を使用する。現行 product では PMT から字幕 track を検出し、`TvTrackInfo.TYPE_SUBTITLE` として通知し、`onSetCaptionEnabled()` と字幕表示経路を接続する。字幕 track を advertise する場合は、ARIB 字幕 PES を libaribcaption C API 経路で処理し、実際に表示できることを対応宣言条件に含める。`arib_si_engine_rs` の自前 ARIB 文字列 decoder はサービス名・番組名・番組説明など字幕以外の SI/EPG 文字列に限定し、字幕 PES や字幕本文をその decoder に渡さない。libaribcaption は C API のみを使用し、独自 C/C++ 薄層 は書かない。Kotlin から直接 C API を呼ばず、TIS Kotlin → Rust JNI boundary → 安全なRustラッパー → libaribcaption C API の順に接続する。BML / data broadcast 実行環境、双方向データ放送 UI、データ放送 UI は恒久対象外である。
 
+現行製品profileの字幕取得は、PMTで字幕ESを検出した場合だけ`TYPE_TS / SUBTYPE_PES`を開き、字幕PIDと明示`streamId=0xBD`（`private_stream_1`）で設定する。TISは`numPesFilter > 0`からwildcardまたは任意stream ID対応を推定しない。`tuner_hal/DESIGN_JA.md`の製品統合契約どおり、`pesSupportedStreamIds={0xBD}`、`pesWildcardSupported=false`、`pesZeroLengthSupported=false`を前提とし、この契約と一致しないHAL profileでは字幕trackを対応宣言しない。別stream IDまたはwildcardを要求する一般PES経路は現行TISの対象外である。
+
 
 ## libaribcaption Soong / renderer 統合境界
 
@@ -392,4 +394,3 @@ TIS は保存データの型、正規化、必須項目判定、欠落補完、�
 `DescriptorDiagnosticV1` は Rust が生成した正規 JSON を正とする。TIS は `DescriptorDiagnosticV1` を項目ごとに再構築してはならない。TIS が保持する場合は、Rust 生成の正規 JSON を不透明な文字列として透過保持する。
 
 TIS の試験は、受け渡し用 JSON の細部を保存形式として検査しない。検査対象は Rust provider-data builder が返した保存用JSON、識別子、拒否診断に寄せる。
-

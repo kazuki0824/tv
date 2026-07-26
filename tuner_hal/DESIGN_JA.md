@@ -83,7 +83,7 @@ VTS XML/profileで使う機能、capabilityで宣言する機能、実装済み�
 
 - CS110 は周波数のみで選局する。ISDB-S settings で `streamIdType=UNDEFINED` かつ `streamId=0` の明示未指定、または AOSP SDK の default 表現である `streamIdType=STREAM_ID` かつ `streamId=INVALID_STREAM_ID(0xFFFF)` だけを selector なしとして扱う。CS110 tune request に TSID / relative stream-number selector が指定された場合は `INVALID_ARGUMENT` とする。`streamIdType=RELATIVE_STREAM_NUMBER` の負値、`streamIdType=UNDEFINED` の負値、その他の負値 selector は未指定へ丸めない。
 
-ISDB-Sのセレクター対応能力は、`SupportedBackendIdentity`、ドライバーのリポジトリとコミット、USB VID/PIDまたは同等の機器識別子、対象リビジョンがすべて一致する `SupportedDeviceCapabilityCatalog` の検証済み項目からだけ生成する。一致する検証済み項目がない場合、または `selector_capability_release_eligible` が偽の場合は、セレクター対応能力を公開せず、そのセレクターを使う選局オブジェクトも生成しない。アダプター経路が確認済みの項目では、`RELATIVE_STREAM_NUMBER` の `0..7` を公開してよい。この項目だけが有効な場合、絶対値の `STREAM_ID` 要求にはバックエンドを変更せず `UNAVAILABLE` を返す。絶対TSID経路を別途確認済みの項目では `0..65534` を公開してよく、`65535` には `INVALID_ARGUMENT` を返す。この場合、`0..11` だけを特別に拒否しない。`ProductProfile` は確認済み能力を抑止できるが、新設または拡張してはならない。実行時は不変の `EffectiveCapabilities` だけを参照する。
+ISDB-Sのセレクター対応能力は、機器識別子と対象リビジョン、versioned backend manifestのABI/API契約版、および起動時functional probeの結果が一致する`SupportedDeviceCapabilityCatalog`の検証済み項目からだけ生成する。repository、commit SHA、build IDは、その台帳項目を作成した証跡metadataとして記録してよいが、実行時の適合判定や能力公開の必要条件にしてはならない。同じABI/API契約とfunctional probeを満たす再build、cherry-pick、保守backportをcommit差だけで排除しない。一致する検証済み項目がない場合、または`selector_capability_release_eligible`が偽の場合は、セレクター対応能力を公開せず、そのセレクターを使う選局オブジェクトも生成しない。アダプター経路が確認済みの項目では、`RELATIVE_STREAM_NUMBER`の`0..7`を公開してよい。この項目だけが有効な場合、絶対値の`STREAM_ID`要求にはバックエンドを変更せず`UNAVAILABLE`を返す。絶対TSID経路を別途確認済みの項目では`0..65534`を公開してよく、`65535`には`INVALID_ARGUMENT`を返す。この場合、`0..11`だけを特別に拒否しない。`ProductProfile`は確認済み能力を抑止できるが、新設または拡張してはならない。実行時は不変の`EffectiveCapabilities`だけを参照する。
 
 
 - コールバック失敗、ワーカー異常終了、FMQ / EventFlag 失敗の状態遷移、診断、後続処理停止条件は表7・表8を正とする。本節では再定義しない。
@@ -144,10 +144,12 @@ VTS製品設定の`canConnectToCiCam`は`false`に固定する。`IFrontend.link
 
 `IFrontend.getStatus(statusTypes)` と `getFrontendStatusReadiness(statusTypes)` では、返却件数の契約が異なる。`getStatus()` は、`FrontendInfo.statusCaps` で公開した種類だけを要求順に返し、公開済み種類の重複も維持する。未公開の既知値と、この実装がまだ認識しない将来の列挙数値は無視するため、要求がすべて非対応種類であれば空の配列を返して成功する。種類ごとの「取得不能」を表す架空値を生成してはならない。要求された公開済み種類の取得に1件でも失敗した場合は、部分結果を返さず `UNAVAILABLE` とする。`getFrontendStatusReadiness()` は、既知・未知にかかわらず要求された各要素に対し要求順で1件ずつ返す。公開済み種類には `UNAVAILABLE`、`UNSTABLE`、`STABLE` のいずれか、未公開の既知値と将来の列挙数値には `UNSUPPORTED` を返す。stable AIDLへ将来追加された列挙値だけを理由に要求全体を`INVALID_ARGUMENT`へ落とさず、現行Android 14の公開済み値に対するVTSの順序・件数・値の契約は維持する。出力件数を決める処理は両APIで共用しない。
 
+公開済みstatusの値は、frontend runtimeが所有する世代付き`FrontendStatusSnapshot`だけから返す。tune/scan workerまたはbackend監視処理が、backend I/Oの完了後に同じfrontend generationを再検証してsnapshotを更新する。`getStatus()`と`getFrontendStatusReadiness()`はsnapshotを読むだけとし、backend I/O、probe、worker起動、状態変更を行わない。snapshotはstatus種別ごとに値、readiness、取得元、更新generation、単調増加する更新番号を持つ。新しいtune/scan、`stopTune()`、`stopScan()`、backend切断、fatal backend failure、`close()`では旧generationの値を無効化する。公開中の`DEMOD_LOCK`と`RF_LOCK`は、現generationで未取得または無効化済みなら`false`かつ`UNSTABLE`とし、fatal backend failureで値の正当性を保証できない場合は要求全体を`UNAVAILABLE`とする。時刻だけで同generationのlock値を失効させず、世代境界またはbackend事象で更新する。任意telemetryは、起動時に安定取得と更新経路を証明できない限り`statusCaps`へ公開しない。
+
 
 `IFilter.setDataSource(source)` は、AOSP意味論どおり `source != NULL` の場合に指定 filter output を入力元とし、`source == NULL` の場合に sink filter の入力元を demux input へ戻す。`setDataSource(NULL)` は実装済み対象に含める。AOSP frozen/stable AIDL の vendor 独自改変、raw Binder transaction parser による公開契約を通さない実装は採用しない。non-null source filter 経路では、旧 `SourceFilter(filter_id, generation)` origin に属する section / PES assembler、continuity、flush generation、downstream partial state を切断し、旧 source 由来の未完了 payload を新 source 由来 payload へ連結してはならない。
 
-`IFrontend.tune()` は binder thread 上で ロック 完了まで待ち続けない。前回 tune / scan の ワーカーを generation で無効化し、backend へ tune request を投入し、非同期 ワーカー が ロック timeout と event 通知を行う。`stopTune()`、`close()`、次回 `tune()`、`scan()` は該当 generation を cancel し、古い ワーカー からの `LOCKED` / `NO_SIGNAL` 通知を捨てる。
+`IFrontend.tune()` は binder thread 上で ロック 完了まで待ち続けない。前回 tune / scan の ワーカーを generation で無効化し、backend へ tune request を投入し、非同期ワーカーが`LOCKED`または`NO_SIGNAL`を終端通知する。現行`ProductProfile.tuneTerminalDeadlineMs`は2500 msとし、正の有限値を起動前に確定できないfrontendは公開しない。backendからlockまたは明示失敗が来ないまま期限へ達した場合は、現generationだけを停止し、接続demuxへのデータを遮断して`NO_SIGNAL`を正確に1回通知し、状態を`Idle`へ移す。`stopTune()`、`close()`、次回`tune()`、`scan()`は該当generationをcancelし、古いワーカーからの`LOCKED` / `NO_SIGNAL`通知を捨てる。Android 14 AIDL VTSの選局試験へ結び付けるprofileでは、VTSが`LOCKED`を待つ3秒以内に、実信号で`LOCKED`を通知できることをprofile受入条件とする。
 
 `IFrontend.scan()` は、同一条件の再 scan であっても成功扱いの無処理 にしない。AOSP 契約に従い、未完了の scan がある場合は既存 scan generation を停止し、新しい scan generation を開始する。既存 scan の callback から来る古い terminal event は generation mismatch として捨てる。
 
@@ -350,7 +352,7 @@ Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時�
 
 - `IDescrambler.addPid()` / `removePid()` の source filter は AOSP意味論では optional であり、`NULL` は demux 入力全体の PID 指定である。NULL 経路は現行AOSP契約上の成功対象として扱い、実装済み対象に含める。
 
-公開する対応能力は、機器検出後に選択して以後変更しない1個の `CapabilitySnapshot` から導出する。最初に `F=successful_frontend_count` と `L=aidl_baseline_eligible_lnb_count` を確定する。実行時の候補C8、C4、C2、C1は優先順を持ち、本書の候補表でdemux、フィルター、DVR、AVのオブジェクト数とF/Lに対する式を明示する。各候補についてオブジェクト台帳と実行権限枠を仮予約し、いずれかの構成要素で失敗した場合は仮予約全体を取り消す。予約に成功した最大の候補を一度だけ確定する。C1は`ITuner`公開に必要な最小オブジェクト構成とし、音声AVフィルター1個と映像AVフィルター1個を含むが、AV payload領域は起動時に先取りしない。確定済みスナップショットを`getDemuxCaps()`、オブジェクト受付、後片付け時の個数集計の根拠とする。呼び出し側が指定するFMQ容量とAVの実サイズ割り当ては、openまたは配送時に`ProductProfile`の実行時メモリー予算へ別transactionで予約する。PES filterはARIB字幕経路に必要なbounded PESだけをsnapshotへ公開する。現行profileで成功させる設定は明示`streamId=0xBD`（`private_stream_1`）に限定し、`PES_packet_length > 0`の完全なPESを通常FMQへ配送する。各filterは同時に1個のassemblerだけを持ち、先頭6 byteから宣言長を確定した時点で`PES_packet_length + 6` byte（最大65,541 byte）をservice共通の`ProductProfile.pesBoundedRuntimeBudgetBytes`からclaimし、完了、破棄、`flush()`、`stop()`、`close()`で返却する。予算は`65_541 * CapabilitySnapshot.pesFilterCount`以上とし、実bufferはPES開始時に必要量だけ確保する。長さ0のvideo PESはライブ映像のAV filter経路に任せ、PES subtypeでは対応宣言しない。VTSはC1に無条件では含めない。AOSPブランチ、フロントエンド入力元、選局値とPID、使用経路、Filter/DVRのバッファー容量、製品のメモリー予算を、起動前の`VtsEnvironmentProfile`として定義する。未定義の間は`DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED`とし、既定のV1 XMLを組み込まず、VTS成功を表明しない。
+公開する対応能力は、機器検出後に確定して以後変更しない1個の`CapabilitySnapshot`から導出する。最初に`F=successful_frontend_count`と`L=aidl_baseline_eligible_lnb_count`を確定する。C8、C4、C2、C1は後述の依存が閉じた資源群ごとに独立して評価し、ある資源群の不足を無関係な資源群の0件化へ波及させない。各資源群では、公開object数と、その数に必要なworker、callback、reaper、cleanup authority、バイト予算の台帳使用権を同時に仮予約し、成功した最大候補だけを確定する。確定済みsnapshotは、全公開個数、各依存枠、`avPerFilterLiveBytes`、`avRuntimeBudgetBytes`、`pesBoundedRuntimeBudgetBytes`、`playbackProcessingBudgetBytes`、FMQ総予算を値として持ち、能力広告と受付判定の唯一の入力とする。バイト予算は起動時に物理領域を先取りする意味ではなく、後続の割り当てが越えられない台帳上限である。AV payloadは配送時、PESは開始時、FMQとplayback処理中バッファーはconfigure時に実領域を確保する。ARIB字幕用bounded PESは明示`streamId=0xBD`だけを公開し、`pesBoundedRuntimeBudgetBytes >= 65_541 * pesFilterCount`を満たす場合だけ非0にする。VTSはC1に無条件では含めない。AOSPブランチ、フロントエンド入力元、選局値とPID、使用経路、Filter/DVRのバッファー容量、製品のメモリー予算を、起動前の`VtsEnvironmentProfile`として定義する。未定義の間は`DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED`とし、既定のV1 XMLを組み込まず、VTS成功を表明しない。
 
 
 - 入力値不正は `INVALID_ARGUMENT`、未対応 capability は `UNAVAILABLE`、オブジェクト state 不整合は `INVALID_STATE`、mutex汚染 や内部整合性崩壊は `UNKNOWN_ERROR` / `HalError::Internal` に写像する。
@@ -425,7 +427,7 @@ Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時�
 | FR-012 | FailedBackend / FailedBoundary | `stopTune()` / `stopScan()` | 回収対象に対応する停止結果 | 成功時Idle、失敗時は入力状態を維持またはQuarantined | 失敗を生じた旧操作だけを回収し、別操作の成功状態へ偽装しない |
 | FR-013 | Closing / Closed / Quarantined | `tune()` / `scan()` / `stopTune()` / `stopScan()` | `INVALID_STATE` | 入力状態を維持 | 公開操作を実行しない |
 
-旧操作の停止が失敗した場合は、原因別エラーを返し、表19と`IFrontend.stopTune()`の失敗規則に従って`FailedBackend`、`FailedBoundary`、または`Quarantined`へ移す。旧tuneまたは旧scanを復元せず、新しいbackend要求、worker、callback generationを公開しない。
+旧操作の停止自体が失敗した場合は、原因別エラーを返し、表19と`IFrontend.stopTune()`の失敗規則に従って`FailedBackend`、`FailedBoundary`、または`Quarantined`へ移す。この場合は状態不明の旧操作を復元せず、新しいbackend要求、worker、callback generationを公開しない。旧操作を正常に停止できた後、新しい`tune()`要求の受理だけが失敗した場合は、表19の復元用snapshotから旧要求を正確に1回復元する。
 
 ### 表1. IFilter 状態表
 
@@ -510,7 +512,7 @@ AV filter の audio/video routing 種別は open subtype を正とする。TsAud
 | F-B-019 | `stop()` 未設定 | F0 | 成功 | F0 | なし | `stop_idempotent` を増やす | AOSP SDK 契約に合わせ、未開始 filter stop は no-op 成功とする |
 | F-B-020 | `close()` | 全非閉鎖状態 | 表5に従う | 表5に従う | 後片付け開始 | 表5に従う | close の戻り値と後片付け完了判定は表5を正とする |
 
-AV割り当てについては、本書のAV割り当て表と`releaseAvHandle()`判定表だけを正とする。`openFilter(bufferSize)`の`bufferSize`はAOSPが要求するFMQ容量としてだけ検証・予約し、AV payloadの上限には流用しない。AV payload領域はイベントごとの要求サイズで割り当て、filter別の未解放合計が`ProductProfile.avPerFilterLiveBytes`、サービス全体の未解放合計が`ProductProfile.avRuntimeBudgetBytes`を超えない場合だけ確定する。両値は製品のメモリー予算から独立に宣言・検証し、未宣言または0の場合はAV filter能力を公開しない。共有方式とイベント固有方式は同じ実行時台帳を消費し、起動時または`CapabilitySnapshot`選択時にpayload領域を先取りしない。上限超過、容量枯渇、割り当て処理の失敗は、コールバックと`dataId`の公開前に拒否する。破棄するのは当該イベントだけとし、使用中の割り当てを追い出してはならない。`avDataId`は符号付き63ビットの正数とし、再利用しない。`flush()`、再設定、論理閉鎖の後も、配送済みの割り当てを`ReleaseOnly`として保持する。`Active`または`ReleaseOnly`の解放は1回だけ資源を返して成功する。終了済みと確認できるIDへの重複解放は状態を変えず成功し、不明ID、別所有者、組の不一致には`INVALID_ARGUMENT`を返す。台帳の信頼性を確認できない場合は`UNKNOWN_ERROR`とし、対象記憶領域を隔離する。
+AV割り当てについては、本書のAV割り当て表と`releaseAvHandle()`判定表だけを正とする。`openFilter(bufferSize)`の`bufferSize`はAOSPが要求するFMQ容量としてだけ検証・予約し、AV payloadの上限には流用しない。AV payload領域はイベントごとの要求サイズで割り当て、filter別の未解放合計が`CapabilitySnapshot.avPerFilterLiveBytes`、サービス全体の未解放合計が`CapabilitySnapshot.avRuntimeBudgetBytes`を超えない場合だけ確定する。両値は起動前に`ProductProfile`を検証してsnapshotへ固定し、未宣言または0の場合はAV filter能力を公開しない。共有方式とイベント固有方式は同じ実行時台帳を消費し、起動時または`CapabilitySnapshot`選択時にpayload領域を先取りしない。上限超過、容量枯渇、割り当て処理の失敗は、コールバックと`dataId`の公開前に当該イベントの非同期失敗として処理する。破棄するのは当該イベントだけとし、使用中の割り当てを追い出してはならない。`avDataId`は符号付き63ビットの正数とし、再利用しない。`flush()`、再設定、論理閉鎖の後も、配送済みの割り当てを`ReleaseOnly`として保持する。`Active`または`ReleaseOnly`の解放は1回だけ資源を返して成功する。終了済みと確認できるIDへの重複解放は状態を変えず成功し、不明ID、別所有者、組の不一致には`INVALID_ARGUMENT`を返す。台帳の信頼性を確認できない場合は`UNKNOWN_ERROR`とし、対象記憶領域を隔離する。
 
 
 #### 表1-C. IFilter 補助API状態契約
@@ -795,14 +797,16 @@ Section/PES処理は、外形の抽出、設定されたCRC検査、型付きeve
 ### 表4. AV共有メモリ資源寿命表
 
 
-#### 表4-A. AV共有メモリ容量固定表
+#### 表4-A. 共有領域方式だけの発行条件
 
 AV共有メモリの slot size は filter `bufferSize` から算出してはならない。`bufferSize` は通常FMQ対象フィルタの queue 容量であり、AV共有メモリの単位領域サイズとは別定数にする。
 
 | 項目 | 固定内容 |
 |---|---|
 | `bufferSize` との関係 | filter `bufferSize` を AV slot size に流用しない |
-| MediaEvent 発行条件 | payload が slot に収まり、共有ハンドル公開済み、client release未済みで、有効な `dataId` を発行できる場合だけ発行する |
+| 適用領域 | 共有領域方式だけに適用する。イベント固有fd方式には適用しない |
+| 共有方式MediaEvent発行条件 | payload が共有領域に収まり、共有ハンドル公開済み、client release未済みで、有効な `dataId` を発行できる場合だけ共有方式で発行する |
+| 条件不成立時 | 表4-BのAVM-008Cへ進み、イベント固有fd方式を試す。共有方式の条件不成立だけでイベントを破棄しない |
 | VTS/profile 条件 | AVペイロードの通常FMQ読み出しを前提にしない |
 
 #### 表4-B. AV共有メモリ資源寿命表
@@ -926,7 +930,7 @@ queueへの確定後に`EventFlag`による起床へ失敗した場合は、確�
 | clear / `flush()` | 新規transactionを遮断し、受付済みtokenを完了または取消する。queue位置、内容、世代はまだ変更しない | 未消費領域の破棄と`queue_epoch`または解析状態世代の更新を同一排他区間で確定する | 診断記録または再起床失敗 | commit前失敗は状態不変で再試行可。commit後は消去成功を維持し、旧世代を復元しない | queue identityとdescriptorは維持し、内容、対象assembler、statsをAPI別規則に従って更新する |
 | playback read | `beginRead()`で得た範囲を検証し、所有権付き処理中領域を準備する。read位置は未確定 | 対象バイト列を処理中領域へ1回だけ移し、同じ範囲の`commitRead()`を成功させる | backend注入の一部受理、再試行可能失敗、致命的失敗 | commit後はFMQから再読せず処理中領域からだけ再試行する。停止・閉鎖・致命的失敗では残存バイト数と理由を記録して終端する | `FMQ_CONSUMED`と`DEMUX_INJECTED`を別状態で持ち、投入カーソルを受理済みバイト数だけ進める |
 
-`CleanupPending` は、本書のワーカー終了契約に従い、所有者内に閉じた依存資源別の事象駆動状態とする。固定ミリ秒の実行予定は設けない。開始元の操作は、その時点で実行可能な後片付け手順をすべて1回ずつ試す。完了した依存資源の使用枠は返却する。再試行可能だが未完了で、実行中ではない依存資源は `CleanupPending` に残し、再 `close()`、所有者消滅の監視、依存資源の完了通知、サービス初期化のいずれかでだけ再開する。再開要求は所有者、世代、依存資源の組ごとにまとめる。実行中のワーカーは所有者世代を無効化して変更を遮断し、有界の `ReaperSupervisor` へ一度だけ移して直ちに隔離する。公開APIの呼び出し元は `join` を待たない。実際の終了と残りの後片付けが完了するまで使用枠を返却しない。移管失敗、遮断失敗、または全体状態への変更を遮断できないことを示す型付き証跡がある場合は、サービス全体に影響する障害として扱う。所有者内に完全に隔離できた残存処理で、無関係な `ITuner` の能力を停止してはならない。公開結果では主処理の結果を優先し、後片付けの型付き集約診断を別に保持する。
+`CleanupPending`は、本書のワーカー終了契約に従い、所有者内に閉じた依存資源別の状態とする。開始元の操作は、その時点で実行可能な後片付け手順をすべて1回ずつ試す。未完項目はサービス起動時から常駐する`ReaperSupervisor`の有界work queueへ渡し、外部APIが再度呼ばれなくても自律的に再試行する。再試行時刻は登録から0、10、100、1000 ms、その後は1000 msごととし、30秒で通常再試行を終端する。期限までに完了できなければ、世代遮断が成立する資源は`Quarantined`、成立しない資源は`ServiceCritical`へ移す。完了した依存資源の使用枠だけを返却し、未完・隔離資源の枠は保持する。再`close()`、所有者消滅、依存資源の完了通知、サービス初期化は即時再開を要求できるが、唯一の進行契機にはしない。再開要求は所有者、世代、依存資源の組ごとにまとめる。実行中のワーカーは所有者世代を無効化して変更を遮断し、有界の`ReaperSupervisor`へ一度だけ移して直ちに隔離する。公開APIの呼び出し元は`join`を待たない。実際の終了と残りの後片付けが完了するまで使用枠を返却しない。移管失敗、遮断失敗、または全体状態への変更を遮断できないことを示す型付き証跡がある場合は、サービス全体に影響する障害として扱う。所有者内に完全に隔離できた残存処理で、無関係な`ITuner`の能力を停止してはならない。公開結果では主処理の結果を優先し、後片付けの型付き集約診断を別に保持する。
 
 FMQのバイト列を所有権付きの一時領域へ複製した後、`commitRead()`を行って`FMQ_CONSUMED`へ遷移する。バックエンドへの投入に成功した場合は`DEMUX_INJECTED`へ遷移する。投入失敗時は一時領域から再試行し、停止または閉鎖時に残存するデータは明示的な損失診断へ記録する。
 
@@ -1227,10 +1231,10 @@ validate には、settings型、周波数範囲、frontend capability、LNB候�
 | TN-002 | prepare | 新worker枠、callback経路、backend要求、境界処理、失敗時回収に必要な資源を旧状態へ触れず準備する | 準備物を逆順に解放し、原因別のエラーを返す。解放不能時は当該準備資源を隔離する | 維持 |
 | TN-003 | same-setting decision | 正規化設定が同一で、前回tuneが完了済みかつ安定中なら無処理成功とする | 未完了の同一tuneを無処理成功にせずTN-004へ進める | 完了済み同一tuneだけ維持 |
 | TN-004 | revalidate under transaction lock | frontend、LNB、旧worker、接続demuxのIDとgenerationを再検証し、対象一覧を固定する | 準備物を解放して状態を変えず失敗する | 維持 |
-| TN-005 | commit A | 旧generationへのcallback・queue・backend確定権限を遮断し、旧workerを停止または回収機構へ移し、旧backendを停止して、全対象demuxの境界を終端する | 変更前失敗は旧状態を維持。変更後の状態を確定できないfrontendまたはdemuxだけを`Failed`または`Quarantined`へ移す | 確定A後は維持しない |
-| TN-006 | backend request | 新しい選局要求をbackendへ正確に1回送る | 通常の受理失敗は準備物を解放して`Untuned`。backend状態または解放結果が不明なら`Failed`とし、専有資源を隔離する | 維持しない |
+| TN-005 | commit A | 旧設定、旧generation、旧backend要求、旧demux境界を復元用snapshotへ固定してから、旧generationへのcallback・queue・backend確定権限を遮断し、旧workerを停止または回収機構へ移し、旧backendを停止して、全対象demuxの境界を終端する | 変更前失敗は旧状態を維持。変更後の状態を確定できないfrontendまたはdemuxだけを`Failed`または`Quarantined`へ移す | 復元用snapshotをTN-007の確定まで保持 |
+| TN-006 | backend request | 新しい選局要求をbackendへ正確に1回送る | 受理失敗時は新要求の準備物を解放し、復元用snapshotの旧要求を正確に1回再投入する。復元成功時は新generationを発行せず旧設定を新しい復元generationで`Tuning`へ戻す。復元失敗時だけ`Untuned`、backend状態不明または解放不能時は`Failed`/`Quarantined` | 新要求失敗時はbest-effort復元 |
 | TN-007 | commit B | backend受理を記録し、新generation、worker、callback許可、demuxへの新入力世代を一括で公開する | 新backendを停止し、新generationを公開しない。停止または回収を確定できなければ`Failed`または`Quarantined` | 維持しない |
-| TN-008 | async run | 非同期workerがLOCKED、NO_SIGNAL、取消、backend失敗のいずれかを現generationへ確定する | worker異常は現generationを終端し、古いgenerationの通知を抑止する | 新tuneへ遷移済み |
+| TN-008 | async run | 非同期workerがLOCKED、NO_SIGNAL、取消、backend失敗のいずれかを現generationへ確定する。`tuneTerminalDeadlineMs`到達はNO_SIGNALとして終端する | worker異常または期限到達は現generationを終端し、古いgenerationの通知を抑止する | 新tuneへ遷移済み |
 | TN-009 | callback delivery after commit B | 現generationの確定済みeventだけをcallbackへ配送する | callback失敗はdomain状態を戻さず、callback healthと診断を更新する | 新tuneを維持 |
 
 malformed/range違反は`INVALID_ARGUMENT`、構文上validだが当該frontend/profileが非対応なら`UNAVAILABLE`とする。例えば、負周波数、不正enum、selector型不一致は`INVALID_ARGUMENT`、対応外delivery system、帯域、機能は`UNAVAILABLE`である。
@@ -1246,7 +1250,9 @@ flowchart TD
     F --> G[demux境界を初期化]
     G --> H[新しいtune要求を送信]
     H -->|送信成功| I[新世代を公開してworkerを有効化]
-    H -->|送信失敗| J[準備資源を解放してUntuned]
+    H -->|送信失敗| J[旧要求を一度だけ復元]
+    J -->|復元成功| K[復元世代でTuning]
+    J -->|復元失敗| L[UntunedまたはFailed]
 
 
 ```
@@ -1638,7 +1644,9 @@ record indexは、現在payload単体だけで完結する前提にしてはな�
 
 ### bounded字幕PESとunbounded video PESの境界
 
-現行製品profileのPES filterは、TISのARIB字幕経路が実際に要求する明示`streamId=0xBD`（`private_stream_1`）だけを成功対象とする。このstream IDで`PES_packet_length == 0`は伝送構文上の正常入力ではないため、対応対象は宣言長付きPESだけで閉じる。先頭6 byteを検証後、assemblerは`PES_packet_length + 6` byteだけをservice共通台帳からclaimする。16 bit宣言長から導かれる1 PESの最大保持量は65,541 byteであり、任意の8 MiB上限を設けない。`ProductProfile.pesBoundedRuntimeBudgetBytes`は`65_541 * CapabilitySnapshot.pesFilterCount`以上とし、各filterは同時に1 assemblerだけを所有するため、対応範囲内の同時入力を個数上限まで受理できる。
+現行製品profileのPES filterは、TISのARIB字幕経路が実際に要求する明示`streamId=0xBD`（`private_stream_1`）だけを成功対象とする。このstream IDで`PES_packet_length == 0`は伝送構文上の正常入力ではないため、対応対象は宣言長付きPESだけで閉じる。先頭6 byteを検証後、assemblerは`PES_packet_length + 6` byteだけをservice共通台帳からclaimする。16 bit宣言長から導かれる1 PESの最大保持量は65,541 byteであり、任意の8 MiB上限を設けない。起動前に`ProductProfile`を検証して`CapabilitySnapshot.pesBoundedRuntimeBudgetBytes`へ固定し、その値を`65_541 * CapabilitySnapshot.pesFilterCount`以上とする。各filterは同時に1 assemblerだけを所有するため、対応範囲内の同時入力を個数上限まで受理できる。
+
+`DemuxCapabilities.numPesFilter`は個数だけを表し、対応stream ID集合または長さ制約を表現できない。このため現行製品profileは、`pesSupportedStreamIds={0xBD}`、`pesWildcardSupported=false`、`pesZeroLengthSupported=false`をTISとの統合契約として起動前に固定する。`numPesFilter > 0`を任意stream IDの一般PES対応表明として扱ってはならない。製品同梱TISはPMTで字幕ESを検出した場合に限り、字幕PIDと明示`streamId=0xBD`でPES filterを設定する。この制限を知らない一般クライアントからのopen自体は許容するが、`0xBD`以外またはwildcardのconfigureは状態を変えず`UNAVAILABLE`とし、任意PESへの対応を約束しない。一般クライアントへ追加stream IDを保証する製品profileを導入する場合は、対応集合、bounded/unbounded別assembler、全filter分の予算、VTS/product設定を先に追加し、そのprofileでだけ能力を有効にする。
 
 `PES_packet_length == 0`を許す映像`stream_id 0xE0..0xEF`については、全量保持、chunk/streaming、共有予算、公平性、overflow時の再同期が未設計である。しかし本製品の映像本体はAV filterと`MediaEvent`の経路を使用し、PES filterへ映像を要求しない。したがって未設計範囲はPES能力全体を0にせず、PES `configure()`でwildcardと`0xE0..0xEF`を`UNAVAILABLE`として拒否する境界に閉じる。将来unbounded video PESを有効化する場合だけ、共有byte予算、chunk/streamingまたは有界保持、複数PID・複数demux間の公平性、overflow時の破棄・再同期・診断、close時の返却を先に固定する。
 
@@ -1724,7 +1732,7 @@ PESの組み立て状態はPIDごとに分離する。`PES_packet_length > 0` �
 closeと所有者消滅は、同じ後片付けの状態機械で処理する。
 
 
-延期した後片付け処理は、`owner_id`、`owner_generation`、`dependency_kind`、`dependency_id` の組で識別する。状態は `Queued`、`Running`、`WaitingForTrigger`、`Released`、`Quarantined`、`Complete` とする。同じ組の重複追加は1件にまとめる。タイマー、再試行間隔、有効期限、締切、確認応答手順は設けない。後片付けを試すのは、処理の追加時と明示的なライフサイクル事象の発生時だけとする。成功時は使用枠を返却して `Complete` へ進む。再試行可能な失敗時は使用枠を保持して `WaitingForTrigger` へ進む。遮断できない、または状態を確定できない依存資源は、使用枠を保持して `Quarantined` へ進む。後続の完了通知によって、残りの後片付けを再開してよい。所有者が消滅した場合は、一回性の処理権限をサービスの後片付け管理機構へ移す。`Queued`、`Running`、`Quarantined` の処理数上限は、公開済みのオブジェクト数・ワーカー数の上限から導出する。
+延期した後片付け処理は、`owner_id`、`owner_generation`、`dependency_kind`、`dependency_id`の組で識別する。状態は`Queued`、`Running`、`WaitingForRetry`、`Released`、`Quarantined`、`Complete`とする。同じ組の重複追加は1件にまとめる。`ReaperSupervisor`は常駐し、上記の再試行予定または完了通知の早い方で処理を起床する。成功時は使用枠を返却して`Complete`へ進む。再試行可能な失敗時は使用枠を保持して`WaitingForRetry`へ進む。30秒の終端期限でなお未完なら、遮断が成立する依存資源を`Quarantined`、遮断できない依存資源を`ServiceCritical`へ進める。後続の完了通知は予定時刻を待たずに残りの後片付けを再開する。所有者が消滅した場合は、一回性の処理権限をサービスの後片付け管理機構へ移す。`Queued`、`Running`、`WaitingForRetry`、`Quarantined`の処理数上限は、公開済みのオブジェクト数・ワーカー数の上限から導出する。
 
 
 所有者消滅時も後片付けを開始する。
@@ -1913,7 +1921,7 @@ px4_drv の legacy chardev は同一 device node の二重 open を許さない�
 px4 backend は control fd を一度だけ open し、ライブ TS reader はその `File` を `try_clone()` / fd duplicate 相当で複製して使う。TS pump は nonblocking fd と `poll()` の組み合わせで動かし、reader 作成のために同じ chardev path を再 open しない。これにより、px4_drv の single-open 制約下でも tune 後に ライブ TS、section、AV、record/DVR経路 へ packet を流せることを保証する。
 
 
-フロントエンドの存在と対応能力は、機器・ドライバーカタログだけから導出する。ロック取得時間の実測上限がないことを理由に、フロントエンドを非公開にしてはならない。選局は非同期操作とし、バックエンドが選局要求を受理した後は、ロック通知または終端状態の通知、明示的停止、再選局、閉鎖、バックエンドの致命的失敗のいずれかまで要求を有効とする。固定経過時間を理由に成功済みの選局要求を覆したり、フロントエンドの能力公開を取り消したりしてはならない。サービス診断としてロック待ち時間のしきい値超過を記録してよいが、公開結果、対応能力、状態を変更してはならない。停止した `ioctl` または読み取りから復帰するためだけに設けるバックエンド操作期限は、内部の有界入出力方針であり、機器の対応能力ではない。
+フロントエンドの存在と対応能力は、機器、versioned backend manifest、functional probe、有限の選局終端を実装できることから導出する。選局は非同期操作とし、バックエンドが選局要求を受理した後は、`LOCKED`、backendの明示失敗、明示的停止、再選局、閉鎖、または`ProductProfile.tuneTerminalDeadlineMs`到達時の`NO_SIGNAL`のいずれかで現generationを必ず終端する。期限到達はbinder呼び出しの成功を後から失敗へ反転させるものではなく、AIDLが要求する非同期終端eventである。正の有限期限と取消可能なbackend I/Oを実装できないfrontendは公開しない。停止した`ioctl`または読み取りから復帰する内部I/O期限は、選局終端期限とは別に`workerIoDeadlineMs`で管理する。
 
 
 ## DVR 方針
@@ -1933,7 +1941,7 @@ record DVR / raw TS filter経路 は受信した 188-byte TS packet を製品の
 payloadを持つ同一PIDで直前と同じcontinuity counterを受信した場合、同じ入力元・世代に保存した直前の188バイトTS packetと全バイトが一致するときだけ再送重複と判定する。この場合はraw TSと録画へ保持し、section/PES/AV assemblerへは二重投入しない。同じcounterで1バイトでも異なるpacketは重複ではなく連続性破損である。raw TSと録画には保持するが、当該PIDのsection/PES/AV assemblerとpartial stateを初期化し、そのpacketから新しい意味単位を継続結合しない。adaptation-only packetは次期待counterを進めず、`discontinuity_indicator`はpacket一致判定とは別に明示境界として処理する。
 
 
-playback入力は`TsInputOrigin::Playback(dvr_id, generation)`を付けて通常のdemux配送経路へ流し、接続済みのrecord filterとrecord DVRへ配送できるようにする。録画対象はfrontend入力とplayback入力を同時に合流させず、demuxの現在入力元に属する188バイトpacketだけを到着順に1回評価する。playbackを録画する構成では`recorded_from_playback`を診断へ記録し、同じ`{origin, generation, ingress_sequence}`を二重にrecord DVRへ投入しない。統計はplayback入力の消費・注入とrecord出力を別々に計数する。
+playback入力は`TsInputOrigin::Playback(dvr_id, generation)`を付けて通常のdemux配送経路へ流すが、playback originのpacketをrecord filterまたはrecord DVRへ再投入してはならない。record経路が受理するoriginはfrontend入力だけとする。playback中にrecord filterが接続または開始されても、record FMQへは書き込まず、record eventも生成しない。この禁止によりfeedback loop、同一TSの再録画、origin横断の重複除去と追加統計を設計対象にしない。
 
 
 playback 専用 stats は少なくとも injected bytes、injected packets、malformed packets、dropped bytes を持つ。malformed TS は drop + 診断 を標準方針とし、1 packet の malformed input で playback stream 全体を fail させない。playback input FMQ の `PlaybackStatus` は start 直後・周期 コールバック ともに playback input FMQ の実 fill / unused write space を唯一の水位 source とし、record/output queue の `queued_bytes` を流用しない。playback consumer ワーカー は `WorkerHandle` / owner `ConcreteWorkerSignal` に接続し、close / Drop / 異常時閉鎖済み で `request_stop()` → `wake()` → `join_from_owner()` の順に停止する。
@@ -1958,7 +1966,7 @@ playback input FMQ の stream 境界 方針は次のとおり固定する。star
 | malformed TS | 成功 | malformed | `MalformedOnly` | 消費済み可 | malformed diagnostic。1 packet でstream全体をfailしない |
 | partial TS | 成功 | pending | 未commit | residual保持 | 次readへ持ち越し |
 
-再生データの取り込みには、1回のFMQ読取トランザクションだけを所有する処理中バッファーと、キュー世代ごとのカーソルを使用する。これは第二の待ち行列ではなく、`commitRead()`後のバイト列を再試行中も所有するためのトランザクション領域である。同時に1件だけ存在し、上限は`min(現在の連続読取可能量, 設定済みPlayback DVR FMQ容量)`とし、同容量を別途常時確保しない。FMQの`beginRead` / `commitRead`では、バイト列をこの領域へ正確に1回だけ移す。確定後の再試行は処理中領域だけを入力とする。投入カーソルはバックエンドが受理したバイト数だけ単調に進め、重複投入を防ぐ。処理中領域が空になるまで次のFMQデータを取り込まない。再試行可能なバックエンドエラーでは未投入部分を保持する。致命的エラー、停止、閉鎖では、残りの正確な消失バイト数と終端理由を記録してから破棄し、無診断で失わない。世代変更で無効化できるのは空のカーソルだけとし、処理中領域にデータがある場合は、その処理を完了するか、明示的に終端させてから世代を変更する。
+再生データの取り込みには、1回のFMQ読取トランザクションだけを所有する処理中バッファーと、キュー世代ごとのカーソルを使用する。これは第二の待ち行列ではなく、`commitRead()`後のバイト列を再試行中も所有するためのトランザクション領域である。Playback DVRの`configure()`時に、FMQ容量と同じ上限の処理中バッファー使用権を`CapabilitySnapshot.playbackProcessingBudgetBytes`から予約し、実領域を確保する。予約または確保に失敗した場合は`OUT_OF_MEMORY`を返し、FMQ記述子とDVR設定を公開しない。読取時は`beginRead()`後、連続読取可能量が確保済み領域に収まることを確認してバイト列をコピーし、コピー完了後にだけ`commitRead()`する。したがってFMQ消費後に処理中領域の割り当てが失敗する経路を作らない。同時に1件だけ存在し、上限は設定済みPlayback DVR FMQ容量とする。確定後の再試行は処理中領域だけを入力とする。投入カーソルはバックエンドが受理したバイト数だけ単調に進め、重複投入を防ぐ。処理中領域が空になるまで次のFMQデータを取り込まない。再試行可能なバックエンドエラーでは未投入部分を保持する。致命的エラー、停止、閉鎖では、残りの正確な消失バイト数と終端理由を記録してから破棄し、無診断で失わない。世代変更で無効化できるのは空のカーソルだけとし、処理中領域にデータがある場合は、その処理を完了するか、明示的に終端させてから世代を変更する。処理中バッファーの使用権はDVRの最終後片付け完了時に返す。
 
 
 ### playback consumer ワーカー 起動順序
@@ -2052,8 +2060,8 @@ AndroidフレームワークとJNIが受理する`MediaEvent`の表現は、本�
 | 共有ハンドル公開済み、クライアント使用権が有効、収容可能な空き領域あり | 共有領域へ配置し、空のハンドルと正の`dataId`を持つ`MediaEvent`を発行する |
 | 共有ハンドル未取得、またはクライアント使用権を解放済み | イベント固有の正確な長さを持つファイル記述子を割り当て、当該ハンドルと正の`dataId`を持つ`MediaEvent`を発行する |
 | shared slotなしまたはAU > slot size | event-local exact-size fdへfallbackする |
-| allocation lease pool exhausted | `OVERFLOW`を通知し、既存allocationをevictしない |
-| イベント固有領域の割り当て失敗 | `UNAVAILABLE`または型付きの割り当て失敗を返す。実体のない`MediaEvent`または`dataId`を公開しない |
+| allocation lease pool exhausted | 当該イベントを破棄し、filter status callbackで`OVERFLOW`を通知する。`av_allocation_drop`と`av_allocation_pool_exhausted`を増やし、filterは開始状態を維持する。既存allocationをevictしない。後続payloadごとに再度割り当てを試す |
+| イベント固有領域の割り当て失敗 | 当該イベントを破棄し、filter status callbackで`OVERFLOW`を通知する。`av_allocation_drop`と`av_event_local_allocation_failure`を増やし、filterは開始状態を維持する。AIDL戻り値は存在しないため`UNAVAILABLE`を返したことにしない。実体のない`MediaEvent`または`dataId`を公開せず、後続payloadごとに再度割り当てを試す |
 | `getAvSharedHandle()`再取得 | 新規または現在の共有クライアント使用権を有効にし、後続イベントで共有モードを再選択できるようにする |
 
 ## A/V sync 方針
@@ -2474,8 +2482,8 @@ raw sectionは、外形、設定されたCRC検査、意味検証を分ける契
 ## 対応能力・キュー・ARIB境界
 
 - フィルターと`SharedFilter`では、HAL内部の`FilterProducerDrainGate`を使用する。ブロッキングするバックエンド読み取り、FMQ待機、解析器の一時保持が終わった後、FMQへの確定書き込みまたは保留イベント追加の直前にだけ配送許可を取得する。Binderコールバック、バックエンド入出力、FMQまたは条件変数の待機、規定外順序のロック取得を許可の有効範囲に含めない。`flush()`は`Draining`へ移り、新しい許可を拒否し、サービス所有のワーカーを起床させ、許可が0件になるまで待つ。未消費のFMQデータと未配送イベントを破棄し、確定済みまたは配送中のコールバックと配送済みAV領域を維持する。ワーカー終了またはpanic時は保護子を解放する。ロック汚染または遮断されていない終端失敗を検出した場合は、フィルターを閉鎖して隔離する。`QueueEpochProtocol`はDVRだけで使用する。
-- デマルチプレクサ、フィルター、DVRの個数は、フロントエンドと公開可能LNBの検出後に評価するC8、C4、C2、C1の`CapabilitySnapshot`候補から決める。各候補はオブジェクト数、ワーカー、コールバック、回収、後片付けの枠だけを一括予約する。AV payloadと呼び出し側指定FMQのバイト予算はsnapshotへ混在させず、openまたは配送時に製品全体の実行時メモリー台帳へ予約する。PES assemblerはARIB字幕用bounded PESだけを公開し、最大65,541 byte/active filterの共通実行時予算で保持する。unbounded video PESは能力公開しない。Tuner VTSは起動前に別途環境へ結び付け、入力元、PID、使用経路、queue容量、製品メモリー予算が定義されるまで`DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED`とする。
-- AVの共有方式とイベント固有方式は、同じ実行時台帳を共有する。各filterでは`ProductProfile.avPerFilterLiveBytes`、サービス全体では`ProductProfile.avRuntimeBudgetBytes`を未解放payloadバイト数の上限とし、イベントの実サイズだけを割り当てる。`openFilter(bufferSize)`はFMQ容量として別に予約する。固定スロット数や1 MiB単位をAOSPまたはコーデック上限として規範化せず、使用中の割り当てを追い出さない。
+- デマルチプレクサ、フィルター、DVRの個数は、フロントエンドと公開可能LNBの検出後、依存が閉じた資源群ごとにC8、C4、C2、C1を独立評価して決める。各資源群は、自身のオブジェクト数、ワーカー、コールバック、回収、後片付け、必要なバイト予算の台帳使用権を一括予約する。別資源群の失敗で無関係な個数を0へ落とさない。確定済みの個数と全バイト予算は`CapabilitySnapshot`へ格納し、openまたは配送時の実領域割り当てはsnapshotの残量から行う。PES assemblerはARIB字幕用bounded PESだけを公開し、最大65,541 byte/active filterの共通実行時予算で保持する。unbounded video PESは能力公開しない。Tuner VTSは起動前に別途環境へ結び付け、入力元、PID、使用経路、queue容量、製品メモリー予算が定義されるまで`DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED`とする。
+- AVの共有方式とイベント固有方式は、同じ実行時台帳を共有する。各filterでは`CapabilitySnapshot.avPerFilterLiveBytes`、サービス全体では`CapabilitySnapshot.avRuntimeBudgetBytes`を未解放payloadバイト数の上限とし、イベントの実サイズだけを割り当てる。`openFilter(bufferSize)`はFMQ容量として別に予約する。固定スロット数や1 MiB単位をAOSPまたはコーデック上限として規範化せず、使用中の割り当てを追い出さない。
 - ARIB B10 5.13-E1を表ごとのsection上限1021/4093の根拠とし、B32 3.11-E1第3部をTS、PES、Sectionの伝送とPES構文の根拠とする。B32を4093の独立した上限根拠として使用しない。B25は公式英訳6.7-E1全文を精読基準とする。第1部の4.9および4.10に従い、物理tuner/backend復号経路ごとの共有poolで奇数・偶数鍵の組を1組以上、PIDを12個以上同時処理できることを容量条件とする。AOSPに公開欄は追加せず、session間で共有する同じ内部台帳で受付と解放を強制する。
 - 対象ドライバーと上流Linuxの証跡は、AOSP契約とは独立した根拠として扱う。
 
@@ -2515,21 +2523,45 @@ raw sectionは、外形、設定されたCRC検査、意味検証を分ける契
 | C2 | 3 | 2 | 8 | 2 | 1 | 1 | 1 | 1 | 14 | 2 | 2 | 4 | 4 | 2*F | F+L+14+4 | 2*F+4 | F+L+2+14+4 | F=正常確認済みfrontend数、L=AIDL基礎操作対応LNB数 |
 | C1 | 4 | 1 | 4 | 1 | 1 | 1 | 1 | 1 | 9 | 1 | 1 | 2 | 2 | 2*F | F+L+9+2 | 2*F+2 | F+L+1+9+2 | F=正常確認済みfrontend数、L=AIDL基礎操作対応LNB数 |
 
+候補表の1行全体を不可分なservice tierとして選ばない。次の資源群ごとに同じ候補IDの該当列だけを評価し、必要な依存枠を同時に確定する。
+
+| 資源群 | 公開個数 | 同時に確定する依存 | 失敗時の影響 |
+|---|---|---|---|
+| demux基礎 | demux、TS、section、PCR | 対象worker、callback、reaper、cleanup authority、FMQ台帳上限 | この群だけを次候補へ下げ、C1も不可ならdemux/filterを0件にする |
+| bounded PES | PES filter | demux基礎の存在、callback、assembler枠、`65_541 * pesFilterCount`のPES予算 | PES filterだけ0件にする |
+| AV | audio/video filter | demux基礎の存在、callback、allocation台帳、filter別・service全体AV予算 | audio/video filterだけ0件にする |
+| playback DVR | playback DVR | demux基礎の存在、consumer worker、callback、reaper、cleanup authority、FMQ予算、処理中バッファー予算 | playback DVRだけ0件にする |
+| record DVR | record DVRとrecord filter | demux基礎の存在、writer worker、callback、reaper、cleanup authority、FMQ予算 | record経路だけ0件にする |
+| frontend/LNB | probe成功した各endpoint | endpoint別worker、callback、reaper、cleanup authority、終端期限 | 該当endpointだけ非公開にする |
+
+`CapabilitySnapshot`は少なくとも次を値として保持する。未宣言値を外部の`ProductProfile`から実行時に後読みして広告可否を変えてはならない。
+
+| snapshot値 | 確定規則 |
+|---|---|
+| 各object/filter/DVR/frontend/LNB個数 | 上記資源群ごとの予約成功数 |
+| worker/callback/reaper/cleanup authority枠 | 公開個数の全依存を回収できる予約済み使用権数 |
+| `fmqRuntimeBudgetBytes` | 同時にconfigure可能とするFMQ容量の台帳上限 |
+| `playbackProcessingBudgetBytes` | playback DVRごとのFMQ容量と同量の処理中バッファーを同時に確保できる台帳上限 |
+| `avPerFilterLiveBytes` / `avRuntimeBudgetBytes` | AV能力を非0にする前に`ProductProfile`から検証・固定したfilter別・service全体上限 |
+| `pesBoundedRuntimeBudgetBytes` | `65_541 * pesFilterCount`以上 |
+| PES製品契約 | `pesSupportedStreamIds={0xBD}`、`pesWildcardSupported=false`、`pesZeroLengthSupported=false`。AIDLの個数能力から任意stream ID対応を推定しない |
+| cleanup/tune期限 | `cleanupRetryScheduleMs`、`cleanupTerminalDeadlineMs`、`workerIoDeadlineMs`、`workerReaperDeadlineMs`、`tuneTerminalDeadlineMs` |
+
 ### サービスオブジェクトの上限
 
-C8、C4、C2、C1の順にオブジェクト台帳と実行権限枠を原子的に予約し、全項目を予約できた最大の候補だけを確定する。一項目でも失敗した候補は予約全体を元に戻し、C1も確保できない場合はサービスを開始しない。変更不能な`CapabilitySnapshot`を個数能力とオブジェクト受付の正本とし、バイト容量は各openまたは割り当てtransactionの実行時台帳を正とする。`CleanupPending`または`Quarantined`の資源は解放完了まで使用中として数える。
+C8、C4、C2、C1の順に資源群ごとの台帳使用権を予約し、各群で成功した最大候補を確定する。ある群の候補失敗ではその群の仮予約だけを戻す。demux基礎群のC1も確保できない場合は、サービスをquery-onlyの縮退状態で登録し、`getDemuxCaps()`では全demux/filter/DVR個数を0、`getDemuxIds()`を空として返し、各open APIを`UNAVAILABLE`とする。`getFrontendIds()`はfrontend/LNB群が独立して成立した場合だけその結果を返す。root queryと非対応APIの明示拒否に必要な最小状態も確保できない場合に限り、Binder service登録を行わない。変更不能な`CapabilitySnapshot`を個数、全依存枠、バイト予算、受付可否の正本とし、各openまたは割り当てtransactionはそのsnapshotの残量だけを消費する。`CleanupPending`または`Quarantined`の資源は解放完了まで使用中として数える。
 
 | 資源 | 範囲 | 候補の最大数 | 公開数 | 最小解放数 | 所有者別上限 | 保証しない事項 |
 |---|---|---:|---|---:|---|---|
-| LIVE_DEMUX | サービス全体 | 8 | `CapabilitySnapshot`の値 | 1 | なし | オブジェクト数だけでは呼び出し側指定のFMQ容量を保証しない。FMQ容量は別のトランザクションで予約する。 |
-| FILTER_TS | サービス全体 | 32 | `CapabilitySnapshot`の値 | 1 | なし | オブジェクト数だけでは呼び出し側指定のFMQ容量を保証しない。FMQ容量は別のトランザクションで予約する。 |
-| FILTER_SECTION | サービス全体 | 8 | `CapabilitySnapshot`の値 | 1 | なし | オブジェクト数だけでは呼び出し側指定のFMQ容量を保証しない。FMQ容量は別のトランザクションで予約する。 |
-| FILTER_AUDIO | サービス全体 | 4 | `CapabilitySnapshot`の値 | 1 | なし | FMQの`bufferSize`とは別に、実payloadを`ProductProfile.avPerFilterLiveBytes`と`avRuntimeBudgetBytes`の両方から割り当てる。起動時予約はしない。 |
-| FILTER_VIDEO | サービス全体 | 4 | `CapabilitySnapshot`の値 | 1 | なし | FMQの`bufferSize`とは別に、実payloadを`ProductProfile.avPerFilterLiveBytes`と`avRuntimeBudgetBytes`の両方から割り当てる。起動時予約はしない。 |
-| FILTER_PES | サービス全体 | 4 | `CapabilitySnapshot`の値 | 1 | demux当たり1 | ARIB字幕用`streamId=0xBD`のbounded PESだけを公開する。`pesBoundedRuntimeBudgetBytes >= 65_541 * 公開数`とし、PES開始時に宣言長+6 byteだけをclaimする。wildcard、他stream ID、長さ0 video PESは`configure()`で`UNAVAILABLE`。 |
-| FILTER_PCR | サービス全体 | 4 | `CapabilitySnapshot`の値 | 1 | なし | オブジェクト数だけでは呼び出し側指定のFMQ容量を保証しない。FMQ容量は別のトランザクションで予約する。 |
-| DVR_PLAYBACK | サービス全体 | 8 | `CapabilitySnapshot`の値 | 1 | demux当たり1 | `VtsEnvironmentProfile`が`UNBOUND`ならXML、モジュール、試験シナリオを選択しない。`BOUND`なら宣言済み静的設定のキュー容量だけを原子的に予約し、C1または既定値へ切り替えない。 |
-| DVR_RECORD | サービス全体 | 8 | `CapabilitySnapshot`の値 | 1 | demux当たり1 | `VtsEnvironmentProfile`が`UNBOUND`ならXML、モジュール、試験シナリオを選択しない。`BOUND`なら宣言済み静的設定のキュー容量だけを原子的に予約し、C1または既定値へ切り替えない。 |
+| LIVE_DEMUX | サービス全体 | 8 | `CapabilitySnapshot`の値 | 0 | なし | 呼び出し側指定のFMQ容量はsnapshotの`fmqRuntimeBudgetBytes`から別transactionで予約する。 |
+| FILTER_TS | サービス全体 | 32 | `CapabilitySnapshot`の値 | 0 | なし | 呼び出し側指定のFMQ容量はsnapshotの`fmqRuntimeBudgetBytes`から別transactionで予約する。 |
+| FILTER_SECTION | サービス全体 | 8 | `CapabilitySnapshot`の値 | 0 | なし | 呼び出し側指定のFMQ容量はsnapshotの`fmqRuntimeBudgetBytes`から別transactionで予約する。 |
+| FILTER_AUDIO | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | なし | FMQの`bufferSize`とは別に、実payloadをsnapshotの`avPerFilterLiveBytes`と`avRuntimeBudgetBytes`から割り当てる。物理領域の起動時先取りはしない。 |
+| FILTER_VIDEO | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | なし | FMQの`bufferSize`とは別に、実payloadをsnapshotの`avPerFilterLiveBytes`と`avRuntimeBudgetBytes`から割り当てる。物理領域の起動時先取りはしない。 |
+| FILTER_PES | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | demux当たり1 | ARIB字幕用`streamId=0xBD`のbounded PESだけを公開する。snapshotの`pesBoundedRuntimeBudgetBytes >= 65_541 * 公開数`とし、PES開始時に宣言長+6 byteだけをclaimする。wildcard、他stream ID、長さ0 video PESは`configure()`で`UNAVAILABLE`。 |
+| FILTER_PCR | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | なし | 呼び出し側指定のFMQ容量はsnapshotの`fmqRuntimeBudgetBytes`から別transactionで予約する。 |
+| DVR_PLAYBACK | サービス全体 | 8 | `CapabilitySnapshot`の値 | 0 | demux当たり1 | configure時にFMQと同容量の処理中バッファーをsnapshotの2台帳から同時予約する。`VtsEnvironmentProfile`が`UNBOUND`ならXML、モジュール、試験シナリオを選択しない。 |
+| DVR_RECORD | サービス全体 | 8 | `CapabilitySnapshot`の値 | 0 | demux当たり1 | `VtsEnvironmentProfile`が`UNBOUND`ならXML、モジュール、試験シナリオを選択しない。`BOUND`なら宣言済み静的設定のキュー容量だけを原子的に予約する。 |
 
 ### AV割り当て
 
@@ -2537,11 +2569,11 @@ C8、C4、C2、C1の順にオブジェクト台帳と実行権限枠を原子的
 |---|---|---|---|---|
 | transport_profile | DUAL_SHARED_PLUS_EVENT_LOCAL | AV filterの世代ごと | AOSPの`MediaEvent`とJNIの二重表現 | 共有領域とイベント専用領域は同じ実行時バイト台帳を使用する。 |
 | fmq_byte_budget | `openFilter(bufferSize)`の`bufferSize` | filterの世代ごと | AOSP open要求 | FMQ容量としてだけ予約する。AV payload領域の上限または裏付けに流用しない。 |
-| filter_live_byte_budget | `ProductProfile.avPerFilterLiveBytes` | AV filterの世代ごと | 製品メモリー予算 | 当該filterの未解放payload合計上限とする。FMQ領域とは別に数える。未宣言または0ならAV能力を公開しない。 |
-| service_live_byte_budget | `ProductProfile.avRuntimeBudgetBytes` | サービスインスタンス | 製品メモリー予算 | 起動時に領域を先取りせず、全AV filterの未解放実サイズ合計を上限以下に保つ。 |
+| filter_live_byte_budget | `CapabilitySnapshot.avPerFilterLiveBytes` | AV filterの世代ごと | 起動前に検証済みの製品メモリー予算 | 当該filterの未解放payload合計上限とする。FMQ領域とは別に数える。0ならAV能力を公開しない。 |
+| service_live_byte_budget | `CapabilitySnapshot.avRuntimeBudgetBytes` | サービスインスタンス | 起動前に検証済みの製品メモリー予算 | 起動時に物理領域を先取りせず、全AV filterの未解放実サイズ合計を上限以下に保つ。 |
 | allocation_size | イベントの実payloadバイト数 | 割り当てごと | MediaEvent payload | filter別残量とサービス全体残量の両方に収まる場合だけ正確なサイズを確保する。 |
 | implementation_pool | 非規範 | allocator内部 | 性能最適化 | 固定slot数・slot sizeは実装詳細であり、公開能力、AU上限、設計変更判定へ使わない。 |
-| allocation_failure | UNAVAILABLE_OR_TYPED_OVERFLOW_BEFORE_CALLBACK | イベントごと | 割り当てトランザクション | イベントを破棄し、`dataId`を公開せず、使用中の割り当てを追い出さない。上限超過と枯渇は診断で区別する。 |
+| allocation_failure | ASYNC_OVERFLOW_WITHOUT_MEDIA_EVENT | イベントごと | 割り当てトランザクション | 当該イベントを破棄し、`OVERFLOW` statusと型付き診断を通知する。`dataId`を公開せず、filter状態を維持し、次payloadで再試行する。使用中の割り当てを追い出さない。 |
 | data_id | CHECKED_POSITIVE_SIGNED_63_BIT_NEVER_REUSED | サービスの存続期間 | AV台帳 | IDを発行できない場合は割り当てを拒否する。 |
 | delivered_lifetime | ACTIVE_OR_RELEASE_ONLY_UNTIL_RELEASE | 割り当てごと | 解放規則 | 配送済み領域はflush、再設定、論理closeでは回収せず、解放要求まで保持する。 |
 
@@ -2571,11 +2603,11 @@ C8、C4、C2、C1の順にオブジェクト台帳と実行権限枠を原子的
 | absolute selectorに対応するLinux DVBの完全一致項目 | ISDB-S | `STREAM_ID` | `0..65534` | 値を変更せず`DTV_STREAM_ID`へ渡す | 独立したrelative selectorの完全一致項目がない場合、`RELATIVE_STREAM_NUMBER 0..7`は`UNAVAILABLE` | `STREAM_ID=65535`または`0..7`以外の相対値：`INVALID_ARGUMENT` |
 | 対象のpx4またはearth_pt1 | ISDB-S | modulation・code rate | `AUTO` | backendの自動検出を使用 | 既知の具体値：`UNAVAILABLE` | `INVALID_ARGUMENT` |
 
-選択子の対応能力は、`SupportedBackendIdentity`、ドライバーのリポジトリとコミット、機器識別情報、改訂の適用範囲が完全に一致し、かつ`selector_capability_release_eligible=true`である台帳項目だけから作る。現在のpx4台帳では相対選択子だけを有効とし、絶対値の`STREAM_ID`は有効にしない。項目が空、不一致、または使用不可の場合は選択子を公開しない。`ProductProfile`は使用可能な部分集合を抑止できるだけで、対応能力を新設または拡張できない。絶対値`0..11`を相対値域との数値の重複だけを理由に`INVALID_ARGUMENT`としてはならない。CS110の`STREAM_ID=INVALID_STREAM_ID(65535)`は、選択子なしを表すAOSPの既定値として別に扱い、本表で選択子値`65535`を拒否する規則と混同しない。
+選択子の対応能力は、機器識別情報と改訂適用範囲、versioned backend manifestのABI/API契約版、要求を実際に設定して結果を読み戻すfunctional probeが一致し、かつ`selector_capability_release_eligible=true`である台帳項目だけから作る。repository、commit SHA、build IDは台帳項目の作成証跡として保存してよいが、実行時の一致条件にしない。現在のpx4台帳では相対選択子だけを有効とし、絶対値の`STREAM_ID`は有効にしない。項目が空、不一致、または使用不可の場合は選択子を公開しない。`ProductProfile`は使用可能な部分集合を抑止できるだけで、対応能力を新設または拡張できない。絶対値`0..11`を相対値域との数値の重複だけを理由に`INVALID_ARGUMENT`としてはならない。CS110の`STREAM_ID=INVALID_STREAM_ID(65535)`は、選択子なしを表すAOSPの既定値として別に扱い、本表で選択子値`65535`を拒否する規則と混同しない。
 
 ### LNB機器の資源規則
 
-| backend | 固定commit | AOSPの公開API | driverの事実 | 設計規則 | 資源規則 | 根拠箇所 |
+| backend | 検証証跡metadata | AOSPの公開API | driverの事実 | 設計規則 | 資源規則 | 根拠箇所 |
 |---|---|---|---|---|---|---|
 | px4_drv feat/android-ddk | c2a031db8771ddd6e3e0b3b4a712b64ec384139b | 現行profileでは非公開 | 0 Vまたは15 Vのみ。tone、position、DiSEqCの実処理証跡なし | `aidl_baseline_eligible=false`。`getLnbIds()`へ出さず、LNB給電を要するsatellite frontendも公開しない | 内部電圧backendをAOSP LNB leaseとして生成しない | `driver/px4_device.c`のblob cfed72f...、`driver/ptx_chrdev.c`のblob 18f074... |
 | earth_pt1 Linux v6.6 | ffc253263a1375a65fa6c9f62a893e9767fbebfa | 現行profileでは非公開 | `pt1.c`では`SEC_VOLTAGE_13`を11 V、`SEC_VOLTAGE_18`を15 Vに対応付ける。tone、position、DiSEqCの実処理証跡なし | `aidl_baseline_eligible=false`。`getLnbIds()`へ出さず、LNB給電を要するsatellite frontendも公開しない | 内部電圧backendをAOSP LNB endpointとして生成しない | Linux v6.6 commitの`drivers/media/pci/pt1/pt1.c` |
@@ -2638,7 +2670,7 @@ C8、C4、C2、C1の順にオブジェクト台帳と実行権限枠を原子的
 
 ### ワーカー終了契約
 
-この契約は事象駆動とし、公開選局結果を変える再試行間隔、`join`の猶予時間、任意の固定時間期限を設けない。停止を待つバックエンド操作自身の復帰を保証する内部I/O期限と`ReaperSupervisor`の進行保証監視は別契約であり、無期限の停止を許可するものではない。
+公開API呼び出し元は`join`を待たないが、内部後片付けは無期限にしない。`CapabilitySnapshot`へ固定する現行値は、`cleanupRetryScheduleMs=[0,10,100,1000]`、以後1000 ms間隔、`cleanupTerminalDeadlineMs=30000`、`workerIoDeadlineMs=2000`、`workerReaperDeadlineMs=10000`とする。backend I/Oは2000 ms以内に取消または復帰しなければI/O期限超過として扱う。Reaper移管後10秒でworker終了を観測できない場合は、局所的な世代遮断の成否を再検証し、成立する場合は`Quarantined`、成立しない場合は`ServiceCritical`としてサービス再起動へ移す。これらは公開選局の成功判定を時間だけで覆す一般規則ではなく、停止・回収を有限化する内部終端規則である。選局自体の終端は`ProductProfile.tuneTerminalDeadlineMs`と表19を正とする。
 
 #### 状態
 
@@ -2648,10 +2680,10 @@ C8、C4、C2、C1の順にオブジェクト台帳と実行権限枠を原子的
 
 1. 停止または閉鎖時は、所有者signalのmutex内で`stop_requested=true`とgenerationを確定してから、利用可能な取り消し・起床手段を各1回実行し、その結果をすべて記録する。ワーカーは待機前後に同じpredicateを検査するため、通知が待機開始より先行しても停止要求を見失わない。
 2. 終了済みであることを確認できる場合は、報告を回収して残りの後片付けをすべて行い、使用枠を返却する。
-3. 再試行可能だが未完了で、実行中ではない依存資源は `CleanupPending` へ移す。再 `close()`、所有者消滅の監視、依存資源の完了通知、サービス初期化のいずれかでだけ再開する。再開要求は `{owner_kind, owner_id, owner_generation, dependency}` ごとにまとめる。
+3. 再試行可能だが未完了で、実行中ではない依存資源は`CleanupPending`へ移す。`ReaperSupervisor`が再試行予定を必ず登録し、再`close()`、所有者消滅の監視、依存資源の完了通知、サービス初期化は予定より早い再開契機として扱う。再開要求は`{owner_kind, owner_id, owner_generation, dependency}`ごとにまとめる。30秒の後片付け終端期限で未完なら、遮断成立時は`Quarantined`、不成立時は`ServiceCritical`へ進める。
 4. 実行中のワーカーは、移管前に所有者世代を無効化して状態変更を遮断する。`Quarantined` へ移し、`JoinHandle` を `ReaperSupervisor` へ正確に1回移管する。公開APIの呼び出し元を `join` 待ちで停止させない。
 5. `CleanupPending` または `Quarantined` の間は、ワーカー、資源、LNB終端の使用枠を返却しない。回収完了時に残りの後片付けを行い、使用枠を正確に1回返却する。
-6. 回収機構の容量は、強制している同時稼働ワーカー数の上限から静的に導出する。各ワーカーが実行中の停止待ち操作について、取消可能性、内部I/O期限、または別プロセス終端のいずれを使うかを台帳に記録する。回収機構は、終了事象、取消完了、内部I/O期限超過、`ReaperSupervisor`による終端のいずれかを必ず観測する。
+6. 回収機構の容量は、強制している同時稼働ワーカー数の上限から静的に導出する。各ワーカーが実行中の停止待ち操作について、取消可能性、2000 msの内部I/O期限、または別プロセス終端のいずれを使うかを台帳に記録する。回収機構は常駐監視し、終了事象、取消完了、内部I/O期限超過、10000 msのReaper終端期限のいずれかを必ず観測する。単発のwakeだけを進行保証にしない。
 7. 移管失敗、遮断の確立失敗、停止待ち操作の進行保証違反、またはワーカーが遮断されていない全体状態を変更できることを示す型付き証跡がある場合は`ServiceCritical`とする。同一プロセス内で安全に終端できないワーカーはサービス再起動へ移す。所有者内に完全に隔離して終端できる障害によって、無関係な`ITuner`の能力を停止してはならない。
 8. 公開操作の結果では主処理の結果を維持する。後から判明した後片付け失敗を戻り値へ反映するのは、当該インターフェースの後片付け契約が要求する場合に限る。失敗は常に型付き集約診断へ記録する。
 
