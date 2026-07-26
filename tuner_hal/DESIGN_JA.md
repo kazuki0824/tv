@@ -122,10 +122,18 @@ AOSP意味論として NULL binder 入力を持つ境界は、`IFilter.setDataSo
 
 | API | 成功条件と結果 | 失敗時 |
 |---|---|---|
+| `getFrontendIds()` | 起動時に確定したfrontend IDを昇順で返す。ID集合はサービス世代中不変であり、`setMaxNumberOfFrontends()`で増減させない | snapshotを読み出せない内部障害は`UNKNOWN_ERROR`、部分結果は返さない |
+| `openFrontendById(id)` | 公開済みID、type別の現在上限、使用権、runtime登録を同一transactionで確定し、指定IDの`IFrontend` objectだけを返す | 未公開IDは`INVALID_ARGUMENT`、公開済みだが現在上限または使用枠により開けない場合は`UNAVAILABLE`、後段準備失敗では予約と登録を戻してobjectを返さない |
+| `getFrontendInfo(id)` | 公開済みIDに対応する起動時確定済みの不変な`FrontendInfo`を返す | 未公開IDは`INVALID_ARGUMENT`、内部snapshot障害は`UNKNOWN_ERROR`、部分情報は返さない |
 | `getDemuxIds()` | 起動時に確定したdemux IDを昇順で返す。ID集合はサービス世代中不変とする | snapshotを読み出せない内部障害は`UNKNOWN_ERROR`、部分結果は返さない |
-| `openDemuxById(id)` | 公開済みIDで使用枠を予約できた場合に、そのIDのdemuxとIDを一括して返す | 未公開IDは`INVALID_ARGUMENT`、公開済みだが使用中または容量不足は`UNAVAILABLE`、後段準備失敗では予約を戻してobjectを返さない |
+| `openDemux(out demuxId)` | 公開済みdemux ID集合から使用可能な1 IDを選び、その使用権、runtime登録、`IDemux` objectを同一transactionで確定する。成功時だけ、objectと要素数1の`demuxId`配列を一括して返す | 使用可能な公開IDまたは容量がない場合は`UNAVAILABLE`。後段準備失敗では予約と登録を戻し、objectもIDも返さない |
+| `openDemuxById(id)` | 公開済みの指定IDについて使用権とruntime登録を同一transactionで確定し、その`IDemux` objectだけを返す。入力IDを出力として返さない | 未公開IDは`INVALID_ARGUMENT`、公開済みだが使用中または容量不足は`UNAVAILABLE`、後段準備失敗では予約と登録を戻してobjectを返さない |
+| `getDemuxCaps()` | 起動時に確定した同じ`CapabilitySnapshot`から、不変な`DemuxCapabilities`を全項目一括で返す | snapshotを読み出せない内部障害は`UNKNOWN_ERROR`、部分的な能力値は返さない |
 | `getDemuxInfo(id)` | 公開済みIDに対応する不変の`DemuxInfo`を返す | 未公開IDは`INVALID_ARGUMENT`、内部snapshot障害は`UNKNOWN_ERROR` |
-| `openLnbByName(name)` | 本製品は名前付き外部LNBを公開しない | 空文字は`INVALID_ARGUMENT`、その他の名前は`UNAVAILABLE`。LNB ID、object、leaseを生成しない |
+| `openDescrambler()` | descrambler object枠とdemux未結合のsession台帳だけを同一transactionで確定し、`IDescrambler` objectだけを返す。demux ID、demux generation、`DescramblerCapacityPool`は選択しない | 対応するdescrambler能力またはobject/session枠がない場合は`UNAVAILABLE`。後段準備失敗では予約と登録を戻してobjectを返さない |
+| `getLnbIds()` | 起動時に公開対象と確定したLNB IDを昇順で返す。現行profileでは空配列を返す | snapshotを読み出せない内部障害は`UNKNOWN_ERROR`、部分結果は返さない |
+| `openLnbById(id)` | 将来、公開済みIDのendpoint使用権とruntime登録を同一transactionで確定できる場合に、その`ILnb` objectだけを返す | 現行profileではLNB能力を公開しないため`UNAVAILABLE`。能力を公開する将来profileでは、未公開IDは`INVALID_ARGUMENT`、使用中または後片付け未完のendpointは`UNAVAILABLE`とし、objectを返さない |
+| `openLnbByName(name, out lnbId)` | 本製品は名前付き外部LNBを公開しない | 空文字は`INVALID_ARGUMENT`、その他の名前は`UNAVAILABLE`。LNB ID、object、leaseを生成せず、出力を部分公開しない |
 | `isLnaSupported()` | `false`を返す | 内部状態へ依存させない |
 | `setLna(enable)` | 本製品はLNA制御を公開しない | `UNAVAILABLE`。frontend、backend、capabilityを変更しない |
 
@@ -540,15 +548,15 @@ FMQの使用方法はフィルターのサブタイプごとに定める。Secti
 | 番号 | API / 入力 | 対象状態集合 | AIDL戻り値 | 次状態関数 | 副作用 | 診断 | 同値性根拠 / 設計上の成立条件 |
 |---:|---|---|---|---|---|---|---|
 | F-C-004 | `configureAvStreamType()` 正常入力 | A0, A1, A2, A3, A8, A9, A10, A11 | 成功 | 補助種別軸を設定済みに変更。他軸は維持 | stream type hint を指定値で保存する。TsAudio には Audio、TsVideo には Video だけを許可する | `av_stream_type_configured` | 非開始AV状態として同値。routing 種別はopen subtype由来であり、共有ハンドル公開状態に依存しない |
+| F-C-005 | `configureAvStreamType()` のunion tagがopen subtypeと不一致 | A0, A1, A2, A3, A8, A9, A10, A11 | `INVALID_ARGUMENT` | 入力状態を維持 | なし | `av_stream_type_tag_mismatch` を増やす | TsAudio + Video tag、TsVideo + Audio tagは、対応能力不足ではなく対象filterに対する入力不整合である |
 | F-C-006 | `configureAvStreamType()` 開始中 | A4, A5, A6, A7 | `INVALID_STATE` | 入力状態を維持 | なし | `av_stream_type_while_started` を増やす | 開始中の種別変更は禁止 |
 
-`IFilter.configureAvStreamType()`は、閉鎖されていない音声または映像フィルターだけで受け付ける。`OpenUnconfigured`または`ConfiguredStopped`では、AVストリーム種別のhintを一括で置き換えて`SUCCESS`を返す。同じ値の再指定は状態を変えず`SUCCESS`とする。`Started`では`INVALID_STATE`を返し、状態、入力元、記憶領域、`dataId`、queue世代を変更しない。AV以外のfilterには、このobject種別では非対応のAPIとして`UNAVAILABLE`、論理閉鎖済みfilterには`INVALID_STATE`を返す。`runtime_failed`も真の場合でも閉鎖済み判定を優先する。
+`IFilter.configureAvStreamType()`は、閉鎖されていない音声または映像フィルターだけで受け付ける。`AvStreamType` unionの公開tagはAudioとVideoだけであり、passthrough入力は存在しない。passthroughの可否は`configure()`が受け取る`DemuxFilterAvSettings.isPassthrough`で判定する。`OpenUnconfigured`または`ConfiguredStopped`では、open subtypeに一致するAVストリーム種別のhintを一括で置き換えて`SUCCESS`を返す。同じ値の再指定は状態を変えず`SUCCESS`とする。TsAudioにVideo tag、またはTsVideoにAudio tagを指定した場合は`INVALID_ARGUMENT`を返し、以前のhintと全状態を維持する。`Started`では`INVALID_STATE`を返し、状態、入力元、記憶領域、`dataId`、queue世代を変更しない。AV以外のfilterには、このobject種別では非対応のAPIとして`UNAVAILABLE`、論理閉鎖済みfilterには`INVALID_STATE`を返す。`runtime_failed`も真の場合でも閉鎖済み判定を優先する。
 
 
 | 番号 | API / 入力 | 対象状態集合 | AIDL戻り値 | 次状態関数 | 副作用 | 診断 | 同値性根拠 / 設計上の成立条件 |
 |---:|---|---|---|---|---|---|---|
 | F-C-008 | `configureAvStreamType()` 非AV | F0, F1, F2, F3, F4, F5, F6 | `UNAVAILABLE` | 入力状態を維持 | なし | `av_stream_type_unavailable` を増やす | configure前を含む非AV状態は全て同値 |
-| F-C-009 | `configureAvStreamType()` passthrough要求 | A0, A1, A2, A3, A8, A9, A10, A11 | `UNAVAILABLE` | 入力状態を維持 | なし | `unsupported_passthrough_configure` を増やす | 本製品では passthrough を恒久非対応とする |
 | F-C-010 | `getAvSharedHandle()` 初回 | A0, A1, A4, A5, A8, A9 | 成功 | 共有ハンドル軸だけ公開済みに変更。他軸は維持 | shared backing を生成しハンドルを返す | `av_shared_memory_create` を増やす | 種別軸と実行状態軸を維持し、ハンドル軸だけ変更する |
 
 handleの公開状態とクライアント側の使用状態は分けて管理し、複製した新しいhandleを再取得する遷移を設ける。
@@ -956,8 +964,9 @@ checked FMQ shim は、`queue == null` または `out_written == null` を `INVA
 | AT-007 | 複数demux stream boundary | 対象一覧固定後、demuxごとに独立した境界transactionを実行 | 各demuxのcommitを個別に記録し、全対象を処理した時点 | 未処理対象は変更せず、commit済み対象を巻き戻さない | 変更結果を確定できないdemuxだけ | 表SB-1に従う | 一部成功を全体rollbackで隠さない |
 | AT-008 | `IFrontend.scan()` / `stopScan()` | 入力検証・worker枠とcallback経路の準備・旧scan世代の終端・新世代の確定 | backend受理、新世代、worker、callback許可を一括で公開した時点 | 旧世代終端前は状態不変。終端後は旧scanを復元しない | frontend、scan worker、callback経路 | scan終了理由とcallback配送結果の規則に従う | scan終了理由とEND通知結果を分離する |
 | AT-009 | `IFilter.setDataSource()` | 表1-Dの検証・新しい関連の準備・旧関連の終端・source境界と新関連の確定 | source/sink関連とsink入力世代を同一確定点で公開した時点 | 確定前は旧関連を維持。確定後の不確定は当該sinkと関連だけを隔離 | source/sink関連とsink入力境界 | 表1-Dと表18-Bに従う | source側とsink側の片方だけを公開しない |
+| AT-009a | `IDescrambler.setDemuxSource()` | demux ID・生存・世代・対応能力の検証、対応する`DescramblerCapacityPool`へのsession結合予約、session台帳確定 | `{demux_id, demux_generation, pool_id}`とpool上のsession帰属を同一commitで未結合から結合済みへ変更した時点 | 確定前は未結合sessionを維持し、予約したpool帰属を戻す。確定後に片側だけ不明な場合は当該descrambler sessionとpool claimを隔離する | descrambler session、demux generation、共有pool session帰属 | 「IDescrambler demux結合契約」に従う | `openDescrambler()`時にdemuxを推測せず、一回限りのsource設定で片側だけの結合を公開しない |
 | AT-010 | `IDescrambler.setKeyToken()` / `addPid()` / `removePid()` | tokenと所有者の検証・backend適用準備・backend反映・鍵またはPID台帳の確定 | backendと台帳の両方が同じ要求を確定した時点 | backend反映前は台帳を変更しない。backend反映後に台帳を確定できない場合は、準備済みの補償操作でbackendを直前の確定状態へ戻す。補償成功時は旧台帳と旧backend状態を維持し、補償失敗または実状態不明時だけ当該descramblerを隔離する | descrambler session、鍵使用権、PID claim | token/PID状態表と失敗分類に従う | backendと台帳の不一致を成功扱いにせず、隔離を補償失敗時に限定する |
-| AT-010a | Frontend / Demux / Filter / DVR / Descrambler / LNB open | 能力と容量の検証・資源予約・runtime object準備・registry登録・公開 | registry登録と所有者台帳を確定し、objectを呼出元へ返す時点 | 公開前の準備物を逆順に解放する。解放結果を確定できない資源は`CleanupPending`または隔離へ移す | 準備中objectと予約済み資源 | 原因別のopenエラーを返し、objectを公開しない | 公開失敗後に半登録objectや消費済み容量を残さない |
+| AT-010a | Frontend / Demux / Filter / DVR / Descrambler / LNB open | 能力と容量の検証・資源予約・runtime object準備・registry登録・公開 | registry登録と所有者台帳を確定し、AIDLが要求するobjectおよびout IDを同一応答で返す時点 | 公開前の準備物を逆順に解放する。解放結果を確定できない資源は`CleanupPending`または隔離へ移し、objectもout IDも部分公開しない | 準備中objectと予約済み資源 | 原因別のopenエラーを返し、objectを公開しない | APIごとのAIDL出力形状を維持し、公開失敗後に半登録object、単独のout ID、消費済み容量を残さない |
 
 再選局には、明確に分離した2つの確定点を設ける。段階Aでは、入力検証と未稼働状態の準備を行い、フロントエンドのトランザクションロックを取得して、旧バックエンドを停止し、旧ワーカーを静止させる。確定Aでは、旧世代を終端として一括確定し、関連付け済みdemuxと組み立て処理の境界状態を初期化する。その後、新しい選局要求をバックエンドへ送る。要求に成功した場合は、確定Bで新世代を公開し、準備済みワーカーを有効化する。新要求だけが通常の受理失敗となり、旧要求snapshotが有効で、backend停止・世代fence・demux境界終端が全て確定している場合は、準備済み状態を解放して旧要求を正確に1回だけ再投入する。復元要求が受理された場合は、新要求の元の原因別エラーを返し、復元generationを`Tuning`として公開する。復元要求も拒否されたがbackend停止と境界終端を確認できる場合だけ`Untuned`へ移す。backend停止、世代遮断、境界終端、準備資源の解放、または復元後状態を確定できない場合は表19の原因別`Failed`または`Quarantined`へ移す。確定A自体が失敗または不明の場合は旧要求を復元しない。確定Aと確定Bを1つの確定処理として記述してはならず、境界状態の初期化はバックエンド要求より前の確定Aで行う。
 
@@ -2120,9 +2129,9 @@ AV filter の `start()`、共有ハンドル、MediaEventの状態別契約は�
 
 LNBは機器単位の終端資源とし、本書の「LNB機器の資源規則」と事象駆動の「ワーカー終了契約」だけで管理する。AOSPにLNBとして公開するendpointは、Android 14 CTSが公開objectへ要求する基礎操作を実処理できなければならない。少なくとも対応電圧、`setTone(TONE_NONE)`、`setSatellitePosition(POSITION_A)`、2バイトの`sendDiseqcMessage()`、登録済みcallbackへの受信通知を、成功扱いの無処理ではなくbackend契約として成立させることを`aidl_baseline_eligible`条件とする。
 
-現在証跡があるpx4/earth_pt1 backendは電圧制御しか確認できず、この条件を満たさない。そのため現行`ProductProfile`では`aidl_baseline_eligible_lnb_count=0`、`getLnbIds()`は空、IDなし`openLnb()`と`openLnbById()`は`UNAVAILABLE`とし、`ILnb` object、callback、leaseを生成しない。LNB給電が必要なsatellite frontendも同じprofileでは公開しない。電圧制御だけを持つ内部backendをAOSPの`ILnb`対応能力として広告してはならない。
+現在証跡があるpx4/earth_pt1 backendは電圧制御しか確認できず、この条件を満たさない。そのため現行`ProductProfile`では`aidl_baseline_eligible_lnb_count=0`、`getLnbIds()`は空、公開AIDLに存在する`openLnbById()`と`openLnbByName()`は`UNAVAILABLE`とし、`ILnb` object、callback、leaseを生成しない。LNB給電が必要なsatellite frontendも同じprofileでは公開しない。電圧制御だけを持つ内部backendをAOSPの`ILnb`対応能力として広告してはならない。
 
-将来`aidl_baseline_eligible`なbackendを追加した場合、`getLnbIds()` は検出に成功して使用条件を満たす終端だけを列挙し、`openLnb()` は終端1個の使用権を取得する。不明なIDには `INVALID_ARGUMENT`、使用中、`CleanupPending`、`Quarantined` の終端には、状態を変えず `UNAVAILABLE` を返す。最初の `close()` では `LogicalClosed` を確定して新しい公開処理を拒否し、その時点で実行可能な後片付けをすべて試す。再試行可能な未完の依存資源は `CleanupPending` に残す。実行中のワーカーは変更を遮断し、`ReaperSupervisor` へ一度だけ移す。バックエンドとワーカーの後片付けが完了した後に限り、終端の使用権を正確に1回返却する。隔離中は使用権を保持する。`ProductProfile` はLNBを抑止できるが、存在しない終端や能力を生成してはならない。
+将来`aidl_baseline_eligible`なbackendを追加した場合、`getLnbIds()` は検出に成功して使用条件を満たす終端だけを列挙し、`openLnbById()`または`openLnbByName()`は終端1個の使用権を取得する。不明なIDには `INVALID_ARGUMENT`、使用中、`CleanupPending`、`Quarantined` の終端には、状態を変えず `UNAVAILABLE` を返す。最初の `close()` では `LogicalClosed` を確定して新しい公開処理を拒否し、その時点で実行可能な後片付けをすべて試す。再試行可能な未完の依存資源は `CleanupPending` に残す。実行中のワーカーは変更を遮断し、`ReaperSupervisor` へ一度だけ移す。バックエンドとワーカーの後片付けが完了した後に限り、終端の使用権を正確に1回返却する。隔離中は使用権を保持する。`ProductProfile` はLNBを抑止できるが、存在しない終端や能力を生成してはならない。
 
 
 公開するLNB IDはsatellite frontendへ接続できる論理endpointとして扱い、1個のendpoint leaseを複数frontendへ同時接続しない。`setLnb(lnb_id)`は当該satellite frontendへ接続可能なLNB IDだけを受け付け、別の物理機器に属するLNB ID、地上波frontendへのLNB接続、不明なLNB IDは失敗させる。同一px4機器内で複数の論理endpointが共有する物理電圧レールは機器単位で直列化し、互換な電圧要求だけを参照数で共有する。
@@ -2155,6 +2164,22 @@ LNBは機器単位の終端資源とし、本書の「LNB機器の資源規則�
 LNBへのバックエンド適用後に台帳の確定へ失敗した場合は、要求状態、バックエンドの適用結果、最後に確認できた機器状態、台帳エラーを1個の診断として保存する。当該LNBを隔離し、閉鎖または回収処理で安全状態を再適用して後片付けする。
 
 
+## IDescrambler demux結合契約
+
+`ITuner.openDescrambler()`にはdemux入力がないため、生成時にdemuxまたはdemux依存の復号poolを推測してはならない。生成直後のsessionは`Unbound`であり、descrambler object枠と未結合session台帳だけを所有する。`IDescrambler.setDemuxSource(demuxId)`が、AOSP契約どおり正確に1回だけ、source demuxと対応する`DescramblerCapacityPool`を選んで`Bound`へ遷移させる。
+
+| 操作 / 入力状態 | 検証と確定 | AIDL戻り値 | 次状態 / 副作用 |
+|---|---|---|---|
+| `openDescrambler()` | descrambler能力、object枠、未結合session台帳を予約し、runtime登録とobject公開を一括確定する。demux ID、demux generation、pool IDを記録しない | 成功 | `Unbound`。demux pool、鍵組、PID claimは消費しない |
+| `setDemuxSource(id)` / `Unbound` / 公開済みで生存するdemux | demux ID、同じサービスのlive generation、対応する復号経路、共有poolのsession受付可否を検証する。`{demux_id, demux_generation, pool_id}`とpool session帰属を同一transactionで確定する | 成功 | `Bound`。以後sourceを変更しない |
+| `setDemuxSource(id)` / `Unbound` / 未公開ID | poolを予約しない | `INVALID_ARGUMENT` | `Unbound`を維持 |
+| `setDemuxSource(id)` / `Unbound` / 公開IDだがdemuxが閉鎖済みまたはgenerationが無効 | poolを予約しない | `INVALID_STATE` | `Unbound`を維持 |
+| `setDemuxSource(id)` / `Unbound` / 有効なdemuxだが復号経路非対応またはpool session枯渇 | poolを予約しない。仮予約済みなら返却する | `UNAVAILABLE` | `Unbound`を維持 |
+| `setDemuxSource(any)` / `Bound` | AOSPの一回限り契約を先に適用し、同じIDを含めて再設定を受け付けない | `INVALID_STATE` | 既存のdemux ID、generation、pool帰属を維持 |
+| `setDemuxSource(any)` / 論理閉鎖済み | 閉鎖状態を入力より先に判定する | `INVALID_STATE` | 状態と資源を変更しない |
+
+`setKeyToken(non-VOID)`、`addPid()`、`removePid()`は`Bound` sessionだけを対象とする。`Unbound`では`INVALID_STATE`を返し、鍵参照とPID claimを作らない。source demuxのgenerationが消失した場合も新しい操作は`INVALID_STATE`とし、別demuxへ再結合せず、保持中のclaimはcloseまたはdemux無効化の後片付けで同じpoolへ返す。`close()`は`Unbound`ならobject/session枠だけ、`Bound`ならpool session帰属、鍵参照、PID claimを含む全後片付けを試行し、表5の完了条件に従う。
+
 ## 復号鍵台帳
 
 `IDescrambler.setKeyToken()` が受け取る値は復号鍵そのものではなく、不透明な参照値である。Tuner HAL はこの参照値で復号鍵台帳を引き、内部の `DescramblerKeySlot` に変換する。Binder 境界を越える バイト列に MULTI2 の system key、CBC 初期値、偶数鍵、奇数鍵を入れてはならない。
@@ -2184,13 +2209,14 @@ STD-B25デコード能力とSTD-B25 Part 1 §4.9への適合宣言を分離す�
 | 事象 | 台帳操作 | 結果 |
 |---|---|---|
 | service/backend初期化 | 物理tuner/backend単位の実鍵組数と実PID数、pool共有単位を製品profileから共有poolへ登録 | 未確定、0、または実体と不一致の能力は公開しない |
-| `openDescrambler()` | 対象demuxが接続する共有poolへのsessionだけを登録 | object単位の鍵組・PID容量は先取りしない。session台帳を確保できない場合は`UNAVAILABLE` |
-| `setKeyToken(non-VOID)` | sessionが未保有なら共有poolから鍵組1件をclaimし、保有中なら同じclaim内で参照を置換 | backend適用と台帳確定の両方が成功した場合だけ新tokenを公開する。鍵組枯渇は`UNAVAILABLE` |
+| `openDescrambler()` | demux未結合のdescrambler object/session枠だけを登録 | demux、共有pool、鍵組、PID容量は選択または先取りしない。session台帳を確保できない場合は`UNAVAILABLE` |
+| `setDemuxSource(demuxId)` | liveなdemux generationと対応する共有poolへsessionを正確に1回だけ結合 | demux generationとpool帰属を一括確定する。pool session枯渇は`UNAVAILABLE`、再呼び出しは`INVALID_STATE` |
+| `setKeyToken(non-VOID)` | demux結合済みsessionが鍵を未保有なら結合済み共有poolから鍵組1件をclaimし、保有中なら同じclaim内で参照を置換 | backend適用と台帳確定の両方が成功した場合だけ新tokenを公開する。未結合は`INVALID_STATE`、鍵組枯渇は`UNAVAILABLE` |
 | `addPid()` | 共有poolからPID claimを1件取得してsessionへ帰属させる | pool合計が実容量を超える要求は`UNAVAILABLE`、既存登録と状態は維持 |
 | `removePid()` | 対象PID claimを共有poolへ返す | 未登録は冪等成功。他sessionのclaimは変更しない |
-| `close()` / demux無効化 | backend解除を全件試行し、sessionが持つ鍵参照とPID claimを共有poolへ返す | 後片付け完了時だけ再利用し、`CleanupPending`または隔離中は使用中として数える |
+| `close()` / demux無効化 | 未結合sessionではobject/session枠を解放する。結合済みsessionではbackend解除を全件試行し、鍵参照、PID claim、pool session帰属を同じpoolへ返す | 後片付け完了時だけ再利用し、`CleanupPending`または隔離中は使用中として数える |
 
-製品profileでSTD-B25デコード能力を有効にしない構成では、その経路の`openDescrambler()`を`UNAVAILABLE`とし、VTS製品設定へdescrambling flowを含めない。能力を有効にする場合も、実鍵組数または実PID数をPart 1 §4.9適合、Part 1 CAS-R適合、またはSTD-B25全面準拠の宣言へ読み替えない。鍵素材はslot数だけを台帳化し、公開AIDLまたは診断へ出さない。
+製品profileで公開demuxのいずれにもSTD-B25デコード能力を有効にしない構成では`openDescrambler()`を`UNAVAILABLE`とし、VTS製品設定へdescrambling flowを含めない。一部のdemux経路だけで能力を有効にする構成では、未結合objectの生成後、対象外demuxへの`setDemuxSource()`を`UNAVAILABLE`とする。能力を有効にする場合も、実鍵組数または実PID数をPart 1 §4.9適合、Part 1 CAS-R適合、またはSTD-B25全面準拠の宣言へ読み替えない。鍵素材はslot数だけを台帳化し、公開AIDLまたは診断へ出さない。
 
 VTS/lab config には descrambling flow を置かない。VTS 用 XML に ECM filter や `<descramblers>` を生成せず、平文ライブ視聴 / DVR / 明示選局 の接続確認に限定する。Tuner HAL は PMT/CAT/SDT/ECM/EMM 等の section payload delivery、`IDescrambler`、`setKeyToken()`、`addPid()` / `removePid()`、トークン lookup 境界、未接続・bad トークン・expired トークン 診断までを確認対象とする。本番経路スクランブル解除成功のリリーススコープと、CA情報 / サービス メタデータの意味解析、ECM/EMM filter 開始方針、MediaCas/CAS bridge 呼び出し、不透明な参照値の取得試行、Tuner descrambler への接続判断、未接続診断の上位制御の責務境界は `開発規則.md` を正とする。Tuner HAL の packet 単位のデスクランブル中核は、単体テスト内で復号鍵台帳へ既知鍵を登録して確認する。
 
@@ -2375,6 +2401,11 @@ px4 probe prefix を変更する場合は、frontend_px4系実装、`tuner_hal2/
 | T-AOSP-25 | `configureMonitorEvent(nonzero)` profile無効時 | `UNAVAILABLE` |
 | T-AOSP-26 | AV `isPassthrough=false` | shared memory AV経路成功 |
 | T-AOSP-27 | AV `isPassthrough=true` | `UNAVAILABLE` |
+| T-AOSP-28a | `openDemux(out demuxId)` | objectと要素数1のID配列を同一成功応答で取得し、失敗時はどちらも公開されない |
+| T-AOSP-28b | `openDemuxById(id)` | 指定IDのobjectだけを取得し、別のout IDを生成しない |
+| T-AOSP-28c | `openDescrambler()` → `setDemuxSource(demuxId)` | 生成時は未結合、source設定時にdemux generationと共有poolへ一回だけ原子的に結合 |
+| T-AOSP-28d | 結合済みdescramblerの再`setDemuxSource()` | 同じIDを含めて`INVALID_STATE`、既存結合を維持 |
+| T-AOSP-28e | TsAudio + Video tag、TsVideo + Audio tagの`configureAvStreamType()` | `INVALID_ARGUMENT`、hintと全状態を維持 |
 | T-AOSP-29 | `getFrontendStatusReadiness()` 要求順・同長 | AIDL配列契約 |
 | T-AOSP-30a | 未公開の既知値または将来のstatus数値を含む`getStatus()` | 対応済み要素だけを要求順で返し、非対応要素を無視して成功 |
 | T-AOSP-30b | `getFrontendStatusReadiness()` unsupported status type | 要求順・同長で要素ごとにUNSUPPORTED |
@@ -2724,4 +2755,4 @@ Filter生産側の許可は、短い非ブロッキング処理だけを覆うRA
 
 #### LNBとの接続
 
-LNBの論理閉鎖にも同じ遷移を適用する。`LogicalClosed+CleanupPending` の `close()` は回復再試行だけを許可する。`Quarantined` は内部回収機構が所有する。終端後片付けが完了するまで、LNB終端の使用枠を `openLnb()` の受付へ戻してはならない。
+LNBの論理閉鎖にも同じ遷移を適用する。`LogicalClosed+CleanupPending` の `close()` は回復再試行だけを許可する。`Quarantined` は内部回収機構が所有する。終端後片付けが完了するまで、LNB終端の使用枠を`openLnbById()`または`openLnbByName()`の受付へ戻してはならない。
