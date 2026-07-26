@@ -7,11 +7,11 @@
 | 論理名 | `../tuner_hal/DESIGN_JA.md`の正本箇所 |
 |---|---|
 | missing target / public close / Drop leak / close cascade | 表5、表7、表8、`close / unregister / quarantine 条件` |
-| 必須診断 / best-effort telemetry / composed failure | 表6、表7、表13、`失敗影響範囲と局所隔離` |
+| 必須診断 / best-effort telemetry / composed failure | `0-S-4. 失敗分類と波及範囲`、表6、表7、表10、表13、`失敗影響範囲` |
 | descrambler transaction | 表17、表17-B |
-| `WorkerExit` / `WorkerFailureClassifier` | `ランタイム設計`、`worker 異常終了`、`worker 終了と保留 cleanup` |
-| `ScanSessionTxn` | 表0-F、表19、`scan terminal event と callback cleanup` |
-| `SourceBoundaryTxn` | 表18、表18-B、`Stream boundary` |
+| `WorkerExit` / `WorkerFailureClassifier` | `Tuner HAL runtime 設計契約`、`ワーカー abnormal exit と scan terminal state の固定方針`、`ワーカー失敗と所有権境界`、`ワーカー終了契約` |
+| `ScanSessionTxn` | 表0-F、表19、`scan END 通知失敗の固定` |
+| `SourceBoundaryTxn` | 表18、表18-B、`Stream boundary 契約` |
 | callback artifact | 表7、表8、表0-S-3A |
 | public nullable / frontend count | `nullable Binder 境界`、表1-D、`ITuner ルート API の固定契約` |
 | 型付き境界 | 表0-S-3、表0-S-3A |
