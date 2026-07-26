@@ -58,16 +58,29 @@
 
 ## 3. service_runtime transaction boundary
 
-- object close / Drop leak の public runtime unregister を `FnOnce` closure で AIDL 側から注入しない。`service_runtime` が `ObjectRuntimeCleanupCommand` を生成し、AIDL executor は command execution bridge に限定する。
-- descrambler key table は service_runtime に置き、descrambler crate から key table / key lookup error / key registration error / key slot id を public export しない。
+`../tuner_hal2/DESIGN_JA.md` の `共通transaction / use-caseの規範実装アンカー`を、状態・寿命・失敗時遷移の単一所有者を決める唯一の実装所有権レジストリとする。directory名や`*_ops.rs` / `*_txn.rs`というsuffixだけから所有権を推定しない。実装アンカーにないmoduleが同じ状態を直接変更してはならない。
 
-- top-level `service_runtime/src/*_ops.rs` は public façade だけを置き、`TunerServiceRuntime` の private field を直接参照しない。
-- 状態変更は `service_runtime/src/boot/*_txn.rs` の domain transaction context へ閉じる。
-- flat `transact_*` helper は原則として boot child module 内の実装詳細であり、top-level `*_ops.rs` から直接呼ばない。ただし `DESIGN_JA.md` で明示した demux/filter/DVR の単純 operation は例外とし、`demux_filter_dvr_ops.rs` から `transact_*` helper を直接呼んでよい。複数 step の child open / owner object registration / rollback / cleanup composition は txn context を通す。
-- `TunerServiceRuntime::registry_mut()` を呼んでよい production code は `service_runtime/src/boot/*_txn.rs` の domain transaction implementation に限る。top-level `*_ops.rs`、AIDL 層、domain crate、`query_api.rs` から呼ばない。
-- `RuntimeQuery<'a>` は read-only query 専用とし、mutable reference や mutating transaction context を持たせない。
-- read-only object query は `execute_object_query_use_case()` または service_runtime query façade を通す。AIDL method body で `ensure_open()` と query 側 lifecycle check を二重化しない。
-- `transaction_registry.rs` は runtime transaction -> dispatch target の正本表に限定する。coverage / 接続済み表示 / stale 未接続表示を同表の第2責務として持たせない。`RuntimeCommandDispatcher` はこの表の dispatch target だけを消費し、production dispatch と別に第2の runtime handler / status 判定層を作らない。
+service_runtime内の状態変更ownerを次の三分類に分ける。
+
+| 分類 | 所有してよい状態・責務 | 所有してはならない状態 | 配置・入口 |
+|---|---|---|---|
+| service-level orchestration transaction | public object lifecycle、object table、public runtime registration、callback registry/artifactとの整合、複数domain operationをまたぐphase order、commit point、rollback、cleanup authority、primary/cleanup failure composition | demux/frontend/LNB/descrambler/backendのprivate domain state、packet assembler、queue内部状態、device固有状態 | `DESIGN_JA.md`の規範実装アンカーでservice-level正本に指定された`object_method_txn.rs`、`root_object_ops.rs`、`object_close_txn.rs`、child-open/finish use-case等だけ。専用typed operationまたはcommandを入口とする |
+| domain transaction | frontend、demux、filter、DVR、LNB、descrambler、backend、worker、queue、packet境界のdomain stateと、その局所commit/rollback/quarantine | public object table、Binder artifact実体、service-level failure composition、別domainの状態 | 原則として`service_runtime/src/boot/*_txn.rs`または規範アンカーで指定したdomain module。service-level orchestrationからtyped request/token/commandで呼ぶ |
+| façade / adapter / query | DTO変換、domain naming隠蔽、read-only snapshot、Binder status bridge | 状態変更、commit、rollback、cleanup authority | 規範アンカーでtransaction ownerに指定されていないtop-level`*_ops.rs`、AIDL façade、adapter、`RuntimeQuery<'a>` |
+
+- `root_object_ops.rs`、`object_method_txn.rs`、`object_close_txn.rs`を一律の薄いfaçadeとして扱わない。これらは規範アンカーに記載されたservice-level状態だけを変更し、domain-private状態はtyped domain transactionへ委譲する。
+- 規範アンカーでservice-level orchestration transactionに指定されていないtop-level `service_runtime/src/*_ops.rs`はpublic façadeに限定し、`TunerServiceRuntime`のprivate fieldを直接参照しない。
+- 同一のstate field、registry entry、lease、generation、cleanup authorityについてservice-level orchestration transactionとdomain transactionの両方を正本にしない。上位transactionは下位transactionの結果とtyped rollback/cleanup commandだけを保持し、下位のprivate stateを書き戻さない。
+- service-level commitは、必要なdomain transactionが成功し、public object/runtime registrationを原子的に公開できる時点に置く。service-level commit前失敗はdomain側が発行したtyped rollback/cleanup commandを逆順に実行し、commit後cleanup failureはservice-level diagnosticと`CleanupPending`/quarantine契約へ接続する。
+- domain transactionのcommit/rollbackは当該domain内部に閉じる。service-level orchestrationへraw mutable registry、domain snapshot本体、任意restore closureを渡さない。
+- object close / Drop leak の public runtime unregister を `FnOnce` closure で AIDL 側から注入しない。`service_runtime` が `ObjectRuntimeCleanupCommand` を生成し、AIDL executor は command execution bridge に限定する。
+- descrambler key table は service_runtime のdescrambler domain transactionが所有し、descrambler crateからkey table / key lookup error / key registration error / key slot idをpublic exportしない。
+- flat `transact_*` helperは原則としてdomain transaction module内の実装詳細とする。`DESIGN_JA.md`の規範アンカーで明示したdemux/filter/DVRの単純operationだけは、`demux_filter_dvr_ops.rs`から直接呼んでよい。複数stepのchild open、owner object registration、rollback、cleanup compositionはservice-level orchestration transactionを通す。
+- `TunerServiceRuntime::registry_mut()`はdomain registryへのraw mutation入口として扱い、production codeでは`service_runtime/src/boot/*_txn.rs`のdomain transaction implementationだけが呼べる。service-level orchestration transactionは専用object-table/runtime-registration APIまたはtyped commandを使い、raw `registry_mut()`でdomain stateを変更しない。
+- `RuntimeQuery<'a>`はread-only query専用とし、mutable reference、service-level orchestration transaction、domain transaction contextを持たせない。
+- read-only object queryは`execute_object_query_use_case()`またはservice_runtime query façadeを通す。AIDL method bodyで`ensure_open()`とquery側lifecycle checkを二重化しない。
+- `transaction_registry.rs`はruntime transactionからdispatch targetへの正本表に限定する。所有権レジストリは`DESIGN_JA.md`の規範アンカー表だけとし、transaction registryに第2のownership表、coverage表、接続済み表示、status判定層を持たせない。
+- 静的検査は「boot配下か」「`*_ops.rs`か」だけで合否を決めず、規範アンカーにないmoduleが対象stateへ直接アクセスしていないこと、上位・下位transactionが同一stateを重複所有していないこと、typed委譲境界を迂回していないことを検査する。
 
 ## 4. wrapper 作成基準
 
