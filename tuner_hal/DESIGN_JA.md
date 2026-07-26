@@ -334,7 +334,7 @@ Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時�
 
 - DVR start は 状態 interval 分だけ Binder thread を sleep しない。状態 interval は コールバック ワーカー の周期だけに使う。
 
-キュー、機器、パケットの各読み取り結果は、本書の失敗影響範囲表に従って分類する。非ブロッキング読み取りでデータがない場合と `WouldBlock` は `NoData`、`EINTR` は `Interrupted` とし、状態を変えずに再試行する。明示的な停止または所有中の入力に対するEOFは `Closed` とする。`InfrastructureCorrupt` はFMQの記述子、制御情報、トランザクションの不変条件違反に限定し、影響を受ける経路を隔離する。不正な188バイトTSパケットは、そのパケットだけを破棄して型付き診断を残し、基盤破損として扱わない。TEI付きパケットはTS生データ出力と記録出力には保持し、意味解析には使用しない。連続性の不連続ではTS生データと記録データを保持し、そのPIDの意味解析組み立てだけを初期化する。SectionまたはPESの解析失敗では対象の意味単位を破棄し、正しい境界から再開する。所有中の入出力に恒久障害が生じても、遮断されていない全体状態の変更を示す型付き証跡がない限り、影響を受けるランタイムだけを終了する。破損または致命的失敗を無言で `NoData` に変換してはならない。
+キュー、機器、パケットの各読み取り結果は、本書の「失敗影響範囲」に従って分類する。非ブロッキング読み取りでデータがない場合と `WouldBlock` は `NoData`、`EINTR` は `Interrupted` とし、状態を変えずに再試行する。明示的な停止または所有中の入力に対するEOFは `Closed` とする。`InfrastructureCorrupt` はFMQの記述子、制御情報、トランザクションの不変条件違反に限定し、影響を受ける経路を隔離する。不正な188バイトTSパケットは、そのパケットだけを破棄して型付き診断を残し、基盤破損として扱わない。TEI付きパケットはTS生データ出力と記録出力には保持し、意味解析には使用しない。連続性の不連続ではTS生データと記録データを保持し、そのPIDの意味解析組み立てだけを初期化する。SectionまたはPESの解析失敗では対象の意味単位を破棄し、正しい境界から再開する。所有中の入出力に恒久障害が生じても、遮断されていない全体状態の変更を示す型付き証跡がない限り、影響を受けるランタイムだけを終了する。破損または致命的失敗を無言で `NoData` に変換してはならない。
 
 
 - px4 close は control FD だけでなく TS reader FD と reader state も解放する。
@@ -492,10 +492,12 @@ AV filter の audio/video routing 種別は open subtype を正とする。TsAud
 | 番号 | API / 入力 | 対象状態集合 | AIDL戻り値 | 次状態関数 | 副作用 | 診断 | 同値性根拠 / 設計上の成立条件 |
 |---:|---|---|---|---|---|---|---|
 | F-B-003 | `configure()` live AV non-passthrough | A8, A9, A10, A11 | 成功 | 設定状態だけ設定済みに変更。他軸は維持 | AV世代を進め、未配送の旧一過性状態を破棄。TsAudio は Audio、TsVideo は Video の routing 種別を open subtype から導出する | `filter_configure_success` | 未設定のAV状態だけを受理し、補助種別と共有ハンドル軸を維持する |
-| F-B-004 | `configure()` AV passthrough | A8, A9, A10, A11 | `UNAVAILABLE` | 入力状態を維持 | なし | `unsupported_passthrough_configure` を増やす | 本製品ではpassthroughを恒久非対応とする |
-| F-B-005 | `configure()` で、open時のmain typeと異なるunion tagを指定 | F0 | `INVALID_ARGUMENT` | F0 | なし | `filter_main_type_mismatch` を増やす | 未対応main typeは`openFilter()`で`UNAVAILABLE`として拒否され、オブジェクトが存在しない。既存オブジェクトの型不一致は入力契約違反として区別する |
+| F-B-004 | `configure()` AV passthrough | A0, A1, A2, A3, A8, A9, A10, A11 | `UNAVAILABLE` | 入力状態を維持 | なし | `unsupported_passthrough_configure` を増やす | 本製品ではpassthroughを恒久非対応とし、停止後の再設定でも同じ判定を行う |
+| F-B-005 | `configure()` で、open時のmain typeと異なるunion tagを指定 | F0, A0, A1, A2, A3, A8, A9, A10, A11 | `INVALID_ARGUMENT` | 入力状態を維持 | なし | `filter_main_type_mismatch` を増やす | 未対応main typeは`openFilter()`で`UNAVAILABLE`として拒否され、オブジェクトが存在しない。既存オブジェクトの型不一致はAVの未設定・停止済み状態を含め入力契約違反として区別する |
 | F-B-006 | `configure()` 同一設定の再指定 | F1, F3 | 成功 | 入力状態を維持 | キュー識別子、キュー内容、各世代、組み立て状態、診断を維持する | `filter_configure_idempotent` を増やす | 同じ正規化済み設定の再指定は無処理とする |
 | F-B-006a | `configure()` 異なる設定への再設定 | F1, F3 | 成功 | F1 | キュー識別子は維持し、配送世代と解析状態世代を更新して旧データ、組み立て状態、PCR、`startId`状態を破棄する | `filter_reconfigure_success` | 設定差分を確定した後にだけ再設定境界を進める |
+| F-B-006b | `configure()` AV同一設定の再指定 | A0, A1, A2, A3 | 成功 | 入力状態を維持 | AV配送世代、解析状態世代、共有ハンドル軸、配送済み割り当てを維持する | `filter_configure_idempotent` を増やす | Android 14 VTSのconfigure→start→stop→configure→startを成立させ、同一設定は無処理にする |
+| F-B-006c | `configure()` AV異なる設定への再設定 | A0, A1, A2, A3 | 成功 | 設定状態、補助種別軸、共有ハンドル軸を維持 | AV配送世代と解析状態世代を進め、未配送の旧一過性状態を破棄する。配送済み割り当ては`ReleaseOnly`として維持する | `filter_reconfigure_success` | AIDLが許す停止後の再設定を受理し、クライアントへ渡した資源の寿命を短縮しない |
 | F-B-007 | `configure()` callback-only同一設定の再指定 | F4, F6 | 成功 | 入力状態を維持 | callback世代、未配送event、parser状態を維持する | `filter_configure_idempotent` を増やす | 同じ正規化済み設定の再指定は無処理 |
 | F-B-007a | `configure()` callback-only異なる設定への再設定 | F4, F6 | 成功 | F4 | callback配送世代とparser状態世代を進め、旧未配送eventとpartial stateを破棄する | `filter_reconfigure_success` | 非開始callback-only状態だけを再設定する |
 
@@ -520,7 +522,7 @@ AV filter の audio/video routing 種別は open subtype を正とする。TsAud
 | F-B-019 | `stop()` 未設定 | F0 | 成功 | F0 | なし | `stop_idempotent` を増やす | AOSP SDK 契約に合わせ、未開始 filter stop は no-op 成功とする |
 | F-B-020 | `close()` | 全非閉鎖状態 | 表5に従う | 表5に従う | 後片付け開始 | 表5に従う | close の戻り値と後片付け完了判定は表5を正とする |
 
-AV割り当てについては、本書のAV割り当て表と`releaseAvHandle()`判定表だけを正とする。`openFilter(bufferSize)`の`bufferSize`はAOSPが要求するFMQ容量としてだけ検証・予約し、AV payloadの上限には流用しない。AV payload領域はイベントごとの要求サイズで割り当て、filter別の未解放合計が`CapabilitySnapshot.avPerFilterLiveBytes`、サービス全体の未解放合計が`CapabilitySnapshot.avRuntimeBudgetBytes`を超えない場合だけ確定する。両値は起動前に`ProductProfile`を検証してsnapshotへ固定し、未宣言または0の場合はAV filter能力を公開しない。共有方式とイベント固有方式は同じ実行時台帳を消費し、起動時または`CapabilitySnapshot`選択時にpayload領域を先取りしない。上限超過、容量枯渇、割り当て処理の失敗は、コールバックと`dataId`の公開前に当該イベントの非同期失敗として処理する。破棄するのは当該イベントだけとし、使用中の割り当てを追い出してはならない。`avDataId`は符号付き63ビットの正数とし、再利用しない。`flush()`、再設定、論理閉鎖の後も、配送済みの割り当てを`ReleaseOnly`として保持する。`Active`または`ReleaseOnly`の解放は1回だけ資源を返して成功する。終了済みと確認できるIDへの重複解放は状態を変えず成功し、不明ID、別所有者、組の不一致には`INVALID_ARGUMENT`を返す。台帳の信頼性を確認できない場合は`UNKNOWN_ERROR`とし、対象記憶領域を隔離する。
+AV割り当てについては、本書の「AV割り当て」と「表1-C-AVH. `releaseAvHandle()` 全域判定表」だけを正とする。`openFilter(bufferSize)`の`bufferSize`はAOSPが要求するFMQ容量としてだけ検証・予約し、AV payloadの上限には流用しない。AV payload領域はイベントごとの要求サイズで割り当て、filter別の未解放合計が`CapabilitySnapshot.avPerFilterLiveBytes`、サービス全体の未解放合計が`CapabilitySnapshot.avRuntimeBudgetBytes`を超えない場合だけ確定する。両値は起動前に`ProductProfile`を検証してsnapshotへ固定し、未宣言または0の場合はAV filter能力を公開しない。共有方式とイベント固有方式は同じ実行時台帳を消費し、起動時または`CapabilitySnapshot`選択時にpayload領域を先取りしない。上限超過、容量枯渇、割り当て処理の失敗は、コールバックと`dataId`の公開前に当該イベントの非同期失敗として処理する。破棄するのは当該イベントだけとし、使用中の割り当てを追い出してはならない。`avDataId`は符号付き63ビットの正数とし、再利用しない。`flush()`、再設定、論理閉鎖の後も、配送済みの割り当てを`ReleaseOnly`として保持する。`Active`または`ReleaseOnly`の解放は1回だけ資源を返して成功する。終了済みと確認できるIDへの重複解放は状態を変えず成功し、不明ID、別所有者、組の不一致には`INVALID_ARGUMENT`を返す。台帳の信頼性を確認できない場合は`UNKNOWN_ERROR`とし、対象記憶領域を隔離する。
 
 
 #### 表1-C. IFilter 補助API状態契約
@@ -545,7 +547,7 @@ FMQの使用方法はフィルターのサブタイプごとに定める。Secti
 
 | 番号 | API / 入力 | 対象状態集合 | AIDL戻り値 | 次状態関数 | 副作用 | 診断 | 同値性根拠 / 設計上の成立条件 |
 |---:|---|---|---|---|---|---|---|
-| F-C-008 | `configureAvStreamType()` 非AV | F1, F2, F3, F4, F5, F6 | `UNAVAILABLE` | 入力状態を維持 | なし | `av_stream_type_unavailable` を増やす | 非AV状態は全て同値 |
+| F-C-008 | `configureAvStreamType()` 非AV | F0, F1, F2, F3, F4, F5, F6 | `UNAVAILABLE` | 入力状態を維持 | なし | `av_stream_type_unavailable` を増やす | configure前を含む非AV状態は全て同値 |
 | F-C-009 | `configureAvStreamType()` passthrough要求 | A0, A1, A2, A3, A8, A9, A10, A11 | `UNAVAILABLE` | 入力状態を維持 | なし | `unsupported_passthrough_configure` を増やす | 本製品では passthrough を恒久非対応とする |
 | F-C-010 | `getAvSharedHandle()` 初回 | A0, A1, A4, A5, A8, A9 | 成功 | 共有ハンドル軸だけ公開済みに変更。他軸は維持 | shared backing を生成しハンドルを返す | `av_shared_memory_create` を増やす | 種別軸と実行状態軸を維持し、ハンドル軸だけ変更する |
 
@@ -556,7 +558,7 @@ open済みのAV filterでは、`configure()`前でも成功させる。
 
 | 番号 | API / 入力 | 対象状態集合 | AIDL戻り値 | 次状態関数 | 副作用 | 診断 | 同値性根拠 / 設計上の成立条件 |
 |---:|---|---|---|---|---|---|---|
-| F-C-013 | `getAvSharedHandle()` 非AV | F1, F2, F3, F4, F5, F6 | `UNAVAILABLE` | 入力状態を維持 | なし | `av_handle_unavailable` を増やす | 非AV状態は全て同値 |
+| F-C-013 | `getAvSharedHandle()` 非AV | F0, F1, F2, F3, F4, F5, F6 | `UNAVAILABLE` | 入力状態を維持 | なし | `av_handle_unavailable` を増やす | configure前を含む非AV状態は全て同値 |
 | F-C-020 | `flush()` FMQ対象 | F1, F2, F3 | 成功 | 入力状態を維持 | FMQ未消費データと一過性状態を破棄 | `filter_flush_success` | FMQ対象状態は flush に関して同値 |
 | F-C-021 | `flush()` callback-only対象 | F4, F5, F6 | 成功 | 入力状態を維持 | 未配送callback eventとparser partial stateを破棄し、通常FMQと配送済みeventは変更しない | `filter_flush_success` | callback-onlyの全設定・実行状態で同じ消去境界を持つ |
 
@@ -664,7 +666,7 @@ TSからTSへの`linkCaps`と、NULL以外を渡す`setDataSource()`の接続関
 
 この行列は、表1-D-1の優先1〜7を通過した場合だけ適用する。つまり、sink は非閉鎖かつ非開始、source は非閉鎖、同一 demux 所属、source と sink は別 object である。source が `NULL` の場合は AOSP契約上は優先4の対象であり、この行列には入らない。
 
-戻り値は、NULL・別所有者・別demuxのオブジェクトを`INVALID_ARGUMENT`、閉鎖済み・不正なライフサイクルを`INVALID_STATE`、規格上は有効だが未対応のsubtype・能力を`UNAVAILABLE`、TPID・tagの不一致を`INVALID_ARGUMENT`、資源不足を`UNAVAILABLE`、内部破損を`UNKNOWN_ERROR`とする。
+戻り値は、非NULLで別所有者または別demuxのオブジェクトを`INVALID_ARGUMENT`、閉鎖済み・不正なライフサイクルを`INVALID_STATE`、規格上は有効だが未対応のsubtype・能力を`UNAVAILABLE`、TPID・tagの不一致を`INVALID_ARGUMENT`、資源不足を`UNAVAILABLE`、内部破損を`UNKNOWN_ERROR`とする。NULLはこの拒否条件に含めず、表1-Dどおりdemux input復帰として成功させる。
 
 
 | source \ sink | section フィルタ | PES フィルタ | TS生データフィルタ | AV フィルタ | record フィルタ | ペイロードなしフィルタ |
@@ -971,7 +973,7 @@ checked FMQ shim は、`queue == null` または `out_written == null` を `INVA
 | AT-010 | `IDescrambler.setKeyToken()` / `addPid()` / `removePid()` | tokenと所有者の検証・backend適用準備・backend反映・鍵またはPID台帳の確定 | backendと台帳の両方が同じ要求を確定した時点 | backend反映前は台帳を変更しない。backend反映後に台帳を確定できない場合は、準備済みの補償操作でbackendを直前の確定状態へ戻す。補償成功時は旧台帳と旧backend状態を維持し、補償失敗または実状態不明時だけ当該descramblerを隔離する | descrambler session、鍵使用権、PID claim | token/PID状態表と失敗分類に従う | backendと台帳の不一致を成功扱いにせず、隔離を補償失敗時に限定する |
 | AT-010a | Frontend / Demux / Filter / DVR / Descrambler / LNB open | 能力と容量の検証・資源予約・runtime object準備・registry登録・公開 | registry登録と所有者台帳を確定し、objectを呼出元へ返す時点 | 公開前の準備物を逆順に解放する。解放結果を確定できない資源は`CleanupPending`または隔離へ移す | 準備中objectと予約済み資源 | 原因別のopenエラーを返し、objectを公開しない | 公開失敗後に半登録objectや消費済み容量を残さない |
 
-再選局には、明確に分離した2つの確定点を設ける。段階Aでは、入力検証と未稼働状態の準備を行い、フロントエンドのトランザクションロックを取得して、旧バックエンドを停止し、旧ワーカーを静止させる。確定Aでは、旧世代を終端として一括確定し、関連付け済みdemuxと組み立て処理の境界状態を初期化する。その後、新しい選局要求をバックエンドへ送る。要求に成功した場合は、確定Bで新世代を公開し、準備済みワーカーを有効化する。新しいバックエンド要求が通常の受理失敗となった場合は準備済み状態を解放して`Untuned`へ移す。停止、世代遮断、境界初期化、または準備資源の解放結果を確定できない場合は`Failed`へ移す。どちらの場合も旧選局を復元しない。確定Aと確定Bを1つの確定処理として記述してはならず、境界状態の初期化はバックエンド要求より前の確定Aで行う。
+再選局には、明確に分離した2つの確定点を設ける。段階Aでは、入力検証と未稼働状態の準備を行い、フロントエンドのトランザクションロックを取得して、旧バックエンドを停止し、旧ワーカーを静止させる。確定Aでは、旧世代を終端として一括確定し、関連付け済みdemuxと組み立て処理の境界状態を初期化する。その後、新しい選局要求をバックエンドへ送る。要求に成功した場合は、確定Bで新世代を公開し、準備済みワーカーを有効化する。新要求だけが通常の受理失敗となり、旧要求snapshotが有効で、backend停止・世代fence・demux境界終端が全て確定している場合は、準備済み状態を解放して旧要求を正確に1回だけ再投入する。復元要求が受理された場合は、新要求の元の原因別エラーを返し、復元generationを`Tuning`として公開する。復元要求も拒否されたがbackend停止と境界終端を確認できる場合だけ`Untuned`へ移す。backend停止、世代遮断、境界終端、準備資源の解放、または復元後状態を確定できない場合は表19の原因別`Failed`または`Quarantined`へ移す。確定A自体が失敗または不明の場合は旧要求を復元しない。確定Aと確定Bを1つの確定処理として記述してはならず、境界状態の初期化はバックエンド要求より前の確定Aで行う。
 
 確定前にコールバックの登録または配送に失敗した場合は、バックエンドを停止し、世代を`TerminalFailed`へ遷移させ、以後のコールバックを抑止する。接続済みデマルチプレクサの境界を初期化し、公開操作は`UNKNOWN_ERROR`を返す。確定後のコールバック配送に失敗した場合は、ドメイン状態と公開結果を維持し、診断または代替の記録先へ記録する。
 
@@ -1437,7 +1439,7 @@ selectorの種類を正として判定し、数値域から種類を推測しな
 
 px4 BSで絶対値の`STREAM_ID`をslotへ直接渡す経路は、ドライバーのブランチに分岐が存在するだけでは対応能力として扱わない。バックエンドと機器の組み合わせを示す台帳項目が絶対値の選択子を検証済みかつリリース可能と宣言した場合だけ、`0..65534`を設定できる。現在のpx4台帳では相対値`0..7`だけを有効とするため、絶対値の`STREAM_ID 0..65534`には`UNAVAILABLE`を返してバックエンドを変更せず、選択子の`65535`には`INVALID_ARGUMENT`を返す。将来絶対値用の項目を追加する場合も、`0..11`を数値の重複だけを理由に拒否してはならない。`ProductProfile`やVTS設定から、台帳にない経路を作ってはならない。HALはTSIDから相対slotへの変換表を互換処理として復活させない。
 
-CATV も TIS の製品 scan 候補表に実装データとして追加する。CATV候補表は C13〜C63 に固定する。MID band は C13〜C22、SHB band は C23〜C63 とし、中心周波数は ARIB STD-B21 Appendix 10 の `+1/7 MHz` オフセット込みで保持する。C22 は `167 + 1/7 MHz`、C23 は `225 + 1/7 MHz` であり、C21からC22、C22からC23は単純な6MHz連続として計算しない。地上UHF候補表とCATV候補表はどちらもTIS側が正であり、Tuner HAL はCATV scan planを自前生成しない。TIS はCATV候補を 明示選局候補 としてHALへ渡し、px4 backend は渡されたCATV frequencyをlegacy `freq_no/addfreq` へ変換するだけにする。
+CATV も TIS の製品 scan 候補表に実装データとして追加する。CATV候補表は C13〜C63 に固定する。MID band は C13〜C22、SHB band は C23〜C63 とし、中心周波数は ARIB STD-B21 5.12-E2 Appendix 10 Table 10-3・Table 10-4 の `+1/7 MHz` オフセット込みで保持する。C22 は `167 + 1/7 MHz`、C23 は `225 + 1/7 MHz` であり、C21からC22、C22からC23は単純な6MHz連続として計算しない。地上UHF候補表とCATV候補表はどちらもTIS側が正であり、Tuner HAL はCATV scan planを自前生成しない。TIS はCATV候補を 明示選局候補 としてHALへ渡し、px4 backend は渡されたCATV frequencyをlegacy `freq_no/addfreq` へ変換するだけにする。
 
 この節に現れる UHF、CATV、BS、CS110 の範囲説明は、Tuner HAL の独立した候補表定義ではない。値の更新が必要になった場合は、まず `開発規則.md` の設計契約と TIS の候補表実装を更新し、Tuner HAL 側は 明示選局要求 の validation と backend adapter だけを追従させる。
 
@@ -1462,7 +1464,7 @@ VTS / lab profile は代表点だけでよく、全 CATV 候補の実波存在�
 
 `numBytesInSectionFilter` は section payload の最大長ではなく、セクションフィルター condition の byte幅として扱う。mask / filter byte 幅は16 bytesを維持する。
 
-`bitWidthOfLengthField`はISO/IEC 23008-1のMMTP section message用であり、MPEG-TSの`section_length`幅を指定する入力ではない。本製品はMMTPを公開しないため、この値をTSのsection assembly、CRC、condition判定へ使用しない。TSの`section_length`はISO/IEC 13818-1およびARIB STD-B10に従う12ビットとして固定し、MMTP用入力値の違いでTS処理を変えてはならない。
+`bitWidthOfLengthField`はISO/IEC 23008-1のMMTP section message用であり、MPEG-TSの`section_length`幅を指定する入力ではない。本製品はMMTPを公開しないため、この値をTSのsection assembly、CRC、condition判定へ使用しない。TSの`section_length`はISO/IEC 13818-1およびARIB STD-B10 5.13-E1 Part 1 5.2.4〜5.2.17の表構文に従う12ビットとして固定し、MMTP用入力値の違いでTS処理を変えてはならない。
 
 
 Tuner HALは、TSペイロードの抽出、sectionの区切り、宣言長の検査、任意のCRC検査、フィルター照合、queueまたはFMQへの配送、および伝送診断から成る汎用MPEG-TS section転送だけを担当する。PAT、CAT、PMT、NIT、SDT、BAT、EIT、TDT、TOT、BIT、NBIT、LDT、CDT、PCAT、SDTT、AIT、AMTを含む各PSI/SI表について、表固有の意味解析、正規化、複数sectionの集約、データベース更新、意味オブジェクトの生成を行ってはならない。TISなどの要求元が汎用sectionフィルターを設定し、HALより上位で表の意味解釈を担当する。再利用可能なSI解析ライブラリーも、その上位層だけで使用する。
@@ -1479,16 +1481,16 @@ Tuner HALは、TSペイロードの抽出、sectionの区切り、宣言長の�
 | ISO/IEC 13818-1 | 0x01 | CAT | 1021 | 1024 |
 | ISO/IEC 13818-1 | 0x02 | PMT | 1021 | 1024 |
 | ISO/IEC 13818-1 | 0x03 | TSDT | 1021 | 1024 |
-| ARIB STD-B10 5.13-E1 | 0x40-0x41 | NIT actual/other | 1021 | 1024 |
-| ARIB STD-B10 5.13-E1 | 0x42, 0x46 | SDT actual/other | 1021 | 1024 |
-| ARIB STD-B10 5.13-E1 | 0x4A | BAT | 1021 | 1024 |
-| ARIB STD-B10 5.13-E1 | 0x4E-0x6F | EIT p/f、schedule | 4093 | 4096 |
-| ARIB STD-B10 5.13-E1 | 0x70 | TDT | 5 | 8 |
-| ARIB STD-B10 5.13-E1 | 0x71 | RST | 1021 | 1024 |
-| ARIB STD-B10 5.13-E1 | 0x72 | ST | 4093 | 4096 |
-| ARIB STD-B10 | 0x73 | TOT | 1021 | 1024 |
-| ARIB STD-B10 5.13-E1 | 0x4C, 0xC2, 0xC4-0xC7, 0xD0-0xD2 | INT、PCAT、BIT、NBIT、LDT、LIT、ERT、ITT | 4093 | 4096 |
-| ARIB STD-B10 | 0xFE | AMT | 4093 | 4096 |
+| ARIB STD-B10 5.13-E1 5.2.4 | 0x40-0x41 | NIT actual/other | 1021 | 1024 |
+| ARIB STD-B10 5.13-E1 5.2.6 | 0x42, 0x46 | SDT actual/other | 1021 | 1024 |
+| ARIB STD-B10 5.13-E1 5.2.5 | 0x4A | BAT | 1021 | 1024 |
+| ARIB STD-B10 5.13-E1 5.2.7 | 0x4E-0x6F | EIT p/f、schedule | 4093 | 4096 |
+| ARIB STD-B10 5.13-E1 5.2.8 | 0x70 | TDT | 5 | 8 |
+| ARIB STD-B10 5.13-E1 5.2.10 | 0x71 | RST | 1021 | 1024 |
+| ARIB STD-B10 5.13-E1 5.2.11 | 0x72 | ST | 4093 | 4096 |
+| ARIB STD-B10 5.13-E1 5.2.9 | 0x73 | TOT | 1021 | 1024 |
+| ARIB STD-B10 5.13-E1 5.2.12〜5.2.17、Part 3 5.1.1〜5.1.3 | 0x4C, 0xC2, 0xC4-0xC7, 0xD0-0xD2 | INT、PCAT、BIT、NBIT、LDT、LIT、ERT、ITT | 4093 | 4096 |
+| ARIB STD-B10 5.13-E1 5.2.16とISO/IEC 13818-1拡張section構文 | 0xFE | AMT | 4093 | 4096 |
 | MPEG-TS構文 | その他、予約済み、private | 型付き意味解析の対象外 | 4093 | 4096 |
 
 
@@ -1496,7 +1498,7 @@ Tuner HALは、TSペイロードの抽出、sectionの区切り、宣言長の�
 
 CRC_32 は MPEG-2 PSI/SI section CRC_32 を用いる。CRC対象範囲は `table_id` から CRC_32 直前までとし、受信section末尾4 byteを期待CRCとして比較する。
 
-CRC計算の初期値、生成多項式、bit order は ISO/IEC 13818-1 / ARIB STD-B10 の PSI/SI section CRC_32 に従う。
+CRC計算の初期値、生成多項式、bit order は ISO/IEC 13818-1とARIB STD-B10 5.13-E1 Part 1 Annex BのPSI/SI section CRC_32に従う。
 
 `isCheckCrc=true`では、CRC不一致をdelivery不成立とし、queue overflowへ写像しない。`isCheckCrc=false`ではCRC一致を配送条件にしない。section lengthによる外形検査は常に行う。reserved bitとsyntax構造の検証は型付きevent生成の条件であり、raw sectionの生バイト列配送条件にはしない。
 
@@ -2006,7 +2008,7 @@ DVR playback consumer ワーカー は、DVR が soft demux と `RuntimeIoRegist
 ## フロントエンドの対応能力と状態
 
 
-ISDB-Tの列挙値域は、精読済みのARIB STD-B31 2.2の条項と、公式2.2-E1英訳の出典に従う。規格上の有効値と対象ドライバーで設定可能な値は分けて扱う。`TARGET_DRIVER` の証跡によって具体値が設定され、機器で有効になることを確認できない限り、対象バックエンドがモード、変調方式、符号化率、ガードインターバル、時間インターリーブについて公開し受け付ける値は `AUTO` だけとする。
+ISDB-Tの列挙値域は、ARIB公式英語版STD-B31 2.2-E1本文の2.3、3.8、3.9、3.11.1、3.14.2、3.15.6.5〜3.15.6.7に従う。規格上の有効値と対象ドライバーで設定可能な値は分けて扱う。`TARGET_DRIVER` の証跡によって具体値が設定され、機器で有効になることを確認できない限り、対象バックエンドがモード、変調方式、符号化率、ガードインターバル、時間インターリーブについて公開し受け付ける値は `AUTO` だけとする。
 
 
 `RF_LOCK` は backend が RF/carrier acquisition を別途取得できる場合だけ advertise する。DVB / earth_pt1 backend は Linux DVB `FE_READ_STATUS` が返す `FE_HAS_CARRIER` を `RF_LOCK`、`FE_HAS_LOCK` を `DEMOD_LOCK` に対応させる。px4_drv backend は RF/carrier ロックを返す API を持たないため、px4 の擬似 ロック は `DEMOD_LOCK` のみに使い、`RF_LOCK` には使わない。
@@ -2018,9 +2020,9 @@ ISDB-Tの列挙値域は、精読済みのARIB STD-B31 2.2の条項と、公式2
 
 ### frontend settings validation の固定方針
 
-フロントエンドの対応能力、AIDL入力の受付可否、`ProductProfile`、VTSの選局入力は、本書の「フロントエンド設定表」から生成する。ARIBが定義する放送パラメーター集合と、対象バックエンドが明示的に設定できる入力集合を混同しない。具体値を対応可能として公開または受理できるのは、ドライバーへ設定する経路、または読み戻して検証する経路が存在する場合だけとする。値を検証するだけでバックエンドへの要求から捨て、成功を返す経路は禁止する。
+フロントエンドの対応能力、AIDL入力の受付可否、`ProductProfile`、VTSの選局入力は、本書の「フロントエンド設定の反映表」から生成する。ARIBが定義する放送パラメーター集合と、対象バックエンドが明示的に設定できる入力集合を混同しない。具体値を対応可能として公開または受理できるのは、ドライバーへ設定する経路、または読み戻して検証する経路が存在する場合だけとする。値を検証するだけでバックエンドへの要求から捨て、成功を返す経路は禁止する。
 
-対象のpx4/earth_pt1によるISDB-Tでは、設定表に従い、周波数と6 MHzまたは `AUTO` の帯域幅に対応する。現在の `FrontendTuneRequest` とpx4の選局変換は具体値を保持・設定しないため、モード、階層ごとの変調方式と符号化率、ガードインターバル、階層ごとの時間インターリーブは `AUTO` だけに対応する。`AUTO` は成功とし、これらの項目に規格上既知の具体値が指定された場合は `UNAVAILABLE` を返して、バックエンドと直前の要求を変更しない。不正なタグまたは値域には `INVALID_ARGUMENT` を返す。対応能力、AIDL入力検証、`ProductProfile`、VTS選局入力は同じ設定表から生成する。ARIB STD-B31 2.2の20ページおよび24ページは放送パラメーターの値域を定めるが、`AUTO` のみという制限はARIB上の制約ではなく、現行実装が正しく表明できる対応能力である。
+対象のpx4/earth_pt1によるISDB-Tでは、設定表に従い、周波数と6 MHzまたは `AUTO` の帯域幅に対応する。現在の `FrontendTuneRequest` とpx4の選局変換は具体値を保持・設定しないため、モード、階層ごとの変調方式と符号化率、ガードインターバル、階層ごとの時間インターリーブは `AUTO` だけに対応する。`AUTO` は成功とし、これらの項目に規格上既知の具体値が指定された場合は `UNAVAILABLE` を返して、バックエンドと直前の要求を変更しない。不正なタグまたは値域には `INVALID_ARGUMENT` を返す。対応能力、AIDL入力検証、`ProductProfile`、VTS選局入力は同じ設定表から生成する。ARIB STD-B31 2.2-E1の2.3、3.8、3.9、3.11.1、3.14.2、3.15.6.5〜3.15.6.7は放送パラメーターの値域と伝送上の意味を定めるが、`AUTO` のみという制限はARIB上の制約ではなく、現行実装が正しく表明できる対応能力である。
 
 
 explicit範囲scanはISDB-T / ISDB-S共通で対応宣言しない。`endFrequency`が`frequency`と異なる場合は`UNAVAILABLE`とし、既存tune/scan stateを変更しない。
@@ -2033,10 +2035,10 @@ explicit範囲scanはISDB-T / ISDB-S共通で対応宣言しない。`endFrequen
 - 上記のAUTO専用項目に指定された既知の具体値は`UNAVAILABLE`、unionまたは値域が不正な入力は`INVALID_ARGUMENT`とし、バックエンドと直前の要求を変更しない。
 - blind scanは`UNAVAILABLE`とする。
 
-ISDB-T設定値の規格上の妥当性は、精読済みのARIB STD-B31の値域と公式英訳の出典に従う。一方、対象ドライバーで設定可能かどうかは独立した根拠で判定する。`TARGET_DRIVER` の証跡で具体値の設定と反映を確認できない限り、対象バックエンドがモード、変調方式、符号化率、ガードインターバル、時間インターリーブについて公開し受け付ける値は `AUTO` だけとする。規格上の具体値を解析や試験のため内部表現に保持してよいが、証跡なしに制御可能な設定として公開または受理してはならない。
+ISDB-T設定値の規格上の妥当性は、ARIB公式英語版STD-B31 2.2-E1本文の2.3、3.8、3.9、3.11.1、3.14.2、3.15.6.5〜3.15.6.7に従う。一方、対象ドライバーで設定可能かどうかは独立した根拠で判定する。`TARGET_DRIVER` の証跡で具体値の設定と反映を確認できない限り、対象バックエンドがモード、変調方式、符号化率、ガードインターバル、時間インターリーブについて公開し受け付ける値は `AUTO` だけとする。規格上の具体値を解析や試験のため内部表現に保持してよいが、証跡なしに制御可能な設定として公開または受理してはならない。
 
 
-ARIB STD-B31 2.2版のPDF 20ページおよび24ページは、モード、搬送波変調、内符号化率、ガードインターバル、時間インターリーブの放送パラメーターを定義する。現在のバックエンドでAUTOだけを受け付けることは、ARIB上の値を否定するものではない。明示的な設定経路がない対象について、対応能力を過大に表明しないための制限である。
+ARIB STD-B31 2.2-E1は、モードを2.3、内符号化率を3.8と3.15.6.6、搬送波変調を3.9と3.15.6.5、時間インターリーブを3.11.1と3.15.6.7、ガードインターバルを3.14.2で定義する。現在のバックエンドでAUTOだけを受け付けることは、ARIB上の値を否定するものではない。明示的な設定経路がない対象について、対応能力を過大に表明しないための制限である。
 
 ### ISDB-S validation
 
@@ -2130,7 +2132,7 @@ AV filter の `start()`、共有ハンドル、MediaEvent、`releaseAvHandle()` 
 ## LNB 固定 profile
 
 
-LNBは機器単位の終端資源とし、本書のLNB機器資源契約と事象駆動のワーカー終了契約だけで管理する。AOSPにLNBとして公開するendpointは、Android 14 CTSが公開objectへ要求する基礎操作を実処理できなければならない。少なくとも対応電圧、`setTone(TONE_NONE)`、`setSatellitePosition(POSITION_A)`、2バイトの`sendDiseqcMessage()`、登録済みcallbackへの受信通知を、成功扱いの無処理ではなくbackend契約として成立させることを`aidl_baseline_eligible`条件とする。
+LNBは機器単位の終端資源とし、本書の「LNB機器の資源規則」と事象駆動の「ワーカー終了契約」だけで管理する。AOSPにLNBとして公開するendpointは、Android 14 CTSが公開objectへ要求する基礎操作を実処理できなければならない。少なくとも対応電圧、`setTone(TONE_NONE)`、`setSatellitePosition(POSITION_A)`、2バイトの`sendDiseqcMessage()`、登録済みcallbackへの受信通知を、成功扱いの無処理ではなくbackend契約として成立させることを`aidl_baseline_eligible`条件とする。
 
 現在証跡があるpx4/earth_pt1 backendは電圧制御しか確認できず、この条件を満たさない。そのため現行`ProductProfile`では`aidl_baseline_eligible_lnb_count=0`、`getLnbIds()`は空、IDなし`openLnb()`と`openLnbById()`は`UNAVAILABLE`とし、`ILnb` object、callback、leaseを生成しない。LNB給電が必要なsatellite frontendも同じprofileでは公開しない。電圧制御だけを持つ内部backendをAOSPの`ILnb`対応能力として広告してはならない。
 
@@ -2187,7 +2189,7 @@ LNBへのバックエンド適用後に台帳の確定へ失敗した場合は�
 
 ### STD-B25容量台帳
 
-ARIB STD-B25が受信機またはチューナーに求める最小処理能力は、Binder objectごとではなく、同じ物理tuner/backend復号経路に属する共有`DescramblerCapacityPool`へ適用する。各poolは少なくとも奇数・偶数鍵の組を1組、同時PID claimを12件保持する。複数`IDescrambler` sessionは同じpoolからclaimし、合計使用量が実容量を超えないようにする。各objectへ1鍵組と12 PIDを重複予約して容量を水増ししてはならない。AOSPの`DemuxCapabilities`には鍵数またはPID数の公開欄がないため、架空のcapability fieldは追加せず、受付と内部台帳で整合を保証する。
+ARIB STD-B25 6.7-E1 Part 1の4.9・4.10が受信機またはチューナーに求める最小処理能力は、Binder objectごとではなく、同じ物理tuner/backend復号経路に属する共有`DescramblerCapacityPool`へ適用する。各poolは少なくとも奇数・偶数鍵の組を1組、同時PID claimを12件保持する。複数`IDescrambler` sessionは同じpoolからclaimし、合計使用量が実容量を超えないようにする。各objectへ1鍵組と12 PIDを重複予約して容量を水増ししてはならない。AOSPの`DemuxCapabilities`には鍵数またはPID数の公開欄がないため、架空のcapability fieldは追加せず、受付と内部台帳で整合を保証する。
 
 | 事象 | 台帳操作 | 結果 |
 |---|---|---|
@@ -2488,7 +2490,7 @@ raw sectionは、外形、設定されたCRC検査、意味検証を分ける契
 | T-B25-6 | bad token | `INVALID_ARGUMENT` / 診断 |
 | T-B25-8 | 復号成功 | scrambling_control clear |
 
-デスクランブラーとTS経路の失敗は、失敗影響範囲表に従って扱う。影響経路を隔離するのは、データ枠を管理する基盤が破損した場合に限る。不正TSはパケット単位で破棄し、TEIと連続性異常は各経路の規則に従う。構造上有効だがスクランブルが残るパケットはTS生データ経路と記録経路に残してよいが、復号済みの意味イベントを生成してはならない。ARIB STD-B25 6.7-E1 第1部の2.2.2.4、2.2.2.10〜2.2.2.11、3.1.5〜3.1.7、3.2.3〜3.2.4、4.3.3.3の表4-11〜4-14、4.8、4.9、4.10を精読基準とする。これらの条項から、TSペイロードをパケット単位でスクランブルすること、受信側でECMとEMMをCAモジュールへ渡すこと、Ksを受信側へ返すこと、スクランブル状態の検出、チューナーごとに奇数・偶数鍵の組を1組以上処理すること、12個以上のPIDを同時処理することを設計条件とする。AOSPの`DemuxCapabilities`には対応する公開欄がないため、容量はSTD-B25容量台帳で予約・受付・解放を強制し、不足時は`openDescrambler()`を公開しない。ECM、EMM、KsをTuner HALの公開面へ出さない境界は、AOSPの公開面と情報露出を最小化する設計から定めるものであり、STD-B25の文言そのものとは主張しない。HAL内部の隔離方法とエラー対応は、AOSP契約に基づく内部設計とする。
+デスクランブラーとTS経路の失敗は、本書の「失敗影響範囲」に従って扱う。影響経路を隔離するのは、データ枠を管理する基盤が破損した場合に限る。不正TSはパケット単位で破棄し、TEIと連続性異常は各経路の規則に従う。構造上有効だがスクランブルが残るパケットはTS生データ経路と記録経路に残してよいが、復号済みの意味イベントを生成してはならない。ARIB STD-B25 6.7-E1 第1部の2.2.2.4、2.2.2.10〜2.2.2.11、3.1.5〜3.1.7、3.2.3〜3.2.4、4.3.3.3の表4-11〜4-14、4.8、4.9、4.10を精読基準とする。これらの条項から、TSペイロードをパケット単位でスクランブルすること、受信側でECMとEMMをCAモジュールへ渡すこと、Ksを受信側へ返すこと、スクランブル状態の検出、チューナーごとに奇数・偶数鍵の組を1組以上処理すること、12個以上のPIDを同時処理することを設計条件とする。AOSPの`DemuxCapabilities`には対応する公開欄がないため、容量はSTD-B25容量台帳で予約・受付・解放を強制し、不足時は`openDescrambler()`を公開しない。ECM、EMM、KsをTuner HALの公開面へ出さない境界は、AOSPの公開面と情報露出を最小化する設計から定めるものであり、STD-B25の文言そのものとは主張しない。HAL内部の隔離方法とエラー対応は、AOSP契約に基づく内部設計とする。
 
 
 | 番号 | 確認観点 | 目的 |
@@ -2499,11 +2501,11 @@ raw sectionは、外形、設定されたCRC検査、意味検証を分ける契
 ## 対応能力ごとの設計正本
 
 - 機器の事実は `DeviceProbeCapability` で確定する。frontendは公開API全体が成立するものだけを公開し、LNBは検出成功に加えてAndroid 14 CTSの基礎操作を実処理できる`aidl_baseline_eligible` endpointだけを公開する。現在のpx4/earth_pt1 LNBは電圧制御以外の証跡がないため公開しない。
-- demux、filter、DVRの個数は本書「サービスオブジェクト上限表」で定め、同じ使用権台帳で強制する。
-- AVの転送、割り当て、解放は、本書「AV割り当て表」と「表1-C-AVH. `releaseAvHandle()` 全域判定表」で定める。共有領域方式は最適化手段とし、要求サイズどおりのイベント固有ファイル記述子方式を正式な代替経路とする。遅延終了済みと確認できる要求は状態を変えず成功し、不明または別所有者の識別情報は拒否する。
-- ワーカーとLNBの停止・後片付けは、本書「ワーカー終了契約」と「LNB機器資源契約」で定める。`TargetDriverTimingProfile` や、公開経路で上限なく `join` を待つ処理を設けない。
-- パケット異常と基盤異常の影響範囲は、本書「失敗影響範囲表」で定める。不正TS、TEI、連続性異常を基盤隔離へ昇格させない。
-- frontendで公開・受理する値は、本書「フロントエンド設定表」で定める。ARIB B31の値域根拠は本書「VTS環境とARIB B31の境界」に置く。
+- demux、filter、DVRの個数は本書「サービスオブジェクトの上限」で定め、同じ使用権台帳で強制する。
+- AVの転送、割り当て、解放は、本書「AV割り当て」と「表1-C-AVH. `releaseAvHandle()` 全域判定表」で定める。共有領域方式は最適化手段とし、要求サイズどおりのイベント固有ファイル記述子方式を正式な代替経路とする。遅延終了済みと確認できる要求は状態を変えず成功し、不明または別所有者の識別情報は拒否する。
+- ワーカーとLNBの停止・後片付けは、本書「ワーカー終了契約」と「LNB機器の資源規則」で定める。`TargetDriverTimingProfile` や、公開経路で上限なく `join` を待つ処理を設けない。
+- パケット異常と基盤異常の影響範囲は、本書「失敗影響範囲」で定める。不正TS、TEI、連続性異常を基盤隔離へ昇格させない。
+- frontendで公開・受理する値は、本書「フロントエンド設定の反映表」で定める。ARIB B31の値域根拠は本書「VTS環境とARIB B31の境界」に置く。
 - 個別の対応能力で失敗した場合は、その能力または要求だけを抑止・拒否する。無関係な `ITuner` の公開を妨げない。
 
 
@@ -2512,23 +2514,23 @@ raw sectionは、外形、設定されたCRC検査、意味検証を分ける契
 - フィルターと`SharedFilter`では、HAL内部の`FilterProducerDrainGate`を使用する。ブロッキングするバックエンド読み取り、FMQ待機、解析器の一時保持が終わった後、FMQへの確定書き込みまたは保留イベント追加の直前にだけ配送許可を取得する。Binderコールバック、バックエンド入出力、FMQまたは条件変数の待機、規定外順序のロック取得を許可の有効範囲に含めない。`flush()`は`Draining`へ移り、新しい許可を拒否し、サービス所有のワーカーを起床させ、許可が0件になるまで待つ。未消費のFMQデータと未配送イベントを破棄し、確定済みまたは配送中のコールバックと配送済みAV領域を維持する。ワーカー終了またはpanic時は保護子を解放する。ロック汚染または遮断されていない終端失敗を検出した場合は、フィルターを閉鎖して隔離する。`QueueEpochProtocol`はDVRだけで使用する。
 - demux、型別filter、DVRの個数は、frontendと公開可能LNBの検出後、`ProductProfile`が列挙する完全な`RuntimeCapabilityVector`から選ぶ。各vectorは任意の非負整数を使用でき、2の冪へ丸めない。object数、worker、callback、reaper、cleanup、PES/AV/playback/FMQ byte予算をvector全体で一括予約し、候補間の列を混成しない。機能群ごとの縮退は他群の値を維持した完全vectorとして明示する。確定値は`CapabilitySnapshot`へ格納し、open/配送時の実領域はsnapshot残量から割り当てる。PES assemblerはARIB字幕用bounded PESだけを公開し、最大65,541 byte/active filterの共通実行時予算で保持する。unbounded video PESは公開しない。Tuner VTSは別途起動前環境へ結び付け、入力元、PID、経路、queue容量、memory予算が定義されるまで`DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED`とする。
 - AVの共有方式とイベント固有方式は、同じ実行時台帳を共有する。各filterでは`CapabilitySnapshot.avPerFilterLiveBytes`、サービス全体では`CapabilitySnapshot.avRuntimeBudgetBytes`を未解放payloadバイト数の上限とし、イベントの実サイズだけを割り当てる。`openFilter(bufferSize)`はFMQ容量として別に予約する。固定スロット数や1 MiB単位をAOSPまたはコーデック上限として規範化せず、使用中の割り当てを追い出さない。
-- ARIB B10 5.13-E1を表ごとのsection上限1021/4093の根拠とし、B32 3.11-E1第3部をTS、PES、Sectionの伝送とPES構文の根拠とする。B32を4093の独立した上限根拠として使用しない。B25は公式英訳6.7-E1全文を精読基準とする。第1部の4.9および4.10に従い、物理tuner/backend復号経路ごとの共有poolで奇数・偶数鍵の組を1組以上、PIDを12個以上同時処理できることを容量条件とする。AOSPに公開欄は追加せず、session間で共有する同じ内部台帳で受付と解放を強制する。
+- ARIB STD-B10 5.13-E1 Part 1 5.2.4〜5.2.17・Part 3 5.1.1〜5.1.3を表ごとのsection上限1021/4093の根拠とし、STD-B32 3.11-E1 Fascicle 3 Chapter 3 3.1をPES構文の根拠とする。B32を4093の独立した上限根拠として使用しない。B25は公式英訳6.7-E1全文を精読基準とする。第1部の4.9および4.10に従い、物理tuner/backend復号経路ごとの共有poolで奇数・偶数鍵の組を1組以上、PIDを12個以上同時処理できることを容量条件とする。AOSPに公開欄は追加せず、session間で共有する同じ内部台帳で受付と解放を強制する。
 - 対象ドライバーと上流Linuxの証跡は、AOSP契約とは独立した根拠として扱う。
 
-### ARIB現行版との対応
+### ARIB公式英語版本文との静的照合
 
-旧英語版は、参照箇所を特定して精読するための基準として使用する。現行日本語版を無視したり、旧英語版と現行日本語版の全文が同一であると主張したりしてはならない。現行版との対応付けは次表の公式改定情報の範囲に限定し、未取得・未照合の範囲へ主張を拡張しない。
+ARIB依存の規範主張は、ARIB公式サイトが公開する最新の英語版全文を一次資料として条項単位で照合する。日本語最新版との同一性確認は完了条件にせず、改定概要、版一覧、二次資料を英語版全文の代用にしない。本PRが使うARIB依存主張は次表の範囲で全てであり、表にない条項への適合を主張しない。
 
-| 規格 | 精読基準 | 現行日本語版 | 設計で使用する範囲 |
+| 規格・公式英語版 | 精読条項 | 本PRで固定する主張 | 所有文書 |
 |---|---|---|---|
-| STD-B10 | 5.13-E1英語版 | 5.14 | 表別のsection長と表の割り当ては、英語版と5.10から5.14までの公式改定履歴を照合して用いる。参照箇所へ影響する改定が判明した場合は、対応付けを更新するまで該当する主張を保留する。 |
-| STD-B20 | なし | 3.0 | 日本語版3.0を一次資料とし、相対TS番号と`TS_ID`を別の値域として扱う。 |
-| STD-B21 | 5.12-E2英語版 | 5.14 | CATV C13〜C63とAppendix 10の中心周波数は5.12-E2を精読基準とする。公式改定概要によれば5.13はCAS用語と省令対応、5.14はSerDes出力規定の運用規定化であり、当該周波数表への変更は示されていない。5.14日本語版全文との同一性は主張しない。 |
-| STD-B25 | 6.7-E1英語版 | 7.0 | 本書が参照する条項は英語版6.7-E1全文で精読し、7.0の公式改定情報を併用する。7.0日本語版の全文との同一性は主張しない。 |
-| STD-B31 | 2.2-E1英語版 | 2.3 | 本書が参照するISDB-Tパラメーターは、英語版2.2-E1と公式2.3改定概要・見本を照合し、対象構造への既知の影響がない範囲で用いる。2.3日本語版の全文との同一性は主張しない。 |
-| STD-B32 | 3.11-E1英語版Part 3 | 4.1 | 取得済みPart 3、H.222.0の参照、および公式改定履歴の範囲でTS・PES・sectionの伝送とPES構文を用いる。未取得の分冊または未照合の記述へ主張を拡張しない。 |
-
-本文・表に記載した英語版の版番号は参照箇所を特定するための基準であり、準拠対象の版を固定するものではない。公式改定情報によって参照条項の意味が変わる場合は、上表と依存する設計規則を先に更新する。解決するまで、該当する対応能力または準拠を表明しない。
+| STD-B10 5.13-E1 | Part 1 5.2.4〜5.2.17・Annex B、Part 2 Table 6-5・6.2.12・6.2.26・Annex E、Part 3 5.1.1〜5.1.3 | PSI/SIのTable ID・表別section長・CRC、parental rating、codec signaling | 本書、`arib_si_engine_rs/DESIGN_JA.md`、`tis/DESIGN_JA.md` |
+| STD-B21 5.12-E2 | Appendix 10 Table 10-3、Table 10-4 | CATV C13〜C63の中心周波数とC21/C22/C23の非連続境界 | 本書、`tis/DESIGN_JA.md` |
+| STD-B24 6.4-E1 Fascicle 1 | 7.1.1.1〜7.1.2.4、9.1.1、9.2、9.3、9.5、9.6 | SI/EPG文字のdesignation・invocation・Macro・DRCS境界、独立PES字幕とdata group、PTS、PMT descriptor | `arib_si_engine_rs/DESIGN_JA.md`、`tis/DESIGN_JA.md` |
+| STD-B25 6.7-E1 | Part 1 2.2.2.4、2.2.2.10〜2.2.2.11、3.1.5〜3.1.7、3.2.3〜3.2.4、4.3.3.3 Table 4-11〜4-14、4.8〜4.10 | MULTI2 payload処理、ECM/EMM/Ks、奇偶鍵組と12 PID以上の容量 | 本書 |
+| STD-B31 2.2-E1 | 2.3、3.8、3.9、3.11.1、3.14.2、3.15.6.5〜3.15.6.7 | ISDB-Tのmode、変調、符号化率、時間interleave、guard intervalの値域 | 本書 |
+| STD-B32 3.11-E1 Fascicle 1 | Chapter 3 3.1〜3.3 | MPEG-2 Video、MPEG-4 AVC、HEVC | `tis/DESIGN_JA.md` |
+| STD-B32 3.11-E1 Fascicle 2 | Chapter 3 3.1〜3.4、Chapter 5、Chapter 6 | MPEG-2 AAC、MPEG-2 BC、MPEG-4 AAC、MPEG-4 ALS | `tis/DESIGN_JA.md` |
+| STD-B32 3.11-E1 Fascicle 3 | Chapter 3 3.1 | PES start code、`stream_id=0xBD`、宣言長、長さ0をvideoだけに許す境界 | 本書、`tis/DESIGN_JA.md` |
 
 
 ## VTS環境とARIB B31の境界
@@ -2536,7 +2538,7 @@ raw sectionは、外形、設定されたCRC検査、意味検証を分ける契
 - `VtsEnvironmentProfile=UNBOUND`では、固定path`/vendor/etc/tuner_vts_config_aidl_V1.xml`へXMLをinstallせず、試験scenarioも設定しない。runtime能力snapshotは独立して維持する。
 - `BOUND`では、要求object数が確定済みsnapshotに収まり、必要queue容量全体を予約できた後、宣言済み値を持つ静的XMLを固定pathへ正確に1つinstallする。
 - `REJECTED`では固定path XMLをinstallせず、既定設定へfallbackしない。
-- ISDB-Tのパラメーター値域は、公式英訳STD-B31 2.2-E1を精読基準とし、公式2.3の改定概要・見本を併用する。参照する構造への既知の影響がない範囲で使用し、2.3日本語版の全文との同一性は主張しない。
+- ISDB-Tのパラメーター値域は、公式英訳STD-B31 2.2-E1本文の2.3、3.8、3.9、3.11.1、3.14.2、3.15.6.5〜3.15.6.7を精読基準とする。
 
 ## 設計表と内部プロトコル
 
@@ -2561,10 +2563,10 @@ raw sectionは、外形、設定されたCRC検査、意味検証を分ける契
 | tuple worker | `Ndvr` |
 | probe worker | `2 * F` |
 | callback | `F + L + Nf + Ndvr` |
-| reaper handle | `2 * F + Ndvr` |
+| reaper handle | `2 * F + Nf + Ndvr` |
 | cleanup authority | `F + L + D + Nf + Ndvr` |
 
-vector全体についてobject枠、上記依存枠、FMQ、playback処理中buffer、AV、bounded PESのbyte予算を原子的に仮予約する。完全に予約できた最初のvectorだけを`CapabilitySnapshot`へcommitし、候補間の列を混成しない。ある機能群だけを0件へ落とす場合は、残す群の個数と再計算済み依存枠を含む別vectorをprofileへ明記する。全vectorが失敗した場合はquery-onlyへ縮退する。
+`reaper handle`の式は、同時に存在し得るfrontend probe worker `2 * F`、filter worker `Nf`、DVR worker `Ndvr`を全て回収対象として数える。vector全体についてobject枠、上記依存枠、FMQ、playback処理中buffer、AV、bounded PESのbyte予算を原子的に仮予約する。完全に予約できた最初のvectorだけを`CapabilitySnapshot`へcommitし、候補間の列を混成しない。ある機能群だけを0件へ落とす場合は、残す群の個数と再計算済み依存枠を含む別vectorをprofileへ明記する。全vectorが失敗した場合はquery-onlyへ縮退する。
 
 `CapabilitySnapshot`は少なくとも次を値として保持し、未宣言値を外部profileから実行時に後読みして広告可否を変えない。
 

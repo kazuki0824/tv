@@ -24,7 +24,7 @@ TIS 以外の文書や実装に同等の scan 候補表を重複保持しては�
 
 TIS は地上UHF、CATV、BS、CS110の候補を持ち、Tuner HALには explicit tune candidate として渡す。Tuner HAL は日本向け scan 候補表を自前生成しない。
 
-CATV候補表は C13〜C63 に固定する。MID band は C13〜C22、SHB band は C23〜C63 とし、中心周波数は ARIB STD-B21 Appendix 10 の `+1/7 MHz` オフセット込みで保持する。C22 は `167 + 1/7 MHz`、C23 は `225 + 1/7 MHz` であり、C21からC22、C22からC23は単純な6MHz連続として計算しない。
+CATV候補表は C13〜C63 に固定する。MID band は C13〜C22、SHB band は C23〜C63 とし、中心周波数は ARIB STD-B21 5.12-E2 Appendix 10 Table 10-3・Table 10-4 の `+1/7 MHz` オフセット込みで保持する。C22 は `167 + 1/7 MHz`、C23 は `225 + 1/7 MHz` であり、C21からC22、C22からC23は単純な6MHz連続として計算しない。
 
 VHF 1〜12ch は開発規則.mdで恒久的にスコープ外であり、TISのCATV候補表、地上波候補表、共同受信候補表に追加してはならない。
 
@@ -59,7 +59,7 @@ TvProvider標準列への投影判断は tv 直下の `ARIB_SI_EPG_TvProvider投
 
 ARIB 字幕は TIS 側の字幕 path で `libaribcaption` を使用する。現行 product では PMT から字幕 track を検出し、`TvTrackInfo.TYPE_SUBTITLE` として通知し、`onSetCaptionEnabled()` と字幕表示経路を接続する。字幕 track を advertise する場合は、ARIB 字幕 PES を libaribcaption C API 経路で処理し、実際に表示できることを対応宣言条件に含める。`arib_si_engine_rs` の自前 ARIB 文字列 decoder はサービス名・番組名・番組説明など字幕以外の SI/EPG 文字列に限定し、字幕 PES や字幕本文をその decoder に渡さない。libaribcaption は C API のみを使用し、独自 C/C++ 薄層 は書かない。Kotlin から直接 C API を呼ばず、TIS Kotlin → Rust JNI boundary → 安全なRustラッパー → libaribcaption C API の順に接続する。BML / data broadcast 実行環境、双方向データ放送 UI、データ放送 UI は恒久対象外である。
 
-現行製品profileの字幕取得は、PMTで字幕ESを検出した場合だけ`TYPE_TS / SUBTYPE_PES`を開き、字幕PIDと明示`streamId=0xBD`（`private_stream_1`）で設定する。TISは`numPesFilter > 0`からwildcardまたは任意stream ID対応を推定しない。`tuner_hal/DESIGN_JA.md`の製品統合契約どおり、`pesSupportedStreamIds={0xBD}`、`pesWildcardSupported=false`、`pesZeroLengthSupported=false`を前提とし、この契約と一致しないHAL profileでは字幕trackを対応宣言しない。別stream IDまたはwildcardを要求する一般PES経路は現行TISの対象外である。
+現行製品profileの字幕取得は、PMTで字幕ESを検出した場合だけ`TYPE_TS / SUBTYPE_PES`を開き、字幕PIDと明示`streamId=0xBD`（`private_stream_1`）で設定する。STD-B24 6.4-E1 Fascicle 1の9.1.1、9.2、9.3、9.5、9.6を独立PES字幕、data group、PTS、PMT descriptorの根拠とし、STD-B32 3.11-E1 Fascicle 3の3.1を`private_stream_1=0xBD`と宣言長付きPESの根拠とする。TISは`numPesFilter > 0`からwildcardまたは任意stream ID対応を推定しない。`tuner_hal/DESIGN_JA.md`の製品統合契約どおり、`pesSupportedStreamIds={0xBD}`、`pesWildcardSupported=false`、`pesZeroLengthSupported=false`を前提とし、この契約と一致しないHAL profileでは字幕trackを対応宣言しない。別stream IDまたはwildcardを要求する一般PES経路は現行TISの対象外である。
 
 
 ## libaribcaption Soong / renderer 統合境界
@@ -352,9 +352,9 @@ ARIB 資料上の国内放送全般であり得る codec を追加認識対象�
 
 | 根拠資料 | 本改訂で固定する内容 |
 |---|---|
-| `ARIB/doc/2-STD-B32v3_7.pdf` 第1部 第3章 | 国内デジタル放送の映像符号化方式は MPEG-2 Video、MPEG-4 AVC、HEVC の3系統として扱う。 |
-| `ARIB/doc/2-STD-B32v3_7.pdf` 第2部 第3章 | 国内デジタル放送の音声符号化方式は MPEG-2 AAC、MPEG-2 BC、MPEG-4 AAC、MPEG-4 ALS の4系統として扱う。 |
-| `ARIB/doc/2-STD-B10v5_8.pdf` 第2部 表 6-5 / 6.2.26 / 付録 E | MPEG-2 系映像、H.264/AVC、H.265/HEVC、MPEG-2 Audio、AAC ADTS、MPEG-4 Audio LATM の signaling を認識対象にする。 |
+| ARIB STD-B32 3.11-E1 Fascicle 1 Chapter 3 3.1〜3.3 | 国内デジタル放送の映像符号化方式は MPEG-2 Video、MPEG-4 AVC、HEVC の3系統として扱う。 |
+| ARIB STD-B32 3.11-E1 Fascicle 2 Chapter 3 3.1〜3.4、Chapter 5、Chapter 6 | 国内デジタル放送の音声符号化方式は MPEG-2 AAC、MPEG-2 BC、MPEG-4 AAC、MPEG-4 ALS の4系統として扱う。 |
+| ARIB STD-B10 5.13-E1 Part 2 Table 6-5 / 6.2.26 / Annex E | MPEG-2 系映像、H.264/AVC、H.265/HEVC、MPEG-2 Audio、AAC ADTS、MPEG-4 Audio LATM の signaling を認識対象にする。 |
 | `ARIB/doc/2-STD-B60v1_7.pdf` MMT / asset signaling | ISDB-S3 / MMT 側では HEVC 映像、ISO/IEC 14496-3 音声、MPEG-4 AAC / MPEG-4 ALS を codecメタデータ として認識対象にする。ただし本プロダクトが ISDB-S3 / MMT / TLV を恒久対象外とする場合、ライブ 視聴可能性 / 再生可能性 には入れない。 |
 | `ARIB/doc/2-STD-B59v2_0.pdf` | 22.2 ch 等の音響チャンネル構成の参照資料であり、放送 bitstream codec としては B32 / B60 の MPEG-4 AAC / MPEG-4 ALS 側で扱う。MPEG-H 3D Audio codec を本表へ追加する根拠にはしない。 |
 

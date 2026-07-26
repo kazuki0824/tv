@@ -13,7 +13,7 @@
 | `ScanSessionTxn` | 表0-F、表19、`scan END 通知失敗の固定` |
 | `SourceBoundaryTxn` | 表18、表18-B、`Stream boundary 契約` |
 | callback artifact | 表7、表8、表0-S-3A |
-| public nullable / frontend count | `nullable Binder 境界`、表1-D、`ITuner ルート API の固定契約` |
+| public nullable / frontend count | `nullable Binder 境界`、表1-D、`ITunerルートAPIの固定契約` |
 | 型付き境界 | 表0-S-3、表0-S-3A |
 
 ## 1. failure / rollback / cleanup の実装規約
@@ -147,7 +147,7 @@ Wrapper を置くべきでない条件:
 
 ## public nullable / close / frontend count 実装入口規約
 
-- public nullable API、public close、frontend count API の状態遷移・戻り値・到達条件は `DESIGN_JA.md` の`nullable Binder 境界`、表1-D、表5、`ITuner ルート API の固定契約`を正とする。
+- public nullable API、public close、frontend count API の状態遷移・戻り値・到達条件は `DESIGN_JA.md` の`nullable Binder 境界`、表1-D、表5、`ITunerルートAPIの固定契約`を正とする。
 - AIDL public method implementation は、nullable 引数を helper 内で非 nullable に潰さず、`None` を service_runtime use-case へ到達させる。
 - AIDL façade は close / callback unregister / demux-input PID claim / frontend count の意味論を再定義せず、service_runtime use-case 呼び出しと Binder status bridge に限定する。
 - `frontend_system_from_type()` のような入力変換 helper は、未対応 type の丸め込みや戻り値 policy を持たず、DESIGN_JA.md の契約に従う service_runtime request/command DTO へ接続する。

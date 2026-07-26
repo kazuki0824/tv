@@ -12,7 +12,7 @@
 未対応の SI/EPG 文字・escape は `panic` させず、置換文字または 診断によって安定動作させる。字幕 payload を `decode_arib_string_lossy()` に渡す経路は禁止する。字幕本文処理は TIS 側の libaribcaption 経路だけで行う。
 `arib_si_engine_rs` は libaribcaption ラッパー を所有しない。libaribcaption は TIS 側の字幕 path から Rust JNI boundary と 安全なRustラッパー 経由で呼ぶ。
 
-規範の精読基準は、ARIB公式に全文が公開されているSTD-B24 6.4-E1英語版Fascicle 1のうち、公式改定履歴がVolume 1 Part 2の文字符号化方式として参照する8単位符号、文字集合、designation、invocation、Macro、DRCS、UCSの条項とする。現行日本語版は6.5である。公式改定概要で確認できる6.5の変更範囲を併用するが、未取得の6.5本文との全文同一性や、STD-B24のFascicle 1全体・他Fascicle・字幕への適合は主張しない。
+規範の精読基準は、ARIB公式に全文が公開されている最新英語版STD-B24 6.4-E1 Fascicle 1の7.1.1.1〜7.1.2.4とする。7.1.1.1のTable 7-1〜7-3をinvocation・designation・Final Byte、7.1.1.2〜7.1.1.5を文字集合とDRCS、7.1.1.6をMacro、7.1.2.1〜7.1.2.4を制御機能の根拠として条項単位で用いる。日本語最新版との同一性確認は完了条件にせず、改定概要、版一覧、二次資料を英語版全文の代用にしない。STD-B24の他Fascicleまたは字幕への適合は本decoderの主張に含めない。
 
 本decoderの適合主張は、字幕ではないSI/EPG文字列について、次の境界に限定する。
 
@@ -54,7 +54,7 @@ content_descriptor 由来のARIB分類、表示文字列、user_nibble を構造
 parental_rating_descriptor:
   entries[]:
     country_code
-    rating_value        # ARIB B10 Rating 8 uimsbf を8bit値のまま保持する
+    rating_value        # ARIB STD-B10 5.13-E1 Part 2 6.2.12のRating 8 uimsbfを8bit値のまま保持する
     raw_rating_byte     # 元8bitレーティング値
   raw_descriptor_bytes
   parse_status          # ok / malformed_length / truncated_descriptor / unsupported_value
