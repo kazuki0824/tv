@@ -6,9 +6,9 @@
 
 公開AIDLの状態、戻り値、能力値、資源寿命、確定点、巻き戻し、後片付け、ワーカー、キュー、section/PES/TS処理は`../tuner_hal/DESIGN_JA.md`を正とする。PSI/SI表固有の意味解釈は`../arib_si_engine_rs/DESIGN_JA.md`を正とする。本書はこれらの契約を再定義せず、`tuner_hal2`の論理責務へ対応付ける。
 
-物理ファイル名、module名、type名、関数名は実装の追跡情報であり、設計上の規範ではない。改名または分割だけでは設計変更にならない。論理責務、依存方向、所有状態、公開契約との対応を変える場合に設計を更新する。
+物理ファイル名、module名、type名、関数名はAOSP公開契約またはARIB規範ではない。ただし、`../tuner_hal/DESIGN_JA.md`の`共通部品の定義条件`を満たすため、状態・寿命・失敗時遷移を所有する単一実装正本と許可entry pointは、本書の`共通transaction / use-caseの規範実装アンカー`で規範的な追跡アンカーとして固定する。責務を変えないrename、split、mergeだけでは公開設計変更にならないが、同一変更でアンカーを更新し、移動前後に複数正本を残してはならない。
 
-本PRで追加・変更する契約は、`tuner_hal2`へ適用する目標設計であり、現行実装済みの事実を表すものではない。実装、設定、`Android.bp`、VTS用XML、単体試験が同じ契約へ追従し、`../タスク完了判定の実施方法.md`による横断確認が完了するまでは「設計済み・実装未適用」とする。公開能力を有効にできるのは、対応する実装入口、状態遷移・異常系試験、製品設定またはVTS設定がそろった機能だけである。移行は公開API単位で行い、未移行APIを新設計の成功能力として広告してはならない。
+本PRで追加・変更する契約は、`tuner_hal2`へ適用する目標設計であり、現行実装済みの事実を表すものではない。実装、設定、`Android.bp`、VTS用XML、単体試験が同じ契約へ追従し、`../タスク完了判定の実施方法.md`による横断確認が完了するまでは「設計済み・実装未適用」とする。公開能力を有効にできるのは、対応する実装入口、状態遷移・異常系試験、製品設定またはVTS設定がそろった機能だけである。移行は公開API単位を最小ゲートとし、依存するAPI、台帳、worker、設定を含む適用単位の完了条件も同時に満たす。未移行APIまたは未完了の依存閉包を新設計の成功能力として広告してはならない。
 
 ## 責務の一方向参照
 
@@ -60,7 +60,7 @@ flowchart TD
 
 ### 規範契約と実装入口の対応
 
-次表は、公開契約を実装で強制する境界を固定する。物理名は追跡索引として変更できるが、所有者、順序、確定点、巻き戻し、禁止入口は変更してはならない。
+次表は、公開契約を実装で強制する境界を固定する。所有者、順序、確定点、巻き戻し、禁止入口を変更する場合は設計変更として扱う。
 
 | 契約 | 所有者 | 必須phase order | 確定点・失敗処理 | 禁止入口 |
 |---|---|---|---|---|
@@ -72,6 +72,23 @@ flowchart TD
 | frontend tune/scan | frontend session transaction | request検証 → worker/callback/rollback準備 → 旧session遮断 → backend要求 → 新generation commit | `../tuner_hal/DESIGN_JA.md`の表19と統合状態表に従う | worker、backend adapter、callback層がfrontend公開状態を直接確定しない |
 | callback artifact | callback registry use-case | owner live確認 → artifact保持 → runtime登録 → domain確定 → lock外配送 | lookup失敗、Binder配送失敗、cleanup失敗を別phaseとして記録し、片側だけ残さない | demux/device/resource ledgerへBinder callback実体を渡さない |
 | worker終端 | worker ownerと後片付け管理 | stop predicate確定 → wake/cancel → 終了回収またはReaper移管 → 残cleanup → lease返却 | 世代遮断前に移管せず、回収完了前に専有資源を再利用しない | worker自身がowner objectをunregisterしない |
+
+#### 共通transaction / use-caseの規範実装アンカー
+
+次表は`../tuner_hal/DESIGN_JA.md`の`共通部品の定義条件`に対する`実装正本`、`公開入口`、`呼び出し許可層`、`呼び出し禁止層`を固定する。記載したmodule/file/typeは外部APIではなく、現在の単一実装正本を特定する規範的トレーサビリティアンカーである。責務不変のrename、split、mergeでは同一変更で本表を更新し、旧アンカーと新アンカーを同時に正本として残してはならない。
+
+| 契約 | 状態・寿命・失敗時遷移の単一実装正本 | 許可entry point | 禁止する迂回 |
+|---|---|---|---|
+| object method | `service_runtime/src/object_method_txn.rs`の`ObjectMethodTxnPlan`、`ObjectMethodDispatchProof`、`ObjectMethodExecutionToken`。validation/dispatchの補助正本は同moduleからだけ呼ぶ`method_validation.rs`と`method_dispatch.rs` | `aidl_service/src/object_runtime/mod.rs`の`execute_*_use_case*`、`plan_unavailable_object_method_use_case()`、`execute_object_query_use_case()`。domain側は`TunerServiceRuntime::*_for_object`が`ObjectMethodExecutionToken`を一回消費する | 個別AIDL methodによる先行runtime query、`AidlMethodAdapter::plan()`の直接実行、dispatch proofの生成・再利用、backend/registryの直接変更 |
+| root open | `service_runtime/src/root_object_ops.rs`。登録後失敗の補償正本は`service_runtime/src/open_rollback.rs` | `aidl_service/src/tuner_service.rs`のroot AIDL methodからroot object use-caseを呼び、返された`RuntimeObjectEntry`からtyped Binder objectを生成する。生成後失敗はservice_runtime rollback入口へ返す | AIDL層でruntime allocation、object table登録、rollback順序、status写像を組み立てる |
+| child open | `service_runtime/src/boot/demux_filter_dvr_txn.rs`の`DemuxFilterDvrTxn<'a>`。公開use-case façadeは`service_runtime/src/demux_filter_dvr_ops.rs` | `aidl_service/src/child_object_open.rs`の`open_filter_child_for_owner_object_with_request_builder()`および`open_dvr_child_for_owner_object_with_request_builder()` | `openFilter()`/`openDvr()`ごとのallocation・callback cleanup・rollback複製、`RuntimeObjectEntry.ledger_id`の再解釈 |
+| public close / owner loss / Drop leak | `service_runtime/src/object_close_txn.rs`のtyped artifact/domain/runtime cleanup command、`CleanupExecutionReport`接続、close finalization | `aidl_service/src/object_runtime/mod.rs`の`close_object_after_close_preflight()`および`drop_leak_object()`。runtime unregisterは`TunerServiceRuntime::unregister_public_runtime_for_closed_aidl_entry()`だけを使用する | AIDL、Drop、worker、Reaperによるcleanup authorityの重複保持、runtime unregister前の`Closed` commit、個別objectでのclose state machine複製 |
+| descrambler key/session | `service_runtime/src/boot/descrambler_txn.rs`の`DescramblerTxn<'a>`。session stateは`service_runtime/src/descrambler_session.rs`、key token/slot/refcountは`service_runtime/src/descrambler_key_table.rs`だけが所有する | `service_runtime/src/descrambler_ops.rs`の`TunerServiceRuntime::*_for_object` use-case。AIDL methodはobject method façade経由で`ObjectMethodExecutionToken`を渡す | AIDL層または`descrambler` crateからsession/key tableを直接変更する、旧claim解放順序をcallerへ露出する |
+| source relation | `demux/src/runtime/source_boundary.rs`の`SourceBoundaryTxn`。service-level owner/generation調停は`service_runtime/src/boot/demux_filter_dvr_txn.rs` | `service_runtime/src/demux_filter_dvr_ops.rs`のobject-handle based source use-caseをobject method façadeから呼ぶ | filter wrapperから接続graph、owner demux、queue generation、assemblerを個別に変更する |
+| stream generation / packet ingress | `demux/src/runtime/generation_boundary.rs`の`GenerationBoundaryTxn`と`service_runtime/src/boot/packet_txn.rs`の`PacketTxn<'a>`。packet pipelineは`demux/src/parser/packet_pipeline.rs`が所有する | `service_runtime/src/packet_ops.rs`のtyped packet/source-boundary use-case | AIDL層、backend adapter、filter callbackからcontinuity、assembler、FMQ世代を直接変更する |
+| frontend tune/scan | `service_runtime/src/boot/frontend_txn.rs`の`FrontendTxn<'a>`。public use-case façadeは`service_runtime/src/frontend_ops.rs` | `aidl_service/src/tuner_service/frontend_methods.rs`からobject method façadeを経由して`TunerServiceRuntime`のfrontend object use-caseを呼ぶ | worker、device backend、callback delivery層によるfrontend公開状態・generation・rollback状態の直接確定 |
+| callback artifact | callback registry stateは`service_runtime/src/callback_registry.rs`の`RuntimeCallbackRegistry`、AIDL callback実体は`aidl_service/src/callback_store.rs`だけが所有し、domain commit/rollbackは対象の`service_runtime/src/*_ops.rs` use-caseが所有する | `aidl_service/src/object_runtime/mod.rs`のcallback registration façadeでlive/dispatch preflight後にartifact bridgeを実行し、service_runtime finish use-caseへ結果を返す | callback実体をdemux/device/resource ledgerへ渡す、AIDL層でruntime registrationとdomain commitのrollback方針を持つ |
+| worker終端 | frontend workerの停止・回収・cleanup resultは`service_runtime/src/frontend_worker_txn.rs`、worker slot/generationは`device/src/runtime/frontend_worker.rs`の`FrontendWorkerRegistry`が所有する | `service_runtime/src/frontend_ops.rs`および`service_runtime/src/boot/frontend_txn.rs`のworker lifecycle use-case。close/owner-lossは`ObjectCloseTxn`からtyped cleanup commandとして接続する | worker自身によるowner unregister/lease返却、回収完了前のresource再利用、AIDL層によるjoin/reaper方針の決定 |
 
 ### ルートobject
 
@@ -93,7 +110,7 @@ queueへの書き込み権限は世代付きとし、`flush()`、再設定、停
 
 ## 現在実装との追跡索引
 
-次表は現在位置を探すための非規範情報である。改名時は追跡索引だけを更新し、論理責務が同じなら公開設計を変更しない。
+次表は規範実装アンカーを探すための補助索引であり、transaction正本または公開契約を置き換えない。
 
 | 論理責務 | 現在の主な位置 |
 |---|---|
@@ -110,7 +127,7 @@ queueへの書き込み権限は世代付きとし、`flush()`、再設定、停
 
 ## 適用状態と移行完了条件
 
-本PRの文書変更だけでは、次の項目を実装済みまたは試験済みと扱わない。各行は独立して移行し、完了条件を満たした行だけを製品profileで有効にする。
+本PRの文書変更だけでは、次の項目を実装済みまたは試験済みと扱わない。各行は依存するAPI・台帳・worker・設定を含む不変条件閉包として移行し、完了条件を満たした行だけを製品profileで有効にする。
 
 | 適用単位 | 現在状態 | 実装追跡先 | 移行完了条件 |
 |---|---|---|---|
@@ -127,5 +144,6 @@ queueへの書き込み権限は世代付きとし、`flush()`、再設定、停
 - `tuner_hal`で定義した公開戻り値を`service_runtime`またはbackendで別の値へ読み替えない。
 - AIDL objectまたはcallback実体をdemux、device、resource ledgerへ渡さない。
 - read-only queryからcleanup、worker操作、backend I/Oを開始しない。
-- file名またはtype名を公開契約、ARIB根拠、設計変更判定の根拠にしない。
-- 物理配置表を状態遷移の正本として扱わない。
+- file名またはtype名をAOSP公開契約、ARIB根拠、公開状態遷移の値そのものとして扱わない。
+- `共通transaction / use-caseの規範実装アンカー`以外の物理配置表を状態遷移の正本として扱わない。
+- 規範実装アンカーのrename、split、merge時に旧アンカーを残したまま新アンカーを追加し、複数のtransaction正本を作らない。
