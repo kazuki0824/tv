@@ -49,8 +49,8 @@ flowchart TD
 更新系メソッドは次の責務分担を守る。
 
 1. AIDL境界は、対象objectとAPI種別を特定するための外形だけを読み取り、失敗し得るdomain入力変換は行わない。
-2. サービス調停が同一排他区間でobjectの生存、所有者、object generation、kind、依存generationを検証する。この検証に失敗した場合は、入力値の詳細検証より先に`INVALID_STATE`を確定する。
-3. 生存検証後に、AIDL境界のtag、列挙値、nullable入力、値域をtyped requestへ変換する。不正入力は`INVALID_ARGUMENT`とし、状態を変更しない。
+2. サービス調停が同一排他区間で呼出対象objectの生存、呼出対象自身の登録owner、object generation、kind、依存generationを検証する。呼出対象のlifecycle/generation不整合は、引数値の詳細検証より先に`INVALID_STATE`へ確定する。
+3. 呼出対象の生存検証後に、AIDL境界のtag、列挙値、nullable入力、値域をtyped requestへ変換する。不正値は`INVALID_ARGUMENT`とし、状態を変更しない。引数として別objectを受けるAPIは、その引数objectの生存/generation不整合を`INVALID_STATE`、foreign owner、別demux、wrong kind、非互換関係を`INVALID_ARGUMENT`へ写像する。呼出対象objectのowner検証と引数objectのownership検証を同じ判定へ丸めない。
 4. サービス調停がrequestと依存関係を再検証し、一回限りの実行権限を発行する。
 5. 資源台帳が失敗し得る予約を行う。
 6. ドメイントランザクションが外部副作用を実行し、commit pointでdomain状態を確定する。commit前失敗は予約と準備物を逆順に戻し、commit後の後片付け失敗は`../tuner_hal/DESIGN_JA.md`の`CleanupPending`または隔離へ接続する。
@@ -64,7 +64,7 @@ flowchart TD
 
 | 契約 | 所有者 | 必須phase order | 確定点・失敗処理 | 禁止入口 |
 |---|---|---|---|---|
-| object method | サービス調停のobject method use-case | live・owner・全依存generation確認 → request変換 → validation → dispatch計画 → 一回限り権限消費 → domain実行 | domain commit前は無変更、commit後失敗は型付き診断と契約別後片付けへ接続 | AIDL methodからbackend、registry、低水準dispatchを直接呼ばない |
+| object method | サービス調停のobject method use-case | 呼出対象live・自身の登録owner・generation・kind確認 → request変換 → 引数object live/generation確認 → 引数object owner/demux/kind/関係検証 → dispatch計画 → 一回限り権限消費 → domain実行 | domain commit前は無変更。呼出対象lifecycle不整合と引数object lifecycle不整合は`INVALID_STATE`、foreign/wrong関係は`INVALID_ARGUMENT`、commit後失敗は型付き診断と契約別cleanupへ接続 | AIDL methodからbackend、registry、低水準dispatchを直接呼ばない |
 | root/child open | サービス調停のopen use-case | 公開ID・能力確認 → 全使用権仮予約 → runtime登録準備 → Binder object準備 → 一括commit | objectとruntime登録を同時公開し、途中失敗は全仮予約・artifactを逆順解放 | AIDL helperでledger IDを再解釈しない |
 | public close / owner loss / Drop leak | 一回限りのcleanup authorityを持つclose use-case | 論理閉鎖 → 新規権限遮断 → worker・queue・接続・artifact・domain cleanup → runtime unregister → ledger解放 | runtime unregister成功後だけobject tableをClosedへ確定。再試行可能失敗はauthorityとleaseを`CleanupPending`へ移す | AIDL、Drop、Reaperが同時にcleanup authorityを持たない |
 | descrambler key/session | descrambler transaction use-case | session検証 → key claim準備 → PID・session変更 → commit → 旧claim解放 | sessionとkey tableを同じcommitで更新し、失敗時は旧sessionを維持 | AIDL層またはdescrambler crateからkey tableを直接変更しない |
