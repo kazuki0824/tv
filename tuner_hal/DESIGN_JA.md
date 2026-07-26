@@ -88,7 +88,7 @@ ISDB-Sのセレクター対応能力は、機器識別子と対象リビジョ�
 
 - コールバック失敗、ワーカー異常終了、FMQ / EventFlag 失敗の状態遷移、診断、後続処理停止条件は表7・表8を正とする。本節では再定義しない。
 - DVR 状態 interval はコールバックワーカーの周期にだけ使う。ワーカーの wait は stop signal で wake 可能な cancellable wait とし、close / Drop / shutdown は interval 満了を待たない。
-- `getAvSharedHandle()`、AV filter `start()`、`releaseAvHandle()` の状態別契約は、本書の「表4. AV共有メモリ資源寿命表」を正とする。
+- `getAvSharedHandle()`とAV filter `start()`の状態別契約は、本書の「表4. AV共有メモリ資源寿命表」を正とする。`releaseAvHandle()`の入力分類、戻り値、資源変化は「表1-C-AVH. `releaseAvHandle()` 全域判定表」だけを正とする。
 
 backendのエラーは、呼び出し側の不正値・値域違反を`INVALID_ARGUMENT`、不存在・使用中・容量不足・規格上は有効だが未対応を`UNAVAILABLE`、不正なライフサイクルを`INVALID_STATE`、依存資源の未初期化を`NOT_INITIALIZED`、割り当て失敗を`OUT_OF_MEMORY`、権限・入出力・設定破損・不変条件違反を`UNKNOWN_ERROR`へ対応付ける。
 
@@ -357,7 +357,7 @@ Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時�
 
 - 入力値不正は `INVALID_ARGUMENT`、未対応 capability は `UNAVAILABLE`、オブジェクト state 不整合は `INVALID_STATE`、mutex汚染 や内部整合性崩壊は `UNKNOWN_ERROR` / `HalError::Internal` に写像する。
 
-- AV filter の `start()`、shared backing、MediaEvent、`releaseAvHandle()` の状態別契約は、本書の「表4. AV共有メモリ資源寿命表」を正とする。
+- AV filter の `start()`、shared backing、MediaEventの状態別契約は、本書の「表4. AV共有メモリ資源寿命表」を正とする。`releaseAvHandle()`の契約は「表1-C-AVH. `releaseAvHandle()` 全域判定表」だけを正とする。
 - A/V sync の状態別契約は本書の「A/V sync 方針」と「A/V sync 非採用範囲」を正とする。
 
 
@@ -493,7 +493,7 @@ AV filter の audio/video routing 種別は open subtype を正とする。TsAud
 |---:|---|---|---|---|---|---|---|
 | F-B-003 | `configure()` live AV non-passthrough | A8, A9, A10, A11 | 成功 | 設定状態だけ設定済みに変更。他軸は維持 | AV世代を進め、未配送の旧一過性状態を破棄。TsAudio は Audio、TsVideo は Video の routing 種別を open subtype から導出する | `filter_configure_success` | 未設定のAV状態だけを受理し、補助種別と共有ハンドル軸を維持する |
 | F-B-004 | `configure()` AV passthrough | A0, A1, A2, A3, A8, A9, A10, A11 | `UNAVAILABLE` | 入力状態を維持 | なし | `unsupported_passthrough_configure` を増やす | 本製品ではpassthroughを恒久非対応とし、停止後の再設定でも同じ判定を行う |
-| F-B-005 | `configure()` で、open時のmain typeと異なるunion tagを指定 | F0, A0, A1, A2, A3, A8, A9, A10, A11 | `INVALID_ARGUMENT` | 入力状態を維持 | なし | `filter_main_type_mismatch` を増やす | 未対応main typeは`openFilter()`で`UNAVAILABLE`として拒否され、オブジェクトが存在しない。既存オブジェクトの型不一致はAVの未設定・停止済み状態を含め入力契約違反として区別する |
+| F-B-005 | `configure()` で、open時のmain typeと異なるunion tagを指定 | F0, F1, F3, F4, F6, A0, A1, A2, A3, A8, A9, A10, A11 | `INVALID_ARGUMENT` | 入力状態を維持 | なし | `filter_main_type_mismatch` を増やす | 未対応main typeは`openFilter()`で`UNAVAILABLE`として拒否され、オブジェクトが存在しない。既存オブジェクトの型不一致はconfigure前と停止済みのnon-AV、AVの未設定・停止済み状態を含め入力契約違反として区別する。開始中のF2/F5/A4〜A7はF-B-009のlifecycle判定を正とする |
 | F-B-006 | `configure()` 同一設定の再指定 | F1, F3 | 成功 | 入力状態を維持 | キュー識別子、キュー内容、各世代、組み立て状態、診断を維持する | `filter_configure_idempotent` を増やす | 同じ正規化済み設定の再指定は無処理とする |
 | F-B-006a | `configure()` 異なる設定への再設定 | F1, F3 | 成功 | F1 | キュー識別子は維持し、配送世代と解析状態世代を更新して旧データ、組み立て状態、PCR、`startId`状態を破棄する | `filter_reconfigure_success` | 設定差分を確定した後にだけ再設定境界を進める |
 | F-B-006b | `configure()` AV同一設定の再指定 | A0, A1, A2, A3 | 成功 | 入力状態を維持 | AV配送世代、解析状態世代、共有ハンドル軸、配送済み割り当てを維持する | `filter_configure_idempotent` を増やす | Android 14 VTSのconfigure→start→stop→configure→startを成立させ、同一設定は無処理にする |
@@ -829,12 +829,11 @@ AV共有メモリの slot size は filter `bufferSize` から算出してはな�
 | 番号 | 操作 / 事象 | 対象状態集合 | AIDL戻り値 | shared backing | 公開済みハンドル | 使用中領域 | `dataId` | 一過性状態 | 累積カウンタ | 新規配送可否 | 次状態関数 | 設計上の成立条件 | 同値性根拠 |
 |---:|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | AVM-001 | `configure(AV)` | A8, A9, A10, A11 | 成功 | 入力状態を維持 | 入力状態を維持 | なし | 未発行 | 補助種別を維持し、routing種別をopen subtypeから導出 | `av_generation`を進める | 不可 | 設定状態軸だけ設定済みに変更 | 設定前に取得可能な共有ハンドルを無効化せず、TsAudio/TsVideoは補助種別未設定でもrouting可能 | 設定状態以外の軸を維持する |
-| AVM-005 | `getAvSharedHandle()` 再取得 | A2, A3, A6, A7, A10, A11 | 成功 | 維持 | 公開済み | 維持 | 維持 | client release済みなら未済みに戻す | `av_shared_handle_reuse` を増やす | 開始済み状態だけ可 | 入力状態を維持 | 再取得で既存資源を維持し、client release 後の配送を再開可能にすること | 再取得は配送再開の合図として扱う |
+| AVM-005a | `getAvSharedHandle()` 再取得 / 未開始 | A2, A3, A10, A11 | 成功 | 維持 | 公開済み | 維持 | 維持 | client release済みなら未済みに戻す | `av_shared_handle_reuse` を増やす | 不可 | 入力状態を維持 | 既存backingから新しいhandle leaseを返すが、未設定または停止済みのためpayload配送は開始しない | handle leaseの再取得と実行状態を直交させる |
+| AVM-005b | `getAvSharedHandle()` 再取得 / 開始済み | A6, A7 | 成功 | 維持 | 公開済み | 維持 | 維持 | client release済みなら未済みに戻す | `av_shared_handle_reuse` を増やす | 可 | 入力状態を維持 | 既存backingから新しいhandle leaseを返し、共有方式の発行条件を満たす後続payloadだけを配送可能にする | handle leaseの再取得と実行状態を直交させる |
 | AVM-008 | AV payload 到着 | A6, A7 + client release未済み | 公開APIなし | 維持 | 公開済み | 割当 | 発行 | MediaEvent 生成 | `av_delivered` を増やす | 可 | 入力状態を維持 | `dataId` と共有メモリ領域が対応すること | ハンドル公開済み開始済みかつ client release未済み状態は同値 |
 | AVM-008B | AV payload到着 / 2方式とも割当不能 | A4, A5, A6, A7 | 公開APIなし | 維持 | 入力状態に従う | 作らない | 発行しない | drop・overflow状態更新 | `av_allocation_drop`を増やす | 不可 | 入力状態を維持 | 使用中領域を追い出さず、2方式とも安全に割り当てられないイベントだけを破棄する | 実体のない`MediaEvent`を公開しない |
 | AVM-008C | AV payload到着 / 共有方式を使用不能 | A4, A5, A6, A7 | 公開APIなし | 入力状態に従う | 入力状態に従う | イベント固有領域を割当 | 発行 | イベント固有fdを持つ`MediaEvent`生成 | `av_event_local_delivered`を増やす | 可 | 入力状態を維持 | 正確なpayload長の領域と正の`dataId`を同じ台帳へ登録してから公開する | 共有ハンドル未取得、使用権解放済み、共有領域不足、過大AUの正式な代替方式 |
-| AVM-010 | `releaseAvHandle(active dataId)` | A2, A3, A6, A7, A10, A11 | 成功 | 維持 | shared/event-local modeに従う | 指定領域だけ破棄 | 指定`dataId`をKnownReleased化 | なし | `av_data_id_release` を増やす | logical close後もrelease ledger経由で可 | 入力状態を維持 | 指定allocationだけが一度解放されること | modeとfilter stateを直交させる |
-| AVM-011 | `releaseAvHandle(known released dataId)` | A2, A3, A6, A7, A10, A11 | 成功扱いの無処理 | 維持 | modeに従う | 維持 | KnownReleasedを維持 | なし | `av_data_id_stale_release` を増やす | 入力状態に従う | 入力状態を維持 | 既知stale releaseが状態を壊さないこと | AOSP framework/JNIの遅延finalizeを吸収 |
 | AVM-012 | `flush()` | A0, A1, A4, A5, A8, A9 | 成功 | 未生成 | 未公開 | なし | 未発行 | 消去 | 累積値維持 | 入力状態に従う | 入力状態を維持 | ハンドル未取得で flush が失敗しないこと | ハンドル未公開AV状態は同値 |
 | AVM-013 | `flush()` | A2, A3, A6, A7, A10, A11 | 成功 | 維持 | 公開済みを維持 | 未配送領域だけ破棄し、配送済み領域を維持 | 配送済みIDを維持 | 一過性eventを消去 | 累積値維持 | 入力状態に従う | 入力状態を維持 | shared backingとclient leaseを維持し、未配送領域だけを消去する | handle公開済みAV状態はflushに関して同値 |
 | AVM-014 | `stop()` | A4, A5, A6, A7 | 成功 | 維持 | 入力状態のハンドル軸に従う | 維持 | 維持 | なし | `av_stop` を増やす | 不可 | 実行状態軸だけ停止済みに変更。他軸は維持 | 停止しても既存`dataId`は release / flush / close まで維持 | 戻り値、診断、状態軸変換規則、資源寿命が同一 |
@@ -845,20 +844,7 @@ AV共有メモリの slot size は filter `bufferSize` から算出してはな�
 
 `getAvSharedHandle()` は、AV shared memory を表す fd付き `NativeHandle` と共有メモリ総サイズを返す。client は、共有ハンドル使用終了時に、`getAvSharedHandle()` で受け取った fd付き `NativeHandle` を `releaseAvHandle(avMemory, 0)` に渡してよい。
 
-`releaseAvHandle()` の正規入力は次に固定する。
-
-| 入力 | 結果 | 意味 |
-|---|---|---|
-| fd付き handle + `avDataId == 0` | 成功 | client側 shared AV handle 使用終了通知 |
-| empty handle + active `avDataId > 0` | 成功 | MediaEvent slot release |
-| empty handle + known released `avDataId > 0` | 成功扱いの無処理 | 遅延/重複finalize吸収。never-issuedは`INVALID_ARGUMENT` |
-| empty handle + unknown `avDataId > 0` | `INVALID_ARGUMENT` | 不正dataId |
-| イベント固有fd付きhandle + 一致するactive `avDataId > 0` | 成功 | イベント固有領域とハンドル使用権を1回解放 |
-| 共有fd付きhandle、別領域fd、または不一致のfd付きhandle + `avDataId > 0` | `INVALID_ARGUMENT` | 別の割り当てを解放しない |
-| 任意handle + `avDataId < 0` | `INVALID_ARGUMENT` | 不正dataId |
-
-
-`releaseAvHandle()`判定表では、呼出先IFilter、台帳上の所有者、世代、転送方式、`avDataId`、使用権の状態を先に検証する。ファイル記述子番号を同一性の根拠にせず、ファイル記述子のメタデータは採用した記憶領域実装で保証できる補助検証に限定する。未解放で配送済みと確認できるトークンの世代だけが不一致の場合は、`INVALID_STATE`ではなく`ReleaseOnly`として扱う。台帳上の同一性情報が一致しない場合、または別所有者のハンドルである場合は`UnknownOrForeign`と分類して`INVALID_ARGUMENT`を返す。台帳の障害によって同一性情報を分類できない場合は`UNKNOWN_ERROR`を返し、安全を確認できない記憶領域を解放せず、影響を受けた台帳を隔離する。
+`releaseAvHandle()`の正規入力形状、判定順序、戻り値、資源変化は「表1-C-AVH. `releaseAvHandle()` 全域判定表」だけを正とする。同表では、呼出先IFilter、台帳上の所有者、世代、転送方式、`avDataId`、使用権の状態を先に検証する。ファイル記述子番号を同一性の根拠にせず、ファイル記述子のメタデータは採用した記憶領域実装で保証できる補助検証に限定する。未解放で配送済みと確認できるトークンの世代だけが不一致の場合は、`INVALID_STATE`ではなく`ReleaseOnly`として扱う。台帳上の同一性情報が一致しない場合、または別所有者のハンドルである場合は`UnknownOrForeign`と分類して`INVALID_ARGUMENT`を返す。台帳の障害によって同一性情報を分類できない場合は`UNKNOWN_ERROR`を返し、安全を確認できない記憶領域を解放せず、影響を受けた台帳を隔離する。
 
 
 fd付きhandle + `avDataId == 0` の成功は、shared backing、公開済みhandle、既存slot、active `avDataId` を破棄することを意味しない。以後のAV payload配送を継続するには、client release済み状態を解除するために `getAvSharedHandle()` 再取得を必要としてよい。
@@ -2047,7 +2033,7 @@ ARIB STD-B31 2.2-E1は、モードを2.3、内符号化率を3.8と3.15.6.6、�
 - modulationとcodeRateは`AUTO`だけをadvertise・受理し、既知具体値は`UNAVAILABLE`、malformed値は`INVALID_ARGUMENT`とする。
 - blind scanは`UNAVAILABLE`とする。
 
-対象のpx4/earth_pt1によるISDB-Sでは、ドライバーと機器が完全一致するカタログ項目によって具体値の設定機能を確認できない限り、変調方式と符号化率は `AUTO` だけに対応する。`AUTO` は成功とし、規格上既知の具体値には状態を変えず `UNAVAILABLE`、不正値には `INVALID_ARGUMENT` を返す。周波数と相対・絶対セレクターの動作は、セレクター設定表とARIB B20/B21の根拠に従って別に定める。
+対象のpx4/earth_pt1によるISDB-Sでは、ドライバーと機器が完全一致するカタログ項目によって具体値の設定機能を確認できない限り、変調方式と符号化率は `AUTO` だけに対応する。`AUTO` は成功とし、規格上既知の具体値には状態を変えず `UNAVAILABLE`、不正値には `INVALID_ARGUMENT` を返す。相対TS番号とTS_IDを別のselector domainとして扱う根拠はARIB STD-B20 3.0の2.9（別記第2・第3）と2.10、周波数の根拠はSTD-B21 5.12-E2とし、セレクター設定表で動作を別に定める。
 
 対象バックエンドのISDB-S変調方式は `AUTO` だけに対応する。具体値を設定できる処理と対応能力の証跡が追加されるまで、BPSK、QPSK、TC8PSKの明示指定には状態を変えず `UNAVAILABLE` を返す。
 
@@ -2064,13 +2050,13 @@ AV passthrough は本製品では恒久的に対応しない。`DemuxFilterAvSet
 
 VTS/profileでは、AV filterを使用する場合でも `isPassthrough=false` に固定する。`isPassthrough=true` を含むprofileは本製品の対応profileとして扱わない。
 
-AV filter の状態別契約、shared backing、公開済みハンドル、使用中領域、`dataId`、`releaseAvHandle()`、`flush()`、`configure()`、`close()` の副作用は、本書の「表4. AV共有メモリ資源寿命表」を正とする。本節では、allocator、NativeHandle形式、payload配置、診断方針だけを補足する。
+AV filter の状態別契約、shared backing、公開済みハンドル、使用中領域、`dataId`、`flush()`、`configure()`、`close()` の副作用は、本書の「表4. AV共有メモリ資源寿命表」を正とする。`releaseAvHandle()`の入力分類、戻り値、資源変化は「表1-C-AVH. `releaseAvHandle()` 全域判定表」だけを正とする。本節では、allocator、NativeHandle形式、payload配置、診断方針だけを補足する。
 
 AndroidフレームワークとJNIが受理する`MediaEvent`の表現は、本書の「AV割り当て方式」を正とする。共有モードでは、`IFilter.getAvSharedHandle()`がdma-bufまたはION系のファイル記述子1個を持つハンドルを返す。各イベントの`avMemory`は空とし、正の`avDataId`と`offset/dataLength`で共有領域内の半開区間を識別する。イベント固有モードでは、各イベントが正確な長さのファイル記述子1個を持つ`avMemory`と、正の`avDataId`を持つ。共有ハンドルの未取得、使用権の解放済み、収容可能な空き領域なし、またはAUが領域長を超える場合は、イベント固有モードを正式な代替方式とする。過大なAUを破棄して、2方式対応という能力表明と矛盾させてはならない。
 
 両モードの`avDataId`は、同じ上限付き割り当て台帳から発行する。メモリー、台帳、`MediaEvent`の準備がすべて成功した後に割り当てを確定し、失敗時はコールバックまたは`dataId`を公開しない。`offset + dataLength <= backing size`を正常範囲とし、上限超過を検出できる加算を用いる。長さ0は不正としてイベントを発行しない。`isSecureMemory=false`に固定する。
 
-解放要求の形状、既知の古い要求を状態変更なしで受理する条件、不明な要求の拒否、ファイル記述子の同一性検証、論理閉鎖後の解放は、表1-C-AVHと本書の「表1-C-AVH. `releaseAvHandle()` 全域判定表」を正とする。`releaseAvHandle(fd,0)`を共有記憶領域全体の破棄と解釈してはならない。イベント固有モードでは、フレームワーク側の参照状態に応じ、受領したハンドルの使用権だけを閉じる場合がある。
+解放要求の形状、既知の古い要求を状態変更なしで受理する条件、不明な要求の拒否、ファイル記述子の同一性検証、論理閉鎖後の解放は、本書の「表1-C-AVH. `releaseAvHandle()` 全域判定表」を正とする。`releaseAvHandle(fd,0)`を共有記憶領域全体の破棄と解釈してはならない。イベント固有モードでは、フレームワーク側の参照状態に応じ、受領したハンドルの使用権だけを閉じる場合がある。
 
 ### AV shared handle の `NativeHandle` 形式
 
@@ -2113,7 +2099,7 @@ AV filterを対応宣言する demux は AOSP の `getAvSyncHwId(Filter)` と `g
 
 ## A/V sync 非採用範囲
 
-AV filter の `start()`、共有ハンドル、MediaEvent、`releaseAvHandle()` の状態別契約は、本書の「表4. AV共有メモリ資源寿命表」を正とする。本節では A/V sync の現行境界と非採用範囲だけを固定する。
+AV filter の `start()`、共有ハンドル、MediaEventの状態別契約は、本書の「表4. AV共有メモリ資源寿命表」を正とする。`releaseAvHandle()`の契約は「表1-C-AVH. `releaseAvHandle()` 全域判定表」だけを正とする。本節では A/V sync の現行境界と非採用範囲だけを固定する。
 
 
 - PTS は current A/V sync clock の 代替処理 として使わない。
@@ -2517,20 +2503,21 @@ raw sectionは、外形、設定されたCRC検査、意味検証を分ける契
 - ARIB STD-B10 5.13-E1 Part 1 5.2.4〜5.2.17・Part 3 5.1.1〜5.1.3を表ごとのsection上限1021/4093の根拠とし、STD-B32 3.11-E1 Fascicle 3 Chapter 3 3.1をPES構文の根拠とする。B32を4093の独立した上限根拠として使用しない。B25は公式英訳6.7-E1全文を精読基準とする。第1部の4.9および4.10に従い、物理tuner/backend復号経路ごとの共有poolで奇数・偶数鍵の組を1組以上、PIDを12個以上同時処理できることを容量条件とする。AOSPに公開欄は追加せず、session間で共有する同じ内部台帳で受付と解放を強制する。
 - 対象ドライバーと上流Linuxの証跡は、AOSP契約とは独立した根拠として扱う。
 
-### ARIB公式英語版本文との静的照合
+### ARIB規範本文との静的照合
 
-ARIB依存の規範主張は、ARIB公式サイトが公開する最新の英語版全文を一次資料として条項単位で照合する。日本語最新版との同一性確認は完了条件にせず、改定概要、版一覧、二次資料を英語版全文の代用にしない。本PRが使うARIB依存主張は次表の範囲で全てであり、表にない条項への適合を主張しない。
+ARIB依存の規範主張は、アクセス可能な最新版日本語版本文を一次資料とし、それにアクセスできない規格ではARIBが公式公開する最新英語版本文を代わりに用いて、条項単位で照合する。改定概要、版一覧、紹介ページ、二次資料を規範本文の代用にしない。本PRが使うARIB依存主張は次表の範囲で全てであり、表にない条項への適合を主張しない。
 
-| 規格・公式英語版 | 精読条項 | 本PRで固定する主張 | 所有文書 |
+| 規格・使用本文 | 精読条項 | 本PRで固定する主張 | 所有文書 |
 |---|---|---|---|
-| STD-B10 5.13-E1 | Part 1 5.2.4〜5.2.17・Annex B、Part 2 Table 6-5・6.2.12・6.2.26・Annex E、Part 3 5.1.1〜5.1.3 | PSI/SIのTable ID・表別section長・CRC、parental rating、codec signaling | 本書、`arib_si_engine_rs/DESIGN_JA.md`、`tis/DESIGN_JA.md` |
-| STD-B21 5.12-E2 | Appendix 10 Table 10-3、Table 10-4 | CATV C13〜C63の中心周波数とC21/C22/C23の非連続境界 | 本書、`tis/DESIGN_JA.md` |
-| STD-B24 6.4-E1 Fascicle 1 | 7.1.1.1〜7.1.2.4、9.1.1、9.2、9.3、9.5、9.6 | SI/EPG文字のdesignation・invocation・Macro・DRCS境界、独立PES字幕とdata group、PTS、PMT descriptor | `arib_si_engine_rs/DESIGN_JA.md`、`tis/DESIGN_JA.md` |
-| STD-B25 6.7-E1 | Part 1 2.2.2.4、2.2.2.10〜2.2.2.11、3.1.5〜3.1.7、3.2.3〜3.2.4、4.3.3.3 Table 4-11〜4-14、4.8〜4.10 | MULTI2 payload処理、ECM/EMM/Ks、奇偶鍵組と12 PID以上の容量 | 本書 |
-| STD-B31 2.2-E1 | 2.3、3.8、3.9、3.11.1、3.14.2、3.15.6.5〜3.15.6.7 | ISDB-Tのmode、変調、符号化率、時間interleave、guard intervalの値域 | 本書 |
-| STD-B32 3.11-E1 Fascicle 1 | Chapter 3 3.1〜3.3 | MPEG-2 Video、MPEG-4 AVC、HEVC | `tis/DESIGN_JA.md` |
-| STD-B32 3.11-E1 Fascicle 2 | Chapter 3 3.1〜3.4、Chapter 5、Chapter 6 | MPEG-2 AAC、MPEG-2 BC、MPEG-4 AAC、MPEG-4 ALS | `tis/DESIGN_JA.md` |
-| STD-B32 3.11-E1 Fascicle 3 | Chapter 3 3.1 | PES start code、`stream_id=0xBD`、宣言長、長さ0をvideoだけに許す境界 | 本書、`tis/DESIGN_JA.md` |
+| STD-B10 5.13-E1 英語版 | Part 1 5.2.4〜5.2.17・Annex B、Part 2 Table 6-5・6.2.12・6.2.26・Annex E、Part 3 5.1.1〜5.1.3 | PSI/SIのTable ID・表別section長・CRC、parental rating、codec signaling | 本書、`arib_si_engine_rs/DESIGN_JA.md`、`tis/DESIGN_JA.md` |
+| STD-B20 3.0 日本語版 | 2.9の別記第2・別記第3、2.10 | 相対TS番号が0〜7のselectorであり、TS_IDとは別domainで1対1に対応付けられること | 本書 |
+| STD-B21 5.12-E2 英語版 | Appendix 10 Table 10-3、Table 10-4 | CATV C13〜C63の中心周波数とC21/C22/C23の非連続境界 | 本書、`tis/DESIGN_JA.md` |
+| STD-B24 6.4-E1 英語版 Fascicle 1 | 7.1.1.1〜7.1.2.4、9.1.1、9.2、9.3、9.5、9.6 | SI/EPG文字のdesignation・invocation・Macro・DRCS境界、独立PES字幕とdata group、PTS、PMT descriptor | `arib_si_engine_rs/DESIGN_JA.md`、`tis/DESIGN_JA.md` |
+| STD-B25 6.7-E1 英語版 | Part 1 2.2.2.4、2.2.2.10〜2.2.2.11、3.1.5〜3.1.7、3.2.3〜3.2.4、4.3.3.3 Table 4-11〜4-14、4.8〜4.10 | MULTI2 payload処理、ECM/EMM/Ks、奇偶鍵組と12 PID以上の容量 | 本書 |
+| STD-B31 2.2-E1 英語版 | 2.3、3.8、3.9、3.11.1、3.14.2、3.15.6.5〜3.15.6.7 | ISDB-Tのmode、変調、符号化率、時間interleave、guard intervalの値域 | 本書 |
+| STD-B32 3.11-E1 英語版 Fascicle 1 | Chapter 3 3.1〜3.3 | MPEG-2 Video、MPEG-4 AVC、HEVC | `tis/DESIGN_JA.md` |
+| STD-B32 3.11-E1 英語版 Fascicle 2 | Chapter 3 3.1〜3.4、Chapter 5、Chapter 6 | MPEG-2 AAC、MPEG-2 BC、MPEG-4 AAC、MPEG-4 ALS | `tis/DESIGN_JA.md` |
+| STD-B32 3.11-E1 英語版 Fascicle 3 | Chapter 3 3.1 | PES start code、`stream_id=0xBD`、宣言長、長さ0をvideoだけに許す境界 | 本書、`tis/DESIGN_JA.md` |
 
 
 ## VTS環境とARIB B31の境界

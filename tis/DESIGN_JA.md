@@ -344,9 +344,9 @@ Provider 必須問い合わせ failure、Program insert/update failure、廃止�
 `AttributionSource?` は `TvInputService.onCreateSession(..., AttributionSource)` から `MaleicacidLiveSession`、`TunerController`、`PlaybackPipeline` へ保持して渡す。対象 Android の `AudioTrack.Builder` が `setAttributionSource(AttributionSource)` を公開している場合は reflection を使わない直接呼び出しへ移行する。Android 14 system SDK 境界では compile visibility 差があるため、`PlaybackPipeline` は reflection による補助設定を行い、失敗時は警告 ログ に残して audio usage/content type/session 設定を継続する。
 
 
-## 国内放送全般であり得る codec 固定表
+## 本プロダクト対象TSであり得るcodec固定表
 
-ARIB 資料上の国内放送全般であり得る codec を追加認識対象にする場合は、次の固定表を設計正本に吸収してから扱う。ここでの「扱う」は、PMT / component descriptor / 音声コンポーネントdescriptor / stream type / MMT asset メタデータ / codecメタデータを認識し、TvProvider / trackメタデータ / 診断情報へ正しく反映することを含む。transport profile や受信方式が本プロダクトの恒久対象外である場合は、codec を認識しても ライブ 視聴可能性 / 再生可能性 として 対応宣言しない。
+ARIB 資料上の本プロダクト対象TSであり得る codec を追加認識対象にする場合は、次の固定表を設計正本に吸収してから扱う。ここでの「扱う」は、PMT / component descriptor / 音声コンポーネントdescriptor / stream type / codecメタデータを認識し、TvProvider / trackメタデータ / 診断情報へ正しく反映することを含む。ISDB-S3 / MMT / TLVは恒久対象外であり、それらだけに依存するcodecまたは音響構成を本表の根拠へ持ち込まない。
 
 ### 参照した ARIB 資料と根拠
 
@@ -355,8 +355,6 @@ ARIB 資料上の国内放送全般であり得る codec を追加認識対象�
 | ARIB STD-B32 3.11-E1 Fascicle 1 Chapter 3 3.1〜3.3 | 国内デジタル放送の映像符号化方式は MPEG-2 Video、MPEG-4 AVC、HEVC の3系統として扱う。 |
 | ARIB STD-B32 3.11-E1 Fascicle 2 Chapter 3 3.1〜3.4、Chapter 5、Chapter 6 | 国内デジタル放送の音声符号化方式は MPEG-2 AAC、MPEG-2 BC、MPEG-4 AAC、MPEG-4 ALS の4系統として扱う。 |
 | ARIB STD-B10 5.13-E1 Part 2 Table 6-5 / 6.2.26 / Annex E | MPEG-2 系映像、H.264/AVC、H.265/HEVC、MPEG-2 Audio、AAC ADTS、MPEG-4 Audio LATM の signaling を認識対象にする。 |
-| `ARIB/doc/2-STD-B60v1_7.pdf` MMT / asset signaling | ISDB-S3 / MMT 側では HEVC 映像、ISO/IEC 14496-3 音声、MPEG-4 AAC / MPEG-4 ALS を codecメタデータ として認識対象にする。ただし本プロダクトが ISDB-S3 / MMT / TLV を恒久対象外とする場合、ライブ 視聴可能性 / 再生可能性 には入れない。 |
-| `ARIB/doc/2-STD-B59v2_0.pdf` | 22.2 ch 等の音響チャンネル構成の参照資料であり、放送 bitstream codec としては B32 / B60 の MPEG-4 AAC / MPEG-4 ALS 側で扱う。MPEG-H 3D Audio codec を本表へ追加する根拠にはしない。 |
 
 ### video codec
 
