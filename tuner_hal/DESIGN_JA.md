@@ -2173,20 +2173,24 @@ LNBへのバックエンド適用後に台帳の確定へ失敗した場合は�
 
 ## デスクランブル gate
 
-### STD-B25容量台帳
+### STD-B25デコード能力台帳
 
-ARIB STD-B25 6.7-E1 Part 1の4.9・4.10が受信機またはチューナーに求める最小処理能力は、Binder objectごとではなく、同じ物理tuner/backend復号経路に属する共有`DescramblerCapacityPool`へ適用する。各poolは少なくとも奇数・偶数鍵の組を1組、同時PID claimを12件保持する。複数`IDescrambler` sessionは同じpoolからclaimし、合計使用量が実容量を超えないようにする。各objectへ1鍵組と12 PIDを重複予約して容量を水増ししてはならない。AOSPの`DemuxCapabilities`には鍵数またはPID数の公開欄がないため、架空のcapability fieldは追加せず、受付と内部台帳で整合を保証する。
+STD-B25デコード能力とSTD-B25 Part 1 §4.9への適合宣言を分離する。本設計は、Part 1 §4.9の受信機システム最小鍵組容量を`Tuner HAL`単体の設計対象外とし、同条項、Part 1 CAS-R全体、またはSTD-B25全体への適合を主張しない。1鍵組を保証することだけを根拠に、Part 1 §4.9準拠と表現してはならない。将来、製品全体として同条項への適合を宣言する場合は、受信機システム全体の統合profileで8鍵組以上を保証し、Tuner HAL、CAS、backendを含む同時利用条件を別途固定する。
+
+実装がSTD-B25で定める対象方式のTS payloadを実際に復号できる場合は、限定した事実を`StdB25DecodeCapability`として製品profileへ記録してよい。この能力は、対応するPart・方式・payload処理、物理tuner/backend復号経路ごとの実同時鍵組数、実同時PID数、pool共有単位、枯渇時の`UNAVAILABLE`を一体で定義する。値が未確定、または復号経路が利用不能の場合は能力を公開しない。AOSPの`DemuxCapabilities`には鍵組数またはPID数の欄がなく、`IDescrambler`は1 sessionを1 key slotへ関連付けて複数PIDを登録する契約までなので、frozen AIDLへ独自fieldを追加しない。鍵組数を外部へ表示する必要がある場合は、AIDL能力ではなく製品profileの設計メタデータとして扱う。
+
+実行時は、同じ物理tuner/backend復号経路に属する共有`DescramblerCapacityPool`へprofileの実鍵組数と実PID数を登録する。複数`IDescrambler` sessionは同じpoolからclaimし、合計使用量が実容量を超えないようにする。各objectへ容量を重複予約して水増ししてはならない。
 
 | 事象 | 台帳操作 | 結果 |
 |---|---|---|
-| service/backend初期化 | 物理tuner/backend単位の実鍵組数とPID数を共有poolへ登録 | 1鍵組・12 PID未満の経路はSTD-B25対応能力として公開しない |
-| `openDescrambler()` | 対象demuxが接続する共有poolへのsessionだけを登録 | object単位の1鍵組・12 PIDは先取りしない。session台帳を確保できない場合は`UNAVAILABLE` |
+| service/backend初期化 | 物理tuner/backend単位の実鍵組数と実PID数、pool共有単位を製品profileから共有poolへ登録 | 未確定、0、または実体と不一致の能力は公開しない |
+| `openDescrambler()` | 対象demuxが接続する共有poolへのsessionだけを登録 | object単位の鍵組・PID容量は先取りしない。session台帳を確保できない場合は`UNAVAILABLE` |
 | `setKeyToken(non-VOID)` | sessionが未保有なら共有poolから鍵組1件をclaimし、保有中なら同じclaim内で参照を置換 | backend適用と台帳確定の両方が成功した場合だけ新tokenを公開する。鍵組枯渇は`UNAVAILABLE` |
 | `addPid()` | 共有poolからPID claimを1件取得してsessionへ帰属させる | pool合計が実容量を超える要求は`UNAVAILABLE`、既存登録と状態は維持 |
 | `removePid()` | 対象PID claimを共有poolへ返す | 未登録は冪等成功。他sessionのclaimは変更しない |
 | `close()` / demux無効化 | backend解除を全件試行し、sessionが持つ鍵参照とPID claimを共有poolへ返す | 後片付け完了時だけ再利用し、`CleanupPending`または隔離中は使用中として数える |
 
-物理tuner/backend単位の最小poolを保証できない製品構成では、その経路の`openDescrambler()`を常に`UNAVAILABLE`とし、VTS製品設定へdescrambling flowを含めない。部分的な8 PID対応などをSTD-B25対応として公開しない。鍵素材はslot数だけを台帳化し、公開AIDLまたは診断へ出さない。
+製品profileでSTD-B25デコード能力を有効にしない構成では、その経路の`openDescrambler()`を`UNAVAILABLE`とし、VTS製品設定へdescrambling flowを含めない。能力を有効にする場合も、実鍵組数または実PID数をPart 1 §4.9適合、Part 1 CAS-R適合、またはSTD-B25全面準拠の宣言へ読み替えない。鍵素材はslot数だけを台帳化し、公開AIDLまたは診断へ出さない。
 
 VTS/lab config には descrambling flow を置かない。VTS 用 XML に ECM filter や `<descramblers>` を生成せず、平文ライブ視聴 / DVR / 明示選局 の接続確認に限定する。Tuner HAL は PMT/CAT/SDT/ECM/EMM 等の section payload delivery、`IDescrambler`、`setKeyToken()`、`addPid()` / `removePid()`、トークン lookup 境界、未接続・bad トークン・expired トークン 診断までを確認対象とする。本番経路スクランブル解除成功のリリーススコープと、CA情報 / サービス メタデータの意味解析、ECM/EMM filter 開始方針、MediaCas/CAS bridge 呼び出し、不透明な参照値の取得試行、Tuner descrambler への接続判断、未接続診断の上位制御の責務境界は `開発規則.md` を正とする。Tuner HAL の packet 単位のデスクランブル中核は、単体テスト内で復号鍵台帳へ既知鍵を登録して確認する。
 
@@ -2476,7 +2480,7 @@ raw sectionは、外形、設定されたCRC検査、意味検証を分ける契
 | T-B25-6 | bad token | `INVALID_ARGUMENT` / 診断 |
 | T-B25-8 | 復号成功 | scrambling_control clear |
 
-デスクランブラーとTS経路の失敗は、本書の「失敗影響範囲」に従って扱う。影響経路を隔離するのは、データ枠を管理する基盤が破損した場合に限る。不正TSはパケット単位で破棄し、TEIと連続性異常は各経路の規則に従う。構造上有効だがスクランブルが残るパケットはTS生データ経路と記録経路に残してよいが、復号済みの意味イベントを生成してはならない。ARIB STD-B25 6.7-E1 第1部の2.2.2.4、2.2.2.10〜2.2.2.11、3.1.5〜3.1.7、3.2.3〜3.2.4、4.3.3.3の表4-11〜4-14、4.8、4.9、4.10を精読基準とする。これらの条項から、TSペイロードをパケット単位でスクランブルすること、受信側でECMとEMMをCAモジュールへ渡すこと、Ksを受信側へ返すこと、スクランブル状態の検出、チューナーごとに奇数・偶数鍵の組を1組以上処理すること、12個以上のPIDを同時処理することを設計条件とする。AOSPの`DemuxCapabilities`には対応する公開欄がないため、容量はSTD-B25容量台帳で予約・受付・解放を強制し、不足時は`openDescrambler()`を公開しない。ECM、EMM、KsをTuner HALの公開面へ出さない境界は、AOSPの公開面と情報露出を最小化する設計から定めるものであり、STD-B25の文言そのものとは主張しない。HAL内部の隔離方法とエラー対応は、AOSP契約に基づく内部設計とする。
+デスクランブラーとTS経路の失敗は、本書の「失敗影響範囲」に従って扱う。影響経路を隔離するのは、データ枠を管理する基盤が破損した場合に限る。不正TSはパケット単位で破棄し、TEIと連続性異常は各経路の規則に従う。構造上有効だがスクランブルが残るパケットはTS生データ経路と記録経路に残してよいが、復号済みの意味イベントを生成してはならない。ARIB STD-B25 6.7-E1 第1部の2.2.2.4、2.2.2.10〜2.2.2.11、3.1.5〜3.1.7、3.2.3〜3.2.4、4.3.3.3の表4-11〜4-14、4.8を精読基準とする。これらの条項から、TSペイロードをパケット単位でスクランブルすること、受信側でECMとEMMをCAモジュールへ渡すこと、Ksを受信側へ返すこと、スクランブル状態を検出することを、限定したSTD-B25デコード能力の設計条件とする。Part 1 §4.9の受信機システム鍵容量は適合対象外であり、実鍵組数と実PID数は製品profileの事実としてSTD-B25デコード能力台帳で予約・受付・解放を強制する。ECM、EMM、KsをTuner HALの公開面へ出さない境界は、AOSPの公開面と情報露出を最小化する設計から定めるものであり、STD-B25の文言そのものとは主張しない。HAL内部の隔離方法とエラー対応は、AOSP契約に基づく内部設計とする。
 
 
 | 番号 | 確認観点 | 目的 |
@@ -2500,7 +2504,7 @@ raw sectionは、外形、設定されたCRC検査、意味検証を分ける契
 - フィルターと`SharedFilter`では、HAL内部の`FilterProducerDrainGate`を使用する。ブロッキングするバックエンド読み取り、FMQ待機、解析器の一時保持が終わった後、FMQへの確定書き込みまたは保留イベント追加の直前にだけ配送許可を取得する。Binderコールバック、バックエンド入出力、FMQまたは条件変数の待機、規定外順序のロック取得を許可の有効範囲に含めない。`flush()`は`Draining`へ移り、新しい許可を拒否し、サービス所有のワーカーを起床させ、許可が0件になるまで待つ。未消費のFMQデータと未配送イベントを破棄し、確定済みまたは配送中のコールバックと配送済みAV領域を維持する。ワーカー終了またはpanic時は保護子を解放する。ロック汚染または遮断されていない終端失敗を検出した場合は、フィルターを閉鎖して隔離する。`QueueEpochProtocol`はDVRだけで使用する。
 - demux、型別filter、DVRの個数は、frontendと公開可能LNBの検出後、`ProductProfile`が列挙する完全な`RuntimeCapabilityVector`から選ぶ。各vectorは任意の非負整数を使用でき、2の冪へ丸めない。object数、worker、callback、reaper、cleanup、PES/AV/playback/FMQ byte予算をvector全体で一括予約し、候補間の列を混成しない。機能群ごとの縮退は他群の値を維持した完全vectorとして明示する。確定値は`CapabilitySnapshot`へ格納し、open/配送時の実領域はsnapshot残量から割り当てる。PES assemblerはARIB字幕用bounded PESだけを公開し、最大65,541 byte/active filterの共通実行時予算で保持する。unbounded video PESは公開しない。Tuner VTSは別途起動前環境へ結び付け、入力元、PID、経路、queue容量、memory予算が定義されるまで`DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED`とする。
 - AVの共有方式とイベント固有方式は、同じ実行時台帳を共有する。各filterでは`CapabilitySnapshot.avPerFilterLiveBytes`、サービス全体では`CapabilitySnapshot.avRuntimeBudgetBytes`を未解放payloadバイト数の上限とし、イベントの実サイズだけを割り当てる。`openFilter(bufferSize)`はFMQ容量として別に予約する。固定スロット数や1 MiB単位をAOSPまたはコーデック上限として規範化せず、使用中の割り当てを追い出さない。
-- ARIB STD-B10 5.13-E1 Part 1 5.2.4〜5.2.17・Part 3 5.1.1〜5.1.3を表ごとのsection上限1021/4093の根拠とし、STD-B32 3.11-E1 Fascicle 3 Chapter 3 3.1をPES構文の根拠とする。B32を4093の独立した上限根拠として使用しない。B25は公式英訳6.7-E1全文を精読基準とする。第1部の4.9および4.10に従い、物理tuner/backend復号経路ごとの共有poolで奇数・偶数鍵の組を1組以上、PIDを12個以上同時処理できることを容量条件とする。AOSPに公開欄は追加せず、session間で共有する同じ内部台帳で受付と解放を強制する。
+- ARIB STD-B10 5.13-E1 Part 1 5.2.4〜5.2.17・Part 3 5.1.1〜5.1.3を表ごとのsection上限1021/4093の根拠とし、STD-B32 3.11-E1 Fascicle 3 Chapter 3 3.1をPES構文の根拠とする。B32を4093の独立した上限根拠として使用しない。B25は公式英訳6.7-E1全文を精読基準とするが、Part 1 §4.9の受信機システム最小鍵組容量は本設計の適合対象外とする。STD-B25デコード能力は、対応するPart・方式・payload処理と、物理tuner/backend復号経路ごとの実鍵組数、実PID数、pool共有単位、枯渇時の`UNAVAILABLE`を製品profileの事実として定義する。AOSPに公開欄は追加せず、session間で共有する同じ内部台帳で受付と解放を強制する。
 - 対象ドライバーと上流Linuxの証跡は、AOSP契約とは独立した根拠として扱う。
 
 ### ARIB規範本文との静的照合
@@ -2513,11 +2517,13 @@ ARIB依存の規範主張は、アクセス可能な最新版日本語版本文�
 | STD-B20 3.0 日本語版 | 2.9の別記第2・別記第3、2.10 | 相対TS番号が0〜7のselectorであり、TS_IDとは別domainで1対1に対応付けられること | 本書 |
 | STD-B21 5.12-E2 英語版 | Appendix 10 Table 10-3、Table 10-4 | CATV C13〜C63の中心周波数とC21/C22/C23の非連続境界 | 本書、`tis/DESIGN_JA.md` |
 | STD-B24 6.4-E1 英語版 Fascicle 1 | 7.1.1.1〜7.1.2.4、9.1.1、9.2、9.3、9.5、9.6 | SI/EPG文字のdesignation・invocation・Macro・DRCS境界、独立PES字幕とdata group、PTS、PMT descriptor | `arib_si_engine_rs/DESIGN_JA.md`、`tis/DESIGN_JA.md` |
-| STD-B25 6.7-E1 英語版 | Part 1 2.2.2.4、2.2.2.10〜2.2.2.11、3.1.5〜3.1.7、3.2.3〜3.2.4、4.3.3.3 Table 4-11〜4-14、4.8〜4.10 | MULTI2 payload処理、ECM/EMM/Ks、奇偶鍵組と12 PID以上の容量 | 本書 |
+| STD-B25 6.7-E1 英語版 | Part 1 2.2.2.4、2.2.2.10〜2.2.2.11、3.1.5〜3.1.7、3.2.3〜3.2.4、4.3.3.3 Table 4-11〜4-14、4.8 | MULTI2 payload処理、ECM/EMM/Ks、スクランブル状態検出に限定したSTD-B25デコード能力 | 本書 |
 | STD-B31 2.2-E1 英語版 | 2.3、3.8、3.9、3.11.1、3.14.2、3.15.6.5〜3.15.6.7 | ISDB-Tのmode、変調、符号化率、時間interleave、guard intervalの値域 | 本書 |
 | STD-B32 3.11-E1 英語版 Fascicle 1 | Chapter 3 3.1〜3.3 | MPEG-2 Video、MPEG-4 AVC、HEVC | `tis/DESIGN_JA.md` |
 | STD-B32 3.11-E1 英語版 Fascicle 2 | Chapter 3 3.1〜3.4、Chapter 5、Chapter 6 | MPEG-2 AAC、MPEG-2 BC、MPEG-4 AAC、MPEG-4 ALS | `tis/DESIGN_JA.md` |
 | STD-B32 3.11-E1 英語版 Fascicle 3 | Chapter 3 3.1 | PES start code、`stream_id=0xBD`、宣言長、長さ0をvideoだけに許す境界 | 本書、`tis/DESIGN_JA.md` |
+
+STD-B25 Part 1 §4.9は上表の適合主張に含めない。同条項に係る受信機システム最小鍵組容量は、本設計の範囲外としてだけ明記し、1鍵組のSTD-B25デコード能力を同条項適合またはPart 1 CAS-R適合と表現しない。
 
 
 ## VTS環境とARIB B31の境界
