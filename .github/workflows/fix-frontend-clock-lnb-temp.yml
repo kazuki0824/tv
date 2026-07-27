@@ -6,6 +6,11 @@ on:
       - agent/apply-tuner-hal2-design-proposals-v70
     paths:
       - .github/workflows/fix-frontend-clock-lnb-temp.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/fix-frontend-clock-lnb-temp.yml
 
 permissions:
   contents: write
@@ -60,12 +65,11 @@ jobs:
                   raise SystemExit(f'expected exactly one replacement target, found {count}: {old[:120]!r}')
               text = text.replace(old, new)
 
-          forbidden = [
+          for phrase in [
               'lockを観測できない場合は`DEMOD_LOCK`を公開せず',
               '90 kHz系の最新観測時刻を返す',
               'LNB給電が必要なsatellite frontendも同じprofileでは公開しない',
-          ]
-          for phrase in forbidden:
+          ]:
               if phrase in text:
                   raise SystemExit(f'contradictory text remains: {phrase}')
 
@@ -93,5 +97,3 @@ jobs:
           git add tuner_hal/DESIGN_JA.md .github/workflows/fix-frontend-clock-lnb-temp.yml
           git commit -m 'docs: fix frontend lock clock and fixed power contracts [skip ci]'
           git push origin HEAD:agent/apply-tuner-hal2-design-proposals-v70
-
-# trigger
