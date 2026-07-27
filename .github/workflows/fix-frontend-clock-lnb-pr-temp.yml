@@ -17,11 +17,79 @@ jobs:
         with:
           ref: agent/apply-tuner-hal2-design-proposals-v70
           fetch-depth: 0
-      - name: Apply exact replacements from the companion workflow
+      - name: Apply review corrections
         shell: bash
         run: |
-          sed -n '31,76p' .github/workflows/fix-frontend-clock-lnb-temp.yml | sed 's/^          //' > /tmp/fix_design.py
-          python3 /tmp/fix_design.py
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path('tuner_hal/DESIGN_JA.md')
+          text = path.read_text(encoding='utf-8')
+
+          lock_body = '''## px4_drv ロック 方針
+
+px4_drv backendはRF/carrier lockを直接返すAPIを持たないため、`RF_LOCK`をadvertiseしない。一方、Android 14の`FrontendEventType.LOCKED`と既知信号VTS経路を成立させるため、px4の`DEMOD_LOCK`は同一tune generationのTS入力から導く製品定義の観測状態とする。backend選局要求の成功だけではlockとせず、streaming開始後に同一generation・同一endpointから、188-byte境界、sync byte `0x47`、`transport_error_indicator=0`、予約値でない`adaptation_field_control`を満たすpacketを連続16個受信し、その区間にnull PID以外のpayload packetが1個以上ある場合にだけ`DEMOD_LOCK=true`へ確定し、`LOCKED`をgenerationごとに1回通知する。PAT、PMT、section、PES、AV、decoderの到達はdemod lock条件へ含めず、サービス視聴可能性と分離する。
+
+初回lock前のpacket framing不成立は`TuneSubmitted`を維持し、選局期限まで再評価する。lock後に有効packetを受信しない状態が`px4DemodUnlockGapMs=1000`継続した場合、またはstreaming停止、fatal read errorが発生した場合は`DEMOD_LOCK=false`へ確定し、同一generationへ`LOST_LOCK`を1回通知する。retune、`stopTune()`、`stopScan()`、`close()`では旧generationのcallback権限を先に遮断し、その旧generationの`LOST_LOCK`を後続generationへ配送しない。`px4DemodLockPacketCount=16`と`px4DemodUnlockGapMs=1000`は`ProductProfile`の固定値として`CapabilitySnapshot`へ取り込み、VTS profile対象px4 frontendはこの条件で3秒以内に`LOCKED`を通知できる実信号・入力経路だけを使用する。
+
+この方針はpx4のfrontend状態だけの設計であり、視聴可能状態の判定ではない。TISは`notifyVideoAvailable()`を出す前に、section到達、PMT/ES PID解決、AV filter data、decoder/surfaceの成立を別途確認する。
+
+'''
+          text, count = re.subn(
+              r'## px4_drv ロック 方針\n.*?(?=## px4_drv chardev open / ライブ TS reader 方針)',
+              lock_body,
+              text,
+              count=1,
+              flags=re.S,
+          )
+          if count != 1:
+              raise SystemExit(f'px4 lock section replacements={count}')
+
+          av_clock = '''同一demuxに属する稼働中のPCRフィルターを示す有効なA/V同期IDについては、PCR未観測でも`getAvSyncTime()`を成功させ、`Tuner.INVALID_TIMESTAMP`を返す。最初の有効なPCRを観測した時点で、PCR filter generationごとに`PcrClockAnchor { raw_pcr_base_33, unwrapped_pcr_90k, monotonic_base_ns, generation }`を確定する。以後の返却値は、`current_90k = (unwrapped_pcr_90k + floor((now_monotonic_ns - monotonic_base_ns) * 90000 / 1000000000)) mod 2^33`とし、PCR到着間隔中もmonotonic clockで進行させる。計算は符号なしオーバーフローを起こさない拡張精度で行い、`now_monotonic_ns < monotonic_base_ns`となる時計異常ではanchorを無効化して`Tuner.INVALID_TIMESTAMP`を返す。
+
+新しいPCRを観測した場合、`discontinuity_indicator`がなく同じgenerationであれば、33-bit PCR baseの`2^33` wrapを直前anchorから前向きにunwrapし、当該PCRの観測monotonic時刻へanchorを更新する。`discontinuity_indicator`、同一generationで前向きwrapとして解釈できないPCR逆行、PCR PIDまたはsource filterの置換・再設定・`flush()`・`stop()`・`close()`、demux input generation変更、frontendのretune・`stopTune()`・`close()`、playback sourceの`flush()`またはresetではanchorを破棄する。破棄後は新しい有効PCRでanchorを再確定するまで`Tuner.INVALID_TIMESTAMP`を返し、旧generationのanchorを再利用しない。別demuxのID、PCR以外のフィルターID、閉鎖済みID、不明なIDには`INVALID_ARGUMENT`を返す。値0を未観測時の特別値として公開してはならない。'''
+          text, count = re.subn(
+              r'同一demuxに属する稼働中のPCRフィルターを示す有効なA/V同期IDについては、PCR未観測でも .*?値0を未観測時の特別値として公開してはならない。',
+              av_clock,
+              text,
+              count=1,
+              flags=re.S,
+          )
+          if count != 1:
+              raise SystemExit(f'A/V clock replacements={count}')
+
+          old_bullets = '- PCR と monotonic clock の対応付けによる最小 wallclock 補間は維持する。\n- PCR PID 明示管理、サービス clock、jitter smoothing、PLL / clock discipline を追加する場合は、clock source、reset 条件、戻り値、診断、実機確認条件を本書へ固定してから扱う。'
+          new_bullets = '- PCRとmonotonic clockの対応付け、90 kHzへの整数変換、33-bit wrap、anchor破棄条件は直前の`PcrClockAnchor`契約を唯一の正本とする。\n- PCR PID明示管理、サービスclock、jitter smoothing、PLL / clock disciplineを追加する場合は、clock source、reset条件、戻り値、診断、実機確認条件を本書へ固定してから扱う。'
+          if text.count(old_bullets) != 1:
+              raise SystemExit(f'PCR bullet replacements={text.count(old_bullets)}')
+          text = text.replace(old_bullets, new_bullets)
+
+          fixed_power = '''現在証跡があるpx4/earth_pt1 backendは電圧制御しか確認できず、公開`ILnb`に必要な基礎操作条件を満たさない。そのため現行`ProductProfile`では`aidl_baseline_eligible_lnb_count=0`、`getLnbIds()`は空、公開AIDLに存在する`openLnbById()`と`openLnbByName()`は`UNAVAILABLE`とし、`ILnb` object、callback、leaseを生成しない。電圧制御だけを持つ内部backendをAOSPの`ILnb`対応能力として広告してはならない。
+
+ただし、公開`ILnb`対応能力と、固定ディッシュ向けsatellite frontendの内部給電は別能力として扱う。`SupportedDeviceCapabilityCatalog`の検証済み項目が、機器ごとの固定電圧、物理rail owner、適用・読戻しまたはfunctional probe、停止時の安全状態、共有時の互換条件を`FixedDishPowerProfile`として一意に定義し、frontend generation開始前に機器単位のrail leaseを取得して固定電圧を実適用できる場合、そのISDB-S frontendは`aidl_baseline_eligible_lnb_count=0`のまま公開してよい。固定給電はfrontend backend内部の選局前提であり、frameworkから選択・変更できるLNB IDとして列挙しない。tune準備失敗では給電とleaseを巻き戻し、`stopTune()`、frontend `close()`、機器切断では同一railの利用generationが0になった時だけcatalogの安全状態へ戻してleaseを解放する。実状態を確定できない場合は当該railと依存frontendを隔離する。
+
+`FixedDishPowerProfile`が未定義、一致しない、固定電圧の適用を確認できない、または対象受信設備がruntime切替を必要とする場合は、そのsatellite frontendを公開しない。VTS/product profileは、公開LNBを使用しない固定給電経路か、将来の`aidl_baseline_eligible`な公開LNB経路かを排他的に選び、固定給電経路で`IFrontend.setLnb()`成功を要求しない。'''
+          text, count = re.subn(
+              r'現在証跡があるpx4/earth_pt1 backendは電圧制御しか確認できず、この条件を満たさない。.*?電圧制御だけを持つ内部backendをAOSPの`ILnb`対応能力として広告してはならない。',
+              fixed_power,
+              text,
+              count=1,
+              flags=re.S,
+          )
+          if count != 1:
+              raise SystemExit(f'fixed power replacements={count}')
+
+          for phrase in (
+              'lockを観測できない場合は`DEMOD_LOCK`を公開せず',
+              '90 kHz系の最新観測時刻を返す',
+              'LNB給電が必要なsatellite frontendも同じprofileでは公開しない',
+          ):
+              if phrase in text:
+                  raise SystemExit(f'contradictory text remains: {phrase}')
+
+          path.write_text(text, encoding='utf-8')
+          PY
       - name: Remove temporary workflows and validate
         shell: bash
         run: |
@@ -31,9 +99,6 @@ jobs:
           grep -Fq 'px4DemodLockPacketCount=16' tuner_hal/DESIGN_JA.md
           grep -Fq 'current_90k = (unwrapped_pcr_90k' tuner_hal/DESIGN_JA.md
           grep -Fq 'FixedDishPowerProfile' tuner_hal/DESIGN_JA.md
-          ! grep -Fq 'lockを観測できない場合は`DEMOD_LOCK`を公開せず' tuner_hal/DESIGN_JA.md
-          ! grep -Fq '90 kHz系の最新観測時刻を返す' tuner_hal/DESIGN_JA.md
-          ! grep -Fq 'LNB給電が必要なsatellite frontendも同じprofileでは公開しない' tuner_hal/DESIGN_JA.md
           git diff --check
       - name: Commit and push
         shell: bash
