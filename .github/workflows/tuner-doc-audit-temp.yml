@@ -1,9 +1,9 @@
 name: tuner-doc-audit-temp
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/apply-tuner-hal2-design-proposals-v70
+      - main
 
 permissions:
   contents: read
