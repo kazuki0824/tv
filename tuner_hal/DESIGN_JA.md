@@ -1967,11 +1967,11 @@ Live/AV経路、診断、recording メタデータ、VTS 判定では、scramble
 
 ## px4_drv ロック 方針
 
+px4_drv backendはRF/carrier lockを直接返すAPIを持たないため、`RF_LOCK`をadvertiseしない。一方、Android 14の`FrontendEventType.LOCKED`と既知信号VTS経路を成立させるため、px4の`DEMOD_LOCK`は同一tune generationのTS入力から導く製品定義の観測状態とする。backend選局要求の成功だけではlockとせず、streaming開始後に同一generation・同一endpointから、188-byte境界、sync byte `0x47`、`transport_error_indicator=0`、予約値でない`adaptation_field_control`を満たすpacketを連続16個受信し、その区間にnull PID以外のpayload packetが1個以上ある場合にだけ`DEMOD_LOCK=true`へ確定し、`LOCKED`をgenerationごとに1回通知する。PAT、PMT、section、PES、AV、decoderの到達はdemod lock条件へ含めず、サービス視聴可能性と分離する。
 
-lockを観測できない場合は`DEMOD_LOCK`を公開せず、trueにもせず、内部の`TuneSubmitted`状態として扱う。
+初回lock前のpacket framing不成立は`TuneSubmitted`を維持し、選局期限まで再評価する。lock後に有効packetを受信しない状態が`px4DemodUnlockGapMs=1000`継続した場合、またはstreaming停止、fatal read errorが発生した場合は`DEMOD_LOCK=false`へ確定し、同一generationへ`LOST_LOCK`を1回通知する。retune、`stopTune()`、`stopScan()`、`close()`では旧generationのcallback権限を先に遮断し、その旧generationの`LOST_LOCK`を後続generationへ配送しない。`px4DemodLockPacketCount=16`と`px4DemodUnlockGapMs=1000`は`ProductProfile`の固定値として`CapabilitySnapshot`へ取り込み、VTS profile対象px4 frontendはこの条件で3秒以内に`LOCKED`を通知できる実信号・入力経路だけを使用する。
 
-
-この方針は px4 の frontend 状態 だけの設計であり、視聴可能状態の判定ではない。TIS は `notifyVideoAvailable()` を出す前に、section 到達、PMT/ES PID 解決、AV filter data、decoder/surface の成立を別途確認する。px4 backend は `RF_LOCK` を advertise しない。
+この方針はpx4のfrontend状態だけの設計であり、視聴可能状態の判定ではない。TISは`notifyVideoAvailable()`を出す前に、section到達、PMT/ES PID解決、AV filter data、decoder/surfaceの成立を別途確認する。
 
 ## px4_drv chardev open / ライブ TS reader 方針
 
@@ -2137,7 +2137,9 @@ AV filterを対応宣言する demux は AOSP の `getAvSyncHwId(Filter)` と `g
 
 `getAvSyncHwId()` は、対象 media filter に対応する PCR filter が configure 済みであれば、PCR 観測前でもその PCR filter ID を返す。PCR 観測済みかどうかを sync ID 返却の前提にしない。PCR 未観測状態は `getAvSyncTime(id)` の戻り値側で未確定値として表現する。
 
-同一demuxに属する稼働中のPCRフィルターを示す有効なA/V同期IDについては、PCR未観測でも `getAvSyncTime()` を成功させ、`Tuner.INVALID_TIMESTAMP` を返す。最初の有効なPCRを観測した後は、90 kHz系の最新観測時刻を返す。別demuxのID、PCR以外のフィルターID、閉鎖済みID、不明なIDには `INVALID_ARGUMENT` を返す。値0を未観測時の特別値として公開してはならない。
+同一demuxに属する稼働中のPCRフィルターを示す有効なA/V同期IDについては、PCR未観測でも`getAvSyncTime()`を成功させ、`Tuner.INVALID_TIMESTAMP`を返す。最初の有効なPCRを観測した時点で、PCR filter generationごとに`PcrClockAnchor { raw_pcr_base_33, unwrapped_pcr_90k, monotonic_base_ns, generation }`を確定する。以後の返却値は、`current_90k = (unwrapped_pcr_90k + floor((now_monotonic_ns - monotonic_base_ns) * 90000 / 1000000000)) mod 2^33`とし、PCR到着間隔中もmonotonic clockで進行させる。計算は符号なしオーバーフローを起こさない拡張精度で行い、`now_monotonic_ns < monotonic_base_ns`となる時計異常ではanchorを無効化して`Tuner.INVALID_TIMESTAMP`を返す。
+
+新しいPCRを観測した場合、`discontinuity_indicator`がなく同じgenerationであれば、33-bit PCR baseの`2^33` wrapを直前anchorから前向きにunwrapし、当該PCRの観測monotonic時刻へanchorを更新する。`discontinuity_indicator`、同一generationで前向きwrapとして解釈できないPCR逆行、PCR PIDまたはsource filterの置換・再設定・`flush()`・`stop()`・`close()`、demux input generation変更、frontendのretune・`stopTune()`・`close()`、playback sourceの`flush()`またはresetではanchorを破棄する。破棄後は新しい有効PCRでanchorを再確定するまで`Tuner.INVALID_TIMESTAMP`を返し、旧generationのanchorを再利用しない。別demuxのID、PCR以外のフィルターID、閉鎖済みID、不明なIDには`INVALID_ARGUMENT`を返す。値0を未観測時の特別値として公開してはならない。
 
 
 ## A/V sync 非採用範囲
@@ -2146,8 +2148,8 @@ AV filter の `start()`、共有ハンドル、MediaEventの状態別契約は�
 
 
 - PTS は current A/V sync clock の 代替処理 として使わない。
-- PCR と monotonic clock の対応付けによる最小 wallclock 補間は維持する。
-- PCR PID 明示管理、サービス clock、jitter smoothing、PLL / clock discipline を追加する場合は、clock source、reset 条件、戻り値、診断、実機確認条件を本書へ固定してから扱う。
+- PCRとmonotonic clockの対応付け、90 kHzへの整数変換、33-bit wrap、anchor破棄条件は直前の`PcrClockAnchor`契約を唯一の正本とする。
+- PCR PID明示管理、サービスclock、jitter smoothing、PLL / clock disciplineを追加する場合は、clock source、reset条件、戻り値、診断、実機確認条件を本書へ固定してから扱う。
 
 以下は現行実装範囲外にする。
 
@@ -2163,7 +2165,11 @@ AV filter の `start()`、共有ハンドル、MediaEventの状態別契約は�
 
 LNBは機器単位の終端資源とし、本書の「LNB機器の資源規則」と事象駆動の「ワーカー終了契約」だけで管理する。AOSPにLNBとして公開するendpointは、Android 14 CTSが公開objectへ要求する基礎操作を実処理できなければならない。少なくとも対応電圧、`setTone(TONE_NONE)`、`setSatellitePosition(POSITION_A)`、2バイトの`sendDiseqcMessage()`、登録済みcallbackへの受信通知を、成功扱いの無処理ではなくbackend契約として成立させることを`aidl_baseline_eligible`条件とする。
 
-現在証跡があるpx4/earth_pt1 backendは電圧制御しか確認できず、この条件を満たさない。そのため現行`ProductProfile`では`aidl_baseline_eligible_lnb_count=0`、`getLnbIds()`は空、公開AIDLに存在する`openLnbById()`と`openLnbByName()`は`UNAVAILABLE`とし、`ILnb` object、callback、leaseを生成しない。LNB給電が必要なsatellite frontendも同じprofileでは公開しない。電圧制御だけを持つ内部backendをAOSPの`ILnb`対応能力として広告してはならない。
+現在証跡があるpx4/earth_pt1 backendは電圧制御しか確認できず、公開`ILnb`に必要な基礎操作条件を満たさない。そのため現行`ProductProfile`では`aidl_baseline_eligible_lnb_count=0`、`getLnbIds()`は空、公開AIDLに存在する`openLnbById()`と`openLnbByName()`は`UNAVAILABLE`とし、`ILnb` object、callback、leaseを生成しない。電圧制御だけを持つ内部backendをAOSPの`ILnb`対応能力として広告してはならない。
+
+ただし、公開`ILnb`対応能力と、固定ディッシュ向けsatellite frontendの内部給電は別能力として扱う。`SupportedDeviceCapabilityCatalog`の検証済み項目が、機器ごとの固定電圧、物理rail owner、適用・読戻しまたはfunctional probe、停止時の安全状態、共有時の互換条件を`FixedDishPowerProfile`として一意に定義し、frontend generation開始前に機器単位のrail leaseを取得して固定電圧を実適用できる場合、そのISDB-S frontendは`aidl_baseline_eligible_lnb_count=0`のまま公開してよい。固定給電はfrontend backend内部の選局前提であり、frameworkから選択・変更できるLNB IDとして列挙しない。tune準備失敗では給電とleaseを巻き戻し、`stopTune()`、frontend `close()`、機器切断では同一railの利用generationが0になった時だけcatalogの安全状態へ戻してleaseを解放する。実状態を確定できない場合は当該railと依存frontendを隔離する。
+
+`FixedDishPowerProfile`が未定義、一致しない、固定電圧の適用を確認できない、または対象受信設備がruntime切替を必要とする場合は、そのsatellite frontendを公開しない。VTS/product profileは、公開LNBを使用しない固定給電経路か、将来の`aidl_baseline_eligible`な公開LNB経路かを排他的に選び、固定給電経路で`IFrontend.setLnb()`成功を要求しない。
 
 将来`aidl_baseline_eligible`なbackendを追加した場合、`getLnbIds()` は検出に成功して使用条件を満たす終端だけを列挙し、`openLnbById()`または`openLnbByName()`は終端1個の使用権を取得する。不明なIDには `INVALID_ARGUMENT`、使用中、`CleanupPending`、`Quarantined` の終端には、状態を変えず `UNAVAILABLE` を返す。最初の `close()` では `LogicalClosed` を確定して新しい公開処理を拒否し、その時点で実行可能な後片付けをすべて試す。再試行可能な未完の依存資源は `CleanupPending` に残す。実行中のワーカーは変更を遮断し、`ReaperSupervisor` へ一度だけ移す。バックエンドとワーカーの後片付けが完了した後に限り、終端の使用権を正確に1回返却する。隔離中は使用権を保持する。`ProductProfile` はLNBを抑止できるが、存在しない終端や能力を生成してはならない。
 
