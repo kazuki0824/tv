@@ -71,8 +71,8 @@ VTS XML/profileで使う機能、capabilityで宣言する機能、実装済み�
 
 | 領域 | capability / profile 方針 | 設計契約 |
 |---|---|---|
-| `setDataSource(NULL)` | AOSP意味論として存在し、現行AOSP契約として成功対象に含める | sink filter の入力元を demux input へ戻す。生成trait上の非nullable表現を理由に現行対象外へ落とさない |
-| `IDescrambler.addPid/removePid(NULL)` | AOSP意味論として存在し、現行AOSP契約として成功対象に含める | demux input 全体に対する PID 登録 / 解除として扱う。生成trait上の非nullable表現を理由に現行対象外へ落とさない |
+| `IFilter.setDataSource(filter)`、`filter == NULL` | AOSP意味論として存在する必須契約。現行Rust生成traitでは受信経路が未解決 | sink filter の入力元を demux input へ戻す。end-to-end受信経路が成立するまで実装済み・AOSP契約達成済みとは判定しない |
+| `IDescrambler.addPid(pid, optionalSourceFilter)` / `removePid(pid, optionalSourceFilter)`、`optionalSourceFilter == NULL` | AOSP意味論として存在する必須契約。現行Rust生成traitでは受信経路が未解決 | 指定PIDについてdemux input全体への登録 / 解除として扱う。end-to-end受信経路が成立するまで実装済み・AOSP契約達成済みとは判定しない |
 | AV shared handle release | media filter shared memory profileでは到達する | `releaseAvHandle(fd付き handle, 0)` を成功させる |
 | monitor event | 現行のTS-only `ProductProfile`では対応宣言しない | `configureMonitorEvent(0)`だけを監視停止として成功させ、非0 maskは`UNAVAILABLE`とする。monitor event用の状態、worker、queue、能力値を生成しない |
 | AV passthrough | 対応宣言しない | profileでは `isPassthrough=false` に固定する |
@@ -101,9 +101,9 @@ backendのエラーは、呼び出し側の不正値・値域違反を`INVALID_A
 
 ### nullable Binder 境界
 
-AOSP意味論として NULL binder 入力を持つ境界は、`IFilter.setDataSource(NULL)`、`IDescrambler.addPid(NULL)`、`IDescrambler.removePid(NULL)`、`IFrontend.setCallback(NULL)`、`ILnb.setCallback(NULL)` とする。これらは現行AOSP契約として扱い、生成trait上の表現差を理由に実装済み対象外へ落とさない。`setDataSource(NULL)` は demux input 復帰、`IDescrambler` の NULL filter は demux input 全体の PID 操作、callback NULL は登録解除として成功対象に含める。
+AOSP意味論としてNULL binder入力を持つ境界は、`IFilter.setDataSource(filter)`の`filter == NULL`、`IDescrambler.addPid(pid, optionalSourceFilter)` / `removePid(pid, optionalSourceFilter)`の`optionalSourceFilter == NULL`、`IFrontend.setCallback(callback)`の`callback == NULL`、`ILnb.setCallback(callback)`の`callback == NULL`とする。`setDataSource`はdemux input復帰、`IDescrambler`のNULL filterは指定PIDについてdemux input全体を対象とする操作、callback NULLは登録解除である。これらはAOSP公開契約上の必須動作であるが、Android 14 official AIDLから生成される現行Rust traitは各interface引数をnon-null `Strong<dyn ...>`として受けるため、現在のRust実装にはNULLを受信するend-to-end経路がない。
 
-この境界は本書で管理する。`future_work` を現行リリース契約の正本として参照してはならない。NULL 経路と non-null 経路の状態遷移、戻り値、資源寿命、失敗時遷移は本書の各表を正とする。nullable binder 入力をAOSP契約どおり受けるための実装方式は公開AIDL契約を改変せずに実装する。
+NULL経路とnon-null経路の期待動作、状態遷移、戻り値、資源寿命、失敗時遷移は本書を正とする。`future_work/r51/android14_aidl_rust_nullable_filter_boundary_blocker.md`は、公開AIDLを改変せずに現行Rust backendでNULLを受け取れない実装阻害だけを追跡する残課題であり、契約SSOTではない。同残課題が解消されるまでは、上記NULL経路を実装済み、VTS接続済み、またはAOSP契約達成済みと表明しない。
 
 ### `IFrontend.setCallback()` 登録契約
 
@@ -169,7 +169,15 @@ snapshot確定時に、ID重複、未定義bit、公開filter数と矛盾するm
 
 本製品の`DemuxCapabilities.bTimeFilter`は`false`に固定する。`IDemux.openTimeFilter()`はdemuxが閉鎖済みなら`INVALID_STATE`、それ以外では`UNAVAILABLE`を返し、`ITimeFilter` object、lease、workerを生成しない。したがって`setTimeStamp()`、`clearTimeStamp()`、`getTimeStamp()`、`getSourceTime()`、`close()`へ到達可能な公開objectは存在しない。
 
-VTS製品設定の`canConnectToCiCam`は`false`に固定する。`IFrontend.linkCiCam()`、`unlinkCiCam()`、`IDemux.connectCiCam()`、`disconnectCiCam()`は、閉鎖済みobjectには`INVALID_STATE`、負のCAM IDには`INVALID_ARGUMENT`、それ以外には`UNAVAILABLE`を返す。CAM ID、接続状態、backend状態を変更しない。対応しない機能を成功扱いの無処理にしてはならない。
+VTS製品設定の`canConnectToCiCam`は`false`に固定する。CI CAM系APIはAIDLシグネチャどおり次の契約へ分け、CAM ID、接続状態、backend状態を変更しない。対応しない機能を成功扱いの無処理にしてはならない。
+
+| API / 入力 | 閉鎖済みobject | Live object |
+|---|---|---|
+| `IFrontend.linkCiCam(ciCamId)` / `unlinkCiCam(ciCamId)` / `IDemux.connectCiCam(ciCamId)`、`ciCamId < 0` | `INVALID_STATE` | `INVALID_ARGUMENT` |
+| 同3 API、`ciCamId >= 0` | `INVALID_STATE` | `UNAVAILABLE` |
+| `IDemux.disconnectCiCam()` | `INVALID_STATE` | `UNAVAILABLE` |
+
+`disconnectCiCam()`には入力引数がないため、CAM ID検証を適用しない。
 
 ### `IFrontend.getHardwareInfo()`
 
@@ -556,7 +564,7 @@ AV filter の audio/video routing 種別は open subtype を正とする。TsAud
 | F-B-019 | `stop()` 未設定 | F0 | 成功 | F0 | なし | `stop_idempotent` を増やす | AOSP SDK 契約に合わせ、未開始 filter stop は no-op 成功とする |
 | F-B-020 | `close()` | 全非閉鎖状態 | 表5に従う | 表5に従う | 後片付け開始 | 表5に従う | close の戻り値と後片付け完了判定は表5を正とする |
 
-AV割り当てについては、本書の「AV割り当て」と「表1-C-AVH. `releaseAvHandle()` 全域判定表」だけを正とする。`openFilter(bufferSize)`の`bufferSize`はAOSPが要求するFMQ容量としてだけ検証・予約し、AV payloadの上限には流用しない。AV payload領域はイベントごとの要求サイズで割り当て、filter別の未解放合計が`CapabilitySnapshot.avPerFilterLiveBytes`、サービス全体の未解放合計が`CapabilitySnapshot.avRuntimeBudgetBytes`を超えない場合だけ確定する。両値は起動前に`ProductProfile`を検証してsnapshotへ固定し、未宣言または0の場合はAV filter能力を公開しない。共有方式とイベント固有方式は同じ実行時台帳を消費し、起動時または`CapabilitySnapshot`選択時にpayload領域を先取りしない。上限超過、容量枯渇、割り当て処理の失敗は、コールバックと`dataId`の公開前に当該イベントの非同期失敗として処理する。破棄するのは当該イベントだけとし、使用中の割り当てを追い出してはならない。`avDataId`は符号付き63ビットの正数とし、再利用しない。`flush()`、再設定、論理閉鎖の後も、配送済みの割り当てを`ReleaseOnly`として保持する。`Active`または`ReleaseOnly`の解放は1回だけ資源を返して成功する。終了済みと確認できるIDへの重複解放は状態を変えず成功し、不明ID、別所有者、組の不一致には`INVALID_ARGUMENT`を返す。台帳の信頼性を確認できない場合は`UNKNOWN_ERROR`とし、対象記憶領域を隔離する。
+AV割り当てについては、本書の「AV割り当て」と「表1-C-AVH. `releaseAvHandle()` 全域判定表」だけを正とする。`openFilter(type, bufferSize, cb)`の`bufferSize`はAOSPが要求するFMQ容量としてだけ検証・予約し、AV payloadの上限には流用しない。AV payload領域はイベントごとの要求サイズで割り当て、filter別の未解放合計が`CapabilitySnapshot.avPerFilterLiveBytes`、サービス全体の未解放合計が`CapabilitySnapshot.avRuntimeBudgetBytes`を超えない場合だけ確定する。両値は起動前に`ProductProfile`を検証してsnapshotへ固定し、未宣言または0の場合はAV filter能力を公開しない。共有方式とイベント固有方式は同じ実行時台帳を消費し、起動時または`CapabilitySnapshot`選択時にpayload領域を先取りしない。上限超過、容量枯渇、割り当て処理の失敗は、コールバックと`dataId`の公開前に当該イベントの非同期失敗として処理する。破棄するのは当該イベントだけとし、使用中の割り当てを追い出してはならない。`avDataId`は符号付き63ビットの正数とし、再利用しない。`flush()`、再設定、論理閉鎖の後も、配送済みの割り当てを`ReleaseOnly`として保持する。`Active`または`ReleaseOnly`の解放は1回だけ資源を返して成功する。終了済みと確認できるIDへの重複解放は状態を変えず成功し、不明ID、別所有者、組の不一致には`INVALID_ARGUMENT`を返す。台帳の信頼性を確認できない場合は`UNKNOWN_ERROR`とし、対象記憶領域を隔離する。
 
 
 #### 表1-C. IFilter 補助API状態契約
@@ -726,8 +734,8 @@ TSからTSへの`linkCaps`と、NULL以外を渡す`setDataSource()`の接続関
 
 | 状態コード | 状態名 | 意味 |
 |---|---|---|
-| D0R | 録画DVR未設定 | `openDvr(record)` 後、`configure()` 未完了 |
-| D0P | 再生DVR未設定 | `openDvr(playback)` 後、`configure()` 未完了 |
+| D0R | 録画DVR未設定 | `openDvr(type=RECORD, bufferSize, cb)` 後、`configure(settings)` 未完了 |
+| D0P | 再生DVR未設定 | `openDvr(type=PLAYBACK, bufferSize, cb)` 後、`configure(settings)` 未完了 |
 | D1 | 録画設定済み | record DVR が configure 済み |
 | D2 | 録画開始済み | record DVR が start 済み |
 | D3 | 録画停止済み | record DVR が stop 済み |
@@ -1478,7 +1486,7 @@ Tuner HAL 側に置いてよい周波数・サービス関連データは、次�
 
 VTS / lab profile は代表点だけでよく、全 CATV 候補の実波存在を VTS pass 条件にはしない。
 
-`Tuner.scan(AUTO_SCAN)` を実装する場合も、HALが日本向け候補列を生成しない。TISが明示した1候補に対する一回限りのscanとして扱い、継続探索はTISが次のcandidateを投入する。
+`IFrontend.scan(settings, AUTO_SCAN)`を処理する場合も、HALが日本向け候補列を生成しない。TISが明示した1候補に対する一回限りのscanとして扱い、継続探索はTISが次のcandidateを投入する。
 
 
 ## セクションフィルターの条件幅とsection長上限
@@ -2564,7 +2572,7 @@ raw sectionは、外形、設定されたCRC検査、意味検証を分ける契
 
 - フィルターと`SharedFilter`では、HAL内部の`FilterProducerDrainGate`を使用する。ブロッキングするバックエンド読み取り、FMQ待機、解析器の一時保持が終わった後、FMQへの確定書き込みまたは保留イベント追加の直前にだけ配送許可を取得する。Binderコールバック、バックエンド入出力、FMQまたは条件変数の待機、規定外順序のロック取得を許可の有効範囲に含めない。`flush()`は`Draining`へ移り、新しい許可を拒否し、サービス所有のワーカーを起床させ、許可が0件になるまで待つ。未消費のFMQデータと未配送イベントを破棄し、確定済みまたは配送中のコールバックと配送済みAV領域を維持する。ワーカー終了またはpanic時は保護子を解放する。ロック汚染または遮断されていない終端失敗を検出した場合は、フィルターを閉鎖して隔離する。`QueueEpochProtocol`はDVRだけで使用する。
 - demux、型別filter、DVRの個数は、frontendと公開可能LNBの検出後、`ProductProfile`が列挙する完全な`RuntimeCapabilityVector`から選ぶ。各vectorは任意の非負整数を使用でき、2の冪へ丸めない。object数、worker、callback、reaper、cleanup、PES/AV/playback/FMQ byte予算をvector全体で一括予約し、候補間の列を混成しない。機能群ごとの縮退は他群の値を維持した完全vectorとして明示する。確定値は`CapabilitySnapshot`へ格納し、open/配送時の実領域はsnapshot残量から割り当てる。PES assemblerはARIB字幕用bounded PESだけを公開し、最大65,541 byte/active filterの共通実行時予算で保持する。unbounded video PESは公開しない。Tuner VTSは別途起動前環境へ結び付け、入力元、PID、経路、queue容量、memory予算が定義されるまで`DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED`とする。
-- AVの共有方式とイベント固有方式は、同じ実行時台帳を共有する。各filterでは`CapabilitySnapshot.avPerFilterLiveBytes`、サービス全体では`CapabilitySnapshot.avRuntimeBudgetBytes`を未解放payloadバイト数の上限とし、イベントの実サイズだけを割り当てる。`openFilter(bufferSize)`はFMQ容量として別に予約する。固定スロット数や1 MiB単位をAOSPまたはコーデック上限として規範化せず、使用中の割り当てを追い出さない。
+- AVの共有方式とイベント固有方式は、同じ実行時台帳を共有する。各filterでは`CapabilitySnapshot.avPerFilterLiveBytes`、サービス全体では`CapabilitySnapshot.avRuntimeBudgetBytes`を未解放payloadバイト数の上限とし、イベントの実サイズだけを割り当てる。`openFilter(type, bufferSize, cb)`の`bufferSize`はFMQ容量として別に予約する。固定スロット数や1 MiB単位をAOSPまたはコーデック上限として規範化せず、使用中の割り当てを追い出さない。
 - ARIB STD-B10 5.13-E1 Part 1 5.2.4〜5.2.17・Part 3 5.1.1〜5.1.3を表ごとのsection上限1021/4093の根拠とし、STD-B32 3.11-E1 Fascicle 3 Chapter 3 3.1をPES構文の根拠とする。B32を4093の独立した上限根拠として使用しない。B25は公式英訳6.7-E1全文を精読基準とするが、Part 1 §4.9の受信機システム最小鍵組容量は本設計の適合対象外とする。STD-B25デコード能力は、対応するPart・方式・payload処理と、物理tuner/backend復号経路ごとの実鍵組数、実PID数、pool共有単位、枯渇時の`UNAVAILABLE`を製品profileの事実として定義する。AOSPに公開欄は追加せず、session間で共有する同じ内部台帳で受付と解放を強制する。
 - 対象ドライバーと上流Linuxの証跡は、AOSP契約とは独立した根拠として扱う。
 
@@ -2656,7 +2664,7 @@ STD-B25 Part 1 §4.9は上表の適合主張に含めない。同条項に係る
 | 項目 | 値 | 範囲 | 設計根拠 | 動作 |
 |---|---|---|---|---|
 | transport_profile | DUAL_SHARED_PLUS_EVENT_LOCAL | AV filterの世代ごと | AOSPの`MediaEvent`とJNIの二重表現 | 共有領域とイベント専用領域は同じ実行時バイト台帳を使用する。 |
-| fmq_byte_budget | `openFilter(bufferSize)`の`bufferSize` | filterの世代ごと | AOSP open要求 | FMQ容量としてだけ予約する。AV payload領域の上限または裏付けに流用しない。 |
+| fmq_byte_budget | `openFilter(type, bufferSize, cb)`の`bufferSize` | filterの世代ごと | AOSP open要求 | FMQ容量としてだけ予約する。AV payload領域の上限または裏付けに流用しない。 |
 | filter_live_byte_budget | `CapabilitySnapshot.avPerFilterLiveBytes` | AV filterの世代ごと | 起動前に検証済みの製品メモリー予算 | 当該filterの未解放payload合計上限とする。FMQ領域とは別に数える。0ならAV能力を公開しない。 |
 | service_live_byte_budget | `CapabilitySnapshot.avRuntimeBudgetBytes` | サービスインスタンス | 起動前に検証済みの製品メモリー予算 | 起動時に物理領域を先取りせず、全AV filterの未解放実サイズ合計を上限以下に保つ。 |
 | allocation_size | イベントの実payloadバイト数 | 割り当てごと | MediaEvent payload | filter別残量とサービス全体残量の両方に収まる場合だけ正確なサイズを確保する。 |
