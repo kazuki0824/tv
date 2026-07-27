@@ -6,6 +6,9 @@ on:
       - agent/apply-tuner-hal2-design-proposals-v70
     paths:
       - .github/workflows/fix-review-comments-temp.yml
+  pull_request:
+    types:
+      - ready_for_review
 
 permissions:
   contents: write
