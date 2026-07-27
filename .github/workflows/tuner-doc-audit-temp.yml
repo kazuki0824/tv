@@ -13,13 +13,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Collect design documents
+      - name: Collect design documents and review metadata
         run: |
           mkdir -p audit-input
           cp tuner_hal/DESIGN_JA.md audit-input/tuner_hal_DESIGN_JA.md
           cp tuner_hal2/DESIGN_JA.md audit-input/tuner_hal2_DESIGN_JA.md
           cp tuner_hal2/CODE_CONVENTION.md audit-input/tuner_hal2_CODE_CONVENTION.md
           cp tuner_hal2/INTEGRATION.md audit-input/tuner_hal2_INTEGRATION.md
+          curl -fsSL 'https://api.github.com/repos/kazuki0824/tv/pulls/2/comments?per_page=100' -o audit-input/pr-review-comments.json
+          curl -fsSL 'https://api.github.com/repos/kazuki0824/tv/issues/2/comments?per_page=100' -o audit-input/pr-issue-comments.json
+          curl -fsSL 'https://api.github.com/repos/kazuki0824/tv/pulls/2/reviews?per_page=100' -o audit-input/pr-reviews.json
       - name: Download Android 14 AIDL interfaces
         run: |
           python3 - <<'PY'
