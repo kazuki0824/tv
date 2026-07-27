@@ -93,3 +93,5 @@ jobs:
           git add tuner_hal/DESIGN_JA.md .github/workflows/fix-frontend-clock-lnb-temp.yml
           git commit -m 'docs: fix frontend lock clock and fixed power contracts [skip ci]'
           git push origin HEAD:agent/apply-tuner-hal2-design-proposals-v70
+
+# trigger
