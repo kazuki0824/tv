@@ -20,7 +20,7 @@ jobs:
       - name: Apply exact replacements from the companion workflow
         shell: bash
         run: |
-          sed -n '27,75p' .github/workflows/fix-frontend-clock-lnb-temp.yml | sed 's/^          //' > /tmp/fix_design.py
+          sed -n '28,74p' .github/workflows/fix-frontend-clock-lnb-temp.yml | sed 's/^          //' > /tmp/fix_design.py
           python3 /tmp/fix_design.py
       - name: Remove temporary workflows and validate
         shell: bash
