@@ -27,6 +27,7 @@ jobs:
         shell: bash
         run: |
           python3 - <<'PY'
+
           from pathlib import Path
           source = Path('.github/workflows/fix-frontend-clock-lnb-pr-temp.yml').read_text(encoding='utf-8')
           marker = "          python3 - <<'PY'\n"
