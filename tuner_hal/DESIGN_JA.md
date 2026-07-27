@@ -34,7 +34,7 @@
 
 ## 外部文書参照: no-panic / 劣化起動 / 閉鎖側失敗境界
 
-この項目は実装規約であるため、詳細な禁止事項、エラー写像、劣化起動、mutex汚染、ワーカー生成・join 方針は `tuner_hal/CODE_CONVENTION.md` を正とする。本書では Tuner HAL が no-`panic` / 劣化起動 / 閉鎖側失敗 を設計上必須とすることだけを固定する。
+この項目のうち、禁止構文、低レベル失敗の型付き検出、公開status変換の集約方法、mutex汚染、ワーカー生成・joinの実装規約は`tuner_hal/CODE_CONVENTION.md`を正とする。公開AIDL戻り値、status precedence、次状態、資源寿命、閉鎖側失敗対象は本書だけを正本とし、実装規約側で再定義しない。
 
 
 ## 正本・移動済み情報の読み方
@@ -130,6 +130,8 @@ current callbackのBinder deathは、death recipientが保持したcallback gene
 ## AIDL 契約境界
 
 `IFilter`、`IDvr`、`IFrontend`、`IDemux`、`ILnb`、`IDescrambler` の 公開メソッド は、AIDL HAL の契約面として close 後状態を必ず検査する。状態別の戻り値、次状態、維持する内部状態、破棄・無効化する内部状態は、本書の「Tuner HAL 状態遷移表SSOT」を正とする。
+
+通常のメモリ割り当て、FMQの作成・領域確保、共有メモリまたはdma-bufの割り当てについて、要求を満たす容量を確保できないことが確定した場合は`OUT_OF_MEMORY`へ写像する。`UNKNOWN_ERROR`は、容量不足ではない内部不整合、allocator/backendから原因を確定できない異常、または割り当て結果・副作用を確定できない障害に限定する。既知の容量不足を`UNKNOWN_ERROR`へ丸めず、低レベル実装名やerrnoにより公開結果を変えない。個別APIのlifecycle、入力、未対応、commit後失敗が優先される場合は各状態表のpriorityを正とする。
 
 ### ITunerルートAPIの固定契約
 
@@ -2160,16 +2162,16 @@ AV filter の `start()`、共有ハンドル、MediaEventの状態別契約は�
 - 複数 clock source の品質評価。
 - より厳密な CTS / VTS / 実波ベース補正。
 
-## LNB 固定 profile
+## LNB能力と固定給電
 
 
 LNBは機器単位の終端資源とし、本書の「LNB機器の資源規則」と事象駆動の「ワーカー終了契約」だけで管理する。AOSPにLNBとして公開するendpointは、Android 14 CTSが公開objectへ要求する基礎操作を実処理できなければならない。少なくとも対応電圧、`setTone(TONE_NONE)`、`setSatellitePosition(POSITION_A)`、2バイトの`sendDiseqcMessage()`、登録済みcallbackへの受信通知を、成功扱いの無処理ではなくbackend契約として成立させることを`aidl_baseline_eligible`条件とする。
 
 現在証跡があるpx4/earth_pt1 backendは電圧制御しか確認できず、公開`ILnb`に必要な基礎操作条件を満たさない。そのため現行`ProductProfile`では`aidl_baseline_eligible_lnb_count=0`、`getLnbIds()`は空、公開AIDLに存在する`openLnbById()`と`openLnbByName()`は`UNAVAILABLE`とし、`ILnb` object、callback、leaseを生成しない。電圧制御だけを持つ内部backendをAOSPの`ILnb`対応能力として広告してはならない。
 
-ただし、公開`ILnb`対応能力と、固定ディッシュ向けsatellite frontendの内部給電は別能力として扱う。`SupportedDeviceCapabilityCatalog`の検証済み項目が、機器ごとの固定電圧、物理rail owner、適用・読戻しまたはfunctional probe、停止時の安全状態、共有時の互換条件を`FixedDishPowerProfile`として一意に定義し、frontend generation開始前に機器単位のrail leaseを取得して固定電圧を実適用できる場合、そのISDB-S frontendは`aidl_baseline_eligible_lnb_count=0`のまま公開してよい。固定給電はfrontend backend内部の選局前提であり、frameworkから選択・変更できるLNB IDとして列挙しない。tune準備失敗では給電とleaseを巻き戻し、`stopTune()`、frontend `close()`、機器切断では同一railの利用generationが0になった時だけcatalogの安全状態へ戻してleaseを解放する。実状態を確定できない場合は当該railと依存frontendを隔離する。
+ただし、公開`ILnb`対応能力と、固定ディッシュ向けsatellite frontendの内部給電は別能力として扱う。`SupportedDeviceCapabilityCatalog`の機器項目は、内部給電能力を`Disabled`または`Fixed(voltage)`として保持する。`Fixed(voltage)`を指定する場合は、同じ項目に物理rail owner、適用確認方法（読戻しまたはfunctional probe）、停止時の安全状態、共有互換条件を含める。frontend generation開始前に、既存の「LNB機器の資源規則」に従って機器単位のrail leaseを取得し、検証済み固定電圧を実適用できる場合、そのISDB-S frontendは`aidl_baseline_eligible_lnb_count=0`のまま公開してよい。固定給電はfrontend backend内部の選局前提であり、frameworkから選択・変更できるLNB IDとして列挙せず、固定給電frontendで`IFrontend.setLnb()`成功を要求しない。
 
-`FixedDishPowerProfile`が未定義、一致しない、固定電圧の適用を確認できない、または対象受信設備がruntime切替を必要とする場合は、そのsatellite frontendを公開しない。VTS/product profileは、公開LNBを使用しない固定給電経路か、将来の`aidl_baseline_eligible`な公開LNB経路かを排他的に選び、固定給電経路で`IFrontend.setLnb()`成功を要求しない。
+内部給電能力が`Disabled`、固定電圧または適用確認条件が不一致、固定電圧の適用を確認できない、または対象受信設備がruntime切替を必要とする場合は、そのsatellite frontendを公開しない。給電、lease、tune準備失敗時の巻き戻し、停止時の安全状態復帰、共有railの参照管理、実状態不明時の隔離は、専用profileや別の状態機械を追加せず、本書の「LNB機器の資源規則」「表7」「表8」「ワーカー終了契約」を適用する。
 
 将来`aidl_baseline_eligible`なbackendを追加した場合、`getLnbIds()` は検出に成功して使用条件を満たす終端だけを列挙し、`openLnbById()`または`openLnbByName()`は終端1個の使用権を取得する。不明なIDには `INVALID_ARGUMENT`、使用中、`CleanupPending`、`Quarantined` の終端には、状態を変えず `UNAVAILABLE` を返す。最初の `close()` では `LogicalClosed` を確定して新しい公開処理を拒否し、その時点で実行可能な後片付けをすべて試す。再試行可能な未完の依存資源は `CleanupPending` に残す。実行中のワーカーは変更を遮断し、`ReaperSupervisor` へ一度だけ移す。バックエンドとワーカーの後片付けが完了した後に限り、終端の使用権を正確に1回返却する。隔離中は使用権を保持する。`ProductProfile` はLNBを抑止できるが、存在しない終端や能力を生成してはならない。
 
