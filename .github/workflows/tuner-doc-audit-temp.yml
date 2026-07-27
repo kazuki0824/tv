@@ -1,0 +1,95 @@
+name: tuner-doc-audit-temp
+
+on:
+  push:
+    branches:
+      - agent/apply-tuner-hal2-design-proposals-v70
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Collect design documents
+        run: |
+          mkdir -p audit-input
+          cp tuner_hal/DESIGN_JA.md audit-input/tuner_hal_DESIGN_JA.md
+          cp tuner_hal2/DESIGN_JA.md audit-input/tuner_hal2_DESIGN_JA.md
+          cp tuner_hal2/CODE_CONVENTION.md audit-input/tuner_hal2_CODE_CONVENTION.md
+          cp tuner_hal2/INTEGRATION.md audit-input/tuner_hal2_INTEGRATION.md
+      - name: Download Android 14 AIDL interfaces
+        run: |
+          python3 - <<'PY'
+          import base64
+          import pathlib
+          import urllib.request
+
+          commit = "613782fa78a0ee7a97b5c7de6febce089f152fa8"
+          names = [
+              "ITuner", "IFrontend", "IDemux", "IFilter", "IDvr",
+              "IDescrambler", "ILnb", "ITimeFilter",
+          ]
+          out = pathlib.Path("audit-input/aidl")
+          out.mkdir(parents=True, exist_ok=True)
+          for name in names:
+              url = (
+                  "https://android.googlesource.com/platform/hardware/interfaces/+/%s/"
+                  "tv/tuner/aidl/android/hardware/tv/tuner/%s.aidl?format=TEXT"
+              ) % (commit, name)
+              data = urllib.request.urlopen(url, timeout=30).read()
+              (out / f"{name}.aidl").write_bytes(base64.b64decode(data))
+          PY
+      - name: Build method-signature occurrence report
+        run: |
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import re
+
+          aidl_dir = pathlib.Path("audit-input/aidl")
+          docs = list(pathlib.Path("audit-input").glob("*.md"))
+          methods = {}
+          decl_re = re.compile(
+              r"(?m)^\s*(?:[A-Za-z_][\w<>\[\].?]*\s+)+([A-Za-z_]\w*)\s*\((.*?)\)\s*;",
+              re.S,
+          )
+          param_name_re = re.compile(r"\b([A-Za-z_]\w*)\s*(?:\[\])?\s*$")
+          for path in aidl_dir.glob("*.aidl"):
+              text = re.sub(r"/\*.*?\*/|//[^\n]*", "", path.read_text(), flags=re.S)
+              for match in decl_re.finditer(text):
+                  name, params = match.groups()
+                  names = []
+                  for raw in [p.strip() for p in params.split(",") if p.strip()]:
+                      m = param_name_re.search(raw)
+                      names.append(m.group(1) if m else raw)
+                  methods.setdefault(name, []).append({"interface": path.stem, "params": names})
+
+          report = {"methods": methods, "occurrences": []}
+          call_re = re.compile(r"`?([A-Za-z_]\w*)\s*\(([^\n`)]*)\)`?")
+          for doc in docs:
+              for lineno, line in enumerate(doc.read_text().splitlines(), 1):
+                  for match in call_re.finditer(line):
+                      name, args = match.groups()
+                      if name not in methods:
+                          continue
+                      arg_tokens = [a.strip() for a in args.split(",") if a.strip()]
+                      report["occurrences"].append({
+                          "document": doc.name,
+                          "line": lineno,
+                          "method": name,
+                          "written_args": arg_tokens,
+                          "aidl": methods[name],
+                          "text": line,
+                      })
+          pathlib.Path("audit-input/signature-occurrences.json").write_text(
+              json.dumps(report, ensure_ascii=False, indent=2)
+          )
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tuner-doc-audit-input
+          path: audit-input
+          if-no-files-found: error
