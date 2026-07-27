@@ -1,0 +1,110 @@
+name: Temporary review comment fixes
+
+on:
+  push:
+    branches:
+      - agent/apply-tuner-hal2-design-proposals-v70
+    paths:
+      - .github/workflows/fix-review-comments-temp.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/apply-tuner-hal2-design-proposals-v70
+          fetch-depth: 0
+
+      - name: Fix error mapping SSOT and simplify fixed power capability
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          convention = Path('tuner_hal/CODE_CONVENTION.md')
+          text = convention.read_text(encoding='utf-8')
+
+          start = text.index('## 4. AIDLエラー写像\n')
+          end = text.index('## 5. 起動時 / 実行時失敗モデル\n', start)
+          text = text[:start] + '''## 4. AIDLエラー変換の集約規約
+
+Tuner HALの公開AIDL戻り値、status precedence、次状態、資源変化、閉鎖側失敗対象は`DESIGN_JA.md`の「Tuner HAL 状態遷移表SSOT」だけを正本とする。本書は具体的な`android.hardware.tv.tuner.Result`値の対応表を持たず、低レベル失敗を正本の分類へ接続する実装規約だけを定める。
+
+```text
+- device、FMQ、共有メモリ、dma-buf、callback、workerの低レベル失敗は、原因を保持する型付きdomain errorへ変換する
+- 容量不足、未対応、入力不正、lifecycle不正、backend内部障害をgeneric errorへ早期に丸めない
+- 公開Binder statusへの最終変換は`binder_service`内の状態補助関数またはエラー変換補助関数へ集約する
+- Binder method、worker、backend adapter、個別resource helperで公開Result値を直接選択しない
+- helper側の分類が`DESIGN_JA.md`の公開契約と矛盾する場合は`DESIGN_JA.md`を正としてhelperを修正する
+```
+
+''' + text[end:]
+
+          old_dma = '| dma-buf確保失敗 | 確保失敗を `NO_MEMORY` または `UNKNOWN_ERROR` へ写像し、非AV filter 経路へ誤波及させない |'
+          new_dma = '| dma-buf確保失敗 | 容量不足と容量不足ではない内部障害を型付きdomain errorで区別し、公開結果は`DESIGN_JA.md`の該当行へ集約して、非AV filter経路へ誤波及させない |'
+          if text.count(old_dma) != 1:
+              raise SystemExit(f'expected one dma-buf row, found {text.count(old_dma)}')
+          text = text.replace(old_dma, new_dma)
+          text = text.replace('`NO_MEMORY`', '`OUT_OF_MEMORY`')
+          convention.write_text(text, encoding='utf-8')
+
+          design = Path('tuner_hal/DESIGN_JA.md')
+          dtext = design.read_text(encoding='utf-8')
+
+          old_external = 'この項目は実装規約であるため、詳細な禁止事項、エラー写像、劣化起動、mutex汚染、ワーカー生成・join 方針は `tuner_hal/CODE_CONVENTION.md` を正とする。本書では Tuner HAL が no-`panic` / 劣化起動 / 閉鎖側失敗 を設計上必須とすることだけを固定する。'
+          new_external = 'この項目のうち、禁止構文、低レベル失敗の型付き検出、公開status変換の集約方法、mutex汚染、ワーカー生成・joinの実装規約は`tuner_hal/CODE_CONVENTION.md`を正とする。公開AIDL戻り値、status precedence、次状態、資源寿命、閉鎖側失敗対象は本書だけを正本とし、実装規約側で再定義しない。'
+          if dtext.count(old_external) != 1:
+              raise SystemExit(f'expected one external-reference paragraph, found {dtext.count(old_external)}')
+          dtext = dtext.replace(old_external, new_external)
+
+          aidl_anchor = '`IFilter`、`IDvr`、`IFrontend`、`IDemux`、`ILnb`、`IDescrambler` の 公開メソッド は、AIDL HAL の契約面として close 後状態を必ず検査する。状態別の戻り値、次状態、維持する内部状態、破棄・無効化する内部状態は、本書の「Tuner HAL 状態遷移表SSOT」を正とする。'
+          aidl_addition = aidl_anchor + '\n\n通常のメモリ割り当て、FMQの作成・領域確保、共有メモリまたはdma-bufの割り当てについて、要求を満たす容量を確保できないことが確定した場合は`OUT_OF_MEMORY`へ写像する。`UNKNOWN_ERROR`は、容量不足ではない内部不整合、allocator/backendから原因を確定できない異常、または割り当て結果・副作用を確定できない障害に限定する。既知の容量不足を`UNKNOWN_ERROR`へ丸めず、低レベル実装名やerrnoにより公開結果を変えない。個別APIのlifecycle、入力、未対応、commit後失敗が優先される場合は各状態表のpriorityを正とする。'
+          if dtext.count(aidl_anchor) != 1:
+              raise SystemExit(f'expected one AIDL boundary anchor, found {dtext.count(aidl_anchor)}')
+          dtext = dtext.replace(aidl_anchor, aidl_addition)
+
+          old_heading = '## LNB 固定 profile'
+          new_heading = '## LNB能力と固定給電'
+          if dtext.count(old_heading) != 1:
+              raise SystemExit(f'expected one LNB heading, found {dtext.count(old_heading)}')
+          dtext = dtext.replace(old_heading, new_heading)
+
+          old_fixed = '''ただし、公開`ILnb`対応能力と、固定ディッシュ向けsatellite frontendの内部給電は別能力として扱う。`SupportedDeviceCapabilityCatalog`の検証済み項目が、機器ごとの固定電圧、物理rail owner、適用・読戻しまたはfunctional probe、停止時の安全状態、共有時の互換条件を`FixedDishPowerProfile`として一意に定義し、frontend generation開始前に機器単位のrail leaseを取得して固定電圧を実適用できる場合、そのISDB-S frontendは`aidl_baseline_eligible_lnb_count=0`のまま公開してよい。固定給電はfrontend backend内部の選局前提であり、frameworkから選択・変更できるLNB IDとして列挙しない。tune準備失敗では給電とleaseを巻き戻し、`stopTune()`、frontend `close()`、機器切断では同一railの利用generationが0になった時だけcatalogの安全状態へ戻してleaseを解放する。実状態を確定できない場合は当該railと依存frontendを隔離する。
+
+`FixedDishPowerProfile`が未定義、一致しない、固定電圧の適用を確認できない、または対象受信設備がruntime切替を必要とする場合は、そのsatellite frontendを公開しない。VTS/product profileは、公開LNBを使用しない固定給電経路か、将来の`aidl_baseline_eligible`な公開LNB経路かを排他的に選び、固定給電経路で`IFrontend.setLnb()`成功を要求しない。'''
+          new_fixed = '''ただし、公開`ILnb`対応能力と、固定ディッシュ向けsatellite frontendの内部給電は別能力として扱う。`SupportedDeviceCapabilityCatalog`の機器項目は、内部給電能力を`Disabled`または`Fixed(voltage)`として保持する。`Fixed(voltage)`を指定する場合は、同じ項目に物理rail owner、適用確認方法（読戻しまたはfunctional probe）、停止時の安全状態、共有互換条件を含める。frontend generation開始前に、既存の「LNB機器の資源規則」に従って機器単位のrail leaseを取得し、検証済み固定電圧を実適用できる場合、そのISDB-S frontendは`aidl_baseline_eligible_lnb_count=0`のまま公開してよい。固定給電はfrontend backend内部の選局前提であり、frameworkから選択・変更できるLNB IDとして列挙せず、固定給電frontendで`IFrontend.setLnb()`成功を要求しない。
+
+内部給電能力が`Disabled`、固定電圧または適用確認条件が不一致、固定電圧の適用を確認できない、または対象受信設備がruntime切替を必要とする場合は、そのsatellite frontendを公開しない。給電、lease、tune準備失敗時の巻き戻し、停止時の安全状態復帰、共有railの参照管理、実状態不明時の隔離は、専用profileや別の状態機械を追加せず、本書の「LNB機器の資源規則」「表7」「表8」「ワーカー終了契約」を適用する。'''
+          if dtext.count(old_fixed) != 1:
+              raise SystemExit(f'expected one fixed-power block, found {dtext.count(old_fixed)}')
+          dtext = dtext.replace(old_fixed, new_fixed)
+          dtext = dtext.replace('`NO_MEMORY`', '`OUT_OF_MEMORY`')
+          design.write_text(dtext, encoding='utf-8')
+          PY
+
+      - name: Remove temporary workflow and validate
+        shell: bash
+        run: |
+          rm .github/workflows/fix-review-comments-temp.yml
+          test -z "$(git diff --name-only -- future_work)"
+          ! grep -RFn 'NO_MEMORY' tuner_hal/DESIGN_JA.md tuner_hal/CODE_CONVENTION.md tuner_hal2/CODE_CONVENTION.md
+          ! grep -Fq 'FixedDishPowerProfile' tuner_hal/DESIGN_JA.md
+          grep -Fq '内部給電能力を`Disabled`または`Fixed(voltage)`' tuner_hal/DESIGN_JA.md
+          grep -Fq '本書は具体的な`android.hardware.tv.tuner.Result`値の対応表を持たず' tuner_hal/CODE_CONVENTION.md
+          grep -Fq '通常のメモリ割り当て、FMQの作成・領域確保、共有メモリまたはdma-bufの割り当て' tuner_hal/DESIGN_JA.md
+          ! grep -Fq '| 状態 | 返すエラー | 方針 |' tuner_hal/CODE_CONVENTION.md
+          grep -Fq '`aidl_service::error_bridge`' tuner_hal2/CODE_CONVENTION.md
+          git diff --check
+
+      - name: Commit and push
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tuner_hal/DESIGN_JA.md tuner_hal/CODE_CONVENTION.md .github/workflows/fix-review-comments-temp.yml
+          git commit -m 'docs: simplify fixed power and centralize errors [skip ci]'
+          git push origin HEAD:agent/apply-tuner-hal2-design-proposals-v70
