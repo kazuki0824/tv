@@ -290,12 +290,13 @@ Tuner HAL の release HAL path では、次の直接実装を禁止する。
 - commit後に失敗した場合は、成功扱いで継続せず、対象objectをquarantineまたはFailedClosingへ移す。
 - public API内で `let _ = cleanup...` により critical cleanup 失敗を握りつぶしてはならない。
 
-## 15. 同一条件 no-op guard
+## 15. 同一条件の安全な非破壊最適化
 
 - `setFrontendDataSource()` は、現在と同一frontend/generationなら stream boundary reset を呼ばない。
-- `tune()` は、現在と同一 normalized tune settings なら backend stop、live pump停止、demux boundary reset を呼ばない。
+- 公開`IFrontend.tune()`は、同一normalized tune settingsであってもno-op guardの対象にしない。受理に成功した呼出しは既存のfrontend統合状態表とtune transactionへ入り、新しいtune generationを発行する。前回tuneが未完了なら旧tuneを停止・遮断してから新要求を開始し、scan中、Failed/cleanup中、callback終端未確定の状態もsettings一致だけで旧generationを継続しない。
+- backend固有の同一設定書込みだけを省略できるのは、新generationの受付、旧generationのfencing、必要なstream boundary処理、callback契約をすべて維持し、backend状態の同一性を検証できる場合に限る。この最適化は公開呼出しのno-op化、旧workerの継続、または旧generationの再利用を意味しない。
 - `configure()` は、現在設定と同一なら queue / AV backing / DVR backing を破棄しない。
-- no-op guard は破壊的処理の前に置く。
+- 同一条件の非破壊最適化は、各公開APIの状態遷移、generation、commit point、callback、stream boundary契約を変えない範囲で、破壊的処理の前にだけ適用する。
 
 ## 16. best-effort 使用制限
 
@@ -324,4 +325,3 @@ Tuner HAL の release HAL path では、次の直接実装を禁止する。
 - 未対応の downstream 組み合わせを成功 no-op にしてはならない。
 - raw TS source を downstream へ渡す場合は、TEI、continuity、discontinuity、duplicate、flush generation の判定を通常入力と同じ経路で通す。
 - section/PES/AV/record payload を別filterのsourceとして直接再配送する経路を追加してはならない。ただし `DESIGN_JA.md` で対応に変更した場合を除く。
-
