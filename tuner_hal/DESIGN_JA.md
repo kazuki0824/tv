@@ -359,7 +359,7 @@ commit前失敗では、成功戻りを返してはならない。commit後clean
 Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時波及範囲を以下の設計契約として固定する。
 
 
-公開APIの戻り値は、不存在または別所有者のIDを`INVALID_ARGUMENT`、同一サービス内の閉鎖済みオブジェクトを`INVALID_STATE`、容量不足または資源不足を`UNAVAILABLE`、依存資源の未初期化を`NOT_INITIALIZED`、内部不整合または破損を`UNKNOWN_ERROR`とする。実体のないオブジェクトを生成せず、自動的な隔離も行わない。
+公開APIの戻り値は、不存在または別所有者のIDを`INVALID_ARGUMENT`、同一サービス内の閉鎖済みオブジェクトを`INVALID_STATE`とする。通常のメモリ割り当て、FMQ領域、共有メモリ、dma-bufなど要求byte容量の不足が確定した場合は`OUT_OF_MEMORY`、frontend・demux・filter・DVR・worker slot・leaseなど論理資源の使用枯渇は`UNAVAILABLE`、依存資源の未初期化は`NOT_INITIALIZED`、内部不整合・破損、原因不明、または割り当て結果・副作用を確定できない内部障害は`UNKNOWN_ERROR`とする。個別API表がlifecycle、入力、未対応、確定前後のpriorityを定める場合はその表を優先する。実体のないオブジェクトを生成せず、自動的な隔離も行わない。
 
 
 - filter ID は HAL 外部へ返す値を demux-local ID のまま維持する。DVR attach/detach、filter データ入力元、AV sync ID 取得では、渡された filter オブジェクト の内部 owner demux を検証し、owner demux が一致しない filter を `INVALID_ARGUMENT` で拒否する。
