@@ -1,0 +1,74 @@
+name: PR2 review fix temporary runner
+
+on:
+  push:
+    branches:
+      - agent/apply-tuner-hal2-design-proposals-v70
+    paths:
+      - .github/workflows/pr2-review-fix-temp.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-review-fixes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/apply-tuner-hal2-design-proposals-v70
+          fetch-depth: 0
+      - name: Apply exact design-document fixes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          code_path = Path("tuner_hal/CODE_CONVENTION.md")
+          code = code_path.read_text(encoding="utf-8")
+          old_code = """## 15. 同一条件 no-op guard
+
+- `setFrontendDataSource()` は、現在と同一frontend/generationなら stream boundary reset を呼ばない。
+- `tune()` は、現在と同一 normalized tune settings なら backend stop、live pump停止、demux boundary reset を呼ばない。
+- `configure()` は、現在設定と同一なら queue / AV backing / DVR backing を破棄しない。
+- no-op guard は破壊的処理の前に置く。
+"""
+          new_code = """## 15. 同一条件の安全な非破壊最適化
+
+- `setFrontendDataSource()` は、現在と同一frontend/generationなら stream boundary reset を呼ばない。
+- 公開`IFrontend.tune()`は、同一normalized tune settingsであってもno-op guardの対象にしない。受理に成功した呼出しは既存のfrontend統合状態表とtune transactionへ入り、新しいtune generationを発行する。前回tuneが未完了なら旧tuneを停止・遮断してから新要求を開始し、scan中、Failed/cleanup中、callback終端未確定の状態もsettings一致だけで旧generationを継続しない。
+- backend固有の同一設定書込みだけを省略できるのは、新generationの受付、旧generationのfencing、必要なstream boundary処理、callback契約をすべて維持し、backend状態の同一性を検証できる場合に限る。この最適化は公開呼出しのno-op化、旧workerの継続、または旧generationの再利用を意味しない。
+- `configure()` は、現在設定と同一なら queue / AV backing / DVR backing を破棄しない。
+- 同一条件の非破壊最適化は、各公開APIの状態遷移、generation、commit point、callback、stream boundary契約を変えない範囲で、破壊的処理の前にだけ適用する。
+"""
+          if code.count(old_code) != 1:
+              raise SystemExit(f"CODE_CONVENTION replacement count={code.count(old_code)}")
+          code_path.write_text(code.replace(old_code, new_code), encoding="utf-8")
+
+          design_path = Path("tuner_hal/DESIGN_JA.md")
+          design = design_path.read_text(encoding="utf-8")
+          old_design = "公開APIの戻り値は、不存在または別所有者のIDを`INVALID_ARGUMENT`、同一サービス内の閉鎖済みオブジェクトを`INVALID_STATE`、容量不足または資源不足を`UNAVAILABLE`、依存資源の未初期化を`NOT_INITIALIZED`、内部不整合または破損を`UNKNOWN_ERROR`とする。実体のないオブジェクトを生成せず、自動的な隔離も行わない。"
+          new_design = "公開APIの戻り値は、不存在または別所有者のIDを`INVALID_ARGUMENT`、同一サービス内の閉鎖済みオブジェクトを`INVALID_STATE`とする。通常のメモリ割り当て、FMQ領域、共有メモリ、dma-bufなど要求byte容量の不足が確定した場合は`OUT_OF_MEMORY`、frontend・demux・filter・DVR・worker slot・leaseなど論理資源の使用枯渇は`UNAVAILABLE`、依存資源の未初期化は`NOT_INITIALIZED`、内部不整合・破損、原因不明、または割り当て結果・副作用を確定できない内部障害は`UNKNOWN_ERROR`とする。個別API表がlifecycle、入力、未対応、確定前後のpriorityを定める場合はその表を優先する。実体のないオブジェクトを生成せず、自動的な隔離も行わない。"
+          if design.count(old_design) != 1:
+              raise SystemExit(f"DESIGN_JA replacement count={design.count(old_design)}")
+          design_path.write_text(design.replace(old_design, new_design), encoding="utf-8")
+          PY
+      - name: Verify and commit
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          code = Path("tuner_hal/CODE_CONVENTION.md").read_text(encoding="utf-8")
+          design = Path("tuner_hal/DESIGN_JA.md").read_text(encoding="utf-8")
+          assert "`tune()` は、現在と同一 normalized tune settings なら backend stop" not in code
+          assert "公開`IFrontend.tune()`は、同一normalized tune settingsであってもno-op guardの対象にしない" in code
+          assert "容量不足または資源不足を`UNAVAILABLE`" not in design
+          assert "要求byte容量の不足が確定した場合は`OUT_OF_MEMORY`" in design
+          PY
+          git diff --check
+          rm .github/workflows/pr2-review-fix-temp.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tuner_hal/CODE_CONVENTION.md tuner_hal/DESIGN_JA.md .github/workflows/pr2-review-fix-temp.yml
+          git commit -m "docs: fix retune and resource error contracts [skip ci]"
+          git push origin HEAD:agent/apply-tuner-hal2-design-proposals-v70
