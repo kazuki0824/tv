@@ -991,7 +991,7 @@ checked FMQ shim は、`queue == null` または `out_written == null` を `INVA
 
 | 番号 | 操作 / 事象 | 変更順序 | 成功の確定点 | 確定点前の失敗 | 巻き戻し不能時の対象 | 公開戻り値 / 作業スレッド終了 | 設計上の成立条件 |
 |---:|---|---|---|---|---|---|---|
-| AT-001 | `IFrontend.tune()` / 再選局 | 表19のvalidate・prepare・確定A・backend要求・確定B | 新規要求受理時は確定B。同一安定設定の無処理成功は表19の判定完了時。新要求受理失敗後の旧要求復元成功は復元generationの公開時 | 確定A前は旧選局維持。確定A後に新要求だけが拒否された場合は保存snapshotの旧要求を正確に1回再投入する。backend停止不明または世代fence不成立では復元しない | frontend、旧世代、失敗したdemux境界 | 表19の失敗分類に従う | 復元を含む2確定点を1つへ圧縮しない |
+| AT-001 | `IFrontend.tune()` / 再選局 | 表19のvalidate・prepare・確定A・backend要求・確定B | 設定の同異にかかわらず新規要求受理時は確定B。新要求受理失敗後の旧要求復元成功は復元generationの公開時 | 確定A前は旧選局維持。確定A後に新要求だけが拒否された場合は保存snapshotの旧要求を正確に1回再投入する。backend停止不明または世代fence不成立では復元しない | frontend、旧世代、失敗したdemux境界 | 表19の失敗分類に従う | 復元を含む2確定点を1つへ圧縮しない |
 | AT-002 | `IFrontend.stopTune()` | 対象確定・旧世代遮断・backend停止・demux境界終端 | backend停止と全対象demux境界の終端が確定した時点 | 旧世代遮断前は状態不変。遮断後は旧選局を復元しない | frontendと失敗したdemux | 「`IFrontend.stopTune()`の失敗時状態」に従う | 停止成功後に旧配送が残らない |
 | AT-003 | `IDemux.setFrontendDataSource()` | 入力検証・新関連の準備・旧関連の終端・新関連の確定 | frontend関連とdemux入力世代を同時に確定した時点 | 確定前は旧関連を維持。外部適用後の不確定は当該demuxを隔離 | demuxとその入力境界 | 表SB-1とstream boundary契約に従う | 片方向関連を公開しない |
 | AT-004 | Filter / DVR configure・start・flush | 表1または表2の状態検証後、表6-Aと内部キュープロトコルを適用 | API別状態とqueue世代または実行状態を同一commitで確定した時点 | 表6-Aに従い、commit前は状態不変 | 当該FilterまたはDVR | 表1、表2、表6-Aに従う | queue identityを設定更新と混同しない |
@@ -1265,7 +1265,7 @@ source filter boundary は downstream lifecycle、queued payload、pending event
 
 ### 表19. `IFrontend.tune()` transaction（状態遷移）契約
 
-`IFrontend.tune()` は、validate / prepare が完了するまで旧tune状態を破壊しない。同一正規化設定の再 `tune()` であっても、前回 `tune()` が未完了の場合は無処理成功にしてはならず、AIDL契約に従って前回 `tune()` を停止し、新generationで再開始する。
+`IFrontend.tune()` は、validate / prepare が完了するまで旧tune状態を破壊しない。受理した公開 `tune()` は、正規化設定が同一で前回tuneが完了済みかつ安定中であっても無処理成功にせず、旧要求を停止・遮断して新しいtransaction / generationへ進む。backend固有の同一設定書込み省略は、公開transaction、generation fencing、demux stream boundary、callback契約を全て維持できる場合の内部最適化に限る。
 
 validate には、settings型、周波数範囲、frontend capability、LNB候補を含める。prepare には、ワーカー生成準備、コールバック経路 準備可能性、バックエンドロールバック経路 準備可能性を含める。
 
@@ -1276,7 +1276,7 @@ validate には、settings型、周波数範囲、frontend capability、LNB候�
 |---:|---|---|---|---:|
 | TN-001 | validate | settings型、値域、frontend capability、LNB関連、閉鎖状態を検証する | malformed、範囲外、不正enum、selector型不一致は`INVALID_ARGUMENT`。有効だが非対応のdelivery system、帯域、機能は`UNAVAILABLE` | 維持 |
 | TN-002 | prepare | 新worker枠、callback経路、backend要求、境界処理、失敗時回収に必要な資源を旧状態へ触れず準備する | 準備物を逆順に解放し、原因別のエラーを返す。解放不能時は当該準備資源を隔離する | 維持 |
-| TN-003 | same-setting decision | 正規化設定が同一で、前回tuneが完了済みかつ安定中なら無処理成功とする | 未完了の同一tuneを無処理成功にせずTN-004へ進める | 完了済み同一tuneだけ維持 |
+| TN-003 | same-setting re-entry | 正規化設定の同異にかかわらず、受理した公開呼出しを新transaction / generationへ進める。backend固有の同一設定書込み省略は公開transactionを短絡しない | 同一設定を理由に成功確定せず、TN-004へ進める | TN-004まで維持 |
 | TN-004 | revalidate under transaction lock | frontend、LNB、旧worker、接続demuxのIDとgenerationを再検証し、対象一覧を固定する | 準備物を解放して状態を変えず失敗する | 維持 |
 | TN-005a | commit A | 旧設定、旧generation、旧backend要求、旧demux境界を復元用snapshotへ固定してから、旧generationへのcallback・queue・backend確定権限を遮断し、旧workerとbackendを停止して全対象demux境界を終端する | 全処理の成功時だけTN-006aへ進む | 復元用snapshotをTN-007aの確定まで保持 |
 | TN-005b | commit A失敗 / backend停止不明 | backend停止結果を確定できない | `UNKNOWN_ERROR`を返し`FailedBackend`へ移し、新要求を送らない | 復元しない |
@@ -1303,9 +1303,7 @@ flowchart TD
     A[設定とLNB候補を検証] -->|失敗| B[エラーを返し、旧tuneを維持]
     A --> C[ワーカー・コールバック・巻き戻し経路を準備]
     C -->|失敗| B
-    C --> D{同じtuneが完了済みで安定中か}
-    D -->|はい| E[無処理で成功]
-    D -->|いいえ| F[旧tuneを停止し旧世代を終端]
+    C --> F[設定の同異にかかわらず旧tuneを停止し旧世代を終端]
     F --> G[demux境界を初期化]
     G --> H[新しいtune要求を送信]
     H -->|送信成功| I[新世代を公開してworkerを有効化]
