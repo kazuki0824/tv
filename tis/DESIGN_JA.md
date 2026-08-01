@@ -7,11 +7,11 @@ TIS の setup / boot EPG sync / user unlock drain は、固定文字列や packa
 
 ## BS と CS110 の選局契約
 
-BS は IF 周波数と typed stream selector を保持し、selector は TSID または px4 専用の相対 TS 番号として保存する。earth_pt1 は TSID のみ許容し、px4 は TSID と相対 TS 番号を許容する。CS110 は周波数帯のみで scan candidate と tune selector を作り、stream selector を保存しない。
+BSはIF周波数とtyped stream selectorを保持する。現行製品ではearth_pt1 / DVB backendはabsolute TSID `0..65534`だけを許容し、px4 backendは相対TS番号`0..7`だけを許容する。px4のabsolute TSID対応は、HAL側で別の将来能力として有効化された場合にだけ候補生成へ追加する。CS110は周波数帯だけでscan candidateとtune selectorを作り、stream selectorを保存しない。
 
 CS110 tune request 生成時、TIS は Android Tuner API builder の default `streamId` / `streamIdType` に依存しない。CS110 では frontend stream selector を明示的に none / `UNDEFINED` 相当に設定する。CS110 の ONID / TSID / service_id は channel identity / サービス識別子 として保持してよいが、HAL frontend selector へ転用してはならない。BS は IF 周波数 + TSID、または px4 backend 限定の relative stream number を使う。
 
-TvProvider の channel internal provider data には JSON v1 `tune.streamIdType` と `tune.streamId` を保存する。`NONE` は `streamId=null`、`TSID` は 0..0xffff、`RELATIVE` は 0..7 とする。
+TvProvider の channel internal provider data には JSON v1 `tune.streamIdType` と `tune.streamId` を保存する。`NONE` は `streamId=null`、`TSID` は `0..65534`、`RELATIVE` は `0..7` とする。`65535`はAOSP `INVALID_STREAM_ID`であり、実TSIDとして保存または再投入しない。
 
 
 ## 製品 scan 候補表の保持者
@@ -28,7 +28,7 @@ CATV候補表は C13〜C63 に固定する。MID band は C13〜C22、SHB band �
 
 VHF 1〜12ch は開発規則.mdで恒久的にスコープ外であり、TISのCATV候補表、地上波候補表、共同受信候補表に追加してはならない。
 
-BSの通常実行時候補生成はTISが持つBS TSID表だけを正とする。px4向けの相対TS番号候補は診断またはbackend指定候補としてのみ許可し、earth_pt1向けには使わない。px4 backend側にTSIDからlegacy slotへの同等表または変換表を持つ場合でも、TISのBS TSID表と不一致になってはならない。
+BSの通常実行時候補は、TISが保持する候補データとHALのeffective backend capabilityから生成する。現行px4にはTIS所有のrelative候補表から`RELATIVE_STREAM_NUMBER 0..7`を生成し、earth_pt1 / DVBにはTIS所有のTSID表から`STREAM_ID 0..65534`を生成する。将来px4 absolute能力がHALで有効になった場合だけTSID候補を追加する。HAL/backendにTSIDからrelative slotへの変換表を置かず、能力外selectorを通常候補へ混入させない。
 
 
 ## 録画・予約の現行除外
@@ -86,7 +86,7 @@ setup scan の channel registration は global discovery complete を必須条�
 
 decoder は PMT の stream_type だけでは構成せず、MediaEvent payload から MPEG-2 sequence header、H.264 SPS/PPS、AAC ADTS/AudioSpecificConfig、MPEG audio header を検出してから MediaFormat を構成する。
 
-MediaEvent payload は、`offset >= 0`、`dataLength > 0`、`offset + dataLength <= mapped buffer capacity`、`dataLength <= MAX_MEDIA_SAMPLE_BYTES` を満たす場合だけ decoder queue に渡す。`MAX_MEDIA_SAMPLE_BYTES` は現行仕様では 4 MiB hard limit とする。範囲不正は playback pipeline 例外ではなく sample drop と 診断カウンター として扱う。
+MediaEvent payloadは、`offset >= 0`、`dataLength > 0`、加算overflowなし、`offset + dataLength <= mapped buffer capacity`を満たす場合だけdecoder queueへ渡す。sample byte上限は固定4 MiBにせず、同一製品profileから生成されるHAL per-event予算と、選択したMediaCodecの入力上限の小さい方をTISの受付上限とする。TISは共有領域方式とイベント固有fd方式の両方を受け付け、実際の`dataLength`をpending byte予算へ予約する。上限超過は構文不正として黙って破棄せず、対応codec/profileの上限超過として診断し、再生継続不能なら`notifyVideoUnavailable()`へ接続する。
 
 A/V同期方式は現行 product で non-tunneled 平文視聴に固定する。tunneled playback と avSyncHwId は TIS non-tunneled playback 範囲外であり、TIS の non-tunneled playback では avSyncHwId を使わないが、Tuner HAL API としては実装・AOSP準拠に仕様を固定する。video/audio は MediaCodec と AudioTrack の PTS により同期する。audio が存在する場合は AudioTrack を master clock とする。video-only サービスは視聴可能として扱い、audio が存在しない場合は `audio absent`、audio codec だけが未対応の場合は `unsupported audio codec` を診断に残す。
 
@@ -316,7 +316,7 @@ Boot EPG sync / background maintenance の開始条件は、`activeLiveSessionCo
 
 - `SectionEvent.dataLength` は、Tuner コールバック から読み取る section の正確な byte 長として扱う。
 - TIS が section event として受け付ける長さは `1..4096` byte だけとする。`dataLength <= 0` は不正、`dataLength > 4096` は過大として、どちらも `ByteArray` 確保前に破棄し、PID 別診断に計上する。
-- `MediaEvent` sample は `4 MiB` を上限とする。負の offset、0 以下の length、offset + length の overflow、LinearBlock 容量超過は sample 確保なしで破棄し、診断に計上する。
+- `MediaEvent` sampleは固定4 MiBを上限にしない。負のoffset、0以下のlength、加算overflow、mapped capacity超過は不正入力として確保前に破棄する。正常な実サイズは同一製品profileのper-event予算とdecoder入力上限で受理し、共有領域方式とイベント固有fd方式を同じpending byte予算へ計上する。
 - decoder input-buffer の逆圧は無通知破棄ではない。sample は上限付き pending queue に保持し、後続 コールバック / drain で再試行する。sample を破棄するのは上限付き queue が満杯の場合だけとし、破棄 counter を加算する。
 
 ## provider-data / retry / attribution 境界契約
