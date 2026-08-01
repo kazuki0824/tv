@@ -1,0 +1,45 @@
+name: PR2 review four runner
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/pr2-review4-runner-trigger.txt
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/apply-tuner-hal2-design-proposals-v70
+          fetch-depth: 0
+      - name: Extract and run reviewed patch
+        shell: bash
+        run: |
+          git fetch origin main
+          git show origin/main:.github/workflows/pr2-review4-fix-20260801-2336.yml > /tmp/source-workflow.yml
+          python3 - <<'PY'
+          from pathlib import Path
+          source = Path('/tmp/source-workflow.yml').read_text(encoding='utf-8')
+          marker = "          python3 - <<'PY'\n"
+          start = source.index(marker) + len(marker)
+          end = source.index("\n          PY\n", start)
+          lines = source[start:end].splitlines()
+          code = '\n'.join(line[10:] if line.startswith('          ') else line for line in lines)
+          Path('/tmp/pr2_review4_patch.py').write_text(code + '\n', encoding='utf-8')
+          PY
+          python3 /tmp/pr2_review4_patch.py
+          git diff --check
+          git diff --stat
+      - name: Commit and push
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tis/DESIGN_JA.md 開発規則.md tuner_hal/DESIGN_JA.md
+          git commit -m 'docs: restore TIS HAL boundaries and TableInfo completion'
+          git push origin HEAD:agent/apply-tuner-hal2-design-proposals-v70
