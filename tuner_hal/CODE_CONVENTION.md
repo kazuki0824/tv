@@ -287,7 +287,7 @@ Tuner HAL の release HAL path では、次の直接実装を禁止する。
 - validate段階で公開状態を変更してはならない。
 - prepare段階で旧queue、旧backing、旧binding、旧tokenを破棄してはならない。
 - commit前に失敗した場合は、prepareで確保した資源だけをrollbackする。
-- commit後に失敗した場合は、成功扱いで継続せず、対象objectをquarantineまたはFailedClosingへ移す。
+- commit後の副次処理が失敗した場合は、`DESIGN_JA.md`の当該API状態表が定める公開結果、次状態、後片付け方針をそのまま適用する。確定済み主処理を維持して型付き診断だけを残す場合、通常動作を継続する場合、`CleanupPending`として再試行権限を移す場合、実状態を確定できない対象だけを`Quarantined`へ移す場合を区別する。閉鎖操作も一律に`FailedClosing`へ丸めず、interface別close表に従う。実装規約側で公開状態または戻り値を再定義してはならない。
 - public API内で `let _ = cleanup...` により critical cleanup 失敗を握りつぶしてはならない。
 
 ## 15. 同一条件の安全な非破壊最適化
