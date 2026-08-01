@@ -458,7 +458,7 @@ Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時�
 | 番号 | 事前状態 | 呼び出し | AIDL戻り値 | 次状態 | 副作用 |
 |---:|---|---|---|---|---|
 | FR-001 | Idle | `tune(settings)` | 成功 | Tuning(generation+1) | 新tuneを開始 |
-| FR-002 | Tuning / Locked | `tune(settings)` | 成功 | Tuning(generation+1)、ただし完了済み同一設定はLocked維持可 | 未完了または異なる旧tuneを停止して新tuneを開始 |
+| FR-002 | Tuning / Locked | `tune(settings)` | 成功 | Tuning(generation+1) | 設定の同異にかかわらず旧tuneを停止・遮断して新tuneを開始する。backend固有の同一設定書込み省略は、公開transaction、generation fencing、demux stream boundary、callback契約を維持する内部最適化に限る |
 | FR-003 | Scanning | `tune(settings)` | 成功 | Tuning(generation+1) | scanをCancelledで終端してから新tuneを開始 |
 | FR-004 | Idle | `scan(settings, type)` | 成功 | Scanning(generation+1) | 新scanを開始 |
 | FR-005 | Tuning / Locked | `scan(settings, type)` | 成功 | Scanning(generation+1) | tuneを停止してから新scanを開始 |
@@ -1096,7 +1096,7 @@ hardware状態が不明であることと、frontendの動作状態は分けて�
 | API | 同一条件 | 破壊的処理の可否 | 異なる条件 |
 |---|---|---:|---|
 | `IDemux.setFrontendDataSource(frontend)` | 現在と同じ frontend / generation | stream boundary reset を行わない | 旧frontend unbind、新frontend bind、boundary reset |
-| `IFrontend.tune(settings)` | normalized tune settings が現在条件と同一、かつ前回tuneが完了済みで安定状態 | backend stop、live pump停止、demux boundary reset を行わない | 前回tune未完了なら同一条件でも旧tune停止、新generation、新tune投入、boundary reset |
+| `IFrontend.tune(settings)` | normalized tune settings が現在条件と同一でも、受理した公開呼出しは新transaction / generationへ進める | 公開transaction、旧generationのfencing、demux boundary、callback契約を省略してはならない。backend固有の同一設定書込みだけは、これらを維持できる場合に省略可 | 異なる条件も同じ公開transaction規則で旧tune停止、新generation、新tune投入、boundary resetを行う |
 | `IFilter.configure(settings)` | 現在設定と同一 | queue / AV backing を破棄しない | validate後にcommitし、必要時だけqueue境界処理 |
 
 `configure()`で種別を変更してはならない。open時の種別と異なるsettings unionには`INVALID_ARGUMENT`を返す。
