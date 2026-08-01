@@ -83,7 +83,7 @@ VTS XML/profileで使う機能、capabilityで宣言する機能、実装済み�
 
 - CS110 は周波数のみで選局する。ISDB-S settings で `streamIdType=UNDEFINED` かつ `streamId=0` の明示未指定、または AOSP SDK の default 表現である `streamIdType=STREAM_ID` かつ `streamId=INVALID_STREAM_ID(0xFFFF)` だけを selector なしとして扱う。CS110 tune request に TSID / relative stream-number selector が指定された場合は `INVALID_ARGUMENT` とする。`streamIdType=RELATIVE_STREAM_NUMBER` の負値、`streamIdType=UNDEFINED` の負値、その他の負値 selector は未指定へ丸めない。
 
-ISDB-Sのセレクター対応能力は、機器識別子と対象リビジョン、versioned backend manifestのABI/API契約版、および起動時functional probeの結果が一致する`SupportedDeviceCapabilityCatalog`の検証済み項目からだけ生成する。repository、commit SHA、build IDは、その台帳項目を作成した証跡metadataとして記録してよいが、実行時の適合判定や能力公開の必要条件にしてはならない。同じABI/API契約とfunctional probeを満たす再build、cherry-pick、保守backportをcommit差だけで排除しない。一致する検証済み項目がない場合、または`selector_capability_release_eligible`が偽の場合は、セレクター対応能力を公開せず、そのセレクターを使う選局オブジェクトも生成しない。アダプター経路が確認済みの項目では、`RELATIVE_STREAM_NUMBER`の`0..7`を公開してよい。この項目だけが有効な場合、絶対値の`STREAM_ID`要求にはバックエンドを変更せず`UNAVAILABLE`を返す。絶対TSID経路を別途確認済みの項目では`0..65534`を公開してよく、`65535`には`INVALID_ARGUMENT`を返す。この場合、`0..11`だけを特別に拒否しない。`ProductProfile`は確認済み能力を抑止できるが、新設または拡張してはならない。実行時は不変の`EffectiveCapabilities`だけを参照する。
+ISDB-S frontendを公開する場合、通常製品経路のAOSP公開selector契約はbackendにかかわらず`STREAM_ID`のTSID `0..65534`へ統一する。`65535`は`Constant.INVALID_STREAM_ID`であり、明示selector値としては使用しない。Linux DVB / earth_pt1はTSIDを`DTV_STREAM_ID`へ渡す。px4は、機器識別子、driver契約版、TMCC取得、同一generationでのTSID→相対slot解決を`SupportedDeviceCapabilityCatalog`とfunctional probeで検証できる場合だけISDB-S frontendを公開し、公開TSID requestを内部slotへ変換する。TISへ`EffectiveCapabilities`、driver名、relative slotを公開しない。`RELATIVE_STREAM_NUMBER`は現行の通常product/VTS profileでは使用せず、有効値を直接指定された場合はbackendを変更せず`UNAVAILABLE`とする。`ProductProfile`は検証済み能力を抑止できるが、新設または拡張してはならない。
 
 
 - コールバック失敗、ワーカー異常終了、FMQ / EventFlag 失敗の状態遷移、診断、後続処理停止条件は表7・表8を正とする。本節では再定義しない。
@@ -384,7 +384,9 @@ Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時�
 - px4 close は control FD だけでなく TS reader FD と reader state も解放する。
 - px4 の CNR 取得は optional telemetry であり、`PTX_GET_CNR` 失敗だけで ロック/状態 query を fatal error にしない。
 - セクションフィルター は condition の必要 byte 幅が payload 長を超える場合に match しない。prefix だけ一致した短い payload を match としない。
-- セクションフィルターの`repeat=false`は重複抑止ではなく、同一`start()`世代内の配送停止条件である。`SectionBits`は最初に一致したsectionを1件配送した後に停止する。`TableInfo`の候補照合条件は公開設定のtable idとversionだけとし、`table_id_extension`を暗黙のfilter条件または最初のsubtableだけを選ぶ条件に使わない。`repeat=false`は、製品profileが当該table id/versionに属する有限のsubtable集合と各`last_section_number`を一意に決定できるtableだけで受理し、期待集合に属する各`table_id_extension / section_number`を1回ずつ配送して全体完了後に停止する。公開条件だけでは完全集合を決定できないtable/profileは`configure()`で`UNAVAILABLE`とし、最初に観測したextensionへ無言で狭めない。versionがwildcardの場合は最初に受理したversionへ固定するが、そのversionに属する期待subtable集合全体を対象とする。`repeat=true`はtable id/versionに一致する全sectionを繰り返し配送する。この配送停止は公開`IFilter.stop()`と同じ状態遷移ではなく、filter objectの公開状態はStartedのまま維持し、利用側が明示的に`stop()` / `flush()` / `configure()` / `close()`を呼べる状態を保つ。
+- セクションフィルターの`repeat=false`は重複抑止ではなく、同一`start()`世代内の配送停止条件である。`SectionBits`は最初に一致したsectionを1件配送した後に停止する。`TableInfo`の候補照合条件はAOSP公開settingsのtable idとversionだけとし、configure可否をruntime `ProductProfile`のsubtable一覧や事前`last_section_number`へ依存させない。
+- `TableInfo repeat=false`を成功させる固定対応範囲は、1つのfilter PIDとtable idの組が規格・製品配線上1つのsubtableだけを運ぶ組に限定する。現行対応は、PAT (`PID 0x0000 / table_id 0x00`)、CAT (`PID 0x0001 / 0x01`)、PATで選択した個別PMT PID (`0x02`)、TSDT (`PID 0x0002 / 0x03`)、NIT actual (`PID 0x0010 / 0x40`)、SDT actual (`PID 0x0011 / 0x42`) とする。NIT other、BAT、SDT other、EIT p/f・scheduleその他の同じPID/table idに複数extensionが並ぶ組は、`repeat=false`では`configure()`を`UNAVAILABLE`とし、`repeat=true`だけを許す。この固定表は公開settingsとfilter PIDから一意に判定し、起動時profile内容で成否を変えない。
+- 成功した`TableInfo repeat=false`は、最初に受理した有効sectionから`table_id_extension`、version、`last_section_number`をruntime完了状態として記録し、同じsubtableの`section_number=0..last_section_number`を各1回配送して停止する。version wildcardは最初に受理したversionへ固定する。完了前に別extensionまたは異なる`last_section_number`が来た場合は固定対応範囲違反として配送集合へ混ぜず、型付き診断を記録し、元のsubtableが完了するまで停止しない。`repeat=true`はtable id/versionに一致する全sectionを繰り返し配送する。この配送停止は公開`IFilter.stop()`と同じ状態遷移ではなく、filter objectの公開状態はStartedのまま維持し、利用側が明示的に`stop()` / `flush()` / `configure()` / `close()`を呼べる状態を保つ。
 - `TableInfo.version` は `-1` または `0..31` だけを受け付ける。`-1` は wildcard、範囲外は `INVALID_ARGUMENT` とする。
 - PES `streamId` は `0..=255` を明示 `stream_id` として照合し、AOSP `Constant.INVALID_STREAM_ID` の `0xFFFF` だけをwildcardとして扱う。負値、`256..=65534`、`65536`以上は`INVALID_ARGUMENT`とする。`streamId=0`はwildcardではなく、8-bit値`0x00`の明示照合である。現行製品profileで成功させるPES設定はARIB字幕用の明示`0xBD`だけとし、wildcardおよび他の有効なstream IDは`UNAVAILABLE`とする。これはAOSP列挙値の妥当性判定と製品対応範囲を分離する規則であり、`0xFFFF`を不正値として扱うものではない。
 - `IFilter.setDataSource()` の互換性は本書の「表1-D. `setDataSource()` 互換表」を正とする。`setDataSource(NULL)` は demux input 復帰として成功対象に含める。filter source を指定する場合は、表1-D-3の subtype 別成立条件を正とする。source filter として指定できるのは TS生データフィルタだけである。下流として成功させるのは TS生データフィルタと record フィルタだけである。section / PES / AV への raw TS 再parse chain、および section payload、PES payload、AV payload、record payload を直接 source として再配送する経路は作らない。非対応の linkage は `UNAVAILABLE` とし、ペイロードなしフィルタを source または sink にする接続は `INVALID_ARGUMENT` とする。`linkCaps` に広告した main type pair はVTS生成の `UNDEFINED` subtype接続も成功させる。
@@ -1460,7 +1462,7 @@ Tuner HAL は、TIS が生成した 明示選局候補 を検証・変換・実�
 日本向け周波数表、CATV周波数表、BS/CS110のTSID表、channel key、サービス検出 の実装データ保持者は TIS とする。選局対象、周波数帯、BS/CS110 selector 境界、CATV 候補範囲の設計契約は tv 直下の開発規則.mdを正とする。Tuner HAL は HAL-generated Japanese scan plan を持たず、TIS が作った explicit candidate を `Tuner.tune()` で受ける。HAL の `scan()` は AOSP/VTS互換の最小実装に限定し、製品の通常 channel scan は TIS の周波数表 + `tune()` ループに寄せる。
 
 
-セレクターの基本対応は次のとおりとする。Linux DVBはISDB-Sの `STREAM_ID` として `0..65534` を受け付け、値を変更せず `DTV_STREAM_ID` へ渡す。`65535`（`Constant.INVALID_STREAM_ID`）は拒否する。未変更の従来版px4は `RELATIVE_STREAM_NUMBER` の `0..7` だけを受け付ける。対象の `kazuki0824/px4_drv` `feat/android-ddk` バックエンドが公開できるセレクター方式は、完全一致する `SupportedDeviceCapabilityCatalog` 項目でリリース対象とされたものに限る。現行項目では、`0..11` が相対スロットの意味と衝突するため、`RELATIVE_STREAM_NUMBER` だけを有効にし、`STREAM_ID` は有効にしない。項目が空、一致しない、またはセレクター公開対象外の場合は、ISDB-Sのセレクター対応能力を公開しない。ISDB-T、CATV、CS110ではISDB-S用セレクターを使用しない。
+セレクターの基本対応は次のとおりとする。BSの通常公開入力は`STREAM_ID 0..65534`に統一する。Linux DVB / earth_pt1は値を変更せず`DTV_STREAM_ID`へ渡す。px4は周波数設定後、同一tune generationで読み取ったTMCCから要求TSIDに一致する相対slotを解決し、legacy `slot`へ渡す。固定のTSID→slot表、TISからのbackend hint、数値域によるselector種別推測を使わない。要求TSIDがTMCCに存在しない場合は別TSへfallbackせず`NO_SIGNAL`へ終端する。TMCC取得またはbackend副作用を確定できない場合は表19の失敗分類に従う。`RELATIVE_STREAM_NUMBER`は現行product/VTS profileでは`UNAVAILABLE`とする。ISDB-T、CATV、CS110ではISDB-S用selectorを使用しない。
 
 
 selectorの種類を正として判定し、数値域から種類を推測しない。
@@ -2513,8 +2515,9 @@ px4 probe prefix を変更する場合は、frontend_px4系実装、`tuner_hal2/
 | T-SEC-7 | EIT `section_length == 4093` | accept |
 | T-SEC-8 | EIT `section_length == 4094` | reject |
 | T-SEC-13 | `SectionBits repeat=false` | one-shot |
-| T-SEC-14 | `TableInfo repeat=false` | 最初に受理したtable id / extension / version / last sectionを固定し、同じsubtableの`0..last_section_number`だけで完了 |
-| T-SEC-14a | 完了前に同じtable id/versionの別extensionを受信 | 固定済み集合へ混ぜず配送しない |
+| T-SEC-14 | 固定対応表のsingle-subtable bindingで`TableInfo repeat=false` | configure成功後、受信sectionからextension/version/lastを構築し、`0..last_section_number`を各1回配送して停止 |
+| T-SEC-14a | NIT other / BAT / SDT other / EIT等のmulti-subtable bindingで`repeat=false` | 固定対応表によりconfigure時`UNAVAILABLE`。起動時profile内容で結果を変えない |
+| T-SEC-14b | single-subtable binding完了前に別extensionまたは異なるlastを受信 | 元の完了集合へ混ぜず配送せず、診断を記録し、元の`0..last`完了前に停止しない |
 | T-SEC-15 | `repeat=true` version更新 | 継続監視 |
 
 raw sectionは、外形、設定されたCRC検査、意味検証を分ける契約に従う。完全なsection外形には、ポインターと`section_length`が範囲内であり、宣言範囲の全バイトが揃っていることを必要とする。外形が完全でも表の構文、予約ビット、意味項目が不正な場合は、rawフィルターに限り元のバイト列を配送してよい。CRC不一致のraw sectionを配送できるのは`isCheckCrc=false`の場合だけとし、`isCheckCrc=true`では破棄する。配送時は推測値を含む`DemuxFilterSectionEvent`を通知せず、`DATA_READY`またはEventFlagでFMQ到着を通知し、型付きのsection解析診断を記録する。raw以外のsectionフィルターでは対象データを破棄する。外形が不正または不完全な場合は、すべてのフィルターで破棄する。

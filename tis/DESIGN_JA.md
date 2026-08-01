@@ -7,11 +7,11 @@ TIS の setup / boot EPG sync / user unlock drain は、固定文字列や packa
 
 ## BS と CS110 の選局契約
 
-BSはIF周波数とtyped stream selectorを保持する。現行製品ではearth_pt1 / DVB backendはabsolute TSID `0..65534`だけを許容し、px4 backendは相対TS番号`0..7`だけを許容する。px4のabsolute TSID対応は、HAL側で別の将来能力として有効化された場合にだけ候補生成へ追加する。CS110は周波数帯だけでscan candidateとtune selectorを作り、stream selectorを保存しない。
+BSはIF周波数とAOSP Tuner公開契約のtyped stream selectorを保持する。通常のscan候補、channel保存、再選局ではbackend種別に依存せず、`STREAM_ID`のTSID `0..65534`だけを使用する。TISはpx4の相対slot、Linux DVBの`DTV_STREAM_ID`、HAL内部のbackend capabilityを取得・推測・保存しない。CS110は周波数帯だけでscan candidateとtune selectorを作り、stream selectorを保存しない。
 
-CS110 tune request 生成時、TIS は Android Tuner API builder の default `streamId` / `streamIdType` に依存しない。CS110 では frontend stream selector を明示的に none / `UNDEFINED` 相当に設定する。CS110 の ONID / TSID / service_id は channel identity / サービス識別子 として保持してよいが、HAL frontend selector へ転用してはならない。BS は IF 周波数 + TSID、または px4 backend 限定の relative stream number を使う。
+CS110 tune request 生成時、TIS は Android Tuner API builder の default `streamId` / `streamIdType` に依存しない。CS110 では frontend stream selector を明示的に none / `UNDEFINED` 相当に設定する。CS110 の ONID / TSID / service_id は channel identity / サービス識別子 として保持してよいが、HAL frontend selector へ転用してはならない。BSはIF周波数と`STREAM_ID`のTSIDを使い、driver固有の相対番号への変換はTuner HAL内部へ閉じる。
 
-TvProvider の channel internal provider data には JSON v1 `tune.streamIdType` と `tune.streamId` を保存する。`NONE` は `streamId=null`、`TSID` は `0..65534`、`RELATIVE` は `0..7` とする。`65535`はAOSP `INVALID_STREAM_ID`であり、実TSIDとして保存または再投入しない。
+TvProvider の channel internal provider data には JSON v1 `tune.streamIdType` と `tune.streamId` を保存する。通常製品経路で書き込む値は、`NONE` の `streamId=null`、または `TSID` の `0..65534`だけとする。`65535`はAOSP `INVALID_STREAM_ID`であり、実TSIDとして保存または再投入しない。`RELATIVE`はdriver固有値になるため、TISの通常channelデータへ保存しない。
 
 
 ## 製品 scan 候補表の保持者
@@ -28,7 +28,7 @@ CATV候補表は C13〜C63 に固定する。MID band は C13〜C22、SHB band �
 
 VHF 1〜12ch は開発規則.mdで恒久的にスコープ外であり、TISのCATV候補表、地上波候補表、共同受信候補表に追加してはならない。
 
-BSの通常実行時候補は、TISが保持する候補データとHALのeffective backend capabilityから生成する。現行px4にはTIS所有のrelative候補表から`RELATIVE_STREAM_NUMBER 0..7`を生成し、earth_pt1 / DVBにはTIS所有のTSID表から`STREAM_ID 0..65534`を生成する。将来px4 absolute能力がHALで有効になった場合だけTSID候補を追加する。HAL/backendにTSIDからrelative slotへの変換表を置かず、能力外selectorを通常候補へ混入させない。
+BSの通常実行時候補は、TISが保持するBS TSID表からIF周波数と`STREAM_ID 0..65534`として生成する。TISはHALのeffective capabilityやdriver名で候補を分岐しない。Tuner HALは同じ公開requestを各backendへ変換し、px4では受信TMCCから要求TSIDに対応する相対slotを実行時に解決する。固定のTSID→slot候補表をHALへ複製してはならない。
 
 
 ## 録画・予約の現行除外
@@ -86,7 +86,7 @@ setup scan の channel registration は global discovery complete を必須条�
 
 decoder は PMT の stream_type だけでは構成せず、MediaEvent payload から MPEG-2 sequence header、H.264 SPS/PPS、AAC ADTS/AudioSpecificConfig、MPEG audio header を検出してから MediaFormat を構成する。
 
-MediaEvent payloadは、`offset >= 0`、`dataLength > 0`、加算overflowなし、`offset + dataLength <= mapped buffer capacity`を満たす場合だけdecoder queueへ渡す。sample byte上限は固定4 MiBにせず、同一製品profileから生成されるHAL per-event予算と、選択したMediaCodecの入力上限の小さい方をTISの受付上限とする。TISは共有領域方式とイベント固有fd方式の両方を受け付け、実際の`dataLength`をpending byte予算へ予約する。上限超過は構文不正として黙って破棄せず、対応codec/profileの上限超過として診断し、再生継続不能なら`notifyVideoUnavailable()`へ接続する。
+MediaEvent payloadは、`offset >= 0`、`dataLength > 0`、加算overflowなし、`offset + dataLength <= mapped buffer capacity`を満たす場合だけdecoder queueへ渡す。TISは共有領域方式とイベント固有fd方式の両方を受け付け、選択したMediaCodecの入力上限とTIS自身のpending queue byte予算だけを受付判定に使う。HALの`avPerFilterLiveBytes`、`avRuntimeBudgetBytes`その他の未解放payload集約台帳をTISへ公開・複製・1イベント上限化しない。codec入力またはTIS queue予算を超える場合は診断し、再生継続不能なら`notifyVideoUnavailable()`へ接続する。
 
 A/V同期方式は現行 product で non-tunneled 平文視聴に固定する。tunneled playback と avSyncHwId は TIS non-tunneled playback 範囲外であり、TIS の non-tunneled playback では avSyncHwId を使わないが、Tuner HAL API としては実装・AOSP準拠に仕様を固定する。video/audio は MediaCodec と AudioTrack の PTS により同期する。audio が存在する場合は AudioTrack を master clock とする。video-only サービスは視聴可能として扱い、audio が存在しない場合は `audio absent`、audio codec だけが未対応の場合は `unsupported audio codec` を診断に残す。
 
