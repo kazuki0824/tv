@@ -398,7 +398,7 @@ Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時�
 
 - `IDescrambler.addPid()` / `removePid()` の source filter は AOSP意味論では optional であり、`NULL` は demux 入力全体の PID 指定である。NULL 経路は現行AOSP契約上の成功対象として扱い、実装済み対象に含める。
 
-公開能力は、機器検出後に確定して以後変更しない1個の`CapabilitySnapshot`から導出する。`F=successful_frontend_count`と`L=aidl_baseline_eligible_lnb_count`を先に確定し、`ProductProfile`が宣言する完全な`RuntimeCapabilityVector`を順に検証する。各vectorはdemux、型別filter、playback/record DVRの任意の非負整数個数と全byte予算を持ち、2の冪へ丸めない。公開object数と、その全数に必要なworker、callback、reaper、cleanup authority、PES、AV、playback処理中buffer、FMQ台帳使用権をvector全体で同時に仮予約し、最初に完全予約できた1個だけを確定する。別候補の列を混成しない。機能群を落とすfallbackが必要なら、他群を維持した別の完全vectorを`ProductProfile`へ明示する。確定済みsnapshotは能力広告と受付判定の唯一の入力であり、byte予算は後続割り当てが越えられない台帳上限である。AV payloadは配送時、bounded PESは開始時、FMQとplayback処理中bufferはconfigure時に実領域を確保する。PES filterを非0で公開する場合は、`pesRuntimeBudgetBytes >= MAX_PES_BUFFER_BYTES * pesFilterCount`を満たし、有効な明示`streamId 0..255`とwildcard `0xFFFF`を同じ公開能力で受理する。ARIB字幕用`0xBD`はTISが選ぶ利用設定であり、HAL capabilityの部分集合ではない。VTSは別の起動前環境bindingであり、未定義中は固定path XMLをinstallせず成功を表明しない。
+公開能力は、機器検出後に確定して以後変更しない1個の`CapabilitySnapshot`から導出する。`F=successful_frontend_count`と`L=aidl_baseline_eligible_lnb_count`を先に確定し、`ProductProfile`が宣言する完全な`RuntimeCapabilityVector`を順に検証する。各vectorはdemux、型別filter、playback/record DVRの任意の非負整数個数と全byte予算を持ち、2の冪へ丸めない。公開object数と、その全数に必要なworker、callback、reaper、cleanup authority、PES、AV、playback処理中buffer、FMQ台帳使用権をvector全体で同時に仮予約し、最初に完全予約できた1個だけを確定する。別候補の列を混成しない。機能群を落とすfallbackが必要なら、他群を維持した別の完全vectorを`ProductProfile`へ明示する。確定済みsnapshotは能力広告と受付判定の唯一の入力であり、byte予算は後続割り当てが越えられない台帳上限である。AV payloadは配送時、宣言長ありPESはヘッダーから必要量を確定した時点、長さ0映像PESは受信量の増加時、FMQとplayback処理中bufferはconfigure時に実領域を確保する。PES filterを非0で公開する場合は、`pesRuntimeBudgetBytes >= MAX_PES_BUFFER_BYTES * pesFilterCount`を満たし、有効な明示`streamId 0..255`とwildcard `0xFFFF`を同じ公開能力で受理する。ARIB字幕用`0xBD`はTISが選ぶ利用設定であり、HAL capabilityの部分集合ではない。VTSは別の起動前環境bindingであり、未定義中は固定path XMLをinstallせず成功を表明しない。
 
 
 - 入力値不正は `INVALID_ARGUMENT`、未対応 capability は `UNAVAILABLE`、オブジェクト state 不整合は `INVALID_STATE`、mutex汚染 や内部整合性崩壊は `UNKNOWN_ERROR` / `HalError::Internal` に写像する。
@@ -492,7 +492,7 @@ Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時�
 | F5 | コールバック開始済み | 通常FMQを持たない非AVフィルターが開始済み |
 | F6 | コールバック停止済み | 通常FMQを持たない非AVフィルターが開始後に停止済み |
 
-フィルターの通常FMQペイロード、DVR記録ストリーム、TS/MMTP記録コールバックのメタデータは、互いに独立した3つの経路として扱う。TS/MMTP記録フィルターは通常のフィルターFMQを公開しない。ペイロードは接続先のRecord DVR FMQだけへ書き込み、PID、索引、バイト番号、PTS、開始コードのメタデータは `DemuxFilterTsRecordEvent` または `DemuxFilterMmtpRecordEvent` のコールバックで通知する。SectionとTS生データのペイロードフィルターは通常のフィルターFMQを使用する。PESペイロードフィルターはARIB字幕用の明示`streamId=0xBD`かつbounded PESに限定して公開し、通常FMQを使用する。長さ0のvideo PESは公開対象にしない。
+フィルターの通常FMQペイロード、DVR記録ストリーム、TS/MMTP記録コールバックのメタデータは、互いに独立した3つの経路として扱う。TS/MMTP記録フィルターは通常のフィルターFMQを公開しない。ペイロードは接続先のRecord DVR FMQだけへ書き込み、PID、索引、バイト番号、PTS、開始コードのメタデータは `DemuxFilterTsRecordEvent` または `DemuxFilterMmtpRecordEvent` のコールバックで通知する。Section、PES、TS生データのペイロードフィルターは通常のフィルターFMQを使用する。PESは有効な明示`streamId 0..255`とwildcard `0xFFFF`を同じ能力で受理し、映像`0xE0..0xEF`の長さ0 PESもruntime組立て対象とする。
 
 
 AVフィルターの状態コードは、AOSP `IFilter`が`configureAvStreamType()`と`getAvSharedHandle()`を`configure()`とは独立したメソッドとして公開することに合わせ、設定状態、実行状態、補助種別、共有ハンドルの各軸から次のとおり導出する。
