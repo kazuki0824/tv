@@ -385,8 +385,8 @@ Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時�
 - px4 の CNR 取得は optional telemetry であり、`PTX_GET_CNR` 失敗だけで ロック/状態 query を fatal error にしない。
 - セクションフィルター は condition の必要 byte 幅が payload 長を超える場合に match しない。prefix だけ一致した短い payload を match としない。
 - セクションフィルターの`repeat=false`は重複抑止ではなく、同一`start()`世代内の配送停止条件である。`SectionBits`は最初に一致したsectionを1件配送した後に停止する。`TableInfo`のconfigure可否と候補照合条件はAOSP公開settingsのtable idとversionだけから決め、PID、table種別、runtime `ProductProfile`のsubtable一覧、事前`table_id_extension`、事前`last_section_number`によって有効な設定を`UNAVAILABLE`にしない。
-- `TableInfo repeat=false`は、最初に受理した有効sectionの`table_id_extension`を当該start世代のcompletion targetとして固定する。version wildcardは同sectionのversionへ固定し、同じextension/versionの`last_section_number`と`section_number=0..last_section_number`をsubtable単位で管理する。対象sectionを各1回配送し、targetの`0..last`が完成した時点で停止する。NIT other、BAT、SDT other、EITを含め、table種別だけを理由にconfigure拒否しない。
-- completion target以外のextension、またはtargetと異なるversion/`last_section_number`を持つsectionは、targetの完了集合へ混ぜず配送しない。型付き診断を記録し、target完了前の早期停止に使わない。`repeat=true`はtable id/versionに一致する全extensionのsectionを繰り返し配送する。この配送停止は公開`IFilter.stop()`と同じ状態遷移ではなく、filter objectの公開状態はStartedのまま維持し、利用側が明示的に`stop()` / `flush()` / `configure()` / `close()`を呼べる状態を保つ。
+- `TableInfo repeat=false`は、table idと確定versionに一致する全extensionを同一`start()`世代の収集対象とする。version wildcardは最初に受理した有効sectionのversionへ固定する。各extensionについて`last_section_number`と`section_number=0..last_section_number`を独立に管理し、`(table_id_extension, section_number)`ごとに最初の1件だけを配送する。最初に到着したextensionをcompletion targetとして固定せず、NIT other、BAT、SDT other、EITを含め、table種別またはextensionだけを理由に候補を除外しない。
+- 停止判定はbroadcast-cycle closureで行う。観測済み全extensionの`0..last`が完成した後も受信を継続し、最後に新規`(table_id_extension, section_number)`を追加した時点より後に、観測済みの全section keyが少なくとも1回再出現し、その間に新しいextensionまたはsection keyが追加されなかった時点で停止する。closure前に新規keyを受信した場合は収集集合へ追加し、再出現確認を最初からやり直す。AOSPが公開していない総extension数を`ProductProfile`、PID、table種別その他の非公開情報から補わない。同一extension/versionで`last_section_number`が変化するsectionは当該収集集合へ混ぜず型付き診断を記録し、早期停止に使わない。`repeat=true`はtable id/versionに一致する全extensionのsectionを繰り返し配送する。この配送停止は公開`IFilter.stop()`と同じ状態遷移ではなく、filter objectの公開状態はStartedのまま維持し、利用側が明示的に`stop()` / `flush()` / `configure()` / `close()`を呼べる状態を保つ。
 - `TableInfo.version` は `-1` または `0..31` だけを受け付ける。`-1` は wildcard、範囲外は `INVALID_ARGUMENT` とする。
 - PES `streamId`は`0..=255`を明示`stream_id`として照合し、AOSP `Constant.INVALID_STREAM_ID`の`0xFFFF`をwildcardとして扱う。負値、`256..=65534`、`65536`以上は`INVALID_ARGUMENT`とする。PES能力を広告するdemuxは、全ての有効な明示stream IDとwildcardを通常のPES filter設定として受理し、`0xBD`その他の私的部分集合へ制限しない。ARIB字幕を利用するTIS profileは`0xBD`を指定してよいが、それは利用側の選択でありHAL capabilityの制限ではない。`PES_packet_length=0`はH.222.0で許可される映像stream ID `0xE0..0xEF`のruntime組立てとして扱い、その他のstream IDで受信した長さ0 PESはmalformedとして当該意味単位を破棄する。
 - `IFilter.setDataSource()` の互換性は本書の「表1-D. `setDataSource()` 互換表」を正とする。`setDataSource(NULL)` は demux input 復帰として成功対象に含める。filter source を指定する場合は、表1-D-3の subtype 別成立条件を正とする。source filter として指定できるのは TS生データフィルタだけである。下流として成功させるのは TS生データフィルタと record フィルタだけである。section / PES / AV への raw TS 再parse chain、および section payload、PES payload、AV payload、record payload を直接 source として再配送する経路は作らない。非対応の linkage は `UNAVAILABLE` とし、ペイロードなしフィルタを source または sink にする接続は `INVALID_ARGUMENT` とする。`linkCaps` に広告した main type pair はVTS生成の `UNDEFINED` subtype接続も成功させる。
@@ -2511,9 +2511,10 @@ px4 probe prefix を変更する場合は、frontend_px4系実装、`tuner_hal2/
 | T-SEC-7 | EIT `section_length == 4093` | accept |
 | T-SEC-8 | EIT `section_length == 4094` | reject |
 | T-SEC-13 | `SectionBits repeat=false` | one-shot |
-| T-SEC-14 | NIT other / BAT / SDT other / EITを含む有効な`TableInfo repeat=false` | table種別に依存せずconfigure成功。最初の有効sectionのextension/version/lastをtargetに固定し、同じsubtableの`0..last`を各1回配送して停止 |
-| T-SEC-14a | target完了前に同じtable id/versionの別extensionを受信 | target集合へ混ぜず配送せず、診断を記録し、targetの`0..last`完了前に停止しない |
-| T-SEC-14b | multi-subtable tableで`repeat=true` | table id/versionに一致する全extensionを配送し、繰り返しを継続する |
+| T-SEC-14 | NIT other / BAT / SDT other / EITを含むmulti-extensionの`TableInfo repeat=false` | table id/versionに一致して観測した全extensionを収集し、各subtableの`0..last`をkeyごとに1回配送する。最初のextension完成では停止しない |
+| T-SEC-14a | 全観測subtable完成後、cycle closure前に新しいextensionまたはsection keyを受信 | 収集集合へ追加し、全keyの再出現確認をやり直して早期停止しない |
+| T-SEC-14b | 全観測subtable完成後、新規keyなしで観測済み全section keyが再出現 | broadcast-cycle closureとして自動配送を停止する |
+| T-SEC-14c | multi-subtable tableで`repeat=true` | table id/versionに一致する全extensionを配送し、繰り返しを継続する |
 | T-SEC-15 | `repeat=true` version更新 | 継続監視 |
 
 raw sectionは、外形、設定されたCRC検査、意味検証を分ける契約に従う。完全なsection外形には、ポインターと`section_length`が範囲内であり、宣言範囲の全バイトが揃っていることを必要とする。外形が完全でも表の構文、予約ビット、意味項目が不正な場合は、rawフィルターに限り元のバイト列を配送してよい。CRC不一致のraw sectionを配送できるのは`isCheckCrc=false`の場合だけとし、`isCheckCrc=true`では破棄する。配送時は推測値を含む`DemuxFilterSectionEvent`を通知せず、`DATA_READY`またはEventFlagでFMQ到着を通知し、型付きのsection解析診断を記録する。raw以外のsectionフィルターでは対象データを破棄する。外形が不正または不完全な場合は、すべてのフィルターで破棄する。

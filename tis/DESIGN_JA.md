@@ -59,7 +59,7 @@ TvProvider標準列への投影判断は tv 直下の `ARIB_SI_EPG_TvProvider投
 
 ARIB 字幕は TIS 側の字幕 path で `libaribcaption` を使用する。現行 product では PMT から字幕 track を検出し、`TvTrackInfo.TYPE_SUBTITLE` として通知し、`onSetCaptionEnabled()` と字幕表示経路を接続する。字幕 track を advertise する場合は、ARIB 字幕 PES を libaribcaption C API 経路で処理し、実際に表示できることを対応宣言条件に含める。`arib_si_engine_rs` の自前 ARIB 文字列 decoder はサービス名・番組名・番組説明など字幕以外の SI/EPG 文字列に限定し、字幕 PES や字幕本文をその decoder に渡さない。libaribcaption は C API のみを使用し、独自 C/C++ 薄層 は書かない。Kotlin から直接 C API を呼ばず、TIS Kotlin → Rust JNI boundary → 安全なRustラッパー → libaribcaption C API の順に接続する。BML / data broadcast 実行環境、双方向データ放送 UI、データ放送 UI は恒久対象外である。
 
-現行製品profileの字幕取得は、PMTで字幕ESを検出した場合だけ`TYPE_TS / SUBTYPE_PES`を開き、字幕PIDと明示`streamId=0xBD`（`private_stream_1`）で設定する。STD-B24 6.4-E1 Fascicle 1の9.1.1、9.2、9.3、9.5、9.6を独立PES字幕、data group、PTS、PMT descriptorの根拠とし、STD-B32 3.11-E1 Fascicle 3の3.1を`private_stream_1=0xBD`と宣言長付きPESの根拠とする。TISは`numPesFilter > 0`からwildcardまたは任意stream ID対応を推定しない。`tuner_hal/DESIGN_JA.md`の製品統合契約どおり、`pesSupportedStreamIds={0xBD}`、`pesWildcardSupported=false`、`pesZeroLengthSupported=false`を前提とし、この契約と一致しないHAL profileでは字幕trackを対応宣言しない。別stream IDまたはwildcardを要求する一般PES経路は現行TISの対象外である。
+現行製品profileの字幕取得は、PMTで字幕ESを検出した場合だけ`TYPE_TS / SUBTYPE_PES`を開き、字幕PIDと明示`streamId=0xBD`（`private_stream_1`）で設定する。STD-B24 6.4-E1 Fascicle 1の9.1.1、9.2、9.3、9.5、9.6を独立PES字幕、data group、PTS、PMT descriptorの根拠とし、STD-B32 3.11-E1 Fascicle 3の3.1を`private_stream_1=0xBD`と宣言長付きPESの根拠とする。これはTIS字幕経路が選ぶ利用設定であり、Tuner HALのPES capabilityを`0xBD`へ制限する契約ではない。HAL正本は有効な明示`streamId 0..255`、wildcard `0xFFFF`、映像`0xE0..0xEF`の長さ0 PESを同じ広告済みPES能力で受理する。現行TISは字幕取得でwildcard、別stream ID、長さ0映像PESを要求しないが、それらをHAL非対応と推定または再定義してはならない。一般PESを利用するTIS機能を追加する場合は、同じ公開HAL契約をそのまま使用する。
 
 
 ## libaribcaption Soong / renderer 統合境界
