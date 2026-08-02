@@ -1,0 +1,72 @@
+name: PR2 review follow-up branch 2026-08-02
+
+on:
+  push:
+    branches:
+      - agent/apply-tuner-hal2-design-proposals-v70
+    paths:
+      - .github/pr2-review-followup-branch-trigger-20260802.txt
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/apply-tuner-hal2-design-proposals-v70
+          fetch-depth: 0
+      - name: Patch design documents and remove temporary files
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_exact(path: str, old: str, new: str) -> None:
+              p = Path(path)
+              text = p.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected exactly one match, got {count}')
+              p.write_text(text.replace(old, new), encoding='utf-8')
+
+          replace_exact(
+              'tuner_hal/DESIGN_JA.md',
+              '''- `TableInfo repeat=false`は、最初に受理した有効sectionの`table_id_extension`を当該start世代のcompletion targetとして固定する。version wildcardは同sectionのversionへ固定し、同じextension/versionの`last_section_number`と`section_number=0..last_section_number`をsubtable単位で管理する。対象sectionを各1回配送し、targetの`0..last`が完成した時点で停止する。NIT other、BAT、SDT other、EITを含め、table種別だけを理由にconfigure拒否しない。
+- completion target以外のextension、またはtargetと異なるversion/`last_section_number`を持つsectionは、targetの完了集合へ混ぜず配送しない。型付き診断を記録し、target完了前の早期停止に使わない。`repeat=true`はtable id/versionに一致する全extensionのsectionを繰り返し配送する。この配送停止は公開`IFilter.stop()`と同じ状態遷移ではなく、filter objectの公開状態はStartedのまま維持し、利用側が明示的に`stop()` / `flush()` / `configure()` / `close()`を呼べる状態を保つ。''',
+              '''- `TableInfo repeat=false`は、table idと確定versionに一致する全extensionを同一`start()`世代の収集対象とする。version wildcardは最初に受理した有効sectionのversionへ固定する。各extensionについて`last_section_number`と`section_number=0..last_section_number`を独立に管理し、`(table_id_extension, section_number)`ごとに最初の1件だけを配送する。最初に到着したextensionをcompletion targetとして固定せず、NIT other、BAT、SDT other、EITを含め、table種別またはextensionだけを理由に候補を除外しない。
+- 停止判定はbroadcast-cycle closureで行う。観測済み全extensionの`0..last`が完成した後も受信を継続し、最後に新規`(table_id_extension, section_number)`を追加した時点より後に、観測済みの全section keyが少なくとも1回再出現し、その間に新しいextensionまたはsection keyが追加されなかった時点で停止する。closure前に新規keyを受信した場合は収集集合へ追加し、再出現確認を最初からやり直す。AOSPが公開していない総extension数を`ProductProfile`、PID、table種別その他の非公開情報から補わない。同一extension/versionで`last_section_number`が変化するsectionは当該収集集合へ混ぜず型付き診断を記録し、早期停止に使わない。`repeat=true`はtable id/versionに一致する全extensionのsectionを繰り返し配送する。この配送停止は公開`IFilter.stop()`と同じ状態遷移ではなく、filter objectの公開状態はStartedのまま維持し、利用側が明示的に`stop()` / `flush()` / `configure()` / `close()`を呼べる状態を保つ。'''
+          )
+
+          replace_exact(
+              'tuner_hal/DESIGN_JA.md',
+              '''| T-SEC-14 | NIT other / BAT / SDT other / EITを含む有効な`TableInfo repeat=false` | table種別に依存せずconfigure成功。最初の有効sectionのextension/version/lastをtargetに固定し、同じsubtableの`0..last`を各1回配送して停止 |
+| T-SEC-14a | target完了前に同じtable id/versionの別extensionを受信 | target集合へ混ぜず配送せず、診断を記録し、targetの`0..last`完了前に停止しない |
+| T-SEC-14b | multi-subtable tableで`repeat=true` | table id/versionに一致する全extensionを配送し、繰り返しを継続する |''',
+              '''| T-SEC-14 | NIT other / BAT / SDT other / EITを含むmulti-extensionの`TableInfo repeat=false` | table id/versionに一致して観測した全extensionを収集し、各subtableの`0..last`をkeyごとに1回配送する。最初のextension完成では停止しない |
+| T-SEC-14a | 全観測subtable完成後、cycle closure前に新しいextensionまたはsection keyを受信 | 収集集合へ追加し、全keyの再出現確認をやり直して早期停止しない |
+| T-SEC-14b | 全観測subtable完成後、新規keyなしで観測済み全section keyが再出現 | broadcast-cycle closureとして自動配送を停止する |
+| T-SEC-14c | multi-subtable tableで`repeat=true` | table id/versionに一致する全extensionを配送し、繰り返しを継続する |'''
+          )
+
+          replace_exact(
+              'tis/DESIGN_JA.md',
+              '''現行製品profileの字幕取得は、PMTで字幕ESを検出した場合だけ`TYPE_TS / SUBTYPE_PES`を開き、字幕PIDと明示`streamId=0xBD`（`private_stream_1`）で設定する。STD-B24 6.4-E1 Fascicle 1の9.1.1、9.2、9.3、9.5、9.6を独立PES字幕、data group、PTS、PMT descriptorの根拠とし、STD-B32 3.11-E1 Fascicle 3の3.1を`private_stream_1=0xBD`と宣言長付きPESの根拠とする。TISは`numPesFilter > 0`からwildcardまたは任意stream ID対応を推定しない。`tuner_hal/DESIGN_JA.md`の製品統合契約どおり、`pesSupportedStreamIds={0xBD}`、`pesWildcardSupported=false`、`pesZeroLengthSupported=false`を前提とし、この契約と一致しないHAL profileでは字幕trackを対応宣言しない。別stream IDまたはwildcardを要求する一般PES経路は現行TISの対象外である。''',
+              '''現行製品profileの字幕取得は、PMTで字幕ESを検出した場合だけ`TYPE_TS / SUBTYPE_PES`を開き、字幕PIDと明示`streamId=0xBD`（`private_stream_1`）で設定する。STD-B24 6.4-E1 Fascicle 1の9.1.1、9.2、9.3、9.5、9.6を独立PES字幕、data group、PTS、PMT descriptorの根拠とし、STD-B32 3.11-E1 Fascicle 3の3.1を`private_stream_1=0xBD`と宣言長付きPESの根拠とする。これはTIS字幕経路が選ぶ利用設定であり、Tuner HALのPES capabilityを`0xBD`へ制限する契約ではない。HAL正本は有効な明示`streamId 0..255`、wildcard `0xFFFF`、映像`0xE0..0xEF`の長さ0 PESを同じ広告済みPES能力で受理する。現行TISは字幕取得でwildcard、別stream ID、長さ0映像PESを要求しないが、それらをHAL非対応と推定または再定義してはならない。一般PESを利用するTIS機能を追加する場合は、同じ公開HAL契約をそのまま使用する。'''
+          )
+          Path('.github/workflows/pr2-review-followup-branch-20260802.yml').unlink()
+          Path('.github/pr2-review-followup-branch-trigger-20260802.txt').unlink()
+          PY
+          git diff --check
+          ! grep -R "pesSupportedStreamIds={0xBD}\|pesWildcardSupported=false\|pesZeroLengthSupported=false" tis/DESIGN_JA.md
+          ! grep -n "最初に受理した有効sectionの.*completion target\|target集合へ混ぜず配送せず" tuner_hal/DESIGN_JA.md
+      - name: Commit and push
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "docs: complete TableInfo across observed extensions"
+          git push origin HEAD:agent/apply-tuner-hal2-design-proposals-v70
