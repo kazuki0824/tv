@@ -293,8 +293,8 @@ Tuner HAL の release HAL path では、次の直接実装を禁止する。
 ## 15. 同一条件の安全な非破壊最適化
 
 - `setFrontendDataSource()` は、現在と同一frontend/generationなら stream boundary reset を呼ばない。
-- 公開`IFrontend.tune()`は、同一normalized tune settingsであってもno-op guardの対象にしない。受理に成功した呼出しは既存のfrontend統合状態表とtune transactionへ入り、新しいtune generationを発行する。前回tuneが未完了なら旧tuneを停止・遮断してから新要求を開始し、scan中、Failed/cleanup中、callback終端未確定の状態もsettings一致だけで旧generationを継続しない。
-- backend固有の同一設定書込みだけを省略できるのは、新generationの受付、旧generationのfencing、必要なstream boundary処理、callback契約をすべて維持し、backend状態の同一性を検証できる場合に限る。この最適化は公開呼出しのno-op化、旧workerの継続、または旧generationの再利用を意味しない。
+- 公開`IFrontend.tune()`は、前回tuneが未完了ならAOSP契約どおり旧tuneを停止・遮断して新要求を開始する。完了済み`Locked`で、normalized settings、typed selector、LNB/power条件、backend状態、stream boundaryの同値性と健全性をtransaction lock下の単一snapshotで証明できる場合は、request sequenceだけを更新し、stream generation、worker、backend要求、demux境界、AVを維持する非破壊re-entryを許可する。
+- 非破壊re-entryでは現lock snapshotに対応する`LOCKED`を新request sequenceへlock外で1回配送する。条件不一致、旧tune未完了、scan中、Failed/cleanup中、callback終端未確定、同値性または健全性を証明できない場合はno-op guardへ入れず、`DESIGN_JA.md`のfull retune transactionへ進める。
 - `configure()` は、現在設定と同一なら queue / AV backing / DVR backing を破棄しない。
 - 同一条件の非破壊最適化は、各公開APIの状態遷移、generation、commit point、callback、stream boundary契約を変えない範囲で、破壊的処理の前にだけ適用する。
 

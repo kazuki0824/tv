@@ -86,7 +86,11 @@ setup scan の channel registration は global discovery complete を必須条�
 
 decoder は PMT の stream_type だけでは構成せず、MediaEvent payload から MPEG-2 sequence header、H.264 SPS/PPS、AAC ADTS/AudioSpecificConfig、MPEG audio header を検出してから MediaFormat を構成する。
 
-MediaEvent payloadは、`offset >= 0`、`dataLength > 0`、加算overflowなし、`offset + dataLength <= mapped buffer capacity`を満たす場合だけdecoder queueへ渡す。TISは共有領域方式とイベント固有fd方式の両方を受け付け、選択したMediaCodecの入力上限とTIS自身のpending queue byte予算だけを受付判定に使う。HALの`avPerFilterLiveBytes`、`avRuntimeBudgetBytes`その他の未解放payload集約台帳をTISへ公開・複製・1イベント上限化しない。codec入力またはTIS queue予算を超える場合は診断し、再生継続不能なら`notifyVideoUnavailable()`へ接続する。
+MediaEvent payloadは、`offset >= 0`、`dataLength > 0`、加算overflowなし、`offset + dataLength <= mapped buffer capacity`を満たす場合だけdecoder queueへ渡す。TISは共有領域方式とイベント固有fd方式の両方を受け付け、HALの`avPerFilterLiveBytes`、`avRuntimeBudgetBytes`その他の未解放payload集約台帳を公開・複製・1イベント上限化しない。
+
+TISはdecoder構成完了後かつAV filter開始前に変更不能な`TisPlaybackBudgetSnapshot`を作る。現行productのrequested input上限は8 MiBとし、MediaFormatで指定可能なcodecでは`KEY_MAX_INPUT_SIZE`へ設定した上で、実際に取得したdecoder input bufferまたはblock capacityと照合し、`singleEventLimitBytes=min(8 MiB, verifiedDecoderInputCapacityBytes)`とする。capacityを正に確定できないdecoderは開始しない。pending queueは`pendingQueueMaxSamples=4`、`pendingQueueBudgetBytes=checked_mul(singleEventLimitBytes, 4)`とし、必要なqueue領域とclaim台帳をplayback generation開始時に原子的に予約する。予約不能ならfilterを開始せず、資源不足の診断を残して`notifyVideoUnavailable()`へ進む。
+
+各eventはrange検証後、copy、map保持またはdecoder投入前に`dataLength`をsnapshot台帳へ原子的にclaimする。1event上限超過は`SAMPLE_TOO_LARGE`、queue sample数またはbyte予算超過は`PENDING_QUEUE_FULL`としてHAL handleを解放し、claim済みbyteはdequeue、generation変更、stop、releaseで正確に返す。first frame前の超過、またはqueueが満杯で`playbackBackpressureDeadlineMs=1000`の間dequeue進行がない場合はplaybackを停止して`notifyVideoUnavailable()`へ進む。first frame後の単発超過は当該sampleだけを破棄して再生を継続し、連続超過または進行不能時だけunavailableへ遷移する。audioだけのqueue超過はvideo-only継続可否を既存規則で判定し、無条件にvideo unavailableへ写像しない。
 
 A/V同期方式は現行 product で non-tunneled 平文視聴に固定する。tunneled playback と avSyncHwId は TIS non-tunneled playback 範囲外であり、TIS の non-tunneled playback では avSyncHwId を使わないが、Tuner HAL API としては実装・AOSP準拠に仕様を固定する。video/audio は MediaCodec と AudioTrack の PTS により同期する。audio が存在する場合は AudioTrack を master clock とする。video-only サービスは視聴可能として扱い、audio が存在しない場合は `audio absent`、audio codec だけが未対応の場合は `unsupported audio codec` を診断に残す。
 
