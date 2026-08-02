@@ -1,0 +1,35 @@
+name: PR2 review follow-up target 2026-08-02
+
+on:
+  pull_request_target:
+    types: [synchronize]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.event.pull_request.number == 2 && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+      - name: Load and apply fixed patch
+        shell: bash
+        run: |
+          git fetch origin main
+          git show origin/main:.github/pr2-review-followup-patch-20260802.py > /tmp/pr2-review-followup-patch.py
+          python3 /tmp/pr2-review-followup-patch.py
+          git diff --check
+          ! grep -R "pesSupportedStreamIds={0xBD}\|pesWildcardSupported=false\|pesZeroLengthSupported=false" tis/DESIGN_JA.md
+          ! grep -n "最初に受理した有効sectionの.*completion target\|target集合へ混ぜず配送せず" tuner_hal/DESIGN_JA.md
+      - name: Commit and push
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "docs: complete TableInfo across observed extensions"
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
