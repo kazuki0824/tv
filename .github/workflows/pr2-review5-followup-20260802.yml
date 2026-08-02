@@ -1,0 +1,52 @@
+name: PR2 review5 follow-up
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/pr2-review5-followup-trigger-20260802.txt
+
+permissions:
+  contents: write
+
+jobs:
+  patch-pr-branch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout runner files
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: runner
+
+      - name: Checkout target branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/apply-tuner-hal2-design-proposals-v70
+          fetch-depth: 0
+          path: target
+
+      - name: Apply follow-up fixes
+        working-directory: target
+        run: python ../runner/.github/pr2-review5-followup-20260802.py
+
+      - name: Static checks
+        working-directory: target
+        run: |
+          git diff --check
+          python - <<'PY'
+          from pathlib import Path
+          text = Path("tuner_hal/DESIGN_JA.md").read_text(encoding="utf-8")
+          if text.count("```") % 2:
+              raise SystemExit("unbalanced code fence")
+          PY
+
+      - name: Commit and push
+        working-directory: target
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tuner_hal/DESIGN_JA.md
+          git commit -m "docs: complete generic PES and selector contracts"
+          git push origin HEAD:agent/apply-tuner-hal2-design-proposals-v70
