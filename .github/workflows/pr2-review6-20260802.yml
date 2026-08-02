@@ -1,0 +1,41 @@
+name: PR2 review6 patch 2026-08-02
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: >-
+      github.event.issue.pull_request &&
+      github.event.issue.number == 2 &&
+      contains(github.event.comment.body, '<!-- pr2-review6-run-20260802 -->')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tooling
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: tooling
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/apply-tuner-hal2-design-proposals-v70
+          path: work
+      - name: Apply design fixes
+        run: python3 tooling/.github/pr2-review6-patch-20260802.py work
+      - name: Validate and push
+        working-directory: work
+        run: |
+          git diff --check
+          changed="$(git diff --name-only | sort)"
+          expected="$(printf '%s\n' tuner_hal/CODE_CONVENTION.md tuner_hal/DESIGN_JA.md tis/DESIGN_JA.md | sort)"
+          test "$changed" = "$expected"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tuner_hal/CODE_CONVENTION.md tuner_hal/DESIGN_JA.md tis/DESIGN_JA.md
+          git commit -m 'docs: address latest tuner review findings'
+          git push origin HEAD:agent/apply-tuner-hal2-design-proposals-v70
