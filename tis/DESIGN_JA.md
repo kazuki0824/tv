@@ -9,7 +9,7 @@ TIS の setup / boot EPG sync / user unlock drain は、固定文字列や packa
 
 BSはIF周波数とAOSP Tuner公開契約のtyped stream selectorを保持する。通常のscan候補、channel保存、再選局ではbackend種別に依存せず、`STREAM_ID`のTSID `0..65534`だけを使用する。TISはpx4の相対slot、Linux DVBの`DTV_STREAM_ID`、HAL内部のbackend capabilityを取得・推測・保存しない。CS110は周波数帯だけでscan candidateとtune selectorを作り、stream selectorを保存しない。
 
-CS110 tune request 生成時、TIS は Android Tuner API builder の default `streamId` / `streamIdType` に依存しない。CS110 では frontend stream selector を明示的に none / `UNDEFINED` 相当に設定する。CS110 の ONID / TSID / service_id は channel identity / サービス識別子 として保持してよいが、HAL frontend selector へ転用してはならない。BSはIF周波数と`STREAM_ID`のTSIDを使い、driver固有の相対番号への変換はTuner HAL内部へ閉じる。
+CS110 tune request 生成時、TIS は Android Tuner API builder の default `streamId` / `streamIdType` に依存しない。CS110 では frontend stream selector を明示的に none / `UNDEFINED` 相当に設定する。CS110 の ONID / TSID / service_id は channel identity / サービス識別子 として保持してよいが、HAL frontend selector へ転用してはならない。BSの通常製品経路はIF周波数と`STREAM_ID`のTSIDを使う。TISはdriver固有slotへ変換せず、typed selectorの検証とbackend ABIへの写像はTuner HALへ委ねる。
 
 TvProvider の channel internal provider data には JSON v1 `tune.streamIdType` と `tune.streamId` を保存する。通常製品経路で書き込む値は、`NONE` の `streamId=null`、または `TSID` の `0..65534`だけとする。`65535`はAOSP `INVALID_STREAM_ID`であり、実TSIDとして保存または再投入しない。`RELATIVE`はdriver固有値になるため、TISの通常channelデータへ保存しない。
 
@@ -28,7 +28,7 @@ CATV候補表は C13〜C63 に固定する。MID band は C13〜C22、SHB band �
 
 VHF 1〜12ch は開発規則.mdで恒久的にスコープ外であり、TISのCATV候補表、地上波候補表、共同受信候補表に追加してはならない。
 
-BSの通常実行時候補は、TISが保持するBS TSID表からIF周波数と`STREAM_ID 0..65534`として生成する。TISはHALのeffective capabilityやdriver名で候補を分岐しない。Tuner HALは同じ公開requestを各backendへ変換し、px4では受信TMCCから要求TSIDに対応する相対slotを実行時に解決する。固定のTSID→slot候補表をHALへ複製してはならない。
+BSの通常実行時候補は、TISが保持するBS TSID表からIF周波数と`STREAM_ID 0..65534`として生成する。TISはHALのeffective capabilityやdriver名で候補を分岐しない。Tuner HALはselector kindを保持して各backend ABIへ写像する。px4の相対slot表またはlegacy数値域をTISへ複製してはならない。
 
 
 ## 録画・予約の現行除外

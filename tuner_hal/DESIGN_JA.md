@@ -83,7 +83,7 @@ VTS XML/profileで使う機能、capabilityで宣言する機能、実装済み�
 
 - CS110 は周波数のみで選局する。ISDB-S settings で `streamIdType=UNDEFINED` かつ `streamId=0` の明示未指定、または AOSP SDK の default 表現である `streamIdType=STREAM_ID` かつ `streamId=INVALID_STREAM_ID(0xFFFF)` だけを selector なしとして扱う。CS110 tune request に TSID / relative stream-number selector が指定された場合は `INVALID_ARGUMENT` とする。`streamIdType=RELATIVE_STREAM_NUMBER` の負値、`streamIdType=UNDEFINED` の負値、その他の負値 selector は未指定へ丸めない。
 
-ISDB-S frontendを公開する場合、通常製品経路のAOSP公開selector契約はbackendにかかわらず`STREAM_ID`のTSID `0..65534`へ統一する。`65535`は`Constant.INVALID_STREAM_ID`であり、明示selector値としては使用しない。Linux DVB / earth_pt1はTSIDを`DTV_STREAM_ID`へ渡す。px4は、機器識別子、driver契約版、TMCC取得、同一generationでのTSID→相対slot解決を`SupportedDeviceCapabilityCatalog`とfunctional probeで検証できる場合だけISDB-S frontendを公開し、公開TSID requestを内部slotへ変換する。TISへ`EffectiveCapabilities`、driver名、relative slotを公開しない。`RELATIVE_STREAM_NUMBER`は現行の通常product/VTS profileでは使用せず、有効値を直接指定された場合はbackendを変更せず`UNAVAILABLE`とする。`ProductProfile`は検証済み能力を抑止できるが、新設または拡張してはならない。
+ISDB-S selectorはAOSPの`FrontendIsdbsStreamIdType`を正とし、`STREAM_ID`と`RELATIVE_STREAM_NUMBER`を別domainとして受理・検証する。Linux DVB / earth_pt1は`STREAM_ID 0..65534`を`DTV_STREAM_ID`へ渡す。px4 legacy ABIは`slot < 12`を相対番号、`slot >= 12`をabsolute TSIDとして解釈するため、px4では`RELATIVE_STREAM_NUMBER 0..7`と`STREAM_ID 12..65534`をlegacy `slot`へ直接渡す。absolute `STREAM_ID 0..11`はAOSP上有効だが同ABIで相対値と区別できないため、副作用なしの`UNAVAILABLE`とする。`65535`は明示TSIDとして`INVALID_ARGUMENT`とする。selector kindを数値域から推測せず、TISへ`EffectiveCapabilities`、driver名、relative slotを公開しない。`ProductProfile`は検証済み能力を抑止できるが、新設または拡張してはならない。
 
 
 - コールバック失敗、ワーカー異常終了、FMQ / EventFlag 失敗の状態遷移、診断、後続処理停止条件は表7・表8を正とする。本節では再定義しない。
@@ -384,11 +384,11 @@ Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時�
 - px4 close は control FD だけでなく TS reader FD と reader state も解放する。
 - px4 の CNR 取得は optional telemetry であり、`PTX_GET_CNR` 失敗だけで ロック/状態 query を fatal error にしない。
 - セクションフィルター は condition の必要 byte 幅が payload 長を超える場合に match しない。prefix だけ一致した短い payload を match としない。
-- セクションフィルターの`repeat=false`は重複抑止ではなく、同一`start()`世代内の配送停止条件である。`SectionBits`は最初に一致したsectionを1件配送した後に停止する。`TableInfo`の候補照合条件はAOSP公開settingsのtable idとversionだけとし、configure可否をruntime `ProductProfile`のsubtable一覧や事前`last_section_number`へ依存させない。
-- `TableInfo repeat=false`を成功させる固定対応範囲は、1つのfilter PIDとtable idの組が規格・製品配線上1つのsubtableだけを運ぶ組に限定する。現行対応は、PAT (`PID 0x0000 / table_id 0x00`)、CAT (`PID 0x0001 / 0x01`)、PATで選択した個別PMT PID (`0x02`)、TSDT (`PID 0x0002 / 0x03`)、NIT actual (`PID 0x0010 / 0x40`)、SDT actual (`PID 0x0011 / 0x42`) とする。NIT other、BAT、SDT other、EIT p/f・scheduleその他の同じPID/table idに複数extensionが並ぶ組は、`repeat=false`では`configure()`を`UNAVAILABLE`とし、`repeat=true`だけを許す。この固定表は公開settingsとfilter PIDから一意に判定し、起動時profile内容で成否を変えない。
-- 成功した`TableInfo repeat=false`は、最初に受理した有効sectionから`table_id_extension`、version、`last_section_number`をruntime完了状態として記録し、同じsubtableの`section_number=0..last_section_number`を各1回配送して停止する。version wildcardは最初に受理したversionへ固定する。完了前に別extensionまたは異なる`last_section_number`が来た場合は固定対応範囲違反として配送集合へ混ぜず、型付き診断を記録し、元のsubtableが完了するまで停止しない。`repeat=true`はtable id/versionに一致する全sectionを繰り返し配送する。この配送停止は公開`IFilter.stop()`と同じ状態遷移ではなく、filter objectの公開状態はStartedのまま維持し、利用側が明示的に`stop()` / `flush()` / `configure()` / `close()`を呼べる状態を保つ。
+- セクションフィルターの`repeat=false`は重複抑止ではなく、同一`start()`世代内の配送停止条件である。`SectionBits`は最初に一致したsectionを1件配送した後に停止する。`TableInfo`のconfigure可否と候補照合条件はAOSP公開settingsのtable idとversionだけから決め、PID、table種別、runtime `ProductProfile`のsubtable一覧、事前`table_id_extension`、事前`last_section_number`によって有効な設定を`UNAVAILABLE`にしない。
+- `TableInfo repeat=false`は、最初に受理した有効sectionの`table_id_extension`を当該start世代のcompletion targetとして固定する。version wildcardは同sectionのversionへ固定し、同じextension/versionの`last_section_number`と`section_number=0..last_section_number`をsubtable単位で管理する。対象sectionを各1回配送し、targetの`0..last`が完成した時点で停止する。NIT other、BAT、SDT other、EITを含め、table種別だけを理由にconfigure拒否しない。
+- completion target以外のextension、またはtargetと異なるversion/`last_section_number`を持つsectionは、targetの完了集合へ混ぜず配送しない。型付き診断を記録し、target完了前の早期停止に使わない。`repeat=true`はtable id/versionに一致する全extensionのsectionを繰り返し配送する。この配送停止は公開`IFilter.stop()`と同じ状態遷移ではなく、filter objectの公開状態はStartedのまま維持し、利用側が明示的に`stop()` / `flush()` / `configure()` / `close()`を呼べる状態を保つ。
 - `TableInfo.version` は `-1` または `0..31` だけを受け付ける。`-1` は wildcard、範囲外は `INVALID_ARGUMENT` とする。
-- PES `streamId` は `0..=255` を明示 `stream_id` として照合し、AOSP `Constant.INVALID_STREAM_ID` の `0xFFFF` だけをwildcardとして扱う。負値、`256..=65534`、`65536`以上は`INVALID_ARGUMENT`とする。`streamId=0`はwildcardではなく、8-bit値`0x00`の明示照合である。現行製品profileで成功させるPES設定はARIB字幕用の明示`0xBD`だけとし、wildcardおよび他の有効なstream IDは`UNAVAILABLE`とする。これはAOSP列挙値の妥当性判定と製品対応範囲を分離する規則であり、`0xFFFF`を不正値として扱うものではない。
+- PES `streamId`は`0..=255`を明示`stream_id`として照合し、AOSP `Constant.INVALID_STREAM_ID`の`0xFFFF`をwildcardとして扱う。負値、`256..=65534`、`65536`以上は`INVALID_ARGUMENT`とする。PES能力を広告するdemuxは、全ての有効な明示stream IDとwildcardを通常のPES filter設定として受理し、`0xBD`その他の私的部分集合へ制限しない。ARIB字幕を利用するTIS profileは`0xBD`を指定してよいが、それは利用側の選択でありHAL capabilityの制限ではない。`PES_packet_length=0`はH.222.0で許可される映像stream ID `0xE0..0xEF`のruntime組立てとして扱い、その他のstream IDで受信した長さ0 PESはmalformedとして当該意味単位を破棄する。
 - `IFilter.setDataSource()` の互換性は本書の「表1-D. `setDataSource()` 互換表」を正とする。`setDataSource(NULL)` は demux input 復帰として成功対象に含める。filter source を指定する場合は、表1-D-3の subtype 別成立条件を正とする。source filter として指定できるのは TS生データフィルタだけである。下流として成功させるのは TS生データフィルタと record フィルタだけである。section / PES / AV への raw TS 再parse chain、および section payload、PES payload、AV payload、record payload を直接 source として再配送する経路は作らない。非対応の linkage は `UNAVAILABLE` とし、ペイロードなしフィルタを source または sink にする接続は `INVALID_ARGUMENT` とする。`linkCaps` に広告した main type pair はVTS生成の `UNDEFINED` subtype接続も成功させる。
 - `IFilter.setDataSource(source)` の non-null source 経路は 同一demux内のfilter接続グラフ の接続だけを正式対象とする。`linkCaps` は同一 demux 内で開いた source / sink filter の main type 対応可否を表し、別 demux に属する filter を source に指定する経路を capability / VTS profile 対象に含めない。source / sink object の lifetime、generation、kind を先に確認し、その後に owner demux 不一致と自己参照を `INVALID_ARGUMENT` で拒否する。AOSP API 文面上の「another filter」は本製品では同一 demux の filter graph 内の別 filter として扱い、別demux間のfilter接続グラフは作らない。
 - `IFilter.getQueueDesc()` の成否は configure 済みかどうかではなく、open時フィルタ種別が通常FMQを持つかどうかで決める。通常FMQ対象フィルタは未configureでも記述子取得を成功させる。
@@ -1462,13 +1462,9 @@ Tuner HAL は、TIS が生成した 明示選局候補 を検証・変換・実�
 日本向け周波数表、CATV周波数表、BS/CS110のTSID表、channel key、サービス検出 の実装データ保持者は TIS とする。選局対象、周波数帯、BS/CS110 selector 境界、CATV 候補範囲の設計契約は tv 直下の開発規則.mdを正とする。Tuner HAL は HAL-generated Japanese scan plan を持たず、TIS が作った explicit candidate を `Tuner.tune()` で受ける。HAL の `scan()` は AOSP/VTS互換の最小実装に限定し、製品の通常 channel scan は TIS の周波数表 + `tune()` ループに寄せる。
 
 
-セレクターの基本対応は次のとおりとする。BSの通常公開入力は`STREAM_ID 0..65534`に統一する。Linux DVB / earth_pt1は値を変更せず`DTV_STREAM_ID`へ渡す。px4は周波数設定後、同一tune generationで読み取ったTMCCから要求TSIDに一致する相対slotを解決し、legacy `slot`へ渡す。固定のTSID→slot表、TISからのbackend hint、数値域によるselector種別推測を使わない。要求TSIDがTMCCに存在しない場合は別TSへfallbackせず`NO_SIGNAL`へ終端する。TMCC取得またはbackend副作用を確定できない場合は表19の失敗分類に従う。`RELATIVE_STREAM_NUMBER`は現行product/VTS profileでは`UNAVAILABLE`とする。ISDB-T、CATV、CS110ではISDB-S用selectorを使用しない。
+セレクターの基本対応は次のとおりとする。Linux DVB / earth_pt1は`STREAM_ID 0..65534`を値を変更せず`DTV_STREAM_ID`へ渡す。px4は`RELATIVE_STREAM_NUMBER 0..7`と`STREAM_ID 12..65534`をkind別に検証してlegacy `slot`へ直接渡す。px4のabsolute `STREAM_ID 0..11`は相対番号とのABI衝突により表現不能なので`UNAVAILABLE`とし、relativeとして解釈せずbackendを変更しない。固定TSID→slot表、TMCC由来の暗黙変換、TISからのbackend hintを使わない。ISDB-T、CATV、CS110ではISDB-S用selectorを使用しない。
 
-
-selectorの種類を正として判定し、数値域から種類を推測しない。
-
-
-px4 BSで絶対値の`STREAM_ID`をslotへ直接渡す経路は、ドライバーのブランチに分岐が存在するだけでは対応能力として扱わない。バックエンドと機器の組み合わせを示す台帳項目が絶対値の選択子を検証済みかつリリース可能と宣言した場合だけ、`0..65534`を設定できる。現在のpx4台帳では相対値`0..7`だけを有効とするため、絶対値の`STREAM_ID 0..65534`には`UNAVAILABLE`を返してバックエンドを変更せず、選択子の`65535`には`INVALID_ARGUMENT`を返す。将来絶対値用の項目を追加する場合も、`0..11`を数値の重複だけを理由に拒否してはならない。`ProductProfile`やVTS設定から、台帳にない経路を作ってはならない。HALはTSIDから相対slotへの変換表を互換処理として復活させない。
+selectorの種類を正として判定し、数値域から種類を推測しない。`RELATIVE_STREAM_NUMBER`はHALの正式入力だが、TISの通常product/VTS候補が使用する必要はない。
 
 CATV も TIS の製品 scan 候補表に実装データとして追加する。CATV候補表は C13〜C63 に固定する。MID band は C13〜C22、SHB band は C23〜C63 とし、中心周波数は ARIB STD-B21 5.12-E2 Appendix 10 Table 10-3・Table 10-4 の `+1/7 MHz` オフセット込みで保持する。C22 は `167 + 1/7 MHz`、C23 は `225 + 1/7 MHz` であり、C21からC22、C22からC23は単純な6MHz連続として計算しない。地上UHF候補表とCATV候補表はどちらもTIS側が正であり、Tuner HAL はCATV scan planを自前生成しない。TIS はCATV候補を 明示選局候補 としてHALへ渡し、px4 backend は渡されたCATV frequencyをlegacy `freq_no/addfreq` へ変換するだけにする。
 
@@ -2169,9 +2165,9 @@ LNBは機器単位の終端資源とし、本書の「LNB機器の資源規則�
 
 現在証跡があるpx4/earth_pt1 backendは電圧制御しか確認できず、公開`ILnb`に必要な基礎操作条件を満たさない。そのため現行`ProductProfile`では`aidl_baseline_eligible_lnb_count=0`、`getLnbIds()`は空、公開AIDLに存在する`openLnbById()`と`openLnbByName()`は`UNAVAILABLE`とし、`ILnb` object、callback、leaseを生成しない。電圧制御だけを持つ内部backendをAOSPの`ILnb`対応能力として広告してはならない。
 
-ただし、公開`ILnb`対応能力と、固定ディッシュ向けsatellite frontendの内部給電は別能力として扱う。`SupportedDeviceCapabilityCatalog`の機器項目は、内部給電能力を`Disabled`または`Fixed(voltage)`として保持する。`Fixed(voltage)`を指定する場合は、同じ項目に物理rail owner、適用確認方法（読戻しまたはfunctional probe）、停止時の安全状態、共有互換条件を含める。frontend generation開始前に、既存の「LNB機器の資源規則」に従って機器単位のrail leaseを取得し、検証済み固定電圧を実適用できる場合、そのISDB-S frontendは`aidl_baseline_eligible_lnb_count=0`のまま公開してよい。固定給電はfrontend backend内部の選局前提であり、frameworkから選択・変更できるLNB IDとして列挙せず、固定給電frontendで`IFrontend.setLnb()`成功を要求しない。
+ただし、公開`ILnb`対応能力とsatellite frontendの電源トポロジは別能力として扱う。`SupportedDeviceCapabilityCatalog`の機器項目は、`InternalFixed15V`、`ExternalOrShared`、`UnknownOrDisabled`のいずれかを保持する。`InternalFixed15V`は、物理rail owner、15 Vの適用確認方法、停止時の安全状態、共有互換条件を同じ項目に持ち、frontend generation開始前に既存の機器単位rail leaseを取得して15 Vを実適用できる場合だけ成立する。`ExternalOrShared`は、給電主体、HALが電圧を変更しないこと、共有互換条件、選局中の給電継続を製品配線として確認できる場合だけ成立する。
 
-内部給電能力が`Disabled`、固定電圧または適用確認条件が不一致、固定電圧の適用を確認できない、または対象受信設備がruntime切替を必要とする場合は、そのsatellite frontendを公開しない。給電、lease、tune準備失敗時の巻き戻し、停止時の安全状態復帰、共有railの参照管理、実状態不明時の隔離は、専用profileや別の状態機械を追加せず、本書の「LNB機器の資源規則」「表7」「表8」「ワーカー終了契約」を適用する。
+`InternalFixed15V`または`ExternalOrShared`が検証済みでruntime LNB切替を必要としない場合、そのISDB-S frontendは`aidl_baseline_eligible_lnb_count=0`のまま公開してよい。前者ではHAL内部で選局前に固定15 Vを適用し、後者ではHALは電圧操作を行わない。いずれもframeworkから選択・変更できるLNB IDとして列挙せず、`IFrontend.setLnb()`成功を要求しない。`UnknownOrDisabled`、トポロジ証跡不一致、給電継続または共有互換性を確認できない場合はsatellite frontendを公開しない。給電、lease、tune準備失敗時の巻き戻し、安全状態復帰、共有rail参照管理、実状態不明時の隔離は、本書の「LNB機器の資源規則」「表7」「表8」「ワーカー終了契約」を適用する。`FixedDishPowerProfile`その他の専用profileや別状態機械を設けない。
 
 将来`aidl_baseline_eligible`なbackendを追加した場合、`getLnbIds()` は検出に成功して使用条件を満たす終端だけを列挙し、`openLnbById()`または`openLnbByName()`は終端1個の使用権を取得する。不明なIDには `INVALID_ARGUMENT`、使用中、`CleanupPending`、`Quarantined` の終端には、状態を変えず `UNAVAILABLE` を返す。最初の `close()` では `LogicalClosed` を確定して新しい公開処理を拒否し、その時点で実行可能な後片付けをすべて試す。再試行可能な未完の依存資源は `CleanupPending` に残す。実行中のワーカーは変更を遮断し、`ReaperSupervisor` へ一度だけ移す。バックエンドとワーカーの後片付けが完了した後に限り、終端の使用権を正確に1回返却する。隔離中は使用権を保持する。`ProductProfile` はLNBを抑止できるが、存在しない終端や能力を生成してはならない。
 
@@ -2515,9 +2511,9 @@ px4 probe prefix を変更する場合は、frontend_px4系実装、`tuner_hal2/
 | T-SEC-7 | EIT `section_length == 4093` | accept |
 | T-SEC-8 | EIT `section_length == 4094` | reject |
 | T-SEC-13 | `SectionBits repeat=false` | one-shot |
-| T-SEC-14 | 固定対応表のsingle-subtable bindingで`TableInfo repeat=false` | configure成功後、受信sectionからextension/version/lastを構築し、`0..last_section_number`を各1回配送して停止 |
-| T-SEC-14a | NIT other / BAT / SDT other / EIT等のmulti-subtable bindingで`repeat=false` | 固定対応表によりconfigure時`UNAVAILABLE`。起動時profile内容で結果を変えない |
-| T-SEC-14b | single-subtable binding完了前に別extensionまたは異なるlastを受信 | 元の完了集合へ混ぜず配送せず、診断を記録し、元の`0..last`完了前に停止しない |
+| T-SEC-14 | NIT other / BAT / SDT other / EITを含む有効な`TableInfo repeat=false` | table種別に依存せずconfigure成功。最初の有効sectionのextension/version/lastをtargetに固定し、同じsubtableの`0..last`を各1回配送して停止 |
+| T-SEC-14a | target完了前に同じtable id/versionの別extensionを受信 | target集合へ混ぜず配送せず、診断を記録し、targetの`0..last`完了前に停止しない |
+| T-SEC-14b | multi-subtable tableで`repeat=true` | table id/versionに一致する全extensionを配送し、繰り返しを継続する |
 | T-SEC-15 | `repeat=true` version更新 | 継続監視 |
 
 raw sectionは、外形、設定されたCRC検査、意味検証を分ける契約に従う。完全なsection外形には、ポインターと`section_length`が範囲内であり、宣言範囲の全バイトが揃っていることを必要とする。外形が完全でも表の構文、予約ビット、意味項目が不正な場合は、rawフィルターに限り元のバイト列を配送してよい。CRC不一致のraw sectionを配送できるのは`isCheckCrc=false`の場合だけとし、`isCheckCrc=true`では破棄する。配送時は推測値を含む`DemuxFilterSectionEvent`を通知せず、`DATA_READY`またはEventFlagでFMQ到着を通知し、型付きのsection解析診断を記録する。raw以外のsectionフィルターでは対象データを破棄する。外形が不正または不完全な場合は、すべてのフィルターで破棄する。
@@ -2663,7 +2659,7 @@ STD-B25 Part 1 §4.9は上表の適合主張に含めない。同条項に係る
 | FILTER_SECTION | サービス全体 | 8 | `CapabilitySnapshot`の値 | 0 | なし | 呼び出し側指定のFMQ容量はsnapshotの`fmqRuntimeBudgetBytes`から別transactionで予約する。 |
 | FILTER_AUDIO | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | なし | FMQの`bufferSize`とは別に、実payloadをsnapshotの`avPerFilterLiveBytes`と`avRuntimeBudgetBytes`から割り当てる。物理領域の起動時先取りはしない。 |
 | FILTER_VIDEO | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | なし | FMQの`bufferSize`とは別に、実payloadをsnapshotの`avPerFilterLiveBytes`と`avRuntimeBudgetBytes`から割り当てる。物理領域の起動時先取りはしない。 |
-| FILTER_PES | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | demux当たり1 | ARIB字幕用`streamId=0xBD`のbounded PESだけを公開する。snapshotの`pesBoundedRuntimeBudgetBytes >= 65_541 * 公開数`とし、PES開始時に宣言長+6 byteだけをclaimする。wildcard、他stream ID、長さ0 video PESは`configure()`で`UNAVAILABLE`。 |
+| FILTER_PES | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | demux当たり1 | 有効な明示`streamId 0..255`とwildcard `0xFFFF`を同じPES capabilityで扱う。宣言長ありPESは宣言長+6 byteをPES実行時台帳からclaimし、映像`0xE0..0xEF`の長さ0 PESは`MAX_PES_BUFFER_BYTES`と同台帳の上限内で組み立てる。stream ID別の非公開capabilityを設けない。 |
 | FILTER_PCR | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | なし | 呼び出し側指定のFMQ容量はsnapshotの`fmqRuntimeBudgetBytes`から別transactionで予約する。 |
 | DVR_PLAYBACK | サービス全体 | 8 | `CapabilitySnapshot`の値 | 0 | demux当たり1 | configure時にFMQと同容量の処理中バッファーをsnapshotの2台帳から同時予約する。`VtsEnvironmentProfile`が`UNBOUND`ならXML、モジュール、試験シナリオを選択しない。 |
 | DVR_RECORD | サービス全体 | 8 | `CapabilitySnapshot`の値 | 0 | demux当たり1 | `VtsEnvironmentProfile`が`UNBOUND`ならXML、モジュール、試験シナリオを選択しない。`BOUND`なら宣言済み静的設定のキュー容量だけを原子的に予約する。 |
@@ -2704,18 +2700,19 @@ STD-B25 Part 1 §4.9は上表の適合主張に含めない。同条項に係る
 | 条件に完全一致するpx4の対応項目 | ISDB-T | 周波数 | backendで検証済みの値域 | 検証済みの周波数設定経路へ反映 | 別のprofileでは有効な値：`UNAVAILABLE` | `INVALID_ARGUMENT` |
 | 条件に完全一致するpx4またはearth_pt1の対応項目 | ISDB-T | 帯域幅 | `AUTO`または`BANDWIDTH_6MHZ` | 検証済みの6 MHz設定経路を使用 | その他の既知の帯域幅：`UNAVAILABLE` | `INVALID_ARGUMENT` |
 | 対象のpx4またはearth_pt1 | ISDB-T | モード、変調、符号化率、ガードインターバル、時間インターリーブ | `AUTO` | バックエンドの自動検出を使用 | 既知の具体値：`UNAVAILABLE` | `INVALID_ARGUMENT` |
-| 相対selectorに対応するpx4の完全一致項目 | ISDB-S | `RELATIVE_STREAM_NUMBER` | `0..7` | 検証済みの相対枠設定経路へ反映 | 独立したabsolute selectorの完全一致項目がない場合、`STREAM_ID 0..65534`は`UNAVAILABLE` | `0..7`以外の相対値または`STREAM_ID=65535`：`INVALID_ARGUMENT` |
-| absolute selectorに対応するLinux DVBの完全一致項目 | ISDB-S | `STREAM_ID` | `0..65534` | 値を変更せず`DTV_STREAM_ID`へ渡す | 独立したrelative selectorの完全一致項目がない場合、`RELATIVE_STREAM_NUMBER 0..7`は`UNAVAILABLE` | `STREAM_ID=65535`または`0..7`以外の相対値：`INVALID_ARGUMENT` |
+| px4 legacy selector ABIの完全一致項目 | ISDB-S | `RELATIVE_STREAM_NUMBER` | `0..7` | 値を変更せずlegacy `slot`へ渡す | なし | `0..7`以外：`INVALID_ARGUMENT` |
+| px4 legacy selector ABIの完全一致項目 | ISDB-S | `STREAM_ID` | `12..65534` | 値を変更せずlegacy `slot`へ渡す | `0..11`はAOSP上有効だがABI衝突で表現不能：`UNAVAILABLE` | `65535`または値域外：`INVALID_ARGUMENT` |
+| absolute selectorに対応するLinux DVBの完全一致項目 | ISDB-S | `STREAM_ID` | `0..65534` | 値を変更せず`DTV_STREAM_ID`へ渡す | relative selectorに対応しない場合、`RELATIVE_STREAM_NUMBER 0..7`は`UNAVAILABLE` | `STREAM_ID=65535`または`0..7`以外の相対値：`INVALID_ARGUMENT` |
 | 対象のpx4またはearth_pt1 | ISDB-S | modulation・code rate | `AUTO` | backendの自動検出を使用 | 既知の具体値：`UNAVAILABLE` | `INVALID_ARGUMENT` |
 
-選択子の対応能力は、機器識別情報と改訂適用範囲、versioned backend manifestのABI/API契約版、要求を実際に設定して結果を読み戻すfunctional probeが一致し、かつ`selector_capability_release_eligible=true`である台帳項目だけから作る。repository、commit SHA、build IDは台帳項目の作成証跡として保存してよいが、実行時の一致条件にしない。現在のpx4台帳では相対選択子だけを有効とし、絶対値の`STREAM_ID`は有効にしない。項目が空、不一致、または使用不可の場合は選択子を公開しない。`ProductProfile`は使用可能な部分集合を抑止できるだけで、対応能力を新設または拡張できない。絶対値`0..11`を相対値域との数値の重複だけを理由に`INVALID_ARGUMENT`としてはならない。CS110の`STREAM_ID=INVALID_STREAM_ID(65535)`は、選択子なしを表すAOSPの既定値として別に扱い、本表で選択子値`65535`を拒否する規則と混同しない。
+選択子の対応能力は、機器識別情報と改訂適用範囲、versioned backend manifestのABI/API契約版、要求を実際に設定して結果を読み戻すfunctional probeが一致し、かつ`selector_capability_release_eligible=true`である台帳項目だけから作る。repository、commit SHA、build IDは台帳項目の作成証跡として保存してよいが、実行時の一致条件にしない。現在のpx4台帳はlegacy ABIに従い、相対`0..7`とabsolute `12..65534`を別typed selectorとして有効にする。absolute `0..11`は有効なAOSP値だがABIで表現不能なので`UNAVAILABLE`とし、相対値へ読み替えない。項目が空、不一致、または使用不可の場合は該当frontendを公開しない。`ProductProfile`は使用可能な部分集合を抑止できるだけで、対応能力を新設または拡張できない。CS110の`STREAM_ID=INVALID_STREAM_ID(65535)`はselectorなしを表すAOSPの既定値として別に扱い、本表で明示selector値`65535`を拒否する規則と混同しない。
 
 ### LNB機器の資源規則
 
 | backend | 検証証跡metadata | AOSPの公開API | driverの事実 | 設計規則 | 資源規則 | 根拠箇所 |
 |---|---|---|---|---|---|---|
-| px4_drv feat/android-ddk | c2a031db8771ddd6e3e0b3b4a712b64ec384139b | 現行profileでは非公開 | 0 Vまたは15 Vのみ。tone、position、DiSEqCの実処理証跡なし | `aidl_baseline_eligible=false`。`getLnbIds()`へ出さず、LNB給電を要するsatellite frontendも公開しない | 内部電圧backendをAOSP LNB leaseとして生成しない | `driver/px4_device.c`のblob cfed72f...、`driver/ptx_chrdev.c`のblob 18f074... |
-| earth_pt1 Linux v6.6 | ffc253263a1375a65fa6c9f62a893e9767fbebfa | 現行profileでは非公開 | `pt1.c`では`SEC_VOLTAGE_13`を11 V、`SEC_VOLTAGE_18`を15 Vに対応付ける。tone、position、DiSEqCの実処理証跡なし | `aidl_baseline_eligible=false`。`getLnbIds()`へ出さず、LNB給電を要するsatellite frontendも公開しない | 内部電圧backendをAOSP LNB endpointとして生成しない | Linux v6.6 commitの`drivers/media/pci/pt1/pt1.c` |
+| px4_drv feat/android-ddk | c2a031db8771ddd6e3e0b3b4a712b64ec384139b | 公開`ILnb`は非公開 | 0 Vまたは15 Vのみ。tone、position、DiSEqCの実処理証跡なし | `aidl_baseline_eligible=false`。`getLnbIds()`へ出さない。機器項目が`InternalFixed15V`ならHAL内固定15 V、`ExternalOrShared`なら電圧非操作でISDB-S frontendを公開可能。`UnknownOrDisabled`なら非公開 | 公開LNB leaseは生成せず、固定15 V時だけ既存の機器rail lease・rollback・safe-state規則を使う | `driver/px4_device.c`のblob cfed72f...、`driver/ptx_chrdev.c`のblob 18f074... |
+| earth_pt1 Linux v6.6 | ffc253263a1375a65fa6c9f62a893e9767fbebfa | 公開`ILnb`は非公開 | `pt1.c`では`SEC_VOLTAGE_13`を11 V、`SEC_VOLTAGE_18`を15 Vに対応付ける。tone、position、DiSEqCの実処理証跡なし | `aidl_baseline_eligible=false`。`getLnbIds()`へ出さない。機器項目が`InternalFixed15V`ならHAL内固定15 V、`ExternalOrShared`なら電圧非操作でISDB-S frontendを公開可能。`UnknownOrDisabled`なら非公開 | 公開LNB endpointは生成せず、固定15 V時だけ既存の機器rail lease・rollback・safe-state規則を使う | Linux v6.6 commitの`drivers/media/pci/pt1/pt1.c` |
 
 ### VTS環境に関する設計保留
 
