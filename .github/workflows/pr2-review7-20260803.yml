@@ -1,6 +1,10 @@
 name: PR2 review7 patch 2026-08-03
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - .github/pr2-review7-trigger-20260803.txt
   issue_comment:
     types: [created]
 
@@ -10,9 +14,10 @@ permissions:
 jobs:
   patch:
     if: >-
-      github.event.issue.pull_request &&
-      github.event.issue.number == 2 &&
-      contains(github.event.comment.body, '<!-- pr2-review7-run-20260803 -->')
+      github.event_name == 'push' ||
+      (github.event.issue.pull_request &&
+       github.event.issue.number == 2 &&
+       contains(github.event.comment.body, '<!-- pr2-review7-run-20260803 -->'))
     runs-on: ubuntu-latest
     steps:
       - name: Checkout tooling
