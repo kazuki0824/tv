@@ -384,12 +384,10 @@ Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時�
 - px4 close は control FD だけでなく TS reader FD と reader state も解放する。
 - px4 の CNR 取得は optional telemetry であり、`PTX_GET_CNR` 失敗だけで ロック/状態 query を fatal error にしない。
 - セクションフィルター は condition の必要 byte 幅が payload 長を超える場合に match しない。prefix だけ一致した短い payload を match としない。
-- セクションフィルターの`repeat=false`は重複抑止ではなく、同一`start()`世代内の配送停止条件である。`SectionBits`は最初に一致したsectionを1件配送した後に停止する。`TableInfo`のconfigure可否と候補照合条件はAOSP公開settingsのtable idとversionだけから決め、PID、table種別、runtime `ProductProfile`のsubtable一覧、事前`table_id_extension`、事前`last_section_number`によって有効な設定を`UNAVAILABLE`にしない。
-- `TableInfo repeat=false`は、AOSP公開条件であるtable idとversionだけで照合する。配送済みkeyは`(actual_version, table_id_extension, section_number)`とし、明示versionではそのversionだけ、`version=-1`では全actual versionを対象にする。callerが指定していないversion、extension、PID、table種別または`ProductProfile`の私的一覧で候補を狭めない。
-- 構造上完全でCRC条件を満たす各sectionは、同一`start()`世代で同じkeyを最初に観測した時点で直ちに1回配送する。payloadを完了待ちbufferへ保持せず、候補ごとに`last_section_number`、受信済みsection番号bitmap、version、extension、最終新規key時刻だけを保持する。同じcandidateの`0..last_section_number`が揃えばcandidate完成とする。`last_section_number`が同じcandidate内で変化した場合は矛盾したcandidateとして完成扱いせず、型付き診断を残す。
-- 自動配送停止は、観測済みcandidateが全て完成し、かつ最後の新規matching keyから`ProductProfile.tableInfoCompletionWindowMs`の間、新しいversion、extension、section keyを観測しなかった時点とする。新規keyを受信した場合はwindowを最初から測り直す。`tableInfoCompletionWindowMs`は、現行ARIB TS profileでTableInfo条件に入り得る全table IDについて、適用するARIB伝送運用規定の最大送出反復間隔の最大値に、scheduler遅延と受信jitterの検証済み余裕を加えて導出する単一の正値とする。table ID別の非公開許可表や到着順によるwinner選択には使わない。profile検証では、この単一windowが対象ARIB profile全体を覆うことを証明する。
-- `version=-1`は停止までwildcardのまま維持し、window内に観測した複数actual versionのsectionをそれぞれ配送・完成管理する。観測済みcandidateが未完成の間はquiescence windowが経過しても成功停止せず、利用側の`flush()`、`stop()`または`close()`まで収集を継続する。規定反復間隔を満たさない入力から未観測candidateの不存在を推測しない。正常完了後は自動配送だけを停止し、filter objectの公開lifecycleはStartedのまま維持する。
-- `TableInfo repeat=false`の追跡状態は`RuntimeCapabilityVector.tableInfoTrackingBudgetBytes`から原子的にclaimする。bitmapまたはcandidate metadataの追加が予算を超える場合は`DemuxFilterStatus::OVERFLOW`と型付き診断を1回通知し、内部`table_info_overflow_latched`を立てて以後の自動配送を停止するが、成功完了とは扱わない。公開lifecycleはStartedのままとし、`flush()`だけが追跡状態とoverflow latchを破棄して新しい配送generationで収集を再開する。`stop()`は通常のStopped、`close()`は通常の閉鎖へ進む。overflow後に黙示的な再開、黙示的な成功停止、payload全保持を行わない。`repeat=true`はtable idとversion条件に一致する全sectionを継続配送する。
+- セクションフィルターの`repeat=false`は重複抑止ではなく、同一`start()`世代内の配送停止条件である。`SectionBits`は最初に一致したsectionを1件配送した後に自動配送を停止する。
+- `TableInfo repeat=true`は対応する。AOSP公開条件であるtable idとversionだけで照合し、明示versionではそのversion、`version=-1`では全actual versionを対象として、条件に一致する構造上完全なsectionを継続配送する。callerが指定していないPID、table種別、`table_id_extension`、`last_section_number`、`ProductProfile`の私的一覧で対象を狭めない。
+- `TableInfo repeat=false`は、AOSP契約上、callerが指定したtable idとversionに基づくall sectionsを配送してから停止しなければならない。しかしAndroid 14 AIDLには総`table_id_extension`数、対象actual version集合、終了通知がなく、MPEG-TSの`last_section_number`が完結させるのは個々のtable instanceだけである。現行ARIB対象範囲にも、受理可能な全table IDについて未観測instanceの不存在を証明できる単一の規範的最大送出周期はない。このため、汎用的な有限完了を証明できない現行`ProductProfile`では当該組合せを対応済みと表明せず、`configure()`のvalidate段階で`UNAVAILABLE`を返す。既存設定、filter generation、queue、追跡状態を変更しない。
+- `TableInfo repeat=false`を、時間窓、最初に完成したcandidate、最初に観測したextension/version、非公開table一覧、再送一巡の推測で成功扱いにしてはならない。将来対応する場合は、公開条件だけから対象全集合と有限終端を証明できる入力構文またはAOSP側の終了情報、および複数extension/versionの適合試験を同一変更で追加する。
 - `TableInfo.version`は`-1`または`0..31`だけを受け付ける。`-1`はwildcardであり、runtimeの最初の観測値へ固定しない。範囲外は`INVALID_ARGUMENT`とする。
 - PES `streamId`は`0..=255`を明示`stream_id`として照合し、AOSP `Constant.INVALID_STREAM_ID`の`0xFFFF`をwildcardとして扱う。負値、`256..=65534`、`65536`以上は`INVALID_ARGUMENT`とする。PES能力を広告するdemuxは、全ての有効な明示stream IDとwildcardを通常のPES filter設定として受理し、`0xBD`その他の私的部分集合へ制限しない。ARIB字幕を利用するTIS profileは`0xBD`を指定してよいが、それは利用側の選択でありHAL capabilityの制限ではない。`PES_packet_length=0`はH.222.0で許可される映像stream ID `0xE0..0xEF`のruntime組立てとして扱い、その他のstream IDで受信した長さ0 PESはmalformedとして当該意味単位を破棄する。
 - `IFilter.setDataSource()` の互換性は本書の「表1-D. `setDataSource()` 互換表」を正とする。`setDataSource(NULL)` は demux input 復帰として成功対象に含める。filter source を指定する場合は、表1-D-3の subtype 別成立条件を正とする。source filter として指定できるのは TS生データフィルタだけである。下流として成功させるのは TS生データフィルタと record フィルタだけである。section / PES / AV への raw TS 再parse chain、および section payload、PES payload、AV payload、record payload を直接 source として再配送する経路は作らない。非対応の linkage は `UNAVAILABLE` とし、ペイロードなしフィルタを source または sink にする接続は `INVALID_ARGUMENT` とする。`linkCaps` に広告した main type pair はVTS生成の `UNDEFINED` subtype接続も成功させる。
@@ -1007,7 +1005,7 @@ checked FMQ shim は、`queue == null` または `out_written == null` を `INVA
 
 | 番号 | 操作 / 事象 | 変更順序 | 成功の確定点 | 確定点前の失敗 | 巻き戻し不能時の対象 | 公開戻り値 / 作業スレッド終了 | 設計上の成立条件 |
 |---:|---|---|---|---|---|---|---|
-| AT-001 | `IFrontend.tune()` / 再選局 | 表19のvalidate・prepare・確定A・backend要求・確定B | 設定の同異にかかわらず新規要求受理時は確定B。新要求受理失敗後の旧要求復元成功は復元generationの公開時 | 確定A前は旧選局維持。確定A後に新要求だけが拒否された場合は保存snapshotの旧要求を自動再投入しない。backend停止不明または世代fence不成立では復元しない | frontend、旧世代、失敗したdemux境界 | 表19の失敗分類に従う | 復元を含む2確定点を1つへ圧縮しない |
+| AT-001 | `IFrontend.tune()` / 再選局 | 表19のvalidate・prepare後、安定同一条件なら非破壊re-entry、その他は確定A・backend要求・確定B | 安定同一条件は`request_sequence`更新と`LOCKED`配送予約の確定時。full retuneは新generationを確定Bで公開した時 | re-entry判定前の失敗は旧状態を維持する。確定A後に新要求が拒否された場合は旧要求を自動再投入せず、backend停止・境界終端を確認できれば`Untuned`、結果不明は`FailedBackend`、境界不明は`FailedBoundary`、fence不成立は`Quarantined`へ進む | frontend、旧世代、失敗したdemux境界 | 表19の失敗分類に従う | 非破壊re-entryに確定A/Bを適用しない。破壊的commit後の旧session復元経路を設けない |
 | AT-002 | `IFrontend.stopTune()` | 対象確定・旧世代遮断・backend停止・demux境界終端 | backend停止と全対象demux境界の終端が確定した時点 | 旧世代遮断前は状態不変。遮断後は旧選局を復元しない | frontendと失敗したdemux | 「`IFrontend.stopTune()`の失敗時状態」に従う | 停止成功後に旧配送が残らない |
 | AT-003 | `IDemux.setFrontendDataSource()` | 入力検証・新関連の準備・旧関連の終端・新関連の確定 | frontend関連とdemux入力世代を同時に確定した時点 | 確定前は旧関連を維持。外部適用後の不確定は当該demuxを隔離 | demuxとその入力境界 | 表SB-1とstream boundary契約に従う | 片方向関連を公開しない |
 | AT-004 | Filter / DVR configure・start・flush | 表1または表2の状態検証後、表6-Aと内部キュープロトコルを適用 | API別状態とqueue世代または実行状態を同一commitで確定した時点 | 表6-Aに従い、commit前は状態不変 | 当該FilterまたはDVR | 表1、表2、表6-Aに従う | queue identityを設定更新と混同しない |
@@ -1112,7 +1110,7 @@ hardware状態が不明であることと、frontendの動作状態は分けて�
 | API | 同一条件 | 破壊的処理の可否 | 異なる条件 |
 |---|---|---:|---|
 | `IDemux.setFrontendDataSource(frontend)` | 現在と同じ frontend / generation | stream boundary reset を行わない | 旧frontend unbind、新frontend bind、boundary reset |
-| `IFrontend.tune(settings)` | normalized tune settings が現在条件と同一でも、受理した公開呼出しは新transaction / generationへ進める | 公開transaction、旧generationのfencing、demux boundary、callback契約を省略してはならない。backend固有の同一設定書込みだけは、これらを維持できる場合に省略可 | 異なる条件も同じ公開transaction規則で旧tune停止、新generation、新tune投入、boundary resetを行う |
+| `IFrontend.tune(settings)` | `Locked`でnormalized settings、typed selector、LNB/power条件が同一かつbackendとstream boundaryがhealthy | 非破壊re-entryとし、`request_sequence`更新と現lockの`LOCKED`再通知だけを行う。stream generation、worker、backend要求、demux境界、AVを維持する | 条件不一致、旧tune未完了、または同値性・健全性を証明できない場合だけ表19のfull retuneへ進む |
 | `IFilter.configure(settings)` | 現在設定と同一 | queue / AV backing を破棄しない | validate後にcommitし、必要時だけqueue境界処理 |
 
 `configure()`で種別を変更してはならない。open時の種別と異なるsettings unionには`INVALID_ARGUMENT`を返す。
@@ -2529,13 +2527,10 @@ px4 probe prefix を変更する場合は、frontend_px4系実装、`tuner_hal2/
 | T-SEC-7 | EIT `section_length == 4093` | accept |
 | T-SEC-8 | EIT `section_length == 4094` | reject |
 | T-SEC-13 | `SectionBits repeat=false` | one-shot |
-| T-SEC-14 | 複数extensionが並行する`TableInfo repeat=false` | table id/version条件に一致する各固有section keyを到着時に1回配送し、first-winnerで破棄しない |
-| T-SEC-14a | `version=-1`で複数actual versionが並行 | wildcardを固定せず、versionごと・extensionごとに独立bitmapを持ち、全て配送する |
-| T-SEC-14b | 最大反復間隔の直前に新しいextensionまたはversionを受信 | completion windowを再開し、そのcandidateの完成前に停止しない |
-| T-SEC-14c | 全観測candidate完成後、単一のARIB由来completion window中に新規keyなし | 自動配送を停止し、公開lifecycleはStartedを維持する |
-| T-SEC-14d | candidate metadata予算枯渇 | OVERFLOWを1回通知してlatchし、`flush()`まで再開しない。payload全保持は行わない |
-| T-SEC-14e | overflow後の`flush()` | bitmap、metadata、latchを破棄し、新しい配送generationで収集を再開する |
-| T-SEC-14f | multi-subtable tableで`repeat=true` | table id/version条件に一致する全sectionを継続配送する |
+| T-SEC-14 | `TableInfo repeat=false` | `UNAVAILABLE`、設定・generation・queue・追跡状態に副作用なし |
+| T-SEC-14a | `version=-1`かつ`TableInfo repeat=false` | wildcardを観測値へ固定せず、同じく`UNAVAILABLE`・副作用なし |
+| T-SEC-14b | 複数extension/versionが並行する`TableInfo repeat=true` | table id/version条件に一致する全sectionを継続配送し、first-winnerや時間窓で停止しない |
+| T-SEC-14c | VTS/product profile | 有限完了を証明する契約と試験が追加されるまで`TableInfo repeat=false`を成功scenarioへ入れない |
 | T-SEC-15 | `repeat=true` version更新 | 継続監視 |
 
 raw sectionは、外形、設定されたCRC検査、意味検証を分ける契約に従う。完全なsection外形には、ポインターと`section_length`が範囲内であり、宣言範囲の全バイトが揃っていることを必要とする。外形が完全でも表の構文、予約ビット、意味項目が不正な場合は、rawフィルターに限り元のバイト列を配送してよい。CRC不一致のraw sectionを配送できるのは`isCheckCrc=false`の場合だけとし、`isCheckCrc=true`では破棄する。配送時は推測値を含む`DemuxFilterSectionEvent`を通知せず、`DATA_READY`またはEventFlagでFMQ到着を通知し、型付きのsection解析診断を記録する。raw以外のsectionフィルターでは対象データを破棄する。外形が不正または不完全な場合は、すべてのフィルターで破棄する。
@@ -2604,7 +2599,7 @@ PES filterは、外形検証の後に`stream_id`で通常optional-header構文�
 ## 対応能力・キュー・ARIB境界
 
 - フィルターと`SharedFilter`では、HAL内部の`FilterProducerDrainGate`を使用する。ブロッキングするバックエンド読み取り、FMQ待機、解析器の一時保持が終わった後、FMQへの確定書き込みまたは保留イベント追加の直前にだけ配送許可を取得する。Binderコールバック、バックエンド入出力、FMQまたは条件変数の待機、規定外順序のロック取得を許可の有効範囲に含めない。`flush()`は`Draining`へ移り、新しい許可を拒否し、サービス所有のワーカーを起床させ、許可が0件になるまで待つ。未消費のFMQデータと未配送イベントを破棄し、確定済みまたは配送中のコールバックと配送済みAV領域を維持する。ワーカー終了またはpanic時は保護子を解放する。ロック汚染または遮断されていない終端失敗を検出した場合は、フィルターを閉鎖して隔離する。`QueueEpochProtocol`はDVRだけで使用する。
-- demux、型別filter、DVRの個数は、frontendと公開可能LNBの検出後、`ProductProfile`が列挙する完全な`RuntimeCapabilityVector`から選ぶ。各vectorは任意の非負整数を使用でき、2の冪へ丸めない。object数、worker、callback、reaper、cleanup、PES/AV/playback/FMQ byte予算をvector全体で一括予約し、候補間の列を混成しない。機能群ごとの縮退は他群の値を維持した完全vectorとして明示する。確定値は`CapabilitySnapshot`へ格納し、open/配送時の実領域はsnapshot残量から割り当てる。PES assemblerは全ての有効な明示stream IDとwildcardを同じ能力で扱い、宣言長ありPESと映像stream IDの長さ0 PESを`MAX_PES_BUFFER_BYTES`および`pesRuntimeBudgetBytes`内で保持する。Tuner VTSは別途起動前環境へ結び付け、入力元、PID、経路、queue容量、memory予算が定義されるまで`DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED`とする。
+- demux、型別filter、DVRの個数とbyte予算は、frontend/backend/電源、demux base、main type別filter/FMQ、PES、AV、playback/record DVR、worker/callback/reaper/cleanup共有枠の`CapabilityClosure`ごとに原子的に検証・予約する。各閉包の失敗は、その閉包を必要とする能力だけを非公開にし、依存しないfrontend、filter種別、DVR種別へ波及させない。選択済み閉包を合成した後、query/openの同一性、`numDemux`、`filterCaps`、用途別個数、全byte台帳の横断不変条件を一括検証し、変更不能な`CapabilitySnapshot`として確定する。PES assemblerは全ての有効な明示stream IDとwildcardを同じPES閉包で扱い、宣言長ありPESと映像stream IDの長さ0 PESを`MAX_PES_BUFFER_BYTES`および`pesRuntimeBudgetBytes`内で保持する。Tuner VTSは別途起動前環境へ結び付け、入力元、PID、経路、queue容量、memory予算が定義されるまで`DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED`とする。
 - AVの共有方式とイベント固有方式は、同じ実行時台帳を共有する。各filterでは`CapabilitySnapshot.avPerFilterLiveBytes`、サービス全体では`CapabilitySnapshot.avRuntimeBudgetBytes`を未解放payloadバイト数の上限とし、イベントの実サイズだけを割り当てる。`openFilter(type, bufferSize, cb)`の`bufferSize`はFMQ容量として別に予約する。固定スロット数や1 MiB単位をAOSPまたはコーデック上限として規範化せず、使用中の割り当てを追い出さない。
 - ARIB STD-B10 5.13-E1 Part 1 5.2.4〜5.2.17・Part 3 5.1.1〜5.1.3を表ごとのsection上限1021/4093の根拠とし、STD-B32 3.11-E1 Fascicle 3 Chapter 3 3.1をPES構文の根拠とする。B32を4093の独立した上限根拠として使用しない。B25は公式英訳6.7-E1全文を精読基準とするが、Part 1 §4.9の受信機システム最小鍵組容量は本設計の適合対象外とする。STD-B25デコード能力は、対応するPart・方式・payload処理と、物理tuner/backend復号経路ごとの実鍵組数、実PID数、pool共有単位、枯渇時の`UNAVAILABLE`を製品profileの事実として定義する。AOSPに公開欄は追加せず、session間で共有する同じ内部台帳で受付と解放を強制する。
 - 対象ドライバーと上流Linuxの証跡は、AOSP契約とは独立した根拠として扱う。
@@ -2639,42 +2634,31 @@ STD-B25 Part 1 §4.9は上表の適合主張に含めない。同条項に係る
 
 本章の表と状態機械を設計正本とし、実行時と設計時は本書の安定した節名を参照する。
 
-### `CapabilitySnapshot` の完全能力ベクトル
+### `CapabilitySnapshot` の依存閉包合成
 
-`ProductProfile`は優先順を持つ有限個の`RuntimeCapabilityVector`を宣言する。各vectorの個数は任意の非負整数であり、実資源7個を4個へ丸めるような2の冪tierを作らない。
+`ProductProfile`は全能力を一個の候補vectorとして一括採否せず、次の`CapabilityClosure`ごとに優先順を持つ有限候補を宣言する。候補値は任意の非負整数とし、実資源を2の冪へ丸めない。
 
-| 記号 | 値 |
-|---|---|
-| `F` | 正常確認済みfrontend数 |
-| `L` | AIDL基礎操作対応LNB数 |
-| `D` | demux数 |
-| `Nf` | 全型別filter個数の総和 |
-| `Ndvr` | playback数＋record数 |
+| 閉包 | 原子的に確定する内容 | 依存先 | 失敗時の縮退範囲 |
+|---|---|---|---|
+| frontend | backend、電源トポロジ、frontend object、tune/scan worker、callback、期限資源 | 機器probeと共有worker基盤 | 当該frontendだけを非公開 |
+| demux base | demux object、入力境界、共通packet処理、基礎worker/cleanup枠 | 共有worker基盤 | demuxと配下能力だけを非公開 |
+| filter main type / FMQ | main type別object数、FMQ byte、callback、assembler、配送worker | demux base、共有worker基盤 | 当該main typeだけを非公開 |
+| PES | PES filter数、assembler、`pesRuntimeBudgetBytes` | section以外の対象filter閉包、demux base | PES能力だけを非公開 |
+| AV | AV filter数、1 event、filter別未解放総量、runtime総量、allocator/handle台帳 | 対象filter閉包、demux base | AV能力だけを非公開 |
+| DVR playback / record | 用途別object数、FMQ、処理中buffer、worker、callback | demux base、共有worker基盤 | 当該DVR用途だけを非公開 |
+| shared runtime | worker、callback、reaper、cleanup authority、診断台帳の共有上限 | なし | 依存する閉包だけを候補から除外 |
 
-各vectorの依存枠は次の式で一意に合成する。個別機能が追加のworkerまたはcallbackを必要とする場合は、その加算項をvector schemaへ明示し、散文で暗黙に足さない。
+各閉包は、必要な共有runtime claimを含む全依存資源を同一transactionで仮予約し、全て成功した候補だけを選ぶ。ある閉包の失敗を理由に、依存関係のない閉包を落としてはならない。共有枠が複数閉包で競合する場合は`ProductProfile`の固定優先順で候補を評価し、先に確定したclaimを後続候補が越えないようにする。候補間の数値を無制約に組み合わせるのではなく、各閉包自身の内部不変条件と明示した依存辺を保ったまま合成する。
 
-| 依存枠 | 最小予約数 |
-|---|---:|
-| tuple worker | `Ndvr` |
-| probe worker | `2 * F` |
-| callback | `F + L + Nf + Ndvr` |
-| reaper handle | `2 * F + Nf + Ndvr` |
-| cleanup authority | `F + L + D + Nf + Ndvr` |
+全閉包の選択後、次を一括検証して変更不能な`CapabilitySnapshot`を確定する。
 
-`reaper handle`の式は、同時に存在し得るfrontend probe worker `2 * F`、filter worker `Nf`、DVR worker `Ndvr`を全て回収対象として数える。vector全体についてobject枠、上記依存枠、FMQ、playback処理中buffer、AV、bounded PESのbyte予算を原子的に仮予約する。完全に予約できた最初のvectorだけを`CapabilitySnapshot`へcommitし、候補間の列を混成しない。ある機能群だけを0件へ落とす場合は、残す群の個数と再計算済み依存枠を含む別vectorをprofileへ明記する。全vectorが失敗した場合はquery-onlyへ縮退する。
+- `getFrontendIds()`、`getFrontendInfo()`、open受付が同じfrontend集合を参照する。
+- `getDemuxIds()`、`getDemuxInfo()`、`getDemuxCaps()`、open受付が同じdemux集合と個数を参照する。
+- `numDemux`、main type別`filterCaps`、PES/AV/DVR個数が、依存先demuxと共有runtime claimを越えない。
+- FMQ、PES、AV、playback処理中buffer、callback、worker、reaper、cleanupの各台帳上限が、選択済み閉包の合計claim以上である。
+- capability query、open、configure、start、配送の受付判定が、同じsnapshotと台帳残量だけを入力にする。
 
-`CapabilitySnapshot`は少なくとも次を値として保持し、未宣言値を外部profileから実行時に後読みして広告可否を変えない。
-
-| snapshot値 | 確定規則 |
-|---|---|
-| 各object/filter/DVR/frontend/LNB個数 | 選択した完全vectorとprobe結果 |
-| worker/callback/reaper/cleanup authority枠 | 上記式と機能固有加算項から得た全依存の予約済み使用権数 |
-| `fmqRuntimeBudgetBytes` | 同時configure可能とするFMQ容量の台帳上限 |
-| `playbackProcessingBudgetBytes` | playback DVRごとのFMQ容量と同量の処理中bufferを同時確保できる台帳上限 |
-| `avPerFilterLiveBytes` / `avRuntimeBudgetBytes` | AV能力を非0にする前に検証・固定したfilter別・service全体上限 |
-| `pesRuntimeBudgetBytes` | `MAX_PES_BUFFER_BYTES * pesFilterCount`以上。実領域はPES単位の必要量だけをclaimする |
-| PES製品契約 | 明示`streamId 0..255`とwildcard `0xFFFF`を受理する。`PES_packet_length=0`は映像`0xE0..0xEF`だけをruntimeで許可する |
-| cleanup/tune期限 | `cleanupRetryScheduleMs`、`cleanupTerminalDeadlineMs`、`workerIoDeadlineMs`、`workerReaperDeadlineMs`、`tuneTerminalDeadlineMs` |
+合成後の横断検証に失敗した場合はsnapshotを公開せず、全仮予約を逆順に返却する。サービス寿命中にsnapshotの個数または能力集合を部分更新しない。open/配送時の実領域はsnapshotの閉包別台帳残量から割り当てる。
 
 ### サービスオブジェクトの上限
 
