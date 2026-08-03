@@ -35,7 +35,7 @@ jobs:
           fi
       - name: Apply design fixes
         if: steps.trigger.outputs.present == 'true'
-        run: python3 tooling/.github/pr2-review7-patch-20260803.py work
+        run: python3 tooling/.github/pr2-review7-runner-20260803.py work
       - name: Validate and push
         if: steps.trigger.outputs.present == 'true'
         working-directory: work
