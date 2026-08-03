@@ -25,7 +25,10 @@ jobs:
           ref: agent/apply-tuner-hal2-design-proposals-v70
           path: work
       - name: Apply design fixes
-        run: python3 tooling/.github/pr2-review10-patch-20260804.py work
+        run: |
+          cp tooling/.github/pr2-review10-patch-20260804.py work/.github/pr2-review10-patch-20260804.py
+          python3 work/.github/pr2-review10-patch-20260804.py
+          rm work/.github/pr2-review10-patch-20260804.py
       - name: Validate and push
         working-directory: work
         run: |
