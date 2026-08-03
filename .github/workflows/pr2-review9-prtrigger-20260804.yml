@@ -1,0 +1,101 @@
+name: PR2 review9 PR trigger 2026-08-04
+
+on:
+  push:
+    branches:
+      - agent/apply-tuner-hal2-design-proposals-v70
+    paths:
+      - .github/pr2-review9-pr-trigger-20260804.txt
+
+permissions:
+  contents: write
+
+jobs:
+  apply-review9:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/apply-tuner-hal2-design-proposals-v70
+          fetch-depth: 0
+
+      - name: Fetch temporary patch script
+        run: |
+          git show origin/main:.github/pr2-review9-patch-20260804.py > /tmp/pr2-review9-patch.py
+          sed -i 's/) `ProductProfile`/)`ProductProfile`/' /tmp/pr2-review9-patch.py
+
+      - name: Apply design corrections
+        run: python3 /tmp/pr2-review9-patch.py
+
+      - name: Static checks
+        run: |
+          set -euxo pipefail
+          git diff --check
+          python3 - <<'PY'
+          from pathlib import Path
+
+          allowed = {
+              '.github/pr2-review9-pr-trigger-20260804.txt',
+              'tuner_hal/DESIGN_JA.md',
+              'tuner_hal/CODE_CONVENTION.md',
+              'tuner_hal2/DESIGN_JA.md',
+              'tis/DESIGN_JA.md',
+              'arib_si_engine_rs/DESIGN_JA.md',
+          }
+          import subprocess
+          changed = set(subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines())
+          unexpected = changed - allowed
+          if unexpected:
+              raise SystemExit(f'unexpected changed files: {sorted(unexpected)}')
+
+          hal = Path('tuner_hal/DESIGN_JA.md').read_text(encoding='utf-8')
+          tis = Path('tis/DESIGN_JA.md').read_text(encoding='utf-8')
+          arib = Path('arib_si_engine_rs/DESIGN_JA.md').read_text(encoding='utf-8')
+          hal2 = Path('tuner_hal2/DESIGN_JA.md').read_text(encoding='utf-8')
+
+          forbidden = {
+              'partial TableInfo repeat=false': '現行`ProductProfile`では当該組合せを対応済みと表明せず',
+              'complete vector': 'ProductProfileに宣言した完全vector',
+              'query-only global downgrade': 'query-onlyの縮退状態',
+              'HAL section assembler': 'section/PES assembler',
+              'HAL section assembly': 'section/PES組み立て',
+              'TIS section filter': 'ECM/EMM セクションフィルター',
+              'TIS CRC API': 'setCrcEnabled(true)',
+          }
+          all_text = '\n'.join([hal, tis, arib, hal2])
+          for label, phrase in forbidden.items():
+              if phrase in all_text:
+                  raise SystemExit(f'forbidden residual {label}: {phrase}')
+
+          required = [
+              'numSectionFilter=0',
+              'openFilter(TYPE_TS / SUBTYPE_SECTION',
+              'TYPE_TS / SUBTYPE_TS',
+              'raw TSからのsection組立契約',
+              '選択済み`CapabilityClosure`のclaimから',
+              'FILTER_SECTION | サービス全体 | 0 | 0',
+          ]
+          for phrase in required:
+              if phrase not in all_text:
+                  raise SystemExit(f'missing required phrase: {phrase}')
+
+          for path in [
+              'tuner_hal/DESIGN_JA.md',
+              'tuner_hal/CODE_CONVENTION.md',
+              'tuner_hal2/DESIGN_JA.md',
+              'tis/DESIGN_JA.md',
+              'arib_si_engine_rs/DESIGN_JA.md',
+          ]:
+              text = Path(path).read_text(encoding='utf-8')
+              if text.count('```') % 2:
+                  raise SystemExit(f'unbalanced Markdown fences: {path}')
+          PY
+
+      - name: Commit and push
+        run: |
+          rm .github/pr2-review9-pr-trigger-20260804.txt
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tuner_hal/DESIGN_JA.md tuner_hal/CODE_CONVENTION.md tuner_hal2/DESIGN_JA.md tis/DESIGN_JA.md arib_si_engine_rs/DESIGN_JA.md .github/pr2-review9-pr-trigger-20260804.txt
+          git commit -m 'docs: align section capability and closure degradation'
+          git push origin HEAD:agent/apply-tuner-hal2-design-proposals-v70
