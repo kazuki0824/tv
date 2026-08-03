@@ -385,13 +385,14 @@ Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時�
 - px4 の CNR 取得は optional telemetry であり、`PTX_GET_CNR` 失敗だけで ロック/状態 query を fatal error にしない。
 - セクションフィルター は condition の必要 byte 幅が payload 長を超える場合に match しない。prefix だけ一致した短い payload を match としない。
 - セクションフィルターの`repeat=false`は重複抑止ではなく、同一`start()`世代内のone-shot配送停止条件である。`SectionBits`は最初に一致したsectionを1件配送した後に自動配送を停止する。
-- `TableInfo`の公開照合条件は、TS filter settingsのPID、table id、versionである。明示versionではそのversionだけを照合し、`version=-1`ではversionを照合条件から外す。callerが指定していないtable種別一覧、送出周期、`ProductProfile`の私的一覧で受理対象を狭めない。
-- MPEG-TSの拡張section構文では、規格上の有限な完全集合は1個の具体的table instanceについて`section_number=0..last_section_number`で定義される。本設計では`TableInstanceKey={input_origin_generation, filter_generation, PID, table_id, table_id_extension, actual_version, current_next_indicator}`をinstance identityとし、別extension、別actual version、別current/next、別generationのsectionを同じ完全集合へ混成しない。これらはcallerへ追加の設定条件を課すためではなく、受信sectionを規格上のtable instanceへ分離する内部同一性である。
-- `TableInfo repeat=false`は、公開条件に一致して入力順で最初に受理した構造上完全なsectionが属する1個の`TableInstanceKey`をone-shot対象として確定する。`version=-1`は設定上wildcardのまま維持し、選択後のactual versionは異版混成を防ぐinstance identityとしてだけ使用する。拡張sectionでは対象instanceの`0..last_section_number`をsection番号ごとに1件だけ保持し、全番号が揃ってからsection番号順に各sectionを正確に1回配送する。全sectionのFMQ書込みまたはevent登録が確定した後にだけ自動配送を停止する。短形式でversion、extension、section番号を持たないtableは、wildcard設定に一致した最初の完全sectionを1 sectionのinstanceとして配送して停止する。
-- one-shot対象を完成前に部分配送しない。`version=-1`で同じextensionのactual versionが完成前に切り替わった場合は、未公開の旧candidateを破棄して新しいcurrent candidateへ切り替える。明示versionでは他versionを無視する。target確定後に別extension/versionが到着しても対象へ混成せず、`repeat=true`では公開条件に一致する全instanceを継続配送する。
-- `TableInfo repeat=false`の完了に時間窓、再送一巡、最初に完成したcandidate、非公開table一覧を使用しない。不完全な信号では有限時間で停止することを推測せず、callerの`stop()`、`flush()`、再設定、stream boundaryまで有界メモリーで待機してよい。`flush()`と再設定は未公開candidateを破棄し、旧generationのsectionを新generationへ連結しない。
-- SECTION能力閉包は、広告する各section filterについて`tableInfoOneShotBufferBytes = checked_mul(256, maxSupportedSectionBytes)`を予約する。現行TS profileの`maxSupportedSectionBytes`は4096であり、1 filter当たり最大1,048,576 bytesをone-shot candidate用に確保する。FMQ予算とは別台帳とし、この予約を公開filter数分保証できない候補ではSECTION filter数をその閉包内で減らす。広告後の通常入力で容量不足を理由に有効なtable instanceを部分配送または誤完了させない。
-- `TableInfo.version`は`-1`または`0..31`だけを受け付ける。`-1`は照合時にversionを無視する指定であり、caller-visibleな設定をruntime観測値へ書き換えない。範囲外は`INVALID_ARGUMENT`とする。
+- `TableInfo`の公開照合条件は、TS filter settingsのPID、table id、versionである。明示versionではそのversionだけを照合し、`version=-1`では最初のtarget選択時にversionを照合条件から外す。callerが指定していないtable種別一覧、送出周期、`ProductProfile`の私的一覧で受理対象を狭めない。
+- Android 14 `SectionSettings`の`repeat=false`がいうall sectionsは、ISO/IEC 13818-1／ARIBの拡張section構文で1個のtableを構成する`section_number=0..last_section_number`である。table idだけではsection番号空間を一意にできず、同じtable idでも`table_id_extension`、actual version、`current_next_indicator`が異なれば別のtable instanceである。本設計では`TableInstanceKey={input_origin_generation, filter_generation, PID, table_id, table_id_extension, actual_version, current_next_indicator}`を内部同一性とし、別instanceの同じsection番号を一つのtableへ混成しない。
+- AOSP公開面は`table_id_extension`または全subtable集合の列挙・終端通知を持たない一方、`repeat=false`には有限な停止点が必要である。このため`TableInfo repeat=false`は、公開条件に一致して入力順で最初に受理した構造上完全なsectionが属する1個の`TableInstanceKey`を要求tableとして確定する。これは追加のcaller-visible filter条件ではなく、公開条件が選んだtable種別・versionから、規格上の1個のtableを決定するone-shot解決規則である。`version=-1`はtarget選択まではwildcardのまま維持し、選択後のactual versionは設定値の書換えではなくtable instance identityとして固定する。
+- 対象instanceの構造上完全なsectionは、最初の出現順に各section番号を正確に1回だけ逐次配送する。FMQ書込みまたはevent登録が確定した後にだけ対応bitを配送済みbitmapへ立て、重複sectionは再配送しない。`0..last_section_number`の全bitが確定した時点で自動配送を停止する。全payloadをtable完成まで保持せず、section番号順への並べ替えも行わない。短形式でversion、extension、section番号を持たないtableは、公開条件に一致した最初の完全sectionを1 sectionのtableとして配送して停止する。
+- target確定後は、別extension、別actual version、別current/nextのsectionを対象へ混成または配送しない。`version=-1`でtarget完成前に別versionが到着してもtargetを先着instanceから切り替えず、明示versionでは他versionを無視する。target内で`last_section_number`が矛盾するsectionはmalformedとして破棄し、誤完了させない。`repeat=true`では公開条件に一致する全instanceを継続配送する。
+- `TableInfo repeat=false`の完了に時間窓、再送一巡、最初に完成したcandidate、非公開table一覧を使用しない。不完全なtargetでは有限時間で停止することを推測せず、callerの`stop()`、`flush()`、再設定、stream boundaryまで待機する。`flush()`、再設定、stream boundaryはtarget metadataと配送済みbitmapを破棄し、旧generationのsectionを新generationへ連結しない。
+- SECTION能力閉包がone-shot用に確保する追加状態は、1 filter当たり1個の`TableInstanceKey`、`last_section_number`等の固定metadata、および256-bit（32 byte）の配送済みbitmapだけとする。FMQ backpressure中の未確定sectionは既存のsection assembler／配送保留予算で保持し、commit前にbitmapを更新しない。最大256 section分のpayloadを別領域へ常時予約せず、通常のsection組立て・FMQ・配送予算とone-shot追跡状態を二重計上しない。
+- `TableInfo.version`は`-1`または`0..31`だけを受け付ける。`-1`はtarget選択時にversionを無視する指定であり、caller-visibleな設定をruntime観測値へ書き換えない。範囲外は`INVALID_ARGUMENT`とする。
 - PES `streamId`は`0..=255`を明示`stream_id`として照合し、AOSP `Constant.INVALID_STREAM_ID`の`0xFFFF`をwildcardとして扱う。負値、`256..=65534`、`65536`以上は`INVALID_ARGUMENT`とする。PES能力を広告するdemuxは、全ての有効な明示stream IDとwildcardを通常のPES filter設定として受理し、`0xBD`その他の私的部分集合へ制限しない。ARIB字幕を利用するTIS profileは`0xBD`を指定してよいが、それは利用側の選択でありHAL capabilityの制限ではない。`PES_packet_length=0`はH.222.0で許可される映像stream ID `0xE0..0xEF`のruntime組立てとして扱い、その他のstream IDで受信した長さ0 PESはmalformedとして当該意味単位を破棄する。
 - `IFilter.setDataSource()` の互換性は本書の「表1-D. `setDataSource()` 互換表」を正とする。`setDataSource(NULL)` は demux input 復帰として成功対象に含める。filter source を指定する場合は、表1-D-3の subtype 別成立条件を正とする。source filter として指定できるのは TS生データフィルタだけである。下流として成功させるのは TS生データフィルタと record フィルタだけである。section / PES / AV への raw TS 再parse chain、および section payload、PES payload、AV payload、record payload を直接 source として再配送する経路は作らない。非対応の linkage は `UNAVAILABLE` とし、ペイロードなしフィルタを source または sink にする接続は `INVALID_ARGUMENT` とする。`linkCaps` に広告した main type pair はVTS生成の `UNDEFINED` subtype接続も成功させる。
 - `IFilter.setDataSource(source)` の non-null source 経路は 同一demux内のfilter接続グラフ の接続だけを正式対象とする。`linkCaps` は同一 demux 内で開いた source / sink filter の main type 対応可否を表し、別 demux に属する filter を source に指定する経路を capability / VTS profile 対象に含めない。source / sink object の lifetime、generation、kind を先に確認し、その後に owner demux 不一致と自己参照を `INVALID_ARGUMENT` で拒否する。AOSP API 文面上の「another filter」は本製品では同一 demux の filter graph 内の別 filter として扱い、別demux間のfilter接続グラフは作らない。
@@ -2530,15 +2531,15 @@ px4 probe prefix を変更する場合は、frontend_px4系実装、`tuner_hal2/
 | T-SEC-7 | EIT `section_length == 4093` | accept |
 | T-SEC-8 | EIT `section_length == 4094` | reject |
 | T-SEC-13 | `SectionBits repeat=false` | 最初の一致sectionを1件配送してone-shot停止 |
-| T-SEC-14 | 明示versionの`TableInfo repeat=false`、sectionが順不同 | 最初に選択した`TableInstanceKey`の`0..last_section_number`を全て揃え、section番号順に各1回配送後停止 |
-| T-SEC-14a | `version=-1`の`TableInfo repeat=false` | wildcard設定を維持し、選択したactual versionだけでinstanceを完成させ、異版を混成しない |
-| T-SEC-14b | 複数extension/versionが並行する`TableInfo repeat=false` | 入力順で最初に受理したmatching instanceをtargetとし、他instanceを混成しない。時間窓またはfirst-completed競争でtargetを変更しない |
-| T-SEC-14c | wildcard targetが完成前に同一extensionのcurrent version更新 | 未公開の旧candidateを破棄し、新actual versionのinstanceを新targetとして収集。旧sectionを配送しない |
-| T-SEC-14d | 明示version中に他version到着 | 他versionを無視し、要求versionのinstanceだけを待つ |
-| T-SEC-14e | short syntax + wildcard + `repeat=false` | 最初の完全sectionを1 section instanceとして1回配送後停止 |
-| T-SEC-14f | 最大`last_section_number=255`・各section 4096 bytes | `tableInfoOneShotBufferBytes=1,048,576`以内で全256 sectionを保持し、部分配送・誤完了なし |
-| T-SEC-14g | target未完成、`stop()`／`flush()`／再設定／stream boundary | timeoutで誤完了せず、未公開candidateを破棄して世代を分離 |
-| T-SEC-14h | 全section完成後のFMQ一時backpressure | 未配送sectionを保持して再試行し、全sectionのcommit前に自動停止またはdropしない |
+| T-SEC-14 | 明示versionの`TableInfo repeat=false`、sectionが順不同 | 最初に選択した`TableInstanceKey`の各sectionを初出順に1回配送し、`0..last_section_number`の配送済みbitが全て立った後に停止 |
+| T-SEC-14a | `version=-1`の`TableInfo repeat=false` | target選択まではwildcardを維持し、先着sectionのactual versionをinstance identityとして固定。設定値は書き換えない |
+| T-SEC-14b | 同一table ID/versionで複数extension/current-nextが並行 | 最初の構造上完全なmatching sectionが属するinstanceだけをtargetとし、他instanceの同じsection番号を混成・配送しない |
+| T-SEC-14c | wildcard target完成前に別actual version到着 | targetを切り替えず、先着instanceの未配送sectionを待つ。別versionを配送しない |
+| T-SEC-14d | target sectionの`last_section_number`不一致 | 不一致sectionをmalformedとして破棄し、bitmapまたは停止判定を進めない |
+| T-SEC-14e | short syntax + wildcard + `repeat=false` | 最初の完全sectionを1 section tableとして1回配送後停止 |
+| T-SEC-14f | 最大`last_section_number=255` | 256-bit（32 byte）bitmapと固定metadataだけで追跡し、各section payloadは逐次配送してtable全体を保持しない |
+| T-SEC-14g | target未完成、`stop()`／`flush()`／再設定／stream boundary | timeoutで誤完了せず、target metadataとbitmapを破棄して世代を分離 |
+| T-SEC-14h | 各section配送時のFMQ一時backpressure | 既存の配送保留予算で当該sectionを再試行し、FMQ/event commit前に配送済みbitを立てない |
 | T-SEC-14i | 複数extension/versionが並行する`TableInfo repeat=true` | table id/version条件に一致する全instanceのsectionを継続配送する |
 | T-SEC-15 | `repeat=true` version更新 | 継続監視 |
 
@@ -2651,7 +2652,7 @@ STD-B25 Part 1 §4.9は上表の適合主張に含めない。同条項に係る
 |---|---|---|---|
 | frontend | backend、電源トポロジ、frontend object、tune/scan worker、callback、期限資源 | 機器probeと共有worker基盤 | 当該frontendだけを非公開 |
 | demux base | demux object、入力境界、共通packet処理、基礎worker/cleanup枠 | 共有worker基盤 | demuxと配下能力だけを非公開 |
-| filter main type / FMQ | main type別object数、FMQ byte、callback、assembler、配送worker。SECTIONでは公開数分の`tableInfoOneShotBufferBytes`を含む | demux base、共有worker基盤 | 当該main typeだけを非公開 |
+| filter main type / FMQ | main type別object数、FMQ byte、callback、assembler、配送worker。SECTIONでは公開数分の`TableInfoOneShotTracker`（target metadataと256-bit bitmap）を含む | demux base、共有worker基盤 | 当該main typeだけを非公開 |
 | PES | PES filter数、assembler、`pesRuntimeBudgetBytes` | section以外の対象filter閉包、demux base | PES能力だけを非公開 |
 | AV | AV filter数、1 event、filter別未解放総量、runtime総量、allocator/handle台帳 | 対象filter閉包、demux base | AV能力だけを非公開 |
 | DVR playback / record | 用途別object数、FMQ、処理中buffer、worker、callback | demux base、共有worker基盤 | 当該DVR用途だけを非公開 |
@@ -2671,7 +2672,7 @@ STD-B25 Part 1 §4.9は上表の適合主張に含めない。同条項に係る
 
 ### サービスオブジェクトの上限
 
-サービスオブジェクトの公開個数、FMQ・PES・AV・SECTION one-shot bufferの各byte上限、worker・callback・reaper・cleanup枠は、選択済み`CapabilityClosure`のclaimから導出する。ある閉包候補を予約できない場合は、その閉包と推移的に依存する能力だけを候補から除外し、依存しないfrontend、filter main type、DVR用途を0へ落とさない。`ProductProfile`の優先順は共有資源を競合する閉包候補の選択順にだけ使用し、全能力を含む単一vectorの採否またはquery-only一括縮退へ使用しない。
+サービスオブジェクトの公開個数、FMQ・PES・AVの各byte上限とSECTION one-shot追跡上限、worker・callback・reaper・cleanup枠は、選択済み`CapabilityClosure`のclaimから導出する。ある閉包候補を予約できない場合は、その閉包と推移的に依存する能力だけを候補から除外し、依存しないfrontend、filter main type、DVR用途を0へ落とさない。`ProductProfile`の優先順は共有資源を競合する閉包候補の選択順にだけ使用し、全能力を含む単一vectorの採否またはquery-only一括縮退へ使用しない。
 
 全閉包の合成後にquery/open、`numDemux`、`filterCaps`、用途別個数、全byte台帳の横断不変条件を検証する。整合したsnapshotを構成できない場合は全仮予約を戻してserviceを登録しないが、AV、PES、SECTION、DVR等の局所閉包不足だけを理由に、整合して残せる無関係な能力を全0にしてserviceを登録する状態は設けない。変更不能なsnapshotを個数、依存枠、byte予算、受付可否の正本とし、`CleanupPending`または`Quarantined`は解放完了まで使用中と数える。
 
@@ -2679,7 +2680,7 @@ STD-B25 Part 1 §4.9は上表の適合主張に含めない。同条項に係る
 |---|---|---:|---|---:|---|---|
 | LIVE_DEMUX | サービス全体 | 8 | `CapabilitySnapshot`の値 | 0 | なし | 呼び出し側指定のFMQ容量はsnapshotの`fmqRuntimeBudgetBytes`から別transactionで予約する。 |
 | FILTER_TS | サービス全体 | 32 | `CapabilitySnapshot`の値 | 0 | なし | 呼び出し側指定のFMQ容量はsnapshotの`fmqRuntimeBudgetBytes`から別transactionで予約する。 |
-| FILTER_SECTION | サービス全体 | 8 | `CapabilitySnapshot`の値 | 0 | なし | FMQ容量に加え、各公開filterについて最大256 section×4096 bytesの`tableInfoOneShotBufferBytes`をSECTION閉包から予約する。 |
+| FILTER_SECTION | サービス全体 | 8 | `CapabilitySnapshot`の値 | 0 | なし | FMQ容量に加え、各公開filterについて1個のtarget metadataと256-bit（32 byte）の配送済みbitmapをSECTION閉包から予約する。section payloadは逐次配送し、table全体のpayload領域を別途予約しない。 |
 | FILTER_AUDIO | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | なし | FMQの`bufferSize`とは別に、実payloadをsnapshotの`avPerFilterLiveBytes`と`avRuntimeBudgetBytes`から割り当てる。物理領域の起動時先取りはしない。 |
 | FILTER_VIDEO | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | なし | FMQの`bufferSize`とは別に、実payloadをsnapshotの`avPerFilterLiveBytes`と`avRuntimeBudgetBytes`から割り当てる。物理領域の起動時先取りはしない。 |
 | FILTER_PES | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | demux当たり1 | 有効な明示`streamId 0..255`とwildcard `0xFFFF`を同じPES capabilityで扱う。宣言長ありPESは宣言長+6 byteをPES実行時台帳からclaimし、映像`0xE0..0xEF`の長さ0 PESは`MAX_PES_BUFFER_BYTES`と同台帳の上限内で組み立てる。stream ID別の非公開capabilityを設けない。 |
