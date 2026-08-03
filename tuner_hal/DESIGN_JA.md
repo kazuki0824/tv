@@ -385,10 +385,12 @@ Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時�
 - px4 の CNR 取得は optional telemetry であり、`PTX_GET_CNR` 失敗だけで ロック/状態 query を fatal error にしない。
 - セクションフィルター は condition の必要 byte 幅が payload 長を超える場合に match しない。prefix だけ一致した短い payload を match としない。
 - セクションフィルターの`repeat=false`は重複抑止ではなく、同一`start()`世代内の配送停止条件である。`SectionBits`は最初に一致したsectionを1件配送した後に停止する。`TableInfo`のconfigure可否と候補照合条件はAOSP公開settingsのtable idとversionだけから決め、PID、table種別、runtime `ProductProfile`のsubtable一覧、事前`table_id_extension`、事前`last_section_number`によって有効な設定を`UNAVAILABLE`にしない。
-- `TableInfo repeat=false`は、AOSP公開条件であるtable idとversionを変更せず、MPEG-TSの有限なtable instanceを1個だけsnapshotとして配送する。候補keyは`(table_id_extension, actual_version)`とし、各候補について同一の`last_section_number`に属する`section_number=0..last_section_number`を独立に収集する。明示versionではそのversionだけを候補にし、`version=-1`はwildcardのまま維持して、観測した各actual versionを別候補として扱う。最初の観測versionへ設定を書き換えたり、別versionを不一致として捨てたりしない。
-- candidateは`0..last_section_number`が全て揃った時点で完成する。部分sectionは完成前に配送しない。最初に完成したcandidateをwinnerとし、同一ingress batchで複数が完成した場合は`actual_version`、`table_id_extension`の昇順で一意に選ぶ。winnerのsectionを`section_number`昇順で各1回配送して自動配送を停止し、他candidateのpartialを破棄する。AOSP公開面には総extension数・全version集合・終了時刻がなく、ARIB/MPEG-TSの`last_section_number`も1個のtable instanceだけを完結させるため、未観測instanceまで含む全体集合や再送周期を推測して停止条件にしない。この自動配送停止は公開`IFilter.stop()`ではなく、filter objectの公開状態はStartedのまま維持する。
-- `TableInfo repeat=false`のcandidate bufferは`RuntimeCapabilityVector.tableInfoSnapshotBudgetBytes`から原子的にclaimする。winner完成前に予算を使い切った場合はpartialを全て破棄し、section filterのoverflow状態と型付き診断を通知して自動配送を停止する。表種別、PID、`ProductProfile`の非公開subtable一覧をcandidate選別または完了判定に使わない。`repeat=true`はtable idと、明示versionまたはwildcardに一致する全sectionを継続配送する。
-- `TableInfo.version` は `-1` または `0..31` だけを受け付ける。`-1` はwildcardであり、runtimeの最初の観測値へ固定しない。範囲外は `INVALID_ARGUMENT` とする。
+- `TableInfo repeat=false`は、AOSP公開条件であるtable idとversionだけで照合する。配送済みkeyは`(actual_version, table_id_extension, section_number)`とし、明示versionではそのversionだけ、`version=-1`では全actual versionを対象にする。callerが指定していないversion、extension、PID、table種別または`ProductProfile`の私的一覧で候補を狭めない。
+- 構造上完全でCRC条件を満たす各sectionは、同一`start()`世代で同じkeyを最初に観測した時点で直ちに1回配送する。payloadを完了待ちbufferへ保持せず、候補ごとに`last_section_number`、受信済みsection番号bitmap、version、extension、最終新規key時刻だけを保持する。同じcandidateの`0..last_section_number`が揃えばcandidate完成とする。`last_section_number`が同じcandidate内で変化した場合は矛盾したcandidateとして完成扱いせず、型付き診断を残す。
+- 自動配送停止は、観測済みcandidateが全て完成し、かつ最後の新規matching keyから`ProductProfile.tableInfoCompletionWindowMs`の間、新しいversion、extension、section keyを観測しなかった時点とする。新規keyを受信した場合はwindowを最初から測り直す。`tableInfoCompletionWindowMs`は、現行ARIB TS profileでTableInfo条件に入り得る全table IDについて、適用するARIB伝送運用規定の最大送出反復間隔の最大値に、scheduler遅延と受信jitterの検証済み余裕を加えて導出する単一の正値とする。table ID別の非公開許可表や到着順によるwinner選択には使わない。profile検証では、この単一windowが対象ARIB profile全体を覆うことを証明する。
+- `version=-1`は停止までwildcardのまま維持し、window内に観測した複数actual versionのsectionをそれぞれ配送・完成管理する。観測済みcandidateが未完成の間はquiescence windowが経過しても成功停止せず、利用側の`flush()`、`stop()`または`close()`まで収集を継続する。規定反復間隔を満たさない入力から未観測candidateの不存在を推測しない。正常完了後は自動配送だけを停止し、filter objectの公開lifecycleはStartedのまま維持する。
+- `TableInfo repeat=false`の追跡状態は`RuntimeCapabilityVector.tableInfoTrackingBudgetBytes`から原子的にclaimする。bitmapまたはcandidate metadataの追加が予算を超える場合は`DemuxFilterStatus::OVERFLOW`と型付き診断を1回通知し、内部`table_info_overflow_latched`を立てて以後の自動配送を停止するが、成功完了とは扱わない。公開lifecycleはStartedのままとし、`flush()`だけが追跡状態とoverflow latchを破棄して新しい配送generationで収集を再開する。`stop()`は通常のStopped、`close()`は通常の閉鎖へ進む。overflow後に黙示的な再開、黙示的な成功停止、payload全保持を行わない。`repeat=true`はtable idとversion条件に一致する全sectionを継続配送する。
+- `TableInfo.version`は`-1`または`0..31`だけを受け付ける。`-1`はwildcardであり、runtimeの最初の観測値へ固定しない。範囲外は`INVALID_ARGUMENT`とする。
 - PES `streamId`は`0..=255`を明示`stream_id`として照合し、AOSP `Constant.INVALID_STREAM_ID`の`0xFFFF`をwildcardとして扱う。負値、`256..=65534`、`65536`以上は`INVALID_ARGUMENT`とする。PES能力を広告するdemuxは、全ての有効な明示stream IDとwildcardを通常のPES filter設定として受理し、`0xBD`その他の私的部分集合へ制限しない。ARIB字幕を利用するTIS profileは`0xBD`を指定してよいが、それは利用側の選択でありHAL capabilityの制限ではない。`PES_packet_length=0`はH.222.0で許可される映像stream ID `0xE0..0xEF`のruntime組立てとして扱い、その他のstream IDで受信した長さ0 PESはmalformedとして当該意味単位を破棄する。
 - `IFilter.setDataSource()` の互換性は本書の「表1-D. `setDataSource()` 互換表」を正とする。`setDataSource(NULL)` は demux input 復帰として成功対象に含める。filter source を指定する場合は、表1-D-3の subtype 別成立条件を正とする。source filter として指定できるのは TS生データフィルタだけである。下流として成功させるのは TS生データフィルタと record フィルタだけである。section / PES / AV への raw TS 再parse chain、および section payload、PES payload、AV payload、record payload を直接 source として再配送する経路は作らない。非対応の linkage は `UNAVAILABLE` とし、ペイロードなしフィルタを source または sink にする接続は `INVALID_ARGUMENT` とする。`linkCaps` に広告した main type pair はVTS生成の `UNDEFINED` subtype接続も成功させる。
 - `IFilter.setDataSource(source)` の non-null source 経路は 同一demux内のfilter接続グラフ の接続だけを正式対象とする。`linkCaps` は同一 demux 内で開いた source / sink filter の main type 対応可否を表し、別 demux に属する filter を source に指定する経路を capability / VTS profile 対象に含めない。source / sink object の lifetime、generation、kind を先に確認し、その後に owner demux 不一致と自己参照を `INVALID_ARGUMENT` で拒否する。AOSP API 文面上の「another filter」は本製品では同一 demux の filter graph 内の別 filter として扱い、別demux間のfilter接続グラフは作らない。
@@ -399,10 +401,17 @@ Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時�
 
 - `IDescrambler.addPid()` / `removePid()` の source filter は AOSP意味論では optional であり、`NULL` は demux 入力全体の PID 指定である。NULL 経路は現行AOSP契約上の成功対象として扱い、実装済み対象に含める。
 
-現行ProductProfileのAV未解放payload予算は、広告する各AV filterについて`avPerFilterLiveBytes=8 MiB`とし、`avRuntimeBudgetBytes=checked_mul(avPerFilterLiveBytes, advertisedAvFilterCount)`で導出する。この8 MiBはcodec規格上限ではなくHAL所有payloadの製品資源上限である。`RuntimeCapabilityVector`の仮予約時に全額を原子的に確保できないvectorは公開せず、filter開始後は各allocationをfilter別上限と全体上限の両方へclaimし、`releaseAvHandle()`または後片付け完了時に同じ台帳へ返却する。
+AV資源上限は全codec共通の固定byte値にしない。`ProductProfile`は対応するcodec、stream subtype、backendごとに`avMaxEventBytes`と`avMaxOutstandingEventsPerFilter`を持つ。`avMaxEventBytes`は、対応宣言するcodec/profileで成立し得る最大access unitまたはPES payload、HAL assembler上限、allocatorの連続・map可能上限、対象機器とdecoderでの最悪値測定を突き合わせ、正の有限値として導出する。対応codecの正当な最大sampleを収容できないprofileはAV能力を公開しない。allocator上限をcodec上限の代用にせず、単一event上限と未解放payload総量を分離する。
 
-公開能力は、機器検出後に確定して以後変更しない1個の`CapabilitySnapshot`から導出する。`F=successful_frontend_count`と`L=aidl_baseline_eligible_lnb_count`を先に確定し、`ProductProfile`が宣言する完全な`RuntimeCapabilityVector`を順に検証する。各vectorはdemux、型別filter、playback/record DVRの任意の非負整数個数と全byte予算を持ち、2の冪へ丸めない。公開object数と、その全数に必要なworker、callback、reaper、cleanup authority、PES、AV、playback処理中buffer、FMQ台帳使用権をvector全体で同時に仮予約し、最初に完全予約できた1個だけを確定する。別候補の列を混成しない。機能群を落とすfallbackが必要なら、他群を維持した別の完全vectorを`ProductProfile`へ明示する。確定済みsnapshotは能力広告と受付判定の唯一の入力であり、byte予算は後続割り当てが越えられない台帳上限である。AV payloadは配送時、宣言長ありPESはヘッダーから必要量を確定した時点、長さ0映像PESは受信量の増加時、FMQとplayback処理中bufferはconfigure時に実領域を確保する。PES filterを非0で公開する場合は、`pesRuntimeBudgetBytes >= MAX_PES_BUFFER_BYTES * pesFilterCount`を満たし、有効な明示`streamId 0..255`とwildcard `0xFFFF`を同じ公開能力で受理する。ARIB字幕用`0xBD`はTISが選ぶ利用設定であり、HAL capabilityの部分集合ではない。VTSは別の起動前環境bindingであり、未定義中は固定path XMLをinstallせず成功を表明しない。
+各AV filterの集約上限`avPerFilterLiveBytes`は、当該filterが取り得る最大`avMaxEventBytes`と`avMaxOutstandingEventsPerFilter`のchecked積以上とする。`avRuntimeBudgetBytes`は、最終`CapabilitySnapshot`へ含める各AV能力閉包のfilter別集約上限をchecked加算して導出する。event-local allocationは、event上限、filter集約上限、runtime集約上限を別々にclaimし、`releaseAvHandle()`または後片付け完了時に同じ台帳へ返却する。
 
+構造上有効なeventがprofile導出済み`avMaxEventBytes`を超える場合、または一時的に集約claimできない場合は、handle/dataIdを公開する前に暫定allocationを解放し、`DemuxFilterStatus::OVERFLOW`と原因別診断を通知する。既に公開したhandleを暗黙解放せず、filter lifecycleを失敗へ移さない。容量が返却された後の後続eventは通常どおり再試行可能とし、固定8 MiB閾値だけを理由に対応codecの正当なsampleを恒久dropしない。
+
+公開能力は、サービス初期化時の機器probeと`ProductProfile`から、実際に同時予約が必要な依存閉包ごとに原子的に確定し、最後に1個の変更不能な`CapabilitySnapshot`へ合成する。依存閉包は少なくとも、(1) frontend/backend/電源/frontend worker・callback、(2) demux base/query/open、(3) main type別filterとFMQ、(4) PES assembler、(5) AV allocationとhandle台帳、(6) playback/record DVR、(7) cleanup/reaper共有枠に分ける。各閉包は必要な下位閉包と共有pool claimを同一transactionで予約し、失敗時はその閉包の仮予約だけを戻す。
+
+最終合成は依存順に行い、同じworker、callback、reaper、FMQ byte、AV/PES byteを二重計上しない。AV閉包の不足で無関係なfrontendまたはrecord DVR閉包を落とさず、共有するdemux baseや全体worker poolが不足する場合だけ、その依存先を使う閉包へ失敗を伝播する。`getDemuxIds()`、`getDemuxInfo()`、`getDemuxCaps()`、open受付、`numDemux`、`filterCaps`の横断不変条件は、合成後snapshotから一括導出する。能力広告と受付判定は同じsnapshotだけを参照し、別候補closureの列を実行時に混成しない。
+
+AV payloadは配送時、宣言長ありPESはheaderから必要量を確定した時点、長さ0映像PESは受信量増加時、FMQとplayback処理中bufferはconfigure時に実領域をclaimする。PES filterを非0で公開する場合は、PES閉包が`pesRuntimeBudgetBytes >= MAX_PES_BUFFER_BYTES * pesFilterCount`を満たし、有効な明示`streamId 0..255`とwildcard `0xFFFF`を同じ能力で受理する。ARIB字幕用`0xBD`はTISの利用設定でありHAL capabilityの部分集合ではない。VTSは別の起動前環境bindingとし、未定義中は固定path XMLをinstallせず成功を表明しない。
 
 - 入力値不正は `INVALID_ARGUMENT`、未対応 capability は `UNAVAILABLE`、オブジェクト state 不整合は `INVALID_STATE`、mutex汚染 や内部整合性崩壊は `UNKNOWN_ERROR` / `HalError::Internal` に写像する。
 
@@ -481,7 +490,7 @@ Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時�
 | FR-012d | FailedBackend / FailedBoundary | `stopTune()` / `stopScan()`。旧世代のcallback・queue・backend確定権限を遮断できない | `UNKNOWN_ERROR` | Quarantined | 当該frontendと遮断不能な依存だけを隔離する |
 | FR-013 | Closing / Closed / Quarantined | `tune()` / `scan()` / `stopTune()` / `stopScan()` | `INVALID_STATE` | 入力状態を維持 | 公開操作を実行しない |
 
-旧操作の停止失敗は、backend停止不明なら`FailedBackend`、backend停止済みでdemux境界だけ不明かつ旧世代fence成立なら`FailedBoundary`、旧世代fence自体を証明できない場合だけ`Quarantined`へ写像する。新しいbackend要求、worker、callback generationは公開しない。旧操作を正常に停止できた後、新しい`tune()`要求の受理だけが失敗した場合は、表19の復元用snapshotから旧要求を正確に1回復元する。
+旧操作の停止失敗は、backend停止不明なら`FailedBackend`、backend停止済みでdemux境界だけ不明かつ旧世代fence成立なら`FailedBoundary`、旧世代fence自体を証明できない場合だけ`Quarantined`へ写像する。新しいbackend要求、worker、callback generationは公開しない。旧操作を正常に停止した後、新しい`tune()`要求が拒否された場合は旧要求を自動再投入しない。旧generationは既に遮断され、旧demux境界も終端しているため、旧TSをcallerが新サービス向けに再構成したfilterへ流さず、表19の原因別失敗状態へ進む。
 
 ### 表1. IFilter 状態表
 
@@ -998,7 +1007,7 @@ checked FMQ shim は、`queue == null` または `out_written == null` を `INVA
 
 | 番号 | 操作 / 事象 | 変更順序 | 成功の確定点 | 確定点前の失敗 | 巻き戻し不能時の対象 | 公開戻り値 / 作業スレッド終了 | 設計上の成立条件 |
 |---:|---|---|---|---|---|---|---|
-| AT-001 | `IFrontend.tune()` / 再選局 | 表19のvalidate・prepare・確定A・backend要求・確定B | 設定の同異にかかわらず新規要求受理時は確定B。新要求受理失敗後の旧要求復元成功は復元generationの公開時 | 確定A前は旧選局維持。確定A後に新要求だけが拒否された場合は保存snapshotの旧要求を正確に1回再投入する。backend停止不明または世代fence不成立では復元しない | frontend、旧世代、失敗したdemux境界 | 表19の失敗分類に従う | 復元を含む2確定点を1つへ圧縮しない |
+| AT-001 | `IFrontend.tune()` / 再選局 | 表19のvalidate・prepare・確定A・backend要求・確定B | 設定の同異にかかわらず新規要求受理時は確定B。新要求受理失敗後の旧要求復元成功は復元generationの公開時 | 確定A前は旧選局維持。確定A後に新要求だけが拒否された場合は保存snapshotの旧要求を自動再投入しない。backend停止不明または世代fence不成立では復元しない | frontend、旧世代、失敗したdemux境界 | 表19の失敗分類に従う | 復元を含む2確定点を1つへ圧縮しない |
 | AT-002 | `IFrontend.stopTune()` | 対象確定・旧世代遮断・backend停止・demux境界終端 | backend停止と全対象demux境界の終端が確定した時点 | 旧世代遮断前は状態不変。遮断後は旧選局を復元しない | frontendと失敗したdemux | 「`IFrontend.stopTune()`の失敗時状態」に従う | 停止成功後に旧配送が残らない |
 | AT-003 | `IDemux.setFrontendDataSource()` | 入力検証・新関連の準備・旧関連の終端・新関連の確定 | frontend関連とdemux入力世代を同時に確定した時点 | 確定前は旧関連を維持。外部適用後の不確定は当該demuxを隔離 | demuxとその入力境界 | 表SB-1とstream boundary契約に従う | 片方向関連を公開しない |
 | AT-004 | Filter / DVR configure・start・flush | 表1または表2の状態検証後、表6-Aと内部キュープロトコルを適用 | API別状態とqueue世代または実行状態を同一commitで確定した時点 | 表6-Aに従い、commit前は状態不変 | 当該FilterまたはDVR | 表1、表2、表6-Aに従う | queue identityを設定更新と混同しない |
@@ -1274,7 +1283,7 @@ source filter boundary は downstream lifecycle、queued payload、pending event
 
 `IFrontend.tune()` は、validateとtransaction-lock下の同値性判定が完了するまで旧tune状態を破壊しない。前回tuneが未完了、設定が異なる、またはbackend・stream boundaryの健全性を証明できない場合だけ旧要求を停止・遮断して新しいstream generationへ進む。前回tuneが`Locked`で、正規化settings、typed selector、LNB/power条件が同一かつbackendと接続demux境界がhealthyである場合は、`stream_generation`を維持する非破壊re-entryとする。公開呼出しごとの`request_sequence`は更新し、現lock snapshotから`LOCKED`を当該sequenceへ1回配送するが、backend再要求、worker交換、境界reset、AV中断を行わない。
 
-validate には、settings型、周波数範囲、frontend capability、LNB候補を含める。prepare には、ワーカー生成準備、コールバック経路 準備可能性、バックエンドロールバック経路 準備可能性を含める。
+validateにはsettings型、周波数範囲、frontend capability、LNB候補を含める。prepareにはworker、callback、backend requestの局所的な受付可能性、必要資源、旧generationを遮断した後の失敗回収経路を含め、旧tuneを破壊する前に確認可能な条件を全て確定する。backendへ実要求を送らなければ判定できない拒否だけをcommit A後に残す。
 
 
 ワーカー生成 失敗時に `LOCKED` / `NO_SIGNAL` / scan message を送ってはならない。
@@ -1286,16 +1295,15 @@ validate には、settings型、周波数範囲、frontend capability、LNB候�
 | TN-003a | stable same-setting re-entry | transaction lock下で`Locked`、正規化settings・typed selector・LNB/power条件の一致、backend/stream boundary healthyを同一snapshotから確認する。`request_sequence`だけを更新し、lock外で`LOCKED`を1回配送する | snapshotまたはcallback準備を確定できなければTN-003bへ進む | stream generation、worker、backend、demux境界、AVを維持 |
 | TN-003b | full retune selection | 旧tune未完了、条件不一致、または同値性・健全性を証明できない | TN-004へ進める | TN-004まで旧状態を維持 |
 | TN-004 | revalidate under transaction lock | frontend、LNB、旧worker、接続demuxのIDとgenerationを再検証し、対象一覧を固定する | 準備物を解放して状態を変えず失敗する | 維持 |
-| TN-005a | commit A | 旧設定、旧generation、旧backend要求、旧demux境界を復元用snapshotへ固定してから、旧generationへのcallback・queue・backend確定権限を遮断し、旧workerとbackendを停止して全対象demux境界を終端する | 全処理の成功時だけTN-006aへ進む | 復元用snapshotをTN-007aの確定まで保持 |
+| TN-005a | commit A | 旧generationへのcallback・queue・backend確定権限を遮断し、旧workerとbackendを停止して全対象demux境界を終端する。旧設定は診断snapshotとしてだけ保持し、再投入権限を持たせない | 全処理の成功時だけTN-006aへ進む | 復元しない |
 | TN-005b | commit A失敗 / backend停止不明 | backend停止結果を確定できない | `UNKNOWN_ERROR`を返し`FailedBackend`へ移し、新要求を送らない | 復元しない |
 | TN-005c | commit A失敗 / 境界不明・fence成立 | backend停止済みだがdemux境界の終端を確定できない | `UNKNOWN_ERROR`を返し`FailedBoundary`へ移し、新要求を送らない | 復元しない |
 | TN-005d | commit A失敗 / fence不成立 | 旧世代のcallback・queue・backend確定権限を遮断できない | `UNKNOWN_ERROR`を返し`Quarantined`へ移す | 復元しない |
 | TN-006a | backend request | 新しい選局要求をbackendへ正確に1回送り、受理された | TN-007aへ進む | 新要求へ移行中 |
-| TN-006b | backend request拒否 / 旧要求復元成功 | 新要求の準備物を解放し、snapshotの旧要求を正確に1回再投入する | 新要求の原因別エラーを返し、新しい復元generationで旧設定を`Tuning`へ戻す | 復元 |
-| TN-006c | backend request拒否 / 復元も拒否 / backend停止確認済み | 新旧要求の準備物を解放し、全demux境界の終端を確認する | 新要求の原因別エラーを返し`Untuned`へ移す | 復元不能 |
-| TN-006d | backend request拒否 / backend結果不明 | 新旧いずれのbackend要求がactiveか確定できない | `UNKNOWN_ERROR`を返し`FailedBackend`へ移す | 復元しない |
-| TN-006e | backend request拒否 / 境界不明・fence成立 | backend停止済みだがdemux境界の終端を確定できない | `UNKNOWN_ERROR`を返し`FailedBoundary`へ移す | 復元しない |
-| TN-006f | backend request拒否 / fence不成立 | 旧世代または新要求の確定権限を遮断できない | `UNKNOWN_ERROR`を返し`Quarantined`へ移す | 復元しない |
+| TN-006b | backend request拒否 / backend停止・全境界終端を確認 | 新要求の準備物を解放し、旧要求を再投入しない | 新要求の原因別エラーを返し`Untuned`へ移る | 復元しない |
+| TN-006c | backend request結果不明 | 新旧いずれのbackend要求がactiveか確定できない | `UNKNOWN_ERROR`を返し`FailedBackend`へ移す | 復元しない |
+| TN-006d | backend停止済み・境界不明・fence成立 | 新要求を公開せず、不明なdemux境界を隔離する | `UNKNOWN_ERROR`を返し`FailedBoundary`へ移す | 復元しない |
+| TN-006e | fence不成立 | 旧世代または新要求の確定権限を遮断できない | `UNKNOWN_ERROR`を返し`Quarantined`へ移す | 復元しない |
 | TN-007a | commit B | backend受理を記録し、新generation、worker、callback許可、demuxへの新入力世代を一括で公開する | 成功時TN-008へ進む | 維持しない |
 | TN-007b | commit B失敗 / 新backend停止と境界終端を確認 | 新generationを公開せず、全準備物を解放する | 原因別エラーを返し`Untuned`へ移す | 維持しない |
 | TN-007c | commit B失敗 / backend停止不明 | 新generationを公開せず、backend資源を再利用しない | `UNKNOWN_ERROR`を返し`FailedBackend`へ移す | 維持しない |
@@ -1309,20 +1317,20 @@ malformed/range違反は`INVALID_ARGUMENT`、構文上validだが当該frontend/
 ```mermaid
 flowchart TD
     A[設定とLNB候補を検証] -->|失敗| B[エラーを返し、旧tuneを維持]
-    A --> C[ワーカー・コールバック・巻き戻し経路を準備]
+    A --> C[worker・callback・backend受付可能性と失敗回収資源を準備]
     C -->|失敗| B
-    C --> F[設定の同異にかかわらず旧tuneを停止し旧世代を終端]
-    F --> G[demux境界を初期化]
-    G --> H[新しいtune要求を送信]
-    H -->|送信成功| I[新世代を公開してworkerを有効化]
-    H -->|送信失敗| J[旧要求を一度だけ復元]
-    J -->|復元成功| K[復元世代でTuning]
-    J -->|backend停止確認済みで復元拒否| L[Untuned]
-    J -->|backend結果不明| M[FailedBackend]
-    J -->|境界だけ不明・fence成立| N[FailedBoundary]
-    J -->|fence不成立| O[Quarantined]
-
-
+    C --> D{Lockedかつ設定・selector・給電条件が同一でbackendと境界がhealthyか}
+    D -->|はい| E[request_sequenceを更新]
+    E --> E2[現lock snapshotのLOCKEDを1回通知]
+    E2 --> E3[stream generation・worker・backend・demux境界・AVを維持]
+    D -->|いいえ| F[旧generationを遮断しbackendを停止]
+    F --> G[旧demux境界を終端]
+    G --> H[新しいtune要求を1回送信]
+    H -->|送信成功| I[新generationを公開してworkerを有効化]
+    H -->|拒否・backend停止と境界終端済み| J[旧要求を再投入せずUntuned]
+    H -->|backend結果不明| M[FailedBackend]
+    H -->|境界だけ不明・fence成立| N[FailedBoundary]
+    H -->|fence不成立| O[Quarantined]
 ```
 
 ### 表20. counter / generation overflow 契約
@@ -2521,11 +2529,13 @@ px4 probe prefix を変更する場合は、frontend_px4系実装、`tuner_hal2/
 | T-SEC-7 | EIT `section_length == 4093` | accept |
 | T-SEC-8 | EIT `section_length == 4094` | reject |
 | T-SEC-13 | `SectionBits repeat=false` | one-shot |
-| T-SEC-14 | 複数extensionが並行する`TableInfo repeat=false` | candidateごとにpartialを隔離し、最初に完成した1 table instanceだけをsection番号順に1回配送する |
-| T-SEC-14a | `version=-1`で複数actual versionが並行 | wildcardを最初のversionへ固定せず、versionごとに独立candidateを持つ |
-| T-SEC-14b | 同一ingress batchで複数candidateが完成 | actual version、extensionの固定tie-breakでwinnerを一意にする |
-| T-SEC-14c | winner完成前にsnapshot予算枯渇 | partialを配送せずoverflow診断後に自動配送を停止する |
-| T-SEC-14d | multi-subtable tableで`repeat=true` | table idとversion条件に一致する全sectionを継続配送する |
+| T-SEC-14 | 複数extensionが並行する`TableInfo repeat=false` | table id/version条件に一致する各固有section keyを到着時に1回配送し、first-winnerで破棄しない |
+| T-SEC-14a | `version=-1`で複数actual versionが並行 | wildcardを固定せず、versionごと・extensionごとに独立bitmapを持ち、全て配送する |
+| T-SEC-14b | 最大反復間隔の直前に新しいextensionまたはversionを受信 | completion windowを再開し、そのcandidateの完成前に停止しない |
+| T-SEC-14c | 全観測candidate完成後、単一のARIB由来completion window中に新規keyなし | 自動配送を停止し、公開lifecycleはStartedを維持する |
+| T-SEC-14d | candidate metadata予算枯渇 | OVERFLOWを1回通知してlatchし、`flush()`まで再開しない。payload全保持は行わない |
+| T-SEC-14e | overflow後の`flush()` | bitmap、metadata、latchを破棄し、新しい配送generationで収集を再開する |
+| T-SEC-14f | multi-subtable tableで`repeat=true` | table id/version条件に一致する全sectionを継続配送する |
 | T-SEC-15 | `repeat=true` version更新 | 継続監視 |
 
 raw sectionは、外形、設定されたCRC検査、意味検証を分ける契約に従う。完全なsection外形には、ポインターと`section_length`が範囲内であり、宣言範囲の全バイトが揃っていることを必要とする。外形が完全でも表の構文、予約ビット、意味項目が不正な場合は、rawフィルターに限り元のバイト列を配送してよい。CRC不一致のraw sectionを配送できるのは`isCheckCrc=false`の場合だけとし、`isCheckCrc=true`では破棄する。配送時は推測値を含む`DemuxFilterSectionEvent`を通知せず、`DATA_READY`またはEventFlagでFMQ到着を通知し、型付きのsection解析診断を記録する。raw以外のsectionフィルターでは対象データを破棄する。外形が不正または不完全な場合は、すべてのフィルターで破棄する。

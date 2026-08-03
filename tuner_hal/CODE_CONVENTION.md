@@ -174,6 +174,8 @@ capability は実体と一致させる。
 - 実装していない CI CAM / descrambler / LNB 機能を成功扱いしない
 - dma-buf が確保できないことを理由に非AV filter capability を落とさない
 - AV共有メモリ が必要な AV経路 は、失敗時に該当 操作 だけ エラーにする
+- AVの1event上限、filter別未解放総量、runtime総量を分離し、codec・allocator・実機証跡からProductProfileごとに導出する。全codec共通の固定byte値を能力契約にしない
+- capabilityは実際に同時予約が必要な依存閉包ごとに原子的に確定し、無関係な閉包の予約失敗を波及させない。最終snapshotの横断不変条件は合成後に一括検証する
 - DVR再生 / 録画 を 対応宣言する場合は、ワーカー 失敗 / queue overflow を 状態 として返す
 ```
 
