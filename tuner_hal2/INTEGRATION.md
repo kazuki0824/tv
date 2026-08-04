@@ -78,3 +78,7 @@ init rc は `android.hardware.tv.tuner.ITuner/default` を登録する。VINTF f
 VTS / product config は `../tuner_hal/DESIGN_JA.md` の`製品スコープ / AOSP capability / VTS profile 境界`、`CapabilitySnapshot`、`ProductProfile`を正とする。現行 TS-only profile では monitor event feature を要求する構成にしない。
 
 monitor event の API 戻り値、feature 宣言有無、別 profile へ切り替える条件は `../tuner_hal/DESIGN_JA.md` を正とし、本書では重複定義しない。
+
+## 7. TableInfo repeat=false の利用境界
+
+`TableInfo repeat=false`のfirst-instance解決規則と停止条件は`../tuner_hal/DESIGN_JA.md`を正とする。AOSP公開面は`table_id_extension`または全subtable集合の列挙・終端通知を持たないため、複数のtable instanceを包括的に取得する製品経路では`repeat=true`を使用する。Tuner HALは公開条件に一致するsectionを継続配送し、SI engineが`table_id_extension`、actual version、`current_next_indicator`、`section_number`、`last_section_number`に基づいてinstance別の完成・更新・寿命を管理し、必要な集合が完成した時点でTISがfilterを明示的に`stop()`する。Tuner HALは未知の全instance集合の一巡または終端を推測しない。
