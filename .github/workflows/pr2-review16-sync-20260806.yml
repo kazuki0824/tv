@@ -1,0 +1,54 @@
+name: PR2 review16 synchronize 2026-08-06
+
+on:
+  push:
+    branches:
+      - agent/apply-tuner-hal2-design-proposals-v70
+    paths:
+      - .github/pr2-review16-trigger-20260806.txt
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/apply-tuner-hal2-design-proposals-v70
+          path: work
+          fetch-depth: 0
+      - name: Checkout helper from main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: helper
+          sparse-checkout: |
+            .github/pr2-review16-patch-20260806.py
+          sparse-checkout-cone-mode: false
+      - name: Apply TIS design corrections
+        working-directory: work
+        run: python ../helper/.github/pr2-review16-patch-20260806.py
+      - name: Static checks
+        working-directory: work
+        run: |
+          git diff --check
+          python - <<'PY'
+          import subprocess
+          changed = set(subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines())
+          expected = {'tis/DESIGN_JA.md'}
+          if changed != expected:
+              raise SystemExit(f'unexpected changed files: {sorted(changed)}')
+          PY
+      - name: Remove temporary files and commit
+        working-directory: work
+        run: |
+          rm -f .github/pr2-review16-trigger-20260806.txt
+          rm -f .github/workflows/pr2-review16-sync-20260806.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tis/DESIGN_JA.md .github/pr2-review16-trigger-20260806.txt .github/workflows/pr2-review16-sync-20260806.yml
+          git commit -m "docs: define TIS session and playback clocks"
+          git push origin HEAD:agent/apply-tuner-hal2-design-proposals-v70
