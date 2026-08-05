@@ -1,0 +1,52 @@
+name: PR2 review14 synchronize 2026-08-05
+
+on:
+  push:
+    branches:
+      - agent/apply-tuner-hal2-design-proposals-v70
+    paths:
+      - .github/pr2-review14-trigger-20260805.txt
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/apply-tuner-hal2-design-proposals-v70
+          fetch-depth: 0
+      - name: Apply design corrections
+        run: python .github/pr2-review14-patch-20260805.py
+      - name: Static checks
+        run: |
+          git diff --check
+          python - <<'PY'
+          from pathlib import Path
+          allowed = {
+              'tuner_hal/DESIGN_JA.md',
+              'tuner_hal2/DESIGN_JA.md',
+          }
+          changed = set(__import__('subprocess').check_output(
+              ['git', 'diff', '--name-only'], text=True).splitlines())
+          unexpected = changed - allowed
+          if unexpected:
+              raise SystemExit(f'unexpected changed files: {sorted(unexpected)}')
+          for p in allowed:
+              text = Path(p).read_text(encoding='utf-8')
+              if text.count('```') % 2:
+                  raise SystemExit(f'unbalanced Markdown fences: {p}')
+          PY
+      - name: Remove temporary files and commit
+        run: |
+          rm -f .github/pr2-review14-patch-20260805.py
+          rm -f .github/workflows/pr2-review14-sync-20260805.yml
+          rm -f .github/pr2-review14-trigger-20260805.txt
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tuner_hal/DESIGN_JA.md tuner_hal2/DESIGN_JA.md .github/pr2-review14-patch-20260805.py .github/workflows/pr2-review14-sync-20260805.yml .github/pr2-review14-trigger-20260805.txt
+          git commit -m "docs: define scan continuation after lock"
+          git push origin HEAD:agent/apply-tuner-hal2-design-proposals-v70
