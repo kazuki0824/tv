@@ -30,8 +30,7 @@ jobs:
           new = 'audio decoder出力PCMは`MediaSync.queueAudio()`へPTS付きで渡し、`MediaSync.Callback.onAudioBufferConsumed()`を受けるまでaudio decoderのoutput buffer IDとPCM `ByteBuffer`（block model出力では`OutputFrame`／output `LinearBlock`を含む）を解放・変更・再利用しない。圧縮入力側の`MediaEvent`／input `LinearBlock`は`QueueRequest.queue()`成功時にcodecへ所有権を移管し、PCM消費完了までは保持しない。'
           if text.count(old) != 1:
               raise SystemExit(f'expected one ownership sentence, found {text.count(old)}')
-          text = text.replace(old, new)
-          path.write_text(text, encoding='utf-8')
+          path.write_text(text.replace(old, new), encoding='utf-8')
           PY
       - name: Static checks
         run: |
@@ -53,15 +52,16 @@ jobs:
               'QueueRequest.queue()`成功時にcodecへ所有権を移管',
               'PCM消費完了までは保持しない',
               'onAudioBufferConsumed(sync, buffer, bufferId)',
+              'TISは`AudioPlaybackClock`、`StandalonePlaybackClock`、`VideoFrameScheduler`',
           ]
           for needle in required:
               if needle not in text:
                   raise SystemExit(f'missing required text: {needle}')
           forbidden = [
-              'AudioPlaybackClock',
-              'StandalonePlaybackClock',
-              'VideoFrameScheduler',
               '受けるまでcodec output／mapped linear blockを解放または変更しない',
+              '`AudioPlaybackClock`を唯一のmaster clock',
+              '`VideoFrameScheduler`は、現generation',
+              '`StandalonePlaybackClock`を使用し',
           ]
           for needle in forbidden:
               if needle in text:
