@@ -51,7 +51,7 @@ BSの通常実行時候補は、TISが保持するBS TSID表からIF周波数と
 
 `getLinearBlock()`がnull、block model configureまたはQueueRequestが利用不能、offset／lengthがblock範囲外、decoderが当該blockを受理しない場合は`BLOCK_MODEL_UNAVAILABLE`または入力不正の型付き診断へ落とす。成功を偽装せず、現generationのfilter、未queue event、decoder、MediaSync、startup queue、budget claimを解放して`notifyVideoUnavailable(VIDEO_UNAVAILABLE_REASON_UNKNOWN)`へ進む。
 
-デコード後のA/V同期とSurface提示はAndroid標準`MediaSync`だけを使用する。video decoder出力は`MediaSync.setSurface(sessionSurface)`後の`createInputSurface()`へ接続し、output frameをPTSナノ秒でreleaseする。audio decoder出力PCMは`MediaSync.queueAudio()`へPTS付きで渡し、`MediaSync.Callback.onAudioBufferConsumed()`を受けるまでcodec output／mapped linear blockを解放または変更しない。独自media clock、`AudioTimestamp`を使う独自同期、独自future render／late drop schedulerを設けない。
+デコード後のA/V同期とSurface提示はAndroid標準`MediaSync`だけを使用する。video decoder出力は`MediaSync.setSurface(sessionSurface)`後の`createInputSurface()`へ接続し、output frameをPTSナノ秒でreleaseする。audio decoder出力PCMは`MediaSync.queueAudio()`へPTS付きで渡し、`MediaSync.Callback.onAudioBufferConsumed()`を受けるまでaudio decoderのoutput buffer IDとPCM `ByteBuffer`（block model出力では`OutputFrame`／output `LinearBlock`を含む）を解放・変更・再利用しない。圧縮入力側の`MediaEvent`／input `LinearBlock`は`QueueRequest.queue()`成功時にcodecへ所有権を移管し、PCM消費完了までは保持しない。独自media clock、`AudioTimestamp`を使う独自同期、独自future render／late drop schedulerを設けない。
 
 `notifyVideoAvailable()`は`Filter.start()`成功、汎用`FilterEvent`、payload付き`MediaEvent`到着だけでは呼ばない。現generationのvideo decoder outputがMediaSync input Surfaceへ時刻付きでrenderされ、session Surfaceが有効で、視聴制限でblockされず、同generationでMediaSync Surface errorが発生していないことをgateとする。これは公開APIで確認可能なMediaSync入力到達を表し、最終display pixelの厳密なpresent証明とはみなさない。
 
