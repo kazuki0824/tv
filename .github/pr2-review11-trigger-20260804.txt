@@ -1,1 +1,0 @@
-Trigger rerun of the prior TableInfo-only synchronization workflow.
