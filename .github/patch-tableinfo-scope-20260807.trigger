@@ -1,1 +1,1 @@
-Trigger the temporary TableInfo scope wording correction workflow.
+Trigger the temporary TableInfo scope wording correction workflow after workflow installation.
