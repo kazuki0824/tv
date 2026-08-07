@@ -29,6 +29,20 @@ TIS内部だけが使う情報:
 
 TvProvider 標準列へ投影する ARIB descriptor 由来値は、Rust parser が構文的に有効な descriptor / event と判定したものに限る。不正 descriptor、fragment 欠落、length 不整合、不正 EIT event 由来の値を title / description / genre / audio / レーティング / long description の正常フィールドとして投影してはならない。これらは JSON v1 診断情報にのみ保持する。
 
+### Channels.COLUMN_TYPE の投影境界
+
+`TvContract.Channels.COLUMN_TYPE` は必須かつ作成後変更不能の放送方式フィールドとして、channel insert時に必ず設定する。値は受信したサービスの正規化済みdelivery systemから決定し、周波数帯、scan候補の由来、backend名、driver名、`service_type`、stream selectorの有無から推測しない。
+
+現行productの写像は次に固定する。
+
+| 正規化済みdelivery system | `Channels.COLUMN_TYPE` | 備考 |
+|---|---|---|
+| ISDB-T | `TvContract.Channels.TYPE_ISDB_T` | 地上UHFだけでなく、CATV帯の候補から受信した場合でも実際のtransportがISDB-TならISDB-Tとする |
+| ISDB-S | `TvContract.Channels.TYPE_ISDB_S` | BSとCS110を含む |
+| ISDB-C | `TvContract.Channels.TYPE_ISDB_C` | 将来、実際のISDB-C transportを対応宣言した場合だけ使用する。CATV周波数帯を走査したという理由だけでは使用しない |
+
+`Channels.COLUMN_SERVICE_TYPE`はARIB `service_type`から決める別軸であり、`Channels.COLUMN_TYPE`の代用にしない。正規化済みdelivery systemを一意に決定できないサービスは、`TYPE_OTHER`や周波数帯由来の値へ丸めずchannel登録可能としない。既存channelの`COLUMN_TYPE`を更新して方式変更を表現せず、方式が異なる受信構成を採用する場合はsetup/rescanで新しいchannel登録transactionとして扱う。
+
 ### EIT時刻のTvProvider投影境界
 
 ARIB EIT の `start_time` は日本標準時（JST、UTC+09:00）のMJD + BCDとして解釈し、具体値を `TvProvider.Programs` へ投影するときだけUTCのUnix epoch millisecondへ変換する。端末の既定time zone、夏時間設定、現在のlocaleを変換規則へ混ぜない。
@@ -175,6 +189,10 @@ Programs.COLUMN_INTERNAL_PROVIDER_DATA:
   `schema`, `schemaVersion`, `programKey`, `serviceKey`, `timing`, `source`, `cas`, `ratings`, `genres`, `series`, `relatedItems`, `linkage`, `freeCaMode`, `audioLanguages`, `audio`, `video`, `extendedItems`, `components`, `diagnostics` を最上位フィールドとして持つ。
   provider-data JSON v1 の構造、canonical encode、正規化、安定キー抽出は `arib_si_engine_rs/DESIGN_JA.md` の `ProgramProviderDataV1` / `ChannelProviderDataV1` を SSOT とする。provider-data単体のdigestまたはsignatureは生成せず、同一process内の重複書き込み抑止にはprovider-data bytesを含むTvProvider行全体のpublish fingerprintだけを使用する。現在番組選択の診断は `diagnostics.currentProgram` 配下に保存する。
   長形式イベント項目リスト、component/audio/series/linkage/event_group/free_CA_mode/audioLanguages等の完全構造、decode/publishability/記述子診断情報は JSON v1 内に保存する。
+
+Channels.COLUMN_TYPE:
+  channel insert時に正規化済みdelivery systemから `TYPE_ISDB_T` / `TYPE_ISDB_S` / 対応宣言済みの場合だけ `TYPE_ISDB_C` を設定する。
+  周波数帯、backend、driver、service_typeから推測せず、作成後に更新しない。
 ```
 
 ## 7. 投影確認観点
@@ -196,6 +214,7 @@ Programs.COLUMN_INTERNAL_PROVIDER_DATA:
 12. `series_name` は `COLUMN_TITLE` / `COLUMN_EPISODE_TITLE` / `LONG_DESCRIPTION` へ機械的に出ず、JSON v1 internal_provider_data の series 構造に残る。
 13. 診断情報は標準列へ出ず、JSON v1 internal_provider_data の 診断情報 構造に残る。
 14. EIT `start_time` の具体値はJSTとして解釈してUTC epoch millisへ変換する。片方だけall-1の時刻未定eventは架空の開始・終了時刻で `Programs` へ投影せず、後続EITの同じevent identityと相関できる。`start_time=0xFFFFFFFFFF`かつ`duration=0xFFFFFF`のevent未定状態は `event_id` をstable identityとして扱わず、後続の具体eventと `event_id` だけで相関しない。
+15. ISDB-T、BS、CS110のchannel insertで`COLUMN_TYPE`がそれぞれ`TYPE_ISDB_T`、`TYPE_ISDB_S`、`TYPE_ISDB_S`となり、CATV帯という理由だけで`TYPE_ISDB_C`へ変わらない。delivery system不明時はchannel登録しない。
 ```
 
 ## 8. 今後の固定方法
