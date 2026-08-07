@@ -113,7 +113,7 @@ freeCA / isFree UI補足:
 | データ・判断 | 現行仕様の扱い | 境界を設ける理由 |
 |---|---|---|
 | series_descriptor series_name | JSON v1 `internal_provider_data` の series 構造に保存する。`COLUMN_TITLE` や `COLUMN_EPISODE_TITLE` へ機械的に入れない。 | EIT `event_name_char` の番組表表示名を壊さないため |
-| series episode/count / series id | `series_id` は `COLUMN_SERIES_ID` または `COLUMN_MULTI_SERIES_ID` へ、episode number は `COLUMN_EPISODE_DISPLAY_NUMBER` へ、last episode number は `COLUMN_ITEM_COUNT` へ自然対応として出す。repeat_label、program_pattern、expire_date、series_name などの完全構造は JSON v1 `internal_provider_data` に保持する。 | Android 標準列へ自然対応できる値だけを投影し、残りはARIB-native構造として保持するため |
+| series episode/count / series id | `series_id` は `COLUMN_SERIES_ID` または、複数 series_id がある場合は `COLUMN_MULTI_SERIES_ID` へ出す。`episode_number=1..4095` は10進文字列として `COLUMN_EPISODE_DISPLAY_NUMBER` へ出し、`0` は話数未定義として列を設定しない。`last_episode_number` は通常の `Programs` に自然対応する標準列がないため標準列へ出さず、`0`（総話数未定）を含め JSON v1 `internal_provider_data` の series 構造に保持する。repeat_label、program_pattern、expire_date、series_name などの完全構造も同じ series 構造に保持する。 | ARIB の 0 sentinel を表示値へ誤投影せず、通常の `Programs` に存在しない `COLUMN_ITEM_COUNT` への投影を禁止するため |
 | linkage_descriptor | JSON v1 `internal_provider_data` の linkage 構造に保存し、現行仕様では標準列・一般 UI・予約追従へ接続しない。予約追従へ接続する場合は、event identity と authoritative 条件を設計正本へ固定してから扱う。 | Android標準列に自然対応しないため |
 | event_group_descriptor | JSON v1 `internal_provider_data.relatedItems` に `shared` / `relay` / `movement` として構造化保存し、現行仕様では標準列・一般 UI・予約追従へ接続しない。予約追従へ接続する場合は、event identity と authoritative 条件を設計正本へ固定してから扱う。 | Android標準列には自然対応しないが、予約追従に必要なARIB-native構造であるため |
 | multi-lingual name の候補列 | 現行仕様で選んだ1文字列だけ標準 title/name へ出し、候補列は JSON v1 `internal_provider_data` に保存する。 | 標準 title/name は1値であり、候補列の全量投影先がないため |
@@ -158,9 +158,11 @@ Programs.COLUMN_CANONICAL_GENRE:
   Android TvProvider が `Programs.COLUMN_BROADCAST_GENRE` から canonical genre を内部補完する場合があるため、TIS が直接設定した値と TvProvider 読み出し後の値は 診断情報で区別する。
 
 Programs.COLUMN_CONTENT_RATING:
-  parental_rating_descriptor から TIS が AOSP system-defined ISDB レーティングドメイン（`com.android.tv / ISDB / ISDB_<age>`）の `TvContentRating` を作り、`TvContentRating.flattenToString()` の結果を格納する。
-  複数のレーティングを持つ場合は、Android TvProvider のコンテンツレーティング 形式に従って複数の `flattenToString()` 後のレーティングを保持する。
-  変換できない値、未対応 country_code、未取得レーティングは推測で標準列へ入れず、`internal_provider_data` と診断に保持する。
+  `country_code=JPN` の parental_rating_descriptor について、適用するARIB運用規定で年齢として定義された値だけを AOSP system-defined ISDB レーティングドメイン（`com.android.tv / ISDB / ISDB_<age>`）へ変換する。
+  ARIB STD-B10 の共通範囲 `rating=0x01..0x0F` は `age=rating+3` として `ISDB_4..ISDB_18` へ変換する。ARIB TR-B15 対象のBS/CSでは運用規定に従い `0x10..0x11` も同式で `ISDB_19..ISDB_20` へ変換する。
+  `rating=0x00` は未定義として標準列へ入れない。TR-B15で年齢として定義されない `0x12..0xFF`、未対応 country_code、未取得レーティングは推測で標準列へ入れず、`internal_provider_data` と診断に保持する。
+  ARIB TR-B14 で parental_rating_descriptor を運用しない地上デジタルでは、この descriptor から `TvContentRating` を生成しない。
+  変換した `TvContentRating.flattenToString()` の結果を格納し、複数のレーティングを持つ場合は Android TvProvider のコンテンツレーティング形式に従って複数保持する。
   ライブセッション側で現在番組のレーティングが未取得または未対応の場合は、視聴制限判定では `TvContentRating.UNRATED` として扱う。
 
 Programs.COLUMN_LONG_DESCRIPTION のUI補足:
@@ -188,10 +190,10 @@ Programs.COLUMN_INTERNAL_PROVIDER_DATA:
 6. 明示写像表に一致するARIB分類では、TIS が `ContentValues` に `Programs.COLUMN_CANONICAL_GENRE` を直接設定することを確認する。写像不能分類では直接設定しないことを確認する。
 7. イベントグループ が LONG_DESCRIPTION に出ず、provider-data JSON `relatedItems` に保存される。
 8. freeCA が `Programs.COLUMN_SCRAMBLED` と provider-data JSON に反映され、UI補足を出す場合は `放送種別: ...` として LONG_DESCRIPTION に出る。
-9. parental_rating_descriptor が変換可能な場合、`Programs.COLUMN_CONTENT_RATING` に `TvContentRating.flattenToString()` 形式で出る。
-10. parental_rating_descriptor の元値、未対応値、元記述子は `internal_provider_data` に残る。
-11. 未対応 レーティングは推測で `COLUMN_CONTENT_RATING` に出ない。
-12. `series_id`、episode number、last episode number は自然対応する標準列へ出る。`series_name` は `COLUMN_TITLE` / `COLUMN_EPISODE_TITLE` / `LONG_DESCRIPTION` へ機械的に出ず、JSON v1 internal_provider_data の series 構造に残る。
+9. `country_code=JPN` の parental_rating_descriptor は、STD-B10 の `0x01..0x0F` を `age=rating+3` で `ISDB_4..ISDB_18` へ変換し、TR-B15対象のBS/CSでは `0x10..0x11` も `ISDB_19..ISDB_20` へ変換して `Programs.COLUMN_CONTENT_RATING` に `TvContentRating.flattenToString()` 形式で出る。
+10. `rating=0x00`、TR-B15で年齢として定義されない `0x12..0xFF`、未対応 country_code、元記述子は `internal_provider_data` に残り、推測で `COLUMN_CONTENT_RATING` に出ない。TR-B14対象の地上デジタルでは parental_rating_descriptor から rating を生成しない。
+11. `episode_number=1..4095` は `COLUMN_EPISODE_DISPLAY_NUMBER` へ出て、`0` は列を設定しない。`last_episode_number` は `0` を含め標準列へ出ず、JSON v1 internal_provider_data の series 構造に残る。
+12. `series_name` は `COLUMN_TITLE` / `COLUMN_EPISODE_TITLE` / `LONG_DESCRIPTION` へ機械的に出ず、JSON v1 internal_provider_data の series 構造に残る。
 13. 診断情報は標準列へ出ず、JSON v1 internal_provider_data の 診断情報 構造に残る。
 14. EIT `start_time` の具体値はJSTとして解釈してUTC epoch millisへ変換する。片方だけall-1の時刻未定eventは架空の開始・終了時刻で `Programs` へ投影せず、後続EITの同じevent identityと相関できる。`start_time=0xFFFFFFFFFF`かつ`duration=0xFFFFFF`のevent未定状態は `event_id` をstable identityとして扱わず、後続の具体eventと `event_id` だけで相関しない。
 ```
