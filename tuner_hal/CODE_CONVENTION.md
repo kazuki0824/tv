@@ -60,23 +60,17 @@ assert! / assert_eq! / assert_ne!
 
 VINTF HAL instance として サービス登録済みになった後は、`panic` で サービスプロセス を落とさない。
 
-## 4. AIDLエラー写像
+## 4. AIDLエラー変換の集約規約
 
-Tuner HAL の 公開API は、`DESIGN_JA.md` の状態遷移表を正とし、実装 helper では下表の基準で AIDL サービス固有エラーへ写像する。
+Tuner HALの公開AIDL戻り値、status precedence、次状態、資源変化、閉鎖側失敗対象は`DESIGN_JA.md`の「Tuner HAL 状態遷移表SSOT」だけを正本とする。本書は具体的な`android.hardware.tv.tuner.Result`値の対応表を持たず、低レベル失敗を正本の分類へ接続する実装規約だけを定める。
 
-| 状態 | 返すエラー | 方針 |
-|---|---|---|
-| クライアント引数不正 | `INVALID_ARGUMENT` | PID 範囲外、未知enum、CS110 stream selector 指定、BS relative stream number の backend 不一致など |
-| lifecycle 不正 | `INVALID_STATE` | close 後操作、start 前 read、AV stream type 未設定など |
-| 未対応機能 | `UNAVAILABLE` | 未対応 CI CAM、未対応 LNB、未対応 backend、未対応 relative stream number など |
-| resource不足 | `NO_MEMORY` または `UNKNOWN_ERROR` | dma-buf確保失敗、FMQ 確保失敗 など。既存 AIDL補助関数 に合わせる |
-| 対象tuner device不在 | `UNAVAILABLE` | 劣化起動 方針に従い、該当 frontend / resource を advertise しない、または open 時に unavailable |
-| device node / ioctl 一時失敗 | `UNKNOWN_ERROR` | device は存在するが ioctl が予期せず失敗した場合 |
-| 内部不変条件違反 | `UNKNOWN_ERROR` | `panic` せず診断情報に記録する。次状態と閉鎖側失敗対象は `DESIGN_JA.md` を正とする |
-| コールバック remote 失敗 | メソッド自体は `panic` せず cleanup | remote オブジェクト dead / binder error はログ記録と cleanup にする。後続処理停止条件は `DESIGN_JA.md` を正とする |
-| mutex汚染 | `UNKNOWN_ERROR` + 閉鎖側失敗 | 対象、次状態、後続APIの戻り値は `DESIGN_JA.md` を正とする |
-
-低レベルエラー は 公開Binderメソッド の各所で直接散在させず、`binder_service` 内の 状態補助関数 または エラー写像補助関数 経由で返す。
+```text
+- device、FMQ、共有メモリ、dma-buf、callback、workerの低レベル失敗は、原因を保持する型付きdomain errorへ変換する
+- 容量不足、未対応、入力不正、lifecycle不正、backend内部障害をgeneric errorへ早期に丸めない
+- 公開Binder statusへの最終変換は`binder_service`内の状態補助関数またはエラー変換補助関数へ集約する
+- Binder method、worker、backend adapter、個別resource helperで公開Result値を直接選択しない
+- helper側の分類が`DESIGN_JA.md`の公開契約と矛盾する場合は`DESIGN_JA.md`を正としてhelperを修正する
+```
 
 ## 5. 起動時 / 実行時失敗モデル
 
@@ -95,7 +89,7 @@ Tuner HAL の 公開API は、`DESIGN_JA.md` の状態遷移表を正とし、�
 
 ### 5.2 対象tuner device不在 は 劣化起動
 
-対象 device node / frontend が存在しない場合でも、HAL サービス自体は起動する。ただし、存在しない frontend / demux / backend resource を capability として advertise してはならない。該当 resource への open / tune / scan は `UNAVAILABLE` を返す。
+対象 device node / frontend が存在しない場合でも、HAL サービス自体は起動する。ただし、存在しない frontend / demux / backend resource を capability として advertise してはならない。該当resourceへの公開結果は`DESIGN_JA.md`の能力・状態表へ写像する。
 
 実装要件:
 
@@ -116,7 +110,7 @@ Tuner HAL の 公開API は、`DESIGN_JA.md` の状態遷移表を正とし、�
 | 個別frontend open失敗 | device不在、permission不足、backend open失敗を区別して診断へ記録し、`DESIGN_JA.md` の該当行へ写像する |
 | tune ioctl失敗 | backend error を `panic` にせず、tune / scan の worker error として戻せる型へ変換する |
 | demux pump失敗 | pump loop の戻り値と診断名を残し、無言停止にしない |
-| dma-buf確保失敗 | 確保失敗を `NO_MEMORY` または `UNKNOWN_ERROR` へ写像し、非AV filter 経路へ誤波及させない |
+| dma-buf確保失敗 | 容量不足と容量不足ではない内部障害を型付きdomain errorで区別し、公開結果は`DESIGN_JA.md`の該当行へ集約して、非AV filter経路へ誤波及させない |
 | コールバック remote dead | Binder error を破棄せず、callback cleanup と診断記録を行う |
 
 ## 6. Mutex 汚染 は 閉鎖側失敗
@@ -180,6 +174,8 @@ capability は実体と一致させる。
 - 実装していない CI CAM / descrambler / LNB 機能を成功扱いしない
 - dma-buf が確保できないことを理由に非AV filter capability を落とさない
 - AV共有メモリ が必要な AV経路 は、失敗時に該当 操作 だけ エラーにする
+- AVの1event上限、filter別未解放総量、runtime総量を分離し、codec・allocator・実機証跡からProductProfileごとに導出する。全codec共通の固定byte値を能力契約にしない
+- capabilityは実際に同時予約が必要な依存閉包ごとに原子的に確定し、無関係な閉包の予約失敗を波及させない。最終snapshotの横断不変条件は合成後に一括検証する
 - DVR再生 / 録画 を 対応宣言する場合は、ワーカー 失敗 / queue overflow を 状態 として返す
 ```
 
@@ -189,7 +185,7 @@ capability は実体と一致させる。
 
 ```text
 1. リリースHAL経路 に `panic` / `unwrap` / expect / assert 系が残っていない
-2. 公開Binderメソッド の エラー写像 が本書と実装 helper で一致している
+2. 公開Binderメソッドの最終status変換が`DESIGN_JA.md`の公開契約と一致し、実装helperに別の公開写像表がない
 3. デバイス検出 結果が capability広告 に反映されている
 4. device不在 で サービスプロセス が `panic` しない
 5. コールバック は ロック解放後に実行される
@@ -207,8 +203,8 @@ capability は実体と一致させる。
 - コールバック失敗は、単独のログ出力で終えてはならない。cleanup、診断記録、後続処理停止条件は `DESIGN_JA.md` の表7と表8へ写像する。
 - ワーカーがロック失敗、registry不整合、record 不在、コールバック失敗で終了する場合、無言停止にしてはならない。`WorkerExit` の分類と公開戻り値は `DESIGN_JA.md` の表7と表8へ写像する。
 - ワーカー の停止待ちは 停止信号 で wake できる 待機primitive を使う。DVR コールバック ワーカー は client 指定 interval の `thread::sleep` によって close / Drop / shutdown をブロックしてはならない。
-- device node 不在、open 不可、permission 不足は `UNAVAILABLE` とする。device が存在する状態での 実行時ioctl失敗 / TS read 失敗 / pump 失敗 は `UNKNOWN_ERROR` とする。
-- client不正入力 は `INVALID_ARGUMENT` とする。CS110 stream selector 指定、unknown monitor bit、負値または `default_max` 超過の `setMaxNumberOfFrontends()` は `INVALID_ARGUMENT` に固定する。
+- device node不在、open不可、permission不足と、device存在下の実行時ioctl/read/pump失敗を型付きdomain errorで区別し、公開結果は`DESIGN_JA.md`へ集約する。
+- client入力不正は、CS110 stream selector指定、unknown monitor bit、負値または`default_max`超過の`setMaxNumberOfFrontends()`などの入力分類を保持したtyped validation errorとし、公開結果は`DESIGN_JA.md`へ集約する。
 - product実行時 に 劣化frontend entry variant / generator / helper を置かない。device不在 は サービス 起動継続 + 診断情報記録 + frontend 非広告で扱う。
 - 一時レビュー用 Markdown と一時変更履歴ファイルを リリースアーカイブ に同梱しない。恒久設計は `DESIGN_JA.md`、実装規約は `CODE_CONVENTION.md` に統合する。恒久的な変更履歴は `README_JA.md` が指定する `CHANGELOG.md` だけに記録し、複数の履歴ファイルを作らない。未公開リリース候補のため、後方互換目的の alias、互換 field、旧API は非公開化ではなく削除する.
 
@@ -225,11 +221,11 @@ scan worker は終了理由を表す型を持ち、`Running`、`Completed`、`Ca
 
 Tuner HAL の release runtime path は、public Binder method、ワーカースレッド、コールバック配送、frontend backend、demux/filter/DVR/descrambler/LNB runtime state の全てで no-`panic` 境界 とする。`unwrap()`、`expect()`、`panic!()`、`unreachable!()`、`todo!()`、`unimplemented!()`、`assert*()`、`dbg!()` を runtime invariant の表現として使わない。HAL サービス登録失敗は、`panic` ではなく明示ログと process exit で fail-fast する。
 
-Target tuner device が存在しない、または権限・device node・driver probing に失敗する場合は劣化起動 とする。HAL サービス自体は登録するが、存在しない frontend / demux / backend resource を capability として advertise しない。`getFrontendIds()` は実在 probe できた frontend だけを返す。存在しない resource への `openFrontend*`、`tune`、`scan` などの public Binder method は `UNAVAILABLE` または対応する service-specific error を返し、サービス起動を `panic` で中断しない。
+Target tuner device が存在しない、または権限・device node・driver probing に失敗する場合は劣化起動とする。HALサービス自体は登録するが、存在しないfrontend / demux / backend resourceをcapabilityとしてadvertiseしない。`getFrontendIds()`は実在probeできたfrontendだけを返す。存在しないresourceへの公開結果は`DESIGN_JA.md`の該当状態表へ写像し、サービス起動を`panic`で中断しない。
 
-mutex汚染は recover-with-inner ではなく閉鎖側失敗とする。runtime オブジェクトの mutex lock に失敗した場合は操作成功扱いにせず、Binder method では `UNKNOWN_ERROR` / service-specific error、内部 HAL path では `HalError::Internal`、非同期ワーカーでは診断ログと `WorkerExit::RuntimeFailure` 相当へ写像する。対象、次状態、後続APIの戻り値は `DESIGN_JA.md` を正とし、本書では再定義しない。汚染後に破損可能な状態を継続利用しない。
+mutex汚染はrecover-with-innerではなく閉鎖側失敗とする。runtime objectのmutex lockに失敗した場合は操作成功扱いにせず、内部HAL pathでは型付きinternal failure、非同期workerでは診断ログと`WorkerExit::RuntimeFailure`相当へ写像する。公開結果、対象、次状態、後続APIの戻り値は`DESIGN_JA.md`を正とし、本書では再定義しない。汚染後に破損可能な状態を継続利用しない。
 
-Public Binder method の error mapping は、入力不正を `INVALID_ARGUMENT`、未対応機能を `UNAVAILABLE`、状態不整合を `INVALID_STATE`、汚染や内部整合性崩壊を `UNKNOWN_ERROR` または `HalError::Internal` 起点の service-specific error に固定する。存在しないオブジェクトを返却する API では AOSP Tuner HAL の該当契約に従い `NAME_NOT_FOUND` または同等の service-specific not-found error を使う。成功を返す場合は、対象 state mutation または query が汚染なしに完了していなければならない。
+Public Binder methodの最終error mappingは`DESIGN_JA.md`だけを正本とし、本書では入力不正、未対応、lifecycle不整合、not-found、容量不足、内部障害のtyped domain分類を失わず`binder_service`の単一変換境界へ渡すことだけを固定する。成功を返す場合は、対象state mutationまたはqueryが汚染なしに完了していなければならない。
 
 ワーカースレッドは `WorkerRuntime::spawn_owned()` または `WorkerRuntime::spawn_owned_with_exit_hook()` を通して生成し、entrypoint `panic` を worker runtime 内で捕捉して診断ログに残す。ワーカーの停止待ちは `WorkerHandle::request_stop()` / `WorkerHandle::wake()` / `WorkerHandle::join_from_owner()` に集約し、`panic` stop を黙殺しない。ワーカー内の mutex汚染や backend error は、通常停止と区別できる終了分類へ写像し、`panic` で HAL process を落とさない。所有 object の状態遷移は `DESIGN_JA.md` を正とする。
 
@@ -285,7 +281,7 @@ Tuner HAL の release HAL path では、次の直接実装を禁止する。
 - callback未登録、callback Binder error、scan通知失敗を frontend backend failure として扱ってはならない。
 - FMQ / AV shared backing の水位取得失敗を、queue破損またはdata path破損と同一視してはならない。
 - backend ioctl/read/tune/stop失敗だけを backend failure として扱う。
-- lifecycle違反、owner不一致、foreign object、closed object は対象APIの `INVALID_STATE` / `INVALID_ARGUMENT` に写像し、backend failureへ昇格させない。
+- lifecycle違反、owner不一致、foreign object、closed objectは対象APIのtyped validation/lifecycle failureとして保持し、backend failureへ昇格させない。公開結果のprecedenceは`DESIGN_JA.md`を正とする。
 
 ## 14. public API transaction 実装規約
 
@@ -293,15 +289,16 @@ Tuner HAL の release HAL path では、次の直接実装を禁止する。
 - validate段階で公開状態を変更してはならない。
 - prepare段階で旧queue、旧backing、旧binding、旧tokenを破棄してはならない。
 - commit前に失敗した場合は、prepareで確保した資源だけをrollbackする。
-- commit後に失敗した場合は、成功扱いで継続せず、対象objectをquarantineまたはFailedClosingへ移す。
+- commit後の副次処理が失敗した場合は、`DESIGN_JA.md`の当該API状態表が定める公開結果、次状態、後片付け方針をそのまま適用する。確定済み主処理を維持して型付き診断だけを残す場合、通常動作を継続する場合、`CleanupPending`として再試行権限を移す場合、実状態を確定できない対象だけを`Quarantined`へ移す場合を区別する。閉鎖操作も一律に`FailedClosing`へ丸めず、interface別close表に従う。実装規約側で公開状態または戻り値を再定義してはならない。
 - public API内で `let _ = cleanup...` により critical cleanup 失敗を握りつぶしてはならない。
 
-## 15. 同一条件 no-op guard
+## 15. 同一条件の安全な非破壊最適化
 
 - `setFrontendDataSource()` は、現在と同一frontend/generationなら stream boundary reset を呼ばない。
-- `tune()` は、現在と同一 normalized tune settings なら backend stop、live pump停止、demux boundary reset を呼ばない。
+- 公開`IFrontend.tune()`は、前回tuneが未完了ならAOSP契約どおり旧tuneを停止・遮断して新要求を開始する。完了済み`Locked`で、normalized settings、typed selector、LNB/power条件、backend状態、stream boundaryの同値性と健全性をtransaction lock下の単一snapshotで証明できる場合は、request sequenceだけを更新し、stream generation、worker、backend要求、demux境界、AVを維持する非破壊re-entryを許可する。
+- 非破壊re-entryでは現lock snapshotに対応する`LOCKED`を新request sequenceへlock外で1回配送する。条件不一致、旧tune未完了、scan中、Failed/cleanup中、callback終端未確定、同値性または健全性を証明できない場合はno-op guardへ入れず、`DESIGN_JA.md`のfull retune transactionへ進める。
 - `configure()` は、現在設定と同一なら queue / AV backing / DVR backing を破棄しない。
-- no-op guard は破壊的処理の前に置く。
+- 同一条件の非破壊最適化は、各公開APIの状態遷移、generation、commit point、callback、stream boundary契約を変えない範囲で、破壊的処理の前にだけ適用する。
 
 ## 16. best-effort 使用制限
 
@@ -330,4 +327,3 @@ Tuner HAL の release HAL path では、次の直接実装を禁止する。
 - 未対応の downstream 組み合わせを成功 no-op にしてはならない。
 - raw TS source を downstream へ渡す場合は、TEI、continuity、discontinuity、duplicate、flush generation の判定を通常入力と同じ経路で通す。
 - section/PES/AV/record payload を別filterのsourceとして直接再配送する経路を追加してはならない。ただし `DESIGN_JA.md` で対応に変更した場合を除く。
-

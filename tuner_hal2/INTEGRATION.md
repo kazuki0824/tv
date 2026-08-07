@@ -75,7 +75,12 @@ init rc は `android.hardware.tv.tuner.ITuner/default` を登録する。VINTF f
 旧実装を手動でビルド・参照することは妨げないが、同一productで `ITuner/default` を二重登録してはならない。
 ## 6. VTS / product config policy
 
-VTS / product config は `tuner_hal2/DESIGN_JA.md` の product profile 正本に従う。現行 TS-only profile では monitor event feature を要求する構成にしない。
+VTS / product config は `../tuner_hal/DESIGN_JA.md` の`製品スコープ / AOSP capability / VTS profile 境界`、`CapabilitySnapshot`、`ProductProfile`を正とする。現行 TS-only profile では monitor event feature を要求する構成にしない。
 
-monitor event の API 戻り値、feature 宣言有無、別 WP へ切り替える条件は `tuner_hal2/DESIGN_JA.md` を正とし、本書では重複定義しない。
+monitor event の API 戻り値、feature 宣言有無、別 profile へ切り替える条件は `../tuner_hal/DESIGN_JA.md` を正とし、本書では重複定義しない。
 
+## 7. section filter runtime契約の参照
+
+`TableInfo repeat=false`を含むsection filterの公開意味、first-instance解決、停止条件、`repeat=true`との使い分け、未知の全instance集合の終端をHALが推測しない契約は`../tuner_hal/DESIGN_JA.md`を正とする。複数table instanceのinstance別完成・更新・寿命は`../arib_si_engine_rs/DESIGN_JA.md`の「複数table instanceの完成・更新・寿命」、操作ごとの必要instance集合と完成時の明示`stop()`は`../tis/DESIGN_JA.md`の「複数table instance収集と停止」を正とする。
+
+本書が所有するのはproduct統合だけであり、VINTF/init/package/VTS設定の配置によって上記runtime契約を変更または再定義してはならない。

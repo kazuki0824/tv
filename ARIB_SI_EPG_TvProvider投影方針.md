@@ -4,7 +4,7 @@
 
 この文書は、`arib_si_engine_rs` が抽出したARIB SI/EPG情報を Android `TvProvider` の標準列と `internal_provider_data` にどう投影するかを固定する。
 
-この文書では、EDCBとEPGStationから補完できた範囲を TvProvider 標準列への投影として固定する。現行仕様で標準列へ自然対応できる値だけを部分投影し、自然対応できない情報は TvProvider 標準列や一般ユーザー向け UI 本文へ投影しない。`internal_provider_data` の schema、key 名、正規化、署名、保存上限、診断情報 schema は `arib_si_engine_rs/DESIGN_JA.md` と `arib_si_engine_rs/schema/*.schema.json` を正とし、本書では再定義しない。
+この文書では、EDCBとEPGStationから補完できた範囲を TvProvider 標準列への投影として固定する。現行仕様で標準列へ自然対応できる値だけを部分投影し、自然対応できない情報は TvProvider 標準列や一般ユーザー向け UI 本文へ投影しない。`internal_provider_data` の schema、key 名、正規化、保存上限、診断情報 schema は `arib_si_engine_rs/DESIGN_JA.md` と `arib_si_engine_rs/schema/*.schema.json` を正とし、本書では再定義しない。
 
 ## 2. 基本原則
 
@@ -25,7 +25,7 @@ TIS内部だけが使う情報:
   完全な構造は JSON v1 internal_provider_data へ構造化保存する。
 ```
 
-`internal_provider_data` は、本TISが内部で使う私的データであり、システムTVアプリや他アプリが解釈する前提にしない。保存形式は JSON v1 とし、具体 schema、正規化、署名、安定キー抽出、保存上限は `arib_si_engine_rs` の Rust provider-data serde構造体を SSOT とする。
+`internal_provider_data` は、本TISが内部で使う私的データであり、システムTVアプリや他アプリが解釈する前提にしない。保存形式は JSON v1 とし、具体 schema、正規化、安定キー抽出、保存上限は `arib_si_engine_rs` の Rust provider-data serde構造体を SSOT とする。
 
 TvProvider 標準列へ投影する ARIB descriptor 由来値は、Rust parser が構文的に有効な descriptor / event と判定したものに限る。不正 descriptor、fragment 欠落、length 不整合、不正 EIT event 由来の値を title / description / genre / audio / レーティング / long description の正常フィールドとして投影してはならない。これらは JSON v1 診断情報にのみ保持する。
 
@@ -158,7 +158,7 @@ Programs.COLUMN_LONG_DESCRIPTION のUI補足:
 Programs.COLUMN_INTERNAL_PROVIDER_DATA:
   JSON v1 UTF-8 バイト列のみを新規書き込み正形式とする。
   `schema`, `schemaVersion`, `programKey`, `serviceKey`, `timing`, `source`, `cas`, `ratings`, `genres`, `series`, `relatedItems`, `linkage`, `freeCaMode`, `audioLanguages`, `audio`, `video`, `extendedItems`, `components`, `diagnostics` を最上位フィールドとして持つ。
-  provider-data JSON v1 の構造、canonical encode、正規化、署名、安定キー抽出は `arib_si_engine_rs/DESIGN_JA.md` の `ProgramProviderDataV1` / `ChannelProviderDataV1` を SSOT とする。現在番組選択の診断は `diagnostics.currentProgram` 配下に保存する。
+  provider-data JSON v1 の構造、canonical encode、正規化、安定キー抽出は `arib_si_engine_rs/DESIGN_JA.md` の `ProgramProviderDataV1` / `ChannelProviderDataV1` を SSOT とする。provider-data単体のdigestまたはsignatureは生成せず、同一process内の重複書き込み抑止にはprovider-data bytesを含むTvProvider行全体のpublish fingerprintだけを使用する。現在番組選択の診断は `diagnostics.currentProgram` 配下に保存する。
   長形式イベント項目リスト、component/audio/series/linkage/event_group/free_CA_mode/audioLanguages等の完全構造、decode/publishability/記述子診断情報は JSON v1 内に保存する。
 ```
 
@@ -196,9 +196,9 @@ Programs.COLUMN_INTERNAL_PROVIDER_DATA:
 
 ## 9. internal_provider_data 参照方針
 
-`internal_provider_data` の具体 schema、正規化、署名、安定キー抽出、保存上限、診断情報 schema は `arib_si_engine_rs/DESIGN_JA.md` の「provider-data / diagnostics Rust SSOT」と `arib_si_engine_rs/schema/*.schema.json` を正とする。本書は TvProvider 標準列への投影規則、一般ユーザー向け本文への補足出力規則、標準列非投影または部分投影の境界だけを固定する。
+`internal_provider_data` の具体 schema、正規化、安定キー抽出、保存上限、診断情報 schema は `arib_si_engine_rs/DESIGN_JA.md` の「provider-data / diagnostics Rust SSOT」と `arib_si_engine_rs/schema/*.schema.json` を正とする。本書は TvProvider 標準列への投影規則、一般ユーザー向け本文への補足出力規則、標準列非投影または部分投影の境界だけを固定する。
 
-標準列へ自然対応しない完全構造は JSON v1 `internal_provider_data` に保存する。ただし、そのフィールド定義、正規化、署名、切り詰め、診断情報の詳細を本書で再定義してはならない。
+標準列へ自然対応しない完全構造は JSON v1 `internal_provider_data` に保存する。ただし、そのフィールド定義、正規化、切り詰め、診断情報の詳細を本書で再定義してはならない。
 
 ## 10. 不正 descriptor / EIT 投影規則
 
