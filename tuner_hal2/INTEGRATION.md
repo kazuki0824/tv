@@ -79,6 +79,8 @@ VTS / product config は `../tuner_hal/DESIGN_JA.md` の`製品スコープ / AO
 
 monitor event の API 戻り値、feature 宣言有無、別 profile へ切り替える条件は `../tuner_hal/DESIGN_JA.md` を正とし、本書では重複定義しない。
 
-## 7. TableInfo repeat=false の利用境界
+## 7. section filter runtime契約の参照
 
-`TableInfo repeat=false`のfirst-instance解決規則と停止条件は`../tuner_hal/DESIGN_JA.md`を正とする。AOSP公開面は`table_id_extension`または全subtable集合の列挙・終端通知を持たないため、複数のtable instanceを包括的に取得する製品経路では`repeat=true`を使用する。Tuner HALは公開条件に一致するsectionを継続配送し、SI engineが`table_id_extension`、actual version、`current_next_indicator`、`section_number`、`last_section_number`に基づいてinstance別の完成・更新・寿命を管理し、必要な集合が完成した時点でTISがfilterを明示的に`stop()`する。Tuner HALは未知の全instance集合の一巡または終端を推測しない。
+`TableInfo repeat=false`を含むsection filterの公開意味、first-instance解決、停止条件、`repeat=true`との使い分け、未知の全instance集合の終端をHALが推測しない契約は`../tuner_hal/DESIGN_JA.md`を正とする。複数table instanceのinstance別完成・更新・寿命は`../arib_si_engine_rs/DESIGN_JA.md`の「複数table instanceの完成・更新・寿命」、操作ごとの必要instance集合と完成時の明示`stop()`は`../tis/DESIGN_JA.md`の「複数table instance収集と停止」を正とする。
+
+本書が所有するのはproduct統合だけであり、VINTF/init/package/VTS設定の配置によって上記runtime契約を変更または再定義してはならない。
