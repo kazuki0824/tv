@@ -60,7 +60,7 @@ EDCBとEPGStationの参照から補完できたため、次を設計として固
 | コンテンツジャンルUI補足 | `Programs.COLUMN_LONG_DESCRIPTION` に `ジャンル: ...` として補足 | 元ARIB分類を保持 | 準正式案でUI向け補足として固定 |
 | event_group_descriptor | 現行仕様では標準列や一般 UI 本文へは出さず、JSON v1 `internal_provider_data.relatedItems` に `shared` / `relay` / `movement` として構造化保存する。予約追従へ接続する場合は、event identity と authoritative 条件を設計正本へ固定してから扱う。 | イベントグループ構造、グループ種別、ONID / TSID / service_id / event_id を保持 | Android標準列に自然対応しないが、予約追従に必要なARIB-native構造であるため |
 | parental_rating_descriptor | `TvContentRating` に変換できる範囲を `Programs.COLUMN_CONTENT_RATING` へ `TvContentRating.flattenToString()` 形式で格納する | country_code、レーティング値、未対応値、元記述子を保持 | Android TIF の視聴制限は `COLUMN_CONTENT_RATING` と `TvInputService.Session` の content block 通知に接続するため |
-| freeCA / isFree | `Programs.COLUMN_SCRAMBLED` に暗号化有無を格納し、必要に応じて `Programs.COLUMN_LONG_DESCRIPTION` に `放送種別: 無料放送/有料放送` として補足 | free_ca_modeを保持 | EDCB/EPGStationでユーザー向け情報として扱う |
+| freeCA / isFree | AOSP契約に従い `free_CA_mode` を `Programs.COLUMN_SCRAMBLED` へ投影し、必要に応じて `Programs.COLUMN_LONG_DESCRIPTION` に `放送種別: 無料放送/有料放送` として補足する。ただしARIB上の `free_CA_mode` は無料/有料区分であり、TS component の実スクランブル状態そのものを示さない。 | free_ca_modeを保持 | ARIB TR-B14 / TR-B15 が SDT/EIT の `free_CA_mode` を無料/有料判定に用いるため。実スクランブル状態は `transport_scrambling_control` 等の別情報で判定し、この値と混同しない。 |
 | event_id | `Programs.COLUMN_EVENT_ID` | イベントキーとして保持する | Android標準列がある |
 | サービス名 | `Channels.COLUMN_DISPLAY_NAME` | サービス構造を保持する | チャンネル名としてUI表示する |
 | service_id | `Channels.COLUMN_SERVICE_ID` | サービスキーとして保持する | Android標準列がある |
@@ -189,7 +189,7 @@ Programs.COLUMN_INTERNAL_PROVIDER_DATA:
 5. ARIB content_descriptor は `Programs.COLUMN_BROADCAST_GENRE` に入り、元ARIB分類が `internal_provider_data` に残る。
 6. 明示写像表に一致するARIB分類では、TIS が `ContentValues` に `Programs.COLUMN_CANONICAL_GENRE` を直接設定することを確認する。写像不能分類では直接設定しないことを確認する。
 7. イベントグループ が LONG_DESCRIPTION に出ず、provider-data JSON `relatedItems` に保存される。
-8. freeCA が `Programs.COLUMN_SCRAMBLED` と provider-data JSON に反映され、UI補足を出す場合は `放送種別: ...` として LONG_DESCRIPTION に出る。
+8. freeCA が `Programs.COLUMN_SCRAMBLED` と provider-data JSON に反映され、UI補足を出す場合は `放送種別: ...` として LONG_DESCRIPTION に出る。この値は無料/有料区分であり、TS component の実スクランブル状態とは別軸である。
 9. `country_code=JPN` の parental_rating_descriptor は、STD-B10 の `0x01..0x0F` を `age=rating+3` で `ISDB_4..ISDB_18` へ変換し、TR-B15対象のBS/CSでは `0x10..0x11` も `ISDB_19..ISDB_20` へ変換して `Programs.COLUMN_CONTENT_RATING` に `TvContentRating.flattenToString()` 形式で出る。
 10. `rating=0x00`、TR-B15で年齢として定義されない `0x12..0xFF`、未対応 country_code、元記述子は `internal_provider_data` に残り、推測で `COLUMN_CONTENT_RATING` に出ない。TR-B14対象の地上デジタルでは parental_rating_descriptor から rating を生成しない。
 11. `episode_number=1..4095` は `COLUMN_EPISODE_DISPLAY_NUMBER` へ出て、`0` は列を設定しない。`last_episode_number` は `0` を含め標準列へ出ず、JSON v1 internal_provider_data の series 構造に残る。
@@ -270,7 +270,7 @@ TIS は次の表に一致する分類だけを `Programs.COLUMN_CANONICAL_GENRE`
 
 | ARIB / PMT 要素 | 投影先 | 投影成立条件 |
 |---|---|---|
-| EIT `free_CA_mode` | TvProvider scrambled 判定、provider-data JSON | `1` を scrambled、`0` を not scrambled とし、CAS 状態と混同しない。 |
+| EIT `free_CA_mode` | TvProvider scrambled 判定、provider-data JSON | AOSP契約に従い `free_CA_mode` をそのまま投影する。`1` はARIB運用上の有料、`0` は無料を表し、TS component の実スクランブル状態とは別軸である。 |
 | 音声 ISO639 language | TvProvider audio language メタデータ、provider-data JSON | PMT / descriptor から取得可能な言語だけ設定し、取得不能時に推測しない。 |
 | 視聴年齢制限 | `COLUMN_CONTENT_RATING`、provider-data JSON、診断情報 | 既存レーティングドメイン と整合する値だけ設定し、reserved / malformed / domain不明は 診断情報に留める。 |
 | event_group_descriptor | provider-data JSON `relatedItems` | 現行仕様では保存・診断のみ。予約追従へ接続する場合は安全条件を設計正本へ固定する。 |
