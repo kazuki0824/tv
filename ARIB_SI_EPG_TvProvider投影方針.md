@@ -29,6 +29,16 @@ TIS内部だけが使う情報:
 
 TvProvider 標準列へ投影する ARIB descriptor 由来値は、Rust parser が構文的に有効な descriptor / event と判定したものに限る。不正 descriptor、fragment 欠落、length 不整合、不正 EIT event 由来の値を title / description / genre / audio / レーティング / long description の正常フィールドとして投影してはならない。これらは JSON v1 診断情報にのみ保持する。
 
+### EIT時刻のTvProvider投影境界
+
+ARIB EIT の `start_time` は日本標準時（JST、UTC+09:00）のMJD + BCDとして解釈し、具体値を `TvProvider.Programs` へ投影するときだけUTCのUnix epoch millisecondへ変換する。端末の既定time zone、夏時間設定、現在のlocaleを変換規則へ混ぜない。
+
+`start_time=0xFFFFFFFFFF` は開始時刻未定、`duration=0xFFFFFF` は継続時間未定を表すARIB上の有効な未定義値であり、BCD不正や壊れたeventとして扱わない。特に `duration=0xFFFFFF` を0秒、1ミリ秒、固定番組長などの架空値へ置換してはならない。
+
+通常の `TvProvider.Programs` row は具体的な開始時刻と終了時刻を必要とするため、開始時刻または継続時間が未定のeventは、未定状態のまま `Programs` rowを新規作成または時刻更新する対象にしない。`arib_si_engine_rs` 側のevent identityと未定状態は保持し、後続EITで具体値が得られた時点で同じ `original_network_id / transport_stream_id / service_id / event_id` のeventとして投影する。未定義値だけを理由に既存の正常な `Programs` rowを削除する根拠にも使わない。
+
+`ProgramProviderDataV1.timing.startUtcMillis / endUtcMillis / durationMillis` は、`TvProvider.Programs` へ実際に投影できる具体的な時刻が揃ったrowの保存表現であり、ARIB EITの全時刻状態を表す一般モデルではない。したがって同schemaの整数必須条件を緩めて未定値を格納するのではなく、未定eventはparser/TISの未投影状態に留める。
+
 ## 3. 設計として固定する投影
 
 EDCBとEPGStationの参照から補完できたため、次を設計として固定する。
@@ -47,7 +57,7 @@ EDCBとEPGStationの参照から補完できたため、次を設計として固
 | コンテンツジャンルUI補足 | `Programs.COLUMN_LONG_DESCRIPTION` に `ジャンル: ...` として補足 | 元ARIB分類を保持 | 準正式案でUI向け補足として固定 |
 | event_group_descriptor | 現行仕様では標準列や一般 UI 本文へは出さず、JSON v1 `internal_provider_data.relatedItems` に `shared` / `relay` / `movement` として構造化保存する。予約追従へ接続する場合は、event identity と authoritative 条件を設計正本へ固定してから扱う。 | イベントグループ構造、グループ種別、ONID / TSID / service_id / event_id を保持 | Android標準列に自然対応しないが、予約追従に必要なARIB-native構造であるため |
 | parental_rating_descriptor | `TvContentRating` に変換できる範囲を `Programs.COLUMN_CONTENT_RATING` へ `TvContentRating.flattenToString()` 形式で格納する | country_code、レーティング値、未対応値、元記述子を保持 | Android TIF の視聴制限は `COLUMN_CONTENT_RATING` と `TvInputService.Session` の content block 通知に接続するため |
-| freeCA / isFree | `Programs.COLUMN_SCRAMBLED` に暗号化有無を格納し、必要に応じて `Programs.COLUMN_LONG_DESCRIPTION` に `放送種別: 無料放送/有料放送` として補足 | free_ca_modeを保持 | EDCB/EPGStationでユーザー向け情報として扱う |
+| freeCA / isFree | `Programs.COLUMN_SCRAMBLED` に暗号化有無を格納し、必要に応じて `Programs.COLUMN_LONG_DESCRIPTION` に `放送種別: 無料放送/有料放送` として補足 | free_CA_modeを保持 | EDCB/EPGStationでユーザー向け情報として扱う |
 | event_id | `Programs.COLUMN_EVENT_ID` | イベントキーとして保持する | Android標準列がある |
 | サービス名 | `Channels.COLUMN_DISPLAY_NAME` | サービス構造を保持する | チャンネル名としてUI表示する |
 | service_id | `Channels.COLUMN_SERVICE_ID` | サービスキーとして保持する | Android標準列がある |
@@ -180,6 +190,7 @@ Programs.COLUMN_INTERNAL_PROVIDER_DATA:
 11. 未対応 レーティングは推測で `COLUMN_CONTENT_RATING` に出ない。
 12. `series_id`、episode number、last episode number は自然対応する標準列へ出る。`series_name` は `COLUMN_TITLE` / `COLUMN_EPISODE_TITLE` / `LONG_DESCRIPTION` へ機械的に出ず、JSON v1 internal_provider_data の series 構造に残る。
 13. 診断情報は標準列へ出ず、JSON v1 internal_provider_data の 診断情報 構造に残る。
+14. EIT `start_time` の具体値はJSTとして解釈してUTC epoch millisへ変換し、`start_time=0xFFFFFFFFFF`または`duration=0xFFFFFF`のeventを架空の開始・終了時刻で `Programs` へ投影しない。後続EITで具体値が得られた場合は同一event identityとして投影する。
 ```
 
 ## 8. 今後の固定方法
@@ -205,7 +216,7 @@ Programs.COLUMN_INTERNAL_PROVIDER_DATA:
 - 新規 provider-data 書き込みでは `arib_si_engine_rs` の `ProgramProviderDataV1` を provider-data 全体の唯一の schema とする。descriptor 診断情報 schema v1 は `diagnostics.descriptorDiagnostics[]` 配下の要素 schema であり、provider-data 全体の schema ではない。
 - extended-event item は `description/text` として書き込む。`key/value` と `itemDescription/itemText` の旧入力形式は受け付けない。
 - 不正な short / extended / content / audio_component / event_group descriptor は、通常の title、description、長形式イベント項目、genre、audio、event-group フィールドとして部分投影してはならない。
-- 不正な EIT event timing は、以前有効だった event が消滅した根拠にしてはならない。不正 section だけでは 廃止行削除区間 を作らない。
+- ARIBで定義された `start_time=0xFFFFFFFFFF` / `duration=0xFFFFFF` の未定義値は不正timingに含めない。それ以外の不正な EIT event timing は、以前有効だった event が消滅した根拠にしてはならない。不正 section だけでは 廃止行削除区間 を作らない。
 
 
 ## ARIB分類から Android canonical genre への明示写像表
