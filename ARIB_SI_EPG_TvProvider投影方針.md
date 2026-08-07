@@ -29,6 +29,19 @@ TIS内部だけが使う情報:
 
 TvProvider 標準列へ投影する ARIB descriptor 由来値は、Rust parser が構文的に有効な descriptor / event と判定したものに限る。不正 descriptor、fragment 欠落、length 不整合、不正 EIT event 由来の値を title / description / genre / audio / レーティング / long description の正常フィールドとして投影してはならない。これらは JSON v1 診断情報にのみ保持する。
 
+### EIT時刻のTvProvider投影境界
+
+ARIB EIT の `start_time` は日本標準時（JST、UTC+09:00）のMJD + BCDとして解釈し、具体値を `TvProvider.Programs` へ投影するときだけUTCのUnix epoch millisecondへ変換する。端末の既定time zone、夏時間設定、現在のlocaleを変換規則へ混ぜない。
+
+`start_time=0xFFFFFFFFFF` と `duration=0xFFFFFF` はARIB上の有効な未定義値であり、BCD不正や壊れたeventとして扱わない。ただし、両者の組合せで意味が異なる。
+
+- `start_time` または `duration` の片方だけが all-1 の場合は時刻未定状態とする。event自体は確定しており `event_id` は有効である。未定の時刻を0秒、1ミリ秒、固定番組長などの架空値へ置換してはならず、後続EITで具体値が得られた場合は同じ `original_network_id / transport_stream_id / service_id / event_id` のeventとして相関してよい。
+- `start_time=0xFFFFFFFFFF` かつ `duration=0xFFFFFF` の場合はevent未定状態とする。event内容自体が未確定であり `event_id` に意味はない。この状態を stable event identity に昇格させず、後続EITの具体eventと `event_id` だけで同一eventとして相関してはならない。
+
+通常の `TvProvider.Programs` row は具体的な開始時刻と終了時刻を必要とするため、時刻未定eventもevent未定状態も、未定状態のまま `Programs` rowを新規作成または時刻更新する対象にしない。これらの未定義値だけを理由に既存の正常な `Programs` rowを削除する根拠にも使わない。
+
+`ProgramProviderDataV1.timing.startUtcMillis / endUtcMillis / durationMillis` は、`TvProvider.Programs` へ実際に投影できる具体的な時刻が揃ったrowの保存表現であり、ARIB EITの全時刻状態を表す一般モデルではない。したがって同schemaの整数必須条件を緩めて未定値を格納するのではなく、未定eventはparser/TISの未投影状態に留める。
+
 ## 3. 設計として固定する投影
 
 EDCBとEPGStationの参照から補完できたため、次を設計として固定する。
@@ -180,6 +193,7 @@ Programs.COLUMN_INTERNAL_PROVIDER_DATA:
 11. 未対応 レーティングは推測で `COLUMN_CONTENT_RATING` に出ない。
 12. `series_id`、episode number、last episode number は自然対応する標準列へ出る。`series_name` は `COLUMN_TITLE` / `COLUMN_EPISODE_TITLE` / `LONG_DESCRIPTION` へ機械的に出ず、JSON v1 internal_provider_data の series 構造に残る。
 13. 診断情報は標準列へ出ず、JSON v1 internal_provider_data の 診断情報 構造に残る。
+14. EIT `start_time` の具体値はJSTとして解釈してUTC epoch millisへ変換する。片方だけall-1の時刻未定eventは架空の開始・終了時刻で `Programs` へ投影せず、後続EITの同じevent identityと相関できる。`start_time=0xFFFFFFFFFF`かつ`duration=0xFFFFFF`のevent未定状態は `event_id` をstable identityとして扱わず、後続の具体eventと `event_id` だけで相関しない。
 ```
 
 ## 8. 今後の固定方法
@@ -205,7 +219,7 @@ Programs.COLUMN_INTERNAL_PROVIDER_DATA:
 - 新規 provider-data 書き込みでは `arib_si_engine_rs` の `ProgramProviderDataV1` を provider-data 全体の唯一の schema とする。descriptor 診断情報 schema v1 は `diagnostics.descriptorDiagnostics[]` 配下の要素 schema であり、provider-data 全体の schema ではない。
 - extended-event item は `description/text` として書き込む。`key/value` と `itemDescription/itemText` の旧入力形式は受け付けない。
 - 不正な short / extended / content / audio_component / event_group descriptor は、通常の title、description、長形式イベント項目、genre、audio、event-group フィールドとして部分投影してはならない。
-- 不正な EIT event timing は、以前有効だった event が消滅した根拠にしてはならない。不正 section だけでは 廃止行削除区間 を作らない。
+- ARIBで定義された `start_time=0xFFFFFFFFFF` / `duration=0xFFFFFF` の未定義値は不正timingに含めない。片方だけall-1の場合は `event_id` が有効な時刻未定状態、両方all-1の場合は `event_id` に意味がないevent未定状態として区別する。それ以外の不正な EIT event timing は、以前有効だった event が消滅した根拠にしてはならない。不正 section だけでは 廃止行削除区間 を作らない。
 
 
 ## ARIB分類から Android canonical genre への明示写像表
