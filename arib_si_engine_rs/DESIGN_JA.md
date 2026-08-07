@@ -78,28 +78,15 @@ BS と CS110 の complete 判定には BAT、SDT other、NIT other を含める�
 
 ## system_management_descriptor と通常受信判定
 
-`system_management_descriptor`（SMD、`descriptor_tag=0xFE`）はNITのnetwork loopに属するネットワーク単位の意味情報として`arib_si_engine_rs`が解析する。Tuner HALはSMDを解釈せず、他のsectionと同じ汎用section配送だけを行う。SMDの構文・意味はARIB STD-B10 5.13-E1 Part 2 §6.2.21、通常の放送受信対象をSMDで選別する受信機側の判定はARIB STD-B21 5.12-E2 Chapter 13 §13.2の責務として扱う。
+`system_management_descriptor`（SMD、`descriptor_tag=0xFE`）はNITのnetwork loopに属するネットワーク単位の意味情報として`arib_si_engine_rs`が解析する。Tuner HALはSMDを解釈せず、他のsectionと同じ汎用section配送だけを行う。SMDの構文・意味はARIB STD-B10 5.13-E1 Part 2 §6.2.21、通常受信対象の判定はARIB STD-B21 5.12-E2 Chapter 13 §13.2を根拠とする。
 
-SMDの意味モデルは少なくとも`system_management_id`の16 bit原値、上位2 bitの`broadcasting_flag`、次の6 bitの`broadcasting_identifier`、下位8 bitの`additional_broadcasting_identification`、後続の`additional_identification_info`、構文検査結果を保持する。未知値を既知の放送方式へ丸めず、raw値と型付き診断を残す。
+SMDの意味モデルは`system_management_id`の16 bit原値、上位2 bitの`broadcasting_flag`、次の6 bitの`broadcasting_identifier`、下位8 bitの`additional_broadcasting_identification`、後続の`additional_identification_info`、構文検査結果を保持する。未知値を既知方式へ丸めずraw値と診断を残す。ただし現行productの通常受信可否を下位8 bitまたは`additional_identification_info`で制限しない。
 
-現行productの通常受信として成立する組は、`broadcasting_flag=0b00`に加えて、選局候補のdelivery systemと`broadcasting_identifier`が一致し、`additional_broadcasting_identification=0x01`である場合だけとする。対応する`broadcasting_identifier`はBSデジタル=`0b000010`、地上デジタルテレビ=`0b000011`、広帯域CSデジタル=`0b000100`とする。CS110は広帯域CSデジタルとして判定する。これ以外を推測で互換扱いしない。
+現行productでは、正常なSMDについて`broadcasting_flag=0b00`かつ選局候補のdelivery systemと`broadcasting_identifier`が一致する場合だけ`SUPPORTED_BROADCAST`とする。対応する`broadcasting_identifier`はBSデジタル=`0b000010`、地上デジタルテレビ=`0b000011`、広帯域CSデジタル=`0b000100`とし、CS110は広帯域CSデジタルとして判定する。`broadcasting_flag`が`01`または`10`なら`NON_BROADCAST`、`11`なら`UNDEFINED_BROADCAST_CLASS`、`00`で`broadcasting_identifier`が一致しない場合は`UNSUPPORTED_BROADCAST_SYSTEM`とする。SMD欠落または構文不正は`UNDETERMINED_SMD`として診断し、SMDだけを根拠に通常受信不可へ確定しない。
 
-SMD判定結果はNIT table instance単位で次のいずれかへ正規化する。
+SMDの判定対象は既存のtable-instance完成・version・寿命規則で有効とされたNITとし、SMD専用の`PENDING`状態や別のversion切替状態機械を設けない。
 
-| 判定 | 条件 | publishabilityへの影響 |
-|---|---|---|
-| `SUPPORTED_BROADCAST` | 完成したNITに正常なSMDがあり、上記3条件がすべて一致 | SMD gateを通過する |
-| `NON_BROADCAST` | `broadcasting_flag`が`01`または`10` | 通常放送として登録・再生しない |
-| `UNDEFINED_BROADCAST_CLASS` | `broadcasting_flag=11` | 通常放送として登録・再生しない |
-| `UNSUPPORTED_BROADCAST_SYSTEM` | `broadcasting_flag=00`だが`broadcasting_identifier`が選局候補と一致しない | 通常放送として登録・再生しない |
-| `UNSUPPORTED_ADDITIONAL_SYSTEM` | 上位8 bitは一致するが`additional_broadcasting_identification != 0x01` | 通常放送として登録・再生しない |
-| `SMD_MALFORMED` | descriptor長または必須16 bitが不正 | 通常放送として登録・再生しない |
-| `SMD_MISSING` | 対象NIT instanceが完成した時点でSMDが存在しない | 通常放送として登録・再生しない |
-| `PENDING` | 対象NIT instanceが未完成で、欠落を確定できない | 新規の成功判定に使わない |
-
-`SMD_MISSING`はNIT未完成中に推測してはならない。現在有効なNIT versionで`SUPPORTED_BROADCAST`が確定済みの場合、次versionの収集中だけを理由に旧判定を失効させない。次versionが完成した時点でSMD判定を原子的に置き換える。完成した次versionが`NON_BROADCAST`、各種unsupported、malformed、missingのいずれかなら、その時点から旧`SUPPORTED_BROADCAST`を再利用しない。
-
-`publishability_by_service`ではSMD gateをサービス登録・通常ライブ再生の必要条件とする。`SUPPORTED_BROADCAST`以外の確定状態では少なくとも`publishable=false`、`channel_registration_ready=false`、`epg_publishable=false`、`clear_live_playback_supported=false`とし、理由コードへ上表の判定を保持する。`PENDING`は新規channel登録または新規ライブ再生成功の根拠にしない。TISは既存のサービス種別、PMT、PCR、codec、CAS等の条件でさらに制限してよいが、SMD gateがfalseのサービスをtrueへ昇格してはならない。Android channel登録と視聴セッションの最終制御は引き続きTISが所有する。
+`publishability_by_service`では`NON_BROADCAST`、`UNDEFINED_BROADCAST_CLASS`、`UNSUPPORTED_BROADCAST_SYSTEM`を通常受信対象外の理由として保持し、`channel_registration_ready=false`、`epg_publishable=false`、`clear_live_playback_supported=false`とする。意味解析・診断用の`publishable`自体はSMDだけでfalseにしない。`SUPPORTED_BROADCAST`ではSMDによる追加制限を課さず、PMT、PCR、service type、codec、CAS等の既存条件で最終判定する。`UNDETERMINED_SMD`も既存条件を上書きせず、SMD適合を肯定する根拠には使わない。Android channel登録と視聴セッションの最終制御は引き続きTISが所有する。
 
 ## section 更新
 
@@ -122,7 +109,7 @@ provider-data JSON v1 は `provider-data / diagnostics Rust SSOT` 節の `Progra
 
 ## 構造化変換対象 descriptor
 
-short_event、extended_event、content、component、audio_component、parental_rating、series、event_group、linkage、system_management を現行仕様で構造化変換する。未知 descriptor は破棄せず 診断に保持する。
+short_event、extended_event、content、component、audio_component、parental_rating、series、event_group、linkage を現行仕様で構造化変換する。未知 descriptor は破棄せず 診断に保持する。
 
 ARIB descriptor は `descriptor_length`、descriptor 内部 length、loop 単位、fragment sequence が妥当な場合だけ正常フィールドとして採用する。length 不整合、余剰 byte、fragment 欠落、`descriptor_number` 重複、`last_descriptor_number` 不一致、必須フィールド 不足は 不正 descriptor とし、番組名、short text、長形式イベント本文、コンテンツジャンル、component、音声コンポーネント、series、event_group、linkage の正常フィールドには採用しない。不正 descriptor は parser を停止させず、`DescriptorDiagnosticV1` に tag、offset、declaredLength、actualRemainingLength、parseStatus、rawPrefixHex、section scope を保持する。
 
