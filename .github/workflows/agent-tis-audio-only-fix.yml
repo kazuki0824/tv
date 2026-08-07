@@ -1,0 +1,64 @@
+name: agent-tis-audio-only-fix
+
+on:
+  push:
+    branches:
+      - agent/fix-tis-audio-only-contracts
+
+permissions:
+  contents: write
+
+jobs:
+  fix-design:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-tis-audio-only-contracts
+      - name: Apply TIS audio-only contract corrections
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('tis/DESIGN_JA.md')
+          s = p.read_text()
+          original = s
+
+          old_registration = '''setup scan の channel registration は global discovery complete を必須条件にしない。ただし partial snapshot を無条件に channel insert に使ってはならない。TvProvider 登録には サービス単位の登録可能 gate を使う。登録可能 は、ONID / TSID / SID が確定し、channel URI から物理 tune key に戻せ、PMT PID と PMT、PCR PID、現行対応 video ES が取得済みで、audio は対応済みまたは video-only として診断可能であり、サービス名 は正式名または deterministic な仮名と後続更新方針を持ち、平文ライブ視聴の対応宣言可能 または scrambled unsupported として状態通知可能な サービスに限定する。登録可能未満の partial snapshot は 診断情報 / ライブ更新 / debugにのみ使い、channel insert しない。scrambled サービスは channel 登録してよいが、CAS 仮実装 のまま 平文ライブ視聴成功 対応宣言 してはならない。'''
+          new_registration = '''setup scan の channel registration は global discovery complete を必須条件にしない。ただし partial snapshot を無条件に channel insert に使ってはならない。TvProvider のサービス単位の登録可否は本書の「サービス登録・publishability利用境界」を唯一の正本とし、この節で video ES 必須などの追加 gate を重複定義しない。したがって `service_type=0x01` は同節の audio-video / video-only 条件、`service_type=0x02` は対応 audio ES を持つ audio-only 条件に従い、`0x02` の登録に video ES を要求しない。登録可能未満の partial snapshot は 診断情報 / ライブ更新 / debugにのみ使い、channel insert しない。scrambled サービスは channel 登録してよいが、CAS 仮実装 のまま 平文ライブ視聴成功 対応宣言 してはならない。'''
+
+          old_mediasync = '''MediaSyncは生成時のplayback rate 0を用いて必要な有限prefillを行い、視聴制限gate、Surface有効性、decoder開始、最小startup条件成立後に`PlaybackParams`のspeed 1.0で開始する。video-onlyではAudioTrackを設定せずMediaSync video経路を使い、audio-onlyではSurfaceとvideo decoderを設定せずMediaSync audio経路を使う。MediaSync errorは`MEDIASYNC_ERROR_SURFACE_FAIL`と`MEDIASYNC_ERROR_AUDIOTRACK_FAIL`を区別し、surface失敗はvideo unavailableへ、audio失敗は既存video-only継続規則へ写像する。'''
+          new_mediasync = '''MediaSyncは生成時のplayback rate 0を用いて必要な有限prefillを行い、視聴制限gate、Surface有効性、decoder開始、最小startup条件成立後に`PlaybackParams`のspeed 1.0で開始する。video-onlyではAudioTrackを設定せずMediaSync video経路を使い、audio-onlyではSurfaceとvideo decoderを設定せずMediaSync audio経路を使う。MediaSync errorは`MEDIASYNC_ERROR_SURFACE_FAIL`と`MEDIASYNC_ERROR_AUDIOTRACK_FAIL`を区別する。surface失敗はvideo経路を持つサービスだけでvideo unavailableへ写像する。audio失敗は、audio-videoサービスで同generationのvideo経路が正常ならAudioTrackとaudio decoderを解放してvideo-only継続へ移り、診断に`MEDIASYNC_ERROR_AUDIOTRACK_FAIL`を残す。audio-onlyサービスでは代替video経路が存在しないためvideo-onlyへ遷移せず、audio decoder、AudioTrack、MediaSyncと未返却bufferを回収して現generationを再生不能状態へ遷移し、`VIDEO_UNAVAILABLE_REASON_AUDIO_ONLY`は映像が存在しないというサービス属性の通知にだけ使用してAudioTrack失敗理由と混同しない。video-onlyサービスはAudioTrackを設定しないため`MEDIASYNC_ERROR_AUDIOTRACK_FAIL`遷移を持たない。'''
+
+          if old_registration not in s:
+              raise SystemExit('registration gate anchor not found')
+          if old_mediasync not in s:
+              raise SystemExit('MediaSync error anchor not found')
+
+          s = s.replace(old_registration, new_registration, 1)
+          s = s.replace(old_mediasync, new_mediasync, 1)
+
+          stale = [
+              '現行対応 video ES が取得済みで、audio は対応済みまたは video-only',
+              'audio失敗は既存video-only継続規則へ写像する',
+          ]
+          if any(x in s for x in stale):
+              raise SystemExit('stale contradictory TIS contract remains')
+          if s == original:
+              raise SystemExit('no design changes applied')
+
+          p.write_text(s)
+          PY
+          git diff --check
+          git diff -- tis/DESIGN_JA.md
+      - name: Commit final design-only tree
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/agent-tis-audio-only-fix.yml
+          git add tis/DESIGN_JA.md
+          git commit -m "docs(tis): close audio-only registration and error transitions"
+          git push origin HEAD:agent/fix-tis-audio-only-contracts
