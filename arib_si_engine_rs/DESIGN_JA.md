@@ -76,6 +76,18 @@ BS と CS110 の complete 判定には BAT、SDT other、NIT other を含める�
 
 `arib_si_engine_rs` は、service / transport単位の意味解析結果として、ONID / TSID / SID、PMT、PCR、audio/video ESの存在・欠落理由、scrambling情報、および`publishability_by_service`を構造化してTISへ渡す。Android channelを登録するか、`TvContract.Channels.SERVICE_TYPE_*`へどう写像するか、partial snapshotをchannel insertへ使用するかはTISの責務であり、`../tis/DESIGN_JA.md`を正とする。 `publishability_by_service`はservice / transport単位の登録判断材料を構造化してTISへ渡す意味解析結果であり、Android channel登録、`TvContract.Channels.SERVICE_TYPE_*`写像、channel insertの最終判断はTISが行う。
 
+## system_management_descriptor と通常受信判定
+
+`system_management_descriptor`（SMD、`descriptor_tag=0xFE`）はNITのnetwork loopに属するネットワーク単位の意味情報として`arib_si_engine_rs`が解析する。Tuner HALはSMDを解釈せず、他のsectionと同じ汎用section配送だけを行う。SMDの構文・意味はARIB STD-B10 5.13-E1 Part 2 §6.2.21、通常受信対象の判定はARIB STD-B21 5.12-E2 Chapter 13 §13.2を根拠とする。
+
+SMDの意味モデルは`system_management_id`の16 bit原値、上位2 bitの`broadcasting_flag`、次の6 bitの`broadcasting_identifier`、下位8 bitの`additional_broadcasting_identification`、後続の`additional_identification_info`、構文検査結果を保持する。未知値を既知方式へ丸めずraw値と診断を残す。ただし現行productの通常受信可否を下位8 bitまたは`additional_identification_info`で制限しない。
+
+現行productでは、正常なSMDについて`broadcasting_flag=0b00`かつ選局候補のdelivery systemと`broadcasting_identifier`が一致する場合だけ`SUPPORTED_BROADCAST`とする。対応する`broadcasting_identifier`はBSデジタル=`0b000010`、地上デジタルテレビ=`0b000011`、広帯域CSデジタル=`0b000100`とし、CS110は広帯域CSデジタルとして判定する。`broadcasting_flag`が`01`または`10`なら`NON_BROADCAST`、`11`なら`UNDEFINED_BROADCAST_CLASS`、`00`で`broadcasting_identifier`が一致しない場合は`UNSUPPORTED_BROADCAST_SYSTEM`とする。SMD欠落または構文不正は`UNDETERMINED_SMD`として診断し、SMDだけを根拠に通常受信不可へ確定しない。
+
+SMDの判定対象は既存のtable-instance完成・version・寿命規則で有効とされたNITとし、SMD専用の`PENDING`状態や別のversion切替状態機械を設けない。
+
+`publishability_by_service`では`NON_BROADCAST`、`UNDEFINED_BROADCAST_CLASS`、`UNSUPPORTED_BROADCAST_SYSTEM`を通常受信対象外の理由として保持し、`channel_registration_ready=false`、`epg_publishable=false`、`clear_live_playback_supported=false`とする。意味解析・診断用の`publishable`自体はSMDだけでfalseにしない。`SUPPORTED_BROADCAST`ではSMDによる追加制限を課さず、PMT、PCR、service type、codec、CAS等の既存条件で最終判定する。`UNDETERMINED_SMD`も既存条件を上書きせず、SMD適合を肯定する根拠には使わない。Android channel登録と視聴セッションの最終制御は引き続きTISが所有する。
+
 ## section 更新
 
 PAT/PMT/SDT/NIT/BAT/EIT の version 更新では collector 全体を捨てない。table 単位、section 単位、サービス 単位で差分更新する。
