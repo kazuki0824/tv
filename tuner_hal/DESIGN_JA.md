@@ -52,7 +52,7 @@
 
 製品全体のリリース到達点、日本向け scan 候補、サービス検出、channel key の実装データ保持者は tv 直下の `開発規則.md` を正とする。本節では、Tuner HAL の capability、VTS/profile、AIDL戻り値に閉じる境界だけを固定する。HAL は渡された tune request を処理し、BLIND_SCAN や HAL-generated Japanese scan plan は capability / VTS profile で対応宣言しない。
 
-Tuner VTS用XMLは実行環境に依存する静的構成であり、既定では導入しない。対象のLineageOS 21 / Android 14 VTSは`/vendor/etc/tuner_vts_config_aidl_V1.xml`だけを読むため、variant propertyやsuffix付きfilenameを使用しない。AOSP branch、受信元、周波数、stream ID、PID、実行手順、filter/DVR queue容量、製品memory予算を宣言し、必要な全資源を起動前に予約できる場合だけ、その値を持つ静的XMLを固定pathへinstallする。環境未確定時は`DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED`とし、固定pathへXMLをinstallせず、VTS成功を宣言しない。descrambler AIDL objectを実装していても、試験設定だけで本番のスクランブル解除成功を宣言しない。
+Tuner VTS用XMLは実行環境に依存する静的構成であり、既定では導入しない。使用するVTS artifact/tag/commitと、試験実行機の`ro.vendor.vts_tuner_configuration_variant`を`VtsEnvironmentProfile`の入力として固定し、XML filenameは選択したVTS実装が実際に行う解決規則から決定する。Android 14 AIDL VTSでbase名`/vendor/etc/tuner_vts_config_aidl_V1`へnon-empty variantを`.`区切りで付加して`.xml`を読む実装を選択した場合は、`/vendor/etc/tuner_vts_config_aidl_V1[.<variant>].xml`として解決する。AOSP branch、VTS artifact/tag/commit、variant property、受信元、周波数、stream ID、PID、実行手順、filter/DVR queue容量、製品memory予算を宣言し、必要な全資源を起動前に予約できる場合だけ、その値を持つ静的XMLを解決済みpathへinstallする。VTS artifactまたはvariant propertyを含む環境入力が未確定な場合はfilename自体を`DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED`とし、推測したpathへXMLをinstallせず、VTS成功を宣言しない。descrambler AIDL objectを実装していても、試験設定だけで本番のスクランブル解除成功を宣言しない。
 
 Tuner HAL の capability / VTS profile では TS 入力だけを宣言する。製品全体の TS-only スコープは `開発規則.md` を正とし、本書では Tuner HAL の宣言値と返却値を固定する。MMTP、TLV、ALP、IP CID は capability と VTS profile に宣言しない。`IFilter.configureIpCid()` は filter種別にかかわらず `UNAVAILABLE` とする。CID を保存だけして 照合、経路制御、配送 に使わない成功扱いの無処理 を残してはならない。
 
@@ -62,7 +62,7 @@ Tuner HAL の capability / VTS profile では TS 入力だけを宣言する。�
 Tuner HAL が framework へ export する frontend ID は backend の単純な numeric index だけに依存しない。`px4video0` と `pxmlt5video0` のように異なる device family が同じ unit index を持つ場合でも、HAL の frontend ID と physical group ID は衝突してはならない。device family code と unit index を組み合わせ、1,000,000 番台の px4 frontend ID として export する。DVB frontend ID はハッシュではなく固定ビット割当で生成し、`2,000,000 + (adapter_id << 12) + (frontend_index << 4) + variant` とする。`adapter_id` と `frontend_index` は 8 bit、`variant` は 4 bit で、variant は ISDB-T=0、ISDB-S=1 に固定する。範囲外の DVB probe は export しない。生成後の duplicate ID 検出は最終保険として残す。px4 frontend の `exclusiveGroupId` は unit index 単独値ではなく、device family code と unit index を含む packed physical group id として返す。
 
 
-`DvrLeasePool`は確定済みで不変の`CapabilitySnapshot`を参照し、`getDemuxCaps()`応答と`openDvr()`受付可否を決める唯一の情報源とする。再生・記録DVRの全体上限は`snapshot.playback_count`と`snapshot.record_count`、demuxごとの上限は各1個とする。受付時はlifecycleと引数を検証し、用途別・demux別の使用枠を一括予約してから要求FMQと通知枠を準備する。途中失敗では仮予約を全て取り消し、不完全objectを公開しない。`CleanupPending`または`Quarantined`は最終解放まで使用中と数える。Tuner VTSはruntime能力から無条件に導出せず、起動前`VtsEnvironmentProfile`に入力元、PID、経路、queue容量、memory予算が定義されるまで`DESIGN_HOLD`として固定path XMLをinstallしない。使用する静的設定は確定済み`CapabilitySnapshot`に収まり、必要queue容量を正確に予約できなければならない。
+`DvrLeasePool`は確定済みで不変の`CapabilitySnapshot`を参照し、`getDemuxCaps()`応答と`openDvr()`受付可否を決める唯一の情報源とする。再生・記録DVRの全体上限は`snapshot.playback_count`と`snapshot.record_count`、demuxごとの上限は各1個とする。受付時はlifecycleと引数を検証し、用途別・demux別の使用枠を一括予約してから要求FMQと通知枠を準備する。途中失敗では仮予約を全て取り消し、不完全objectを公開しない。`CleanupPending`または`Quarantined`は最終解放まで使用中と数える。Tuner VTSはruntime能力から無条件に導出せず、起動前`VtsEnvironmentProfile`にVTS artifact/tag/commit、variant property、入力元、PID、経路、queue容量、memory予算が定義されるまで`DESIGN_HOLD`としてXML filenameを解決せず、XMLをinstallしない。使用する静的設定は確定済み`CapabilitySnapshot`に収まり、必要queue容量を正確に予約できなければならない。
 
 
 ### VTS profile / capability / 実装済み機能 対応表
@@ -439,7 +439,7 @@ AV資源上限は全codec共通の固定byte値にしない。`ProductProfile`�
 
 最終合成は依存順に行い、同じworker、callback、reaper、FMQ byte、AV/PES byteを二重計上しない。AV閉包の不足で無関係なfrontendまたはrecord DVR閉包を落とさず、共有するdemux baseや全体worker poolが不足する場合だけ、その依存先を使う閉包へ失敗を伝播する。`getDemuxIds()`、`getDemuxInfo()`、`getDemuxCaps()`、open受付、`numDemux`、`filterCaps`の横断不変条件は、合成後snapshotから一括導出する。能力広告と受付判定は同じsnapshotだけを参照し、別候補closureの列を実行時に混成しない。
 
-AV payloadは配送時、宣言長ありPESはheaderから必要量を確定した時点、長さ0映像PESは受信量増加時、FMQとplayback処理中bufferはconfigure時に実領域をclaimする。PES filterを非0で公開する場合は、PES閉包が`pesRuntimeBudgetBytes >= MAX_PES_BUFFER_BYTES * pesFilterCount`を満たし、有効な明示`streamId 0..255`とwildcard `0xFFFF`を同じ能力で受理する。ARIB字幕用`0xBD`はTISの利用設定でありHAL capabilityの部分集合ではない。VTSは別の起動前環境bindingとし、未定義中は固定path XMLをinstallせず成功を表明しない。
+AV payloadは配送時、宣言長ありPESはheaderから必要量を確定した時点、長さ0映像PESは受信量増加時、FMQとplayback処理中bufferはconfigure時に実領域をclaimする。PES filterを非0で公開する場合は、PES閉包が`pesRuntimeBudgetBytes >= MAX_PES_BUFFER_BYTES * pesFilterCount`を満たし、有効な明示`streamId 0..255`とwildcard `0xFFFF`を同じ能力で受理する。ARIB字幕用`0xBD`はTISの利用設定でありHAL capabilityの部分集合ではない。VTSは別の起動前環境bindingとし、VTS artifact/tag/commitとvariant propertyを含む環境入力が未定義中はXML filenameを解決せず、XMLをinstallせず成功を表明しない。
 
 - 入力値不正は `INVALID_ARGUMENT`、未対応 capability は `UNAVAILABLE`、オブジェクト state 不整合は `INVALID_STATE`、mutex汚染 や内部整合性崩壊は `UNKNOWN_ERROR` / `HalError::Internal` に写像する。
 
@@ -2034,7 +2034,7 @@ px4 backend は control fd を一度だけ open し、ライブ TS reader はそ
 ## DVR 方針
 
 
-DVRの同時利用上限は確定済み`CapabilitySnapshot`で定める。`P=snapshot.playback_count`、`R=snapshot.record_count`、demuxごとの上限は各1個とする。用途別全体枠とdemux別枠に空きがあり、要求queueと正確な通知枠をtransactionとして準備できる場合だけ受け付ける。検証順序はlifecycleと引数、用途別容量、demux別上限、失敗し得る準備処理とする。失敗時は`INVALID_ARGUMENT`、`UNAVAILABLE`、`UNKNOWN_ERROR`を原因別に返し、確定状態を変更しない。能力報告、受付、cleanup、最終解放は同じsnapshotを参照する。VTS設定を実行時生成せず、無条件の既定XMLも設けない。起動前環境profileで入力元、経路、PID、queue予算を定義し、その要求全体がsnapshotに収まる場合だけ固定pathの静的V1 XMLをinstallする。それ以外はruntime保証を弱めずVTSを`DESIGN_HOLD`とする。
+DVRの同時利用上限は確定済み`CapabilitySnapshot`で定める。`P=snapshot.playback_count`、`R=snapshot.record_count`、demuxごとの上限は各1個とする。用途別全体枠とdemux別枠に空きがあり、要求queueと正確な通知枠をtransactionとして準備できる場合だけ受け付ける。検証順序はlifecycleと引数、用途別容量、demux別上限、失敗し得る準備処理とする。失敗時は`INVALID_ARGUMENT`、`UNAVAILABLE`、`UNKNOWN_ERROR`を原因別に返し、確定状態を変更しない。能力報告、受付、cleanup、最終解放は同じsnapshotを参照する。VTS設定を実行時生成せず、無条件の既定XMLも設けない。起動前環境profileでVTS artifact/tag/commit、variant property、入力元、経路、PID、queue予算を定義し、選択したVTS実装の規則でXML filenameを解決し、その要求全体がsnapshotに収まる場合だけ解決済みpathへ静的XMLをinstallする。それ以外はruntime保証を弱めずVTSを`DESIGN_HOLD`とする。
 
 
 demux入力世代ごとに、Record DVRへ接続中の全記録フィルター条件を、変更不能な1個の和集合条件へまとめる。到着した188バイトTSパケットは1回だけ評価し、いずれかの記録条件に一致した場合は、到着順にRecord DVRへ正確に1回書き込む。フィルターごとの索引状態とコールバック状態は別々に保持する。接続、切断、設定変更では、世代境界で和集合条件をトランザクションとして置き換える。各フィルターへ一度分配してから全体を並べ替える、重複排除する、または `ingress_sequence` で欠落を推測する構成にしてはならない。
@@ -2665,9 +2665,9 @@ STD-B25 Part 1 §4.9は上表の適合主張に含めない。同条項に係る
 
 ## VTS環境とARIB B31の境界
 
-- `VtsEnvironmentProfile=UNBOUND`では、固定path`/vendor/etc/tuner_vts_config_aidl_V1.xml`へXMLをinstallせず、試験scenarioも設定しない。runtime能力snapshotは独立して維持する。
-- `BOUND`では、要求object数が確定済みsnapshotに収まり、必要queue容量全体を予約できた後、宣言済み値を持つ静的XMLを固定pathへ正確に1つinstallする。
-- `REJECTED`では固定path XMLをinstallせず、既定設定へfallbackしない。
+- `VtsEnvironmentProfile=UNBOUND`では、VTS artifact/tag/commitまたはvariant propertyを含む環境入力が未確定であるためXML filenameを解決せず、XMLをinstallせず、試験scenarioも設定しない。runtime能力snapshotは独立して維持する。
+- `BOUND`では、要求object数が確定済みsnapshotに収まり、必要queue容量全体を予約できた後、宣言済み値を持つ静的XMLを選択したVTS実装で解決済みのpathへ正確に1つinstallする。
+- `REJECTED`では推測したpathへXMLをinstallせず、既定設定へfallbackしない。
 - ISDB-Tのパラメーター値域は、公式英訳STD-B31 2.2-E1本文の2.3、3.8、3.9、3.11.1、3.14.2、3.15.6.5〜3.15.6.7を精読基準とする。
 
 ## 設計表と内部プロトコル
@@ -2772,15 +2772,15 @@ STD-B25 Part 1 §4.9は上表の適合主張に含めない。同条項に係る
 
 | 入力ID | 必要な入力 | 判断規則 | 状態 |
 |---|---|---|---|
-| VTS-ENV-01 | AOSPブランチとTuner VTS設定のschemaおよび版 | 対象のVTS読み込み処理とschemaが完全に一致する場合だけ対応付け、版をまたいで推定しない | UNDECLARED_DESIGN_HOLD |
+| VTS-ENV-01 | AOSP branch、Tuner VTS設定schema/版、使用VTS artifact/tag/commit | 選択するVTS binary/source contractを一意に固定する | UNDECLARED_DESIGN_HOLD |
 | VTS-ENV-02 | フロントエンドの入力元と選局・走査パラメーター | XML選択前に機器またはソフトウェアの入力元、周波数、ストリームID・種類、信号の有無を宣言する | UNDECLARED_DESIGN_HOLD |
 | VTS-ENV-03 | audio・video・recordのPIDと有効なdata flow | 使用可能な入力元と対応済みHAL経路の両方があるflowだけを含める | UNDECLARED_DESIGN_HOLD |
 | VTS-ENV-04 | filterとDVRのbuffer size | 宣言済みの静的設定値を起動時の資源一式としてそのまま使い、オブジェクト数から推定しない | UNDECLARED_DESIGN_HOLD |
 | VTS-ENV-05 | productのprocess memoryとFMQ割り当て予算 | serviceまたはVTSの起動前に宣言済みキュー一式を原子的に予約し、失敗した設定は拒否する | UNDECLARED_DESIGN_HOLD |
-| VTS-ENV-06 | Android 14固定pathへinstallする静的XML module | 対象VTSが読む`/vendor/etc/tuner_vts_config_aidl_V1.xml`をprocess開始前にinstallする。variant property、suffix付きfilename、実行時rendererを使用しない | UNDECLARED_DESIGN_HOLD |
-| VTS-STATE-UNBOUND | 完全な`VtsEnvironmentProfile`がない | 固定path XMLをinstallせず、試験scenarioを設定しない。runtime`CapabilitySnapshot`は独立して使用できる | DESIGN_HOLD |
-| VTS-STATE-BOUND | 6入力が宣言済みで、object要求が確定済みsnapshot以内に収まり、queue一式の予約に成功 | 起動前に固定pathへ宣言済み静的XMLを正確に1つinstallし、別設定へ自動fallbackしない | BOUND_STATIC_XML |
-| VTS-STATE-REJECTED | object要求がsnapshotを超える、またはqueue予約に失敗 | 設定を拒否し、runtime snapshotを維持する。固定path XMLまたは既定XMLをinstallしない | PROFILE_REJECTED |
+| VTS-ENV-06 | VTS設定XMLのfilename解決 | 選択済みVTS artifact/tag/commitと試験実行機の`ro.vendor.vts_tuner_configuration_variant`から、そのVTS実装が実際に読むfilenameを解決する。artifactまたはproperty未確定時はfilenameを推測しない。実行時rendererは使用しない | UNDECLARED_DESIGN_HOLD |
+| VTS-STATE-UNBOUND | 完全な`VtsEnvironmentProfile`がない | VTS artifact/tag/commitまたはvariant propertyを含む環境入力が未確定で、XML filenameを解決せずXMLをinstallしない| DESIGN_HOLD |
+| VTS-STATE-BOUND | 6入力が宣言済みで、object要求が確定済みsnapshot以内に収まり、queue一式の予約に成功 | 起動前に選択したVTS実装で解決済みのpathへ宣言済み静的XMLを正確に1つinstallし、別設定へ自動fallbackしない | BOUND_STATIC_XML |
+| VTS-STATE-REJECTED | object要求がsnapshotを超える、またはqueue予約に失敗 | 設定を拒否し、runtime snapshotを維持する。解決済みpathまたは既定値を推測したXMLまたは既定XMLをinstallしない | PROFILE_REJECTED |
 
 ### キューと生産側の内部プロトコル
 
