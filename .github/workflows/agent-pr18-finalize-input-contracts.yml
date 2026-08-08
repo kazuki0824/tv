@@ -1,0 +1,74 @@
+name: agent-pr18-finalize-input-contracts
+
+on:
+  push:
+    branches:
+      - agent/fix-frontend-settings-driver-contracts
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-frontend-settings-driver-contracts
+          fetch-depth: 0
+      - name: Patch design contracts
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('tuner_hal/DESIGN_JA.md')
+          s = p.read_text()
+
+          replacements = [
+              (
+                  "- `partialReceptionFlag`は未指定を表すAIDL値だけを明示制約なしとして成功させる。規格上有効な明示値を反映または検証する経路がない現行profileでは`UNAVAILABLE`、予約値・未知値は`INVALID_ARGUMENT`とする。",
+                  "- `partialReceptionFlag`は未指定を表すAIDL値を明示制約なしとして成功させる。`TRUE` / `FALSE`は規格上有効な明示要求であり、最終契約では対象demodulatorが自動判定したlock後の同一tune/scan generationに属するfreshなTMCC readbackと要求値を照合し、一致時だけ成功させる。earth_pt1 / TC90522は`future_work/r51/earth_pt1_tc90522_tmcc_readback_error_propagation_blocker.md`、px4は`future_work/r51/px4_tmcc_partial_reception_readback_blocker.md`が未解決の間、readback成立を偽装せず明示`TRUE` / `FALSE`を`UNAVAILABLE`とする。予約値・未知値は`INVALID_ARGUMENT`とする。"
+              ),
+              (
+                  "| 対象のpx4またはearth_pt1 | ISDB-T | `partialReceptionFlag` | 未指定を表すAIDL値 | 明示partial-reception制約を付けずbackendへ要求 | 反映・検証できない既知の明示値：`UNAVAILABLE` | 予約値・未知値：`INVALID_ARGUMENT` |",
+                  "| 対象のpx4またはearth_pt1 | ISDB-T | `partialReceptionFlag` | 未指定を表すAIDL値。blocker解消後は`TRUE` / `FALSE`も対象 | 未指定は追加制約なし。最終契約ではlock後の同一generationのfreshなTMCC readbackと明示値を照合し、一致時だけ成功 | earth_pt1 / px4の対応readback blocker未解決中の明示`TRUE` / `FALSE`：`UNAVAILABLE` | 予約値・未知値：`INVALID_ARGUMENT` |"
+              ),
+              (
+                  "- BSは有効なstream selectorを必須とする。CS110はfixed-slot profileに従いselectorを制限する。",
+                  "- AOSP SDK defaultの`STREAM_ID + INVALID_STREAM_ID(0xFFFF)`は、BS/CS110を問わず明示TSIDの値域検証より先に`Unspecified`へ正規化する。通常の日本向けBS scan、channel保存、ライブ再選局ではTISが検出・保存したabsolute TSIDを明示し、`Unspecified` fallbackをサービス選択に使用しない。px4 BSの`Unspecified`は現行ABI上の互換fallbackとしてrelative slot `0`へ写像するが、callerがslot 0を指定したとは扱わない。Linux DVB / earth_pt1の`Unspecified`は`DTV_STREAM_ID=NO_STREAM_ID_FILTER`へ明示写像し、前回のselectorをproperty cacheへ残さない。CS110は従来どおりselectorなしのfrequency-only選局を使用する。"
+              ),
+              (
+                  "| px4 legacy selector ABIの完全一致項目 | ISDB-S | `RELATIVE_STREAM_NUMBER` | `0..7` | 値を変更せずlegacy `slot`へ渡す | なし | `0..7`以外：`INVALID_ARGUMENT` |",
+                  "| 対象のpx4またはLinux DVB / earth_pt1 | ISDB-S | selector未指定 | AOSP SDK defaultの`STREAM_ID + INVALID_STREAM_ID(0xFFFF)`を`Unspecified`へ正規化 | px4 BSは互換fallbackとしてrelative slot `0`、px4 CS110はfixed slot `0`、Linux DVB / earth_pt1は`DTV_STREAM_ID=NO_STREAM_ID_FILTER`を明示設定 | なし。通常の日本向けBSサービス選択はTISの明示absolute TSID経路を使用 | `0xFFFF`を明示TSIDとして再解釈しない |\n| px4 legacy selector ABIの完全一致項目 | ISDB-S | `RELATIVE_STREAM_NUMBER` | `0..7` | 値を変更せずlegacy `slot`へ渡す | なし | `0..7`以外：`INVALID_ARGUMENT` |"
+              ),
+              (
+                  "現在のpx4台帳はlegacy ABIに従い、相対`0..7`とabsolute `12..65534`を別typed selectorとして有効にする。absolute `0..11`は有効なAOSP値だがABIで表現不能なので`UNAVAILABLE`とし、相対値へ読み替えない。項目が空、不一致、または使用不可の場合は該当frontendを公開しない。`ProductProfile`は使用可能な部分集合を抑止できるだけで、対応能力を新設または拡張できない。CS110の`STREAM_ID=INVALID_STREAM_ID(65535)`はselectorなしを表すAOSPの既定値として別に扱い、本表で明示selector値`65535`を拒否する規則と混同しない。",
+                  "現在のpx4台帳はlegacy ABIに従い、相対`0..7`とabsolute `12..65534`を別typed selectorとして有効にする。absolute `0..11`は有効なAOSP値だがABIで表現不能なので`UNAVAILABLE`とし、相対値へ読み替えない。項目が空、不一致、または使用不可の場合は該当frontendを公開しない。`ProductProfile`は使用可能な部分集合を抑止できるだけで、対応能力を新設または拡張できない。AOSP SDK defaultの`STREAM_ID=INVALID_STREAM_ID(65535)`はBS/CS110を問わずselectorなしを表す入力として明示selector値の検証より先に`Unspecified`へ正規化し、本表で明示selector値`65535`を拒否する規則と混同しない。px4 BSのslot `0` fallbackはAOSP未指定入力を現行ABIで成立させるためだけの互換経路であり、通常の日本向けBS scan、channel保存、ライブ再選局のサービス選択へ使用してはならない。Linux DVB / earth_pt1では`Unspecified`を`NO_STREAM_ID_FILTER`として毎回明示設定する。"
+              ),
+              (
+                  "| T-AOSP-47 | ISDB-T V2 `inversion` / `serviceAreaId` / `partialReceptionFlag` / `numOfSegment` | 成功・`UNAVAILABLE`・`INVALID_ARGUMENT`をフィールド別に固定し、silent ignore-successがない |",
+                  "| T-AOSP-47 | ISDB-T V2 `inversion` / `serviceAreaId` / `partialReceptionFlag` / `numOfSegment` | 成功・`UNAVAILABLE`・`INVALID_ARGUMENT`をフィールド別に固定し、`partialReceptionFlag`はblocker解消後のfresh TMCC readback一致だけを明示値成功条件とし、blocker未解決中はsilent ignore-successがない |\n| T-AOSP-51 | ISDB-S SDK default selector未指定 | `STREAM_ID + INVALID_STREAM_ID(0xFFFF)`を明示TSID検証より先に`Unspecified`へ正規化し、px4 BSは互換slot 0、px4 CS110はfixed slot 0、Linux DVB / earth_pt1は`NO_STREAM_ID_FILTER`へ写像する。通常のBS TIS経路では明示absolute TSIDを維持する |"
+              ),
+          ]
+
+          for old, new in replacements:
+              count = s.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected exactly one match, got {count}: {old[:80]}')
+              s = s.replace(old, new)
+
+          p.write_text(s)
+          PY
+          git diff --check
+      - name: Commit design update and remove workflow
+        shell: bash
+        run: |
+          rm .github/workflows/agent-pr18-finalize-input-contracts.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tuner_hal/DESIGN_JA.md .github/workflows/agent-pr18-finalize-input-contracts.yml
+          git diff --cached --check
+          git commit -m 'docs: finalize frontend compatibility contracts'
+          git push origin HEAD:agent/fix-frontend-settings-driver-contracts
