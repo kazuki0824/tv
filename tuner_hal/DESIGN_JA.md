@@ -2141,7 +2141,7 @@ ISDB-Tの列挙値域は、ARIB公式英語版STD-B31 2.2-E1本文の2.3、3.8�
 Android 14 AIDL V2の`FrontendIsdbtCapabilities.isSegmentAuto`と`isFullSegment`は、ISDB-T frontendごとの変更不能な`IsdbtSegmentCapability`として`CapabilitySnapshot`へ保持し、`FrontendInfo.frontendCaps`とsettings validationの両方を同じ値から導出する。
 
 - layerの`numOfSegment=0`はAOSP builderの未指定値として扱い、segment数の明示制約を付けず成功させる。`isSegmentAuto`の真偽を`0`の受付条件にしてはならない。
-- `isSegmentAuto=true`にできるのは、対象backend/device/profileでsegment構成を明示指定せず自動判定して実際に選局できることを検証済みの場合だけとする。AOSPが定義していない特定の`numOfSegment`値を独自のAUTO sentinelとして設けない。
+- `isSegmentAuto=true`にできるのは、対象backend/device/profileでsegment構成を明示指定せず自動判定して実際に選局できることを検証済みの場合だけとする。Android framework APIは`numOfSegment`用のnamed AUTO定数を公開していないが、Android 14 CTSは`isSegmentAutoSupported()==true`のISDB-T frontendに対して`numOfSegment=0xFF`を設定して`tune()`成功を要求する。このため`0xFF`はCTS互換のAUTO要求として受理し、`isSegmentAuto=true`のfrontendではbackend/demodulatorのsegment自動判定へ写像する。`isSegmentAuto=false`では`0xFF`を`UNAVAILABLE`とし、独自の明示segment数へ読み替えない。
 - `isFullSegment=true`にできるのは、対象backend/device/profileで13-segmentの通常受信が成立することを機器能力として検証済みの場合だけとする。単にlockを取得できたこと、またはARIB上13 segmentが存在することだけから`true`を推測しない。
 - callerが指定する明示`numOfSegment=1..13`を成功させるには、その値をlayerごとにbackendへ反映する経路または固定値として検証する経路が必要である。現行px4/earth_pt1でその経路を持たない間は、値域内の明示segment数を`UNAVAILABLE`とし、値を捨てて成功しない。
 - segment能力の証跡がない場合はbooleanを`false`に倒す。能力boolean、`numOfSegment`の受付、`ProductProfile`、VTS選局入力の間に矛盾がある候補は`CapabilitySnapshot`へcommitしない。
@@ -2165,7 +2165,7 @@ Android 14 AIDL V2の`FrontendIsdbtCapabilities.isSegmentAuto`と`isFullSegment`
 - `inversion`は未指定・自動を表すAIDL値だけを、明示制約なしとして成功させる。規格上有効な明示inversionは、対象backendで設定または固定値検証できる場合だけ成功させ、現行profileでその証跡がない値は`UNAVAILABLE`とする。予約値・未知値は`INVALID_ARGUMENT`とする。
 - `serviceAreaId=0`は未指定として成功させる。正の値は構文上有効な要求として、backend requestまたは選局結果検証へ実際に使用できる場合だけ成功させる。現行profileでその経路がない正の値は`UNAVAILABLE`、負値は`INVALID_ARGUMENT`とする。
 - `partialReceptionFlag`は未指定を表すAIDL値だけを明示制約なしとして成功させる。規格上有効な明示値を反映または検証する経路がない現行profileでは`UNAVAILABLE`、予約値・未知値は`INVALID_ARGUMENT`とする。
-- layer `numOfSegment=0`は未指定として成功させる。`1..13`は構文上有効だが、layerごとのsegment数をbackendへ反映または固定値検証できない現行profileでは`UNAVAILABLE`とする。負値または13超は`INVALID_ARGUMENT`とする。
+- layer `numOfSegment=0`は未指定として成功させる。`0xFF`はAndroid 14 CTSが`isSegmentAutoSupported()==true`のfrontendへ送る互換AUTO要求として扱い、`isSegmentAuto=true`ならbackend/demodulatorのsegment自動判定を使用して成功させ、`false`なら`UNAVAILABLE`とする。`1..13`は構文上有効だが、layerごとのsegment数をbackendへ反映または固定値検証できない現行profileでは`UNAVAILABLE`とする。`14..254`、負値、255を超える値は`INVALID_ARGUMENT`とする。
 - 上記4項目を含むsettingsは、成功時だけ正規化済みrequest fingerprintへ含める。`UNAVAILABLE`または`INVALID_ARGUMENT`では旧tune/scan、backend、generationを変更せず、入力値を黙って捨てて成功してはならない。
 - blind scanは`UNAVAILABLE`とする。
 
@@ -2571,7 +2571,7 @@ px4 probe prefix を変更する場合は、frontend_px4系実装、`tuner_hal2/
 | T-AOSP-40 | `FilterDelayHint` time+data | OR条件 |
 | T-AOSP-44 | `FrontendInfo` scalar境界とtune validation | min/max frequency、symbol rate、acquire rangeが同一`CapabilitySnapshot`と受付範囲に一致 |
 | T-AOSP-45 | DVB同一`(adapter_id, frontend_index)`のvariantと別物理frontend | 同一物理variantは同じ`exclusiveGroupId`、別group/backendは衝突しない |
-| T-AOSP-46 | ISDB-T segment capabilityとlayer `numOfSegment` | `0`は未指定、`1..13`は明示値として分離し、`0`の受付を`isSegmentAuto`に結び付けず、`isSegmentAuto`/`isFullSegment`と明示segment受付が同一能力正本に一致 |
+| T-AOSP-46 | ISDB-T segment capabilityとlayer `numOfSegment` | `0`は未指定、`0xFF`はCTS互換AUTO、`1..13`は明示値として分離し、`0`の受付を`isSegmentAuto`に結び付けず、`0xFF`は`isSegmentAuto=true`の場合だけ成功し、`isSegmentAuto`/`isFullSegment`と明示segment受付が同一能力正本に一致 |
 | T-AOSP-47 | ISDB-T V2 `inversion` / `serviceAreaId` / `partialReceptionFlag` / `numOfSegment` | 成功・`UNAVAILABLE`・`INVALID_ARGUMENT`をフィールド別に固定し、silent ignore-successがない |
 | T-AOSP-48 | ISDB-S `rolloff` | 未指定、既知未対応、malformedを分類し、未適用値を成功させない |
 | T-AOSP-49 | RECORD index settings/event | request mask/typeを無損失検証し、event mask、`byteNumber`、`pts`、`firstMbInSlice`をgenerationと実出力に一致させる |
@@ -2823,7 +2823,7 @@ STD-B25 Part 1 §4.9は上表の適合主張に含めない。同条項に係る
 | 対象のpx4またはearth_pt1 | ISDB-T | `inversion` | 未指定・自動を表すAIDL値 | 明示inversion制約を付けずbackendへ要求 | 設定・固定値検証できない既知の明示値：`UNAVAILABLE` | 予約値・未知値：`INVALID_ARGUMENT` |
 | 対象のpx4またはearth_pt1 | ISDB-T | `serviceAreaId` | `0` | 未指定として扱い、追加制約を付けない | 正の値でbackendへ反映・検証経路なし：`UNAVAILABLE` | 負値：`INVALID_ARGUMENT` |
 | 対象のpx4またはearth_pt1 | ISDB-T | `partialReceptionFlag` | 未指定を表すAIDL値 | 明示partial-reception制約を付けずbackendへ要求 | 反映・検証できない既知の明示値：`UNAVAILABLE` | 予約値・未知値：`INVALID_ARGUMENT` |
-| 対象のpx4またはearth_pt1 | ISDB-T | layer `numOfSegment` | `0` | 未指定として扱い、追加制約を付けない | `1..13`で明示segment数を反映・検証できない値：`UNAVAILABLE` | 負値または13超：`INVALID_ARGUMENT` |
+| 対象のpx4またはearth_pt1 | ISDB-T | layer `numOfSegment` | `0`、`0xFF`（`isSegmentAuto=true`時） | `0`は未指定として追加制約を付けない。`0xFF`はAndroid 14 CTS互換AUTOとしてbackend/demodulatorのsegment自動判定を使用 | `0xFF`かつ`isSegmentAuto=false`、または`1..13`で明示segment数を反映・検証できない値：`UNAVAILABLE` | `14..254`、負値、255超：`INVALID_ARGUMENT` |
 | px4 legacy selector ABIの完全一致項目 | ISDB-S | `RELATIVE_STREAM_NUMBER` | `0..7` | 値を変更せずlegacy `slot`へ渡す | なし | `0..7`以外：`INVALID_ARGUMENT` |
 | px4 legacy selector ABIの完全一致項目 | ISDB-S | `STREAM_ID` | `12..65534` | 値を変更せずlegacy `slot`へ渡す | `0..11`はAOSP上有効だがABI衝突で表現不能：`UNAVAILABLE` | `65535`または値域外：`INVALID_ARGUMENT` |
 | absolute selectorに対応するLinux DVBの完全一致項目 | ISDB-S | `STREAM_ID` | `0..65534` | 値を変更せず`DTV_STREAM_ID`へ渡す | relative selectorに対応しない場合、`RELATIVE_STREAM_NUMBER 0..7`は`UNAVAILABLE` | `STREAM_ID=65535`または`0..7`以外の相対値：`INVALID_ARGUMENT` |
