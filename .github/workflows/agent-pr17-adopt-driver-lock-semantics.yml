@@ -26,47 +26,42 @@ jobs:
 
           path = Path('tuner_hal/DESIGN_JA.md')
           text = path.read_text(encoding='utf-8')
-
           pattern = re.compile(
               r"## px4_drv ロック 方針\n.*?(?=\n## px4_drv chardev open / ライブ TS reader 方針)",
               re.S,
           )
-          replacement = '''## px4_drv ロック 方針
-
-px4_drv backendはRF/carrier lockを直接返すuserspace APIを持たないため、`RF_LOCK`をadvertiseしない。現行userspace ABIではcurrent demodulator lockを副作用なしに読み戻すAPIも持たないため、px4の`DEMOD_LOCK`も`FrontendInfo.statusCaps`へadvertiseしない。`PTX_GET_CNR`、TS packet到達、過去の選局成功をcurrent `DEMOD_LOCK`の代替にしてはならない。
-
-一方、`PTX_SET_CHANNEL`はdriver内部で`ops->check_lock()`をポーリングし、demodulator lockを取得できなければ失敗し、取得できた場合だけ成功する。したがって、active tune/scan generationに対する`PTX_SET_CHANNEL`成功は、その選局要求についてdriverが実demodulator lock成立を確認した一回限りの証跡として扱い、同じgenerationの`LOCKED`を正確に1回通知する。ioctl成功を選局後のcurrent lock状態として保持し続けたり、後続generationへ流用したりしてはならない。
-
-現行userspace ABIでは選局後のcurrent demodulator lockを再観測できないため、px4 backendは`LOST_LOCK`をTS無受信時間、C/N、read timeout、streaming停止、USB経路異常などから推測して生成しない。これらはtransport/backend health、診断、fatal failure判定には使用してよいが、AOSPのdemodulator lock transitionとは分離する。driver/backendのfatal failureでは既存のbackend failure契約に従って状態を無効化し、観測していない`LOST_LOCK`を捏造しない。
-
-TS入力について、188-byte境界、sync byte `0x47`、`transport_error_indicator`、`adaptation_field_control`、連続packet数、packet無受信時間などを監視してtransport healthを判定してよい。ただし、この判定を`DEMOD_LOCK`、`RF_LOCK`、`LOCKED`、`LOST_LOCK`の真値へ写像しない。`px4DemodLockPacketCount`、`px4DemodUnlockGapMs`のような閾値をAIDL lock意味論の正本値として`CapabilitySnapshot`へ持たせない。
-
-`future_work/r51/px4_demod_lock_status_readback_blocker.md`が解消され、target `px4_drv`からcurrent demodulator lockを副作用なしに取得できるread-only ABIとI/O failureの分離が固定された後は、そのgeneration-fenced readbackを`DEMOD_LOCK`の正本にできる。その時点でのみpx4の`DEMOD_LOCK`を`statusCaps`へ追加し、観測したlock transitionに一致する`LOST_LOCK`および必要なrelock後の`LOCKED`を生成する。driver ABI未解決の間は、この将来状態を実装済み能力として扱わない。
-'''
-
+          replacement = "\n".join([
+              "## px4_drv ロック 方針",
+              "",
+              "px4_drv backendはRF/carrier lockを直接返すuserspace APIを持たないため、`RF_LOCK`をadvertiseしない。現行userspace ABIではcurrent demodulator lockを副作用なしに読み戻すAPIも持たないため、px4の`DEMOD_LOCK`も`FrontendInfo.statusCaps`へadvertiseしない。`PTX_GET_CNR`、TS packet到達、過去の選局成功をcurrent `DEMOD_LOCK`の代替にしてはならない。",
+              "",
+              "一方、`PTX_SET_CHANNEL`はdriver内部で`ops->check_lock()`をポーリングし、demodulator lockを取得できなければ失敗し、取得できた場合だけ成功する。したがって、active tune/scan generationに対する`PTX_SET_CHANNEL`成功は、その選局要求についてdriverが実demodulator lock成立を確認した一回限りの証跡として扱い、同じgenerationの`LOCKED`を正確に1回通知する。ioctl成功を選局後のcurrent lock状態として保持し続けたり、後続generationへ流用したりしてはならない。",
+              "",
+              "現行userspace ABIでは選局後のcurrent demodulator lockを再観測できないため、px4 backendは`LOST_LOCK`をTS無受信時間、C/N、read timeout、streaming停止、USB経路異常などから推測して生成しない。これらはtransport/backend health、診断、fatal failure判定には使用してよいが、AOSPのdemodulator lock transitionとは分離する。driver/backendのfatal failureでは既存のbackend failure契約に従って状態を無効化し、観測していない`LOST_LOCK`を捏造しない。",
+              "",
+              "TS入力について、188-byte境界、sync byte `0x47`、`transport_error_indicator`、`adaptation_field_control`、連続packet数、packet無受信時間などを監視してtransport healthを判定してよい。ただし、この判定を`DEMOD_LOCK`、`RF_LOCK`、`LOCKED`、`LOST_LOCK`の真値へ写像しない。`px4DemodLockPacketCount`、`px4DemodUnlockGapMs`のような閾値をAIDL lock意味論の正本値として`CapabilitySnapshot`へ持たせない。",
+              "",
+              "`future_work/r51/px4_demod_lock_status_readback_blocker.md`が解消され、target `px4_drv`からcurrent demodulator lockを副作用なしに取得できるread-only ABIとI/O failureの分離が固定された後は、そのgeneration-fenced readbackを`DEMOD_LOCK`の正本にできる。その時点でのみpx4の`DEMOD_LOCK`を`statusCaps`へ追加し、観測したlock transitionに一致する`LOST_LOCK`および必要なrelock後の`LOCKED`を生成する。driver ABI未解決の間は、この将来状態を実装済み能力として扱わない。",
+              "",
+          ])
           new_text, count = pattern.subn(replacement, text)
           if count != 1:
               raise SystemExit(f'expected exactly one px4 lock policy section, got {count}')
-
-          forbidden = [
+          for token in (
               'px4DemodLockPacketCount=16',
               'px4DemodUnlockGapMs=1000',
               '同一tune generationのTS入力から導く製品定義の観測状態',
-          ]
-          for token in forbidden:
+          ):
               if token in new_text:
                   raise SystemExit(f'old pseudo-lock contract remains: {token}')
-
-          required = [
+          for token in (
               '`PTX_SET_CHANNEL`成功は、その選局要求についてdriverが実demodulator lock成立を確認した一回限りの証跡',
               'px4の`DEMOD_LOCK`も`FrontendInfo.statusCaps`へadvertiseしない',
               'px4 backendは`LOST_LOCK`をTS無受信時間',
               '`future_work/r51/px4_demod_lock_status_readback_blocker.md`が解消され',
-          ]
-          for token in required:
+          ):
               if token not in new_text:
                   raise SystemExit(f'required contract missing: {token}')
-
           path.write_text(new_text, encoding='utf-8')
           PY
           rm .github/workflows/agent-pr17-adopt-driver-lock-semantics.yml
