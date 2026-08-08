@@ -2056,11 +2056,15 @@ Live/AV経路、診断、recording メタデータ、VTS 判定では、scramble
 
 ## px4_drv ロック 方針
 
-px4_drv backendはRF/carrier lockを直接返すAPIを持たないため、`RF_LOCK`をadvertiseしない。一方、Android 14の`FrontendEventType.LOCKED`と既知信号VTS経路を成立させるため、px4の`DEMOD_LOCK`は同一tune generationのTS入力から導く製品定義の観測状態とする。backend選局要求の成功だけではlockとせず、streaming開始後に同一generation・同一endpointから、188-byte境界、sync byte `0x47`、`transport_error_indicator=0`、予約値でない`adaptation_field_control`を満たすpacketを連続16個受信し、その区間にnull PID以外のpayload packetが1個以上ある場合にだけ`DEMOD_LOCK=true`へ確定し、`LOCKED`をgenerationごとに1回通知する。PAT、PMT、section、PES、AV、decoderの到達はdemod lock条件へ含めず、サービス視聴可能性と分離する。
+px4_drv backendはRF/carrier lockを直接返すuserspace APIを持たないため、`RF_LOCK`をadvertiseしない。現行userspace ABIではcurrent demodulator lockを副作用なしに読み戻すAPIも持たないため、px4の`DEMOD_LOCK`も`FrontendInfo.statusCaps`へadvertiseしない。`PTX_GET_CNR`、TS packet到達、過去の選局成功をcurrent `DEMOD_LOCK`の代替にしてはならない。
 
-初回lock前のpacket framing不成立は`TuneSubmitted`を維持し、選局期限まで再評価する。lock後に有効packetを受信しない状態が`px4DemodUnlockGapMs=1000`継続した場合、またはstreaming停止、fatal read errorが発生した場合は`DEMOD_LOCK=false`へ確定し、同一generationへ`LOST_LOCK`を1回通知する。retune、`stopTune()`、`stopScan()`、`close()`では旧generationのcallback権限を先に遮断し、その旧generationの`LOST_LOCK`を後続generationへ配送しない。`px4DemodLockPacketCount=16`と`px4DemodUnlockGapMs=1000`は`ProductProfile`の固定値として`CapabilitySnapshot`へ取り込み、VTS profile対象px4 frontendはこの条件で3秒以内に`LOCKED`を通知できる実信号・入力経路だけを使用する。
+一方、`PTX_SET_CHANNEL`はdriver内部で`ops->check_lock()`をポーリングし、demodulator lockを取得できなければ失敗し、取得できた場合だけ成功する。したがって、active tune/scan generationに対する`PTX_SET_CHANNEL`成功は、その選局要求についてdriverが実demodulator lock成立を確認した一回限りの証跡として扱い、同じgenerationの`LOCKED`を正確に1回通知する。ioctl成功を選局後のcurrent lock状態として保持し続けたり、後続generationへ流用したりしてはならない。
 
-この方針はpx4のfrontend状態だけの設計であり、視聴可能状態の判定ではない。TISは`notifyVideoAvailable()`を出す前に、section到達、PMT/ES PID解決、AV filter data、decoder/surfaceの成立を別途確認する。
+現行userspace ABIでは選局後のcurrent demodulator lockを再観測できないため、px4 backendは`LOST_LOCK`をTS無受信時間、C/N、read timeout、streaming停止、USB経路異常などから推測して生成しない。これらはtransport/backend health、診断、fatal failure判定には使用してよいが、AOSPのdemodulator lock transitionとは分離する。driver/backendのfatal failureでは既存のbackend failure契約に従って状態を無効化し、観測していない`LOST_LOCK`を捏造しない。
+
+TS入力について、188-byte境界、sync byte `0x47`、`transport_error_indicator`、`adaptation_field_control`、連続packet数、packet無受信時間などを監視してtransport healthを判定してよい。ただし、この判定を`DEMOD_LOCK`、`RF_LOCK`、`LOCKED`、`LOST_LOCK`の真値へ写像しない。`px4DemodLockPacketCount`、`px4DemodUnlockGapMs`のような閾値をAIDL lock意味論の正本値として`CapabilitySnapshot`へ持たせない。
+
+`future_work/r51/px4_demod_lock_status_readback_blocker.md`が解消され、target `px4_drv`からcurrent demodulator lockを副作用なしに取得できるread-only ABIとI/O failureの分離が固定された後は、そのgeneration-fenced readbackを`DEMOD_LOCK`の正本にできる。その時点でのみpx4の`DEMOD_LOCK`を`statusCaps`へ追加し、観測したlock transitionに一致する`LOST_LOCK`および必要なrelock後の`LOCKED`を生成する。driver ABI未解決の間は、この将来状態を実装済み能力として扱わない。
 
 ## px4_drv chardev open / ライブ TS reader 方針
 
