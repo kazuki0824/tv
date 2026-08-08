@@ -1,0 +1,101 @@
+name: Apply frontend settings driver contract fixes
+
+on:
+  push:
+    branches:
+      - agent/fix-frontend-settings-driver-contracts
+    paths:
+      - .github/workflows/agent-fix-frontend-settings-driver-contracts.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-frontend-settings-driver-contracts
+          fetch-depth: 0
+      - name: Correct frontend settings contracts
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('tuner_hal/DESIGN_JA.md')
+          text = path.read_text(encoding='utf-8')
+
+          replacements = [
+              (
+                  'セレクターの基本対応は次のとおりとする。Linux DVB / earth_pt1は`STREAM_ID 0..65534`を値を変更せず`DTV_STREAM_ID`へ渡す。px4は`RELATIVE_STREAM_NUMBER 0..7`と`STREAM_ID 12..65534`をkind別に検証してlegacy `slot`へ直接渡す。px4のabsolute `STREAM_ID 0..11`は相対番号とのABI衝突により表現不能なので`UNAVAILABLE`とし、relativeとして解釈せずbackendを変更しない。固定TSID→slot表、TMCC由来の暗黙変換、TISからのbackend hintを使わない。ISDB-T、CATV、CS110ではISDB-S用selectorを使用しない。',
+                  'セレクターの基本対応では、まずAOSPのselector未指定表現を明示selectorとは別の正規入力`Unspecified`へ正規化する。`streamIdType=STREAM_ID`かつ`streamId=INVALID_STREAM_ID(0xFFFF)`、または本製品が受理する`streamIdType=UNDEFINED`かつ`streamId=0`を`Unspecified`とする。Linux DVB / earth_pt1の`Unspecified`は`DTV_STREAM_ID=NO_STREAM_ID_FILTER`へ変換し、px4のBS `Unspecified`はcallerが特定TSを要求していない選局としてlegacy `slot=0`を使用する。px4のCS110 `Unspecified`もfixed-slot profileの`slot=0`を使用する。明示selectorについては、Linux DVB / earth_pt1は`STREAM_ID 0..65534`を値を変更せず`DTV_STREAM_ID`へ渡し、px4は`RELATIVE_STREAM_NUMBER 0..7`と`STREAM_ID 12..65534`をkind別に検証してlegacy `slot`へ直接渡す。px4のabsolute `STREAM_ID 0..11`は相対番号とのABI衝突により表現不能なので`UNAVAILABLE`とし、relativeとして解釈せずbackendを変更しない。固定TSID→slot表、TMCC由来の暗黙変換、TISからのbackend hintを使わない。ISDB-TとCATVではISDB-S用selectorを使用しない。CS110では`Unspecified`だけを受理し、明示ISDB-S selectorは使用しない。'
+              ),
+              (
+                  'フロントエンドの対応能力、AIDL入力の受付可否、`ProductProfile`、VTSの選局入力は、本書の「フロントエンド設定の反映表」から生成する。ARIBが定義する放送パラメーター集合と、対象バックエンドが明示的に設定できる入力集合を混同しない。具体値を対応可能として公開または受理できるのは、ドライバーへ設定する経路、または読み戻して検証する経路が存在する場合だけとする。値を検証するだけでバックエンドへの要求から捨て、成功を返す経路は禁止する。',
+                  'フロントエンドの対応能力、AIDL入力の受付可否、`ProductProfile`、VTSの選局入力は、本書の「フロントエンド設定の反映表」から生成する。ARIBが定義する放送パラメーター集合と、対象バックエンドが明示的に設定できる入力集合を混同しない。AIDL要求を成功扱いにできるのは、その意味を、ドライバーへの明示設定、backend/demodulatorの検証済み自動判定、固定機器能力またはlock後readbackとの適合確認、あるいは当該API操作ではそのフィールドが非適用であること、のいずれかで満たせる場合だけとする。フィールド専用setterが存在しないことだけを理由に未対応へ倒してはならない。一方、当該操作で意味を持つ要求を設定、自動処理、または検証せずbackend requestから捨てたまま成功を返す経路は禁止する。'
+              ),
+              (
+                  'explicit範囲scanはISDB-T / ISDB-S共通で対応宣言しない。`endFrequency`が`frequency`と異なる場合は`UNAVAILABLE`とし、既存tune/scan stateを変更しない。',
+                  '`endFrequency`はAOSPのblind scan範囲終端としてだけ解釈する。`IFrontend.tune()`およびblind以外のscanでは選局条件ではないため、`endFrequency`が`frequency`と異なっていても拒否せず、正規化済みrequest fingerprint、backend tune request、選局結果の適合条件へ含めない。本製品はblind scanを対応宣言しないため、blind scan要求は正常な`endFrequency`を含めて`UNAVAILABLE`とし、既存tune/scan stateを変更しない。blind以外の操作で`endFrequency`差分を独自のexplicit範囲scanとして再解釈してはならない。'
+              ),
+              (
+                  '- `isSegmentAuto=true`にできるのは、layerの`numOfSegment=0`をAUTO指定として受理し、backendが明示segment数なしで実際に選局できることを検証済みの場合だけとする。`false`のfrontendで`numOfSegment=0`を成功させてはならない。\n- `isFullSegment=true`にできるのは、対象backend/device/profileで13-segmentの通常受信が成立することを機器能力として検証済みの場合だけとする。単にlockを取得できたこと、またはARIB上13 segmentが存在することだけから`true`を推測しない。\n- callerが指定する明示`numOfSegment=1..13`を成功させるには、その値をlayerごとにbackendへ反映する経路または固定値として検証する経路が必要である。現行px4/earth_pt1でその経路を持たない間は、値域内の明示segment数を`UNAVAILABLE`とし、値を捨てて成功しない。',
+                  '- layerの`numOfSegment=0`はAOSP builderの未指定値として扱い、segment数の明示制約を付けず成功させる。`isSegmentAuto`の真偽を`0`の受付条件にしてはならない。\n- `isSegmentAuto=true`にできるのは、layerの`numOfSegment=0xFF`をAUTO指定として受理し、backend/demodulatorがsegment構成を自動判定して実際に選局できることを対象backend/device/profileで検証済みの場合だけとする。`false`のfrontendで`0xFF`を成功させてはならない。現行px4/earth_pt1は、対象機器カタログでdemodulatorの自動segment判定を検証できたfrontendだけ`true`を広告する。\n- `isFullSegment=true`にできるのは、対象backend/device/profileで13-segmentの通常受信が成立することを機器能力として検証済みの場合だけとする。単にlockを取得できたこと、またはARIB上13 segmentが存在することだけから`true`を推測しない。\n- callerが指定する明示`numOfSegment=1..13`を成功対象にするには、その値をlayerごとにbackendへ反映するか、lock後の受信結果から要求値との一致を検証できなければならない。earth_pt1 / TC90522はLinux DVBのISDB-T layer segment-count readbackを要求適合判定へ用いてよい。px4は現行userspace ABIでlayer segment countを観測できないため、明示`1..13`は`UNAVAILABLE`とし、AUTO対応を理由に明示値まで対応扱いにしない。'
+              ),
+              (
+                  '- `partialReceptionFlag`は未指定を表すAIDL値だけを明示制約なしとして成功させる。規格上有効な明示値を反映または検証する経路がない現行profileでは`UNAVAILABLE`、予約値・未知値は`INVALID_ARGUMENT`とする。\n- layer `numOfSegment=0`は`isSegmentAuto=true`のfrontendだけAUTOとして成功させる。`1..13`は構文上有効だが、layerごとのsegment数をbackendへ反映または固定値検証できない現行profileでは`UNAVAILABLE`とする。負値または13超は`INVALID_ARGUMENT`とする。',
+                  '- `partialReceptionFlag`の未指定値は明示制約なしとして成功させる。earth_pt1 / TC90522では明示`TRUE` / `FALSE`を受理し、demodulatorの自動受信後にLinux DVBのpartial-reception readbackを要求適合判定へ用いる。要求値と観測値が一致しない候補、TMCC未確定、または世代の異なるreadbackを要求成立として扱わない。px4は現行userspace ABIでTMCC partial-reception状態を観測できないため、明示`TRUE` / `FALSE`は`UNAVAILABLE`とし、入力値を捨てて成功しない。予約値・未知値は`INVALID_ARGUMENT`とする。\n- layer `numOfSegment=0`は未指定として成功させる。`0xFF`は`isSegmentAuto=true`のfrontendだけAUTOとして成功させる。明示`1..13`はearth_pt1 / TC90522ではlock後segment-count readbackとの一致を要求適合判定へ用い、px4では現行ABIで検証できないため`UNAVAILABLE`とする。`14..254`、負値、255を超える値はARIB上のsegment数でもAOSPのAUTO sentinelでもないため`INVALID_ARGUMENT`とする。'
+              ),
+              (
+                  '- BSは有効なstream selectorを必須とする。CS110はfixed-slot profileに従いselectorを制限する。',
+                  '- BS/CS110ともAOSPのselector未指定を正規入力として受理する。`STREAM_ID + INVALID_STREAM_ID(0xFFFF)`、または許容する`UNDEFINED + 0`は`Unspecified`へ正規化し、BSで明示selectorを必須にしない。`Unspecified`のbackend変換と明示selectorの受付範囲は本書のセレクター設定表に従う。CS110は`Unspecified`だけを成功対象とし、明示selectorは`INVALID_ARGUMENT`とする。'
+              ),
+              (
+                  '### Tuner HAL 固定境界\n\n- CS110 は周波数のみで選局する。ISDB-S settings で `streamIdType=UNDEFINED` かつ `streamId=0` の明示未指定、または AOSP SDK の default 表現である `streamIdType=STREAM_ID` かつ `streamId=INVALID_STREAM_ID(0xFFFF)` だけを selector なしとして扱う。CS110 tune request に TSID / relative stream-number selector が指定された場合は `INVALID_ARGUMENT` とする。`streamIdType=RELATIVE_STREAM_NUMBER` の負値、`streamIdType=UNDEFINED` の負値、その他の負値 selector は未指定へ丸めない。\n\nISDB-S selectorはAOSPの`FrontendIsdbsStreamIdType`を正とし、`STREAM_ID`と`RELATIVE_STREAM_NUMBER`を別domainとして受理・検証する。Linux DVB / earth_pt1は`STREAM_ID 0..65534`を`DTV_STREAM_ID`へ渡す。px4 legacy ABIは`slot < 12`を相対番号、`slot >= 12`をabsolute TSIDとして解釈するため、px4では`RELATIVE_STREAM_NUMBER 0..7`と`STREAM_ID 12..65534`をlegacy `slot`へ直接渡す。absolute `STREAM_ID 0..11`はAOSP上有効だが同ABIで相対値と区別できないため、副作用なしの`UNAVAILABLE`とする。`65535`は明示TSIDとして`INVALID_ARGUMENT`とする。selector kindを数値域から推測せず、TISへ`EffectiveCapabilities`、driver名、relative slotを公開しない。`ProductProfile`は検証済み能力を抑止できるが、新設または拡張してはならない。',
+                  '### Tuner HAL 固定境界\n\n- BS/CS110のselector未指定は、`streamIdType=UNDEFINED`かつ`streamId=0`、またはAOSP SDK defaultの`streamIdType=STREAM_ID`かつ`streamId=INVALID_STREAM_ID(0xFFFF)`を`Unspecified`へ正規化して表す。`INVALID_STREAM_ID(0xFFFF)`を明示TSIDの不正値として拒否してはならない。Linux DVB / earth_pt1では`Unspecified`を`DTV_STREAM_ID=NO_STREAM_ID_FILTER`へ変換する。px4のBSではcallerが特定TSを要求していないことを保ったままlegacy ABIで選局可能にするためrelative `slot=0`を使用し、この内部fallbackをcaller指定selector、TSID保証、またはTIS向けbackend hintとして公開しない。px4のCS110では既存fixed-slot profileの`slot=0`を使用する。CS110 tune requestに明示TSID / relative stream-number selectorが指定された場合は`INVALID_ARGUMENT`とする。`streamIdType=RELATIVE_STREAM_NUMBER`の負値、`streamIdType=UNDEFINED`の負値、その他の負値selectorは未指定へ丸めない。\n\nISDB-S selectorはAOSPの`FrontendIsdbsStreamIdType`を正とし、`Unspecified`へ正規化した後の明示`STREAM_ID`と`RELATIVE_STREAM_NUMBER`を別domainとして受理・検証する。Linux DVB / earth_pt1は明示`STREAM_ID 0..65534`を`DTV_STREAM_ID`へ渡す。px4 legacy ABIは`slot < 12`を相対番号、`slot >= 12`をabsolute TSIDとして解釈するため、px4では明示`RELATIVE_STREAM_NUMBER 0..7`と明示`STREAM_ID 12..65534`をlegacy `slot`へ直接渡す。absolute `STREAM_ID 0..11`はAOSP上有効だが同ABIで相対値と区別できないため、副作用なしの`UNAVAILABLE`とする。selector kindを数値域から推測せず、TISへ`EffectiveCapabilities`、driver名、relative slotを公開しない。`ProductProfile`は検証済み能力を抑止できるが、新設または拡張してはならない。'
+              ),
+              (
+                  '| T-AOSP-46 | ISDB-T segment capabilityとlayer `numOfSegment` | `isSegmentAuto`/`isFullSegment`とAUTO・明示segment受付が同一能力正本に一致 |\n| T-AOSP-47 | ISDB-T V2 `inversion` / `serviceAreaId` / `partialReceptionFlag` / `numOfSegment` | 成功・`UNAVAILABLE`・`INVALID_ARGUMENT`をフィールド別に固定し、silent ignore-successがない |\n| T-AOSP-48 | ISDB-S `rolloff` | 未指定、既知未対応、malformedを分類し、未適用値を成功させない |\n| T-AOSP-49 | RECORD index settings/event | request mask/typeを無損失検証し、event mask、`byteNumber`、`pts`、`firstMbInSlice`をgenerationと実出力に一致させる |\n| T-AOSP-50 | DVR `statusMask` / threshold / `dataFormat` / `packetSize` | playbackはunused bytes、recordはunconsumed bytesで判定し、無効・未対応設定を状態不変で拒否 |',
+                  '| T-AOSP-46 | ISDB-T segment capabilityとlayer `numOfSegment` | `0`は未指定、`0xFF`はAUTO、`1..13`は明示値として分離し、`isSegmentAuto`/`isFullSegment`とbackend別受付が同一能力正本に一致 |\n| T-AOSP-47 | ISDB-T V2 `inversion` / `serviceAreaId` / `partialReceptionFlag` / `numOfSegment` | earth_pt1のreadback充足とpx4の観測不能境界を含め、成功・`UNAVAILABLE`・`INVALID_ARGUMENT`をフィールド別に固定し、silent ignore-successがない |\n| T-AOSP-48 | ISDB-S `rolloff` | 未指定、既知未対応、malformedを分類し、未適用値を成功させない |\n| T-AOSP-49 | RECORD index settings/event | request mask/typeを無損失検証し、event mask、`byteNumber`、`pts`、`firstMbInSlice`をgenerationと実出力に一致させる |\n| T-AOSP-50 | DVR `statusMask` / threshold / `dataFormat` / `packetSize` | playbackはunused bytes、recordはunconsumed bytesで判定し、無効・未対応設定を状態不変で拒否 |\n| T-AOSP-51 | ISDB-S selector未指定 | SDK default `STREAM_ID + INVALID_STREAM_ID`をBS/CS110で成功させ、earth_pt1は`NO_STREAM_ID_FILTER`、px4 BS/CS110は検証済みslot 0へ変換する |\n| T-AOSP-52 | `endFrequency`の操作別意味 | `tune()`とblind以外のscanでは差分を理由に拒否せずfingerprint/backend要求へ含めず、blind scanだけ`UNAVAILABLE`にする |'
+              ),
+              (
+                  '| 対象のpx4またはearth_pt1 | ISDB-T | `partialReceptionFlag` | 未指定を表すAIDL値 | 明示partial-reception制約を付けずbackendへ要求 | 反映・検証できない既知の明示値：`UNAVAILABLE` | 予約値・未知値：`INVALID_ARGUMENT` |\n| 対象のpx4またはearth_pt1 | ISDB-T | layer `numOfSegment` | `0`かつ`isSegmentAuto=true` | backendのsegment AUTOを使用 | `1..13`で明示segment数を反映・検証できない値：`UNAVAILABLE` | 負値または13超：`INVALID_ARGUMENT` |\n| px4 legacy selector ABIの完全一致項目 | ISDB-S | `RELATIVE_STREAM_NUMBER` | `0..7` | 値を変更せずlegacy `slot`へ渡す | なし | `0..7`以外：`INVALID_ARGUMENT` |\n| px4 legacy selector ABIの完全一致項目 | ISDB-S | `STREAM_ID` | `12..65534` | 値を変更せずlegacy `slot`へ渡す | `0..11`はAOSP上有効だがABI衝突で表現不能：`UNAVAILABLE` | `65535`または値域外：`INVALID_ARGUMENT` |\n| absolute selectorに対応するLinux DVBの完全一致項目 | ISDB-S | `STREAM_ID` | `0..65534` | 値を変更せず`DTV_STREAM_ID`へ渡す | relative selectorに対応しない場合、`RELATIVE_STREAM_NUMBER 0..7`は`UNAVAILABLE` | `STREAM_ID=65535`または`0..7`以外の相対値：`INVALID_ARGUMENT` |',
+                  '| earth_pt1 / TC90522 | ISDB-T | `partialReceptionFlag` | 未指定、または明示`TRUE` / `FALSE` | 未指定は追加制約なし。明示値はdemodulator自動受信後のLinux DVB partial-reception readbackを要求適合判定へ使用 | なし | 予約値・未知値：`INVALID_ARGUMENT` |\n| px4 | ISDB-T | `partialReceptionFlag` | 未指定を表すAIDL値 | 明示partial-reception制約を付けずbackendへ要求 | 現行userspace ABIで観測できない明示`TRUE` / `FALSE`：`UNAVAILABLE` | 予約値・未知値：`INVALID_ARGUMENT` |\n| earth_pt1 / TC90522 | ISDB-T | layer `numOfSegment` | `0`、`0xFF`（`isSegmentAuto=true`時）、`1..13` | `0`は追加制約なし、`0xFF`はdemodulator AUTO、`1..13`はlock後のlayer segment-count readbackで要求適合を確認 | なし | `14..254`、負値、255超：`INVALID_ARGUMENT` |\n| px4 | ISDB-T | layer `numOfSegment` | `0`、`0xFF`（`isSegmentAuto=true`時） | `0`は追加制約なし、`0xFF`はdemodulator AUTO | 明示`1..13`は現行userspace ABIで検証不能：`UNAVAILABLE` | `14..254`、負値、255超：`INVALID_ARGUMENT` |\n| px4 legacy selector ABIの完全一致項目 | ISDB-S | selector未指定 | `STREAM_ID + INVALID_STREAM_ID(0xFFFF)`、または`UNDEFINED + 0` | BS/CS110ともlegacy `slot=0`へ変換。caller指定selectorとして公開しない | なし | malformed kind/value：`INVALID_ARGUMENT` |\n| Linux DVB / earth_pt1 | ISDB-S | selector未指定 | `STREAM_ID + INVALID_STREAM_ID(0xFFFF)`、または`UNDEFINED + 0` | `DTV_STREAM_ID=NO_STREAM_ID_FILTER`へ変換 | なし | malformed kind/value：`INVALID_ARGUMENT` |\n| px4 legacy selector ABIの完全一致項目 | ISDB-S | 明示`RELATIVE_STREAM_NUMBER` | `0..7` | 値を変更せずlegacy `slot`へ渡す | なし | `0..7`以外：`INVALID_ARGUMENT` |\n| px4 legacy selector ABIの完全一致項目 | ISDB-S | 明示`STREAM_ID` | `12..65534` | 値を変更せずlegacy `slot`へ渡す | `0..11`はAOSP上有効だがABI衝突で表現不能：`UNAVAILABLE` | 値域外：`INVALID_ARGUMENT` |\n| absolute selectorに対応するLinux DVBの完全一致項目 | ISDB-S | 明示`STREAM_ID` | `0..65534` | 値を変更せず`DTV_STREAM_ID`へ渡す | relative selectorに対応しない場合、明示`RELATIVE_STREAM_NUMBER 0..7`は`UNAVAILABLE` | `0..7`以外の相対値または値域外：`INVALID_ARGUMENT` |'
+              ),
+              (
+                  '現在のpx4台帳はlegacy ABIに従い、相対`0..7`とabsolute `12..65534`を別typed selectorとして有効にする。absolute `0..11`は有効なAOSP値だがABIで表現不能なので`UNAVAILABLE`とし、相対値へ読み替えない。項目が空、不一致、または使用不可の場合は該当frontendを公開しない。`ProductProfile`は使用可能な部分集合を抑止できるだけで、対応能力を新設または拡張できない。CS110の`STREAM_ID=INVALID_STREAM_ID(65535)`はselectorなしを表すAOSPの既定値として別に扱い、本表で明示selector値`65535`を拒否する規則と混同しない。',
+                  '現在のpx4台帳はlegacy ABIに従い、selector未指定のBS/CS110を`slot=0`で実行可能とし、明示相対`0..7`と明示absolute `12..65534`を別typed selectorとして有効にする。absolute `0..11`は有効なAOSP明示値だがABIで表現不能なので`UNAVAILABLE`とし、相対値へ読み替えない。項目が空、不一致、または使用不可の場合は該当frontendを公開しない。`ProductProfile`は使用可能な部分集合を抑止できるだけで、対応能力を新設または拡張できない。`STREAM_ID=INVALID_STREAM_ID(65535)`はBS/CS110ともselectorなしを表すAOSPの既定値として正規化し、明示TSIDの値域検証へ流して拒否してはならない。'
+              ),
+          ]
+
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected one occurrence, got {count}: {old[:120]}')
+              text = text.replace(old, new)
+
+          forbidden = [
+              'layerの`numOfSegment=0`をAUTO指定',
+              'layer `numOfSegment=0`は`isSegmentAuto=true`',
+              'BSは有効なstream selectorを必須',
+              '`endFrequency`が`frequency`と異なる場合は`UNAVAILABLE`',
+              '`65535`は明示TSIDとして`INVALID_ARGUMENT`',
+          ]
+          for value in forbidden:
+              if value in text:
+                  raise SystemExit(f'forbidden stale contract remains: {value}')
+
+          path.write_text(text, encoding='utf-8')
+          PY
+          git diff --check
+      - name: Commit design change and remove one-shot workflow
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tuner_hal/DESIGN_JA.md
+          git rm .github/workflows/agent-fix-frontend-settings-driver-contracts.yml
+          git commit -m 'docs: align frontend settings with driver semantics'
+          git push origin HEAD:agent/fix-frontend-settings-driver-contracts
