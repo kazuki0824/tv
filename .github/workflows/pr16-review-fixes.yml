@@ -1,0 +1,75 @@
+name: PR16 review fixes
+
+on:
+  push:
+    branches:
+      - design/tuner-contract-t1-t7
+    paths:
+      - .github/workflows/pr16-review-fixes.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: design/tuner-contract-t1-t7
+          fetch-depth: 0
+      - name: Apply review fixes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('tuner_hal/DESIGN_JA.md')
+          s = p.read_text(encoding='utf-8')
+
+          replacements = [
+            (
+              'DVB frontend の `exclusiveGroupId` も公開 frontend ID から逆算せず、物理的に同時利用できない frontend 群を一意に表す。global group ID は符号付き32 bitの非負範囲に収め、上位4 bitをbackend class、下位28 bitをbackend固有の物理group payloadとする。現行backend classはpx4=`0x10000000`、DVB=`0x20000000`に固定する。px4は既存のdevice family codeとunit indexを含むpacked physical group idを下位28 bitへ格納し、DVBは`0x20000000 | (adapter_id << 8) | frontend_index`を使用する。DVBの`variant`はgroup IDへ含めないため、同じ`(adapter_id, frontend_index)`から公開するISDB-T/ISDB-S variantは必ず同じ`exclusiveGroupId`を返す。別の`(adapter_id, frontend_index)`、または別backend classは異なるgroup IDを返す。payloadが28 bitへ収まらない候補、group ID重複、同じ物理frontendのvariant間でgroup IDが不一致になる候補は`CapabilitySnapshot`へcommitせず、そのfrontendを公開しない。resource arbitrationはfrontend IDの数値近接ではなく、この`exclusiveGroupId`だけを同時利用不可群の正本とする。',
+              'DVB frontend の `exclusiveGroupId` は公開 frontend ID や `(adapter_id, frontend_index)` の一意性から生成せず、backend topology が検証した「同時に機能できない物理 frontend 群」を正本として決める。同じ物理 frontend から公開する ISDB-T/ISDB-S variant は必ず同じ group に属する。異なる `(adapter_id, frontend_index)` を別 group にできるのは、RF/tuner/demod を含む同時利用不可資源を共有せず同時利用できることを topology で確認できる場合だけとし、共有が確認された別 tuple は同じ group にする。global group ID は符号付き32 bitの非負範囲に収め、上位4 bitの backend class と下位28 bitの backend 固有 group payload は、検証済み排他群へ衝突しない識別子を割り当てるための名前空間にだけ使う。現行 backend class は px4=`0x10000000`、DVB=`0x20000000` に固定する。payload が28 bitへ収まらない候補、異なる排他群の group ID 重複、同一排他群内で group ID が不一致になる候補は `CapabilitySnapshot` へ commit せず、その frontend を公開しない。resource arbitration は frontend ID の数値近接や DVB node tuple ではなく、この検証済み物理排他群と `exclusiveGroupId` の対応だけを正本とする。'
+            ),
+            (
+              '- `minSymbolRate`と`maxSymbolRate`はcaller指定のsymbol rateを当該frontendが実際に反映または検証できる範囲だけを表す。現行ISDB-T/ISDB-S profileのように非0のcaller指定symbol rateを対応能力として持たない場合は両方を`0`に固定する。放送方式の公称symbol rateを、設定可能能力の証拠なしに広告値へ流用しない。',
+              '- `minSymbolRate`と`maxSymbolRate`は当該frontendが受信可能なsymbol rate rangeをsymbols per secondで表し、`FrontendSettings`でcallerが明示symbol rateを指定できるかどうかとは分離する。backend/device/profileの能力証跡から実際の受信可能範囲を決め、明示指定非対応だけを理由に`0/0`へ固定したり、独自sentinelとして扱ったりしない。settings側の`symbolRate`受付可否は別のvalidation契約に従う。'
+            ),
+            (
+              '- `pts`はindex対象のPESから構文上有効なPTSを取得できた場合だけ、その90 kHz値を格納する。PTSを取得できないindexでは`0`に固定し、PCR、monotonic clock、直前PESのPTSから推測しない。内部parserは`pts_present`を別に保持し、公開値0だけをPTS存在の証明にしない。',
+              '- `pts`はindex対象のPESから構文上有効なPTSを取得できた場合だけ、その90 kHz値を格納する。PTSを取得できないindexではAOSPの`Constant64Bit.INVALID_PRESENTATION_TIME_STAMP`を設定し、PCR、monotonic clock、直前PESのPTSから推測しない。内部parserは`pts_present`を別に保持し、公開AIDL sentinelと内部の取得有無を混同しない。'
+            ),
+            (
+              '- `firstMbInSlice`はAVC slice start indexについて構文上取得した`first_mb_in_slice`だけを設定し、それ以外のindex種別では`0`に固定する。',
+              '- `firstMbInSlice`はAVC slice start indexについて構文上取得した`first_mb_in_slice`だけを設定し、AVC slice start以外または取得不能の場合はAOSPの`Constant.INVALID_FIRST_MACROBLOCK_IN_SLICE`を設定する。`0`を利用不能sentinelとして使わない。'
+            ),
+          ]
+
+          for old, new in replacements:
+              count = s.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected one occurrence, got {count}: {old[:100]}')
+              s = s.replace(old, new, 1)
+
+          forbidden = [
+            '別の`(adapter_id, frontend_index)`、または別backend classは異なるgroup IDを返す',
+            '非0のcaller指定symbol rateを対応能力として持たない場合は両方を`0`に固定する',
+            'PTSを取得できないindexでは`0`に固定',
+            'それ以外のindex種別では`0`に固定',
+          ]
+          for x in forbidden:
+              if x in s:
+                  raise SystemExit(f'forbidden stale text remains: {x}')
+
+          p.write_text(s, encoding='utf-8')
+          PY
+          git diff --check
+      - name: Commit and push
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tuner_hal/DESIGN_JA.md
+          git commit -m 'docs: address PR16 AOSP contract review'
+          git push origin HEAD:design/tuner-contract-t1-t7
