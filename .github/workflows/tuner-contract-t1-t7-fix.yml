@@ -1,0 +1,56 @@
+name: Fix T1-T7 record index contract
+
+on:
+  push:
+    branches:
+      - design/tuner-contract-t1-t7
+    paths:
+      - .github/workflows/tuner-contract-t1-t7-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: design/tuner-contract-t1-t7
+          fetch-depth: 0
+      - name: Correct tagged-union record index semantics
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('tuner_hal/DESIGN_JA.md')
+          s = p.read_text(encoding='utf-8')
+          replacements = [
+            (
+              '- `scIndexType=NONE`では`scIndexMask=0`だけを受理し、非0 maskは`INVALID_ARGUMENT`とする。非NONEの既知typeは、対応parserと対応maskを`RecordIndexCapability`で公開できる場合だけ成功させる。既知だが未対応のtypeまたはbitは`UNAVAILABLE`、予約type・未知type・未知bitは`INVALID_ARGUMENT`とする。',
+              '- `scIndexMask`は`DemuxFilterScIndexMask` tagged unionとして検証する。`scIndexType=NONE`では実効maskを0とし、`scIndex` tagの値0だけを受理する。`SC`では`scIndex`、`SC_AVC`では`scAvc`、`SC_HEVC`では`scHevc`というようにtypeとunion tagを一致させる。typeとtagの不一致、予約tag、選択tag内の未知bitは`INVALID_ARGUMENT`とする。type/tagが正しく、AIDLで既知のbitだが現行`RecordIndexCapability`にない要求は`UNAVAILABLE`とする。対応parserと対応bitを同capabilityで公開できる場合だけ成功させる。'
+            ),
+            (
+              '`DemuxFilterTsRecordEvent`は、対象record filterの現generationに属し、対応するTS bytesが接続済みRecord DVR FMQへcommit済みの場合だけ生成する。イベントの`tsIndexMask`と`scIndexMask`はそれぞれ`detected & requested`とし、要求されていないbit、未検出bit、別generationのbitを立てない。両maskが0のイベントをindex検出として生成しない。',
+              '`DemuxFilterTsRecordEvent`は、対象record filterの現generationに属し、対応するTS bytesが接続済みRecord DVR FMQへcommit済みの場合だけ生成する。イベントの`tsIndexMask`は`detectedTsBits & requestedTsIndexMask`とする。`scIndexMask`は要求時の`scIndexType`に対応するunion tagを維持し、そのtagのpayloadを`detectedScBits & requestedScMaskPayload`とする。要求されていないbit、未検出bit、別generationのbitを立てない。TS側とSC側の実効payloadがともに0のイベントをindex検出として生成しない。'
+            ),
+            ('- blind scanは`UNAVAILABLE`とする.', '- blind scanは`UNAVAILABLE`とする。'),
+          ]
+          for old, new in replacements:
+              c = s.count(old)
+              if c < 1:
+                  raise SystemExit(f'missing replacement anchor: {old[:80]}')
+              s = s.replace(old, new)
+          if '`scIndexMask=0`だけを受理' in s:
+              raise SystemExit('stale scalar scIndexMask contract remains')
+          p.write_text(s, encoding='utf-8')
+          PY
+          git diff --check
+      - name: Commit and push
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tuner_hal/DESIGN_JA.md
+          git commit -m 'docs: correct record index union contract'
+          git push origin HEAD:design/tuner-contract-t1-t7
