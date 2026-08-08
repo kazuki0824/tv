@@ -1747,10 +1747,10 @@ malformed TS、adaptation field不整合、PES header不整合、section長不�
 RECORD filterの`DemuxFilterRecordSettings.tsIndexMask`、`scIndexType`、`scIndexMask`は、record filterの正規化済み設定として一括検証し、`CapabilitySnapshot`の`RecordIndexCapability`だけを受付可否の正本とする。設定値を内部でmaskして成功させてはならない。
 
 - `tsIndexMask=0`はTS index eventを要求しない有効値として成功させる。AIDLで既知のbitのうち現行`RecordIndexCapability.tsIndexMask`にないbitを要求した場合は`UNAVAILABLE`、予約bit・未知bitを含む場合は`INVALID_ARGUMENT`とする。
-- `scIndexType=NONE`では`scIndexMask=0`だけを受理し、非0 maskは`INVALID_ARGUMENT`とする。非NONEの既知typeは、対応parserと対応maskを`RecordIndexCapability`で公開できる場合だけ成功させる。既知だが未対応のtypeまたはbitは`UNAVAILABLE`、予約type・未知type・未知bitは`INVALID_ARGUMENT`とする。
+- `scIndexMask`は`DemuxFilterScIndexMask` tagged unionとして検証する。`scIndexType=NONE`では実効maskを0とし、`scIndex` tagの値0だけを受理する。`SC`では`scIndex`、`SC_AVC`では`scAvc`、`SC_HEVC`では`scHevc`というようにtypeとunion tagを一致させる。typeとtagの不一致、予約tag、選択tag内の未知bitは`INVALID_ARGUMENT`とする。type/tagが正しく、AIDLで既知のbitだが現行`RecordIndexCapability`にない要求は`UNAVAILABLE`とする。対応parserと対応bitを同capabilityで公開できる場合だけ成功させる。
 - 成功した設定は`requestedTsIndexMask`、`requestedScIndexType`、`requestedScIndexMask`としてfilter generationへ固定する。再設定、`flush()`、source/stream boundaryではrecord index parserのcarry stateとrecord output generationを更新し、旧generationのindex eventを配送しない。
 
-`DemuxFilterTsRecordEvent`は、対象record filterの現generationに属し、対応するTS bytesが接続済みRecord DVR FMQへcommit済みの場合だけ生成する。イベントの`tsIndexMask`と`scIndexMask`はそれぞれ`detected & requested`とし、要求されていないbit、未検出bit、別generationのbitを立てない。両maskが0のイベントをindex検出として生成しない。
+`DemuxFilterTsRecordEvent`は、対象record filterの現generationに属し、対応するTS bytesが接続済みRecord DVR FMQへcommit済みの場合だけ生成する。イベントの`tsIndexMask`は`detectedTsBits & requestedTsIndexMask`とする。`scIndexMask`は要求時の`scIndexType`に対応するunion tagを維持し、そのtagのpayloadを`detectedScBits & requestedScMaskPayload`とする。要求されていないbit、未検出bit、別generationのbitを立てない。TS側とSC側の実効payloadがともに0のイベントをindex検出として生成しない。
 
 - `byteNumber`は当該record filter output generationの先頭から、Record DVRへ実際にcommitしたbyte数を基準とする0始まりのbyte位置とする。TEI付きpacketその他、本設計がrecord TSへ保持して実際に書いた188 byte packetはこの位置へ含める。dropしたbytesを加算しない。
 - `pts`はindex対象のPESから構文上有効なPTSを取得できた場合だけ、その90 kHz値を格納する。PTSを取得できないindexでは`0`に固定し、PCR、monotonic clock、直前PESのPTSから推測しない。内部parserは`pts_present`を別に保持し、公開値0だけをPTS存在の証明にしない。
@@ -2166,7 +2166,7 @@ explicit範囲scanはISDB-T / ISDB-S共通で対応宣言しない。`endFrequen
 - `partialReceptionFlag`は未指定を表すAIDL値だけを明示制約なしとして成功させる。規格上有効な明示値を反映または検証する経路がない現行profileでは`UNAVAILABLE`、予約値・未知値は`INVALID_ARGUMENT`とする。
 - layer `numOfSegment=0`は`isSegmentAuto=true`のfrontendだけAUTOとして成功させる。`1..13`は構文上有効だが、layerごとのsegment数をbackendへ反映または固定値検証できない現行profileでは`UNAVAILABLE`とする。負値または13超は`INVALID_ARGUMENT`とする。
 - 上記4項目を含むsettingsは、成功時だけ正規化済みrequest fingerprintへ含める。`UNAVAILABLE`または`INVALID_ARGUMENT`では旧tune/scan、backend、generationを変更せず、入力値を黙って捨てて成功してはならない。
-- blind scanは`UNAVAILABLE`とする.
+- blind scanは`UNAVAILABLE`とする。
 
 ISDB-T設定値の規格上の妥当性は、ARIB公式英語版STD-B31 2.2-E1本文の2.3、3.8、3.9、3.11.1、3.14.2、3.15.6.5〜3.15.6.7に従う。一方、対象ドライバーで設定可能かどうかは独立した根拠で判定する。`TARGET_DRIVER` の証跡で具体値の設定と反映を確認できない限り、対象バックエンドがモード、変調方式、符号化率、ガードインターバル、時間インターリーブについて公開し受け付ける値は `AUTO` だけとする。規格上の具体値を解析や試験のため内部表現に保持してよいが、証跡なしに制御可能な設定として公開または受理してはならない。
 
@@ -2179,7 +2179,7 @@ ARIB STD-B31 2.2-E1は、モードを2.3、内符号化率を3.8と3.15.6.6、�
 - BSは有効なstream selectorを必須とする。CS110はfixed-slot profileに従いselectorを制限する。
 - modulationとcodeRateは`AUTO`だけをadvertise・受理し、既知具体値は`UNAVAILABLE`、malformed値は`INVALID_ARGUMENT`とする。
 - `rolloff`は未指定を表すAIDL値を明示制約なしとして成功させる。規格上有効な明示rolloffは、対象backend/deviceでその値を設定できるか、固定rolloffとして検証済みの場合だけ成功させる。現行profileで証跡のない既知値は`UNAVAILABLE`、予約値・未知値は`INVALID_ARGUMENT`とする。入力`rolloff`をbackend requestから捨てたまま成功してはならず、拒否時は旧tune/scan、backend、generationを変更しない。
-- blind scanは`UNAVAILABLE`とする.
+- blind scanは`UNAVAILABLE`とする。
 
 対象のpx4/earth_pt1によるISDB-Sでは、ドライバーと機器が完全一致するカタログ項目によって具体値の設定機能を確認できない限り、変調方式と符号化率は `AUTO` だけに対応する。`AUTO` は成功とし、規格上既知の具体値には状態を変えず `UNAVAILABLE`、不正値には `INVALID_ARGUMENT` を返す。相対TS番号とTS_IDを別のselector domainとして扱う根拠はARIB STD-B20 3.0の2.9（別記第2・第3）と2.10、周波数の根拠はSTD-B21 5.12-E2とし、セレクター設定表で動作を別に定める。
 
