@@ -61,6 +61,8 @@ Tuner HAL の capability / VTS profile では TS 入力だけを宣言する。�
 
 Tuner HAL が framework へ export する frontend ID は backend の単純な numeric index だけに依存しない。`px4video0` と `pxmlt5video0` のように異なる device family が同じ unit index を持つ場合でも、HAL の frontend ID と physical group ID は衝突してはならない。device family code と unit index を組み合わせ、1,000,000 番台の px4 frontend ID として export する。DVB frontend ID はハッシュではなく固定ビット割当で生成し、`2,000,000 + (adapter_id << 12) + (frontend_index << 4) + variant` とする。`adapter_id` と `frontend_index` は 8 bit、`variant` は 4 bit で、variant は ISDB-T=0、ISDB-S=1 に固定する。範囲外の DVB probe は export しない。生成後の duplicate ID 検出は最終保険として残す。px4 frontend の `exclusiveGroupId` は unit index 単独値ではなく、device family code と unit index を含む packed physical group id として返す。
 
+DVB frontend の `exclusiveGroupId` は公開 frontend ID や `(adapter_id, frontend_index)` の一意性から生成せず、backend topology が検証した「同時に機能できない物理 frontend 群」を正本として決める。同じ物理 frontend から公開する ISDB-T/ISDB-S variant は必ず同じ group に属する。異なる `(adapter_id, frontend_index)` を別 group にできるのは、RF/tuner/demod を含む同時利用不可資源を共有せず同時利用できることを topology で確認できる場合だけとし、共有が確認された別 tuple は同じ group にする。global group ID は符号付き32 bitの非負範囲に収め、上位4 bitの backend class と下位28 bitの backend 固有 group payload は、検証済み排他群へ衝突しない識別子を割り当てるための名前空間にだけ使う。現行 backend class は px4=`0x10000000`、DVB=`0x20000000` に固定する。payload が28 bitへ収まらない候補、異なる排他群の group ID 重複、同一排他群内で group ID が不一致になる候補は `CapabilitySnapshot` へ commit せず、その frontend を公開しない。resource arbitration は frontend ID の数値近接や DVB node tuple ではなく、この検証済み物理排他群と `exclusiveGroupId` の対応だけを正本とする。
+
 
 `DvrLeasePool`は確定済みで不変の`CapabilitySnapshot`を参照し、`getDemuxCaps()`応答と`openDvr()`受付可否を決める唯一の情報源とする。再生・記録DVRの全体上限は`snapshot.playback_count`と`snapshot.record_count`、demuxごとの上限は各1個とする。受付時はlifecycleと引数を検証し、用途別・demux別の使用枠を一括予約してから要求FMQと通知枠を準備する。途中失敗では仮予約を全て取り消し、不完全objectを公開しない。`CleanupPending`または`Quarantined`は最終解放まで使用中と数える。Tuner VTSはruntime能力から無条件に導出せず、起動前`VtsEnvironmentProfile`にVTS artifact/tag/commit、variant property、入力元、PID、経路、queue容量、memory予算が定義されるまで`DESIGN_HOLD`としてXML filenameを解決せず、XMLをinstallしない。使用する静的設定は確定済み`CapabilitySnapshot`に収まり、必要queue容量を正確に予約できなければならない。
 
@@ -168,6 +170,16 @@ object methodでは、呼出対象のlifecycle/generation不整合を引数値�
 | `openLnbByName(name, out lnbId)` | 本製品は名前付き外部LNBを公開しない | 空文字は`INVALID_ARGUMENT`、その他の名前は`UNAVAILABLE`。LNB ID、object、leaseを生成せず、出力を部分公開しない |
 | `isLnaSupported()` | `false`を返す | 内部状態へ依存させない |
 | `setLna(enable)` | 本製品はLNA制御を公開しない | `UNAVAILABLE`。frontend、backend、capabilityを変更しない |
+
+### `FrontendInfo` scalar capability 契約
+
+公開frontendごとに、`CapabilitySnapshot`は`FrontendInfo`へ返す`minFrequency`、`maxFrequency`、`minSymbolRate`、`maxSymbolRate`、`acquireRange`を`FrontendScalarCapability`として変更不能に保持する。`getFrontendInfo(id)`はこのsnapshotをコピーするだけとし、呼出し時のbackend probe、推測値、別の周波数表から値を合成しない。
+
+- `minFrequency`と`maxFrequency`は、同じfrontendの公開`tune()`/`scan()` validationが受理し得る周波数集合の外側境界と一致させ、`0 <= minFrequency <= maxFrequency`を満たす。境界外を`UNAVAILABLE`で拒否する実装が、それより広い範囲を`FrontendInfo`で広告してはならない。逆に、明示選局で受理する周波数をこの範囲外へ置いてはならない。
+- `minSymbolRate`と`maxSymbolRate`は当該frontendが受信可能なsymbol rate rangeをsymbols per secondで表し、`FrontendSettings`でcallerが明示symbol rateを指定できるかどうかとは分離する。backend/device/profileの能力証跡から実際の受信可能範囲を決め、明示指定非対応だけを理由に`0/0`へ固定したり、独自sentinelとして扱ったりしない。settings側の`symbolRate`受付可否は別のvalidation契約に従う。
+- `acquireRange`は、要求周波数の周囲でbackendが探索可能と製品profileで検証した非負の範囲だけを返す。検証済みの非0範囲がない現行profileでは`0`とする。`acquireRange`を`minFrequency`/`maxFrequency`の外側を受理する根拠にしてはならない。
+- 起動時のsnapshot候補について、上記scalarとfrontend validation、backend設定経路、`ProductProfile`のいずれかが矛盾する場合は候補をcommitしない。scalarだけを後からclampして整合したことにしてはならない。
+
 
 ### demux能力の横断不変条件
 
@@ -806,6 +818,19 @@ TSからTSへの`linkCaps`と、NULL以外を渡す`setDataSource()`の接続関
 open済みのrecord DVRとplayback DVRでは、`configure()`前も同じキュー記述子を返す。
 
 DVR FMQは`openDvr()`の`bufferSize`から作成し、`configure()`はAOSPの`DvrSettings`に含まれるしきい値などを設定する。`configure()`または再設定でFMQの識別子、容量、記述子を置換しない。設定失敗では設定世代、queue位置、接続済みfilterを変更しない。再設定成功でも接続関係を維持する。接続関係を変更できるのは`attachFilter()`、`detachFilter()`、filterまたはDVRの閉鎖だけとする。
+
+#### `DvrSettings` configure 契約
+
+`IDvr.configure()`は`statusMask`、`lowThreshold`、`highThreshold`、`dataFormat`、`packetSize`を同一の`DvrSettingsSnapshot`としてvalidateし、全項目が成功条件を満たした場合だけ設定世代を一括commitする。いずれか1項目の拒否時は以前のsettings、FMQ read/write位置、queue identity、filter接続、worker状態を変更しない。
+
+- `statusMask=0`はstatus callbackを要求しない有効値として成功させ、データ経路は通常どおり動作させる。AIDLで既知のstatus bitのうち現行profileが生成できないbitは`UNAVAILABLE`、予約bit・未知bitは`INVALID_ARGUMENT`とする。成功後はmaskで選択したstatusだけをcallback対象にし、非選択statusを内部観測しても公開callbackへ出さない。
+- `lowThreshold`と`highThreshold`はbyte単位とし、`0 <= lowThreshold <= highThreshold <= openDvr(bufferSize)`を満たす場合だけ受理する。負値、大小逆転、FMQ容量超過は`INVALID_ARGUMENT`とし、clampしない。
+- playbackでは水位をplayback input FMQの`unusedBytes = capacity - usedBytes`で測り、low/high thresholdを空き領域byteへ適用する。recordではRecord DVR output FMQの`unconsumedBytes`へlow/high thresholdを適用する。playbackの使用済み量、recordの空き領域量、別queueの`queued_bytes`を代用しない。
+- `dataFormat`は現行TS-only `ProductProfile`が扱うTS formatだけを成功させる。AIDL上既知だが非TSのformatは`UNAVAILABLE`、予約値・未知値・未定義のformatは`INVALID_ARGUMENT`とする。
+- `packetSize`は正のbyte数だけを構文上受け付ける。現行TS formatでは188 byteだけを成功させ、正の別packet sizeは本製品のpacket pipelineで扱わないため`UNAVAILABLE`、0以下は`INVALID_ARGUMENT`とする。`dataFormat`と`packetSize`を独立に黙認せず、組として検証する。
+- status callbackは、現在のqueue状態から算出したstatusのうち`statusMask`で選択されたものだけを、`start()`直後の初期通知、threshold crossingまたはstatus変化、および設定済みstatus intervalの周期確認で配送する。同一状態を周期ごとに必ず再通知する必要はなく、callback失敗は既存のcallback health契約へ接続する。
+
+
 
 
 | 番号 | API / 入力 | 対象状態集合 | AIDL戻り値 | 次状態関数 | 副作用 | 診断 | 同値性根拠 / 設計上の成立条件 |
@@ -1717,6 +1742,22 @@ Frontend と SourceFilter を同じ continuity / generation 名前空間に入�
 
 malformed TS、adaptation field不整合、PES header不整合、section長不整合は正常payloadとして配送しない。構造上完全な188-byte TSで`TEI=1`のpacketは、TS生データとrecord TSには入力順で保持するが、section/PES/AVなど意味payloadの組み立てには使用しない。ここでいう「正常payloadとして配送しない」は意味経路だけを指し、TS生データ・record保持規則を上書きしない。破棄したpacketを意味経路への投入成功として数えない。
 
+### RECORD filter index request / event 契約
+
+RECORD filterの`DemuxFilterRecordSettings.tsIndexMask`、`scIndexType`、`scIndexMask`は、record filterの正規化済み設定として一括検証し、`CapabilitySnapshot`の`RecordIndexCapability`だけを受付可否の正本とする。設定値を内部でmaskして成功させてはならない。
+
+- `tsIndexMask=0`はTS index eventを要求しない有効値として成功させる。AIDLで既知のbitのうち現行`RecordIndexCapability.tsIndexMask`にないbitを要求した場合は`UNAVAILABLE`、予約bit・未知bitを含む場合は`INVALID_ARGUMENT`とする。
+- `scIndexMask`は`DemuxFilterScIndexMask` tagged unionとして検証する。`scIndexType=NONE`では実効maskを0とし、`scIndex` tagの値0だけを受理する。`SC`では`scIndex`、`SC_AVC`では`scAvc`、`SC_HEVC`では`scHevc`というようにtypeとunion tagを一致させる。typeとtagの不一致、予約tag、選択tag内の未知bitは`INVALID_ARGUMENT`とする。type/tagが正しく、AIDLで既知のbitだが現行`RecordIndexCapability`にない要求は`UNAVAILABLE`とする。対応parserと対応bitを同capabilityで公開できる場合だけ成功させる。
+- 成功した設定は`requestedTsIndexMask`、`requestedScIndexType`、`requestedScIndexMask`としてfilter generationへ固定する。再設定、`flush()`、source/stream boundaryではrecord index parserのcarry stateとrecord output generationを更新し、旧generationのindex eventを配送しない。
+
+`DemuxFilterTsRecordEvent`は、対象record filterの現generationに属し、対応するTS bytesが接続済みRecord DVR FMQへcommit済みの場合だけ生成する。イベントの`tsIndexMask`は`detectedTsBits & requestedTsIndexMask`とする。`scIndexMask`は要求時の`scIndexType`に対応するunion tagを維持し、そのtagのpayloadを`detectedScBits & requestedScMaskPayload`とする。要求されていないbit、未検出bit、別generationのbitを立てない。TS側とSC側の実効payloadがともに0のイベントをindex検出として生成しない。
+
+- `byteNumber`は当該record filter output generationの先頭から、Record DVRへ実際にcommitしたbyte数を基準とする0始まりのbyte位置とする。TEI付きpacketその他、本設計がrecord TSへ保持して実際に書いた188 byte packetはこの位置へ含める。dropしたbytesを加算しない。
+- `pts`はindex対象のPESから構文上有効なPTSを取得できた場合だけ、その90 kHz値を格納する。PTSを取得できないindexではAOSPの`Constant64Bit.INVALID_PRESENTATION_TIME_STAMP`を設定し、PCR、monotonic clock、直前PESのPTSから推測しない。内部parserは`pts_present`を別に保持し、公開AIDL sentinelと内部の取得有無を混同しない。
+- `firstMbInSlice`はAVC slice start indexについて構文上取得した`first_mb_in_slice`だけを設定し、AVC slice start以外または取得不能の場合はAOSPの`Constant.INVALID_FIRST_MACROBLOCK_IN_SLICE`を設定する。`0`を利用不能sentinelとして使わない。
+- start-code prefix、PES header、PTS、AVC slice headerが188 byte TS packet境界を跨ぐ場合は、直後の「record index packet boundary 契約」のcarry stateで解析する。malformed index候補ではeventを生成せず、raw record TSの保持規則を変更しない。
+
+
 ### record index packet boundary 契約
 
 record index は、TS packet境界をまたぐ以下の構造を検出できなければならない。
@@ -2095,6 +2136,16 @@ ISDB-Tの列挙値域は、ARIB公式英語版STD-B31 2.2-E1本文の2.3、3.8�
 `SIGNAL_QUALITY` は、backend ごとに根拠ある合成値を返せる場合だけ `statusCaps` に含める。DVB / earth_pt1 backend の `SIGNAL_QUALITY` は Linux DVB `FE_READ_STATUS` 状態 bit の ロック 進捗を 0〜100 に正規化した値とする。px4 backend は `PTX_GET_CNR` を安定取得できることを frontendエントリ の capability として固定できない限り、`SNR` と `SIGNAL_QUALITY` を advertise しない。いずれも `DEMOD_LOCK` や `RF_LOCK` の代替ではなく、UI/診断 用の合成指標である。未取得 telemetry を `SIGNAL_QUALITY=0` として成功返却してはならない。
 
 
+### ISDB-T segment capability 契約
+
+Android 14 AIDL V2の`FrontendIsdbtCapabilities.isSegmentAuto`と`isFullSegment`は、ISDB-T frontendごとの変更不能な`IsdbtSegmentCapability`として`CapabilitySnapshot`へ保持し、`FrontendInfo.frontendCaps`とsettings validationの両方を同じ値から導出する。
+
+- `isSegmentAuto=true`にできるのは、layerの`numOfSegment=0`をAUTO指定として受理し、backendが明示segment数なしで実際に選局できることを検証済みの場合だけとする。`false`のfrontendで`numOfSegment=0`を成功させてはならない。
+- `isFullSegment=true`にできるのは、対象backend/device/profileで13-segmentの通常受信が成立することを機器能力として検証済みの場合だけとする。単にlockを取得できたこと、またはARIB上13 segmentが存在することだけから`true`を推測しない。
+- callerが指定する明示`numOfSegment=1..13`を成功させるには、その値をlayerごとにbackendへ反映する経路または固定値として検証する経路が必要である。現行px4/earth_pt1でその経路を持たない間は、値域内の明示segment数を`UNAVAILABLE`とし、値を捨てて成功しない。
+- segment能力の証跡がない場合はbooleanを`false`に倒す。能力boolean、`numOfSegment`の受付、`ProductProfile`、VTS選局入力の間に矛盾がある候補は`CapabilitySnapshot`へcommitしない。
+
+
 ### frontend settings validation の固定方針
 
 フロントエンドの対応能力、AIDL入力の受付可否、`ProductProfile`、VTSの選局入力は、本書の「フロントエンド設定の反映表」から生成する。ARIBが定義する放送パラメーター集合と、対象バックエンドが明示的に設定できる入力集合を混同しない。具体値を対応可能として公開または受理できるのは、ドライバーへ設定する経路、または読み戻して検証する経路が存在する場合だけとする。値を検証するだけでバックエンドへの要求から捨て、成功を返す経路は禁止する。
@@ -2110,6 +2161,11 @@ explicit範囲scanはISDB-T / ISDB-S共通で対応宣言しない。`endFrequen
 - `bandwidth`は`AUTO`または`BANDWIDTH_6MHZ`を受け付ける。
 - `mode`、layer `modulation`、layer `codeRate`、`guardInterval`、layer `timeInterleave`は`AUTO`だけをadvertise・受理する。
 - 上記のAUTO専用項目に指定された既知の具体値は`UNAVAILABLE`、unionまたは値域が不正な入力は`INVALID_ARGUMENT`とし、バックエンドと直前の要求を変更しない。
+- `inversion`は未指定・自動を表すAIDL値だけを、明示制約なしとして成功させる。規格上有効な明示inversionは、対象backendで設定または固定値検証できる場合だけ成功させ、現行profileでその証跡がない値は`UNAVAILABLE`とする。予約値・未知値は`INVALID_ARGUMENT`とする。
+- `serviceAreaId=0`は未指定として成功させる。正の値は構文上有効な要求として、backend requestまたは選局結果検証へ実際に使用できる場合だけ成功させる。現行profileでその経路がない正の値は`UNAVAILABLE`、負値は`INVALID_ARGUMENT`とする。
+- `partialReceptionFlag`は未指定を表すAIDL値だけを明示制約なしとして成功させる。規格上有効な明示値を反映または検証する経路がない現行profileでは`UNAVAILABLE`、予約値・未知値は`INVALID_ARGUMENT`とする。
+- layer `numOfSegment=0`は`isSegmentAuto=true`のfrontendだけAUTOとして成功させる。`1..13`は構文上有効だが、layerごとのsegment数をbackendへ反映または固定値検証できない現行profileでは`UNAVAILABLE`とする。負値または13超は`INVALID_ARGUMENT`とする。
+- 上記4項目を含むsettingsは、成功時だけ正規化済みrequest fingerprintへ含める。`UNAVAILABLE`または`INVALID_ARGUMENT`では旧tune/scan、backend、generationを変更せず、入力値を黙って捨てて成功してはならない。
 - blind scanは`UNAVAILABLE`とする。
 
 ISDB-T設定値の規格上の妥当性は、ARIB公式英語版STD-B31 2.2-E1本文の2.3、3.8、3.9、3.11.1、3.14.2、3.15.6.5〜3.15.6.7に従う。一方、対象ドライバーで設定可能かどうかは独立した根拠で判定する。`TARGET_DRIVER` の証跡で具体値の設定と反映を確認できない限り、対象バックエンドがモード、変調方式、符号化率、ガードインターバル、時間インターリーブについて公開し受け付ける値は `AUTO` だけとする。規格上の具体値を解析や試験のため内部表現に保持してよいが、証跡なしに制御可能な設定として公開または受理してはならない。
@@ -2122,6 +2178,7 @@ ARIB STD-B31 2.2-E1は、モードを2.3、内符号化率を3.8と3.15.6.6、�
 - public settingsの`symbolRate`は`0` / 未指定相当のみ成功とする。
 - BSは有効なstream selectorを必須とする。CS110はfixed-slot profileに従いselectorを制限する。
 - modulationとcodeRateは`AUTO`だけをadvertise・受理し、既知具体値は`UNAVAILABLE`、malformed値は`INVALID_ARGUMENT`とする。
+- `rolloff`は未指定を表すAIDL値を明示制約なしとして成功させる。規格上有効な明示rolloffは、対象backend/deviceでその値を設定できるか、固定rolloffとして検証済みの場合だけ成功させる。現行profileで証跡のない既知値は`UNAVAILABLE`、予約値・未知値は`INVALID_ARGUMENT`とする。入力`rolloff`をbackend requestから捨てたまま成功してはならず、拒否時は旧tune/scan、backend、generationを変更しない。
 - blind scanは`UNAVAILABLE`とする。
 
 対象のpx4/earth_pt1によるISDB-Sでは、ドライバーと機器が完全一致するカタログ項目によって具体値の設定機能を確認できない限り、変調方式と符号化率は `AUTO` だけに対応する。`AUTO` は成功とし、規格上既知の具体値には状態を変えず `UNAVAILABLE`、不正値には `INVALID_ARGUMENT` を返す。相対TS番号とTS_IDを別のselector domainとして扱う根拠はARIB STD-B20 3.0の2.9（別記第2・第3）と2.10、周波数の根拠はSTD-B21 5.12-E2とし、セレクター設定表で動作を別に定める。
@@ -2511,6 +2568,13 @@ px4 probe prefix を変更する場合は、frontend_px4系実装、`tuner_hal2/
 | T-AOSP-38 | `FilterDelayHint` timeのみ | time条件 |
 | T-AOSP-39 | `FilterDelayHint` dataのみ | data条件 |
 | T-AOSP-40 | `FilterDelayHint` time+data | OR条件 |
+| T-AOSP-44 | `FrontendInfo` scalar境界とtune validation | min/max frequency、symbol rate、acquire rangeが同一`CapabilitySnapshot`と受付範囲に一致 |
+| T-AOSP-45 | DVB同一`(adapter_id, frontend_index)`のvariantと別物理frontend | 同一物理variantは同じ`exclusiveGroupId`、別group/backendは衝突しない |
+| T-AOSP-46 | ISDB-T segment capabilityとlayer `numOfSegment` | `isSegmentAuto`/`isFullSegment`とAUTO・明示segment受付が同一能力正本に一致 |
+| T-AOSP-47 | ISDB-T V2 `inversion` / `serviceAreaId` / `partialReceptionFlag` / `numOfSegment` | 成功・`UNAVAILABLE`・`INVALID_ARGUMENT`をフィールド別に固定し、silent ignore-successがない |
+| T-AOSP-48 | ISDB-S `rolloff` | 未指定、既知未対応、malformedを分類し、未適用値を成功させない |
+| T-AOSP-49 | RECORD index settings/event | request mask/typeを無損失検証し、event mask、`byteNumber`、`pts`、`firstMbInSlice`をgenerationと実出力に一致させる |
+| T-AOSP-50 | DVR `statusMask` / threshold / `dataFormat` / `packetSize` | playbackはunused bytes、recordはunconsumed bytesで判定し、無効・未対応設定を状態不変で拒否 |
 
 `close()` 以外の公開メソッドでは、`LogicalClosed`、`InvalidArgument`、`WrongLifecycle`、`ResourceUnavailable`、`BackendFailure`、`Success` の順で判定を優先する。`close()` 自体の結果はこの共通優先順位で決めず、インターフェース別の `close()` 表だけに従う。遅延して呼ばれる `IFilter.releaseAvHandle()` はAV解放台帳に従う独立操作であり、閉鎖後の共通メソッドとして扱わない。
 
@@ -2754,10 +2818,15 @@ STD-B25 Part 1 §4.9は上表の適合主張に含めない。同条項に係る
 | 条件に完全一致するpx4の対応項目 | ISDB-T | 周波数 | backendで検証済みの値域 | 検証済みの周波数設定経路へ反映 | 別のprofileでは有効な値：`UNAVAILABLE` | `INVALID_ARGUMENT` |
 | 条件に完全一致するpx4またはearth_pt1の対応項目 | ISDB-T | 帯域幅 | `AUTO`または`BANDWIDTH_6MHZ` | 検証済みの6 MHz設定経路を使用 | その他の既知の帯域幅：`UNAVAILABLE` | `INVALID_ARGUMENT` |
 | 対象のpx4またはearth_pt1 | ISDB-T | モード、変調、符号化率、ガードインターバル、時間インターリーブ | `AUTO` | バックエンドの自動検出を使用 | 既知の具体値：`UNAVAILABLE` | `INVALID_ARGUMENT` |
+| 対象のpx4またはearth_pt1 | ISDB-T | `inversion` | 未指定・自動を表すAIDL値 | 明示inversion制約を付けずbackendへ要求 | 設定・固定値検証できない既知の明示値：`UNAVAILABLE` | 予約値・未知値：`INVALID_ARGUMENT` |
+| 対象のpx4またはearth_pt1 | ISDB-T | `serviceAreaId` | `0` | 未指定として扱い、追加制約を付けない | 正の値でbackendへ反映・検証経路なし：`UNAVAILABLE` | 負値：`INVALID_ARGUMENT` |
+| 対象のpx4またはearth_pt1 | ISDB-T | `partialReceptionFlag` | 未指定を表すAIDL値 | 明示partial-reception制約を付けずbackendへ要求 | 反映・検証できない既知の明示値：`UNAVAILABLE` | 予約値・未知値：`INVALID_ARGUMENT` |
+| 対象のpx4またはearth_pt1 | ISDB-T | layer `numOfSegment` | `0`かつ`isSegmentAuto=true` | backendのsegment AUTOを使用 | `1..13`で明示segment数を反映・検証できない値：`UNAVAILABLE` | 負値または13超：`INVALID_ARGUMENT` |
 | px4 legacy selector ABIの完全一致項目 | ISDB-S | `RELATIVE_STREAM_NUMBER` | `0..7` | 値を変更せずlegacy `slot`へ渡す | なし | `0..7`以外：`INVALID_ARGUMENT` |
 | px4 legacy selector ABIの完全一致項目 | ISDB-S | `STREAM_ID` | `12..65534` | 値を変更せずlegacy `slot`へ渡す | `0..11`はAOSP上有効だがABI衝突で表現不能：`UNAVAILABLE` | `65535`または値域外：`INVALID_ARGUMENT` |
 | absolute selectorに対応するLinux DVBの完全一致項目 | ISDB-S | `STREAM_ID` | `0..65534` | 値を変更せず`DTV_STREAM_ID`へ渡す | relative selectorに対応しない場合、`RELATIVE_STREAM_NUMBER 0..7`は`UNAVAILABLE` | `STREAM_ID=65535`または`0..7`以外の相対値：`INVALID_ARGUMENT` |
 | 対象のpx4またはearth_pt1 | ISDB-S | modulation・code rate | `AUTO` | backendの自動検出を使用 | 既知の具体値：`UNAVAILABLE` | `INVALID_ARGUMENT` |
+| 対象のpx4またはearth_pt1 | ISDB-S | `rolloff` | 未指定を表すAIDL値 | backend既定値を使用 | 設定または固定値検証できない既知の明示値：`UNAVAILABLE` | 予約値・未知値：`INVALID_ARGUMENT` |
 
 選択子の対応能力は、機器識別情報と改訂適用範囲、versioned backend manifestのABI/API契約版、要求を実際に設定して結果を読み戻すfunctional probeが一致し、かつ`selector_capability_release_eligible=true`である台帳項目だけから作る。repository、commit SHA、build IDは台帳項目の作成証跡として保存してよいが、実行時の一致条件にしない。現在のpx4台帳はlegacy ABIに従い、相対`0..7`とabsolute `12..65534`を別typed selectorとして有効にする。absolute `0..11`は有効なAOSP値だがABIで表現不能なので`UNAVAILABLE`とし、相対値へ読み替えない。項目が空、不一致、または使用不可の場合は該当frontendを公開しない。`ProductProfile`は使用可能な部分集合を抑止できるだけで、対応能力を新設または拡張できない。CS110の`STREAM_ID=INVALID_STREAM_ID(65535)`はselectorなしを表すAOSPの既定値として別に扱い、本表で明示selector値`65535`を拒否する規則と混同しない。
 
