@@ -42,17 +42,19 @@ partial snapshot は サービス単位の登録可能判定に使ってよい�
 
 ## 再生経路
 
-現行 product の平文 non-tunneled AV入力は、Tuner `MediaEvent.getLinearBlock()` と `MediaCodec` block model の型付き経路だけを正式経路とする。video／audio decoderは `MediaCodec.CONFIGURE_FLAG_USE_BLOCK_MODEL` で構成し、入力slotの `MediaCodec.QueueRequest.setLinearBlock(linearBlock, offset, dataLength)` にPTSとflagsを設定してqueueする。reflection、hidden API、`LinearBlock.map()`でESを`ByteArray`へ複製して通常input bufferへ入れる経路、通常ByteBuffer input modelへの代替処理を禁止する。`MediaEvent`、`LinearBlock`、decoder input claimはqueue成功または破棄確定まで保持し、queue成功後にだけ呼出側所有権を解放する。secure `MediaEvent`は現行平文productの対象外とし、mappable blockへの暗黙変換を行わない。
+現行 product の平文 non-tunneled AV入力は、Tuner `MediaEvent.getLinearBlock()` と `MediaCodec` block model の型付き経路だけを正式経路とする。video／audio decoderは `MediaCodec.CONFIGURE_FLAG_USE_BLOCK_MODEL` で構成し、入力slotの `MediaCodec.QueueRequest.setLinearBlock(linearBlock, offset, dataLength)` を使う。`MediaEvent.isPtsPresent()` が true のsampleだけを現行r51のAV queue対象とし、raw PTSは90 kHz、33 bit modulo値として扱う。`PlaybackPipeline` は playback generation ごとに `PtsNormalizer` を1個だけ所有し、連続するraw PTSの差を modulo `2^33` の最短signed差としてunwrapしてgeneration内のextended PTSへ変換する。extended PTSから `presentationTimeUs = floor(pts90k * 1000000 / 90000)` をoverflow-safeなchecked integer arithmeticで算出し、`MediaCodec.QueueRequest.setPresentationTimeUs()`へ設定する。`isPtsPresent()` が false のsampleに0、前sample、PCR、wallclock等から推測した時刻を補わず、`MISSING_PTS`診断として現playback generationを再生不能へ移し、未queue event、filter、decoder、MediaSync、startup queue、budget claimを回収して `notifyVideoUnavailable(VIDEO_UNAVAILABLE_REASON_UNKNOWN)` へ進む。このsample自体をTuner HALのmalformed eventとは扱わない。
+
+`PtsNormalizer` の状態はretune、新playback generation、filter flush、decoder再生成、非wrap discontinuityで破棄する。通常の33 bit wrapだけは同generation内の連続差としてunwrapし、独自media clock、PCR→wallclock変換、独自future/late schedulerへ拡張しない。reflection、hidden API、`LinearBlock.map()`でESを`ByteArray`へ複製して通常input bufferへ入れる経路、通常ByteBuffer input modelへの代替処理を禁止する。`MediaEvent`、`LinearBlock`、decoder input claimはqueue成功または破棄確定まで保持し、queue成功後にだけ呼出側所有権を解放する。secure `MediaEvent`は現行平文productの対象外とし、mappable blockへの暗黙変換を行わない。
 
 `getLinearBlock()`がnull、block model configureまたはQueueRequestが利用不能、offset／lengthがblock範囲外、decoderが当該blockを受理しない場合は`BLOCK_MODEL_UNAVAILABLE`または入力不正の型付き診断へ落とす。成功を偽装せず、現generationのfilter、未queue event、decoder、MediaSync、startup queue、budget claimを解放して`notifyVideoUnavailable(VIDEO_UNAVAILABLE_REASON_UNKNOWN)`へ進む。
 
-デコード後のA/V同期とSurface提示はAndroid標準`MediaSync`だけを使用する。video decoder出力は`MediaSync.setSurface(sessionSurface)`後の`createInputSurface()`へ接続し、output frameをPTSナノ秒でreleaseする。audio decoder出力PCMは`MediaSync.queueAudio()`へPTS付きで渡し、`MediaSync.Callback.onAudioBufferConsumed()`を受けるまでaudio decoderのoutput buffer IDとPCM `ByteBuffer`（block model出力では`OutputFrame`／output `LinearBlock`を含む）を解放・変更・再利用しない。圧縮入力側の`MediaEvent`／input `LinearBlock`は`QueueRequest.queue()`成功時にcodecへ所有権を移管し、PCM消費完了までは保持しない。独自media clock、`AudioTimestamp`を使う独自同期、独自future render／late drop schedulerを設けない。
+デコード後のA/V同期とSurface提示はAndroid標準`MediaSync`だけを使用する。decoder output の `BufferInfo.presentationTimeUs` をMediaSyncへ渡すmedia timeの正本とする。video decoder出力は`MediaSync.setSurface(sessionSurface)`後の`createInputSurface()`へ接続し、`BufferInfo.presentationTimeUs * 1000` をoverflow検査してnanosecondsへ変換したtimestampでoutput bufferをreleaseする。audio decoder出力PCMは`MediaSync.queueAudio()`へ`BufferInfo.presentationTimeUs`をmicrosecondsのまま渡し、`MediaSync.Callback.onAudioBufferConsumed()`を受けるまでaudio decoderのoutput buffer IDとPCM `ByteBuffer`（block model出力では`OutputFrame`／output `LinearBlock`を含む）を解放・変更・再利用しない。圧縮入力側の`MediaEvent`／input `LinearBlock`は`QueueRequest.queue()`成功時にcodecへ所有権を移管し、PCM消費完了までは保持しない。独自media clock、`AudioTimestamp`を使う独自同期、独自future render／late drop schedulerを設けない。
 
-`notifyVideoAvailable()`は`Filter.start()`成功、汎用`FilterEvent`、payload付き`MediaEvent`到着だけでは呼ばない。現generationのvideo decoder outputがMediaSync input Surfaceへ時刻付きでrenderされ、session Surfaceが有効で、視聴制限でblockされず、同generationでMediaSync Surface errorが発生していないことをgateとする。これは公開APIで確認可能なMediaSync入力到達を表し、最終display pixelの厳密なpresent証明とはみなさない。
+video decoderには実行開始前に `MediaCodec.OnFrameRenderedListener` を登録し、current decoderかつcurrent playback generationの最初の `onFrameRendered()` callbackを、公開APIで観測できるfirst-frame render commit pointとする。`notifyVideoAvailable()`は`Filter.start()`成功、汎用`FilterEvent`、payload付き`MediaEvent`到着、decoder output buffer生成、`releaseOutputBuffer(..., render=true)`成功だけでは呼ばない。current decoder/current generationの最初の`onFrameRendered()`を受け、MediaSyncがcurrent generationで再生開始済みかつplayback rateが0より大きく、session Surfaceが有効で、視聴制限でblockされず、同generationでMediaSync Surface errorが発生していない場合だけ呼ぶ。旧decoder/旧generationのcallbackは無視する。このgateはAndroid公開APIで観測できるdecoder output Surfaceへのrender完了を用いるものであり、最終compositor pixelを独自にprobeすることは要件にしない。
 
 ## EIT と TvProvider
 
-現行releaseで収集するEIT table範囲、短期補完の用途、長期・他service・予約/追従利用のrelease境界は、tv直下の`開発規則.md`のr51到達点を唯一の正本とする。本書はそのscopeを再定義せず、TIS runtimeにおけるfilter起動・停止、Programs書き込み契機、retry、現在番組解決、視聴セッション利用だけを定義する。Programs の `internal_provider_data` には JSON v1 の stable `programKey`、timing、CAS state、長形式イベント項目、component/audio メタデータ、series 完全構造、イベントグループ `relatedItems`、linkage、free_CA_mode、音声言語、レーティング、診断 JSON を TIS 内部データとして保存する。TvProvider の標準 column には title / short description / long description、broadcast genre、明示写像できる canonical genre、series id、episode display number、item count、scrambled、audio language、コンテンツレーティング など自然対応できる範囲だけ反映する。
+現行releaseで収集するEIT table範囲、短期補完の用途、長期・他service・予約/追従利用のrelease境界は、tv直下の`開発規則.md`のr51到達点を唯一の正本とする。本書はそのscopeを再定義せず、TIS runtimeにおけるfilter起動・停止、Programs書き込み契機、retry、現在番組解決、視聴セッション利用だけを定義する。Programs の `internal_provider_data` には JSON v1 の stable `programKey`、timing、CAS state、長形式イベント項目、component/audio メタデータ、series 完全構造、イベントグループ `relatedItems`、linkage、free_CA_mode、音声言語、レーティング、診断 JSON を TIS 内部データとして保存する。TvProvider の標準 column には title / short description / long description、broadcast genre、明示写像できる canonical genre、series id、episode display number、scrambled、audio language、コンテンツレーティング など、`ARIB_SI_EPG_TvProvider投影方針.md` で自然対応が固定された範囲だけ反映する。last episode number は通常の `TvContract.Programs` 標準列へ投影しない。
 
 TvProvider標準列への投影判断は tv 直下の `ARIB_SI_EPG_TvProvider投影方針.md` を正とする。`internal_provider_data` の schema、canonical encode、保存上限、診断 schema は `arib_si_engine_rs/DESIGN_JA.md` と Rust serde 構造体を正とする。本書は TIS runtime における取得、書き込み契機、retry、現在番組解決、視聴セッションでの利用だけを定義する。
 
@@ -79,13 +81,13 @@ ARIB字幕表示は、repoで供給される `libaribcaption-android` の produc
 
 TIS のライブplaybackは、Tuner AV filterの平文`MediaEvent.LinearBlock`をMediaCodec block modelへcopyなしで投入し、video decoder出力を`MediaSync.createInputSurface()`へ、audio decoder出力PCMを`MediaSync.queueAudio()`へ渡す標準経路だけを採用する。MediaSyncはsession SurfaceとAudioTrackを所有し、A/V同期、映像提示時刻、音声clock追従を担当する。TISはMediaSyncの外側に独自clockまたは独自frame schedulerを置かない。
 
-`tunneled`／platform passthrough playback pathは現行productの設計候補から外し、実装しない。`notifyVideoAvailable()`は現generationの最初のdecoded video frameがMediaSync input Surfaceへ時刻付きでrenderされたことをgateとし、単なるfilter開始または入力event到着をgateにしない。
+`tunneled`／platform passthrough playback pathは現行productの設計候補から外し、実装しない。`notifyVideoAvailable()`はcurrent decoder/current generationの最初の `MediaCodec.OnFrameRenderedListener.onFrameRendered()` と本書「再生経路」のMediaSync再生開始・surface・generation・視聴制限gateを満たしたことだけをcommit pointとし、単なるfilter開始、入力event到着、decoder output生成をgateにしない。
 
 setup scan の channel registration は global discovery complete を必須条件にしない。ただし partial snapshot を無条件に channel insert に使ってはならない。TvProvider のサービス単位の登録可否は本書の「サービス登録・publishability利用境界」を唯一の正本とし、この節で video ES 必須などの追加 gate を重複定義しない。したがって `service_type=0x01` は同節の audio-video / video-only 条件、`service_type=0x02` は対応 audio ES を持つ audio-only 条件に従い、`0x02` の登録に video ES を要求しない。登録可能未満の partial snapshot は 診断情報 / ライブ更新 / debugにのみ使い、channel insert しない。scrambled サービスは channel 登録してよいが、CAS 仮実装 のまま 平文ライブ視聴成功 対応宣言 してはならない。
 
 ## codec header / A-V sync / publish mode の固定
 
-ライブ playback の codec 構成は、現行 product では video は MPEG-2 video と H.264/AVC、audio は AAC と MPEG audio を対象 codec とする。国内放送全般であり得る codec を追加で扱う場合は、対象 codec、MediaFormat、decoder 起動、AudioTrack、first-frame gate、unsupported 診断情報の契約を設計正本へ固定してから扱う。
+ライブ playback の codec 構成は、現行 product では video は MPEG-2 video と H.264/AVC、audio は AAC と MPEG audio を対象 codec とする。現行 product が対象とする transport profile で追加 codec を扱う場合は、`開発規則.md` の ARIB 本文選定規則に従う条項根拠と、MediaFormat、decoder 起動、AudioTrack、first-frame gate、unsupported 診断情報の契約を設計正本へ固定してから扱う。STD-B79 / STD-B80 の高度地上方式が現行 product scope 外である間、それらの方式だけに追加された codec を現行 playback capabilityへ入れない。
 
 現行製品が登録対象とするARIB `service_type`は、`0x01`のdigital television serviceと`0x02`のdigital radio sound serviceに固定する。`0x01`は`TvContract.Channels.SERVICE_TYPE_AUDIO_VIDEO`、`0x02`は`TvContract.Channels.SERVICE_TYPE_AUDIO`へ写像する。その他のservice typeは壊れたサービスへ丸めず、`UNSUPPORTED_SERVICE_TYPE`を記録して現行製品スコープ外としてchannel登録しない。対応集合を追加する場合は、ARIB上の意味、TvProvider写像、PMT成立条件、再生経路を同じ変更で追加する。
 
@@ -93,7 +95,7 @@ setup scan の channel registration は global discovery complete を必須条�
 
 `service_type=0x01`はaudio-video serviceであり、現行対応video ESがない場合にaudio-onlyへ再分類しない。弱信号またはlock喪失は`VIDEO_UNAVAILABLE_REASON_WEAK_SIGNAL`、有効なserviceでdecoder起動またはqueue補充を一時待機する場合だけ`VIDEO_UNAVAILABLE_REASON_BUFFERING`、video codec非対応またはPMT構成不整合は`VIDEO_UNAVAILABLE_REASON_UNKNOWN`と型付き診断`UNSUPPORTED_VIDEO_CODEC`／`SERVICE_TYPE_PMT_MISMATCH`へ分離する。HEVCなど未対応codecのmetadataはprovider-dataへ保存してよいが、再生可能表明には使わない。
 
-現行対応 video ES が存在し、audio ES が存在しない、または audio codec だけが 現行未対応の場合は、video-only サービスとして視聴可能にする。この場合、`notifyVideoUnavailable()` には落とさず、`audio absent` または `unsupported audio codec` を診断に残す。未対応 audio codec は、対応 video が存在する限り video-only 診断の対象であり、video unavailable の直接理由にしてはならない。AC-3 / Enhanced AC-3 / MPEG-H 3D Audio は、今回確認した ARIB 資料群では国内放送全般の対象 codec として固定する根拠を持たないため、codec 固定表には含めない。
+現行対応 video ES が存在し、audio ES が存在しない、または audio codec だけが現行未対応の場合は、video-only サービスとして視聴可能にする。この場合、`notifyVideoUnavailable()` には落とさず、`audio absent` または `unsupported audio codec` を診断に残す。未対応 audio codec は、対応 video が存在する限り video-only 診断の対象であり、video unavailable の直接理由にしてはならない。STD-B32 4.0以降の改定概要で高度地上デジタルテレビジョン放送向けに追加された MPEG-H 3D Audio / AC-4 は、STD-B79 / STD-B80 の高度地上方式が現行product scope外であるため現行codec固定表へ追加しない。AC-3 / Enhanced AC-3 も現行対象transportに対する条項根拠を確認せず推測で追加しない。
 
 PMTからcodec family、audio/video種別、PIDを確定した後、AV filter開始前に変更不能な`TisPlaybackBudgetSnapshot`を作る。snapshotは製品profileで事前検証した有限値として、`singleEventLimitBytes`、`startupQueueBudgetBytes`、`startupQueueMaxSamples`、`startupQueueMaxDurationUs`、`pendingQueueBudgetBytes`、`pendingQueueMaxSamples`、`pendingQueueMaxDurationUs`、`decoderStartupDeadlineMs`、`steadyBackpressureDeadlineMs`を持つ。codec headerをまだ受信していないこと、またはdecoderが未構成であることを理由に値を動的導出しない。全codec共通の8 MiB、4 sample、1000 msへ固定せず、対象codec、対象decoder/device組合せ、最大access unit、header収集量、reorder depth、allocator上限、実機最悪値からofflineで検証する。正の有限値と必要領域を開始前に予約できないprofileはAV filterを開始しない。
 
@@ -140,9 +142,9 @@ TIS は `TvInputManager.ACTION_BLOCKED_RATINGS_CHANGED` と `TvInputManager.ACTI
 ## TIS/arib_si_engine_rs 固定事項
 
 - LineageOS 21／Android 14の通常ライブセッション生成では`onCreateSession(inputId, sessionId, tvAppAttributionSource)`をoverrideする。framework由来`sessionId`は`Tuner(serviceContext, sessionId, useCase)`へ渡し、`tvAppAttributionSource`はsession固有Contextの生成へ渡す。2引数版`onCreateSession(inputId, sessionId)`と1引数版は明示的な互換経路だけに限定し、対象productの通常3引数入口を素のservice Contextへ委譲または後退させない。
-- 現行の video 対応宣言対象は MPEG-2 video `0x02` と H.264/AVC `0x1b` に限定する。HEVC `0x24` は 現行平文ライブ視聴 / playback selection 対象外であり、診断上は `NO_SUPPORTED_VIDEO_ES` 相当として扱う。HEVC などを国内放送全般であり得る video codec として認識対象に追加する場合は、codec 固定表と playback selection 境界を設計正本へ固定してから扱う。
+- 現行の video 対応宣言対象は MPEG-2 video `0x02` と H.264/AVC `0x1b` に限定する。HEVC `0x24` は 現行平文ライブ視聴 / playback selection 対象外であり、診断上は `NO_SUPPORTED_VIDEO_ES` 相当として扱う。現行productが対象とするtransport profileで認識codecを追加する場合は、取得可能なARIB本文の条項根拠、codec固定表、playback selection境界を同じ設計変更で固定してから扱う。
 - ARIB 視聴年齢制限 は Android `TvContentRating` へ `domain=com.android.tv`, `ratingSystem=ISDB`, `rating=ISDB_<age>` として写像する。対応範囲は JPN かつ レーティング 4..20 のみとし、未対応 country / レーティングは推測変換せず `internal_provider_data` / 診断に残す。レーティング 未取得時は `TvContentRating.UNRATED` として 視聴制限判定する。
-- `notifyVideoAvailable()` は現generationのdecoder first-frame callbackがMediaSync input Surfaceへの時刻付きrenderを示し、session Surfaceが有効で、同generationのMediaSync Surface errorがなく、視聴制限でblockされていない場合だけ呼ぶ。旧generationのdecoder／MediaSync callbackは無視する。
+- `notifyVideoAvailable()` は current decoder/current generation の最初の `MediaCodec.OnFrameRenderedListener.onFrameRendered()` が発生し、MediaSyncがcurrent generationで再生開始済みかつplayback rateが0より大きく、session Surfaceが有効で、同generationのMediaSync Surface errorがなく、視聴制限でblockされていない場合だけ呼ぶ。旧decoder／旧generationのcallbackは無視する。
 - ライブ tune refresh では新規 channel row を作らず、既存 channel の program 更新だけを行う。setup/rescan のみ channel row を作成できる。
 - H.264 は SPS/PPS 検出だけでなく SPS 由来の width / height を MediaFormat へ反映する。SPS 解析不能時は固定 1920x1080 代替処理 で成功扱いしない。
 - PMT 由来の video/audio/subtitle track は `TvTrackInfo` として通知し、`onSelectTrack(TYPE_AUDIO, trackId)` と `onSetCaptionEnabled()` を受ける。現行 product では字幕 track と libaribcaption 表示経路を実装対象に含める。別 video track と data track 選択は、対応 codec / 実行環境がない限り 対応宣言しない。
@@ -210,14 +212,14 @@ TIS は `components.video[]`、`components.audio[]`、`components.subtitle[]`、
 
 Program publish fingerprintは、同一process内で同じ公開transactionをTvProviderへ重複書き込みしないためだけに使用する。TvProviderへ実際に書く`ContentValues`（provider-data bytesを含む）と更新windowを、固定column list順の`<columnName>\0<byteLength>\0<bytes>`へ直列化し、そのSHA-256 lowercase hexをprocess-local cacheにだけ保持する。TvProvider rowやprovider-dataには保存せず、診断、真正性、改ざん検出、永続identityには使用しない。insert後にprovider-dataを再生成した場合は、実際に書いた最終bytesからfingerprintを再生成する。この行全体fingerprintがprovider-data bytesの同一性も包含するため、provider-data単体のdigestは生成しない。
 
-`selectedProgramId` のような TvProvider row id 依存値は publish fingerprintの構成要素にしてはならない。必要な場合は補助診断として扱い、publish skip判定を壊さない。
+publish fingerprint は、provider-data bytesを含む TvProvider へ実際に書く最終 `ContentValues` と更新windowだけを固定column順で直列化して計算し、JSON key単位の除外規則を設けない。TvProvider row id に依存する診断値を provider-data へ混ぜないことで、row作成後の診断更新が fingerprint を自己参照的に変更する構造を禁止する。
 
 
 ## 現在番組 選択
 
 現在番組 resolver は TvProvider query 時点で `START_TIME_UTC_MILLIS <= now AND END_TIME_UTC_MILLIS > now` に絞る。sort order は `START_TIME_UTC_MILLIS DESC, END_TIME_UTC_MILLIS ASC, _ID DESC` に固定する。overlap がある場合も cursor 返却順には依存せず、この selection rule で1件を選ぶ。
 
-provider-data 診断情報は `diagnostics.currentProgram` 配下に保存する。`selectionRule` は `START_DESC_END_ASC_ID_DESC` とする。対象なしの場合は empty string とする。`overlapCount` と `selectedProgramId` は補助診断として扱い、publish fingerprintの意味上のidentity にしない。ARIB `event_id` は `COLUMN_EVENT_ID` と JSON v1 `programKey.eventId` で扱う。
+現在番組選択の診断は process-local `CurrentProgramResolutionDiagnostic` とし、`selectionRule`、`overlapCount`、`selectedProgramId` を保持できる。`selectionRule` は `START_DESC_END_ASC_ID_DESC` とし、対象なしの場合は empty string とする。この診断は `Programs.COLUMN_INTERNAL_PROVIDER_DATA` へ永続化せず、publish fingerprint、Program identity、unblock identity の構成要素にしない。ARIB `event_id` は `COLUMN_EVENT_ID` と JSON v1 `programKey.eventId` で扱う。
 
 ## CA descriptor / provider-data 直列化
 
@@ -236,6 +238,8 @@ object NativeProviderData {
     external fun buildProgramProviderData(inputJson: String): ProviderDataResult
     external fun normalizeProgramProviderData(rawBytes: ByteArray): ProviderDataResult
     external fun extractProgramKey(rawBytes: ByteArray): ProgramKeyResult?
+    external fun buildChannelProviderData(inputJson: String): ProviderDataResult
+    external fun decodeChannelProviderData(rawBytes: ByteArray): ChannelProviderDataResult?
 }
 
 data class ProviderDataResult(
@@ -244,13 +248,22 @@ data class ProviderDataResult(
     val truncated: Boolean,
     val diagnosticsDroppedCount: Int,
 )
+
+data class ChannelProviderDataResult(
+    val canonicalBytes: ByteArray,
+    val schemaVersion: Int,
+    val serviceKey: ServiceKey,
+    val tune: ChannelTune,
+)
 ```
+
+`ChannelTune` は `inputId`、`deliverySystem`、`frequencyHz`、`streamIdType`、`streamId`、`physicalChannel`、`satelliteBand`、`remoteControlKeyId` だけを持つ typed tune 復元値とし、backend名、driver名、px4相対slot等のbackend固有値を持たない。`decodeChannelProviderData()` は invalid UTF-8、malformed JSON、schema不整合を null または診断付き失敗へ落とし、Kotlin側でJSONを解釈・修復しない。
 
 `inputJson` は Rust builder への入力 DTO であり、TvProvider に保存する provider-data schema ではない。最終JSONバイト列、正規化、安定キー抽出はRustが行う。provider-data単体のdigestまたはsignatureは返さない。
 
 `rawBytes` は任意バイナリではなく、既存 TvProvider に保存済みの JSON v1 UTF-8 バイト列を指す。Kotlin は `String(rawBytes)` などで再解釈してから Rust へ渡してはならず、TvProvider から取得した `COLUMN_INTERNAL_PROVIDER_DATA` の BLOB バイト列をそのまま Rust JNI 境界へ渡す。TvProvider が文字列として返した場合の互換補助は、UTF-8 バイト列へ戻すだけに限定し、Kotlin 側で JSON 構造を解釈・再構築してはならない。
 
-`normalizeProgramProviderData(rawBytes)`、`extractProgramKey(rawBytes)`、`appendCurrentProgramDiagnostics(rawBytes, ...)`は、invalid UTF-8またはmalformed JSONをKotlin側で修復しない。Rustは診断付き失敗またはkey抽出失敗へ落とし、通常実行経路で例外やpanicに変換しない。provider-data bytesだけのdigest APIと`ProviderDataResult.signature` / `contentDigest`は設けない。
+`normalizeProgramProviderData(rawBytes)`、`extractProgramKey(rawBytes)`、`decodeChannelProviderData(rawBytes)`は、invalid UTF-8またはmalformed JSONをKotlin側で修復しない。Rustは診断付き失敗、key抽出失敗、またはchannel decode失敗へ落とし、通常実行経路で例外やpanicに変換しない。provider-data bytesだけのdigest APIと`ProviderDataResult.signature` / `contentDigest`は設けない。
 
 ### 診断情報 schema
 
@@ -278,9 +291,9 @@ data class ProgramPublishSnapshot(
     val publishabilityByServiceKey: Map<ServiceKey, ProgramPublishability>,
     val descriptorDiagnostics: List<DescriptorDiagnostic>,
     val parserDiagnostics: List<ParserDiagnostic>,
-    // CAS 診断一次保存先から Program provider-data summary へ渡す service_id 別件数。
+    // CAS 診断一次保存先から Program provider-data summary へ渡す ServiceKey 別件数。
     // Program ごとに raw descriptor / table / PID context を重複展開しない。
-    val malformedCaDescriptorCountByServiceId: Map<Int, Int>,
+    val malformedCaDescriptorCountByServiceKey: Map<ServiceKey, Int>,
 )
 
 fun takeProgramPublishSnapshot(): ProgramPublishSnapshot
@@ -383,11 +396,13 @@ ARIB 資料上の本プロダクト対象TSであり得る codec を追加認識
 
 ### 参照した ARIB 資料と根拠
 
+ARIB本文の選定は `../開発規則.md` の規則を正とする。STD-B32 は日本語最新版4.1が存在するが本レビュー環境から本文を取得できないため、現行 product が対象とする従来TS profileの条項精読には取得可能な公式英語版3.11-E1を用いる。ARIB公式の4.0/4.1改定概要は、高度地上デジタルテレビジョン放送向けにVVC、MPEG-H 3D Audio、AC-4等が追加・更新されたという適用範囲確認には用いるが、取得できない4.x本文の具体条項を推測する根拠にはしない。現行r51〜r53はSTD-B79のISDB-T2/ISDB-T1.5およびSTD-B80のISDB-T3を対応宣言しないため、これら高度地上方式向け追加codecを現行capabilityへ自動追加しない。
+
 | 根拠資料 | 本改訂で固定する内容 |
 |---|---|
-| ARIB STD-B32 3.11-E1 Fascicle 1 Chapter 3 3.1〜3.3 | 国内デジタル放送の映像符号化方式は MPEG-2 Video、MPEG-4 AVC、HEVC の3系統として扱う。 |
-| ARIB STD-B32 3.11-E1 Fascicle 2 Chapter 3 3.1〜3.4、Chapter 5、Chapter 6 | 国内デジタル放送の音声符号化方式は MPEG-2 AAC、MPEG-2 BC、MPEG-4 AAC、MPEG-4 ALS の4系統として扱う。 |
-| ARIB STD-B10 5.13-E1 Part 2 Table 6-5 / 6.2.26 / Annex E | MPEG-2 系映像、H.264/AVC、H.265/HEVC、MPEG-2 Audio、AAC ADTS、MPEG-4 Audio LATM の signaling を認識対象にする。 |
+| ARIB STD-B32 3.11-E1 Fascicle 1 Chapter 3 3.1〜3.3 | 現行 product が対象とする従来TS profileについて、MPEG-2 Video、MPEG-4 AVC、HEVC の認識根拠として用いる。 |
+| ARIB STD-B32 3.11-E1 Fascicle 2 Chapter 3 3.1〜3.4、Chapter 5、Chapter 6 | 現行 product が対象とする従来TS profileについて、MPEG-2 AAC、MPEG-2 BC、MPEG-4 AAC、MPEG-4 ALS の認識根拠として用いる。 |
+| ARIB STD-B10 5.13-E1 Part 2 Table 6-5 / 6.2.26 / Annex E | 現行 product が対象とするTS signalingについて、MPEG-2 系映像、H.264/AVC、H.265/HEVC、MPEG-2 Audio、AAC ADTS、MPEG-4 Audio LATM の認識根拠として用いる。 |
 
 ### video codec
 
@@ -408,7 +423,7 @@ ISO/IEC 14496-2 Visual、JPEG 2000、auxiliary video、SVC、MVC、3D additional
 | MPEG-4 AAC / HE-AAC | 必須認識。AAC LC / HE-AAC profile、LATM/LOAS / ADTS、AudioSpecificConfig、channel count、sample rate を保持する。decoder が利用できる場合だけ再生対応を 対応宣言する。 |
 | MPEG-4 ALS | codec として認識対象。対象 transport profile を本プロダクトが 対応宣言しない場合は playable capability に入れない。対応する場合は block model decoder / MediaSync / AudioTrack / メタデータ / unsupported 診断情報 まで必須。 |
 
-AC-3、Enhanced AC-3、MPEG-H 3D Audio、DTS、DTS-HD、Dolby TrueHD は、今回確認した ARIB 資料群では国内デジタル放送の対象 codec として固定する根拠を確認できないため、codec 固定表には含めない。
+MPEG-H 3D Audio と AC-4 は ARIB STD-B32 4.0以降の改定概要で高度地上デジタルテレビジョン放送向け追加codecであることを確認できるが、STD-B79 / STD-B80 の高度地上方式を現行productが対応宣言しないため現行codec固定表には含めない。AC-3、Enhanced AC-3、DTS、DTS-HD、Dolby TrueHDも現行対象transportに対する取得可能なARIB本文の条項根拠を確認せず推測で追加しない。
 
 ## provider-data 受け渡し境界（推奨案A）
 
