@@ -1,0 +1,74 @@
+name: PR18 CTS segment auto compatibility
+
+on:
+  push:
+    branches:
+      - agent/fix-frontend-settings-driver-contracts
+    paths:
+      - .github/workflows/agent-pr18-cts-segment-auto.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-frontend-settings-driver-contracts
+          fetch-depth: 0
+      - name: Apply CTS segment auto contract
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('tuner_hal/DESIGN_JA.md')
+          text = path.read_text(encoding='utf-8')
+
+          replacements = [
+              (
+                  '- `isSegmentAuto=true`にできるのは、対象backend/device/profileでsegment構成を明示指定せず自動判定して実際に選局できることを検証済みの場合だけとする。AOSPが定義していない特定の`numOfSegment`値を独自のAUTO sentinelとして設けない。',
+                  '- `isSegmentAuto=true`にできるのは、対象backend/device/profileでsegment構成を明示指定せず自動判定して実際に選局できることを検証済みの場合だけとする。Android framework APIは`numOfSegment`用のnamed AUTO定数を公開していないが、Android 14 CTSは`isSegmentAutoSupported()==true`のISDB-T frontendに対して`numOfSegment=0xFF`を設定して`tune()`成功を要求する。このため`0xFF`はCTS互換のAUTO要求として受理し、`isSegmentAuto=true`のfrontendではbackend/demodulatorのsegment自動判定へ写像する。`isSegmentAuto=false`では`0xFF`を`UNAVAILABLE`とし、独自の明示segment数へ読み替えない。'
+              ),
+              (
+                  '- layer `numOfSegment=0`は未指定として成功させる。`1..13`は構文上有効だが、layerごとのsegment数をbackendへ反映または固定値検証できない現行profileでは`UNAVAILABLE`とする。負値または13超は`INVALID_ARGUMENT`とする。',
+                  '- layer `numOfSegment=0`は未指定として成功させる。`0xFF`はAndroid 14 CTSが`isSegmentAutoSupported()==true`のfrontendへ送る互換AUTO要求として扱い、`isSegmentAuto=true`ならbackend/demodulatorのsegment自動判定を使用して成功させ、`false`なら`UNAVAILABLE`とする。`1..13`は構文上有効だが、layerごとのsegment数をbackendへ反映または固定値検証できない現行profileでは`UNAVAILABLE`とする。`14..254`、負値、255を超える値は`INVALID_ARGUMENT`とする。'
+              ),
+              (
+                  '| T-AOSP-46 | ISDB-T segment capabilityとlayer `numOfSegment` | `0`は未指定、`1..13`は明示値として分離し、`0`の受付を`isSegmentAuto`に結び付けず、`isSegmentAuto`/`isFullSegment`と明示segment受付が同一能力正本に一致 |',
+                  '| T-AOSP-46 | ISDB-T segment capabilityとlayer `numOfSegment` | `0`は未指定、`0xFF`はCTS互換AUTO、`1..13`は明示値として分離し、`0`の受付を`isSegmentAuto`に結び付けず、`0xFF`は`isSegmentAuto=true`の場合だけ成功し、`isSegmentAuto`/`isFullSegment`と明示segment受付が同一能力正本に一致 |'
+              ),
+              (
+                  '| 対象のpx4またはearth_pt1 | ISDB-T | layer `numOfSegment` | `0` | 未指定として扱い、追加制約を付けない | `1..13`で明示segment数を反映・検証できない値：`UNAVAILABLE` | 負値または13超：`INVALID_ARGUMENT` |',
+                  '| 対象のpx4またはearth_pt1 | ISDB-T | layer `numOfSegment` | `0`、`0xFF`（`isSegmentAuto=true`時） | `0`は未指定として追加制約を付けない。`0xFF`はAndroid 14 CTS互換AUTOとしてbackend/demodulatorのsegment自動判定を使用 | `0xFF`かつ`isSegmentAuto=false`、または`1..13`で明示segment数を反映・検証できない値：`UNAVAILABLE` | `14..254`、負値、255超：`INVALID_ARGUMENT` |'
+              ),
+          ]
+
+          for old, new in replacements:
+              if text.count(old) != 1:
+                  raise SystemExit(f'expected exactly one match, got {text.count(old)} for: {old[:80]}')
+              text = text.replace(old, new)
+
+          required = [
+              'Android 14 CTSは`isSegmentAutoSupported()==true`のISDB-T frontendに対して`numOfSegment=0xFF`',
+              '`0xFF`はAndroid 14 CTSが`isSegmentAutoSupported()==true`のfrontendへ送る互換AUTO要求',
+              '`0xFF`はCTS互換AUTO',
+          ]
+          for token in required:
+              if token not in text:
+                  raise SystemExit(f'missing required contract: {token}')
+
+          path.write_text(text, encoding='utf-8')
+          PY
+          rm .github/workflows/agent-pr18-cts-segment-auto.yml
+          git diff --check
+      - name: Commit and push
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tuner_hal/DESIGN_JA.md .github/workflows/agent-pr18-cts-segment-auto.yml
+          git commit -m 'docs: accept CTS ISDB-T segment auto request'
+          git push origin HEAD:agent/fix-frontend-settings-driver-contracts
