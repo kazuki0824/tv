@@ -42,6 +42,12 @@ partial snapshot は サービス単位の登録可能判定に使ってよい�
 
 ## 再生経路
 
+### Media3 version / Soong 境界
+
+現行productのplaybackで使用するAndroidX Media3は **1.5.1** に固定し、対象LineageOS 21 / Android 14 treeの`prebuilts/misc`に偶然存在するMedia3版を暗黙利用しない。製品側でGoogle Maven由来の`media3-common:1.5.1`、`media3-exoplayer:1.5.1`、字幕Cue符号化に必要な`media3-extractor:1.5.1`と、それらPOMが要求するMedia3依存closureを同一version 1.5.1でcommit固定・hash検証してproduct-local prebuiltとして保持する。Soong導入はAOSP `prebuilts/misc/common/androidx-media3`と同じ`pom2bp`生成の`android_library_import` + `static_libs`方式を使い、製品固有module名でTIS APKへstatic linkする。platform側`androidx.media3.*` moduleへのfallback、異version混在、runtime download、Gradle解決は行わない。実装時にこのprebuilt closureとSoong moduleを追加できないtreeは現行product対象外とし、別versionへ黙示fallbackしない。
+
+1.5.1を固定する理由は、現行設計が必要とする公開境界が同版で閉じるためである。videoのfirst-render commitは`Player.Listener.onRenderedFirstFrame()`、subtitle schedulingは`MimeTypes.APPLICATION_MEDIA3_CUES`を処理する`TextRenderer`、bitmap字幕表現は`Cue.bitmap`、Cue + durationのserializationは`CueEncoder`を使う。audio attributionは1.9系で導入された`AudioOutputProvider` / `AudioTrackAudioOutputProvider`を前提にせず、1.5.1の`DefaultAudioSink.AudioTrackProvider`と`DefaultAudioSink.Builder.setAudioTrackProvider()`だけを使う。したがってAndroid 14標準prebuiltの版差を隠して新APIを呼ぶ構成にはしない。
+
 現行 product の平文 non-tunneled AV入力は、Tuner `MediaEvent.getLinearBlock()`をTISのMedia3 `MediaSource`／`SampleStream` adapterへ渡す経路を正式経路とする。`MediaEvent.isPtsPresent()` が true のsampleでは、raw PTSを90 kHz、33 bit modulo値として扱う。`PlaybackPipeline` は playback generation ごとに `PtsNormalizer` を1個だけ所有し、連続するraw PTSの差を modulo `2^33` の最短signed差としてunwrapしてgeneration内のextended PTSへ変換する。extended PTSから `presentationTimeUs = floor(pts90k * 1000000 / 90000)` をoverflow-safeなchecked integer arithmeticで算出し、Media3 `DecoderInputBuffer.timeUs`へ設定する。`isPtsPresent()` が false のsampleはAOSP Tuner API上で表現可能な入力状態として扱い、0、前sample、PCR、wallclock等から時刻を捏造せず、そのsampleだけをMedia3へ渡さず解放してtrack別`MISSING_PTS_SAMPLE`診断へ計上する。PTS欠落sample単体を理由にplayback generationを再生不能へ遷移させず、`notifyVideoUnavailable()`も呼ばない。first frame前ではPTS欠落sampleをMedia3入力可能状態への進捗として数えず、既存の`decoderStartupDeadlineMs`を延長またはリセットしない。first frame後も当該sampleだけを破棄し、generation全体のunavailable遷移は既存のplayer／decoder error、lock喪失、startup/backpressure deadline等の独立条件だけで判定する。このsample自体をTuner HALのmalformed eventとは扱わない。
 
 `PtsNormalizer` の状態はretune、新playback generation、filter flush、player／decoder再生成、非wrap discontinuityで破棄する。通常の33 bit wrapだけは同generation内の連続差としてunwrapし、独自media clock、PCR→wallclock変換、独自future/late schedulerへ拡張しない。reflection、hidden API、ES全体の`ByteArray`中継、多重copyを禁止する。`SampleStream.readData()`で要求されたsampleだけを`LinearBlock.map()`でread-only参照し、有効rangeを`DecoderInputBuffer.data`へ1回copyする。`MediaEvent`、`LinearBlock`、input claimはcopy完了または破棄確定まで保持し、copy完了後に呼出側所有権を解放する。secure `MediaEvent`は現行平文productの対象外とし、mappable blockへの暗黙変換を行わない。
@@ -79,9 +85,17 @@ ARIB字幕表示は、repoで供給される `libaribcaption-android` の produc
 
 `libmaleicacid_arib_caption_jni` は `libaribcaption` に明示依存し、`MaleicacidTvInput` は JNI library として `libmaleicacid_arib_caption_jni` を取り込む。TIS は字幕 PES を Rust JNI boundary と安全な Rust ラッパー経由で libaribcaption C API に渡し、renderer 出力を字幕 overlay へ接続する。字幕 PES を受け取っても renderer 表示に到達できない状態を字幕対応成功として扱ってはならない。
 
+### 字幕PTS scheduling / clear ownership
+
+字幕のpresentation clockとdisplay/clear schedulingはvideo/audioと同じMedia3 ExoPlayer timelineが唯一所有する。TIS、Rust JNI、`CaptionOverlayView`は独自timer、`player.currentPosition` polling loop、`SystemClock`比較、MediaSync position追従loopを持たない。ARIB字幕PESから得たPTSはvideo/audioと同じ33-bit 90 kHz unwrap規則でcurrent playback generationの`timeUs`へ変換し、libaribcaption rendererへそのPTSで描画要求する。rendererが返すRGBA8888画像と描画領域はKotlin側で`Bitmap`へ安全に所有権変換し、Media3 1.5.1のbitmap `Cue`へ変換する。
+
+字幕用Media3 `SampleStream`はformatを`MimeTypes.APPLICATION_MEDIA3_CUES`とし、各字幕eventを`CueEncoder.encode(cues, durationUs)`でsample化する。sampleの`DecoderInputBuffer.timeUs`を字幕PTSに設定し、表示継続時間はlibaribcaption/ARIB字幕eventから得たdurationまたは次の明示clear境界としてencodeする。Media3 `TextRenderer`がplayerの`positionUs`に対してCueの開始・終了を評価し、current cue setを`TextOutput` / player cue callbackへ出す。`CaptionOverlayView`はそのcallbackで渡されたcurrent bitmap Cue群だけを合成し、空Cue群では即座に消去する。overlay自体は時刻判定を行わない。
+
+字幕track無効化、`onSelectTrack(TYPE_SUBTITLE, null)`、retune、Surface/session release、playback generation変更ではsubtitle SampleStreamを無効化し、Media3 text rendererのcurrent cueをclearしてoverlayへ空Cue群を反映する。旧generationのlibaribcaption結果やCue callbackはgeneration tokenで破棄する。これにより既存future_workの「libaribcaption rendererのRGBA8888をKotlin overlayへ表示する」という完了条件を維持しつつ、表示・消去時刻のownerだけをMedia3 timelineへ固定する。future_workを独立timer実装の根拠として解釈してはならない。
+
 ## ライブ playback 実装方式
 
-TIS のライブplaybackは、Tuner AV filterの`MediaEvent.LinearBlock`をTISのMedia3 `SampleStream` adapterで受け、必要rangeを`DecoderInputBuffer`へ1回copyしてMedia3 ExoPlayerへ供給する経路に固定する。ExoPlayerがdecoder、audio sink、A/V clock、video scheduling／drop、current `sessionSurface`への提示を所有し、TISはその外側にMediaCodec／MediaSyncや独自clock／frame schedulerを置かない。
+TIS のライブplaybackは、Tuner AV filterの`MediaEvent.LinearBlock`をTISのMedia3 1.5.1 `SampleStream` adapterで受け、必要rangeを`DecoderInputBuffer`へ1回copyして同じMedia3 1.5.1 ExoPlayerへ供給する経路に固定する。ExoPlayerがdecoder、audio sink、A/V clock、video scheduling／drop、text timeline、current `sessionSurface`への提示を所有し、TISはその外側にMediaCodec／MediaSyncや独自clock／frame scheduler／字幕timerを置かない。
 
 `tunneled`／platform passthrough playback pathは現行productの設計候補から外し、実装しない。`notifyVideoAvailable()`は、current player/current Surface tokenに対するMedia3 `Player.Listener.onRenderedFirstFrame()`だけをvideo成功commitとして扱い、current Surface有効、generation一致、視聴制限、player／video renderer errorの各gateを満たした場合だけ一度通知する。frame available、decoder output、clock進行、drop eventをfinal commitへ昇格させない。
 
@@ -387,7 +401,7 @@ Provider 必須問い合わせ failure、Program insert/update failure、廃止�
 
 LineageOS 21の通常経路では、`TvInputService.onCreateSession(inputId, sessionId, tvAppAttributionSource)`で受け取ったnon-null `tvAppAttributionSource`をsession寿命中のattribution正本とする。session生成時に`serviceContext.createContext(new ContextParams.Builder().setNextAttributionSource(tvAppAttributionSource).build())`で変更不能なsession固有`sessionContext`を作り、`sessionId`、`tvAppAttributionSource`、`sessionContext`を同じsession creation snapshotへ確定する。途中失敗ではSessionを公開せず、作成済みartifactを解放する。
 
-Tuner SDKのTRM接続にはframework由来`sessionId`を`Tuner(serviceContext, sessionId, useCase)`へ渡す。audio出力はMedia3が所有するが、Android 14（API 34）の`AudioTrack.Builder.setContext(sessionContext)`によるTV app attribution chainを失ってはならない。現行productでは`DefaultRenderersFactory`の`buildAudioSink(...)`をoverrideし、`DefaultAudioSink`へ`AudioTrackAudioOutputProvider`を供給して、その公開`setAudioTrackBuilderModifier(...)`で生成される各`AudioTrack.Builder`へ`setContext(sessionContext)`を設定する。これによりdecoder／clock／AudioSinkの所有はMedia3に残したままAudioTrack attributionをsession固有Contextへ固定する。通常経路で素の`serviceContext`へ後退せず、2引数版／1引数版の互換経路から3引数通常経路へ黙示fallbackしない。session releaseまたはplayer置換後は旧`sessionContext`、旧player、旧AudioSinkを新generationへ再利用しない。
+Tuner SDKのTRM接続にはframework由来`sessionId`を`Tuner(serviceContext, sessionId, useCase)`へ渡す。audio出力はMedia3が所有するが、Android 14（API 34）の公開`AudioTrack.Builder.setContext(sessionContext)`によるTV app attribution chainを失ってはならない。現行productではMedia3 1.5.1の`DefaultRenderersFactory.buildAudioSink(...)`をoverrideし、`DefaultAudioSink.Builder(sessionContext)`へ1.5.1公開`DefaultAudioSink.AudioTrackProvider`を`setAudioTrackProvider(...)`で注入する。providerはMedia3から渡された`AudioTrackConfig`、`AudioAttributes`、`audioSessionId`をそのまま`AudioTrack.Builder`へ写像し、API 34の`setContext(sessionContext)`を追加してbuildする。TISはAudioTrackへのwrite、playback head、clock、buffer schedulingを所有せず、AudioTrack生成だけをattribution付きfactory境界でMedia3へ返す。1.9系`AudioOutputProvider`、`AudioTrackAudioOutputProvider`、`setAudioTrackBuilderModifier(...)`には依存しない。通常経路で素の`serviceContext`へ後退せず、2引数版／1引数版の互換経路から3引数通常経路へ黙示fallbackしない。session releaseまたはplayer置換後は旧`sessionContext`、旧player、旧AudioSinkを新generationへ再利用しない。
 
 `setAttributionSource()`を探索・呼出しするreflection、hidden API、vendor独自AIDL、reflection失敗時の無言fallbackを通常経路に置かない。対象system APIを使う必要が生じた場合は、対象SDKへ直接コンパイルできる型付き呼出しとして別途設計する。
 
