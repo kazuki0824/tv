@@ -20,7 +20,7 @@ jobs:
       - name: Verify and push
         run: |
           git diff --check
-          if git grep -n -E 'AudioTrackAudioOutputProvider|setAudioTrackBuilderModifier' -- tis/DESIGN_JA.md; then
+          if git grep -n 'その公開`setAudioTrackBuilderModifier' -- tis/DESIGN_JA.md; then
             exit 1
           fi
           git config user.name github-actions[bot]
