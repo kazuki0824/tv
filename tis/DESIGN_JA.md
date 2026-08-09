@@ -46,15 +46,13 @@ partial snapshot は サービス単位の登録可能判定に使ってよい�
 
 `PtsNormalizer` の状態はretune、新playback generation、filter flush、decoder再生成、非wrap discontinuityで破棄する。通常の33 bit wrapだけは同generation内の連続差としてunwrapし、独自media clock、PCR→wallclock変換、独自future/late schedulerへ拡張しない。reflection、hidden API、`LinearBlock.map()`でESを`ByteArray`へ複製して通常input bufferへ入れる経路、通常ByteBuffer input modelへの代替処理を禁止する。`MediaEvent`、`LinearBlock`、decoder input claimはqueue成功または破棄確定まで保持し、queue成功後にだけ呼出側所有権を解放する。secure `MediaEvent`は現行平文productの対象外とし、mappable blockへの暗黙変換を行わない。
 
-`getLinearBlock()`がnull、block model configureまたはQueueRequestが利用不能、offset／lengthがblock範囲外、decoderが当該blockを受理しない場合は`BLOCK_MODEL_UNAVAILABLE`または入力不正の型付き診断へ落とす。成功を偽装せず、現generationのfilter、未queue event、decoder、MediaSync、startup queue、budget claimを解放して`notifyVideoUnavailable(VIDEO_UNAVAILABLE_REASON_UNKNOWN)`へ進む。
+`getLinearBlock()`がnull、offset／lengthがblock範囲外、Media3入力adapterへ安全に渡せない場合は`PLAYBACK_INPUT_UNAVAILABLE`または入力不正の型付き診断へ落とす。成功を偽装せず、現generationのfilter、未消費event、Media3 player／MediaSource／SampleStream adapter、startup queue、budget claimを解放して`notifyVideoUnavailable(VIDEO_UNAVAILABLE_REASON_UNKNOWN)`へ進む。
 
-デコード後のA/V同期とSurface提示は、Android platformまたはAndroidXの標準renderer/player機構に委ねる。TIS自身は独自media clock、`AudioTimestamp`由来の独自同期、独自future render／late drop scheduler、固定delayを持たない。video側には設計上の役割として`VideoPresentationRenderer`境界を置く。この境界は特定ライブラリのクラス名ではなく、decoderからcurrent `sessionSurface`までのvideo scheduling／dropを最終的に所有し、dropしたframeとcurrent output Surfaceへrenderしたframeを区別できるrenderer契約を表す。最終rendererは、current playback generationかつcurrent Surface generationの非drop frameをcurrent `sessionSurface`へrenderした後にだけfirst-frame-rendered eventを返す。このeventは物理display/compositorのpresentation fenceを意味せず、TIFが要求する「content rendered onto its surface is ready for viewing」を判定するrenderer境界のcommitとする。
+デコード、A/V同期、video frame scheduling／drop、AudioTrack、Surface提示は現行productではAndroidX Media3 ExoPlayerへ一括して委ねる。TIS自身はMediaCodec、MediaSync、AudioTrack、独自media clock、独自future/late schedulerをplayback ownerとして持たない。`ExoPlayer.Builder(sessionContext)`でcurrent playback generation専用playerを生成し、TISはTuner AV filterから受けた圧縮sampleをMedia3 `MediaSource`／`SampleStream` adapterとして供給する。video outputは`player.setVideoSurface(currentSessionSurface)`でcurrent `sessionSurface`へ直接設定し、audio output、decoder選択、A/V clock、frame release scheduling、late dropはMedia3 renderer群へ所有させる。
 
-`MediaCodec.OnFrameRenderedListener`は、codecのoutput Surface自体がcurrent `sessionSurface`であり、その後段にvideo scheduling／dropを行う層が存在しない構成でのみfinal-renderの根拠にできる。codec outputが`MediaSync.createInputSurface()`で得たMediaSync入力Surfaceである構成では、`onFrameRendered()`はdecoderからMediaSync入力への到達を示す中間観測に限定する。`MediaSync.getTimestamp()`はcurrent playback positionの観測に過ぎず、MediaSync内部で当該video frameがrenderされたかdropされたかを区別できないため、first-frame availabilityの確定根拠または代替commitには使わない。公開`MediaSync` APIだけでMediaSync出力側のrender/dropを区別するfirst-frame eventを取得できない構成は、現行productの完成したvideo availability経路として採用しない。
+Tuner `MediaEvent.getLinearBlock()`はTIS input adapterまでの所有物とする。Media3 `SampleStream.readData()`の公開契約は`DecoderInputBuffer.data`の`ByteBuffer`へsample dataを供給する形なので、現行productではadapterが`LinearBlock`の有効rangeをread-only mapし、そのrangeをcurrent `DecoderInputBuffer`へ1回copyしてPTSとflagsを設定する。copy完了後に該当`MediaEvent`／`LinearBlock`とTIS budget claimを解放する。Media3へ渡した後のcompressed input buffer、decoder output、audio buffer、render queueの寿命はMedia3が所有する。従来のTIS-owned `MediaCodec.CONFIGURE_FLAG_USE_BLOCK_MODEL`／`QueueRequest.setLinearBlock()` zero-copy経路は、このownership graphと公開Media3入力契約を同時には満たせないため現行productの正式playback経路から外す。header解析のためのmapとMedia3 adapterへの1回copy以外にES全体の多重copyやByteArray中継を追加しない。
 
-適合する標準renderer構成は、最終output Surfaceへのfirst-frame-rendered eventとdrop eventを分離して公開し、A/V同期とframe release schedulingをその標準renderer/player側が所有することを必須とする。Media3を採用する場合は、`VideoSink.Listener.onFirstFrameRendered()`／`onFrameDropped()`相当を最終renderer eventとして使い、frame schedulingをTIS独自loopで再実装せずMedia3 renderer側に所有させる。AOSP Live TV系のように最終Surfaceへのdraw完了をrendererからsessionへ返す構成も同じ契約を満たし得る。特定renderer製品の採用自体は本設計では固定せず、上記境界を満たすAndroid標準経路であることを固定する。
-
-`notifyVideoAvailable()`は、current playback generation/current Surface generationに結び付いた最終rendererのfirst-frame-rendered eventを受け、current `sessionSurface`が有効、視聴制限でblockされておらず、同generationのrenderer／Surface failureがない場合だけ一度呼ぶ。frame-available-before-render、decoder output生成、MediaSync入力到達、media clockのcandidate PTS到達、drop eventだけでは通知しない。旧generation／旧Surfaceのcallbackは無視する。固定delay、独自clock、独自frame scheduler、hidden API、Surface/compositor pixel probeは追加しない。audio bufferの所有権と寿命は選択した標準renderer/playerの公開契約に従う。
+first-frame availabilityのcommitはMedia3 `Player.Listener.onRenderedFirstFrame()`を使う。このcallbackはsurface設定、renderer reset、stream変更後にframeが初めてrenderされた時点のイベントなので、current playback generationとcurrent Surface generationへlistener tokenを結び付ける。`notifyVideoAvailable()`はこのcurrent tokenの`onRenderedFirstFrame()`を受け、current `sessionSurface`が有効、視聴制限でblockされておらず、同generationのplayer／video renderer errorがない場合だけ一度呼ぶ。Media3内部のframe-available、decoder output、clock進行、drop、旧generation／旧Surface callbackをfinal commitへ昇格させない。物理display/compositor fenceは要求せず、固定delay、独自clock、独自frame scheduler、hidden API、pixel probeも追加しない。
 
 ## EIT と TvProvider
 
@@ -83,9 +81,9 @@ ARIB字幕表示は、repoで供給される `libaribcaption-android` の produc
 
 ## ライブ playback 実装方式
 
-TIS のライブplaybackは、Tuner AV filterの平文`MediaEvent.LinearBlock`をMediaCodec block modelへcopyなしで投入する入力契約を維持する。decoder以後のA/V同期、video scheduling／drop、current `sessionSurface`への提示は、本書「再生経路」の`VideoPresentationRenderer`境界を満たすAndroid platform／AndroidX標準renderer/playerへ委ねる。TISはその外側に独自clockまたは独自frame schedulerを置かない。codec outputを`MediaSync.createInputSurface()`へ入れ、MediaSync前段の`OnFrameRendered`と`getTimestamp()`だけで最終availabilityを確定する構成は採用しない。
+TIS のライブplaybackは、Tuner AV filterの`MediaEvent.LinearBlock`をTISのMedia3 `SampleStream` adapterで受け、必要rangeを`DecoderInputBuffer`へ1回copyしてMedia3 ExoPlayerへ供給する経路に固定する。ExoPlayerがdecoder、audio sink、A/V clock、video scheduling／drop、current `sessionSurface`への提示を所有し、TISはその外側にMediaCodec／MediaSyncや独自clock／frame schedulerを置かない。
 
-`tunneled`／platform passthrough playback pathは現行productの設計候補から外し、実装しない。`notifyVideoAvailable()`は、video scheduling／dropを最終的に所有するrendererがcurrent generation/current `sessionSurface`へ非dropのfirst frameをrenderしたeventを唯一のvideo成功commitとして扱い、current Surface有効、generation一致、視聴制限、renderer／Surface errorの各gateを満たした場合だけ一度通知する。frame available、decoder output、MediaSync入力到達、`MediaSync.getTimestamp()`のmedia position到達、drop eventをfinal commitへ昇格させない。
+`tunneled`／platform passthrough playback pathは現行productの設計候補から外し、実装しない。`notifyVideoAvailable()`は、current player/current Surface tokenに対するMedia3 `Player.Listener.onRenderedFirstFrame()`だけをvideo成功commitとして扱い、current Surface有効、generation一致、視聴制限、player／video renderer errorの各gateを満たした場合だけ一度通知する。frame available、decoder output、clock進行、drop eventをfinal commitへ昇格させない。
 
 setup scan の channel registration は global discovery complete を必須条件にしない。ただし partial snapshot を無条件に channel insert に使ってはならない。TvProvider のサービス単位の登録可否は本書の「サービス登録・publishability利用境界」を唯一の正本とし、この節で video ES 必須などの追加 gate を重複定義しない。したがって `service_type=0x01` は同節の audio-video / video-only 条件、`service_type=0x02` は対応 audio ES を持つ audio-only 条件に従い、`0x02` の登録に video ES を要求しない。登録可能未満の partial snapshot は 診断情報 / ライブ更新 / debugにのみ使い、channel insert しない。scrambled サービスは channel 登録してよいが、CAS 仮実装 のまま 平文ライブ視聴成功 対応宣言 してはならない。
 
@@ -111,19 +109,17 @@ MediaEvent payloadは、`offset >= 0`、`dataLength > 0`、加算overflowなし�
 
 first frame前はcodec-specificな`decoderStartupDeadlineMs`を用い、必要なsequence header、SPS/PPS、audio config、reorder用入力を収集している間の一時queue増加を通常backpressure失敗へ写像しない。startup deadlineまでにdecoder入力可能状態またはfirst frameへ到達できず、queueのbyteまたはduration上限も解消しない場合だけplaybackを停止して`notifyVideoUnavailable()`へ進む。first frame後は別の`steadyBackpressureDeadlineMs`を用い、単発超過は当該sampleを解放して継続し、期限中にdequeue進行がなくqueue上限が継続する場合だけunavailableへ遷移する。audioだけの超過はvideo-only継続可否を既存規則で判定し、無条件にvideo unavailableへ写像しない。
 
-A/V同期方式は現行productでAndroid platformまたはAndroidXの標準renderer/player機構に固定し、TIS独自のmedia clock、frame release clock、future/late判定を実装しない。`PlaybackPipeline`のserial executorはcurrent playback generation、current Surface generation、選択した標準renderer/player、session Surface、video／audio decoder、未返却bufferとbudget claimを単一所有し、decoder／renderer／audio route callbackはstateを直接変更せず同executorへ直列化する。
+A/V同期方式とownership graphは現行productでMedia3 ExoPlayerに固定する。TISはTuner filter／Media3 input adapter／session lifecycleだけを所有し、ExoPlayerがdecoder、audio sink、playback clock、video renderer、frame scheduling／dropを所有する。`PlaybackPipeline`のserial executorはcurrent player generation、Surface generation、Tuner filter、input adapter、pending `MediaEvent`／`LinearBlock`、budget claim、player listener tokenを単一管理し、player callback／Tuner callback／parental callbackはstateを直接変更せず同executorへ直列化する。
 
-video経路の必須境界を`VideoPresentationRenderer`とする。これはvideo scheduling／dropを最終的に決定する層であり、current `sessionSurface`をoutputとして所有し、少なくともfirst-frame-rendered、frame-dropped、surface/render errorを区別してTISへ返す。first-frame-renderedは非drop frameをcurrent output Surfaceへrenderした後にだけ発火する契約とし、物理display/compositor fenceまでは要求しない。listener instanceまたはcallback tokenをplayback generationとSurface generationへ結び付け、retune、Surface変更、decoder／renderer再生成後のstale callbackは状態更新に使わない。
+input adapterはMedia3 `MediaSource`／`SampleStream`として実装し、Tuner sampleのPTS、codec format、EOSをMedia3へ公開する。`SampleStream.readData()`がsampleを要求した時だけpending `LinearBlock`の対象rangeをread-only mapして`DecoderInputBuffer.data`へ1回copyし、`timeUs`と必要flagsを設定する。copyが完了したsampleはTuner側ownershipとbudget claimを即時返却する。Media3が受理した後のbuffer lifetime、decoder input/output、audio queue、video frame queueはExoPlayer内部ownershipとし、TISはcodec output IDやAudioTrack bufferを保持しない。pending queue満杯時だけ既存budget規則で入力sampleをdropし、それ以外を無通知破棄しない。
 
-`MediaCodec.OnFrameRenderedListener`を使う場合、codec output Surfaceが最終current `sessionSurface`で、その後段に別のscheduling／drop所有者が存在しないことをfinal event採用条件とする。codec outputが`MediaSync.createInputSurface()`である場合、同callbackは中間観測でありavailabilityには使わない。`MediaSync.getTimestamp()`もmedia position観測であってrender/drop結果ではないためavailabilityのcommitに使わない。MediaSyncをvideo schedulingの最終所有者にするだけの構成は、公開APIで最終outputへのfirst renderとdropを区別できないため本契約を満たさない。
+video outputは`player.setVideoSurface(sessionSurface)`でcurrent Surfaceへ設定する。Surface設定または変更ごとにSurface generationを進め、`Player.Listener.onRenderedFirstFrame()`をcurrent player generation/current Surface generationへ関連付ける。Media3 Player契約上、このcallbackはsurface設定、renderer reset、stream変更後のfirst rendered frameを通知するため、これをTIF availability commitとして使用する。TISはMedia3内部のframe release時刻計算、late判定、drop判定を再実装しない。
 
-適合rendererの具体製品は固定しない。Media3等を採用する場合はfinal rendererのfirst-frame-rendered eventとdrop eventを区別し、frame release schedulingを標準renderer側に所有させる。別のAndroid標準renderer/playerを採用する場合も同じfirst-render/drop/error契約を満たすことを必要条件とする。
+audio outputは`ExoPlayer.Builder(sessionContext)`から生成したplayerの標準audio renderer／AudioSinkへ所有させる。session attributionはplayer生成Contextとして`sessionContext`を渡すことで同generationへ閉じる。TISが別途AudioTrackを生成してplayer外から同期させる経路は持たない。video-onlyではaudio trackを選択しない／audio rendererを無効化し、audio-onlyではvideo Surfaceを設定せず`VIDEO_UNAVAILABLE_REASON_AUDIO_ONLY`契約を維持する。
 
-audio経路も選択した標準renderer/playerのA/V同期機構へ委ねる。buffer ownershipはその公開契約に従い、TIS独自clockでvideoへ同期させない。video-onlyではaudio rendererを作らず、audio-onlyでは`VideoPresentationRenderer`を作らない。
+retune、playback generation変更、stop、非wrap PTS discontinuity、decoder fatal、player fatalではcurrent player、MediaSource、SampleStream adapter、pending sampleをreleaseして新player generationを作る。Surface変更だけではplayer全体を必須再生成せず、旧Surfaceをclearして新Surfaceを設定しSurface generationを進める。旧player generationまたは旧Surface generationのlistener callbackは状態更新に使わない。通常33-bit PTS wrapはadapter内でunwrapし、wrapだけではgenerationを変更しない。
 
-retune、playback generation変更、stop、flush、非wrap PTS discontinuity、Surface変更、audio route変更、decoder／renderer再生成では旧rendererのgeneration／Surface tokenを失効させ、未返却bufferと旧decoder outputを回収して新generationとして標準renderer/playerを再生成または再bindする。通常33-bit PTS wrapはgeneration内でunwrapし、wrapだけではgenerationを変更しない。旧generation／旧Surfaceのrenderer callbackはstate更新に使わない。
-
-最低試験契約は、型付きLinearBlock→block model QueueRequest、ES全体copy禁止、PTS欠落sample単体dropとgeneration継続、通常PTS wrap、decoder outputまたはMediaSync入力到達だけではvideo availableにしないこと、media position到達だけではvideo availableにしないこと、final rendererがdropしたframeでは通知しないこと、current generation/current Surfaceへのfirst-frame-rendered eventを受けるまで抑止すること、event後もSurface／parental／renderer-error gateが揃うまで抑止し条件成立後に一回だけavailability通知すること、stale generation／stale Surface callback非採用、audio buffer ownership、A/V同期、video-only、audio-only、非wrap discontinuity後のrenderer再生成、Surface／route変更後の旧generation非利用、renderer error写像を含む。試験のqueue数値上限は選択した`ProductProfile`と一致させる。
+最低試験契約は、Tuner sample→Media3 SampleStream adapter、LinearBlock range検証、Media3入力への1回copy、PTS欠落sample単体dropとgeneration継続、通常PTS wrap、`onRenderedFirstFrame()`前はvideo availableにしないこと、current player/current Surface token以外のfirst-frame callbackを無視すること、drop／clock進行だけでは通知しないこと、Surface／parental／player-error gate成立後に一回だけavailability通知すること、retune／fatal後の旧player callback非採用、Surface切替後の旧Surface callback非採用、audio/video-only、player release時のpending Tuner ownership回収を含む。試験のqueue数値上限は選択した`ProductProfile`と一致させる。
 
 TvProvider公開モードは `PublishMode` で channel row 追加を setup scan / explicit rescan に限定する。ライブ tune refresh、boot EPG sync、background channel maintenance では既存 channel の番組・診断更新だけを許可し、新規 channel row は追加しない。
 
@@ -150,7 +146,7 @@ TIS は `TvInputManager.ACTION_BLOCKED_RATINGS_CHANGED` と `TvInputManager.ACTI
 - LineageOS 21／Android 14の通常ライブセッション生成では`onCreateSession(inputId, sessionId, tvAppAttributionSource)`をoverrideする。framework由来`sessionId`は`Tuner(serviceContext, sessionId, useCase)`へ渡し、`tvAppAttributionSource`はsession固有Contextの生成へ渡す。2引数版`onCreateSession(inputId, sessionId)`と1引数版は明示的な互換経路だけに限定し、対象productの通常3引数入口を素のservice Contextへ委譲または後退させない。
 - 現行の video 対応宣言対象は MPEG-2 video `0x02` と H.264/AVC `0x1b` に限定する。HEVC `0x24` は 現行平文ライブ視聴 / playback selection 対象外であり、診断上は `NO_SUPPORTED_VIDEO_ES` 相当として扱う。現行productが対象とするtransport profileで認識codecを追加する場合は、規範対象の現行ARIB原文と、実際に検証証拠として使用した取得可能本文の版・条項および未証明差分、codec固定表、playback selection境界を同じ設計変更で固定してから扱う。
 - ARIB 視聴年齢制限 は Android `TvContentRating` へ `domain=com.android.tv`, `ratingSystem=ISDB`, `rating=ISDB_<age>` として写像する。対応範囲は JPN かつ レーティング 4..20 のみとし、未対応 country / レーティングは推測変換せず `internal_provider_data` / 診断に残す。レーティング 未取得時は `TvContentRating.UNRATED` として 視聴制限判定する。
-- `notifyVideoAvailable()` は、video scheduling／dropを最終的に所有する`VideoPresentationRenderer`がcurrent playback generation/current Surface generationの非drop first frameをcurrent `sessionSurface`へrenderしたeventを受けた後だけ一度呼ぶ。`MediaCodec.OnFrameRenderedListener`がMediaSync入力Surface到達を示すだけの構成、`MediaSync.getTimestamp()`のmedia position、frame-available event、drop eventはavailability確定根拠にしない。物理display/compositor fenceは要求しないが、最終rendererより前段のcallbackで代用もしない。固定delay、独自clock、独自frame scheduler、hidden API、pixel probeは使わない。
+- `notifyVideoAvailable()` はcurrent Media3 player/current Surface generationの`Player.Listener.onRenderedFirstFrame()`を受けた後だけ一度呼ぶ。clock進行、decoder output、drop、旧player／旧Surface callbackはavailability確定根拠にしない。物理display/compositor fenceは要求しないが、rendererより前段のcallbackで代用もしない。固定delay、独自clock、独自frame scheduler、hidden API、pixel probeは使わない。
 - ライブ tune refresh では新規 channel row を作らず、既存 channel の program 更新だけを行う。setup/rescan のみ channel row を作成できる。
 - H.264 は SPS/PPS 検出だけでなく SPS 由来の width / height を MediaFormat へ反映する。SPS 解析不能時は固定 1920x1080 代替処理 で成功扱いしない。
 - PMT 由来の video/audio/subtitle track は `TvTrackInfo` として通知し、`onSelectTrack(TYPE_AUDIO, trackId)` と `onSetCaptionEnabled()` を受ける。現行 product では字幕 track と libaribcaption 表示経路を実装対象に含める。別 video track と data track 選択は、対応 codec / 実行環境がない限り 対応宣言しない。
@@ -341,7 +337,7 @@ fun casDiscoverySnapshot(): CasDiscoverySnapshot
 
 `MaleicacidLiveSession` は session-level serial executor を持ち、current サービス、generation、playback 署名、track state、unblock state、latest video メタデータ、`ProgramPublishCoordinator` へのアクセスを同一 executor に閉じる。TunerController、PlaybackPipeline、parental receiver の コールバック は直接 state mutation せず、session executor に enqueue する。
 
-`PlaybackPipeline` は playback-level serial executor を持ち、`setSurface()`、`setVolume()`、`start()`、`switchAudio()`、`stop()`、`release()` の state mutation を同一 executor に閉じる。filter、block model decoder、MediaSync、MediaSync input Surface、AudioTrack、generation、surface、未返却audio buffer id、トークンの変更を呼び出し元スレッドで直接行わない。release後のqueued taskはreleased flagとgenerationで破棄する。
+`PlaybackPipeline` は playback-level serial executor を持ち、`setSurface()`、`setVolume()`、`start()`、`switchAudio()`、`stop()`、`release()` の state mutation を同一 executor に閉じる。Tuner filter、Media3 MediaSource／SampleStream adapter、ExoPlayer、player generation、Surface generation、pending Tuner sample、budget claim、listener tokenの変更を呼び出し元スレッドで直接行わない。release後のqueued taskはreleased flagとgenerationで破棄する。
 
 `ChannelScanManager` は scan generation と purpose を持つ。cancel / cleanup task は対象 generation にだけ作用し、stale cleanup が後続 scan の `running`、controller、engine を変更してはならない。
 
@@ -365,7 +361,7 @@ Boot EPG sync / background maintenance の開始条件は、`activeLiveSessionCo
 - `SectionEvent.dataLength` は、Tuner コールバック から読み取る section の正確な byte 長として扱う。
 - TIS が section event として受け付ける長さは `1..4096` byte だけとする。`dataLength <= 0` は不正、`dataLength > 4096` は過大として、どちらも `ByteArray` 確保前に破棄し、PID 別診断に計上する。
 - `MediaEvent` sampleは固定4 MiBを上限にしない。負のoffset、0以下のlength、加算overflow、`offset + length > LinearBlock capacity`は不正入力として確保前に破棄する。正常sampleはES全体をcopyせず、同一製品profileのper-event予算をclaimしてblock model QueueRequestへ渡す。共有領域方式とイベント固有fd方式を同じpending byte予算へ計上する。
-- decoder／MediaSync入力の逆圧は無通知破棄ではない。sampleまたは未返却audio outputは上限付きpending queueとbudget claimに保持し、後続callback／drainで再試行する。sampleを破棄するのは上限付きqueueが満杯の場合だけとし、破棄counterを加算する。
+- Tuner→Media3 input adapterの逆圧は無通知破棄ではない。未読`MediaEvent`／`LinearBlock`は上限付きpending queueとbudget claimに保持し、Media3 `SampleStream.readData()`で消費する。sampleを破棄するのは上限付きqueueが満杯の場合だけとし、破棄counterを加算する。
 
 ## provider-data / retry / attribution 境界契約
 
@@ -391,7 +387,7 @@ Provider 必須問い合わせ failure、Program insert/update failure、廃止�
 
 LineageOS 21の通常経路では、`TvInputService.onCreateSession(inputId, sessionId, tvAppAttributionSource)`で受け取ったnon-null `tvAppAttributionSource`をsession寿命中のattribution正本とする。session生成時に`serviceContext.createContext(new ContextParams.Builder().setNextAttributionSource(tvAppAttributionSource).build())`で変更不能なsession固有`sessionContext`を作り、`sessionId`、`tvAppAttributionSource`、`sessionContext`を同じsession creation snapshotへ確定する。途中失敗ではSessionを公開せず、作成済みartifactを解放する。
 
-Tuner SDKのTRM接続にはframework由来`sessionId`を`Tuner(serviceContext, sessionId, useCase)`へ渡す。AudioTrack生成はAndroid 14（API 34）の公開`AudioTrack.Builder.setContext(sessionContext)`を必須とし、`sessionContext.getAttributionSource()`からTV app attribution chainとdevice固有audio session情報を伝播させる。通常経路で素の`serviceContext`をAudioTrackへ渡さず、2引数版／1引数版の互換経路から3引数通常経路へ黙示fallbackしない。生成したAudioTrackは同generationのMediaSyncへ設定し、session releaseまたは置換後は旧`sessionContext`と旧AudioTrackを新しいMediaSync generationへ再利用しない。
+Tuner SDKのTRM接続にはframework由来`sessionId`を`Tuner(serviceContext, sessionId, useCase)`へ渡す。AudioTrack生成はAndroid 14（API 34）の公開`AudioTrack.Builder.setContext(sessionContext)`を必須とし、`sessionContext.getAttributionSource()`からTV app attribution chainとdevice固有audio session情報を伝播させる。通常経路で素の`serviceContext`をAudioTrackへ渡さず、2引数版／1引数版の互換経路から3引数通常経路へ黙示fallbackしない。現行playbackではTISがAudioTrackを直接生成せず、`ExoPlayer.Builder(sessionContext)`で同generationのMedia3 playerを生成し、その標準audio renderer／AudioSinkにaudio出力を所有させる。session releaseまたはplayer置換後は旧`sessionContext`と旧playerを新generationへ再利用しない。
 
 `setAttributionSource()`を探索・呼出しするreflection、hidden API、vendor独自AIDL、reflection失敗時の無言fallbackを通常経路に置かない。対象system APIを使う必要が生じた場合は、対象SDKへ直接コンパイルできる型付き呼出しとして別途設計する。
 
@@ -414,9 +410,9 @@ ARIB適合性の規範対象と検証証拠の分離は `../開発規則.md` を
 
 | codec | 追加認識時の扱い |
 |---|---|
-| MPEG-2 Video | 必須対応。PMT / component descriptor から codec、解像度、走査方式、aspect を認識し、MediaFormat、block model decoder起動、MediaSync first-frame gate、unsupported 診断情報を固定する。 |
+| MPEG-2 Video | 必須対応。PMT / component descriptor から codec、解像度、走査方式、aspect を認識し、Media3 Format写像、decoder capability確認、`onRenderedFirstFrame()` gate、unsupported 診断情報を固定する。 |
 | H.264 / MPEG-4 AVC | 必須対応。profile / level は AVC video descriptor と実 MediaCodec capability を照合し、未対応時は codec unsupported 診断に落とす。 |
-| H.265 / HEVC | codec として認識対象。対象 transport profile を本プロダクトが 対応宣言しない場合は ライブ viewable capability に入れない。対応する場合は MediaFormat / block model decoder / MediaSync first-frame gate まで必須。 |
+| H.265 / HEVC | codec として認識対象。対象 transport profile を本プロダクトが 対応宣言しない場合は ライブ viewable capability に入れない。対応する場合は Media3 Format写像 / decoder capability確認 / `onRenderedFirstFrame()` gate まで必須。 |
 
 ISO/IEC 14496-2 Visual、JPEG 2000、auxiliary video、SVC、MVC、3D additional view は、今回の ISDB-T/S product scope の ライブ viewable codec として 対応宣言しない。必要なら provider-data / 診断情報に保持する。
 
@@ -427,7 +423,7 @@ ISO/IEC 14496-2 Visual、JPEG 2000、auxiliary video、SVC、MVC、3D additional
 | MPEG-2 AAC | 必須対応。ADTS / MPEG-2 AAC LC、channel count、sample rate、ISO639 language、main/sub、dual mono、音声モード、音質表示を保持する。 |
 | MPEG-2 BC Audio | 認識対象。decoder が利用できる場合だけ再生対応を 対応宣言 し、未対応時は video-only 診断に落とす。 |
 | MPEG-4 AAC / HE-AAC | 必須認識。AAC LC / HE-AAC profile、LATM/LOAS / ADTS、AudioSpecificConfig、channel count、sample rate を保持する。decoder が利用できる場合だけ再生対応を 対応宣言する。 |
-| MPEG-4 ALS | codec として認識対象。対象 transport profile を本プロダクトが 対応宣言しない場合は playable capability に入れない。対応する場合は block model decoder / MediaSync / AudioTrack / メタデータ / unsupported 診断情報 まで必須。 |
+| MPEG-4 ALS | codec として認識対象。対象 transport profile を本プロダクトが 対応宣言しない場合は playable capability に入れない。対応する場合は Media3 Format写像 / decoder capability確認 / audio renderer／AudioSink / メタデータ / unsupported 診断情報 まで必須。 |
 
 MPEG-H 3D Audio と AC-4 は ARIB STD-B32 4.0以降の改定概要で高度地上デジタルテレビジョン放送向け追加codecであることを確認できるが、STD-B79 / STD-B80 の高度地上方式を現行productが対応宣言しないため現行codec固定表には含めない。AC-3、Enhanced AC-3、DTS、DTS-HD、Dolby TrueHDも現行対象transportに対する取得可能なARIB本文の条項根拠を確認せず推測で追加しない。
 
