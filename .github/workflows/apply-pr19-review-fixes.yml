@@ -1,0 +1,124 @@
+name: Apply PR19 review fixes
+
+on:
+  push:
+    branches:
+      - agent/fix-tis-arib-design-residuals
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-tis-arib-design-residuals
+          fetch-depth: 0
+
+      - name: Apply review fixes
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              p = Path(path)
+              text = p.read_text(encoding="utf-8")
+              n = text.count(old)
+              if n != 1:
+                  raise SystemExit(f"{path}: expected 1 match, got {n}: {old[:120]!r}")
+              p.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          replace_once(
+              "開発規則.md",
+              "ARIB規格本文の参照版は、ARIB公式から本レビュー環境で取得でき、対象事項を条項単位で確認できる本文のうち最も新しい版を用いる。日本語原文を取得できる場合は日本語原文を優先する。日本語版が会員認証または有償入手を必要とし本レビュー環境から取得できない場合はARIB公式英語版本文を使用してよく、取得可能な日本語版本文より新しい公式英語版本文がある場合はその英語版を使用してよい。英語版と取得可能な日本語原文に差異がある場合は日本語原文を優先する。版一覧、改定概要、規格概要は版差分と適用範囲の確認には用いてよいが、取得できない本文の具体的な条項内容を推測する根拠にはしない。",
+              "ARIB適合性では、製品が準拠すべき規範対象と、レビューで適合性を確認するための検証証拠を分離する。規範対象は、製品scopeに適用される現行ARIB日本語原文とし、レビュー環境の会員資格、購入可否、ネットワークアクセスによって変更しない。ARIB公式英語版は原文の翻訳として扱い、原文との内容・表現等に差異がある場合は原文を優先する。\n\n検証証拠は、対象条項の現行日本語原文を取得できる場合はその原文を用いる。会員認証または有償入手等により現行日本語原文をレビュー環境から取得できない場合は、ARIB公式英語版本文を条項確認の証拠として使用してよく、取得可能な日本語旧版より新しい公式英語版がある場合もその英語版を使用してよい。ただし、使用する英語版が現行日本語原文と同版でない場合は、未取得の現行原文との差分を未証明として明記し、その英語版だけを根拠に現行最新版への完全適合を確認済みとは扱わない。版一覧、改定概要、規格概要は版差分と適用範囲の確認には用いてよいが、未取得本文の具体的な条項内容を推測する根拠にはしない。"
+          )
+          replace_once(
+              "開発規則.md",
+              "  - 現行 product が対象とする transport profile の video/audio codec は、本書の ARIB 本文選定規則に従い、`tis/DESIGN_JA.md` が版・分冊・条項を固定した取得可能な ARIB 公式本文と対象 transport の規範を根拠に認識し、MediaFormat / decoder 起動 / AudioTrack / first-frame gate / unsupported 診断情報に接続する。版一覧や改定概要だけから本文の具体的な codec 契約を推測して追加しない。",
+              "  - 現行 product が対象とする transport profile の video/audio codec は、本書で規範対象とした現行ARIB日本語原文に適合させる。設計レビューでは `tis/DESIGN_JA.md` に、実際に検証証拠として使用したARIB公式本文の版・分冊・条項と、現行原文との差分が未証明である範囲を固定し、MediaFormat / decoder 起動 / AudioTrack / first-frame gate / unsupported 診断情報に接続する。版一覧や改定概要だけから未取得本文の具体的な codec 契約を推測して追加しない。"
+          )
+
+          replace_once(
+              "tis/DESIGN_JA.md",
+              "現行 product の平文 non-tunneled AV入力は、Tuner `MediaEvent.getLinearBlock()` と `MediaCodec` block model の型付き経路だけを正式経路とする。video／audio decoderは `MediaCodec.CONFIGURE_FLAG_USE_BLOCK_MODEL` で構成し、入力slotの `MediaCodec.QueueRequest.setLinearBlock(linearBlock, offset, dataLength)` を使う。`MediaEvent.isPtsPresent()` が true のsampleだけを現行r51のAV queue対象とし、raw PTSは90 kHz、33 bit modulo値として扱う。`PlaybackPipeline` は playback generation ごとに `PtsNormalizer` を1個だけ所有し、連続するraw PTSの差を modulo `2^33` の最短signed差としてunwrapしてgeneration内のextended PTSへ変換する。extended PTSから `presentationTimeUs = floor(pts90k * 1000000 / 90000)` をoverflow-safeなchecked integer arithmeticで算出し、`MediaCodec.QueueRequest.setPresentationTimeUs()`へ設定する。`isPtsPresent()` が false のsampleに0、前sample、PCR、wallclock等から推測した時刻を補わず、`MISSING_PTS`診断として現playback generationを再生不能へ移し、未queue event、filter、decoder、MediaSync、startup queue、budget claimを回収して `notifyVideoUnavailable(VIDEO_UNAVAILABLE_REASON_UNKNOWN)` へ進む。このsample自体をTuner HALのmalformed eventとは扱わない。",
+              "現行 product の平文 non-tunneled AV入力は、Tuner `MediaEvent.getLinearBlock()` と `MediaCodec` block model の型付き経路だけを正式経路とする。video／audio decoderは `MediaCodec.CONFIGURE_FLAG_USE_BLOCK_MODEL` で構成し、入力slotの `MediaCodec.QueueRequest.setLinearBlock(linearBlock, offset, dataLength)` を使う。`MediaEvent.isPtsPresent()` が true のsampleでは、raw PTSを90 kHz、33 bit modulo値として扱う。`PlaybackPipeline` は playback generation ごとに `PtsNormalizer` を1個だけ所有し、連続するraw PTSの差を modulo `2^33` の最短signed差としてunwrapしてgeneration内のextended PTSへ変換する。extended PTSから `presentationTimeUs = floor(pts90k * 1000000 / 90000)` をoverflow-safeなchecked integer arithmeticで算出し、`MediaCodec.QueueRequest.setPresentationTimeUs()`へ設定する。`isPtsPresent()` が false のsampleはAOSP Tuner API上で表現可能な入力状態として扱い、0、前sample、PCR、wallclock等から時刻を捏造せず、そのsampleだけをcodecへqueueせず解放してtrack別`MISSING_PTS_SAMPLE`診断へ計上する。PTS欠落sample単体を理由にplayback generationを再生不能へ遷移させず、`notifyVideoUnavailable()`も呼ばない。first frame前ではPTS欠落sampleをdecoder入力可能状態への進捗として数えず、既存の`decoderStartupDeadlineMs`を延長またはリセットしない。first frame後も当該sampleだけを破棄し、generation全体のunavailable遷移は既存のdecoder error、lock喪失、startup/backpressure deadline等の独立条件だけで判定する。このsample自体をTuner HALのmalformed eventとは扱わない。"
+          )
+          replace_once(
+              "tis/DESIGN_JA.md",
+              "video decoderには実行開始前に `MediaCodec.OnFrameRenderedListener` を登録し、current decoderかつcurrent playback generationの最初の `onFrameRendered()` callbackを、公開APIで観測できるfirst-frame render commit pointとする。`notifyVideoAvailable()`は`Filter.start()`成功、汎用`FilterEvent`、payload付き`MediaEvent`到着、decoder output buffer生成、`releaseOutputBuffer(..., render=true)`成功だけでは呼ばない。current decoder/current generationの最初の`onFrameRendered()`を受け、MediaSyncがcurrent generationで再生開始済みかつplayback rateが0より大きく、session Surfaceが有効で、視聴制限でblockされず、同generationでMediaSync Surface errorが発生していない場合だけ呼ぶ。旧decoder/旧generationのcallbackは無視する。このgateはAndroid公開APIで観測できるdecoder output Surfaceへのrender完了を用いるものであり、最終compositor pixelを独自にprobeすることは要件にしない。",
+              "video decoderには実行開始前に `MediaCodec.OnFrameRenderedListener` を登録する。ただしcodecのoutput Surfaceは`MediaSync.createInputSurface()`で得たMediaSync入力Surfaceなので、current decoder/current playback generationの`onFrameRendered()`はdecoderからMediaSync入力へframeが渡ったことを示す中間観測に限定し、`notifyVideoAvailable()`のfinal commit pointにはしない。callbackの`presentationTimeUs`をcurrent generationの`firstFrameCandidatePtsUs`として記録した後、同じserial executor上で`MediaSync.getTimestamp()`を確認する。`notifyVideoAvailable()`は、candidateが存在し、MediaSyncがcurrent generationでplayback rate 0より大きく再生中で、`getTimestamp()`がnon-nullかつ`MediaTimestamp.getMediaClockRate()>0`で、そのcurrent playback positionである`getAnchorMediaTimeUs()`が`firstFrameCandidatePtsUs`以上に到達し、`MediaSync.setSurface()`へ設定したcurrent `sessionSurface`が有効で、視聴制限でblockされず、同generationで`MEDIASYNC_ERROR_SURFACE_FAIL`が発生していない場合だけ一度呼ぶ。`getTimestamp()`がnullまたはcandidate時刻未到達なら通知せず、後続のcurrent-generation decoder/MediaSync pipeline callbackで同じgateを再評価する。旧decoder/旧generationのcallbackは無視する。AOSP `MediaTimestamp`のpresentationはplatformが把握できる範囲で外部観測可能またはpresentation commit済みの時刻を表すため、この公開APIのbest-effort presentation evidenceを用い、固定delay、独自clock、独自frame scheduler、compositor/pixel probeは追加しない。"
+          )
+          replace_once(
+              "tis/DESIGN_JA.md",
+              "- `notifyVideoAvailable()` は current decoder/current generation の最初の `MediaCodec.OnFrameRenderedListener.onFrameRendered()` が発生し、MediaSyncがcurrent generationで再生開始済みかつplayback rateが0より大きく、session Surfaceが有効で、同generationのMediaSync Surface errorがなく、視聴制限でblockされていない場合だけ呼ぶ。旧decoder／旧generationのcallbackは無視する。",
+              "- `notifyVideoAvailable()` は `MediaCodec.OnFrameRenderedListener.onFrameRendered()`をMediaSync入力Surface到達の中間観測として扱い、そのcurrent-generation candidate PTSに`MediaSync.getTimestamp()`のcurrent playback positionが到達したこと、playback rateが0より大きいこと、current session Surfaceが有効で`MEDIASYNC_ERROR_SURFACE_FAIL`がなく、視聴制限でblockされていないことを全て満たした場合だけ呼ぶ。旧decoder／旧generationのcallbackは無視し、固定delay、独自clock、pixel probeは使わない。"
+          )
+          replace_once(
+              "tis/DESIGN_JA.md",
+              "現行の EIT 対象 table は、present/following actual `0x4E`、present/following other `0x4F`、および scan/setup 後の初期登録・短期補完に使う schedule actual `0x50..0x5F` のうち、上記対象 サービスに属する event とする。schedule actual を常時・長期収集として扱わない。schedule other `0x60..0x6F` は現行 Programs publish/delete 対象外であり、更新区間 を発生させない。",
+              "現行r51の EIT publish/delete 対象 table は present/following actual `0x4E` のみとする。present/following other `0x4F`、schedule actual `0x50..0x5F`、schedule other `0x60..0x6F` は r51 の Programs publish/delete 対象外であり、更新区間を発生させない。r53以降で対象を拡張する場合は `開発規則.md` のrelease scopeを先に更新する。"
+          )
+          replace_once(
+              "tis/DESIGN_JA.md",
+              "ARIB本文の選定は `../開発規則.md` の規則を正とする。STD-B32 は日本語最新版4.1が存在するが本レビュー環境から本文を取得できないため、現行 product が対象とする従来TS profileの条項精読には取得可能な公式英語版3.11-E1を用いる。ARIB公式の4.0/4.1改定概要は、高度地上デジタルテレビジョン放送向けにVVC、MPEG-H 3D Audio、AC-4等が追加・更新されたという適用範囲確認には用いるが、取得できない4.x本文の具体条項を推測する根拠にはしない。現行r51〜r53はSTD-B79のISDB-T2/ISDB-T1.5およびSTD-B80のISDB-T3を対応宣言しないため、これら高度地上方式向け追加codecを現行capabilityへ自動追加しない。",
+              "ARIB適合性の規範対象と検証証拠の分離は `../開発規則.md` を正とする。STD-B32 の規範対象は製品scopeに適用される現行日本語原文4.1であり、レビュー環境の入手可否では変えない。現時点で条項単位に取得して検証証拠として使用できる公式本文は英語版3.11-E1であるため、下表の従来TS profile条項確認には3.11-E1を用いる。ただし4.1日本語原文を本レビュー環境で取得していないため、3.11-E1から4.1までの当該条項差分は未証明であり、下表だけをもって4.1への完全適合確認済みとは扱わない。ARIB公式の4.0/4.1改定概要は、高度地上デジタルテレビジョン放送向けにVVC、MPEG-H 3D Audio、AC-4等が追加・更新されたという適用範囲確認には用いるが、未取得4.x本文の具体条項を推測する根拠にはしない。現行r51〜r53はSTD-B79のISDB-T2/ISDB-T1.5およびSTD-B80のISDB-T3を対応宣言しないため、これら高度地上方式向け追加codecを現行capabilityへ自動追加しない。"
+          )
+          replace_once(
+              "tis/DESIGN_JA.md",
+              "- 現行の video 対応宣言対象は MPEG-2 video `0x02` と H.264/AVC `0x1b` に限定する。HEVC `0x24` は 現行平文ライブ視聴 / playback selection 対象外であり、診断上は `NO_SUPPORTED_VIDEO_ES` 相当として扱う。現行productが対象とするtransport profileで認識codecを追加する場合は、取得可能なARIB本文の条項根拠、codec固定表、playback selection境界を同じ設計変更で固定してから扱う。",
+              "- 現行の video 対応宣言対象は MPEG-2 video `0x02` と H.264/AVC `0x1b` に限定する。HEVC `0x24` は 現行平文ライブ視聴 / playback selection 対象外であり、診断上は `NO_SUPPORTED_VIDEO_ES` 相当として扱う。現行productが対象とするtransport profileで認識codecを追加する場合は、規範対象の現行ARIB原文と、実際に検証証拠として使用した取得可能本文の版・条項および未証明差分、codec固定表、playback selection境界を同じ設計変更で固定してから扱う。"
+          )
+          replace_once(
+              "tis/DESIGN_JA.md",
+              "最低試験契約は、型付きLinearBlock→block model QueueRequest、ES全体copy禁止、video PTSのMediaSync input Surface到達、audio bufferのconsume callbackまでの寿命、A/V同期、video-only、audio-only、通常PTS wrap、非wrap discontinuity後のMediaSync再生成、Surface／route変更後の旧generation非利用、MediaSync error写像、stale generation非描画を含む。試験のqueue数値上限は選択した`ProductProfile`と一致させる。",
+              "最低試験契約は、型付きLinearBlock→block model QueueRequest、ES全体copy禁止、PTS欠落sample単体dropとgeneration継続、通常PTS wrap、`OnFrameRendered`単独ではvideo availableにしないこと、candidate PTSに対する`MediaSync.getTimestamp()`未到達/null時の抑止と到達時の一回だけのavailability通知、audio bufferのconsume callbackまでの寿命、A/V同期、video-only、audio-only、非wrap discontinuity後のMediaSync再生成、Surface／route変更後の旧generation非利用、MediaSync error写像、stale generation非描画を含む。試験のqueue数値上限は選択した`ProductProfile`と一致させる。"
+          )
+
+          replace_once(
+              "arib_si_engine_rs/DESIGN_JA.md",
+              "ARIB本文の選定は `../開発規則.md` の ARIB 本文選定規則を正とする。本decoderについて現時点で条項単位に取得・確認できる本文は ARIB 公式英語版 STD-B24 6.4-E1 Fascicle 1 の7.1.1.1〜7.1.2.4であり、7.1.1.1のTable 7-1〜7-3をinvocation・designation・Final Byte、7.1.1.2〜7.1.1.5を文字集合とDRCS、7.1.1.6をMacro、7.1.2.1〜7.1.2.4を制御機能の根拠として条項単位で用いる。改定概要、版一覧、二次資料を取得できない本文の具体規定の代用にしない。STD-B24の他Fascicleまたは字幕への適合は本decoderの主張に含めない。",
+              "ARIB適合性の規範対象と検証証拠の分離は `../開発規則.md` を正とする。本decoderについて現時点で条項単位に取得・確認し検証証拠として使用している本文は ARIB 公式英語版 STD-B24 6.4-E1 Fascicle 1 の7.1.1.1〜7.1.2.4であり、7.1.1.1のTable 7-1〜7-3をinvocation・designation・Final Byte、7.1.1.2〜7.1.1.5を文字集合とDRCS、7.1.1.6をMacro、7.1.2.1〜7.1.2.4を制御機能の根拠として条項単位で用いる。この英語版を現行日本語原文そのものとは扱わず、版差がある場合は未証明差分を残す。改定概要、版一覧、二次資料を未取得本文の具体規定の代用にしない。STD-B24の他Fascicleまたは字幕への適合は本decoderの主張に含めない。"
+          )
+          replace_once(
+              "arib_si_engine_rs/DESIGN_JA.md",
+              "EIT event の `start_time` と `duration` は、ARIB の未定義値と不正値を混同せず次の状態に正規化する。\n\n- `DEFINED`: `start_time` と `duration` がともに具体的で構文的に有効。`original_network_id / transport_stream_id / service_id / event_id` を stable identity として扱う。\n- `UNDEFINED_TIME`: `start_time=0xFFFFFFFFFF` または `duration=0xFFFFFF` の片方だけが all-1。event 自体は確定しており `event_id` は有効なので、同じ4要素を stable identity として保持してよい。ただし具体時刻が揃うまで `TvProvider.Programs` row へ投影しない。\n- `UNDECIDED_EVENT`: `start_time=0xFFFFFFFFFF` かつ `duration=0xFFFFFF`。event 内容自体が未定で `event_id` に identity としての意味がないため、raw event_id は診断・raw意味objectに保持してよいが、stable key、`ProgramKeyV1`、deletion-authoritative な valid-event-set、後続の具体eventとの相関に使用しない。\n- `MALFORMED_TIMING`: 上記未定義値ではなく、BCDその他の構文規則に違反する。正常eventへ昇格せず診断に保持する。",
+              "EIT event の `start_time` と `duration` は、ARIB が各フィールドのall-1を未定義値として規定していることと、本製品の誤相関・誤削除防止ポリシーを分離して次の状態に正規化する。ARIB本文から、両フィールドが同時にall-1の場合に`event_id`自体の識別子としての意味が失われることまでは導出しない。\n\n- `DEFINED`: `start_time` と `duration` がともに具体的で構文的に有効。`original_network_id / transport_stream_id / service_id / event_id` を stable identity として扱う。\n- `UNDEFINED_TIME`: `start_time=0xFFFFFFFFFF` または `duration=0xFFFFFF` の片方だけが all-1。raw `event_id` はARIB fieldとして保持する。本製品では同じ4要素を継続用stable identityとして使用してよいが、具体時刻が揃うまで `TvProvider.Programs` row へ投影しない。\n- `BOTH_TIMING_UNDEFINED`: `start_time=0xFFFFFFFFFF` かつ `duration=0xFFFFFF`。raw `event_id` はARIB fieldとして診断・raw意味objectに保持する。ARIBが`event_id`を無意味と規定したものとは扱わず、本製品の保守的ポリシーとして、具体時刻を持つeventとの誤相関または既存Programの誤削除を避けるため、persistent stable key、`ProgramKeyV1`、deletion-authoritativeなvalid-event-set、後続具体eventとの自動相関へ昇格させない。\n- `MALFORMED_TIMING`: 上記未定義値ではなく、BCDその他の構文規則に違反する。正常eventへ昇格せず診断に保持する。"
+          )
+          replace_once(
+              "arib_si_engine_rs/DESIGN_JA.md",
+              "EIT は section version 更新で消えた event を削除候補として扱う。ただし TvProvider / TIS 側へ stable identity として `original_network_id / transport_stream_id / service_id / event_id` を提供できるのは `DEFINED` または `UNDEFINED_TIME` の event に限る。`UNDECIDED_EVENT` は valid event identity set に含めず、既存 Program の削除根拠にも後続具体eventとの相関根拠にも使わない。section 更新後の stable event set が空になった場合も no-op として破棄せず、サービスキー、更新区間、空の valid event identity set を JNI/TIS へ返す。TIS は、Rust parser が `deletionAuthoritative=true` と判定した snapshot だけを obsolete Programs delete に使う。",
+              "EIT は section version 更新で消えた event を削除候補として扱う。ただし TvProvider / TIS 側へ stable identity として `original_network_id / transport_stream_id / service_id / event_id` を提供できるのは `DEFINED` または `UNDEFINED_TIME` の event に限る。`BOTH_TIMING_UNDEFINED` は本製品の保守的ポリシーとしてvalid event identity setに含めず、既存Programの削除根拠にも後続具体eventとの自動相関根拠にも使わない。section 更新後の stable event set が空になった場合も no-op として破棄せず、サービスキー、更新区間、空の valid event identity set を JNI/TIS へ返す。TIS は、Rust parser が `deletionAuthoritative=true` と判定した snapshot だけを obsolete Programs delete に使う。"
+          )
+          replace_once(
+              "arib_si_engine_rs/DESIGN_JA.md",
+              "EIT event の stable key は `DEFINED` または `UNDEFINED_TIME` の場合だけ `original_network_id / transport_stream_id / service_id / event_id` とし、開始時刻は表示・更新用フィールドとして別に扱う。`UNDECIDED_EVENT` は stable key を持たず、bulk snapshot DTO から `ProgramProviderDataV1.programKey` を必要とする公開対象へ昇格させない。TIS/TvProvider は `event_id + start_time` に依存した stable key を作らず、`UNDECIDED_EVENT` の raw event_id だけからstable keyを作らない。旧 indexed JNI getterである `nativeGetEventStableIdentity()` は提供しない。",
+              "EIT event の stable key は `DEFINED` または `UNDEFINED_TIME` の場合だけ `original_network_id / transport_stream_id / service_id / event_id` とし、開始時刻は表示・更新用フィールドとして別に扱う。`BOTH_TIMING_UNDEFINED` はARIB上の`event_id` field自体を否定せず、誤相関・誤削除を避ける本製品ポリシーとしてpersistent stable keyを割り当てず、bulk snapshot DTO から `ProgramProviderDataV1.programKey` を必要とする公開対象へ昇格させない。TIS/TvProvider は `event_id + start_time` に依存した stable key を作らず、`BOTH_TIMING_UNDEFINED` の raw event_id だけからstable keyを作らない。旧 indexed JNI getterである `nativeGetEventStableIdentity()` は提供しない。"
+          )
+          replace_once(
+              "arib_si_engine_rs/DESIGN_JA.md",
+              "EIT `free_CA_mode` は ARIB 運用上の無料/有料区分として保持し、TS component の実スクランブル状態、CAS 権利状態、カード状態、CAS HAL 状態とは別軸とする。TIS は AOSP 契約に従う TvProvider 投影を `ARIB_SI_EPG_TvProvider投影方針.md` に従って行うが、`free_CA_mode` 単独から実 descramble の要否またはライブ再生可否を導出しない。実スクランブル状態は `transport_scrambling_control` 等の別情報から判定する。音声 ISO639 language は PMT / 音声コンポーネントdescriptor 等から取得できる値だけを保持し、取得不能時に推測しない。視聴年齢制限は既存レーティングドメインへ変換できる構造化値と、未対応・不正・reserved の診断情報を分離して保持する。",
+              "EIT `free_CA_mode` の規範対象は、地上デジタルについて現行日本語TR-B14 6.13、BS/広帯域CSについて現行日本語TR-B15 8.9のうち製品scopeに適用されるCA運用規定とする。現時点の検証証拠は、ARIB公式英訳TR-B14 6.7-E1 Fascicle 5のconditional-access運用における`Non-scramble/Scramble`およびfree/pay判定の節と、ARIB公式英訳TR-B15 4.6-E1のCA運用における`Non-Scramble/Scramble`および`Free Program/Pay Program`の節である。これら取得可能な英訳では、`free_CA_mode`は無料/有料区分の判定に用い、componentの実スクランブル状態はTS packet headerの`transport_scrambling_control`で判定する別軸としている。この意味分離を本製品でも採用し、CAS権利状態、カード状態、CAS HAL状態とも混同しない。TIS は AOSP 契約に従う TvProvider 投影を `ARIB_SI_EPG_TvProvider投影方針.md` に従って行うが、`free_CA_mode` 単独から実 descramble の要否またはライブ再生可否を導出しない。なお現行日本語TR-B14 6.13 / TR-B15 8.9本文は本レビュー環境で未取得であり、上記英訳版から現行日本語原文までの当該規定差分は未証明なので、この英訳確認だけをもって6.13 / 8.9への完全適合確認済みとは扱わない。音声 ISO639 language は PMT / 音声コンポーネントdescriptor 等から取得できる値だけを保持し、取得不能時に推測しない。視聴年齢制限は既存レーティングドメインへ変換できる構造化値と、未対応・不正・reserved の診断情報を分離して保持する。"
+          )
+          PY
+
+          rm .github/workflows/apply-pr19-review-fixes.yml
+          git diff --check
+          changed="$(git diff --name-only | sort)"
+          expected="$(printf '%s\n' '.github/workflows/apply-pr19-review-fixes.yml' 'arib_si_engine_rs/DESIGN_JA.md' 'tis/DESIGN_JA.md' '開発規則.md' | sort)"
+          test "$changed" = "$expected"
+          ! grep -q 'UNDECIDED_EVENT' arib_si_engine_rs/DESIGN_JA.md
+          grep -q 'BOTH_TIMING_UNDEFINED' arib_si_engine_rs/DESIGN_JA.md
+          grep -q 'MISSING_PTS_SAMPLE' tis/DESIGN_JA.md
+          grep -q 'MediaSync.getTimestamp()' tis/DESIGN_JA.md
+          grep -q '規範対象と、レビューで適合性を確認するための検証証拠' 開発規則.md
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add arib_si_engine_rs/DESIGN_JA.md tis/DESIGN_JA.md 開発規則.md .github/workflows/apply-pr19-review-fixes.yml
+          git commit -m 'docs: address PR19 review feedback'
+          git push origin HEAD:agent/fix-tis-arib-design-residuals
