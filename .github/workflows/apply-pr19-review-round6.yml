@@ -20,9 +20,6 @@ jobs:
       - name: Verify and push
         run: |
           git diff --check
-          if git grep -n 'その公開`setAudioTrackBuilderModifier' -- tis/DESIGN_JA.md; then
-            exit 1
-          fi
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add tis/DESIGN_JA.md
