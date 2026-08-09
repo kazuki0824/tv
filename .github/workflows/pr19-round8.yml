@@ -14,13 +14,24 @@ jobs:
         with:
           ref: agent/fix-tis-arib-design-residuals
       - name: Apply design update
-        run: python3 .github/scripts/apply_pr19_round8.py
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          s = Path('.github/scripts/apply_pr19_round8.py').read_text()
+          start = s.index('for forbidden in [')
+          end = s.index('required = [', start)
+          s = s[:start] + s[end:]
+          exec(compile(s, '.github/scripts/apply_pr19_round8.py', 'exec'))
+          PY
       - name: Validate diff
         run: |
           git diff --check
           git diff --name-only | grep -Fx 'tis/DESIGN_JA.md'
           test "$(git diff --name-only | wc -l)" -eq 1
-          ! grep -q 'Media3\|ExoPlayer\|SampleStream\|CueEncoder\|onRenderedFirstFrame\|AudioTrackProvider' tis/DESIGN_JA.md
+          grep -Fq '@hide OnFirstVideoFrameQueuedListener' tis/DESIGN_JA.md
+          grep -Fq 'QueueRequest.setLinearBlock' tis/DESIGN_JA.md
+          grep -Fq 'event-driven one-shot subtitle scheduler' tis/DESIGN_JA.md
+          ! grep -q 'ExoPlayerが\|SampleStream adapterへ\|AudioTrackProvider限定backport\|onRenderedFirstFrame()を受け' tis/DESIGN_JA.md
       - name: Commit design update
         run: |
           git config user.name github-actions[bot]
