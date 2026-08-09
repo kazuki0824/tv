@@ -1,0 +1,30 @@
+name: PR19 review round 8
+on:
+  push:
+    branches:
+      - agent/fix-tis-arib-design-residuals
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-tis-arib-design-residuals
+      - name: Apply design update
+        run: python3 .github/scripts/apply_pr19_round8.py
+      - name: Validate diff
+        run: |
+          git diff --check
+          git diff --name-only | grep -Fx 'tis/DESIGN_JA.md'
+          test "$(git diff --name-only | wc -l)" -eq 1
+          ! grep -q 'Media3\|ExoPlayer\|SampleStream\|CueEncoder\|onRenderedFirstFrame\|AudioTrackProvider' tis/DESIGN_JA.md
+      - name: Commit design update
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tis/DESIGN_JA.md
+          git commit -m 'docs: prefer MediaSync private first-output callback'
+          git push origin HEAD:agent/fix-tis-arib-design-residuals
