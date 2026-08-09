@@ -12,7 +12,7 @@
 未対応の SI/EPG 文字・escape は `panic` させず、置換文字または 診断によって安定動作させる。字幕 payload を `decode_arib_string_lossy()` に渡す経路は禁止する。字幕本文処理は TIS 側の libaribcaption 経路だけで行う。
 `arib_si_engine_rs` は libaribcaption ラッパー を所有しない。libaribcaption は TIS 側の字幕 path から Rust JNI boundary と 安全なRustラッパー 経由で呼ぶ。
 
-ARIB本文の選定は `../開発規則.md` の ARIB 本文選定規則を正とする。本decoderについて現時点で条項単位に取得・確認できる本文は ARIB 公式英語版 STD-B24 6.4-E1 Fascicle 1 の7.1.1.1〜7.1.2.4であり、7.1.1.1のTable 7-1〜7-3をinvocation・designation・Final Byte、7.1.1.2〜7.1.1.5を文字集合とDRCS、7.1.1.6をMacro、7.1.2.1〜7.1.2.4を制御機能の根拠として条項単位で用いる。改定概要、版一覧、二次資料を取得できない本文の具体規定の代用にしない。STD-B24の他Fascicleまたは字幕への適合は本decoderの主張に含めない。
+ARIB適合性の規範対象と検証証拠の分離は `../開発規則.md` を正とする。本decoderについて現時点で条項単位に取得・確認し検証証拠として使用している本文は ARIB 公式英語版 STD-B24 6.4-E1 Fascicle 1 の7.1.1.1〜7.1.2.4であり、7.1.1.1のTable 7-1〜7-3をinvocation・designation・Final Byte、7.1.1.2〜7.1.1.5を文字集合とDRCS、7.1.1.6をMacro、7.1.2.1〜7.1.2.4を制御機能の根拠として条項単位で用いる。この英語版を現行日本語原文そのものとは扱わず、版差がある場合は未証明差分を残す。改定概要、版一覧、二次資料を未取得本文の具体規定の代用にしない。STD-B24の他Fascicleまたは字幕への適合は本decoderの主張に含めない。
 
 本decoderの適合主張は、字幕ではないSI/EPG文字列について、次の境界に限定する。
 
@@ -90,18 +90,18 @@ SMDの判定対象は既存のtable-instance完成・version・寿命規則で�
 
 ## EIT 時刻状態と event identity
 
-EIT event の `start_time` と `duration` は、ARIB の未定義値と不正値を混同せず次の状態に正規化する。
+EIT event の `start_time` と `duration` は、ARIB が各フィールドのall-1を未定義値として規定していることと、本製品の誤相関・誤削除防止ポリシーを分離して次の状態に正規化する。ARIB本文から、両フィールドが同時にall-1の場合に`event_id`自体の識別子としての意味が失われることまでは導出しない。
 
 - `DEFINED`: `start_time` と `duration` がともに具体的で構文的に有効。`original_network_id / transport_stream_id / service_id / event_id` を stable identity として扱う。
-- `UNDEFINED_TIME`: `start_time=0xFFFFFFFFFF` または `duration=0xFFFFFF` の片方だけが all-1。event 自体は確定しており `event_id` は有効なので、同じ4要素を stable identity として保持してよい。ただし具体時刻が揃うまで `TvProvider.Programs` row へ投影しない。
-- `UNDECIDED_EVENT`: `start_time=0xFFFFFFFFFF` かつ `duration=0xFFFFFF`。event 内容自体が未定で `event_id` に identity としての意味がないため、raw event_id は診断・raw意味objectに保持してよいが、stable key、`ProgramKeyV1`、deletion-authoritative な valid-event-set、後続の具体eventとの相関に使用しない。
+- `UNDEFINED_TIME`: `start_time=0xFFFFFFFFFF` または `duration=0xFFFFFF` の片方だけが all-1。raw `event_id` はARIB fieldとして保持する。本製品では同じ4要素を継続用stable identityとして使用してよいが、具体時刻が揃うまで `TvProvider.Programs` row へ投影しない。
+- `BOTH_TIMING_UNDEFINED`: `start_time=0xFFFFFFFFFF` かつ `duration=0xFFFFFF`。raw `event_id` はARIB fieldとして診断・raw意味objectに保持する。ARIBが`event_id`を無意味と規定したものとは扱わず、本製品の保守的ポリシーとして、具体時刻を持つeventとの誤相関または既存Programの誤削除を避けるため、persistent stable key、`ProgramKeyV1`、deletion-authoritativeなvalid-event-set、後続具体eventとの自動相関へ昇格させない。
 - `MALFORMED_TIMING`: 上記未定義値ではなく、BCDその他の構文規則に違反する。正常eventへ昇格せず診断に保持する。
 
 ## section 更新
 
 PAT/PMT/SDT/NIT/BAT/EIT の version 更新では collector 全体を捨てない。table 単位、section 単位、サービス 単位で差分更新する。
 
-EIT は section version 更新で消えた event を削除候補として扱う。ただし TvProvider / TIS 側へ stable identity として `original_network_id / transport_stream_id / service_id / event_id` を提供できるのは `DEFINED` または `UNDEFINED_TIME` の event に限る。`UNDECIDED_EVENT` は valid event identity set に含めず、既存 Program の削除根拠にも後続具体eventとの相関根拠にも使わない。section 更新後の stable event set が空になった場合も no-op として破棄せず、サービスキー、更新区間、空の valid event identity set を JNI/TIS へ返す。TIS は、Rust parser が `deletionAuthoritative=true` と判定した snapshot だけを obsolete Programs delete に使う。
+EIT は section version 更新で消えた event を削除候補として扱う。ただし TvProvider / TIS 側へ stable identity として `original_network_id / transport_stream_id / service_id / event_id` を提供できるのは `DEFINED` または `UNDEFINED_TIME` の event に限る。`BOTH_TIMING_UNDEFINED` は本製品の保守的ポリシーとしてvalid event identity setに含めず、既存Programの削除根拠にも後続具体eventとの自動相関根拠にも使わない。section 更新後の stable event set が空になった場合も no-op として破棄せず、サービスキー、更新区間、空の valid event identity set を JNI/TIS へ返す。TIS は、Rust parser が `deletionAuthoritative=true` と判定した snapshot だけを obsolete Programs delete に使う。
 
 EIT event fixed フィールド、start_time BCD、duration BCD、descriptor_loop_length が不正な event を含む section は、既存 event 削除用の authoritative valid-event-set として扱わない。不正 event は Programs から消すのではなく、既存正常 event を保持したまま 診断情報に記録する。
 
@@ -128,7 +128,7 @@ Kotlin/JNI の通常 サービススナップショット は channel registrati
 
 PAT は ONID を持たないため、`(transport_stream_id, service_id) -> pmt_pid` をそのまま publishable サービス識別子 として扱わない。SDT/NIT/BAT 等で ONID が一意に解決できた場合だけ `(original_network_id, transport_stream_id, service_id, pmt_pid)` へ昇格し、ONID が曖昧な場合は publish 抑止または欠落診断に留める。
 
-EIT event の stable key は `DEFINED` または `UNDEFINED_TIME` の場合だけ `original_network_id / transport_stream_id / service_id / event_id` とし、開始時刻は表示・更新用フィールドとして別に扱う。`UNDECIDED_EVENT` は stable key を持たず、bulk snapshot DTO から `ProgramProviderDataV1.programKey` を必要とする公開対象へ昇格させない。TIS/TvProvider は `event_id + start_time` に依存した stable key を作らず、`UNDECIDED_EVENT` の raw event_id だけからstable keyを作らない。旧 indexed JNI getterである `nativeGetEventStableIdentity()` は提供しない。
+EIT event の stable key は `DEFINED` または `UNDEFINED_TIME` の場合だけ `original_network_id / transport_stream_id / service_id / event_id` とし、開始時刻は表示・更新用フィールドとして別に扱う。`BOTH_TIMING_UNDEFINED` はARIB上の`event_id` field自体を否定せず、誤相関・誤削除を避ける本製品ポリシーとしてpersistent stable keyを割り当てず、bulk snapshot DTO から `ProgramProviderDataV1.programKey` を必要とする公開対象へ昇格させない。TIS/TvProvider は `event_id + start_time` に依存した stable key を作らず、`BOTH_TIMING_UNDEFINED` の raw event_id だけからstable keyを作らない。旧 indexed JNI getterである `nativeGetEventStableIdentity()` は提供しない。
 
 開始時刻変更によって TvProvider row を削除・再作成する場合でも、TIS / arib_si_engine_rs の stable identity は変更しない。`event_id + start_time` は表示・検索・provider row 再作成補助には使ってよいが、event identity の SSOT にしてはならない。
 
@@ -336,7 +336,7 @@ Channel provider-data の正形式は JSON v1 のみとし、schema は `maleica
 
 ## free_CA_mode / 音声言語 / 視聴年齢制限の構造化契約
 
-EIT `free_CA_mode` は ARIB 運用上の無料/有料区分として保持し、TS component の実スクランブル状態、CAS 権利状態、カード状態、CAS HAL 状態とは別軸とする。TIS は AOSP 契約に従う TvProvider 投影を `ARIB_SI_EPG_TvProvider投影方針.md` に従って行うが、`free_CA_mode` 単独から実 descramble の要否またはライブ再生可否を導出しない。実スクランブル状態は `transport_scrambling_control` 等の別情報から判定する。音声 ISO639 language は PMT / 音声コンポーネントdescriptor 等から取得できる値だけを保持し、取得不能時に推測しない。視聴年齢制限は既存レーティングドメインへ変換できる構造化値と、未対応・不正・reserved の診断情報を分離して保持する。
+EIT `free_CA_mode` の規範対象は、地上デジタルについて現行日本語TR-B14 6.13、BS/広帯域CSについて現行日本語TR-B15 8.9のうち製品scopeに適用されるCA運用規定とする。現時点の検証証拠は、ARIB公式英訳TR-B14 6.7-E1 Fascicle 5のconditional-access運用における`Non-scramble/Scramble`およびfree/pay判定の節と、ARIB公式英訳TR-B15 4.6-E1のCA運用における`Non-Scramble/Scramble`および`Free Program/Pay Program`の節である。これら取得可能な英訳では、`free_CA_mode`は無料/有料区分の判定に用い、componentの実スクランブル状態はTS packet headerの`transport_scrambling_control`で判定する別軸としている。この意味分離を本製品でも採用し、CAS権利状態、カード状態、CAS HAL状態とも混同しない。TIS は AOSP 契約に従う TvProvider 投影を `ARIB_SI_EPG_TvProvider投影方針.md` に従って行うが、`free_CA_mode` 単独から実 descramble の要否またはライブ再生可否を導出しない。なお現行日本語TR-B14 6.13 / TR-B15 8.9本文は本レビュー環境で未取得であり、上記英訳版から現行日本語原文までの当該規定差分は未証明なので、この英訳確認だけをもって6.13 / 8.9への完全適合確認済みとは扱わない。音声 ISO639 language は PMT / 音声コンポーネントdescriptor 等から取得できる値だけを保持し、取得不能時に推測しない。視聴年齢制限は既存レーティングドメインへ変換できる構造化値と、未対応・不正・reserved の診断情報を分離して保持する。
 
 ## PSI/SIのTable ID規則と意味解釈の責務
 
