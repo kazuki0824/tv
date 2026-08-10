@@ -12,7 +12,7 @@
 未対応の SI/EPG 文字・escape は `panic` させず、置換文字または 診断によって安定動作させる。字幕 payload を `decode_arib_string_lossy()` に渡す経路は禁止する。字幕本文処理は TIS 側の libaribcaption 経路だけで行う。
 `arib_si_engine_rs` は libaribcaption ラッパー を所有しない。libaribcaption は TIS 側の字幕 path から Rust JNI boundary と 安全なRustラッパー 経由で呼ぶ。
 
-ARIB適合性の規範対象と検証証拠の分離は `../開発規則.md` を正とする。本decoderについて条項単位に取得・確認し検証証拠として使用する本文は ARIB 公式英語版 STD-B24 6.4-E1 Fascicle 1 とし、従来の8単位符号については7.1.1.1〜7.1.2.4をinvocation・designation・文字集合・Macro・制御機能の根拠として用いる。UCS符号方式についても同FascicleのUCS文字符号化規定を検証証拠に含める。ARIB公式の改定履歴上、UCSは既存STD-B24の正式な符号方式として維持・修正されているため、本crateのSI/EPG文字列対応から時点依存で除外しない。この英語版を現行日本語原文そのものとは扱わず、版差がある場合は未証明差分を残す。改定概要、版一覧、二次資料を未取得本文の具体規定の代用にしない。STD-B24の字幕レンダリングや他Fascicleへの適合は本decoderの主張に含めない。
+ARIB適合性の規範対象と検証証拠の分離は `../開発規則.md` を正とする。本decoderについて条項単位に取得・確認し検証証拠として使用する本文は ARIB 公式英語版 STD-B24 6.4-E1 Fascicle 1 とし、従来の8単位符号については7.1.1.1〜7.1.2.4をinvocation・designation・文字集合・Macro・制御機能の根拠として用いる。UCSは同Fascicle第一編第2部7.2.1〜7.2.3を根拠とし、特に7.2.3のcharacter encoding schemeをcoding formとBOM/byte-order判定のSSOTにする。7.2.3で伝送に用いる符号化方式はISO/IEC 10646に基づくUTF-8またはUTF-16であり、UTF-16はhigh-byte-first (big-endian) かつBOMを省略せず、UTF-8ではBOMを使用しない。したがってUCS入力を受けたdecoderはheuristicなbyte-order推測を行わず、先頭`FE FF`をUTF-16BEの必須BOMとして認識して除去し、`FF FE`はlittle-endianとして規格外入力にし、`EF BB BF`はUTF-8で禁止されたBOMとして規格外入力にする。`FE FF`がない入力をUTF-16とは解釈せずUTF-8として検証する。UCSの文字集合・制御符号は7.2.1／7.2.2の規定を同じdecoder stateへ適用する。ARIB公式の改定履歴上、UCSは既存STD-B24の正式な符号方式として維持・修正されているため、本crateのSI/EPG文字列対応から時点依存で除外しない。この英語版を現行日本語原文そのものとは扱わず、版差がある場合は未証明差分を残す。改定概要、版一覧、二次資料を未取得本文の具体規定の代用にしない。STD-B24の字幕レンダリングや他Fascicleへの適合は本decoderの主張に含めない。
 
 本decoderの適合主張は、字幕ではないSI/EPG文字列について、次の境界に限定する。
 
@@ -23,7 +23,7 @@ ARIB適合性の規範対象と検証証拠の分離は `../開発規則.md` を
 | designation / invocation | ESCによるdesignation、LS0/LS1/LS2/LS3、LS1R/LS2R/LS3R、SS2/SS3を、対応済み文字集合とMacroの選択に使用する |
 | Macro | STD-B24 6.4-E1で定義された既定Macroだけを展開し、再帰・入力消費量に上限を設ける。未定義Macroは置換と診断にする |
 | DRCS・外字 | 自前で字形を生成しない。SI/EPG用の明示的な外字辞書に一致する場合だけ変換し、それ以外は置換と診断にする |
-| UCS | STD-B24でUCS符号方式としてsignalingされたSI/EPG文字列を対応能力に含める。適用されるUCS符号化方式としてUTF-8／UTF-16を判別し、妥当なUnicode scalar列へ復号する。BOM、byte order、切詰めcode unit、illegal sequenceを推測で修復せず、strict APIではエラー、lossy APIでは`U+FFFD`と診断にする |
+| UCS | STD-B24 Fascicle 1 第一編第2部7.2.1〜7.2.3に従うUCS文字列を対応能力に含める。7.2.3に従いUTF-8／UTF-16だけを許可し、`FE FF`先頭ならBOMを消費してUTF-16BE、BOMなしならUTF-8として検証する。UTF-16LE (`FF FE`)、BOMなしUTF-16、UTF-8 BOM (`EF BB BF`)、切詰めcode unit／surrogate、illegal UTF-8 sequenceは推測修復しない。strict APIでは規格外／不正入力をエラー、lossy APIでは`U+FFFD`と条項・offset付き診断にする。最低試験はvalid UTF-8 without BOM、valid UTF-16BE with `FE FF`、UTF-8 BOM拒否、UTF-16LE BOM拒否、UTF-16 BOM欠落をUTF-16へ推測しないこと、truncated/illegal sequenceのstrict/lossy差を含む |
 | 不明・切詰めescape | `U+FFFD`へ置換し、offset、入力prefix、理由を診断へ記録する。`panic`、無言の脱落、推測による状態遷移を禁止する |
 | lossy境界 | 置換を許すAPIは`decode_arib_string_lossy()`だけとし、置換数と理由を返す。strict APIは未対応または不正な符号列をエラーにする |
 
