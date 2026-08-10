@@ -2931,3 +2931,11 @@ Filter生産側の許可は、短い非ブロッキング処理だけを覆うRA
 #### LNBとの接続
 
 LNBの論理閉鎖にも同じ遷移を適用する。`LogicalClosed+CleanupPending` の `close()` は回復再試行だけを許可する。`Quarantined` は内部回収機構が所有する。終端後片付けが完了するまで、LNB終端の使用枠を`openLnbById()`または`openLnbByName()`の受付へ戻してはならない。
+
+## clear non-passthrough MediaEvent presentation timestamp 契約
+
+本製品が成功対応として表明するlive AVのclear / non-passthrough media-filter profileでは、Tuner HAL / media-filter producerは、配送するすべてのnon-empty `DemuxFilterMediaEvent`について、当該eventのESデータへ適用可能な有効な33-bit 90 kHz presentation timestampを`pts`へ設定してから配送する。AOSP契約どおり`isPtsPresent`は元PES headerに明示PTSが存在したかというprovenanceだけを表し、timestamp validity flagとして使用しない。明示PTSを持つPESでは`isPtsPresent=true`かつ`pts`をその明示PTSとし、明示PTSを持たない合法なPESでは`isPtsPresent=false`を維持したまま、producerが当該ESデータへ適用可能なqueue可能presentation timestampへ解決した値を`pts`へ設定する。provenanceを満たすために`isPtsPresent`を`true`へ偽装してはならない。
+
+presentation timestampの解決責務は`MediaEvent`を公開するproducer側で完了させ、TISへPES再解析、codec別AU parser、AU再構成、独自clockを要求しない。解決結果は当該ESデータへ適用可能であることをprofile qualificationで検証し、単なる定数0、無検証の直前値carry-forward、wallclock代入をqueue可能timestamp保証として扱わない。backend/profileがこの保証を提供できない場合は、そのlive media-filter profileを成功capabilityとして表明しない。公開Tuner AIDL/VINTFの`isPtsPresent` / `pts`の意味は変更せず、VTS profileも既存capability整合規則に従う。
+
+最低試験は、explicit PTS、`isPtsPresent=false`の合法なPTS-sparse input、33-bit wrapとA/V timeline差、falseだけを理由にpayload破棄/fatalしないこと、TIS側で0/PCR/wallclock/直前PTS補完をしないことを含める。
