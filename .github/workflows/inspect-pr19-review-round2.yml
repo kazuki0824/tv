@@ -1,0 +1,21 @@
+name: Inspect PR19 review round 2
+
+on:
+  push:
+    paths:
+      - '.github/workflows/inspect-pr19-review-round2.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-tis-arib-design-residuals
+      - name: Inspect design references only
+        run: |
+          set -euxo pipefail
+          git grep -n -E 'flush|decoder再生成|track置換|availabilityEpochId|registrationToken|onTune|ChannelTune|inputId|COLUMN_INPUT_ID' -- tis/DESIGN_JA.md arib_si_engine_rs/DESIGN_JA.md ARIB_SI_EPG_TvProvider投影方針.md 開発規則.md || true
