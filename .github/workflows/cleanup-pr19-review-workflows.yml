@@ -1,0 +1,29 @@
+name: Cleanup PR19 review workflows
+
+on:
+  push:
+    branches:
+      - agent/fix-tis-arib-design-residuals
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-tis-arib-design-residuals
+          fetch-depth: 0
+      - shell: bash
+        run: |
+          git rm -f \
+            .github/workflows/fix-pr19-fragmented-au-shared-pts-epoch.yml \
+            .github/workflows/fix-pr19-reassembly-ownership-wording.yml \
+            .github/workflows/cleanup-pr19-review-workflows.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m 'ci: remove PR19 review workflows'
+          git push origin HEAD:agent/fix-tis-arib-design-residuals
