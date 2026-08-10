@@ -10,129 +10,32 @@ permissions:
 
 jobs:
   patch:
-    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-      - name: Patch TIS design
+          fetch-depth: 2
+      - name: Recover and run patch script
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          import re
+          import subprocess
 
-          p = Path('tis/DESIGN_JA.md')
-          s = p.read_text()
-
-          def replace_between(text, start, end, replacement):
-              i = text.index(start)
-              j = text.index(end, i)
-              return text[:i] + replacement + text[j:]
-
-          direct = '''## 再生経路
-
-製品ライブAVのアーキテクチャは、`../開発規則.md` のproduct-level invariantどおり **clear-memory / non-passthrough** のAOSP Tuner標準経路に固定する。TISはTuner media filterが返す各`MediaEvent`について`getLinearBlock()`と`getOffset()` / `getDataLength()`で示された有効rangeを、そのまま`MediaCodec.CONFIGURE_FLAG_USE_BLOCK_MODEL`の`QueueRequest.setLinearBlock()`へ渡す。AOSP Tuner Frameworkが同じnon-passthrough media filterについてデータ形式をESまたはpartial ESとしつつ`MediaEvent.getLinearBlock()`を直接MediaCodecへqueueする利用フローを規定しているため、TISは`MediaEvent`境界の上にcodec別access-unit parser、AU再構成、PES再解析を追加しない。
-
-TISはMPEG-2 Video / H.264 / HEVC / AAC / MPEG audioのstart code、NAL、slice、ADTS frame、MPEG audio frameを通常入力経路で再解析してqueue境界を作らない。`MediaEvent`がpartial ESを含み得ることはTuner→MediaCodec境界の契約として受け入れ、`BUFFER_FLAG_PARTIAL_FRAME`の手動付与、TIS所有`LinearBlock`への再構成、ES全体またはAU単位のcopyを標準経路にしない。対象decoder/device profileがこのAOSP direct-input契約を満たさない場合は、その組合せをplayback capability qualificationで非対応にする。runtimeでcodec parser/reassemblerへfallbackしてAOSPの責務境界を複製しない。
-
-各`MediaEvent`のtimestamp metadataもevent単位で透過的に扱う。`MediaEvent.getOffset()`をPTSの適用位置またはPES header位置とは解釈しない。`isPtsPresent()==true`なら、そのeventに付随する33-bit 90 kHz `getPts()`だけを`PtsNormalizer`へ入力し、同じeventのQueueRequestの`presentationTimeUs`に変換する。`isPtsPresent()==false`ならpayloadをdropせず、0、直前PTS、PCR、wallclock、frame rate、sample rateからPTSを捏造せず、別eventやcodec AUへPTSを再関連付けしない。明示PTSのないeventについてはfabricated timestampを設定せずdirect queueし、この入力を受理できないdecoder/profileは上記qualificationで非対応にする。
-
-`PlaybackPipeline` はplayback generationごとに1個の`PtsEpochCoordinator`と、active compressed trackごとの`PtsNormalizer`を持つ。これはcodec framingやAU identityを所有せず、**明示PTSを持つMediaEventのtimestamp変換だけ**を担当する。`PtsNormalizer`の`rawPrev` / `extendedPrev`はtrack別とし、33-bit wrap epochだけをgeneration内で共有する。`M = 2^33`、`H = 2^32`、`signedDelta(rawNew, rawRef) = ((rawNew - rawRef + H) mod M) - H`を`[-H, H-1]`の差とし、半周期差は`-H`に固定する。generationで最初の明示PTSを共通extended seed `H`へ置き、後から明示PTSを得るtrackはcurrent coordinator referenceに対してsigned-moduloで同じepochへjoinする。seed済みtrackはtrack-localにunwrapする。`isPtsPresent()==false`のeventはcoordinator / normalizerを進めない。PTS deltaの大小、通常wrap、presentation-order reorderだけから独自discontinuityを推定しない。
-
-plain `Filter.flush()`はAOSP契約どおりfilterが生成済みで未消費のdataをclearする入力側操作とし、未queue `MediaEvent` / `LinearBlock`と対応claimだけを破棄する。plain flushだけでは`PtsEpochCoordinator`、seed済み`PtsNormalizer`、decoder、MediaSync、AudioTrack、playback generationをresetしない。decoder再生成、AudioTrack切替 / 再生成、audio route変更、Surface変更、またはcodec / PID / track graph変更を伴うretune・track切替は後段のlifecycle契約どおりfull playback generation resetとし、coordinatorと全normalizerを新seedから開始する。filterのstop/reconfigure/restartに伴う`RestartEvent`は旧configuration eventを捨てるevent-validity境界であり、playback graphが変わらない限りそれ単独ではgeneration resetにせず、任意のPTS jump検出器としても使わない。
-
-`MediaEvent.getOffset()` / `getDataLength()`は`long`のまま境界検査し、`offsetLong >= 0`、`dataLengthLong > 0`、`offsetLong <= Int.MAX_VALUE`、`dataLengthLong <= Int.MAX_VALUE`を先に満たすことを要求する。次に`offsetLong + dataLengthLong`をchecked additionで算出して`long` overflowを拒否し、`LinearBlock`のqueue可能range / capacity以下であることを確認する。すべて満たした後だけ`Math.toIntExact()`相当でoffset / sizeを`int`へnarrowし、`QueueRequest.setLinearBlock()`へ渡す。implicit cast、truncate、narrow後のoverflow検査は禁止する。`getLinearBlock()`がnull、block model configureまたはQueueRequestが利用不能、range / narrowing検査違反、decoderがAOSP direct-input契約を満たさない場合は成功を偽装せず型付き診断へ落とし、当該playback profileを成功対応として表明しない。
-
-source `MediaEvent` / `LinearBlock`とrangeに対応するbudget claimは、`QueueRequest.queue()`が成功してcodecへ所有権を移すか、当該eventの破棄が確定するまで保持する。TISは通常ES payloadを`LinearBlock.map()`から`ByteArray`、別`LinearBlock`、通常ByteBuffer input modelへ複製しない。header / MediaFormat確定のために必要な最小prefixをread-only参照することは許すが、それをAU parserまたはES搬送経路へ拡張しない。
-
-secure-memory handle、tunneled playback、platform passthroughは本製品が提供しない恒久的なplayback capabilityであり、時点依存の一時除外ではない。TISはsecure `MediaEvent`をclear-memoryへcopyできると仮定せず、その経路をadvertiseしない。r52のCAS対応もdescramble後のclear ESをこのdirect non-passthrough経路へ接続できるサービスだけをライブ視聴成功対象とする。
-
-デコード後のA/V同期とSurface提示はAndroid標準`MediaSync`だけを使用する。decoder output の `BufferInfo.presentationTimeUs` をMediaSyncへ渡すmedia timeの正本とする。video decoder出力は`MediaSync.setSurface(sessionSurface)`後の`createInputSurface()`へ接続し、output timestampをMediaSyncへ渡す。audio decoder出力PCMは`MediaSync.queueAudio()`へpresentation time付きで渡し、`MediaSync.Callback.onAudioBufferConsumed()`を受けるまでaudio output bufferの所有権を保持する。独自media clock、PCR→wallclock変換、独自future render / late drop schedulerを設けない。
-
-'''
-          s = replace_between(s, '## 再生経路\n', '### MediaSync Framework-private final-output observation\n', direct)
-
-          live = '''## ライブ playback 実装方式
-
-TIS のライブplaybackは、Tuner AV filterのclear-memory `MediaEvent.getLinearBlock()`が示す各有効rangeをAOSP標準どおりMediaCodec block modelへ直接queueする。TISはcodec access-unit境界を再解析せず、fragmented ESを別`LinearBlock`へ再構成せず、通常ES payloadをByteArrayへcopyしない。video decoder出力を`MediaSync.createInputSurface()`へ、audio decoder出力PCMを`MediaSync.queueAudio()`へ渡す。MediaSyncはsession SurfaceとAudioTrackを所有し、A/V同期、映像提示時刻、音声clock追従を担当する。TISはMediaSyncの外側に独自clockまたは独自frame schedulerを置かない。
-
-本productはnon-tunneled MediaCodec + MediaSync経路をarchitectureとして採用し、tunneled / platform passthrough playback capabilityを恒久的に提供しない。`notifyVideoAvailable()`は、本書「MediaSync Framework-private final-output observation」で定義したcurrent availability epochのfinal-output成功eventだけをcommitにする。initial generationおよび同instanceでrecoverable unavailableから復旧するepochごとにlistenerをarm/re-armし、decoder output、`OnFrameRendered`、`getTimestamp()`のclock進行だけでは通知しない。
-
-'''
-          s = replace_between(s, '## ライブ playback 実装方式\n', 'setup scan の channel registration', live)
-
-          codec = '''## codec header / A-V sync / publish mode の固定
-
-r51 のライブ playback codec は video=MPEG-2 video / H.264 AVC、audio=AAC / MPEG audio とする。r52では`開発規則.md`の到達点どおり、現行対象の従来TS profileでARIB signaling上HEVC/H.265が現れる場合を同じgeneric Tuner→MediaCodec経路の再生判定対象へ含め、PMT / descriptor認識、MediaFormat、MediaCodec capability照合、decoder起動、MediaSync first-output gate、unsupported診断を同一契約で扱う。codec追加を別の専用再生経路にせず、対象releaseのARIB本文選定規則とdecoder capabilityに従って同じdirect pathへ接続する。
-
-STD-B79のISDB-T2 / ISDB-T1.5およびSTD-B80のISDB-T3は`開発規則.md`で恒久的な製品scope外とされているため、それらの方式だけに依存するcodecを本productのplayback capabilityへ追加しない。
-
-'''
-          s = replace_between(s, '## codec header / A-V sync / publish mode の固定\n', '現行製品が登録対象とするARIB `service_type`', codec)
-
-          s = s.replace('`service_type=0x01`はaudio-video serviceであり、現行対応video ESがない場合にaudio-onlyへ再分類しない。弱信号またはlock喪失は`VIDEO_UNAVAILABLE_REASON_WEAK_SIGNAL`、有効なserviceでdecoder起動またはqueue補充を一時待機する場合だけ`VIDEO_UNAVAILABLE_REASON_BUFFERING`、video codec非対応またはPMT構成不整合は`VIDEO_UNAVAILABLE_REASON_UNKNOWN`と型付き診断`UNSUPPORTED_VIDEO_CODEC`／`SERVICE_TYPE_PMT_MISMATCH`へ分離する。HEVCなど未対応codecのmetadataはprovider-dataへ保存してよいが、再生可能表明には使わない。',
-'''`service_type=0x01`はaudio-video serviceであり、対象releaseで対応するvideo ESがない場合にaudio-onlyへ再分類しない。弱信号またはlock喪失は`VIDEO_UNAVAILABLE_REASON_WEAK_SIGNAL`、有効なserviceでdecoder起動またはqueue補充を一時待機する場合だけ`VIDEO_UNAVAILABLE_REASON_BUFFERING`、video codec非対応またはPMT構成不整合は`VIDEO_UNAVAILABLE_REASON_UNKNOWN`と型付き診断`UNSUPPORTED_VIDEO_CODEC` / `SERVICE_TYPE_PMT_MISMATCH`へ分離する。HEVCはr51ではmetadata / 診断対象に留め、r52で`開発規則.md`の条件を満たす従来TS profileについてgeneric video playback selectionへ含める。''')
-
-          startup_re = re.compile(r'startup queueと台帳claimを確保した後にAV filterを開始し、.*?\n\nMediaEvent payloadは', re.S)
-          startup_new = '''startup queueと台帳claimを確保した後にAV filterを開始し、上限内の`MediaEvent`からdecoder構成に必要なcodec configuration metadataだけを取得して`MediaFormat`を構成する。r51ではMPEG-2 sequence header、H.264 SPS/PPS、AAC ADTS/AudioSpecificConfig、MPEG audio headerを対象とし、r52でHEVCを再生判定対象にする場合はHEVC VPS/SPS/PPSも同じheader収集契約へ追加する。header解析に必要な最小rangeだけ`LinearBlock.map()`でread-only参照してよいが、通常payloadのqueue境界を作るcodec parserやES/AU copyへ拡張しない。decoder構成成功後は同じsnapshotのsteady-state上限へ遷移し、startup queueの各`MediaEvent` / `LinearBlock`は元rangeのままblock model QueueRequestへ渡してqueue成功時にcodecへ所有権を移す。runtimeで観測したdecoder block capabilityは各eventの投入可否と製品profile検証の診断にだけ用い、開始済み世代のsnapshotまたは予約量を書き換えない。AOSP direct-input契約を満たさないdecoder/profileではfilterを停止し、claimとHAL handleを解放して`DECODER_CAPACITY_MISMATCH`または`DIRECT_INPUT_UNSUPPORTED`を記録し、成功対応として表明しない。
-
-MediaEvent payloadは'''
-          s, n = startup_re.subn(startup_new, s, count=1)
-          assert n == 1
-
-          claims_re = re.compile(r'必要なqueue領域とclaim台帳はplayback generation開始時に原子的に予約する。.*?\n\nfirst frame前は', re.S)
-          claims_new = '''必要なqueue領域とclaim台帳はplayback generation開始時に原子的に予約する。各eventはrange検証後、block model投入前に`dataLength`をsnapshot台帳へclaimし、event / byte / sample / duration上限を超える場合は原因別に`SAMPLE_TOO_LARGE`または`PENDING_QUEUE_FULL`を記録してHAL handleを解放する。TISはAU再構成用の追加buffer claimを持たない。claim済みbyte、sample、durationはQueueRequest成功、破棄、generation変更、stop、releaseの各ownership境界で正確に返す。HALの`avPerFilterLiveBytes`または`avRuntimeBudgetBytes`をTISへ公開・複製・1event上限化しない。
-
-first frame前は'''
-          s, n = claims_re.subn(claims_new, s, count=1)
-          assert n == 1
-
-          s = s.replace('A/V同期方式は現行productでAndroid標準`MediaSync`に固定する。tunneled playbackと`avSyncHwId`はTIS non-tunneled playback範囲外であり、TISは使用しない。',
-'''A/V同期方式はAndroid標準`MediaSync`に固定する。本productはnon-tunneled playbackを恒久architectureとして採用し、tunneled playback、platform passthrough、`avSyncHwId`をTIS capabilityとして提供しない。''')
-
-          tests = '''最低試験契約は、AOSP Tunerのclear non-passthrough media filterから得た`MediaEvent.getLinearBlock()`の有効rangeをcodec別AU解析なしでblock model `QueueRequest.setLinearBlock()`へ直接queueすること、ESまたはpartial ESのevent列をTIS側で再構成・copyしないこと、MPEG-2 Video / H.264 / AAC / MPEG audio（r52では対象条件を満たすHEVCを追加）の選択decoder/device profileでこのdirect-input契約を満たすことを確認する。`isPtsPresent=true`では同じeventの`getPts()`だけをevent-level timestampとして使い、offsetをPTS位置と解釈しないこと、`isPtsPresent=false`のeventもpayloadをdropせず、0 / 前値 / PCR / wallclock等からPTSを捏造せず、別eventまたはcodec AUへPTSを再関連付けしないことを確認する。`PtsEpochCoordinator`は明示PTSを持つeventだけで進め、track-local `rawPrev` / `extendedPrev`とgeneration共有wrap epoch、`2^33-1 -> 0` wrap、`0 -> 2^33-1` reorder、半周期差=`-2^32`、generation開始時video=`2^33-100` / audio=`50`と逆順、後からPTSを得るtrackのjoinを検証する。PTS deltaの大小だけではgeneration resetしない。plain `Filter.flush()`は未queue event / claimだけをclearし、coordinator / seed済みnormalizer / decoder / MediaSync / AudioTrack / generationを維持する。decoder再生成 / AudioTrack切替・再生成 / audio route変更 / Surface変更 / codec・PID・track graph変更を伴うretuneはfull generation resetにする。`MediaEvent`のlong offset / lengthについて負値、0 length、`Int.MAX_VALUE`境界、`Int.MAX_VALUE+1`、checked-add overflow、end==capacity、end>capacityをnarrow前に検査し、通常payloadをByteArray・別LinearBlock・通常input-bufferへcopyしないことを確認する。MediaSync rate-0有限prefillからstartup gate成立後speed 1.0へ遷移すること、`MEDIASYNC_ERROR_SURFACE_FAIL`と`MEDIASYNC_ERROR_AUDIOTRACK_FAIL`の分離、audio-videoでAudioTrack failure時のvideo-only継続、audio-onlyでの再生不能遷移、video-onlyがAudioTrack error遷移を持たないこと、各accepted video `onTune()`でfresh availability armを作り、そのarm後のfinal-output成功前はvideo availableにしないこと、late-drop / attach失敗 / queue失敗でcurrent armを消費しないこと、成功event後だけ一回availability通知すること、`available -> recoverable unavailable -> available`で同MediaSync instanceを維持する場合にfresh armでre-armして次のfinal-output成功後だけ再availableにすること、arm Aの成功event配送を遅延させたままunavailable遷移とarm Bのre-armを行い遅延Aをtoken不一致で破棄すること、generation teardown後は新instanceのinitial armを使うこと、audio bufferのconsume callbackまでの寿命、A/V同期、video-only、audio-only、destructive retune / Surface変更 / AudioTrack切替・再生成 / audio route変更 / decoder再生成後のMediaSync再生成、same-generation non-destructive `onTune()`でもfresh arm後のfinal-output成功でavailabilityを通知すること、旧tokenを新armへ再利用しないこと、route変更後の旧generation非利用、MediaSync error写像、stale generation非描画を含む。試験のqueue数値上限は選択した`ProductProfile`と一致させる。
-
-'''
-          s = replace_between(s, '最低試験契約は、', 'TvProvider公開モードは', tests)
-
-          s = s.replace('- `MediaEvent` sampleは固定4 MiBを上限にしない。負のoffset、0以下のlength、加算overflow、`offset + length > LinearBlock capacity`は不正入力として確保前に破棄する。正常sampleは同一製品profileのper-event予算をclaimし、range境界をAU境界にせずtrack別`AccessUnitAssembler`の論理ES cursorへ到着順に接続する。完成AUが単一blockの連続rangeなら直接block model QueueRequestへ渡す。fragmented AUだけは完成AU単位の追加reassembly claimを予約してTIS所有`LinearBlock`へ再構成し、ES stream全体のcopyや通常ByteBuffer input modelへのfallbackは行わない。共有領域方式とイベント固有fd方式を同じpending byte予算へ計上する。',
-'''- `MediaEvent` sampleは固定4 MiBを上限にしない。負のoffset、0以下のlength、`Int.MAX_VALUE`超過、加算overflow、`offset + length > LinearBlock capacity`はqueue前に拒否する。正常sampleは同一製品profileのper-event予算をclaimし、元`LinearBlock`の有効rangeをcodec別AU解析・再構成・payload copyなしでblock model QueueRequestへ直接渡す。`isPtsPresent=false`はpayload破棄理由にせず、timestampを別eventへ再関連付けしない。共有領域方式とイベント固有fd方式を同じpending byte予算へ計上する。''')
-
-          s = s.replace('現行r51〜r53はSTD-B79のISDB-T2/ISDB-T1.5およびSTD-B80のISDB-T3を対応宣言しないため、これら高度地上方式向け追加codecを現行capabilityへ自動追加しない。',
-'''STD-B79のISDB-T2 / ISDB-T1.5およびSTD-B80のISDB-T3は`開発規則.md`で恒久的な製品scope外とされているため、これら高度地上方式だけに依存するcodecを本product capabilityへ追加しない。''')
-
-          s = s.replace('| H.265 / HEVC | codec として認識対象。対象 transport profile を本プロダクトが 対応宣言しない場合は ライブ viewable capability に入れない。対応する場合は MediaFormat / block model decoder / MediaSync first-frame gate まで必須。 |',
-'''| H.265 / HEVC | codec として認識対象。r51はmetadata / 診断へ保持する。r52では現行対象の従来TS profileでARIB signaling上HEVCが現れる場合をgeneric direct playback selectionへ含め、MediaFormat / block model decoder / MediaSync first-output gate / unsupported診断まで必須とする。 |''')
-
-          s = s.replace('MPEG-H 3D Audio と AC-4 は ARIB STD-B32 4.0以降の改定概要で高度地上デジタルテレビジョン放送向け追加codecであることを確認できるが、STD-B79 / STD-B80 の高度地上方式を現行productが対応宣言しないため現行codec固定表には含めない。',
-'''MPEG-H 3D Audio と AC-4 は ARIB STD-B32 4.0以降の改定概要で高度地上デジタルテレビジョン放送向け追加codecであることを確認できるが、STD-B79 / STD-B80 の高度地上方式は本productの恒久scope外であるためcodec固定表には含めない。''')
-
-          old_hevc = '- 現行の video 対応宣言対象は MPEG-2 video `0x02` と H.264/AVC `0x1b` に限定する。HEVC `0x24` は 現行平文ライブ視聴 / playback selection 対象外であり、診断上は `NO_SUPPORTED_VIDEO_ES` 相当として扱う。現行productが対象とするtransport profileで認識codecを追加する場合は、規範対象の現行ARIB原文と、実際に検証証拠として使用した取得可能本文の版・条項および未証明差分、codec固定表、playback selection境界を同じ設計変更で固定してから扱う。'
-          new_hevc = '- r51 の video 対応宣言対象は MPEG-2 video `0x02` と H.264/AVC `0x1b` とする。HEVC `0x24` はr51ではmetadata / 診断へ保持し、r52で`開発規則.md`の到達点どおり、現行対象の従来TS profileでARIB signaling上現れる場合をgeneric Tuner→MediaCodec playback selectionへ含める。r52のHEVC対応は規範対象の現行ARIB原文、検証証拠の版・条項と未証明差分、MediaFormat / decoder capability / first-output gate / unsupported診断を同じ契約で固定する。'
-          assert old_hevc in s
-          s = s.replace(old_hevc, new_hevc)
-
-          # Eliminate stale parser/reassembly concepts from the normative TIS design.
-          forbidden = [
-              'AccessUnitAssembler', 'PtsAnchor', 'CONFLICTING_PTS_ACCESS_UNIT',
-              'MISSING_PTS_ACCESS_UNIT', 'AU_REASSEMBLY_BUDGET_EXCEEDED',
-              'reassemblyBlock', 'reassembly path', '完成access unit',
-          ]
-          for term in forbidden:
-              assert term not in s, f'stale term remains: {term}'
-
-          # The scope comments being addressed must no longer use time-dependent exclusions without a later release.
-          assert 'secure `MediaEvent`は現行平文productの対象外' not in s
-          assert '`tunneled`／platform passthrough playback pathは現行product' not in s
-          assert 'HEVC `0x24` は 現行平文ライブ視聴 / playback selection 対象外' not in s
-
-          p.write_text(s)
+          path = '.github/workflows/tmp-pr19-direct-tuner-path.yml'
+          old = subprocess.check_output(['git', 'show', f'HEAD^:{path}'], text=True)
+          start_marker = "          python3 - <<'PY'\n"
+          end_marker = "\n          PY\n\n          git diff --check"
+          start = old.index(start_marker) + len(start_marker)
+          end = old.index(end_marker, start)
+          body = old[start:end]
+          out = []
+          for line in body.splitlines():
+              out.append(line[10:] if line.startswith('          ') else line)
+          Path('/tmp/pr19_patch.py').write_text('\n'.join(out) + '\n')
           PY
-
+          python3 /tmp/pr19_patch.py
           git diff --check
-          git diff -- tis/DESIGN_JA.md
       - name: Commit design fix and remove helper
         shell: bash
         run: |
