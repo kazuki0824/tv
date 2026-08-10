@@ -12,7 +12,7 @@
 未対応の SI/EPG 文字・escape は `panic` させず、置換文字または 診断によって安定動作させる。字幕 payload を `decode_arib_string_lossy()` に渡す経路は禁止する。字幕本文処理は TIS 側の libaribcaption 経路だけで行う。
 `arib_si_engine_rs` は libaribcaption ラッパー を所有しない。libaribcaption は TIS 側の字幕 path から Rust JNI boundary と 安全なRustラッパー 経由で呼ぶ。
 
-ARIB適合性の規範対象と検証証拠の分離は `../開発規則.md` を正とする。本decoderについて現時点で条項単位に取得・確認し検証証拠として使用している本文は ARIB 公式英語版 STD-B24 6.4-E1 Fascicle 1 の7.1.1.1〜7.1.2.4であり、7.1.1.1のTable 7-1〜7-3をinvocation・designation・Final Byte、7.1.1.2〜7.1.1.5を文字集合とDRCS、7.1.1.6をMacro、7.1.2.1〜7.1.2.4を制御機能の根拠として条項単位で用いる。この英語版を現行日本語原文そのものとは扱わず、版差がある場合は未証明差分を残す。改定概要、版一覧、二次資料を未取得本文の具体規定の代用にしない。STD-B24の他Fascicleまたは字幕への適合は本decoderの主張に含めない。
+ARIB適合性の規範対象と検証証拠の分離は `../開発規則.md` を正とする。本decoderについて条項単位に取得・確認し検証証拠として使用する本文は ARIB 公式英語版 STD-B24 6.4-E1 Fascicle 1 とし、従来の8単位符号については7.1.1.1〜7.1.2.4をinvocation・designation・文字集合・Macro・制御機能の根拠として用いる。UCS符号方式についても同FascicleのUCS文字符号化規定を検証証拠に含める。ARIB公式の改定履歴上、UCSは既存STD-B24の正式な符号方式として維持・修正されているため、本crateのSI/EPG文字列対応から時点依存で除外しない。この英語版を現行日本語原文そのものとは扱わず、版差がある場合は未証明差分を残す。改定概要、版一覧、二次資料を未取得本文の具体規定の代用にしない。STD-B24の字幕レンダリングや他Fascicleへの適合は本decoderの主張に含めない。
 
 本decoderの適合主張は、字幕ではないSI/EPG文字列について、次の境界に限定する。
 
@@ -23,11 +23,11 @@ ARIB適合性の規範対象と検証証拠の分離は `../開発規則.md` を
 | designation / invocation | ESCによるdesignation、LS0/LS1/LS2/LS3、LS1R/LS2R/LS3R、SS2/SS3を、対応済み文字集合とMacroの選択に使用する |
 | Macro | STD-B24 6.4-E1で定義された既定Macroだけを展開し、再帰・入力消費量に上限を設ける。未定義Macroは置換と診断にする |
 | DRCS・外字 | 自前で字形を生成しない。SI/EPG用の明示的な外字辞書に一致する場合だけ変換し、それ以外は置換と診断にする |
-| UCS | UCS符号方式を現行の対応能力として主張しない。UCS切替を検出した場合は、その文字列を未対応符号方式として置換と診断にする |
+| UCS | STD-B24でUCS符号方式としてsignalingされたSI/EPG文字列を対応能力に含める。適用されるUCS符号化方式としてUTF-8／UTF-16を判別し、妥当なUnicode scalar列へ復号する。BOM、byte order、切詰めcode unit、illegal sequenceを推測で修復せず、strict APIではエラー、lossy APIでは`U+FFFD`と診断にする |
 | 不明・切詰めescape | `U+FFFD`へ置換し、offset、入力prefix、理由を診断へ記録する。`panic`、無言の脱落、推測による状態遷移を禁止する |
 | lossy境界 | 置換を許すAPIは`decode_arib_string_lossy()`だけとし、置換数と理由を返す。strict APIは未対応または不正な符号列をエラーにする |
 
-この表にない文字集合、制御機能、字幕、BML、組版、DRCS字形レンダリング、UCS符号方式は未対応である。対応を追加する場合は、参照するSTD-B24の版・分冊・条項、入力状態、出力、置換規則、試験ベクトルを先に更新する。
+この表にない文字集合、制御機能、字幕、BML、組版、DRCS字形レンダリングは対応能力に含めない。UCSについては、標準でsignalingされたSI/EPG入力を未対応符号方式として一括置換する設計にはせず、従来8単位符号とUCSを同じstrict/lossy境界で扱う。対応文字集合または制御機能を追加する場合は、参照するSTD-B24の版・分冊・条項、入力状態、出力、置換規則、試験ベクトルを先に更新する。
 
 
 ## EIT 範囲
@@ -150,7 +150,7 @@ extended_event は、全 fragment の `last_descriptor_number` が一致し、`d
 
 ## ARIB 文字列 decoder 入力境界と TvProvider 連携境界
 
-ARIB SI/EPG文字デコードの仕様固定に使う入力形態は、実波 TS ファイルを必須形式にせず、descriptor byte array / section builder を主入力とする。対象は SDT サービス名、EIT short_event、extended_event fragment、長形式イベント項目、component、audio_component、series、unsupported escape、truncated text、replacement 診断である。
+ARIB SI/EPG文字デコードの仕様固定に使う入力形態は、実波 TS ファイルを必須形式にせず、descriptor byte array / section builder を主入力とする。対象は SDT サービス名、EIT short_event、extended_event fragment、長形式イベント項目、component、audio_component、series、従来8単位符号のunsupported escape、truncated text、replacement 診断、UCSの有効UTF-8/UTF-16、byte order、切詰めcode unit、illegal sequenceである。
 
 Rust descriptor モデル から Kotlin/TvProvider へ渡す通常境界は、`ProgramProviderDataV1` と、TvProvider 標準列へ投影するための構造化 DTO だけにする。旧来の `eventGroupText`、`freeCaText`、`seriesName` のような表示用 flat フィールド は通常投影経路では使わない。イベントグループは provider-data JSON の `relatedItems`、free_CA_mode は `freeCaMode`、series name は `series.name` に保存する。TvProvider の title / description / long description への投影は `ARIB_SI_EPG_TvProvider投影方針.md` を SSOT とし、同文書で固定済みの component/audio/content/freeCA 補足だけを `Programs.COLUMN_LONG_DESCRIPTION` へ出す。イベントグループは LONG_DESCRIPTION や一般 UI 本文へ出さない。
 
