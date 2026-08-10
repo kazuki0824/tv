@@ -1,0 +1,52 @@
+name: Patch sparse PTS review v2
+'on':
+  push:
+    branches:
+      - agent/fix-tis-arib-design-residuals
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - shell: bash
+        run: |
+          cat > /tmp/p.py <<'PY'
+          from pathlib import Path
+          p=Path('tis/DESIGN_JA.md'); s=p.read_text()
+          a=s.index('各`MediaEvent`のtimestamp metadataもevent単位で透過的に扱う。')
+          b=s.index('\n\n`PlaybackPipeline`',a)
+          n='''各`MediaEvent`のtimestamp metadataもevent単位で透過的に扱う。`MediaEvent.getOffset()`をPTSの適用位置またはPES header位置とは解釈しない。AOSP契約上、`isPtsPresent()`は元PES headerに明示PTSが存在したかというprovenanceを表し、`getPts()`はaudio/video frameの90 kHz presentation timestampを表す別フィールドである。本製品が成功対応として表明するclear / non-passthrough live media-filter profileでは、Tuner HAL / media-filter producerがすべてのnon-empty `MediaEvent`について、当該eventのESデータへ適用可能な有効な33-bit 90 kHz presentation timestampを`getPts()`で提供することをproducer/consumer契約とする。明示PTSを持つPES由来eventでは`isPtsPresent()==true`かつ`getPts()`はその明示PTSを表し、PTSを明示しない合法なPES由来eventでは`isPtsPresent()==false`を維持したまま、producerが同じproduct contractを満たすqueue可能なpresentation timestampを`getPts()`へ設定する。`isPtsPresent`をtimestamp validity flagへ読み替えず、provenanceを偽装して`true`へ丸めない。
+
+TISは`isPtsPresent()`をMediaCodecへqueueする／しない、drop、playback fatalの判定に使用しない。non-empty `MediaEvent`では`getPts()`を33-bit range検証し、`PtsNormalizer`へ渡して同じeventの`QueueRequest.setPresentationTimeUs()`へ必ず設定してからdirect queueする。Android 14の`MediaCodec.QueueRequest`はpresentation timestampのabsenceを表現できずsetter未呼出しでは0がqueueされるため、setter未呼出しを「timestampなし」として利用しない。TISは0、直前PTS、PCR、wallclock、frame rate、sample rateからtimestampを補完せず、別eventやcodec AUへPTSを再関連付けせず、codec別AU parser、PES再解析、AU再構成も追加しない。producerが上記保証を満たせないbackend/profileはlive direct-input成功対応profileとしてqualificationを通さず、成功capabilityとして表明しない。これは公開Tuner AIDL/VINTF/VTSのフィールド意味を変更するものではなく、既存`MediaEvent.pts`を使って製品内producer/consumer責務を閉じる追加契約である。
+
+最低試験は、(1) explicit PTS PESでは`isPtsPresent()==true`かつ`getPts()`がそのPTSになること、(2) 合法なPTS-sparse inputでは`isPtsPresent()==false`のnon-empty eventでもproducerが有効な`getPts()`を提供しTISがdrop/fatalせずqueue継続すること、(3) 33-bit wrap前後とA/V間で本来のtimeline差を維持すること、(4) TISが`isPtsPresent()==false`だけを理由にdrop/fatalしないこと、(5) TISが0/PCR/wallclock/直前PTS等からtimestampを補完しないこと、を含める。'''
+          s=s[:a]+n+s[b:]
+          s=s.replace('これはcodec framingやAU identityを所有せず、**明示PTSを持つMediaEventのtimestamp変換だけ**を担当する。','これはcodec framingやAU identityを所有せず、**producer contractで有効な`getPts()`を持つ全non-empty `MediaEvent`のtimestamp変換だけ**を担当する。',1)
+          s=s.replace('`isPtsPresent()==false`のeventは上記product capability境界でMediaCodec queue前にplayback failureへ遷移させ、coordinator / normalizerを進めない。','`isPtsPresent()==false`でも`getPts()`は通常どおりcoordinator / normalizerへ入力し、provenance bit自体はunwrap状態やqueue可否を変更しない。',1)
+          p.write_text(s)
+          p=Path('tuner_hal/DESIGN_JA.md'); s=p.read_text()
+          sec='''
+
+## clear non-passthrough MediaEvent presentation timestamp 契約
+
+本製品が成功対応として表明するlive AVのclear / non-passthrough media-filter profileでは、Tuner HAL / media-filter producerは、配送するすべてのnon-empty `DemuxFilterMediaEvent`について、当該eventのESデータへ適用可能な有効な33-bit 90 kHz presentation timestampを`pts`へ設定してから配送する。AOSP契約どおり`isPtsPresent`は元PES headerに明示PTSが存在したかというprovenanceだけを表し、timestamp validity flagとして使用しない。明示PTSを持つPESでは`isPtsPresent=true`かつ`pts`をその明示PTSとし、明示PTSを持たない合法なPESでは`isPtsPresent=false`を維持したまま、producerが当該ESデータへ適用可能なqueue可能presentation timestampへ解決した値を`pts`へ設定する。provenanceを満たすために`isPtsPresent`を`true`へ偽装してはならない。
+
+presentation timestampの解決責務は`MediaEvent`を公開するproducer側で完了させ、TISへPES再解析、codec別AU parser、AU再構成、独自clockを要求しない。解決結果は当該ESデータへ適用可能であることをprofile qualificationで検証し、単なる定数0、無検証の直前値carry-forward、wallclock代入をqueue可能timestamp保証として扱わない。backend/profileがこの保証を提供できない場合は、そのlive media-filter profileを成功capabilityとして表明しない。公開Tuner AIDL/VINTFの`isPtsPresent` / `pts`の意味は変更せず、VTS profileも既存capability整合規則に従う。
+
+最低試験は、explicit PTS、`isPtsPresent=false`の合法なPTS-sparse input、33-bit wrapとA/V timeline差、falseだけを理由にpayload破棄/fatalしないこと、TIS側で0/PCR/wallclock/直前PTS補完をしないことを含める。
+'''
+          if '## clear non-passthrough MediaEvent presentation timestamp 契約' not in s: s=s.rstrip()+sec+'\n'
+          p.write_text(s)
+          PY
+          python3 /tmp/p.py
+          git diff --check
+          rm -f .github/workflows/patch-pr19-sparse-pts.yml .github/workflows/patch-pr19-sparse-pts-v2.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tis/DESIGN_JA.md tuner_hal/DESIGN_JA.md .github/workflows
+          git commit -m 'docs: align sparse PTS producer contract'
+          git push
