@@ -1,4 +1,4 @@
-name: Inspect PR19 review round 2
+name: Fix PR19 review round 2
 
 on:
   push:
@@ -6,16 +6,107 @@ on:
       - '.github/workflows/inspect-pr19-review-round2.yml'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  inspect:
+  fix:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: agent/fix-tis-arib-design-residuals
-      - name: Inspect design references only
+          fetch-depth: 0
+      - name: Update design contracts only
         run: |
-          set -euxo pipefail
-          git grep -n -E 'flush|decoder再生成|track置換|availabilityEpochId|registrationToken|onTune|ChannelTune|inputId|COLUMN_INPUT_ID' -- tis/DESIGN_JA.md arib_si_engine_rs/DESIGN_JA.md ARIB_SI_EPG_TvProvider投影方針.md 開発規則.md || true
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(text, old, new, label):
+              n = text.count(old)
+              if n != 1:
+                  raise SystemExit(f'{label}: expected 1 match, got {n}')
+              return text.replace(old, new, 1)
+
+          p = Path('tis/DESIGN_JA.md')
+          s = p.read_text()
+
+          s = replace_once(s,
+              'generation／flush／track replacement等の明示境界では未消費anchorを旧入力とともに破棄する。',
+              'plain `Filter.flush()`、full playback generation reset、track入力境界の切替では、その境界より前のincomplete AUに属する未消費anchorを旧入力artifactとともに破棄する。plain `Filter.flush()`はcompleted／queued AUのtimeline stateには作用しない。',
+              'anchor boundary')
+
+          s = replace_once(s,
+              '新playback generationではcoordinatorと全track normalizerを破棄して新しい共通seedから開始する。filter flush、decoder再生成、track置換では対象trackのlocal normalizerだけを破棄し、generationを維持する場合は次の明示PTSをcurrent coordinatorへjoinさせる。filterをstop/reconfigure/restartした場合の`RestartEvent`は旧configuration eventを捨てるevent-validity境界としてgeneration管理に使うが、任意のin-stream PTS jump検出器としては使わない。',
+              '新playback generationではcoordinatorと全track normalizerを破棄して新しい共通seedから開始する。plain `Filter.flush()`はAOSP契約どおりfilterが生成済みで未消費のdataをclearする入力側操作とし、`AccessUnitAssembler`のincomplete AU、未queue source range／`PtsAnchor`、filter由来pending inputと対応claimだけを破棄する。plain flushだけでは`PtsEpochCoordinator`、seed済み`PtsNormalizer`、decoder、MediaSync、AudioTrack、playback generationをresetしない。decoder再生成、AudioTrack切替／再生成、audio route変更、Surface変更、またはcodec／PID／track graphの変更を伴うretune・track切替は後段のlifecycle契約どおりfull playback generation resetとし、coordinatorと全normalizerを新seedから開始する。filterをstop/reconfigure/restartした場合の`RestartEvent`は旧configuration eventを捨てるevent-validity境界であり、playback graphが変わらない限りそれ単独ではgeneration resetにせず、任意のin-stream PTS jump検出器としても使わない。',
+              'pts lifecycle')
+
+          old_token = '''availabilityをarmするたびに、`PlaybackPipeline`は同一session内で再利用しない単調増加`availabilityEpochId`を割り当て、その値をFramework-private setterへopaqueな`registrationToken`として渡す。native MediaSyncはcurrent armの`registrationToken`を保持するだけでavailability semanticsを解釈しない。arm中にvideo bufferがlate-drop分岐を通過し、current `mOutput`へのattachと`queueBuffer()`がともに成功した時点で、その**成功を判定したarmの`registrationToken`をevent payloadへ固定してから**armを解除する。late-drop、attach失敗、queue失敗、output abandonment、inputへ返したbufferではeventを生成せず、arm状態も消費しない。re-arm後に旧eventのJava配送が遅延しても、event payloadのtokenは生成時の旧registrationから書き換えない。TIS側の`availabilityEpochId`はpending eventが存在し得る間に再利用せず、整数overflow時はwrapさせず現sessionのplayback pipelineを再生成する。常時すべてのrender成功を通知せず、TISが必要なavailability epochだけをarm/re-armする。'''
+          new_token = '''availabilityをarmするたびに、`PlaybackPipeline`はimmutableな`AvailabilityArm`を作り、Framework-private setterへ十分に広いopaque `registrationToken`を渡す。tokenの数値自体にTIF/TIS意味や単調増加意味を持たせず、**旧arm由来eventがまだ配送され得るtokenと同じ値を新armへ割り当てない**ことだけをallocatorの不変条件とする。native MediaSyncはcurrent armの`registrationToken`を保持するだけでavailability semanticsを解釈しない。arm中にvideo bufferがlate-drop分岐を通過し、current `mOutput`へのattachと`queueBuffer()`がともに成功した時点で、その**成功を判定したarmの`registrationToken`をevent payloadへ固定してから**armを解除する。late-drop、attach失敗、queue失敗、output abandonment、inputへ返したbufferではeventを生成せず、arm状態も消費しない。re-arm後に旧eventのJava配送が遅延しても、event payloadのtokenは生成時の旧registrationから書き換えない。旧armについてeventが今後配送されないことが確定するまでtokenをretireせず、session releaseではtoken namespace自体を破棄する。理論上の整数counter exhaustion／wrapはplayback failureでもgeneration境界でもなく、これを理由にMediaSyncやplayback pipelineを再生成するruntime recoveryを設けない。常時すべてのrender成功を通知せず、TISが必要な`AvailabilityArm`だけをarm/re-armする。'''
+          s = replace_once(s, old_token, new_token, 'availability token')
+
+          old_av = '''TISは新playback generation開始時にinitial availability epochを新しい`availabilityEpochId`でarmし、`waitingAvailabilityEpochId`として保持するとともに同じ数値をopaqueな`registrationToken`としてMediaSyncへ渡す。callback eventはMediaSync instance、playback generation、event payloadの`registrationToken`を同executor上で照合し、tokenが`waitingAvailabilityEpochId`と一致し、current `sessionSurface`が有効、視聴制限でblockされておらず、同generationの`MEDIASYNC_ERROR_SURFACE_FAIL`がない場合だけ`notifyVideoAvailable()`を呼ぶ。受理またはepoch取消し後は`waitingAvailabilityEpochId`を無効化する。一度availableになった後、`VIDEO_UNAVAILABLE_REASON_BUFFERING`等のrecoverable unavailableへ遷移し**同じMediaSync instance/generationを維持して復旧する場合**は、旧waiting epochを取消して新しいID/tokenでre-armし、re-arm前の旧epochで既に生成済みだった遅延eventはtoken不一致で必ず破棄する。新epochのfinal-output成功event後だけ再びavailableへ遷移する。generation teardownを伴うunavailableは新MediaSync instanceのinitial armで閉じる。これにより`available -> unavailable -> available`をrecoverable pathとgeneration-recreate pathの双方で閉じる。'''
+          new_av = '''TISは**各accepted `onTune(Uri)`ごと**に新しいvideo availability obligationを生成する。videoを持つtuneではcurrent waiting armを取消してfresh `AvailabilityArm`を割り当て、tuneがfull playback generation resetを伴う場合は新MediaSync instanceのinitial armとして、same-channel／same-locked-healthy等の非破壊tuneでcurrent pipeline/generationを維持する場合は既存MediaSyncへfresh armとしてre-armする。したがって同一generationを再利用する`onTune()`でも、当該tune受理後に生成されたcurrent final-output成功eventだけがそのtuneの`notifyVideoAvailable()` obligationを満たし、前のtuneで生成済みの遅延eventは満たせない。audio-only serviceは既存契約どおり映像availabilityを偽装せず`notifyVideoUnavailable(VIDEO_UNAVAILABLE_REASON_AUDIO_ONLY)`で閉じる。callback eventはMediaSync instance、playback generation、event payloadの`registrationToken`を同executor上で照合し、tokenがcurrent `waitingAvailabilityArm.registrationToken`と一致し、current `sessionSurface`が有効、視聴制限でblockされておらず、同generationの`MEDIASYNC_ERROR_SURFACE_FAIL`がない場合だけ`notifyVideoAvailable()`を呼ぶ。受理またはarm取消し後はcurrent waiting armを無効化する。一度availableになった後、`VIDEO_UNAVAILABLE_REASON_BUFFERING`等のrecoverable unavailableへ遷移し**同じMediaSync instance/generationを維持して復旧する場合**もfresh armでre-armし、re-arm前の旧armで既に生成済みだった遅延eventはtoken不一致で必ず破棄する。fresh arm後のfinal-output成功eventだけで再びavailableへ遷移する。generation teardownを伴うunavailableは新MediaSync instanceのinitial armで閉じる。これによりper-`onTune()` obligationと`available -> unavailable -> available`を、generation-reuse pathとgeneration-recreate pathの双方で閉じる。'''
+          s = replace_once(s, old_av, new_av, 'per tune availability')
+
+          s = replace_once(s,
+              'release済み、旧generation、旧MediaSync instance、またはTISのcurrent waiting epochとtokenが一致しない遅延eventはstate更新に使わない。',
+              'release済み、旧generation、旧MediaSync instance、またはTISのcurrent waiting armとtokenが一致しない遅延eventはstate更新に使わない。',
+              'waiting arm wording')
+
+          s = replace_once(s,
+              'playback rate変更、flush、retune、Surface/MediaSync generation変更、track disable、session releaseではpending subtitle eventをcancel/re-armする。',
+              'playback rate変更、字幕filterのplain flush／字幕track reset、retune、Surface/MediaSync generation変更、track disable、session releaseではpending subtitle eventをcancel/re-armする。A/V filterだけのplain flushを字幕schedulerのgeneration reset理由にはしない。',
+              'subtitle flush')
+
+          old_life = '''retune、playback generation変更、stop、flush、Surface変更、AudioTrack切替／再生成、audio route変更、decoder再生成では、既存MediaSyncの内部anchorを再利用せず、playback rateを0へ戻して未返却audio bufferと旧decoder outputを回収し、MediaSync input Surface、MediaSync、decoder、AudioTrackを解放して新generationとして再生成する。PTS raw deltaの大小、通常33-bit wrap、presentation-order reorderだけではMediaSync generationを再生成しない。旧generationのdecoder／MediaSync／route callbackはstate更新に使わず、旧bufferを非描画解放する。'''
+          new_life = '''playback graph／output ownershipを失効させるretune（物理選局・service・codec/PID graph変更、またはcurrent pipelineがhealthy/lockedでなく再利用不能な場合）、明示的playback generation変更、stop、Surface変更、AudioTrack切替／再生成、audio route変更、decoder再生成では、既存MediaSyncの内部anchorを再利用せず、playback rateを0へ戻して未返却audio bufferと旧decoder outputを回収し、MediaSync input Surface、MediaSync、decoder、AudioTrackを解放して新generationとして再生成する。same-channelかつcurrent physical tuneがlocked/healthyでgraph変更のない非破壊`onTune()`はこのfull reset条件ではなく、前段のper-tune fresh `AvailabilityArm`だけを必須とする。plain `Filter.flush()`はAOSP契約どおり未消費filter dataのclearに限定し、assembler/pending inputを破棄するだけでMediaSync/decoder/AudioTrack/playback generationを再生成しない。PTS raw deltaの大小、通常33-bit wrap、presentation-order reorderだけでもMediaSync generationを再生成しない。旧generationのdecoder／MediaSync／route callbackはstate更新に使わず、旧bufferを非描画解放する。'''
+          s = replace_once(s, old_life, new_life, 'playback lifecycle')
+
+          s = s.replace('track replacementがwrapを跨いでもcurrent coordinatorへjoinすること', '同generation内で後から明示PTSを得たtrackがwrapを跨いでもcurrent coordinatorへjoinすること')
+          s = s.replace('新generationだけがcoordinatorをresetしflush／decoder再生成／track置換でgeneration維持時は対象trackだけを再seedしてcurrent epochへjoinすること', '新generationだけがcoordinatorをresetしplain `Filter.flush()`ではcoordinator／seed済みnormalizerを維持したままassembler・pending inputだけをclearすること、decoder再生成／AudioTrack切替／graph変更track切替ではfull generation resetすること')
+          s = s.replace('initial availability epochでfinal-output成功前はvideo availableにしないこと', '各accepted video `onTune()`でfresh availability armを作り、そのarm後のfinal-output成功前はvideo availableにしないこと')
+          s = s.replace('`available -> recoverable unavailable -> available`で同MediaSync instanceを維持する場合に新しい`availabilityEpochId`でlistenerをre-armして次のfinal-output成功後だけ再availableにすること', '`available -> recoverable unavailable -> available`で同MediaSync instanceを維持する場合にfresh `AvailabilityArm`でlistenerをre-armして次のfinal-output成功後だけ再availableにすること')
+          s = s.replace('retune／flush／Surface変更／AudioTrack切替・再生成／audio route変更／decoder再生成後のMediaSync再生成', 'destructive retune／Surface変更／AudioTrack切替・再生成／audio route変更／decoder再生成後のMediaSync再生成、plain `Filter.flush()`ではMediaSyncを再生成しないこと、same-generation non-destructive `onTune()`でもfresh arm後のfinal-output成功で当該tuneのavailabilityを通知すること、pending旧tokenを新armへ再利用しないこと、およびtoken counter exhaustionをplayback teardownへ接続しないこと')
+
+          s = replace_once(s,
+              '登録可能サービスは、`ServiceKey`、物理選局情報、inputId へ戻せる channel provider data、表示名が揃い、TvProvider channel insert/update に進める サービスとする。',
+              '登録可能サービスは、`ServiceKey`、物理選局情報へ戻せるchannel provider-data、`Channels.COLUMN_INPUT_ID`として保存する自TISのinputId、表示名が揃い、TvProvider channel insert/update に進めるサービスとする。input ownershipのSSOTはprovider-dataではなく`Channels.COLUMN_INPUT_ID`とする。',
+              'registration inputId')
+
+          s = replace_once(s,
+              '`ChannelTune` は `inputId`、`deliverySystem`、`frequencyHz`、`streamIdType`、`streamId`、`physicalChannel`、`satelliteBand`、`remoteControlKeyId` だけを持つ typed tune 復元値とし、backend名、driver名、px4相対slot等のbackend固有値を持たない。`decodeChannelProviderData()` は invalid UTF-8、malformed JSON、schema不整合を null または診断付き失敗へ落とし、Kotlin側でJSONを解釈・修復しない。',
+              '`ChannelTune` は `deliverySystem`、`frequencyHz`、`streamIdType`、`streamId`、`physicalChannel`、`satelliteBand`、`remoteControlKeyId` だけを持つtyped物理tune復元値とし、`inputId`、backend名、driver名、px4相対slot等を持たない。TV input ownershipはchannel rowのrequired fieldである`TvContract.Channels.COLUMN_INPUT_ID`を唯一のSSOTとする。tune復元前にrowの`COLUMN_INPUT_ID`がcurrent TISの`TvInputInfo.id`と一致することを検証し、不一致rowのprovider-dataを別inputの物理tuneとして使用しない。`decodeChannelProviderData()` は invalid UTF-8、malformed JSON、schema不整合を null または診断付き失敗へ落とし、Kotlin側でJSONを解釈・修復しない。',
+              'ChannelTune inputId')
+
+          s = replace_once(s,
+              'JSON v1 は `schema="maleicacid.tv.channel"` / `schemaVersion=1` を持ち、channel tune 復元に必要な inputId、物理選局情報、ONID / TSID / service_id、表示名、登録可能性診断を Rust provider-data API 由来の構造として保存する。',
+              'JSON v1 は `schema="maleicacid.tv.channel"` / `schemaVersion=1` を持ち、channel tune 復元に必要な物理選局情報、ONID / TSID / service_id、表示名、登録可能性診断を Rust provider-data API 由来の構造として保存する。`inputId`はprovider-dataへ重複保存せず、channel rowのrequired `TvContract.Channels.COLUMN_INPUT_ID`をSSOTとする。',
+              'provider data inputId')
+
+          p.write_text(s)
+
+          p = Path('arib_si_engine_rs/DESIGN_JA.md')
+          s = p.read_text()
+          s = replace_once(s,
+              '`decodeChannelProviderData()` は UTF-8、JSON、schema を Rust 側で検証し、canonical bytes、schema version、型付き `ServiceKey`、型付き `ChannelTune` を返す。`ChannelTune` は `inputId`、`deliverySystem`、`frequencyHz`、`streamIdType`、`streamId`、`physicalChannel`、`satelliteBand`、`remoteControlKeyId` を持ち、backend名、driver名、driver固有slotを含めない。Kotlin は channel provider-data JSON を `JSONObject`、文字列連結、個別key抽出で解釈しない。',
+              '`decodeChannelProviderData()` は UTF-8、JSON、schema を Rust 側で検証し、canonical bytes、schema version、型付き `ServiceKey`、型付き `ChannelTune` を返す。`ChannelTune` は `deliverySystem`、`frequencyHz`、`streamIdType`、`streamId`、`physicalChannel`、`satelliteBand`、`remoteControlKeyId` を持ち、`inputId`、backend名、driver名、driver固有slotを含めない。TV input ownershipはTvProvider channel rowのrequired `TvContract.Channels.COLUMN_INPUT_ID`をSSOTとし、Kotlin/TISはprovider-data decode前にrowのinputIdがcurrent TIS inputIdと一致することを検証する。Kotlin は channel provider-data JSON を `JSONObject`、文字列連結、個別key抽出で解釈しない。',
+              'rust ChannelTune')
+          s = replace_once(s,
+              '`arib_si_engine_rs/schema/channel_provider_data_v1.schema.json` は、channel row の tune 復元に必要な `inputId`、物理選局情報、ONID / TSID / service_id、表示名、登録可能性診断を検証対象にする。',
+              '`arib_si_engine_rs/schema/channel_provider_data_v1.schema.json` は、channel row の tune 復元に必要な物理選局情報、ONID / TSID / service_id、表示名、登録可能性診断を検証対象にし、`inputId`をprovider-data schemaへ重複定義しない。',
+              'schema inputId')
+          s = replace_once(s,
+              '`tune` は `inputId`、`displayName`、`deliverySystem`、`frequencyHz`、`streamId`、`streamIdType`、`physicalChannel`、`satelliteBand`、`remoteControlKeyId` を持つ。',
+              '`tune` は `displayName`、`deliverySystem`、`frequencyHz`、`streamId`、`streamIdType`、`physicalChannel`、`satelliteBand`、`remoteControlKeyId` を持つ。`inputId`は保存せず、TvProvider rowの`Channels.COLUMN_INPUT_ID`を唯一のSSOTとする。',
+              'tune inputId')
+          p.write_text(s)
+          PY
+          git diff --check
+          git grep -n '整数overflow時はwrapさせず現sessionのplayback pipelineを再生成' -- tis/DESIGN_JA.md && exit 1 || true
+          git grep -n -E 'ChannelTune.*inputId|tune.*`inputId`|復元に必要な `inputId`' -- tis/DESIGN_JA.md arib_si_engine_rs/DESIGN_JA.md && exit 1 || true
+          git status --short
+          git add tis/DESIGN_JA.md arib_si_engine_rs/DESIGN_JA.md
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m 'docs: close tune lifecycle and provider ownership gaps'
+          git push origin HEAD:agent/fix-tis-arib-design-residuals
