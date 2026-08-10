@@ -1,0 +1,31 @@
+name: Patch sparse PTS review v4
+'on':
+  push:
+    branches:
+      - agent/fix-tis-arib-design-residuals
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - shell: bash
+        run: |
+          payload=$(sed -n "s/.*echo '\([^']*\)'.*/\1/p" .github/workflows/patch-pr19-sparse-pts-v3.yml | head -1)
+          echo "$payload" | base64 -d > /tmp/p.py
+          python3 /tmp/p.py
+          python3 - <<'PY'
+          from pathlib import Path
+          for f in ['tis/DESIGN_JA.md','tuner_hal/DESIGN_JA.md']:
+              p=Path(f); p.write_text(p.read_text().rstrip()+'\n')
+          PY
+          git diff --check
+          rm -f .github/workflows/patch-pr19-sparse-pts.yml .github/workflows/patch-pr19-sparse-pts-v2.yml .github/workflows/patch-pr19-sparse-pts-v3.yml .github/workflows/patch-pr19-sparse-pts-v4.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tis/DESIGN_JA.md tuner_hal/DESIGN_JA.md .github/workflows
+          git commit -m 'docs: align sparse PTS producer contract'
+          git push
