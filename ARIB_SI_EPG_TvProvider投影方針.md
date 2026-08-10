@@ -39,7 +39,7 @@ TvProvider 標準列へ投影する ARIB descriptor 由来値は、Rust parser �
 |---|---|---|
 | ISDB-T | `TvContract.Channels.TYPE_ISDB_T` | 地上UHFだけでなく、CATV帯の候補から受信した場合でも実際のtransportがISDB-TならISDB-Tとする |
 | ISDB-S | `TvContract.Channels.TYPE_ISDB_S` | BSとCS110を含む |
-| ISDB-C | `TvContract.Channels.TYPE_ISDB_C` | 将来、実際のISDB-C transportを対応宣言した場合だけ使用する。CATV周波数帯を走査したという理由だけでは使用しない |
+| ISDB-C | 投影しない | ISDB-C delivery systemは本productの恒久非対応対象とする。CATV周波数帯を走査したという理由だけで`TYPE_ISDB_C`へ写像せず、実transportがISDB-Cならchannel登録対象にしない |
 
 `Channels.COLUMN_SERVICE_TYPE`はARIB `service_type`から決める別軸であり、`Channels.COLUMN_TYPE`の代用にしない。正規化済みdelivery systemを一意に決定できないサービスは、`TYPE_OTHER`や周波数帯由来の値へ丸めずchannel登録可能としない。既存channelの`COLUMN_TYPE`を更新して方式変更を表現せず、方式が異なる受信構成を採用する場合はsetup/rescanで新しいchannel登録transactionとして扱う。
 
