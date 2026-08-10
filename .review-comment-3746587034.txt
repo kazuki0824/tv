@@ -1,1 +1,0 @@
-**[BLOCKER] `AccessUnitAssembler` の境界・PTS相関契約がまだ不足しています。** AOSP Tuner の partial ES を欠落させず、完成AU単位でqueue/dropする方向は妥当ですが、現状は「codec bitstreamのframe/access-unit境界を確定する」としか規定されていません。現行対応対象（MPEG-2 Video / H.264 AVC / AAC / MPEG audio）について、少なくとも (1) fragmentがheader/NAL等の途中で切れた場合を含むAU境界判定、(2) 1 AUを構成する複数fragmentに複数の明示
