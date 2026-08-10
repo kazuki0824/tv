@@ -1,0 +1,63 @@
+name: Fix PR19 AU boundary and PTS correlation
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-pr19-au-boundary-pts-correlation.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  fix-design:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-tis-arib-design-residuals
+          fetch-depth: 0
+      - name: Update design contract
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path('tis/DESIGN_JA.md')
+          s = p.read_text()
+
+          new_playback = '''## 再生経路
+
+現行 product の平文 non-tunneled AV入力は、Tuner `MediaEvent.getLinearBlock()` と `MediaCodec` block model の型付き経路だけを正式経路とする。AOSP Tuner の media filter output は complete ES に限定されず partial ES も許すため、`MediaEvent` 1件、`LinearBlock` 1個、range 1個、PES 1個のいずれもcodec access unit境界とはみなさない。video／audio decoderは `MediaCodec.CONFIGURE_FLAG_USE_BLOCK_MODEL` で構成し、track別のbounded `AccessUnitAssembler` は到着順source rangeを論理的に連結したread-only ES byte streamとして走査する。start-code prefix、syncword、NAL header、slice header、ADTS header、MPEG audio headerその他の境界判定に必要なsyntaxが`MediaEvent`／`LinearBlock`境界の任意byte位置で分断されてもparser stateを次rangeへ持ち越し、source payload自体はdirect queueまたは完成AU再構成が確定するまで元`LinearBlock`に保持する。range境界や`isPtsPresent()`の変化だけでAUを閉じてはならない。
+
+`AccessUnitAssembler` のcodec別境界は次で固定する。MPEG-2 VideoはH.262のaccess-unit定義に従い、`0x000001` start-code prefixをrange跨ぎで認識し、pictureが直前の`sequence_header_code`／`group_start_code`を伴う場合はその最初のstart codeから、伴わない場合は`picture_start_code`からAUを開始し、次AU開始直前で閉じる。最後のpictureに続く`sequence_end_code`はその最終AUに含める。H.264/AVCはAnnex B byte streamの3-byte／4-byte start-code prefixとNAL/RBSP syntaxをrange跨ぎで解析し、ITU-T H.264 7.4.1.2.3および7.4.1.2.4のNAL ordering／first-VCL-of-primary-coded-picture規則をそのままAU境界判定の正本とする。AUDは境界判定の補助には使えるが必須とせず、`first_mb_in_slice == 0`だけへ単純化しない。SPS/PPS/SEI等のnon-VCL NALは同節のassociation規則に従って前後AUへ所属させる。AACは現行ARIB運用で用いるADTSをrange跨ぎで解析し、syncword、`protection_absent`を含むheader、13-bit `aac_frame_length`を検証し、header 7/9 byteやpayloadがfragmentを跨いでも`aac_frame_length`全体が揃うまで閉じない。現行対象のADTSは1 frame=1 raw_data_blockの運用を前提とし、この運用条件を満たさない入力を暗黙に複数AUとして1 QueueRequestへ詰めない。MPEG audioは4-byte headerをrange跨ぎで解析し、MPEG version／layer／bitrate／sampling-rate／paddingから規格上のframe sizeを確定し、その完全な1 audio frameを1 AUとする。headerだけ、syncwordだけ、またはsource fragment終端だけではAU完成としない。
+
+PTSはpayload fragmentへ面で付与せず、`MediaEvent.isPtsPresent()==true`のsource range開始位置に33-bit raw PTSを持つ`PtsAnchor`を置く。これはPES header由来timestampを表すmetadataであり、既に開始済みでanchor位置を跨いでいるAUへ**後方適用しない**。anchorは、その位置以後に最初に開始するcodec AUだけの候補となり、1つのanchorを複数AUへ複製しない。1つのsource rangeに複数AUが含まれても、そのrangeの1つのanchorを全AUへ反復適用しない。複数anchorが同じAU開始位置の候補となった場合、33-bit raw値が同値なら重複metadataとして1個へcoalesceし、異なる値ならfirst/last-winsで選ばず、その完成AUだけを`CONFLICTING_PTS_ACCESS_UNIT`としてcodecへ渡さず解放する。anchor位置より前に開始したAUが後続rangeまで伸びる場合、その後続rangeのanchorを当該AUへ付け替えてはならない。generation／flush／track replacement等の明示境界で未消費anchorは旧入力とともに破棄する。AOSP `MediaEvent`が`isPtsPresent=false`を表現可能であることから、全AUにPTSが存在することをAOSP／ARIB必須契約とは主張しない。現行productでは、上記規則で完成AUに一意の明示PTS anchorを関連付けられた場合だけ、その90 kHz・33 bit値を`PtsNormalizer`へ渡して1つの`presentationTimeUs`をqueueする。関連付け可能な明示anchorが無い完成AUは0、直前PTS、PCR、wallclock、frame rate、sample rateからこの層で時刻を補間・捏造せず、完成AU全体を`MISSING_PTS_ACCESS_UNIT`としてdropする。このdropはARIB/H.222.0が全AUへのPTS記載を要求するという規範主張ではなく、timestamp derivationを別途仕様化していない現行productの保守的入力ポリシーである。
+
+完成access unitが1つのsource `LinearBlock`上の1つの連続rangeだけで構成される場合は、そのsource block/rangeを`MediaCodec.QueueRequest.setLinearBlock()`へ直接1回だけ渡す。完成access unitが複数`MediaEvent`、複数`LinearBlock`、または非連続rangeに跨る場合は、source fragmentのclaimを保持したままaccess-unit総byte数をchecked arithmeticで算出し、正で`Int.MAX_VALUE`以下かつ同じ`TisPlaybackBudgetSnapshot`の追加reassembly byte予算を原子的にclaimできる場合だけ、`MediaCodec.LinearBlock.obtain(totalAuBytes, arrayOf(selectedCodecName))`相当でTIS所有のmappable blockを確保する。各source rangeのうち当該AUに属する有効payloadだけを到着順にそのblockへ連続copyして**完成access unit 1個**へ再構成し、copy完了後にsource `MediaEvent`／`LinearBlock`／source claimを解放する。再構成blockは`QueueRequest.setLinearBlock(reassemblyBlock, 0, totalAuBytes)`で1回だけqueueし、queue成功または破棄確定までreassembly claimとともに保持する。現行productの正式経路はvideo/audioのいずれについても`MediaCodec.BUFFER_FLAG_PARTIAL_FRAME`または`FEATURE_PartialFrame`を必須能力とせず、decoderのoptional partial-frame capabilityへ再生成立性を依存させない。incomplete access unitは既存のper-track pending byte/count budgetとstartup/backpressure deadlineに従い、上限超過時は認識済みの当該incomplete unit全体を`INCOMPLETE_ACCESS_UNIT`として破棄するがdeadlineを延長・リセットしない。syntaxが確定的に不正で境界復旧不能な場合は途中fragmentだけを黙って捨てず、次のcodec-valid resync boundaryまでを`MALFORMED_ACCESS_UNIT`として型付き診断し、bounded resyncを行う。reassembly用追加claimを確保できない場合もsource fragmentを無制限保持せず、既存deadlineとbounded queue規則に従って`AU_REASSEMBLY_BUDGET_EXCEEDED`へ落とす。PTS欠落／衝突AU単体を理由にplayback generationを再生不能へ遷移させず、generation全体のunavailable遷移は既存のdecoder error、lock喪失、startup/backpressure deadline等の独立条件だけで判定する。'''
+
+          s, n = re.subn(r'## 再生経路\n\n.*?(?=\n\n`PlaybackPipeline` はplayback generationごとに)', new_playback, s, count=1, flags=re.S)
+          if n != 1:
+              raise SystemExit(f'playback replacement count={n}')
+
+          old = '`MediaEvent` sampleは固定4 MiBを上限にしない。負のoffset、0以下のlength、加算overflow、`offset + length > LinearBlock capacity`は不正入力として確保前に破棄する。正常sampleは同一製品profileのper-event予算をclaimし、完成AUが単一blockの連続rangeなら直接block model QueueRequestへ渡す。fragmented AUだけは完成AU単位の追加reassembly claimを予約してTIS所有`LinearBlock`へ再構成し、ES stream全体のcopyや通常ByteBuffer input modelへのfallbackは行わない。共有領域方式とイベント固有fd方式を同じpending byte予算へ計上する。'
+          new = '`MediaEvent` sampleは固定4 MiBを上限にしない。負のoffset、0以下のlength、加算overflow、`offset + length > LinearBlock capacity`は不正入力として確保前に破棄する。正常sampleは同一製品profileのper-event予算をclaimし、range境界をcodec AU境界とはみなさず、track別`AccessUnitAssembler`の論理ES cursorへ到着順に接続する。完成AUが単一blockの連続rangeなら直接block model QueueRequestへ渡し、fragmented AUだけは完成AU単位の追加reassembly claimを予約してTIS所有`LinearBlock`へ再構成する。PTSは`isPtsPresent` source-range開始位置の`PtsAnchor`として扱い、既開始AUへ後方適用せず、同じAUへ異なるanchorが競合する場合もfirst/last-winsで選ばない。ES stream全体のcopyや通常ByteBuffer input modelへのfallbackは行わない。共有領域方式とイベント固有fd方式を同じpending byte予算へ計上する。'
+          if old not in s:
+              raise SystemExit('callback boundary paragraph not found')
+          s = s.replace(old, new, 1)
+
+          test_para = '''最低試験契約は、型付きLinearBlock→block model QueueRequest、ES stream全体のByteArray copy／通常input-buffer fallback禁止、**MediaEvent／LinearBlock／range境界をAU境界にしないこと、start code／syncword／header／NAL／slice headerを全byte位置でfragment分割しても同じAU列を復元すること、MPEG-2 Videoでsequence/GOP/picture startのH.262 associationと次pictureによるclosure、H.264で3-byte／4-byte Annex-B start code分割・AUD無しstream・SPS/PPS/SEI association・H.264 7.4.1.2.3/.4 first-VCL判定、AACでADTS 7/9-byte headerの各byte分割・`aac_frame_length`跨ぎ・1 frame=1 raw_data_block運用、MPEG audioで4-byte header分割・frame-size跨ぎ・1 frame=1 AUを検証すること**、PTSなしのpartial `MediaEvent`を単独dropせず保持して後続fragmentとaccess unitを完成させること、**`PtsAnchor`をanchor位置より前に開始したAUへ後方適用しないこと、1 range内の複数AUへ1 anchorを複製しないこと、同一AU候補の同値anchorはcoalesceし異値anchorは`CONFLICTING_PTS_ACCESS_UNIT`でそのAUだけdropしてfirst/last-winsにしないこと、AU途中のeventに現れたanchorは既開始AUのPTSを書き換えないこと、明示anchor無しでは完成AU単位で`MISSING_PTS_ACCESS_UNIT`としこの層でtimestamp derivationを行わないこと**、単一block・連続rangeの完成AUはsource LinearBlockを直接queueすること、fragmented audio AUと`FEATURE_PartialFrame`非対応video decoderのfragmented AUはいずれもTIS所有`LinearBlock`へ完成AU単位で再構成して1回queueし`BUFFER_FLAG_PARTIAL_FRAME`へ依存しないこと、reassembly中はsource claimと追加reassembly claimの二重保持peakをbudgetへ計上しcopy完了後だけsourceを解放すること、incomplete／malformed access unitのbounded resync、reassembly budget超過、track-local `rawPrev`／`extendedPrev`とgeneration共有`PtsEpochCoordinator`、`2^33-1 -> 0` wrap、`0 -> 2^33-1` reorder、半周期差=`-2^32`、**generation開始時のvideo=`2^33-100`／audio=`50`とその逆順でextended差が±150 tick近傍の同一epochになること、片trackがwrap前・他trackがwrap後に開始すること、track replacementがwrapを跨いでもcurrent coordinatorへjoinすること**、PTS deltaの大小だけではgeneration resetしないこと、新generationだけがcoordinatorをresetしflush／decoder再生成／track置換でgeneration維持時は対象trackだけを再seedしてcurrent epochへjoinすること、`MediaEvent`のlong offset／lengthについて負値、0 length、`Int.MAX_VALUE`境界、`Int.MAX_VALUE+1`、checked-add overflow、`end==capacity`、`end>capacity`をnarrow前に検査すること、MediaSync rate-0有限prefillからstartup gate成立後speed 1.0へ遷移すること、`MEDIASYNC_ERROR_SURFACE_FAIL`と`MEDIASYNC_ERROR_AUDIOTRACK_FAIL`の分離、audio-videoでAudioTrack failure時のvideo-only継続、audio-onlyでの再生不能遷移、video-onlyがAudioTrack error遷移を持たないこと、initial availability epochでfinal-output成功前はvideo availableにしないこと、late-drop／attach失敗／queue失敗でepochを消費しないこと、成功event後だけ一回availability通知すること、`available -> recoverable unavailable -> available`で同MediaSync instanceを維持する場合に新しい`availabilityEpochId`でlistenerをre-armして次のfinal-output成功後だけ再availableにすること、**epoch Aのfinal-output成功eventを生成したままJava配送を遅延させ、その間にunavailable遷移とepoch Bのre-armを行った場合、遅延event AをID不一致で破棄し、epoch B arm後の新しいfinal-output成功eventだけで再availableにする競合試験**、generation teardown後は新instanceのinitial armを使うこと、audio bufferのconsume callbackまでの寿命、A/V同期、video-only、audio-only、retune／flush／Surface変更／AudioTrack切替・再生成／audio route変更／decoder再生成後のMediaSync再生成、route変更後の旧generation非利用、MediaSync error写像、stale generation非描画を含む。試験のqueue数値上限は選択した`ProductProfile`と一致させる。'''
+          s, n = re.subn(r'最低試験契約は、.*?試験のqueue数値上限は選択した`ProductProfile`と一致させる。', test_para, s, count=1, flags=re.S)
+          if n != 1:
+              raise SystemExit(f'test replacement count={n}')
+
+          p.write_text(s)
+          PY
+
+          rm -f .review-comment-3746587034.txt
+          rm -f .github/workflows/read-pr19-review-comment-3746587034.yml
+          git diff --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tis/DESIGN_JA.md .github/workflows/read-pr19-review-comment-3746587034.yml .review-comment-3746587034.txt
+          git commit -m 'docs: define AU boundaries and PTS correlation'
+          git push origin HEAD:agent/fix-tis-arib-design-residuals
