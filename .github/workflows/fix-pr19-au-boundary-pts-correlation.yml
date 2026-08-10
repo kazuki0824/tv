@@ -1,4 +1,4 @@
-name: Fix PR19 AU boundary and PTS correlation
+name: Polish PR19 AU boundary wording
 
 on:
   push:
@@ -9,122 +9,31 @@ permissions:
   contents: write
 
 jobs:
-  fix-design:
+  polish-design:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: agent/fix-tis-arib-design-residuals
           fetch-depth: 0
-      - name: Update design contract
+      - name: Polish design text
         run: |
-          cat > /tmp/fix.py <<'PY'
+          python3 - <<'PY'
           from pathlib import Path
-
           p = Path('tis/DESIGN_JA.md')
           s = p.read_text()
-
-          old_intro = (
-              '現行 product の平文 non-tunneled AV入力は、Tuner `MediaEvent.getLinearBlock()` と `MediaCodec` block model の型付き経路だけを正式経路とする。'
-              'AOSP Tuner の media filter output は complete ES に限定されず partial ES も許すため、`MediaEvent` 1件を独立したaccess unitと仮定しない。'
-              'video／audio decoderは `MediaCodec.CONFIGURE_FLAG_USE_BLOCK_MODEL` で構成し、track別のbounded `AccessUnitAssembler` がcodec bitstreamのframe/access-unit境界を確定するまで、到着順の`MediaEvent`／`LinearBlock`／rangeとそのeventに付随するPTS有無を保持する。'
-          )
-          new_intro = (
-              '現行 product の平文 non-tunneled AV入力は、Tuner `MediaEvent.getLinearBlock()` と `MediaCodec` block model の型付き経路だけを正式経路とする。'
-              'AOSP Tuner の media filter output は complete ES に限定されず partial ES も許すため、`MediaEvent` 1件、`LinearBlock` 1個、range 1個、PES 1個のいずれもcodec access unit境界とはみなさない。'
-              'video／audio decoderは `MediaCodec.CONFIGURE_FLAG_USE_BLOCK_MODEL` で構成し、track別のbounded `AccessUnitAssembler` は到着順source rangeを論理的に連結したread-only ES byte streamとして走査する。'
-              'start-code prefix、syncword、NAL header、slice header、ADTS header、MPEG audio headerその他の境界判定syntaxが`MediaEvent`／`LinearBlock`境界の任意byte位置で分断されてもparser stateを次rangeへ持ち越し、source payloadはdirect queueまたは完成AU再構成が確定するまで元`LinearBlock`に保持する。'
-              'range境界や`isPtsPresent()`の変化だけでAUを閉じてはならない。'
-          )
-          if old_intro not in s:
-              raise SystemExit('intro not found')
-          s = s.replace(old_intro, new_intro, 1)
-
-          marker = '完成access unitが1つのsource `LinearBlock`上の1つの連続rangeだけで構成される場合は、'
-          boundary = '\n\n'.join([
-              (
-                  '`AccessUnitAssembler` のcodec別境界は次で固定する。MPEG-2 VideoはH.262のaccess-unit定義に従い、`0x000001` start-code prefixをrange跨ぎで認識する。'
-                  'pictureが直前の`sequence_header_code`／`group_start_code`を伴う場合はその最初のstart codeから、伴わない場合は`picture_start_code`からAUを開始し、次AU開始直前で閉じる。'
-                  '最後のpictureに続く`sequence_end_code`はその最終AUに含める。'
-              ),
-              (
-                  'H.264/AVCはAnnex B byte streamの3-byte／4-byte start-code prefixとNAL/RBSP syntaxをrange跨ぎで解析し、ITU-T H.264 7.4.1.2.3および7.4.1.2.4のNAL ordering／first-VCL-of-primary-coded-picture規則をAU境界判定の正本とする。'
-                  'AUDは補助には使えるが必須とせず、`first_mb_in_slice == 0`だけへ単純化しない。SPS/PPS/SEI等のnon-VCL NALは同節のassociation規則に従って所属AUを決める。'
-              ),
-              (
-                  'AACは現行ARIB運用で用いるADTSをrange跨ぎで解析し、syncword、`protection_absent`を含むheader、13-bit `aac_frame_length`を検証し、header 7/9 byteやpayloadがfragmentを跨いでもframe全体が揃うまで閉じない。'
-                  '現行対象のADTSは1 frame=1 raw_data_blockの運用を前提とし、この条件を満たさない入力を暗黙に複数AUとして1 QueueRequestへ詰めない。'
-                  'MPEG audioは4-byte headerをrange跨ぎで解析し、MPEG version／layer／bitrate／sampling-rate／paddingから規格上のframe sizeを確定し、その完全な1 audio frameを1 AUとする。header、syncword、source fragment終端だけではAU完成としない。'
-              ),
-          ]) + '\n\n'
-          if marker not in s:
-              raise SystemExit('AU marker not found')
-          s = s.replace(marker, boundary + marker, 1)
-
-          old_pts = (
-              '1つの明示PTSが完成access unitに関連付けられた場合だけ、その90 kHz・33 bit値から算出した1つの`presentationTimeUs`を完成access unitのqueueへ設定する。'
-              '0、直前access unit、PCR、wallclock、frame rate等からPTSを補間・捏造しない。'
-              'complete access unitの境界が確定しても明示PTSを関連付けられない場合に限り、その**完成access unit全体**をcodecへ渡さず解放してtrack別`MISSING_PTS_ACCESS_UNIT`診断へ計上する。'
-              '`isPtsPresent()==false`の`MediaEvent`だけを理由にそのpayload/rangeを単独破棄してはならず、途中fragmentを欠落させない。'
-          )
-          new_pts = (
-              'PTSはpayload fragment全体へ付与せず、`MediaEvent.isPtsPresent()==true`のsource range開始位置に33-bit raw PTSを持つ`PtsAnchor`を置く。'
-              'anchorはPES header由来timestampの位置metadataとして扱い、anchor位置より前に開始して既に進行中のAUへ**後方適用しない**。'
-              '1つのanchorはその位置以後に最初に開始するcodec AUだけの候補とし、1 range内に複数AUがあっても全AUへ反復適用しない。'
-              '複数anchorが同じAU開始位置の候補になる場合、33-bit raw値が同値なら重複metadataとしてcoalesceし、異値ならfirst/last-winsで選ばず、その完成AUだけを`CONFLICTING_PTS_ACCESS_UNIT`としてcodecへ渡さず解放する。'
-              '後続fragmentのanchorで既開始AUのPTSを書き換えてはならない。generation／flush／track replacement等の明示境界では未消費anchorを旧入力とともに破棄する。'
-              '完成AUに一意の明示anchorを関連付けられた場合だけ、その90 kHz・33 bit値を`PtsNormalizer`へ渡して1つの`presentationTimeUs`をqueueする。'
-              '関連付け可能な明示anchorが無い完成AUは0、直前PTS、PCR、wallclock、frame rate、sample rateからこの層で時刻を補間・捏造せず、完成AU全体を`MISSING_PTS_ACCESS_UNIT`としてdropする。'
-              'これはARIB/H.222.0が全AUへのPTS記載を要求するという規範主張ではなく、timestamp derivationを別途仕様化していない現行productの保守的入力ポリシーである。'
-              '`isPtsPresent()==false`の`MediaEvent`だけを理由にpayload/rangeを単独破棄してはならず、途中fragmentを欠落させない。'
-          )
-          if old_pts not in s:
-              raise SystemExit('PTS block not found')
-          s = s.replace(old_pts, new_pts, 1)
-
-          old_malformed = (
-              'incomplete access unitは既存のper-track pending byte/count budgetとstartup/backpressure deadlineに従い、上限超過時は当該incomplete unit全体を`INCOMPLETE_ACCESS_UNIT`として破棄するがdeadlineを延長・リセットしない。'
-          )
-          new_malformed = old_malformed + (
-              'syntaxが確定的に不正で境界復旧不能な場合は途中fragmentだけを黙って捨てず、次のcodec-valid resync boundaryまでを`MALFORMED_ACCESS_UNIT`として型付き診断し、bounded resyncする。'
-          )
-          if old_malformed not in s:
-              raise SystemExit('incomplete AU sentence not found')
-          s = s.replace(old_malformed, new_malformed, 1)
-
-          old_cb = (
-              '`MediaEvent` sampleは固定4 MiBを上限にしない。負のoffset、0以下のlength、加算overflow、`offset + length > LinearBlock capacity`は不正入力として確保前に破棄する。'
-              '正常sampleは同一製品profileのper-event予算をclaimし、完成AUが単一blockの連続rangeなら直接block model QueueRequestへ渡す。'
-          )
-          new_cb = (
-              '`MediaEvent` sampleは固定4 MiBを上限にしない。負のoffset、0以下のlength、加算overflow、`offset + length > LinearBlock capacity`は不正入力として確保前に破棄する。'
-              '正常sampleは同一製品profileのper-event予算をclaimし、range境界をAU境界にせずtrack別`AccessUnitAssembler`の論理ES cursorへ到着順に接続する。'
-              '完成AUが単一blockの連続rangeなら直接block model QueueRequestへ渡す。'
-          )
-          if old_cb not in s:
-              raise SystemExit('callback boundary text not found')
-          s = s.replace(old_cb, new_cb, 1)
-
-          test_insert = (
-              '**MediaEvent／LinearBlock／range境界をAU境界にしないこと、start code／syncword／header／NAL／slice headerを各byte位置でfragment分割しても同じAU列を復元すること、'
-              'MPEG-2 Videoのsequence/GOP/picture association、H.264の3/4-byte Annex-B start code分割・AUD無し・SPS/PPS/SEI association・7.4.1.2.3/.4 first-VCL判定、'
-              'AACのADTS 7/9-byte header分割・`aac_frame_length`跨ぎ・1 frame=1 raw_data_block運用、MPEG audioの4-byte header分割・frame-size跨ぎを検証すること、'
-              '`PtsAnchor`を既開始AUへ後方適用しないこと、1 rangeのanchorを複数AUへ複製しないこと、同一AU候補の同値anchorはcoalesceし異値anchorは`CONFLICTING_PTS_ACCESS_UNIT`で当該AUだけdropしてfirst/last-winsにしないこと、'
-              '後続fragmentのanchorで既開始AUのPTSを書き換えないこと、**'
-          )
-          needle = '最低試験契約は、型付きLinearBlock→block model QueueRequest、'
-          if needle not in s:
-              raise SystemExit('minimum test marker not found')
-          s = s.replace(needle, needle + test_insert, 1)
-
+          old = 'range境界や`isPtsPresent()`の変化だけでAUを閉じてはならない。`AccessUnitAssembler` のcodec別境界は次で固定する。'
+          new = 'range境界や`isPtsPresent()`の変化だけでAUを閉じてはならない。\n\n`AccessUnitAssembler` のcodec別境界は次で固定する。'
+          if old not in s:
+              raise SystemExit('paragraph boundary not found')
+          s = s.replace(old, new, 1)
+          s = s.replace('QueueRequest、**MediaEvent／LinearBlock／range境界', 'QueueRequest、MediaEvent／LinearBlock／range境界', 1)
+          s = s.replace('後続fragmentのanchorで既開始AUのPTSを書き換えないこと、**ES stream全体', '後続fragmentのanchorで既開始AUのPTSを書き換えないこと、ES stream全体', 1)
           p.write_text(s)
           PY
-          python3 /tmp/fix.py
-          rm -f .review-comment-3746587034.txt
-          rm -f .github/workflows/read-pr19-review-comment-3746587034.yml
           git diff --check
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add tis/DESIGN_JA.md .github/workflows/read-pr19-review-comment-3746587034.yml .review-comment-3746587034.txt
-          git commit -m 'docs: define AU boundaries and PTS correlation'
+          git add tis/DESIGN_JA.md
+          git commit -m 'docs: polish AU boundary and PTS tests'
           git push origin HEAD:agent/fix-tis-arib-design-residuals
