@@ -10,158 +10,18 @@ permissions:
 
 jobs:
   patch:
+    if: ${{ !contains(github.event.head_commit.message, 'docs: align TIS and ARIB provider contracts') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: agent/fix-tis-arib-provider-contracts
           fetch-depth: 0
-      - name: Patch design contracts
+      - name: Apply design patch
+        run: python3 .github/agent-fix-tis-arib-provider-contracts.py
+      - name: Validate design artifacts
         shell: bash
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import json
-
-          def replace_once(path, old, new):
-              p = Path(path)
-              text = p.read_text(encoding="utf-8")
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f"{path}: expected exactly one match, got {count}: {old[:80]!r}")
-              p.write_text(text.replace(old, new), encoding="utf-8")
-
-          # 1) ARIB service_type: preserve the underlying ARIB coding in TvProvider.
-          replace_once(
-              "tis/DESIGN_JA.md",
-              "video-onlyサービスは`TvContract.Channels.SERVICE_TYPE_AUDIO_VIDEO`、audio-onlyサービスは`SERVICE_TYPE_AUDIO`として登録可能にする。",
-              "video-only / audio-onlyというtrack構成は`TvContract.Channels.COLUMN_SERVICE_TYPE`の再分類根拠にせず、同列は`../ARIB_SI_EPG_TvProvider投影方針.md`に従ってARIB `service_type`のcodingを保持する。",
-          )
-          replace_once(
-              "tis/DESIGN_JA.md",
-              "本productがchannel登録およびlive viewableとして対応するARIB `service_type`集合は、`0x01`のdigital television serviceと`0x02`のdigital radio sound serviceだけに恒久固定する。`0x01`は`TvContract.Channels.SERVICE_TYPE_AUDIO_VIDEO`、`0x02`は`TvContract.Channels.SERVICE_TYPE_AUDIO`へ写像する。その他のservice typeはparser / provider-data診断ではraw値を保持するが、既知typeへ丸めず`UNSUPPORTED_SERVICE_TYPE`を記録してchannel登録・live viewable対象にしない。",
-              "本productがchannel登録およびlive viewableとして対応するARIB `service_type`集合は、`0x01`のdigital television serviceと`0x02`のdigital radio sound serviceだけに恒久固定する。`TvContract.Channels.COLUMN_SERVICE_TYPE`は`../ARIB_SI_EPG_TvProvider投影方針.md`に従ってARIB `service_type`のcodingを保持し、Android generic `SERVICE_TYPE_AUDIO_VIDEO` / `SERVICE_TYPE_AUDIO`へ意味変換しない。その他のservice typeはparser / provider-data診断ではraw値を保持するが、既知typeへ丸めず`UNSUPPORTED_SERVICE_TYPE`を記録してchannel登録・live viewable対象にしない。",
-          )
-          replace_once(
-              "tis/DESIGN_JA.md",
-              "少なくとも1本の現行対応audio ESと物理選局情報、`ServiceKey`、inputId、表示名が揃えば、video ESを要求せず`SERVICE_TYPE_AUDIO`として登録し、audio filter・decoder・AudioTrackだけを開始する。",
-              "少なくとも1本の現行対応audio ESと物理選局情報、`ServiceKey`、inputId、表示名が揃えば、video ESを要求せずARIB `service_type=0x02`のchannelとして登録し、audio filter・decoder・AudioTrackだけを開始する。",
-          )
-
-          projection_old = "`Channels.COLUMN_SERVICE_TYPE`はARIB `service_type`から決める別軸であり、`Channels.COLUMN_TYPE`の代用にしない。正規化済みdelivery systemを一意に決定できないサービスは、`TYPE_OTHER`や周波数帯由来の値へ丸めずchannel登録可能としない。既存channelの`COLUMN_TYPE`を更新して方式変更を表現せず、方式が異なる受信構成を採用する場合はsetup/rescanで新しいchannel登録transactionとして扱う。"
-          projection_new = "`Channels.COLUMN_SERVICE_TYPE`はARIB STD-B10の`service_type`と同じcodingを保持する別軸であり、`Channels.COLUMN_TYPE`の代用にしない。AOSP `TvContract.Channels`は基礎放送規格に`service_type`が定義されている場合、その規格と同じcodingを使うことを要求しているため、ARIBサービスをAndroid generic `SERVICE_TYPE_AUDIO_VIDEO` / `SERVICE_TYPE_AUDIO` / `SERVICE_TYPE_OTHER`へ意味変換しない。`COLUMN_SERVICE_TYPE`はTEXT列なので、本TISのcanonical保存表現はARIB raw 8-bit値の符号なし10進文字列とし、例えば`0x01`は`\"1\"`、`0x02`は`\"2\"`として保存する。channel登録・live viewableとしてどのARIB `service_type`を製品対応するかはTISの製品policyであり、この列のcodingとは分離する。正規化済みdelivery systemを一意に決定できないサービスは、`TYPE_OTHER`や周波数帯由来の値へ丸めずchannel登録可能としない。既存channelの`COLUMN_TYPE`を更新して方式変更を表現せず、方式が異なる受信構成を採用する場合はsetup/rescanで新しいchannel登録transactionとして扱う。"
-          replace_once("ARIB_SI_EPG_TvProvider投影方針.md", projection_old, projection_new)
-          replace_once(
-              "ARIB_SI_EPG_TvProvider投影方針.md",
-              "| original_network_id | `Channels.COLUMN_ORIGINAL_NETWORK_ID` | サービスキーとして保持する | Android標準列がある |",
-              "| original_network_id | `Channels.COLUMN_ORIGINAL_NETWORK_ID` | サービスキーとして保持する | Android標準列がある |\n| service_type | `Channels.COLUMN_SERVICE_TYPE` にARIB raw 8-bit codingの符号なし10進文字列を格納する | ARIB raw `service_type` を保持する | AOSPがARIB STD-B10のcoding維持を要求するため |",
-          )
-
-          replace_once(
-              "arib_si_engine_rs/DESIGN_JA.md",
-              "`arib_si_engine_rs` は、service / transport単位の意味解析結果として、ONID / TSID / SID、PMT、PCR、audio/video ESの存在・欠落理由、scrambling情報、および`publishability_by_service`を構造化してTISへ渡す。Android channelを登録するか、`TvContract.Channels.SERVICE_TYPE_*`へどう写像するか、partial snapshotをchannel insertへ使用するかはTISの責務であり、`../tis/DESIGN_JA.md`を正とする。 `publishability_by_service`はservice / transport単位の登録判断材料を構造化してTISへ渡す意味解析結果であり、Android channel登録、`TvContract.Channels.SERVICE_TYPE_*`写像、channel insertの最終判断はTISが行う。",
-              "`arib_si_engine_rs` は、service / transport単位の意味解析結果として、ONID / TSID / SID、ARIB `service_type`のraw 8-bit値、PMT、PCR、audio/video ESの存在・欠落理由、scrambling情報、および`publishability_by_service`を構造化してTISへ渡す。Android channelを登録するか、partial snapshotをchannel insertへ使用するかはTISの責務であり、`../tis/DESIGN_JA.md`を正とする。`Channels.COLUMN_SERVICE_TYPE`への最終投影は`../ARIB_SI_EPG_TvProvider投影方針.md`を正とし、本crateはAndroid generic `TvContract.Channels.SERVICE_TYPE_*`への意味変換を行わない。`publishability_by_service`はservice / transport単位の登録判断材料を構造化してTISへ渡す意味解析結果であり、channel登録とchannel insertの最終判断はTISが行う。",
-          )
-          replace_once(
-              "arib_si_engine_rs/DESIGN_JA.md",
-              "`video` と `audio` は実際に主track 候補として選択された component の要約であり、未選択の場合は `null` とする。codecメタデータの認識は ライブ viewable / playable 対応宣言を意味しない。unsupported codec、decoder unavailable、transport profile out of scope は 診断情報に保存する。",
-              "`video` と `audio` は実際に主track 候補として選択された component の要約であり、未選択の場合は `null` とする。codecメタデータの認識は ライブ viewable / playable 対応宣言を意味しない。unsupported codec、decoder unavailable、transport profile out of scope は 診断情報に保存する。`ProgramProviderDataV1.components.video[]` / `components.audio[]` にrelease固有またはruntime capability判定の `r51PlaybackSupported` / `liveViewableClaim` を保存せず、再生可否はTIS runtimeの製品policyとdecoder capability判定に閉じる。",
-          )
-
-          # 2) Make ChannelProviderDataV1 schema match its Markdown contract.
-          channel_path = Path("arib_si_engine_rs/schema/channel_provider_data_v1.schema.json")
-          channel = json.loads(channel_path.read_text(encoding="utf-8"))
-          tune = channel["properties"]["tune"]
-          tune["required"] = [x for x in tune["required"] if x != "inputId"]
-          tune["properties"].pop("inputId", None)
-          tune["properties"].pop("backendHint", None)
-          tune["properties"]["streamId"]["maximum"] = 65534
-          tune["properties"]["streamIdType"]["enum"] = ["NONE", "TSID"]
-          tune["allOf"] = [
-              {
-                  "if": {
-                      "properties": {"streamIdType": {"const": "NONE"}},
-                      "required": ["streamIdType"],
-                  },
-                  "then": {"properties": {"streamId": {"type": "null"}}},
-              },
-              {
-                  "if": {
-                      "properties": {"streamIdType": {"const": "TSID"}},
-                      "required": ["streamIdType"],
-                  },
-                  "then": {
-                      "properties": {
-                          "streamId": {
-                              "type": "integer",
-                              "minimum": 0,
-                              "maximum": 65534,
-                          }
-                      }
-                  },
-              },
-          ]
-          channel_path.write_text(json.dumps(channel, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-          # 3) Keep ProgramProviderDataV1 free of process-local/release capability state.
-          program_path = Path("arib_si_engine_rs/schema/program_provider_data_v1.schema.json")
-          program = json.loads(program_path.read_text(encoding="utf-8"))
-          diagnostics = program["$defs"]["diagnostics"]
-          diagnostics["properties"].pop("currentProgram", None)
-          diagnostics["not"] = {"required": ["currentProgram"]}
-          for component_name in ("videoComponent", "audioComponent"):
-              component = program["$defs"][component_name]
-              component["properties"].pop("r51PlaybackSupported", None)
-              component["properties"].pop("liveViewableClaim", None)
-              component["not"] = {
-                  "anyOf": [
-                      {"required": ["r51PlaybackSupported"]},
-                      {"required": ["liveViewableClaim"]},
-                  ]
-              }
-          program_path.write_text(json.dumps(program, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-          for fixture_name in (
-              "arib_si_engine_rs/testdata/program_provider_data_v1/unsupported_codec_program.json",
-              "tis/tests/assets/program_provider_data_v1/unsupported_codec_program.json",
-          ):
-              fixture_path = Path(fixture_name)
-              fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
-              for component_group in ("video", "audio"):
-                  for component in fixture["components"][component_group]:
-                      component.pop("r51PlaybackSupported", None)
-                      component.pop("liveViewableClaim", None)
-              fixture_path.write_text(json.dumps(fixture, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-          # Changelogs are mandatory project artifacts for every actual change.
-          tis_changelog = Path("tis/CHANGELOG.md")
-          tis_prefix = """# r50ee98_provider_contract_residual_fix
-
-- ARIB `service_type` を Android generic `SERVICE_TYPE_*` へ変換せず、TvProvider `COLUMN_SERVICE_TYPE` には投影方針正本に従ってARIB codingを保持する設計へ修正した。
-- `tis/tests/assets/program_provider_data_v1/unsupported_codec_program.json` からrelease/runtime capability値 `r51PlaybackSupported` / `liveViewableClaim` を削除し、Rust側schema正本と同期した。
-- 実装コード変更なし。JSON構文確認と静的差分確認のみ実施し、Android/Soong build、Rust unit test、atest、CTS、VTS、実機確認は未実施。
-
-"""
-          tis_text = tis_changelog.read_text(encoding="utf-8")
-          if tis_text.startswith("# r50ee98_provider_contract_residual_fix"):
-              raise SystemExit("tis changelog entry already exists")
-          tis_changelog.write_text(tis_prefix + tis_text, encoding="utf-8")
-
-          engine_changelog = Path("arib_si_engine_rs/CHANGELOG.md")
-          engine_prefix = """# r50ee98_provider_contract_residual_fix
-
-- `ChannelProviderDataV1` schemaから`inputId` / `backendHint` / `RELATIVE` / `65535` TSIDを除去し、`NONE -> null` / `TSID -> 0..65534`の組合せを機械検証する契約へ修正した。
-- `ProgramProviderDataV1` schemaからprocess-local `diagnostics.currentProgram` とrelease/runtime capability値 `r51PlaybackSupported` / `liveViewableClaim` を除去し、同名fieldを明示的に拒否するようにした。
-- unsupported codecのprovider-data整合確認データを新schemaへ同期し、`arib_si_engine_rs/DESIGN_JA.md` のservice_type・provider-data責務をTvProvider投影正本と一致させた。
-- 実装コード変更なし。JSON構文確認と静的差分確認のみ実施し、Android/Soong build、Rust unit test、atest、CTS、VTS、実機確認は未実施。
-
-"""
-          engine_text = engine_changelog.read_text(encoding="utf-8")
-          if engine_text.startswith("# r50ee98_provider_contract_residual_fix"):
-              raise SystemExit("engine changelog entry already exists")
-          engine_changelog.write_text(engine_prefix + engine_text, encoding="utf-8")
-          PY
-
           python3 -m json.tool arib_si_engine_rs/schema/channel_provider_data_v1.schema.json >/dev/null
           python3 -m json.tool arib_si_engine_rs/schema/program_provider_data_v1.schema.json >/dev/null
           python3 -m json.tool arib_si_engine_rs/testdata/program_provider_data_v1/unsupported_codec_program.json >/dev/null
@@ -169,32 +29,28 @@ jobs:
           python3 - <<'PY'
           import json
           from pathlib import Path
-
-          channel = json.loads(Path("arib_si_engine_rs/schema/channel_provider_data_v1.schema.json").read_text())
-          tune = channel["properties"]["tune"]
-          assert "inputId" not in tune["required"]
-          assert "inputId" not in tune["properties"]
-          assert "backendHint" not in tune["properties"]
-          assert tune["properties"]["streamIdType"]["enum"] == ["NONE", "TSID"]
-          assert tune["properties"]["streamId"]["maximum"] == 65534
-
-          program = json.loads(Path("arib_si_engine_rs/schema/program_provider_data_v1.schema.json").read_text())
-          assert "currentProgram" not in program["$defs"]["diagnostics"]["properties"]
-          for name in ("videoComponent", "audioComponent"):
-              props = program["$defs"][name]["properties"]
-              assert "r51PlaybackSupported" not in props
-              assert "liveViewableClaim" not in props
+          channel = json.loads(Path('arib_si_engine_rs/schema/channel_provider_data_v1.schema.json').read_text())
+          tune = channel['properties']['tune']
+          assert 'inputId' not in tune['required']
+          assert 'inputId' not in tune['properties']
+          assert 'backendHint' not in tune['properties']
+          assert tune['properties']['streamIdType']['enum'] == ['NONE', 'TSID']
+          assert tune['properties']['streamId']['maximum'] == 65534
+          program = json.loads(Path('arib_si_engine_rs/schema/program_provider_data_v1.schema.json').read_text())
+          assert 'currentProgram' not in program['$defs']['diagnostics']['properties']
+          for name in ('videoComponent', 'audioComponent'):
+              props = program['$defs'][name]['properties']
+              assert 'r51PlaybackSupported' not in props
+              assert 'liveViewableClaim' not in props
           PY
           git diff --check
+      - name: Commit final design-only diff
+        shell: bash
+        run: |
+          rm .github/agent-fix-tis-arib-provider-contracts.py
           rm .github/workflows/agent-fix-tis-arib-provider-contracts.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add tis/DESIGN_JA.md tis/CHANGELOG.md ARIB_SI_EPG_TvProvider投影方針.md \
-            arib_si_engine_rs/DESIGN_JA.md arib_si_engine_rs/CHANGELOG.md \
-            arib_si_engine_rs/schema/channel_provider_data_v1.schema.json \
-            arib_si_engine_rs/schema/program_provider_data_v1.schema.json \
-            arib_si_engine_rs/testdata/program_provider_data_v1/unsupported_codec_program.json \
-            tis/tests/assets/program_provider_data_v1/unsupported_codec_program.json \
-            .github/workflows/agent-fix-tis-arib-provider-contracts.yml
+          git add -A
           git commit -m "docs: align TIS and ARIB provider contracts"
           git push origin HEAD:agent/fix-tis-arib-provider-contracts
