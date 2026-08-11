@@ -304,7 +304,7 @@ rollback不能、cleanup不能、正本不一致、backend実状態とregistry�
 | packet pipeline | `PacketPipeline` | `soft_demux` | continuity、origin、generationを複数箇所で更新しない |
 | AV shared memory | `AvSharedBacking` | `FilterHal` | fd番号一致をshared handle同一性条件にしない。fd付きhandle + `avDataId == 0` はclient側shared handle使用終了通知として扱う |
 
-AV領域の正本となる同一性情報は、HALが発行時に台帳へ記録する`{owner_filter_id, filter_generation, transfer_kind, backing_id, allocation_id, avDataId, lease_state}`とする。ファイル記述子番号や`fstat`の`{st_dev, st_ino, size}`を正本となる同一性情報にしてはならない。`fstat`などの記述子メタデータは、採用した記憶領域実装で同一性が保証される場合だけ補助検証と診断に用いる。共有ハンドルの`dataId=0`解放は、呼出先IFilterが所有する有効なクライアント使用権を対象とし、イベント固有領域の正の`dataId`解放は、当該IFilterの台帳で使用中の割り当てと転送方式を特定して行う。`empty+dataId`ではファイル記述子を使わず台帳上の識別情報を検証する。所有者、世代、転送方式、`dataId`が一致しない場合は`INVALID_ARGUMENT`とし、別の割り当てを解放してはならない。台帳の信頼性を確認できない場合は`UNKNOWN_ERROR`とし、安全を確認できない記憶領域を隔離する。
+未解放AV allocationの正本は、正の`avDataId`をkeyとするactive token台帳に記録した`{owner_filter_id, filter_generation, transfer_kind, backing_id, allocation_id, avDataId, lease_state}`とする。ファイル記述子番号や`fstat`の`{st_dev, st_ino, size}`をallocation identityの正本にしてはならない。`fstat`などの記述子メタデータは、採用した記憶領域実装で同一性が保証される場合だけ補助検証と診断に用いる。共有ハンドルの`dataId=0`解放は呼出先IFilterが所有するboundedなクライアント使用権を対象とし、正の`dataId`解放はactive token台帳で当該IFilterの未解放allocationと転送方式を特定して行う。allocation解放成功時はtoken entryを削除し、その後activeでない正のtokenは`INVALID_ARGUMENT`として資源を変更しない。解放済みduplicate、foreign、never-issuedを永久に識別するためのtombstoneは持たない。台帳の信頼性を確認できない場合は`UNKNOWN_ERROR`とし、安全を確認できない記憶領域を隔離する。
 
 
 #### 0-S-3. 公開API transaction（状態遷移）契約
@@ -699,34 +699,35 @@ open済みのAV filterでは、`configure()`前でも成功させる。
 
 ##### 表1-C-AVH. `releaseAvHandle()` 全域判定表
 
-shared-handle lease、event-local handle lease、個別AV allocationは別の寿命であり、数値fd一致ではなく記録済みbacking/allocation identityで、次の優先順に分類する。
+shared-handle lease、event-local handle lease、個別AV allocationは別の寿命である。正の`avDataId`はAOSPが往復させるopaque release tokenとして扱い、未解放allocationだけをboundedなactive token台帳へ保持する。`NativeHandle.ints`へHAL内部のowner、generation、allocation IDを追加せず、数値fd一致もallocation identityの正本にしない。
 
 | 優先順 | 判定ID | ハンドル種別 | フィルター状態 | 台帳状態 | `dataId`区分 | 同一性条件 | AIDL結果 | 処理後状態 | 割り当てへの作用 | 補足 |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 1 | AVH-001 | ANY | ANY | ANY | NEGATIVE | 評価しない | INVALID_ARGUMENT | UNCHANGED | NONE | 負の `dataId` を最優先で拒否 |
-| 2 | AVH-002 | MALFORMED_OR_UNSUPPORTED_FD_SHAPE | OPEN_OR_LOGICAL_CLOSED | ANY | ZERO_OR_POSITIVE | 形状を分類できない | INVALID_ARGUMENT | UNCHANGED | NONE | ファイル記述子番号の一致だけで解放しない |
-| 3 | AVH-003 | RETURNED_SHARED_HANDLE | OPEN_OR_LOGICAL_CLOSED | RegistryFailure | ZERO | 記憶領域の同一性を判定できない | UNKNOWN_ERROR | RegistryFailure | 不確実な領域を保持・隔離 | 不確実な解放を行わない |
-| 4 | AVH-004 | RETURNED_SHARED_HANDLE | OPEN_OR_LOGICAL_CLOSED | ActiveSharedHandleLease | ZERO | 呼出先IFilterの台帳に有効な共有ハンドル使用権が1件あり、入力ハンドルの形状が共有方式と一致 | SUCCESS | SharedHandleLeaseRemoved | クライアントの共有ハンドル使用権だけを解放 | ファイル記述子のメタデータは補助診断に限定。割り当てと共有領域は維持し、後続の`getAvSharedHandle()`で再取得可 |
-| 5 | AVH-005 | RETURNED_SHARED_HANDLE | OPEN_OR_LOGICAL_CLOSED | KnownReleasedSharedHandleLease | ZERO | 同じ公開済み領域で使用権は解放済み | SUCCESS | UNCHANGED | NONE | 遅延または重複終了を状態を変えず受理 |
-| 6 | AVH-006 | RETURNED_SHARED_HANDLE | OPEN_OR_LOGICAL_CLOSED | UnknownOrForeignSharedHandle | ZERO | 別所有者または記憶領域の同一性不一致 | INVALID_ARGUMENT | UNCHANGED | NONE | 不正・別所有者を既知の解放済みと扱わない |
-| 7 | AVH-007 | EMPTY | OPEN_OR_LOGICAL_CLOSED | ANY | ZERO | 割り当て解放を伴わないイベント終了 | SUCCESS | UNCHANGED | NONE | 状態を変えず、共有領域・使用権・割り当てを消去しない |
-| 8 | AVH-008 | EMPTY | OPEN_OR_LOGICAL_CLOSED | ActiveCurrentOrReleaseOnly | POSITIVE | 発行範囲と割り当て情報の組全体が使用中割り当てを特定 | SUCCESS | KnownReleased | バイト容量と割り当て使用権を正確に1回解放 | `flush()`、再設定、論理閉鎖後も可 |
-| 9 | AVH-009 | EMPTY | OPEN_OR_LOGICAL_CLOSED | KnownReleased | POSITIVE | 当該フィルター世代の発行範囲内だが使用中割り当てなし | SUCCESS | KnownReleased | NONE | 遅延・重複解放を状態を変えず受理し、IDは再利用しない |
-| 10 | AVH-010 | EMPTY | OPEN_OR_LOGICAL_CLOSED | UnknownOrForeign | POSITIVE | 当該サービス・フィルターに未発行または情報の組が不一致 | INVALID_ARGUMENT | UNCHANGED | NONE | 不明IDと既知の解放済みIDを区別 |
-| 11 | AVH-011 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | RegistryFailure | ZERO_OR_POSITIVE | イベント固有ファイル記述子の同一性を判定できない | UNKNOWN_ERROR | RegistryFailure | 不確実な割り当てを保持・隔離 | 不確実な閉鎖・解放を行わない |
-| 12 | AVH-012 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | ActiveEventLocal | POSITIVE | 台帳の所有者、世代、転送方式、`avDataId`が使用中の割り当てを一意に特定し、入力ハンドルの形状がイベント固有方式と一致 | SUCCESS | KnownReleased | イベント固有ハンドルの使用権を閉じ、割り当てを1回解放 | ファイル記述子のメタデータは既知の不一致検出と診断だけに用いる |
-| 13 | AVH-013 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | ActiveEventLocal | ZERO | 台帳に有効なイベント固有ハンドル使用権があり、入力ハンドルの形状が当該使用権と一致 | SUCCESS | ActiveEventLocalHandleFinalized | 受け取ったハンドル使用権だけを閉じ、割り当てと後続の空ハンドル+正の`dataId`解放を維持 | フレームワークやCodec2の参照数を判定条件にしない |
-| 14 | AVH-014 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | KnownReleasedOrHandleFinalized | ZERO_OR_POSITIVE | 同じ発行済み情報の要求対象部分が終了済み | SUCCESS | UNCHANGED | NONE | 遅延終了を状態を変えず受理 |
-| 15 | AVH-015 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | UnknownOrForeign | ZERO_OR_POSITIVE | ファイル記述子と`dataId`の組が未発行または不一致 | INVALID_ARGUMENT | UNCHANGED | NONE | 別所有者の組で他の割り当てを解放しない |
-| 16 | AVH-016 | ANY | QUARANTINED | ANY | ZERO_OR_POSITIVE | 公開台帳を安全に分類できない | INVALID_STATE | UNCHANGED | NONE | 隔離後の後片付けは内部回収機構が所有 |
+| 1 | AVH-001 | ANY | ANY | ANY | NEGATIVE | 評価しない | INVALID_ARGUMENT | UNCHANGED | NONE | 負の`dataId`を最優先で拒否 |
+| 2 | AVH-002 | ANY | QUARANTINED | ANY | ZERO_OR_POSITIVE | 公開台帳を安全に分類できない | INVALID_STATE | UNCHANGED | NONE | 隔離後の後片付けは内部回収機構が所有 |
+| 3 | AVH-003 | MALFORMED_OR_UNSUPPORTED_FD_SHAPE | OPEN_OR_LOGICAL_CLOSED | ANY | ZERO_OR_POSITIVE | 形状を分類できない | INVALID_ARGUMENT | UNCHANGED | NONE | fd番号一致だけで解放しない |
+| 4 | AVH-004 | RETURNED_SHARED_HANDLE | OPEN_OR_LOGICAL_CLOSED | RegistryFailure | ZERO | shared leaseを安全に分類できない | UNKNOWN_ERROR | RegistryFailure | NONE | 不確実な解放を行わない |
+| 5 | AVH-005 | RETURNED_SHARED_HANDLE | OPEN_OR_LOGICAL_CLOSED | ActiveSharedHandleLease | ZERO | 呼出先IFilterに有効な共有ハンドル使用権が1件あり、入力形状が共有方式と一致 | SUCCESS | SharedHandleLeaseRemoved | 共有ハンドル使用権だけを解放 | 共有backingとAV allocationは維持し、後続`getAvSharedHandle()`で再取得可 |
+| 6 | AVH-006 | RETURNED_SHARED_HANDLE | OPEN_OR_LOGICAL_CLOSED | ReleasedSharedHandleLease | ZERO | 同じ共有backingに対するboundedなlease stateが解放済み | SUCCESS | UNCHANGED | NONE | `dataId=0`のshared lease終了だけは同一backingのlease stateで冪等化する |
+| 7 | AVH-007 | RETURNED_SHARED_HANDLE | OPEN_OR_LOGICAL_CLOSED | UnknownOrForeignSharedHandle | ZERO | 呼出先IFilterのshared leaseと一致しない | INVALID_ARGUMENT | UNCHANGED | NONE | allocation tokenとは別に判定する |
+| 8 | AVH-008 | EMPTY | OPEN_OR_LOGICAL_CLOSED | ANY | ZERO | allocation解放を伴わないevent終了 | SUCCESS | UNCHANGED | NONE | 状態を変えない |
+| 9 | AVH-009 | EMPTY | OPEN_OR_LOGICAL_CLOSED | ActiveAllocationToken | POSITIVE | active tokenが呼出先IFilter、generation、transfer kind、backing/allocationを一意に特定し、allocationが`Active`または`ReleaseOnly` | SUCCESS | TokenRemoved | バイト容量とallocation使用権を正確に1回解放 | 成功時にactive token台帳から削除する |
+| 10 | AVH-010 | EMPTY | OPEN_OR_LOGICAL_CLOSED | InactiveOrUnknownToken | POSITIVE | active token台帳に存在しない | INVALID_ARGUMENT | UNCHANGED | NONE | 解放済みduplicate、foreign、never-issuedを永久分類せず、いずれも資源を変更しない |
+| 11 | AVH-011 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | RegistryFailure | ZERO_OR_POSITIVE | event-local leaseまたはactive tokenを安全に分類できない | UNKNOWN_ERROR | RegistryFailure | NONE | 不確実な解放を行わない |
+| 12 | AVH-012 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | ActiveAllocationToken | POSITIVE | active tokenが呼出先IFilterのevent-local allocationを特定し、入力handle形状がevent-local方式と一致 | SUCCESS | TokenRemoved | handle使用権を閉じ、allocationを1回解放 | 成功時にactive token台帳から削除する |
+| 13 | AVH-013 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | ActiveEventLocalHandleLease | ZERO | 呼出先IFilterに有効なevent-local handle使用権があり、入力形状が当該使用権と一致 | SUCCESS | EventLocalHandleFinalized | 受領handle使用権だけを閉じる | 正のactive tokenとallocationは後続の`EMPTY + dataId`解放まで維持する |
+| 14 | AVH-014 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | EventLocalHandleFinalizedWithActiveToken | ZERO | 同じ未解放allocationに対するhandle使用権だけが既に終了済み | SUCCESS | UNCHANGED | NONE | allocationがactiveな間だけboundedなlease stateとして冪等化する |
+| 15 | AVH-015 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | ActiveAllocationToken | POSITIVE | tokenはactiveだがowner、generation、transfer kindまたは入力handle形状が一致しない | INVALID_ARGUMENT | UNCHANGED | NONE | 別allocationを解放しない |
+| 16 | AVH-016 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | InactiveOrUnknownToken | POSITIVE | active token台帳に存在しない | INVALID_ARGUMENT | UNCHANGED | NONE | 永久tombstoneを要求しない |
 
 受け入れ条件:
 
-- `avDataId` は1..=`I64_MAX`のchecked monotonic IDで、service instance内で再利用しない。
-- 既知staleは同一service/filter generationのissued range/high-watermarkと非再利用で判定し、allocationごとの無制限tombstoneを要求しない。
-- flush、reconfigure、logical closeは配送済み未解放allocationを`ReleaseOnly`として保持する。
-- unknown/foreign/never-issued/wrong-generation/wrong-backingは`INVALID_ARGUMENT`であり、既知released/duplicateとは区別する。
-- 台帳または記憶領域の処理に失敗し、所有者、世代、転送方式、使用権を分類できない場合は`UNKNOWN_ERROR`とし、状態を確定できない資源を解放または再割り当てしない。補助的なファイル記述子メタデータを取得できないことだけで、台帳上の同一性情報を別の割り当てへ対応付けない。
+- 正の`avDataId`は1..=`I64_MAX`のchecked monotonicなopaque release tokenとし、service instance内で再利用しない。
+- active token台帳には未解放allocationだけを保持し、各entryは`{owner_filter_id, filter_generation, transfer_kind, backing_id, allocation_id, avTataId, lease_state}`を保持する。台帳サイズは`avPerFilterLiveBytes`、`avRuntimeBudgetBytes`および未解放allocation数の既存上限によってboundedでなければならない。
+- 正の`avDataId`によるallocation解放成功時はactive token entryを削除する。以後、同じ値を含めactive token台帳に存在しない正のtokenは`INVALID_ARGUMENT`とし、資源を変更しない。解放済みduplicate、foreign、never-issuedを永久に区別する契約は設けず、allocationごとのtombstoneを保持しない。
+- `flush()`、再設定、logical closeは配送済み未解放allocationを`ReleaseOnly`として保持し、そのactive tokenも解放要求まで保持する。
+- `dataId=0`のshared/event-local handle lease終了はallocation tokenとは別のboundedなlease stateで扱う。allocation解放後まで正のtokenの履歴を残すために流用してはならない。
+- 台帳または記憶領域の処理に失敗し、active tokenの所有者、世代、転送方式、使用権を分類できない場合は`UNKNOWN_ERROR`とし、状態を確定できない資源を解放または再割り当てしない。補助的なfd metadataだけで別allocationへ対応付けない。
 
 #### 表1-D. `setDataSource()` 互換表
 
@@ -1330,6 +1331,8 @@ source filter boundary は downstream lifecycle、queued payload、pending event
 | downstream `stop()` | source接続を維持 | 未配送entryを維持するが、停止中は新規配送しない | 未配送eventを維持し、停止中は通知しない | partialを破棄 | 変更なし | stopの状態表に従う |
 | downstream `close()` | source接続を解除 | downstream所有entryを破棄 | downstream所有eventを破棄 | downstream assemblerを破棄 | downstream自身のRecord DVR接続を解除 | 表5に従う |
 | upstream generation mismatch | 変更しない | 配送しない | eventを抑止 | 当該旧originのpartialをreset | 変更なし | runtime failedにはしない |
+
+Record DVR経路について、表18-Bの`queued payload` / `entry`は、Record DVR FMQへcommitする前にHAL内部で保持しているentryだけを指す。Record DVR FMQへのcommitはAOSPのbyte FMQ契約上の公開境界であり、commit済みbyte列にはsource/filter/generationを示すsideband metadataを付与しない。したがって、source変更、source filterの`flush()`・再設定・close、またはgeneration不一致だけを理由に、Record DVR FMQへcommit済みのbyte列を遡及的に選択破棄または配送禁止へ変更してはならない。これらの境界は、commit前の内部entryと境界以後のproductionにだけgeneration fenceを適用する。client未消費のRecord DVR FMQ全体を破棄する操作は`IDvr.flush()`だけとする。
 
 開始中の`setDataSource()`には、引数がNULLかどうかにかかわらず`INVALID_STATE`を返す。入力元の接続と切断は、open済み、設定済み、または停止済みの場合だけ許可し、動作中の切り替えは行わない。
 
@@ -2084,6 +2087,8 @@ DVRの同時利用上限は確定済み`CapabilitySnapshot`で定める。`P=sna
 
 demux入力世代ごとに、Record DVRへ接続中の全記録フィルター条件を、変更不能な1個の和集合条件へまとめる。到着した188バイトTSパケットは1回だけ評価し、いずれかの記録条件に一致した場合は、到着順にRecord DVRへ正確に1回書き込む。フィルターごとの索引状態とコールバック状態は別々に保持する。接続、切断、設定変更では、世代境界で和集合条件をトランザクションとして置き換える。各フィルターへ一度分配してから全体を並べ替える、重複排除する、または `ingress_sequence` で欠落を推測する構成にしてはならない。
 
+Record DVR FMQへ成功commitした188-byte packetは公開済みとして扱い、後続のrecord filter接続・切断、source変更、source generation変更によって遡及変更しない。和集合条件のcommitは次のpacket境界以後のwrite可否にだけ作用する。Record DVR FMQのclient未消費byte列を明示的に破棄するのは`IDvr.flush()`だけとし、個別source/filter境界の代替として共有queue全体をflushしてはならない。
+
 
 開始済みの録画フィルターを接続または切断する場合は、録画経路のロックを保持し、次の188バイトパケット境界で確定する。重複接続と未接続フィルターの切断は状態を変えず成功する。切断境界以後のパケットは配送せず、経路世代によって重複配送と遅延配送を抑止する。
 
@@ -2209,7 +2214,7 @@ AndroidフレームワークとJNIが受理する`MediaEvent`の表現は、本�
 
 両モードの`avDataId`は、同じ上限付き割り当て台帳から発行する。メモリー、台帳、`MediaEvent`の準備がすべて成功した後に割り当てを確定し、失敗時はコールバックまたは`dataId`を公開しない。`offset + dataLength <= backing size`を正常範囲とし、上限超過を検出できる加算を用いる。長さ0は不正としてイベントを発行しない。`isSecureMemory=false`に固定する。
 
-解放要求の形状、既知の古い要求を状態変更なしで受理する条件、不明な要求の拒否、ファイル記述子の同一性検証、論理閉鎖後の解放は、本書の「表1-C-AVH. `releaseAvHandle()` 全域判定表」を正とする。`releaseAvHandle(fd,0)`を共有記憶領域全体の破棄と解釈してはならない。イベント固有モードでは、フレームワーク側の参照状態に応じ、受領したハンドルの使用権だけを閉じる場合がある。
+解放要求の形状、active `avDataId` tokenのowner・generation・transfer kind検証、inactive/unknown tokenの拒否、ファイル記述子の補助検証、論理閉鎖後の解放は、本書の「表1-C-AVH. `releaseAvHandle()` 全域判定表」を正とする。`releaseAvHandle(fd,0)`を共有記憶領域全体の破棄と解釈してはならない。イベント固有モードでは、受領したハンドルの使用権だけを先に閉じ、正のactive tokenとallocationを後続解放まで維持できる。
 
 ### AV shared handle の `NativeHandle` 形式
 
@@ -2785,7 +2790,7 @@ STD-B25 Part 1 §4.9は上表の適合主張に含めない。同条項に係る
 | FILTER_AUDIO | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | なし | FMQの`bufferSize`とは別に、実payloadをsnapshotの`avPerFilterLiveBytes`と`avRuntimeBudgetBytes`から割り当てる。物理領域の起動時先取りはしない。 |
 | FILTER_VIDEO | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | なし | FMQの`bufferSize`とは別に、実payloadをsnapshotの`avPerFilterLiveBytes`と`avRuntimeBudgetBytes`から割り当てる。物理領域の起動時先取りはしない。 |
 | FILTER_PES | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | demux当たり1 | 有効な明示`streamId 0..255`とwildcard `0xFFFF`を同じPES capabilityで扱う。宣言長ありPESは宣言長+6 byteをPES実行時台帳からclaimし、映像`0xE0..0xEF`の長さ0 PESは`MAX_PES_BUFFER_BYTES`と同台帳の上限内で組み立てる。stream ID別の非公開capabilityを設けない。 |
-| FILTER_PCR | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | なし | 呼び出し側指定のFMQ容量はsnapshotの`fmqRuntimeBudgetBytes`から別transactionで予約する。 |
+| FILTER_PCR | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | なし | PCRはcallback-only filterとして通常payload FMQを持たず、`openFilter()`の`bufferSize`を`fmqRuntimeBudgetBytes`から予約しない。PCR通知に必要なcallback stateだけを当該filterの固定資源として扱う。 |
 | DVR_PLAYBACK | サービス全体 | 8 | `CapabilitySnapshot`の値 | 0 | demux当たり1 | configure時にFMQと同容量の処理中バッファーをsnapshotの2台帳から同時予約する。`VtsEnvironmentProfile`が`UNBOUND`ならXML、モジュール、試験シナリオを選択しない。 |
 | DVR_RECORD | サービス全体 | 8 | `CapabilitySnapshot`の値 | 0 | demux当たり1 | `VtsEnvironmentProfile`が`UNBOUND`ならXML、モジュール、試験シナリオを選択しない。`BOUND`なら宣言済み静的設定のキュー容量だけを原子的に予約する。 |
 
