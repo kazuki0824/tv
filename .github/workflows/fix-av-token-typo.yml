@@ -1,0 +1,36 @@
+name: Fix AV token design typo
+
+on:
+  push:
+    branches:
+      - agent/fix-tuner-hal-design-contracts
+
+permissions:
+  contents: write
+
+jobs:
+  patch-design:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-tuner-hal-design-contracts
+      - name: Correct token field name
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('tuner_hal/DESIGN_JA.md')
+          text = path.read_text(encoding='utf-8')
+          old = 'allocation_id, avTataId, lease_state'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one typo occurrence, got {text.count(old)}')
+          path.write_text(text.replace(old, 'allocation_id, avDataId, lease_state', 1), encoding='utf-8')
+          PY
+          rm .github/workflows/fix-av-token-typo.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tuner_hal/DESIGN_JA.md .github/workflows/fix-av-token-typo.yml
+          git diff --cached --check
+          git commit -m 'design: correct AV token field name'
+          git push origin HEAD:agent/fix-tuner-hal-design-contracts
