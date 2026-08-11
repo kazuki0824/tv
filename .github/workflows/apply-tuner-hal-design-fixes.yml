@@ -1,0 +1,137 @@
+name: Apply tuner HAL design fixes
+
+on:
+  push:
+    branches:
+      - agent/fix-tuner-hal-design-contracts
+
+permissions:
+  contents: write
+
+jobs:
+  patch-design:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-tuner-hal-design-contracts
+
+      - name: Apply design-only corrections
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('tuner_hal/DESIGN_JA.md')
+          text = path.read_text(encoding='utf-8')
+
+          def replace_once(old: str, new: str, label: str) -> None:
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly one match, got {count}')
+              text = text.replace(old, new, 1)
+
+          # 1) PCR is callback-only and has no normal payload FMQ.
+          replace_once(
+              '| FILTER_PCR | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | なし | 呼び出し側指定のFMQ容量はsnapshotの`fmqRuntimeBudgetBytes`から別transactionで予約する。 |',
+              '| FILTER_PCR | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | なし | PCRはcallback-only filterとして通常payload FMQを持たず、`openFilter()`の`bufferSize`を`fmqRuntimeBudgetBytes`から予約しない。PCR通知に必要なcallback stateだけを当該filterの固定資源として扱う。 |',
+              'PCR capacity row',
+          )
+
+          # 2) Record DVR FMQ publication is irreversible; source fences only act before commit.
+          source_boundary_anchor = (
+              '\n開始中の`setDataSource()`には、引数がNULLかどうかにかかわらず`INVALID_STATE`を返す。入力元の接続と切断は、open済み、設定済み、または停止済みの場合だけ許可し、動作中の切り替えは行わない。\n'
+          )
+          source_boundary_text = (
+              '\nRecord DVR経路について、表18-Bの`queued payload` / `entry`は、Record DVR FMQへcommitする前にHAL内部で保持しているentryだけを指す。Record DVR FMQへのcommitはAOSPのbyte FMQ契約上の公開境界であり、commit済みbyte列にはsource/filter/generationを示すsideband metadataを付与しない。したがって、source変更、source filterの`flush()`・再設定・close、またはgeneration不一致だけを理由に、Record DVR FMQへcommit済みのbyte列を遡及的に選択破棄または配送禁止へ変更してはならない。これらの境界は、commit前の内部entryと境界以後のproductionにだけgeneration fenceを適用する。client未消費のRecord DVR FMQ全体を破棄する操作は`IDvr.flush()`だけとする。\n'
+          )
+          if source_boundary_text.strip() in text:
+              raise SystemExit('Record DVR source-boundary paragraph already exists')
+          replace_once(
+              source_boundary_anchor,
+              source_boundary_text + source_boundary_anchor,
+              'Record DVR source-boundary anchor',
+          )
+
+          union_para = (
+              'demux入力世代ごとに、Record DVRへ接続中の全記録フィルター条件を、変更不能な1個の和集合条件へまとめる。到着した188バイトTSパケットは1回だけ評価し、いずれかの記録条件に一致した場合は、到着順にRecord DVRへ正確に1回書き込む。フィルターごとの索引状態とコールバック状態は別々に保持する。接続、切断、設定変更では、世代境界で和集合条件をトランザクションとして置き換える。各フィルターへ一度分配してから全体を並べ替える、重複排除する、または `ingress_sequence` で欠落を推測する構成にしてはならない。\n'
+          )
+          union_with_commit = union_para + (
+              '\nRecord DVR FMQへ成功commitした188-byte packetは公開済みとして扱い、後続のrecord filter接続・切断、source変更、source generation変更によって遡及変更しない。和集合条件のcommitは次のpacket境界以後のwrite可否にだけ作用する。Record DVR FMQのclient未消費byte列を明示的に破棄するのは`IDvr.flush()`だけとし、個別source/filter境界の代替として共有queue全体をflushしてはならない。\n'
+          )
+          replace_once(union_para, union_with_commit, 'Record DVR union paragraph')
+
+          # 3) AV positive avDataId is the opaque release token. Keep only outstanding
+          # allocations in a bounded active-token ledger; do not require permanent
+          # duplicate-vs-foreign classification after release.
+          start_marker = '##### 表1-C-AVH. `releaseAvHandle()` 全域判定表\n'
+          end_marker = '#### 表1-D. `setDataSource()` 互換表\n'
+          start = text.find(start_marker)
+          end = text.find(end_marker, start)
+          if start < 0 or end < 0:
+              raise SystemExit('AV release table markers not found')
+          if text.find(start_marker, start + 1) >= 0:
+              raise SystemExit('AV release start marker is not unique')
+
+          avh = '''##### 表1-C-AVH. `releaseAvHandle()` 全域判定表
+
+shared-handle lease、event-local handle lease、個別AV allocationは別の寿命である。正の`avDataId`はAOSPが往復させるopaque release tokenとして扱い、未解放allocationだけをboundedなactive token台帳へ保持する。`NativeHandle.ints`へHAL内部のowner、generation、allocation IDを追加せず、数値fd一致もallocation identityの正本にしない。
+
+| 優先順 | 判定ID | ハンドル種別 | フィルター状態 | 台帳状態 | `dataId`区分 | 同一性条件 | AIDL結果 | 処理後状態 | 割り当てへの作用 | 補足 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | AVH-001 | ANY | ANY | ANY | NEGATIVE | 評価しない | INVALID_ARGUMENT | UNCHANGED | NONE | 負の`dataId`を最優先で拒否 |
+| 2 | AVH-002 | ANY | QUARANTINED | ANY | ZERO_OR_POSITIVE | 公開台帳を安全に分類できない | INVALID_STATE | UNCHANGED | NONE | 隔離後の後片付けは内部回収機構が所有 |
+| 3 | AVH-003 | MALFORMED_OR_UNSUPPORTED_FD_SHAPE | OPEN_OR_LOGICAL_CLOSED | ANY | ZERO_OR_POSITIVE | 形状を分類できない | INVALID_ARGUMENT | UNCHANGED | NONE | fd番号一致だけで解放しない |
+| 4 | AVH-004 | RETURNED_SHARED_HANDLE | OPEN_OR_LOGICAL_CLOSED | RegistryFailure | ZERO | shared leaseを安全に分類できない | UNKNOWN_ERROR | RegistryFailure | NONE | 不確実な解放を行わない |
+| 5 | AVH-005 | RETURNED_SHARED_HANDLE | OPEN_OR_LOGICAL_CLOSED | ActiveSharedHandleLease | ZERO | 呼出先IFilterに有効な共有ハンドル使用権が1件あり、入力形状が共有方式と一致 | SUCCESS | SharedHandleLeaseRemoved | 共有ハンドル使用権だけを解放 | 共有backingとAV allocationは維持し、後続`getAvSharedHandle()`で再取得可 |
+| 6 | AVH-006 | RETURNED_SHARED_HANDLE | OPEN_OR_LOGICAL_CLOSED | ReleasedSharedHandleLease | ZERO | 同じ共有backingに対するboundedなlease stateが解放済み | SUCCESS | UNCHANGED | NONE | `dataId=0`のshared lease終了だけは同一backingのlease stateで冪等化する |
+| 7 | AVH-007 | RETURNED_SHARED_HANDLE | OPEN_OR_LOGICAL_CLOSED | UnknownOrForeignSharedHandle | ZERO | 呼出先IFilterのshared leaseと一致しない | INVALID_ARGUMENT | UNCHANGED | NONE | allocation tokenとは別に判定する |
+| 8 | AVH-008 | EMPTY | OPEN_OR_LOGICAL_CLOSED | ANY | ZERO | allocation解放を伴わないevent終了 | SUCCESS | UNCHANGED | NONE | 状態を変えない |
+| 9 | AVH-009 | EMPTY | OPEN_OR_LOGICAL_CLOSED | ActiveAllocationToken | POSITIVE | active tokenが呼出先IFilter、generation、transfer kind、backing/allocationを一意に特定し、allocationが`Active`または`ReleaseOnly` | SUCCESS | TokenRemoved | バイト容量とallocation使用権を正確に1回解放 | 成功時にactive token台帳から削除する |
+| 10 | AVH-010 | EMPTY | OPEN_OR_LOGICAL_CLOSED | InactiveOrUnknownToken | POSITIVE | active token台帳に存在しない | INVALID_ARGUMENT | UNCHANGED | NONE | 解放済みduplicate、foreign、never-issuedを永久分類せず、いずれも資源を変更しない |
+| 11 | AVH-011 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | RegistryFailure | ZERO_OR_POSITIVE | event-local leaseまたはactive tokenを安全に分類できない | UNKNOWN_ERROR | RegistryFailure | NONE | 不確実な解放を行わない |
+| 12 | AVH-012 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | ActiveAllocationToken | POSITIVE | active tokenが呼出先IFilterのevent-local allocationを特定し、入力handle形状がevent-local方式と一致 | SUCCESS | TokenRemoved | handle使用権を閉じ、allocationを1回解放 | 成功時にactive token台帳から削除する |
+| 13 | AVH-013 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | ActiveEventLocalHandleLease | ZERO | 呼出先IFilterに有効なevent-local handle使用権があり、入力形状が当該使用権と一致 | SUCCESS | EventLocalHandleFinalized | 受領handle使用権だけを閉じる | 正のactive tokenとallocationは後続の`EMPTY + dataId`解放まで維持する |
+| 14 | AVH-014 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | EventLocalHandleFinalizedWithActiveToken | ZERO | 同じ未解放allocationに対するhandle使用権だけが既に終了済み | SUCCESS | UNCHANGED | NONE | allocationがactiveな間だけboundedなlease stateとして冪等化する |
+| 15 | AVH-015 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | ActiveAllocationToken | POSITIVE | tokenはactiveだがowner、generation、transfer kindまたは入力handle形状が一致しない | INVALID_ARGUMENT | UNCHANGED | NONE | 別allocationを解放しない |
+| 16 | AVH-016 | EVENT_LOCAL_HANDLE | OPEN_OR_LOGICAL_CLOSED | InactiveOrUnknownToken | POSITIVE | active token台帳に存在しない | INVALID_ARGUMENT | UNCHANGED | NONE | 永久tombstoneを要求しない |
+
+受け入れ条件:
+
+- 正の`avDataId`は1..=`I64_MAX`のchecked monotonicなopaque release tokenとし、service instance内で再利用しない。
+- active token台帳には未解放allocationだけを保持し、各entryは`{owner_filter_id, filter_generation, transfer_kind, backing_id, allocation_id, avDataId, lease_state}`を保持する。台帳サイズは`avPerFilterLiveBytes`、`avRuntimeBudgetBytes`および未解放allocation数の既存上限によってboundedでなければならない。
+- 正の`avDataId`によるallocation解放成功時はactive token entryを削除する。以後、同じ値を含めactive token台帳に存在しない正のtokenは`INVALID_ARGUMENT`とし、資源を変更しない。解放済みduplicate、foreign、never-issuedを永久に区別する契約は設けず、allocationごとのtombstoneを保持しない。
+- `flush()`、再設定、logical closeは配送済み未解放allocationを`ReleaseOnly`として保持し、そのactive tokenも解放要求まで保持する。
+- `dataId=0`のshared/event-local handle lease終了はallocation tokenとは別のboundedなlease stateで扱う。allocation解放後まで正のtokenの履歴を残すために流用してはならない。
+- 台帳または記憶領域の処理に失敗し、active tokenの所有者、世代、転送方式、使用権を分類できない場合は`UNKNOWN_ERROR`とし、状態を確定できない資源を解放または再割り当てしない。補助的なfd metadataだけで別allocationへ対応付けない。
+
+'''
+          text = text[:start] + avh + text[end:]
+
+          old_identity = '''AV領域の正本となる同一性情報は、HALが発行時に台帳へ記録する`{owner_filter_id, filter_generation, transfer_kind, backing_id, allocation_id, avDataId, lease_state}`とする。ファイル記述子番号や`fstat`の`{st_dev, st_ino, size}`を正本となる同一性情報にしてはならない。`fstat`などの記述子メタデータは、採用した記憶領域実装で同一性が保証される場合だけ補助検証と診断に用いる。共有ハンドルの`dataId=0`解放は、呼出先IFilterが所有する有効なクライアント使用権を対象とし、イベント固有領域の正の`dataId`解放は、当該IFilterの台帳で使用中の割り当てと転送方式を特定して行う。`empty+dataId`ではファイル記述子を使わず台帳上の識別情報を検証する。所有者、世代、転送方式、`dataId`が一致しない場合は`INVALID_ARGUMENT`とし、別の割り当てを解放してはならない。台帳の信頼性を確認できない場合は`UNKNOWN_ERROR`とし、安全を確認できない記憶領域を隔離する。'''
+          new_identity = '''未解放AV allocationの正本は、正の`avDataId`をkeyとするactive token台帳に記録した`{owner_filter_id, filter_generation, transfer_kind, backing_id, allocation_id, avDataId, lease_state}`とする。ファイル記述子番号や`fstat`の`{st_dev, st_ino, size}`をallocation identityの正本にしてはならない。`fstat`などの記述子メタデータは、採用した記憶領域実装で同一性が保証される場合だけ補助検証と診断に用いる。共有ハンドルの`dataId=0`解放は呼出先IFilterが所有するboundedなクライアント使用権を対象とし、正の`dataId`解放はactive token台帳で当該IFilterの未解放allocationと転送方式を特定して行う。allocation解放成功時はtoken entryを削除し、その後activeでない正のtokenは`INVALID_ARGUMENT`として資源を変更しない。解放済みduplicate、foreign、never-issuedを永久に識別するためのtombstoneは持たない。台帳の信頼性を確認できない場合は`UNKNOWN_ERROR`とし、安全を確認できない記憶領域を隔離する。'''
+          replace_once(old_identity, new_identity, 'AV state-owner identity paragraph')
+
+          old_release_ref = '''解放要求の形状、既知の古い要求を状態変更なしで受理する条件、不明な要求の拒否、ファイル記述子の同一性検証、論理閉鎖後の解放は、本書の「表1-C-AVH. `releaseAvHandle()` 全域判定表」を正とする。`releaseAvHandle(fd,0)`を共有記憶領域全体の破棄と解釈してはならない。イベント固有モードでは、フレームワーク側の参照状態に応じ、受領したハンドルの使用権だけを閉じる場合がある。'''
+          new_release_ref = '''解放要求の形状、active `avDataId` tokenのowner・generation・transfer kind検証、inactive/unknown tokenの拒否、ファイル記述子の補助検証、論理閉鎖後の解放は、本書の「表1-C-AVH. `releaseAvHandle()` 全域判定表」を正とする。`releaseAvHandle(fd,0)`を共有記憶領域全体の破棄と解釈してはならない。イベント固有モードでは、受領したハンドルの使用権だけを先に閉じ、正のactive tokenとallocationを後続解放まで維持できる。'''
+          replace_once(old_release_ref, new_release_ref, 'AV release-reference paragraph')
+
+          # Guard against the superseded positive-token semantics surviving in the AVH section.
+          avh_now = text[text.find(start_marker):text.find(end_marker, text.find(start_marker))]
+          for obsolete in ('issued range/high-watermark', 'KnownReleased | POSITIVE', '既知released/duplicate'):
+              if obsolete in avh_now:
+                  raise SystemExit(f'obsolete AV release semantic remains: {obsolete}')
+
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          rm .github/workflows/apply-tuner-hal-design-fixes.yml
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tuner_hal/DESIGN_JA.md .github/workflows/apply-tuner-hal-design-fixes.yml
+          git diff --cached --check
+          git diff --cached --exit-code --quiet && { echo 'no changes produced'; exit 1; } || true
+          git commit -m 'design: fix FMQ and AV lifetime contracts'
+          git push origin HEAD:agent/fix-tuner-hal-design-contracts
