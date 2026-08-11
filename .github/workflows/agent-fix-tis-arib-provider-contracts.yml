@@ -26,7 +26,7 @@ jobs:
           python3 -m json.tool arib_si_engine_rs/testdata/program_provider_data_v1/unsupported_codec_program.json >/dev/null
           python3 -m json.tool tis/tests/assets/program_provider_data_v1/unsupported_codec_program.json >/dev/null
           python3 -c "import json,pathlib; c=json.loads(pathlib.Path('arib_si_engine_rs/schema/channel_provider_data_v1.schema.json').read_text()); t=c['properties']['tune']; assert 'inputId' not in t['required']; assert 'inputId' not in t['properties']; assert 'backendHint' not in t['properties']; assert t['properties']['streamIdType']['enum']==['NONE','TSID']; assert t['properties']['streamId']['maximum']==65534"
-          python3 -c "import json,pathlib; p=json.loads(pathlib.Path('arib_si_engine_rs/schema/program_provider_data_v1.schema.json').read_text()); assert 'currentProgram' not in p['$defs']['diagnostics']['properties']; assert all('r51PlaybackSupported' not in p['$defs'][n]['properties'] and 'liveViewableClaim' not in p['$defs'][n]['properties'] for n in ('videoComponent','audioComponent'))"
+          python3 -c "import json,pathlib; p=json.loads(pathlib.Path('arib_si_engine_rs/schema/program_provider_data_v1.schema.json').read_text()); assert 'currentProgram' not in p['\$defs']['diagnostics']['properties']; assert all('r51PlaybackSupported' not in p['\$defs'][n]['properties'] and 'liveViewableClaim' not in p['\$defs'][n]['properties'] for n in ('videoComponent','audioComponent'))"
           git diff --check
       - name: Commit final design-only diff
         shell: bash
