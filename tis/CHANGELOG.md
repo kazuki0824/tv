@@ -1,3 +1,10 @@
+# r50ee99_review_wording_precision
+
+- AOSP frozen Tuner AIDLで`RELATIVE_STREAM_NUMBER`が合法なselector種別であることを明示し、永続channel tune identityでは採用しないという製品設計理由へ表現を修正した。
+- `Channels.COLUMN_INPUT_ID`の責務をTV input ownership一般ではなく、channelとTvInputServiceの関連付けのSSOTとして限定した。
+- ARIB STD-B10 5.13-E1 Part 2 Table 6-25に合わせ、`0x01`を`Digital television service`、`0x02`を`Digital audio service`と表記した。
+- schemaおよび実装コード変更なし。文言整合と`git diff --check`のみ確認し、Android/Soong build、Rust unit test、atest、CTS、VTS、実機確認は未実施。
+
 # r50ee98_provider_contract_residual_fix
 
 - ARIB `service_type` を Android generic `SERVICE_TYPE_*` へ変換せず、TvProvider `COLUMN_SERVICE_TYPE` には投影方針正本に従ってARIB codingを保持する設計へ修正した。
