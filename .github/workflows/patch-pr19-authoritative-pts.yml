@@ -1,0 +1,83 @@
+name: Patch PR19 authoritative PTS contract
+'on':
+  push:
+    branches:
+      - agent/fix-tis-arib-design-residuals
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch design documents
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('tis/DESIGN_JA.md')
+          s = p.read_text()
+
+          old = '''明示PTSを持つPES由来eventでは`isPtsPresent()==true`かつ`getPts()`はその明示PTSを表し、PTSを明示しない合法なPES由来eventでは`isPtsPresent()==false`を維持したまま、producerが同じproduct contractを満たすqueue可能なpresentation timestampを`getPts()`へ設定する。`isPtsPresent`をtimestamp validity flagへ読み替えず、provenanceを偽装して`true`へ丸めない。'''
+          new = '''明示PTSを持つPES由来eventでは`isPtsPresent()==true`かつ`getPts()`はその明示PTSを表す。PTSを明示しない合法なPES由来eventでは`isPtsPresent()==false`を維持し、hardware demux / driver / backend media extractor等のproducer側が当該eventのESデータに対応するpresentation timestampをauthoritative timing metadataとして既に確定できる場合に限り、その値を`getPts()`へ設定する。HAL共通層は定数0、単純な直前PTS carry-forward、PCR、wallclock、nominal frame rate、sample rate等からpresentation timestampを推測生成しない。producer側境界でも当該eventとのauthoritative associationを確定できないbackend/profileは、このlive direct-input成功対応profileとして表明しない。`isPtsPresent`をtimestamp validity flagへ読み替えず、provenanceを偽装して`true`へ丸めない。'''
+          if old not in s:
+              raise SystemExit('TIS producer paragraph not found')
+          s = s.replace(old, new, 1)
+
+          old = '''non-empty `MediaEvent`では`getPts()`を33-bit range検証し、`PtsNormalizer`へ渡して同じeventの`QueueRequest.setPresentationTimeUs()`へ必ず設定してからdirect queueする。'''
+          new = '''non-empty `MediaEvent`ではproducer-authoritativeな`getPts()`を33-bit range検証し、`PtsNormalizer`へ渡して同じeventの`QueueRequest.setPresentationTimeUs()`へ必ず設定してからdirect queueする。'''
+          if old not in s:
+              raise SystemExit('TIS queue paragraph not found')
+          s = s.replace(old, new, 1)
+
+          old = '''最低試験は、(1) explicit PTS PESでは`isPtsPresent()==true`かつ`getPts()`がそのPTSになること、(2) 合法なPTS-sparse inputでは`isPtsPresent()==false`のnon-empty eventでもproducerが有効な`getPts()`を提供しTISがdrop/fatalせずqueue継続すること、(3) 33-bit wrap前後とA/V間で本来のtimeline差を維持すること、(4) TISが`isPtsPresent()==false`だけを理由にdrop/fatalしないこと、(5) TISが0/PCR/wallclock/直前PTS等からtimestampを補完しないこと、を含める。'''
+          new = '''最低試験は、(1) explicit PTS PESでは`isPtsPresent()==true`かつ`getPts()`がそのPTSになること、(2) 合法なPTS-sparse inputで`isPtsPresent()==false`でもbackendが当該media outputに対応するauthoritative timing metadataを持つ場合はその対応値を`getPts()`へ出し、TISがdrop/fatalせずqueue継続すること、(3) authoritative sourceがない場合にproducer共通層／TISのどちらも0、直前PTS、PCR、wallclock、frame rate、sample rate等からtimestampを推測生成せず、そのbackend/profileをlive direct-input成功capabilityとして表明しないこと、(4) 33-bit wrap前後とA/V間で本来のtimeline差を維持すること、(5) TISが`isPtsPresent()==false`だけを理由にdrop/fatalしないこと、を含める。'''
+          if old not in s:
+              raise SystemExit('TIS minimum tests paragraph not found')
+          s = s.replace(old, new, 1)
+
+          old = '''generationで最初の明示PTSを共通extended seed `H`へ置き、後から明示PTSを得るtrackはcurrent coordinator referenceに対してsigned-moduloで同じepochへjoinする。'''
+          new = '''generationで最初のproducer-authoritative `getPts()`を共通extended seed `H`へ置き、後から開始または置換されるtrackはそのtrackで最初のproducer-authoritative `getPts()`をcurrent coordinator referenceに対してsigned-moduloで同じepochへjoinする。'''
+          if old not in s:
+              raise SystemExit('TIS coordinator seed phrase not found')
+          s = s.replace(old, new, 1)
+
+          old = '''`PtsEpochCoordinator`は明示PTSを持つeventだけで進め、track-local `rawPrev` / `extendedPrev`とgeneration共有wrap epoch、`2^33-1 -> 0` wrap、`0 -> 2^33-1` reorder、半周期差=`-2^32`、generation開始時video=`2^33-100` / audio=`50`と逆順、後からPTSを得るtrackのjoinを検証する。'''
+          new = '''`PtsEpochCoordinator`は`isPtsPresent`をseed / advance / join条件に使わず、producer-authoritative `getPts()`を持つ全non-empty eventで進める。track-local `rawPrev` / `extendedPrev`とgeneration共有wrap epoch、`2^33-1 -> 0` wrap、`0 -> 2^33-1` reorder、半周期差=`-2^32`、generation最初のeventが`isPtsPresent=false`でもauthoritative `getPts()`を持つ場合、後発video/audio trackが`isPtsPresent=false`から開始する場合、generation開始時video=`2^33-100` / audio=`50`と逆順、双方が33-bit wrap近傍で開始する場合、後から開始／置換するtrackのjoinを検証し、A/V timeline差が本来の差を維持することを確認する。'''
+          if old not in s:
+              raise SystemExit('TIS coordinator test phrase not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          p = Path('tuner_hal/DESIGN_JA.md')
+          s = p.read_text()
+
+          old = '''明示PTSを持つPESでは`isPtsPresent=true`かつ`pts`をその明示PTSとし、明示PTSを持たない合法なPESでは`isPtsPresent=false`を維持したまま、producerが当該ESデータへ適用可能なqueue可能presentation timestampへ解決した値を`pts`へ設定する。provenanceを満たすために`isPtsPresent`を`true`へ偽装してはならない。'''
+          new = '''明示PTSを持つPESでは`isPtsPresent=true`かつ`pts`をその明示PTSとする。明示PTSを持たない合法なPESでは`isPtsPresent=false`を維持し、hardware demux / driver / backend media extractor等が当該media outputに対応するpresentation timestampをauthoritative timing metadataとして既に確定できる場合に限り、その対応値を`pts`へ設定する。HAL共通層は定数0、単純な直前PTS carry-forward、PCR、wallclock、nominal frame rate、sample rate等からpresentation timestampを推測生成しない。provenanceを満たすために`isPtsPresent`を`true`へ偽装してはならない。'''
+          if old not in s:
+              raise SystemExit('HAL authoritative source paragraph not found')
+          s = s.replace(old, new, 1)
+
+          old = '''presentation timestampの解決責務は`MediaEvent`を公開するproducer側で完了させ、TISへPES再解析、codec別AU parser、AU再構成、独自clockを要求しない。解決結果は当該ESデータへ適用可能であることをprofile qualificationで検証し、単なる定数0、無検証の直前値carry-forward、wallclock代入をqueue可能timestamp保証として扱わない。backend/profileがこの保証を提供できない場合は、そのlive media-filter profileを成功capabilityとして表明しない。公開Tuner AIDL/VINTFの`isPtsPresent` / `pts`の意味は変更せず、VTS profileも既存capability整合規則に従う。'''
+          new = '''presentation timestampと当該media outputのassociation責務は`MediaEvent`を公開するproducer側境界で完了させ、TISへPES再解析、codec別AU parser、AU再構成、独自clockを要求しない。backendがauthoritative timing metadataを直接出す場合はその値を透過し、backend adapter側の既存media extractionで当該outputとの対応をauthoritatively確定できる場合もその結果だけを使用する。HAL共通層にgeneric timestamp interpolationを追加しない。producer側境界でもauthoritative associationを成立させられないbackend/profileは、そのlive media-filter profileを成功capabilityとして表明しない。公開Tuner AIDL/VINTFの`isPtsPresent` / `pts`の意味は変更せず、VTS profileも既存capability整合規則に従う。'''
+          if old not in s:
+              raise SystemExit('HAL responsibility paragraph not found')
+          s = s.replace(old, new, 1)
+
+          old = '''最低試験は、explicit PTS、`isPtsPresent=false`の合法なPTS-sparse input、33-bit wrapとA/V timeline差、falseだけを理由にpayload破棄/fatalしないこと、TIS側で0/PCR/wallclock/直前PTS補完をしないことを含める。'''
+          new = '''最低試験は、(1) explicit PTS PESでは`isPtsPresent=true`かつ`pts`がその明示PTSと一致すること、(2) `isPtsPresent=false`の合法なPTS-sparse inputでもbackendがauthoritative timing metadataを持つ場合は当該media outputに対応するその値を`pts`へ出すこと、(3) authoritative sourceがない場合は定数0、直前PTS、PCR、wallclock、frame rate、sample rate等のgeneric interpolationを行わず、そのbackend/profileをlive media-filter成功capabilityとして表明しないこと、(4) 33-bit wrapとA/V timeline差を維持すること、(5) `isPtsPresent=false`だけを理由にpayload破棄/fatalしないこと、を含める。'''
+          if old not in s:
+              raise SystemExit('HAL tests paragraph not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+          PY
+          git diff --check
+          rm -f .github/workflows/patch-pr19-authoritative-pts.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tis/DESIGN_JA.md tuner_hal/DESIGN_JA.md .github/workflows/patch-pr19-authoritative-pts.yml
+          git commit -m 'docs: tighten authoritative PTS contract'
+          git push
