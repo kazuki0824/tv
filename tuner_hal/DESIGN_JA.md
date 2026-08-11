@@ -723,7 +723,7 @@ shared-handle lease、event-local handle lease、個別AV allocationは別の寿
 受け入れ条件:
 
 - 正の`avDataId`は1..=`I64_MAX`のchecked monotonicなopaque release tokenとし、service instance内で再利用しない。
-- active token台帳には未解放allocationだけを保持し、各entryは`{owner_filter_id, filter_generation, transfer_kind, backing_id, allocation_id, avTataId, lease_state}`を保持する。台帳サイズは`avPerFilterLiveBytes`、`avRuntimeBudgetBytes`および未解放allocation数の既存上限によってboundedでなければならない。
+- active token台帳には未解放allocationだけを保持し、各entryは`{owner_filter_id, filter_generation, transfer_kind, backing_id, allocation_id, avDataId, lease_state}`を保持する。台帳サイズは`avPerFilterLiveBytes`、`avRuntimeBudgetBytes`および未解放allocation数の既存上限によってboundedでなければならない。
 - 正の`avDataId`によるallocation解放成功時はactive token entryを削除する。以後、同じ値を含めactive token台帳に存在しない正のtokenは`INVALID_ARGUMENT`とし、資源を変更しない。解放済みduplicate、foreign、never-issuedを永久に区別する契約は設けず、allocationごとのtombstoneを保持しない。
 - `flush()`、再設定、logical closeは配送済み未解放allocationを`ReleaseOnly`として保持し、そのactive tokenも解放要求まで保持する。
 - `dataId=0`のshared/event-local handle lease終了はallocation tokenとは別のboundedなlease stateで扱う。allocation解放後まで正のtokenの履歴を残すために流用してはならない。
