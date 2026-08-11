@@ -62,8 +62,6 @@
         "componentTag": 1,
         "componentType": 0,
         "codec": "HEVC",
-        "r51PlaybackSupported": false,
-        "liveViewableClaim": false,
         "diagnosticCode": "UNSUPPORTED_R51_CODEC",
         "parseStatus": "UNSUPPORTED_R51"
       }
@@ -76,8 +74,6 @@
         "componentType": 0,
         "codec": "MPEG-4-AAC-LATM",
         "language": "jpn",
-        "r51PlaybackSupported": false,
-        "liveViewableClaim": false,
         "diagnosticCode": "UNSUPPORTED_R51_CODEC",
         "parseStatus": "UNSUPPORTED_R51"
       }

@@ -74,7 +74,7 @@ parental_rating_descriptor:
 
 BS と CS110 の complete 判定には BAT、SDT other、NIT other を含める。これらは table_id だけの global 完了ではなく、table_extension と NIT/BAT transport loop から得た ONID/TSID scope を使って transport 単位で判定する。リモコンキー が得られない場合は service_id を表示番号の代替値 とする。
 
-`arib_si_engine_rs` は、service / transport単位の意味解析結果として、ONID / TSID / SID、PMT、PCR、audio/video ESの存在・欠落理由、scrambling情報、および`publishability_by_service`を構造化してTISへ渡す。Android channelを登録するか、`TvContract.Channels.SERVICE_TYPE_*`へどう写像するか、partial snapshotをchannel insertへ使用するかはTISの責務であり、`../tis/DESIGN_JA.md`を正とする。 `publishability_by_service`はservice / transport単位の登録判断材料を構造化してTISへ渡す意味解析結果であり、Android channel登録、`TvContract.Channels.SERVICE_TYPE_*`写像、channel insertの最終判断はTISが行う。
+`arib_si_engine_rs` は、service / transport単位の意味解析結果として、ONID / TSID / SID、ARIB `service_type`のraw 8-bit値、PMT、PCR、audio/video ESの存在・欠落理由、scrambling情報、および`publishability_by_service`を構造化してTISへ渡す。Android channelを登録するか、partial snapshotをchannel insertへ使用するかはTISの責務であり、`../tis/DESIGN_JA.md`を正とする。`Channels.COLUMN_SERVICE_TYPE`への最終投影は`../ARIB_SI_EPG_TvProvider投影方針.md`を正とし、本crateはAndroid generic `TvContract.Channels.SERVICE_TYPE_*`への意味変換を行わない。`publishability_by_service`はservice / transport単位の登録判断材料を構造化してTISへ渡す意味解析結果であり、channel登録とchannel insertの最終判断はTISが行う。
 
 ## system_management_descriptor と通常受信判定
 
@@ -254,7 +254,7 @@ JSON は正規表現ではなく、Rust `serde` / Kotlin JSON parser / JSON Sche
 
 `components.video[]` は ES PID、stream_type、component_tag、component_type、codec、解像度、走査方式、aspect、profile / level、根拠 descriptor を ES/component 単位で保持する。`components.audio[]` は ES PID、stream_type、component_tag、component_type、codec、ISO639 language、channel configuration、sampling info、根拠 descriptor を ES/component 単位で保持する。`components.subtitle[]` は ES PID、component_tag、data_component_id、ISO639 language、TIS trackId、caption サービス kind、parse_status を保持する。`components.data[]` はデータ component の メタデータを保持するが、BML / data broadcast 実行状態や UI 状態は保持しない。
 
-`video` と `audio` は実際に主track 候補として選択された component の要約であり、未選択の場合は `null` とする。codecメタデータの認識は ライブ viewable / playable 対応宣言を意味しない。unsupported codec、decoder unavailable、transport profile out of scope は 診断情報に保存する。
+`video` と `audio` は実際に主track 候補として選択された component の要約であり、未選択の場合は `null` とする。codecメタデータの認識は ライブ viewable / playable 対応宣言を意味しない。unsupported codec、decoder unavailable、transport profile out of scope は 診断情報に保存する。`ProgramProviderDataV1.components.video[]` / `components.audio[]` にrelease固有またはruntime capability判定の `r51PlaybackSupported` / `liveViewableClaim` を保存せず、再生可否はTIS runtimeの製品policyとdecoder capability判定に閉じる。
 
 ### DescriptorDiagnosticV1
 

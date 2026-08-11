@@ -1,3 +1,10 @@
+# r50ee98_provider_contract_residual_fix
+
+- `ChannelProviderDataV1` schemaから`inputId` / `backendHint` / `RELATIVE` / `65535` TSIDを除去し、`NONE -> null` / `TSID -> 0..65534`の組合せを機械検証する契約へ修正した。
+- `ProgramProviderDataV1` schemaからprocess-local `diagnostics.currentProgram` とrelease/runtime capability値 `r51PlaybackSupported` / `liveViewableClaim` を除去し、同名fieldを明示的に拒否するようにした。
+- unsupported codecのprovider-data整合確認データを新schemaへ同期し、`arib_si_engine_rs/DESIGN_JA.md` のservice_type・provider-data責務をTvProvider投影正本と一致させた。
+- 実装コード変更なし。JSON構文確認と静的差分確認のみ実施し、Android/Soong build、Rust unit test、atest、CTS、VTS、実機確認は未実施。
+
 # r50ee97_future_wording_and_wallclock_research_fix
 
 - `arib_si_engine_rs/DESIGN_JA.md` の r51/r53 表現を、現行仕様・現行ライブ視聴対応・予約追従接続時の設計正本固定条件へ補正した。
