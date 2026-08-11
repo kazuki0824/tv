@@ -2931,3 +2931,11 @@ Filter生産側の許可は、短い非ブロッキング処理だけを覆うRA
 #### LNBとの接続
 
 LNBの論理閉鎖にも同じ遷移を適用する。`LogicalClosed+CleanupPending` の `close()` は回復再試行だけを許可する。`Quarantined` は内部回収機構が所有する。終端後片付けが完了するまで、LNB終端の使用枠を`openLnbById()`または`openLnbByName()`の受付へ戻してはならない。
+
+## clear non-passthrough MediaEvent presentation timestamp 契約
+
+本製品が成功対応として表明するlive AVのclear / non-passthrough media-filter profileでは、Tuner HAL / media-filter producerは、配送するすべてのnon-empty `DemuxFilterMediaEvent`について、当該eventのESデータへ適用可能な有効な33-bit 90 kHz presentation timestampを`pts`へ設定してから配送する。AOSP契約どおり`isPtsPresent`は元PES headerに明示PTSが存在したかというprovenanceだけを表し、timestamp validity flagとして使用しない。明示PTSを持つPESでは`isPtsPresent=true`かつ`pts`をその明示PTSとする。明示PTSを持たない合法なPESでは`isPtsPresent=false`を維持し、hardware demux / driver / backend media extractor等が当該media outputに対応するpresentation timestampをauthoritative timing metadataとして既に確定できる場合に限り、その対応値を`pts`へ設定する。HAL共通層は定数0、単純な直前PTS carry-forward、PCR、wallclock、nominal frame rate、sample rate等からpresentation timestampを推測生成しない。provenanceを満たすために`isPtsPresent`を`true`へ偽装してはならない。
+
+presentation timestampと当該media outputのassociation責務は`MediaEvent`を公開するproducer側境界で完了させ、TISへPES再解析、codec別AU parser、AU再構成、独自clockを要求しない。backendがauthoritative timing metadataを直接出す場合はその値を透過し、backend adapter側の既存media extractionで当該outputとの対応をauthoritatively確定できる場合もその結果だけを使用する。HAL共通層にgeneric timestamp interpolationを追加しない。producer側境界でもauthoritative associationを成立させられないbackend/profileは、そのlive media-filter profileを成功capabilityとして表明しない。公開Tuner AIDL/VINTFの`isPtsPresent` / `pts`の意味は変更せず、VTS profileも既存capability整合規則に従う。
+
+最低試験は、(1) explicit PTS PESでは`isPtsPresent=true`かつ`pts`がその明示PTSと一致すること、(2) `isPtsPresent=false`の合法なPTS-sparse inputでもbackendがauthoritative timing metadataを持つ場合は当該media outputに対応するその値を`pts`へ出すこと、(3) authoritative sourceがない場合は定数0、直前PTS、PCR、wallclock、frame rate、sample rate等のgeneric interpolationを行わず、そのbackend/profileをlive media-filter成功capabilityとして表明しないこと、(4) 33-bit wrapとA/V timeline差を維持すること、(5) `isPtsPresent=false`だけを理由にpayload破棄/fatalしないこと、を含める。

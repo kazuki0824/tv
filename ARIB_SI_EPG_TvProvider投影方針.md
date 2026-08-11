@@ -39,7 +39,7 @@ TvProvider 標準列へ投影する ARIB descriptor 由来値は、Rust parser �
 |---|---|---|
 | ISDB-T | `TvContract.Channels.TYPE_ISDB_T` | 地上UHFだけでなく、CATV帯の候補から受信した場合でも実際のtransportがISDB-TならISDB-Tとする |
 | ISDB-S | `TvContract.Channels.TYPE_ISDB_S` | BSとCS110を含む |
-| ISDB-C | `TvContract.Channels.TYPE_ISDB_C` | 将来、実際のISDB-C transportを対応宣言した場合だけ使用する。CATV周波数帯を走査したという理由だけでは使用しない |
+| ISDB-C | 投影しない | ISDB-C delivery systemは本productの恒久非対応対象とする。CATV周波数帯を走査したという理由だけで`TYPE_ISDB_C`へ写像せず、実transportがISDB-Cならchannel登録対象にしない |
 
 `Channels.COLUMN_SERVICE_TYPE`はARIB `service_type`から決める別軸であり、`Channels.COLUMN_TYPE`の代用にしない。正規化済みdelivery systemを一意に決定できないサービスは、`TYPE_OTHER`や周波数帯由来の値へ丸めずchannel登録可能としない。既存channelの`COLUMN_TYPE`を更新して方式変更を表現せず、方式が異なる受信構成を採用する場合はsetup/rescanで新しいchannel登録transactionとして扱う。
 
@@ -50,7 +50,7 @@ ARIB EIT の `start_time` は日本標準時（JST、UTC+09:00）のMJD + BCDと
 `start_time=0xFFFFFFFFFF` と `duration=0xFFFFFF` はARIB上の有効な未定義値であり、BCD不正や壊れたeventとして扱わない。ただし、両者の組合せで意味が異なる。
 
 - `start_time` または `duration` の片方だけが all-1 の場合は時刻未定状態とする。event自体は確定しており `event_id` は有効である。未定の時刻を0秒、1ミリ秒、固定番組長などの架空値へ置換してはならず、後続EITで具体値が得られた場合は同じ `original_network_id / transport_stream_id / service_id / event_id` のeventとして相関してよい。
-- `start_time=0xFFFFFFFFFF` かつ `duration=0xFFFFFF` の場合はevent未定状態とする。event内容自体が未確定であり `event_id` に意味はない。この状態を stable event identity に昇格させず、後続EITの具体eventと `event_id` だけで同一eventとして相関してはならない。
+- `start_time=0xFFFFFFFFFF` かつ `duration=0xFFFFFF` の場合も、ARIB規定として断定するのは両timing fieldが未定義値であることまでとし、raw `event_id` field自体の意味が失われるとは扱わない。本製品では、具体時刻を持つeventとの誤相関・既存Programの誤削除を避ける保守的ポリシーとして、この状態をpersistent stable event identityへ昇格させず、後続EITの具体eventとraw `event_id`だけで自動相関しない。
 
 通常の `TvProvider.Programs` row は具体的な開始時刻と終了時刻を必要とするため、時刻未定eventもevent未定状態も、未定状態のまま `Programs` rowを新規作成または時刻更新する対象にしない。これらの未定義値だけを理由に既存の正常な `Programs` rowを削除する根拠にも使わない。
 
@@ -63,7 +63,7 @@ EDCBとEPGStationの参照から補完できたため、次を設計として固
 | ARIB由来データ | TvProvider標準列への投影 | internal_provider_dataへの保存 | 固定理由 |
 |---|---|---|---|
 | 番組名 | `Programs.COLUMN_TITLE` | イベントキーと合わせて保持する | EDCB/EPGStationとも番組名として扱う |
-| 短形式イベント本文 | `Programs.COLUMN_SHORT_DESCRIPTION` と `Programs.COLUMN_LONG_DESCRIPTION` 冒頭 | 元文字列を保持する | 概要としてUI表示する |
+| 短形式イベント本文 | `Programs.COLUMN_SHORT_DESCRIPTION` | 元文字列を保持する | 概要は専用の標準列へ投影し、追加情報がない場合に `COLUMN_LONG_DESCRIPTION` へ同文を重複保存しないため |
 | 長形式イベント本文 | `Programs.COLUMN_LONG_DESCRIPTION` | 元文字列を保持する | 詳細説明としてUI表示する |
 | extended_event の項目説明 / item_text | `Programs.COLUMN_LONG_DESCRIPTION` に `【項目名】本文` として平坦化 | 長形式イベント項目リストを構造保持 | EPGStationの `extended` は平坦化文字列、元構造は `rawExtended` 相当 |
 | component_descriptor の text | `Programs.COLUMN_LONG_DESCRIPTION` に `映像: ...` として補足 | コンポーネント構造を保持 | EDCB系UIでは映像情報として表示される |
@@ -83,16 +83,15 @@ EDCBとEPGStationの参照から補完できたため、次を設計として固
 
 ## 4. 表示文の固定形式
 
-`Programs.COLUMN_LONG_DESCRIPTION` は、次の順で構成する。
+`Programs.COLUMN_LONG_DESCRIPTION` は、`COLUMN_SHORT_DESCRIPTION` を超える追加情報だけを次の順で構成する。追加情報が1件もない場合は `COLUMN_LONG_DESCRIPTION` を設定せず、短形式イベント本文を機械的に複製しない。
 
 ```text
-1. 短形式イベント本文
-2. 長形式イベント本文
-3. extended_event item list
-4. component_descriptor の text
-5. audio_component_descriptor の text
-6. コンテンツジャンルUI補足
-7. freeCA / isFree UI補足
+1. 長形式イベント本文
+2. extended_event item list
+3. component_descriptor の text
+4. audio_component_descriptor の text
+5. コンテンツジャンルUI補足
+6. freeCA / isFree UI補足
 ```
 
 各要素の整形は次で固定する。
@@ -149,13 +148,13 @@ Programs.COLUMN_SHORT_DESCRIPTION:
   短形式イベント本文を先頭から短縮したもの
 
 Programs.COLUMN_LONG_DESCRIPTION:
-  短形式イベント本文
   長形式イベント本文
   extended_event item listを平坦化したもの
   component_descriptor の text
   audio_component_descriptor の text
   コンテンツジャンルUI補足
   freeCA / isFree UI補足
+  上記の追加情報がすべて空なら列を設定しない
 
 Programs.COLUMN_AUDIO_LANGUAGE:
   音声コンポーネントから得られる言語情報。
@@ -187,7 +186,7 @@ Programs.COLUMN_LONG_DESCRIPTION のUI補足:
 Programs.COLUMN_INTERNAL_PROVIDER_DATA:
   JSON v1 UTF-8 バイト列のみを新規書き込み正形式とする。
   `schema`, `schemaVersion`, `programKey`, `serviceKey`, `timing`, `source`, `cas`, `ratings`, `genres`, `series`, `relatedItems`, `linkage`, `freeCaMode`, `audioLanguages`, `audio`, `video`, `extendedItems`, `components`, `diagnostics` を最上位フィールドとして持つ。
-  provider-data JSON v1 の構造、canonical encode、正規化、安定キー抽出は `arib_si_engine_rs/DESIGN_JA.md` の `ProgramProviderDataV1` / `ChannelProviderDataV1` を SSOT とする。provider-data単体のdigestまたはsignatureは生成せず、同一process内の重複書き込み抑止にはprovider-data bytesを含むTvProvider行全体のpublish fingerprintだけを使用する。現在番組選択の診断は `diagnostics.currentProgram` 配下に保存する。
+  provider-data JSON v1 の構造、canonical encode、正規化、安定キー抽出は `arib_si_engine_rs/DESIGN_JA.md` の `ProgramProviderDataV1` / `ChannelProviderDataV1` を SSOT とする。provider-data単体のdigestまたはsignatureは生成せず、同一process内の重複書き込み抑止にはprovider-data bytesを含むTvProvider行全体のpublish fingerprintだけを使用する。TvProvider row id に依存する現在番組選択の診断は provider-data へ永続化せず、TIS の process-local 診断に限定する。
   長形式イベント項目リスト、component/audio/series/linkage/event_group/free_CA_mode/audioLanguages等の完全構造、decode/publishability/記述子診断情報は JSON v1 内に保存する。
 
 Channels.COLUMN_TYPE:
@@ -200,7 +199,7 @@ Channels.COLUMN_TYPE:
 投影仕様の確認観点は次とする。本節は実行手順、atest名、成果物名、完了判定の正本ではない。
 
 ```text
-1. 長形式イベント項目が `【項目名】本文` として LONG_DESCRIPTION に出る。
+1. 短形式イベント本文だけを持つ番組は `COLUMN_SHORT_DESCRIPTION` に出て `COLUMN_LONG_DESCRIPTION` を設定しない。長形式イベント項目などの追加情報がある場合だけ、その追加情報が `【項目名】本文` 等の固定形式で LONG_DESCRIPTION に出る。
 2. component text が `映像: ...` として LONG_DESCRIPTION に出る。
 3. 音声コンポーネント本文が `音声: ...` として LONG_DESCRIPTION に出る。
 4. genre補足が `ジャンル: ...` として LONG_DESCRIPTION に出る。
@@ -213,7 +212,7 @@ Channels.COLUMN_TYPE:
 11. `episode_number=1..4095` は `COLUMN_EPISODE_DISPLAY_NUMBER` へ出て、`0` は列を設定しない。`last_episode_number` は `0` を含め標準列へ出ず、JSON v1 internal_provider_data の series 構造に残る。
 12. `series_name` は `COLUMN_TITLE` / `COLUMN_EPISODE_TITLE` / `LONG_DESCRIPTION` へ機械的に出ず、JSON v1 internal_provider_data の series 構造に残る。
 13. 診断情報は標準列へ出ず、JSON v1 internal_provider_data の 診断情報 構造に残る。
-14. EIT `start_time` の具体値はJSTとして解釈してUTC epoch millisへ変換する。片方だけall-1の時刻未定eventは架空の開始・終了時刻で `Programs` へ投影せず、後続EITの同じevent identityと相関できる。`start_time=0xFFFFFFFFFF`かつ`duration=0xFFFFFF`のevent未定状態は `event_id` をstable identityとして扱わず、後続の具体eventと `event_id` だけで相関しない。
+14. EIT `start_time` の具体値はJSTとして解釈してUTC epoch millisへ変換する。片方だけall-1の時刻未定eventは架空の開始・終了時刻で `Programs` へ投影せず、本製品のstable identity規則に従って後続EITと相関できる。`start_time=0xFFFFFFFFFF`かつ`duration=0xFFFFFF`ではraw `event_id` field自体をARIB上無意味とは断定せず、本製品の誤相関・誤削除防止ポリシーとしてpersistent stable identityへ昇格させず、後続の具体eventとraw `event_id`だけで自動相関しない。
 15. ISDB-T、BS、CS110のchannel insertで`COLUMN_TYPE`がそれぞれ`TYPE_ISDB_T`、`TYPE_ISDB_S`、`TYPE_ISDB_S`となり、CATV帯という理由だけで`TYPE_ISDB_C`へ変わらない。delivery system不明時はchannel登録しない。
 ```
 
@@ -240,7 +239,7 @@ Channels.COLUMN_TYPE:
 - 新規 provider-data 書き込みでは `arib_si_engine_rs` の `ProgramProviderDataV1` を provider-data 全体の唯一の schema とする。descriptor 診断情報 schema v1 は `diagnostics.descriptorDiagnostics[]` 配下の要素 schema であり、provider-data 全体の schema ではない。
 - extended-event item は `description/text` として書き込む。`key/value` と `itemDescription/itemText` の旧入力形式は受け付けない。
 - 不正な short / extended / content / audio_component / event_group descriptor は、通常の title、description、長形式イベント項目、genre、audio、event-group フィールドとして部分投影してはならない。
-- ARIBで定義された `start_time=0xFFFFFFFFFF` / `duration=0xFFFFFF` の未定義値は不正timingに含めない。片方だけall-1の場合は `event_id` が有効な時刻未定状態、両方all-1の場合は `event_id` に意味がないevent未定状態として区別する。それ以外の不正な EIT event timing は、以前有効だった event が消滅した根拠にしてはならない。不正 section だけでは 廃止行削除区間 を作らない。
+- ARIBで定義された `start_time=0xFFFFFFFFFF` / `duration=0xFFFFFF` の未定義値は不正timingに含めない。片方だけall-1の場合と両方all-1の場合を区別するが、両方all-1でもraw `event_id` field自体をARIB上無意味とは断定しない。両方all-1をpersistent stable identity、deletion-authoritativeなvalid-event-set、後続具体eventとの自動相関へ使わないのは本製品の誤相関・誤削除防止ポリシーとする。それ以外の不正な EIT event timing は、以前有効だった event が消滅した根拠にしてはならない。不正 section だけでは 廃止行削除区間 を作らない。
 
 
 ## ARIB分類から Android canonical genre への明示写像表
