@@ -1,0 +1,30 @@
+name: Direct Boot 設計文書の体裁を修正
+
+on:
+  push:
+    branches:
+      - agent/fix-direct-boot-epg-drain-clean
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-direct-boot-epg-drain-clean
+          fetch-depth: 0
+      - run: python3 .github/scripts/fix_direct_boot_doc_spacing.py
+      - shell: bash
+        run: |
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/fix-direct-boot-doc-spacing.yml .github/scripts/fix_direct_boot_doc_spacing.py
+          git add tis/DESIGN_JA.md tis/INTEGRATION.md
+          git diff --cached --check
+          git commit -m 'docs: Direct Boot 設計文書の体裁を整える'
+          git push origin HEAD:agent/fix-direct-boot-epg-drain-clean
