@@ -672,16 +672,24 @@
         "parseStatus": {
           "$ref": "#/$defs/parseStatus"
         },
-        "r51PlaybackSupported": {
-          "type": "boolean"
-        },
-        "liveViewableClaim": {
-          "type": "boolean"
-        },
         "diagnosticCode": {
           "type": "string",
           "minLength": 1
         }
+      },
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "r51PlaybackSupported"
+            ]
+          },
+          {
+            "required": [
+              "liveViewableClaim"
+            ]
+          }
+        ]
       }
     },
     "audioComponent": {
@@ -737,16 +745,24 @@
         "parseStatus": {
           "$ref": "#/$defs/parseStatus"
         },
-        "r51PlaybackSupported": {
-          "type": "boolean"
-        },
-        "liveViewableClaim": {
-          "type": "boolean"
-        },
         "diagnosticCode": {
           "type": "string",
           "minLength": 1
         }
+      },
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "r51PlaybackSupported"
+            ]
+          },
+          {
+            "required": [
+              "liveViewableClaim"
+            ]
+          }
+        ]
       }
     },
     "subtitleComponent": {
@@ -898,28 +914,6 @@
             "$ref": "#/$defs/diagnosticItem"
           }
         },
-        "currentProgram": {
-          "type": "object",
-          "additionalProperties": true,
-          "required": [
-            "overlapCount",
-            "selectedProgramId",
-            "selectionRule"
-          ],
-          "properties": {
-            "overlapCount": {
-              "type": "integer",
-              "minimum": 0
-            },
-            "selectedProgramId": {
-              "type": "integer"
-            },
-            "selectionRule": {
-              "type": "string",
-              "minLength": 1
-            }
-          }
-        },
         "rawProviderDataExtensions": {
           "type": "array",
           "items": {
@@ -954,6 +948,11 @@
           "type": "integer",
           "minimum": 0
         }
+      },
+      "not": {
+        "required": [
+          "currentProgram"
+        ]
       }
     }
   }

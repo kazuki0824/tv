@@ -27,16 +27,12 @@
       "additionalProperties": false,
       "required": [
         "displayName",
-        "inputId",
         "deliverySystem",
         "frequencyHz",
         "streamId",
         "streamIdType"
       ],
       "properties": {
-        "inputId": {
-          "type": "string"
-        },
         "displayName": {
           "type": "string"
         },
@@ -53,25 +49,18 @@
             "null"
           ],
           "minimum": 0,
-          "maximum": 65535
+          "maximum": 65534
         },
         "streamIdType": {
           "type": "string",
           "enum": [
             "NONE",
-            "TSID",
-            "RELATIVE"
+            "TSID"
           ]
         },
         "physicalChannel": {
           "type": [
             "integer",
-            "null"
-          ]
-        },
-        "backendHint": {
-          "type": [
-            "string",
             "null"
           ]
         },
@@ -88,7 +77,49 @@
           ],
           "minimum": 0
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "streamIdType": {
+                "const": "NONE"
+              }
+            },
+            "required": [
+              "streamIdType"
+            ]
+          },
+          "then": {
+            "properties": {
+              "streamId": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "streamIdType": {
+                "const": "TSID"
+              }
+            },
+            "required": [
+              "streamIdType"
+            ]
+          },
+          "then": {
+            "properties": {
+              "streamId": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 65534
+              }
+            }
+          }
+        }
+      ]
     },
     "cas": {
       "type": "object",

@@ -1,3 +1,16 @@
+# r50ee99_review_wording_precision
+
+- AOSP frozen Tuner AIDLで`RELATIVE_STREAM_NUMBER`が合法なselector種別であることを明示し、永続channel tune identityでは採用しないという製品設計理由へ表現を修正した。
+- `Channels.COLUMN_INPUT_ID`の責務をTV input ownership一般ではなく、channelとTvInputServiceの関連付けのSSOTとして限定した。
+- ARIB STD-B10 5.13-E1 Part 2 Table 6-25に合わせ、`0x01`を`Digital television service`、`0x02`を`Digital audio service`と表記した。
+- schemaおよび実装コード変更なし。文言整合と`git diff --check`のみ確認し、Android/Soong build、Rust unit test、atest、CTS、VTS、実機確認は未実施。
+
+# r50ee98_provider_contract_residual_fix
+
+- ARIB `service_type` を Android generic `SERVICE_TYPE_*` へ変換せず、TvProvider `COLUMN_SERVICE_TYPE` には投影方針正本に従ってARIB codingを保持する設計へ修正した。
+- `tis/tests/assets/program_provider_data_v1/unsupported_codec_program.json` からrelease/runtime capability値 `r51PlaybackSupported` / `liveViewableClaim` を削除し、Rust側schema正本と同期した。
+- 実装コード変更なし。JSON構文確認と静的差分確認のみ実施し、Android/Soong build、Rust unit test、atest、CTS、VTS、実機確認は未実施。
+
 # r50ee97_future_wording_and_wallclock_research_fix
 
 - TIS 設計・統合文書の r51/r52/r53 表現を、開発規則で定義されたリリース計画を暗黙に再定義しない現行 product / 現行仕様 / 非採用範囲の表現へ補正した。

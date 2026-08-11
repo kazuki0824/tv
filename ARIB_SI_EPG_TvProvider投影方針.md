@@ -41,7 +41,7 @@ TvProvider 標準列へ投影する ARIB descriptor 由来値は、Rust parser �
 | ISDB-S | `TvContract.Channels.TYPE_ISDB_S` | BSとCS110を含む |
 | ISDB-C | 投影しない | ISDB-C delivery systemは本productの恒久非対応対象とする。CATV周波数帯を走査したという理由だけで`TYPE_ISDB_C`へ写像せず、実transportがISDB-Cならchannel登録対象にしない |
 
-`Channels.COLUMN_SERVICE_TYPE`はARIB `service_type`から決める別軸であり、`Channels.COLUMN_TYPE`の代用にしない。正規化済みdelivery systemを一意に決定できないサービスは、`TYPE_OTHER`や周波数帯由来の値へ丸めずchannel登録可能としない。既存channelの`COLUMN_TYPE`を更新して方式変更を表現せず、方式が異なる受信構成を採用する場合はsetup/rescanで新しいchannel登録transactionとして扱う。
+`Channels.COLUMN_SERVICE_TYPE`はARIB STD-B10の`service_type`と同じcodingを保持する別軸であり、`Channels.COLUMN_TYPE`の代用にしない。AOSP `TvContract.Channels`は基礎放送規格に`service_type`が定義されている場合、その規格と同じcodingを使うことを要求しているため、ARIBサービスをAndroid generic `SERVICE_TYPE_AUDIO_VIDEO` / `SERVICE_TYPE_AUDIO` / `SERVICE_TYPE_OTHER`へ意味変換しない。`COLUMN_SERVICE_TYPE`はTEXT列なので、本TISのcanonical保存表現はARIB raw 8-bit値の符号なし10進文字列とし、例えば`0x01`は`"1"`、`0x02`は`"2"`として保存する。channel登録・live viewableとしてどのARIB `service_type`を製品対応するかはTISの製品policyであり、この列のcodingとは分離する。正規化済みdelivery systemを一意に決定できないサービスは、`TYPE_OTHER`や周波数帯由来の値へ丸めずchannel登録可能としない。既存channelの`COLUMN_TYPE`を更新して方式変更を表現せず、方式が異なる受信構成を採用する場合はsetup/rescanで新しいchannel登録transactionとして扱う。
 
 ### EIT時刻のTvProvider投影境界
 
@@ -80,6 +80,7 @@ EDCBとEPGStationの参照から補完できたため、次を設計として固
 | service_id | `Channels.COLUMN_SERVICE_ID` | サービスキーとして保持する | Android標準列がある |
 | transport_stream_id | `Channels.COLUMN_TRANSPORT_STREAM_ID` | サービスキーとして保持する | Android標準列がある |
 | original_network_id | `Channels.COLUMN_ORIGINAL_NETWORK_ID` | サービスキーとして保持する | Android標準列がある |
+| service_type | `Channels.COLUMN_SERVICE_TYPE` にARIB raw 8-bit codingの符号なし10進文字列を格納する | ARIB raw `service_type` を保持する | AOSPがARIB STD-B10のcoding維持を要求するため |
 
 ## 4. 表示文の固定形式
 
