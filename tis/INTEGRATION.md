@@ -65,14 +65,15 @@ ARIB字幕表示の product 統合では、repoで供給される `libaribcaptio
 
 `MaleicacidRecScopeTests` は録画・予約作業で明示指定して使う範囲に限定し、現行 product の build / atest / VTS / 実機確認 gate へ混ぜない。
 
-## Direct Boot と boot receiver
+## Direct Boot と起動時の受信処理
 
-TIS は `directBootAware=true` を維持する。`LOCKED_BOOT_COMPLETED` では device protected storage に pending flag だけを記録し、TvProvider、Tuner、JNI parser は user unlock 後にだけ起動する。
+TIS は `directBootAware=true` を維持する。`AndroidManifest.xml` の `BootReceiver` は `android:directBootAware="true"` とし、`ACTION_LOCKED_BOOT_COMPLETED` と `ACTION_BOOT_COMPLETED` の双方を受信対象にする。`ACTION_LOCKED_BOOT_COMPLETED` ではデバイス保護領域に `DirectBootEpgPending` だけを記録し、TvProvider、Tuner、JNI 経由の解析処理は起動しない。
 
-`ACTION_USER_UNLOCKED` は manifest receiver へ登録しない。Boot EPG sync / background maintenance は BootReceiver、UserUnlockReceiver、または明示的な maintenance scheduler からのみ起動する。`MaleicacidTvInputService.onCreate()` は Direct Boot pending drain、boot EPG sync、background maintenance を開始してはならない。
+`ACTION_BOOT_COMPLETED` では `UserManager.isUserUnlocked()==true` を確認し、`DirectBootEpgPending=true` なら起動時の EPG 同期を開始対象にする。同じ `inputId` に対する開始要求を複数回受けても同じ結果になるようにし、同じ反映処理を重複して確定しない。起動時の EPG 同期を開始できなかった場合、または TvProvider への反映が正常終了する前は `DirectBootEpgPending` を維持し、正常な反映処理の確定後にだけ解除する。
 
-Boot EPG sync / background maintenance の開始条件は、active ライブセッション、session creation in progress、setup scan、playback pipeline、scan manager running がすべて存在しないこととする。ライブセッション 作成要求が来た時点で boot/background task が未開始なら defer する。boot/background task が既に running の場合、現行仕様では boot/background task を cancel/defer し ライブ tune を優先する。
+`ACTION_USER_UNLOCKED` は `AndroidManifest.xml` に登録しない。プロセスが利用者のロック解除まで生存している場合は、動的に登録した受信処理から同じ保留処理の開始を前倒ししてよい。ただし、`DirectBootEpgPending` を確実に再開する正規の入口は `ACTION_BOOT_COMPLETED` とし、動的な `ACTION_USER_UNLOCKED` の受信や定期保守の実行機構だけに再開保証を依存させない。`MaleicacidTvInputService.onCreate()` は Direct Boot の保留処理、起動時の EPG 同期、定期保守を開始してはならない。
 
+起動時の EPG 同期と定期保守を開始できるのは、ライブセッション、セッション作成中、設定用の走査、再生処理、走査管理処理がすべて存在しない場合だけとする。ライブセッションの作成要求が来た時点でこれらの処理をまだ開始していない場合は開始を見送る。すでに実行中の場合は停止または延期し、ライブ視聴の選局を優先する。
 ## flash 後の確認
 
 ```bash

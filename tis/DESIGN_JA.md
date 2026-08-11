@@ -383,13 +383,13 @@ product 側で システムTVアプリ に grant 可能な場合、SetupActivity
 
 SetupActivity は自分が開始した `SETUP_SCAN` purpose かつ同一 scan generation の Completed だけで `RESULT_OK` にする。過去の Completed、boot EPG sync、background maintenance の Completed で finish してはならない。
 
-### Direct Boot drain / ライブセッション 優先
+### Direct Boot の保留処理とライブセッションの優先順位
 
-`MaleicacidTvInputService.onCreate()` は Direct Boot pending drain、boot EPG sync、background maintenance を開始しない。Boot EPG sync / background maintenance は BootReceiver、UserUnlockReceiver、または明示的な maintenance scheduler からのみ起動する。
+`MaleicacidTvInputService.onCreate()` は Direct Boot の保留処理、起動時の EPG 同期、定期保守を開始しない。`DirectBootEpgPending` を確実に処理するための再開点は、`AndroidManifest.xml` に登録した `BootReceiver` が受ける `ACTION_BOOT_COMPLETED` とする。`ACTION_LOCKED_BOOT_COMPLETED` では `DirectBootEpgPending` の記録だけを行い、TvProvider、Tuner、JNI 経由の解析処理は起動しない。利用者のロック解除までプロセスが生存している場合は、動的に登録した `ACTION_USER_UNLOCKED` の受信処理から同じ保留処理を前倒ししてよいが、保留処理を確実に再開できることは `ACTION_BOOT_COMPLETED` によって保証する。定期保守の実行機構だけに `DirectBootEpgPending` の処理保証を依存させない。
 
-Boot EPG sync / background maintenance の開始条件は、`activeLiveSessionCount == 0`、`sessionCreationInProgress == false`、`setupScanRunning == false`、`playbackPipelineRunning == false`、`scanManager running == false` をすべて満たすこととする。ライブセッション 作成要求が来た時点で boot/background task が未開始なら defer する。boot/background task が既に running の場合、現行仕様では boot/background task を cancel/defer し ライブ tune を優先する。
+`ACTION_BOOT_COMPLETED` と補助的な `ACTION_USER_UNLOCKED` が重複して到達しても、同じ `inputId` の保留処理を重複して確定してはならない。開始要求を何度受けても同じ結果になるようにし、同期処理を開始できなかった場合、および TvProvider への反映が正常終了する前は `DirectBootEpgPending` を維持する。`DirectBootEpgPending` は、前節で定めた起動時 EPG 同期の反映処理が正常に確定した場合だけ解除する。
 
-
+起動時の EPG 同期と定期保守を開始できるのは、`activeLiveSessionCount == 0`、`sessionCreationInProgress == false`、`setupScanRunning == false`、`playbackPipelineRunning == false`、`scanManager running == false` をすべて満たす場合だけとする。ライブセッションの作成要求が来た時点でこれらの処理をまだ開始していない場合は開始を見送る。すでに実行中の場合は停止または延期し、ライブ視聴の選局を優先する。
 ## TIS コールバック 入力境界と逆圧
 
 - `SectionEvent.dataLength` は、Tuner コールバック から読み取る section の正確な byte 長として扱う。
