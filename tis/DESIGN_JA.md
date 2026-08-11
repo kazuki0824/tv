@@ -390,6 +390,7 @@ SetupActivity は自分が開始した `SETUP_SCAN` purpose かつ同一 scan ge
 `ACTION_BOOT_COMPLETED` と補助的な `ACTION_USER_UNLOCKED` が重複して到達しても、同じ `inputId` の保留処理を重複して確定してはならない。開始要求を何度受けても同じ結果になるようにし、同期処理を開始できなかった場合、および TvProvider への反映が正常終了する前は `DirectBootEpgPending` を維持する。`DirectBootEpgPending` は、前節で定めた起動時 EPG 同期の反映処理が正常に確定した場合だけ解除する。
 
 起動時の EPG 同期と定期保守を開始できるのは、`activeLiveSessionCount == 0`、`sessionCreationInProgress == false`、`setupScanRunning == false`、`playbackPipelineRunning == false`、`scanManager running == false` をすべて満たす場合だけとする。ライブセッションの作成要求が来た時点でこれらの処理をまだ開始していない場合は開始を見送る。すでに実行中の場合は停止または延期し、ライブ視聴の選局を優先する。
+
 ## TIS コールバック 入力境界と逆圧
 
 - `SectionEvent.dataLength` は、Tuner コールバック から読み取る section の正確な byte 長として扱う。

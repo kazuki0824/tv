@@ -74,6 +74,7 @@ TIS は `directBootAware=true` を維持する。`AndroidManifest.xml` の `Boot
 `ACTION_USER_UNLOCKED` は `AndroidManifest.xml` に登録しない。プロセスが利用者のロック解除まで生存している場合は、動的に登録した受信処理から同じ保留処理の開始を前倒ししてよい。ただし、`DirectBootEpgPending` を確実に再開する正規の入口は `ACTION_BOOT_COMPLETED` とし、動的な `ACTION_USER_UNLOCKED` の受信や定期保守の実行機構だけに再開保証を依存させない。`MaleicacidTvInputService.onCreate()` は Direct Boot の保留処理、起動時の EPG 同期、定期保守を開始してはならない。
 
 起動時の EPG 同期と定期保守を開始できるのは、ライブセッション、セッション作成中、設定用の走査、再生処理、走査管理処理がすべて存在しない場合だけとする。ライブセッションの作成要求が来た時点でこれらの処理をまだ開始していない場合は開始を見送る。すでに実行中の場合は停止または延期し、ライブ視聴の選局を優先する。
+
 ## flash 後の確認
 
 ```bash
