@@ -385,12 +385,13 @@ SetupActivity は自分が開始した `SETUP_SCAN` purpose かつ同一 scan ge
 
 ### Direct Boot の保留処理とライブセッションの優先順位
 
-`MaleicacidTvInputService.onCreate()` は Direct Boot の保留処理、起動時の EPG 同期、定期保守を開始しない。`DirectBootEpgPending` を確実に処理するための再開点は、`AndroidManifest.xml` に登録した `BootReceiver` が受ける `ACTION_BOOT_COMPLETED` とする。`ACTION_LOCKED_BOOT_COMPLETED` では `DirectBootEpgPending` の記録だけを行い、TvProvider、Tuner、JNI 経由の解析処理は起動しない。利用者のロック解除までプロセスが生存している場合は、動的に登録した `ACTION_USER_UNLOCKED` の受信処理から同じ保留処理を前倒ししてよいが、保留処理を確実に再開できることは `ACTION_BOOT_COMPLETED` によって保証する。定期保守の実行機構だけに `DirectBootEpgPending` の処理保証を依存させない。
+`MaleicacidTvInputService.onCreate()` は Direct Boot の保留処理、起動時の EPG 同期、定期保守を直接開始しない。起動通知を受ける `BootReceiver` は `android.permission.RECEIVE_BOOT_COMPLETED` を宣言したうえで `ACTION_LOCKED_BOOT_COMPLETED` と `ACTION_BOOT_COMPLETED` を受信する。`ACTION_LOCKED_BOOT_COMPLETED` では `DirectBootEpgPending` の記録だけを行い、TvProvider、Tuner、JNI 経由の解析処理は起動しない。`ACTION_BOOT_COMPLETED` は利用者のロック解除後の正規の起動時入口とするが、この通知単独を無条件の再開保証とはしない。状態の正本はデバイス保護領域の `DirectBootEpgPending` とする。
 
-`ACTION_BOOT_COMPLETED` と補助的な `ACTION_USER_UNLOCKED` が重複して到達しても、同じ `inputId` の保留処理を重複して確定してはならない。開始要求を何度受けても同じ結果になるようにし、同期処理を開始できなかった場合、および TvProvider への反映が正常終了する前は `DirectBootEpgPending` を維持する。`DirectBootEpgPending` は、前節で定めた起動時 EPG 同期の反映処理が正常に確定した場合だけ解除する。
+`BootReceiver.onReceive()` は保留状態の確認と `BootEpgSyncCoordinator` への開始要求までで終了し、EPG の収集、Tuner の使用、TvProvider への反映処理を `BroadcastReceiver` の実行時間へ結びつけない。`BootEpgSyncCoordinator` は同一プロセス内で `inputId` ごとの起動時 EPG 同期を一度に1件だけ実行する。すでに開始済みまたは実行中の `inputId` に対する後続要求は既存処理へ集約し、別の走査処理や別の Tuner 資源取得を開始しない。起動時 EPG 同期を開始できなかった場合、および TvProvider への反映が正常終了する前は `DirectBootEpgPending` を維持し、前節で定めた反映処理が正常に確定した場合だけ解除する。
 
-起動時の EPG 同期と定期保守を開始できるのは、`activeLiveSessionCount == 0`、`sessionCreationInProgress == false`、`setupScanRunning == false`、`playbackPipelineRunning == false`、`scanManager running == false` をすべて満たす場合だけとする。ライブセッションの作成要求が来た時点でこれらの処理をまだ開始していない場合は開始を見送る。すでに実行中の場合は停止または延期し、ライブ視聴の選局を優先する。
+利用者のロック解除までプロセスが生存している場合は、動的に登録した `ACTION_USER_UNLOCKED` の受信処理から同じ開始判定を前倒ししてよい。ただし、この補助経路や定期保守の実行機構だけに再開保証を依存させない。Android の背景実行制限などで起動完了通知が遅延し得ることを前提に、通知の到達時と開始条件の再成立時の双方で永続化した `DirectBootEpgPending` を再評価する。
 
+起動時の EPG 同期と定期保守を開始できるのは、`activeLiveSessionCount == 0`、`sessionCreationInProgress == false`、`setupScanRunning == false`、`playbackPipelineRunning == false`、`scanManager running == false` をすべて満たす場合だけとする。開始条件を満たさない場合は開始を見送る。開始を妨げる状態を更新した後に全開始条件が不成立から成立へ変わった場合は、`DirectBootEpgPending` を再評価し、保留中なら同じ `BootEpgSyncCoordinator` へ開始要求を出す。周期的な監視、新しい永続待ち行列、別の定期実行機構は追加しない。ライブセッション作成要求が来た時点ですでに起動時の EPG 同期または定期保守が実行中なら、当該処理を停止または延期し、ライブ視聴の選局を優先する。
 ## TIS コールバック 入力境界と逆圧
 
 - `SectionEvent.dataLength` は、Tuner コールバック から読み取る section の正確な byte 長として扱う。

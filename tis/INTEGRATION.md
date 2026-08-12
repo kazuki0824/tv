@@ -67,14 +67,13 @@ ARIB字幕表示の product 統合では、repoで供給される `libaribcaptio
 
 ## Direct Boot と起動時の受信処理
 
-TIS は `directBootAware=true` を維持する。`AndroidManifest.xml` の `BootReceiver` は `android:directBootAware="true"` とし、`ACTION_LOCKED_BOOT_COMPLETED` と `ACTION_BOOT_COMPLETED` の双方を受信対象にする。`ACTION_LOCKED_BOOT_COMPLETED` ではデバイス保護領域に `DirectBootEpgPending` だけを記録し、TvProvider、Tuner、JNI 経由の解析処理は起動しない。
+TIS は `directBootAware=true` を維持する。`AndroidManifest.xml` には `<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />` を宣言し、`BootReceiver` は `android:directBootAware="true"` とする。`BootReceiver` は `ACTION_LOCKED_BOOT_COMPLETED` と `ACTION_BOOT_COMPLETED` の双方を受信対象にする。`ACTION_LOCKED_BOOT_COMPLETED` ではデバイス保護領域に `DirectBootEpgPending` だけを記録し、TvProvider、Tuner、JNI 経由の解析処理は起動しない。
 
-`ACTION_BOOT_COMPLETED` では `UserManager.isUserUnlocked()==true` を確認し、`DirectBootEpgPending=true` なら起動時の EPG 同期を開始対象にする。同じ `inputId` に対する開始要求を複数回受けても同じ結果になるようにし、同じ反映処理を重複して確定しない。起動時の EPG 同期を開始できなかった場合、または TvProvider への反映が正常終了する前は `DirectBootEpgPending` を維持し、正常な反映処理の確定後にだけ解除する。
+`BootReceiver.onReceive()` は既知の起動通知を判別し、`DirectBootEpgPending` の確認と `BootEpgSyncCoordinator` への開始要求までで終了する。EPG の収集、Tuner の使用、TvProvider への反映処理の寿命を `BroadcastReceiver.onReceive()` に結びつけない。`BootEpgSyncCoordinator` は同一プロセス内で `inputId` ごとに実行中の起動時 EPG 同期を1件だけ許可する。すでに開始済みまたは実行中なら、後続の `ACTION_BOOT_COMPLETED`、動的に受信した `ACTION_USER_UNLOCKED`、開始条件の再評価からの要求を既存処理へ集約し、別の走査処理や別の Tuner 資源取得を開始しない。
 
-`ACTION_USER_UNLOCKED` は `AndroidManifest.xml` に登録しない。プロセスが利用者のロック解除まで生存している場合は、動的に登録した受信処理から同じ保留処理の開始を前倒ししてよい。ただし、`DirectBootEpgPending` を確実に再開する正規の入口は `ACTION_BOOT_COMPLETED` とし、動的な `ACTION_USER_UNLOCKED` の受信や定期保守の実行機構だけに再開保証を依存させない。`MaleicacidTvInputService.onCreate()` は Direct Boot の保留処理、起動時の EPG 同期、定期保守を開始してはならない。
+`ACTION_BOOT_COMPLETED` は利用者のロック解除後に起動時 EPG 同期へ入る正規の入口とするが、この通知単独を無条件の再開保証とはしない。Android の背景実行制限などで通知が遅延しても状態を失わないよう、`DirectBootEpgPending` をデバイス保護領域に維持する。`ACTION_BOOT_COMPLETED` では `UserManager.isUserUnlocked()==true` を確認し、`DirectBootEpgPending=true` なら同じ開始判定へ進む。`ACTION_USER_UNLOCKED` は `AndroidManifest.xml` に登録せず、プロセスが利用者のロック解除まで生存している場合に動的な受信から同じ開始判定を前倒しする補助経路に限定する。`MaleicacidTvInputService.onCreate()` は Direct Boot の保留処理、起動時の EPG 同期、定期保守を直接開始してはならない。
 
-起動時の EPG 同期と定期保守を開始できるのは、ライブセッション、セッション作成中、設定用の走査、再生処理、走査管理処理がすべて存在しない場合だけとする。ライブセッションの作成要求が来た時点でこれらの処理をまだ開始していない場合は開始を見送る。すでに実行中の場合は停止または延期し、ライブ視聴の選局を優先する。
-
+起動時の EPG 同期と定期保守を開始できるのは、ライブセッション、セッション作成中、設定用の走査、再生処理、走査管理処理がすべて存在しない場合だけとする。開始条件を満たさない場合は `DirectBootEpgPending` を維持して開始を見送る。ライブセッション終了、セッション作成終了、設定用走査終了、再生処理終了、走査管理処理終了など、開始を妨げる状態の更新後に全開始条件が不成立から成立へ変わった場合は、同じ `DirectBootEpgPending` を再評価する。保留中なら `BootEpgSyncCoordinator` へ同じ開始要求を出す。周期的な監視、新しい永続待ち行列、別の定期実行機構をこの再評価のために追加しない。すでに起動時の EPG 同期または定期保守が実行中の状態でライブセッション作成要求が来た場合は、当該処理を停止または延期し、ライブ視聴の選局を優先する。
 ## flash 後の確認
 
 ```bash
