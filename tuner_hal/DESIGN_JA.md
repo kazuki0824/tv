@@ -469,7 +469,7 @@ AV payloadは配送時、宣言長ありPESはheaderから必要量を確定し�
 | ライブAV正式経路 | non-passthrough `MediaEvent`を使用し、共有領域+`dataId`を第一選択、イベント固有fd+`dataId`を正式な代替方式とする |
 | AVペイロードとFMQ | AVペイロードは通常FMQへ書き込まない。EventFlag は FMQ対象経路の通知にだけ使う |
 
-`releaseAvHandle()`の判定は、本書の`releaseAvHandle()`判定表だけを根拠とする。この表は共有領域方式と、イベントごとにファイル記述子を渡す`MediaEvent`方式の両方を扱う。負の`dataId`は`INVALID_ARGUMENT`とする。空ハンドルと0の組は、状態を変えず成功する。返却済み共有ハンドルと0の組では、呼出先IFilterの台帳にあるクライアント側共有ハンドル使用権だけを解放する。解放済みであることを確認できる重複終了は状態を変えず成功し、所有者、世代、転送方式、識別情報の不一致には`INVALID_ARGUMENT`を返す。空ハンドルと正の`dataId`の組では、一致する使用中の共有領域またはイベント固有領域を解放する。発行済みで解放済みと確認できるIDへの重複要求は、状態を変えず成功する。イベント固有ファイル記述子を含むハンドルと一致する正の`dataId`では、そのイベント固有領域を解放する。同ハンドルと0の組では、台帳上のイベント固有ハンドル使用権だけを終了し、割り当ては後続の正の`dataId`解放まで維持する。フレームワークまたはCodec2の参照数を判定条件にしない。未発行、不明、別所有者、識別情報不一致の組には`INVALID_ARGUMENT`を返す。台帳上の同一性情報を分類できない場合は`UNKNOWN_ERROR`とし、安全を確認できない領域を解放または再割り当てしない。ファイル記述子のメタデータは補助検証と診断に限定する。発行済みの割り当ては論理閉鎖後も解放できるようにし、隔離状態の後片付けは内部処理だけで行う。
+`releaseAvHandle()`の判定は、本書の`releaseAvHandle()`判定表だけを根拠とする。この表は共有領域方式と、イベントごとにファイル記述子を渡す`MediaEvent`方式の両方を扱う。負の`dataId`は`INVALID_ARGUMENT`とする。空ハンドルと0の組は、状態を変えず成功する。返却済み共有ハンドルと0の組では、呼出先IFilterの台帳にあるクライアント側共有ハンドル使用権だけを解放する。`dataId=0`のshared/event-local handle leaseで、同一backing/allocationに対するboundedなlease stateから解放済みと確認できる重複終了は状態を変えず成功し、所有者、世代、転送方式、識別情報の不一致には`INVALID_ARGUMENT`を返す。空ハンドルと正の`dataId`の組では、一致する使用中の共有領域またはイベント固有領域を解放する。正の`avDataId`はactive token台帳に存在する場合だけ解放を成功させ、成功時にtokenを削除する。以後、同じ値を含めactiveでない正のtokenは`INVALID_ARGUMENT`とし、資源を変更しない。イベント固有ファイル記述子を含むハンドルと一致する正の`dataId`では、そのイベント固有領域を解放する。同ハンドルと0の組では、台帳上のイベント固有ハンドル使用権だけを終了し、割り当ては後続の正の`dataId`解放まで維持する。フレームワークまたはCodec2の参照数を判定条件にしない。未発行、不明、別所有者、識別情報不一致の組には`INVALID_ARGUMENT`を返す。台帳上の同一性情報を分類できない場合は`UNKNOWN_ERROR`とし、安全を確認できない領域を解放または再割り当てしない。ファイル記述子のメタデータは補助検証と診断に限定する。発行済みの割り当ては論理閉鎖後も解放できるようにし、隔離状態の後片付けは内部処理だけで行う。
 
 
 | 項目 | 固定内容 |
@@ -622,7 +622,7 @@ AV filter の audio/video routing 種別は open subtype を正とする。TsAud
 | F-B-019 | `stop()` 未設定 | F0 | 成功 | F0 | なし | `stop_idempotent` を増やす | AOSP SDK 契約に合わせ、未開始 filter stop は no-op 成功とする |
 | F-B-020 | `close()` | 全非閉鎖状態 | 表5に従う | 表5に従う | 後片付け開始 | 表5に従う | close の戻り値と後片付け完了判定は表5を正とする |
 
-AV割り当てについては、本書の「AV割り当て」と「表1-C-AVH. `releaseAvHandle()` 全域判定表」だけを正とする。`openFilter(type, bufferSize, cb)`の`bufferSize`はAOSPが要求するFMQ容量としてだけ検証・予約し、AV payloadの上限には流用しない。AV payload領域はイベントごとの要求サイズで割り当て、filter別の未解放合計が`CapabilitySnapshot.avPerFilterLiveBytes`、サービス全体の未解放合計が`CapabilitySnapshot.avRuntimeBudgetBytes`を超えない場合だけ確定する。両値は起動前に`ProductProfile`を検証してsnapshotへ固定し、未宣言または0の場合はAV filter能力を公開しない。共有方式とイベント固有方式は同じ実行時台帳を消費し、起動時または`CapabilitySnapshot`選択時にpayload領域を先取りしない。上限超過、容量枯渇、割り当て処理の失敗は、コールバックと`dataId`の公開前に当該イベントの非同期失敗として処理する。破棄するのは当該イベントだけとし、使用中の割り当てを追い出してはならない。`avDataId`は符号付き63ビットの正数とし、再利用しない。`flush()`、再設定、論理閉鎖の後も、配送済みの割り当てを`ReleaseOnly`として保持する。`Active`または`ReleaseOnly`の解放は1回だけ資源を返して成功する。終了済みと確認できるIDへの重複解放は状態を変えず成功し、不明ID、別所有者、組の不一致には`INVALID_ARGUMENT`を返す。台帳の信頼性を確認できない場合は`UNKNOWN_ERROR`とし、対象記憶領域を隔離する。
+AV割り当てについては、本書の「AV割り当て」と「表1-C-AVH. `releaseAvHandle()` 全域判定表」だけを正とする。`openFilter(type, bufferSize, cb)`の`bufferSize`はAOSPが要求するFMQ容量としてだけ検証・予約し、AV payloadの上限には流用しない。AV payload領域はイベントごとの要求サイズで割り当て、filter別の未解放合計が`CapabilitySnapshot.avPerFilterLiveBytes`、サービス全体の未解放合計が`CapabilitySnapshot.avRuntimeBudgetBytes`を超えない場合だけ確定する。両値は起動前に`ProductProfile`を検証してsnapshotへ固定し、未宣言または0の場合はAV filter能力を公開しない。共有方式とイベント固有方式は同じ実行時台帳を消費し、起動時または`CapabilitySnapshot`選択時にpayload領域を先取りしない。上限超過、容量枯渇、割り当て処理の失敗は、コールバックと`dataId`の公開前に当該イベントの非同期失敗として処理する。破棄するのは当該イベントだけとし、使用中の割り当てを追い出してはならない。`avDataId`は符号付き63ビットの正数とし、再利用しない。`flush()`、再設定、論理閉鎖の後も、配送済みの割り当てを`ReleaseOnly`として保持する。active token台帳に残る`Active`または`ReleaseOnly`の解放は1回だけ資源を返して成功し、成功時にtokenを削除する。以後、同じ値を含めactiveでない正のtoken、および別所有者・組の不一致には`INVALID_ARGUMENT`を返し、資源を変更しない。台帳の信頼性を確認できない場合は`UNKNOWN_ERROR`とし、対象記憶領域を隔離する。
 
 
 #### 表1-C. IFilter 補助API状態契約
@@ -2705,7 +2705,7 @@ PES filterは、外形検証の後に`stream_id`で通常optional-header構文�
 
 - 機器の事実は `DeviceProbeCapability` で確定する。frontendは公開API全体が成立するものだけを公開し、LNBは検出成功に加えてAndroid 14 CTSの基礎操作を実処理できる`aidl_baseline_eligible` endpointだけを公開する。現在のpx4/earth_pt1 LNBは電圧制御以外の証跡がないため公開しない。
 - demux、filter、DVRの個数は本書「サービスオブジェクトの上限」で定め、同じ使用権台帳で強制する。
-- AVの転送、割り当て、解放は、本書「AV割り当て」と「表1-C-AVH. `releaseAvHandle()` 全域判定表」で定める。共有領域方式は最適化手段とし、要求サイズどおりのイベント固有ファイル記述子方式を正式な代替経路とする。遅延終了済みと確認できる要求は状態を変えず成功し、不明または別所有者の識別情報は拒否する。
+- AVの転送、割り当て、解放は、本書「AV割り当て」と「表1-C-AVH. `releaseAvHandle()` 全域判定表」で定める。共有領域方式は最適化手段とし、要求サイズどおりのイベント固有ファイル記述子方式を正式な代替経路とする。`dataId=0`のhandle lease終了だけは表1-C-AVHで定めたboundedなlease stateにより冪等化し、正の`avDataId`はactive token台帳に存在する場合だけ解放を成功させる。
 - ワーカーとLNBの停止・後片付けは、本書「ワーカー終了契約」と「LNB機器の資源規則」で定める。`TargetDriverTimingProfile` や、公開経路で上限なく `join` を待つ処理を設けない。
 - パケット異常と基盤異常の影響範囲は、本書「失敗影響範囲」で定める。不正TS、TEI、連続性異常を基盤隔離へ昇格させない。
 - frontendで公開・受理する値は、本書「フロントエンド設定の反映表」で定める。ARIB B31の値域根拠は本書「VTS環境とARIB B31の境界」に置く。
