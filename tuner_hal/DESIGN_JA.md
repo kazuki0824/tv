@@ -1264,7 +1264,7 @@ snapshotの問い合わせは読み取りだけとし、古い資源の後片付
 | 操作 | session更新順序 | key table更新順序 | 失敗時 | 後続session処理 | 共通部品 |
 |---|---|---|---|---|---|
 | `invalidate_demux()` | 全affected sessionを走査 | key release/expire | 1件失敗しても全件試行 | 失敗一覧を返す | `DescramblerSessionCleanupTxn` |
-| `close()` | closing gate | key release | 失敗時 cleanup_failed、再close可能 | retry可 | `CloseLifecycleTxn` |
+| `close()` | 表5のpublic close lifecycleがclosing gateを確立した後、`DescramblerSessionCleanupTxn`がsession cleanupを実行 | `DescramblerSessionCleanupTxn`がkey refをrelease | 失敗時は表5に従いcleanup_failedを維持し、未完stepだけ再closeでretry | retry可 | `DescramblerSessionCleanupTxn`（外側のclose lifecycleと再試行権限は表5のpublic close契約） |
 
 
 ```mermaid
@@ -1327,7 +1327,7 @@ source filter boundary は downstream lifecycle、queued payload、pending event
 | source filter `flush()` | downstreamの公開lifecycleと接続を維持 | 当該source由来entryを破棄または旧generationとして配送禁止にする | 当該source由来eventを抑止 | source origin generationを進めてpartialをreset | 変更なし | downstreamを自動停止・失敗にしない |
 | source filter再設定 | downstreamの接続を維持し、互換性を再検証する | 旧設定世代のentryを破棄または配送禁止にする | 旧設定世代のeventを抑止 | source origin generationを進めてpartialをreset | 変更なし | source開始中の再設定は拒否。非開始時の確定前失敗は旧設定を維持 |
 | source filter実行失敗 | downstreamはsource lost境界を観測 | source由来entryを破棄または配送禁止にする | source由来eventを抑止 | source originをreset | 変更なし | downstreamを自動failedにせず、再配送だけを止める |
-| source filter close / unlink | 接続を解除し、downstreamはsource lost境界を観測 | source由来entryを破棄または旧generationとして配送禁止にする | source由来eventを抑止 | source originをreset | source自身のRecord DVR接続は`FilterUnregisterTxn`で解除し、sink側接続は維持 | downstreamを自動failedにしない。閉鎖済みsourceの再指定は`INVALID_STATE` |
+| source filter close / unlink | 接続を解除し、downstreamはsource lost境界を観測 | source由来entryを破棄または旧generationとして配送禁止にする | source由来eventを抑止 | source originをreset | source filter自身がcloseされる場合は表5のFilter close cleanupでRecord DVR接続を解除する。relation unlinkだけではsource自身のRecord DVR接続を変更しない。sink側接続は維持 | downstreamを自動failedにしない。閉鎖済みsourceの再指定は`INVALID_STATE` |
 | downstream `stop()` | source接続を維持 | 未配送entryを維持するが、停止中は新規配送しない | 未配送eventを維持し、停止中は通知しない | partialを破棄 | 変更なし | stopの状態表に従う |
 | downstream `close()` | source接続を解除 | downstream所有entryを破棄 | downstream所有eventを破棄 | downstream assemblerを破棄 | downstream自身のRecord DVR接続を解除 | 表5に従う |
 | upstream generation mismatch | 変更しない | 配送しない | eventを抑止 | 当該旧originのpartialをreset | 変更なし | runtime failedにはしない |
