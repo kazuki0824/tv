@@ -65,14 +65,17 @@ ARIB字幕表示の product 統合では、repoで供給される `libaribcaptio
 
 `MaleicacidRecScopeTests` は録画・予約作業で明示指定して使う範囲に限定し、現行 product の build / atest / VTS / 実機確認 gate へ混ぜない。
 
-## Direct Boot と boot receiver
+## Direct Boot と起動時の受信処理
 
-TIS は `directBootAware=true` を維持する。`LOCKED_BOOT_COMPLETED` では device protected storage に pending flag だけを記録し、TvProvider、Tuner、JNI parser は user unlock 後にだけ起動する。
+TIS は `directBootAware=true` を維持する。`AndroidManifest.xml` には `<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />` を宣言し、`BootReceiver` は `android:directBootAware="true"` とする。`BootReceiver` は `ACTION_LOCKED_BOOT_COMPLETED` と `ACTION_BOOT_COMPLETED` の双方を受信対象にする。`ACTION_LOCKED_BOOT_COMPLETED` ではデバイス保護領域に `DirectBootEpgPending` だけを記録し、TvProvider、Tuner、JNI 経由の解析処理は起動しない。
 
-`ACTION_USER_UNLOCKED` は manifest receiver へ登録しない。Boot EPG sync / background maintenance は BootReceiver、UserUnlockReceiver、または明示的な maintenance scheduler からのみ起動する。`MaleicacidTvInputService.onCreate()` は Direct Boot pending drain、boot EPG sync、background maintenance を開始してはならない。
+`BootReceiver.onReceive()` は既知の起動通知を判別し、`DirectBootEpgPending` を確認して、必要なら Android 標準の `JobScheduler` に固定識別子の `BootEpgSyncJobService` を登録するところまでで終了する。EPG の収集、Tuner の使用、TvProvider への反映処理は `BroadcastReceiver.onReceive()` の寿命では実行しない。`BootEpgSyncJobService` は `AndroidManifest.xml` で `android.permission.BIND_JOB_SERVICE` により保護し、利用者のロック解除後だけ実行対象にする。
 
-Boot EPG sync / background maintenance の開始条件は、active ライブセッション、session creation in progress、setup scan、playback pipeline、scan manager running がすべて存在しないこととする。ライブセッション 作成要求が来た時点で boot/background task が未開始なら defer する。boot/background task が既に running の場合、現行仕様では boot/background task を cancel/defer し ライブ tune を優先する。
+起動時 EPG 同期用の `JobInfo` は再起動をまたいで永続化しない。再起動をまたぐ正本はデバイス保護領域の `DirectBootEpgPending` だけとし、再起動後は起動通知から同じジョブ登録判定を行う。ジョブ識別子は起動時 EPG 同期用に固定し、`JobScheduler.getPendingJob()` で同じジョブが登録済みなら再登録しない。`BootEpgSyncJobService.onStartJob()` はロック解除、`DirectBootEpgPending`、開始条件を再確認し、処理を開始する場合は `BootEpgSyncCoordinator` へ引き渡して `true` を返す。`BootEpgSyncCoordinator` は同一プロセス内で `inputId` ごとの起動時 EPG 同期を一度に1件だけ実行する。処理完了時は `jobFinished()` で終了を通知し、成功時は再試行を要求せず、未完了または失敗で `DirectBootEpgPending` が残る場合は再試行を要求する。`JobScheduler` が処理を中断して `onStopJob()` を呼んだ場合は進行中の走査と Tuner 資源を停止・解放し、`DirectBootEpgPending` が残る限り再試行を要求する。
 
+`ACTION_BOOT_COMPLETED` は利用者のロック解除後に起動時 EPG 同期へ入る正規の入口とするが、この通知単独を無条件の再開保証とはしない。Android の背景実行制限などで通知が遅延しても状態を失わないよう、`DirectBootEpgPending` をデバイス保護領域に維持する。`ACTION_BOOT_COMPLETED` では `UserManager.isUserUnlocked()==true` を確認し、`DirectBootEpgPending=true` なら同じ開始判定へ進む。`ACTION_USER_UNLOCKED` は `AndroidManifest.xml` に登録せず、プロセスが利用者のロック解除まで生存している場合に動的な受信から同じ開始判定を前倒しする補助経路に限定する。`MaleicacidTvInputService.onCreate()` は Direct Boot の保留処理、起動時の EPG 同期、定期保守を直接開始してはならない。
+
+起動時の EPG 同期と定期保守を開始できるのは、ライブセッション、セッション作成中、設定用の走査、再生処理、走査管理処理がすべて存在しない場合だけとする。開始条件を満たさない場合は `DirectBootEpgPending` を維持して開始を見送る。ライブセッション終了、セッション作成終了、設定用走査終了、再生処理終了、走査管理処理終了など、開始を妨げる状態の更新後に全開始条件が不成立から成立へ変わった場合は、同じ `DirectBootEpgPending` を再評価する。保留中なら `JobScheduler` に同じ固定識別子の `BootEpgSyncJobService` を登録する判定へ進む。周期的な監視、新しい永続待ち行列、独自の定期実行機構をこの再評価のために追加しない。すでに起動時の EPG 同期または定期保守が実行中の状態でライブセッション作成要求が来た場合は、当該処理を停止または延期し、ライブ視聴の選局を優先する。
 ## flash 後の確認
 
 ```bash
