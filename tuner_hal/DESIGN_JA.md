@@ -841,7 +841,7 @@ DVR FMQは`openDvr()`の`bufferSize`から作成し、`configure()`はAOSPの`Dv
 | DVR-009 | `start()` playback | D4, D6 | 成功 | D5 | 再生入力受付を開始 | `dvr_start_success` | playback DVR の非開始状態は start に関して同値 |
 | DVR-010 | `start()` 開始済み | D2, D5 | 成功 | 入力状態を維持 | なし | `dvr_start_idempotent` を増やす | 重複 start は冪等成功 |
 | DVR-011 | `start()` 未設定 | D0R, D0P | `INVALID_STATE` | 入力状態を維持 | なし | `dvr_start_invalid_state` を増やす | 未設定DVRでは開始対象が存在しない |
-| DVR-012 | `stop()` record | D2 | 成功 | D3 | 録画作業スレッドを停止 | `dvr_stop_success` | record開始済みを停止済みにする |
+| DVR-012 | `stop()` record | D2 | 成功 | D3 | record productionを停止し、Record DVR FMQへ確定済みの未消費データとqueue identityを維持する。`stop()`をrecord-input continuity boundaryとして、停止区間を跨げないparser / index / assembler等のRecord-path partial stateを破棄する | `dvr_stop_success` | client-visible queued dataは`stop()`で破棄せず、未消費Record DVR FMQの破棄は`flush()`だけが行う |
 | DVR-013 | `stop()` playback | D5 | 成功 | D6 | 再生入力受付を停止 | `dvr_stop_success` | playback開始済みを停止済みにする |
 | DVR-014 | `stop()` 設定済み非開始 | D1, D3, D4, D6 | 成功 | 入力状態を維持 | なし | `dvr_stop_idempotent` を増やす | 非開始設定済み状態で stop は冪等成功 |
 | DVR-015 | `stop()` 未設定 | D0R, D0P | 成功 | 入力状態を維持 | なし | `dvr_stop_idempotent` を増やす | AOSP SDK 契約に合わせ、未開始 DVR stop は no-op 成功とする |
