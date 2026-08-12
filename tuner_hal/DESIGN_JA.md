@@ -1294,7 +1294,7 @@ source filter は配送元であり、downstream filter の continuity / assembl
 | 番号 | 事象 | 状態所有者 | 許可する副作用 | 禁止する副作用 | 設計上の成立条件 |
 |---:|---|---|---|---|---|
 | SF-001 | frontend input TS | `TsInputOrigin::Frontend` | frontend origin の continuity / assembler 更新 | source filter origin への混入 | frontend直入力として処理 |
-| SF-002 | DVR playback input TS | `TsInputOrigin::PlaybackDvr(dvr_id, queue_epoch)` | playback origin の continuity / assembler 更新 | frontend origin への混入 | playback入力として処理 |
+| SF-002 | DVR playback input TS | `TsInputOrigin::PlaybackDvr(dvr_id, queue_identity, queue_epoch)` | playback origin の continuity / assembler 更新 | frontend origin への混入 | playback入力として処理 |
 | SF-003 | source filter raw TS delivery | `TsInputOrigin::SourceFilter(filter_id, generation)` | 接続済みdownstreamに限り、そのdownstream用状態を更新 | downstream未接続時のassembler更新 | 未接続なら状態を汚染しない |
 | SF-004 | source filter flush | source filter + downstream接続表 | source origin generation更新、接続済みdownstream partial破棄 | 古いpartialの保持 | flush後の旧payloadを配送しない |
 | SF-006 | source filter close | source filter | downstream接続解除、source origin破棄 | downstreamに閉鎖済みsourceを残す | close後source由来配送なし |
@@ -1811,7 +1811,7 @@ soft demuxに入るTS packetの入力元は次の三種類だけとする。
 | 入力元 | 意味 | 世代キー |
 |---|---|---|
 | `Frontend` | frontend backendから来るlive TS | `Frontend(frontend_generation)` |
-| `PlaybackDvr` | playback DVR input FMQから読み、demuxへ投入するTS | `PlaybackDvr(dvr_id, dvr_generation)` |
+| `PlaybackDvr` | playback DVR input FMQから読み、demuxへ投入するTS | `PlaybackDvr(dvr_id, queue_identity, queue_epoch)` |
 | `SourceFilter` | `IFilter.setDataSource()`により、上流raw TS filter出力を下流filterへ再投入するTS | `SourceFilter(filter_id, filter_generation)` |
 
 三者を同じcontinuity、parser、flush generation名前空間へ入れてはならない。
@@ -2900,9 +2900,9 @@ STD-B25 Part 1 §4.9は上表の適合主張に含めない。同条項に係る
 
 #### DVR用 `QueueEpochProtocol`
 
-状態は `Open(g)`、`Draining(g)`、`Closed` の3種類だけとする。`beginRead` / `beginWrite` は、キュー識別子、検査済みキュー世代、方向、予約情報を持つParcelableではない一回限りのRAIIトークンを返す。`commit` / `cancel` はこのトークンを正確に1回消費する。未消費トークンの所有者が通常return、エラーreturn、取り消し、またはpanicでスコープを離れた場合は`Drop`が`cancel`と同じ予約解除を行い、受付中件数を減らして待機者を起床させる。`flush()`は`Draining`へ移り、新しいトランザクションを拒否して、世代gで受付済みのトランザクションがすべてcommit、cancel、またはRAII取消になるまで待つ。その後、DVRキューを一括消去し、検査済みのg+1へ進めて`Open`に戻る。失敗時はポインター、内容、世代を維持する。閉鎖または所有者消滅ではキュー識別子を閉じ、すべてのトークンを古いものとして無効化し、待機者を起床させる。記述子の置換では旧識別子を閉じ、世代0の別識別子を生成する。
+状態は `Open(g)`、`Draining(g)`、`Closed` の3種類だけとする。`beginRead` / `beginWrite` は、キュー識別子、検査済みキュー世代、方向、予約情報を持つParcelableではない一回限りのRAIIトークンを返す。`commit` / `cancel` はこのトークンを正確に1回消費する。未消費トークンの所有者が通常return、エラーreturn、取り消し、またはpanicでスコープを離れた場合は`Drop`が`cancel`と同じ予約解除を行い、受付中件数を減らして待機者を起床させる。`flush()`は`Draining`へ移り、新しいトランザクションを拒否して、世代gで受付済みのトランザクションがすべてcommit、cancel、またはRAII取消になるまで待つ。その後、DVRキューを一括消去し、検査済みのg+1へ進めて`Open`に戻る。失敗時はポインター、内容、世代を維持する。閉鎖または所有者消滅ではキュー識別子を閉じ、すべてのトークンを古いものとして無効化し、待機者を起床させる。キュー識別子はlogical `queue_identity` とし、fd番号やdescriptor内容などの再利用可能な物理値ではなく、同一DVR object寿命中に再利用しない。記述子の置換では旧 `queue_identity` を閉じ、世代0の新しい `queue_identity` を生成する。
 
-Playback DVR の入力originは `TsInputOrigin::PlaybackDvr(dvr_id, queue_epoch)` を唯一の正本キーとし、別の `dvr_generation` は設けない。`queue_epoch` の所有者は当該Playback DVRの `QueueEpochProtocol` とし、キュー生成時は0、`stop()` / `start()` では維持し、成功した `flush()` の消去commitでだけ進める。`close()` / 所有者消滅では当該キュー識別子ごと無効化し、記述子置換時は新しいキュー識別子を世代0で開始する。これにより `stop()`→`start()` は同一stream continuationを保ち、`flush()` 前後のcontinuity / parser stateを同一originとして再結合しない。
+Playback DVR の入力originは `TsInputOrigin::PlaybackDvr(dvr_id, queue_identity, queue_epoch)` を唯一の正本キーとし、別の `dvr_generation` は設けない。`queue_identity` は `QueueEpochProtocol` が既に所有するキュー識別子を表すlogical incarnation tokenであり、fd番号、descriptor内容、アドレス等の再利用可能な物理値を使用せず、同一DVR object寿命中は再利用しない。`queue_epoch` は同一 `queue_identity` 内のflush世代だけを表し、キュー生成時は0、`stop()` / `start()` では `queue_identity` とともに維持し、成功した `flush()` の消去commitでだけ進める。`close()` / 所有者消滅では当該 `queue_identity` を閉じる。記述子置換では、旧 `queue_identity` を閉じ、旧 `PlaybackDvr` originに属するcontinuity / assembler / parser stateの切断を同じboundary commitで確定してから、再利用しない新しい `queue_identity` を `queue_epoch=0` で開始する。これにより `stop()`→`start()` は同一stream continuationを保ち、`flush()` 前後またはdescriptor replacement前後の旧状態を新originへ再結合せず、ABAを許さない。
 
 #### 独立した世代軸
 
