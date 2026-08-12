@@ -1814,7 +1814,7 @@ soft demuxに入るTS packetの入力元は次の三種類だけとする。
 | `PlaybackDvr` | playback DVR input FMQから読み、demuxへ投入するTS | `PlaybackDvr(dvr_id, dvr_generation)` |
 | `SourceFilter` | `IFilter.setDataSource()`により、上流raw TS filter出力を下流filterへ再投入するTS | `SourceFilter(filter_id, filter_generation)` |
 
-三者を同じcontinuity、parser、flush generation名前空間へ入れてはならない。playback由来packetのrecord経路への再投入禁止は後述のorigin契約に従う。
+三者を同じcontinuity、parser、flush generation名前空間へ入れてはならない。
 
 `IDvr`のAIDLには`read`/`write` methodがない。AIDLのlifecycle表、戻り値表、worker表に`read`/`write`を記載してはならない。SDK/JNIの`beginRead`/`commitRead`と`beginWrite`/`commitWrite`に対応するバイト数補助処理は、DVR FMQデータ経路の節へ分離し、AIDL公開面が変わらないことと接続条件を明示する。
 
