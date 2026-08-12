@@ -393,7 +393,7 @@ SetupActivity は自分が開始した `SETUP_SCAN` purpose かつ同一 scan ge
 
 利用者のロック解除までプロセスが生存している場合は、動的に登録した `ACTION_USER_UNLOCKED` の受信処理から同じ開始判定を前倒ししてよい。ただし、この補助経路や定期保守の実行機構だけに再開保証を依存させない。Android の背景実行制限などで起動完了通知が遅延し得ることを前提に、通知の到達時と開始条件の再成立時の双方で永続化した `DirectBootEpgPending` を再評価する。
 
-起動時の EPG 同期と定期保守を開始できるのは、`activeLiveSessionCount == 0`、`sessionCreationInProgress == false`、`setupScanRunning == false`、`playbackPipelineRunning == false`、`scanManager running == false` をすべて満たす場合だけとする。開始条件を満たさない場合は開始を見送る。開始を妨げる状態を更新した後に全開始条件が不成立から成立へ変わった場合は、`DirectBootEpgPending` を再評価し、保留中なら同じ `BootEpgSyncCoordinator` へ開始要求を出す。周期的な監視、新しい永続待ち行列、別の定期実行機構は追加しない。ライブセッション作成要求が来た時点ですでに起動時の EPG 同期または定期保守が実行中なら、当該処理を停止または延期し、ライブ視聴の選局を優先する。
+起動時の EPG 同期と定期保守を開始できるのは、`activeLiveSessionCount == 0`、`sessionCreationInProgress == false`、`setupScanRunning == false`、`playbackPipelineRunning == false`、`scanManager running == false` をすべて満たす場合だけとする。開始条件を満たさない場合は開始を見送る。開始を妨げる状態を更新した後に全開始条件が不成立から成立へ変わった場合は、`DirectBootEpgPending` を再評価し、保留中なら `JobScheduler` に同じ固定識別子の `BootEpgSyncJobService` を登録する判定へ進む。周期的な監視、新しい永続待ち行列、独自の定期実行機構は追加しない。ライブセッション作成要求が来た時点ですでに起動時の EPG 同期または定期保守が実行中なら、当該処理を停止または延期し、ライブ視聴の選局を優先する。
 ## TIS コールバック 入力境界と逆圧
 
 - `SectionEvent.dataLength` は、Tuner コールバック から読み取る section の正確な byte 長として扱う。
