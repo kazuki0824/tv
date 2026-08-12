@@ -2100,8 +2100,6 @@ record DVR / raw TS filter経路 は受信した 188-byte TS packet を製品の
 payloadを持つ同一PIDで直前と同じcontinuity counterを受信した場合、同じ入力元・世代に保存した直前の188バイトTS packetと全バイトが一致するときだけ再送重複と判定する。この場合はraw TSと録画へ保持し、section/PES/AV assemblerへは二重投入しない。同じcounterで1バイトでも異なるpacketは重複ではなく連続性破損である。raw TSと録画には保持するが、当該PIDのsection/PES/AV assemblerとpartial stateを初期化し、そのpacketから新しい意味単位を継続結合しない。adaptation-only packetは次期待counterを進めず、`discontinuity_indicator`はpacket一致判定とは別に明示境界として処理する。
 
 
-playback入力は`TsInputOrigin::Playback(dvr_id, generation)`を付けて通常のdemux配送経路へ流すが、playback originのpacketをrecord filterまたはrecord DVRへ再投入してはならない。record経路が受理するoriginはfrontend入力だけとする。playback中にrecord filterが接続または開始されても、record FMQへは書き込まず、record eventも生成しない。この禁止によりfeedback loop、同一TSの再録画、origin横断の重複除去と追加統計を設計対象にしない。
-
 
 playback 専用 stats は少なくとも injected bytes、injected packets、malformed packets、dropped bytes を持つ。malformed TS は drop + 診断 を標準方針とし、1 packet の malformed input で playback stream 全体を fail させない。playback input FMQ の `PlaybackStatus` は start 直後・周期 コールバック ともに playback input FMQ の実 fill / unused write space を唯一の水位 source とし、record/output queue の `queued_bytes` を流用しない。playback consumer ワーカー は `WorkerHandle` / owner `ConcreteWorkerSignal` に接続し、close / Drop / 異常時閉鎖済み で `request_stop()` → `wake()` → `join_from_owner()` の順に停止する。
 
