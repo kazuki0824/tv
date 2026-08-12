@@ -601,7 +601,7 @@ AV filter の audio/video routing 種別は open subtype を正とする。TsAud
 | F-B-007 | `configure()` callback-only同一設定の再指定 | F4, F6 | 成功 | 入力状態を維持 | callback世代、未配送event、parser状態を維持する | `filter_configure_idempotent` を増やす | 同じ正規化済み設定の再指定は無処理 |
 | F-B-007a | `configure()` callback-only異なる設定への再設定 | F4, F6 | 成功 | F4 | callback配送世代とparser状態世代を進め、旧未配送eventとpartial stateを破棄する | `filter_reconfigure_success` | 非開始callback-only状態だけを再設定する |
 
-初期化時の世代管理では、`filter_delivery_generation` と `parser_state_generation` を独立させ、DVRキューではさらに `queue_epoch` を使用する。異なる設定への`configure()`が成功した場合だけ、フィルター配送世代と解析状態世代を進め、解析器、PCR、`startId`の状態を初期化する。同じ正規化済み設定の再指定では、これらの世代と状態を維持する。設定契約で明示的に変更するものを除き、キューの記憶領域と識別子、入力元の関連付け、コールバック、監視マスク、ヒントは維持する。FilterまたはSharedFilterの `flush()` は `FilterProducerDrainGate` を `Draining` に移し、新しい線形許可を拒否して、サービス所有ワーカーを起床させる。許可の解放に必要なロックを保持せず、有限個の非ブロッキング許可がすべて返るまで待つ。許可の有効範囲は、ブロッキング読み取り・待機・一時保持の後から、FMQへの確定書き込みまたは保留イベントの追加までに限定し、Binderコールバックと外部入出力を含めない。その後、未消費のFMQデータと未配送イベントを一括で破棄し、取り出し済みまたは配送中のコールバックと、配送済みAV領域は維持する。解析状態を初期化し、解析状態世代だけを進めて `Open` に戻す。消去確定前に失敗した場合は、ポインター、内容、保留イベント、すべての世代を変更しない。ロック汚染または部分的確定という不可能状態が生じた場合は、対象を閉鎖して隔離する。DVRの `flush()` は `QueueEpochProtocol` に従い、開始・確定トランザクションがすべて終了した後に `queue_epoch` だけを進める。`stop()` はキュー内容と識別子を維持して解析途中状態だけを破棄する。入力元の置換ではフィルター配送世代と解析状態世代を同じ確定点で進め、`close()` ではすべての世代軸を遮断する。
+初期化時の世代管理では、`filter_delivery_generation` と `parser_state_generation` を独立させ、DVRキューではさらに `queue_epoch` を使用する。異なる設定への`configure()`が成功した場合だけ、フィルター配送世代と解析状態世代を進め、解析器、PCR、`startId`の状態を初期化する。同じ正規化済み設定の再指定では、これらの世代と状態を維持する。設定契約で明示的に変更するものを除き、キューの記憶領域と識別子、入力元の関連付け、コールバック、監視マスク、ヒントは維持する。FilterまたはSharedFilterの `flush()` は `FilterProducerDrainGate` を `Draining` に移し、新しい線形許可を拒否して、サービス所有ワーカーを起床させる。許可の解放に必要なロックを保持せず、有限個の非ブロッキング許可がすべて返るまで待つ。許可の有効範囲は、ブロッキング読み取り・待機・一時保持の後から、FMQへの確定書き込みまたは保留イベントの追加までに限定し、Binderコールバックと外部入出力を含めない。その後、未消費のFMQデータと未配送イベントを一括で破棄し、取り出し済みまたは配送中のコールバックと、配送済みAV領域は維持する。解析状態を初期化し、解析状態世代だけを進めて `Open` に戻す。消去確定前に失敗した場合は、ポインター、内容、保留イベント、すべての世代を変更しない。ロック汚染または部分的確定という不可能状態が生じた場合は、対象を閉鎖して隔離する。DVRの `flush()` は `QueueEpochProtocol` に従い、開始・確定トランザクションがすべて終了した後に `queue_epoch` だけを進める。`stop()` はキュー内容と識別子を維持する。入力元の置換ではフィルター配送世代と解析状態世代を同じ確定点で進め、`close()` ではすべての世代軸を遮断する。
 
 現在の世代から切り離した後も、解放待ちの記憶領域と解放台帳を保持し、解放後使用と枠の再利用競合を防ぐ。
 
@@ -841,7 +841,7 @@ DVR FMQは`openDvr()`の`bufferSize`から作成し、`configure()`はAOSPの`Dv
 | DVR-009 | `start()` playback | D4, D6 | 成功 | D5 | 再生入力受付を開始 | `dvr_start_success` | playback DVR の非開始状態は start に関して同値 |
 | DVR-010 | `start()` 開始済み | D2, D5 | 成功 | 入力状態を維持 | なし | `dvr_start_idempotent` を増やす | 重複 start は冪等成功 |
 | DVR-011 | `start()` 未設定 | D0R, D0P | `INVALID_STATE` | 入力状態を維持 | なし | `dvr_start_invalid_state` を増やす | 未設定DVRでは開始対象が存在しない |
-| DVR-012 | `stop()` record | D2 | 成功 | D3 | 録画作業スレッドを停止 | `dvr_stop_success` | record開始済みを停止済みにする |
+| DVR-012 | `stop()` record | D2 | 成功 | D3 | record productionを停止し、Record DVR FMQへ確定済みの未消費データとqueue identityを維持する。`stop()`をrecord-input continuity boundaryとして、停止区間を跨げないparser / index / assembler等のRecord-path partial stateを破棄する | `dvr_stop_success` | client-visible queued dataは`stop()`で破棄せず、未消費Record DVR FMQの破棄は`flush()`だけが行う |
 | DVR-013 | `stop()` playback | D5 | 成功 | D6 | 再生入力受付を停止 | `dvr_stop_success` | playback開始済みを停止済みにする |
 | DVR-014 | `stop()` 設定済み非開始 | D1, D3, D4, D6 | 成功 | 入力状態を維持 | なし | `dvr_stop_idempotent` を増やす | 非開始設定済み状態で stop は冪等成功 |
 | DVR-015 | `stop()` 未設定 | D0R, D0P | 成功 | 入力状態を維持 | なし | `dvr_stop_idempotent` を増やす | AOSP SDK 契約に合わせ、未開始 DVR stop は no-op 成功とする |
@@ -2123,7 +2123,7 @@ playback input FMQ の stream 境界 方針は次のとおり固定する。star
 | malformed TS | 成功 | malformed | `MalformedOnly` | 消費済み可 | malformed diagnostic。1 packet でstream全体をfailしない |
 | partial TS | 成功 | pending | 未commit | residual保持 | 次readへ持ち越し |
 
-再生データの取り込みには、1回のFMQ読取トランザクションだけを所有する処理中バッファーと、キュー世代ごとのカーソルを使用する。これは第二の待ち行列ではなく、`commitRead()`後のバイト列を再試行中も所有するためのトランザクション領域である。Playback DVRの`configure()`時に、FMQ容量と同じ上限の処理中バッファー使用権を`CapabilitySnapshot.playbackProcessingBudgetBytes`から予約し、実領域を確保する。予約または確保に失敗した場合は`OUT_OF_MEMORY`を返し、FMQ記述子とDVR設定を公開しない。読取時は`beginRead()`後、連続読取可能量が確保済み領域に収まることを確認してバイト列をコピーし、コピー完了後にだけ`commitRead()`する。したがってFMQ消費後に処理中領域の割り当てが失敗する経路を作らない。同時に1件だけ存在し、上限は設定済みPlayback DVR FMQ容量とする。確定後の再試行は処理中領域だけを入力とする。投入カーソルはバックエンドが受理したバイト数だけ単調に進め、重複投入を防ぐ。処理中領域が空になるまで次のFMQデータを取り込まない。再試行可能なバックエンドエラーでは未投入部分を保持する。致命的エラー、停止、閉鎖では、残りの正確な消失バイト数と終端理由を記録してから破棄し、無診断で失わない。世代変更で無効化できるのは空のカーソルだけとし、処理中領域にデータがある場合は、その処理を完了するか、明示的に終端させてから世代を変更する。処理中バッファーの使用権はDVRの最終後片付け完了時に返す。
+再生データの取り込みには、1回のFMQ読取トランザクションだけを所有する処理中バッファーと、キュー世代ごとのカーソルを使用する。これは第二の待ち行列ではなく、`commitRead()`後のバイト列を再試行中も所有するためのトランザクション領域である。Playback DVRの`configure()`時に、FMQ容量と同じ上限の処理中バッファー使用権を`CapabilitySnapshot.playbackProcessingBudgetBytes`から予約し、実領域を確保する。予約または確保に失敗した場合は`OUT_OF_MEMORY`を返し、FMQ記述子とDVR設定を公開しない。読取時は`beginRead()`後、連続読取可能量が確保済み領域に収まることを確認してバイト列をコピーし、コピー完了後にだけ`commitRead()`する。したがってFMQ消費後に処理中領域の割り当てが失敗する経路を作らない。同時に1件だけ存在し、上限は設定済みPlayback DVR FMQ容量とする。確定後の再試行は処理中領域だけを入力とする。投入カーソルはバックエンドが受理したバイト数だけ単調に進め、重複投入を防ぐ。処理中領域が空になるまで次のFMQデータを取り込まない。再試行可能なバックエンドエラーでは未投入部分を保持する。致命的エラー、`flush()`、閉鎖では、残りの正確な消失バイト数と終端理由を記録してから破棄する。`stop()`では`commitRead()`済みの処理中バッファとinjection cursorを維持し、次の`start()`で同一streamの続きとして再開し、無診断で失わない。世代変更で無効化できるのは空のカーソルだけとし、処理中領域にデータがある場合は、その処理を完了するか、明示的に終端させてから世代を変更する。処理中バッファーの使用権はDVRの最終後片付け完了時に返す。
 
 
 ### playback consumer ワーカー 起動順序
