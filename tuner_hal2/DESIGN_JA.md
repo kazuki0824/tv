@@ -152,7 +152,6 @@ queueへの書き込み権限は世代付きとし、`flush()`、再設定、停
 | 適用単位 | 現在状態 | 実装追跡先 | 移行完了条件 |
 |---|---|---|---|
 | 公開object methodの検証順序とtransaction境界 | 設計済み・実装未適用 | `aidl_service/`、`service_runtime/`、`domain_request/` | 対象APIの入口が規範phase orderへ一本化され、状態不正と入力不正の優先順位、commit前後失敗、rollbackの試験が合格 |
-| 共通transaction経路の一本化 | 設計済み・実装未適用 | `service_runtime/`、`demux/`、descrambler/worker owner | `SourceBoundaryTxn` / `StreamBoundaryTxn` / `QueueCleanupTxn` / `PlaybackConsumeTxn` / `DescramblerKeyTxn` / `DescramblerSessionCleanupTxn` / `WorkerFailureClassifier`の各対象経路が規範anchorへ一本化され、API/worker側に同じ状態機械・失敗分類・cleanup ownershipが残らないことを静的確認と異常系試験で確認 |
 | frontend tune/scan、再選局、終端deadline | 設計済み・実装未適用 | `service_runtime/`、`device/`、callback配送 | AOSP callback契約を満たす終端、`scan(K)→LOCKED(g1)→scan(K)→END(g2)`で2回目のbackend探索・LOCKED再配送がないこと、異なるscan request・stopScan・tune・closeで継続状態が失効すること、安定同一条件の非破壊re-entry、full retuneでの旧session遮断、破壊的commit後に旧要求を再投入しないこと、旧TSが新demux/filter世代へ混入しないこと、原因別の`Untuned`／`FailedBackend`／`FailedBoundary`／`Quarantined`遷移、deadlineの試験が合格 |
 | Filter/DVR/AV/PESとFMQの資源契約 | 設計済み・実装未適用 | `demux/`、`fmq/`、`fmq_shim/`、`resource_ledger/` | `CapabilitySnapshot`からの予約、event-local/shared AV、processing buffer、overflow、close解放の試験が合格 |
 | 自律cleanupとworker回収 | 設計済み・実装未適用 | `service_runtime/`、各worker owner、`resource_ledger/` | owner操作なしで再試行が進み、期限後の隔離またはservice-critical遷移とlease非再利用を試験で確認 |
