@@ -1,0 +1,39 @@
+ | AT-007 | 複数demux stream boundary | 対象一覧固定後、demuxごとに独立した境界transactionを実行 | 各demuxのcommitを個別に記録し、全対象を処理した時点 | 未処理対象は変更せず、commit済み対象を巻き戻さない | 変更結果を確定できないdemuxだけ | 表SB-1に従う | 一部成功を全体rollbackで隠さない |
+ | AT-008 | `IFrontend.scan()` / `stopScan()` | 入力検証・request fingerprint確定・worker/callback経路準備 → 旧scan世代終端 → 同一`LockedReported`なら新generationのEND step、それ以外はbackend要求と新scan世代確定 | 同一lock報告済みrequestの継続は新generationとEND配送権限を一括で公開した時点。通常scanはbackend受理、新世代、worker、callback許可を一括で公開した時点 | 旧世代終端前は状態不変。終端後は旧scanを復元しない。同一request継続のEND失敗をbackend再探索または二重LOCKEDで補償しない | frontend、scan worker、callback経路、scan continuation state | scan終了理由とcallback配送結果の規則に従う | `scan(K)→LOCKED→scan(K)→END`を新旧generationのfence付きで成立させ、異なるrequest・stopScan・tune・closeで継続状態を破棄する |
+-| AT-009 | `IFilter.setDataSource()` | 表1-Dの検証・新しい関連の準備・旧関連の終端・source境界と新関連の確定 | source/sink関連とsink入力世代を同一確定点で公開した時点 | 確定前は旧関連を維持。確定後の不確定は当該sinkと関連だけを隔離 | source/sink関連とsink入力境界 | 表1-Dと表18-Bに従う | source側とsink側の片方だけを公開しない |
++| AT-009 | `IFilter.setDataSource()` | `SourceBoundaryTxn`が表1-D検証後にsource/sink relationとsink source-boundaryをprepare/commit | source/sink relationとsink入力世代を同一確定点で公開した時点 | commit前は旧relation維持、commit結果不明時だけ当該sink/relationを隔離 | Filter source/sink relationとsink入力境界 | 表1-D、表18-B、`SourceBoundaryTxn`に従う | API別relation state machineを持たない |
+ | AT-009a | `IDescrambler.setDemuxSource()` | 閉鎖gate確認、一回性消費、demux ID・生存・世代・対応能力の検証、対応する`DescramblerCapacityPool`へのsession結合予約、session台帳確定 | commit Aで初回呼出しを`CallConsumed`へ不可逆に変更し、成功経路だけcommit Bで`{demux_id, demux_generation, pool_id}`とpool上のsession帰属を`Bound`へ一括変更する | commit A後の検証・予約失敗はpool帰属を戻して`CallConsumedUnbound`を維持する。commit B後に片側だけ不明な場合は当該descrambler sessionとpool claimを隔離する | descrambler source-call state、demux generation、共有pool session帰属 | 「IDescrambler demux結合契約」に従う | `openDescrambler()`時にdemuxを推測せず、失敗を含む初回呼出しだけにsource設定権限を与える |
+-| AT-010 | `IDescrambler.setKeyToken()` / `addPid()` / `removePid()` | tokenと所有者の検証・backend適用準備・backend反映・鍵またはPID台帳の確定 | backendと台帳の両方が同じ要求を確定した時点 | backend反映前は台帳を変更しない。backend反映後に台帳を確定できない場合は、準備済みの補償操作でbackendを直前の確定状態へ戻す。補償成功時は旧台帳と旧backend状態を維持し、補償失敗または実状態不明時だけ当該descramblerを隔離する | descrambler session、鍵使用権、PID claim | token/PID状態表と失敗分類に従う | backendと台帳の不一致を成功扱いにせず、隔離を補償失敗時に限定する |
++| AT-010 | `IDescrambler.setKeyToken()` / `addPid()` / `removePid()` | keyは`DescramblerKeyTxn`、PID add/removeは`DescramblerPidTxn`が別々にvalidate・prepare・backend apply・ledger commit・compensationを所有 | 各transactionのbackendと対応台帳が同じ要求を確定した時点 | backend反映前は台帳不変。backend反映後commit失敗は各ownerが補償し、補償失敗/実状態不明時だけ当該descramblerを隔離 | key transactionは鍵使用権、PID transactionはPID claim | token/PID状態表と0-S-3Bに従う | key/PID/session cleanupを一つのstate machineへ統合しない |
+ | AT-010a | Frontend / Demux / Filter / DVR / Descrambler / LNB open | 能力と容量の検証・資源予約・runtime object準備・registry登録・公開 | registry登録と所有者台帳を確定し、AIDLが要求するobjectおよびout IDを同一応答で返す時点 | 公開前の準備物を逆順に解放する。解放結果を確定できない資源は`CleanupPending`または隔離へ移し、objectもout IDも部分公開しない | 準備中objectと予約済み資源 | 原因別のopenエラーを返し、objectを公開しない | APIごとのAIDL出力形状を維持し、公開失敗後に半登録object、単独のout ID、消費済み容量を残さない |
+ 
+ 再選局は表19およびAT-001の二分岐を正とする。`Locked`で正規化settings、typed selector、LNB/power条件が同一かつbackendとstream boundaryがhealthyな場合は、確定A/Bを通らない非破壊re-entryとし、`request_sequence`更新と現lockの`LOCKED`配送予約だけを確定する。stream generation、worker、backend要求、demux境界、AVは維持する。
+@@ -1079,18 +1119,18 @@
+ 
+ 確定A後に新要求が拒否された場合は、callerが要求していない旧要求を自動再投入しない。準備済み状態を解放し、backend停止と全demux境界終端を確認できれば`Untuned`、backend結果を確定できなければ`FailedBackend`、境界終端を確定できなければ`FailedBoundary`、旧generationのfenceを成立させられなければ`Quarantined`へ遷移する。旧TSを新サービス向けdemux/filter generationへ戻す経路を設けない。確定A自体の完了可否が不明な場合も旧要求を再投入せず、表19の原因別状態へ閉じる。確定Aと確定Bを1つの確定処理として記述してはならず、stream boundary初期化はbackend要求より前の確定Aで行う。
+ 
+-確定前にコールバックの登録または配送に失敗した場合は、バックエンドを停止し、世代を`TerminalFailed`へ遷移させ、以後のコールバックを抑止する。接続済みデマルチプレクサの境界を初期化し、公開操作は`UNKNOWN_ERROR`を返す。確定後のコールバック配送に失敗した場合は、ドメイン状態と公開結果を維持し、診断または代替の記録先へ記録する。
++確定前にコールバックの登録または配送に失敗した場合は、バックエンドを停止し、世代を`TerminalFailed`へ遷移させ、以後のコールバックを抑止する。接続済みデマルチプレクサの境界を初期化し、公開操作は`UNKNOWN_ERROR`を返す。確定後のコールバック配送に失敗した場合は`PostCommitCallbackFailureTxn`へ渡し、ドメイン状態と公開結果を維持したままcallback health、delivery outcome、診断だけを更新する。Frontend/Filter/DVR等が同型処理を個別に持たない。
+ 
+ `terminal_reason` と `end_delivery_outcome` は、互いに独立した項目として保持する。`terminal_reason` は `Completed`、`Cancelled`、`FailedBackend`、`FailedPanic` のいずれかとし、END通知の結果で上書きしない。`end_delivery_outcome` は `Delivered`、`CallbackMissing`、`StoreFailure`、`BinderFailure` のいずれかとする。バックエンド停止と世代終端は各1回だけ行い、通知失敗は副次的な診断・集計情報として扱う。
+ 
+ callbackの健全性は独立した状態軸とし、障害の影響はcallbackに依存する操作だけに限定する。
+ 
+-`addPid()`と`removePid()`はバックエンドのパケット経路を準備し、成功後にPID登録台帳を確定する。バックエンドが準備用APIを持たない場合は、冪等な適用と補償用の巻き戻しを同一トランザクション内で完了する。巻き戻しに失敗した場合だけデスクランブラーを隔離する。
++`addPid()`と`removePid()`の共通backend/ledger state machineは`DescramblerPidTxn`だけが所有する。バックエンドが準備用APIを持たない場合の冪等適用と補償rollbackも同transaction内で完了し、巻き戻しに失敗した場合だけデスクランブラーを隔離する。API別記述はPID/source入力分類と公開statusだけを持つ。
+ 
+ 
+ | 番号 | 操作 / 事象 | 変更順序 | 成功の確定点 | 確定点前の失敗 | 巻き戻し不能時の対象 | 公開戻り値 / 作業スレッド終了 | 設計上の成立条件 |
+ |---:|---|---|---|---|---|---|---|
+-| AT-011 | `ILnb.setVoltage()` / `setTone()` / `setSatellitePosition()` | `operation_lock`取得 → 旧状態取得 → 新状態候補作成 → backend反映 → registry確定 | backend反映と registry確定が両方成功した時点 | backend反映失敗では registry を変更しない。registry確定失敗時に backend rollback apply は行わない | LNB、関連 satellite frontend | `UNKNOWN_ERROR`、LNBは失敗状態。以後の公開制御APIも `UNKNOWN_ERROR` | registryとbackendの二重巻き戻し失敗を作らない |
++| AT-011 | `ILnb.setVoltage()` / `setTone()` / `setSatellitePosition()` | `LnbControlTxn`が`operation_lock`取得 → old snapshot → candidate → backend apply → registry commitを一回だけ実装 | backend反映と`LnbRegistry` commitが両方成功した時点 | `Rejected`ではregistry不変。commit/実状態不明またはrollback不能時だけLNBをfail/quarantine | LNB persistent control state | `BackendApplyOutcome`と0-S-3Bに従う | 3 APIで同型transactionを複製しない、`sendDiseqcMessage()`を吸収しない |
+ 
+ 
+ ### 表8. 資源寿命・所有権・破棄失敗表
+@@ -1103,8 +1143,8 @@
+ | RL-003 | demux generation | `DemuxHal` | demux open / stream boundary reset | demux close | frontend tune boundary、demux fail-closed | demuxを閉鎖側失敗。診断に失敗対象を残す | closed demux向けの後続配送が残らない |
+ | RL-004 | Filter / DVR FMQとdescriptor | `FilterHal` / `DvrHal` | object open時にqueueを生成し、descriptor取得時に複製を公開 | cleanup authorityが新規transactionを遮断し、受付済みtokenを完了または取消した後に破棄 | queue破損、EventFlag回復不能障害 | 当該queueを隔離し、descriptorとqueue領域を再利用しない | configureでqueue identityを置換しない |
+ | RL-005 | AV backing、event-local allocation、client lease | `AvSharedBacking`とFilter別割り当て台帳 | shared handle公開またはMediaEvent準備 | `releaseAvHandle()`でleaseまたはallocationを1回解放。論理close後も配送済みallocationは`ReleaseOnly`で保持 | 台帳破損、identity検証不能、allocator破損 | 対象領域を保持して隔離し、別allocationへ再利用しない | client lease、allocation、backingの寿命を分離する |
+-| RL-006 | callback artifactとregistry entry | callback registryと所有object | callback保持成功後にruntime登録し、domain状態へ確定 | runtime unregister成功後にだけdomain entryを閉じ、artifactを解放 | Binder死亡、unregister失敗、registry破損 | 再試行可能なら`CleanupPending`、破損時は当該registry entryをunhealthy化 | domainだけを閉じてcallbackを残さない |
+-| RL-007 | workerとreaper lease | 所有object、移管後は`ReaperSupervisor` | worker開始時に稼働枠と回収枠を同じ台帳から予約 | 終了報告回収と依存資源の後片付け完了後に1回返却 | panic、取消不能、終了証明不能 | 世代遮断後に回収機構へ1回移管し、遮断不能なら`ServiceCritical` | 実終了前に枠、FD、endpointを再利用しない |
++| RL-006 | callback artifactとregistry entry | callback artifact store / `RuntimeCallbackRegistry` / domain logical owner。登録orchestrationは`CallbackRegistrationUseCase` | callback保持成功後にruntime登録し、domain状態へ確定 | runtime unregister成功後にだけdomain entryを閉じ、artifactを解放 | Binder死亡、unregister失敗、registry破損 | 再試行可能なら`CleanupPending`、破損時は当該registry entryをunhealthy化 | domainだけを閉じてcallbackを残さない |
