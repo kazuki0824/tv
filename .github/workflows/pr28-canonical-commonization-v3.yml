@@ -19,5 +19,15 @@ jobs:
         with:
           ref: agent/fix-commonization-boundaries
           fetch-depth: 0
+      - name: Remove stale AV sync context hunk
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('.tmp/pr28-diff.parts/04')
+          s = p.read_text(encoding='utf-8')
+          marker = '@@ -2239,17 +2286,17 @@'
+          assert marker in s
+          p.write_text(s[:s.index(marker)], encoding='utf-8')
+          PY
       - name: Apply reviewed canonical design patch
         run: bash .tmp/pr28-runner.sh
