@@ -1,0 +1,43 @@
+-`ILnb.setCallback(callback)` は、受け取ったコールバック実体を `LnbHal` 内に保持する。`callback == NULL` は AOSP契約上の callback 登録解除として成功対象に含め、保持中の callback 実体を解放する。再設定時は新しいコールバック実体で置換する。`ILnb.close()` と未閉鎖 `LnbHal` の破棄経路では保持中のコールバック実体を解放する。AOSP frozen/stable AIDL の vendor 独自改変、生の Binder transaction 解析器による公開契約を通さない実装は採用しない。
++`ILnb.setCallback(callback)` は`CallbackRegistrationUseCase`を唯一の登録transactionとして使用する。Binder callback実体のstrong reference・death/replacement/releaseはcallback artifact storeだけが所有し、`RuntimeCallbackRegistry`はruntime登録状態、LNB domainはcallback identity/generation等の論理状態だけを所有する。`callback == NULL`はAOSP契約上の登録解除として同じtransactionで成功対象に含め、non-NULL再設定は新artifact・runtime・domain stateの確定後に旧artifactを解放する。確定前失敗は準備済みartifact/runtime登録を逆順で戻し旧callbackを維持する。`ILnb.close()`とowner loss/Dropの解放は`ObjectCloseTxn`から同じcallback cleanup commandを呼ぶ。AOSP frozen/stable AIDLのvendor独自改変や生のBinder transaction解析器は採用しない。
+ 
+ ### ILnb公開操作
+ 
+@@ -2302,10 +2349,11 @@
+ 閉鎖開始後は全操作を`INVALID_STATE`とする。不明な列挙値、空メッセージ、または宣言済みbackend上限を超えるDiSEqCメッセージは`INVALID_ARGUMENT`とする。2バイトを長さだけで拒否してはならない。妥当だが個別profileで非対応の操作は`UNAVAILABLE`とするが、そのようなprofileを`aidl_baseline_eligible`として公開してはならない。
+ 
+ 
+-`BackendApplyOutcome`は`Applied`、`Rejected`、`Indeterminate`、`RollbackFailed`の4種類とする。`Applied`では確定し、`Rejected`では以前の状態を維持する。`Indeterminate`では対象資源を隔離して`UNKNOWN_ERROR`を返し、`RollbackFailed`でも隔離して`UNKNOWN_ERROR`を返す。再試行は新しい操作IDでだけ許可する。
++`setVoltage()`、`setTone()`、`setSatellitePosition()`のpersistent state mutationは`LnbControlTxn`を唯一のownerとする。各AIDL methodは入力固有のvalidationと公開status写像だけを持ち、`operation_lock`、旧state snapshot、candidate、backend apply、`LnbRegistry` commit、失敗時state transitionを個別に再実装しない。`sendDiseqcMessage()`はpersistent registry commitを持たないtransient sendであり、`LnbControlTxn`へ吸収しない。
+ 
++`BackendApplyOutcome`は`Applied`、`Rejected`、`Indeterminate`、`RollbackFailed`の4種類とする。`Applied`では`LnbControlTxn`がregistryまで同一操作として確定し、`Rejected`では以前の状態を維持する。`Indeterminate`またはregistry commit後の実状態不明、`RollbackFailed`では対象LNBを隔離して`UNKNOWN_ERROR`を返す。再試行は新しい操作IDでだけ許可する。
+ 
+-`Drop`または所有者消滅では、待機を伴わず安全状態へ戻す後片付けを開始する。
++`Drop`または所有者消滅では別のLNB cleanup state machineを開始せず、`ObjectCloseTxn`へcleanup authorityを一度だけ移管する。
+ 
+ 
+ ### LNB 状態更新の失敗時整合性
+@@ -2400,6 +2448,8 @@
+ 
+ `addPid(pid, source)`は完全同一のdemux generation・PID・source filter generation tupleだけ冪等成功とする。sourceが異なる既存登録には`INVALID_STATE`を返し、変更には先行`removePid()`を必須とする。
+ 
++`addPid()` / `removePid()`のbackend packet-path準備・PID claim・backend apply・PID台帳commit・補償・quarantine判定は`DescramblerPidTxn`だけが所有する。API別節は入力分類、冪等条件、公開statusだけを定義し、このstate machineを再実装しない。`setKeyToken()`は`DescramblerKeyTxn`、close/demux invalidation時のPID/key/pool cleanupは`DescramblerSessionCleanupTxn`が別々に所有し、三者を一つのtransactionへ統合しない。
++
+ 
+ エラー写像:
+ - `INVALID_STATE`: descrambler 閉鎖済み、demux 未設定、demux generation 消失、再検査時 state 不整合、別 active descrambler による同一 demux / demux generation / PID 所有衝突。key token 未設定は `addPid()` / `removePid()` の `INVALID_STATE` 理由にしない。
+@@ -2866,6 +2916,8 @@
+ 
+ #### `FilterProducerDrainGate`
+ 
++`FilterProducerDrainGate`はproducer admission/drainだけを所有する下位protocolであり、Filter `flush()`全体のtransaction authorityではない。Filter `flush()`のeligibility、FMQ/未配送event/parser/AV pending cleanup、commit/failure transitionは`FilterFlushTxn`が所有する。
++
+ 状態は `Open`、`Draining`、`Closed` の3種類だけとする。ゲートは、検査付きの `filter_delivery_generation`、`parser_state_generation`、`admitted_producer_count` と、サービスが所有する有界の保留イベントキューを保持する。Parcelableではない線形の `FilterProducerPermit(g)` はRAIIで所有し、正確に1回解放する。
+ 
+ ##### 許可の有効範囲と有限時間での排出
+@@ -2894,6 +2946,8 @@
+ 
+ #### DVR用 `QueueEpochProtocol`
+ 
++`QueueEpochProtocol`はDVR queue identity/epochとread/write tokenの下位protocolであり、DVR `flush()`全体のtransaction authorityではない。DVRのflush eligibility、queue/parser/stats cleanup、epoch commit、playback started状態の維持は`DvrFlushTxn`が所有する。Filter flushと同じtransaction authorityへ統合しない。
++
