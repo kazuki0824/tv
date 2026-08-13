@@ -83,13 +83,12 @@ flowchart TD
 | LNB persistent control | `LnbControlTxn` | 3つのpersistent control APIで同じbackend+registry transactionを複製しない |
 | callback registration | `CallbackRegistrationUseCase` | Binder artifact、runtime registry、domain callback stateを片側だけcommitしない |
 | post-commit callback failure | `PostCommitCallbackFailureTxn` | commit済みdomain stateをcallback delivery失敗でrollbackしない |
-| Filter flush | `FilterFlushTxn` | Filter flushをDVR flushと同じtransaction authorityへ統合しない |
-| DVR flush | `DvrFlushTxn` | DVR flushをFilter flushと同じtransaction authorityへ統合しない |
+| Filter / DVR flush cleanup orchestration | `QueueCleanupTxn` | Filter/DVR固有stateを所有せず、typed下位protocol呼出しと失敗集約だけを共通化 | API別orchestration複製、下位protocol内部stateの直接変更 |
 | DVR playback consume | `PlaybackConsumeTxn` | playback workerがread/parse/inject/consume状態機械を再実装しない |
 | A/V sync relation | `AvSyncRegistry` | 双方向mapを片側だけ直接変更しない |
 | PCR clock anchor | `PcrClockAnchorStore` | APIまたは`StreamBoundaryTxn`がanchor内部を直接変更しない |
 | worker lifecycle mechanism | `WorkerRuntime` / `WorkerHandle` | 別のgeneric worker lifecycle transaction/protocolを重ねない |
-| worker infrastructure failure classification | `WorkerFailureClassifier` | backend/device/callback/FMQ data通知EventFlag失敗をworker failureへ分類しない |
+| worker failure classification | `WorkerFailureClassifier` | stop/wake/join/EventFlag/Reaper/backend-control/callback等の生の失敗を共通typed分類する | 停止順序、retry/cleanup、公開状態遷移の所有、API別再分類 |
 
 #### 共通transaction / use-caseの規範実装アンカー
 
@@ -109,15 +108,14 @@ flowchart TD
 | `LnbControlTxn` | `service_runtime/src/lnb_control_txn.rs::LnbControlTxn` | `ILnb.setVoltage()` / `setTone()` / `setSatellitePosition()`のobject use-case | `sendDiseqcMessage()`をpersistent state transactionへ吸収する、3 APIでlock/apply/commit/failure transitionを複製する |
 | `CallbackRegistrationUseCase` | `aidl_service/src/object_runtime/mod.rs::CallbackRegistrationUseCase`がorchestrationを所有し、Binder artifactは既存`aidl_service/src/callback_store.rs`、runtime stateは既存`service_runtime/src/callback_registry.rs::RuntimeCallbackRegistry`、domain logical stateは対象`service_runtime/src/*_ops.rs`だけが所有する | `IFrontend.setCallback()` / `ILnb.setCallback()`等のcallback登録/解除入口 | Binder callback実体をLNB/demux/device/resource ledgerへ保持する、artifact/runtime/domainを片側だけcommitする |
 | `PostCommitCallbackFailureTxn` | `service_runtime/src/post_commit_callback_failure_txn.rs::PostCommitCallbackFailureTxn` | domain commitを完了したFrontend/Filter/DVR等のcompletion use-case | domain commitをrollbackする、APIごとに`callback_unhealthy`/診断更新を再実装する |
-| `FilterProducerDrainGate` | 既存`demux/src/runtime/queue_runtime.rs` | Filter/SharedFilter data pathのproducer admission/finishと`FilterFlushTxn`のtyped drain入口 | flush transactionがgate内部状態を直接変更する |
-| `QueueEpochProtocol` | 既存`demux/src/runtime/queue_runtime.rs` | DVR data pathのbegin/commit/cancelと`DvrFlushTxn`のtyped drain/prepare入口 | flush transactionがqueue token/epoch内部状態を直接変更する |
-| `FilterFlushTxn` | 既存`service_runtime/src/queue_cleanup_txn.rs::FilterFlushTxn`。共有result/helperは同fileでよいがtransaction ownerにはしない | Filter `flush()` object use-case | DVR eligibility/epoch/token stateを所有する、共有`QueueCleanupTxn`をtransaction authorityとして再導入する |
-| `DvrFlushTxn` | 既存`service_runtime/src/queue_cleanup_txn.rs::DvrFlushTxn`。共有result/helperは同fileでよいがtransaction ownerにはしない | DVR `flush()` object use-case | Filter producer/callback stateを所有する、共有`QueueCleanupTxn`をtransaction authorityとして再導入する |
+| `FilterProducerDrainGate` | 既存`demux/src/runtime/queue_runtime.rs` | Filter/SharedFilter data pathのproducer admission/finishと`QueueCleanupTxn`からのtyped drain入口 | `QueueCleanupTxn`がgate内部状態を直接変更する、DVR stateを吸収する |
+| `QueueEpochProtocol` | 既存`demux/src/runtime/queue_runtime.rs` | DVR data pathのbegin/commit/cancelと`QueueCleanupTxn`からのtyped flush入口 | `QueueCleanupTxn`がqueue token/epoch内部状態を直接変更する、Filter stateを吸収する |
+| `QueueCleanupTxn` | 既存`service_runtime/src/queue_cleanup_txn.rs::QueueCleanupTxn`。Filter/DVR固有stateはそれぞれ`FilterProducerDrainGate` / `QueueEpochProtocol`が所有する | Filter/DVR `flush()` object use-case | 下位protocol内部stateを直接変更する、API別に同じorchestration/failure aggregationを再実装する |
 | `PlaybackConsumeTxn` | 既存`service_runtime/src/playback_consume_txn.rs` | playback workerから1 consume stepごとのtyped入口 | worker/FMQ helper/packet helperがread/parse/inject/consume遷移を再実装する |
 | `AvSyncRegistry` | `demux/src/runtime/av_sync_registry.rs::AvSyncRegistry` | filter configure/unregister/close、demux closeからのprepared relation mutation | API、filter wrapper、`StreamBoundaryTxn`が双方向mapを直接更新する、PCR anchorを同ownerへ吸収する |
 | `PcrClockAnchorStore` | `demux/src/runtime/pcr_clock_anchor.rs::PcrClockAnchorStore` | PCR観測と`StreamBoundaryTxn`からのprepared invalidation | APIまたは`StreamBoundaryTxn`がanchor内部を直接更新する、A/V sync relationを同ownerへ吸収する |
 | `WorkerRuntime` / `WorkerHandle` | `service_runtime/src/worker_runtime.rs::{WorkerRuntime, WorkerHandle}` | 各domain worker ownerのspawn/stop/wake/join/reaper入口 | `WorkerLifecycleProtocol`等の別generic lifecycle ownerを追加する、domain start/stop state machineを共通runtimeへ吸収する |
-| `WorkerFailureClassifier` | 既存`service_runtime/src/worker_failure_classifier.rs` | worker ownerとcleanup管理から、worker panic/join/worker-control wake/reaper failureだけをtyped入力する | backend/device/callback failure、FMQ payload通知用EventFlag失敗、domain transaction failureを入力する |
+| `WorkerFailureClassifier` | 既存`service_runtime/src/worker_failure_classifier.rs` | worker owner / cleanup manager / callback・backend失敗を扱うownerからtyped failureを入力し、分類結果だけを返す | classifierが停止順序、retry/cleanup、quarantine、公開/domain state transitionを直接変更する、owner側が文字列/errnoで再分類する |
 | frontend worker終端 | 既存`service_runtime/src/frontend_worker_txn.rs`、worker slot/generationは`device/src/runtime/frontend_worker.rs`の`FrontendWorkerRegistry` | `service_runtime/src/frontend_ops.rs`および`service_runtime/src/boot/frontend_txn.rs` | generic worker mechanismやclassifierの責務を再実装する |
 
 ##### 共通部品とAPI固有手順の合成規則
@@ -129,9 +127,9 @@ flowchart TD
 - `DescramblerPidTxn`は通常の`addPid()` / `removePid()`だけを所有し、key mutationとsession cleanupを吸収しない。
 - Record DVR/Filter relationは`RecordDvrFilterRelationTxn`の一つのrelation stateを正本とし、DVR/Filter側の集合は同commitから導出する。
 - `WorkerRuntime` / `WorkerHandle`はstop predicate、wake/cancel、generation fence、join、reaper handoffのmechanismだけを共通化し、Frontend/Filter/DVR/Playbackのdomain start/stop state machineを所有しない。
-- `WorkerFailureClassifier`はworker infrastructure failureだけを分類する。FMQ payload commit後のEventFlag通知失敗はqueue/data-path runtimeが所有し、queue内payload保持と再起床契約へ従う。
+- `WorkerFailureClassifier`はstop/wake/join/EventFlag/Reaper/backend-control/callback等の失敗種別のtyped分類だけを共通化する。停止順序、retry/cleanup、quarantine、公開状態遷移は各worker owner/API側に残す。FMQ data通知EventFlagのpayload保持・再起床state machineはqueue runtimeが所有し、classifierはそのfailure categoryだけを返す。
 - `PostCommitCallbackFailureTxn`はAPI名ではなくdomain commitとの相対時点で適用する。commit後だけを対象とし、domain stateをrollbackせずcallback health/diagnosticだけを更新する。
-- `FilterFlushTxn`は`FilterProducerDrainGate`とFilter固有queue/event/parser/AV pending stateを調停し、`DvrFlushTxn`は`QueueEpochProtocol`とDVR固有queue/parser/stats/token stateを調停する。両者のtransaction-level commit/rollback authorityは統合しない。
+- Filter/DVR `flush()`は`QueueCleanupTxn`を共通orchestratorとして使用し、cleanup対象調停と失敗集約だけを共通化する。Filter固有stateは`FilterProducerDrainGate`、DVR固有stateは`QueueEpochProtocol`が独立して所有し、`QueueCleanupTxn`はtyped入口だけを使用する。
 - `AvSyncRegistry`と`PcrClockAnchorStore`はprepared mutation/invalidation tokenを上位transactionへ返し、外側のfilter lifecycleまたは`StreamBoundaryTxn`のcommitと同じ排他区間で確定する。pre-commit failureではtokenをabortし、片側だけ更新しない。
 - top-level cleanup / rollback use-caseは`CleanupExecutionReport` / `SharedCleanupDiagnostics`と共通failure-composition helperを通してよい。これらは結果表現/helperであってtransaction ownerではない。
 
@@ -190,9 +188,9 @@ queueへの書き込み権限は世代付きとし、`flush()`、再設定、停
 - `DropLeakTxn`を`ObjectCloseTxn`と並ぶcleanup authorityとして置かない。
 - Demux frontend relationをFilter用`SourceBoundaryTxn`へ吸収しない。
 - relation transactionと`StreamBoundaryTxn`を別々の公開commitにしない。
-- `QueueCleanupTxn`をFilter/DVR共通flush transaction authorityとして置かない。
+- Filter/DVR `flush()`のcleanup orchestrationと失敗集約をAPI別に複製せず、`QueueCleanupTxn`のtyped入口を使用する。
 - `WorkerLifecycleProtocol`等を`WorkerRuntime` / `WorkerHandle`と並ぶgeneric lifecycle ownerとして置かない。
-- `WorkerFailureClassifier`へbackend/device/callback/FMQ data通知EventFlag failureを入力しない。
+- worker owner/APIがstop/wake/join/EventFlag/Reaper/backend-control/callback等の同型失敗分類を個別実装せず、`WorkerFailureClassifier`のtyped結果を使用する。
 - LNB Binder callback実体をLNB domain/AIDL objectに直接保持しない。
 - DVR側とFilter側がRecord relationを別々にcommitしない。
 - A/V sync双方向mapまたはPCR anchorを複数ownerが直接変更しない。

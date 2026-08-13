@@ -234,7 +234,7 @@ VTS製品設定の`canConnectToCiCam`は`false`に固定する。CI CAM系APIは
 
 異なるrequest fingerprintの `scan()`、`stopScan()`、`tune()`、`close()`では `LockedReported` を破棄する。異なるrequestは通常の新scanとしてbackend探索を開始する。同一requestの継続で `END` 配送が失敗した場合は、scanのterminal reasonとend delivery outcomeを分離する既存契約に従い、backend再探索または二重 `LOCKED` で補償しない。最低試験は `scan(K) → LOCKED(g1) → scan(K) → END(g2)` を満たし、2回目にbackend探索と再度の `LOCKED` がないこと、`scan(K2)`、`stopScan()`、`tune()`、`close()`で継続状態が失効することを確認する。
 
-`IFrontend.close()` は frontend backend の critical cleanup を成功扱いで握り潰さない。公開 close では、scan cancel、tune ワーカー stop、ライブ pump stop、backend close、コールバック解除、demux unbind、frontend lease release を step runner として扱い、途中 step が失敗しても後続 cleanup を継続し、最初に観測した critical error を AIDL 状態 として返す。cleanup failure 後の frontend オブジェクト は通常操作へ戻さず、close retry だけを通常の復旧経路として許可する。戻り値を返せない Drop 経路は通常 cleanup の代替にせず、未 close または cleanup 未完了を DropLeakTxn に記録し、対象を漏えい診断 / 隔離診断へ落とす。
+`IFrontend.close()` は frontend backend の critical cleanup を成功扱いで握り潰さない。公開 close では、scan cancel、tune ワーカー stop、ライブ pump stop、backend close、コールバック解除、demux unbind、frontend lease release を step runner として扱い、途中 step が失敗しても後続 cleanup を継続し、最初に観測した critical error を AIDL 状態 として返す。cleanup failure 後の frontend オブジェクト は通常操作へ戻さず、close retry だけを通常の復旧経路として許可する。戻り値を返せない Drop 経路は通常 cleanup の代替にせず、未 close または cleanup 未完了を `ObjectCloseTxn`へ未完cleanup authorityと診断を移管し、同じcleanup state machineで再試行または隔離へ進める。
 
 DVB / earth_pt1 backend では、`DTV_CLEAR` は明示的な tune 停止操作である `stop_tune()` の責務とする。DVB backend の `close()` は reader stop と fd release を行うが、`DTV_CLEAR` の実行を close の必須条件とはしない。したがって、DVB `close()` が `DTV_CLEAR` を発行しないことを release blocker または bug と扱わない。
 
@@ -339,19 +339,55 @@ commit前失敗では、成功戻りを返してはならない。commit後clean
 
 #### 0-S-3A. 共通部品適用表
 
-
-共通化するのは共有可能な基本処理と不変条件だけとし、インターフェース固有の処理順序は個別に定める。
-
+共通化するのは、state owner、commit boundary、rollback authority、failure semantics が一致する不変条件とmechanismだけとする。phaseの形が似ているだけの状態機械を同一transactionへ統合しない。API別節は公開意味、対象、順序、戻り値だけを定義し、状態mutationの第二の正本を持たない。
 
 | 対象処理 | 所有共通部品 | 必ず通す経路 | 禁止する実装 |
 |---|---|---|---|
-| Filter / DVR `start()` の commit 後 コールバック失敗 | `PostCommitCallbackFailureTxn` | start commit 後の callback 失敗は rollback せず `callback_unhealthy` に固定。既存実装名が異なる場合でも、この責務を単一の callback health 正本へ移管する | APIごとに `stop_*()` を直接呼んで rollback すること、またはAPI別に同型の コールバック失敗 処理を再実装すること |
-| Filter / DVR `flush()` の queue cleanup | `QueueCleanupTxn` | demux flush 後の FMQ / AV / playback cleanup 失敗を runtime failed または cleanup failed に接続 | `clear_best_effort()` で 公開API 成功に丸めること |
-| ワーカー起動 / 停止 / join / wake | `WorkerFailureClassifier` | ワーカー制御失敗、コールバック失敗、backend failure を enum / domain error で分類 | `reason.contains(...)` など文字列分類で失敗種別を決めること |
-| frontend / demux / source filter / flush 境界 | `StreamBoundaryTxn` / `SourceBoundaryTxn` | origin、generation、assembler、FMQ、AV shared、record queue を対象単位で処理 | 各APIが assembler / queue / generation を個別に直接操作すること |
-| descrambler demux / PID / key cleanup | `DescramblerSessionCleanupTxn` / `DescramblerKeyTxn` | session と key table の更新・release・失敗集約を一体で扱う | 1件の stale cleanup 失敗で後続 session を未処理のまま抜けること |
-| DVR playback read / inject | `PlaybackConsumeTxn` | FMQ read、TS parse、注入結果、消費確定を1つの状態機械で扱う | read済み入力を 注入結果未確認のまま一律消費済みにすること |
+| public close / owner loss / Drop | `ObjectCloseTxn` | 一回性cleanup authority、typed cleanup command、失敗集約、`CleanupPending`/quarantine、retry/reaper handoff | `DropLeakTxn`等の別cleanup authority、API/Drop/Reaperごとのclose state machine |
+| Filter source relation | `SourceBoundaryTxn` | Filter source/sink relationのvalidate/prepare/commit/rollback | demux/frontend relationを吸収すること、API別graph mutation |
+| Demux frontend source relation | `DemuxFrontendSourceTxn` | relation prepareと`StreamBoundaryTxn.prepare()`を同じ上位transactionでcommit/abort | relationとstream generationを別commitで公開すること |
+| stream data boundary | `StreamBoundaryTxn` | stream generation、continuity、section/PES/record-index parser/assembler boundaryとprepared invalidation dispatch | relation、Filter/DVR queue内部、A/V sync map、PCR store内部、callback artifact、descrambler stateを所有すること |
+| callback registration | `CallbackRegistrationUseCase` | callback artifact準備、runtime登録、domain callback state確定を一つの登録transactionで扱う | `LnbHal`等がBinder callback実体を直接所有すること、三者を片側だけcommitすること |
+| LNB persistent control | `LnbControlTxn` | `setVoltage()` / `setTone()` / `setSatellitePosition()`のlock、backend apply、registry commit、失敗状態を共通化 | `sendDiseqcMessage()`をpersistent state transactionへ吸収すること、3 APIで同型state machineを複製すること |
+| descrambler PID mutation | `DescramblerPidTxn` | `addPid()` / `removePid()`のclaim、backend apply、ledger commit、compensation | key mutation/session cleanupと統合すること、API別backend/ledger二重commit |
+| descrambler key mutation | `DescramblerKeyTxn` | key token/refcount/session key mutation | PID/session cleanupを吸収すること |
+| descrambler session cleanup | `DescramblerSessionCleanupTxn` | PID/key/pool帰属のcleanupと失敗集約 | normal PID/key mutationのownerになること |
+| Record DVR / Filter relation | `RecordDvrFilterRelationTxn` | attach/detach/close/demux cleanupから同じrelation mutationへ接続 | DVR/Filter側に別shadow relationを持ち別commitすること |
+| worker lifecycle mechanism | `WorkerRuntime` / `WorkerHandle` | owner generation、signal、stop/wake/join、reaper handoff | `WorkerLifecycleProtocol`等の第二generic owner、domain start/stop state machineの吸収 |
+| worker failure classification | `WorkerFailureClassifier` | stop/wake/join/EventFlag/Reaper/backend-control/callback等の失敗種別を共通typed分類し、ownerへ分類結果だけを返す | 停止順序、retry/cleanup、公開状態遷移の所有、API/worker別の文字列・errno再分類 |
+| domain commit後callback failure | `PostCommitCallbackFailureTxn` | commit済みdomain stateを維持しcallback health/diagnosticだけ更新 | callback失敗でdomain rollback、API別同型failure handler |
+| Filter producer drain | `FilterProducerDrainGate` | producer permit/admission/drainだけを所有 | Filter flush全体やDVR queue stateを所有すること |
+| DVR queue epoch | `QueueEpochProtocol` | DVR begin/commit/cancel、queue identity/epoch/token/drain | Filter stateまたはDVR flush全体を所有すること |
+| Filter / DVR `flush()` cleanup orchestration | `QueueCleanupTxn` | Filter/DVR固有stateを所有せず、公開`flush()`のcleanup対象調停・typed下位protocol呼出し・失敗集約だけを共通化 | `FilterProducerDrainGate` / `QueueEpochProtocol`内部状態の直接所有、API別cleanup orchestrationの複製 |
+| DVR playback read/inject | `PlaybackConsumeTxn` | FMQ read、TS parse、backend inject、consume cursorを一つの状態機械で扱う | workerやFMQ helperがread/parse/inject/consumeを再実装すること |
+| A/V sync relation | `AvSyncRegistry` | `filter_id <-> hw_id`双方向relationをprepared mutationで外側transactionと同commit | 片方向mapの直接更新、PCR anchorとのowner統合 |
+| PCR clock anchor | `PcrClockAnchorStore` | generation-scoped anchorとprepared invalidationを外側boundaryと同commit | API/`StreamBoundaryTxn`によるanchor内部の直接更新、A/V sync relationとのowner統合 |
 
+#### 0-S-3B. 共通部品の規範定義
+
+次表の10項目を満たしたものだけを共通部品の設計正本とする。実装正本の物理アンカーは`tuner_hal2/DESIGN_JA.md`の「共通transaction / use-caseの規範実装アンカー」と一致させる。
+
+| 論理契約名 | 実装正本 | 公開入口 | 所有する状態 | 所有しない状態 | phase order | 失敗時処理 | 呼び出し許可層 | 呼び出し禁止層 | 最低テスト |
+|---|---|---|---|---|---|---|---|---|---|
+| `ObjectCloseTxn` | `service_runtime/src/object_close_txn.rs::ObjectCloseTxn` | public `close()`、owner loss/Drop、shutdown/reaper retry | cleanup authority、未完step、cleanup report、retry handoff、完了確定 | API固有入力、backend内部状態、queue parser内部 | logical close → authority取得 → 新規操作遮断 → typed cleanup全件試行 → unregister/release → complete/pending | 全stepを試行し、retryableは`CleanupPending`、実状態不明/遮断不能だけquarantine、主障害とcleanup障害を別保持 | object close façade、owner-loss façade、reaper | AIDL method body、Drop、worker、backendが独自cleanup authorityを持つこと | close-vs-Drop race、途中失敗後も後続cleanup実行、retry、二重release防止、quarantine |
+| `SourceBoundaryTxn` | `demux/src/runtime/source_boundary.rs` | `IFilter.setDataSource()` use-case | Filter source/sink relationとそのrelation generation | demux/frontend relation、DVR queue、A/V sync/PCR内部 | validate → relation prepare → source boundary prepare → commit / rollback | pre-commitは旧relation維持、確定不明だけ対象relationを隔離 | Filter source use-case | API wrapper/workerのgraph直接変更、Demux frontend use-case | NULL復帰、replacement、wrong demux/owner、closed/generation、prepare/commit fault |
+| `DemuxFrontendSourceTxn` | `service_runtime/src/demux_filter_dvr_ops.rs::DemuxFrontendSourceTxn` | `IDemux.setFrontendDataSource()` use-case | demux/frontend relationのorchestration | stream parser内部、Filter source graph | validate → relation prepare + `StreamBoundaryTxn.prepare()` → composite commit → old relation release | pre-commitは両prepared stateをabortし旧relation/旧generation維持、commit結果不明だけ対象demuxを隔離 | Demux frontend-source use-case | `SourceBoundaryTxn`への吸収、relation/stream別commit | same-source no-reset、switch/unbind、boundary prepare failure、composite commit fault |
+| `StreamBoundaryTxn` | `demux/src/runtime/generation_boundary.rs::GenerationBoundaryTxn` | typed stream-boundary use-case、上位transactionからの`prepare()` | stream generation、continuity、section/PES/record-index parser/assembler boundary、prepared invalidation dispatch | relation table、Filter/DVR queue内部、A/V sync/PCR内部、callback、descrambler | validate → prepare `PreparedStreamBoundary` → commit / abort | abortでは旧generation維持、commit不明時だけ対象streamをfail/quarantine | service_runtime packet/boundary use-case、上位relation transaction | API/worker/helperのparser/generation直接変更 | standalone commit、prepared abort/commit、stale generation、relation composite atomicity |
+| `CallbackRegistrationUseCase` | `aidl_service/src/object_runtime/mod.rs::CallbackRegistrationUseCase` + `callback_store.rs` + `RuntimeCallbackRegistry` | Frontend/LNB等のset/clear/replace callback | 登録transactionのorchestration。artifactはcallback store、runtime entryはregistry、logical stateはdomain owner | callback配送後のdomain state、backend state | artifact prepare → runtime register/clear prepare → domain commit → old artifact release | commit前は逆順rollback、commit後配送失敗は`PostCommitCallbackFailureTxn` | AIDL callback registration façade | LNB/domain/backend/resource ledgerのBinder strong ref直接保持 | set/replace/NULL、各phase failure、Binder death/generation、old callback保持 |
+| `LnbControlTxn` | `service_runtime/src/lnb_control_txn.rs::LnbControlTxn` | `setVoltage()` / `setTone()` / `setSatellitePosition()` | operation lock、candidate、backend apply結果、LnbRegistry commit、failure state | DiSEqC transient send、callback、endpoint lease | validate → lock → old snapshot → candidate → backend apply → registry commit | `Rejected`は旧状態、`Indeterminate`/commit不明/rollback失敗はLNB fail/quarantine、成功時だけgeneration更新 | LNB object use-case | 3 APIの個別state machine、DiSEqCの吸収 | 3操作、invalid/unavailable、backend rejected/indeterminate、registry failure、close race |
+| `DescramblerPidTxn` | `service_runtime/src/boot/descrambler_txn.rs::DescramblerPidTxn` | `addPid()` / `removePid()` use-case | PID tuple、pool PID claim、backend packet-path apply、compensation | key refcount、session close/pool session lifetime | validate → claim/prepare → backend apply → PID ledger commit → compensation on failure | pre-commit rollback、backend適用後commit失敗はcompensation、compensation不能/実状態不明だけquarantine | descrambler PID use-case | AIDL/packet helperのclaim/backend/ledger直接変更 | add/remove idempotence、NULL/non-NULL source、wrong owner/generation、capacity、backend/commit/compensation fault |
+| `DescramblerKeyTxn` | `service_runtime/src/boot/descrambler_txn.rs::DescramblerKeyTxn` | `setKeyToken()` use-case | key token/refcount/session-key mutation | PID relation、session cleanup | validate → new key acquire/prepare → backend apply → session/key-table commit → old ref release | pre-commit rollback、refcount/commit不整合は対象session/key tableをfail/quarantine | descrambler key use-case | PID/cleanup path、AIDL direct key table mutation | valid/invalid/VOID/same/replacement、backend fault、commit/refcount fault |
+| `DescramblerSessionCleanupTxn` | `service_runtime/src/boot/descrambler_txn.rs::DescramblerSessionCleanupTxn` | descrambler close/demux invalidationから`ObjectCloseTxn`経由 | sessionに属するPID/key/pool帰属のcleanup進捗 | normal key/PID mutation、他session | cleanup authority確認 → backend detach全件 → claims/key refs/pool session release → report | 全対象を試行しretryableは`CleanupPending`、状態不明だけquarantine | `ObjectCloseTxn` typed cleanup command | public API/workerによる個別release | close/invalidate、partial cleanup、retry、idempotence、quarantine |
+| `RecordDvrFilterRelationTxn` | `service_runtime/src/demux_filter_dvr_ops.rs::RecordDvrFilterRelationTxn` | attach/detach、Filter/DVR close、demux cleanup | Record DVR/Filter relationの単一正本 | Filter/DVR lifecycle本体、queue payload | validate both objects → relation prepare → union-route prepare → single commit / abort | pre-commit旧relation維持、commit不明時だけrelation/routeをfail | DVR/Filter relation use-case、close cleanup command | DVR/Filter両側のshadow relation別commit | duplicate attach、absent detach、wrong owner/demux/kind、close/detach race、commit fault |
+| `WorkerRuntime` / `WorkerHandle` | `service_runtime/src/worker_runtime.rs::{WorkerRuntime,WorkerHandle}` | 各domain worker ownerのspawn/stop/wake/join/reaper | owner generation、stop signal、JoinHandle、fence、reaper handoff mechanism | domain start/stop state、backend semantic failure、queue payload | spawn fenced worker → signal stop → wake/cancel → observe/join or reaper handoff → release after completion | failureをtyped reportしleaseを早期再利用しない、遮断不能だけServiceCritical | domain worker owner、cleanup/reaper | generic `WorkerLifecycleProtocol`の追加、AIDLからの直接join | generation fence、stop/wake ordering、join/reaper、panic、no early reuse |
+| `WorkerFailureClassifier` | `service_runtime/src/worker_failure_classifier.rs` | worker owner / cleanup managerからのtyped failure | stop/wake/join/EventFlag/Reaper/backend-control/callback等の失敗種別分類だけ | worker lifecycle、停止順序、retry/cleanup、quarantine、公開状態遷移 | typed/raw failure受理 → source/domainをtyped分類 → ownerへ分類結果返却 | 文字列推測・API別errno推測を禁止し、unknownもtyped分類として返す。分類器自身はstate mutationしない | worker owner、cleanup manager、callback/backend failureを扱うowner | classifierからdomain/public stateを直接変更すること、owner側で同型分類を再実装すること | stop/wake/join/EventFlag/Reaper/backend-control/callback分類、owner間同一分類、state不変 |
+| `PostCommitCallbackFailureTxn` | `service_runtime/src/post_commit_callback_failure_txn.rs::PostCommitCallbackFailureTxn` | domain commit済みcompletion use-case | callback health、delivery outcome、診断 | commit済みdomain state、backend state | verify post-commit → classify callback failure → health/diagnostic commit | domain rollback禁止、public結果維持、callback healthだけ更新 | Frontend/Filter/DVR等のcompletion use-case | API別rollback handler | Frontend tune、Filter/DVR start、missing/store/Binder failure、domain unchanged |
+| `FilterProducerDrainGate` | `demux/src/runtime/queue_runtime.rs` | Filter/SharedFilter producer、`QueueCleanupTxn`からのtyped drain request | permit、admitted count、Draining gate | FMQ内容、DVR token、flush全体 | admit → short nonblocking commit section → release / drain | panic/returnでもpermit解放、遮断不能だけFilter fail | data producer、`QueueCleanupTxn` | Binder callback/IO/joinをpermit内に保持、orchestratorの内部state直接変更 | drain race、panic/drop、bounded completion、共通orchestratorからのdrain |
+| `QueueEpochProtocol` | `demux/src/runtime/queue_runtime.rs` | DVR data path、`QueueCleanupTxn`からのtyped flush request | queue identity、epoch、read/write token、active count | Filter producer、DVR parser/stats、flush orchestration | begin → commit/cancel/drop → drain → epoch prepare/commit | stale token拒否、commit前失敗はepoch/position不変 | DVR data path、`QueueCleanupTxn` | Filter path、API別token state machine、orchestratorの内部state直接変更 | begin/commit/cancel/drop、flush race、stale token、identity ABA |
+| `QueueCleanupTxn` | `service_runtime/src/queue_cleanup_txn.rs::QueueCleanupTxn` | Filter / DVR `flush()` use-case | cleanup orchestration plan、typed下位protocol呼出順序、共通失敗集約/result composition | Filter producer permit/state、DVR queue token/epoch、API固有eligibility/公開状態 | API ownerが対象確定 → typed drain/cleanup request → 全対象結果集約 → API ownerへtyped result返却 | 下位protocol失敗を成功へ丸めず全対象を試行し、API固有state transitionは各ownerへ返す | Filter/DVR flush use-case | 下位protocol内部stateの直接変更、non-flush API、API別orchestration複製 | Filter/DVR双方が同じorchestratorを通る、下位state独立、partial cleanup failure、result aggregation |
+| `PlaybackConsumeTxn` | `service_runtime/src/playback_consume_txn.rs` | playback workerの1 consume step | FMQ read transaction、processing buffer、parse/inject cursor、consume result | worker lifetime、queue epoch owner | beginRead → copy → commitRead → parse → inject incrementally → finish/retain | retryable injectはbuffer/cursor保持、stop保持、flush/close/fatalは損失診断して破棄 | playback worker | FMQ/helperの独自consume state machine | partial TS、partial inject、retry、stop→start preserve、flush discard |
+| `AvSyncRegistry` | `demux/src/runtime/av_sync_registry.rs::AvSyncRegistry` | AV/PCR filter configure/unregister/close、demux close | `filter_id <-> hw_id`双方向relation | PCR clock anchor、filter lifecycle本体 | validate → prepared bidirectional mutation → outer transaction commit/abort | abortで両map不変、片方向確定を通常状態にしない | filter/demux lifecycle transaction | API/Filter wrapper/StreamBoundaryのmap直接更新 | register、reconfigure、unregister、filter/demux close、abort、bidirectional invariant |
+| `PcrClockAnchorStore` | `demux/src/runtime/pcr_clock_anchor.rs::PcrClockAnchorStore` | PCR観測、stream/filter boundaryからprepared invalidation | generation-scoped `PcrClockAnchor` | A/V sync ID relation、stream generation本体 | observe/update または prepare invalidation → outer commit/abort | stale generation拒否、abortで旧anchor維持、commit後は旧anchor再利用禁止 | PCR data path、StreamBoundary/filter lifecycle | API/StreamBoundaryによる内部直接変更 | PCR observe/wrap、flush/stop/close/input-gen/retune/playback flush invalidation、stale generation |
 
 #### 0-S-4. 失敗分類と波及範囲
 
@@ -367,7 +403,7 @@ commit前失敗では、成功戻りを返してはならない。commit後clean
 | unsupported | capability外、恒久非対応 | `UNAVAILABLE` | なし | callback/ワーカー状態を先に見て別エラーにしない |
 | コールバック失敗 | Binder コールバック失敗 | API表に従う | コールバック所有者 | データ経路全体を即failedにしない |
 
-ワーカーの異常は、`WorkerPanic`、`JoinFailure`、`StopWakeFailure`、`EventFlagWakeFailure`として区別する。
+ワーカー関連の失敗種別は`WorkerFailureClassifier`だけがtyped分類する。対象にはstop/wake/join/EventFlag/Reaper/backend-control/callback等の発生源を含めるが、分類器が所有するのは分類結果だけであり、停止順序、retry、cleanup、quarantine、公開状態遷移は各worker owner/API契約に残す。FMQ payload commit後のEventFlag起床失敗についても、payload保持・再起床というdata-path状態機械はqueue runtimeが所有し、classifierは失敗種別を分類するだけとする。
 
 
 | 失敗種別 | 例 | 戻り値 | 波及範囲 | 禁止事項 |
@@ -867,6 +903,8 @@ DVRの読み書きはSDK・JNIの補助処理として扱う。playbackの読み
 
 open済みのrecord DVRでは、`configure()`前もfilterの接続と切断を許可する。
 
+Record DVRとFilterの接続relationは`RecordDvrFilterRelationTxn`を唯一のmutation ownerとする。`attachFilter()` / `detachFilter()`、Filter/DVR close、demux cleanupは同じtyped relation mutationを使用し、DVR側とFilter側に別々のshadow relationを置いて別commitしてはならない。公開API表は対象状態、入力分類、冪等性、戻り値だけを正本として持つ。
+
 
 | 番号 | API / 入力 | 対象状態集合 | AIDL戻り値 | 次状態関数 | 副作用 | 診断 | 同値性根拠 / 設計上の成立条件 |
 |---:|---|---|---|---|---|---|---|
@@ -979,8 +1017,8 @@ fd付きhandle + `avDataId == 0` の成功は、shared backing、公開済みhan
 |---:|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | CL-005 | Filter / DVR | 公開`close()` | 未生成資源の解放 | 安全な無処理成功 | true | 既存値を維持 | 成功扱い | 該当なし | 不要 | `close()`以外は`INVALID_STATE` | 安全な無処理成功手順 | 未生成資源の解放が`close()`失敗にならないこと | lazy allocation と整合 |
 | CL-007 | Filter / DVR | 公開`close()`全手順成功 | 完了確定 | 完了確定 | true | true | 成功 | Dropで何もしない | 不要 | `close()`以外は`INVALID_STATE`。二重`close()`は CL-009 に従う | close成功 | cleanup_complete が true になること | 完全閉鎖 |
-| CL-008 | Filter / DVR | 公開`close()`致命的手順失敗 | 未完確定 | 異常時閉鎖 | true | false | `UNKNOWN_ERROR` | Dropでは通常後片付けを再試行しない。DropLeakTxnへ未完診断を記録 | 失敗手順が残る間 | `close()`以外は`INVALID_STATE`。二重`close()`は CL-010 に従う | `failed_step`, `error_kind`, `remaining_steps` | 失敗が成功扱いにならないこと | fail-closed |
-| CL-010 | Filter / DVR | 二重`close()` | 後片付け未完 | 再試行 | true | false | 再試行結果に従う | Dropでは通常後片付けを再試行しない。DropLeakTxnへ未完診断を記録 | 失敗手順が残る間 | `close()`以外は`INVALID_STATE` | `close_retry` | 未完cleanupを成功扱いで隠さないこと | cleanup_complete を正にする |
+| CL-008 | Filter / DVR | 公開`close()`致命的手順失敗 | 未完確定 | 異常時閉鎖 | true | false | `UNKNOWN_ERROR` | Dropは別authorityを作らず、未完authorityを`ObjectCloseTxn`/回収機構へ一度だけ移管 | 失敗手順が残る間 | `close()`以外は`INVALID_STATE`。二重`close()`は CL-010 に従う | `failed_step`, `error_kind`, `remaining_steps` | 失敗が成功扱いにならないこと | fail-closed |
+| CL-010 | Filter / DVR | 二重`close()` | 後片付け未完 | 再試行 | true | false | 再試行結果に従う | Dropは別authorityを作らず、未完authorityを`ObjectCloseTxn`/回収機構へ一度だけ移管 | 失敗手順が残る間 | `close()`以外は`INVALID_STATE` | `close_retry` | 未完cleanupを成功扱いで隠さないこと | cleanup_complete を正にする |
 
 `CleanupPending`では、すべてのインターフェースの`close()`が未完了の後片付けだけを再試行する。`CleanupComplete`では、FrontendとLNBの`close()`は状態を変えず成功し、DVRとFilterの`close()`は`INVALID_STATE`を返す。Filterの使用中AV台帳は、`close()`の再試行または再度の`close()`で解放済みとして扱わない。
 
@@ -1063,15 +1101,15 @@ checked FMQ shim は、`queue == null` または `out_written == null` を `INVA
 |---:|---|---|---|---|---|---|---|
 | AT-001 | `IFrontend.tune()` / 再選局 | 表19のvalidate・prepare後、安定同一条件なら非破壊re-entry、その他は確定A・backend要求・確定B | 安定同一条件は`request_sequence`更新と`LOCKED`配送予約の確定時。full retuneは新generationを確定Bで公開した時 | re-entry判定前の失敗は旧状態を維持する。確定A後に新要求が拒否された場合は旧要求を自動再投入せず、backend停止・境界終端を確認できれば`Untuned`、結果不明は`FailedBackend`、境界不明は`FailedBoundary`、fence不成立は`Quarantined`へ進む | frontend、旧世代、失敗したdemux境界 | 表19の失敗分類に従う | 非破壊re-entryに確定A/Bを適用しない。破壊的commit後の旧session復元経路を設けない |
 | AT-002 | `IFrontend.stopTune()` | 対象確定・旧世代遮断・backend停止・demux境界終端 | backend停止と全対象demux境界の終端が確定した時点 | 旧世代遮断前は状態不変。遮断後は旧選局を復元しない | frontendと失敗したdemux | 「`IFrontend.stopTune()`の失敗時状態」に従う | 停止成功後に旧配送が残らない |
-| AT-003 | `IDemux.setFrontendDataSource()` | 入力検証・新関連の準備・旧関連の終端・新関連の確定 | frontend関連とdemux入力世代を同時に確定した時点 | 確定前は旧関連を維持。外部適用後の不確定は当該demuxを隔離 | demuxとその入力境界 | 表SB-1とstream boundary契約に従う | 片方向関連を公開しない |
-| AT-004 | Filter / DVR configure・start・flush | 表1または表2の状態検証後、表6-Aと内部キュープロトコルを適用 | API別状態とqueue世代または実行状態を同一commitで確定した時点 | 表6-Aに従い、commit前は状態不変 | 当該FilterまたはDVR | 表1、表2、表6-Aに従う | queue identityを設定更新と混同しない |
-| AT-005 | Filter / DVR / Demux close | 表5の公開遮断・実行権限無効化・登録解除・資源回収 | 表5のcleanup完了条件を満たした時点 | 未完手順と一回性権限を`CleanupPending`または回収機構へ移管 | 当該objectと未完依存資源 | 表5に従う | public closeと物理解放を分離する |
-| AT-006 | callback登録 | callback artifact準備・runtime登録・domain確定 | 三者の関連が確定した時点 | 準備済みartifactとruntime登録を逆順で戻す | callback registryと所有object | 0-S-3とcallback ownership契約に従う | 登録の片側だけを残さない |
+| AT-003 | `IDemux.setFrontendDataSource()` | `DemuxFrontendSourceTxn`が入力/owner/generationを検証し、relation prepareと`StreamBoundaryTxn.prepare()`を取得してcomposite commit | relationとdemux入力generationを同じ上位commitで公開した時点 | commit前失敗は両prepared stateをabortし旧relation/旧generationを維持。commit結果不明時だけ当該demuxを隔離 | demux frontend relationと入力境界 | `DemuxFrontendSourceTxn` / `StreamBoundaryTxn`契約に従う | relationまたはstream boundaryだけを先にcommitしない |
+| AT-004 | Filter / DVR configure・start・flush | configure/startは各domain transaction、flushは`QueueCleanupTxn`が共通orchestrationと失敗集約を行い、Filter固有stateは`FilterProducerDrainGate`、DVR固有stateは`QueueEpochProtocol`へtyped委譲 | API別状態と対象queue/parser generationまたは実行状態を各API ownerの確定点で公開した時点 | commit前は状態不変。共通orchestratorは下位stateを二重所有しない | 当該FilterまたはDVR | 表1、表2、表6-A、0-S-3Bに従う | API別にcleanup orchestrationを複製せず、異なる下位state machineを統合しない |
+| AT-005 | public close / owner loss / Drop | `ObjectCloseTxn`が論理閉鎖・一回性cleanup authority・typed cleanup command・登録解除・資源回収を実行 | 表5のcleanup完了条件を満たしauthorityを消費した時点 | 未完手順とauthorityを`CleanupPending`または回収機構へ一度だけ移管 | 当該objectと未完依存資源 | 表5と`ObjectCloseTxn`に従う | API/Drop/Reaperが別々のcleanup state machineを持たない |
+| AT-006 | callback登録 | `CallbackRegistrationUseCase`がartifact準備・runtime登録・domain logical stateを調停 | 三者を同じ登録transactionで確定した時点 | commit前は準備済みartifact/runtime登録を逆順で戻し旧callbackを維持 | callback artifact store、runtime registry、所有object logical state | 0-S-3Bとcallback ownership契約に従う | LNB等がBinder callback実体を直接保持しない、登録の片側だけを残さない |
 | AT-007 | 複数demux stream boundary | 対象一覧固定後、demuxごとに独立した境界transactionを実行 | 各demuxのcommitを個別に記録し、全対象を処理した時点 | 未処理対象は変更せず、commit済み対象を巻き戻さない | 変更結果を確定できないdemuxだけ | 表SB-1に従う | 一部成功を全体rollbackで隠さない |
 | AT-008 | `IFrontend.scan()` / `stopScan()` | 入力検証・request fingerprint確定・worker/callback経路準備 → 旧scan世代終端 → 同一`LockedReported`なら新generationのEND step、それ以外はbackend要求と新scan世代確定 | 同一lock報告済みrequestの継続は新generationとEND配送権限を一括で公開した時点。通常scanはbackend受理、新世代、worker、callback許可を一括で公開した時点 | 旧世代終端前は状態不変。終端後は旧scanを復元しない。同一request継続のEND失敗をbackend再探索または二重LOCKEDで補償しない | frontend、scan worker、callback経路、scan continuation state | scan終了理由とcallback配送結果の規則に従う | `scan(K)→LOCKED→scan(K)→END`を新旧generationのfence付きで成立させ、異なるrequest・stopScan・tune・closeで継続状態を破棄する |
-| AT-009 | `IFilter.setDataSource()` | 表1-Dの検証・新しい関連の準備・旧関連の終端・source境界と新関連の確定 | source/sink関連とsink入力世代を同一確定点で公開した時点 | 確定前は旧関連を維持。確定後の不確定は当該sinkと関連だけを隔離 | source/sink関連とsink入力境界 | 表1-Dと表18-Bに従う | source側とsink側の片方だけを公開しない |
+| AT-009 | `IFilter.setDataSource()` | `SourceBoundaryTxn`が表1-D検証後にsource/sink relationとsink source-boundaryをprepare/commit | source/sink relationとsink入力世代を同一確定点で公開した時点 | commit前は旧relation維持、commit結果不明時だけ当該sink/relationを隔離 | Filter source/sink relationとsink入力境界 | 表1-D、表18-B、`SourceBoundaryTxn`に従う | API別relation state machineを持たない |
 | AT-009a | `IDescrambler.setDemuxSource()` | 閉鎖gate確認、一回性消費、demux ID・生存・世代・対応能力の検証、対応する`DescramblerCapacityPool`へのsession結合予約、session台帳確定 | commit Aで初回呼出しを`CallConsumed`へ不可逆に変更し、成功経路だけcommit Bで`{demux_id, demux_generation, pool_id}`とpool上のsession帰属を`Bound`へ一括変更する | commit A後の検証・予約失敗はpool帰属を戻して`CallConsumedUnbound`を維持する。commit B後に片側だけ不明な場合は当該descrambler sessionとpool claimを隔離する | descrambler source-call state、demux generation、共有pool session帰属 | 「IDescrambler demux結合契約」に従う | `openDescrambler()`時にdemuxを推測せず、失敗を含む初回呼出しだけにsource設定権限を与える |
-| AT-010 | `IDescrambler.setKeyToken()` / `addPid()` / `removePid()` | tokenと所有者の検証・backend適用準備・backend反映・鍵またはPID台帳の確定 | backendと台帳の両方が同じ要求を確定した時点 | backend反映前は台帳を変更しない。backend反映後に台帳を確定できない場合は、準備済みの補償操作でbackendを直前の確定状態へ戻す。補償成功時は旧台帳と旧backend状態を維持し、補償失敗または実状態不明時だけ当該descramblerを隔離する | descrambler session、鍵使用権、PID claim | token/PID状態表と失敗分類に従う | backendと台帳の不一致を成功扱いにせず、隔離を補償失敗時に限定する |
+| AT-010 | `IDescrambler.setKeyToken()` / `addPid()` / `removePid()` | keyは`DescramblerKeyTxn`、PID add/removeは`DescramblerPidTxn`が別々にvalidate・prepare・backend apply・ledger commit・compensationを所有 | 各transactionのbackendと対応台帳が同じ要求を確定した時点 | backend反映前は台帳不変。backend反映後commit失敗は各ownerが補償し、補償失敗/実状態不明時だけ当該descramblerを隔離 | key transactionは鍵使用権、PID transactionはPID claim | token/PID状態表と0-S-3Bに従う | key/PID/session cleanupを一つのstate machineへ統合しない |
 | AT-010a | Frontend / Demux / Filter / DVR / Descrambler / LNB open | 能力と容量の検証・資源予約・runtime object準備・registry登録・公開 | registry登録と所有者台帳を確定し、AIDLが要求するobjectおよびout IDを同一応答で返す時点 | 公開前の準備物を逆順に解放する。解放結果を確定できない資源は`CleanupPending`または隔離へ移し、objectもout IDも部分公開しない | 準備中objectと予約済み資源 | 原因別のopenエラーを返し、objectを公開しない | APIごとのAIDL出力形状を維持し、公開失敗後に半登録object、単独のout ID、消費済み容量を残さない |
 
 再選局は表19およびAT-001の二分岐を正とする。`Locked`で正規化settings、typed selector、LNB/power条件が同一かつbackendとstream boundaryがhealthyな場合は、確定A/Bを通らない非破壊re-entryとし、`request_sequence`更新と現lockの`LOCKED`配送予約だけを確定する。stream generation、worker、backend要求、demux境界、AVは維持する。
@@ -1080,18 +1118,18 @@ checked FMQ shim は、`queue == null` または `out_written == null` を `INVA
 
 確定A後に新要求が拒否された場合は、callerが要求していない旧要求を自動再投入しない。準備済み状態を解放し、backend停止と全demux境界終端を確認できれば`Untuned`、backend結果を確定できなければ`FailedBackend`、境界終端を確定できなければ`FailedBoundary`、旧generationのfenceを成立させられなければ`Quarantined`へ遷移する。旧TSを新サービス向けdemux/filter generationへ戻す経路を設けない。確定A自体の完了可否が不明な場合も旧要求を再投入せず、表19の原因別状態へ閉じる。確定Aと確定Bを1つの確定処理として記述してはならず、stream boundary初期化はbackend要求より前の確定Aで行う。
 
-確定前にコールバックの登録または配送に失敗した場合は、バックエンドを停止し、世代を`TerminalFailed`へ遷移させ、以後のコールバックを抑止する。接続済みデマルチプレクサの境界を初期化し、公開操作は`UNKNOWN_ERROR`を返す。確定後のコールバック配送に失敗した場合は、ドメイン状態と公開結果を維持し、診断または代替の記録先へ記録する。
+確定前にコールバックの登録または配送に失敗した場合は、バックエンドを停止し、世代を`TerminalFailed`へ遷移させ、以後のコールバックを抑止する。接続済みデマルチプレクサの境界を初期化し、公開操作は`UNKNOWN_ERROR`を返す。確定後のコールバック配送に失敗した場合は`PostCommitCallbackFailureTxn`へ渡し、ドメイン状態と公開結果を維持したままcallback health、delivery outcome、診断だけを更新する。Frontend/Filter/DVR等が同型処理を個別に持たない。
 
 `terminal_reason` と `end_delivery_outcome` は、互いに独立した項目として保持する。`terminal_reason` は `Completed`、`Cancelled`、`FailedBackend`、`FailedPanic` のいずれかとし、END通知の結果で上書きしない。`end_delivery_outcome` は `Delivered`、`CallbackMissing`、`StoreFailure`、`BinderFailure` のいずれかとする。バックエンド停止と世代終端は各1回だけ行い、通知失敗は副次的な診断・集計情報として扱う。
 
 callbackの健全性は独立した状態軸とし、障害の影響はcallbackに依存する操作だけに限定する。
 
-`addPid()`と`removePid()`はバックエンドのパケット経路を準備し、成功後にPID登録台帳を確定する。バックエンドが準備用APIを持たない場合は、冪等な適用と補償用の巻き戻しを同一トランザクション内で完了する。巻き戻しに失敗した場合だけデスクランブラーを隔離する。
+`addPid()`と`removePid()`の共通backend/ledger state machineは`DescramblerPidTxn`だけが所有する。バックエンドが準備用APIを持たない場合の冪等適用と補償rollbackも同transaction内で完了し、巻き戻しに失敗した場合だけデスクランブラーを隔離する。API別記述はPID/source入力分類と公開statusだけを持つ。
 
 
 | 番号 | 操作 / 事象 | 変更順序 | 成功の確定点 | 確定点前の失敗 | 巻き戻し不能時の対象 | 公開戻り値 / 作業スレッド終了 | 設計上の成立条件 |
 |---:|---|---|---|---|---|---|---|
-| AT-011 | `ILnb.setVoltage()` / `setTone()` / `setSatellitePosition()` | `operation_lock`取得 → 旧状態取得 → 新状態候補作成 → backend反映 → registry確定 | backend反映と registry確定が両方成功した時点 | backend反映失敗では registry を変更しない。registry確定失敗時に backend rollback apply は行わない | LNB、関連 satellite frontend | `UNKNOWN_ERROR`、LNBは失敗状態。以後の公開制御APIも `UNKNOWN_ERROR` | registryとbackendの二重巻き戻し失敗を作らない |
+| AT-011 | `ILnb.setVoltage()` / `setTone()` / `setSatellitePosition()` | `LnbControlTxn`が`operation_lock`取得 → old snapshot → candidate → backend apply → registry commitを一回だけ実装 | backend反映と`LnbRegistry` commitが両方成功した時点 | `Rejected`ではregistry不変。commit/実状態不明またはrollback不能時だけLNBをfail/quarantine | LNB persistent control state | `BackendApplyOutcome`と0-S-3Bに従う | 3 APIで同型transactionを複製しない、`sendDiseqcMessage()`を吸収しない |
 
 
 ### 表8. 資源寿命・所有権・破棄失敗表
@@ -1104,8 +1142,8 @@ callbackの健全性は独立した状態軸とし、障害の影響はcallback�
 | RL-003 | demux generation | `DemuxHal` | demux open / stream boundary reset | demux close | frontend tune boundary、demux fail-closed | demuxを閉鎖側失敗。診断に失敗対象を残す | closed demux向けの後続配送が残らない |
 | RL-004 | Filter / DVR FMQとdescriptor | `FilterHal` / `DvrHal` | object open時にqueueを生成し、descriptor取得時に複製を公開 | cleanup authorityが新規transactionを遮断し、受付済みtokenを完了または取消した後に破棄 | queue破損、EventFlag回復不能障害 | 当該queueを隔離し、descriptorとqueue領域を再利用しない | configureでqueue identityを置換しない |
 | RL-005 | AV backing、event-local allocation、client lease | `AvSharedBacking`とFilter別割り当て台帳 | shared handle公開またはMediaEvent準備 | `releaseAvHandle()`でleaseまたはallocationを1回解放。論理close後も配送済みallocationは`ReleaseOnly`で保持 | 台帳破損、identity検証不能、allocator破損 | 対象領域を保持して隔離し、別allocationへ再利用しない | client lease、allocation、backingの寿命を分離する |
-| RL-006 | callback artifactとregistry entry | callback registryと所有object | callback保持成功後にruntime登録し、domain状態へ確定 | runtime unregister成功後にだけdomain entryを閉じ、artifactを解放 | Binder死亡、unregister失敗、registry破損 | 再試行可能なら`CleanupPending`、破損時は当該registry entryをunhealthy化 | domainだけを閉じてcallbackを残さない |
-| RL-007 | workerとreaper lease | 所有object、移管後は`ReaperSupervisor` | worker開始時に稼働枠と回収枠を同じ台帳から予約 | 終了報告回収と依存資源の後片付け完了後に1回返却 | panic、取消不能、終了証明不能 | 世代遮断後に回収機構へ1回移管し、遮断不能なら`ServiceCritical` | 実終了前に枠、FD、endpointを再利用しない |
+| RL-006 | callback artifactとregistry entry | callback artifact store / `RuntimeCallbackRegistry` / domain logical owner。登録orchestrationは`CallbackRegistrationUseCase` | callback保持成功後にruntime登録し、domain状態へ確定 | runtime unregister成功後にだけdomain entryを閉じ、artifactを解放 | Binder死亡、unregister失敗、registry破損 | 再試行可能なら`CleanupPending`、破損時は当該registry entryをunhealthy化 | domainだけを閉じてcallbackを残さない |
+| RL-007 | workerとreaper lease | `WorkerRuntime` / `WorkerHandle`、移管後は`ReaperSupervisor` | worker開始時に稼働枠と回収枠を同じ台帳から予約 | 終了報告回収と依存資源の後片付け完了後に1回返却 | panic、取消不能、終了証明不能 | 世代遮断後に回収機構へ1回移管し、遮断不能なら`ServiceCritical` | 実終了前に枠、FD、endpointを再利用しない |
 | RL-008 | descrambler key、token、PID claim | key tableと`DescramblerSession` | 鍵登録、token発行、PID追加の各transaction | 参照数0、session close、PID解除時に1回解放 | backend解除失敗、token台帳破損 | sessionまたはkey tableを隔離し、残存参照を再割当てしない | key material、opaque token、PID claimを別寿命にする |
 | RL-009 | backend FDとdevice endpoint | frontend / LNB / demuxのbackend adapter | probe成功後、対応objectのreservation確定時 | worker停止とbackend closeの完了後 | close/ioctl失敗、残存workerによる使用 | 使用権を保持して局所隔離し、共有変更を遮断できなければ`ServiceCritical` | 実終了前に同じ専有endpointを新世代へ渡さない |
 | RL-010 | `CloseCleanupAuthority` | 最初に`begin_close`へ成功した経路 | public close、所有者消滅、Dropのいずれかが一回だけ取得 | 全後片付け完了時に消費済みとして終了 | 所有者が完了前に消滅 | 権限と未完依存資源を`CleanupPending`または回収機構へ移管 | 複数経路が同じ後片付けを並行実行しない |
@@ -1119,7 +1157,7 @@ callbackの健全性は独立した状態軸とし、障害の影響はcallback�
 
 | 番号 | 資源 | 所有者 | 作成 / 取得 | 通常破棄 | 異常時破棄契機 | 破棄失敗時 | 設計上の成立条件 |
 |---:|---|---|---|---|---|---|---|
-| RL-011 | LNB registry state | `LnbRegistry` / `LnbHal` | LNB open / set系API | `ILnb.close()` | backend反映失敗、registry確定失敗、mutex汚染 | LNBを失敗状態。関連frontendへ診断反映 | registry状態とbackend状態を成功扱いで乖離させない |
+| RL-011 | LNB registry state | `LnbRegistry`。persistent mutation ownerは`LnbControlTxn` | LNB open / set系API | `ILnb.close()` | backend反映失敗、registry確定失敗、mutex汚染 | LNBを失敗状態。関連frontendへ診断反映 | registry状態とbackend状態を成功扱いで乖離させない |
 
 hardware状態が不明であることと、frontendの動作状態は分けて管理する。
 
@@ -1155,6 +1193,7 @@ hardware状態が不明であることと、frontendの動作状態は分けて�
 | 9 | close検査 | `closed` と `cleanup_complete` が分離され、致命的後片付け失敗を成功扱いにしていない |
 | 11 | AOSP setDataSource 検査 | `setDataSource(NULL)` は demux input 復帰として成功対象に含める |
 | 12 | 実装反映検査 | 表1〜表8の各行に対応する単体テストや状態遷移テストを作成できる |
+| 13 | 共通部品SSOT検査 | 0-S-3Aの各ownerが0-S-3Bの10項目を満たし、`tuner_hal2/DESIGN_JA.md`の単一実装アンカーと一致し、API別節に第二のstate-mutation正本がない |
 
 
 ### 表10. 失敗領域と波及範囲
@@ -1820,6 +1859,8 @@ soft demuxに入るTS packetの入力元は次の三種類だけとする。
 
 `SourceFilter`はraw TS packetの再投入経路だけを表す。section、PES、AV、record payloadを`SourceFilter`経由で再配送しない。上流filterがraw TSを出力できない種別なら`setDataSource()`を拒否する。
 
+stream generation、continuity、section/PES/record-index parser/assemblerの境界mutationは`StreamBoundaryTxn`を唯一のownerとする。`StreamBoundaryTxn`はrelation table、Filter/DVR queue内部、`AvSyncRegistry`、`PcrClockAnchorStore`、callback artifact、descrambler key/PIDを直接所有せず、必要な他ownerのmutationはprepared tokenを取得して外側transactionの同じcommitへ合成する。
+
 section assembler と PES assembler は、上記の世代キー単位で flush generation を保持する。`flush()`、`setDataSource()`、filter close、source unlink、stream boundary reset のいずれかが発生した場合、対象入力元の assembler state と carry state を破棄し、flush generation を更新する。古い generation で組み立て開始された section / PES は配送しない。新しい generation で開始された section / PES だけを配送する。
 
 
@@ -1870,6 +1911,8 @@ PESの組み立て状態はPIDごとに分離する。`PES_packet_length > 0` �
 
 ### ワーカー失敗と所有権境界
 
+worker lifecycleの共通mechanismは既存`WorkerRuntime` / `WorkerHandle`を唯一のownerとする。owner generation、stop predicate/signal、wake/cancel、join、generation fence、Reaper handoffだけを共通化し、Frontend/Filter/DVR/Playback固有のstart/stop state machineやbackend意味論を所有しない。別のgeneric `WorkerLifecycleProtocol`を設けない。失敗種別は`WorkerFailureClassifier`だけがstop/wake/join/EventFlag/Reaper/backend-control/callback等をtyped分類し、停止順序、retry/cleanup、公開状態遷移は各worker owner/API側が所有する。
+
 ワーカー はデータ処理と通知だけを担当し、資源寿命 の所有者ではない。ワーカー失敗 発生時、ワーカー は demux、filter、DVR、descrambler を直接 unregister してはならない。
 
 ワーカー が行ってよい処理は次だけとする。
@@ -1906,6 +1949,8 @@ closeと所有者消滅は、同じ後片付けの状態機械で処理する。
 | `close()` | 必ず cleanup 経路へ進む。ワーカー失敗 済みでも直接成功扱いしない |
 
 ### close / unregister / quarantine 条件
+
+公開`close()`、owner loss、Dropのcleanup実行authorityは`ObjectCloseTxn`だけが所有する。以下のFilter/DVR手順は`ObjectCloseTxn`へ渡すtyped cleanup commandの依存順序と公開意味を定義する索引であり、各APIやobject wrapperが独立したstep runnerを所有することを意味しない。途中失敗でも`ObjectCloseTxn`は安全に実行可能な後続commandを試し、結果を`CleanupExecutionReport`へ集約する。
 
 close は、公開 object の lifetime を閉じる唯一の正規経路である。close 中に demux 側 unregister が missing を返した場合、通常は成功扱いしない。missing を成功扱いできるのは、同じ object の runtime failure 経路で事前 unregister 済みと明示記録されている場合だけである。
 
