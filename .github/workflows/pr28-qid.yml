@@ -1,0 +1,22 @@
+name: PR28 qid fix
+on:
+  push:
+    branches: [agent/fix-commonization-boundaries]
+    paths: [.github/workflows/pr28-qid.yml]
+permissions:
+  contents: write
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-commonization-boundaries
+      - run: |
+          python3 -c "from pathlib import Path; p=Path('tuner_hal/DESIGN_JA.md'); s=p.read_text(); a='DVR begin/commit/cancel、queue identity/epoch/token/drain'; b='PlaybackQueueBacking.queue_identityを参照し、同一identity内のqueue_epoch/token/drainを管理'; assert s.count(a)==1; p.write_text(s.replace(a,b))"
+          git rm .github/workflows/pr28-qid.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tuner_hal/DESIGN_JA.md
+          git commit -m 'design: keep queue identity with backing'
+          git push
