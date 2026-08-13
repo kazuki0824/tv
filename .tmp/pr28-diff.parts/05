@@ -35,7 +35,7 @@
  状態は `Open`、`Draining`、`Closed` の3種類だけとする。ゲートは、検査付きの `filter_delivery_generation`、`parser_state_generation`、`admitted_producer_count` と、サービスが所有する有界の保留イベントキューを保持する。Parcelableではない線形の `FilterProducerPermit(g)` はRAIIで所有し、正確に1回解放する。
  
  ##### 許可の有効範囲と有限時間での排出
-@@ -2894,6 +2946,8 @@
+@@ -2894,3 +2946,5 @@
  
  #### DVR用 `QueueEpochProtocol`
  
