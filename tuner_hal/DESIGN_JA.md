@@ -357,7 +357,7 @@ commit前失敗では、成功戻りを返してはならない。commit後clean
 | worker failure classification | `WorkerFailureClassifier` | stop/wake/join/EventFlag/Reaper/backend-control/callback等の失敗種別を共通typed分類し、ownerへ分類結果だけを返す | 停止順序、retry/cleanup、公開状態遷移の所有、API/worker別の文字列・errno再分類 |
 | domain commit後callback failure | `PostCommitCallbackFailureTxn` | commit済みdomain stateを維持しcallback health/diagnosticだけ更新 | callback失敗でdomain rollback、API別同型failure handler |
 | Filter producer drain | `FilterProducerDrainGate` | producer permit/admission/drainだけを所有 | Filter flush全体やDVR queue stateを所有すること |
-| DVR queue epoch | `QueueEpochProtocol` | DVR begin/commit/cancel、queue identity/epoch/token/drain | Filter stateまたはDVR flush全体を所有すること |
+| DVR queue epoch | `QueueEpochProtocol` | PlaybackQueueBacking.queue_identityを参照し、同一identity内のqueue_epoch/token/drainを管理 | Filter stateまたはDVR flush全体を所有すること |
 | Filter / DVR `flush()` cleanup orchestration | `QueueCleanupTxn` | Filter/DVR固有stateを所有せず、公開`flush()`のcleanup対象調停・typed下位protocol呼出し・失敗集約だけを共通化 | `FilterProducerDrainGate` / `QueueEpochProtocol`内部状態の直接所有、API別cleanup orchestrationの複製 |
 | DVR playback read/inject | `PlaybackConsumeTxn` | FMQ read、TS parse、backend inject、consume cursorを一つの状態機械で扱う | workerやFMQ helperがread/parse/inject/consumeを再実装すること |
 | A/V sync relation | `AvSyncRegistry` | `filter_id <-> hw_id`双方向relationをprepared mutationで外側transactionと同commit | 片方向mapの直接更新、PCR anchorとのowner統合 |
