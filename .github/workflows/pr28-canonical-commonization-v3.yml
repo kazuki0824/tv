@@ -1,5 +1,6 @@
 name: PR28 canonical commonization patch v3
 
+# One-shot migration; the job deletes this workflow after producing canonical docs.
 on:
   push:
     branches:
@@ -18,5 +19,5 @@ jobs:
         with:
           ref: agent/fix-commonization-boundaries
           fetch-depth: 0
-      - name: Apply canonical design patch
+      - name: Apply reviewed canonical design patch
         run: bash .tmp/pr28-runner.sh
