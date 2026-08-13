@@ -1,0 +1,33 @@
+--- tuner_hal/DESIGN_JA.md
++++ tuner_hal/DESIGN_JA.md
+@@ -234,7 +234,7 @@
+ 
+ 異なるrequest fingerprintの `scan()`、`stopScan()`、`tune()`、`close()`では `LockedReported` を破棄する。異なるrequestは通常の新scanとしてbackend探索を開始する。同一requestの継続で `END` 配送が失敗した場合は、scanのterminal reasonとend delivery outcomeを分離する既存契約に従い、backend再探索または二重 `LOCKED` で補償しない。最低試験は `scan(K) → LOCKED(g1) → scan(K) → END(g2)` を満たし、2回目にbackend探索と再度の `LOCKED` がないこと、`scan(K2)`、`stopScan()`、`tune()`、`close()`で継続状態が失効することを確認する。
+ 
+-`IFrontend.close()` は frontend backend の critical cleanup を成功扱いで握り潰さない。公開 close では、scan cancel、tune ワーカー stop、ライブ pump stop、backend close、コールバック解除、demux unbind、frontend lease release を step runner として扱い、途中 step が失敗しても後続 cleanup を継続し、最初に観測した critical error を AIDL 状態 として返す。cleanup failure 後の frontend オブジェクト は通常操作へ戻さず、close retry だけを通常の復旧経路として許可する。戻り値を返せない Drop 経路は通常 cleanup の代替にせず、未 close または cleanup 未完了を DropLeakTxn に記録し、対象を漏えい診断 / 隔離診断へ落とす。
++`IFrontend.close()` は frontend backend の critical cleanup を成功扱いで握り潰さない。公開 close では、scan cancel、tune ワーカー stop、ライブ pump stop、backend close、コールバック解除、demux unbind、frontend lease release を step runner として扱い、途中 step が失敗しても後続 cleanup を継続し、最初に観測した critical error を AIDL 状態 として返す。cleanup failure 後の frontend オブジェクト は通常操作へ戻さず、close retry だけを通常の復旧経路として許可する。戻り値を返せない Drop 経路は通常 cleanup の代替にせず、未 close または cleanup 未完了を `ObjectCloseTxn`へ未完cleanup authorityと診断を移管し、同じcleanup state machineで再試行または隔離へ進める。
+ 
+ DVB / earth_pt1 backend では、`DTV_CLEAR` は明示的な tune 停止操作である `stop_tune()` の責務とする。DVB backend の `close()` は reader stop と fd release を行うが、`DTV_CLEAR` の実行を close の必須条件とはしない。したがって、DVB `close()` が `DTV_CLEAR` を発行しないことを release blocker または bug と扱わない。
+ 
+@@ -339,19 +339,57 @@
+ 
+ #### 0-S-3A. 共通部品適用表
+ 
+-
+-共通化するのは共有可能な基本処理と不変条件だけとし、インターフェース固有の処理順序は個別に定める。
+-
++共通化するのは、state owner、commit boundary、rollback authority、failure semantics が一致する不変条件とmechanismだけとする。phaseの形が似ているだけの状態機械を同一transactionへ統合しない。API別節は公開意味、対象、順序、戻り値だけを定義し、状態mutationの第二の正本を持たない。
+ 
+ | 対象処理 | 所有共通部品 | 必ず通す経路 | 禁止する実装 |
+ |---|---|---|---|
+-| Filter / DVR `start()` の commit 後 コールバック失敗 | `PostCommitCallbackFailureTxn` | start commit 後の callback 失敗は rollback せず `callback_unhealthy` に固定。既存実装名が異なる場合でも、この責務を単一の callback health 正本へ移管する | APIごとに `stop_*()` を直接呼んで rollback すること、またはAPI別に同型の コールバック失敗 処理を再実装すること |
+-| Filter / DVR `flush()` の queue cleanup | `QueueCleanupTxn` | demux flush 後の FMQ / AV / playback cleanup 失敗を runtime failed または cleanup failed に接続 | `clear_best_effort()` で 公開API 成功に丸めること |
+-| ワーカー起動 / 停止 / join / wake | `WorkerFailureClassifier` | ワーカー制御失敗、コールバック失敗、backend failure を enum / domain error で分類 | `reason.contains(...)` など文字列分類で失敗種別を決めること |
+-| frontend / demux / source filter / flush 境界 | `StreamBoundaryTxn` / `SourceBoundaryTxn` | origin、generation、assembler、FMQ、AV shared、record queue を対象単位で処理 | 各APIが assembler / queue / generation を個別に直接操作すること |
+-| descrambler demux / PID / key cleanup | `DescramblerSessionCleanupTxn` / `DescramblerKeyTxn` | session と key table の更新・release・失敗集約を一体で扱う | 1件の stale cleanup 失敗で後続 session を未処理のまま抜けること |
+-| DVR playback read / inject | `PlaybackConsumeTxn` | FMQ read、TS parse、注入結果、消費確定を1つの状態機械で扱う | read済み入力を 注入結果未確認のまま一律消費済みにすること |
++| public close / owner loss / Drop | `ObjectCloseTxn` | 一回性cleanup authority、typed cleanup command、失敗集約、`CleanupPending`/quarantine、retry/reaper handoff | `DropLeakTxn`等の別cleanup authority、API/Drop/Reaperごとのclose state machine |
++| Filter source relation | `SourceBoundaryTxn` | Filter source/sink relationのvalidate/prepare/commit/rollback | demux/frontend relationを吸収すること、API別graph mutation |
++| Demux frontend source relation | `DemuxFrontendSourceTxn` | relation prepareと`StreamBoundaryTxn.prepare()`を同じ上位transactionでcommit/abort | relationとstream generationを別commitで公開すること |
++| stream data boundary | `StreamBoundaryTxn` | stream generation、continuity、section/PES/record-index parser/assembler boundaryとprepared invalidation dispatch | relation、Filter/DVR queue内部、A/V sync map、PCR store内部、callback artifact、descrambler stateを所有すること |
++| callback registration | `CallbackRegistrationUseCase` | callback artifact準備、runtime登録、domain callback state確定を一つの登録transactionで扱う | `LnbHal`等がBinder callback実体を直接所有すること、三者を片側だけcommitすること |
