@@ -1,0 +1,1 @@
+run: bash .tmp/pr28-runner.sh
