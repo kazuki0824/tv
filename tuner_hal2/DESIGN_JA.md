@@ -81,41 +81,42 @@ flowchart TD
 | stream boundary | `StreamBoundaryTxn` | relation、queue token、A/V sync map、PCR store内部、callback artifactを所有しない |
 | Record DVR / Filter relation | `RecordDvrFilterRelationTxn` | DVR側とFilter側がrelation shadow copyを別commitしない |
 | LNB persistent control | `LnbControlTxn` | 3つのpersistent control APIで同じbackend+registry transactionを複製しない |
-| callback registration | 既存callback registration use-case | Binder artifact、runtime registry、domain callback stateを片側だけcommitしない |
+| callback registration | `CallbackRegistrationUseCase` | Binder artifact、runtime registry、domain callback stateを片側だけcommitしない |
 | post-commit callback failure | `PostCommitCallbackFailureTxn` | commit済みdomain stateをcallback delivery失敗でrollbackしない |
 | Filter flush | `FilterFlushTxn` | Filter flushをDVR flushと同じtransaction authorityへ統合しない |
 | DVR flush | `DvrFlushTxn` | DVR flushをFilter flushと同じtransaction authorityへ統合しない |
 | DVR playback consume | `PlaybackConsumeTxn` | playback workerがread/parse/inject/consume状態機械を再実装しない |
 | A/V sync relation | `AvSyncRegistry` | 双方向mapを片側だけ直接変更しない |
 | PCR clock anchor | `PcrClockAnchorStore` | APIまたは`StreamBoundaryTxn`がanchor内部を直接変更しない |
-| worker lifecycle mechanism | 既存`WorkerRuntime` / `WorkerHandle` | 別のgeneric worker lifecycle transaction/protocolを重ねない |
+| worker lifecycle mechanism | `WorkerRuntime` / `WorkerHandle` | 別のgeneric worker lifecycle transaction/protocolを重ねない |
 | worker infrastructure failure classification | `WorkerFailureClassifier` | backend/device/callback/FMQ data通知EventFlag失敗をworker failureへ分類しない |
 
 #### 共通transaction / use-caseの規範実装アンカー
 
-次表は`../tuner_hal/DESIGN_JA.md`の`共通部品の定義条件`に対する`実装正本`、`公開入口`、`呼び出し許可層`、`呼び出し禁止層`を固定する。既存アンカーは責務変更がない限り維持し、新しい論理契約だけを既存の責務層へ追加する。記載した新規type名は目標設計の単一正本名であり、実装済みであることを意味しない。
+次表は`../tuner_hal/DESIGN_JA.md`の`共通部品の定義条件`に対する`実装正本`、`公開入口`、`呼び出し許可層`、`呼び出し禁止層`を固定する。既存アンカーは責務変更がない限り維持し、新しい論理契約だけを既存の責務層へ追加する。記載した新規type名・新規pathは目標設計の単一正本名であり、現時点の実装済み事実を意味しない。
 
 | 契約 | 状態・寿命・失敗時遷移の単一実装正本 | 許可entry point | 禁止する迂回 |
 |---|---|---|---|
 | object method | `service_runtime/src/object_method_txn.rs`の`ObjectMethodTxnPlan`、`ObjectMethodDispatchProof`、`ObjectMethodExecutionToken`。validation/dispatchの補助正本は同moduleからだけ呼ぶ`method_validation.rs`と`method_dispatch.rs` | `aidl_service/src/object_runtime/mod.rs`の`execute_*_use_case*`、`plan_unavailable_object_method_use_case()`、`execute_object_query_use_case()`。domain側は`TunerServiceRuntime::*_for_object`が`ObjectMethodExecutionToken`を一回消費する | 個別AIDL methodによる先行runtime query、dispatch proofの生成・再利用、backend/registryの直接変更 |
 | root open | `service_runtime/src/root_object_ops.rs`。登録後失敗の補償正本は`service_runtime/src/open_rollback.rs` | `aidl_service/src/tuner_service.rs`のroot AIDL methodからroot object use-caseを呼び、返された`RuntimeObjectEntry`からtyped Binder objectを生成する。生成後失敗はservice_runtime rollback入口へ返す | AIDL層でruntime allocation、object table登録、rollback順序、status写像を組み立てる |
 | child open | `service_runtime/src/boot/demux_filter_dvr_txn.rs`の`DemuxFilterDvrTxn<'a>`。公開use-case façadeは`service_runtime/src/demux_filter_dvr_ops.rs` | `aidl_service/src/child_object_open.rs`のfilter/DVR child open入口 | `openFilter()`/`openDvr()`ごとのallocation・callback cleanup・rollback複製 |
-| `ObjectCloseTxn` | `service_runtime/src/object_close_txn.rs`のtyped artifact/domain/runtime cleanup command、`CleanupExecutionReport`接続、close finalization | `aidl_service/src/object_runtime/mod.rs`の`close_object_after_close_preflight()`、owner-loss/Drop入口、service shutdown/reaper retry。runtime unregisterは`TunerServiceRuntime::unregister_public_runtime_for_closed_aidl_entry()`だけを使用する | `DropLeakTxn`等の別cleanup authority、AIDL/Drop/worker/Reaperによるauthority重複、個別objectでのclose state machine複製 |
-| `DescramblerKeyTxn` / `DescramblerPidTxn` / `DescramblerSessionCleanupTxn` | 既存`service_runtime/src/boot/descrambler_txn.rs`の`DescramblerTxn<'a>`内に三者を独立typeとして置く。session stateは`service_runtime/src/descrambler_session.rs`、key token/slot/refcountは`service_runtime/src/descrambler_key_table.rs`だけが所有する | `service_runtime/src/descrambler_ops.rs`のobject use-case。AIDL methodはobject method façade経由で一回性tokenを渡す | key/PID/cleanupのstate machineを相互に吸収する、AIDL層またはdescrambler crateから台帳を直接変更する |
+| `ObjectCloseTxn` | `service_runtime/src/object_close_txn.rs::ObjectCloseTxn`。typed artifact/domain/runtime cleanup command、`CleanupExecutionReport`接続、close finalizationを同typeが所有する | `aidl_service/src/object_runtime/mod.rs`の`close_object_after_close_preflight()`、owner-loss/Drop入口、service shutdown/reaper retry。runtime unregisterは`TunerServiceRuntime::unregister_public_runtime_for_closed_aidl_entry()`だけを使用する | `DropLeakTxn`等の別cleanup authority、AIDL/Drop/worker/Reaperによるauthority重複、個別objectでのclose state machine複製 |
+| `DescramblerKeyTxn` / `DescramblerPidTxn` / `DescramblerSessionCleanupTxn` | 既存`service_runtime/src/boot/descrambler_txn.rs`内の独立type。session stateは`service_runtime/src/descrambler_session.rs`、key token/slot/refcountは`service_runtime/src/descrambler_key_table.rs`だけが所有する | `service_runtime/src/descrambler_ops.rs`のobject use-case。AIDL methodはobject method façade経由で一回性tokenを渡す | key/PID/cleanupのstate machineを相互に吸収する、AIDL層またはdescrambler crateから台帳を直接変更する |
 | `SourceBoundaryTxn` | 既存`demux/src/runtime/source_boundary.rs` | `service_runtime/src/demux_filter_dvr_ops.rs`のFilter source use-case | demux/frontend relationをこのtransactionへ吸収する、filter wrapperからgraph/stream stateを直接変更する |
-| `DemuxFrontendSourceTxn` | `service_runtime/src/demux_filter_dvr_ops.rs`のDemux frontend-source relation use-case内の単一論理type | `IDemux.setFrontendDataSource()` object use-case | relation recordと`StreamBoundaryTxn`を別commitで公開する、`SourceBoundaryTxn`へ吸収する |
-| `StreamBoundaryTxn` | 既存`demux/src/runtime/generation_boundary.rs`の`GenerationBoundaryTxn`。`GenerationBoundaryTxn`は`StreamBoundaryTxn`の実装名であり別正本ではない | `service_runtime/src/packet_ops.rs`のtyped boundary use-case。上位transactionは`prepare`で`PreparedStreamBoundary`を得て、同一owner排他区間で`commit`または`abort`する | relation table、Filter/DVR queue内部、A/V sync map、PCR store内部、callback artifact、descrambler key/PIDを直接変更する |
-| `RecordDvrFilterRelationTxn` | `service_runtime/src/demux_filter_dvr_ops.rs`のRecord DVR/Filter relation use-case内の単一論理type | Record DVR `attachFilter()` / `detachFilter()`、Filter/DVR close、demux cleanupからのtyped relation mutation | 両objectのrelation shadow copyを別commitする、close側がrelation tableを直接編集する |
-| `LnbControlTxn` | `service_runtime`のLNB object operation use-caseに置く単一論理type。物理アンカーは同type導入時に本表へ一意に固定し、LNB backend adapterや`LnbRegistry`自身をtransaction ownerにしない | `ILnb.setVoltage()` / `setTone()` / `setSatellitePosition()`のobject use-case | `sendDiseqcMessage()`をpersistent state transactionへ吸収する、3 APIでlock/apply/commit/failure transitionを複製する |
-| callback registration use-case | 既存`service_runtime/src/callback_registry.rs`の`RuntimeCallbackRegistry`、`aidl_service/src/callback_store.rs`のBinder artifact store、対象`service_runtime/src/*_ops.rs`のdomain callback state。三者のcommit/rollback orchestrationは`aidl_service/src/object_runtime/mod.rs`のcallback registration façadeから開始する | `IFrontend.setCallback()` / `ILnb.setCallback()`等のcallback登録/解除入口 | Binder callback実体をLNB/demux/device/resource ledgerへ保持する、artifact/runtime/domainを片側だけcommitする |
-| `PostCommitCallbackFailureTxn` | `service_runtime`共通callback failure use-caseの単一論理type。Filter/DVR専用typeの親子関係にはせず、frontendとdemux系のcommit後callbackから同じtyped入口へ合流する | domain commitを完了したFrontend/Filter/DVR等のcompletion use-case | domain commitをrollbackする、APIごとに`callback_unhealthy`/診断更新を再実装する |
+| `DemuxFrontendSourceTxn` | `service_runtime/src/demux_filter_dvr_ops.rs::DemuxFrontendSourceTxn` | `IDemux.setFrontendDataSource()` object use-case | relation recordと`StreamBoundaryTxn`を別commitで公開する、`SourceBoundaryTxn`へ吸収する |
+| `StreamBoundaryTxn` | 既存`demux/src/runtime/generation_boundary.rs::GenerationBoundaryTxn`。`GenerationBoundaryTxn`は`StreamBoundaryTxn`の実装名であり別正本ではない | `service_runtime/src/packet_ops.rs`のtyped boundary use-case。上位transactionは`prepare`で`PreparedStreamBoundary`を得て、同一owner排他区間で`commit`または`abort`する | relation table、Filter/DVR queue内部、A/V sync map、PCR store内部、callback artifact、descrambler key/PIDを直接変更する |
+| `RecordDvrFilterRelationTxn` | `service_runtime/src/demux_filter_dvr_ops.rs::RecordDvrFilterRelationTxn` | Record DVR `attachFilter()` / `detachFilter()`、Filter/DVR close、demux cleanupからのtyped relation mutation | 両objectのrelation shadow copyを別commitする、close側がrelation tableを直接編集する |
+| `LnbControlTxn` | `service_runtime/src/lnb_control_txn.rs::LnbControlTxn` | `ILnb.setVoltage()` / `setTone()` / `setSatellitePosition()`のobject use-case | `sendDiseqcMessage()`をpersistent state transactionへ吸収する、3 APIでlock/apply/commit/failure transitionを複製する |
+| `CallbackRegistrationUseCase` | `aidl_service/src/object_runtime/mod.rs::CallbackRegistrationUseCase`がorchestrationを所有し、Binder artifactは既存`aidl_service/src/callback_store.rs`、runtime stateは既存`service_runtime/src/callback_registry.rs::RuntimeCallbackRegistry`、domain logical stateは対象`service_runtime/src/*_ops.rs`だけが所有する | `IFrontend.setCallback()` / `ILnb.setCallback()`等のcallback登録/解除入口 | Binder callback実体をLNB/demux/device/resource ledgerへ保持する、artifact/runtime/domainを片側だけcommitする |
+| `PostCommitCallbackFailureTxn` | `service_runtime/src/post_commit_callback_failure_txn.rs::PostCommitCallbackFailureTxn` | domain commitを完了したFrontend/Filter/DVR等のcompletion use-case | domain commitをrollbackする、APIごとに`callback_unhealthy`/診断更新を再実装する |
 | `FilterProducerDrainGate` | 既存`demux/src/runtime/queue_runtime.rs` | Filter/SharedFilter data pathのproducer admission/finishと`FilterFlushTxn`のtyped drain入口 | flush transactionがgate内部状態を直接変更する |
 | `QueueEpochProtocol` | 既存`demux/src/runtime/queue_runtime.rs` | DVR data pathのbegin/commit/cancelと`DvrFlushTxn`のtyped drain/prepare入口 | flush transactionがqueue token/epoch内部状態を直接変更する |
-| `FilterFlushTxn` | 既存`service_runtime/src/queue_cleanup_txn.rs`に置くFilter専用transaction type。共有result/helperは同fileでよいがtransaction ownerにはしない | Filter `flush()` object use-case | DVR eligibility/epoch/token stateを所有する、共有`QueueCleanupTxn`をtransaction authorityとして再導入する |
-| `DvrFlushTxn` | 既存`service_runtime/src/queue_cleanup_txn.rs`に置くDVR専用transaction type。共有result/helperは同fileでよいがtransaction ownerにはしない | DVR `flush()` object use-case | Filter producer/callback stateを所有する、共有`QueueCleanupTxn`をtransaction authorityとして再導入する |
+| `FilterFlushTxn` | 既存`service_runtime/src/queue_cleanup_txn.rs::FilterFlushTxn`。共有result/helperは同fileでよいがtransaction ownerにはしない | Filter `flush()` object use-case | DVR eligibility/epoch/token stateを所有する、共有`QueueCleanupTxn`をtransaction authorityとして再導入する |
+| `DvrFlushTxn` | 既存`service_runtime/src/queue_cleanup_txn.rs::DvrFlushTxn`。共有result/helperは同fileでよいがtransaction ownerにはしない | DVR `flush()` object use-case | Filter producer/callback stateを所有する、共有`QueueCleanupTxn`をtransaction authorityとして再導入する |
 | `PlaybackConsumeTxn` | 既存`service_runtime/src/playback_consume_txn.rs` | playback workerから1 consume stepごとのtyped入口 | worker/FMQ helper/packet helperがread/parse/inject/consume遷移を再実装する |
-| `AvSyncRegistry` / `PcrClockAnchorStore` | demux runtimeのA/V sync state ownerとして独立typeを置き、双方向sync mapとgeneration-scoped PCR anchorを別々に所有する。物理アンカーは同type導入時に本表へ一意に固定する | filter configure/unregister/close、demux close、PCR観測、`StreamBoundaryTxn`からのprepared invalidation | API、filter wrapper、`StreamBoundaryTxn`がmap/anchor内部を直接更新する、両state ownerを1つへ統合する |
-| `WorkerRuntime` / `WorkerHandle` | 既存worker runtime/handle実装。owner id、signal、JoinHandle、generation fence、reaper handoffの共通mechanism | 各domain worker ownerのspawn/stop/wake/join/reaper入口 | `WorkerLifecycleProtocol`等の別generic lifecycle ownerを追加する、domain start/stop state machineを共通runtimeへ吸収する |
+| `AvSyncRegistry` | `demux/src/runtime/av_sync_registry.rs::AvSyncRegistry` | filter configure/unregister/close、demux closeからのprepared relation mutation | API、filter wrapper、`StreamBoundaryTxn`が双方向mapを直接更新する、PCR anchorを同ownerへ吸収する |
+| `PcrClockAnchorStore` | `demux/src/runtime/pcr_clock_anchor.rs::PcrClockAnchorStore` | PCR観測と`StreamBoundaryTxn`からのprepared invalidation | APIまたは`StreamBoundaryTxn`がanchor内部を直接更新する、A/V sync relationを同ownerへ吸収する |
+| `WorkerRuntime` / `WorkerHandle` | `service_runtime/src/worker_runtime.rs::{WorkerRuntime, WorkerHandle}` | 各domain worker ownerのspawn/stop/wake/join/reaper入口 | `WorkerLifecycleProtocol`等の別generic lifecycle ownerを追加する、domain start/stop state machineを共通runtimeへ吸収する |
 | `WorkerFailureClassifier` | 既存`service_runtime/src/worker_failure_classifier.rs` | worker ownerとcleanup管理から、worker panic/join/worker-control wake/reaper failureだけをtyped入力する | backend/device/callback failure、FMQ payload通知用EventFlag失敗、domain transaction failureを入力する |
 | frontend worker終端 | 既存`service_runtime/src/frontend_worker_txn.rs`、worker slot/generationは`device/src/runtime/frontend_worker.rs`の`FrontendWorkerRegistry` | `service_runtime/src/frontend_ops.rs`および`service_runtime/src/boot/frontend_txn.rs` | generic worker mechanismやclassifierの責務を再実装する |
 
@@ -124,7 +125,7 @@ flowchart TD
 - `SourceBoundaryTxn`はFilter source/sink relationだけを所有する。demux/frontend relationは`DemuxFrontendSourceTxn`が所有する。
 - relation transactionがstream data boundaryを必要とする場合、`StreamBoundaryTxn.prepare()`で変更不能な`PreparedStreamBoundary`を取得し、relation prepareとともに同じ上位transactionのcommit対象へ含める。pre-commit failureでは両方をabortし、旧relationと旧stream generationを維持する。relationだけまたはboundaryだけを先に公開してはならない。
 - `StreamBoundaryTxn`はstream generation、continuity、section/PES/record-index parser/assembler boundaryとprepared invalidation dispatchだけを所有する。Filter/DVR queue内部、relation table、A/V sync map、PCR anchor内部、callback artifact、descrambler key/PIDを所有しない。
-- callback登録は既存のartifact preparation → runtime registration → domain callback state commitの三者transactionを使う。`ILnb.setCallback()`専用のBinder artifact ownerを新設しない。
+- callback登録は`CallbackRegistrationUseCase`でartifact preparation → runtime registration → domain callback state commitを行う。`ILnb.setCallback()`専用のBinder artifact ownerを新設しない。
 - `DescramblerPidTxn`は通常の`addPid()` / `removePid()`だけを所有し、key mutationとsession cleanupを吸収しない。
 - Record DVR/Filter relationは`RecordDvrFilterRelationTxn`の一つのrelation stateを正本とし、DVR/Filter側の集合は同commitから導出する。
 - `WorkerRuntime` / `WorkerHandle`はstop predicate、wake/cancel、generation fence、join、reaper handoffのmechanismだけを共通化し、Frontend/Filter/DVR/Playbackのdomain start/stop state machineを所有しない。
@@ -190,7 +191,7 @@ queueへの書き込み権限は世代付きとし、`flush()`、再設定、停
 - Demux frontend relationをFilter用`SourceBoundaryTxn`へ吸収しない。
 - relation transactionと`StreamBoundaryTxn`を別々の公開commitにしない。
 - `QueueCleanupTxn`をFilter/DVR共通flush transaction authorityとして置かない。
-- `WorkerLifecycleProtocol`等を既存`WorkerRuntime` / `WorkerHandle`と並ぶgeneric lifecycle ownerとして置かない。
+- `WorkerLifecycleProtocol`等を`WorkerRuntime` / `WorkerHandle`と並ぶgeneric lifecycle ownerとして置かない。
 - `WorkerFailureClassifier`へbackend/device/callback/FMQ data通知EventFlag failureを入力しない。
 - LNB Binder callback実体をLNB domain/AIDL objectに直接保持しない。
 - DVR側とFilter側がRecord relationを別々にcommitしない。
