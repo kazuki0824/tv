@@ -1,0 +1,82 @@
+name: PR28 review owner closure fix
+on:
+  push:
+    branches: [agent/fix-commonization-boundaries]
+permissions:
+  contents: write
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-commonization-boundaries
+          fetch-depth: 0
+      - name: Apply review fixes
+        shell: python
+        run: |
+          from pathlib import Path
+
+          def replace_once(path, old, new, label):
+              p = Path(path)
+              s = p.read_text(encoding='utf-8')
+              n = s.count(old)
+              if n != 1:
+                  raise SystemExit(f'{label}: expected 1 occurrence, got {n}')
+              p.write_text(s.replace(old, new, 1), encoding='utf-8')
+
+          pub = 'tuner_hal/DESIGN_JA.md'
+          impl = 'tuner_hal2/DESIGN_JA.md'
+
+          replace_once(impl,
+            '| Filter / DVR flush cleanup orchestration | `QueueCleanupTxn` | Filter/DVR固有stateを所有せず、typed下位protocol呼出しと失敗集約だけを共通化 | API別orchestration複製、下位protocol内部stateの直接変更 |',
+            '| Filter / DVR flush cleanup orchestration | `QueueCleanupTxn`。Filter/DVR固有stateを所有せず、typed下位protocol呼出しと失敗集約だけを共通化 | API別orchestration複製、下位protocol内部stateの直接変更 |',
+            'QueueCleanupTxn 3-column row')
+          replace_once(impl,
+            '| worker failure classification | `WorkerFailureClassifier` | stop/wake/join/EventFlag/Reaper/backend-control/callback等の生の失敗を共通typed分類する | 停止順序、retry/cleanup、公開状態遷移の所有、API別再分類 |',
+            '| worker failure classification | `WorkerFailureClassifier`。stop/wake/join/EventFlag/Reaper/backend-control/callback等の生の失敗を共通typed分類し、分類結果だけを返す | 停止順序、retry/cleanup、公開状態遷移の所有、API別再分類 |',
+            'WorkerFailureClassifier 3-column row')
+
+          replace_once(pub,
+            '| Filter source relation | `SourceBoundaryTxn` | Filter source/sink relationのvalidate/prepare/commit/rollback | demux/frontend relationを吸収すること、API別graph mutation |',
+            '| Filter source relation | `SourceBoundaryTxn` | Filter source/sink relationのvalidate/prepare/commit/rollback。`setDataSource()`、source Filter close/unlink cleanupの全mutationを同ownerへ接続 | demux/frontend relationを吸収すること、API別graph mutation |',
+            'SourceBoundaryTxn application row')
+          replace_once(pub,
+            '| Demux frontend source relation | `DemuxFrontendSourceTxn` | relation prepareと`StreamBoundaryTxn.prepare()`を同じ上位transactionでcommit/abort | relationとstream generationを別commitで公開すること |',
+            '| Demux frontend source relation | `DemuxFrontendSourceTxn` | relation prepareと`StreamBoundaryTxn.prepare()`を同じ上位transactionでcommit/abort。`setFrontendDataSource()`、Frontend/Demux closeのunbind cleanupを同ownerへ接続 | relationとstream generationを別commitで公開すること |',
+            'DemuxFrontendSourceTxn application row')
+
+          old = '| `SourceBoundaryTxn` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | `IFilter.setDataSource()` use-case | Filter source/sink relationとそのrelation generation | demux/frontend relation、DVR queue、A/V sync/PCR内部 | validate → relation prepare → source boundary prepare → commit / rollback | pre-commitは旧relation維持、確定不明だけ対象relationを隔離 | Filter source use-case | API wrapper/workerのgraph直接変更、Demux frontend use-case | NULL復帰、replacement、wrong demux/owner、closed/generation、prepare/commit fault |'
+          new = '| `SourceBoundaryTxn` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | `IFilter.setDataSource()` use-case、`ObjectCloseTxn`/source unlink cleanupからのtyped relation mutation | Filter source/sink relationとそのrelation generation | demux/frontend relation、DVR queue、A/V sync/PCR内部 | validate → relation prepare → source boundary prepare → commit / rollback | pre-commitは旧relation維持、確定不明だけ対象relationを隔離 | Filter source use-case、`ObjectCloseTxn` typed cleanup command | API wrapper/workerのgraph直接変更、Demux frontend use-case | NULL復帰、replacement、wrong demux/owner、closed/generation、source close/unlink cleanup、cleanup idempotence、prepare/commit fault |'
+          replace_once(pub, old, new, 'SourceBoundaryTxn normative row')
+
+          old = '| `DemuxFrontendSourceTxn` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | `IDemux.setFrontendDataSource()` use-case | demux/frontend relationのorchestration | stream parser内部、Filter source graph | validate → relation prepare + `StreamBoundaryTxn.prepare()` → composite commit → old relation release | pre-commitは両prepared stateをabortし旧relation/旧generation維持、commit結果不明だけ対象demuxを隔離 | Demux frontend-source use-case | `SourceBoundaryTxn`への吸収、relation/stream別commit | same-source no-reset、switch/unbind、boundary prepare failure、composite commit fault |'
+          new = '| `DemuxFrontendSourceTxn` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | `IDemux.setFrontendDataSource()` use-case、`ObjectCloseTxn`/Frontend・Demux cleanupからのtyped unbind mutation | demux/frontend relationのorchestration | stream parser内部、Filter source graph | validate → relation prepare + `StreamBoundaryTxn.prepare()` → composite commit → old relation release | pre-commitは両prepared stateをabortし旧relation/旧generation維持、commit結果不明だけ対象demuxを隔離 | Demux frontend-source use-case、`ObjectCloseTxn` typed cleanup command | `SourceBoundaryTxn`への吸収、relation/stream別commit | same-source no-reset、switch/unbind、Frontend/Demux close cleanup、cleanup idempotence、boundary prepare failure、composite commit fault |'
+          replace_once(pub, old, new, 'DemuxFrontendSourceTxn normative row')
+
+          old = '| `SourceBoundaryTxn` | 既存`demux/src/runtime/source_boundary.rs` | `service_runtime/src/demux_filter_dvr_ops.rs`のFilter source use-case | demux/frontend relationをこのtransactionへ吸収する、filter wrapperからgraph/stream stateを直接変更する |'
+          new = '| `SourceBoundaryTxn` | 既存`demux/src/runtime/source_boundary.rs` | `service_runtime/src/demux_filter_dvr_ops.rs`のFilter source use-case、およびsource Filter close/unlink時に`ObjectCloseTxn`/cleanupから渡されるtyped relation mutation | demux/frontend relationをこのtransactionへ吸収する、filter wrapper/cleanup callerからgraph/stream stateを直接変更する |'
+          replace_once(impl, old, new, 'SourceBoundaryTxn implementation anchor')
+
+          old = '| `DemuxFrontendSourceTxn` | `service_runtime/src/demux_filter_dvr_ops.rs::DemuxFrontendSourceTxn` | `IDemux.setFrontendDataSource()` object use-case | relation recordと`StreamBoundaryTxn`を別commitで公開する、`SourceBoundaryTxn`へ吸収する |'
+          new = '| `DemuxFrontendSourceTxn` | `service_runtime/src/demux_filter_dvr_ops.rs::DemuxFrontendSourceTxn` | `IDemux.setFrontendDataSource()` object use-case、およびFrontend/Demux close時に`ObjectCloseTxn`/cleanupから渡されるtyped unbind mutation | relation recordと`StreamBoundaryTxn`を別commitで公開する、cleanup callerがrelationを直接編集する、`SourceBoundaryTxn`へ吸収する |'
+          replace_once(impl, old, new, 'DemuxFrontendSourceTxn implementation anchor')
+
+          # Verify the three-column table rows now have exactly three cells.
+          s = Path(impl).read_text(encoding='utf-8')
+          for needle in ('Filter / DVR flush cleanup orchestration', 'worker failure classification'):
+              line = next(x for x in s.splitlines() if needle in x)
+              cells = [x for x in line.split('|')[1:-1]]
+              if len(cells) != 3:
+                  raise SystemExit(f'{needle}: expected 3 cells, got {len(cells)}')
+
+          Path('.github/workflows/pr28-review-owner-closure-fix.yml').unlink()
+      - name: Commit
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tuner_hal/DESIGN_JA.md tuner_hal2/DESIGN_JA.md .github/workflows/pr28-review-owner-closure-fix.yml
+          git diff --cached --check
+          git commit -m 'design: close relation owner mutation paths'
+          git push origin HEAD:agent/fix-commonization-boundaries
