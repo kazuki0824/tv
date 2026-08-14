@@ -1,0 +1,32 @@
+name: PR28 fix regression workflow check
+on:
+  push:
+    paths:
+      - '.github/workflows/pr28-fix-regression-workflow-check.yml'
+permissions:
+  contents: write
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-commonization-boundaries
+      - name: Fix validation order and remove this workflow
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('.github/workflows/pr28-review-regression-fixes.yml')
+          s = p.read_text()
+          old = "test \"$(git diff --name-only | sort)\" = $'tuner_hal/DESIGN_JA.md\\ntuner_hal2/DESIGN_JA.md\\n.github/workflows/pr28-review-regression-fixes.yml'"
+          new = "test \"$(git diff --name-only | sort)\" = $'.github/workflows/pr28-review-regression-fixes.yml\\ntuner_hal/DESIGN_JA.md\\ntuner_hal2/DESIGN_JA.md'"
+          if s.count(old) != 1:
+              raise SystemExit('validation line not found exactly once')
+          p.write_text(s.replace(old, new, 1))
+          PY
+          rm .github/workflows/pr28-fix-regression-workflow-check.yml
+          git config user.name maleicacid
+          git config user.email 4982384+kazuki0824@users.noreply.github.com
+          git add .github/workflows/pr28-review-regression-fixes.yml .github/workflows/pr28-fix-regression-workflow-check.yml
+          git commit -m 'chore: fix PR28 review workflow validation'
+          git push origin HEAD:agent/fix-commonization-boundaries
