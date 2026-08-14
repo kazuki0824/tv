@@ -1018,7 +1018,7 @@ fd付きhandle + `avDataId == 0` の成功は、shared backing、公開済みhan
 | CL-005 | Filter / DVR | 公開`close()` | 未生成資源の解放 | 安全な無処理成功 | true | 既存値を維持 | 成功扱い | 該当なし | 不要 | `close()`以外は`INVALID_STATE` | 安全な無処理成功手順 | 未生成資源の解放が`close()`失敗にならないこと | lazy allocation と整合 |
 | CL-007 | Filter / DVR | 公開`close()`全手順成功 | 完了確定 | 完了確定 | true | true | 成功 | 0-S-3Bの`ObjectCloseTxn`参照 | 不要 | `close()`以外は`INVALID_STATE`。二重`close()`は CL-009 に従う | close成功 | cleanup_complete が true になること | 完全閉鎖 |
 | CL-008 | Filter / DVR | 公開`close()`致命的手順失敗 | 未完確定 | 異常時閉鎖 | true | false | `UNKNOWN_ERROR` | 0-S-3Bの`ObjectCloseTxn`参照 | 0-S-3Bの`ObjectCloseTxn`参照 | `close()`以外は`INVALID_STATE`。二重`close()`は CL-010 に従う | `failed_step`, `error_kind`, `remaining_steps` | 失敗が成功扱いにならないこと | fail-closed |
-| CL-010 | Filter / DVR | 二重`close()` | 後片付け未完 | 0-S-3Bの`ObjectCloseTxn`参照 | true | false | 0-S-3Bの`ObjectCloseTxn`が定める公開結果に従う | 0-S-3Bの`ObjectCloseTxn`参照 | 0-S-3Bの`ObjectCloseTxn`参照 | `close()`以外は`INVALID_STATE` | `close_retry` | 未完cleanupを成功扱いで隠さないこと | cleanup_complete を正にする |
+| CL-010 | Filter / DVR | 二重`close()` | 後片付け未完 | 公開再`close()` | true | false | cleanup完了なら成功、未完なら`UNKNOWN_ERROR` | 0-S-3Bの`ObjectCloseTxn`参照 | 0-S-3Bの`ObjectCloseTxn`参照 | `close()`以外は`INVALID_STATE` | `close_retry` | 未完cleanupを成功扱いで隠さないこと | cleanup_complete を正にする |
 
 `CleanupPending`の内部retry / handoffは0-S-3Bの`ObjectCloseTxn`を正とする。公開上、`CleanupComplete`ではFrontendとLNBの`close()`は状態を変えず成功し、DVRとFilterの`close()`は`INVALID_STATE`を返す。Filterの使用中AV台帳は、公開`close()`の再呼出しだけを理由に解放済みとして扱わない。
 
