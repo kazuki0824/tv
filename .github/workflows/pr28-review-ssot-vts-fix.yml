@@ -1,0 +1,125 @@
+name: PR28 review SSOT and VTS fix
+
+on:
+  push:
+    branches:
+      - agent/fix-commonization-boundaries
+    paths:
+      - .github/workflows/pr28-review-ssot-vts-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-commonization-boundaries
+          fetch-depth: 0
+      - name: Apply design review fixes
+        shell: bash
+        run: |
+          echo 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCgpkZWYgcmVwbGFjZV9vbmNlKHRleHQsIG9sZCwgbmV3LCBsYWJlbCk6CiAgICBuID0gdGV4dC5jb3VudChvbGQpCiAgICBpZiBuICE9IDE6CiAgICAgICAgcmFpc2UgU3lzdGVtRXhpdChmIntsYWJlbH06IGV4cGVjdGVkIDEgb2NjdXJyZW5jZSwgZ290IHtufSIpCiAgICByZXR1cm4gdGV4dC5yZXBsYWNlKG9sZCwgbmV3LCAxKQoKIyB0dW5lcl9oYWwyOiBrZWVwIG9ubHkgaW1wbGVtZW50YXRpb24gc3RydWN0dXJlL293bmVyIG1hcHBpbmc7IGxvZ2ljYWwgc2VtYW50aWNzIHN0YXkgY2Fub25pY2FsLgpwID0gUGF0aCgidHVuZXJfaGFsMi9ERVNJR05fSkEubWQiKQp0ID0gcC5yZWFkX3RleHQoZW5jb2Rpbmc9InV0Zi04IikKCm9sZCA9ICIiIumdkOeahGludmVudG9yee+8j2NhcGFiaWxpdHnnhafohINjg6Hjgr3jg4Pjg4njga/jgIHjgrXjg7zjg5Pjgrnorr/lgaTjgYzl kIzkuIDsb2Nr5YaF44Gn5aSJ5pu05LiN6IO944GqYENhcGFiaWxpdHlTbmFwc2hvdGBjgpzlv4PnrZTzga7jgY3jg4fjg4Tjg4jjgafjgIHBSURM5aKD55WM44GM5bqU562U44G45aSJ5o+b44GZ44KL44CC5YuV55qE44GqYElGcm9udGVuZC5nZXRTdGF0dXMoKWTvvI8gYGdldEZyb250ZW5kU3RhdHVzUmVhZGluZXNzKClg44GvYC4uL3R1bmVyX2hhbC9ERVNJR05fSkEubWRg44Gu5LiW5Luj5LuY44GN YEZyb250ZW5kU3RhdHVzU25hcHNob3Rg5aWR57SE44KS5q2j44Go44GX44CB54++6KGM6KO95ZOB44Gn44GvdHVuZS9zY2FuIHdvcmtlcuOBvuOBn+OBrGJhY2tlbmTnm6PoppNvd25lcuOBjGJvdW5kZWQgYmFja2VuZCBJL+WujOS6huW+jOOBq+aWsOOBmeOBvuOBneOCk+OBqOOBrOWQjGZyb250ZW5kIGdlbmVyYXRpb27jgpLlho3mpJzmmLjjgZfjgabzjJlzbmFwc2hvdOOCkuaBjeaWsOOBmeOCi+OAgOWPgueFp+WRvOWHu+OBleOCk+OBkOOBruOAguOBneOCjOOCieOBruWQjOaehOOBqOS6i+aDheOBjeOCkumhmuOBjuOBquOBhOOAgkFPU1Djga9xdWVyeeeUqOOBruWQjOacn2JhY2tlbmQgcmVhZOOCh+OBruW/l+mgiOOCkjigqOOCgeOBpuOBhOOBquOBhOOBn+OCgeOAgeePvuWcqOOBruOBc25hcHNob3TmlrnjgI/jgpLntprmjIHjgZnjgosi5bCG5p2l44CB54m55a6ac3RhdHVz44KSYm91bmRlZOeckua9nHJlYWTjgbjlpInmm7TjgZnjgovloLTlkIjjga/jgIHlr77osKHzdGF0dXPjgIFJL+S4iumZkOOAgeWkseaVmeWGmeWDjOOAgeWdlbmVyYXRpb27lho3mpJzmmI7jgIFzbmFwc2hvdOabtOaWsOOBqOOBruaOkuS7luOCkuWFrOWTm+eKt+iho+OBu+i/veWKoOOBl+OBpuOBi+OCieacieWKueWMluOBmeOCi+OAgiIiIgpuZXcgPSAiIiLpnZnnmoRpbnZlbnRvcnnvvI9jYXBhYmlsaXR554Wn5Lya44Oh44K944OD44OJ44Gvc2VydmljZV9ydW50aW1l44GuY2FwYWJpbGl0eS9xdWVyeSBvd25lcuOBi+OCi0FJREzlu5TnrZTlpInmjqLjgbjmlK/ku5jjgZfjgIHli5XnmoTjgarBJ RnJvbnRlbmQuZ2V0U3RhdHVzKClg77yPIGBnZXRGcm9udGVuZFN0YXR1c1JlYWRpbmVzcygpYOOBr2Zyb250ZW5kIHN0YXR1cyBxdWVyeSBvd25lcuOBi+OCi0FJREzlu5TnrZTlpInmjqLjgbjmlK/ku5jjgZnjgovjgIJgQ2FwYWJpbGl0eVNuYXBzaG90YOOBoGBGcm9udGVuZFN0YXR1c1NuYXBzaG90YOOBr+WApOOAgeabtOaWsOOAgeeEoeWKueWMluaZguaUr+OCs+S7tuOAgeWQjOacny/pmZ7lkIzmnJ9yZWFk5p2h5Lu244CB5YWs6ZaLc3RhdHVz44GvYC4uL3R1bmVyX2hhbC9ERVNJR05fSkEubWRg44Gu6Kmy5b2T5aWR57SE44KS5q2j44Go44GX44CB5pys5pu444Gn44Gv5YaN5a6a576p44GX44Gq44GE44CCIiIKdCA9IHJlcGxhY2Vfb25jZSh0LCBvbGQsIG5ldywgInF1ZXJ5IGNvbm5lY3Rpb24iKQoKb2xkID0gIiIiYG9wZW5Gcm9udGVuZEJ5SWQoKWDjgIFgb3BlbkRlbXV4KClg44CBYG9wZW5EZW11eEJ5SWQoKWDjgIFgb3BlbkRlc2NyYW1ibGVyKClg44CBYG9wZW5MbmJCeUlkKClg44CBYG9wZW5MbmJCeU5hbWUoKWTjga/jgIHlkIzjgZpyb290IG9wZW7osrzli5njgpLkvb/jgYbjgILlkITBUEnjga7BSURM5YWl5Ye65Yqb44KS5re35oiQ44Gb44Ga44CB5YWl5YqbSU/jgpLmjIHjgaRDUEnjgafjga/lhazplovJROOCkuaonOiovOOBlyDjgIFgb3BlbkRlbXV4KClg44GoYG9wZW5MbmJCeU5hbWUoKWDjgafjga9vYmplY3TjgajjgYvjiYbjgZfjga5vdXQgSUTjgpLlkIzkuIDnorrrlrprngrnjgaflhazplovjgZnjgovjgIJgb3BlbkRlc2NyYW1ibGVyKClg44GvZGVtdXjmnKrntZDlkIjjga5vYmplY3Qvc2Vzc2lvbuani+jgaDjgaHjgZHjgpLnlJ/miJDjgZfjgIFkZW11eCBJR Hajgajlvqnlj7dwb29s44Gu6YG45oqe44Gv5LiA5Zue6ZmQ44KK44GuYHNldERlbXV4U291cmNlKClg44G45aeU44Gt44KL44CC5L2/55So5qip5L+d5LqI57SE44CBrdW50aW1l55m76Yyy44CBdHlwZWQgQmluZGVyIG9iamVjdOeUn+aIkOOAgeWkseaVmeaZguOBruino+aUvuOCkuS4gOOBpOOBruaTjeS9nOOBqOOBluaJseOBhOOAgeW9k2plY3TjgpLov5TjgZfjgZ/ljYrlvozjgavnmbvpjLLjgpLlt7vmrrvjgZfjgarjgYTjgIIiIiIKbmV3ID0gIiIiYG9wZW5Gcm9udGVuZEJ5SWQoKWDjgIFgb3BlbkRlbXV4KClg44CBYG9wZW5EZW11eEJ5SWQoKWDjgIFgb3BlbkRlc2NyYW1ibGVyKClg44CBYG9wZW5MbmJCeUlkKClg44CBYG9wZW5MbmJCeU5hbWUoKWDjga9yb290IG9wZW7lrp/oo4dvd25lcuOBu+aUr+S7mOOBmeOCi+OAgOWFrOmWi0lE5qSc6Ki844CBb2JqZWN0L291dCBJROOBruWFrOmWi+eiuuWumuWNoO+AgeWkseaVmeaZgnJvbGxiYWNr44CBYG9wZW5EZXNjcmFtYmxlcigpYOOBr+acque1kOWQiOeUn+aIkOOBryAuLi90dW5lcl9oYWwvREVTSUdOX0pBLm1kYOOBr+WQhEFQSeihqOOAgeFULV8wMTBh44CBYElEZXNjcmFtYmxlciBkZW11eOe1kOWQiOWlkee0hOOCkuatuOOBoOOBq+OBmeOCi+OAgOacrOabuOOBp+OBr+WGjeWumu 義しない。
+
+`getFrontendIds()`、`getFrontendInfo()`、`getLnbIds()`、`getDemuxIds()`、`getDemuxInfo()`、`getDemuxCaps()`、`getMaxNumberOfFrontends()`、`isLnaSupported()`はservice_runtimeのcapability/query ownerへ接続する。snapshot、使用上限、probe可否その他の公開query semanticsは`../tuner_hal/DESIGN_JA.md`を正とする。"""
+t = replace_once(t, old, new, "root/query semantics")
+
+old = """Filter、DVR、TimeFilterなどの子objectは、親demuxの生存、所有者、世代、能力、資源予約を確認してから登録する。Descramblerはrootで未結合objectを生成した後、`setDemuxSource()`で親demuxの生存、世代、能力、復号poolを検証し、一回だけ原子的に結合する。対応しないTimeFilterは`tuner_hal`の契約どおりobjectを生成しない。
+
+`IFilter.setDataSource()`は`SourceBoundaryTxn`、`IDemux.setFrontendDataSource()`は`DemuxFrontendSourceTxn`、Record DVR接続は`RecordDvrFilterRelationTxn`、descrambler PID登録は`DescramblerPidTxn`を通す。frontendとLNBまたはCI CAMの接続は、両objectの所有者と世代を同じsnapshotで検証する。片側だけを確定した状態を通常状態として公開しない。"""
+new = """Filter、DVR、TimeFilterなどの子object生成はchild-open実装ownerへ接続する。親demuxの検証順序、登録確定点、rollback、TimeFilter非対応時の公開結果は`../tuner_hal/DESIGN_JA.md`の各API表とAT-010aを正とする。Descramblerのroot未結合生成と`setDemuxSource()`の一回性・原子的結合は同書AT-009aおよび`IDescrambler demux結合契約`を正とし、本書では再定義しない。
+
+`IFilter.setDataSource()`は`SourceBoundaryTxn`、`IDemux.setFrontendDataSource()`は`DemuxFrontendSourceTxn`、Record DVR接続は`RecordDvrFilterRelationTxn`、descrambler PID登録は`DescramblerPidTxn`を通す。`IFrontend.setLnb()`はservice_runtimeのfrontend object method use-caseからLNB lease/registry ownerへ接続する。CI CAM系は`../tuner_hal/DESIGN_JA.md`の非対応契約へ接続し、backend relationを生成しない。relationのvalidation、generation、commit/rollback semanticsは同書を正とする。"""
+t = replace_once(t, old, new, "child/relation semantics")
+
+old = """TS入力は、frontend、playback DVR、許可されたsource filterの入力元を別の世代空間で保持する。packet validation、continuity、section/PES組み立て、filter照合までをdemux責務とし、PSI/SI意味解析を呼ばない。
+
+queueへの書き込み権限は世代付きとし、`flush()`、再設定、停止、再選局、入力元変更、閉鎖で旧世代を失効させる。配送済みAV領域など、クライアントが保持する資源の寿命はqueue世代と分離する。"""
+new = """TS入力originとgeneration名前空間は`../tuner_hal/DESIGN_JA.md`の`TsInputOrigin`／soft demux入力元契約を正とする。本書ではdemux packet pipelineをpacket validation、continuity、section/PES組み立て、filter照合の実装ownerへ接続し、PSI/SI意味解析を呼ばない責務境界だけを定義する。
+
+Filter/SharedFilterのqueue確定は`FilterProducerDrainGate`、DVR queue I/Oは`QueueEpochProtocol`、配送済みAV領域のallocation/leaseはAV resource ownerへ接続する。write authorityのgeneration、失効条件、配送済みAV資源の寿命は`../tuner_hal/DESIGN_JA.md`の同名契約・資源寿命表を正とし、本書では再定義しない。"""
+t = replace_once(t, old, new, "input/queue semantics")
+
+old = """- 静的inventory／capability queryからcleanup、worker操作、backend I/Oを開始しない。動的frontend status queryは現行製品では世代付き`FrontendStatusSnapshot`だけを読む。ただし、`../tuner_hal/DESIGN_JA.md`の公開状態表で対象status、bounded I/O上限、失敗写像、generation再検証、snapshot更新との排他を明示したstatusはbounded synchronous readへ変更できる。"""
+new = """- 静的inventory／capability queryからcleanup、worker操作、backend I/Oを開始しない。動的frontend status queryのread model、`FrontendStatusSnapshot`の更新・無効化、bounded synchronous readへ変更できる条件は`../tuner_hal/DESIGN_JA.md`を正とし、本書ではowner/entry mapping以外を再定義しない。"""
+t = replace_once(t, old, new, "status prohibition")
+
+p.write_text(t, encoding="utf-8")
+
+# tuner_hal canonical: move the missing frontend-LNB relation semantics here.
+p = Path("tuner_hal/DESIGN_JA.md")
+t = p.read_text(encoding="utf-8")
+old = """公開するLNB IDはsatellite frontendへ接続できる論理endpointとして扱い、1個のendpoint leaseを複数frontendへ同時接続しない。`setLnb(lnb_id)`は当該satellite frontendへ接続可能なLNB IDだけを受け付け、別の物理機器に属するLNB ID、地上波frontendへのLNB接続、不明なLNB IDは失敗させる。同一px4機器内で複数の論理endpointが共有する物理電圧レールは機器単位で直列化し、互換な電圧要求だけを参照数で共有する。"""
+new = old + """
+
+`IFrontend.setLnb(lnb_id)`のrelation mutationは、frontendとLNB endpointの生存、所有者、generation、接続可能性、endpoint leaseおよび共有rail互換性を同一validation snapshotで確認し、frontend-LNB relationと必要なlease参照を単一commitで公開する。commit前失敗では旧relationと既存leaseを維持し、frontend側またはLNB側の片側だけを確定したrelation/leaseを通常状態として公開しない。CI CAM系は本書「非対応のTimeFilterとCI CAM」の契約どおり非対応であり、このrelation commit契約の成功対象へ含めない。"""
+t = replace_once(t, old, new, "frontend LNB relation canonical")
+p.write_text(t, encoding="utf-8")
+
+# Existing CTS future_work also records the VTS mismatch; no new VTS suppression gate.
+p = Path("future_work/not_planned/tuner_lnb_partial_hardware_cts_mismatch.md")
+t = p.read_text(encoding="utf-8")
+t = replace_once(
+    t,
+    "# Tuner LNB 部分ハードウェア能力と CTS 基礎操作の不一致",
+    "# Tuner LNB 部分ハードウェア能力と CTS / VTS 基礎操作の不一致",
+    "future_work title",
+)
+t = replace_once(
+    t,
+    "## AOSP / CTS 側の事実",
+    "## AOSP / CTS / VTS 側の事実",
+    "future_work facts heading",
+)
+needle = """したがって、上記の一部だけを実処理できる LNB endpoint を non-null で公開する構成では、実処理できる個別機能が正しく動作していても Android 14 CTS の LNB 試験全体は合格しない。この不一致が、本件で記録する compatibility delta である。"""
+addition = needle + """
+
+Android 14 AIDL Tuner VTS も LNB live profile を有効にした場合、LNB を open して callback を設定した後、設定済み voltage、tone、satellite position を適用し、DiSEqC message を送信する一連の LNB 試験を実行する。したがって、同じ部分 LNB endpoint を VTS の LNB live profile から到達可能にすると、未対応 operation を含む試験で VTS も失敗し得る。これは CTS と別の実装不具合を示すものではなく、operation 単位 capability を公開できない AIDL/VTS 試験粒度と、本製品が採用した部分能力公開の粒度との同じ compatibility delta である。
+
+`VtsEnvironmentProfile` を使って公開済み LNB endpoint を試験から隠すことで合格扱いにすることは、この delta の解消とは扱わない。VTS profile / capability の規範は `tuner_hal/DESIGN_JA.md` を正とし、本書では VTS XML の入力・除外規則を再定義しない。"""
+t = replace_once(t, needle, addition, "future_work VTS facts")
+
+old_refs = """- AOSP CTS `TunerTest.java`: https://android.googlesource.com/platform/cts/+/105d6f1ab8b916880af25847d71f01d5acc930e3/tests/tests/tv/src/android/media/tv/tuner/cts/TunerTest.java
+- AOSP Tuner AIDL `ILnb.aidl`: https://android.googlesource.com/platform/hardware/interfaces/+/2caf529bdcf4ff02ad941f77f158b680f3a5a4dc/tv/tuner/aidl/android/hardware/tv/tuner/ILnb.aidl"""
+new_refs = old_refs + """
+- AOSP AIDL Tuner VTS `VtsHalTvTunerTargetTest.cpp`: https://android.googlesource.com/platform/hardware/interfaces/+/e6af4d18dfbc83eb2df356dcaabeff344e89e85f/tv/tuner/aidl/vts/functional/VtsHalTvTunerTargetTest.cpp
+- AOSP AIDL Tuner VTS configuration loader `VtsHalTvTunerTargetTest.h`: https://android.googlesource.com/platform/hardware/interfaces/+/eb39ea1855023c268b12c226699a0351e101c8b2/tv/tuner/aidl/vts/functional/VtsHalTvTunerTargetTest.h"""
+t = replace_once(t, old_refs, new_refs, "future_work refs")
+
+old = """採用された product-level 判断により、対象製品では Android 14 CTS の LNB 試験が失敗し得る。これは AOSP / CTS の意味論を変更したと解釈しない。また、この記録だけを根拠に CTS / CDD 適合を宣言しない。"""
+new = """採用された product-level 判断により、対象製品では Android 14 CTS の LNB 試験に加え、LNB live profile から部分 endpoint を試験する Android 14 AIDL Tuner VTS も失敗し得る。これは AOSP / CTS / VTS の意味論を変更したと解釈しない。また、この記録だけを根拠に CTS / VTS / CDD 適合を宣言しない。"""
+t = replace_once(t, old, new, "future_work known delta")
+
+old = """- 対象 CTS / CDD の LNB 要求が変更され、現在記録している不一致が解消または変質した場合。"""
+new = """- 対象 CTS / VTS / CDD の LNB 要求または VTS configuration schema / data-flow 契約が変更され、現在記録している不一致が解消または変質した場合。"""
+t = replace_once(t, old, new, "future_work reeval")
+
+p.write_text(t, encoding="utf-8")
+
+# Guard the review-specific SSOT regressions.
+hal2 = Path("tuner_hal2/DESIGN_JA.md").read_text(encoding="utf-8")
+for forbidden in [
+    "frontendとLNBまたはCI CAMの接続は、両objectの所有者と世代を同じsnapshotで検証する",
+    "TS入力は、frontend、playback DVR、許可されたsource filterの入力元を別の世代空間で保持する",
+    "queueへの書き込み権限は世代付きとし",
+    "動的frontend status queryは現行製品では世代付き`FrontendStatusSnapshot`だけを読む",
+]:
+    if forbidden in hal2:
+        raise SystemExit(f"forbidden second-SSOT text remains: {forbidden}")
+
+fw = Path("future_work/not_planned/tuner_lnb_partial_hardware_cts_mismatch.md").read_text(encoding="utf-8")
+if "AOSP AIDL Tuner VTS `VtsHalTvTunerTargetTest.cpp`" not in fw:
+    raise SystemExit("VTS delta reference missing")
+' | base64 -d > /tmp/pr28_patch.py
+          python3 /tmp/pr28_patch.py
+          git diff --check
+      - name: Commit and push
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tuner_hal/DESIGN_JA.md tuner_hal2/DESIGN_JA.md future_work/not_planned/tuner_lnb_partial_hardware_cts_mismatch.md
+          git commit -m 'design: address SSOT and LNB VTS review'
+          git push origin HEAD:agent/fix-commonization-boundaries
