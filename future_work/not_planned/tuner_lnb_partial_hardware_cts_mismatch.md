@@ -44,8 +44,6 @@ Product Owner は、対象 hardware / driver が実際に有する LNB 制御能
 
 採用された product-level 判断により、対象製品では Android 14 CTS の LNB 試験が失敗し得る。これは AOSP / CTS の意味論を変更したと解釈しない。また、この記録だけを根拠に CTS / CDD 適合を宣言しない。
 
-対象 backend ごとの実際の公開能力および API 契約は `tuner_hal/DESIGN_JA.md` を参照する。
-
 ## 再評価条件
 
 次のいずれかが生じた場合は、この compatibility delta の前提と Product Owner 判断を再評価する。
