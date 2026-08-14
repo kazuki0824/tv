@@ -1,0 +1,114 @@
+name: PR28 review fixes 20260814
+on:
+  push:
+    paths:
+      - '.github/workflows/pr28-review-fixes-20260814.yml'
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-commonization-boundaries
+          fetch-depth: 0
+      - name: Apply review fixes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(text, old, new, label):
+              n = text.count(old)
+              if n != 1:
+                  raise SystemExit(f'{label}: expected 1 occurrence, got {n}')
+              return text.replace(old, new, 1)
+
+          p = Path('tuner_hal2/DESIGN_JA.md')
+          t = p.read_text(encoding='utf-8')
+
+          t = replace_once(t,
+              '本PRで追加・変更する契約は、`tuner_hal2`へ適用する目標設計であり、現行実装済みの事実を表すものではない。公開能力を有効にできるのは、対応する実装入口、状態遷移・異常系試験、製品設定またはVTS設定がそろった機能だけである。移行は公開API単位を最小ゲートとし、依存するAPI、台帳、worker、設定を含む適用単位の完了条件も同時に満たす。未移行APIまたは未完了の依存閉包を新設計の成功能力として広告してはならない。',
+              '本PRで追加・変更する契約は、`tuner_hal2`へ適用する目標設計であり、現行実装済みの事実を表すものではない。実装、設定、`Android.bp`、VTS用XML、単体試験が同じ契約へ追従し、`../タスク完了判定の実施方法.md`による横断確認が完了するまでは「設計済み・実装未適用」とする。この適用状態判定は本PR自身の設計完了判定とは別に扱う。公開能力を有効にできるのは、対応する実装入口、状態遷移・異常系試験、製品設定またはVTS設定がそろった機能だけである。移行は公開API単位を最小ゲートとし、依存するAPI、台帳、worker、設定を含む適用単位の完了条件も同時に満たす。未移行APIまたは未完了の依存閉包を新設計の成功能力として広告してはならない。',
+              'application gate')
+
+          t = replace_once(t,
+              '| `tuner_hal2/DESIGN_JA.md` | 実装内の論理責務、依存方向、規範実装アンカー | 公開契約の値や状態を上書きしない |',
+              '| `tuner_hal2/DESIGN_JA.md` | 実装内の論理責務、依存方向、現在位置との対応、規範実装アンカー | 公開契約の値や状態を上書きしない |',
+              'responsibility row')
+
+          t = replace_once(t,
+              '同残課題が解消されるまでは、上記NULL経路を実装済み、VTS接続済み、またはAOSP契約達成済みと表明しない。この阻害を理由に',
+              '同残課題が解消されるまでは、上記NULL経路を実装済み、VTS接続済み、またはAOSP契約達成済みと表明しない。 この阻害を理由に',
+              'zero-noise spacing')
+
+          t = replace_once(t,
+              '| object method | `service_runtime/src/object_method_txn.rs`の`ObjectMethodTxnPlan`、`ObjectMethodDispatchProof`、`ObjectMethodExecutionToken`。validation/dispatchの補助正本は同moduleからだけ呼ぶ`method_validation.rs`と`method_dispatch.rs` | `aidl_service/src/object_runtime/mod.rs`の`execute_*_use_case*`、`plan_unavailable_object_method_use_case()`、`execute_object_query_use_case()`。domain側は`TunerServiceRuntime::*_for_object`が`ObjectMethodExecutionToken`を一回消費する | 個別AIDL methodによる先行runtime query、dispatch proofの生成・再利用、backend/registryの直接変更 |',
+              '| object method | `service_runtime/src/object_method_txn.rs`の`ObjectMethodTxnPlan`、`ObjectMethodDispatchProof`、`ObjectMethodExecutionToken`。validation/dispatchの補助正本は同moduleからだけ呼ぶ`method_validation.rs`と`method_dispatch.rs` | `aidl_service/src/object_runtime/mod.rs`の`execute_*_use_case*`、`plan_unavailable_object_method_use_case()`、`execute_object_query_use_case()`。domain側は`TunerServiceRuntime::*_for_object`が`ObjectMethodExecutionToken`を一回消費する | 個別AIDL methodによる先行runtime query、`AidlMethodAdapter::plan()`の直接実行、dispatch proofの生成・再利用、backend/registryの直接変更 |',
+              'object method forbidden entry')
+
+          t = replace_once(t,
+              '| child open | `service_runtime/src/boot/demux_filter_dvr_txn.rs`の`DemuxFilterDvrTxn<\'a>`。公開use-case façadeは`service_runtime/src/demux_filter_dvr_ops.rs` | `aidl_service/src/child_object_open.rs`のfilter/DVR child open入口 | `openFilter()`/`openDvr()`ごとのallocation・callback cleanup・rollback複製 |',
+              '| child open | `service_runtime/src/boot/demux_filter_dvr_txn.rs`の`DemuxFilterDvrTxn<\'a>`。公開use-case façadeは`service_runtime/src/demux_filter_dvr_ops.rs` | `aidl_service/src/child_object_open.rs`の`open_filter_child_for_owner_object_with_request_builder()`および`open_dvr_child_for_owner_object_with_request_builder()` | `openFilter()`/`openDvr()`ごとのallocation・callback cleanup・rollback複製、`RuntimeObjectEntry.ledger_id`の再解釈 |',
+              'child open traceability')
+
+          t = replace_once(t,
+              '| `QueueEpochProtocol` | 既存`demux/src/runtime/queue_runtime.rs`。`queue_epoch`、read/write token、active count、drain stateだけを所有し、`PlaybackQueueBacking.queue_identity`は参照するが所有しない | DVR data pathのbegin/commit/cancelと`QueueCleanupTxn`からのtyped flush入口 | `QueueCleanupTxn`がqueue token/epoch内部状態を直接変更する、`QueueEpochProtocol`が`PlaybackQueueBacking.queue_identity`を二重所有・変更する、Filter stateを吸収する |',
+              '| `QueueEpochProtocol` | 既存`demux/src/runtime/queue_runtime.rs`。`Open(g)`/`Draining(g)`/`Closed`、一回限りのread/write transaction token、受付中transaction数、`queue_epoch`の単一正本とし、`PlaybackQueueBacking.queue_identity`は参照するが所有しない | DVR data pathの`beginRead`/`beginWrite`/`commit`/`cancel`相当のtyped入口と、`QueueCleanupTxn`からのtyped flush requestだけを入口とする | 公開API、worker、`QueueCleanupTxn`が`queue_epoch`、queue pointer、token stateを直接変更する、または`PlaybackQueueBacking.queue_identity`の所有を二重化する、Filter stateを吸収する |',
+              'queue epoch anchor detail')
+
+          t = replace_once(t,
+              '| frontend worker終端 | 既存`service_runtime/src/frontend_worker_txn.rs`、worker slot/generationは`device/src/runtime/frontend_worker.rs`の`FrontendWorkerRegistry` | `service_runtime/src/frontend_ops.rs`および`service_runtime/src/boot/frontend_txn.rs` | generic worker mechanismやclassifierの責務を再実装する |',
+              '| frontend worker終端 | 既存`service_runtime/src/frontend_worker_txn.rs`、worker slot/generationは`device/src/runtime/frontend_worker.rs`の`FrontendWorkerRegistry` | `service_runtime/src/frontend_ops.rs`および`service_runtime/src/boot/frontend_txn.rs`。close/owner-lossは`ObjectCloseTxn`からtyped cleanup commandとして接続し、失敗種別は`WorkerFailureClassifier`のtyped resultだけを受ける | worker自身によるowner unregister/lease返却、回収完了前のresource再利用、AIDL層によるjoin/reaper方針の決定、worker終了use-caseによる失敗種別の再分類、generic worker mechanismやclassifierの責務の再実装 |',
+              'frontend worker terminal detail')
+
+          t = replace_once(t,
+              '- top-level cleanup / rollback use-caseは`CleanupExecutionReport` / `SharedCleanupDiagnostics`と共通failure-composition helperを通してよい。これらは結果表現/helperであってtransaction ownerではない。',
+              '- top-level cleanup / rollback use-caseは`CleanupExecutionReport` / `SharedCleanupDiagnostics`と共通failure-composition helperを通し、API別・worker別にfirst-error aggregation、primary/cleanup precedence、文字列detail合成を再実装しない。これらはcleanup結果の共通表現と合成部品であり、新しいlifecycle transaction ownerを意味しない。',
+              'cleanup helper detail')
+
+          marker = '- top-level cleanup / rollback use-caseは`CleanupExecutionReport` / `SharedCleanupDiagnostics`と共通failure-composition helperを通し、API別・worker別にfirst-error aggregation、primary/cleanup precedence、文字列detail合成を再実装しない。これらはcleanup結果の共通表現と合成部品であり、新しいlifecycle transaction ownerを意味しない。\n'
+          if marker not in t:
+              raise SystemExit('cleanup marker missing')
+          minimum = '\n最低試験は、`PostCommitCallbackFailureTxn`についてFilter/DVR双方でcommit済みstartを維持してrollbackしないこと、`FilterProducerDrainGate`についてflush中の新規permit拒否・全permit排出・commit前失敗時の状態不変、`QueueEpochProtocol`についてtokenの一回消費・flush drain後だけのepoch更新・flush commit前失敗時のqueue/epoch不変を固定する。\n'
+          if minimum.strip() not in t:
+              t = t.replace(marker, marker + minimum, 1)
+
+          t = replace_once(t,
+              '| frontend tune/scan、再選局、終端deadline | 設計済み・実装未適用 | `service_runtime/`、`device/`、callback配送 | AOSP callback契約を満たす終端、scan継続、非破壊re-entry、full retune、原因別状態、deadlineの試験が合格 |',
+              '| frontend tune/scan、再選局、終端deadline | 設計済み・実装未適用 | `service_runtime/`、`device/`、callback配送 | AOSP callback契約を満たす終端、`scan(K)→LOCKED(g1)→scan(K)→END(g2)`で2回目のbackend探索・LOCKED再配送がないこと、異なるscan request・`stopScan()`・`tune()`・`close()`で継続状態が失効すること、安定同一条件の非破壊re-entry、full retuneでの旧session遮断、破壊的commit後に旧要求を再投入しないこと、旧TSが新demux/filter世代へ混入しないこと、原因別の`Untuned`／`FailedBackend`／`FailedBoundary`／`Quarantined`遷移、deadlineの試験が合格 |',
+              'frontend migration completion')
+
+          p.write_text(t, encoding='utf-8')
+
+          p = Path('tuner_hal/DESIGN_JA.md')
+          t = p.read_text(encoding='utf-8')
+          old = '| `QueueEpochProtocol` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | DVR data path、`QueueCleanupTxn`からのtyped flush request | `queue_epoch`、read/write token、active count、drain state | `queue_identity`（`PlaybackQueueBacking`所有）、Filter producer、DVR parser/stats、flush orchestration | begin → commit/cancel/drop → drain → epoch prepare/commit | stale token拒否、commit前失敗はepoch/position不変 | DVR data path、`QueueCleanupTxn` | Filter path、API別token state machine、orchestratorの内部state直接変更 | begin/commit/cancel/drop、flush race、stale token、identity ABA |'
+          new = '| `QueueEpochProtocol` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | DVR data path、`QueueCleanupTxn`からのtyped flush request | `Open(g)`/`Draining(g)`/`Closed`、`queue_epoch`、一回限りのread/write transaction token、受付中transaction数 | `queue_identity`（`PlaybackQueueBacking`所有）、Filter producer、DVR parser/stats、flush orchestration | `Open(g)`でbegin/token発行 → commit/cancel/dropでtokenを一回消費 → flush開始を`Draining(g)`へ線形化して新規begin拒否 → 受付中transaction排出 → epoch prepare/commitで`Open(g+1)`、closeで`Closed` | stale token・二重token消費を拒否し、flush commit前失敗は旧`Open(g)`/epoch/positionを維持 | DVR data path、`QueueCleanupTxn` | Filter path、API別token state machine、orchestratorの内部state直接変更 | Open/Draining/Closed遷移、一回性token、flush race、commit前状態不変、stale token、identity ABA |'
+          t = replace_once(t, old, new, 'public queue epoch logical contract')
+          p.write_text(t, encoding='utf-8')
+
+          p = Path('future_work/not_planned/tuner_lnb_partial_hardware_cts_mismatch.md')
+          t = p.read_text(encoding='utf-8')
+          t = replace_once(t,
+              'この文書は、`earth_pt1` / `px4_drv` が実機・driverとして提供する LNB 制御能力と、Android CTS が non-null の `Lnb` に要求する基礎操作一式の粒度が一致しない問題を、既知の not planned 項目として記録する。\n\n本製品は、対象 hardware / driver が実際に対応する LNB 制御を、CTS 合格のためだけに隠さない。反対に、hardware / driver が実処理できない tone、satellite position、DiSEqC 等を成功 no-op、擬似成功、callback echo で実装済みに見せない。',
+              'この文書は、`earth_pt1` / `px4_drv` が実機・driverとして提供する LNB 制御能力と、Android CTS が non-null の `Lnb` に要求する基礎操作一式の粒度が一致しない問題を、既知の not planned 項目として記録する。Android互換性を満たすcanonical契約の正本ではなく、`tuner_hal/DESIGN_JA.md`の互換性契約を上書きしない。\n\nAndroid互換性を維持するproduct profileでは、canonicalの`aidl_baseline_eligible`条件を適用し、CTS基礎操作一式を成立させられない部分LNB endpointを公開しない。以下の部分LNB公開方針は、CTS/CDD互換性を意図的に放棄する非互換product variantを選択する場合の既知差分としてのみ記録する。\n\n非互換product variantでは、対象 hardware / driver が実際に対応する LNB 制御を、CTS 合格のためだけに隠さない。反対に、hardware / driver が実処理できない tone、satellite position、DiSEqC 等を成功 no-op、擬似成功、callback echo で実装済みに見せない。',
+              'future work positioning')
+          t = replace_once(t, '## 本製品の方針', '## 非互換product variantを選択する場合の方針', 'future work heading')
+          t = replace_once(t,
+              '部分 LNB 能力を公開する product/profile では、CTS LNB 試験が失敗し得ることを既知差分として扱う。',
+              '部分 LNB 能力を公開する非互換product variantでは、CTS LNB 試験が失敗し得ることを既知差分として扱う。',
+              'future work test handling')
+          p.write_text(t, encoding='utf-8')
+          PY
+          git diff --check
+          git diff --name-only
+      - name: Commit and push design changes
+        shell: bash
+        run: |
+          git config user.name maleicacid
+          git config user.email 4982384+kazuki0824@users.noreply.github.com
+          git add tuner_hal/DESIGN_JA.md tuner_hal2/DESIGN_JA.md future_work/not_planned/tuner_lnb_partial_hardware_cts_mismatch.md
+          git commit -m 'design: restore review contract detail'
+          git push origin HEAD:agent/fix-commonization-boundaries
