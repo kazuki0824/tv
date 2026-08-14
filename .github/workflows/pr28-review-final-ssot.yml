@@ -1,0 +1,34 @@
+name: PR28 final SSOT review fix
+
+on:
+  push:
+    branches:
+      - agent/fix-commonization-boundaries
+    paths:
+      - .github/workflows/pr28-review-final-ssot.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-commonization-boundaries
+          fetch-depth: 0
+      - name: Apply final SSOT fixes
+        shell: bash
+        run: |
+          echo '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' | base64 -d | gzip -d > /tmp/pr28_final_ssot.py
+          python3 /tmp/pr28_final_ssot.py
+          git diff --check
+      - name: Commit and push
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tuner_hal2/DESIGN_JA.md 開発規則.md
+          git commit -m 'design: finish SSOT responsibility cleanup'
+          git push origin HEAD:agent/fix-commonization-boundaries
