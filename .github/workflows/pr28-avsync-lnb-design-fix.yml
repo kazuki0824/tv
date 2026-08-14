@@ -1,0 +1,129 @@
+name: PR28 targeted AV sync and LNB design fix
+on:
+  push:
+    paths:
+      - '.github/workflows/pr28-avsync-lnb-design-fix.yml'
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-commonization-boundaries
+          fetch-depth: 0
+      - name: Apply canonical design edits
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          def replace_once(text, old, new, label):
+              n = text.count(old)
+              if n != 1:
+                  raise SystemExit(f'{label}: expected 1 occurrence, got {n}')
+              return text.replace(old, new, 1)
+
+          p = Path('tuner_hal/DESIGN_JA.md')
+          t = p.read_text(encoding='utf-8')
+
+          t = replace_once(t,
+              '| A/V sync relation | `AvSyncRegistry` | `filter_id <-> hw_id`双方向relationをprepared mutationで外側transactionと同commit | 片方向mapの直接更新、PCR anchorとのowner統合 |',
+              '| A/V sync relation | `AvSyncRegistry` | `media_filter_id -> hw_sync_id`のmany-to-one relationを正本とし、reverse indexを物理保持する場合は`hw_sync_id -> Set<media_filter_id>`としてprepared mutationで外側transactionと同commitする。injective / bijectiveは要求しない | relation/reverse indexの片側だけの直接更新、reverse indexを単一filterへ縮退、PCR anchorとのowner統合 |',
+              'public AvSync summary')
+
+          t = replace_once(t,
+              '| `AvSyncRegistry` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | AV/PCR filter configure/unregister/close、demux close | `filter_id <-> hw_id`双方向relation | PCR clock anchor、filter lifecycle本体 | validate → prepared bidirectional mutation → outer transaction commit/abort | abortで両map不変、片方向確定を通常状態にしない | filter/demux lifecycle transaction | API/Filter wrapper/StreamBoundaryのmap直接更新 | register、reconfigure、unregister、filter/demux close、abort、bidirectional invariant |',
+              '| `AvSyncRegistry` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | AV/PCR filter configure/unregister/close、demux close | `media_filter_id -> hw_sync_id`のmany-to-one relation。reverse indexを物理保持する場合だけ`hw_sync_id -> Set<media_filter_id>`を同ownerで持ち、injective / bijectiveは要求しない | PCR clock anchor、filter lifecycle本体 | validate → forward relation mutation prepare → optional reverse-index mutation prepare → outer transaction commit/abort | abortでforward relationとreverse indexを不変に保ち、片側だけの確定を通常状態にしない。1 filterのunregisterで同一`hw_sync_id`を共有する他filterのrelationを消さない | filter/demux lifecycle transaction | API/Filter wrapper/StreamBoundaryのrelation/reverse index直接更新、reverse indexを`hw_sync_id -> media_filter_id`へ縮退 | register、複数media filterによる同一hw sync ID共有、reconfigure、1 filterだけのunregister、filter/demux close、abort、forward/reverse整合、non-injective relation |',
+              'public AvSync canonical row')
+
+          lnb_re = re.compile(r'## LNB能力と固定給電\n.*?(?=\n公開するLNB IDは)', re.S)
+          if len(lnb_re.findall(t)) != 1:
+              raise SystemExit('LNB canonical section must occur exactly once')
+          lnb_lines = [
+              '## LNB能力と固定給電',
+              '',
+              '',
+              'LNBは機器単位の終端資源とし、本書の「LNB機器の資源規則」と事象駆動の「ワーカー終了契約」だけで管理する。`aidl_baseline_eligible`は、Android 14 CTSがnon-nullの公開LNB objectへ要求する基礎操作一式、すなわち対応電圧、`setTone(TONE_NONE)`、`setSatellitePosition(POSITION_A)`、2バイトの`sendDiseqcMessage()`、登録済みcallbackへの受信通知を、成功扱いの無処理ではなくbackend契約として実処理できるかを表すCTS baseline適合分類とする。この分類は公開`ILnb` endpoint全体の生成可否を決めるgateではない。',
+              '',
+              '本製品はAndroid 14 CTSのLNB試験合格より、hardware / driverが実処理できることを証跡で確認したLNB operation / valueをframeworkへ公開することを優先する。LNB endpointは、probeに成功し、satellite frontendへ接続可能で、endpoint lease条件を満たし、かつ少なくとも1つの公開operation / valueに実処理証跡がある場合に`CapabilitySnapshot`へ公開対象としてcommitできる。`aidl_baseline_eligible=false`だけを理由にendpoint全体を隠してはならない。証跡のないoperation / valueを能力として生成してはならず、有効だが対象backendで未対応の要求は副作用なしの`UNAVAILABLE`とする。未知の列挙値その他の不正要求は`INVALID_ARGUMENT`とし、backend未対応と区別する。',
+              '',
+              '現在証跡があるpx4/earth_pt1 backendは電圧制御だけを確認でき、tone、satellite position、DiSEqCの実処理証跡がないため`aidl_baseline_eligible=false`である。ただし、px4は証跡のある0 V / 15 V、earth_pt1は証跡のある11 V / 15 Vのcaller制御可能な電圧operationを持つendpointとして公開できる。`getLnbIds()`はこれらの公開対象endpointを列挙し、`openLnbById()`はendpoint leaseを取得して`ILnb` objectを生成する。tone、satellite position、DiSEqC等の未対応要求をCTS合格目的の成功no-op、擬似成功、callback echoにしてはならない。本製品は部分LNB公開によりAndroid 14 CTSのLNB試験が失敗し得ることを既知compatibility deltaとして受容し、CTS LNB適合を宣言しない。',
+              '',
+              '公開`ILnb` operation能力とsatellite frontendの電源トポロジは別能力として扱う。`SupportedDeviceCapabilityCatalog`の機器項目は、`InternalFixed15V`、`ExternalOrShared`、`UnknownOrDisabled`のいずれかを保持する。`InternalFixed15V`は、物理rail owner、15 Vの適用確認方法、停止時の安全状態、共有互換条件を同じ項目に持ち、frontend generation開始前に既存の機器単位rail leaseを取得して15 Vを実適用できる場合だけ成立する。`ExternalOrShared`は、給電主体、HALが電圧を変更しないこと、共有互換条件、選局中の給電継続を製品配線として確認できる場合だけ成立する。',
+              '',
+              '`InternalFixed15V`または`ExternalOrShared`が検証済みでruntime LNB切替を必要としないISDB-S frontendは、公開`ILnb` endpointの有無と独立に公開可否を判断する。前者ではHAL内部で選局前に固定15 Vを適用し、後者ではHALは電圧操作を行わない。固定給電だけをcaller制御可能な`ILnb.setVoltage()`能力として広告してはならない。`UnknownOrDisabled`、トポロジ証跡不一致、給電継続または共有互換性を確認できない場合はsatellite frontendを公開しない。給電、lease、tune準備失敗時の巻き戻し、安全状態復帰、共有rail参照管理、実状態不明時の隔離は、本書の「LNB機器の資源規則」「表7」「表8」「ワーカー終了契約」を適用する。`FixedDishPowerProfile`その他の専用profileや別状態機械を設けない。',
+              '',
+              '`getLnbIds()`は起動時probeとoperation/value capability対応表から公開対象として確定したendpoint IDを列挙する。`openLnbById()`は公開済みendpoint 1個の使用権を取得する。不明なIDには`INVALID_ARGUMENT`、使用中、`CleanupPending`、`Quarantined`のendpointには状態を変えず`UNAVAILABLE`を返す。`openLnbByName()`はstableなconfigured name mappingが`ProductProfile`に定義されたendpointだけを成功対象にでき、mappingがない現行製品では空文字を`INVALID_ARGUMENT`、その他を`UNAVAILABLE`とする。最初の`close()`では`LogicalClosed`を確定して新しい公開処理を拒否し、その時点で実行可能な後片付けをすべて試す。再試行可能な未完の依存資源は`CleanupPending`に残す。実行中のワーカーは変更を遮断し、`ReaperSupervisor`へ一度だけ移す。バックエンドとワーカーの後片付けが完了した後に限り、endpointの使用権を正確に1回返却する。隔離中は使用権を保持する。`ProductProfile`はLNBを抑止できるが、存在しないendpointやoperation/value能力を生成してはならない。',
+              '',
+          ]
+          t = lnb_re.sub('\n'.join(lnb_lines), t, count=1)
+
+          t = replace_once(t,
+              '| `getLnbIds()` | 起動時に公開対象と確定したLNB IDを昇順で返す。現行profileでは空配列を返す | snapshotを読み出せない内部障害は`UNKNOWN_ERROR`、部分結果は返さない |',
+              '| `getLnbIds()` | 起動時probeとoperation/value capability対応表から公開対象と確定したLNB IDを昇順で返す。`aidl_baseline_eligible=false`だけを理由に除外しない | snapshotを読み出せない内部障害は`UNKNOWN_ERROR`、部分結果は返さない |',
+              'getLnbIds row')
+          t = replace_once(t,
+              '| `openLnbById(id)` | 将来、公開済みIDのendpoint使用権とruntime登録を同一transactionで確定できる場合に、その`ILnb` objectだけを返す | 現行profileではLNB能力を公開しないため`UNAVAILABLE`。能力を公開する将来profileでは、未公開IDは`INVALID_ARGUMENT`、使用中または後片付け未完のendpointは`UNAVAILABLE`とし、objectを返さない |',
+              '| `openLnbById(id)` | 公開済みIDのendpoint使用権とruntime登録を同一transactionで確定し、その`ILnb` objectだけを返す。公開判定は実証済みoperation/value capabilityに従う | 未公開IDは`INVALID_ARGUMENT`、公開済みだが使用中、`CleanupPending`、`Quarantined`のendpointは`UNAVAILABLE`。`aidl_baseline_eligible=false`だけを理由に拒否しない |',
+              'openLnbById row')
+          t = replace_once(t,
+              '| `setTone(tone)` | AIDLの有効列挙値。少なくとも`TONE_NONE` | backend状態へ適用して成功する。成功扱いの無処理は禁止 | 旧状態を維持できなければ隔離 |',
+              '| `setTone(tone)` | AIDLの有効列挙値 | 対応表でbackend実処理が確認された値だけを適用して成功する。有効だが対象backendで未対応の値は副作用なしの`UNAVAILABLE`。成功扱いの無処理は禁止 | backend適用を開始した後に旧状態を維持できなければ隔離。未対応判定だけなら状態不変 |',
+              'setTone row')
+          t = replace_once(t,
+              '| `setSatellitePosition(position)` | AIDLの有効列挙値。少なくとも`POSITION_A` | backend状態へ適用して成功する。成功扱いの無処理は禁止 | 旧状態を維持できなければ隔離 |',
+              '| `setSatellitePosition(position)` | AIDLの有効列挙値 | 対応表でbackend実処理が確認された値だけを適用して成功する。有効だが対象backendで未対応の値は副作用なしの`UNAVAILABLE`。成功扱いの無処理は禁止 | backend適用を開始した後に旧状態を維持できなければ隔離。未対応判定だけなら状態不変 |',
+              'setSatellitePosition row')
+          t = replace_once(t,
+              '| `sendDiseqcMessage(message)` | backend上限内の非空byte列。2バイトを必ず含む | 全byteをbackendへ渡し、送信完了後に成功する。受信応答は登録済みcallbackへ順序どおり通知する | 部分送信を成功にせず、状態不明なら隔離 |',
+              '| `sendDiseqcMessage(message)` | 非空byte列。実処理可能なbackendでは宣言済み上限内とし、Android 14 CTSが使う2バイト要求を能力対応時は受理できる | 対応表でDiSEqC実処理が確認されたbackendだけ全byteを送信し、送信完了後に成功する。有効だが対象backendで未対応なら副作用なしの`UNAVAILABLE`。送信していないmessageのcallback echoは禁止 | 部分送信を成功にせず、送信開始後に状態不明なら隔離。未対応判定だけなら状態不変 |',
+              'sendDiseqc row')
+          t = replace_once(t,
+              '閉鎖開始後は全操作を`INVALID_STATE`とする。不明な列挙値、空メッセージ、または宣言済みbackend上限を超えるDiSEqCメッセージは`INVALID_ARGUMENT`とする。2バイトを長さだけで拒否してはならない。妥当だが個別profileで非対応の操作は`UNAVAILABLE`とするが、そのようなprofileを`aidl_baseline_eligible`として公開してはならない。',
+              '閉鎖開始後は全操作を`INVALID_STATE`とする。不明な列挙値、空メッセージ、またはDiSEqC実処理を宣言したbackendの上限を超えるメッセージは`INVALID_ARGUMENT`とする。DiSEqC未対応backendでは、上限検証以前に有効な非空messageを副作用なしの`UNAVAILABLE`とする。2バイトを長さだけで拒否してはならない。妥当だが個別profileで非対応のoperation / valueは`UNAVAILABLE`とする。`aidl_baseline_eligible=false`はCTS baseline適合分類であり、endpoint全体の公開可否を単独では決めない。',
+              'LNB validity paragraph')
+          t = replace_once(t,
+              '- 機器の事実は `DeviceProbeCapability` で確定する。frontendは公開API全体が成立するものだけを公開し、LNBは検出成功に加えてAndroid 14 CTSの基礎操作を実処理できる`aidl_baseline_eligible` endpointだけを公開する。現在のpx4/earth_pt1 LNBは電圧制御以外の証跡がないため公開しない。',
+              '- 機器の事実は`DeviceProbeCapability`で確定する。frontendは公開API全体が成立するものだけを公開する。LNBは検出成功、endpoint/lease条件、operation/valueごとの実処理証跡から公開可否を決め、`aidl_baseline_eligible`はAndroid 14 CTS baseline適合分類としてだけ保持する。px4/earth_pt1は電圧制御の証跡があるため該当operation/valueを公開し、tone、position、DiSEqC等の有効だが未対応の要求は副作用なしの`UNAVAILABLE`とする。',
+              'capability design bullet')
+          t = replace_once(t,
+              '| px4_drv feat/android-ddk | c2a031db8771ddd6e3e0b3b4a712b64ec384139b | 公開`ILnb`は非公開 | 0 Vまたは15 Vのみ。tone、position、DiSEqCの実処理証跡なし | `aidl_baseline_eligible=false`。`getLnbIds()`へ出さない。機器項目が`InternalFixed15V`ならHAL内固定15 V、`ExternalOrShared`なら電圧非操作でISDB-S frontendを公開可能。`UnknownOrDisabled`なら非公開 | 公開LNB leaseは生成せず、固定15 V時だけ既存の機器rail lease・rollback・safe-state規則を使う | `driver/px4_device.c`のblob cfed72f...、`driver/ptx_chrdev.c`のblob 18f074... |',
+              '| px4_drv feat/android-ddk | c2a031db8771ddd6e3e0b3b4a712b64ec384139b | 証跡済み`setVoltage()`能力を持つ公開`ILnb` endpoint | 0 Vまたは15 Vのみ。tone、position、DiSEqCの実処理証跡なし | `aidl_baseline_eligible=false`はCTS分類として保持するがpublication gateにしない。probe/endpoint条件成立時は`getLnbIds()`へ列挙し、0 V / 15 Vを実機へ適用する。tone、position、DiSEqCは有効要求を`UNAVAILABLE`とする。機器項目が`InternalFixed15V`ならHAL内固定15 V、`ExternalOrShared`なら電圧非操作でISDB-S frontendを公開可能。`UnknownOrDisabled`ならsatellite frontend非公開 | 公開endpointにはLNB leaseを生成する。固定15 V経路はcaller制御可能な`ILnb.setVoltage()`と分離し、既存の機器rail lease・rollback・safe-state規則を使う | `driver/px4_device.c`のblob cfed72f...、`driver/ptx_chrdev.c`のblob 18f074... |',
+              'px4 LNB resource row')
+          t = replace_once(t,
+              '| earth_pt1 Linux v6.6 | ffc253263a1375a65fa6c9f62a893e9767fbebfa | 公開`ILnb`は非公開 | `pt1.c`では`SEC_VOLTAGE_13`を11 V、`SEC_VOLTAGE_18`を15 Vに対応付ける。tone、position、DiSEqCの実処理証跡なし | `aidl_baseline_eligible=false`。`getLnbIds()`へ出さない。機器項目が`InternalFixed15V`ならHAL内固定15 V、`ExternalOrShared`なら電圧非操作でISDB-S frontendを公開可能。`UnknownOrDisabled`なら非公開 | 公開LNB endpointは生成せず、固定15 V時だけ既存の機器rail lease・rollback・safe-state規則を使う | Linux v6.6 commitの`drivers/media/pci/pt1/pt1.c` |',
+              '| earth_pt1 Linux v6.6 | ffc253263a1375a65fa6c9f62a893e9767fbebfa | 証跡済み`setVoltage()`能力を持つ公開`ILnb` endpoint | `pt1.c`では`SEC_VOLTAGE_13`を11 V、`SEC_VOLTAGE_18`を15 Vに対応付ける。tone、position、DiSEqCの実処理証跡なし | `aidl_baseline_eligible=false`はCTS分類として保持するがpublication gateにしない。probe/endpoint条件成立時は`getLnbIds()`へ列挙し、11 V / 15 Vを実機へ適用する。tone、position、DiSEqCは有効要求を`UNAVAILABLE`とする。機器項目が`InternalFixed15V`ならHAL内固定15 V、`ExternalOrShared`なら電圧非操作でISDB-S frontendを公開可能。`UnknownOrDisabled`ならsatellite frontend非公開 | 公開endpointにはLNB leaseを生成する。固定15 V経路はcaller制御可能な`ILnb.setVoltage()`と分離し、既存の機器rail lease・rollback・safe-state規則を使う | Linux v6.6 commitの`drivers/media/pci/pt1/pt1.c` |',
+              'earth_pt1 LNB resource row')
+
+          for forbidden in ('現行profileでは空配列を返す', '現行profileではLNB能力を公開しないため`UNAVAILABLE`', '公開`ILnb`は非公開', '`getLnbIds()`へ出さない', '`filter_id <-> hw_id`双方向relation', 'prepared bidirectional mutation'):
+              if forbidden in t:
+                  raise SystemExit(f'forbidden canonical text remains: {forbidden}')
+          p.write_text(t, encoding='utf-8')
+
+          p = Path('tuner_hal2/DESIGN_JA.md')
+          t = p.read_text(encoding='utf-8')
+          t = replace_once(t,
+              '| A/V sync relation | `AvSyncRegistry` | 双方向mapを片側だけ直接変更しない |',
+              '| A/V sync relation | `AvSyncRegistry` | `media_filter_id -> hw_sync_id`のmany-to-one relationと、保持する場合の`hw_sync_id -> Set<media_filter_id>` reverse indexを片側だけ直接変更しない。injective / bijectiveを仮定しない |',
+              'impl AvSync summary')
+          t = replace_once(t,
+              '| `AvSyncRegistry` | `demux/src/runtime/av_sync_registry.rs::AvSyncRegistry` | filter configure/unregister/close、demux closeからのprepared relation mutation | API、filter wrapper、`StreamBoundaryTxn`が双方向mapを直接更新する、PCR anchorを同ownerへ吸収する |',
+              '| `AvSyncRegistry` | `demux/src/runtime/av_sync_registry.rs::AvSyncRegistry`。正方向は`media_filter_id -> hw_sync_id`のmany-to-one relationとし、reverse indexを物理保持する場合は`hw_sync_id -> Set<media_filter_id>`を同ownerで管理する。injective / bijectiveは要求しない | filter configure/unregister/close、demux closeからのprepared relation mutation。1 filterのunregisterは同一`hw_sync_id`を共有する他filterのrelationを維持する | API、filter wrapper、`StreamBoundaryTxn`がrelation/reverse indexを直接更新する、reverse indexを単一filterへ縮退する、PCR anchorを同ownerへ吸収する |',
+              'impl AvSync canonical anchor')
+          t = replace_once(t, 'A/V sync双方向mapまたはPCR anchorを複数ownerが直接変更しない。', 'A/V sync relation / reverse indexまたはPCR anchorを複数ownerが直接変更しない。', 'impl AvSync prohibition')
+          if '双方向map' in t:
+              raise SystemExit('ambiguous AvSync bidirectional-map wording remains in tuner_hal2')
+          p.write_text(t, encoding='utf-8')
+          PY
+          git diff --check
+      - name: Commit canonical edits
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tuner_hal/DESIGN_JA.md tuner_hal2/DESIGN_JA.md
+          git commit -m 'design: clarify AV sync cardinality and partial LNB publication'
+          git push origin HEAD:agent/fix-commonization-boundaries
