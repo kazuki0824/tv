@@ -2496,7 +2496,7 @@ DVB backend は frontend index と同じ demux index / dvr index を使う。`ad
 
 ## B25 packet デスクランブル中核の範囲
 
-現行 Tuner HAL は、libaribb25 相当の B25 全体実装であるとは主張しない。Tuner HAL に実装済みなのは、188 byte TS packet の payload に対する MULTI2 復号中核、odd/even key 選択、adaptation フィールドを壊さない payload offset 判定、復号成功時の scrambling_control 正規化、復号失敗時の録画向け scrambled pass-through 診断である。
+本設計は、libaribb25 相当の B25 全体処理系を規定しない。本設計が Tuner HAL descrambler 中核として規定する範囲は、188 byte TS packet の payload に対する MULTI2 復号、odd/even key 選択、adaptation フィールドを変更しない payload offset 判定、復号成功時の scrambling_control 正規化、復号失敗時の録画向け scrambled pass-through 診断である。
 
 ### MULTI2 / B25 境界
 
