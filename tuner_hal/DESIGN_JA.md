@@ -1008,7 +1008,7 @@ fd付きhandle + `avDataId == 0` の成功は、shared backing、公開済みhan
 
 | 番号 | 対象 | 呼び出し元 / 事象 | 後片付け手順 | 手順分類 | 閉鎖ゲート | 後片付け完了フラグ | 公開API戻り値 | Drop挙動 | 再試行条件 | 後続公開API | 診断保持 | 設計上の成立条件 | 固定根拠 |
 |---:|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| CL-001 | Filter / DVR | 公開`close()`開始 | 公開API遮断開始 | 公開API遮断 | true | false | 後続手順結果で決定 | 該当なし | 後片付け未完の間は再試行対象 | `close()`以外は`INVALID_STATE` | close開始 | `close()`開始直後から他APIが成功しないこと | 閉鎖ゲートと後片付け完了を分離 |
+| CL-001 | Filter / DVR | 公開`close()`開始 | 公開API遮断開始 | 公開API遮断 | true | false | 後続手順結果で決定 | 該当なし | 0-S-3Bの`ObjectCloseTxn`参照 | `close()`以外は`INVALID_STATE` | close開始 | `close()`開始直後から他APIが成功しないこと | 閉鎖ゲートと後片付け完了を分離 |
 
 表5 / CL-* は公開 `close()` の対象、公開状態、戻り値、object 固有の cleanup 依存だけを定義する。`CloseCleanupAuthority` の取得、`begin_close` の atomicity、Drop / owner loss との競合、`CleanupPending` / reaper への handoff、retry semantics は 0-S-3B の `ObjectCloseTxn` を唯一の正本とし、本節では再定義しない。
 
@@ -1016,20 +1016,20 @@ fd付きhandle + `avDataId == 0` の成功は、shared backing、公開済みhan
 | 番号 | 対象 | 呼び出し元 / 事象 | 後片付け手順 | 手順分類 | 閉鎖ゲート | 後片付け完了フラグ | 公開API戻り値 | Drop挙動 | 再試行条件 | 後続公開API | 診断保持 | 設計上の成立条件 | 固定根拠 |
 |---:|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | CL-005 | Filter / DVR | 公開`close()` | 未生成資源の解放 | 安全な無処理成功 | true | 既存値を維持 | 成功扱い | 該当なし | 不要 | `close()`以外は`INVALID_STATE` | 安全な無処理成功手順 | 未生成資源の解放が`close()`失敗にならないこと | lazy allocation と整合 |
-| CL-007 | Filter / DVR | 公開`close()`全手順成功 | 完了確定 | 完了確定 | true | true | 成功 | Dropで何もしない | 不要 | `close()`以外は`INVALID_STATE`。二重`close()`は CL-009 に従う | close成功 | cleanup_complete が true になること | 完全閉鎖 |
-| CL-008 | Filter / DVR | 公開`close()`致命的手順失敗 | 未完確定 | 異常時閉鎖 | true | false | `UNKNOWN_ERROR` | Dropは別authorityを作らず、未完authorityを`ObjectCloseTxn`/回収機構へ一度だけ移管 | 失敗手順が残る間 | `close()`以外は`INVALID_STATE`。二重`close()`は CL-010 に従う | `failed_step`, `error_kind`, `remaining_steps` | 失敗が成功扱いにならないこと | fail-closed |
-| CL-010 | Filter / DVR | 二重`close()` | 後片付け未完 | 再試行 | true | false | 再試行結果に従う | Dropは別authorityを作らず、未完authorityを`ObjectCloseTxn`/回収機構へ一度だけ移管 | 失敗手順が残る間 | `close()`以外は`INVALID_STATE` | `close_retry` | 未完cleanupを成功扱いで隠さないこと | cleanup_complete を正にする |
+| CL-007 | Filter / DVR | 公開`close()`全手順成功 | 完了確定 | 完了確定 | true | true | 成功 | 0-S-3Bの`ObjectCloseTxn`参照 | 不要 | `close()`以外は`INVALID_STATE`。二重`close()`は CL-009 に従う | close成功 | cleanup_complete が true になること | 完全閉鎖 |
+| CL-008 | Filter / DVR | 公開`close()`致命的手順失敗 | 未完確定 | 異常時閉鎖 | true | false | `UNKNOWN_ERROR` | 0-S-3Bの`ObjectCloseTxn`参照 | 0-S-3Bの`ObjectCloseTxn`参照 | `close()`以外は`INVALID_STATE`。二重`close()`は CL-010 に従う | `failed_step`, `error_kind`, `remaining_steps` | 失敗が成功扱いにならないこと | fail-closed |
+| CL-010 | Filter / DVR | 二重`close()` | 後片付け未完 | 0-S-3Bの`ObjectCloseTxn`参照 | true | false | 0-S-3Bの`ObjectCloseTxn`が定める公開結果に従う | 0-S-3Bの`ObjectCloseTxn`参照 | 0-S-3Bの`ObjectCloseTxn`参照 | `close()`以外は`INVALID_STATE` | `close_retry` | 未完cleanupを成功扱いで隠さないこと | cleanup_complete を正にする |
 
-`CleanupPending`では、すべてのインターフェースの`close()`が未完了の後片付けだけを再試行する。`CleanupComplete`では、FrontendとLNBの`close()`は状態を変えず成功し、DVRとFilterの`close()`は`INVALID_STATE`を返す。Filterの使用中AV台帳は、`close()`の再試行または再度の`close()`で解放済みとして扱わない。
-
-
-#### 表5-A. close開始遮断 実装所有表
+`CleanupPending`の内部retry / handoffは0-S-3Bの`ObjectCloseTxn`を正とする。公開上、`CleanupComplete`ではFrontendとLNBの`close()`は状態を変えず成功し、DVRとFilterの`close()`は`INVALID_STATE`を返す。Filterの使用中AV台帳は、公開`close()`の再呼出しだけを理由に解放済みとして扱わない。
 
 
-| Resource | close開始時の状態 | close中に許可する操作 | close中に拒否する操作 | cleanup失敗時状態 | 再試行条件 |
+#### 表5-A. close開始遮断 公開状態表
+
+
+| Resource | close開始時の状態 | close中に許可する公開操作 | close中に拒否する公開操作 | cleanup失敗時状態 | 内部cleanup契約 |
 |---|---|---|---|---|---|
-| Frontend | `closing=true`, `cleanup_complete=false` | `close()` の再試行、所有者喪失 cleanup | `tune/scan/stopTune/stopScan/setCallback/linkLnb` | `cleanup_failed` または failed | `close()` または 所有者喪失 経路で再試行 |
-| Descrambler | `closing=true`, `cleanup_complete=false` | `close()` の再試行 | `setDemuxSource/setKeyToken/addPid/removePid` | `cleanup_failed` | `close()` 再試行可 |
+| Frontend | `closing=true`, `cleanup_complete=false` | `close()` | `tune/scan/stopTune/stopScan/setCallback/linkLnb` | `cleanup_failed` または failed | 0-S-3Bの`ObjectCloseTxn`参照 |
+| Descrambler | `closing=true`, `cleanup_complete=false` | `close()` | `setDemuxSource/setKeyToken/addPid/removePid` | `cleanup_failed` | 0-S-3Bの`ObjectCloseTxn`参照 |
 
 
 ### 表6. FMQ / EventFlag / 接続層失敗写像表
