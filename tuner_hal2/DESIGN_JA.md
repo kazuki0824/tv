@@ -66,6 +66,7 @@ lifecycle/owner/generation検証、引数検証との優先順位、再検証、
 | packet ingress / pipeline | `PacketTxn` / `PacketPipeline` | 通常packet ingress/parse/filter dispatchを`StreamBoundaryTxn`へ吸収しない |
 | frontend tune/scan | `FrontendTxn` | worker、backend adapter、callback層がfrontend ownerを迂回しない |
 | Record DVR / Filter relation | `RecordDvrFilterRelationTxn` | DVR側とFilter側が別のrelation ownerを持たない |
+| Frontend / LNB assignment relation | `FrontendLnbRelationTxn` | frontend object method use-caseまたはLNB registry ownerがrelation/leaseを別commitしない |
 | LNB persistent control | `LnbControlTxn` | persistent control APIごとに別のcontrol ownerを持たない |
 | callback registration | service_runtime側`CallbackRegistrationUseCase`。Binder callback artifactは`aidl_service/src/callback_store.rs` | AIDL façadeまたはdomain別use-caseが別のregistration ownerを持たない |
 | post-commit callback failure | `PostCommitCallbackFailureTxn` | API別に同型handlerを設けない |
@@ -92,6 +93,7 @@ lifecycle/owner/generation検証、引数検証との優先順位、再検証、
 | `StreamBoundaryTxn` | `demux/src/runtime/generation_boundary.rs::GenerationBoundaryTxn`（`StreamBoundaryTxn`の実装名） | `service_runtime/src/packet_ops.rs`のtyped boundary use-case | relation/queue/A-V sync/PCR/callback/descrambler各ownerの直接変更 |
 | packet ingress / pipeline | `service_runtime/src/boot/packet_txn.rs::PacketTxn<'a>`、`demux/src/parser/packet_pipeline.rs::PacketPipeline` | `service_runtime/src/packet_ops.rs`のtyped packet ingress use-case | `StreamBoundaryTxn`への通常packet処理吸収、AIDL/backend/filter callbackからのpipeline直接変更 |
 | `RecordDvrFilterRelationTxn` | `service_runtime/src/demux_filter_dvr_ops.rs::RecordDvrFilterRelationTxn` | Record DVR `attachFilter()` / `detachFilter()`、Filter/DVR close、demux cleanup接続 | object側shadow relationの直接変更 |
+| `FrontendLnbRelationTxn` | `service_runtime/src/frontend_ops.rs::FrontendLnbRelationTxn` | `IFrontend.setLnb()` object use-case、Frontend close時の`ObjectCloseTxn` typed assignment release | frontend use-case/LNB registryによるrelation・lease別commit、`LnbControlTxn`へのassignment ownership統合 |
 | `LnbControlTxn` | `service_runtime/src/lnb_control_txn.rs::LnbControlTxn` | `ILnb.setVoltage()` / `setTone()` / `setSatellitePosition()` object use-case | API別control owner、`sendDiseqcMessage()`の同ownerへの統合 |
 | `CallbackRegistrationUseCase` | `service_runtime/src/callback_registry.rs::CallbackRegistrationUseCase`、`RuntimeCallbackRegistry`、`aidl_service/src/callback_store.rs` | `IFrontend.setCallback()` / `ILnb.setCallback()`等のAIDL façadeからservice_runtime callback registration入口 | AIDL façade/domain別use-caseによる別registration owner、callback artifactの別保管先 |
 | `PostCommitCallbackFailureTxn` | `service_runtime/src/post_commit_callback_failure_txn.rs::PostCommitCallbackFailureTxn` | domain completion use-caseからのtyped入口 | API別handler、classifierまたはdomain ownerの置換 |
@@ -114,6 +116,7 @@ lifecycle/owner/generation検証、引数検証との優先順位、再検証、
 - callback AIDL façadeは`aidl_service/src/callback_store.rs`とservice_runtime側`CallbackRegistrationUseCase`を接続し、runtime/domain側へ直接書き込まない。
 - descrambler closeは`ObjectCloseTxn`から、demux invalidationはdemux invalidation ownerから、`DescramblerSessionCleanupTxn`のtyped入口へ接続する。
 - Record DVR/Filter lifecycle use-caseは`RecordDvrFilterRelationTxn`のtyped入口へ接続する。
+- Frontend LNB assignment use-caseは`FrontendLnbRelationTxn`へ接続し、LNB resource ownerのlease台帳内部を直接変更しない。
 - Filter/DVR `flush()` use-caseは`QueueCleanupTxn`へ接続し、同ownerからFilter側`FilterProducerDrainGate`またはDVR側`QueueEpochProtocol`のtyped入口を使用する。
 - filter lifecycle use-caseは`AvSyncRegistry`、stream boundary側は`PcrClockAnchorStore`のtyped invalidation入口へ接続し、各store内部へ直接アクセスしない。
 - domain completion use-caseは`WorkerFailureClassifier`のtyped結果を`PostCommitCallbackFailureTxn`へ渡す接続だけを持つ。
@@ -130,7 +133,7 @@ lifecycle/owner/generation検証、引数検証との優先順位、再検証、
 
 Filter、DVR、TimeFilterなどの子object生成はchild-open実装ownerへ接続する。親demuxの検証順序、登録確定点、rollback、TimeFilter非対応時の公開結果は`../tuner_hal/DESIGN_JA.md`の各API表とAT-010aを正とする。Descramblerのroot未結合生成と`setDemuxSource()`の一回性・原子的結合は同書AT-009aおよび`IDescrambler demux結合契約`を正とし、本書では再定義しない。
 
-`IFilter.setDataSource()`は`SourceBoundaryTxn`、`IDemux.setFrontendDataSource()`は`DemuxFrontendSourceTxn`、Record DVR接続は`RecordDvrFilterRelationTxn`、descrambler PID登録は`DescramblerPidTxn`を通す。`IFrontend.setLnb()`はservice_runtimeのfrontend object method use-caseからLNB lease/registry ownerへ接続する。CI CAM系は`../tuner_hal/DESIGN_JA.md`の非対応契約へ接続し、backend relationを生成しない。relationのvalidation、generation、commit/rollback semanticsは同書を正とする。
+`IFilter.setDataSource()`は`SourceBoundaryTxn`、`IDemux.setFrontendDataSource()`は`DemuxFrontendSourceTxn`、Record DVR接続は`RecordDvrFilterRelationTxn`、descrambler PID登録は`DescramblerPidTxn`を通す。`IFrontend.setLnb()`は`FrontendLnbRelationTxn`を通し、同ownerからLNB resource ownerのprepared assignment lease入口へ接続する。CI CAM系は`../tuner_hal/DESIGN_JA.md`の非対応契約へ接続し、backend relationを生成しない。relationのvalidation、generation、commit/rollback semanticsは同書を正とする。
 
 ### 入力処理
 
