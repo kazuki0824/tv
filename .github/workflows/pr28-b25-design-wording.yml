@@ -1,0 +1,45 @@
+name: PR28 B25 design wording
+
+on:
+  push:
+    branches:
+      - agent/fix-commonization-boundaries
+    paths:
+      - .github/workflows/pr28-b25-design-wording.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-commonization-boundaries
+          fetch-depth: 0
+      - name: Remove implementation status from B25 design scope
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('tuner_hal/DESIGN_JA.md')
+          t = p.read_text(encoding='utf-8')
+          old = '現行 Tuner HAL は、libaribb25 相当の B25 全体実装であるとは主張しない。Tuner HAL に実装済みなのは、188 byte TS packet の payload に対する MULTI2 復号中核、odd/even key 選択、adaptation フィールドを壊さない payload offset 判定、復号成功時の scrambling_control 正規化、復号失敗時の録画向け scrambled pass-through 診断である。'
+          new = '本設計は、libaribb25 相当の B25 全体処理系を規定しない。本設計が Tuner HAL descrambler 中核として規定する範囲は、188 byte TS packet の payload に対する MULTI2 復号、odd/even key 選択、adaptation フィールドを変更しない payload offset 判定、復号成功時の scrambling_control 正規化、復号失敗時の録画向け scrambled pass-through 診断である。'
+          if t.count(old) != 1:
+              raise SystemExit(f'expected exactly one B25 implementation-status paragraph, got {t.count(old)}')
+          t = t.replace(old, new, 1)
+          if 'Tuner HAL に実装済みなのは' in t:
+              raise SystemExit('implementation-status wording remains')
+          p.write_text(t, encoding='utf-8')
+      - name: Check diff
+        shell: bash
+        run: git diff --check
+      - name: Commit and push
+        shell: bash
+        run: |
+          git config user.name 'maleicacid'
+          git config user.email '4982384+kazuki0824@users.noreply.github.com'
+          git add tuner_hal/DESIGN_JA.md
+          git commit -m 'design: state B25 core as contract scope'
+          git push origin HEAD:agent/fix-commonization-boundaries
