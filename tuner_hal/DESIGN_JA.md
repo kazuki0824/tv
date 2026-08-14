@@ -2337,6 +2337,8 @@ LNBは機器単位の終端資源とし、本書の「LNB機器の資源規則�
 
 公開するLNB IDはsatellite frontendへ接続できる論理endpointとして扱い、1個のendpoint leaseを複数frontendへ同時接続しない。`setLnb(lnb_id)`は当該satellite frontendへ接続可能なLNB IDだけを受け付け、別の物理機器に属するLNB ID、地上波frontendへのLNB接続、不明なLNB IDは失敗させる。同一px4機器内で複数の論理endpointが共有する物理電圧レールは機器単位で直列化し、互換な電圧要求だけを参照数で共有する。
 
+`IFrontend.setLnb(lnb_id)`のrelation mutationは、frontendとLNB endpointの生存、所有者、generation、接続可能性、endpoint leaseおよび共有rail互換性を同一validation snapshotで確認し、frontend-LNB relationと必要なlease参照を単一commitで公開する。commit前失敗では旧relationと既存leaseを維持し、frontend側またはLNB側の片側だけを確定したrelation/leaseを通常状態として公開しない。CI CAM系は本書「非対応のTimeFilterとCI CAM」の契約どおり非対応であり、このrelation commit契約の成功対象へ含めない。
+
 `ILnb.setCallback(callback)` のBinder callback artifact / strong refは共通callback storeだけが所有し、runtime登録は`RuntimeCallbackRegistry`、LNB domainはlogical callback stateだけを所有する。set / replace / `callback == NULL` による解除 / close / owner lossは`CallbackRegistrationUseCase`の登録・cleanup契約へ接続し、`LnbHal`またはLNB個別use-caseがBinder callback実体、runtime registry、rollback方針を第二の正本として直接所有してはならない。`callback == NULL` はAOSP契約上の登録解除として成功対象に含める。AOSP frozen/stable AIDL のvendor独自改変、生のBinder transaction解析器による公開契約を通さない実装は採用しない。
 
 ### ILnb公開操作
