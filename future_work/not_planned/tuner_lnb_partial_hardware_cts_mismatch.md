@@ -2,9 +2,11 @@
 
 ## 位置付け
 
-この文書は、`earth_pt1` / `px4_drv` が実機・driverとして提供する LNB 制御能力と、Android CTS が non-null の `Lnb` に要求する基礎操作一式の粒度が一致しない問題を、既知の not planned 項目として記録する。
+この文書は、`earth_pt1` / `px4_drv` が実機・driverとして提供する LNB 制御能力と、Android CTS が non-null の `Lnb` に要求する基礎操作一式の粒度が一致しない問題を、既知の not planned 項目として記録する。Android互換性を満たすcanonical契約の正本ではなく、`tuner_hal/DESIGN_JA.md`の互換性契約を上書きしない。
 
-本製品は、対象 hardware / driver が実際に対応する LNB 制御を、CTS 合格のためだけに隠さない。反対に、hardware / driver が実処理できない tone、satellite position、DiSEqC 等を成功 no-op、擬似成功、callback echo で実装済みに見せない。
+Android互換性を維持するproduct profileでは、canonicalの`aidl_baseline_eligible`条件を適用し、CTS基礎操作一式を成立させられない部分LNB endpointを公開しない。以下の部分LNB公開方針は、CTS/CDD互換性を意図的に放棄する非互換product variantを選択する場合の既知差分としてのみ記録する。
+
+非互換product variantでは、対象 hardware / driver が実際に対応する LNB 制御を、CTS 合格のためだけに隠さない。反対に、hardware / driver が実処理できない tone、satellite position、DiSEqC 等を成功 no-op、擬似成功、callback echo で実装済みに見せない。
 
 ## AOSP / CTS 側の事実
 
@@ -24,7 +26,7 @@ Android CTS の `android.media.tv.tuner.cts.TunerTest#testLnb()` は、`Tuner.op
 - AOSP CTS `TunerTest.java`: https://android.googlesource.com/platform/cts/+/105d6f1ab8b916880af25847d71f01d5acc930e3/tests/tests/tv/src/android/media/tv/tuner/cts/TunerTest.java
 - AOSP Tuner AIDL `ILnb.aidl`: https://android.googlesource.com/platform/hardware/interfaces/+/2caf529bdcf4ff02ad941f77f158b680f3a5a4dc/tv/tuner/aidl/android/hardware/tv/tuner/ILnb.aidl
 
-## 本製品の方針
+## 非互換product variantを選択する場合の方針
 
 - `earth_pt1` / `px4_drv` について、hardware / driver の証跡で実処理可能と確認した LNB 制御は公開経路へ接続する。
 - 実処理できない LNB 操作を CTS 合格目的の成功 no-op にしない。
@@ -43,6 +45,6 @@ Android CTS の `android.media.tv.tuner.cts.TunerTest#testLnb()` は、`Tuner.op
 
 ## 製品・試験上の扱い
 
-部分 LNB 能力を公開する product/profile では、CTS LNB 試験が失敗し得ることを既知差分として扱う。製品側の受け入れ確認では、backend ごとに公開した操作と列挙値が実機へ反映されること、未対応操作が成功 no-op にならないことを個別に確認する。
+部分 LNB 能力を公開する非互換product variantでは、CTS LNB 試験が失敗し得ることを既知差分として扱う。製品側の受け入れ確認では、backend ごとに公開した操作と列挙値が実機へ反映されること、未対応操作が成功 no-op にならないことを個別に確認する。
 
 この既知差分は AOSP / CTS の意味論を書き換える根拠にはしない。AOSP 側に LNB の操作別 capability 表現が追加された場合、または対象 hardware / driver が CTS の基礎操作一式を実処理できるようになった場合は、本項目の前提を再評価する。

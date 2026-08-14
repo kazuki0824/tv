@@ -8,7 +8,7 @@
 
 物理ファイル名、module名、type名、関数名はAOSP公開契約またはARIB規範ではない。ただし、`../tuner_hal/DESIGN_JA.md`の`共通部品の定義条件`を満たすため、状態・寿命・失敗時遷移を所有する単一実装正本と許可entry pointは、本書の`共通transaction / use-caseの規範実装アンカー`で規範的な追跡アンカーとして固定する。責務を変えないrename、split、mergeだけでは公開設計変更にならないが、同一変更でアンカーを更新し、移動前後に複数正本を残してはならない。
 
-本PRで追加・変更する契約は、`tuner_hal2`へ適用する目標設計であり、現行実装済みの事実を表すものではない。公開能力を有効にできるのは、対応する実装入口、状態遷移・異常系試験、製品設定またはVTS設定がそろった機能だけである。移行は公開API単位を最小ゲートとし、依存するAPI、台帳、worker、設定を含む適用単位の完了条件も同時に満たす。未移行APIまたは未完了の依存閉包を新設計の成功能力として広告してはならない。
+本PRで追加・変更する契約は、`tuner_hal2`へ適用する目標設計であり、現行実装済みの事実を表すものではない。実装、設定、`Android.bp`、VTS用XML、単体試験が同じ契約へ追従し、`../タスク完了判定の実施方法.md`による横断確認が完了するまでは「設計済み・実装未適用」とする。この適用状態判定は本PR自身の設計完了判定とは別に扱う。公開能力を有効にできるのは、対応する実装入口、状態遷移・異常系試験、製品設定またはVTS設定がそろった機能だけである。移行は公開API単位を最小ゲートとし、依存するAPI、台帳、worker、設定を含む適用単位の完了条件も同時に満たす。未移行APIまたは未完了の依存閉包を新設計の成功能力として広告してはならない。
 
 ## 責務の一方向参照
 
@@ -16,14 +16,14 @@
 |---|---|---|
 | `tuner_hal/DESIGN_JA.md` | AOSP公開契約、VTSと能力公開、TS伝送構文、Table ID別section長、公開状態、寿命、失敗時遷移、共通部品の論理契約 | `tuner_hal2`は実装責務へ接続するだけとし、同じ状態表を持たない |
 | `arib_si_engine_rs/DESIGN_JA.md` | PSI/SI表固有の意味解析と意味オブジェクト | Tuner HAL公開状態または伝送長を定義しない |
-| `tuner_hal2/DESIGN_JA.md` | 実装内の論理責務、依存方向、規範実装アンカー | 公開契約の値や状態を上書きしない |
+| `tuner_hal2/DESIGN_JA.md` | 実装内の論理責務、依存方向、現在位置との対応、規範実装アンカー | 公開契約の値や状態を上書きしない |
 | `tuner_hal2/CODE_CONVENTION.md` | 実装規約、禁止構造、静的検査観点 | 状態遷移または戻り値を定義しない |
 
 ### 現行適用状態: nullable Binder境界
 
 公開契約の意味・戻り値・状態遷移は`../tuner_hal/DESIGN_JA.md`の「nullable Binder 境界」を正とし、本節は現在の実装適用状態だけを追跡する。
 
-Android 14 official AIDLから生成される現行Rust traitは、`IFilter.setDataSource()`、`IDescrambler.addPid()` / `removePid()`、`IFrontend.setCallback()`、`ILnb.setCallback()`のBinder interface引数をnon-null `Strong<dyn ...>`として受けるため、現在のRust実装にはNULLを受信するend-to-end経路がない。`future_work/r51/android14_aidl_rust_nullable_filter_boundary_blocker.md`は、公開AIDLを改変せずに現行Rust backendでNULLを受け取れない実装阻害だけを追跡する残課題であり、契約SSOTではない。同残課題が解消されるまでは、上記NULL経路を実装済み、VTS接続済み、またはAOSP契約達成済みと表明しない。この阻害を理由に`setDataSource(NULL)`または`IDescrambler.addPid()` / `removePid()`のNULL経路を実装対象から除外してはならない。
+Android 14 official AIDLから生成される現行Rust traitは、`IFilter.setDataSource()`、`IDescrambler.addPid()` / `removePid()`、`IFrontend.setCallback()`、`ILnb.setCallback()`のBinder interface引数をnon-null `Strong<dyn ...>`として受けるため、現在のRust実装にはNULLを受信するend-to-end経路がない。`future_work/r51/android14_aidl_rust_nullable_filter_boundary_blocker.md`は、公開AIDLを改変せずに現行Rust backendでNULLを受け取れない実装阻害だけを追跡する残課題であり、契約SSOTではない。同残課題が解消されるまでは、上記NULL経路を実装済み、VTS接続済み、またはAOSP契約達成済みと表明しない。 この阻害を理由に`setDataSource(NULL)`または`IDescrambler.addPid()` / `removePid()`のNULL経路を実装対象から除外してはならない。
 
 依存はAIDL境界からドメイン処理へ向かう。下位層がAIDL objectまたはBinder statusを保持してはならない。
 
@@ -98,9 +98,9 @@ flowchart TD
 
 | 契約 | 状態・寿命・失敗時遷移の単一実装正本 | 許可entry point | 禁止する迂回 |
 |---|---|---|---|
-| object method | `service_runtime/src/object_method_txn.rs`の`ObjectMethodTxnPlan`、`ObjectMethodDispatchProof`、`ObjectMethodExecutionToken`。validation/dispatchの補助正本は同moduleからだけ呼ぶ`method_validation.rs`と`method_dispatch.rs` | `aidl_service/src/object_runtime/mod.rs`の`execute_*_use_case*`、`plan_unavailable_object_method_use_case()`、`execute_object_query_use_case()`。domain側は`TunerServiceRuntime::*_for_object`が`ObjectMethodExecutionToken`を一回消費する | 個別AIDL methodによる先行runtime query、dispatch proofの生成・再利用、backend/registryの直接変更 |
+| object method | `service_runtime/src/object_method_txn.rs`の`ObjectMethodTxnPlan`、`ObjectMethodDispatchProof`、`ObjectMethodExecutionToken`。validation/dispatchの補助正本は同moduleからだけ呼ぶ`method_validation.rs`と`method_dispatch.rs` | `aidl_service/src/object_runtime/mod.rs`の`execute_*_use_case*`、`plan_unavailable_object_method_use_case()`、`execute_object_query_use_case()`。domain側は`TunerServiceRuntime::*_for_object`が`ObjectMethodExecutionToken`を一回消費する | 個別AIDL methodによる先行runtime query、`AidlMethodAdapter::plan()`の直接実行、dispatch proofの生成・再利用、backend/registryの直接変更 |
 | root open | `service_runtime/src/root_object_ops.rs`。登録後失敗の補償正本は`service_runtime/src/open_rollback.rs` | `aidl_service/src/tuner_service.rs`のroot AIDL methodからroot object use-caseを呼び、返された`RuntimeObjectEntry`からtyped Binder objectを生成する。生成後失敗はservice_runtime rollback入口へ返す | AIDL層でruntime allocation、object table登録、rollback順序、status写像を組み立てる |
-| child open | `service_runtime/src/boot/demux_filter_dvr_txn.rs`の`DemuxFilterDvrTxn<'a>`。公開use-case façadeは`service_runtime/src/demux_filter_dvr_ops.rs` | `aidl_service/src/child_object_open.rs`のfilter/DVR child open入口 | `openFilter()`/`openDvr()`ごとのallocation・callback cleanup・rollback複製 |
+| child open | `service_runtime/src/boot/demux_filter_dvr_txn.rs`の`DemuxFilterDvrTxn<'a>`。公開use-case façadeは`service_runtime/src/demux_filter_dvr_ops.rs` | `aidl_service/src/child_object_open.rs`の`open_filter_child_for_owner_object_with_request_builder()`および`open_dvr_child_for_owner_object_with_request_builder()` | `openFilter()`/`openDvr()`ごとのallocation・callback cleanup・rollback複製、`RuntimeObjectEntry.ledger_id`の再解釈 |
 | `ObjectCloseTxn` | `service_runtime/src/object_close_txn.rs::ObjectCloseTxn`。`begin_close`がlogical close確定・新規通常操作遮断・`CloseCleanupAuthority`取得を単一atomic commitとして所有し、typed artifact/domain/runtime cleanup command、`CleanupExecutionReport`接続、close finalizationを同typeが所有する | `aidl_service/src/object_runtime/mod.rs`のpublic close、owner-loss/Drop入口、service shutdown/reaper retryはいずれも同じ`begin_close`を使用する。取得済みauthorityの未完分だけを回収機構へ一度移管する | `DropLeakTxn`等の別cleanup authority、logical closeとauthority取得の分離commit、AIDL/Drop/worker/Reaperによるauthority重複、個別objectでのclose state machine複製 |
 | `DescramblerKeyTxn` / `DescramblerPidTxn` / `DescramblerSessionCleanupTxn` | 既存`service_runtime/src/boot/descrambler_txn.rs`内の独立type。session stateは`service_runtime/src/descrambler_session.rs`、key token/slot/refcountは`service_runtime/src/descrambler_key_table.rs`だけが所有する | 通常key/PID操作は`service_runtime/src/descrambler_ops.rs`のobject use-case。session cleanupはdescrambler close時に`ObjectCloseTxn` typed cleanup commandから、demux invalidation時にdemux invalidation ownerから直接typed cleanup requestとして`DescramblerSessionCleanupTxn`へ入る | key/PID/cleanupのstate machineを相互に吸収する、AIDL層またはdescrambler crateから台帳を直接変更する、demux invalidationをpublic close authorityへ変換する、close/invalidate callerがPID/key/pool cleanupを個別所有する |
 | `SourceBoundaryTxn` | 既存`demux/src/runtime/source_boundary.rs` | `service_runtime/src/demux_filter_dvr_ops.rs`のFilter source use-case、およびsource Filter close/unlink時に`ObjectCloseTxn`/cleanupから渡されるtyped relation mutation | demux/frontend relationをこのtransactionへ吸収する、filter wrapper/cleanup callerからgraph/stream stateを直接変更する |
@@ -112,7 +112,7 @@ flowchart TD
 | `CallbackRegistrationUseCase` | service_runtime側`service_runtime/src/callback_registry.rs::CallbackRegistrationUseCase`がregistration orchestrationとrollback policyを所有し、prepared runtime mutationは同moduleの`RuntimeCallbackRegistry`、domain logical stateは対象`service_runtime/src/*_ops.rs`のprepared mutationが所有する。Binder artifact本体は既存`aidl_service/src/callback_store.rs`だけが所有する | `IFrontend.setCallback()` / `ILnb.setCallback()`等ではAIDL façadeがlive/dispatch preflight後にBinder artifactを非公開prepareし、そのhandleをservice_runtime ownerへ渡す。service_runtime composite commit後、AIDL façadeは旧artifact cleanup/releaseだけを行う | AIDL façadeがdomain state・runtime registry・rollback policyを所有する、Binder callback実体をLNB/demux/device/resource ledgerへ保持する、artifact/runtime/domainを片側だけcommitする |
 | `PostCommitCallbackFailureTxn` | `service_runtime/src/post_commit_callback_failure_txn.rs::PostCommitCallbackFailureTxn`。分類済みtyped callback failureからdelivery outcome、callback health、必須診断への写像だけを所有し、failure category分類・commit済みdomain state・worker lifecycle・rollbackは所有しない | domain commitを完了したFrontend/Filter/DVR等のcompletion use-caseが`WorkerFailureClassifier`の分類済みtyped callback failureを一回だけ渡す | failure categoryの再分類、文字列/errno分類、domain commitのrollback、APIごとのcallback health/診断更新再実装 |
 | `FilterProducerDrainGate` | 既存`demux/src/runtime/queue_runtime.rs`。`Open`/`Draining`/`Closed`、`filter_delivery_generation`、`parser_state_generation`、`admitted_producer_count`、bounded pending event queue、`FilterProducerPermit(g)`の単一正本 | Filter/SharedFilter data pathのtyped producer admission/finishと、`QueueCleanupTxn`からのtyped drain/flush requestだけを入口とする | 公開API、worker、`QueueCleanupTxn`がgate内部状態を直接変更する、permit/drainを飛び越えてFMQ writeまたはpending event追加を確定する、DVR stateを吸収する |
-| `QueueEpochProtocol` | 既存`demux/src/runtime/queue_runtime.rs`。`queue_epoch`、read/write token、active count、drain stateだけを所有し、`PlaybackQueueBacking.queue_identity`は参照するが所有しない | DVR data pathのbegin/commit/cancelと`QueueCleanupTxn`からのtyped flush入口 | `QueueCleanupTxn`がqueue token/epoch内部状態を直接変更する、`QueueEpochProtocol`が`PlaybackQueueBacking.queue_identity`を二重所有・変更する、Filter stateを吸収する |
+| `QueueEpochProtocol` | 既存`demux/src/runtime/queue_runtime.rs`。`Open(g)`/`Draining(g)`/`Closed`、一回限りのread/write transaction token、受付中transaction数、`queue_epoch`の単一正本とし、`PlaybackQueueBacking.queue_identity`は参照するが所有しない | DVR data pathの`beginRead`/`beginWrite`/`commit`/`cancel`相当のtyped入口と、`QueueCleanupTxn`からのtyped flush requestだけを入口とする | 公開API、worker、`QueueCleanupTxn`が`queue_epoch`、queue pointer、token stateを直接変更する、または`PlaybackQueueBacking.queue_identity`の所有を二重化する、Filter stateを吸収する |
 | `QueueCleanupTxn` | 既存`service_runtime/src/queue_cleanup_txn.rs::QueueCleanupTxn`。Filter/DVR固有stateはそれぞれ`FilterProducerDrainGate` / `QueueEpochProtocol`が所有する | Filter/DVR `flush()` object use-case | 下位protocol内部stateを直接変更する、API別に同じorchestration/failure aggregationを再実装する |
 | `PlaybackConsumeTxn` | 既存`service_runtime/src/playback_consume_txn.rs` | playback workerから1 consume stepごとのtyped入口 | worker/FMQ helper/packet helperがread/parse/inject/consume遷移を再実装する |
 | frontend tune/scan | `service_runtime/src/boot/frontend_txn.rs::FrontendTxn<'a>`。public use-case façadeは`service_runtime/src/frontend_ops.rs` | `aidl_service/src/tuner_service/frontend_methods.rs`からobject method façadeを経由してfrontend object use-caseを呼ぶ。full retune、`stopTune()`、scan切替でdemux境界が必要な場合は`StreamBoundaryTxn`のtyped入口だけを使用する | worker、device backend、callback delivery層によるfrontend公開状態・generation・rollback状態の直接確定、`FrontendTxn`自身によるassembler、FMQ、AV、record queue、demux stream generationの直接変更 |
@@ -120,7 +120,7 @@ flowchart TD
 | `PcrClockAnchorStore` | `demux/src/runtime/pcr_clock_anchor.rs::PcrClockAnchorStore` | PCR観測と`StreamBoundaryTxn`からのprepared invalidation | APIまたは`StreamBoundaryTxn`がanchor内部を直接更新する、A/V sync relationを同ownerへ吸収する |
 | `WorkerRuntime` / `WorkerHandle` | `service_runtime/src/worker_runtime.rs::{WorkerRuntime, WorkerHandle}` | 各domain worker ownerのspawn/stop/wake/join/reaper入口 | `WorkerLifecycleProtocol`等の別generic lifecycle ownerを追加する、domain start/stop state machineを共通runtimeへ吸収する |
 | `WorkerFailureClassifier` | 既存`service_runtime/src/worker_failure_classifier.rs` | worker owner / cleanup manager / callback・backend失敗を扱うownerからtyped failureを入力し、分類結果だけを返す | classifierが停止順序、retry/cleanup、quarantine、公開/domain state transitionを直接変更する、owner側が文字列/errnoで再分類する |
-| frontend worker終端 | 既存`service_runtime/src/frontend_worker_txn.rs`、worker slot/generationは`device/src/runtime/frontend_worker.rs`の`FrontendWorkerRegistry` | `service_runtime/src/frontend_ops.rs`および`service_runtime/src/boot/frontend_txn.rs` | generic worker mechanismやclassifierの責務を再実装する |
+| frontend worker終端 | 既存`service_runtime/src/frontend_worker_txn.rs`、worker slot/generationは`device/src/runtime/frontend_worker.rs`の`FrontendWorkerRegistry` | `service_runtime/src/frontend_ops.rs`および`service_runtime/src/boot/frontend_txn.rs`。close/owner-lossは`ObjectCloseTxn`からtyped cleanup commandとして接続し、失敗種別は`WorkerFailureClassifier`のtyped resultだけを受ける | worker自身によるowner unregister/lease返却、回収完了前のresource再利用、AIDL層によるjoin/reaper方針の決定、worker終了use-caseによる失敗種別の再分類、generic worker mechanismやclassifierの責務の再実装 |
 
 ##### 共通部品とAPI固有手順の合成規則
 
@@ -135,7 +135,9 @@ flowchart TD
 - `PostCommitCallbackFailureTxn`はAPI名ではなくdomain commitとの相対時点で適用する。commit後だけを対象とし、domain stateをrollbackせずcallback health/diagnosticだけを更新する。
 - Filter/DVR `flush()`は`QueueCleanupTxn`を共通orchestratorとして使用し、cleanup対象調停と失敗集約だけを共通化する。Filter固有stateは`FilterProducerDrainGate`、DVR固有stateは`QueueEpochProtocol`が独立して所有し、`QueueCleanupTxn`はtyped入口だけを使用する。
 - `AvSyncRegistry`と`PcrClockAnchorStore`はprepared mutation/invalidation tokenを上位transactionへ返し、外側のfilter lifecycleまたは`StreamBoundaryTxn`のcommitと同じ排他区間で確定する。pre-commit failureではtokenをabortし、片側だけ更新しない。
-- top-level cleanup / rollback use-caseは`CleanupExecutionReport` / `SharedCleanupDiagnostics`と共通failure-composition helperを通してよい。これらは結果表現/helperであってtransaction ownerではない。
+- top-level cleanup / rollback use-caseは`CleanupExecutionReport` / `SharedCleanupDiagnostics`と共通failure-composition helperを通し、API別・worker別にfirst-error aggregation、primary/cleanup precedence、文字列detail合成を再実装しない。これらはcleanup結果の共通表現と合成部品であり、新しいlifecycle transaction ownerを意味しない。
+
+最低試験は、`PostCommitCallbackFailureTxn`についてFilter/DVR双方でcommit済みstartを維持してrollbackしないこと、`FilterProducerDrainGate`についてflush中の新規permit拒否・全permit排出・commit前失敗時の状態不変、`QueueEpochProtocol`についてtokenの一回消費・flush drain後だけのepoch更新・flush commit前失敗時のqueue/epoch不変を固定する。
 
 ### ルートobject
 
@@ -179,7 +181,7 @@ queueへの書き込み権限は世代付きとし、`flush()`、再設定、停
 | 適用単位 | 現在状態 | 実装追跡先 | 移行完了条件 |
 |---|---|---|---|
 | 公開object methodの検証順序とtransaction境界 | 設計済み・実装未適用 | `aidl_service/`、`service_runtime/`、`domain_request/` | 対象APIの入口が規範phase orderへ一本化され、状態不正と入力不正の優先順位、commit前後失敗、rollbackの試験が合格 |
-| frontend tune/scan、再選局、終端deadline | 設計済み・実装未適用 | `service_runtime/`、`device/`、callback配送 | AOSP callback契約を満たす終端、scan継続、非破壊re-entry、full retune、原因別状態、deadlineの試験が合格 |
+| frontend tune/scan、再選局、終端deadline | 設計済み・実装未適用 | `service_runtime/`、`device/`、callback配送 | AOSP callback契約を満たす終端、`scan(K)→LOCKED(g1)→scan(K)→END(g2)`で2回目のbackend探索・LOCKED再配送がないこと、異なるscan request・`stopScan()`・`tune()`・`close()`で継続状態が失効すること、安定同一条件の非破壊re-entry、full retuneでの旧session遮断、破壊的commit後に旧要求を再投入しないこと、旧TSが新demux/filter世代へ混入しないこと、原因別の`Untuned`／`FailedBackend`／`FailedBoundary`／`Quarantined`遷移、deadlineの試験が合格 |
 | Filter/DVR/AV/PESとFMQの資源契約 | 設計済み・実装未適用 | `demux/`、`fmq/`、`fmq_shim/`、`resource_ledger/` | `CapabilitySnapshot`からの予約、event-local/shared AV、processing buffer、overflow、close解放の試験が合格 |
 | 自律cleanupとworker回収 | 設計済み・実装未適用 | `service_runtime/`、各worker owner、`resource_ledger/` | owner操作なしで再試行が進み、期限後の隔離またはservice-critical遷移とlease非再利用を試験で確認 |
 | query snapshotとbackend適合 | 設計済み・実装未適用 | `service_runtime/`、`device/`、`config/` | queryがbackend I/Oを行わず、世代付きcacheの更新・失効とmanifest/probeによるbackend選択を試験で確認 |
