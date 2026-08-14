@@ -2,9 +2,9 @@
 
 ## 位置付け
 
-この文書は、`earth_pt1` / `px4_drv` が実機・driverとして提供する LNB 制御能力と、Android CTS が non-null の `Lnb` に要求する基礎操作一式の粒度が一致しない問題を、既知の not planned 項目として記録する。LNB の公開可否、各 operation / value の成功可否、資源寿命、失敗時遷移の canonical 契約は `tuner_hal/DESIGN_JA.md` を正とし、この文書を並行 SSOT にしない。
+この文書は、`earth_pt1` / `px4_drv` が実機・driverとして提供する LNB 制御能力と、Android CTS が non-null の `Lnb` に要求する基礎操作一式の粒度が一致しない問題について、採用理由、既知 compatibility delta、再評価条件を記録する。部分LNB能力を公開してCTS/CDD差分を受容するproduct-level判断は `開発規則.md` の「LNB部分能力公開の製品例外」を正とし、LNB の公開可否、各 operation / value の成功可否、資源寿命、失敗時遷移のTuner HAL公開契約は `tuner_hal/DESIGN_JA.md` を正とする。この文書はどちらの並行SSOTにもならない。
 
-本製品では、Android 14 CTS の LNB 試験合格よりも、hardware / driver が実処理できることを証跡で確認した LNB operation / value を公開することを優先する。`aidl_baseline_eligible` は Android 14 CTS が non-null LNB object に要求する基礎操作一式を実処理できるかを表す CTS baseline 適合分類であり、公開 `ILnb` endpoint 全体の生成可否を決める gate には使わない。
+`開発規則.md` の決定により、本製品ではAndroid 14 CTSのLNB試験合格より、hardware / driverが実処理できることを証跡で確認したLNB operation / valueの公開を優先する。`aidl_baseline_eligible` の意味と公開gateとの関係は `tuner_hal/DESIGN_JA.md` を正とし、本書では再定義しない。
 
 したがって、対象 hardware / driver が実処理できる LNB 制御は canonical capability 対応表に従って公開経路へ接続する。反対に、hardware / driver が実処理できない tone、satellite position、DiSEqC 等を成功 no-op、擬似成功、callback echo で実装済みに見せない。有効だが対象 backend で未対応の operation / value は、副作用なしの typed failure として `UNAVAILABLE` を返す。
 

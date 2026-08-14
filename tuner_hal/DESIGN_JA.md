@@ -2337,7 +2337,7 @@ LNBは機器単位の終端資源とし、本書の「LNB機器の資源規則�
 
 公開するLNB IDはsatellite frontendへ接続できる論理endpointとして扱い、1個のendpoint leaseを複数frontendへ同時接続しない。`setLnb(lnb_id)`は当該satellite frontendへ接続可能なLNB IDだけを受け付け、別の物理機器に属するLNB ID、地上波frontendへのLNB接続、不明なLNB IDは失敗させる。同一px4機器内で複数の論理endpointが共有する物理電圧レールは機器単位で直列化し、互換な電圧要求だけを参照数で共有する。
 
-`ILnb.setCallback(callback)` は、受け取ったコールバック実体を `LnbHal` 内に保持する。`callback == NULL` は AOSP契約上の callback 登録解除として成功対象に含め、保持中の callback 実体を解放する。再設定時は新しいコールバック実体で置換する。`ILnb.close()` と未閉鎖 `LnbHal` の破棄経路では保持中のコールバック実体を解放する。AOSP frozen/stable AIDL の vendor 独自改変、生の Binder transaction 解析器による公開契約を通さない実装は採用しない。
+`ILnb.setCallback(callback)` のBinder callback artifact / strong refは共通callback storeだけが所有し、runtime登録は`RuntimeCallbackRegistry`、LNB domainはlogical callback stateだけを所有する。set / replace / `callback == NULL` による解除 / close / owner lossは`CallbackRegistrationUseCase`の登録・cleanup契約へ接続し、`LnbHal`またはLNB個別use-caseがBinder callback実体、runtime registry、rollback方針を第二の正本として直接所有してはならない。`callback == NULL` はAOSP契約上の登録解除として成功対象に含める。AOSP frozen/stable AIDL のvendor独自改変、生のBinder transaction解析器による公開契約を通さない実装は採用しない。
 
 ### ILnb公開操作
 
