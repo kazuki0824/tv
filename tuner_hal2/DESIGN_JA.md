@@ -87,7 +87,7 @@ flowchart TD
 | post-commit callback failure | `PostCommitCallbackFailureTxn`が`WorkerFailureClassifier`で分類済みのtyped callback failureを受け、delivery outcome / callback health / diagnosticへの写像だけを所有する | failure categoryの再分類、commit済みdomain stateのrollback、API別同型handler |
 | Filter / DVR flush cleanup orchestration | `QueueCleanupTxn`。Filter/DVR固有stateを所有せず、typed下位protocol呼出しと失敗集約だけを共通化 | API別orchestration複製、下位protocol内部stateの直接変更 |
 | DVR playback consume | `PlaybackConsumeTxn` | playback workerがread/parse/inject/consume状態機械を再実装しない |
-| A/V sync relation | `AvSyncRegistry` | 双方向mapを片側だけ直接変更しない |
+| A/V sync relation | `AvSyncRegistry` | `media_filter_id -> hw_sync_id`のmany-to-one relationと、保持する場合の`hw_sync_id -> Set<media_filter_id>` reverse indexを片側だけ直接変更しない。injective / bijectiveを仮定しない |
 | PCR clock anchor | `PcrClockAnchorStore` | APIまたは`StreamBoundaryTxn`がanchor内部を直接変更しない |
 | worker lifecycle mechanism | `WorkerRuntime` / `WorkerHandle` | 別のgeneric worker lifecycle transaction/protocolを重ねない |
 | worker failure classification | `WorkerFailureClassifier`。stop/wake/join/EventFlag/Reaper/backend-control/callback等の生の失敗を共通typed分類し、分類結果だけを返す | 停止順序、retry/cleanup、公開状態遷移の所有、API別再分類 |
@@ -116,7 +116,7 @@ flowchart TD
 | `QueueCleanupTxn` | 既存`service_runtime/src/queue_cleanup_txn.rs::QueueCleanupTxn`。Filter/DVR固有stateはそれぞれ`FilterProducerDrainGate` / `QueueEpochProtocol`が所有する | Filter/DVR `flush()` object use-case | 下位protocol内部stateを直接変更する、API別に同じorchestration/failure aggregationを再実装する |
 | `PlaybackConsumeTxn` | 既存`service_runtime/src/playback_consume_txn.rs` | playback workerから1 consume stepごとのtyped入口 | worker/FMQ helper/packet helperがread/parse/inject/consume遷移を再実装する |
 | frontend tune/scan | `service_runtime/src/boot/frontend_txn.rs::FrontendTxn<'a>`。public use-case façadeは`service_runtime/src/frontend_ops.rs` | `aidl_service/src/tuner_service/frontend_methods.rs`からobject method façadeを経由してfrontend object use-caseを呼ぶ。full retune、`stopTune()`、scan切替でdemux境界が必要な場合は`StreamBoundaryTxn`のtyped入口だけを使用する | worker、device backend、callback delivery層によるfrontend公開状態・generation・rollback状態の直接確定、`FrontendTxn`自身によるassembler、FMQ、AV、record queue、demux stream generationの直接変更 |
-| `AvSyncRegistry` | `demux/src/runtime/av_sync_registry.rs::AvSyncRegistry` | filter configure/unregister/close、demux closeからのprepared relation mutation | API、filter wrapper、`StreamBoundaryTxn`が双方向mapを直接更新する、PCR anchorを同ownerへ吸収する |
+| `AvSyncRegistry` | `demux/src/runtime/av_sync_registry.rs::AvSyncRegistry`。正方向は`media_filter_id -> hw_sync_id`のmany-to-one relationとし、reverse indexを物理保持する場合は`hw_sync_id -> Set<media_filter_id>`を同ownerで管理する。injective / bijectiveは要求しない | filter configure/unregister/close、demux closeからのprepared relation mutation。1 filterのunregisterは同一`hw_sync_id`を共有する他filterのrelationを維持する | API、filter wrapper、`StreamBoundaryTxn`がrelation/reverse indexを直接更新する、reverse indexを単一filterへ縮退する、PCR anchorを同ownerへ吸収する |
 | `PcrClockAnchorStore` | `demux/src/runtime/pcr_clock_anchor.rs::PcrClockAnchorStore` | PCR観測と`StreamBoundaryTxn`からのprepared invalidation | APIまたは`StreamBoundaryTxn`がanchor内部を直接更新する、A/V sync relationを同ownerへ吸収する |
 | `WorkerRuntime` / `WorkerHandle` | `service_runtime/src/worker_runtime.rs::{WorkerRuntime, WorkerHandle}` | 各domain worker ownerのspawn/stop/wake/join/reaper入口 | `WorkerLifecycleProtocol`等の別generic lifecycle ownerを追加する、domain start/stop state machineを共通runtimeへ吸収する |
 | `WorkerFailureClassifier` | 既存`service_runtime/src/worker_failure_classifier.rs` | worker owner / cleanup manager / callback・backend失敗を扱うownerからtyped failureを入力し、分類結果だけを返す | classifierが停止順序、retry/cleanup、quarantine、公開/domain state transitionを直接変更する、owner側が文字列/errnoで再分類する |
@@ -199,7 +199,7 @@ queueへの書き込み権限は世代付きとし、`flush()`、再設定、停
 - worker owner/APIがstop/wake/join/EventFlag/Reaper/backend-control/callback等の同型失敗分類を個別実装せず、`WorkerFailureClassifier`のtyped結果を使用する。
 - LNB Binder callback実体をLNB domain/AIDL objectに直接保持しない。
 - DVR側とFilter側がRecord relationを別々にcommitしない。
-- A/V sync双方向mapまたはPCR anchorを複数ownerが直接変更しない。
+- A/V sync relation / reverse indexまたはPCR anchorを複数ownerが直接変更しない。
 - `tuner_hal`で定義した公開戻り値を`service_runtime`またはbackendで別の値へ読み替えない。
 - AIDL objectまたはcallback実体をdemux、device、resource ledgerへ渡さない。
 - 静的inventory／capability queryからcleanup、worker操作、backend I/Oを開始しない。動的frontend status queryは現行製品では世代付き`FrontendStatusSnapshot`だけを読む。ただし、`../tuner_hal/DESIGN_JA.md`の公開状態表で対象status、bounded I/O上限、失敗写像、generation再検証、snapshot更新との排他を明示したstatusはbounded synchronous readへ変更できる。

@@ -165,8 +165,8 @@ object methodでは、呼出対象のlifecycle/generation不整合を引数値�
 | `getDemuxCaps()` | `CapabilitySnapshot.publicDemuxes`と同じper-demux能力集合から`numDemux`と`filterCaps`を導出し、その他の不変な`DemuxCapabilities`項目と一括で返す | snapshotを読み出せない内部障害は`UNKNOWN_ERROR`、部分的な能力値は返さない |
 | `getDemuxInfo(id)` | `CapabilitySnapshot.publicDemuxes[id].filterTypes`を不変の`DemuxInfo.filterTypes`として返す | 未公開IDは`INVALID_ARGUMENT`、内部snapshot障害は`UNKNOWN_ERROR` |
 | `openDescrambler()` | descrambler object枠と`NeverCalledUnbound` session台帳だけを同一transactionで確定し、`IDescrambler` objectだけを返す。demux ID、demux generation、`DescramblerCapacityPool`は選択しない | 対応するdescrambler能力またはobject/session枠がない場合は`UNAVAILABLE`。後段準備失敗では予約と登録を戻してobjectを返さない |
-| `getLnbIds()` | 起動時に公開対象と確定したLNB IDを昇順で返す。現行profileでは空配列を返す | snapshotを読み出せない内部障害は`UNKNOWN_ERROR`、部分結果は返さない |
-| `openLnbById(id)` | 将来、公開済みIDのendpoint使用権とruntime登録を同一transactionで確定できる場合に、その`ILnb` objectだけを返す | 現行profileではLNB能力を公開しないため`UNAVAILABLE`。能力を公開する将来profileでは、未公開IDは`INVALID_ARGUMENT`、使用中または後片付け未完のendpointは`UNAVAILABLE`とし、objectを返さない |
+| `getLnbIds()` | 起動時probeとoperation/value capability対応表から公開対象と確定したLNB IDを昇順で返す。`aidl_baseline_eligible=false`だけを理由に除外しない | snapshotを読み出せない内部障害は`UNKNOWN_ERROR`、部分結果は返さない |
+| `openLnbById(id)` | 公開済みIDのendpoint使用権とruntime登録を同一transactionで確定し、その`ILnb` objectだけを返す。公開判定は実証済みoperation/value capabilityに従う | 未公開IDは`INVALID_ARGUMENT`、公開済みだが使用中、`CleanupPending`、`Quarantined`のendpointは`UNAVAILABLE`。`aidl_baseline_eligible=false`だけを理由に拒否しない |
 | `openLnbByName(name, out lnbId)` | 本製品は名前付き外部LNBを公開しない | 空文字は`INVALID_ARGUMENT`、その他の名前は`UNAVAILABLE`。LNB ID、object、leaseを生成せず、出力を部分公開しない |
 | `isLnaSupported()` | `false`を返す | 内部状態へ依存させない |
 | `setLna(enable)` | 本製品はLNA制御を公開しない | `UNAVAILABLE`。frontend、backend、capabilityを変更しない |
@@ -360,7 +360,7 @@ commit前失敗では、成功戻りを返してはならない。commit後clean
 | DVR queue epoch | `QueueEpochProtocol` | PlaybackQueueBacking.queue_identityを参照し、同一identity内のqueue_epoch/token/drainを管理 | Filter stateまたはDVR flush全体を所有すること |
 | Filter / DVR `flush()` cleanup orchestration | `QueueCleanupTxn` | Filter/DVR固有stateを所有せず、公開`flush()`のcleanup対象調停・typed下位protocol呼出し・失敗集約だけを共通化 | `FilterProducerDrainGate` / `QueueEpochProtocol`内部状態の直接所有、API別cleanup orchestrationの複製 |
 | DVR playback read/inject | `PlaybackConsumeTxn` | FMQ read、TS parse、backend inject、consume cursorを一つの状態機械で扱う | workerやFMQ helperがread/parse/inject/consumeを再実装すること |
-| A/V sync relation | `AvSyncRegistry` | `filter_id <-> hw_id`双方向relationをprepared mutationで外側transactionと同commit | 片方向mapの直接更新、PCR anchorとのowner統合 |
+| A/V sync relation | `AvSyncRegistry` | `media_filter_id -> hw_sync_id`のmany-to-one relationを正本とし、reverse indexを物理保持する場合は`hw_sync_id -> Set<media_filter_id>`としてprepared mutationで外側transactionと同commitする。injective / bijectiveは要求しない | relation/reverse indexの片側だけの直接更新、reverse indexを単一filterへ縮退、PCR anchorとのowner統合 |
 | PCR clock anchor | `PcrClockAnchorStore` | generation-scoped anchorとprepared invalidationを外側boundaryと同commit | API/`StreamBoundaryTxn`によるanchor内部の直接更新、A/V sync relationとのowner統合 |
 
 #### 0-S-3B. 共通部品の規範定義
@@ -386,7 +386,7 @@ commit前失敗では、成功戻りを返してはならない。commit後clean
 | `QueueEpochProtocol` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | DVR data path、`QueueCleanupTxn`からのtyped flush request | `Open(g)`/`Draining(g)`/`Closed`、`queue_epoch`、一回限りのread/write transaction token、受付中transaction数 | `queue_identity`（`PlaybackQueueBacking`所有）、Filter producer、DVR parser/stats、flush orchestration | `Open(g)`でbegin/token発行 → commit/cancel/dropでtokenを一回消費 → flush開始を`Draining(g)`へ線形化して新規begin拒否 → 受付中transaction排出 → epoch prepare/commitで`Open(g+1)`、closeで`Closed` | stale token・二重token消費を拒否し、flush commit前失敗は旧`Open(g)`/epoch/positionを維持 | DVR data path、`QueueCleanupTxn` | Filter path、API別token state machine、orchestratorの内部state直接変更 | Open/Draining/Closed遷移、一回性token、flush race、commit前状態不変、stale token、identity ABA |
 | `QueueCleanupTxn` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | Filter / DVR `flush()` use-case | cleanup orchestration plan、typed下位protocol呼出順序、共通失敗集約/result composition | Filter producer permit/state、DVR queue token/epoch、API固有eligibility/公開状態 | API ownerが対象確定 → typed drain/cleanup request → 全対象結果集約 → API ownerへtyped result返却 | 下位protocol失敗を成功へ丸めず全対象を試行し、API固有state transitionは各ownerへ返す | Filter/DVR flush use-case | 下位protocol内部stateの直接変更、non-flush API、API別orchestration複製 | Filter/DVR双方が同じorchestratorを通る、下位state独立、partial cleanup failure、result aggregation |
 | `PlaybackConsumeTxn` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | playback workerの1 consume step | FMQ read transaction、processing buffer、parse/inject cursor、consume result | worker lifetime、queue epoch owner | beginRead → copy → commitRead → parse → inject incrementally → finish/retain | retryable injectはbuffer/cursor保持、stop保持、flush/close/fatalは損失診断して破棄 | playback worker | FMQ/helperの独自consume state machine | partial TS、partial inject、retry、stop→start preserve、flush discard |
-| `AvSyncRegistry` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | AV/PCR filter configure/unregister/close、demux close | `filter_id <-> hw_id`双方向relation | PCR clock anchor、filter lifecycle本体 | validate → prepared bidirectional mutation → outer transaction commit/abort | abortで両map不変、片方向確定を通常状態にしない | filter/demux lifecycle transaction | API/Filter wrapper/StreamBoundaryのmap直接更新 | register、reconfigure、unregister、filter/demux close、abort、bidirectional invariant |
+| `AvSyncRegistry` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | AV/PCR filter configure/unregister/close、demux close | `media_filter_id -> hw_sync_id`のmany-to-one relation。reverse indexを物理保持する場合だけ`hw_sync_id -> Set<media_filter_id>`を同ownerで持ち、injective / bijectiveは要求しない | PCR clock anchor、filter lifecycle本体 | validate → forward relation mutation prepare → optional reverse-index mutation prepare → outer transaction commit/abort | abortでforward relationとreverse indexを不変に保ち、片側だけの確定を通常状態にしない。1 filterのunregisterで同一`hw_sync_id`を共有する他filterのrelationを消さない | filter/demux lifecycle transaction | API/Filter wrapper/StreamBoundaryのrelation/reverse index直接更新、reverse indexを`hw_sync_id -> media_filter_id`へ縮退 | register、複数media filterによる同一hw sync ID共有、reconfigure、1 filterだけのunregister、filter/demux close、abort、forward/reverse整合、non-injective relation |
 | `PcrClockAnchorStore` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | PCR観測、stream/filter boundaryからprepared invalidation | generation-scoped `PcrClockAnchor` | A/V sync ID relation、stream generation本体 | observe/update または prepare invalidation → outer commit/abort | stale generation拒否、abortで旧anchor維持、commit後は旧anchor再利用禁止 | PCR data path、StreamBoundary/filter lifecycle | API/StreamBoundaryによる内部直接変更 | PCR observe/wrap、flush/stop/close/input-gen/retune/playback flush invalidation、stale generation |
 
 #### 0-S-4. 失敗分類と波及範囲
@@ -2323,16 +2323,17 @@ AV filter の `start()`、共有ハンドル、MediaEventの状態別契約は�
 ## LNB能力と固定給電
 
 
-LNBは機器単位の終端資源とし、本書の「LNB機器の資源規則」と事象駆動の「ワーカー終了契約」だけで管理する。AOSPにLNBとして公開するendpointは、Android 14 CTSが公開objectへ要求する基礎操作を実処理できなければならない。少なくとも対応電圧、`setTone(TONE_NONE)`、`setSatellitePosition(POSITION_A)`、2バイトの`sendDiseqcMessage()`、登録済みcallbackへの受信通知を、成功扱いの無処理ではなくbackend契約として成立させることを`aidl_baseline_eligible`条件とする。
+LNBは機器単位の終端資源とし、本書の「LNB機器の資源規則」と事象駆動の「ワーカー終了契約」だけで管理する。`aidl_baseline_eligible`は、Android 14 CTSがnon-nullの公開LNB objectへ要求する基礎操作一式、すなわち対応電圧、`setTone(TONE_NONE)`、`setSatellitePosition(POSITION_A)`、2バイトの`sendDiseqcMessage()`、登録済みcallbackへの受信通知を、成功扱いの無処理ではなくbackend契約として実処理できるかを表すCTS baseline適合分類とする。この分類は公開`ILnb` endpoint全体の生成可否を決めるgateではない。
 
-現在証跡があるpx4/earth_pt1 backendは電圧制御しか確認できず、公開`ILnb`に必要な基礎操作条件を満たさない。そのため現行`ProductProfile`では`aidl_baseline_eligible_lnb_count=0`、`getLnbIds()`は空、公開AIDLに存在する`openLnbById()`と`openLnbByName()`は`UNAVAILABLE`とし、`ILnb` object、callback、leaseを生成しない。電圧制御だけを持つ内部backendをAOSPの`ILnb`対応能力として広告してはならない。
+本製品はAndroid 14 CTSのLNB試験合格より、hardware / driverが実処理できることを証跡で確認したLNB operation / valueをframeworkへ公開することを優先する。LNB endpointは、probeに成功し、satellite frontendへ接続可能で、endpoint lease条件を満たし、かつ少なくとも1つの公開operation / valueに実処理証跡がある場合に`CapabilitySnapshot`へ公開対象としてcommitできる。`aidl_baseline_eligible=false`だけを理由にendpoint全体を隠してはならない。証跡のないoperation / valueを能力として生成してはならず、有効だが対象backendで未対応の要求は副作用なしの`UNAVAILABLE`とする。未知の列挙値その他の不正要求は`INVALID_ARGUMENT`とし、backend未対応と区別する。
 
-ただし、公開`ILnb`対応能力とsatellite frontendの電源トポロジは別能力として扱う。`SupportedDeviceCapabilityCatalog`の機器項目は、`InternalFixed15V`、`ExternalOrShared`、`UnknownOrDisabled`のいずれかを保持する。`InternalFixed15V`は、物理rail owner、15 Vの適用確認方法、停止時の安全状態、共有互換条件を同じ項目に持ち、frontend generation開始前に既存の機器単位rail leaseを取得して15 Vを実適用できる場合だけ成立する。`ExternalOrShared`は、給電主体、HALが電圧を変更しないこと、共有互換条件、選局中の給電継続を製品配線として確認できる場合だけ成立する。
+現在証跡があるpx4/earth_pt1 backendは電圧制御だけを確認でき、tone、satellite position、DiSEqCの実処理証跡がないため`aidl_baseline_eligible=false`である。ただし、px4は証跡のある0 V / 15 V、earth_pt1は証跡のある11 V / 15 Vのcaller制御可能な電圧operationを持つendpointとして公開できる。`getLnbIds()`はこれらの公開対象endpointを列挙し、`openLnbById()`はendpoint leaseを取得して`ILnb` objectを生成する。tone、satellite position、DiSEqC等の未対応要求をCTS合格目的の成功no-op、擬似成功、callback echoにしてはならない。本製品は部分LNB公開によりAndroid 14 CTSのLNB試験が失敗し得ることを既知compatibility deltaとして受容し、CTS LNB適合を宣言しない。
 
-`InternalFixed15V`または`ExternalOrShared`が検証済みでruntime LNB切替を必要としない場合、そのISDB-S frontendは`aidl_baseline_eligible_lnb_count=0`のまま公開してよい。前者ではHAL内部で選局前に固定15 Vを適用し、後者ではHALは電圧操作を行わない。いずれもframeworkから選択・変更できるLNB IDとして列挙せず、`IFrontend.setLnb()`成功を要求しない。`UnknownOrDisabled`、トポロジ証跡不一致、給電継続または共有互換性を確認できない場合はsatellite frontendを公開しない。給電、lease、tune準備失敗時の巻き戻し、安全状態復帰、共有rail参照管理、実状態不明時の隔離は、本書の「LNB機器の資源規則」「表7」「表8」「ワーカー終了契約」を適用する。`FixedDishPowerProfile`その他の専用profileや別状態機械を設けない。
+公開`ILnb` operation能力とsatellite frontendの電源トポロジは別能力として扱う。`SupportedDeviceCapabilityCatalog`の機器項目は、`InternalFixed15V`、`ExternalOrShared`、`UnknownOrDisabled`のいずれかを保持する。`InternalFixed15V`は、物理rail owner、15 Vの適用確認方法、停止時の安全状態、共有互換条件を同じ項目に持ち、frontend generation開始前に既存の機器単位rail leaseを取得して15 Vを実適用できる場合だけ成立する。`ExternalOrShared`は、給電主体、HALが電圧を変更しないこと、共有互換条件、選局中の給電継続を製品配線として確認できる場合だけ成立する。
 
-将来`aidl_baseline_eligible`なbackendを追加した場合、`getLnbIds()` は検出に成功して使用条件を満たす終端だけを列挙し、`openLnbById()`または`openLnbByName()`は終端1個の使用権を取得する。不明なIDには `INVALID_ARGUMENT`、使用中、`CleanupPending`、`Quarantined` の終端には、状態を変えず `UNAVAILABLE` を返す。最初の `close()` では `LogicalClosed` を確定して新しい公開処理を拒否し、その時点で実行可能な後片付けをすべて試す。再試行可能な未完の依存資源は `CleanupPending` に残す。実行中のワーカーは変更を遮断し、`ReaperSupervisor` へ一度だけ移す。バックエンドとワーカーの後片付けが完了した後に限り、終端の使用権を正確に1回返却する。隔離中は使用権を保持する。`ProductProfile` はLNBを抑止できるが、存在しない終端や能力を生成してはならない。
+`InternalFixed15V`または`ExternalOrShared`が検証済みでruntime LNB切替を必要としないISDB-S frontendは、公開`ILnb` endpointの有無と独立に公開可否を判断する。前者ではHAL内部で選局前に固定15 Vを適用し、後者ではHALは電圧操作を行わない。固定給電だけをcaller制御可能な`ILnb.setVoltage()`能力として広告してはならない。`UnknownOrDisabled`、トポロジ証跡不一致、給電継続または共有互換性を確認できない場合はsatellite frontendを公開しない。給電、lease、tune準備失敗時の巻き戻し、安全状態復帰、共有rail参照管理、実状態不明時の隔離は、本書の「LNB機器の資源規則」「表7」「表8」「ワーカー終了契約」を適用する。`FixedDishPowerProfile`その他の専用profileや別状態機械を設けない。
 
+`getLnbIds()`は起動時probeとoperation/value capability対応表から公開対象として確定したendpoint IDを列挙する。`openLnbById()`は公開済みendpoint 1個の使用権を取得する。不明なIDには`INVALID_ARGUMENT`、使用中、`CleanupPending`、`Quarantined`のendpointには状態を変えず`UNAVAILABLE`を返す。`openLnbByName()`はstableなconfigured name mappingが`ProductProfile`に定義されたendpointだけを成功対象にでき、mappingがない現行製品では空文字を`INVALID_ARGUMENT`、その他を`UNAVAILABLE`とする。最初の`close()`では`LogicalClosed`を確定して新しい公開処理を拒否し、その時点で実行可能な後片付けをすべて試す。再試行可能な未完の依存資源は`CleanupPending`に残す。実行中のワーカーは変更を遮断し、`ReaperSupervisor`へ一度だけ移す。バックエンドとワーカーの後片付けが完了した後に限り、endpointの使用権を正確に1回返却する。隔離中は使用権を保持する。`ProductProfile`はLNBを抑止できるが、存在しないendpointやoperation/value能力を生成してはならない。
 
 公開するLNB IDはsatellite frontendへ接続できる論理endpointとして扱い、1個のendpoint leaseを複数frontendへ同時接続しない。`setLnb(lnb_id)`は当該satellite frontendへ接続可能なLNB IDだけを受け付け、別の物理機器に属するLNB ID、地上波frontendへのLNB接続、不明なLNB IDは失敗させる。同一px4機器内で複数の論理endpointが共有する物理電圧レールは機器単位で直列化し、互換な電圧要求だけを参照数で共有する。
 
@@ -2345,11 +2346,11 @@ LNBは機器単位の終端資源とし、本書の「LNB機器の資源規則�
 | API | 有効入力 | 本製品の結果 | backend失敗時 |
 |---|---|---|---|
 | `setVoltage(voltage)` | AIDL列挙値であり、対象profileの対応電圧 | 対応表に従って実機へ適用する。profile非対応の有効電圧は`UNAVAILABLE` | 状態が未変更と確認できれば`UNKNOWN_ERROR`で旧状態維持、実状態不明なら対象LNBを隔離 |
-| `setTone(tone)` | AIDLの有効列挙値。少なくとも`TONE_NONE` | backend状態へ適用して成功する。成功扱いの無処理は禁止 | 旧状態を維持できなければ隔離 |
-| `setSatellitePosition(position)` | AIDLの有効列挙値。少なくとも`POSITION_A` | backend状態へ適用して成功する。成功扱いの無処理は禁止 | 旧状態を維持できなければ隔離 |
-| `sendDiseqcMessage(message)` | backend上限内の非空byte列。2バイトを必ず含む | 全byteをbackendへ渡し、送信完了後に成功する。受信応答は登録済みcallbackへ順序どおり通知する | 部分送信を成功にせず、状態不明なら隔離 |
+| `setTone(tone)` | AIDLの有効列挙値 | 対応表でbackend実処理が確認された値だけを適用して成功する。有効だが対象backendで未対応の値は副作用なしの`UNAVAILABLE`。成功扱いの無処理は禁止 | backend適用を開始した後に旧状態を維持できなければ隔離。未対応判定だけなら状態不変 |
+| `setSatellitePosition(position)` | AIDLの有効列挙値 | 対応表でbackend実処理が確認された値だけを適用して成功する。有効だが対象backendで未対応の値は副作用なしの`UNAVAILABLE`。成功扱いの無処理は禁止 | backend適用を開始した後に旧状態を維持できなければ隔離。未対応判定だけなら状態不変 |
+| `sendDiseqcMessage(message)` | 非空byte列。実処理可能なbackendでは宣言済み上限内とし、Android 14 CTSが使う2バイト要求を能力対応時は受理できる | 対応表でDiSEqC実処理が確認されたbackendだけ全byteを送信し、送信完了後に成功する。有効だが対象backendで未対応なら副作用なしの`UNAVAILABLE`。送信していないmessageのcallback echoは禁止 | 部分送信を成功にせず、送信開始後に状態不明なら隔離。未対応判定だけなら状態不変 |
 
-閉鎖開始後は全操作を`INVALID_STATE`とする。不明な列挙値、空メッセージ、または宣言済みbackend上限を超えるDiSEqCメッセージは`INVALID_ARGUMENT`とする。2バイトを長さだけで拒否してはならない。妥当だが個別profileで非対応の操作は`UNAVAILABLE`とするが、そのようなprofileを`aidl_baseline_eligible`として公開してはならない。
+閉鎖開始後は全操作を`INVALID_STATE`とする。不明な列挙値、空メッセージ、またはDiSEqC実処理を宣言したbackendの上限を超えるメッセージは`INVALID_ARGUMENT`とする。DiSEqC未対応backendでは、上限検証以前に有効な非空messageを副作用なしの`UNAVAILABLE`とする。2バイトを長さだけで拒否してはならない。妥当だが個別profileで非対応のoperation / valueは`UNAVAILABLE`とする。`aidl_baseline_eligible=false`はCTS baseline適合分類であり、endpoint全体の公開可否を単独では決めない。
 
 
 `BackendApplyOutcome`は`Applied`、`Rejected`、`Indeterminate`、`RollbackFailed`の4種類とする。`Applied`では確定し、`Rejected`では以前の状態を維持する。`Indeterminate`では対象資源を隔離して`UNKNOWN_ERROR`を返し、`RollbackFailed`でも隔離して`UNKNOWN_ERROR`を返す。再試行は新しい操作IDでだけ許可する。
@@ -2748,7 +2749,7 @@ PES filterは、外形検証の後に`stream_id`で通常optional-header構文�
 
 ## 対応能力ごとの設計正本
 
-- 機器の事実は `DeviceProbeCapability` で確定する。frontendは公開API全体が成立するものだけを公開し、LNBは検出成功に加えてAndroid 14 CTSの基礎操作を実処理できる`aidl_baseline_eligible` endpointだけを公開する。現在のpx4/earth_pt1 LNBは電圧制御以外の証跡がないため公開しない。
+- 機器の事実は`DeviceProbeCapability`で確定する。frontendは公開API全体が成立するものだけを公開する。LNBは検出成功、endpoint/lease条件、operation/valueごとの実処理証跡から公開可否を決め、`aidl_baseline_eligible`はAndroid 14 CTS baseline適合分類としてだけ保持する。px4/earth_pt1は電圧制御の証跡があるため該当operation/valueを公開し、tone、position、DiSEqC等の有効だが未対応の要求は副作用なしの`UNAVAILABLE`とする。
 - demux、filter、DVRの個数は本書「サービスオブジェクトの上限」で定め、同じ使用権台帳で強制する。
 - AVの転送、割り当て、解放は、本書「AV割り当て」と「表1-C-AVH. `releaseAvHandle()` 全域判定表」で定める。共有領域方式は最適化手段とし、要求サイズどおりのイベント固有ファイル記述子方式を正式な代替経路とする。`dataId=0`のhandle lease終了だけは表1-C-AVHで定めたboundedなlease stateにより冪等化し、正の`avDataId`はactive token台帳に存在する場合だけ解放を成功させる。
 - ワーカーとLNBの停止・後片付けは、本書「ワーカー終了契約」と「LNB機器の資源規則」で定める。`TargetDriverTimingProfile` や、公開経路で上限なく `join` を待つ処理を設けない。
@@ -2892,8 +2893,8 @@ STD-B25 Part 1 §4.9は上表の適合主張に含めない。同条項に係る
 
 | backend | 検証証跡metadata | AOSPの公開API | driverの事実 | 設計規則 | 資源規則 | 根拠箇所 |
 |---|---|---|---|---|---|---|
-| px4_drv feat/android-ddk | c2a031db8771ddd6e3e0b3b4a712b64ec384139b | 公開`ILnb`は非公開 | 0 Vまたは15 Vのみ。tone、position、DiSEqCの実処理証跡なし | `aidl_baseline_eligible=false`。`getLnbIds()`へ出さない。機器項目が`InternalFixed15V`ならHAL内固定15 V、`ExternalOrShared`なら電圧非操作でISDB-S frontendを公開可能。`UnknownOrDisabled`なら非公開 | 公開LNB leaseは生成せず、固定15 V時だけ既存の機器rail lease・rollback・safe-state規則を使う | `driver/px4_device.c`のblob cfed72f...、`driver/ptx_chrdev.c`のblob 18f074... |
-| earth_pt1 Linux v6.6 | ffc253263a1375a65fa6c9f62a893e9767fbebfa | 公開`ILnb`は非公開 | `pt1.c`では`SEC_VOLTAGE_13`を11 V、`SEC_VOLTAGE_18`を15 Vに対応付ける。tone、position、DiSEqCの実処理証跡なし | `aidl_baseline_eligible=false`。`getLnbIds()`へ出さない。機器項目が`InternalFixed15V`ならHAL内固定15 V、`ExternalOrShared`なら電圧非操作でISDB-S frontendを公開可能。`UnknownOrDisabled`なら非公開 | 公開LNB endpointは生成せず、固定15 V時だけ既存の機器rail lease・rollback・safe-state規則を使う | Linux v6.6 commitの`drivers/media/pci/pt1/pt1.c` |
+| px4_drv feat/android-ddk | c2a031db8771ddd6e3e0b3b4a712b64ec384139b | 証跡済み`setVoltage()`能力を持つ公開`ILnb` endpoint | 0 Vまたは15 Vのみ。tone、position、DiSEqCの実処理証跡なし | `aidl_baseline_eligible=false`はCTS分類として保持するがpublication gateにしない。probe/endpoint条件成立時は`getLnbIds()`へ列挙し、0 V / 15 Vを実機へ適用する。tone、position、DiSEqCは有効要求を`UNAVAILABLE`とする。機器項目が`InternalFixed15V`ならHAL内固定15 V、`ExternalOrShared`なら電圧非操作でISDB-S frontendを公開可能。`UnknownOrDisabled`ならsatellite frontend非公開 | 公開endpointにはLNB leaseを生成する。固定15 V経路はcaller制御可能な`ILnb.setVoltage()`と分離し、既存の機器rail lease・rollback・safe-state規則を使う | `driver/px4_device.c`のblob cfed72f...、`driver/ptx_chrdev.c`のblob 18f074... |
+| earth_pt1 Linux v6.6 | ffc253263a1375a65fa6c9f62a893e9767fbebfa | 証跡済み`setVoltage()`能力を持つ公開`ILnb` endpoint | `pt1.c`では`SEC_VOLTAGE_13`を11 V、`SEC_VOLTAGE_18`を15 Vに対応付ける。tone、position、DiSEqCの実処理証跡なし | `aidl_baseline_eligible=false`はCTS分類として保持するがpublication gateにしない。probe/endpoint条件成立時は`getLnbIds()`へ列挙し、11 V / 15 Vを実機へ適用する。tone、position、DiSEqCは有効要求を`UNAVAILABLE`とする。機器項目が`InternalFixed15V`ならHAL内固定15 V、`ExternalOrShared`なら電圧非操作でISDB-S frontendを公開可能。`UnknownOrDisabled`ならsatellite frontend非公開 | 公開endpointにはLNB leaseを生成する。固定15 V経路はcaller制御可能な`ILnb.setVoltage()`と分離し、既存の機器rail lease・rollback・safe-state規則を使う | Linux v6.6 commitの`drivers/media/pci/pt1/pt1.c` |
 
 ### VTS環境に関する設計保留
 
