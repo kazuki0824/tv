@@ -1,0 +1,167 @@
+from pathlib import Path
+import re
+
+
+def once(text, old, new, label):
+    n = text.count(old)
+    if n != 1:
+        raise SystemExit(f"{label}: expected 1 occurrence, got {n}")
+    return text.replace(old, new, 1)
+
+
+def regex_once(text, pattern, repl, label, flags=0):
+    new, n = re.subn(pattern, repl, text, count=1, flags=flags)
+    if n != 1:
+        raise SystemExit(f"{label}: expected 1 match, got {n}")
+    return new
+
+
+p = Path("tuner_hal/DESIGN_JA.md")
+t = p.read_text(encoding="utf-8")
+
+old = """AV sync hardware ID は `filter_id & 0xffff` から導出しない。demux 内の `filter_id -> hw_id` と `hw_id -> filter_id` の双方向表で固定し、filter ID 65536周期の衝突を禁止する。
+
+filter unregister、non-AV configure、AV filter close、demux close では、双方向表の両方向を同一commitで削除する。片方向だけ残る場合は demux の AV sync 状態を通常状態として扱わない。"""
+new = """AV sync hardware ID は `filter_id & 0xffff` のような media filter ID の単純変換から導出しない。media filter と hardware sync ID の relation cardinality、reverse index の有無と形、register / unregister / close 時の mutation・commit / abort semantics は 0-S-3B の `AvSyncRegistry` を唯一の正本とし、本節では再定義しない。"""
+t = once(t, old, new, "AvSync downstream duplicate")
+
+old = """`Drop`または所有者消滅では、待機を伴わない後片付けを開始し、待機を伴う`join`は回収機構へ委ねる。
+
+後片付け権限は`CloseCleanupAuthority`の一回限りの所有権で表す。公開`close()`が`begin_close`に成功した時点で同権限を取得し、Dropと所有者消滅処理は同じ権限を取得できない限り新しい後片付けを開始しない。公開`close()`が完了前に戻る場合は、未完の依存資源と権限を`CleanupPending`または内部回収機構へ移管する。Dropは権限が未取得の漏えいだけを終端化し、公開`close()`と同じ手順を並行実行しない。"""
+new = """表5 / CL-* は公開 `close()` の対象、公開状態、戻り値、object 固有の cleanup 依存だけを定義する。`CloseCleanupAuthority` の取得、`begin_close` の atomicity、Drop / owner loss との競合、`CleanupPending` / reaper への handoff、retry semantics は 0-S-3B の `ObjectCloseTxn` を唯一の正本とし、本節では再定義しない。"""
+t = once(t, old, new, "ObjectClose downstream duplicate")
+
+replacement = """#### 表17-B. Descrambler cleanup / key lifetime transaction（契約参照）
+
+Descrambler の内部 mutation は、key 変更=`DescramblerKeyTxn`、PID 変更=`DescramblerPidTxn`、close / demux invalidation による session cleanup=`DescramblerSessionCleanupTxn` を 0-S-3B の唯一の正本とする。本節では session / key table の更新順序、commit / rollback、retry、failure semantics を再定義しない。API 入力分類、冪等性、公開 status は表D-1および key token の公開状態表を正とする。
+
+"""
+t = regex_once(
+    t,
+    r"#### 表17-B\. Descrambler cleanup / key lifetime transaction（状態遷移）表\n.*?(?=\n#### |\n### |\n## )",
+    replacement,
+    "Descrambler table 17-B",
+    re.S,
+)
+
+old = """`addPid()`と`removePid()`の共通backend/ledger state machineは`DescramblerPidTxn`だけが所有する。バックエンドが準備用APIを持たない場合の冪等適用と補償rollbackも同transaction内で完了し、巻き戻しに失敗した場合だけデスクランブラーを隔離する。API別記述はPID/source入力分類と公開statusだけを持つ。"""
+new = """`addPid()` / `removePid()` の PID / source 入力分類と公開 status は表D-1を正とする。claim、backend apply、ledger commit、compensation を含む内部 mutation は 0-S-3B の `DescramblerPidTxn` だけを正本とし、本節では再定義しない。"""
+t = once(t, old, new, "Descrambler PID downstream duplicate")
+
+old = """stream generation、continuity、section/PES/record-index parser/assemblerの境界mutationは`StreamBoundaryTxn`を唯一のownerとする。`StreamBoundaryTxn`はrelation table、Filter/DVR queue内部、`AvSyncRegistry`、`PcrClockAnchorStore`、callback artifact、descrambler key/PIDを直接所有せず、必要な他ownerのmutationはprepared tokenを取得して外側transactionの同じcommitへ合成する。"""
+new = """soft-demux で必要な stream generation、continuity、section / PES / record-index parser / assembler の boundary mutation と、上位 transaction との prepare / commit composition は 0-S-3B の `StreamBoundaryTxn` を唯一の正本とし、本節では再定義しない。以下では入力 origin と generation ごとの data-path 結果だけを定める。"""
+t = once(t, old, new, "StreamBoundary downstream duplicate")
+
+old = """- フィルターと`SharedFilter`では、HAL内部の`FilterProducerDrainGate`を使用する。ブロッキングするバックエンド読み取り、FMQ待機、解析器の一時保持が終わった後、FMQへの確定書き込みまたは保留イベント追加の直前にだけ配送許可を取得する。Binderコールバック、バックエンド入出力、FMQまたは条件変数の待機、規定外順序のロック取得を許可の有効範囲に含めない。`flush()`は`Draining`へ移り、新しい許可を拒否し、サービス所有のワーカーを起床させ、許可が0件になるまで待つ。未消費のFMQデータと未配送イベントを破棄し、確定済みまたは配送中のコールバックと配送済みAV領域を維持する。ワーカー終了またはpanic時は保護子を解放する。ロック汚染または遮断されていない終端失敗を検出した場合は、フィルターを閉鎖して隔離する。`QueueEpochProtocol`はDVRだけで使用する。"""
+new = """- Filter / SharedFilter の producer drain は 0-S-3B の `FilterProducerDrainGate`、DVR の queue epoch / transaction token は `QueueEpochProtocol`、Filter / DVR `flush()` の共通 cleanup orchestration は `QueueCleanupTxn` を唯一の正本とする。本節では対象 domain、公開結果、資源要求だけを定め、内部 state、permit / token、phase、commit / rollback を再定義しない。"""
+t = once(t, old, new, "Queue capability duplicate")
+
+queue_repl = """### キューと生産側の内部プロトコル
+
+#### 適用範囲
+
+安定版 Tuner AIDL は変更しない。Filter / SharedFilter の drain state、permit、flush / close semantics は 0-S-3B の `FilterProducerDrainGate`、DVR の queue epoch、read / write token、flush / close semantics は `QueueEpochProtocol`、両者の公開 `flush()` cleanup orchestration は `QueueCleanupTxn` を唯一の正本とする。この節では同じ state machine を再定義しない。
+
+Playback DVR の queue incarnation identity は `PlaybackQueueBacking` が所有し、`QueueEpochProtocol` はその identity を参照して同一 identity 内の `queue_epoch` だけを所有する。入力 origin の正本キーは `TsInputOrigin::PlaybackDvr(dvr_id, queue_identity, queue_epoch)` とし、`queue_identity`、`queue_epoch`、stream boundary の変更はそれぞれ `PlaybackQueueBacking`、`QueueEpochProtocol`、`StreamBoundaryTxn` の契約に従う。
+
+#### 独立した世代軸
+"""
+t = regex_once(
+    t,
+    r"### キューと生産側の内部プロトコル\n.*?#### 独立した世代軸\n",
+    queue_repl,
+    "Queue protocol duplicate section",
+    re.S,
+)
+
+old = """| `WorkerRuntime` / `WorkerHandle` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | 各domain worker ownerのspawn/stop/wake/join/reaper | owner generation、stop signal、JoinHandle、fence、reaper handoff mechanism | domain start/stop state、backend semantic failure、queue payload | spawn fenced worker → signal stop → wake/cancel → observe/join or reaper handoff → release after completion | failureをtyped reportしleaseを早期再利用しない、遮断不能だけServiceCritical | domain worker owner、cleanup/reaper | generic `WorkerLifecycleProtocol`の追加、AIDLからの直接join | generation fence、stop/wake ordering、join/reaper、panic、no early reuse |"""
+new = """| `WorkerRuntime` / `WorkerHandle` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | 各domain worker ownerのspawn/stop/wake/join/reaper | owner generation、stop signal、JoinHandle、fence、reaper handoff mechanism | domain start/stop state、backend semantic failure、queue payload | spawn fenced worker → signal stop → wake/cancel → observe/join or reaper handoff → release after completion | failureをtyped reportしleaseを早期再利用しない。terminal budgetは`cleanupRetryScheduleMs=[0,10,100,1000]`後1000 ms間隔、`cleanupTerminalDeadlineMs=30000`、`workerIoDeadlineMs=2000`、`workerReaperDeadlineMs=10000`。deadline到達時はgeneration fence成立なら`Quarantined`、成立不能なら`ServiceCritical` | domain worker owner、cleanup/reaper | generic `WorkerLifecycleProtocol`の追加、AIDLからの直接join | generation fence、stop/wake ordering、join/reaper、panic、no early reuse、deadline branch |"""
+t = once(t, old, new, "WorkerRuntime canonical budgets")
+
+pattern = r"`CleanupPending`は、本書のワーカー終了契約に従い、所有者内に閉じた依存資源別の状態とする。.*?公開結果では主処理の結果を優先し、後片付けの型付き集約診断を別に保持する。"
+repl = """`CleanupPending` の generic retry / reaper / generation fence / lease return / terminal failure branching は 0-S-3B の `WorkerRuntime` / `WorkerHandle` を唯一の正本とし、public close 由来の cleanup authority は `ObjectCloseTxn` を正とする。本節では FMQ / data-path 固有の公開結果と診断だけを定める。"""
+t = regex_once(t, pattern, repl, "CleanupPending worker duplicate", re.S)
+
+worker_repl = """### ワーカー終了契約
+
+Generic worker lifecycle の owner generation、stop / wake / join、reaper handoff、terminal budget、lease return、`Quarantined` / `ServiceCritical` 分岐は 0-S-3B の `WorkerRuntime` / `WorkerHandle` を唯一の正本とし、failure category の分類は `WorkerFailureClassifier` を正とする。本節では第二の generic lifecycle state machine を定義しない。
+
+#### フィルターの排出処理との接続
+
+Filter `flush()` が待つ producer drain と permit の意味は `FilterProducerDrainGate` を正とし、worker の cancel / wake / join / reaper は `WorkerRuntime` / `WorkerHandle` に従う。公開 `flush()` は Binder callback 完了や上限のない join を待たない。
+
+#### LNBとの接続
+
+LNB の logical close と cleanup authority は `ObjectCloseTxn` および LNB 資源契約を正とし、worker の停止・回収は `WorkerRuntime` / `WorkerHandle` に従う。終端 cleanup が完了するまで endpoint lease を新しい `openLnbById()` / `openLnbByName()` 受付へ戻さない。
+
+"""
+t = regex_once(
+    t,
+    r"### ワーカー終了契約\n.*?(?=\n## clear non-passthrough MediaEvent presentation timestamp 契約)",
+    worker_repl,
+    "Worker lifecycle duplicate section",
+    re.S,
+)
+
+old = """| playback read | `beginRead()`で得た範囲を検証し、所有権付き処理中領域を準備する。read位置は未確定 | 対象バイト列を処理中領域へ1回だけ移し、同じ範囲の`commitRead()`を成功させる | backend注入の一部受理、再試行可能失敗、致命的失敗 | commit後はFMQから再読せず処理中領域からだけ再試行する。停止・閉鎖・致命的失敗では残存バイト数と理由を記録して終端する | `FMQ_CONSUMED`と`DEMUX_INJECTED`を別状態で持ち、投入カーソルを受理済みバイト数だけ進める |"""
+new = """| playback read | 公開 data-path の入力範囲と予約済み processing-buffer 容量を検証する | read / parse / inject / consume の内部確定点は0-S-3Bの`PlaybackConsumeTxn`参照 | partial inject、retryable / fatal failureの内部処理は同契約参照 | worker結果と損失診断はDVR公開契約と`PlaybackConsumeTxn`に従う | processing-buffer / cursor のphase・stateを本表では再定義しない |"""
+t = once(t, old, new, "Playback FMQ row duplicate")
+
+old = """FMQのバイト列を所有権付きの一時領域へ複製した後、`commitRead()`を行って`FMQ_CONSUMED`へ遷移する。バックエンドへの投入に成功した場合は`DEMUX_INJECTED`へ遷移する。投入失敗時は一時領域から再試行し、停止または閉鎖時に残存するデータは明示的な損失診断へ記録する。"""
+new = """Playback の read / parse / inject / consume cursor、retry、stop / flush / close 時の処理は 0-S-3B の `PlaybackConsumeTxn` を唯一の正本とし、本節では再定義しない。"""
+t = once(t, old, new, "Playback standalone duplicate")
+
+pattern = r"再生データの取り込みには、1回のFMQ読取トランザクションだけを所有する処理中バッファーと、キュー世代ごとのカーソルを使用する。.*?処理中バッファーの使用権はDVRの最終後片付け完了時に返す。"
+repl = """Playback DVR の `configure()` 時は、FMQ 容量と同じ上限の processing-buffer 使用権を `CapabilitySnapshot.playbackProcessingBudgetBytes` から予約し、実領域を確保する。予約または確保に失敗した場合は `OUT_OF_MEMORY` を返し、FMQ descriptor と DVR 設定を部分公開しない。この領域は第二の queue ではなく、1 consume transaction のための予約済み storage であり、使用権は DVR の最終 cleanup 完了時に返す。`beginRead()`、copy、`commitRead()`、parse / inject cursor、retry、stop保持、flush / close / fatal時の破棄と損失診断の内部 phase / state / failure semantics は 0-S-3B の `PlaybackConsumeTxn` を唯一の正本とし、本節では再定義しない。"""
+t = regex_once(t, pattern, repl, "Playback processing-buffer duplicate", re.S)
+
+old = """対象のpx4/earth_pt1によるISDB-Tでは、設定表に従い、周波数と6 MHzまたは `AUTO` の帯域幅に対応する。現在の `FrontendTuneRequest` とpx4の選局変換は具体値を保持・設定しないため、モード、階層ごとの変調方式と符号化率、ガードインターバル、階層ごとの時間インターリーブは `AUTO` だけに対応する。`AUTO` は成功とし、これらの項目に規格上既知の具体値が指定された場合は `UNAVAILABLE` を返して、バックエンドと直前の要求を変更しない。不正なタグまたは値域には `INVALID_ARGUMENT` を返す。対応能力、AIDL入力検証、`ProductProfile`、VTS選局入力は同じ設定表から生成する。ARIB STD-B31 2.2-E1の2.3、3.8、3.9、3.11.1、3.14.2、3.15.6.5〜3.15.6.7は放送パラメーターの値域と伝送上の意味を定めるが、`AUTO` のみという制限はARIB上の制約ではなく、現行実装が正しく表明できる対応能力である。"""
+new = """対象の px4 / earth_pt1 による ISDB-T の設計上の backend capability は、設定表に従い、周波数と 6 MHz または `AUTO` の帯域幅に対応する。モード、階層ごとの変調方式と符号化率、ガードインターバル、階層ごとの時間インターリーブについては、対象 backend に具体値を設定する経路または読み戻して検証する経路の証跡がないため `AUTO` だけを対応能力として宣言する。`AUTO` は成功とし、規格上既知でも具体値を実処理・検証できない要求は `UNAVAILABLE` を返して、backend と直前の要求を変更しない。不正なタグまたは値域には `INVALID_ARGUMENT` を返す。対応能力、AIDL 入力検証、`ProductProfile`、VTS 選局入力は同じ設定表から生成する。ARIB STD-B31 2.2-E1 の 2.3、3.8、3.9、3.11.1、3.14.2、3.15.6.5〜3.15.6.7 は放送パラメーターの値域と伝送上の意味を定めるが、`AUTO` のみという制限は ARIB 上の制約ではなく、本製品が証跡に基づき宣言する backend capability である。"""
+t = once(t, old, new, "Frontend current-implementation snapshot")
+
+old = """- PCR PID明示管理、サービスclock、jitter smoothing、PLL / clock disciplineを追加する場合は、clock source、reset条件、戻り値、診断、実機確認条件を本書へ固定してから扱う。
+
+以下は現行実装範囲外にする。
+
+- PCR PID 明示管理。
+- サービス clock モデル。
+- jitter smoothing。
+- PLL / clock discipline。"""
+new = """- 本製品の canonical A/V sync contract は `PcrClockAnchorStore` が所有する観測済み PCR anchor と monotonic clock の対応だけを用いる。PCR PID 明示管理、サービス clock モデル、jitter smoothing、PLL / clock discipline は本製品の契約として導入しない。これらを導入する設計変更を行う場合は、clock source、reset条件、戻り値、診断、実機確認条件を先に本書へ固定する。"""
+t = once(t, old, new, "PCR current-implementation snapshot")
+
+for s in [
+    "`hw_id -> filter_id` の双方向表",
+    "現在の `FrontendTuneRequest`",
+    "現行実装範囲外にする",
+    "#### 表17-B. Descrambler cleanup / key lifetime transaction（状態遷移）表",
+]:
+    if s in t:
+        raise SystemExit(f"forbidden canonical duplicate remains: {s}")
+
+p.write_text(t, encoding="utf-8")
+
+p = Path("開発規則.md")
+d = p.read_text(encoding="utf-8")
+old = """## B25デスクランブル 関連で TIS 側に今後実装すべき項目
+
+### 前提
+
+現在の Tuner HAL に入っている B25 関連処理は、188 byte TS packet の payload offset 判定、transport_scrambling_control による odd/even key 選択、MULTI2 復号中核、復号成功時の scrambling_control 平文 化、復号失敗時の scrambled TS pass-through、key トークン を内部 key slot に解決する境界、descrambler 診断カウンター / dump までである。
+
+一方、ECM/EMM の暗号・カード処理、B-CAS/ACAS/カード I/O、CW 取得、権利判定、本物の key トークン 発行は CAS HAL / MediaCas plugin / vendor key bridge 側の責務であり、TIS に B25 暗号アルゴリズムやカード処理を持ち込まない。
+
+この文書では、「Tuner HAL には入っておらず、CAS HAL の内部責務でもなく、TIS が Android 標準経路上の接着層として今後実装すべきもの」だけを列挙する。"""
+new = """## B25デスクランブル関連の r52 module 責務
+
+### 前提
+
+r52 の Tuner HAL descrambler 責務は、188 byte TS packet の payload offset 判定、`transport_scrambling_control` による odd/even key 選択、MULTI2 復号中核、復号成功時の scrambling_control 平文化、復号失敗時の scrambled TS pass-through、key token を内部 key slot に解決する境界、descrambler 診断カウンター / dump とする。
+
+ECM / EMM の暗号・カード処理、B-CAS / ACAS / card I/O、CW 取得、権利判定、実 key token 発行は CAS HAL / MediaCas plugin / vendor key bridge 側の責務であり、TIS に B25 暗号アルゴリズムやカード処理を持ち込まない。
+
+本節は、Tuner HAL packet descrambler 責務にも CAS 内部責務にも属さず、r52 の TIS が Android 標準経路上の接着層として担う責務だけを列挙する。"""
+d = once(d, old, new, "B25 current-implementation snapshot")
+if "現在の Tuner HAL に入っている B25 関連処理は" in d:
+    raise SystemExit("B25 current snapshot remains")
+p.write_text(d, encoding="utf-8")
