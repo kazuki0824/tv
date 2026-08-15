@@ -1,0 +1,129 @@
+name: PR28 normalize capability contracts
+
+on:
+  push:
+    branches:
+      - agent/fix-commonization-boundaries
+    paths:
+      - .github/workflows/pr28-normalize-capability-contracts.yml
+
+permissions:
+  contents: write
+
+jobs:
+  normalize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-commonization-boundaries
+          fetch-depth: 0
+      - name: Normalize all eight review findings
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('tuner_hal/DESIGN_JA.md')
+          s = p.read_text(encoding='utf-8')
+
+          replacements = [
+              (
+                  '| T-AOSP-24 | `configureMonitorEvent(nonzero)` / 現行TS-only profile | `UNAVAILABLE`。monitor state、worker、queueを生成しない |',
+                  '| T-AOSP-24 | `configureMonitorEvent(nonzero)` | `UNAVAILABLE`。本製品のTS-only `ProductProfile`はmonitor eventを対応能力として採用せず、monitor state、worker、queueを生成しない |',
+              ),
+              (
+                  '`acquireRange`は、要求周波数の周囲でbackendが探索可能と製品profileで検証した非負の範囲だけを返す。検証済みの非0範囲がない現行profileでは`0`とする。',
+                  '`acquireRange`は、要求周波数の周囲でbackendが探索可能と製品profileで検証した非負の範囲だけを返す。製品profileで検証済みの非0範囲がなければ`0`とする。',
+              ),
+              (
+                  'AIDLで既知のstatus bitのうち現行profileが生成できないbitは`UNAVAILABLE`',
+                  'AIDLで既知のstatus bitのうち本製品`ProductProfile`が生成能力を持たないbitは`UNAVAILABLE`',
+              ),
+              (
+                  '`dataFormat`は現行TS-only `ProductProfile`が扱うTS formatだけを成功させる。',
+                  '`dataFormat`は本製品のTS-only `ProductProfile`が扱うTS formatだけを成功させる。',
+              ),
+              (
+                  '現行TS formatでは188 byteだけを成功させ、',
+                  '本製品のTS packet pipelineでは188 byteだけを成功させ、',
+              ),
+              (
+                  '`SNR` と `SIGNAL_STRENGTH` は、現行Tuner HAL capability / VTS profile では `statusCaps` に含めない。DVB / earth_pt1 の `FE_READ_SNR` と `FE_READ_SIGNAL_STRENGTH`、px4 の `PTX_GET_CNR` は target driver / device 状態によって read 時に失敗し得る optional telemetry であり、起動時列挙時点で frontendエントリ の固定 capability として証明できないためである。これらの optional telemetry は 診断内部値として保持してよいが、AOSP statusCaps 上の supported 状態として advertise してはならない。',
+                  '`SNR` と `SIGNAL_STRENGTH` は、起動時に安定取得と更新経路をfrontendエントリの固定capabilityとして証明できる場合だけ `statusCaps` に含める。DVB / earth_pt1 の `FE_READ_SNR` と `FE_READ_SIGNAL_STRENGTH`、px4 の `PTX_GET_CNR` は target driver / device 状態によって read 時に失敗し得る optional telemetry であり、その証明がないfrontendではadvertiseしない。これらの optional telemetry は診断内部値として保持してよいが、証明なしにAOSP `statusCaps` 上のsupported状態としてadvertiseしてはならない。',
+              ),
+              (
+                  '`openLnbByName()`はstableなconfigured name mappingが`ProductProfile`に定義されたendpointだけを成功対象にでき、mappingがない現行製品では空文字を`INVALID_ARGUMENT`、その他を`UNAVAILABLE`とする。',
+                  '`openLnbByName()`は本製品で名前付き外部LNBを公開しないため成功対象を持たず、空文字を`INVALID_ARGUMENT`、その他の名前を`UNAVAILABLE`とする。LNB ID、object、leaseを生成せず、出力を部分公開しない。',
+              ),
+              (
+                  '現行仕様では persistent expired state を持たないため、',
+                  '本製品仕様は persistent expired state を持たないため、',
+              ),
+              (
+                  '現在のpx4台帳はlegacy ABIに従い、相対`0..7`とabsolute `12..65534`を別typed selectorとして有効にする。',
+                  'px4 legacy ABI契約の台帳項目では、相対`0..7`とabsolute `12..65534`を別typed selectorとして有効にする。',
+              ),
+              (
+                  'px4 BSのslot `0` fallbackはAOSP未指定入力を現行ABIで成立させるためだけの互換経路であり、',
+                  'px4 BSのslot `0` fallbackはAOSP未指定入力をlegacy ABI契約で成立させるためだけの互換経路であり、',
+              ),
+              (
+                  '現在証跡があるpx4/earth_pt1 backendは電圧制御だけを確認でき、tone、satellite position、DiSEqCの実処理証跡がないため`aidl_baseline_eligible=false`である。ただし、px4は証跡のある0 V / 15 V、earth_pt1は証跡のある11 V / 15 Vのcaller制御可能な電圧operationを持つendpointとして公開できる。`getLnbIds()`はこれらの公開対象endpointを列挙し、`openLnbById()`はendpoint leaseを取得して`ILnb` objectを生成する。tone、satellite position、DiSEqC等の未対応要求をCTS合格目的の成功no-op、擬似成功、callback echoにしてはならない。本製品は部分LNB公開によりAndroid 14 CTSのLNB試験が失敗し得ることを既知compatibility deltaとして受容し、CTS LNB適合を宣言しない。',
+                  'versioned `SupportedDeviceCapabilityCatalog` のpx4 / earth_pt1項目は、公開LNB operation / value capabilityとして電圧制御だけを保持し、tone、satellite position、DiSEqCの実処理能力を保持しないため`aidl_baseline_eligible=false`とする。px4項目は0 V / 15 V、earth_pt1項目は11 V / 15 Vのcaller制御可能な電圧operationを持つendpointとして公開できる。`getLnbIds()`はこれらの公開対象endpointを列挙し、`openLnbById()`はendpoint leaseを取得して`ILnb` objectを生成する。tone、satellite position、DiSEqC等の未対応要求をCTS合格目的の成功no-op、擬似成功、callback echoにしてはならない。本製品は部分LNB公開によりAndroid 14 CTSのLNB試験が失敗し得ることを既知compatibility deltaとして受容し、CTS LNB適合を宣言しない。hardware / driver能力が変化した場合は、既存のcatalog再評価条件に従ってversioned項目を更新する。',
+              ),
+          ]
+
+          for old, new in replacements:
+              n = s.count(old)
+              if n != 1:
+                  raise SystemExit(f'expected exactly one occurrence, got {n}: {old[:100]}')
+              s = s.replace(old, new)
+
+          forbidden = [
+              '`configureMonitorEvent(nonzero)` / 現行TS-only profile',
+              '検証済みの非0範囲がない現行profile',
+              '現行profileが生成できないbit',
+              '`dataFormat`は現行TS-only',
+              '現行TS formatでは188 byte',
+              '現行Tuner HAL capability / VTS profile',
+              'mappingがない現行製品では',
+              '現行仕様では persistent expired state',
+              '現在のpx4台帳はlegacy ABI',
+              'AOSP未指定入力を現行ABIで成立',
+              '現在証跡があるpx4/earth_pt1 backend',
+          ]
+          for needle in forbidden:
+              if needle in s:
+                  raise SystemExit(f'review finding remains: {needle}')
+
+          required = [
+              '本製品のTS-only `ProductProfile`はmonitor eventを対応能力として採用せず',
+              '製品profileで検証済みの非0範囲がなければ`0`',
+              '本製品`ProductProfile`が生成能力を持たないbit',
+              '本製品のTS packet pipelineでは188 byteだけ',
+              '起動時に安定取得と更新経路をfrontendエントリの固定capabilityとして証明できる場合だけ `statusCaps` に含める',
+              '`openLnbByName()`は本製品で名前付き外部LNBを公開しないため成功対象を持たず',
+              '本製品仕様は persistent expired state を持たない',
+              'px4 legacy ABI契約の台帳項目では',
+              'AOSP未指定入力をlegacy ABI契約で成立させるためだけ',
+              'versioned `SupportedDeviceCapabilityCatalog` のpx4 / earth_pt1項目',
+          ]
+          for needle in required:
+              if needle not in s:
+                  raise SystemExit(f'normalized contract missing: {needle}')
+
+          p.write_text(s, encoding='utf-8')
+          PY
+          git diff --check -- tuner_hal/DESIGN_JA.md
+          git diff -- tuner_hal/DESIGN_JA.md
+      - name: Commit design normalization and remove transport workflow
+        shell: bash
+        run: |
+          git config user.name 'kazuki0824'
+          git config user.email '4982384+kazuki0824@users.noreply.github.com'
+          git rm .github/workflows/pr28-normalize-capability-contracts.yml
+          git add tuner_hal/DESIGN_JA.md
+          git diff --cached --quiet && exit 1
+          git commit -m 'design: normalize capability contracts [skip ci]'
+          git push origin HEAD:agent/fix-commonization-boundaries
