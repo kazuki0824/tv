@@ -2042,7 +2042,7 @@ DVR playback consumer ワーカー は、DVR が soft demux と `RuntimeIoRegist
 ## フロントエンドの対応能力と状態
 
 
-ISDB-Tの列挙値域は、ARIB公式英語版STD-B31 2.2-E1本文の2.3、3.8、3.9、3.11.1、3.14.2、3.15.6.5〜3.15.6.7に従う。規格上の有効値と対象ドライバーで設定可能な値は分けて扱う。`TARGET_DRIVER` の証跡によって具体値が設定され、機器で有効になることを確認できない限り、対象バックエンドがモード、変調方式、符号化率、ガードインターバル、時間インターリーブについて公開し受け付ける値は `AUTO` だけとする。
+ISDB-Tの列挙値域は、ARIB公式英語版STD-B31 2.2-E1本文の2.3、3.8、3.9、3.11.1、3.14.2、3.15.6.5〜3.15.6.7に従う。規格上の有効値と対象ドライバーで設定可能な値は分けて扱う。本製品の対象バックエンドは、モード、変調方式、符号化率、ガードインターバル、時間インターリーブについて `AUTO` だけを対応能力として採用し、公開・受理する。
 
 
 `RF_LOCK` は backend が RF/carrier acquisition を別途取得できる場合だけ advertise する。DVB / earth_pt1 backend は Linux DVB `FE_READ_STATUS` が返す `FE_HAS_CARRIER` を `RF_LOCK`、`FE_HAS_LOCK` を `DEMOD_LOCK` に対応させる。px4固有の`RF_LOCK` / `DEMOD_LOCK` capability、`PTX_SET_CHANNEL`成功と`LOCKED`通知の関係は後段の「px4_drv ロック 方針」を唯一の正本とし、本節では再定義しない。
@@ -2067,7 +2067,7 @@ Android 14 AIDL V2の`FrontendIsdbtCapabilities.isSegmentAuto`と`isFullSegment`
 
 フロントエンドの対応能力、AIDL入力の受付可否、`ProductProfile`、VTSの選局入力は、本書の「フロントエンド設定の反映表」から生成する。ARIBが定義する放送パラメーター集合と、対象バックエンドが明示的に設定できる入力集合を混同しない。具体値を対応可能として公開または受理できるのは、ドライバーへ設定する経路、または読み戻して検証する経路が存在する場合だけとする。値を検証するだけでバックエンドへの要求から捨て、成功を返す経路は禁止する。
 
-対象の px4 / earth_pt1 による ISDB-T の設計上の backend capability は、設定表に従い、周波数と 6 MHz または `AUTO` の帯域幅に対応する。モード、階層ごとの変調方式と符号化率、ガードインターバル、階層ごとの時間インターリーブについては、対象 backend に具体値を設定する経路または読み戻して検証する経路の証跡がないため `AUTO` だけを対応能力として宣言する。`AUTO` は成功とし、規格上既知でも具体値を実処理・検証できない要求は `UNAVAILABLE` を返して、backend と直前の要求を変更しない。不正なタグまたは値域には `INVALID_ARGUMENT` を返す。対応能力、AIDL 入力検証、`ProductProfile`、VTS 選局入力は同じ設定表から生成する。ARIB STD-B31 2.2-E1 の 2.3、3.8、3.9、3.11.1、3.14.2、3.15.6.5〜3.15.6.7 は放送パラメーターの値域と伝送上の意味を定めるが、`AUTO` のみという制限は ARIB 上の制約ではなく、本製品が証跡に基づき宣言する backend capability である。
+対象の px4 / earth_pt1 による ISDB-T の設計上の backend capability は、設定表に従い、周波数と 6 MHz または `AUTO` の帯域幅に対応する。モード、階層ごとの変調方式と符号化率、ガードインターバル、階層ごとの時間インターリーブについては、対象 backend に具体値を設定する経路または読み戻して検証する経路の証跡がないため `AUTO` だけを対応能力として宣言する。`AUTO` は成功とし、規格上既知でも具体値を実処理・検証できない要求は `UNAVAILABLE` を返して、backend と直前の要求を変更しない。不正なタグまたは値域には `INVALID_ARGUMENT` を返す。対応能力、AIDL 入力検証、`ProductProfile`、VTS 選局入力は同じ設定表から生成する。ARIB STD-B31 2.2-E1 の 2.3、3.8、3.9、3.11.1、3.14.2、3.15.6.5〜3.15.6.7 は放送パラメーターの値域と伝送上の意味を定めるが、`AUTO` のみという制限は ARIB 上の制約ではなく、本製品が採用する backend capability である。
 
 
 `endFrequency`はAOSPのblind scan範囲終端としてだけ解釈する。`IFrontend.tune()`およびblind以外のscanでは選局条件ではないため、`endFrequency`が`frequency`と異なっていても拒否せず、正規化済みrequest fingerprint、backend tune request、選局結果の適合条件へ含めない。本製品はblind scanを対応宣言しないため、blind scan要求は正常な`endFrequency`を含めて`UNAVAILABLE`とし、既存tune/scan stateを変更しない。blind以外の操作で`endFrequency`差分を独自のexplicit範囲scanとして再解釈してはならない。
@@ -2085,7 +2085,7 @@ Android 14 AIDL V2の`FrontendIsdbtCapabilities.isSegmentAuto`と`isFullSegment`
 - 上記4項目を含むsettingsは、成功時だけ正規化済みrequest fingerprintへ含める。`UNAVAILABLE`または`INVALID_ARGUMENT`では旧tune/scan、backend、generationを変更せず、入力値を黙って捨てて成功してはならない。
 - blind scanは`UNAVAILABLE`とする。
 
-ISDB-T設定値の規格上の妥当性は、ARIB公式英語版STD-B31 2.2-E1本文の2.3、3.8、3.9、3.11.1、3.14.2、3.15.6.5〜3.15.6.7に従う。一方、対象ドライバーで設定可能かどうかは独立した根拠で判定する。`TARGET_DRIVER` の証跡で具体値の設定と反映を確認できない限り、対象バックエンドがモード、変調方式、符号化率、ガードインターバル、時間インターリーブについて公開し受け付ける値は `AUTO` だけとする。規格上の具体値を解析や試験のため内部表現に保持してよいが、証跡なしに制御可能な設定として公開または受理してはならない。
+ISDB-T設定値の規格上の妥当性は、ARIB公式英語版STD-B31 2.2-E1本文の2.3、3.8、3.9、3.11.1、3.14.2、3.15.6.5〜3.15.6.7に従う。一方、対象ドライバーで設定可能かどうかは独立した根拠で判定する。本製品の対象バックエンドは、モード、変調方式、符号化率、ガードインターバル、時間インターリーブについて `AUTO` だけを対応能力として採用し、公開・受理する。規格上の具体値を解析や試験のため内部表現に保持してよいが、制御可能な設定として公開または受理してはならない。
 
 
 ARIB STD-B31 2.2-E1は、モードを2.3、内符号化率を3.8と3.15.6.6、搬送波変調を3.9と3.15.6.5、時間インターリーブを3.11.1と3.15.6.7、ガードインターバルを3.14.2で定義する。本製品の対象バックエンドでAUTOだけを受け付けることは、ARIB上の値を否定するものではない。明示的な設定経路がない対象について、対応能力を過大に表明しないための制限である。
@@ -2098,7 +2098,7 @@ ARIB STD-B31 2.2-E1は、モードを2.3、内符号化率を3.8と3.15.6.6、�
 - `rolloff`は未指定を表すAIDL値を明示制約なしとして成功させる。本製品の対象backend/deviceは明示rolloffを設定または固定値検証する能力を採用しないため、規格上有効な明示rolloffは`UNAVAILABLE`、予約値・未知値は`INVALID_ARGUMENT`とする。入力`rolloff`をbackend requestから捨てたまま成功してはならず、拒否時は旧tune/scan、backend、generationを変更しない。
 - blind scanは`UNAVAILABLE`とする。
 
-対象のpx4/earth_pt1によるISDB-Sでは、ドライバーと機器が完全一致するカタログ項目によって具体値の設定機能を確認できない限り、変調方式と符号化率は `AUTO` だけに対応する。`AUTO` は成功とし、規格上既知の具体値には状態を変えず `UNAVAILABLE`、不正値には `INVALID_ARGUMENT` を返す。相対TS番号とTS_IDを別のselector domainとして扱う根拠はARIB STD-B20 3.0の2.9（別記第2・第3）と2.10、周波数の根拠はSTD-B21 5.12-E2とし、セレクター設定表で動作を別に定める。
+対象のpx4/earth_pt1によるISDB-Sでは、変調方式と符号化率は `AUTO` だけを対応能力として採用する。`AUTO` は成功とし、規格上既知の具体値には状態を変えず `UNAVAILABLE`、不正値には `INVALID_ARGUMENT` を返す。相対TS番号とTS_IDを別のselector domainとして扱う根拠はARIB STD-B20 3.0の2.9（別記第2・第3）と2.10、周波数の根拠はSTD-B21 5.12-E2とし、セレクター設定表で動作を別に定める。
 
 対象バックエンドのISDB-S変調方式は `AUTO` だけを対応能力として採用する。BPSK、QPSK、TC8PSKの明示指定には状態を変えず `UNAVAILABLE` を返す。
 
