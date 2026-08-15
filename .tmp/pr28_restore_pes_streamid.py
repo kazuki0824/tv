@@ -17,29 +17,22 @@ def line_with_prefix(text: str, prefix: str) -> str:
     raise RuntimeError(f"missing line prefix: {prefix}")
 
 
-def paragraph_starting(text: str, prefix: str) -> str:
-    i = text.index(prefix)
-    # Require paragraph start or list-item start anchor supplied by caller.
-    j = text.find("\n\n", i)
-    if j < 0:
-        j = len(text)
-    return text[i:j]
-
-
 def sentence_starting(text: str, prefix: str) -> str:
     i = text.index(prefix)
     j = text.index("。", i) + 1
     return text[i:j]
 
 
-def replace_sentence(cur_text: str, old_text: str, old_prefix: str, current_prefixes: tuple[str, ...]) -> str:
+def replace_sentence_if_present(cur_text: str, old_text: str, old_prefix: str, current_prefixes: tuple[str, ...]) -> str:
     desired = sentence_starting(old_text, old_prefix)
     for cp in current_prefixes:
         if cp in cur_text:
             i = cur_text.index(cp)
             j = cur_text.index("。", i) + 1
             return cur_text[:i] + desired + cur_text[j:]
-    raise RuntimeError(f"missing current sentence for {old_prefix}")
+    # A later unrelated cleanup may have removed the entire paragraph. Do not
+    # resurrect a superseded paragraph merely to undo this review's wording.
+    return cur_text
 
 # 1. Restore the runtime PES sentinel contract. The TableInfo rollback restored the
 # surrounding pre-review block but intentionally ended before this PES line, so add
@@ -49,20 +42,19 @@ if old_runtime not in cur:
     anchor = line_with_prefix(cur, "- `TableInfo.version`は")
     cur = cur.replace(anchor + "\n", anchor + "\n" + old_runtime + "\n", 1)
 
-# 2. Restore every caller-visible/capability sentence changed from wildcard to
-# mandatory rejection, without rolling back unrelated later wording in the same
-# paragraphs.
-cur = replace_sentence(
+# 2. Undo review-specific wording on still-existing design surfaces, without
+# resurrecting paragraphs removed later for independent reasons.
+cur = replace_sentence_if_present(
     cur, old,
     "PES filterを非0で公開する場合は",
     ("PES filterを非0で公開する場合は",),
 )
-cur = replace_sentence(
+cur = replace_sentence_if_present(
     cur, old,
     "PESは有効な明示`streamId 0..255`とwildcard `0xFFFF`を同じ能力で受理し",
     ("PESは有効な明示`streamId 0..255`", "PESは有効なPES `streamId` 0..255"),
 )
-cur = replace_sentence(
+cur = replace_sentence_if_present(
     cur, old,
     "`configure()`は有効な明示`streamId 0..255`とwildcard `0xFFFF`を成功させる",
     ("`configure()`は有効な明示`streamId 0..255`", "`configure()`は有効なPES `streamId` 0..255"),
@@ -77,31 +69,21 @@ if n != 1:
 # 4. Restore only the first two paragraphs of the PES stream-ID section; retain
 # later parser/generation ownership corrections made for unrelated reviews.
 heading = "### PES stream IDと宣言長の境界\n"
-if heading not in cur:
-    raise RuntimeError("current PES stream-ID heading missing")
-if heading not in old:
-    raise RuntimeError("old PES stream-ID heading missing")
+if heading not in cur or heading not in old:
+    raise RuntimeError("PES stream-ID heading missing")
 old_sec_start = old.index(heading) + len(heading)
 old_sec_end = old.index("\n## 失敗時状態・境界処理の設計固定", old_sec_start)
 old_paras = [x for x in old[old_sec_start:old_sec_end].strip().split("\n\n") if x.strip()]
-if len(old_paras) < 2:
-    raise RuntimeError("old PES section has fewer than two paragraphs")
 cur_sec_start = cur.index(heading) + len(heading)
 cur_sec_end = cur.index("\n## 失敗時状態・境界処理の設計固定", cur_sec_start)
 cur_paras = [x for x in cur[cur_sec_start:cur_sec_end].strip().split("\n\n") if x.strip()]
-if len(cur_paras) < 2:
-    raise RuntimeError("current PES section has fewer than two paragraphs")
+if len(old_paras) < 2 or len(cur_paras) < 2:
+    raise RuntimeError("PES stream-ID section paragraph count unexpected")
 cur_paras[0] = old_paras[0]
 cur_paras[1] = old_paras[1]
 cur = cur[:cur_sec_start] + "\n" + "\n\n".join(cur_paras) + "\n" + cur[cur_sec_end:]
 
 # 5. Restore the assembler-input statement that wildcard is a valid configuration.
-old_assembler_sentence = sentence_starting(
-    old,
-    "次表は一般PES filterが満たす構文・再同期条件を表す。設定は",
-)
-# The first sentence contains both clauses and ends at the second Japanese period;
-# recover the exact old full line instead because it is one Markdown line.
 old_assembler_line = line_with_prefix(old, "次表は一般PES filterが満たす構文・再同期条件を表す。設定は")
 cur, n = re.subn(
     r"^次表は一般PES filterが満たす構文・再同期条件を表す。設定は.*$",
@@ -126,7 +108,7 @@ reject_re = re.compile(
 )
 replacement = "明示`streamId 0..255`またはwildcard `0xFFFF`の有効な設定を受理する。"
 cur, n = reject_re.subn(replacement, cur, count=1)
-if n != 1:
+if n not in (0, 1):
     raise RuntimeError(f"later PES parser streamId sentence replacement count={n}")
 
 # 8. Restore FILTER_PES resource contract exactly.
@@ -135,15 +117,14 @@ cur, n = re.subn(r"^\| FILTER_PES \|.*$", lambda _: old_filter_pes, cur, count=1
 if n != 1:
     raise RuntimeError(f"FILTER_PES row replacement count={n}")
 
-# 9. Restore the PES-closure sentence inside the later capability-summary bullet,
-# while retaining unrelated VTS/resource wording added later.
-old_cap_sentence = sentence_starting(old, "PES assemblerは全ての有効なPES `streamId` 0..255")
-# Current text can have the same prefix but reject 0xFFFF later or explicit-only.
-if "PES assemblerは全ての有効なPES `streamId` 0..255" not in cur:
-    raise RuntimeError("current PES capability-summary sentence missing")
-i = cur.index("PES assemblerは全ての有効なPES `streamId` 0..255")
-j = cur.index("。", i) + 1
-cur = cur[:i] + old_cap_sentence + cur[j:]
+# 9. Restore the PES-closure sentence inside the later capability-summary bullet if
+# that later summary still exists; otherwise do not reintroduce a superseded block.
+cap_prefix = "PES assemblerは全ての有効なPES `streamId` 0..255"
+if cap_prefix in cur:
+    old_cap_sentence = sentence_starting(old, cap_prefix)
+    i = cur.index(cap_prefix)
+    j = cur.index("。", i) + 1
+    cur = cur[:i] + old_cap_sentence + cur[j:]
 
 # PES-specific rejection residues from review 4944521799 must be gone. Do not
 # globally reject INVALID_STREAM_ID because frontend ISDB-S legitimately uses it.
@@ -156,18 +137,18 @@ for bad in (
     if bad in cur:
         raise RuntimeError(f"PES rejection residue remains: {bad}")
 
-# Positive assertions covering all directly related design surfaces.
+# Positive assertions on all mandatory surviving review-affected surfaces.
 for required in (
     old_runtime,
     old_tpes17,
     old_filter_pes,
     old_row2,
+    old_assembler_line,
     "PES filterは、有効な明示`streamId 0..255`とwildcard `0xFFFF`を同じ公開能力で受理する。",
     "`DemuxCapabilities.numPesFilter`は個数だけを表し、対応stream ID集合または長さ制約を表現できない。",
-    "`configure()`は有効な明示`streamId 0..255`とwildcard `0xFFFF`を成功させる。",
 ):
     if required not in cur:
         raise RuntimeError(f"restored PES contract missing: {required}")
 
 p.write_text(cur)
-print("restored PES 0xFFFF wildcard/sentinel contract on all review-affected design surfaces")
+print("restored PES 0xFFFF wildcard/sentinel contract on all surviving review-affected design surfaces")
