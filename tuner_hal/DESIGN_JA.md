@@ -714,13 +714,13 @@ open済みのAV filterでは、`configure()`前でも成功させる。
 |---:|---|---|---|---|---|---|---|
 | F-C-024 | `flush()` 未設定 | F0 | `INVALID_STATE` | F0 | なし | `filter_flush_invalid_state` を増やす | 未設定では破棄対象が存在しない |
 
-現行のTS-only `ProductProfile`ではmonitor eventを宣言しない。AIDLのreset入力だけを実装し、非0 maskを受理する将来状態機械は置かない。
+本製品のTS-only `ProductProfile`はfilter monitor eventを対応能力として採用しない。AIDLのreset入力だけを成功対象とし、非0 maskは`UNAVAILABLE`とする。
 
 
 | 番号 | API / 入力 | 対象状態集合 | AIDL戻り値 | 次状態関数 | 副作用 | 診断 | 同値性根拠 / 設計上の成立条件 |
 |---:|---|---|---|---|---|---|---|
 | F-C-025 | `configureMonitorEvent(0)` | F0, F1, F2, F3, F4, F5, F6, A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11 | 成功 | 入力状態を維持 | mask 0を確定し、未配送monitor eventと種別ごとの最終観測値を消去する。通常のfilter event、callback登録、FMQ、parser状態は維持する | `monitor_event_reset`を増やす | AIDLのResetによる監視停止を実装し、非監視eventへ波及させない |
-| F-C-026 | `configureMonitorEvent(nonzero)` | F0, F1, F2, F3, F4, F5, F6, A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11 | `UNAVAILABLE` | 入力状態を維持 | monitor mask、観測値、worker、queueを生成または変更しない | `monitor_event_unavailable`を増やす | 現行profileが宣言しない有効機能要求を成功扱いにしない |
+| F-C-026 | `configureMonitorEvent(nonzero)` | F0, F1, F2, F3, F4, F5, F6, A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11 | `UNAVAILABLE` | 入力状態を維持 | monitor mask、観測値、worker、queueを生成または変更しない | `monitor_event_unavailable`を増やす | 本製品が対応能力として採用しない有効機能要求を成功扱いにしない |
 | F-C-027 | `configureIpCid()` | F0, F1, F2, F3, F4, F5, F6, A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11 | `UNAVAILABLE` | 入力状態を維持 | なし | `ip_cid_unavailable` を増やす | IP CID は Tuner HAL の視聴経路 / capability 対象外 |
 | F-C-028 | `setDelayHint()` 正常入力 / non-media filter | F0, F1, F2, F3, F4, F5, F6 | 成功 | 入力状態を維持 | hint 値だけ保存 | `delay_hint_set` | 資源寿命を変えない。media / AV filter は対象外 |
 | F-C-028a | `setDelayHint()` media / AV filter | A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11 | `UNAVAILABLE` | 入力状態を維持 | なし | `delay_hint_media_unavailable` を増やす | `FilterDelayHint` は media filter に非適用であり、成功扱いにしない |
