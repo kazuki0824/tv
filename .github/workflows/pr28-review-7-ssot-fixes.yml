@@ -1,12 +1,17 @@
 name: PR28 latest SSOT review fixes
+
 on:
   push:
-    branches: [agent/fix-commonization-boundaries]
+    branches:
+      - agent/fix-commonization-boundaries
+    paths:
+      - .github/workflows/pr28-review-7-ssot-fixes.yml
+
 permissions:
   contents: write
+
 jobs:
   apply:
-    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,7 +27,7 @@ jobs:
           import re
 
           p = Path('tuner_hal/DESIGN_JA.md')
-          s = p.read_text()
+          s = p.read_text(encoding='utf-8')
 
           def sub(pattern, repl, label, flags=0):
               global s
@@ -31,7 +36,6 @@ jobs:
                   raise SystemExit(f'{label}: expected 1 replacement, got {n}')
               s = ns
 
-          # 1. Table 17: keep caller-visible key-token semantics; mutation order belongs only to canonical txns.
           sub(
               r"### 表17\. key token 所有権・参照カウント契約\n.*?\n#### 表17-B\. Descrambler cleanup / key lifetime transaction（契約参照）",
               """### 表17. key token 公開状態契約
@@ -53,7 +57,6 @@ key token は不透明な参照値として扱い、同一 token bytes を複数
 #### 表17-B. Descrambler cleanup / key lifetime transaction（契約参照）""",
               'table17', re.S)
 
-          # 2. Close section: retain typed Filter/DVR cleanup dependencies, not generic authority/retry/handoff state.
           sub(
               r"### close / unregister / quarantine 条件\n.*?\n### `IFrontend\.stopTune\(\)` の失敗時状態",
               """### close / unregister / quarantine 条件
@@ -71,7 +74,6 @@ cleanup commandの途中失敗後の後続command実行、未完step記録、同
 ### `IFrontend.stopTune()` の失敗時状態""",
               'close-section', re.S)
 
-          # 3. Remove undefined present/future axis from A/V sync non-adopted scope.
           sub(
               r"本節では A/V sync の現行境界と非採用範囲だけを固定する。",
               "本節では A/V sync の非採用範囲だけを恒久契約として固定する。",
@@ -81,7 +83,6 @@ cleanup commandの途中失敗後の後続command実行、未完step記録、同
               "- 本製品の canonical A/V sync contract は `PcrClockAnchorStore` が所有する観測済み PCR anchor と monotonic clock の対応だけを用いる。PCR PID 明示管理、サービス clock モデル、jitter smoothing、PLL / clock discipline、複数 clock source の品質評価、CTS / VTS / 実波ベースの補正モデルは本製品契約として導入しない。",
               'av-nonadopted')
 
-          # 4. Persistent LNB controls: public capability/result here; internal backend failure only in LnbControlTxn.
           sub(
               r"\| API \| 有効入力 \| 本製品の結果 \| backend失敗時 \|\n\|---\|---\|---\|---\|\n\| `setVoltage\(voltage\)` .*?\n\| `sendDiseqcMessage\(message\)` .*?\n",
               """| API | 有効入力 | 本製品の結果 | 内部失敗契約 |
@@ -93,7 +94,6 @@ cleanup commandの途中失敗後の後続command実行、未完step記録、同
 """,
               'lnb-public-table', re.S)
 
-          # 5. Move the remaining diagnostic fact into canonical LnbControlTxn and remove divergent BackendApplyOutcome state machine.
           m = re.search(r"^\| `LnbControlTxn` \|.*$", s, flags=re.M)
           if not m:
               raise SystemExit('LnbControlTxn row not found')
@@ -118,7 +118,6 @@ LNB固有のsafe-state復帰はcleanup対象として`ObjectCloseTxn`へtyped cl
 ## IDescrambler demux結合契約""",
               'lnb-backend-outcome', re.S)
 
-          # 6/7. Capacity ledger owns capacities/public exhaustion only; mutations stay in canonical descrambler contracts.
           sub(
               r"実行時は、同じ物理tuner/backend復号経路に属する共有`DescramblerCapacityPool`へprofileの実鍵組数と実PID数を登録する。複数`IDescrambler` sessionは同じpoolからclaimし、合計使用量が実容量を超えないようにする。各objectへ容量を重複予約して水増ししてはならない。\n\n\| 事象 \| 台帳操作 \| 結果 \|\n\|---\|---\|---\|\n.*?\| `close\(\)` / demux無効化 \|.*?\n",
               """実行時は、同じ物理tuner/backend復号経路に属する共有`DescramblerCapacityPool`へprofileの実鍵組数と実PID数、pool共有単位を登録し、全sessionの合計使用量が実容量を超えないことをcapacity contractとして保証する。個別sessionのclaim / release順序、commit / rollback / cleanupは下表のcanonical mutation ownerだけを正本とし、本能力台帳では再定義しない。
@@ -134,11 +133,10 @@ LNB固有のsafe-state復帰はcleanup対象として`ObjectCloseTxn`へtyped cl
 """,
               'b25-capacity-table', re.S)
 
-          p.write_text(s)
+          p.write_text(s, encoding='utf-8')
           PY
 
           git diff --check
-          git diff -- tuner_hal/DESIGN_JA.md
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add tuner_hal/DESIGN_JA.md
