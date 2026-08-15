@@ -1,0 +1,133 @@
+name: PR28 worker SSOT fix
+
+on:
+  push:
+    branches:
+      - agent/fix-commonization-boundaries
+    paths:
+      - .github/workflows/pr28-worker-ssot-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-commonization-boundaries
+          fetch-depth: 0
+      - name: Centralize generic worker lifecycle contract
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('tuner_hal/DESIGN_JA.md')
+          text = path.read_text(encoding='utf-8')
+
+          # Move the remaining generic worker semantics into the canonical 0-S-3B owner.
+          lines = text.splitlines()
+          hits = [i for i, line in enumerate(lines) if line.startswith('| `WorkerRuntime` / `WorkerHandle` |')]
+          if len(hits) != 1:
+              raise SystemExit(f'WorkerRuntime row count: {len(hits)}')
+          i = hits[0]
+          parts = lines[i].split('|')
+          if len(parts) != 12:
+              raise SystemExit(f'unexpected WorkerRuntime row shape: {len(parts)}')
+          parts[4] = ' owner generation、stop signal、JoinHandle、fence、reaper handoff mechanism、typed worker terminal result（`Normal` / `StopRequested` / `RuntimeFailure` / `PanicOrJoinFailure`） '
+          parts[6] = ' owner handle slot prepare → fenced worker spawn / handle bind → signal stop → wake/cancel → observe/join または one-shot reaper handoff → worker実終了と依存cleanup完了後にlease/slot release '
+          parts[7] = ' handle slot準備失敗ではspawnしない。取消generationごとのstop/wake通知は各1回までとし、終了済みworkerは直ちに回収する。failureはtyped reportしleaseを早期再利用しない。terminal budgetは`cleanupRetryScheduleMs=[0,10,100,1000]`後1000 ms間隔、`cleanupTerminalDeadlineMs=30000`、`workerIoDeadlineMs=2000`、`workerReaperDeadlineMs=10000`。deadline到達後もowner generation無効化で副作用を遮断できる場合は対象owner/generation/resourceだけを`Quarantined`とする。無効化後もservice-global stateを変更可能、遮断不能なservice-wide exclusive resourceを保持、owner/generation/resource tokenで遮断不能、または同一資源のreplacement/restartと競合可能というtyped evidenceがある場合だけ`ServiceCritical`とする '
+          parts[10] = ' handle-slot failureでno-spawn、typed terminal result、stop/wake一回性、generation fence、join/one-shot reaper、panic、no early reuse、deadline branch、local quarantine対ServiceCritical判定 '
+          lines[i] = '|'.join(parts)
+          text = '\n'.join(lines) + ('\n' if text.endswith('\n') else '')
+
+          # Downstream runtime section keeps only domain/backend requirements and canonical references.
+          lines = text.splitlines()
+          out = []
+          replaced_worker_bullets = 0
+          j = 0
+          while j < len(lines):
+              line = lines[j]
+              if line.startswith('- ワーカー は handle 保存先の mutex を確保してから spawn する。'):
+                  if j + 3 >= len(lines):
+                      raise SystemExit('worker bullet block truncated')
+                  # Consume this bullet, the next stop/wake/join bullet, optional blank line,
+                  # and the WorkerHandle/WorkerExit paragraph.
+                  if not lines[j + 1].startswith('- 長寿命 ワーカー の待機は'):
+                      raise SystemExit('stop/wake/join bullet not adjacent')
+                  k = j + 2
+                  while k < len(lines) and lines[k] == '':
+                      k += 1
+                  if k >= len(lines) or not lines[k].startswith('- 現行仕様で管理対象となる長寿命ワーカーは、`WorkerHandle`'):
+                      raise SystemExit('WorkerHandle/WorkerExit bullet not found')
+                  out.append('- generic workerのhandle/spawn ownership、typed terminal result、stop / wake / join、generation fence、reaper handoff、lease returnは0-S-3Bの`WorkerRuntime` / `WorkerHandle`を唯一の正本とする。failure categoryは`WorkerFailureClassifier`を正とする。mutex / condvar、spawn / join等の実装規約は`CODE_CONVENTION.md`を正とし、本節では再定義しない。')
+                  j = k + 1
+                  replaced_worker_bullets += 1
+                  continue
+              out.append(line)
+              j += 1
+          if replaced_worker_bullets != 1:
+              raise SystemExit(f'worker bullet block replacements: {replaced_worker_bullets}')
+          text = '\n'.join(out) + ('\n' if text.endswith('\n') else '')
+
+          def replace_paragraph(prefix: str, replacement: str) -> None:
+              nonlocal_box[0] = _replace_paragraph(nonlocal_box[0], prefix, replacement)
+
+          def _replace_paragraph(s: str, prefix: str, replacement: str) -> str:
+              pos = s.find(prefix)
+              if pos < 0:
+                  raise SystemExit(f'paragraph not found: {prefix}')
+              start = s.rfind('\n\n', 0, pos)
+              start = 0 if start < 0 else start + 2
+              end = s.find('\n\n', pos)
+              end = len(s) if end < 0 else end
+              return s[:start] + replacement + s[end:]
+
+          nonlocal_box = [text]
+          replace_paragraph(
+              'ワーカーの後片付けは、本書のワーカー終了契約に従って事象駆動で行い、',
+              'ワーカーが利用するbackend pathは、停止通知またはFD closeで有限時間に復帰すること、driver/kernel契約から導出した内部I/O上限内に復帰すること、または副作用をowner境界で遮断できる隔離実行であることのいずれかを能力公開前に証明する。いずれも証明できないbackend pathは能力として公開しない。選局成否を固定時間で覆す`TargetDriverTimingProfile`は設けない。取消、回収、reaper、lease return、terminal budget、`Quarantined` / `ServiceCritical`分岐のgeneric semanticsは0-S-3Bの`WorkerRuntime` / `WorkerHandle`を唯一の正本とし、本節では再定義しない。'
+          )
+          replace_paragraph(
+              '失敗の影響範囲は、既定では所有者、世代、依存資源の組に限定する。',
+              'generic worker failureの隔離範囲と`ServiceCritical`昇格条件は0-S-3Bの`WorkerRuntime` / `WorkerHandle`を唯一の正本とし、failure categoryは`WorkerFailureClassifier`を正とする。各domain節は分類済みterminal resultをAPI固有状態・公開結果へ写像する責務だけを持ち、service-wide failure判定条件を再定義しない。'
+          )
+          text = nonlocal_box[0]
+
+          forbidden = [
+              'handle 保存先の mutex を確保してから spawn',
+              'stop request → wake → join',
+              '`WorkerExit` は `Normal` / `StopRequested` / `RuntimeFailure` / `PanicOrJoinFailure`',
+              '所有者世代を無効化して状態変更を遮断した後、有界の`ReaperSupervisor`へ一度だけ移して隔離する',
+              '残存ワーカーをサービス全体に影響するものと判定できるのは',
+          ]
+          for needle in forbidden:
+              if needle in text:
+                  raise SystemExit(f'generic worker second SSOT remains: {needle}')
+
+          required = [
+              '| `WorkerRuntime` / `WorkerHandle` |',
+              '`WorkerFailureClassifier`',
+              'typed worker terminal result',
+              '同一資源のreplacement/restartと競合可能',
+              'backend pathは、停止通知またはFD closeで有限時間に復帰すること',
+          ]
+          for needle in required:
+              if needle not in text:
+                  raise SystemExit(f'required canonical worker contract missing: {needle}')
+
+          path.write_text(text, encoding='utf-8')
+          PY
+          git diff --check -- tuner_hal/DESIGN_JA.md
+          git diff -- tuner_hal/DESIGN_JA.md
+      - name: Commit design fix
+        shell: bash
+        run: |
+          git config user.name 'maleicacid'
+          git config user.email '4982384+kazuki0824@users.noreply.github.com'
+          git add tuner_hal/DESIGN_JA.md
+          git diff --cached --quiet && exit 1
+          git commit -m 'design: centralize worker lifecycle semantics'
+          git push origin HEAD:agent/fix-commonization-boundaries
