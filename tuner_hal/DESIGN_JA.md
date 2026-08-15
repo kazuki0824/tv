@@ -67,16 +67,16 @@ DVB frontend の `exclusiveGroupId` は公開 frontend ID や `(adapter_id, fron
 `DvrLeasePool`は確定済みで不変の`CapabilitySnapshot`を参照し、`getDemuxCaps()`応答と`openDvr()`受付可否を決める唯一の情報源とする。再生・記録DVRの全体上限は`snapshot.playback_count`と`snapshot.record_count`、demuxごとの上限は各1個とする。受付時はlifecycleと引数を検証し、用途別・demux別の使用枠を一括予約してから要求FMQと通知枠を準備する。途中失敗では仮予約を全て取り消し、不完全objectを公開しない。`CleanupPending`または`Quarantined`は最終解放まで使用中と数える。Tuner VTSはruntime能力から無条件に導出せず、起動前`VtsEnvironmentProfile`にVTS artifact/tag/commit、variant property、入力元、PID、経路、queue容量、memory予算が定義されるまで`DESIGN_HOLD`としてXML filenameを解決せず、XMLをinstallしない。使用する静的設定は確定済み`CapabilitySnapshot`に収まり、必要queue容量を正確に予約できなければならない。
 
 
-### VTS profile / capability / 実装済み機能 対応表
+### VTS profile / capability 対応契約
 
-VTS XML/profileで使う機能、capabilityで宣言する機能、実装済み機能は一致させる。VTS profileで使用する機能をcapability非宣言または未実装扱いにしてはならない。capabilityで宣言する機能をVTS/profileから到達不能にして検査を回避してはならない。
+VTS XML/profileで使用する機能とcapabilityで宣言する機能は一致させる。VTS profileで使用する機能をcapability非宣言にしてはならず、capabilityで宣言する機能をVTS/profileから到達不能にして検査を回避してはならない。実装適用状況そのものは実装を事実源とし、完了・未達判定は `../タスク完了判定の実施方法.md` に従う判定側で管理する。
 
 | 領域 | capability / profile 方針 | 設計契約 |
 |---|---|---|
 | `IFilter.setDataSource(filter)`、`filter == NULL` | AOSP意味論として存在する必須契約であり、現行設計の成功対象 | sink filter の入力元を demux input へ戻す |
 | `IDescrambler.addPid(pid, optionalSourceFilter)` / `removePid(pid, optionalSourceFilter)`、`optionalSourceFilter == NULL` | AOSP意味論として存在する必須契約であり、現行設計の成功対象 | 指定PIDについてdemux input全体への登録 / 解除として扱う |
 | AV shared handle release | media filter shared memory profileでは到達する | `releaseAvHandle(fd付き handle, 0)` を成功させる |
-| monitor event | 現行のTS-only `ProductProfile`では対応宣言しない | `configureMonitorEvent(0)`だけを監視停止として成功させ、非0 maskは`UNAVAILABLE`とする。monitor event用の状態、worker、queue、能力値を生成しない |
+| monitor event | 本製品のTS-only `ProductProfile`では対応宣言しない | `configureMonitorEvent(0)`だけを監視停止として成功させ、非0 maskは`UNAVAILABLE`とする。monitor event用の状態、worker、queue、能力値を生成しない |
 | AV passthrough | 対応宣言しない | profileでは `isPassthrough=false` に固定する |
 | `linkCaps` | main type 粒度 | 広告した main type pair は VTS が生成する subtype `UNDEFINED` 接続も成功対象に含める。成功させない pair は広告しない |
 
@@ -95,7 +95,7 @@ ISDB-S selectorはAOSPの`FrontendIsdbsStreamIdType`を正とし、`STREAM_ID`�
 backendのエラーは、呼び出し側の不正値・値域違反を`INVALID_ARGUMENT`、不存在・使用中・容量不足・規格上は有効だが未対応を`UNAVAILABLE`、不正なライフサイクルを`INVALID_STATE`、依存資源の未初期化を`NOT_INITIALIZED`、割り当て失敗を`OUT_OF_MEMORY`、権限・入出力・設定破損・不変条件違反を`UNKNOWN_ERROR`へ対応付ける。
 
 
-- 現行のTS-only `ProductProfile`はfilter monitor eventを宣言しない。`configureMonitorEvent(0)`は監視停止として成功し、未配送monitor event、保存mask、種別ごとの最終観測値を消去する。非0 maskは常に`UNAVAILABLE`とし、monitor event用の状態、worker、queueを生成しない。通常の`DATA_READY` / `OVERFLOW` / `onFilterEvent()` deliveryはmask 0または非0要求の拒否によって抑止しない。
+- 本製品のTS-only `ProductProfile`はfilter monitor eventを対応能力として採用しない。`configureMonitorEvent(0)`は監視停止として成功し、未配送monitor event、保存mask、種別ごとの最終観測値を消去する。非0 maskは常に`UNAVAILABLE`とし、monitor event用の状態、worker、queueを生成しない。通常の`DATA_READY` / `OVERFLOW` / `onFilterEvent()` deliveryはmask 0または非0要求の拒否によって抑止しない。
 - soft demux の section / PES assembler と filter `stop()` / `flush()` / `configure()` / `close()` の状態別契約は、本書の「表1. IFilter 状態表」を正とする。
 - `setMaxNumberOfFrontends(type, maxNumber)`は同じ`FrontendType`の`0 <= maxNumber <= defaultMax(type)`だけを成功させる。負値、未知type、同typeの既定上限超過は`INVALID_ARGUMENT`とし、別typeの上限を変更しない。
 - 製品実行時 の frontend registry は実在 probe できた backendエントリ だけで構成する。probe 失敗は 診断情報レコード に残し、劣化 frontendエントリ / テスト劣化補助関数 / 診断劣化補助関数 は作らない。
@@ -122,7 +122,7 @@ Binder artifact、runtime registry、domain callback logical stateのprepare / c
 
 current callbackのBinder deathは、死亡したcallbackがcurrent registrationに対応する場合だけ登録解除として扱う。置換済みcallbackの遅延death通知は現在の登録へ影響させない。`close()`後は旧generation由来の未配送entryを配送せず、callback registrationのcleanupは`ObjectCloseTxn`から`CallbackRegistrationUseCase`のtyped cleanupへ接続する。
 
-### Android 14 AIDL filter source 境界の現行処理
+### Android 14 AIDL filter source 境界契約
 
 
 `configure()`は入力元との接続を変更しない。新しい設定が既存の接続と両立しない場合は`INVALID_STATE`で拒否し、以前の設定と接続を保持する。切断は`setDataSource(null)`で明示する。不正な設定には`INVALID_ARGUMENT`を返す。
@@ -512,7 +512,7 @@ AV payloadは配送時、宣言長ありPESはheaderから必要量を確定し�
 | 項目 | 固定内容 |
 |---|---|
 | AV passthrough | 本製品では恒久的に対応しない。passthrough capability は宣言せず、passthrough要求は configure時 `UNAVAILABLE` とする |
-| 監視イベント配送 | 現行のTS-only `ProductProfile`では非対応。`configureMonitorEvent(0)`だけを監視停止として成功させ、非0マスク値は常に`UNAVAILABLE`とする。将来対応profileの状態機械を本設計へ先取りしない |
+| 監視イベント配送 | 本製品のTS-only `ProductProfile`では非対応能力とする。`configureMonitorEvent(0)`だけを監視停止として成功させ、非0マスク値は常に`UNAVAILABLE`とする。monitor event用の状態、worker、queueは設けない |
 | PCR | ペイロードキューとして公開しない。AV同期の内部状態として扱う |
 | 未対応機能 | capability と VTS profile に宣言しない。要求された場合は configure時、専用API呼び出し時、対応する公開API呼び出し時のいずれかで `UNAVAILABLE` とする |
 | close | `closed` は公開API遮断ゲート、`cleanup_complete` は後片付け完了根拠として別管理する |
@@ -2139,7 +2139,7 @@ Android 14 AIDL V2の`FrontendIsdbtCapabilities.isSegmentAuto`と`isFullSegment`
 - layerの`numOfSegment=0`はAOSP builderの未指定値として扱い、segment数の明示制約を付けず成功させる。`isSegmentAuto`の真偽を`0`の受付条件にしてはならない。
 - `isSegmentAuto=true`にできるのは、対象backend/device/profileでsegment構成を明示指定せず自動判定して実際に選局できることを検証済みの場合だけとする。Android framework APIは`numOfSegment`用のnamed AUTO定数を公開していないが、Android 14 CTSは`isSegmentAutoSupported()==true`のISDB-T frontendに対して`numOfSegment=0xFF`を設定して`tune()`成功を要求する。このため`0xFF`はCTS互換のAUTO要求として受理し、`isSegmentAuto=true`のfrontendではbackend/demodulatorのsegment自動判定へ写像する。`isSegmentAuto=false`では`0xFF`を`UNAVAILABLE`とし、独自の明示segment数へ読み替えない。
 - `isFullSegment=true`にできるのは、対象backend/device/profileで13-segmentの通常受信が成立することを機器能力として検証済みの場合だけとする。単にlockを取得できたこと、またはARIB上13 segmentが存在することだけから`true`を推測しない。
-- callerが指定する明示`numOfSegment=1..13`を成功させるには、その値をlayerごとにbackendへ反映する経路または固定値として検証する経路が必要である。現行px4/earth_pt1でその経路を持たない間は、値域内の明示segment数を`UNAVAILABLE`とし、値を捨てて成功しない。
+- callerが指定する明示`numOfSegment=1..13`を成功させるには、その値をlayerごとにbackendへ反映する経路または固定値として検証する経路が必要である。本製品のpx4/earth_pt1はlayerごとの明示segment数を反映または固定値検証する能力を採用しないため、値域内の明示segment数を`UNAVAILABLE`とし、値を捨てて成功しない。
 - CTS対象として公開するISDB-T frontendは、`isSegmentAuto` / `isFullSegment` と `numOfSegment` 受付の閉包条件を満たさなければならない。`isSegmentAuto=true`ならCTSが送る`0xFF`を実現できること、`isSegmentAuto=false && isFullSegment=true`なら`13`を実現できること、`isSegmentAuto=false && isFullSegment=false`なら`1`を実現できることを、同じ`CapabilitySnapshot`の生成時に検証する。対応するCTS入力を実現できないcapability pairを公開してはならず、3分岐のいずれも成立しないbackend/device/profileはCTS対象ISDB-T frontendとしてexportしない。segment能力の証跡がない場合にbooleanを単に`false`へ倒すだけでこの閉包条件を回避してはならない。能力boolean、`numOfSegment`の受付、`ProductProfile`、VTS選局入力の間に矛盾がある候補は`CapabilitySnapshot`へcommitしない。
 
 
@@ -2158,31 +2158,31 @@ Android 14 AIDL V2の`FrontendIsdbtCapabilities.isSegmentAuto`と`isFullSegment`
 - `bandwidth`は`AUTO`または`BANDWIDTH_6MHZ`を受け付ける。
 - `mode`、layer `modulation`、layer `codeRate`、`guardInterval`、layer `timeInterleave`は`AUTO`だけをadvertise・受理する。
 - 上記のAUTO専用項目に指定された既知の具体値は`UNAVAILABLE`、unionまたは値域が不正な入力は`INVALID_ARGUMENT`とし、バックエンドと直前の要求を変更しない。
-- `inversion`は未指定・自動を表すAIDL値だけを、明示制約なしとして成功させる。規格上有効な明示inversionは、対象backendで設定または固定値検証できる場合だけ成功させ、現行profileでその証跡がない値は`UNAVAILABLE`とする。予約値・未知値は`INVALID_ARGUMENT`とする。
-- `serviceAreaId=0`は未指定として成功させる。正の値は構文上有効な要求として、backend requestまたは選局結果検証へ実際に使用できる場合だけ成功させる。現行profileでその経路がない正の値は`UNAVAILABLE`、負値は`INVALID_ARGUMENT`とする。
+- `inversion`は未指定・自動を表すAIDL値だけを、明示制約なしとして成功させる。本製品の対象backendは明示inversionを設定または固定値検証する能力を採用しないため、規格上有効な明示inversionは`UNAVAILABLE`とする。予約値・未知値は`INVALID_ARGUMENT`とする。
+- `serviceAreaId=0`は未指定として成功させる。本製品の対象backendは正の`serviceAreaId`をbackend requestまたは選局結果検証へ反映する能力を採用しないため、構文上有効な正の値は`UNAVAILABLE`、負値は`INVALID_ARGUMENT`とする。
 - `partialReceptionFlag`は未指定を表すAIDL値を明示制約なしとして成功させる。`TRUE` / `FALSE`は規格上有効な明示要求である。blocker解消後の`IFrontend.tune()`同期戻り値は、要求の構文・capability・資源・backend開始可否を検証して選局処理を受理できたことだけを表し、lock後のTMCC照合結果を後から同期戻り値へ反映しない。対象demodulatorが自動判定した同一tune generationのfreshなTMCC readbackが要求値と一致した場合だけ、その要求で指定されたsignalへlockしたものとして`FrontendEventType::LOCKED`を通知する。不一致は要求されたsignalへlockできなかったものとして`NO_SIGNAL`とし、readback未確定・I/O失敗・古いgenerationでは`LOCKED`を捏造せず既存のbackend failure契約に従う。scanでは同じfresh readback一致を当該candidateの成立条件とし、不一致または未確定をlock済みcandidateとして通知しない。earth_pt1 / TC90522は`future_work/r51/earth_pt1_tc90522_tmcc_readback_error_propagation_blocker.md`、px4は`future_work/r51/px4_tmcc_partial_reception_readback_blocker.md`が未解決の間、readback成立を偽装せず明示`TRUE` / `FALSE`を`UNAVAILABLE`とする。予約値・未知値は`INVALID_ARGUMENT`とする。
-- layer `numOfSegment=0`は未指定として成功させる。`0xFF`はAndroid 14 CTSが`isSegmentAutoSupported()==true`のfrontendへ送る互換AUTO要求として扱い、`isSegmentAuto=true`ならbackend/demodulatorのsegment自動判定を使用して成功させ、`false`なら`UNAVAILABLE`とする。`1..13`は構文上有効だが、layerごとのsegment数をbackendへ反映または固定値検証できない現行profileでは`UNAVAILABLE`とする。`14..254`、負値、255を超える値は`INVALID_ARGUMENT`とする。
+- layer `numOfSegment=0`は未指定として成功させる。`0xFF`はAndroid 14 CTSが`isSegmentAutoSupported()==true`のfrontendへ送る互換AUTO要求として扱い、`isSegmentAuto=true`ならbackend/demodulatorのsegment自動判定を使用して成功させ、`false`なら`UNAVAILABLE`とする。本製品の対象backendはlayerごとの明示segment数を反映または固定値検証する能力を採用しないため、構文上有効な`1..13`は`UNAVAILABLE`とする。`14..254`、負値、255を超える値は`INVALID_ARGUMENT`とする。
 - 上記4項目を含むsettingsは、成功時だけ正規化済みrequest fingerprintへ含める。`UNAVAILABLE`または`INVALID_ARGUMENT`では旧tune/scan、backend、generationを変更せず、入力値を黙って捨てて成功してはならない。
 - blind scanは`UNAVAILABLE`とする。
 
 ISDB-T設定値の規格上の妥当性は、ARIB公式英語版STD-B31 2.2-E1本文の2.3、3.8、3.9、3.11.1、3.14.2、3.15.6.5〜3.15.6.7に従う。一方、対象ドライバーで設定可能かどうかは独立した根拠で判定する。`TARGET_DRIVER` の証跡で具体値の設定と反映を確認できない限り、対象バックエンドがモード、変調方式、符号化率、ガードインターバル、時間インターリーブについて公開し受け付ける値は `AUTO` だけとする。規格上の具体値を解析や試験のため内部表現に保持してよいが、証跡なしに制御可能な設定として公開または受理してはならない。
 
 
-ARIB STD-B31 2.2-E1は、モードを2.3、内符号化率を3.8と3.15.6.6、搬送波変調を3.9と3.15.6.5、時間インターリーブを3.11.1と3.15.6.7、ガードインターバルを3.14.2で定義する。現在のバックエンドでAUTOだけを受け付けることは、ARIB上の値を否定するものではない。明示的な設定経路がない対象について、対応能力を過大に表明しないための制限である。
+ARIB STD-B31 2.2-E1は、モードを2.3、内符号化率を3.8と3.15.6.6、搬送波変調を3.9と3.15.6.5、時間インターリーブを3.11.1と3.15.6.7、ガードインターバルを3.14.2で定義する。本製品の対象バックエンドでAUTOだけを受け付けることは、ARIB上の値を否定するものではない。明示的な設定経路がない対象について、対応能力を過大に表明しないための制限である。
 
 ### ISDB-S validation
 
 - public settingsの`symbolRate`は`0` / 未指定相当のみ成功とする。
 - AOSP SDK defaultの`STREAM_ID + INVALID_STREAM_ID(0xFFFF)`は、BS/CS110を問わず明示TSIDの値域検証より先に`Unspecified`へ正規化する。通常の日本向けBS scan、channel保存、ライブ再選局ではTISが検出・保存したabsolute TSIDを明示し、`Unspecified` fallbackをサービス選択に使用しない。px4 BSの`Unspecified`は現行ABI上の互換fallbackとしてrelative slot `0`へ写像するが、callerがslot 0を指定したとは扱わない。Linux DVB / earth_pt1の`Unspecified`は`DTV_STREAM_ID=NO_STREAM_ID_FILTER`へ明示写像し、前回のselectorをproperty cacheへ残さない。CS110は従来どおりselectorなしのfrequency-only選局を使用する。
 - modulationとcodeRateは`AUTO`だけをadvertise・受理し、既知具体値は`UNAVAILABLE`、malformed値は`INVALID_ARGUMENT`とする。
-- `rolloff`は未指定を表すAIDL値を明示制約なしとして成功させる。規格上有効な明示rolloffは、対象backend/deviceでその値を設定できるか、固定rolloffとして検証済みの場合だけ成功させる。現行profileで証跡のない既知値は`UNAVAILABLE`、予約値・未知値は`INVALID_ARGUMENT`とする。入力`rolloff`をbackend requestから捨てたまま成功してはならず、拒否時は旧tune/scan、backend、generationを変更しない。
+- `rolloff`は未指定を表すAIDL値を明示制約なしとして成功させる。本製品の対象backend/deviceは明示rolloffを設定または固定値検証する能力を採用しないため、規格上有効な明示rolloffは`UNAVAILABLE`、予約値・未知値は`INVALID_ARGUMENT`とする。入力`rolloff`をbackend requestから捨てたまま成功してはならず、拒否時は旧tune/scan、backend、generationを変更しない。
 - blind scanは`UNAVAILABLE`とする。
 
 対象のpx4/earth_pt1によるISDB-Sでは、ドライバーと機器が完全一致するカタログ項目によって具体値の設定機能を確認できない限り、変調方式と符号化率は `AUTO` だけに対応する。`AUTO` は成功とし、規格上既知の具体値には状態を変えず `UNAVAILABLE`、不正値には `INVALID_ARGUMENT` を返す。相対TS番号とTS_IDを別のselector domainとして扱う根拠はARIB STD-B20 3.0の2.9（別記第2・第3）と2.10、周波数の根拠はSTD-B21 5.12-E2とし、セレクター設定表で動作を別に定める。
 
-対象バックエンドのISDB-S変調方式は `AUTO` だけに対応する。具体値を設定できる処理と対応能力の証跡が追加されるまで、BPSK、QPSK、TC8PSKの明示指定には状態を変えず `UNAVAILABLE` を返す。
+対象バックエンドのISDB-S変調方式は `AUTO` だけを対応能力として採用する。BPSK、QPSK、TC8PSKの明示指定には状態を変えず `UNAVAILABLE` を返す。
 
-対象バックエンドのISDB-S符号化率は `AUTO` だけに対応する。具体値を設定できる処理と対応能力の証跡が追加されるまで、符号化率の明示指定には状態を変えず `UNAVAILABLE` を返す。
+対象バックエンドのISDB-S符号化率は `AUTO` だけを対応能力として採用する。符号化率の明示指定には状態を変えず `UNAVAILABLE` を返す。
 
 
 共通検証はBinder層の要求変換と`service_runtime`の事前確認で実施する。ただし、設定権限を持たない層が具体値を成功扱いにしてはならない。検証済みの要求だけをバックエンドへ渡し、未対応の入力では以前のワーカーと選局状態を破壊しない。
