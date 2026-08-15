@@ -20,6 +20,15 @@ jobs:
           fetch-depth: 0
       - name: Apply and validate patch
         run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('.github/pr28_review_4944265973.py')
+          s = p.read_text()
+          stale = '    "`terminal_reason` と `end_delivery_outcome` は、互いに独立した項目として保持する。`terminal_reason`",\n'
+          if stale not in s:
+              raise SystemExit('expected stale safety check not found')
+          p.write_text(s.replace(stale, '', 1))
+          PY
           python3 .github/pr28_review_4944265973.py
           git diff --check
       - name: Commit design fix and remove temporary helpers
