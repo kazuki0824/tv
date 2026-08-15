@@ -1,0 +1,147 @@
+name: PR28 latest SSOT review fixes
+on:
+  push:
+    branches: [agent/fix-commonization-boundaries]
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-commonization-boundaries
+          fetch-depth: 0
+      - name: Apply design-only fixes and remove this workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path('tuner_hal/DESIGN_JA.md')
+          s = p.read_text()
+
+          def sub(pattern, repl, label, flags=0):
+              global s
+              ns, n = re.subn(pattern, repl, s, count=1, flags=flags)
+              if n != 1:
+                  raise SystemExit(f'{label}: expected 1 replacement, got {n}')
+              s = ns
+
+          # 1. Table 17: keep caller-visible key-token semantics; mutation order belongs only to canonical txns.
+          sub(
+              r"### 表17\. key token 所有権・参照カウント契約\n.*?\n#### 表17-B\. Descrambler cleanup / key lifetime transaction（契約参照）",
+              """### 表17. key token 公開状態契約
+
+key token は不透明な参照値として扱い、同一 token bytes を複数 `IDescrambler` session が指定できる。HAL内部のkey table、refcount、session-key mutation、slot削除順序は0-S-3Bの`DescramblerKeyTxn`、close / demux invalidation時のkey cleanupは`DescramblerSessionCleanupTxn`だけを正本とし、本表では再定義しない。
+
+| 番号 | 操作 | 入力状態 | AIDL戻り値 | caller-visibleな結果 | 内部mutation正本 |
+|---:|---|---|---|---|---|
+| KT-001 | `setKeyToken(non-VOID)` | token malformed | `INVALID_ARGUMENT` | 現在tokenを変更しない | `DescramblerKeyTxn` |
+| KT-002 | `setKeyToken(non-VOID)` | token unknown / expired / revoked / releasedで台帳項目なし | `INVALID_ARGUMENT` | 現在tokenを変更しない | `DescramblerKeyTxn` |
+| KT-002a | `setKeyToken(non-VOID)` | 台帳項目は存在するが現在のsessionでは利用不能 | `INVALID_STATE` | 現在tokenを変更しない | `DescramblerKeyTxn` |
+| KT-003 | `setKeyToken(non-VOID)` | 現在tokenなし、新token有効 | 成功 | 新tokenを現在tokenとして公開する | `DescramblerKeyTxn` |
+| KT-004 | `setKeyToken(non-VOID)` | 現在token A、新token A | 成功 | 同一token再設定は冪等成功で公開状態を変更しない | `DescramblerKeyTxn` |
+| KT-005 | `setKeyToken(non-VOID)` | 現在token A、新token B | 成功 | 成功時だけ現在tokenをBとして公開する | `DescramblerKeyTxn` |
+| KT-006 | `setKeyToken(VOID)` | 現在token A | 成功 | 成功時だけ現在tokenなしとして公開する | `DescramblerKeyTxn` |
+| KT-007 | descrambler close | token保持の有無を問わない | close表に従う | 公開close結果だけを表5に従って返す | `DescramblerSessionCleanupTxn` / `ObjectCloseTxn` |
+
+
+#### 表17-B. Descrambler cleanup / key lifetime transaction（契約参照）""",
+              'table17', re.S)
+
+          # 2. Close section: retain typed Filter/DVR cleanup dependencies, not generic authority/retry/handoff state.
+          sub(
+              r"### close / unregister / quarantine 条件\n.*?\n### `IFrontend\.stopTune\(\)` の失敗時状態",
+              """### close / unregister / quarantine 条件
+
+公開`close()`、owner loss、Dropのcleanup実行authority、`begin_close`、`CleanupPending`、retry / handoff / reaper、`Quarantined`判定は0-S-3Bの`ObjectCloseTxn`だけを正本とする。本節はFilter/DVR固有のcleanup対象と依存順序、caller-visibleな結果だけを定義し、独立したclose state machineを持たない。
+
+Filterのtyped cleanup commandは、Filter producer / worker依存の停止・drain要求、未配送queue / 保留eventのcleanupと配送済みAV割り当ての`ReleaseOnly`台帳への移管、source/downstream relationとRecord DVR relationの解除、`demux.unregister_filter(filter_id, generation)`、runtime object登録解除、Filter ledgerの最終releaseを依存順に`ObjectCloseTxn`へ渡す。worker lifecycle自体は`WorkerRuntime` / `WorkerHandle`、queue drainは`FilterProducerDrainGate` / `QueueCleanupTxn`、relation mutationは各0-S-3B ownerを正本とする。
+
+DVRのtyped cleanup commandは、DVR worker / queue依存の停止・cleanup要求、接続済みfilter relation解除、queue cleanup、`demux.unregister_dvr(dvr_id, generation)`、runtime object登録解除、DVR ledgerの最終releaseを依存順に`ObjectCloseTxn`へ渡す。worker lifecycle、queue epoch / cleanup、relation mutationの内部semanticsは各0-S-3B ownerを正本とする。
+
+`demux.unregister_filter()` / `demux.unregister_dvr()` のmissingを成功相当に扱えるのは、同一object / generationについてruntime failure経路で事前unregister済みというtyped記録が存在する場合だけとする。それ以外のmissingは公開close成功へ丸めない。
+
+cleanup commandの途中失敗後の後続command実行、未完step記録、同generationのrecovery `close()`、自律retry、authority移管、reaper進行、quarantine、公開操作拒否、ID / generation再利用可否は0-S-3Bの`ObjectCloseTxn`を唯一の正本とし、本節では再定義しない。
+
+### `IFrontend.stopTune()` の失敗時状態""",
+              'close-section', re.S)
+
+          # 3. Remove undefined present/future axis from A/V sync non-adopted scope.
+          sub(
+              r"本節では A/V sync の現行境界と非採用範囲だけを固定する。",
+              "本節では A/V sync の非採用範囲だけを恒久契約として固定する。",
+              'av-current')
+          sub(
+              r"- 本製品の canonical A/V sync contract は `PcrClockAnchorStore` が所有する観測済み PCR anchor と monotonic clock の対応だけを用いる。PCR PID 明示管理、サービス clock モデル、jitter smoothing、PLL / clock discipline は本製品の契約として導入しない。これらを導入する設計変更を行う場合は、clock source、reset条件、戻り値、診断、実機確認条件を先に本書へ固定する。\n- 複数 clock source の品質評価。\n- より厳密な CTS / VTS / 実波ベース補正。",
+              "- 本製品の canonical A/V sync contract は `PcrClockAnchorStore` が所有する観測済み PCR anchor と monotonic clock の対応だけを用いる。PCR PID 明示管理、サービス clock モデル、jitter smoothing、PLL / clock discipline、複数 clock source の品質評価、CTS / VTS / 実波ベースの補正モデルは本製品契約として導入しない。",
+              'av-nonadopted')
+
+          # 4. Persistent LNB controls: public capability/result here; internal backend failure only in LnbControlTxn.
+          sub(
+              r"\| API \| 有効入力 \| 本製品の結果 \| backend失敗時 \|\n\|---\|---\|---\|---\|\n\| `setVoltage\(voltage\)` .*?\n\| `sendDiseqcMessage\(message\)` .*?\n",
+              """| API | 有効入力 | 本製品の結果 | 内部失敗契約 |
+|---|---|---|---|
+| `setVoltage(voltage)` | AIDL列挙値であり、対象profileの対応電圧 | 対応表に従って実機へ適用する。profile非対応の有効電圧は`UNAVAILABLE` | backend apply、registry commit、failure state、quarantineは0-S-3Bの`LnbControlTxn`だけを正本とする |
+| `setTone(tone)` | AIDLの有効列挙値 | 対応表でbackend実処理が確認された値だけを適用して成功する。有効だが対象backendで未対応の値は副作用なしの`UNAVAILABLE`。成功扱いの無処理は禁止 | backend apply、registry commit、failure state、quarantineは0-S-3Bの`LnbControlTxn`だけを正本とする |
+| `setSatellitePosition(position)` | AIDLの有効列挙値 | 対応表でbackend実処理が確認された値だけを適用して成功する。有効だが対象backendで未対応の値は副作用なしの`UNAVAILABLE`。成功扱いの無処理は禁止 | backend apply、registry commit、failure state、quarantineは0-S-3Bの`LnbControlTxn`だけを正本とする |
+| `sendDiseqcMessage(message)` | 非空byte列。実処理可能なbackendでは宣言済み上限内とし、Android 14 CTSが使う2バイト要求を能力対応時は受理できる | 対応表でDiSEqC実処理が確認されたbackendだけ全byteを送信し、送信完了後に成功する。有効だが対象backendで未対応なら副作用なしの`UNAVAILABLE`。送信していないmessageのcallback echoは禁止 | transient送信固有契約として、部分送信を成功にせず、送信開始後に実状態不明なら当該LNBを隔離する。未対応判定だけなら状態不変 |
+""",
+              'lnb-public-table', re.S)
+
+          # 5. Move the remaining diagnostic fact into canonical LnbControlTxn and remove divergent BackendApplyOutcome state machine.
+          m = re.search(r"^\| `LnbControlTxn` \|.*$", s, flags=re.M)
+          if not m:
+              raise SystemExit('LnbControlTxn row not found')
+          row = m.group(0)
+          needle = "backend反映結果自体が不明な場合はLNBをfail/quarantine。成功時だけgeneration更新"
+          if needle not in row:
+              raise SystemExit('LnbControlTxn failure clause not found')
+          row2 = row.replace(
+              needle,
+              "backend反映結果自体が不明な場合はLNBをfail/quarantine。backend / registry failureでは要求状態、backend apply結果、最後に確認できた機器状態、registry errorをtyped diagnosticとして保持する。成功時だけgeneration更新")
+          s = s[:m.start()] + row2 + s[m.end():]
+
+          sub(
+              r"\n`BackendApplyOutcome`は`Applied`、`Rejected`、`Indeterminate`、`RollbackFailed`の4種類とする。.*?\n## IDescrambler demux結合契約",
+              """
+
+`setVoltage()` / `setTone()` / `setSatellitePosition()` のbackend apply outcome、`LnbRegistry` commit、failure state、typed diagnostic、公開`UNKNOWN_ERROR`への写像、quarantine条件は0-S-3Bの`LnbControlTxn`だけを正本とする。本節では`BackendApplyOutcome`列挙、backend rollback経路、registry commit失敗時の別状態機械を再定義しない。
+
+LNB固有のsafe-state復帰はcleanup対象として`ObjectCloseTxn`へtyped cleanup commandで渡す。public `close()`、owner loss、Dropのcleanup開始authority、`begin_close`、handoff、reaper、実行方式は0-S-3Bの`ObjectCloseTxn`だけを正本とし、LNB個別節では再定義しない。
+
+
+## IDescrambler demux結合契約""",
+              'lnb-backend-outcome', re.S)
+
+          # 6/7. Capacity ledger owns capacities/public exhaustion only; mutations stay in canonical descrambler contracts.
+          sub(
+              r"実行時は、同じ物理tuner/backend復号経路に属する共有`DescramblerCapacityPool`へprofileの実鍵組数と実PID数を登録する。複数`IDescrambler` sessionは同じpoolからclaimし、合計使用量が実容量を超えないようにする。各objectへ容量を重複予約して水増ししてはならない。\n\n\| 事象 \| 台帳操作 \| 結果 \|\n\|---\|---\|---\|\n.*?\| `close\(\)` / demux無効化 \|.*?\n",
+              """実行時は、同じ物理tuner/backend復号経路に属する共有`DescramblerCapacityPool`へprofileの実鍵組数と実PID数、pool共有単位を登録し、全sessionの合計使用量が実容量を超えないことをcapacity contractとして保証する。個別sessionのclaim / release順序、commit / rollback / cleanupは下表のcanonical mutation ownerだけを正本とし、本能力台帳では再定義しない。
+
+| 容量次元 | capability / capacity契約 | caller-visibleな枯渇結果 | 内部mutation正本 |
+|---|---|---|---|
+| 能力公開 | 物理tuner/backend単位の実鍵組数、実PID数、pool共有単位を製品profileから確定する。未確定、0、または実体と不一致の値を能力として公開しない | 能力非公開 | `CapabilitySnapshot` / product profile契約 |
+| descrambler object/session枠 | 公開したobject/session上限を超えて生成しない | `openDescrambler()`は`UNAVAILABLE` | root/child open契約 |
+| pool session容量 | 同じ物理復号経路を共有するsession総数をpool容量内に制限する | 対応demuxへの初回`setDemuxSource()`でもsession容量枯渇なら`UNAVAILABLE` | `IDescrambler demux結合契約` |
+| 鍵組容量 | 同じpoolで同時利用する鍵組数をprofileの実鍵組数以下にする | 新規鍵組を必要とする`setKeyToken(non-VOID)`で枯渇なら`UNAVAILABLE` | `DescramblerKeyTxn` |
+| PID容量 | 同じpoolで同時利用するPID数をprofileの実PID数以下にする | `addPid()`で枯渇なら`UNAVAILABLE` | `DescramblerPidTxn` |
+| cleanup中容量 | cleanup完了を確認できないsession / key / PID / pool帰属は再利用可能容量へ戻さない | 必要容量を確保できない新規要求は`UNAVAILABLE` | `DescramblerSessionCleanupTxn` / `ObjectCloseTxn` |
+""",
+              'b25-capacity-table', re.S)
+
+          p.write_text(s)
+          PY
+
+          git diff --check
+          git diff -- tuner_hal/DESIGN_JA.md
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tuner_hal/DESIGN_JA.md
+          git rm .github/workflows/pr28-review-7-ssot-fixes.yml
+          git commit -m 'docs: address latest PR28 SSOT review findings'
+          git push origin HEAD:agent/fix-commonization-boundaries
