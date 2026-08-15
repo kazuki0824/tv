@@ -1,0 +1,160 @@
+name: PR28 latest review fixes
+
+on:
+  push:
+    branches:
+      - agent/fix-commonization-boundaries
+    paths:
+      - .github/workflows/pr28-latest-review-fixes.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-commonization-boundaries
+          fetch-depth: 0
+          sparse-checkout: |
+            tuner_hal/DESIGN_JA.md
+            開発規則.md
+            .github/workflows/pr28-latest-review-fixes.yml
+      - name: Apply design review fixes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def repl(text, old, new, label):
+              n = text.count(old)
+              if n != 1:
+                  raise SystemExit(f'{label}: expected 1 occurrence, got {n}')
+              return text.replace(old, new, 1)
+
+          # tuner_hal/DESIGN_JA.md: design contracts must not encode implementation progress,
+          # and unsupported capabilities without a defined later milestone are timeless product contracts.
+          p = Path('tuner_hal/DESIGN_JA.md')
+          s = p.read_text(encoding='utf-8')
+          s = repl(s,
+              '### VTS profile / capability / 実装済み機能 対応表',
+              '### VTS profile / capability 対応契約',
+              'VTS heading')
+          s = repl(s,
+              'VTS XML/profileで使う機能、capabilityで宣言する機能、実装済み機能は一致させる。VTS profileで使用する機能をcapability非宣言または未実装扱いにしてはならない。capabilityで宣言する機能をVTS/profileから到達不能にして検査を回避してはならない。',
+              'VTS XML/profileで使用する機能とcapabilityで宣言する機能は一致させる。VTS profileで使用する機能をcapability非宣言にしてはならず、capabilityで宣言する機能をVTS/profileから到達不能にして検査を回避してはならない。実装適用状況そのものは実装を事実源とし、完了・未達判定は `../タスク完了判定の実施方法.md` に従う判定側で管理する。',
+              'VTS progress wording')
+          s = repl(s,
+              '### Android 14 AIDL filter source 境界の現行処理',
+              '### Android 14 AIDL filter source 境界契約',
+              'filter source heading')
+          s = s.replace('現行のTS-only `ProductProfile`では対応宣言しない', '本製品のTS-only `ProductProfile`では対応宣言しない')
+          s = repl(s,
+              '- 現行のTS-only `ProductProfile`はfilter monitor eventを宣言しない。`configureMonitorEvent(0)`は監視停止として成功し、未配送monitor event、保存mask、種別ごとの最終観測値を消去する。非0 maskは常に`UNAVAILABLE`とし、monitor event用の状態、worker、queueを生成しない。通常の`DATA_READY` / `OVERFLOW` / `onFilterEvent()` deliveryはmask 0または非0要求の拒否によって抑止しない。',
+              '- 本製品のTS-only `ProductProfile`はfilter monitor eventを対応能力として採用しない。`configureMonitorEvent(0)`は監視停止として成功し、未配送monitor event、保存mask、種別ごとの最終観測値を消去する。非0 maskは常に`UNAVAILABLE`とし、monitor event用の状態、worker、queueを生成しない。通常の`DATA_READY` / `OVERFLOW` / `onFilterEvent()` deliveryはmask 0または非0要求の拒否によって抑止しない。',
+              'monitor paragraph')
+          s = repl(s,
+              '| 監視イベント配送 | 現行のTS-only `ProductProfile`では非対応。`configureMonitorEvent(0)`だけを監視停止として成功させ、非0マスク値は常に`UNAVAILABLE`とする。将来対応profileの状態機械を本設計へ先取りしない |',
+              '| 監視イベント配送 | 本製品のTS-only `ProductProfile`では非対応能力とする。`configureMonitorEvent(0)`だけを監視停止として成功させ、非0マスク値は常に`UNAVAILABLE`とする。monitor event用の状態、worker、queueは設けない |',
+              'monitor fixed policy')
+          s = repl(s,
+              '- callerが指定する明示`numOfSegment=1..13`を成功させるには、その値をlayerごとにbackendへ反映する経路または固定値として検証する経路が必要である。現行px4/earth_pt1でその経路を持たない間は、値域内の明示segment数を`UNAVAILABLE`とし、値を捨てて成功しない。',
+              '- callerが指定する明示`numOfSegment=1..13`を成功させるには、その値をlayerごとにbackendへ反映する経路または固定値として検証する経路が必要である。本製品のpx4/earth_pt1はlayerごとの明示segment数を反映または固定値検証する能力を採用しないため、値域内の明示segment数を`UNAVAILABLE`とし、値を捨てて成功しない。',
+              'segment capability')
+          s = repl(s,
+              '- `inversion`は未指定・自動を表すAIDL値だけを、明示制約なしとして成功させる。規格上有効な明示inversionは、対象backendで設定または固定値検証できる場合だけ成功させ、現行profileでその証跡がない値は`UNAVAILABLE`とする。予約値・未知値は`INVALID_ARGUMENT`とする。',
+              '- `inversion`は未指定・自動を表すAIDL値だけを、明示制約なしとして成功させる。本製品の対象backendは明示inversionを設定または固定値検証する能力を採用しないため、規格上有効な明示inversionは`UNAVAILABLE`とする。予約値・未知値は`INVALID_ARGUMENT`とする。',
+              'ISDB-T inversion')
+          s = repl(s,
+              '- `serviceAreaId=0`は未指定として成功させる。正の値は構文上有効な要求として、backend requestまたは選局結果検証へ実際に使用できる場合だけ成功させる。現行profileでその経路がない正の値は`UNAVAILABLE`、負値は`INVALID_ARGUMENT`とする。',
+              '- `serviceAreaId=0`は未指定として成功させる。本製品の対象backendは正の`serviceAreaId`をbackend requestまたは選局結果検証へ反映する能力を採用しないため、構文上有効な正の値は`UNAVAILABLE`、負値は`INVALID_ARGUMENT`とする。',
+              'serviceAreaId')
+          s = repl(s,
+              '- layer `numOfSegment=0`は未指定として成功させる。`0xFF`はAndroid 14 CTSが`isSegmentAutoSupported()==true`のfrontendへ送る互換AUTO要求として扱い、`isSegmentAuto=true`ならbackend/demodulatorのsegment自動判定を使用して成功させ、`false`なら`UNAVAILABLE`とする。`1..13`は構文上有効だが、layerごとのsegment数をbackendへ反映または固定値検証できない現行profileでは`UNAVAILABLE`とする。`14..254`、負値、255を超える値は`INVALID_ARGUMENT`とする。',
+              '- layer `numOfSegment=0`は未指定として成功させる。`0xFF`はAndroid 14 CTSが`isSegmentAutoSupported()==true`のfrontendへ送る互換AUTO要求として扱い、`isSegmentAuto=true`ならbackend/demodulatorのsegment自動判定を使用して成功させ、`false`なら`UNAVAILABLE`とする。本製品の対象backendはlayerごとの明示segment数を反映または固定値検証する能力を採用しないため、構文上有効な`1..13`は`UNAVAILABLE`とする。`14..254`、負値、255を超える値は`INVALID_ARGUMENT`とする。',
+              'ISDB-T numOfSegment')
+          s = repl(s,
+              '現在のバックエンドでAUTOだけを受け付けることは、ARIB上の値を否定するものではない。',
+              '本製品の対象バックエンドでAUTOだけを受け付けることは、ARIB上の値を否定するものではない。',
+              'ISDB-T backend wording')
+          s = repl(s,
+              '- `rolloff`は未指定を表すAIDL値を明示制約なしとして成功させる。規格上有効な明示rolloffは、対象backend/deviceでその値を設定できるか、固定rolloffとして検証済みの場合だけ成功させる。現行profileで証跡のない既知値は`UNAVAILABLE`、予約値・未知値は`INVALID_ARGUMENT`とする。入力`rolloff`をbackend requestから捨てたまま成功してはならず、拒否時は旧tune/scan、backend、generationを変更しない。',
+              '- `rolloff`は未指定を表すAIDL値を明示制約なしとして成功させる。本製品の対象backend/deviceは明示rolloffを設定または固定値検証する能力を採用しないため、規格上有効な明示rolloffは`UNAVAILABLE`、予約値・未知値は`INVALID_ARGUMENT`とする。入力`rolloff`をbackend requestから捨てたまま成功してはならず、拒否時は旧tune/scan、backend、generationを変更しない。',
+              'ISDB-S rolloff')
+          s = repl(s,
+              '対象バックエンドのISDB-S変調方式は `AUTO` だけに対応する。具体値を設定できる処理と対応能力の証跡が追加されるまで、BPSK、QPSK、TC8PSKの明示指定には状態を変えず `UNAVAILABLE` を返す。',
+              '対象バックエンドのISDB-S変調方式は `AUTO` だけを対応能力として採用する。BPSK、QPSK、TC8PSKの明示指定には状態を変えず `UNAVAILABLE` を返す。',
+              'ISDB-S modulation')
+          s = repl(s,
+              '対象バックエンドのISDB-S符号化率は `AUTO` だけに対応する。具体値を設定できる処理と対応能力の証跡が追加されるまで、符号化率の明示指定には状態を変えず `UNAVAILABLE` を返す。',
+              '対象バックエンドのISDB-S符号化率は `AUTO` だけを対応能力として採用する。符号化率の明示指定には状態を変えず `UNAVAILABLE` を返す。',
+              'ISDB-S code rate')
+          p.write_text(s, encoding='utf-8')
+
+          # 開発規則.md: make TIS/CAS/vendor-key/Tuner packet descrambler responsibilities explicit.
+          p = Path('開発規則.md')
+          s = p.read_text(encoding='utf-8')
+          s = repl(s,
+              '  - card adapter、権利状態、ECM/EMM エラー、CW 取得、key-トークン 発行を CAS HAL または vendor key bridge 側に閉じる。\n  - raw CW を Binder に出さない。',
+              '  - scheme / vendor 固有の ECM / EMM 処理、B-CAS / ACAS / card I/O、CAS方式固有の entitlement validation、EMM / card 処理による Kw 管理、ECM からの Ks 導出を CAS HAL / MediaCas plugin / vendor key bridge 側に閉じる。\n  - Ks は Tuner descrambler が opaque token で参照可能な安全な内部鍵資源へ設定し、その資源と session の対応を表す opaque token を vendor key bridge 経由で成立させる。物理 key slot の実装方式は vendor 内部契約に閉じる。\n  - raw Kw / Ks を Binder または TIS に出さない。',
+              'r52 CAS bullets')
+          old = '''r52 の Tuner HAL descrambler 責務は、188 byte TS packet の payload offset 判定、`transport_scrambling_control` による odd/even key 選択、MULTI2 復号中核、復号成功時の scrambling_control 平文化、復号失敗時の scrambled TS pass-through、key token を内部 key slot に解決する境界、descrambler 診断カウンター / dump とする。\n\nECM / EMM の暗号・カード処理、B-CAS / ACAS / card I/O、CW 取得、権利判定、実 key token 発行は CAS HAL / MediaCas plugin / vendor key bridge 側の責務であり、TIS に B25 暗号アルゴリズムやカード処理を持ち込まない。\n\n本節は、Tuner HAL packet descrambler 責務にも CAS 内部責務にも属さず、r52 の TIS が Android 標準経路上の接着層として担う責務だけを列挙する。\n\n### TIS に今後実装すべきもの'''
+          new = '''r52 の Tuner HAL descrambler 責務は、188 byte TS packet の payload offset 判定、`transport_scrambling_control` による odd/even key 選択、MULTI2 復号中核、復号成功時の scrambling_control 平文化、復号失敗時の scrambled TS pass-through、opaque key token を内部鍵資源へ解決する境界、descrambler 診断カウンター / dump とする。\n\n### B25 / CAS / TIS の責務境界\n\nB25 / CAS / TIS の責務は、AOSP Media CAS / Tuner の境界とARIB STD-B25の ECM / EMM / Kw / Ks / MULTI2 の役割分担に合わせ、次に固定する。\n\n| 境界 | 責務 | 禁止事項 |\n|---|---|---|\n| TIS | CA descriptor / ECM / in-band EMM の取得、CA system 選択、`MediaCas` / session orchestration、ECM の `MediaCas.Session.processEcm()`、in-band EMM の `MediaCas.processEmm()` へのrouting、CASのtyped resultをservice-levelの視聴可否・UI状態へ反映する判断 | Kw / Ks、card protocol、MULTI2 algorithm を解釈・保持しない。生のKsを受け渡さない |\n| CAS HAL / MediaCas plugin / vendor CAS layer | scheme / vendor固有のECM / EMM処理、B-CAS / ACAS / card I/O、CAS方式固有のentitlement validation、EMM / card処理によるKw管理、ECMをKwで処理したKsの導出。KsをTuner descramblerから参照可能な安全な内部鍵資源へ設定し、その資源とsessionの対応を表すopaque key tokenをvendor key bridge経由で成立させる | 188-byte TS packet payloadのMULTI2 descramblingをCAS側へ移さない。生のKw / KsをTISへ公開しない |\n| CAS / vendor key bridge → TIS | opaque key tokenだけをTISへ渡す。key slotの物理実装方式はvendor内部契約に閉じる | raw key materialまたはkey-slot内部表現をTIS / Binder契約へ露出しない |\n| TIS → Tuner HAL | CAS側で成立したopaque key tokenを`IDescrambler.setKeyToken(token)`へ接続し、対象PIDを`addPid()` / `removePid()`へ接続する | Tuner HAL内部のkey table / key resourceを直接変更しない |\n| Tuner HAL `IDescrambler` | opaque tokenから対応する内部鍵資源 / Ksを参照し、188-byte TS packet payloadのMULTI2 descrambling、odd / even key選択、payload offset判定、復号成功時の`transport_scrambling_control`平文化を担当する | ECM / EMM解釈、card I/O、CAS方式固有のentitlement validation、service-levelの視聴可否・UI判断を担当しない |\n\n責務間のデータフローは次を正とする。\n\n```text\n                EMM\nTS/Tuner ──────────────> TIS ──processEmm()──> MediaCas / CAS HAL / B-CAS\n                                                  │\n                                                  │ EMM処理\n                                                  │ → Kwを獲得・保持\n                                                  │\n                ECM                               │\nTS/Tuner ──────────────> TIS ──processEcm()──────>│\n                                                  │\n                                                  │ ECMをKwで処理\n                                                  │ → Ksを獲得\n                                                  │\n                                                  │ key slotへKs設定\n                                                  │ key token発行\n                                                  ▼\nTIS <──────────────────── opaque key token ───── CAS/vendor key bridge\n │\n │ IDescrambler.setKeyToken(token)\n ▼\nTuner HAL\n │\n │ token → key slot → Ks\n │\n │ Ksを用いたMULTI2\n ▼\nscrambled TS ───────────> clear TS\n```\n\n図中の`key slot`は、Tuner descramblerがopaque tokenで参照する安全な内部鍵資源を表す論理名である。AOSP Media CASはhardware key ladder / TEE等のvendor固有接続を標準化しないため、物理key slotの実装方式はCAS / vendor key bridge内部契約に閉じる。TISはKw / Ksを受け取らない。\n\n本節は、Tuner HAL packet descrambler、CAS内部処理、TIS接着層の境界を一意に定める。TISはAndroid標準経路上のorchestrationとservice-level状態への写像を担当し、B25暗号アルゴリズムやカード処理を持たない。\n\n### TIS が所有する接着責務'''
+          s = repl(s, old, new, 'B25 responsibility preface')
+          s = repl(s,
+              '   - 取得した ECM section を、reflection ではなく型付きの MediaCas / MediaCas.Session API 経由で CAS 側へ渡す。\n   - TIS は ECM を解読しない。TIS は section を CAS へ配送し、戻ってきた トークン または失敗状態を扱うだけにする。',
+              '   - 取得した ECM section を、reflection ではなく型付きの `MediaCas.Session.processEcm()` 経由で CAS 側へ渡す。\n   - TIS は ECM を解読しない。TIS は section を CAS へ配送し、CAS / vendor key bridge で成立した opaque token または typed failure を扱うだけにする。',
+              'ECM routing')
+          s = repl(s,
+              '   - CAT から得た EMM PID をもとに、必要な EMM section を取得する。\n   - 取得した EMM は MediaCas 側へ渡す。\n   - TIS は EMM の権利更新やカード応答解析を行わない。カード状態・契約状態の最終判断は CAS 側に閉じる。',
+              '   - CAT から得た EMM PID をもとに、in-band EMM section を取得する。CAS plugin が vendor 固有経路で out-of-band EMM を取得する場合、そのネットワーク取得は CAS 側の責務とする。\n   - 取得した in-band EMM は型付きの `MediaCas.processEmm()` 経由で CAS 側へ渡す。\n   - TIS は EMM の権利更新、Kw 管理、カード応答解析を行わない。CAS方式固有の entitlement validation は CAS 側に閉じ、TIS はその typed result を service-level の視聴可否・UI状態へ写像する。',
+              'EMM routing')
+          s = s.replace('TIS は raw CW を扱わず、トークン を生成しない。', 'TIS は raw Kw / Ks を扱わず、トークン を生成しない。')
+          s = repl(s,
+              '9. **権利状態に応じた TIS session 状態通知**\n   - CAS 側から未契約、カード未挿入、権利期限切れ、ECM 失敗などが通知された場合に、TIS session の video unavailable reason、診断ログ、UI 向け状態を更新する。\n   - ただし、権利判定そのものは TIS ではなく CAS 側の責務とする。',
+              '9. **CAS結果に応じた TIS session 状態通知**\n   - CAS 側から未契約、カード未挿入、権利期限切れ、ECM 失敗などの typed result が通知された場合に、TIS session の video unavailable reason、診断ログ、UI 向け状態を更新する。\n   - CAS方式固有の entitlement validation は CAS 側、CAS結果を service-level の視聴可否・UI状態へ写像する判断は TIS 側の責務とする。',
+              'entitlement mapping')
+          s = s.replace('### TIS に実装しないもの\n\n次は TIS に実装しない。', '### TIS が所有しない責務\n\n次は TIS が所有しない。')
+          s = s.replace('2. ECM の暗号解読・CW 抽出', '2. ECM の暗号解読・Ks 導出')
+          s = s.replace('6. raw CW の保持・配送', '6. raw Kw / Ks の保持・配送')
+          s = s.replace('8. 契約可否・権利可否の最終判定', '8. CAS方式固有の entitlement validation')
+          p.write_text(s, encoding='utf-8')
+
+          # Review-specific sanity checks.
+          design = Path('tuner_hal/DESIGN_JA.md').read_text(encoding='utf-8')
+          for forbidden in [
+              'VTS profile / capability / 実装済み機能 対応表',
+              'Android 14 AIDL filter source 境界の現行処理',
+              '将来対応profileの状態機械を本設計へ先取りしない',
+              '具体値を設定できる処理と対応能力の証跡が追加されるまで',
+              '現行profileでその証跡がない値',
+              '現行profileでその経路がない正の値',
+              'segment数をbackendへ反映または固定値検証できない現行profile',
+          ]:
+              if forbidden in design:
+                  raise SystemExit(f'review wording remains: {forbidden}')
+          rules = Path('開発規則.md').read_text(encoding='utf-8')
+          for required in [
+              'TS/Tuner ──────────────> TIS ──processEmm()──> MediaCas / CAS HAL / B-CAS',
+              'TIS <──────────────────── opaque key token ───── CAS/vendor key bridge',
+              'IDescrambler.setKeyToken(token)',
+              '図中の`key slot`は',
+              'CAS方式固有の entitlement validation は CAS 側、CAS結果を service-level の視聴可否・UI状態へ写像する判断は TIS 側',
+          ]:
+              if required not in rules:
+                  raise SystemExit(f'required B25 contract missing: {required}')
+          PY
+          git diff --check -- tuner_hal/DESIGN_JA.md 開発規則.md
+          git diff -- tuner_hal/DESIGN_JA.md 開発規則.md
+      - name: Commit fixes and remove temporary workflow
+        shell: bash
+        run: |
+          git config user.name 'maleicacid'
+          git config user.email '4982384+kazuki0824@users.noreply.github.com'
+          git rm .github/workflows/pr28-latest-review-fixes.yml
+          git add tuner_hal/DESIGN_JA.md 開発規則.md
+          git diff --cached --quiet && exit 1
+          git commit -m 'design: address latest review comments'
+          git push origin HEAD:agent/fix-commonization-boundaries
