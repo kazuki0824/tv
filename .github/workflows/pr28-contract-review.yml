@@ -26,6 +26,7 @@ jobs:
       - name: Remove helper files
         run: git rm .github/workflows/pr28-contract-review.yml .tmp/pr28_contract_review.py
       - name: Commit
-        run: git commit -m "design: close contract review gaps [skip ci]"
+        run: |
+          git commit -m "design: close contract review gaps [skip ci]"
       - name: Push
         run: git push origin HEAD:agent/fix-commonization-boundaries
