@@ -90,7 +90,7 @@ for bad in (
 for required in (
     "first-instanceはAOSPの明文要求ではなく、有限なsnapshotを決定的に選択する製品内規則である",
     "1 filter当たり1個の`TableInstanceKey`",
-    "| T-SEC-14i | `repeat=true` + 複数extension/version |",
+    "| T-SEC-14i | 複数extension/versionが並行する`TableInfo repeat=true` |",
     "SECTIONでは公開数分のTableInfoOneShotTracker（target metadataと256-bit bitmap）を含む",
     "各公開filterについて1個のtarget metadataと256-bit（32 byte）の配送済みbitmap",
 ):
