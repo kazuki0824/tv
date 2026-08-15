@@ -1,0 +1,310 @@
+from pathlib import Path
+import re
+
+design = Path('tuner_hal/DESIGN_JA.md')
+s = design.read_text()
+
+def sub(pattern, repl, *, flags=re.M|re.S, min_count=1, max_count=0, label=None):
+    global s
+    s2, n = re.subn(pattern, repl, s, count=max_count, flags=flags)
+    if n < min_count:
+        raise SystemExit(f"replacement missing: {label or pattern!r}, got {n}")
+    s = s2
+    return n
+
+# 1. Public tune/scan table owns caller-visible semantics only.
+new_f0 = '''### 表0-F. IFrontend tune / scan 統合状態表
+
+`tune()` / `scan()` の内部generation発行、worker/backend停止、callback fence、stream boundary、複数demux結果集約、rollback / quarantineは「公開transactionのphase・確定点・失敗処理契約」のcanonical `frontend tune/scan`だけを正本とする。本表はcaller-visibleな状態・戻り値・外部結果だけを定義する。
+
+| 番号 | 事前状態 | 呼び出し | AIDL戻り値 | 次状態 | caller-visibleな結果 |
+|---:|---|---|---|---|---|
+| FR-001 | Idle | `tune(K)` | 成功 | Tuning | `K`のtuneを開始する |
+| FR-002a | Tuning | `tune(K2)` | 成功 | Tuning | 以後、旧tune要求の結果を新要求の結果として公開しない |
+| FR-002b | Locked | healthyな同一`K`の`tune(K)` | 成功 | Locked | 現在のstreamを維持し、当該要求に対する`LOCKED`を1回だけ公開する |
+| FR-002c | Locked | 異なる`tune(K2)` | 成功 | Tuning | 新要求へ移り、旧要求由来結果を新要求の結果として公開しない |
+| FR-003 | Scanning | `tune(K)` | 成功 | Tuning | 旧scanの後続結果を新tune結果として公開しない |
+| FR-004 | Idle | `scan(K)` | 成功 | Scanning | `K`のscanを開始する |
+| FR-005 | Tuning / Locked | `scan(K)` | 成功 | Scanning | scanへ移り、旧tune結果をscan結果として公開しない |
+| FR-006a | Scanning、同一request fingerprint、直前stage=`LockedReported` | `scan(K)` | 成功 | Scanning | backendを再探索せず、2回目は`END`を正確に1回配送し、2回目の`LOCKED`を配送しない |
+| FR-006b | Scanning、FR-006a以外 | `scan(K2)` | 成功 | Scanning | 新scanを開始し、旧scanの後続結果を新scan結果として公開しない |
+| FR-007 | Tuning / Locked | `stopTune()` | 成功 | Idle | active tuneを停止し、旧tune由来data/callbackを後続成功結果として公開しない |
+| FR-008 | Scanning | `stopTune()` | 成功 | Scanning | active scanを停止・変更しない |
+| FR-009 | Scanning | `stopScan()` | 成功 | Idle | active scanを停止し、旧scan由来callbackを後続成功結果として公開しない |
+| FR-010 | Tuning / Locked | `stopScan()` | 成功 | 入力状態維持 | active tuneを停止・変更しない |
+| FR-011 | Idle | `stopTune()` / `stopScan()` | 成功 | Idle | no-op |
+| FR-012 | FailedBackend / FailedBoundary | recovery `stopTune()` / `stopScan()` | API固有結果 | 回復結果に従う | 原因別状態と回復可否は表19およびcanonical `frontend tune/scan`参照 |
+| FR-013 | Quarantined / LogicalClosed | `tune()` / `scan()` / 通常operation | `INVALID_STATE` | 入力状態維持 | 通常operationを再開しない |
+
+同一`scan(K)`継続の`LOCKED -> END`、異なる要求への切替、stop、失敗時の内部確定点はcanonical `frontend tune/scan`だけを正本とし、本表に第二のtransaction state machineを置かない。
+
+'''
+sub(r'^### 表0-F\. IFrontend tune / scan 統合状態表\n.*?(?=^### 表1\.)', new_f0, label='table0-F')
+sub(r'^\| T-AOSP-32[^\n]*$', '| T-AOSP-32a | `scan(K) -> LOCKED -> scan(K)` | 2回目はbackend再探索なしに`END`を正確に1回配送し、2回目の`LOCKED`を配送しない |\n| T-AOSP-32b | active scan中に異なるrequestで`scan(K2)` | 新scanへ移り、旧scan由来の後続結果を新scan結果として公開しない |', label='T-AOSP-32')
+
+# 2. StreamBoundary owns boundary generation/dispatch, not steady-state parser/continuity state.
+stream_line = '| `StreamBoundaryTxn` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | typed stream-boundary use-case、上位transactionからの`prepare()` | `stream_boundary_generation`、`PreparedStreamBoundary`、各data-path ownerへのtyped reset / invalidate dispatch | steady-state PID continuity、section/PES/TableInfo/record-index parser・assembler・tracker state、relation table、Filter/DVR queue内部、A/V sync/PCR内部、callback、descrambler | validate → 次`stream_boundary_generation`を`checked_add()`でprepare → 各steady-state ownerからtyped reset tokenをprepare → `PreparedStreamBoundary` commit / abort | abortでは旧boundary generationと各steady-state stateを維持。generationを発行できない場合はwrap / reuseせず当該stream boundaryを局所`Quarantined`とする。commit不明時だけ対象streamをfail/quarantine | service_runtime packet/boundary use-case、上位relation transaction | API/worker/helperによるboundary generation直接変更、`StreamBoundaryTxn`によるsteady-state parser/continuity state直接所有 | standalone commit、prepared abort/commit、stale generation、generation exhaustion、continuity/parser/TableInfo/record-index ownerへのtyped reset、relation composite atomicity |'
+sub(r'^\| `StreamBoundaryTxn` \|.*$', stream_line, flags=re.M, label='StreamBoundaryTxn row')
+source_line = '| `SourceBoundaryTxn` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | `IFilter.setDataSource()` use-case、`ObjectCloseTxn`/source unlink cleanupからのtyped relation mutation | Filter source/sink relationとそのrelation generation、committed source relation graphの非巡回不変条件 | demux/frontend relation、DVR queue、A/V sync/PCR内部 | validate（candidate edge追加後も有向cycleを作らないことを含む） → relation prepare → source boundary prepare → commit / rollback | cycleを作るcandidateは`INVALID_ARGUMENT`で状態不変。pre-commitは旧relation維持、確定不明だけ対象relationを隔離 | Filter source use-case、`ObjectCloseTxn` typed cleanup command | API wrapper/workerのgraph直接変更、Demux frontend use-case | NULL復帰、replacement、self-loop、2-node/3-node cycle拒否、wrong demux/owner、closed/generation、source close/unlink cleanup、prepare/commit fault |'
+sub(r'^\| `SourceBoundaryTxn` \|.*$', source_line, flags=re.M, label='SourceBoundaryTxn row')
+s = s.replace('Frontend(frontend_generation)', 'Frontend(frontend_operation_generation)')
+s = s.replace('SourceFilter(filter_id, filter_generation)', 'SourceFilter(filter_id, filter_delivery_generation)')
+sub(r'^\| RL-002 \|.*$', '| RL-002 | `frontend_operation_generation` | `FrontendRuntime`。発行・fenceはcanonical `frontend tune/scan` | tune/scan operation開始時に取得 | operation終端 / replacementでfence | fence結果を確定できない場合は再利用せずcanonical frontend failure契約へ接続 |', flags=re.M, label='RL-002')
+sub(r'^\| RL-003 \|.*$', '| RL-003 | `stream_boundary_generation` | `StreamBoundaryTxn` | stream boundary prepare時に取得 | boundary replacement / object cleanupで失効 | 発行・fence不明時は再利用せず`StreamBoundaryTxn`の局所failure契約へ接続 |', flags=re.M, label='RL-003')
+s = s.replace('PID continuity / discontinuity、section/PES/record-index parser/assembler generationは`StreamBoundaryTxn`', 'steady-state PID continuityは`PacketPipeline`、section/PES/TableInfo/record-indexのparser・assembler・tracker stateは対応するper-filter parser ownerが所有し、境界時のtyped reset / invalidate dispatchだけは`StreamBoundaryTxn`')
+s = s.replace('parser / assembler / generationのboundary mutationは`StreamBoundaryTxn`だけを正本とする。', 'steady-state parser / assembler stateは対応するper-filter parser ownerを正本とし、境界時のreset / invalidate要求と`stream_boundary_generation`だけを`StreamBoundaryTxn`のtyped boundaryとして扱う。')
+s = s.replace('stream generation、continuity、section / PES / record-index parser / assembler の boundary mutation', '`stream_boundary_generation`とsteady-state ownerへのtyped reset / invalidate dispatch')
+
+# 3. AV release classification has one canonical table; eliminate ownerless av_generation.
+s = s.replace('`av_generation`を進める', '累積カウンタを変更しない')
+sub(r'`releaseAvHandle\(\)`の判定は.*?(?=\n\n)', '`releaseAvHandle()`の入力分類、戻り値、資源変化、再release、close後releaseは「表1-C-AVH. `releaseAvHandle()` 全域判定表」だけを正本とし、他節では再定義しない。', label='releaseAvHandle duplicate', max_count=1)
+new_avh = '''### AV shared handle 入出力契約
+
+`getAvSharedHandle()` / `releaseAvHandle()` のAIDL入力・出力形状とcaller-visibleな資源寿命だけを本節で扱う。`releaseAvHandle()`の全入力分類、status、token/lease変化は「表1-C-AVH. `releaseAvHandle()` 全域判定表」を唯一の正本とし、本節で別の判定表・generationを定義しない。
+
+配送済みAV allocationはFilterの論理close後も、client releaseまたは最終cleanupで回収されるまで存続する。Filterの`filter_delivery_generation`は新規配送のfenceに使うが、既に公開済みallocationのrelease権限を失わせない。
+
+'''
+sub(r'^### AV shared handle 入出力契約\n.*?(?=^### )', new_avh, label='AV shared handle section')
+
+# 4. Move implementation-specific notation out of public DESIGN.
+if '### test と release API の境界' in s:
+    sub(r'^### test と release API の境界\n.*?(?=^### )', '### test と release API の境界\n\nrelease AIDL経路からテスト専用入口へ到達してはならず、テスト専用入口は製品runtimeのcapability・状態・戻り値を変更しない。この実装方法と具体的なcompile-time gateは`CODE_CONVENTION.md`を正本とする。\n\n', label='test/release section')
+sub(r'AV shared backing は、MediaEvent 用 shared memory slot の lifetime を所有する。slot の `active`、`reserved`、`free`、`next_generation` は、一つの原子的状態として扱う。.*?(?=\n###|\n####)', 'AV shared backingはMediaEvent用allocationのlifetimeを論理的に一括管理し、allocation/release操作で部分更新を公開しない。物理lock、内部struct、helper名は`CODE_CONVENTION.md`を正本とする。\n', label='AvSharedState block')
+s = re.sub(r'`notify_scan_end_with_callback\(\)`', '`scan END配送use-case`', s)
+s = re.sub(r'`let _ =[^`]*`', 'callback配送結果の破棄', s)
+sub(r'px4は同一device node.*?`live_stream_reader\(\)`[^\n]*', 'px4は同一device nodeを二重openせず、1回のbackend openからcontrol経路とlive TS readerを派生させる。二重open回避の具体的Rust API・fd複製・poll方式は`CODE_CONVENTION.md`を正本とする。', label='px4 public impl detail')
+sub(r'`filter_queue_model\(\)`.*?(?=\n\n)', 'Filter/DVR queueの論理overflow方針、容量、producer/consumer結果だけを本書で規定する。具体helper/type/alias名は`CODE_CONVENTION.md`を正本とし、公開契約のSSOTにしない。', label='queue helper detail')
+sub(r'`register_from_cas_bridge\(\)`.*?(?=\n\n)', 'CAS bridgeからのtoken登録は標準MediaCas session ID bytesと内部key resourceの対応を成立させる論理契約に従う。具体helper名とdebug出力方法は`CODE_CONVENTION.md`を正本とする。', label='descrambler helper detail')
+s = re.sub(r'`dump_descrambler_diagnostics_for_debug\(\)`[^\n]*', 'descrambler診断は公開AIDL意味を変えない内部診断として保持し、具体helper・出力先・時間間隔は`CODE_CONVENTION.md`を正本とする。', s)
+s = re.sub(r'`MALEICACID_TUNER_HAL_DESCRAMBLER_DIAGNOSTIC_FILE`[^\n]*', 'descrambler診断の具体的なdebug出力設定は`CODE_CONVENTION.md`を正本とする。', s)
+s = re.sub(r'`frontend_px4`[^\n]*(?:\n|$)', 'px4 probe prefix変更時に同期すべき実装・ueventd・SELinuxの具体pathは`tuner_hal2/INTEGRATION.md`を正本とする。\n', s)
+
+# 5. Permanent TS-only product has no positive MMTP record behavior.
+s = s.replace('TS/MMTP記録コールバック', 'TS記録コールバック')
+s = s.replace('`DemuxFilterTsRecordEvent` または `DemuxFilterMmtpRecordEvent`', '`DemuxFilterTsRecordEvent`')
+s = s.replace('`DemuxFilterTsRecordEvent` / `DemuxFilterMmtpRecordEvent`', '`DemuxFilterTsRecordEvent`')
+s = s.replace('DemuxFilterTsRecordEvent / DemuxFilterMmtpRecordEvent', 'DemuxFilterTsRecordEvent')
+
+# 6. ARIB current revision and read evidence revision are separate facts.
+arib = '''### ARIB規範本文との静的照合
+
+ARIB依存の規範主張は、**現行日本語版の版番号**と、**今回実際に条項本文を精読した証拠本文**を分離して管理する。証拠本文と現行日本語版の版が一致しない規格は`差分未証明`とし、その規格について現行版まで条項内容が同一である、または現行版へ完全適合を検証済みであるとは主張しない。改定概要・版一覧・紹介ページは版管理の一次資料として使えるが、条項本文の代替にはしない。
+
+| 規格 | 現行日本語版 | 今回精読した証拠本文 | 版差分状態 | 精読条項 / 本PRで使う主張 | 所有文書 |
+|---|---|---|---|---|---|
+| STD-B10 | 5.14 | 5.13-E1 英語版 | `差分未証明` | Part 1 5.2.4〜5.2.17・Annex B、Part 2 Table 6-5・6.2.12・6.2.26・Annex E、Part 3 5.1.1〜5.1.3 / PSI/SI Table ID・表別section長・CRC、parental rating、codec signaling | 本書、`arib_si_engine_rs/DESIGN_JA.md`、`tis/DESIGN_JA.md` |
+| STD-B20 | 3.0 | 3.0 日本語版 | `版一致` | 2.9別記第2・別記第3、2.10 / 相対TS番号0〜7とTS_IDの別domain | 本書 |
+| STD-B21 | 5.14 | 5.12-E2 英語版 | `差分未証明` | Appendix 10 Table 10-3/10-4 / CATV C13〜C63中心周波数 | 本書、`tis/DESIGN_JA.md` |
+| STD-B24 | 6.5 | 6.4-E1 英語版 Fascicle 1 | `差分未証明` | 7.1.1.1〜7.1.2.4、9.1.1、9.2、9.3、9.5、9.6 / SI/EPG文字、字幕/data group、PTS、PMT descriptor | `arib_si_engine_rs/DESIGN_JA.md`、`tis/DESIGN_JA.md` |
+| STD-B25 | 7.0 | 6.7-E1 英語版 | `差分未証明` | Part 1 2.2.2.4、2.2.2.10〜2.2.2.11、3.1.5〜3.1.7、3.2.3〜3.2.4、4.3.3.3、4.8 / MULTI2・ECM/EMM・Ks境界。§4.9はproduct-level非適合方針を別途維持 | 本書、`開発規則.md` |
+| STD-B31 | 2.3 | 2.2-E1 英語版 | `差分未証明` | 2.3、3.8、3.9、3.11.1、3.14.2、3.15.6.5〜3.15.6.7 / ISDB-T伝送parameter | 本書 |
+| STD-B32 | 4.1 | 3.11-E1 英語版 Fascicle 3 | `差分未証明` | Fascicle 3 Chapter 3 3.1 / PES構文 | 本書 |
+
+上表で`差分未証明`の規格について、本PRのARIB根拠は「今回精読した証拠本文が支持する範囲」に限定する。現行日本語版との条項差分が別途条項本文で確認されるまで、現行版まで検証済みという表現へ読み替えない。
+
+'''
+sub(r'^### ARIB規範本文との静的照合\n.*?(?=^### )', arib, label='ARIB evidence table')
+
+# 7. Source-filter graph cycle rejection.
+cycle_note = '`IFilter.setDataSource(non-NULL)`はcandidate edgeをcommitした場合のsource relation graph全体を検証し、self-loopを含む任意の有向cycleを作る要求を`INVALID_ARGUMENT`で拒否して状態を変更しない。2-node / 3-node cycleも同じ規則で拒否する。cycle検証とrelation commitは0-S-3B `SourceBoundaryTxn`の同一transactionに属する。'
+anchor = '### Android 14 AIDL filter source 境界契約\n'
+if cycle_note not in s:
+    s = s.replace(anchor, anchor + '\n' + cycle_note + '\n\n', 1)
+
+# 8. Record byteNumber is cumulative from the beginning of filter output lifetime.
+s = re.sub(r'`byteNumber`[^\n]*(?:StreamBoundaryTxn|record-index parser generation)[^\n]*', '`byteNumber`は当該Record Filterのoutput lifetime先頭から、Record DVRへ実際にcommit済みのTS byte数を累積した`record_output_byte_offset`とする。configure/reconfigure、`flush()`、source/stream boundary、parser resetでは0へ戻さず、新しいFilter object/output lifetimeだけ0から開始する。', s)
+s = s.replace('現在のrecord-index parser generationの出力区間先頭', '当該Record Filterのoutput lifetime先頭')
+
+# 9. PES streamId: 0xFFFF is INVALID_STREAM_ID, never wildcard.
+s = re.sub(r'有効な明示stream IDまたはwildcard', '有効なPES `streamId` 0..255', s)
+s = re.sub(r'明示stream IDとwildcard', 'PES `streamId` 0..255', s)
+s = re.sub(r'PES([^\n]*)wildcard([^\n]*)', lambda m: 'PES' + m.group(1) + '`0xFFFF`は`INVALID_STREAM_ID`として拒否する値' + m.group(2), s)
+s = s.replace('`streamId=0xFFFF` wildcard', '`streamId=0xFFFF` (`INVALID_STREAM_ID`)')
+s = s.replace('`0xFFFF` wildcard', '`0xFFFF` (`INVALID_STREAM_ID`)')
+sub(r'^\| T-PES-17 \|.*$', '| T-PES-17 | `streamId=0xFFFF`または256..65535 | `INVALID_ARGUMENT`で拒否し、stateを変更しない |', flags=re.M, label='T-PES-17')
+
+# 10. Common TS PID range.
+pid_contract = '''### TS PID 共通値域契約
+
+TS PIDの構文上有効な値域は13 bitの`0x0000..0x1FFF`とする。`0xFFFF`はAOSP `INVALID_TS_PID`であり入力PIDとして無効、`0x2000..0xFFFE`、負値、生成binding上の範囲外値・不正union encodingも`INVALID_ARGUMENT`として状態を変更しない。予約PID/特殊PIDも13 bit値域内なら、予約されているという理由だけで構文上無効とはしない。Filter設定とDescrambler `tPid`は同じ値域契約を使う。未対応の`DemuxPid` union variantは既存のcapability契約どおり`UNAVAILABLE`とし、数値不正と混同しない。
+
+'''
+if '### TS PID 共通値域契約' not in s:
+    s = s.replace('### nullable Binder 境界\n', pid_contract + '### nullable Binder 境界\n', 1)
+
+# 11. Exact SectionBits predicate.
+sectionbits = '''### SectionBits bit照合契約
+
+`SectionBits.filter` / `mask` / `mode`はnon-nullかつ同じ長さで、長さは`numBytesInSectionFilter`以下でなければならない。長さ不一致、null/不正array、上限超過は`INVALID_ARGUMENT`で状態不変とする。各bitは `mask=0` なら比較対象外、`mask=1 && mode=0` ならsection bitとfilter bitが等しいこと、`mask=1 && mode=1` なら異なることを要求し、全ての有効mask bitが成立した場合だけmatchとする。`repeat`、`raw`、CRC設定はこのbit predicateと直交する。
+
+'''
+if '### SectionBits bit照合契約' not in s:
+    idx = s.find('### 生section')
+    if idx < 0: idx = s.find('### Filter data source')
+    if idx < 0: idx = s.find('### 表4')
+    if idx < 0: raise SystemExit('SectionBits insertion anchor missing')
+    s = s[:idx] + sectionbits + s[idx:]
+
+# 12. TableInfo repeat=false: public predicate is TableId/version only.
+tableinfo = '''#### TableInfo / SectionBits repeat=false one-shot契約
+
+`SectionBits`の`repeat=false`は公開predicateに最初にmatchしたsectionを1回だけ配送して停止する。
+
+`TableInfo`の公開match predicateは`tableId`と`version`だけである。`table_id_extension`、`current_next_indicator`その他の内部識別子をhidden eligibility filterとして使ってはならない。内部`TableInstanceKey`は異なるsection-number空間を混ぜないtracker分離にだけ使い、公開predicateへmatchしたinstanceを除外する根拠にしない。
+
+one-shot完了前に観測した公開match済みinstanceはactive setへ加入し、instanceごとにsection_numberを独立追跡する。各instanceで必要sectionが揃い、現在active setに属する全instanceが完了した時点でone-shotを終了する。完了前に新しいmatching instanceを観測した場合はactive setへ追加する。private timer、table allowlist、最初のextension/current_nextだけをtargetとして固定する規則は設けない。short sectionは1-section instanceとして扱う。stream/source/filter boundaryではtracker stateを対応するsection/TableInfo parser ownerがresetし、そのtyped boundary dispatchだけを`StreamBoundaryTxn`から受ける。
+
+'''
+sub(r'- セクションフィルターの repeat=false.*?(?=\n### PES assembler)', tableinfo + '\n', label='TableInfo one-shot block')
+s = re.sub(r'^\| T-SEC-14[a-z]?[^\n]*$', '', s, flags=re.M)
+insert_tests = '''| T-SEC-14 | TableInfo `repeat=false` / 同じTableId・versionの複数instance | extension/current_nextで公開matchを狭めず、完了前に観測したmatching instanceを別trackerとして追跡 |
+| T-SEC-14a | TableInfo version=`-1` | version wildcardとして公開matchし、内部instance keyをhidden filterにしない |
+| T-SEC-14b | matching instance追加 / one-shot完了前 | active setへ追加し、全active instance完了後だけ停止 |
+| T-SEC-14c | stream/source/filter boundary | section/TableInfo parser ownerをtyped resetし、境界前後のsectionを結合しない |
+'''
+pos = s.find('| T-SEC-15 ')
+if pos >= 0 and '| T-SEC-14 | TableInfo `repeat=false`' not in s:
+    s = s[:pos] + insert_tests + s[pos:]
+
+# 13. Raw section/PES callback and event metadata.
+raw_contract = '''### 生section・生PESのcallback / metadata契約
+
+| filter設定 | payload | FMQ commit後の必須callback | `onFilterEvent()` |
+|---|---|---|---|
+| Section `raw=true` | 完全なsection bytes | `IFilterCallback.onFilterStatus(DATA_READY)` | `DemuxFilterSectionEvent`を生成しない |
+| PES `raw=true` | 完全なPES bytes | `IFilterCallback.onFilterStatus(DATA_READY)` | `DemuxFilterPesEvent`を生成しない |
+| Section `raw=false` | 既存section data-path契約 | 完了結果をevent pathへ渡す | `DemuxFilterSectionEvent` |
+| PES `raw=false` | 既存PES data-path契約 | 完了結果をevent pathへ渡す | `DemuxFilterPesEvent` |
+
+raw=trueではFMQ payloadをcommitした後に`DATA_READY` status callbackを要求する。EventFlagはFMQ consumerを追加で起床させる同期手段であり、`onFilterStatus(DATA_READY)`の代替ではない。raw/nonraw切替前generationのcallback/eventを切替後として配送しないfenceは`FilterProducerDrainGate.filter_delivery_generation`を使う。
+
+nonraw Section eventの`tableId`は実sectionのtable_idとし、long sectionでは実際の5-bit `version`とsection_number、short sectionでは`version=0` / `sectionNum=0`を設定する。`dataLength`は当該eventに対応してcommitした完全section byte数と一致させる。nonraw PES eventの`streamId`はparseした0..255の実stream_id、`dataLength`は当該eventに対応する完全PES byte数、TS-only productの`mpuSequenceNumber`は0とする。
+
+'''
+s = s.replace('### 生section・生PESイベントのメタデータ\n\n', '')
+if '### raw section / raw PES event' in s:
+    sub(r'^### raw section / raw PES event.*?(?=^### )', raw_contract, label='raw section/PES section')
+elif '### 生section・生PESのcallback / metadata契約' not in s:
+    s = s.replace('### PES assembler の異常系状態表\n', raw_contract + '### PES assembler の異常系状態表\n', 1)
+s = s.replace('`DATA_READY`またはEventFlag起床', '`IFilterCallback.onFilterStatus(DATA_READY)`（EventFlagは追加のFMQ wakeとして使用可）')
+
+# 14. DemuxFilterEvent.startId uses existing filter_delivery_generation.
+startid = '''### `DemuxFilterEvent.startId` 契約
+
+settingsを変更する有効な`configure()`は、commit後の`filter_delivery_generation`に対応するpending startIdをprepareする。同じsettingsの冪等`configure()`では新しいstartIdを発行しない。Filterを再startした後、最初のevent callbackはstartIdだけを含むcallbackとして正確に1回配送し、その後に通常eventを配送する。startId-only callbackに別eventを同梱しない。新規open Filterの最初のstartだけはAOSP予約値0を使用してよく、それ以外は再利用しないpositive idを使用する。stale `filter_delivery_generation`のpending startIdは配送しない。positive idを再利用なしに発行できない場合は、既存`filter_delivery_generation` exhaustionの局所failure契約へ従い、新しい独立generation軸を追加しない。
+
+'''
+if '### `DemuxFilterEvent.startId` 契約' not in s:
+    if '### FilterDelayHint' in s:
+        s = s.replace('### FilterDelayHint', startid + '### FilterDelayHint', 1)
+    else:
+        s = s.replace('### 表1.', startid + '### 表1.', 1)
+
+# 15. FilterDelayHint supports time and data-size, first threshold wins.
+delay = '''### FilterDelayHint 契約
+
+`FilterDelayHint`は`TIME_DELAY_IN_MS`と`DATA_SIZE_DELAY_IN_BYTES`だけを受理し、unknown type、負の`hintValue`、表現不能値は`INVALID_ARGUMENT`で状態不変とする。typeごとに独立したhint値を保持し、0はそのtypeのhintだけをresetする。positive値は対応typeの閾値として保持する。media filterは本製品capability契約どおり`UNAVAILABLE`とする。
+
+non-mediaのevent-producing filterではpending `onFilterEvent()` batchを保持し、有効な時間閾値または有効な累積data-size閾値の**いずれか**に達した時点でbatchを配送する。data-sizeはpending batch内eventのdata length合計で評価する。hintはイベントを失わせる権限ではなく、停止・flush・close・reconfigure時のpending aggregateは`filter_delivery_generation`でfenceし、旧generationのbatchを新generationとして配送しない。別のscheduler state machineは導入せず、既存Filter delivery ownerが評価する。
+
+'''
+if re.search(r'^### FilterDelayHint[^\n]*\n', s, flags=re.M):
+    sub(r'^### FilterDelayHint[^\n]*\n.*?(?=^### )', delay, label='FilterDelayHint section')
+else:
+    s = s.replace('### 表2.', delay + '### 表2.', 1)
+s = re.sub(r'^(\| F-C-028 \|[^\n]*)$', lambda m: m.group(0).replace('hint値を保存', 'type別hintを検証して更新し、event aggregationのtime/data-size閾値へ反映'), s, flags=re.M)
+
+# 16. TS live MediaEvent remaining fields.
+media = '''### TS live `MediaEvent` field契約
+
+TS live AV eventの`streamId`は対応PESからparseした実stream_id 0..255を設定する。PTSは本書の既存PTS契約に従う。PES headerにDTSが存在する場合は`isDtsPresent=true`かつparse済み33-bit 90 kHz DTS、存在しない場合は`isDtsPresent=false`かつ`dts=0`とする。TS-only productでは`mpuSequenceNumber=0`とする。`isPesPrivateData`はPES `stream_id=0xBD` (`private_stream_1`) の場合だけtrue、それ以外falseとする。live AV eventはrecord start-code indexを所有しないため`scIndexMask`は0/default、追加audio metadataを本製品のTS live AV capabilityとして採用しないため`extraMetaData`はnoinit/defaultとする。未使用fieldはAIDL既定値を明示的に設定し、未初期化memory由来の値を公開しない。
+
+'''
+if '### TS live `MediaEvent` field契約' not in s:
+    pos = s.find('### AV shared handle 入出力契約\n')
+    if pos >= 0:
+        s = s[:pos] + media + s[pos:]
+    else:
+        s += '\n' + media
+
+# 17. IDvr status interval hint affects status evaluation cadence.
+s = re.sub(r'^(\| DVR-033 \|[^\n]*)$', lambda m: m.group(0).replace('hint値だけ保存', 'positive msを後続data-status評価のtarget intervalとして保存・適用し、0はproduct defaultへ戻す'), s, flags=re.M)
+dvr_hint = '''`IDvr.setStatusCheckIntervalHint(milliseconds)`はDVRのdata statusを評価する頻度のhintである。positive値は後続status評価のtarget intervalへ反映し、0はproduct default intervalへ戻す。started中の変更は既存worker/runtimeを別state machineへ置換せず、次回評価から新intervalを使えるよう既存`WorkerRuntime`のwake/re-arm経路へ接続する。queue identity、queue epoch、payload、DVR lifecycleは変更しない。
+'''
+if dvr_hint not in s:
+    m = re.search(r'^\| DVR-033 \|.*$', s, flags=re.M)
+    if not m: raise SystemExit('DVR-033 anchor missing')
+    s = s[:m.end()] + '\n\n' + dvr_hint + s[m.end():]
+
+# 18. Remove duplicate/empty headings; generalize closed Frontend rejection contract.
+s = re.sub(r'(IFrontend\.close\(\)[^\n]*\n)\1', r'\1', s)
+s = s.replace('### Filter data source の source lifecycle エラー\n\n', '')
+s = re.sub(r'^\| Frontend \|.*linkLnb.*$', '| Frontend | `LogicalClosed` / `CleanupPending` / `Quarantined` | `close()`および0-S-3B `ObjectCloseTxn`のrecovery/cleanup入口を除く全ての通常public method | `INVALID_STATE`または各recovery契約 | hard-coded method列挙を第二正本にしない |', s, flags=re.M)
+
+# Delete any remaining positive MMTP Record event sentence.
+s = re.sub(r'[^\n]*DemuxFilterMmtpRecordEvent[^\n]*', '', s)
+
+design.write_text(s)
+
+# Move implementation-only details to existing implementation convention document.
+cc = Path('tuner_hal/CODE_CONVENTION.md')
+c = cc.read_text()
+marker = '## DESIGN_JA.md から移送した実装規約（PR #28）'
+if marker not in c:
+    c += '''
+
+## DESIGN_JA.md から移送した実装規約（PR #28）
+
+公開AIDL意味ではなく実装方法に属する次の事項は本書を正本とする。
+
+- scan END callbackを返すhelperの結果を`let _ =`等で破棄しない。配送失敗はtyped resultとして上位ownerへ返す。テスト専用helper/entryは`#[cfg(test)]`等のcompile-time gateでrelease経路から除外する。
+- AV shared allocationの`active/reserved/free`、次ID/generation、diagnosticを一つの`AvSharedState`と一つのmutex配下で更新し、`clear_result()` / `release()` / `release_all()`は部分更新を残さない。
+- px4 backendは同一device nodeを一度だけopenし、TS readerはcontrol `File`から`File::try_clone()` / fd duplicate相当で派生させる。readerはnonblocking + `poll()`で扱い、live reader取得のための再openを禁止する。
+- Filter/DVR queue policyの具体実装は`filter_queue_model()` / `dvr_queue_model()`および`QueueOverflowPolicy`へ集約し、旧alias/boolean policyを再導入しない。
+- MediaCas session ID bytesとinternal key resourceの登録entryは`register_from_cas_bridge()`へ集約する。`dump_descrambler_diagnostics_for_debug()`、`MALEICACID_TUNER_HAL_DESCRAMBLER_DIAGNOSTIC_FILE`等のdebug出力は公開AIDL契約を変更しない診断経路に限定し、debug file writeは5秒以内のbounded operationとする。
+
+これらの名称・lock/API選択は実装規約であり、`DESIGN_JA.md`の公開状態・capability・戻り値・資源寿命を変更する根拠にはしない。
+'''
+    cc.write_text(c)
+
+integ = Path('tuner_hal2/INTEGRATION.md')
+i = integ.read_text()
+imarker = '## px4 probe prefix 変更時の同期対象（PR #28）'
+if imarker not in i:
+    i += '''
+
+## px4 probe prefix 変更時の同期対象（PR #28）
+
+px4のdevice probe prefixを変更する場合は、実装側の`frontend_px4`と、`tuner_hal2/config/ueventd.tuner_hal2.rc`、`tuner_hal2/sepolicy/file_contexts`を同一変更で同期する。具体pathはintegration contractであり、公開AIDL契約の`DESIGN_JA.md`では再定義しない。
+'''
+    integ.write_text(i)
+
+rules = Path('開発規則.md')
+r = rules.read_text()
+r2, n = re.subn(r'\* px4は同一device nodeの二重openを行わない。control FDを一度だけopenし、TS readerは同じFileから`try_clone\(\)` / fd duplicate相当で作る。読取経路は`live_stream_reader\(\)`に統一し[^\n]*', '* px4は同一device nodeを二重openせず、1回のbackend openからcontrol経路とTS readerを派生させる。このproduct-level invariantを維持し、具体的なRust API・fd duplicate・poll方式は`tuner_hal/CODE_CONVENTION.md`を正本とする。', r)
+if n:
+    rules.write_text(r2)
+
+# Reviewed residue checks.
+final = design.read_text()
+bad = [
+    'Frontend(frontend_generation)', 'SourceFilter(filter_id, filter_generation)',
+    '`av_generation`', 'DemuxFilterMmtpRecordEvent',
+    'PES assemblerは全ての有効な明示stream IDとwildcard',
+    '現在のrecord-index parser generationの出力区間先頭',
+    '#### checked FMQ shim 入力契約####',
+    '### 表20. counter / generation overflow 契約###',
+]
+present = [x for x in bad if x in final]
+if present:
+    raise SystemExit('review residue remains: ' + repr(present))
+required = [
+    'frontend_operation_generation', 'stream_boundary_generation',
+    '### TS PID 共通値域契約', '### SectionBits bit照合契約',
+    '### `DemuxFilterEvent.startId` 契約', '### TS live `MediaEvent` field契約',
+    '差分未証明', 'onFilterStatus(DATA_READY)', 'record_output_byte_offset'
+]
+missing = [x for x in required if x not in final]
+if missing:
+    raise SystemExit('required contract missing: ' + repr(missing))
