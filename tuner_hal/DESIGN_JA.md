@@ -88,8 +88,8 @@ VTS XML/profileで使用する機能とcapabilityで宣言する機能は一致�
 ISDB-S selectorはAOSPの`FrontendIsdbsStreamIdType`を正とし、`STREAM_ID`と`RELATIVE_STREAM_NUMBER`を別domainとして受理・検証する。Linux DVB / earth_pt1は`STREAM_ID 0..65534`を`DTV_STREAM_ID`へ渡す。px4 legacy ABIは`slot < 12`を相対番号、`slot >= 12`をabsolute TSIDとして解釈するため、px4では`RELATIVE_STREAM_NUMBER 0..7`と`STREAM_ID 12..65534`をlegacy `slot`へ直接渡す。absolute `STREAM_ID 0..11`はAOSP上有効だが同ABIで相対値と区別できないため、副作用なしの`UNAVAILABLE`とする。`65535`は明示TSIDとして`INVALID_ARGUMENT`とする。selector kindを数値域から推測せず、TISへ`EffectiveCapabilities`、driver名、relative slotを公開しない。`ProductProfile`は検証済み能力を抑止できるが、新設または拡張してはならない。
 
 
-- コールバック失敗、ワーカー異常終了、FMQ / EventFlag 失敗の状態遷移、診断、後続処理停止条件は表7・表8を正とする。本節では再定義しない。
-- DVR 状態 interval はコールバックワーカーの周期にだけ使う。ワーカーの wait は stop signal で wake 可能な cancellable wait とし、close / Drop / shutdown は interval 満了を待たない。
+- post-commit callback failureの写像は0-S-3Bの`PostCommitCallbackFailureTxn`、generic worker lifecycleは`WorkerRuntime` / `WorkerHandle`、worker failure分類は`WorkerFailureClassifier`を正とする。FMQ / EventFlagのdata-path結果と診断は表6および`FilterProducerDrainGate` / `QueueEpochProtocol` / `QueueCleanupTxn`等の各queue owner契約、API固有の公開状態・戻り値は各API状態表を正とし、本節ではfailure state machineを再定義しない。
+- DVR 状態 interval はcallback workerの周期にだけ使う。callback workerのwait / wake / cancel、close / Drop / shutdown時のgeneric終端は0-S-3Bの`WorkerRuntime` / `WorkerHandle`を正とし、本節では再定義しない。
 - `getAvSharedHandle()`とAV filter `start()`の状態別契約は、本書の「表4. AV共有メモリ資源寿命表」を正とする。`releaseAvHandle()`の入力分類、戻り値、資源変化は「表1-C-AVH. `releaseAvHandle()` 全域判定表」だけを正とする。
 
 backendのエラーは、呼び出し側の不正値・値域違反を`INVALID_ARGUMENT`、不存在・使用中・容量不足・規格上は有効だが未対応を`UNAVAILABLE`、不正なライフサイクルを`INVALID_STATE`、依存資源の未初期化を`NOT_INITIALIZED`、割り当て失敗を`OUT_OF_MEMORY`、権限・入出力・設定破損・不変条件違反を`UNKNOWN_ERROR`へ対応付ける。
@@ -399,7 +399,7 @@ commit前失敗では、成功戻りを返してはならない。commit後clean
 |---|---|---|---|---|
 | クライアント誤用 | 引数不正、owner不一致 | `INVALID_ARGUMENT` | 呼び出し対象のみ | backend/データ経路 failureへ昇格しない |
 
-公開 `close()` の意味は、インターフェース、論理ライフサイクル、後片付け状態を組み合わせた単一の表で定める。`Live` オブジェクトに対する最初の `close()` は、すべての後片付けを試す前に `LogicalClosed` を確定し、回復処理以外のメソッドを拒否する。`IFrontend.close()` と `ILnb.close()` は複数回呼び出せる。`LogicalClosed+CleanupComplete` では、完了済みの後片付けを再実行せず `SUCCESS` を返す。`IDvr.close()` と `IFilter.close()` は、同じ状態で `INVALID_STATE` を返す。IDvrのその他のメソッドも失敗とし、IFilterの遅延した `releaseAvHandle()` は別の解放台帳操作として扱う。どのインターフェースでも、`LogicalClosed+CleanupPending` の `close()` は未完手順の回復再試行に限定し、未完手順だけを実行する。完了時だけ `SUCCESS` を返し、失敗時はその操作に対応する後片付けエラーを返して `CleanupPending` を維持する。`Quarantined` では公開 `close()` に `INVALID_STATE` を返し、内部の後片付け管理機構だけが処理する。論理ライフサイクル軸は`Live`または`LogicalClosed`、後片付け軸は`NotStarted`、`CleanupPending`、`CleanupComplete`、`Quarantined`のいずれか一つとする。`Live+NotStarted`、`LogicalClosed+CleanupPending`、`LogicalClosed+CleanupComplete`、`LogicalClosed+Quarantined`だけを有効な組み合わせとし、`CleanupPending+CleanupComplete`や`Quarantined+CleanupComplete`は成立させない。
+公開 `close()` の状態別結果は表5 / CL-*を正とする。`Live` objectへの最初の`close()`は0-S-3Bの`ObjectCloseTxn`へ接続し、logical close確定後は回復用入口を除く通常methodを拒否する。`LogicalClosed+CleanupComplete`では`IFrontend.close()` / `ILnb.close()`は状態を変えず`SUCCESS`、`IDvr.close()` / `IFilter.close()`は`INVALID_STATE`とし、Filterの遅延`releaseAvHandle()`は別の解放台帳操作として扱う。`LogicalClosed+CleanupPending`の再`close()`は`ObjectCloseTxn`のrecovery入口へ接続し、そのtyped resultを表5の公開戻り値へ写像する。`CleanupPending` / `Quarantined`への遷移条件、未完cleanupのretry、authority handoff、reaper移管、quarantine判定は0-S-3Bの`ObjectCloseTxn`を唯一の正本とし、本節では再定義しない。
 
 
 | 失敗種別 | 例 | 戻り値 | 波及範囲 | 禁止事項 |
@@ -447,7 +447,7 @@ Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時�
 generic worker failureの隔離範囲と`ServiceCritical`昇格条件は0-S-3Bの`WorkerRuntime` / `WorkerHandle`を唯一の正本とし、failure categoryは`WorkerFailureClassifier`を正とする。各domain節は分類済みterminal resultをAPI固有状態・公開結果へ写像する責務だけを持ち、service-wide failure判定条件を再定義しない。
 
 
-- frontend source transition は transactional に扱い、new bind / old unbind / record更新 / stream 境界 reset の途中失敗時には新 binding をrollbackし、rollback不能なら demux を 異常時閉鎖済み にする。
+- frontend source transitionでは、API成功時に要求したfrontend source assignmentが成立していることを公開意味として固定する。relation / stream boundaryのprepare、composite commit、rollback、post-commit cleanup、commit不明時処理は0-S-3Bの`DemuxFrontendSourceTxn` / `StreamBoundaryTxn`を唯一の正本とし、本節では再定義しない。
 
 
 - DVR start は 状態 interval 分だけ Binder thread を sleep しない。状態 interval は コールバック ワーカー の周期だけに使う。
@@ -1107,7 +1107,7 @@ checked FMQ shim は、`queue == null` または `out_written == null` を `INVA
 | AT-007 | 複数demux stream boundary | 対象一覧固定後、demuxごとに独立した境界transactionを実行 | 各demuxのcommitを個別に記録し、全対象を処理した時点 | 未処理対象は変更せず、commit済み対象を巻き戻さない | 変更結果を確定できないdemuxだけ | 表SB-1に従う | 一部成功を全体rollbackで隠さない |
 | AT-008 | `IFrontend.scan()` / `stopScan()` | 入力検証・request fingerprint確定・worker/callback経路準備 → 旧scan世代終端 → 同一`LockedReported`なら新generationのEND step、それ以外はbackend要求と新scan世代確定 | 同一lock報告済みrequestの継続は新generationとEND配送権限を一括で公開した時点。通常scanはbackend受理、新世代、worker、callback許可を一括で公開した時点 | 旧世代終端前は状態不変。終端後は旧scanを復元しない。同一request継続のEND失敗をbackend再探索または二重LOCKEDで補償しない | frontend、scan worker、callback経路、scan continuation state | scan終了理由とcallback配送結果の規則に従う | `scan(K)→LOCKED→scan(K)→END`を新旧generationのfence付きで成立させ、異なるrequest・stopScan・tune・closeで継続状態を破棄する |
 | AT-009 | `IFilter.setDataSource()` | NULLはdemux input復帰、non-NULLは指定Filter source assignmentという公開意味を表1-D / 表18-Bで固定し、内部relation transactionは0-S-3Bの`SourceBoundaryTxn`参照 | 公開成功条件は表1-D / 表18-B、内部確定点は0-S-3B参照 | rollback / quarantine semanticsは0-S-3B参照 | 0-S-3B参照 | 表1-D、表18-B、`SourceBoundaryTxn`に従う | source relation内部state machineを本索引で再定義しない |
-| AT-009a | `IDescrambler.setDemuxSource()` | 閉鎖gate確認、一回性消費、demux ID・生存・世代・対応能力の検証、対応する`DescramblerCapacityPool`へのsession結合予約、session台帳確定 | commit Aで初回呼出しを`CallConsumed`へ不可逆に変更し、成功経路だけcommit Bで`{demux_id, demux_generation, pool_id}`とpool上のsession帰属を`Bound`へ一括変更する | commit A後の検証・予約失敗はpool帰属を戻して`CallConsumedUnbound`を維持する。commit B後に片側だけ不明な場合は当該descrambler sessionとpool claimを隔離する | descrambler source-call state、demux generation、共有pool session帰属 | 「IDescrambler demux結合契約」に従う | `openDescrambler()`時にdemuxを推測せず、失敗を含む初回呼出しだけにsource設定権限を与える |
+| AT-009a | `IDescrambler.setDemuxSource()` | 失敗を含む初回呼出しだけがsource設定権限を消費し、成功時に指定demuxへの結合を公開するというAPI意味を「IDescrambler demux結合契約」で固定する。内部phaseは同契約参照 | 公開成功条件と内部確定点は「IDescrambler demux結合契約」参照 | rollback / cleanup / commit不明時処理は「IDescrambler demux結合契約」参照 | 同契約参照 | 「IDescrambler demux結合契約」に従う | `openDescrambler()`時にdemuxを推測せず、失敗を含む初回呼出しだけにsource設定権限を与えるという公開意味だけを本索引で要求し、内部transaction semanticsを複製しない |
 | AT-010 | `IDescrambler.setKeyToken()` / `addPid()` / `removePid()` | key/PIDの公開入力分類・戻り値はtoken/PID状態表を正とし、内部mutationは0-S-3Bの`DescramblerKeyTxn` / `DescramblerPidTxn`参照 | 公開成功条件は各状態表、内部確定点は0-S-3B参照 | compensation / quarantineを含むtransaction内部failure semanticsは0-S-3B参照 | 0-S-3B参照 | token/PID状態表と0-S-3Bに従う | key/PID/session cleanupのowner境界を本索引で再定義しない |
 | AT-010a | Frontend / Demux / Filter / DVR / Descrambler / LNB open | 能力と容量の検証・資源予約・runtime object準備・registry登録・公開 | registry登録と所有者台帳を確定し、AIDLが要求するobjectおよびout IDを同一応答で返す時点 | 公開前の準備物を逆順に解放する。解放結果を確定できない資源は`CleanupPending`または隔離へ移し、objectもout IDも部分公開しない | 準備中objectと予約済み資源 | 原因別のopenエラーを返し、objectを公開しない | APIごとのAIDL出力形状を維持し、公開失敗後に半登録object、単独のout ID、消費済み容量を残さない |
 
@@ -1454,7 +1454,7 @@ diagnostic counterのsaturation/dropは、diagnostic取得APIを除く全busines
 
 ## ワーカー abnormal exit と scan terminal state の固定方針
 
-ワーカーのabnormal exitはログ-onlyにしない。genericなstop / wake / join / generation fence / reaper handoff / lease returnは0-S-3Bの`WorkerRuntime` / `WorkerHandle`、失敗種別の分類は`WorkerFailureClassifier`を唯一の正本とする。本節ではscan固有のterminal reasonとcallback delivery outcomeだけを定める。scan workerのpanicに対応するdomain terminal reasonは`FailedPanic`とし、公開APIがtyped worker failureを観測した場合の戻り値と次状態は表7・表8を正とする。
+ワーカーのabnormal exitはログ-onlyにしない。genericなstop / wake / join / generation fence / reaper handoff / lease returnは0-S-3Bの`WorkerRuntime` / `WorkerHandle`、失敗種別の分類は`WorkerFailureClassifier`を唯一の正本とする。本節ではscan固有のterminal reasonとcallback delivery outcomeだけを定める。scan workerのpanicに対応するdomain terminal reasonは`FailedPanic`とし、分類済みtyped worker failureの公開戻り値と次状態はscan / frontendのAPI状態表へ写像する。
 
 scan ワーカー は次の terminal reason を保持する。
 
@@ -1888,7 +1888,7 @@ generic worker lifecycleは0-S-3Bの`WorkerRuntime` / `WorkerHandle`、worker fa
 
 ワーカーはデータ処理と通知を担当し、demux、filter、DVR、descrambler等の資源寿命または登録relationのmutation ownerにはならない。worker failureはtyped resultとしてdomain ownerへ返し、domain ownerが各API状態表に従って公開状態へ反映する。worker自身が対象objectを直接unregisterしたり、別ownerのresourceを解放したりしてはならない。
 
-Frontend / Filter / DVR / Playback固有のterminal meaning、worker failure後の`start()` / `stop()` / `flush()` / `close()`の公開結果とdata-path効果は各API状態表、表6、表7、表8を正とし、本節では第二の状態表を持たない。
+Frontend / Filter / DVR / Playback固有のterminal meaningとworker failure後の公開結果 / data-path効果は各API状態表と表6を正とする。generic lifecycleは`WorkerRuntime` / `WorkerHandle`、failure categoryは`WorkerFailureClassifier`、post-commit callback failureは`PostCommitCallbackFailureTxn`を唯一の正本とし、本節では第二のfailure contractを持たない。
 
 ### close / unregister / quarantine 条件
 
@@ -2088,7 +2088,7 @@ payloadを持つ同一PIDで直前と同じcontinuity counterを受信した場�
 
 
 
-playback 専用 stats は少なくとも injected bytes、injected packets、malformed packets、dropped bytes を持つ。malformed TS は drop + 診断 を標準方針とし、1 packet の malformed input で playback stream 全体を fail させない。playback input FMQ の `PlaybackStatus` は start 直後・周期 コールバック ともに playback input FMQ の実 fill / unused write space を唯一の水位 source とし、record/output queue の `queued_bytes` を流用しない。playback consumer ワーカー は `WorkerHandle` / owner `ConcreteWorkerSignal` に接続し、close / Drop / 異常時閉鎖済み で `request_stop()` → `wake()` → `join_from_owner()` の順に停止する。
+playback 専用 stats は少なくとも injected bytes、injected packets、malformed packets、dropped bytes を持つ。malformed TS は drop + 診断 を標準方針とし、1 packet の malformed input で playback stream 全体を fail させない。playback input FMQ の `PlaybackStatus` は start 直後・周期 コールバック ともに playback input FMQ の実 fill / unused write space を唯一の水位 source とし、record/output queue の `queued_bytes` を流用しない。playback consumer ワーカー は domain worker ownerから0-S-3Bの`WorkerRuntime` / `WorkerHandle`へ接続する。stop / wake / join / reaper / retry / lease returnのgeneric lifecycleは同契約を唯一の正本とし、本節ではPlayback固有のstatsとdata-path結果だけを定める。
 
 playback input FMQ の stream 境界 方針は次のとおり固定する。start 前に client が prefill した bytes は保持し、start 後に playback TS として読む。started=false 中は ワーカー が FMQ を読まない。stop 時は playback input FMQ と packet assembler residual を維持し、次 start で既存 stream の続きとして読む。flush 時は playback input FMQ と packet assembler residual を drain/discard し、dropped bytes 診断カウンター と ログ に記録する。flush 後に client が新たに書いた bytes は started=false 中には読まず、直前の flush で既存 stream 境界が drain 済みであることを前提に、次 start の prefill として扱う。playback flush は playback input FMQ、packet assembler、playback stats だけを reset し、record/output queue を破壊しない。record DVR flush は record output queue と record stats だけを reset し、playback input queue と playback stats を破壊しない。
 
@@ -2115,9 +2115,7 @@ Playback DVR の `configure()` 時は、FMQ 容量と同じ上限の processing-
 
 ### playback consumer ワーカー 起動順序
 
-DVR playback consumer ワーカー は、DVR が soft demux と `RuntimeIoRegistry` の両方へ登録され、queue と ワーカー signal の所有権が `DvrHal` へ確定した後にだけ開始する。登録前に playback ワーカー が DVR state を観測してはならない。
-
-ワーカー生成 後に registry commit する構造は禁止する。spawn 後に後段登録が失敗した場合は、ワーカー stop / join、queue cleanup、soft demux unregister、ledger rollback を一体で行う。
+DVR playback consumer ワーカー は、DVR が soft demux と `RuntimeIoRegistry` の両方へ登録され、queue と worker signal の所有権がdomain ownerへ確定した後にだけ開始する。登録前にplayback workerがDVR stateを観測してはならない。worker handle slot準備・spawn・stop / wake / join / reaperは0-S-3Bの`WorkerRuntime` / `WorkerHandle`、公開前のregistry / queue / ledger rollbackはroot/child open契約を正とし、本節では失敗時cleanup phaseを再定義しない。
 
 ## フロントエンドの対応能力と状態
 
@@ -2125,7 +2123,7 @@ DVR playback consumer ワーカー は、DVR が soft demux と `RuntimeIoRegist
 ISDB-Tの列挙値域は、ARIB公式英語版STD-B31 2.2-E1本文の2.3、3.8、3.9、3.11.1、3.14.2、3.15.6.5〜3.15.6.7に従う。規格上の有効値と対象ドライバーで設定可能な値は分けて扱う。`TARGET_DRIVER` の証跡によって具体値が設定され、機器で有効になることを確認できない限り、対象バックエンドがモード、変調方式、符号化率、ガードインターバル、時間インターリーブについて公開し受け付ける値は `AUTO` だけとする。
 
 
-`RF_LOCK` は backend が RF/carrier acquisition を別途取得できる場合だけ advertise する。DVB / earth_pt1 backend は Linux DVB `FE_READ_STATUS` が返す `FE_HAS_CARRIER` を `RF_LOCK`、`FE_HAS_LOCK` を `DEMOD_LOCK` に対応させる。px4_drv backend は RF/carrier ロックを返す API を持たないため、px4 の擬似 ロック は `DEMOD_LOCK` のみに使い、`RF_LOCK` には使わない。
+`RF_LOCK` は backend が RF/carrier acquisition を別途取得できる場合だけ advertise する。DVB / earth_pt1 backend は Linux DVB `FE_READ_STATUS` が返す `FE_HAS_CARRIER` を `RF_LOCK`、`FE_HAS_LOCK` を `DEMOD_LOCK` に対応させる。px4固有の`RF_LOCK` / `DEMOD_LOCK` capability、`PTX_SET_CHANNEL`成功と`LOCKED`通知の関係は後段の「px4_drv ロック 方針」を唯一の正本とし、本節では再定義しない。
 
 `SNR` と `SIGNAL_STRENGTH` は、起動時に安定取得と更新経路をfrontendエントリの固定capabilityとして証明できる場合だけ `statusCaps` に含める。DVB / earth_pt1 の `FE_READ_SNR` と `FE_READ_SIGNAL_STRENGTH`、px4 の `PTX_GET_CNR` は target driver / device 状態によって read 時に失敗し得る optional telemetry であり、その証明がないfrontendではadvertiseしない。これらの optional telemetry は診断内部値として保持してよいが、証明なしにAOSP `statusCaps` 上のsupported状態としてadvertiseしてはならない。
 
@@ -2356,7 +2354,7 @@ STD-B25デコード能力とSTD-B25 Part 1 §4.9への適合宣言を分離す�
 
 製品profileで公開demuxのいずれにもSTD-B25デコード能力を有効にしない構成では`openDescrambler()`を`UNAVAILABLE`とし、VTS製品設定へdescrambling flowを含めない。一部のdemux経路だけで能力を有効にする構成では、未結合objectの生成後、対象外demuxへの`setDemuxSource()`を`UNAVAILABLE`とする。能力を有効にする場合も、実鍵組数または実PID数を、本製品全体として恒久的に適合対象外であるPart 1 §4.9への適合、Part 1 CAS-R適合、またはSTD-B25全面準拠の宣言へ読み替えない。鍵素材はslot数だけを台帳化し、公開AIDLまたは診断へ出さない。
 
-VTS/lab config には descrambling flow を置かない。VTS 用 XML に ECM filter や `<descramblers>` を生成せず、平文ライブ視聴 / DVR / 明示選局 の接続確認に限定する。Tuner HAL は PMT/CAT/SDT/ECM/EMM 等の section payload delivery、`IDescrambler`、`setKeyToken()`、`addPid()` / `removePid()`、トークン lookup 境界、未接続・bad トークン・expired トークン 診断までを確認対象とする。本番経路スクランブル解除成功のリリーススコープと、CA情報 / サービス メタデータの意味解析、ECM/EMM filter 開始方針、MediaCas/CAS bridge 呼び出し、不透明な参照値の取得試行、Tuner descrambler への接続判断、未接続診断の上位制御の責務境界は `開発規則.md` を正とする。Tuner HAL の packet 単位のデスクランブル中核は、単体テスト内で復号鍵台帳へ既知鍵を登録して確認する。
+VTS/lab config の descrambling flow は、`VTS profile / capability 対応契約`と`開発規則.md`のrelease到達点を正とする。r51ではCAS HALがplaceholderで本番の実CAS tokenを成立させないため、VTS product profileで本番descrambling成功を表明するflowを宣言しない。r52の正式リリース到達点でCAS HAL / MediaCas / vendor key bridgeが実tokenを成立させ、対象demuxの`StdB25DecodeCapability`を有効化し、使用するVTS artifact / variant / input / CAS system / filter / PID / queue / memory等の`VtsEnvironmentProfile`入力と必要資源を起動前に確定・予約できるprofileでは、AOSP VTSのdescrambling flowを到達可能にする。descrambler能力を宣言したprofileからflowを隠して検査を回避してはならない。Tuner HAL は PMT/CAT/SDT/ECM/EMM 等の section payload delivery、`IDescrambler`、`setKeyToken()`、`addPid()` / `removePid()`、token lookup境界、未接続・bad token・expired token診断を契約対象とする。本番経路スクランブル解除成功のrelease scopeと、CA情報 / service metadataの意味解析、ECM/EMM filter開始方針、MediaCas/CAS bridge呼出し、実token取得、Tuner descramblerへの接続判断、未接続診断の上位制御は`開発規則.md`を正とする。Tuner HALのpacket単位デスクランブル中核は単体テスト内で既知鍵を登録して確認してよい。
 
 
 ## IDescrambler optionalSourceFilter 境界
@@ -2484,9 +2482,9 @@ record index は、PES と raw elementary stream を区別する。共有 PES pa
 
 source filter 由来の TS packet は frontend 由来の TS packet と同じ packet pipeline を通る。ただし origin namespace は frontend と source filter で分離し、assembler generation、carry state、flush state を相互に消してはならない。
 
-### ワーカー 停止失敗
+### scan / tune worker terminal mapping
 
-scan ワーカー と tune ワーカー は、join 失敗時に ワーカーslot を破棄してはならない。停止失敗は診断に残し、後続 close または stop で再試行できる状態を保持する。
+scan / tune workerのgeneric join failure、retry、reaper handoff、worker slot / lease保持は0-S-3Bの`WorkerRuntime` / `WorkerHandle`を唯一の正本とする。本節では分類済みterminal resultをscan / tune固有状態と公開結果へ写像する責務だけを持ち、generic停止失敗state machineを再定義しない。
 
 ### AV shared backing
 
