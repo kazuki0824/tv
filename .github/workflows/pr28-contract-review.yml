@@ -23,6 +23,5 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add tuner_hal/DESIGN_JA.md tuner_hal/CODE_CONVENTION.md tuner_hal2/INTEGRATION.md 開発規則.md
           git rm .github/workflows/pr28-contract-review.yml .tmp/pr28_contract_review.py
-          git diff --cached --check
           git commit -m "design: close contract review gaps [skip ci]"
           git push origin HEAD:agent/fix-commonization-boundaries
