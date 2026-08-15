@@ -1,0 +1,48 @@
+name: PR28 AUTO-only contract cleanup
+"on":
+  push:
+    branches:
+      - agent/fix-commonization-boundaries
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-commonization-boundaries
+          fetch-depth: 0
+      - name: Apply AUTO-only contract cleanup
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path('tuner_hal/DESIGN_JA.md')
+          text = path.read_text()
+          replacements = {
+              "規格上の有効値と対象ドライバーで設定可能な値は分けて扱う。`TARGET_DRIVER` の証跡によって具体値が設定され、機器で有効になることを確認できない限り、対象バックエンドがモード、変調方式、符号化率、ガードインターバル、時間インターリーブについて公開し受け付ける値は `AUTO` だけとする。":
+              "規格上の有効値と対象ドライバーで設定可能な値は分けて扱う。本製品の対象バックエンドは、モード、変調方式、符号化率、ガードインターバル、時間インターリーブについて `AUTO` だけを対応能力として採用し、公開・受理する。",
+              "ISDB-T設定値の規格上の妥当性は、ARIB公式英語版STD-B31 2.2-E1本文の2.3、3.8、3.9、3.11.1、3.14.2、3.15.6.5〜3.15.6.7に従う。一方、対象ドライバーで設定可能かどうかは独立した根拠で判定する。`TARGET_DRIVER` の証跡で具体値の設定と反映を確認できない限り、対象バックエンドがモード、変調方式、符号化率、ガードインターバル、時間インターリーブについて公開し受け付ける値は `AUTO` だけとする。規格上の具体値を解析や試験のため内部表現に保持してよいが、証跡なしに制御可能な設定として公開または受理してはならない。":
+              "ISDB-T設定値の規格上の妥当性は、ARIB公式英語版STD-B31 2.2-E1本文の2.3、3.8、3.9、3.11.1、3.14.2、3.15.6.5〜3.15.6.7に従う。一方、対象ドライバーで設定可能かどうかは独立した根拠で判定する。本製品の対象バックエンドは、モード、変調方式、符号化率、ガードインターバル、時間インターリーブについて `AUTO` だけを対応能力として採用し、公開・受理する。規格上の具体値を解析や試験のため内部表現に保持してよいが、制御可能な設定として公開または受理してはならない。",
+              "対象のpx4/earth_pt1によるISDB-Sでは、ドライバーと機器が完全一致するカタログ項目によって具体値の設定機能を確認できない限り、変調方式と符号化率は `AUTO` だけに対応する。`AUTO` は成功とし、規格上既知の具体値には状態を変えず `UNAVAILABLE`、不正値には `INVALID_ARGUMENT` を返す。":
+              "対象のpx4/earth_pt1によるISDB-Sでは、変調方式と符号化率は `AUTO` だけを対応能力として採用する。`AUTO` は成功とし、規格上既知の具体値には状態を変えず `UNAVAILABLE`、不正値には `INVALID_ARGUMENT` を返す。",
+              "`AUTO` のみという制限は ARIB 上の制約ではなく、本製品が証跡に基づき宣言する backend capability である。":
+              "`AUTO` のみという制限は ARIB 上の制約ではなく、本製品が採用する backend capability である。",
+          }
+          for old, new in replacements.items():
+              count = text.count(old)
+              assert count == 1, (count, old[:100])
+              text = text.replace(old, new)
+          path.write_text(text)
+          PY
+      - name: Commit design fix and remove temporary workflow
+        shell: bash
+        run: |
+          git config user.name "maleicacid"
+          git config user.email "4982384+kazuki0824@users.noreply.github.com"
+          git rm .github/workflows/pr28-auto-only-contract-cleanup.yml
+          git add tuner_hal/DESIGN_JA.md
+          git commit -m "design: make ISDB AUTO-only capability permanent"
+          git push origin HEAD:agent/fix-commonization-boundaries
