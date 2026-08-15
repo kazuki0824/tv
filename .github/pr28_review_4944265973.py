@@ -1,0 +1,207 @@
+from pathlib import Path
+
+path = Path("tuner_hal/DESIGN_JA.md")
+s = path.read_text()
+
+
+def once(old: str, new: str, label: str) -> None:
+    global s
+    n = s.count(old)
+    if n != 1:
+        raise SystemExit(f"{label}: expected 1 occurrence, found {n}")
+    s = s.replace(old, new, 1)
+
+
+# 1. removeOutputPid: permanent product capability decision.
+once(
+    "`IFrontend.removeOutputPid(pid)` は、frontend 出力段で PID を除去できる実装が存在しない限り `UNAVAILABLE` とする。soft demux 後段の block list だけで PID を捨てる実装は、frontend-level output PID removal を実装したことにしない。",
+    "`IFrontend.removeOutputPid(pid)` は、本製品では frontend-level output PID removal を対応能力として採用しないため、常に `UNAVAILABLE` とする。soft demux 後段の block list だけで PID を捨てる経路を、frontend-level output PID removal の成功として扱わない。",
+    "removeOutputPid",
+)
+
+# 2. Playback consumer: caller/data-path results here; consume internals stay canonical.
+start = s.index("### playback consumer commit（消費確定）表")
+end = s.index("### playback consumer ワーカー 起動順序", start)
+replacement = """### playback consumer commit（消費確定）表
+
+本節は DVR playback の caller / data-path から観測できる結果と診断だけを固定する。FMQ read admission、`beginRead()` / `commitRead()`、processing buffer、parse / inject cursor、consume result、retain / discard、residual、retry の内部 phase・state・failure semantics は 0-S-3B の `PlaybackConsumeTxn` だけを正本とし、本節では再定義しない。
+
+| caller / data-path 状況 | caller-visible / data-path結果 | 診断 | 内部mutation正本 |
+|---|---|---|---|
+| valid TSの配送成功 | 対象outputへ正確に1回配送する | 正常 | `PlaybackConsumeTxn` |
+| 受付後から配送確定までの間に配送先が消滅 | stream全体を致命失敗にせず、消滅した配送先へ重複配送しない | no-delivery raceを型付きで記録 | `PlaybackConsumeTxn` |
+| malformed TS | 当該malformed単位を配送せず、後続stream処理を継続する | malformed diagnostic | `PlaybackConsumeTxn` |
+| partial TS | 完全なTS packet / semantic unitとして成立する前に配送済み扱いにしない | 必要に応じpartial入力診断 | `PlaybackConsumeTxn` |
+
+定常的に配送先がない状態を即時fatal stream failureへ昇格しない。FMQの背圧・容量状態は既存のplayback queue公開契約に従い、read admissionや入力保持方法を本節で追加定義しない。
+
+Playback DVR の `configure()` 時は、FMQ 容量と同じ上限の processing-buffer 使用権を `CapabilitySnapshot.playbackProcessingBudgetBytes` から予約し、実領域を確保する。予約または確保に失敗した場合は `OUT_OF_MEMORY` を返し、FMQ descriptor と DVR 設定を部分公開しない。この領域は第二の queue ではなく、1 consume transaction のための予約済み storage であり、使用権は DVR の最終 cleanup 完了時に返す。processing-buffer の read / parse / inject / retain / discard semantics は 0-S-3B の `PlaybackConsumeTxn` だけを正本とする。
+
+"""
+s = s[:start] + replacement + s[end:]
+
+# 3. Record DVR union route: relation/route mutation stays canonical.
+old_record = """demux入力世代ごとに、Record DVRへ接続中の全記録フィルター条件を、変更不能な1個の和集合条件へまとめる。到着した188バイトTSパケットは1回だけ評価し、いずれかの記録条件に一致した場合は、到着順にRecord DVRへ正確に1回書き込む。フィルターごとの索引状態とコールバック状態は別々に保持する。接続、切断、設定変更では、世代境界で和集合条件をトランザクションとして置き換える。各フィルターへ一度分配してから全体を並べ替える、重複排除する、または `ingress_sequence` で欠落を推測する構成にしてはならない。
+
+Record DVR FMQへ成功commitした188-byte packetは公開済みとして扱い、後続のrecord filter接続・切断、source変更、source generation変更によって遡及変更しない。和集合条件のcommitは次のpacket境界以後のwrite可否にだけ作用する。Record DVR FMQのclient未消費byte列を明示的に破棄するのは`IDvr.flush()`だけとし、個別source/filter境界の代替として共有queue全体をflushしてはならない。
+
+
+開始済みの録画フィルターを接続または切断する場合は、録画経路のロックを保持し、次の188バイトパケット境界で確定する。重複接続と未接続フィルターの切断は状態を変えず成功する。切断境界以後のパケットは配送せず、経路世代によって重複配送と遅延配送を抑止する。
+"""
+new_record = """Record DVRへ接続中の記録フィルター条件について、caller / data-path上の不変条件は、各188-byte TS packetを単一の確定済みroute snapshotに対して正確に1回評価し、いずれかの記録条件に一致した場合は到着順にRecord DVRへ正確に1回commitすることとする。フィルターごとの索引状態とコールバック状態は独立して保持する。relation / union-routeのprepare、commit / abort、設定変更時のsnapshot更新、relation generation、切替確定点、lockingは0-S-3Bの`RecordDvrFilterRelationTxn`だけを正本とし、本節では再定義しない。各フィルターへ一度分配してから全体を並べ替える、重複排除する、または`ingress_sequence`で欠落を推測する構成にしてはならない。
+
+Record DVR FMQへ成功commitした188-byte packetは公開済みとして扱い、後続のrecord filter接続・切断、source変更、source generation変更によって遡及変更しない。relation更新前後の個々のpacketを旧新routeの混在条件で評価せず、Record DVR FMQのclient未消費byte列を明示的に破棄するのは`IDvr.flush()`だけとする。個別source/filter境界の代替として共有queue全体をflushしてはならない。
+
+開始済みの録画フィルターを接続または切断する場合も、各packetの配送はexactly-onceとし、切断後のrouteへ旧relation由来の新規配送を行わない。重複接続と未接続フィルターの切断は状態を変えず成功する。route locking、relation generation、packet間の切替確定処理は`RecordDvrFilterRelationTxn`を正とする。
+"""
+once(old_record, new_record, "record union-route")
+
+# 4. Section/PES/continuity: boundary mutation is owned only by StreamBoundaryTxn.
+once(
+    "| T-SEC-14g | target未完成、`stop()`／`flush()`／再設定／stream boundary | timeoutで誤完了せず、target metadataとbitmapを破棄して世代を分離 |",
+    "| T-SEC-14g | target未完成、`stop()`／`flush()`／再設定／stream boundary | timeoutで誤完了せず、境界前targetを境界後へ継承・完了扱いしない。target metadata / bitmap / parser generationのmutationは`StreamBoundaryTxn`参照 |",
+    "T-SEC-14g",
+)
+once(
+    "`TableInfo repeat=false`の完了に時間窓、再送一巡、最初に完成したcandidate、非公開table一覧を使用しない。不完全なtargetでは有限時間で停止することを推測せず、callerの`stop()`、`flush()`、再設定、stream boundaryまで待機する。`flush()`、再設定、stream boundaryはtarget metadataと配送済みbitmapを破棄し、旧generationのsectionを新generationへ連結しない。",
+    "`TableInfo repeat=false`の完了に時間窓、再送一巡、最初に完成したcandidate、非公開table一覧を使用しない。不完全なtargetでは有限時間で停止することを推測せず、callerの`stop()`、`flush()`、再設定、stream boundaryまで待機する。これらの境界前target / sectionを境界後のtarget / sectionへ連結・配送せず、target metadata、配送済みbitmap、parser generationのmutationは`StreamBoundaryTxn`だけを正本とする。",
+    "TableInfo boundary prose",
+)
+once(
+    "| flush / stop / close / source unlink | boundary | state 破棄 | 未完了 PES は配送しない |",
+    "| flush / stop / close / source unlink | boundary | `StreamBoundaryTxn`参照 | 境界前の未完了PESを境界後のPESとして配送しない |",
+    "PES boundary row",
+)
+once(
+    "別PIDのPUSIは影響させない。TEI、連続性の不連続、`flush()`、`stop()`、`close()` は、それぞれ独立して未完PESを破棄し、対応する型付き診断を記録する。いずれの場合も完了PESとして通知しない。",
+    "別PIDのPUSIは影響させない。TEI、連続性の不連続、`flush()`、`stop()`、`close()`では、境界前の未完PESを境界後の完了PESへ連結・配送せず、対応する型付き診断を記録する。parser / assembler / generationのboundary mutationは`StreamBoundaryTxn`だけを正本とする。",
+    "PES boundary prose",
+)
+once(
+    "| ContinuityDiscontinuity | PIDの連続性とadaptation discontinuity | CC欠落、同じCCで188バイトTS packetが不一致、`discontinuity_indicator` | 保持 | 保持 | PID単位のassemblerと世代を戻し、境界をまたいで連結しない | 継続 | なし | PIDと世代を含む不連続診断 | 隔離しない |",
+    "| ContinuityDiscontinuity | PIDの連続性とadaptation discontinuity | CC欠落、同じCCで188バイトTS packetが不一致、`discontinuity_indicator` | 保持 | 保持 | 境界前後のsection / PES等を連結しない。assembler / generationのmutationは`StreamBoundaryTxn`参照 | 継続 | なし | PIDと世代を含む不連続診断 | 隔離しない |",
+    "ContinuityDiscontinuity row",
+)
+once(
+    "| DVR-012 | `stop()` record | D2 | 成功 | D3 | record productionを停止し、Record DVR FMQへ確定済みの未消費データとqueue identityを維持する。`stop()`をrecord-input continuity boundaryとして、停止区間を跨げないparser / index / assembler等のRecord-path partial stateを破棄する | `dvr_stop_success` | client-visible queued dataは`stop()`で破棄せず、未消費Record DVR FMQの破棄は`flush()`だけが行う |",
+    "| DVR-012 | `stop()` record | D2 | 成功 | D3 | record productionを停止し、Record DVR FMQへ確定済みの未消費データとqueue identityを維持する。stop前のRecord-path partial由来結果を次start後の結果へ連結・配送しない。record parser / index / assemblerのboundary mutationは`StreamBoundaryTxn`参照 | `dvr_stop_success` | client-visible queued dataは`stop()`で破棄せず、未消費Record DVR FMQの破棄は`flush()`だけが行う |",
+    "DVR-012",
+)
+once(
+    "連続性の不連続ではTS生データと記録データを保持し、そのPIDの意味解析組み立てだけを初期化する。",
+    "連続性の不連続ではTS生データと記録データを保持し、境界前の意味解析結果を境界後へ連結しない。continuity / parser / assemblerの内部mutationは`StreamBoundaryTxn`参照とする。",
+    "runtime continuity prose",
+)
+once(
+    "同じcounterで1バイトでも異なるpacketは重複ではなく連続性破損である。raw TSと録画には保持するが、当該PIDのsection/PES/AV assemblerとpartial stateを初期化し、そのpacketから新しい意味単位を継続結合しない。adaptation-only packetは次期待counterを進めず、`discontinuity_indicator`はpacket一致判定とは別に明示境界として処理する。",
+    "同じcounterで1バイトでも異なるpacketは重複ではなく連続性破損である。raw TSと録画には保持するが、境界前のsection / PES / AV partialを当該packet以後の意味単位へ継続結合しない。continuity / assembler / partial-stateのmutationは`StreamBoundaryTxn`参照とする。adaptation-only packetは次期待counterを進めず、`discontinuity_indicator`はpacket一致判定とは別に明示境界として処理する。",
+    "DVR continuity prose",
+)
+once(
+    "- adaptation-only packet に `discontinuity_indicator` が立つ場合だけ、当該 PID の continuity 状態と section/PES assembler を切断する。",
+    "- adaptation-only packet に `discontinuity_indicator` が立つ場合は、境界前のsection / PESを境界後へ連結しない。continuity / assemblerのmutationは`StreamBoundaryTxn`参照とする。",
+    "adaptation-only discontinuity",
+)
+once(
+    "| T-TS-10a | 同一CC・packet不一致 | raw/recordへ保持し、PIDのassemblyをreset |",
+    "| T-TS-10a | 同一CC・packet不一致 | raw/recordへ保持し、境界前の意味解析結果を後続へ連結しない。内部boundary mutationは`StreamBoundaryTxn`参照 |",
+    "T-TS-10a",
+)
+once(
+    "| T-TS-11 | discontinuity_indicator | continuity/assembler reset |",
+    "| T-TS-11 | discontinuity_indicator | 境界前後の意味解析結果を連結しない。continuity / assembler mutationは`StreamBoundaryTxn`参照 |",
+    "T-TS-11",
+)
+once(
+    "同期バイトまたは長さの不正は、TEIとは別のパケット単位破棄とする。連続性の不連続は、さらに別の組み立て状態初期化とする。これらの放送パケット上の異常だけを理由にキューまたは経路を隔離してはならず、隔離は基盤破損の場合に限る。",
+    "同期バイトまたは長さの不正は、TEIとは別のパケット単位破棄とする。連続性の不連続では、境界前後の意味解析結果を連結せず、内部boundary mutationは`StreamBoundaryTxn`参照とする。これらの放送パケット上の異常だけを理由にキューまたは経路を隔離してはならず、隔離は基盤破損の場合に限る。",
+    "T-TS continuity explanation",
+)
+
+# 5. Resource lifetime prose: distinguish acquisition/release domains.
+once(
+    "資源はopen時に生成し、close時に破棄する。`flush()`は内容の消去、`configure()`は設定の更新だけを行う。",
+    "表8でopen時生成と明記したobject-owned physical backingだけがopen起点の寿命を持つ。callback artifact、descrambler key/PID claim、AV allocation、capacity reservation等は表8の取得契機に従う。logical close / flush / configureによるlogical state・generationの無効化と、physical backing / allocationの最終解放は分離し、通常破棄・最終解放条件は表8および各canonical owner契約を正とする。",
+    "resource lifetime prose",
+)
+
+# 6. Multi-demux outer orchestration belongs to existing canonical frontend tune/scan owner.
+once(
+    "`stopTune()` / `stopScan()`は対象operationのgenerationをfenceし、該当backend/worker停止と必要なstream boundary cleanupを同じownerで完了させる",
+    "`stopTune()` / `stopScan()`は対象operationのgenerationをfenceし、該当backend/worker停止と必要なstream boundary cleanupを同じownerで完了させる。複数demuxへboundaryが必要な場合は、破壊的処理の対象demux一覧をこのownerで固定し、各対象へtyped `StreamBoundaryTxn`を実行して結果を集約する",
+    "frontend tune/scan phase extension",
+)
+once(
+    "commit済みoperationのcallback配送失敗ではdomain stateをrollbackせず`PostCommitCallbackFailureTxn`へ渡す",
+    "複数demuxのboundary結果集約では、確定済みdemux結果を巻き戻さず、pre-commit失敗または未処理対象は変更せず、commit結果を確定できないdemuxだけを隔離し、frontendの公開状態を表0-F / 表19へ写像する。commit済みoperationのcallback配送失敗ではdomain stateをrollbackせず`PostCommitCallbackFailureTxn`へ渡す",
+    "frontend tune/scan aggregate result extension",
+)
+once(
+    "| AT-007 | 複数demux stream boundary | 対象一覧固定後、demuxごとに独立した境界transactionを実行 | 各demuxのcommitを個別に記録し、全対象を処理した時点 | 未処理対象は変更せず、commit済み対象を巻き戻さない | 変更結果を確定できないdemuxだけ | 表SB-1に従う | 一部成功を全体rollbackで隠さない |",
+    "| AT-007 | 複数demux stream boundary | frontend tune / scan / stopに伴う対象一覧固定・per-demux境界実行・結果集約の内部phaseはcanonical `frontend tune/scan`、各demuxのboundary mutationは`StreamBoundaryTxn`参照 | caller-visibleな成功/失敗条件は表0-F / 表19、内部確定点はcanonical契約参照 | rollback / partial failure semanticsはcanonical契約参照 | 同契約参照 | 表0-F / 表19に従う | 一部失敗を全体rollbackで隠さず、内部batch state machineを本索引で再定義しない |",
+    "AT-007",
+)
+
+sb_start = s.index("#### 表SB-1. 複数 demux boundary 一部失敗表")
+sb_end = s.index("## Packet pipeline 正本契約", sb_start)
+sb_new = """#### 表SB-1. 複数 demux boundary 公開結果・診断表
+
+frontend tune / scan / stopに伴って複数demuxへstream boundaryが必要な場合、本表はcaller-visibleな結果と診断だけを固定する。対象一覧固定、per-demux実行順序、commit / abort、未処理集合、retry、quarantine、aggregate failureの内部semanticsはcanonical `frontend tune/scan`、各demuxのstream / parser mutationは`StreamBoundaryTxn`だけを正本とし、本表では再定義しない。
+
+| caller-visible状況 | 公開API / frontend状態 | data / callback可視性 | 診断 |
+|---|---|---|---|
+| 全対象boundary成功 | 操作固有の成功状態へ進む | 成功後に旧operation / 旧stream generation由来のdata・callbackを新結果として配送しない | 対象demuxごとのtyped boundary success |
+| 1件以上のboundary失敗 | 表0-F / 表19の原因別エラーと`FailedBoundary`等へ写像する | boundary失敗を成功済みとして公開せず、旧generationの結果を新operation結果として復元しない | demuxごとのtyped result、commit可否、隔離根拠 |
+| stale結果を遮断できない | `UNKNOWN_ERROR` / `Quarantined` | 遮断不能な依存から新operation結果を公開しない | 遮断不能demux / generation / dependencyを記録 |
+
+一部demuxの失敗だけを理由に、無関係なdemuxまたはservice全体を隔離しない。どのdemuxが変更済みか、未変更か、commit結果不明かの判定と後続retry / isolationはcanonical `frontend tune/scan` / `StreamBoundaryTxn`を正とする。
+
+
+"""
+s = s[:sb_start] + sb_new + s[sb_end:]
+
+stop_start = s.index("### `IFrontend.stopTune()` の失敗時状態")
+stop_end = s.index("### AV 共有メモリの原子性不変条件", stop_start)
+stop_new = """### `IFrontend.stopTune()` の失敗時状態
+
+`IFrontend.stopTune()`はactive tuneを停止し、当該frontendに接続されたdemuxについて旧tune由来data / callbackを後続の成功結果として公開しない。公開成功・失敗状態は表0-F / 表19を正とし、backend停止結果を確定できない場合は`FailedBackend`、backend停止済みだが必要なdemux boundaryを確定できず旧generation fenceが成立する場合は`FailedBoundary`、stale callback / queue / backend resultを遮断できない場合だけ`Quarantined`とする。
+
+対象demux一覧の固定、frontend operation generation fence、worker / backend停止、per-demux `StreamBoundaryTxn`、結果集約、retry / quarantineの内部phase・failure semanticsは「公開transactionのphase・確定点・失敗処理契約」のcanonical `frontend tune/scan`と0-S-3Bの`StreamBoundaryTxn`だけを正本とする。本節では別の複数demux batch state machineを定義しない。active scanだけが存在する場合の`stopTune()`は表0-Fどおりscan generation、backend scan、attached demux boundaryを変更しない。
+
+新しい配送の停止と、クライアントが保持する記憶領域の存続期間は分けて管理する。
+
+
+"""
+s = s[:stop_start] + stop_new + s[stop_end:]
+
+# 7-9. Editorial duplicates.
+once(
+    "`terminal_reason` と `end_delivery_outcome` は、互いに独立した項目として保持する。`terminal_reason` と `end_delivery_outcome` は、互いに独立した項目として保持する。",
+    "`terminal_reason` と `end_delivery_outcome` は、互いに独立した項目として保持する。",
+    "terminal_reason duplicate",
+)
+once(
+    "#### checked FMQ shim 入力契約#### checked FMQ shim 入力契約",
+    "#### checked FMQ shim 入力契約",
+    "checked FMQ heading duplicate",
+)
+once(
+    "### 表20. counter / generation overflow 契約### 表20. counter / generation overflow 契約",
+    "### 表20. counter / generation overflow 契約",
+    "table20 heading duplicate",
+)
+
+forbidden = [
+    "frontend 出力段で PID を除去できる実装が存在しない限り",
+    "### 表20. counter / generation overflow 契約### 表20.",
+    "#### checked FMQ shim 入力契約#### checked FMQ shim 入力契約",
+    "`terminal_reason` と `end_delivery_outcome` は、互いに独立した項目として保持する。`terminal_reason`",
+    "対象一覧固定後、demuxごとに独立した境界transactionを実行",
+    "録画経路のロックを保持し、次の188バイトパケット境界で確定する",
+    "FMQ read | TS parse | 注入結果 | 消費扱い",
+]
+for item in forbidden:
+    if item in s:
+        raise SystemExit(f"forbidden stale text remains: {item}")
+
+path.write_text(s)
