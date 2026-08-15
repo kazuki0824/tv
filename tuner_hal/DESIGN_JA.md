@@ -64,7 +64,7 @@ Tuner HAL が framework へ export する frontend ID は backend の単純な n
 DVB frontend の `exclusiveGroupId` は公開 frontend ID や `(adapter_id, frontend_index)` の一意性から生成せず、backend topology が検証した「同時に機能できない物理 frontend 群」を正本として決める。同じ物理 frontend から公開する ISDB-T/ISDB-S variant は必ず同じ group に属する。異なる `(adapter_id, frontend_index)` を別 group にできるのは、RF/tuner/demod を含む同時利用不可資源を共有せず同時利用できることを topology で確認できる場合だけとし、共有が確認された別 tuple は同じ group にする。global group ID は符号付き32 bitの非負範囲に収め、上位4 bitの backend class と下位28 bitの backend 固有 group payload は、検証済み排他群へ衝突しない識別子を割り当てるための名前空間にだけ使う。現行 backend class は px4=`0x10000000`、DVB=`0x20000000` に固定する。payload が28 bitへ収まらない候補、異なる排他群の group ID 重複、同一排他群内で group ID が不一致になる候補は `CapabilitySnapshot` へ commit せず、その frontend を公開しない。resource arbitration は frontend ID の数値近接や DVB node tuple ではなく、この検証済み物理排他群と `exclusiveGroupId` の対応だけを正本とする。
 
 
-`DvrLeasePool`は確定済みで不変の`CapabilitySnapshot`を参照し、`getDemuxCaps()`応答と`openDvr()`受付可否を決める唯一の情報源とする。再生・記録DVRの全体上限は`snapshot.playback_count`と`snapshot.record_count`、demuxごとの上限は各1個とする。受付時はlifecycleと引数を検証し、用途別・demux別の使用枠を一括予約してから要求FMQと通知枠を準備する。途中失敗では仮予約を全て取り消し、不完全objectを公開しない。`CleanupPending`または`Quarantined`は最終解放まで使用中と数える。Tuner VTSはruntime能力から無条件に導出せず、起動前`VtsEnvironmentProfile`にVTS artifact/tag/commit、variant property、入力元、PID、経路、queue容量、memory予算が定義されるまで`DESIGN_HOLD`としてXML filenameを解決せず、XMLをinstallしない。使用する静的設定は確定済み`CapabilitySnapshot`に収まり、必要queue容量を正確に予約できなければならない。
+`DvrLeasePool`は確定済みで不変の`CapabilitySnapshot`を参照し、`getDemuxCaps()`応答と`openDvr()`受付可否を決める唯一の情報源とする。再生・記録DVRの全体上限は`snapshot.playback_count`と`snapshot.record_count`、demuxごとの上限は各1個とする。`openDvr()`はlifecycle・入力・用途別/ demux別容量を満たす場合だけobjectを公開し、容量枯渇は`UNAVAILABLE`とする。使用枠reservation、FMQ / Binder artifact prepare、commit、公開前failure時のrollback / cleanup順序は「公開transactionのphase・確定点・失敗処理契約」の`root/child open`を唯一の正本とする。`CleanupPending`または`Quarantined`は最終解放まで使用中と数える。Tuner VTSはruntime能力から無条件に導出せず、起動前`VtsEnvironmentProfile`にVTS artifact/tag/commit、variant property、入力元、PID、経路、queue容量、memory予算が定義されるまで`DESIGN_HOLD`としてXML filenameを解決せず、XMLをinstallしない。使用する静的設定は確定済み`CapabilitySnapshot`に収まり、必要queue容量を正確に予約できなければならない。
 
 
 ### VTS profile / capability 対応契約
@@ -159,16 +159,16 @@ object methodでは、呼出対象のlifecycle/generation不整合を引数値�
 | API | 成功条件と結果 | 失敗時 |
 |---|---|---|
 | `getFrontendIds()` | 起動時に確定したfrontend IDを昇順で返す。ID集合はサービス世代中不変であり、`setMaxNumberOfFrontends()`で増減させない | snapshotを読み出せない内部障害は`UNKNOWN_ERROR`、部分結果は返さない |
-| `openFrontendById(id)` | 公開済みID、type別の現在上限、使用権、runtime登録を同一transactionで確定し、指定IDの`IFrontend` objectだけを返す | 未公開IDは`INVALID_ARGUMENT`、公開済みだが現在上限または使用枠により開けない場合は`UNAVAILABLE`、後段準備失敗では予約と登録を戻してobjectを返さない |
+| `openFrontendById(id)` | 公開済みIDでtype別の現在上限と使用可能枠を満たす場合に、指定IDの`IFrontend` objectだけを返す。内部open transactionは「公開transactionのphase・確定点・失敗処理契約」の`root/child open`を正とする | 未公開IDは`INVALID_ARGUMENT`、公開済みだが現在上限または使用枠により開けない場合は`UNAVAILABLE`。その他の公開前failure / rollback / cleanupは`root/child open`に従いobjectを返さない |
 | `getFrontendInfo(id)` | 公開済みIDに対応する起動時確定済みの不変な`FrontendInfo`を返す | 未公開IDは`INVALID_ARGUMENT`、内部snapshot障害は`UNKNOWN_ERROR`、部分情報は返さない |
 | `getDemuxIds()` | `CapabilitySnapshot.publicDemuxes`のkeyを昇順で返す。ID集合はサービス世代中不変とする | snapshotを読み出せない内部障害は`UNKNOWN_ERROR`、部分結果は返さない |
-| `openDemux(out demuxId)` | 公開済みdemux ID集合から使用可能な1 IDを選び、その使用権、runtime登録、`IDemux` objectを同一transactionで確定する。成功時だけ、objectと要素数1の`demuxId`配列を一括して返す | 使用可能な公開IDまたは容量がない場合は`UNAVAILABLE`。後段準備失敗では予約と登録を戻し、objectもIDも返さない |
-| `openDemuxById(id)` | 公開済みの指定IDについて使用権とruntime登録を同一transactionで確定し、その`IDemux` objectだけを返す。入力IDを出力として返さない | 未公開IDは`INVALID_ARGUMENT`、公開済みだが使用中または容量不足は`UNAVAILABLE`、後段準備失敗では予約と登録を戻してobjectを返さない |
+| `openDemux(out demuxId)` | 公開済みdemux ID集合から使用可能な1 IDを選び、成功時だけ`IDemux` objectと要素数1の`demuxId`配列を同一応答で返す。内部open transactionは`root/child open`を正とする | 使用可能な公開IDまたは容量がない場合は`UNAVAILABLE`。その他の公開前failure / rollback / cleanupは`root/child open`に従い、objectもIDも部分公開しない |
+| `openDemuxById(id)` | 公開済みの指定IDが利用可能な場合に、その`IDemux` objectだけを返す。入力IDを出力として返さない。内部open transactionは`root/child open`を正とする | 未公開IDは`INVALID_ARGUMENT`、公開済みだが使用中または容量不足は`UNAVAILABLE`。その他の公開前failure / rollback / cleanupは`root/child open`に従いobjectを返さない |
 | `getDemuxCaps()` | `CapabilitySnapshot.publicDemuxes`と同じper-demux能力集合から`numDemux`と`filterCaps`を導出し、その他の不変な`DemuxCapabilities`項目と一括で返す | snapshotを読み出せない内部障害は`UNKNOWN_ERROR`、部分的な能力値は返さない |
 | `getDemuxInfo(id)` | `CapabilitySnapshot.publicDemuxes[id].filterTypes`を不変の`DemuxInfo.filterTypes`として返す | 未公開IDは`INVALID_ARGUMENT`、内部snapshot障害は`UNKNOWN_ERROR` |
-| `openDescrambler()` | descrambler object枠と`NeverCalledUnbound` session台帳だけを同一transactionで確定し、`IDescrambler` objectだけを返す。demux ID、demux generation、`DescramblerCapacityPool`は選択しない | 対応するdescrambler能力またはobject/session枠がない場合は`UNAVAILABLE`。後段準備失敗では予約と登録を戻してobjectを返さない |
+| `openDescrambler()` | descrambler能力とobject/session枠が利用可能な場合に、未結合の`IDescrambler` objectだけを返す。demux ID、demux generation、`DescramblerCapacityPool`は選択しない。内部open transactionは`root/child open`を正とする | 対応するdescrambler能力またはobject/session枠がない場合は`UNAVAILABLE`。その他の公開前failure / rollback / cleanupは`root/child open`に従いobjectを返さない |
 | `getLnbIds()` | 起動時probeとoperation/value capability対応表から公開対象と確定したLNB IDを昇順で返す。`aidl_baseline_eligible=false`だけを理由に除外しない | snapshotを読み出せない内部障害は`UNKNOWN_ERROR`、部分結果は返さない |
-| `openLnbById(id)` | 公開済みIDのendpoint使用権とruntime登録を同一transactionで確定し、その`ILnb` objectだけを返す。公開判定は実証済みoperation/value capabilityに従う | 未公開IDは`INVALID_ARGUMENT`、公開済みだが使用中、`CleanupPending`、`Quarantined`のendpointは`UNAVAILABLE`。`aidl_baseline_eligible=false`だけを理由に拒否しない |
+| `openLnbById(id)` | 公開済みIDのendpointが利用可能な場合に、その`ILnb` objectだけを返す。公開判定は実証済みoperation/value capabilityに従い、内部open transactionは`root/child open`を正とする | 未公開IDは`INVALID_ARGUMENT`、公開済みだが使用中、`CleanupPending`、`Quarantined`のendpointは`UNAVAILABLE`。`aidl_baseline_eligible=false`だけを理由に拒否しない。その他の公開前failure / rollback / cleanupは`root/child open`に従う |
 | `openLnbByName(name, out lnbId)` | 本製品は名前付き外部LNBを公開しない | 空文字は`INVALID_ARGUMENT`、その他の名前は`UNAVAILABLE`。LNB ID、object、leaseを生成せず、出力を部分公開しない |
 | `isLnaSupported()` | `false`を返す | 内部状態へ依存させない |
 | `setLna(enable)` | 本製品はLNA制御を公開しない | `UNAVAILABLE`。frontend、backend、capabilityを変更しない |
@@ -2012,7 +2012,7 @@ payloadを持つ同一PIDで直前と同じcontinuity counterを受信した場�
 
 playback 専用 stats は少なくとも injected bytes、injected packets、malformed packets、dropped bytes を持つ。malformed TS は drop + 診断 を標準方針とし、1 packet の malformed input で playback stream 全体を fail させない。playback input FMQ の `PlaybackStatus` は start 直後・周期 コールバック ともに playback input FMQ の実 fill / unused write space を唯一の水位 source とし、record/output queue の `queued_bytes` を流用しない。playback consumer ワーカー は domain worker ownerから0-S-3Bの`WorkerRuntime` / `WorkerHandle`へ接続する。stop / wake / join / reaper / retry / lease returnのgeneric lifecycleは同契約を唯一の正本とし、本節ではPlayback固有のstatsとdata-path結果だけを定める。
 
-playback input FMQ の stream 境界 方針は次のとおり固定する。start 前に client が prefill した bytes は保持し、start 後に playback TS として読む。started=false 中は ワーカー が FMQ を読まない。stop 時は playback input FMQ と packet assembler residual を維持し、次 start で既存 stream の続きとして読む。flush 時は playback input FMQ と packet assembler residual を drain/discard し、dropped bytes 診断カウンター と ログ に記録する。flush 後に client が新たに書いた bytes は started=false 中には読まず、直前の flush で既存 stream 境界が drain 済みであることを前提に、次 start の prefill として扱う。playback flush は playback input FMQ、packet assembler、playback stats だけを reset し、record/output queue を破壊しない。record DVR flush は record output queue と record stats だけを reset し、playback input queue と playback stats を破壊しない。
+playback input のstream境界について、本節はcaller/domain-visibleなdata-path結果だけを固定する。start前にclientがprefillしたbytesはstart後のplayback TSとして扱い、started=false中はplayback consumerが入力を消費しない。stop成功後は同じplayback streamを次startで継続できる。flush成功後にclientが新たに書いたbytesは次startのprefillとなり、flush前のstreamと連結しない。flushで破棄された入力量はdropped bytes診断カウンターとログへ反映する。playback flushはrecord/output側のstream/queue/statsを破壊せず、record DVR flushもplayback側のstream/queue/statsを破壊しない。playback input FMQのdrain/reset、queue epochとconsume stateは0-S-3Bの`QueueEpochProtocol` / `PlaybackConsumeTxn`、packet assembler residualの保持・破棄を含むstream boundary mutationは`StreamBoundaryTxn`だけを正本とし、本節では内部mutation順序を再定義しない。playback/record固有statsのreset結果は各DVR公開契約に従う。
 
 
 ### playback consumer commit（消費確定）表
@@ -2220,7 +2220,7 @@ LNB固有のsafe-state復帰はcleanup対象として`ObjectCloseTxn`へtyped cl
 
 | 操作 / 入力状態 | 検証と確定 | AIDL戻り値 | 次状態 / 副作用 |
 |---|---|---|---|
-| `openDescrambler()` | descrambler能力、object枠、未結合session台帳を予約し、runtime登録とobject公開を一括確定する。demux ID、demux generation、pool IDを記録しない | 成功 | `NeverCalledUnbound`。demux pool、鍵組、PID claimは消費しない |
+| `openDescrambler()` | descrambler能力とobject/session枠を満たす場合に未結合objectを公開する。内部reservation / runtime・Binder prepare / commit / rollbackは`root/child open`を正とし、demux ID、demux generation、pool IDは記録しない | 成功 | `NeverCalledUnbound`。demux pool、鍵組、PID claimは消費しない |
 | `setDemuxSource(id)` / `NeverCalledUnbound` / 公開済みで生存する対応demux | 一回性を先に消費し、demux ID、同じサービスのlive generation、対応する復号経路、共有poolのsession受付可否を検証する。`{demux_id, demux_generation, pool_id}`とpool session帰属を同一transactionで確定する | 成功 | `Bound`。以後sourceを変更しない |
 | `setDemuxSource(id)` / `NeverCalledUnbound` / 未公開ID | 一回性を消費し、poolを予約しない | `INVALID_ARGUMENT` | `CallConsumedUnbound(InvalidDemuxId)` |
 | `setDemuxSource(id)` / `NeverCalledUnbound` / 公開IDだがdemuxが閉鎖済みまたはgenerationが無効 | 一回性を消費し、poolを予約しない | `INVALID_STATE` | `CallConsumedUnbound(InvalidDemuxState)` |
