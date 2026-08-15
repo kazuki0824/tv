@@ -101,6 +101,10 @@ backendのエラーは、呼び出し側の不正値・値域違反を`INVALID_A
 - 製品実行時 の frontend registry は実在 probe できた backendエントリ だけで構成する。probe 失敗は 診断情報レコード に残し、劣化 frontendエントリ / テスト劣化補助関数 / 診断劣化補助関数 は作らない。
 
 
+### TS PID 共通値域契約
+
+TS PIDの構文上有効な値域は13 bitの`0x0000..0x1FFF`とする。`0xFFFF`はAOSP `INVALID_TS_PID`であり入力PIDとして無効、`0x2000..0xFFFE`、負値、生成binding上の範囲外値・不正union encodingも`INVALID_ARGUMENT`として状態を変更しない。予約PID/特殊PIDも13 bit値域内なら、予約されているという理由だけで構文上無効とはしない。Filter設定とDescrambler `tPid`は同じ値域契約を使う。未対応の`DemuxPid` union variantは既存のcapability契約どおり`UNAVAILABLE`とし、数値不正と混同しない。
+
 ### nullable Binder 境界
 
 AOSP意味論としてNULL binder入力を持つ境界は、`IFilter.setDataSource(filter)`の`filter == NULL`、`IDescrambler.addPid(pid, optionalSourceFilter)` / `removePid(pid, optionalSourceFilter)`の`optionalSourceFilter == NULL`、`IFrontend.setCallback(callback)`の`callback == NULL`、`ILnb.setCallback(callback)`の`callback == NULL`とする。`setDataSource`はdemux input復帰、`IDescrambler`のNULL filterは指定PIDについてdemux input全体を対象とする操作、callback NULLは登録解除である。これらはAOSP公開契約上の必須動作であり、NULL経路とnon-null経路の期待動作、状態遷移、戻り値、資源寿命、失敗時遷移は本書を唯一の契約正本とする。
@@ -123,6 +127,9 @@ Binder artifact、runtime registry、domain callback logical stateのprepare / c
 current callbackのBinder deathは、死亡したcallbackがcurrent registrationに対応する場合だけ登録解除として扱う。置換済みcallbackの遅延death通知は現在の登録へ影響させない。`close()`後は旧generation由来の未配送entryを配送せず、callback registrationのcleanupは`ObjectCloseTxn`から`CallbackRegistrationUseCase`のtyped cleanupへ接続する。
 
 ### Android 14 AIDL filter source 境界契約
+
+`IFilter.setDataSource(non-NULL)`はcandidate edgeをcommitした場合のsource relation graph全体を検証し、self-loopを含む任意の有向cycleを作る要求を`INVALID_ARGUMENT`で拒否して状態を変更しない。2-node / 3-node cycleも同じ規則で拒否する。cycle検証とrelation commitは0-S-3B `SourceBoundaryTxn`の同一transactionに属する。
+
 
 
 `configure()`は入力元との接続を変更しない。新しい設定が既存の接続と両立しない場合は`INVALID_STATE`で拒否し、以前の設定と接続を保持する。切断は`setDataSource(null)`で明示する。不正な設定には`INVALID_ARGUMENT`を返す。
@@ -367,9 +374,9 @@ commit前失敗では、成功戻りを返してはならない。commit後clean
 | 論理契約名 | 実装正本 | 公開入口 | 所有する状態 | 所有しない状態 | phase order | 失敗時処理 | 呼び出し許可層 | 呼び出し禁止層 | 最低テスト |
 |---|---|---|---|---|---|---|---|---|---|
 | `ObjectCloseTxn` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | public `close()`、owner loss/Drop、shutdown/reaper retryはいずれも同じ`begin_close`入口 | `CloseCleanupAuthority`、未完step、cleanup report、retry/reaper handoff、早期再開要求、完了確定 | API固有入力、backend内部状態、queue parser内部 | `begin_close` atomic commit（logical close確定 + 新規通常操作遮断 + authority取得） → authority下でtyped cleanup全件試行 → unregister/release → complete/pending | 全stepを試行し、retryableは`CleanupPending`。再`close()`、owner消滅、依存資源の完了通知、service初期化は未完cleanupの早期再開を要求できるが、これらは唯一の進行契機ではなく、`WorkerRuntime` / `WorkerHandle`の自律retryを停止しない。authority取得後にcaller/ownerが消滅した場合は未完authorityを回収機構へ一度だけ移管し、実状態不明/遮断不能だけquarantine。主障害とcleanup障害を別保持 | object close façade、owner-loss/Drop façade、reaper | AIDL method body、Drop、worker、backendが独自cleanup authorityを持つこと、logical closeとauthority取得の分離commit | close-vs-Drop race、`begin_close` atomicityと中間状態不存在、owner-loss/Drop handoffの一回性、途中失敗後も後続cleanup実行、retry、二重release防止、quarantine |
-| `SourceBoundaryTxn` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | `IFilter.setDataSource()` use-case、`ObjectCloseTxn`/source unlink cleanupからのtyped relation mutation | Filter source/sink relationとそのrelation generation | demux/frontend relation、DVR queue、A/V sync/PCR内部 | validate → relation prepare → source boundary prepare → commit / rollback | pre-commitは旧relation維持、確定不明だけ対象relationを隔離 | Filter source use-case、`ObjectCloseTxn` typed cleanup command | API wrapper/workerのgraph直接変更、Demux frontend use-case | NULL復帰、replacement、wrong demux/owner、closed/generation、source close/unlink cleanup、cleanup idempotence、prepare/commit fault |
+| `SourceBoundaryTxn` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | `IFilter.setDataSource()` use-case、`ObjectCloseTxn`/source unlink cleanupからのtyped relation mutation | Filter source/sink relationとそのrelation generation、committed source relation graphの非巡回不変条件 | demux/frontend relation、DVR queue、A/V sync/PCR内部 | validate（candidate edge追加後も有向cycleを作らないことを含む） → relation prepare → source boundary prepare → commit / rollback | cycleを作るcandidateは`INVALID_ARGUMENT`で状態不変。pre-commitは旧relation維持、確定不明だけ対象relationを隔離 | Filter source use-case、`ObjectCloseTxn` typed cleanup command | API wrapper/workerのgraph直接変更、Demux frontend use-case | NULL復帰、replacement、self-loop、2-node/3-node cycle拒否、wrong demux/owner、closed/generation、source close/unlink cleanup、prepare/commit fault |
 | `DemuxFrontendSourceTxn` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | `IDemux.setFrontendDataSource()` use-case、`ObjectCloseTxn`/Frontend・Demux cleanupからのtyped unbind mutation | demux/frontend relationのorchestration | stream parser内部、Filter source graph | validate → relation prepare + `StreamBoundaryTxn.prepare()` → composite commit（新relation・stream generation・旧relation logical detach） → old relation physical cleanup | pre-commitは両prepared stateをabortし旧relation/旧generation維持。commit結果不明だけ対象demuxを隔離。composite commit成功後のold relation physical cleanup失敗では新relationをrollbackせず、旧relation cleanupだけをretryable cleanupへ移管し、旧資源の実状態不明時だけ旧relation資源をquarantine | Demux frontend-source use-case、`ObjectCloseTxn` typed cleanup command | `SourceBoundaryTxn`への吸収、relation/stream別commit、post-commit cleanup失敗による新relation rollback | same-source no-reset、switch/unbind、Frontend/Demux close cleanup、cleanup idempotence、boundary prepare failure、composite commit fault、post-commit old relation cleanup failureで新relation維持 |
-| `StreamBoundaryTxn` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | typed stream-boundary use-case、上位transactionからの`prepare()` | stream generation、continuity、section/PES/record-index parser/assembler boundary、prepared invalidation dispatch | relation table、Filter/DVR queue内部、A/V sync/PCR内部、callback、descrambler | validate → owned generationの次値を`checked_add()`でprepare → prepare `PreparedStreamBoundary` → commit / abort | abortでは旧generation維持。owned generationを発行できない場合はwrap / saturating reuseせず、当該stream/filter boundaryを`Quarantined`として新boundaryを開始しない。commit不明時だけ対象streamをfail/quarantine | service_runtime packet/boundary use-case、上位relation transaction | API/worker/helperのparser/generation直接変更 | standalone commit、prepared abort/commit、stale generation、generation exhaustionで非再利用・局所quarantine、relation composite atomicity |
+| `StreamBoundaryTxn` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | typed stream-boundary use-case、上位transactionからの`prepare()` | `stream_boundary_generation`、`PreparedStreamBoundary`、各data-path ownerへのtyped reset / invalidate dispatch | steady-state PID continuity、section/PES/TableInfo/record-index parser・assembler・tracker state、relation table、Filter/DVR queue内部、A/V sync/PCR内部、callback、descrambler | validate → 次`stream_boundary_generation`を`checked_add()`でprepare → 各steady-state ownerからtyped reset tokenをprepare → `PreparedStreamBoundary` commit / abort | abortでは旧boundary generationと各steady-state stateを維持。generationを発行できない場合はwrap / reuseせず当該stream boundaryを局所`Quarantined`とする。commit不明時だけ対象streamをfail/quarantine | service_runtime packet/boundary use-case、上位relation transaction | API/worker/helperによるboundary generation直接変更、`StreamBoundaryTxn`によるsteady-state parser/continuity state直接所有 | standalone commit、prepared abort/commit、stale generation、generation exhaustion、continuity/parser/TableInfo/record-index ownerへのtyped reset、relation composite atomicity |
 | `CallbackRegistrationUseCase` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | Frontend/LNB等のset/clear/replace callback。AIDL façadeはartifact prepare/releaseだけを行い、prepared artifact handleをservice_runtime ownerへ渡す | service_runtime側registration transactionのorchestration、prepared runtime registry mutation、domain callback logical stateのcommit/rollback policy。Binder artifact本体はcallback storeが所有 | Binder artifact storage/strong ref、callback配送後のdomain state、backend state | AIDL artifact prepare（非公開） → service_runtime runtime registry prepare → domain callback state prepare → service_runtime composite commit（prepared artifact handle採用 + runtime mutation + domain logical state） → AIDL old artifact cleanup | composite commit前はservice_runtime ownerがruntime/domain prepared stateをabortし、AIDL façadeへprepared artifact releaseを指示して旧callbackを維持。commit後のold artifact cleanup失敗では新registrationをrollbackせずcleanup/診断へ接続し、callback delivery失敗は`PostCommitCallbackFailureTxn` | service_runtime callback registration owner、AIDL artifact prepare/release façade | AIDL façadeによるdomain state/rollback policy所有、LNB/domain/backend/resource ledgerのBinder strong ref直接保持、artifact/runtime/domainの片側commit | set/replace/NULL、各prepare failure、composite commit fault、old artifact cleanup failureで新registration維持、Binder death/generation |
 | `FrontendLnbRelationTxn` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | `IFrontend.setLnb()` use-case、Frontend close時は`ObjectCloseTxn`からのtyped assignment release | frontend→LNB assignment relation、prepared assignment lease-reference mutation、transaction authority、旧assignment cleanup record | LNB endpoint lease pool内部、共有railの物理状態、`LnbControlTxn`のpersistent control state、`ILnb` object lifecycle | frontendとLNB endpointのlive/owner/generation/type/connectability・shared rail互換性を同一snapshotでvalidate → LNB resource ownerからassignment lease-reference mutationをprepare → relation prepare → composite commit（新relation + 新lease参照 + 旧relation logical detach） → 旧assignment lease参照cleanup | commit前失敗はprepared relation/lease mutationをabortして旧relation/旧lease参照を維持。commit結果不明時だけ当該frontend assignmentと関係claimをquarantine。commit後の旧lease cleanup失敗では新relationをrollbackせず旧lease cleanupだけをretry/quarantineへ接続。Frontend closeは同ownerのtyped releaseでassignmentを解放 | frontend object-method use-case、`ObjectCloseTxn` typed cleanup command、LNB resource ownerのprepared lease入口 | AIDL wrapper/frontend use-case/LNB registryによるrelation・leaseの別commit、`LnbControlTxn`への吸収、LNB lease pool内部の直接変更 | 初回assignment、同一assignment再設定、別LNBへの更新、non-satellite/wrong owner/stale generation/incompatible rail/capacity、prepare/commit fault、post-commit旧lease cleanup failureで新assignment維持、Frontend closeでassignment release |
 | `LnbControlTxn` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | `setVoltage()` / `setTone()` / `setSatellitePosition()` | operation lock、candidate、backend apply結果、LnbRegistry commit、failure state、LNB state generation | DiSEqC transient send、callback、endpoint lease | validate → lock → old snapshot → 次generationを`checked_add()`でcandidateへprepare → backend apply → registry commit | generationを発行できない場合はbackend apply前に拒否し、wrap / saturating reuseせず対象LNBを`Quarantined`とする。`Rejected`はregistry不変。backend反映成功後のregistry commit失敗ではbackend rollback applyを行わずLNBを失敗状態とし、当該操作および以後の公開control APIを`UNKNOWN_ERROR`とする。backend反映結果自体が不明な場合はLNBをfail/quarantine。backend / registry failureでは要求状態、backend apply結果、最後に確認できた機器状態、registry errorをtyped diagnosticとして保持する。成功時だけgeneration更新 | LNB object use-case | 3 APIの個別state machine、DiSEqCの吸収 | 3操作、invalid/unavailable、generation exhaustion、backend rejected/indeterminate、registry failure、close race |
@@ -462,7 +469,7 @@ generic worker failureの隔離範囲と`ServiceCritical`昇格条件は0-S-3B�
 - `TableInfo repeat=false`の完了に時間窓、再送一巡、最初に完成したcandidate、非公開table一覧を使用しない。不完全なtargetでは有限時間で停止することを推測せず、callerの`stop()`、`flush()`、再設定、stream boundaryまで待機する。これらの境界前target / sectionを境界後のtarget / sectionへ連結・配送せず、target metadata、配送済みbitmap、parser generationのmutationは`StreamBoundaryTxn`だけを正本とする。
 - SECTION能力閉包がone-shot用に確保する追加状態は、1 filter当たり1個の`TableInstanceKey`、`last_section_number`等の固定metadata、および256-bit（32 byte）の配送済みbitmapだけとする。FMQ backpressure中の未確定sectionは既存のsection assembler／配送保留予算で保持し、commit前にbitmapを更新しない。最大256 section分のpayloadを別領域へ常時予約せず、通常のsection組立て・FMQ・配送予算とone-shot追跡状態を二重計上しない。
 - `TableInfo.version`は`-1`または`0..31`だけを受け付ける。`-1`はtarget選択時にversionを無視する指定であり、caller-visibleな設定をruntime観測値へ書き換えない。範囲外は`INVALID_ARGUMENT`とする。
-- PES `streamId`は`0..=255`を明示`stream_id`として照合し、AOSP `Constant.INVALID_STREAM_ID`の`0xFFFF`をwildcardとして扱う。負値、`256..=65534`、`65536`以上は`INVALID_ARGUMENT`とする。PES能力を広告するdemuxは、全ての有効な明示stream IDとwildcardを通常のPES filter設定として受理し、`0xBD`その他の私的部分集合へ制限しない。ARIB字幕を利用するTIS profileは`0xBD`を指定してよいが、それは利用側の選択でありHAL capabilityの制限ではない。`PES_packet_length=0`はH.222.0で許可される映像stream ID `0xE0..0xEF`のruntime組立てとして扱い、その他のstream IDで受信した長さ0 PESはmalformedとして当該意味単位を破棄する。
+- PES `streamId`は`0..=255`を明示`stream_id`として照合し、AOSP `Constant.INVALID_STREAM_ID`の`0xFFFF`を`0xFFFF`は`INVALID_STREAM_ID`として拒否する値として扱う。負値、`256..=65534`、`65536`以上は`INVALID_ARGUMENT`とする。PES能力を広告するdemuxは、全ての有効なPES `streamId` 0..255を通常のPES filter設定として受理し、`0xBD`その他の私的部分集合へ制限しない。ARIB字幕を利用するTIS profileは`0xBD`を指定してよいが、それは利用側の選択でありHAL capabilityの制限ではない。`PES_packet_length=0`はH.222.0で許可される映像stream ID `0xE0..0xEF`のruntime組立てとして扱い、その他のstream IDで受信した長さ0 PESはmalformedとして当該意味単位を破棄する。
 - `IFilter.setDataSource()` の互換性は本書の「表1-D. `setDataSource()` 互換表」を正とする。`setDataSource(NULL)` は demux input 復帰として成功対象に含める。filter source を指定する場合は、表1-D-3の subtype 別成立条件を正とする。source filter として指定できるのは TS生データフィルタだけである。下流として成功させるのは TS生データフィルタと record フィルタだけである。section / PES / AV への raw TS 再parse chain、および section payload、PES payload、AV payload、record payload を直接 source として再配送する経路は作らない。非対応の linkage は `UNAVAILABLE` とし、ペイロードなしフィルタを source または sink にする接続は `INVALID_ARGUMENT` とする。`linkCaps` に広告した main type pair はVTS生成の `UNDEFINED` subtype接続も成功させる。
 - `IFilter.setDataSource(source)` の non-null source 経路は 同一demux内のfilter接続グラフ の接続だけを正式対象とする。`linkCaps` は同一 demux 内で開いた source / sink filter の main type 対応可否を表し、別 demux に属する filter を source に指定する経路を capability / VTS profile 対象に含めない。source / sink object の lifetime、generation、kind を先に確認し、その後に owner demux 不一致と自己参照を `INVALID_ARGUMENT` で拒否する。AOSP API 文面上の「another filter」は本製品では同一 demux の filter graph 内の別 filter として扱い、別demux間のfilter接続グラフは作らない。
 - `IFilter.getQueueDesc()` の成否は configure 済みかどうかではなく、open時フィルタ種別が通常FMQを持つかどうかで決める。通常FMQ対象フィルタは未configureでも記述子取得を成功させる。
@@ -482,7 +489,7 @@ AV資源上限は全codec共通の固定byte値にしない。`ProductProfile`�
 
 最終合成は依存順に行い、同じworker、callback、reaper、FMQ byte、AV/PES byteを二重計上しない。AV閉包の不足で無関係なfrontendまたはrecord DVR閉包を落とさず、共有するdemux baseや全体worker poolが不足する場合だけ、その依存先を使う閉包へ失敗を伝播する。`getDemuxIds()`、`getDemuxInfo()`、`getDemuxCaps()`、open受付、`numDemux`、`filterCaps`の横断不変条件は、合成後snapshotから一括導出する。能力広告と受付判定は同じsnapshotだけを参照し、別候補closureの列を実行時に混成しない。
 
-AV payloadは配送時、宣言長ありPESはheaderから必要量を確定した時点、長さ0映像PESは受信量増加時、FMQとplayback処理中bufferはconfigure時に実領域をclaimする。PES filterを非0で公開する場合は、PES閉包が`pesRuntimeBudgetBytes >= MAX_PES_BUFFER_BYTES * pesFilterCount`を満たし、有効な明示`streamId 0..255`とwildcard `0xFFFF`を同じ能力で受理する。ARIB字幕用`0xBD`はTISの利用設定でありHAL capabilityの部分集合ではない。VTSは別の起動前環境bindingとし、VTS artifact/tag/commitとvariant propertyを含む環境入力が未定義中はXML filenameを解決せず、XMLをinstallせず成功を表明しない。
+AV payloadは配送時、宣言長ありPESはheaderから必要量を確定した時点、長さ0映像PESは受信量増加時、FMQとplayback処理中bufferはconfigure時に実領域をclaimする。PES filterを非0で公開する場合は、PES閉包が`pesRuntimeBudgetBytes >= MAX_PES_BUFFER_BYTES * pesFilterCount`を満たし、有効な明示`streamId 0..255`と`0xFFFF`は`INVALID_STREAM_ID`として拒否する値 `0xFFFF`を同じ能力で受理する。ARIB字幕用`0xBD`はTISの利用設定でありHAL capabilityの部分集合ではない。VTSは別の起動前環境bindingとし、VTS artifact/tag/commitとvariant propertyを含む環境入力が未定義中はXML filenameを解決せず、XMLをinstallせず成功を表明しない。
 
 - 入力値不正は `INVALID_ARGUMENT`、未対応 capability は `UNAVAILABLE`、オブジェクト state 不整合は `INVALID_STATE`、mutex汚染 や内部整合性崩壊は `UNKNOWN_ERROR` / `HalError::Internal` に写像する。
 
@@ -500,7 +507,7 @@ AV payloadは配送時、宣言長ありPESはheaderから必要量を確定し�
 | ライブAV正式経路 | non-passthrough `MediaEvent`を使用し、共有領域+`dataId`を第一選択、イベント固有fd+`dataId`を正式な代替方式とする |
 | AVペイロードとFMQ | AVペイロードは通常FMQへ書き込まない。EventFlag は FMQ対象経路の通知にだけ使う |
 
-`releaseAvHandle()`の判定は、本書の`releaseAvHandle()`判定表だけを根拠とする。この表は共有領域方式と、イベントごとにファイル記述子を渡す`MediaEvent`方式の両方を扱う。負の`dataId`は`INVALID_ARGUMENT`とする。空ハンドルと0の組は、状態を変えず成功する。返却済み共有ハンドルと0の組では、呼出先IFilterの台帳にあるクライアント側共有ハンドル使用権だけを解放する。`dataId=0`のshared/event-local handle leaseで、同一backing/allocationに対するboundedなlease stateから解放済みと確認できる重複終了は状態を変えず成功し、所有者、世代、転送方式、識別情報の不一致には`INVALID_ARGUMENT`を返す。空ハンドルと正の`dataId`の組では、一致する使用中の共有領域またはイベント固有領域を解放する。正の`avDataId`はactive token台帳に存在する場合だけ解放を成功させ、成功時にtokenを削除する。以後、同じ値を含めactiveでない正のtokenは`INVALID_ARGUMENT`とし、資源を変更しない。イベント固有ファイル記述子を含むハンドルと一致する正の`dataId`では、そのイベント固有領域を解放する。同ハンドルと0の組では、台帳上のイベント固有ハンドル使用権だけを終了し、割り当ては後続の正の`dataId`解放まで維持する。フレームワークまたはCodec2の参照数を判定条件にしない。未発行、不明、別所有者、識別情報不一致の組には`INVALID_ARGUMENT`を返す。台帳上の同一性情報を分類できない場合は`UNKNOWN_ERROR`とし、安全を確認できない領域を解放または再割り当てしない。ファイル記述子のメタデータは補助検証と診断に限定する。発行済みの割り当ては論理閉鎖後も解放できるようにし、隔離状態の後片付けは内部処理だけで行う。
+`releaseAvHandle()`の入力分類、戻り値、資源変化、再release、close後releaseは「表1-C-AVH. `releaseAvHandle()` 全域判定表」だけを正本とし、他節では再定義しない。
 
 
 | 項目 | 固定内容 |
@@ -538,30 +545,32 @@ AV payloadは配送時、宣言長ありPESはheaderから必要量を確定し�
 
 ### 表0-F. IFrontend tune / scan 統合状態表
 
-`tune()`と`scan()`は同じfrontend backendと世代を共有する。新しい操作へ移る前に、競合する旧操作を停止し、旧generationのcallback権限を無効化する。停止に失敗した場合は新操作を開始しない。`scan()`が成功した場合は、同一条件でも常に新しいscan generationを開始する。
+`tune()` / `scan()` の内部generation発行、worker/backend停止、callback fence、stream boundary、複数demux結果集約、rollback / quarantineは「公開transactionのphase・確定点・失敗処理契約」のcanonical `frontend tune/scan`だけを正本とする。本表はcaller-visibleな状態・戻り値・外部結果だけを定義する。
 
-| 番号 | 事前状態 | 呼び出し | AIDL戻り値 | 次状態 | 副作用 |
+| 番号 | 事前状態 | 呼び出し | AIDL戻り値 | 次状態 | caller-visibleな結果 |
 |---:|---|---|---|---|---|
-| FR-001 | Idle | `tune(settings)` | 成功 | Tuning(generation+1) | 新tuneを開始 |
-| FR-002a | Tuning | `tune(settings)` | 成功 | Tuning(stream_generation+1) | 未完了の旧tuneを停止・遮断して新tuneを開始する |
-| FR-002b | Locked、正規化settings・selector・LNB/power条件が同一、backend/stream boundaryがhealthy | `tune(settings)` | 成功 | Locked(stream_generation維持、tune_request_sequence+1) | backend再要求、worker交換、demux境界終端、AV中断を行わない。現lock snapshotに基づく`LOCKED`を新request sequenceへ1回配送する |
-| FR-002c | Lockedで条件が異なる、または同値性・健全性を証明できない | `tune(settings)` | 成功 | Tuning(stream_generation+1) | 旧tuneを停止・遮断して新tuneを開始する |
-| FR-003 | Scanning | `tune(settings)` | 成功 | Tuning(generation+1) | scanをCancelledで終端してから新tuneを開始 |
-| FR-004 | Idle | `scan(settings, type)` | 成功 | Scanning(generation+1) | 新scanを開始 |
-| FR-005 | Tuning / Locked | `scan(settings, type)` | 成功 | Scanning(generation+1) | tuneを停止してから新scanを開始 |
-| FR-006 | Scanning | `scan(settings, type)` | 成功 | Scanning(generation+1) | 条件の同異にかかわらず旧scanを停止して新scanを開始 |
-| FR-007 | Tuning / Locked | `stopTune()` | 成功 | Idle | tune世代を終端し、接続demuxの境界を閉じる |
-| FR-008 | Idle / Scanning | `stopTune()` | 成功 | 入力状態を維持 | active tuneがないためbackend tune-stopを呼ばない。Scanningではscan generation、backend scan、scan callbackを継続し、attached demuxのstream boundaryを変更しない |
-| FR-009 | Scanning | `stopScan()` | 成功 | Idle | scanをCancelledで終端 |
-| FR-010 | Idle / Tuning / Locked | `stopScan()` | 成功 | 入力状態を維持 | active scanがないため無処理。tuneは停止しない |
-| FR-011 | FailedBackend / FailedBoundary | `tune()` / `scan()` | `INVALID_STATE` | 入力状態を維持 | 回収前に新操作を開始しない |
-| FR-012a | FailedBackend / FailedBoundary | `stopTune()` / `stopScan()`。backend停止と全対象demux境界の終端を確認できた | 成功 | Idle | 失敗を生じた旧操作を回収し、世代を終端する |
-| FR-012b | FailedBackend | `stopTune()` / `stopScan()`。backend停止結果を確認できない | `UNKNOWN_ERROR` | FailedBackend | 新規操作を拒否し、backend世代を再利用しない |
-| FR-012c | FailedBoundary | `stopTune()` / `stopScan()`。backend停止済みだがdemux境界の終端を確認できない。旧世代のfenceは成立 | `UNKNOWN_ERROR` | FailedBoundary | 不明な境界を隔離し、無関係なdemuxへ波及させない |
-| FR-012d | FailedBackend / FailedBoundary | `stopTune()` / `stopScan()`。旧世代のcallback・queue・backend確定権限を遮断できない | `UNKNOWN_ERROR` | Quarantined | 当該frontendと遮断不能な依存だけを隔離する |
-| FR-013 | Closing / Closed / Quarantined | `tune()` / `scan()` / `stopTune()` / `stopScan()` | `INVALID_STATE` | 入力状態を維持 | 公開操作を実行しない |
+| FR-001 | Idle | `tune(K)` | 成功 | Tuning | `K`のtuneを開始する |
+| FR-002a | Tuning | `tune(K2)` | 成功 | Tuning | 以後、旧tune要求の結果を新要求の結果として公開しない |
+| FR-002b | Locked | healthyな同一`K`の`tune(K)` | 成功 | Locked | 現在のstreamを維持し、当該要求に対する`LOCKED`を1回だけ公開する |
+| FR-002c | Locked | 異なる`tune(K2)` | 成功 | Tuning | 新要求へ移り、旧要求由来結果を新要求の結果として公開しない |
+| FR-003 | Scanning | `tune(K)` | 成功 | Tuning | 旧scanの後続結果を新tune結果として公開しない |
+| FR-004 | Idle | `scan(K)` | 成功 | Scanning | `K`のscanを開始する |
+| FR-005 | Tuning / Locked | `scan(K)` | 成功 | Scanning | scanへ移り、旧tune結果をscan結果として公開しない |
+| FR-006a | Scanning、同一request fingerprint、直前stage=`LockedReported` | `scan(K)` | 成功 | Scanning | backendを再探索せず、2回目は`END`を正確に1回配送し、2回目の`LOCKED`を配送しない |
+| FR-006b | Scanning、FR-006a以外 | `scan(K2)` | 成功 | Scanning | 新scanを開始し、旧scanの後続結果を新scan結果として公開しない |
+| FR-007 | Tuning / Locked | `stopTune()` | 成功 | Idle | active tuneを停止し、旧tune由来data/callbackを後続成功結果として公開しない |
+| FR-008 | Scanning | `stopTune()` | 成功 | Scanning | active scanを停止・変更しない |
+| FR-009 | Scanning | `stopScan()` | 成功 | Idle | active scanを停止し、旧scan由来callbackを後続成功結果として公開しない |
+| FR-010 | Tuning / Locked | `stopScan()` | 成功 | 入力状態維持 | active tuneを停止・変更しない |
+| FR-011 | Idle | `stopTune()` / `stopScan()` | 成功 | Idle | no-op |
+| FR-012 | FailedBackend / FailedBoundary | recovery `stopTune()` / `stopScan()` | API固有結果 | 回復結果に従う | 原因別状態と回復可否は表19およびcanonical `frontend tune/scan`参照 |
+| FR-013 | Quarantined / LogicalClosed | `tune()` / `scan()` / 通常operation | `INVALID_STATE` | 入力状態維持 | 通常operationを再開しない |
 
-旧操作の停止失敗は、backend停止不明なら`FailedBackend`、backend停止済みでdemux境界だけ不明かつ旧世代fence成立なら`FailedBoundary`、旧世代fence自体を証明できない場合だけ`Quarantined`へ写像する。新しいbackend要求、worker、callback generationは公開しない。旧操作を正常に停止した後、新しい`tune()`要求が拒否された場合は旧要求を自動再投入しない。旧generationは既に遮断され、旧demux境界も終端しているため、旧TSをcallerが新サービス向けに再構成したfilterへ流さず、表19の原因別失敗状態へ進む。
+同一`scan(K)`継続の`LOCKED -> END`、異なる要求への切替、stop、失敗時の内部確定点はcanonical `frontend tune/scan`だけを正本とし、本表に第二のtransaction state machineを置かない。
+
+### `DemuxFilterEvent.startId` 契約
+
+settingsを変更する有効な`configure()`は、commit後の`filter_delivery_generation`に対応するpending startIdをprepareする。同じsettingsの冪等`configure()`では新しいstartIdを発行しない。Filterを再startした後、最初のevent callbackはstartIdだけを含むcallbackとして正確に1回配送し、その後に通常eventを配送する。startId-only callbackに別eventを同梱しない。新規open Filterの最初のstartだけはAOSP予約値0を使用してよく、それ以外は再利用しないpositive idを使用する。stale `filter_delivery_generation`のpending startIdは配送しない。positive idを再利用なしに発行できない場合は、既存`filter_delivery_generation` exhaustionの局所failure契約へ従い、新しい独立generation軸を追加しない。
 
 ### 表1. IFilter 状態表
 
@@ -577,7 +586,7 @@ AV payloadは配送時、宣言長ありPESはheaderから必要量を確定し�
 | F5 | コールバック開始済み | 通常FMQを持たない非AVフィルターが開始済み |
 | F6 | コールバック停止済み | 通常FMQを持たない非AVフィルターが開始後に停止済み |
 
-フィルターの通常FMQペイロード、DVR記録ストリーム、TS/MMTP記録コールバックのメタデータは、互いに独立した3つの経路として扱う。TS/MMTP記録フィルターは通常のフィルターFMQを公開しない。ペイロードは接続先のRecord DVR FMQだけへ書き込み、PID、索引、バイト番号、PTS、開始コードのメタデータは `DemuxFilterTsRecordEvent` または `DemuxFilterMmtpRecordEvent` のコールバックで通知する。Section、PES、TS生データのペイロードフィルターは通常のフィルターFMQを使用する。PESは有効な明示`streamId 0..255`とwildcard `0xFFFF`を同じ能力で受理し、映像`0xE0..0xEF`の長さ0 PESもruntime組立て対象とする。
+フィルターの通常FMQペイロード、DVR記録ストリーム、TS記録コールバックのメタデータは、互いに独立した3つの経路として扱う。TS/MMTP記録フィルターは通常のフィルターFMQを公開しない。ペイロードは接続先のRecord DVR FMQだけへ書き込み、PID、索引、バイト番号、PTS、開始コードのメタデータは `DemuxFilterTsRecordEvent` のコールバックで通知する。Section、PES、TS生データのペイロードフィルターは通常のフィルターFMQを使用する。PESは有効な明示`streamId 0..255`と`0xFFFF`は`INVALID_STREAM_ID`として拒否する値 `0xFFFF`を同じ能力で受理し、映像`0xE0..0xEF`の長さ0 PESもruntime組立て対象とする。
 
 
 AVフィルターの状態コードは、AOSP `IFilter`が`configureAvStreamType()`と`getAvSharedHandle()`を`configure()`とは独立したメソッドとして公開することに合わせ、設定状態、実行状態、補助種別、共有ハンドルの各軸から次のとおり導出する。
@@ -665,7 +674,7 @@ AV割り当てについては、本書の「AV割り当て」と「表1-C-AVH. `
 | F-C-002a | `getQueueDesc()` | A0, A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11 | `UNAVAILABLE` | 入力状態を維持 | なし | `queue_desc_unavailable` を増やす | AVペイロードは通常FMQではなく、共有領域またはイベント固有fdを参照する`MediaEvent`を使用する |
 | F-C-003 | `getQueueDesc()` | F4, F5, F6 | `UNAVAILABLE` | 入力状態を維持 | なし | `queue_desc_unavailable` を増やす | callback-only filterは通常FMQを持たない |
 
-FMQの使用方法はフィルターのサブタイプごとに定める。SectionとTS生データのペイロードフィルターは通常のフィルターFMQを使用する。PESも通常FMQを使用し、PES subtypeの`openFilter()`は個数枠とFMQ容量を予約して成功させる。`configure()`は有効な明示`streamId 0..255`とwildcard `0xFFFF`を成功させる。映像`0xE0..0xEF`の長さ0 PESはruntime組立て対象とし、その他のstream IDで受信した長さ0 PESだけをmalformedとして破棄する。TS/MMTP記録フィルターには通常のフィルターFMQを設けず、ペイロードはRecord DVR FMQへ、索引メタデータはコールバックイベントへ送る。音声・映像メディアフィルターは通常FMQではなく、共有領域またはイベント固有fdを参照する`MediaEvent`を使用する。PCR、監視、`startId`などコールバックだけで通知するイベントには、ペイロードFMQを設けない。Record DVRは記録FMQを、Playback DVRは再生FMQを所有する。未対応のmain typeまたは規格上有効だが未対応のsubtypeは`openFilter()`で`UNAVAILABLE`を返し、filter object、queue、使用枠を生成しない。
+FMQの使用方法はフィルターのサブタイプごとに定める。SectionとTS生データのペイロードフィルターは通常のフィルターFMQを使用する。PESも通常FMQを使用し、PES subtypeの`openFilter()`は個数枠とFMQ容量を予約して成功させる。`configure()`は有効な明示`streamId 0..255`と`0xFFFF`は`INVALID_STREAM_ID`として拒否する値 `0xFFFF`を成功させる。映像`0xE0..0xEF`の長さ0 PESはruntime組立て対象とし、その他のstream IDで受信した長さ0 PESだけをmalformedとして破棄する。TS/MMTP記録フィルターには通常のフィルターFMQを設けず、ペイロードはRecord DVR FMQへ、索引メタデータはコールバックイベントへ送る。音声・映像メディアフィルターは通常FMQではなく、共有領域またはイベント固有fdを参照する`MediaEvent`を使用する。PCR、監視、`startId`などコールバックだけで通知するイベントには、ペイロードFMQを設けない。Record DVRは記録FMQを、Playback DVRは再生FMQを所有する。未対応のmain typeまたは規格上有効だが未対応のsubtypeは`openFilter()`で`UNAVAILABLE`を返し、filter object、queue、使用枠を生成しない。
 
 
 | 番号 | API / 入力 | 対象状態集合 | AIDL戻り値 | 次状態関数 | 副作用 | 診断 | 同値性根拠 / 設計上の成立条件 |
@@ -815,8 +824,12 @@ TSからTSへの`linkCaps`と、NULL以外を渡す`setDataSource()`の接続関
 | 成功 | 成功 | sink 状態を維持 | sink が source 参照を保持する。登録済み source がある場合は新しい source 参照で置換する | `set_data_source_success` | source / sink の組み合わせが表1-D-3の成功セルに一致する |
 
 
-### Filter data source の source lifecycle エラー
 
+### FilterDelayHint 契約
+
+`FilterDelayHint`は`TIME_DELAY_IN_MS`と`DATA_SIZE_DELAY_IN_BYTES`だけを受理し、unknown type、負の`hintValue`、表現不能値は`INVALID_ARGUMENT`で状態不変とする。typeごとに独立したhint値を保持し、0はそのtypeのhintだけをresetする。positive値は対応typeの閾値として保持する。media filterは本製品capability契約どおり`UNAVAILABLE`とする。
+
+non-mediaのevent-producing filterではpending `onFilterEvent()` batchを保持し、有効な時間閾値または有効な累積data-size閾値の**いずれか**に達した時点でbatchを配送する。data-sizeはpending batch内eventのdata length合計で評価する。hintはイベントを失わせる権限ではなく、停止・flush・close・reconfigure時のpending aggregateは`filter_delivery_generation`でfenceし、旧generationのbatchを新generationとして配送しない。別のscheduler state machineは導入せず、既存Filter delivery ownerが評価する。
 
 ### 表2. IDvr 状態表
 
@@ -913,6 +926,9 @@ Record DVRとFilterの接続relationは`RecordDvrFilterRelationTxn`を唯一のm
 | DVR-032 | `detachFilter()` playback DVR | D0P, D4, D5, D6 | `INVALID_ARGUMENT` | 入力状態を維持 | なし | `dvr_detach_wrong_dvr_kind` を増やす | `detachFilter()`は録画DVRだけの操作であり、DVR種別不一致として扱う |
 | DVR-033 | `setStatusCheckIntervalHint()` 正常入力 | D0R, D0P, D1, D2, D3, D4, D5, D6 | 成功 | 入力状態を維持 | hint 値だけ保存 | `dvr_status_hint_set` | 資源寿命を変えない |
 
+`IDvr.setStatusCheckIntervalHint(milliseconds)`はDVRのdata statusを評価する頻度のhintである。positive値は後続status評価のtarget intervalへ反映し、0はproduct default intervalへ戻す。started中の変更は既存worker/runtimeを別state machineへ置換せず、次回評価から新intervalを使えるよう既存`WorkerRuntime`のwake/re-arm経路へ接続する。queue identity、queue epoch、payload、DVR lifecycleは変更しない。
+
+
 長さ、件数、位置の入力が負値の場合は`INVALID_ARGUMENT`を返す。0はAPIごとに定めた意味に限定し、バッファー長0と読み書き長0には`INVALID_ARGUMENT`を返す。位置0は有効とし、状態通知間隔0は既定値への復帰とする。長さと位置の加算が上限を超える場合、`usize`へ変換できない場合は`INVALID_ARGUMENT`、割り当て不能時は`OUT_OF_MEMORY`を返す。
 
 
@@ -928,7 +944,7 @@ configure 非受理後は IFilter 状態が F0 のままである。その後に
 | 番号 | フィルタ種別 / 要求 | 本製品での扱い | capability / VTS profile | configure時 / 専用API戻り値 | 後続公開APIの扱い | ペイロード配送 | 固定根拠 |
 |---:|---|---|---|---|---|---|---|
 | 1 | section | 受理 | 宣言する | 成功 | 表1のFMQ対象状態に従う | 通常FMQ | PSI/SI sectionの取得に必要 |
-| 2 | PES | 有効なPES設定を一般に受理 | 明示`streamId 0..255`とwildcard `0xFFFF`のPES能力を宣言する | `openFilter()`は成功。`configure()`は全有効stream IDとwildcardを成功させる。映像`0xE0..0xEF`の長さ0 PESもruntimeで扱う | 表1のFMQ対象状態に従う | 通常FMQ + `DemuxFilterPesEvent` | TISのARIB字幕経路は利用設定として`0xBD`を指定する。video/audio本体はAV filter経路を使用してよい |
+| 2 | PES | 有効なPES設定を一般に受理 | 明示`streamId 0..255`とwildcard `0xFFFF`のPES能力を宣言する | `openFilter()`は成功。`configure()`は全有効stream IDと`0xFFFF`は`INVALID_STREAM_ID`として拒否する値を成功させる。映像`0xE0..0xEF`の長さ0 PESもruntimeで扱う | 表1のFMQ対象状態に従う | 通常FMQ + `DemuxFilterPesEvent` | TISのARIB字幕経路は利用設定として`0xBD`を指定する。video/audio本体はAV filter経路を使用してよい |
 | 3 | TS生データ | 受理 | 宣言する | 成功 | 表1のFMQ対象状態に従う | 通常FMQ | 試験用の生TS取得に必要 |
 | 4 | パススルーではないライブAV音声・映像 | 受理 | AVフィルターと2つの`MediaEvent`方式を宣言する。通常FMQからのAVペイロード読み出しをVTS構成に入れない | 成功 | 表1のAV状態に従う | 共有領域+`dataId`、またはイベント固有fd+`dataId` | 本製品のライブAV正式経路 |
 | 5 | AVパススルー | 恒久非対応 | 宣言しない | `UNAVAILABLE` | AVの未設定状態を維持。後続APIは表1のA8..A11に従う | なし | 本製品では対応しない |
@@ -945,15 +961,17 @@ Section/PES処理は、外形の抽出、設定されたCRC検査、型付きeve
 | filter出力 | `isCheckCrc` | 入力 | FMQ配送 | status通知 | 型付きevent | 診断 |
 |---|---:|---|---|---|---|---|
 | raw section | 任意 | 外形不完全、宣言長不成立、境界不明 | しない | データ到着としては通知しない | 生成しない | 外形破棄理由を記録 |
-| raw section | true | 外形完全、CRC一致 | 元のsection全体を配送 | `DATA_READY`またはEventFlag起床 | 生成しない | 正常配送を記録 |
+| raw section | true | 外形完全、CRC一致 | 元のsection全体を配送 | `IFilterCallback.onFilterStatus(DATA_READY)`（EventFlagは追加のFMQ wakeとして使用可） | 生成しない | 正常配送を記録 |
 | raw section | true | 外形完全、CRC不一致またはCRC検査に必要な末尾不足 | しない | データ到着としては通知しない | 生成しない | CRC破棄を記録し、overflowへ写像しない |
-| raw section | false | 外形完全。CRC、予約ビット、表固有構文のいずれかが不正 | 元のsection全体を配送 | `DATA_READY`またはEventFlag起床 | 生成しない | 不正内容とraw配送を併記 |
+| raw section | false | 外形完全。CRC、予約ビット、表固有構文のいずれかが不正 | 元のsection全体を配送 | `IFilterCallback.onFilterStatus(DATA_READY)`（EventFlagは追加のFMQ wakeとして使用可） | 生成しない | 不正内容とraw配送を併記 |
 | non-raw section | true | 外形完全、CRC不一致 | しない | データ到着としては通知しない | 生成しない | CRC破棄を記録し、overflowへ写像しない |
 | non-raw section | false | 外形完全、CRC不一致、型付きevent生成に必要な構文は正常 | 配送する | event配送規則に従う | 検証済みメタデータだけで生成 | CRC未検査設定であることを記録してよい |
 | non-raw section | 任意 | 外形完全だが予約ビットまたは型付きevent生成に必要な構文が不正 | しない | データ到着としては通知しない | 生成しない | 構文破棄理由を記録 |
 
 
-### 生section・生PESイベントのメタデータ
+### SectionBits bit照合契約
+
+`SectionBits.filter` / `mask` / `mode`はnon-nullかつ同じ長さで、長さは`numBytesInSectionFilter`以下でなければならない。長さ不一致、null/不正array、上限超過は`INVALID_ARGUMENT`で状態不変とする。各bitは `mask=0` なら比較対象外、`mask=1 && mode=0` ならsection bitとfilter bitが等しいこと、`mask=1 && mode=1` なら異なることを要求し、全ての有効mask bitが成立した場合だけmatchとする。`repeat`、`raw`、CRC設定はこのbit predicateと直交する。
 
 
 ### 表4. AV共有メモリ資源寿命表
@@ -975,7 +993,7 @@ AV共有メモリの slot size は filter `bufferSize` から算出してはな�
 
 | 番号 | 操作 / 事象 | 対象状態集合 | AIDL戻り値 | shared backing | 公開済みハンドル | 使用中領域 | `dataId` | 一過性状態 | 累積カウンタ | 新規配送可否 | 次状態関数 | 設計上の成立条件 | 同値性根拠 |
 |---:|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| AVM-001 | `configure(AV)` | A8, A9, A10, A11 | 成功 | 入力状態を維持 | 入力状態を維持 | なし | 未発行 | 補助種別を維持し、routing種別をopen subtypeから導出 | `av_generation`を進める | 不可 | 設定状態軸だけ設定済みに変更 | 設定前に取得可能な共有ハンドルを無効化せず、TsAudio/TsVideoは補助種別未設定でもrouting可能 | 設定状態以外の軸を維持する |
+| AVM-001 | `configure(AV)` | A8, A9, A10, A11 | 成功 | 入力状態を維持 | 入力状態を維持 | なし | 未発行 | 補助種別を維持し、routing種別をopen subtypeから導出 | 累積カウンタを変更しない | 不可 | 設定状態軸だけ設定済みに変更 | 設定前に取得可能な共有ハンドルを無効化せず、TsAudio/TsVideoは補助種別未設定でもrouting可能 | 設定状態以外の軸を維持する |
 | AVM-005a | `getAvSharedHandle()` 再取得 / 未開始 | A2, A3, A10, A11 | 成功 | 維持 | 公開済み | 維持 | 維持 | client release済みなら未済みに戻す | `av_shared_handle_reuse` を増やす | 不可 | 入力状態を維持 | 既存backingから新しいhandle leaseを返すが、未設定または停止済みのためpayload配送は開始しない | handle leaseの再取得と実行状態を直交させる |
 | AVM-005b | `getAvSharedHandle()` 再取得 / 開始済み | A6, A7 | 成功 | 維持 | 公開済み | 維持 | 維持 | client release済みなら未済みに戻す | `av_shared_handle_reuse` を増やす | 可 | 入力状態を維持 | 既存backingから新しいhandle leaseを返し、共有方式の発行条件を満たす後続payloadだけを配送可能にする | handle leaseの再取得と実行状態を直交させる |
 | AVM-008 | AV payload 到着 | A6, A7 + client release未済み | 公開APIなし | 維持 | 公開済み | 割当 | 発行 | MediaEvent 生成 | `av_delivered` を増やす | 可 | 入力状態を維持 | `dataId` と共有メモリ領域が対応すること | ハンドル公開済み開始済みかつ client release未済み状態は同値 |
@@ -987,15 +1005,15 @@ AV共有メモリの slot size は filter `bufferSize` から算出してはな�
 | AVM-015 | `close()` | 全AV状態 | 表5に従う | 新規配送用backingを閉じる | 新規取得不可 | 未配送領域を破棄し、配送済み未解放領域を`ReleaseOnly`へ移す | 未配送IDを無効化し、配送済みIDの解放台帳を維持 | 消去 | close診断へ反映 | 不可 | 表5に従う | 論理閉鎖後もAOSP/JNIから遅延する`releaseAvHandle()`を受理し、解放後使用を防ぐ | 新規配送の閉鎖と配送済み領域の寿命を分離する |
 
 
+### TS live `MediaEvent` field契約
+
+TS live AV eventの`streamId`は対応PESからparseした実stream_id 0..255を設定する。PTSは本書の既存PTS契約に従う。PES headerにDTSが存在する場合は`isDtsPresent=true`かつparse済み33-bit 90 kHz DTS、存在しない場合は`isDtsPresent=false`かつ`dts=0`とする。TS-only productでは`mpuSequenceNumber=0`とする。`isPesPrivateData`はPES `stream_id=0xBD` (`private_stream_1`) の場合だけtrue、それ以外falseとする。live AV eventはrecord start-code indexを所有しないため`scIndexMask`は0/default、追加audio metadataを本製品のTS live AV capabilityとして採用しないため`extraMetaData`はnoinit/defaultとする。未使用fieldはAIDL既定値を明示的に設定し、未初期化memory由来の値を公開しない。
+
 ### AV shared handle 入出力契約
 
-`getAvSharedHandle()` は、AV shared memory を表す fd付き `NativeHandle` と共有メモリ総サイズを返す。client は、共有ハンドル使用終了時に、`getAvSharedHandle()` で受け取った fd付き `NativeHandle` を `releaseAvHandle(avMemory, 0)` に渡してよい。
+`getAvSharedHandle()` / `releaseAvHandle()` のAIDL入力・出力形状とcaller-visibleな資源寿命だけを本節で扱う。`releaseAvHandle()`の全入力分類、status、token/lease変化は「表1-C-AVH. `releaseAvHandle()` 全域判定表」を唯一の正本とし、本節で別の判定表・generationを定義しない。
 
-`releaseAvHandle()`の正規入力形状、判定順序、戻り値、資源変化は「表1-C-AVH. `releaseAvHandle()` 全域判定表」だけを正とする。同表では、呼出先IFilter、台帳上の所有者、世代、転送方式、`avDataId`、使用権の状態を先に検証する。ファイル記述子番号を同一性の根拠にせず、ファイル記述子のメタデータは採用した記憶領域実装で保証できる補助検証に限定する。未解放で配送済みと確認できるトークンの世代だけが不一致の場合は、`INVALID_STATE`ではなく`ReleaseOnly`として扱う。台帳上の同一性情報が一致しない場合、または別所有者のハンドルである場合は`UnknownOrForeign`と分類して`INVALID_ARGUMENT`を返す。台帳の障害によって同一性情報を分類できない場合は`UNKNOWN_ERROR`を返し、安全を確認できない記憶領域を解放せず、影響を受けた台帳を隔離する。
-
-
-fd付きhandle + `avDataId == 0` の成功は、shared backing、公開済みhandle、既存slot、active `avDataId` を破棄することを意味しない。以後のAV payload配送を継続するには、client release済み状態を解除するために `getAvSharedHandle()` 再取得を必要としてよい。
-
+配送済みAV allocationはFilterの論理close後も、client releaseまたは最終cleanupで回収されるまで存続する。Filterの`filter_delivery_generation`は新規配送のfenceに使うが、既に公開済みallocationのrelease権限を失わせない。
 
 ### 表5. `close()` / 後片付け完了状態表
 
@@ -1021,7 +1039,7 @@ fd付きhandle + `avDataId == 0` の成功は、shared backing、公開済みhan
 
 | Resource | close開始時の状態 | close中に許可する公開操作 | close中に拒否する公開操作 | cleanup失敗時状態 | 内部cleanup契約 |
 |---|---|---|---|---|---|
-| Frontend | `closing=true`, `cleanup_complete=false` | `close()` | `tune/scan/stopTune/stopScan/setCallback/linkLnb` | `cleanup_failed` または failed | 0-S-3Bの`ObjectCloseTxn`参照 |
+| Frontend | `LogicalClosed` / `CleanupPending` / `Quarantined` | `close()`および0-S-3B `ObjectCloseTxn`のrecovery/cleanup入口を除く全ての通常public method | `INVALID_STATE`または各recovery契約 | hard-coded method列挙を第二正本にしない |
 | Descrambler | `closing=true`, `cleanup_complete=false` | `close()` | `setDemuxSource/setKeyToken/addPid/removePid` | `cleanup_failed` | 0-S-3Bの`ObjectCloseTxn`参照 |
 
 
@@ -1126,8 +1144,8 @@ callbackの健全性は独立した状態軸とし、障害の影響はcallback�
 
 | 番号 | 資源 | 所有者 | 作成 / 取得 | 通常破棄 | 異常時破棄契機 | 破棄失敗時 | 設計上の成立条件 |
 |---:|---|---|---|---|---|---|---|
-| RL-002 | scan / tune generation | `FrontendHal` | `tune()` / `scan()` | stopTune / stopScan / close / 次generation | generation ownerが当該generationの寿命終了を確定した時、または有効性を確認できない時 | 失効または有効性を確認できないgenerationを新generationとして再利用しない。frontend / scanの状態遷移・callback / worker failure semanticsは表19および0-S-3Bのcanonical contract参照 | stale generationから新状態を更新できない |
-| RL-003 | demux generation | `DemuxHal` | demux open / stream boundary reset | demux close | generation ownerが当該demux generationの寿命終了を確定した時、または有効性を確認できない時 | 失効または有効性を確認できないgenerationを再利用しない。frontend-source / stream boundary / demux failure semanticsは`DemuxFrontendSourceTxn` / `StreamBoundaryTxn`とdemux公開状態契約参照 | stale demux generation向けの配送を新generationへ混入させない |
+| RL-002 | `frontend_operation_generation` | `FrontendRuntime`。発行・fenceはcanonical `frontend tune/scan` | tune/scan operation開始時に取得 | operation終端 / replacementでfence | fence結果を確定できない場合は再利用せずcanonical frontend failure契約へ接続 |
+| RL-003 | `stream_boundary_generation` | `StreamBoundaryTxn` | stream boundary prepare時に取得 | boundary replacement / object cleanupで失効 | 発行・fence不明時は再利用せず`StreamBoundaryTxn`の局所failure契約へ接続 |
 | RL-004 | Filter / DVR FMQとdescriptor | 0-S-2で定める各queue owner | object open時にqueueを生成し、descriptor取得時に複製を公開 | object固有cleanupが完了し、queueへの使用権が消滅した時 | queue backing / descriptor control structure / EventFlag objectまたはcontrol blockの構造破損により再利用不能と判定した場合、または解放結果不明 | 解放を確認できないqueue領域とdescriptor backingを再利用しない。payload commit後のEventFlag起床失敗だけでは破棄せず表6/6-Aのqueue runtime契約に従う。flush / token / drain semanticsは`FilterProducerDrainGate` / `QueueEpochProtocol` / `QueueCleanupTxn`参照 | configureでqueue identityを暗黙置換しない |
 | RL-005 | AV backing、event-local allocation、client lease | `AvSharedBacking`とFilter別割り当て台帳 | shared handle公開またはMediaEvent準備 | `releaseAvHandle()`でleaseまたはallocationを1回解放。論理close後も配送済みallocationは`ReleaseOnly`で保持 | 台帳破損、identity検証不能、allocator破損 | 対象領域を保持して隔離し、別allocationへ再利用しない | client lease、allocation、backingの寿命を分離する |
 | RL-006 | callback artifactとregistry entry | callback artifact store / `RuntimeCallbackRegistry` / domain logical owner | callback registration成功時に各ownerの寿命を開始 | registration解除またはobject固有cleanup完了時に各ownerから解放 | Binder死亡、registry障害、解放結果不明 | 解放結果を確認できないartifact / entryを再利用しない。登録transaction semanticsは`CallbackRegistrationUseCase`参照 | artifact / runtime / domainの寿命ownerを混同しない |
@@ -1402,7 +1420,7 @@ scan の normal / stopScan / backend error / `panic` は終端理由として区
 scan END 通知失敗は コールバック失敗 の固定契約であり、Stream boundary / データ経路 failure の正本を変更しない。
 
 scan ワーカー 内の `END` 通知は、`PROGRESS_PERCENT`、`FREQUENCY`、`LOCKED`、`INPUT_STREAM_IDS`、`LOCKED` / `NO_SIGNAL` event と同じく callback 契約の一部として扱う。
-`notify_scan_end_with_callback()` の戻り値を `let _ = ...` で捨ててはならない。
+`scan END配送use-case` の戻り値を callback配送結果の破棄 で捨ててはならない。
 
 - `END` 通知成功時だけ、scan terminal 通知済みとして扱う。
 
@@ -1582,7 +1600,7 @@ filter runtime state と DVR runtime state は pending overflow を持つ。コ�
 
 AV payload delivery result は、少なくとも `Delivered`、`DroppedBeforeHandleExport`、`DroppedNoFreeSlot`、`DroppedOversizePayload`、`DroppedMalformedPayload` を区別する。slot size 超過を `DroppedInvalidPayload` に丸めてはならない。
 
-queue 容量は profile 依存にできる構造にする。VTS/lab profile の小容量で overflow test を行えることと、product profile で record / DVR raw TS を大容量化できることの両方を満たす。overflow 時に古いデータを捨てるか新しいデータを捨てるかは用途別に固定し、ライブ AV の 旧データ破棄 方針を TS raw / section / PES / 録画経路 に流用してはならない。`filter_queue_model()`、`dvr_queue_model()`、`QueuePolicy.overflow_policy`、`QueuePolicy.bounded_entries` はこの用途別方針を診断モデルとしてそのまま表す。未公開リリース候補のため、後方互換目的の alias、boolean 互換 field、旧モデル API は残さず削除する。`QueueOverflowPolicy` を唯一の overflow 方針表現とする。
+queue 容量は profile 依存にできる構造にする。VTS/lab profile の小容量で overflow test を行えることと、product profile で record / DVR raw TS を大容量化できることの両方を満たす。overflow 時に古いデータを捨てるか新しいデータを捨てるかは用途別に固定し、ライブ AV の 旧データ破棄 方針を TS raw / section / PES / 録画経路 に流用してはならない。Filter/DVR queueの論理overflow方針、容量、producer/consumer結果だけを本書で規定する。具体helper/type/alias名は`CODE_CONVENTION.md`を正本とし、公開契約のSSOTにしない。
 
 
 `QueuePushOutcome` は 受理バイト数、破棄バイト数、破棄要素数、旧データ破棄/新データ破棄、overflow を区別する。filter queue で overflow した場合は runtime state の `pending_overflow` を立て、コールバック ワーカー が payload 有無にかかわらず次周期で `DemuxFilterStatus::OVERFLOW` を通知する。record DVR output queue は 1サービスTS録画 用に 新データ破棄 方針を採り、full 時に新規 TS packet を 無通知破棄 せず `RecordStatus::OVERFLOW` へ伝播する。
@@ -1674,7 +1692,7 @@ RECORD filterの`DemuxFilterRecordSettings.tsIndexMask`、`scIndexType`、`scInd
 
 `DemuxFilterTsRecordEvent`は、`StreamBoundaryTxn`が確定したcurrent record-index parser/assembler generationと`FilterProducerDrainGate`のcurrent delivery generationに属し、対応するTS bytesが接続済みRecord DVR FMQへcommit済みの場合だけ生成する。イベントの`tsIndexMask`は`detectedTsBits & requestedTsIndexMask`とする。`scIndexMask`は要求時の`scIndexType`に対応するunion tagを維持し、そのtagのpayloadを`detectedScBits & requestedScMaskPayload`とする。要求されていないbit、未検出bit、stale parser/delivery generationのbitを立てない。TS側とSC側の実効payloadがともに0のイベントをindex検出として生成しない。
 
-- `byteNumber`は`StreamBoundaryTxn`が確定した当該record-index parser/assembler generationの出力区間先頭から、Record DVRへ実際にcommitしたbyte数を基準とする0始まりのbyte位置とする。TEI付きpacketその他、本設計がrecord TSへ保持して実際に書いた188 byte packetはこの位置へ含める。dropしたbytesを加算しない。別の`record output generation`は定義しない。
+- `byteNumber`は当該Record Filterのoutput lifetime先頭から、Record DVRへ実際にcommit済みのTS byte数を累積した`record_output_byte_offset`とする。configure/reconfigure、`flush()`、source/stream boundary、parser resetでは0へ戻さず、新しいFilter object/output lifetimeだけ0から開始する。
 - `pts`はindex対象のPESから構文上有効なPTSを取得できた場合だけ、その90 kHz値を格納する。PTSを取得できないindexではAOSPの`Constant64Bit.INVALID_PRESENTATION_TIME_STAMP`を設定し、PCR、monotonic clock、直前PESのPTSから推測しない。内部parserは`pts_present`を別に保持し、公開AIDL sentinelと内部の取得有無を混同しない。
 - `firstMbInSlice`はAVC slice start indexについて構文上取得した`first_mb_in_slice`だけを設定し、AVC slice start以外または取得不能の場合はAOSPの`Constant.INVALID_FIRST_MACROBLOCK_IN_SLICE`を設定する。`0`を利用不能sentinelとして使わない。
 - start-code prefix、PES header、PTS、AVC slice headerが188 byte TS packet境界を跨ぐ場合は、直後の「record index packet boundary 契約」のcarry stateで解析する。malformed index候補ではeventを生成せず、raw record TSの保持規則を変更しない。
@@ -1711,7 +1729,7 @@ record indexは、現在payload単体だけで完結する前提にしてはな�
 
 ### PES stream IDと宣言長の境界
 
-PES filterは、有効な明示`streamId 0..255`とwildcard `0xFFFF`を同じ公開能力で受理する。先頭6 byteを検証後、宣言長ありPESではassemblerが`PES_packet_length + 6` byteだけをservice共通台帳からclaimする。映像`stream_id 0xE0..0xEF`の`PES_packet_length == 0`は、同一PIDの次PUSIまでを収集し、`MAX_PES_BUFFER_BYTES`を上限とする。起動前に`ProductProfile`を検証して`CapabilitySnapshot.pesRuntimeBudgetBytes`へ固定し、その値を`MAX_PES_BUFFER_BYTES * CapabilitySnapshot.pesFilterCount`以上とする。各filterは同時に1 assemblerだけを所有するため、公開個数上限まで最大保持量を同時に保証できる。
+PES filterは、有効な明示`streamId 0..255`と`0xFFFF`は`INVALID_STREAM_ID`として拒否する値 `0xFFFF`を同じ公開能力で受理する。先頭6 byteを検証後、宣言長ありPESではassemblerが`PES_packet_length + 6` byteだけをservice共通台帳からclaimする。映像`stream_id 0xE0..0xEF`の`PES_packet_length == 0`は、同一PIDの次PUSIまでを収集し、`MAX_PES_BUFFER_BYTES`を上限とする。起動前に`ProductProfile`を検証して`CapabilitySnapshot.pesRuntimeBudgetBytes`へ固定し、その値を`MAX_PES_BUFFER_BYTES * CapabilitySnapshot.pesFilterCount`以上とする。各filterは同時に1 assemblerだけを所有するため、公開個数上限まで最大保持量を同時に保証できる。
 
 `DemuxCapabilities.numPesFilter`は個数だけを表し、対応stream ID集合または長さ制約を表現できない。そのため`numPesFilter > 0`を広告するdemuxは、有効な明示`streamId 0..255`とwildcard `0xFFFF`を一般PES設定として受理する。製品同梱TISはPMTで字幕ESを検出した場合に字幕PIDと明示`streamId=0xBD`を指定するが、これは利用側の選択でありHAL能力の非公開制限ではない。
 
@@ -1727,9 +1745,9 @@ soft demuxに入るTS packetの入力元は次の三種類だけとする。
 
 | 入力元 | 意味 | 世代キー |
 |---|---|---|
-| `Frontend` | frontend backendから来るlive TS | `Frontend(frontend_generation)` |
+| `Frontend` | frontend backendから来るlive TS | `Frontend(frontend_operation_generation)` |
 | `PlaybackDvr` | playback DVR input FMQから読み、demuxへ投入するTS | `PlaybackDvr(dvr_id, queue_identity, queue_epoch)` |
-| `SourceFilter` | `IFilter.setDataSource()`により、上流raw TS filter出力を下流filterへ再投入するTS | `SourceFilter(filter_id, filter_generation)` |
+| `SourceFilter` | `IFilter.setDataSource()`により、上流raw TS filter出力を下流filterへ再投入するTS | `SourceFilter(filter_id, filter_delivery_generation)` |
 
 三者を同じcontinuity、parser、flush generation名前空間へ入れてはならない。
 
@@ -1737,7 +1755,7 @@ soft demuxに入るTS packetの入力元は次の三種類だけとする。
 
 `SourceFilter`はraw TS packetの再投入経路だけを表す。section、PES、AV、record payloadを`SourceFilter`経由で再配送しない。上流filterがraw TSを出力できない種別なら`setDataSource()`を拒否する。
 
-soft-demux で必要な stream generation、continuity、section / PES / record-index parser / assembler の boundary mutation と、上位 transaction との prepare / commit composition は 0-S-3B の `StreamBoundaryTxn` を唯一の正本とし、本節では再定義しない。以下では入力 origin と generation ごとの data-path 結果だけを定める。
+soft-demux で必要な `stream_boundary_generation`とsteady-state ownerへのtyped reset / invalidate dispatch と、上位 transaction との prepare / commit composition は 0-S-3B の `StreamBoundaryTxn` を唯一の正本とし、本節では再定義しない。以下では入力 origin と generation ごとの data-path 結果だけを定める。
 
 旧input origin / generationで開始されたsection / PES partial outputは、新しいboundary後のoutputへ連結または配送しない。`flush()`、`setDataSource()`、filter close、source unlink、stream boundaryに伴うparser / assembler stateとgenerationのmutationは0-S-3Bの`StreamBoundaryTxn`を唯一の正本とし、本節では再定義しない。
 
@@ -1762,7 +1780,7 @@ record filter  -> SourceFilter -> 任意 filter
 
 ### PES assembler の異常系状態表
 
-次表は一般PES filterが満たす構文・再同期条件を表す。設定は有効な明示stream IDまたはwildcardを受理し、受信したstream IDごとに宣言長ありPESと映像の長さ0 PESを区別する。
+次表は一般PES filterが満たす構文・再同期条件を表す。設定は有効なPES `streamId` 0..255を受理し、受信したstream IDごとに宣言長ありPESと映像の長さ0 PESを区別する。
 
 | 入力状態 | 判定 | assembler 動作 | 配送 |
 |---|---|---|---|
@@ -1784,7 +1802,7 @@ record filter  -> SourceFilter -> 任意 filter
 | flush / stop / close / source unlink | boundary | `StreamBoundaryTxn`参照 | 境界前の未完了PESを境界後のPESとして配送しない |
 
 
-PESの組み立て状態はPIDごとに分離する。`PES_packet_length > 0` の場合は、宣言されたPESバイト数を正確に収集した時点だけを完了とする。同じPIDで宣言長に達する前にPUSIを受信した場合は破損とし、未完のPESを破棄する。`PES_packet_length == 0` の場合は、同じPIDの後続TSペイロードで `payload_unit_start_indicator=1` かつ、ペイロード先頭に構造上有効な `0x000001` のPES開始コードと最低限有効なPESヘッダーがある場合に限り、その直前で現在のPESを完了する。境界となるパケットは次のPESの先頭とし、前のPESへ追加しない。同じPIDのPUSIと有効なPESヘッダーを伴わないエレメンタリーストリーム内の `0x000001` 開始コードによって、現在のPESを終了してはならない。同じPIDのPUSIがあってもPES開始部またはヘッダーが構造上不正な場合は、伝送破損として未完PESを破棄し、型付き診断を記録して、完了PESとして通知しない。別PIDのPUSIは影響させない。TEI、連続性の不連続、`flush()`、`stop()`、`close()`では、境界前の未完PESを境界後の完了PESへ連結・配送せず、対応する型付き診断を記録する。parser / assembler / generationのboundary mutationは`StreamBoundaryTxn`だけを正本とする。
+PESの組み立て状態はPIDごとに分離する。`PES_packet_length > 0` の場合は、宣言されたPESバイト数を正確に収集した時点だけを完了とする。同じPIDで宣言長に達する前にPUSIを受信した場合は破損とし、未完のPESを破棄する。`PES_packet_length == 0` の場合は、同じPIDの後続TSペイロードで `payload_unit_start_indicator=1` かつ、ペイロード先頭に構造上有効な `0x000001` のPES開始コードと最低限有効なPESヘッダーがある場合に限り、その直前で現在のPESを完了する。境界となるパケットは次のPESの先頭とし、前のPESへ追加しない。同じPIDのPUSIと有効なPESヘッダーを伴わないエレメンタリーストリーム内の `0x000001` 開始コードによって、現在のPESを終了してはならない。同じPIDのPUSIがあってもPES開始部またはヘッダーが構造上不正な場合は、伝送破損として未完PESを破棄し、型付き診断を記録して、完了PESとして通知しない。別PIDのPUSIは影響させない。TEI、連続性の不連続、`flush()`、`stop()`、`close()`では、境界前の未完PESを境界後の完了PESへ連結・配送せず、対応する型付き診断を記録する。steady-state parser / assembler stateは対応するper-filter parser ownerを正本とし、境界時のreset / invalidate要求と`stream_boundary_generation`だけを`StreamBoundaryTxn`のtyped boundaryとして扱う。
 
 
 ### ワーカー失敗と所有権境界
@@ -1818,46 +1836,7 @@ cleanup commandの途中失敗後の後続command実行、未完step記録、同
 
 ### AV 共有メモリの原子性不変条件
 
-AV shared backing は、MediaEvent 用 shared memory slot の lifetime を所有する。slot の `active`、`reserved`、`free`、`next_generation` は、一つの原子的状態として扱う。
-
-`clear_result()`、`release()`、`release_all()` は、失敗時に部分更新してはならない。内部状態は次を一つの mutex 配下に置く。
-
-```text
-AvSharedState {
-  active_slots
-  reserved_slots
-  free_slots
-  next_generation
-  diagnostics
-}
-```
-
-複数 mutex に分けて順次更新してはならない。lock 取得に失敗した場合、状態は呼び出し前から変化しない。
-
-`clear_result()` の動作は次に固定する。
-
-| 条件 | 動作 |
-|---|---|
-| lock 取得失敗 | Err を返す。状態は不変 |
-
-未配送状態と配送済み使用中状態を分け、使用中の領域は解放要求時だけ空き状態へ移す。
-
-
-| 条件 | 動作 |
-|---|---|
-| generation 枯渇 | Err を返す。状態は不変 |
-
-`release(avDataId)` の動作は次に固定する。
-
-| 条件 | 動作 |
-|---|---|
-| lock 取得失敗 | Err。状態不変 |
-| active に存在する | active から削除し、同一 commit で free へ戻す |
-| free 復帰に失敗 | 状態不変で Err |
-
-
-資源の寿命と所有者を明示し、FMQとAV領域で分けて管理する。FMQの記述子と記憶領域はキューランタイムが所有し、`flush()`後も維持する。論理閉鎖済みで、受付済みトランザクションが0件になった後にだけ解放する。AV共有領域はフィルター世代が、イベント固有領域は個々の割り当てが所有する。配送済みの`avDataId`に対応する割り当ては、`flush()`、再設定、論理閉鎖をまたいでクライアント保持中とし、`releaseAvHandle()`または内部の最終隔離処理まで維持する。各割り当ては実サイズだけをfilter別・サービス全体の実行時台帳へ加算し、解放時に正確に1回減算する。要求量超過、容量枯渇、割り当て失敗は、コールバックと`dataId`の公開前に確定させ、使用中の割り当てを追い出してはならない。ワーカーハンドルは、実際に終了するまでサービスのワーカー保管領域または回収機構が所有する。キュー世代、フィルター配送世代、解析器世代を進める処理は論理状態だけを初期化し、公開済みまたはクライアント保持中の記憶領域を破棄しない。
-
+AV shared backingはMediaEvent用allocationのlifetimeを論理的に一括管理し、allocation/release操作で部分更新を公開しない。物理lock、内部struct、helper名は`CODE_CONVENTION.md`を正本とする。
 
 ### TS continuity / adaptation-only packet 固定
 
@@ -2227,7 +2206,7 @@ DVB backend は frontend index と同じ demux index / dvr index を使う。`ad
 
 ## 診断可観測性の固定
 
-本番経路トークンの用語、リリース段階、TIS から `setKeyToken()` へ渡してよい値のスコープは `開発規則.md` を正とする。本節では、Tuner HAL が受け取ったトークンの検証、AIDL戻り値、診断、副作用だけを固定する。`register_from_cas_bridge()` は CAS bridge 接続口であり、非 test product 経路からの到達可否は `開発規則.md` の本番経路スコープに従う。
+本番経路トークンの用語、リリース段階、TIS から `setKeyToken()` へ渡してよい値のスコープは `開発規則.md` を正とする。本節では、Tuner HAL が受け取ったトークンの検証、AIDL戻り値、診断、副作用だけを固定する。CAS bridgeからのtoken登録は標準MediaCas session ID bytesと内部key resourceの対応を成立させる論理契約に従う。具体helper名とdebug出力方法は`CODE_CONVENTION.md`を正本とする。
 
 `IDescrambler.setKeyToken()` に到達する non-VOID トークンは、標準MediaCas経路では `MediaCas.Session.getSessionId()` と同一byte sequenceをTuner key tokenとして用い、CAS / vendor key bridgeがそのbytesと内部`DescramblerKeySlot`の対応をHAL key token tableへ登録したものを解決対象とする。TIS向けに別形式のvendor-private tokenを設けない。入力形式はTuner SDK `Descrambler.isValidKeyToken()` に合わせ、1 byte以上16 byte以下を有効なtoken形式とする。ただしAndroid 14系の `Tuner.VOID_KEYTOKEN` は1 byteトークン `[0x00]` としてcurrent key removal用に予約する。空トークン `[]` はVOIDトークンではなく、常に `INVALID_ARGUMENT` と内部診断 `BAD_TOKEN` に落とす。16 byteを超えるnon-VOIDトークンはregistry lookup前に `INVALID_ARGUMENT` / `BAD_TOKEN` とする。
 
@@ -2239,9 +2218,9 @@ DVB backend は frontend index と同じ demux index / dvr index を使う。`ad
 
 `IDescrambler.setKeyToken()` の失敗時は、現在の鍵スロット、現在のトークン、demux 紐付け、PID登録を変更しない。空 トークン、長さ超過、未登録、失効済み、台帳異常のどれで失敗しても、成功扱いにせず固定された AIDL 戻り値と診断だけを返す。PID 登録を消す操作は `removePid()` だけであり、`VOID_KEYTOKEN` と 鍵参照の解決失敗は PID 登録削除を伴わない。
 
-デスクランブル診断は、`dump_descrambler_diagnostics_for_debug()` の dump 文字列と `maleicacid-tuner-hal-descrambler-diagnostic` ログで観測する。dump には demux、PID、`CLEAR_PACKET`、`DESCRAMBLED`、`SCRAMBLED_PASSTHROUGH_FOR_RECORDING`、`MALFORMED_PACKET_FOR_RECORDING`、`DESCRAMBLE_FAILED`、`INVALID_PACKET_SIZE`、`BAD_SYNC_BYTE`、`INVALID_AFC`、`INVALID_ADAPTATION_FIELD`、`INVALID_TSC`、`SCRAMBLED_WITHOUT_PAYLOAD`、`NO_KEY`、`BAD_TOKEN`、`CAS_BRIDGE_UNCONNECTED`、`EXPIRED_KEY_SLOT`、`MULTI2_FAIL`、`SCRAMBLED_WITHOUT_DESCRAMBLER` を含める。`SCRAMBLED_PASSTHROUGH_FOR_RECORDING` は後段デスクランブル可能な録画 TS を残すための pass-through であり、平文 成功を意味しない。malformed / undefined な TS-frame-like packet の録画保存は `MALFORMED_PACKET_FOR_RECORDING` で別管理し、`InvalidPacketSize` / `BadSyncByte` は record-DVR raw TS に保存しない。
+デスクランブル診断は、descrambler診断は公開AIDL意味を変えない内部診断として保持し、具体helper・出力先・時間間隔は`CODE_CONVENTION.md`を正本とする。
 
-`MALEICACID_TUNER_HAL_DESCRAMBLER_DIAGNOSTIC_FILE` を設定した デバッグビルドまたは立ち上げ検証環境では、Tuner HAL サービスが 5 秒間隔で同じ descrambler 診断 dump を指定ファイルへ書き出す。Stable AIDL には vendor 独自メソッドを追加しない。
+descrambler診断の具体的なdebug出力設定は`CODE_CONVENTION.md`を正本とする。
 
 
 ### 失効 トークン 診断
@@ -2320,19 +2299,7 @@ AV shared backing は、検証が成功するまで旧 backing を保持する�
 
 ### test と release API の境界
 
-テストの都合で release経路 の API 可視性を広げない。テスト補助関数は `#[cfg(test)]` 内に閉じる。旧 補助関数、互換 alias、互換 wrapper を release経路 に戻してはならない。
-
-
-## product 統合手順
-
-product makefile、BoardConfig、ueventd、SELinux、VINTF/init、VTS設定、通常 vendor binary 統合、二重登録禁止の具体手順は `tuner_hal2/INTEGRATION.md` を正とする。本書には統合手順を重複定義せず、Tuner HAL の設計判断だけを置く。旧 `tuner_hal` は参照用ソースであり、product default serviceとして組み込まない。
-
-px4 probe prefix を変更する場合は、frontend_px4系実装、`tuner_hal2/config/ueventd.tuner_hal2.rc`、`tuner_hal2/sepolicy/file_contexts` を同時に更新し、静的確認 と ロジック確認で一致を確認する。この整合条件の実機組込手順は `tuner_hal2/INTEGRATION.md` に従う。
-
-
-## 契約確認観点
-
-本節は設計契約に対する確認観点を列挙する。実行手順、atest名、VTSコマンド、成果物名、完了判定は `タスク完了判定の実施方法.md` または個別テスト計画を正とし、本書では定義しない。
+release AIDL経路からテスト専用入口へ到達してはならず、テスト専用入口は製品runtimeのcapability・状態・戻り値を変更しない。この実装方法と具体的なcompile-time gateは`CODE_CONVENTION.md`を正本とする。
 
 ### AOSP / AIDL / VTS 系
 
@@ -2376,7 +2343,8 @@ px4 probe prefix を変更する場合は、frontend_px4系実装、`tuner_hal2/
 | T-AOSP-30a | 未公開の既知値または将来のstatus数値を含む`getStatus()` | 対応済み要素だけを要求順で返し、非対応要素を無視して成功 |
 | T-AOSP-30b | `getFrontendStatusReadiness()` unsupported status type | 要求順・同長で要素ごとにUNSUPPORTED |
 | T-AOSP-31 | `tune()` 中の再`tune()` | 旧tune停止、新tune開始 |
-| T-AOSP-32 | `scan()` 中の再`scan()` | 旧scan停止、新scan開始 |
+| T-AOSP-32a | `scan(K) -> LOCKED -> scan(K)` | 2回目はbackend再探索なしに`END`を正確に1回配送し、2回目の`LOCKED`を配送しない |
+| T-AOSP-32b | active scan中に異なるrequestで`scan(K2)` | 新scanへ移り、旧scan由来の後続結果を新scan結果として公開しない |
 | T-AOSP-33 | `stopTune()` | tune停止、attached demuxへdata停止 |
 | T-AOSP-34 | `stopScan()` | scan停止 |
 | T-AOSP-35 | active scan中の`stopTune()` | 成功。scan generationとbackend scanを停止せず、scan callbackを継続し、frontendは`Scanning`のまま。tune世代は存在しないためbackend tune-stopを呼ばず、attached demuxのstream boundaryも変更しない |
@@ -2411,7 +2379,7 @@ px4 probe prefix を変更する場合は、frontend_px4系実装、`tuner_hal2/
 | T-TS-2 | 187/189 byte | reject |
 | T-TS-3 | TEI set packet | section/PES/AV assemblyへ入れない |
 
-188バイトで構造上完全なTSパケットに `TEI=1` が設定されている場合、TS生データ出力とTS記録出力には入力順のまま保持する。HALはTEIカウンターを飽和加算し、記録の `byteNumber` は実際に書き込んだバイト数を基準に進める。Section、PES、AVなどの意味解析側では当該パケットを破棄または再同期し、解析済みイベントを通知しない。同期バイトまたは長さの不正は、TEIとは別のパケット単位破棄とする。連続性の不連続では、境界前後の意味解析結果を連結せず、内部boundary mutationは`StreamBoundaryTxn`参照とする。これらの放送パケット上の異常だけを理由にキューまたは経路を隔離してはならず、隔離は基盤破損の場合に限る。エラーパケットを除いたTS生データまたは記録データを公開する場合は、バイト番号の契約を含む明示的な `ProductProfile` を別に定義する。
+188バイトで構造上完全なTSパケットに `TEI=1` が設定されている場合、TS生データ出力とTS記録出力には入力順のまま保持する。HALはTEIカウンターを飽和加算し、記録の `byteNumber`は当該Record Filterのoutput lifetime先頭から、Record DVRへ実際にcommit済みのTS byte数を累積した`record_output_byte_offset`とする。configure/reconfigure、`flush()`、source/stream boundary、parser resetでは0へ戻さず、新しいFilter object/output lifetimeだけ0から開始する。
 
 
 | 番号 | 確認観点 | 目的 |
@@ -2444,16 +2412,20 @@ px4 probe prefix を変更する場合は、frontend_px4系実装、`tuner_hal2/
 | T-SEC-7 | EIT `section_length == 4093` | accept |
 | T-SEC-8 | EIT `section_length == 4094` | reject |
 | T-SEC-13 | `SectionBits repeat=false` | 最初の一致sectionを1件配送してone-shot停止 |
-| T-SEC-14 | 明示versionの`TableInfo repeat=false`、sectionが順不同 | 最初に選択した`TableInstanceKey`の各sectionを初出順に1回配送し、`0..last_section_number`の配送済みbitが全て立った後に停止 |
-| T-SEC-14a | `version=-1`の`TableInfo repeat=false` | target選択まではwildcardを維持し、先着sectionのactual versionをinstance identityとして固定。設定値は書き換えない |
-| T-SEC-14b | 同一table ID/versionで複数extension/current-nextが並行 | 最初の構造上完全なmatching sectionが属するinstanceだけをtargetとし、他instanceの同じsection番号を混成・配送しない |
-| T-SEC-14c | wildcard target完成前に別actual version到着 | targetを切り替えず、先着instanceの未配送sectionを待つ。別versionを配送しない |
-| T-SEC-14d | target sectionの`last_section_number`不一致 | 不一致sectionをmalformedとして破棄し、bitmapまたは停止判定を進めない |
-| T-SEC-14e | short syntax + wildcard + `repeat=false` | 最初の完全sectionを1 section tableとして1回配送後停止 |
-| T-SEC-14f | 最大`last_section_number=255` | 256-bit（32 byte）bitmapと固定metadataだけで追跡し、各section payloadは逐次配送してtable全体を保持しない |
-| T-SEC-14g | target未完成、`stop()`／`flush()`／再設定／stream boundary | timeoutで誤完了せず、境界前targetを境界後へ継承・完了扱いしない。target metadata / bitmap / parser generationのmutationは`StreamBoundaryTxn`参照 |
-| T-SEC-14h | 各section配送時のFMQ一時backpressure | 既存の配送保留予算で当該sectionを再試行し、FMQ/event commit前に配送済みbitを立てない |
-| T-SEC-14i | 複数extension/versionが並行する`TableInfo repeat=true` | table id/version条件に一致する全instanceのsectionを継続配送する |
+
+
+
+
+
+
+
+
+
+
+| T-SEC-14 | TableInfo `repeat=false` / 同じTableId・versionの複数instance | extension/current_nextで公開matchを狭めず、完了前に観測したmatching instanceを別trackerとして追跡 |
+| T-SEC-14a | TableInfo version=`-1` | version wildcardとして公開matchし、内部instance keyをhidden filterにしない |
+| T-SEC-14b | matching instance追加 / one-shot完了前 | active setへ追加し、全active instance完了後だけ停止 |
+| T-SEC-14c | stream/source/filter boundary | section/TableInfo parser ownerをtyped resetし、境界前後のsectionを結合しない |
 | T-SEC-15 | `repeat=true` version更新 | 継続監視 |
 
 raw sectionは、外形、設定されたCRC検査、意味検証を分ける契約に従う。完全なsection外形には、ポインターと`section_length`が範囲内であり、宣言範囲の全バイトが揃っていることを必要とする。外形が完全でも表の構文、予約ビット、意味項目が不正な場合は、rawフィルターに限り元のバイト列を配送してよい。CRC不一致のraw sectionを配送できるのは`isCheckCrc=false`の場合だけとし、`isCheckCrc=true`では破棄する。配送時は推測値を含む`DemuxFilterSectionEvent`を通知せず、`DATA_READY`またはEventFlagでFMQ到着を通知し、型付きのsection解析診断を記録する。raw以外のsectionフィルターでは対象データを破棄する。外形が不正または不完全な場合は、すべてのフィルターで破棄する。
@@ -2479,13 +2451,13 @@ raw sectionは、外形、設定されたCRC検査、意味検証を分ける契
 | T-PES-14 | malformed PES後の復帰 | 次PUSIから正常復帰 |
 | T-PES-15 | 映像以外の`stream_id`で`PES_packet_length=0` | malformedとして破棄 |
 | T-PES-16 | `streamId=0xBD`以外の有効な明示stream ID | configure成功し、指定IDだけを照合・配送 |
-| T-PES-17 | wildcard `streamId=0xFFFF` | configure成功し、有効な全stream IDを配送対象にする |
+| T-PES-17 | `streamId=0xFFFF`または256..65535 | `INVALID_ARGUMENT`で拒否し、stateを変更しない |
 | T-PES-18 | 映像`stream_id 0xE0..0xEF`の長さ0 PES | 次PUSIで完成し、`MAX_PES_BUFFER_BYTES`超過時だけoversize破棄 |
 | T-PES-19 | ordinary PESの`PTS_DTS_flags=00` | timestampなしの有効PESとして配送 |
 | T-PES-20 | ordinary optional headerを持たないspecial stream id | 通常header検証を適用せず、special syntaxの完全長を配送 |
 | T-PES-21 | PES event生成 | `streamId`、`dataLength`、`mpuSequenceNumber`だけを設定し、PTS有無を捏造しない |
 
-PES filterは、外形検証の後に`stream_id`で通常optional-header構文とspecial syntaxを分岐する。明示`streamId 0..255`またはwildcard `0xFFFF`の有効な設定を受理し、ヘッダーが複数TSパケットに分割される場合にも対応する。通常構文では`PTS_DTS_flags=00`をtimestampなしの有効PESとして受理し、PTSまたはPTS/DTSが存在する場合だけflag、marker、`header_data_length`とtimestamp fieldを内部検証する。special syntaxへ通常optional-header検証を適用しない。完全PES bytesを通常FMQへ書き込み、`DemuxFilterPesEvent`ではAIDL公開フィールドの`streamId`、`dataLength`、`mpuSequenceNumber`だけを通知する。PES eventへPTS有無またはPTS値を追加しない。Media eventのPTS公開契約とは分離する。宣言長ありPESは宣言長で完成し、映像`stream_id 0xE0..0xEF`の長さ0 PESは同一PIDの次PUSIで完成する。その他のstream IDで長さ0を受信した場合はruntime malformedとして破棄する。
+PES filterは、外形検証の後に`stream_id`で通常optional-header構文とspecial syntaxを分岐する。明示`streamId 0..255`または`0xFFFF`は`INVALID_STREAM_ID`として拒否する値 `0xFFFF`の有効な設定を受理し、ヘッダーが複数TSパケットに分割される場合にも対応する。通常構文では`PTS_DTS_flags=00`をtimestampなしの有効PESとして受理し、PTSまたはPTS/DTSが存在する場合だけflag、marker、`header_data_length`とtimestamp fieldを内部検証する。special syntaxへ通常optional-header検証を適用しない。完全PES bytesを通常FMQへ書き込み、`DemuxFilterPesEvent`ではAIDL公開フィールドの`streamId`、`dataLength`、`mpuSequenceNumber`だけを通知する。PES eventへPTS有無またはPTS値を追加しない。Media eventのPTS公開契約とは分離する。宣言長ありPESは宣言長で完成し、映像`stream_id 0xE0..0xEF`の長さ0 PESは同一PIDの次PUSIで完成する。その他のstream IDで長さ0を受信した場合はruntime malformedとして破棄する。
 
 
 ### MULTI2 / B25 descrambler 系
@@ -2522,40 +2494,26 @@ PES filterは、外形検証の後に`stream_id`で通常optional-header構文�
 ## 対応能力・キュー・ARIB境界
 
 - Filter / SharedFilter の producer drain は 0-S-3B の `FilterProducerDrainGate`、DVR の queue epoch / transaction token は `QueueEpochProtocol`、Filter / DVR `flush()` の共通 cleanup orchestration は `QueueCleanupTxn` を唯一の正本とする。本節では対象 domain、公開結果、資源要求だけを定め、内部 state、permit / token、phase、commit / rollback を再定義しない。
-- demux、型別filter、DVRの個数とbyte予算は、frontend/backend/電源、demux base、main type別filter/FMQ、PES、AV、playback/record DVR、worker/callback/reaper/cleanup共有枠の`CapabilityClosure`ごとに原子的に検証・予約する。各閉包の失敗は、その閉包を必要とする能力だけを非公開にし、依存しないfrontend、filter種別、DVR種別へ波及させない。選択済み閉包を合成した後、query/openの同一性、`numDemux`、`filterCaps`、用途別個数、全byte台帳の横断不変条件を一括検証し、変更不能な`CapabilitySnapshot`として確定する。PES assemblerは全ての有効な明示stream IDとwildcardを同じPES閉包で扱い、宣言長ありPESと映像stream IDの長さ0 PESを`MAX_PES_BUFFER_BYTES`および`pesRuntimeBudgetBytes`内で保持する。Tuner VTSは別途起動前環境へ結び付け、入力元、PID、経路、queue容量、memory予算が定義されるまで`DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED`とする。
+- demux、型別filter、DVRの個数とbyte予算は、frontend/backend/電源、demux base、main type別filter/FMQ、PES、AV、playback/record DVR、worker/callback/reaper/cleanup共有枠の`CapabilityClosure`ごとに原子的に検証・予約する。各閉包の失敗は、その閉包を必要とする能力だけを非公開にし、依存しないfrontend、filter種別、DVR種別へ波及させない。選択済み閉包を合成した後、query/openの同一性、`numDemux`、`filterCaps`、用途別個数、全byte台帳の横断不変条件を一括検証し、変更不能な`CapabilitySnapshot`として確定する。PES assemblerは全ての有効なPES `streamId` 0..255を同じPES閉包で扱い、宣言長ありPESと映像stream IDの長さ0 PESを`MAX_PES_BUFFER_BYTES`および`pesRuntimeBudgetBytes`内で保持する。Tuner VTSは別途起動前環境へ結び付け、入力元、PID、経路、queue容量、memory予算が定義されるまで`DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED`とする。
 - AVの共有方式とイベント固有方式は、同じ実行時台帳を共有する。各filterでは`CapabilitySnapshot.avPerFilterLiveBytes`、サービス全体では`CapabilitySnapshot.avRuntimeBudgetBytes`を未解放payloadバイト数の上限とし、イベントの実サイズだけを割り当てる。`openFilter(type, bufferSize, cb)`の`bufferSize`はFMQ容量として別に予約する。固定スロット数や1 MiB単位をAOSPまたはコーデック上限として規範化せず、使用中の割り当てを追い出さない。
 - ARIB STD-B10 5.13-E1 Part 1 5.2.4〜5.2.17・Part 3 5.1.1〜5.1.3を表ごとのsection上限1021/4093の根拠とし、STD-B32 3.11-E1 Fascicle 3 Chapter 3 3.1をPES構文の根拠とする。B32を4093の独立した上限根拠として使用しない。B25は公式英訳6.7-E1全文を精読基準とするが、`開発規則.md` のproduct-level invariantどおり、Part 1 §4.9の受信機システム最小8鍵組容量は本製品全体として恒久的に適合対象外とし、同条項への適合を宣言しない。STD-B25デコード能力は、対応するPart・方式・payload処理と、物理tuner/backend復号経路ごとの実鍵組数、実PID数、pool共有単位、枯渇時の`UNAVAILABLE`を製品profileの事実として定義する。AOSPに公開欄は追加せず、session間で共有する同じ内部台帳で受付と解放を強制する。
 - 対象ドライバーと上流Linuxの証跡は、AOSP契約とは独立した根拠として扱う。
 
 ### ARIB規範本文との静的照合
 
-ARIB依存の規範主張は、アクセス可能な最新版日本語版本文を一次資料とし、それにアクセスできない規格ではARIBが公式公開する最新英語版本文を代わりに用いて、条項単位で照合する。改定概要、版一覧、紹介ページ、二次資料を規範本文の代用にしない。本PRが使うARIB依存主張は次表の範囲で全てであり、表にない条項への適合を主張しない。
+ARIB依存の規範主張は、**現行日本語版の版番号**と、**今回実際に条項本文を精読した証拠本文**を分離して管理する。証拠本文と現行日本語版の版が一致しない規格は`差分未証明`とし、その規格について現行版まで条項内容が同一である、または現行版へ完全適合を検証済みであるとは主張しない。改定概要・版一覧・紹介ページは版管理の一次資料として使えるが、条項本文の代替にはしない。
 
-| 規格・使用本文 | 精読条項 | 本PRで固定する主張 | 所有文書 |
-|---|---|---|---|
-| STD-B10 5.13-E1 英語版 | Part 1 5.2.4〜5.2.17・Annex B、Part 2 Table 6-5・6.2.12・6.2.26・Annex E、Part 3 5.1.1〜5.1.3 | PSI/SIのTable ID・表別section長・CRC、parental rating、codec signaling | 本書、`arib_si_engine_rs/DESIGN_JA.md`、`tis/DESIGN_JA.md` |
-| STD-B20 3.0 日本語版 | 2.9の別記第2・別記第3、2.10 | 相対TS番号が0〜7のselectorであり、TS_IDとは別domainで1対1に対応付けられること | 本書 |
-| STD-B21 5.12-E2 英語版 | Appendix 10 Table 10-3、Table 10-4 | CATV C13〜C63の中心周波数とC21/C22/C23の非連続境界 | 本書、`tis/DESIGN_JA.md` |
-| STD-B24 6.4-E1 英語版 Fascicle 1 | 7.1.1.1〜7.1.2.4、9.1.1、9.2、9.3、9.5、9.6 | SI/EPG文字のdesignation・invocation・Macro・DRCS境界、独立PES字幕とdata group、PTS、PMT descriptor | `arib_si_engine_rs/DESIGN_JA.md`、`tis/DESIGN_JA.md` |
-| STD-B25 6.7-E1 英語版 | Part 1 2.2.2.4、2.2.2.10〜2.2.2.11、3.1.5〜3.1.7、3.2.3〜3.2.4、4.3.3.3 Table 4-11〜4-14、4.8 | MULTI2 payload処理、ECM/EMM/Ks、スクランブル状態検出に限定したSTD-B25デコード能力 | 本書 |
-| STD-B31 2.2-E1 英語版 | 2.3、3.8、3.9、3.11.1、3.14.2、3.15.6.5〜3.15.6.7 | ISDB-Tのmode、変調、符号化率、時間interleave、guard intervalの値域 | 本書 |
-| STD-B32 3.11-E1 英語版 Fascicle 1 | Chapter 3 3.1〜3.3 | MPEG-2 Video、MPEG-4 AVC、HEVC | `tis/DESIGN_JA.md` |
-| STD-B32 3.11-E1 英語版 Fascicle 2 | Chapter 3 3.1〜3.4、Chapter 5、Chapter 6 | MPEG-2 AAC、MPEG-2 BC、MPEG-4 AAC、MPEG-4 ALS | `tis/DESIGN_JA.md` |
-| STD-B32 3.11-E1 英語版 Fascicle 3 | Chapter 3 3.1 | PES start code、`stream_id=0xBD`、宣言長、長さ0をvideoだけに許す境界 | 本書、`tis/DESIGN_JA.md` |
+| 規格 | 現行日本語版 | 今回精読した証拠本文 | 版差分状態 | 精読条項 / 本PRで使う主張 | 所有文書 |
+|---|---|---|---|---|---|
+| STD-B10 | 5.14 | 5.13-E1 英語版 | `差分未証明` | Part 1 5.2.4〜5.2.17・Annex B、Part 2 Table 6-5・6.2.12・6.2.26・Annex E、Part 3 5.1.1〜5.1.3 / PSI/SI Table ID・表別section長・CRC、parental rating、codec signaling | 本書、`arib_si_engine_rs/DESIGN_JA.md`、`tis/DESIGN_JA.md` |
+| STD-B20 | 3.0 | 3.0 日本語版 | `版一致` | 2.9別記第2・別記第3、2.10 / 相対TS番号0〜7とTS_IDの別domain | 本書 |
+| STD-B21 | 5.14 | 5.12-E2 英語版 | `差分未証明` | Appendix 10 Table 10-3/10-4 / CATV C13〜C63中心周波数 | 本書、`tis/DESIGN_JA.md` |
+| STD-B24 | 6.5 | 6.4-E1 英語版 Fascicle 1 | `差分未証明` | 7.1.1.1〜7.1.2.4、9.1.1、9.2、9.3、9.5、9.6 / SI/EPG文字、字幕/data group、PTS、PMT descriptor | `arib_si_engine_rs/DESIGN_JA.md`、`tis/DESIGN_JA.md` |
+| STD-B25 | 7.0 | 6.7-E1 英語版 | `差分未証明` | Part 1 2.2.2.4、2.2.2.10〜2.2.2.11、3.1.5〜3.1.7、3.2.3〜3.2.4、4.3.3.3、4.8 / MULTI2・ECM/EMM・Ks境界。§4.9はproduct-level非適合方針を別途維持 | 本書、`開発規則.md` |
+| STD-B31 | 2.3 | 2.2-E1 英語版 | `差分未証明` | 2.3、3.8、3.9、3.11.1、3.14.2、3.15.6.5〜3.15.6.7 / ISDB-T伝送parameter | 本書 |
+| STD-B32 | 4.1 | 3.11-E1 英語版 Fascicle 3 | `差分未証明` | Fascicle 3 Chapter 3 3.1 / PES構文 | 本書 |
 
-STD-B25 Part 1 §4.9は上表の適合主張に含めない。`開発規則.md` のproduct-level invariantどおり、同条項に係る受信機システム最小8鍵組容量は本製品全体として恒久的に適合対象外とし、同条項への適合を宣言しない。1鍵組のSTD-B25デコード能力、実鍵組数または実PID数を同条項適合またはPart 1 CAS-R適合と表現しない。
-
-
-## VTS環境とARIB B31の境界
-
-- `VtsEnvironmentProfile=UNBOUND`では、VTS artifact/tag/commitまたはvariant propertyを含む環境入力が未確定であるためXML filenameを解決せず、XMLをinstallせず、試験scenarioも設定しない。runtime能力snapshotは独立して維持する。
-- `BOUND`では、要求object数が確定済みsnapshotに収まり、必要queue容量全体を予約できた後、宣言済み値を持つ静的XMLを選択したVTS実装で解決済みのpathへ正確に1つinstallする。
-- `REJECTED`では推測したpathへXMLをinstallせず、既定設定へfallbackしない。
-- ISDB-Tのパラメーター値域は、公式英訳STD-B31 2.2-E1本文の2.3、3.8、3.9、3.11.1、3.14.2、3.15.6.5〜3.15.6.7を精読基準とする。
-
-## 設計表と内部プロトコル
-
-本章の表と状態機械を設計正本とし、実行時と設計時は本書の安定した節名を参照する。
+上表で`差分未証明`の規格について、本PRのARIB根拠は「今回精読した証拠本文が支持する範囲」に限定する。現行日本語版との条項差分が別途条項本文で確認されるまで、現行版まで検証済みという表現へ読み替えない。
 
 ### `CapabilitySnapshot` の依存閉包合成
 
@@ -2596,7 +2554,7 @@ STD-B25 Part 1 §4.9は上表の適合主張に含めない。`開発規則.md` 
 | FILTER_SECTION | サービス全体 | 8 | `CapabilitySnapshot`の値 | 0 | なし | FMQ容量に加え、各公開filterについて1個のtarget metadataと256-bit（32 byte）の配送済みbitmapをSECTION閉包から予約する。section payloadは逐次配送し、table全体のpayload領域を別途予約しない。 |
 | FILTER_AUDIO | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | なし | FMQの`bufferSize`とは別に、実payloadをsnapshotの`avPerFilterLiveBytes`と`avRuntimeBudgetBytes`から割り当てる。物理領域の起動時先取りはしない。 |
 | FILTER_VIDEO | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | なし | FMQの`bufferSize`とは別に、実payloadをsnapshotの`avPerFilterLiveBytes`と`avRuntimeBudgetBytes`から割り当てる。物理領域の起動時先取りはしない。 |
-| FILTER_PES | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | demux当たり1 | 有効な明示`streamId 0..255`とwildcard `0xFFFF`を同じPES capabilityで扱う。宣言長ありPESは宣言長+6 byteをPES実行時台帳からclaimし、映像`0xE0..0xEF`の長さ0 PESは`MAX_PES_BUFFER_BYTES`と同台帳の上限内で組み立てる。stream ID別の非公開capabilityを設けない。 |
+| FILTER_PES | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | demux当たり1 | 有効な明示`streamId 0..255`と`0xFFFF`は`INVALID_STREAM_ID`として拒否する値 `0xFFFF`を同じPES capabilityで扱う。宣言長ありPESは宣言長+6 byteをPES実行時台帳からclaimし、映像`0xE0..0xEF`の長さ0 PESは`MAX_PES_BUFFER_BYTES`と同台帳の上限内で組み立てる。stream ID別の非公開capabilityを設けない。 |
 | FILTER_PCR | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | なし | PCRは通常payload FMQを持たず、`openFilter()`の`bufferSize`を`fmqRuntimeBudgetBytes`から予約しない。固定資源にはstatus callbackとA/V sync / PCR clockに必要なgeneration-local state（`PcrClockAnchor`等）を含む。 |
 | DVR_PLAYBACK | サービス全体 | 8 | `CapabilitySnapshot`の値 | 0 | demux当たり1 | configure時にFMQと同容量の処理中バッファーをsnapshotの2台帳から同時予約する。`VtsEnvironmentProfile`が`UNBOUND`ならXML、モジュール、試験シナリオを選択しない。 |
 | DVR_RECORD | サービス全体 | 8 | `CapabilitySnapshot`の値 | 0 | demux当たり1 | `VtsEnvironmentProfile`が`UNBOUND`ならXML、モジュール、試験シナリオを選択しない。`BOUND`なら宣言済み静的設定のキュー容量だけを原子的に予約する。 |

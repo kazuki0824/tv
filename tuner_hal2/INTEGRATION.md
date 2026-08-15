@@ -84,3 +84,8 @@ monitor event の API 戻り値、feature 宣言有無、別 profile へ切り�
 `TableInfo repeat=false`を含むsection filterの公開意味、first-instance解決、停止条件、`repeat=true`との使い分け、未知の全instance集合の終端をHALが推測しない契約は`../tuner_hal/DESIGN_JA.md`を正とする。複数table instanceのinstance別完成・更新・寿命は`../arib_si_engine_rs/DESIGN_JA.md`の「複数table instanceの完成・更新・寿命」、操作ごとの必要instance集合と完成時の明示`stop()`は`../tis/DESIGN_JA.md`の「複数table instance収集と停止」を正とする。
 
 本書が所有するのはproduct統合だけであり、VINTF/init/package/VTS設定の配置によって上記runtime契約を変更または再定義してはならない。
+
+
+## px4 probe prefix 変更時の同期対象（PR #28）
+
+px4のdevice probe prefixを変更する場合は、実装側の`frontend_px4`と、`tuner_hal2/config/ueventd.tuner_hal2.rc`、`tuner_hal2/sepolicy/file_contexts`を同一変更で同期する。具体pathはintegration contractであり、公開AIDL契約の`DESIGN_JA.md`では再定義しない。

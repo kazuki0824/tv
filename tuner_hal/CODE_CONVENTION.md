@@ -327,3 +327,16 @@ Tuner HAL の release HAL path では、次の直接実装を禁止する。
 - 未対応の downstream 組み合わせを成功 no-op にしてはならない。
 - raw TS source を downstream へ渡す場合は、TEI、continuity、discontinuity、duplicate、flush generation の判定を通常入力と同じ経路で通す。
 - section/PES/AV/record payload を別filterのsourceとして直接再配送する経路を追加してはならない。ただし `DESIGN_JA.md` で対応に変更した場合を除く。
+
+
+## DESIGN_JA.md から移送した実装規約（PR #28）
+
+公開AIDL意味ではなく実装方法に属する次の事項は本書を正本とする。
+
+- scan END callbackを返すhelperの結果を`let _ =`等で破棄しない。配送失敗はtyped resultとして上位ownerへ返す。テスト専用helper/entryは`#[cfg(test)]`等のcompile-time gateでrelease経路から除外する。
+- AV shared allocationの`active/reserved/free`、次ID/generation、diagnosticを一つの`AvSharedState`と一つのmutex配下で更新し、`clear_result()` / `release()` / `release_all()`は部分更新を残さない。
+- px4 backendは同一device nodeを一度だけopenし、TS readerはcontrol `File`から`File::try_clone()` / fd duplicate相当で派生させる。readerはnonblocking + `poll()`で扱い、live reader取得のための再openを禁止する。
+- Filter/DVR queue policyの具体実装は`filter_queue_model()` / `dvr_queue_model()`および`QueueOverflowPolicy`へ集約し、旧alias/boolean policyを再導入しない。
+- MediaCas session ID bytesとinternal key resourceの登録entryは`register_from_cas_bridge()`へ集約する。`dump_descrambler_diagnostics_for_debug()`、`MALEICACID_TUNER_HAL_DESCRAMBLER_DIAGNOSTIC_FILE`等のdebug出力は公開AIDL契約を変更しない診断経路に限定し、debug file writeは5秒以内のbounded operationとする。
+
+これらの名称・lock/API選択は実装規約であり、`DESIGN_JA.md`の公開状態・capability・戻り値・資源寿命を変更する根拠にはしない。
