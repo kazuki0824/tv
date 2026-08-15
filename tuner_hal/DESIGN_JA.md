@@ -378,7 +378,7 @@ commit前失敗では、成功戻りを返してはならない。commit後clean
 | `StreamBoundaryTxn` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | typed stream-boundary use-case、上位transactionからの`prepare()` | stream generation、continuity、section/PES/record-index parser/assembler boundary、prepared invalidation dispatch | relation table、Filter/DVR queue内部、A/V sync/PCR内部、callback、descrambler | validate → prepare `PreparedStreamBoundary` → commit / abort | abortでは旧generation維持、commit不明時だけ対象streamをfail/quarantine | service_runtime packet/boundary use-case、上位relation transaction | API/worker/helperのparser/generation直接変更 | standalone commit、prepared abort/commit、stale generation、relation composite atomicity |
 | `CallbackRegistrationUseCase` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | Frontend/LNB等のset/clear/replace callback。AIDL façadeはartifact prepare/releaseだけを行い、prepared artifact handleをservice_runtime ownerへ渡す | service_runtime側registration transactionのorchestration、prepared runtime registry mutation、domain callback logical stateのcommit/rollback policy。Binder artifact本体はcallback storeが所有 | Binder artifact storage/strong ref、callback配送後のdomain state、backend state | AIDL artifact prepare（非公開） → service_runtime runtime registry prepare → domain callback state prepare → service_runtime composite commit（prepared artifact handle採用 + runtime mutation + domain logical state） → AIDL old artifact cleanup | composite commit前はservice_runtime ownerがruntime/domain prepared stateをabortし、AIDL façadeへprepared artifact releaseを指示して旧callbackを維持。commit後のold artifact cleanup失敗では新registrationをrollbackせずcleanup/診断へ接続し、callback delivery失敗は`PostCommitCallbackFailureTxn` | service_runtime callback registration owner、AIDL artifact prepare/release façade | AIDL façadeによるdomain state/rollback policy所有、LNB/domain/backend/resource ledgerのBinder strong ref直接保持、artifact/runtime/domainの片側commit | set/replace/NULL、各prepare failure、composite commit fault、old artifact cleanup failureで新registration維持、Binder death/generation |
 | `FrontendLnbRelationTxn` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | `IFrontend.setLnb()` use-case、Frontend close時は`ObjectCloseTxn`からのtyped assignment release | frontend→LNB assignment relation、prepared assignment lease-reference mutation、transaction authority、旧assignment cleanup record | LNB endpoint lease pool内部、共有railの物理状態、`LnbControlTxn`のpersistent control state、`ILnb` object lifecycle | frontendとLNB endpointのlive/owner/generation/type/connectability・shared rail互換性を同一snapshotでvalidate → LNB resource ownerからassignment lease-reference mutationをprepare → relation prepare → composite commit（新relation + 新lease参照 + 旧relation logical detach） → 旧assignment lease参照cleanup | commit前失敗はprepared relation/lease mutationをabortして旧relation/旧lease参照を維持。commit結果不明時だけ当該frontend assignmentと関係claimをquarantine。commit後の旧lease cleanup失敗では新relationをrollbackせず旧lease cleanupだけをretry/quarantineへ接続。Frontend closeは同ownerのtyped releaseでassignmentを解放 | frontend object-method use-case、`ObjectCloseTxn` typed cleanup command、LNB resource ownerのprepared lease入口 | AIDL wrapper/frontend use-case/LNB registryによるrelation・leaseの別commit、`LnbControlTxn`への吸収、LNB lease pool内部の直接変更 | 初回assignment、同一assignment再設定、別LNBへの更新、non-satellite/wrong owner/stale generation/incompatible rail/capacity、prepare/commit fault、post-commit旧lease cleanup failureで新assignment維持、Frontend closeでassignment release |
-| `LnbControlTxn` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | `setVoltage()` / `setTone()` / `setSatellitePosition()` | operation lock、candidate、backend apply結果、LnbRegistry commit、failure state | DiSEqC transient send、callback、endpoint lease | validate → lock → old snapshot → candidate → backend apply → registry commit | `Rejected`はregistry不変。backend反映成功後のregistry commit失敗ではbackend rollback applyを行わずLNBを失敗状態とし、当該操作および以後の公開control APIを`UNKNOWN_ERROR`とする。backend反映結果自体が不明な場合はLNBをfail/quarantine。成功時だけgeneration更新 | LNB object use-case | 3 APIの個別state machine、DiSEqCの吸収 | 3操作、invalid/unavailable、backend rejected/indeterminate、registry failure、close race |
+| `LnbControlTxn` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | `setVoltage()` / `setTone()` / `setSatellitePosition()` | operation lock、candidate、backend apply結果、LnbRegistry commit、failure state | DiSEqC transient send、callback、endpoint lease | validate → lock → old snapshot → candidate → backend apply → registry commit | `Rejected`はregistry不変。backend反映成功後のregistry commit失敗ではbackend rollback applyを行わずLNBを失敗状態とし、当該操作および以後の公開control APIを`UNKNOWN_ERROR`とする。backend反映結果自体が不明な場合はLNBをfail/quarantine。backend / registry failureでは要求状態、backend apply結果、最後に確認できた機器状態、registry errorをtyped diagnosticとして保持する。成功時だけgeneration更新 | LNB object use-case | 3 APIの個別state machine、DiSEqCの吸収 | 3操作、invalid/unavailable、backend rejected/indeterminate、registry failure、close race |
 | `DescramblerPidTxn` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | `addPid()` / `removePid()` use-case | PID tuple、pool PID claim、backend packet-path apply、compensation | key refcount、session close/pool session lifetime | validate → claim/prepare → backend apply → PID ledger commit → compensation on failure | pre-commit rollback、backend適用後commit失敗はcompensation、compensation不能/実状態不明だけquarantine | descrambler PID use-case | AIDL/packet helperのclaim/backend/ledger直接変更 | add/remove idempotence、NULL/non-NULL source、wrong owner/generation、capacity、backend/commit/compensation fault |
 | `DescramblerKeyTxn` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | `setKeyToken()` use-case | key token/refcount/session-key mutation | PID relation、session cleanup | validate → new key acquire/prepare → backend apply → session/key-table commit → old ref release | pre-commit rollback、refcount/commit不整合は対象session/key tableをfail/quarantine | descrambler key use-case | PID/cleanup path、AIDL direct key table mutation | valid/invalid/VOID/same/replacement、backend fault、commit/refcount fault |
 | `DescramblerSessionCleanupTxn` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | descrambler closeは`ObjectCloseTxn`からtyped cleanup command、demux invalidationはdemux invalidation ownerからtyped cleanup request | sessionに属するPID/key/pool帰属のcleanup進捗 | public close authority、normal key/PID mutation、他session | trigger（close authorityまたはdemux invalidation generation）確認 → session cleanup直列化 → backend detach全件 → claims/key refs/pool session release → report | 全対象を試行し、close起因retryableは`ObjectCloseTxn`の`CleanupPending`へ、invalidation起因retryableはdemux invalidation ownerへtyped pending結果を返してcleanup/reaperで再試行。状態不明だけ対象sessionをquarantine | `ObjectCloseTxn` typed cleanup command、demux invalidation owner | public API/workerによる個別release、demux invalidationをpublic close authorityとして扱うこと | close/invalidateの別入口、partial cleanup、retry、idempotence、quarantine |
@@ -1267,24 +1267,20 @@ source filter downstream の対応範囲は、「表18. source filter origin / d
 
 本製品の source filter linkage は raw TS packet を下流 raw TS / record 系へ配送する範囲だけを正式対応とする。section payload / PES payload / AV payload / record payload を別filterへ直接再投入する linkage は対応しない。非対応組み合わせは成功扱いの無処理 にせず、設定時または接続時に `UNAVAILABLE` とする。
 
-### 表17. key token 所有権・参照カウント契約
+### 表17. key token 公開状態契約
 
-key token は HAL 内部では refcount 付き共有資源として管理する。同一 token bytes を複数 `IDescrambler` が `setKeyToken()` してよい。
+key token は不透明な参照値として扱い、同一 token bytes を複数 `IDescrambler` session が指定できる。HAL内部のkey table、refcount、session-key mutation、slot削除順序は0-S-3Bの`DescramblerKeyTxn`、close / demux invalidation時のkey cleanupは`DescramblerSessionCleanupTxn`だけを正本とし、本表では再定義しない。
 
-HAL 内 refcount は、HAL が保持する token 解決結果の寿命だけを管理する。CAS session の本来の寿命、CAS HAL 側の失効、ECM更新方針を代替しない。
-
-
-| 番号 | 操作 | 入力状態 | AIDL戻り値 | key table 変更 | session 変更 | 設計上の成立条件 |
-|---:|---|---|---|---|---|---|
-| KT-001 | `setKeyToken(non-VOID)` | token malformed | `INVALID_ARGUMENT` | なし | なし | 長さ・形式不正を未知tokenと混同しない |
-| KT-002 | `setKeyToken(non-VOID)` | token unknown / expired / revoked / releasedで台帳項目なし | `INVALID_ARGUMENT` | なし | なし | 入力トークンで参照できる項目が存在しない |
-| KT-002a | `setKeyToken(non-VOID)` | 台帳項目は存在するが現在のsessionでは利用不能 | `INVALID_STATE` | なし | なし | sessionのライフサイクル不整合として扱う |
-| KT-003 | `setKeyToken(non-VOID)` | 現在tokenなし、新token有効 | 成功 | 新token refcount +1 | sessionに新token設定 | key material解決とrefcount増加が両方成功 |
-| KT-004 | `setKeyToken(non-VOID)` | 現在token A、新token A | 成功 | 変更なし | 変更なし | 同一token再設定は 無処理。release しない |
-| KT-005 | `setKeyToken(non-VOID)` | 現在token A、新token B | 成功 | B refcount +1 後に A refcount -1 | sessionをBへ変更 | B確保成功前にAを失効しない |
-| KT-006 | `setKeyToken(VOID)` | 現在token A | 成功 | A refcount -1 | session keyを空へ変更 | refcount減少とsession clearが両方完了 |
-| KT-007 | descrambler close | 現在token A | close表に従う | A refcount -1 | session closed | key release失敗時はdescramblerを異常時閉鎖へ移す |
-| KT-008 | token refcount 0 | active sessionなし | - | token slot削除 | - | expired tokenを永久保持しない |
+| 番号 | 操作 | 入力状態 | AIDL戻り値 | caller-visibleな結果 | 内部mutation正本 |
+|---:|---|---|---|---|---|
+| KT-001 | `setKeyToken(non-VOID)` | token malformed | `INVALID_ARGUMENT` | 現在tokenを変更しない | `DescramblerKeyTxn` |
+| KT-002 | `setKeyToken(non-VOID)` | token unknown / expired / revoked / releasedで台帳項目なし | `INVALID_ARGUMENT` | 現在tokenを変更しない | `DescramblerKeyTxn` |
+| KT-002a | `setKeyToken(non-VOID)` | 台帳項目は存在するが現在のsessionでは利用不能 | `INVALID_STATE` | 現在tokenを変更しない | `DescramblerKeyTxn` |
+| KT-003 | `setKeyToken(non-VOID)` | 現在tokenなし、新token有効 | 成功 | 新tokenを現在tokenとして公開する | `DescramblerKeyTxn` |
+| KT-004 | `setKeyToken(non-VOID)` | 現在token A、新token A | 成功 | 同一token再設定は冪等成功で公開状態を変更しない | `DescramblerKeyTxn` |
+| KT-005 | `setKeyToken(non-VOID)` | 現在token A、新token B | 成功 | 成功時だけ現在tokenをBとして公開する | `DescramblerKeyTxn` |
+| KT-006 | `setKeyToken(VOID)` | 現在token A | 成功 | 成功時だけ現在tokenなしとして公開する | `DescramblerKeyTxn` |
+| KT-007 | descrambler close | token保持の有無を問わない | close表に従う | 公開close結果だけを表5に従って返す | `DescramblerSessionCleanupTxn` / `ObjectCloseTxn` |
 
 
 #### 表17-B. Descrambler cleanup / key lifetime transaction（契約参照）
@@ -1892,55 +1888,15 @@ Frontend / Filter / DVR / Playback固有のterminal meaningとworker failure後�
 
 ### close / unregister / quarantine 条件
 
-公開`close()`、owner loss、Dropのcleanup実行authorityは`ObjectCloseTxn`だけが所有する。以下のFilter/DVR手順は`ObjectCloseTxn`へ渡すtyped cleanup commandの依存順序と公開意味を定義する索引であり、各APIやobject wrapperが独立したstep runnerを所有することを意味しない。途中失敗でも`ObjectCloseTxn`は安全に実行可能な後続commandを試し、結果を`CleanupExecutionReport`へ集約する。
+公開`close()`、owner loss、Dropのcleanup実行authority、`begin_close`、`CleanupPending`、retry / handoff / reaper、`Quarantined`判定は0-S-3Bの`ObjectCloseTxn`だけを正本とする。本節はFilter/DVR固有のcleanup対象と依存順序、caller-visibleな結果だけを定義し、独立したclose state machineを持たない。
 
-close は、公開 object の lifetime を閉じる唯一の正規経路である。close 中に demux 側 unregister が missing を返した場合、通常は成功扱いしない。missing を成功扱いできるのは、同じ object の runtime failure 経路で事前 unregister 済みと明示記録されている場合だけである。
+Filterのtyped cleanup commandは、Filter producer / worker依存の停止・drain要求、未配送queue / 保留eventのcleanupと配送済みAV割り当ての`ReleaseOnly`台帳への移管、source/downstream relationとRecord DVR relationの解除、`demux.unregister_filter(filter_id, generation)`、runtime object登録解除、Filter ledgerの最終releaseを依存順に`ObjectCloseTxn`へ渡す。worker lifecycle自体は`WorkerRuntime` / `WorkerHandle`、queue drainは`FilterProducerDrainGate` / `QueueCleanupTxn`、relation mutationは各0-S-3B ownerを正本とする。
 
-`IFilter.close()` は次の順序で処理する。
+DVRのtyped cleanup commandは、DVR worker / queue依存の停止・cleanup要求、接続済みfilter relation解除、queue cleanup、`demux.unregister_dvr(dvr_id, generation)`、runtime object登録解除、DVR ledgerの最終releaseを依存順に`ObjectCloseTxn`へ渡す。worker lifecycle、queue epoch / cleanup、relation mutationの内部semanticsは各0-S-3B ownerを正本とする。
 
-```text
-1. FilterLedger begin_close
-2. 新しい配送許可を遮断し、実行中ワーカーを停止または回収機構へ移管
-3. 未配送queue・保留eventを消去し、配送済みAV割り当てをReleaseOnly台帳へ移す
-4. source/downstream接続とRecord DVR接続を解除
-5. demux.unregister_filter(filter_id, generation)
-6. runtime object tableから登録解除
-7. FilterLedger commit_close
-8. cleanup_complete = true
-```
+`demux.unregister_filter()` / `demux.unregister_dvr()` のmissingを成功相当に扱えるのは、同一object / generationについてruntime failure経路で事前unregister済みというtyped記録が存在する場合だけとする。それ以外のmissingは公開close成功へ丸めない。
 
-`demux.unregister_filter()` が missing を返した場合の動作は次に固定する。
-
-| 条件 | 動作 |
-|---|---|
-| runtime に `pre_unregistered_by_worker_failure` がある | close 継続可能 |
-
-閉鎖または登録解除の失敗は`cleanup_pending`へ記録し、再試行可能にする。機器、queue、台帳を変更した後で実状態を確定できない場合だけ隔離し、その他の後片付け失敗を一律に隔離してはならない。
-
-
-`IDvr.close()` は次の順序で処理する。
-
-```text
-1. DvrLedger begin_close
-2. 新しいキュートランザクションを遮断し、実行中ワーカーを停止または回収機構へ移管
-3. 接続済みfilterを解除
-4. queue clear
-5. demux.unregister_dvr(dvr_id, generation)
-6. runtime object tableから登録解除
-7. DvrLedger commit_close
-8. cleanup_complete = true
-```
-
-`demux.unregister_dvr()` が missing を返した場合の動作は次に固定する。
-
-| 条件 | 動作 |
-|---|---|
-| runtime に `pre_unregistered_by_worker_failure` がある | close 継続可能 |
-
-子オブジェクトの登録解除または閉鎖で未完了となった処理は、依存資源ごとに`cleanup_pending`へ保存する。共有状態の破損、または変更結果を確定できない対象だけを隔離し、通常の削除失敗は再試行対象とする。
-
-
-再試行可能で実状態を確定できる後片付け失敗は`CleanupPending`へ遷移し、同じgenerationの`close()`で未完手順だけを再試行できる。共有状態の破損、または変更結果を確定できない場合だけ`Quarantined`へ遷移し、公開`close()`を含むすべての公開操作を拒否して内部回収機構へ委ねる。新規openは同じIDまたはgenerationを再利用しない。
+cleanup commandの途中失敗後の後続command実行、未完step記録、同generationのrecovery `close()`、自律retry、authority移管、reaper進行、quarantine、公開操作拒否、ID / generation再利用可否は0-S-3Bの`ObjectCloseTxn`を唯一の正本とし、本節では再定義しない。
 
 ### `IFrontend.stopTune()` の失敗時状態
 
@@ -2242,14 +2198,12 @@ AV filterを対応宣言する demux は AOSP の `getAvSyncHwId(Filter)` と `g
 
 ## A/V sync 非採用範囲
 
-AV filter の `start()`、共有ハンドル、MediaEventの状態別契約は、本書の「表4. AV共有メモリ資源寿命表」を正とする。`releaseAvHandle()`の契約は「表1-C-AVH. `releaseAvHandle()` 全域判定表」だけを正とする。本節では A/V sync の現行境界と非採用範囲だけを固定する。
+AV filter の `start()`、共有ハンドル、MediaEventの状態別契約は、本書の「表4. AV共有メモリ資源寿命表」を正とする。`releaseAvHandle()`の契約は「表1-C-AVH. `releaseAvHandle()` 全域判定表」だけを正とする。本節では A/V sync の非採用範囲だけを恒久契約として固定する。
 
 
 - PTS は current A/V sync clock の 代替処理 として使わない。
 - PCRとmonotonic clockの対応付け、90 kHzへの整数変換、33-bit wrap、anchor破棄条件は直前の`PcrClockAnchor`契約を唯一の正本とする。
-- 本製品の canonical A/V sync contract は `PcrClockAnchorStore` が所有する観測済み PCR anchor と monotonic clock の対応だけを用いる。PCR PID 明示管理、サービス clock モデル、jitter smoothing、PLL / clock discipline は本製品の契約として導入しない。これらを導入する設計変更を行う場合は、clock source、reset条件、戻り値、診断、実機確認条件を先に本書へ固定する。
-- 複数 clock source の品質評価。
-- より厳密な CTS / VTS / 実波ベース補正。
+- 本製品の canonical A/V sync contract は `PcrClockAnchorStore` が所有する観測済み PCR anchor と monotonic clock の対応だけを用いる。PCR PID 明示管理、サービス clock モデル、jitter smoothing、PLL / clock discipline、複数 clock source の品質評価、CTS / VTS / 実波ベースの補正モデルは本製品契約として導入しない。
 
 ## LNB能力と固定給電
 
@@ -2276,26 +2230,20 @@ versioned `SupportedDeviceCapabilityCatalog` のpx4 / earth_pt1項目は、公�
 
 公開操作は、閉鎖状態、入力妥当性、製品対応能力、backend適用の順に判定する。
 
-| API | 有効入力 | 本製品の結果 | backend失敗時 |
+| API | 有効入力 | 本製品の結果 | 内部失敗契約 |
 |---|---|---|---|
-| `setVoltage(voltage)` | AIDL列挙値であり、対象profileの対応電圧 | 対応表に従って実機へ適用する。profile非対応の有効電圧は`UNAVAILABLE` | 状態が未変更と確認できれば`UNKNOWN_ERROR`で旧状態維持、実状態不明なら対象LNBを隔離 |
-| `setTone(tone)` | AIDLの有効列挙値 | 対応表でbackend実処理が確認された値だけを適用して成功する。有効だが対象backendで未対応の値は副作用なしの`UNAVAILABLE`。成功扱いの無処理は禁止 | backend適用を開始した後に旧状態を維持できなければ隔離。未対応判定だけなら状態不変 |
-| `setSatellitePosition(position)` | AIDLの有効列挙値 | 対応表でbackend実処理が確認された値だけを適用して成功する。有効だが対象backendで未対応の値は副作用なしの`UNAVAILABLE`。成功扱いの無処理は禁止 | backend適用を開始した後に旧状態を維持できなければ隔離。未対応判定だけなら状態不変 |
-| `sendDiseqcMessage(message)` | 非空byte列。実処理可能なbackendでは宣言済み上限内とし、Android 14 CTSが使う2バイト要求を能力対応時は受理できる | 対応表でDiSEqC実処理が確認されたbackendだけ全byteを送信し、送信完了後に成功する。有効だが対象backendで未対応なら副作用なしの`UNAVAILABLE`。送信していないmessageのcallback echoは禁止 | 部分送信を成功にせず、送信開始後に状態不明なら隔離。未対応判定だけなら状態不変 |
+| `setVoltage(voltage)` | AIDL列挙値であり、対象profileの対応電圧 | 対応表に従って実機へ適用する。profile非対応の有効電圧は`UNAVAILABLE` | backend apply、registry commit、failure state、quarantineは0-S-3Bの`LnbControlTxn`だけを正本とする |
+| `setTone(tone)` | AIDLの有効列挙値 | 対応表でbackend実処理が確認された値だけを適用して成功する。有効だが対象backendで未対応の値は副作用なしの`UNAVAILABLE`。成功扱いの無処理は禁止 | backend apply、registry commit、failure state、quarantineは0-S-3Bの`LnbControlTxn`だけを正本とする |
+| `setSatellitePosition(position)` | AIDLの有効列挙値 | 対応表でbackend実処理が確認された値だけを適用して成功する。有効だが対象backendで未対応の値は副作用なしの`UNAVAILABLE`。成功扱いの無処理は禁止 | backend apply、registry commit、failure state、quarantineは0-S-3Bの`LnbControlTxn`だけを正本とする |
+| `sendDiseqcMessage(message)` | 非空byte列。実処理可能なbackendでは宣言済み上限内とし、Android 14 CTSが使う2バイト要求を能力対応時は受理できる | 対応表でDiSEqC実処理が確認されたbackendだけ全byteを送信し、送信完了後に成功する。有効だが対象backendで未対応なら副作用なしの`UNAVAILABLE`。送信していないmessageのcallback echoは禁止 | transient送信固有契約として、部分送信を成功にせず、送信開始後に実状態不明なら当該LNBを隔離する。未対応判定だけなら状態不変 |
 
 閉鎖開始後は全操作を`INVALID_STATE`とする。不明な列挙値、空メッセージ、またはDiSEqC実処理を宣言したbackendの上限を超えるメッセージは`INVALID_ARGUMENT`とする。DiSEqC未対応backendでは、上限検証以前に有効な非空messageを副作用なしの`UNAVAILABLE`とする。2バイトを長さだけで拒否してはならない。妥当だが個別profileで非対応のoperation / valueは`UNAVAILABLE`とする。`aidl_baseline_eligible=false`はCTS baseline適合分類であり、endpoint全体の公開可否を単独では決めない。
 
 
-`BackendApplyOutcome`は`Applied`、`Rejected`、`Indeterminate`、`RollbackFailed`の4種類とする。`Applied`では確定し、`Rejected`では以前の状態を維持する。`Indeterminate`では対象資源を隔離して`UNKNOWN_ERROR`を返し、`RollbackFailed`でも隔離して`UNKNOWN_ERROR`を返す。再試行は新しい操作IDでだけ許可する。
 
+`setVoltage()` / `setTone()` / `setSatellitePosition()` のbackend apply outcome、`LnbRegistry` commit、failure state、typed diagnostic、公開`UNKNOWN_ERROR`への写像、quarantine条件は0-S-3Bの`LnbControlTxn`だけを正本とする。本節では`BackendApplyOutcome`列挙、backend rollback経路、registry commit失敗時の別状態機械を再定義しない。
 
-`Drop`または所有者消滅では、待機を伴わず安全状態へ戻す後片付けを開始する。
-
-
-### LNB 状態更新の失敗時整合性
-
-
-LNBへのバックエンド適用後に台帳の確定へ失敗した場合は、要求状態、バックエンドの適用結果、最後に確認できた機器状態、台帳エラーを1個の診断として保存する。当該LNBを隔離し、閉鎖または回収処理で安全状態を再適用して後片付けする。
+LNB固有のsafe-state復帰はcleanup対象として`ObjectCloseTxn`へtyped cleanup commandで渡す。public `close()`、owner loss、Dropのcleanup開始authority、`begin_close`、handoff、reaper、実行方式は0-S-3Bの`ObjectCloseTxn`だけを正本とし、LNB個別節では再定義しない。
 
 
 ## IDescrambler demux結合契約
@@ -2340,17 +2288,16 @@ STD-B25デコード能力とSTD-B25 Part 1 §4.9への適合宣言を分離す�
 
 実装がSTD-B25で定める対象方式のTS payloadを実際に復号できる場合は、限定した事実を`StdB25DecodeCapability`として製品profileへ記録してよい。この能力は、対応するPart・方式・payload処理、物理tuner/backend復号経路ごとの実同時鍵組数、実同時PID数、pool共有単位、枯渇時の`UNAVAILABLE`を一体で定義する。値が未確定、または復号経路が利用不能の場合は能力を公開しない。AOSPの`DemuxCapabilities`には鍵組数またはPID数の欄がなく、`IDescrambler`は1 sessionを1 key slotへ関連付けて複数PIDを登録する契約までなので、frozen AIDLへ独自fieldを追加しない。鍵組数を外部へ表示する必要がある場合は、AIDL能力ではなく製品profileの設計メタデータとして扱う。
 
-実行時は、同じ物理tuner/backend復号経路に属する共有`DescramblerCapacityPool`へprofileの実鍵組数と実PID数を登録する。複数`IDescrambler` sessionは同じpoolからclaimし、合計使用量が実容量を超えないようにする。各objectへ容量を重複予約して水増ししてはならない。
+実行時は、同じ物理tuner/backend復号経路に属する共有`DescramblerCapacityPool`へprofileの実鍵組数と実PID数、pool共有単位を登録し、全sessionの合計使用量が実容量を超えないことをcapacity contractとして保証する。個別sessionのclaim / release順序、commit / rollback / cleanupは下表のcanonical mutation ownerだけを正本とし、本能力台帳では再定義しない。
 
-| 事象 | 台帳操作 | 結果 |
-|---|---|---|
-| service/backend初期化 | 物理tuner/backend単位の実鍵組数と実PID数、pool共有単位を製品profileから共有poolへ登録 | 未確定、0、または実体と不一致の能力は公開しない |
-| `openDescrambler()` | demux未結合のdescrambler object/session枠だけを登録 | demux、共有pool、鍵組、PID容量は選択または先取りしない。session台帳を確保できない場合は`UNAVAILABLE` |
-| `setDemuxSource(demuxId)` | Liveな初回呼出しで一回性を消費し、対応するdemux generationと共有poolへ成功時だけsessionを結合 | demux generationとpool帰属を一括確定する。pool session枯渇を含む初回失敗後も再呼出しは`INVALID_STATE`であり、closeして新objectをopenする |
-| `setKeyToken(non-VOID)` | demux結合済みsessionが鍵を未保有なら結合済み共有poolから鍵組1件をclaimし、保有中なら同じclaim内で参照を置換 | backend適用と台帳確定の両方が成功した場合だけ新tokenを公開する。未結合は`INVALID_STATE`、鍵組枯渇は`UNAVAILABLE` |
-| `addPid()` | 共有poolからPID claimを1件取得してsessionへ帰属させる | pool合計が実容量を超える要求は`UNAVAILABLE`、既存登録と状態は維持 |
-| `removePid()` | 対象PID claimを共有poolへ返す | 未登録は冪等成功。他sessionのclaimは変更しない |
-| `close()` / demux無効化 | 未結合sessionではobject/session枠を解放する。結合済みsessionではbackend解除を全件試行し、鍵参照、PID claim、pool session帰属を同じpoolへ返す | 後片付け完了時だけ再利用し、`CleanupPending`または隔離中は使用中として数える |
+| 容量次元 | capability / capacity契約 | caller-visibleな枯渇結果 | 内部mutation正本 |
+|---|---|---|---|
+| 能力公開 | 物理tuner/backend単位の実鍵組数、実PID数、pool共有単位を製品profileから確定する。未確定、0、または実体と不一致の値を能力として公開しない | 能力非公開 | `CapabilitySnapshot` / product profile契約 |
+| descrambler object/session枠 | 公開したobject/session上限を超えて生成しない | `openDescrambler()`は`UNAVAILABLE` | root/child open契約 |
+| pool session容量 | 同じ物理復号経路を共有するsession総数をpool容量内に制限する | 対応demuxへの初回`setDemuxSource()`でもsession容量枯渇なら`UNAVAILABLE` | `IDescrambler demux結合契約` |
+| 鍵組容量 | 同じpoolで同時利用する鍵組数をprofileの実鍵組数以下にする | 新規鍵組を必要とする`setKeyToken(non-VOID)`で枯渇なら`UNAVAILABLE` | `DescramblerKeyTxn` |
+| PID容量 | 同じpoolで同時利用するPID数をprofileの実PID数以下にする | `addPid()`で枯渇なら`UNAVAILABLE` | `DescramblerPidTxn` |
+| cleanup中容量 | cleanup完了を確認できないsession / key / PID / pool帰属は再利用可能容量へ戻さない | 必要容量を確保できない新規要求は`UNAVAILABLE` | `DescramblerSessionCleanupTxn` / `ObjectCloseTxn` |
 
 製品profileで公開demuxのいずれにもSTD-B25デコード能力を有効にしない構成では`openDescrambler()`を`UNAVAILABLE`とし、VTS製品設定へdescrambling flowを含めない。一部のdemux経路だけで能力を有効にする構成では、未結合objectの生成後、対象外demuxへの`setDemuxSource()`を`UNAVAILABLE`とする。能力を有効にする場合も、実鍵組数または実PID数を、本製品全体として恒久的に適合対象外であるPart 1 §4.9への適合、Part 1 CAS-R適合、またはSTD-B25全面準拠の宣言へ読み替えない。鍵素材はslot数だけを台帳化し、公開AIDLまたは診断へ出さない。
 
