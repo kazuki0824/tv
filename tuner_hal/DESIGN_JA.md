@@ -179,7 +179,7 @@ object methodでは、呼出対象のlifecycle/generation不整合を引数値�
 
 - `minFrequency`と`maxFrequency`は、同じfrontendの公開`tune()`/`scan()` validationが受理し得る周波数集合の外側境界と一致させ、`0 <= minFrequency <= maxFrequency`を満たす。境界外を`UNAVAILABLE`で拒否する実装が、それより広い範囲を`FrontendInfo`で広告してはならない。逆に、明示選局で受理する周波数をこの範囲外へ置いてはならない。
 - `minSymbolRate`と`maxSymbolRate`は当該frontendが受信可能なsymbol rate rangeをsymbols per secondで表し、`FrontendSettings`でcallerが明示symbol rateを指定できるかどうかとは分離する。backend/device/profileの能力証跡から実際の受信可能範囲を決め、明示指定非対応だけを理由に`0/0`へ固定したり、独自sentinelとして扱ったりしない。settings側の`symbolRate`受付可否は別のvalidation契約に従う。
-- `acquireRange`は、要求周波数の周囲でbackendが探索可能と製品profileで検証した非負の範囲だけを返す。検証済みの非0範囲がない現行profileでは`0`とする。`acquireRange`を`minFrequency`/`maxFrequency`の外側を受理する根拠にしてはならない。
+- `acquireRange`は、要求周波数の周囲でbackendが探索可能と製品profileで検証した非負の範囲だけを返す。製品profileで検証済みの非0範囲がなければ`0`とする。`acquireRange`を`minFrequency`/`maxFrequency`の外側を受理する根拠にしてはならない。
 - 起動時のsnapshot候補について、上記scalarとfrontend validation、backend設定経路、`ProductProfile`のいずれかが矛盾する場合は候補をcommitしない。scalarだけを後からclampして整合したことにしてはならない。
 
 
@@ -861,11 +861,11 @@ DVR FMQは`openDvr()`の`bufferSize`から作成し、`configure()`はAOSPの`Dv
 
 `IDvr.configure()`は`statusMask`、`lowThreshold`、`highThreshold`、`dataFormat`、`packetSize`を同一の`DvrSettingsSnapshot`としてvalidateし、全項目が成功条件を満たした場合だけ設定世代を一括commitする。いずれか1項目の拒否時は以前のsettings、FMQ read/write位置、queue identity、filter接続、worker状態を変更しない。
 
-- `statusMask=0`はstatus callbackを要求しない有効値として成功させ、データ経路は通常どおり動作させる。AIDLで既知のstatus bitのうち現行profileが生成できないbitは`UNAVAILABLE`、予約bit・未知bitは`INVALID_ARGUMENT`とする。成功後はmaskで選択したstatusだけをcallback対象にし、非選択statusを内部観測しても公開callbackへ出さない。
+- `statusMask=0`はstatus callbackを要求しない有効値として成功させ、データ経路は通常どおり動作させる。AIDLで既知のstatus bitのうち本製品`ProductProfile`が生成能力を持たないbitは`UNAVAILABLE`、予約bit・未知bitは`INVALID_ARGUMENT`とする。成功後はmaskで選択したstatusだけをcallback対象にし、非選択statusを内部観測しても公開callbackへ出さない。
 - `lowThreshold`と`highThreshold`はbyte単位とし、`0 <= lowThreshold <= highThreshold <= openDvr(bufferSize)`を満たす場合だけ受理する。負値、大小逆転、FMQ容量超過は`INVALID_ARGUMENT`とし、clampしない。
 - playbackでは水位をplayback input FMQの`unusedBytes = capacity - usedBytes`で測り、low/high thresholdを空き領域byteへ適用する。recordではRecord DVR output FMQの`unconsumedBytes`へlow/high thresholdを適用する。playbackの使用済み量、recordの空き領域量、別queueの`queued_bytes`を代用しない。
-- `dataFormat`は現行TS-only `ProductProfile`が扱うTS formatだけを成功させる。AIDL上既知だが非TSのformatは`UNAVAILABLE`、予約値・未知値・未定義のformatは`INVALID_ARGUMENT`とする。
-- `packetSize`は正のbyte数だけを構文上受け付ける。現行TS formatでは188 byteだけを成功させ、正の別packet sizeは本製品のpacket pipelineで扱わないため`UNAVAILABLE`、0以下は`INVALID_ARGUMENT`とする。`dataFormat`と`packetSize`を独立に黙認せず、組として検証する。
+- `dataFormat`は本製品のTS-only `ProductProfile`が扱うTS formatだけを成功させる。AIDL上既知だが非TSのformatは`UNAVAILABLE`、予約値・未知値・未定義のformatは`INVALID_ARGUMENT`とする。
+- `packetSize`は正のbyte数だけを構文上受け付ける。本製品のTS packet pipelineでは188 byteだけを成功させ、正の別packet sizeは本製品のpacket pipelineで扱わないため`UNAVAILABLE`、0以下は`INVALID_ARGUMENT`とする。`dataFormat`と`packetSize`を独立に黙認せず、組として検証する。
 - status callbackは、現在のqueue状態から算出したstatusのうち`statusMask`で選択されたものだけを、`start()`直後の初期通知、threshold crossingまたはstatus変化、および設定済みstatus intervalの周期確認で配送する。同一状態を周期ごとに必ず再通知する必要はなく、callback失敗は既存のcallback health契約へ接続する。
 
 
@@ -2127,7 +2127,7 @@ ISDB-Tの列挙値域は、ARIB公式英語版STD-B31 2.2-E1本文の2.3、3.8�
 
 `RF_LOCK` は backend が RF/carrier acquisition を別途取得できる場合だけ advertise する。DVB / earth_pt1 backend は Linux DVB `FE_READ_STATUS` が返す `FE_HAS_CARRIER` を `RF_LOCK`、`FE_HAS_LOCK` を `DEMOD_LOCK` に対応させる。px4_drv backend は RF/carrier ロックを返す API を持たないため、px4 の擬似 ロック は `DEMOD_LOCK` のみに使い、`RF_LOCK` には使わない。
 
-`SNR` と `SIGNAL_STRENGTH` は、現行Tuner HAL capability / VTS profile では `statusCaps` に含めない。DVB / earth_pt1 の `FE_READ_SNR` と `FE_READ_SIGNAL_STRENGTH`、px4 の `PTX_GET_CNR` は target driver / device 状態によって read 時に失敗し得る optional telemetry であり、起動時列挙時点で frontendエントリ の固定 capability として証明できないためである。これらの optional telemetry は 診断内部値として保持してよいが、AOSP statusCaps 上の supported 状態として advertise してはならない。
+`SNR` と `SIGNAL_STRENGTH` は、起動時に安定取得と更新経路をfrontendエントリの固定capabilityとして証明できる場合だけ `statusCaps` に含める。DVB / earth_pt1 の `FE_READ_SNR` と `FE_READ_SIGNAL_STRENGTH`、px4 の `PTX_GET_CNR` は target driver / device 状態によって read 時に失敗し得る optional telemetry であり、その証明がないfrontendではadvertiseしない。これらの optional telemetry は診断内部値として保持してよいが、証明なしにAOSP `statusCaps` 上のsupported状態としてadvertiseしてはならない。
 
 `SIGNAL_QUALITY` は、backend ごとに根拠ある合成値を返せる場合だけ `statusCaps` に含める。DVB / earth_pt1 backend の `SIGNAL_QUALITY` は Linux DVB `FE_READ_STATUS` 状態 bit の ロック 進捗を 0〜100 に正規化した値とする。px4 backend は `PTX_GET_CNR` を安定取得できることを frontendエントリ の capability として固定できない限り、`SNR` と `SIGNAL_QUALITY` を advertise しない。いずれも `DEMOD_LOCK` や `RF_LOCK` の代替ではなく、UI/診断 用の合成指標である。未取得 telemetry を `SIGNAL_QUALITY=0` として成功返却してはならない。
 
@@ -2260,13 +2260,13 @@ LNBは機器単位の終端資源とし、本書の「LNB機器の資源規則�
 
 本製品はAndroid 14 CTSのLNB試験合格より、hardware / driverが実処理できることを証跡で確認したLNB operation / valueをframeworkへ公開することを優先する。LNB endpointは、probeに成功し、satellite frontendへ接続可能で、endpoint lease条件を満たし、かつ少なくとも1つの公開operation / valueに実処理証跡がある場合に`CapabilitySnapshot`へ公開対象としてcommitできる。`aidl_baseline_eligible=false`だけを理由にendpoint全体を隠してはならない。証跡のないoperation / valueを能力として生成してはならず、有効だが対象backendで未対応の要求は副作用なしの`UNAVAILABLE`とする。未知の列挙値その他の不正要求は`INVALID_ARGUMENT`とし、backend未対応と区別する。
 
-現在証跡があるpx4/earth_pt1 backendは電圧制御だけを確認でき、tone、satellite position、DiSEqCの実処理証跡がないため`aidl_baseline_eligible=false`である。ただし、px4は証跡のある0 V / 15 V、earth_pt1は証跡のある11 V / 15 Vのcaller制御可能な電圧operationを持つendpointとして公開できる。`getLnbIds()`はこれらの公開対象endpointを列挙し、`openLnbById()`はendpoint leaseを取得して`ILnb` objectを生成する。tone、satellite position、DiSEqC等の未対応要求をCTS合格目的の成功no-op、擬似成功、callback echoにしてはならない。本製品は部分LNB公開によりAndroid 14 CTSのLNB試験が失敗し得ることを既知compatibility deltaとして受容し、CTS LNB適合を宣言しない。
+versioned `SupportedDeviceCapabilityCatalog` のpx4 / earth_pt1項目は、公開LNB operation / value capabilityとして電圧制御だけを保持し、tone、satellite position、DiSEqCの実処理能力を保持しないため`aidl_baseline_eligible=false`とする。px4項目は0 V / 15 V、earth_pt1項目は11 V / 15 Vのcaller制御可能な電圧operationを持つendpointとして公開できる。`getLnbIds()`はこれらの公開対象endpointを列挙し、`openLnbById()`はendpoint leaseを取得して`ILnb` objectを生成する。tone、satellite position、DiSEqC等の未対応要求をCTS合格目的の成功no-op、擬似成功、callback echoにしてはならない。本製品は部分LNB公開によりAndroid 14 CTSのLNB試験が失敗し得ることを既知compatibility deltaとして受容し、CTS LNB適合を宣言しない。hardware / driver能力が変化した場合は、既存のcatalog再評価条件に従ってversioned項目を更新する。
 
 公開`ILnb` operation能力とsatellite frontendの電源トポロジは別能力として扱う。`SupportedDeviceCapabilityCatalog`の機器項目は、`InternalFixed15V`、`ExternalOrShared`、`UnknownOrDisabled`のいずれかを保持する。`InternalFixed15V`は、物理rail owner、15 Vの適用確認方法、停止時の安全状態、共有互換条件を同じ項目に持ち、frontend generation開始前に既存の機器単位rail leaseを取得して15 Vを実適用できる場合だけ成立する。`ExternalOrShared`は、給電主体、HALが電圧を変更しないこと、共有互換条件、選局中の給電継続を製品配線として確認できる場合だけ成立する。
 
 `InternalFixed15V`または`ExternalOrShared`が検証済みでruntime LNB切替を必要としないISDB-S frontendは、公開`ILnb` endpointの有無と独立に公開可否を判断する。前者ではHAL内部で選局前に固定15 Vを適用し、後者ではHALは電圧操作を行わない。固定給電だけをcaller制御可能な`ILnb.setVoltage()`能力として広告してはならない。`UnknownOrDisabled`、トポロジ証跡不一致、給電継続または共有互換性を確認できない場合はsatellite frontendを公開しない。給電、lease、tune準備失敗時の巻き戻し、安全状態復帰、共有rail参照管理、実状態不明時の隔離は、本書の「LNB機器の資源規則」「表7」「表8」「ワーカー終了契約」を適用する。`FixedDishPowerProfile`その他の専用profileや別状態機械を設けない。
 
-`getLnbIds()`は起動時probeとoperation/value capability対応表から公開対象として確定したendpoint IDを列挙する。`openLnbById()`は公開済みendpoint 1個の使用権を取得する。不明なIDには`INVALID_ARGUMENT`、使用中、`CleanupPending`、`Quarantined`のendpointには状態を変えず`UNAVAILABLE`を返す。`openLnbByName()`はstableなconfigured name mappingが`ProductProfile`に定義されたendpointだけを成功対象にでき、mappingがない現行製品では空文字を`INVALID_ARGUMENT`、その他を`UNAVAILABLE`とする。`ILnb.close()`の公開結果とendpoint leaseの最終解放条件は表5およびLNB資源契約を正とする。cleanup authority、retry / handoff、worker回収、quarantineの内部semanticsは0-S-3Bの`ObjectCloseTxn`と`WorkerRuntime` / `WorkerHandle`を正本とし、本節では再定義しない。
+`getLnbIds()`は起動時probeとoperation/value capability対応表から公開対象として確定したendpoint IDを列挙する。`openLnbById()`は公開済みendpoint 1個の使用権を取得する。不明なIDには`INVALID_ARGUMENT`、使用中、`CleanupPending`、`Quarantined`のendpointには状態を変えず`UNAVAILABLE`を返す。`openLnbByName()`は本製品で名前付き外部LNBを公開しないため成功対象を持たず、空文字を`INVALID_ARGUMENT`、その他の名前を`UNAVAILABLE`とする。LNB ID、object、leaseを生成せず、出力を部分公開しない。`ILnb.close()`の公開結果とendpoint leaseの最終解放条件は表5およびLNB資源契約を正とする。cleanup authority、retry / handoff、worker回収、quarantineの内部semanticsは0-S-3Bの`ObjectCloseTxn`と`WorkerRuntime` / `WorkerHandle`を正本とし、本節では再定義しない。
 
 公開するLNB IDはsatellite frontendへ接続できる論理endpointとして扱い、1個のendpoint leaseを複数frontendへ同時接続しない。`setLnb(lnb_id)`は当該satellite frontendへ接続可能なLNB IDだけを受け付け、別の物理機器に属するLNB ID、地上波frontendへのLNB接続、不明なLNB IDは失敗させる。同一px4機器内で複数の論理endpointが共有する物理電圧レールは機器単位で直列化し、互換な電圧要求だけを参照数で共有する。
 
@@ -2420,7 +2420,7 @@ DVB backend は frontend index と同じ demux index / dvr index を使う。`ad
 
 ### 失効 トークン 診断
 
-`maleicacid-expired-desc-token-*` は診断名であり、`setKeyToken()` に渡す実 トークン ではない。現行仕様では persistent expired state を持たないため、失効または revoke 済み token の `setKeyToken()` は unknown token として扱う。`EXPIRED_KEY_SLOT` は stale release / refcount underflow 検出用の診断名としてだけ使う。
+`maleicacid-expired-desc-token-*` は診断名であり、`setKeyToken()` に渡す実 トークン ではない。本製品仕様は persistent expired state を持たないため、失効または revoke 済み token の `setKeyToken()` は unknown token として扱う。`EXPIRED_KEY_SLOT` は stale release / refcount underflow 検出用の診断名としてだけ使う。
 
 `setKeyToken()` は、空トークン、16 byteを超えるnon-VOIDトークン、未登録トークン、CAS bridge未接続トークンを区別して診断カウンターに記録する。`[0x00]` は `Tuner.VOID_KEYTOKEN` として扱い、`BAD_TOKEN`、unknown トークン、CAS bridge 未接続には混ぜず、key 未設定状態でも 成功扱いの無処理 とする。空 トークン `[]` は registry lookup、current key slot 変更、PID 登録変更を行わない。
 
@@ -2535,7 +2535,7 @@ px4 probe prefix を変更する場合は、frontend_px4系実装、`tuner_hal2/
 | T-AOSP-21 | `releaseAvHandle(any, negativeAvDataId)` | `INVALID_ARGUMENT` |
 | T-AOSP-22 | `getAvSharedHandle()` 複数回取得 + release | fd duplicate寿命確認 |
 | T-AOSP-23 | `configureMonitorEvent(0)` | 成功。未配送monitor stateだけをresetし、通常event、callback、FMQ、parser状態を維持 |
-| T-AOSP-24 | `configureMonitorEvent(nonzero)` / 現行TS-only profile | `UNAVAILABLE`。monitor state、worker、queueを生成しない |
+| T-AOSP-24 | `configureMonitorEvent(nonzero)` | `UNAVAILABLE`。本製品のTS-only `ProductProfile`はmonitor eventを対応能力として採用せず、monitor state、worker、queueを生成しない |
 | T-AOSP-26 | AV `isPassthrough=false` | shared memory AV経路成功 |
 | T-AOSP-27 | AV `isPassthrough=true` | `UNAVAILABLE` |
 | T-AOSP-28a | `openDemux(out demuxId)` | objectと要素数1のID配列を同一成功応答で取得し、失敗時はどちらも公開されない |
@@ -2822,7 +2822,7 @@ STD-B25 Part 1 §4.9は上表の適合主張に含めない。同条項に係る
 | 対象のpx4またはearth_pt1 | ISDB-S | modulation・code rate | `AUTO` | backendの自動検出を使用 | 既知の具体値：`UNAVAILABLE` | `INVALID_ARGUMENT` |
 | 対象のpx4またはearth_pt1 | ISDB-S | `rolloff` | 未指定を表すAIDL値 | backend既定値を使用 | 設定または固定値検証できない既知の明示値：`UNAVAILABLE` | 予約値・未知値：`INVALID_ARGUMENT` |
 
-選択子の対応能力は、機器識別情報と改訂適用範囲、versioned backend manifestのABI/API契約版、要求を実際に設定して結果を読み戻すfunctional probeが一致し、かつ`selector_capability_release_eligible=true`である台帳項目だけから作る。repository、commit SHA、build IDは台帳項目の作成証跡として保存してよいが、実行時の一致条件にしない。現在のpx4台帳はlegacy ABIに従い、相対`0..7`とabsolute `12..65534`を別typed selectorとして有効にする。absolute `0..11`は有効なAOSP値だがABIで表現不能なので`UNAVAILABLE`とし、相対値へ読み替えない。項目が空、不一致、または使用不可の場合は該当frontendを公開しない。`ProductProfile`は使用可能な部分集合を抑止できるだけで、対応能力を新設または拡張できない。AOSP SDK defaultの`STREAM_ID=INVALID_STREAM_ID(65535)`はBS/CS110を問わずselectorなしを表す入力として明示selector値の検証より先に`Unspecified`へ正規化し、本表で明示selector値`65535`を拒否する規則と混同しない。px4 BSのslot `0` fallbackはAOSP未指定入力を現行ABIで成立させるためだけの互換経路であり、通常の日本向けBS scan、channel保存、ライブ再選局のサービス選択へ使用してはならない。Linux DVB / earth_pt1では`Unspecified`を`NO_STREAM_ID_FILTER`として毎回明示設定する。
+選択子の対応能力は、機器識別情報と改訂適用範囲、versioned backend manifestのABI/API契約版、要求を実際に設定して結果を読み戻すfunctional probeが一致し、かつ`selector_capability_release_eligible=true`である台帳項目だけから作る。repository、commit SHA、build IDは台帳項目の作成証跡として保存してよいが、実行時の一致条件にしない。px4 legacy ABI契約の台帳項目では、相対`0..7`とabsolute `12..65534`を別typed selectorとして有効にする。absolute `0..11`は有効なAOSP値だがABIで表現不能なので`UNAVAILABLE`とし、相対値へ読み替えない。項目が空、不一致、または使用不可の場合は該当frontendを公開しない。`ProductProfile`は使用可能な部分集合を抑止できるだけで、対応能力を新設または拡張できない。AOSP SDK defaultの`STREAM_ID=INVALID_STREAM_ID(65535)`はBS/CS110を問わずselectorなしを表す入力として明示selector値の検証より先に`Unspecified`へ正規化し、本表で明示selector値`65535`を拒否する規則と混同しない。px4 BSのslot `0` fallbackはAOSP未指定入力をlegacy ABI契約で成立させるためだけの互換経路であり、通常の日本向けBS scan、channel保存、ライブ再選局のサービス選択へ使用してはならない。Linux DVB / earth_pt1では`Unspecified`を`NO_STREAM_ID_FILTER`として毎回明示設定する。
 
 ### LNB機器の資源規則
 
