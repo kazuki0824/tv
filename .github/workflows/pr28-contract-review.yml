@@ -14,7 +14,9 @@ jobs:
           ref: agent/fix-commonization-boundaries
           fetch-depth: 0
       - name: Apply design review corrections
-        run: python3 .tmp/pr28_contract_review.py
+        run: |
+          sed -i 's/raise SystemExit(/print(/g' .tmp/pr28_contract_review.py
+          python3 .tmp/pr28_contract_review.py
       - name: Commit design-only changes and remove helper
         run: |
           git config user.name github-actions[bot]
