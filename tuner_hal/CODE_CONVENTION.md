@@ -329,9 +329,11 @@ Tuner HAL の release HAL path では、次の直接実装を禁止する。
 - section/PES/AV/record payload を別filterのsourceとして直接再配送する経路を追加してはならない。ただし `DESIGN_JA.md` で対応に変更した場合を除く。
 
 
-## DESIGN_JA.md から移送した実装規約（PR #28）
+## 20. 旧 tuner_hal 参照実装固有の実装規約
 
-公開AIDL意味ではなく実装方法に属する次の事項は本書を正本とする。
+本節は旧 `tuner_hal` 参照実装だけを拘束する。product default の `tuner_hal2` に適用する実装規約は `../tuner_hal2/CODE_CONVENTION.md`、実装owner / anchor / 許可entry pointは `../tuner_hal2/DESIGN_JA.md` を正とし、本節の具体type / helper名を `tuner_hal2` の規範として転用してはならない。両実装に共通化すべき規約が生じた場合も、両CODE_CONVENTIONへ同じ規範を重複定義せず、所有文書を一意にして他方から参照する。
+
+公開AIDL意味ではなく旧 `tuner_hal` の実装方法に属する次の事項は本節を正本とする。
 
 - scan END callbackを返すhelperの結果を`let _ =`等で破棄しない。配送失敗はtyped resultとして上位ownerへ返す。テスト専用helper/entryは`#[cfg(test)]`等のcompile-time gateでrelease経路から除外する。
 - AV shared allocationの`active/reserved/free`、次ID/generation、diagnosticを一つの`AvSharedState`と一つのmutex配下で更新し、`clear_result()` / `release()` / `release_all()`は部分更新を残さない。
@@ -339,4 +341,4 @@ Tuner HAL の release HAL path では、次の直接実装を禁止する。
 - Filter/DVR queue policyの具体実装は`filter_queue_model()` / `dvr_queue_model()`および`QueueOverflowPolicy`へ集約し、旧alias/boolean policyを再導入しない。
 - MediaCas session ID bytesとinternal key resourceの登録entryは`register_from_cas_bridge()`へ集約する。`dump_descrambler_diagnostics_for_debug()`、`MALEICACID_TUNER_HAL_DESCRAMBLER_DIAGNOSTIC_FILE`等のdebug出力は公開AIDL契約を変更しない診断経路に限定し、debug file writeは5秒以内のbounded operationとする。
 
-これらの名称・lock/API選択は実装規約であり、`DESIGN_JA.md`の公開状態・capability・戻り値・資源寿命を変更する根拠にはしない。
+これらの名称・lock/API選択は旧 `tuner_hal` の実装規約であり、`DESIGN_JA.md`の公開状態・capability・戻り値・資源寿命、または`tuner_hal2`の実装owner/anchorを変更する根拠にはしない。
