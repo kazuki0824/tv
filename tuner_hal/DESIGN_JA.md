@@ -42,11 +42,11 @@
 本書の正本階層は次の順とする。
 
 1. `DESIGN_JA.md の責務境界`、`製品スコープ / AOSP capability / VTS profile 境界`、`AIDL 契約境界`、`Tuner HAL 状態遷移表SSOT` を最上位正本とする。
-2. `0-S. 状態所有・寿命・失敗時遷移設計`、`表1`〜`表20`、`ARIB/ISDB入力処理契約`、`Stream boundary 契約`、`Packet pipeline 正本契約`、`AV shared handle 入出力契約` を、現在の設計契約の正本とする。
+2. `0-S. 状態所有・寿命・失敗時遷移設計`、0-S-3Bの名前付きcanonical contract、各公開APIの名前付き契約、`ARIB/ISDB入力処理契約`、`Stream boundary 契約`、`Packet pipeline 正本契約`、`AV shared handle 入出力契約` を現在の設計契約の正本とする。移送済みの旧表番号は現行正本参照に使用しない。
 3. 旧 `補足契約:` 章は本体正本章へ吸収済みであり、本書内に二重正本として残さない。
 4. 個別リリースの履歴、作業経緯、ビルド/atest/VTS/静的検索/成果物命名/完了宣言は本書では定義しない。履歴は `CHANGELOG.md`、完了判定は `タスク完了判定の実施方法.md` を正とする。
 
-削除・移動した旧記載の追跡表は現行リリース物に置かない。現行仕様は本書、実装規約は `tuner_hal/CODE_CONVENTION.md`、統合手順は `tuner_hal2/INTEGRATION.md`、変更履歴は `tuner_hal/CHANGELOG.md` を正とする。存在しない trace 文書を正本参照にしてはならない。
+削除・移動した旧記載の追跡表は現行リリース物に置かない。現行仕様は本書、実装規約は `tuner_hal/CODE_CONVENTION.md`、統合手順は `tuner_hal2/INTEGRATION.md`、変更履歴は `tuner_hal/CHANGELOG.md` を正とする。存在しない trace 文書または移送済み旧表番号を正本参照にしてはならない。
 
 ## 製品スコープ / AOSP capability / VTS profile 境界
 
@@ -88,15 +88,15 @@ VTS XML/profileで使用する機能とcapabilityで宣言する機能は一致�
 ISDB-S selectorはAOSPの`FrontendIsdbsStreamIdType`を正とし、`STREAM_ID`と`RELATIVE_STREAM_NUMBER`を別domainとして受理・検証する。Linux DVB / earth_pt1は`STREAM_ID 0..65534`を`DTV_STREAM_ID`へ渡す。px4 legacy ABIは`slot < 12`を相対番号、`slot >= 12`をabsolute TSIDとして解釈するため、px4では`RELATIVE_STREAM_NUMBER 0..7`と`STREAM_ID 12..65534`をlegacy `slot`へ直接渡す。absolute `STREAM_ID 0..11`はAOSP上有効だが同ABIで相対値と区別できないため、副作用なしの`UNAVAILABLE`とする。`65535`は明示TSIDとして`INVALID_ARGUMENT`とする。selector kindを数値域から推測せず、TISへ`EffectiveCapabilities`、driver名、relative slotを公開しない。`ProductProfile`は検証済み能力を抑止できるが、新設または拡張してはならない。
 
 
-- post-commit callback failureの写像は0-S-3Bの`PostCommitCallbackFailureTxn`、generic worker lifecycleは`WorkerRuntime` / `WorkerHandle`、worker failure分類は`WorkerFailureClassifier`を正とする。FMQ / EventFlagのdata-path結果と診断は表6および`FilterProducerDrainGate` / `QueueEpochProtocol` / `QueueCleanupTxn`等の各queue owner契約、API固有の公開状態・戻り値は各API状態表を正とし、本節ではfailure state machineを再定義しない。
+- post-commit callback failureの写像は0-S-3Bの`PostCommitCallbackFailureTxn`、generic worker lifecycleは`WorkerRuntime` / `WorkerHandle`、worker failure分類は`WorkerFailureClassifier`を正とする。FMQ / EventFlagのdata-path結果と診断は「失敗影響範囲」および`FilterProducerDrainGate` / `QueueEpochProtocol` / `QueueCleanupTxn`等の各queue owner契約、API固有の公開状態・戻り値は各APIの名前付き契約を正とし、本節ではfailure state machineを再定義しない。
 - `IDvr.setStatusCheckIntervalHint(milliseconds)`で受理したhintは、playback / record DVRが以後のdata/status evaluation cadenceを決定する入力として使用する。hint変更自体はqueue内容、DVR lifecycle、playback/record stateを変更せず、Binder threadをhint時間sleepさせない。callback workerのwait / wake / cancel、close / Drop / shutdown時のgeneric終端は0-S-3Bの`WorkerRuntime` / `WorkerHandle`を正とし、本節では再定義しない。
-- `getAvSharedHandle()`とAV filter `start()`の状態別契約は、本書の「表4. AV共有メモリ資源寿命表」を正とする。`releaseAvHandle()`の入力分類、戻り値、資源変化は「表1-C-AVH. `releaseAvHandle()` 全域判定表」だけを正とする。
+- `getAvSharedHandle()`、AV filter `start()`、`releaseAvHandle()`の公開資源寿命と解放条件は、0-S-2のAV active token台帳、後段の「AV 共有メモリの原子性不変条件」「AV転送方式とクライアント側の存続期間」「AV割り当て」を正とする。
 
 backendのエラーは、呼び出し側の不正値・値域違反を`INVALID_ARGUMENT`、不存在・使用中・容量不足・規格上は有効だが未対応を`UNAVAILABLE`、不正なライフサイクルを`INVALID_STATE`、依存資源の未初期化を`NOT_INITIALIZED`、割り当て失敗を`OUT_OF_MEMORY`、権限・入出力・設定破損・不変条件違反を`UNKNOWN_ERROR`へ対応付ける。
 
 
 - 本製品のTS-only `ProductProfile`はfilter monitor eventを対応能力として採用しない。`configureMonitorEvent(0)`は監視停止として成功し、未配送monitor event、保存mask、種別ごとの最終観測値を消去する。非0 maskは常に`UNAVAILABLE`とし、monitor event用の状態、worker、queueを生成しない。通常の`DATA_READY` / `OVERFLOW` / `onFilterEvent()` deliveryはmask 0または非0要求の拒否によって抑止しない。
-- soft demux の section / PES assembler と filter `stop()` / `flush()` / `configure()` / `close()` の状態別契約は、本書の「表1. IFilter 状態表」を正とする。
+- soft demux の section / PES assembler と filter `stop()` / `flush()` / `configure()` / `close()` は、後段の「フィルタ状態破棄境界と遅延通知方針」、0-S-3Bの`FilterProducerDrainGate` / `QueueCleanupTxn` / `StreamBoundaryTxn`、および各公開Filter APIの名前付き契約を正とする。
 - `setMaxNumberOfFrontends(type, maxNumber)`は同じ`FrontendType`の`0 <= maxNumber <= defaultMax(type)`だけを成功させる。負値、未知type、同typeの既定上限超過は`INVALID_ARGUMENT`とし、別typeの上限を変更しない。
 - 製品実行時 の frontend registry は実在 probe できた backendエントリ だけで構成する。probe 失敗は 診断情報レコード に残し、劣化 frontendエントリ / テスト劣化補助関数 / 診断劣化補助関数 は作らない。
 
@@ -151,7 +151,7 @@ object methodでは、呼出対象のlifecycle/generation不整合を引数値�
 | public close / owner loss / Drop | `ObjectCloseTxn`の`begin_close`とtyped cleanup契約を正とし、本行では再定義しない | 確定点、`CloseCleanupAuthority`、`CleanupPending`、回収移管は`ObjectCloseTxn`契約を正とする |
 | descrambler key / PID / session cleanup | key変更は`DescramblerKeyTxn`、PID変更は`DescramblerPidTxn`、session cleanupは`DescramblerSessionCleanupTxn`を正とし、本行ではphaseを再定義しない | 各契約の確定点、rollback / cleanup、失敗時状態をそのまま適用する |
 | source relation / stream boundary | Filter source relationは`SourceBoundaryTxn`、Demux-Frontend relationは`DemuxFrontendSourceTxn`、stream state境界は`StreamBoundaryTxn`を正とし、本行では一体transactionを再定義しない | 各relation契約と`StreamBoundaryTxn`の確定点、rollback / cleanup、失敗時状態をそのまま適用する |
-| frontend tune/scan | request検証 → tuneでは同一条件・healthy snapshot判定、scanではrequest fingerprint確定 → worker/callback/rollback準備 → 非破壊tune re-entry、同一`LockedReported`のscan継続、または旧session遮断後のbackend要求・新generation commitへ分岐。`stopTune()` / `stopScan()`は対象operationのgenerationをfenceし、該当backend/worker停止と必要なstream boundary cleanupを同じownerで完了させる。複数demuxへboundaryが必要な場合は、破壊的処理の対象demux一覧をこのownerで固定し、各対象へtyped `StreamBoundaryTxn`を実行して結果を集約する | 同一健全tuneは`request_sequence`と現lockの`LOCKED`配送予約だけを確定し、現generation・worker・backend・demux境界・AVを維持する。scan継続は旧scan generationをfenceし、backend再探索なしに新callback generationからENDを1回配送する。それ以外のfull tune/scanだけが旧session遮断、backend要求、新generation commitへ進む。旧session遮断後の新要求拒否では旧要求を再投入せず、backend停止・境界終端を確認できれば`Untuned`、backend結果不明は`FailedBackend`、境界不明でfence成立は`FailedBoundary`、fence不成立は`Quarantined`とする。複数demuxのboundary結果集約では、確定済みdemux結果を巻き戻さず、pre-commit失敗または未処理対象は変更せず、commit結果を確定できないdemuxだけを隔離し、frontendの公開状態を表0-F / 表19へ写像する。commit済みoperationのcallback配送失敗ではdomain stateをrollbackせず`PostCommitCallbackFailureTxn`へ渡す |
+| frontend tune/scan | request検証 → tuneでは同一条件・healthy snapshot判定、scanではrequest fingerprint確定 → worker/callback/rollback準備 → 非破壊tune re-entry、同一`LockedReported`のscan継続、または旧session遮断後のbackend要求・新generation commitへ分岐。`stopTune()` / `stopScan()`は対象operationのgenerationをfenceし、該当backend/worker停止と必要なstream boundary cleanupを同じownerで完了させる。複数demuxへboundaryが必要な場合は、破壊的処理の対象demux一覧をこのownerで固定し、各対象へtyped `StreamBoundaryTxn`を実行して結果を集約する | 同一健全tuneは`request_sequence`と現lockの`LOCKED`配送予約だけを確定し、現generation・worker・backend・demux境界・AVを維持する。scan継続は旧scan generationをfenceし、backend再探索なしに新callback generationからENDを1回配送する。それ以外のfull tune/scanだけが旧session遮断、backend要求、新generation commitへ進む。旧session遮断後の新要求拒否では旧要求を再投入せず、backend停止・境界終端を確認できれば`Untuned`、backend結果不明は`FailedBackend`、境界不明でfence成立は`FailedBoundary`、fence不成立は`Quarantined`とする。複数demuxのboundary結果集約では、確定済みdemux結果を巻き戻さず、pre-commit失敗または未処理対象は変更せず、commit結果を確定できないdemuxだけを隔離する。frontendのcaller-visibleな結果は後段の`IFrontend.tune()` / `IFrontend.scan()` / `IFrontend.stopTune()` / `IFrontend.stopScan()`の名前付き契約へ写像する。commit済みoperationのcallback配送失敗ではdomain stateをrollbackせず`PostCommitCallbackFailureTxn`へ渡す |
 | callback registration | `CallbackRegistrationUseCase`を正とし、AIDL façadeのartifact prepare/releaseとservice_runtime側composite commitのphaseを本行では再定義しない | artifact、runtime registry、domain logical stateの確定点とrollback / cleanupは同契約をそのまま適用する |
 | worker終端 | generic lifecycle mechanismは`WorkerRuntime` / `WorkerHandle`を正とし、本行では共通phaseを再定義しない | domain固有の終了意味は該当API契約、failure分類は`WorkerFailureClassifier`契約を適用する |
 
@@ -231,13 +231,13 @@ VTS製品設定の`canConnectToCiCam`は`false`に固定する。CI CAM系APIは
 
 `IFilter.setDataSource(source)` は、AOSP意味論どおり`source != NULL`では指定filter outputを入力元とし、`source == NULL`ではsink filterの入力元をdemux inputへ戻す。`setDataSource(NULL)`は現行設計の成功対象に含める。AOSP frozen/stable AIDLのvendor独自改変、raw Binder transaction parserによる公開契約を通さない実装は採用しない。source relationの変更は0-S-3Bの`SourceBoundaryTxn`、旧入力origin由来のpartial dataを新入力originへ連結しないstream/parser boundaryは`StreamBoundaryTxn`を唯一の正本とし、本節ではrelation phase、generation更新、parser mutationを再定義しない。
 
-`IFrontend.tune()`はbinder thread上でlock完了まで待ち続けない。同一の正規化settings、typed selector、LNB/power条件で既存lockを安全に継続できる場合は、既存streamを中断せず当該requestに対応する`LOCKED`を正確に1回配送する。それ以外の要求ではfull retuneとして扱い、破壊的遷移後に旧service由来のdataを新要求の出力として復元しない。入力分類、公開status、失敗後の公開状態は表19を正とし、同値性snapshot、generation、worker/backend停止、boundary、commit / rollbackの内部semanticsはcanonical `frontend tune/scan`だけを正本とする。
+`IFrontend.tune()`はbinder thread上でlock完了まで待ち続けない。同一の正規化settings、typed selector、LNB/power条件で既存lockを安全に継続できる場合は、既存streamを中断せず当該requestに対応する`LOCKED`を正確に1回配送する。それ以外の要求ではfull retuneとして扱い、破壊的遷移後に旧service由来のdataを新要求の出力として復元しない。入力分類、caller-visibleな結果、失敗後の公開状態は本節のfrontend各API契約を正とし、同値性snapshot、generation、worker/backend停止、boundary、commit / rollbackの内部semanticsはcanonical `frontend tune/scan`だけを正本とする。
 
 無応答backendの製品watchdogはbackend別`ProductProfile.tuneTerminalDeadlineMs`を正とし、本製品ProductProfileではearth_pt1=`4000 ms`、px4=`7000 ms`とする。これはAIDL規定値ではなく、正常なbackend処理列を期限前に打ち切らないための製品値である。lockまたは明示失敗がないまま期限へ達した場合のcaller-visibleな結果は`NO_SIGNAL`を正確に1回通知して`Idle`とし、期限と既に確定したlockが競合する場合は`LOCKED`を優先する。cancel / stale通知fence等の内部処理はcanonical `frontend tune/scan` / `WorkerRuntime` / `WorkerHandle`参照とする。Android 14 AIDL VTSへ結び付けるprofileは、実信号でVTSの`WAIT_TIMEOUT=3秒`より前に`LOCKED`を通知できることを別の受入条件とし、VTS待機値を製品watchdogへ流用しない。
 
 `IFrontend.scan()`は、最初の`scan(K)`で`LOCKED`を配送した後、同じsettings / scan typeの次の`scan(K)`に対して`END`を正確に1回配送し、2回目の`LOCKED`で補償しない。異なるrequestは新しいscanとして扱い、`stopScan()`はactive scanを停止する。`tune()` / `close()`等で継続条件を失った後に旧scanのterminal callbackを新operationの結果として配送しない。request fingerprint、scan generation、continuation state、worker/callback commit等の内部semanticsはcanonical `frontend tune/scan`だけを正本とする。最低試験は`scan(K)→LOCKED→scan(K)→END`、2回目の`LOCKED`がないこと、および異なるrequest / `stopScan()` / `tune()` / `close()`後に旧continuation結果が現れないことを確認する。
 
-`IFrontend.close()` は、scan / tune worker、live pump、frontend backend、callback registration、demux relation、frontend leaseを当該frontend固有のcleanup対象とする。公開`close()`の戻り値、再`close()`時の結果、論理閉鎖後に許可する操作は表5を正とする。cleanup authority、全対象試行、retry / handoff、quarantineの内部semanticsは0-S-3Bの`ObjectCloseTxn`を唯一の正本とし、本節では再定義しない。
+`IFrontend.close()` は、scan / tune worker、live pump、frontend backend、callback registration、demux relation、frontend leaseを当該frontend固有のcleanup対象とする。公開`close()`の戻り値、再`close()`時の結果、論理閉鎖後に許可する操作は0-S-4の公開close契約を正とする。cleanup authority、全対象試行、retry / handoff、quarantineの内部semanticsは0-S-3Bの`ObjectCloseTxn`を唯一の正本とし、本節では再定義しない。
 
 DVB / earth_pt1 backend では、`DTV_CLEAR` は明示的な tune 停止操作である `stop_tune()` の責務とする。DVB backend の `close()` は reader stop と fd release を行うが、`DTV_CLEAR` の実行を close の必須条件とはしない。したがって、DVB `close()` が `DTV_CLEAR` を発行しないことを release blocker または bug と扱わない。
 
@@ -260,7 +260,7 @@ DVR playback status は playback input buffer の空き領域、すなわち spa
 
 ## Tuner HAL 状態遷移表SSOT
 
-本節の表は、Tuner HAL の状態を持つ公開API、内部事象、資源寿命、戻り値、副作用のSSOTである。表に記載した状態別契約は、後続の散文で再定義しない。後続本文は、表だけでは読み取れない背景、製品方針、能力宣言、実装上の補足に限定する。
+本節は、Tuner HAL の状態を持つ公開API、内部事象、資源寿命、戻り値、副作用のSSOTである。現行契約は以下の名前付き節および0-S-3Bの論理契約名で参照し、移送済み旧表番号を参照名として使用しない。
 
 
 ### 0-S. 状態所有・寿命・失敗時遷移設計
@@ -400,7 +400,7 @@ commit前失敗では、成功戻りを返してはならない。commit後clean
 |---|---|---|---|---|
 | クライアント誤用 | 引数不正、owner不一致 | `INVALID_ARGUMENT` | 呼び出し対象のみ | backend/データ経路 failureへ昇格しない |
 
-公開 `close()` の状態別結果は表5 / CL-*を正とする。`Live` objectへの最初の`close()`は0-S-3Bの`ObjectCloseTxn`へ接続し、logical close確定後は回復用入口を除く通常methodを拒否する。`LogicalClosed+CleanupComplete`では`IFrontend.close()` / `ILnb.close()`は状態を変えず`SUCCESS`、`IDvr.close()` / `IFilter.close()`は`INVALID_STATE`とし、Filterの遅延`releaseAvHandle()`は別の解放台帳操作として扱う。`LogicalClosed+CleanupPending`の再`close()`は`ObjectCloseTxn`のrecovery入口へ接続し、そのtyped resultを表5の公開戻り値へ写像する。`CleanupPending` / `Quarantined`への遷移条件、未完cleanupのretry、authority handoff、reaper移管、quarantine判定は0-S-3Bの`ObjectCloseTxn`を唯一の正本とし、本節では再定義しない。
+公開 `close()` の状態別結果は本段落を正とする。`Live` objectへの最初の`close()`は0-S-3Bの`ObjectCloseTxn`へ接続し、logical close確定後は回復用入口を除く通常methodを拒否する。`LogicalClosed+CleanupComplete`では`IFrontend.close()` / `ILnb.close()`は状態を変えず`SUCCESS`、`IDvr.close()` / `IFilter.close()`は`INVALID_STATE`とし、Filterの遅延`releaseAvHandle()`は別の解放台帳操作として扱う。`LogicalClosed+CleanupPending`の再`close()`は`ObjectCloseTxn`のrecovery入口へ接続し、そのtyped resultを公開戻り値へ写像する。`CleanupPending` / `Quarantined`への遷移条件、未完cleanupのretry、authority handoff、reaper移管、quarantine判定は0-S-3Bの`ObjectCloseTxn`を唯一の正本とし、本節では再定義しない。
 
 
 | 失敗種別 | 例 | 戻り値 | 波及範囲 | 禁止事項 |
@@ -519,7 +519,7 @@ generic worker lifecycleは0-S-3Bの`WorkerRuntime` / `WorkerHandle`、worker fa
 
 ワーカーはデータ処理と通知を担当し、demux、filter、DVR、descrambler等の資源寿命または登録relationのmutation ownerにはならない。worker failureはtyped resultとしてdomain ownerへ返し、domain ownerが各API状態表に従って公開状態へ反映する。worker自身が対象objectを直接unregisterしたり、別ownerのresourceを解放したりしてはならない。
 
-Frontend / Filter / DVR / Playback固有のterminal meaningとworker failure後の公開結果 / data-path効果は各API状態表と表6を正とする。generic lifecycleは`WorkerRuntime` / `WorkerHandle`、failure categoryは`WorkerFailureClassifier`、post-commit callback failureは`PostCommitCallbackFailureTxn`を唯一の正本とし、本節では第二のfailure contractを持たない。
+Frontend / Filter / DVR / Playback固有のterminal meaningとworker failure後の公開結果 / data-path効果は各APIの名前付き契約と「失敗影響範囲」を正とする。generic lifecycleは`WorkerRuntime` / `WorkerHandle`、failure categoryは`WorkerFailureClassifier`、post-commit callback failureは`PostCommitCallbackFailureTxn`を唯一の正本とし、本節では第二のfailure contractを持たない。
 
 ### close / unregister / quarantine 条件
 
@@ -535,9 +535,9 @@ cleanup commandの途中失敗後の後続command実行、未完step記録、同
 
 ### `IFrontend.stopTune()` の失敗時状態
 
-`IFrontend.stopTune()`はactive tuneを停止し、当該frontendに接続されたdemuxについて旧tune由来data / callbackを後続の成功結果として公開しない。公開成功・失敗状態は表0-F / 表19を正とし、backend停止結果を確定できない場合は`FailedBackend`、backend停止済みだが必要なdemux boundaryを確定できず旧generation fenceが成立する場合は`FailedBoundary`、stale callback / queue / backend resultを遮断できない場合だけ`Quarantined`とする。
+`IFrontend.stopTune()`はactive tuneを停止し、当該frontendに接続されたdemuxについて旧tune由来data / callbackを後続の成功結果として公開しない。backend停止結果を確定できない場合は`FailedBackend`、backend停止済みだが必要なdemux boundaryを確定できず旧generation fenceが成立する場合は`FailedBoundary`、stale callback / queue / backend resultを遮断できない場合だけ`Quarantined`とする。
 
-対象demux一覧の固定、frontend operation generation fence、worker / backend停止、per-demux `StreamBoundaryTxn`、結果集約、retry / quarantineの内部phase・failure semanticsは「公開transactionのphase・確定点・失敗処理契約」のcanonical `frontend tune/scan`と0-S-3Bの`StreamBoundaryTxn`だけを正本とする。本節では別の複数demux batch state machineを定義しない。active scanだけが存在する場合の`stopTune()`は表0-Fどおりscan generation、backend scan、attached demux boundaryを変更しない。
+対象demux一覧の固定、frontend operation generation fence、worker / backend停止、per-demux `StreamBoundaryTxn`、結果集約、retry / quarantineの内部phase・failure semanticsは「公開transactionのphase・確定点・失敗処理契約」のcanonical `frontend tune/scan`と0-S-3Bの`StreamBoundaryTxn`だけを正本とする。本節では別の複数demux batch state machineを定義しない。active scanだけが存在する場合の`stopTune()`はscan generation、backend scan、attached demux boundaryを変更せず成功する。
 
 新しい配送の停止と、クライアントが保持する記憶領域の存続期間は分けて管理する。
 
@@ -568,7 +568,7 @@ non-mediaのevent-producing filterではpending `onFilterEvent()` batchを既存
 
 ## フィルタ状態破棄境界と遅延通知方針
 
-filter の `stop()`、`flush()`、`configure()`、上流フィルタ登録解除の状態別契約は、本書の「表1. IFilter 状態表」を正とする。本節では、遅延通知の再arm条件だけを補足する。
+filter の `stop()`、`flush()`、`configure()`、上流フィルタ登録解除の状態別契約は、本節、0-S-3Bの`FilterProducerDrainGate` / `QueueCleanupTxn` / `StreamBoundaryTxn`、および各Filter公開APIの名前付き契約を正とする。本節では、遅延通知の再arm条件を補足する。
 
 `FilterDelayHint::時間遅延指定` は queue-empty → non-empty の各まとまりごとに再armする。start/configure直後の1回限りdelayではない。payload queue が空の filter に新規 payload が入った時点で期限を再設定し、最初のまとまり delivery 後に queue が空になった場合、次まとまりは再び time delay を受ける。time delay と data-size delay が両方有効な場合は OR 条件であり、どちらか一方を満たした時点でコールバック配送可能とする。
 
@@ -739,13 +739,13 @@ AV passthrough は本製品では恒久的に対応しない。`DemuxFilterAvSet
 
 VTS/profileでは、AV filterを使用する場合でも `isPassthrough=false` に固定する。`isPassthrough=true` を含むprofileは本製品の対応profileとして扱わない。
 
-AV filter の状態別契約、shared backing、公開済みハンドル、使用中領域、`dataId`、`flush()`、`configure()`、`close()` の副作用は、本書の「表4. AV共有メモリ資源寿命表」を正とする。`releaseAvHandle()`の入力分類、戻り値、資源変化は「表1-C-AVH. `releaseAvHandle()` 全域判定表」だけを正とする。本節では、allocator、NativeHandle形式、payload配置、診断方針だけを補足する。
+AV filter の状態別契約、shared backing、公開済みハンドル、使用中領域、`dataId`、`flush()`、`configure()`、`close()` の副作用は、0-S-2のAV active token台帳、本節の「AV転送方式とクライアント側の存続期間」および後段の「AV割り当て」を正とする。本節では、allocator、NativeHandle形式、payload配置、診断方針だけを補足する。
 
-AndroidフレームワークとJNIが受理する`MediaEvent`の表現は、本書の「AV割り当て方式」を正とする。共有モードでは、`IFilter.getAvSharedHandle()`がdma-bufまたはION系のファイル記述子1個を持つハンドルを返す。各イベントの`avMemory`は空とし、正の`avDataId`と`offset/dataLength`で共有領域内の半開区間を識別する。イベント固有モードでは、各イベントが正確な長さのファイル記述子1個を持つ`avMemory`と、正の`avDataId`を持つ。共有ハンドルの未取得、使用権の解放済み、収容可能な空き領域なし、またはAUが領域長を超える場合は、イベント固有モードを正式な代替方式とする。過大なAUを破棄して、2方式対応という能力表明と矛盾させてはならない。
+AndroidフレームワークとJNIが受理する`MediaEvent`の表現は、本書の「AV割り当て」を正とする。共有モードでは、`IFilter.getAvSharedHandle()`がdma-bufまたはION系のファイル記述子1個を持つハンドルを返す。各イベントの`avMemory`は空とし、正の`avDataId`と`offset/dataLength`で共有領域内の半開区間を識別する。イベント固有モードでは、各イベントが正確な長さのファイル記述子1個を持つ`avMemory`と、正の`avDataId`を持つ。共有ハンドルの未取得、使用権の解放済み、収容可能な空き領域なし、またはAUが領域長を超える場合は、イベント固有モードを正式な代替方式とする。過大なAUを破棄して、2方式対応という能力表明と矛盾させてはならない。
 
 両モードの`avDataId`は、同じ上限付き割り当て台帳から発行する。メモリー、台帳、`MediaEvent`の準備がすべて成功した後に割り当てを確定し、失敗時はコールバックまたは`dataId`を公開しない。`offset + dataLength <= backing size`を正常範囲とし、上限超過を検出できる加算を用いる。長さ0は不正としてイベントを発行しない。`isSecureMemory=false`に固定する。
 
-解放要求の形状、active `avDataId` tokenのowner・generation・transfer kind検証、inactive/unknown tokenの拒否、ファイル記述子の補助検証、論理閉鎖後の解放は、本書の「表1-C-AVH. `releaseAvHandle()` 全域判定表」を正とする。`releaseAvHandle(fd,0)`を共有記憶領域全体の破棄と解釈してはならない。イベント固有モードでは、受領したハンドルの使用権だけを先に閉じ、正のactive tokenとallocationを後続解放まで維持できる。
+解放要求の形状、active `avDataId` tokenのowner・generation・transfer kind検証、inactive/unknown tokenの拒否、ファイル記述子の補助検証、論理閉鎖後の解放は、0-S-2のAV active token台帳と「AV転送方式とクライアント側の存続期間」を正とする。`releaseAvHandle(fd,0)`を共有記憶領域全体の破棄と解釈してはならない。イベント固有モードでは、受領したハンドルの使用権だけを先に閉じ、正のactive tokenとallocationを後続解放まで維持できる。
 
 ### clear non-passthrough `DemuxFilterMediaEvent` 公開field契約
 
@@ -806,7 +806,7 @@ AV filterを対応宣言する demux は AOSP の `getAvSyncHwId(Filter)` と `g
 
 ## A/V sync 非採用範囲
 
-AV filter の `start()`、共有ハンドル、MediaEventの状態別契約は、本書の「表4. AV共有メモリ資源寿命表」を正とする。`releaseAvHandle()`の契約は「表1-C-AVH. `releaseAvHandle()` 全域判定表」だけを正とする。本節では A/V sync の非採用範囲だけを恒久契約として固定する。
+AV filter の `start()`、共有ハンドル、MediaEventの状態別契約と`releaseAvHandle()`の資源寿命・解放契約は、0-S-2のAV active token台帳、前節の「AV転送方式とクライアント側の存続期間」および後段の「AV割り当て」を正とする。本節では A/V sync の非採用範囲だけを恒久契約として固定する。
 
 
 - PTS は current A/V sync clock の 代替処理 として使わない。
@@ -824,9 +824,9 @@ versioned `SupportedDeviceCapabilityCatalog` のpx4 / earth_pt1項目は、公�
 
 公開`ILnb` operation能力とsatellite frontendの電源トポロジは別能力として扱う。`SupportedDeviceCapabilityCatalog`の機器項目は、`InternalFixed15V`、`ExternalOrShared`、`UnknownOrDisabled`のいずれかを保持する。`InternalFixed15V`は、物理rail owner、15 Vの適用確認方法、停止時の安全状態、共有互換条件を同じ項目に持ち、frontend generation開始前に既存の機器単位rail leaseを取得して15 Vを実適用できる場合だけ成立する。`ExternalOrShared`は、給電主体、HALが電圧を変更しないこと、共有互換条件、選局中の給電継続を製品配線として確認できる場合だけ成立する。
 
-`InternalFixed15V`または`ExternalOrShared`が検証済みでruntime LNB切替を必要としないISDB-S frontendは、公開`ILnb` endpointの有無と独立に公開可否を判断する。前者ではHAL内部で選局前に固定15 Vを適用し、後者ではHALは電圧操作を行わない。固定給電だけをcaller制御可能な`ILnb.setVoltage()`能力として広告してはならない。`UnknownOrDisabled`、トポロジ証跡不一致、給電継続または共有互換性を確認できない場合はsatellite frontendを公開しない。給電、lease、tune準備失敗時の巻き戻し、安全状態復帰、共有rail参照管理、実状態不明時の隔離は、本書の「LNB機器の資源規則」「表7」「表8」「ワーカー終了契約」を適用する。`FixedDishPowerProfile`その他の専用profileや別状態機械を設けない。
+`InternalFixed15V`または`ExternalOrShared`が検証済みでruntime LNB切替を必要としないISDB-S frontendは、公開`ILnb` endpointの有無と独立に公開可否を判断する。前者ではHAL内部で選局前に固定15 Vを適用し、後者ではHALは電圧操作を行わない。固定給電だけをcaller制御可能な`ILnb.setVoltage()`能力として広告してはならない。`UnknownOrDisabled`、トポロジ証跡不一致、給電継続または共有互換性を確認できない場合はsatellite frontendを公開しない。給電、lease、tune準備失敗時の巻き戻し、安全状態復帰、共有rail参照管理、実状態不明時の隔離は、「公開transactionのphase・確定点・失敗処理契約」、0-S-2の状態所有者、0-S-3Bの`FrontendLnbRelationTxn` / `LnbControlTxn` / `ObjectCloseTxn` / `WorkerRuntime`を適用する。`FixedDishPowerProfile`その他の専用profileや別状態機械を設けない。
 
-`getLnbIds()`は起動時probeとoperation/value capability対応表から公開対象として確定したendpoint IDを列挙する。`openLnbById()`は公開済みendpoint 1個の使用権を取得する。不明なIDには`INVALID_ARGUMENT`、使用中、`CleanupPending`、`Quarantined`のendpointには状態を変えず`UNAVAILABLE`を返す。`openLnbByName()`は本製品で名前付き外部LNBを公開しないため成功対象を持たず、空文字を`INVALID_ARGUMENT`、その他の名前を`UNAVAILABLE`とする。LNB ID、object、leaseを生成せず、出力を部分公開しない。`ILnb.close()`の公開結果とendpoint leaseの最終解放条件は表5およびLNB資源契約を正とする。cleanup authority、retry / handoff、worker回収、quarantineの内部semanticsは0-S-3Bの`ObjectCloseTxn`と`WorkerRuntime` / `WorkerHandle`を正本とし、本節では再定義しない。
+`getLnbIds()`は起動時probeとoperation/value capability対応表から公開対象として確定したendpoint IDを列挙する。`openLnbById()`は公開済みendpoint 1個の使用権を取得する。不明なIDには`INVALID_ARGUMENT`、使用中、`CleanupPending`、`Quarantined`のendpointには状態を変えず`UNAVAILABLE`を返す。`openLnbByName()`は本製品で名前付き外部LNBを公開しないため成功対象を持たず、空文字を`INVALID_ARGUMENT`、その他の名前を`UNAVAILABLE`とする。LNB ID、object、leaseを生成せず、出力を部分公開しない。`ILnb.close()`の公開結果とendpoint leaseの最終解放条件は0-S-4の公開close契約と「LNB機器の資源規則」を正とする。cleanup authority、retry / handoff、worker回収、quarantineの内部semanticsは0-S-3Bの`ObjectCloseTxn`と`WorkerRuntime` / `WorkerHandle`を正本とし、本節では再定義しない。
 
 公開するLNB IDはsatellite frontendへ接続できる論理endpointとして扱い、1個のendpoint leaseを複数frontendへ同時接続しない。`setLnb(lnb_id)`は当該satellite frontendへ接続可能なLNB IDだけを受け付け、別の物理機器に属するLNB ID、地上波frontendへのLNB接続、不明なLNB IDは失敗させる。同一px4機器内で複数の論理endpointが共有する物理電圧レールは機器単位で直列化し、互換な電圧要求だけを参照数で共有する。
 
@@ -870,11 +870,11 @@ LNB固有のsafe-state復帰はcleanup対象として`ObjectCloseTxn`へtyped cl
 | `setDemuxSource(any)` / `CallConsumedUnbound`または`Bound` | AOSPの一回限り契約を入力検証より先に適用し、再設定を受け付けない | `INVALID_STATE` | 既存のfailureまたはdemux ID、generation、pool帰属を維持 |
 | `setDemuxSource(any)` / 論理閉鎖済み | 閉鎖状態を入力より先に判定する | `INVALID_STATE` | 状態と資源を変更しない |
 
-`setKeyToken(non-VOID)`、`addPid()`、`removePid()`は`Bound` sessionだけを対象とする。`NeverCalledUnbound`と`CallConsumedUnbound`では`INVALID_STATE`を返し、鍵参照とPID claimを作らない。source demuxのgenerationが消失した場合も新しい操作は`INVALID_STATE`とし、別demuxへ再結合せず、保持中のclaimはcloseまたはdemux無効化の後片付けで同じpoolへ返す。`close()`は未結合の2状態ならobject/session枠だけ、`Bound`ならpool session帰属、鍵参照、PID claimを含む全後片付けを試行し、表5の完了条件に従う。
+`setKeyToken(non-VOID)`、`addPid()`、`removePid()`は`Bound` sessionだけを対象とする。`NeverCalledUnbound`と`CallConsumedUnbound`では`INVALID_STATE`を返し、鍵参照とPID claimを作らない。source demuxのgenerationが消失した場合も新しい操作は`INVALID_STATE`とし、別demuxへ再結合せず、保持中のclaimはcloseまたはdemux無効化の後片付けで同じpoolへ返す。`close()`は未結合の2状態ならobject/session枠だけ、`Bound`ならpool session帰属、鍵参照、PID claimを含む全後片付けを試行し、0-S-4の公開close契約と0-S-3Bの`DescramblerSessionCleanupTxn` / `ObjectCloseTxn`に従う。
 
 ## 復号鍵台帳
 
-`IDescrambler.setKeyToken()` が受け取る値は復号鍵そのものではなく、不透明な参照値である。Tuner HAL はこの参照値で復号鍵台帳を引き、内部の `DescramblerKeySlot` に変換する。Binder 境界を越える バイト列に MULTI2 の system key、CBC 初期値、偶数鍵、奇数鍵を入れてはならない。
+`IDescrambler.setKeyToken()` が受け取る値は復号鍵そのものではなく、不透明な参照値である。Tuner HAL はこの参照値で復号鍵台帳を引き、内部の `DescramblerKeySlot` に変換する。Binder 境界を越える バイト列に MULTI2 の system key、CBC 初期値、偶数鍵、奇数鍵を入れてはならない。r52のCAS/Tuner内部鍵資源の完全なmaterial構成、供給・更新・revoke境界は`../future_work/r52/b25_key_slot_registry_contract.md`を正とし、本書では公開AIDL境界とTuner側のtoken解決意味だけを定義する。
 
 復号鍵台帳の key slot 状態は次で固定する。
 
@@ -966,10 +966,15 @@ DVB backend は frontend index と同じ demux index / dvr index を使う。`ad
 
 `IDescrambler.setKeyToken()` の失敗時は、現在の鍵スロット、現在のトークン、demux 紐付け、PID登録を変更しない。空 トークン、長さ超過、未登録、失効済み、台帳異常のどれで失敗しても、成功扱いにせず固定された AIDL 戻り値と診断だけを返す。PID 登録を消す操作は `removePid()` だけであり、`VOID_KEYTOKEN` と 鍵参照の解決失敗は PID 登録削除を伴わない。
 
-デスクランブル診断は、descrambler診断は公開AIDL意味を変えない内部診断として保持し、具体helper・出力先・時間間隔は`CODE_CONVENTION.md`を正本とする。
+デスクランブル診断は公開AIDL意味を変えない内部診断として保持し、具体helper・debug出力先・時間間隔は`CODE_CONVENTION.md`を正本とする。
 
-descrambler診断の具体的なdebug出力設定は`CODE_CONVENTION.md`を正本とする。
+### 診断counter飽和契約
 
+診断専用counterはlifetime ID、generation、token、startId等の再利用禁止識別子とは別の値域として扱う。診断counterは上限で飽和してよいが、上限到達時は`diagnostic_counter_saturated`をcounter種別と対象ownerを識別できる必須診断として記録する。
+
+診断counterの飽和または診断記録のdropだけを理由に、filter / DVR / demux / frontendをruntime failure、cleanup failure、`Quarantined`へ遷移させず、本体data pathを停止しない。診断取得APIを除くbusiness APIの成功/失敗、AIDL戻り値、capability、資源寿命を変更してはならず、診断counterをこれらの判定入力に使用しない。
+
+lifetime ID、generation、token、startId等の識別子発行は本契約の対象外であり、各canonical ownerが定めるchecked increment、wrap/reuse禁止、発行不能時の局所failure / quarantine契約をそのまま適用する。
 
 ### 失効 トークン 診断
 
@@ -998,7 +1003,7 @@ Tuner HAL の descrambler は、key token で与えられた鍵を用いて、18
 ECM / EMM、CAS権利判定、card I/O、CW取得は Tuner HAL の責務ではない。CAS HAL または CAS bridge が責務を持つ。Tuner HAL は、取得済み key token を使う payload 復号中核だけを担当する。
 
 
-ECM / EMM 処理、カード I/O、CAS 権利判定、CW 取得、不透明 トークン 発行、B25 system key / CBC 初期値 / data key を CAS 側から安全に供給する経路は CAS HAL または CAS bridge の責務である。CAS / TIS / Tuner HAL のリリース段階ごとの統合スコープは `開発規則.md` を正とする。本節の OK 判定は「Tuner HAL の packet 単位のデスクランブル中核と診断境界が静的に整った」という意味であり、「CAS 通信部だけを除いて libaribb25 の TS→TS B25 処理系が全て完成した」という意味ではない。
+ECM / EMM 処理、カード I/O、CAS 権利判定、CW 取得、不透明 トークン 発行、B25 system key / CBC 初期値 / data key を CAS 側から安全に供給する経路は CAS HAL または CAS bridge の責務であり、r52内部鍵資源の詳細は`../future_work/r52/b25_key_slot_registry_contract.md`を正とする。CAS / TIS / Tuner HAL のリリース段階ごとの統合スコープは `開発規則.md` を正とする。本節が規定するのはTuner HALのpacket単位デスクランブル中核と診断境界であり、libaribb25相当のTS→TS B25処理系全体の完成条件または作業完了判定を定義しない。
 
 ## LNB profile 判定表
 
@@ -1114,7 +1119,7 @@ release AIDL経路からテスト専用入口へ到達してはならず、テ�
 | T-AOSP-54 | TS live `DemuxFilterMediaEvent`公開field | `streamId`、PTS/DTS presence/value、`mpuSequenceNumber`、private-data、`extraMetaData`、`scIndexMask`を同一media outputの入力由来または定義済みdefaultと一致させ、別PES/generationを混成しない |
 | T-AOSP-55 | DVR `setStatusCheckIntervalHint()` | playback / record双方で受理したhintを以後のdata/status evaluation cadence決定に使用し、保存だけのno-op、Binder thread sleep、queue/lifecycle変更にしない |
 
-`close()` 以外の公開メソッドでは、`LogicalClosed`、`InvalidArgument`、`WrongLifecycle`、`ResourceUnavailable`、`BackendFailure`、`Success` の順で判定を優先する。`close()` 自体の結果はこの共通優先順位で決めず、インターフェース別の `close()` 表だけに従う。遅延して呼ばれる `IFilter.releaseAvHandle()` はAV解放台帳に従う独立操作であり、閉鎖後の共通メソッドとして扱わない。
+`close()` 以外の公開メソッドでは、`LogicalClosed`、`InvalidArgument`、`WrongLifecycle`、`ResourceUnavailable`、`BackendFailure`、`Success` の順で判定を優先する。`close()` 自体の結果はこの共通優先順位で決めず、0-S-4の公開close契約に従う。遅延して呼ばれる `IFilter.releaseAvHandle()` はAV解放台帳に従う独立操作であり、閉鎖後の共通メソッドとして扱わない。
 
 
 | 番号 | 確認観点 | 目的 |
@@ -1241,7 +1246,7 @@ PES filterは、外形検証の後に`stream_id`で通常optional-header構文�
 
 - 機器の事実は`DeviceProbeCapability`で確定する。frontendは公開API全体が成立するものだけを公開する。LNBは検出成功、endpoint/lease条件、operation/valueごとの実処理証跡から公開可否を決め、`aidl_baseline_eligible`はAndroid 14 CTS baseline適合分類としてだけ保持する。px4/earth_pt1は電圧制御の証跡があるため該当operation/valueを公開し、tone、position、DiSEqC等の有効だが未対応の要求は副作用なしの`UNAVAILABLE`とする。
 - demux、filter、DVRの個数は本書「サービスオブジェクトの上限」で定め、同じ使用権台帳で強制する。
-- AVの転送、割り当て、解放は、本書「AV割り当て」と「表1-C-AVH. `releaseAvHandle()` 全域判定表」で定める。共有領域方式は最適化手段とし、要求サイズどおりのイベント固有ファイル記述子方式を正式な代替経路とする。`dataId=0`のhandle lease終了だけは表1-C-AVHで定めたboundedなlease stateにより冪等化し、正の`avDataId`はactive token台帳に存在する場合だけ解放を成功させる。
+- AVの転送、割り当て、解放は、本書「AV割り当て」、0-S-2のAV active token台帳、「AV転送方式とクライアント側の存続期間」で定める。共有領域方式は最適化手段とし、要求サイズどおりのイベント固有ファイル記述子方式を正式な代替経路とする。`dataId=0`のhandle lease終了だけはboundedなclient lease stateにより冪等化し、正の`avDataId`はactive token台帳に存在する場合だけ解放を成功させる。
 - ワーカーとLNBの停止・後片付けは、本書「ワーカー終了契約」と「LNB機器の資源規則」で定める。`TargetDriverTimingProfile` や、公開経路で上限なく `join` を待つ処理を設けない。
 - パケット異常と基盤異常の影響範囲は、本書「失敗影響範囲」で定める。不正TS、TEI、連続性異常を基盤隔離へ昇格させない。
 - frontendで公開・受理する値は、本書「フロントエンド設定の反映表」で定める。ARIB B31の値域根拠は本書「VTS環境とARIB B31の境界」に置く。
