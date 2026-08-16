@@ -8,8 +8,8 @@
 
 対象は次の2系統である。
 
-1. スマートカードに対する読み書きにより ECM / EMM を処理する経路
-2. Android 向けに一部フォークした `libyakisoba` を常駐プロセスとして起動し、CAS HAL から ECM / EMM を送受信する経路
+1. スマートカードに対する読み書きにより、B25では ECM / EMM、B1では ECM のみを処理する経路
+2. Android 向けに一部フォークした `libyakisoba` を常駐プロセスとして起動し、B25 の ECM / EMM をCAS HALと送受信する経路。B1には使用しない
 
 ただし、B1 については本改訂で次を固定する。
 
@@ -22,9 +22,9 @@ libyakisoba:
   - B1 backend として列挙しない。
   - B1 の yakisoba fallback 対象にしない。
 
-B1 の初期実装範囲:
-  - B1SmartCardPath / libaribb1 系参照の ECM-only 実験対応から開始する。
-  - B1 EMM 処理と通電制御情報取得は、実装根拠と検証条件が揃うまで unsupported とする。
+B1 の実装範囲:
+  - B1SmartCardPath / libaribb1 系参照の ECM-only 経路を正式対応とする。
+  - B1 EMM 処理、EMMに依存する通電制御情報取得、契約更新、権利更新は恒久的に対応しない。
 ```
 
 改訂後の基本方針は次のとおりである。
@@ -121,7 +121,7 @@ B1 plugin は、次の条件を満たすまで `enumeratePlugins()` に出さな
 ```text
 - B1SmartCardPath の ECM 処理が実装済みである。
 - processEmm() は unsupported として明示実装されている。
-- 通電制御情報取得は unsupported として明示実装されている。
+- B1 EMMに依存する通電制御情報取得、契約更新、権利更新は unsupported として明示実装されている。
 - YakisobaCasPath が B1 に対して選択されないことがテストで固定されている。
 ```
 
@@ -186,7 +186,7 @@ trait CasProcessingPath {
 }
 ```
 
-`MaleicacidCasPlugin` は、この trait を通じて下位処理を呼ぶ。上位の `ICas` 契約は、スマートカード直結経路でも libyakisoba 経路でも変化しない。ただし、B1の `process_emm()` は、実装根拠が固定されるまでは明示的に unsupported を返す。
+`MaleicacidCasPlugin` は、この trait を通じて下位処理を呼ぶ。上位の `ICas` 契約は、スマートカード直結経路でも libyakisoba 経路でも変化しない。ただし、B1はECM-only能力として固定し、`process_emm()` は恒久的に unsupported を返す。TISはB1 sessionで `MediaCas.processEmm()` を呼ばない。
 
 ---
 
@@ -196,7 +196,7 @@ trait CasProcessingPath {
 
 `SmartCardCasPath` は、ARIB 資料に準拠したスマートカード I/O を担当する。CAS HAL から見た主処理は ECM / EMM の処理であり、TS demux や AV / DVR 出力は担当しない。
 
-B1については、`B1SmartCardPath` を別経路として実装する。B1の公開・移植可能な参照実装は実質的に `libaribb1` 系に集約されているため、B1は `libaribb1` 系の挙動を参照して ECM-only 実験対応から開始する。
+B1については、`B1SmartCardPath` を別経路として実装する。B1の公開・移植可能な参照実装は実質的に `libaribb1` 系に集約されているため、B1は `libaribb1` 系の挙動を参照するECM-only経路だけを正式対応とする。
 
 ### 4.2 実装対象
 
@@ -229,10 +229,10 @@ B1 系:
 - ECM 結果から key slot / opaque token 生成
 - Tuner HAL descrambler への token 連携
 
-当面 unsupported:
+恒久的に非対応:
   - B1 EMM 処理
-  - B1 通電制御情報取得
-  - B1 契約更新・権利更新を受信機側で完結させる処理
+  - B1 EMMに依存する通電制御情報取得
+  - B1 EMMに依存する契約更新・権利更新を受信機側で完結させる処理
 ```
 
 ### 4.3 完了条件
@@ -256,7 +256,7 @@ B1 系:
 - ECM 成功時、raw key を Binder / logcat / IPC に出さない
 - ECM 成功時、KeySlotRegistry に key を登録し、opaque token のみを返す
 - processEmm() は明示的に unsupported を返す
-- 通電制御情報取得は明示的に unsupported として扱う
+- B1 EMMに依存する通電制御情報取得、契約更新、権利更新は明示的に unsupported として扱う
 - B1 で YakisobaCasPath が選択されない
 - B1 plugin advertise は上記確認後にのみ有効化される
 ```
@@ -499,7 +499,7 @@ CAS HAL は TS packet path を持たない。TS packet payload の復号は Tune
 - CAS event / status 通知
 ```
 
-B1については、EMM処理を当面 unsupported とする。
+B1はECM-only能力として固定し、EMM処理を恒久的に対応しない。
 
 ### 8.2 Tuner HAL の責務
 
@@ -517,16 +517,17 @@ B1については、EMM処理を当面 unsupported とする。
 ### 8.3 TIS の責務
 
 ```text
-- PMT / CAT / ECM / EMM filter を Tuner API 経由で開く
+- B25では PMT / CAT / ECM / EMM filter を Tuner API 経由で開く
+- B1では PMT / ECM filter を Tuner API 経由で開き、EMM filterを起動しない
 - CA descriptor を解析し caSystemId を決定する
 - MediaCas(caSystemId) を生成する
 - setPrivateData() / setSessionPrivateData() を呼ぶ
-- processEcm() / processEmm() を呼ぶ
+- B25では processEcm() / processEmm()、B1では processEcm() だけを呼ぶ
 - MediaCas session 由来の key token を Tuner descrambler へ渡す
 - addPid() で video/audio PID を復号対象にする
 ```
 
-B1では、`processEmm()` が unsupported を返すことをTIS側でも許容し、空成功として扱わない。
+B1では`MediaCas.processEmm()`を呼ばない。防御的にB1 pluginの`processEmm()`へ到達した場合も明示的unsupportedを返し、空成功にしない。
 
 ---
 
@@ -657,7 +658,7 @@ B1参照元として扱う `libaribb1` 系についても、実際にソース�
 - B1 ECM 処理を実装する
 - B1 key token 発行を実装する
 - B1 processEmm() を unsupported として明示実装する
-- B1 通電制御情報取得を unsupported として明示実装する
+- B1 EMMに依存する通電制御情報取得、契約更新、権利更新を unsupported として明示実装する
 ```
 
 完了条件:
@@ -665,7 +666,7 @@ B1参照元として扱う `libaribb1` 系についても、実際にソース�
 ```text
 - B1 ECM 処理が実カードまたは妥当なテストベクタで確認できる
 - B1 EMM が空成功にならない
-- B1 通電制御情報取得が空成功にならない
+- B1 EMMに依存する通電制御情報取得、契約更新、権利更新が空成功にならない
 - B1 で YakisobaCasPath が選択されない
 - B1 advertise gate を満たすまで plugin descriptor が出ない
 ```
@@ -749,9 +750,9 @@ B1参照元として扱う `libaribb1` 系についても、実際にソース�
   可能。
 
 条件:
-  - B1SmartCardPath として ECM-only 実験対応から開始する。
-  - B1 EMM は未対応として固定する。
-  - 通電制御情報取得は未対応として固定する。
+  - B1SmartCardPath の ECM-only 経路を正式対応とする。
+  - B1 EMM は恒久的に非対応とする。
+  - EMMに依存する通電制御情報取得は恒久的に非対応とする。
   - B1 の公開参照実装は libaribb1 系を一次候補とする。
 ```
 
@@ -798,8 +799,8 @@ B1参照元として扱う `libaribb1` 系についても、実際にソース�
 13. libyakisoba daemon を同梱する場合、GPL 配布義務の対象として扱う。
 14. libyakisoba は B1 実装として扱わない。
 15. B1実装の公開参照元は libaribb1 系を一次候補とする。
-16. B1 EMM は実装根拠が揃うまで unsupported とする。
-17. B1 通電制御情報取得は実装根拠が揃うまで unsupported とする。
+16. B1 EMM は恒久的に非対応とする。
+17. B1 EMMに依存する通電制御情報取得、契約更新、権利更新は恒久的に非対応とする。
 18. raw CW は Binder、logcat、TIS、Tuner HAL へ出さない。
 19. CAS HAL は TS demux / TS packet 復号 / AV / DVR を担当しない。
 20. TS payload 復号は Tuner HAL descrambler の責務とする。

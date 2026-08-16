@@ -242,6 +242,19 @@ loom テスト:
 - loom テストを atest / VTS / 実機確認の代替完了条件にすること。
 - 同じテストを通常 rust_test と loom test の両方の正本にすること。
 
+
+### テストでの本体ソース自己参照禁止
+
+単体テストまたは結合テストで、テスト対象と同じ本体ソースを `include_str!()` 等で読み込み、`contains()`、`find()`、`split()`、正規表現等の文字列検査によって実装済み判定を行ってはならない。実装契約は公開関数、状態遷移、戻り値、診断、queue、callback、worker lifecycle等の実ロジックを呼び出して固定する。
+
+設定ファイル、VTS XML、sepolicy、rc、設計文書、別モジュールのSSOTとの整合確認では `include_str!()` 等を補助的に使用してよいが、それを実装ロジック完了の主証拠にしてはならない。
+
+### テスト専用入口の本番隔離
+
+テスト専用のhelper、entry point、type、moduleは、`#[cfg(test)]`、test専用module、test target等のcompile-time / build-target境界でproduction buildの通常経路から参照不能にする。runtime flag、property、environment variable等だけで到達不能に見せる構造を、本番隔離の代替にしてはならない。
+
+テスト専用入口はproduction runtimeのcapability、公開状態、戻り値、資源寿命を変更してはならず、本番用のmutation authorityまたはcleanup authorityを追加する根拠にしない。
+
 ### 実装規約レビューの補助確認
 
 実装規約レビューでは、補助確認として次の grep を行う。本節は完了判定の正本ではなく、完了判定は `タスク完了判定の実施方法.md` を正とする。
