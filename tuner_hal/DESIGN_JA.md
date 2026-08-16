@@ -34,7 +34,7 @@
 
 ## 外部文書参照: no-panic / 劣化起動 / 閉鎖側失敗境界
 
-この項目のうち、禁止構文、低レベル失敗の型付き検出、公開status変換の集約方法、mutex汚染、ワーカー生成・joinの実装規約は`tuner_hal/CODE_CONVENTION.md`を正とする。公開AIDL戻り値、status precedence、次状態、資源寿命、閉鎖側失敗対象は本書だけを正本とし、実装規約側で再定義しない。
+この項目のうち、プロジェクト共通の禁止構文、低レベル失敗の型付き検出、mutex汚染、一般的なworker / lock / callback規約は`../GLOBAL_CODE_CONVENTION.md`を正とする。product default `tuner_hal2`の公開status変換の集約方法、ワーカー生成・join、typed entry、現行helper使用規則は`../tuner_hal2/CODE_CONVENTION.md`を正とする。旧`tuner_hal/CODE_CONVENTION.md`は旧参照実装だけの規約であり、現行実装規約の正本として参照しない。公開AIDL戻り値、status precedence、次状態、資源寿命、閉鎖側失敗対象は本書だけを正本とし、実装規約側で再定義しない。
 
 
 ## 正本・移動済み情報の読み方
@@ -46,7 +46,7 @@
 3. 旧 `補足契約:` 章は本体正本章へ吸収済みであり、本書内に二重正本として残さない。
 4. 個別リリースの履歴、作業経緯、ビルド/atest/VTS/静的検索/成果物命名/完了宣言は本書では定義しない。履歴は `CHANGELOG.md`、完了判定は `タスク完了判定の実施方法.md` を正とする。
 
-削除・移動した旧記載の追跡表は現行リリース物に置かない。現行仕様は本書、実装規約は `tuner_hal/CODE_CONVENTION.md`、統合手順は `tuner_hal2/INTEGRATION.md`、変更履歴は `tuner_hal/CHANGELOG.md` を正とする。存在しない trace 文書または移送済み旧表番号を正本参照にしてはならない。
+削除・移動した旧記載の追跡表は現行リリース物に置かない。現行仕様は本書、project-wide実装規約は`../GLOBAL_CODE_CONVENTION.md`、product default `tuner_hal2`の実装規約は`../tuner_hal2/CODE_CONVENTION.md`、現行実装owner / anchorは`../tuner_hal2/DESIGN_JA.md`、統合手順は`../tuner_hal2/INTEGRATION.md`、変更履歴は`tuner_hal/CHANGELOG.md`を正とする。`tuner_hal/CODE_CONVENTION.md`は旧参照実装固有の規約だけを保持する。存在しない trace 文書または移送済み旧表番号を正本参照にしてはならない。
 
 ## 製品スコープ / AOSP capability / VTS profile 境界
 
@@ -441,7 +441,7 @@ Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時�
 
 
 - filter ID は HAL 外部へ返す値を demux-local ID のまま維持する。DVR attach/detach、filter データ入力元、AV sync ID 取得では、渡された filter オブジェクト の内部 owner demux を検証し、owner demux が一致しない filter を `INVALID_ARGUMENT` で拒否する。
-- generic workerのhandle/spawn ownership、typed terminal result、stop / wake / join、generation fence、reaper handoff、lease returnは0-S-3Bの`WorkerRuntime` / `WorkerHandle`を唯一の正本とする。failure categoryは`WorkerFailureClassifier`を正とする。mutex / condvar、spawn / join等の実装規約は`CODE_CONVENTION.md`を正とし、本節では再定義しない。
+- generic workerのhandle/spawn ownership、typed terminal result、stop / wake / join、generation fence、reaper handoff、lease returnは0-S-3Bの`WorkerRuntime` / `WorkerHandle`を唯一の正本とする。failure categoryは`WorkerFailureClassifier`を正とする。mutex / condvarのproject-wide規約は`../GLOBAL_CODE_CONVENTION.md`、product defaultのspawn / join等の実装規約は`../tuner_hal2/CODE_CONVENTION.md`を正とし、本節では再定義しない。
 
 ワーカーが利用するbackend pathは、停止通知またはFD closeで有限時間に復帰すること、driver/kernel契約から導出した内部I/O上限内に復帰すること、または副作用をowner境界で遮断できる隔離実行であることのいずれかを能力公開前に証明する。いずれも証明できないbackend pathは能力として公開しない。選局成否を固定時間で覆す`TargetDriverTimingProfile`は設けない。取消、回収、reaper、lease return、terminal budget、`Quarantined` / `ServiceCritical`分岐のgeneric semanticsは0-S-3Bの`WorkerRuntime` / `WorkerHandle`を唯一の正本とし、本節では再定義しない。
 
@@ -544,7 +544,7 @@ cleanup commandの途中失敗後の後続command実行、未完step記録、同
 
 ### AV 共有メモリの原子性不変条件
 
-AV shared backingはMediaEvent用allocationのlifetimeを論理的に一括管理し、allocation/release操作で部分更新を公開しない。物理lock、内部struct、helper名は`CODE_CONVENTION.md`を正本とする。
+AV shared backingはMediaEvent用allocationのlifetimeを論理的に一括管理し、allocation/release操作で部分更新を公開しない。product defaultの物理lock、内部struct、helper名は`../tuner_hal2/CODE_CONVENTION.md`と`../tuner_hal2/DESIGN_JA.md`の実装owner / anchorを正本とする。
 
 ### TS continuity / adaptation-only packet 固定
 
@@ -606,7 +606,7 @@ TS入力について、188-byte境界、sync byte `0x47`、`transport_error_indi
 
 px4_drv の legacy chardev は同一 device node の二重 open を許さないため、px4 backend は control 用 fd と ライブ TS reader 用 fd を別々に `open()` してはならない。`/dev/px4video*` family は `PTX_SET_SYSTEM_MODE`、`PTX_SET_CHANNEL`、`PTX_START_STREAMING`、TS read を同一 open instance から扱う前提にする。
 
-px4 backendは同一device nodeを二重openせず、1回のbackend openからcontrol経路とlive TS readerを派生させる。二重open回避の具体的Rust API、fd複製、nonblocking / poll方式は`tuner_hal/CODE_CONVENTION.md`を正本とする。single-open制約下でもtune後にlive TS、section、AV、record/DVR経路へpacketを流せることを公開設計上の不変条件とする。
+px4 backendは同一device nodeを二重openせず、1回のbackend openからcontrol経路とlive TS readerを派生させる。二重open回避のproduct default実装規約は`../tuner_hal2/CODE_CONVENTION.md`を正とし、旧参照実装の具体API選択を現行実装の根拠にしない。single-open制約下でもtune後にlive TS、section、AV、record/DVR経路へpacketを流せることを公開設計上の不変条件とする。
 
 
 フロントエンドの存在と対応能力は、機器、versioned backend manifest、functional probe、有限の選局終端を実装できることから導出する。選局は非同期操作とし、バックエンドが選局要求を受理した後は、`LOCKED`、backendの明示失敗、明示的停止、再選局、閉鎖、またはbackend別`ProductProfile.tuneTerminalDeadlineMs`到達時の`NO_SIGNAL`のいずれかで現generationを必ず終端する。現行profileはearth_pt1を`4000 ms`、px4を`7000 ms`とする。px4値はRT710設定、PLL確認、demod lock、absolute TSID一致、およびrelative selectorのTMCC解決からなる正常な有限経路を期限前に打ち切らないための上限である。期限到達はbinder呼出しの成功を後から失敗へ反転させず、非同期終端eventとして扱う。VTS既知信号経路はVTS自身の待機内でLOCKEDへ到達できる入力を別途要求し、製品deadlineをVTS待機値へ短縮しない。正の有限期限と取消可能なbackend I/Oを実装できないfrontendは公開しない。停止した`ioctl`、read、USB control transferから復帰する内部期限は別の`workerIoDeadlineMs`で管理し、px4の`ctrl_timeout=0`を禁止する。個別I/O期限は検証済みcontrol transfer上限より短くせず、正常処理列の合計がbackendのterminal deadline内に収まるよう固定する。
@@ -954,7 +954,7 @@ DVB backend は frontend index と同じ demux index / dvr index を使う。`ad
 
 ## 診断可観測性の固定
 
-本番経路トークンの用語、リリース段階、TIS から `setKeyToken()` へ渡してよい値のスコープは `開発規則.md` を正とする。本節では、Tuner HAL が受け取ったトークンの検証、AIDL戻り値、診断、副作用だけを固定する。CAS bridgeからのtoken登録は標準MediaCas session ID bytesと内部key resourceの対応を成立させる論理契約に従う。具体helper名とdebug出力方法は`CODE_CONVENTION.md`を正本とする。
+本番経路トークンの用語、リリース段階、TIS から `setKeyToken()` へ渡してよい値のスコープは `開発規則.md` を正とする。本節では、Tuner HAL が受け取ったトークンの検証、AIDL戻り値、診断、副作用だけを固定する。CAS bridgeからのtoken登録は標準MediaCas session ID bytesと内部key resourceの対応を成立させる論理契約に従う。product defaultの具体helper名とdebug出力方法は`../tuner_hal2/CODE_CONVENTION.md`と`../tuner_hal2/DESIGN_JA.md`の実装owner / anchorを正本とする。
 
 `IDescrambler.setKeyToken()` に到達する non-VOID トークンは、標準MediaCas経路では `MediaCas.Session.getSessionId()` と同一byte sequenceをTuner key tokenとして用い、CAS / vendor key bridgeがそのbytesと内部`DescramblerKeySlot`の対応をHAL key token tableへ登録したものを解決対象とする。TIS向けに別形式のvendor-private tokenを設けない。入力形式はTuner SDK `Descrambler.isValidKeyToken()` に合わせ、1 byte以上16 byte以下を有効なtoken形式とする。ただしAndroid 14系の `Tuner.VOID_KEYTOKEN` は1 byteトークン `[0x00]` としてcurrent key removal用に予約する。空トークン `[]` はVOIDトークンではなく、常に `INVALID_ARGUMENT` と内部診断 `BAD_TOKEN` に落とす。16 byteを超えるnon-VOIDトークンはregistry lookup前に `INVALID_ARGUMENT` / `BAD_TOKEN` とする。
 
@@ -966,7 +966,7 @@ DVB backend は frontend index と同じ demux index / dvr index を使う。`ad
 
 `IDescrambler.setKeyToken()` の失敗時は、現在の鍵スロット、現在のトークン、demux 紐付け、PID登録を変更しない。空 トークン、長さ超過、未登録、失効済み、台帳異常のどれで失敗しても、成功扱いにせず固定された AIDL 戻り値と診断だけを返す。PID 登録を消す操作は `removePid()` だけであり、`VOID_KEYTOKEN` と 鍵参照の解決失敗は PID 登録削除を伴わない。
 
-デスクランブル診断は公開AIDL意味を変えない内部診断として保持し、具体helper・debug出力先・時間間隔は`CODE_CONVENTION.md`を正本とする。
+デスクランブル診断は公開AIDL意味を変えない内部診断として保持し、product defaultの具体helper・debug出力先・bounded operationの実装方法は`../tuner_hal2/CODE_CONVENTION.md`を正本とする。
 
 ### 診断counter飽和契約
 
@@ -1052,7 +1052,7 @@ AV shared backing は、検証が成功するまで旧 backing を保持する�
 
 ### test と release API の境界
 
-release AIDL経路からテスト専用入口へ到達してはならず、テスト専用入口は製品runtimeのcapability・状態・戻り値を変更しない。この実装方法と具体的なcompile-time gateは`CODE_CONVENTION.md`を正本とする。
+release AIDL経路からテスト専用入口へ到達してはならず、テスト専用入口は製品runtimeのcapability・状態・戻り値を変更しない。この実装方法は`../GLOBAL_CODE_CONVENTION.md`のtest規約と`../tuner_hal2/CODE_CONVENTION.md`の現行実装規約を正とし、具体的なcompile-time gateは現行owner境界で固定する。
 
 ### AOSP / AIDL / VTS 系
 

@@ -1,6 +1,6 @@
 # Tuner HAL2 コーディング規則
 
-この文書は `tuner_hal2` 固有の**実装規約**だけを定める。公開契約、状態遷移、戻り値、capability / profile、資源寿命、transaction の phase / commit / rollback、cleanup / quarantine の意味、worker / callback / source boundary / descrambler の論理契約は `../tuner_hal/DESIGN_JA.md` を唯一の正本とする。実装 owner、module anchor、許可 entry point は `DESIGN_JA.md` の「共通transaction / use-caseの規範実装アンカー」を唯一の正本とする。
+この文書は `tuner_hal2` 固有の**実装規約**だけを定める。公開契約、状態遷移、戻り値、capability / profile、資源寿命、transaction の phase / commit / rollback、cleanup / quarantine の意味、worker / callback / source boundary / descrambler の論理契約は `../tuner_hal/DESIGN_JA.md` を唯一の正本とする。実装 owner、module anchor、許可 entry point は `DESIGN_JA.md` の「共通transaction / use-caseの規範実装アンカー」を唯一の正本とする。プロジェクト全体の Rust 規約、no-`panic`、mutex汚染、一般worker、FFI、parser、ロック / callback、テスト自己参照禁止は `../GLOBAL_CODE_CONVENTION.md` を正とし、本書へ重複定義しない。旧 `../tuner_hal/CODE_CONVENTION.md` は旧参照実装だけの規約であり、`tuner_hal2` の現行実装規約の正本として参照しない。
 
 本書は論理状態名、commit point、rollback policy、quarantine 条件を第二の正本として定義しない。以下で論理契約名を記す場合も、その意味を再定義するのではなく、**実装が正本 owner / typed entry を迂回しないための禁止規約**を示すだけである。
 
@@ -126,3 +126,45 @@ Wrapper を置いてよいのは、public API 境界、domain naming 隠蔽、AI
 - 静的チェックを追加する場合は検出対象を明示し、完了判定の主根拠にしない。
 - テストは公開関数、戻り値、状態、診断を直接検査し、同じソースファイルの文字列検索で完了判定しない。
 - owner / entry の静的検査は `tuner_hal2/DESIGN_JA.md` の規範実装アンカーを入力とし、本書独自の ownership 表を入力にしない。
+
+## 12. runtime failure / capability inventory の実装境界
+
+- service publication前のstartup validationでは、AIDL service registration不能、VINTF instance不整合、必須profile / 静的設定の解析不能、stable AIDL / service名 / init設定の自己矛盾をtyped startup failureとして確定し、明示診断を残して未公開のまま終了させる。service publication後のruntime failureをこのfail-fast経路へ流用しない。公開可否・capability意味論は`../tuner_hal/DESIGN_JA.md`、product統合条件は`INTEGRATION.md`を正とする。
+- device node 不在、open不可、permission不足、probe不成立と、device存在下の runtime ioctl / read / pump failure を別の typed domain error として保持する。公開結果と状態遷移は `../tuner_hal/DESIGN_JA.md` を正とする。
+- product runtime の frontend / backend inventory は、正本 capability owner が probe 成功と必要情報の確定を確認した entry だけから構成する。実体のない degraded frontend entry、診断専用 phantom entry、成功扱いの代替entryを生成しない。
+- capability / resource query は正本 snapshot / ledger だけを参照し、未対応機能、存在しないresource、確保不能resourceを helper 層の成功 no-op で補償しない。
+- client入力の不正、未対応、lifecycle不整合、resource unavailable、backend/internal failureを文字列または一個のgeneric errorへ早期に丸めず、`aidl_service::error_bridge`まで typed classification を保持する。
+
+## 13. FMQ / callback / worker の失敗伝播
+
+- FMQのcurrent implementation boundaryは、write success、short write、overflow、native write failure、EventFlag wake failureを区別する typed result を返す。write failureを0 byte成功、空queue、overflow、normal wakeへ丸めない。
+- framework callback / Binder callback の戻り値を `let _ = ...`、`drop(result)`、ログだけで破棄しない。typed delivery failureを `WorkerFailureClassifier` / `PostCommitCallbackFailureTxn` の正本entryへ接続する。
+- worker bodyは通常停止、停止要求、runtime failure、panic/join failureを区別できる typed terminal resultをownerへ返し、無言停止しない。terminal meaning自体は `../tuner_hal/DESIGN_JA.md` を正とする。
+- worker runtime failureとpanic / join failureは別のtyped diagnostic categoryとして記録し、単一の「worker stopped」診断へ潰さない。counterを持つ場合もerror系とpanic/join系を別集計とし、診断名・counter値から公開状態を逆算しない。
+- workerの待機はstop/wakeで解除可能なprimitiveを使い、client指定intervalをそのまま `thread::sleep()` してclose / Drop / shutdownを妨げない。
+- generic worker生成・停止・wake・joinは `DESIGN_JA.md` の `WorkerRuntime` / `WorkerHandle` 規範アンカーへ接続する。規範owner外から `std::thread::spawn`、独自`JoinHandle` lifecycle、silent joinを追加しない。
+
+## 14. transaction / cleanup / 非破壊最適化の実装境界
+
+- public AIDL method、façade、worker、backend adapterが、正本transactionのvalidation / prepare / commit / rollback / cleanupを分解して別ownerとして再実装しない。正本ownerのtyped entryへ接続する。
+- destructive mutationより前に検証できる条件、容量、ID / generation候補、rollback準備を完了させる。失敗し得るpreflightを旧resource破棄後へ送らない。
+- critical cleanup、unregister、backend stop、token release、worker join、queue cleanupをbest-effort helperへ流して沈黙させない。失敗を直接返せない場所でもtyped diagnosticに対象と段階を残す。
+- 同一条件の非破壊最適化は `../tuner_hal/DESIGN_JA.md` が許可する公開意味を変えず、正本transaction owner内で破壊的処理より前にだけ適用する。façadeやhelperが独自のsame-condition state machineを持たない。
+
+## 15. lifetime ID / generation / token の実装規約
+
+- lifetime ID、generation、worker signal generation、token、`startId`等の再利用禁止識別子の発行に `saturating_add()` またはwrapを許す `fetch_add()` を使用しない。
+- 正本ownerは `checked_add()` 等で発行可能性を確定し、発行不能時の公開結果・局所failure / quarantineは `../tuner_hal/DESIGN_JA.md` の各契約へ接続する。wrapまたは予約値への回帰で処理継続しない。
+- 0、負値、予約値を通常発行IDとして使用しない。失効・revoke後のtoken保持要否は正本key/token ownerの契約に従い、診断目的だけで復号可能なactive entryとして残さない。
+
+## 16. backend 診断名前空間
+
+- DVB backend の失敗を px4 専用診断record / counterへ記録せず、px4 backend の失敗を DVB 専用診断record / counterへ記録しない。
+- frontend共通処理からbackend failureを記録する場合は、検証済みbackend kindをtyped contextとして渡し、対応する診断variant / namespaceだけを更新する。文字列からbackend種別を再推測しない。
+
+## 17. source filter / packet pipeline 実装規約
+
+- source filter relationの対応可否と公開結果は `../tuner_hal/DESIGN_JA.md` を正とし、実装は `SourceBoundaryTxn` のtyped entryを迂回しない。未対応組合せを成功no-opにしない。
+- raw TS source由来packetも通常demux inputと同じ `PacketTxn` / `PacketPipeline` の検証済みpacket経路へ接続し、TEI、continuity、discontinuity、duplicate、stream / parser generation処理を別実装にしない。
+- section / PES / AV / record payloadをraw TS source packetへ再解釈して別filterへ直接redispatchする経路を追加しない。公開source契約の変更が必要な場合は先に `../tuner_hal/DESIGN_JA.md` を変更する。
+
