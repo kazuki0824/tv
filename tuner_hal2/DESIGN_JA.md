@@ -96,7 +96,7 @@ lifecycle/owner/generation検証、引数検証との優先順位、再検証、
 | `FrontendLnbRelationTxn` | `service_runtime/src/frontend_ops.rs::FrontendLnbRelationTxn` | `IFrontend.setLnb()` object use-case、Frontend close時の`ObjectCloseTxn` typed assignment release | frontend use-case/LNB registryによるrelation・lease別commit、`LnbControlTxn`へのassignment ownership統合 |
 | `LnbControlTxn` | `service_runtime/src/lnb_control_txn.rs::LnbControlTxn` | `ILnb.setVoltage()` / `setTone()` / `setSatellitePosition()` object use-case | API別control owner、`sendDiseqcMessage()`の同ownerへの統合 |
 | `CallbackRegistrationUseCase` | `service_runtime/src/callback_registry.rs::CallbackRegistrationUseCase`、`RuntimeCallbackRegistry`、`aidl_service/src/callback_store.rs` | `IFrontend.setCallback()` / `ILnb.setCallback()`等のAIDL façadeからservice_runtime callback registration入口 | AIDL façade/domain別use-caseによる別registration owner、callback artifactの別保管先 |
-| `PostCommitCallbackFailureTxn` | `service_runtime/src/post_commit_callback_failure_txn.rs::PostCommitCallbackFailureTxn` | domain completion use-caseからのtyped入口 | API別handler、classifierまたはdomain ownerの置換 |
+| `PostCommitCallbackFailureTxn` | `service_runtime/src/post_commit_callback_failure_txn.rs::PostCommitCallbackFailureTxn` | domain commit後のcallback delivery failureを受けたcompletion use-caseからのtyped入口 | API別handler、classifierまたはdomain ownerの置換 |
 | `FilterProducerDrainGate` | `demux/src/runtime/queue_runtime.rs` | Filter/SharedFilter data path、`QueueCleanupTxn`からのtyped入口 | 公開API/worker/`QueueCleanupTxn`からのgate内部直接変更、DVR ownerとの統合 |
 | `QueueEpochProtocol` | `demux/src/runtime/queue_runtime.rs` | DVR data path、`QueueCleanupTxn`からのtyped入口 | 公開API/worker/`QueueCleanupTxn`からのprotocol内部直接変更、`PlaybackQueueBacking` ownerとの統合 |
 | `QueueCleanupTxn` | `service_runtime/src/queue_cleanup_txn.rs::QueueCleanupTxn` | Filter/DVR `flush()` object use-case | 下位protocol内部への直接アクセス、API別orchestrator |
@@ -119,7 +119,7 @@ lifecycle/owner/generation検証、引数検証との優先順位、再検証、
 - Frontend LNB assignment use-caseは`FrontendLnbRelationTxn`へ接続し、LNB resource ownerのlease台帳内部を直接変更しない。
 - Filter/DVR `flush()` use-caseは`QueueCleanupTxn`へ接続し、同ownerからFilter側`FilterProducerDrainGate`またはDVR側`QueueEpochProtocol`のtyped入口を使用する。
 - filter lifecycle use-caseは`AvSyncRegistry`、stream boundary側は`PcrClockAnchorStore`のtyped invalidation入口へ接続し、各store内部へ直接アクセスしない。
-- domain completion use-caseは`WorkerFailureClassifier`のtyped結果を`PostCommitCallbackFailureTxn`へ渡す接続だけを持つ。
+- post-commit callback failureを受けたdomain completion use-caseは、`WorkerFailureClassifier`で分類済みのtyped callback failureだけを`PostCommitCallbackFailureTxn`へ渡す。callbackを伴わない正常completionまたは別種failureは同Txnへ接続しない。
 - domain worker ownerは`WorkerRuntime` / `WorkerHandle`と`WorkerFailureClassifier`のtyped入口を使用し、generic runtime/classifierを再実装しない。
 - top-level cleanup / rollback use-caseは`CleanupExecutionReport` / `SharedCleanupDiagnostics`と共通failure-composition helperへ接続し、API別・worker別helperを設けない。
 
