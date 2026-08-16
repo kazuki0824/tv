@@ -89,7 +89,7 @@ ISDB-S selectorはAOSPの`FrontendIsdbsStreamIdType`を正とし、`STREAM_ID`�
 
 
 - post-commit callback failureの写像は0-S-3Bの`PostCommitCallbackFailureTxn`、generic worker lifecycleは`WorkerRuntime` / `WorkerHandle`、worker failure分類は`WorkerFailureClassifier`を正とする。FMQ / EventFlagのdata-path結果と診断は表6および`FilterProducerDrainGate` / `QueueEpochProtocol` / `QueueCleanupTxn`等の各queue owner契約、API固有の公開状態・戻り値は各API状態表を正とし、本節ではfailure state machineを再定義しない。
-- DVR 状態 interval はcallback workerの周期にだけ使う。callback workerのwait / wake / cancel、close / Drop / shutdown時のgeneric終端は0-S-3Bの`WorkerRuntime` / `WorkerHandle`を正とし、本節では再定義しない。
+- `IDvr.setStatusCheckIntervalHint(milliseconds)`で受理したhintは、playback / record DVRが以後のdata/status evaluation cadenceを決定する入力として使用する。hint変更自体はqueue内容、DVR lifecycle、playback/record stateを変更せず、Binder threadをhint時間sleepさせない。callback workerのwait / wake / cancel、close / Drop / shutdown時のgeneric終端は0-S-3Bの`WorkerRuntime` / `WorkerHandle`を正とし、本節では再定義しない。
 - `getAvSharedHandle()`とAV filter `start()`の状態別契約は、本書の「表4. AV共有メモリ資源寿命表」を正とする。`releaseAvHandle()`の入力分類、戻り値、資源変化は「表1-C-AVH. `releaseAvHandle()` 全域判定表」だけを正とする。
 
 backendのエラーは、呼び出し側の不正値・値域違反を`INVALID_ARGUMENT`、不存在・使用中・容量不足・規格上は有効だが未対応を`UNAVAILABLE`、不正なライフサイクルを`INVALID_STATE`、依存資源の未初期化を`NOT_INITIALIZED`、割り当て失敗を`OUT_OF_MEMORY`、権限・入出力・設定破損・不変条件違反を`UNKNOWN_ERROR`へ対応付ける。
@@ -451,7 +451,7 @@ generic worker failureの隔離範囲と`ServiceCritical`昇格条件は0-S-3B�
 - frontend source transitionでは、API成功時に要求したfrontend source assignmentが成立していることを公開意味として固定する。relation / stream boundaryのprepare、composite commit、rollback、post-commit cleanup、commit不明時処理は0-S-3Bの`DemuxFrontendSourceTxn` / `StreamBoundaryTxn`を唯一の正本とし、本節では再定義しない。
 
 
-- DVR start は 状態 interval 分だけ Binder thread を sleep しない。状態 interval は コールバック ワーカー の周期だけに使う。
+- DVR `start()` は`setStatusCheckIntervalHint()`で受理済みのhint時間だけBinder threadをsleepしない。受理済みhintは以後のdata/status evaluation cadenceの決定に使用し、queue内容、DVR lifecycle、playback/record stateのmutation条件には使用しない。
 
 キュー、機器、パケットの各読み取り結果は、本書の「失敗影響範囲」に従って分類する。非ブロッキング読み取りでデータがない場合と `WouldBlock` は `NoData`、`EINTR` は `Interrupted` とし、状態を変えずに再試行する。明示的な停止または所有中の入力に対するEOFは `Closed` とする。`InfrastructureCorrupt` はFMQの記述子、制御情報、トランザクションの不変条件違反に限定し、影響を受ける経路を隔離する。不正な188バイトTSパケットは、そのパケットだけを破棄して型付き診断を残し、基盤破損として扱わない。TEI付きパケットはTS生データ出力と記録出力には保持し、意味解析には使用しない。連続性の不連続ではTS生データと記録データを保持し、境界前の意味解析結果を境界後へ連結しない。steady-state continuityは`PacketPipeline`、parser / assembler stateは各per-filter parser owner、Filter parser fenceは`FilterProducerDrainGate.parser_state_generation`を正本とする。stream/source boundaryでは`StreamBoundaryTxn`からtyped reset / invalidate dispatchだけを受ける。SectionまたはPESの解析失敗では対象の意味単位を破棄し、正しい境界から再開する。所有中の入出力に恒久障害が生じても、遮断されていない全体状態の変更を示す型付き証跡がない限り、影響を受けるランタイムだけを終了する。破損または致命的失敗を無言で `NoData` に変換してはならない。
 
@@ -556,7 +556,9 @@ AV shared backingはMediaEvent用allocationのlifetimeを論理的に一括管�
 
 ### `DemuxFilterEvent.startId`
 
-settingsを変更する有効な`configure()`は、commit後の`filter_delivery_generation`に対応するpending startIdをprepareする。同じsettingsの冪等`configure()`では新しいstartIdを発行しない。Filterを再startした後、最初のevent callbackはstartIdだけを含むcallbackとして正確に1回配送し、その後に通常eventを配送する。startId-only callbackに別eventを同梱しない。新規open Filterの最初のstartだけはAOSP予約値0を使用してよく、それ以外は再利用しないpositive idを使用する。stale `filter_delivery_generation`のpending startIdは配送しない。positive idを再利用なしに発行できない場合は既存`filter_delivery_generation` exhaustionの局所failure契約へ従い、新しい独立generation軸を追加しない。
+一度start済みのFilterに対するstop後の有効な`configure()`成功は、settingsが直前と同一か否かにかかわらず、次回start用のpending `startId`をprepareする。`startId`は0以外の再利用しないpositive idをFilterごとの発行状態からcommit前に予約し、発行できない場合は設定変更をcommitせず`UNKNOWN_ERROR`として従前の設定とpending状態を維持する。次回start前に複数回の`configure()`が成功した場合は、最後に成功したreconfigureに対応するpending `startId`だけを次回startへ引き継ぎ、置換された未配送IDを後から配送または再利用しない。
+
+pending `startId`は対応する`filter_delivery_generation`と関連付けてstale配送を防ぐが、AIDL-visibleな`startId`の識別子空間そのものを内部`filter_delivery_generation`と同一視しない。Filterを再startした後、最初のevent callbackは`startId`だけを含むcallbackとして正確に1回配送し、その後に通常eventを配送する。startId-only callbackに別eventを同梱しない。新規open Filterの最初のstartだけはAOSP予約値0を使用してよく、それ以外は0を使用しない。stale `filter_delivery_generation`に関連付いたpending `startId`は配送しない。`startId`専用のID発行状態は既存Filter delivery ownerが所有し、stream / queue / parser用の新しいgeneration軸として扱わない。
 
 ### `FilterDelayHint`
 
@@ -614,6 +616,14 @@ px4 backendは同一device nodeを二重openせず、1回のbackend openからco
 
 
 DVRの同時利用上限は確定済み`CapabilitySnapshot`で定める。`P=snapshot.playback_count`、`R=snapshot.record_count`、demuxごとの上限は各1個とする。用途別全体枠とdemux別枠に空きがあり、要求queueと正確な通知枠をtransactionとして準備できる場合だけ受け付ける。検証順序はlifecycleと引数、用途別容量、demux別上限、失敗し得る準備処理とする。失敗時は`INVALID_ARGUMENT`、`UNAVAILABLE`、`UNKNOWN_ERROR`を原因別に返し、確定状態を変更しない。能力報告、受付、cleanup、最終解放は同じsnapshotを参照する。VTS設定を実行時生成せず、無条件の既定XMLも設けない。起動前環境profileでVTS artifact/tag/commit、variant property、入力元、経路、PID、queue予算を定義し、選択したVTS実装の規則でXML filenameを解決し、その要求全体がsnapshotに収まる場合だけ解決済みpathへ静的XMLをinstallする。それ以外はruntime保証を弱めずVTSを`DESIGN_HOLD`とする。
+
+### `IDvr.setStatusCheckIntervalHint()` 契約
+
+Android 14 AIDL V2の`setStatusCheckIntervalHint(milliseconds)`はPlayback / Recordの双方で有効なDVR objectに対して受理し、成功後のhintを以後のdata/status evaluation cadenceを決める入力として使用する。method成功を「値を保存するだけ」で完了させず、次回以後のstatus評価scheduleは受理済みhintを参照する。
+
+hint変更自体はDVR queue内容、FMQ read/write position、playback/record state、`start()` / `stop()` lifecycle、Filter relationを変更しない。Binder methodはhint時間待機しない。started中の変更を既存workerへ反映する場合は`WorkerRuntime` / `WorkerHandle`の既存signal mechanismでwaitを再評価させ、別のworker lifecycle/state machineを導入しない。
+
+Android 14 AIDL本文は`milliseconds=0`に特別なreset意味を規定せず、positive値についても厳密deadlineまたは最大遅延を保証していないため、本設計は0を独自の「product defaultへreset」と読み替えず、受理したhint値としてevaluation cadence決定へ渡す。AOSPが保証する以上の時刻意味を公開契約へ追加しない。
 
 
 Record DVRへ接続中の記録フィルター条件について、caller / data-path上の不変条件は、各188-byte TS packetを単一の確定済みroute snapshotに対して正確に1回評価し、いずれかの記録条件に一致した場合は到着順にRecord DVRへ正確に1回commitすることとする。フィルターごとの索引状態とコールバック状態は独立して保持する。relation / union-routeのprepare、commit / abort、設定変更時のsnapshot更新、relation generation、切替確定点、lockingは0-S-3Bの`RecordDvrFilterRelationTxn`だけを正本とし、本節では再定義しない。各フィルターへ一度分配してから全体を並べ替える、重複排除する、または`ingress_sequence`で欠落を推測する構成にしてはならない。
@@ -736,6 +746,24 @@ AndroidフレームワークとJNIが受理する`MediaEvent`の表現は、本�
 両モードの`avDataId`は、同じ上限付き割り当て台帳から発行する。メモリー、台帳、`MediaEvent`の準備がすべて成功した後に割り当てを確定し、失敗時はコールバックまたは`dataId`を公開しない。`offset + dataLength <= backing size`を正常範囲とし、上限超過を検出できる加算を用いる。長さ0は不正としてイベントを発行しない。`isSecureMemory=false`に固定する。
 
 解放要求の形状、active `avDataId` tokenのowner・generation・transfer kind検証、inactive/unknown tokenの拒否、ファイル記述子の補助検証、論理閉鎖後の解放は、本書の「表1-C-AVH. `releaseAvHandle()` 全域判定表」を正とする。`releaseAvHandle(fd,0)`を共有記憶領域全体の破棄と解釈してはならない。イベント固有モードでは、受領したハンドルの使用権だけを先に閉じ、正のactive tokenとallocationを後続解放まで維持できる。
+
+### clear non-passthrough `DemuxFilterMediaEvent` 公開field契約
+
+本製品が成功対応として表明するTS入力のclear / non-passthrough live AVでは、Android 14 Tuner AIDL V2で`DemuxFilterMediaEvent`に公開されるfieldを、同一media outputへauthoritativeに関連付けられる入力metadataまたは以下で明示した未使用/default表現から構成する。別PES、別generation、別media outputのmetadataを混成せず、入力から確定できない値を推測して生成しない。
+
+| field | TS live AVでの値契約 |
+|---|---|
+| `streamId` | 当該media outputを生成したPESの実`stream_id` `0..255`。別PES、filter設定値、固定値から推測しない |
+| `isPtsPresent` / `pts` | 後段の「clear non-passthrough MediaEvent presentation timestamp 契約」を正とする |
+| `isDtsPresent` / `dts` | 元PES headerに有効なDTSが存在する場合だけ`isDtsPresent=true`とし、その33-bit 90 kHz DTSを`dts`へ設定する。DTSが存在しない場合は`isDtsPresent=false`かつ`dts=0`とし、PTS、PCR、wallclock等からDTSを生成しない |
+| `dataLength` / `offset` / `avMemory` / `avDataId` | 本節のAV allocation / transfer契約を正とする |
+| `isSecureMemory` | `false` |
+| `mpuSequenceNumber` | TS入力ではMMTP用sequenceを生成せず`0` |
+| `isPesPrivateData` | 当該media outputに対応する元PESの構文からprivate dataであることをauthoritativeに確定できる場合だけ`true`、それ以外は`false`。stream IDや用途名だけから推測しない |
+| `extraMetaData` | audioでauthoritativeな`AudioExtraMetaData`を構成できる場合だけ`audio` tag/valueを設定し、それ以外は`noinit`。videoは`noinit`。存在しないaudio metadataを生成しない |
+| `scIndexMask` | 当該media outputに対応するstart-code indexをauthoritativeに確定できる場合だけ対応するAndroid 14 AIDL union tag/valueを設定し、それ以外は`scIndex=0`。record indexや別outputのindex情報を流用しない |
+
+PES parserがDTSまたはprivate-data presenceを有効入力として既に確定したmedia outputについて、それを「未対応」として虚偽のabsenceへ変換してはならない。producer側で成功capabilityに必要な公開fieldのauthoritative associationを成立させられないbackend/profileは、そのlive media-filter capabilityを公開しない。
 
 ### AV shared handle の `NativeHandle` 形式
 
@@ -1082,6 +1110,9 @@ release AIDL経路からテスト専用入口へ到達してはならず、テ�
 | T-AOSP-49 | RECORD index settings/event | request mask/typeを無損失検証し、event mask、`pts`、`firstMbInSlice`をcurrent parser/delivery fenceに一致させる。`byteNumber`はFilter output lifetime先頭からRecord DVRへcommit済みの累積`record_output_byte_offset`とし、flush/reconfigure/source/stream boundaryで0へ戻さない |
 | T-AOSP-50 | DVR `statusMask` / threshold / `dataFormat` / `packetSize` | playbackはunused bytes、recordはunconsumed bytesで判定し、無効・未対応設定を状態不変で拒否 |
 | T-AOSP-52 | `endFrequency`の操作別意味 | `tune()`とblind以外のscanでは差分を理由に拒否せずfingerprint/backend要求へ含めず、blind scanだけ`UNAVAILABLE`にする |
+| T-AOSP-53 | 同一settingsでのFilter reconfigure後startId | 一度start済みFilterをstopし、同一settingsで`configure()`成功後にrestartした場合も、最初に新しいstartId-only callbackを正確に1回配送してから通常eventを配送する |
+| T-AOSP-54 | TS live `DemuxFilterMediaEvent`公開field | `streamId`、PTS/DTS presence/value、`mpuSequenceNumber`、private-data、`extraMetaData`、`scIndexMask`を同一media outputの入力由来または定義済みdefaultと一致させ、別PES/generationを混成しない |
+| T-AOSP-55 | DVR `setStatusCheckIntervalHint()` | playback / record双方で受理したhintを以後のdata/status evaluation cadence決定に使用し、保存だけのno-op、Binder thread sleep、queue/lifecycle変更にしない |
 
 `close()` 以外の公開メソッドでは、`LogicalClosed`、`InvalidArgument`、`WrongLifecycle`、`ResourceUnavailable`、`BackendFailure`、`Success` の順で判定を優先する。`close()` 自体の結果はこの共通優先順位で決めず、インターフェース別の `close()` 表だけに従う。遅延して呼ばれる `IFilter.releaseAvHandle()` はAV解放台帳に従う独立操作であり、閉鎖後の共通メソッドとして扱わない。
 
