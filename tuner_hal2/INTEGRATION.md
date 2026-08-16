@@ -75,9 +75,9 @@ init rc は `android.hardware.tv.tuner.ITuner/default` を登録する。VINTF f
 旧実装を手動でビルド・参照することは妨げないが、同一productで `ITuner/default` を二重登録してはならない。
 ## 6. VTS / product config policy
 
-VTS / product config は `../tuner_hal/DESIGN_JA.md` の`製品スコープ / AOSP capability / VTS profile 境界`、`CapabilitySnapshot`、`ProductProfile`を正とする。現行 TS-only profile では monitor event feature を要求する構成にしない。
+VTS / product config は `../tuner_hal/DESIGN_JA.md` の`製品スコープ / AOSP capability / VTS profile 境界`、`CapabilitySnapshot`、`ProductProfile`を正とする。本製品は monitor event feature を製品能力として採用せず、静的VTS/product configでも同featureを要求・広告する構成にしない。
 
-monitor event の API 戻り値、feature 宣言有無、別 profile へ切り替える条件は `../tuner_hal/DESIGN_JA.md` を正とし、本書では重複定義しない。
+monitor event の公開API戻り値とcapability契約は `../tuner_hal/DESIGN_JA.md` を正とし、本書では重複定義しない。本書のproduct integration設定を、未定義の将来profileでmonitor eventを有効化するための切替点として扱ってはならない。
 
 ## 7. section filter runtime契約の参照
 
