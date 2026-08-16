@@ -85,7 +85,25 @@ monitor event の API 戻り値、feature 宣言有無、別 profile へ切り�
 
 本書が所有するのはproduct統合だけであり、VINTF/init/package/VTS設定の配置によって上記runtime契約を変更または再定義してはならない。
 
+## 8. px4 device probe path契約
 
-## px4 probe prefix 変更時の同期対象（PR #28）
+px4系device nodeのprobe prefixは本節をproduct integration上のSSOTとする。対象prefixは次のとおりである。
 
-px4のdevice probe prefixを変更する場合は、実装側の`frontend_px4`と、`tuner_hal2/config/ueventd.tuner_hal2.rc`、`tuner_hal2/sepolicy/file_contexts`を同一変更で同期する。具体pathはintegration contractであり、公開AIDL契約の`DESIGN_JA.md`では再定義しない。
+```text
+/dev/px4video
+/dev/pxmlt5video
+/dev/pxmlt8video
+/dev/isdb6014video
+/dev/isdb2056video
+/dev/pxm1urvideo
+/dev/pxs1urvideo
+/dev/isdbt2071video
+```
+
+このprefix集合を変更する場合は、次を同一変更で同期する。
+
+- `tuner_hal2`のpx4 frontend probe adapterは本節のprefix集合だけを参照してdevice node候補を構成する。実装owner/anchorは`DESIGN_JA.md`のfrontend/backend実装ownerに従い、本書では別の実装ownerを設けない。
+- `tuner_hal2/config/ueventd.tuner_hal2.rc`は同じdevice node集合のpermission entryを持つ。
+- `tuner_hal2/sepolicy/file_contexts`その他のSELinux path設定で同device nodeを列挙する場合は、本節のprefix集合と一致させる。
+
+probe adapter、ueventd、SELinux側のいずれかだけに別prefixを追加してはならない。具体device pathの正本を実装helper名やPR履歴へ置かず、本節から一方向に同期する。
