@@ -168,3 +168,9 @@ Wrapper を置いてよいのは、public API 境界、domain naming 隠蔽、AI
 - raw TS source由来packetも通常demux inputと同じ `PacketTxn` / `PacketPipeline` の検証済みpacket経路へ接続し、TEI、continuity、discontinuity、duplicate、stream / parser generation処理を別実装にしない。
 - section / PES / AV / record payloadをraw TS source packetへ再解釈して別filterへ直接redispatchする経路を追加しない。公開source契約の変更が必要な場合は先に `../tuner_hal/DESIGN_JA.md` を変更する。
 
+## 18. px4 single-open backend 実装規約
+
+- 同一のpx4 physical chardev endpointに対し、control経路とlive TS reader経路が独立にdevice nodeを`open()`してはならない。1つのbackend instanceが1つのdevice-open resourceを所有し、control操作とTS readはそのownerが管理する同一open resourceから接続する。
+- control用viewとreader用viewを内部で分ける場合も、別のdevice-open ownership、独立したlifetime authority、再open fallbackを作らない。view生成またはreader準備の失敗を理由に同一endpointを再openして成功扱いへ切り替えてはならない。
+- owner resourceからcontrol / reader viewを導出する具体APIは本書で固定しない。旧参照実装の具体API選択をproduct default実装の必須形として継承せず、single-openと単一ownershipを満たすことだけを本節の実装規約とする。
+- device-open resource、control view、reader viewのclose / cleanupはowner関係を崩さず、片方の終了で他方が参照するdevice-open resourceを早期解放しない。失敗は本書のtyped error / cleanup規約へ接続し、二重openによる代替経路を設けない。
