@@ -81,6 +81,14 @@ VTS XML/profileで使用する機能とcapabilityで宣言する機能は一致�
 | `linkCaps` | main type 粒度 | 広告した main type pair は VTS が生成する subtype `UNDEFINED` 接続も成功対象に含める。成功させない pair は広告しない |
 
 
+#### `DemuxCapabilities.linkCaps` / `numBytesInSectionFilter` 固定契約
+
+Android 14 AIDL V2 の `DemuxCapabilities.linkCaps` は `DemuxFilterMainType` の各bit位置をsource rowとし、各要素をsink main typeのbitmaskとして返す。本製品の `ProductProfile` はTS main typeだけを公開し、source-filter linkageはraw TSを下流raw TS / recordへ渡す経路だけを正式対応とするため、公開するmain-type linkageは **TS -> TS の1組だけ** とする。Android 14 V2で定義済みのmain type順 `TS, MMTP, IP, TLV, ALP` に対する具体値は `linkCaps = [0x01, 0, 0, 0, 0]` とし、`filterCaps`にもTS以外のmain type bitを立てない。将来main typeが追加されても、現行profileで対応を証明していないrow / sink bitを推測して1にしない。
+
+`linkCaps`で1を返したpairは、VTSがsource / sink双方をsubtype `UNDEFINED`でopenして`setDataSource()`を呼ぶ場合も成功対象に含める。TS main type内の具体的subtype互換性は本書のsource filter契約を正とし、raw TS source -> raw TS / recordだけを成功させ、section / PES / AV / payloadなしfilterへのlinkageは既存の入力・lifecycle判定後に`UNAVAILABLE`または`INVALID_ARGUMENT`へ写像する。main-type capabilityとsubtype成功範囲を別の並行SSOTにしない。
+
+`DemuxCapabilities.numBytesInSectionFilter` は **16** を返す。これはsection payload最大長ではなく、`DemuxFilterSectionBits` のfilter conditionでサポートする最大byte幅である。`sectionBits.filter`、`mask`、`mode` はAOSPが独立したbyte arrayとして渡すため、長さが互いに異なることだけを理由に拒否せず、各arrayを改変・padding・truncationせず保持する。ただし各arrayの長さが16 bytesを超える要求は `INVALID_ARGUMENT` とし、状態を変更しない。`bitWidthOfLengthField`はMMTP section messageのlength-field幅であり、TSの`section_length`、CRC、condition幅の代用にしない。本製品はMMTP main typeを公開しないため、TS section処理をこの値で変化させない。
+
 ### Tuner HAL 固定境界
 
 - CS110 は周波数のみで選局する。ISDB-S settings で `streamIdType=UNDEFINED` かつ `streamId=0` の明示未指定、または AOSP SDK の default 表現である `streamIdType=STREAM_ID` かつ `streamId=INVALID_STREAM_ID(0xFFFF)` だけを selector なしとして扱う。CS110 tune request に TSID / relative stream-number selector が指定された場合は `INVALID_ARGUMENT` とする。`streamIdType=RELATIVE_STREAM_NUMBER` の負値、`streamIdType=UNDEFINED` の負値、その他の負値 selector は未指定へ丸めない。
@@ -263,6 +271,17 @@ Record DVRの`attachFilter()` / `detachFilter()`は、Record DVRがLiveであれ
 
 `IDvr.setStatusCheckIntervalHint(milliseconds)`はRecord / Playbackの全Live lifecycle状態で受理し、DVR lifecycle、queue内容、relationを変更しない。値0をproduct defaultへの独自resetと解釈せず、受理済みhintを以後のdata/status evaluation cadence決定へ使用する詳細は既存の「`IDvr.setStatusCheckIntervalHint()` 契約」を正とする。
 
+
+#### `DvrSettings` configure 完全契約
+
+`IDvr.configure()` はunion tagがopen時のDVR kindと一致することを確認した後、`statusMask`、`lowThreshold`、`highThreshold`、`dataFormat`、`packetSize`を同一の `DvrSettingsSnapshot` としてvalidateし、全項目が成功条件を満たした場合だけ設定世代を一括commitする。いずれか1項目の拒否時は以前のsettings、FMQ read/write位置、queue identity、Record Filter relation、worker状態を変更しない。開始中のconfigureは前段lifecycle契約どおり`INVALID_STATE`を優先する。
+
+- `statusMask=0` はstatus callbackを要求しない有効値として成功させ、データ経路は通常どおり動作させる。AIDLで既知のstatus bitのうち現行profileが生成できないbitは`UNAVAILABLE`、予約bit・未知bitは`INVALID_ARGUMENT`とする。成功後はmaskで選択したstatusだけをcallback対象にする。
+- `lowThreshold` と `highThreshold` はbyte単位とし、`0 <= lowThreshold <= highThreshold <= openDvr(bufferSize)`を満たす場合だけ受理する。負値、大小逆転、FMQ容量超過は`INVALID_ARGUMENT`とし、clampしない。
+- Playbackでは水位をplayback input FMQの `unusedBytes = capacity - usedBytes` で測り、low/high thresholdを空き領域byteへ適用する。RecordではRecord DVR output FMQの `unconsumedBytes` へ適用する。playbackのused bytes、recordのunused bytes、別queueの値を代用しない。
+- `dataFormat` は現行TS-only `ProductProfile`が扱うTS formatだけを成功させる。AIDL上既知だが現行profileで扱わないformatは`UNAVAILABLE`、予約値・未知値・未定義値は`INVALID_ARGUMENT`とする。
+- `packetSize` は正のbyte数だけを構文上受理し、現行TS formatでは188だけを成功させる。正の別packet sizeは`UNAVAILABLE`、0以下は`INVALID_ARGUMENT`とし、`dataFormat`との組として検証する。
+- status callbackは現在のqueue状態から算出したstatusのうち`statusMask`で選択されたものだけを対象とする。開始直後の初期評価、threshold crossing / status変化、および受理済み`setStatusCheckIntervalHint()`による周期評価は同じsnapshotを参照し、callback失敗は`PostCommitCallbackFailureTxn`へ接続する。
 
 ### `IFrontend.getHardwareInfo()`
 
@@ -657,6 +676,55 @@ px4 backendは同一device nodeを二重openせず、1回のbackend openからco
 
 フロントエンドの存在と対応能力は、機器、versioned backend manifest、functional probe、有限の選局終端を実装できることから導出する。選局は非同期操作とし、バックエンドが選局要求を受理した後は、`LOCKED`、backendの明示失敗、明示的停止、再選局、閉鎖、またはbackend別`ProductProfile.tuneTerminalDeadlineMs`到達時の`NO_SIGNAL`のいずれかで現generationを必ず終端する。現行profileはearth_pt1を`4000 ms`、px4を`7000 ms`とする。px4値はRT710設定、PLL確認、demod lock、absolute TSID一致、およびrelative selectorのTMCC解決からなる正常な有限経路を期限前に打ち切らないための上限である。期限到達はbinder呼出しの成功を後から失敗へ反転させず、非同期終端eventとして扱う。VTS既知信号経路はVTS自身の待機内でLOCKEDへ到達できる入力を別途要求し、製品deadlineをVTS待機値へ短縮しない。正の有限期限と取消可能なbackend I/Oを実装できないfrontendは公開しない。停止した`ioctl`、read、USB control transferから復帰する内部期限は別の`workerIoDeadlineMs`で管理し、px4の`ctrl_timeout=0`を禁止する。個別I/O期限は検証済みcontrol transfer上限より短くせず、正常処理列の合計がbackendのterminal deadline内に収まるよう固定する。
 
+
+## TS input origin namespace 固定契約
+
+TS packetのcontinuity / parser / assembler状態を異なる入力経路間で共有しないため、論理入力originの正本namespaceを次の3種類に固定する。
+
+| origin | identity | generation / boundary owner | 禁止事項 |
+|---|---|---|---|
+| `TsInputOrigin::Frontend` | demuxに現在接続されているfrontend入力 | frontend tune/scan/stop/closeに伴うstream boundaryは`StreamBoundaryTxn` | Playback DVRまたはSourceFilter由来stateとの混成 |
+| `TsInputOrigin::PlaybackDvr(dvr_id, queue_identity, queue_epoch)` | Playback DVR object + 再利用しないqueue incarnation + 同一queue内flush epoch | `queue_identity`は`PlaybackQueueBacking`、`queue_epoch`は`QueueEpochProtocol`、境界dispatchは`StreamBoundaryTxn` | fd番号・descriptor内容・別`dvr_generation`をorigin identityに使用 |
+| `TsInputOrigin::SourceFilter(filter_id, generation)` | source raw-TS Filter + 当該Filterのcurrent delivery generation | generation mutationは`FilterProducerDrainGate`、relationは`SourceBoundaryTxn`、境界dispatchは`StreamBoundaryTxn` | 未接続downstreamのcontinuity/parser stateを進めること |
+
+`PacketPipeline`は受理したpacketを必ず1個の `TsInputOrigin` とともに処理し、steady-state continuityをorigin別に分離する。per-filter parser / assembler ownerもoriginを含むkeyでpartial stateを分離する。`StreamBoundaryTxn`はboundaryのprepare / dispatchを所有するが、steady-state continuityやper-filter parser stateそのものを第二のownerとして保持しない。origin変更前のpartial stateを新originへ連結してはならない。
+
+## Filter / DVR queue full・overflow 固定契約
+
+通常Filter FMQおよびRecord DVR FMQでは、既にcommit済みでclient未消費のdataを新規dataのために暗黙evictionしない。payload / packet全体をcommitできる空きがない場合は部分writeせず、既存queue内容とread/write positionを維持したまま当該新規単位をdrop-newとして扱う。
+
+| path | full / insufficient space時 | caller-visible通知 | state / counter |
+|---|---|---|---|
+| TS raw Filter FMQ | 新規TS packetを部分commitせず破棄 | `DemuxFilterStatus::OVERFLOW`をpendingにしcallback delivery対象とする | drop packet/byte診断を飽和加算。既存未消費FMQは維持 |
+| section / PES Filter FMQ | 新規の完全section / PESを論理単位で破棄し、先頭だけを書かない | `DemuxFilterStatus::OVERFLOW` | drop診断を更新し、未commit単位を配送済み・one-shot完了扱いにしない |
+| Record DVR FMQ | 新規188-byte TS packetを部分commitせず破棄 | `RecordStatus`のoverflow/full相当statusを、設定済み`statusMask`に従って通知対象にする | `record_output_byte_offset`を進めず、既存未消費record dataを維持 |
+| Playback DVR input FMQ | HAL consumerはclient producerの未読dataをevictしない | client producer側のFMQ空き領域によるbackpressure | HALはdrop-old/drop-new queueとして扱わない |
+
+Filter runtimeとRecord DVR runtimeは、drop原因を通常のmalformed/CRC rejectionと区別できるpending overflow診断を保持する。FMQ write成功後のEventFlag wake失敗はpayload commit済みであり、同じpayloadを再writeしたりoverflow dropへ書き換えたりしない。AV allocation不足は既存AV allocation契約を正とし、この表のTS/section/PES/Record方針を流用しない。
+
+## MPEG-TS section transport 固定契約
+
+TS `section_length`は12 bit構文として扱い、table IDごとの外形上限を次で固定する。1021区分は`section_length <= 1021`かつsection全体`<= 1024`、拡張区分は`section_length <= 4093`かつsection全体`<= 4096`とする。表固有の意味解析はHALへ持ち込まず、ここではtransport外形だけを検証する。
+
+| `table_id` / 範囲 | 表 | `section_length`上限 | section全体上限 |
+|---|---|---:|---:|
+| `0x00` | PAT | 1021 | 1024 |
+| `0x01` | CAT | 1021 | 1024 |
+| `0x02` | PMT | 1021 | 1024 |
+| `0x03` | TSDT | 1021 | 1024 |
+| `0x40-0x41` | NIT actual/other | 1021 | 1024 |
+| `0x42`, `0x46` | SDT actual/other | 1021 | 1024 |
+| `0x4A` | BAT | 1021 | 1024 |
+| `0x4E-0x6F` | EIT p/f, schedule | 4093 | 4096 |
+| `0x70` | TDT | 5 | 8 |
+| `0x71` | RST | 1021 | 1024 |
+| `0x72` | ST | 4093 | 4096 |
+| `0x73` | TOT | 1021 | 1024 |
+| `0x4C`, `0xC2`, `0xC4-0xC7`, `0xD0-0xD2` | INT, PCAT, BIT, NBIT, LDT, LIT, ERT, ITT | 4093 | 4096 |
+| `0xFE` | AMT | 4093 | 4096 |
+| その他の予約/private/未割当table ID | raw transport | 4093 | 4096 |
+
+PUSI=1のTS payloadでは、payload先頭の`pointer_field`を検証してから `1 + pointer_field` を新section開始位置とする。`pointer_field` bytesは直前の未完了sectionのtailとしてだけ使用できる。pointer bytesで旧sectionが完全になった場合はそのsectionを確定後に新sectionへ進む。pointer bytesで旧sectionが完了しない場合、または`pointer_field == 0`なのに旧partialが残る場合は旧partialを破棄し、新section本文へ連結しない。`1 + pointer_field`が当該TS payload範囲を超える入力はmalformedとして新section開始を作らない。旧partialの破棄はstale-partial診断へ記録し、queue overflowへ写像しない。
 
 ## DVR 方針
 
@@ -1169,6 +1237,12 @@ release AIDL経路からテスト専用入口へ到達してはならず、テ�
 | T-AOSP-56 | Filter lifecycle closure | non-AV未設定`start()`/`flush()`は`INVALID_STATE`、未開始`stop()`と重複`start()`は冪等成功、開始中`configure()`は`INVALID_STATE`。`stop()`はcommit済みoutput/client資源を維持し、`flush()`だけが対象の未消費FMQ・未配送event・partial stateを破棄する。開始済みFilterのflushは開始状態を維持し、一度start済みFilterのstop後同一settings再configureはT-AOSP-53の新`startId`契約を満たす |
 | T-AOSP-57 | DVR lifecycle closure | 未設定`start()`/`flush()`は`INVALID_STATE`、未開始`stop()`と重複`start()`は冪等成功、開始中`configure()`は`INVALID_STATE`。Record開始中flushは`INVALID_STATE`、Playback開始中flushは成功して開始状態を維持する。stopではRecord未消費outputおよびPlayback未読input/processing residualを維持し、configureでqueue identity/relationを置換しない |
 | T-AOSP-58 | Record DVR Filter relation lifecycle | configure前/停止中/開始中のRecord DVRでvalid attach/detachを成功させ、duplicate attach / absent detachは状態不変成功。Playback DVR、foreign owner、別demux、record非対応Filterは`INVALID_ARGUMENT`、閉鎖済みFilter引数は`INVALID_STATE`。route mutationは`RecordDvrFilterRelationTxn`だけを通る |
+| T-AOSP-59 | `linkCaps` concrete matrix | TS-only profileでは`[0x01, 0, 0, 0, 0]`を返し、TS->TSのUNDEFINED subtype linkageを成功させ、非広告pairを成功させない |
+| T-AOSP-60 | `numBytesInSectionFilter` / SectionBits boundary | capabilityは16。filter/mask/modeは独立長を保持し各16 bytes超だけを`INVALID_ARGUMENT`で拒否し、padding/truncationしない |
+| T-AOSP-61 | `DvrSettings` atomic configure | statusMask / low/high threshold / dataFormat / packetSizeを同一snapshotでvalidateし、1 field拒否時にsettings・queue位置・identity・relationを変更しない |
+| T-AOSP-62 | Filter / Record DVR FMQ full | 既存未消費dataをevictせず新規論理単位を部分commitしない。FilterはOVERFLOW、Recordはrecord overflow/full statusへ反映し、Record commit失敗では`record_output_byte_offset`不変 |
+| T-AOSP-63 | section table length / `pointer_field` | PAT/CAT/PMT等1021区分、EIT等4093区分、TDT=5、TOT=1021を固定し、PUSI pointerで旧partial未完了を新sectionへ連結しない |
+| T-AOSP-64 | `TsInputOrigin` namespace | Frontend / PlaybackDvr(dvr_id, queue_identity, queue_epoch) / SourceFilter(filter_id, generation)でcontinuity・partial stateを分離し、origin boundary前後を連結しない |
 
 `close()` 以外の公開メソッドでは、`LogicalClosed`、`InvalidArgument`、`WrongLifecycle`、`ResourceUnavailable`、`BackendFailure`、`Success` の順で判定を優先する。`close()` 自体の結果はこの共通優先順位で決めず、0-S-4の公開close契約に従う。遅延して呼ばれる `IFilter.releaseAvHandle()` はAV解放台帳に従う独立操作であり、閉鎖後の共通メソッドとして扱わない。
 
