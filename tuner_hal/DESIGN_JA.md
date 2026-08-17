@@ -304,7 +304,7 @@ Record DVRの`attachFilter()` / `detachFilter()`は、Record DVRがLiveであれ
 
 #### `DemuxFilterAvSettings.isSecureMemory` / `isPassthrough`
 
-本製品のAV経路はclear-memoryかつnon-passthroughを恒久仕様とする。非開始AV filterの `configure()` では `isSecureMemory=false && isPassthrough=false` だけをAV能力判定へ進める。`isSecureMemory=true` または `isPassthrough=true` はAIDL上有効だが本製品非対応の要求として、副作用なしの `UNAVAILABLE` とし、旧settings、shared backing、stream-type hint、source relation、generation、active `avDataId` を変更しない。開始済みfilterでは前段のlifecycle判定を適用し、有効だが未対応の値を評価して既存 `INVALID_STATE` を覆さない。未知tag / malformed settingsは `INVALID_ARGUMENT` とする。
+製品ライブAVアーキテクチャをclear-memoryかつnon-passthroughへ固定するproduct-level invariantは `../開発規則.md` を唯一の正本とし、本節では再定義しない。そのinvariantをAIDL入力契約へ写像し、非開始AV filterの `configure()` では `isSecureMemory=false && isPassthrough=false` だけをAV能力判定へ進める。`isSecureMemory=true` または `isPassthrough=true` はAIDL上有効だが本製品非対応の要求として、副作用なしの `UNAVAILABLE` とし、旧settings、shared backing、stream-type hint、source relation、generation、active `avDataId` を変更しない。開始済みfilterでは前段のlifecycle判定を適用し、有効だが未対応の値を評価して既存 `INVALID_STATE` を覆さない。未知tag / malformed settingsは `INVALID_ARGUMENT` とする。
 
 `MediaEvent`出力側の `isSecureMemory=false` はこの入力validationの代替ではない。secure allocator、secure backing、secure handle種別、secure専用state machineを生成してはならない。
 
