@@ -277,11 +277,11 @@ Record DVRの`attachFilter()` / `detachFilter()`は、Record DVRがLiveであれ
 `IDvr.configure()` はunion tagがopen時のDVR kindと一致することを確認した後、`statusMask`、`lowThreshold`、`highThreshold`、`dataFormat`、`packetSize`を同一の `DvrSettingsSnapshot` としてvalidateし、全項目が成功条件を満たした場合だけ設定世代を一括commitする。いずれか1項目の拒否時は以前のsettings、FMQ read/write位置、queue identity、Record Filter relation、worker状態を変更しない。開始中のconfigureは前段lifecycle契約どおり`INVALID_STATE`を優先する。
 
 - `statusMask=0` はstatus callbackを要求しない有効値として成功させ、データ経路は通常どおり動作させる。AIDLで既知のstatus bitのうち現行profileが生成できないbitは`UNAVAILABLE`、予約bit・未知bitは`INVALID_ARGUMENT`とする。成功後はmaskで選択したstatusだけをcallback対象にする。
-- `lowThreshold` と `highThreshold` はbyte単位とし、`0 <= lowThreshold <= highThreshold <= openDvr(bufferSize)`を満たす場合だけ受理する。負値、大小逆転、FMQ容量超過は`INVALID_ARGUMENT`とし、clampしない。
-- Playbackでは水位をplayback input FMQの `unusedBytes = capacity - usedBytes` で測り、low/high thresholdを空き領域byteへ適用する。RecordではRecord DVR output FMQの `unconsumedBytes` へ適用する。playbackのused bytes、recordのunused bytes、別queueの値を代用しない。
+- `lowThreshold` と `highThreshold` はbyte単位とし、`0 <= lowThreshold <= highThreshold <= openDvr(bufferSize)`を満たす場合だけ受理する。負値、大小逆転、FMQ容量超過は`INVALID_ARGUMENT`とし、clampしない。`lowThreshold == highThreshold` はAOSPが禁止していない有効入力として受理し、等値だけを理由に本製品固有の拒否条件を追加しない。
+- 水位判定は、同一queue snapshotのbyte数 `q` とcommit済み `DvrSettingsSnapshot` だけから次の順序で決定する純粋な分類とし、別のwatermark state machineを設けない。Playbackは `q = unusedBytes = capacity - usedBytes` とし、`q == 0` なら `PlaybackStatus::SPACE_EMPTY`、それ以外で `q == capacity` なら `SPACE_FULL`、それ以外で `q <= lowThreshold` なら `SPACE_ALMOST_EMPTY`、それ以外で `q >= highThreshold` なら `SPACE_ALMOST_FULL`、それ以外はwatermark statusなしとする。Recordは `q = unconsumedBytes` とし、`q <= lowThreshold` なら `RecordStatus::LOW_WATER`、それ以外で `q >= highThreshold` なら `HIGH_WATER`、それ以外はwatermark statusなしとする。したがって `lowThreshold == highThreshold == T` かつ `q == T` ではlow側を一意に採用する。Playbackのused bytes、Recordのunused bytes、別queueの値を代用しない。`RecordStatus::DATA_READY` はwatermark分類ではなく、Record outputが実際に成功commitされ読み取り可能になった事象として既存のdata-ready契約に従う。
 - `dataFormat` は現行TS-only `ProductProfile`が扱うTS formatだけを成功させる。AIDL上既知だが現行profileで扱わないformatは`UNAVAILABLE`、予約値・未知値・未定義値は`INVALID_ARGUMENT`とする。
 - `packetSize` は正のbyte数だけを構文上受理し、現行TS formatでは188だけを成功させる。正の別packet sizeは`UNAVAILABLE`、0以下は`INVALID_ARGUMENT`とし、`dataFormat`との組として検証する。
-- status callbackは現在のqueue状態から算出したstatusのうち`statusMask`で選択されたものだけを対象とする。開始直後の初期評価、threshold crossing / status変化、および受理済み`setStatusCheckIntervalHint()`による周期評価は同じsnapshotを参照し、callback失敗は`PostCommitCallbackFailureTxn`へ接続する。
+- `statusMask` は上記のsemantic status分類後に適用し、選択されているbitのstatusだけをcallback対象とする。分類されたstatusのbitがmaskされている場合、同じsnapshotで条件が重なる別statusへfallback / remapしない。開始直後の初期評価、threshold crossing / status変化、および受理済み`setStatusCheckIntervalHint()`による周期評価は同じ分類式と同じ`DvrSettingsSnapshot`を参照し、callback失敗は`PostCommitCallbackFailureTxn`へ接続する。
 
 ### `openFilter()` type/subtype acceptance と AV 入力固定契約
 
@@ -735,10 +735,10 @@ TS packetのcontinuity / parser / assembler状態を異なる入力経路間で�
 |---|---|---|---|
 | TS raw Filter FMQ | 新規TS packetを部分commitせず破棄 | `DemuxFilterStatus::OVERFLOW`をpendingにしcallback delivery対象とする | drop packet/byte診断を飽和加算。既存未消費FMQは維持 |
 | section / PES Filter FMQ | 新規の完全section / PESを論理単位で破棄し、先頭だけを書かない | `DemuxFilterStatus::OVERFLOW` | drop診断を更新し、未commit単位を配送済み・one-shot完了扱いにしない |
-| Record DVR FMQ | 新規188-byte TS packetを部分commitせず破棄 | `RecordStatus`のoverflow/full相当statusを、設定済み`statusMask`に従って通知対象にする | `record_output_byte_offset`を進めず、既存未消費record dataを維持 |
+| Record DVR FMQ | 新規188-byte TS packetを部分commitせず破棄 | 当該write attemptのsemantic outcomeを `RecordStatus::OVERFLOW` とする。`statusMask`で`OVERFLOW` bitが選択されている場合だけcallbackし、maskされている場合に`HIGH_WATER`その他へ代替通知しない | `record_output_byte_offset`を進めず、既存未消費record dataとqueue位置を維持 |
 | Playback DVR input FMQ | HAL consumerはclient producerの未読dataをevictしない | client producer側のFMQ空き領域によるbackpressure | HALはdrop-old/drop-new queueとして扱わない |
 
-Filter runtimeとRecord DVR runtimeは、drop原因を通常のmalformed/CRC rejectionと区別できるpending overflow診断を保持する。FMQ write成功後のEventFlag wake失敗はpayload commit済みであり、同じpayloadを再writeしたりoverflow dropへ書き換えたりしない。AV allocation不足は既存AV allocation契約を正とし、この表のTS/section/PES/Record方針を流用しない。
+Filter runtimeとRecord DVR runtimeは、drop原因を通常のmalformed/CRC rejectionと区別できるpending overflow診断を保持する。Record DVRでは、FMQのavailable space不足により188-byte packetの原子的commitを拒否したwrite attemptについて `OVERFLOW` をwatermarkより優先し、そのwrite attemptを契機に `HIGH_WATER` / `LOW_WATER` / `DATA_READY` を代替生成しない。失敗したwriteではqueue occupancyが変わらないため、その後の通常の初期評価・status変化・周期評価は不変のqueue snapshotに対して前段のwatermark分類を独立に適用してよいが、`OVERFLOW`がmaskされていることを理由に同じ失敗を別statusへ再分類してはならない。FMQ write成功後のEventFlag wake失敗はpayload commit済みであり、同じpayloadを再writeしたりoverflow dropへ書き換えたりしない。AV allocation不足は既存AV allocation契約を正とし、この表のTS/section/PES/Record方針を流用しない。
 
 ## 通常Filter status 公開方針
 
@@ -1318,7 +1318,7 @@ release AIDL経路からテスト専用入口へ到達してはならず、テ�
 | T-AOSP-51 | ISDB-S SDK default selector未指定 | `STREAM_ID + INVALID_STREAM_ID(0xFFFF)`を明示TSID検証より先に`Unspecified`へ正規化し、px4 BSは互換slot 0、px4 CS110はfixed slot 0、Linux DVB / earth_pt1は`NO_STREAM_ID_FILTER`へ写像する。通常のBS TIS経路では明示absolute TSIDを維持する |
 | T-AOSP-48 | ISDB-S `rolloff` | 未指定、既知未対応、malformedを分類し、未適用値を成功させない |
 | T-AOSP-49 | RECORD index settings/event | request mask/typeを無損失検証し、event mask、`pts`、`firstMbInSlice`をcurrent parser/delivery fenceに一致させる。`byteNumber`は当該indexが位置するcommitted Record Filter output上の0起点offsetとする。最初のoutputは0から始まり、Record DVR output commit成功時だけ実commit byte数分`record_output_byte_offset`を進め、commit失敗では不変とする。flush/reconfigure/source/stream boundary、Record DVR attach/detachで維持し、新Filter output lifetimeだけ0へ戻す |
-| T-AOSP-50 | DVR `statusMask` / threshold / `dataFormat` / `packetSize` | playbackはunused bytes、recordはunconsumed bytesで判定し、無効・未対応設定を状態不変で拒否 |
+| T-AOSP-50 | DVR `statusMask` / threshold / `dataFormat` / `packetSize` | playbackはunused bytes、recordはunconsumed bytesで判定する。`low == high == T` / `q == T` はlow側へ一意化し、Playbackは0/capacityを`SPACE_EMPTY`/`SPACE_FULL`へ優先分類する。分類後に`statusMask`を適用し、maskされたstatusを別statusへremapしない。無効・未対応設定は状態不変で拒否 |
 | T-AOSP-52 | `endFrequency`の操作別意味 | `tune()`とblind以外のscanでは差分を理由に拒否せずfingerprint/backend要求へ含めず、blind scanだけ`UNAVAILABLE`にする |
 | T-AOSP-53 | 同一settingsでのFilter reconfigure後startId | 一度start済みFilterをstopし、同一settingsで`configure()`成功後にrestartした場合も、最初に新しいstartId-only callbackを正確に1回配送してから通常eventを配送する |
 | T-AOSP-54 | TS live `DemuxFilterMediaEvent`公開field | `streamId`、PTS/DTS presence/value、`mpuSequenceNumber`、private-data、`extraMetaData`、`scIndexMask`を同一media outputの入力由来または定義済みdefaultと一致させ、別PES/generationを混成しない |
@@ -1329,7 +1329,7 @@ release AIDL経路からテスト専用入口へ到達してはならず、テ�
 | T-AOSP-59 | `linkCaps` concrete matrix | TS-only profileでは`[0x01, 0, 0, 0, 0]`を返し、TS->TSのUNDEFINED subtype linkageを成功させ、非広告pairを成功させない |
 | T-AOSP-60 | `numBytesInSectionFilter` / SectionBits boundary | capabilityは16。filter/mask/modeは独立長を保持し各16 bytes超だけを`INVALID_ARGUMENT`で拒否し、padding/truncationしない |
 | T-AOSP-61 | `DvrSettings` atomic configure | statusMask / low/high threshold / dataFormat / packetSizeを同一snapshotでvalidateし、1 field拒否時にsettings・queue位置・identity・relationを変更しない |
-| T-AOSP-62 | Filter / Record DVR FMQ full | 既存未消費dataをevictせず新規論理単位を部分commitしない。FilterはOVERFLOW、Recordはrecord overflow/full statusへ反映し、Record commit失敗では`record_output_byte_offset`不変 |
+| T-AOSP-62 | Filter / Record DVR FMQ full | 既存未消費dataをevictせず新規論理単位を部分commitしない。Filterは`DemuxFilterStatus::OVERFLOW`、Recordの188-byte commit拒否は`RecordStatus::OVERFLOW`へ一意に写像する。Recordは`OVERFLOW` bit選択時だけ通知し、mask時にHIGH/LOW/DATA_READYへ代替しない。commit失敗ではqueue位置と`record_output_byte_offset`不変 |
 | T-AOSP-63 | section table length / `pointer_field` | PAT/CAT/PMT等1021区分、EIT等4093区分、TDT=5、TOT=1021を固定し、PUSI pointerで旧partial未完了を新sectionへ連結しない |
 | T-AOSP-64 | `TsInputOrigin` namespace | Frontend / PlaybackDvr(dvr_id, queue_identity, queue_epoch) / SourceFilter(filter_id, generation)でcontinuity・partial stateを分離し、origin boundary前後を連結しない |
 | T-AOSP-65 | `configureAvStreamType()` 全域 | matching Audio/Video tagは非開始状態でUNDEFINEDまたはadvertise済みcodecを成功commitし、再設定はhintだけを置換。同値はno-op成功、tag不一致/予約・未知値は`INVALID_ARGUMENT`、既知非対応codecは`UNAVAILABLE`、valid Started要求は`INVALID_STATE`、non-AVは`UNAVAILABLE` |
