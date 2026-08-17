@@ -42,7 +42,7 @@
 本書の正本階層は次の順とする。
 
 1. `DESIGN_JA.md の責務境界`、`製品スコープ / AOSP capability / VTS profile 境界`、`AIDL 契約境界`、`Tuner HAL 状態遷移表SSOT` を最上位正本とする。
-2. `0-S. 状態所有・寿命・失敗時遷移設計`、0-S-3Bの名前付きcanonical contract、各公開APIの名前付き契約、`ARIB/ISDB入力処理契約`、`Stream boundary 契約`、`Packet pipeline 正本契約`、`AV shared handle 入出力契約` を現在の設計契約の正本とする。移送済みの旧表番号は現行正本参照に使用しない。
+2. `0-S. 状態所有・寿命・失敗時遷移設計`、`0-S-2. 状態所有者表`、0-S-3Bの名前付きcanonical contract、各公開APIの名前付き契約、`TS continuity / adaptation-only packet 固定`、`AV shared handle の NativeHandle 形式`、`AV転送方式とクライアント側の存続期間`、`AOSP / AIDL / VTS 系`、`ARIB TS packet 系`、`ARIB section 系`、`PES / record index 系`、`MULTI2 / B25 descrambler 系`を現在の設計契約の正本とする。移送済みの旧表番号・旧節名は現行正本参照に使用しない。
 3. 旧 `補足契約:` 章は本体正本章へ吸収済みであり、本書内に二重正本として残さない。
 4. 個別リリースの履歴、作業経緯、ビルド/atest/VTS/静的検索/成果物命名/完了宣言は本書では定義しない。履歴は `CHANGELOG.md`、完了判定は `タスク完了判定の実施方法.md` を正とする。
 
@@ -218,6 +218,18 @@ VTS製品設定の`canConnectToCiCam`は`false`に固定する。CI CAM系APIは
 | `IDemux.disconnectCiCam()` | `INVALID_STATE` | `UNAVAILABLE` |
 
 `disconnectCiCam()`には入力引数がないため、CAM ID検証を適用しない。
+
+### Filter / DVR query API 固定契約
+
+`IFilter.getQueueDesc()`、`IFilter.getId()`、`IFilter.getId64Bit()`、`IDvr.getQueueDesc()`は読み取り専用queryであり、成功時にobject lifecycle、queue identity、generation、設定、relation、FMQ read/write positionを変更しない。論理閉鎖開始後は0-S-4の公開close gateに従い`INVALID_STATE`とする。
+
+| API | Live objectでの成功条件と結果 | 非対応 / failure |
+|---|---|---|
+| `IFilter.getQueueDesc()` | open時filter種別が通常payload FMQを持つ場合、`configure()`前後を問わずopen時に確保した同一FMQ descriptorを返す | 通常payload FMQを持たないfilterは`UNAVAILABLE`とし、FMQ descriptorを後付け生成しない |
+| `IFilter.getId()` / `getId64Bit()` | open時に確定したdemux-local filter IDを対応するAIDL返却型で返す。両queryは同じfilter object identityを表す | 読み取り専用queryとして別IDを再発行せず、状態を変更しない |
+| `IDvr.getQueueDesc()` | record / playbackとも、`configure()`前後およびstart/stop状態を問わず、open時に確保した同一DVR FMQ descriptorを返す | `configure()`または再設定でqueue identity、容量、descriptorを置換しない |
+
+通常payload FMQを持つFilterは、未configureを理由に`getQueueDesc()`を拒否しない。Record FilterのpayloadはRecord DVR FMQへ、audio/video mediaは`MediaEvent`の共有領域またはイベント固有fdへ配送し、PCRその他callback-only eventには通常payload FMQを設けない。DVR FMQは`openDvr()`の`bufferSize`から生成し、`configure()`はしきい値等のDVR設定だけを変更する。
 
 ### `IFrontend.getHardwareInfo()`
 
@@ -1249,7 +1261,7 @@ PES filterは、外形検証の後に`stream_id`で通常optional-header構文�
 - AVの転送、割り当て、解放は、本書「AV割り当て」、0-S-2のAV active token台帳、「AV転送方式とクライアント側の存続期間」で定める。共有領域方式は最適化手段とし、要求サイズどおりのイベント固有ファイル記述子方式を正式な代替経路とする。`dataId=0`のhandle lease終了だけはboundedなclient lease stateにより冪等化し、正の`avDataId`はactive token台帳に存在する場合だけ解放を成功させる。
 - ワーカーとLNBの停止・後片付けは、本書「ワーカー終了契約」と「LNB機器の資源規則」で定める。`TargetDriverTimingProfile` や、公開経路で上限なく `join` を待つ処理を設けない。
 - パケット異常と基盤異常の影響範囲は、本書「失敗影響範囲」で定める。不正TS、TEI、連続性異常を基盤隔離へ昇格させない。
-- frontendで公開・受理する値は、本書「フロントエンド設定の反映表」で定める。ARIB B31の値域根拠は本書「VTS環境とARIB B31の境界」に置く。
+- frontendで公開・受理する値は、本書「フロントエンド設定の反映表」で定める。ARIB B31の値域根拠は本書「フロントエンドの対応能力と状態」、現行日本語版との差分管理は本書「ARIB規範本文との静的照合」を正とする。
 - 個別の対応能力で失敗した場合は、その能力または要求だけを抑止・拒否する。無関係な `ITuner` の公開を妨げない。
 
 
