@@ -231,6 +231,39 @@ VTS製品設定の`canConnectToCiCam`は`false`に固定する。CI CAM系APIは
 
 通常payload FMQを持つFilterは、未configureを理由に`getQueueDesc()`を拒否しない。Record FilterのpayloadはRecord DVR FMQへ、audio/video mediaは`MediaEvent`の共有領域またはイベント固有fdへ配送し、PCRその他callback-only eventには通常payload FMQを設けない。DVR FMQは`openDvr()`の`bufferSize`から生成し、`configure()`はしきい値等のDVR設定だけを変更する。
 
+### Filter / DVR lifecycle API 固定契約
+
+Filter / DVR の `configure()` / `start()` / `stop()` / `flush()` と Record DVR の `attachFilter()` / `detachFilter()` について、caller-visibleな事前状態、戻り値、次状態、維持する公開資源は本節を正とする。旧状態表の行番号や旧状態コードを現行正本として復活させず、内部のprepare / commit / rollback、producer drain、queue epoch、playback consume、relation mutationは0-S-3Bの既存canonical contractを唯一の正本とする。論理閉鎖開始後の優先判定は0-S-4の公開close gateを正とし、本節のLive状態行より先に適用する。
+
+本節では公開lifecycleを `OpenUnconfigured`（open成功後、対象settings未確定）、`ConfiguredStopped`（有効settings確定済みかつ非開始）、`Started`（開始済み）の3射影で記述する。AV filterのshared handle、補助stream type、active `avDataId`等の直交軸は「AV転送方式とクライアント側の存続期間」およびAV allocation契約を正とし、本節の射影へ吸収しない。
+
+#### IFilter lifecycle
+
+| API / 条件 | `OpenUnconfigured` | `ConfiguredStopped` | `Started` | caller-visibleな確定内容 |
+|---|---|---|---|---|
+| `configure(valid settings)` | 成功 → `ConfiguredStopped` | 成功 → `ConfiguredStopped` | `INVALID_STATE`、状態不変 | open時のqueue identity、source relation、callback登録、monitor設定、delay hintを勝手に置換しない。既存source relationと新settingsが両立しない場合は`INVALID_STATE`で旧settings/relationを維持する。一度start済みのFilterに対するstop後の有効な`configure()`成功は、settingsが同一か否かにかかわらず「Filter event startId / FilterDelayHint 契約」に従って次回start用pending `startId`をprepareし、同一settingsを単なるno-opとしてこの契約を省略しない |
+| `start()` | `INVALID_STATE`、状態不変 | 成功 → `Started` | 成功、状態不変 | 対応producer / deliveryを開始または再開する。AVはshared handle未取得でもevent-local fd経路があるためhandle取得をstart成功条件にしない |
+| `stop()` | 成功、状態不変 | 成功、状態不変 | 成功 → `ConfiguredStopped` | 新規producer / deliveryを停止するが、既にFilter outputへcommitした未消費FMQ data、配送済みAV allocation / active token等のcaller-visible資源を破棄しない。`stop()`を`flush()`の代用にしない |
+| `flush()`（non-AV） | `INVALID_STATE`、状態不変 | 成功、lifecycle維持 | 成功、`Started`を維持 | `FilterProducerDrainGate`と`QueueCleanupTxn`を通し、受付済みproducerを排出してから未消費Filter FMQ data、未配送event、parser / assembler partial stateを当該Filterの契約に従って破棄する。source relation、callback登録、monitor設定、delay hint、queue identity、配送済みclient資源は維持する |
+| `flush()`（AV） | 成功、設定/実行軸を維持 | 成功、設定/実行軸を維持 | 成功、`Started`を維持 | shared handleの取得有無を成功条件にしない。未配送AV payload / transient stateだけを破棄し、shared backing、client handle lease、配送済みactive `avDataId` allocationはAV資源寿命契約に従って維持する |
+
+`configure()`の入力値・subtype・passthrough・PES/section等の能力判定は各既存の名前付き入力契約を正とする。本節は有効入力に対するlifecycle結果を固定するだけであり、未対応入力を成功へ昇格させない。`flush()`成功はFilter lifecycleそのものを停止状態へ変更する操作ではなく、開始済みFilterでは開始状態を維持する。
+
+#### IDvr lifecycle
+
+| API / 条件 | `OpenUnconfigured` | `ConfiguredStopped` | `Started` | caller-visibleな確定内容 |
+|---|---|---|---|---|
+| `configure(valid same-kind settings)` | 成功 → `ConfiguredStopped` | 成功 → `ConfiguredStopped` | `INVALID_STATE`、状態不変 | `DvrSettings`契約で全fieldを一括validate / commitし、open時queue identity、FMQ read/write position、既存Record Filter relationをconfigureだけで置換・flushしない。record/playback settingsのDVR kind不一致は`INVALID_ARGUMENT`で状態不変 |
+| `start()` | `INVALID_STATE`、状態不変 | 成功 → `Started` | 成功、状態不変 | Record DVRはrecord Filter未attachでもstart自体を成功させ、attachされるまでdata productionがないだけとする。Playback DVRは既存queueを入力としてconsumeを開始する |
+| `stop()` | 成功、状態不変 | 成功、状態不変 | 成功 → `ConfiguredStopped` | Recordは既にcommit済みの未消費Record DVR FMQと`record_output_byte_offset`を維持する。Playbackは未読FMQと`PlaybackConsumeTxn`が保持するprocessing buffer / parse-inject cursorを維持し、再startで継続可能にする。いずれも`stop()`でqueueをflushしない |
+| `flush()`（Record） | `INVALID_STATE`、状態不変 | 成功、lifecycle維持 | `INVALID_STATE`、`Started`維持 | 非開始時だけRecord DVR FMQのclient未消費byte列とRecord-pathの未確定partial / statsを破棄し、Filter relation、queue identity、Filter側`record_output_byte_offset`を維持する |
+| `flush()`（Playback） | `INVALID_STATE`、状態不変 | 成功、lifecycle維持 | 成功、`Started`維持 | `QueueEpochProtocol` / `QueueCleanupTxn` / `PlaybackConsumeTxn`を通し、新規read commitをfenceして受付済みtokenを完了または取消した後、未読Playback DVR FMQと保持中processing / assembler residualを破棄する。relation、queue identityは維持する |
+
+Record DVRの`attachFilter()` / `detachFilter()`は、Record DVRがLiveであればconfigure前、`ConfiguredStopped`、`Started`のいずれでも受理対象とする。liveかつ同一demux・同一owner・record対応Filterへの初回attachは成功、同一Filterの重複attachは状態不変で成功、登録済みFilterのdetachは成功、未登録の同一Filterのdetachも状態不変で成功とする。Playback DVRに対するattach/detach、foreign owner、別demux、record非対応Filterは`INVALID_ARGUMENT`、同一サービス内で論理閉鎖済みのFilter引数は`INVALID_STATE`とする。relationのprepare / commit / abortとexactly-once route切替は`RecordDvrFilterRelationTxn`だけを正本とする。
+
+`IDvr.setStatusCheckIntervalHint(milliseconds)`はRecord / Playbackの全Live lifecycle状態で受理し、DVR lifecycle、queue内容、relationを変更しない。値0をproduct defaultへの独自resetと解釈せず、受理済みhintを以後のdata/status evaluation cadence決定へ使用する詳細は既存の「`IDvr.setStatusCheckIntervalHint()` 契約」を正とする。
+
+
 ### `IFrontend.getHardwareInfo()`
 
 公開するfrontendは、probe時に非空のhardware info文字列を確定できたものに限る。文字列はbackend種別、物理機器識別子、driver revisionなど、秘密情報を含まない不変情報から生成し、同じfrontend objectの寿命中は同じ値を返す。objectがLiveなら必ず成功して非空値を返し、部分値や空文字を返さない。閉鎖開始後は`INVALID_STATE`とする。probe時に生成できないfrontendは`getFrontendIds()`へ公開せず、VTSがopen済みfrontendで失敗する状態を作らない。
@@ -1133,6 +1166,9 @@ release AIDL経路からテスト専用入口へ到達してはならず、テ�
 | T-AOSP-53 | 同一settingsでのFilter reconfigure後startId | 一度start済みFilterをstopし、同一settingsで`configure()`成功後にrestartした場合も、最初に新しいstartId-only callbackを正確に1回配送してから通常eventを配送する |
 | T-AOSP-54 | TS live `DemuxFilterMediaEvent`公開field | `streamId`、PTS/DTS presence/value、`mpuSequenceNumber`、private-data、`extraMetaData`、`scIndexMask`を同一media outputの入力由来または定義済みdefaultと一致させ、別PES/generationを混成しない |
 | T-AOSP-55 | DVR `setStatusCheckIntervalHint()` | playback / record双方で受理したhintを以後のdata/status evaluation cadence決定に使用し、保存だけのno-op、Binder thread sleep、queue/lifecycle変更にしない |
+| T-AOSP-56 | Filter lifecycle closure | non-AV未設定`start()`/`flush()`は`INVALID_STATE`、未開始`stop()`と重複`start()`は冪等成功、開始中`configure()`は`INVALID_STATE`。`stop()`はcommit済みoutput/client資源を維持し、`flush()`だけが対象の未消費FMQ・未配送event・partial stateを破棄する。開始済みFilterのflushは開始状態を維持し、一度start済みFilterのstop後同一settings再configureはT-AOSP-53の新`startId`契約を満たす |
+| T-AOSP-57 | DVR lifecycle closure | 未設定`start()`/`flush()`は`INVALID_STATE`、未開始`stop()`と重複`start()`は冪等成功、開始中`configure()`は`INVALID_STATE`。Record開始中flushは`INVALID_STATE`、Playback開始中flushは成功して開始状態を維持する。stopではRecord未消費outputおよびPlayback未読input/processing residualを維持し、configureでqueue identity/relationを置換しない |
+| T-AOSP-58 | Record DVR Filter relation lifecycle | configure前/停止中/開始中のRecord DVRでvalid attach/detachを成功させ、duplicate attach / absent detachは状態不変成功。Playback DVR、foreign owner、別demux、record非対応Filterは`INVALID_ARGUMENT`、閉鎖済みFilter引数は`INVALID_STATE`。route mutationは`RecordDvrFilterRelationTxn`だけを通る |
 
 `close()` 以外の公開メソッドでは、`LogicalClosed`、`InvalidArgument`、`WrongLifecycle`、`ResourceUnavailable`、`BackendFailure`、`Success` の順で判定を優先する。`close()` 自体の結果はこの共通優先順位で決めず、0-S-4の公開close契約に従う。遅延して呼ばれる `IFilter.releaseAvHandle()` はAV解放台帳に従う独立操作であり、閉鎖後の共通メソッドとして扱わない。
 
