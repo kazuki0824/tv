@@ -1318,7 +1318,7 @@ release AIDL経路からテスト専用入口へ到達してはならず、テ�
 | T-AOSP-33 | `stopTune()` | tune停止、attached demuxへdata停止 |
 | T-AOSP-34 | `stopScan()` | scan停止 |
 | T-AOSP-35 | active scan中の`stopTune()` | 成功。scan generationとbackend scanを停止せず、scan callbackを継続し、frontendは`Scanning`のまま。tune世代は存在しないためbackend tune-stopを呼ばず、attached demuxのstream boundaryも変更しない |
-| T-AOSP-36 | DVR playback watermark | 空き領域基準 |
+| T-AOSP-36 | DVR playback watermark | T-AOSP-50のPlayback watermark判定と一致 |
 | T-AOSP-37 | DVR record watermark | record callback基準 |
 | T-AOSP-38 | `FilterDelayHint` timeのみ | time条件 |
 | T-AOSP-39 | `FilterDelayHint` dataのみ | data条件 |
