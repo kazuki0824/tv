@@ -742,11 +742,15 @@ Filter runtimeとRecord DVR runtimeは、drop原因を通常のmalformed/CRC rej
 
 ## 通常Filter status 公開方針
 
-本製品が通常Filterの `IFilterCallback.onFilterStatus()` へ生成する `DemuxFilterStatus` は **`DATA_READY` と `OVERFLOW` だけ** とする。`DATA_READY` は各payload/event契約のcommit条件、`OVERFLOW` は本書のqueue full / allocation overflow契約を正とする。
+通常payload FMQを持つFilterの `IFilterCallback.onFilterStatus()` は、Android 14 AIDL V2がfilter buffer statusとして定義する `DATA_READY`、`LOW_WATER`、`HIGH_WATER`、`OVERFLOW` を生成対象とする。`DATA_READY` は各payload/event契約の成功commit条件、`OVERFLOW` は本書のqueue full / allocation overflow契約を正とし、LOW/HIGH watermarkを理由に既存のcommit / drop契約を変更しない。
 
-`LOW_WATER`、`HIGH_WATER`、`NO_DATA` はAIDL上の有効statusだが、本製品の通常Filterでは生成しない。AIDL記載の既定25% / 75%水位を暗黙採用せず、Filter用のwatermark threshold、crossing state、dedup timer、NO_DATA timerを生成しない。この固定方針はDVRの `PlaybackStatus` / `RecordStatus` と `DvrSettings.lowThreshold/highThreshold` には適用せず、DVR水位契約を変更しない。
+`LOW_WATER` / `HIGH_WATER` はAIDLが規定する既定25% / 75%水位をそのまま用いる。open時のFilter FMQ byte容量を `capacity`、clientから現在読み出し可能なbyte数を `available` とし、`low = ceil(capacity * 0.25)`、`high = ceil(capacity * 0.75)` とする。同一queue snapshotに対して `available < low` なら `LOW_WATER`、`available > high` なら `HIGH_WATER` とし、`available == low` / `available == high` では新たなLOW/HIGH遷移を生成しない。これはAOSP default Tuner HALの既定watermark計算と比較境界に合わせる。LOW/HIGH判定は`FilterQueueBacking`が持つ既存FMQ occupancy snapshotから導出し、独立したwatermark owner / queue / worker / timerを追加しない。重複callback抑止に必要な直前のderived watermark statusはFilter callback配送の補助状態に限り、payload ownership、lifecycle、generation、queue positionを変更しない。
 
-frameworkが受信statusを上位へ伝搬することを前提に、未定義の内部水位からLOW/HIGH/NO_DATAを偶発的に生成してはならない。将来のAIDL enum値も、明示契約なしに既存statusへ丸めて生成しない。
+成功したpayload commitでreadable dataが生じた場合の`DATA_READY`と、そのcommit後snapshotがLOW/HIGH条件を満たした場合のwatermark statusは別の公開事象として扱う。一方、論理単位を原子的にcommitできず本書のoverflow条件に入ったwrite attemptは`OVERFLOW`を正とし、その失敗をLOW/HIGHへ代替写像しない。
+
+`NO_DATA` はAIDL上「filterへdataが来ていない」状態として定義されるが、AIDLはその判定時間・timeout・周期を規定しておらず、AOSP default Tuner HALの通常Filter watermark処理にも独自のinactivity timerはない。本製品も経過時間だけを根拠とするNO_DATA timerを新設せず、`available == 0`だけで`NO_DATA`へ写像しない。現行の通常Filter経路では、AOSP契約または入力domainからNO_DATAを一意に確定できる別の明示事象を定義していないため`NO_DATA`を生成しない。将来のAIDL enum値も、明示契約なしに既存statusへ丸めて生成しない。
+
+このFilter watermark契約はDVRの `PlaybackStatus` / `RecordStatus` と `DvrSettings.lowThreshold/highThreshold` には適用せず、DVR水位契約を変更しない。
 
 ## MPEG-TS section transport 固定契約
 
@@ -886,11 +890,13 @@ Android 14 AIDL V2の`FrontendIsdbtCapabilities.isSegmentAuto`と`isFullSegment`
 
 `FrontendIsdbtSettings.layerSettings` は配列形状を保持したままvalidationし、空配列を **layer個別制約なし** として成功対象に含める。空配列を3個のAUTO要素へ書き換えたり、backendへ存在しないlayer要求を生成したりしない。
 
-ARIB STD-B31でISDB-Tの階層伝送をA/B/Cの最大3 layerとして扱う本書の規範根拠に合わせ、非空配列は最大3要素とし、index 0 / 1 / 2をそれぞれLayer A / B / Cへ対応させる。要素順序を並べ替えず、欠番を推測しないため、1要素はLayer A、2要素はLayer A/B、3要素はLayer A/B/Cの指定を意味する。4要素以上は `INVALID_ARGUMENT` で要求全体を状態不変のまま拒否する。
+AOSP側はこの配列の物理layer数上限を定義しない。Frameworkの `IsdbtFrontendSettings.Builder.setLayerSettings()` はcallerの配列長を保持してcopyし、JNIも同じ長さでAIDL `FrontendIsdbtSettings.layerSettings` vectorをresizeして全要素を順に写像するため、4要素以上という配列長それ自体をAOSP malformed inputとは扱わない。
 
-各要素の `modulation`、`codeRate`、`timeInterleave`、`numOfSegment` は既存のISDB-T element-level契約で独立に検証する。1要素でもmalformed / 値域外なら要求全体を `INVALID_ARGUMENT`、AIDL/ARIB上有効でも対象backendが実処理・検証できない明示値を含む場合は要求全体を `UNAVAILABLE` とし、旧tune/scan request、backend、generationを変更しない。現行px4 / earth_pt1のAUTO/未指定中心の能力方針を、配列要素数を理由に拡張しない。
+本製品が通常の13-segment ISDB-Tとして受理する物理階層数の上限はAndroid vectorではなく放送方式側から導出する。現行の「標準テレビジョン放送等のうちデジタル放送に関する送信の標準方式」第21条は、通常の地上デジタルテレビジョン放送について階層を「13個のOFDMセグメントを最大3個に区分したもの」と規定する。ARIB STD-B31 2.3の現行公開サンプルでも対応する規範領域は第2章2.1「階層伝送」および第3章3.4「階層分割」として維持されている。ただし公開サンプルは当該本文を収録していないため、そのサンプルだけから2.3本文の具体文言を推測せず、最大3という具体値の現行一次根拠には前記省令第21条を使用する。ARIB本文との版差分確認は本書「ARIB規範本文との静的照合」の証拠境界に従う。
 
-A/B/Cの最大3 layerという規範値はAOSP vectorの長さから導出したものではなく、本書が採用しているARIB STD-B31の階層伝送モデルに由来する。現行日本語版との差分証明は既存「ARIB規範本文との静的照合」の版管理境界に従い、配列長だけを根拠にARIB値域を新設しない。
+したがって非空配列は入力順序を保持したまま最大3要素を物理階層要求として検証し、4要素以上はAOSP vector encodingの異常ではなく、対象ISDB-T方式に存在しない4番目以降の物理階層を要求するsemantic inputとして `INVALID_ARGUMENT` で要求全体を状態不変のまま拒否する。AOSPがlayer名やvector indexにA/B/Cという追加意味を固定していないため、本書もindex 0 / 1 / 2へ独自のA/B/C名称を再定義せず、callerが与えた先頭からの階層順を保持する。
+
+各要素の `modulation`、`codeRate`、`timeInterleave`、`numOfSegment` は既存のISDB-T element-level契約で独立に検証する。1要素でもmalformed / 値域外なら要求全体を `INVALID_ARGUMENT`、AIDL/放送方式上有効でも対象backendが実処理・検証できない明示値を含む場合は要求全体を `UNAVAILABLE` とし、旧tune/scan request、backend、generationを変更しない。現行px4 / earth_pt1のAUTO/未指定中心の能力方針を、配列要素数を理由に拡張しない。
 
 ### frontend settings validation の固定方針
 
@@ -1335,8 +1341,8 @@ release AIDL経路からテスト専用入口へ到達してはならず、テ�
 | T-AOSP-65 | `configureAvStreamType()` 全域 | matching Audio/Video tagは非開始状態でUNDEFINEDまたはadvertise済みcodecを成功commitし、再設定はhintだけを置換。同値はno-op成功、tag不一致/予約・未知値は`INVALID_ARGUMENT`、既知非対応codecは`UNAVAILABLE`、valid Started要求は`INVALID_STATE`、non-AVは`UNAVAILABLE` |
 | T-AOSP-66 | AV secure-memory input | non-started AVで`isSecureMemory=false && isPassthrough=false`だけを通常能力判定へ進め、`isSecureMemory=true`または`isPassthrough=true`は`UNAVAILABLE`かつ旧settings/backing/hint/relationを維持。Startedはlifecycle契約を優先 |
 | T-AOSP-67 | scan callback union | candidate成立は`LOCKED + isLocked=true`、正常終了は`END + isEnd=true`をcurrent generationだけから生成し、type/tag/value不一致、false variant、未採用message type、stale generation、重複ENDを公開しない |
-| T-AOSP-68 | ISDB-T `layerSettings[]` | 空配列をlayer制約なしで成功。1/2/3要素をA/A-B/A-B-Cの順で保持し、4要素以上は`INVALID_ARGUMENT`。全要素を既存field契約で原子的に検証し、unsupported explicit valueを無視成功しない |
-| T-AOSP-69 | normal Filter status set | `DATA_READY` / `OVERFLOW`だけを生成し、`LOW_WATER` / `HIGH_WATER` / `NO_DATA`を生成しない。DVR watermark contractには波及させない |
+| T-AOSP-68 | ISDB-T `layerSettings[]` | AOSPはvector長を制限せず全要素を保持することを確認する。空配列はlayer制約なしで成功し、1〜3要素は入力順を保持する。通常13-segment ISDB-Tの最大3階層は現行省令第21条を根拠とし、4要素以上は存在しない4番目以降の物理階層要求として`INVALID_ARGUMENT`。全要素を既存field契約で原子的に検証し、unsupported explicit valueを無視成功しない |
+| T-AOSP-69 | normal Filter status set | 通常payload FMQ Filterは`DATA_READY` / `LOW_WATER` / `HIGH_WATER` / `OVERFLOW`を生成対象とする。LOW/HIGHはFMQ容量の`ceil(25%)` / `ceil(75%)`を既定thresholdとし、`available < low` / `available > high`だけで遷移し、等値では新規遷移しない。`NO_DATA`はAIDL未定義の独自inactivity timeoutを設けず、`available == 0`だけでは生成しない。DVR watermark contractには波及させない |
 | T-AOSP-70 | TS RECORD settings/event closure | `tsIndexMask`、`scIndexType`、union tag/maskを原子的に検証し、known unsupportedは`UNAVAILABLE`、malformed/unknownは`INVALID_ARGUMENT`。eventのPID/mask/PTS/firstMb/byteNumberを同一generationの実検出・成功commitに一致させる |
 | T-AOSP-71 | `openFilter()` acceptance matrix | TSのUNDEFINED/SECTION/PES/TS/AUDIO/VIDEO/PCR/RECORDは表の条件で開き、TEMIおよびMMTP/IP/TLV/ALPは`UNAVAILABLE`。wrong main/subtype/unionと未知値を`INVALID_ARGUMENT`とし、拒否時にobject/queue/leaseを生成しない |
 
