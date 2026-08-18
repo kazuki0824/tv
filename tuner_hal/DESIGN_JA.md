@@ -278,7 +278,7 @@ Record DVRの`attachFilter()` / `detachFilter()`は、Record DVRがLiveであれ
 
 - `statusMask=0` はstatus callbackを要求しない有効値として成功させ、データ経路は通常どおり動作させる。AIDLで既知のstatus bitのうち現行profileが生成できないbitは`UNAVAILABLE`、予約bit・未知bitは`INVALID_ARGUMENT`とする。成功後はmaskで選択したstatusだけをcallback対象にする。
 - `lowThreshold` と `highThreshold` はbyte単位とし、`0 <= lowThreshold <= highThreshold <= openDvr(bufferSize)`を満たす場合だけ受理する。負値、大小逆転、FMQ容量超過は`INVALID_ARGUMENT`とし、clampしない。`lowThreshold == highThreshold` はAOSPが禁止していない有効入力として受理し、等値だけを理由に本製品固有の拒否条件を追加しない。
-- 水位判定は、同一queue snapshotのbyte数 `q` とcommit済み `DvrSettingsSnapshot` だけから次の順序で決定する純粋な分類とし、別のwatermark state machineを設けない。Playbackは `q = unusedBytes = capacity - usedBytes` とし、`q == 0` なら `PlaybackStatus::SPACE_EMPTY`、それ以外で `q == capacity` なら `SPACE_FULL`、それ以外で `q <= lowThreshold` なら `SPACE_ALMOST_EMPTY`、それ以外で `q >= highThreshold` なら `SPACE_ALMOST_FULL`、それ以外はwatermark statusなしとする。Recordは `q = unconsumedBytes` とし、`q <= lowThreshold` なら `RecordStatus::LOW_WATER`、それ以外で `q >= highThreshold` なら `HIGH_WATER`、それ以外はwatermark statusなしとする。したがって `lowThreshold == highThreshold == T` かつ `q == T` ではlow側を一意に採用する。Playbackのused bytes、Recordのunused bytes、別queueの値を代用しない。`RecordStatus::DATA_READY` はwatermark分類ではなく、Record outputが実際に成功commitされ読み取り可能になった事象として既存のdata-ready契約に従う。
+- 水位判定は、同一queue snapshotとcommit済み `DvrSettingsSnapshot` だけから決定し、別のwatermark state machineを設けない。Playbackは同一snapshotから `readableBytes = availableToRead` と `writableBytes = availableToWrite` を取得し、AOSP default HAL / VTSの歴史的behaviorに合わせて、`writableBytes == 0` なら `PlaybackStatus::SPACE_FULL`、それ以外で `readableBytes > highThreshold` なら `SPACE_ALMOST_FULL`、それ以外で `readableBytes < lowThreshold` なら `SPACE_ALMOST_EMPTY`、それ以外で `readableBytes == 0` なら `SPACE_EMPTY`、それ以外は直前のPlayback statusを維持して新しいstatus遷移を生成しない。したがってPlaybackでは `readableBytes == lowThreshold` / `readableBytes == highThreshold` をALMOST側の新規遷移条件にしない。Recordは `q = unconsumedBytes` とし、`q <= lowThreshold` なら `RecordStatus::LOW_WATER`、それ以外で `q >= highThreshold` なら `HIGH_WATER`、それ以外はwatermark statusなしとする。Recordでは `lowThreshold == highThreshold == T` かつ `q == T` の場合にlow側を一意に採用する。Playbackのthreshold判定へunused/free bytesを代用せず、Recordの判定へunused bytesを代用しない。`RecordStatus::DATA_READY` はwatermark分類ではなく、Record outputが実際に成功commitされ読み取り可能になった事象として既存のdata-ready契約に従う。
 - `dataFormat` は現行TS-only `ProductProfile`が扱うTS formatだけを成功させる。AIDL上既知だが現行profileで扱わないformatは`UNAVAILABLE`、予約値・未知値・未定義値は`INVALID_ARGUMENT`とする。
 - `packetSize` は正のbyte数だけを構文上受理し、現行TS formatでは188だけを成功させる。正の別packet sizeは`UNAVAILABLE`、0以下は`INVALID_ARGUMENT`とし、`dataFormat`との組として検証する。
 - `statusMask` は上記のsemantic status分類後に適用し、選択されているbitのstatusだけをcallback対象とする。分類されたstatusのbitがmaskされている場合、同じsnapshotで条件が重なる別statusへfallback / remapしない。開始直後の初期評価、threshold crossing / status変化、および受理済み`setStatusCheckIntervalHint()`による周期評価は同じ分類式と同じ`DvrSettingsSnapshot`を参照し、callback失敗は`PostCommitCallbackFailureTxn`へ接続する。
@@ -348,18 +348,19 @@ DVB / earth_pt1 backend では、`DTV_CLEAR` は明示的な tune 停止操作�
 `IFrontend.removeOutputPid(pid)` は、本製品では frontend-level output PID removal を対応能力として採用しないため、常に `UNAVAILABLE` とする。soft demux 後段の block list だけで PID を捨てる経路を、frontend-level output PID removal の成功として扱わない。
 
 
-### DVR playback status の空き領域基準
+### DVR playback status のAOSP互換判定
 
-DVR playback status は playback input buffer の空き領域、すなわち space を基準に判定する。
+HIDL 1.0およびAndroid 14 AIDLの`PlaybackSettings`コメントはlow/high thresholdをplaybackのunused spaceとして記載する一方、AOSPのHIDL VTSとdefault HALの歴史的behaviorはqueue内のreadable data量を`SPACE_EMPTY` / `SPACE_FULL`およびALMOST判定の基準としている。本製品はAndroid互換性を優先し、後者のAOSP実装/VTS behaviorへ合わせる。
 
-| PlaybackStatus | 意味 |
-|---|---|
-| `SPACE_EMPTY` | playback input buffer の空き領域が空、すなわち書き込み余地がない |
-| `SPACE_ALMOST_EMPTY` | 空き領域が少ない |
-| `SPACE_ALMOST_FULL` | 空き領域が多い |
-| `SPACE_FULL` | 空き領域が満杯、すなわち buffer は空に近い |
+同一FMQ snapshotから `readableBytes = availableToRead` と `writableBytes = availableToWrite` を取得し、次の順に最初に成立したstatusを採用する。
 
-使用済み量基準と空き領域基準を混同してはならない。
+1. `writableBytes == 0` → `PlaybackStatus::SPACE_FULL`
+2. `readableBytes > highThreshold` → `PlaybackStatus::SPACE_ALMOST_FULL`
+3. `readableBytes < lowThreshold` → `PlaybackStatus::SPACE_ALMOST_EMPTY`
+4. `readableBytes == 0` → `PlaybackStatus::SPACE_EMPTY`
+5. いずれも成立しない → 直前のPlayback statusを維持し、新しいstatus遷移 / callbackを生成しない
+
+`readableBytes == lowThreshold` / `readableBytes == highThreshold` はALMOST側への新規遷移条件にしない。status名をunused/free space量へ読み替えてEMPTY/FULLを反転させず、同一snapshotで上記の優先順位を変更しない。
 
 
 ## Tuner HAL 状態遷移表SSOT
@@ -1329,7 +1330,7 @@ release AIDL経路からテスト専用入口へ到達してはならず、テ�
 | T-AOSP-51 | ISDB-S SDK default selector未指定 | `STREAM_ID + INVALID_STREAM_ID(0xFFFF)`を明示TSID検証より先に`Unspecified`へ正規化し、px4 BSは互換slot 0、px4 CS110はfixed slot 0、Linux DVB / earth_pt1は`NO_STREAM_ID_FILTER`へ写像する。通常のBS TIS経路では明示absolute TSIDを維持する |
 | T-AOSP-48 | ISDB-S `rolloff` | 未指定、既知未対応、malformedを分類し、未適用値を成功させない |
 | T-AOSP-49 | RECORD index settings/event | request mask/typeを無損失検証し、event mask、`pts`、`firstMbInSlice`をcurrent parser/delivery fenceに一致させる。`byteNumber`は当該indexが位置するcommitted Record Filter output上の0起点offsetとする。最初のoutputは0から始まり、Record DVR output commit成功時だけ実commit byte数分`record_output_byte_offset`を進め、commit失敗では不変とする。flush/reconfigure/source/stream boundary、Record DVR attach/detachで維持し、新Filter output lifetimeだけ0へ戻す |
-| T-AOSP-50 | DVR `statusMask` / threshold / `dataFormat` / `packetSize` | playbackはunused bytes、recordはunconsumed bytesで判定する。`low == high == T` / `q == T` はlow側へ一意化し、Playbackは0/capacityを`SPACE_EMPTY`/`SPACE_FULL`へ優先分類する。分類後に`statusMask`を適用し、maskされたstatusを別statusへremapしない。無効・未対応設定は状態不変で拒否 |
+| T-AOSP-50 | DVR `statusMask` / threshold / `dataFormat` / `packetSize` | Playbackは同一FMQ snapshotの`availableToRead` / `availableToWrite`を用い、`SPACE_FULL` → `SPACE_ALMOST_FULL` → `SPACE_ALMOST_EMPTY` → `SPACE_EMPTY` → 前status維持の順で判定する。threshold等値ではALMOSTへ新規遷移しない。Recordはunconsumed bytesで判定し、`low == high == T` / `q == T` はlow側へ一意化する。semantic status確定後に`statusMask`を適用し、maskされたstatusを別statusへremapしない。無効・未対応設定は状態不変で拒否 |
 | T-AOSP-52 | `endFrequency`の操作別意味 | `tune()`とblind以外のscanでは差分を理由に拒否せずfingerprint/backend要求へ含めず、blind scanだけ`UNAVAILABLE`にする |
 | T-AOSP-53 | 同一settingsでのFilter reconfigure後startId | 一度start済みFilterをstopし、同一settingsで`configure()`成功後にrestartした場合も、最初に新しいstartId-only callbackを正確に1回配送してから通常eventを配送する |
 | T-AOSP-54 | TS live `DemuxFilterMediaEvent`公開field | `streamId`、PTS/DTS presence/value、`mpuSequenceNumber`、private-data、`extraMetaData`、`scIndexMask`を同一media outputの入力由来または定義済みdefaultと一致させ、別PES/generationを混成しない |
