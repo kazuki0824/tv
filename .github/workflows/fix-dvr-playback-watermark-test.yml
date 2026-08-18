@@ -1,0 +1,21 @@
+name: Fix DVR playback watermark test
+
+on:
+  push:
+    branches:
+      - agent/fix-dvr-playback-watermark-test
+    paths:
+      - .github/workflows/fix-dvr-playback-watermark-test.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-dvr-playback-watermark-test
+          fetch-depth: 0
+      - name: Align
