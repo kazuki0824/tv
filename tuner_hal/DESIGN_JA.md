@@ -42,7 +42,7 @@
 本書の正本階層は次の順とする。
 
 1. `DESIGN_JA.md の責務境界`、`製品スコープ / AOSP capability / VTS profile 境界`、`AIDL 契約境界`、`Tuner HAL 状態遷移表SSOT` を最上位正本とする。
-2. `0-S. 状態所有・寿命・失敗時遷移設計`、0-S-3Bの名前付きcanonical contract、各公開APIの名前付き契約、`ARIB/ISDB入力処理契約`、`Stream boundary 契約`、`Packet pipeline 正本契約`、`AV shared handle 入出力契約` を現在の設計契約の正本とする。移送済みの旧表番号は現行正本参照に使用しない。
+2. `0-S. 状態所有・寿命・失敗時遷移設計`、`0-S-2. 状態所有者表`、0-S-3Bの名前付きcanonical contract、各公開APIの名前付き契約、`TS continuity / adaptation-only packet 固定`、`AV shared handle の NativeHandle 形式`、`AV転送方式とクライアント側の存続期間`、`AOSP / AIDL / VTS 系`、`ARIB TS packet 系`、`ARIB section 系`、`PES / record index 系`、`MULTI2 / B25 descrambler 系`を現在の設計契約の正本とする。移送済みの旧表番号・旧節名は現行正本参照に使用しない。
 3. 旧 `補足契約:` 章は本体正本章へ吸収済みであり、本書内に二重正本として残さない。
 4. 個別リリースの履歴、作業経緯、ビルド/atest/VTS/静的検索/成果物命名/完了宣言は本書では定義しない。履歴は `CHANGELOG.md`、完了判定は `タスク完了判定の実施方法.md` を正とする。
 
@@ -80,6 +80,14 @@ VTS XML/profileで使用する機能とcapabilityで宣言する機能は一致�
 | AV passthrough | 対応宣言しない | profileでは `isPassthrough=false` に固定する |
 | `linkCaps` | main type 粒度 | 広告した main type pair は VTS が生成する subtype `UNDEFINED` 接続も成功対象に含める。成功させない pair は広告しない |
 
+
+#### `DemuxCapabilities.linkCaps` / `numBytesInSectionFilter` 固定契約
+
+Android 14 AIDL V2 の `DemuxCapabilities.linkCaps` は `DemuxFilterMainType` の各bit位置をsource rowとし、各要素をsink main typeのbitmaskとして返す。本製品の `ProductProfile` はTS main typeだけを公開し、公開するmain-type linkageは **TS -> TS の1組だけ** とする。Android 14 V2で定義済みのmain type順 `TS, MMTP, IP, TLV, ALP` に対する具体値は `linkCaps = [0x01, 0, 0, 0, 0]` とし、`filterCaps`にもTS以外のmain type bitを立てない。`linkCaps` はmain type間の接続能力を表すものであり、TS内部の具体的subtype組み合わせを独自の第二capability matrixとして符号化しない。将来main typeが追加されても、現行profileで対応を証明していないrow / sink bitを推測して1にしない。
+
+`linkCaps`で1を返したpairは、VTSがsource / sink双方をsubtype `UNDEFINED`でopenして`setDataSource()`を呼ぶ場合も成功対象に含める。実データ経路では、完全なMPEG-TS packet列を出力するTS raw filterをsourceとし、同じTS main typeのうちMPEG-TS packetを入力として処理する `TS` / `SECTION` / `PES` / `AUDIO` / `VIDEO` / `PCR` / `RECORD` filterをdownstreamとして成功対象に含める。各接続は、対象subtype自体が本製品で公開済みであること、同一demux・owner、lifecycle、cycle禁止、既存settingsとの整合、資源条件などsource filter契約の通常validationを満たす場合にだけ成功する。Section/PES/AV/Record等の加工済みoutputを完全なTS packet列へ暗黙再解釈してsourceにする経路は追加しない。`UNDEFINED`はVTSのmain-type linkage endpointとしての役割を維持し、具体filter subtypeへ暗黙昇格させない。
+
+`DemuxCapabilities.numBytesInSectionFilter` は **16** を返す。AIDL上、この値はSection Filterの`mask`でサポートする最大byte数を表し、section payload最大長、`filter`配列長、`mode`配列長の上限ではない。したがって `sectionBits.mask.size() > 16` は `INVALID_ARGUMENT` とし、状態を変更しない一方、`filter` / `mode` に16-byte上限をこのcapability値から派生させない。`sectionBits.filter`、`mask`、`mode` はAOSPが独立したbyte arrayとして渡すため、長さ不一致だけを理由に拒否せず、各arrayを改変・padding・truncationせず保持する。matching domainは`mask`とし、各byte位置`i < mask.size()`について`mask[i]`の0 bitは比較対象外とする。`mask[i]`に1のactive bitが1つでも存在する場合は、同じbyte位置の`filter[i]`と`mode[i]`の双方が存在しなければ、そのconditionは意味的に不完全として`INVALID_ARGUMENT`とし、値0その他で補完しない。`mask.size()`を超える`filter` / `mode`末尾要素はmatchingに使用しないが、入力shape自体は保持する。active bitの比較はAIDLどおり、`mode` bitが0ならsection bitと`filter` bitの一致、1なら不一致を要求する。runtime sectionがactive comparison位置まで存在しない場合はconfigure/runtime failureへ昇格させず、そのsectionをnon-matchとする。`bitWidthOfLengthField`はMMTP section messageのlength-field幅であり、TSの`section_length`、CRC、condition幅の代用にしない。本製品はMMTP main typeを公開しないため、TS section処理をこの値で変化させない。
 
 ### Tuner HAL 固定境界
 
@@ -219,6 +227,100 @@ VTS製品設定の`canConnectToCiCam`は`false`に固定する。CI CAM系APIは
 
 `disconnectCiCam()`には入力引数がないため、CAM ID検証を適用しない。
 
+### Filter / DVR query API 固定契約
+
+`IFilter.getQueueDesc()`、`IFilter.getId()`、`IFilter.getId64Bit()`、`IDvr.getQueueDesc()`は読み取り専用queryであり、成功時にobject lifecycle、queue identity、generation、設定、relation、FMQ read/write positionを変更しない。論理閉鎖開始後は0-S-4の公開close gateに従い`INVALID_STATE`とする。
+
+| API | Live objectでの成功条件と結果 | 非対応 / failure |
+|---|---|---|
+| `IFilter.getQueueDesc()` | open時filter種別が通常payload FMQを持つ場合、`configure()`前後を問わずopen時に確保した同一FMQ descriptorを返す | 通常payload FMQを持たないfilterは`UNAVAILABLE`とし、FMQ descriptorを後付け生成しない |
+| `IFilter.getId()` / `getId64Bit()` | open時に確定したdemux-local filter IDを対応するAIDL返却型で返す。両queryは同じfilter object identityを表す | 読み取り専用queryとして別IDを再発行せず、状態を変更しない |
+| `IDvr.getQueueDesc()` | record / playbackとも、`configure()`前後およびstart/stop状態を問わず、open時に確保した同一DVR FMQ descriptorを返す | `configure()`または再設定でqueue identity、容量、descriptorを置換しない |
+
+通常payload FMQを持つFilterは、未configureを理由に`getQueueDesc()`を拒否しない。Record FilterのpayloadはRecord DVR FMQへ、audio/video mediaは`MediaEvent`の共有領域またはイベント固有fdへ配送し、PCRその他callback-only eventには通常payload FMQを設けない。DVR FMQは`openDvr()`の`bufferSize`から生成し、`configure()`はしきい値等のDVR設定だけを変更する。
+
+### Filter / DVR lifecycle API 固定契約
+
+Filter / DVR の `configure()` / `start()` / `stop()` / `flush()` と Record DVR の `attachFilter()` / `detachFilter()` について、caller-visibleな事前状態、戻り値、次状態、維持する公開資源は本節を正とする。旧状態表の行番号や旧状態コードを現行正本として復活させず、内部のprepare / commit / rollback、producer drain、queue epoch、playback consume、relation mutationは0-S-3Bの既存canonical contractを唯一の正本とする。論理閉鎖開始後の優先判定は0-S-4の公開close gateを正とし、本節のLive状態行より先に適用する。
+
+本節では公開lifecycleを `OpenUnconfigured`（open成功後、対象settings未確定）、`ConfiguredStopped`（有効settings確定済みかつ非開始）、`Started`（開始済み）の3射影で記述する。AV filterのshared handle、補助stream type、active `avDataId`等の直交軸は「AV転送方式とクライアント側の存続期間」およびAV allocation契約を正とし、本節の射影へ吸収しない。
+
+#### IFilter lifecycle
+
+| API / 条件 | `OpenUnconfigured` | `ConfiguredStopped` | `Started` | caller-visibleな確定内容 |
+|---|---|---|---|---|
+| `configure(valid settings)` | 成功 → `ConfiguredStopped` | 成功 → `ConfiguredStopped` | `INVALID_STATE`、状態不変 | open時のqueue identity、source relation、callback登録、monitor設定、delay hintを勝手に置換しない。既存source relationと新settingsが両立しない場合は`INVALID_STATE`で旧settings/relationを維持する。一度start済みのFilterに対するstop後の有効な`configure()`成功は、settingsが同一か否かにかかわらず「Filter event startId / FilterDelayHint 契約」に従って次回start用pending `startId`をprepareし、同一settingsを単なるno-opとしてこの契約を省略しない |
+| `start()` | `INVALID_STATE`、状態不変 | 成功 → `Started` | 成功、状態不変 | 対応producer / deliveryを開始または再開する。AVはshared handle未取得でもevent-local fd経路があるためhandle取得をstart成功条件にしない |
+| `stop()` | 成功、状態不変 | 成功、状態不変 | 成功 → `ConfiguredStopped` | 新規producer / deliveryを停止するが、既にFilter outputへcommitした未消費FMQ data、配送済みAV allocation / active token等のcaller-visible資源を破棄しない。`stop()`を`flush()`の代用にしない |
+| `flush()`（non-AV） | `INVALID_STATE`、状態不変 | 成功、lifecycle維持 | 成功、`Started`を維持 | `FilterProducerDrainGate`と`QueueCleanupTxn`を通し、受付済みproducerを排出してから未消費Filter FMQ data、未配送event、parser / assembler partial stateを当該Filterの契約に従って破棄する。source relation、callback登録、monitor設定、delay hint、queue identity、配送済みclient資源は維持する |
+| `flush()`（AV） | 成功、設定/実行軸を維持 | 成功、設定/実行軸を維持 | 成功、`Started`を維持 | shared handleの取得有無を成功条件にしない。未配送AV payload / transient stateだけを破棄し、shared backing、client handle lease、配送済みactive `avDataId` allocationはAV資源寿命契約に従って維持する |
+
+`configure()`の入力値・subtype・passthrough・PES/section等の能力判定は各既存の名前付き入力契約を正とする。本節は有効入力に対するlifecycle結果を固定するだけであり、未対応入力を成功へ昇格させない。`flush()`成功はFilter lifecycleそのものを停止状態へ変更する操作ではなく、開始済みFilterでは開始状態を維持する。
+
+#### IDvr lifecycle
+
+| API / 条件 | `OpenUnconfigured` | `ConfiguredStopped` | `Started` | caller-visibleな確定内容 |
+|---|---|---|---|---|
+| `configure(valid same-kind settings)` | 成功 → `ConfiguredStopped` | 成功 → `ConfiguredStopped` | `INVALID_STATE`、状態不変 | `DvrSettings`契約で全fieldを一括validate / commitし、open時queue identity、FMQ read/write position、既存Record Filter relationをconfigureだけで置換・flushしない。record/playback settingsのDVR kind不一致は`INVALID_ARGUMENT`で状態不変 |
+| `start()` | `INVALID_STATE`、状態不変 | 成功 → `Started` | 成功、状態不変 | Record DVRはrecord Filter未attachでもstart自体を成功させ、attachされるまでdata productionがないだけとする。Playback DVRは既存queueを入力としてconsumeを開始する |
+| `stop()` | 成功、状態不変 | 成功、状態不変 | 成功 → `ConfiguredStopped` | Recordは既にcommit済みの未消費Record DVR FMQと`record_output_byte_offset`を維持する。Playbackは未読FMQと`PlaybackConsumeTxn`が保持するprocessing buffer / parse-inject cursorを維持し、再startで継続可能にする。いずれも`stop()`でqueueをflushしない |
+| `flush()`（Record） | `INVALID_STATE`、状態不変 | 成功、lifecycle維持 | `INVALID_STATE`、`Started`維持 | 非開始時だけRecord DVR FMQのclient未消費byte列とRecord-pathの未確定partial / statsを破棄し、Filter relation、queue identity、Filter側`record_output_byte_offset`を維持する |
+| `flush()`（Playback） | `INVALID_STATE`、状態不変 | 成功、lifecycle維持 | 成功、`Started`維持 | `QueueEpochProtocol` / `QueueCleanupTxn` / `PlaybackConsumeTxn`を通し、新規read commitをfenceして受付済みtokenを完了または取消した後、未読Playback DVR FMQと保持中processing / assembler residualを破棄する。relation、queue identityは維持する |
+
+Record DVRの`attachFilter()` / `detachFilter()`は、Record DVRがLiveであればconfigure前、`ConfiguredStopped`、`Started`のいずれでも受理対象とする。liveかつ同一demux・同一owner・record対応Filterへの初回attachは成功、同一Filterの重複attachは状態不変で成功、登録済みFilterのdetachは成功、未登録の同一Filterのdetachも状態不変で成功とする。Playback DVRに対するattach/detach、foreign owner、別demux、record非対応Filterは`INVALID_ARGUMENT`、同一サービス内で論理閉鎖済みのFilter引数は`INVALID_STATE`とする。relationのprepare / commit / abortとexactly-once route切替は`RecordDvrFilterRelationTxn`だけを正本とする。
+
+`IDvr.setStatusCheckIntervalHint(milliseconds)`はRecord / Playbackの全Live lifecycle状態で受理し、DVR lifecycle、queue内容、relationを変更しない。値0をproduct defaultへの独自resetと解釈せず、受理済みhintを以後のdata/status evaluation cadence決定へ使用する詳細は既存の「`IDvr.setStatusCheckIntervalHint()` 契約」を正とする。
+
+
+#### `DvrSettings` configure 完全契約
+
+`IDvr.configure()` はunion tagがopen時のDVR kindと一致することを確認した後、`statusMask`、`lowThreshold`、`highThreshold`、`dataFormat`、`packetSize`を同一の `DvrSettingsSnapshot` としてvalidateし、全項目が成功条件を満たした場合だけ設定世代を一括commitする。いずれか1項目の拒否時は以前のsettings、FMQ read/write位置、queue identity、Record Filter relation、worker状態を変更しない。開始中のconfigureは前段lifecycle契約どおり`INVALID_STATE`を優先する。
+
+- `statusMask=0` はstatus callbackを要求しない有効値として成功させ、データ経路は通常どおり動作させる。AIDLで既知のstatus bitのうち現行profileが生成できないbitは`UNAVAILABLE`、予約bit・未知bitは`INVALID_ARGUMENT`とする。成功後はmaskで選択したstatusだけをcallback対象にする。
+- `lowThreshold` と `highThreshold` はbyte単位とし、`0 <= lowThreshold <= highThreshold <= openDvr(bufferSize)`を満たす場合だけ受理する。負値、大小逆転、FMQ容量超過は`INVALID_ARGUMENT`とし、clampしない。`lowThreshold == highThreshold` はAOSPが禁止していない有効入力として受理し、等値だけを理由に本製品固有の拒否条件を追加しない。
+- 水位判定は、同一queue snapshotとcommit済み `DvrSettingsSnapshot` だけから決定し、別のwatermark state machineを設けない。Playbackは同一snapshotから `readableBytes = availableToRead` と `writableBytes = availableToWrite` を取得し、AOSP default HAL / VTSの歴史的behaviorに合わせて、`writableBytes == 0` なら `PlaybackStatus::SPACE_FULL`、それ以外で `readableBytes > highThreshold` なら `SPACE_ALMOST_FULL`、それ以外で `readableBytes < lowThreshold` なら `SPACE_ALMOST_EMPTY`、それ以外で `readableBytes == 0` なら `SPACE_EMPTY`、それ以外は直前のPlayback statusを維持して新しいstatus遷移を生成しない。したがってPlaybackでは `readableBytes == lowThreshold` / `readableBytes == highThreshold` をALMOST側の新規遷移条件にしない。Recordは `q = unconsumedBytes` とし、`q <= lowThreshold` なら `RecordStatus::LOW_WATER`、それ以外で `q >= highThreshold` なら `HIGH_WATER`、それ以外はwatermark statusなしとする。Recordでは `lowThreshold == highThreshold == T` かつ `q == T` の場合にlow側を一意に採用する。Playbackのthreshold判定へunused/free bytesを代用せず、Recordの判定へunused bytesを代用しない。`RecordStatus::DATA_READY` はwatermark分類ではなく、Record outputが実際に成功commitされ読み取り可能になった事象として既存のdata-ready契約に従う。
+- `dataFormat` は現行TS-only `ProductProfile`が扱うTS formatだけを成功させる。AIDL上既知だが現行profileで扱わないformatは`UNAVAILABLE`、予約値・未知値・未定義値は`INVALID_ARGUMENT`とする。
+- `packetSize` は正のbyte数だけを構文上受理し、現行TS formatでは188だけを成功させる。正の別packet sizeは`UNAVAILABLE`、0以下は`INVALID_ARGUMENT`とし、`dataFormat`との組として検証する。
+- `statusMask` は上記のsemantic status分類後に適用し、選択されているbitのstatusだけをcallback対象とする。分類されたstatusのbitがmaskされている場合、同じsnapshotで条件が重なる別statusへfallback / remapしない。開始直後の初期評価、threshold crossing / status変化、および受理済み`setStatusCheckIntervalHint()`による周期評価は同じ分類式と同じ`DvrSettingsSnapshot`を参照し、callback失敗は`PostCommitCallbackFailureTxn`へ接続する。
+
+### `openFilter()` type/subtype acceptance と AV 入力固定契約
+
+`IDemux.openFilter(type, bufferSize, callback)` の公開可否は、Android 14 AIDL V2 の main type / subtype と確定済み `CapabilitySnapshot` から一意に決める。AIDL上有効だが本製品が能力として採用しない main type / subtype は副作用なしの `UNAVAILABLE`、未知の列挙値、不正union encoding、main typeとsubtypeの組として成立しない入力は `INVALID_ARGUMENT` とする。拒否時はfilter ID、object、FMQ、callback artifact、使用枠を生成・消費しない。成功時の child-open reserve / prepare / commit / rollback は既存の `root/child open` 契約だけを正本とする。
+
+| main type | subtype | `openFilter()` | `configure()` の対応settings | 通常payload / 補足 |
+|---|---|---|---|---|
+| TS | `UNDEFINED` | `linkCaps` で TS→TS を広告するため成功 | linkage検査用のsubtypeであり、具体filter settingsの成功対象を持たない。`configure()` は `UNAVAILABLE` | 通常payload FMQなし。`setDataSource()` のTS→TS linkageとdemux input復帰だけを成功対象にし、`start()` は未configure契約どおり `INVALID_STATE` |
+| TS | `SECTION` | 成功 | `section` | 通常Filter FMQ |
+| TS | `PES` | 成功 | `pesData` | 通常Filter FMQ |
+| TS | `TS` | 成功 | `noinit` | raw TSの通常Filter FMQ |
+| TS | `AUDIO` | AV filterの公開能力と既存child-open資源条件が成立する場合に成功 | `av` | `MediaEvent`。通常Filter FMQなし |
+| TS | `VIDEO` | AV filterの公開能力と既存child-open資源条件が成立する場合に成功 | `av` | `MediaEvent`。通常Filter FMQなし |
+| TS | `PCR` | 成功 | `noinit` | callback-only。通常Filter FMQなし |
+| TS | `RECORD` | 成功 | `record` | payloadはRecord DVR FMQ、index metadataはcallback |
+| TS | `TEMI` | `UNAVAILABLE` | なし | 本製品はTEMI処理能力を採用せず、object / queue / workerを生成しない |
+| MMTP / IP / TLV / ALP | AIDL上の任意の既知subtype | `UNAVAILABLE` | なし | TS-only `ProductProfile`の固定能力外。main-type objectを生成しない |
+
+上表の成功行でも、`bufferSize`、callback、個数枠、FMQ / AV / PES予算その他の既存child-open条件を満たさない場合は既存契約の原因別errorへ写像する。成功行を理由に資源不足を成功へ丸めない。TS `UNDEFINED` は `linkCaps` のmain-type接続試験を成立させるための公開subtypeであり、SECTION/PES/TS/AV/PCR/RECORDのいずれかへ暗黙昇格させない。
+
+#### `DemuxFilterAvSettings.isSecureMemory` / `isPassthrough`
+
+製品ライブAVアーキテクチャをclear-memoryかつnon-passthroughへ固定するproduct-level invariantは `../開発規則.md` を唯一の正本とし、本節では再定義しない。そのinvariantをAIDL入力契約へ写像し、非開始AV filterの `configure()` では `isSecureMemory=false && isPassthrough=false` だけをAV能力判定へ進める。`isSecureMemory=true` または `isPassthrough=true` はAIDL上有効だが本製品非対応の要求として、副作用なしの `UNAVAILABLE` とし、旧settings、shared backing、stream-type hint、source relation、generation、active `avDataId` を変更しない。開始済みfilterでは前段のlifecycle判定を適用し、有効だが未対応の値を評価して既存 `INVALID_STATE` を覆さない。未知tag / malformed settingsは `INVALID_ARGUMENT` とする。
+
+`MediaEvent`出力側の `isSecureMemory=false` はこの入力validationの代替ではない。secure allocator、secure backing、secure handle種別、secure専用state machineを生成してはならない。
+
+#### `IFilter.configureAvStreamType()`
+
+AV stream type hintはopen subtypeが `AUDIO` / `VIDEO` のFilterだけが持つ直交設定軸とし、既存Filter ownerが所有する。routing種別そのものはopen subtypeを正とし、hint未設定または `UNDEFINED` でも `configure()`、`setDataSource()`、`start()`、PES/AV routing、`MediaEvent`配送の必須条件にはしない。
+
+- TsAudio filterでは `AvStreamType.audio` tag、TsVideo filterでは `AvStreamType.video` tagだけを受理する。反対tagは `INVALID_ARGUMENT` とし、旧hintと全状態を維持する。
+- matching tagの値が `UNDEFINED` なら成功し、既存codec hintを未指定へ置き換える。routing subtypeは変更しない。
+- matching tagのAndroid 14 AIDLで定義済みのstream typeは、`UNDEFINED`を含めstream-type hintとして成功させる。stream typeはrouting subtypeそのものでもdemux codec capability advertisementでもないため、非公開のcodec別capability matrixを追加して公開APIの成功可否を狭めない。予約値・未知値は `INVALID_ARGUMENT` とし、旧hintと全状態を維持する。
+- `OpenUnconfigured` / `ConfiguredStopped` では成功時にstream-type hintだけを原子的に置換し、configure状態、source relation、shared handle/backing、active allocation、queue/delivery generationを変更しない。同じ値の再指定は成功no-opとする。
+- `Started` では、tag/value自体が有効な要求に `INVALID_STATE` を返して旧hintと全状態を維持する。close gateと共通入力検証優先順位は既存契約に従う。
+- non-AV filterでは `UNAVAILABLE`、論理閉鎖開始後は `INVALID_STATE` とする。
+
+stream-type hintの保存は、open subtypeから決まるAudio/Video routing、AV filterの公開可否、実payloadの検証・配送能力を代替しない。実際のAV data pathで未対応の入力を受理したふりをする根拠にも使わず、反対にprivateなcodec capability表だけを理由としてAIDL定義済みhintを拒否しない。
+
 ### `IFrontend.getHardwareInfo()`
 
 公開するfrontendは、probe時に非空のhardware info文字列を確定できたものに限る。文字列はbackend種別、物理機器識別子、driver revisionなど、秘密情報を含まない不変情報から生成し、同じfrontend objectの寿命中は同じ値を返す。objectがLiveなら必ず成功して非空値を返し、部分値や空文字を返さない。閉鎖開始後は`INVALID_STATE`とする。probe時に生成できないfrontendは`getFrontendIds()`へ公開せず、VTSがopen済みfrontendで失敗する状態を作らない。
@@ -230,6 +332,8 @@ VTS製品設定の`canConnectToCiCam`は`false`に固定する。CI CAM系APIは
 
 
 `IFilter.setDataSource(source)` は、AOSP意味論どおり`source != NULL`では指定filter outputを入力元とし、`source == NULL`ではsink filterの入力元をdemux inputへ戻す。`setDataSource(NULL)`は現行設計の成功対象に含める。AOSP frozen/stable AIDLのvendor独自改変、raw Binder transaction parserによる公開契約を通さない実装は採用しない。source relationの変更は0-S-3Bの`SourceBoundaryTxn`、旧入力origin由来のpartial dataを新入力originへ連結しないstream/parser boundaryは`StreamBoundaryTxn`を唯一の正本とし、本節ではrelation phase、generation更新、parser mutationを再定義しない。
+
+TS main typeの具体的linkageでは、実データを供給するsourceとして完全な188-byte MPEG-TS packet列を出力するTS `TS` subtypeを成功対象とする。そのpacket列は、各sinkの通常のPID/settings/filter semanticsで再処理するため、公開済みのTS `TS` / `SECTION` / `PES` / `AUDIO` / `VIDEO` / `PCR` / `RECORD` subtypeへ接続できる。source/sinkのconfigure前後にrelationを設定できる範囲は既存lifecycle契約に従い、後続`configure()`が既存relationと両立しない場合は前段契約どおり`INVALID_STATE`で旧settings/relationを維持する。TS `UNDEFINED`同士の接続は`linkCaps`検査用endpointとして別に成功させるが、通常のdata producerへ昇格させない。Section/PES/AV/Record等の加工済みoutputをTS packet sourceとして再解釈する接続は、別の公開capabilityを定義しない限り成功対象へ追加しない。
 
 `IFrontend.tune()`はbinder thread上でlock完了まで待ち続けない。同一の正規化settings、typed selector、LNB/power条件で既存lockを安全に継続できる場合は、既存streamを中断せず当該requestに対応する`LOCKED`を正確に1回配送する。それ以外の要求ではfull retuneとして扱い、破壊的遷移後に旧service由来のdataを新要求の出力として復元しない。入力分類、caller-visibleな結果、失敗後の公開状態は本節のfrontend各API契約を正とし、同値性snapshot、generation、worker/backend停止、boundary、commit / rollbackの内部semanticsはcanonical `frontend tune/scan`だけを正本とする。
 
@@ -244,18 +348,19 @@ DVB / earth_pt1 backend では、`DTV_CLEAR` は明示的な tune 停止操作�
 `IFrontend.removeOutputPid(pid)` は、本製品では frontend-level output PID removal を対応能力として採用しないため、常に `UNAVAILABLE` とする。soft demux 後段の block list だけで PID を捨てる経路を、frontend-level output PID removal の成功として扱わない。
 
 
-### DVR playback status の空き領域基準
+### DVR playback status のAOSP互換判定
 
-DVR playback status は playback input buffer の空き領域、すなわち space を基準に判定する。
+HIDL 1.0およびAndroid 14 AIDLの`PlaybackSettings`コメントはlow/high thresholdをplaybackのunused spaceとして記載する一方、AOSPのHIDL VTSとdefault HALの歴史的behaviorはqueue内のreadable data量を`SPACE_EMPTY` / `SPACE_FULL`およびALMOST判定の基準としている。本製品はAndroid互換性を優先し、後者のAOSP実装/VTS behaviorへ合わせる。
 
-| PlaybackStatus | 意味 |
-|---|---|
-| `SPACE_EMPTY` | playback input buffer の空き領域が空、すなわち書き込み余地がない |
-| `SPACE_ALMOST_EMPTY` | 空き領域が少ない |
-| `SPACE_ALMOST_FULL` | 空き領域が多い |
-| `SPACE_FULL` | 空き領域が満杯、すなわち buffer は空に近い |
+同一FMQ snapshotから `readableBytes = availableToRead` と `writableBytes = availableToWrite` を取得し、次の順に最初に成立したstatusを採用する。
 
-使用済み量基準と空き領域基準を混同してはならない。
+1. `writableBytes == 0` → `PlaybackStatus::SPACE_FULL`
+2. `readableBytes > highThreshold` → `PlaybackStatus::SPACE_ALMOST_FULL`
+3. `readableBytes < lowThreshold` → `PlaybackStatus::SPACE_ALMOST_EMPTY`
+4. `readableBytes == 0` → `PlaybackStatus::SPACE_EMPTY`
+5. いずれも成立しない → 直前のPlayback statusを維持し、新しいstatus遷移 / callbackを生成しない
+
+`readableBytes == lowThreshold` / `readableBytes == highThreshold` はALMOST側への新規遷移条件にしない。status名をunused/free space量へ読み替えてEMPTY/FULLを反転させず、同一snapshotで上記の優先順位を変更しない。
 
 
 ## Tuner HAL 状態遷移表SSOT
@@ -297,6 +402,7 @@ rollback不能、cleanup不能、正本不一致、backend実状態とregistry�
 | demux データ経路 | `DemuxRuntime` | `RuntimeIoRegistry` | FMQ/DVR/AV境界処理をAPIごとに重複実装しない |
 | filter lifecycle | `FilterLedger` | `FilterHal`, `soft_demux` | soft demux filter record と binder object の片方だけを残さない |
 | filter queue | `FilterQueueBacking` | `FilterHal` | write成功後のwake失敗を完全失敗として黙殺しない |
+| Record Filter output position | `FilterProducerDrainGate` | なし | `record_output_byte_offset`を`PacketPipeline` / `RecordDvrFilterRelationTxn` / `QueueEpochProtocol` / `StreamBoundaryTxn`から直接変更しない |
 | DVR lifecycle | `DvrLedger` | `DvrHal`, `soft_demux` | DVR object と soft demux DVR record の片方だけを残さない |
 | playback queue | `PlaybackQueueBacking` | playback ワーカー | ワーカー失敗だけでDVRをclosed扱いにしない |
 | descrambler session | `DescramblerSession` | `DescramblerLedger` | demux binding、PID、source filter、key tokenを別々に閉じない |
@@ -387,7 +493,7 @@ commit前失敗では、成功戻りを返してはならない。commit後clean
 | `WorkerRuntime` / `WorkerHandle` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | 各domain worker ownerのspawn/stop/wake/join/reaper | owner generation / signal generation、stop signal、JoinHandle、fence、reaper handoff mechanism、有界`ReaperSupervisor` work queue、retry schedule / coalesce state、typed worker terminal result（`Normal` / `StopRequested` / `RuntimeFailure` / `PanicOrJoinFailure`） | domain start/stop state、backend semantic failure、queue payload | owner handle slot prepare → 次generationを`checked_add()`でprepare → fenced worker spawn / handle bind → signal stop → wake/cancel → observe/join または one-shot reaper handoff → handoff済みworkを既存retry scheduleで外部API再呼出しなしに自律再試行 → worker実終了と依存cleanup完了後にlease/slot release | handle slot準備失敗ではspawnしない。owner/signal generationを発行できない場合はwrap / saturating reuseや存在しない次generationでのreplacement spawnを行わず、現generationをfenceして停止・回収し、影響するowner/generation/resourceだけを`Quarantined`とする。取消generationごとのstop/wake通知は各1回までとし、終了済みworkerは直ちに回収する。failureはtyped reportしleaseを早期再利用しない。`ReaperSupervisor`へのenqueueおよび早期再開要求は `(owner, generation, dependency resource)` ごとにcoalesceし、同一未完workを重複実行しない。外部APIの再呼出しがなくても有界work queueがretry scheduleに従って進行する。terminal budgetは`cleanupRetryScheduleMs=[0,10,100,1000]`後1000 ms間隔、`cleanupTerminalDeadlineMs=30000`、`workerIoDeadlineMs=2000`、`workerReaperDeadlineMs=10000`。deadline到達後もowner generation無効化で副作用を遮断できる場合は対象owner/generation/resourceだけを`Quarantined`とする。無効化後もservice-global stateを変更可能、遮断不能なservice-wide exclusive resourceを保持、owner/generation/resource tokenで遮断不能、または同一資源のreplacement/restartと競合可能というtyped evidenceがある場合だけ`ServiceCritical`とする | domain worker owner、cleanup/reaper | generic `WorkerLifecycleProtocol`の追加、AIDLからの直接join | handle-slot failureでno-spawn、generation exhaustionでwrap/reuse/replacementなし、typed terminal result、stop/wake一回性、generation fence、join/one-shot reaper、外部API再呼出しなしの自律retry、早期再開要求のcoalesce、panic、no early reuse、deadline branch、local quarantine対ServiceCritical判定 |
 | `WorkerFailureClassifier` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | worker owner / cleanup managerからのtyped failure | stop/wake/join/EventFlag/Reaper/backend-control/callback等の失敗種別分類だけ | worker lifecycle、停止順序、retry/cleanup、quarantine、公開状態遷移 | typed/raw failure受理 → source/domainをtyped分類 → ownerへ分類結果返却 | 文字列推測・API別errno推測を禁止し、unknownもtyped分類として返す。分類器自身はstate mutationしない | worker owner、cleanup manager、callback/backend failureを扱うowner | classifierからdomain/public stateを直接変更すること、owner側で同型分類を再実装すること | stop/wake/join/EventFlag/Reaper/backend-control/callback分類、owner間同一分類、state不変 |
 | `PostCommitCallbackFailureTxn` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | domain commit済みcompletion use-caseから`WorkerFailureClassifier`で分類済みのtyped callback failureを受け取る | callback health、delivery outcome、診断への写像と確定 | commit済みdomain state、backend state、failure category分類 | verify post-commit → classified typed callback failure受領 → delivery outcome / health / diagnostic commit | failure categoryを再分類せず、domain rollback禁止・public結果維持。分類済みcategoryからcallback health/delivery outcome/診断だけを確定 | Frontend/Filter/DVR等のcompletion use-case | API別rollback handler、文字列/errno再分類、failure categoryの再分類 | Frontend tune、Filter/DVR start、分類済みmissing/store/Binder failureのcategory維持、domain unchanged、classifier二重呼出しなし |
-| `FilterProducerDrainGate` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | Filter/SharedFilter producer、`QueueCleanupTxn`からのtyped drain request | `Open`/`Draining`/`Closed`、`filter_delivery_generation`、`parser_state_generation`、`admitted_producer_count`、bounded pending event queue、`FilterProducerPermit(g)` | FMQ内容、DVR token/epoch、flush全体のorchestration | `Open`でadmit/permit発行 → producer commit/finishでpermit解放 → drain開始を`Draining`へ線形化し新規admit拒否 → admitted producerとpending eventを排出 → 次generationを`checked_add()`でprepareしてgeneration/parser stateを確定し`Open`へ戻す、またはcloseで`Closed` | panic/returnでもpermit解放。generationを発行できない場合はwrap / saturating reuseせず対象Filterを`Quarantined`として`Open`へ戻さない。drain中は旧generationのproducer/eventを新generationへ確定せず、その他の遮断不能failureだけFilter fail。`QueueCleanupTxn`はtyped入口の結果だけを集約 | data producer、`QueueCleanupTxn` | Binder callback/IO/joinをpermit内に保持、`QueueCleanupTxn`/API/workerがgate内部stateを直接変更、DVR stateの吸収 | Open/Draining/Closed遷移、flush中の新規permit拒否、全permit/pending event排出、generation/parser更新、generation exhaustionで非再利用・quarantine、panic/drop、commit前失敗時の旧state維持、共通orchestratorからのdrain |
+| `FilterProducerDrainGate` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | Filter/SharedFilter producer、`QueueCleanupTxn`からのtyped drain request | `Open`/`Draining`/`Closed`、`filter_delivery_generation`、`parser_state_generation`、`admitted_producer_count`、bounded pending event queue、`FilterProducerPermit(g)`、Record Filter output lifetime単位の`record_output_byte_offset` | FMQ内容、DVR token/epoch、flush全体のorchestration | `Open`でadmit/permit発行 → producer commit/finishでpermit解放。Record FilterではRecord DVR output commit成功と同じ確定点で実commit byte数だけ`record_output_byte_offset`を進め、commitしなかったdataでは不変とする → drain開始を`Draining`へ線形化し新規admit拒否 → admitted producerとpending eventを排出 → 次generationを`checked_add()`でprepareしてgeneration/parser stateを確定し`Open`へ戻す、またはcloseで`Closed`。drain / generation更新では`record_output_byte_offset`をresetしない | panic/returnでもpermit解放。generationを発行できない場合はwrap / saturating reuseせず対象Filterを`Quarantined`として`Open`へ戻さない。drain中は旧generationのproducer/eventを新generationへ確定せず、その他の遮断不能failureだけFilter fail。Record DVR output commit失敗では`record_output_byte_offset`と対応するRecord eventを確定しない。`QueueCleanupTxn`はtyped入口の結果だけを集約 | data producer、`QueueCleanupTxn` | Binder callback/IO/joinをpermit内に保持、`QueueCleanupTxn`/API/workerがgate内部stateを直接変更、DVR stateの吸収、他ownerによる`record_output_byte_offset`直接変更 | Open/Draining/Closed遷移、flush中の新規permit拒否、全permit/pending event排出、generation/parser更新、Record output初期offset 0、commit成功時だけ実commit byte数分進行、commit失敗時不変、flush/reconfigure/source/stream boundary・Record DVR relation変更でoffset維持、新Filter output lifetimeで0、generation exhaustionで非再利用・quarantine、panic/drop、commit前失敗時の旧state維持、共通orchestratorからのdrain |
 | `QueueEpochProtocol` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | DVR data path、`QueueCleanupTxn`からのtyped flush request | `Open(g)`/`Draining(g)`/`Closed`、`queue_epoch`、一回限りのread/write transaction token、受付中transaction数 | `queue_identity`（`PlaybackQueueBacking`所有）、Filter producer、DVR parser/stats、flush orchestration | `Open(g)`でbegin/token発行 → commit/cancel/dropでtokenを一回消費 → flush開始を`Draining(g)`へ線形化して新規begin拒否 → 受付中transaction排出 → epoch prepare/commitで`Open(g+1)`、closeで`Closed` | stale token・二重token消費を拒否し、flush commit前失敗は旧`Open(g)`/epoch/positionを維持 | DVR data path、`QueueCleanupTxn` | Filter path、API別token state machine、orchestratorの内部state直接変更 | Open/Draining/Closed遷移、一回性token、flush race、commit前状態不変、stale token、identity ABA |
 | `QueueCleanupTxn` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | Filter / DVR `flush()` use-case | cleanup orchestration plan、typed下位protocol呼出順序、共通失敗集約/result composition | Filter producer permit/state、DVR queue token/epoch、API固有eligibility/公開状態 | API ownerが対象確定 → typed drain/cleanup request → 全対象結果集約 → API ownerへtyped result返却 | 下位protocol失敗を成功へ丸めず全対象を試行し、API固有state transitionは各ownerへ返す | Filter/DVR flush use-case | 下位protocol内部stateの直接変更、non-flush API、API別orchestration複製 | Filter/DVR双方が同じorchestratorを通る、下位state独立、partial cleanup failure、result aggregation |
 | `PlaybackConsumeTxn` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | playback workerの1 consume step | FMQ read transaction、processing buffer、parse/inject cursor、consume result | worker lifetime、queue epoch owner | beginRead → copy → commitRead → parse → inject incrementally → finish/retain | retryable injectはbuffer/cursor保持、stop保持、flush/close/fatalは損失診断して破棄 | playback worker | FMQ/helperの独自consume state machine | partial TS、partial inject、retry、stop→start preserve、flush discard |
@@ -612,6 +718,67 @@ px4 backendは同一device nodeを二重openせず、1回のbackend openからco
 フロントエンドの存在と対応能力は、機器、versioned backend manifest、functional probe、有限の選局終端を実装できることから導出する。選局は非同期操作とし、バックエンドが選局要求を受理した後は、`LOCKED`、backendの明示失敗、明示的停止、再選局、閉鎖、またはbackend別`ProductProfile.tuneTerminalDeadlineMs`到達時の`NO_SIGNAL`のいずれかで現generationを必ず終端する。現行profileはearth_pt1を`4000 ms`、px4を`7000 ms`とする。px4値はRT710設定、PLL確認、demod lock、absolute TSID一致、およびrelative selectorのTMCC解決からなる正常な有限経路を期限前に打ち切らないための上限である。期限到達はbinder呼出しの成功を後から失敗へ反転させず、非同期終端eventとして扱う。VTS既知信号経路はVTS自身の待機内でLOCKEDへ到達できる入力を別途要求し、製品deadlineをVTS待機値へ短縮しない。正の有限期限と取消可能なbackend I/Oを実装できないfrontendは公開しない。停止した`ioctl`、read、USB control transferから復帰する内部期限は別の`workerIoDeadlineMs`で管理し、px4の`ctrl_timeout=0`を禁止する。個別I/O期限は検証済みcontrol transfer上限より短くせず、正常処理列の合計がbackendのterminal deadline内に収まるよう固定する。
 
 
+## TS input origin namespace 固定契約
+
+TS packetのcontinuity / parser / assembler状態を異なる入力経路間で共有しないため、論理入力originの正本namespaceを次の3種類に固定する。
+
+| origin | identity | generation / boundary owner | 禁止事項 |
+|---|---|---|---|
+| `TsInputOrigin::Frontend` | demuxに現在接続されているfrontend入力 | frontend tune/scan/stop/closeに伴うstream boundaryは`StreamBoundaryTxn` | Playback DVRまたはSourceFilter由来stateとの混成 |
+| `TsInputOrigin::PlaybackDvr(dvr_id, queue_identity, queue_epoch)` | Playback DVR object + 再利用しないqueue incarnation + 同一queue内flush epoch | `queue_identity`は`PlaybackQueueBacking`、`queue_epoch`は`QueueEpochProtocol`、境界dispatchは`StreamBoundaryTxn` | fd番号・descriptor内容・別`dvr_generation`をorigin identityに使用 |
+| `TsInputOrigin::SourceFilter(filter_id, generation)` | source raw-TS Filter + 当該Filterのcurrent delivery generation | generation mutationは`FilterProducerDrainGate`、relationは`SourceBoundaryTxn`、境界dispatchは`StreamBoundaryTxn` | 未接続downstreamのcontinuity/parser stateを進めること |
+
+`PacketPipeline`は受理したpacketを必ず1個の `TsInputOrigin` とともに処理し、steady-state continuityをorigin別に分離する。per-filter parser / assembler ownerもoriginを含むkeyでpartial stateを分離する。`StreamBoundaryTxn`はboundaryのprepare / dispatchを所有するが、steady-state continuityやper-filter parser stateそのものを第二のownerとして保持しない。origin変更前のpartial stateを新originへ連結してはならない。
+
+## Filter / DVR queue full・overflow 固定契約
+
+通常Filter FMQおよびRecord DVR FMQでは、既にcommit済みでclient未消費のdataを新規dataのために暗黙evictionしない。payload / packet全体をcommitできる空きがない場合は部分writeせず、既存queue内容とread/write positionを維持したまま当該新規単位をdrop-newとして扱う。
+
+| path | full / insufficient space時 | caller-visible通知 | state / counter |
+|---|---|---|---|
+| TS raw Filter FMQ | 新規TS packetを部分commitせず破棄 | `DemuxFilterStatus::OVERFLOW`をpendingにしcallback delivery対象とする | drop packet/byte診断を飽和加算。既存未消費FMQは維持 |
+| section / PES Filter FMQ | 新規の完全section / PESを論理単位で破棄し、先頭だけを書かない | `DemuxFilterStatus::OVERFLOW` | drop診断を更新し、未commit単位を配送済み・one-shot完了扱いにしない |
+| Record DVR FMQ | 新規188-byte TS packetを部分commitせず破棄 | 当該write attemptのsemantic outcomeを `RecordStatus::OVERFLOW` とする。`statusMask`で`OVERFLOW` bitが選択されている場合だけcallbackし、maskされている場合に`HIGH_WATER`その他へ代替通知しない | `record_output_byte_offset`を進めず、既存未消費record dataとqueue位置を維持 |
+| Playback DVR input FMQ | HAL consumerはclient producerの未読dataをevictしない | client producer側のFMQ空き領域によるbackpressure | HALはdrop-old/drop-new queueとして扱わない |
+
+Filter runtimeとRecord DVR runtimeは、drop原因を通常のmalformed/CRC rejectionと区別できるpending overflow診断を保持する。Record DVRでは、FMQのavailable space不足により188-byte packetの原子的commitを拒否したwrite attemptについて `OVERFLOW` をwatermarkより優先し、そのwrite attemptを契機に `HIGH_WATER` / `LOW_WATER` / `DATA_READY` を代替生成しない。失敗したwriteではqueue occupancyが変わらないため、その後の通常の初期評価・status変化・周期評価は不変のqueue snapshotに対して前段のwatermark分類を独立に適用してよいが、`OVERFLOW`がmaskされていることを理由に同じ失敗を別statusへ再分類してはならない。FMQ write成功後のEventFlag wake失敗はpayload commit済みであり、同じpayloadを再writeしたりoverflow dropへ書き換えたりしない。AV allocation不足は既存AV allocation契約を正とし、この表のTS/section/PES/Record方針を流用しない。
+
+## 通常Filter status 公開方針
+
+通常payload FMQを持つFilterの `IFilterCallback.onFilterStatus()` は、Android 14 AIDL V2がfilter buffer statusとして定義する `DATA_READY`、`LOW_WATER`、`HIGH_WATER`、`OVERFLOW` を生成対象とする。`DATA_READY` は各payload/event契約の成功commit条件、`OVERFLOW` は本書のqueue full / allocation overflow契約を正とし、LOW/HIGH watermarkを理由に既存のcommit / drop契約を変更しない。
+
+`LOW_WATER` / `HIGH_WATER` はAIDLが規定する既定25% / 75%水位をそのまま用いる。open時のFilter FMQ byte容量を `capacity`、clientから現在読み出し可能なbyte数を `available` とし、`low = ceil(capacity * 0.25)`、`high = ceil(capacity * 0.75)` とする。同一queue snapshotに対して `available < low` なら `LOW_WATER`、`available > high` なら `HIGH_WATER` とし、`available == low` / `available == high` では新たなLOW/HIGH遷移を生成しない。これはAOSP default Tuner HALの既定watermark計算と比較境界に合わせる。LOW/HIGH判定は`FilterQueueBacking`が持つ既存FMQ occupancy snapshotから導出し、独立したwatermark owner / queue / worker / timerを追加しない。重複callback抑止に必要な直前のderived watermark statusはFilter callback配送の補助状態に限り、payload ownership、lifecycle、generation、queue positionを変更しない。
+
+成功したpayload commitでreadable dataが生じた場合の`DATA_READY`と、そのcommit後snapshotがLOW/HIGH条件を満たした場合のwatermark statusは別の公開事象として扱う。一方、論理単位を原子的にcommitできず本書のoverflow条件に入ったwrite attemptは`OVERFLOW`を正とし、その失敗をLOW/HIGHへ代替写像しない。
+
+`NO_DATA` はAIDL上「filterへdataが来ていない」状態として定義されるが、AIDLはその判定時間・timeout・周期を規定しておらず、AOSP default Tuner HALの通常Filter watermark処理にも独自のinactivity timerはない。本製品も経過時間だけを根拠とするNO_DATA timerを新設せず、`available == 0`だけで`NO_DATA`へ写像しない。現行の通常Filter経路では、AOSP契約または入力domainからNO_DATAを一意に確定できる別の明示事象を定義していないため`NO_DATA`を生成しない。将来のAIDL enum値も、明示契約なしに既存statusへ丸めて生成しない。
+
+このFilter watermark契約はDVRの `PlaybackStatus` / `RecordStatus` と `DvrSettings.lowThreshold/highThreshold` には適用せず、DVR水位契約を変更しない。
+
+## MPEG-TS section transport 固定契約
+
+TS `section_length`は12 bit構文として扱い、table IDごとの外形上限を次で固定する。1021区分は`section_length <= 1021`かつsection全体`<= 1024`、拡張区分は`section_length <= 4093`かつsection全体`<= 4096`とする。表固有の意味解析はHALへ持ち込まず、ここではtransport外形だけを検証する。
+
+| `table_id` / 範囲 | 表 | `section_length`上限 | section全体上限 |
+|---|---|---:|---:|
+| `0x00` | PAT | 1021 | 1024 |
+| `0x01` | CAT | 1021 | 1024 |
+| `0x02` | PMT | 1021 | 1024 |
+| `0x03` | TSDT | 1021 | 1024 |
+| `0x40-0x41` | NIT actual/other | 1021 | 1024 |
+| `0x42`, `0x46` | SDT actual/other | 1021 | 1024 |
+| `0x4A` | BAT | 1021 | 1024 |
+| `0x4E-0x6F` | EIT p/f, schedule | 4093 | 4096 |
+| `0x70` | TDT | 5 | 8 |
+| `0x71` | RST | 1021 | 1024 |
+| `0x72` | ST | 4093 | 4096 |
+| `0x73` | TOT | 1021 | 1024 |
+| `0x4C`, `0xC2`, `0xC4-0xC7`, `0xD0-0xD2` | INT, PCAT, BIT, NBIT, LDT, LIT, ERT, ITT | 4093 | 4096 |
+| `0xFE` | AMT | 4093 | 4096 |
+| その他の予約/private/未割当table ID | raw transport | 4093 | 4096 |
+
+PUSI=1のTS payloadでは、payload先頭の`pointer_field`を検証してから `1 + pointer_field` を新section開始位置とする。`pointer_field` bytesは直前の未完了sectionのtailとしてだけ使用できる。pointer bytesで旧sectionが完全になった場合はそのsectionを確定後に新sectionへ進む。pointer bytesで旧sectionが完了しない場合、または`pointer_field == 0`なのに旧partialが残る場合は旧partialを破棄し、新section本文へ連結しない。`1 + pointer_field`が当該TS payload範囲を超える入力はmalformedとして新section開始を作らない。旧partialの破棄はstale-partial診断へ記録し、queue overflowへ写像しない。
+
 ## DVR 方針
 
 
@@ -626,7 +793,29 @@ hint変更自体はDVR queue内容、FMQ read/write position、playback/record s
 Android 14 AIDL本文は`milliseconds=0`に特別なreset意味を規定せず、positive値についても厳密deadlineまたは最大遅延を保証していないため、本設計は0を独自の「product defaultへreset」と読み替えず、受理したhint値としてevaluation cadence決定へ渡す。AOSPが保証する以上の時刻意味を公開契約へ追加しない。
 
 
+### TS RECORD filter settings / event 固定契約
+
+`DemuxFilterRecordSettings` は `tsIndexMask`、`scIndexType`、tagged `scIndexMask` を1個の設定snapshotとして検証し、全項目が成功した場合だけFilter設定へcommitする。拒否時は旧settings、parser/tracker、`record_output_byte_offset`、source relation、Record DVR relation、generationを変更しない。
+
+- `tsIndexMask=0` はTS header/adaptation indexを要求しない有効値とする。Android 14 `DemuxTsIndex` のうちMPEG-TS packet header / adaptation fieldを直接表す既知bitだけを本製品のTS record index候補とし、要求maskの各bitはその既知bit集合のsubsetでなければならない。MMTP/MPT固有としてAIDL上定義された既知bitはTS-only productで `UNAVAILABLE`、予約bit・未知bitは `INVALID_ARGUMENT` とする。
+- `scIndexType=NONE` はstart-code indexなしを意味し、effective `scIndexMask` は0でなければならない。NONE時に非0 maskを要求した場合は `INVALID_ARGUMENT` とし、unionの未使用tagからcodecを推測しない。event側のcanonical zeroは `scIndex` tag + 0とする。
+- `SC` / `SC_HEVC` / `SC_AVC` / `SC_VVC` はそれぞれ `scIndex` / `scHevc` / `scAvc` / `scVvc` union tagと一致しなければならず、tag不一致は `INVALID_ARGUMENT` とする。各maskは選択tagでAndroid 14 AIDLが定義するbitのsubsetだけを受理し、予約bit・未知bitは `INVALID_ARGUMENT` とする。
+- non-NONEの `scIndexType` は、同じ確定済み `CapabilitySnapshot` に当該index parser / codec能力が存在する場合だけ成功する。AIDL上既知だが能力非採用のtypeは `UNAVAILABLE` とし、値を保存して無視しない。未知の `scIndexType` は `INVALID_ARGUMENT` とする。
+
+`DemuxFilterTsRecordEvent` は設定要求のechoではなく、同じFilter/source/delivery generationで実際に検出し、対応するRecord DVR output commitが成功した事実だけから生成する。
+
+- `pid` はindexを検出した実TS packetの13-bit PIDとする。別PIDまたは設定値の固定echoを使用しない。
+- `tsIndexMask` は要求maskと当該位置で実検出したTS index bitの積集合だけを設定し、未検出の要求bitを立てない。
+- `scIndexMask` は設定した `scIndexType` に対応するunion tagを使用し、要求maskと実検出indexの積集合だけを設定する。`NONE`では前記canonical zeroを使用する。
+- `byteNumber` は既存のRecord Filter output offset契約を正とし、対応output commit成功後だけ公開する。
+- `pts` は同じ検出位置へ結び付く構造上有効なPTSをparserが取得できた場合だけその値を設定し、取得できない場合はAndroidの `Constant64Bit.INVALID_PRESENTATION_TIME_STAMP` を返す。別PES / 別generationのPTSを流用しない。
+- `firstMbInSlice` は `SC_AVC` で当該sliceから構造上有効な値を取得できた場合だけ設定し、それ以外は `Constant.INVALID_FIRST_MACROBLOCK_IN_SLICE` を返す。別codecへ0を意味値として捏造しない。
+
+flush、reconfigure、source変更、stream boundaryでは旧generationの未配送Record eventとpartial index parser stateをfenceし、新generationのeventとして配送しない。`record_output_byte_offset`自体のreset規則は前段の固定契約を正とし、index parser generationとoffset lifetimeを同一視しない。
+
 Record DVRへ接続中の記録フィルター条件について、caller / data-path上の不変条件は、各188-byte TS packetを単一の確定済みroute snapshotに対して正確に1回評価し、いずれかの記録条件に一致した場合は到着順にRecord DVRへ正確に1回commitすることとする。フィルターごとの索引状態とコールバック状態は独立して保持する。relation / union-routeのprepare、commit / abort、設定変更時のsnapshot更新、relation generation、切替確定点、lockingは0-S-3Bの`RecordDvrFilterRelationTxn`だけを正本とし、本節では再定義しない。各フィルターへ一度分配してから全体を並べ替える、重複排除する、または`ingress_sequence`で欠落を推測する構成にしてはならない。
+
+Record Filterの`record_output_byte_offset`はFilter output lifetimeごとに`FilterProducerDrainGate`が唯一のmutation ownerとして所有し、次にRecord Filter outputへcommitされるbyteのoffsetを0起点で表す。Record DVRへのoutput commit成功時だけ、実際にcommitしたbyte数だけ単調に進め、commitしなかったdata、cancel、失敗したwriteでは変更しない。`DemuxFilterTsRecordEvent.byteNumber`は当該indexが位置するcommitted Record Filter output上のbyte offsetとし、対応するoutput commitが成功した後にだけ当該Record eventを配送可能にする。TS packet先頭を示すindexではcommit前の`record_output_byte_offset`、packet内のindexではそのoutput内位置を加えた値を使用する。`start()` / `stop()`、configure / reconfigure、Filter / DVR `flush()`、source / stream boundary、Record DVRのattach / detachではresetせず、新しいFilter object / output lifetimeだけ0から開始する。`PacketPipeline`、`RecordDvrFilterRelationTxn`、`QueueEpochProtocol`、`StreamBoundaryTxn`はこのoffsetを直接変更しない。
 
 Record DVR FMQへ成功commitした188-byte packetは公開済みとして扱い、後続のrecord filter接続・切断、source変更、source generation変更によって遡及変更しない。relation更新前後の個々のpacketを旧新routeの混在条件で評価せず、Record DVR FMQのclient未消費byte列を明示的に破棄するのは`IDvr.flush()`だけとする。個別source/filter境界の代替として共有queue全体をflushしてはならない。
 
@@ -663,6 +852,22 @@ Playback DVR の `configure()` 時は、FMQ 容量と同じ上限の processing-
 
 DVR playback consumer ワーカー は、DVR が soft demux と `RuntimeIoRegistry` の両方へ登録され、queue と worker signal の所有権がdomain ownerへ確定した後にだけ開始する。登録前にplayback workerがDVR stateを観測してはならない。worker handle slot準備・spawn・stop / wake / join / reaperは0-S-3Bの`WorkerRuntime` / `WorkerHandle`、公開前のregistry / queue / ledger rollbackはroot/child open契約を正とし、本節では失敗時cleanup phaseを再定義しない。
 
+### Frontend scan callback message 固定契約
+
+本製品のscan callbackは、公開する `FrontendScanMessageType` と `FrontendScanMessage` union tag/valueを一体の契約として生成する。message typeだけを正しくして別tagまたは、当該事象を表さない値を入れてはならない。
+
+| scan事象 | message type | union tag / value | 生成条件 |
+|---|---|---|---|
+| current scan generationでcandidate成立 | `LOCKED` | `isLocked=true` | backend lockと、要求に含まれる追加検証条件が同一generationで成立したcandidateだけ。candidateごとに既存scan契約の回数制約に従う |
+| scanの正常終了 | `END` | `isEnd=true` | current generationの終了をcommitした後に正確に1回 |
+| current candidate / scan進行についてAIDL定義済みの追加情報をauthoritativeに取得済み | 対応するAIDL定義済みmessage type | 当該message typeに対応するunion tag / 実観測値 | current generationに属するbackend結果、正規化済みrequest、または同generationで確定したparser結果から値を一意に構成できる場合だけ |
+
+`LOCKED` / `END` は上表の条件で最低保証する。`PROGRESS_PERCENT`、`FREQUENCY`、`SYMBOL_RATE`、`HIERARCHY`、`ANALOG_TYPE`、`PLP_IDS`、`GROUP_IDS`、`INPUT_STREAM_IDS`、`DVBS_STANDARD`、`DVBT_STANDARD`、`ATSC3_PLP_INFO` などAndroid 14 AIDLで定義済みのmessage typeは、単に現行の最低保証集合に含まれないことを理由に禁止しない。一方、別generationの値、固定値、別frontend由来値、未取得値、推測値をcallback生成のために捏造してはならず、値をauthoritativeに確定できないmessageは生成しない。追加messageのためだけに公開scan lifecycleと独立した第二のscan state machineを設けず、必要な補助値はcanonical `frontend tune/scan` ownerのcurrent-generation stateへ従属させる。
+
+本製品は現行profileでblind scanを対応宣言しないため、blind scan要求を成功へ拡張しない。将来blind scan能力を公開する場合は、その能力を使用するAndroid 14 VTSが要求する`FREQUENCY`等のcallback closureを同じprofile変更で満たし、`LOCKED` / `END`だけを返す部分対応を広告してはならない。
+
+callback entryは `FrontendTuneScanTxn` が確定したcurrent scan generationをfenceし、旧generationのいかなるscan messageも新generationへ配送しない。同一scan終了について `END` を重複配送せず、type/tag/valueのいずれかが不一致のentryは公開callbackへ渡さず内部不変条件違反として扱う。`LOCKED`では`isLocked=true`、`END`では`isEnd=true`だけを公開し、false variantを別事象の代替表現として生成しない。
+
 ## フロントエンドの対応能力と状態
 
 
@@ -686,6 +891,18 @@ Android 14 AIDL V2の`FrontendIsdbtCapabilities.isSegmentAuto`と`isFullSegment`
 - callerが指定する明示`numOfSegment=1..13`を成功させるには、その値をlayerごとにbackendへ反映する経路または固定値として検証する経路が必要である。本製品のpx4/earth_pt1はlayerごとの明示segment数を反映または固定値検証する能力を採用しないため、値域内の明示segment数を`UNAVAILABLE`とし、値を捨てて成功しない。
 - CTS対象として公開するISDB-T frontendは、`isSegmentAuto` / `isFullSegment` と `numOfSegment` 受付の閉包条件を満たさなければならない。`isSegmentAuto=true`ならCTSが送る`0xFF`を実現できること、`isSegmentAuto=false && isFullSegment=true`なら`13`を実現できること、`isSegmentAuto=false && isFullSegment=false`なら`1`を実現できることを、同じ`CapabilitySnapshot`の生成時に検証する。対応するCTS入力を実現できないcapability pairを公開してはならず、3分岐のいずれも成立しないbackend/device/profileはCTS対象ISDB-T frontendとしてexportしない。segment能力の証跡がない場合にbooleanを単に`false`へ倒すだけでこの閉包条件を回避してはならない。能力boolean、`numOfSegment`の受付、`ProductProfile`、VTS選局入力の間に矛盾がある候補は`CapabilitySnapshot`へcommitしない。
 
+
+### ISDB-T `layerSettings[]` 配列契約
+
+`FrontendIsdbtSettings.layerSettings` は配列形状を保持したままvalidationし、空配列を **layer個別制約なし** として成功対象に含める。空配列を3個のAUTO要素へ書き換えたり、backendへ存在しないlayer要求を生成したりしない。
+
+AOSP側はこの配列の物理layer数上限を定義しない。Frameworkの `IsdbtFrontendSettings.Builder.setLayerSettings()` はcallerの配列長を保持してcopyし、JNIも同じ長さでAIDL `FrontendIsdbtSettings.layerSettings` vectorをresizeして全要素を順に写像するため、4要素以上という配列長それ自体をAOSP malformed inputとは扱わない。
+
+本製品が通常の13-segment ISDB-Tとして受理する物理階層数の上限はAndroid vectorではなく放送方式側から導出する。現行の「標準テレビジョン放送等のうちデジタル放送に関する送信の標準方式」第21条は、通常の地上デジタルテレビジョン放送について階層を「13個のOFDMセグメントを最大3個に区分したもの」と規定する。ARIB STD-B31 2.3の現行公開サンプルでも対応する規範領域は第2章2.1「階層伝送」および第3章3.4「階層分割」として維持されている。ただし公開サンプルは当該本文を収録していないため、そのサンプルだけから2.3本文の具体文言を推測せず、最大3という具体値の現行一次根拠には前記省令第21条を使用する。ARIB本文との版差分確認は本書「ARIB規範本文との静的照合」の証拠境界に従う。
+
+したがって非空配列は入力順序を保持したまま最大3要素を物理階層要求として検証し、4要素以上はAOSP vector encodingの異常ではなく、対象ISDB-T方式に存在しない4番目以降の物理階層を要求するsemantic inputとして `INVALID_ARGUMENT` で要求全体を状態不変のまま拒否する。AOSPがlayer名やvector indexにA/B/Cという追加意味を固定していないため、本書もindex 0 / 1 / 2へ独自のA/B/C名称を再定義せず、callerが与えた先頭からの階層順を保持する。
+
+各要素の `modulation`、`codeRate`、`timeInterleave`、`numOfSegment` は既存のISDB-T element-level契約で独立に検証する。1要素でもmalformed / 値域外なら要求全体を `INVALID_ARGUMENT`、AIDL/放送方式上有効でも対象backendが実処理・検証できない明示値を含む場合は要求全体を `UNAVAILABLE` とし、旧tune/scan request、backend、generationを変更しない。現行px4 / earth_pt1のAUTO/未指定中心の能力方針を、配列要素数を理由に拡張しない。
 
 ### frontend settings validation の固定方針
 
@@ -1058,12 +1275,12 @@ release AIDL経路からテスト専用入口へ到達してはならず、テ�
 
 | 番号 | 確認観点 | 目的 |
 |---:|---|---|
-| T-AOSP-1 | `setDataSource(sourceFilter)` 成功 | 同一 demux 内の source filter接続 |
+| T-AOSP-1 | `setDataSource(sourceFilter)` 成功 | 同一demuxのTS raw sourceから、公開済みTS `TS` / `SECTION` / `PES` / `AUDIO` / `VIDEO` / `PCR` / `RECORD` sinkへの接続を、通常のlifecycle・owner・cycle・settings整合条件を満たす場合に成功させる |
 | T-AOSP-2 | `setDataSource(nullptr)` | demux input 復帰として成功 |
 | T-AOSP-3 | `setDataSource(nullptr)` 後の再start/data出力 | demux inputからの再start/data出力成功 |
 | T-AOSP-4 | source filter owner demux不一致 | `INVALID_ARGUMENT` |
 | T-AOSP-5 | source filter closed/failed | `INVALID_STATE` |
-| T-AOSP-6 | unsupported source/sink subtype | `UNAVAILABLE` |
+| T-AOSP-6 | unsupported source/sink semantics | 加工済みSection/PES/AV/Record outputのTS packet source化など、公開capabilityを持たない接続は`UNAVAILABLE` |
 | T-AOSP-7 | `addPid(pid, nullptr)` | AOSP意味論確認。demux input 全体へのPID登録として成功 |
 | T-AOSP-8 | `removePid(pid, nullptr)` | AOSP意味論確認。demux input 全体へのPID解除として成功 |
 | T-AOSP-9 | `addPid(pid, sourceFilter)` 成功 | upper stream識別ありPID登録 |
@@ -1112,12 +1329,28 @@ release AIDL経路からテスト専用入口へ到達してはならず、テ�
 | T-AOSP-47 | ISDB-T V2 `inversion` / `serviceAreaId` / `partialReceptionFlag` / `numOfSegment` | 成功・`UNAVAILABLE`・`INVALID_ARGUMENT`をフィールド別に固定する。`partialReceptionFlag`明示値では同期`tune()`受付と非同期lock成立を分離し、blocker解消後はfresh TMCC readback一致時だけ`LOCKED`、不一致は`NO_SIGNAL`、未確定・I/O失敗・旧generationでは`LOCKED`を生成しない。blocker未解決中はsilent ignore-successがない |
 | T-AOSP-51 | ISDB-S SDK default selector未指定 | `STREAM_ID + INVALID_STREAM_ID(0xFFFF)`を明示TSID検証より先に`Unspecified`へ正規化し、px4 BSは互換slot 0、px4 CS110はfixed slot 0、Linux DVB / earth_pt1は`NO_STREAM_ID_FILTER`へ写像する。通常のBS TIS経路では明示absolute TSIDを維持する |
 | T-AOSP-48 | ISDB-S `rolloff` | 未指定、既知未対応、malformedを分類し、未適用値を成功させない |
-| T-AOSP-49 | RECORD index settings/event | request mask/typeを無損失検証し、event mask、`pts`、`firstMbInSlice`をcurrent parser/delivery fenceに一致させる。`byteNumber`はFilter output lifetime先頭からRecord DVRへcommit済みの累積`record_output_byte_offset`とし、flush/reconfigure/source/stream boundaryで0へ戻さない |
-| T-AOSP-50 | DVR `statusMask` / threshold / `dataFormat` / `packetSize` | playbackはunused bytes、recordはunconsumed bytesで判定し、無効・未対応設定を状態不変で拒否 |
+| T-AOSP-49 | RECORD index settings/event | request mask/typeを無損失検証し、event mask、`pts`、`firstMbInSlice`をcurrent parser/delivery fenceに一致させる。`byteNumber`は当該indexが位置するcommitted Record Filter output上の0起点offsetとする。最初のoutputは0から始まり、Record DVR output commit成功時だけ実commit byte数分`record_output_byte_offset`を進め、commit失敗では不変とする。flush/reconfigure/source/stream boundary、Record DVR attach/detachで維持し、新Filter output lifetimeだけ0へ戻す |
+| T-AOSP-50 | DVR `statusMask` / threshold / `dataFormat` / `packetSize` | Playbackは同一FMQ snapshotの`availableToRead` / `availableToWrite`を用い、`SPACE_FULL` → `SPACE_ALMOST_FULL` → `SPACE_ALMOST_EMPTY` → `SPACE_EMPTY` → 前status維持の順で判定する。threshold等値ではALMOSTへ新規遷移しない。Recordはunconsumed bytesで判定し、`low == high == T` / `q == T` はlow側へ一意化する。semantic status確定後に`statusMask`を適用し、maskされたstatusを別statusへremapしない。無効・未対応設定は状態不変で拒否 |
 | T-AOSP-52 | `endFrequency`の操作別意味 | `tune()`とblind以外のscanでは差分を理由に拒否せずfingerprint/backend要求へ含めず、blind scanだけ`UNAVAILABLE`にする |
 | T-AOSP-53 | 同一settingsでのFilter reconfigure後startId | 一度start済みFilterをstopし、同一settingsで`configure()`成功後にrestartした場合も、最初に新しいstartId-only callbackを正確に1回配送してから通常eventを配送する |
 | T-AOSP-54 | TS live `DemuxFilterMediaEvent`公開field | `streamId`、PTS/DTS presence/value、`mpuSequenceNumber`、private-data、`extraMetaData`、`scIndexMask`を同一media outputの入力由来または定義済みdefaultと一致させ、別PES/generationを混成しない |
 | T-AOSP-55 | DVR `setStatusCheckIntervalHint()` | playback / record双方で受理したhintを以後のdata/status evaluation cadence決定に使用し、保存だけのno-op、Binder thread sleep、queue/lifecycle変更にしない |
+| T-AOSP-56 | Filter lifecycle closure | non-AV未設定`start()`/`flush()`は`INVALID_STATE`、未開始`stop()`と重複`start()`は冪等成功、開始中`configure()`は`INVALID_STATE`。`stop()`はcommit済みoutput/client資源を維持し、`flush()`だけが対象の未消費FMQ・未配送event・partial stateを破棄する。開始済みFilterのflushは開始状態を維持し、一度start済みFilterのstop後同一settings再configureはT-AOSP-53の新`startId`契約を満たす |
+| T-AOSP-57 | DVR lifecycle closure | 未設定`start()`/`flush()`は`INVALID_STATE`、未開始`stop()`と重複`start()`は冪等成功、開始中`configure()`は`INVALID_STATE`。Record開始中flushは`INVALID_STATE`、Playback開始中flushは成功して開始状態を維持する。stopではRecord未消費outputおよびPlayback未読input/processing residualを維持し、configureでqueue identity/relationを置換しない |
+| T-AOSP-58 | Record DVR Filter relation lifecycle | configure前/停止中/開始中のRecord DVRでvalid attach/detachを成功させ、duplicate attach / absent detachは状態不変成功。Playback DVR、foreign owner、別demux、record非対応Filterは`INVALID_ARGUMENT`、閉鎖済みFilter引数は`INVALID_STATE`。route mutationは`RecordDvrFilterRelationTxn`だけを通る |
+| T-AOSP-59 | `linkCaps` concrete matrix | TS-only profileでは`[0x01, 0, 0, 0, 0]`を返し、TS->TSのUNDEFINED subtype linkageを成功させ、非広告pairを成功させない |
+| T-AOSP-60 | `numBytesInSectionFilter` / SectionBits boundary | capabilityはmask最大幅16。filter/mask/modeは独立shapeを保持し、maskだけ16 bytes超を`INVALID_ARGUMENT`で拒否する。active mask bitが参照するbyte位置ではfilter/mode双方の存在を必須とし、missing valueを補完しない。mask外のfilter/mode末尾はmatchingに使わず、短いruntime sectionはnon-matchとする |
+| T-AOSP-61 | `DvrSettings` atomic configure | statusMask / low/high threshold / dataFormat / packetSizeを同一snapshotでvalidateし、1 field拒否時にsettings・queue位置・identity・relationを変更しない |
+| T-AOSP-62 | Filter / Record DVR FMQ full | 既存未消費dataをevictせず新規論理単位を部分commitしない。Filterは`DemuxFilterStatus::OVERFLOW`、Recordの188-byte commit拒否は`RecordStatus::OVERFLOW`へ一意に写像する。Recordは`OVERFLOW` bit選択時だけ通知し、mask時にHIGH/LOW/DATA_READYへ代替しない。commit失敗ではqueue位置と`record_output_byte_offset`不変 |
+| T-AOSP-63 | section table length / `pointer_field` | PAT/CAT/PMT等1021区分、EIT等4093区分、TDT=5、TOT=1021を固定し、PUSI pointerで旧partial未完了を新sectionへ連結しない |
+| T-AOSP-64 | `TsInputOrigin` namespace | Frontend / PlaybackDvr(dvr_id, queue_identity, queue_epoch) / SourceFilter(filter_id, generation)でcontinuity・partial stateを分離し、origin boundary前後を連結しない |
+| T-AOSP-65 | `configureAvStreamType()` 全域 | matching Audio/Video tagは非開始状態でAndroid 14 AIDL定義済みstream type（UNDEFINEDを含む）をhintとして成功commitし、private codec capability gateを設けない。再設定はhintだけを置換し、同値はno-op成功、tag不一致/予約・未知値は`INVALID_ARGUMENT`、valid Started要求は`INVALID_STATE`、non-AVは`UNAVAILABLE` |
+| T-AOSP-66 | AV secure-memory input | non-started AVで`isSecureMemory=false && isPassthrough=false`だけを通常能力判定へ進め、`isSecureMemory=true`または`isPassthrough=true`は`UNAVAILABLE`かつ旧settings/backing/hint/relationを維持。Startedはlifecycle契約を優先 |
+| T-AOSP-67 | scan callback union | candidate成立は`LOCKED + isLocked=true`、正常終了は`END + isEnd=true`をcurrent generationだけから生成する。その他のAIDL定義済みmessageはcurrent generationのauthoritativeな実値を一意に構成できる場合に対応tagで生成可能とし、未取得/推測値、type/tag/value不一致、false variant、stale generation、重複ENDを公開しない。blind scanを将来広告する場合はVTSが要求する`FREQUENCY`等のclosureも同時に満たす |
+| T-AOSP-68 | ISDB-T `layerSettings[]` | AOSPはvector長を制限せず全要素を保持することを確認する。空配列はlayer制約なしで成功し、1〜3要素は入力順を保持する。通常13-segment ISDB-Tの最大3階層は現行省令第21条を根拠とし、4要素以上は存在しない4番目以降の物理階層要求として`INVALID_ARGUMENT`。全要素を既存field契約で原子的に検証し、unsupported explicit valueを無視成功しない |
+| T-AOSP-69 | normal Filter status set | 通常payload FMQ Filterは`DATA_READY` / `LOW_WATER` / `HIGH_WATER` / `OVERFLOW`を生成対象とする。LOW/HIGHはFMQ容量の`ceil(25%)` / `ceil(75%)`を既定thresholdとし、`available < low` / `available > high`だけで遷移し、等値では新規遷移しない。`NO_DATA`はAIDL未定義の独自inactivity timeoutを設けず、`available == 0`だけでは生成しない。DVR watermark contractには波及させない |
+| T-AOSP-70 | TS RECORD settings/event closure | `tsIndexMask`、`scIndexType`、union tag/maskを原子的に検証し、known unsupportedは`UNAVAILABLE`、malformed/unknownは`INVALID_ARGUMENT`。eventのPID/mask/PTS/firstMb/byteNumberを同一generationの実検出・成功commitに一致させる |
+| T-AOSP-71 | `openFilter()` acceptance matrix | TSのUNDEFINED/SECTION/PES/TS/AUDIO/VIDEO/PCR/RECORDは表の条件で開き、TEMIおよびMMTP/IP/TLV/ALPは`UNAVAILABLE`。wrong main/subtype/unionと未知値を`INVALID_ARGUMENT`とし、拒否時にobject/queue/leaseを生成しない |
 
 `close()` 以外の公開メソッドでは、`LogicalClosed`、`InvalidArgument`、`WrongLifecycle`、`ResourceUnavailable`、`BackendFailure`、`Success` の順で判定を優先する。`close()` 自体の結果はこの共通優先順位で決めず、0-S-4の公開close契約に従う。遅延して呼ばれる `IFilter.releaseAvHandle()` はAV解放台帳に従う独立操作であり、閉鎖後の共通メソッドとして扱わない。
 
@@ -1135,7 +1368,7 @@ release AIDL経路からテスト専用入口へ到達してはならず、テ�
 | T-TS-2 | 187/189 byte | reject |
 | T-TS-3 | TEI set packet | section/PES/AV assemblyへ入れない |
 
-188バイトで構造上完全なTSパケットに `TEI=1` が設定されている場合、TS生データ出力とTS記録出力には入力順のまま保持する。HALはTEIカウンターを飽和加算し、記録の `byteNumber`は当該Record Filterのoutput lifetime先頭から、Record DVRへ実際にcommit済みのTS byte数を累積した`record_output_byte_offset`とする。configure/reconfigure、`flush()`、source/stream boundary、parser resetでは0へ戻さず、新しいFilter object/output lifetimeだけ0から開始する。
+188バイトで構造上完全なTSパケットに `TEI=1` が設定されている場合、TS生データ出力とTS記録出力には入力順のまま保持する。HALはTEIカウンターを飽和加算する。記録の`byteNumber`と`record_output_byte_offset`は前段のRecord Filter output offset契約に従い、TEI packetもRecord DVRへ成功commitした実188 byteとしてoffsetを進める。
 
 
 | 番号 | 確認観点 | 目的 |
@@ -1249,7 +1482,7 @@ PES filterは、外形検証の後に`stream_id`で通常optional-header構文�
 - AVの転送、割り当て、解放は、本書「AV割り当て」、0-S-2のAV active token台帳、「AV転送方式とクライアント側の存続期間」で定める。共有領域方式は最適化手段とし、要求サイズどおりのイベント固有ファイル記述子方式を正式な代替経路とする。`dataId=0`のhandle lease終了だけはboundedなclient lease stateにより冪等化し、正の`avDataId`はactive token台帳に存在する場合だけ解放を成功させる。
 - ワーカーとLNBの停止・後片付けは、本書「ワーカー終了契約」と「LNB機器の資源規則」で定める。`TargetDriverTimingProfile` や、公開経路で上限なく `join` を待つ処理を設けない。
 - パケット異常と基盤異常の影響範囲は、本書「失敗影響範囲」で定める。不正TS、TEI、連続性異常を基盤隔離へ昇格させない。
-- frontendで公開・受理する値は、本書「フロントエンド設定の反映表」で定める。ARIB B31の値域根拠は本書「VTS環境とARIB B31の境界」に置く。
+- frontendで公開・受理する値は、本書「フロントエンド設定の反映表」で定める。ARIB B31の値域根拠は本書「フロントエンドの対応能力と状態」、現行日本語版との差分管理は本書「ARIB規範本文との静的照合」を正とする。
 - 個別の対応能力で失敗した場合は、その能力または要求だけを抑止・拒否する。無関係な `ITuner` の公開を妨げない。
 
 
