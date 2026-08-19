@@ -16,6 +16,8 @@
 - best-effort telemetry は primary failure を上書きしない。必須診断 store は bounded とし、records と dropped / record-failure counter を同じ snapshot で観測可能にする。
 - bounded diagnostic store の reset は records と dropped counter を同時に初期化する。reset failure を silent success にしない。
 - `Drop` に object 種別固有の cleanup state machine を書かない。`ObjectCloseTxn` owner が公開する owner-loss / Drop 用 typed entry だけへ接続する。
+- `Drop` に任せる自動cleanupは、失敗不能なlocal reservation / memory / guard解放に限定する。backend I/O、Binder call、worker join、retry schedule、quarantine判定、失敗結果を上位ownerへ返す必要があるcleanupは明示的なtyped `commit` / `abort` / `cleanup` / `finish`で実行し、`Drop`だけへ隠さない。
+- `Drop` はpanicせず、cleanup failureをpanicへ変換しない。
 
 ## 2. AIDL / service_runtime 境界
 
@@ -47,6 +49,10 @@
 - `RuntimeQuery<'a>` は read-only query 専用とし、mutable reference、transaction context、mutation closure を持たせない。
 - `transaction_registry.rs` は dispatch target の実装表に限定し、ownership、coverage、接続済み判定、公開 status semantics を第二の表として持たせない。
 - 静的検査は directory 名や `*_ops.rs` / `*_txn.rs` suffix だけで owner を判定せず、規範アンカーにない module が owner state を直接 mutation していないことと typed entry を迂回していないことを検査する。
+- A分類は、呼出し終了後も残り後続呼出しが正本として参照・変更するpersistent stateのcanonical ownerとする。persistent fieldはAの正規状態所有型または同型だけが直接所有するprivate内部型に置き、同義shadow stateを別ownerへ置かない。
+- B分類はpersistent stateへの複数段階mutation手順を所有してよいが、persistent storageの第二正本を持たない。`../tuner_hal/DESIGN_JA.md`でBが「所有する状態」と記載される場合も、変更責任の所有を意味し、B instanceを呼出し越しのstate ownerにしない。
+- Bはcall-local variable、immutable plan/result enum、typed snapshot、prepared mutation、one-shot authorityを使用してよいが、`Arc<Mutex<BState>>`等でmutable進行状態を外部呼出し越しに保持しない。共有persistent stateが必要になった場合は、既存Aへ状態を置くか、論理owner境界を設計側で再判定する。
+- Bのretryable pending stateは`ObjectCloseTxn`、demux invalidation owner、`WorkerRuntime`等のpersistent canonical ownerへtyped resultとして返し、B instance自体をretry正本として保持しない。
 
 ## 4. wrapper 作成基準
 
@@ -69,7 +75,10 @@ Wrapper を置いてよいのは、public API 境界、domain naming 隠蔽、AI
 - capability token は owner だけが発行する。外部 caller が public constructor / enum variant / field struct literal で偽造できる形にしない。
 - crate 間 typed request は operation DTO として使用してよいが、request 単体で snapshot、one-shot token、queue export handle、registry entry、任意 restore authority を得られないことを条件とする。
 - one-shot token に `Clone` / `Copy` を付けず、consume-by-value で消費する。rollback snapshot 本体を token 外へ出さない。
-- 再利用可能な値は token と分離した read-only descriptor にする。
+- prepared mutation、permit、cleanup authority、execution authority等、二重使用が契約違反になる値もone-shot tokenと同じ規則を適用し、正規の`commit(self)` / `abort(self)` / `release(self)` / `finish(self)`等でby-value消費する。
+- 未使用が誤りになるprepared value / one-shot authorityには`#[must_use]`またはrepositoryで採用する同等の静的検出を使用する。
+- 再利用可能な値は token と分離した read-only descriptor にする。clone可能なread-only handleとone-shot mutation authorityが同じ型に混在して権限を複製しないよう、必要に応じて別型へ分離する。
+- lifetime ID / generation / epoch / tokenは意味ごとのnewtypeまたは同等の型境界で区別し、異なるnamespaceの裸の整数を同じmutation APIへ渡せる形を正規形にしない。
 - single-variant enum や未使用 variant で状態機械を装わない。
 
 ## 6. worker / callback / source boundary
@@ -82,6 +91,7 @@ Wrapper を置いてよいのは、public API 境界、domain naming 隠蔽、AI
 - callback artifact store、DVR notifier store、filter dispatcher、drop-leak diagnostic store を process-global `OnceLock` / `static Mutex` に置かず、service instance lifetime に閉じる。
 - `IFilter.setDataSource()` の relation validation と mutation は `SourceBoundaryTxn` の typed entry に接続する。AIDL / runtime helper が cycle、rollback、quarantine semantics を別定義しない。
 - stream boundary は `StreamBoundaryTxn` の typed entry に接続する。packet / parser / queue owner の steady-state を boundary helper が直接所有しない。
+- generic worker lifecycleのcanonical state ownerは`WorkerRuntime`だけとする。`WorkerHandle`は`WorkerRuntime`が発行・管理するopaqueな従属handle / authorityとして扱い、独自のowner generation、retry schedule、reaper stateを持つ第二ownerにしない。
 
 ## 7. query / packet / diagnostic 境界
 
@@ -126,6 +136,8 @@ Wrapper を置いてよいのは、public API 境界、domain naming 隠蔽、AI
 - 静的チェックを追加する場合は検出対象を明示し、完了判定の主根拠にしない。
 - テストは公開関数、戻り値、状態、診断を直接検査し、同じソースファイルの文字列検索で完了判定しない。
 - owner / entry の静的検査は `tuner_hal2/DESIGN_JA.md` の規範実装アンカーを入力とし、本書独自の ownership 表を入力にしない。
+- `DESIGN_JA.md`が正に要求する`Send` / `Sync`は実型へのcompile-time assertionで確認する。単に実行器のtrait boundを通すための`unsafe impl Send` / `unsafe impl Sync`を追加しない。
+- one-shot authority / prepared valueのconstructor非公開、非`Clone` / 非`Copy`、consume-by-valueをcompile-fail相当またはrepositoryで採用する静的検査で確認する。
 
 ## 12. runtime failure / capability inventory の実装境界
 
@@ -142,7 +154,7 @@ Wrapper を置いてよいのは、public API 境界、domain naming 隠蔽、AI
 - worker bodyは通常停止、停止要求、runtime failure、panic/join failureを区別できる typed terminal resultをownerへ返し、無言停止しない。terminal meaning自体は `../tuner_hal/DESIGN_JA.md` を正とする。
 - worker runtime failureとpanic / join failureは別のtyped diagnostic categoryとして記録し、単一の「worker stopped」診断へ潰さない。counterを持つ場合もerror系とpanic/join系を別集計とし、診断名・counter値から公開状態を逆算しない。
 - workerの待機はstop/wakeで解除可能なprimitiveを使い、client指定intervalをそのまま `thread::sleep()` してclose / Drop / shutdownを妨げない。
-- generic worker生成・停止・wake・joinは `DESIGN_JA.md` の `WorkerRuntime` / `WorkerHandle` 規範アンカーへ接続する。規範owner外から `std::thread::spawn`、独自`JoinHandle` lifecycle、silent joinを追加しない。
+- generic worker生成・停止・wake・joinは `DESIGN_JA.md` の `WorkerRuntime` 規範アンカーへ接続する。`WorkerHandle`は同ownerに従属するopaque handle / authorityとしてのみ使用し、規範owner外から `std::thread::spawn`、独自`JoinHandle` lifecycle、silent joinを追加しない。
 
 ## 14. transaction / cleanup / 非破壊最適化の実装境界
 
