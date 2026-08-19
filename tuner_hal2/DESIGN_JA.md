@@ -105,7 +105,7 @@ lifecycle/owner/generation検証、引数検証との優先順位、再検証、
 | `QueueEpochProtocol` | `demux/src/runtime/queue_runtime.rs` | DVR data path、`QueueCleanupTxn`からのtyped入口 | 公開API/worker/`QueueCleanupTxn`からのprotocol内部直接変更、`PlaybackQueueBacking` ownerとの統合 |
 | `QueueCleanupTxn` | `service_runtime/src/queue_cleanup_txn.rs::QueueCleanupTxn` | Filter/DVR `flush()` object use-case | 下位protocol内部への直接アクセス、API別orchestrator |
 | `PlaybackConsumeTxn` | `service_runtime/src/playback_consume_txn.rs` | playback workerのtyped consume入口 | worker/FMQ/packet helperによる別consume owner |
-| `FrontendTuneScanTxn` | 正規手順所有者・入口は`FrontendTuneScanTxn`名を持つ。既存アンカーは`service_runtime/src/boot/frontend_txn.rs::FrontendTxn<'a>`、`service_runtime/src/frontend_ops.rs`であり、`FrontendTxn<'a>`は非公開補助処理または呼出し単位の文脈型としてのみ扱う | `aidl_service/src/tuner_service/frontend_methods.rs`からオブジェクトメソッドのファサード経由 | ワーカー・機器層・コールバック層によるフロントエンド所有者の迂回、Demux所有者の吸収、`FrontendTxn<'a>`の第二正規所有者化 |
+| `FrontendTuneScanTxn` | 正規手順所有者・入口は`FrontendTuneScanTxn`名を持つ。既存アンカーは`service_runtime/src/boot/frontend_txn.rs::FrontendTxn<'a>`、`service_runtime/src/frontend_ops.rs`であり、`FrontendTxn<'a>`は非公開補助処理または呼出し単位の文脈型としてのみ扱う | `FrontendTuneScanTxn`の有限entry集合 `begin_tune` / `begin_scan` / `stop_tune` / `stop_scan` / `accept_operation_event` / `accept_worker_terminal`。AIDL façadeはbegin/stopだけ、worker/backend completion bridgeはaccept系だけを呼ぶ | ワーカー・機器層・コールバック層によるフロントエンド所有者の迂回、Demux所有者の吸収、`FrontendTxn<'a>`の第二正規所有者化、有限entry集合外でのtune/scan進行再実装 |
 | `AvSyncRegistry` | `demux/src/runtime/av_sync_registry.rs::AvSyncRegistry` | filter configure/unregister/close、demux closeからのtyped relation入口 | API/filter wrapper/`StreamBoundaryTxn`からのregistry直接変更、PCR ownerとの統合 |
 | `PcrClockAnchorStore` | `demux/src/runtime/pcr_clock_anchor.rs::PcrClockAnchorStore` | PCR観測、stream boundary側のtyped invalidation入口 | API/`StreamBoundaryTxn`からのstore内部直接変更、A/V sync ownerとの統合 |
 | `WorkerRuntime` | `service_runtime/src/worker_runtime.rs::{WorkerRuntime, WorkerHandle}`。`WorkerRuntime`がgeneric worker lifecycleの唯一のcanonical A state ownerであり、`WorkerHandle`は同ownerに従属するopaqueなtyped handle / authority表現 | 各domain worker ownerの`WorkerRuntime`正規入口。必要な場合に同ownerが発行・管理する`WorkerHandle`を使用する | `WorkerHandle`による独立したgeneration / retry / reaper state所有、別generic lifecycle owner、domain start/stop ownerの吸収 |
@@ -143,7 +143,7 @@ lifecycle/owner/generation検証、引数検証との優先順位、再検証、
 | 21 | `ObjectMethodTxn` | B | B共有lockを持たず、object / relation / resource ownerのsnapshotとtyped入口を使う | one-shot execution authorityをconsume-by-valueで消費する | — | 通常制御 |
 | 22 | `RootOpenTxn` | B | B共有lockを持たず、resource / runtime registry / Binder artifact ownerのprepared入口を使う | prepared reservation / registrationを一回だけcommitまたはabortする | — | 通常制御 |
 | 23 | `ChildOpenTxn` | B | B共有lockを持たず、parent / resource / runtime / Binder ownerのprepared入口を使う | parent generation + prepared reservation / registrationを一回だけ消費する | — | 通常制御 |
-| 24 | `FrontendTuneScanTxn` | B | B共有進行状態を持たず、frontend runtime、`WorkerRuntime`、各`StreamBoundaryTxn`の正規同期入口を調停する | request fingerprint / frontend operation generation / prepared boundaryを既存ownerから取得し、第二のscan generationを発行しない | — | 通常制御。非同期worker / callbackのpersistent stateは各canonical ownerへ保持する |
+| 24 | `FrontendTuneScanTxn` | B | B共有進行状態を持たず、frontend runtime、`WorkerRuntime`、各`StreamBoundaryTxn`の正規同期入口を調停する | request fingerprint / frontend operation generation / prepared boundaryを既存ownerから取得し、第二のscan generationを発行しない | — | 有限entry集合から毎回call-localに再入場し、entry終了時にB自身のmutable進行状態を残さない |
 | 25 | `FrontendWorkerTerminationTxn` | B | B共有lockを持たず、`WorkerRuntime`とfrontend固有ownerのtyped入口を使う | `WorkerRuntime`のowner generation / terminal resultを使用し、独自worker generationを発行しない | — | 通常制御 |
 | 26 | `PacketPipeline` | A | demuxごとの単一packet mutation ownerを基本とし、boundaryとの競合はtyped generation fence / commandで同期する。packetごとの外側mutexを標準形にしない | typed `TsInputOrigin`のgenerationとstream boundary generationを使用し、第二の同義generation namespaceを持たない | `Send` | — |
 | 27 | `FilterWatermarkClassifier` | C | なし | なし | — | — |
@@ -172,6 +172,24 @@ flowchart LR
 - `DemuxFrontendSourceTxn`、`CallbackRegistrationUseCase`、`Descrambler*Txn`、`QueueCleanupTxn`、`RootOpenTxn`、`ChildOpenTxn`、`FrontendTuneScanTxn`、`FrontendWorkerTerminationTxn`等のBはcross-owner lockを保持せず、各Aのtyped prepare / commit / abort入口を順に使用する。
 - backend I/O、Binder call / callback delivery、blocking wait、FMQ wait、worker joinの間はcanonical A owner lockまたは上位runtime lockを保持しない。
 - cross-ownerの不可分性がこの規則だけでは保てない場合、nested lockを例外追加するのではなく、必要なstateを一つのcanonical A ownerへ集約するか、一つのAが所有するprepared / one-shot protocolへ責務境界を再定義する。
+
+##### `FrontendTuneScanTxn` の有限正規entry集合
+
+`FrontendTuneScanTxn`は長寿命instanceを保持せず、次の有限entry集合だけを正規の再入場面とする。各entryは呼出しごとのB実行として完結し、非同期operationのpersistent state、generation、worker lifetime、callback reservationは対応するcanonical ownerへ残す。
+
+| entry role | 呼出元 | 入力 | Bが行うこと | 永続化先 |
+|---|---|---|---|---|
+| `begin_tune` | `IFrontend.tune()` object-method façade | validated tune request、frontend generation | request fingerprint / generation candidate準備、`WorkerRuntime` / backend / `StreamBoundaryTxn`のtyped prepareと結果集約 | frontend operation owner、`WorkerRuntime`、各`StreamBoundaryTxn` |
+| `begin_scan` | `IFrontend.scan()` object-method façade | validated scan request、frontend generation | scan fingerprint確定、worker/backend/boundary準備、初期callback reservationのgeneration fence設定 | frontend operation owner、`WorkerRuntime`、callback owner |
+| `stop_tune` | `IFrontend.stopTune()` object-method façade | current frontend generation | 対象tune generationをfenceし、worker/backend停止と必要なboundary結果を集約 | frontend operation owner、`WorkerRuntime`、各`StreamBoundaryTxn` |
+| `stop_scan` | `IFrontend.stopScan()` object-method façade | current frontend generation | 対象scan generationをfenceし、worker/backend停止と必要なboundary結果を集約 | frontend operation owner、`WorkerRuntime`、各`StreamBoundaryTxn` |
+| `accept_operation_event` | worker/backend completion bridge | operation generation + typed frontend event/result | generation再検証、stale event拒否、現generationに対するcallback reservation / domain completionを調停 | frontend operation owner、callback owner |
+| `accept_worker_terminal` | `WorkerRuntime` completion bridge | worker owner generation + typed terminal result | operation generationとの対応を再検証し、frontend固有終了結果を`FrontendWorkerTerminationTxn` / failure分類へ接続 | frontend operation owner、`WorkerRuntime`、cleanup owner |
+
+- `begin_*` / `stop_*`はAIDL façadeだけから、`accept_*`はworker/backend completion bridgeだけから呼ぶ。callback delivery façade自身は`FrontendTuneScanTxn`へ再入場せず、予約済みtyped callbackを配送し、配送失敗は`PostCommitCallbackFailureTxn`へ接続する。
+- 各entryは開始時にcanonical ownerからsnapshot / generation / one-shot authorityを取得し、外部処理後にgenerationを再検証する。旧generationの`accept_operation_event` / `accept_worker_terminal`はstate変更またはcallback予約を行わずstale resultとして破棄・診断する。
+- `FrontendTuneScanTxn`用の`Arc<Mutex<...>>`、共有mutable phase、独自retry queue、独自scan generationを設けない。複数呼出しにまたがる情報が必要なら上表の永続化先へ置く。
+- 上記6 roleを複数Rust関数へ機械的にsplitしてよいが、正規名称標識から同一roleへ追跡可能にし、別の第7 roleを実装都合だけで追加しない。新しい外部非同期入力種別が必要になった場合は、この有限集合とcanonical owner境界を設計更新してから入口を追加する。
 
 ##### 実装依存とcomposition接続規則
 
