@@ -11,7 +11,7 @@
 1. `../tuner_hal/DESIGN_JA.md` 0-S-3B の正規共通契約を Rust 識別子単位へ分解した21件。
 2. 0-S-3B 外だが、現行設計が共通の処理責務として一意化している8件。
 
-`PacketTxn<'a>`、`DemuxFilterDvrTxn<'a>`、`FrontendTxn<'a>`、`GenerationBoundaryTxn` のような現在の実装アンカー名は、それ自体を追加の論理契約として数えない。
+`DemuxFilterDvrTxn<'a>`、`FrontendTxn<'a>`、`GenerationBoundaryTxn` のような現在の実装アンカー名は、それ自体を追加の論理契約として数えない。
 
 ---
 
@@ -240,7 +240,7 @@ assert_sync::<SomeSharedOwner>();
 | 24 | `ChildOpenTxn` | B | 手順所有者・入口に `ChildOpenTxn` 標識 | `Filter` / `DVR` / `TimeFilter` 等の子オブジェクトについて、親検証、資源予約、実行時・Binder・コールバック準備、確定・巻戻しを共通化する |
 | 25 | `FrontendTuneScanTxn` | B | 手順所有者・入口に `FrontendTuneScanTxn` 標識 | 要求指紋、事前検査、ワーカー・下位実装、世代柵、複数の `Demux` 境界、結果集約に加え、現走査世代に従属するコールバック生成と旧世代配送の遮断を共通化し、追加メッセージのための第二の走査状態機械を持たせない |
 | 26 | `FrontendWorkerTerminationTxn` | B | 手順所有者・入口に `FrontendWorkerTerminationTxn` 標識 | `WorkerRuntime` / `WorkerHandle` の型付き寿命管理入口を使用し、フロントエンド固有の後始末結果、リース再利用条件、失敗分類器への接続を調停する |
-| 27 | `PacketPipeline` | A | 状態所有型 `PacketPipeline` | パケット検証、発生元分類、データ経路振分けに加え、現行設計で発生元ごとの定常時連続性の正本を保持する |
+| 27 | `PacketPipeline` | A | 状態所有型 `PacketPipeline` | 型付き`TsInputOrigin`とともにパケットを受理し、入力元別の定常時連続性の正本を保持しつつ、パケット検証と各正規所有者へのデータ経路振分けを一意な正規入口で行う |
 | 28 | `FilterWatermarkClassifier` | C | 分類器所有者・入口に `FilterWatermarkClassifier` 標識 | 通常payload FMQを持つFilterについて、同一キュー観測値から `LOW_WATER` / `HIGH_WATER` を導く分類を一意化し、状態機械・キュー・ワーカー・タイマーを所有しない |
 | 29 | `DvrWatermarkClassifier` | C | 分類器所有者・入口に `DvrWatermarkClassifier` 標識 | `DvrSettingsSnapshot` と同一FMQ観測値および直前状態を入力としてPlayback/Recordの水位分類を一意化し、評価契機ごとの状態機械や分類式の複製を持たない |
 
@@ -291,6 +291,7 @@ assert_sync::<SomeSharedOwner>();
 10. 走査コールバックの生成・配送経路は `FrontendTuneScanTxn` が確定した現走査世代の柵を必ず通り、旧世代のメッセージ配送または追加メッセージ専用の第二の走査状態機械を持たない。
 11. 通常payload FMQを持つFilterの水位分類は `FilterWatermarkClassifier` を通り、呼出元が同じ閾値計算・比較境界を再実装せず、独立した水位状態機械・キュー・ワーカー・タイマーを持たない。
 12. DVRの開始直後評価、状態変化時評価、周期評価は `DvrWatermarkClassifier` を通り、同じ `DvrSettingsSnapshot` と同一FMQ観測値を入力として使用し、Playback/Recordの分類式を評価契機ごとに複製しない。
+13. `PacketPipeline`へのすべての通常パケット入力は型付き`TsInputOrigin`を伴い、物理経路から入力元を推測・再構成せず、通常パケット処理の第二の正規状態所有者または正規手順所有者を設けない。
 
 ### 5.4 未使用コード・静的検査
 
@@ -314,7 +315,7 @@ assert_sync::<SomeSharedOwner>();
 - A の正規状態所有型名は正規論理契約名と一致する。
 - B/C の本番コードの呼出元から、正規名称標識を経由しない別名の所有者・入口が検出された場合、その全件について重複実装・迂回実装・旧実装残存ではないことを解消または説明できる。
 - `StreamBoundaryTxn` / `GenerationBoundaryTxn` の正規状態所有者の別名が解消される。
-- `PacketTxn`を独立論理契約として扱わない。
+- `PacketPipeline`が通常パケット処理の唯一の正規A状態所有者であり、すべての通常パケット入力が型付き`TsInputOrigin`を伴って正規入口を通り、第二の正規状態所有者または正規手順所有者がない。
 - `ChildOpenTxn` が `Filter` / `DVR` / `TimeFilter` 等の共通の子オープン手順所有者として接続され、オブジェクト種別ごとの第二の正規子オープン所有者がない。
 - `DescramblerPidTxn` / `DescramblerKeyTxn` / `DescramblerSessionCleanupTxn` が互いに独立した正規手順所有者・入口として追跡できる。
 - `CallbackRegistrationUseCase` がコールバック登録手順だけを所有し、`RuntimeCallbackRegistry`やBinder生成物の保管主体を同一B所有者へ統合しない。
