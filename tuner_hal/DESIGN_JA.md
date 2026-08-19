@@ -464,7 +464,7 @@ commit前失敗では、成功戻りを返してはならない。commit後clean
 | descrambler session cleanup | `DescramblerSessionCleanupTxn` | normal PID / key mutationのownerにしない |
 | Record DVR / Filter relation | `RecordDvrFilterRelationTxn` | DVR側とFilter側に別のrelation正本を持たない |
 | worker lifecycle mechanism | `WorkerRuntime` / `WorkerHandle` | domain固有のstart / stop state machineを統合しない |
-| worker failure classification | `WorkerFailureClassifier` | lifecycle、retry / cleanup、quarantine、公開状態遷移を所有しない |
+| worker failure classification | `WorkerFailureClassifier` | lifecycle、retry / cleanup、公開状態遷移を所有しない |
 | domain commit後callback failure | `PostCommitCallbackFailureTxn` | commit済みdomain stateを所有しない |
 | Filter producer drain | `FilterProducerDrainGate` | Filter `flush()`全体またはDVR queue stateを所有しない |
 | DVR queue epoch | `QueueEpochProtocol` | Filter stateまたはDVR `flush()`全体を所有しない |
@@ -601,7 +601,7 @@ nonraw Section eventの`tableId`は実sectionのtable_id、long sectionでは実
 | PUSI あり、PES start code 正常 | 新規 PES 開始 | 既存未完了 PES を破棄し、新規 PES を開始 | まだ配送しない |
 | PUSI なし、既存 PES あり | continuation | buffer へ追加 | 完成条件を満たせば配送 |
 | PUSI なし、既存 PES なし | continuation-only | state 破棄 | 配送しない |
-| PES start code不正 | malformed | state 破棄 | 配送しない |
+| PES start code 不正 | malformed | state 破棄 | 配送しない |
 | `stream_id`が`0xBC,0xBE,0xBF,0xF0,0xF1,0xF2,0xF8,0xFF` | ordinary optional headerを持たないspecial syntax | start code、stream id、宣言長と当該special payload境界だけを検証し、optional-header marker、`PTS_DTS_flags`、`header_data_length`、PTS/DTSを要求しない | 完全長とspecial syntax検証成功時だけ配送 |
 | 上記以外の`stream_id`でoptional header marker不正 | malformed ordinary PES | state 破棄 | 配送しない |
 | ordinary PESで`PTS_DTS_flags == 0b00` | timestampなしの有効PES | timestamp fieldを要求せず収集を継続 | 完全長で配送 |
@@ -1220,7 +1220,7 @@ Tuner HAL の descrambler は、key token で与えられた鍵を用いて、18
 ECM / EMM、CAS権利判定、card I/O、CW取得は Tuner HAL の責務ではない。CAS HAL または CAS bridge が責務を持つ。Tuner HAL は、取得済み key token を使う payload 復号中核だけを担当する。
 
 
-ECM / EMM 処理、カード I/O、CAS 権利判定、CW 取得、不透明 トークン 発行、B25 system key / CBC 初期値 / data key を CAS 側から安全に供給する経路は CAS HAL または CAS bridge の責務であり、r52内部鍵資源の詳細は`../future_work/r52/b25_key_slot_registry_contract.md`を正とする。CAS / TIS / Tuner HAL のリリース段階ごとの統合スコープは `開発規則.md`を正とする。本節が規定するのはTuner HALのpacket単位デスクランブル中核と診断境界であり、libaribb25相当のTS→TS B25処理系全体の完成条件または作業完了判定を定義しない。
+ECM / EMM 処理、カード I/O、CAS 権利判定、CW 取得、不透明 トークン 発行、B25 system key / CBC 初期値 / data key を CAS 側から安全に供給する経路は CAS HAL または CAS bridge の責務であり、r52内部鍵資源の詳細は`../future_work/r52/b25_key_slot_registry_contract.md`を正とする。CAS / TIS / Tuner HAL のリリース段階ごとの統合スコープは `開発規則.md` を正とする。本節が規定するのはTuner HALのpacket単位デスクランブル中核と診断境界であり、libaribb25相当のTS→TS B25処理系全体の完成条件または作業完了判定を定義しない。
 
 ## LNB profile 判定表
 
