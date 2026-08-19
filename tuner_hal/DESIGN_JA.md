@@ -278,7 +278,7 @@ Record DVRの`attachFilter()` / `detachFilter()`は、Record DVRがLiveであれ
 
 - `statusMask=0` はstatus callbackを要求しない有効値として成功させ、データ経路は通常どおり動作させる。AIDLで既知のstatus bitのうち現行profileが生成できないbitは`UNAVAILABLE`、予約bit・未知bitは`INVALID_ARGUMENT`とする。成功後はmaskで選択したstatusだけをcallback対象にする。
 - `lowThreshold` と `highThreshold` はbyte単位とし、`0 <= lowThreshold <= highThreshold <= openDvr(bufferSize)`を満たす場合だけ受理する。負値、大小逆転、FMQ容量超過は`INVALID_ARGUMENT`とし、clampしない。`lowThreshold == highThreshold` はAOSPが禁止していない有効入力として受理し、等値だけを理由に本製品固有の拒否条件を追加しない。
-- 水位判定は、同一queue snapshotとcommit済み `DvrSettingsSnapshot` だけから決定し、別のwatermark state machineを設けない。Playbackは同一snapshotから `readableBytes = availableToRead` と `writableBytes = availableToWrite` を取得し、AOSP default HAL / VTSの歴史的behaviorに合わせて、`writableBytes == 0` なら `PlaybackStatus::SPACE_FULL`、それ以外で `readableBytes > highThreshold` なら `SPACE_ALMOST_FULL`、それ以外で `readableBytes < lowThreshold` なら `SPACE_ALMOST_EMPTY`、それ以外で `readableBytes == 0` なら `SPACE_EMPTY`、それ以外は直前のPlayback statusを維持して新しいstatus遷移を生成しない。したがってPlaybackでは `readableBytes == lowThreshold` / `readableBytes == highThreshold` をALMOST側の新規遷移条件にしない。Recordは `q = unconsumedBytes` とし、`q <= lowThreshold` なら `RecordStatus::LOW_WATER`、それ以外で `q >= highThreshold` なら `HIGH_WATER`、それ以外はwatermark statusなしとする。Recordでは `lowThreshold == highThreshold == T` かつ `q == T` の場合にlow側を一意に採用する。Playbackのthreshold判定へunused/free bytesを代用せず、Recordの判定へunused bytesを代用しない。`RecordStatus::DATA_READY` はwatermark分類ではなく、Record outputが実際に成功commitされ読み取り可能になった事象として既存のdata-ready契約に従う。
+- 水位判定は、同一queue snapshotとcommit済み `DvrSettingsSnapshot` だけから決定し、別のwatermark state machineを設けない。Playbackは同一snapshotから `readableBytes = availableToRead` と `writableBytes = availableToWrite` を取得し、AOSP default HAL / VTSの歴史的behaviorに合わせて、`writableBytes == 0` なら `PlaybackStatus::SPACE_FULL`、それ以外で `readableBytes > highThreshold` なら `SPACE_ALMOST_FULL`、それ以外で `readableBytes < lowThreshold` なら `SPACE_ALMOST_EMPTY`、それ以外で `readableBytes == 0` なら `SPACE_EMPTY`、それ以外は直前のPlayback statusを維持して新しいstatus遷移を生成しない。したがってPlaybackでは `readableBytes == lowThreshold` / `readableBytes == highThreshold` をALMOST側の新規遷移条件にしない。Recordは `q = unconsumedBytes` とし、`q > highThreshold` なら `RecordStatus::HIGH_WATER`、それ以外で `q < lowThreshold` なら `LOW_WATER`、それ以外は直前のRecord statusを維持して新しいwatermark status遷移を生成しない。Recordでは `lowThreshold == highThreshold == T` かつ `q == T` の場合もLOW/HIGHのどちらにも新規遷移しない。Playbackのthreshold判定へunused/free bytesを代用せず、Recordの判定へunused bytesを代用しない。`RecordStatus::DATA_READY` はwatermark分類ではなく、Record outputが実際に成功commitされ読み取り可能になった事象として既存のdata-ready契約に従う。
 - `dataFormat` は現行TS-only `ProductProfile`が扱うTS formatだけを成功させる。AIDL上既知だが現行profileで扱わないformatは`UNAVAILABLE`、予約値・未知値・未定義値は`INVALID_ARGUMENT`とする。
 - `packetSize` は正のbyte数だけを構文上受理し、現行TS formatでは188だけを成功させる。正の別packet sizeは`UNAVAILABLE`、0以下は`INVALID_ARGUMENT`とし、`dataFormat`との組として検証する。
 - `statusMask` は上記のsemantic status分類後に適用し、選択されているbitのstatusだけをcallback対象とする。分類されたstatusのbitがmaskされている場合、同じsnapshotで条件が重なる別statusへfallback / remapしない。開始直後の初期評価、threshold crossing / status変化、および受理済み`setStatusCheckIntervalHint()`による周期評価は同じ分類式と同じ`DvrSettingsSnapshot`を参照し、callback失敗は`PostCommitCallbackFailureTxn`へ接続する。
@@ -464,7 +464,7 @@ commit前失敗では、成功戻りを返してはならない。commit後clean
 | descrambler session cleanup | `DescramblerSessionCleanupTxn` | normal PID / key mutationのownerにしない |
 | Record DVR / Filter relation | `RecordDvrFilterRelationTxn` | DVR側とFilter側に別のrelation正本を持たない |
 | worker lifecycle mechanism | `WorkerRuntime` / `WorkerHandle` | domain固有のstart / stop state machineを統合しない |
-| worker failure classification | `WorkerFailureClassifier` | lifecycle、retry / cleanup、公開状態遷移を所有しない |
+| worker failure classification | `WorkerFailureClassifier` | lifecycle、retry / cleanup、quarantine、公開状態遷移を所有しない |
 | domain commit後callback failure | `PostCommitCallbackFailureTxn` | commit済みdomain stateを所有しない |
 | Filter producer drain | `FilterProducerDrainGate` | Filter `flush()`全体またはDVR queue stateを所有しない |
 | DVR queue epoch | `QueueEpochProtocol` | Filter stateまたはDVR `flush()`全体を所有しない |
@@ -601,7 +601,7 @@ nonraw Section eventの`tableId`は実sectionのtable_id、long sectionでは実
 | PUSI あり、PES start code 正常 | 新規 PES 開始 | 既存未完了 PES を破棄し、新規 PES を開始 | まだ配送しない |
 | PUSI なし、既存 PES あり | continuation | buffer へ追加 | 完成条件を満たせば配送 |
 | PUSI なし、既存 PES なし | continuation-only | state 破棄 | 配送しない |
-| PES start code 不正 | malformed | state 破棄 | 配送しない |
+| PES start code不正 | malformed | state 破棄 | 配送しない |
 | `stream_id`が`0xBC,0xBE,0xBF,0xF0,0xF1,0xF2,0xF8,0xFF` | ordinary optional headerを持たないspecial syntax | start code、stream id、宣言長と当該special payload境界だけを検証し、optional-header marker、`PTS_DTS_flags`、`header_data_length`、PTS/DTSを要求しない | 完全長とspecial syntax検証成功時だけ配送 |
 | 上記以外の`stream_id`でoptional header marker不正 | malformed ordinary PES | state 破棄 | 配送しない |
 | ordinary PESで`PTS_DTS_flags == 0b00` | timestampなしの有効PES | timestamp fieldを要求せず収集を継続 | 完全長で配送 |
@@ -1220,7 +1220,7 @@ Tuner HAL の descrambler は、key token で与えられた鍵を用いて、18
 ECM / EMM、CAS権利判定、card I/O、CW取得は Tuner HAL の責務ではない。CAS HAL または CAS bridge が責務を持つ。Tuner HAL は、取得済み key token を使う payload 復号中核だけを担当する。
 
 
-ECM / EMM 処理、カード I/O、CAS 権利判定、CW 取得、不透明 トークン 発行、B25 system key / CBC 初期値 / data key を CAS 側から安全に供給する経路は CAS HAL または CAS bridge の責務であり、r52内部鍵資源の詳細は`../future_work/r52/b25_key_slot_registry_contract.md`を正とする。CAS / TIS / Tuner HAL のリリース段階ごとの統合スコープは `開発規則.md` を正とする。本節が規定するのはTuner HALのpacket単位デスクランブル中核と診断境界であり、libaribb25相当のTS→TS B25処理系全体の完成条件または作業完了判定を定義しない。
+ECM / EMM 処理、カード I/O、CAS 権利判定、CW 取得、不透明 トークン 発行、B25 system key / CBC 初期値 / data key を CAS 側から安全に供給する経路は CAS HAL または CAS bridge の責務であり、r52内部鍵資源の詳細は`../future_work/r52/b25_key_slot_registry_contract.md`を正とする。CAS / TIS / Tuner HAL のリリース段階ごとの統合スコープは `開発規則.md`を正とする。本節が規定するのはTuner HALのpacket単位デスクランブル中核と診断境界であり、libaribb25相当のTS→TS B25処理系全体の完成条件または作業完了判定を定義しない。
 
 ## LNB profile 判定表
 
@@ -1330,7 +1330,7 @@ release AIDL経路からテスト専用入口へ到達してはならず、テ�
 | T-AOSP-51 | ISDB-S SDK default selector未指定 | `STREAM_ID + INVALID_STREAM_ID(0xFFFF)`を明示TSID検証より先に`Unspecified`へ正規化し、px4 BSは互換slot 0、px4 CS110はfixed slot 0、Linux DVB / earth_pt1は`NO_STREAM_ID_FILTER`へ写像する。通常のBS TIS経路では明示absolute TSIDを維持する |
 | T-AOSP-48 | ISDB-S `rolloff` | 未指定、既知未対応、malformedを分類し、未適用値を成功させない |
 | T-AOSP-49 | RECORD index settings/event | request mask/typeを無損失検証し、event mask、`pts`、`firstMbInSlice`をcurrent parser/delivery fenceに一致させる。`byteNumber`は当該indexが位置するcommitted Record Filter output上の0起点offsetとする。最初のoutputは0から始まり、Record DVR output commit成功時だけ実commit byte数分`record_output_byte_offset`を進め、commit失敗では不変とする。flush/reconfigure/source/stream boundary、Record DVR attach/detachで維持し、新Filter output lifetimeだけ0へ戻す |
-| T-AOSP-50 | DVR `statusMask` / threshold / `dataFormat` / `packetSize` | Playbackは同一FMQ snapshotの`availableToRead` / `availableToWrite`を用い、`SPACE_FULL` → `SPACE_ALMOST_FULL` → `SPACE_ALMOST_EMPTY` → `SPACE_EMPTY` → 前status維持の順で判定する。threshold等値ではALMOSTへ新規遷移しない。Recordはunconsumed bytesで判定し、`low == high == T` / `q == T` はlow側へ一意化する。semantic status確定後に`statusMask`を適用し、maskされたstatusを別statusへremapしない。無効・未対応設定は状態不変で拒否 |
+| T-AOSP-50 | DVR `statusMask` / threshold / `dataFormat` / `packetSize` | Playbackは同一FMQ snapshotの`availableToRead` / `availableToWrite`を用い、`SPACE_FULL` → `SPACE_ALMOST_FULL` → `SPACE_ALMOST_EMPTY` → `SPACE_EMPTY` → 前status維持の順で判定する。threshold等値ではALMOSTへ新規遷移しない。Recordはunconsumed bytesで`q > highThreshold`を`HIGH_WATER`、`q < lowThreshold`を`LOW_WATER`として判定し、threshold等値では新規遷移しない。`low == high == T` / `q == T` でも直前statusを維持する。semantic status確定後に`statusMask`を適用し、maskされたstatusを別statusへremapしない。無効・未対応設定は状態不変で拒否 |
 | T-AOSP-52 | `endFrequency`の操作別意味 | `tune()`とblind以外のscanでは差分を理由に拒否せずfingerprint/backend要求へ含めず、blind scanだけ`UNAVAILABLE`にする |
 | T-AOSP-53 | 同一settingsでのFilter reconfigure後startId | 一度start済みFilterをstopし、同一settingsで`configure()`成功後にrestartした場合も、最初に新しいstartId-only callbackを正確に1回配送してから通常eventを配送する |
 | T-AOSP-54 | TS live `DemuxFilterMediaEvent`公開field | `streamId`、PTS/DTS presence/value、`mpuSequenceNumber`、private-data、`extraMetaData`、`scIndexMask`を同一media outputの入力由来または定義済みdefaultと一致させ、別PES/generationを混成しない |
