@@ -1,0 +1,56 @@
+name: Revert PR31 unrelated edits
+
+on:
+  push:
+    branches:
+      - agent/fix-dvr-playback-watermark-test
+    paths:
+      - .github/workflows/tmp-revert-pr31-unrelated.yml
+
+permissions:
+  contents: write
+
+jobs:
+  revert-unrelated:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-dvr-playback-watermark-test
+          fetch-depth: 0
+      - name: Revert unrelated edits only
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("tuner_hal/DESIGN_JA.md")
+          text = path.read_text(encoding="utf-8")
+          replacements = [
+              (
+                  "| worker failure classification | `WorkerFailureClassifier` | lifecycle、retry / cleanup、quarantine、公開状態遷移を所有しない |",
+                  "| worker failure classification | `WorkerFailureClassifier` | lifecycle、retry / cleanup、公開状態遷移を所有しない |",
+              ),
+              (
+                  "| PES start code不正 | malformed | state 破棄 | 配送しない |",
+                  "| PES start code 不正 | malformed | state 破棄 | 配送しない |",
+              ),
+              (
+                  "CAS / TIS / Tuner HAL のリリース段階ごとの統合スコープは `開発規則.md`を正とする。",
+                  "CAS / TIS / Tuner HAL のリリース段階ごとの統合スコープは `開発規則.md` を正とする。",
+              ),
+          ]
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"expected exactly one occurrence, got {count}: {old}")
+              text = text.replace(old, new, 1)
+          path.write_text(text, encoding="utf-8")
+      - name: Commit cleanup
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tuner_hal/DESIGN_JA.md
+          git diff --cached --check
+          git diff --cached --exit-code >/dev/null && exit 1 || true
+          git commit -m "docs: revert unrelated PR31 edits"
+          git push origin HEAD:agent/fix-dvr-playback-watermark-test
