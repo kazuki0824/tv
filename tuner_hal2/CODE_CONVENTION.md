@@ -18,6 +18,10 @@
 - `Drop` に object 種別固有の cleanup state machine を書かない。`ObjectCloseTxn` owner が公開する owner-loss / Drop 用 typed entry だけへ接続する。
 - `Drop` に任せる自動cleanupは、失敗不能なlocal reservation / memory / guard解放に限定する。backend I/O、Binder call、worker join、retry schedule、quarantine判定、失敗結果を上位ownerへ返す必要があるcleanupは明示的なtyped `commit` / `abort` / `cleanup` / `finish`で実行し、`Drop`だけへ隠さない。
 - `Drop` はpanicせず、cleanup failureをpanicへ変換しない。
+- `Drop`を論理的なcommit pointまたはfallible cleanupの完了確定点にしない。destructorが実行されなかった場合でも、公開状態・cleanup義務・retry可否の正しさが変わらない構造にする。
+- backend I/O、Binder、worker joinその他のfallible / external cleanupを必要とする義務は、attempt authorityを発行する前に論理契約が指定するpersistent canonical ownerへ記録する。cleanup義務そのものをone-shot tokenだけに保持しない。
+- fallible cleanupのattempt authorityが明示消費されずに`Drop`または`mem::forget`された場合も、canonical ownerのcleanup義務は未完のまま残る。authorityの消滅だけをcleanup成功、放棄、retry不要の根拠にしない。
+- fallible cleanup attempt成功時だけtyped resultをcanonical ownerへ返して義務の完了を確定し、失敗・結果不明・stale authorityは論理契約のpending / retry / quarantine意味へ接続する。attempt authorityの`Drop`がこの確定処理を代行しない。
 
 ## 2. AIDL / service_runtime 境界
 
@@ -77,6 +81,11 @@ Wrapper を置いてよいのは、public API 境界、domain naming 隠蔽、AI
 - one-shot token に `Clone` / `Copy` を付けず、consume-by-value で消費する。rollback snapshot 本体を token 外へ出さない。
 - prepared mutation、permit、cleanup authority、execution authority等、二重使用が契約違反になる値もone-shot tokenと同じ規則を適用し、正規の`commit(self)` / `abort(self)` / `release(self)` / `finish(self)`等でby-value消費する。
 - 未使用が誤りになるprepared value / one-shot authorityには`#[must_use]`またはrepositoryで採用する同等の静的検出を使用する。
+- `#[must_use]`は未消費authorityの検出補助であり、cleanup義務を保証するcorrectness primitiveとして扱わない。destructor実行やlint発火に依存せず、persistent canonical ownerのstateだけから未完義務を再発見できなければならない。
+- one-shot値は、(a) `Drop`で失敗不能なlocal abort / releaseを行えるRAII guard と、(b) fallible / external operationを一回試行するattempt authorityを区別する。同じ型が両方の意味を曖昧に兼ねない。
+- (a) のRAII guardはlocal reservation、memory / in-memory claim、mutex / producer permit、失敗不能に元へ戻せるprepared local mutation等に限る。explicit `commit(self)` / `release(self)`等でdisarmし、armedなまま`Drop`された場合だけlocal abort / releaseしてよい。
+- (b) のattempt authorityはcleanup義務そのものを所有しない。canonical ownerにpersistent obligationが存在する場合だけ発行し、generation / obligation identity / attempt permission等の型付き証明を保持する。`Drop`では外部cleanupを実行せず、必要なら失敗不能なlocal attempt leaseの返却だけを行う。
+- attempt authorityを消費したfallible operationはtyped outcomeをcanonical ownerへ返し、ownerだけが義務の完了・継続・再試行・隔離を論理契約に従って確定する。authority型の消滅、`Drop`、`mem::forget`、task cancellationを義務完了として扱わない。
 - 再利用可能な値は token と分離した read-only descriptor にする。clone可能なread-only handleとone-shot mutation authorityが同じ型に混在して権限を複製しないよう、必要に応じて別型へ分離する。
 - lifetime ID / generation / epoch / tokenは意味ごとのnewtypeまたは同等の型境界で区別し、異なるnamespaceの裸の整数を同じmutation APIへ渡せる形を正規形にしない。
 - single-variant enum や未使用 variant で状態機械を装わない。
@@ -138,6 +147,7 @@ Wrapper を置いてよいのは、public API 境界、domain naming 隠蔽、AI
 - owner / entry の静的検査は `tuner_hal2/DESIGN_JA.md` の規範実装アンカーを入力とし、本書独自の ownership 表を入力にしない。
 - `DESIGN_JA.md`が正に要求する`Send` / `Sync`は実型へのcompile-time assertionで確認する。単に実行器のtrait boundを通すための`unsafe impl Send` / `unsafe impl Sync`を追加しない。
 - one-shot authority / prepared valueのconstructor非公開、非`Clone` / 非`Copy`、consume-by-valueをcompile-fail相当またはrepositoryで採用する静的検査で確認する。
+- fallible cleanup attempt authorityについて、authorityを未消費のままdrop / forget相当としてもpersistent cleanup obligationが残り、後続attemptを発行できることを状態・型付き結果で検査する。`#[must_use]`警告だけを完了条件にしない。
 
 ## 12. runtime failure / capability inventory の実装境界
 
