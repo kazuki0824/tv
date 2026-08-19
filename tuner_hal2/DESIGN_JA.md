@@ -151,6 +151,28 @@ lifecycle/owner/generation検証、引数検証との優先順位、再検証、
 
 A=13、B=12、C=3であり、`WorkerHandle`を第二のAまたは第二の論理契約として数えない。
 
+##### owner lock acquisition DAG
+
+共通化対象のcanonical A owner間では、**別ownerのlockを保持したまま別のcanonical A owner lockを取得しない**。複数ownerをまたぐBまたは上位orchestrationは、source ownerのlock内でtyped snapshot / prepared value / one-shot authorityを取得してlockを解放し、その後に別ownerのtyped entryまたは外部処理を実行し、必要な場合だけ元ownerを再取得してgeneration / authorityを再検証してcommitする。これによりcross-owner nested lockの順序表そのものを不要にし、owner追加時に暗黙のlock hierarchyを増やさない。
+
+次図の矢印は処理順序であり、`unlock`を越えて次のownerへ進むことを必須とする。`A1 lock`から`A2 lock`への直接辺は存在せず、そのnested acquisitionは禁止する。
+
+```mermaid
+flowchart LR
+    A1[canonical A1 lock\nsnapshot / prepare] --> U1[unlock A1]
+    U1 --> X[canonical A2 typed entry\nor backend / Binder / join]
+    X --> A1R[reacquire A1 if needed\ngeneration / authority revalidate]
+    A1R --> C[commit or reject stale result]
+
+    A1 -. forbidden: nested lock .-> A2[canonical A2 lock]
+```
+
+- `TunerServiceRuntime`等の上位registry / object-table lockもcanonical A ownerを呼ぶ前に解放し、上位lockとA owner lockをnestedに保持しない。
+- `StreamBoundaryTxn`からsteady-state ownerへreset / invalidateをdispatchする場合も、`StreamBoundaryTxn`自身の内部lockを保持したまま対象owner lockへ入らない。prepare済みgeneration / authorityを境界として渡し、各ownerの結果を再集約する。
+- `DemuxFrontendSourceTxn`、`CallbackRegistrationUseCase`、`Descrambler*Txn`、`QueueCleanupTxn`、`RootOpenTxn`、`ChildOpenTxn`、`FrontendTuneScanTxn`、`FrontendWorkerTerminationTxn`等のBはcross-owner lockを保持せず、各Aのtyped prepare / commit / abort入口を順に使用する。
+- backend I/O、Binder call / callback delivery、blocking wait、FMQ wait、worker joinの間はcanonical A owner lockまたは上位runtime lockを保持しない。
+- cross-ownerの不可分性がこの規則だけでは保てない場合、nested lockを例外追加するのではなく、必要なstateを一つのcanonical A ownerへ集約するか、一つのAが所有するprepared / one-shot protocolへ責務境界を再定義する。
+
 ##### 実装依存とcomposition接続規則
 
 論理契約の状態、phase、commit / rollback、failure semanticsは`../tuner_hal/DESIGN_JA.md`の同名契約を正とし、本節は`tuner_hal2`内でowner同士をどのtyped入口で接続するかだけを定義する。
