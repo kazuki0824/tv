@@ -18,6 +18,10 @@
 - `Drop` に object 種別固有の cleanup state machine を書かない。`ObjectCloseTxn` owner が公開する owner-loss / Drop 用 typed entry だけへ接続する。
 - `Drop` に任せる自動cleanupは、失敗不能なlocal reservation / memory / guard解放に限定する。backend I/O、Binder call、worker join、retry schedule、quarantine判定、失敗結果を上位ownerへ返す必要があるcleanupは明示的なtyped `commit` / `abort` / `cleanup` / `finish`で実行し、`Drop`だけへ隠さない。
 - `Drop` はpanicせず、cleanup failureをpanicへ変換しない。
+- `Drop`を論理上の確定点または失敗し得る後片付けの完了確定点にしない。`Drop`が実行されなかった場合でも、公開状態・未完後片付け義務・再試行可否の正しさが変わらない構造にする。
+- 機器入出力、Binder呼出し、ワーカー終了待ちその他の失敗し得る外部後片付けを必要とする義務は、一回実行権限を発行する前に、論理契約が指定する呼出しを越えて保持される正本所有者へ記録する。未完後片付け義務そのものを一回限り値だけに保持しない。
+- 失敗し得る後片付けの一回実行権限が明示的に消費されずに`Drop`または`mem::forget`された場合も、正本所有者の未完後片付け義務は未完のまま残る。権限値の消滅だけを後片付け成功、放棄、再試行不要の根拠にしない。
+- 失敗し得る後片付けが成功した場合だけ、型付き結果を正本所有者へ返して義務の完了を確定する。失敗・結果不明・失効済み権限は論理契約の未完・再試行・隔離の扱いへ接続し、一回実行権限の`Drop`がこの確定処理を代行しない。
 
 ## 2. AIDL / service_runtime 境界
 
@@ -77,6 +81,15 @@ Wrapper を置いてよいのは、public API 境界、domain naming 隠蔽、AI
 - one-shot token に `Clone` / `Copy` を付けず、consume-by-value で消費する。rollback snapshot 本体を token 外へ出さない。
 - prepared mutation、permit、cleanup authority、execution authority等、二重使用が契約違反になる値もone-shot tokenと同じ規則を適用し、正規の`commit(self)` / `abort(self)` / `release(self)` / `finish(self)`等でby-value消費する。
 - 未使用が誤りになるprepared value / one-shot authorityには`#[must_use]`またはrepositoryで採用する同等の静的検出を使用する。
+- 本節で後片付け権限を説明する規範用語は「未完後片付け義務」と「一回実行権限」に統一する。Rust識別子、AIDL識別子その他の実在する名前を除き、同じ概念に英語の別名を併記しない。
+- `#[must_use]`は未消費権限の検出補助であり、未完後片付け義務の履行を保証する仕組みとして扱わない。`Drop`の実行や静的検査の警告に依存せず、呼出しを越えて保持される正本所有者の状態だけから未完義務を再発見できなければならない。
+- 一回限り値は、(a) `Drop`で失敗不能な局所取消し・解放を行える値と、(b) 失敗し得る外部処理を一回だけ実行する権限を区別する。同じ型が両方の意味を曖昧に兼ねない。
+- (a) は局所予約、メモリ上の使用権、排他制御の保護値、生成側の許可証、失敗不能に元へ戻せる準備済み局所変更等に限る。明示的な`commit(self)` / `release(self)`等で無効化し、有効なまま`Drop`された場合だけ局所取消し・解放を行ってよい。
+- (b) の一回実行権限は未完後片付け義務そのものを所有しない。正本所有者に未完義務が存在する場合だけ発行し、世代、義務識別子、一回実行許可等の型付き証明を保持する。`Drop`では外部後片付けを実行せず、必要なら失敗不能な局所的な実行権限貸出しの返却だけを行う。
+- 一回実行権限を消費した失敗し得る処理は型付き結果を正本所有者へ返し、正本所有者だけが義務の完了・継続・再試行・隔離を論理契約に従って確定する。権限型の消滅、`Drop`、`mem::forget`、タスク取消しを義務完了として扱わない。
+- `ObjectCloseTxn`の`CloseCleanupAuthority`は上記(b)に該当する具体的な一回実行権限である。`CloseCleanupAuthority`自体は未完後片付け義務を所有しない。未完手順、後片付け結果、再試行・回収移管、完了確定は`ObjectCloseTxn`の呼出しを越えて保持される状態に残す。
+- `ObjectCloseTxn.begin_close`の不可分な確定を実装する際は、論理閉鎖と新規通常操作遮断に加え、未完後片付け義務の記録を最初の`CloseCleanupAuthority`発行より先に、または同一の不可分更新内で確定する。権限値だけが先に存在する中間状態を作らない。
+- 生存している`CloseCleanupAuthority`を回収機構へ引き渡せる通常経路では、論理契約の一度だけの移管を用いる。`CloseCleanupAuthority`が`Drop`、`mem::forget`、タスク取消し等で消滅または到達不能になっても、それを移管済みまたは義務完了とは扱わず、`ObjectCloseTxn`の未完後片付け義務から後続の一回実行権限を発行できなければならない。古い権限から遅れて返った結果は世代と義務識別子で失効判定する。
 - 再利用可能な値は token と分離した read-only descriptor にする。clone可能なread-only handleとone-shot mutation authorityが同じ型に混在して権限を複製しないよう、必要に応じて別型へ分離する。
 - lifetime ID / generation / epoch / tokenは意味ごとのnewtypeまたは同等の型境界で区別し、異なるnamespaceの裸の整数を同じmutation APIへ渡せる形を正規形にしない。
 - single-variant enum や未使用 variant で状態機械を装わない。
@@ -138,6 +151,7 @@ Wrapper を置いてよいのは、public API 境界、domain naming 隠蔽、AI
 - owner / entry の静的検査は `tuner_hal2/DESIGN_JA.md` の規範実装アンカーを入力とし、本書独自の ownership 表を入力にしない。
 - `DESIGN_JA.md`が正に要求する`Send` / `Sync`は実型へのcompile-time assertionで確認する。単に実行器のtrait boundを通すための`unsafe impl Send` / `unsafe impl Sync`を追加しない。
 - one-shot authority / prepared valueのconstructor非公開、非`Clone` / 非`Copy`、consume-by-valueをcompile-fail相当またはrepositoryで採用する静的検査で確認する。
+- 失敗し得る後片付けの一回実行権限について、権限を未消費のまま`Drop` / `mem::forget`相当としても呼出しを越えて保持される未完後片付け義務が残り、後続の一回実行権限を発行できることを状態と型付き結果で検査する。`#[must_use]`警告だけを完了条件にしない。`CloseCleanupAuthority`についてもこの検査を必須とする。
 
 ## 12. runtime failure / capability inventory の実装境界
 
