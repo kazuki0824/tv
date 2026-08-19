@@ -238,7 +238,7 @@ assert_sync::<SomeSharedOwner>();
 | 22 | `ObjectMethodTxn` | B | 手順所有者・入口に `ObjectMethodTxn` 標識 | 生存・所有者・世代・種別確認→要求変換→引数オブジェクト検証→振分け→一回性権限消費→ドメイン実行の順序を固定する |
 | 23 | `RootOpenTxn` | B | 手順所有者・入口に `RootOpenTxn` 標識 | 能力確認→予約→実行時準備→Binderオブジェクト準備→一括確定・逆順後始末を固定する |
 | 24 | `ChildOpenTxn` | B | 手順所有者・入口に `ChildOpenTxn` 標識 | `Filter` / `DVR` / `TimeFilter` 等の子オブジェクトについて、親検証、資源予約、実行時・Binder・コールバック準備、確定・巻戻しを共通化する |
-| 25 | `FrontendTuneScanTxn` | B | 手順所有者・入口に `FrontendTuneScanTxn` 標識 | 要求指紋、事前検査、ワーカー・下位実装、世代柵、複数の `Demux` 境界、結果集約を共通化する |
+| 25 | `FrontendTuneScanTxn` | B | 手順所有者・入口に `FrontendTuneScanTxn` 標識 | 要求指紋、事前検査、ワーカー・下位実装、世代柵、複数の `Demux` 境界、結果集約に加え、現走査世代に従属するコールバック生成と旧世代配送の遮断を共通化し、追加メッセージのための第二の走査状態機械を持たせない |
 | 26 | `FrontendWorkerTerminationTxn` | B | 手順所有者・入口に `FrontendWorkerTerminationTxn` 標識 | `WorkerRuntime` / `WorkerHandle` の型付き寿命管理入口を使用し、フロントエンド固有の後始末結果、リース再利用条件、失敗分類器への接続を調停する |
 | 27 | `PacketPipeline` | A | 状態所有型 `PacketPipeline` | パケット検証、発生元分類、データ経路振分けに加え、現行設計で発生元ごとの定常時連続性の正本を保持する |
 
@@ -286,6 +286,7 @@ assert_sync::<SomeSharedOwner>();
 7. Cの分類規則を呼出元が再実装していない。
 8. 判定の木で得た分類・追加要件、および2章の共通実装・接続規則に一致する。
 9. `unsafe impl Send` / `unsafe impl Sync` が存在する場合、2.5の条件を満たす。
+10. 走査コールバックの生成・配送経路は `FrontendTuneScanTxn` が確定した現走査世代の柵を必ず通り、旧世代のメッセージ配送または追加メッセージ専用の第二の走査状態機械を持たない。
 
 ### 5.4 未使用コード・静的検査
 
@@ -313,6 +314,7 @@ assert_sync::<SomeSharedOwner>();
 - `ChildOpenTxn` が `Filter` / `DVR` / `TimeFilter` 等の共通の子オープン手順所有者として接続され、オブジェクト種別ごとの第二の正規子オープン所有者がない。
 - `DescramblerPidTxn` / `DescramblerKeyTxn` / `DescramblerSessionCleanupTxn` が互いに独立した正規手順所有者・入口として追跡できる。
 - `CallbackRegistrationUseCase` がコールバック登録手順だけを所有し、`RuntimeCallbackRegistry`やBinder生成物の保管主体を同一B所有者へ統合しない。
+- `FrontendTuneScanTxn` が現走査世代に従属するコールバック生成・配送を調停し、旧世代メッセージを配送せず、追加メッセージのための第二の走査状態機械を持たない。
 - `FrontendWorkerTerminationTxn` がフロントエンド固有の終了処理を調停し、汎用寿命管理機構の所有者は `WorkerRuntime` / `WorkerHandle` のままである。
 - 正規入口を迂回する本番コードの呼出元がない。
 - 同じ状態・手順・分類を実装する非正規の本番重複実装がない。
