@@ -209,7 +209,7 @@ assert_sync::<SomeSharedOwner>();
 | 4 | `StreamBoundaryTxn` | A | 状態所有型 `StreamBoundaryTxn` | ストリーム境界世代、準備済み境界、型付きリセット・無効化通知を保持する |
 | 5 | `CallbackRegistrationUseCase` | B | 手順所有者・入口に `CallbackRegistrationUseCase` 標識 | Binder生成物・実行時登録簿・ドメイン状態をまたぐ準備、複合確定、後始末の手順を所有する |
 | 6 | `FrontendLnbRelationTxn` | A | 状態所有型 `FrontendLnbRelationTxn` | フロントエンド→LNB 割当関係、リース参照の変更、取引権限を保持する |
-| 7 | `LnbControlTxn` | A | 状態所有型 `LnbControlTxn` | 操作ロック、LNB 状態世代、失敗状態を保持する |
+| 7 | `LnbControlTxn` | B | 手順所有者・入口に `LnbControlTxn` 標識 | `LnbRegistry`が所有する永続状態、世代、失敗・隔離状態、共有レール状態、物理I/O権限を使い、1回の制御要求について準備済み変更→backend適用→確定・取消しを調停する。呼出しを越える状態または共有ロックを所有しない |
 | 8 | `DescramblerPidTxn` | B | 手順所有者・入口に `DescramblerPidTxn` 標識 | 要求確保・準備→下位実装への適用→PID台帳確定→補償の手順を所有する |
 | 9 | `DescramblerKeyTxn` | B | 手順所有者・入口に `DescramblerKeyTxn` 標識 | 鍵確保・準備→下位実装への適用→セッション・鍵表の確定→旧参照解放の手順を所有する |
 | 10 | `DescramblerSessionCleanupTxn` | B | 手順所有者・入口に `DescramblerSessionCleanupTxn` 標識 | 下位実装からの全切離し、要求・鍵・プール解放、全対象試行と報告の手順を所有する |
@@ -243,7 +243,7 @@ assert_sync::<SomeSharedOwner>();
 | 27 | `FilterWatermarkClassifier` | C | 分類器所有者・入口に `FilterWatermarkClassifier` 標識 | 通常payload FMQを持つFilterについて、同一キュー観測値から `LOW_WATER` / `HIGH_WATER` を導く分類を一意化し、状態機械・キュー・ワーカー・タイマーを所有しない |
 | 28 | `DvrWatermarkClassifier` | C | 分類器所有者・入口に `DvrWatermarkClassifier` 標識 | `DvrSettingsSnapshot` と同一FMQ観測値および直前状態を入力としてPlayback/Recordの水位分類を一意化し、評価契機ごとの状態機械や分類式の複製を持たない |
 
-集計を20件へ加えると、**A=13、B=12、C=3、計28件**となる。
+集計を20件へ加えると、**A=12、B=13、C=3、計28件**となる。
 
 この8件について、本メモでは上表の名称を正規論理契約名として扱う。散文の「オブジェクトメソッド」「ルートオープン」「子オープン」「フロントエンド選局・走査」「フロントエンドワーカー終了」は、それぞれ上表の正規名称を参照する。
 
@@ -291,6 +291,7 @@ assert_sync::<SomeSharedOwner>();
 11. 通常payload FMQを持つFilterの水位分類は `FilterWatermarkClassifier` を通り、呼出元が同じ閾値計算・比較境界を再実装せず、独立した水位状態機械・キュー・ワーカー・タイマーを持たない。
 12. DVRの開始直後評価、状態変化時評価、周期評価は `DvrWatermarkClassifier` を通り、同じ `DvrSettingsSnapshot` と同一FMQ観測値を入力として使用し、Playback/Recordの分類式を評価契機ごとに複製しない。
 13. `PacketPipeline`へのすべての通常パケット入力は型付き`TsInputOrigin`を伴い、物理経路から入力元を推測・再構成せず、通常パケット処理の第二の正規状態所有者または正規手順所有者を設けない。
+14. `LnbControlTxn`はBとして呼出しを越える状態・世代・失敗状態・操作ロックを持たず、永続状態と物理LNB・レール単位のI/O直列化は`LnbRegistry`だけが所有する。公開制御、固定給電、安全状態復帰、DiSEqCのbackend I/Oが同じ物理I/O権限を通り、I/O権限待ち中にregistry状態ロックを保持しない。
 
 ### 5.4 未使用コード・静的検査
 
@@ -308,11 +309,12 @@ assert_sync::<SomeSharedOwner>();
 
 - 28件すべてにA/B/Cが一意に付与されている。
 - 28件すべてについて、正規の状態所有者・手順所有者・分類器所有者、正規名称標識、正規入口または明示された入口集合を一意に追跡できる。
-- A=13、B=12、C=3 の集計と全件表が一致する。
+- A=12、B=13、C=3 の集計と全件表が一致する。
 - 28件すべてが判定の木による判定結果と一致する。
 - 28件すべてが2章の共通実装・接続規則に一致する。
 - A の正規状態所有型名は正規論理契約名と一致する。
 - `WorkerRuntime` が generic worker lifecycle の唯一の正規 A 状態所有者であり、内部物理要素の数を理由に共通化対象または正規状態所有者を増やさない。
+- `LnbControlTxn` はBの手順所有者であり、LNB永続制御状態・世代・失敗・隔離状態・共有レール状態・物理I/O権限の正本は`LnbRegistry`だけにあり、公開制御・固定給電・安全状態復帰・DiSEqCが同じ物理I/O直列化を共有する。
 - B/C の本番コードの呼出元から、正規名称標識を経由しない別名の所有者・入口が検出された場合、その全件について重複実装・迂回実装・旧実装残存ではないことを解消または説明できる。
 - `StreamBoundaryTxn` / `GenerationBoundaryTxn` の正規状態所有者の別名が解消される。
 - `PacketPipeline`が通常パケット処理の唯一の正規A状態所有者であり、すべての通常パケット入力が型付き`TsInputOrigin`を伴って正規入口を通り、第二の正規状態所有者または正規手順所有者がない。

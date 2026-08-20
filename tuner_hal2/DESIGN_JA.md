@@ -68,7 +68,8 @@ lifecycle/owner/generation検証、引数検証との優先順位、再検証、
 | `FrontendTuneScanTxn` | フロントエンド選局・走査の手順所有者 | ワーカー、下位実装接続層、コールバック層がフロントエンド所有者を迂回しない |
 | Record DVR / Filter relation | `RecordDvrFilterRelationTxn` | DVR側とFilter側が別のrelation ownerを持たない |
 | Frontend / LNB assignment relation | `FrontendLnbRelationTxn` | frontend object method use-caseまたはLNB registry ownerがrelation/leaseを別commitしない |
-| LNB persistent control | `LnbControlTxn` | persistent control APIごとに別のcontrol ownerを持たない |
+| LNB永続状態・物理I/O直列化 | `LnbRegistry` | `LnbControlTxn`、固定給電、安全状態復帰、DiSEqCが別の永続状態所有者または物理I/Oロックを持たない |
+| LNB永続制御手順 | `LnbControlTxn` | 永続制御APIごとに別の制御手順所有者を持たず、`LnbRegistry`の永続状態・物理I/O所有権を吸収しない |
 | callback registration | `CallbackRegistrationUseCase`。`RuntimeCallbackRegistry`とBinder callback artifactの保管主体は別責務 | AIDL façadeまたはdomain別use-caseが別のregistration ownerを持たない |
 | post-commit callback failure | `PostCommitCallbackFailureTxn` | API別に同型handlerを設けない |
 | Filter / DVR flush cleanup orchestration | `QueueCleanupTxn` | API別に別のflush cleanup orchestratorを設けない |
@@ -98,7 +99,8 @@ lifecycle/owner/generation検証、引数検証との優先順位、再検証、
 | `PacketPipeline` | `demux/src/parser/packet_pipeline.rs::PacketPipeline` | `service_runtime/src/packet_ops.rs`の型付きパケット入力処理入口 | `StreamBoundaryTxn`への通常パケット処理吸収、AIDL・下位実装・Filterコールバックからの`PacketPipeline`直接変更、第二の正規パケット処理所有者または正規手順所有者の追加 |
 | `RecordDvrFilterRelationTxn` | `service_runtime/src/demux_filter_dvr_ops.rs::RecordDvrFilterRelationTxn` | Record DVR `attachFilter()` / `detachFilter()`、Filter/DVR close、demux cleanup接続 | object側shadow relationの直接変更 |
 | `FrontendLnbRelationTxn` | `service_runtime/src/frontend_ops.rs::FrontendLnbRelationTxn` | `IFrontend.setLnb()` object use-case、Frontend close時の`ObjectCloseTxn` typed assignment release | frontend use-case/LNB registryによるrelation・lease別commit、`LnbControlTxn`へのassignment ownership統合 |
-| `LnbControlTxn` | `service_runtime/src/lnb_control_txn.rs::LnbControlTxn` | `ILnb.setVoltage()` / `setTone()` / `setSatellitePosition()` object use-case | API別control owner、`sendDiseqcMessage()`の同ownerへの統合 |
+| `LnbRegistry` | 正規状態所有者は`LnbRegistry`名を持つ。物理LNB・レール競合単位ごとの非公開I/O権限も同所有者に従属させる | `LnbControlTxn`の準備済み変更の準備・確定・取消し、HAL内部固定給電、安全状態復帰、DiSEqCの型付き物理I/O入口 | 永続状態・世代・失敗・隔離・共有レールのリース参照数の別所有者、`LnbRegistry`を迂回するbackend I/O、I/O権限待ち中のregistry状態ロック保持 |
+| `LnbControlTxn` | 正規B手順所有者・入口は`service_runtime/src/lnb_control_txn.rs::LnbControlTxn` | `ILnb.setVoltage()` / `setTone()` / `setSatellitePosition()` object use-case | API別制御手順所有者、呼出しを越える状態・世代・失敗状態・操作ロックの所有、`LnbRegistry`を迂回するbackend I/O、`sendDiseqcMessage()`の同手順への統合 |
 | `CallbackRegistrationUseCase` | 正規B手順所有者は`service_runtime/src/callback_registry.rs::CallbackRegistrationUseCase`。`RuntimeCallbackRegistry`は実行時登録簿の状態所有者、`aidl_service/src/callback_store.rs`はBinderコールバック生成物の保管主体であり、いずれも`CallbackRegistrationUseCase`へ統合または同名化しない | `IFrontend.setCallback()` / `ILnb.setCallback()`等のAIDLファサードからサービス実行時のコールバック登録入口 | AIDLファサード・ドメイン別処理による別の登録所有者、`RuntimeCallbackRegistry`またはコールバック生成物保管主体をBの共有進行状態として所有すること、コールバック生成物の別保管先 |
 | `PostCommitCallbackFailureTxn` | `service_runtime/src/post_commit_callback_failure_txn.rs::PostCommitCallbackFailureTxn` | domain commit後のcallback delivery failureを受けたcompletion use-caseからのtyped入口 | API別handler、classifierまたはdomain ownerの置換 |
 | `FilterProducerDrainGate` | `demux/src/runtime/queue_runtime.rs` | Filter/SharedFilter data path、`QueueCleanupTxn`からのtyped入口 | 公開API/worker/`QueueCleanupTxn`からのgate内部直接変更、DVR ownerとの統合 |
@@ -132,7 +134,7 @@ lifecycle/owner/generation検証、引数検証との優先順位、再検証、
 | `SourceBoundaryTxn` | demux runtime正本をdata-path実行主体へ移管できること | `setDataSource()`、source unlink、Filter closeが同一relation正規入口を並行に要求し得る |
 | `StreamBoundaryTxn` | demux runtime正本をpacket/boundary実行主体へ移管できること | relation変更、flush/close、packet側境界通知が同一stream boundary正規入口を並行に要求し得る |
 | `FrontendLnbRelationTxn` | service_runtime正本をfrontend処理実行主体へ移管できること | `setLnb()`とFrontend closeが同一assignment正規入口を並行に要求し得る |
-| `LnbControlTxn` | LNB正本をサービス実行主体へ移管できること | 複数Binder呼出しとclose側処理が同一LNB制御正規入口へ並行到達し得る |
+| `LnbRegistry` | LNB永続状態と物理I/O権限をLNB制御・固定給電・安全状態復帰・DiSEqCの実行主体から共有できること | 複数Binder呼出し、固定給電、close側安全状態復帰、DiSEqCが同一物理LNB・レールへ並行到達し得る |
 | `RecordDvrFilterRelationTxn` | service_runtime正本をDVR/Filter処理実行主体へ移管できること | attach/detach、Filter close、DVR close、demux cleanupが同一relation正規入口を並行に要求し得る |
 | `WorkerRuntime` | worker lifecycle正本をworker/reaperを管理する実行主体へ移管できること | domain start/stop、worker terminal、close、shutdown/reaperが同じworker寿命正規入口を並行に要求し得る |
 | `FilterProducerDrainGate` | gate正本をproducer/queue処理実行主体へ移管できること | producerとflush/closeのdrain要求が同一gateを並行利用する |
@@ -148,7 +150,7 @@ lifecycle/owner/generation検証、引数検証との優先順位、再検証、
 | 4 | `StreamBoundaryTxn` | A | boundary prepare / commitとsteady-state ownerへのdispatchをowner内で整合させる | `stream_boundary_generation` + one-shot `PreparedStreamBoundary` | `Send + Sync` | — |
 | 5 | `CallbackRegistrationUseCase` | B | B共有lockを持たず、callback store / runtime registry / domain ownerのprepared入口を使う | prepared artifact / registry mutation / domain mutationを一回だけ消費し、独自generationを発行しない | — | 通常制御 |
 | 6 | `FrontendLnbRelationTxn` | A | `setLnb()` / closeによるassignment mutationをowner内で直列化する | object generation + prepared assignment lease mutation + transaction authority | `Send + Sync` | — |
-| 7 | `LnbControlTxn` | A | operation lockをowner自身が持つ | LNB state generation + 一回だけ確定するcandidate | `Send + Sync` | — |
+| 7 | `LnbControlTxn` | B | B共有ロックを持たず、`LnbRegistry`の準備済み変更入口と物理I/O権限を使う | 準備済み制御変更・backend適用結果を一回だけ消費し、独自の世代または失敗状態を発行しない | — | 通常制御 |
 | 8 | `DescramblerPidTxn` | B | B共有lockを持たず、pool / PID ledger / backend ownerの正規入口を使う | prepared PID claim / compensation authorityを一回だけ消費し、独自generationを発行しない | — | 通常制御 |
 | 9 | `DescramblerKeyTxn` | B | B共有lockを持たず、key table / session / backend ownerの正規入口を使う | prepared key ref / session mutationを一回だけ消費し、独自generationを発行しない | — | 通常制御 |
 | 10 | `DescramblerSessionCleanupTxn` | B | 同一session cleanupの直列化はsession / close / invalidation側のpersistent ownerへ置き、B共有lockを追加しない | trigger generation / cleanup authorityを入力として消費し、retryable pendingはpersistent ownerへ返す | — | 通常制御 |
