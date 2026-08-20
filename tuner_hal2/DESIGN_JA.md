@@ -118,6 +118,28 @@ lifecycle/owner/generation検証、引数検証との優先順位、再検証、
 
 `trait要求`の`—`は非`Send` / 非`Sync`を要求する意味ではなく、本契約から正のauto trait要件を追加しないことを表す。Bの`通常制御`は通常の関数制御、typed snapshot / prepared value / one-shot authority、immutableなplan / result enumで手順を表現し、B自身のmutable進行状態を呼出し越しに保持しないことを表す。
 
+従属するハンドル・権限・準備済み値のauto trait要件は、正本所有型の`Send` / `Sync`要件から自動的に導出しない。値そのものをワーカースレッド、回収処理、別の実行主体のキューへ所有権移動する境界では、その実際の転送型に`Send`を要求する。共有参照を複数スレッドから同時利用する境界だけ、その共有対象型に`Sync`を要求する。
+
+- `CloseCleanupAuthority`を所有者消滅処理または回収処理へ値のままスレッド間移送する実装では、`CloseCleanupAuthority: Send`を正の要件とする。正本所有者内で権限を消費して別の専用実行項目へ変換してからスレッド境界を越える実装では、スレッド境界を越える実行項目に`Send`を要求し、元の`CloseCleanupAuthority`へ不要な`Send`を強制しない。
+- `WorkerHandle`、停止・起床権限、回収移管権限その他の従属値も同じ規則とし、実際にスレッド境界を越える型だけ`Send`を要求する。共有参照を渡さない値へ対称性だけを理由に`Sync`を追加しない。
+- 正のauto trait要件はフィールド構成から成立させ、実際にスレッド境界を越える型についてコンパイル時の型検査で確認する。実行器やキューのtrait要件を満たすだけの`unsafe impl Send` / `unsafe impl Sync`を追加しない。
+
+`Send + Sync`を要求する分類Aの正本所有型については、次の利用境界を正の根拠として固定する。`Send`は当該正本所有値をサービス構築時または所有主体移管時に別スレッドへ移動できる必要があるため、`Sync`は表に示す複数の実行主体が同じ正本所有値への共有参照を介して正規入口を並行利用するために要求する。表にない実行主体を追加したことだけを理由にtrait要件を強めず、利用境界が変わる場合は本表も同時に更新する。
+
+| 正本所有型 | `Send`が必要な境界 | `Sync`が必要な共有利用境界 |
+|---|---|---|
+| `ObjectCloseTxn` | service_runtimeが所有するclose正本をshutdown/reaper実行主体へ移管できること | public close、owner loss/Drop、shutdown/reaperが同じobjectのclose正規入口を並行に要求し得る |
+| `SourceBoundaryTxn` | demux runtime正本をdata-path実行主体へ移管できること | `setDataSource()`、source unlink、Filter closeが同一relation正規入口を並行に要求し得る |
+| `StreamBoundaryTxn` | demux runtime正本をpacket/boundary実行主体へ移管できること | relation変更、flush/close、packet側境界通知が同一stream boundary正規入口を並行に要求し得る |
+| `FrontendLnbRelationTxn` | service_runtime正本をfrontend処理実行主体へ移管できること | `setLnb()`とFrontend closeが同一assignment正規入口を並行に要求し得る |
+| `LnbControlTxn` | LNB正本をサービス実行主体へ移管できること | 複数Binder呼出しとclose側処理が同一LNB制御正規入口へ並行到達し得る |
+| `RecordDvrFilterRelationTxn` | service_runtime正本をDVR/Filter処理実行主体へ移管できること | attach/detach、Filter close、DVR close、demux cleanupが同一relation正規入口を並行に要求し得る |
+| `WorkerRuntime` | worker lifecycle正本をworker/reaperを管理する実行主体へ移管できること | domain start/stop、worker terminal、close、shutdown/reaperが同じworker寿命正規入口を並行に要求し得る |
+| `FilterProducerDrainGate` | gate正本をproducer/queue処理実行主体へ移管できること | producerとflush/closeのdrain要求が同一gateを並行利用する |
+| `QueueEpochProtocol` | queue protocol正本をDVR worker/FM Q処理実行主体へ移管できること | queue I/Oとflush/close/drainが同一queue epoch正規入口を並行利用する |
+| `AvSyncRegistry` | registry正本をdemux/filter処理実行主体へ移管できること | configure、unregister、Filter close、demux cleanupが同一registry正規入口を並行に要求し得る |
+| `PcrClockAnchorStore` | anchor正本をpacket処理実行主体へ移管できること | packet PCR観測とstream boundary invalidationが同一storeを並行利用する |
+
 | # | 対象 | 分類 | 同期 | stale操作・one-shot識別 | trait要求 | B進行状態 |
 |---:|---|:---:|---|---|---|---|
 | 1 | `ObjectCloseTxn` | A | public close / owner loss / Drop / shutdown / reaperによる同一object変更をowner内で直列化する | lifecycle generation + one-shot `CloseCleanupAuthority` | `Send + Sync` | — |
@@ -175,16 +197,16 @@ flowchart LR
 
 ##### `FrontendTuneScanTxn` の有限正規入口集合
 
-`FrontendTuneScanTxn`は呼出しを越えて存続する手順実体を保持せず、次の有限入口集合だけを正規の再入場面とする。各入口は呼出しごとの分類B実行として完結し、非同期操作の継続状態、世代、ワーカー寿命、コールバック配送予約は対応する正本所有者へ残す。
+`FrontendTuneScanTxn`は呼出しを越えて存続する手順実体を保持せず、次の有限入口集合だけを正規の再入場面とする。各入口は呼出しごとの分類B実行として完結し、非同期操作の継続状態、世代、ワーカー寿命、コールバック配送予約は対応する正本所有者へ残す。ここで「フロントエンド操作所有者」は`../tuner_hal/DESIGN_JA.md`の0-S-2でフロントエンド機器状態の正本とされた`FrontendRuntime`を指し、選局・走査の現行操作状態、要求指紋、操作世代、継続状態を同正本所有者の非公開状態として保持する。「コールバック所有者」は、現行操作に従属する配送予約・世代遮断については`FrontendRuntime`、コールバック登録記録については`RuntimeCallbackRegistry`を指し、`FrontendTuneScanTxn`自身または第三の永続状態所有者を追加しない。「後片付け所有者」は、汎用ワーカー寿命について`WorkerRuntime`、公開`close()`の未完後片付け義務が存在する場合について`ObjectCloseTxn`を指す。
 
 | 入口 | 呼出元 | 入力 | 分類Bが行うこと | 永続化先 |
 |---|---|---|---|---|
-| `begin_tune` | `IFrontend.tune()`のオブジェクトメソッド境界 | 検証済み選局要求、フロントエンド世代 | 要求指紋・世代候補を準備し、`WorkerRuntime`・下位機器処理・`StreamBoundaryTxn`の型付き準備結果を集約する | フロントエンド操作所有者、`WorkerRuntime`、各`StreamBoundaryTxn` |
-| `begin_scan` | `IFrontend.scan()`のオブジェクトメソッド境界 | 検証済み走査要求、フロントエンド世代 | 走査要求指紋を確定し、ワーカー・下位機器処理・境界処理を準備し、初期コールバック配送予約へ世代遮断条件を設定する | フロントエンド操作所有者、`WorkerRuntime`、コールバック所有者 |
-| `stop_tune` | `IFrontend.stopTune()`のオブジェクトメソッド境界 | 現在のフロントエンド世代 | 対象選局世代を遮断し、ワーカー・下位機器処理の停止と必要な境界処理結果を集約する | フロントエンド操作所有者、`WorkerRuntime`、各`StreamBoundaryTxn` |
-| `stop_scan` | `IFrontend.stopScan()`のオブジェクトメソッド境界 | 現在のフロントエンド世代 | 対象走査世代を遮断し、ワーカー・下位機器処理の停止と必要な境界処理結果を集約する | フロントエンド操作所有者、`WorkerRuntime`、各`StreamBoundaryTxn` |
-| `accept_operation_event` | ワーカー・下位機器処理の完了通知橋渡し | 操作世代 + 型付きフロントエンド事象・結果 | 世代を再検証し、失効事象を拒否し、現世代に対するコールバック配送予約とドメイン完了処理を調停する | フロントエンド操作所有者、コールバック所有者 |
-| `accept_worker_terminal` | `WorkerRuntime`の完了通知橋渡し | ワーカー所有者世代 + 型付き終了結果 | 操作世代との対応を再検証し、フロントエンド固有の終了結果を`FrontendWorkerTerminationTxn`と失敗分類へ接続する | フロントエンド操作所有者、`WorkerRuntime`、後片付け所有者 |
+| `begin_tune` | `IFrontend.tune()`のオブジェクトメソッド境界 | 検証済み選局要求、フロントエンド世代 | 要求指紋・世代候補を準備し、`WorkerRuntime`・下位機器処理・`StreamBoundaryTxn`の型付き準備結果を集約する | `FrontendRuntime`の現行操作状態、`WorkerRuntime`、各`StreamBoundaryTxn` |
+| `begin_scan` | `IFrontend.scan()`のオブジェクトメソッド境界 | 検証済み走査要求、フロントエンド世代 | 走査要求指紋を確定し、ワーカー・下位機器処理・境界処理を準備し、初期コールバック配送予約へ世代遮断条件を設定する | `FrontendRuntime`の現行操作・コールバック配送状態、`WorkerRuntime` |
+| `stop_tune` | `IFrontend.stopTune()`のオブジェクトメソッド境界 | 現在のフロントエンド世代 | 対象選局世代を遮断し、ワーカー・下位機器処理の停止と必要な境界処理結果を集約する | `FrontendRuntime`の現行操作状態、`WorkerRuntime`、各`StreamBoundaryTxn` |
+| `stop_scan` | `IFrontend.stopScan()`のオブジェクトメソッド境界 | 現在のフロントエンド世代 | 対象走査世代を遮断し、ワーカー・下位機器処理の停止と必要な境界処理結果を集約する | `FrontendRuntime`の現行操作状態、`WorkerRuntime`、各`StreamBoundaryTxn` |
+| `accept_operation_event` | ワーカー・下位機器処理の完了通知橋渡し | 操作世代 + 型付きフロントエンド事象・結果 | 世代を再検証し、失効事象を拒否し、現世代に対するコールバック配送予約とドメイン完了処理を調停する | `FrontendRuntime`の現行操作・コールバック配送状態 |
+| `accept_worker_terminal` | `WorkerRuntime`の完了通知橋渡し | ワーカー所有者世代 + 型付き終了結果 | 操作世代との対応を再検証し、フロントエンド固有の終了結果を`FrontendWorkerTerminationTxn`と失敗分類へ接続する | `FrontendRuntime`の現行操作状態、`WorkerRuntime`、公開`close()`の未完義務がある場合の`ObjectCloseTxn` |
 
 - `begin_*` / `stop_*`はAIDL境界だけから、`accept_*`はワーカー・下位機器処理の完了通知橋渡しだけから呼ぶ。コールバック配送境界自身は`FrontendTuneScanTxn`へ再入場せず、予約済みの型付きコールバックを配送し、配送失敗は`PostCommitCallbackFailureTxn`へ接続する。
 - 各入口は開始時に正本所有者から状態の写し・世代・一回実行権限を取得し、外部処理後に世代を再検証する。旧世代の`accept_operation_event` / `accept_worker_terminal`は状態変更またはコールバック予約を行わず、失効結果として破棄・診断する。

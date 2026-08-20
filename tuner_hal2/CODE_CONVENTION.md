@@ -1,6 +1,6 @@
 # Tuner HAL2 コーディング規則
 
-この文書は `tuner_hal2` 固有の**実装規約**だけを定める。公開契約、状態遷移、戻り値、capability / profile、資源寿命、transaction の phase / commit / rollback、cleanup / quarantine の意味、worker / callback / source boundary / descrambler の論理契約は `../tuner_hal/DESIGN_JA.md` を唯一の正本とする。実装 owner、module anchor、許可 entry point は `DESIGN_JA.md` の「共通transaction / use-caseの規範実装アンカー」を唯一の正本とする。プロジェクト全体の Rust 規約、no-`panic`、mutex汚染、一般worker、FFI、parser、ロック / callback、テスト自己参照禁止は `../GLOBAL_CODE_CONVENTION.md` を正とし、本書へ重複定義しない。旧 `../tuner_hal/CODE_CONVENTION.md` は旧参照実装だけの規約であり、`tuner_hal2` の現行実装規約の正本として参照しない。
+この文書は `tuner_hal2` 固有の**実装規約**だけを定める。公開契約、状態遷移、戻り値、capability / profile、資源寿命、transaction の phase / commit / rollback、cleanup / quarantine の意味、worker / callback / source boundary / descrambler の論理契約は `../tuner_hal/DESIGN_JA.md` を唯一の正本とする。実装 owner、module anchor、許可 entry point は `DESIGN_JA.md` の「共通transaction / use-caseの規範実装アンカー」を唯一の正本とする。プロジェクト全体の Rust 規約、no-`panic`、mutex汚染、一般worker、FFI、parser、ロック / callback、テスト自己参照禁止は`../GLOBAL_CODE_CONVENTION.md`を正とし、本書へ重複定義しない。旧 `../tuner_hal/CODE_CONVENTION.md` は旧参照実装だけの規約であり、`tuner_hal2` の現行実装規約の正本として参照しない。
 
 本書は論理状態名、commit point、rollback policy、quarantine 条件を第二の正本として定義しない。以下で論理契約名を記す場合も、その意味を再定義するのではなく、**実装が正本 owner / typed entry を迂回しないための禁止規約**を示すだけである。
 
@@ -87,9 +87,10 @@ Wrapper を置いてよいのは、public API 境界、domain naming 隠蔽、AI
 - (a) は局所予約、メモリ上の使用権、排他制御の保護値、生成側の許可証、失敗不能に元へ戻せる準備済み局所変更等に限る。明示的な`commit(self)` / `release(self)`等で無効化し、有効なまま`Drop`された場合だけ局所取消し・解放を行ってよい。
 - (b) の一回実行権限は未完後片付け義務そのものを所有しない。正本所有者に未完義務が存在する場合だけ発行し、世代、義務識別子、一回実行許可等の型付き証明を保持する。`Drop`では外部後片付けを実行せず、必要なら失敗不能な局所的な実行権限貸出しの返却だけを行う。
 - 一回実行権限を消費した失敗し得る処理は型付き結果を正本所有者へ返し、正本所有者だけが義務の完了・継続・再試行・隔離を論理契約に従って確定する。権限型の消滅、`Drop`、`mem::forget`、タスク取消しを義務完了として扱わない。
-- `ObjectCloseTxn`の`CloseCleanupAuthority`は上記(b)に該当する具体的な一回実行権限である。`CloseCleanupAuthority`自体は未完後片付け義務を所有しない。未完手順、後片付け結果、再試行・回収移管、完了確定は`ObjectCloseTxn`の呼出しを越えて保持される状態に残す。
-- `ObjectCloseTxn.begin_close`の不可分な確定を実装する際は、論理閉鎖と新規通常操作遮断に加え、未完後片付け義務の記録を最初の`CloseCleanupAuthority`発行より先に、または同一の不可分更新内で確定する。権限値だけが先に存在する中間状態を作らない。
-- 生存している`CloseCleanupAuthority`を回収機構へ引き渡せる通常経路では、論理契約の一度だけの移管を用いる。`CloseCleanupAuthority`が`Drop`、`mem::forget`、タスク取消し等で消滅または到達不能になっても、それを移管済みまたは義務完了とは扱わず、`ObjectCloseTxn`の未完後片付け義務から後続の一回実行権限を発行できなければならない。古い権限から遅れて返った結果は世代と義務識別子で失効判定する。
+- 一回実行権限が、失敗し得る外部副作用を開始し、かつ同一の永続義務について後続の一回実行権限を再発行できる種類である場合は、外部副作用の開始直前に正本所有者の正規入口へ再入場し、世代・義務識別子・試行識別子を検証して当該試行を唯一の実行中試行として不可分に確定する。失効済みの権限、または別試行が既に実行中である権限は、外部副作用を開始する前に拒否する。
+- 前項の一回実行権限が実行中確定前に失われた場合は、論理契約が未完義務の継続を要求する限り後続権限を発行できる。実行中確定後に結果が失われ、外部副作用が開始済みか不明な場合は、権限喪失だけを根拠に同じ外部処理を再実行しない。再実行してよいのは、対象処理が論理契約上安全に反復可能である場合、外部実状態を再確認して処理未完を確定できる場合、または世代・義務識別子等で旧試行の副作用を遮断できる場合に限る。それらを確認できない場合は、正本論理契約の結果不明時の扱いへ接続する。
+- 遅れて返った試行結果は、正本所有者への取込み前に世代・義務識別子・試行識別子を再検証し、現在の実行中試行に一致しない結果から完了を確定しない。
+- `ObjectCloseTxn`の`CloseCleanupAuthority`は、失敗し得る外部副作用を伴い同一の未完後片付け義務について再発行され得る場合、直前3項の一般規則を適用する。`ObjectCloseTxn`固有の未完手順、再試行、回収移管、完了確定、結果不明時の状態遷移は`../tuner_hal/DESIGN_JA.md`の同名論理契約を正とし、本書では再定義しない。
 - 再利用可能な値は token と分離した read-only descriptor にする。clone可能なread-only handleとone-shot mutation authorityが同じ型に混在して権限を複製しないよう、必要に応じて別型へ分離する。
 - lifetime ID / generation / epoch / tokenは意味ごとのnewtypeまたは同等の型境界で区別し、異なるnamespaceの裸の整数を同じmutation APIへ渡せる形を正規形にしない。
 - single-variant enum や未使用 variant で状態機械を装わない。
@@ -152,6 +153,7 @@ Wrapper を置いてよいのは、public API 境界、domain naming 隠蔽、AI
 - `DESIGN_JA.md`が正に要求する`Send` / `Sync`は実型へのcompile-time assertionで確認する。単に実行器のtrait boundを通すための`unsafe impl Send` / `unsafe impl Sync`を追加しない。
 - one-shot authority / prepared valueのconstructor非公開、非`Clone` / 非`Copy`、consume-by-valueをcompile-fail相当またはrepositoryで採用する静的検査で確認する。
 - 失敗し得る後片付けの一回実行権限について、権限を未消費のまま`Drop` / `mem::forget`相当としても呼出しを越えて保持される未完後片付け義務が残り、後続の一回実行権限を発行できることを状態と型付き結果で検査する。`#[must_use]`警告だけを完了条件にしない。`CloseCleanupAuthority`についてもこの検査を必須とする。
+- 失敗し得る外部副作用を伴い同一の永続義務について再発行され得る一回実行権限について、外部副作用開始前の実行中確定が一回だけ成立すること、競合する別試行が副作用を開始できないこと、実行中確定前の権限喪失は後続権限の発行を妨げないこと、実行中確定後の結果不明では安全な反復可能性・外部実状態の再確認・旧副作用の遮断のいずれも成立しない限り同一処理を再実行しないことを状態と型付き結果で検査する。`CloseCleanupAuthority`はこの一般検査の適用対象に含める。
 
 ## 12. runtime failure / capability inventory の実装境界
 
