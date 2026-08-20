@@ -78,13 +78,13 @@ lifecycle/owner/generation検証、引数検証との優先順位、再検証、
 | PCR clock anchor | `PcrClockAnchorStore` | APIまたは`StreamBoundaryTxn`がstoreを迂回しない |
 | worker lifecycle mechanism | `WorkerRuntime`が唯一のcanonical A state owner。`WorkerHandle`は`WorkerRuntime`に従属するopaqueなtyped handle / authority表現 | `WorkerHandle`を第二のgeneric lifecycle ownerまたは第二のstate正本として扱わず、別のgeneric worker lifecycle ownerも重ねない |
 | worker failure classification | `WorkerFailureClassifier` | 各ownerがclassifierを迂回して別のfailure classification ownerを設けない |
-| `FrontendWorkerTerminationUseCase` | フロントエンド固有の終了手順所有者。汎用寿命管理のcanonical state ownerは`WorkerRuntime`であり、`WorkerHandle`は従属物理要素 | フロントエンド固有の終了手順へ汎用ワーカー寿命管理の所有責務を吸収せず、ワーカー・AIDL層が別の終了手順所有者を持たない |
+| `FrontendWorkerTerminationUseCase` | フロントエンド固有の終了手順所有者。汎用寿命管理のcanonical state ownerは`WorkerRuntime`であり、`WorkerHandle`は従属物理要素 | フロントエンド固有の終了手順へ汎用寿命管理の所有責務を吸収せず、ワーカー・AIDL層が別の終了手順所有者を持たない |
 
 #### 共通化対象の A/B/C 分類境界
 
 共通化対象の分類は論理状態と責務の単位で行い、Rustの型数、ファイル数、モジュール数、スレッド配置、共有参照方式を分類根拠にしない。次の順序で判定する。
 
-- **A**: 呼出しを越えて状態の正本を持つ。一意な状態所有者と一意な変更入口を設ける。競合する操作要求が複数の実行主体から並行して到達し得る場合は、正規入口で順序を一意に確定できなければならない。具体的な排他制御、単一所有の実行主体、命令待ち行列などの方式は実装側で選ぶ。古い操作や競合する操作を識別しなければ整合性を保てない場合に限り、必要な世代番号や一回性権限を追加する。Aに排他制御が必要な場合、その同期手段の所有者と取得規則は当該Aの設計に含める。Aの状態所有境界を曖昧にする外側からの無条件な`Arc<Mutex<A>>`包装を標準形にしない。
+- **A**: 呼出しを越えて状態の正本を持つ。一意な状態所有者と一意な変更入口を設ける。その正規変更入口は正規状態所有型自身に置く。競合する操作要求が複数の実行主体から並行して到達し得る場合は、正規入口で順序を一意に確定できなければならない。具体的な排他制御、単一所有の実行主体、命令待ち行列などの方式は実装側で選ぶ。古い操作や競合する操作を識別しなければ整合性を保てない場合に限り、必要な世代番号や一回性権限を追加する。Aに排他制御が必要な場合、その同期手段の所有者と取得規則は当該Aの設計に含める。Aの状態所有境界を曖昧にする外側からの無条件な`Arc<Mutex<A>>`包装を標準形にしない。
 - **B**: 呼出しを越える状態の正本は持たないが、複数段階の手順そのものを一意化する必要がある。一意な手順所有者と明示された正規入口を設ける。通常の関数制御だけで進行順序を保持できる場合は追加の状態機械を設けない。追加の状態表現が必要な場合も呼出し単位に閉じ、列挙型で段階を明示し、段階ごとに必要な値は対応する列挙子に保持する。手順が複数の実行主体にまたがる場合は型付き要求と型付き結果で責務境界を明示し、B自身の共有永続状態を作らない。同じ操作の二重実行を防ぐことが契約上必要な場合に限り一回性権限を追加する。共有永続状態が必要になった場合は、既存Aへ状態を置くか、A/Bの責務境界を設計側で再判定する。Bが一回の呼出し内で複数の実行主体へ処理を分配する場合、Bの可変な進行状態を直接変更する主体は一つに限定する。各実行主体は型付き結果を返し、その一つの調停主体だけが結果を集約して進行状態を更新する。
 - **C**: 呼出しを越える状態の正本も、一意化すべき複数段階手順も持たない分類・変換責務とする。分類Cであることだけを理由に、状態機械、世代番号、一回性権限、排他制御、ワーカー、キュー、タイマーを追加しない。
 
@@ -135,14 +135,14 @@ A/B/Cの分類と`Txn` / `UseCase` / `Context`の命名判定は別である。B
 | `PlaybackConsumeTxn` | `service_runtime/src/playback_consume_txn.rs` | playback workerのtyped consume入口 | worker/FMQ/packet helperによる別consume owner |
 | `FrontendTuneScanTxn` | 正規手順所有者・入口は`FrontendTuneScanTxn`名を持つ。既存アンカーは`service_runtime/src/boot/frontend_tune_scan_context.rs::FrontendTuneScanContext<'a>`、`service_runtime/src/frontend_ops.rs`であり、`FrontendTuneScanContext<'a>`は非公開補助処理または呼出し単位の文脈型としてのみ扱う | `FrontendTuneScanTxn`の有限正規入口集合 `begin_tune` / `begin_scan` / `stop_tune` / `stop_scan` / `accept_operation_event` / `accept_worker_terminal`。AIDL境界は`begin_*` / `stop_*`だけ、ワーカー・下位機器処理の完了通知橋渡しは`accept_*`だけを呼ぶ | ワーカー・機器層・コールバック層によるフロントエンド所有者の迂回、Demux所有者の吸収、`FrontendTuneScanContext<'a>`の第二正規所有者化、有限正規入口集合外での選局・走査進行の再実装 |
 | `AvSyncRegistry` | `demux/src/runtime/av_sync_registry.rs::AvSyncRegistry` | filter configure/unregister/close、demux closeからのtyped relation入口 | API/filter wrapper/`StreamBoundaryTxn`からのregistry直接変更、PCR ownerとの統合 |
-| `PcrClockAnchorStore` | `demux/src/runtime/pcr_clock_anchor.rs::PcrClockAnchorStore` | PCR観測、stream boundary側のtyped invalidation入口 | API/`StreamBoundaryTxn`からのstore内部直接変更、A/V sync ownerとの統合 |
+| `PcrClockAnchorStore` | `demux/src/runtime/pcr_clock_anchor.rs::PcrClockAnchorStore` | PCR観測、stream boundary側のtyped invalidation入口 | APIまたは`StreamBoundaryTxn`からのstore内部直接変更、A/V sync ownerとの統合 |
 | `WorkerRuntime` | `service_runtime/src/worker_runtime.rs::{WorkerRuntime, WorkerHandle}`。`WorkerRuntime`がgeneric worker lifecycleの唯一のcanonical A state ownerであり、`WorkerHandle`は同ownerに従属するopaqueなtyped handle / authority表現 | 各domain worker ownerの`WorkerRuntime`正規入口。必要な場合に同ownerが発行・管理する`WorkerHandle`を使用する | `WorkerHandle`による独立したgeneration / retry / reaper state所有、別generic lifecycle owner、domain start/stop ownerの吸収 |
 | `WorkerFailureClassifier` | `service_runtime/src/worker_failure_classifier.rs` | worker owner / cleanup manager / callback・backend failure ownerからのtyped入口 | owner側の別classifier、classifierによるdomain ownerの置換 |
 | `FrontendWorkerTerminationUseCase` | 正規手順所有者・入口は`FrontendWorkerTerminationUseCase`名を持つ。`service_runtime/src/frontend_worker_termination_use_case.rs`はフロントエンド固有終了の補助処理、`device/src/runtime/frontend_worker.rs::FrontendWorkerRegistry`は既存の状態所有者として扱う。汎用の停止・起床・終了待ち・回収処理・再試行機構のcanonical state ownerは`WorkerRuntime`であり、`WorkerHandle`は従属する物理要素 | `service_runtime/src/frontend_ops.rs`、`service_runtime/src/boot/frontend_tune_scan_context.rs`、`ObjectCloseTxn`からの型付き後始末接続 | ワーカー・AIDL層による所有者登録解除、リース、終了待ち・回収処理、失敗分類器の直接代替、汎用寿命管理の所有責務の吸収、別のフロントエンド終了手順所有者 |
 
 ##### 共通化対象のRust物理化追加要件
 
-次表は、`../tuner_hal/DESIGN_JA.md`の論理契約と本書の実装所有者・アンカーを変更せず、A/B/C判定後に必要となる論理上の並行性・直列化契約、失効操作・一回性識別、Bの呼出し内進行状態だけを固定する。公開状態、段階、確定点、巻戻し・後始末、失敗時の意味は`../tuner_hal/DESIGN_JA.md`を正とする。一回性権限の一般実装規則とA/Bの永続状態格納境界は`CODE_CONVENTION.md`を正とする。`Send` / `Sync`はA/B/C分類から導出せず、外部API・実行基盤の型制約と、実際のスレッド間移送・共有参照から判定する。
+次表は、`../tuner_hal/DESIGN_JA.md`の論理契約と本書の実装所有者・アンカーを変更せず、A/B/C判定後に必要となる論理上の並行性・直列化契約、失効操作・一回性識別、Bの呼出し内進行状態だけを固定する。公開状態、段階、確定点、巻戻し・後片付け、失敗時の意味は`../tuner_hal/DESIGN_JA.md`を正とする。一回性権限の一般実装規則とA/Bの永続状態格納境界は`CODE_CONVENTION.md`を正とする。`Send` / `Sync`はA/B/C分類から導出せず、外部API・実行基盤の型制約と、実際のスレッド間移送・共有参照から判定する。
 
 `B進行状態`の`通常制御`は通常の関数制御、型付きスナップショット、準備済み値、一回性権限、変更不能な計画、結果列挙型で手順を表現し、B自身の可変進行状態を呼出し越しに保持しないことを表す。
 
@@ -159,7 +159,7 @@ AIDL/Binder等の外部API・実行基盤が、境界に現れる型へ`Send` / 
 
 | 正本・手順所有者 | 並行し得る要求 | 契約上必要な性質 |
 |---|---|---|
-| `ObjectCloseTxn` | 公開close、所有者消滅 / Drop、終了処理 / 回収処理 | 同一オブジェクトのclose開始権限と後始末進行を一つの正本で線形化する |
+| `ObjectCloseTxn` | 公開close、所有者消滅 / Drop、終了処理 / 回収処理 | 同一オブジェクトのclose開始権限と後片付け進行を一つの正本で線形化する |
 | `SourceBoundaryTxn` | `setDataSource()`、入力元解除、Filter close | 同一関係の変更を一つの正本で順序付ける |
 | `StreamBoundaryTxn` | 関係変更、flush / close、パケット側境界通知 | ストリーム境界世代と型付きリセット・無効化通知の順序を一意にする |
 | `FrontendLnbRelationTxn` | `setLnb()`、Frontend close | 割当関係とリース参照変更を一つの正本で確定する |
