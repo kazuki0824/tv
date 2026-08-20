@@ -175,16 +175,16 @@ flowchart LR
 
 ##### `FrontendTuneScanTxn` の有限正規入口集合
 
-`FrontendTuneScanTxn`は呼出しを越えて存続する手順実体を保持せず、次の有限入口集合だけを正規の再入場面とする。各入口は呼出しごとの分類B実行として完結し、非同期操作の継続状態、世代、ワーカー寿命、コールバック配送予約は対応する正本所有者へ残す。
+`FrontendTuneScanTxn`は呼出しを越えて存続する手順実体を保持せず、次の有限入口集合だけを正規の再入場面とする。各入口は呼出しごとの分類B実行として完結し、非同期操作の継続状態、世代、ワーカー寿命、コールバック配送予約は対応する正本所有者へ残す。ここで「フロントエンド操作所有者」は`../tuner_hal/DESIGN_JA.md`の0-S-2でfrontend backend stateの正本とされた`FrontendRuntime`を指し、選局・走査のcurrent operation state、request fingerprint、operation generation、continuation stateを同ownerのprivate stateとして保持する。「コールバック所有者」は、current operationに従属する配送予約・generation fenceについては`FrontendRuntime`、callback registration recordについては`RuntimeCallbackRegistry`を指し、`FrontendTuneScanTxn`自身または第三のpersistent ownerを追加しない。「後片付け所有者」は、generic worker寿命について`WorkerRuntime`、public closeの未完後片付け義務が存在する場合について`ObjectCloseTxn`を指す。
 
 | 入口 | 呼出元 | 入力 | 分類Bが行うこと | 永続化先 |
 |---|---|---|---|---|
-| `begin_tune` | `IFrontend.tune()`のオブジェクトメソッド境界 | 検証済み選局要求、フロントエンド世代 | 要求指紋・世代候補を準備し、`WorkerRuntime`・下位機器処理・`StreamBoundaryTxn`の型付き準備結果を集約する | フロントエンド操作所有者、`WorkerRuntime`、各`StreamBoundaryTxn` |
-| `begin_scan` | `IFrontend.scan()`のオブジェクトメソッド境界 | 検証済み走査要求、フロントエンド世代 | 走査要求指紋を確定し、ワーカー・下位機器処理・境界処理を準備し、初期コールバック配送予約へ世代遮断条件を設定する | フロントエンド操作所有者、`WorkerRuntime`、コールバック所有者 |
-| `stop_tune` | `IFrontend.stopTune()`のオブジェクトメソッド境界 | 現在のフロントエンド世代 | 対象選局世代を遮断し、ワーカー・下位機器処理の停止と必要な境界処理結果を集約する | フロントエンド操作所有者、`WorkerRuntime`、各`StreamBoundaryTxn` |
-| `stop_scan` | `IFrontend.stopScan()`のオブジェクトメソッド境界 | 現在のフロントエンド世代 | 対象走査世代を遮断し、ワーカー・下位機器処理の停止と必要な境界処理結果を集約する | フロントエンド操作所有者、`WorkerRuntime`、各`StreamBoundaryTxn` |
-| `accept_operation_event` | ワーカー・下位機器処理の完了通知橋渡し | 操作世代 + 型付きフロントエンド事象・結果 | 世代を再検証し、失効事象を拒否し、現世代に対するコールバック配送予約とドメイン完了処理を調停する | フロントエンド操作所有者、コールバック所有者 |
-| `accept_worker_terminal` | `WorkerRuntime`の完了通知橋渡し | ワーカー所有者世代 + 型付き終了結果 | 操作世代との対応を再検証し、フロントエンド固有の終了結果を`FrontendWorkerTerminationTxn`と失敗分類へ接続する | フロントエンド操作所有者、`WorkerRuntime`、後片付け所有者 |
+| `begin_tune` | `IFrontend.tune()`のオブジェクトメソッド境界 | 検証済み選局要求、フロントエンド世代 | 要求指紋・世代候補を準備し、`WorkerRuntime`・下位機器処理・`StreamBoundaryTxn`の型付き準備結果を集約する | `FrontendRuntime`のcurrent operation state、`WorkerRuntime`、各`StreamBoundaryTxn` |
+| `begin_scan` | `IFrontend.scan()`のオブジェクトメソッド境界 | 検証済み走査要求、フロントエンド世代 | 走査要求指紋を確定し、ワーカー・下位機器処理・境界処理を準備し、初期コールバック配送予約へ世代遮断条件を設定する | `FrontendRuntime`のcurrent operation / callback delivery state、`WorkerRuntime` |
+| `stop_tune` | `IFrontend.stopTune()`のオブジェクトメソッド境界 | 現在のフロントエンド世代 | 対象選局世代を遮断し、ワーカー・下位機器処理の停止と必要な境界処理結果を集約する | `FrontendRuntime`のcurrent operation state、`WorkerRuntime`、各`StreamBoundaryTxn` |
+| `stop_scan` | `IFrontend.stopScan()`のオブジェクトメソッド境界 | 現在のフロントエンド世代 | 対象走査世代を遮断し、ワーカー・下位機器処理の停止と必要な境界処理結果を集約する | `FrontendRuntime`のcurrent operation state、`WorkerRuntime`、各`StreamBoundaryTxn` |
+| `accept_operation_event` | ワーカー・下位機器処理の完了通知橋渡し | 操作世代 + 型付きフロントエンド事象・結果 | 世代を再検証し、失効事象を拒否し、現世代に対するコールバック配送予約とドメイン完了処理を調停する | `FrontendRuntime`のcurrent operation / callback delivery state |
+| `accept_worker_terminal` | `WorkerRuntime`の完了通知橋渡し | ワーカー所有者世代 + 型付き終了結果 | 操作世代との対応を再検証し、フロントエンド固有の終了結果を`FrontendWorkerTerminationTxn`と失敗分類へ接続する | `FrontendRuntime`のcurrent operation state、`WorkerRuntime`、public close未完義務がある場合の`ObjectCloseTxn` |
 
 - `begin_*` / `stop_*`はAIDL境界だけから、`accept_*`はワーカー・下位機器処理の完了通知橋渡しだけから呼ぶ。コールバック配送境界自身は`FrontendTuneScanTxn`へ再入場せず、予約済みの型付きコールバックを配送し、配送失敗は`PostCommitCallbackFailureTxn`へ接続する。
 - 各入口は開始時に正本所有者から状態の写し・世代・一回実行権限を取得し、外部処理後に世代を再検証する。旧世代の`accept_operation_event` / `accept_worker_terminal`は状態変更またはコールバック予約を行わず、失効結果として破棄・診断する。
