@@ -76,7 +76,7 @@ parental_rating_descriptor:
 
 ## BS / CS110 discovery
 
-BS と CS110 の complete 判定には BAT、SDT other、NIT other を含める。これらは table_id だけの global 完了ではなく、table_extension と NIT/BAT transport loop から得た ONID/TSID scope を使って transport 単位で判定する。リモコンキー が得られない場合は service_id を表示番号の代替値 とする。
+BS と CS110 の complete 判定には SDT other、NIT other を含める。BAT は受信した場合に解析・意味利用するが、BAT の未受信だけを discovery incomplete の理由にしない。これらの complete 判定は table_id だけの global 完了ではなく、table_extension と NIT/BAT transport loop から得た ONID/TSID scope を使って transport 単位で判定する。リモコンキー が得られない場合は service_id を表示番号の代替値 とする。
 
 `arib_si_engine_rs` は、service / transport単位の意味解析結果として、ONID / TSID / SID、ARIB `service_type`のraw 8-bit値、PMT、PCR、audio/video ESの存在・欠落理由、scrambling情報、および`publishability_by_service`を構造化してTISへ渡す。Android channelを登録するか、partial snapshotをchannel insertへ使用するかはTISの責務であり、`../tis/DESIGN_JA.md`を正とする。`Channels.COLUMN_SERVICE_TYPE`への最終投影は`../ARIB_SI_EPG_TvProvider投影方針.md`を正とし、本crateはAndroid generic `TvContract.Channels.SERVICE_TYPE_*`への意味変換を行わない。`publishability_by_service`はservice / transport単位の登録判断材料を構造化してTISへ渡す意味解析結果であり、channel登録とchannel insertの最終判断はTISが行う。
 
