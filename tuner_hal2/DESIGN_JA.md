@@ -116,42 +116,44 @@ lifecycle/owner/generation検証、引数検証との優先順位、再検証、
 
 ##### 共通化対象のRust物理化追加要件
 
-次表は、`../tuner_hal/DESIGN_JA.md`の論理契約と本書の実装owner / anchorを変更せず、A/B/C判定後に必要となる論理上の並行性・直列化契約、stale操作・one-shot識別、Bのcall-local進行状態だけを固定する。公開状態、phase、commit point、rollback / cleanup、failure semanticsは`../tuner_hal/DESIGN_JA.md`を正とする。one-shot authorityの一般実装規則とA/Bのpersistent storage境界は`CODE_CONVENTION.md`を正とし、`Send` / `Sync`は物理形決定後に実際のthread境界・共有参照境界から判定する。
+次表は、`../tuner_hal/DESIGN_JA.md`の論理契約と本書の実装所有者・アンカーを変更せず、A/B/C判定後に必要となる論理上の並行性・直列化契約、失効操作・一回性識別、Bの呼出し内進行状態だけを固定する。公開状態、段階、確定点、巻戻し・後始末、失敗時の意味は`../tuner_hal/DESIGN_JA.md`を正とする。一回性権限の一般実装規則とA/Bの永続状態格納境界は`CODE_CONVENTION.md`を正とする。`Send` / `Sync`はA/B/C分類から導出せず、外部API・実行基盤の型制約と、実際のスレッド間移送・共有参照から判定する。
 
-`B進行状態`の`通常制御`は通常の関数制御、typed snapshot / prepared value / one-shot authority、immutableなplan / result enumで手順を表現し、B自身のmutable進行状態を呼出し越しに保持しないことを表す。
+`B進行状態`の`通常制御`は通常の関数制御、型付きスナップショット、準備済み値、一回性権限、変更不能な計画、結果列挙型で手順を表現し、B自身の可変進行状態を呼出し越しに保持しないことを表す。
 
-従属するハンドル・権限・準備済み値のauto trait要件は、正本所有型のtrait有無から自動的に導出しない。値そのものをワーカースレッド、回収処理、別の実行主体のキューへ所有権移動する境界では、その実際の転送型に`Send`を要求する。共有参照を複数スレッドから同時利用する境界だけ、その共有対象型に`Sync`を要求する。
+従属するハンドル・権限・準備済み値の自動トレイト要件は、正本所有型のトレイト有無から自動的に導出しない。値そのものを実際にスレッド間で移送する境界では、その転送型に`Send`を要求する。共有参照を複数スレッドから同時利用する境界では、その共有対象型に`Sync`を要求する。同一スレッド内で処理主体が変わるだけの場合は`Send`の根拠にしない。
+
+AIDL/Binder等の外部API・実行基盤が、境界に現れる型へ`Send` / `Sync`を要求する場合は、その境界の型制約として満たす。この要求は内部正本の共有方式とは独立に発生し得るため、内部の正本所有型へ機械的に伝播させない。
 
 - `CloseCleanupAuthority`を所有者消滅処理または回収処理へ値のままスレッド間移送する実装では、`CloseCleanupAuthority: Send`を正の要件とする。正本所有者内で権限を消費して別の専用実行項目へ変換してからスレッド境界を越える実装では、スレッド境界を越える実行項目に`Send`を要求し、元の`CloseCleanupAuthority`へ不要な`Send`を強制しない。
 - `WorkerHandle`、停止・起床権限、回収移管権限その他の従属値も同じ規則とし、実際にスレッド境界を越える型だけ`Send`を要求する。共有参照を渡さない値へ対称性だけを理由に`Sync`を追加しない。
-- 正のauto trait要件はフィールド構成から成立させ、実際にスレッド境界を越える型についてコンパイル時の型検査で確認する。実行器やキューのtrait要件を満たすだけの`unsafe impl Send` / `unsafe impl Sync`を追加しない。
+- 正の自動トレイト要件はフィールド構成から成立させ、要求対象となる具体型についてコンパイル時の型検査で確認する。実行器やキューのトレイト要件を満たすだけの`unsafe impl Send` / `unsafe impl Sync`を追加しない。
 
-次表は、`../tuner_hal/DESIGN_JA.md`が定める競合・順序関係を実装接続の観点で追跡するための表であり、公開契約を再定義しない。正本所有型のRustのauto traitとは分離して扱う。複数の実行主体から要求が並行到達し得る場合も、必要なのは同じ正本に対する順序・一回性・世代柵を守ることであり、正本所有型そのものを共有参照する物理形は要求しない。単一所有実行主体、命令キュー、アクターその他の物理形も許容する。実際に所有権をスレッド間移動する型だけ `Send`、実際に共有参照を複数スレッドから利用する型だけ `Sync` を要求し、具体型は物理形決定後に確定する。
+次表は、`../tuner_hal/DESIGN_JA.md`が定める競合・順序関係を実装接続の観点で追跡するための表であり、公開契約を再定義しない。複数の実行主体から要求が並行到達し得る場合に必要なのは、各契約が定める順序、世代柵、一回性等の不変条件を守ることである。実行主体が複数であることだけを理由に一回性権限を追加しない。正本所有型そのものを共有参照する物理形も要求せず、単一所有の専用実行主体や命令キュー等の物理形も許容する。`Send` / `Sync`の具体型要件は、この表とは別に、外部API・実行基盤の型制約と実際のスレッド間移送・共有参照から確定する。
 
 | 正本・手順所有者 | 並行し得る要求 | 契約上必要な性質 |
 |---|---|---|
-| `ObjectCloseTxn` | public close、owner loss / Drop、shutdown / reaper | 同一objectのclose開始権限と後始末進行を一つの正本で線形化する |
-| `SourceBoundaryTxn` | `setDataSource()`、source unlink、Filter close | 同一relationの変更を一つの正本で順序付ける |
-| `StreamBoundaryTxn` | relation変更、flush / close、packet側境界通知 | stream boundary generationと型付きreset / invalidate通知の順序を一意にする |
-| `FrontendLnbRelationTxn` | `setLnb()`、Frontend close | assignment relationとlease参照変更を一つの正本で確定する |
+| `ObjectCloseTxn` | 公開close、所有者消滅 / Drop、終了処理 / 回収処理 | 同一オブジェクトのclose開始権限と後始末進行を一つの正本で線形化する |
+| `SourceBoundaryTxn` | `setDataSource()`、入力元解除、Filter close | 同一関係の変更を一つの正本で順序付ける |
+| `StreamBoundaryTxn` | 関係変更、flush / close、パケット側境界通知 | ストリーム境界世代と型付きリセット・無効化通知の順序を一意にする |
+| `FrontendLnbRelationTxn` | `setLnb()`、Frontend close | 割当関係とリース参照変更を一つの正本で確定する |
 | `LnbRegistry` | 公開LNB制御、固定給電、安全状態復帰、DiSEqC | 同一物理LNB・レールへのI/Oと永続状態変更を同じ物理競合単位で直列化する |
-| `RecordDvrFilterRelationTxn` | attach / detach、Filter close、DVR close、demux cleanup | Record DVR / Filter relation変更を一つの正本で確定する |
-| `WorkerRuntime` | domain start / stop、worker terminal、close、shutdown / reaper | 同一worker寿命の停止・起床・終了・回収・再試行を一つの正本で順序付ける |
-| `FilterProducerDrainGate` | producer、flush / closeのdrain | admit / permit / drain / generation更新を同一gateで線形化する |
-| `QueueEpochProtocol` | queue I/O、flush / close / drain | read/write authorityとqueue epoch変更を同一protocolで順序付ける |
-| `PlaybackConsumeTxn` | playback consumeとflush / close等の境界要求 | consume状態の変更主体は一つとし、他経路は`QueueEpochProtocol`等の型付き境界から影響させる。consume状態を複数実行主体が直接変更しない |
-| `AvSyncRegistry` | configure / unregister、Filter close、demux cleanup | A/V sync relation変更を一つの正本で確定する |
-| `PcrClockAnchorStore` | PCR観測、stream boundary invalidation | 同一generationの観測と無効化の順序を一つの正本で確定する |
-| `PacketPipeline` | packet処理、stream boundary変更 | packet状態の変更主体は一つとし、型付きgeneration fence / commandでboundary競合を解消する |
+| `RecordDvrFilterRelationTxn` | 接続 / 切離し、Filter close、DVR close、demux後始末 | Record DVR / Filter 関係変更を一つの正本で確定する |
+| `WorkerRuntime` | ドメインstart / stop、ワーカー終了通知、close、終了処理 / 回収処理 | 同一ワーカー寿命の停止・起床・終了・回収・再試行を一つの正本で順序付ける |
+| `FilterProducerDrainGate` | 生成側、flush / closeの排出要求 | 受付・許可・排出・世代更新を同一gateで線形化する |
+| `QueueEpochProtocol` | キューI/O、flush / close / drain | 読出し・書込み権限とキュー世代変更を同一protocolで順序付ける |
+| `PlaybackConsumeTxn` | Playback消費処理とflush / close等の境界要求 | 消費処理状態の変更主体は一つとし、他経路は`QueueEpochProtocol`等の型付き境界から影響させる。消費処理状態を複数実行主体が直接変更しない |
+| `AvSyncRegistry` | 設定 / 登録解除、Filter close、demux後始末 | A/V同期関係変更を一つの正本で確定する |
+| `PcrClockAnchorStore` | PCR観測、ストリーム境界無効化 | 同一世代の観測と無効化の順序を一つの正本で確定する |
+| `PacketPipeline` | パケット処理、ストリーム境界変更 | パケット状態の変更主体は一つとし、型付き世代柵・指示で境界競合を解消する |
 
-この表は `Send` / `Sync` を要求する表ではない。上記契約を満たす物理形を選んだ後、実際にスレッド境界を越える指示、結果、ハンドル、権限、状態所有者等の型だけに必要なtrait要件を付ける。
+この表は `Send` / `Sync` を要求する表ではない。具体型のトレイト要件は、AIDL/Binder等の外部API・実行基盤が要求する型制約と、選択したRust物理形で実際に生じるスレッド間移送・共有参照の双方から別途決める。
 
-| # | 対象 | 分類 | 並行性・直列化契約 | stale操作・one-shot識別 | B進行状態 |
+| # | 対象 | 分類 | 並行性・直列化契約 | 失効操作・一回性識別 | B進行状態 |
 |---:|---|:---:|---|---|---|
-| 1 | `ObjectCloseTxn` | A | public close / owner loss / Drop / shutdown / reaperによる同一object変更をowner内で直列化する | lifecycle generation + one-shot `CloseCleanupAuthority` | — |
+| 1 | `ObjectCloseTxn` | A | public close / owner loss / Drop / shutdown / reaperによる同一object変更をowner内で直列化する | lifecycle generation + 一回性 `CloseCleanupAuthority` | — |
 | 2 | `SourceBoundaryTxn` | A | set / unlink / closeによるrelation変更をowner内で直列化する | relation generation + prepared relation mutation | — |
 | 3 | `DemuxFrontendSourceTxn` | B | B共有lockを持たず、relation ownerと`StreamBoundaryTxn`の正規同期入口を使う | 各Aが発行するprepared mutationを消費し、独自generationを発行しない | 通常制御 |
-| 4 | `StreamBoundaryTxn` | A | boundary prepare / commitとsteady-state ownerへのdispatchをowner内で整合させる | `stream_boundary_generation` + one-shot `PreparedStreamBoundary` | — |
+| 4 | `StreamBoundaryTxn` | A | boundary prepare / commitとsteady-state ownerへのdispatchをowner内で整合させる | `stream_boundary_generation` + 一回性 `PreparedStreamBoundary` | — |
 | 5 | `CallbackRegistrationUseCase` | B | B共有lockを持たず、callback store / runtime registry / domain ownerのprepared入口を使う | prepared artifact / registry mutation / domain mutationを一回だけ消費し、独自generationを発行しない | 通常制御 |
 | 6 | `FrontendLnbRelationTxn` | A | `setLnb()` / closeによるassignment mutationをowner内で直列化する | object generation + prepared assignment lease mutation + transaction authority | — |
 | 7 | `LnbControlTxn` | B | B共有ロックを持たず、`LnbRegistry`の準備済み変更入口と物理I/O権限を使う | 準備済み制御変更・backend適用結果を一回だけ消費し、独自の世代または失敗状態を発行しない | 通常制御 |
@@ -159,16 +161,16 @@ lifecycle/owner/generation検証、引数検証との優先順位、再検証、
 | 9 | `DescramblerKeyTxn` | B | B共有lockを持たず、key table / session / backend ownerの正規入口を使う | prepared key ref / session mutationを一回だけ消費し、独自generationを発行しない | 通常制御 |
 | 10 | `DescramblerSessionCleanupTxn` | B | 同一session cleanupの直列化はsession / close / invalidation側のpersistent ownerへ置き、B共有lockを追加しない | trigger generation / cleanup authorityを入力として消費し、retryable pendingはpersistent ownerへ返す | 通常制御 |
 | 11 | `RecordDvrFilterRelationTxn` | A | attach / detach / close / demux cleanupによるrelation変更をowner内で直列化する | object generation + prepared relation / route mutation | — |
-| 12 | `WorkerRuntime` | A | handle slot / stop / wake / join / reaper stateをowner内で同期し、外側に第二のlifecycle lockを作らない | owner generation + signal generation + one-shot stop / wake authority + reaper handoff authority | — |
+| 12 | `WorkerRuntime` | A | handle slot / stop / wake / join / reaper stateをowner内で同期し、外側に第二のlifecycle lockを作らない | owner generation + signal generation + 一回性の停止・起床権限 + 回収移管権限 | — |
 | 13 | `WorkerFailureClassifier` | C | なし | なし | — |
 | 14 | `PostCommitCallbackFailureTxn` | B | B共有lockを持たず、診断・cleanupのpersistent ownerへtyped結果を渡す | callback delivery result / owner generationを入力にし、独自generationを発行しない | 通常制御 |
-| 15 | `FilterProducerDrainGate` | A | producerとdrain / closeの競合をgate自身の同期境界で解決する | delivery / parser generation + one-shot `FilterProducerPermit` | — |
-| 16 | `QueueEpochProtocol` | A | queue I/Oとdrain / flush / closeの競合をprotocol自身の同期境界で解決する | queue epoch + one-shot read / write transaction authority | — |
+| 15 | `FilterProducerDrainGate` | A | producerとdrain / closeの競合をgate自身の同期境界で解決する | delivery / parser generation + 一回性 `FilterProducerPermit` | — |
+| 16 | `QueueEpochProtocol` | A | queue I/Oとdrain / flush / closeの競合をprotocol自身の同期境界で解決する | queue epoch + 一回性の読出し・書込み取引権限 | — |
 | 17 | `QueueCleanupTxn` | B | B共有lockを持たず、`FilterProducerDrainGate` / `QueueEpochProtocol`のtyped入口を順に使用する | 各protocolのauthorityを消費し、独自epochを発行しない | 通常制御 |
 | 18 | `PlaybackConsumeTxn` | A | playback workerを単一mutation ownerとし、同じconsume stateを複数threadから直接変更しない。共有のためだけの外側mutexを標準形にしない | `QueueEpochProtocol`が発行するtyped epoch / consume authorityを使用し、第二のqueue generationを持たない | — |
 | 19 | `AvSyncRegistry` | A | configure / unregister / close / demux cleanupをowner内で直列化する | object / relation generationをtyped keyに含め、同義のgeneration namespaceを追加しない | — |
 | 20 | `PcrClockAnchorStore` | A | packet観測とboundary invalidationをowner内で整合させ、複数fieldの不変条件に必要な最小同期を持つ | anchorをstream boundary generationへ従属させ、stale anchorを確定しない | — |
-| 21 | `ObjectMethodTxn` | B | B共有lockを持たず、object / relation / resource ownerのsnapshotとtyped入口を使う | one-shot execution authorityをconsume-by-valueで消費する | 通常制御 |
+| 21 | `ObjectMethodTxn` | B | B共有lockを持たず、object / relation / resource ownerのsnapshotとtyped入口を使う | 一回性実行権限をconsume-by-valueで消費する | 通常制御 |
 | 22 | `RootOpenTxn` | B | B共有lockを持たず、resource / runtime registry / Binder artifact ownerのprepared入口を使う | prepared reservation / registrationを一回だけcommitまたはabortする | 通常制御 |
 | 23 | `ChildOpenTxn` | B | B共有lockを持たず、parent / resource / runtime / Binder ownerのprepared入口を使う | parent generation + prepared reservation / registrationを一回だけ消費する | 通常制御 |
 | 24 | `FrontendTuneScanTxn` | B | B共有進行状態を持たず、フロントエンド実行時状態、`WorkerRuntime`、各`StreamBoundaryTxn`の正規同期入口を調停する | 要求指紋 / フロントエンド操作世代 / 準備済み境界を既存所有者から取得し、第二の走査世代を発行しない | 有限正規入口集合から毎回呼出し内で再入場し、入口終了時にB自身の可変進行状態を残さない |
