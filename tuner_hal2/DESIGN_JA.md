@@ -118,6 +118,12 @@ lifecycle/owner/generation検証、引数検証との優先順位、再検証、
 
 `trait要求`の`—`は非`Send` / 非`Sync`を要求する意味ではなく、本契約から正のauto trait要件を追加しないことを表す。Bの`通常制御`は通常の関数制御、typed snapshot / prepared value / one-shot authority、immutableなplan / result enumで手順を表現し、B自身のmutable進行状態を呼出し越しに保持しないことを表す。
 
+従属するhandle / authority / prepared valueのauto trait要件は、owner型の`Send` / `Sync`要件から自動的に代用しない。値そのものをワーカースレッド、reaper、別実行主体のqueueへ所有権移動する境界では、その実際の転送型に`Send`を要求する。共有参照を複数threadから同時利用する境界だけ、その共有対象型に`Sync`を要求する。
+
+- `CloseCleanupAuthority`をowner-loss処理またはreaperへ値のままthread間移送する実装では、`CloseCleanupAuthority: Send`を正の要件とする。owner内で権限を消費して別の専用work itemへ変換してからthread境界を越える実装では、thread境界を越えるwork itemに`Send`を要求し、元の`CloseCleanupAuthority`へ不要な`Send`を強制しない。
+- `WorkerHandle`、stop / wake authority、reaper handoff authorityその他の従属値も同じ規則とし、実際にthread境界を越える型だけ`Send`を要求する。共有参照を渡さない値へ対称性だけを理由に`Sync`を追加しない。
+- 正のauto trait要件はフィールド構成から成立させ、実際にthread境界を越える型についてcompile-time assertionで確認する。executorやqueueのtrait boundを満たすだけの`unsafe impl Send` / `unsafe impl Sync`を追加しない。
+
 | # | 対象 | 分類 | 同期 | stale操作・one-shot識別 | trait要求 | B進行状態 |
 |---:|---|:---:|---|---|---|---|
 | 1 | `ObjectCloseTxn` | A | public close / owner loss / Drop / shutdown / reaperによる同一object変更をowner内で直列化する | lifecycle generation + one-shot `CloseCleanupAuthority` | `Send + Sync` | — |
