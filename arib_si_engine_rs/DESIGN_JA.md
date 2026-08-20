@@ -124,7 +124,7 @@ provider-data JSON v1 は `provider-data / diagnostics Rust SSOT` 節の `Progra
 
 short_event、extended_event、content、component、audio_component、parental_rating、series、event_group、linkage を現行仕様で構造化変換する。未知 descriptor は破棄せず 診断に保持する。
 
-ARIB descriptor は `descriptor_length`、descriptor 内部 length、loop 単位、fragment sequence が妥当な場合だけ正常フィールドとして採用する。length 不整合、余剰 byte、fragment 欠落、`descriptor_number` 重複、`last_descriptor_number` 不一致、必須フィールド 不足は 不正 descriptor とし、番組名、short text、長形式イベント本文、コンテンツジャンル、component、音声コンポーネント、series、event_group、linkage の正常フィールドには採用しない。不正 descriptor は parser を停止させず、`DescriptorDiagnosticV1` に tag、offset、declaredLength、actualRemainingLength、parseStatus、rawPrefixHex、section scope を保持する。
+ARIB descriptor は `descriptor_length`、descriptor 内部 length、loop 単位、fragment sequence が妥当な場合だけ正常フィールドとして採用する。length 不整合、余剰 byte、fragment 欠落、`descriptor_number` 重複、`last_descriptor_number` 不一致、必須フィールド 不足は 不正 descriptor とし、番組名、short text、長形式イベント本文、コンテンツジャンル、component、音声コンポーネント、series、event_group、linkage の正常フィールドには採用しない。`extended_event_descriptor` の `descriptor_number` 重複、欠落、`last_descriptor_number` 一致は同一eventかつ同一`ISO_639_language_code`のdescriptor set内で判定し、異なるlanguage set間の同一番号を重複とみなさない。不正 descriptor は parser を停止させず、`DescriptorDiagnosticV1` に tag、offset、declaredLength、actualRemainingLength、parseStatus、rawPrefixHex、section scope を保持する。
 
 ## API 境界の固定
 
@@ -150,7 +150,7 @@ EIT event の stable key は `DEFINED` または `UNDEFINED_TIME` の場合だ�
 
 自前 decoder は mirakc-arib が EPG / サービスモデル 構築で文字列化している範囲に限定する。対象は SDT サービス descriptor の サービス名、EIT short_event の 番組名 / text、EIT extended_event の item description / item text / text、component descriptor、音声コンポーネントdescriptor、series descriptor の text/name である。
 
-extended_event は、全 fragment の `last_descriptor_number` が一致し、`descriptor_number` が 0 から `last_descriptor_number` まで重複なく連続して揃う場合だけ、`descriptor_number` 順に fragment を連結して ARIB 文字列として復号する。欠番、重複、`last_descriptor_number` 不一致がある場合は extended description / 長形式イベント項目s を正常フィールドに採用せず、診断に記録する。字幕 PES、字幕管理データ、字幕本文、DRCS/外字レンダリング、組版制御、BML は対象外であり、`libaribcaption` 側の責務とする。
+`extended_event_descriptor` は同一event内で `ISO_639_language_code` ごとに独立したdescriptor setとして扱う。各language setについてだけ、全fragmentの`last_descriptor_number`が一致し、`descriptor_number`が0から`last_descriptor_number`まで重複なく連続して揃うことをcomplete条件とする。異なるlanguage set間で同じ`descriptor_number`が存在しても重複とみなさず、一方のlanguage setの欠番・重複・`last_descriptor_number`不一致によって、独立してcompleteな別language setをinvalidにしない。completeな各language setは`descriptor_number`順にfragmentを連結してARIB文字列として復号する。不完全なlanguage setだけをextended description / 長形式イベント項目の正常フィールドに採用せず、language codeを含む診断に記録する。字幕 PES、字幕管理データ、字幕本文、DRCS/外字レンダリング、組版制御、BML は対象外であり、`libaribcaption` 側の責務とする。
 
 ## ARIB 文字列 decoder 入力境界と TvProvider 連携境界
 
