@@ -124,6 +124,22 @@ lifecycle/owner/generation検証、引数検証との優先順位、再検証、
 - `WorkerHandle`、停止・起床権限、回収移管権限その他の従属値も同じ規則とし、実際にスレッド境界を越える型だけ`Send`を要求する。共有参照を渡さない値へ対称性だけを理由に`Sync`を追加しない。
 - 正のauto trait要件はフィールド構成から成立させ、実際にスレッド境界を越える型についてコンパイル時の型検査で確認する。実行器やキューのtrait要件を満たすだけの`unsafe impl Send` / `unsafe impl Sync`を追加しない。
 
+`Send + Sync`を要求する分類Aの正本所有型については、次の利用境界を正の根拠として固定する。`Send`は当該正本所有値をサービス構築時または所有主体移管時に別スレッドへ移動できる必要があるため、`Sync`は表に示す複数の実行主体が同じ正本所有値への共有参照を介して正規入口を並行利用するために要求する。表にない実行主体を追加したことだけを理由にtrait要件を強めず、利用境界が変わる場合は本表も同時に更新する。
+
+| 正本所有型 | `Send`が必要な境界 | `Sync`が必要な共有利用境界 |
+|---|---|---|
+| `ObjectCloseTxn` | service_runtimeが所有するclose正本をshutdown/reaper実行主体へ移管できること | public close、owner loss/Drop、shutdown/reaperが同じobjectのclose正規入口を並行に要求し得る |
+| `SourceBoundaryTxn` | demux runtime正本をdata-path実行主体へ移管できること | `setDataSource()`、source unlink、Filter closeが同一relation正規入口を並行に要求し得る |
+| `StreamBoundaryTxn` | demux runtime正本をpacket/boundary実行主体へ移管できること | relation変更、flush/close、packet側境界通知が同一stream boundary正規入口を並行に要求し得る |
+| `FrontendLnbRelationTxn` | service_runtime正本をfrontend処理実行主体へ移管できること | `setLnb()`とFrontend closeが同一assignment正規入口を並行に要求し得る |
+| `LnbControlTxn` | LNB正本をサービス実行主体へ移管できること | 複数Binder呼出しとclose側処理が同一LNB制御正規入口へ並行到達し得る |
+| `RecordDvrFilterRelationTxn` | service_runtime正本をDVR/Filter処理実行主体へ移管できること | attach/detach、Filter close、DVR close、demux cleanupが同一relation正規入口を並行に要求し得る |
+| `WorkerRuntime` | worker lifecycle正本をworker/reaperを管理する実行主体へ移管できること | domain start/stop、worker terminal、close、shutdown/reaperが同じworker寿命正規入口を並行に要求し得る |
+| `FilterProducerDrainGate` | gate正本をproducer/queue処理実行主体へ移管できること | producerとflush/closeのdrain要求が同一gateを並行利用する |
+| `QueueEpochProtocol` | queue protocol正本をDVR worker/FM Q処理実行主体へ移管できること | queue I/Oとflush/close/drainが同一queue epoch正規入口を並行利用する |
+| `AvSyncRegistry` | registry正本をdemux/filter処理実行主体へ移管できること | configure、unregister、Filter close、demux cleanupが同一registry正規入口を並行に要求し得る |
+| `PcrClockAnchorStore` | anchor正本をpacket処理実行主体へ移管できること | packet PCR観測とstream boundary invalidationが同一storeを並行利用する |
+
 | # | 対象 | 分類 | 同期 | stale操作・one-shot識別 | trait要求 | B進行状態 |
 |---:|---|:---:|---|---|---|---|
 | 1 | `ObjectCloseTxn` | A | public close / owner loss / Drop / shutdown / reaperによる同一object変更をowner内で直列化する | lifecycle generation + one-shot `CloseCleanupAuthority` | `Send + Sync` | — |
