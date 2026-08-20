@@ -1,6 +1,6 @@
 # Tuner HAL2 コーディング規則
 
-この文書は `tuner_hal2` 固有の**実装規約**だけを定める。公開契約、状態遷移、戻り値、capability / profile、資源寿命、transaction の phase / commit / rollback、cleanup / quarantine の意味、worker / callback / source boundary / descrambler の論理契約は `../tuner_hal/DESIGN_JA.md` を唯一の正本とする。実装 owner、module anchor、許可 entry point は `DESIGN_JA.md` の「共通transaction / use-caseの規範実装アンカー」を唯一の正本とする。プロジェクト全体の Rust 規約、no-`panic`、mutex汚染、一般worker、FFI、parser、ロック / callback、テスト自己参照禁止は `../GLOBAL_CODE_CONVENTION.md` を正とし、本書へ重複定義しない。旧 `../tuner_hal/CODE_CONVENTION.md` は旧参照実装だけの規約であり、`tuner_hal2` の現行実装規約の正本として参照しない。
+この文書は `tuner_hal2` 固有の**実装規約**だけを定める。公開契約、状態遷移、戻り値、capability / profile、資源寿命、transaction の phase / commit / rollback、cleanup / quarantine の意味、worker / callback / source boundary / descrambler の論理契約は `../tuner_hal/DESIGN_JA.md` を唯一の正本とする。実装 owner、module anchor、許可 entry point は `DESIGN_JA.md` の「共通transaction / use-caseの規範実装アンカー」を唯一の正本とする。プロジェクト全体の Rust 規約、no-`panic`、mutex汚染、一般worker、FFI、parser、ロック / callback、テスト自己参照禁止は`../GLOBAL_CODE_CONVENTION.md`を正とし、本書へ重複定義しない。旧 `../tuner_hal/CODE_CONVENTION.md` は旧参照実装だけの規約であり、`tuner_hal2` の現行実装規約の正本として参照しない。
 
 本書は論理状態名、commit point、rollback policy、quarantine 条件を第二の正本として定義しない。以下で論理契約名を記す場合も、その意味を再定義するのではなく、**実装が正本 owner / typed entry を迂回しないための禁止規約**を示すだけである。
 
@@ -90,6 +90,9 @@ Wrapper を置いてよいのは、public API 境界、domain naming 隠蔽、AI
 - `ObjectCloseTxn`の`CloseCleanupAuthority`は上記(b)に該当する具体的な一回実行権限である。`CloseCleanupAuthority`自体は未完後片付け義務を所有しない。未完手順、後片付け結果、再試行・回収移管、完了確定は`ObjectCloseTxn`の呼出しを越えて保持される状態に残す。
 - `ObjectCloseTxn.begin_close`の不可分な確定を実装する際は、論理閉鎖と新規通常操作遮断に加え、未完後片付け義務の記録を最初の`CloseCleanupAuthority`発行より先に、または同一の不可分更新内で確定する。権限値だけが先に存在する中間状態を作らない。
 - 生存している`CloseCleanupAuthority`を回収機構へ引き渡せる通常経路では、論理契約の一度だけの移管を用いる。`CloseCleanupAuthority`が`Drop`、`mem::forget`、タスク取消し等で消滅または到達不能になっても、それを移管済みまたは義務完了とは扱わず、`ObjectCloseTxn`の未完後片付け義務から後続の一回実行権限を発行できなければならない。古い権限から遅れて返った結果は世代と義務識別子で失効判定する。
+- `CloseCleanupAuthority`が機器入出力、Binder呼出し、ワーカー終了待ち、外部資源解放その他の外部副作用を開始する直前には、`ObjectCloseTxn`の正規入口へ再入場し、権限が指す世代・義務識別子・試行識別子が現在の未完義務に対する唯一の実行可能な試行であることを確認して、当該試行を実行中として不可分に確定しなければならない。失効済みまたは別試行が実行中の権限は外部副作用開始前に拒否する。
+- 外部副作用開始前に権限が失われた場合は、正本所有者の未完義務から後続の`CloseCleanupAuthority`を発行してよい。外部副作用開始を実行中として確定した後に結果が失われた場合は、権限喪失だけを理由に同じ後片付けを再実行しない。後続試行を発行できるのは、当該stepが再実行可能であることを契約上保証できる場合、外部実状態を読み戻して未完を確認できる場合、または世代・義務識別子等により旧試行の副作用を遮断できる場合に限る。それらを確認できず実状態が不明な場合は、正本契約の未完・再試行停止・隔離の扱いへ接続する。
+- 遅れて返った旧試行の結果は、結果取込み前に世代・義務識別子・試行識別子を再検証し、現在の実行中試行に一致しない結果から完了を確定しない。
 - 再利用可能な値は token と分離した read-only descriptor にする。clone可能なread-only handleとone-shot mutation authorityが同じ型に混在して権限を複製しないよう、必要に応じて別型へ分離する。
 - lifetime ID / generation / epoch / tokenは意味ごとのnewtypeまたは同等の型境界で区別し、異なるnamespaceの裸の整数を同じmutation APIへ渡せる形を正規形にしない。
 - single-variant enum や未使用 variant で状態機械を装わない。
@@ -152,6 +155,7 @@ Wrapper を置いてよいのは、public API 境界、domain naming 隠蔽、AI
 - `DESIGN_JA.md`が正に要求する`Send` / `Sync`は実型へのcompile-time assertionで確認する。単に実行器のtrait boundを通すための`unsafe impl Send` / `unsafe impl Sync`を追加しない。
 - one-shot authority / prepared valueのconstructor非公開、非`Clone` / 非`Copy`、consume-by-valueをcompile-fail相当またはrepositoryで採用する静的検査で確認する。
 - 失敗し得る後片付けの一回実行権限について、権限を未消費のまま`Drop` / `mem::forget`相当としても呼出しを越えて保持される未完後片付け義務が残り、後続の一回実行権限を発行できることを状態と型付き結果で検査する。`#[must_use]`警告だけを完了条件にしない。`CloseCleanupAuthority`についてもこの検査を必須とする。
+- `CloseCleanupAuthority`について、外部副作用開始前の実行中claimが一回だけ成立すること、claim済み試行と競合する別試行が副作用を開始できないこと、claim前の権限喪失は再発行できること、claim後の結果不明では再実行可能性・read-back・旧副作用遮断のいずれも証明できない限り同一stepを再発行しないことを状態と型付き結果で検査する。
 
 ## 12. runtime failure / capability inventory の実装境界
 
