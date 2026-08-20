@@ -12,22 +12,26 @@
 未対応の SI/EPG 文字・escape は `panic` させず、置換文字または 診断によって安定動作させる。字幕 payload を `decode_arib_string_lossy()` に渡す経路は禁止する。字幕本文処理は TIS 側の libaribcaption 経路だけで行う。
 `arib_si_engine_rs` は libaribcaption ラッパー を所有しない。libaribcaption は TIS 側の字幕 path から Rust JNI boundary と 安全なRustラッパー 経由で呼ぶ。
 
-ARIB適合性の規範対象と検証証拠の分離は `../開発規則.md` を正とする。本decoderについて条項単位に取得・確認し検証証拠として使用する本文は ARIB 公式英語版 STD-B24 6.4-E1 Fascicle 1 とし、従来の8単位符号については7.1.1.1〜7.1.2.4をinvocation・designation・文字集合・Macro・制御機能の根拠として用いる。UCSは同Fascicle第一編第2部7.2.1〜7.2.3を根拠とし、特に7.2.3のcharacter encoding schemeをcoding formとBOM/byte-order判定のSSOTにする。7.2.3で伝送に用いる符号化方式はISO/IEC 10646に基づくUTF-8またはUTF-16であり、UTF-16はhigh-byte-first (big-endian) かつBOMを省略せず、UTF-8ではBOMを使用しない。したがってUCS入力を受けたdecoderはheuristicなbyte-order推測を行わず、先頭`FE FF`をUTF-16BEの必須BOMとして認識して除去し、`FF FE`はlittle-endianとして規格外入力にし、`EF BB BF`はUTF-8で禁止されたBOMとして規格外入力にする。`FE FF`がない入力をUTF-16とは解釈せずUTF-8として検証する。UCSの文字集合・制御符号は7.2.1／7.2.2の規定を同じdecoder stateへ適用する。ARIB公式の改定履歴上、UCSは既存STD-B24の正式な符号方式として維持・修正されているため、本crateのSI/EPG文字列対応から時点依存で除外しない。この英語版を現行日本語原文そのものとは扱わず、版差がある場合は未証明差分を残す。改定概要、版一覧、二次資料を未取得本文の具体規定の代用にしない。STD-B24の字幕レンダリングや他Fascicleへの適合は本decoderの主張に含めない。
+ARIB適合性の規範対象と検証証拠の分離は `../開発規則.md` を正とする。本decoderがSI/EPG文字列として受理する符号profileは、対象放送方式に適用される現行日本語TR-B14 / TR-B15のSI運用規定を正とし、STD-B24が定義する汎用的な文字符号機能全体をSI/EPG入力能力へ自動的に昇格させない。STD-B10 / STD-B24は、当該SI運用profileから参照される構文、designation / invocation、文字集合、制御機能の意味を解釈する基礎規格として用いる。取得可能なARIB公式英語版を条項単位の検証証拠に用いる場合も、現行日本語原文との版差を未証明差分として残し、改定概要、版一覧、二次資料を未取得本文の具体規定の代用にしない。
+
+従来8単位符号のSI/EPG文字列は、TR-B14 / TR-B15のSI運用profileで定義された初期状態と使用文字集合を適用する。初期状態は G0=Kanji、G1=Alphanumeric、G2=Hiragana、G3=Katakana、GL=LS0(G0)、GR=LS2R(G2)、文字サイズ=NSZ とする。SI運用profileが使用しないMacro code set、DRCS code set、外字字形転送を正常なSI入力として要求しない。これらがSI/EPG入力に現れた場合、strict APIは規格外または未対応入力としてエラーにし、lossy APIだけが`U+FFFD`とoffset・理由付き診断へ変換する。STD-B24の汎用Macro展開器、DRCS renderer、字幕組版機能を本crateのSI decoder capabilityとして設計しない。
+
+UCSについても、STD-B24に符号方式が存在することだけを根拠にSI/EPG入力として受理しない。対象放送方式のSI運用profileが対象fieldについてUCSのsignalingとcoding formを明示的に許可する場合に限り、そのprofileが指定する境界で受理する。適用profile上でUCSを使用しないfieldでは、BOMやbyte patternからUCSを推測して復号しない。したがって、SI/EPG decoderの通常契約に「BOMなしならUTF-8」「`FE FF`ならUTF-16BE」のようなSTD-B24汎用UCS判定を置かず、profileで許可されたUCS入力専用の入口を設ける場合にだけSTD-B24のcoding-form規定を適用する。
 
 本decoderの適合主張は、字幕ではないSI/EPG文字列について、次の境界に限定する。
 
 | 項目 | 対応境界 |
 |---|---|
-| 初期状態 | G0=Kanji、G1=Alphanumeric、G2=Hiragana、G3=Macro、GL=LS0(G0)、GR=LS2R(G2) |
-| 文字集合 | SI/EPGで使用するKanji、Alphanumeric、Hiragana、Katakanaと、実装・試験で対応を確認した追加記号だけを文字として出力する |
-| designation / invocation | ESCによるdesignation、LS0/LS1/LS2/LS3、LS1R/LS2R/LS3R、SS2/SS3を、対応済み文字集合とMacroの選択に使用する |
-| Macro | STD-B24 6.4-E1で定義された既定Macroだけを展開し、再帰・入力消費量に上限を設ける。未定義Macroは置換と診断にする |
-| DRCS・外字 | 自前で字形を生成しない。SI/EPG用の明示的な外字辞書に一致する場合だけ変換し、それ以外は置換と診断にする |
-| UCS | STD-B24 Fascicle 1 第一編第2部7.2.1〜7.2.3に従うUCS文字列を対応能力に含める。7.2.3に従いUTF-8／UTF-16だけを許可し、`FE FF`先頭ならBOMを消費してUTF-16BE、BOMなしならUTF-8として検証する。UTF-16LE (`FF FE`)、BOMなしUTF-16、UTF-8 BOM (`EF BB BF`)、切詰めcode unit／surrogate、illegal UTF-8 sequenceは推測修復しない。strict APIでは規格外／不正入力をエラー、lossy APIでは`U+FFFD`と条項・offset付き診断にする。最低試験はvalid UTF-8 without BOM、valid UTF-16BE with `FE FF`、UTF-8 BOM拒否、UTF-16LE BOM拒否、UTF-16 BOM欠落をUTF-16へ推測しないこと、truncated/illegal sequenceのstrict/lossy差を含む |
+| 初期状態 | 対象放送方式のSI運用profileに従い、従来8単位符号では G0=Kanji、G1=Alphanumeric、G2=Hiragana、G3=Katakana、GL=LS0(G0)、GR=LS2R(G2)、NSZ |
+| 文字集合 | SI/EPG運用profileで使用するKanji、Alphanumeric、Hiragana、Katakana、追加記号だけを正常な文字入力として扱う |
+| designation / invocation | SI運用profileで使用可能な文字集合を選択するために必要なESC designation、LS/SS invocationだけを受理し、汎用STD-B24 capabilityを理由に使用禁止集合へ遷移しない |
+| Macro | SI運用profileで使用しない。Macro code setを正常なSI/EPG入力能力として宣言せず、出現時はstrictでエラー、lossyで置換と診断にする |
+| DRCS・外字 | SI運用profileで使用しないDRCS code set / 外字字形転送を正常なSI/EPG入力能力として宣言しない。字幕・DRCS表示は`libaribcaption`側の責務とする |
+| UCS | 対象放送方式のSI運用profileが対象fieldについて明示的に許可・signalingする場合だけ、そのprofileで指定された入口から受理する。STD-B24にUCSが存在することやBOM/byte patternだけを根拠に従来8単位符号fieldをUCSとして推測しない |
 | 不明・切詰めescape | `U+FFFD`へ置換し、offset、入力prefix、理由を診断へ記録する。`panic`、無言の脱落、推測による状態遷移を禁止する |
 | lossy境界 | 置換を許すAPIは`decode_arib_string_lossy()`だけとし、置換数と理由を返す。strict APIは未対応または不正な符号列をエラーにする |
 
-この表にない文字集合、制御機能、字幕、BML、組版、DRCS字形レンダリングは対応能力に含めない。UCSについては、標準でsignalingされたSI/EPG入力を未対応符号方式として一括置換する設計にはせず、従来8単位符号とUCSを同じstrict/lossy境界で扱う。対応文字集合または制御機能を追加する場合は、参照するSTD-B24の版・分冊・条項、入力状態、出力、置換規則、試験ベクトルを先に更新する。
+この表にない文字集合、制御機能、字幕、BML、組版、DRCS字形レンダリングを、STD-B24に定義があるという理由だけでSI/EPG対応能力に含めない。対応文字集合、制御機能、または別coding systemを追加する場合は、適用するTR-B14 / TR-B15のSI運用条項、参照するSTD-B10 / STD-B24の版・分冊・条項、入力状態、出力、置換規則、試験ベクトルを先に更新する。
 
 
 ## EIT 範囲
@@ -150,7 +154,7 @@ extended_event は、全 fragment の `last_descriptor_number` が一致し、`d
 
 ## ARIB 文字列 decoder 入力境界と TvProvider 連携境界
 
-ARIB SI/EPG文字デコードの仕様固定に使う入力形態は、実波 TS ファイルを必須形式にせず、descriptor byte array / section builder を主入力とする。対象は SDT サービス名、EIT short_event、extended_event fragment、長形式イベント項目、component、audio_component、series、従来8単位符号のunsupported escape、truncated text、replacement 診断、UCSの有効UTF-8/UTF-16、byte order、切詰めcode unit、illegal sequenceである。
+ARIB SI/EPG文字デコードの仕様固定に使う入力形態は、実波 TS ファイルを必須形式にせず、descriptor byte array / section builder を主入力とする。対象は SDT サービス名、EIT short_event、extended_event fragment、長形式イベント項目、component、audio_component、series、従来8単位符号のunsupported escape、truncated text、replacement 診断である。別coding systemの入力試験を追加する場合は、対象放送方式のSI運用profileが当該fieldについてそのcoding systemを許可・signalingすることを先に設計契約へ固定し、汎用STD-B24 capabilityだけを根拠に試験対象へ加えない。
 
 Rust descriptor モデル から Kotlin/TvProvider へ渡す通常境界は、`ProgramProviderDataV1` と、TvProvider 標準列へ投影するための構造化 DTO だけにする。旧来の `eventGroupText`、`freeCaText`、`seriesName` のような表示用 flat フィールド は通常投影経路では使わない。イベントグループは provider-data JSON の `relatedItems`、free_CA_mode は `freeCaMode`、series name は `series.name` に保存する。TvProvider の title / description / long description への投影は `ARIB_SI_EPG_TvProvider投影方針.md` を SSOT とし、同文書で固定済みの component/audio/content/freeCA 補足だけを `Programs.COLUMN_LONG_DESCRIPTION` へ出す。イベントグループは LONG_DESCRIPTION や一般 UI 本文へ出さない。
 
