@@ -80,6 +80,24 @@ lifecycle/owner/generation検証、引数検証との優先順位、再検証、
 | worker failure classification | `WorkerFailureClassifier` | 各ownerがclassifierを迂回して別のfailure classification ownerを設けない |
 | `FrontendWorkerTerminationUseCase` | フロントエンド固有の終了手順所有者。汎用寿命管理のcanonical state ownerは`WorkerRuntime`であり、`WorkerHandle`は従属物理要素 | フロントエンド固有の終了手順へ汎用ワーカー寿命管理の所有責務を吸収せず、ワーカー・AIDL層が別の終了手順所有者を持たない |
 
+#### 共通化対象の A/B/C 分類境界
+
+本書で共通化対象を A/B/C に分類する場合は、次の判定だけを使用する。分類は論理状態・責務の単位で行い、Rustの型数、ファイル数、モジュール数、スレッド配置、共有参照方式を分類根拠にしない。
+
+- **A**: 呼出し終了後も残り、後続呼出しが正本として参照または変更する状態を所有する。Aには一意なcanonical state ownerと一意な変更入口を置く。
+- **B**: 呼出しを越える状態正本は所有しないが、複数段階の手順そのものを一意化する必要がある。Bには一意な手順所有者と明示された正規入口を置き、call-localな進行状態、immutable plan/result、typed snapshot、prepared mutation、一回性権限を使用してよいが、B自身をpersistent stateの第二正本にしない。
+- **C**: 呼出しを越える状態正本も、一意化すべき複数段階手順も所有しない分類・変換責務とする。Cには分類だけを理由として状態機械、generation、authority、排他制御、worker、queue、timerを追加しない。
+
+Aで競合する操作要求が複数の実行主体から並行到達し得る場合は、正規入口で順序を一意に確定できることを要求する。具体的なmutex、単一所有実行主体、actor、command queue等の物理形は固定しない。古い操作または競合する操作を識別しなければ整合性を保てない場合だけ、必要なgenerationまたはauthorityを追加する。
+
+Bが複数の実行主体にまたがる場合は、typed request / result等で責務境界を明示し、B自身の共有persistent stateを作らない。同一操作の二重実行防止が論理契約上必要な場合だけ一回性権限等を追加する。共有persistent stateが必要になった場合は、既存Aへ状態を置くか、A/Bの責務境界を設計側で再判定する。
+
+A/B/Cの判定木は`Send` / `Sync`を出力しない。具体型の`Send` / `Sync`要件は、AIDL/Binder等の外部API・実行基盤が境界型へ要求する型制約と、選択したRust物理形で実際に生じるスレッド間の所有権移送・共有参照から別途決める。論理上の並行要求、複数の呼出経路、分類そのものを理由として内部canonical ownerまたは従属型へ`Send` / `Sync`を機械的に伝播させない。
+
+正規論理契約を実装へ追跡可能にするため、Aは正規論理契約名と正規状態所有型名を一致させる。B/Cは正規の手順所有者・分類器所有者または正規入口のRust識別子・経路に、正規論理契約名そのものまたはその機械的な`snake_case`形を直接現し、これを**正規名称標識**とする。本来その共通部品を使用すべき本番呼出元が正規名称標識を経由せず、別名owner、別entry、下位操作の直接組合せによって同じ責務を再構成している場合は、重複実装、迂回実装、旧実装残存の監査異常として扱う。
+
+この分類は`Txn` / `UseCase` / `Context`の命名判定とは独立である。Bであることだけを理由に`Txn`と呼ばず、命名は次節および`../tuner_hal/DESIGN_JA.md`の共通部品命名規則に従う。
+
 #### `Txn` / `UseCase` / `Context` の物理名称境界
 
 `Txn` の論理上の成立条件は `../tuner_hal/DESIGN_JA.md` の共通部品命名規則を正とする。本書では、その判定結果を物理アンカーへ反映する。取引境界を所有しない共通調停手順は `UseCase`、正規手順所有者ではない呼出し単位の非公開補助型は `Context` とし、実装都合だけで `Txn` を付けない。
