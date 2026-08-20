@@ -13,7 +13,7 @@
 
 共通化対象の件数は論理状態・責務の単位で決め、Rust 型・ファイル・モジュールの数を理由に分割しない。判定の木で A/B/C を確定した後に、必要な Rust 物理形を決める。
 
-`DemuxFilterDvrTxn<'a>`、`FrontendTxn<'a>`、`GenerationBoundaryTxn` のような現在の実装アンカー名は、それ自体を追加の論理契約として数えない。
+`ChildOpenContext<'a>`、`FrontendTuneScanContext<'a>`、`GenerationBoundaryTxn` のような現在の実装アンカー名は、それ自体を追加の論理契約として数えない。
 
 ---
 
@@ -89,7 +89,7 @@ struct StreamBoundaryTxn { /* 非公開の正規状態 */ }
 次は許容する標準形の一例であり、専用モジュールと `execute()` という組合せだけを唯一の物理形とはしない。
 
 ```rust
-mod queue_cleanup_txn {
+mod root_open_txn {
     pub(crate) fn execute(...) -> Result<..., ...> {
         ...
     }
@@ -106,7 +106,7 @@ mod queue_cleanup_txn {
 次も許容する標準形の一例である。
 
 ```rust
-pub(crate) struct QueueCleanupTxn {
+pub(crate) struct RootOpenTxn {
     state: State,
 }
 
@@ -117,7 +117,7 @@ enum State {
     Done,
 }
 
-impl QueueCleanupTxn {
+impl RootOpenTxn {
     pub(crate) fn execute(...) -> Result<..., ...> { ... }
 }
 ```
@@ -194,6 +194,8 @@ fn assert_sync<T: Sync>() {}
 8. 名称変更が必要なら、論理契約名、実装アンカー、正規名称標識、呼出元、対応する検査を同じ変更で更新する。旧名を同一責務の互換入口として恒久的に残さない。
 9. 現在の実装名を残すためだけに正規論理契約名を曲げない。
 
+`Txn` 接尾辞は `../tuner_hal/DESIGN_JA.md` の transaction 命名条件を満たす場合だけ使用する。分類Bであること、複数段階であること、複数所有者を接続することだけでは `Txn` としない。現行28件では `ObjectMethodUseCase`、`QueueCleanupUseCase`、`FrontendWorkerTerminationUseCase` は取引境界そのものではなく、正規所有者の入口を接続・集約する手順なので `UseCase` とする。`ChildOpenContext<'a>` と `FrontendTuneScanContext<'a>` は正規手順所有者ではない呼出し単位の非公開文脈型なので `Context` とする。
+
 現行 `StreamBoundaryTxn -> GenerationBoundaryTxn` は、正規状態所有者自体が論理契約名と異なる個別不整合である。`StreamBoundaryTxn` が正規論理契約である以上、正規の Rust 状態所有型も `StreamBoundaryTxn` とする。
 
 ---
@@ -218,7 +220,7 @@ fn assert_sync<T: Sync>() {}
 | 14 | `PostCommitCallbackFailureTxn` | B | 手順所有者・入口に `PostCommitCallbackFailureTxn` 標識 | 確定後確認後の健全性、配送結果、診断情報の確定手順を所有する |
 | 15 | `FilterProducerDrainGate` | A | 状態所有型 `FilterProducerDrainGate` | `Open` / `Draining` / `Closed`、配送・解析世代、生成側数、許可証を保持する |
 | 16 | `QueueEpochProtocol` | A | 状態所有型 `QueueEpochProtocol` | `Open` / `Draining` / `Closed`、キュー世代、一回性札、処理中件数を保持する |
-| 17 | `QueueCleanupTxn` | B | 手順所有者・入口に `QueueCleanupTxn` 標識 | 下位プロトコルの呼出順序、全対象試行、失敗集約を所有する |
+| 17 | `QueueCleanupUseCase` | B | 手順所有者・入口に `QueueCleanupUseCase` 標識 | 下位プロトコルの呼出順序、全対象試行、失敗集約を所有する |
 | 18 | `PlaybackConsumeTxn` | A | 状態所有型 `PlaybackConsumeTxn` | FMQ 読出し取引、処理用バッファ、解析・注入位置、再試行状態を保持する |
 | 19 | `AvSyncRegistry` | A | 状態所有型 `AvSyncRegistry` | `media-filter -> hw-sync` 関係と必要な逆引き索引を保持する |
 | 20 | `PcrClockAnchorStore` | A | 状態所有型 `PcrClockAnchorStore` | 世代単位の PCR 基準点、単調時刻基準、観測・無効化状態を保持する |
@@ -233,11 +235,11 @@ fn assert_sync<T: Sync>() {}
 
 | 番号 | 共通化対象 | 分類 | 要求する正規 Rust 物理要素 | 理由 |
 |---:|---|:---:|---|---|
-| 21 | `ObjectMethodTxn` | B | 手順所有者・入口に `ObjectMethodTxn` 標識 | 生存・所有者・世代・種別確認→要求変換→引数オブジェクト検証→振分け→一回性権限消費→ドメイン実行の順序を固定する |
+| 21 | `ObjectMethodUseCase` | B | 手順所有者・入口に `ObjectMethodUseCase` 標識 | 生存・所有者・世代・種別確認→要求変換→引数オブジェクト検証→振分け→一回性権限消費→ドメイン実行の順序を固定する |
 | 22 | `RootOpenTxn` | B | 手順所有者・入口に `RootOpenTxn` 標識 | 能力確認→予約→実行時準備→Binderオブジェクト準備→一括確定・逆順後始末を固定する |
 | 23 | `ChildOpenTxn` | B | 手順所有者・入口に `ChildOpenTxn` 標識 | `Filter` / `DVR` / `TimeFilter` 等の子オブジェクトについて、親検証、資源予約、実行時・Binder・コールバック準備、確定・巻戻しを共通化する |
 | 24 | `FrontendTuneScanTxn` | B | 手順所有者・入口に `FrontendTuneScanTxn` 標識 | 要求指紋、事前検査、ワーカー・下位実装、世代柵、複数の `Demux` 境界、結果集約に加え、現走査世代に従属するコールバック生成と旧世代配送の遮断を共通化し、追加メッセージのための第二の走査状態機械を持たせない |
-| 25 | `FrontendWorkerTerminationTxn` | B | 手順所有者・入口に `FrontendWorkerTerminationTxn` 標識 | `WorkerRuntime` の型付き寿命管理入口を使用し、フロントエンド固有の後始末結果、リース再利用条件、失敗分類器への接続を調停する |
+| 25 | `FrontendWorkerTerminationUseCase` | B | 手順所有者・入口に `FrontendWorkerTerminationUseCase` 標識 | `WorkerRuntime` の型付き寿命管理入口を使用し、フロントエンド固有の後始末結果、リース再利用条件、失敗分類器への接続を調停する |
 | 26 | `PacketPipeline` | A | 状態所有型 `PacketPipeline` | 型付き`TsInputOrigin`とともにパケットを受理し、入力元別の定常時連続性の正本を保持しつつ、パケット検証と各正規所有者へのデータ経路振分けを一意な正規入口で行う |
 | 27 | `FilterWatermarkClassifier` | C | 分類器所有者・入口に `FilterWatermarkClassifier` 標識 | 通常payload FMQを持つFilterについて、同一キュー観測値から `LOW_WATER` / `HIGH_WATER` を導く分類を一意化し、状態機械・キュー・ワーカー・タイマーを所有しない |
 | 28 | `DvrWatermarkClassifier` | C | 分類器所有者・入口に `DvrWatermarkClassifier` 標識 | `DvrSettingsSnapshot` と同一FMQ観測値および直前状態を入力としてPlayback/Recordの水位分類を一意化し、評価契機ごとの状態機械や分類式の複製を持たない |
@@ -321,7 +323,7 @@ fn assert_sync<T: Sync>() {}
 - `DescramblerPidTxn` / `DescramblerKeyTxn` / `DescramblerSessionCleanupTxn` が互いに独立した正規手順所有者・入口として追跡できる。
 - `CallbackRegistrationUseCase` がコールバック登録手順だけを所有し、`RuntimeCallbackRegistry`やBinder生成物の保管主体を同一B所有者へ統合しない。
 - `FrontendTuneScanTxn` が現走査世代に従属するコールバック生成・配送を調停し、旧世代メッセージを配送せず、追加メッセージのための第二の走査状態機械を持たない。
-- `FrontendWorkerTerminationTxn` がフロントエンド固有の終了処理を調停し、汎用寿命管理機構の所有者は `WorkerRuntime` のままである。
+- `FrontendWorkerTerminationUseCase` がフロントエンド固有の終了処理を調停し、汎用寿命管理機構の所有者は `WorkerRuntime` のままである。
 - `FilterWatermarkClassifier` が通常payload FMQ Filterの水位分類だけを一意に所有し、呼出元に同じ分類式や独立した水位状態機械を残さない。
 - `DvrWatermarkClassifier` がPlayback/Recordの水位分類を一意に所有し、開始直後・状態変化・周期評価の各経路に同じ分類式の再実装を残さない。
 - 正規入口を迂回する本番コードの呼出元がない。
