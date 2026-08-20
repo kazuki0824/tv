@@ -13,13 +13,13 @@
 
 共通化対象の件数は論理状態・責務の単位で決め、Rust 型・ファイル・モジュールの数を理由に分割しない。判定の木で A/B/C を確定した後に、必要な Rust 物理形を決める。
 
-`DemuxFilterDvrTxn<'a>`、`FrontendTxn<'a>`、`GenerationBoundaryTxn` のような現在の実装アンカー名は、それ自体を追加の論理契約として数えない。
+`ChildOpenContext<'a>`、`FrontendTuneScanContext<'a>`、`GenerationBoundaryTxn` のような現在の実装アンカー名は、それ自体を追加の論理契約として数えない。
 
 ---
 
 ## 1. 判定の木
 
-A/B/C の分類と、分類後に追加する機構は、次の木だけで判定する。Rust の命名・ファイルやモジュールの配置はこの木では判定せず、2章の実装規則を判定後に適用する。下位節はこの判定条件を再掲しない。
+A/B/C の分類と、分類後に必要となる論理上の追加要件は、次の木だけで判定する。Rust の命名・ファイルやモジュールの配置、スレッドへの配置、共有参照方式、`Send` / `Sync` はこの木では判定しない。並行性・順序・所有境界を確定した後、外部API・実行基盤が要求する型制約と、選択したRust物理形で実際に生じるスレッド間移送・共有参照を2章で判定する。
 
 ```text
 共通化対象
@@ -29,21 +29,14 @@ A/B/C の分類と、分類後に追加する機構は、次の木だけで判�
 │   ├─ はい → A
 │   │          └─ 一意な状態所有者 + 一意な変更入口
 │   │
-│   │          ├─ 同じ状態を複数の実行主体が同時に変更するか
-│   │          │   ├─ はい → 必要最小限の排他制御を追加
-│   │          │   └─ いいえ → 排他制御を追加しない
+│   │          ├─ 競合する操作要求が複数の実行主体から並行到達し得るか
+│   │          │   ├─ はい → 正規入口で順序を一意に確定できることを要求
+│   │          │   │          └─ 具体的なロック、単一所有実行主体、命令キュー等は物理形で選ぶ
+│   │          │   └─ いいえ → 並行要求の線形化要件を追加しない
 │   │          │
-│   │          ├─ 古い操作や競合する操作を識別しなければ整合性を保てないか
-│   │          │   ├─ はい → 必要な世代番号・権限札などを追加
-│   │          │   └─ いいえ → 追加しない
-│   │          │
-│   │          ├─ 値の所有権を別スレッドへ移すか
-│   │          │   ├─ はい → Send を要求
-│   │          │   └─ いいえ → Send を要求しない
-│   │          │
-│   │          └─ 共有参照を複数スレッドから使うか
-│   │              ├─ はい → Sync を要求
-│   │              └─ いいえ → Sync を要求しない
+│   │          └─ 古い操作や競合する操作を識別しなければ整合性を保てないか
+│   │              ├─ はい → 必要な世代番号・権限札などを追加
+│   │              └─ いいえ → 追加しない
 │   │
 │   └─ いいえ
 │       │
@@ -57,19 +50,19 @@ A/B/C の分類と、分類後に追加する機構は、次の木だけで判�
 │       │   │          │   └─ いいえ → 呼出しごとの進行状態 + 明示的な列挙型の状態機械
 │       │   │          │                  └─ 段階ごとに保持できる値が異なるなら、値を列挙子に持たせる
 │       │   │          │
-│       │   │          ├─ 進行状態の所有権を別スレッドへ移すか
-│       │   │          │   ├─ はい → Send を要求
-│       │   │          │   └─ いいえ → Send を要求しない
-│       │   │          │
-│       │   │          └─ 同じ進行状態を複数の実行主体から変更する必要があるか
-│       │   │              ├─ はい → B の共有状態にはせず、A との責務分離を再判定
-│       │   │              └─ いいえ → 一つの実行主体が進行状態を所有
+│       │   │          └─ 手順が複数の実行主体にまたがるか
+│       │   │              ├─ はい → 型付き要求・結果等で責務境界を明示し、B自身の共有永続状態を作らない
+│       │   │              │          ├─ 同じ操作の二重実行を防ぐことが契約上必要なら一回性権限等を追加
+│       │   │              │          └─ 共有永続状態が必要ならAとの責務分離を再判定
+│       │   │              └─ いいえ → 一つの実行主体が呼出し単位の進行状態を所有
 │       │   │
 │       │   └─ いいえ → C
 │       │              └─ 一意な状態を持たない分類・変換関数
 │       │
 │       └─ C には分類だけを理由とする状態機械・世代番号・権限札・排他制御を追加しない
 ```
+
+この判定木は `Send` / `Sync` を出力しない。必要な並行性・順序・所有境界を先に確定し、その後、AIDL/Binder等の外部API・実行基盤が要求する型制約と、選んだRust物理形で実際に生じるスレッド間移送・共有参照の双方から、具体型ごとの自動トレイト要件を決める。
 
 ---
 
@@ -96,7 +89,7 @@ struct StreamBoundaryTxn { /* 非公開の正規状態 */ }
 次は許容する標準形の一例であり、専用モジュールと `execute()` という組合せだけを唯一の物理形とはしない。
 
 ```rust
-mod queue_cleanup_txn {
+mod root_open_txn {
     pub(crate) fn execute(...) -> Result<..., ...> {
         ...
     }
@@ -113,7 +106,7 @@ mod queue_cleanup_txn {
 次も許容する標準形の一例である。
 
 ```rust
-pub(crate) struct QueueCleanupTxn {
+pub(crate) struct RootOpenTxn {
     state: State,
 }
 
@@ -124,7 +117,7 @@ enum State {
     Done,
 }
 
-impl QueueCleanupTxn {
+impl RootOpenTxn {
     pub(crate) fn execute(...) -> Result<..., ...> { ... }
 }
 ```
@@ -158,21 +151,27 @@ mod worker_failure_classifier {
 
 ### 2.5 `Send` / `Sync` の実装規則
 
-`Send` / `Sync` は Rust の `auto trait` なので、原則としてフィールドのトレイト構成からコンパイラに導出させる。
+`Send` / `Sync` はA/B/C分類または論理上の並行要求から直接導出しない。論理設計が固定するのは、どの状態・手順を誰が所有し、どの要求が競合し得て、どの順序・世代柵・一回性を守る必要があるかまでとする。
 
-`unsafe impl Send` / `unsafe impl Sync` は、単にワーカーや実行器のトレイト境界を満たす目的では追加しない。必要な場合は、フィールドごとのスレッド安全性と別名参照の安全性を証明できる下位ラッパーに限定する。
+具体型の `Send` / `Sync` 要件は、次の二つの根拠を独立に確認して決める。
 
-判定の木で正のトレイト要件が付いた型は、コンパイル時検査で確認する。
+1. AIDL/Binder等の外部API・実行基盤が、その境界に現れる型へ要求するトレイト境界。これは内部の正本所有型を共有するかどうかとは独立に発生し得る。外部境界で要求されたトレイトを、内部の正本所有型や従属型へ機械的に伝播させない。
+2. 選択したRust物理形で実際に生じるスレッド境界。値そのものの所有権をスレッド間で移送する型には `Send`、同じ値への共有参照を複数スレッドから利用する型には `Sync` を要求する。
+
+単に別の処理主体へ値を渡すことは `Send` の根拠にしない。同一スレッド内で処理主体が変わるだけなら `Send` は不要である。また、正本所有型へ複数経路から操作要求が到達し得るという理由だけで、その正本所有型自身へ `Send` / `Sync` を要求しない。単一所有の専用実行主体や命令キュー等で契約上の並行性を満たす物理形も許容する。
+
+従属するハンドル、権限、準備済み値についても、正本所有型のトレイト要件から機械的に導出せず、外部境界の型制約と実際のスレッド境界をそれぞれ確認する。
+
+`Send` / `Sync` はRustの自動トレイトなので、正の要件が生じた具体型については原則としてフィールド構成からコンパイラに導出させる。`unsafe impl Send` / `unsafe impl Sync` は、ワーカーや実行器のトレイト境界を満たすためだけには追加しない。必要な場合は、フィールドごとのスレッド安全性と別名参照の安全性を証明できる下位ラッパーに限定する。
+
+正のトレイト要件が付いた具体型は、コンパイル時の型検査で確認する。
 
 ```rust
 fn assert_send<T: Send>() {}
 fn assert_sync<T: Sync>() {}
-
-assert_send::<SomeTxn>();
-assert_sync::<SomeSharedOwner>();
 ```
 
-安定版 Rust で非 `Send` / 非 `Sync` を構造的に要求する場合は、`negative impl` を前提にせず、フィールド構成と `compile-fail` 相当の検査、またはリポジトリで採用する静的検査で意図を確認する。
+どの具体型に上記検査を適用するかは、A/B/C分類ではなく、外部API・実行基盤の型制約と実際のスレッド間移送・共有参照から決める。安定版Rustで非 `Send` / 非 `Sync` を構造的に要求する場合は、`negative impl` を前提にせず、フィールド構成と `compile-fail` 相当の検査、またはリポジトリで採用する静的検査で意図を確認する。
 
 ### 2.6 共有・並行処理の接続規則
 
@@ -194,6 +193,8 @@ assert_sync::<SomeSharedOwner>();
 7. 同じ責務を実装する第二の正規所有者を設けない。契約上複数の正規入口が必要な場合は、一つの所有者に属する有限な入口集合として明示し、すべて正規名称標識から追跡可能にする。
 8. 名称変更が必要なら、論理契約名、実装アンカー、正規名称標識、呼出元、対応する検査を同じ変更で更新する。旧名を同一責務の互換入口として恒久的に残さない。
 9. 現在の実装名を残すためだけに正規論理契約名を曲げない。
+
+`Txn` 接尾辞は `../tuner_hal/DESIGN_JA.md` の transaction 命名条件を満たす場合だけ使用する。分類Bであること、複数段階であること、複数所有者を接続することだけでは `Txn` としない。現行28件では `ObjectMethodUseCase`、`QueueCleanupUseCase`、`FrontendWorkerTerminationUseCase` は取引境界そのものではなく、正規所有者の入口を接続・集約する手順なので `UseCase` とする。`ChildOpenContext<'a>` と `FrontendTuneScanContext<'a>` は正規手順所有者ではない呼出し単位の非公開文脈型なので `Context` とする。
 
 現行 `StreamBoundaryTxn -> GenerationBoundaryTxn` は、正規状態所有者自体が論理契約名と異なる個別不整合である。`StreamBoundaryTxn` が正規論理契約である以上、正規の Rust 状態所有型も `StreamBoundaryTxn` とする。
 
@@ -219,7 +220,7 @@ assert_sync::<SomeSharedOwner>();
 | 14 | `PostCommitCallbackFailureTxn` | B | 手順所有者・入口に `PostCommitCallbackFailureTxn` 標識 | 確定後確認後の健全性、配送結果、診断情報の確定手順を所有する |
 | 15 | `FilterProducerDrainGate` | A | 状態所有型 `FilterProducerDrainGate` | `Open` / `Draining` / `Closed`、配送・解析世代、生成側数、許可証を保持する |
 | 16 | `QueueEpochProtocol` | A | 状態所有型 `QueueEpochProtocol` | `Open` / `Draining` / `Closed`、キュー世代、一回性札、処理中件数を保持する |
-| 17 | `QueueCleanupTxn` | B | 手順所有者・入口に `QueueCleanupTxn` 標識 | 下位プロトコルの呼出順序、全対象試行、失敗集約を所有する |
+| 17 | `QueueCleanupUseCase` | B | 手順所有者・入口に `QueueCleanupUseCase` 標識 | 下位プロトコルの呼出順序、全対象試行、失敗集約を所有する |
 | 18 | `PlaybackConsumeTxn` | A | 状態所有型 `PlaybackConsumeTxn` | FMQ 読出し取引、処理用バッファ、解析・注入位置、再試行状態を保持する |
 | 19 | `AvSyncRegistry` | A | 状態所有型 `AvSyncRegistry` | `media-filter -> hw-sync` 関係と必要な逆引き索引を保持する |
 | 20 | `PcrClockAnchorStore` | A | 状態所有型 `PcrClockAnchorStore` | 世代単位の PCR 基準点、単調時刻基準、観測・無効化状態を保持する |
@@ -234,11 +235,11 @@ assert_sync::<SomeSharedOwner>();
 
 | 番号 | 共通化対象 | 分類 | 要求する正規 Rust 物理要素 | 理由 |
 |---:|---|:---:|---|---|
-| 21 | `ObjectMethodTxn` | B | 手順所有者・入口に `ObjectMethodTxn` 標識 | 生存・所有者・世代・種別確認→要求変換→引数オブジェクト検証→振分け→一回性権限消費→ドメイン実行の順序を固定する |
+| 21 | `ObjectMethodUseCase` | B | 手順所有者・入口に `ObjectMethodUseCase` 標識 | 生存・所有者・世代・種別確認→要求変換→引数オブジェクト検証→振分け→一回性権限消費→ドメイン実行の順序を固定する |
 | 22 | `RootOpenTxn` | B | 手順所有者・入口に `RootOpenTxn` 標識 | 能力確認→予約→実行時準備→Binderオブジェクト準備→一括確定・逆順後始末を固定する |
 | 23 | `ChildOpenTxn` | B | 手順所有者・入口に `ChildOpenTxn` 標識 | `Filter` / `DVR` / `TimeFilter` 等の子オブジェクトについて、親検証、資源予約、実行時・Binder・コールバック準備、確定・巻戻しを共通化する |
 | 24 | `FrontendTuneScanTxn` | B | 手順所有者・入口に `FrontendTuneScanTxn` 標識 | 要求指紋、事前検査、ワーカー・下位実装、世代柵、複数の `Demux` 境界、結果集約に加え、現走査世代に従属するコールバック生成と旧世代配送の遮断を共通化し、追加メッセージのための第二の走査状態機械を持たせない |
-| 25 | `FrontendWorkerTerminationTxn` | B | 手順所有者・入口に `FrontendWorkerTerminationTxn` 標識 | `WorkerRuntime` の型付き寿命管理入口を使用し、フロントエンド固有の後始末結果、リース再利用条件、失敗分類器への接続を調停する |
+| 25 | `FrontendWorkerTerminationUseCase` | B | 手順所有者・入口に `FrontendWorkerTerminationUseCase` 標識 | `WorkerRuntime` の型付き寿命管理入口を使用し、フロントエンド固有の後始末結果、リース再利用条件、失敗分類器への接続を調停する |
 | 26 | `PacketPipeline` | A | 状態所有型 `PacketPipeline` | 型付き`TsInputOrigin`とともにパケットを受理し、入力元別の定常時連続性の正本を保持しつつ、パケット検証と各正規所有者へのデータ経路振分けを一意な正規入口で行う |
 | 27 | `FilterWatermarkClassifier` | C | 分類器所有者・入口に `FilterWatermarkClassifier` 標識 | 通常payload FMQを持つFilterについて、同一キュー観測値から `LOW_WATER` / `HIGH_WATER` を導く分類を一意化し、状態機械・キュー・ワーカー・タイマーを所有しない |
 | 28 | `DvrWatermarkClassifier` | C | 分類器所有者・入口に `DvrWatermarkClassifier` 標識 | `DvrSettingsSnapshot` と同一FMQ観測値および直前状態を入力としてPlayback/Recordの水位分類を一意化し、評価契機ごとの状態機械や分類式の複製を持たない |
@@ -322,7 +323,7 @@ assert_sync::<SomeSharedOwner>();
 - `DescramblerPidTxn` / `DescramblerKeyTxn` / `DescramblerSessionCleanupTxn` が互いに独立した正規手順所有者・入口として追跡できる。
 - `CallbackRegistrationUseCase` がコールバック登録手順だけを所有し、`RuntimeCallbackRegistry`やBinder生成物の保管主体を同一B所有者へ統合しない。
 - `FrontendTuneScanTxn` が現走査世代に従属するコールバック生成・配送を調停し、旧世代メッセージを配送せず、追加メッセージのための第二の走査状態機械を持たない。
-- `FrontendWorkerTerminationTxn` がフロントエンド固有の終了処理を調停し、汎用寿命管理機構の所有者は `WorkerRuntime` のままである。
+- `FrontendWorkerTerminationUseCase` がフロントエンド固有の終了処理を調停し、汎用寿命管理機構の所有者は `WorkerRuntime` のままである。
 - `FilterWatermarkClassifier` が通常payload FMQ Filterの水位分類だけを一意に所有し、呼出元に同じ分類式や独立した水位状態機械を残さない。
 - `DvrWatermarkClassifier` がPlayback/Recordの水位分類を一意に所有し、開始直後・状態変化・周期評価の各経路に同じ分類式の再実装を残さない。
 - 正規入口を迂回する本番コードの呼出元がない。
