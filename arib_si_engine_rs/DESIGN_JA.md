@@ -16,6 +16,8 @@ ARIB適合性の規範対象と検証証拠の分離は `../開発規則.md` を
 
 従来8単位符号のSI/EPG文字列は、TR-B14 / TR-B15のSI運用profileで定義された初期状態と使用文字集合を適用する。初期状態は G0=Kanji、G1=Alphanumeric、G2=Hiragana、G3=Katakana、GL=LS0(G0)、GR=LS2R(G2)、文字サイズ=NSZ とする。SI運用profileが使用しないMacro code set、DRCS code set、外字字形転送を正常なSI入力として要求しない。これらがSI/EPG入力に現れた場合、strict APIは規格外または未対応入力としてエラーにし、lossy APIだけが`U+FFFD`とoffset・理由付き診断へ変換する。STD-B24の汎用Macro展開器、DRCS renderer、字幕組版機能を本crateのSI decoder capabilityとして設計しない。
 
+SI運用profileで使用するAPR、SP、MSZ、NSZは、未対応制御ではなく正常なSI/EPG入力として受理する。APRはoperation positionで改行を発生させ、SPは空白を出力する。MSZはmiddle size（半角）へ、NSZはstandard size（全角）へ文字サイズ状態を切り替える。MSZを指定できる対象はSI運用profileの制約に従い、alphanumeric characterとspaceに限定し、対象外の文字へMSZを適用する入力はstrict APIでエラー、lossy APIで置換とoffset・理由付き診断にする。LS0 / LS1 / SS2 / SS3 / ESCは後記designation / invocation契約、XCS(CSI)は後記CSI / XCS契約に従う。
+
 UCSについても、STD-B24に符号方式が存在することだけを根拠にSI/EPG入力として受理しない。対象放送方式のSI運用profileが対象fieldについてUCSのsignalingとcoding formを明示的に許可する場合に限り、そのprofileが指定する境界で受理する。適用profile上でUCSを使用しないfieldでは、BOMやbyte patternからUCSを推測して復号しない。したがって、SI/EPG decoderの通常契約に「BOMなしならUTF-8」「`FE FF`ならUTF-16BE」のようなSTD-B24汎用UCS判定を置かず、profileで許可されたUCS入力専用の入口を設ける場合にだけSTD-B24のcoding-form規定を適用する。
 
 XCS の実装方針は、実装上の先例として `xtne6f/EDCB` の `work-plus-s` commit `9770536e9f04835fab2bddee26af1f17c7c40a9c` にある `EpgDataCap3/EpgDataCap3/ARIB8CharDecode.cpp` に倣う。EDCBはCSI sequenceを構文として最後までconsumeし、XCSを認識したうえでXCS固有の意味処理を行わない。本crateも同じ境界を採用し、構文的に正しいXCSはCSI sequence全体をconsumeしてdecoderの文字出力・designation / invocation stateを変更しないno-opとして扱う。XCS固有の意味処理を実装しないことだけを理由にstrict APIを失敗させず、lossy APIで`U+FFFD`も出力しない。構文不正または切り詰められたCSI / XCSはこの例外に含めず、strict APIではエラー、lossy APIでは置換とoffset・理由付き診断にする。EDCBはARIB適合性の規範資料ではなく、このno-op境界の実装先例としてのみ参照し、XCSの構文・適用可否そのものは前記TR-B14 / TR-B15およびSTD-B24の規範判断に従う。
@@ -27,6 +29,7 @@ XCS の実装方針は、実装上の先例として `xtne6f/EDCB` の `work-plu
 | 初期状態 | 対象放送方式のSI運用profileに従い、従来8単位符号では G0=Kanji、G1=Alphanumeric、G2=Hiragana、G3=Katakana、GL=LS0(G0)、GR=LS2R(G2)、NSZ |
 | 文字集合 | SI/EPG運用profileで使用するKanji、Alphanumeric、Hiragana、Katakana、追加記号だけを正常な文字入力として扱う |
 | designation / invocation | SI運用profileで使用可能な文字集合を選択するために必要なESC designation、LS/SS invocationだけを受理し、汎用STD-B24 capabilityを理由に使用禁止集合へ遷移しない |
+| SI control (APR / SP / MSZ / NSZ) | APR、SP、MSZ、NSZを正常なSI controlとして受理する。APRは改行、SPは空白、MSZはmiddle size（半角）、NSZはstandard size（全角）として扱う。MSZの適用対象はSI運用profileで許可されたalphanumeric characterとspaceに限定する |
 | Macro | SI運用profileで使用しない。Macro code setを正常なSI/EPG入力能力として宣言せず、出現時はstrictでエラー、lossyで置換と診断にする |
 | DRCS・外字 | SI運用profileで使用しないDRCS code set / 外字字形転送を正常なSI/EPG入力能力として宣言しない。字幕・DRCS表示は`libaribcaption`側の責務とする |
 | UCS | 対象放送方式のSI運用profileが対象fieldについて明示的に許可・signalingする場合だけ、そのprofileで指定された入口から受理する。STD-B24にUCSが存在することやBOM/byte patternだけを根拠に従来8単位符号fieldをUCSとして推測しない |
@@ -159,7 +162,7 @@ extended_eventのcollector完全性判定と文字decoder stateは別責務と�
 
 ## ARIB 文字列 decoder 入力境界と TvProvider 連携境界
 
-ARIB SI/EPG文字デコードの仕様固定に使う入力形態は、実波 TS ファイルを必須形式にせず、descriptor byte array / section builder を主入力とする。対象は SDT サービス名、EIT short_event、extended_event fragment、長形式イベント項目、component、audio_component、series、従来8単位符号のunsupported escape、truncated text、replacement 診断である。XCSはEDCB方式の回帰試験として、構文的に正しいCSI/XCS sequenceの直後に通常文字列を置き、XCS sequence全体がconsumeされ、XCS自体の置換文字や出力が発生せず、後続文字列が初期のdesignation / invocation stateを保って復号されることを確認する。切り詰めまたは構文不正のCSI/XCSはstrict APIで失敗し、lossy APIではoffset・理由付き診断と置換になることを確認する。extended_eventについては、言語別complete set、通常fieldの初期化、連続するdescriptorで`item_description_length == 0`となる規定継続時のstate継承、継続条件外でstateを持ち越さないことを入力契約と試験対象に含める。別coding systemの入力試験を追加する場合は、対象放送方式のSI運用profileが当該fieldについてそのcoding systemを許可・signalingすることを先に設計契約へ固定し、汎用STD-B24 capabilityだけを根拠に試験対象へ加えない。
+ARIB SI/EPG文字デコードの仕様固定に使う入力形態は、実波 TS ファイルを必須形式にせず、descriptor byte array / section builder を主入力とする。対象は SDT サービス名、EIT short_event、extended_event fragment、長形式イベント項目、component、audio_component、series、従来8単位符号のunsupported escape、truncated text、replacement 診断である。APR / SP / MSZ / NSZは正常系回帰試験に含め、APRの改行、SPの空白、MSZ→NSZの文字サイズ状態遷移、およびMSZ適用対象外入力のstrict/lossy境界を確認する。XCSはEDCB方式の回帰試験として、構文的に正しいCSI/XCS sequenceの直後に通常文字列を置き、XCS sequence全体がconsumeされ、XCS自体の置換文字や出力が発生せず、後続文字列が初期のdesignation / invocation stateを保って復号されることを確認する。切り詰めまたは構文不正のCSI/XCSはstrict APIで失敗し、lossy APIではoffset・理由付き診断と置換になることを確認する。extended_eventについては、言語別complete set、通常fieldの初期化、連続するdescriptorで`item_description_length == 0`となる規定継続時のstate継承、継続条件外でstateを持ち越さないことを入力契約と試験対象に含める。別coding systemの入力試験を追加する場合は、対象放送方式のSI運用profileが当該fieldについてそのcoding systemを許可・signalingすることを先に設計契約へ固定し、汎用STD-B24 capabilityだけを根拠に試験対象へ加えない。
 
 Rust descriptor モデル から Kotlin/TvProvider へ渡す通常境界は、`ProgramProviderDataV1` と、TvProvider 標準列へ投影するための構造化 DTO だけにする。旧来の `eventGroupText`、`freeCaText`、`seriesName` のような表示用 flat フィールド は通常投影経路では使わない。イベントグループは provider-data JSON の `relatedItems`、free_CA_mode は `freeCaMode`、series name は `series.name` に保存する。TvProvider の title / description / long description への投影は `ARIB_SI_EPG_TvProvider投影方針.md` を SSOT とし、同文書で固定済みの component/audio/content/freeCA 補足だけを `Programs.COLUMN_LONG_DESCRIPTION` へ出す。イベントグループは LONG_DESCRIPTION や一般 UI 本文へ出さない。
 
