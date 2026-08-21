@@ -18,6 +18,8 @@ ARIB適合性の規範対象と検証証拠の分離は `../開発規則.md` を
 
 UCSについても、STD-B24に符号方式が存在することだけを根拠にSI/EPG入力として受理しない。対象放送方式のSI運用profileが対象fieldについてUCSのsignalingとcoding formを明示的に許可する場合に限り、そのprofileが指定する境界で受理する。適用profile上でUCSを使用しないfieldでは、BOMやbyte patternからUCSを推測して復号しない。したがって、SI/EPG decoderの通常契約に「BOMなしならUTF-8」「`FE FF`ならUTF-16BE」のようなSTD-B24汎用UCS判定を置かず、profileで許可されたUCS入力専用の入口を設ける場合にだけSTD-B24のcoding-form規定を適用する。
 
+XCS の実装方針は、実装上の先例として `xtne6f/EDCB` の `work-plus-s` commit `9770536e9f04835fab2bddee26af1f17c7c40a9c` にある `EpgDataCap3/EpgDataCap3/ARIB8CharDecode.cpp` に倣う。EDCBはCSI sequenceを構文として最後までconsumeし、XCSを認識したうえでXCS固有の意味処理を行わない。本crateも同じ境界を採用し、構文的に正しいXCSはCSI sequence全体をconsumeしてdecoderの文字出力・designation / invocation stateを変更しないno-opとして扱う。XCS固有の意味処理を実装しないことだけを理由にstrict APIを失敗させず、lossy APIで`U+FFFD`も出力しない。構文不正または切り詰められたCSI / XCSはこの例外に含めず、strict APIではエラー、lossy APIでは置換とoffset・理由付き診断にする。EDCBはARIB適合性の規範資料ではなく、このno-op境界の実装先例としてのみ参照し、XCSの構文・適用可否そのものは前記TR-B14 / TR-B15およびSTD-B24の規範判断に従う。
+
 本decoderの適合主張は、字幕ではないSI/EPG文字列について、次の境界に限定する。
 
 | 項目 | 対応境界 |
@@ -28,6 +30,7 @@ UCSについても、STD-B24に符号方式が存在することだけを根拠�
 | Macro | SI運用profileで使用しない。Macro code setを正常なSI/EPG入力能力として宣言せず、出現時はstrictでエラー、lossyで置換と診断にする |
 | DRCS・外字 | SI運用profileで使用しないDRCS code set / 外字字形転送を正常なSI/EPG入力能力として宣言しない。字幕・DRCS表示は`libaribcaption`側の責務とする |
 | UCS | 対象放送方式のSI運用profileが対象fieldについて明示的に許可・signalingする場合だけ、そのprofileで指定された入口から受理する。STD-B24にUCSが存在することやBOM/byte patternだけを根拠に従来8単位符号fieldをUCSとして推測しない |
+| CSI / XCS | CSIはsequence終端まで構文として完全にconsumeする。構文的に正しいXCSはEDCB方式に倣い、XCS固有の意味処理を行わないno-opとしてconsumeし、文字出力・designation / invocation stateを変更せず、XCS自体を未対応escapeとしてstrict errorまたは`U+FFFD`へ変換しない。構文不正・切詰めCSI / XCSは通常のstrict/lossy異常境界に従う |
 | 不明・切詰めescape | `U+FFFD`へ置換し、offset、入力prefix、理由を診断へ記録する。`panic`、無言の脱落、推測による状態遷移を禁止する |
 | lossy境界 | 置換を許すAPIは`decode_arib_string_lossy()`だけとし、置換数と理由を返す。strict APIは未対応または不正な符号列をエラーにする |
 
@@ -156,7 +159,7 @@ extended_eventのcollector完全性判定と文字decoder stateは別責務と�
 
 ## ARIB 文字列 decoder 入力境界と TvProvider 連携境界
 
-ARIB SI/EPG文字デコードの仕様固定に使う入力形態は、実波 TS ファイルを必須形式にせず、descriptor byte array / section builder を主入力とする。対象は SDT サービス名、EIT short_event、extended_event fragment、長形式イベント項目、component、audio_component、series、従来8単位符号のunsupported escape、truncated text、replacement 診断である。extended_eventについては、言語別complete set、通常fieldの初期化、連続するdescriptorで`item_description_length == 0`となる規定継続時のstate継承、継続条件外でstateを持ち越さないことを入力契約と試験対象に含める。別coding systemの入力試験を追加する場合は、対象放送方式のSI運用profileが当該fieldについてそのcoding systemを許可・signalingすることを先に設計契約へ固定し、汎用STD-B24 capabilityだけを根拠に試験対象へ加えない。
+ARIB SI/EPG文字デコードの仕様固定に使う入力形態は、実波 TS ファイルを必須形式にせず、descriptor byte array / section builder を主入力とする。対象は SDT サービス名、EIT short_event、extended_event fragment、長形式イベント項目、component、audio_component、series、従来8単位符号のunsupported escape、truncated text、replacement 診断である。XCSはEDCB方式の回帰試験として、構文的に正しいCSI/XCS sequenceの直後に通常文字列を置き、XCS sequence全体がconsumeされ、XCS自体の置換文字や出力が発生せず、後続文字列が初期のdesignation / invocation stateを保って復号されることを確認する。切り詰めまたは構文不正のCSI/XCSはstrict APIで失敗し、lossy APIではoffset・理由付き診断と置換になることを確認する。extended_eventについては、言語別complete set、通常fieldの初期化、連続するdescriptorで`item_description_length == 0`となる規定継続時のstate継承、継続条件外でstateを持ち越さないことを入力契約と試験対象に含める。別coding systemの入力試験を追加する場合は、対象放送方式のSI運用profileが当該fieldについてそのcoding systemを許可・signalingすることを先に設計契約へ固定し、汎用STD-B24 capabilityだけを根拠に試験対象へ加えない。
 
 Rust descriptor モデル から Kotlin/TvProvider へ渡す通常境界は、`ProgramProviderDataV1` と、TvProvider 標準列へ投影するための構造化 DTO だけにする。旧来の `eventGroupText`、`freeCaText`、`seriesName` のような表示用 flat フィールド は通常投影経路では使わない。イベントグループは provider-data JSON の `relatedItems`、free_CA_mode は `freeCaMode`、series name は `series.name` に保存する。TvProvider の title / description / long description への投影は `ARIB_SI_EPG_TvProvider投影方針.md` を SSOT とし、同文書で固定済みの component/audio/content/freeCA 補足だけを `Programs.COLUMN_LONG_DESCRIPTION` へ出す。イベントグループは LONG_DESCRIPTION や一般 UI 本文へ出さない。
 
@@ -237,7 +240,6 @@ pub struct ProgramKeyV1 {
 ```
 
 `ProgramKeyV1.kind` は `arib-event-v1` とする。`ProgramKeyV1` に start/end/duration を入れてはならない。
-
 ### JSON 表現規則
 
 JSON は正規表現ではなく、Rust `serde` / Kotlin JSON parser / JSON Schema によって読み書き・検証する。`ProgramProviderDataV1` の canonical JSON では、任意の単一 オブジェクト は値が無い場合 `null`、繰り返し要素は空の場合 `[]`、常設 container は空でも オブジェクト として出力する。具体的には、`series`、`freeCaMode`、`audio`、`video` は未取得時 `null`、`ratings`、`genres`、`relatedItems`、`linkage`、`audioLanguages`、`extendedItems` は未取得時 `[]`、`components` は常に オブジェクト とし、内部の `video`、`audio`、`subtitle`、`data` は空でも `[]` とする。
@@ -351,7 +353,6 @@ Tuner HALは汎用的なMPEG-TS sectionの伝送処理（ペイロード抽出�
 TSの伝送構文、`table_id`別のsection長上限、CRCとraw配送条件、公開フィルター状態は`../tuner_hal/DESIGN_JA.md`の「セクションフィルターの条件幅とsection長上限」を正とする。本crateは、それらの条件を満たして上位から入力されたsectionについてだけ、次表の意味解釈を担当する。予約済み、未割り当て、私用、外部所有の`table_id`を型付き意味オブジェクトとして推測しない。
 
 ### 意味解釈の責務
-
 | 対象 | 主なtable ID | 意味解釈の責務 | Tuner HALの処理 | 配送規則 | 禁止事項 | 理由 |
 |---|---|---|---|---|---|---|
 | すべてのPSI/SI | PAT 0x00、CAT 0x01、PMT 0x02、NIT 0x40/0x41、SDT 0x42/0x46、BAT 0x4A、EIT 0x4E-0x6F、TDT 0x70、TOT 0x73、BIT 0xC4、AMT 0xFE、私用・将来用ID | TISまたはTuner HALより上位の要求元 | 汎用sectionフィルターの照合、外形処理、宣言長・CRC処理、メタデータとバイト列の配送だけ | 条件に一致する完全なsectionは、要求元の有効な経路へすべて配送する。条件に一致しないsectionだけを配送対象外とし、`table_id`を理由に無言で破棄しない | 表ごとの意味解析・正規化・オブジェクト生成、EPG・時刻・アプリケーションDBの更新、特定の`table_id`に対する固定破棄、HAL内の意味別振り分け | AOSP Tuner HALのsection APIは、PSI/SI表ごとの意味APIではなく、汎用のsection転送を公開しているため |
