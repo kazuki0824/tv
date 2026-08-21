@@ -57,6 +57,7 @@ XCS の実装方針は、実装上の先例として `xtne6f/EDCB` の `work-plu
 `arib_si_engine_rs` は Android canonical genre の写像表をSSOTとして所有しない。
 
 本 crate は provider-data schema、canonical encode、保存上限、診断 schema の正本を所有する。TvProvider標準列への投影判断は `ARIB_SI_EPG_TvProvider投影方針.md`、TIS runtime での書き込み契機、retry、現在番組解決、視聴セッション利用は `tis/DESIGN_JA.md` を正とする。
+
 content_descriptor 由来のARIB分類、表示文字列、user_nibble を構造化して出力し、TIS が `ARIB_SI_EPG_TvProvider投影方針.md` の明示写像表に基づいて `Programs.COLUMN_CANONICAL_GENRE` へ入れる値を決定する。
 
 ## parental_rating_descriptor の構造化契約
@@ -146,6 +147,7 @@ EIT event の stable key は `DEFINED` または `UNDEFINED_TIME` の場合だ�
 自前 ARIB 文字列 decoder は字幕以外の SI/EPG 文字列だけを対象にする。未対応 escape、切り詰め escape、切り詰め漢字、置換文字数は 診断要約 として観測できる。字幕は `libaribcaption` の責務である。
 
 ### 文字 decoder 固定方針
+
 自前 ARIB 文字列 decoder の設計対象範囲は、mirakc が EPG / サービスモデル 構築で扱う範囲に合わせる。すなわち、字幕本文レンダリングではなく、サービス名、番組名、短形式イベント記述、長形式イベント記述、各種 SI/EPG descriptor の テキストフィールドを安定して文字列化する範囲を対象にする。
 
 この範囲を超える字幕 PES、字幕管理データ、字幕本文、DRCS/外字レンダリング、厳密な組版制御は恒久的に `arib_si_engine_rs` の対象外であり、必要な場合は `libaribcaption` 側の責務とする。未対応 escape / 未対応文字は `panic` ではなく 診断情報と置換文字へ変換する。これは本crateの設計方針として固定する。
