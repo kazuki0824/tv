@@ -12,22 +12,32 @@
 未対応の SI/EPG 文字・escape は `panic` させず、置換文字または 診断によって安定動作させる。字幕 payload を `decode_arib_string_lossy()` に渡す経路は禁止する。字幕本文処理は TIS 側の libaribcaption 経路だけで行う。
 `arib_si_engine_rs` は libaribcaption ラッパー を所有しない。libaribcaption は TIS 側の字幕 path から Rust JNI boundary と 安全なRustラッパー 経由で呼ぶ。
 
-ARIB適合性の規範対象と検証証拠の分離は `../開発規則.md` を正とする。本decoderについて条項単位に取得・確認し検証証拠として使用する本文は ARIB 公式英語版 STD-B24 6.4-E1 Fascicle 1 とし、従来の8単位符号については7.1.1.1〜7.1.2.4をinvocation・designation・文字集合・Macro・制御機能の根拠として用いる。UCSは同Fascicle第一編第2部7.2.1〜7.2.3を根拠とし、特に7.2.3のcharacter encoding schemeをcoding formとBOM/byte-order判定のSSOTにする。7.2.3で伝送に用いる符号化方式はISO/IEC 10646に基づくUTF-8またはUTF-16であり、UTF-16はhigh-byte-first (big-endian) かつBOMを省略せず、UTF-8ではBOMを使用しない。したがってUCS入力を受けたdecoderはheuristicなbyte-order推測を行わず、先頭`FE FF`をUTF-16BEの必須BOMとして認識して除去し、`FF FE`はlittle-endianとして規格外入力にし、`EF BB BF`はUTF-8で禁止されたBOMとして規格外入力にする。`FE FF`がない入力をUTF-16とは解釈せずUTF-8として検証する。UCSの文字集合・制御符号は7.2.1／7.2.2の規定を同じdecoder stateへ適用する。ARIB公式の改定履歴上、UCSは既存STD-B24の正式な符号方式として維持・修正されているため、本crateのSI/EPG文字列対応から時点依存で除外しない。この英語版を現行日本語原文そのものとは扱わず、版差がある場合は未証明差分を残す。改定概要、版一覧、二次資料を未取得本文の具体規定の代用にしない。STD-B24の字幕レンダリングや他Fascicleへの適合は本decoderの主張に含めない。
+ARIB適合性の規範対象と検証証拠の分離は `../開発規則.md` を正とする。本decoderがSI/EPG文字列として受理する符号profileは、対象放送方式に適用される現行日本語TR-B14 / TR-B15のSI運用規定を正とし、STD-B24が定義する汎用的な文字符号機能全体をSI/EPG入力能力へ自動的に昇格させない。STD-B10 / STD-B24は、当該SI運用profileから参照される構文、designation / invocation、文字集合、制御機能の意味を解釈する基礎規格として用いる。取得可能なARIB公式英語版を条項単位の検証証拠に用いる場合も、現行日本語原文との版差を未証明差分として残し、改定概要、版一覧、二次資料を未取得本文の具体規定の代用にしない。
+
+従来8単位符号のSI/EPG文字列は、TR-B14 / TR-B15のSI運用profileで定義された初期状態と使用文字集合を適用する。初期状態は G0=Kanji、G1=Alphanumeric、G2=Hiragana、G3=Katakana、GL=LS0(G0)、GR=LS2R(G2)、文字サイズ=NSZ とする。SI運用profileが使用しないMacro code set、DRCS code set、外字字形転送を正常なSI入力として要求しない。これらがSI/EPG入力に現れた場合、strict APIは規格外または未対応入力としてエラーにし、lossy APIだけが`U+FFFD`とoffset・理由付き診断へ変換する。STD-B24の汎用Macro展開器、DRCS renderer、字幕組版機能を本crateのSI decoder capabilityとして設計しない。
+
+SI運用profileで使用するAPR、SP、MSZ、NSZは、未対応制御ではなく正常なSI/EPG入力として受理する。APRはoperation positionで改行を発生させ、SPは空白を出力する。MSZはmiddle size（半角）へ、NSZはstandard size（全角）へ文字サイズ状態を切り替える。MSZを指定できる対象はSI運用profileの制約に従い、alphanumeric characterとspaceに限定し、対象外の文字へMSZを適用する入力はstrict APIでエラー、lossy APIで置換とoffset・理由付き診断にする。LS0 / LS1 / SS2 / SS3 / ESCは後記designation / invocation契約、XCS(CSI)は後記CSI / XCS契約に従う。
+
+UCSについても、STD-B24に符号方式が存在することだけを根拠にSI/EPG入力として受理しない。対象放送方式のSI運用profileが対象fieldについてUCSのsignalingとcoding formを明示的に許可する場合に限り、そのprofileが指定する境界で受理する。適用profile上でUCSを使用しないfieldでは、BOMやbyte patternからUCSを推測して復号しない。したがって、SI/EPG decoderの通常契約に「BOMなしならUTF-8」「`FE FF`ならUTF-16BE」のようなSTD-B24汎用UCS判定を置かず、profileで許可されたUCS入力専用の入口を設ける場合にだけSTD-B24のcoding-form規定を適用する。
+
+XCS の実装方針は、実装上の先例として `xtne6f/EDCB` の `work-plus-s` commit `9770536e9f04835fab2bddee26af1f17c7c40a9c` にある `EpgDataCap3/EpgDataCap3/ARIB8CharDecode.cpp` に倣う。EDCBはCSI sequenceを構文として最後までconsumeし、XCSを認識したうえでXCS固有の意味処理を行わない。本crateも同じ境界を採用し、構文的に正しいXCSはCSI sequence全体をconsumeしてdecoderの文字出力・designation / invocation stateを変更しないno-opとして扱う。XCS固有の意味処理を実装しないことだけを理由にstrict APIを失敗させず、lossy APIで`U+FFFD`も出力しない。構文不正または切り詰められたCSI / XCSはこの例外に含めず、strict APIではエラー、lossy APIでは置換とoffset・理由付き診断にする。EDCBはARIB適合性の規範資料ではなく、このno-op境界の実装先例としてのみ参照し、XCSの構文・適用可否そのものは前記TR-B14 / TR-B15およびSTD-B24の規範判断に従う。
 
 本decoderの適合主張は、字幕ではないSI/EPG文字列について、次の境界に限定する。
 
 | 項目 | 対応境界 |
 |---|---|
-| 初期状態 | G0=Kanji、G1=Alphanumeric、G2=Hiragana、G3=Macro、GL=LS0(G0)、GR=LS2R(G2) |
-| 文字集合 | SI/EPGで使用するKanji、Alphanumeric、Hiragana、Katakanaと、実装・試験で対応を確認した追加記号だけを文字として出力する |
-| designation / invocation | ESCによるdesignation、LS0/LS1/LS2/LS3、LS1R/LS2R/LS3R、SS2/SS3を、対応済み文字集合とMacroの選択に使用する |
-| Macro | STD-B24 6.4-E1で定義された既定Macroだけを展開し、再帰・入力消費量に上限を設ける。未定義Macroは置換と診断にする |
-| DRCS・外字 | 自前で字形を生成しない。SI/EPG用の明示的な外字辞書に一致する場合だけ変換し、それ以外は置換と診断にする |
-| UCS | STD-B24 Fascicle 1 第一編第2部7.2.1〜7.2.3に従うUCS文字列を対応能力に含める。7.2.3に従いUTF-8／UTF-16だけを許可し、`FE FF`先頭ならBOMを消費してUTF-16BE、BOMなしならUTF-8として検証する。UTF-16LE (`FF FE`)、BOMなしUTF-16、UTF-8 BOM (`EF BB BF`)、切詰めcode unit／surrogate、illegal UTF-8 sequenceは推測修復しない。strict APIでは規格外／不正入力をエラー、lossy APIでは`U+FFFD`と条項・offset付き診断にする。最低試験はvalid UTF-8 without BOM、valid UTF-16BE with `FE FF`、UTF-8 BOM拒否、UTF-16LE BOM拒否、UTF-16 BOM欠落をUTF-16へ推測しないこと、truncated/illegal sequenceのstrict/lossy差を含む |
+| 初期状態 | 対象放送方式のSI運用profileに従い、従来8単位符号では G0=Kanji、G1=Alphanumeric、G2=Hiragana、G3=Katakana、GL=LS0(G0)、GR=LS2R(G2)、NSZ |
+| 文字集合 | SI/EPG運用profileで使用するKanji、Alphanumeric、Hiragana、Katakana、追加記号だけを正常な文字入力として扱う |
+| designation / invocation | SI運用profileで使用可能な文字集合を選択するために必要なESC designation、LS/SS invocationだけを受理し、汎用STD-B24 capabilityを理由に使用禁止集合へ遷移しない |
+| SI control (APR / SP / MSZ / NSZ) | APR、SP、MSZ、NSZを正常なSI controlとして受理する。APRは改行、SPは空白、MSZはmiddle size（半角）、NSZはstandard size（全角）として扱う。MSZの適用対象はSI運用profileで許可されたalphanumeric characterとspaceに限定する |
+| Macro | SI運用profileで使用しない。Macro code setを正常なSI/EPG入力能力として宣言せず、出現時はstrictでエラー、lossyで置換と診断にする |
+| DRCS・外字 | SI運用profileで使用しないDRCS code set / 外字字形転送を正常なSI/EPG入力能力として宣言しない。字幕・DRCS表示は`libaribcaption`側の責務とする |
+| UCS | 対象放送方式のSI運用profileが対象fieldについて明示的に許可・signalingする場合だけ、そのprofileで指定された入口から受理する。STD-B24にUCSが存在することやBOM/byte patternだけを根拠に従来8単位符号fieldをUCSとして推測しない |
+| CSI / XCS | CSIはsequence終端まで構文として完全にconsumeする。構文的に正しいXCSはEDCB方式に倣い、XCS固有の意味処理を行わないno-opとしてconsumeし、文字出力・designation / invocation stateを変更せず、XCS自体を未対応escapeとしてstrict errorまたは`U+FFFD`へ変換しない。構文不正・切詰めCSI / XCSは通常のstrict/lossy異常境界に従う |
 | 不明・切詰めescape | `U+FFFD`へ置換し、offset、入力prefix、理由を診断へ記録する。`panic`、無言の脱落、推測による状態遷移を禁止する |
 | lossy境界 | 置換を許すAPIは`decode_arib_string_lossy()`だけとし、置換数と理由を返す。strict APIは未対応または不正な符号列をエラーにする |
 
-この表にない文字集合、制御機能、字幕、BML、組版、DRCS字形レンダリングは対応能力に含めない。UCSについては、標準でsignalingされたSI/EPG入力を未対応符号方式として一括置換する設計にはせず、従来8単位符号とUCSを同じstrict/lossy境界で扱う。対応文字集合または制御機能を追加する場合は、参照するSTD-B24の版・分冊・条項、入力状態、出力、置換規則、試験ベクトルを先に更新する。
+この表にない文字集合、制御機能、字幕、BML、組版、DRCS字形レンダリングを、STD-B24に定義があるという理由だけでSI/EPG対応能力に含めない。対応文字集合、制御機能、または別coding systemを追加する場合は、適用するTR-B14 / TR-B15のSI運用条項、参照するSTD-B10 / STD-B24の版・分冊・条項、入力状態、出力、置換規則、試験ベクトルを先に更新する。
 
 
 ## EIT 範囲
@@ -72,7 +82,7 @@ parental_rating_descriptor:
 
 ## BS / CS110 discovery
 
-BS と CS110 の complete 判定には BAT、SDT other、NIT other を含める。これらは table_id だけの global 完了ではなく、table_extension と NIT/BAT transport loop から得た ONID/TSID scope を使って transport 単位で判定する。リモコンキー が得られない場合は service_id を表示番号の代替値 とする。
+BS と CS110 の complete 判定には SDT other、NIT other を含める。BAT は受信した場合に解析・意味利用するが、BAT の未受信だけを discovery incomplete の理由にしない。これらの complete 判定は table_id だけの global 完了ではなく、table_extension と NIT/BAT transport loop から得た ONID/TSID scope を使って transport 単位で判定する。リモコンキー が得られない場合は service_id を表示番号の代替値 とする。
 
 `arib_si_engine_rs` は、service / transport単位の意味解析結果として、ONID / TSID / SID、ARIB `service_type`のraw 8-bit値、PMT、PCR、audio/video ESの存在・欠落理由、scrambling情報、および`publishability_by_service`を構造化してTISへ渡す。Android channelを登録するか、partial snapshotをchannel insertへ使用するかはTISの責務であり、`../tis/DESIGN_JA.md`を正とする。`Channels.COLUMN_SERVICE_TYPE`への最終投影は`../ARIB_SI_EPG_TvProvider投影方針.md`を正とし、本crateはAndroid generic `TvContract.Channels.SERVICE_TYPE_*`への意味変換を行わない。`publishability_by_service`はservice / transport単位の登録判断材料を構造化してTISへ渡す意味解析結果であり、channel登録とchannel insertの最終判断はTISが行う。
 
@@ -120,7 +130,7 @@ provider-data JSON v1 は `provider-data / diagnostics Rust SSOT` 節の `Progra
 
 short_event、extended_event、content、component、audio_component、parental_rating、series、event_group、linkage を現行仕様で構造化変換する。未知 descriptor は破棄せず 診断に保持する。
 
-ARIB descriptor は `descriptor_length`、descriptor 内部 length、loop 単位、fragment sequence が妥当な場合だけ正常フィールドとして採用する。length 不整合、余剰 byte、fragment 欠落、`descriptor_number` 重複、`last_descriptor_number` 不一致、必須フィールド 不足は 不正 descriptor とし、番組名、short text、長形式イベント本文、コンテンツジャンル、component、音声コンポーネント、series、event_group、linkage の正常フィールドには採用しない。不正 descriptor は parser を停止させず、`DescriptorDiagnosticV1` に tag、offset、declaredLength、actualRemainingLength、parseStatus、rawPrefixHex、section scope を保持する。
+ARIB descriptor は `descriptor_length`、descriptor 内部 length、loop 単位、fragment sequence が妥当な場合だけ正常フィールドとして採用する。length 不整合、余剰 byte、fragment 欠落、`descriptor_number` 重複、`last_descriptor_number` 不一致、必須フィールド 不足は 不正 descriptor とし、番組名、short text、長形式イベント本文、コンテンツジャンル、component、音声コンポーネント、series、event_group、linkage の正常フィールドには採用しない。`extended_event_descriptor` の `descriptor_number` 重複、欠落、`last_descriptor_number` 一致は同一eventかつ同一`ISO_639_language_code`のdescriptor set内で判定し、異なるlanguage set間の同一番号を重複とみなさない。不正 descriptor は parser を停止させず、`DescriptorDiagnosticV1` に tag、offset、declaredLength、actualRemainingLength、parseStatus、rawPrefixHex、section scope を保持する。
 
 ## API 境界の固定
 
@@ -146,11 +156,13 @@ EIT event の stable key は `DEFINED` または `UNDEFINED_TIME` の場合だ�
 
 自前 decoder は mirakc-arib が EPG / サービスモデル 構築で文字列化している範囲に限定する。対象は SDT サービス descriptor の サービス名、EIT short_event の 番組名 / text、EIT extended_event の item description / item text / text、component descriptor、音声コンポーネントdescriptor、series descriptor の text/name である。
 
-extended_event は、全 fragment の `last_descriptor_number` が一致し、`descriptor_number` が 0 から `last_descriptor_number` まで重複なく連続して揃う場合だけ、`descriptor_number` 順に fragment を連結して ARIB 文字列として復号する。欠番、重複、`last_descriptor_number` 不一致がある場合は extended description / 長形式イベント項目s を正常フィールドに採用せず、診断に記録する。字幕 PES、字幕管理データ、字幕本文、DRCS/外字レンダリング、組版制御、BML は対象外であり、`libaribcaption` 側の責務とする。
+`extended_event_descriptor` は同一event内で `ISO_639_language_code` ごとに独立したdescriptor setとして扱う。各language setについてだけ、全fragmentの`last_descriptor_number`が一致し、`descriptor_number`が0から`last_descriptor_number`まで重複なく連続して揃うことをcomplete条件とする。異なるlanguage set間で同じ`descriptor_number`が存在しても重複とみなさず、一方のlanguage setの欠番・重複・`last_descriptor_number`不一致によって、独立してcompleteな別language setをinvalidにしない。completeなlanguage setは`descriptor_number`順に意味組み立てするが、fragmentのraw文字byte列を単純連結して1回だけ復号してはならない。各descriptor内の各文字列fieldはTR-B14 / TR-B15のSI文字列初期化規則に従って所定の初期状態から復号する。ただし連続する`descriptor_number`で`item_description_length == 0`となるitemについて、TR-B14 / TR-B15が前descriptor_numberのitem descriptionの継続と定める場合だけ、その継続文字列のdecoder stateを前descriptorから引き継ぎ、境界で再初期化しない。language code変更、descriptor_number欠落・重複、不正descriptor、またはこの継続条件に該当しない別文字列fieldへdecoder stateを持ち越さない。不完全なlanguage setだけをextended description / 長形式イベント項目の正常フィールドに採用せず、language codeを含む診断に記録する。字幕 PES、字幕管理データ、字幕本文、DRCS/外字レンダリング、組版制御、BML は対象外であり、`libaribcaption` 側の責務とする。
+
+extended_eventのcollector完全性判定と文字decoder stateは別責務とする。collectorはlanguage set内の`descriptor_number`系列の完全性だけを確定し、文字decoderはfield boundaryと規定された継続だけを扱う。構造的にcompleteなlanguage setでも個別fieldのstrict decodeに失敗した場合は、そのfieldを正常値へ昇格させず、language code、`descriptor_number`、field種別、offsetを診断に残す。
 
 ## ARIB 文字列 decoder 入力境界と TvProvider 連携境界
 
-ARIB SI/EPG文字デコードの仕様固定に使う入力形態は、実波 TS ファイルを必須形式にせず、descriptor byte array / section builder を主入力とする。対象は SDT サービス名、EIT short_event、extended_event fragment、長形式イベント項目、component、audio_component、series、従来8単位符号のunsupported escape、truncated text、replacement 診断、UCSの有効UTF-8/UTF-16、byte order、切詰めcode unit、illegal sequenceである。
+ARIB SI/EPG文字デコードの仕様固定に使う入力形態は、実波 TS ファイルを必須形式にせず、descriptor byte array / section builder を主入力とする。対象は SDT サービス名、EIT short_event、extended_event fragment、長形式イベント項目、component、audio_component、series、従来8単位符号のunsupported escape、truncated text、replacement 診断である。APR / SP / MSZ / NSZは正常系回帰試験に含め、APRの改行、SPの空白、MSZ→NSZの文字サイズ状態遷移、およびMSZ適用対象外入力のstrict/lossy境界を確認する。XCSはEDCB方式の回帰試験として、構文的に正しいCSI/XCS sequenceの直後に通常文字列を置き、XCS sequence全体がconsumeされ、XCS自体の置換文字や出力が発生せず、後続文字列が初期のdesignation / invocation stateを保って復号されることを確認する。切り詰めまたは構文不正のCSI/XCSはstrict APIで失敗し、lossy APIではoffset・理由付き診断と置換になることを確認する。extended_eventについては、言語別complete set、通常fieldの初期化、連続するdescriptorで`item_description_length == 0`となる規定継続時のstate継承、継続条件外でstateを持ち越さないことを入力契約と試験対象に含める。別coding systemの入力試験を追加する場合は、対象放送方式のSI運用profileが当該fieldについてそのcoding systemを許可・signalingすることを先に設計契約へ固定し、汎用STD-B24 capabilityだけを根拠に試験対象へ加えない。
 
 Rust descriptor モデル から Kotlin/TvProvider へ渡す通常境界は、`ProgramProviderDataV1` と、TvProvider 標準列へ投影するための構造化 DTO だけにする。旧来の `eventGroupText`、`freeCaText`、`seriesName` のような表示用 flat フィールド は通常投影経路では使わない。イベントグループは provider-data JSON の `relatedItems`、free_CA_mode は `freeCaMode`、series name は `series.name` に保存する。TvProvider の title / description / long description への投影は `ARIB_SI_EPG_TvProvider投影方針.md` を SSOT とし、同文書で固定済みの component/audio/content/freeCA 補足だけを `Programs.COLUMN_LONG_DESCRIPTION` へ出す。イベントグループは LONG_DESCRIPTION や一般 UI 本文へ出さない。
 
@@ -231,7 +243,6 @@ pub struct ProgramKeyV1 {
 ```
 
 `ProgramKeyV1.kind` は `arib-event-v1` とする。`ProgramKeyV1` に start/end/duration を入れてはならない。
-
 ### JSON 表現規則
 
 JSON は正規表現ではなく、Rust `serde` / Kotlin JSON parser / JSON Schema によって読み書き・検証する。`ProgramProviderDataV1` の canonical JSON では、任意の単一 オブジェクト は値が無い場合 `null`、繰り返し要素は空の場合 `[]`、常設 container は空でも オブジェクト として出力する。具体的には、`series`、`freeCaMode`、`audio`、`video` は未取得時 `null`、`ratings`、`genres`、`relatedItems`、`linkage`、`audioLanguages`、`extendedItems` は未取得時 `[]`、`components` は常に オブジェクト とし、内部の `video`、`audio`、`subtitle`、`data` は空でも `[]` とする。
@@ -345,7 +356,6 @@ Tuner HALは汎用的なMPEG-TS sectionの伝送処理（ペイロード抽出�
 TSの伝送構文、`table_id`別のsection長上限、CRCとraw配送条件、公開フィルター状態は`../tuner_hal/DESIGN_JA.md`の「セクションフィルターの条件幅とsection長上限」を正とする。本crateは、それらの条件を満たして上位から入力されたsectionについてだけ、次表の意味解釈を担当する。予約済み、未割り当て、私用、外部所有の`table_id`を型付き意味オブジェクトとして推測しない。
 
 ### 意味解釈の責務
-
 | 対象 | 主なtable ID | 意味解釈の責務 | Tuner HALの処理 | 配送規則 | 禁止事項 | 理由 |
 |---|---|---|---|---|---|---|
 | すべてのPSI/SI | PAT 0x00、CAT 0x01、PMT 0x02、NIT 0x40/0x41、SDT 0x42/0x46、BAT 0x4A、EIT 0x4E-0x6F、TDT 0x70、TOT 0x73、BIT 0xC4、AMT 0xFE、私用・将来用ID | TISまたはTuner HALより上位の要求元 | 汎用sectionフィルターの照合、外形処理、宣言長・CRC処理、メタデータとバイト列の配送だけ | 条件に一致する完全なsectionは、要求元の有効な経路へすべて配送する。条件に一致しないsectionだけを配送対象外とし、`table_id`を理由に無言で破棄しない | 表ごとの意味解析・正規化・オブジェクト生成、EPG・時刻・アプリケーションDBの更新、特定の`table_id`に対する固定破棄、HAL内の意味別振り分け | AOSP Tuner HALのsection APIは、PSI/SI表ごとの意味APIではなく、汎用のsection転送を公開しているため |
