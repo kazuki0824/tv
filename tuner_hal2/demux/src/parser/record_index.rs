@@ -17,6 +17,7 @@ impl RecordIndexParser {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn processed_packets(&self) -> u64 {
         self.processed_packets
     }
@@ -131,11 +132,11 @@ impl RecordEventState {
         let mut merged = Vec::with_capacity(self.sc_prefix_carry.len() + payload.len());
         merged.extend_from_slice(&self.sc_prefix_carry);
         merged.extend_from_slice(payload);
-        let keep = payload.len().min(3);
+        let keep = merged.len().min(3);
         self.sc_prefix_carry.clear();
         if keep > 0 {
             self.sc_prefix_carry
-                .extend_from_slice(&payload[payload.len() - keep..]);
+                .extend_from_slice(&merged[merged.len() - keep..]);
         }
         merged
     }
@@ -755,6 +756,21 @@ mod record_start_code_boundary_tests {
         assert!(
             matches!(event, Some(TsRecordEventData { sc_index_mask_bits, .. }) if sc_index_mask_bits == (1 << 3))
         );
+    }
+
+    #[test]
+    fn start_code_prefix_carry_survives_three_payload_fragments() {
+        let mut state = RecordEventState::default();
+        assert_eq!(state.payload_with_sc_carry(&[0x00]), vec![0x00]);
+        assert_eq!(
+            state.payload_with_sc_carry(&[0x00]),
+            vec![0x00, 0x00]
+        );
+        let merged = state.payload_with_sc_carry(&[0x01, 0xb3]);
+        assert!(matches!(
+            record_sc_info(&merged, RECORD_SC_TYPE_SC, 1 << 3),
+            Some(RecordStartCodeInfo { mask, .. }) if mask == (1 << 3)
+        ));
     }
 }
 

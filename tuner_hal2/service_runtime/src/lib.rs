@@ -1,5 +1,6 @@
 mod boot;
 mod callback_registry;
+mod capability_snapshot;
 mod capability_profile;
 mod cleanup_execution;
 mod command_dispatch;
@@ -14,6 +15,7 @@ mod frontend_ops;
 mod frontend_request_txn;
 mod frontend_worker_txn;
 mod lnb_backend_adapter;
+mod lnb_control_txn;
 mod lnb_ops;
 mod method_dispatch;
 mod method_validation;
@@ -24,10 +26,15 @@ mod object_method_txn;
 mod object_table;
 mod open_rollback;
 mod packet_ops;
+mod playback_consume_txn;
+mod post_commit_callback_failure_txn;
+mod queue_cleanup_txn;
 mod registry;
 mod root_method_txn;
 mod root_object_ops;
 mod transaction_registry;
+mod worker_failure_classifier;
+mod worker_runtime;
 
 pub use boot::{
     start_frontend_demux_live_pump_from_reader, CallbackArtifactCleanupResult,
@@ -43,6 +50,7 @@ pub use capability_profile::{
     hal_generates_japanese_scan_plan, open_failed, scan_candidate_owner, transport_declared,
     ProfileFeature, RuntimeFailureDomain, ScanCandidateOwner, TransportCapability,
 };
+pub use capability_snapshot::{CapabilitySnapshot, PublicDemuxCapability};
 pub use cleanup_execution::{
     CleanupExecutionDiagnosticSnapshot, CleanupExecutionReport, CleanupExecutionStepOutcome,
     SharedCleanupDiagnostics,
@@ -79,7 +87,8 @@ pub use frontend_worker_txn::{
     start_frontend_backend_tune_worker as start_frontend_tune_use_case,
     stop_frontend_scan_object as stop_frontend_scan_use_case,
     stop_frontend_tune_object as stop_frontend_tune_use_case, FrontendCloseCleanupReport,
-    FrontendScanEndNotifier, FrontendWorkerCleanupDiagnosticKind,
+    FrontendScanNotification, FrontendScanNotifier, FrontendTuneNotification,
+    FrontendTuneNotifier, FrontendWorkerCleanupDiagnosticKind,
     FrontendWorkerCleanupDiagnosticRecord, FrontendWorkerCleanupDiagnosticSnapshot,
     FrontendWorkerCleanupExecutionReport, FrontendWorkerCleanupStep,
     FrontendWorkerCleanupStepOutcome, FrontendWorkerCleanupTarget,
@@ -91,7 +100,7 @@ pub use object_close_txn::{
     ObjectCleanupDiagnosticKind, ObjectCleanupDiagnosticRecord, ObjectCleanupDiagnosticSnapshot,
     ObjectCleanupExecutionKind, ObjectCleanupExecutionReport, ObjectCleanupObjectTarget,
     ObjectCleanupStepOutcome, ObjectCloseCleanupFailure, ObjectCloseRuntimeExecutor,
-    ObjectCloseUseCasePlan, ObjectRuntimeCleanupCommand, ObjectRuntimeCleanupKind,
+    ObjectCloseTxn, ObjectCloseUseCasePlan, ObjectRuntimeCleanupCommand, ObjectRuntimeCleanupKind,
     SharedObjectCleanupDiagnostics,
 };
 pub use object_domain_cleanup::{
@@ -106,12 +115,22 @@ pub use object_method_txn::{
     ObjectFrontendStatusType, ObjectFrontendStatusValue, ObjectMethodExecutionToken,
     ObjectMethodTxnBuildError, ObjectQueryRequest, ObjectQueryResponse,
 };
+pub use object_lifecycle::{
+    aidl_object_cleanup_dependency, aidl_object_cleanup_is_terminal,
+};
 pub(crate) use object_table::RuntimeObjectLifecycle;
 pub use object_table::{RuntimeObjectEntry, RuntimeObjectTableError, RuntimeOwnerRelation};
-pub use registry::{FrontendRuntimeId, LnbRegistryProfile};
+pub use registry::{
+    FrontendCapabilitySnapshot, FrontendRuntimeId, FrontendScalarCapability,
+    IsdbtSegmentCapability, LnbRegistryProfile,
+};
 pub use root_method_txn::{
     RootCommandRequest, RootDemuxCapabilitiesSnapshot, RootDemuxInfoSnapshot,
     RootFrontendInfoSnapshot, RootQueryRequest, RootQueryResponse,
+};
+pub use worker_runtime::{
+    WorkerHandle, WorkerRuntime, WorkerTerminalResult, CLEANUP_RETRY_SCHEDULE_MS,
+    CLEANUP_TERMINAL_DEADLINE_MS, WORKER_IO_DEADLINE_MS, WORKER_REAPER_DEADLINE_MS,
 };
 #[cfg(test)]
 mod failure_injection_tests;
@@ -123,11 +142,13 @@ pub enum ServiceState {
     Degraded,
     Closing,
     Failed,
+    ServiceCritical,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use maleicacid_tuner_hal2_binder_adapter::{AidlApi, AidlMethodCall};
     use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem, HalError};
     use maleicacid_tuner_hal2_demux::{
         FilterConfig, FilterConfigKind, FilterOpenType, OpenFilterRequest, PacketPid, PesSettings,
@@ -140,8 +161,8 @@ mod tests {
     };
     use maleicacid_tuner_hal2_domain_request::{
         AidlObjectGeneration, AidlObjectId, AidlObjectKind, DvrConfigureKind, DvrConfigureRequest,
-        DvrOpenKind, FilterDelayHintKind, FilterDelayHintRequest, OpenDvrRequest,
-        RuntimeTransactionName, AIDL_TRANSACTION_TABLE,
+        DvrDataFormat, DvrOpenKind, FilterDelayHintKind, FilterDelayHintRequest, OpenDvrRequest,
+        RuntimeExecutableRequest, RuntimeTransactionName, AIDL_TRANSACTION_TABLE,
     };
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
@@ -289,12 +310,50 @@ mod tests {
         path_name: &str,
         lnb_profile: Option<LnbRegistryProfile>,
     ) -> FrontendProbeOutcome {
+        let exclusive_group_id = match backend {
+            FrontendBackendKind::Px4CharDevice => {
+                let relative = id.saturating_sub(1_000_000);
+                let family = relative.div_euclid(10_000) & 0x03ff;
+                let unit = relative.rem_euclid(10_000).div_euclid(10) & 0x3fff;
+                0x1000_0000 | (family << 14) | unit
+            }
+            FrontendBackendKind::LinuxDvb => 0x2000_0000,
+        };
+        let capability = match system {
+            FrontendSystem::IsdbT => crate::registry::FrontendCapabilitySnapshot {
+                scalar: crate::registry::FrontendScalarCapability {
+                    min_frequency_hz: 110_642_857,
+                    max_frequency_hz: 767_642_857,
+                    min_symbol_rate: 0,
+                    max_symbol_rate: 0,
+                    acquire_range_hz: 0,
+                },
+                exclusive_group_id,
+                isdbt_segment: Some(crate::registry::IsdbtSegmentCapability {
+                    is_segment_auto: true,
+                    is_full_segment: true,
+                }),
+            },
+            FrontendSystem::IsdbS => crate::registry::FrontendCapabilitySnapshot {
+                scalar: crate::registry::FrontendScalarCapability {
+                    min_frequency_hz: 1_049_480_000,
+                    max_frequency_hz: 2_053_000_000,
+                    min_symbol_rate: 28_860_000,
+                    max_symbol_rate: 28_860_000,
+                    acquire_range_hz: 0,
+                },
+                exclusive_group_id,
+                isdbt_segment: None,
+            },
+            FrontendSystem::IsdbS3 | FrontendSystem::DvbS => unreachable!(),
+        };
         FrontendProbeOutcome::Available {
             id: FrontendRuntimeId(id),
             backend,
             system,
             path: path(path_name),
             lnb_profile,
+            capability,
         }
     }
 
@@ -348,7 +407,151 @@ mod tests {
             .registry()
             .frontend_runtime(FrontendRuntimeId(1_000_000))
             .is_some());
+        assert!(matches!(
+            runtime
+                .execute_root_query(RootQueryRequest::FrontendInfo {
+                    frontend_id: 1_000_000,
+                })
+                .unwrap(),
+            RootQueryResponse::FrontendInfo(snapshot)
+                if snapshot.capability.scalar.min_frequency_hz == 110_642_857
+                    && snapshot.capability.scalar.max_frequency_hz == 767_642_857
+                    && snapshot.capability.scalar.acquire_range_hz == 0
+                    && snapshot.capability.isdbt_segment.is_some_and(|segment| {
+                        segment.is_segment_auto && segment.is_full_segment
+                    })
+        ));
         assert!(runtime.diagnostics().is_empty());
+    }
+
+    #[test]
+    fn frontend_limit_query_and_open_share_current_lease_limit() {
+        let mut runtime = TunerServiceRuntime::new();
+        runtime.boot_from_probe_results([
+            available(
+                1_000_000,
+                FrontendBackendKind::Px4CharDevice,
+                FrontendSystem::IsdbT,
+                "/dev/px4video0",
+                None,
+            ),
+            available(
+                1_000_010,
+                FrontendBackendKind::Px4CharDevice,
+                FrontendSystem::IsdbT,
+                "/dev/px4video1",
+                None,
+            ),
+        ]);
+        runtime
+            .execute_root_command(RootCommandRequest::SetMaxNumberOfFrontends {
+                frontend_system: FrontendSystem::IsdbT,
+                max_number: 1,
+            })
+            .unwrap();
+        assert_eq!(
+            runtime
+                .execute_root_query(RootQueryRequest::MaxNumberOfFrontends {
+                    frontend_system: FrontendSystem::IsdbT,
+                })
+                .unwrap(),
+            RootQueryResponse::MaxNumberOfFrontends(1)
+        );
+        runtime
+            .open_frontend_root_object_for_id(
+                1_000_000,
+                AidlMethodCall::PublicApi {
+                    object: AidlObjectKind::Tuner,
+                    api: AidlApi::TunerOpenFrontendById,
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            runtime.open_frontend_root_object_for_id(
+                1_000_010,
+                AidlMethodCall::PublicApi {
+                    object: AidlObjectKind::Tuner,
+                    api: AidlApi::TunerOpenFrontendById,
+                },
+            ),
+            Err(HalError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn frontend_variants_in_same_physical_group_are_not_leased_concurrently() {
+        let mut runtime = TunerServiceRuntime::new();
+        runtime.boot_from_probe_results([
+            available(
+                1_000_000,
+                FrontendBackendKind::Px4CharDevice,
+                FrontendSystem::IsdbT,
+                "/dev/px4video0",
+                None,
+            ),
+            available(
+                1_000_001,
+                FrontendBackendKind::Px4CharDevice,
+                FrontendSystem::IsdbS,
+                "/dev/px4video0",
+                Some(LnbRegistryProfile::Px4Device15VOnly),
+            ),
+        ]);
+        runtime
+            .open_frontend_root_object_for_id(
+                1_000_000,
+                AidlMethodCall::PublicApi {
+                    object: AidlObjectKind::Tuner,
+                    api: AidlApi::TunerOpenFrontendById,
+                },
+            )
+            .unwrap();
+
+        assert!(matches!(
+            runtime.open_frontend_root_object_for_id(
+                1_000_001,
+                AidlMethodCall::PublicApi {
+                    object: AidlObjectKind::Tuner,
+                    api: AidlApi::TunerOpenFrontendById,
+                },
+            ),
+            Err(HalError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn demux_inventory_queries_and_open_use_same_fixed_ids() {
+        let mut runtime = TunerServiceRuntime::new();
+        runtime.boot_from_probe_results([available(
+            1_000_000,
+            FrontendBackendKind::Px4CharDevice,
+            FrontendSystem::IsdbT,
+            "/dev/px4video0",
+            None,
+        )]);
+        assert_eq!(
+            runtime
+                .execute_root_query(RootQueryRequest::DemuxIds)
+                .unwrap(),
+            RootQueryResponse::DemuxIds(vec![1, 2, 3, 4, 5, 6, 7, 8])
+        );
+        let opened = runtime
+            .open_demux_root_object(AidlMethodCall::PublicApi {
+                object: AidlObjectKind::Tuner,
+                api: AidlApi::TunerOpenDemux,
+            })
+            .unwrap();
+        assert_eq!(opened.public_runtime_id().0, 1);
+        assert!(matches!(
+            runtime.open_demux_root_object_by_id(
+                1,
+                AidlMethodCall::PublicApi {
+                    object: AidlObjectKind::Tuner,
+                    api: AidlApi::TunerOpenDemuxById,
+                },
+            ),
+            Err(HalError::Unsupported(_))
+        ));
     }
 
     #[test]
@@ -920,6 +1123,17 @@ mod tests {
                 .unwrap()
                 .generation();
             assert_eq!(after, before + 1);
+            guard
+                .set_demux_frontend_data_source(demux.id.0, 1_000_000)
+                .unwrap();
+            assert_eq!(
+                guard
+                    .registry()
+                    .demux_runtime(demux.id)
+                    .unwrap()
+                    .generation(),
+                after
+            );
         }
 
         let mut packet = [0xffu8; maleicacid_tuner_hal2_common::TS_PACKET_SIZE];
@@ -1310,7 +1524,7 @@ mod tests {
             open_type: FilterOpenType::TsPes,
             tpid: pid,
             kind: FilterConfigKind::TsPes(PesSettings {
-                stream_id: 0,
+                stream_id: 0xffff,
                 raw: false,
             }),
         }
@@ -1353,6 +1567,8 @@ mod tests {
                     status_mask: 0,
                     low_threshold_bytes: 0,
                     high_threshold_bytes: 0,
+                    data_format: DvrDataFormat::Ts,
+                    packet_size: 188,
                 },
             )
             .unwrap();
@@ -1364,11 +1580,11 @@ mod tests {
     }
 
     #[test]
-    fn media_filter_delay_hint_is_typed_unavailable() {
+    fn media_filter_is_unavailable_without_authoritative_pts_source() {
         let mut runtime = TunerServiceRuntime::new();
         let demux = runtime.allocate_demux_runtime().unwrap();
         let filter = runtime.allocate_filter_runtime(demux.id.0).unwrap();
-        runtime
+        let error = runtime
             .register_demux_filter_runtime(
                 demux.id.0,
                 filter.id.0,
@@ -1376,16 +1592,6 @@ mod tests {
                     open_type: FilterOpenType::TsAudio,
                     buffer_size: 4096,
                     callback_present: false,
-                },
-            )
-            .unwrap();
-
-        let error = runtime
-            .set_filter_delay_hint_request(
-                filter.id.0,
-                FilterDelayHintRequest {
-                    kind: FilterDelayHintKind::TimeDelayMs,
-                    value: 10,
                 },
             )
             .unwrap_err();
@@ -1419,6 +1625,53 @@ mod tests {
                 },
             )
             .unwrap();
+    }
+
+    #[test]
+    fn raw_and_record_filters_share_the_published_ts_filter_capacity() {
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        let demux_entry = {
+            let mut guard = runtime.lock().unwrap();
+            guard.capability_snapshot.num_ts_filter = 1;
+            guard
+                .open_demux_root_object(AidlMethodCall::PublicApi {
+                    object: AidlObjectKind::Tuner,
+                    api: AidlApi::TunerOpenDemux,
+                })
+                .unwrap()
+        };
+        let open_filter = |open_type| {
+            execute_object_method_call_after_live(
+                &runtime,
+                demux_entry.object_id(),
+                demux_entry.generation(),
+                AidlObjectKind::Demux,
+                || -> Result<_, HalError> {
+                    let request = OpenFilterRequest {
+                        open_type,
+                        buffer_size: 4096,
+                        callback_present: false,
+                    };
+                    Ok((
+                        AidlMethodCall::DemuxOpenFilter(RuntimeExecutableRequest::OpenFilter(
+                            request.clone(),
+                        )),
+                        request,
+                    ))
+                },
+                |runtime, dispatch, request| {
+                    runtime.open_filter_child_runtime_for_demux_object(
+                        demux_entry.object_id(),
+                        demux_entry.generation(),
+                        &request,
+                        dispatch,
+                    )
+                },
+            )
+        };
+        open_filter(FilterOpenType::TsRaw).unwrap();
+        let error = open_filter(FilterOpenType::TsRecord).unwrap_err();
+        assert!(matches!(error, HalError::Unsupported(_)));
     }
 
     #[test]
@@ -1457,6 +1710,8 @@ mod tests {
                     status_mask: 0,
                     low_threshold_bytes: 0,
                     high_threshold_bytes: 0,
+                    data_format: DvrDataFormat::Ts,
+                    packet_size: 188,
                 },
             )
             .unwrap();
@@ -1555,8 +1810,71 @@ mod tests {
     }
 
     #[test]
-    fn descrambler_clear_key_token_reports_old_release_failure_without_api_failure() {
+    fn descrambler_failed_source_call_consumes_the_one_shot_binding_attempt() {
         let mut runtime = TunerServiceRuntime::new();
+        let demux = runtime.allocate_demux_runtime().unwrap();
+        let descrambler = runtime.allocate_descrambler_runtime().unwrap();
+
+        let first = runtime
+            .set_descrambler_demux_source(descrambler.id.0, 99_999)
+            .unwrap_err();
+        assert!(matches!(first, HalError::InvalidArgument { .. }));
+        let second = runtime
+            .set_descrambler_demux_source(descrambler.id.0, demux.id.0)
+            .unwrap_err();
+        assert!(matches!(second, HalError::InvalidState { .. }));
+        assert_eq!(
+            runtime
+                .registry()
+                .descrambler_runtime(descrambler.id)
+                .unwrap()
+                .demux_binding(),
+            None
+        );
+        assert_eq!(
+            runtime
+                .registry()
+                .descrambler_runtime(descrambler.id)
+                .unwrap()
+                .source_call_failure(),
+            Some(crate::descrambler_session::DescramblerSourceCallFailure::InvalidDemuxId)
+        );
+    }
+
+    #[test]
+    fn descrambler_non_void_key_requires_a_live_bound_demux() {
+        let mut runtime = TunerServiceRuntime::new();
+        let descrambler = runtime.allocate_descrambler_runtime().unwrap();
+        let token_bytes = vec![0x40; 8];
+        let token = DescramblerKeyToken::try_from_bytes(token_bytes.clone()).unwrap();
+        runtime
+            .register_descrambler_key_slot(token.clone(), DescramblerKeySlot::empty())
+            .unwrap();
+
+        let error = runtime
+            .set_descrambler_key_token(descrambler.id.0, &token_bytes)
+            .unwrap_err();
+        assert!(matches!(error, HalError::InvalidState { .. }));
+        assert_eq!(
+            runtime
+                .registry_mut_for_test()
+                .descrambler_key_table_mut()
+                .refcount_for_test(&token),
+            Some(0)
+        );
+        assert!(runtime.descrambler_diagnostics().iter().any(|record| {
+            descrambler_set_key_diagnostic_matches(
+                record,
+                descrambler.id.0,
+                DescramblerDiagnosticKind::SessionClosed,
+            )
+        }));
+    }
+
+    #[test]
+    fn descrambler_clear_key_token_release_failure_quarantines_and_fails_api() {
+        let mut runtime = TunerServiceRuntime::new();
+        let demux = runtime.allocate_demux_runtime().unwrap();
         let descrambler = runtime.allocate_descrambler_runtime().unwrap();
         let token_bytes = vec![0x41; 8];
         let token = DescramblerKeyToken::try_from_bytes(token_bytes.clone()).unwrap();
@@ -1568,6 +1886,9 @@ mod tests {
             .register_descrambler_key_slot(token.clone(), key_slot)
             .unwrap();
         runtime
+            .set_descrambler_demux_source(descrambler.id.0, demux.id.0)
+            .unwrap();
+        runtime
             .set_descrambler_key_token(descrambler.id.0, &token_bytes)
             .unwrap();
         runtime
@@ -1576,14 +1897,16 @@ mod tests {
             .release(&token)
             .unwrap();
 
-        runtime
+        let error = runtime
             .set_descrambler_key_token(descrambler.id.0, &[0x00])
-            .unwrap();
+            .unwrap_err();
+        assert!(matches!(error, HalError::Internal { .. }));
         let session = runtime
             .registry()
             .descrambler_runtime(descrambler.id)
             .unwrap();
         assert!(!session.has_key());
+        assert!(session.is_quarantined());
         assert!(runtime.descrambler_diagnostics().iter().any(|record| {
             descrambler_set_key_diagnostic_matches(
                 record,
@@ -1594,8 +1917,9 @@ mod tests {
     }
 
     #[test]
-    fn descrambler_replace_key_token_reports_old_release_failure_without_api_failure() {
+    fn descrambler_replace_key_release_failure_quarantines_and_fails_api() {
         let mut runtime = TunerServiceRuntime::new();
+        let demux = runtime.allocate_demux_runtime().unwrap();
         let descrambler = runtime.allocate_descrambler_runtime().unwrap();
         let old_token_bytes = vec![0x42; 8];
         let old_token = DescramblerKeyToken::try_from_bytes(old_token_bytes.clone()).unwrap();
@@ -1615,6 +1939,9 @@ mod tests {
             .register_descrambler_key_slot(new_token.clone(), new_key_slot)
             .unwrap();
         runtime
+            .set_descrambler_demux_source(descrambler.id.0, demux.id.0)
+            .unwrap();
+        runtime
             .set_descrambler_key_token(descrambler.id.0, &old_token_bytes)
             .unwrap();
         runtime
@@ -1623,15 +1950,17 @@ mod tests {
             .release(&old_token)
             .unwrap();
 
-        runtime
+        let error = runtime
             .set_descrambler_key_token(descrambler.id.0, &new_token_bytes)
-            .unwrap();
+            .unwrap_err();
+        assert!(matches!(error, HalError::Internal { .. }));
 
         let session = runtime
             .registry()
             .descrambler_runtime(descrambler.id)
             .unwrap();
         assert_eq!(session.key_token(), Some(&new_token));
+        assert!(session.is_quarantined());
         assert!(runtime.descrambler_diagnostics().iter().any(|record| {
             descrambler_set_key_diagnostic_matches(
                 record,
@@ -1721,7 +2050,11 @@ mod tests {
     #[test]
     fn descrambler_set_key_token_records_cas_unavailable_diagnostic() {
         let mut runtime = TunerServiceRuntime::new();
+        let demux = runtime.allocate_demux_runtime().unwrap();
         let descrambler = runtime.allocate_descrambler_runtime().unwrap();
+        runtime
+            .set_descrambler_demux_source(descrambler.id.0, demux.id.0)
+            .unwrap();
 
         let err = runtime
             .set_descrambler_key_token(descrambler.id.0, &[1, 2, 3, 4, 5, 6, 7, 8])
@@ -1782,6 +2115,7 @@ mod tests {
     #[test]
     fn descrambler_set_key_token_rejects_expired_tokens() {
         let mut runtime = TunerServiceRuntime::new();
+        let demux = runtime.allocate_demux_runtime().unwrap();
         let descrambler = runtime.allocate_descrambler_runtime().unwrap();
         let token_bytes = vec![9, 9, 9, 9, 9, 9, 9, 9];
         let token = DescramblerKeyToken::try_from_bytes(token_bytes.clone()).unwrap();
@@ -1791,6 +2125,9 @@ mod tests {
 
         runtime
             .register_descrambler_key_slot(token.clone(), key_slot)
+            .unwrap();
+        runtime
+            .set_descrambler_demux_source(descrambler.id.0, demux.id.0)
             .unwrap();
         runtime
             .registry_mut_for_test()

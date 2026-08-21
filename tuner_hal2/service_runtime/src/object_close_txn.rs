@@ -867,7 +867,40 @@ fn unregister_public_runtime_entries_for_drop_leak(
         .map_err(|error| ObjectCloseCleanupFailure::new(CleanupStep::UnregisterRuntime, error))
 }
 
+pub struct ObjectCloseTxn;
+
+impl ObjectCloseTxn {
+    pub fn begin(
+        runtime: &mut TunerServiceRuntime,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        object_kind: AidlObjectKind,
+        method: AidlMethodCall,
+    ) -> Result<ObjectCloseUseCasePlan, HalError> {
+        begin_object_close_txn(runtime, object_id, generation, object_kind, method)
+    }
+
+    pub fn finish(
+        runtime: &mut TunerServiceRuntime,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        cleanup_result: Result<(), ObjectCloseCleanupFailure>,
+    ) -> Result<(), HalError> {
+        finish_object_close_txn(runtime, object_id, generation, cleanup_result)
+    }
+}
+
 pub fn close_object_use_case(
+    runtime: &mut TunerServiceRuntime,
+    object_id: AidlObjectId,
+    generation: AidlObjectGeneration,
+    object_kind: AidlObjectKind,
+    method: AidlMethodCall,
+) -> Result<ObjectCloseUseCasePlan, HalError> {
+    ObjectCloseTxn::begin(runtime, object_id, generation, object_kind, method)
+}
+
+fn begin_object_close_txn(
     runtime: &mut TunerServiceRuntime,
     object_id: AidlObjectId,
     generation: AidlObjectGeneration,
@@ -947,6 +980,15 @@ pub fn close_object_use_case(
 }
 
 pub fn finish_object_close_use_case(
+    runtime: &mut TunerServiceRuntime,
+    object_id: AidlObjectId,
+    generation: AidlObjectGeneration,
+    cleanup_result: Result<(), ObjectCloseCleanupFailure>,
+) -> Result<(), HalError> {
+    ObjectCloseTxn::finish(runtime, object_id, generation, cleanup_result)
+}
+
+fn finish_object_close_txn(
     runtime: &mut TunerServiceRuntime,
     object_id: AidlObjectId,
     generation: AidlObjectGeneration,
@@ -1335,7 +1377,7 @@ mod tests {
                 .entry(AidlObjectId(5))
                 .expect("object remains tracked")
                 .lifecycle,
-            crate::RuntimeObjectLifecycle::CleanupFailed {
+            crate::RuntimeObjectLifecycle::CleanupPending {
                 step: CleanupStep::ReleaseBackend
             }
         );

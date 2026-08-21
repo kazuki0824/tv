@@ -5,7 +5,9 @@ use super::{
     FrontendWorkerStartError, FrontendWorkerStopOutcome, GenerationBoundaryReport, HalError,
     HalInternalKind, HalInvalidStateKind, PipelineBoundaryReason, TunerServiceRuntime,
 };
-use maleicacid_tuner_hal2_demux::DemuxRuntimeRollbackRestoreRequest;
+use maleicacid_tuner_hal2_demux::{
+    DemuxRuntimeRollbackCommitRequest, DemuxRuntimeRollbackRestoreRequest,
+};
 use maleicacid_tuner_hal2_device::FrontendWorkerStopTicket;
 
 impl TunerServiceRuntime {
@@ -132,6 +134,42 @@ impl TunerServiceRuntime {
         runtime.advance_scan_session_after_candidate(generation)
     }
 
+    fn transact_mark_frontend_scan_session_locked_reported(
+        &mut self,
+        frontend_id: i32,
+        generation: u64,
+    ) -> Result<(), HalError> {
+        let runtime = self
+            .registry
+            .frontend_runtime_mut(crate::registry::FrontendRuntimeId(frontend_id))
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend runtime is missing for advertised frontend",
+                )
+            })?;
+        runtime.mark_scan_session_locked_reported(generation)
+    }
+
+    fn transact_complete_locked_frontend_scan_continuation(
+        &mut self,
+        frontend_id: i32,
+        generation: u64,
+        fingerprint: String,
+        candidates: Vec<FrontendTuneRequest>,
+    ) -> Result<(), HalError> {
+        let runtime = self
+            .registry
+            .frontend_runtime_mut(crate::registry::FrontendRuntimeId(frontend_id))
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend runtime is missing for advertised frontend",
+                )
+            })?;
+        runtime.complete_locked_scan_continuation(generation, fingerprint, candidates)
+    }
+
     fn transact_mark_frontend_tune_worker_failed(
         &mut self,
         frontend_id: i32,
@@ -155,6 +193,41 @@ impl TunerServiceRuntime {
         Ok(())
     }
 
+    fn transact_mark_frontend_tune_submit_rejected_after_boundary(
+        &mut self,
+        frontend_id: i32,
+        generation: u64,
+        error: HalError,
+    ) -> Result<(), HalError> {
+        let runtime = self
+            .registry
+            .frontend_runtime_mut(crate::registry::FrontendRuntimeId(frontend_id))
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend runtime is missing for advertised frontend",
+                )
+            })?;
+        runtime.mark_tune_submit_rejected_after_boundary(generation, error)
+    }
+
+    fn transact_mark_frontend_tune_no_signal(
+        &mut self,
+        frontend_id: i32,
+        generation: u64,
+    ) -> Result<(), HalError> {
+        let runtime = self
+            .registry
+            .frontend_runtime_mut(crate::registry::FrontendRuntimeId(frontend_id))
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend runtime is missing for advertised frontend",
+                )
+            })?;
+        runtime.mark_tune_no_signal(generation)
+    }
+
     fn transact_mark_frontend_scan_session_backend_failed(
         &mut self,
         frontend_id: i32,
@@ -176,6 +249,24 @@ impl TunerServiceRuntime {
             .quarantine_bound_demuxes_for_frontend(crate::registry::FrontendRuntimeId(frontend_id));
         Ok(())
     }
+
+    fn transact_mark_frontend_scan_submit_rejected_after_boundary(
+        &mut self,
+        frontend_id: i32,
+        generation: u64,
+        error: HalError,
+    ) -> Result<(), HalError> {
+        let runtime = self
+            .registry
+            .frontend_runtime_mut(crate::registry::FrontendRuntimeId(frontend_id))
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend runtime is missing for advertised frontend",
+                )
+            })?;
+        runtime.mark_scan_submit_rejected_after_boundary(generation, error)
+    }
 }
 
 pub(crate) struct FrontendTxn<'a> {
@@ -189,6 +280,85 @@ impl TunerServiceRuntime {
 }
 
 impl<'a> FrontendTxn<'a> {
+    pub(crate) fn is_stable_locked_tune_reentry(
+        &mut self,
+        frontend_id: i32,
+        request: &FrontendTuneRequest,
+    ) -> Result<bool, HalError> {
+        let frontend_key = crate::registry::FrontendRuntimeId(frontend_id);
+        if self
+            .runtime
+            .registry
+            .frontend(frontend_key)
+            .is_some_and(|entry| entry.backend == FrontendBackendKind::Px4CharDevice)
+        {
+            // px4のPTX_SET_CHANNEL成功は一回限りの証跡であり、
+            // 過去generationのcurrent lock継続を証明しない。
+            return Ok(false);
+        }
+        let snapshot = self
+            .runtime
+            .registry
+            .frontend_runtime(frontend_key)
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend runtime is missing for advertised frontend",
+                )
+            })?
+            .snapshot();
+        let generation = match snapshot.state {
+            maleicacid_tuner_hal2_device::FrontendRuntimeState::Tuning { generation }
+                if snapshot.signal_state == FrontendSignalState::Locked
+                    && snapshot.active_tune_request.as_ref() == Some(request) => generation,
+            _ => return Ok(false),
+        };
+        if self
+            .runtime
+            .frontend_workers
+            .running_generation(frontend_id, FrontendWorkerKind::Tune)
+            != Some(generation)
+        {
+            return Ok(false);
+        }
+        Ok(self
+            .runtime
+            .registry
+            .frontend_bound_demux_ids(frontend_key)
+            .into_iter()
+            .all(|demux_id| {
+                self.runtime
+                    .registry
+                    .demux_runtime(demux_id)
+                    .is_some_and(|demux| {
+                        demux.state() == maleicacid_tuner_hal2_demux::DemuxRuntimeState::Open
+                    })
+            }))
+    }
+
+    pub(crate) fn commit_stable_locked_tune_reentry(
+        &mut self,
+        frontend_id: i32,
+        request: &FrontendTuneRequest,
+    ) -> Result<Option<(u64, u64)>, HalError> {
+        if !self.is_stable_locked_tune_reentry(frontend_id, request)? {
+            return Ok(None);
+        }
+        let runtime = self
+            .runtime
+            .registry
+            .frontend_runtime_mut(crate::registry::FrontendRuntimeId(frontend_id))
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend runtime is missing while committing stable tune re-entry",
+                )
+            })?;
+        let generation = runtime.generation();
+        let request_sequence = runtime.commit_stable_tune_reentry(generation, request)?;
+        Ok(Some((generation, request_sequence)))
+    }
+
     pub(crate) fn restore_frontend_runtime_snapshot(
         &mut self,
         frontend_id: i32,
@@ -225,6 +395,28 @@ impl<'a> FrontendTxn<'a> {
                 })?;
             demux
                 .restore_from_rollback_request(DemuxRuntimeRollbackRestoreRequest::new(token))
+                .map_err(super::demux_runtime_error_to_hal)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn commit_bound_demux_runtime_rollback_tokens(
+        &mut self,
+        tokens: Vec<(DemuxRuntimeId, DemuxRuntimeRollbackToken)>,
+    ) -> Result<(), HalError> {
+        for (demux_id, token) in tokens {
+            let demux = self
+                .runtime
+                .registry
+                .demux_runtime_mut(demux_id)
+                .ok_or_else(|| {
+                    HalError::invalid_state(
+                        HalInvalidStateKind::InvalidLifecycle,
+                        "bound demux runtime is missing while committing tune boundary",
+                    )
+                })?;
+            demux
+                .commit_rollback_request(DemuxRuntimeRollbackCommitRequest::new(token))
                 .map_err(super::demux_runtime_error_to_hal)?;
         }
         Ok(())
@@ -380,6 +572,185 @@ impl<'a> FrontendTxn<'a> {
         runtime.install_live_reader_for_worker_generation(generation, reader, kind)
     }
 
+    pub(crate) fn fence_frontend_worker_replacement_generation(
+        &mut self,
+        frontend_id: i32,
+        generation: u64,
+    ) -> Result<(), HalError> {
+        let runtime = self
+            .runtime
+            .registry
+            .frontend_runtime_mut(crate::registry::FrontendRuntimeId(frontend_id))
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend runtime is missing while fencing a worker generation",
+                )
+            })?;
+        runtime.fence_for_worker_replacement(generation)
+    }
+
+    pub(crate) fn mark_frontend_worker_stop_pending_failure(
+        &mut self,
+        frontend_id: i32,
+        generation: u64,
+        error: HalError,
+    ) -> Result<(), HalError> {
+        let runtime = self
+            .runtime
+            .registry
+            .frontend_runtime_mut(crate::registry::FrontendRuntimeId(frontend_id))
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend runtime is missing while recording pending worker stop",
+                )
+            })?;
+        runtime.mark_worker_stop_pending_failure(generation, error)
+    }
+
+    pub(crate) fn install_frontend_live_reader_descriptor_after_fence(
+        &mut self,
+        frontend_id: i32,
+        kind: FrontendWorkerKind,
+        generation: u64,
+    ) -> Result<(), HalError> {
+        let entry = self
+            .runtime
+            .registry
+            .frontend(crate::registry::FrontendRuntimeId(frontend_id))
+            .cloned()
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend registry entry is missing after worker fence",
+                )
+            })?;
+        let reader = live_reader_descriptor_for_frontend_entry(&entry)?;
+        let runtime = self
+            .runtime
+            .registry
+            .frontend_runtime_mut(crate::registry::FrontendRuntimeId(frontend_id))
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend runtime is missing after worker fence",
+                )
+            })?;
+        runtime.install_live_reader_for_fenced_worker_generation(generation, reader, kind)
+    }
+
+    pub(crate) fn commit_frontend_tune_after_fence(
+        &mut self,
+        frontend_id: i32,
+        generation: u64,
+        request: FrontendTuneRequest,
+    ) -> Result<(), HalError> {
+        let entry = self
+            .runtime
+            .registry
+            .frontend(crate::registry::FrontendRuntimeId(frontend_id))
+            .cloned()
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend registry entry is missing at tune commit",
+                )
+            })?;
+        let reader = live_reader_descriptor_for_frontend_entry(&entry)?;
+        let runtime = self
+            .runtime
+            .registry
+            .frontend_runtime_mut(crate::registry::FrontendRuntimeId(frontend_id))
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend runtime is missing at tune commit",
+                )
+            })?;
+        runtime.commit_tune_after_fence(generation, reader, request)
+    }
+
+    pub(crate) fn commit_frontend_scan_after_fence(
+        &mut self,
+        frontend_id: i32,
+        generation: u64,
+        fingerprint: String,
+        candidates: Vec<FrontendTuneRequest>,
+    ) -> Result<(), HalError> {
+        let entry = self
+            .runtime
+            .registry
+            .frontend(crate::registry::FrontendRuntimeId(frontend_id))
+            .cloned()
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend registry entry is missing at scan commit",
+                )
+            })?;
+        let reader = live_reader_descriptor_for_frontend_entry(&entry)?;
+        let runtime = self
+            .runtime
+            .registry
+            .frontend_runtime_mut(crate::registry::FrontendRuntimeId(frontend_id))
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend runtime is missing at scan commit",
+                )
+            })?;
+        runtime.commit_scan_after_fence(generation, reader, fingerprint, candidates)
+    }
+
+    pub(crate) fn record_frontend_backend_request_failure_after_fence(
+        &mut self,
+        frontend_id: i32,
+        generation: u64,
+        error: HalError,
+        backend_stopped: bool,
+    ) -> Result<(), HalError> {
+        let runtime = self
+            .runtime
+            .registry
+            .frontend_runtime_mut(crate::registry::FrontendRuntimeId(frontend_id))
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend runtime is missing while recording backend request failure",
+                )
+            })?;
+        runtime.record_backend_request_failure_after_fence(
+            generation,
+            error,
+            backend_stopped,
+        )
+    }
+
+    pub(crate) fn record_frontend_backend_activation_failure_after_commit(
+        &mut self,
+        frontend_id: i32,
+        generation: u64,
+        error: HalError,
+        backend_stopped: bool,
+    ) -> Result<(), HalError> {
+        let runtime = self
+            .runtime
+            .registry
+            .frontend_runtime_mut(crate::registry::FrontendRuntimeId(frontend_id))
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend runtime is missing while recording backend activation failure",
+                )
+            })?;
+        runtime.record_backend_activation_failure_after_commit(
+            generation,
+            error,
+            backend_stopped,
+        )
+    }
+
     pub(crate) fn clear_frontend_live_reader_descriptor_and_idle(
         &mut self,
         frontend_id: i32,
@@ -448,6 +819,55 @@ impl<'a> FrontendTxn<'a> {
             .transact_advance_frontend_scan_session_after_candidate(frontend_id, generation)
     }
 
+    pub(crate) fn mark_frontend_scan_session_locked_reported(
+        &mut self,
+        frontend_id: i32,
+        generation: u64,
+    ) -> Result<(), HalError> {
+        self.runtime
+            .transact_mark_frontend_scan_session_locked_reported(frontend_id, generation)
+    }
+
+    pub(crate) fn complete_locked_frontend_scan_continuation(
+        &mut self,
+        frontend_id: i32,
+        generation: u64,
+        fingerprint: String,
+        candidates: Vec<FrontendTuneRequest>,
+    ) -> Result<(), HalError> {
+        self.runtime
+            .transact_complete_locked_frontend_scan_continuation(
+                frontend_id,
+                generation,
+                fingerprint,
+                candidates,
+            )
+    }
+
+    pub(crate) fn complete_locked_frontend_scan_continuation_after_fence(
+        &mut self,
+        frontend_id: i32,
+        generation: u64,
+        fingerprint: String,
+        candidates: Vec<FrontendTuneRequest>,
+    ) -> Result<(), HalError> {
+        let runtime = self
+            .runtime
+            .registry
+            .frontend_runtime_mut(crate::registry::FrontendRuntimeId(frontend_id))
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend runtime is missing for fenced scan continuation",
+                )
+            })?;
+        runtime.complete_locked_scan_continuation_after_fence(
+            generation,
+            fingerprint,
+            candidates,
+        )
+    }
+
     pub(crate) fn mark_frontend_tune_worker_failed(
         &mut self,
         frontend_id: i32,
@@ -458,6 +878,29 @@ impl<'a> FrontendTxn<'a> {
             .transact_mark_frontend_tune_worker_failed(frontend_id, generation, error)
     }
 
+    pub(crate) fn mark_frontend_tune_submit_rejected_after_boundary(
+        &mut self,
+        frontend_id: i32,
+        generation: u64,
+        error: HalError,
+    ) -> Result<(), HalError> {
+        self.runtime
+            .transact_mark_frontend_tune_submit_rejected_after_boundary(
+                frontend_id,
+                generation,
+                error,
+            )
+    }
+
+    pub(crate) fn mark_frontend_tune_no_signal(
+        &mut self,
+        frontend_id: i32,
+        generation: u64,
+    ) -> Result<(), HalError> {
+        self.runtime
+            .transact_mark_frontend_tune_no_signal(frontend_id, generation)
+    }
+
     pub(crate) fn mark_frontend_scan_session_backend_failed(
         &mut self,
         frontend_id: i32,
@@ -465,6 +908,20 @@ impl<'a> FrontendTxn<'a> {
     ) -> Result<(), HalError> {
         self.runtime
             .transact_mark_frontend_scan_session_backend_failed(frontend_id, generation)
+    }
+
+    pub(crate) fn mark_frontend_scan_submit_rejected_after_boundary(
+        &mut self,
+        frontend_id: i32,
+        generation: u64,
+        error: HalError,
+    ) -> Result<(), HalError> {
+        self.runtime
+            .transact_mark_frontend_scan_submit_rejected_after_boundary(
+                frontend_id,
+                generation,
+                error,
+            )
     }
 
     pub(crate) fn mark_frontend_scan_session_callback_failed(

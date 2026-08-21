@@ -23,7 +23,8 @@ use maleicacid_tuner_hal2_service_runtime::{
     OwnerCallbackCleanupUseCaseOutcome, TunerServiceRuntime,
 };
 
-use crate::dvr_callback_delivery::stop_dvr_status_notifier;
+use crate::callback_store::{CallbackStore, PreparedCallbackArtifactToken};
+use crate::dvr_callback_delivery::finish_dvr_status_notifier_cleanup;
 use crate::error_bridge::{status_from_hal_error, status_from_tuner_status, status_unknown_error};
 use crate::object_handle::AidlObjectHandle;
 use crate::service_context::{SharedAidlServiceContext, SharedTunerRuntime};
@@ -37,6 +38,54 @@ fn lock_runtime<'a>(
             "service runtime lock poisoned",
         )
     })
+}
+
+fn abort_prepared_callback_artifact_bridge(
+    context: &SharedAidlServiceContext,
+    command: &OwnerCallbackCleanupArtifactCommand,
+    token: PreparedCallbackArtifactToken,
+) -> Result<CallbackArtifactCleanupResult, HalError> {
+    let registration_api = command.registration_api().ok_or_else(|| {
+        HalError::internal(
+            HalInternalKind::InvariantViolation,
+            "prepared callback artifact cleanup is missing its registration API",
+        )
+    })?;
+    let handle = AidlObjectHandle::new(
+        command.owner_kind(),
+        command.owner_id(),
+        command.owner_generation(),
+    );
+    context
+        .abort_prepared_callback(handle, registration_api, token)
+        .map(|removed| {
+            if removed {
+                CallbackArtifactCleanupResult::Cleared
+            } else {
+                CallbackArtifactCleanupResult::NoArtifact
+            }
+        })
+        .map_err(|error| error.into_hal_error(command.cleanup_failure_message()))
+}
+
+fn commit_prepared_callback_artifact_bridge(
+    context: &SharedAidlServiceContext,
+    outcome: &CallbackRegistrationArtifactOutcome,
+    token: PreparedCallbackArtifactToken,
+) -> Result<(), HalError> {
+    let (owner_kind, owner_id, owner_generation, registration_api) = outcome.artifact_key();
+    let handle = AidlObjectHandle::new(owner_kind, owner_id, owner_generation);
+    let committed = context
+        .commit_prepared_callback(handle, registration_api, token)
+        .map_err(|error| error.into_hal_error("prepared callback artifact commit failed"))?;
+    if committed {
+        Ok(())
+    } else {
+        Err(HalError::internal(
+            HalInternalKind::InvariantViolation,
+            "prepared callback artifact disappeared before composite commit",
+        ))
+    }
 }
 
 fn callback_artifact_runtime_finish_lock_failure_error(
@@ -83,14 +132,16 @@ fn callback_artifact_runtime_finish_lock_failure_error(
 fn callback_artifact_registration_runtime_lock_failure_error(
     context: &SharedAidlServiceContext,
     command: OwnerCallbackCleanupArtifactCommand,
-    artifact_result: &Result<(), HalError>,
+    artifact_result: &Result<PreparedCallbackArtifactToken, HalError>,
     runtime_error: HalError,
 ) -> HalError {
     let artifact_error = artifact_result.as_ref().err().cloned();
     let mut runtime_or_record_error = runtime_error.clone();
     let mut rollback_cleanup_error = None;
-    if artifact_error.is_none() {
-        if let Err(cleanup_error) = context.clear_owner_callback_artifacts_bridge(&command) {
+    if let Ok(token) = artifact_result {
+        if let Err(cleanup_error) =
+            abort_prepared_callback_artifact_bridge(context, &command, *token)
+        {
             runtime_or_record_error = compose_primary_cleanup_failure(
                 command.cleanup_failure_message(),
                 runtime_or_record_error,
@@ -204,17 +255,42 @@ pub(crate) fn finish_owner_callback_cleanup_outcome<T>(
 fn finish_callback_registration_artifact_outcome(
     context: &SharedAidlServiceContext,
     outcome: CallbackRegistrationArtifactOutcome,
+    prepared_token: Option<PreparedCallbackArtifactToken>,
 ) -> Result<(), HalError> {
     if !outcome.requires_runtime_finish() {
+        if outcome.uses_prepared_artifact() {
+            let token = prepared_token.ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "successful callback registration omitted its prepared artifact token",
+                )
+            })?;
+            commit_prepared_callback_artifact_bridge(context, &outcome, token)?;
+        }
         return outcome.into_primary_result();
     }
 
+    let uses_prepared_artifact = outcome.uses_prepared_artifact();
     let finish_lock_failure_command = outcome.finish_lock_failure_command();
     let primary_error = outcome.primary_error().cloned();
     let rollback_command = outcome.rollback_command().copied();
     let rollback_result = rollback_command
         .as_ref()
-        .map(|command| context.clear_owner_callback_artifacts_bridge(command));
+        .map(|command| {
+            if uses_prepared_artifact {
+                match prepared_token {
+                    Some(token) => {
+                        abort_prepared_callback_artifact_bridge(context, command, token)
+                    }
+                    None => Err(HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "callback registration rollback omitted its prepared artifact token",
+                    )),
+                }
+            } else {
+                context.clear_owner_callback_artifacts_bridge(command)
+            }
+        });
     let runtime = context.runtime();
     let mut guard = match lock_runtime(&runtime) {
         Ok(guard) => guard,
@@ -258,7 +334,7 @@ pub(crate) fn finish_callback_artifact_registration_after_owner_ready_hal(
             artifact_retain_result,
         )
     };
-    finish_callback_registration_artifact_outcome(context, outcome)
+    finish_callback_registration_artifact_outcome(context, outcome, None)
 }
 
 pub(crate) fn execute_object_runtime_use_case<T, F>(
@@ -474,18 +550,18 @@ enum CallbackArtifactRetainBridge<'a> {
 }
 
 impl<'a> CallbackArtifactRetainBridge<'a> {
-    fn retain(
+    fn prepare(
         self,
-        context: &SharedAidlServiceContext,
+        store: &mut CallbackStore,
         handle: AidlObjectHandle,
-    ) -> Result<(), HalError> {
+    ) -> Result<PreparedCallbackArtifactToken, HalError> {
         match self {
-            Self::Frontend(callback) => context
-                .retain_frontend_callback(handle, callback)
-                .map_err(|error| error.into_hal_error("frontend callback store retain failed")),
-            Self::Lnb(callback) => context
-                .retain_lnb_callback(handle, callback)
-                .map_err(|error| error.into_hal_error("LNB callback store retain failed")),
+            Self::Frontend(callback) => store
+                .prepare_frontend_callback(handle, callback)
+                .map_err(|error| error.into_hal_error("frontend callback artifact prepare failed")),
+            Self::Lnb(callback) => store
+                .prepare_lnb_callback(handle, callback)
+                .map_err(|error| error.into_hal_error("LNB callback artifact prepare failed")),
         }
     }
 }
@@ -507,7 +583,7 @@ fn execute_callback_registration_after_artifact_bridge(
             api,
         )
     };
-    let outcome = execute_shared_object_method_call_after_live(
+    execute_shared_object_method_call_after_live(
         &runtime,
         handle.object_id(),
         handle.generation(),
@@ -522,10 +598,15 @@ fn execute_callback_registration_after_artifact_bridge(
             ))
         },
         |runtime, token, (artifact_retain_bridge, registration_finish_lock_failure_command)| {
-            let artifact_retain_result = artifact_retain_bridge.retain(context, handle);
+            let mut callback_store = context.callback_store_lock().map_err(|error| {
+                error.into_hal_error("callback artifact store lock failed during registration")
+            })?;
+            let artifact_retain_result =
+                artifact_retain_bridge.prepare(&mut callback_store, handle);
             let mut guard = match lock_runtime(&runtime) {
                 Ok(guard) => guard,
                 Err(runtime_error) => {
+                    drop(callback_store);
                     return Err(callback_artifact_registration_runtime_lock_failure_error(
                         context,
                         registration_finish_lock_failure_command,
@@ -534,23 +615,79 @@ fn execute_callback_registration_after_artifact_bridge(
                     ));
                 }
             };
-            Ok(
+            let prepared_token = artifact_retain_result.as_ref().ok().copied();
+            let outcome =
                 guard.execute_callback_registration_after_artifact_result_for_object_use_case(
                     handle.object_kind(),
                     handle.object_id(),
                     handle.generation(),
                     api,
-                    artifact_retain_result,
+                    artifact_retain_result.map(|_| ()),
                     token,
-                ),
+                );
+
+            if !outcome.requires_runtime_finish() {
+                let prepared_token = prepared_token.ok_or_else(|| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "successful callback registration omitted its prepared artifact token",
+                    )
+                })?;
+                let (owner_kind, owner_id, owner_generation, registration_api) =
+                    outcome.artifact_key();
+                let artifact_handle =
+                    AidlObjectHandle::new(owner_kind, owner_id, owner_generation);
+                if !callback_store.commit_prepared_callback(
+                    artifact_handle,
+                    registration_api,
+                    prepared_token,
+                ) {
+                    return Err(HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "prepared callback artifact disappeared during composite commit",
+                    ));
+                }
+                return outcome.into_primary_result();
+            }
+
+            let rollback_result = outcome.rollback_command().map(|command| {
+                let Some(prepared_token) = prepared_token else {
+                    return Err(HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "callback registration rollback omitted its prepared artifact token",
+                    ));
+                };
+                let registration_api = command.registration_api().ok_or_else(|| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "prepared callback artifact rollback is missing its registration API",
+                    )
+                })?;
+                let artifact_handle = AidlObjectHandle::new(
+                    command.owner_kind(),
+                    command.owner_id(),
+                    command.owner_generation(),
+                );
+                Ok(if callback_store.abort_prepared_callback(
+                    artifact_handle,
+                    registration_api,
+                    prepared_token,
+                ) {
+                    CallbackArtifactCleanupResult::Cleared
+                } else {
+                    CallbackArtifactCleanupResult::NoArtifact
+                })
+            });
+            guard.finish_callback_registration_after_artifact_result_use_case(
+                outcome,
+                rollback_result,
             )
         },
     )
     .map_err(|error| match error {
         ObjectMethodTxnBuildError::Runtime(error) => status_from_hal_error(error),
         ObjectMethodTxnBuildError::Builder(status) => status,
-    })?;
-    finish_callback_registration_artifact_outcome(context, outcome).map_err(status_from_hal_error)
+    })
 }
 
 pub fn execute_frontend_callback_registration_runtime_use_case(
@@ -766,7 +903,7 @@ impl<'a> ObjectArtifactCleanupExecutor for AidlObjectArtifactCleanupExecutor<'a>
     ) -> Result<(), ObjectCloseCleanupFailure> {
         let step = command.step();
         let handle = handle_from_artifact_cleanup_command(&command);
-        stop_dvr_status_notifier(self.context, handle)
+        finish_dvr_status_notifier_cleanup(self.context, handle)
             .map_err(|error| ObjectCloseCleanupFailure::new(step, error))
     }
 }
@@ -828,9 +965,23 @@ fn finish_object_close_plan(
 }
 
 mod drop_leak;
-pub(crate) use drop_leak::drop_leak_object_from_drop;
+pub(crate) use drop_leak::{drop_leak_object, drop_leak_object_from_drop};
 
 pub fn close_object_after_close_preflight(
+    context: &SharedAidlServiceContext,
+    handle: AidlObjectHandle,
+    method: AidlMethodCall,
+) -> BinderResult<()> {
+    let result = execute_close_after_preflight_once(context, handle, method);
+    if result.is_err() {
+        if let Err(error) = context.enqueue_cleanup_retry(handle) {
+            return Err(status_from_hal_error(error));
+        }
+    }
+    result
+}
+
+fn execute_close_after_preflight_once(
     context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
     method: AidlMethodCall,
@@ -851,6 +1002,14 @@ pub fn close_object_after_close_preflight(
     };
     let cleanup_report = execute_close_cleanup_plan_with_executor(context, close_plan);
     finish_object_close_plan(context, handle, cleanup_report)
+}
+
+pub(crate) fn retry_cleanup_from_reaper(
+    context: &SharedAidlServiceContext,
+    handle: AidlObjectHandle,
+    method: AidlMethodCall,
+) -> BinderResult<()> {
+    execute_close_after_preflight_once(context, handle, method)
 }
 
 #[cfg(test)]

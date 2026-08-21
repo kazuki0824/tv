@@ -29,16 +29,6 @@ fn validate_frontend_request_against_entry(
                     "ISDB-T frequency is outside Japan CATV C13..UHF62 contract range",
                 ));
             }
-            if let Some(end_frequency) = request.end_frequency {
-                if end_frequency < request.frequency
-                    || !is_japan_isdbt_frequency_contract_hz(end_frequency)
-                {
-                    return Err(HalError::invalid_argument(
-                        HalInvalidArgumentKind::UnsupportedScanRange,
-                        "ISDB-T endFrequency must be >= frequency and inside Japan contract range",
-                    ));
-                }
-            }
             if request.stream_id.is_some() || request.stream_id_kind.is_some() {
                 return Err(HalError::invalid_argument(
                     HalInvalidArgumentKind::UnsupportedStreamSelector,
@@ -54,22 +44,6 @@ fn validate_frontend_request_against_entry(
                     HalInvalidArgumentKind::UnsupportedFrequency,
                     "ISDB-S frequency must be a Japan BS/CS110 IF center frequency",
                 ));
-            }
-            if let Some(end_frequency) = request.end_frequency {
-                if end_frequency < request.frequency {
-                    return Err(HalError::invalid_argument(
-                        HalInvalidArgumentKind::UnsupportedScanRange,
-                        "ISDB-S endFrequency must be >= frequency",
-                    ));
-                }
-                if !(is_japan_bs_if_frequency_hz(end_frequency)
-                    || is_japan_cs110_if_frequency_hz(end_frequency))
-                {
-                    return Err(HalError::invalid_argument(
-                        HalInvalidArgumentKind::UnsupportedScanRange,
-                        "ISDB-S endFrequency must be a Japan BS/CS110 IF center frequency",
-                    ));
-                }
             }
             if is_cs110 && (request.stream_id.is_some() || request.stream_id_kind.is_some()) {
                 return Err(HalError::invalid_argument(

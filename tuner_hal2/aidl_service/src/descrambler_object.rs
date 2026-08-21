@@ -3,7 +3,6 @@ use crate::object_runtime::drop_leak_object_from_drop;
 use crate::service_context::{SharedAidlServiceContext, SharedTunerRuntime};
 use binder::Interface;
 
-#[derive(Clone)]
 pub struct DescramblerAidlObject {
     handle: AidlObjectHandle,
     context: SharedAidlServiceContext,

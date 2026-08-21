@@ -2,10 +2,18 @@ use std::sync::{Arc, Mutex, Weak};
 
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     DemuxFilterEvent::DemuxFilterEvent, DemuxFilterMediaEvent::DemuxFilterMediaEvent,
-    DemuxFilterPesEvent::DemuxFilterPesEvent, DemuxFilterSectionEvent::DemuxFilterSectionEvent,
+    DemuxFilterPesEvent::DemuxFilterPesEvent, DemuxFilterScIndexMask::DemuxFilterScIndexMask,
+    DemuxFilterSectionEvent::DemuxFilterSectionEvent,
+    DemuxFilterTsRecordEvent::DemuxFilterTsRecordEvent, DemuxPid::DemuxPid,
 };
+use android_hardware_common::aidl::android::hardware::common::NativeHandle::NativeHandle;
+use binder::ParcelFileDescriptor;
 use maleicacid_tuner_hal2_binder_adapter::AidlObjectKind;
 use maleicacid_tuner_hal2_common::{FirstErrorCollector, HalError, HalInternalKind};
+use maleicacid_tuner_hal2_demux::{
+    TsRecordEventData, RECORD_SC_TYPE_SC, RECORD_SC_TYPE_SC_AVC, RECORD_SC_TYPE_SC_HEVC,
+    RECORD_SC_TYPE_SC_VVC,
+};
 use maleicacid_tuner_hal2_service_runtime::{
     CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport,
     FilterCallbackDeliveryDiagnosticPhase, FilterCallbackDeliveryDiagnosticRecord,
@@ -44,10 +52,23 @@ fn event_from_snapshot(
                     "filter media event offset does not fit i64",
                 )
             })?;
+            let av_memory = match event.event_local_file {
+                Some(file) => NativeHandle {
+                    fds: vec![ParcelFileDescriptor::new(file.try_clone().map_err(|_| {
+                        HalError::internal(
+                            HalInternalKind::InvariantViolation,
+                            "event-local AV handle duplication failed",
+                        )
+                    })?)],
+                    ints: vec![0],
+                },
+                None => Default::default(),
+            };
             Ok(DemuxFilterEvent::Media(DemuxFilterMediaEvent {
                 dataLength: data_length,
                 offset,
                 avDataId: event.data_id.0,
+                avMemory: av_memory,
                 ..Default::default()
             }))
         }
@@ -79,6 +100,26 @@ fn event_from_snapshot(
                 ..Default::default()
             }))
         }
+        FilterEventDelivery::RecordIndex(event) => {
+            Ok(DemuxFilterEvent::TsRecord(DemuxFilterTsRecordEvent {
+                pid: DemuxPid::TPid(event.pid.to_i32_for_aidl_boundary()),
+                tsIndexMask: event.ts_index_mask,
+                scIndexMask: aidl_sc_index_mask_from_record_event(event),
+                byteNumber: event.byte_number,
+                pts: event.pts,
+                firstMbInSlice: event.first_mb_in_slice,
+            }))
+        }
+    }
+}
+
+fn aidl_sc_index_mask_from_record_event(event: TsRecordEventData) -> DemuxFilterScIndexMask {
+    match event.sc_index_type {
+        RECORD_SC_TYPE_SC => DemuxFilterScIndexMask::ScIndex(event.sc_index_mask_bits),
+        RECORD_SC_TYPE_SC_AVC => DemuxFilterScIndexMask::ScAvc(event.sc_index_mask_bits),
+        RECORD_SC_TYPE_SC_HEVC => DemuxFilterScIndexMask::ScHevc(event.sc_index_mask_bits),
+        RECORD_SC_TYPE_SC_VVC => DemuxFilterScIndexMask::ScVvc(event.sc_index_mask_bits),
+        _ => DemuxFilterScIndexMask::ScIndex(0),
     }
 }
 
@@ -244,6 +285,7 @@ mod tests {
                 slot_id: AvSlotId(0),
                 offset: 12,
                 data_length: 188,
+                event_local_file: None,
             },
         )))
         .unwrap();

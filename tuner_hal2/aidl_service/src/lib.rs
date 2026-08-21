@@ -1,5 +1,6 @@
 pub(crate) mod callback_store;
 pub(crate) mod child_object_open;
+pub(crate) mod cleanup_reaper;
 pub(crate) mod demux_object;
 pub(crate) mod descrambler_object;
 pub(crate) mod dvr_callback_delivery;

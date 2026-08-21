@@ -1,6 +1,8 @@
 use crate::boot::TunerServiceRuntime;
 use crate::method_dispatch::plan_object_method_dispatch;
-use crate::registry::{FrontendRegistryEntry, LnbRegistryProfile};
+use crate::registry::{
+    FrontendCapabilitySnapshot, FrontendRegistryEntry, LnbRegistryProfile,
+};
 use maleicacid_tuner_hal2_binder_adapter::{AidlMethodAdapter, AidlMethodCall};
 use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem};
 use maleicacid_tuner_hal2_common::{HalError, HalInvalidArgumentKind};
@@ -12,6 +14,7 @@ pub struct RootFrontendInfoSnapshot {
     pub backend: FrontendBackendKind,
     pub system: FrontendSystem,
     pub lnb_profile: Option<LnbRegistryProfile>,
+    pub capability: FrontendCapabilitySnapshot,
 }
 
 impl From<FrontendRegistryEntry> for RootFrontendInfoSnapshot {
@@ -21,6 +24,7 @@ impl From<FrontendRegistryEntry> for RootFrontendInfoSnapshot {
             backend: entry.backend,
             system: entry.system,
             lnb_profile: entry.lnb_profile,
+            capability: entry.capability,
         }
     }
 }
@@ -47,58 +51,57 @@ pub struct RootDemuxInfoSnapshot {
     pub filter_types: i32,
 }
 
-const ROOT_MAX_LIVE_DEMUXES: i32 = 8;
-const ROOT_DEMUX_MAX_TS_FILTERS: i32 = 32;
-const ROOT_DEMUX_MAX_SECTION_FILTERS: i32 = 8;
-const ROOT_DEMUX_MAX_AUDIO_FILTERS: i32 = 4;
-const ROOT_DEMUX_MAX_VIDEO_FILTERS: i32 = 4;
-const ROOT_DEMUX_MAX_PES_FILTERS: i32 = 8;
-const ROOT_DEMUX_MAX_PCR_FILTERS: i32 = 4;
 const ROOT_MAX_SECTION_FILTER_BYTES: i64 = 16;
-const ROOT_SUPPORTED_DEMUX_FILTER_CAPS: i32 = 1;
+pub(crate) fn published_demux_ids(
+    snapshot: crate::CapabilitySnapshot,
+) -> Result<Vec<i32>, maleicacid_tuner_hal2_common::HalError> {
+    snapshot.public_demux_ids()
+}
 
-fn root_demux_capabilities_snapshot() -> RootDemuxCapabilitiesSnapshot {
-    RootDemuxCapabilitiesSnapshot {
-        num_demux: ROOT_MAX_LIVE_DEMUXES,
-        num_record: ROOT_MAX_LIVE_DEMUXES,
-        num_playback: ROOT_MAX_LIVE_DEMUXES,
-        num_ts_filter: ROOT_DEMUX_MAX_TS_FILTERS,
-        num_section_filter: ROOT_DEMUX_MAX_SECTION_FILTERS,
-        num_audio_filter: ROOT_DEMUX_MAX_AUDIO_FILTERS,
-        num_video_filter: ROOT_DEMUX_MAX_VIDEO_FILTERS,
-        num_pes_filter: ROOT_DEMUX_MAX_PES_FILTERS,
-        num_pcr_filter: ROOT_DEMUX_MAX_PCR_FILTERS,
+pub(crate) fn is_public_demux_id(
+    snapshot: crate::CapabilitySnapshot,
+    demux_id: i32,
+) -> Result<bool, maleicacid_tuner_hal2_common::HalError> {
+    snapshot
+        .public_demux_filter_types(demux_id)
+        .map(|filter_types| filter_types.is_some())
+}
+
+fn root_demux_capabilities_snapshot(
+    snapshot: crate::CapabilitySnapshot,
+) -> Result<RootDemuxCapabilitiesSnapshot, maleicacid_tuner_hal2_common::HalError> {
+    let public_demuxes = snapshot.public_demuxes()?;
+    let num_demux = i32::try_from(public_demuxes.len()).map_err(|_| {
+        maleicacid_tuner_hal2_common::HalError::internal(
+            maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+            "published demux capability count overflow",
+        )
+    })?;
+    let filter_caps = snapshot.public_demux_filter_caps()?;
+    Ok(RootDemuxCapabilitiesSnapshot {
+        num_demux,
+        num_record: snapshot.num_record,
+        num_playback: snapshot.num_playback,
+        num_ts_filter: snapshot.num_ts_filter,
+        num_section_filter: snapshot.num_section_filter,
+        num_audio_filter: snapshot.num_audio_filter,
+        num_video_filter: snapshot.num_video_filter,
+        num_pes_filter: snapshot.num_pes_filter,
+        num_pcr_filter: snapshot.num_pcr_filter,
         num_bytes_in_section_filter: ROOT_MAX_SECTION_FILTER_BYTES,
-        filter_caps: ROOT_SUPPORTED_DEMUX_FILTER_CAPS,
-        link_caps: vec![ROOT_SUPPORTED_DEMUX_FILTER_CAPS, 0, 0, 0, 0],
+        filter_caps,
+        link_caps: vec![filter_caps, 0, 0, 0, 0],
         has_time_filter: false,
-    }
+    })
 }
 
-fn default_max_number_of_frontends_for_system(
-    runtime: &TunerServiceRuntime,
-    frontend_system: FrontendSystem,
-) -> i32 {
-    let query = runtime.query();
-    i32::try_from(
-        query
-            .frontend_ids()
-            .into_iter()
-            .filter(|frontend_id| {
-                query
-                    .frontend_entry(*frontend_id)
-                    .map(|entry| entry.system == frontend_system)
-                    .unwrap_or(false)
-            })
-            .count(),
-    )
-    .unwrap_or(i32::MAX)
-}
-
-fn root_demux_info_snapshot() -> RootDemuxInfoSnapshot {
-    RootDemuxInfoSnapshot {
-        filter_types: ROOT_SUPPORTED_DEMUX_FILTER_CAPS,
-    }
+fn root_demux_info_snapshot(
+    snapshot: crate::CapabilitySnapshot,
+    demux_id: i32,
+) -> Result<Option<RootDemuxInfoSnapshot>, maleicacid_tuner_hal2_common::HalError> {
+    snapshot
+        .public_demux_filter_types(demux_id)
+        .map(|filter_types| filter_types.map(|filter_types| RootDemuxInfoSnapshot { filter_types }))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -207,20 +210,24 @@ impl TunerServiceRuntime {
                 .map(RootQueryResponse::FrontendInfo)
                 .ok_or(HalError::Unsupported("frontend id is not available")),
             RootQueryRequest::LnbIds => Ok(RootQueryResponse::LnbIds(query.lnb_ids())),
-            RootQueryRequest::DemuxIds => Ok(RootQueryResponse::DemuxIds(query.demux_ids())),
-            RootQueryRequest::DemuxInfo { demux_id } => {
-                if query.has_demux_id(demux_id) {
-                    Ok(RootQueryResponse::DemuxInfo(root_demux_info_snapshot()))
-                } else {
-                    Err(HalError::Unsupported("demux id is not available"))
-                }
-            }
-            RootQueryRequest::DemuxCapabilities => Ok(RootQueryResponse::DemuxCapabilities(
-                root_demux_capabilities_snapshot(),
+            RootQueryRequest::DemuxIds => Ok(RootQueryResponse::DemuxIds(
+                published_demux_ids(self.capability_snapshot())?,
             )),
+            RootQueryRequest::DemuxInfo { demux_id } => {
+                root_demux_info_snapshot(self.capability_snapshot(), demux_id)?
+                    .map(RootQueryResponse::DemuxInfo)
+                    .ok_or_else(|| HalError::invalid_argument(
+                        HalInvalidArgumentKind::NumericRange,
+                        "demux id is not published by the capability snapshot",
+                    ))
+            }
+            RootQueryRequest::DemuxCapabilities => root_demux_capabilities_snapshot(
+                self.capability_snapshot(),
+            )
+            .map(RootQueryResponse::DemuxCapabilities),
             RootQueryRequest::MaxNumberOfFrontends { frontend_system } => {
                 Ok(RootQueryResponse::MaxNumberOfFrontends(
-                    default_max_number_of_frontends_for_system(self, frontend_system),
+                    self.current_max_number_of_frontends(frontend_system),
                 ))
             }
             RootQueryRequest::LnaSupported => Ok(RootQueryResponse::LnaSupported(false)),
@@ -243,8 +250,9 @@ impl TunerServiceRuntime {
                         "frontend max number must be non-negative",
                     ));
                 }
-                let default_max = default_max_number_of_frontends_for_system(self, frontend_system);
+                let default_max = self.default_max_number_of_frontends(frontend_system);
                 if max_number <= default_max {
+                    self.set_current_max_number_of_frontends(frontend_system, max_number);
                     Ok(())
                 } else {
                     Err(HalError::invalid_argument(

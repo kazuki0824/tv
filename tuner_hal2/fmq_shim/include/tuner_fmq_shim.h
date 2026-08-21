@@ -14,13 +14,16 @@ tuner_fmq_queue* tuner_fmq_queue_create(size_t num_bytes, bool configure_event_f
 void tuner_fmq_queue_destroy(tuner_fmq_queue* queue);
 size_t tuner_fmq_queue_available_to_read(const tuner_fmq_queue* queue);
 size_t tuner_fmq_queue_available_to_write(const tuner_fmq_queue* queue);
-// FMQ write checked API.
-// Returns 0 on success, -1 on invalid arguments, -2 when libfmq write fails.
-// On success, out_written receives the requested byte count; size == 0 is a
-// 成功時でも out_written == 0 の場合は書き込みなしとして扱う。
+// 書き込み量を検証できるFMQ書き込みAPI。
+// 成功時は0、不正引数では-1、libfmqの書込み失敗では-2を返す。
+// 成功時はout_writtenへ要求byte数を格納する。size == 0はdata == nullptrでも成功する。
+// queue == nullptrまたはout_written == nullptrは不正引数として扱う。
 int tuner_fmq_queue_write_checked(tuner_fmq_queue* queue, const uint8_t* data,
                                   size_t size, size_t* out_written);
 size_t tuner_fmq_queue_read(tuner_fmq_queue* queue, uint8_t* data, size_t size);
+// size byteを正確に読み取る。失敗時はFMQの読取り位置を変更しない。
+// 成功時は0、不正引数では-1、libfmqの読取り失敗では-2を返す。
+int tuner_fmq_queue_read_exact(tuner_fmq_queue* queue, uint8_t* data, size_t size);
 int tuner_fmq_queue_wake(tuner_fmq_queue* queue, uint32_t bits);
 int tuner_fmq_queue_wait(tuner_fmq_queue* queue, uint32_t bits, int64_t timeout_ns, uint32_t* state);
 int32_t tuner_fmq_queue_quantum(const tuner_fmq_queue* queue);

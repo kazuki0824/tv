@@ -4,12 +4,13 @@ use super::{
     BinderResult, ObjectCloseCleanupFailure,
 };
 use crate::service_context::SharedAidlServiceContext;
+use maleicacid_tuner_hal2_binder_adapter::AidlObjectKind;
 use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, FirstErrorCollector};
 use maleicacid_tuner_hal2_service_runtime::{
     quarantine_object_drop_leak_use_case, ObjectCleanupDiagnosticRecord,
 };
 
-pub(super) fn drop_leak_object(
+pub(crate) fn drop_leak_object(
     context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
 ) -> BinderResult<()> {
@@ -72,6 +73,25 @@ pub(crate) fn drop_leak_object_from_drop(
     handle: AidlObjectHandle,
 ) {
     if let Err(status) = drop_leak_object(context, handle) {
+        context.record_drop_leak_error(handle, &status);
+        return;
+    }
+    if handle.object_kind() != AidlObjectKind::Filter {
+        return;
+    }
+    let runtime_handle = context.runtime();
+    let final_release_state_cleanup = runtime_handle
+        .lock()
+        .map_err(|_| status_unknown_error("service runtime lock poisoned during final AV cleanup"))
+        .and_then(|mut runtime| {
+            runtime
+                .finalize_filter_av_release_state_after_last_reference(
+                    handle.object_id(),
+                    handle.generation(),
+                )
+                .map_err(status_from_hal_error)
+        });
+    if let Err(status) = final_release_state_cleanup {
         context.record_drop_leak_error(handle, &status);
     }
 }

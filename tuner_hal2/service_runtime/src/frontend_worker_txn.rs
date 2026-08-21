@@ -1,5 +1,10 @@
-use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::collections::BTreeMap;
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::sync::{Arc, Mutex, Weak};
+#[cfg(test)]
+use std::sync::MutexGuard;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::cleanup_execution::{
     CleanupExecutionDiagnosticSnapshot, CleanupExecutionReport, CleanupExecutionStepOutcome,
@@ -13,21 +18,390 @@ use crate::{
 };
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FrontendBackendKind, FrontendDevicePath, FrontendScanMode,
-    FrontendTuneRequest, HalError, HalInternalKind, HalInvalidStateKind,
+    FrontendTuneRequest, HalError, HalErrorDetail, HalInternalKind, HalInvalidStateKind,
 };
 use maleicacid_tuner_hal2_demux::DemuxRuntimeRollbackToken;
 use maleicacid_tuner_hal2_device::{
-    FrontendBackendSession, FrontendBackendTunePlan, FrontendLivePumpJoinOutcome,
-    FrontendLivePumpOwner, FrontendRuntimeSnapshot, FrontendWorkerCancelReason,
+    FrontendBackendSession, FrontendBackendSubmitFailure, FrontendBackendSubmitTicket,
+    FrontendBackendSubmitWait, FrontendBackendTunePlan, FrontendLivePumpJoinOutcome,
+    FrontendLivePumpOwner, FrontendRuntimeSnapshot, FrontendScanPhase, FrontendWorkerCancelReason,
     FrontendWorkerContext, FrontendWorkerKind, FrontendWorkerStartError, FrontendWorkerStopOutcome,
-    FrontendWorkerStopTicket,
+    FrontendWorkerStopPoll, FrontendWorkerStopTicket,
 };
 use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
 
-pub type FrontendScanEndNotifier =
-    Arc<dyn Fn(i32, u64) -> Result<(), HalError> + Send + Sync + 'static>;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrontendScanNotification {
+    Locked,
+    End,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrontendTuneNotification {
+    Locked,
+    NoSignal,
+}
+
+pub type FrontendTuneNotifier = Arc<
+    dyn Fn(i32, u64, FrontendTuneNotification) -> Result<(), HalError> + Send + Sync + 'static,
+>;
+
+pub type FrontendScanNotifier = Arc<
+    dyn Fn(i32, u64, FrontendScanNotification) -> Result<(), HalError> + Send + Sync + 'static,
+>;
+
+fn deliver_committed_tune_notification(
+    notifier: &FrontendTuneNotifier,
+    frontend_id: i32,
+    generation: u64,
+    notification: FrontendTuneNotification,
+) {
+    if notifier(frontend_id, generation, notification).is_err() {
+        // 配送ownerがcallback healthと型付き診断を確定する。commit済みdomain状態は戻さない。
+    }
+}
+
+fn deliver_committed_scan_notification(
+    notifier: &FrontendScanNotifier,
+    frontend_id: i32,
+    generation: u64,
+    notification: FrontendScanNotification,
+) {
+    if notifier(frontend_id, generation, notification).is_err() {
+        // 配送ownerがcallback healthと型付き診断を確定する。commit済みscan終端は戻さない。
+    }
+}
 
 type SharedRuntime = Arc<Mutex<TunerServiceRuntime>>;
+
+enum FrontendTuneWorkerActivation {
+    Run(FrontendBackendSession),
+    Abort,
+}
+
+enum FrontendScanWorkerActivation {
+    Run(FrontendBackendSession),
+    Abort,
+}
+
+type FrontendWorkerReaperDeadlineAction =
+    Box<dyn FnOnce(&SharedRuntime) + Send + 'static>;
+type FrontendWorkerReaperCompletionAction =
+    Box<
+        dyn FnOnce(
+                &SharedRuntime,
+                Vec<(FrontendWorkerKind, FrontendWorkerStopOutcome)>,
+                bool,
+            ) + Send
+            + 'static,
+    >;
+
+struct FrontendWorkerReaperTicketGroup {
+    pending: Vec<(FrontendWorkerKind, FrontendWorkerStopTicket)>,
+    completed: Vec<(FrontendWorkerKind, FrontendWorkerStopOutcome)>,
+}
+
+impl FrontendWorkerReaperTicketGroup {
+    fn new(tickets: Vec<(FrontendWorkerKind, FrontendWorkerStopTicket)>) -> Self {
+        let capacity = tickets.len();
+        Self {
+            pending: tickets,
+            completed: Vec::with_capacity(capacity),
+        }
+    }
+
+    fn try_complete(
+        mut self,
+    ) -> Result<Vec<(FrontendWorkerKind, FrontendWorkerStopOutcome)>, Self> {
+        let mut still_pending = Vec::new();
+        for (kind, ticket) in self.pending {
+            match ticket.try_complete() {
+                FrontendWorkerStopPoll::Completed(outcome) => {
+                    self.completed.push((kind, outcome))
+                }
+                FrontendWorkerStopPoll::Pending(ticket) => still_pending.push((kind, ticket)),
+            }
+        }
+        if still_pending.is_empty() {
+            Ok(self.completed)
+        } else {
+            self.pending = still_pending;
+            Err(self)
+        }
+    }
+
+    fn wait_for_progress(&self, deadline: Option<Instant>) -> Result<Option<usize>, HalError> {
+        for (index, (_, ticket)) in self.pending.iter().enumerate() {
+            if ticket.wait_until_finished(deadline)? {
+                return Ok(Some(index));
+            }
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                return Ok(None);
+            }
+        }
+        Err(HalError::internal(
+            HalInternalKind::InvariantViolation,
+            "frontend worker reaper waited without a pending ticket",
+        ))
+    }
+
+    fn complete_signalled(&mut self, index: usize) -> Result<(), HalError> {
+        if index >= self.pending.len() {
+            return Err(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "frontend worker completion signal index is out of range",
+            ));
+        }
+        let (kind, ticket) = self.pending.remove(index);
+        self.completed.push((kind, ticket.complete()));
+        Ok(())
+    }
+}
+
+struct FrontendWorkerReaperJob {
+    keys: Vec<(i32, FrontendWorkerKind)>,
+    continuation_kind: Option<FrontendWorkerKind>,
+    tickets: FrontendWorkerReaperTicketGroup,
+    transferred_at: Instant,
+    deadline_action: Option<FrontendWorkerReaperDeadlineAction>,
+    completion_action: FrontendWorkerReaperCompletionAction,
+}
+
+impl FrontendWorkerReaperJob {
+    fn run(
+        mut self,
+        runtime: &Weak<Mutex<TunerServiceRuntime>>,
+        pending: &Mutex<BTreeMap<(i32, FrontendWorkerKind), Option<FrontendWorkerKind>>>,
+        deadline: Duration,
+    ) {
+        let mut deadline_elapsed = false;
+        let terminal_deadline = match self.transferred_at.checked_add(deadline) {
+            Some(deadline) => deadline,
+            None => {
+                if let Some(runtime) = runtime.upgrade() {
+                    if let Ok(mut guard) = runtime.lock() {
+                        guard.mark_service_critical();
+                    }
+                }
+                core::mem::forget(self);
+                return;
+            }
+        };
+        loop {
+            match self.tickets.try_complete() {
+                Ok(outcomes) => {
+                    let pending_cleanup_failed = match pending.lock() {
+                        Ok(mut pending) => {
+                            for key in &self.keys {
+                                pending.remove(key);
+                            }
+                            false
+                        }
+                        Err(_) => true,
+                    };
+                    if let Some(runtime) = runtime.upgrade() {
+                        if pending_cleanup_failed {
+                            if let Ok(mut guard) = runtime.lock() {
+                                guard.mark_service_critical();
+                            }
+                        }
+                        (self.completion_action)(&runtime, outcomes, deadline_elapsed);
+                    }
+                    return;
+                }
+                Err(tickets) => self.tickets = tickets,
+            }
+            let wait_deadline = (!deadline_elapsed).then_some(terminal_deadline);
+            match self.tickets.wait_for_progress(wait_deadline) {
+                Ok(Some(index)) => {
+                    if self.tickets.complete_signalled(index).is_err() {
+                        if let Some(runtime) = runtime.upgrade() {
+                            if let Ok(mut guard) = runtime.lock() {
+                                guard.mark_service_critical();
+                            }
+                        }
+                        core::mem::forget(self);
+                        return;
+                    }
+                }
+                Ok(None) => {
+                    deadline_elapsed = true;
+                    if let (Some(runtime), Some(action)) =
+                        (runtime.upgrade(), self.deadline_action.take())
+                    {
+                        action(&runtime);
+                    }
+                }
+                Err(_) => {
+                    if let Some(runtime) = runtime.upgrade() {
+                        if let Ok(mut guard) = runtime.lock() {
+                            guard.mark_service_critical();
+                        }
+                    }
+                    core::mem::forget(self);
+                    return;
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct FrontendWorkerReaperHandle {
+    sender: SyncSender<FrontendWorkerReaperJob>,
+    pending: Arc<Mutex<BTreeMap<(i32, FrontendWorkerKind), Option<FrontendWorkerKind>>>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FrontendWorkerReaperPendingState {
+    NotPending,
+    CleanupOnly,
+    Replacement(FrontendWorkerKind),
+}
+
+impl core::fmt::Debug for FrontendWorkerReaperHandle {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FrontendWorkerReaperHandle").finish()
+    }
+}
+
+impl FrontendWorkerReaperHandle {
+    fn start(
+        runtime: Weak<Mutex<TunerServiceRuntime>>,
+        capacity: usize,
+        deadline: Duration,
+    ) -> Result<Self, HalError> {
+        let capacity = capacity.max(1);
+        let (sender, receiver) = mpsc::sync_channel(capacity);
+        let pending = Arc::new(Mutex::new(BTreeMap::new()));
+        let receiver: Arc<Mutex<Receiver<FrontendWorkerReaperJob>>> =
+            Arc::new(Mutex::new(receiver));
+        for lane in 0..capacity {
+            let receiver = Arc::clone(&receiver);
+            let runtime = Weak::clone(&runtime);
+            let pending = Arc::clone(&pending);
+            thread::Builder::new()
+                .name(format!("maleicacid-frontend-reaper-{lane}"))
+                .spawn(move || loop {
+                    let job = match receiver.lock() {
+                        Ok(receiver) => receiver.recv(),
+                        Err(_) => return,
+                    };
+                    match job {
+                        Ok(job) => job.run(&runtime, &pending, deadline),
+                        Err(_) => return,
+                    }
+                })
+                .map_err(|error| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        format!("frontend worker reaper lane spawn failed: {error}"),
+                    )
+                })?;
+        }
+        Ok(Self { sender, pending })
+    }
+
+    fn enqueue(&self, job: FrontendWorkerReaperJob) -> Result<(), HalError> {
+        let mut pending = match self.pending.lock() {
+            Ok(pending) => pending,
+            Err(_) => {
+                // pending key台帳が利用不能でも、移譲済みJoinHandleの所有権を保持する。
+                // ここでjobをdropするとendpoint leaseが有効なままworkerがdetachされる。
+                core::mem::forget(job);
+                return Err(HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend worker reaper pending registry lock poisoned",
+                ));
+            }
+        };
+        if job.keys.iter().any(|key| pending.contains_key(key)) {
+            core::mem::forget(job);
+            return Err(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "frontend worker reaper received a duplicate endpoint lease",
+            ));
+        }
+        for key in &job.keys {
+            pending.insert(*key, job.continuation_kind);
+        }
+        drop(pending);
+        self.sender.try_send(job).map_err(|error| match error {
+            TrySendError::Full(job) => {
+                // 移譲済みJoinHandleをdropまたはdetachしてはならない。
+                // 容量枯渇はServiceCriticalとし、不安全なendpoint再利用を防ぐため
+                // process lifetime中は所有権を保持する。
+                core::mem::forget(job);
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend worker reaper capacity exhausted",
+                )
+            }
+            TrySendError::Disconnected(job) => {
+                core::mem::forget(job);
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend worker reaper is unavailable",
+                )
+            }
+        })
+    }
+
+    fn is_pending(&self, frontend_id: i32, kind: FrontendWorkerKind) -> Result<bool, HalError> {
+        self.pending
+            .lock()
+            .map(|pending| pending.contains_key(&(frontend_id, kind)))
+            .map_err(|_| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend worker reaper pending registry lock poisoned",
+                )
+            })
+    }
+
+    fn pending_state(
+        &self,
+        frontend_id: i32,
+        kind: FrontendWorkerKind,
+    ) -> Result<FrontendWorkerReaperPendingState, HalError> {
+        self.pending
+            .lock()
+            .map(|pending| match pending.get(&(frontend_id, kind)).copied() {
+                None => FrontendWorkerReaperPendingState::NotPending,
+                Some(None) => FrontendWorkerReaperPendingState::CleanupOnly,
+                Some(Some(kind)) => FrontendWorkerReaperPendingState::Replacement(kind),
+            })
+            .map_err(|_| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend worker reaper pending registry lock poisoned",
+                )
+            })
+    }
+}
+
+fn ensure_frontend_worker_reaper(
+    runtime: &SharedRuntime,
+) -> Result<FrontendWorkerReaperHandle, HalError> {
+    let (capacity, deadline) = {
+        let guard = lock_runtime(runtime, "service runtime lock poisoned while finding reaper")?;
+        if let Some(handle) = guard.frontend_worker_reaper_handle() {
+            return Ok(handle);
+        }
+        (
+            guard.frontend_worker_reaper_capacity(),
+            Duration::from_millis(guard.capability_snapshot().worker_reaper_deadline_ms),
+        )
+    };
+    let candidate =
+        FrontendWorkerReaperHandle::start(Arc::downgrade(runtime), capacity, deadline)?;
+    let mut guard = lock_runtime(runtime, "service runtime lock poisoned while installing reaper")?;
+    if let Some(handle) = guard.frontend_worker_reaper_handle() {
+        return Ok(handle);
+    }
+    guard.install_frontend_worker_reaper_handle(candidate.clone());
+    Ok(candidate)
+}
 
 type DemuxRollbackTokenList = Vec<(crate::registry::DemuxRuntimeId, DemuxRuntimeRollbackToken)>;
 type SharedDemuxRollbackTokenList = Arc<Mutex<Option<DemuxRollbackTokenList>>>;
@@ -45,6 +419,8 @@ pub enum FrontendWorkerCleanupDiagnosticKind {
     ScanStartRollback,
     ScanWorkerStartRollback,
     ScanBackendRollbackStateRestore,
+    WorkerReaperDeadline,
+    WorkerReaperCompletion,
     FrontendClose,
     FrontendCloseOwnerLoss,
 }
@@ -538,6 +914,15 @@ pub type FrontendWorkerCleanupDiagnosticSnapshot =
 pub type SharedFrontendWorkerCleanupDiagnostics =
     SharedCleanupDiagnostics<FrontendWorkerCleanupDiagnosticRecord>;
 
+fn record_frontend_cleanup_diagnostic_after_terminal(
+    sink: &SharedFrontendWorkerCleanupDiagnostics,
+    record: FrontendWorkerCleanupDiagnosticRecord,
+) {
+    if sink.record(record).is_err() {
+        // sink内のrecord failure counterを残す。呼び出し元を失った終端結果は再実行しない。
+    }
+}
+
 type BoundDemuxGenerationSnapshot = Vec<(crate::registry::DemuxRuntimeId, u64)>;
 
 fn share_demux_rollback_tokens(tokens: DemuxRollbackTokenList) -> SharedDemuxRollbackTokenList {
@@ -559,6 +944,7 @@ fn take_demux_rollback_tokens(
         .ok_or_else(|| HalError::internal(HalInternalKind::InvariantViolation, context))
 }
 
+#[cfg(test)]
 struct FrontendWorkerReplacementTicket {
     object_id: AidlObjectId,
     object_generation: AidlObjectGeneration,
@@ -579,6 +965,7 @@ struct FrontendWorkerReplacementRollbackContext {
     new_worker_generation: u64,
 }
 
+#[cfg(test)]
 struct FrontendWorkerStopObjectTicket {
     object_id: AidlObjectId,
     object_generation: AidlObjectGeneration,
@@ -638,6 +1025,21 @@ fn current_bound_demux_generation_snapshot(
     Ok(generations)
 }
 
+fn bound_demux_generations_are_fenced_at_or_after(
+    current: &BoundDemuxGenerationSnapshot,
+    expected: &BoundDemuxGenerationSnapshot,
+) -> bool {
+    expected.iter().all(|(expected_id, expected_generation)| {
+        match current
+            .iter()
+            .find(|(current_id, _)| current_id == expected_id)
+        {
+            Some((_, current_generation)) => current_generation >= expected_generation,
+            None => true,
+        }
+    })
+}
+
 fn ensure_frontend_join_snapshot_still_matches(
     guard: &TunerServiceRuntime,
     frontend_id: i32,
@@ -664,6 +1066,7 @@ fn ensure_frontend_join_snapshot_still_matches(
     Ok(())
 }
 
+#[cfg(test)]
 fn complete_frontend_worker_replacement_ticket<'a>(
     runtime: &'a SharedRuntime,
     ticket: FrontendWorkerReplacementTicket,
@@ -771,6 +1174,7 @@ fn complete_frontend_worker_replacement_ticket<'a>(
     ))
 }
 
+#[cfg(test)]
 fn prepare_frontend_worker_stop_object_ticket(
     runtime: &mut TunerServiceRuntime,
     object_id: AidlObjectId,
@@ -801,6 +1205,7 @@ fn prepare_frontend_worker_stop_object_ticket(
     })
 }
 
+#[cfg(test)]
 fn complete_frontend_worker_stop_object_ticket<'a>(
     runtime: &'a SharedRuntime,
     ticket: FrontendWorkerStopObjectTicket,
@@ -861,7 +1266,7 @@ fn complete_frontend_worker_stop_object_ticket<'a>(
                 ),
             }
         };
-    if let Some(error) = frontend_worker_stop_request_failure(&stop_outcome) {
+    if let Some(error) = frontend_worker_stop_failure(&stop_outcome) {
         return Err(record_stop_outcome_for_failure(error, false));
     }
     let guard = match lock_runtime(runtime, context) {
@@ -1133,6 +1538,281 @@ fn finish_backend_session_after_worker_body(
     }
 }
 
+fn finish_backend_session_before_frontend_commit_failure(
+    guard: &mut TunerServiceRuntime,
+    frontend_id: i32,
+    generation: u64,
+    session: FrontendBackendSession,
+    primary: HalError,
+    context: &'static str,
+) -> HalError {
+    let stop_result = session.stop();
+    let backend_stopped = stop_result.is_ok();
+    let public_error = match stop_result {
+        Ok(()) => primary,
+        Err(stop_error) => compose_frontend_cleanup_error(context, primary, stop_error),
+    };
+    match guard
+        .frontend_txn()
+        .record_frontend_backend_request_failure_after_fence(
+            frontend_id,
+            generation,
+            public_error.clone(),
+            backend_stopped,
+        ) {
+        Ok(()) => public_error,
+        Err(record_error) => compose_frontend_cleanup_error(
+            "frontend backend failure state record failed",
+            public_error,
+            record_error,
+        ),
+    }
+}
+
+fn finish_backend_session_after_frontend_commit_activation_failure(
+    guard: &mut TunerServiceRuntime,
+    frontend_id: i32,
+    generation: u64,
+    session: FrontendBackendSession,
+    primary: HalError,
+    context: &'static str,
+) -> HalError {
+    let stop_result = session.stop();
+    let backend_stopped = stop_result.is_ok();
+    let public_error = match stop_result {
+        Ok(()) => primary,
+        Err(stop_error) => compose_frontend_cleanup_error(context, primary, stop_error),
+    };
+    match guard
+        .frontend_txn()
+        .record_frontend_backend_activation_failure_after_commit(
+            frontend_id,
+            generation,
+            public_error.clone(),
+            backend_stopped,
+        ) {
+        Ok(()) => public_error,
+        Err(record_error) => compose_frontend_cleanup_error(
+            "frontend backend activation failure state record failed",
+            public_error,
+            record_error,
+        ),
+    }
+}
+
+fn record_backend_submit_failure_after_fence(
+    guard: &mut TunerServiceRuntime,
+    frontend_id: i32,
+    generation: u64,
+    backend_stopped: bool,
+    public_error: HalError,
+) -> HalError {
+    match guard
+        .frontend_txn()
+        .record_frontend_backend_request_failure_after_fence(
+            frontend_id,
+            generation,
+            public_error.clone(),
+            backend_stopped,
+        ) {
+        Ok(()) => public_error,
+        Err(record_error) => compose_frontend_cleanup_error(
+            "frontend backend submission failure state record failed",
+            public_error,
+            record_error,
+        ),
+    }
+}
+
+enum FrontendBackendSubmitDeadlineOutcome {
+    Completed(Result<FrontendBackendSession, FrontendBackendSubmitFailure>),
+    TimedOut(FrontendBackendSubmitTicket),
+}
+
+const FRONTEND_BACKEND_SUBMIT_TIMEOUT_ERRNO: i32 = 110;
+
+fn submit_frontend_backend_with_deadline(
+    plan: FrontendBackendTunePlan,
+    previous_request: Option<FrontendTuneRequest>,
+    generation: u64,
+    deadline_ms: u64,
+) -> Result<FrontendBackendSubmitDeadlineOutcome, HalError> {
+    let deadline = Instant::now()
+        .checked_add(Duration::from_millis(deadline_ms))
+        .ok_or_else(|| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "frontend backend submit deadline overflow",
+            )
+        })?;
+    let ticket = FrontendBackendSubmitTicket::start(plan, previous_request)?;
+    match ticket.wait_until(deadline) {
+        Ok(FrontendBackendSubmitWait::Completed(result)) => {
+            Ok(FrontendBackendSubmitDeadlineOutcome::Completed(result))
+        }
+        Ok(FrontendBackendSubmitWait::TimedOut(ticket)) => {
+            Ok(FrontendBackendSubmitDeadlineOutcome::TimedOut(ticket))
+        }
+        Err(error) => Ok(FrontendBackendSubmitDeadlineOutcome::Completed(Err(
+            FrontendBackendSubmitFailure::indeterminate(generation, error),
+        ))),
+    }
+}
+
+fn frontend_backend_submit_timeout_error(deadline_ms: u64) -> HalError {
+    HalError::Io {
+        backend: "frontend",
+        operation: "backend submit",
+        path: None,
+        errno: Some(FRONTEND_BACKEND_SUBMIT_TIMEOUT_ERRNO),
+        detail: HalErrorDetail::new(format!(
+            "backend request did not finish within worker I/O deadline ({deadline_ms} ms)"
+        )),
+    }
+}
+
+fn transfer_timed_out_frontend_backend_submit(
+    reaper: &FrontendWorkerReaperHandle,
+    guard: &mut TunerServiceRuntime,
+    target: FrontendWorkerCleanupTarget,
+    worker_kind: FrontendWorkerKind,
+    generation: u64,
+    expected_demux_generations: BoundDemuxGenerationSnapshot,
+    ticket: FrontendBackendSubmitTicket,
+    diagnostic_sink: SharedFrontendWorkerCleanupDiagnostics,
+    deadline_ms: u64,
+) -> HalError {
+    let timeout_error = frontend_backend_submit_timeout_error(deadline_ms);
+    let public_error = record_backend_submit_failure_after_fence(
+        guard,
+        target.frontend_id(),
+        generation,
+        false,
+        timeout_error,
+    );
+    enqueue_timed_out_frontend_backend_submit(
+        reaper,
+        guard,
+        target,
+        worker_kind,
+        generation,
+        expected_demux_generations,
+        ticket,
+        diagnostic_sink,
+        public_error,
+    )
+}
+
+fn transfer_timed_out_active_scan_submit(
+    reaper: &FrontendWorkerReaperHandle,
+    guard: &mut TunerServiceRuntime,
+    target: FrontendWorkerCleanupTarget,
+    generation: u64,
+    expected_demux_generations: BoundDemuxGenerationSnapshot,
+    ticket: FrontendBackendSubmitTicket,
+    diagnostic_sink: SharedFrontendWorkerCleanupDiagnostics,
+    deadline_ms: u64,
+) -> HalError {
+    let timeout_error = frontend_backend_submit_timeout_error(deadline_ms);
+    let public_error = match guard
+        .frontend_txn()
+        .mark_frontend_scan_session_backend_failed(target.frontend_id(), generation)
+    {
+        Ok(()) => timeout_error,
+        Err(mark_error) => compose_frontend_cleanup_error(
+            "frontend scan submit timeout state commit failed",
+            timeout_error,
+            mark_error,
+        ),
+    };
+    enqueue_timed_out_frontend_backend_submit(
+        reaper,
+        guard,
+        target,
+        FrontendWorkerKind::Scan,
+        generation,
+        expected_demux_generations,
+        ticket,
+        diagnostic_sink,
+        public_error,
+    )
+}
+
+fn enqueue_timed_out_frontend_backend_submit(
+    reaper: &FrontendWorkerReaperHandle,
+    guard: &mut TunerServiceRuntime,
+    target: FrontendWorkerCleanupTarget,
+    worker_kind: FrontendWorkerKind,
+    generation: u64,
+    expected_demux_generations: BoundDemuxGenerationSnapshot,
+    ticket: FrontendBackendSubmitTicket,
+    diagnostic_sink: SharedFrontendWorkerCleanupDiagnostics,
+    public_error: HalError,
+) -> HalError {
+    let deadline_sink = diagnostic_sink.clone();
+    let completion_sink = diagnostic_sink;
+    let completion_error = public_error.clone();
+    let cleanup_ticket = FrontendWorkerStopTicket::backend_submit_cleanup(
+        target.frontend_id(),
+        worker_kind,
+        generation,
+        ticket,
+    );
+    let job = FrontendWorkerReaperJob {
+        keys: vec![(target.frontend_id(), worker_kind)],
+        continuation_kind: None,
+        tickets: FrontendWorkerReaperTicketGroup::new(vec![(worker_kind, cleanup_ticket)]),
+        transferred_at: Instant::now(),
+        deadline_action: Some(Box::new(move |runtime| {
+            handle_frontend_worker_reaper_deadline(
+                runtime,
+                target,
+                worker_kind,
+                generation,
+                expected_demux_generations,
+                deadline_sink,
+            );
+        })),
+        completion_action: Box::new(move |runtime, outcomes, deadline_elapsed| {
+            let recorded_error = if deadline_elapsed {
+                compose_frontend_cleanup_error(
+                    "frontend backend submit reaper deadline elapsed",
+                    completion_error.clone(),
+                    HalError::cleanup_failed(
+                        "frontend backend submit reaper",
+                        "submit operation did not exit before the reaper deadline",
+                    ),
+                )
+            } else {
+                completion_error.clone()
+            };
+            if record_aborted_frontend_replacement_after_reap(
+                completion_sink,
+                target,
+                worker_kind,
+                generation,
+                &outcomes,
+                recorded_error,
+            )
+            .is_err()
+            {
+                if let Ok(mut guard) = runtime.lock() {
+                    guard.mark_service_critical();
+                }
+            }
+        }),
+    };
+    if let Err(transfer_error) = reaper.enqueue(job) {
+        guard.mark_service_critical();
+        return compose_frontend_cleanup_error(
+            "frontend backend submit reaper transfer failed",
+            public_error,
+            transfer_error,
+        );
+    }
+    public_error
+}
+
 fn stop_live_pump_after_worker_error(
     live_pump: &mut Option<FrontendLivePumpOwner>,
     body_result: &mut Result<(), HalError>,
@@ -1162,13 +1842,6 @@ fn frontend_worker_stop_failure(outcome: &FrontendWorkerStopOutcome) -> Option<H
         | FrontendWorkerStopOutcome::Completed {
             result: Err(error), ..
         } => Some(error.clone()),
-        _ => None,
-    }
-}
-
-fn frontend_worker_stop_request_failure(outcome: &FrontendWorkerStopOutcome) -> Option<HalError> {
-    match outcome {
-        FrontendWorkerStopOutcome::StopRequestFailed { error, .. } => Some(error.clone()),
         _ => None,
     }
 }
@@ -1339,7 +2012,16 @@ fn record_scan_cancelled_from_stop_outcome_locked(
     reason: FrontendWorkerCancelReason,
 ) -> Result<(), HalError> {
     let generation = match outcome {
-        FrontendWorkerStopOutcome::NotRunning => return Ok(()),
+        FrontendWorkerStopOutcome::NotRunning => {
+            let snapshot = runtime.query().frontend_runtime_snapshot(frontend_id)?;
+            let Some(session) = snapshot.scan_session else {
+                return Ok(());
+            };
+            if session.phase() != FrontendScanPhase::LockedReported {
+                return Ok(());
+            }
+            session.generation()
+        }
         FrontendWorkerStopOutcome::StopRequestFailed { error, .. } => return Err(error.clone()),
         FrontendWorkerStopOutcome::CancelRequested { generation, .. }
         | FrontendWorkerStopOutcome::Completed { generation, .. } => *generation,
@@ -1364,6 +2046,7 @@ fn mark_tune_worker_failed(
         .mark_frontend_tune_worker_failed(frontend_id, generation, error)
 }
 
+#[cfg(test)]
 fn rollback_started_tune_worker_after_commit_failure(
     runtime: &SharedRuntime,
     cleanup_diagnostic_sink: Result<SharedFrontendWorkerCleanupDiagnostics, HalError>,
@@ -1474,14 +2157,909 @@ pub(crate) fn request_tune_worker_replacement_stop(
     )
 }
 
+fn run_frontend_backend_tune_session_worker(
+    runtime: SharedRuntime,
+    ctx: FrontendWorkerContext,
+    session: FrontendBackendSession,
+    backend: FrontendBackendKind,
+    frontend_id: i32,
+    generation: u64,
+    tune_notifier: FrontendTuneNotifier,
+) -> Result<(), HalError> {
+    if ctx.frontend_id() != frontend_id || ctx.generation() != generation {
+        return Err(HalError::internal(
+            HalInternalKind::InvariantViolation,
+            "frontend tune worker activation target mismatch",
+        ));
+    }
+    let mut live_pump = None;
+    let mut body_result = (|| {
+        let terminal_deadline = match backend {
+            FrontendBackendKind::LinuxDvb => Duration::from_millis(4_000),
+            FrontendBackendKind::Px4CharDevice => Duration::from_millis(7_000),
+        };
+        let started = Instant::now();
+        match backend {
+            FrontendBackendKind::Px4CharDevice => {
+                // PTX_SET_CHANNEL成功をこのgenerationの一回限りのLOCKED証跡とする。
+                // current statusとして保持せず、CNRを代替lockとしてpollしない。
+                deliver_committed_tune_notification(
+                    &tune_notifier,
+                    frontend_id,
+                    generation,
+                    FrontendTuneNotification::Locked,
+                );
+            }
+            FrontendBackendKind::LinuxDvb => loop {
+                if ctx.cancel_requested() {
+                    return Ok(());
+                }
+                let signal_state = match session.observe_signal_state() {
+                    Ok(signal_state) => signal_state,
+                    Err(_) => maleicacid_tuner_hal2_device::FrontendSignalState::Unknown,
+                };
+                let mut guard = lock_runtime(
+                    &runtime,
+                    "service runtime lock poisoned while recording frontend signal state",
+                )?;
+                guard.frontend_txn().record_frontend_signal_state(
+                    frontend_id,
+                    generation,
+                    signal_state,
+                )?;
+                drop(guard);
+                if signal_state == maleicacid_tuner_hal2_device::FrontendSignalState::Locked {
+                    deliver_committed_tune_notification(
+                        &tune_notifier,
+                        frontend_id,
+                        generation,
+                        FrontendTuneNotification::Locked,
+                    );
+                    break;
+                }
+                if started.elapsed() >= terminal_deadline {
+                    let final_signal_state = match session.observe_signal_state() {
+                        Ok(signal_state) => signal_state,
+                        Err(_) => maleicacid_tuner_hal2_device::FrontendSignalState::Unknown,
+                    };
+                    if final_signal_state
+                        == maleicacid_tuner_hal2_device::FrontendSignalState::Locked
+                    {
+                        let mut guard = lock_runtime(
+                            &runtime,
+                            "service runtime lock poisoned while recording deadline lock state",
+                        )?;
+                        guard.frontend_txn().record_frontend_signal_state(
+                            frontend_id,
+                            generation,
+                            final_signal_state,
+                        )?;
+                        drop(guard);
+                        deliver_committed_tune_notification(
+                            &tune_notifier,
+                            frontend_id,
+                            generation,
+                            FrontendTuneNotification::Locked,
+                        );
+                        break;
+                    }
+                    deliver_committed_tune_notification(
+                        &tune_notifier,
+                        frontend_id,
+                        generation,
+                        FrontendTuneNotification::NoSignal,
+                    );
+                    let mut guard = lock_runtime(
+                        &runtime,
+                        "service runtime lock poisoned while recording tune deadline",
+                    )?;
+                    guard
+                        .frontend_txn()
+                        .mark_frontend_tune_no_signal(frontend_id, generation)?;
+                    return Ok(());
+                }
+                thread::sleep(Duration::from_millis(20));
+            },
+        }
+        while !ctx.cancel_requested() {
+            if live_pump.is_none() {
+                let live_reader_descriptor = {
+                    let guard = lock_runtime(
+                        &runtime,
+                        "service runtime lock poisoned while checking frontend live pump readiness",
+                    )?;
+                    guard
+                        .query()
+                        .frontend_live_reader_descriptor_for_live_pump(frontend_id)?
+                };
+                if let Some(descriptor) = live_reader_descriptor {
+                    let reader = session.open_live_reader(&descriptor)?;
+                    live_pump = Some(start_frontend_demux_live_pump_from_reader(
+                        Arc::clone(&runtime),
+                        frontend_id,
+                        reader,
+                    )?);
+                }
+            }
+            let completed_live_pump =
+                live_pump
+                    .as_mut()
+                    .and_then(|owner| match owner.collect_if_finished() {
+                        FrontendLivePumpJoinOutcome::Running => None,
+                        FrontendLivePumpJoinOutcome::Completed(result) => Some(result),
+                    });
+            if let Some(result) = completed_live_pump {
+                live_pump = None;
+                let report = result?;
+                let mut guard = lock_runtime(
+                    &runtime,
+                    "service runtime lock poisoned while recording completed live pump report",
+                )?;
+                guard.frontend_txn().record_live_pump_report(
+                    frontend_id,
+                    generation,
+                    report,
+                    ctx.cancel_reason()?,
+                )?;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        if let Some(owner) = live_pump.take() {
+            let report = owner.join_after_stop()?;
+            let mut guard = lock_runtime(
+                &runtime,
+                "service runtime lock poisoned while recording stopped live pump report",
+            )?;
+            guard.frontend_txn().record_live_pump_report(
+                frontend_id,
+                generation,
+                report,
+                ctx.cancel_reason()?,
+            )?;
+        }
+        Ok(())
+    })();
+    stop_live_pump_after_worker_error(&mut live_pump, &mut body_result);
+    finish_backend_session_after_worker_body(session, body_result)
+}
+
+struct CommittedTuneReplacement {
+    object_id: AidlObjectId,
+    object_generation: AidlObjectGeneration,
+    frontend_id: i32,
+    generation: u64,
+    entry: FrontendRegistryEntry,
+    request: FrontendTuneRequest,
+    kind: FrontendWorkerKind,
+    tune_notifier: FrontendTuneNotifier,
+    cleanup_diagnostic_sink: SharedFrontendWorkerCleanupDiagnostics,
+}
+
+fn first_reaped_worker_generation(
+    outcomes: &[(FrontendWorkerKind, FrontendWorkerStopOutcome)],
+) -> Option<u64> {
+    outcomes
+        .iter()
+        .find_map(|(_, outcome)| frontend_worker_stop_outcome_generation(outcome))
+}
+
+fn record_frontend_reaper_completion(
+    sink: SharedFrontendWorkerCleanupDiagnostics,
+    target: FrontendWorkerCleanupTarget,
+    replacement_kind: FrontendWorkerKind,
+    new_generation: u64,
+    outcomes: &[(FrontendWorkerKind, FrontendWorkerStopOutcome)],
+    result: Result<(), HalError>,
+) -> Result<(), HalError> {
+    let mut report = FrontendWorkerCleanupExecutionReport::new();
+    for (kind, outcome) in outcomes {
+        report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
+            target,
+            *kind,
+            frontend_worker_stop_outcome_generation(outcome),
+            frontend_worker_stop_result_from_outcome(outcome),
+        ));
+    }
+    report.push(FrontendWorkerCleanupStepOutcome::complete_replacement(
+        target,
+        replacement_kind,
+        first_reaped_worker_generation(outcomes),
+        new_generation,
+        result.clone(),
+    ));
+    let primary = result.err();
+    sink.record(FrontendWorkerCleanupDiagnosticRecord::new(
+        FrontendWorkerCleanupDiagnosticKind::WorkerReaperCompletion,
+        target,
+        report,
+        primary.clone(),
+    ))?;
+    match primary {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+fn record_aborted_frontend_replacement_after_reap(
+    sink: SharedFrontendWorkerCleanupDiagnostics,
+    target: FrontendWorkerCleanupTarget,
+    replacement_kind: FrontendWorkerKind,
+    new_generation: u64,
+    outcomes: &[(FrontendWorkerKind, FrontendWorkerStopOutcome)],
+    public_error: HalError,
+) -> Result<(), HalError> {
+    let mut report = FrontendWorkerCleanupExecutionReport::new();
+    for (kind, outcome) in outcomes {
+        report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
+            target,
+            *kind,
+            frontend_worker_stop_outcome_generation(outcome),
+            frontend_worker_stop_result_from_outcome(outcome),
+        ));
+    }
+    report.push(FrontendWorkerCleanupStepOutcome::complete_replacement(
+        target,
+        replacement_kind,
+        first_reaped_worker_generation(outcomes),
+        new_generation,
+        Err(public_error.clone()),
+    ));
+    sink.record(FrontendWorkerCleanupDiagnosticRecord::new(
+        FrontendWorkerCleanupDiagnosticKind::WorkerReaperCompletion,
+        target,
+        report,
+        Some(public_error),
+    ))
+}
+
+fn handle_frontend_worker_reaper_deadline(
+    runtime: &SharedRuntime,
+    target: FrontendWorkerCleanupTarget,
+    worker_kind: FrontendWorkerKind,
+    fenced_generation: u64,
+    expected_demux_generations: BoundDemuxGenerationSnapshot,
+    diagnostic_sink: SharedFrontendWorkerCleanupDiagnostics,
+) {
+    let deadline_error = HalError::cleanup_failed(
+        "frontend worker reaper deadline",
+        "worker did not exit within 10 seconds after cancellation",
+    );
+    let result = (|| {
+        let mut guard = lock_runtime(
+            runtime,
+            "service runtime lock poisoned at frontend worker reaper deadline",
+        )?;
+        let snapshot = guard
+            .query()
+            .frontend_runtime_snapshot(target.frontend_id())?;
+        let current_demux_generations =
+            current_bound_demux_generation_snapshot(&guard, target.frontend_id())?;
+        let fenced = snapshot.generation >= fenced_generation
+            && snapshot.live_reader_descriptor.is_none()
+            && bound_demux_generations_are_fenced_at_or_after(
+                &current_demux_generations,
+                &expected_demux_generations,
+            );
+        if !fenced {
+            guard.mark_service_critical();
+            return Err(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "frontend worker remained live without a valid generation fence",
+            ));
+        }
+        if let (Some(object_id), Some(object_generation)) =
+            (target.object_id(), target.object_generation())
+        {
+            let owner_generation_is_present = guard
+                .object_table()
+                .entry(object_id)
+                .is_some_and(|entry| entry.generation == object_generation);
+            if owner_generation_is_present
+                && crate::object_close_txn::quarantine_object_cascade(
+                    &mut guard,
+                    object_id,
+                    object_generation,
+                )
+                .is_err()
+            {
+                guard.mark_service_critical();
+                return Err(HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend worker deadline quarantine failed",
+                ));
+            }
+        }
+        Ok(())
+    })();
+    let mut report = FrontendWorkerCleanupExecutionReport::new();
+    report.push(FrontendWorkerCleanupStepOutcome::complete_replacement(
+        target,
+        worker_kind,
+        None,
+        fenced_generation,
+        Err(deadline_error.clone()),
+    ));
+    let public_error = match result {
+        Ok(()) => deadline_error,
+        Err(error) => error,
+    };
+    let record = FrontendWorkerCleanupDiagnosticRecord::new(
+        FrontendWorkerCleanupDiagnosticKind::WorkerReaperDeadline,
+        target,
+        report,
+        Some(public_error),
+    );
+    if diagnostic_sink.record(record).is_err() {
+        if let Ok(mut guard) = runtime.lock() {
+            guard.mark_service_critical();
+        }
+    }
+}
+
+fn finish_committed_tune_replacement(
+    runtime: &SharedRuntime,
+    transition: CommittedTuneReplacement,
+    outcomes: Vec<(FrontendWorkerKind, FrontendWorkerStopOutcome)>,
+    deadline_elapsed: bool,
+) -> Result<(), HalError> {
+    let frontend_id = transition.frontend_id;
+    let generation = transition.generation;
+    let replacement_kind = transition.kind;
+    let completion_diagnostic_sink = transition.cleanup_diagnostic_sink.clone();
+    let target = FrontendWorkerCleanupTarget::object(
+        frontend_id,
+        transition.object_id,
+        transition.object_generation,
+    );
+    let reaper = ensure_frontend_worker_reaper(runtime)?;
+    let result = (|| {
+        if deadline_elapsed {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "frontend worker replacement was quarantined after reaper deadline",
+            ));
+        }
+        for (_, outcome) in &outcomes {
+            if let Some(error) = frontend_worker_stop_failure(outcome) {
+                return Err(error);
+            }
+        }
+        let mut guard = lock_runtime(
+            runtime,
+            "service runtime lock poisoned while completing tune replacement",
+        )?;
+        ensure_frontend_ticket_still_targets_object(
+            &guard,
+            transition.object_id,
+            transition.object_generation,
+            frontend_id,
+        )?;
+        let snapshot = guard
+            .query()
+            .frontend_runtime_snapshot(frontend_id)?;
+        if snapshot.generation > generation && snapshot.live_reader_descriptor.is_none() {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "frontend replacement was cancelled by a later stop or close",
+            ));
+        }
+        if snapshot.generation != generation || snapshot.live_reader_descriptor.is_some()
+        {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "frontend replacement fence changed before old worker exit",
+            ));
+        }
+        let plan = FrontendBackendTunePlan::new(
+            frontend_id,
+            generation,
+            transition.entry.backend,
+            FrontendDevicePath::new(transition.entry.device_path.clone()),
+            transition.request.clone(),
+        );
+        let worker_io_deadline_ms = guard.capability_snapshot().worker_io_deadline_ms;
+        let session = match submit_frontend_backend_with_deadline(
+            plan,
+            None,
+            generation,
+            worker_io_deadline_ms,
+        ) {
+            Ok(FrontendBackendSubmitDeadlineOutcome::Completed(Ok(session))) => session,
+            Ok(FrontendBackendSubmitDeadlineOutcome::Completed(Err(failure))) => {
+                let backend_stopped = failure.rollback_succeeded;
+                let public_error = failure.into_error();
+                return Err(record_backend_submit_failure_after_fence(
+                    &mut guard,
+                    frontend_id,
+                    generation,
+                    backend_stopped,
+                    public_error,
+                ));
+            }
+            Ok(FrontendBackendSubmitDeadlineOutcome::TimedOut(ticket)) => {
+                let (expected_demux_generations, snapshot_error) =
+                    match current_bound_demux_generation_snapshot(&guard, frontend_id) {
+                        Ok(snapshot) => (snapshot, None),
+                        Err(error) => {
+                            guard.mark_service_critical();
+                            (Vec::new(), Some(error))
+                        }
+                    };
+                let timeout_error = transfer_timed_out_frontend_backend_submit(
+                    &reaper,
+                    &mut guard,
+                    target,
+                    replacement_kind,
+                    generation,
+                    expected_demux_generations,
+                    ticket,
+                    transition.cleanup_diagnostic_sink.clone(),
+                    worker_io_deadline_ms,
+                );
+                return Err(match snapshot_error {
+                    Some(snapshot_error) => compose_frontend_cleanup_error(
+                        "frontend backend submit timeout demux snapshot failed",
+                        timeout_error,
+                        snapshot_error,
+                    ),
+                    None => timeout_error,
+                });
+            }
+            Err(start_error) => {
+                return Err(record_backend_submit_failure_after_fence(
+                    &mut guard,
+                    frontend_id,
+                    generation,
+                    true,
+                    start_error,
+                ));
+            }
+        };
+        let runtime_for_worker = Arc::clone(runtime);
+        let backend = transition.entry.backend;
+        let tune_notifier = transition.tune_notifier;
+        let (activation_sender, activation_receiver) = mpsc::sync_channel(1);
+        if let Err(start_error) = guard.frontend_txn().start_worker(
+            frontend_id,
+            replacement_kind,
+            generation,
+            move |ctx| match activation_receiver.recv() {
+                Ok(FrontendTuneWorkerActivation::Run(session)) => {
+                    run_frontend_backend_tune_session_worker(
+                        runtime_for_worker,
+                        ctx,
+                        session,
+                        backend,
+                        frontend_id,
+                        generation,
+                        tune_notifier,
+                    )
+                }
+                Ok(FrontendTuneWorkerActivation::Abort) => Ok(()),
+                Err(_) => Err(HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend tune worker activation channel disconnected",
+                )),
+            },
+        ) {
+            return Err(finish_backend_session_before_frontend_commit_failure(
+                &mut guard,
+                frontend_id,
+                generation,
+                session,
+                map_frontend_worker_start_error(start_error),
+                "frontend backend stop failed after tune worker preparation failure",
+            ));
+        }
+        if let Err(commit_error) = guard.frontend_txn().commit_frontend_tune_after_fence(
+            frontend_id,
+            generation,
+            transition.request,
+        ) {
+            let activation_error = activation_sender
+                .send(FrontendTuneWorkerActivation::Abort)
+                .err()
+                .map(|_| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "frontend tune worker abort activation failed",
+                    )
+                });
+            let mut error = finish_backend_session_before_frontend_commit_failure(
+                &mut guard,
+                frontend_id,
+                generation,
+                session,
+                commit_error,
+                "frontend backend stop failed after tune commit failure",
+            );
+            if let Some(activation_error) = activation_error {
+                error = compose_frontend_cleanup_error(
+                    "frontend tune worker abort failed after commit failure",
+                    error,
+                    activation_error,
+                );
+            }
+            return Err(error);
+        }
+        match activation_sender.send(FrontendTuneWorkerActivation::Run(session)) {
+            Ok(()) => Ok(()),
+            Err(error) => match error.0 {
+                FrontendTuneWorkerActivation::Run(session) => {
+                    let primary = HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "frontend tune worker ended before backend activation",
+                    );
+                    Err(finish_backend_session_after_frontend_commit_activation_failure(
+                        &mut guard,
+                        frontend_id,
+                        generation,
+                        session,
+                        primary,
+                        "frontend backend stop failed after tune activation failure",
+                    ))
+                }
+                FrontendTuneWorkerActivation::Abort => Err(HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend tune worker returned an unexpected abort activation",
+                )),
+            },
+        }
+    })();
+    record_frontend_reaper_completion(
+        completion_diagnostic_sink,
+        target,
+        replacement_kind,
+        generation,
+        &outcomes,
+        result,
+    )
+}
+
 pub fn start_frontend_backend_tune_worker(
     runtime: SharedRuntime,
     object_id: AidlObjectId,
     object_generation: AidlObjectGeneration,
     request: FrontendTuneRequest,
     kind: FrontendWorkerKind,
+    tune_notifier: FrontendTuneNotifier,
     dispatch: ObjectMethodExecutionToken,
 ) -> Result<(), HalError> {
+    let reaper = ensure_frontend_worker_reaper(&runtime)?;
+    let request = request.normalized_for_non_blind_operation();
+    let mut guard = lock_runtime(&runtime, "service runtime lock poisoned")?;
+    dispatch.consume_for_object(
+        &mut guard,
+        object_id,
+        object_generation,
+        AidlObjectKind::Frontend,
+    )?;
+    let (frontend_id, _) =
+        resolve_frontend_object_for_method(&guard, object_id, object_generation)?;
+    if reaper.is_pending(frontend_id, FrontendWorkerKind::Tune)?
+        || reaper.is_pending(frontend_id, FrontendWorkerKind::Scan)?
+    {
+        return Err(HalError::invalid_state(
+            HalInvalidStateKind::InvalidLifecycle,
+            "frontend endpoint remains owned by the worker reaper",
+        ));
+    }
+    let entry = guard.validate_frontend_request_for_id(frontend_id, &request)?;
+    if guard
+        .frontend_txn()
+        .is_stable_locked_tune_reentry(frontend_id, &request)?
+    {
+        let generation = guard
+            .query()
+            .frontend_runtime_snapshot(frontend_id)?
+            .generation;
+        drop(guard);
+        deliver_committed_tune_notification(
+            &tune_notifier,
+            frontend_id,
+            generation,
+            FrontendTuneNotification::Locked,
+        );
+        return Ok(());
+    }
+
+    let frontend_snapshot = guard.query().frontend_runtime_snapshot(frontend_id)?;
+    let demux_rollback_tokens = guard.prepare_bound_demux_runtime_rollback_tokens(frontend_id)?;
+    let cleanup_diagnostic_sink = guard.frontend_worker_cleanup_diagnostic_sink();
+    let generation = guard
+        .frontend_txn()
+        .prepare_frontend_worker_replacement_generation(frontend_id, kind)?;
+    if let Err(error) = guard
+        .frontend_txn()
+        .fence_frontend_worker_replacement_generation(frontend_id, generation)
+    {
+        return match guard
+            .frontend_txn()
+            .restore_bound_demux_runtime_rollback_tokens(demux_rollback_tokens)
+        {
+            Ok(()) => Err(error),
+            Err(restore_error) => Err(compose_frontend_cleanup_error(
+                "frontend demux rollback failed after tune fence failure",
+                error,
+                restore_error,
+            )),
+        };
+    }
+    if frontend_snapshot
+        .scan_session
+        .as_ref()
+        .is_some_and(|session| session.phase() == FrontendScanPhase::Running)
+    {
+        if let Err(error) = guard.frontend_txn().cancel_frontend_scan_session(
+            frontend_id,
+            frontend_snapshot.generation,
+            FrontendWorkerCancelReason::SupersededByNewRequest,
+        ) {
+            let mut public_error = error;
+            if let Err(commit_error) = guard
+                .frontend_txn()
+                .commit_bound_demux_runtime_rollback_tokens(demux_rollback_tokens)
+            {
+                public_error = compose_frontend_cleanup_error(
+                    "frontend demux rollback-token commit failed after scan cancellation failure",
+                    public_error,
+                    commit_error,
+                );
+            }
+            if let Err(quarantine_error) = crate::object_close_txn::quarantine_object_cascade(
+                &mut guard,
+                object_id,
+                object_generation,
+            ) {
+                public_error = compose_frontend_cleanup_error(
+                    "frontend quarantine failed after scan cancellation failure",
+                    public_error,
+                    quarantine_error,
+                );
+                guard.mark_service_critical();
+            }
+            return Err(public_error);
+        }
+    }
+    let scan_stop_ticket = guard.frontend_txn().request_worker_stop_for_join(
+        frontend_id,
+        FrontendWorkerKind::Scan,
+        FrontendWorkerCancelReason::SupersededByNewRequest,
+    );
+    let tune_stop_ticket = guard.frontend_txn().request_worker_stop_for_join(
+        frontend_id,
+        FrontendWorkerKind::Tune,
+        FrontendWorkerCancelReason::SupersededByNewRequest,
+    );
+    let tickets = FrontendWorkerReaperTicketGroup::new(vec![
+        (FrontendWorkerKind::Scan, scan_stop_ticket),
+        (FrontendWorkerKind::Tune, tune_stop_ticket),
+    ]);
+    let tickets = match tickets.try_complete() {
+        Ok(outcomes) => {
+            for (_, outcome) in &outcomes {
+                if let Some(error) = frontend_worker_stop_failure(outcome) {
+                    let mut public_error = error;
+                    if let Err(commit_error) = guard
+                        .frontend_txn()
+                        .commit_bound_demux_runtime_rollback_tokens(demux_rollback_tokens)
+                    {
+                        public_error = compose_frontend_cleanup_error(
+                            "frontend demux rollback-token commit failed after worker stop failure",
+                            public_error,
+                            commit_error,
+                        );
+                    }
+                    if let Err(quarantine_error) = crate::object_close_txn::quarantine_object_cascade(
+                        &mut guard,
+                        object_id,
+                        object_generation,
+                    ) {
+                        public_error = compose_frontend_cleanup_error(
+                            "frontend quarantine failed after worker stop failure",
+                            public_error,
+                            quarantine_error,
+                        );
+                        guard.mark_service_critical();
+                    }
+                    return Err(public_error);
+                }
+            }
+            Ok(outcomes)
+        }
+        Err(tickets) => {
+            if let Some(error) = tickets
+                .completed
+                .iter()
+                .find_map(|(_, outcome)| frontend_worker_stop_failure(outcome))
+            {
+                let mut public_error = error;
+                if let Err(commit_error) = guard
+                    .frontend_txn()
+                    .commit_bound_demux_runtime_rollback_tokens(demux_rollback_tokens)
+                {
+                    public_error = compose_frontend_cleanup_error(
+                        "frontend demux rollback-token commit failed with pending worker stop",
+                        public_error,
+                        commit_error,
+                    );
+                }
+                guard.mark_service_critical();
+                core::mem::forget(tickets);
+                return Err(public_error);
+            }
+            Err(tickets)
+        }
+    };
+
+    let boundary_result = guard.reset_bound_demuxes_for_frontend_tune_start(frontend_id);
+    let commit_tokens_result = guard
+        .frontend_txn()
+        .commit_bound_demux_runtime_rollback_tokens(demux_rollback_tokens);
+    if let Err(error) = commit_tokens_result {
+        guard.mark_service_critical();
+        core::mem::forget(tickets);
+        return Err(error);
+    }
+    if let Err(error) = boundary_result {
+        let public_error = match crate::object_close_txn::quarantine_object_cascade(
+            &mut guard,
+            object_id,
+            object_generation,
+        ) {
+            Ok(()) => error,
+            Err(quarantine_error) => {
+                guard.mark_service_critical();
+                compose_frontend_cleanup_error(
+                    "frontend quarantine failed after tune boundary failure",
+                    error,
+                    quarantine_error,
+                )
+            }
+        };
+        core::mem::forget(tickets);
+        return Err(public_error);
+    }
+    let mut pending_stop_error = tickets.is_err().then(|| {
+        HalError::internal(
+            HalInternalKind::InvariantViolation,
+            "frontend backend stop did not complete before tune returned",
+        )
+    });
+    if let Some(error) = pending_stop_error.as_mut() {
+        if let Err(mark_error) = guard
+            .frontend_txn()
+            .mark_frontend_worker_stop_pending_failure(frontend_id, generation, error.clone())
+        {
+            guard.mark_service_critical();
+            *error = compose_frontend_cleanup_error(
+                "frontend pending worker-stop failure state commit failed",
+                error.clone(),
+                mark_error,
+            );
+        }
+    }
+    let fenced_demux_generations = if tickets.is_err() {
+        match current_bound_demux_generation_snapshot(&guard, frontend_id) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                guard.mark_service_critical();
+                core::mem::forget(tickets);
+                return Err(error);
+            }
+        }
+    } else {
+        Vec::new()
+    };
+    drop(guard);
+
+    match tickets {
+        Ok(outcomes) => {
+            let transition = CommittedTuneReplacement {
+                object_id,
+                object_generation,
+                frontend_id,
+                generation,
+                entry,
+                request,
+                kind,
+                tune_notifier,
+                cleanup_diagnostic_sink: cleanup_diagnostic_sink.clone(),
+            };
+            finish_committed_tune_replacement(&runtime, transition, outcomes, false)
+        }
+        Err(tickets) => {
+            let pending_stop_error = match pending_stop_error {
+                Some(error) => error,
+                None => {
+                    let error = HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "pending frontend worker tickets lost their public failure",
+                    );
+                    if let Ok(mut guard) = runtime.lock() {
+                        guard.mark_service_critical();
+                    }
+                    core::mem::forget(tickets);
+                    return Err(error);
+                }
+            };
+            let target = FrontendWorkerCleanupTarget::object(
+                frontend_id,
+                object_id,
+                object_generation,
+            );
+            let deadline_demux_generations = fenced_demux_generations;
+            let completion_public_error = pending_stop_error.clone();
+            let deadline_diagnostic_sink = cleanup_diagnostic_sink.clone();
+            let job = FrontendWorkerReaperJob {
+                keys: vec![
+                    (frontend_id, FrontendWorkerKind::Scan),
+                    (frontend_id, FrontendWorkerKind::Tune),
+                ],
+                continuation_kind: None,
+                tickets,
+                transferred_at: Instant::now(),
+                deadline_action: Some(Box::new(move |runtime| {
+                    handle_frontend_worker_reaper_deadline(
+                        runtime,
+                        target,
+                        kind,
+                        generation,
+                        deadline_demux_generations,
+                        deadline_diagnostic_sink,
+                    );
+                })),
+                completion_action: Box::new(move |runtime, outcomes, deadline_elapsed| {
+                    let completion_error = if deadline_elapsed {
+                        compose_frontend_cleanup_error(
+                            "frontend tune replacement reaper deadline elapsed",
+                            completion_public_error.clone(),
+                            HalError::cleanup_failed(
+                                "frontend tune replacement reaper",
+                                "old worker did not exit before the reaper deadline",
+                            ),
+                        )
+                    } else {
+                        completion_public_error.clone()
+                    };
+                    if record_aborted_frontend_replacement_after_reap(
+                        cleanup_diagnostic_sink,
+                        target,
+                        kind,
+                        generation,
+                        &outcomes,
+                        completion_error,
+                    )
+                    .is_err()
+                    {
+                        if let Ok(mut guard) = runtime.lock() {
+                            guard.mark_service_critical();
+                        }
+                    }
+                }),
+            };
+            if let Err(error) = reaper.enqueue(job) {
+                if let Ok(mut guard) = runtime.lock() {
+                    guard.mark_service_critical();
+                }
+                return Err(error);
+            }
+            Err(pending_stop_error)
+        }
+    }
+}
+
+#[cfg(test)]
+fn start_frontend_backend_tune_worker_legacy(
+    runtime: SharedRuntime,
+    object_id: AidlObjectId,
+    object_generation: AidlObjectGeneration,
+    request: FrontendTuneRequest,
+    kind: FrontendWorkerKind,
+    tune_notifier: FrontendTuneNotifier,
+    dispatch: ObjectMethodExecutionToken,
+) -> Result<(), HalError> {
+    let request = request.normalized_for_non_blind_operation();
     let mut guard = lock_runtime(&runtime, "service runtime lock poisoned")?;
     dispatch.consume_for_object(
         &mut guard,
@@ -1492,6 +3070,41 @@ pub fn start_frontend_backend_tune_worker(
     let (frontend_id, _resolved_entry) =
         resolve_frontend_object_for_method(&guard, object_id, object_generation)?;
     let entry = guard.validate_frontend_request_for_id(frontend_id, &request)?;
+    let scan_stop_ticket = guard.frontend_txn().request_worker_stop_for_join(
+        frontend_id,
+        FrontendWorkerKind::Scan,
+        FrontendWorkerCancelReason::SupersededByNewRequest,
+    );
+    drop(guard);
+    let scan_stop_outcome = scan_stop_ticket.complete();
+    if let Some(error) = frontend_worker_stop_failure(&scan_stop_outcome) {
+        return Err(error);
+    }
+    let mut guard = lock_runtime(
+        &runtime,
+        "service runtime lock poisoned after superseded scan worker stop",
+    )?;
+    ensure_frontend_object_still_live(&guard, object_id, object_generation)?;
+    record_scan_cancelled_from_stop_outcome_locked(
+        &mut guard,
+        frontend_id,
+        &scan_stop_outcome,
+        FrontendWorkerCancelReason::SupersededByNewRequest,
+    )?;
+    if guard
+        .frontend_txn()
+        .is_stable_locked_tune_reentry(frontend_id, &request)?
+    {
+        let generation = guard.query().frontend_runtime_snapshot(frontend_id)?.generation;
+        drop(guard);
+        deliver_committed_tune_notification(
+            &tune_notifier,
+            frontend_id,
+            generation,
+            FrontendTuneNotification::Locked,
+        );
+        return Ok(());
+    }
     let frontend_snapshot = guard.query().frontend_runtime_snapshot(frontend_id)?;
     let demux_rollback_tokens = guard.prepare_bound_demux_runtime_rollback_tokens(frontend_id)?;
     let bound_demux_generations = bound_demux_generation_snapshot(&demux_rollback_tokens);
@@ -1576,117 +3189,217 @@ pub fn start_frontend_backend_tune_worker(
         FrontendDevicePath::new(entry.device_path.clone()),
         request.clone(),
     );
-    let previous_tune_for_worker = snapshot.active_tune_request.clone();
     let target_for_worker = target;
     let replacement_context_for_worker = replacement_context;
-    let frontend_snapshot_for_worker = snapshot.clone();
-    let demux_rollback_tokens_for_worker = Arc::clone(&demux_rollback_tokens);
     let runtime_for_worker = Arc::clone(&runtime);
     let cleanup_diagnostic_sink_for_worker = cleanup_diagnostic_sink.clone();
-    if let Err(error) = guard.frontend_txn().start_worker(frontend_id, kind, generation, move |ctx| {
-        plan.validate_worker_generation(ctx.generation())?;
-        let session = match FrontendBackendSession::open_and_submit_with_previous_report(
-            &plan,
-            previous_tune_for_worker,
-        ) {
-            Ok(session) => session,
-            Err(failure) if failure.rollback_succeeded => {
-                let report_error = failure.error;
-                let mut guard = match lock_runtime(
-                    &runtime_for_worker,
-                    "service runtime lock poisoned while restoring tune rollback state",
-                ) {
-                    Ok(guard) => guard,
-                    Err(lock_error) => {
-                        return Err(finish_frontend_state_restore_lock_failure_report(
-                            cleanup_diagnostic_sink_for_worker.clone(),
-                            report_error,
-                            lock_error,
-                            "frontend tune backend rollback state restore",
-                            FrontendWorkerCleanupDiagnosticKind::TuneBackendRollbackStateRestore,
-                            target_for_worker,
-                            replacement_context_for_worker,
-                        ));
-                    }
-                };
-                return Err(restore_frontend_state_after_primary_failure_with_shared_demux_tokens(
-                    &mut guard,
-                    frontend_id,
-                    frontend_snapshot_for_worker.clone(),
-                    &demux_rollback_tokens_for_worker,
-                    report_error,
-                    "frontend tune backend rollback state restore",
-                    FrontendWorkerCleanupDiagnosticKind::TuneBackendRollbackStateRestore,
-                    target_for_worker,
-                    replacement_context_for_worker,
-                ));
-            }
-            Err(failure) => {
-                let report_error = failure.error.clone();
-                match mark_tune_worker_failed(
-                    &runtime_for_worker,
-                    frontend_id,
-                    generation,
-                    failure.error,
-                ) {
-                    Ok(()) => return Err(report_error),
-                    Err(mark_error) => {
-                        return Err(finish_frontend_state_restore_lock_failure_report(
-                            cleanup_diagnostic_sink_for_worker.clone(),
-                            report_error,
-                            mark_error,
-                            "frontend tune backend failure marking failed",
-                            FrontendWorkerCleanupDiagnosticKind::TuneBackendRollbackStateRestore,
-                            target_for_worker,
-                            replacement_context_for_worker,
-                        ));
-                    }
-                }
-            }
-        };
-        let mut live_pump = None;
-        let mut body_result = (|| {
-            {
-                let mut guard = lock_runtime(
-                    &runtime_for_worker,
-                    "service runtime lock poisoned while recording frontend signal state",
-                )?;
-                guard.frontend_txn().record_frontend_signal_state(
-                    frontend_id,
-                    generation,
-                    session.initial_signal_state(),
-                )?;
-            }
-            while !ctx.cancel_requested() {
-                if live_pump.is_none() {
-                    let live_reader_descriptor = {
-                        let guard = lock_runtime(
-                            &runtime_for_worker,
-                            "service runtime lock poisoned while checking frontend live pump readiness",
-                        )?;
-                        guard.query().frontend_live_reader_descriptor_for_live_pump(frontend_id)?
+    if let Err(error) = guard.frontend_txn().start_worker(
+        frontend_id,
+        kind,
+        generation,
+        move |ctx| {
+            plan.validate_worker_generation(ctx.generation())?;
+            let session = match FrontendBackendSession::open_and_submit_with_previous_report(
+                &plan, None,
+            ) {
+                Ok(session) => session,
+                Err(failure) if failure.rollback_succeeded => {
+                    let report_error = failure.error;
+                    let mut guard = match lock_runtime(
+                        &runtime_for_worker,
+                        "service runtime lock poisoned while recording rejected tune submission",
+                    ) {
+                        Ok(guard) => guard,
+                        Err(lock_error) => {
+                            return Err(finish_frontend_state_restore_lock_failure_report(
+                                cleanup_diagnostic_sink_for_worker.clone(),
+                                report_error,
+                                lock_error,
+                                "frontend tune backend rollback state restore",
+                                FrontendWorkerCleanupDiagnosticKind::TuneBackendRollbackStateRestore,
+                                target_for_worker,
+                                replacement_context_for_worker,
+                            ));
+                        }
                     };
-                    if let Some(descriptor) = live_reader_descriptor {
-                        let reader = session.open_live_reader(&descriptor)?;
-                        live_pump = Some(start_frontend_demux_live_pump_from_reader(
-                            Arc::clone(&runtime_for_worker),
+                    match guard
+                        .frontend_txn()
+                        .mark_frontend_tune_submit_rejected_after_boundary(
                             frontend_id,
-                            reader,
-                        )?);
+                            generation,
+                            report_error.clone(),
+                        ) {
+                        Ok(()) => return Err(report_error),
+                        Err(mark_error) => {
+                            return Err(compose_frontend_cleanup_error(
+                                "frontend tune submission failure marking failed",
+                                report_error,
+                                mark_error,
+                            ));
+                        }
                     }
                 }
-                let completed_live_pump = live_pump
-                    .as_mut()
-                    .and_then(|owner| match owner.collect_if_finished() {
-                        FrontendLivePumpJoinOutcome::Running => None,
-                        FrontendLivePumpJoinOutcome::Completed(result) => Some(result),
-                    });
-                if let Some(result) = completed_live_pump {
-                    live_pump = None;
-                    let report = result?;
+                Err(failure) => {
+                    let report_error = failure.error.clone();
+                    match mark_tune_worker_failed(
+                        &runtime_for_worker,
+                        frontend_id,
+                        generation,
+                        failure.error,
+                    ) {
+                        Ok(()) => return Err(report_error),
+                        Err(mark_error) => {
+                            return Err(finish_frontend_state_restore_lock_failure_report(
+                                cleanup_diagnostic_sink_for_worker.clone(),
+                                report_error,
+                                mark_error,
+                                "frontend tune backend failure marking failed",
+                                FrontendWorkerCleanupDiagnosticKind::TuneBackendRollbackStateRestore,
+                                target_for_worker,
+                                replacement_context_for_worker,
+                            ));
+                        }
+                    }
+                }
+            };
+            let mut live_pump = None;
+            let mut body_result = (|| {
+                let terminal_deadline = match entry.backend {
+                    FrontendBackendKind::LinuxDvb => Duration::from_millis(4_000),
+                    FrontendBackendKind::Px4CharDevice => Duration::from_millis(7_000),
+                };
+                let started = Instant::now();
+                match entry.backend {
+                    FrontendBackendKind::Px4CharDevice => {
+                        // PTX_SET_CHANNEL成功をこのgenerationの一回限りのLOCKED証跡とする。
+                        // current statusとして保持せず、CNRを代替lockとしてpollしない。
+                        deliver_committed_tune_notification(
+                            &tune_notifier,
+                            frontend_id,
+                            generation,
+                            FrontendTuneNotification::Locked,
+                        );
+                    }
+                    FrontendBackendKind::LinuxDvb => loop {
+                        if ctx.cancel_requested() {
+                            return Ok(());
+                        }
+                        let signal_state = match session.observe_signal_state() {
+                            Ok(signal_state) => signal_state,
+                            Err(_) => maleicacid_tuner_hal2_device::FrontendSignalState::Unknown,
+                        };
+                        let mut guard = lock_runtime(
+                            &runtime_for_worker,
+                            "service runtime lock poisoned while recording frontend signal state",
+                        )?;
+                        guard.frontend_txn().record_frontend_signal_state(
+                            frontend_id,
+                            generation,
+                            signal_state,
+                        )?;
+                        drop(guard);
+                        if signal_state
+                            == maleicacid_tuner_hal2_device::FrontendSignalState::Locked
+                        {
+                            deliver_committed_tune_notification(
+                                &tune_notifier,
+                                frontend_id,
+                                generation,
+                                FrontendTuneNotification::Locked,
+                            );
+                            break;
+                        }
+                        if started.elapsed() >= terminal_deadline {
+                            let final_signal_state = match session.observe_signal_state() {
+                                Ok(signal_state) => signal_state,
+                                Err(_) => {
+                                    maleicacid_tuner_hal2_device::FrontendSignalState::Unknown
+                                }
+                            };
+                            if final_signal_state
+                                == maleicacid_tuner_hal2_device::FrontendSignalState::Locked
+                            {
+                                let mut guard = lock_runtime(
+                                    &runtime_for_worker,
+                                    "service runtime lock poisoned while recording deadline lock state",
+                                )?;
+                                guard.frontend_txn().record_frontend_signal_state(
+                                    frontend_id,
+                                    generation,
+                                    final_signal_state,
+                                )?;
+                                drop(guard);
+                                deliver_committed_tune_notification(
+                                    &tune_notifier,
+                                    frontend_id,
+                                    generation,
+                                    FrontendTuneNotification::Locked,
+                                );
+                                break;
+                            }
+                            deliver_committed_tune_notification(
+                                &tune_notifier,
+                                frontend_id,
+                                generation,
+                                FrontendTuneNotification::NoSignal,
+                            );
+                            let mut guard = lock_runtime(
+                                &runtime_for_worker,
+                                "service runtime lock poisoned while recording tune deadline",
+                            )?;
+                            guard
+                                .frontend_txn()
+                                .mark_frontend_tune_no_signal(frontend_id, generation)?;
+                            return Ok(());
+                        }
+                        std::thread::sleep(Duration::from_millis(20));
+                    },
+                }
+                while !ctx.cancel_requested() {
+                    if live_pump.is_none() {
+                        let live_reader_descriptor = {
+                            let guard = lock_runtime(
+                                &runtime_for_worker,
+                                "service runtime lock poisoned while checking frontend live pump readiness",
+                            )?;
+                            guard.query().frontend_live_reader_descriptor_for_live_pump(frontend_id)?
+                        };
+                        if let Some(descriptor) = live_reader_descriptor {
+                            let reader = session.open_live_reader(&descriptor)?;
+                            live_pump = Some(start_frontend_demux_live_pump_from_reader(
+                                Arc::clone(&runtime_for_worker),
+                                frontend_id,
+                                reader,
+                            )?);
+                        }
+                    }
+                    let completed_live_pump = live_pump
+                        .as_mut()
+                        .and_then(|owner| match owner.collect_if_finished() {
+                            FrontendLivePumpJoinOutcome::Running => None,
+                            FrontendLivePumpJoinOutcome::Completed(result) => Some(result),
+                        });
+                    if let Some(result) = completed_live_pump {
+                        live_pump = None;
+                        let report = result?;
+                        let mut guard = lock_runtime(
+                            &runtime_for_worker,
+                            "service runtime lock poisoned while recording completed live pump report",
+                        )?;
+                        guard.frontend_txn().record_live_pump_report(
+                            frontend_id,
+                            generation,
+                            report,
+                            ctx.cancel_reason()?,
+                        )?;
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                if let Some(owner) = live_pump.take() {
+                    let report = owner.join_after_stop()?;
                     let mut guard = lock_runtime(
                         &runtime_for_worker,
-                        "service runtime lock poisoned while recording completed live pump report",
+                        "service runtime lock poisoned while recording stopped live pump report",
                     )?;
                     guard.frontend_txn().record_live_pump_report(
                         frontend_id,
@@ -1695,26 +3408,12 @@ pub fn start_frontend_backend_tune_worker(
                         ctx.cancel_reason()?,
                     )?;
                 }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            if let Some(owner) = live_pump.take() {
-                let report = owner.join_after_stop()?;
-                let mut guard = lock_runtime(
-                    &runtime_for_worker,
-                    "service runtime lock poisoned while recording stopped live pump report",
-                )?;
-                guard.frontend_txn().record_live_pump_report(
-                    frontend_id,
-                    generation,
-                    report,
-                    ctx.cancel_reason()?,
-                )?;
-            }
-            Ok(())
-        })();
-        stop_live_pump_after_worker_error(&mut live_pump, &mut body_result);
-        finish_backend_session_after_worker_body(session, body_result)
-    }) {
+                Ok(())
+            })();
+            stop_live_pump_after_worker_error(&mut live_pump, &mut body_result);
+            finish_backend_session_after_worker_body(session, body_result)
+        },
+    ) {
         let primary = map_frontend_worker_start_error(error);
         return Err(restore_frontend_state_after_primary_failure_with_shared_demux_tokens(
             &mut guard,
@@ -1755,14 +3454,22 @@ fn run_frontend_backend_scan_session_worker(
     backend: FrontendBackendKind,
     device_path: FrontendDevicePath,
     candidates: Vec<FrontendTuneRequest>,
+    initial_session: Option<FrontendBackendSession>,
     previous_request: Option<FrontendTuneRequest>,
-    frontend_snapshot: FrontendRuntimeSnapshot,
-    demux_rollback_tokens: SharedDemuxRollbackTokenList,
     target_for_worker: FrontendWorkerCleanupTarget,
-    scan_end_notifier: FrontendScanEndNotifier,
+    scan_notifier: FrontendScanNotifier,
     cleanup_diagnostic_sink: SharedFrontendWorkerCleanupDiagnostics,
     replacement_context: Option<FrontendWorkerReplacementRollbackContext>,
 ) -> Result<(), HalError> {
+    let reaper = ensure_frontend_worker_reaper(&runtime)?;
+    let worker_io_deadline_ms = {
+        let guard = lock_runtime(
+            &runtime,
+            "service runtime lock poisoned while reading worker I/O deadline",
+        )?;
+        guard.capability_snapshot().worker_io_deadline_ms
+    };
+    let mut initial_session = initial_session;
     for candidate in candidates {
         if ctx.cancel_requested() {
             return Ok(());
@@ -1774,99 +3481,209 @@ fn run_frontend_backend_scan_session_worker(
             device_path.clone(),
             candidate,
         );
-        plan.validate_worker_generation(ctx.generation())?;
-        let session = match FrontendBackendSession::open_and_submit_with_previous_report(
-            &plan,
-            previous_request.clone(),
-        ) {
-            Ok(session) => session,
-            Err(failure) if failure.rollback_succeeded => {
-                let primary = failure.error;
-                let mut guard = match lock_runtime(
-                    &runtime,
-                    "service runtime lock poisoned while restoring scan rollback state",
-                ) {
-                    Ok(guard) => guard,
-                    Err(lock_error) => {
-                        return Err(finish_frontend_state_restore_lock_failure_report(
-                            cleanup_diagnostic_sink.clone(),
+        if let Err(error) = plan.validate_worker_generation(ctx.generation()) {
+            return Err(error);
+        }
+        let session = match initial_session.take() {
+            Some(session) => session,
+            None => match submit_frontend_backend_with_deadline(
+                plan,
+                previous_request.clone(),
+                ctx.generation(),
+                worker_io_deadline_ms,
+            ) {
+                Ok(FrontendBackendSubmitDeadlineOutcome::Completed(Ok(session))) => session,
+                Ok(FrontendBackendSubmitDeadlineOutcome::Completed(Err(failure)))
+                    if failure.rollback_succeeded => {
+                    let primary = failure.error;
+                    let mut guard = match lock_runtime(
+                        &runtime,
+                        "service runtime lock poisoned while recording rejected scan submission",
+                    ) {
+                        Ok(guard) => guard,
+                        Err(lock_error) => {
+                            let error = finish_frontend_state_restore_lock_failure_report(
+                                cleanup_diagnostic_sink.clone(),
+                                primary,
+                                lock_error,
+                                "frontend scan submission failure marking failed",
+                                FrontendWorkerCleanupDiagnosticKind::ScanBackendRollbackStateRestore,
+                                target_for_worker,
+                                replacement_context,
+                            );
+                            return Err(error);
+                        }
+                    };
+                    if let Err(mark_error) = guard
+                        .frontend_txn()
+                        .mark_frontend_scan_submit_rejected_after_boundary(
+                            ctx.frontend_id(),
+                            ctx.generation(),
+                            primary.clone(),
+                        )
+                    {
+                        let error = compose_frontend_cleanup_error(
+                            "frontend scan submission failure marking failed",
                             primary,
-                            lock_error,
-                            "frontend scan backend rollback state restore",
-                            FrontendWorkerCleanupDiagnosticKind::ScanBackendRollbackStateRestore,
-                            target_for_worker,
-                            replacement_context,
-                        ));
+                            mark_error,
+                        );
+                        return Err(error);
                     }
-                };
-                return Err(
-                    restore_frontend_state_after_primary_failure_with_shared_demux_tokens(
-                        &mut guard,
-                        ctx.frontend_id(),
-                        frontend_snapshot.clone(),
-                        &demux_rollback_tokens,
-                        primary,
-                        "frontend scan backend rollback state restore",
-                        FrontendWorkerCleanupDiagnosticKind::ScanBackendRollbackStateRestore,
-                        target_for_worker,
-                        replacement_context,
-                    ),
-                );
-            }
-            Err(failure) => {
-                let primary = failure.error;
-                let mut guard = match lock_runtime(
-                    &runtime,
-                    "service runtime lock poisoned while marking scan backend failure",
-                ) {
-                    Ok(guard) => guard,
-                    Err(lock_error) => {
-                        return Err(finish_frontend_state_restore_lock_failure_report(
-                            cleanup_diagnostic_sink.clone(),
-                            primary,
-                            lock_error,
+                    return Err(primary);
+                }
+                Ok(FrontendBackendSubmitDeadlineOutcome::Completed(Err(failure))) => {
+                    let primary = failure.error;
+                    let mut guard = match lock_runtime(
+                        &runtime,
+                        "service runtime lock poisoned while marking scan backend failure",
+                    ) {
+                        Ok(guard) => guard,
+                        Err(lock_error) => {
+                            let error = finish_frontend_state_restore_lock_failure_report(
+                                cleanup_diagnostic_sink.clone(),
+                                primary,
+                                lock_error,
+                                "frontend scan backend failure marking failed",
+                                FrontendWorkerCleanupDiagnosticKind::ScanBackendRollbackStateRestore,
+                                target_for_worker,
+                                replacement_context,
+                            );
+                            return Err(error);
+                        }
+                    };
+                    if let Err(mark_error) = guard
+                        .frontend_txn()
+                        .mark_frontend_scan_session_backend_failed(
+                            ctx.frontend_id(),
+                            ctx.generation(),
+                        )
+                    {
+                        let error = compose_frontend_cleanup_error(
                             "frontend scan backend failure marking failed",
-                            FrontendWorkerCleanupDiagnosticKind::ScanBackendRollbackStateRestore,
-                            target_for_worker,
-                            replacement_context,
+                            primary,
+                            mark_error,
+                        );
+                        return Err(error);
+                    }
+                    return Err(primary);
+                }
+                Ok(FrontendBackendSubmitDeadlineOutcome::TimedOut(ticket)) => {
+                    let mut guard = lock_runtime(
+                        &runtime,
+                        "service runtime lock poisoned while recording scan submit timeout",
+                    )?;
+                    let (expected_demux_generations, snapshot_error) =
+                        match current_bound_demux_generation_snapshot(&guard, ctx.frontend_id()) {
+                            Ok(snapshot) => (snapshot, None),
+                            Err(error) => {
+                                guard.mark_service_critical();
+                                (Vec::new(), Some(error))
+                            }
+                        };
+                    let timeout_error = transfer_timed_out_active_scan_submit(
+                        &reaper,
+                        &mut guard,
+                        target_for_worker,
+                        ctx.generation(),
+                        expected_demux_generations,
+                        ticket,
+                        cleanup_diagnostic_sink.clone(),
+                        worker_io_deadline_ms,
+                    );
+                    return Err(match snapshot_error {
+                        Some(snapshot_error) => compose_frontend_cleanup_error(
+                            "frontend scan submit timeout demux snapshot failed",
+                            timeout_error,
+                            snapshot_error,
+                        ),
+                        None => timeout_error,
+                    });
+                }
+                Err(start_error) => {
+                    let mut guard = lock_runtime(
+                        &runtime,
+                        "service runtime lock poisoned while recording scan submit start failure",
+                    )?;
+                    if let Err(mark_error) = guard
+                        .frontend_txn()
+                        .mark_frontend_scan_submit_rejected_after_boundary(
+                            ctx.frontend_id(),
+                            ctx.generation(),
+                            start_error.clone(),
+                        )
+                    {
+                        return Err(compose_frontend_cleanup_error(
+                            "frontend scan submit start failure state commit failed",
+                            start_error,
+                            mark_error,
                         ));
                     }
-                };
-                if let Err(mark_error) = guard
-                    .frontend_txn()
-                    .mark_frontend_scan_session_backend_failed(ctx.frontend_id(), ctx.generation())
-                {
-                    return Err(compose_frontend_cleanup_error(
-                        "frontend scan backend failure marking failed",
-                        primary,
-                        mark_error,
-                    ));
+                    return Err(start_error);
                 }
-                return Err(primary);
-            }
+            },
         };
+        let mut signal_state = session.initial_signal_state();
         let body_result = (|| {
-            {
-                let mut guard = lock_runtime(
-                    &runtime,
-                    "service runtime lock poisoned while recording scan signal state",
-                )?;
-                guard.frontend_txn().record_frontend_signal_state(
-                    ctx.frontend_id(),
-                    ctx.generation(),
-                    session.initial_signal_state(),
-                )?;
-            }
-            for _ in 0..5 {
-                if ctx.cancel_requested() {
-                    break;
+            if backend == FrontendBackendKind::LinuxDvb {
+                {
+                    let mut guard = lock_runtime(
+                        &runtime,
+                        "service runtime lock poisoned while recording scan signal state",
+                    )?;
+                    guard.frontend_txn().record_frontend_signal_state(
+                        ctx.frontend_id(),
+                        ctx.generation(),
+                        signal_state,
+                    )?;
                 }
-                std::thread::sleep(Duration::from_millis(20));
+                for _ in 0..5 {
+                    if ctx.cancel_requested() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                if !ctx.cancel_requested() {
+                    signal_state = match session.observe_signal_state() {
+                        Ok(signal_state) => signal_state,
+                        Err(_) => signal_state,
+                    };
+                    let mut guard = lock_runtime(
+                        &runtime,
+                        "service runtime lock poisoned while refreshing scan signal state",
+                    )?;
+                    guard.frontend_txn().record_frontend_signal_state(
+                        ctx.frontend_id(),
+                        ctx.generation(),
+                        signal_state,
+                    )?;
+                }
             }
             Ok(())
         })();
         finish_backend_session_after_worker_body(session, body_result)?;
         if ctx.cancel_requested() {
+            return Ok(());
+        }
+        if signal_state == maleicacid_tuner_hal2_device::FrontendSignalState::Locked {
+            if scan_notifier(
+                ctx.frontend_id(),
+                ctx.generation(),
+                FrontendScanNotification::Locked,
+            )
+            .is_err()
+            {
+                return Ok(());
+            }
+            let mut guard = lock_runtime(
+                &runtime,
+                "service runtime lock poisoned while recording scan lock delivery",
+            )?;
+            guard
+                .frontend_txn()
+                .mark_frontend_scan_session_locked_reported(
+                    ctx.frontend_id(),
+                    ctx.generation(),
+                )?;
             return Ok(());
         }
         let mut guard = lock_runtime(
@@ -1878,11 +3695,288 @@ fn run_frontend_backend_scan_session_worker(
             .advance_frontend_scan_session_after_candidate(ctx.frontend_id(), ctx.generation())?;
         drop(guard);
         if !has_next {
-            scan_end_notifier(ctx.frontend_id(), ctx.generation())?;
+            if scan_notifier(
+                ctx.frontend_id(),
+                ctx.generation(),
+                FrontendScanNotification::End,
+            )
+            .is_err()
+            {
+                return Ok(());
+            }
             return Ok(());
         }
     }
     Ok(())
+}
+
+struct CommittedScanReplacement {
+    object_id: AidlObjectId,
+    object_generation: AidlObjectGeneration,
+    frontend_id: i32,
+    generation: u64,
+    entry: FrontendRegistryEntry,
+    fingerprint: String,
+    candidates: Vec<FrontendTuneRequest>,
+    locked_continuation: bool,
+    scan_notifier: FrontendScanNotifier,
+    cleanup_diagnostic_sink: SharedFrontendWorkerCleanupDiagnostics,
+}
+
+fn finish_committed_scan_replacement(
+    runtime: &SharedRuntime,
+    transition: CommittedScanReplacement,
+    outcomes: Vec<(FrontendWorkerKind, FrontendWorkerStopOutcome)>,
+    deadline_elapsed: bool,
+) -> Result<(), HalError> {
+    let frontend_id = transition.frontend_id;
+    let generation = transition.generation;
+    let completion_diagnostic_sink = transition.cleanup_diagnostic_sink.clone();
+    let target = FrontendWorkerCleanupTarget::object(
+        frontend_id,
+        transition.object_id,
+        transition.object_generation,
+    );
+    let stopped_worker_generation = first_reaped_worker_generation(&outcomes);
+    let replacement_context = Some(FrontendWorkerReplacementRollbackContext {
+        worker_kind: FrontendWorkerKind::Scan,
+        stopped_worker_generation,
+        new_worker_generation: generation,
+    });
+    let reaper = ensure_frontend_worker_reaper(runtime)?;
+    let result = (|| {
+        if deadline_elapsed {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "frontend scan replacement was quarantined after reaper deadline",
+            ));
+        }
+        for (_, outcome) in &outcomes {
+            if let Some(error) = frontend_worker_stop_failure(outcome) {
+                return Err(error);
+            }
+        }
+        let mut guard = lock_runtime(
+            runtime,
+            "service runtime lock poisoned while completing scan replacement",
+        )?;
+        ensure_frontend_ticket_still_targets_object(
+            &guard,
+            transition.object_id,
+            transition.object_generation,
+            frontend_id,
+        )?;
+        let snapshot = guard
+            .query()
+            .frontend_runtime_snapshot(frontend_id)?;
+        if snapshot.generation > generation && snapshot.live_reader_descriptor.is_none() {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "frontend scan replacement was cancelled by a later stop or close",
+            ));
+        }
+        if snapshot.generation != generation || snapshot.live_reader_descriptor.is_some() {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "frontend scan fence changed before old worker exit",
+            ));
+        }
+        if transition.locked_continuation {
+            guard
+                .frontend_txn()
+                .complete_locked_frontend_scan_continuation_after_fence(
+                    frontend_id,
+                    generation,
+                    transition.fingerprint,
+                    transition.candidates,
+                )?;
+            drop(guard);
+            deliver_committed_scan_notification(
+                &transition.scan_notifier,
+                frontend_id,
+                generation,
+                FrontendScanNotification::End,
+            );
+            return Ok(());
+        }
+        let first_candidate = transition.candidates.first().cloned().ok_or_else(|| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "frontend scan candidate list is empty after preflight",
+            )
+        })?;
+        let runtime_for_worker = Arc::clone(runtime);
+        let backend = transition.entry.backend;
+        let device_path = FrontendDevicePath::new(transition.entry.device_path);
+        let plan = FrontendBackendTunePlan::new(
+            frontend_id,
+            generation,
+            backend,
+            device_path.clone(),
+            first_candidate,
+        );
+        let worker_io_deadline_ms = guard.capability_snapshot().worker_io_deadline_ms;
+        let session = match submit_frontend_backend_with_deadline(
+            plan,
+            None,
+            generation,
+            worker_io_deadline_ms,
+        ) {
+            Ok(FrontendBackendSubmitDeadlineOutcome::Completed(Ok(session))) => session,
+            Ok(FrontendBackendSubmitDeadlineOutcome::Completed(Err(failure))) => {
+                let backend_stopped = failure.rollback_succeeded;
+                let public_error = failure.into_error();
+                return Err(record_backend_submit_failure_after_fence(
+                    &mut guard,
+                    frontend_id,
+                    generation,
+                    backend_stopped,
+                    public_error,
+                ));
+            }
+            Ok(FrontendBackendSubmitDeadlineOutcome::TimedOut(ticket)) => {
+                let (expected_demux_generations, snapshot_error) =
+                    match current_bound_demux_generation_snapshot(&guard, frontend_id) {
+                        Ok(snapshot) => (snapshot, None),
+                        Err(error) => {
+                            guard.mark_service_critical();
+                            (Vec::new(), Some(error))
+                        }
+                    };
+                let timeout_error = transfer_timed_out_frontend_backend_submit(
+                    &reaper,
+                    &mut guard,
+                    target,
+                    FrontendWorkerKind::Scan,
+                    generation,
+                    expected_demux_generations,
+                    ticket,
+                    transition.cleanup_diagnostic_sink.clone(),
+                    worker_io_deadline_ms,
+                );
+                return Err(match snapshot_error {
+                    Some(snapshot_error) => compose_frontend_cleanup_error(
+                        "frontend scan backend submit timeout demux snapshot failed",
+                        timeout_error,
+                        snapshot_error,
+                    ),
+                    None => timeout_error,
+                });
+            }
+            Err(start_error) => {
+                return Err(record_backend_submit_failure_after_fence(
+                    &mut guard,
+                    frontend_id,
+                    generation,
+                    true,
+                    start_error,
+                ));
+            }
+        };
+        let scan_notifier = transition.scan_notifier;
+        let cleanup_diagnostic_sink = transition.cleanup_diagnostic_sink.clone();
+        let candidates_for_worker = transition.candidates.clone();
+        let (activation_sender, activation_receiver) = mpsc::sync_channel(1);
+        if let Err(start_error) = guard.frontend_txn().start_worker(
+            frontend_id,
+            FrontendWorkerKind::Scan,
+            generation,
+            move |ctx| match activation_receiver.recv() {
+                Ok(FrontendScanWorkerActivation::Run(session)) => {
+                    run_frontend_backend_scan_session_worker(
+                        runtime_for_worker,
+                        ctx,
+                        backend,
+                        device_path,
+                        candidates_for_worker,
+                        Some(session),
+                        None,
+                        target,
+                        scan_notifier,
+                        cleanup_diagnostic_sink,
+                        replacement_context,
+                    )
+                }
+                Ok(FrontendScanWorkerActivation::Abort) => Ok(()),
+                Err(_) => Err(HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend scan worker activation channel disconnected",
+                )),
+            },
+        ) {
+            return Err(finish_backend_session_before_frontend_commit_failure(
+                &mut guard,
+                frontend_id,
+                generation,
+                session,
+                map_frontend_worker_start_error(start_error),
+                "frontend backend stop failed after scan worker preparation failure",
+            ));
+        }
+        if let Err(commit_error) = guard.frontend_txn().commit_frontend_scan_after_fence(
+            frontend_id,
+            generation,
+            transition.fingerprint,
+            transition.candidates,
+        ) {
+            let activation_error = activation_sender
+                .send(FrontendScanWorkerActivation::Abort)
+                .err()
+                .map(|_| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "frontend scan worker abort activation failed",
+                    )
+                });
+            let mut error = finish_backend_session_before_frontend_commit_failure(
+                &mut guard,
+                frontend_id,
+                generation,
+                session,
+                commit_error,
+                "frontend backend stop failed after scan commit failure",
+            );
+            if let Some(activation_error) = activation_error {
+                error = compose_frontend_cleanup_error(
+                    "frontend scan worker abort failed after commit failure",
+                    error,
+                    activation_error,
+                );
+            }
+            return Err(error);
+        }
+        match activation_sender.send(FrontendScanWorkerActivation::Run(session)) {
+            Ok(()) => Ok(()),
+            Err(error) => match error.0 {
+                FrontendScanWorkerActivation::Run(session) => {
+                    let primary = HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "frontend scan worker ended before backend activation",
+                    );
+                    Err(finish_backend_session_after_frontend_commit_activation_failure(
+                        &mut guard,
+                        frontend_id,
+                        generation,
+                        session,
+                        primary,
+                        "frontend backend stop failed after scan activation failure",
+                    ))
+                }
+                FrontendScanWorkerActivation::Abort => Err(HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend scan worker returned an unexpected abort activation",
+                )),
+            },
+        }
+    })();
+    record_frontend_reaper_completion(
+        completion_diagnostic_sink,
+        target,
+        FrontendWorkerKind::Scan,
+        generation,
+        &outcomes,
+        result,
+    )
 }
 
 pub fn start_frontend_backend_scan_session_worker(
@@ -1891,9 +3985,326 @@ pub fn start_frontend_backend_scan_session_worker(
     object_generation: AidlObjectGeneration,
     request: FrontendTuneRequest,
     scan_mode: FrontendScanMode,
-    scan_end_notifier: FrontendScanEndNotifier,
+    scan_notifier: FrontendScanNotifier,
     dispatch: ObjectMethodExecutionToken,
 ) -> Result<(), HalError> {
+    let reaper = ensure_frontend_worker_reaper(&runtime)?;
+    let request = request.normalized_for_non_blind_operation();
+    let fingerprint = format!("{:?}:{:?}", scan_mode, request);
+    let mut guard = lock_runtime(&runtime, "service runtime lock poisoned")?;
+    dispatch.consume_for_object(
+        &mut guard,
+        object_id,
+        object_generation,
+        AidlObjectKind::Frontend,
+    )?;
+    let (frontend_id, _) =
+        resolve_frontend_object_for_method(&guard, object_id, object_generation)?;
+    if reaper.is_pending(frontend_id, FrontendWorkerKind::Tune)?
+        || reaper.is_pending(frontend_id, FrontendWorkerKind::Scan)?
+    {
+        return Err(HalError::invalid_state(
+            HalInvalidStateKind::InvalidLifecycle,
+            "frontend endpoint remains owned by the worker reaper",
+        ));
+    }
+    let entry = guard.validate_frontend_request_for_id(frontend_id, &request)?;
+    let candidates = guard.scan_candidates_for_frontend_entry(&entry, &request, scan_mode)?;
+    let frontend_snapshot = guard.query().frontend_runtime_snapshot(frontend_id)?;
+    let is_locked_continuation = frontend_snapshot.scan_session.as_ref().is_some_and(|session| {
+        session.phase() == FrontendScanPhase::LockedReported
+            && session.fingerprint() == fingerprint
+    });
+    let demux_rollback_tokens = guard.prepare_bound_demux_runtime_rollback_tokens(frontend_id)?;
+    let cleanup_diagnostic_sink = guard.frontend_worker_cleanup_diagnostic_sink();
+    let generation = guard
+        .frontend_txn()
+        .prepare_frontend_worker_replacement_generation(frontend_id, FrontendWorkerKind::Scan)?;
+    if !is_locked_continuation
+        && frontend_snapshot
+            .scan_session
+            .as_ref()
+            .is_some_and(|session| session.phase() == FrontendScanPhase::Running)
+    {
+        if let Err(error) = guard.frontend_txn().cancel_frontend_scan_session(
+            frontend_id,
+            frontend_snapshot.generation,
+            FrontendWorkerCancelReason::SupersededByNewRequest,
+        ) {
+            return match guard
+                .frontend_txn()
+                .restore_bound_demux_runtime_rollback_tokens(demux_rollback_tokens)
+            {
+                Ok(()) => Err(error),
+                Err(restore_error) => Err(compose_frontend_cleanup_error(
+                    "frontend demux rollback failed after scan cancellation failure",
+                    error,
+                    restore_error,
+                )),
+            };
+        }
+    }
+    if let Err(error) = guard
+        .frontend_txn()
+        .fence_frontend_worker_replacement_generation(frontend_id, generation)
+    {
+        return match guard
+            .frontend_txn()
+            .restore_bound_demux_runtime_rollback_tokens(demux_rollback_tokens)
+        {
+            Ok(()) => Err(error),
+            Err(restore_error) => Err(compose_frontend_cleanup_error(
+                "frontend demux rollback failed after scan fence failure",
+                error,
+                restore_error,
+            )),
+        };
+    }
+    let tune_stop_ticket = guard.frontend_txn().request_worker_stop_for_join(
+        frontend_id,
+        FrontendWorkerKind::Tune,
+        FrontendWorkerCancelReason::SupersededByNewRequest,
+    );
+    let scan_stop_ticket = guard.frontend_txn().request_worker_stop_for_join(
+        frontend_id,
+        FrontendWorkerKind::Scan,
+        FrontendWorkerCancelReason::SupersededByNewRequest,
+    );
+    let tickets = FrontendWorkerReaperTicketGroup::new(vec![
+        (FrontendWorkerKind::Tune, tune_stop_ticket),
+        (FrontendWorkerKind::Scan, scan_stop_ticket),
+    ]);
+    let tickets = match tickets.try_complete() {
+        Ok(outcomes) => {
+            for (_, outcome) in &outcomes {
+                if let Some(error) = frontend_worker_stop_failure(outcome) {
+                    let mut public_error = error;
+                    if let Err(commit_error) = guard
+                        .frontend_txn()
+                        .commit_bound_demux_runtime_rollback_tokens(demux_rollback_tokens)
+                    {
+                        public_error = compose_frontend_cleanup_error(
+                            "frontend demux rollback-token commit failed after scan worker stop failure",
+                            public_error,
+                            commit_error,
+                        );
+                    }
+                    if let Err(quarantine_error) = crate::object_close_txn::quarantine_object_cascade(
+                        &mut guard,
+                        object_id,
+                        object_generation,
+                    ) {
+                        public_error = compose_frontend_cleanup_error(
+                            "frontend quarantine failed after scan worker stop failure",
+                            public_error,
+                            quarantine_error,
+                        );
+                        guard.mark_service_critical();
+                    }
+                    return Err(public_error);
+                }
+            }
+            Ok(outcomes)
+        }
+        Err(tickets) => {
+            if let Some(error) = tickets
+                .completed
+                .iter()
+                .find_map(|(_, outcome)| frontend_worker_stop_failure(outcome))
+            {
+                let mut public_error = error;
+                if let Err(commit_error) = guard
+                    .frontend_txn()
+                    .commit_bound_demux_runtime_rollback_tokens(demux_rollback_tokens)
+                {
+                    public_error = compose_frontend_cleanup_error(
+                        "frontend demux rollback-token commit failed with pending scan worker stop",
+                        public_error,
+                        commit_error,
+                    );
+                }
+                guard.mark_service_critical();
+                core::mem::forget(tickets);
+                return Err(public_error);
+            }
+            Err(tickets)
+        }
+    };
+
+    let boundary_result = if is_locked_continuation {
+        Ok(())
+    } else {
+        guard
+            .reset_bound_demuxes_for_frontend_tune_start(frontend_id)
+            .map(|_| ())
+    };
+    let commit_tokens_result = guard
+        .frontend_txn()
+        .commit_bound_demux_runtime_rollback_tokens(demux_rollback_tokens);
+    if let Err(error) = commit_tokens_result {
+        guard.mark_service_critical();
+        core::mem::forget(tickets);
+        return Err(error);
+    }
+    if let Err(error) = boundary_result {
+        let public_error = match crate::object_close_txn::quarantine_object_cascade(
+            &mut guard,
+            object_id,
+            object_generation,
+        ) {
+            Ok(()) => error,
+            Err(quarantine_error) => {
+                guard.mark_service_critical();
+                compose_frontend_cleanup_error(
+                    "frontend quarantine failed after scan boundary failure",
+                    error,
+                    quarantine_error,
+                )
+            }
+        };
+        core::mem::forget(tickets);
+        return Err(public_error);
+    }
+    let mut pending_stop_error = tickets.is_err().then(|| {
+        HalError::internal(
+            HalInternalKind::InvariantViolation,
+            "frontend backend stop did not complete before scan returned",
+        )
+    });
+    if let Some(error) = pending_stop_error.as_mut() {
+        if let Err(mark_error) = guard
+            .frontend_txn()
+            .mark_frontend_worker_stop_pending_failure(frontend_id, generation, error.clone())
+        {
+            guard.mark_service_critical();
+            *error = compose_frontend_cleanup_error(
+                "frontend pending scan worker-stop failure state commit failed",
+                error.clone(),
+                mark_error,
+            );
+        }
+    }
+    let fenced_demux_generations = if tickets.is_err() {
+        match current_bound_demux_generation_snapshot(&guard, frontend_id) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                guard.mark_service_critical();
+                core::mem::forget(tickets);
+                return Err(error);
+            }
+        }
+    } else {
+        Vec::new()
+    };
+    drop(guard);
+
+    match tickets {
+        Ok(outcomes) => {
+            let transition = CommittedScanReplacement {
+                object_id,
+                object_generation,
+                frontend_id,
+                generation,
+                entry,
+                fingerprint,
+                candidates,
+                locked_continuation: is_locked_continuation,
+                scan_notifier,
+                cleanup_diagnostic_sink: cleanup_diagnostic_sink.clone(),
+            };
+            finish_committed_scan_replacement(&runtime, transition, outcomes, false)
+        }
+        Err(tickets) => {
+            let pending_stop_error = match pending_stop_error {
+                Some(error) => error,
+                None => {
+                    let error = HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "pending frontend scan tickets lost their public failure",
+                    );
+                    if let Ok(mut guard) = runtime.lock() {
+                        guard.mark_service_critical();
+                    }
+                    core::mem::forget(tickets);
+                    return Err(error);
+                }
+            };
+            let target = FrontendWorkerCleanupTarget::object(
+                frontend_id,
+                object_id,
+                object_generation,
+            );
+            let completion_public_error = pending_stop_error.clone();
+            let deadline_diagnostic_sink = cleanup_diagnostic_sink.clone();
+            let job = FrontendWorkerReaperJob {
+                keys: vec![
+                    (frontend_id, FrontendWorkerKind::Tune),
+                    (frontend_id, FrontendWorkerKind::Scan),
+                ],
+                continuation_kind: None,
+                tickets,
+                transferred_at: Instant::now(),
+                deadline_action: Some(Box::new(move |runtime| {
+                    handle_frontend_worker_reaper_deadline(
+                        runtime,
+                        target,
+                        FrontendWorkerKind::Scan,
+                        generation,
+                        fenced_demux_generations,
+                        deadline_diagnostic_sink,
+                    );
+                })),
+                completion_action: Box::new(move |runtime, outcomes, deadline_elapsed| {
+                    let completion_error = if deadline_elapsed {
+                        compose_frontend_cleanup_error(
+                            "frontend scan replacement reaper deadline elapsed",
+                            completion_public_error.clone(),
+                            HalError::cleanup_failed(
+                                "frontend scan replacement reaper",
+                                "old worker did not exit before the reaper deadline",
+                            ),
+                        )
+                    } else {
+                        completion_public_error.clone()
+                    };
+                    if record_aborted_frontend_replacement_after_reap(
+                        cleanup_diagnostic_sink,
+                        target,
+                        FrontendWorkerKind::Scan,
+                        generation,
+                        &outcomes,
+                        completion_error,
+                    )
+                    .is_err()
+                    {
+                        if let Ok(mut guard) = runtime.lock() {
+                            guard.mark_service_critical();
+                        }
+                    }
+                }),
+            };
+            if let Err(error) = reaper.enqueue(job) {
+                if let Ok(mut guard) = runtime.lock() {
+                    guard.mark_service_critical();
+                }
+                return Err(error);
+            }
+            Err(pending_stop_error)
+        }
+    }
+}
+
+#[cfg(test)]
+fn start_frontend_backend_scan_session_worker_legacy(
+    runtime: SharedRuntime,
+    object_id: AidlObjectId,
+    object_generation: AidlObjectGeneration,
+    request: FrontendTuneRequest,
+    scan_mode: FrontendScanMode,
+    scan_notifier: FrontendScanNotifier,
+    dispatch: ObjectMethodExecutionToken,
+) -> Result<(), HalError> {
+    let request = request.normalized_for_non_blind_operation();
     let fingerprint = format!("{:?}:{:?}", scan_mode, request);
     let mut guard = lock_runtime(&runtime, "service runtime lock poisoned")?;
     dispatch.consume_for_object(
@@ -1906,7 +4317,31 @@ pub fn start_frontend_backend_scan_session_worker(
         resolve_frontend_object_for_method(&guard, object_id, object_generation)?;
     let entry = guard.validate_frontend_request_for_id(frontend_id, &request)?;
     let candidates = guard.scan_candidates_for_frontend_entry(&entry, &request, scan_mode)?;
+    let tune_stop_ticket = guard.frontend_txn().request_worker_stop_for_join(
+        frontend_id,
+        FrontendWorkerKind::Tune,
+        FrontendWorkerCancelReason::SupersededByNewRequest,
+    );
+    drop(guard);
+    let tune_stop_outcome = tune_stop_ticket.complete();
+    if let Some(error) = frontend_worker_stop_failure(&tune_stop_outcome) {
+        return Err(error);
+    }
+    let mut guard = lock_runtime(
+        &runtime,
+        "service runtime lock poisoned after superseded tune worker stop",
+    )?;
+    ensure_frontend_object_still_live(&guard, object_id, object_generation)?;
+    if !matches!(tune_stop_outcome, FrontendWorkerStopOutcome::NotRunning) {
+        guard
+            .frontend_txn()
+            .clear_frontend_live_reader_descriptor_and_idle(frontend_id)?;
+    }
     let frontend_snapshot = guard.query().frontend_runtime_snapshot(frontend_id)?;
+    let is_locked_continuation = frontend_snapshot.scan_session.as_ref().is_some_and(|session| {
+        session.phase() == FrontendScanPhase::LockedReported
+            && session.fingerprint() == fingerprint
+    });
     let demux_rollback_tokens = guard.prepare_bound_demux_runtime_rollback_tokens(frontend_id)?;
     let bound_demux_generations = bound_demux_generation_snapshot(&demux_rollback_tokens);
     let cleanup_diagnostic_sink = guard.frontend_worker_cleanup_diagnostic_sink();
@@ -1940,12 +4375,16 @@ pub fn start_frontend_backend_scan_session_worker(
             "service runtime lock poisoned after scan worker join",
         )?;
     let demux_rollback_tokens = share_demux_rollback_tokens(demux_rollback_tokens);
-    let scan_cancel_result = record_scan_cancelled_from_stop_outcome_locked(
-        &mut guard,
-        frontend_id,
-        &stop_outcome,
-        FrontendWorkerCancelReason::SupersededByNewRequest,
-    );
+    let scan_cancel_result = if is_locked_continuation {
+        Ok(())
+    } else {
+        record_scan_cancelled_from_stop_outcome_locked(
+            &mut guard,
+            frontend_id,
+            &stop_outcome,
+            FrontendWorkerCancelReason::SupersededByNewRequest,
+        )
+    };
     let target = FrontendWorkerCleanupTarget::object(frontend_id, object_id, object_generation);
     let replacement_context = Some(FrontendWorkerReplacementRollbackContext {
         worker_kind: FrontendWorkerKind::Scan,
@@ -1960,6 +4399,27 @@ pub fn start_frontend_backend_scan_session_worker(
         &stop_outcome,
         Some(scan_cancel_result),
     )?;
+    if is_locked_continuation {
+        guard
+            .frontend_txn()
+            .complete_locked_frontend_scan_continuation(
+                frontend_id,
+                generation,
+                fingerprint,
+                candidates,
+            )?;
+        drop(guard);
+        if scan_notifier(
+            frontend_id,
+            generation,
+            FrontendScanNotification::End,
+        )
+        .is_err()
+        {
+            return Ok(());
+        }
+        return Ok(());
+    }
     if let Err(error) = guard.reset_bound_demuxes_for_frontend_tune_start(frontend_id) {
         return Err(
             restore_frontend_state_after_primary_failure_with_shared_demux_tokens(
@@ -2017,11 +4477,8 @@ pub fn start_frontend_backend_scan_session_worker(
             ),
         );
     }
-    let previous_tune_for_worker = snapshot.active_tune_request.clone();
     let target_for_worker = target;
     let replacement_context_for_worker = replacement_context;
-    let frontend_snapshot_for_worker = snapshot.clone();
-    let demux_rollback_tokens_for_worker = Arc::clone(&demux_rollback_tokens);
     let runtime_for_worker = Arc::clone(&runtime);
     let backend = entry.backend;
     let device_path = FrontendDevicePath::new(entry.device_path.clone());
@@ -2036,11 +4493,10 @@ pub fn start_frontend_backend_scan_session_worker(
                 backend,
                 device_path,
                 candidates,
-                previous_tune_for_worker,
-                frontend_snapshot_for_worker,
-                demux_rollback_tokens_for_worker,
+                None,
+                None,
                 target_for_worker,
-                scan_end_notifier,
+                scan_notifier,
                 cleanup_diagnostic_sink.clone(),
                 replacement_context_for_worker,
             )
@@ -2064,6 +4520,7 @@ pub fn start_frontend_backend_scan_session_worker(
     Ok(())
 }
 
+#[cfg(test)]
 pub fn stop_frontend_worker(
     runtime: SharedRuntime,
     frontend_id: i32,
@@ -2079,33 +4536,367 @@ pub fn stop_frontend_worker(
     Ok(ticket.complete())
 }
 
-fn record_scan_cancelled_terminal_event(
-    runtime: &SharedRuntime,
-    frontend_id: i32,
-    generation: u64,
-    reason: FrontendWorkerCancelReason,
-) -> Result<(), HalError> {
-    lock_runtime(runtime, "service runtime lock poisoned")?
-        .frontend_txn()
-        .cancel_frontend_scan_session(frontend_id, generation, reason)
-}
-
 fn record_scan_cancelled_from_stop_outcome(
     runtime: &SharedRuntime,
     frontend_id: i32,
     outcome: &FrontendWorkerStopOutcome,
     reason: FrontendWorkerCancelReason,
 ) -> Result<(), HalError> {
-    let generation = match outcome {
-        FrontendWorkerStopOutcome::NotRunning => return Ok(()),
-        FrontendWorkerStopOutcome::StopRequestFailed { error, .. } => return Err(error.clone()),
-        FrontendWorkerStopOutcome::CancelRequested { generation, .. }
-        | FrontendWorkerStopOutcome::Completed { generation, .. } => *generation,
+    let mut guard = lock_runtime(runtime, "service runtime lock poisoned")?;
+    record_scan_cancelled_from_stop_outcome_locked(&mut guard, frontend_id, outcome, reason)
+}
+
+fn record_frontend_stop_reaper_completion(
+    runtime: &SharedRuntime,
+    sink: SharedFrontendWorkerCleanupDiagnostics,
+    target: FrontendWorkerCleanupTarget,
+    kind: FrontendWorkerKind,
+    outcomes: Vec<(FrontendWorkerKind, FrontendWorkerStopOutcome)>,
+    deadline_elapsed: bool,
+) {
+    let outcome = outcomes
+        .iter()
+        .find(|(outcome_kind, _)| *outcome_kind == kind)
+        .map(|(_, outcome)| outcome);
+    let mut result = match outcome {
+        Some(outcome) => frontend_worker_stop_result_from_outcome(outcome),
+        None => Err(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "frontend reaper completion omitted the requested worker kind",
+            )),
     };
-    record_scan_cancelled_terminal_event(runtime, frontend_id, generation, reason)
+    if deadline_elapsed && result.is_ok() {
+        result = Err(HalError::cleanup_failed(
+            "frontend worker reaper deadline",
+            "worker exit was observed only after the reaper deadline",
+        ));
+    }
+    if deadline_elapsed || result.is_err() {
+        if let (Some(object_id), Some(object_generation)) =
+            (target.object_id(), target.object_generation())
+        {
+            let quarantine_result = match runtime.lock() {
+                Ok(mut guard) => {
+                    let owner_generation_is_present = guard
+                        .object_table()
+                        .entry(object_id)
+                        .is_some_and(|entry| entry.generation == object_generation);
+                    if owner_generation_is_present {
+                        crate::object_close_txn::quarantine_object_cascade(
+                            &mut guard,
+                            object_id,
+                            object_generation,
+                        )
+                    } else {
+                        Ok(())
+                    }
+                }
+                Err(_) => Err(HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "service runtime lock poisoned while quarantining a reaped frontend worker",
+                )),
+            };
+            if let Err(quarantine_error) = quarantine_result {
+                result = Err(match result {
+                    Ok(()) => quarantine_error,
+                    Err(primary) => compose_frontend_cleanup_error(
+                        "frontend quarantine failed after worker reaper completion",
+                        primary,
+                        quarantine_error,
+                    ),
+                });
+            }
+        }
+    }
+    let mut report = FrontendWorkerCleanupExecutionReport::new();
+    report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
+        target,
+        kind,
+        outcome.and_then(frontend_worker_stop_outcome_generation),
+        result.clone(),
+    ));
+    report.push(FrontendWorkerCleanupStepOutcome::complete_stop_object(
+        target,
+        kind,
+        outcome.and_then(frontend_worker_stop_outcome_generation),
+        result.clone(),
+    ));
+    record_frontend_cleanup_diagnostic_after_terminal(
+        &sink,
+        FrontendWorkerCleanupDiagnosticRecord::new(
+            FrontendWorkerCleanupDiagnosticKind::WorkerReaperCompletion,
+            target,
+            report,
+            result.err(),
+        ),
+    );
+}
+
+fn stop_frontend_object_without_join(
+    runtime: SharedRuntime,
+    object_id: AidlObjectId,
+    object_generation: AidlObjectGeneration,
+    kind: FrontendWorkerKind,
+    reason: FrontendWorkerCancelReason,
+    dispatch: ObjectMethodExecutionToken,
+) -> Result<(), HalError> {
+    let reaper = ensure_frontend_worker_reaper(&runtime)?;
+    let mut guard = lock_runtime(&runtime, "service runtime lock poisoned")?;
+    dispatch.consume_for_object(
+        &mut guard,
+        object_id,
+        object_generation,
+        AidlObjectKind::Frontend,
+    )?;
+    let (frontend_id, _) =
+        resolve_frontend_object_for_method(&guard, object_id, object_generation)?;
+    let replacement_pending_for_kind = match reaper.pending_state(frontend_id, kind)? {
+        FrontendWorkerReaperPendingState::NotPending => false,
+        FrontendWorkerReaperPendingState::CleanupOnly => return Ok(()),
+        FrontendWorkerReaperPendingState::Replacement(replacement_kind)
+            if replacement_kind != kind =>
+        {
+            return Ok(())
+        }
+        FrontendWorkerReaperPendingState::Replacement(_) => true,
+    };
+    let snapshot = guard.query().frontend_runtime_snapshot(frontend_id)?;
+    let generation = guard
+        .frontend_txn()
+        .prepare_frontend_worker_replacement_generation(frontend_id, kind)?;
+    if kind == FrontendWorkerKind::Scan
+        && snapshot
+            .scan_session
+            .as_ref()
+            .is_some_and(|session| session.phase() == FrontendScanPhase::Running)
+    {
+        guard
+            .frontend_txn()
+            .cancel_frontend_scan_session(frontend_id, snapshot.generation, reason)?;
+    }
+    guard
+        .frontend_txn()
+        .fence_frontend_worker_replacement_generation(frontend_id, generation)?;
+    if replacement_pending_for_kind {
+        let boundary_result = match kind {
+            FrontendWorkerKind::Tune => guard
+                .frontend_txn()
+                .stop_frontend_live_data_and_unbind(frontend_id)
+                .map(|_| ()),
+            FrontendWorkerKind::Scan => guard
+                .frontend_txn()
+                .clear_frontend_live_reader_descriptor_and_idle(frontend_id),
+        };
+        let target =
+            FrontendWorkerCleanupTarget::object(frontend_id, object_id, object_generation);
+        let mut report = FrontendWorkerCleanupExecutionReport::new();
+        report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
+            target,
+            kind,
+            None,
+            Ok(()),
+        ));
+        match kind {
+            FrontendWorkerKind::Tune => report.push(
+                FrontendWorkerCleanupStepOutcome::stop_live_data_and_unbind(
+                    target,
+                    boundary_result.clone(),
+                ),
+            ),
+            FrontendWorkerKind::Scan => report.push(
+                FrontendWorkerCleanupStepOutcome::clear_live_reader_descriptor(
+                    target,
+                    boundary_result.clone(),
+                ),
+            ),
+        }
+        guard.frontend_worker_cleanup_diagnostic_sink().record(
+            FrontendWorkerCleanupDiagnosticRecord::new(
+                match kind {
+                    FrontendWorkerKind::Tune => {
+                        FrontendWorkerCleanupDiagnosticKind::StopTuneObject
+                    }
+                    FrontendWorkerKind::Scan => {
+                        FrontendWorkerCleanupDiagnosticKind::StopScanObject
+                    }
+                },
+                target,
+                report,
+                boundary_result.clone().err(),
+            ),
+        )?;
+        return boundary_result;
+    }
+    let ticket = guard
+        .frontend_txn()
+        .request_worker_stop_for_join(frontend_id, kind, reason);
+    let worker_generation = ticket.worker_generation();
+    let tickets = FrontendWorkerReaperTicketGroup::new(vec![(kind, ticket)]);
+    let tickets = match tickets.try_complete() {
+        Ok(outcomes) => {
+            if let Some(error) = outcomes
+                .iter()
+                .find_map(|(_, outcome)| frontend_worker_stop_failure(outcome))
+            {
+                let public_error = match crate::object_close_txn::quarantine_object_cascade(
+                    &mut guard,
+                    object_id,
+                    object_generation,
+                ) {
+                    Ok(()) => error,
+                    Err(quarantine_error) => {
+                        guard.mark_service_critical();
+                        compose_frontend_cleanup_error(
+                            "frontend quarantine failed after stop worker failure",
+                            error,
+                            quarantine_error,
+                        )
+                    }
+                };
+                return Err(public_error);
+            }
+            Ok(outcomes)
+        }
+        Err(tickets) => Err(tickets),
+    };
+    let mut boundary_result = match kind {
+        FrontendWorkerKind::Tune => guard
+            .frontend_txn()
+            .stop_frontend_live_data_and_unbind(frontend_id)
+            .map(|_| ()),
+        FrontendWorkerKind::Scan => guard
+            .frontend_txn()
+            .clear_frontend_live_reader_descriptor_and_idle(frontend_id),
+    };
+    let target =
+        FrontendWorkerCleanupTarget::object(frontend_id, object_id, object_generation);
+    let mut report = FrontendWorkerCleanupExecutionReport::new();
+    report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
+        target,
+        kind,
+        worker_generation,
+        Ok(()),
+    ));
+    match kind {
+        FrontendWorkerKind::Tune => report.push(
+            FrontendWorkerCleanupStepOutcome::stop_live_data_and_unbind(
+                target,
+                boundary_result.clone(),
+            ),
+        ),
+        FrontendWorkerKind::Scan => report.push(
+            FrontendWorkerCleanupStepOutcome::clear_live_reader_descriptor(
+                target,
+                boundary_result.clone(),
+            ),
+        ),
+    }
+    let cleanup_diagnostic_sink = guard.frontend_worker_cleanup_diagnostic_sink();
+    cleanup_diagnostic_sink.record(FrontendWorkerCleanupDiagnosticRecord::new(
+        match kind {
+            FrontendWorkerKind::Tune => FrontendWorkerCleanupDiagnosticKind::StopTuneObject,
+            FrontendWorkerKind::Scan => FrontendWorkerCleanupDiagnosticKind::StopScanObject,
+        },
+        target,
+        report,
+        boundary_result.clone().err(),
+    ))?;
+    if let Err(primary) = boundary_result.clone() {
+        if let Err(quarantine_error) = crate::object_close_txn::quarantine_object_cascade(
+            &mut guard,
+            object_id,
+            object_generation,
+        ) {
+            guard.mark_service_critical();
+            boundary_result = Err(compose_frontend_cleanup_error(
+                "frontend quarantine failed after stop boundary failure",
+                primary,
+                quarantine_error,
+            ));
+        }
+    }
+    let fenced_demux_generations = if tickets.is_err() {
+        match current_bound_demux_generation_snapshot(&guard, frontend_id) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                guard.mark_service_critical();
+                core::mem::forget(tickets);
+                return Err(error);
+            }
+        }
+    } else {
+        Vec::new()
+    };
+    drop(guard);
+
+    match tickets {
+        Ok(outcomes) => record_frontend_stop_reaper_completion(
+            &runtime,
+            cleanup_diagnostic_sink,
+            target,
+            kind,
+            outcomes,
+            false,
+        ),
+        Err(tickets) => {
+            let completion_sink = cleanup_diagnostic_sink.clone();
+            let deadline_diagnostic_sink = cleanup_diagnostic_sink.clone();
+            let job = FrontendWorkerReaperJob {
+                keys: vec![(frontend_id, kind)],
+                continuation_kind: None,
+                tickets,
+                transferred_at: Instant::now(),
+                deadline_action: Some(Box::new(move |runtime| {
+                    handle_frontend_worker_reaper_deadline(
+                        runtime,
+                        target,
+                        kind,
+                        generation,
+                        fenced_demux_generations,
+                        deadline_diagnostic_sink,
+                    );
+                })),
+                completion_action: Box::new(move |runtime, outcomes, deadline_elapsed| {
+                    record_frontend_stop_reaper_completion(
+                        runtime,
+                        completion_sink,
+                        target,
+                        kind,
+                        outcomes,
+                        deadline_elapsed,
+                    );
+                }),
+            };
+            if let Err(error) = reaper.enqueue(job) {
+                if let Ok(mut guard) = runtime.lock() {
+                    guard.mark_service_critical();
+                }
+                return Err(error);
+            }
+        }
+    }
+    boundary_result
 }
 
 pub fn stop_frontend_tune_object(
+    runtime: SharedRuntime,
+    object_id: AidlObjectId,
+    object_generation: AidlObjectGeneration,
+    reason: FrontendWorkerCancelReason,
+    dispatch: ObjectMethodExecutionToken,
+) -> Result<(), HalError> {
+    stop_frontend_object_without_join(
+        runtime,
+        object_id,
+        object_generation,
+        FrontendWorkerKind::Tune,
+        reason,
+        dispatch,
+    )
+}
+
+#[cfg(test)]
+fn stop_frontend_tune_object_legacy(
     runtime: SharedRuntime,
     object_id: AidlObjectId,
     object_generation: AidlObjectGeneration,
@@ -2164,6 +4955,24 @@ pub fn stop_frontend_tune_object(
 }
 
 pub fn stop_frontend_scan_object(
+    runtime: SharedRuntime,
+    object_id: AidlObjectId,
+    object_generation: AidlObjectGeneration,
+    reason: FrontendWorkerCancelReason,
+    dispatch: ObjectMethodExecutionToken,
+) -> Result<(), HalError> {
+    stop_frontend_object_without_join(
+        runtime,
+        object_id,
+        object_generation,
+        FrontendWorkerKind::Scan,
+        reason,
+        dispatch,
+    )
+}
+
+#[cfg(test)]
+fn stop_frontend_scan_object_legacy(
     runtime: SharedRuntime,
     object_id: AidlObjectId,
     object_generation: AidlObjectGeneration,
@@ -2268,6 +5077,7 @@ pub fn cleanup_frontend_object_after_close_begin(
         frontend_id,
         reason,
         Ok(cleanup_diagnostic_sink.clone()),
+        target,
     );
     report.push(
         FrontendWorkerCleanupStepOutcome::close_frontend_workers_and_live_data(
@@ -2309,6 +5119,7 @@ pub fn close_frontend_workers_and_live_data(
         frontend_id,
         reason,
         cleanup_diagnostic_sink,
+        FrontendWorkerCleanupTarget::frontend(frontend_id),
     )
 }
 
@@ -2317,62 +5128,189 @@ fn close_frontend_workers_and_live_data_with_sink(
     frontend_id: i32,
     reason: FrontendWorkerCancelReason,
     cleanup_diagnostic_sink: Result<SharedFrontendWorkerCleanupDiagnostics, HalError>,
+    target: FrontendWorkerCleanupTarget,
 ) -> Result<(), HalError> {
-    let tune_outcome = stop_frontend_worker(
-        Arc::clone(&runtime),
-        frontend_id,
-        FrontendWorkerKind::Tune,
-        reason,
-    );
-    let scan_outcome = stop_frontend_worker(
-        Arc::clone(&runtime),
-        frontend_id,
-        FrontendWorkerKind::Scan,
-        reason,
-    );
-
-    let target = FrontendWorkerCleanupTarget::frontend(frontend_id);
-    let mut report = FrontendWorkerCleanupExecutionReport::new();
-    report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
-        target,
-        FrontendWorkerKind::Tune,
-        frontend_worker_stop_result_generation(&tune_outcome),
-        frontend_worker_stop_result(&tune_outcome),
-    ));
-    report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
-        target,
-        FrontendWorkerKind::Scan,
-        frontend_worker_stop_result_generation(&scan_outcome),
-        frontend_worker_stop_result(&scan_outcome),
-    ));
-    if let Ok(outcome) = &scan_outcome {
-        let scan_cancel_result =
-            record_scan_cancelled_from_stop_outcome(&runtime, frontend_id, outcome, reason);
-        report.push(FrontendWorkerCleanupStepOutcome::record_scan_cancelled(
-            target,
-            frontend_worker_stop_outcome_generation(outcome),
-            scan_cancel_result,
-        ));
-    } else if let Err(error) = &scan_outcome {
-        report.push(FrontendWorkerCleanupStepOutcome::record_scan_cancelled(
-            target,
-            None,
-            Err(HalError::cleanup_failed(
-                "frontend scan cancel record skipped",
-                format!(
-                    "scan worker stop failed before scan cancel record could be attempted: {error:?}"
-                ),
-            )),
+    let reaper = ensure_frontend_worker_reaper(&runtime)?;
+    if reaper.is_pending(frontend_id, FrontendWorkerKind::Tune)?
+        || reaper.is_pending(frontend_id, FrontendWorkerKind::Scan)?
+    {
+        return Err(HalError::cleanup_failed(
+            "frontend worker cleanup pending",
+            "frontend worker exit is still owned by the reaper",
         ));
     }
-    let close_result = close_frontend_live_data_and_unbind(Arc::clone(&runtime), frontend_id);
-    report.push(FrontendWorkerCleanupStepOutcome::close_live_data_and_unbind(target, close_result));
-    let public_error = report.first_error();
-    let record = FrontendWorkerCleanupDiagnosticRecord::new(
+    let sink = cleanup_diagnostic_sink?;
+    let (generation, tickets, fenced_demux_generations, close_result) = {
+        let mut guard = lock_runtime(
+            &runtime,
+            "service runtime lock poisoned while preparing frontend close reaping",
+        )?;
+        let generation = guard
+            .frontend_txn()
+            .prepare_frontend_worker_replacement_generation(
+                frontend_id,
+                FrontendWorkerKind::Tune,
+            )?;
+        guard
+            .frontend_txn()
+            .fence_frontend_worker_replacement_generation(frontend_id, generation)?;
+        let tune_ticket = guard.frontend_txn().request_worker_stop_for_join(
+            frontend_id,
+            FrontendWorkerKind::Tune,
+            reason,
+        );
+        let scan_ticket = guard.frontend_txn().request_worker_stop_for_join(
+            frontend_id,
+            FrontendWorkerKind::Scan,
+            reason,
+        );
+        let tickets = FrontendWorkerReaperTicketGroup::new(vec![
+            (FrontendWorkerKind::Tune, tune_ticket),
+            (FrontendWorkerKind::Scan, scan_ticket),
+        ]);
+        let close_result = guard
+            .frontend_txn()
+            .close_frontend_live_data_and_unbind(frontend_id)
+            .map(|_| ());
+        let fenced_demux_generations = match current_bound_demux_generation_snapshot(
+            &guard,
+            frontend_id,
+        ) {
+            Ok(snapshot) => snapshot,
+            Err(snapshot_error) => {
+                guard.mark_service_critical();
+                core::mem::forget(tickets);
+                return Err(match close_result {
+                    Ok(()) => snapshot_error,
+                    Err(primary) => compose_frontend_cleanup_error(
+                        "frontend demux snapshot failed after close boundary failure",
+                        primary,
+                        snapshot_error,
+                    ),
+                });
+            }
+        };
+        (generation, tickets, fenced_demux_generations, close_result)
+    };
+
+    let tickets = match tickets.try_complete() {
+        Ok(outcomes) => Ok(outcomes),
+        Err(tickets) => Err(tickets),
+    };
+    let mut report = FrontendWorkerCleanupExecutionReport::new();
+    if let Ok(outcomes) = &tickets {
+        for (kind, outcome) in outcomes {
+            report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
+                target,
+                *kind,
+                frontend_worker_stop_outcome_generation(outcome),
+                frontend_worker_stop_result_from_outcome(outcome),
+            ));
+        }
+        if let Some((_, scan_outcome)) = outcomes
+            .iter()
+            .find(|(kind, _)| *kind == FrontendWorkerKind::Scan)
+        {
+            let scan_cancel_result = record_scan_cancelled_from_stop_outcome(
+                &runtime,
+                frontend_id,
+                scan_outcome,
+                reason,
+            );
+            report.push(FrontendWorkerCleanupStepOutcome::record_scan_cancelled(
+                target,
+                frontend_worker_stop_outcome_generation(scan_outcome),
+                scan_cancel_result,
+            ));
+        }
+    } else {
+        report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
+            target,
+            FrontendWorkerKind::Tune,
+            None,
+            Ok(()),
+        ));
+        report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
+            target,
+            FrontendWorkerKind::Scan,
+            None,
+            Ok(()),
+        ));
+    }
+    report.push(FrontendWorkerCleanupStepOutcome::close_live_data_and_unbind(
+        target,
+        close_result.clone(),
+    ));
+    sink.record(FrontendWorkerCleanupDiagnosticRecord::new(
         FrontendWorkerCleanupDiagnosticKind::FrontendClose,
         target,
         report,
-        public_error,
-    );
-    finish_frontend_worker_cleanup_report(cleanup_diagnostic_sink, record)
+        close_result.clone().err(),
+    ))?;
+    close_result?;
+
+    match tickets {
+        Ok(outcomes) => {
+            for (_, outcome) in outcomes {
+                if let Some(error) = frontend_worker_stop_failure(&outcome) {
+                    return Err(error);
+                }
+            }
+            Ok(())
+        }
+        Err(tickets) => {
+            let completion_sink = sink.clone();
+            let deadline_diagnostic_sink = sink.clone();
+            let job = FrontendWorkerReaperJob {
+                keys: vec![
+                    (frontend_id, FrontendWorkerKind::Tune),
+                    (frontend_id, FrontendWorkerKind::Scan),
+                ],
+                continuation_kind: None,
+                tickets,
+                transferred_at: Instant::now(),
+                deadline_action: Some(Box::new(move |runtime| {
+                    handle_frontend_worker_reaper_deadline(
+                        runtime,
+                        target,
+                        FrontendWorkerKind::Tune,
+                        generation,
+                        fenced_demux_generations,
+                        deadline_diagnostic_sink,
+                    );
+                })),
+                completion_action: Box::new(move |_runtime, outcomes, _deadline_elapsed| {
+                    let mut report = FrontendWorkerCleanupExecutionReport::new();
+                    for (kind, outcome) in outcomes {
+                        report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
+                            target,
+                            kind,
+                            frontend_worker_stop_outcome_generation(&outcome),
+                            frontend_worker_stop_result_from_outcome(&outcome),
+                        ));
+                    }
+                    let public_error = report.first_error();
+                    record_frontend_cleanup_diagnostic_after_terminal(
+                        &completion_sink,
+                        FrontendWorkerCleanupDiagnosticRecord::new(
+                            FrontendWorkerCleanupDiagnosticKind::WorkerReaperCompletion,
+                            target,
+                            report,
+                            public_error,
+                        ),
+                    );
+                }),
+            };
+            if let Err(error) = reaper.enqueue(job) {
+                if let Ok(mut guard) = runtime.lock() {
+                    guard.mark_service_critical();
+                }
+                return Err(error);
+            }
+            Err(HalError::cleanup_failed(
+                "frontend worker cleanup pending",
+                "frontend worker ownership transferred to the reaper",
+            ))
+        }
+    }
 }

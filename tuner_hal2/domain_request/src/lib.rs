@@ -607,11 +607,18 @@ pub enum DvrConfigureKind {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DvrDataFormat {
+    Ts,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DvrConfigureRequest {
     pub kind: DvrConfigureKind,
     pub status_mask: i32,
     pub low_threshold_bytes: i64,
     pub high_threshold_bytes: i64,
+    pub data_format: DvrDataFormat,
+    pub packet_size: i64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

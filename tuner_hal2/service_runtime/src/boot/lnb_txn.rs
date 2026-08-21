@@ -14,7 +14,18 @@ use maleicacid_tuner_hal2_lnb::{
 use super::TunerServiceRuntime;
 use crate::error_mapping::registry_commit_error_to_hal;
 use crate::lnb_backend_adapter::ServiceRuntimeLnbProfileAdapter;
-use crate::registry::{FrontendRuntimeId, LnbRegistryProfile, LnbRuntimeId, RegistryCommitError};
+use crate::registry::{
+    FrontendRuntimeId, LnbRegistryProfile, LnbRuntimeId, PreparedLnbAssignmentLease,
+    RegistryCommitError,
+};
+
+pub(crate) enum PreparedFrontendLnbAssignment {
+    Unchanged,
+    Apply {
+        prepared_lease: PreparedLnbAssignmentLease,
+        prepared_runtime: LnbRuntime,
+    },
+}
 
 pub(crate) struct LnbTxn<'a> {
     runtime: &'a mut TunerServiceRuntime,
@@ -27,11 +38,11 @@ impl TunerServiceRuntime {
 }
 
 impl<'a> LnbTxn<'a> {
-    pub(crate) fn set_frontend_lnb(
+    pub(crate) fn prepare_frontend_lnb_assignment(
         &mut self,
         frontend_id: i32,
         lnb_id: i32,
-    ) -> Result<(), HalError> {
+    ) -> Result<PreparedFrontendLnbAssignment, HalError> {
         let frontend_key = FrontendRuntimeId(frontend_id);
         let lnb_key = LnbRuntimeId(lnb_id);
         if self.runtime.registry().frontend(frontend_key).is_none() {
@@ -56,80 +67,84 @@ impl<'a> LnbTxn<'a> {
             .cloned()
             .ok_or_else(missing_lnb_error)?;
         ensure_lnb_open(&runtime)?;
-        self.apply_lnb_state_to_pending_frontend(lnb_key, frontend_key, runtime)?;
-        self.runtime
+        let Some(prepared_lease) = self
+            .runtime
             .registry_mut()
-            .bind_lnb_to_frontend(frontend_key, lnb_key)
-            .map_err(map_registry_error)
+            .prepare_lnb_assignment_lease(frontend_key, lnb_key)?
+        else {
+            return Ok(PreparedFrontendLnbAssignment::Unchanged);
+        };
+        let prepared_runtime = match self.prepare_lnb_state_for_pending_frontend(
+            lnb_key,
+            frontend_key,
+            runtime,
+        ) {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                if self
+                    .runtime
+                    .registry_mut()
+                    .abort_prepared_lnb_assignment_lease(prepared_lease)
+                {
+                    return Err(error);
+                }
+                return Err(compose_primary_cleanup_failure(
+                    "LNB assignment backend prepare failed and prepared lease abort failed",
+                    error,
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "prepared LNB assignment lease disappeared before abort",
+                    ),
+                ));
+            }
+        };
+        Ok(PreparedFrontendLnbAssignment::Apply {
+            prepared_lease,
+            prepared_runtime,
+        })
     }
 
-    pub(crate) fn apply_lnb_voltage(
+    pub(crate) fn commit_frontend_lnb_assignment(
         &mut self,
-        lnb_id: i32,
-        request: LnbVoltageRequest,
+        prepared: PreparedFrontendLnbAssignment,
     ) -> Result<(), HalError> {
-        let lnb_key = LnbRuntimeId(lnb_id);
-        let entry = self
+        let PreparedFrontendLnbAssignment::Apply {
+            prepared_lease,
+            prepared_runtime,
+        } = prepared
+        else {
+            return Ok(());
+        };
+        let cleanup = match self
             .runtime
-            .registry()
-            .lnb(lnb_key)
-            .cloned()
-            .ok_or_else(missing_lnb_error)?;
-        let runtime = self
-            .runtime
-            .registry()
-            .lnb_runtime(lnb_key)
-            .cloned()
-            .ok_or_else(missing_lnb_error)?;
-        ensure_lnb_open(&runtime)?;
-        let voltage = validate_voltage_for_profile(entry.profile, request)?;
-        let mut target = runtime.registry_state();
-        target.voltage = voltage;
-        self.apply_lnb_state_with_generation(lnb_key, runtime, target)
-    }
-
-    pub(crate) fn apply_lnb_tone(
-        &mut self,
-        lnb_id: i32,
-        request: LnbToneRequest,
-    ) -> Result<(), HalError> {
-        let lnb_key = LnbRuntimeId(lnb_id);
-        if self.runtime.registry().lnb(lnb_key).is_none() {
-            return Err(missing_lnb_error());
+            .registry_mut()
+            .commit_prepared_lnb_assignment(prepared_lease, prepared_runtime)
+        {
+            Ok(cleanup) => cleanup,
+            Err(error) => {
+                if self
+                    .runtime
+                    .registry_mut()
+                    .abort_prepared_lnb_assignment_lease(prepared_lease)
+                {
+                    return Err(error);
+                }
+                return Err(compose_primary_cleanup_failure(
+                    "LNB assignment composite commit failed and prepared lease abort failed",
+                    error,
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "prepared LNB assignment lease disappeared after commit failure",
+                    ),
+                ));
+            }
+        };
+        if let Some(cleanup) = cleanup {
+            self.runtime
+                .registry_mut()
+                .complete_lnb_assignment_cleanup(cleanup)?;
         }
-        let runtime = self
-            .runtime
-            .registry()
-            .lnb_runtime(lnb_key)
-            .cloned()
-            .ok_or_else(missing_lnb_error)?;
-        ensure_lnb_open(&runtime)?;
-        let tone = validate_tone_for_profile(request)?;
-        let mut target = runtime.registry_state();
-        target.tone = tone;
-        self.apply_lnb_state_with_generation(lnb_key, runtime, target)
-    }
-
-    pub(crate) fn apply_lnb_satellite_position(
-        &mut self,
-        lnb_id: i32,
-        request: LnbSetSatellitePositionRequest,
-    ) -> Result<(), HalError> {
-        let lnb_key = LnbRuntimeId(lnb_id);
-        if self.runtime.registry().lnb(lnb_key).is_none() {
-            return Err(missing_lnb_error());
-        }
-        let runtime = self
-            .runtime
-            .registry()
-            .lnb_runtime(lnb_key)
-            .cloned()
-            .ok_or_else(missing_lnb_error)?;
-        ensure_lnb_open(&runtime)?;
-        let satellite_position = validate_position_for_profile(request)?;
-        let mut target = runtime.registry_state();
-        target.satellite_position = satellite_position;
-        self.apply_lnb_state_with_generation(lnb_key, runtime, target)
+        Ok(())
     }
 
     pub(crate) fn send_lnb_diseqc(&mut self, lnb_id: i32, payload: &[u8]) -> Result<(), HalError> {
@@ -206,7 +221,15 @@ impl<'a> LnbTxn<'a> {
     }
 
     pub(crate) fn close_lnb_explicit(&mut self, lnb_id: i32) -> Result<(), HalError> {
-        self.close_lnb_with_reason(LnbRuntimeId(lnb_id), LnbLifecycleReason::PublicClose)
+        let lnb_key = LnbRuntimeId(lnb_id);
+        self.close_lnb_with_reason(lnb_key, LnbLifecycleReason::PublicClose)?;
+        for frontend_id in self.runtime.registry().selected_frontends_for_lnb(lnb_key) {
+            crate::frontend_ops::FrontendLnbRelationTxn::release(
+                self.runtime,
+                frontend_id.0,
+            )?;
+        }
+        Ok(())
     }
 
     pub(crate) fn close_lnb_from_frontend_owner_loss_report(
@@ -227,13 +250,21 @@ impl<'a> LnbTxn<'a> {
                     .unwrap_or(false)
             })
             .collect();
-        owned_lnb_ids
+        let outcomes = owned_lnb_ids
             .into_iter()
             .map(|lnb_key| {
                 let result = self.close_lnb_with_reason(lnb_key, LnbLifecycleReason::OwnerLoss);
                 (lnb_key.0, result)
             })
-            .collect()
+            .collect::<Vec<_>>();
+        if outcomes.iter().all(|(_, result)| result.is_ok()) {
+            if let Err(error) =
+                crate::frontend_ops::FrontendLnbRelationTxn::release(self.runtime, frontend_id)
+            {
+                return vec![(frontend_id, Err(error))];
+            }
+        }
+        outcomes
     }
 
     pub(crate) fn record_lnb_drop_leak(&mut self, lnb_id: i32) -> Result<(), HalError> {
@@ -268,36 +299,12 @@ impl<'a> LnbTxn<'a> {
         }
     }
 
-    fn apply_lnb_state_with_generation(
-        &mut self,
-        lnb_key: LnbRuntimeId,
-        mut runtime: LnbRuntime,
-        target: LnbElectricalState,
-    ) -> Result<(), HalError> {
-        let outcome = {
-            let mut backend =
-                ServiceRuntimeLnbProfileAdapter::new(self.runtime.registry(), lnb_key);
-            apply_lnb_state_with_txn(&mut runtime, &mut backend, target)
-        };
-        let store_result = self.store_lnb_runtime(lnb_key, runtime);
-        match (outcome.result.map(|_| ()), store_result) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Ok(()), Err(store_error)) => Err(store_error),
-            (Err(record), Ok(())) => Err(map_lnb_failure(record)),
-            (Err(record), Err(store_error)) => Err(compose_primary_cleanup_failure(
-                "LNB apply transaction failed and runtime store failed",
-                map_lnb_failure(record),
-                store_error,
-            )),
-        }
-    }
-
-    fn apply_lnb_state_to_pending_frontend(
+    fn prepare_lnb_state_for_pending_frontend(
         &mut self,
         lnb_key: LnbRuntimeId,
         frontend_key: FrontendRuntimeId,
         mut runtime: LnbRuntime,
-    ) -> Result<(), HalError> {
+    ) -> Result<LnbRuntime, HalError> {
         let target = runtime.registry_state();
         let outcome = {
             let mut backend = ServiceRuntimeLnbProfileAdapter::new_with_pending_frontend(
@@ -307,16 +314,16 @@ impl<'a> LnbTxn<'a> {
             );
             apply_lnb_state_with_txn(&mut runtime, &mut backend, target)
         };
-        let store_result = self.store_lnb_runtime(lnb_key, runtime);
-        match (outcome.result.map(|_| ()), store_result) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Ok(()), Err(store_error)) => Err(store_error),
-            (Err(record), Ok(())) => Err(map_lnb_failure(record)),
-            (Err(record), Err(store_error)) => Err(compose_primary_cleanup_failure(
-                "LNB setLnb backend apply transaction failed and runtime store failed",
-                map_lnb_failure(record),
-                store_error,
-            )),
+        match outcome.result {
+            Ok(_) => Ok(runtime),
+            Err(record) => match self.store_lnb_runtime(lnb_key, runtime) {
+                Ok(()) => Err(map_lnb_failure(record)),
+                Err(store_error) => Err(compose_primary_cleanup_failure(
+                    "LNB setLnb backend apply transaction failed and runtime store failed",
+                    map_lnb_failure(record),
+                    store_error,
+                )),
+            },
         }
     }
 
@@ -368,7 +375,7 @@ impl<'a> LnbTxn<'a> {
     }
 }
 
-fn missing_lnb_error() -> HalError {
+pub(crate) fn missing_lnb_error() -> HalError {
     HalError::invalid_argument(
         HalInvalidArgumentKind::NumericRange,
         "LNB runtime id is missing",
@@ -382,7 +389,7 @@ fn lnb_state_error() -> HalError {
     )
 }
 
-fn ensure_lnb_open(runtime: &LnbRuntime) -> Result<(), HalError> {
+pub(crate) fn ensure_lnb_open(runtime: &LnbRuntime) -> Result<(), HalError> {
     if runtime.state() == LnbRuntimeState::Open {
         Ok(())
     } else {
@@ -394,7 +401,7 @@ fn map_registry_error(error: RegistryCommitError) -> HalError {
     registry_commit_error_to_hal(error, "frontend/LNB binding is invalid")
 }
 
-fn map_lnb_failure(record: LnbFailureRecord) -> HalError {
+pub(crate) fn map_lnb_failure(record: LnbFailureRecord) -> HalError {
     match record.kind {
         LnbFailureKind::InvalidState => lnb_state_error(),
         LnbFailureKind::GenerationOverflow => HalError::internal(
@@ -425,7 +432,7 @@ fn runtime_voltage(request: LnbVoltageRequest) -> RuntimeLnbVoltage {
     }
 }
 
-fn validate_voltage_for_profile(
+pub(crate) fn validate_voltage_for_profile(
     profile: LnbRegistryProfile,
     request: LnbVoltageRequest,
 ) -> Result<RuntimeLnbVoltage, HalError> {
@@ -444,7 +451,9 @@ fn validate_voltage_for_profile(
     }
 }
 
-fn validate_tone_for_profile(request: LnbToneRequest) -> Result<RuntimeLnbTone, HalError> {
+pub(crate) fn validate_tone_for_profile(
+    request: LnbToneRequest,
+) -> Result<RuntimeLnbTone, HalError> {
     match request {
         LnbToneRequest::None => Ok(RuntimeLnbTone::Off),
         LnbToneRequest::Continuous => Err(HalError::Unsupported(
@@ -453,7 +462,7 @@ fn validate_tone_for_profile(request: LnbToneRequest) -> Result<RuntimeLnbTone, 
     }
 }
 
-fn validate_position_for_profile(
+pub(crate) fn validate_position_for_profile(
     request: LnbSetSatellitePositionRequest,
 ) -> Result<Option<i32>, HalError> {
     if request.position == 0 {

@@ -226,9 +226,9 @@ pub(crate) fn descramble_ts_packet_in_place(
     } else {
         KeyParity::Odd
     };
-    if !target_pids.contains(&DescramblerPid::from_validated_pid_for_descrambler_core(
-        header.pid,
-    )) {
+    let target_pid = DescramblerPid::from_validated_pid_for_descrambler_core(header.pid)
+        .ok_or(DescrambleFailure::InvalidPacketSize)?;
+    if !target_pids.contains(&target_pid) {
         return Err(DescrambleFailure::ScrambledPidNotRegistered);
     }
     let Some(payload_offset) = header.payload_offset else {
@@ -260,7 +260,7 @@ mod tests {
     fn target_pids(pids: &[u16]) -> BTreeSet<DescramblerPid> {
         pids.iter()
             .copied()
-            .map(DescramblerPid::from_validated_pid_for_descrambler_core)
+            .filter_map(DescramblerPid::from_validated_pid_for_descrambler_core)
             .collect()
     }
 

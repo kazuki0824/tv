@@ -58,6 +58,7 @@ pub enum FmqFailureKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FmqDeliveryAction {
     Continue,
+    WakePending,
     Overflow,
     RuntimeFailed(FmqFailureKind),
 }
@@ -120,7 +121,11 @@ impl FmqDeliveryTxn {
                 object_kind: self.object_kind,
                 phase: FmqDeliveryPhase::Wake,
                 bytes: written_bytes,
-                action: FmqDeliveryAction::RuntimeFailed(err),
+                action: if err == FmqFailureKind::EventFlagWakeFailed {
+                    FmqDeliveryAction::WakePending
+                } else {
+                    FmqDeliveryAction::RuntimeFailed(err)
+                },
             },
         }
     }
@@ -152,7 +157,7 @@ mod tests {
     }
 
     #[test]
-    fn fmq_wake_failure_is_typed_runtime_failure() {
+    fn fmq_wake_failure_preserves_committed_payload_for_retry() {
         let result = FmqDeliveryTxn::new(FmqObjectKind::Filter).commit_payload(
             188,
             Ok(188),
@@ -160,7 +165,7 @@ mod tests {
         );
         assert_eq!(
             result.action,
-            FmqDeliveryAction::RuntimeFailed(FmqFailureKind::EventFlagWakeFailed)
+            FmqDeliveryAction::WakePending
         );
         assert_eq!(result.bytes, 188);
     }

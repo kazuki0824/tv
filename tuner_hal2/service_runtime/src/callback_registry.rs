@@ -29,23 +29,44 @@ pub(crate) struct RuntimeCallbackRegistry {
     >,
 }
 
-impl RuntimeCallbackRegistry {
-    pub(crate) fn record_registration(
-        &mut self,
+#[derive(Debug)]
+pub(crate) struct PreparedCallbackRegistration {
+    key: (AidlObjectKind, AidlObjectId, AidlObjectGeneration, AidlApi),
+}
+
+pub(crate) struct CallbackRegistrationUseCase;
+
+impl CallbackRegistrationUseCase {
+    pub(crate) const fn prepare(
         owner_kind: AidlObjectKind,
         owner_id: AidlObjectId,
         owner_generation: AidlObjectGeneration,
         registration_api: AidlApi,
+    ) -> PreparedCallbackRegistration {
+        PreparedCallbackRegistration {
+            key: (
+                owner_kind,
+                owner_id,
+                owner_generation,
+                registration_api,
+            ),
+        }
+    }
+
+    pub(crate) fn commit(
+        registry: &mut RuntimeCallbackRegistry,
+        prepared: PreparedCallbackRegistration,
     ) {
-        let key = (owner_kind, owner_id, owner_generation, registration_api);
-        self.registrations.insert(
-            key,
+        registry.registrations.insert(
+            prepared.key,
             RuntimeCallbackRegistration {
                 health: CallbackHealthState::Registered,
             },
         );
     }
+}
 
+impl RuntimeCallbackRegistry {
     pub(crate) fn mark_unhealthy(
         &mut self,
         owner_kind: AidlObjectKind,
@@ -112,10 +133,27 @@ impl RuntimeCallbackRegistry {
 mod tests {
     use super::*;
 
+    fn register(
+        registry: &mut RuntimeCallbackRegistry,
+        owner_kind: AidlObjectKind,
+        owner_id: AidlObjectId,
+        owner_generation: AidlObjectGeneration,
+        registration_api: AidlApi,
+    ) {
+        let prepared = CallbackRegistrationUseCase::prepare(
+            owner_kind,
+            owner_id,
+            owner_generation,
+            registration_api,
+        );
+        CallbackRegistrationUseCase::commit(registry, prepared);
+    }
+
     #[test]
     fn callback_registration_is_keyed_by_owner_generation_and_api() {
         let mut registry = RuntimeCallbackRegistry::default();
-        registry.record_registration(
+        register(
+            &mut registry,
             AidlObjectKind::Lnb,
             AidlObjectId(10),
             AidlObjectGeneration(2),
@@ -167,21 +205,45 @@ mod tests {
     }
 
     #[test]
+    fn prepared_callback_registration_is_non_mutating_until_commit() {
+        let mut registry = RuntimeCallbackRegistry::default();
+        let prepared = CallbackRegistrationUseCase::prepare(
+            AidlObjectKind::Frontend,
+            AidlObjectId(21),
+            AidlObjectGeneration(4),
+            AidlApi::FrontendSetCallback,
+        );
+        assert!(registry.registrations.is_empty());
+        CallbackRegistrationUseCase::commit(&mut registry, prepared);
+        assert!(registry
+            .registration_for(
+                AidlObjectKind::Frontend,
+                AidlObjectId(21),
+                AidlObjectGeneration(4),
+                AidlApi::FrontendSetCallback,
+            )
+            .is_some());
+    }
+
+    #[test]
     fn mark_owner_unhealthy_marks_all_owner_registrations() {
         let mut registry = RuntimeCallbackRegistry::default();
-        registry.record_registration(
+        register(
+            &mut registry,
             AidlObjectKind::Frontend,
             AidlObjectId(20),
             AidlObjectGeneration(3),
             AidlApi::FrontendSetCallback,
         );
-        registry.record_registration(
+        register(
+            &mut registry,
             AidlObjectKind::Lnb,
             AidlObjectId(20),
             AidlObjectGeneration(3),
             AidlApi::LnbSetCallback,
         );
-        registry.record_registration(
+        register(
+            &mut registry,
             AidlObjectKind::Lnb,
             AidlObjectId(20),
             AidlObjectGeneration(4),

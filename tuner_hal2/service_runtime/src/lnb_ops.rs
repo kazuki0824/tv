@@ -16,7 +16,7 @@ impl TunerServiceRuntime {
         frontend_id: i32,
         lnb_id: i32,
     ) -> Result<(), HalError> {
-        self.lnb_txn().set_frontend_lnb(frontend_id, lnb_id)
+        crate::frontend_ops::FrontendLnbRelationTxn::new(frontend_id, lnb_id).execute(self)
     }
 
     pub(crate) fn apply_lnb_voltage(
@@ -24,7 +24,7 @@ impl TunerServiceRuntime {
         lnb_id: i32,
         request: LnbVoltageRequest,
     ) -> Result<(), HalError> {
-        self.lnb_txn().apply_lnb_voltage(lnb_id, request)
+        self.lnb_control_txn().apply_voltage(lnb_id, request)
     }
 
     pub(crate) fn apply_lnb_tone(
@@ -32,7 +32,7 @@ impl TunerServiceRuntime {
         lnb_id: i32,
         request: LnbToneRequest,
     ) -> Result<(), HalError> {
-        self.lnb_txn().apply_lnb_tone(lnb_id, request)
+        self.lnb_control_txn().apply_tone(lnb_id, request)
     }
 
     pub(crate) fn apply_lnb_satellite_position(
@@ -40,7 +40,8 @@ impl TunerServiceRuntime {
         lnb_id: i32,
         request: LnbSetSatellitePositionRequest,
     ) -> Result<(), HalError> {
-        self.lnb_txn().apply_lnb_satellite_position(lnb_id, request)
+        self.lnb_control_txn()
+            .apply_satellite_position(lnb_id, request)
     }
 
     pub(crate) fn send_lnb_diseqc(&mut self, lnb_id: i32, payload: &[u8]) -> Result<(), HalError> {
@@ -89,8 +90,8 @@ impl TunerServiceRuntime {
 mod wp_r11_lnb_apply_tests {
     use crate::boot::TunerServiceRuntime;
     use crate::registry::{
-        FrontendRegistryEntry, FrontendRuntimeId, LnbRegistryEntry, LnbRegistryProfile,
-        LnbRuntimeId,
+        FrontendCapabilitySnapshot, FrontendRegistryEntry, FrontendRuntimeId,
+        FrontendScalarCapability, LnbRegistryEntry, LnbRegistryProfile, LnbRuntimeId,
     };
     use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem, HalError};
     use maleicacid_tuner_hal2_domain_request::LnbVoltageRequest;
@@ -106,6 +107,17 @@ mod wp_r11_lnb_apply_tests {
                 system: FrontendSystem::IsdbS,
                 device_path: "/dev/null".into(),
                 lnb_profile: Some(profile),
+                capability: FrontendCapabilitySnapshot {
+                    scalar: FrontendScalarCapability {
+                        min_frequency_hz: 1_049_480_000,
+                        max_frequency_hz: 2_053_000_000,
+                        min_symbol_rate: 28_860_000,
+                        max_symbol_rate: 28_860_000,
+                        acquire_range_hz: 0,
+                    },
+                    exclusive_group_id: 0x1000_0001,
+                    isdbt_segment: None,
+                },
             })
             .unwrap();
         runtime
@@ -187,6 +199,28 @@ mod wp_r11_lnb_apply_tests {
         let lnb = runtime.registry().lnb_runtime(LnbRuntimeId(10001)).unwrap();
         assert_eq!(lnb.registry_state(), LnbElectricalState::safe());
         assert_eq!(lnb.state(), LnbRuntimeState::Failed);
+    }
+
+    #[test]
+    fn frontend_lnb_relation_commits_and_releases_with_assignment_lease() {
+        let mut runtime = runtime_with_lnb(LnbRegistryProfile::NoPower);
+
+        runtime.set_frontend_lnb(1, 10001).unwrap();
+        runtime.set_frontend_lnb(1, 10001).unwrap();
+
+        assert_eq!(
+            runtime
+                .registry()
+                .selected_lnb_for_frontend(FrontendRuntimeId(1)),
+            Some(LnbRuntimeId(10001))
+        );
+        crate::frontend_ops::FrontendLnbRelationTxn::release(&mut runtime, 1).unwrap();
+        assert_eq!(
+            runtime
+                .registry()
+                .selected_lnb_for_frontend(FrontendRuntimeId(1)),
+            None
+        );
     }
 }
 

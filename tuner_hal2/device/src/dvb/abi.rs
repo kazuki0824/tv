@@ -147,6 +147,7 @@ pub const DTV_BANDWIDTH_HZ: u32 = 5;
 pub const DTV_DELIVERY_SYSTEM: u32 = 17;
 pub const DTV_STREAM_ID: u32 = 42;
 pub const DTV_ENUM_DELSYS: u32 = 44;
+pub const NO_STREAM_ID_FILTER: u32 = u32::MAX;
 
 pub const FE_HAS_SIGNAL: u32 = 0x01;
 pub const FE_HAS_CARRIER: u32 = 0x02;

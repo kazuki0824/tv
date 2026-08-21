@@ -2,6 +2,7 @@ use crate::boot::TunerServiceRuntime;
 use crate::error_mapping::{object_table_error_to_hal, registry_commit_error_to_hal};
 use crate::method_dispatch::plan_object_method_dispatch;
 use crate::open_rollback::finish_open_rollback;
+use crate::root_method_txn::{is_public_demux_id, published_demux_ids};
 use crate::{RuntimeObjectEntry, RuntimeOwnerRelation};
 use maleicacid_tuner_hal2_binder_adapter::{AidlMethodAdapter, AidlMethodCall};
 use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, HalError};
@@ -81,8 +82,25 @@ impl TunerServiceRuntime {
         method: AidlMethodCall,
     ) -> Result<RuntimeObjectEntry, HalError> {
         preflight_root_method_dispatch(self, method)?;
-        if !self.has_frontend_id(frontend_id) {
+        let Some(frontend) = self.frontend_entry(frontend_id) else {
             return Err(HalError::Unsupported("frontend id is not available"));
+        };
+        if self.has_active_frontend_lease(frontend_id) {
+            return Err(HalError::Unsupported(
+                "frontend id is already leased by a live object",
+            ));
+        }
+        if self.has_active_frontend_group_lease(frontend.capability.exclusive_group_id) {
+            return Err(HalError::Unsupported(
+                "frontend physical group is already leased by a live object",
+            ));
+        }
+        if self.active_frontend_lease_count(frontend.system)
+            >= self.current_max_number_of_frontends(frontend.system)
+        {
+            return Err(HalError::Unsupported(
+                "frontend lease limit is reached for this frontend type",
+            ));
         }
         register_root_object(self, AidlObjectKind::Frontend, i64::from(frontend_id))
     }
@@ -92,9 +110,18 @@ impl TunerServiceRuntime {
         method: AidlMethodCall,
     ) -> Result<RuntimeObjectEntry, HalError> {
         preflight_root_method_dispatch(self, method)?;
-        let entry = self.allocate_demux_runtime().map_err(|error| {
-            registry_commit_error_to_hal(error, "demux runtime allocation failed")
-        })?;
+        let demux_id = published_demux_ids(self.capability_snapshot())?
+            .iter()
+            .copied()
+            .find(|demux_id| !self.has_demux_id(*demux_id))
+            .ok_or(HalError::Unsupported(
+                "no published demux lease is available",
+            ))?;
+        let entry = self
+            .allocate_demux_runtime_for_public_id(demux_id)
+            .map_err(|error| {
+                registry_commit_error_to_hal(error, "demux runtime allocation failed")
+            })?;
         match register_root_object(self, AidlObjectKind::Demux, i64::from(entry.id.0)) {
             Ok(object_entry) => Ok(object_entry),
             Err(error) => {
@@ -120,10 +147,37 @@ impl TunerServiceRuntime {
         method: AidlMethodCall,
     ) -> Result<RuntimeObjectEntry, HalError> {
         preflight_root_method_dispatch(self, method)?;
-        if !self.has_demux_id(demux_id) {
-            return Err(HalError::Unsupported("demux id is not available"));
+        if !is_public_demux_id(self.capability_snapshot(), demux_id)? {
+            return Err(HalError::invalid_argument(
+                maleicacid_tuner_hal2_common::HalInvalidArgumentKind::NumericRange,
+                "demux id is not published by the capability snapshot",
+            ));
         }
-        register_root_object(self, AidlObjectKind::Demux, i64::from(demux_id))
+        if self.has_demux_id(demux_id) {
+            return Err(HalError::Unsupported(
+                "published demux id is already leased",
+            ));
+        }
+        let entry = self
+            .allocate_demux_runtime_for_public_id(demux_id)
+            .map_err(|error| {
+                registry_commit_error_to_hal(error, "demux runtime allocation failed")
+            })?;
+        match register_root_object(self, AidlObjectKind::Demux, i64::from(demux_id)) {
+            Ok(object_entry) => Ok(object_entry),
+            Err(error) => match unregister_demux_runtime_for_open_rollback(
+                self,
+                entry.id.0,
+                "demux root object rollback after AIDL registration failure",
+            ) {
+                Ok(()) => Err(error),
+                Err(cleanup_error) => Err(compose_primary_cleanup_failure(
+                    "demux root object registration failure",
+                    error,
+                    cleanup_error,
+                )),
+            },
+        }
     }
 
     pub fn open_descrambler_root_object(

@@ -66,7 +66,7 @@ impl RuntimeOwnerRelation {
 pub enum RuntimeObjectLifecycle {
     Live,
     Closing { step: CleanupStep },
-    CleanupFailed { step: CleanupStep },
+    CleanupPending { step: CleanupStep },
     Closed,
     Quarantined,
 }
@@ -222,7 +222,7 @@ impl RuntimeObjectTable {
     ) -> Result<Vec<RuntimeObjectEntry>, RuntimeObjectTableError> {
         let root = self.entry_checked_any(object_id, generation)?;
         match root.lifecycle {
-            RuntimeObjectLifecycle::Live | RuntimeObjectLifecycle::CleanupFailed { .. } => {}
+            RuntimeObjectLifecycle::Live | RuntimeObjectLifecycle::CleanupPending { .. } => {}
             lifecycle => {
                 return Err(RuntimeObjectTableError::InvalidLifecycle {
                     object_id,
@@ -236,7 +236,7 @@ impl RuntimeObjectTable {
         for (target_id, target_generation) in targets {
             let entry = self.entry_mut_checked_any(target_id, target_generation)?;
             match entry.lifecycle {
-                RuntimeObjectLifecycle::Live | RuntimeObjectLifecycle::CleanupFailed { .. } => {
+                RuntimeObjectLifecycle::Live | RuntimeObjectLifecycle::CleanupPending { .. } => {
                     entry.lifecycle = RuntimeObjectLifecycle::Closing { step };
                     changed.push(entry.clone());
                 }
@@ -264,8 +264,8 @@ impl RuntimeObjectTable {
             let is_root = target_id == object_id && target_generation == generation;
             match entry.lifecycle {
                 RuntimeObjectLifecycle::Closing { .. }
-                | RuntimeObjectLifecycle::CleanupFailed { .. } => {
-                    entry.lifecycle = RuntimeObjectLifecycle::CleanupFailed { step };
+                | RuntimeObjectLifecycle::CleanupPending { .. } => {
+                    entry.lifecycle = RuntimeObjectLifecycle::CleanupPending { step };
                     changed.push(entry.clone());
                 }
                 RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined
@@ -295,7 +295,7 @@ impl RuntimeObjectTable {
             let is_root = target_id == object_id && target_generation == generation;
             match entry.lifecycle {
                 RuntimeObjectLifecycle::Closing { .. }
-                | RuntimeObjectLifecycle::CleanupFailed { .. } => entries.push(entry.clone()),
+                | RuntimeObjectLifecycle::CleanupPending { .. } => entries.push(entry.clone()),
                 RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined
                     if !is_root => {}
                 lifecycle => {
@@ -323,7 +323,7 @@ impl RuntimeObjectTable {
             let is_root = target_id == object_id && target_generation == generation;
             match entry.lifecycle {
                 RuntimeObjectLifecycle::Closing { .. }
-                | RuntimeObjectLifecycle::CleanupFailed { .. } => {
+                | RuntimeObjectLifecycle::CleanupPending { .. } => {
                     entry.lifecycle = RuntimeObjectLifecycle::Closed;
                     changed.push(entry.clone());
                 }
@@ -409,6 +409,17 @@ impl RuntimeObjectTable {
                     && entry.lifecycle.is_live()
             })
             .cloned()
+    }
+
+    pub fn active_public_runtime_ids(&self, kind: AidlObjectKind) -> Vec<LedgerId> {
+        self.entries
+            .values()
+            .filter(|entry| {
+                entry.object_kind == kind
+                    && !matches!(entry.lifecycle, RuntimeObjectLifecycle::Closed)
+            })
+            .map(|entry| entry.ledger_id)
+            .collect()
     }
 
     pub fn clear(&mut self) {
@@ -522,7 +533,7 @@ impl RuntimeObjectTable {
         let root = self.entry_checked_any(object_id, generation)?;
         match root.lifecycle {
             RuntimeObjectLifecycle::Closing { .. }
-            | RuntimeObjectLifecycle::CleanupFailed { .. } => Ok(()),
+            | RuntimeObjectLifecycle::CleanupPending { .. } => Ok(()),
             lifecycle => Err(RuntimeObjectTableError::InvalidLifecycle {
                 object_id,
                 lifecycle,

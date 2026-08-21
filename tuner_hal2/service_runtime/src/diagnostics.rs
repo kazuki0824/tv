@@ -134,6 +134,7 @@ pub enum CapabilitySuppressionReason {
     UnsupportedDeliverySystem,
     DeviceFamilyDisabled,
     NoExportableFrontend,
+    InvalidCapabilityProfile,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -449,6 +450,8 @@ pub enum DvrStatusNotifierCleanupDiagnosticKind {
     ResetNotifierCleanup,
     WorkerTerminal,
     SupersedeCleanup,
+    ReaperDeadline,
+    ReaperCompletion,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -506,6 +509,34 @@ impl DvrStatusNotifierCleanupDiagnosticRecord {
     ) -> Self {
         Self {
             kind: DvrStatusNotifierCleanupDiagnosticKind::SupersedeCleanup,
+            phase: DvrPostCommitNotificationPhase::StatusNotifierStop,
+            object_id: Some(object_id),
+            generation: Some(generation),
+            result,
+        }
+    }
+
+    pub fn reaper_deadline(
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        result: Result<(), HalError>,
+    ) -> Self {
+        Self {
+            kind: DvrStatusNotifierCleanupDiagnosticKind::ReaperDeadline,
+            phase: DvrPostCommitNotificationPhase::StatusNotifierStop,
+            object_id: Some(object_id),
+            generation: Some(generation),
+            result,
+        }
+    }
+
+    pub fn reaper_completion(
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        result: Result<(), HalError>,
+    ) -> Self {
+        Self {
+            kind: DvrStatusNotifierCleanupDiagnosticKind::ReaperCompletion,
             phase: DvrPostCommitNotificationPhase::StatusNotifierStop,
             object_id: Some(object_id),
             generation: Some(generation),
@@ -1213,6 +1244,7 @@ impl FilterCallbackDeliveryDiagnosticRecord {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FrontendCallbackDeliveryDiagnosticPhase {
     CallbackArtifactLookup,
+    FrontendEventDelivery,
     ScanEndDelivery,
     ScanSessionAccounting,
     CallbackRegistryAccounting,
@@ -1223,6 +1255,13 @@ pub enum FrontendCallbackDeliveryDiagnosticRecord {
     CallbackArtifactLookup {
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
+        error: HalError,
+    },
+    FrontendEventDelivery {
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        frontend_id: i32,
+        frontend_generation: u64,
         error: HalError,
     },
     ScanEndDelivery {
@@ -1277,6 +1316,22 @@ impl FrontendCallbackDeliveryDiagnosticRecord {
         }
     }
 
+    pub fn frontend_event_delivery(
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        frontend_id: i32,
+        frontend_generation: u64,
+        error: HalError,
+    ) -> Self {
+        Self::FrontendEventDelivery {
+            object_id,
+            generation,
+            frontend_id,
+            frontend_generation,
+            error,
+        }
+    }
+
     pub fn scan_session_accounting(
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
@@ -1313,6 +1368,9 @@ impl FrontendCallbackDeliveryDiagnosticRecord {
         match self {
             Self::CallbackArtifactLookup { .. } => {
                 FrontendCallbackDeliveryDiagnosticPhase::CallbackArtifactLookup
+            }
+            Self::FrontendEventDelivery { .. } => {
+                FrontendCallbackDeliveryDiagnosticPhase::FrontendEventDelivery
             }
             Self::ScanEndDelivery { .. } => {
                 FrontendCallbackDeliveryDiagnosticPhase::ScanEndDelivery

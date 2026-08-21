@@ -1,10 +1,13 @@
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     FrontendIsdbsCoderate::FrontendIsdbsCoderate, FrontendIsdbsModulation::FrontendIsdbsModulation,
+    FrontendIsdbsRolloff::FrontendIsdbsRolloff,
     FrontendIsdbsStreamIdType::FrontendIsdbsStreamIdType,
     FrontendIsdbtBandwidth::FrontendIsdbtBandwidth, FrontendIsdbtCoderate::FrontendIsdbtCoderate,
     FrontendIsdbtGuardInterval::FrontendIsdbtGuardInterval, FrontendIsdbtMode::FrontendIsdbtMode,
     FrontendIsdbtModulation::FrontendIsdbtModulation,
+    FrontendIsdbtPartialReceptionFlag::FrontendIsdbtPartialReceptionFlag,
     FrontendIsdbtTimeInterleaveMode::FrontendIsdbtTimeInterleaveMode,
+    FrontendSpectralInversion::FrontendSpectralInversion,
     FrontendScanType::FrontendScanType, FrontendSettings::FrontendSettings,
 };
 use maleicacid_tuner_hal2_common::{
@@ -23,19 +26,6 @@ fn cast_u64_field(value: i64, field: &'static str) -> Result<u64, HalError> {
     })
 }
 
-fn optional_positive_i64_to_u64_field(
-    value: i64,
-    field: &'static str,
-) -> Result<Option<u64>, HalError> {
-    if value < 0 {
-        return Err(HalError::invalid_argument(
-            HalInvalidArgumentKind::NumericRange,
-            format!("{field} must be non-negative"),
-        ));
-    }
-    Ok(u64::try_from(value).ok().filter(|v| *v > 0))
-}
-
 fn map_isdbt_bandwidth(bandwidth: FrontendIsdbtBandwidth) -> Option<u32> {
     match bandwidth {
         FrontendIsdbtBandwidth::BANDWIDTH_6MHZ => Some(6_000_000),
@@ -45,6 +35,40 @@ fn map_isdbt_bandwidth(bandwidth: FrontendIsdbtBandwidth) -> Option<u32> {
     }
 }
 
+fn is_single_known_enum_value(raw: i32, highest_known_bit: i32) -> bool {
+    raw == 0 || (raw > 0 && raw <= highest_known_bit && raw.is_power_of_two())
+}
+
+fn unsupported_frontend_setting(
+    feature: &'static str,
+    detail: &'static str,
+) -> Result<(), HalError> {
+    Err(HalError::unsupported_detail(feature, detail))
+}
+
+fn invalid_frontend_setting(detail: &'static str) -> Result<(), HalError> {
+    Err(HalError::invalid_argument(
+        HalInvalidArgumentKind::NumericRange,
+        detail,
+    ))
+}
+
+fn validate_auto_only(
+    raw: i32,
+    auto: i32,
+    highest_known_bit: i32,
+    feature: &'static str,
+    detail: &'static str,
+) -> Result<(), HalError> {
+    if raw == auto {
+        return Ok(());
+    }
+    if is_single_known_enum_value(raw, highest_known_bit) {
+        return unsupported_frontend_setting(feature, detail);
+    }
+    invalid_frontend_setting("frontend setting contains a reserved enum value")
+}
+
 fn validate_isdbt_fixed_settings(
     s: &android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::FrontendIsdbtSettings::FrontendIsdbtSettings,
 ) -> Result<(), HalError> {
@@ -52,70 +76,101 @@ fn validate_isdbt_fixed_settings(
         s.bandwidth,
         FrontendIsdbtBandwidth::AUTO | FrontendIsdbtBandwidth::BANDWIDTH_6MHZ
     ) {
-        return Err(HalError::invalid_argument(
-            HalInvalidArgumentKind::UnsupportedBandwidth,
-            "ISDB-T bandwidth must be AUTO or 6MHz",
-        ));
+        if is_single_known_enum_value(
+            s.bandwidth.0,
+            FrontendIsdbtBandwidth::BANDWIDTH_6MHZ.0,
+        ) {
+            unsupported_frontend_setting(
+                "isdbt.bandwidth",
+                "known ISDB-T bandwidth is not supported by this product profile",
+            )?;
+        }
+        return invalid_frontend_setting("ISDB-T bandwidth contains a reserved enum value");
     }
-    if !matches!(s.mode, FrontendIsdbtMode::AUTO | FrontendIsdbtMode::MODE_3) {
-        return Err(HalError::invalid_argument(
-            HalInvalidArgumentKind::UnsupportedBandwidth,
-            "ISDB-T mode must be AUTO or MODE_3",
-        ));
+    validate_auto_only(
+        s.mode.0,
+        FrontendIsdbtMode::AUTO.0,
+        FrontendIsdbtMode::MODE_3.0,
+        "isdbt.mode",
+        "explicit ISDB-T mode is not supported",
+    )?;
+    match s.inversion {
+        FrontendSpectralInversion::UNDEFINED => {}
+        FrontendSpectralInversion::NORMAL | FrontendSpectralInversion::INVERTED => {
+            unsupported_frontend_setting(
+                "isdbt.inversion",
+                "explicit ISDB-T spectral inversion is not supported",
+            )?;
+        }
+        _ => return invalid_frontend_setting("ISDB-T inversion contains a reserved enum value"),
     }
-    if !matches!(
-        s.guardInterval,
-        FrontendIsdbtGuardInterval::AUTO
-            | FrontendIsdbtGuardInterval::INTERVAL_1_32
-            | FrontendIsdbtGuardInterval::INTERVAL_1_16
-            | FrontendIsdbtGuardInterval::INTERVAL_1_8
-            | FrontendIsdbtGuardInterval::INTERVAL_1_4
-    ) {
-        return Err(HalError::invalid_argument(
-            HalInvalidArgumentKind::UnsupportedBandwidth,
-            "unsupported ISDB-T guard interval",
-        ));
+    validate_auto_only(
+        s.guardInterval.0,
+        FrontendIsdbtGuardInterval::AUTO.0,
+        1 << 7,
+        "isdbt.guardInterval",
+        "explicit ISDB-T guard interval is not supported",
+    )?;
+    if s.serviceAreaId < 0 {
+        return invalid_frontend_setting("ISDB-T serviceAreaId must be non-negative");
+    }
+    if s.serviceAreaId > 0 {
+        unsupported_frontend_setting(
+            "isdbt.serviceAreaId",
+            "explicit ISDB-T serviceAreaId is not supported",
+        )?;
+    }
+    match s.partialReceptionFlag {
+        FrontendIsdbtPartialReceptionFlag::UNDEFINED => {}
+        FrontendIsdbtPartialReceptionFlag::AUTO
+        | FrontendIsdbtPartialReceptionFlag::FALSE
+        | FrontendIsdbtPartialReceptionFlag::TRUE => {
+            unsupported_frontend_setting(
+                "isdbt.partialReceptionFlag",
+                "explicit ISDB-T partial reception flag is not supported",
+            )?;
+        }
+        _ => {
+            return invalid_frontend_setting(
+                "ISDB-T partialReceptionFlag contains a reserved enum value",
+            )
+        }
     }
     for layer in &s.layerSettings {
-        if !matches!(
-            layer.modulation,
-            FrontendIsdbtModulation::AUTO
-                | FrontendIsdbtModulation::MOD_DQPSK
-                | FrontendIsdbtModulation::MOD_QPSK
-                | FrontendIsdbtModulation::MOD_16QAM
-                | FrontendIsdbtModulation::MOD_64QAM
-        ) {
-            return Err(HalError::invalid_argument(
-                HalInvalidArgumentKind::UnsupportedBandwidth,
-                "unsupported ISDB-T layer modulation",
-            ));
-        }
-        if !matches!(
-            layer.coderate,
-            FrontendIsdbtCoderate::AUTO
-                | FrontendIsdbtCoderate::CODERATE_1_2
-                | FrontendIsdbtCoderate::CODERATE_2_3
-                | FrontendIsdbtCoderate::CODERATE_3_4
-                | FrontendIsdbtCoderate::CODERATE_5_6
-                | FrontendIsdbtCoderate::CODERATE_7_8
-        ) {
-            return Err(HalError::invalid_argument(
-                HalInvalidArgumentKind::UnsupportedBandwidth,
-                "unsupported ISDB-T layer coderate",
-            ));
-        }
-        if !matches!(
-            layer.timeInterleave,
-            FrontendIsdbtTimeInterleaveMode::AUTO
-                | FrontendIsdbtTimeInterleaveMode::INTERLEAVE_3_0
-                | FrontendIsdbtTimeInterleaveMode::INTERLEAVE_3_1
-                | FrontendIsdbtTimeInterleaveMode::INTERLEAVE_3_2
-                | FrontendIsdbtTimeInterleaveMode::INTERLEAVE_3_4
-        ) {
-            return Err(HalError::invalid_argument(
-                HalInvalidArgumentKind::UnsupportedBandwidth,
-                "unsupported ISDB-T layer time interleave",
-            ));
+        validate_auto_only(
+            layer.modulation.0,
+            FrontendIsdbtModulation::AUTO.0,
+            FrontendIsdbtModulation::MOD_64QAM.0,
+            "isdbt.layer.modulation",
+            "explicit ISDB-T layer modulation is not supported",
+        )?;
+        validate_auto_only(
+            layer.coderate.0,
+            FrontendIsdbtCoderate::AUTO.0,
+            FrontendIsdbtCoderate::CODERATE_8_9.0,
+            "isdbt.layer.coderate",
+            "explicit ISDB-T layer coderate is not supported",
+        )?;
+        validate_auto_only(
+            layer.timeInterleave.0,
+            FrontendIsdbtTimeInterleaveMode::AUTO.0,
+            1 << 12,
+            "isdbt.layer.timeInterleave",
+            "explicit ISDB-T layer time interleave is not supported",
+        )?;
+        match layer.numOfSegment {
+            0 | 0xFF => {}
+            1..=13 => {
+                unsupported_frontend_setting(
+                    "isdbt.layer.numOfSegment",
+                    "explicit ISDB-T segment count is not supported",
+                )?;
+            }
+            _ => {
+                return invalid_frontend_setting(
+                    "ISDB-T numOfSegment must be 0, CTS AUTO 0xFF, or 1..=13",
+                );
+            }
         }
     }
     Ok(())
@@ -124,37 +179,38 @@ fn validate_isdbt_fixed_settings(
 fn validate_isdbs_fixed_settings(
     s: &android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::FrontendIsdbsSettings::FrontendIsdbsSettings,
 ) -> Result<(), HalError> {
-    if !matches!(
-        s.modulation,
-        FrontendIsdbsModulation::AUTO
-            | FrontendIsdbsModulation::MOD_BPSK
-            | FrontendIsdbsModulation::MOD_QPSK
-            | FrontendIsdbsModulation::MOD_TC8PSK
-    ) {
-        return Err(HalError::invalid_argument(
-            HalInvalidArgumentKind::UnsupportedBandwidth,
-            "unsupported ISDB-S modulation",
-        ));
+    validate_auto_only(
+        s.modulation.0,
+        FrontendIsdbsModulation::AUTO.0,
+        FrontendIsdbsModulation::MOD_TC8PSK.0,
+        "isdbs.modulation",
+        "explicit ISDB-S modulation is not supported",
+    )?;
+    validate_auto_only(
+        s.coderate.0,
+        FrontendIsdbsCoderate::AUTO.0,
+        FrontendIsdbsCoderate::CODERATE_7_8.0,
+        "isdbs.coderate",
+        "explicit ISDB-S coderate is not supported",
+    )?;
+    if s.symbolRate < 0 {
+        return invalid_frontend_setting("ISDB-S symbolRate must be non-negative");
     }
-    if !matches!(
-        s.coderate,
-        FrontendIsdbsCoderate::AUTO
-            | FrontendIsdbsCoderate::CODERATE_1_2
-            | FrontendIsdbsCoderate::CODERATE_2_3
-            | FrontendIsdbsCoderate::CODERATE_3_4
-            | FrontendIsdbsCoderate::CODERATE_5_6
-            | FrontendIsdbsCoderate::CODERATE_7_8
-    ) {
-        return Err(HalError::invalid_argument(
-            HalInvalidArgumentKind::UnsupportedSymbolRate,
-            "unsupported ISDB-S coderate",
-        ));
+    if s.symbolRate > 0 {
+        unsupported_frontend_setting(
+            "isdbs.symbolRate",
+            "explicit ISDB-S symbolRate is not supported",
+        )?;
     }
-    if s.symbolRate != 0 {
-        return Err(HalError::invalid_argument(
-            HalInvalidArgumentKind::UnsupportedSymbolRate,
-            "ISDB-S symbolRate must be 0 in this product scope",
-        ));
+    match s.rolloff {
+        FrontendIsdbsRolloff::UNDEFINED => {}
+        FrontendIsdbsRolloff::ROLLOFF_0_35 => {
+            unsupported_frontend_setting(
+                "isdbs.rolloff",
+                "explicit ISDB-S rolloff is not supported",
+            )?;
+        }
+        _ => return invalid_frontend_setting("ISDB-S rolloff contains a reserved enum value"),
     }
     Ok(())
 }
@@ -238,10 +294,9 @@ pub fn aidl_frontend_settings_to_request(
             Ok(FrontendTuneRequest {
                 system: FrontendSystem::IsdbT,
                 frequency: cast_u64_field(s.frequency, "isdbt.frequency")?,
-                end_frequency: optional_positive_i64_to_u64_field(
-                    s.endFrequency,
-                    "isdbt.endFrequency",
-                )?,
+                // endFrequency は blind scan 専用であり、
+                // tune/non-blind request へ保持しない。
+                end_frequency: None,
                 stream_id: None,
                 stream_id_kind: None,
                 bandwidth_hz: map_isdbt_bandwidth(s.bandwidth),
@@ -256,10 +311,9 @@ pub fn aidl_frontend_settings_to_request(
             Ok(FrontendTuneRequest {
                 system: FrontendSystem::IsdbS,
                 frequency,
-                end_frequency: optional_positive_i64_to_u64_field(
-                    s.endFrequency,
-                    "isdbs.endFrequency",
-                )?,
+                // endFrequency は blind scan 専用であり、
+                // tune/non-blind request へ保持しない。
+                end_frequency: None,
                 stream_id,
                 stream_id_kind,
                 bandwidth_hz: None,
@@ -291,5 +345,130 @@ pub fn aidl_scan_type_to_mode(scan_type: FrontendScanType) -> Result<FrontendSca
         _ => Err(HalError::Unsupported(
             "frontend scan type is outside the r51 product scope",
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
+        FrontendIsdbsSettings::FrontendIsdbsSettings,
+        FrontendIsdbtLayerSettings::FrontendIsdbtLayerSettings,
+        FrontendIsdbtSettings::FrontendIsdbtSettings,
+    };
+
+    fn valid_isdbt_settings() -> FrontendIsdbtSettings {
+        FrontendIsdbtSettings {
+            inversion: FrontendSpectralInversion::UNDEFINED,
+            bandwidth: FrontendIsdbtBandwidth::AUTO,
+            mode: FrontendIsdbtMode::AUTO,
+            guardInterval: FrontendIsdbtGuardInterval::AUTO,
+            serviceAreaId: 0,
+            partialReceptionFlag: FrontendIsdbtPartialReceptionFlag::UNDEFINED,
+            layerSettings: vec![FrontendIsdbtLayerSettings {
+                modulation: FrontendIsdbtModulation::AUTO,
+                coderate: FrontendIsdbtCoderate::AUTO,
+                timeInterleave: FrontendIsdbtTimeInterleaveMode::AUTO,
+                numOfSegment: 0,
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn valid_isdbs_settings() -> FrontendIsdbsSettings {
+        FrontendIsdbsSettings {
+            modulation: FrontendIsdbsModulation::AUTO,
+            coderate: FrontendIsdbsCoderate::AUTO,
+            symbolRate: 0,
+            rolloff: FrontendIsdbsRolloff::UNDEFINED,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn isdbt_auto_segment_and_unspecified_constraints_are_accepted() {
+        assert_eq!(validate_isdbt_fixed_settings(&valid_isdbt_settings()), Ok(()));
+    }
+
+    #[test]
+    fn isdbt_explicit_segment_is_unavailable_and_reserved_segment_is_invalid() {
+        let mut explicit = valid_isdbt_settings();
+        explicit.layerSettings[0].numOfSegment = 13;
+        assert!(matches!(
+            validate_isdbt_fixed_settings(&explicit),
+            Err(HalError::UnsupportedDetail { .. })
+        ));
+
+        let mut reserved = valid_isdbt_settings();
+        reserved.layerSettings[0].numOfSegment = 14;
+        assert!(matches!(
+            validate_isdbt_fixed_settings(&reserved),
+            Err(HalError::InvalidArgument { .. })
+        ));
+    }
+
+    #[test]
+    fn isdbt_cts_auto_segment_is_accepted() {
+        let mut settings = valid_isdbt_settings();
+        settings.layerSettings[0].numOfSegment = 0xFF;
+        assert_eq!(validate_isdbt_fixed_settings(&settings), Ok(()));
+    }
+
+    #[test]
+    fn end_frequency_is_not_retained_in_non_blind_request() {
+        let mut isdbt = valid_isdbt_settings();
+        isdbt.frequency = 473_142_857;
+        isdbt.endFrequency = -1;
+        let request = aidl_frontend_settings_to_request(&FrontendSettings::Isdbt(isdbt)).unwrap();
+        assert_eq!(request.end_frequency, None);
+
+        let mut isdbs = valid_isdbs_settings();
+        isdbs.frequency = 1_049_480_000;
+        isdbs.endFrequency = 2_053_000_000;
+        isdbs.streamId = AOSP_TUNER_INVALID_STREAM_ID;
+        isdbs.streamIdType = FrontendIsdbsStreamIdType::STREAM_ID;
+        let request = aidl_frontend_settings_to_request(&FrontendSettings::Isdbs(isdbs)).unwrap();
+        assert_eq!(request.end_frequency, None);
+    }
+
+    #[test]
+    fn isdbt_explicit_inversion_and_partial_reception_are_unavailable() {
+        let mut inversion = valid_isdbt_settings();
+        inversion.inversion = FrontendSpectralInversion::NORMAL;
+        assert!(matches!(
+            validate_isdbt_fixed_settings(&inversion),
+            Err(HalError::UnsupportedDetail { .. })
+        ));
+
+        let mut partial = valid_isdbt_settings();
+        partial.partialReceptionFlag = FrontendIsdbtPartialReceptionFlag::AUTO;
+        assert!(matches!(
+            validate_isdbt_fixed_settings(&partial),
+            Err(HalError::UnsupportedDetail { .. })
+        ));
+    }
+
+    #[test]
+    fn isdbs_explicit_rolloff_is_unavailable() {
+        let mut settings = valid_isdbs_settings();
+        settings.rolloff = FrontendIsdbsRolloff::ROLLOFF_0_35;
+        assert!(matches!(
+            validate_isdbs_fixed_settings(&settings),
+            Err(HalError::UnsupportedDetail { .. })
+        ));
+    }
+
+    #[test]
+    fn isdbs_sdk_default_selector_is_unspecified_for_bs_and_cs110() {
+        for frequency in [1_049_480_000, 1_613_000_000] {
+            let mut settings = valid_isdbs_settings();
+            settings.frequency = frequency;
+            settings.streamId = AOSP_TUNER_INVALID_STREAM_ID;
+            settings.streamIdType = FrontendIsdbsStreamIdType::STREAM_ID;
+            let request =
+                aidl_frontend_settings_to_request(&FrontendSettings::Isdbs(settings)).unwrap();
+            assert_eq!(request.stream_id, None);
+            assert_eq!(request.stream_id_kind, None);
+        }
     }
 }

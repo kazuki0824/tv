@@ -60,8 +60,8 @@ use maleicacid_tuner_hal2_binder_adapter::{
     FilterReleaseAvHandleRequest, FilterSetDataSourceRequest,
 };
 use maleicacid_tuner_hal2_common::{
-    fail_after_cleanup, japan_isdbt_frequency_contract_range_hz, FrontendBackendKind,
-    FrontendSystem, HalError, HalInternalKind,
+    fail_after_cleanup, FrontendBackendKind, FrontendSystem, HalError, HalInternalKind,
+    HalInvalidArgumentKind,
 };
 use maleicacid_tuner_hal2_demux::QueueDescriptorSnapshot;
 use maleicacid_tuner_hal2_service_runtime::{
@@ -80,13 +80,14 @@ use crate::child_object_open::{
 use crate::demux_object::DemuxAidlObject;
 use crate::descrambler_object::DescramblerAidlObject;
 use crate::dvr_callback_delivery::{
-    deliver_started_dvr_status, start_dvr_status_notifier, stop_dvr_status_notifier,
+    deliver_started_dvr_status, is_playback_dvr, start_dvr_status_notifier,
+    stop_dvr_status_notifier,
 };
 use crate::dvr_object::DvrAidlObject;
 use crate::error_bridge::{status_from_hal_error, status_unknown_error};
 use crate::filter_callback_delivery::AidlFilterEventDispatcher;
 use crate::filter_object::FilterAidlObject;
-use crate::frontend_callback_delivery::scan_end_notifier;
+use crate::frontend_callback_delivery::{scan_notifier, tune_notifier};
 use crate::frontend_object::FrontendAidlObject;
 use crate::lnb_object::LnbAidlObject;
 use crate::object_handle::AidlObjectHandle;
@@ -149,8 +150,9 @@ fn frontend_system_from_type(frontend_type: FrontendType) -> Result<FrontendSyst
     match frontend_type {
         FrontendType::ISDBS => Ok(FrontendSystem::IsdbS),
         FrontendType::ISDBT => Ok(FrontendSystem::IsdbT),
-        _ => Err(HalError::Unsupported(
-            "frontend type is unsupported by tuner_hal2",
+        _ => Err(HalError::invalid_argument(
+            HalInvalidArgumentKind::NumericRange,
+            "frontend type is not present in the immutable capability snapshot",
         )),
     }
 }
@@ -347,19 +349,6 @@ impl TunerAidlService {
     }
 }
 
-const JAPAN_BS_FIRST_IF_HZ: i64 = 1_049_480_000;
-const JAPAN_CS110_LAST_IF_HZ: i64 = 2_053_000_000;
-const PX4_FRONTEND_ID_BASE: i32 = 1_000_000;
-const DVB_FRONTEND_ID_BASE: i32 = 2_000_000;
-const PX4_PHYSICAL_GROUP_TAG: i32 = 0x1000_0000;
-const DVB_PHYSICAL_GROUP_TAG: i32 = 0x2000_0000;
-
-fn packed_physical_group_id(tag: i32, major: i32, minor: i32) -> i32 {
-    let major_bits = (major.max(0) & 0x3fff) << 14;
-    let minor_bits = minor.max(0) & 0x3fff;
-    tag | major_bits | minor_bits
-}
-
 fn frontend_type_from_snapshot(snapshot: &RootFrontendInfoSnapshot) -> FrontendType {
     match snapshot.system {
         FrontendSystem::IsdbT => FrontendType::ISDBT,
@@ -368,29 +357,15 @@ fn frontend_type_from_snapshot(snapshot: &RootFrontendInfoSnapshot) -> FrontendT
     }
 }
 
-fn physical_group_id_from_snapshot(snapshot: &RootFrontendInfoSnapshot) -> i32 {
-    match snapshot.backend {
-        FrontendBackendKind::LinuxDvb => {
-            let rel = snapshot.id.saturating_sub(DVB_FRONTEND_ID_BASE);
-            let adapter = (rel >> 12) & 0xff;
-            let frontend_index = (rel >> 4) & 0xff;
-            packed_physical_group_id(DVB_PHYSICAL_GROUP_TAG, adapter, frontend_index)
-        }
-        FrontendBackendKind::Px4CharDevice => {
-            let rel = snapshot.id.saturating_sub(PX4_FRONTEND_ID_BASE);
-            let family = rel.div_euclid(10_000);
-            let unit = rel.rem_euclid(10_000).div_euclid(10);
-            packed_physical_group_id(PX4_PHYSICAL_GROUP_TAG, family, unit)
-        }
-    }
-}
-
 fn frontend_status_caps_for_snapshot(
     snapshot: &RootFrontendInfoSnapshot,
 ) -> Vec<FrontendStatusType> {
     // optional telemetryは保守的に扱う。tune/scan backend runtime接続前は決定的な状態fieldだけをadvertiseする。
     // LNB voltageは、systemがISDB-Sであるだけではなく、frontend exportとexported LNBがprobe/registry由来の同じ固定LNB profileを共有する場合だけadvertiseする。
-    let mut caps = vec![FrontendStatusType::DEMOD_LOCK];
+    let mut caps = Vec::new();
+    if snapshot.backend == FrontendBackendKind::LinuxDvb {
+        caps.push(FrontendStatusType::DEMOD_LOCK);
+    }
     if lnb_profile_supports_voltage_status(snapshot.lnb_profile) {
         caps.push(FrontendStatusType::LNB_VOLTAGE);
     }
@@ -398,53 +373,28 @@ fn frontend_status_caps_for_snapshot(
 }
 
 fn isdbt_mode_caps() -> i32 {
-    FrontendIsdbtMode::AUTO.0 | FrontendIsdbtMode::MODE_3.0
+    FrontendIsdbtMode::AUTO.0
 }
 fn isdbt_bandwidth_caps() -> i32 {
     FrontendIsdbtBandwidth::AUTO.0 | FrontendIsdbtBandwidth::BANDWIDTH_6MHZ.0
 }
 fn isdbt_modulation_caps() -> i32 {
     FrontendIsdbtModulation::AUTO.0
-        | FrontendIsdbtModulation::MOD_DQPSK.0
-        | FrontendIsdbtModulation::MOD_QPSK.0
-        | FrontendIsdbtModulation::MOD_16QAM.0
-        | FrontendIsdbtModulation::MOD_64QAM.0
 }
 fn isdbt_coderate_caps() -> i32 {
     FrontendIsdbtCoderate::AUTO.0
-        | FrontendIsdbtCoderate::CODERATE_1_2.0
-        | FrontendIsdbtCoderate::CODERATE_2_3.0
-        | FrontendIsdbtCoderate::CODERATE_3_4.0
-        | FrontendIsdbtCoderate::CODERATE_5_6.0
-        | FrontendIsdbtCoderate::CODERATE_7_8.0
 }
 fn isdbt_guard_interval_caps() -> i32 {
     FrontendIsdbtGuardInterval::AUTO.0
-        | FrontendIsdbtGuardInterval::INTERVAL_1_32.0
-        | FrontendIsdbtGuardInterval::INTERVAL_1_16.0
-        | FrontendIsdbtGuardInterval::INTERVAL_1_8.0
-        | FrontendIsdbtGuardInterval::INTERVAL_1_4.0
 }
 fn isdbt_time_interleave_caps() -> i32 {
     FrontendIsdbtTimeInterleaveMode::AUTO.0
-        | FrontendIsdbtTimeInterleaveMode::INTERLEAVE_3_0.0
-        | FrontendIsdbtTimeInterleaveMode::INTERLEAVE_3_1.0
-        | FrontendIsdbtTimeInterleaveMode::INTERLEAVE_3_2.0
-        | FrontendIsdbtTimeInterleaveMode::INTERLEAVE_3_4.0
 }
 fn isdbs_modulation_caps() -> i32 {
     FrontendIsdbsModulation::AUTO.0
-        | FrontendIsdbsModulation::MOD_BPSK.0
-        | FrontendIsdbsModulation::MOD_QPSK.0
-        | FrontendIsdbsModulation::MOD_TC8PSK.0
 }
 fn isdbs_coderate_caps() -> i32 {
     FrontendIsdbsCoderate::AUTO.0
-        | FrontendIsdbsCoderate::CODERATE_1_2.0
-        | FrontendIsdbsCoderate::CODERATE_2_3.0
-        | FrontendIsdbsCoderate::CODERATE_3_4.0
-        | FrontendIsdbsCoderate::CODERATE_5_6.0
-        | FrontendIsdbsCoderate::CODERATE_7_8.0
 }
 
 fn frontend_caps_for_snapshot(snapshot: &RootFrontendInfoSnapshot) -> FrontendCapabilities {
@@ -456,8 +406,14 @@ fn frontend_caps_for_snapshot(snapshot: &RootFrontendInfoSnapshot) -> FrontendCa
             coderateCap: isdbt_coderate_caps(),
             guardIntervalCap: isdbt_guard_interval_caps(),
             timeInterleaveCap: isdbt_time_interleave_caps(),
-            isSegmentAuto: true,
-            isFullSegment: true,
+            isSegmentAuto: snapshot
+                .capability
+                .isdbt_segment
+                .is_some_and(|capability| capability.is_segment_auto),
+            isFullSegment: snapshot
+                .capability
+                .isdbt_segment
+                .is_some_and(|capability| capability.is_full_segment),
         }),
         FrontendType::ISDBS => FrontendCapabilities::IsdbsCaps(FrontendIsdbsCapabilities {
             modulationCap: isdbs_modulation_caps(),
@@ -467,27 +423,16 @@ fn frontend_caps_for_snapshot(snapshot: &RootFrontendInfoSnapshot) -> FrontendCa
     }
 }
 
-fn frontend_frequency_contract(snapshot: &RootFrontendInfoSnapshot) -> (i64, i64, i64) {
-    match frontend_type_from_snapshot(snapshot) {
-        FrontendType::ISDBT => {
-            let (min_hz, max_hz, tolerance_hz) = japan_isdbt_frequency_contract_range_hz();
-            (min_hz as i64, max_hz as i64, tolerance_hz as i64)
-        }
-        FrontendType::ISDBS => (JAPAN_BS_FIRST_IF_HZ, JAPAN_CS110_LAST_IF_HZ, 0),
-        _ => (0, 0, 0),
-    }
-}
-
 fn frontend_info_from_snapshot(snapshot: &RootFrontendInfoSnapshot) -> FrontendInfo {
-    let (min_freq, max_freq, acquire_range) = frontend_frequency_contract(snapshot);
+    let scalar = snapshot.capability.scalar;
     FrontendInfo {
         r#type: frontend_type_from_snapshot(snapshot),
-        minFrequency: min_freq,
-        maxFrequency: max_freq,
-        minSymbolRate: 0,
-        maxSymbolRate: 0,
-        acquireRange: acquire_range,
-        exclusiveGroupId: physical_group_id_from_snapshot(snapshot),
+        minFrequency: scalar.min_frequency_hz,
+        maxFrequency: scalar.max_frequency_hz,
+        minSymbolRate: scalar.min_symbol_rate,
+        maxSymbolRate: scalar.max_symbol_rate,
+        acquireRange: scalar.acquire_range_hz,
+        exclusiveGroupId: snapshot.capability.exclusive_group_id,
         statusCaps: frontend_status_caps_for_snapshot(snapshot),
         frontendCaps: frontend_caps_for_snapshot(snapshot),
     }
@@ -814,5 +759,36 @@ mod tests {
         assert!(dvr.close().is_ok());
         assert!(dvr.close().is_err());
         assert!(dvr.start().is_err());
+    }
+
+    #[test]
+    fn px4_does_not_advertise_current_demod_lock_readback() {
+        let capability = maleicacid_tuner_hal2_service_runtime::FrontendCapabilitySnapshot {
+            scalar: maleicacid_tuner_hal2_service_runtime::FrontendScalarCapability {
+                min_frequency_hz: 1,
+                max_frequency_hz: 2,
+                min_symbol_rate: 0,
+                max_symbol_rate: 0,
+                acquire_range_hz: 0,
+            },
+            exclusive_group_id: 1,
+            isdbt_segment: None,
+        };
+        let px4 = RootFrontendInfoSnapshot {
+            id: 1,
+            backend: FrontendBackendKind::Px4CharDevice,
+            system: FrontendSystem::IsdbT,
+            lnb_profile: None,
+            capability,
+        };
+        let dvb = RootFrontendInfoSnapshot {
+            backend: FrontendBackendKind::LinuxDvb,
+            ..px4
+        };
+
+        assert!(!frontend_status_caps_for_snapshot(&px4)
+            .contains(&FrontendStatusType::DEMOD_LOCK));
+        assert!(frontend_status_caps_for_snapshot(&dvb)
+            .contains(&FrontendStatusType::DEMOD_LOCK));
     }
 }

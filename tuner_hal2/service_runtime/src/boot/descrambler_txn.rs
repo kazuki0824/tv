@@ -9,6 +9,7 @@ use super::{
     HalInvalidArgumentKind, HalInvalidStateKind, RegistryCommitError, TunerServiceRuntime,
 };
 use crate::descrambler_key_table::DescramblerKeyLookupError;
+use crate::descrambler_session::DescramblerSourceCallFailure;
 use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, FirstErrorCollector};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -56,14 +57,31 @@ impl TunerServiceRuntime {
     }
 
     fn descrambler_bound_demux(&self, descrambler_id: i32) -> Result<(i32, u64), HalError> {
-        self.registry
+        let (demux_id, generation) = self
+            .registry
             .descrambler_bound_demux(DescramblerRuntimeId(descrambler_id))
             .ok_or_else(|| {
                 HalError::invalid_state(
                     HalInvalidStateKind::InvalidLifecycle,
                     "descrambler demux source is not bound",
                 )
-            })
+            })?;
+        let demux = self
+            .registry
+            .demux_runtime(DemuxRuntimeId(demux_id))
+            .ok_or_else(|| {
+                HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "descrambler source demux runtime no longer exists",
+                )
+            })?;
+        if demux.state() != DemuxRuntimeState::Open || demux.generation() != generation {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "descrambler source demux generation is no longer live",
+            ));
+        }
+        Ok((demux_id, generation))
     }
 
     pub(super) fn validate_descrambler_source_filter(
@@ -86,10 +104,20 @@ impl TunerServiceRuntime {
         descrambler_id: i32,
         demux_id: i32,
     ) -> Result<(), HalError> {
-        let demux_runtime = self
-            .registry
-            .demux_runtime(DemuxRuntimeId(demux_id))
-            .ok_or(HalError::Unsupported("demux id is not available"))?;
+        self.registry
+            .begin_descrambler_demux_source_call_use_case(DescramblerRuntimeId(descrambler_id))
+            .map_err(|failure| descrambler_session_failure_to_hal(failure.kind))?;
+        let Some(demux_runtime) = self.registry.demux_runtime(DemuxRuntimeId(demux_id)) else {
+            let error = HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "demux id is not available",
+            );
+            return Err(self.finish_failed_descrambler_source_call(
+                descrambler_id,
+                DescramblerSourceCallFailure::InvalidDemuxId,
+                error,
+            ));
+        };
         match demux_runtime.state() {
             DemuxRuntimeState::Open => {}
             DemuxRuntimeState::Closing
@@ -97,20 +125,57 @@ impl TunerServiceRuntime {
             | DemuxRuntimeState::Closed
             | DemuxRuntimeState::Failed
             | DemuxRuntimeState::Quarantined => {
-                return Err(HalError::invalid_state(
+                let error = HalError::invalid_state(
                     HalInvalidStateKind::InvalidLifecycle,
                     "demux runtime is not live",
+                );
+                return Err(self.finish_failed_descrambler_source_call(
+                    descrambler_id,
+                    DescramblerSourceCallFailure::InvalidDemuxState,
+                    error,
                 ));
             }
         }
         let demux_generation = demux_runtime.generation();
-        self.registry
+        match self.registry
             .bind_descrambler_demux_use_case(
                 DescramblerRuntimeId(descrambler_id),
                 demux_id,
                 demux_generation,
             )
-            .map_err(|failure| descrambler_session_failure_to_hal(failure.kind))
+        {
+            Ok(()) => Ok(()),
+            Err(failure) => {
+                let error = descrambler_session_failure_to_hal(failure.kind);
+                Err(self.finish_failed_descrambler_source_call(
+                    descrambler_id,
+                    DescramblerSourceCallFailure::BindingCommitFailed,
+                    error,
+                ))
+            }
+        }
+    }
+
+    fn finish_failed_descrambler_source_call(
+        &mut self,
+        descrambler_id: i32,
+        failure: DescramblerSourceCallFailure,
+        primary: HalError,
+    ) -> HalError {
+        match self
+            .registry
+            .record_descrambler_demux_source_call_failure_use_case(
+                DescramblerRuntimeId(descrambler_id),
+                failure,
+            )
+        {
+            Ok(()) => primary,
+            Err(record_failure) => compose_primary_cleanup_failure(
+                "descrambler source-call failure state commit failed",
+                primary,
+                descrambler_session_failure_to_hal(record_failure.kind),
+            ),
+        }
     }
 
     fn transact_set_descrambler_key_token(
@@ -131,9 +196,9 @@ impl TunerServiceRuntime {
                     self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::set_key_token(
                         descrambler_id,
                         DescramblerDiagnosticKind::KeyTokenReleaseFailed,
-                        hal_error,
+                        hal_error.clone(),
                     ));
-                    Ok(())
+                    Err(hal_error)
                 }
                 Err(DescramblerClearKeyTxnError::Session(failure)) => {
                     let error = descrambler_session_failure_to_hal(failure.kind);
@@ -164,6 +229,14 @@ impl TunerServiceRuntime {
                 return Err(hal_error);
             }
         };
+        if let Err(error) = self.descrambler_bound_demux(descrambler_id) {
+            self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::set_key_token(
+                descrambler_id,
+                DescramblerDiagnosticKind::SessionClosed,
+                error.clone(),
+            ));
+            return Err(error);
+        }
         if !self.registry.descrambler_token_resolution_available() {
             let error = HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
@@ -189,9 +262,9 @@ impl TunerServiceRuntime {
                 self.record_descrambler_diagnostic(DescramblerDiagnosticRecord::set_key_token(
                     descrambler_id,
                     DescramblerDiagnosticKind::KeyTokenReleaseFailed,
-                    hal_error,
+                    hal_error.clone(),
                 ));
-                Ok(())
+                Err(hal_error)
             }
             Err(DescramblerReplaceKeyTxnError::Session(failure)) => {
                 let hal_error = descrambler_session_failure_to_hal(failure.kind);

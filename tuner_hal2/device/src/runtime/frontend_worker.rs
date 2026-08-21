@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
 use maleicacid_tuner_hal2_control_core::{WorkerExit, WorkerFailureDomain, WorkerStopReason};
 
+use super::backend_worker::FrontendBackendSubmitTicket;
 use crate::runtime::thread_result_owner::{ThreadResultOwner, ThreadResultPoll};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -93,17 +94,92 @@ impl FrontendWorkerDetachedJoin {
             result,
         }
     }
+
+    fn try_complete(mut self) -> FrontendWorkerStopPoll {
+        let Some((result, exit)) = self.slot.completed_result() else {
+            return FrontendWorkerStopPoll::Pending(FrontendWorkerStopTicket::join(self));
+        };
+        FrontendWorkerStopPoll::Completed(FrontendWorkerStopOutcome::Completed {
+            frontend_id: self.frontend_id,
+            kind: self.kind,
+            generation: self.generation,
+            exit,
+            result,
+        })
+    }
+
+    fn wait_until_finished(&self, deadline: Option<std::time::Instant>) -> Result<bool, HalError> {
+        if self.slot.pending_completed.is_some() {
+            return Ok(true);
+        }
+        self.slot
+            .thread_result
+            .as_ref()
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend worker slot missing thread result owner while waiting",
+                )
+            })?
+            .wait_until_finished(deadline)
+    }
+}
+
+#[derive(Debug)]
+struct FrontendBackendSubmitDetachedJoin {
+    frontend_id: i32,
+    kind: FrontendWorkerKind,
+    generation: u64,
+    ticket: FrontendBackendSubmitTicket,
+}
+
+impl FrontendBackendSubmitDetachedJoin {
+    fn complete(self) -> FrontendWorkerStopOutcome {
+        FrontendWorkerStopOutcome::Completed {
+            frontend_id: self.frontend_id,
+            kind: self.kind,
+            generation: self.generation,
+            exit: WorkerExit::Normal,
+            result: self.ticket.complete_cleanup(),
+        }
+    }
+
+    fn try_complete(mut self) -> FrontendWorkerStopPoll {
+        let Some(result) = self.ticket.try_complete_cleanup() else {
+            return FrontendWorkerStopPoll::Pending(
+                FrontendWorkerStopTicket::backend_submit_join(self),
+            );
+        };
+        FrontendWorkerStopPoll::Completed(FrontendWorkerStopOutcome::Completed {
+            frontend_id: self.frontend_id,
+            kind: self.kind,
+            generation: self.generation,
+            exit: WorkerExit::Normal,
+            result,
+        })
+    }
+
+    fn wait_until_finished(&self, deadline: Option<std::time::Instant>) -> Result<bool, HalError> {
+        self.ticket.wait_until_cleanup(deadline)
+    }
 }
 
 #[derive(Debug)]
 enum FrontendWorkerStopTicketKind {
     Immediate(FrontendWorkerStopOutcome),
     Join(FrontendWorkerDetachedJoin),
+    BackendSubmitJoin(FrontendBackendSubmitDetachedJoin),
 }
 
 #[derive(Debug)]
 pub struct FrontendWorkerStopTicket {
     kind: FrontendWorkerStopTicketKind,
+}
+
+#[derive(Debug)]
+pub enum FrontendWorkerStopPoll {
+    Pending(FrontendWorkerStopTicket),
+    Completed(FrontendWorkerStopOutcome),
 }
 
 impl FrontendWorkerStopTicket {
@@ -119,6 +195,26 @@ impl FrontendWorkerStopTicket {
         }
     }
 
+    fn backend_submit_join(join: FrontendBackendSubmitDetachedJoin) -> Self {
+        Self {
+            kind: FrontendWorkerStopTicketKind::BackendSubmitJoin(join),
+        }
+    }
+
+    pub fn backend_submit_cleanup(
+        frontend_id: i32,
+        kind: FrontendWorkerKind,
+        generation: u64,
+        ticket: FrontendBackendSubmitTicket,
+    ) -> Self {
+        Self::backend_submit_join(FrontendBackendSubmitDetachedJoin {
+            frontend_id,
+            kind,
+            generation,
+            ticket,
+        })
+    }
+
     pub fn worker_generation(&self) -> Option<u64> {
         match &self.kind {
             FrontendWorkerStopTicketKind::Immediate(FrontendWorkerStopOutcome::NotRunning) => None,
@@ -128,6 +224,7 @@ impl FrontendWorkerStopTicket {
                 | FrontendWorkerStopOutcome::StopRequestFailed { generation, .. },
             ) => Some(*generation),
             FrontendWorkerStopTicketKind::Join(join) => Some(join.generation),
+            FrontendWorkerStopTicketKind::BackendSubmitJoin(join) => Some(join.generation),
         }
     }
 
@@ -135,6 +232,30 @@ impl FrontendWorkerStopTicket {
         match self.kind {
             FrontendWorkerStopTicketKind::Immediate(outcome) => outcome,
             FrontendWorkerStopTicketKind::Join(join) => join.complete(),
+            FrontendWorkerStopTicketKind::BackendSubmitJoin(join) => join.complete(),
+        }
+    }
+
+    pub fn try_complete(self) -> FrontendWorkerStopPoll {
+        match self.kind {
+            FrontendWorkerStopTicketKind::Immediate(outcome) => {
+                FrontendWorkerStopPoll::Completed(outcome)
+            }
+            FrontendWorkerStopTicketKind::Join(join) => join.try_complete(),
+            FrontendWorkerStopTicketKind::BackendSubmitJoin(join) => join.try_complete(),
+        }
+    }
+
+    pub fn wait_until_finished(
+        &self,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<bool, HalError> {
+        match &self.kind {
+            FrontendWorkerStopTicketKind::Immediate(_) => Ok(true),
+            FrontendWorkerStopTicketKind::Join(join) => join.wait_until_finished(deadline),
+            FrontendWorkerStopTicketKind::BackendSubmitJoin(join) => {
+                join.wait_until_finished(deadline)
+            }
         }
     }
 }
@@ -263,8 +384,8 @@ impl FrontendWorkerRegistry {
         if let Some(slot) = self.slots.get_mut(&key) {
             match slot.completed_result() {
                 Some((Ok(()), _exit)) => {
-                    // A successfully completed worker may be replaced. Remove the
-                    // old slot after releasing the mutable slot borrow.
+                    // 正常終了済みworkerは置換できる。mutable borrowを解放してから
+                    // 旧slotを削除する。
                     remove_finished_success = true;
                 }
                 Some((Err(error), exit)) => {

@@ -1,20 +1,212 @@
 use crate::boot::{DvrChildRuntimeOpen, FilterChildRuntimeOpen, TunerServiceRuntime};
 use crate::object_method_txn::ObjectMethodExecutionToken;
 use crate::registry::{
-    DemuxRegistryEntry, DvrRegistryEntry, FilterRegistryEntry, RegistryCommitError,
+    DemuxRegistryEntry, DemuxRuntimeId, DvrRegistryEntry, FilterRegistryEntry, FrontendRuntimeId,
+    RegistryCommitError,
 };
-use maleicacid_tuner_hal2_common::HalError;
-use maleicacid_tuner_hal2_demux::PipelineResetReport;
+use maleicacid_tuner_hal2_device::FrontendRuntimeState;
+use maleicacid_tuner_hal2_common::{
+    compose_primary_cleanup_failure, HalError, HalInternalKind, HalInvalidStateKind,
+};
+
+use crate::queue_cleanup_txn::QueueCleanupTxn;
+use maleicacid_tuner_hal2_demux::{
+    DemuxGenerationBoundaryRequest, DemuxRuntime, DemuxRuntimeError, DemuxStreamGeneration,
+    DvrFilterLinkRequest, GenerationBoundaryReport, PlaybackConsumeReport, PipelineBoundaryReason,
+    PipelineResetReport,
+};
 use maleicacid_tuner_hal2_demux::{FilterConfig, FilterOpenType, OpenFilterRequest};
 use maleicacid_tuner_hal2_domain_request::{
     DvrConfigureRequest, FilterAvStreamTypeRequest, FilterDelayHintRequest, OpenDvrRequest,
 };
+
+pub(crate) struct DemuxFrontendSourceTxn {
+    demux_id: DemuxRuntimeId,
+    mutation: DemuxFrontendSourceMutation,
+}
+
+enum DemuxFrontendSourceMutation {
+    Bind(FrontendRuntimeId),
+    Unbind {
+        expected_frontend_id: FrontendRuntimeId,
+        reason: PipelineBoundaryReason,
+    },
+}
+
+impl DemuxFrontendSourceTxn {
+    pub(crate) const fn new(demux_id: i32, frontend_id: i32) -> Self {
+        Self {
+            demux_id: DemuxRuntimeId(demux_id),
+            mutation: DemuxFrontendSourceMutation::Bind(FrontendRuntimeId(frontend_id)),
+        }
+    }
+
+    pub(crate) const fn unbind(
+        demux_id: i32,
+        expected_frontend_id: i32,
+        reason: PipelineBoundaryReason,
+    ) -> Self {
+        Self {
+            demux_id: DemuxRuntimeId(demux_id),
+            mutation: DemuxFrontendSourceMutation::Unbind {
+                expected_frontend_id: FrontendRuntimeId(expected_frontend_id),
+                reason,
+            },
+        }
+    }
+
+    pub(crate) fn execute(
+        self,
+        runtime: &mut TunerServiceRuntime,
+    ) -> Result<GenerationBoundaryReport, HalError> {
+        let (next_frontend_id, reason) = match self.mutation {
+            DemuxFrontendSourceMutation::Bind(next_frontend_id) => {
+                let Some(frontend_runtime) = runtime.registry.frontend_runtime(next_frontend_id)
+                else {
+                    return Err(HalError::Unsupported(
+                        "frontend id is not available for demux source binding",
+                    ));
+                };
+                match frontend_runtime.snapshot().state {
+                    FrontendRuntimeState::Closing | FrontendRuntimeState::Failed => {
+                        return Err(HalError::invalid_state(
+                            HalInvalidStateKind::InvalidLifecycle,
+                            "frontend runtime is closing or failed",
+                        ));
+                    }
+                    FrontendRuntimeState::Idle
+                    | FrontendRuntimeState::Tuning { .. }
+                    | FrontendRuntimeState::Scanning { .. } => {}
+                }
+                if runtime.registry.frontend_bound_to_demux(self.demux_id)
+                    == Some(next_frontend_id)
+                {
+                    let generation = runtime
+                        .registry
+                        .demux_runtime(self.demux_id)
+                        .map(|demux| demux.generation())
+                        .ok_or_else(|| {
+                            HalError::invalid_state(
+                                HalInvalidStateKind::InvalidLifecycle,
+                                "demux runtime is missing",
+                            )
+                        })?;
+                    return Ok(GenerationBoundaryReport {
+                        reason: PipelineBoundaryReason::TuneStart,
+                        reset: PipelineResetReport::default(),
+                        next_generation: DemuxStreamGeneration(generation),
+                    });
+                }
+                (Some(next_frontend_id), PipelineBoundaryReason::TuneStart)
+            }
+            DemuxFrontendSourceMutation::Unbind {
+                expected_frontend_id,
+                reason,
+            } => {
+                if runtime.registry.frontend_bound_to_demux(self.demux_id)
+                    != Some(expected_frontend_id)
+                {
+                    return Err(HalError::invalid_state(
+                        HalInvalidStateKind::InvalidLifecycle,
+                        "demux/frontend relation changed before unbind",
+                    ));
+                }
+                (None, reason)
+            }
+        };
+
+        let prepared = runtime
+            .registry
+            .demux_runtime_mut(self.demux_id)
+            .ok_or_else(|| {
+                HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "demux runtime is missing",
+                )
+            })?
+            .prepare_generation_boundary_from_typed_request(
+                DemuxGenerationBoundaryRequest::new(reason),
+            )
+            .map_err(crate::demux_runtime_error_to_hal)?;
+        let report = runtime
+            .registry
+            .demux_runtime_mut(self.demux_id)
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "demux runtime disappeared after stream-boundary prepare",
+                )
+            })?
+            .commit_generation_boundary_from_typed_request(prepared)
+            .map_err(crate::demux_runtime_error_to_hal)?;
+        match next_frontend_id {
+            Some(frontend_id) => runtime
+                .registry
+                .bind_demux_frontend(self.demux_id, frontend_id),
+            None => runtime.registry.unbind_demux_frontend(self.demux_id),
+        }
+        Ok(report)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RecordDvrFilterRelationMutation {
+    Attach,
+    Detach,
+}
+
+pub(crate) struct RecordDvrFilterRelationTxn {
+    dvr_id: i32,
+    filter_id: i32,
+    mutation: RecordDvrFilterRelationMutation,
+}
+
+impl RecordDvrFilterRelationTxn {
+    pub(crate) const fn attach(dvr_id: i32, filter_id: i32) -> Self {
+        Self {
+            dvr_id,
+            filter_id,
+            mutation: RecordDvrFilterRelationMutation::Attach,
+        }
+    }
+
+    pub(crate) const fn detach(dvr_id: i32, filter_id: i32) -> Self {
+        Self {
+            dvr_id,
+            filter_id,
+            mutation: RecordDvrFilterRelationMutation::Detach,
+        }
+    }
+
+    pub(crate) fn execute(
+        self,
+        demux: &mut DemuxRuntime,
+    ) -> Result<(), DemuxRuntimeError> {
+        let request = DvrFilterLinkRequest::new(self.dvr_id, self.filter_id);
+        let prepared = match self.mutation {
+            RecordDvrFilterRelationMutation::Attach => {
+                demux.prepare_attach_dvr_filter_from_typed_request(request)?
+            }
+            RecordDvrFilterRelationMutation::Detach => {
+                demux.prepare_detach_dvr_filter_from_typed_request(request)?
+            }
+        };
+        demux.commit_prepared_dvr_filter_relation(prepared)
+    }
+}
 
 impl TunerServiceRuntime {
     pub(crate) fn allocate_demux_runtime(
         &mut self,
     ) -> Result<DemuxRegistryEntry, RegistryCommitError> {
         self.transact_allocate_demux_runtime()
+    }
+
+    pub(crate) fn allocate_demux_runtime_for_public_id(
+        &mut self,
+        id: i32,
+    ) -> Result<DemuxRegistryEntry, RegistryCommitError> {
+        self.transact_allocate_demux_runtime_for_public_id(id)
     }
 
     pub(crate) fn unregister_demux_runtime(
@@ -46,7 +238,24 @@ impl TunerServiceRuntime {
         filter_id: i32,
         request: &OpenFilterRequest,
     ) -> Result<(), HalError> {
-        self.transact_register_demux_filter_runtime(owner_demux_id, filter_id, request)
+        self.reserve_filter_capacity_for_test(
+            filter_id,
+            request.open_type,
+            request.buffer_size,
+        )?;
+        if let Err(error) =
+            self.transact_register_demux_filter_runtime(owner_demux_id, filter_id, request)
+        {
+            return match self.release_filter_capacity_for_test(filter_id) {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(compose_primary_cleanup_failure(
+                    "test filter registration capacity rollback failed",
+                    error,
+                    cleanup,
+                )),
+            };
+        }
+        Ok(())
     }
 
     pub(crate) fn configure_filter_runtime_request(
@@ -118,7 +327,23 @@ impl TunerServiceRuntime {
         request: &OpenDvrRequest,
         callback_present: bool,
     ) -> Result<(), HalError> {
-        self.transact_register_demux_dvr_runtime(owner_demux_id, dvr_id, request, callback_present)
+        self.reserve_dvr_capacity_for_test(dvr_id, request.buffer_size)?;
+        if let Err(error) = self.transact_register_demux_dvr_runtime(
+            owner_demux_id,
+            dvr_id,
+            request,
+            callback_present,
+        ) {
+            return match self.release_dvr_capacity_for_test(dvr_id) {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(compose_primary_cleanup_failure(
+                    "test DVR registration capacity rollback failed",
+                    error,
+                    cleanup,
+                )),
+            };
+        }
+        Ok(())
     }
 
     pub(crate) fn configure_dvr_runtime_request(
@@ -359,7 +584,7 @@ impl TunerServiceRuntime {
             generation,
             maleicacid_tuner_hal2_domain_request::AidlObjectKind::Filter,
         )?;
-        self.transact_flush_filter_runtime(filter_id)
+        QueueCleanupTxn::filter(self, filter_id).execute()
     }
 
     pub fn export_filter_av_shared_handle_for_object(
@@ -387,7 +612,7 @@ impl TunerServiceRuntime {
         &mut self,
         object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
         generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
-        has_fd: bool,
+        descriptor: maleicacid_tuner_hal2_demux::AvHandleReleaseDescriptor,
         av_data_id: i64,
         dispatch: ObjectMethodExecutionToken,
     ) -> Result<(), HalError> {
@@ -403,7 +628,7 @@ impl TunerServiceRuntime {
             generation,
             maleicacid_tuner_hal2_domain_request::AidlObjectKind::Filter,
         )?;
-        self.transact_release_filter_av_handle(filter_id, has_fd, av_data_id)
+        self.transact_release_filter_av_handle(filter_id, descriptor, av_data_id)
     }
 
     pub fn disconnect_filter_data_source_for_object(
@@ -487,6 +712,72 @@ impl TunerServiceRuntime {
             maleicacid_tuner_hal2_domain_request::AidlObjectKind::Dvr,
         )?;
         self.transact_start_dvr_runtime(dvr_id)
+    }
+
+    pub fn consume_playback_dvr_for_object(
+        &mut self,
+        object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
+        generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
+    ) -> Result<PlaybackConsumeReport, HalError> {
+        let entry = self.public_entry_for_object_method(
+            object_id,
+            generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Dvr,
+        )?;
+        let (demux_object_id, demux_generation) = match entry.owner() {
+            crate::RuntimeOwnerRelation::Demux { demux, generation } => (demux, generation),
+            _ => {
+                return Err(HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "DVR owner demux is not live",
+                ))
+            }
+        };
+        let demux_id = self.public_runtime_id_for_object_method(
+            demux_object_id,
+            demux_generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Demux,
+        )?;
+        let dvr_id = self.public_runtime_id_for_object_method(
+            object_id,
+            generation,
+            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Dvr,
+        )?;
+        let mut consume_txn = self
+            .playback_consume_txns
+            .remove(&dvr_id)
+            .ok_or_else(|| {
+                HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "playback consume transaction is not configured",
+                )
+            })?;
+        let result = match self.registry.demux_runtime_mut(DemuxRuntimeId(demux_id)) {
+            Some(demux) => match consume_txn.consume(demux) {
+                Ok(report) => Ok(report),
+                Err(_) => {
+                    let dropped_bytes = consume_txn.discard_for_boundary();
+                    if dropped_bytes > 0 {
+                        let _ = demux
+                            .note_playback_consume_boundary_discard(dvr_id, dropped_bytes);
+                        eprintln!(
+                            "maleicacid-tuner-hal2-dvr-playback-diagnostic: dvr_id={} boundary=fatal dropped_bytes={}",
+                            dvr_id, dropped_bytes,
+                        );
+                    }
+                    Err(HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "playback DVR consume failed",
+                    ))
+                }
+            },
+            None => Err(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "owner demux runtime is missing for playback DVR consume",
+            )),
+        };
+        self.playback_consume_txns.insert(dvr_id, consume_txn);
+        result
     }
 
     pub fn attach_dvr_filter_for_object(
@@ -656,7 +947,7 @@ impl TunerServiceRuntime {
             generation,
             maleicacid_tuner_hal2_domain_request::AidlObjectKind::Dvr,
         )?;
-        self.transact_flush_dvr_runtime(dvr_id)
+        QueueCleanupTxn::dvr(self, dvr_id).execute()
     }
 
     pub fn set_dvr_status_check_interval_for_object(

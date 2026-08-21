@@ -1,19 +1,25 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::descrambler_key_table::{DescramblerKeyLookupError, DescramblerKeyTable};
 use crate::descrambler_session::{
     DescramblerCleanupReport, DescramblerCleanupTxnError, DescramblerClearKeyOutcome,
     DescramblerClearKeyTxnError, DescramblerReplaceKeyOutcome, DescramblerReplaceKeyTxnError,
     DescramblerRuntime, DescramblerSessionFailure, DescramblerSessionFailureKind,
-    DescramblerSessionTxnStep,
+    DescramblerSessionTxnStep, DescramblerSourceCallFailure,
 };
 use crate::diagnostics::{DescramblerDiagnosticKind, DescramblerDiagnosticRecord};
 use maleicacid_tuner_hal2_common::TS_PACKET_SIZE;
 use maleicacid_tuner_hal2_common::{
-    FrontendBackendKind, FrontendSystem, HalError, HalInvalidArgumentKind, HalInvalidStateKind,
+    FrontendBackendKind, FrontendSystem, HalError, HalInternalKind, HalInvalidArgumentKind,
+    HalInvalidStateKind,
 };
-use maleicacid_tuner_hal2_demux::{DemuxRuntime, FilterOpenType, FilterRuntimeState};
+use maleicacid_tuner_hal2_demux::{
+    AvDataIdAllocator, AvRuntimeBudget, DemuxRuntime, FilterOpenType, FilterRuntimeState,
+    DEFAULT_AV_MAX_EVENT_BYTES, DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
+    DEFAULT_AV_PER_FILTER_LIVE_BYTES,
+};
 use maleicacid_tuner_hal2_demux::{
     PacketDescramblePolicyFailure, PacketPid, PipelineDiagnostic, PipelineReport,
 };
@@ -49,9 +55,47 @@ pub struct FrontendRegistryEntry {
     pub backend: FrontendBackendKind,
     pub system: FrontendSystem,
     pub device_path: PathBuf,
+    /// 起動時probeで検証し、公開後は変更しないfrontend capability。
+    pub capability: FrontendCapabilitySnapshot,
     /// frontend exportと同じprobe sourceから導出した固定LNB profile。
     /// Noneの場合、frontendはLNB voltage statusやLNB bindingをadvertiseしてはならない。
     pub lnb_profile: Option<LnbRegistryProfile>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FrontendScalarCapability {
+    pub min_frequency_hz: i64,
+    pub max_frequency_hz: i64,
+    pub min_symbol_rate: i32,
+    pub max_symbol_rate: i32,
+    pub acquire_range_hz: i64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IsdbtSegmentCapability {
+    pub is_segment_auto: bool,
+    pub is_full_segment: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FrontendCapabilitySnapshot {
+    pub scalar: FrontendScalarCapability,
+    pub exclusive_group_id: i32,
+    pub isdbt_segment: Option<IsdbtSegmentCapability>,
+}
+
+impl FrontendRegistryEntry {
+    pub fn hardware_info(&self) -> String {
+        let backend = match self.backend {
+            FrontendBackendKind::Px4CharDevice => "px4",
+            FrontendBackendKind::LinuxDvb => "linux-dvb",
+        };
+        format!(
+            "maleicacid/{backend}/{}/{}",
+            self.system.as_hint(),
+            self.device_path.display()
+        )
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -72,6 +116,28 @@ pub struct LnbRegistryEntry {
     pub name: Option<String>,
     pub owner_frontend_id: FrontendRuntimeId,
     pub profile: LnbRegistryProfile,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LnbAssignmentLease {
+    lnb_id: LnbRuntimeId,
+    token: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PreparedLnbAssignmentLease {
+    frontend_id: FrontendRuntimeId,
+    lnb_id: LnbRuntimeId,
+    token: u64,
+    expected_relation: Option<LnbRuntimeId>,
+    expected_lease: Option<LnbAssignmentLease>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct LnbAssignmentCleanupRecord {
+    frontend_id: FrontendRuntimeId,
+    lnb_id: LnbRuntimeId,
+    token: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -390,6 +456,7 @@ pub enum RegistryCommitError {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeRegistryKind {
     Demux,
+    Lnb,
     Filter,
     Dvr,
     Descrambler,
@@ -405,13 +472,22 @@ pub struct RuntimeRegistry {
     lnbs: BTreeMap<LnbRuntimeId, LnbRegistryEntry>,
     lnb_runtimes: BTreeMap<LnbRuntimeId, LnbRuntime>,
     frontend_lnb_bindings: BTreeMap<FrontendRuntimeId, LnbRuntimeId>,
+    frontend_lnb_assignment_leases: BTreeMap<FrontendRuntimeId, LnbAssignmentLease>,
+    prepared_lnb_assignment_leases: BTreeMap<u64, (FrontendRuntimeId, LnbRuntimeId)>,
+    pending_lnb_assignment_cleanup: BTreeMap<u64, (FrontendRuntimeId, LnbRuntimeId)>,
     filters: BTreeMap<FilterRuntimeId, FilterRegistryEntry>,
     dvrs: BTreeMap<DvrRuntimeId, DvrRegistryEntry>,
     descramblers: BTreeMap<DescramblerRuntimeId, DescramblerRegistryEntry>,
     descrambler_runtimes: BTreeMap<DescramblerRuntimeId, DescramblerRuntime>,
     descrambler_key_table: DescramblerKeyTable,
+    av_data_id_allocator: Arc<AvDataIdAllocator>,
+    av_runtime_budget: Arc<AvRuntimeBudget>,
+    av_max_event_bytes: usize,
+    av_max_outstanding_events_per_filter: usize,
+    av_per_filter_live_bytes: usize,
     next_demux_id: i32,
     next_lnb_id: i32,
+    next_lnb_assignment_lease_token: u64,
     next_filter_id: i32,
     next_dvr_id: i32,
     next_descrambler_id: i32,
@@ -428,13 +504,23 @@ impl Default for RuntimeRegistry {
             lnbs: BTreeMap::new(),
             lnb_runtimes: BTreeMap::new(),
             frontend_lnb_bindings: BTreeMap::new(),
+            frontend_lnb_assignment_leases: BTreeMap::new(),
+            prepared_lnb_assignment_leases: BTreeMap::new(),
+            pending_lnb_assignment_cleanup: BTreeMap::new(),
             filters: BTreeMap::new(),
             dvrs: BTreeMap::new(),
             descramblers: BTreeMap::new(),
             descrambler_runtimes: BTreeMap::new(),
             descrambler_key_table: DescramblerKeyTable::default(),
+            av_data_id_allocator: Arc::new(AvDataIdAllocator::default()),
+            av_runtime_budget: Arc::new(AvRuntimeBudget::unlimited()),
+            av_max_event_bytes: DEFAULT_AV_MAX_EVENT_BYTES,
+            av_max_outstanding_events_per_filter:
+                DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
+            av_per_filter_live_bytes: DEFAULT_AV_PER_FILTER_LIVE_BYTES,
             next_demux_id: 1,
             next_lnb_id: 1,
+            next_lnb_assignment_lease_token: 0,
             next_filter_id: 1,
             next_dvr_id: 1,
             next_descrambler_id: 1,
@@ -443,6 +529,21 @@ impl Default for RuntimeRegistry {
 }
 
 impl RuntimeRegistry {
+    pub(crate) fn with_av_runtime_limits(
+        av_max_event_bytes: usize,
+        av_max_outstanding_events_per_filter: usize,
+        av_per_filter_live_bytes: usize,
+        av_runtime_budget_bytes: usize,
+    ) -> Self {
+        Self {
+            av_runtime_budget: Arc::new(AvRuntimeBudget::new(av_runtime_budget_bytes)),
+            av_max_event_bytes,
+            av_max_outstanding_events_per_filter,
+            av_per_filter_live_bytes,
+            ..Self::default()
+        }
+    }
+
     pub fn register_frontend(
         &mut self,
         entry: FrontendRegistryEntry,
@@ -460,12 +561,18 @@ impl RuntimeRegistry {
         self.frontends.clear();
         self.frontend_runtimes.clear();
         self.frontend_lnb_bindings.clear();
+        self.frontend_lnb_assignment_leases.clear();
+        self.prepared_lnb_assignment_leases.clear();
+        self.pending_lnb_assignment_cleanup.clear();
     }
 
     pub fn clear_lnbs(&mut self) {
         self.lnbs.clear();
         self.lnb_runtimes.clear();
         self.frontend_lnb_bindings.clear();
+        self.frontend_lnb_assignment_leases.clear();
+        self.prepared_lnb_assignment_leases.clear();
+        self.pending_lnb_assignment_cleanup.clear();
         self.next_lnb_id = 1;
     }
 
@@ -508,7 +615,18 @@ impl RuntimeRegistry {
             return Err(RegistryCommitError::DuplicateDemuxId { id: entry.id });
         }
         self.demux_runtimes
-            .insert(entry.id, DemuxRuntime::new(entry.id.0, 1));
+            .insert(
+                entry.id,
+                DemuxRuntime::new_with_av_runtime_limits(
+                    entry.id.0,
+                    1,
+                    Arc::clone(&self.av_data_id_allocator),
+                    Arc::clone(&self.av_runtime_budget),
+                    self.av_max_event_bytes,
+                    self.av_max_outstanding_events_per_filter,
+                    self.av_per_filter_live_bytes,
+                ),
+            );
         self.demuxes.insert(entry.id, entry);
         Ok(())
     }
@@ -533,6 +651,17 @@ impl RuntimeRegistry {
         frontend_id: FrontendRuntimeId,
     ) {
         self.demux_frontend_bindings.insert(demux_id, frontend_id);
+    }
+
+    pub fn frontend_bound_to_demux(
+        &self,
+        demux_id: DemuxRuntimeId,
+    ) -> Option<FrontendRuntimeId> {
+        self.demux_frontend_bindings.get(&demux_id).copied()
+    }
+
+    pub fn unbind_demux_frontend(&mut self, demux_id: DemuxRuntimeId) {
+        self.demux_frontend_bindings.remove(&demux_id);
     }
 
     pub fn unbind_frontend_demuxes(
@@ -638,6 +767,186 @@ impl RuntimeRegistry {
             .collect()
     }
 
+    fn validate_lnb_assignment_target(
+        &self,
+        frontend_id: FrontendRuntimeId,
+        lnb_id: LnbRuntimeId,
+    ) -> Result<(), HalError> {
+        if !self.frontends.contains_key(&frontend_id) {
+            return Err(HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "frontend id is missing for LNB assignment",
+            ));
+        }
+        let Some(entry) = self.lnbs.get(&lnb_id) else {
+            return Err(HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "LNB id is missing for frontend assignment",
+            ));
+        };
+        if entry.owner_frontend_id != frontend_id {
+            return Err(HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "LNB does not belong to the assignment frontend",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn prepare_lnb_assignment_lease(
+        &mut self,
+        frontend_id: FrontendRuntimeId,
+        lnb_id: LnbRuntimeId,
+    ) -> Result<Option<PreparedLnbAssignmentLease>, HalError> {
+        self.validate_lnb_assignment_target(frontend_id, lnb_id)?;
+        let current_relation = self.frontend_lnb_bindings.get(&frontend_id).copied();
+        let current_lease = self
+            .frontend_lnb_assignment_leases
+            .get(&frontend_id)
+            .copied();
+        if current_relation != current_lease.map(|current| current.lnb_id) {
+            return Err(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "frontend/LNB relation and assignment lease are inconsistent",
+            ));
+        }
+        if current_relation == Some(lnb_id) {
+            return Ok(None);
+        }
+        if self
+            .prepared_lnb_assignment_leases
+            .values()
+            .any(|(prepared_frontend, _)| *prepared_frontend == frontend_id)
+        {
+            return Err(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "frontend already has a prepared LNB assignment lease",
+            ));
+        }
+        let token = self
+            .next_lnb_assignment_lease_token
+            .checked_add(1)
+            .filter(|token| *token != 0)
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "LNB assignment lease token exhausted",
+                )
+            })?;
+        self.next_lnb_assignment_lease_token = token;
+        self.prepared_lnb_assignment_leases
+            .insert(token, (frontend_id, lnb_id));
+        Ok(Some(PreparedLnbAssignmentLease {
+            frontend_id,
+            lnb_id,
+            token,
+            expected_relation: current_relation,
+            expected_lease: current_lease,
+        }))
+    }
+
+    pub(crate) fn abort_prepared_lnb_assignment_lease(
+        &mut self,
+        prepared: PreparedLnbAssignmentLease,
+    ) -> bool {
+        if self
+            .prepared_lnb_assignment_leases
+            .get(&prepared.token)
+            .is_some_and(|entry| *entry == (prepared.frontend_id, prepared.lnb_id))
+        {
+            self.prepared_lnb_assignment_leases
+                .remove(&prepared.token);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn commit_prepared_lnb_assignment(
+        &mut self,
+        prepared: PreparedLnbAssignmentLease,
+        prepared_runtime: LnbRuntime,
+    ) -> Result<Option<LnbAssignmentCleanupRecord>, HalError> {
+        if self
+            .prepared_lnb_assignment_leases
+            .get(&prepared.token)
+            != Some(&(prepared.frontend_id, prepared.lnb_id))
+            || self.frontend_lnb_bindings.get(&prepared.frontend_id).copied()
+                != prepared.expected_relation
+            || self
+                .frontend_lnb_assignment_leases
+                .get(&prepared.frontend_id)
+                .copied()
+                != prepared.expected_lease
+            || !self.lnb_runtimes.contains_key(&prepared.lnb_id)
+        {
+            return Err(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "prepared frontend/LNB assignment no longer matches its commit snapshot",
+            ));
+        }
+
+        self.prepared_lnb_assignment_leases
+            .remove(&prepared.token);
+        self.lnb_runtimes
+            .insert(prepared.lnb_id, prepared_runtime);
+        self.frontend_lnb_bindings
+            .insert(prepared.frontend_id, prepared.lnb_id);
+        let old_lease = self.frontend_lnb_assignment_leases.insert(
+            prepared.frontend_id,
+            LnbAssignmentLease {
+                lnb_id: prepared.lnb_id,
+                token: prepared.token,
+            },
+        );
+        Ok(old_lease.map(|lease| {
+            self.pending_lnb_assignment_cleanup
+                .insert(lease.token, (prepared.frontend_id, lease.lnb_id));
+            LnbAssignmentCleanupRecord {
+                frontend_id: prepared.frontend_id,
+                lnb_id: lease.lnb_id,
+                token: lease.token,
+            }
+        }))
+    }
+
+    pub(crate) fn complete_lnb_assignment_cleanup(
+        &mut self,
+        cleanup: LnbAssignmentCleanupRecord,
+    ) -> Result<(), HalError> {
+        if self.pending_lnb_assignment_cleanup.get(&cleanup.token)
+            != Some(&(cleanup.frontend_id, cleanup.lnb_id))
+        {
+            return Err(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "old frontend/LNB assignment cleanup record is missing",
+            ));
+        }
+        self.pending_lnb_assignment_cleanup.remove(&cleanup.token);
+        Ok(())
+    }
+
+    pub(crate) fn release_lnb_assignment(
+        &mut self,
+        frontend_id: FrontendRuntimeId,
+    ) -> Result<Option<LnbRuntimeId>, HalError> {
+        let relation = self.frontend_lnb_bindings.get(&frontend_id).copied();
+        let lease = self
+            .frontend_lnb_assignment_leases
+            .get(&frontend_id)
+            .copied();
+        if relation != lease.map(|lease| lease.lnb_id) {
+            return Err(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "frontend/LNB release found inconsistent relation and lease state",
+            ));
+        }
+        self.frontend_lnb_bindings.remove(&frontend_id);
+        self.frontend_lnb_assignment_leases.remove(&frontend_id);
+        Ok(relation)
+    }
+
+    #[cfg(test)]
     pub fn bind_lnb_to_frontend(
         &mut self,
         frontend_id: FrontendRuntimeId,
@@ -655,8 +964,27 @@ impl RuntimeRegistry {
                 lnb_id,
             });
         }
+        let token = self
+            .next_lnb_assignment_lease_token
+            .checked_add(1)
+            .filter(|token| *token != 0)
+            .ok_or(RegistryCommitError::RuntimeIdExhausted {
+                kind: RuntimeRegistryKind::Lnb,
+            })?;
+        self.next_lnb_assignment_lease_token = token;
         self.frontend_lnb_bindings.insert(frontend_id, lnb_id);
+        self.frontend_lnb_assignment_leases
+            .insert(frontend_id, LnbAssignmentLease { lnb_id, token });
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn unbind_lnb_from_frontend(
+        &mut self,
+        frontend_id: FrontendRuntimeId,
+    ) -> Option<LnbRuntimeId> {
+        self.frontend_lnb_assignment_leases.remove(&frontend_id);
+        self.frontend_lnb_bindings.remove(&frontend_id)
     }
 
     pub fn register_lnb(&mut self, entry: LnbRegistryEntry) -> Result<(), RegistryCommitError> {
@@ -710,6 +1038,60 @@ impl RuntimeRegistry {
             .collect()
     }
 
+    fn filter_open_type(
+        &self,
+        entry: &FilterRegistryEntry,
+    ) -> Result<FilterOpenType, HalError> {
+        let demux = self
+            .demux_runtimes
+            .get(&DemuxRuntimeId(entry.owner_demux_id))
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "filter registry owner demux runtime is missing",
+                )
+            })?;
+        demux
+            .filter_snapshot(entry.id.0)
+            .map(|snapshot| snapshot.open_type)
+            .map_err(|_| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "filter registry entry is missing from its owner demux runtime",
+                )
+            })
+    }
+
+    pub fn filter_open_type_count(
+        &self,
+        open_type: FilterOpenType,
+    ) -> Result<usize, HalError> {
+        let mut count = 0;
+        for entry in self.filters.values() {
+            if self.filter_open_type(entry)? == open_type {
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
+    pub fn demux_has_filter_open_type(
+        &self,
+        owner_demux_id: i32,
+        open_type: FilterOpenType,
+    ) -> Result<bool, HalError> {
+        for entry in self
+            .filters
+            .values()
+            .filter(|entry| entry.owner_demux_id == owner_demux_id)
+        {
+            if self.filter_open_type(entry)? == open_type {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     pub fn unregister_filter(&mut self, id: FilterRuntimeId) -> Option<FilterRegistryEntry> {
         self.filters.remove(&id)
     }
@@ -742,6 +1124,54 @@ impl RuntimeRegistry {
 
     pub fn dvr(&self, id: DvrRuntimeId) -> Option<&DvrRegistryEntry> {
         self.dvrs.get(&id)
+    }
+
+    fn dvr_kind(&self, entry: &DvrRegistryEntry) -> Result<DvrKind, HalError> {
+        let demux = self
+            .demux_runtimes
+            .get(&DemuxRuntimeId(entry.owner_demux_id))
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "DVR registry owner demux runtime is missing",
+                )
+            })?;
+        demux
+            .dvr_snapshot(entry.id.0)
+            .map(|snapshot| snapshot.kind)
+            .map_err(|_| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "DVR registry entry is missing from its owner demux runtime",
+                )
+            })
+    }
+
+    pub fn dvr_kind_count(&self, kind: DvrKind) -> Result<usize, HalError> {
+        let mut count = 0;
+        for entry in self.dvrs.values() {
+            if self.dvr_kind(entry)? == kind {
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
+    pub fn demux_has_dvr_kind(
+        &self,
+        owner_demux_id: i32,
+        kind: DvrKind,
+    ) -> Result<bool, HalError> {
+        for entry in self
+            .dvrs
+            .values()
+            .filter(|entry| entry.owner_demux_id == owner_demux_id)
+        {
+            if self.dvr_kind(entry)? == kind {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     pub fn unregister_dvr(&mut self, id: DvrRuntimeId) -> Option<DvrRegistryEntry> {
@@ -821,7 +1251,42 @@ impl RuntimeRegistry {
                 step: DescramblerSessionTxnStep::ValidateOpen,
                 kind: DescramblerSessionFailureKind::SessionClosed,
             })?
-            .bind_demux_use_case(demux_id, generation)
+            .commit_demux_binding_use_case(demux_id, generation)
+    }
+
+    pub(crate) fn begin_descrambler_demux_source_call_use_case(
+        &mut self,
+        id: DescramblerRuntimeId,
+    ) -> Result<(), DescramblerSessionFailure> {
+        self.descrambler_runtimes
+            .get_mut(&id)
+            .ok_or(DescramblerSessionFailure {
+                step: DescramblerSessionTxnStep::ValidateOpen,
+                kind: DescramblerSessionFailureKind::SessionClosed,
+            })?
+            .begin_demux_source_call_use_case()
+    }
+
+    pub(crate) fn record_descrambler_demux_source_call_failure_use_case(
+        &mut self,
+        id: DescramblerRuntimeId,
+        failure: DescramblerSourceCallFailure,
+    ) -> Result<(), DescramblerSessionFailure> {
+        let runtime = self
+            .descrambler_runtimes
+            .get_mut(&id)
+            .ok_or(DescramblerSessionFailure {
+                step: DescramblerSessionTxnStep::ValidateOpen,
+                kind: DescramblerSessionFailureKind::SessionClosed,
+            })?;
+        if runtime.record_demux_source_call_failure_use_case(failure) {
+            Ok(())
+        } else {
+            Err(DescramblerSessionFailure {
+                step: DescramblerSessionTxnStep::ValidateDemux,
+                kind: DescramblerSessionFailureKind::DemuxAlreadyBound,
+            })
+        }
     }
 
     pub(crate) fn add_descrambler_pid_claim_use_case(
@@ -863,7 +1328,8 @@ impl RuntimeRegistry {
             .iter()
             .filter(|(id, _)| **id != current_id)
             .any(|(_, runtime)| {
-                runtime.is_bound_to_demux(demux_id, demux_generation) && runtime.has_pid_claim(pid)
+                runtime.holds_binding_to_demux(demux_id, demux_generation)
+                    && runtime.has_pid_claim(pid)
             })
     }
 
@@ -873,7 +1339,11 @@ impl RuntimeRegistry {
     ) -> Vec<DescramblerRuntimeId> {
         self.descrambler_runtimes
             .iter()
-            .filter_map(|(id, runtime)| runtime.is_bound_to_demux_id(demux_id).then_some(*id))
+            .filter_map(|(id, runtime)| {
+                runtime
+                    .holds_binding_to_demux_id(demux_id)
+                    .then_some(*id)
+            })
             .collect()
     }
 

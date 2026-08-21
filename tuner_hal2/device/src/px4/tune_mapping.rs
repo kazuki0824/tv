@@ -294,12 +294,13 @@ pub fn map_tune_request_to_px4(request: &FrontendTuneRequest) -> Result<Px4TuneR
                     0
                 }
                 Px4SatBand::Bs => {
-                    let raw_stream_id = request.stream_id.ok_or_else(|| {
-                        HalError::invalid_argument(
-                            HalInvalidArgumentKind::MissingStreamSelector,
-                            "px4 BS選局にはTSIDまたは相対ストリーム番号が必要です",
-                        )
-                    })?;
+                    let Some(raw_stream_id) = request.stream_id else {
+                        return Ok(Px4TuneRequest {
+                            system_code: PTX_ISDB_S_SYSTEM,
+                            freq_no,
+                            slot: 0,
+                        });
+                    };
                     let stream_id = u16::try_from(raw_stream_id).map_err(|_| {
                         HalError::invalid_argument(
                             HalInvalidArgumentKind::NumericRange,
@@ -329,13 +330,9 @@ pub fn map_tune_request_to_px4(request: &FrontendTuneRequest) -> Result<Px4TuneR
 }
 
 pub fn px4_scan_requests(base: &FrontendTuneRequest) -> Result<Vec<FrontendTuneRequest>, HalError> {
-    if base.end_frequency.unwrap_or(base.frequency) != base.frequency {
-        return Err(HalError::Unsupported(
-            "px4バックエンドは日本向けscan表を生成しません。TISが明示選局候補を渡す必要があります",
-        ));
-    }
-    map_tune_request_to_px4(base)?;
-    Ok(vec![base.clone()])
+    let candidate = base.clone().normalized_for_non_blind_operation();
+    map_tune_request_to_px4(&candidate)?;
+    Ok(vec![candidate])
 }
 
 #[cfg(test)]
@@ -470,13 +467,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_bs_frequency_without_stream_selector() {
+    fn maps_unspecified_bs_selector_to_compatibility_slot_zero() {
         let request = FrontendTuneRequest {
             stream_id: None,
             stream_id_kind: None,
             ..bs_request(0x4010)
         };
-        assert!(map_tune_request_to_px4(&request).is_err());
+        let mapped = map_tune_request_to_px4(&request).unwrap();
+        assert_eq!(mapped.slot, 0);
     }
 
     #[test]
@@ -557,7 +555,10 @@ mod tests {
             symbol_rate: None,
         };
         assert_eq!(px4_scan_requests(&isdbt).unwrap(), vec![isdbt]);
-        assert_eq!(px4_scan_requests(&bs).unwrap(), vec![bs]);
+        assert_eq!(
+            px4_scan_requests(&bs).unwrap(),
+            vec![bs.normalized_for_non_blind_operation()]
+        );
         assert_eq!(px4_scan_requests(&cs110).unwrap(), vec![cs110]);
     }
 
@@ -583,11 +584,13 @@ mod tests {
     }
 
     #[test]
-    fn range_scan_generation_is_not_supported() {
+    fn non_blind_scan_ignores_end_frequency() {
         let request = FrontendTuneRequest {
             end_frequency: Some(2_053_000_000),
             ..bs_request(0x4010)
         };
-        assert!(px4_scan_requests(&request).is_err());
+        let candidates = px4_scan_requests(&request).unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].end_frequency, None);
     }
 }

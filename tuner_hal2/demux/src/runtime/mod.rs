@@ -1,10 +1,19 @@
+mod av_sync_registry;
 pub(crate) mod configure_txn;
 pub(crate) mod demux;
 pub(crate) mod dvr;
 pub(crate) mod filter;
+mod filter_producer_drain_gate {
+    pub(crate) use super::queue_runtime::{
+        FilterDrainBoundary, FilterDrainTxn, FilterProducerDrainGate, FilterProducerPermit,
+    };
+}
 mod generation_boundary;
+mod pcr_clock_anchor;
 mod queue_runtime;
 pub(crate) mod source_boundary;
+#[cfg(test)]
+mod transaction_contract_tests;
 
 pub use configure_txn::{
     DvrConfigureOutcome, DvrConfigureReport, DvrConfigureStep, FilterConfigureOutcome,
@@ -22,11 +31,18 @@ pub use demux::{
     FilterRuntimeOperationReport, FilterRuntimeOperationRequest, FilterRuntimeOperationSkipReason,
     FilterRuntimeOperationStep, FilterRuntimeOperationStepOutcome,
     FilterRuntimeRegistrationRequest, FilterSourceConnectRequest, FilterSourceDisconnectRequest,
-    PlaybackConsumeReport, QueueDescriptorQueryError, ValidatedPacketIngressRequest,
+    PlaybackConsumeReport, PlaybackQueueReadTxn, PreparedDvrFilterRelation,
+    QueueDescriptorQueryError,
+    ValidatedPacketIngressRequest,
 };
-pub use dvr::{DvrKind, DvrRuntimeSnapshot, DvrRuntimeState, DvrStatusEvent};
+pub use dvr::{
+    DvrDataFormat, DvrKind, DvrRuntimeSnapshot, DvrRuntimeState, DvrStatusEvent,
+    PlaybackFlushDiagnostic, PlaybackStats, RecordDvrFilterRelationState,
+};
 pub use filter::{FilterRuntimeSnapshot, FilterRuntimeState};
-pub use generation_boundary::{DemuxStreamGeneration, GenerationBoundaryReport};
+pub use generation_boundary::{
+    DemuxStreamGeneration, GenerationBoundaryReport, PreparedStreamBoundary,
+};
 pub use queue_runtime::{
     QueueDescriptorExportPlan, QueueDescriptorExportTarget, QueueDescriptorSnapshot,
     QueueGrantorDescriptorSnapshot, QueueRuntimeError, QueueRuntimeErrorKind,

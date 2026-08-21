@@ -1,9 +1,13 @@
+use std::collections::VecDeque;
 use std::fmt;
 use std::fs::File;
 use std::os::fd::FromRawFd;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 
 use maleicacid_tuner_hal2_fmq::{FmqQueue, FmqQueueError};
+
+use crate::packet_pipeline::PipelineGeneratedEvent;
 
 #[derive(Debug)]
 pub struct QueueDescriptorSnapshot {
@@ -64,16 +68,219 @@ pub struct QueueRuntimeError {
     pub detail: &'static str,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct QueueAvailabilitySnapshot {
+    pub(crate) readable_bytes: usize,
+    pub(crate) writable_bytes: usize,
+}
+
 impl QueueRuntimeError {
-    const fn new(kind: QueueRuntimeErrorKind, detail: &'static str) -> Self {
+    pub(crate) const fn new(kind: QueueRuntimeErrorKind, detail: &'static str) -> Self {
         Self { kind, detail }
     }
 }
 
+#[derive(Clone)]
 pub struct QueueRuntime {
     queue: Arc<FmqQueue>,
+    playback_backing: Option<PlaybackQueueBacking>,
     capacity_bytes: usize,
     configure_event_flag: bool,
+    wake_pending: Arc<AtomicBool>,
+    dvr_epoch: Option<Arc<QueueEpochProtocolInner>>,
+}
+
+#[derive(Clone, Debug)]
+struct PlaybackQueueBacking {
+    queue_identity: u64,
+}
+
+static NEXT_PLAYBACK_QUEUE_IDENTITY: AtomicU64 = AtomicU64::new(1);
+
+fn allocate_playback_queue_identity() -> Result<u64, QueueRuntimeError> {
+    let mut current = NEXT_PLAYBACK_QUEUE_IDENTITY.load(Ordering::Acquire);
+    loop {
+        let next = current
+            .checked_add(1)
+            .ok_or_else(|| protocol_error("playback queue identity exhausted"))?;
+        match NEXT_PLAYBACK_QUEUE_IDENTITY.compare_exchange_weak(
+            current,
+            next,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return Ok(current),
+            Err(observed) => current = observed,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QueueEpochState {
+    Open,
+    Draining,
+    Closed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum QueueTransactionDirection {
+    Read,
+    Write,
+}
+
+#[derive(Debug)]
+struct QueueEpochProtocolState {
+    state: QueueEpochState,
+    epoch: u64,
+    admitted_transaction_count: usize,
+}
+
+#[derive(Debug)]
+struct QueueEpochProtocolInner {
+    state: Mutex<QueueEpochProtocolState>,
+    drained: Condvar,
+    queue_identity: Option<u64>,
+}
+
+#[derive(Debug)]
+pub(crate) struct QueueEpochToken {
+    protocol: Arc<QueueEpochProtocolInner>,
+    queue_identity: Option<u64>,
+    epoch: u64,
+    direction: QueueTransactionDirection,
+    reserved_bytes: usize,
+    active: bool,
+}
+
+impl QueueEpochToken {
+    fn release(&mut self) -> Result<QueueEpochState, QueueRuntimeError> {
+        if !self.active {
+            return Err(protocol_error(
+                "DVR queue transaction was already consumed",
+            ));
+        }
+        let mut state = self.protocol.state.lock().map_err(|_| {
+            protocol_error("DVR queue epoch lock poisoned while releasing a transaction")
+        })?;
+        if self.protocol.queue_identity != self.queue_identity
+            || state.epoch != self.epoch
+        {
+            return Err(protocol_error(
+                "DVR queue transaction identity or epoch changed before release",
+            ));
+        }
+        let protocol_state = state.state;
+        state.admitted_transaction_count = state
+            .admitted_transaction_count
+            .checked_sub(1)
+            .ok_or_else(|| protocol_error("DVR queue transaction count underflow"))?;
+        self.active = false;
+        if state.admitted_transaction_count == 0 {
+            self.protocol.drained.notify_all();
+        }
+        Ok(protocol_state)
+    }
+
+    pub(crate) fn commit(mut self) -> Result<(), QueueRuntimeError> {
+        if self.reserved_bytes == 0 {
+            return Err(protocol_error(
+                "DVR queue transaction has an empty reservation",
+            ));
+        }
+        let protocol_state = match self.direction {
+            QueueTransactionDirection::Read | QueueTransactionDirection::Write => self.release()?,
+        };
+        if protocol_state == QueueEpochState::Closed {
+            Err(protocol_error(
+                "DVR queue transaction was closed before commit",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(crate) fn playback_coordinates(&self) -> Result<(u64, u64), QueueRuntimeError> {
+        if !self.active || self.direction != QueueTransactionDirection::Read {
+            return Err(protocol_error(
+                "playback coordinates require an active DVR read transaction",
+            ));
+        }
+        let queue_identity = self
+            .queue_identity
+            .ok_or_else(|| protocol_error("DVR queue is not a playback queue"))?;
+        Ok((queue_identity, self.epoch))
+    }
+}
+
+impl Drop for QueueEpochToken {
+    fn drop(&mut self) {
+        if self.active && self.release().is_err() {
+            if let Ok(mut state) = self.protocol.state.lock() {
+                state.state = QueueEpochState::Closed;
+                self.protocol.drained.notify_all();
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct QueueEpochDrainTxn {
+    protocol: Arc<QueueEpochProtocolInner>,
+    epoch: u64,
+    next_epoch: u64,
+    active: bool,
+}
+
+impl QueueEpochDrainTxn {
+    fn commit(mut self) -> Result<(), QueueRuntimeError> {
+        let mut state = self.protocol.state.lock().map_err(|_| {
+            protocol_error("DVR queue epoch lock poisoned while committing drain")
+        })?;
+        if state.state != QueueEpochState::Draining
+            || state.epoch != self.epoch
+            || state.admitted_transaction_count != 0
+        {
+            return Err(protocol_error("DVR queue drain state changed before commit"));
+        }
+        state.epoch = self.next_epoch;
+        state.state = QueueEpochState::Open;
+        self.active = false;
+        self.protocol.drained.notify_all();
+        Ok(())
+    }
+
+    fn rollback(&mut self) -> Result<(), QueueRuntimeError> {
+        if !self.active {
+            return Ok(());
+        }
+        let mut state = self.protocol.state.lock().map_err(|_| {
+            protocol_error("DVR queue epoch lock poisoned while rolling back drain")
+        })?;
+        if state.state != QueueEpochState::Draining || state.epoch != self.epoch {
+            return Err(protocol_error(
+                "DVR queue drain state changed before rollback",
+            ));
+        }
+        state.state = QueueEpochState::Open;
+        self.active = false;
+        self.protocol.drained.notify_all();
+        Ok(())
+    }
+}
+
+impl Drop for QueueEpochDrainTxn {
+    fn drop(&mut self) {
+        if self.active && self.rollback().is_err() {
+            if let Ok(mut state) = self.protocol.state.lock() {
+                state.state = QueueEpochState::Closed;
+                self.protocol.drained.notify_all();
+            }
+        }
+    }
+}
+
+fn protocol_error(detail: &'static str) -> QueueRuntimeError {
+    QueueRuntimeError::new(QueueRuntimeErrorKind::StructuralDescriptor, detail)
 }
 
 pub(crate) struct QueueDescriptorExportHandle {
@@ -131,7 +338,27 @@ impl fmt::Debug for QueueRuntime {
 }
 
 impl QueueRuntime {
-    pub fn new(buffer_size: i32, configure_event_flag: bool) -> Result<Self, QueueRuntimeError> {
+    pub(crate) fn new_filter(
+        buffer_size: i32,
+        configure_event_flag: bool,
+    ) -> Result<Self, QueueRuntimeError> {
+        Self::new(buffer_size, configure_event_flag, false, false)
+    }
+
+    pub(crate) fn new_dvr(
+        buffer_size: i32,
+        configure_event_flag: bool,
+        playback: bool,
+    ) -> Result<Self, QueueRuntimeError> {
+        Self::new(buffer_size, configure_event_flag, true, playback)
+    }
+
+    fn new(
+        buffer_size: i32,
+        configure_event_flag: bool,
+        use_dvr_epoch_protocol: bool,
+        playback: bool,
+    ) -> Result<Self, QueueRuntimeError> {
         let capacity_bytes = usize::try_from(buffer_size).map_err(|_| {
             QueueRuntimeError::new(
                 QueueRuntimeErrorKind::InvalidCapacity,
@@ -146,10 +373,30 @@ impl QueueRuntime {
         }
         let queue = FmqQueue::create(capacity_bytes, configure_event_flag)
             .map_err(|err| map_create_error(err, "FMQ create failed"))?;
+        let playback_backing = playback
+            .then(allocate_playback_queue_identity)
+            .transpose()?
+            .map(|queue_identity| PlaybackQueueBacking { queue_identity });
+        let queue_identity = playback_backing
+            .as_ref()
+            .map(|backing| backing.queue_identity);
         Ok(Self {
             queue: Arc::new(queue),
+            playback_backing,
             capacity_bytes,
             configure_event_flag,
+            wake_pending: Arc::new(AtomicBool::new(false)),
+            dvr_epoch: use_dvr_epoch_protocol.then(|| {
+                Arc::new(QueueEpochProtocolInner {
+                    state: Mutex::new(QueueEpochProtocolState {
+                        state: QueueEpochState::Open,
+                        epoch: 0,
+                        admitted_transaction_count: 0,
+                    }),
+                    drained: Condvar::new(),
+                    queue_identity,
+                })
+            }),
         })
     }
 
@@ -157,13 +404,136 @@ impl QueueRuntime {
         usize::try_from(buffer_size).ok() == Some(self.capacity_bytes)
     }
 
-    pub fn clear(&mut self) -> Result<(), QueueRuntimeError> {
-        self.queue
+    pub(crate) fn clear_contents(&self) -> Result<(), QueueRuntimeError> {
+        let result = self
+            .queue
             .clear()
-            .map_err(|err| map_data_path_error(err, "FMQ clear failed"))
+            .map_err(|err| map_data_path_error(err, "FMQ clear failed"));
+        if result.is_ok() {
+            self.wake_pending.store(false, Ordering::Release);
+        }
+        result
     }
 
-    #[cfg(test)]
+    fn begin_dvr_transaction(
+        &self,
+        direction: QueueTransactionDirection,
+        reserved_bytes: usize,
+    ) -> Result<QueueEpochToken, QueueRuntimeError> {
+        if reserved_bytes == 0 {
+            return Err(protocol_error(
+                "DVR queue transaction reservation must be positive",
+            ));
+        }
+        let protocol = self
+            .dvr_epoch
+            .as_ref()
+            .ok_or_else(|| protocol_error("DVR queue epoch protocol is not installed"))?;
+        let mut state = protocol.state.lock().map_err(|_| {
+            protocol_error("DVR queue epoch lock poisoned while admitting a transaction")
+        })?;
+        if state.state != QueueEpochState::Open {
+            return Err(protocol_error("DVR queue epoch is draining or closed"));
+        }
+        state.admitted_transaction_count = state
+            .admitted_transaction_count
+            .checked_add(1)
+            .ok_or_else(|| protocol_error("DVR queue transaction count overflow"))?;
+        Ok(QueueEpochToken {
+            protocol: Arc::clone(protocol),
+            queue_identity: protocol.queue_identity,
+            epoch: state.epoch,
+            direction,
+            reserved_bytes,
+            active: true,
+        })
+    }
+
+    pub(crate) fn begin_dvr_read(
+        &self,
+        reserved_bytes: usize,
+    ) -> Result<QueueEpochToken, QueueRuntimeError> {
+        self.begin_dvr_transaction(QueueTransactionDirection::Read, reserved_bytes)
+    }
+
+    pub(crate) fn begin_dvr_write(
+        &self,
+        reserved_bytes: usize,
+    ) -> Result<QueueEpochToken, QueueRuntimeError> {
+        self.begin_dvr_transaction(QueueTransactionDirection::Write, reserved_bytes)
+    }
+
+    fn begin_dvr_drain(&self) -> Result<QueueEpochDrainTxn, QueueRuntimeError> {
+        let protocol = self
+            .dvr_epoch
+            .as_ref()
+            .ok_or_else(|| protocol_error("DVR queue epoch protocol is not installed"))?;
+        let mut state = protocol.state.lock().map_err(|_| {
+            protocol_error("DVR queue epoch lock poisoned while beginning drain")
+        })?;
+        if state.state != QueueEpochState::Open {
+            return Err(protocol_error("DVR queue epoch is not open"));
+        }
+        let next_epoch = state
+            .epoch
+            .checked_add(1)
+            .ok_or_else(|| protocol_error("DVR queue epoch exhausted"))?;
+        state.state = QueueEpochState::Draining;
+        while state.admitted_transaction_count != 0 {
+            state = protocol.drained.wait(state).map_err(|_| {
+                protocol_error("DVR queue epoch lock poisoned while waiting for drain")
+            })?;
+            if state.state != QueueEpochState::Draining {
+                return Err(protocol_error(
+                    "DVR queue epoch left draining state while waiting",
+                ));
+            }
+        }
+        Ok(QueueEpochDrainTxn {
+            protocol: Arc::clone(protocol),
+            epoch: state.epoch,
+            next_epoch,
+            active: true,
+        })
+    }
+
+    pub(crate) fn clear_dvr_boundary(&self) -> Result<usize, QueueRuntimeError> {
+        let drain = self.begin_dvr_drain()?;
+        let dropped_bytes = self.available_to_read()?;
+        self.clear_contents()?;
+        drain.commit()?;
+        Ok(dropped_bytes)
+    }
+
+    pub(crate) fn playback_coordinates(&self) -> Result<(u64, u64), QueueRuntimeError> {
+        let queue_identity = self
+            .playback_backing
+            .as_ref()
+            .map(|backing| backing.queue_identity)
+            .ok_or_else(|| protocol_error("DVR queue is not a playback queue"))?;
+        let protocol = self
+            .dvr_epoch
+            .as_ref()
+            .ok_or_else(|| protocol_error("DVR queue epoch protocol is not installed"))?;
+        let state = protocol.state.lock().map_err(|_| {
+            protocol_error("DVR queue epoch lock poisoned while reading playback coordinates")
+        })?;
+        Ok((queue_identity, state.epoch))
+    }
+
+    pub(crate) fn close_dvr_protocol(&self) -> Result<(), QueueRuntimeError> {
+        let protocol = self
+            .dvr_epoch
+            .as_ref()
+            .ok_or_else(|| protocol_error("DVR queue epoch protocol is not installed"))?;
+        let mut state = protocol.state.lock().map_err(|_| {
+            protocol_error("DVR queue epoch lock poisoned while closing")
+        })?;
+        state.state = QueueEpochState::Closed;
+        protocol.drained.notify_all();
+        Ok(())
+    }
+
     pub fn available_to_read(&self) -> Result<usize, QueueRuntimeError> {
         self.queue
             .available_to_read_result()
@@ -176,7 +546,22 @@ impl QueueRuntime {
             .map_err(|err| map_data_path_error(err, "FMQ available_to_write failed"))
     }
 
-    #[cfg(test)]
+    pub(crate) fn availability_snapshot(
+        &self,
+    ) -> Result<QueueAvailabilitySnapshot, QueueRuntimeError> {
+        let readable_bytes = self
+            .queue
+            .current_fill()
+            .map_err(|err| map_data_path_error(err, "FMQ fill snapshot failed"))?;
+        let writable_bytes = self.capacity_bytes.checked_sub(readable_bytes).ok_or_else(|| {
+            protocol_error("FMQ fill snapshot exceeds the configured queue capacity")
+        })?;
+        Ok(QueueAvailabilitySnapshot {
+            readable_bytes,
+            writable_bytes,
+        })
+    }
+
     pub fn read_into(&self, data: &mut [u8]) -> Result<usize, QueueRuntimeError> {
         self.queue
             .read_into(data)
@@ -190,9 +575,19 @@ impl QueueRuntime {
     }
 
     pub fn wake(&self, event_mask: u32) -> Result<(), QueueRuntimeError> {
-        self.queue
+        let result = self
+            .queue
             .wake(event_mask)
-            .map_err(|err| map_data_path_error(err, "FMQ wake failed"))
+            .map_err(|err| map_data_path_error(err, "FMQ wake failed"));
+        self.wake_pending.store(result.is_err(), Ordering::Release);
+        result
+    }
+
+    pub fn retry_pending_wake(&self, event_mask: u32) -> Result<(), QueueRuntimeError> {
+        if !self.wake_pending.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        self.wake(event_mask)
     }
 
     pub(crate) fn descriptor_export_handle(&self) -> QueueDescriptorExportHandle {
@@ -313,11 +708,6 @@ fn validate_grantor_ranges_against_fd_sizes(
             ));
         };
         let fd_size = fd_sizes[grantor.fd_index as usize];
-        // Some Android FMQ/ashmem backed fds report metadata len as 0 even though
-        // the native FMQ descriptor carries the valid grantor extent.  Treat a
-        // zero reported fd size as unknown and keep the structural range checks
-        // above; when the platform reports a positive size, keep the strict
-        // grantor-vs-fd bound check.
         if fd_size > 0 && end > fd_size {
             return Err(QueueRuntimeError::new(
                 QueueRuntimeErrorKind::StructuralDescriptor,
@@ -349,10 +739,432 @@ fn map_export_error(err: FmqQueueError, detail: &'static str) -> QueueRuntimeErr
 fn map_data_path_error(err: FmqQueueError, detail: &'static str) -> QueueRuntimeError {
     let kind = match err {
         FmqQueueError::NativeReadZero
+        | FmqQueueError::NativeClearBufferAllocationFailed
+        | FmqQueueError::NativeClearReadFailed
         | FmqQueueError::NativeWriteFailed
         | FmqQueueError::NativeWriteInvalidArgument
         | FmqQueueError::NativeWakeFailed => QueueRuntimeErrorKind::DataPathFailure,
         _ => QueueRuntimeErrorKind::StructuralDescriptor,
     };
     QueueRuntimeError::new(kind, detail)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GateState {
+    Open,
+    Draining,
+    Closed,
+}
+
+#[derive(Debug)]
+struct GateData {
+    state: GateState,
+    filter_delivery_generation: u64,
+    parser_state_generation: u64,
+    admitted_producer_count: usize,
+    pending_events: VecDeque<PipelineGeneratedEvent>,
+    pending_event_capacity: usize,
+    record_output_byte_offset: u64,
+}
+
+#[derive(Debug)]
+struct GateInner {
+    data: Mutex<GateData>,
+    drained: Condvar,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct FilterProducerDrainGate {
+    inner: Arc<GateInner>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FilterDrainBoundary {
+    Flush,
+    Reconfigure,
+}
+
+#[derive(Debug)]
+pub(crate) struct FilterProducerPermit {
+    inner: Arc<GateInner>,
+    delivery_generation: u64,
+    active: bool,
+}
+
+#[derive(Debug)]
+pub(crate) struct FilterDrainTxn {
+    inner: Arc<GateInner>,
+    boundary: FilterDrainBoundary,
+    delivery_generation: u64,
+    parser_generation: u64,
+    next_delivery_generation: u64,
+    next_parser_generation: u64,
+    active: bool,
+}
+
+fn gate_error(detail: &'static str) -> QueueRuntimeError {
+    QueueRuntimeError::new(QueueRuntimeErrorKind::StructuralDescriptor, detail)
+}
+
+impl FilterProducerDrainGate {
+    pub(crate) fn new(pending_event_capacity: usize) -> Result<Self, QueueRuntimeError> {
+        if pending_event_capacity == 0 {
+            return Err(gate_error(
+                "filter producer gate pending event capacity must be positive",
+            ));
+        }
+        let mut pending_events = VecDeque::new();
+        pending_events
+            .try_reserve_exact(pending_event_capacity)
+            .map_err(|_| gate_error("filter producer gate pending event reservation failed"))?;
+        Ok(Self {
+            inner: Arc::new(GateInner {
+                data: Mutex::new(GateData {
+                    state: GateState::Open,
+                    filter_delivery_generation: 0,
+                    parser_state_generation: 0,
+                    admitted_producer_count: 0,
+                    pending_events,
+                    pending_event_capacity,
+                    record_output_byte_offset: 0,
+                }),
+                drained: Condvar::new(),
+            }),
+        })
+    }
+
+    pub(crate) fn begin_producer(&self) -> Result<FilterProducerPermit, QueueRuntimeError> {
+        let mut data = self
+            .inner
+            .data
+            .lock()
+            .map_err(|_| gate_error("filter producer gate lock poisoned while admitting"))?;
+        if data.state != GateState::Open {
+            return Err(gate_error("filter producer gate is draining or closed"));
+        }
+        data.admitted_producer_count = data
+            .admitted_producer_count
+            .checked_add(1)
+            .ok_or_else(|| gate_error("filter producer permit count overflow"))?;
+        Ok(FilterProducerPermit {
+            inner: Arc::clone(&self.inner),
+            delivery_generation: data.filter_delivery_generation,
+            active: true,
+        })
+    }
+
+    pub(crate) fn begin_drain(
+        &self,
+        boundary: FilterDrainBoundary,
+    ) -> Result<FilterDrainTxn, QueueRuntimeError> {
+        let mut data = self
+            .inner
+            .data
+            .lock()
+            .map_err(|_| gate_error("filter producer gate lock poisoned while draining"))?;
+        if data.state != GateState::Open {
+            return Err(gate_error("filter producer gate is not open"));
+        }
+        let next_parser_generation = data
+            .parser_state_generation
+            .checked_add(1)
+            .ok_or_else(|| gate_error("filter parser generation exhausted"))?;
+        let next_delivery_generation = match boundary {
+            FilterDrainBoundary::Flush => data.filter_delivery_generation,
+            FilterDrainBoundary::Reconfigure => data
+                .filter_delivery_generation
+                .checked_add(1)
+                .ok_or_else(|| gate_error("filter delivery generation exhausted"))?,
+        };
+        data.state = GateState::Draining;
+        while data.admitted_producer_count != 0 {
+            data = self
+                .inner
+                .drained
+                .wait(data)
+                .map_err(|_| gate_error("filter producer gate lock poisoned while waiting"))?;
+            if data.state != GateState::Draining {
+                return Err(gate_error(
+                    "filter producer gate left draining state while waiting",
+                ));
+            }
+        }
+        Ok(FilterDrainTxn {
+            inner: Arc::clone(&self.inner),
+            boundary,
+            delivery_generation: data.filter_delivery_generation,
+            parser_generation: data.parser_state_generation,
+            next_delivery_generation,
+            next_parser_generation,
+            active: true,
+        })
+    }
+
+    pub(crate) fn take_pending_events(
+        &self,
+    ) -> Result<Vec<PipelineGeneratedEvent>, QueueRuntimeError> {
+        let mut data = self
+            .inner
+            .data
+            .lock()
+            .map_err(|_| gate_error("filter producer gate lock poisoned while taking events"))?;
+        match data.state {
+            GateState::Open => Ok(data.pending_events.drain(..).collect()),
+            GateState::Draining => Ok(Vec::new()),
+            GateState::Closed => Err(gate_error(
+                "filter producer gate is closed while taking events",
+            )),
+        }
+    }
+
+    pub(crate) fn close(&self) -> Result<(), QueueRuntimeError> {
+        let mut data = self
+            .inner
+            .data
+            .lock()
+            .map_err(|_| gate_error("filter producer gate lock poisoned while closing"))?;
+        data.state = GateState::Closed;
+        data.pending_events.clear();
+        self.inner.drained.notify_all();
+        Ok(())
+    }
+}
+
+impl FilterProducerPermit {
+    pub(crate) fn record_output_byte_offset(&self) -> Result<u64, QueueRuntimeError> {
+        if !self.active {
+            return Err(gate_error("filter producer permit was already consumed"));
+        }
+        let data = self.inner.data.lock().map_err(|_| {
+            gate_error("filter producer gate lock poisoned while reading record offset")
+        })?;
+        if data.state == GateState::Closed
+            || data.filter_delivery_generation != self.delivery_generation
+        {
+            return Err(gate_error("filter producer permit is stale"));
+        }
+        Ok(data.record_output_byte_offset)
+    }
+
+    pub(crate) fn commit_record_output(
+        mut self,
+        committed_bytes: usize,
+        event: Option<PipelineGeneratedEvent>,
+    ) -> Result<(), QueueRuntimeError> {
+        if !self.active || committed_bytes == 0 {
+            return Err(gate_error("record output commit is invalid"));
+        }
+        let committed_bytes = u64::try_from(committed_bytes)
+            .map_err(|_| gate_error("record output byte count is out of range"))?;
+        let mut data = self.inner.data.lock().map_err(|_| {
+            gate_error("filter producer gate lock poisoned while committing record output")
+        })?;
+        if data.filter_delivery_generation != self.delivery_generation {
+            return Err(gate_error("filter producer permit generation changed"));
+        }
+        let next_offset = data
+            .record_output_byte_offset
+            .checked_add(committed_bytes)
+            .ok_or_else(|| gate_error("record output byte offset exhausted"))?;
+        let event_queue_full = event.is_some()
+            && data.pending_events.len() >= data.pending_event_capacity;
+        data.record_output_byte_offset = next_offset;
+        if !event_queue_full {
+            if let Some(event) = event {
+                data.pending_events.push_back(event);
+            }
+        }
+        let gate_state = data.state;
+        data.admitted_producer_count = data
+            .admitted_producer_count
+            .checked_sub(1)
+            .ok_or_else(|| gate_error("filter producer permit count underflow"))?;
+        self.active = false;
+        if data.admitted_producer_count == 0 {
+            self.inner.drained.notify_all();
+        }
+        if event_queue_full {
+            Err(gate_error("filter producer pending event queue is full"))
+        } else if gate_state == GateState::Closed {
+            Err(gate_error("filter producer gate closed before record output commit"))
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(crate) fn enqueue_event(
+        &mut self,
+        event: PipelineGeneratedEvent,
+    ) -> Result<(), QueueRuntimeError> {
+        if !self.active {
+            return Err(gate_error("filter producer permit was already consumed"));
+        }
+        let mut data = self
+            .inner
+            .data
+            .lock()
+            .map_err(|_| gate_error("filter producer gate lock poisoned while queueing event"))?;
+        if data.state == GateState::Closed
+            || data.filter_delivery_generation != self.delivery_generation
+        {
+            return Err(gate_error("filter producer permit is stale"));
+        }
+        if data.pending_events.len() >= data.pending_event_capacity {
+            return Err(gate_error("filter producer pending event queue is full"));
+        }
+        data.pending_events.push_back(event);
+        Ok(())
+    }
+
+    fn release(&mut self) -> Result<GateState, QueueRuntimeError> {
+        if !self.active {
+            return Err(gate_error("filter producer permit was already consumed"));
+        }
+        let mut data = self
+            .inner
+            .data
+            .lock()
+            .map_err(|_| gate_error("filter producer gate lock poisoned while releasing"))?;
+        if data.filter_delivery_generation != self.delivery_generation {
+            return Err(gate_error("filter producer permit generation changed"));
+        }
+        let gate_state = data.state;
+        data.admitted_producer_count = data
+            .admitted_producer_count
+            .checked_sub(1)
+            .ok_or_else(|| gate_error("filter producer permit count underflow"))?;
+        self.active = false;
+        if data.admitted_producer_count == 0 {
+            self.inner.drained.notify_all();
+        }
+        Ok(gate_state)
+    }
+
+    pub(crate) fn commit(mut self) -> Result<(), QueueRuntimeError> {
+        if self.release()? == GateState::Closed {
+            Err(gate_error("filter producer gate closed before commit"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl Drop for FilterProducerPermit {
+    fn drop(&mut self) {
+        if self.active && self.release().is_err() {
+            if let Ok(mut data) = self.inner.data.lock() {
+                data.state = GateState::Closed;
+                data.pending_events.clear();
+                self.inner.drained.notify_all();
+            }
+        }
+    }
+}
+
+impl FilterDrainTxn {
+    pub(crate) fn take_pending_events(
+        &mut self,
+    ) -> Result<Vec<PipelineGeneratedEvent>, QueueRuntimeError> {
+        if !self.active {
+            return Err(gate_error("filter producer drain was already consumed"));
+        }
+        let mut data = self
+            .inner
+            .data
+            .lock()
+            .map_err(|_| gate_error("filter producer gate lock poisoned while draining events"))?;
+        if data.state != GateState::Draining
+            || data.filter_delivery_generation != self.delivery_generation
+            || data.parser_state_generation != self.parser_generation
+            || data.admitted_producer_count != 0
+        {
+            return Err(gate_error(
+                "filter producer drain state changed before draining events",
+            ));
+        }
+        Ok(data.pending_events.drain(..).collect())
+    }
+
+    pub(crate) fn commit(mut self) -> Result<(), QueueRuntimeError> {
+        let mut data = self
+            .inner
+            .data
+            .lock()
+            .map_err(|_| gate_error("filter producer gate lock poisoned while committing"))?;
+        if data.state != GateState::Draining
+            || data.filter_delivery_generation != self.delivery_generation
+            || data.parser_state_generation != self.parser_generation
+            || data.admitted_producer_count != 0
+        {
+            return Err(gate_error("filter producer drain state changed before commit"));
+        }
+        match self.boundary {
+            FilterDrainBoundary::Flush | FilterDrainBoundary::Reconfigure => {
+                data.pending_events.clear();
+            }
+        }
+        data.filter_delivery_generation = self.next_delivery_generation;
+        data.parser_state_generation = self.next_parser_generation;
+        data.state = GateState::Open;
+        self.active = false;
+        self.inner.drained.notify_all();
+        Ok(())
+    }
+
+    pub(crate) fn commit_and_take_pending_events(
+        mut self,
+    ) -> Result<Vec<PipelineGeneratedEvent>, QueueRuntimeError> {
+        let mut data = self
+            .inner
+            .data
+            .lock()
+            .map_err(|_| gate_error("filter producer gate lock poisoned while committing"))?;
+        if data.state != GateState::Draining
+            || data.filter_delivery_generation != self.delivery_generation
+            || data.parser_state_generation != self.parser_generation
+            || data.admitted_producer_count != 0
+        {
+            return Err(gate_error("filter producer drain state changed before commit"));
+        }
+        let pending_events = data.pending_events.drain(..).collect();
+        data.filter_delivery_generation = self.next_delivery_generation;
+        data.parser_state_generation = self.next_parser_generation;
+        data.state = GateState::Open;
+        self.active = false;
+        self.inner.drained.notify_all();
+        Ok(pending_events)
+    }
+
+    fn rollback(&mut self) -> Result<(), QueueRuntimeError> {
+        if !self.active {
+            return Ok(());
+        }
+        let mut data = self
+            .inner
+            .data
+            .lock()
+            .map_err(|_| gate_error("filter producer gate lock poisoned while rolling back"))?;
+        if data.state != GateState::Draining
+            || data.filter_delivery_generation != self.delivery_generation
+            || data.parser_state_generation != self.parser_generation
+        {
+            return Err(gate_error("filter producer drain state changed before rollback"));
+        }
+        data.state = GateState::Open;
+        self.active = false;
+        self.inner.drained.notify_all();
+        Ok(())
+    }
+}
+
+impl Drop for FilterDrainTxn {
+    fn drop(&mut self) {
+        if self.active && self.rollback().is_err() {
+            if let Ok(mut data) = self.inner.data.lock() {
+                data.state = GateState::Closed;
+                data.pending_events.clear();
+                self.inner.drained.notify_all();
+            }
+        }
+    }
 }

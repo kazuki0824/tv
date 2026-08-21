@@ -11,6 +11,7 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     DemuxFilterSectionSettingsConditionTableInfo::DemuxFilterSectionSettingsConditionTableInfo,
     DemuxFilterSettings::DemuxFilterSettings, DemuxFilterSubType::DemuxFilterSubType,
     DemuxFilterType::DemuxFilterType,
+    DemuxTsIndex::DemuxTsIndex,
     DemuxTsFilterSettingsFilterSettings::DemuxTsFilterSettingsFilterSettings,
     DemuxTsFilterType::DemuxTsFilterType,
 };
@@ -20,19 +21,14 @@ use maleicacid_tuner_hal2_demux::config::{
     RecordIndexSettings, SectionCondition, SectionConditionKind,
 };
 use maleicacid_tuner_hal2_demux::{
-    normalize_length_field_bits, AVC_SC_B_SLICE, AVC_SC_I_SLICE, AVC_SC_P_SLICE, AVC_SC_SI_SLICE,
-    AVC_SC_SP_SLICE, DEMUX_TS_INDEX_ADAPTATION_EXTENSION, DEMUX_TS_INDEX_CHANGE_TO_EVEN_SCRAMBLED,
-    DEMUX_TS_INDEX_CHANGE_TO_NOT_SCRAMBLED, DEMUX_TS_INDEX_CHANGE_TO_ODD_SCRAMBLED,
-    DEMUX_TS_INDEX_DISCONTINUITY, DEMUX_TS_INDEX_FIRST_PACKET, DEMUX_TS_INDEX_OPCR,
-    DEMUX_TS_INDEX_PAYLOAD_UNIT_START, DEMUX_TS_INDEX_PCR, DEMUX_TS_INDEX_PRIORITY,
-    DEMUX_TS_INDEX_PRIVATE_DATA, DEMUX_TS_INDEX_RANDOM_ACCESS, DEMUX_TS_INDEX_SPLICING_POINT,
-    HEVC_SC_AUD, HEVC_SC_BLA_N_LP, HEVC_SC_BLA_W_LP, HEVC_SC_BLA_W_RADL, HEVC_SC_IDR_N_LP,
-    HEVC_SC_IDR_W_RADL, HEVC_SC_SPS, HEVC_SC_TRAIL_CRA, RECORD_SC_TYPE_NONE, RECORD_SC_TYPE_SC,
-    RECORD_SC_TYPE_SC_AVC, RECORD_SC_TYPE_SC_HEVC, RECORD_SC_TYPE_SC_VVC, VVC_SC_AUD, VVC_SC_CRA,
-    VVC_SC_GDR, VVC_SC_IDR_N_LP, VVC_SC_IDR_W_RADL, VVC_SC_SPS, VVC_SC_VPS,
+    normalize_length_field_bits, supported_record_sc_index_mask, supported_record_ts_index_mask,
+    PES_STREAM_ID_WILDCARD,
+    RECORD_SC_TYPE_NONE, RECORD_SC_TYPE_SC, RECORD_SC_TYPE_SC_AVC, RECORD_SC_TYPE_SC_HEVC,
+    RECORD_SC_TYPE_SC_VVC,
 };
+#[cfg(test)]
+use maleicacid_tuner_hal2_demux::HEVC_SC_AUD;
 
-const PES_STREAM_ID_WILDCARD: i32 = -1;
 const MAX_SECTION_FILTER_BYTES: usize = 16;
 
 fn invalid(detail: &'static str) -> HalError {
@@ -93,7 +89,7 @@ pub fn normalize_pes_stream_id(stream_id: i32) -> Result<i32, HalError> {
     if stream_id == PES_STREAM_ID_WILDCARD || (0..=0xff).contains(&stream_id) {
         Ok(stream_id)
     } else {
-        Err(invalid("PES stream id must be -1 or 0..=255"))
+        Err(invalid("PES stream id must be 0..=255 or 0xffff"))
     }
 }
 
@@ -169,22 +165,6 @@ pub fn build_section_condition(
     }
 }
 
-fn supported_record_ts_index_mask() -> i32 {
-    DEMUX_TS_INDEX_FIRST_PACKET
-        | DEMUX_TS_INDEX_PAYLOAD_UNIT_START
-        | DEMUX_TS_INDEX_CHANGE_TO_NOT_SCRAMBLED
-        | DEMUX_TS_INDEX_CHANGE_TO_EVEN_SCRAMBLED
-        | DEMUX_TS_INDEX_CHANGE_TO_ODD_SCRAMBLED
-        | DEMUX_TS_INDEX_DISCONTINUITY
-        | DEMUX_TS_INDEX_RANDOM_ACCESS
-        | DEMUX_TS_INDEX_PRIORITY
-        | DEMUX_TS_INDEX_PCR
-        | DEMUX_TS_INDEX_OPCR
-        | DEMUX_TS_INDEX_SPLICING_POINT
-        | DEMUX_TS_INDEX_PRIVATE_DATA
-        | DEMUX_TS_INDEX_ADAPTATION_EXTENSION
-}
-
 fn record_sc_mask_variant_type(mask: &DemuxFilterScIndexMask) -> (i32, i32) {
     match mask {
         DemuxFilterScIndexMask::ScIndex(v) => (RECORD_SC_TYPE_SC, *v),
@@ -194,56 +174,43 @@ fn record_sc_mask_variant_type(mask: &DemuxFilterScIndexMask) -> (i32, i32) {
     }
 }
 
-fn supported_record_sc_index_mask(sc_index_type: i32) -> Option<i32> {
-    match sc_index_type {
-        RECORD_SC_TYPE_NONE => Some(0),
-        RECORD_SC_TYPE_SC => Some((1 << 0) | (1 << 1) | (1 << 2) | (1 << 3)),
-        RECORD_SC_TYPE_SC_AVC => Some(
-            AVC_SC_I_SLICE | AVC_SC_P_SLICE | AVC_SC_B_SLICE | AVC_SC_SI_SLICE | AVC_SC_SP_SLICE,
-        ),
-        RECORD_SC_TYPE_SC_HEVC => Some(
-            HEVC_SC_SPS
-                | HEVC_SC_AUD
-                | HEVC_SC_BLA_W_LP
-                | HEVC_SC_BLA_W_RADL
-                | HEVC_SC_BLA_N_LP
-                | HEVC_SC_IDR_W_RADL
-                | HEVC_SC_IDR_N_LP
-                | HEVC_SC_TRAIL_CRA,
-        ),
-        RECORD_SC_TYPE_SC_VVC => Some(
-            VVC_SC_IDR_W_RADL
-                | VVC_SC_IDR_N_LP
-                | VVC_SC_CRA
-                | VVC_SC_GDR
-                | VVC_SC_VPS
-                | VVC_SC_SPS
-                | VVC_SC_AUD,
-        ),
-        _ => None,
-    }
-}
-
 pub fn validate_record_index_settings(
     ts_index_mask: i32,
     sc_index_type: i32,
     sc_index_mask: &DemuxFilterScIndexMask,
 ) -> Result<i32, HalError> {
-    if ts_index_mask < 0 || (ts_index_mask & !supported_record_ts_index_mask()) != 0 {
-        return Err(invalid("record.tsIndexMask contains unsupported bits"));
+    let supported_ts_mask = supported_record_ts_index_mask();
+    let known_ts_mask = supported_ts_mask
+        | DemuxTsIndex::MPT_INDEX_MPT.0
+        | DemuxTsIndex::MPT_INDEX_VIDEO.0
+        | DemuxTsIndex::MPT_INDEX_AUDIO.0
+        | DemuxTsIndex::MPT_INDEX_TIMESTAMP_TARGET_VIDEO.0
+        | DemuxTsIndex::MPT_INDEX_TIMESTAMP_TARGET_AUDIO.0;
+    if ts_index_mask < 0 || (ts_index_mask & !known_ts_mask) != 0 {
+        return Err(invalid("record.tsIndexMask contains reserved bits"));
+    }
+    if (ts_index_mask & !supported_ts_mask) != 0 {
+        return Err(HalError::unsupported_detail(
+            "record.tsIndexMask",
+            "known MPT record index bits are unavailable in the TS-only profile",
+        ));
     }
     let (variant_type, mask_bits) = record_sc_mask_variant_type(sc_index_mask);
     if sc_index_type == RECORD_SC_TYPE_NONE {
-        if mask_bits == 0 {
+        if variant_type == RECORD_SC_TYPE_SC && mask_bits == 0 {
             return Ok(0);
         }
         return Err(invalid(
-            "record.scIndexMask must be zero when scIndexType is NONE",
+            "record.scIndexType NONE requires ScIndex(0)",
         ));
     }
-    let Some(supported_mask) = supported_record_sc_index_mask(sc_index_type) else {
+    if !matches!(
+        sc_index_type,
+        RECORD_SC_TYPE_SC | RECORD_SC_TYPE_SC_AVC | RECORD_SC_TYPE_SC_HEVC | RECORD_SC_TYPE_SC_VVC
+    ) {
         return Err(invalid("record.scIndexType is unsupported"));
-    };
+    }
+    let supported_mask = supported_record_sc_index_mask(sc_index_type);
     if variant_type != sc_index_type {
         return Err(invalid(
             "record.scIndexType does not match scIndexMask union variant",
@@ -384,13 +351,47 @@ mod tests {
 
     #[test]
     fn invalid_pes_stream_id_is_invalid_argument() {
+        assert_eq!(normalize_pes_stream_id(0xffff).unwrap(), 0xffff);
+        assert!(normalize_pes_stream_id(-1).is_err());
         assert!(normalize_pes_stream_id(256).is_err());
+        assert!(normalize_pes_stream_id(0xfffe).is_err());
+        assert!(normalize_pes_stream_id(0x1_0000).is_err());
     }
 
     #[test]
     fn record_sc_type_mask_mismatch_is_invalid_argument() {
         let mask = DemuxFilterScIndexMask::ScHevc(HEVC_SC_AUD);
         assert!(validate_record_index_settings(0, RECORD_SC_TYPE_SC_AVC, &mask).is_err());
+    }
+
+    #[test]
+    fn record_sc_type_none_requires_sc_index_zero_union_arm() {
+        assert_eq!(
+            validate_record_index_settings(
+                0,
+                RECORD_SC_TYPE_NONE,
+                &DemuxFilterScIndexMask::ScIndex(0),
+            ),
+            Ok(0)
+        );
+        assert!(validate_record_index_settings(
+            0,
+            RECORD_SC_TYPE_NONE,
+            &DemuxFilterScIndexMask::ScAvc(0),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn known_mpt_record_index_bit_is_unavailable_not_invalid() {
+        assert!(matches!(
+            validate_record_index_settings(
+                DemuxTsIndex::MPT_INDEX_MPT.0,
+                RECORD_SC_TYPE_NONE,
+                &DemuxFilterScIndexMask::ScIndex(0),
+            ),
+            Err(HalError::UnsupportedDetail { .. })
+        ));
     }
 
     #[test]

@@ -145,6 +145,13 @@ extern "C" size_t tuner_fmq_queue_read(tuner_fmq_queue* queue, uint8_t* data, si
     return to_read;
 }
 
+extern "C" int tuner_fmq_queue_read_exact(
+        tuner_fmq_queue* queue, uint8_t* data, size_t size) {
+    if (queue == nullptr || data == nullptr || size == 0) return -1;
+    if (!queue->queue.read(reinterpret_cast<int8_t*>(data), size)) return -2;
+    return 0;
+}
+
 extern "C" int tuner_fmq_queue_wake(tuner_fmq_queue* queue, uint32_t bits) {
     if (queue == nullptr || queue->event_flag == nullptr) return -1;
     return queue->event_flag->wake(bits);

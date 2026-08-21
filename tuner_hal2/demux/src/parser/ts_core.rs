@@ -1,19 +1,22 @@
 use super::packet_pipeline::PacketPid;
+use maleicacid_tuner_hal2_common::TS_PACKET_SIZE;
 use std::collections::BTreeMap;
 
-const MAX_PES_BUFFER_BYTES: usize = 1024 * 1024;
+pub const MAX_PES_BUFFER_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ContinuityOutcome {
     FirstPacket,
     InOrder,
     Duplicate,
+    CounterCollision,
     Discontinuity,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct ContinuityState {
     last_counter: Option<u8>,
+    last_packet: Option<[u8; TS_PACKET_SIZE]>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -27,6 +30,7 @@ impl ContinuityTracker {
         pid: PacketPid,
         continuity_counter: u8,
         has_payload: bool,
+        packet: &[u8; TS_PACKET_SIZE],
     ) -> ContinuityOutcome {
         if !has_payload {
             return ContinuityOutcome::InOrder;
@@ -34,13 +38,19 @@ impl ContinuityTracker {
         let state = self.states.entry(pid).or_default();
         let Some(last_counter) = state.last_counter else {
             state.last_counter = Some(continuity_counter);
+            state.last_packet = Some(*packet);
             return ContinuityOutcome::FirstPacket;
         };
         if continuity_counter == last_counter {
-            return ContinuityOutcome::Duplicate;
+            if state.last_packet.as_ref() == Some(packet) {
+                return ContinuityOutcome::Duplicate;
+            }
+            state.last_packet = Some(*packet);
+            return ContinuityOutcome::CounterCollision;
         }
         let expected = (last_counter + 1) & 0x0f;
         state.last_counter = Some(continuity_counter);
+        state.last_packet = Some(*packet);
         if continuity_counter == expected {
             ContinuityOutcome::InOrder
         } else {
@@ -115,6 +125,9 @@ fn parse_pes_header_status(bytes: &[u8]) -> PesHeaderParseStatus {
     }
     let stream_id = bytes[3];
     let packet_length = u16::from_be_bytes([bytes[4], bytes[5]]) as usize;
+    if packet_length == 0 && !(0xe0..=0xef).contains(&stream_id) {
+        return PesHeaderParseStatus::Malformed;
+    }
     if !pes_stream_has_optional_header(stream_id) {
         let expected_len = if packet_length == 0 {
             None
@@ -326,12 +339,15 @@ impl PesAssembler {
                 return None;
             }
         }
-        let payload = if self.buf.starts_with(&[0x00, 0x00, 0x01]) {
-            self.buf[summary.payload_offset.min(self.buf.len())..].to_vec()
+        let mut raw_bytes = std::mem::take(&mut self.buf);
+        if let Some(expected_len) = summary.expected_len {
+            raw_bytes.truncate(expected_len);
+        }
+        let payload = if raw_bytes.starts_with(&[0x00, 0x00, 0x01]) {
+            raw_bytes[summary.payload_offset.min(raw_bytes.len())..].to_vec()
         } else {
-            self.buf.clone()
+            raw_bytes.clone()
         };
-        let raw_bytes = std::mem::take(&mut self.buf);
         self.expected_len = None;
         self.unbounded_summary = None;
         self.pid = None;
@@ -410,61 +426,87 @@ mod tests {
     #[test]
     fn continuity_tracker_flags_duplicate_and_gap() {
         let mut tracker = ContinuityTracker::default();
+        let packet_0 = make_packet(256, 0);
+        let packet_1 = make_packet(256, 1);
+        let packet_3 = make_packet(256, 3);
         assert_eq!(
-            tracker.observe(packet_pid(256), 0, true),
+            tracker.observe(packet_pid(256), 0, true, &packet_0),
             ContinuityOutcome::FirstPacket
         );
         assert_eq!(
-            tracker.observe(packet_pid(256), 1, true),
+            tracker.observe(packet_pid(256), 1, true, &packet_1),
             ContinuityOutcome::InOrder
         );
         assert_eq!(
-            tracker.observe(packet_pid(256), 1, true),
+            tracker.observe(packet_pid(256), 1, true, &packet_1),
             ContinuityOutcome::Duplicate
         );
         assert_eq!(
-            tracker.observe(packet_pid(256), 3, true),
+            tracker.observe(packet_pid(256), 3, true, &packet_3),
             ContinuityOutcome::Discontinuity
+        );
+    }
+
+    #[test]
+    fn continuity_tracker_requires_full_packet_equality_for_duplicate() {
+        let mut tracker = ContinuityTracker::default();
+        let first = make_packet(256, 5);
+        let mut changed = first;
+        changed[20] ^= 0x01;
+
+        assert_eq!(
+            tracker.observe(packet_pid(256), 5, true, &first),
+            ContinuityOutcome::FirstPacket
+        );
+        assert_eq!(
+            tracker.observe(packet_pid(256), 5, true, &changed),
+            ContinuityOutcome::CounterCollision
         );
     }
 
     #[test]
     fn continuity_tracker_ignores_adaptation_only_packets() {
         let mut tracker = ContinuityTracker::default();
+        let packet_256_0 = make_packet(256, 0);
+        let packet_256_1 = make_packet(256, 1);
         assert_eq!(
-            tracker.observe(packet_pid(256), 0, true),
+            tracker.observe(packet_pid(256), 0, true, &packet_256_0),
             ContinuityOutcome::FirstPacket
         );
         assert_eq!(
-            tracker.observe(packet_pid(256), 1, false),
+            tracker.observe(packet_pid(256), 1, false, &packet_256_1),
             ContinuityOutcome::InOrder
         );
         assert_eq!(
-            tracker.observe(packet_pid(256), 1, true),
+            tracker.observe(packet_pid(256), 1, true, &packet_256_1),
             ContinuityOutcome::InOrder
         );
 
         let mut tracker = ContinuityTracker::default();
+        let packet_300_7 = make_packet(300, 7);
+        let packet_300_0 = make_packet(300, 0);
         assert_eq!(
-            tracker.observe(packet_pid(300), 7, false),
+            tracker.observe(packet_pid(300), 7, false, &packet_300_7),
             ContinuityOutcome::InOrder
         );
         assert_eq!(
-            tracker.observe(packet_pid(300), 0, true),
+            tracker.observe(packet_pid(300), 0, true, &packet_300_0),
             ContinuityOutcome::FirstPacket
         );
 
         let mut tracker = ContinuityTracker::default();
+        let packet_301_0 = make_packet(301, 0);
+        let packet_301_1 = make_packet(301, 1);
         assert_eq!(
-            tracker.observe(packet_pid(301), 0, true),
+            tracker.observe(packet_pid(301), 0, true, &packet_301_0),
             ContinuityOutcome::FirstPacket
         );
         assert_eq!(
-            tracker.observe(packet_pid(301), 0, false),
+            tracker.observe(packet_pid(301), 0, false, &packet_301_0),
             ContinuityOutcome::InOrder
         );
         assert_eq!(
-            tracker.observe(packet_pid(301), 1, true),
+            tracker.observe(packet_pid(301), 1, true, &packet_301_1),
             ContinuityOutcome::InOrder
         );
     }
@@ -486,6 +528,42 @@ mod tests {
 #[cfg(test)]
 mod pes_flush_tests {
     use super::{packet_pid_for_test, PesAssembler, PesDropReason};
+
+    #[test]
+    fn length_zero_video_pes_completes_at_the_next_start_boundary() {
+        let mut assembler = PesAssembler::default();
+        let first = [
+            0x00, 0x00, 0x01, 0xe0, 0x00, 0x00, 0x80, 0x00, 0x00, 0xaa, 0xbb,
+        ];
+        assert!(assembler
+            .push(packet_pid_for_test(0x0100), true, &first)
+            .is_empty());
+
+        let packets = assembler.push(
+            packet_pid_for_test(0x0100),
+            true,
+            &[0x00, 0x00, 0x01, 0xe1],
+        );
+        assert_eq!(packets.len(), 1);
+        assert_eq!(packets[0].stream_id, 0xe0);
+        assert_eq!(packets[0].payload, vec![0xaa, 0xbb]);
+    }
+
+    #[test]
+    fn length_zero_non_video_pes_is_malformed() {
+        let mut assembler = PesAssembler::default();
+        let private_stream = [
+            0x00, 0x00, 0x01, 0xbd, 0x00, 0x00, 0x80, 0x00, 0x00, 0xaa,
+        ];
+
+        assert!(assembler
+            .push(packet_pid_for_test(0x0100), true, &private_stream)
+            .is_empty());
+        assert_eq!(
+            assembler.take_drop_diagnostic(),
+            Some((PesDropReason::MalformedPes, 1))
+        );
+    }
 
     #[test]
     fn length_zero_pes_is_discarded_on_lifecycle_boundary() {
@@ -736,6 +814,19 @@ mod pes_split_and_recovery_tests {
 
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].payload, vec![0xaa, 0xbb, 0xcc]);
+    }
+
+    #[test]
+    fn bounded_pes_excludes_trailing_ts_payload_stuffing() {
+        let mut assembler = PesAssembler::default();
+        let mut pes = bounded_video_pes(&[0xaa]);
+        pes.extend_from_slice(&[0xff; 32]);
+
+        let out = assembler.push(packet_pid_for_test(0x0100), true, &pes);
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].payload, vec![0xaa]);
+        assert_eq!(out[0].raw_bytes, bounded_video_pes(&[0xaa]));
     }
 
     #[test]

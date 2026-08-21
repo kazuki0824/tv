@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use crate::registry::LnbRegistryProfile;
 use maleicacid_tuner_hal2_binder_adapter::{AidlMethodAdapter, AidlMethodCall};
 use maleicacid_tuner_hal2_common::{
-    HalError, HalInternalKind, HalInvalidArgumentKind, HalInvalidStateKind,
+    FrontendBackendKind, HalError, HalInternalKind, HalInvalidArgumentKind, HalInvalidStateKind,
 };
 use maleicacid_tuner_hal2_device::{FrontendRuntimeState, FrontendSignalState};
 use maleicacid_tuner_hal2_domain_request::{
@@ -19,6 +19,8 @@ use crate::{
     TunerServiceRuntime,
 };
 use maleicacid_tuner_hal2_demux::QueueDescriptorQueryError;
+
+const TUNER_INVALID_TIMESTAMP: i64 = -1;
 
 pub type SharedObjectMethodRuntime = Arc<Mutex<TunerServiceRuntime>>;
 
@@ -62,6 +64,7 @@ pub enum ObjectQueryRequest {
     FrontendGetStatus {
         status_types: Vec<ObjectFrontendStatusType>,
     },
+    FrontendGetHardwareInfo,
     FrontendGetFrontendStatusReadiness {
         status_types: Vec<ObjectFrontendStatusType>,
     },
@@ -84,6 +87,10 @@ impl ObjectQueryRequest {
             Self::FrontendGetStatus { .. } => AidlMethodCall::PublicApi {
                 object: AidlObjectKind::Frontend,
                 api: AidlApi::FrontendGetStatus,
+            },
+            Self::FrontendGetHardwareInfo => AidlMethodCall::PublicApi {
+                object: AidlObjectKind::Frontend,
+                api: AidlApi::FrontendGetHardwareInfo,
             },
             Self::FrontendGetFrontendStatusReadiness { .. } => AidlMethodCall::PublicApi {
                 object: AidlObjectKind::Frontend,
@@ -124,6 +131,7 @@ pub enum ObjectFrontendStatusReadinessValue {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ObjectFrontendStatusSnapshot {
+    pub backend: FrontendBackendKind,
     pub lnb_profile: Option<LnbRegistryProfile>,
     pub runtime_state: FrontendRuntimeState,
     pub signal_state: FrontendSignalState,
@@ -140,9 +148,24 @@ fn object_frontend_status_value(
     snapshot: ObjectFrontendStatusSnapshot,
     status_type: ObjectFrontendStatusType,
 ) -> Result<ObjectFrontendStatusValue, HalError> {
+    if matches!(
+        snapshot.runtime_state,
+        FrontendRuntimeState::Closing | FrontendRuntimeState::Failed
+    ) {
+        return Err(HalError::Unsupported(
+            "frontend status snapshot is unavailable after a fatal runtime transition",
+        ));
+    }
     match status_type {
-        ObjectFrontendStatusType::DemodLock => Ok(ObjectFrontendStatusValue::DemodLocked(
-            matches!(snapshot.signal_state, FrontendSignalState::Locked),
+        ObjectFrontendStatusType::DemodLock
+            if snapshot.backend == FrontendBackendKind::LinuxDvb => {
+            Ok(ObjectFrontendStatusValue::DemodLocked(matches!(
+                snapshot.signal_state,
+                FrontendSignalState::Locked
+            )))
+        }
+        ObjectFrontendStatusType::DemodLock => Err(HalError::Unsupported(
+            "frontend demodulator lock status is not advertised",
         )),
         ObjectFrontendStatusType::LnbVoltage
             if lnb_profile_supports_voltage_status(snapshot.lnb_profile) =>
@@ -162,6 +185,11 @@ fn object_frontend_readiness_value(
     snapshot: ObjectFrontendStatusSnapshot,
     status_type: ObjectFrontendStatusType,
 ) -> ObjectFrontendStatusReadinessValue {
+    if matches!(status_type, ObjectFrontendStatusType::DemodLock)
+        && snapshot.backend != FrontendBackendKind::LinuxDvb
+    {
+        return ObjectFrontendStatusReadinessValue::Unsupported;
+    }
     if matches!(status_type, ObjectFrontendStatusType::LnbVoltage)
         && !lnb_profile_supports_voltage_status(snapshot.lnb_profile)
     {
@@ -170,18 +198,24 @@ fn object_frontend_readiness_value(
     if matches!(status_type, ObjectFrontendStatusType::Unsupported) {
         return ObjectFrontendStatusReadinessValue::Unsupported;
     }
-    match snapshot.runtime_state {
-        FrontendRuntimeState::Idle => ObjectFrontendStatusReadinessValue::Stable,
-        FrontendRuntimeState::Tuning { .. } | FrontendRuntimeState::Scanning { .. } => {
-            match snapshot.signal_state {
-                FrontendSignalState::Locked => ObjectFrontendStatusReadinessValue::Stable,
-                FrontendSignalState::NoSignal
-                | FrontendSignalState::SignalDetected
-                | FrontendSignalState::Unknown => ObjectFrontendStatusReadinessValue::Unstable,
+    if matches!(
+        snapshot.runtime_state,
+        FrontendRuntimeState::Closing | FrontendRuntimeState::Failed
+    ) {
+        return ObjectFrontendStatusReadinessValue::Unavailable;
+    }
+    match status_type {
+        ObjectFrontendStatusType::LnbVoltage => ObjectFrontendStatusReadinessValue::Stable,
+        ObjectFrontendStatusType::DemodLock => match snapshot.signal_state {
+            FrontendSignalState::Locked | FrontendSignalState::NoSignal => {
+                ObjectFrontendStatusReadinessValue::Stable
             }
-        }
-        FrontendRuntimeState::Closing | FrontendRuntimeState::Failed => {
-            ObjectFrontendStatusReadinessValue::Unavailable
+            FrontendSignalState::SignalDetected | FrontendSignalState::Unknown => {
+                ObjectFrontendStatusReadinessValue::Unstable
+            }
+        },
+        ObjectFrontendStatusType::Unsupported => {
+            ObjectFrontendStatusReadinessValue::Unsupported
         }
     }
 }
@@ -192,6 +226,7 @@ pub enum ObjectQueryResponse {
     PublicId(i32),
     PublicId64(i64),
     FrontendStatus(Vec<ObjectFrontendStatusValue>),
+    FrontendHardwareInfo(String),
     FrontendStatusReadiness(Vec<ObjectFrontendStatusReadinessValue>),
     AvSyncHwId(i32),
     AvSyncTime(i64),
@@ -244,9 +279,29 @@ fn prepare_object_query_request(
                 ObjectQueryResponse::FrontendStatus(
                     status_types
                         .into_iter()
+                        .filter(|status_type| {
+                            matches!(status_type, ObjectFrontendStatusType::DemodLock)
+                                && snapshot.backend == FrontendBackendKind::LinuxDvb
+                                || matches!(status_type, ObjectFrontendStatusType::LnbVoltage)
+                                    && lnb_profile_supports_voltage_status(snapshot.lnb_profile)
+                        })
                         .map(|status_type| object_frontend_status_value(snapshot, status_type))
                         .collect::<Result<Vec<_>, _>>()?,
                 ),
+            ))
+        }
+        ObjectQueryRequest::FrontendGetHardwareInfo => {
+            let entry = query
+                .frontend_entry_for_aidl_object(target.object_id(), target.generation())?;
+            let hardware_info = entry.hardware_info();
+            if hardware_info.is_empty() {
+                return Err(HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "advertised frontend has empty probe-derived hardware information",
+                ));
+            }
+            Ok(ObjectQueryExecution::Immediate(
+                ObjectQueryResponse::FrontendHardwareInfo(hardware_info),
             ))
         }
         ObjectQueryRequest::FrontendGetFrontendStatusReadiness { status_types } => {
@@ -291,8 +346,18 @@ fn prepare_object_query_request(
                 filter_object_id,
                 filter_generation,
             )?;
+            let filter_id = query.public_runtime_id_for_object_method(
+                filter_object_id,
+                filter_generation,
+                AidlObjectKind::Filter,
+            )?;
+            let demux_id = query.public_runtime_id_for_object_method(
+                target.object_id(),
+                target.generation(),
+                AidlObjectKind::Demux,
+            )?;
             query
-                .first_pcr_filter_id_for_demux_object(target.object_id(), target.generation())?
+                .av_sync_hw_id_for_media_filter(demux_id, filter_id)
                 .ok_or_else(|| {
                     HalError::invalid_state(
                         HalInvalidStateKind::InvalidLifecycle,
@@ -309,18 +374,42 @@ fn prepare_object_query_request(
                     "AV sync hardware id must be non-negative",
                 ));
             }
+            let pcr_filter_id = query
+                .pcr_filter_id_for_av_sync_hw_id_for_demux_object(
+                    target.object_id(),
+                    target.generation(),
+                    av_sync_hw_id,
+                )?
+                .ok_or_else(|| {
+                    HalError::invalid_argument(
+                        HalInvalidArgumentKind::NumericRange,
+                        "AV sync hardware id is not owned by this demux",
+                    )
+                })?;
             if !query.is_live_pcr_filter_for_demux_object(
                 target.object_id(),
                 target.generation(),
-                av_sync_hw_id,
+                pcr_filter_id,
             )? {
                 return Err(HalError::invalid_argument(
                     HalInvalidArgumentKind::NumericRange,
                     "AV sync hardware id must refer to a live PCR filter owned by this demux",
                 ));
             }
-            Err(HalError::Unsupported(
-                "AV sync timestamp is unavailable until PCR timestamp observation is implemented",
+            let demux_id = query.public_runtime_id_for_object_method(
+                target.object_id(),
+                target.generation(),
+                AidlObjectKind::Demux,
+            )?;
+            let timestamp = match query
+                .pcr_clock_time_90khz_for_demux(demux_id, pcr_filter_id)
+                .and_then(|value| i64::try_from(value).ok())
+            {
+                Some(timestamp) => timestamp,
+                None => TUNER_INVALID_TIMESTAMP,
+            };
+            Ok(ObjectQueryExecution::Immediate(
+                ObjectQueryResponse::AvSyncTime(timestamp),
             ))
         }
     }
@@ -691,7 +780,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maleicacid_tuner_hal2_demux::{FilterOpenType, OpenFilterRequest};
+    use maleicacid_tuner_hal2_demux::{
+        FilterConfig, FilterConfigKind, FilterOpenType, OpenFilterRequest,
+    };
 
     fn snapshot(
         lnb_profile: Option<LnbRegistryProfile>,
@@ -699,6 +790,7 @@ mod tests {
         signal_state: FrontendSignalState,
     ) -> ObjectFrontendStatusSnapshot {
         ObjectFrontendStatusSnapshot {
+            backend: FrontendBackendKind::LinuxDvb,
             lnb_profile,
             runtime_state,
             signal_state,
@@ -744,7 +836,7 @@ mod tests {
     }
 
     #[test]
-    fn av_sync_time_rejects_unobserved_timestamp_without_zero_success() {
+    fn av_sync_time_returns_invalid_timestamp_before_first_pcr() {
         let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
         let demux_entry = {
             let mut guard = runtime.lock().unwrap();
@@ -783,8 +875,24 @@ mod tests {
             },
         )
         .expect("PCR filter child open succeeds");
+        {
+            let mut guard = runtime.lock().unwrap();
+            guard
+                .configure_filter_runtime_request(
+                    pcr_open.filter_id,
+                    FilterConfig {
+                        open_type: FilterOpenType::TsPcr,
+                        tpid: 0x0100,
+                        kind: FilterConfigKind::TsRaw,
+                    },
+                )
+                .expect("PCR filter configure succeeds");
+            guard
+                .start_filter_runtime(pcr_open.filter_id)
+                .expect("PCR filter start succeeds");
+        }
 
-        let error = execute_object_query_call_after_live(
+        let response = execute_object_query_call_after_live(
             &runtime,
             demux_entry.object_id(),
             demux_entry.generation(),
@@ -793,9 +901,9 @@ mod tests {
                 av_sync_hw_id: pcr_open.filter_id,
             },
         )
-        .expect_err("unobserved AV sync time must not return a zero timestamp");
+        .expect("valid PCR sync id succeeds before first PCR observation");
 
-        assert!(matches!(error, HalError::Unsupported(_)));
+        assert!(matches!(response, ObjectQueryResponse::AvSyncTime(-1)));
     }
 
     #[test]
@@ -810,5 +918,24 @@ mod tests {
         );
 
         assert_eq!(value, ObjectFrontendStatusReadinessValue::Unsupported);
+    }
+
+    #[test]
+    fn px4_demod_lock_status_is_not_exposed_from_one_shot_lock_evidence() {
+        let px4 = ObjectFrontendStatusSnapshot {
+            backend: FrontendBackendKind::Px4CharDevice,
+            lnb_profile: None,
+            runtime_state: FrontendRuntimeState::Tuning { generation: 7 },
+            signal_state: FrontendSignalState::Locked,
+        };
+
+        assert!(matches!(
+            object_frontend_status_value(px4, ObjectFrontendStatusType::DemodLock),
+            Err(HalError::Unsupported(_))
+        ));
+        assert_eq!(
+            object_frontend_readiness_value(px4, ObjectFrontendStatusType::DemodLock),
+            ObjectFrontendStatusReadinessValue::Unsupported
+        );
     }
 }

@@ -3,14 +3,16 @@ use super::{
     aidl_frontend_settings_to_request, aidl_scan_type_to_mode, close_object_after_close_preflight,
     execute_object_query_use_case, execute_shared_object_runtime_use_case,
     execute_shared_object_runtime_use_case_with_request_builder,
-    plan_unavailable_object_method_use_case, scan_end_notifier, set_frontend_lnb_object_use_case,
+    plan_unavailable_object_method_use_case, scan_notifier, set_frontend_lnb_object_use_case,
     start_frontend_scan_use_case, start_frontend_tune_use_case, status_from_hal_error,
     status_unknown_error, stop_frontend_scan_use_case, stop_frontend_tune_use_case, AidlApi,
-    AidlMethodCall, AidlObjectKind, BinderResult, FrontendAidlObject, FrontendScanType,
-    FrontendSettings, FrontendStatus, FrontendStatusReadiness, FrontendStatusType, IFrontend,
-    IFrontendCallback, ObjectFrontendStatusReadinessValue, ObjectFrontendStatusType,
-    ObjectFrontendStatusValue, ObjectQueryRequest, ObjectQueryResponse, Strong,
+    tune_notifier, AidlMethodCall, AidlObjectKind, BinderResult, FrontendAidlObject,
+    FrontendScanType, FrontendSettings, FrontendStatus, FrontendStatusReadiness,
+    FrontendStatusType, IFrontend, IFrontendCallback, ObjectFrontendStatusReadinessValue,
+    ObjectFrontendStatusType, ObjectFrontendStatusValue, ObjectQueryRequest, ObjectQueryResponse,
+    Strong,
 };
+use maleicacid_tuner_hal2_common::{HalError, HalInvalidArgumentKind};
 use maleicacid_tuner_hal2_device::{FrontendWorkerCancelReason, FrontendWorkerKind};
 
 fn object_frontend_status_type_from_aidl(
@@ -63,6 +65,7 @@ impl IFrontend for FrontendAidlObject {
                     handle.generation(),
                     request,
                     FrontendWorkerKind::Tune,
+                    tune_notifier(self.context(), handle),
                     dispatch_proof,
                 )
             },
@@ -111,7 +114,7 @@ impl IFrontend for FrontendAidlObject {
                     handle.generation(),
                     request,
                     scan_mode,
-                    scan_end_notifier(self.context(), handle),
+                    scan_notifier(self.context(), handle),
                     dispatch_proof,
                 )
             },
@@ -170,11 +173,17 @@ impl IFrontend for FrontendAidlObject {
             },
         )
     }
-    fn linkCiCam(&self, _ci_cam_id: i32) -> BinderResult<i32> {
+    fn linkCiCam(&self, ci_cam_id: i32) -> BinderResult<i32> {
         plan_unavailable_object_method_use_case(
             &self.runtime(),
             self.handle(),
             || {
+                if ci_cam_id < 0 {
+                    return Err(status_from_hal_error(HalError::invalid_argument(
+                        HalInvalidArgumentKind::NumericRange,
+                        "CI CAM id must be non-negative",
+                    )));
+                }
                 Ok(unsupported_public_api_call(
                     AidlObjectKind::Frontend,
                     AidlApi::FrontendLinkCiCam,
@@ -187,11 +196,17 @@ impl IFrontend for FrontendAidlObject {
             "linkCiCam unavailable path unexpectedly returned success",
         ))
     }
-    fn unlinkCiCam(&self, _ci_cam_id: i32) -> BinderResult<()> {
+    fn unlinkCiCam(&self, ci_cam_id: i32) -> BinderResult<()> {
         plan_unavailable_object_method_use_case(
             &self.runtime(),
             self.handle(),
             || {
+                if ci_cam_id < 0 {
+                    return Err(status_from_hal_error(HalError::invalid_argument(
+                        HalInvalidArgumentKind::NumericRange,
+                        "CI CAM id must be non-negative",
+                    )));
+                }
                 Ok(unsupported_public_api_call(
                     AidlObjectKind::Frontend,
                     AidlApi::FrontendUnlinkCiCam,
@@ -202,21 +217,16 @@ impl IFrontend for FrontendAidlObject {
         )
     }
     fn getHardwareInfo(&self) -> BinderResult<String> {
-        plan_unavailable_object_method_use_case(
+        match execute_object_query_use_case(
             &self.runtime(),
             self.handle(),
-            || {
-                Ok(unsupported_public_api_call(
-                    AidlObjectKind::Frontend,
-                    AidlApi::FrontendGetHardwareInfo,
-                    None,
-                ))
-            },
-            "frontend backend is not probed",
-        )?;
-        Err(status_unknown_error(
-            "getHardwareInfo unavailable path unexpectedly returned success",
-        ))
+            ObjectQueryRequest::FrontendGetHardwareInfo,
+        )? {
+            ObjectQueryResponse::FrontendHardwareInfo(hardware_info) => Ok(hardware_info),
+            _ => Err(status_unknown_error(
+                "unexpected object query response for Frontend.getHardwareInfo",
+            )),
+        }
     }
     fn removeOutputPid(&self, _pid: i32) -> BinderResult<()> {
         plan_unavailable_object_method_use_case(

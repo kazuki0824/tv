@@ -1,6 +1,6 @@
 use super::{
     demux_runtime_error_to_hal, DemuxRuntimeId, DescrambleFailure, DescramblePacketDecision,
-    DescramblePacketFlow, FrontendRuntimeId, FrontendRuntimeState, GenerationBoundaryReport,
+    DescramblePacketFlow, FrontendRuntimeId, GenerationBoundaryReport,
     HalError, HalInvalidStateKind, PipelineBoundaryReason, PipelineReport, TsInputOrigin,
     TsPacketValidationError, TunerServiceRuntime, ValidatedTsPacket, TS_PACKET_SIZE,
 };
@@ -22,41 +22,8 @@ impl TunerServiceRuntime {
         demux_id: i32,
         frontend_id: i32,
     ) -> Result<GenerationBoundaryReport, HalError> {
-        let demux_key = DemuxRuntimeId(demux_id);
-        let frontend_key = FrontendRuntimeId(frontend_id);
-
-        let Some(frontend_runtime) = self.registry.frontend_runtime(frontend_key) else {
-            return Err(HalError::Unsupported(
-                "frontend id is not available for demux source binding",
-            ));
-        };
-        match frontend_runtime.snapshot().state {
-            FrontendRuntimeState::Closing | FrontendRuntimeState::Failed => {
-                return Err(HalError::invalid_state(
-                    HalInvalidStateKind::InvalidLifecycle,
-                    "frontend runtime is closing or failed",
-                ));
-            }
-            FrontendRuntimeState::Idle
-            | FrontendRuntimeState::Tuning { .. }
-            | FrontendRuntimeState::Scanning { .. } => {}
-        }
-
-        let Some(demux_runtime) = self.registry.demux_runtime_mut(demux_key) else {
-            return Err(HalError::invalid_state(
-                HalInvalidStateKind::InvalidLifecycle,
-                "demux runtime is missing",
-            ));
-        };
-        let report = demux_runtime
-            .apply_generation_boundary_from_typed_request(
-                maleicacid_tuner_hal2_demux::DemuxGenerationBoundaryRequest::new(
-                    PipelineBoundaryReason::TuneStart,
-                ),
-            )
-            .map_err(demux_runtime_error_to_hal)?;
-        self.registry.bind_demux_frontend(demux_key, frontend_key);
-        Ok(report)
+        crate::demux_filter_dvr_ops::DemuxFrontendSourceTxn::new(demux_id, frontend_id)
+            .execute(self)
     }
 
     fn transact_reset_bound_demuxes_for_frontend_tune_start(
@@ -104,22 +71,16 @@ impl TunerServiceRuntime {
         }
         let demux_ids = self.registry.frontend_bound_demux_ids(frontend_key);
         let mut reports = Vec::with_capacity(demux_ids.len());
-        for demux_id in &demux_ids {
-            let Some(demux_runtime) = self.registry.demux_runtime_mut(*demux_id) else {
-                return Err(HalError::invalid_state(
-                    HalInvalidStateKind::InvalidLifecycle,
-                    "bound demux runtime is missing during frontend unbind",
-                ));
-            };
+        for demux_id in demux_ids {
             reports.push(
-                demux_runtime
-                    .apply_generation_boundary_from_typed_request(
-                        maleicacid_tuner_hal2_demux::DemuxGenerationBoundaryRequest::new(reason),
-                    )
-                    .map_err(demux_runtime_error_to_hal)?,
+                crate::demux_filter_dvr_ops::DemuxFrontendSourceTxn::unbind(
+                    demux_id.0,
+                    frontend_id,
+                    reason,
+                )
+                .execute(self)?,
             );
         }
-        self.registry.unbind_frontend_demuxes(frontend_key);
         Ok(reports)
     }
 
@@ -129,6 +90,16 @@ impl TunerServiceRuntime {
         packet: &[u8; TS_PACKET_SIZE],
     ) -> Result<Vec<PipelineReport>, HalError> {
         let demux_ids = self.query().ensure_frontend_demux_sink_ready(frontend_id)?;
+        let frontend_generation = self
+            .registry
+            .frontend_runtime(FrontendRuntimeId(frontend_id))
+            .map(|runtime| runtime.generation())
+            .ok_or_else(|| {
+                HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "frontend runtime is missing during live TS delivery",
+                )
+            })?;
         let mut reports = Vec::with_capacity(demux_ids.len());
         for demux_id in demux_ids {
             let generation = self
@@ -173,7 +144,9 @@ impl TunerServiceRuntime {
                 let report = demux_runtime.push_validated_ts_packet_from_typed_request(
                     maleicacid_tuner_hal2_demux::ValidatedPacketIngressRequest::new(
                         &validated,
-                        TsInputOrigin::Frontend,
+                        TsInputOrigin::Frontend {
+                            frontend_generation,
+                        },
                     ),
                 );
                 (demux_generation, report)
