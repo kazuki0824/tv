@@ -57,7 +57,6 @@ XCS の実装方針は、実装上の先例として `xtne6f/EDCB` の `work-plu
 `arib_si_engine_rs` は Android canonical genre の写像表をSSOTとして所有しない。
 
 本 crate は provider-data schema、canonical encode、保存上限、診断 schema の正本を所有する。TvProvider標準列への投影判断は `ARIB_SI_EPG_TvProvider投影方針.md`、TIS runtime での書き込み契機、retry、現在番組解決、視聴セッション利用は `tis/DESIGN_JA.md` を正とする。
-
 content_descriptor 由来のARIB分類、表示文字列、user_nibble を構造化して出力し、TIS が `ARIB_SI_EPG_TvProvider投影方針.md` の明示写像表に基づいて `Programs.COLUMN_CANONICAL_GENRE` へ入れる値を決定する。
 
 ## parental_rating_descriptor の構造化契約
@@ -82,7 +81,7 @@ parental_rating_descriptor:
 
 ## BS / CS110 discovery
 
-BS と CS110 の complete 判定には SDT other、NIT other を含める。BAT は受信した場合に解析・意味利用するが、BAT の未受信だけを discovery incomplete の理由にしない。これらの complete 判定は table_id だけの global 完了ではなく、table_extension と NIT/BAT transport loop から得た ONID/TSID scope を使って transport 単位で判定する。リモコンキー が得られない場合は service_id を表示番号の代替値 とする。
+BS と CS110 の discovery completion 条件は放送方式別に扱う。BS の complete 判定では NIT actual と SDT actual / other を対象とし、NIT other の受信を必須にしない。CS110（広帯域CSデジタル放送）の complete 判定では NIT actual / other と SDT actual / other を対象とする。BAT は受信した場合に解析・意味利用するが、BAT の未受信だけを discovery incomplete の理由にしない。complete 判定は table_id だけの global 完了ではなく、table_extension と NIT/BAT transport loop から得た ONID/TSID scope を使って transport 単位で判定する。リモコンキー が得られない場合は service_id を表示番号の代替値 とする。
 
 `arib_si_engine_rs` は、service / transport単位の意味解析結果として、ONID / TSID / SID、ARIB `service_type`のraw 8-bit値、PMT、PCR、audio/video ESの存在・欠落理由、scrambling情報、および`publishability_by_service`を構造化してTISへ渡す。Android channelを登録するか、partial snapshotをchannel insertへ使用するかはTISの責務であり、`../tis/DESIGN_JA.md`を正とする。`Channels.COLUMN_SERVICE_TYPE`への最終投影は`../ARIB_SI_EPG_TvProvider投影方針.md`を正とし、本crateはAndroid generic `TvContract.Channels.SERVICE_TYPE_*`への意味変換を行わない。`publishability_by_service`はservice / transport単位の登録判断材料を構造化してTISへ渡す意味解析結果であり、channel登録とchannel insertの最終判断はTISが行う。
 
@@ -147,7 +146,6 @@ EIT event の stable key は `DEFINED` または `UNDEFINED_TIME` の場合だ�
 自前 ARIB 文字列 decoder は字幕以外の SI/EPG 文字列だけを対象にする。未対応 escape、切り詰め escape、切り詰め漢字、置換文字数は 診断要約 として観測できる。字幕は `libaribcaption` の責務である。
 
 ### 文字 decoder 固定方針
-
 自前 ARIB 文字列 decoder の設計対象範囲は、mirakc が EPG / サービスモデル 構築で扱う範囲に合わせる。すなわち、字幕本文レンダリングではなく、サービス名、番組名、短形式イベント記述、長形式イベント記述、各種 SI/EPG descriptor の テキストフィールドを安定して文字列化する範囲を対象にする。
 
 この範囲を超える字幕 PES、字幕管理データ、字幕本文、DRCS/外字レンダリング、厳密な組版制御は恒久的に `arib_si_engine_rs` の対象外であり、必要な場合は `libaribcaption` 側の責務とする。未対応 escape / 未対応文字は `panic` ではなく 診断情報と置換文字へ変換する。これは本crateの設計方針として固定する。
