@@ -1,6 +1,6 @@
 use super::{
     demux_runtime_error_to_hal, DemuxRuntimeId, DescrambleFailure, DescramblePacketDecision,
-    DescramblePacketFlow, FrontendRuntimeId, GenerationBoundaryReport,
+    DescramblePacketFlow, FrontendRuntimeId, StreamBoundaryReport,
     HalError, HalInvalidStateKind, PipelineBoundaryReason, PipelineReport, TsInputOrigin,
     TsPacketValidationError, TunerServiceRuntime, ValidatedTsPacket, TS_PACKET_SIZE,
 };
@@ -21,7 +21,7 @@ impl TunerServiceRuntime {
         &mut self,
         demux_id: i32,
         frontend_id: i32,
-    ) -> Result<GenerationBoundaryReport, HalError> {
+    ) -> Result<StreamBoundaryReport, HalError> {
         crate::demux_filter_dvr_ops::DemuxFrontendSourceTxn::new(demux_id, frontend_id)
             .execute(self)
     }
@@ -29,7 +29,7 @@ impl TunerServiceRuntime {
     fn transact_reset_bound_demuxes_for_frontend_tune_start(
         &mut self,
         frontend_id: i32,
-    ) -> Result<Vec<GenerationBoundaryReport>, HalError> {
+    ) -> Result<Vec<StreamBoundaryReport>, HalError> {
         let frontend_key = FrontendRuntimeId(frontend_id);
         if self.registry.frontend(frontend_key).is_none() {
             return Err(HalError::Unsupported(
@@ -47,8 +47,8 @@ impl TunerServiceRuntime {
             };
             reports.push(
                 demux_runtime
-                    .apply_generation_boundary_from_typed_request(
-                        maleicacid_tuner_hal2_demux::DemuxGenerationBoundaryRequest::new(
+                    .apply_stream_boundary_from_typed_request(
+                        maleicacid_tuner_hal2_demux::DemuxStreamBoundaryRequest::new(
                             PipelineBoundaryReason::TuneStart,
                         ),
                     )
@@ -62,7 +62,7 @@ impl TunerServiceRuntime {
         &mut self,
         frontend_id: i32,
         reason: PipelineBoundaryReason,
-    ) -> Result<Vec<GenerationBoundaryReport>, HalError> {
+    ) -> Result<Vec<StreamBoundaryReport>, HalError> {
         let frontend_key = FrontendRuntimeId(frontend_id);
         if self.registry.frontend(frontend_key).is_none() {
             return Err(HalError::Unsupported(
@@ -258,7 +258,7 @@ impl<'a> PacketTxn<'a> {
         &mut self,
         demux_id: i32,
         frontend_id: i32,
-    ) -> Result<GenerationBoundaryReport, HalError> {
+    ) -> Result<StreamBoundaryReport, HalError> {
         self.runtime
             .transact_set_demux_frontend_data_source(demux_id, frontend_id)
     }
@@ -266,7 +266,7 @@ impl<'a> PacketTxn<'a> {
     pub(crate) fn reset_bound_demuxes_for_frontend_tune_start(
         &mut self,
         frontend_id: i32,
-    ) -> Result<Vec<GenerationBoundaryReport>, HalError> {
+    ) -> Result<Vec<StreamBoundaryReport>, HalError> {
         self.runtime
             .transact_reset_bound_demuxes_for_frontend_tune_start(frontend_id)
     }

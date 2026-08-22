@@ -8,18 +8,17 @@ use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, HalError, Ha
 use maleicacid_tuner_hal2_device::FrontendWorkerCancelReason;
 use maleicacid_tuner_hal2_resource_ledger::CleanupStep;
 use maleicacid_tuner_hal2_service_runtime::{
-    close_frontend_object_cleanup_use_case, close_object_use_case,
-    execute_object_method_call_after_live, execute_object_query_call_after_live,
-    execute_object_query_call_after_live_with_aidl_input_conversion,
-    execute_shared_object_method_call_after_live, finish_object_close_use_case,
-    preflight_object_method_after_live_plan_only, CallbackArtifactCleanupResult,
+    close_lnb_explicit_after_object_close_begin_use_case, close_object_use_case,
+    finish_object_close_use_case, CallbackArtifactCleanupResult,
     CallbackArtifactRuntimeSplitDiagnosticRecord, CallbackArtifactRuntimeSplitOutcome,
     CallbackArtifactRuntimeSplitPhase, CallbackRegistrationArtifactOutcome,
     ObjectArtifactCleanupCommand, ObjectArtifactCleanupExecutor, ObjectCleanupDiagnosticRecord,
     ObjectCleanupExecutionReport, ObjectCloseCleanupFailure, ObjectCloseRuntimeExecutor,
-    ObjectCloseUseCasePlan, ObjectDomainCleanupCommand, ObjectDomainCleanupExecutor,
-    ObjectMethodExecutionToken, ObjectMethodTxnBuildError, ObjectQueryRequest, ObjectQueryResponse,
-    ObjectRuntimeCleanupCommand, OwnerCallbackCleanupArtifactCommand,
+    CloseCleanupAttemptCompletion, ObjectCloseCleanupAttempt, ObjectCloseUseCasePlan,
+    ObjectDomainCleanupCommand, ObjectDomainCleanupExecutor,
+    ObjectMethodExecutionToken, ObjectMethodUseCase, ObjectMethodUseCaseBuildError,
+    ObjectQueryRequest, ObjectQueryResponse, ObjectRuntimeCleanupCommand,
+    FrontendWorkerTerminationUseCase, ObjectCloseTxn, OwnerCallbackCleanupArtifactCommand,
     OwnerCallbackCleanupUseCaseOutcome, TunerServiceRuntime,
 };
 
@@ -350,7 +349,7 @@ where
         ObjectMethodExecutionToken,
     ) -> Result<T, HalError>,
 {
-    execute_object_method_call_after_live(
+    ObjectMethodUseCase::execute_after_live(
         runtime,
         handle.object_id(),
         handle.generation(),
@@ -359,8 +358,8 @@ where
         |runtime, token, ()| execute(runtime, handle, token),
     )
     .map_err(|error| match error {
-        ObjectMethodTxnBuildError::Runtime(error) => status_from_hal_error(error),
-        ObjectMethodTxnBuildError::Builder(status) => status,
+        ObjectMethodUseCaseBuildError::Runtime(error) => status_from_hal_error(error),
+        ObjectMethodUseCaseBuildError::Builder(status) => status,
     })
 }
 
@@ -377,7 +376,7 @@ where
         ObjectMethodExecutionToken,
     ) -> Result<T, HalError>,
 {
-    execute_shared_object_method_call_after_live(
+    ObjectMethodUseCase::execute_shared_after_live(
         runtime,
         handle.object_id(),
         handle.generation(),
@@ -386,8 +385,8 @@ where
         |runtime, token, ()| execute(runtime, handle, token),
     )
     .map_err(|error| match error {
-        ObjectMethodTxnBuildError::Runtime(error) => status_from_hal_error(error),
-        ObjectMethodTxnBuildError::Builder(status) => status,
+        ObjectMethodUseCaseBuildError::Runtime(error) => status_from_hal_error(error),
+        ObjectMethodUseCaseBuildError::Builder(status) => status,
     })
 }
 
@@ -396,7 +395,7 @@ pub(crate) fn execute_object_query_use_case(
     handle: AidlObjectHandle,
     request: ObjectQueryRequest,
 ) -> BinderResult<ObjectQueryResponse> {
-    execute_object_query_call_after_live(
+    ObjectMethodUseCase::execute_query_after_live(
         runtime,
         handle.object_id(),
         handle.generation(),
@@ -415,7 +414,7 @@ pub(crate) fn execute_object_query_use_case_with_aidl_input_conversion<Build>(
 where
     Build: FnOnce() -> BinderResult<ObjectQueryRequest>,
 {
-    execute_object_query_call_after_live_with_aidl_input_conversion(
+    ObjectMethodUseCase::execute_query_after_live_with_aidl_input_conversion(
         runtime,
         handle.object_id(),
         handle.generation(),
@@ -424,8 +423,8 @@ where
         build,
     )
     .map_err(|error| match error {
-        ObjectMethodTxnBuildError::Runtime(error) => status_from_hal_error(error),
-        ObjectMethodTxnBuildError::Builder(status) => status,
+        ObjectMethodUseCaseBuildError::Runtime(error) => status_from_hal_error(error),
+        ObjectMethodUseCaseBuildError::Builder(status) => status,
     })
 }
 
@@ -444,7 +443,7 @@ where
         B,
     ) -> Result<T, HalError>,
 {
-    execute_object_method_call_after_live(
+    ObjectMethodUseCase::execute_after_live(
         runtime,
         handle.object_id(),
         handle.generation(),
@@ -453,8 +452,8 @@ where
         |runtime, token, built_request| execute(runtime, handle, token, built_request),
     )
     .map_err(|error| match error {
-        ObjectMethodTxnBuildError::Runtime(error) => status_from_hal_error(error),
-        ObjectMethodTxnBuildError::Builder(status) => status,
+        ObjectMethodUseCaseBuildError::Runtime(error) => status_from_hal_error(error),
+        ObjectMethodUseCaseBuildError::Builder(status) => status,
     })
 }
 
@@ -473,7 +472,7 @@ where
         B,
     ) -> Result<T, HalError>,
 {
-    execute_shared_object_method_call_after_live(
+    ObjectMethodUseCase::execute_shared_after_live(
         runtime,
         handle.object_id(),
         handle.generation(),
@@ -482,8 +481,8 @@ where
         |runtime, token, built_request| execute(runtime, handle, token, built_request),
     )
     .map_err(|error| match error {
-        ObjectMethodTxnBuildError::Runtime(error) => status_from_hal_error(error),
-        ObjectMethodTxnBuildError::Builder(status) => status,
+        ObjectMethodUseCaseBuildError::Runtime(error) => status_from_hal_error(error),
+        ObjectMethodUseCaseBuildError::Builder(status) => status,
     })
 }
 
@@ -496,7 +495,7 @@ pub(crate) fn plan_unavailable_object_method_use_case<Build>(
 where
     Build: FnOnce() -> BinderResult<AidlMethodCall>,
 {
-    let api = preflight_object_method_after_live_plan_only(
+    let api = ObjectMethodUseCase::preflight_after_live(
         runtime,
         handle.object_id(),
         handle.generation(),
@@ -504,8 +503,8 @@ where
         || build(),
     )
     .map_err(|error| match error {
-        ObjectMethodTxnBuildError::Runtime(error) => status_from_hal_error(error),
-        ObjectMethodTxnBuildError::Builder(status) => status,
+        ObjectMethodUseCaseBuildError::Runtime(error) => status_from_hal_error(error),
+        ObjectMethodUseCaseBuildError::Builder(status) => status,
     })?;
     let failure = AidlFailureSource::RuntimeDispatch(HalError::Unsupported(message));
     let failures = [failure];
@@ -521,7 +520,7 @@ pub fn execute_callback_unregistration_runtime_use_case(
 ) -> BinderResult<()> {
     let runtime = context.runtime();
     let api = method.api();
-    let outcome = execute_object_method_call_after_live(
+    let outcome = ObjectMethodUseCase::execute_after_live(
         &runtime,
         handle.object_id(),
         handle.generation(),
@@ -538,8 +537,8 @@ pub fn execute_callback_unregistration_runtime_use_case(
         },
     )
     .map_err(|error| match error {
-        ObjectMethodTxnBuildError::Runtime(error) => status_from_hal_error(error),
-        ObjectMethodTxnBuildError::Builder(status) => status,
+        ObjectMethodUseCaseBuildError::Runtime(error) => status_from_hal_error(error),
+        ObjectMethodUseCaseBuildError::Builder(status) => status,
     })?;
     finish_owner_callback_cleanup_outcome(context, outcome).map_err(status_from_hal_error)
 }
@@ -583,7 +582,7 @@ fn execute_callback_registration_after_artifact_bridge(
             api,
         )
     };
-    execute_shared_object_method_call_after_live(
+    ObjectMethodUseCase::execute_shared_after_live(
         &runtime,
         handle.object_id(),
         handle.generation(),
@@ -685,8 +684,8 @@ fn execute_callback_registration_after_artifact_bridge(
         },
     )
     .map_err(|error| match error {
-        ObjectMethodTxnBuildError::Runtime(error) => status_from_hal_error(error),
-        ObjectMethodTxnBuildError::Builder(status) => status,
+        ObjectMethodUseCaseBuildError::Runtime(error) => status_from_hal_error(error),
+        ObjectMethodUseCaseBuildError::Builder(status) => status,
     })
 }
 
@@ -774,7 +773,7 @@ impl<'a> AidlObjectDomainCleanupExecutor<'a> {
 
     fn cleanup_frontend(&self, command: ObjectDomainCleanupCommand) -> Result<(), HalError> {
         let handle = Self::handle_from_domain_command(command);
-        close_frontend_object_cleanup_use_case(
+        FrontendWorkerTerminationUseCase::cleanup_after_close_begin(
             self.context.runtime(),
             handle.object_id(),
             handle.generation(),
@@ -784,14 +783,11 @@ impl<'a> AidlObjectDomainCleanupExecutor<'a> {
     }
 
     fn cleanup_lnb(&self, command: ObjectDomainCleanupCommand) -> Result<(), HalError> {
-        let runtime = self.context.runtime();
-        let mut guard = runtime.lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "service runtime lock poisoned during LNB domain cleanup",
-            )
-        })?;
-        guard.close_lnb_explicit_after_object_close_begin(command.object_id(), command.generation())
+        close_lnb_explicit_after_object_close_begin_use_case(
+            self.context.runtime(),
+            command.object_id(),
+            command.generation(),
+        )
     }
 
     fn record_lnb_drop_leak(&self, command: ObjectDomainCleanupCommand) -> Result<(), HalError> {
@@ -910,12 +906,12 @@ impl<'a> ObjectArtifactCleanupExecutor for AidlObjectArtifactCleanupExecutor<'a>
 
 fn execute_close_cleanup_plan_with_executor(
     context: &SharedAidlServiceContext,
-    plan: ObjectCloseUseCasePlan,
-) -> ObjectCleanupExecutionReport {
+    attempt: ObjectCloseCleanupAttempt,
+) -> (CloseCleanupAttemptCompletion, ObjectCleanupExecutionReport) {
     let mut runtime_executor = AidlObjectCloseRuntimeExecutor::new(context);
     let mut domain_executor = AidlObjectDomainCleanupExecutor::new(context);
     let mut artifact_executor = AidlObjectArtifactCleanupExecutor::new(context);
-    plan.execute_cleanup_report_with_executor(
+    attempt.execute_cleanup_report_with_executor(
         &mut runtime_executor,
         &mut domain_executor,
         &mut artifact_executor,
@@ -925,6 +921,7 @@ fn execute_close_cleanup_plan_with_executor(
 fn finish_object_close_plan(
     context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
+    completion: CloseCleanupAttemptCompletion,
     cleanup_report: ObjectCleanupExecutionReport,
 ) -> BinderResult<()> {
     let cleanup_result = cleanup_report.clone().into_result();
@@ -943,8 +940,7 @@ fn finish_object_close_plan(
     let finish_result = match runtime.lock() {
         Ok(mut guard) => finish_object_close_use_case(
             &mut guard,
-            handle.object_id(),
-            handle.generation(),
+            completion,
             cleanup_result,
         ),
         Err(_) => Err(HalError::internal(
@@ -965,20 +961,51 @@ fn finish_object_close_plan(
 }
 
 mod drop_leak;
-pub(crate) use drop_leak::{drop_leak_object, drop_leak_object_from_drop};
+pub(crate) use drop_leak::{
+    drop_leak_object, drop_leak_object_from_drop, quarantine_drop_leak_object,
+};
 
 pub fn close_object_after_close_preflight(
     context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
     method: AidlMethodCall,
 ) -> BinderResult<()> {
+    if object_close_is_idempotent_complete(context, handle)? {
+        return Ok(());
+    }
     let result = execute_close_after_preflight_once(context, handle, method);
+    if result.is_err() && object_close_is_idempotent_complete(context, handle)? {
+        return Ok(());
+    }
     if result.is_err() {
+        if context
+            .cleanup_is_terminal_for_handle(handle)
+            .map_err(status_from_hal_error)?
+        {
+            return result;
+        }
         if let Err(error) = context.enqueue_cleanup_retry(handle) {
             return Err(status_from_hal_error(error));
         }
     }
     result
+}
+
+fn object_close_is_idempotent_complete(
+    context: &SharedAidlServiceContext,
+    handle: AidlObjectHandle,
+) -> BinderResult<bool> {
+    let runtime = context.runtime();
+    let guard = runtime
+        .lock()
+        .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
+    ObjectCloseTxn::is_idempotent_complete(
+        &guard,
+        handle.object_id(),
+        handle.generation(),
+        handle.object_kind(),
+    )
+    .map_err(status_from_hal_error)
 }
 
 fn execute_close_after_preflight_once(
@@ -1000,8 +1027,18 @@ fn execute_close_after_preflight_once(
         )
         .map_err(status_from_hal_error)?
     };
-    let cleanup_report = execute_close_cleanup_plan_with_executor(context, close_plan);
-    finish_object_close_plan(context, handle, cleanup_report)
+    let cleanup_attempt = {
+        let runtime = context.runtime();
+        let mut guard = runtime
+            .lock()
+            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
+        close_plan
+            .begin_cleanup_attempt(&mut guard)
+            .map_err(status_from_hal_error)?
+    };
+    let (completion, cleanup_report) =
+        execute_close_cleanup_plan_with_executor(context, cleanup_attempt);
+    finish_object_close_plan(context, handle, completion, cleanup_report)
 }
 
 pub(crate) fn retry_cleanup_from_reaper(
@@ -1036,7 +1073,7 @@ mod tests {
             AidlObjectKind::Demux => {
                 let mut guard = runtime.lock().unwrap();
                 let entry = guard
-                    .open_demux_root_object(AidlMethodCall::PublicApi {
+                    .root_open_txn().open_demux_root_object(AidlMethodCall::PublicApi {
                         object: AidlObjectKind::Tuner,
                         api: AidlApi::TunerOpenDemux,
                     })
@@ -1053,13 +1090,13 @@ mod tests {
                 let owner = {
                     let mut guard = runtime.lock().unwrap();
                     guard
-                        .open_demux_root_object(AidlMethodCall::PublicApi {
+                        .root_open_txn().open_demux_root_object(AidlMethodCall::PublicApi {
                             object: AidlObjectKind::Tuner,
                             api: AidlApi::TunerOpenDemux,
                         })
                         .unwrap()
                 };
-                let runtime_open = execute_object_method_call_after_live(
+                let runtime_open = ObjectMethodUseCase::execute_after_live(
                     &runtime,
                     owner.object_id(),
                     owner.generation(),
@@ -1078,7 +1115,7 @@ mod tests {
                         ))
                     },
                     |runtime, dispatch, request| {
-                        runtime.open_filter_child_runtime_for_demux_object(
+                        runtime.child_open_txn().open_filter_child_runtime_for_demux_object(
                             owner.object_id(),
                             owner.generation(),
                             &request,
@@ -1113,13 +1150,13 @@ mod tests {
                 let owner = {
                     let mut guard = runtime.lock().unwrap();
                     guard
-                        .open_demux_root_object(AidlMethodCall::PublicApi {
+                        .root_open_txn().open_demux_root_object(AidlMethodCall::PublicApi {
                             object: AidlObjectKind::Tuner,
                             api: AidlApi::TunerOpenDemux,
                         })
                         .unwrap()
                 };
-                let runtime_open = execute_object_method_call_after_live(
+                let runtime_open = ObjectMethodUseCase::execute_after_live(
                     &runtime,
                     owner.object_id(),
                     owner.generation(),
@@ -1132,7 +1169,7 @@ mod tests {
                         Ok((AidlMethodCall::DemuxOpenDvr(request.clone()), request))
                     },
                     |runtime, dispatch, request| {
-                        runtime.open_dvr_child_runtime_for_demux_object(
+                        runtime.child_open_txn().open_dvr_child_runtime_for_demux_object(
                             owner.object_id(),
                             owner.generation(),
                             request,
@@ -1166,7 +1203,7 @@ mod tests {
             AidlObjectKind::Descrambler => {
                 let mut guard = runtime.lock().unwrap();
                 let entry = guard
-                    .open_descrambler_root_object(AidlMethodCall::PublicApi {
+                    .root_open_txn().open_descrambler_root_object(AidlMethodCall::PublicApi {
                         object: AidlObjectKind::Tuner,
                         api: AidlApi::TunerOpenDescrambler,
                     })
@@ -1496,7 +1533,7 @@ mod tests {
         );
         {
             let mut guard = runtime.lock().unwrap();
-            close_object_use_case(
+            let _close_plan = close_object_use_case(
                 &mut guard,
                 handle.object_id(),
                 handle.generation(),
@@ -1504,13 +1541,6 @@ mod tests {
                 AidlMethodCall::FilterClose,
             )
             .expect("public close use-case begins close");
-            finish_object_close_use_case(
-                &mut guard,
-                handle.object_id(),
-                handle.generation(),
-                Ok(()),
-            )
-            .expect("public close use-case commits close");
         }
         let builder_called = Arc::new(Mutex::new(false));
         let builder_called_for_builder = builder_called.clone();
@@ -1571,7 +1601,7 @@ mod tests {
             retain_test_callback_marker_as_hal(&context, handle, AidlApi::DemuxOpenFilter);
         {
             let mut guard = runtime.lock().unwrap();
-            close_object_use_case(
+            let _close_plan = close_object_use_case(
                 &mut guard,
                 handle.object_id(),
                 handle.generation(),
@@ -1579,13 +1609,6 @@ mod tests {
                 AidlMethodCall::FilterClose,
             )
             .expect("public close use-case begins close");
-            finish_object_close_use_case(
-                &mut guard,
-                handle.object_id(),
-                handle.generation(),
-                Ok(()),
-            )
-            .expect("public close use-case commits close");
         }
         let result = finish_callback_artifact_registration_after_owner_ready_hal(
             &context,
@@ -1617,7 +1640,7 @@ mod tests {
         context.clear_owner_callbacks_for_test(handle).unwrap();
         {
             let mut guard = runtime.lock().unwrap();
-            close_object_use_case(
+            let _close_plan = close_object_use_case(
                 &mut guard,
                 handle.object_id(),
                 handle.generation(),
@@ -1625,13 +1648,6 @@ mod tests {
                 AidlMethodCall::LnbClose,
             )
             .expect("public close use-case begins close");
-            finish_object_close_use_case(
-                &mut guard,
-                handle.object_id(),
-                handle.generation(),
-                Ok(()),
-            )
-            .expect("public close use-case commits close");
         }
         let retain_result =
             retain_test_callback_marker_as_hal(&context, handle, AidlApi::LnbSetCallback);

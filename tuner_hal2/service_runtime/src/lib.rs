@@ -13,6 +13,7 @@ mod dispatch;
 mod error_mapping;
 mod frontend_ops;
 mod frontend_request_txn;
+mod frontend_worker_termination_use_case;
 mod frontend_worker_txn;
 mod lnb_backend_adapter;
 mod lnb_control_txn;
@@ -22,13 +23,13 @@ mod method_validation;
 mod object_close_txn;
 mod object_domain_cleanup;
 mod object_lifecycle;
-mod object_method_txn;
+mod object_method_use_case;
 mod object_table;
 mod open_rollback;
 mod packet_ops;
 mod playback_consume_txn;
 mod post_commit_callback_failure_txn;
-mod queue_cleanup_txn;
+mod queue_cleanup_use_case;
 mod registry;
 mod root_method_txn;
 mod root_object_ops;
@@ -55,6 +56,7 @@ pub use cleanup_execution::{
     CleanupExecutionDiagnosticSnapshot, CleanupExecutionReport, CleanupExecutionStepOutcome,
     SharedCleanupDiagnostics,
 };
+pub use demux_filter_dvr_ops::ChildOpenTxn;
 pub use command_dispatch::{
     RuntimeCommandDispatchError, RuntimeCommandDispatchPlan, RuntimeCommandDispatcher,
 };
@@ -80,40 +82,44 @@ pub use diagnostics::{
     StartupDiagnosticSnapshot,
 };
 pub use dispatch::{dispatch_target_for, ServiceRuntimeDispatchTarget};
-pub use frontend_ops::set_frontend_lnb_object_use_case;
+pub use frontend_ops::{
+    set_frontend_lnb_object_use_case, FrontendOperationEvent,
+    FrontendOperationEventAcceptance, FrontendTuneScanTxn, FrontendWorkerTerminalEvent,
+    FrontendWorkerTerminalEventAcceptance, SharedFrontendRuntime,
+};
+pub use frontend_worker_termination_use_case::FrontendWorkerTerminationUseCase;
 pub use frontend_worker_txn::{
-    cleanup_frontend_object_after_close_begin as close_frontend_object_cleanup_use_case,
-    start_frontend_backend_scan_session_worker as start_frontend_scan_use_case,
-    start_frontend_backend_tune_worker as start_frontend_tune_use_case,
-    stop_frontend_scan_object as stop_frontend_scan_use_case,
-    stop_frontend_tune_object as stop_frontend_tune_use_case, FrontendCloseCleanupReport,
-    FrontendScanNotification, FrontendScanNotifier, FrontendTuneNotification,
-    FrontendTuneNotifier, FrontendWorkerCleanupDiagnosticKind,
+    FrontendCloseCleanupReport, FrontendScanNotification, FrontendScanNotifier,
+    FrontendTuneNotification, FrontendTuneNotifier, FrontendWorkerCleanupDiagnosticKind,
     FrontendWorkerCleanupDiagnosticRecord, FrontendWorkerCleanupDiagnosticSnapshot,
     FrontendWorkerCleanupExecutionReport, FrontendWorkerCleanupStep,
     FrontendWorkerCleanupStepOutcome, FrontendWorkerCleanupTarget,
     FrontendWorkerCleanupWorkerGeneration, SharedFrontendWorkerCleanupDiagnostics,
 };
+pub use lnb_ops::{
+    apply_lnb_satellite_position_object_use_case, apply_lnb_tone_object_use_case,
+    apply_lnb_voltage_object_use_case, close_lnb_after_root_open_rollback_use_case,
+    close_lnb_explicit_after_object_close_begin_use_case, send_lnb_diseqc_object_use_case,
+    SharedLnbRuntime,
+};
 pub use object_close_txn::{
     close_object_use_case, finish_object_close_use_case, quarantine_object_drop_leak_use_case,
+    CloseCleanupAttemptCompletion, CloseCleanupAuthority,
     ObjectArtifactCleanupCommand, ObjectArtifactCleanupExecutor, ObjectArtifactCleanupKind,
     ObjectCleanupDiagnosticKind, ObjectCleanupDiagnosticRecord, ObjectCleanupDiagnosticSnapshot,
     ObjectCleanupExecutionKind, ObjectCleanupExecutionReport, ObjectCleanupObjectTarget,
     ObjectCleanupStepOutcome, ObjectCloseCleanupFailure, ObjectCloseRuntimeExecutor,
-    ObjectCloseTxn, ObjectCloseUseCasePlan, ObjectRuntimeCleanupCommand, ObjectRuntimeCleanupKind,
-    SharedObjectCleanupDiagnostics,
+    ObjectCloseCleanupAttempt, ObjectCloseTxn, ObjectCloseUseCasePlan,
+    ObjectRuntimeCleanupCommand, ObjectRuntimeCleanupKind, SharedObjectCleanupDiagnostics,
 };
 pub use object_domain_cleanup::{
     ObjectDomainCleanupCommand, ObjectDomainCleanupExecutor, ObjectDomainCleanupKind,
     ObjectDomainCleanupOutcome,
 };
-pub use object_method_txn::{
-    execute_object_method_call_after_live, execute_object_query_call_after_live,
-    execute_object_query_call_after_live_with_aidl_input_conversion,
-    execute_shared_object_method_call_after_live, lnb_profile_supports_voltage_status,
-    preflight_object_method_after_live_plan_only, ObjectFrontendStatusReadinessValue,
+pub use object_method_use_case::{
+    lnb_profile_supports_voltage_status, ObjectFrontendStatusReadinessValue,
     ObjectFrontendStatusType, ObjectFrontendStatusValue, ObjectMethodExecutionToken,
-    ObjectMethodTxnBuildError, ObjectQueryRequest, ObjectQueryResponse,
+    ObjectMethodUseCase, ObjectMethodUseCaseBuildError, ObjectQueryRequest, ObjectQueryResponse,
 };
 pub use object_lifecycle::{
     aidl_object_cleanup_dependency, aidl_object_cleanup_is_terminal,
@@ -122,12 +128,13 @@ pub(crate) use object_table::RuntimeObjectLifecycle;
 pub use object_table::{RuntimeObjectEntry, RuntimeObjectTableError, RuntimeOwnerRelation};
 pub use registry::{
     FrontendCapabilitySnapshot, FrontendRuntimeId, FrontendScalarCapability,
-    IsdbtSegmentCapability, LnbRegistryProfile,
+    IsdbtSegmentCapability, LnbRegistry, LnbRegistryProfile, SatellitePowerTopology,
 };
 pub use root_method_txn::{
     RootCommandRequest, RootDemuxCapabilitiesSnapshot, RootDemuxInfoSnapshot,
     RootFrontendInfoSnapshot, RootQueryRequest, RootQueryResponse,
 };
+pub use root_object_ops::RootOpenTxn;
 pub use worker_runtime::{
     WorkerHandle, WorkerRuntime, WorkerTerminalResult, CLEANUP_RETRY_SCHEDULE_MS,
     CLEANUP_TERMINAL_DEADLINE_MS, WORKER_IO_DEADLINE_MS, WORKER_REAPER_DEADLINE_MS,
@@ -353,6 +360,19 @@ mod tests {
             system,
             path: path(path_name),
             lnb_profile,
+            satellite_power_topology: match (system, lnb_profile) {
+                (
+                    FrontendSystem::IsdbS,
+                    Some(
+                        LnbRegistryProfile::Px4Device15VOnly
+                        | LnbRegistryProfile::EarthPt1FixedLnb,
+                    ),
+                ) => crate::registry::SatellitePowerTopology::InternalFixed15V,
+                (FrontendSystem::IsdbS, Some(LnbRegistryProfile::NoPower)) => {
+                    crate::registry::SatellitePowerTopology::ExternalOrShared
+                }
+                _ => crate::registry::SatellitePowerTopology::UnknownOrDisabled,
+            },
             capability,
         }
     }
@@ -458,7 +478,7 @@ mod tests {
             RootQueryResponse::MaxNumberOfFrontends(1)
         );
         runtime
-            .open_frontend_root_object_for_id(
+            .root_open_txn().open_frontend_root_object_for_id(
                 1_000_000,
                 AidlMethodCall::PublicApi {
                     object: AidlObjectKind::Tuner,
@@ -467,7 +487,7 @@ mod tests {
             )
             .unwrap();
         assert!(matches!(
-            runtime.open_frontend_root_object_for_id(
+            runtime.root_open_txn().open_frontend_root_object_for_id(
                 1_000_010,
                 AidlMethodCall::PublicApi {
                     object: AidlObjectKind::Tuner,
@@ -498,7 +518,7 @@ mod tests {
             ),
         ]);
         runtime
-            .open_frontend_root_object_for_id(
+            .root_open_txn().open_frontend_root_object_for_id(
                 1_000_000,
                 AidlMethodCall::PublicApi {
                     object: AidlObjectKind::Tuner,
@@ -508,7 +528,7 @@ mod tests {
             .unwrap();
 
         assert!(matches!(
-            runtime.open_frontend_root_object_for_id(
+            runtime.root_open_txn().open_frontend_root_object_for_id(
                 1_000_001,
                 AidlMethodCall::PublicApi {
                     object: AidlObjectKind::Tuner,
@@ -536,14 +556,14 @@ mod tests {
             RootQueryResponse::DemuxIds(vec![1, 2, 3, 4, 5, 6, 7, 8])
         );
         let opened = runtime
-            .open_demux_root_object(AidlMethodCall::PublicApi {
+            .root_open_txn().open_demux_root_object(AidlMethodCall::PublicApi {
                 object: AidlObjectKind::Tuner,
                 api: AidlApi::TunerOpenDemux,
             })
             .unwrap();
         assert_eq!(opened.public_runtime_id().0, 1);
         assert!(matches!(
-            runtime.open_demux_root_object_by_id(
+            runtime.root_open_txn().open_demux_root_object_by_id(
                 1,
                 AidlMethodCall::PublicApi {
                     object: AidlObjectKind::Tuner,
@@ -1040,6 +1060,22 @@ mod tests {
             .query()
             .lnb_id_by_name("maleicacid-lnb-px4-px4video0-unit-0")
             .is_some());
+    }
+
+    #[test]
+    fn externally_powered_isdbs_frontend_does_not_publish_an_lnb_endpoint() {
+        let mut runtime = TunerServiceRuntime::new();
+        let outcome = runtime.boot_from_probe_results([available(
+            1_020_001,
+            FrontendBackendKind::Px4CharDevice,
+            FrontendSystem::IsdbS,
+            "/dev/pxmlt5video0",
+            Some(LnbRegistryProfile::NoPower),
+        )]);
+
+        assert_eq!(outcome, ServiceBootOutcome::Ready);
+        assert_eq!(runtime.query().frontend_ids(), vec![1_020_001]);
+        assert!(runtime.query().lnb_ids().is_empty());
     }
 
     #[test]
@@ -1634,14 +1670,14 @@ mod tests {
             let mut guard = runtime.lock().unwrap();
             guard.capability_snapshot.num_ts_filter = 1;
             guard
-                .open_demux_root_object(AidlMethodCall::PublicApi {
+                .root_open_txn().open_demux_root_object(AidlMethodCall::PublicApi {
                     object: AidlObjectKind::Tuner,
                     api: AidlApi::TunerOpenDemux,
                 })
                 .unwrap()
         };
         let open_filter = |open_type| {
-            execute_object_method_call_after_live(
+            ObjectMethodUseCase::execute_after_live(
                 &runtime,
                 demux_entry.object_id(),
                 demux_entry.generation(),
@@ -1660,7 +1696,7 @@ mod tests {
                     ))
                 },
                 |runtime, dispatch, request| {
-                    runtime.open_filter_child_runtime_for_demux_object(
+                    runtime.child_open_txn().open_filter_child_runtime_for_demux_object(
                         demux_entry.object_id(),
                         demux_entry.generation(),
                         &request,

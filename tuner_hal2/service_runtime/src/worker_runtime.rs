@@ -18,17 +18,18 @@ pub enum WorkerTerminalResult<T> {
     PanicOrJoinFailure,
 }
 
-pub struct WorkerHandle<T> {
+/// Canonical owner for one generic worker lifecycle.
+pub struct WorkerRuntime<T = ()> {
     owner_id: i64,
     generation: u64,
     stop: Arc<AtomicBool>,
     stop_signalled: Arc<AtomicBool>,
     wake_signalled: Arc<AtomicBool>,
     finished: Arc<AtomicBool>,
-    join: Option<JoinHandle<WorkerTerminalResult<T>>>,
+    handle: WorkerHandle<T>,
 }
 
-impl<T> WorkerHandle<T> {
+impl<T> WorkerRuntime<T> {
     pub const fn owner_id(&self) -> i64 {
         self.owner_id
     }
@@ -58,14 +59,14 @@ impl<T> WorkerHandle<T> {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
         {
-            if let Some(join) = self.join.as_ref() {
+            if let Some(join) = self.handle.join.as_ref() {
                 join.thread().unpark();
             }
         }
     }
 
     pub fn join(mut self) -> WorkerTerminalResult<T> {
-        let Some(join) = self.join.take() else {
+        let Some(join) = self.handle.join.take() else {
             return WorkerTerminalResult::PanicOrJoinFailure;
         };
         match join.join() {
@@ -75,24 +76,27 @@ impl<T> WorkerHandle<T> {
     }
 }
 
-impl<T> Drop for WorkerHandle<T> {
+impl<T> Drop for WorkerRuntime<T> {
     fn drop(&mut self) {
-        if self.join.is_some() && !self.is_finished() {
+        if self.handle.join.is_some() && !self.is_finished() {
             self.request_stop_and_wake();
         }
     }
 }
 
-pub struct WorkerRuntime;
+/// Physical join element subordinate to its `WorkerRuntime` owner.
+pub struct WorkerHandle<T> {
+    join: Option<JoinHandle<WorkerTerminalResult<T>>>,
+}
 
-impl WorkerRuntime {
+impl WorkerRuntime<()> {
     pub fn spawn<T, F, C>(
         thread_name: String,
         owner_id: i64,
         generation: u64,
         worker: F,
         completion_signal: C,
-    ) -> std::io::Result<WorkerHandle<T>>
+    ) -> std::io::Result<WorkerRuntime<T>>
     where
         T: Send + 'static,
         F: FnOnce(Arc<AtomicBool>) -> Result<T, HalError> + Send + 'static,
@@ -115,14 +119,14 @@ impl WorkerRuntime {
             completion_signal();
             terminal
         })?;
-        Ok(WorkerHandle {
+        Ok(WorkerRuntime {
             owner_id,
             generation,
             stop,
             stop_signalled: Arc::new(AtomicBool::new(false)),
             wake_signalled: Arc::new(AtomicBool::new(false)),
             finished,
-            join: Some(join),
+            handle: WorkerHandle { join: Some(join) },
         })
     }
 

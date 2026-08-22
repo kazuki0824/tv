@@ -16,7 +16,7 @@ use maleicacid_tuner_hal2_device::dvb::{
 use maleicacid_tuner_hal2_service_runtime::{
     CapabilitySuppressionReason, FrontendCapabilitySnapshot, FrontendProbeOutcome,
     FrontendRuntimeId, FrontendScalarCapability, IsdbtSegmentCapability, LnbRegistryProfile,
-    TunerServiceRuntime,
+    SatellitePowerTopology, TunerServiceRuntime,
 };
 
 use crate::tuner_service::TunerAidlService;
@@ -96,6 +96,22 @@ fn probe_lnb_profile_for_frontend(
         }
         FrontendBackendKind::LinuxDvb => LnbRegistryProfile::EarthPt1FixedLnb,
     })
+}
+
+fn probe_satellite_power_topology(
+    system: FrontendSystem,
+    profile: Option<LnbRegistryProfile>,
+) -> SatellitePowerTopology {
+    if system != FrontendSystem::IsdbS {
+        return SatellitePowerTopology::UnknownOrDisabled;
+    }
+    match profile {
+        Some(LnbRegistryProfile::Px4Device15VOnly | LnbRegistryProfile::EarthPt1FixedLnb) => {
+            SatellitePowerTopology::InternalFixed15V
+        }
+        Some(LnbRegistryProfile::NoPower) => SatellitePowerTopology::ExternalOrShared,
+        None => SatellitePowerTopology::UnknownOrDisabled,
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -412,16 +428,21 @@ fn probe_frontends() -> Vec<FrontendProbeOutcome> {
             });
             continue;
         };
+        let lnb_profile = probe_lnb_profile_for_frontend(
+            FrontendBackendKind::Px4CharDevice,
+            FrontendSystem::IsdbT,
+            &path,
+            Some(&name),
+        );
         outcomes.push(FrontendProbeOutcome::Available {
             id: FrontendRuntimeId(base_id),
             backend: FrontendBackendKind::Px4CharDevice,
             system: FrontendSystem::IsdbT,
             path: path.clone(),
-            lnb_profile: probe_lnb_profile_for_frontend(
-                FrontendBackendKind::Px4CharDevice,
+            lnb_profile,
+            satellite_power_topology: probe_satellite_power_topology(
                 FrontendSystem::IsdbT,
-                &path,
-                Some(&name),
+                lnb_profile,
             ),
             capability: isdbt_capability,
         });
@@ -434,16 +455,21 @@ fn probe_frontends() -> Vec<FrontendProbeOutcome> {
                 });
                 continue;
             };
+            let lnb_profile = probe_lnb_profile_for_frontend(
+                FrontendBackendKind::Px4CharDevice,
+                FrontendSystem::IsdbS,
+                &path,
+                Some(&name),
+            );
             outcomes.push(FrontendProbeOutcome::Available {
                 id: FrontendRuntimeId(isdbs_id),
                 backend: FrontendBackendKind::Px4CharDevice,
                 system: FrontendSystem::IsdbS,
                 path: path.clone(),
-                lnb_profile: probe_lnb_profile_for_frontend(
-                    FrontendBackendKind::Px4CharDevice,
+                lnb_profile,
+                satellite_power_topology: probe_satellite_power_topology(
                     FrontendSystem::IsdbS,
-                    &path,
-                    Some(&name),
+                    lnb_profile,
                 ),
                 capability: isdbs_capability,
             });
@@ -484,16 +510,21 @@ fn probe_frontends() -> Vec<FrontendProbeOutcome> {
                                 });
                                 continue;
                             };
+                            let lnb_profile = probe_lnb_profile_for_frontend(
+                                FrontendBackendKind::LinuxDvb,
+                                variant.system,
+                                &path,
+                                None,
+                            );
                             outcomes.push(FrontendProbeOutcome::Available {
                                 id: FrontendRuntimeId(variant.id),
                                 backend: FrontendBackendKind::LinuxDvb,
                                 system: variant.system,
                                 path: path.clone(),
-                                lnb_profile: probe_lnb_profile_for_frontend(
-                                    FrontendBackendKind::LinuxDvb,
+                                lnb_profile,
+                                satellite_power_topology: probe_satellite_power_topology(
                                     variant.system,
-                                    &path,
-                                    None,
+                                    lnb_profile,
                                 ),
                                 capability,
                             });

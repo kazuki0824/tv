@@ -19,7 +19,7 @@ use maleicacid_tuner_hal2_service_runtime::{
     CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport, CapabilitySnapshot,
     DvrPostCommitNotificationDiagnosticRecord, DvrPostCommitNotificationFailureKind,
     DvrPostCommitNotificationPhase, DvrStatusNotifierCleanupDiagnosticRecord,
-    DvrStatusPollSnapshot, WorkerHandle, WorkerRuntime, WorkerTerminalResult,
+    DvrStatusPollSnapshot, WorkerRuntime, WorkerTerminalResult,
 };
 
 use crate::object_handle::AidlObjectHandle;
@@ -41,7 +41,7 @@ impl DvrStatusNotifierKey {
 }
 
 pub(crate) struct DvrStatusNotifier {
-    worker: WorkerHandle<()>,
+    worker: WorkerRuntime<()>,
 }
 
 fn signal_dvr_status_notifier_stop(notifier: &DvrStatusNotifier) {
@@ -1184,7 +1184,7 @@ mod tests {
         AidlApi, AidlMethodCall, AidlObjectKind, DvrConfigureKind, DvrConfigureRequest,
         DvrDataFormat, DvrOpenKind, OpenDvrRequest,
     };
-    use maleicacid_tuner_hal2_service_runtime::execute_object_method_call_after_live;
+    use maleicacid_tuner_hal2_service_runtime::ObjectMethodUseCase;
     use std::sync::{
         atomic::{AtomicBool, Ordering},
         Mutex,
@@ -1256,13 +1256,13 @@ mod tests {
         let demux_entry = {
             let mut guard = runtime.lock().unwrap();
             guard
-                .open_demux_root_object(AidlMethodCall::PublicApi {
+                .root_open_txn().open_demux_root_object(AidlMethodCall::PublicApi {
                     object: AidlObjectKind::Tuner,
                     api: AidlApi::TunerOpenDemux,
                 })
                 .unwrap()
         };
-        let dvr_open = execute_object_method_call_after_live(
+        let dvr_open = ObjectMethodUseCase::execute_after_live(
             &runtime,
             demux_entry.object_id(),
             demux_entry.generation(),
@@ -1275,7 +1275,7 @@ mod tests {
                 Ok((AidlMethodCall::DemuxOpenDvr(request.clone()), request))
             },
             |runtime, dispatch, request| {
-                runtime.open_dvr_child_runtime_for_demux_object(
+                runtime.child_open_txn().open_dvr_child_runtime_for_demux_object(
                     demux_entry.object_id(),
                     demux_entry.generation(),
                     request,
@@ -1289,7 +1289,7 @@ mod tests {
             dvr_open.runtime_entry.object_id(),
             dvr_open.runtime_entry.generation(),
         );
-        execute_object_method_call_after_live(
+        ObjectMethodUseCase::execute_after_live(
             &runtime,
             handle.object_id(),
             handle.generation(),
@@ -1315,7 +1315,7 @@ mod tests {
             },
         )
         .unwrap();
-        execute_object_method_call_after_live(
+        ObjectMethodUseCase::execute_after_live(
             &runtime,
             handle.object_id(),
             handle.generation(),

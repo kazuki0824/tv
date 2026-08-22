@@ -636,6 +636,13 @@ pub struct FrontendBackendLnbApplyPlan {
     voltage: FrontendLnbVoltage,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FrontendBackendLnbApplyOutcome {
+    Applied,
+    Rejected(HalError),
+    Indeterminate(HalError),
+}
+
 impl FrontendBackendLnbApplyPlan {
     pub fn new(
         frontend_id: i32,
@@ -701,8 +708,21 @@ impl<'a> Px4LnbApplyOps for RealPx4LnbApplyOps<'a> {
 pub fn apply_frontend_backend_lnb_voltage(
     plan: &FrontendBackendLnbApplyPlan,
 ) -> Result<(), HalError> {
-    let file = open_rw(&plan.device_path)?;
-    match plan.backend {
+    match apply_frontend_backend_lnb_voltage_classified(plan) {
+        FrontendBackendLnbApplyOutcome::Applied => Ok(()),
+        FrontendBackendLnbApplyOutcome::Rejected(error)
+        | FrontendBackendLnbApplyOutcome::Indeterminate(error) => Err(error),
+    }
+}
+
+pub fn apply_frontend_backend_lnb_voltage_classified(
+    plan: &FrontendBackendLnbApplyPlan,
+) -> FrontendBackendLnbApplyOutcome {
+    let file = match open_rw(&plan.device_path) {
+        Ok(file) => file,
+        Err(error) => return FrontendBackendLnbApplyOutcome::Rejected(error),
+    };
+    let result = match plan.backend {
         FrontendBackendKind::Px4CharDevice => {
             let mut ops = RealPx4LnbApplyOps {
                 fd: file.as_raw_fd(),
@@ -721,6 +741,10 @@ pub fn apply_frontend_backend_lnb_voltage(
                 "FE_SET_VOLTAGE",
             )
         }
+    };
+    match result {
+        Ok(()) => FrontendBackendLnbApplyOutcome::Applied,
+        Err(error) => FrontendBackendLnbApplyOutcome::Indeterminate(error),
     }
 }
 

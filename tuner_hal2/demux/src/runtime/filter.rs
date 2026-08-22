@@ -2,6 +2,7 @@ use crate::config::{
     AvStreamTypeConfig, FilterDelayHint, FilterDelayHints, FilterOpenType, OpenFilterRequest,
 };
 use crate::packet_pipeline::{FilterPipelineConfig, PipelineFilterView, PipelineOpenKind};
+use crate::runtime::{FilterStatusEvent, FilterWatermarkClassifier};
 use crate::TsInputOrigin;
 use std::time::{Duration, Instant};
 
@@ -74,6 +75,7 @@ pub struct FilterRuntimeSnapshot {
     pub queued_bytes: usize,
     pub delivery_not_before: Option<Instant>,
     pub callback_unhealthy: bool,
+    pub last_watermark_status: Option<FilterStatusEvent>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -98,6 +100,7 @@ pub struct FilterRuntime {
     queued_bytes: usize,
     delivery_not_before: Option<Instant>,
     callback_unhealthy: bool,
+    last_watermark_status: Option<FilterStatusEvent>,
 }
 
 impl FilterRuntime {
@@ -133,6 +136,7 @@ impl FilterRuntime {
             queued_bytes: 0,
             delivery_not_before: None,
             callback_unhealthy: false,
+            last_watermark_status: None,
         }
     }
 
@@ -158,6 +162,7 @@ impl FilterRuntime {
             queued_bytes: 0,
             delivery_not_before: None,
             callback_unhealthy: false,
+            last_watermark_status: None,
         }
     }
 
@@ -248,6 +253,7 @@ impl FilterRuntime {
             queued_bytes: self.queued_bytes,
             delivery_not_before: self.delivery_not_before,
             callback_unhealthy: self.callback_unhealthy,
+            last_watermark_status: self.last_watermark_status,
         }
     }
 
@@ -271,6 +277,7 @@ impl FilterRuntime {
         self.queued_bytes = snapshot.queued_bytes;
         self.delivery_not_before = snapshot.delivery_not_before;
         self.callback_unhealthy = snapshot.callback_unhealthy;
+        self.last_watermark_status = snapshot.last_watermark_status;
     }
 
     pub fn configure_with_generation(
@@ -288,6 +295,7 @@ impl FilterRuntime {
         self.av_backing_present = matches!(self.open_kind, PipelineOpenKind::Av);
         self.queued_bytes = 0;
         self.delivery_not_before = None;
+        self.last_watermark_status = None;
         self.state = FilterRuntimeState::Configured;
     }
 
@@ -338,6 +346,20 @@ impl FilterRuntime {
     pub fn clear_queued_payload_state(&mut self) {
         self.queued_bytes = 0;
         self.delivery_not_before = None;
+        self.last_watermark_status = None;
+    }
+
+    pub(crate) fn classify_watermark_transition(
+        &mut self,
+        capacity_bytes: usize,
+        readable_bytes: usize,
+    ) -> Option<FilterStatusEvent> {
+        let status = FilterWatermarkClassifier::classify(capacity_bytes, readable_bytes)?;
+        if self.last_watermark_status == Some(status) {
+            return None;
+        }
+        self.last_watermark_status = Some(status);
+        Some(status)
     }
 
     pub const fn source_relation_generation(&self) -> u64 {

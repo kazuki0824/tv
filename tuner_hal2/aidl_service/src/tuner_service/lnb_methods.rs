@@ -1,8 +1,9 @@
 use super::{
     build_lnb_satellite_position_request, build_lnb_tone_request, build_lnb_voltage_request,
-    close_object_after_close_preflight, execute_object_runtime_use_case,
-    execute_object_runtime_use_case_with_request_builder, status_from_hal_error, AidlMethodCall,
-    BinderResult, ILnb, ILnbCallback, LnbAidlObject, LnbPosition, LnbTone, LnbVoltage, Strong,
+    close_object_after_close_preflight, execute_shared_object_runtime_use_case,
+    execute_shared_object_runtime_use_case_with_request_builder, status_from_hal_error,
+    AidlMethodCall, BinderResult, ILnb, ILnbCallback, LnbAidlObject, LnbPosition, LnbTone,
+    LnbVoltage, Strong,
 };
 
 impl ILnb for LnbAidlObject {
@@ -11,7 +12,7 @@ impl ILnb for LnbAidlObject {
     }
 
     fn setVoltage(&self, voltage: LnbVoltage) -> BinderResult<()> {
-        execute_object_runtime_use_case_with_request_builder(
+        execute_shared_object_runtime_use_case_with_request_builder(
             &self.runtime(),
             self.handle(),
             || {
@@ -19,7 +20,8 @@ impl ILnb for LnbAidlObject {
                 Ok((AidlMethodCall::LnbSetVoltage(request.clone()), request))
             },
             |runtime, handle, dispatch_proof, request| {
-                runtime.apply_lnb_voltage_for_object(
+                super::apply_lnb_voltage_object_use_case(
+                    runtime,
                     handle.object_id(),
                     handle.generation(),
                     request,
@@ -30,7 +32,7 @@ impl ILnb for LnbAidlObject {
     }
 
     fn setTone(&self, tone: LnbTone) -> BinderResult<()> {
-        execute_object_runtime_use_case_with_request_builder(
+        execute_shared_object_runtime_use_case_with_request_builder(
             &self.runtime(),
             self.handle(),
             || {
@@ -38,7 +40,8 @@ impl ILnb for LnbAidlObject {
                 Ok((AidlMethodCall::LnbSetTone(request.clone()), request))
             },
             |runtime, handle, dispatch_proof, request| {
-                runtime.apply_lnb_tone_for_object(
+                super::apply_lnb_tone_object_use_case(
+                    runtime,
                     handle.object_id(),
                     handle.generation(),
                     request,
@@ -49,7 +52,7 @@ impl ILnb for LnbAidlObject {
     }
 
     fn setSatellitePosition(&self, position: LnbPosition) -> BinderResult<()> {
-        execute_object_runtime_use_case_with_request_builder(
+        execute_shared_object_runtime_use_case_with_request_builder(
             &self.runtime(),
             self.handle(),
             || {
@@ -61,7 +64,8 @@ impl ILnb for LnbAidlObject {
                 ))
             },
             |runtime, handle, dispatch_proof, request| {
-                runtime.apply_lnb_satellite_position_for_object(
+                super::apply_lnb_satellite_position_object_use_case(
+                    runtime,
                     handle.object_id(),
                     handle.generation(),
                     request,
@@ -72,15 +76,16 @@ impl ILnb for LnbAidlObject {
     }
 
     fn sendDiseqcMessage(&self, diseqc_message: &[u8]) -> BinderResult<()> {
-        execute_object_runtime_use_case(
+        execute_shared_object_runtime_use_case(
             &self.runtime(),
             self.handle(),
             AidlMethodCall::LnbSendDiseqc(diseqc_message.to_vec()),
             |runtime, handle, dispatch_proof| {
-                runtime.send_lnb_diseqc_for_object(
+                super::send_lnb_diseqc_object_use_case(
+                    runtime,
                     handle.object_id(),
                     handle.generation(),
-                    diseqc_message,
+                    diseqc_message.to_vec(),
                     dispatch_proof,
                 )
             },

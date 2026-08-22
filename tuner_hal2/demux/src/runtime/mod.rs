@@ -12,6 +12,7 @@ mod generation_boundary;
 mod pcr_clock_anchor;
 mod queue_runtime;
 pub(crate) mod source_boundary;
+mod watermark_classifier;
 #[cfg(test)]
 mod transaction_contract_tests;
 
@@ -20,7 +21,7 @@ pub use configure_txn::{
     FilterConfigureReport, FilterConfigureStep,
 };
 pub use demux::{
-    DemuxGenerationBoundaryRequest, DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind,
+    DemuxStreamBoundaryRequest, DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind,
     DemuxRuntimeQuarantineRequest, DemuxRuntimeRollbackCommitRequest,
     DemuxRuntimeRollbackRestoreRequest, DemuxRuntimeRollbackToken,
     DemuxRuntimeRollbackTokenPrepareRequest, DemuxRuntimeSnapshot, DemuxRuntimeState,
@@ -41,10 +42,13 @@ pub use dvr::{
 };
 pub use filter::{FilterRuntimeSnapshot, FilterRuntimeState};
 pub use generation_boundary::{
-    DemuxStreamGeneration, GenerationBoundaryReport, PreparedStreamBoundary,
+    DemuxStreamGeneration, StreamBoundaryReport, PreparedStreamBoundary,
 };
 pub use queue_runtime::{
     QueueDescriptorExportPlan, QueueDescriptorExportTarget, QueueDescriptorSnapshot,
     QueueGrantorDescriptorSnapshot, QueueRuntimeError, QueueRuntimeErrorKind,
 };
 pub use source_boundary::{SourceBoundaryOutcome, SourceBoundaryReport, SourceBoundaryStep};
+pub use watermark_classifier::{
+    DvrWatermarkClassifier, FilterStatusEvent, FilterWatermarkClassifier,
+};

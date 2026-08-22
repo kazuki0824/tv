@@ -208,7 +208,12 @@ impl TunerServiceRuntime {
                 .frontend_entry(frontend_id)
                 .map(RootFrontendInfoSnapshot::from)
                 .map(RootQueryResponse::FrontendInfo)
-                .ok_or(HalError::Unsupported("frontend id is not available")),
+                .ok_or_else(|| {
+                    HalError::invalid_argument(
+                        HalInvalidArgumentKind::NumericRange,
+                        "frontend id is not published by the capability snapshot",
+                    )
+                }),
             RootQueryRequest::LnbIds => Ok(RootQueryResponse::LnbIds(query.lnb_ids())),
             RootQueryRequest::DemuxIds => Ok(RootQueryResponse::DemuxIds(
                 published_demux_ids(self.capability_snapshot())?,

@@ -44,6 +44,7 @@ use super::source_boundary::{
     apply_filter_source_boundary_change, connect_filter_source_boundary_change,
     SourceBoundaryReport,
 };
+use super::watermark_classifier::FilterStatusEvent;
 
 const TUNER_EVENT_DATA_READY: u32 = 1 << 0;
 const MAX_FILTER_DELAY_MS: u64 = 10_000;
@@ -55,6 +56,24 @@ enum RecordDvrMirrorWriteOutcome {
     Written,
     WakePending,
     Overflow,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FilterQueuePayloadError {
+    Overflow(DemuxRuntimeError),
+    Runtime(DemuxRuntimeError),
+}
+
+impl FilterQueuePayloadError {
+    const fn runtime_error(self) -> DemuxRuntimeError {
+        match self {
+            Self::Overflow(error) | Self::Runtime(error) => error,
+        }
+    }
+
+    const fn is_overflow(self) -> bool {
+        matches!(self, Self::Overflow(_))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -370,7 +389,7 @@ fn av_payload_delivery_outcome_diagnostic(
 #[derive(Clone, Debug)]
 pub struct DemuxRuntimeSnapshot {
     state: DemuxRuntimeState,
-    generation: u64,
+    stream_boundary_generation: u64,
     pipeline: PacketPipeline,
     filters: BTreeMap<i32, FilterRuntime>,
     dvrs: BTreeMap<i32, DvrRuntime>,
@@ -439,7 +458,7 @@ impl DemuxRuntimeRollbackCommitRequest {
 
 impl DemuxRuntimeSnapshot {
     pub fn generation(&self) -> u64 {
-        self.generation
+        self.stream_boundary_generation
     }
 }
 
@@ -537,11 +556,11 @@ impl DvrStatusReportingRequest {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DemuxGenerationBoundaryRequest {
+pub struct DemuxStreamBoundaryRequest {
     reason: PipelineBoundaryReason,
 }
 
-impl DemuxGenerationBoundaryRequest {
+impl DemuxStreamBoundaryRequest {
     pub const fn new(reason: PipelineBoundaryReason) -> Self {
         Self { reason }
     }
@@ -716,7 +735,7 @@ impl<'a> ValidatedPacketIngressRequest<'a> {
 pub struct DemuxRuntime {
     demux_id: i32,
     state: DemuxRuntimeState,
-    generation: u64,
+    stream_boundary: super::generation_boundary::StreamBoundaryTxn,
     pipeline: PacketPipeline,
     filters: BTreeMap<i32, FilterRuntime>,
     dvrs: BTreeMap<i32, DvrRuntime>,
@@ -934,7 +953,7 @@ impl DemuxRuntime {
         Self {
             demux_id,
             state: DemuxRuntimeState::Open,
-            generation,
+            stream_boundary: super::generation_boundary::StreamBoundaryTxn::new(generation),
             pipeline: PacketPipeline::default(),
             filters: BTreeMap::new(),
             dvrs: BTreeMap::new(),
@@ -964,7 +983,7 @@ impl DemuxRuntime {
         self.state
     }
     pub fn generation(&self) -> u64 {
-        self.generation
+        self.stream_boundary.generation()
     }
     #[cfg(test)]
     pub(crate) fn pipeline(&self) -> &PacketPipeline {
@@ -1110,7 +1129,7 @@ impl DemuxRuntime {
     pub fn snapshot(&self) -> DemuxRuntimeSnapshot {
         DemuxRuntimeSnapshot {
             state: self.state,
-            generation: self.generation,
+            stream_boundary_generation: self.stream_boundary.generation(),
             pipeline: self.pipeline.clone(),
             filters: self.filters.clone(),
             dvrs: self.dvrs.clone(),
@@ -1140,7 +1159,7 @@ impl DemuxRuntime {
                     id: Some(self.demux_id),
                 })?;
         let snapshot = self.snapshot();
-        let generation = snapshot.generation;
+        let generation = snapshot.generation();
         self.rollback_snapshots.insert(token_id, snapshot);
         Ok(DemuxRuntimeRollbackToken::new(
             self.demux_id,
@@ -1168,7 +1187,7 @@ impl DemuxRuntime {
             .rollback_snapshots
             .remove(&token.token_id)
             .ok_or(DemuxRuntimeError::invalid_state(self.demux_id))?;
-        if snapshot.generation != token.generation {
+        if snapshot.generation() != token.generation {
             self.rollback_snapshots.clear();
             return Err(DemuxRuntimeError::invalid_state(self.demux_id));
         }
@@ -1186,7 +1205,7 @@ impl DemuxRuntime {
             .rollback_snapshots
             .remove(&token.token_id)
             .ok_or(DemuxRuntimeError::invalid_state(self.demux_id))?;
-        if snapshot.generation != token.generation {
+        if snapshot.generation() != token.generation {
             self.rollback_snapshots.clear();
             return Err(DemuxRuntimeError::invalid_state(self.demux_id));
         }
@@ -1208,7 +1227,8 @@ impl DemuxRuntime {
         });
 
         self.state = snapshot.state;
-        self.generation = snapshot.generation;
+        self.stream_boundary
+            .restore(snapshot.stream_boundary_generation);
         self.pipeline = snapshot.pipeline;
         self.filters = snapshot.filters;
         self.dvrs = snapshot.dvrs;
@@ -1570,12 +1590,28 @@ impl DemuxRuntime {
         Ok(())
     }
 
+    pub(crate) fn apply_filter_source_stream_boundary(
+        &mut self,
+        filter_id: i32,
+    ) -> Result<PipelineResetReport, DemuxRuntimeError> {
+        let prepared = self
+            .stream_boundary
+            .prepare_filter_source_boundary(filter_id);
+        let filter_id = self
+            .stream_boundary
+            .consume_filter_source_boundary(prepared)
+            .ok_or(DemuxRuntimeError::invalid_state(self.demux_id))?;
+        self.clear_existing_filter_queue(filter_id)?;
+        self.reset_filter_source_boundary(filter_id)
+    }
+
     pub(crate) fn enqueue_filter_queue_payload(
         &mut self,
         filter_id: i32,
         payload: Vec<u8>,
     ) -> Result<(), DemuxRuntimeError> {
-        self.preflight_filter_queue_payload(filter_id, payload.len())?;
+        self.preflight_filter_queue_payload(filter_id, payload.len())
+            .map_err(FilterQueuePayloadError::runtime_error)?;
         let gate = self
             .filter_producer_gates
             .get(&filter_id)
@@ -1584,7 +1620,8 @@ impl DemuxRuntime {
         let mut permit = gate
             .begin_producer()
             .map_err(|_| DemuxRuntimeError::queue_runtime_failure(filter_id))?;
-        self.enqueue_filter_queue_payload_with_permit(filter_id, payload, &mut permit)?;
+        self.enqueue_filter_queue_payload_with_permit(filter_id, payload, &mut permit)
+            .map_err(FilterQueuePayloadError::runtime_error)?;
         permit
             .commit()
             .map_err(|_| DemuxRuntimeError::queue_runtime_failure(filter_id))
@@ -1594,22 +1631,34 @@ impl DemuxRuntime {
         &self,
         filter_id: i32,
         payload_len: usize,
-    ) -> Result<(), DemuxRuntimeError> {
+    ) -> Result<(), FilterQueuePayloadError> {
         if !self.filters.contains_key(&filter_id) {
-            return Err(DemuxRuntimeError::filter_missing(filter_id));
+            return Err(FilterQueuePayloadError::Runtime(
+                DemuxRuntimeError::filter_missing(filter_id),
+            ));
         }
         let queue = self
             .filter_queue_runtimes
             .get(&filter_id)
-            .ok_or(DemuxRuntimeError::queue_missing(filter_id))?;
+            .ok_or_else(|| {
+                FilterQueuePayloadError::Runtime(DemuxRuntimeError::queue_missing(filter_id))
+            })?;
         if queue.retry_pending_wake(TUNER_EVENT_DATA_READY).is_err() {
-            return Err(DemuxRuntimeError::queue_runtime_failure(filter_id));
+            return Err(FilterQueuePayloadError::Runtime(
+                DemuxRuntimeError::queue_runtime_failure(filter_id),
+            ));
         }
         let available = queue
             .available_to_write()
-            .map_err(|_| DemuxRuntimeError::queue_runtime_failure(filter_id))?;
+            .map_err(|_| {
+                FilterQueuePayloadError::Runtime(DemuxRuntimeError::queue_runtime_failure(
+                    filter_id,
+                ))
+            })?;
         if available < payload_len {
-            return Err(DemuxRuntimeError::queue_runtime_failure(filter_id));
+            return Err(FilterQueuePayloadError::Overflow(
+                DemuxRuntimeError::queue_runtime_failure(filter_id),
+            ));
         }
         Ok(())
     }
@@ -1619,9 +1668,11 @@ impl DemuxRuntime {
         filter_id: i32,
         payload: Vec<u8>,
         _permit: &mut FilterProducerPermit,
-    ) -> Result<(), DemuxRuntimeError> {
+    ) -> Result<(), FilterQueuePayloadError> {
         let Some(queue) = self.filter_queue_runtimes.get(&filter_id) else {
-            return Err(DemuxRuntimeError::queue_missing(filter_id));
+            return Err(FilterQueuePayloadError::Runtime(
+                DemuxRuntimeError::queue_missing(filter_id),
+            ));
         };
         let result = FmqDeliveryTxn::new(FmqObjectKind::Filter).commit_payload(
             payload.len(),
@@ -1646,14 +1697,47 @@ impl DemuxRuntime {
                 }
                 Ok(())
             }
-            FmqDeliveryAction::Overflow => Err(DemuxRuntimeError::queue_runtime_failure(filter_id)),
+            FmqDeliveryAction::Overflow => Err(FilterQueuePayloadError::Overflow(
+                DemuxRuntimeError::queue_runtime_failure(filter_id),
+            )),
             FmqDeliveryAction::RuntimeFailed(_) => {
                 if let Some(filter) = self.filters.get_mut(&filter_id) {
                     filter.mark_failed();
                 }
-                Err(DemuxRuntimeError::queue_runtime_failure(filter_id))
+                Err(FilterQueuePayloadError::Runtime(
+                    DemuxRuntimeError::queue_runtime_failure(filter_id),
+                ))
             }
         }
+    }
+
+    fn committed_filter_status_events(
+        &mut self,
+        filter_id: i32,
+    ) -> Result<Vec<PipelineGeneratedEvent>, DemuxRuntimeError> {
+        let queue = self
+            .filter_queue_runtimes
+            .get(&filter_id)
+            .ok_or_else(|| DemuxRuntimeError::queue_missing(filter_id))?;
+        let capacity_bytes = queue.capacity_bytes();
+        let readable_bytes = queue
+            .availability_snapshot()
+            .map_err(|_| DemuxRuntimeError::queue_runtime_failure(filter_id))?
+            .readable_bytes;
+        let filter = self
+            .filters
+            .get_mut(&filter_id)
+            .ok_or_else(|| DemuxRuntimeError::filter_missing(filter_id))?;
+        let mut events = vec![PipelineGeneratedEvent::FilterStatus {
+            filter_id,
+            status: FilterStatusEvent::DataReady,
+        }];
+        if let Some(status) =
+            filter.classify_watermark_transition(capacity_bytes, readable_bytes)
+        {
+            events.push(PipelineGeneratedEvent::FilterStatus { filter_id, status });
+        }
+        Ok(events)
     }
 
     #[cfg(test)]
@@ -3528,16 +3612,16 @@ impl DemuxRuntime {
         (source_boundary, result)
     }
 
-    pub(crate) fn prepare_generation_boundary(
+    pub(crate) fn prepare_stream_boundary(
         &mut self,
         reason: PipelineBoundaryReason,
     ) -> Result<super::generation_boundary::PreparedStreamBoundary, DemuxRuntimeError> {
         if self.state != DemuxRuntimeState::Open {
             return Err(DemuxRuntimeError::invalid_state(self.demux_id));
         }
-        let next = match next_generation(self.generation) {
-            Ok(next) => next,
-            Err(_) => {
+        let next = match self.stream_boundary.prepare_next_generation() {
+            Some(next) => next,
+            None => {
                 self.quarantine();
                 return Err(DemuxRuntimeError::generation_exhausted(Some(self.demux_id)));
             }
@@ -3566,8 +3650,8 @@ impl DemuxRuntime {
         }
         Ok(super::generation_boundary::PreparedStreamBoundary {
             reason,
-            expected_generation: self.generation,
-            next_generation: DemuxStreamGeneration(next),
+            expected_generation: self.stream_boundary.generation(),
+            next_generation: next,
             reset,
             prepared_pipeline,
             filter_queue_ids,
@@ -3576,27 +3660,30 @@ impl DemuxRuntime {
         })
     }
 
-    pub fn prepare_generation_boundary_from_typed_request(
+    pub fn prepare_stream_boundary_from_typed_request(
         &mut self,
-        request: DemuxGenerationBoundaryRequest,
+        request: DemuxStreamBoundaryRequest,
     ) -> Result<super::generation_boundary::PreparedStreamBoundary, DemuxRuntimeError> {
-        self.prepare_generation_boundary(request.reason)
+        self.prepare_stream_boundary(request.reason)
     }
 
-    pub(crate) fn commit_generation_boundary(
+    pub(crate) fn commit_stream_boundary(
         &mut self,
         prepared: super::generation_boundary::PreparedStreamBoundary,
-    ) -> Result<super::generation_boundary::GenerationBoundaryReport, DemuxRuntimeError> {
-        if self.state != DemuxRuntimeState::Open
-            || self.generation != prepared.expected_generation
-        {
+    ) -> Result<super::generation_boundary::StreamBoundaryReport, DemuxRuntimeError> {
+        if self.state != DemuxRuntimeState::Open {
+            return Err(DemuxRuntimeError::invalid_state(self.demux_id));
+        }
+        if !self.stream_boundary.commit_prepared_generation(
+            prepared.expected_generation,
+            prepared.next_generation,
+        ) {
             return Err(DemuxRuntimeError::invalid_state(self.demux_id));
         }
         self.pipeline = prepared.prepared_pipeline;
         for filter in self.filters.values_mut() {
             filter.clear_queued_payload_state();
         }
-        self.generation = prepared.next_generation.0;
         self.pcr_clock_anchor_store
             .commit_invalidation(prepared.pcr_invalidation);
 
@@ -3634,34 +3721,33 @@ impl DemuxRuntime {
         for queue in self.filter_queue_mirror.values_mut() {
             queue.clear();
         }
-        Ok(super::generation_boundary::GenerationBoundaryReport {
+        Ok(super::generation_boundary::StreamBoundaryReport {
             reason: prepared.reason,
             reset: prepared.reset,
             next_generation: prepared.next_generation,
         })
     }
 
-    pub fn commit_generation_boundary_from_typed_request(
+    pub fn commit_stream_boundary_from_typed_request(
         &mut self,
         prepared: super::generation_boundary::PreparedStreamBoundary,
-    ) -> Result<super::generation_boundary::GenerationBoundaryReport, DemuxRuntimeError> {
-        self.commit_generation_boundary(prepared)
+    ) -> Result<super::generation_boundary::StreamBoundaryReport, DemuxRuntimeError> {
+        self.commit_stream_boundary(prepared)
     }
 
-    pub fn apply_generation_boundary_from_typed_request(
+    pub fn apply_stream_boundary_from_typed_request(
         &mut self,
-        request: DemuxGenerationBoundaryRequest,
-    ) -> Result<super::generation_boundary::GenerationBoundaryReport, DemuxRuntimeError> {
-        self.apply_generation_boundary(request.reason)
+        request: DemuxStreamBoundaryRequest,
+    ) -> Result<super::generation_boundary::StreamBoundaryReport, DemuxRuntimeError> {
+        self.apply_stream_boundary(request.reason)
     }
 
-    pub(crate) fn apply_generation_boundary(
+    pub(crate) fn apply_stream_boundary(
         &mut self,
         reason: PipelineBoundaryReason,
-    ) -> Result<super::generation_boundary::GenerationBoundaryReport, DemuxRuntimeError> {
-        let (_, report) =
-            super::generation_boundary::GenerationBoundaryTxn::for_reason(reason).apply(self);
-        report
+    ) -> Result<super::generation_boundary::StreamBoundaryReport, DemuxRuntimeError> {
+        let prepared = self.prepare_stream_boundary(reason)?;
+        self.commit_stream_boundary(prepared)
     }
 
     pub fn quarantine_runtime_from_typed_request(
@@ -4664,6 +4750,10 @@ impl DemuxRuntime {
         let mut gates_with_pending_events = BTreeSet::new();
         for event in std::mem::take(generated_events) {
             let (filter_id, pid, payload, callback_event) = match &event {
+                PipelineGeneratedEvent::FilterStatus { .. } => {
+                    committed_events.push(event);
+                    continue;
+                }
                 PipelineGeneratedEvent::DataReady { filter_id } => {
                     (*filter_id, packet_pid, Some(packet.to_vec()), false)
                 }
@@ -4703,10 +4793,16 @@ impl DemuxRuntime {
             };
             if let Some(payload) = payload.as_ref() {
                 if let Err(error) = self.preflight_filter_queue_payload(filter_id, payload.len()) {
+                    if error.is_overflow() {
+                        committed_events.push(PipelineGeneratedEvent::FilterStatus {
+                            filter_id,
+                            status: FilterStatusEvent::Overflow,
+                        });
+                    }
                     diagnostics.push(PipelineDiagnostic::filter_queue_payload_delivery_failure(
                         pid,
                         filter_id,
-                        error,
+                        error.runtime_error(),
                     ));
                     continue;
                 }
@@ -4722,6 +4818,7 @@ impl DemuxRuntime {
                     continue;
                 }
             };
+            let payload_committed = payload.is_some();
             let payload_result = match payload {
                 Some(payload) => self
                     .enqueue_filter_queue_payload_with_permit(filter_id, payload, &mut permit),
@@ -4729,10 +4826,16 @@ impl DemuxRuntime {
             };
             if let Err(error) = payload_result {
                 drop(permit);
+                if error.is_overflow() {
+                    committed_events.push(PipelineGeneratedEvent::FilterStatus {
+                        filter_id,
+                        status: FilterStatusEvent::Overflow,
+                    });
+                }
                 diagnostics.push(PipelineDiagnostic::filter_queue_payload_delivery_failure(
                     pid,
                     filter_id,
-                    error,
+                    error.runtime_error(),
                 ));
                 continue;
             }
@@ -4751,17 +4854,32 @@ impl DemuxRuntime {
             } else {
                 Some(event)
             };
-            if permit.commit().is_err() {
+            let permit_committed = if permit.commit().is_err() {
                 self.quarantine_filter_runtime(filter_id);
                 diagnostics.push(PipelineDiagnostic::filter_queue_payload_delivery_failure(
                     pid,
                     filter_id,
                     DemuxRuntimeError::queue_runtime_failure(filter_id),
                 ));
+                false
             } else if callback_event {
                 gates_with_pending_events.insert(filter_id);
+                true
             } else if let Some(event) = unqueued_event {
                 committed_events.push(event);
+                true
+            } else {
+                true
+            };
+            if payload_committed && permit_committed {
+                match self.committed_filter_status_events(filter_id) {
+                    Ok(mut events) => committed_events.append(&mut events),
+                    Err(error) => diagnostics.push(
+                        PipelineDiagnostic::filter_queue_payload_delivery_failure(
+                            pid, filter_id, error,
+                        ),
+                    ),
+                }
             }
         }
         for filter_id in gates_with_pending_events {

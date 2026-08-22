@@ -1,16 +1,53 @@
 use super::{
-    status_from_hal_error, status_unknown_error, AidlObjectArtifactCleanupExecutor,
-    AidlObjectCloseRuntimeExecutor, AidlObjectDomainCleanupExecutor, AidlObjectHandle,
-    BinderResult, ObjectCloseCleanupFailure,
+    execute_close_after_preflight_once, status_from_hal_error, status_unknown_error,
+    AidlObjectArtifactCleanupExecutor, AidlObjectCloseRuntimeExecutor,
+    AidlObjectDomainCleanupExecutor, AidlObjectHandle, BinderResult, ObjectCloseCleanupFailure,
 };
 use crate::service_context::SharedAidlServiceContext;
-use maleicacid_tuner_hal2_binder_adapter::AidlObjectKind;
+use maleicacid_tuner_hal2_binder_adapter::{AidlMethodCall, AidlObjectKind};
 use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, FirstErrorCollector};
 use maleicacid_tuner_hal2_service_runtime::{
     quarantine_object_drop_leak_use_case, ObjectCleanupDiagnosticRecord,
 };
 
 pub(crate) fn drop_leak_object(
+    context: &SharedAidlServiceContext,
+    handle: AidlObjectHandle,
+) -> BinderResult<()> {
+    if context
+        .cleanup_is_terminal_for_handle(handle)
+        .map_err(status_from_hal_error)?
+    {
+        return Ok(());
+    }
+    let method = close_method_for_drop(handle.object_kind()).map_err(status_from_hal_error)?;
+    let result = execute_close_after_preflight_once(context, handle, method);
+    if result.is_err() {
+        context
+            .enqueue_cleanup_retry(handle)
+            .map_err(status_from_hal_error)?;
+    }
+    result
+}
+
+fn close_method_for_drop(
+    kind: AidlObjectKind,
+) -> Result<AidlMethodCall, maleicacid_tuner_hal2_common::HalError> {
+    match kind {
+        AidlObjectKind::Frontend => Ok(AidlMethodCall::FrontendClose),
+        AidlObjectKind::Demux => Ok(AidlMethodCall::DemuxClose),
+        AidlObjectKind::Filter => Ok(AidlMethodCall::FilterClose),
+        AidlObjectKind::Dvr => Ok(AidlMethodCall::DvrClose),
+        AidlObjectKind::Descrambler => Ok(AidlMethodCall::DescramblerClose),
+        AidlObjectKind::Lnb => Ok(AidlMethodCall::LnbClose),
+        AidlObjectKind::Tuner => Err(maleicacid_tuner_hal2_common::HalError::internal(
+            maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+            "root tuner object reached object Drop cleanup",
+        )),
+    }
+}
+
+pub(crate) fn quarantine_drop_leak_object(
     context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
 ) -> BinderResult<()> {

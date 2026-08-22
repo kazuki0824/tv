@@ -1,6 +1,6 @@
 use crate::boot::TunerServiceRuntime;
 use maleicacid_tuner_hal2_common::HalError;
-use maleicacid_tuner_hal2_demux::GenerationBoundaryReport;
+use maleicacid_tuner_hal2_demux::StreamBoundaryReport;
 use maleicacid_tuner_hal2_demux::PipelineReport;
 
 impl TunerServiceRuntime {
@@ -8,7 +8,7 @@ impl TunerServiceRuntime {
         &mut self,
         demux_id: i32,
         frontend_id: i32,
-    ) -> Result<GenerationBoundaryReport, HalError> {
+    ) -> Result<StreamBoundaryReport, HalError> {
         self.packet_txn()
             .set_demux_frontend_data_source(demux_id, frontend_id)
     }
@@ -16,7 +16,7 @@ impl TunerServiceRuntime {
     pub(crate) fn reset_bound_demuxes_for_frontend_tune_start(
         &mut self,
         frontend_id: i32,
-    ) -> Result<Vec<GenerationBoundaryReport>, HalError> {
+    ) -> Result<Vec<StreamBoundaryReport>, HalError> {
         self.packet_txn()
             .reset_bound_demuxes_for_frontend_tune_start(frontend_id)
     }

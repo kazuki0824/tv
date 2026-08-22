@@ -270,7 +270,9 @@ fn quarantine_cleanup_job(
     queue: &CleanupReaperQueue,
     job: CleanupJob,
 ) -> bool {
-    let terminal = if crate::object_runtime::drop_leak_object(context, job.handle).is_ok() {
+    let terminal = if crate::object_runtime::quarantine_drop_leak_object(context, job.handle)
+        .is_ok()
+    {
         Some(CleanupJobState::Quarantined)
     } else if context.cleanup_is_terminal_for_handle(job.handle) == Ok(true) {
         Some(CleanupJobState::Released)

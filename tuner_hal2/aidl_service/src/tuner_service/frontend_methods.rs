@@ -4,9 +4,8 @@ use super::{
     execute_object_query_use_case, execute_shared_object_runtime_use_case,
     execute_shared_object_runtime_use_case_with_request_builder,
     plan_unavailable_object_method_use_case, scan_notifier, set_frontend_lnb_object_use_case,
-    start_frontend_scan_use_case, start_frontend_tune_use_case, status_from_hal_error,
-    status_unknown_error, stop_frontend_scan_use_case, stop_frontend_tune_use_case, AidlApi,
-    tune_notifier, AidlMethodCall, AidlObjectKind, BinderResult, FrontendAidlObject,
+    status_from_hal_error, status_unknown_error, tune_notifier, AidlApi, AidlMethodCall,
+    AidlObjectKind, BinderResult, FrontendAidlObject, FrontendTuneScanTxn,
     FrontendScanType, FrontendSettings, FrontendStatus, FrontendStatusReadiness,
     FrontendStatusType, IFrontend, IFrontendCallback, ObjectFrontendStatusReadinessValue,
     ObjectFrontendStatusType, ObjectFrontendStatusValue, ObjectQueryRequest, ObjectQueryResponse,
@@ -59,7 +58,7 @@ impl IFrontend for FrontendAidlObject {
                 Ok((AidlMethodCall::FrontendTune(request.clone()), request))
             },
             |runtime, handle, dispatch_proof, request| {
-                start_frontend_tune_use_case(
+                FrontendTuneScanTxn::begin_tune(
                     runtime,
                     handle.object_id(),
                     handle.generation(),
@@ -77,7 +76,7 @@ impl IFrontend for FrontendAidlObject {
             self.handle(),
             AidlMethodCall::FrontendStopTune,
             |runtime, handle, dispatch_proof| {
-                stop_frontend_tune_use_case(
+                FrontendTuneScanTxn::stop_tune(
                     runtime,
                     handle.object_id(),
                     handle.generation(),
@@ -108,7 +107,7 @@ impl IFrontend for FrontendAidlObject {
                 ))
             },
             |runtime, handle, dispatch_proof, (request, scan_mode)| {
-                start_frontend_scan_use_case(
+                FrontendTuneScanTxn::begin_scan(
                     runtime.clone(),
                     handle.object_id(),
                     handle.generation(),
@@ -126,7 +125,7 @@ impl IFrontend for FrontendAidlObject {
             self.handle(),
             AidlMethodCall::FrontendStopScan,
             |runtime, handle, dispatch_proof| {
-                stop_frontend_scan_use_case(
+                FrontendTuneScanTxn::stop_scan(
                     runtime,
                     handle.object_id(),
                     handle.generation(),

@@ -2,7 +2,7 @@ use super::{
     live_reader_descriptor_for_frontend_entry, DemuxRuntimeId, DemuxRuntimeRollbackToken,
     FrontendLivePumpReport, FrontendRuntimeSnapshot, FrontendSignalState, FrontendTuneRequest,
     FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind,
-    FrontendWorkerStartError, FrontendWorkerStopOutcome, GenerationBoundaryReport, HalError,
+    FrontendWorkerStartError, FrontendWorkerStopOutcome, StreamBoundaryReport, HalError,
     HalInternalKind, HalInvalidStateKind, PipelineBoundaryReason, TunerServiceRuntime,
 };
 use maleicacid_tuner_hal2_demux::{
@@ -42,7 +42,7 @@ impl TunerServiceRuntime {
     fn transact_stop_frontend_live_data_and_unbind(
         &mut self,
         frontend_id: i32,
-    ) -> Result<Vec<GenerationBoundaryReport>, HalError> {
+    ) -> Result<Vec<StreamBoundaryReport>, HalError> {
         let runtime = self
             .registry
             .frontend_runtime_mut(crate::registry::FrontendRuntimeId(frontend_id))
@@ -62,7 +62,7 @@ impl TunerServiceRuntime {
     fn transact_close_frontend_live_data_and_unbind(
         &mut self,
         frontend_id: i32,
-    ) -> Result<Vec<GenerationBoundaryReport>, HalError> {
+    ) -> Result<Vec<StreamBoundaryReport>, HalError> {
         let frontend_key = crate::registry::FrontendRuntimeId(frontend_id);
         let runtime = self
             .registry
@@ -772,7 +772,7 @@ impl<'a> FrontendTxn<'a> {
     pub(crate) fn stop_frontend_live_data_and_unbind(
         &mut self,
         frontend_id: i32,
-    ) -> Result<Vec<GenerationBoundaryReport>, HalError> {
+    ) -> Result<Vec<StreamBoundaryReport>, HalError> {
         self.runtime
             .transact_stop_frontend_live_data_and_unbind(frontend_id)
     }
@@ -780,7 +780,7 @@ impl<'a> FrontendTxn<'a> {
     pub(crate) fn close_frontend_live_data_and_unbind(
         &mut self,
         frontend_id: i32,
-    ) -> Result<Vec<GenerationBoundaryReport>, HalError> {
+    ) -> Result<Vec<StreamBoundaryReport>, HalError> {
         self.runtime
             .transact_close_frontend_live_data_and_unbind(frontend_id)
     }

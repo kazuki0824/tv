@@ -1,7 +1,6 @@
 use crate::packet_pipeline::{PipelineOpenKind, PipelineResetReport};
 
 use super::demux::{DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind};
-use super::generation_boundary::GenerationBoundaryTxn;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SourceBoundaryStep {
@@ -259,9 +258,8 @@ impl SourceBoundaryTxn {
         }
 
         self.record_step(SourceBoundaryStep::StreamBoundary);
-        let (_, stream_boundary_result) =
-            GenerationBoundaryTxn::for_filter_source(self.sink_filter_id)
-                .apply_filter_source(demux);
+        let stream_boundary_result =
+            demux.apply_filter_source_stream_boundary(self.sink_filter_id);
         match stream_boundary_result {
             Ok(reset_report) => self.reset_report = Some(reset_report),
             Err(err) => {

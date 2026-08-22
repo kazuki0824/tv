@@ -5,7 +5,7 @@ use super::{
     HalInvalidStateKind, LnbRuntimeId, RuntimeObjectTable, RuntimeObjectTableError,
     RuntimeOwnerRelation, RuntimeRegistry, TunerServiceRuntime,
 };
-use crate::object_method_txn::ObjectFrontendStatusSnapshot;
+use crate::object_method_use_case::ObjectFrontendStatusSnapshot;
 use maleicacid_tuner_hal2_demux::{
     DemuxRuntimeRollbackTokenPrepareRequest, DvrKind, DvrRuntimeState, DvrStatusEvent,
     FilterRuntimeState, QueueDescriptorExportPlan as DemuxQueueDescriptorExportPlan,

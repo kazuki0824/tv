@@ -1,4 +1,4 @@
-use crate::registry::FrontendRegistryEntry;
+use crate::registry::{FrontendRegistryEntry, SatellitePowerTopology};
 use crate::TunerServiceRuntime;
 use maleicacid_tuner_hal2_common::{
     is_japan_bs_if_frequency_hz, is_japan_cs110_if_frequency_hz,
@@ -68,6 +68,14 @@ fn validate_frontend_lnb_candidate(
 ) -> Result<(), HalError> {
     if !matches!(request.system, FrontendSystem::IsdbS) {
         return Ok(());
+    }
+    if entry.satellite_power_topology == SatellitePowerTopology::ExternalOrShared {
+        return Ok(());
+    }
+    if entry.satellite_power_topology != SatellitePowerTopology::InternalFixed15V {
+        return Err(HalError::Unsupported(
+            "ISDB-S frontend does not have a verified power topology",
+        ));
     }
     let lnb = runtime.query().lnb_for_frontend_id(entry.id.0);
     match (entry.lnb_profile, lnb) {

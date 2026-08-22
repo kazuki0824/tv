@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::descrambler_key_table::{DescramblerKeyLookupError, DescramblerKeyTable};
 use crate::descrambler_session::{
@@ -29,7 +29,11 @@ use maleicacid_tuner_hal2_descrambler::{
     DescramblerPidClaim, PacketPolicyAction,
 };
 use maleicacid_tuner_hal2_device::FrontendRuntime;
-use maleicacid_tuner_hal2_lnb::LnbRuntime;
+use maleicacid_tuner_hal2_lnb::{
+    finish_lnb_close, finish_lnb_state_apply, prepare_lnb_close, prepare_lnb_state_apply,
+    LnbBackendApplyOutcome, LnbElectricalState, LnbFailureKind, LnbFailureRecord,
+    LnbFailureStep, LnbRuntime, PreparedLnbClose, PreparedLnbStateApply,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct FrontendRuntimeId(pub i32);
@@ -60,6 +64,9 @@ pub struct FrontendRegistryEntry {
     /// frontend exportと同じprobe sourceから導出した固定LNB profile。
     /// Noneの場合、frontendはLNB voltage statusやLNB bindingをadvertiseしてはならない。
     pub lnb_profile: Option<LnbRegistryProfile>,
+    /// Product-wiring evidence for satellite power. This is independent of
+    /// whether a caller-controllable ILnb endpoint is exported.
+    pub satellite_power_topology: SatellitePowerTopology,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -110,12 +117,349 @@ pub enum LnbRegistryProfile {
     NoPower,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SatellitePowerTopology {
+    InternalFixed15V,
+    ExternalOrShared,
+    UnknownOrDisabled,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LnbRegistryEntry {
     pub id: LnbRuntimeId,
     pub name: Option<String>,
     pub owner_frontend_id: FrontendRuntimeId,
     pub profile: LnbRegistryProfile,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct LnbPhysicalIoAuthority {
+    gate: Arc<Mutex<()>>,
+}
+
+pub(crate) struct LnbPhysicalIoPermit<'a> {
+    _guard: MutexGuard<'a, ()>,
+}
+
+impl LnbPhysicalIoAuthority {
+    fn new() -> Self {
+        Self {
+            gate: Arc::new(Mutex::new(())),
+        }
+    }
+
+    pub(crate) fn execute<T>(
+        &self,
+        execute: impl FnOnce(LnbPhysicalIoPermit<'_>) -> Result<T, HalError>,
+    ) -> Result<T, HalError> {
+        let guard = self.gate.lock().map_err(|_| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "physical LNB I/O authority lock poisoned",
+            )
+        })?;
+        execute(LnbPhysicalIoPermit { _guard: guard })
+    }
+}
+
+/// Canonical owner for persistent LNB state and per-physical-LNB I/O
+/// serialization authorities.
+#[derive(Debug, Default)]
+pub struct LnbRegistry {
+    entries: BTreeMap<LnbRuntimeId, LnbRegistryEntry>,
+    runtimes: BTreeMap<LnbRuntimeId, LnbRuntime>,
+    physical_keys: BTreeMap<LnbRuntimeId, String>,
+    physical_io: BTreeMap<String, LnbPhysicalIoAuthority>,
+    assignment_leases: BTreeMap<FrontendRuntimeId, LnbAssignmentLease>,
+    prepared_assignment_leases: BTreeMap<u64, (FrontendRuntimeId, LnbRuntimeId)>,
+    pending_assignment_cleanup: BTreeMap<u64, (FrontendRuntimeId, LnbRuntimeId)>,
+    fixed_power_leases: BTreeMap<FrontendRuntimeId, LnbRuntimeId>,
+    rail_reference_counts: BTreeMap<String, usize>,
+    next_assignment_lease_token: u64,
+}
+
+impl LnbRegistry {
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.runtimes.clear();
+        self.physical_keys.clear();
+        self.physical_io.clear();
+        self.clear_assignment_state();
+        self.rail_reference_counts.clear();
+    }
+
+    fn clear_assignment_state(&mut self) {
+        self.assignment_leases.clear();
+        self.prepared_assignment_leases.clear();
+        self.pending_assignment_cleanup.clear();
+        self.fixed_power_leases.clear();
+        self.next_assignment_lease_token = 0;
+        for count in self.rail_reference_counts.values_mut() {
+            *count = 0;
+        }
+    }
+
+    pub(crate) fn physical_io_authority(
+        &self,
+        id: LnbRuntimeId,
+    ) -> Option<LnbPhysicalIoAuthority> {
+        let key = self.physical_keys.get(&id)?;
+        self.physical_io.get(key).cloned()
+    }
+
+    pub fn rail_reference_count(&self, id: LnbRuntimeId) -> Option<usize> {
+        let key = self.physical_keys.get(&id)?;
+        self.rail_reference_counts.get(key).copied()
+    }
+
+    fn missing_runtime_failure(id: LnbRuntimeId) -> LnbFailureRecord {
+        LnbFailureRecord {
+            lnb_id: id.0,
+            kind: LnbFailureKind::InvalidState,
+            step: LnbFailureStep::ValidateState,
+        }
+    }
+
+    fn prepare_state_apply(
+        &mut self,
+        id: LnbRuntimeId,
+        target: LnbElectricalState,
+    ) -> Result<PreparedLnbStateApply, LnbFailureRecord> {
+        if target.voltage != maleicacid_tuner_hal2_lnb::LnbVoltage::Voltage15V
+            && self
+                .fixed_power_leases
+                .values()
+                .any(|fixed_power_lnb_id| *fixed_power_lnb_id == id)
+        {
+            return Err(LnbFailureRecord {
+                lnb_id: id.0,
+                kind: LnbFailureKind::InvalidState,
+                step: LnbFailureStep::ValidateState,
+            });
+        }
+        let runtime = self
+            .runtimes
+            .get_mut(&id)
+            .ok_or_else(|| Self::missing_runtime_failure(id))?;
+        prepare_lnb_state_apply(runtime, target)
+    }
+
+    fn finish_state_apply(
+        &mut self,
+        id: LnbRuntimeId,
+        prepared: PreparedLnbStateApply,
+        outcome: LnbBackendApplyOutcome,
+    ) -> Result<LnbElectricalState, LnbFailureRecord> {
+        let runtime = self
+            .runtimes
+            .get_mut(&id)
+            .ok_or_else(|| Self::missing_runtime_failure(id))?;
+        finish_lnb_state_apply(runtime, prepared, outcome)
+    }
+
+    fn prepare_close(
+        &mut self,
+        id: LnbRuntimeId,
+    ) -> Result<PreparedLnbClose, LnbFailureRecord> {
+        if self
+            .fixed_power_leases
+            .values()
+            .any(|fixed_power_lnb_id| *fixed_power_lnb_id == id)
+        {
+            return Err(LnbFailureRecord {
+                lnb_id: id.0,
+                kind: LnbFailureKind::InvalidState,
+                step: LnbFailureStep::ValidateState,
+            });
+        }
+        let runtime = self
+            .runtimes
+            .get_mut(&id)
+            .ok_or_else(|| Self::missing_runtime_failure(id))?;
+        prepare_lnb_close(runtime)
+    }
+
+    fn finish_close(
+        &mut self,
+        id: LnbRuntimeId,
+        prepared: PreparedLnbClose,
+        outcome: LnbBackendApplyOutcome,
+    ) -> Result<(), LnbFailureRecord> {
+        let runtime = self
+            .runtimes
+            .get_mut(&id)
+            .ok_or_else(|| Self::missing_runtime_failure(id))?;
+        finish_lnb_close(runtime, prepared, outcome)
+    }
+
+    fn reopen(&mut self, id: LnbRuntimeId) -> Result<(), LnbFailureRecord> {
+        let runtime = self
+            .runtimes
+            .get_mut(&id)
+            .ok_or_else(|| Self::missing_runtime_failure(id))?;
+        runtime.reopen_after_public_open()
+    }
+
+    fn set_callback_registered(
+        &mut self,
+        id: LnbRuntimeId,
+        registered: bool,
+    ) -> Result<(), LnbFailureRecord> {
+        let runtime = self
+            .runtimes
+            .get_mut(&id)
+            .ok_or_else(|| Self::missing_runtime_failure(id))?;
+        if runtime.state() != maleicacid_tuner_hal2_lnb::LnbRuntimeState::Open {
+            return Err(LnbFailureRecord {
+                lnb_id: id.0,
+                kind: LnbFailureKind::InvalidState,
+                step: LnbFailureStep::ValidateState,
+            });
+        }
+        runtime.set_callback_registered(registered);
+        Ok(())
+    }
+
+    fn record_drop_leak(&mut self, id: LnbRuntimeId) -> Result<(), LnbFailureRecord> {
+        let runtime = self
+            .runtimes
+            .get_mut(&id)
+            .ok_or_else(|| Self::missing_runtime_failure(id))?;
+        runtime.record_unclosed_drop();
+        Ok(())
+    }
+
+    fn finish_diseqc(
+        &mut self,
+        id: LnbRuntimeId,
+        expected_generation: u64,
+        outcome: LnbBackendApplyOutcome,
+    ) -> Result<(), LnbFailureRecord> {
+        let runtime = self
+            .runtimes
+            .get_mut(&id)
+            .ok_or_else(|| Self::missing_runtime_failure(id))?;
+        if runtime.generation() != expected_generation
+            || runtime.state() != maleicacid_tuner_hal2_lnb::LnbRuntimeState::Open
+        {
+            return Err(LnbFailureRecord {
+                lnb_id: id.0,
+                kind: LnbFailureKind::InvalidState,
+                step: LnbFailureStep::ValidateState,
+            });
+        }
+        match outcome {
+            LnbBackendApplyOutcome::Applied => Ok(()),
+            LnbBackendApplyOutcome::Rejected(kind) => Err(LnbFailureRecord {
+                lnb_id: id.0,
+                kind,
+                step: LnbFailureStep::SendDiseqc,
+            }),
+            LnbBackendApplyOutcome::Indeterminate(kind) => Err(
+                runtime.quarantine_indeterminate_backend(kind, LnbFailureStep::SendDiseqc),
+            ),
+        }
+    }
+
+    fn physical_key_for_entry(entry: &LnbRegistryEntry) -> String {
+        entry
+            .name
+            .clone()
+            .unwrap_or_else(|| format!("lnb-endpoint-{}", entry.id.0))
+    }
+
+    fn retain_rail_reference(&mut self, id: LnbRuntimeId) -> Result<(), HalError> {
+        let key = self.physical_keys.get(&id).ok_or_else(|| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "LNB physical rail key is missing while retaining a lease",
+            )
+        })?;
+        let count = self.rail_reference_counts.get_mut(key).ok_or_else(|| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "LNB physical rail reference count is missing",
+            )
+        })?;
+        *count = count.checked_add(1).ok_or_else(|| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "LNB physical rail reference count overflow",
+            )
+        })?;
+        Ok(())
+    }
+
+    fn release_rail_reference(&mut self, id: LnbRuntimeId) -> Result<(), HalError> {
+        let key = self.physical_keys.get(&id).ok_or_else(|| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "LNB physical rail key is missing while releasing a lease",
+            )
+        })?;
+        let count = self.rail_reference_counts.get_mut(key).ok_or_else(|| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "LNB physical rail reference count is missing",
+            )
+        })?;
+        *count = count.checked_sub(1).ok_or_else(|| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "LNB physical rail reference count underflow",
+            )
+        })?;
+        Ok(())
+    }
+
+    fn retain_fixed_power_lease(
+        &mut self,
+        frontend_id: FrontendRuntimeId,
+        lnb_id: LnbRuntimeId,
+    ) -> Result<bool, HalError> {
+        if let Some(current) = self.fixed_power_leases.get(&frontend_id).copied() {
+            if current == lnb_id {
+                return Ok(false);
+            }
+            return Err(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "frontend fixed-power lease points at another LNB rail",
+            ));
+        }
+        self.retain_rail_reference(lnb_id)?;
+        self.fixed_power_leases.insert(frontend_id, lnb_id);
+        Ok(true)
+    }
+
+    fn release_fixed_power_lease(
+        &mut self,
+        frontend_id: FrontendRuntimeId,
+    ) -> Result<Option<(LnbRuntimeId, usize)>, HalError> {
+        let Some(lnb_id) = self.fixed_power_leases.get(&frontend_id).copied() else {
+            return Ok(None);
+        };
+        let key = self.physical_keys.get(&lnb_id).cloned().ok_or_else(|| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "fixed-power lease lost its physical LNB rail key",
+            )
+        })?;
+        let count = self.rail_reference_counts.get_mut(&key).ok_or_else(|| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "fixed-power lease lost its rail reference count",
+            )
+        })?;
+        let remaining = count.checked_sub(1).ok_or_else(|| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "fixed-power rail reference count underflow",
+            )
+        })?;
+        self.fixed_power_leases.remove(&frontend_id);
+        *count = remaining;
+        Ok(Some((lnb_id, remaining)))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -469,12 +813,8 @@ pub struct RuntimeRegistry {
     demuxes: BTreeMap<DemuxRuntimeId, DemuxRegistryEntry>,
     demux_runtimes: BTreeMap<DemuxRuntimeId, DemuxRuntime>,
     demux_frontend_bindings: BTreeMap<DemuxRuntimeId, FrontendRuntimeId>,
-    lnbs: BTreeMap<LnbRuntimeId, LnbRegistryEntry>,
-    lnb_runtimes: BTreeMap<LnbRuntimeId, LnbRuntime>,
+    lnb_registry: LnbRegistry,
     frontend_lnb_bindings: BTreeMap<FrontendRuntimeId, LnbRuntimeId>,
-    frontend_lnb_assignment_leases: BTreeMap<FrontendRuntimeId, LnbAssignmentLease>,
-    prepared_lnb_assignment_leases: BTreeMap<u64, (FrontendRuntimeId, LnbRuntimeId)>,
-    pending_lnb_assignment_cleanup: BTreeMap<u64, (FrontendRuntimeId, LnbRuntimeId)>,
     filters: BTreeMap<FilterRuntimeId, FilterRegistryEntry>,
     dvrs: BTreeMap<DvrRuntimeId, DvrRegistryEntry>,
     descramblers: BTreeMap<DescramblerRuntimeId, DescramblerRegistryEntry>,
@@ -487,7 +827,6 @@ pub struct RuntimeRegistry {
     av_per_filter_live_bytes: usize,
     next_demux_id: i32,
     next_lnb_id: i32,
-    next_lnb_assignment_lease_token: u64,
     next_filter_id: i32,
     next_dvr_id: i32,
     next_descrambler_id: i32,
@@ -501,12 +840,8 @@ impl Default for RuntimeRegistry {
             demuxes: BTreeMap::new(),
             demux_runtimes: BTreeMap::new(),
             demux_frontend_bindings: BTreeMap::new(),
-            lnbs: BTreeMap::new(),
-            lnb_runtimes: BTreeMap::new(),
+            lnb_registry: LnbRegistry::default(),
             frontend_lnb_bindings: BTreeMap::new(),
-            frontend_lnb_assignment_leases: BTreeMap::new(),
-            prepared_lnb_assignment_leases: BTreeMap::new(),
-            pending_lnb_assignment_cleanup: BTreeMap::new(),
             filters: BTreeMap::new(),
             dvrs: BTreeMap::new(),
             descramblers: BTreeMap::new(),
@@ -520,7 +855,6 @@ impl Default for RuntimeRegistry {
             av_per_filter_live_bytes: DEFAULT_AV_PER_FILTER_LIVE_BYTES,
             next_demux_id: 1,
             next_lnb_id: 1,
-            next_lnb_assignment_lease_token: 0,
             next_filter_id: 1,
             next_dvr_id: 1,
             next_descrambler_id: 1,
@@ -561,18 +895,12 @@ impl RuntimeRegistry {
         self.frontends.clear();
         self.frontend_runtimes.clear();
         self.frontend_lnb_bindings.clear();
-        self.frontend_lnb_assignment_leases.clear();
-        self.prepared_lnb_assignment_leases.clear();
-        self.pending_lnb_assignment_cleanup.clear();
+        self.lnb_registry.clear_assignment_state();
     }
 
     pub fn clear_lnbs(&mut self) {
-        self.lnbs.clear();
-        self.lnb_runtimes.clear();
+        self.lnb_registry.clear();
         self.frontend_lnb_bindings.clear();
-        self.frontend_lnb_assignment_leases.clear();
-        self.prepared_lnb_assignment_leases.clear();
-        self.pending_lnb_assignment_cleanup.clear();
         self.next_lnb_id = 1;
     }
 
@@ -724,31 +1052,155 @@ impl RuntimeRegistry {
     }
 
     pub fn lnb_ids(&self) -> Vec<LnbRuntimeId> {
-        self.lnbs.keys().copied().collect()
+        self.lnb_registry.entries.keys().copied().collect()
+    }
+
+    pub fn lnb_registry(&self) -> &LnbRegistry {
+        &self.lnb_registry
     }
 
     pub fn lnb(&self, id: LnbRuntimeId) -> Option<&LnbRegistryEntry> {
-        self.lnbs.get(&id)
+        self.lnb_registry.entries.get(&id)
     }
 
     pub fn lnb_for_frontend(&self, frontend_id: FrontendRuntimeId) -> Option<&LnbRegistryEntry> {
-        self.lnbs
+        self.lnb_registry.entries
             .values()
             .find(|entry| entry.owner_frontend_id == frontend_id)
     }
 
     pub fn lnb_by_name(&self, name: &str) -> Option<&LnbRegistryEntry> {
-        self.lnbs
+        self.lnb_registry.entries
             .values()
             .find(|entry| entry.name.as_deref() == Some(name))
     }
 
     pub fn lnb_runtime(&self, id: LnbRuntimeId) -> Option<&LnbRuntime> {
-        self.lnb_runtimes.get(&id)
+        self.lnb_registry.runtimes.get(&id)
     }
 
+    #[cfg(test)]
     pub fn lnb_runtime_mut(&mut self, id: LnbRuntimeId) -> Option<&mut LnbRuntime> {
-        self.lnb_runtimes.get_mut(&id)
+        self.lnb_registry.runtimes.get_mut(&id)
+    }
+
+    pub(crate) fn prepare_lnb_state_apply(
+        &mut self,
+        id: LnbRuntimeId,
+        target: LnbElectricalState,
+    ) -> Result<PreparedLnbStateApply, LnbFailureRecord> {
+        self.lnb_registry.prepare_state_apply(id, target)
+    }
+
+    pub(crate) fn finish_lnb_state_apply(
+        &mut self,
+        id: LnbRuntimeId,
+        prepared: PreparedLnbStateApply,
+        outcome: LnbBackendApplyOutcome,
+    ) -> Result<LnbElectricalState, LnbFailureRecord> {
+        self.lnb_registry.finish_state_apply(id, prepared, outcome)
+    }
+
+    pub(crate) fn prepare_lnb_close(
+        &mut self,
+        id: LnbRuntimeId,
+    ) -> Result<PreparedLnbClose, LnbFailureRecord> {
+        self.lnb_registry.prepare_close(id)
+    }
+
+    pub(crate) fn finish_lnb_close(
+        &mut self,
+        id: LnbRuntimeId,
+        prepared: PreparedLnbClose,
+        outcome: LnbBackendApplyOutcome,
+    ) -> Result<(), LnbFailureRecord> {
+        self.lnb_registry.finish_close(id, prepared, outcome)
+    }
+
+    pub(crate) fn reopen_lnb(&mut self, id: LnbRuntimeId) -> Result<(), LnbFailureRecord> {
+        self.lnb_registry.reopen(id)
+    }
+
+    pub(crate) fn set_lnb_callback_registered(
+        &mut self,
+        id: LnbRuntimeId,
+        registered: bool,
+    ) -> Result<(), LnbFailureRecord> {
+        self.lnb_registry.set_callback_registered(id, registered)
+    }
+
+    pub(crate) fn record_lnb_drop_leak(
+        &mut self,
+        id: LnbRuntimeId,
+    ) -> Result<(), LnbFailureRecord> {
+        self.lnb_registry.record_drop_leak(id)
+    }
+
+    pub(crate) fn finish_lnb_diseqc(
+        &mut self,
+        id: LnbRuntimeId,
+        expected_generation: u64,
+        outcome: LnbBackendApplyOutcome,
+    ) -> Result<(), LnbFailureRecord> {
+        self.lnb_registry
+            .finish_diseqc(id, expected_generation, outcome)
+    }
+
+    pub(crate) fn lnb_physical_io_authority(
+        &self,
+        id: LnbRuntimeId,
+    ) -> Option<LnbPhysicalIoAuthority> {
+        self.lnb_registry.physical_io_authority(id)
+    }
+
+    pub(crate) fn retain_frontend_fixed_power_lease(
+        &mut self,
+        frontend_id: FrontendRuntimeId,
+        lnb_id: LnbRuntimeId,
+    ) -> Result<bool, HalError> {
+        let frontend = self.frontends.get(&frontend_id).ok_or_else(|| {
+            HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "frontend is missing while retaining fixed LNB power",
+            )
+        })?;
+        if frontend.satellite_power_topology != SatellitePowerTopology::InternalFixed15V {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "frontend does not own an internal fixed-15V rail",
+            ));
+        }
+        let lnb = self.lnb_registry.entries.get(&lnb_id).ok_or_else(|| {
+            HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "LNB is missing while retaining fixed frontend power",
+            )
+        })?;
+        if lnb.owner_frontend_id != frontend_id {
+            return Err(HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "LNB does not belong to the fixed-power frontend",
+            ));
+        }
+        self.lnb_registry
+            .retain_fixed_power_lease(frontend_id, lnb_id)
+    }
+
+    pub(crate) fn release_frontend_fixed_power_lease(
+        &mut self,
+        frontend_id: FrontendRuntimeId,
+    ) -> Result<Option<(LnbRuntimeId, usize)>, HalError> {
+        self.lnb_registry.release_fixed_power_lease(frontend_id)
+    }
+
+    pub(crate) fn frontend_fixed_power_lnb(
+        &self,
+        frontend_id: FrontendRuntimeId,
+    ) -> Option<LnbRuntimeId> {
+        self.lnb_registry
+            .fixed_power_leases
+            .get(&frontend_id)
+            .copied()
     }
 
     pub fn selected_lnb_for_frontend(
@@ -778,7 +1230,7 @@ impl RuntimeRegistry {
                 "frontend id is missing for LNB assignment",
             ));
         }
-        let Some(entry) = self.lnbs.get(&lnb_id) else {
+        let Some(entry) = self.lnb_registry.entries.get(&lnb_id) else {
             return Err(HalError::invalid_argument(
                 HalInvalidArgumentKind::NumericRange,
                 "LNB id is missing for frontend assignment",
@@ -801,7 +1253,8 @@ impl RuntimeRegistry {
         self.validate_lnb_assignment_target(frontend_id, lnb_id)?;
         let current_relation = self.frontend_lnb_bindings.get(&frontend_id).copied();
         let current_lease = self
-            .frontend_lnb_assignment_leases
+            .lnb_registry
+            .assignment_leases
             .get(&frontend_id)
             .copied();
         if current_relation != current_lease.map(|current| current.lnb_id) {
@@ -814,7 +1267,8 @@ impl RuntimeRegistry {
             return Ok(None);
         }
         if self
-            .prepared_lnb_assignment_leases
+            .lnb_registry
+            .prepared_assignment_leases
             .values()
             .any(|(prepared_frontend, _)| *prepared_frontend == frontend_id)
         {
@@ -824,7 +1278,8 @@ impl RuntimeRegistry {
             ));
         }
         let token = self
-            .next_lnb_assignment_lease_token
+            .lnb_registry
+            .next_assignment_lease_token
             .checked_add(1)
             .filter(|token| *token != 0)
             .ok_or_else(|| {
@@ -833,8 +1288,9 @@ impl RuntimeRegistry {
                     "LNB assignment lease token exhausted",
                 )
             })?;
-        self.next_lnb_assignment_lease_token = token;
-        self.prepared_lnb_assignment_leases
+        self.lnb_registry.next_assignment_lease_token = token;
+        self.lnb_registry
+            .prepared_assignment_leases
             .insert(token, (frontend_id, lnb_id));
         Ok(Some(PreparedLnbAssignmentLease {
             frontend_id,
@@ -850,11 +1306,13 @@ impl RuntimeRegistry {
         prepared: PreparedLnbAssignmentLease,
     ) -> bool {
         if self
-            .prepared_lnb_assignment_leases
+            .lnb_registry
+            .prepared_assignment_leases
             .get(&prepared.token)
             .is_some_and(|entry| *entry == (prepared.frontend_id, prepared.lnb_id))
         {
-            self.prepared_lnb_assignment_leases
+            self.lnb_registry
+                .prepared_assignment_leases
                 .remove(&prepared.token);
             true
         } else {
@@ -865,20 +1323,21 @@ impl RuntimeRegistry {
     pub(crate) fn commit_prepared_lnb_assignment(
         &mut self,
         prepared: PreparedLnbAssignmentLease,
-        prepared_runtime: LnbRuntime,
     ) -> Result<Option<LnbAssignmentCleanupRecord>, HalError> {
         if self
-            .prepared_lnb_assignment_leases
+            .lnb_registry
+            .prepared_assignment_leases
             .get(&prepared.token)
             != Some(&(prepared.frontend_id, prepared.lnb_id))
             || self.frontend_lnb_bindings.get(&prepared.frontend_id).copied()
                 != prepared.expected_relation
             || self
-                .frontend_lnb_assignment_leases
+                .lnb_registry
+                .assignment_leases
                 .get(&prepared.frontend_id)
                 .copied()
                 != prepared.expected_lease
-            || !self.lnb_runtimes.contains_key(&prepared.lnb_id)
+            || !self.lnb_registry.runtimes.contains_key(&prepared.lnb_id)
         {
             return Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
@@ -886,13 +1345,14 @@ impl RuntimeRegistry {
             ));
         }
 
-        self.prepared_lnb_assignment_leases
+        self.lnb_registry
+            .retain_rail_reference(prepared.lnb_id)?;
+        self.lnb_registry
+            .prepared_assignment_leases
             .remove(&prepared.token);
-        self.lnb_runtimes
-            .insert(prepared.lnb_id, prepared_runtime);
         self.frontend_lnb_bindings
             .insert(prepared.frontend_id, prepared.lnb_id);
-        let old_lease = self.frontend_lnb_assignment_leases.insert(
+        let old_lease = self.lnb_registry.assignment_leases.insert(
             prepared.frontend_id,
             LnbAssignmentLease {
                 lnb_id: prepared.lnb_id,
@@ -900,7 +1360,8 @@ impl RuntimeRegistry {
             },
         );
         Ok(old_lease.map(|lease| {
-            self.pending_lnb_assignment_cleanup
+            self.lnb_registry
+                .pending_assignment_cleanup
                 .insert(lease.token, (prepared.frontend_id, lease.lnb_id));
             LnbAssignmentCleanupRecord {
                 frontend_id: prepared.frontend_id,
@@ -914,7 +1375,10 @@ impl RuntimeRegistry {
         &mut self,
         cleanup: LnbAssignmentCleanupRecord,
     ) -> Result<(), HalError> {
-        if self.pending_lnb_assignment_cleanup.get(&cleanup.token)
+        if self
+            .lnb_registry
+            .pending_assignment_cleanup
+            .get(&cleanup.token)
             != Some(&(cleanup.frontend_id, cleanup.lnb_id))
         {
             return Err(HalError::internal(
@@ -922,7 +1386,11 @@ impl RuntimeRegistry {
                 "old frontend/LNB assignment cleanup record is missing",
             ));
         }
-        self.pending_lnb_assignment_cleanup.remove(&cleanup.token);
+        self.lnb_registry
+            .release_rail_reference(cleanup.lnb_id)?;
+        self.lnb_registry
+            .pending_assignment_cleanup
+            .remove(&cleanup.token);
         Ok(())
     }
 
@@ -932,7 +1400,8 @@ impl RuntimeRegistry {
     ) -> Result<Option<LnbRuntimeId>, HalError> {
         let relation = self.frontend_lnb_bindings.get(&frontend_id).copied();
         let lease = self
-            .frontend_lnb_assignment_leases
+            .lnb_registry
+            .assignment_leases
             .get(&frontend_id)
             .copied();
         if relation != lease.map(|lease| lease.lnb_id) {
@@ -941,8 +1410,11 @@ impl RuntimeRegistry {
                 "frontend/LNB release found inconsistent relation and lease state",
             ));
         }
+        if let Some(lease) = lease {
+            self.lnb_registry.release_rail_reference(lease.lnb_id)?;
+        }
         self.frontend_lnb_bindings.remove(&frontend_id);
-        self.frontend_lnb_assignment_leases.remove(&frontend_id);
+        self.lnb_registry.assignment_leases.remove(&frontend_id);
         Ok(relation)
     }
 
@@ -955,7 +1427,7 @@ impl RuntimeRegistry {
         if !self.frontends.contains_key(&frontend_id) {
             return Err(RegistryCommitError::MissingFrontendId { id: frontend_id });
         }
-        let Some(entry) = self.lnbs.get(&lnb_id) else {
+        let Some(entry) = self.lnb_registry.entries.get(&lnb_id) else {
             return Err(RegistryCommitError::MissingLnbId { id: lnb_id });
         };
         if entry.owner_frontend_id != frontend_id {
@@ -965,15 +1437,22 @@ impl RuntimeRegistry {
             });
         }
         let token = self
-            .next_lnb_assignment_lease_token
+            .lnb_registry
+            .next_assignment_lease_token
             .checked_add(1)
             .filter(|token| *token != 0)
             .ok_or(RegistryCommitError::RuntimeIdExhausted {
                 kind: RuntimeRegistryKind::Lnb,
             })?;
-        self.next_lnb_assignment_lease_token = token;
+        self.lnb_registry.next_assignment_lease_token = token;
+        self.lnb_registry
+            .retain_rail_reference(lnb_id)
+            .map_err(|_| RegistryCommitError::RuntimeIdExhausted {
+                kind: RuntimeRegistryKind::Lnb,
+            })?;
         self.frontend_lnb_bindings.insert(frontend_id, lnb_id);
-        self.frontend_lnb_assignment_leases
+        self.lnb_registry
+            .assignment_leases
             .insert(frontend_id, LnbAssignmentLease { lnb_id, token });
         Ok(())
     }
@@ -983,17 +1462,49 @@ impl RuntimeRegistry {
         &mut self,
         frontend_id: FrontendRuntimeId,
     ) -> Option<LnbRuntimeId> {
-        self.frontend_lnb_assignment_leases.remove(&frontend_id);
+        if let Some(lease) = self.lnb_registry.assignment_leases.remove(&frontend_id) {
+            let _ = self.lnb_registry.release_rail_reference(lease.lnb_id);
+        }
         self.frontend_lnb_bindings.remove(&frontend_id)
     }
 
     pub fn register_lnb(&mut self, entry: LnbRegistryEntry) -> Result<(), RegistryCommitError> {
-        if self.lnbs.contains_key(&entry.id) || self.lnb_runtimes.contains_key(&entry.id) {
+        if self.lnb_registry.entries.contains_key(&entry.id)
+            || self.lnb_registry.runtimes.contains_key(&entry.id)
+        {
             return Err(RegistryCommitError::DuplicateLnbId { id: entry.id });
         }
-        self.lnb_runtimes
+        let physical_key = LnbRegistry::physical_key_for_entry(&entry);
+        if let Some(existing_id) = self
+            .lnb_registry
+            .physical_keys
+            .iter()
+            .find_map(|(id, key)| (key == &physical_key).then_some(*id))
+        {
+            let compatible = self
+                .lnb_registry
+                .entries
+                .get(&existing_id)
+                .is_some_and(|existing| existing.profile == entry.profile);
+            if !compatible {
+                return Err(RegistryCommitError::DuplicateLnbId { id: entry.id });
+            }
+        }
+        self.lnb_registry
+            .physical_io
+            .entry(physical_key.clone())
+            .or_insert_with(LnbPhysicalIoAuthority::new);
+        self.lnb_registry
+            .rail_reference_counts
+            .entry(physical_key.clone())
+            .or_insert(0);
+        self.lnb_registry
+            .physical_keys
+            .insert(entry.id, physical_key);
+        self.lnb_registry
+            .runtimes
             .insert(entry.id, LnbRuntime::new(entry.id.0));
-        self.lnbs.insert(entry.id, entry);
+        self.lnb_registry.entries.insert(entry.id, entry);
         Ok(())
     }
 

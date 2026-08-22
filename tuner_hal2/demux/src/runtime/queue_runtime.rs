@@ -87,7 +87,7 @@ pub struct QueueRuntime {
     capacity_bytes: usize,
     configure_event_flag: bool,
     wake_pending: Arc<AtomicBool>,
-    dvr_epoch: Option<Arc<QueueEpochProtocolInner>>,
+    dvr_epoch: Option<Arc<QueueEpochProtocol>>,
 }
 
 #[derive(Clone, Debug)]
@@ -136,7 +136,10 @@ struct QueueEpochProtocolState {
 }
 
 #[derive(Debug)]
-struct QueueEpochProtocolInner {
+/// Canonical DVR queue-epoch state owner. Tokens and drain transactions are
+/// one-shot authorities issued by this owner and never carry an independent
+/// epoch namespace.
+pub(crate) struct QueueEpochProtocol {
     state: Mutex<QueueEpochProtocolState>,
     drained: Condvar,
     queue_identity: Option<u64>,
@@ -144,7 +147,7 @@ struct QueueEpochProtocolInner {
 
 #[derive(Debug)]
 pub(crate) struct QueueEpochToken {
-    protocol: Arc<QueueEpochProtocolInner>,
+    protocol: Arc<QueueEpochProtocol>,
     queue_identity: Option<u64>,
     epoch: u64,
     direction: QueueTransactionDirection,
@@ -225,7 +228,7 @@ impl Drop for QueueEpochToken {
 
 #[derive(Debug)]
 struct QueueEpochDrainTxn {
-    protocol: Arc<QueueEpochProtocolInner>,
+    protocol: Arc<QueueEpochProtocol>,
     epoch: u64,
     next_epoch: u64,
     active: bool,
@@ -387,7 +390,7 @@ impl QueueRuntime {
             configure_event_flag,
             wake_pending: Arc::new(AtomicBool::new(false)),
             dvr_epoch: use_dvr_epoch_protocol.then(|| {
-                Arc::new(QueueEpochProtocolInner {
+                Arc::new(QueueEpochProtocol {
                     state: Mutex::new(QueueEpochProtocolState {
                         state: QueueEpochState::Open,
                         epoch: 0,
@@ -402,6 +405,10 @@ impl QueueRuntime {
 
     pub(crate) fn capacity_matches_buffer_size(&self, buffer_size: i32) -> bool {
         usize::try_from(buffer_size).ok() == Some(self.capacity_bytes)
+    }
+
+    pub(crate) const fn capacity_bytes(&self) -> usize {
+        self.capacity_bytes
     }
 
     pub(crate) fn clear_contents(&self) -> Result<(), QueueRuntimeError> {

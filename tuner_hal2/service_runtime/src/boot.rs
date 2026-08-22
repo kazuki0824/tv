@@ -19,7 +19,7 @@ use maleicacid_tuner_hal2_demux::OpenFilterRequest;
 use maleicacid_tuner_hal2_demux::{
     AvDataId, AvMediaEventDescriptor, AvSharedBacking, DemuxRuntimeError, DemuxRuntimeErrorKind,
     DemuxRuntimeRollbackToken, DemuxRuntimeState, DvrKind, DvrRuntimeState,
-    GenerationBoundaryReport, PipelineBoundaryReason, PipelineDiagnostic, PipelineReport,
+    StreamBoundaryReport, PipelineBoundaryReason, PipelineDiagnostic, PipelineReport,
     PipelineResetReport, TsInputOrigin,
     TsPacketValidationError, ValidatedTsPacket,
 };
@@ -79,7 +79,7 @@ use crate::object_close_txn::{
     ObjectCleanupDiagnosticRecord, ObjectCleanupDiagnosticSnapshot, SharedObjectCleanupDiagnostics,
 };
 use crate::object_lifecycle::aidl_object_live;
-use crate::object_method_txn::ObjectMethodExecutionToken;
+use crate::object_method_use_case::ObjectMethodExecutionToken;
 use crate::object_table::{
     RuntimeObjectEntry, RuntimeObjectLifecycle, RuntimeObjectTable, RuntimeObjectTableError,
     RuntimeOwnerRelation,
@@ -87,7 +87,7 @@ use crate::object_table::{
 use crate::registry::{
     DemuxRuntimeId, DescramblerRuntimeId, DvrRuntimeId, FilterRuntimeId, FrontendRegistryEntry,
     FrontendRuntimeId, LnbRegistryEntry, LnbRegistryProfile, LnbRuntimeId, RegistryCommitError,
-    RuntimeRegistry,
+    RuntimeRegistry, SatellitePowerTopology,
 };
 use crate::ServiceState;
 use maleicacid_tuner_hal2_resource_ledger::{LedgerGeneration, LedgerId};
@@ -99,9 +99,12 @@ pub use query_api::DvrStatusPollSnapshot;
 pub(crate) use query_api::{
     map_queue_descriptor_query_error, QueueDescriptorExportPlan, RuntimeQuery,
 };
-mod demux_filter_dvr_txn;
+mod child_open_context;
+pub(crate) use child_open_context::ChildOpenContext;
 mod descrambler_txn;
 mod frontend_txn;
+mod frontend_tune_scan_context;
+pub(crate) use frontend_tune_scan_context::FrontendTuneScanContext;
 pub(crate) mod lnb_txn;
 mod packet_txn;
 
@@ -125,6 +128,7 @@ pub enum FrontendProbeOutcome {
         system: FrontendSystem,
         path: PathBuf,
         lnb_profile: Option<LnbRegistryProfile>,
+        satellite_power_topology: SatellitePowerTopology,
         capability: crate::registry::FrontendCapabilitySnapshot,
     },
     DeviceMissing {
@@ -214,7 +218,14 @@ fn live_reader_descriptor_for_frontend_entry(
 }
 
 fn default_lnb_entry_for_frontend(entry: &FrontendRegistryEntry) -> Option<LnbRegistryEntry> {
-    let profile = entry.lnb_profile?;
+    let profile = match entry.lnb_profile? {
+        // ExternalOrShared is product wiring evidence for keeping the
+        // satellite frontend powered.  It is not evidence for any
+        // caller-controllable ILnb operation, so it must not create a public
+        // LNB endpoint.
+        LnbRegistryProfile::NoPower => return None,
+        profile => profile,
+    };
     let id = LnbRuntimeId(entry.id.0.checked_add(10_000)?);
     let name = match entry.backend {
         FrontendBackendKind::Px4CharDevice => {
@@ -256,6 +267,7 @@ pub struct FilterEventDeliverySnapshot {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FilterEventDelivery {
+    Status(maleicacid_tuner_hal2_demux::FilterStatusEvent),
     Media(AvMediaEventDescriptor),
     Section { data_length: usize },
     Pes { stream_id: i32, data_length: usize },
@@ -966,6 +978,9 @@ impl TunerServiceRuntime {
             .filter_map(|event| {
                 use maleicacid_tuner_hal2_demux::PipelineGeneratedEvent;
                 let (filter_id, event) = match event {
+                    PipelineGeneratedEvent::FilterStatus { filter_id, status } => {
+                        (*filter_id, FilterEventDelivery::Status(*status))
+                    }
                     PipelineGeneratedEvent::AvMedia {
                         filter_id,
                         descriptor,
@@ -1491,7 +1506,10 @@ impl TunerServiceRuntime {
         filter_id: i32,
         primary_error: HalError,
     ) -> Result<(), HalError> {
-        match self.rollback_filter_child_open_after_aidl_failure(object_id, generation, filter_id) {
+        match self
+            .child_open_txn()
+            .rollback_filter_child_open_after_aidl_failure(object_id, generation, filter_id)
+        {
             Ok(()) => Err(primary_error),
             Err(cleanup_error) => Err(compose_primary_cleanup_failure(
                 "filter child callback retain failure rollback failed",
@@ -1508,7 +1526,10 @@ impl TunerServiceRuntime {
         dvr_id: i32,
         primary_error: HalError,
     ) -> Result<(), HalError> {
-        match self.rollback_dvr_child_open_after_aidl_failure(object_id, generation, dvr_id) {
+        match self
+            .child_open_txn()
+            .rollback_dvr_child_open_after_aidl_failure(object_id, generation, dvr_id)
+        {
             Ok(()) => Err(primary_error),
             Err(cleanup_error) => Err(compose_primary_cleanup_failure(
                 "DVR child callback retain failure rollback failed",
@@ -1554,7 +1575,7 @@ impl TunerServiceRuntime {
         owner_generation: AidlObjectGeneration,
         filter_id: i32,
     ) -> OwnerCallbackCleanupUseCaseOutcome<()> {
-        let primary_result = self.rollback_filter_child_open_after_aidl_failure(
+        let primary_result = self.child_open_txn().rollback_filter_child_open_after_aidl_failure(
             owner_id,
             owner_generation,
             filter_id,
@@ -1575,8 +1596,13 @@ impl TunerServiceRuntime {
         owner_generation: AidlObjectGeneration,
         dvr_id: i32,
     ) -> OwnerCallbackCleanupUseCaseOutcome<()> {
-        let primary_result =
-            self.rollback_dvr_child_open_after_aidl_failure(owner_id, owner_generation, dvr_id);
+        let primary_result = self
+            .child_open_txn()
+            .rollback_dvr_child_open_after_aidl_failure(
+                owner_id,
+                owner_generation,
+                dvr_id,
+            );
         let command = OwnerCallbackCleanupArtifactCommand::new(
             AidlObjectKind::Dvr,
             owner_id,
@@ -2534,6 +2560,7 @@ impl TunerServiceRuntime {
                     system,
                     path,
                     lnb_profile,
+                    satellite_power_topology,
                     capability,
                 } => {
                     let path_group_mismatch = physical_group_by_path
@@ -2546,7 +2573,17 @@ impl TunerServiceRuntime {
                         && px4_path_by_group
                             .get(&capability.exclusive_group_id)
                             .is_some_and(|known_path| known_path != &path);
+                    let satellite_power_is_consistent = match system {
+                        FrontendSystem::IsdbS => satellite_power_topology
+                            != SatellitePowerTopology::UnknownOrDisabled,
+                        FrontendSystem::IsdbT => {
+                            satellite_power_topology
+                                == SatellitePowerTopology::UnknownOrDisabled
+                        }
+                        FrontendSystem::IsdbS3 | FrontendSystem::DvbS => false,
+                    };
                     if !frontend_capability_is_consistent(backend, system, capability)
+                        || !satellite_power_is_consistent
                         || path_group_mismatch
                         || px4_group_collision
                     {
@@ -2564,6 +2601,7 @@ impl TunerServiceRuntime {
                         system,
                         device_path: path.clone(),
                         lnb_profile,
+                        satellite_power_topology,
                         capability,
                     };
                     match self.registry.register_frontend(entry.clone()) {

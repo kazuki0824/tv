@@ -7,12 +7,12 @@ pub(crate) enum QueueCleanupTarget {
     Dvr { dvr_id: i32 },
 }
 
-pub(crate) struct QueueCleanupTxn<'a> {
+pub(crate) struct QueueCleanupUseCase<'a> {
     runtime: &'a mut TunerServiceRuntime,
     target: QueueCleanupTarget,
 }
 
-impl<'a> QueueCleanupTxn<'a> {
+impl<'a> QueueCleanupUseCase<'a> {
     pub(crate) fn filter(runtime: &'a mut TunerServiceRuntime, filter_id: i32) -> Self {
         Self {
             runtime,

@@ -58,11 +58,12 @@ pub fn aidl_object_closeable(
         ));
     }
     match entry.lifecycle {
-        RuntimeObjectLifecycle::Live | RuntimeObjectLifecycle::CleanupPending { .. } => {
+        RuntimeObjectLifecycle::Live
+        | RuntimeObjectLifecycle::Closing { .. }
+        | RuntimeObjectLifecycle::CleanupPending { .. } => {
             Ok(AidlObjectCloseability::BeginClose)
         }
         RuntimeObjectLifecycle::Closed
-        | RuntimeObjectLifecycle::Closing { .. }
         | RuntimeObjectLifecycle::Quarantined => Err(HalError::invalid_state(
             HalInvalidStateKind::InvalidLifecycle,
             "AIDL object is not closeable",
@@ -293,7 +294,7 @@ mod closeable_lifecycle_tests {
     }
 
     #[test]
-    fn aidl_object_closeable_rejects_closing_and_quarantined() {
+    fn aidl_object_closeable_accepts_closing_but_rejects_quarantined() {
         let mut closing = runtime_with_filter();
         closing
             .object_table_mut()
@@ -303,13 +304,16 @@ mod closeable_lifecycle_tests {
                 CleanupStep::UnregisterRuntime,
             )
             .expect("begin close succeeds");
-        assert!(aidl_object_closeable(
-            &closing,
-            AidlObjectId(501),
-            AidlObjectGeneration(1),
-            AidlObjectKind::Filter,
-        )
-        .is_err());
+        assert_eq!(
+            aidl_object_closeable(
+                &closing,
+                AidlObjectId(501),
+                AidlObjectGeneration(1),
+                AidlObjectKind::Filter,
+            )
+            .expect("closing object remains closeable when cleanup authority was dropped"),
+            AidlObjectCloseability::BeginClose
+        );
 
         let mut quarantined = runtime_with_filter();
         quarantined

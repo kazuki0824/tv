@@ -25,13 +25,13 @@ const TUNER_INVALID_TIMESTAMP: i64 = -1;
 pub type SharedObjectMethodRuntime = Arc<Mutex<TunerServiceRuntime>>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ObjectMethodTxnTarget {
+struct ObjectMethodUseCaseTarget {
     object_id: AidlObjectId,
     generation: AidlObjectGeneration,
     object_kind: AidlObjectKind,
 }
 
-impl ObjectMethodTxnTarget {
+impl ObjectMethodUseCaseTarget {
     const fn new(
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
@@ -239,7 +239,7 @@ enum ObjectQueryExecution {
 
 fn prepare_object_query_request(
     query: &crate::boot::RuntimeQuery<'_>,
-    target: ObjectMethodTxnTarget,
+    target: ObjectMethodUseCaseTarget,
     request: ObjectQueryRequest,
 ) -> Result<ObjectQueryExecution, HalError> {
     match request {
@@ -462,12 +462,12 @@ fn finish_queue_descriptor_export(
 }
 
 #[derive(Debug, Eq, PartialEq)]
-struct ObjectMethodTxnPlan {
+struct ObjectMethodUseCasePlan {
     command_plan: CommandPlan,
     executable_request: Option<RuntimeExecutableRequest>,
 }
 
-impl ObjectMethodTxnPlan {
+impl ObjectMethodUseCasePlan {
     fn new(
         command_plan: CommandPlan,
         executable_request: Option<RuntimeExecutableRequest>,
@@ -488,16 +488,16 @@ impl ObjectMethodTxnPlan {
 
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct ObjectMethodDispatchProof {
-    target: ObjectMethodTxnTarget,
+    target: ObjectMethodUseCaseTarget,
 }
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct ObjectMethodExecutionToken {
-    target: ObjectMethodTxnTarget,
+    target: ObjectMethodUseCaseTarget,
 }
 
 impl ObjectMethodExecutionToken {
-    fn new(target: ObjectMethodTxnTarget) -> Self {
+    fn new(target: ObjectMethodUseCaseTarget) -> Self {
         Self { target }
     }
 
@@ -508,7 +508,7 @@ impl ObjectMethodExecutionToken {
         generation: AidlObjectGeneration,
         object_kind: AidlObjectKind,
     ) -> Result<(), HalError> {
-        if self.target == ObjectMethodTxnTarget::new(object_id, generation, object_kind) {
+        if self.target == ObjectMethodUseCaseTarget::new(object_id, generation, object_kind) {
             aidl_object_live(_runtime, object_id, generation, object_kind)
         } else {
             Err(HalError::invalid_state(
@@ -520,11 +520,11 @@ impl ObjectMethodExecutionToken {
 }
 
 impl ObjectMethodDispatchProof {
-    const fn new(target: ObjectMethodTxnTarget) -> Self {
+    const fn new(target: ObjectMethodUseCaseTarget) -> Self {
         Self { target }
     }
 
-    fn consume_for_target(self, target: ObjectMethodTxnTarget) -> Result<(), HalError> {
+    fn consume_for_target(self, target: ObjectMethodUseCaseTarget) -> Result<(), HalError> {
         if self.target == target {
             Ok(())
         } else {
@@ -537,7 +537,7 @@ impl ObjectMethodDispatchProof {
 }
 
 #[derive(Debug)]
-pub enum ObjectMethodTxnBuildError<E> {
+pub enum ObjectMethodUseCaseBuildError<E> {
     Runtime(HalError),
     Builder(E),
 }
@@ -545,13 +545,13 @@ pub enum ObjectMethodTxnBuildError<E> {
 fn build_plan(
     command_plan: CommandPlan,
     executable_request: Option<RuntimeExecutableRequest>,
-) -> ObjectMethodTxnPlan {
-    ObjectMethodTxnPlan::new(command_plan, executable_request)
+) -> ObjectMethodUseCasePlan {
+    ObjectMethodUseCasePlan::new(command_plan, executable_request)
 }
 
 fn validate_plan_target(
-    plan: &ObjectMethodTxnPlan,
-    target: ObjectMethodTxnTarget,
+    plan: &ObjectMethodUseCasePlan,
+    target: ObjectMethodUseCaseTarget,
 ) -> Result<(), HalError> {
     if plan.command_plan().object() != target.object_kind() {
         return Err(HalError::invalid_state(
@@ -562,7 +562,7 @@ fn validate_plan_target(
     Ok(())
 }
 
-fn plan_aidl_method_call(method: AidlMethodCall) -> Result<ObjectMethodTxnPlan, HalError> {
+fn plan_aidl_method_call(method: AidlMethodCall) -> Result<ObjectMethodUseCasePlan, HalError> {
     let method_plan = AidlMethodAdapter::plan(method)?;
     Ok(build_plan(
         method_plan.command_plan,
@@ -572,14 +572,14 @@ fn plan_aidl_method_call(method: AidlMethodCall) -> Result<ObjectMethodTxnPlan, 
 
 fn build_aidl_method_plan_after_live_inner<T, E, F>(
     runtime: &SharedObjectMethodRuntime,
-    target: ObjectMethodTxnTarget,
+    target: ObjectMethodUseCaseTarget,
     build: F,
-) -> Result<(ObjectMethodTxnPlan, T), ObjectMethodTxnBuildError<E>>
+) -> Result<(ObjectMethodUseCasePlan, T), ObjectMethodUseCaseBuildError<E>>
 where
     F: FnOnce() -> Result<(AidlMethodCall, T), E>,
 {
     let mut runtime = runtime.lock().map_err(|_| {
-        ObjectMethodTxnBuildError::Runtime(HalError::internal(
+        ObjectMethodUseCaseBuildError::Runtime(HalError::internal(
             HalInternalKind::InvariantViolation,
             "service runtime lock poisoned",
         ))
@@ -590,61 +590,107 @@ where
         target.generation(),
         target.object_kind(),
     )
-    .map_err(ObjectMethodTxnBuildError::Runtime)?;
-    let (method, request) = build().map_err(ObjectMethodTxnBuildError::Builder)?;
-    let plan = plan_aidl_method_call(method).map_err(ObjectMethodTxnBuildError::Runtime)?;
-    validate_plan_target(&plan, target).map_err(ObjectMethodTxnBuildError::Runtime)?;
+    .map_err(ObjectMethodUseCaseBuildError::Runtime)?;
+    let (method, request) = build().map_err(ObjectMethodUseCaseBuildError::Builder)?;
+    let plan = plan_aidl_method_call(method).map_err(ObjectMethodUseCaseBuildError::Runtime)?;
+    validate_plan_target(&plan, target).map_err(ObjectMethodUseCaseBuildError::Runtime)?;
     plan_object_method_dispatch(&mut runtime, plan.command_plan(), plan.executable_request())
-        .map_err(ObjectMethodTxnBuildError::Runtime)?;
+        .map_err(ObjectMethodUseCaseBuildError::Runtime)?;
     Ok((plan, request))
 }
 
-pub fn execute_object_query_call_after_live(
-    runtime: &SharedObjectMethodRuntime,
-    object_id: AidlObjectId,
-    generation: AidlObjectGeneration,
-    object_kind: AidlObjectKind,
-    request: ObjectQueryRequest,
-) -> Result<ObjectQueryResponse, HalError> {
-    let target = ObjectMethodTxnTarget::new(object_id, generation, object_kind);
-    let execution = {
-        let mut runtime = runtime.lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "service runtime lock poisoned",
+/// Canonical call-local owner for object-method validation, planning, dispatch,
+/// and one-shot execution authority issuance.
+///
+/// The type is intentionally stateless: all persistent state remains in the
+/// object table and the corresponding domain owners.
+pub struct ObjectMethodUseCase;
+
+impl ObjectMethodUseCase {
+    pub fn execute_query_after_live(
+        runtime: &SharedObjectMethodRuntime,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        object_kind: AidlObjectKind,
+        request: ObjectQueryRequest,
+    ) -> Result<ObjectQueryResponse, HalError> {
+        let target = ObjectMethodUseCaseTarget::new(object_id, generation, object_kind);
+        let execution = {
+            let mut runtime = runtime.lock().map_err(|_| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "service runtime lock poisoned",
+                )
+            })?;
+            aidl_object_live(
+                &runtime,
+                target.object_id(),
+                target.generation(),
+                target.object_kind(),
+            )?;
+            let method = request.method();
+            let plan = plan_aidl_method_call(method)?;
+            validate_plan_target(&plan, target)?;
+            plan_object_method_dispatch(&mut runtime, plan.command_plan(), plan.executable_request())?;
+            let query = runtime.query();
+            prepare_object_query_request(&query, target, request)?
+        };
+        finish_object_query_execution(runtime, execution)
+    }
+
+    pub fn execute_query_after_live_with_aidl_input_conversion<E, Build>(
+        runtime: &SharedObjectMethodRuntime,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        object_kind: AidlObjectKind,
+        method: AidlMethodCall,
+        build: Build,
+    ) -> Result<ObjectQueryResponse, ObjectMethodUseCaseBuildError<E>>
+    where
+        Build: FnOnce() -> Result<ObjectQueryRequest, E>,
+    {
+        let target = ObjectMethodUseCaseTarget::new(object_id, generation, object_kind);
+        let execution = {
+            let mut runtime = runtime.lock().map_err(|_| {
+                ObjectMethodUseCaseBuildError::Runtime(HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "service runtime lock poisoned",
+                ))
+            })?;
+            aidl_object_live(
+                &runtime,
+                target.object_id(),
+                target.generation(),
+                target.object_kind(),
             )
-        })?;
-        aidl_object_live(
-            &runtime,
-            target.object_id(),
-            target.generation(),
-            target.object_kind(),
-        )?;
-        let method = request.method();
-        let plan = plan_aidl_method_call(method)?;
-        validate_plan_target(&plan, target)?;
-        plan_object_method_dispatch(&mut runtime, plan.command_plan(), plan.executable_request())?;
-        let query = runtime.query();
-        prepare_object_query_request(&query, target, request)?
-    };
-    finish_object_query_execution(runtime, execution)
-}
+            .map_err(ObjectMethodUseCaseBuildError::Runtime)?;
+            let plan = plan_aidl_method_call(method).map_err(ObjectMethodUseCaseBuildError::Runtime)?;
+            validate_plan_target(&plan, target).map_err(ObjectMethodUseCaseBuildError::Runtime)?;
+            plan_object_method_dispatch(&mut runtime, plan.command_plan(), plan.executable_request())
+                .map_err(ObjectMethodUseCaseBuildError::Runtime)?;
+            let request = build().map_err(ObjectMethodUseCaseBuildError::Builder)?;
+            let query = runtime.query();
+            prepare_object_query_request(&query, target, request)
+                .map_err(ObjectMethodUseCaseBuildError::Runtime)?
+        };
+        finish_object_query_execution(runtime, execution).map_err(ObjectMethodUseCaseBuildError::Runtime)
+    }
 
-pub fn execute_object_query_call_after_live_with_aidl_input_conversion<E, Build>(
-    runtime: &SharedObjectMethodRuntime,
-    object_id: AidlObjectId,
-    generation: AidlObjectGeneration,
-    object_kind: AidlObjectKind,
-    method: AidlMethodCall,
-    build: Build,
-) -> Result<ObjectQueryResponse, ObjectMethodTxnBuildError<E>>
-where
-    Build: FnOnce() -> Result<ObjectQueryRequest, E>,
-{
-    let target = ObjectMethodTxnTarget::new(object_id, generation, object_kind);
-    let execution = {
+    pub fn execute_after_live<T, E, B, Build, Execute>(
+        runtime: &SharedObjectMethodRuntime,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        object_kind: AidlObjectKind,
+        build: Build,
+        execute: Execute,
+    ) -> Result<T, ObjectMethodUseCaseBuildError<E>>
+    where
+        Build: FnOnce() -> Result<(AidlMethodCall, B), E>,
+        Execute: FnOnce(&mut TunerServiceRuntime, ObjectMethodExecutionToken, B) -> Result<T, HalError>,
+    {
+        let target = ObjectMethodUseCaseTarget::new(object_id, generation, object_kind);
         let mut runtime = runtime.lock().map_err(|_| {
-            ObjectMethodTxnBuildError::Runtime(HalError::internal(
+            ObjectMethodUseCaseBuildError::Runtime(HalError::internal(
                 HalInternalKind::InvariantViolation,
                 "service runtime lock poisoned",
             ))
@@ -655,126 +701,89 @@ where
             target.generation(),
             target.object_kind(),
         )
-        .map_err(ObjectMethodTxnBuildError::Runtime)?;
-        let plan = plan_aidl_method_call(method).map_err(ObjectMethodTxnBuildError::Runtime)?;
-        validate_plan_target(&plan, target).map_err(ObjectMethodTxnBuildError::Runtime)?;
+        .map_err(ObjectMethodUseCaseBuildError::Runtime)?;
+        let (method, request) = build().map_err(ObjectMethodUseCaseBuildError::Builder)?;
+        let plan = plan_aidl_method_call(method).map_err(ObjectMethodUseCaseBuildError::Runtime)?;
+        validate_plan_target(&plan, target).map_err(ObjectMethodUseCaseBuildError::Runtime)?;
         plan_object_method_dispatch(&mut runtime, plan.command_plan(), plan.executable_request())
-            .map_err(ObjectMethodTxnBuildError::Runtime)?;
-        let request = build().map_err(ObjectMethodTxnBuildError::Builder)?;
-        let query = runtime.query();
-        prepare_object_query_request(&query, target, request)
-            .map_err(ObjectMethodTxnBuildError::Runtime)?
-    };
-    finish_object_query_execution(runtime, execution).map_err(ObjectMethodTxnBuildError::Runtime)
-}
-
-pub fn execute_object_method_call_after_live<T, E, B, Build, Execute>(
-    runtime: &SharedObjectMethodRuntime,
-    object_id: AidlObjectId,
-    generation: AidlObjectGeneration,
-    object_kind: AidlObjectKind,
-    build: Build,
-    execute: Execute,
-) -> Result<T, ObjectMethodTxnBuildError<E>>
-where
-    Build: FnOnce() -> Result<(AidlMethodCall, B), E>,
-    Execute: FnOnce(&mut TunerServiceRuntime, ObjectMethodExecutionToken, B) -> Result<T, HalError>,
-{
-    let target = ObjectMethodTxnTarget::new(object_id, generation, object_kind);
-    let mut runtime = runtime.lock().map_err(|_| {
-        ObjectMethodTxnBuildError::Runtime(HalError::internal(
-            HalInternalKind::InvariantViolation,
-            "service runtime lock poisoned",
-        ))
-    })?;
-    aidl_object_live(
-        &runtime,
-        target.object_id(),
-        target.generation(),
-        target.object_kind(),
-    )
-    .map_err(ObjectMethodTxnBuildError::Runtime)?;
-    let (method, request) = build().map_err(ObjectMethodTxnBuildError::Builder)?;
-    let plan = plan_aidl_method_call(method).map_err(ObjectMethodTxnBuildError::Runtime)?;
-    validate_plan_target(&plan, target).map_err(ObjectMethodTxnBuildError::Runtime)?;
-    plan_object_method_dispatch(&mut runtime, plan.command_plan(), plan.executable_request())
-        .map_err(ObjectMethodTxnBuildError::Runtime)?;
-    ObjectMethodDispatchProof::new(target)
-        .consume_for_target(target)
-        .map_err(ObjectMethodTxnBuildError::Runtime)?;
-    execute(
-        &mut runtime,
-        ObjectMethodExecutionToken::new(target),
-        request,
-    )
-    .map_err(ObjectMethodTxnBuildError::Runtime)
-}
-
-pub fn execute_shared_object_method_call_after_live<T, E, B, Build, Execute>(
-    runtime: &SharedObjectMethodRuntime,
-    object_id: AidlObjectId,
-    generation: AidlObjectGeneration,
-    object_kind: AidlObjectKind,
-    build: Build,
-    execute: Execute,
-) -> Result<T, ObjectMethodTxnBuildError<E>>
-where
-    Build: FnOnce() -> Result<(AidlMethodCall, B), E>,
-    Execute:
-        FnOnce(SharedObjectMethodRuntime, ObjectMethodExecutionToken, B) -> Result<T, HalError>,
-{
-    let target = ObjectMethodTxnTarget::new(object_id, generation, object_kind);
-    let request = {
-        let mut runtime_guard = runtime.lock().map_err(|_| {
-            ObjectMethodTxnBuildError::Runtime(HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "service runtime lock poisoned",
-            ))
-        })?;
-        aidl_object_live(
-            &runtime_guard,
-            target.object_id(),
-            target.generation(),
-            target.object_kind(),
-        )
-        .map_err(ObjectMethodTxnBuildError::Runtime)?;
-        let (method, request) = build().map_err(ObjectMethodTxnBuildError::Builder)?;
-        let plan = plan_aidl_method_call(method).map_err(ObjectMethodTxnBuildError::Runtime)?;
-        validate_plan_target(&plan, target).map_err(ObjectMethodTxnBuildError::Runtime)?;
-        plan_object_method_dispatch(
-            &mut runtime_guard,
-            plan.command_plan(),
-            plan.executable_request(),
-        )
-        .map_err(ObjectMethodTxnBuildError::Runtime)?;
+            .map_err(ObjectMethodUseCaseBuildError::Runtime)?;
         ObjectMethodDispatchProof::new(target)
             .consume_for_target(target)
-            .map_err(ObjectMethodTxnBuildError::Runtime)?;
-        request
-    };
-    execute(
-        Arc::clone(runtime),
-        ObjectMethodExecutionToken::new(target),
-        request,
-    )
-    .map_err(ObjectMethodTxnBuildError::Runtime)
-}
+            .map_err(ObjectMethodUseCaseBuildError::Runtime)?;
+        execute(
+            &mut runtime,
+            ObjectMethodExecutionToken::new(target),
+            request,
+        )
+        .map_err(ObjectMethodUseCaseBuildError::Runtime)
+    }
 
-pub fn preflight_object_method_after_live_plan_only<E, F>(
-    runtime: &SharedObjectMethodRuntime,
-    object_id: AidlObjectId,
-    generation: AidlObjectGeneration,
-    object_kind: AidlObjectKind,
-    build: F,
-) -> Result<AidlApi, ObjectMethodTxnBuildError<E>>
-where
-    F: FnOnce() -> Result<AidlMethodCall, E>,
-{
-    let target = ObjectMethodTxnTarget::new(object_id, generation, object_kind);
-    let (plan, ()) = build_aidl_method_plan_after_live_inner(runtime, target, || {
-        build().map(|method| (method, ()))
-    })?;
-    Ok(plan.command_plan().api())
+    pub fn execute_shared_after_live<T, E, B, Build, Execute>(
+        runtime: &SharedObjectMethodRuntime,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        object_kind: AidlObjectKind,
+        build: Build,
+        execute: Execute,
+    ) -> Result<T, ObjectMethodUseCaseBuildError<E>>
+    where
+        Build: FnOnce() -> Result<(AidlMethodCall, B), E>,
+        Execute:
+            FnOnce(SharedObjectMethodRuntime, ObjectMethodExecutionToken, B) -> Result<T, HalError>,
+    {
+        let target = ObjectMethodUseCaseTarget::new(object_id, generation, object_kind);
+        let request = {
+            let mut runtime_guard = runtime.lock().map_err(|_| {
+                ObjectMethodUseCaseBuildError::Runtime(HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "service runtime lock poisoned",
+                ))
+            })?;
+            aidl_object_live(
+                &runtime_guard,
+                target.object_id(),
+                target.generation(),
+                target.object_kind(),
+            )
+            .map_err(ObjectMethodUseCaseBuildError::Runtime)?;
+            let (method, request) = build().map_err(ObjectMethodUseCaseBuildError::Builder)?;
+            let plan = plan_aidl_method_call(method).map_err(ObjectMethodUseCaseBuildError::Runtime)?;
+            validate_plan_target(&plan, target).map_err(ObjectMethodUseCaseBuildError::Runtime)?;
+            plan_object_method_dispatch(
+                &mut runtime_guard,
+                plan.command_plan(),
+                plan.executable_request(),
+            )
+            .map_err(ObjectMethodUseCaseBuildError::Runtime)?;
+            ObjectMethodDispatchProof::new(target)
+                .consume_for_target(target)
+                .map_err(ObjectMethodUseCaseBuildError::Runtime)?;
+            request
+        };
+        execute(
+            Arc::clone(runtime),
+            ObjectMethodExecutionToken::new(target),
+            request,
+        )
+        .map_err(ObjectMethodUseCaseBuildError::Runtime)
+    }
+
+    pub fn preflight_after_live<E, F>(
+        runtime: &SharedObjectMethodRuntime,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        object_kind: AidlObjectKind,
+        build: F,
+    ) -> Result<AidlApi, ObjectMethodUseCaseBuildError<E>>
+    where
+        F: FnOnce() -> Result<AidlMethodCall, E>,
+    {
+        let target = ObjectMethodUseCaseTarget::new(object_id, generation, object_kind);
+        let (plan, ()) = build_aidl_method_plan_after_live_inner(runtime, target, || {
+            build().map(|method| (method, ()))
+        })?;
+        Ok(plan.command_plan().api())
+    }
 }
 
 #[cfg(test)]
@@ -841,13 +850,13 @@ mod tests {
         let demux_entry = {
             let mut guard = runtime.lock().unwrap();
             guard
-                .open_demux_root_object(AidlMethodCall::PublicApi {
+                .root_open_txn().open_demux_root_object(AidlMethodCall::PublicApi {
                     object: AidlObjectKind::Tuner,
                     api: AidlApi::TunerOpenDemux,
                 })
                 .expect("demux root open succeeds")
         };
-        let pcr_open = execute_object_method_call_after_live(
+        let pcr_open = ObjectMethodUseCase::execute_after_live(
             &runtime,
             demux_entry.object_id(),
             demux_entry.generation(),
@@ -866,7 +875,7 @@ mod tests {
                 ))
             },
             |runtime, dispatch, request| {
-                runtime.open_filter_child_runtime_for_demux_object(
+                runtime.child_open_txn().open_filter_child_runtime_for_demux_object(
                     demux_entry.object_id(),
                     demux_entry.generation(),
                     &request,
@@ -892,7 +901,7 @@ mod tests {
                 .expect("PCR filter start succeeds");
         }
 
-        let response = execute_object_query_call_after_live(
+        let response = ObjectMethodUseCase::execute_query_after_live(
             &runtime,
             demux_entry.object_id(),
             demux_entry.generation(),

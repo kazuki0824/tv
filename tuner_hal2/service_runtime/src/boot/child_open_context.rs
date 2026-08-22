@@ -13,7 +13,7 @@ use crate::diagnostics::{
     DemuxTransactionDiagnosticId, DemuxTransactionDiagnosticRecord,
 };
 use crate::error_mapping::{object_table_error_to_hal, registry_commit_error_to_hal};
-use crate::object_method_txn::ObjectMethodExecutionToken;
+use crate::object_method_use_case::ObjectMethodExecutionToken;
 use crate::open_rollback::finish_open_rollback;
 use maleicacid_tuner_hal2_common::compose_primary_cleanup_failure;
 use maleicacid_tuner_hal2_demux::{
@@ -1657,17 +1657,15 @@ impl TunerServiceRuntime {
     }
 }
 
-pub(crate) struct DemuxFilterDvrTxn<'a> {
+/// Private, call-local context used only by the canonical `ChildOpenTxn`.
+pub(crate) struct ChildOpenContext<'a> {
     runtime: &'a mut TunerServiceRuntime,
 }
 
-impl TunerServiceRuntime {
-    pub(crate) fn demux_filter_dvr_txn(&mut self) -> DemuxFilterDvrTxn<'_> {
-        DemuxFilterDvrTxn { runtime: self }
+impl<'a> ChildOpenContext<'a> {
+    pub(crate) fn new(runtime: &'a mut TunerServiceRuntime) -> Self {
+        Self { runtime }
     }
-}
-
-impl<'a> DemuxFilterDvrTxn<'a> {
     fn unregister_filter_runtime_for_open_rollback(
         &mut self,
         filter_id: i32,

@@ -75,7 +75,7 @@ pub use parser::record_index::{
 };
 pub use parser::sections::normalize_length_field_bits;
 pub use runtime::{
-    DemuxGenerationBoundaryRequest, DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind,
+    DemuxStreamBoundaryRequest, DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind,
     DemuxRuntimeQuarantineRequest, DemuxRuntimeRollbackCommitRequest,
     DemuxRuntimeRollbackRestoreRequest, DemuxRuntimeRollbackToken,
     DemuxRuntimeRollbackTokenPrepareRequest, DemuxRuntimeSnapshot, DemuxRuntimeState,
@@ -90,13 +90,14 @@ pub use runtime::{
     FilterRuntimeOperationRequest, FilterRuntimeOperationSkipReason, FilterRuntimeOperationStep,
     FilterRuntimeOperationStepOutcome, FilterRuntimeRegistrationRequest, FilterRuntimeSnapshot,
     FilterRuntimeState, FilterSourceConnectRequest, FilterSourceDisconnectRequest,
-    GenerationBoundaryReport, PlaybackConsumeReport, PlaybackFlushDiagnostic,
+    StreamBoundaryReport, PlaybackConsumeReport, PlaybackFlushDiagnostic,
     PlaybackQueueReadTxn, PlaybackStats, PreparedDvrFilterRelation,
     PreparedStreamBoundary,
     QueueDescriptorExportPlan, QueueDescriptorExportTarget, QueueDescriptorQueryError,
     QueueDescriptorSnapshot, QueueGrantorDescriptorSnapshot, QueueRuntimeError,
     QueueRuntimeErrorKind, RecordDvrFilterRelationState, SourceBoundaryOutcome,
     SourceBoundaryReport, SourceBoundaryStep,
+    DvrWatermarkClassifier, FilterStatusEvent, FilterWatermarkClassifier,
     ValidatedPacketIngressRequest,
 };
 
@@ -3782,7 +3783,7 @@ mod tests {
     #[test]
     fn generation_boundary_overflow_quarantines_demux() {
         let mut demux = DemuxRuntime::new(1, u64::MAX);
-        let result = demux.apply_generation_boundary(PipelineBoundaryReason::TuneStart);
+        let result = demux.apply_stream_boundary(PipelineBoundaryReason::TuneStart);
         assert!(result.is_err());
         assert_eq!(demux.state(), DemuxRuntimeState::Quarantined);
     }
@@ -3910,7 +3911,7 @@ mod tests {
     fn generation_boundary_resets_pipeline_and_bumps_generation() {
         let mut demux = DemuxRuntime::new(1, 7);
         let report = demux
-            .apply_generation_boundary(PipelineBoundaryReason::TuneStart)
+            .apply_stream_boundary(PipelineBoundaryReason::TuneStart)
             .unwrap();
         assert_eq!(report.next_generation, DemuxStreamGeneration(8));
         assert_eq!(demux.generation(), 8);

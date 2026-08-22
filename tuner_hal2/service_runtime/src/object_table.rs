@@ -3,6 +3,11 @@ use std::collections::BTreeMap;
 use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
 use maleicacid_tuner_hal2_resource_ledger::{CleanupStep, LedgerGeneration, LedgerId};
 
+use crate::object_close_txn::{
+    CloseCleanupAttemptKey, CloseCleanupAttemptOutcome, CloseCleanupAuthorityKey, ObjectCloseTxn,
+    ObjectCloseTxnStateError,
+};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeOwnerRelation {
     Root,
@@ -171,9 +176,19 @@ pub enum RuntimeObjectTableError {
     ObjectIdOverflow,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct RuntimeObjectTable {
     entries: BTreeMap<AidlObjectId, RuntimeObjectEntry>,
+    object_close_txn: ObjectCloseTxn,
+}
+
+impl Default for RuntimeObjectTable {
+    fn default() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            object_close_txn: ObjectCloseTxn::new(),
+        }
+    }
 }
 
 impl RuntimeObjectTable {
@@ -198,6 +213,7 @@ impl RuntimeObjectTable {
             });
         }
         self.ensure_owner_live_for(entry.object_id, entry.owner)?;
+        self.object_close_txn.clear_obligation(entry.object_id);
         entry.lifecycle = RuntimeObjectLifecycle::Live;
         self.entries.insert(entry.object_id, entry);
         Ok(())
@@ -209,6 +225,7 @@ impl RuntimeObjectTable {
         generation: AidlObjectGeneration,
     ) -> Result<RuntimeObjectEntry, RuntimeObjectTableError> {
         self.entry_checked(object_id, generation)?;
+        self.object_close_txn.clear_obligation(object_id);
         self.entries
             .remove(&object_id)
             .ok_or(RuntimeObjectTableError::MissingObject { object_id })
@@ -249,6 +266,117 @@ impl RuntimeObjectTable {
         Ok(changed)
     }
 
+    pub(crate) fn begin_close_cascade_with_cleanup_authority(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        step: CleanupStep,
+    ) -> Result<(Vec<RuntimeObjectEntry>, CloseCleanupAuthorityKey), RuntimeObjectTableError> {
+        let root_lifecycle = self.entry_checked_any(object_id, generation)?.lifecycle;
+        match root_lifecycle {
+            RuntimeObjectLifecycle::Live
+            | RuntimeObjectLifecycle::Closing { .. }
+            | RuntimeObjectLifecycle::CleanupPending { .. } => {}
+            lifecycle => {
+                return Err(RuntimeObjectTableError::InvalidLifecycle {
+                    object_id,
+                    lifecycle,
+                });
+            }
+        }
+        let mut targets = self.descendant_object_keys(object_id, generation);
+        targets.push((object_id, generation));
+        let mut changed = Vec::with_capacity(targets.len());
+        for (target_id, target_generation) in targets {
+            let mut entry = self
+                .entry_checked_any(target_id, target_generation)?
+                .clone();
+            let is_root = target_id == object_id && target_generation == generation;
+            match entry.lifecycle {
+                RuntimeObjectLifecycle::Live
+                | RuntimeObjectLifecycle::Closing { .. }
+                | RuntimeObjectLifecycle::CleanupPending { .. } => {
+                    entry.lifecycle = RuntimeObjectLifecycle::Closing { step };
+                    changed.push(entry);
+                }
+                RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined
+                    if !is_root => {}
+                lifecycle => {
+                    return Err(RuntimeObjectTableError::InvalidLifecycle {
+                        object_id: target_id,
+                        lifecycle,
+                    });
+                }
+            }
+        }
+        let authority = self
+            .object_close_txn
+            .issue_cleanup_authority(object_id, generation)
+            .map_err(|error| Self::close_txn_error(object_id, root_lifecycle, error))?;
+        for entry in &changed {
+            self.entries.insert(entry.object_id, entry.clone());
+        }
+        Ok((changed, authority))
+    }
+
+    pub(crate) fn begin_close_cleanup_attempt(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        authority: CloseCleanupAuthorityKey,
+    ) -> Result<CloseCleanupAttemptKey, RuntimeObjectTableError> {
+        let lifecycle = self.entry_checked_any(object_id, generation)?.lifecycle;
+        if !matches!(
+            lifecycle,
+            RuntimeObjectLifecycle::Closing { .. }
+                | RuntimeObjectLifecycle::CleanupPending { .. }
+        ) {
+            return Err(RuntimeObjectTableError::InvalidLifecycle {
+                object_id,
+                lifecycle,
+            });
+        }
+        self.object_close_txn
+            .begin_cleanup_attempt(object_id, generation, authority)
+            .map_err(|error| Self::close_txn_error(object_id, lifecycle, error))
+    }
+
+    pub(crate) fn finish_close_cleanup_attempt(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        attempt: CloseCleanupAttemptKey,
+        outcome: CloseCleanupAttemptOutcome,
+    ) -> Result<Vec<RuntimeObjectEntry>, RuntimeObjectTableError> {
+        let lifecycle = self.entry_checked_any(object_id, generation)?.lifecycle;
+        if !self
+            .object_close_txn
+            .attempt_is_current(object_id, generation, attempt)
+        {
+            return Err(RuntimeObjectTableError::InvalidLifecycle {
+                object_id,
+                lifecycle,
+            });
+        }
+
+        match outcome {
+            CloseCleanupAttemptOutcome::Complete => {
+                let changed = self.commit_close_cascade(object_id, generation)?;
+                self.object_close_txn
+                    .finish_cleanup_attempt(object_id, generation, attempt, true)
+                    .map_err(|error| Self::close_txn_error(object_id, lifecycle, error))?;
+                Ok(changed)
+            }
+            CloseCleanupAttemptOutcome::Pending { step } => {
+                let changed = self.mark_cleanup_failed_cascade(object_id, generation, step)?;
+                self.object_close_txn
+                    .finish_cleanup_attempt(object_id, generation, attempt, false)
+                    .map_err(|error| Self::close_txn_error(object_id, lifecycle, error))?;
+                Ok(changed)
+            }
+        }
+    }
+
     pub fn mark_cleanup_failed_cascade(
         &mut self,
         object_id: AidlObjectId,
@@ -260,13 +388,15 @@ impl RuntimeObjectTable {
         targets.push((object_id, generation));
         let mut changed = Vec::with_capacity(targets.len());
         for (target_id, target_generation) in targets {
-            let entry = self.entry_mut_checked_any(target_id, target_generation)?;
+            let mut entry = self
+                .entry_checked_any(target_id, target_generation)?
+                .clone();
             let is_root = target_id == object_id && target_generation == generation;
             match entry.lifecycle {
                 RuntimeObjectLifecycle::Closing { .. }
                 | RuntimeObjectLifecycle::CleanupPending { .. } => {
                     entry.lifecycle = RuntimeObjectLifecycle::CleanupPending { step };
-                    changed.push(entry.clone());
+                    changed.push(entry);
                 }
                 RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined
                     if !is_root => {}
@@ -277,6 +407,9 @@ impl RuntimeObjectTable {
                     });
                 }
             }
+        }
+        for entry in &changed {
+            self.entries.insert(entry.object_id, entry.clone());
         }
         Ok(changed)
     }
@@ -319,13 +452,15 @@ impl RuntimeObjectTable {
         targets.push((object_id, generation));
         let mut changed = Vec::with_capacity(targets.len());
         for (target_id, target_generation) in targets {
-            let entry = self.entry_mut_checked_any(target_id, target_generation)?;
+            let mut entry = self
+                .entry_checked_any(target_id, target_generation)?
+                .clone();
             let is_root = target_id == object_id && target_generation == generation;
             match entry.lifecycle {
                 RuntimeObjectLifecycle::Closing { .. }
                 | RuntimeObjectLifecycle::CleanupPending { .. } => {
                     entry.lifecycle = RuntimeObjectLifecycle::Closed;
-                    changed.push(entry.clone());
+                    changed.push(entry);
                 }
                 RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined
                     if !is_root => {}
@@ -336,6 +471,9 @@ impl RuntimeObjectTable {
                     });
                 }
             }
+        }
+        for entry in &changed {
+            self.entries.insert(entry.object_id, entry.clone());
         }
         Ok(changed)
     }
@@ -424,6 +562,25 @@ impl RuntimeObjectTable {
 
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.object_close_txn.clear();
+    }
+
+    fn close_txn_error(
+        object_id: AidlObjectId,
+        lifecycle: RuntimeObjectLifecycle,
+        error: ObjectCloseTxnStateError,
+    ) -> RuntimeObjectTableError {
+        match error {
+            ObjectCloseTxnStateError::InvalidAuthority => {
+                RuntimeObjectTableError::InvalidLifecycle {
+                    object_id,
+                    lifecycle,
+                }
+            }
+            ObjectCloseTxnStateError::IdentifierExhausted => {
+                RuntimeObjectTableError::GenerationOverflow
+            }
+        }
     }
 
     fn ensure_owner_live_for(

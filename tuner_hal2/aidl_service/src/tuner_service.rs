@@ -65,12 +65,14 @@ use maleicacid_tuner_hal2_common::{
 };
 use maleicacid_tuner_hal2_demux::QueueDescriptorSnapshot;
 use maleicacid_tuner_hal2_service_runtime::{
-    lnb_profile_supports_voltage_status, set_frontend_lnb_object_use_case,
-    start_frontend_scan_use_case, start_frontend_tune_use_case, stop_frontend_scan_use_case,
-    stop_frontend_tune_use_case, ObjectFrontendStatusReadinessValue, ObjectFrontendStatusType,
-    ObjectFrontendStatusValue, ObjectQueryRequest, ObjectQueryResponse, RootCommandRequest,
-    RootDemuxCapabilitiesSnapshot, RootDemuxInfoSnapshot, RootFrontendInfoSnapshot,
-    RootQueryRequest, RootQueryResponse, RuntimeObjectEntry, TunerServiceRuntime,
+    apply_lnb_satellite_position_object_use_case, apply_lnb_tone_object_use_case,
+    apply_lnb_voltage_object_use_case, close_lnb_after_root_open_rollback_use_case,
+    lnb_profile_supports_voltage_status, send_lnb_diseqc_object_use_case,
+    set_frontend_lnb_object_use_case, FrontendTuneScanTxn,
+    ObjectFrontendStatusReadinessValue, ObjectFrontendStatusType, ObjectFrontendStatusValue,
+    ObjectQueryRequest, ObjectQueryResponse, RootCommandRequest, RootDemuxCapabilitiesSnapshot,
+    RootDemuxInfoSnapshot, RootFrontendInfoSnapshot, RootQueryRequest, RootQueryResponse,
+    RuntimeObjectEntry, TunerServiceRuntime,
 };
 
 use crate::child_object_open::{
@@ -226,16 +228,22 @@ impl TunerAidlService {
         entry: RuntimeObjectEntry,
         unregister_runtime: bool,
     ) -> Result<(), HalError> {
-        self.context
-            .runtime()
-            .lock()
-            .map_err(|_| {
+        let runtime = self.context.runtime();
+        let lnb_cleanup_id = {
+            let mut guard = runtime.lock().map_err(|_| {
                 HalError::internal(
                     HalInternalKind::InvariantViolation,
                     "service runtime lock poisoned",
                 )
-            })?
-            .rollback_root_object_entry_after_aidl_failure(entry, unregister_runtime)
+            })?;
+            guard
+                .root_open_txn()
+                .rollback_root_object_entry_after_aidl_failure(entry, unregister_runtime)?
+        };
+        match lnb_cleanup_id {
+            Some(lnb_id) => close_lnb_after_root_open_rollback_use_case(runtime, lnb_id),
+            None => Ok(()),
+        }
     }
 
     fn frontend_object_from_entry(
@@ -455,7 +463,7 @@ impl ITuner for TunerAidlService {
     fn openFrontendById(&self, frontend_id: i32) -> BinderResult<Strong<dyn IFrontend>> {
         let entry = self
             .lock_runtime()?
-            .open_frontend_root_object_for_id(
+            .root_open_txn().open_frontend_root_object_for_id(
                 frontend_id,
                 public_api_call(AidlObjectKind::Tuner, AidlApi::TunerOpenFrontendById, None),
             )
@@ -467,7 +475,7 @@ impl ITuner for TunerAidlService {
         demux_id.clear();
         let entry = self
             .lock_runtime()?
-            .open_demux_root_object(public_api_call(
+            .root_open_txn().open_demux_root_object(public_api_call(
                 AidlObjectKind::Tuner,
                 AidlApi::TunerOpenDemux,
                 None,
@@ -496,7 +504,7 @@ impl ITuner for TunerAidlService {
     fn openDescrambler(&self) -> BinderResult<Strong<dyn IDescrambler>> {
         let entry = self
             .lock_runtime()?
-            .open_descrambler_root_object(public_api_call(
+            .root_open_txn().open_descrambler_root_object(public_api_call(
                 AidlObjectKind::Tuner,
                 AidlApi::TunerOpenDescrambler,
                 None,
@@ -534,7 +542,7 @@ impl ITuner for TunerAidlService {
     fn openLnbById(&self, lnb_id: i32) -> BinderResult<Strong<dyn ILnb>> {
         let entry = self
             .lock_runtime()?
-            .open_lnb_root_object_for_id(
+            .root_open_txn().open_lnb_root_object_for_id(
                 lnb_id,
                 public_api_call(AidlObjectKind::Tuner, AidlApi::TunerOpenLnbById, None),
             )
@@ -550,7 +558,7 @@ impl ITuner for TunerAidlService {
         lnb_id.clear();
         let (id, entry) = self
             .lock_runtime()?
-            .open_lnb_root_object_by_name(
+            .root_open_txn().open_lnb_root_object_by_name(
                 lnb_name,
                 public_api_call(AidlObjectKind::Tuner, AidlApi::TunerOpenLnbByName, None),
             )
@@ -625,7 +633,7 @@ impl ITuner for TunerAidlService {
     fn openDemuxById(&self, demux_id: i32) -> BinderResult<Strong<dyn IDemux>> {
         let entry = self
             .lock_runtime()?
-            .open_demux_root_object_by_id(
+            .root_open_txn().open_demux_root_object_by_id(
                 demux_id,
                 public_api_call(AidlObjectKind::Tuner, AidlApi::TunerOpenDemuxById, None),
             )
@@ -655,7 +663,7 @@ mod tests {
     use super::*;
     use maleicacid_tuner_hal2_binder_adapter::{DvrOpenKind, OpenDvrRequest};
     use maleicacid_tuner_hal2_service_runtime::{
-        execute_object_method_call_after_live, RuntimeOwnerRelation,
+        ObjectMethodUseCase, RuntimeOwnerRelation,
     };
 
     #[test]
@@ -720,14 +728,14 @@ mod tests {
         let demux_entry = {
             let mut guard = runtime.lock().unwrap();
             guard
-                .open_demux_root_object(public_api_call(
+                .root_open_txn().open_demux_root_object(public_api_call(
                     AidlObjectKind::Tuner,
                     AidlApi::TunerOpenDemux,
                     None,
                 ))
                 .unwrap()
         };
-        let dvr_open = execute_object_method_call_after_live(
+        let dvr_open = ObjectMethodUseCase::execute_after_live(
             &runtime,
             demux_entry.object_id(),
             demux_entry.generation(),
@@ -740,7 +748,7 @@ mod tests {
                 Ok((AidlMethodCall::DemuxOpenDvr(request.clone()), request))
             },
             |runtime, dispatch, request| {
-                runtime.open_dvr_child_runtime_for_demux_object(
+                runtime.child_open_txn().open_dvr_child_runtime_for_demux_object(
                     demux_entry.object_id(),
                     demux_entry.generation(),
                     request,

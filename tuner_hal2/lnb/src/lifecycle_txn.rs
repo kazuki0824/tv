@@ -1,4 +1,6 @@
-use crate::runtime::{LnbBackendOps, LnbElectricalState, LnbRuntime};
+use crate::runtime::{
+    LnbBackendApplyOutcome, LnbBackendOps, LnbElectricalState, LnbRuntime, LnbRuntimeState,
+};
 use crate::{LnbFailureKind, LnbFailureRecord, LnbFailureStep};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -41,6 +43,68 @@ pub struct LnbLifecycleOutcome {
     pub result: Result<(), LnbFailureRecord>,
 }
 
+#[must_use = "a prepared LNB close must consume exactly one backend result"]
+#[derive(Debug, Eq, PartialEq)]
+pub struct PreparedLnbClose {
+    lnb_id: i32,
+    expected_generation: u64,
+    already_closed: bool,
+}
+
+impl PreparedLnbClose {
+    pub const fn lnb_id(&self) -> i32 {
+        self.lnb_id
+    }
+
+    pub const fn requires_backend_io(&self) -> bool {
+        !self.already_closed
+    }
+}
+
+pub fn prepare_lnb_close(runtime: &mut LnbRuntime) -> Result<PreparedLnbClose, LnbFailureRecord> {
+    runtime.begin_close()?;
+    Ok(PreparedLnbClose {
+        lnb_id: runtime.lnb_id(),
+        expected_generation: runtime.generation(),
+        already_closed: runtime.state() == LnbRuntimeState::Closed,
+    })
+}
+
+pub fn finish_lnb_close(
+    runtime: &mut LnbRuntime,
+    prepared: PreparedLnbClose,
+    backend_result: LnbBackendApplyOutcome,
+) -> Result<(), LnbFailureRecord> {
+    if runtime.lnb_id() != prepared.lnb_id
+        || runtime.generation() != prepared.expected_generation
+        || (prepared.already_closed && runtime.state() != LnbRuntimeState::Closed)
+        || (!prepared.already_closed && runtime.state() != LnbRuntimeState::Closing)
+    {
+        return Err(runtime.record_failure(
+            LnbFailureKind::InvalidState,
+            LnbFailureStep::ValidateState,
+        ));
+    }
+    if prepared.already_closed {
+        return Ok(());
+    }
+    match backend_result {
+        LnbBackendApplyOutcome::Applied => {}
+        LnbBackendApplyOutcome::Rejected(kind) => {
+            return Err(runtime.record_failure(kind, LnbFailureStep::ApplyBackend));
+        }
+        LnbBackendApplyOutcome::Indeterminate(kind) => {
+            return Err(runtime.quarantine_indeterminate_backend(
+                kind,
+                LnbFailureStep::ApplyBackend,
+            ));
+        }
+    }
+    let safe = LnbElectricalState::safe();
+    runtime.commit_successful_close(safe);
+    Ok(())
+}
+
 #[derive(Debug, Default)]
 pub struct LnbLifecycleTxn {
     steps: Vec<LnbLifecycleStep>,
@@ -63,14 +127,17 @@ impl LnbLifecycleTxn {
         let outcome_reason = LnbLifecycleOutcomeReason::from(reason);
 
         self.record_step(LnbLifecycleStep::MarkClosing);
-        if let Err(record) = runtime.begin_close() {
-            return LnbLifecycleOutcome {
-                reason: outcome_reason,
-                steps: self.steps,
-                result: Err(record),
-            };
-        }
-        if runtime.state() == crate::runtime::LnbRuntimeState::Closed {
+        let prepared = match prepare_lnb_close(runtime) {
+            Ok(prepared) => prepared,
+            Err(record) => {
+                return LnbLifecycleOutcome {
+                    reason: outcome_reason,
+                    steps: self.steps,
+                    result: Err(record),
+                };
+            }
+        };
+        if !prepared.requires_backend_io() {
             return LnbLifecycleOutcome {
                 reason: outcome_reason,
                 steps: self.steps,
@@ -82,21 +149,17 @@ impl LnbLifecycleTxn {
         let safe = LnbElectricalState::safe();
 
         self.record_step(LnbLifecycleStep::ApplySafeState);
-        if let Err(_kind) = backend.apply_lnb_state(runtime.lnb_id(), safe) {
-            let record = runtime.record_failure(
-                LnbFailureKind::BackendApplyFailed,
-                LnbFailureStep::ApplyBackend,
-            );
+        let backend_result = backend.apply_lnb_state(runtime.lnb_id(), safe);
+        if backend_result != LnbBackendApplyOutcome::Applied {
             return LnbLifecycleOutcome {
                 reason: outcome_reason,
                 steps: self.steps,
-                result: Err(record),
+                result: finish_lnb_close(runtime, prepared, backend_result),
             };
         }
-        runtime.note_backend_applied(safe);
 
         self.record_step(LnbLifecycleStep::CommitRegistry);
-        if let Err(record) = runtime.commit_registry(safe, LnbFailureStep::CommitRegistry) {
+        if let Err(record) = finish_lnb_close(runtime, prepared, backend_result) {
             return LnbLifecycleOutcome {
                 reason: outcome_reason,
                 steps: self.steps,
@@ -105,10 +168,7 @@ impl LnbLifecycleTxn {
         }
 
         self.record_step(LnbLifecycleStep::ClearRuntimeCallbackState);
-        runtime.clear_callback();
-
         self.record_step(LnbLifecycleStep::CommitClosed);
-        runtime.commit_closed();
         LnbLifecycleOutcome {
             reason: outcome_reason,
             steps: self.steps,
@@ -156,16 +216,16 @@ mod tests {
             &mut self,
             _lnb_id: i32,
             state: LnbElectricalState,
-        ) -> Result<(), LnbFailureKind> {
+        ) -> LnbBackendApplyOutcome {
             self.applied.push(state);
-            Ok(())
+            LnbBackendApplyOutcome::Applied
         }
         fn send_diseqc_message(
             &mut self,
             _lnb_id: i32,
             _message: &crate::runtime::LnbDiseqcMessage,
-        ) -> Result<(), LnbFailureKind> {
-            Err(LnbFailureKind::DiseqcUnsupported)
+        ) -> LnbBackendApplyOutcome {
+            LnbBackendApplyOutcome::Rejected(LnbFailureKind::DiseqcUnsupported)
         }
     }
 

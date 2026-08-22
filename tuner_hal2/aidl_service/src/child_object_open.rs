@@ -11,7 +11,7 @@ use maleicacid_tuner_hal2_binder_adapter::{
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
 use maleicacid_tuner_hal2_demux::config::OpenFilterRequest;
 use maleicacid_tuner_hal2_service_runtime::{
-    execute_object_method_call_after_live, ObjectMethodTxnBuildError,
+    ObjectMethodUseCase, ObjectMethodUseCaseBuildError,
 };
 
 use crate::dvr_object::DvrAidlObject;
@@ -30,13 +30,13 @@ fn handle_from_runtime_entry(
     AidlObjectHandle::new(entry.object_kind(), entry.object_id(), entry.generation())
 }
 
-fn child_open_txn_error<E>(error: ObjectMethodTxnBuildError<E>) -> binder::Status
+fn child_open_txn_error<E>(error: ObjectMethodUseCaseBuildError<E>) -> binder::Status
 where
     E: Into<HalError>,
 {
     match error {
-        ObjectMethodTxnBuildError::Runtime(error) => status_from_hal_error(error),
-        ObjectMethodTxnBuildError::Builder(error) => status_from_hal_error(error.into()),
+        ObjectMethodUseCaseBuildError::Runtime(error) => status_from_hal_error(error),
+        ObjectMethodUseCaseBuildError::Builder(error) => status_from_hal_error(error.into()),
     }
 }
 
@@ -229,7 +229,7 @@ where
     Build: FnOnce() -> Result<OpenFilterRequest, maleicacid_tuner_hal2_common::HalError>,
 {
     let runtime = context.runtime();
-    let runtime_entry = execute_object_method_call_after_live(
+    let runtime_entry = ObjectMethodUseCase::execute_after_live(
         &runtime,
         owner_handle.object_id(),
         owner_handle.generation(),
@@ -244,7 +244,7 @@ where
             ))
         },
         |runtime, dispatch_proof, request| {
-            runtime.open_filter_child_runtime_for_demux_object(
+            runtime.child_open_txn().open_filter_child_runtime_for_demux_object(
                 owner_handle.object_id(),
                 owner_handle.generation(),
                 &request,
@@ -266,7 +266,7 @@ where
     Build: FnOnce() -> Result<OpenDvrRequest, maleicacid_tuner_hal2_common::HalError>,
 {
     let runtime = context.runtime();
-    let runtime_entry = execute_object_method_call_after_live(
+    let runtime_entry = ObjectMethodUseCase::execute_after_live(
         &runtime,
         owner_handle.object_id(),
         owner_handle.generation(),
@@ -276,7 +276,7 @@ where
             Ok((AidlMethodCall::DemuxOpenDvr(request.clone()), request))
         },
         |runtime, dispatch_proof, request| {
-            runtime.open_dvr_child_runtime_for_demux_object(
+            runtime.child_open_txn().open_dvr_child_runtime_for_demux_object(
                 owner_handle.object_id(),
                 owner_handle.generation(),
                 request,

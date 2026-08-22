@@ -1,6 +1,8 @@
 use std::cell::Cell;
 use std::collections::BTreeSet;
 
+use super::watermark_classifier::DvrWatermarkClassifier;
+
 #[cfg(test)]
 use maleicacid_tuner_hal2_common::{
     TsPacketBufferDrain, TsPacketCompletionBuffer, TS_PACKET_SIZE,
@@ -511,28 +513,13 @@ impl DvrRuntime {
                 .then_some(DvrStatusEvent::RecordDataReady);
         }
 
-        let semantic_status = match self.kind {
-            DvrKind::Record if readable_bytes > self.high_threshold_bytes => {
-                Some(DvrStatusEvent::RecordHighWater)
-            }
-            DvrKind::Record if readable_bytes < self.low_threshold_bytes => {
-                Some(DvrStatusEvent::RecordLowWater)
-            }
-            DvrKind::Record => None,
-            DvrKind::Playback if writable_bytes == 0 => {
-                Some(DvrStatusEvent::PlaybackSpaceFull)
-            }
-            DvrKind::Playback if readable_bytes > self.high_threshold_bytes => {
-                Some(DvrStatusEvent::PlaybackSpaceAlmostFull)
-            }
-            DvrKind::Playback if readable_bytes < self.low_threshold_bytes => {
-                Some(DvrStatusEvent::PlaybackSpaceAlmostEmpty)
-            }
-            DvrKind::Playback if readable_bytes == 0 => {
-                Some(DvrStatusEvent::PlaybackSpaceEmpty)
-            }
-            DvrKind::Playback => None,
-        };
+        let semantic_status = DvrWatermarkClassifier::classify(
+            self.kind,
+            readable_bytes,
+            writable_bytes,
+            self.low_threshold_bytes,
+            self.high_threshold_bytes,
+        );
         let Some(semantic_status) = semantic_status else {
             return None;
         };
