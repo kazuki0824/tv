@@ -38,7 +38,7 @@ partial snapshot は サービス単位の登録可能判定に使ってよい�
 
 ## Tuner SDK API 呼び出し
 
-`openDescrambler()`、`setKeyToken()`、`addPid()`、`removePid()` は reflection を使わず、対象 build の system/privileged API として直接呼ぶ。API が利用できない build は現行 product 対象外とする。
+`openDescrambler()`、`setKeyToken()`、`addPid()`、`removePid()` は reflection を使わず、対象 build の system/privileged API として直接呼ぶ。本製品buildはこれらのAPIを提供するplatformと一体で構成することを恒久的なintegration prerequisiteとし、欠くbuildを本製品構成として成立させない。runtimeでreflection、代替API、HAL binder直呼びへfallbackしてこの前提を回避しない。
 
 ## 再生経路
 
