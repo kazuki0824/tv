@@ -193,7 +193,7 @@ Wrapper を置いてよいのは、public API 境界、domain naming 隠蔽、AI
 ## 17. source filter / packet pipeline 実装規約
 
 - source filter relationの対応可否と公開結果は `../tuner_hal/DESIGN_JA.md` を正とし、実装は `SourceBoundaryTxn` のtyped entryを迂回しない。未対応組合せを成功no-opにしない。
-- raw TS source由来packetも通常demux inputと同じ `PacketTxn` / `PacketPipeline` の検証済みpacket経路へ接続し、TEI、continuity、discontinuity、duplicate、stream / parser generation処理を別実装にしない。
+- raw TS source由来packetも通常demux inputと同じ `PacketPipeline` の検証済みpacket経路へ接続し、TEI、continuity、discontinuity、duplicate、stream / parser generation処理を別実装にしない。
 - section / PES / AV / record payloadをraw TS source packetへ再解釈して別filterへ直接redispatchする経路を追加しない。公開source契約の変更が必要な場合は先に `../tuner_hal/DESIGN_JA.md` を変更する。
 
 ## 18. px4 single-open backend 実装規約
