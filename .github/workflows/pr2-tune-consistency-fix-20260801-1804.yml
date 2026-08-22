@@ -15,50 +15,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: agent/apply-tuner-hal2-design-proposals-v70
+          ref: fix/f02-si-policy-boundary
           fetch-depth: 0
-      - name: Unify public tune transaction contract
+          persist-credentials: true
+      - name: Apply F-02 design correction
         shell: bash
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path('tuner_hal/DESIGN_JA.md')
-          text = path.read_text(encoding='utf-8')
-          replacements = [
-              (
-                  '`IFrontend.tune()` は、validate / prepare が完了するまで旧tune状態を破壊しない。同一正規化設定の再 `tune()` であっても、前回 `tune()` が未完了の場合は無処理成功にしてはならず、AIDL契約に従って前回 `tune()` を停止し、新generationで再開始する。',
-                  '`IFrontend.tune()` は、validate / prepare が完了するまで旧tune状態を破壊しない。受理した公開 `tune()` は、正規化設定が同一で前回tuneが完了済みかつ安定中であっても無処理成功にせず、旧要求を停止・遮断して新しいtransaction / generationへ進む。backend固有の同一設定書込み省略は、公開transaction、generation fencing、demux stream boundary、callback契約を全て維持できる場合の内部最適化に限る。'
-              ),
-              (
-                  '| TN-003 | same-setting decision | 正規化設定が同一で、前回tuneが完了済みかつ安定中なら無処理成功とする | 未完了の同一tuneを無処理成功にせずTN-004へ進める | 完了済み同一tuneだけ維持 |',
-                  '| TN-003 | same-setting re-entry | 正規化設定の同異にかかわらず、受理した公開呼出しを新transaction / generationへ進める。backend固有の同一設定書込み省略は公開transactionを短絡しない | 同一設定を理由に成功確定せず、TN-004へ進める | TN-004まで維持 |'
-              ),
-              (
-                  '| AT-001 | `IFrontend.tune()` / 再選局 | 表19のvalidate・prepare・確定A・backend要求・確定B | 新規要求受理時は確定B。同一安定設定の無処理成功は表19の判定完了時。新要求受理失敗後の旧要求復元成功は復元generationの公開時 | 確定A前は旧選局維持。確定A後に新要求だけが拒否された場合は保存snapshotの旧要求を正確に1回再投入する。backend停止不明または世代fence不成立では復元しない | frontend、旧世代、失敗したdemux境界 | 表19の失敗分類に従う | 復元を含む2確定点を1つへ圧縮しない |',
-                  '| AT-001 | `IFrontend.tune()` / 再選局 | 表19のvalidate・prepare・確定A・backend要求・確定B | 設定の同異にかかわらず新規要求受理時は確定B。新要求受理失敗後の旧要求復元成功は復元generationの公開時 | 確定A前は旧選局維持。確定A後に新要求だけが拒否された場合は保存snapshotの旧要求を正確に1回再投入する。backend停止不明または世代fence不成立では復元しない | frontend、旧世代、失敗したdemux境界 | 表19の失敗分類に従う | 復元を含む2確定点を1つへ圧縮しない |'
-              ),
-              (
-                  '    C --> D{同じtuneが完了済みで安定中か}\n    D -->|はい| E[無処理で成功]\n    D -->|いいえ| F[旧tuneを停止し旧世代を終端]',
-                  '    C --> F[設定の同異にかかわらず旧tuneを停止し旧世代を終端]'
-              ),
-          ]
-          for old, new in replacements:
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f'expected one occurrence, got {count}: {old[:100]}')
-              text = text.replace(old, new)
-          for forbidden in ('同一安定設定の無処理成功', '同じtuneが完了済みで安定中か', '| TN-003 | same-setting decision |'):
-              if forbidden in text:
-                  raise SystemExit(f'forbidden text remains: {forbidden}')
-          path.write_text(text, encoding='utf-8')
-          PY
+          python3 .github/f02_apply.py
           git diff --check
-      - name: Commit and push
-        shell: bash
-        run: |
+          python3 -m json.tool arib_si_engine_rs/schema/program_provider_data_v1.schema.json >/dev/null
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add tuner_hal/DESIGN_JA.md
-          git commit -m 'docs: unify repeated tune transaction contract'
-          git push origin HEAD:agent/apply-tuner-hal2-design-proposals-v70
+          git add tis/DESIGN_JA.md arib_si_engine_rs/DESIGN_JA.md arib_si_engine_rs/schema/program_provider_data_v1.schema.json
+          git rm .github/f02_apply.py
+          git commit -m 'design: restore TIS and SI engine policy boundary'
+          git push origin HEAD:fix/f02-si-policy-boundary
