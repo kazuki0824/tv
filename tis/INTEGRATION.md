@@ -79,7 +79,7 @@ build確認では次を必須とする。
 
 実機確認では字幕PES入力からlibaribcaption decoder/renderer、RGBA8888出力、TIS字幕overlay表示までを接続確認対象とする。renderer viewport、PTS/NoPTS、scheduler、decoder/renderer lifecycleのruntime意味論は `DESIGN_JA.md` を正とし、本書で独立に再定義しない。
 
-`future_work/r51/libaribcaption_android_soong_ready_plan(1).md` は、上記static-link構成とruntime契約を実装へ反映した段階で旧shared-library前提の完了条件をstatic-link前提へ同期する。`m libaribcaption libmaleicacid_arib_caption_jni MaleicacidTvInput` と実機の字幕PES→decoder→renderer→RGBA8888→overlay経路が通るまではfuture_workから削除せず、それらの実装・実機検証が完了した時点でのみfuture_workから外す。
+libaribcaption rendererの設計正本は本節と`DESIGN_JA.md`に集約済みであり、旧shared-library前提の別future_work文書を維持しない。残る作業は本節のbuild gateと実機の字幕PES→decoder→renderer→RGBA8888→overlay確認で管理し、設計済み内容をfuture_workへ重複定義しない。
 
 ## 権限と priv-app
 
