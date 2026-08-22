@@ -472,7 +472,7 @@ SetupActivity は自分が開始した `SETUP_SCAN` purpose かつ同一 scan ge
 
 `BootReceiver.onReceive()` は保留状態を確認し、必要なら Android 標準の `JobScheduler` に固定識別子の `BootEpgSyncJobService` を登録するところまでで終了する。EPG の収集、Tuner の使用、TvProvider への反映処理は `BroadcastReceiver` の実行時間へ結びつけず、`android.permission.BIND_JOB_SERVICE` で保護した `BootEpgSyncJobService` の実行寿命下で行う。起動時 EPG 同期用の `JobInfo` は再起動をまたいで永続化せず、再起動をまたぐ正本は `DirectBootEpgPending` だけとする。`JobScheduler.getPendingJob()` で同じ固定識別子のジョブが登録済みなら再登録しない。
 
-`BootEpgSyncJobService.onStartJob()` は利用者のロック解除、`DirectBootEpgPending`、開始条件を再確認し、処理を開始する場合は `BootEpgSyncCoordinator` へ引き渡す。`BootEpgSyncCoordinator` は同一プロセス内で `inputId` ごとの起動時 EPG 同期を一度に1件だけ実行する。処理完了時は `jobFinished()` で終了を通知し、成功時は再試行を要求しない。未完了または失敗で `DirectBootEpgPending` が残る場合、または `JobScheduler` による中断で`onStopJob()` が呼ばれた場合は、進行中の走査と Tuner 資源を停止・解放したうえで再試行を要求する。起動時 EPG 同期を開始できなかった場合は `DirectBootEpgPending` を維持する。開始後の保留解除条件は本書「TIS / EPG 公開境界」を正とし、通常publish成功に加えて、開始前の必須TvProvider問い合わせが正常終了し自TIS所有の既存channelが0件だった`NO_WORK`正常終了を含む。
+`BootEpgSyncJobService.onStartJob()` は利用者のロック解除、`DirectBootEpgPending`、開始条件を再確認し、処理を開始する場合は `BootEpgSyncCoordinator` へ引き渡す。`BootEpgSyncCoordinator` は同一プロセス内で `inputId` ごとの起動時 EPG 同期を一度に1件だけ実行する。処理完了時は `jobFinished()` で終了を通知し、成功時は再試行を要求しない。未完了または失敗で `DirectBootEpgPending` が残る場合、または `JobScheduler` による中断で `onStopJob()` が呼ばれた場合は、進行中の走査と Tuner 資源を停止・解放したうえで再試行を要求する。起動時 EPG 同期を開始できなかった場合は `DirectBootEpgPending` を維持する。開始後の保留解除条件は本書「TIS / EPG 公開境界」を正とし、通常publish成功に加えて、開始前の必須TvProvider問い合わせが正常終了し自TIS所有の既存channelが0件だった`NO_WORK`正常終了を含む。
 
 利用者のロック解除までプロセスが生存している場合は、動的に登録した `ACTION_USER_UNLOCKED` の受信処理から同じ開始判定を前倒ししてよい。ただし、この補助経路や定期保守の実行機構だけに再開保証を依存させない。Android の背景実行制限などで起動完了通知が遅延し得ることを前提に、通知の到達時と開始条件の再成立時の双方で永続化した `DirectBootEpgPending` を再評価する。
 
