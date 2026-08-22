@@ -70,7 +70,7 @@ stock Android 14 / LineageOS 21 の `MediaSync` はvideo scheduling/dropをnativ
 
 availabilityをarmするたびに、`PlaybackPipeline`はimmutableな`AvailabilityArm`を作り、Framework-private setterの`long`へ64-bit opaque `registrationToken`を渡す。tokenの数値自体にTIF/TIS意味や単調増加意味を持たせず、**旧arm由来eventがまだ配送され得るtokenと同じ値を新armへ割り当てない**ことだけをallocatorの不変条件とする。allocatorはnonce＋counterまたはcollision-check付き候補生成のいずれでもよく、candidateがlive／retired tokenと衝突した場合は別candidateを選ぶ。native MediaSyncはcurrent armの`registrationToken`を保持するだけでavailability semanticsを解釈しない。arm中にvideo bufferがlate-drop分岐を通過し、current `mOutput`へのattachと`queueBuffer()`がともに成功した時点で、その**成功を判定したarmの`registrationToken`をevent payloadへ固定してから**armを解除する。late-drop、attach失敗、queue失敗、output abandonment、inputへ返したbufferではeventを生成せず、arm状態も消費しない。re-arm後に旧eventのJava配送が遅延しても、event payloadのtokenは生成時の旧registrationから書き換えない。旧armについてeventが今後配送されないことが確定するまでtokenをretireせず、session releaseではtoken namespace自体を破棄する。理論上の整数counter exhaustion／wrapはplayback failureでもgeneration境界でもなく、これを理由にMediaSyncやplayback pipelineを再生成するruntime recoveryを設けない。常時すべてのrender成功を通知せず、TISが必要な`AvailabilityArm`だけをarm/re-armする。
 
-TISは**各accepted `onTune(Uri)`ごと**に新しいvideo availability obligationを生成する。videoを持つtuneではcurrent waiting armを取消してfresh `AvailabilityArm`を割り当て、tuneがfull playback generation resetを伴う場合は新MediaSync instanceのinitial armとして、same-channel／same-locked-healthy等の非破壊tuneでcurrent pipeline/generationを維持する場合は既存MediaSyncへfresh armとしてre-armする。したがって同一generationを再利用する`onTune()`でも、当該tune受理後に生成されたcurrent final-output成功eventだけがそのtuneの`notifyVideoAvailable()` obligationを満たし、前のtuneで生成済みの遅延eventは満たせない。audio-only serviceは既存契約どおり映像availabilityを偽装せず`notifyVideoUnavailable(VIDEO_UNAVAILABLE_REASON_AUDIO_ONLY)`で閉じる。callback eventはMediaSync instance、playback generation、event payloadの`registrationToken`を同executor上で照合し、tokenがcurrent `waitingAvailabilityArm.registrationToken`と一致し、current `sessionSurface`が有効、視聴制限でblockされておらず、同generationの`MEDIASYNC_ERROR_SURFACE_FAIL`がない場合だけ`notifyVideoAvailable()`を呼ぶ。受理またはarm取消し後はcurrent waiting armを無効化する。一度availableになった後、`VIDEO_UNAVAILABLE_REASON_BUFFERING`等のrecoverable unavailableへ遷移し**同じMediaSync instance/generationを維持して復旧する場合**もfresh armでre-armし、re-arm前の旧armで既に生成済みだった遅延eventはtoken不一致で必ず破棄する。fresh arm後のfinal-output成功eventだけで再びavailableへ遷移する。generation teardownを伴うunavailableは新instanceのinitial armで閉じる。これによりper-`onTune()` obligationと`available -> unavailable -> available`を、generation-reuse pathとgeneration-recreate pathの双方で閉じる。
+TISは**各accepted `onTune(Uri)`ごと**に新しいvideo availability obligationを生成する。videoを持つtuneではcurrent waiting armを取消してfresh `AvailabilityArm`を割り当て、tuneがfull playback generation resetを伴う場合は新MediaSync instanceのinitial armとして、same-channel／same-locked-healthy等の非破壊tuneでcurrent pipeline/generationを維持する場合は既存MediaSyncへfresh armとしてre-armする。したがって同一generationを再利用する`onTune()`でも、当該tune受理後に生成されたcurrent final-output成功eventだけがそのtuneの`notifyVideoAvailable()` obligationを満たし、前のtuneで生成済みの遅延eventは満たせない。audio-only serviceは既存契約どおり映像availabilityを偽装せず`notifyVideoUnavailable(VIDEO_UNAVAILABLE_REASON_AUDIO_ONLY)`で閉じる。callback eventはMediaSync instance、playback generation、event payloadの`registrationToken`を同executor上で照合し、tokenがcurrent `waitingAvailabilityArm.registrationToken`と一致し、current `sessionSurface`が有効、視聴制限でblockされておらず、同generationの`MEDIASYNC_ERROR_SURFACE_FAIL`がない場合だけ`notifyVideoAvailable()`を呼ぶ。受理またはarm取消し後はcurrent waiting armを無効化する。一度availableになった後、`VIDEO_UNAVAILABLE_REASON_BUFFERING`等のrecoverable unavailableへ遷移し**同じMediaSync instance/generationを維持して復旧する場合**もfresh armでre-armし、re-arm前の旧armで既に生成済みだった遅延eventはtoken不一致で必ず破棄する。fresh arm後のfinal-output成功eventだけで再びavailableへ遷移する。generation teardownを伴うunavailableは新MediaSync instanceのinitial armで閉じる。これによりper-`onTune()` obligationと`available -> unavailable -> available`を、generation-reuse pathとgeneration-recreate pathの双方で閉じる。
 
 callbackは物理display/compositorへのpresent fence完了を意味せず、video scheduling/drop ownerであるMediaSyncがrender対象を選択しcurrent final outputへのqueueを成功させたことだけをcommitする。`MediaCodec.OnFrameRenderedListener`、`MediaSync.getTimestamp()`、playback clock進行はvideo availability commitへ使用しない。native内部mutexを保持したままJavaへreentrant callせず、成功時に固定したopaque `registrationToken`を保持したままJNI/Java handlerへ非同期配送する。release済み、旧generation、旧MediaSync instance、またはTISのcurrent waiting armとtokenが一致しない遅延eventはstate更新に使わない。
 
@@ -80,7 +80,7 @@ callbackは物理display/compositorへのpresent fence完了を意味せず、vi
 
 現行releaseで収集するEIT table範囲、短期補完の用途、長期・他service・予約/追従利用のrelease境界は、tv直下の`開発規則.md`のr51到達点を唯一の正本とする。本書はそのscopeを再定義せず、TIS runtimeにおけるfilter起動・停止、Programs書き込み契機、retry、現在番組解決、視聴セッション利用だけを定義する。Programs の `internal_provider_data` には JSON v1 の stable `programKey`、timing、CAS state、長形式イベント項目、component/audio メタデータ、series 完全構造、イベントグループ `relatedItems`、linkage、free_CA_mode、音声言語、レーティング、診断 JSON を TIS 内部データとして保存する。TvProvider の標準 column には title / short description / long description、broadcast genre、明示写像できる canonical genre、series id、episode display number、scrambled、audio language、コンテンツレーティング など、`ARIB_SI_EPG_TvProvider投影方針.md` で自然対応が固定された範囲だけ反映する。last episode number は通常の `TvContract.Programs` 標準列へ投影しない。
 
-TvProvider標準列への投影判断は tv直下の `ARIB_SI_EPG_TvProvider投影方針.md` を正とする。`internal_provider_data` の schema、canonical encode、保存上限、診断 schema は `arib_si_engine_rs/DESIGN_JA.md` と Rust serde 構造体を正とする。本書は TIS runtime における取得、書き込み契機、retry、現在番組解決、視聴セッションでの利用だけを定義する。
+TvProvider標準列への投影判断は tv 直下の `ARIB_SI_EPG_TvProvider投影方針.md` を正とする。`internal_provider_data` の schema、canonical encode、保存上限、診断 schema は `arib_si_engine_rs/DESIGN_JA.md` と Rust serde 構造体を正とする。本書は TIS runtime における取得、書き込み契機、retry、現在番組解決、視聴セッションでの利用だけを定義する。
 
 ### 複数table instance収集と停止
 
@@ -99,15 +99,47 @@ ARIB 字幕は TIS 側の字幕 path で `libaribcaption` を使用する。現�
 
 ARIB字幕表示は、repoで供給される `libaribcaption-android` の製品forkをSoong build graphに入れ、renderer有効の `libaribcaption` moduleを正式経路として使用する。build/link/partitionの統合条件は `INTEGRATION.md` を正とし、本書はTIS内部runtime、renderer viewport、PTS、native lifecycleだけを所有する。out-of-graph prebuilt、renderer無効build、`dlopen()`確認だけ、decoder API呼び出しだけ、Canvas文字描画だけを字幕対応宣言条件にしてはならない。
 
-`libmaleicacid_arib_caption_jni` は Rust JNI boundary + 安全なRustラッパーから libaribcaption C APIを直接利用し、TISは字幕PESをdecoderからrendererへ渡してRGBA8888 renderer出力を字幕overlayへ接続する。字幕PESを受け取ってもrenderer表示に到達できない状態を字幕対応成功として扱ってはならない。Kotlinへlibaribcaptionのraw pointerや借用寿命を漏らさず、caption/result/imageのcleanupはRust FFI境界で完結させる。
+`libmaleicacid_arib_caption_jni` は Rust JNI boundary + 安全なRustラッパーから libaribcaption C APIを直接利用し、TISは字幕PESをdecoderからrendererへ渡してRGBA8888 renderer出力を字幕overlayへ接続する。字幕PESを受け取ってもrenderer表示に到達できない状態を字幕対応成功として扱ってはならない。renderer結果はin-processでRust-owned bufferからKotlin/Bitmap所有へ直接受け渡しし、serialization round-tripを挟まない。Kotlinへlibaribcaptionのraw pointerや借用寿命を漏らさず、caption/result/imageのcleanupはRust FFI境界で完結させる。
 
-Rust JNIの表示用出力は文字列ではなくrenderer結果を表し、少なくとも `pts_millis`、有限またはindefiniteを区別できるduration、画像ごとの `dst_x`、`dst_y`、`width`、`height`、`stride`、Rust-owned `rgba8888` bufferを持つ。libaribcaption所有bitmapはRust-owned bufferへcopyしてからcleanupする。`CaptionOverlayView`はrenderer imageをBitmap化し、後述viewport originを一度だけ加算して`drawBitmap()`する。`caption.text` / `Canvas.drawText()`を字幕表示正式経路に残さない。strideを無視して `width * 4` の密な配列と仮定せず、Bitmap生成前にwidth/height/stride/buffer sizeの整合を検査する。
+Rust JNIの表示用出力は文字列ではなくrenderer結果を表し、次のmodelを保持する。
+
+```rust
+struct RenderedCaptionFrame {
+    pts_millis: i64,
+    duration_millis: Option<i64>,
+    images: Vec<RenderedCaptionImage>,
+}
+
+struct RenderedCaptionImage {
+    dst_x: i32,
+    dst_y: i32,
+    width: i32,
+    height: i32,
+    stride: i32,
+    rgba8888: Vec<u8>,
+}
+```
+
+libaribcaption所有bitmapはRust-owned `Vec<u8>`へcopyしてからcleanupし、JNIを越えた後はKotlin/Bitmap側が所有する。`CaptionOverlayView`はrenderer imageをBitmap化し、後述viewport originを一度だけ加算して`drawBitmap()`する。`caption.text` / `Canvas.drawText()`を字幕表示正式経路に残さない。strideを無視して `width * 4` の密な配列と仮定せず、Bitmap生成前にwidth/height/stride/buffer sizeの整合を検査する。
 
 ### renderer viewport / 座標契約
 
 libaribcaption rendererはrender前に `aribcc_renderer_set_frame_size()` を必ず成功させる。固定1920x1080、字幕plane size、端末display sizeを代替値として推測使用してはならない。
 
-TISはplayback generationごとに `CaptionViewport` を一つ所有する。これはcurrent session Surfaceに対応して実際に字幕を重ねるvideo content viewportをoverlay座標系で表し、少なくとも `overlayWidthPx > 0`、`overlayHeightPx > 0`、`contentLeftPx`、`contentTopPx`、`contentWidthPx > 0`、`contentHeightPx > 0`、`generationToken` を持つ。`contentLeftPx/contentTopPx/contentWidthPx/contentHeightPx` はletterbox / pillarboxを含むoverlay全体ではなくcurrent video content表示矩形を表す。videoを持たないaudio-only serviceでは映像座標のrenderer viewportを成立させず、その経路で字幕表示成功を表明しない。
+TISはplayback generationごとに `CaptionViewport` を一つ所有する。`CaptionViewport` はcurrent session Surfaceに対応して実際に字幕を重ねるvideo content viewportをoverlay座標系で表し、次を一組として持つ。
+
+```text
+CaptionViewport:
+  overlayWidthPx   > 0
+  overlayHeightPx  > 0
+  contentLeftPx
+  contentTopPx
+  contentWidthPx   > 0
+  contentHeightPx  > 0
+  generationToken
+```
+
+`contentLeftPx/contentTopPx/contentWidthPx/contentHeightPx` はletterbox / pillarboxを含むoverlay全体ではなくcurrent video content表示矩形を表す。videoを持たないaudio-only serviceでは映像座標のrenderer viewportを成立させず、その経路で字幕表示成功を表明しない。
 
 renderer frame sizeは `contentWidthPx x contentHeightPx` に設定する。libaribcaptionが返す `dst_x/dst_y/width/height` はrenderer frame左上を原点とする座標として扱い、overlayでは `contentLeftPx/contentTopPx` を一度だけ加算する。別の独自scale、ARIB planeからの再計算、Canvas text layoutを追加しない。
 
@@ -115,17 +147,33 @@ viewportが未確定、幅/高さが0、generation不一致の場合は `aribcc_
 
 ### 字幕PTS scheduling / NoPTS / clear ownership
 
-字幕のmedia clockはvideo/audioと同じcurrent MediaSyncのcanonical clockだけとする。TIS、Rust JNI、`CaptionOverlayView`はPCR/wallclockから別media clockを作らず、固定delayや周期的な`getTimestamp()` polling loopも持たない。字幕PESにrendererへ渡せるauthoritativeな33-bit 90 kHz PTSがある場合だけ、video/audioと同じcurrent playback generationのunwrap規則でcanonical `timeUs`へ変換し、その時刻をdecoder/renderer/schedulerの同一caption時刻として使用する。
+字幕のmedia clockはvideo/audioと同じcurrent MediaSyncのcanonical clockだけとする。TIS、Rust JNI、`CaptionOverlayView`はPCR/wallclockから別media clockを作らず、固定delayや周期的な`getTimestamp()` polling loopも持たない。字幕PESにrendererへ渡せるauthoritativeな33-bit 90 kHz PTSがある場合だけ、video/audioと同じcurrent playback generationのunwrap規則でcanonical `timeUs`へ変換し、その時刻をdecoder/renderer/schedulerの同一caption時刻として使用する。PCR、wallclock、受信時刻、固定delay、直前caption PTS、nominal frame rateから字幕PTSを生成しない。
 
 libaribcaptionの `ARIBCC_PTS_NOPTS` / `PTS_NOPTS` をrendererへappendしない。rendererが使用できるauthoritative PTSがないcaptionは、0へ丸めず、直前PTSをcarry-forwardせず、PCR / wallclock / MediaSync current position / 受信時刻 / nominal frame rateからcaption PTSを生成せず、renderer queueへappendせず、そのcaptionを表示成功として扱わず型付き診断へ記録する。NoPTS入力だけを理由に既に表示中の有効captionを即時clearせず、その既存caption自身のduration / clear / lifecycle契約に従う。現行製品profileが字幕表示対応を表明するには、字幕filter / producerが表示対象caption PESについてrendererに渡せるauthoritative PTSを供給できることをqualification条件に含め、満たせないbackend/profileはdecoderが文字列抽出できてもr51字幕表示成功対応として表明しない。
 
 字幕display/clearは、MediaSyncの`getTimestamp()`が返すmedia time / anchor time / playback rateを唯一の時間基準とするevent-driven one-shot subtitle schedulerが担当する。新caption、finite-duration clear、明示clearのうち次の1境界だけをarmし、予定時刻到達時にcurrent MediaSync timestampを再読して境界到達を確認する。earlyなら同じ境界へre-armし、dueならdisplay/clearして次境界だけをarmする。周期polling、独立free-running clock、PCR→wallclock clock、video frame release/drop判定を実装しない。
 
-libaribcaptionが有限durationを返すcaptionは `PTS + duration` を同じcanonical timeline上のclear境界とする。`DURATION_INDEFINITE`は有限値へ推測変換せず、次caption、ARIB/libaribcaptionの明示clear、字幕track無効化、generation終了までcurrent imageを保持する。次captionはそのPTS境界で旧imageを直接replaceする。既表示captionのdurationを後から別clockで補正しない。
+libaribcaptionが有限`wait_duration`を返すcaptionは `PTS + duration` を同じcanonical timeline上の明示clear境界とする。`DURATION_INDEFINITE`は有限値へ推測変換せず、次caption、ARIB/libaribcaptionの明示clear、字幕track無効化、generation終了までcurrent imageを保持する。次captionはそのPTS境界で旧imageを直接replaceする。既表示captionのdurationを後から別clockで補正しない。
+
+このschedulerはA/V clockやvideo schedulerを複製するものではなく、MediaSyncが所有するcanonical playback positionに字幕presentation eventを従属させるUI dispatch層である。
 
 ### decoder / renderer / scheduler lifecycle
 
-字幕native state、scheduler state、overlay stateは同じsubtitle generationに属し、少なくとも `playbackGenerationToken`、`selectedSubtitleTrackId`、`CaptionViewport`、libaribcaption context、decoder、renderer、pending one-shot event、current rendered frameを一組として扱う。状態変更はsession/subtitleのserial executor上に直列化し、旧generation callback/result/eventはgeneration token不一致で破棄する。
+字幕native state、scheduler state、overlay stateは同じsubtitle generationに属し、少なくとも次を一組として扱う。
+
+```text
+SubtitleGeneration:
+  playbackGenerationToken
+  selectedSubtitleTrackId
+  CaptionViewport
+  libaribcaption context
+  decoder
+  renderer
+  pending one-shot event
+  current rendered frame
+```
+
+状態変更はsession/subtitleのserial executor上に直列化し、旧generation callback/result/eventはgeneration token不一致で破棄する。
 
 字幕がenabledかつsubtitle trackが選択され、current playback generationと有効viewportが揃った場合だけnative renderer pathをactiveにする。新subtitle generation開始時はcontext/decoder/rendererを既知の初期状態から構築し、renderer initialize後にcurrent viewportで `aribcc_renderer_set_frame_size()` を成功させてからcaption inputを受け入れる。
 
@@ -424,7 +472,7 @@ SetupActivity は自分が開始した `SETUP_SCAN` purpose かつ同一 scan ge
 
 `BootReceiver.onReceive()` は保留状態を確認し、必要なら Android 標準の `JobScheduler` に固定識別子の `BootEpgSyncJobService` を登録するところまでで終了する。EPG の収集、Tuner の使用、TvProvider への反映処理は `BroadcastReceiver` の実行時間へ結びつけず、`android.permission.BIND_JOB_SERVICE` で保護した `BootEpgSyncJobService` の実行寿命下で行う。起動時 EPG 同期用の `JobInfo` は再起動をまたいで永続化せず、再起動をまたぐ正本は `DirectBootEpgPending` だけとする。`JobScheduler.getPendingJob()` で同じ固定識別子のジョブが登録済みなら再登録しない。
 
-`BootEpgSyncJobService.onStartJob()` は利用者のロック解除、`DirectBootEpgPending`、開始条件を再確認し、処理を開始する場合は `BootEpgSyncCoordinator` へ引き渡す。`BootEpgSyncCoordinator` は同一プロセス内で `inputId` ごとの起動時 EPG 同期を一度に1件だけ実行する。処理完了時は `jobFinished()` で終了を通知し、成功時は再試行を要求しない。未完了または失敗で `DirectBootEpgPending` が残る場合、または `JobScheduler` による中断で `onStopJob()` が呼ばれた場合は、進行中の走査と Tuner 資源を停止・解放したうえで再試行を要求する。起動時 EPG 同期を開始できなかった場合は `DirectBootEpgPending` を維持する。開始後の保留解除条件は本書「TIS / EPG 公開境界」を正とし、通常publish成功に加えて、開始前の必須TvProvider問い合わせが正常終了し自TIS所有の既存channelが0件だった`NO_WORK`正常終了を含める。
+`BootEpgSyncJobService.onStartJob()` は利用者のロック解除、`DirectBootEpgPending`、開始条件を再確認し、処理を開始する場合は `BootEpgSyncCoordinator` へ引き渡す。`BootEpgSyncCoordinator` は同一プロセス内で `inputId` ごとの起動時 EPG 同期を一度に1件だけ実行する。処理完了時は `jobFinished()` で終了を通知し、成功時は再試行を要求しない。未完了または失敗で `DirectBootEpgPending` が残る場合、または `JobScheduler` による中断で`onStopJob()` が呼ばれた場合は、進行中の走査と Tuner 資源を停止・解放したうえで再試行を要求する。起動時 EPG 同期を開始できなかった場合は `DirectBootEpgPending` を維持する。開始後の保留解除条件は本書「TIS / EPG 公開境界」を正とし、通常publish成功に加えて、開始前の必須TvProvider問い合わせが正常終了し自TIS所有の既存channelが0件だった`NO_WORK`正常終了を含む。
 
 利用者のロック解除までプロセスが生存している場合は、動的に登録した `ACTION_USER_UNLOCKED` の受信処理から同じ開始判定を前倒ししてよい。ただし、この補助経路や定期保守の実行機構だけに再開保証を依存させない。Android の背景実行制限などで起動完了通知が遅延し得ることを前提に、通知の到達時と開始条件の再成立時の双方で永続化した `DirectBootEpgPending` を再評価する。
 
