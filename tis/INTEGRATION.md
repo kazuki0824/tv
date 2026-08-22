@@ -40,7 +40,7 @@ CAS HAL 仮実装は TIS 初回ビルド確認ゲートへ含めない。
 
 ## libaribcaption Soong / renderer 統合
 
-ARIB字幕表示のproduct統合では、repoで供給される `libaribcaption-android` の製品forkをSoong graphに含め、renderer有効の `cc_library_static { name: "libaribcaption" }` を正式経路とする。`libaribcaption` はcore側variantを使用し、`system_ext_specific: true` の `libmaleicacid_arib_caption_jni` からSoongの静的native dependencyとして直接linkする。`libaribcaption` のFreeType依存は `libft2.nodep` を使用し、TISのsystem/system_ext dependency closure内で解決する。
+ARIB字幕表示のproduct統合では、repoで供給される `libaribcaption-android` の製品forkをSoong graphに含め、renderer有効の `cc_library_static { name: "libaribcaption" }` を正式経路とする。製品repo manifestの `revision` はbranchではなく検証済みcommitへ固定し、repo syncのたびにsource list・C API・renderer構成が暗黙変更される状態をrelease構成として認めない。`libaribcaption` はcore側variantを使用し、`system_ext_specific: true` の `libmaleicacid_arib_caption_jni` からSoongの静的native dependencyとして直接linkする。`libaribcaption` のFreeType依存は `libft2.nodep` を使用し、TISのsystem/system_ext dependency closure内で解決する。
 
 正式な依存関係は次とする。
 
@@ -78,6 +78,8 @@ build確認では次を必須とする。
 ```
 
 実機確認では字幕PES入力からlibaribcaption decoder/renderer、RGBA8888出力、TIS字幕overlay表示までを接続確認対象とする。renderer viewport、PTS/NoPTS、scheduler、decoder/renderer lifecycleのruntime意味論は `DESIGN_JA.md` を正とし、本書で独立に再定義しない。
+
+`future_work/r51/libaribcaption_android_soong_ready_plan(1).md` は、上記static-link構成とruntime契約を実装へ反映した段階で旧shared-library前提の完了条件をstatic-link前提へ同期する。`m libaribcaption libmaleicacid_arib_caption_jni MaleicacidTvInput` と実機の字幕PES→decoder→renderer→RGBA8888→overlay経路が通るまではfuture_workから削除せず、それらの実装・実機検証が完了した時点でのみfuture_workから外す。
 
 ## 権限と priv-app
 
