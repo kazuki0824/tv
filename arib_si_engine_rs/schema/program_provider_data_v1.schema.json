@@ -19,8 +19,6 @@
     "linkage",
     "freeCaMode",
     "audioLanguages",
-    "audio",
-    "video",
     "extendedItems",
     "components",
     "diagnostics"
@@ -97,26 +95,6 @@
         "$ref": "#/$defs/audioLanguage"
       }
     },
-    "audio": {
-      "oneOf": [
-        {
-          "type": "null"
-        },
-        {
-          "$ref": "#/$defs/audioMetadata"
-        }
-      ]
-    },
-    "video": {
-      "oneOf": [
-        {
-          "type": "null"
-        },
-        {
-          "$ref": "#/$defs/videoMetadata"
-        }
-      ]
-    },
     "extendedItems": {
       "type": "array",
       "items": {
@@ -129,6 +107,12 @@
     "diagnostics": {
       "$ref": "#/$defs/diagnostics"
     }
+  },
+  "not": {
+    "anyOf": [
+      { "required": ["audio"] },
+      { "required": ["video"] }
+    ]
   },
   "$defs": {
     "uint16": {
@@ -264,24 +248,25 @@
       "additionalProperties": true,
       "required": [
         "requiresCas",
-        "unsupportedCas",
-        "clearLivePlaybackSupported",
         "source"
       ],
       "properties": {
         "requiresCas": {
           "type": "boolean"
         },
-        "unsupportedCas": {
-          "type": "boolean"
-        },
-        "clearLivePlaybackSupported": {
-          "type": "boolean"
-        },
         "source": {
           "type": "string",
           "minLength": 1
         }
+      },
+      "not": {
+        "anyOf": [
+          { "required": ["unsupportedCas"] },
+          { "required": ["clearLivePlaybackSupported"] },
+          { "required": ["channelRegistrationReady"] },
+          { "required": ["epgPublishable"] },
+          { "required": ["publishStateSource"] }
+        ]
       }
     },
     "rating": {
@@ -291,7 +276,6 @@
         "countryCode",
         "ratingValue",
         "rawRatingByte",
-        "supported",
         "parseStatus"
       ],
       "properties": {
@@ -310,18 +294,15 @@
           "minimum": 0,
           "maximum": 255
         },
-        "supported": {
-          "type": "boolean"
-        },
-        "mappedTvContentRating": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "parseStatus": {
           "$ref": "#/$defs/parseStatus"
         }
+      },
+      "not": {
+        "anyOf": [
+          { "required": ["supported"] },
+          { "required": ["mappedTvContentRating"] }
+        ]
       }
     },
     "genre": {
@@ -332,7 +313,6 @@
         "level2",
         "userNibble",
         "aribName",
-        "unmappedReason",
         "parseStatus"
       ],
       "properties": {
@@ -354,15 +334,16 @@
         "aribName": {
           "type": "string"
         },
-        "unmappedReason": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "parseStatus": {
           "$ref": "#/$defs/parseStatus"
         }
+      },
+      "not": {
+        "anyOf": [
+          { "required": ["unmappedReason"] },
+          { "required": ["canonicalGenre"] },
+          { "required": ["mappedCanonicalGenre"] }
+        ]
       }
     },
     "series": {
@@ -534,55 +515,6 @@
           "$ref": "#/$defs/iso639"
         },
         "source": {
-          "type": "string",
-          "minLength": 1
-        },
-        "parseStatus": {
-          "$ref": "#/$defs/parseStatus"
-        }
-      }
-    },
-    "audioMetadata": {
-      "type": "object",
-      "additionalProperties": true,
-      "required": [
-        "codec",
-        "parseStatus"
-      ],
-      "properties": {
-        "esPid": {
-          "$ref": "#/$defs/uint13"
-        },
-        "componentTag": {
-          "$ref": "#/$defs/uint8"
-        },
-        "codec": {
-          "type": "string",
-          "minLength": 1
-        },
-        "language": {
-          "$ref": "#/$defs/iso639"
-        },
-        "parseStatus": {
-          "$ref": "#/$defs/parseStatus"
-        }
-      }
-    },
-    "videoMetadata": {
-      "type": "object",
-      "additionalProperties": true,
-      "required": [
-        "codec",
-        "parseStatus"
-      ],
-      "properties": {
-        "esPid": {
-          "$ref": "#/$defs/uint13"
-        },
-        "componentTag": {
-          "$ref": "#/$defs/uint8"
-        },
-        "codec": {
           "type": "string",
           "minLength": 1
         },
@@ -773,7 +705,6 @@
         "componentTag",
         "dataComponentId",
         "language",
-        "trackId",
         "captionServiceKind",
         "parseStatus"
       ],
@@ -790,10 +721,6 @@
         "language": {
           "$ref": "#/$defs/iso639"
         },
-        "trackId": {
-          "type": "string",
-          "minLength": 1
-        },
         "captionServiceKind": {
           "type": "string",
           "minLength": 1
@@ -801,6 +728,9 @@
         "parseStatus": {
           "$ref": "#/$defs/parseStatus"
         }
+      },
+      "not": {
+        "required": ["trackId"]
       }
     },
     "dataComponent": {
