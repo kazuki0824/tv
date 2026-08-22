@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">ARIB Content Ratings</string>
+    <string name="rating_system_title">ARIB 放送事業者指定視聴制限</string>
+    <string name="rating_system_description">ARIB parental_rating_descriptor の JPN raw 0x12..0xFF を、年齢値や未レーティングへ潰さず Android TV parental-control policy に接続します。</string>
+    <string name="broadcaster_defined_title">放送事業者指定</string>
+    <string name="broadcaster_defined_description">ARIB parental_rating_descriptor の放送事業者指定値です。年齢レーティングや未レーティングとは区別して扱います。</string>
+</resources>

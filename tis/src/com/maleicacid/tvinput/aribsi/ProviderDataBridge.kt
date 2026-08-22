@@ -196,7 +196,7 @@ object ProviderDataBridge {
                 .put("rawRatingByte", rating.rawRatingByte)
                 .put("supported", rating.supported)
                 .put("mappedTvContentRating", AribRatingMapper.toTvContentRatingString(rating) ?: JSONObject.NULL)
-                .put("parseStatus", if (rating.supported) "OK" else "UNSUPPORTED"))
+                .put("parseStatus", rating.parseStatus))
         }
         return arr
     }

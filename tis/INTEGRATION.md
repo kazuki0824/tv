@@ -15,6 +15,7 @@ $(call inherit-product, vendor/maleicacid/tv/tis/config/product_integration.mk)
 ```make
 PRODUCT_PACKAGES += \
     MaleicacidTvInput \
+    AribContentRatings \
     privapp-permissions-maleicacid-tvinput \
     libmaleicacid_arib_si_engine_jni \
     libmaleicacid_arib_caption_jni
@@ -25,6 +26,8 @@ PRODUCT_COPY_FILES += \
 
 `MaleicacidTvInput` の `<uses-feature android:name="android.software.live_tv" />` は APK の要求であり、device feature 宣言の代替ではない。TIF 対応 product では上記 feature XML を product image へ配置する。
 
+`AribContentRatings` は Android TIF 標準の `android.media.tv.action.QUERY_CONTENT_RATING_SYSTEMS` receiver と `android.media.tv.metadata.CONTENT_RATING_SYSTEMS` XMLだけを公開する独立product componentであり、privileged permissionやplatform-private APIを要求しない。`product_specific: true` の `/product/app` として組み込む。
+
 CAS HAL 仮実装は TIS 初回ビルド確認ゲートへ含めない。
 
 ## Treble partition / platform API 統合
@@ -33,7 +36,7 @@ CAS HAL 仮実装は TIS 初回ビルド確認ゲートへ含めない。
 
 `privapp-permissions-maleicacid-tvinput` は `MaleicacidTvInput` と同じ `/system_ext` に配置する。TIS専用の `libmaleicacid_arib_si_engine_jni` と `libmaleicacid_arib_caption_jni` も `system_ext_specific: true` とし、TISから `/product` 専用native moduleへ逆向き依存を作らない。TIS専用 `libaribcaption` variantを正式統合する場合も、TISのnative依存closureから利用可能なsystem/system_ext側variantとして閉じ、product-only private dependencyにしない。
 
-一方、`android.software.live_tv.xml` のようなproduct feature宣言と、public/System APIだけで成立する独立product componentは `/product` に置く。Tuner HAL、VINTF、vendor init、vendor sepolicy、ueventd、CAS HALは `/vendor` の責務を維持し、TISのsystem_ext化を理由にsystem側へ移さない。board固有差分が存在しない現構成では `/odm` を追加しない。
+一方、`AribContentRatings` と `android.software.live_tv.xml` のようなpublic/System APIだけで成立する独立product component / product feature宣言は `/product` に置く。Tuner HAL、VINTF、vendor init、vendor sepolicy、ueventd、CAS HALは `/vendor` の責務を維持し、TISのsystem_ext化を理由にsystem側へ移さない。board固有差分が存在しない現構成では `/odm` を追加しない。
 
 ## libaribcaption Soong / renderer 統合
 
@@ -60,6 +63,7 @@ ARIB字幕表示の product 統合では、repoで供給される `libaribcaptio
 ```text
 /system_ext/priv-app/MaleicacidTvInput/MaleicacidTvInput.apk
 /system_ext/etc/permissions/privapp-permissions-maleicacid-tvinput.xml
+/product/app/AribContentRatings/AribContentRatings.apk
 /product/etc/permissions/android.software.live_tv.xml
 /system_ext/priv-app/MaleicacidTvInput/lib/<abi>/libmaleicacid_arib_si_engine_jni.so
 /system_ext/priv-app/MaleicacidTvInput/lib/<abi>/libmaleicacid_arib_caption_jni.so
@@ -82,6 +86,7 @@ TIS は `directBootAware=true` を維持する。`AndroidManifest.xml` には `<
 ```bash
 adb shell pm list features | grep android.software.live_tv
 adb shell ls /product/etc/permissions/android.software.live_tv.xml
+adb shell ls /product/app/AribContentRatings/AribContentRatings.apk
 adb shell ls /system_ext/etc/permissions/privapp-permissions-maleicacid-tvinput.xml
 adb shell ls /system_ext/priv-app/MaleicacidTvInput/MaleicacidTvInput.apk
 adb shell dumpsys tv_input | grep -i Maleicacid
@@ -93,9 +98,13 @@ adb shell dumpsys tv_input | grep -i Maleicacid
 
 ## 視聴年齢制限 / CAS の product 統合確認
 
-product のシステムTVアプリ / rating definitions に、`DESIGN_JA.md` と `../ARIB_SI_EPG_TvProvider投影方針.md` が使用するレーティングが存在することを確認する。視聴制限判定、`notifyContentBlocked()`、unblock identity、CAS unavailable reason、provider-data の意味論はそれぞれの設計正本を参照し、本書では再定義しない。
+AOSP system-defined `com.android.tv / ISDB / ISDB_4..ISDB_20` に加え、`AribContentRatings` が `com.maleicacid.tv.ratings / ARIB_EXCEPTIONAL / BROADCASTER_DEFINED` をTIF標準rating-provider機構から公開していることを確認する。TISは明示的なARIB `0x12..0xFF` をこのexceptional ratingへ写像し、rating情報そのものが存在しない場合だけ `TvContentRating.UNRATED` を使用する。
 
-`MaleicacidTvInputAcceptanceTests` と実機確認では、設計正本に定義された視聴年齢制限、CAS 仮実装境界、TvProvider 投影が product integration 後も成立することを確認する。
+System TV App本体は本repoの所有物ではないため、同等実装を本repoへ複製しない。製品platform統合ではSystem TV App側に、上記product固有exceptional ratingだけを対象とするpolicy patchを含めることを必須条件とする。parental controlsが有効でglobal policyが`NONE`以外の場合はこのratingをglobal blocked-rating集合へ反映する一方、PIN認証済みの現在コンテンツに対する `onUnblockContent()` 一時解除は維持する。第三者custom rating、CTS Verifierが提供するrating、他domain/ratingSystemのblock/unblock可否へこのpolicyを波及させない。
+
+TIS自身はraw ARIB値から独自にAV blockを強制せず、現在コンテンツの `TvContentRating` を `TvInputManager.isRatingBlocked()` に渡した結果だけをpolicy判定として使用する。`notifyContentBlocked()` / `notifyContentAllowed()` とPIN解除のruntime意味論は `DESIGN_JA.md` を正とする。
+
+`MaleicacidTvInputAcceptanceTests` と実機確認では、通常ISDB年齢rating、`0x12` / `0xFF` exceptional rating、rating情報欠落時のUNRATED、PINによるcurrent-content unblock、第三者custom rating非干渉、CAS 仮実装境界、TvProvider投影が product integration 後も成立することを確認する。
 
 ## ビルド・試験確認ゲート
 
@@ -110,6 +119,7 @@ source build/envsetup.sh
 breakfast virtio_x86_64_tv_grub
 m nothing
 m \
+  AribContentRatings \
   libaribcaption \
   libmaleicacid_arib_si_engine_jni \
   libmaleicacid_arib_caption_jni \
@@ -146,6 +156,7 @@ atest \
 ```bash
 adb shell pm list features | grep android.software.live_tv
 adb shell ls /product/etc/permissions/android.software.live_tv.xml
+adb shell ls /product/app/AribContentRatings/AribContentRatings.apk
 adb shell ls /system_ext/etc/permissions/privapp-permissions-maleicacid-tvinput.xml
 adb shell ls /system_ext/priv-app/MaleicacidTvInput/MaleicacidTvInput.apk
 adb shell dumpsys tv_input | grep -i Maleicacid
@@ -156,6 +167,7 @@ adb shell dumpsys tv_input | grep -i Maleicacid
 ```text
 - システムTVアプリから設定画面を起動できる。
 - setup 後に少なくとも1つの非スクランブル視聴可能チャンネルが TvContract.Channels に登録される。
-- system_ext image にTIS本体・privapp allowlist・TIS専用JNIが配置され、product image にlive_tv feature XMLが配置される。
+- system_ext image にTIS本体・privapp allowlist・TIS専用JNIが配置され、product image にlive_tv feature XMLとAribContentRatingsが配置される。
+- System TV AppのARIB exceptional policyが有効で、PINによる現在コンテンツ一時解除と第三者rating非干渉を維持する。
 - android:canRecord="false" が product manifest metadata に反映される。
 ```

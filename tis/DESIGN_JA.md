@@ -179,7 +179,7 @@ TIS は `TvInputManager.ACTION_BLOCKED_RATINGS_CHANGED` と `TvInputManager.ACTI
 
 - LineageOS 21／Android 14の通常ライブセッション生成では`onCreateSession(inputId, sessionId, tvAppAttributionSource)`をoverrideする。framework由来`sessionId`は`Tuner(serviceContext, sessionId, useCase)`へ渡し、`tvAppAttributionSource`はsession固有Contextの生成へ渡す。2引数版`onCreateSession(inputId, sessionId)`と1引数版は明示的な互換経路だけに限定し、対象productの通常3引数入口を素のservice Contextへ委譲または後退させない。
 - r51 の video 対応宣言対象は MPEG-2 video `0x02` と H.264/AVC `0x1b` とする。HEVC `0x24` はr51ではmetadata / 診断へ保持し、r52で`開発規則.md`の到達点どおり、現行対象の従来TS profileでARIB signaling上現れる場合をgeneric Tuner→MediaCodec playback selectionへ含める。r52のHEVC対応は規範対象の現行ARIB原文、検証証拠の版・条項と未証明差分、MediaFormat / decoder capability / first-output gate / unsupported診断を同じ契約で固定する。
-- ARIB 視聴年齢制限 は Android `TvContentRating` へ `domain=com.android.tv`, `ratingSystem=ISDB`, `rating=ISDB_<age>` として写像する。対応範囲は JPN かつ レーティング 4..20 のみとし、未対応 country / レーティングは推測変換せず `internal_provider_data` / 診断に残す。レーティング 未取得時は `TvContentRating.UNRATED` として 視聴制限判定する。
+- ARIB 視聴年齢制限は raw `parental_rating_descriptor.rating` の意味を保ったまま Android `TvContentRating` へ写像する。`country_code=JPN` の `0x01..0x0F` は `age=raw+3` で AOSP system-defined `com.android.tv / ISDB / ISDB_4..ISDB_18`、BS/CSで運用される `0x10..0x11` は同式で `ISDB_19..ISDB_20` とする。明示的に受信した `0x12..0xFF` は年齢へ推測変換せず、product rating provider が定義する `com.maleicacid.tv.ratings / ARIB_EXCEPTIONAL / BROADCASTER_DEFINED` へ写像する。`0x00` と未対応countryはAndroid ratingを捏造せずraw値と診断に残す。`TvContentRating.UNRATED` は TvProvider current Program と latest EIT の双方から現在コンテンツに適用可能なratingが得られない場合だけに使用し、明示的な `0x12..0xFF` の代替値にはしない。
 - `notifyVideoAvailable()` はcurrent MediaSync availability epochでlate-dropを通過しcurrent final outputへのattach＋`queueBuffer()`成功後に発行されるFramework-private first-output eventを受け、current Surface有効、generation一致、視聴制限、Surface errorのgateを満たした場合だけ呼ぶ。recoverable unavailableから同MediaSync instanceで復旧する場合はlistenerをre-armし、次の成功event後に再度availableへ遷移する。decoder output、`OnFrameRendered`、`getTimestamp()`のclock進行、drop、旧instance callbackはavailability根拠にしない。
 - ライブ tune refresh では新規 channel row を作らず、既存 channel の program 更新だけを行う。setup/rescan のみ channel row を作成できる。
 - H.264 は SPS/PPS 検出だけでなく SPS 由来の width / height を MediaFormat へ反映する。SPS 解析不能時は固定 1920x1080 代替処理 で成功扱いしない。
@@ -192,9 +192,10 @@ TIS は `TvInputManager.ACTION_BLOCKED_RATINGS_CHANGED` と `TvInputManager.ACTI
 
 ## 視聴年齢制限 / CAS 代替参照の固定
 
-- `Programs.COLUMN_CONTENT_RATING` と Live session の 視聴制限判定は同じ `AribRatingMapper` を使い、`com.android.tv / ISDB / ISDB_4..20` の AOSP system-defined レーティングに統一する。
-- TIS は custom レーティング-system XML / receiver を追加しない。product 統合時は システムTVアプリ / レーティング definitions に `com.android.tv / ISDB / ISDB_4..20` が存在することを確認する。
-- Live session は 現在番組 レーティングを `TvProvider current Program -> latest EIT cache -> TvContentRating.UNRATED` の順で解決する。
+- `Programs.COLUMN_CONTENT_RATING` と Live session の視聴制限判定は同じ `AribRatingMapper` を使う。JPN raw `0x01..0x11` は AOSP system-defined `com.android.tv / ISDB / ISDB_4..20`、明示的な JPN raw `0x12..0xFF` は product rating provider の `com.maleicacid.tv.ratings / ARIB_EXCEPTIONAL / BROADCASTER_DEFINED` へ写像し、後者を `TvContentRating.UNRATED` へ潰さない。
+- `MaleicacidTvInput` APK自身はrating-system XML / receiverを所有しない。productは独立した `AribContentRatings` APKを `/product` に組み込み、TIF標準 `ACTION_QUERY_CONTENT_RATING_SYSTEMS` / `META_DATA_CONTENT_RATING_SYSTEMS` 機構でexceptional ratingを公開する。このAPKはpublic APIだけで成立させ、platform certificateやprivileged permissionを要求しない。
+- System TV Appはpolicy ownerとして、parental controlsが有効でglobal policyが`NONE`以外の場合に限り上記exceptional ratingをblocked-rating集合へ反映する。PIN認証済みcurrent contentの `onUnblockContent()` 一時解除は維持し、第三者custom rating、CTS Verifier由来rating、他domain/ratingSystemへこのproduct policyを波及させない。TISはraw値から独自policyを実装せず `TvInputManager.isRatingBlocked()` の結果だけに従う。
+- Live session は現在番組ratingを `TvProvider current Program -> latest EIT cache -> TvContentRating.UNRATED` の順で解決する。ただし前二者からexceptional ratingを含む適用可能ratingが得られた場合はそれを使い、`UNRATED` はrating情報が得られなかった場合だけのfallbackとする。
 - parental blocked の通知は `notifyContentBlocked(rating)` と AV停止を主とし、parental block の通知手段として `notifyVideoUnavailable()` を呼ばない。
 - `onUnblockContent()` の解除範囲は同一 `channelUri + serviceKey + eventId + ratingString` の 現在番組 / レーティングに限定する。start/end は stable identity ではなく、解除対象が現在表示中の同一 Program row であることを確認する補助条件としてのみ使ってよい。start/end/duration を provider-data `programKey`、unblock stable identity、または Program identity の SSOT にしてはならない。
 - CAS 未完成 / scrambled unsupported で 再生成功 にしない場合は `TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN` を使う。具体的な CAS 状態 reason は CAS HAL 本実装まで使わない。

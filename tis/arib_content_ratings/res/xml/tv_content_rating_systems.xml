@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rating-system-definitions xmlns:android="http://schemas.android.com/apk/res/android"
+    android:versionCode="1">
+    <rating-system-definition
+        android:name="ARIB_EXCEPTIONAL"
+        android:country="JP"
+        android:title="@string/rating_system_title"
+        android:description="@string/rating_system_description">
+        <rating-definition
+            android:name="BROADCASTER_DEFINED"
+            android:title="@string/broadcaster_defined_title"
+            android:description="@string/broadcaster_defined_description"
+            android:contentAgeHint="0" />
+    </rating-system-definition>
+</rating-system-definitions>
