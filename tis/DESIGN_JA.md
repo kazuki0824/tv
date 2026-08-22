@@ -22,9 +22,9 @@ TISの候補表は製品scan実装データのSSOTであり、`開発規則.md`�
 
 ## サービス登録・公開・再生policy境界
 
-`arib_si_engine_rs` が返すservice / transport単位の `ServiceSemanticFacts` をAndroid channel登録、EPG公開、ライブ再生へ接続する判断はTISが所有する。`ServiceSemanticFacts` はONID / TSID / SID、ARIB `service_type`、PMT/PCRの存在・構文状態、ES/component一覧とcodec signaling、CA descriptor / free_CA_mode、SMD意味状態、欠落・不正理由など放送由来の事実だけを含み、`channelRegistrationReady`、`epgPublishable`、`clearLivePlaybackSupported`、`requiresCas`、`unsupportedCas`のような製品/TIF policy結果を含まない。
+`arib_si_engine_rs` が返すservice / transport単位の `ServiceSemanticFacts` をAndroid channel登録、EPG公開、ライブ再生へ接続する判断はTISが所有する。`ServiceSemanticFacts` はONID / TSID / SID、ARIB `service_type`、PMT/PCRの存在・構文状態、ES/component一覧とcodec signaling、CA descriptor / free_CA_mode、CA descriptor等から導出した`requiresCas`、SMD意味状態、欠落・不正理由など放送由来の事実だけを含む。`channelRegistrationReady`、`epgPublishable`、`clearLivePlaybackSupported`、`unsupportedCas`のような現在の製品能力・TIF policy結果は含まない。
 
-TISはcurrent `ServiceSemanticFacts`、現在releaseの対応service type/codec、実decoder availability、CAS実装状態、TvProvider transaction条件から、serviceごとに `channelRegistrationReady`、`epgPublishable`、`clearLivePlaybackSupported`、`requiresCas`、`unsupportedCas` を算出する。このpolicy結果はTIS runtimeの一貫した判断材料であり、SI parserへ逆流させず、保存済みprovider-dataをcurrent policyのfallback sourceにしない。
+TISはcurrent `ServiceSemanticFacts`から`requiresCas`を意味事実として受け取り、現在releaseの対応service type/codec、実decoder availability、CAS実装状態、TvProvider transaction条件と組み合わせて、serviceごとに `channelRegistrationReady`、`epgPublishable`、`clearLivePlaybackSupported`、`unsupportedCas` を算出する。このpolicy結果はTIS runtimeの一貫した判断材料であり、SI parserへ逆流させず、保存済みprovider-dataをcurrent policyのfallback sourceにしない。
 
 partial snapshot はサービス単位の登録可能判定に使ってよい。ただし partial snapshot を無条件に channel 登録へ出してはならない。登録可能サービスは、ONID / TSID / SID、PMT PID と PMT、有効 PCR、後続更新可能な internal key、および現行ライブ視聴で対応するaudioまたはvideo ESを持つサービスとする。video-only / audio-onlyというtrack構成は`TvContract.Channels.COLUMN_SERVICE_TYPE`の再分類根拠にせず、同列は`../ARIB_SI_EPG_TvProvider投影方針.md`に従ってARIB `service_type`のcodingを保持する。audio-onlyの視聴セッションでは`VIDEO_UNAVAILABLE_REASON_AUDIO_ONLY`を通知できるが、この値をchannel登録の禁止理由に使わない。音声・映像の欠落または未対応はTIS側のtrack別診断に残す。scrambled サービスはTIS policyでchannel登録してよいが、現行の平文ライブ視聴成功対応宣言対象にはしない。登録可能未満の partial snapshot は診断情報 / ライブ更新 / debugに限定し、channel insert に使わない。
 
