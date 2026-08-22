@@ -7,6 +7,14 @@ name = "maleicacid-tuner-hal2-common-host-ci"
 version = "0.0.0"
 
 [[package]]
+name = "maleicacid-tuner-hal2-compile-contract-host-ci"
+version = "0.0.0"
+dependencies = [
+ "maleicacid-tuner-hal2-device-host-ci",
+ "static_assertions",
+]
+
+[[package]]
 name = "maleicacid-tuner-hal2-control-host-ci"
 version = "0.0.0"
 dependencies = [
@@ -44,3 +52,9 @@ version = "0.0.0"
 dependencies = [
  "maleicacid-tuner-hal2-common-host-ci",
 ]
+
+[[package]]
+name = "static_assertions"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"

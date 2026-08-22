@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "tuner_hal2/common/**"
+      - "tuner_hal2/compile_contract/**"
       - "tuner_hal2/control/**"
       - "tuner_hal2/descrambler/**"
       - "tuner_hal2/device/**"
@@ -15,6 +16,7 @@ on:
     branches: [main]
     paths:
       - "tuner_hal2/common/**"
+      - "tuner_hal2/compile_contract/**"
       - "tuner_hal2/control/**"
       - "tuner_hal2/descrambler/**"
       - "tuner_hal2/device/**"

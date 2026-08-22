@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "common",
+    "compile_contract",
     "control",
     "descrambler",
     "device",
