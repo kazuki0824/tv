@@ -7,7 +7,7 @@ rust_ffi_shared {
     crate_name: "maleicacid_arib_caption_jni",
     srcs: ["src/lib.rs"],
     edition: "2021",
-    product_specific: true,
+    system_ext_specific: true,
     min_sdk_version: "31",
     rustlibs: [
         "libjni",

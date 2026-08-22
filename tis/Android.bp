@@ -10,14 +10,14 @@ filegroup {
 
 android_app {
     name: "MaleicacidTvInput",
-    product_specific: true,
+    system_ext_specific: true,
     privileged: true,
 
     manifest: "AndroidManifest.xml",
     srcs: ["src/**/*.kt"],
     resource_dirs: ["res"],
 
-    sdk_version: "system_current",
+    platform_apis: true,
     min_sdk_version: "31",
     certificate: "platform",
 
@@ -37,7 +37,7 @@ android_app {
 
 prebuilt_etc {
     name: "privapp-permissions-maleicacid-tvinput",
-    product_specific: true,
+    system_ext_specific: true,
     src: "permissions/privapp-permissions-maleicacid-tvinput.xml",
     sub_dir: "permissions",
     filename: "privapp-permissions-maleicacid-tvinput.xml",
@@ -45,11 +45,11 @@ prebuilt_etc {
 
 android_test {
     name: "MaleicacidTvInputAcceptanceTests",
-    product_specific: true,
+    system_ext_specific: true,
     srcs: ["tests/src/**/*.kt"],
     asset_dirs: ["tests/assets"],
     manifest: "tests/AndroidManifest.xml",
-    sdk_version: "system_current",
+    platform_apis: true,
     min_sdk_version: "31",
     certificate: "platform",
     instrumentation_for: "MaleicacidTvInput",

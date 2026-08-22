@@ -1,5 +1,6 @@
 PRODUCT_PACKAGES += \
     MaleicacidTvInput \
+    AribContentRatings \
     privapp-permissions-maleicacid-tvinput \
     libmaleicacid_arib_si_engine_jni \
     libmaleicacid_arib_caption_jni

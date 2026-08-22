@@ -735,7 +735,7 @@ fn event_diagnostic_text(event: &EitEvent) -> String {
 fn parental_ratings_json(event: &EitEvent) -> String {
     json_array(event.descriptors.parental_ratings.iter().map(|r| format!(
         "{{\"countryCode\":{},\"ratingValue\":{},\"rawRatingByte\":{},\"supported\":{},\"parseStatus\":\"OK\"}}",
-        json_string(&r.country_code), r.rating_value, r.raw_rating_byte, json_bool(r.country_code == "JPN" && r.rating_value <= 20)
+        json_string(&r.country_code), r.rating_value, r.raw_rating_byte, json_bool(r.country_code == "JPN" && r.rating_value != 0)
     )).collect())
 }
 

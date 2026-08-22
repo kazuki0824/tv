@@ -133,25 +133,48 @@ class TisR51FixedPlanAcceptanceTest {
         check(MaleicacidLiveSession.shouldRejectPlaybackSelectionWithoutVideoForTest(selection))
     }
 
-    @Test fun supportedAribRatingConvertsToTvContentRatingString() {
-        val flattened = AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 15, 15, supported = true))
+    @Test fun supportedAribRawRatingConvertsToTvContentRatingString() {
+        val flattened = AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 12, 12, supported = true))
         check(flattened != null)
         check(flattened!!.contains(AribRatingMapper.DOMAIN))
         check(flattened.contains("ISDB"))
         check(flattened.contains("ISDB_15"))
     }
 
-    @Test fun isdbRatingBoundaryValuesAreProjected() {
-        check(requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 4, 4, supported = true))).contains("ISDB_4"))
-        check(requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 20, 20, supported = true))).contains("ISDB_20"))
+    @Test fun isdbRawRatingBoundaryValuesAreProjected() {
+        check(requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 1, 1, supported = true))).contains("ISDB_4"))
+        check(requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 17, 17, supported = true))).contains("ISDB_20"))
     }
 
-    @Test fun unsupportedRatingIsNotGuessed() {
-        check(AribRatingMapper.toTvContentRatingString(AribParentalRating("USA", 15, 15, supported = false)) == null)
-        check(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 3, 3, supported = true)) == null)
-        check(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 21, 21, supported = true)) == null)
-        check(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 99, 99, supported = false)) == null)
-        check(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 12, 12, supported = false)) == null)
+    @Test fun explicitAribExceptionalRatingUsesProductDomainInsteadOfUnrated() {
+        listOf(0x12, 0x15, 0x63, 0xff).forEach { raw ->
+            val flattened = requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", raw, raw, supported = false)))
+            check(flattened.contains(AribRatingMapper.EXCEPTIONAL_DOMAIN))
+            check(flattened.contains(AribRatingMapper.EXCEPTIONAL_RATING_SYSTEM))
+            check(flattened.contains(AribRatingMapper.EXCEPTIONAL_RATING))
+            check(flattened != TvContentRating.UNRATED.flattenToString())
+        }
+        check(AribRatingMapper.toTvContentRatingString(AribParentalRating("USA", 0x12, 0x12, supported = false)) == null)
+        check(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 0, 0, supported = false)) == null)
+    }
+
+    @Test fun explicitAribExceptionalRatingIsWrittenToProgramsContentRating() {
+        val store = FakeStore()
+        val writer = TvProviderWriter("input.test", store, testOnly = true)
+        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", FrequencyHz(473_142_857L))))
+        val record = EventModelMapper().toProgramRecords(listOf(
+            aribEvent(parentalRatings = listOf(AribParentalRating("JPN", 0x12, 0x12, supported = false))),
+        )).single()
+        writer.upsertPrograms(listOf(record))
+        val contentRating = store.programs.values.single().getAsString(TvContract.Programs.COLUMN_CONTENT_RATING)
+        check(contentRating != null)
+        check(contentRating.contains(AribRatingMapper.EXCEPTIONAL_DOMAIN))
+        check(contentRating != TvContentRating.UNRATED.flattenToString())
+        val providerData = org.json.JSONObject(TvProviderWriter.programProviderDataForTest(record))
+        val rating = providerData.getJSONArray("ratings").getJSONObject(0)
+        check(rating.getInt("rawRatingByte") == 0x12)
+        check(rating.getString("parseStatus") == "OK")
+        check(rating.getString("mappedTvContentRating").contains(AribRatingMapper.EXCEPTIONAL_DOMAIN))
     }
 
     @Test fun unsupportedRatingGoesToRatingsAndPublishDiagnostics() {
@@ -200,8 +223,7 @@ class TisR51FixedPlanAcceptanceTest {
         val unsupported = EventModelMapper().toProgramRecords(listOf(
             aribEvent(parentalRatings = listOf(
                 AribParentalRating("USA", 12, 12, supported = false),
-                AribParentalRating("JPN", 3, 3, supported = true),
-                AribParentalRating("JPN", 21, 21, supported = true),
+                AribParentalRating("JPN", 12, 12, supported = false),
             )),
         )).single()
         writer.upsertPrograms(listOf(unsupported))
@@ -213,14 +235,15 @@ class TisR51FixedPlanAcceptanceTest {
         check(!providerData.utf8Contains("parentalRatingDiagnostics"))
     }
 
-    @Test fun oldCustomAribRatingDomainIsNotGeneratedOnProductPath() {
-        val flattened = requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 12, 12, supported = true)))
-        check(flattened.contains("com.android.tv"))
-        check(flattened.contains("ISDB"))
-        check(flattened.contains("ISDB_12"))
-        check(!flattened.contains("com.maleicacid.tvinput.arib"))
-        check(!flattened.contains("AR" + "IB_JP"))
-        check(!flattened.contains("AG" + "E_12"))
+    @Test fun productExceptionalAribRatingDomainIsGeneratedSeparatelyFromAospIsdbAgeDomain() {
+        val age = requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 12, 12, supported = true)))
+        check(age.contains("com.android.tv"))
+        check(age.contains("ISDB"))
+        check(age.contains("ISDB_15"))
+        val exceptional = requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 0x12, 0x12, supported = false)))
+        check(exceptional.contains(AribRatingMapper.EXCEPTIONAL_DOMAIN))
+        check(exceptional.contains(AribRatingMapper.EXCEPTIONAL_RATING_SYSTEM))
+        check(exceptional.contains(AribRatingMapper.EXCEPTIONAL_RATING))
     }
 
     @Test fun mergedCasStateIsPersistedInProgramProviderData() {
@@ -269,7 +292,7 @@ class TisR51FixedPlanAcceptanceTest {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", FrequencyHz(473_142_857L))))
-        val rating = requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 15, 15, true)))
+        val rating = requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 12, 12, true)))
         writer.upsertPrograms(listOf(program(key, contentRatings = listOf(rating))))
         val values = store.programs.values.single()
         check(values.getAsString(TvContract.Programs.COLUMN_CONTENT_RATING) == rating)
@@ -287,7 +310,6 @@ class TisR51FixedPlanAcceptanceTest {
         check(!PlaybackPipeline.acceptsFirstFrameForTest(callbackGeneration = 2, currentGeneration = 2, surfaceValid = true, alreadyNotified = true))
         check(PlaybackPipeline.acceptsFirstFrameForTest(callbackGeneration = 2, currentGeneration = 2, surfaceValid = true, alreadyNotified = false))
     }
-
 
     @Test fun localClearLivePlaybackRequiresRustDiagnostic() {
         val clearService = aribService(
@@ -555,7 +577,6 @@ class TisR51FixedPlanAcceptanceTest {
         check(!AribCaptionController.shouldDrawCaptionForTest(enabled = true, selectedTrackId = null, incomingTrackId = "subtitle:304:8"))
     }
 
-
     @Test fun audioSelectTrackCommitsOnlyWhenAudioSwitchSucceeds() {
         val tracks = listOf(
             TunerController.TisTrack("audio:272:7", TvTrackInfo.TYPE_AUDIO, TsPid(0x110), 0x0f, 7, -1, "jpn"),
@@ -565,7 +586,6 @@ class TisR51FixedPlanAcceptanceTest {
         check(!MaleicacidLiveSession.audioTrackSelectionAcceptedForTest("audio:999", tracks, audioSwitchSucceeded = true))
         check(!MaleicacidLiveSession.audioTrackSelectionAcceptedForTest(null, tracks, audioSwitchSucceeded = true))
     }
-
 
     @Test fun audioSelectTrackFailurePreservesExistingPlaybackSignature() {
         val previous = AvPlaybackSignature(
@@ -605,14 +625,14 @@ class TisR51FixedPlanAcceptanceTest {
         )
         check(keyString.contains("\"originalNetworkId\":4"))
         check(keyString.contains("\"eventId\":10"))
-        check(keyString.contains("ISDB_12"))
+        check(keyString.contains("ISDB_15"))
     }
 
     @Test fun onUnblockContentAcceptsOnlySameCurrentProgramRatingWithCompleteIdentity() {
-        val rating12 = requireNotNull(AribRatingMapper.parseFlattened(requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 12, 12, true)))))
-        val rating15 = requireNotNull(AribRatingMapper.parseFlattened(requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 15, 15, true)))))
+        val rating15 = requireNotNull(AribRatingMapper.parseFlattened(requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 12, 12, true)))))
+        val rating18 = requireNotNull(AribRatingMapper.parseFlattened(requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 15, 15, true)))))
         val current = CurrentProgramRatingResolver.CurrentProgramRatingSet(
-            ratings = listOf(rating12),
+            ratings = listOf(rating15),
             source = CurrentProgramRatingResolver.Source.LATEST_EIT_CACHE,
             channelUriString = "content://android.media.tv/channel/1",
             serviceKey = key,
@@ -620,8 +640,8 @@ class TisR51FixedPlanAcceptanceTest {
             startTimeMillis = 1_700_000_000_000L,
             endTimeMillis = 1_700_001_800_000L,
         )
-        check(current.exactUnblockKeyFor(rating12) != null)
-        check(current.exactUnblockKeyFor(rating15) == null)
+        check(current.exactUnblockKeyFor(rating15) != null)
+        check(current.exactUnblockKeyFor(rating18) == null)
 
         val unratedFallback = CurrentProgramRatingResolver.CurrentProgramRatingSet(
             ratings = listOf(TvContentRating.UNRATED),
@@ -684,7 +704,6 @@ class TisR51FixedPlanAcceptanceTest {
         check(bootRetained == setOf(key))
         check(backgroundRetained == setOf(key))
     }
-
 
     @Test fun bootEpgSyncStartRequiresIdleScanAndNoLiveSession() {
         val active = ChannelScanManager.bootEpgSyncStartDecisionForTest(activeLiveSessionCount = 1, scanRunning = false)
@@ -762,8 +781,6 @@ class TisR51FixedPlanAcceptanceTest {
         check(!PlaybackPipeline.shouldTriggerFirstFrameTimeoutForTest(timeoutGeneration = 3, currentGeneration = 3, alreadyNotified = true))
     }
 
-
-
     @Test fun tunerKeyTokenRejectsZeroAndOverSixteenBytes() {
         check(TunerKeyToken.fromOrNull(ByteArray(0)) == null)
         check(TunerKeyToken.fromOrNull(ByteArray(17)) == null)
@@ -798,7 +815,7 @@ class TisR51FixedPlanAcceptanceTest {
         val first = listOf(program(key, description = "desc"))
         val same = listOf(program(key, description = "desc"))
         val changedDescription = listOf(program(key, description = "updated"))
-        val changedRating = listOf(program(key, description = "desc", contentRatings = listOf(requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 18, 18, true))))))
+        val changedRating = listOf(program(key, description = "desc", contentRatings = listOf(requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 15, 15, true))))))
         check(ProgramPublishCoordinator.programSignatureForTest(first) == ProgramPublishCoordinator.programSignatureForTest(same))
         check(ProgramPublishCoordinator.programSignatureForTest(first) != ProgramPublishCoordinator.programSignatureForTest(changedDescription))
         check(ProgramPublishCoordinator.programSignatureForTest(first) != ProgramPublishCoordinator.programSignatureForTest(changedRating))
@@ -848,7 +865,6 @@ class TisR51FixedPlanAcceptanceTest {
         check(identity == null)
         check(keys.isEmpty())
     }
-
 
     private fun aribService(
         pmtPid: TsPid?,
