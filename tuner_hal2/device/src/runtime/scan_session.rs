@@ -253,7 +253,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn locked_reported_waits_for_a_new_scan_continuation() {
         let mut session =
