@@ -125,13 +125,13 @@ A/B/Cの分類と`Txn` / `UseCase` / `Context`の命名判定は別である。B
 | object method | `service_runtime/src/object_method_use_case.rs`。補助moduleは`method_validation.rs` / `method_dispatch.rs` | `aidl_service/src/object_runtime/mod.rs`の`execute_*_use_case*`、`plan_unavailable_object_method_use_case()`、`execute_object_query_use_case()`、domain側`TunerServiceRuntime::*_for_object` | 個別AIDL methodからの先行runtime query、`AidlMethodAdapter::plan()`直接実行、backend/registry直接変更 |
 | `RootOpenTxn` | 正規手順所有者・入口は`RootOpenTxn`名を持つ。既存の補助アンカーは`service_runtime/src/root_object_ops.rs`、`service_runtime/src/open_rollback.rs` | `aidl_service/src/tuner_service.rs`のルートオブジェクト処理入口 | AIDL層で実行時資源割当、オブジェクト表、巻戻し補助処理を直接扱う。別名のルートオープン手順を第二の正規所有者として残さない |
 | `ChildOpenTxn` | 正規手順所有者・入口は`ChildOpenTxn`名を持つ。既存の補助アンカーは`service_runtime/src/boot/child_open_context.rs::ChildOpenContext<'a>`、`service_runtime/src/demux_filter_dvr_ops.rs`であり、`ChildOpenContext<'a>`は非公開補助処理または呼出し単位の文脈型としてのみ扱う | `aidl_service/src/child_object_open.rs`の`open_filter_child_for_owner_object_with_request_builder()` / `open_dvr_child_for_owner_object_with_request_builder()`を含む、`Filter` / `DVR` / `TimeFilter`等の子オブジェクト生成用正規入口 | API別の資源割当・後始末所有者、`RuntimeObjectEntry.ledger_id`の再解釈、`Filter` / `DVR`だけの別の正規子オープン所有者 |
-| `ObjectCloseTxn` | `service_runtime/src/object_close_txn.rs::ObjectCloseTxn` | `aidl_service/src/object_runtime/mod.rs`のpublic close / owner-loss / Drop接続とservice_runtimeのshutdown/reaper接続 | `DropLeakTxn`等の別close owner、AIDL/Drop/worker/Reaperの直接cleanup |
+| `ObjectCloseTxn` | `service_runtime/src/object_close_txn.rs::ObjectCloseTxn` | `aidl_service/src/object_runtime/mod.rs`のpublic close / owner-loss / Drop接続とservice_runtimeのshutdown/reaper接続 | 別のclose owner、AIDL/Drop/worker/Reaperの直接cleanup |
 | `DescramblerPidTxn` | `service_runtime/src/boot/descrambler_txn.rs`、`service_runtime/src/descrambler_session.rs`、`service_runtime/src/descrambler_key_table.rs`を共用してよいが、正規手順所有者・入口は`DescramblerPidTxn`名で独立させる | `service_runtime/src/descrambler_ops.rs`のPID変更処理入口 | AIDL層またはデスクランブラ実装からPID台帳を直接変更、鍵変更・セッション後片付けと同じ別名所有者だけを入口にする |
 | `DescramblerKeyTxn` | `service_runtime/src/boot/descrambler_txn.rs`、`service_runtime/src/descrambler_session.rs`、`service_runtime/src/descrambler_key_table.rs`を共用してよいが、正規手順所有者・入口は`DescramblerKeyTxn`名で独立させる | `service_runtime/src/descrambler_ops.rs`の鍵変更処理入口 | AIDL層またはデスクランブラ実装から鍵台帳を直接変更、PID変更・セッション後片付けと同じ別名所有者だけを入口にする |
 | `DescramblerSessionCleanupTxn` | `service_runtime/src/boot/descrambler_txn.rs`、`service_runtime/src/descrambler_session.rs`、`service_runtime/src/descrambler_key_table.rs`を共用してよいが、正規手順所有者・入口は`DescramblerSessionCleanupTxn`名で独立させる | デスクランブラのクローズ接続、Demux無効化接続 | AIDL層またはデスクランブラ実装からPID・鍵・プール台帳を直接変更、通常のPID・鍵変更所有者へ後片付け責務を統合する |
 | `SourceBoundaryTxn` | `demux/src/runtime/source_boundary.rs` | `service_runtime/src/demux_filter_dvr_ops.rs`のFilter source use-case、source Filter close/unlink接続 | filter wrapper/cleanup callerによるgraph直接変更、demux/frontend ownerとの統合 |
 | `DemuxFrontendSourceTxn` | `service_runtime/src/demux_filter_dvr_ops.rs::DemuxFrontendSourceTxn` | `IDemux.setFrontendDataSource()` object use-case、Frontend/Demux close接続 | cleanup callerによるrelation直接編集、`SourceBoundaryTxn`への統合 |
-| `StreamBoundaryTxn` | `demux/src/runtime/generation_boundary.rs::StreamBoundaryTxn` | `service_runtime/src/packet_ops.rs`の型付き境界処理入口 | `GenerationBoundaryTxn`を正規状態所有型の恒久別名として残すこと、関係・キュー・A/V同期・PCR・コールバック・デスクランブラ各所有者の直接変更 |
+| `StreamBoundaryTxn` | `demux/src/runtime/generation_boundary.rs::StreamBoundaryTxn` | `service_runtime/src/packet_ops.rs`の型付き境界処理入口 | 正規状態所有型の恒久別名または第二の正規所有者を残すこと、関係・キュー・A/V同期・PCR・コールバック・デスクランブラ各所有者の直接変更 |
 | `PacketPipeline` | `demux/src/parser/packet_pipeline.rs::PacketPipeline` | `service_runtime/src/packet_ops.rs`の型付きパケット入力処理入口 | `StreamBoundaryTxn`への通常パケット処理吸収、AIDL・下位実装・Filterコールバックからの`PacketPipeline`直接変更、第二の正規パケット処理所有者または正規手順所有者の追加 |
 | `RecordDvrFilterRelationTxn` | `service_runtime/src/demux_filter_dvr_ops.rs::RecordDvrFilterRelationTxn` | Record DVR `attachFilter()` / `detachFilter()`、Filter/DVR close、demux cleanup接続 | object側shadow relationの直接変更 |
 | `FrontendLnbRelationTxn` | `service_runtime/src/frontend_ops.rs::FrontendLnbRelationTxn` | `IFrontend.setLnb()` object use-case、Frontend close時の`ObjectCloseTxn` typed assignment release | frontend use-case/LNB registryによるrelation・lease別commit、`LnbControlTxn`へのassignment ownership統合 |
@@ -324,13 +324,13 @@ Filter/SharedFilterのqueue確定は`FilterProducerDrainGate`、DVR queue I/Oは
 
 - AIDL methodごとにclose、queue、rollback、quarantineの状態機械を複製しない。
 - `../tuner_hal/DESIGN_JA.md`の共通部品適用表が所有者を指定した処理について、API別use-case、worker、helperが同じ状態変更、cleanup、失敗分類を個別再実装しない。
-- `DropLeakTxn`を`ObjectCloseTxn`と並ぶcleanup authorityとして置かない。
+- `ObjectCloseTxn`と並ぶ別のcleanup authorityを置かない。
 - Demux frontend relationをFilter用`SourceBoundaryTxn`へ吸収しない。
 - relation transactionと`StreamBoundaryTxn`を別々の公開commitにしない。
 - 通常パケット処理について、`PacketPipeline`と並ぶ第二の正規状態所有者または正規手順所有者を設けない。
 - Filter/DVR `flush()`のcleanup orchestrationと失敗集約をAPI別に複製せず、`QueueCleanupUseCase`のtyped入口を使用する。
 - Filter / Record DVR / Playback DVRの閾値比較をAPI別classifierへ分裂させず、`WatermarkClassifier`のtyped入口を使用する。`WatermarkClassifier`へ公開API種別tag、AIDL status、直前status、statusMask、callback状態、queue stateを持ち込まない。
-- `WorkerLifecycleProtocol`等を`WorkerRuntime`と並ぶgeneric lifecycle ownerとして置かず、`WorkerHandle`を第二のgeneric lifecycle ownerまたは第二のcanonical state ownerとして扱わない。
+- `WorkerRuntime`と並ぶ別のgeneric lifecycle ownerを置かず、`WorkerHandle`を第二のgeneric lifecycle ownerまたは第二のcanonical state ownerとして扱わない。
 - worker owner/APIがstop/wake/join/EventFlag/Reaper/backend-control/callback等の同型失敗分類を個別実装せず、`WorkerFailureClassifier`のtyped結果を使用する。
 - LNB Binder callback実体をLNB domain/AIDL objectに直接保持しない。
 - DVR側とFilter側がRecord relationを別々にcommitしない。
