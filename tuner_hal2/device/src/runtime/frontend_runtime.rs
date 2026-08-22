@@ -144,6 +144,7 @@ pub struct FrontendRuntimeSnapshot {
     pub active_tune_request: Option<FrontendTuneRequest>,
     pub tune_request_sequence: u64,
     pub signal_state: FrontendSignalState,
+    pub tune_lock_qualified: bool,
 }
 
 #[derive(Debug)]
@@ -165,6 +166,7 @@ pub struct FrontendRuntime {
     active_tune_request: Option<FrontendTuneRequest>,
     tune_request_sequence: u64,
     signal_state: FrontendSignalState,
+    tune_lock_qualified: bool,
 }
 
 impl FrontendRuntime {
@@ -187,6 +189,7 @@ impl FrontendRuntime {
             active_tune_request: None,
             tune_request_sequence: 0,
             signal_state: FrontendSignalState::Unknown,
+            tune_lock_qualified: false,
         }
     }
 
@@ -224,6 +227,7 @@ impl FrontendRuntime {
             ));
         }
         self.generation = generation;
+        self.tune_lock_qualified = false;
         Ok(())
     }
 
@@ -275,6 +279,7 @@ impl FrontendRuntime {
             active_tune_request: self.active_tune_request.clone(),
             tune_request_sequence: self.tune_request_sequence,
             signal_state: self.signal_state,
+            tune_lock_qualified: self.tune_lock_qualified,
         }
     }
 
@@ -295,6 +300,7 @@ impl FrontendRuntime {
         self.active_tune_request = snapshot.active_tune_request;
         self.tune_request_sequence = snapshot.tune_request_sequence;
         self.signal_state = snapshot.signal_state;
+        self.tune_lock_qualified = snapshot.tune_lock_qualified;
     }
 
     fn record_terminal_event(&mut self, event: FrontendTerminalEvent) {
@@ -326,6 +332,7 @@ impl FrontendRuntime {
         self.clear_live_reader_descriptor();
         self.active_tune_request = None;
         self.signal_state = FrontendSignalState::Unknown;
+        self.tune_lock_qualified = false;
         self.mark_idle();
         Ok(())
     }
@@ -343,6 +350,7 @@ impl FrontendRuntime {
         }
         self.active_tune_request = None;
         self.signal_state = FrontendSignalState::Unknown;
+        self.tune_lock_qualified = false;
         self.mark_failed(error);
         Ok(())
     }
@@ -386,6 +394,7 @@ impl FrontendRuntime {
         self.active_tune_request = Some(request);
         self.scan_session = None;
         self.signal_state = FrontendSignalState::Unknown;
+        self.tune_lock_qualified = false;
         self.last_error = None;
         self.mark_tuning(generation);
         Ok(())
@@ -412,6 +421,7 @@ impl FrontendRuntime {
         self.active_tune_request = None;
         self.scan_session = Some(session);
         self.signal_state = FrontendSignalState::Unknown;
+        self.tune_lock_qualified = false;
         self.last_error = None;
         self.mark_scanning(generation);
         Ok(())
@@ -432,6 +442,7 @@ impl FrontendRuntime {
         self.active_tune_request = None;
         self.scan_session = None;
         self.signal_state = FrontendSignalState::Unknown;
+        self.tune_lock_qualified = false;
         if backend_stopped {
             self.last_error = Some(error);
             self.mark_idle();
@@ -466,6 +477,7 @@ impl FrontendRuntime {
         self.active_tune_request = None;
         self.scan_session = None;
         self.signal_state = FrontendSignalState::Unknown;
+        self.tune_lock_qualified = false;
         if backend_stopped {
             self.last_error = Some(error);
             self.mark_idle();
@@ -479,11 +491,13 @@ impl FrontendRuntime {
         self.clear_live_reader_descriptor();
         self.active_tune_request = None;
         self.signal_state = FrontendSignalState::Unknown;
+        self.tune_lock_qualified = false;
         self.mark_idle();
     }
 
     pub fn clear_live_reader_and_mark_closing(&mut self) {
         self.clear_live_reader_descriptor();
+        self.tune_lock_qualified = false;
         self.mark_closing();
     }
 
@@ -499,6 +513,28 @@ impl FrontendRuntime {
             ));
         }
         self.signal_state = signal_state;
+        if signal_state != FrontendSignalState::Locked {
+            self.tune_lock_qualified = false;
+        }
+        Ok(())
+    }
+
+    pub fn record_tune_lock_qualified(&mut self, generation: u64) -> Result<(), HalError> {
+        if generation != self.generation
+            || !matches!(
+                self.state,
+                FrontendRuntimeState::Tuning {
+                    generation: current
+                } if current == generation
+            )
+            || self.signal_state != FrontendSignalState::Locked
+        {
+            return Err(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "tune lock qualification requires the current locked tune generation",
+            ));
+        }
+        self.tune_lock_qualified = true;
         Ok(())
     }
 
@@ -566,6 +602,7 @@ impl FrontendRuntime {
                 generation: current
             } if current == generation
         ) || self.signal_state != FrontendSignalState::Locked
+            || !self.tune_lock_qualified
             || self.active_tune_request.as_ref() != Some(request)
         {
             return Err(HalError::internal(
@@ -632,6 +669,7 @@ impl FrontendRuntime {
         });
         self.live_reader_descriptor = None;
         self.signal_state = FrontendSignalState::Unknown;
+        self.tune_lock_qualified = false;
         self.state = FrontendRuntimeState::Idle;
         Ok(())
     }
@@ -658,6 +696,7 @@ impl FrontendRuntime {
         session.fail_backend();
         self.live_reader_descriptor = None;
         self.signal_state = FrontendSignalState::Unknown;
+        self.tune_lock_qualified = false;
         self.last_error = Some(HalError::internal(
             HalInternalKind::InvariantViolation,
             "scan backend failure",
@@ -697,6 +736,7 @@ impl FrontendRuntime {
         });
         self.live_reader_descriptor = None;
         self.signal_state = FrontendSignalState::Unknown;
+        self.tune_lock_qualified = false;
         self.last_error = Some(error);
         self.state = FrontendRuntimeState::Idle;
         Ok(())
@@ -725,6 +765,8 @@ impl FrontendRuntime {
             ));
         }
         let has_next = session.advance_after_candidate()?.is_some();
+        self.signal_state = FrontendSignalState::Unknown;
+        self.tune_lock_qualified = false;
         if !has_next {
             self.record_terminal_event(FrontendTerminalEvent {
                 generation,
@@ -760,6 +802,8 @@ impl FrontendRuntime {
         }
         session.mark_locked_reported()?;
         self.live_reader_descriptor = None;
+        self.signal_state = FrontendSignalState::Unknown;
+        self.tune_lock_qualified = false;
         self.state = FrontendRuntimeState::Idle;
         Ok(())
     }
@@ -801,6 +845,8 @@ impl FrontendRuntime {
             reason: FrontendTerminalEventReason::End,
         });
         self.live_reader_descriptor = None;
+        self.signal_state = FrontendSignalState::Unknown;
+        self.tune_lock_qualified = false;
         self.state = FrontendRuntimeState::Idle;
         Ok(())
     }
@@ -831,6 +877,8 @@ impl FrontendRuntime {
             reason: FrontendTerminalEventReason::End,
         });
         self.live_reader_descriptor = None;
+        self.signal_state = FrontendSignalState::Unknown;
+        self.tune_lock_qualified = false;
         self.state = FrontendRuntimeState::Idle;
         Ok(())
     }
@@ -864,6 +912,7 @@ impl FrontendRuntime {
         });
         self.live_reader_descriptor = None;
         self.signal_state = FrontendSignalState::Unknown;
+        self.tune_lock_qualified = false;
         self.mark_failed(error);
         Ok(())
     }
@@ -898,6 +947,7 @@ impl FrontendRuntime {
         self.live_reader_descriptor = None;
         self.active_tune_request = None;
         self.signal_state = FrontendSignalState::Unknown;
+        self.tune_lock_qualified = false;
         self.last_error = Some(error);
         self.state = FrontendRuntimeState::Idle;
         Ok(())
@@ -929,6 +979,7 @@ impl FrontendRuntime {
         self.live_reader_descriptor = None;
         self.active_tune_request = None;
         self.signal_state = FrontendSignalState::NoSignal;
+        self.tune_lock_qualified = false;
         self.state = FrontendRuntimeState::Idle;
         Ok(())
     }
@@ -962,6 +1013,8 @@ impl FrontendRuntime {
             "IFrontendCallback.onScanMessage",
             "scan callback delivery failed",
         ));
+        self.signal_state = FrontendSignalState::Unknown;
+        self.tune_lock_qualified = false;
         self.state = FrontendRuntimeState::Idle;
         Ok(())
     }
@@ -1199,6 +1252,68 @@ mod tests {
     }
 
     #[test]
+    fn new_generation_rejects_stale_signal_readback() {
+        let mut runtime = FrontendRuntime::new(7, FrontendBackendKind::Px4CharDevice);
+        runtime.commit_generation(1).unwrap();
+        runtime.mark_tuning(1);
+        runtime.commit_generation(2).unwrap();
+        runtime.mark_tuning(2);
+
+        assert!(runtime
+            .record_signal_state(1, FrontendSignalState::Locked)
+            .is_err());
+        assert_eq!(
+            runtime.snapshot().signal_state,
+            FrontendSignalState::Unknown
+        );
+    }
+
+    #[test]
+    fn tune_lock_qualification_is_generation_bound_and_cleared_on_lock_loss() {
+        let mut runtime = FrontendRuntime::new(7, FrontendBackendKind::Px4CharDevice);
+        let request = FrontendTuneRequest {
+            system: maleicacid_tuner_hal2_common::FrontendSystem::IsdbT,
+            frequency: 473_142_857,
+            end_frequency: None,
+            stream_id: None,
+            stream_id_kind: None,
+            bandwidth_hz: Some(6_000_000),
+            symbol_rate: None,
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Required(
+                    true,
+                ),
+        };
+        runtime.commit_generation(1).unwrap();
+        runtime.mark_tuning(1);
+        runtime
+            .commit_active_tune_request(1, request.clone())
+            .unwrap();
+        runtime
+            .record_signal_state(1, FrontendSignalState::Locked)
+            .unwrap();
+        assert!(!runtime.snapshot().tune_lock_qualified);
+        assert!(runtime.commit_stable_tune_reentry(1, &request).is_err());
+
+        runtime.record_tune_lock_qualified(1).unwrap();
+        assert!(runtime.snapshot().tune_lock_qualified);
+        assert_eq!(runtime.commit_stable_tune_reentry(1, &request), Ok(2));
+
+        runtime
+            .record_signal_state(1, FrontendSignalState::NoSignal)
+            .unwrap();
+        assert!(!runtime.snapshot().tune_lock_qualified);
+
+        runtime.commit_generation(2).unwrap();
+        runtime.mark_tuning(2);
+        runtime
+            .record_signal_state(2, FrontendSignalState::Locked)
+            .unwrap();
+        assert!(runtime.record_tune_lock_qualified(1).is_err());
+        assert!(!runtime.snapshot().tune_lock_qualified);
+    }
+
+    #[test]
     fn active_scan_cancel_records_terminal_diagnostic() {
         let mut runtime = FrontendRuntime::new(7, FrontendBackendKind::Px4CharDevice);
         runtime.commit_generation(1).unwrap();
@@ -1240,6 +1355,8 @@ mod tests {
             stream_id_kind: None,
             bandwidth_hz: Some(6_000_000),
             symbol_rate: None,
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
         assert!(runtime.begin_scan_session(2, "bad", vec![request]).is_err());
     }
@@ -1278,6 +1395,8 @@ mod tests {
             stream_id_kind: None,
             bandwidth_hz: Some(6_000_000),
             symbol_rate: None,
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
         runtime
             .begin_scan_session(1, "scan", vec![request])

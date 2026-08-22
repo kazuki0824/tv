@@ -39,6 +39,8 @@ mod tests {
             stream_id_kind: None,
             bandwidth_hz: None,
             symbol_rate: None,
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
         let candidates = dvb_scan_requests(&base, FrontendScanMode::Auto).unwrap();
         assert_eq!(candidates.len(), 1);
@@ -55,6 +57,8 @@ mod tests {
             stream_id_kind: Some(FrontendStreamIdKind::AbsoluteStreamId),
             bandwidth_hz: None,
             symbol_rate: None,
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
         assert_eq!(
             dvb_scan_requests(&base, FrontendScanMode::Auto).unwrap(),

@@ -226,6 +226,10 @@ fn deliver_tune_event_callback(
             FrontendEventType::LOCKED,
             "IFrontendCallback.onEvent(LOCKED)",
         ),
+        FrontendTuneNotification::LostLock => (
+            FrontendEventType::LOST_LOCK,
+            "IFrontendCallback.onEvent(LOST_LOCK)",
+        ),
         FrontendTuneNotification::NoSignal => (
             FrontendEventType::NO_SIGNAL,
             "IFrontendCallback.onEvent(NO_SIGNAL)",

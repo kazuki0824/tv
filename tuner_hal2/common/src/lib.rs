@@ -505,6 +505,12 @@ impl FrontendDevicePath {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrontendIsdbtPartialReceptionRequirement {
+    Unspecified,
+    Required(bool),
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FrontendTuneRequest {
     pub system: FrontendSystem,
@@ -514,6 +520,7 @@ pub struct FrontendTuneRequest {
     pub stream_id_kind: Option<FrontendStreamIdKind>,
     pub bandwidth_hz: Option<u32>,
     pub symbol_rate: Option<u32>,
+    pub partial_reception: FrontendIsdbtPartialReceptionRequirement,
 }
 
 impl FrontendTuneRequest {

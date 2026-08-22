@@ -370,10 +370,7 @@ fn frontend_status_caps_for_snapshot(
 ) -> Vec<FrontendStatusType> {
     // optional telemetryは保守的に扱う。tune/scan backend runtime接続前は決定的な状態fieldだけをadvertiseする。
     // LNB voltageは、systemがISDB-Sであるだけではなく、frontend exportとexported LNBがprobe/registry由来の同じ固定LNB profileを共有する場合だけadvertiseする。
-    let mut caps = Vec::new();
-    if snapshot.backend == FrontendBackendKind::LinuxDvb {
-        caps.push(FrontendStatusType::DEMOD_LOCK);
-    }
+    let mut caps = vec![FrontendStatusType::DEMOD_LOCK];
     if lnb_profile_supports_voltage_status(snapshot.lnb_profile) {
         caps.push(FrontendStatusType::LNB_VOLTAGE);
     }
@@ -770,7 +767,7 @@ mod tests {
     }
 
     #[test]
-    fn px4_does_not_advertise_current_demod_lock_readback() {
+    fn every_published_frontend_advertises_current_demod_lock_readback() {
         let capability = maleicacid_tuner_hal2_service_runtime::FrontendCapabilitySnapshot {
             scalar: maleicacid_tuner_hal2_service_runtime::FrontendScalarCapability {
                 min_frequency_hz: 1,
@@ -794,9 +791,7 @@ mod tests {
             ..px4
         };
 
-        assert!(!frontend_status_caps_for_snapshot(&px4)
-            .contains(&FrontendStatusType::DEMOD_LOCK));
-        assert!(frontend_status_caps_for_snapshot(&dvb)
-            .contains(&FrontendStatusType::DEMOD_LOCK));
+        assert!(frontend_status_caps_for_snapshot(&px4).contains(&FrontendStatusType::DEMOD_LOCK));
+        assert!(frontend_status_caps_for_snapshot(&dvb).contains(&FrontendStatusType::DEMOD_LOCK));
     }
 }

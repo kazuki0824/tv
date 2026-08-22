@@ -11,8 +11,8 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     FrontendScanType::FrontendScanType, FrontendSettings::FrontendSettings,
 };
 use maleicacid_tuner_hal2_common::{
-    is_japan_cs110_if_frequency_hz, FrontendScanMode, FrontendStreamIdKind, FrontendSystem,
-    FrontendTuneRequest, HalError, HalInvalidArgumentKind,
+    is_japan_cs110_if_frequency_hz, FrontendIsdbtPartialReceptionRequirement, FrontendScanMode,
+    FrontendStreamIdKind, FrontendSystem, FrontendTuneRequest, HalError, HalInvalidArgumentKind,
 };
 
 const AOSP_TUNER_INVALID_STREAM_ID: i32 = 0xFFFF;
@@ -36,17 +36,17 @@ fn map_isdbt_bandwidth(bandwidth: FrontendIsdbtBandwidth) -> Option<u32> {
 }
 
 fn is_single_known_enum_value(raw: i32, highest_known_bit: i32) -> bool {
-    raw == 0 || (raw > 0 && raw <= highest_known_bit && raw.is_power_of_two())
+    raw == 0 || (raw > 0 && raw <= highest_known_bit && raw.count_ones() == 1)
 }
 
-fn unsupported_frontend_setting(
+fn unsupported_frontend_setting<T>(
     feature: &'static str,
     detail: &'static str,
-) -> Result<(), HalError> {
+) -> Result<T, HalError> {
     Err(HalError::unsupported_detail(feature, detail))
 }
 
-fn invalid_frontend_setting(detail: &'static str) -> Result<(), HalError> {
+fn invalid_frontend_setting<T>(detail: &'static str) -> Result<T, HalError> {
     Err(HalError::invalid_argument(
         HalInvalidArgumentKind::NumericRange,
         detail,
@@ -121,13 +121,13 @@ fn validate_isdbt_fixed_settings(
         )?;
     }
     match s.partialReceptionFlag {
-        FrontendIsdbtPartialReceptionFlag::UNDEFINED => {}
-        FrontendIsdbtPartialReceptionFlag::AUTO
+        FrontendIsdbtPartialReceptionFlag::UNDEFINED
         | FrontendIsdbtPartialReceptionFlag::FALSE
-        | FrontendIsdbtPartialReceptionFlag::TRUE => {
+        | FrontendIsdbtPartialReceptionFlag::TRUE => {}
+        FrontendIsdbtPartialReceptionFlag::AUTO => {
             unsupported_frontend_setting(
                 "isdbt.partialReceptionFlag",
-                "explicit ISDB-T partial reception flag is not supported",
+                "ISDB-T partial reception AUTO is not supported",
             )?;
         }
         _ => {
@@ -174,6 +174,27 @@ fn validate_isdbt_fixed_settings(
         }
     }
     Ok(())
+}
+
+fn map_isdbt_partial_reception(
+    value: FrontendIsdbtPartialReceptionFlag,
+) -> Result<FrontendIsdbtPartialReceptionRequirement, HalError> {
+    match value {
+        FrontendIsdbtPartialReceptionFlag::UNDEFINED => {
+            Ok(FrontendIsdbtPartialReceptionRequirement::Unspecified)
+        }
+        FrontendIsdbtPartialReceptionFlag::FALSE => {
+            Ok(FrontendIsdbtPartialReceptionRequirement::Required(false))
+        }
+        FrontendIsdbtPartialReceptionFlag::TRUE => {
+            Ok(FrontendIsdbtPartialReceptionRequirement::Required(true))
+        }
+        FrontendIsdbtPartialReceptionFlag::AUTO => unsupported_frontend_setting(
+            "isdbt.partialReceptionFlag",
+            "ISDB-T partial reception AUTO is not supported",
+        ),
+        _ => invalid_frontend_setting("ISDB-T partialReceptionFlag contains a reserved enum value"),
+    }
 }
 
 fn validate_isdbs_fixed_settings(
@@ -301,6 +322,7 @@ pub fn aidl_frontend_settings_to_request(
                 stream_id_kind: None,
                 bandwidth_hz: map_isdbt_bandwidth(s.bandwidth),
                 symbol_rate: None,
+                partial_reception: map_isdbt_partial_reception(s.partialReceptionFlag)?,
             })
         }
         FrontendSettings::Isdbs(s) => {
@@ -318,6 +340,7 @@ pub fn aidl_frontend_settings_to_request(
                 stream_id_kind,
                 bandwidth_hz: None,
                 symbol_rate: None,
+                partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
             })
         }
         FrontendSettings::Isdbs3(_) => Err(HalError::Unsupported(
@@ -387,7 +410,17 @@ mod tests {
 
     #[test]
     fn isdbt_auto_segment_and_unspecified_constraints_are_accepted() {
-        assert_eq!(validate_isdbt_fixed_settings(&valid_isdbt_settings()), Ok(()));
+        assert_eq!(
+            validate_isdbt_fixed_settings(&valid_isdbt_settings()),
+            Ok(())
+        );
+        let request =
+            aidl_frontend_settings_to_request(&FrontendSettings::Isdbt(valid_isdbt_settings()))
+                .unwrap();
+        assert_eq!(
+            request.partial_reception,
+            FrontendIsdbtPartialReceptionRequirement::Unspecified
+        );
     }
 
     #[test]
@@ -432,7 +465,7 @@ mod tests {
     }
 
     #[test]
-    fn isdbt_explicit_inversion_and_partial_reception_are_unavailable() {
+    fn isdbt_explicit_inversion_and_auto_partial_reception_are_unavailable() {
         let mut inversion = valid_isdbt_settings();
         inversion.inversion = FrontendSpectralInversion::NORMAL;
         assert!(matches!(
@@ -446,6 +479,26 @@ mod tests {
             validate_isdbt_fixed_settings(&partial),
             Err(HalError::UnsupportedDetail { .. })
         ));
+    }
+
+    #[test]
+    fn isdbt_explicit_partial_reception_boolean_is_preserved() {
+        for (flag, expected) in [
+            (
+                FrontendIsdbtPartialReceptionFlag::FALSE,
+                FrontendIsdbtPartialReceptionRequirement::Required(false),
+            ),
+            (
+                FrontendIsdbtPartialReceptionFlag::TRUE,
+                FrontendIsdbtPartialReceptionRequirement::Required(true),
+            ),
+        ] {
+            let mut settings = valid_isdbt_settings();
+            settings.partialReceptionFlag = flag;
+            let request =
+                aidl_frontend_settings_to_request(&FrontendSettings::Isdbt(settings)).unwrap();
+            assert_eq!(request.partial_reception, expected);
+        }
     }
 
     #[test]
