@@ -186,8 +186,8 @@ Programs.COLUMN_LONG_DESCRIPTION のUI補足:
 
 Programs.COLUMN_INTERNAL_PROVIDER_DATA:
   JSON v1 UTF-8 バイト列のみを新規書き込み正形式とする。
-  `schema`, `schemaVersion`, `programKey`, `serviceKey`, `timing`, `source`, `cas`, `ratings`, `genres`, `series`, `relatedItems`, `linkage`, `freeCaMode`, `audioLanguages`, `audio`, `video`, `extendedItems`, `components`, `diagnostics` を最上位フィールドとして持つ。
-  provider-data JSON v1 の構造、canonical encode、正規化、安定キー抽出は `arib_si_engine_rs/DESIGN_JA.md` の `ProgramProviderDataV1` / `ChannelProviderDataV1` を SSOT とする。provider-data単体のdigestまたはsignatureは生成せず、同一process内の重複書き込み抑止にはprovider-data bytesを含むTvProvider行全体のpublish fingerprintだけを使用する。TvProvider row id に依存する現在番組選択の診断は provider-data へ永続化せず、TIS の process-local 診断に限定する。
+  provider-data JSON v1 の最上位フィールド、必須性、nested構造は本書で列挙・再定義せず、`arib_si_engine_rs/DESIGN_JA.md` の `ProgramProviderDataV1` / `ChannelProviderDataV1` と `arib_si_engine_rs/schema/*.schema.json` を唯一の正本とする。
+  provider-data JSON v1 のcanonical encode、正規化、安定キー抽出も同じ正本に従う。provider-data単体のdigestまたはsignatureは生成せず、同一process内の重複書き込み抑止にはprovider-data bytesを含むTvProvider行全体のpublish fingerprintだけを使用する。TvProvider row id に依存する現在番組選択の診断は provider-data へ永続化せず、TIS の process-local 診断に限定する。
   長形式イベント項目リスト、component/audio/series/linkage/event_group/free_CA_mode/audioLanguages等の完全構造、decode/publishability/記述子診断情報は JSON v1 内に保存する。
 
 Channels.COLUMN_TYPE:
