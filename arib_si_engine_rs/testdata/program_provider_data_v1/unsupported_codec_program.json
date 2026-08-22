@@ -27,9 +27,7 @@
   },
   "cas": {
     "requiresCas": false,
-    "unsupportedCas": false,
-    "clearLivePlaybackSupported": true,
-    "source": "CURRENT_DIAGNOSTIC"
+    "source": "SI_SEMANTICS"
   },
   "ratings": [],
   "genres": [
@@ -38,7 +36,6 @@
       "level2": 0,
       "userNibble": 0,
       "aribName": "ニュース／報道",
-      "unmappedReason": null,
       "parseStatus": "OK"
     }
   ],
@@ -51,8 +48,6 @@
     "parseStatus": "OK"
   },
   "audioLanguages": [],
-  "audio": null,
-  "video": null,
   "extendedItems": [],
   "components": {
     "video": [
@@ -62,8 +57,8 @@
         "componentTag": 1,
         "componentType": 0,
         "codec": "HEVC",
-        "diagnosticCode": "UNSUPPORTED_R51_CODEC",
-        "parseStatus": "UNSUPPORTED_R51"
+        "diagnosticCode": "CODEC_SIGNALING_OBSERVED",
+        "parseStatus": "OK"
       }
     ],
     "audio": [
@@ -74,8 +69,8 @@
         "componentType": 0,
         "codec": "MPEG-4-AAC-LATM",
         "language": "jpn",
-        "diagnosticCode": "UNSUPPORTED_R51_CODEC",
-        "parseStatus": "UNSUPPORTED_R51"
+        "diagnosticCode": "CODEC_SIGNALING_OBSERVED",
+        "parseStatus": "OK"
       }
     ],
     "subtitle": [],
