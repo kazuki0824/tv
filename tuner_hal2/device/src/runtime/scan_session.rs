@@ -199,7 +199,6 @@ mod tests {
                 maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         }
     }
-
     #[test]
     fn scan_session_rejects_empty_candidates() {
         assert!(FrontendScanSession::start(1, "empty", Vec::new()).is_err());

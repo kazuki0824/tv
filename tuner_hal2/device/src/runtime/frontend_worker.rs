@@ -146,9 +146,9 @@ impl FrontendBackendSubmitDetachedJoin {
 
     fn try_complete(mut self) -> FrontendWorkerStopPoll {
         let Some(result) = self.ticket.try_complete_cleanup() else {
-            return FrontendWorkerStopPoll::Pending(
-                FrontendWorkerStopTicket::backend_submit_join(self),
-            );
+            return FrontendWorkerStopPoll::Pending(FrontendWorkerStopTicket::backend_submit_join(
+                self,
+            ));
         };
         FrontendWorkerStopPoll::Completed(FrontendWorkerStopOutcome::Completed {
             frontend_id: self.frontend_id,
