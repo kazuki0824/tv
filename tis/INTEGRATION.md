@@ -1,6 +1,6 @@
 # MaleicacidTvInput 統合手順
 
-この文書は `tis/` の product 統合条件を固定する。Tuner HAL 側の統合手順は `tuner_hal2/INTEGRATION.md` を正とし、この文書には重複して記載しない。
+この文書は `tis/` の product 統合条件を固定する。Tuner HAL 側の統合手順は `tuner_hal2/INTEGRATION.md` を正とし、この文書には重複して記載しない。TIS の runtime 状態遷移、TvProvider 利用、Direct Boot の保留・再試行、ライブセッション優先順位、録画 API、視聴年齢制限、CAS 状態写像は `DESIGN_JA.md` を正とし、本書では再定義しない。
 
 ## product package
 
@@ -26,7 +26,6 @@ PRODUCT_COPY_FILES += \
 `MaleicacidTvInput` の `<uses-feature android:name="android.software.live_tv" />` は APK の要求であり、device feature 宣言の代替ではない。TIF 対応 product では上記 feature XML を product image へ配置する。
 
 CAS HAL 仮実装は TIS 初回ビルド確認ゲートへ含めない。
-
 
 ## libaribcaption Soong / renderer 統合
 
@@ -58,24 +57,18 @@ ARIB字幕表示の product 統合では、repoで供給される `libaribcaptio
 /product/priv-app/MaleicacidTvInput/lib/<abi>/libmaleicacid_arib_caption_jni.so
 ```
 
+## 録画・予約の product 統合境界
 
-## 録画・予約の除外
-
-現行 product 統合では `rec/` 配下の予約録画 サービス / receiver / test module を product package または release確認条件へ入れない。TIS メタデータは `android:canRecord="false"` を維持し、`onCreateRecordingSession()` は `null` を返す状態を 現行仕様の正とする。
+現行 product 統合では `rec/` 配下の予約録画サービス、receiver、test module を product package または release確認条件へ入れない。TIS manifest metadata は `android:canRecord="false"` を維持する。`TvInputService` の録画 API に対する runtime 契約は `DESIGN_JA.md` を正とする。
 
 `MaleicacidRecScopeTests` は録画・予約作業で明示指定して使う範囲に限定し、現行 product の build / atest / VTS / 実機確認 gate へ混ぜない。
 
-## Direct Boot と起動時の受信処理
+## Direct Boot の product 統合条件
 
-TIS は `directBootAware=true` を維持する。`AndroidManifest.xml` には `<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />` を宣言し、`BootReceiver` は `android:directBootAware="true"` とする。`BootReceiver` は `ACTION_LOCKED_BOOT_COMPLETED` と `ACTION_BOOT_COMPLETED` の双方を受信対象にする。`ACTION_LOCKED_BOOT_COMPLETED` ではデバイス保護領域に `DirectBootEpgPending` だけを記録し、TvProvider、Tuner、JNI 経由の解析処理は起動しない。
+TIS は `directBootAware=true` を維持する。`AndroidManifest.xml` には `<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />` を宣言し、`BootReceiver` は `android:directBootAware="true"` とする。`BootReceiver` の intent filter は `ACTION_LOCKED_BOOT_COMPLETED` と `ACTION_BOOT_COMPLETED` を含める。`ACTION_USER_UNLOCKED` は manifest receiver の対象にしない。
 
-`BootReceiver.onReceive()` は既知の起動通知を判別し、`DirectBootEpgPending` を確認して、必要なら Android 標準の `JobScheduler` に固定識別子の `BootEpgSyncJobService` を登録するところまでで終了する。EPG の収集、Tuner の使用、TvProvider への反映処理は `BroadcastReceiver.onReceive()` の寿命では実行しない。`BootEpgSyncJobService` は `AndroidManifest.xml` で `android.permission.BIND_JOB_SERVICE` により保護し、利用者のロック解除後だけ実行対象にする。
+`BootEpgSyncJobService` は `AndroidManifest.xml` に service として宣言し、`android.permission.BIND_JOB_SERVICE` で保護する。`BootReceiver`、`BootEpgSyncJobService`、`DirectBootEpgPending`、`BootEpgSyncCoordinator` の実行時役割、ジョブ登録・再試行、保留解除、開始条件、ライブセッションとの優先順位は `DESIGN_JA.md` を正とし、本書では状態遷移を再定義しない。
 
-起動時 EPG 同期用の `JobInfo` は再起動をまたいで永続化しない。再起動をまたぐ正本はデバイス保護領域の `DirectBootEpgPending` だけとし、再起動後は起動通知から同じジョブ登録判定を行う。ジョブ識別子は起動時 EPG 同期用に固定し、`JobScheduler.getPendingJob()` で同じジョブが登録済みなら再登録しない。`BootEpgSyncJobService.onStartJob()` はロック解除、`DirectBootEpgPending`、開始条件を再確認し、処理を開始する場合は `BootEpgSyncCoordinator` へ引き渡して `true` を返す。`BootEpgSyncCoordinator` は同一プロセス内で `inputId` ごとの起動時 EPG 同期を一度に1件だけ実行する。処理完了時は `jobFinished()` で終了を通知し、成功時は再試行を要求せず、未完了または失敗で `DirectBootEpgPending` が残る場合は再試行を要求する。`JobScheduler` が処理を中断して `onStopJob()` を呼んだ場合は進行中の走査と Tuner 資源を停止・解放し、`DirectBootEpgPending` が残る限り再試行を要求する。
-
-`ACTION_BOOT_COMPLETED` は利用者のロック解除後に起動時 EPG 同期へ入る正規の入口とするが、この通知単独を無条件の再開保証とはしない。Android の背景実行制限などで通知が遅延しても状態を失わないよう、`DirectBootEpgPending` をデバイス保護領域に維持する。`ACTION_BOOT_COMPLETED` では `UserManager.isUserUnlocked()==true` を確認し、`DirectBootEpgPending=true` なら同じ開始判定へ進む。`ACTION_USER_UNLOCKED` は `AndroidManifest.xml` に登録せず、プロセスが利用者のロック解除まで生存している場合に動的な受信から同じ開始判定を前倒しする補助経路に限定する。`MaleicacidTvInputService.onCreate()` は Direct Boot の保留処理、起動時の EPG 同期、定期保守を直接開始してはならない。
-
-起動時の EPG 同期と定期保守を開始できるのは、ライブセッション、セッション作成中、設定用の走査、再生処理、走査管理処理がすべて存在しない場合だけとする。開始条件を満たさない場合は `DirectBootEpgPending` を維持して開始を見送る。ライブセッション終了、セッション作成終了、設定用走査終了、再生処理終了、走査管理処理終了など、開始を妨げる状態の更新後に全開始条件が不成立から成立へ変わった場合は、同じ `DirectBootEpgPending` を再評価する。保留中なら `JobScheduler` に同じ固定識別子の `BootEpgSyncJobService` を登録する判定へ進む。周期的な監視、新しい永続待ち行列、独自の定期実行機構をこの再評価のために追加しない。すでに起動時の EPG 同期または定期保守が実行中の状態でライブセッション作成要求が来た場合は、当該処理を停止または延期し、ライブ視聴の選局を優先する。
 ## flash 後の確認
 
 ```bash
@@ -87,18 +80,13 @@ adb shell dumpsys tv_input | grep -i Maleicacid
 
 ## TIS discovery 確認
 
-システムTVアプリから設定画面 を起動でき、setup 後に少なくとも 1 つの 非スクランブル視聴可能チャンネルが `TvContract.Channels` に登録されることを確認する。TIS は Tuner HAL binder を直接呼ばず、Tuner SDK API 経由で Tuner HAL にアクセスする。
+システムTVアプリから設定画面を起動でき、setup 後に少なくとも1つの非スクランブル視聴可能チャンネルが `TvContract.Channels` に登録されることを確認する。runtime の channel 登録条件と Tuner SDK API 利用境界は `DESIGN_JA.md` を正とする。
 
+## 視聴年齢制限 / CAS の product 統合確認
 
-## 視聴年齢制限 / CAS 代替処理 統合確認
+product のシステムTVアプリ / rating definitions に、`DESIGN_JA.md` と `../ARIB_SI_EPG_TvProvider投影方針.md` が使用する AOSP system-defined ISDB rating が存在することを確認する。視聴制限判定、`notifyContentBlocked()`、unblock identity、CAS unavailable reason、provider-data の意味論はそれぞれの設計正本を参照し、本書では再定義しない。
 
-- product の システムTVアプリ / レーティング definitions に `domain=com.android.tv`, `ratingSystem=ISDB`, `rating=ISDB_4..ISDB_20` が存在することを確認する。
-- `TvProvider.Programs.COLUMN_CONTENT_RATING` に `com.android.tv/ISDB/ISDB_<age>` 相当の `TvContentRating.flattenToString()` が入ることを確認する。
-- `Programs.COLUMN_INTERNAL_PROVIDER_DATA` に CAS 状態、`publishStateSource`、raw 視聴年齢制限 診断JSONが残ることを確認する。
-- parental controls enabled + blocked レーティング で `notifyContentBlocked()` が発生し、parental block を理由に `notifyVideoUnavailable()` を呼ばずに AV再生が停止または開始抑止されることを確認する。
-- `onUnblockContent()` 後は同一 `channelUri + serviceKey + eventId + ratingString` の 現在番組 / レーティングに限って playback retry が許可されることを確認する。start/end は現在表示中の Program row 照合用の補助条件であり、stable identity や provider-data `programKey` の構成要素ではないことを確認する。
-- scrambled unsupported サービスは parental allowed でも playback success にせず、`notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN)` を使うことを確認する。
-
+`MaleicacidTvInputAcceptanceTests` と実機確認では、設計正本に定義された視聴年齢制限、CAS 仮実装境界、TvProvider 投影が product integration 後も成立することを確認する。
 
 ## ビルド・試験確認ゲート
 
@@ -140,7 +128,7 @@ atest \
 
 ```text
 - provider-data JSON v1、descriptor 診断、未対応 codec 試験データは maleicacid_arib_si_engine_rs_test と MaleicacidTvInputAcceptanceTests で確認する。
-- TvProvider 標準列投影、字幕トラック、視聴年齢制限、CAS 仮実装 境界、設定、scan、チャンネル登録 は MaleicacidTvInputAcceptanceTests の対象とする。
+- TvProvider 標準列投影、字幕トラック、視聴年齢制限、CAS 仮実装境界、設定、scan、チャンネル登録は MaleicacidTvInputAcceptanceTests の対象とする。
 - 録画・予約は現行 product の確認対象外とし、MaleicacidRecScopeTests は録画・予約作業で明示指定して使う。
 ```
 
@@ -156,8 +144,8 @@ adb shell dumpsys tv_input | grep -i Maleicacid
 合格条件:
 
 ```text
-- システムTVアプリから設定画面 を起動できる。
-- setup 後に少なくとも 1 つの 非スクランブル視聴可能チャンネルが TvContract.Channels に登録される。
-- TIS は Tuner HAL binder を直接呼ばず、Tuner SDK API 経由で Tuner HAL にアクセスする。
-- android:canRecord="false" を維持する。
+- システムTVアプリから設定画面を起動できる。
+- setup 後に少なくとも1つの非スクランブル視聴可能チャンネルが TvContract.Channels に登録される。
+- product image に必要な feature / permission / JNI library が配置される。
+- android:canRecord="false" が product manifest metadata に反映される。
 ```

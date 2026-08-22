@@ -38,7 +38,7 @@ partial snapshot は サービス単位の登録可能判定に使ってよい�
 
 ## Tuner SDK API 呼び出し
 
-`openDescrambler()`、`setKeyToken()`、`addPid()`、`removePid()` は reflection を使わず、対象 build の system/privileged API として直接呼ぶ。API が利用できない build は現行 product 対象外とする。
+`openDescrambler()`、`setKeyToken()`、`addPid()`、`removePid()` は reflection を使わず、対象 build の system/privileged API として直接呼ぶ。本製品buildはこれらのAPIを提供するplatformと一体で構成することを恒久的なintegration prerequisiteとし、欠くbuildを本製品構成として成立させない。runtimeでreflection、代替API、HAL binder直呼びへfallbackしてこの前提を回避しない。
 
 ## 再生経路
 
@@ -212,7 +212,11 @@ EIT 更新時の update/削除区間 は、追加・変更・削除された eve
 
 Direct Boot保留の正式状態を`DirectBootEpgPending`とする。`BootEpgSyncCoordinator`がinputIdごとにdevice-protected storage上のこの状態を所有し、boot EPG sync要求を受理した時点または未完了・失敗終了時に設定する。状態はprocess restartとuser unlockをまたいで保持し、background maintenanceは設定・解除しない。
 
-同一boot EPG sync taskがcancelされず、`collectSiForCandidate()`が`COMPLETE`となるcandidateを1件以上得て、登録対象channel／Programに必要なTvProvider必須問い合わせとinsert/update/deleteが一つのpublish transactionとして全て成功したcommit後にだけ`DirectBootEpgPending`を解除する。provider query/write failure、publish fingerprint生成失敗、cancel、登録可能サービス0件では保留を維持する。candidate成功だけ、部分write、またはfingerprint cache更新だけを解除根拠にしない。
+`BootEpgSyncCoordinator` は Tuner や SI collection を開始する前に、解決済みの自 TIS `inputId` を使って既存 `TvContract.Channels` を必須問い合わせとして取得し、今回の boot EPG sync の authoritative target channel 集合を確定する。この必須問い合わせ自体が失敗した場合は channel なしとは扱わず `DirectBootEpgPending` を維持して再試行対象にする。問い合わせが正常終了し、自 TIS 所有の既存 channel が 0 件だった場合は、boot EPG sync に更新対象が存在しない `NO_WORK` 正常終了とする。この場合は Tuner、SI collection、Programs publish/delete を開始せず `DirectBootEpgPending` を解除し、JobScheduler の再試行を要求しない。setup / explicit rescan はこの `NO_WORK` 判定とは独立した channel 登録経路であり、boot EPG sync は 0 件状態から channel を作成しない。
+
+既存 target channel が 1 件以上ある場合は、同一boot EPG sync taskがcancelされず、`collectSiForCandidate()`が`COMPLETE`となるcandidateを1件以上得て、対象channel／Programに必要なTvProvider必須問い合わせとinsert/update/deleteが一つのpublish transactionとして全て成功したcommit後にだけ`DirectBootEpgPending`を解除する。provider query/write failure、publish fingerprint生成失敗、cancel、target channel が存在するのに登録可能サービスまたはpublish可能Programが0件となった場合は保留を維持する。candidate成功だけ、部分write、またはfingerprint cache更新だけを解除根拠にしない。したがって `NO_WORK` は「開始前のauthoritative channel queryが正常終了し、その結果が0件」の場合だけであり、受信失敗やSI不完全、publishability不足を0件成功へ丸めない。
+
+最低試験は、(1) authoritative channel query failure では Tuner を開始せず pending を維持して再試行すること、(2) query 成功かつ自TIS所有channel 0件では Tuner / SI collection / Programs publish-delete を開始せず `NO_WORK` として pending を解除し再試行しないこと、(3) target channel が1件以上あるが全candidate失敗またはpublish可能対象0件の場合は pending を維持すること、(4) target channel が1件以上ありpublish transactionが正常commitした場合だけ通常成功としてpendingを解除すること、を含める。
 
 登録可能サービスは、`ServiceKey`、物理選局情報へ戻せるchannel provider-data、`Channels.COLUMN_INPUT_ID`として保存する自TISのinputId、表示名が揃い、TvProvider channel insert/update に進めるサービスとする。input ownershipのSSOTはprovider-dataではなく`Channels.COLUMN_INPUT_ID`とする。表示名は `ChannelRecord.displayName` が nonblank ならそれを使い、なければ SDT service_name、さらに無ければ `service-<onid>-<tsid>-<sid>` を使う。この 代替処理名は 登録可能判定上の有効な 表示名と扱う。
 
@@ -389,7 +393,7 @@ SetupActivity は自分が開始した `SETUP_SCAN` purpose かつ同一 scan ge
 
 `BootReceiver.onReceive()` は保留状態を確認し、必要なら Android 標準の `JobScheduler` に固定識別子の `BootEpgSyncJobService` を登録するところまでで終了する。EPG の収集、Tuner の使用、TvProvider への反映処理は `BroadcastReceiver` の実行時間へ結びつけず、`android.permission.BIND_JOB_SERVICE` で保護した `BootEpgSyncJobService` の実行寿命下で行う。起動時 EPG 同期用の `JobInfo` は再起動をまたいで永続化せず、再起動をまたぐ正本は `DirectBootEpgPending` だけとする。`JobScheduler.getPendingJob()` で同じ固定識別子のジョブが登録済みなら再登録しない。
 
-`BootEpgSyncJobService.onStartJob()` は利用者のロック解除、`DirectBootEpgPending`、開始条件を再確認し、処理を開始する場合は `BootEpgSyncCoordinator` へ引き渡す。`BootEpgSyncCoordinator` は同一プロセス内で `inputId` ごとの起動時 EPG 同期を一度に1件だけ実行する。処理完了時は `jobFinished()` で終了を通知し、成功時は再試行を要求しない。未完了または失敗で `DirectBootEpgPending` が残る場合、または `JobScheduler` による中断で `onStopJob()` が呼ばれた場合は、進行中の走査と Tuner 資源を停止・解放したうえで再試行を要求する。起動時 EPG 同期を開始できなかった場合、および TvProvider への反映が正常終了する前は `DirectBootEpgPending` を維持し、前節で定めた反映処理が正常に確定した場合だけ解除する。
+`BootEpgSyncJobService.onStartJob()` は利用者のロック解除、`DirectBootEpgPending`、開始条件を再確認し、処理を開始する場合は `BootEpgSyncCoordinator` へ引き渡す。`BootEpgSyncCoordinator` は同一プロセス内で `inputId` ごとの起動時 EPG 同期を一度に1件だけ実行する。処理完了時は `jobFinished()` で終了を通知し、成功時は再試行を要求しない。未完了または失敗で `DirectBootEpgPending` が残る場合、または `JobScheduler` による中断で `onStopJob()` が呼ばれた場合は、進行中の走査と Tuner 資源を停止・解放したうえで再試行を要求する。起動時 EPG 同期を開始できなかった場合は `DirectBootEpgPending` を維持する。開始後の保留解除条件は本書「TIS / EPG 公開境界」を正とし、通常publish成功に加えて、開始前の必須TvProvider問い合わせが正常終了し自TIS所有の既存channelが0件だった`NO_WORK`正常終了を含む。
 
 利用者のロック解除までプロセスが生存している場合は、動的に登録した `ACTION_USER_UNLOCKED` の受信処理から同じ開始判定を前倒ししてよい。ただし、この補助経路や定期保守の実行機構だけに再開保証を依存させない。Android の背景実行制限などで起動完了通知が遅延し得ることを前提に、通知の到達時と開始条件の再成立時の双方で永続化した `DirectBootEpgPending` を再評価する。
 
