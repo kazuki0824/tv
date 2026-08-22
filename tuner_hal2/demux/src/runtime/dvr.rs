@@ -1,7 +1,9 @@
 use std::cell::Cell;
 use std::collections::BTreeSet;
 
-use super::watermark_classifier::DvrWatermarkClassifier;
+use super::watermark_classifier::{
+    WatermarkClassifier, WatermarkDecision, WatermarkPolicy, WatermarkQueueSnapshot,
+};
 
 #[cfg(test)]
 use maleicacid_tuner_hal2_common::{
@@ -513,15 +515,27 @@ impl DvrRuntime {
                 .then_some(DvrStatusEvent::RecordDataReady);
         }
 
-        let semantic_status = DvrWatermarkClassifier::classify(
-            self.kind,
-            readable_bytes,
-            writable_bytes,
-            self.low_threshold_bytes,
-            self.high_threshold_bytes,
-        );
-        let Some(semantic_status) = semantic_status else {
-            return None;
+        let policy = match self.kind {
+            DvrKind::Record => WatermarkPolicy::OccupancyBand {
+                low: self.low_threshold_bytes,
+                high: self.high_threshold_bytes,
+            },
+            DvrKind::Playback => WatermarkPolicy::ReadableWritableBand {
+                low: self.low_threshold_bytes,
+                high: self.high_threshold_bytes,
+            },
+        };
+        let decision = WatermarkClassifier::new(policy)
+            .classify(WatermarkQueueSnapshot::new(readable_bytes, writable_bytes));
+        let semantic_status = match (self.kind, decision) {
+            (DvrKind::Record, WatermarkDecision::Low) => DvrStatusEvent::RecordLowWater,
+            (DvrKind::Record, WatermarkDecision::High) => DvrStatusEvent::RecordHighWater,
+            (DvrKind::Playback, WatermarkDecision::Empty) => DvrStatusEvent::PlaybackSpaceEmpty,
+            (DvrKind::Playback, WatermarkDecision::Low) => DvrStatusEvent::PlaybackSpaceAlmostEmpty,
+            (DvrKind::Playback, WatermarkDecision::High) => DvrStatusEvent::PlaybackSpaceAlmostFull,
+            (DvrKind::Playback, WatermarkDecision::Full) => DvrStatusEvent::PlaybackSpaceFull,
+            (_, WatermarkDecision::NoTransition)
+            | (DvrKind::Record, WatermarkDecision::Empty | WatermarkDecision::Full) => return None,
         };
         if self.last_watermark_status.replace(Some(semantic_status)) == Some(semantic_status) {
             return None;
@@ -548,5 +562,59 @@ impl DvrRuntime {
     }
     pub fn mark_failed(&mut self) {
         self.state = DvrRuntimeState::Failed;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn configured_runtime(kind: DvrKind, low: usize, high: usize) -> DvrRuntime {
+        let mut runtime = DvrRuntime::new(1, kind, 1);
+        runtime.configure_settings(0b1111, low, high, DvrDataFormat::Ts, 188);
+        runtime
+    }
+
+    #[test]
+    fn playback_projects_contract_order_and_strict_thresholds() {
+        let runtime = configured_runtime(DvrKind::Playback, 3, 8);
+
+        assert_eq!(
+            runtime.status_event_for_snapshot(9, 0),
+            Some(DvrStatusEvent::PlaybackSpaceFull)
+        );
+        assert_eq!(
+            runtime.status_event_for_snapshot(9, 1),
+            Some(DvrStatusEvent::PlaybackSpaceAlmostFull)
+        );
+        assert_eq!(
+            runtime.status_event_for_snapshot(2, 8),
+            Some(DvrStatusEvent::PlaybackSpaceAlmostEmpty)
+        );
+        assert_eq!(runtime.status_event_for_snapshot(3, 7), None);
+        assert_eq!(runtime.status_event_for_snapshot(8, 2), None);
+
+        let empty_runtime = configured_runtime(DvrKind::Playback, 0, 8);
+        assert_eq!(
+            empty_runtime.status_event_for_snapshot(0, 10),
+            Some(DvrStatusEvent::PlaybackSpaceEmpty)
+        );
+    }
+
+    #[test]
+    fn record_projects_occupancy_and_preserves_equal_threshold() {
+        let runtime = configured_runtime(DvrKind::Record, 3, 8);
+
+        assert_eq!(
+            runtime.status_event_for_snapshot(9, 1),
+            Some(DvrStatusEvent::RecordHighWater)
+        );
+        assert_eq!(
+            runtime.status_event_for_snapshot(2, 8),
+            Some(DvrStatusEvent::RecordLowWater)
+        );
+
+        let equal_runtime = configured_runtime(DvrKind::Record, 5, 5);
+        assert_eq!(equal_runtime.status_event_for_snapshot(5, 5), None);
     }
 }

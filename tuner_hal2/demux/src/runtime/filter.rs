@@ -2,9 +2,19 @@ use crate::config::{
     AvStreamTypeConfig, FilterDelayHint, FilterDelayHints, FilterOpenType, OpenFilterRequest,
 };
 use crate::packet_pipeline::{FilterPipelineConfig, PipelineFilterView, PipelineOpenKind};
-use crate::runtime::{FilterStatusEvent, FilterWatermarkClassifier};
+use crate::runtime::{
+    WatermarkClassifier, WatermarkDecision, WatermarkPolicy, WatermarkQueueSnapshot,
+};
 use crate::TsInputOrigin;
 use std::time::{Duration, Instant};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FilterStatusEvent {
+    DataReady,
+    LowWater,
+    HighWater,
+    Overflow,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FilterRuntimeState {
@@ -354,7 +364,24 @@ impl FilterRuntime {
         capacity_bytes: usize,
         readable_bytes: usize,
     ) -> Option<FilterStatusEvent> {
-        let status = FilterWatermarkClassifier::classify(capacity_bytes, readable_bytes)?;
+        if capacity_bytes == 0 || readable_bytes > capacity_bytes {
+            return None;
+        }
+
+        let quarter = capacity_bytes / 4;
+        let remainder = capacity_bytes % 4;
+        let policy = WatermarkPolicy::OccupancyBand {
+            low: quarter + usize::from(remainder != 0),
+            high: quarter * 3 + (remainder * 3 + 3) / 4,
+        };
+        let snapshot = WatermarkQueueSnapshot::new(readable_bytes, capacity_bytes - readable_bytes);
+        let status = match WatermarkClassifier::new(policy).classify(snapshot) {
+            WatermarkDecision::Low => FilterStatusEvent::LowWater,
+            WatermarkDecision::High => FilterStatusEvent::HighWater,
+            WatermarkDecision::Empty
+            | WatermarkDecision::Full
+            | WatermarkDecision::NoTransition => return None,
+        };
         if self.last_watermark_status == Some(status) {
             return None;
         }
@@ -493,5 +520,43 @@ impl FilterRuntime {
             return;
         };
         self.delivery_not_before = Instant::now().checked_add(Duration::from_millis(delay_ms));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn filter_projects_strict_rounded_watermark_decisions() {
+        let mut runtime = FilterRuntime::new(1, 1, PipelineOpenKind::Raw);
+
+        assert_eq!(
+            runtime.classify_watermark_transition(10, 2),
+            Some(FilterStatusEvent::LowWater)
+        );
+        assert_eq!(runtime.classify_watermark_transition(10, 2), None);
+        assert_eq!(runtime.classify_watermark_transition(10, 3), None);
+        assert_eq!(runtime.classify_watermark_transition(10, 8), None);
+        assert_eq!(
+            runtime.classify_watermark_transition(10, 9),
+            Some(FilterStatusEvent::HighWater)
+        );
+    }
+
+    #[test]
+    fn filter_non_divisible_capacity_uses_ceiling_thresholds() {
+        let mut runtime = FilterRuntime::new(1, 1, PipelineOpenKind::Raw);
+
+        assert_eq!(
+            runtime.classify_watermark_transition(5, 1),
+            Some(FilterStatusEvent::LowWater)
+        );
+        assert_eq!(runtime.classify_watermark_transition(5, 2), None);
+        assert_eq!(runtime.classify_watermark_transition(5, 4), None);
+        assert_eq!(
+            runtime.classify_watermark_transition(5, 5),
+            Some(FilterStatusEvent::HighWater)
+        );
     }
 }

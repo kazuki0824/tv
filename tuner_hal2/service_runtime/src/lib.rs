@@ -4,7 +4,6 @@ mod capability_snapshot;
 mod capability_profile;
 mod cleanup_execution;
 mod command_dispatch;
-mod demux_filter_dvr_ops;
 mod descrambler_key_table;
 mod descrambler_ops;
 mod descrambler_session;
@@ -26,7 +25,6 @@ mod object_lifecycle;
 mod object_method_use_case;
 mod object_table;
 mod open_rollback;
-mod packet_ops;
 mod playback_consume_txn;
 mod post_commit_callback_failure_txn;
 mod queue_cleanup_use_case;
@@ -40,7 +38,7 @@ mod worker_runtime;
 pub use boot::{
     start_frontend_demux_live_pump_from_reader, CallbackArtifactCleanupResult,
     CallbackArtifactResetCommand, CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport,
-    CallbackRegistrationArtifactOutcome, DvrChildRuntimeOpen, DvrStatusPollSnapshot,
+    CallbackRegistrationArtifactOutcome, ChildOpenTxn, DvrChildRuntimeOpen, DvrStatusPollSnapshot,
     FilterChildRuntimeOpen, FilterEventDelivery, FilterEventDeliverySnapshot,
     FilterEventDispatcher, FrontendDemuxPacketSink, FrontendProbeOutcome,
     OwnerCallbackCleanupArtifactCommand, OwnerCallbackCleanupUseCaseOutcome, ServiceBootOutcome,
@@ -56,7 +54,6 @@ pub use cleanup_execution::{
     CleanupExecutionDiagnosticSnapshot, CleanupExecutionReport, CleanupExecutionStepOutcome,
     SharedCleanupDiagnostics,
 };
-pub use demux_filter_dvr_ops::ChildOpenTxn;
 pub use command_dispatch::{
     RuntimeCommandDispatchError, RuntimeCommandDispatchPlan, RuntimeCommandDispatcher,
 };
@@ -1665,12 +1662,16 @@ mod tests {
 
     #[test]
     fn raw_and_record_filters_share_the_published_ts_filter_capacity() {
-        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        let mut capability_snapshot = CapabilitySnapshot::product_default();
+        capability_snapshot.num_ts_filter = 1;
+        let runtime = Arc::new(Mutex::new(
+            TunerServiceRuntime::from_capability_snapshot_for_test(capability_snapshot),
+        ));
         let demux_entry = {
             let mut guard = runtime.lock().unwrap();
-            guard.capability_snapshot.num_ts_filter = 1;
             guard
-                .root_open_txn().open_demux_root_object(AidlMethodCall::PublicApi {
+                .root_open_txn()
+                .open_demux_root_object(AidlMethodCall::PublicApi {
                     object: AidlObjectKind::Tuner,
                     api: AidlApi::TunerOpenDemux,
                 })
@@ -1696,18 +1697,23 @@ mod tests {
                     ))
                 },
                 |runtime, dispatch, request| {
-                    runtime.child_open_txn().open_filter_child_runtime_for_demux_object(
-                        demux_entry.object_id(),
-                        demux_entry.generation(),
-                        &request,
-                        dispatch,
-                    )
+                    runtime
+                        .child_open_txn()
+                        .open_filter_child_runtime_for_demux_object(
+                            demux_entry.object_id(),
+                            demux_entry.generation(),
+                            &request,
+                            dispatch,
+                        )
                 },
             )
         };
         open_filter(FilterOpenType::TsRaw).unwrap();
         let error = open_filter(FilterOpenType::TsRecord).unwrap_err();
-        assert!(matches!(error, HalError::Unsupported(_)));
+        assert!(matches!(
+            error,
+            ObjectMethodUseCaseBuildError::Runtime(HalError::Unsupported(_))
+        ));
     }
 
     #[test]

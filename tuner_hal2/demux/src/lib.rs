@@ -97,7 +97,8 @@ pub use runtime::{
     QueueDescriptorSnapshot, QueueGrantorDescriptorSnapshot, QueueRuntimeError,
     QueueRuntimeErrorKind, RecordDvrFilterRelationState, SourceBoundaryOutcome,
     SourceBoundaryReport, SourceBoundaryStep,
-    DvrWatermarkClassifier, FilterStatusEvent, FilterWatermarkClassifier,
+    FilterStatusEvent, WatermarkClassifier, WatermarkDecision, WatermarkPolicy,
+    WatermarkQueueSnapshot,
     ValidatedPacketIngressRequest,
 };
 

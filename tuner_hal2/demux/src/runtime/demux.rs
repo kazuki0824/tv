@@ -32,7 +32,9 @@ use super::dvr::{
     DvrDataFormat, DvrKind, DvrRuntime, DvrRuntimeSnapshot, DvrStatusEvent,
     RecordDvrFilterRelationState,
 };
-use super::filter::{FilterRuntime, FilterRuntimeSnapshot, FilterRuntimeState, FilterSource};
+use super::filter::{
+    FilterRuntime, FilterRuntimeSnapshot, FilterRuntimeState, FilterSource, FilterStatusEvent,
+};
 use super::filter_producer_drain_gate::{
     FilterDrainBoundary, FilterProducerDrainGate, FilterProducerPermit,
 };
@@ -44,8 +46,6 @@ use super::source_boundary::{
     apply_filter_source_boundary_change, connect_filter_source_boundary_change,
     SourceBoundaryReport,
 };
-use super::watermark_classifier::FilterStatusEvent;
-
 const TUNER_EVENT_DATA_READY: u32 = 1 << 0;
 const MAX_FILTER_DELAY_MS: u64 = 10_000;
 #[cfg(test)]

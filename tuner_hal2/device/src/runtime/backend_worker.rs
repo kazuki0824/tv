@@ -731,7 +731,10 @@ pub fn apply_frontend_backend_lnb_voltage_classified(
             apply_px4_lnb_voltage_with_ops(&mut ops, plan.voltage)
         }
         FrontendBackendKind::LinuxDvb => {
-            let mode = dvb_lnb_voltage_mode(plan.voltage)?;
+            let mode = match dvb_lnb_voltage_mode(plan.voltage) {
+                Ok(mode) => mode,
+                Err(error) => return FrontendBackendLnbApplyOutcome::Rejected(error),
+            };
             ioctl_word(
                 "dvb",
                 Some(plan.device_path.as_path().to_path_buf()),

@@ -16,7 +16,7 @@ use maleicacid_tuner_hal2_common::{
     HalInvalidStateKind,
 };
 use maleicacid_tuner_hal2_demux::{
-    AvDataIdAllocator, AvRuntimeBudget, DemuxRuntime, FilterOpenType, FilterRuntimeState,
+    AvDataIdAllocator, AvRuntimeBudget, DemuxRuntime, DvrKind, FilterOpenType, FilterRuntimeState,
     DEFAULT_AV_MAX_EVENT_BYTES, DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
     DEFAULT_AV_PER_FILTER_LIVE_BYTES,
 };

@@ -1529,7 +1529,7 @@ impl TunerServiceRuntime {
                 "owner demux runtime is missing",
             ));
         };
-        crate::demux_filter_dvr_ops::RecordDvrFilterRelationTxn::attach(dvr_id, filter_id)
+        super::demux_filter_dvr_ops::RecordDvrFilterRelationTxn::attach(dvr_id, filter_id)
             .execute(demux_runtime)
             .map_err(Self::map_dvr_runtime_error)
     }
@@ -1549,7 +1549,7 @@ impl TunerServiceRuntime {
                 "owner demux runtime is missing",
             ));
         };
-        crate::demux_filter_dvr_ops::RecordDvrFilterRelationTxn::detach(dvr_id, filter_id)
+        super::demux_filter_dvr_ops::RecordDvrFilterRelationTxn::detach(dvr_id, filter_id)
             .execute(demux_runtime)
             .map_err(Self::map_dvr_runtime_error)
     }

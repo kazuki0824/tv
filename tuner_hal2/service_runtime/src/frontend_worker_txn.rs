@@ -2976,7 +2976,7 @@ pub(crate) fn start_frontend_backend_tune_worker(
             object_id,
             object_generation,
         ) {
-            Ok(()) => error,
+            Ok(_) => error,
             Err(quarantine_error) => {
                 guard.mark_service_critical();
                 compose_frontend_cleanup_error(
@@ -3827,7 +3827,7 @@ pub(crate) fn start_frontend_backend_scan_session_worker(
             object_id,
             object_generation,
         ) {
-            Ok(()) => error,
+            Ok(_) => error,
             Err(quarantine_error) => {
                 guard.mark_service_critical();
                 compose_frontend_cleanup_error(
@@ -4037,6 +4037,7 @@ fn record_frontend_stop_reaper_completion(
                             object_id,
                             object_generation,
                         )
+                        .map(|_| ())
                     } else {
                         Ok(())
                     }
@@ -4193,7 +4194,7 @@ fn stop_frontend_object_without_join(
                     object_id,
                     object_generation,
                 ) {
-                    Ok(()) => error,
+                    Ok(_) => error,
                     Err(quarantine_error) => {
                         guard.mark_service_critical();
                         compose_frontend_cleanup_error(

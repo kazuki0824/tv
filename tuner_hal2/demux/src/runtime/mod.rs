@@ -40,7 +40,7 @@ pub use dvr::{
     DvrDataFormat, DvrKind, DvrRuntimeSnapshot, DvrRuntimeState, DvrStatusEvent,
     PlaybackFlushDiagnostic, PlaybackStats, RecordDvrFilterRelationState,
 };
-pub use filter::{FilterRuntimeSnapshot, FilterRuntimeState};
+pub use filter::{FilterRuntimeSnapshot, FilterRuntimeState, FilterStatusEvent};
 pub use generation_boundary::{
     DemuxStreamGeneration, StreamBoundaryReport, PreparedStreamBoundary,
 };
@@ -50,5 +50,5 @@ pub use queue_runtime::{
 };
 pub use source_boundary::{SourceBoundaryOutcome, SourceBoundaryReport, SourceBoundaryStep};
 pub use watermark_classifier::{
-    DvrWatermarkClassifier, FilterStatusEvent, FilterWatermarkClassifier,
+    WatermarkClassifier, WatermarkDecision, WatermarkPolicy, WatermarkQueueSnapshot,
 };

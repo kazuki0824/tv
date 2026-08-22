@@ -101,12 +101,16 @@ pub(crate) use query_api::{
 };
 mod child_open_context;
 pub(crate) use child_open_context::ChildOpenContext;
+#[path = "demux_filter_dvr_ops.rs"]
+mod demux_filter_dvr_ops;
+pub use demux_filter_dvr_ops::ChildOpenTxn;
 mod descrambler_txn;
-mod frontend_txn;
 mod frontend_tune_scan_context;
+mod frontend_txn;
 pub(crate) use frontend_tune_scan_context::FrontendTuneScanContext;
 pub(crate) mod lnb_txn;
-mod packet_txn;
+#[path = "packet_ops.rs"]
+mod packet_ops;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FilterChildRuntimeOpen {
@@ -1151,6 +1155,13 @@ impl TunerServiceRuntime {
             next_aidl_generation: 0,
             next_aidl_object_id: 0,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_capability_snapshot_for_test(
+        capability_snapshot: CapabilitySnapshot,
+    ) -> Self {
+        Self::from_capability_snapshot(capability_snapshot)
     }
 
     pub fn state(&self) -> ServiceState {

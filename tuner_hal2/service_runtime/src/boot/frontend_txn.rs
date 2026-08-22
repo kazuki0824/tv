@@ -1,9 +1,9 @@
 use super::{
     live_reader_descriptor_for_frontend_entry, DemuxRuntimeId, DemuxRuntimeRollbackToken,
-    FrontendLivePumpReport, FrontendRuntimeSnapshot, FrontendSignalState, FrontendTuneRequest,
-    FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind,
-    FrontendWorkerStartError, FrontendWorkerStopOutcome, StreamBoundaryReport, HalError,
-    HalInternalKind, HalInvalidStateKind, PipelineBoundaryReason, TunerServiceRuntime,
+    FrontendBackendKind, FrontendLivePumpReport, FrontendRuntimeSnapshot, FrontendSignalState,
+    FrontendTuneRequest, FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind,
+    FrontendWorkerStartError, FrontendWorkerStopOutcome, HalError, HalInternalKind,
+    HalInvalidStateKind, PipelineBoundaryReason, StreamBoundaryReport, TunerServiceRuntime,
 };
 use maleicacid_tuner_hal2_demux::{
     DemuxRuntimeRollbackCommitRequest, DemuxRuntimeRollbackRestoreRequest,
@@ -53,7 +53,7 @@ impl TunerServiceRuntime {
                 )
             })?;
         runtime.clear_live_reader_and_mark_idle();
-        self.transact_reset_and_unbind_bound_demuxes_for_frontend(
+        self.reset_and_unbind_bound_demuxes_for_frontend(
             frontend_id,
             PipelineBoundaryReason::FrontendUnbind,
         )
@@ -74,7 +74,7 @@ impl TunerServiceRuntime {
                 )
             })?;
         runtime.clear_live_reader_and_mark_closing();
-        self.transact_reset_and_unbind_bound_demuxes_for_frontend(
+        self.reset_and_unbind_bound_demuxes_for_frontend(
             frontend_id,
             PipelineBoundaryReason::FrontendClose,
         )

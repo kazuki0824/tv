@@ -129,7 +129,7 @@ impl DemuxFrontendSourceTxn {
             .prepare_stream_boundary_from_typed_request(
                 DemuxStreamBoundaryRequest::new(reason),
             )
-            .map_err(crate::demux_runtime_error_to_hal)?;
+            .map_err(super::demux_runtime_error_to_hal)?;
         let report = runtime
             .registry
             .demux_runtime_mut(self.demux_id)
@@ -140,7 +140,7 @@ impl DemuxFrontendSourceTxn {
                 )
             })?
             .commit_stream_boundary_from_typed_request(prepared)
-            .map_err(crate::demux_runtime_error_to_hal)?;
+            .map_err(super::demux_runtime_error_to_hal)?;
         match next_frontend_id {
             Some(frontend_id) => runtime
                 .registry

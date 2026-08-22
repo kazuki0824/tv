@@ -357,7 +357,7 @@ pub(crate) fn release_frontend_fixed_power_after_operation(
                 .frontend_runtime(frontend_id)
                 .map(|frontend| {
                     matches!(
-                        frontend.state(),
+                        frontend.snapshot().state,
                         maleicacid_tuner_hal2_device::FrontendRuntimeState::Idle
                             | maleicacid_tuner_hal2_device::FrontendRuntimeState::Closing
                             | maleicacid_tuner_hal2_device::FrontendRuntimeState::Failed
