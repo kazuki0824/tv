@@ -5,4 +5,5 @@ edition = "2021"
 publish = false
 
 [lib]
+name = "maleicacid_tuner_hal2_common"
 path = "../../common/src/lib.rs"
