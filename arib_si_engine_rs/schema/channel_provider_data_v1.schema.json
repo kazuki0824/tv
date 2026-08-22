@@ -44,70 +44,39 @@
           "minimum": 0
         },
         "streamId": {
-          "type": [
-            "integer",
-            "null"
-          ],
+          "type": ["integer", "null"],
           "minimum": 0,
           "maximum": 65534
         },
         "streamIdType": {
           "type": "string",
-          "enum": [
-            "NONE",
-            "TSID"
-          ]
+          "enum": ["NONE", "TSID"]
         },
         "physicalChannel": {
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": ["integer", "null"]
         },
         "satelliteBand": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "remoteControlKeyId": {
-          "type": [
-            "integer",
-            "null"
-          ],
+          "type": ["integer", "null"],
           "minimum": 0
         }
       },
       "allOf": [
         {
           "if": {
-            "properties": {
-              "streamIdType": {
-                "const": "NONE"
-              }
-            },
-            "required": [
-              "streamIdType"
-            ]
+            "properties": {"streamIdType": {"const": "NONE"}},
+            "required": ["streamIdType"]
           },
           "then": {
-            "properties": {
-              "streamId": {
-                "type": "null"
-              }
-            }
+            "properties": {"streamId": {"type": "null"}}
           }
         },
         {
           "if": {
-            "properties": {
-              "streamIdType": {
-                "const": "TSID"
-              }
-            },
-            "required": [
-              "streamIdType"
-            ]
+            "properties": {"streamIdType": {"const": "TSID"}},
+            "required": ["streamIdType"]
           },
           "then": {
             "properties": {
@@ -124,62 +93,26 @@
     "cas": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "requiresCas",
-        "unsupportedCas",
-        "clearLivePlaybackSupported"
-      ],
+      "required": ["requiresCas"],
       "properties": {
-        "requiresCas": {
-          "type": "boolean"
-        },
-        "unsupportedCas": {
-          "type": "boolean"
-        },
-        "clearLivePlaybackSupported": {
-          "type": "boolean"
-        }
+        "requiresCas": {"type": "boolean"}
       }
     },
     "diagnostics": {
       "type": "object",
       "additionalProperties": true,
-      "required": [
-        "channelRegistrationReady",
-        "epgPublishable"
-      ],
       "properties": {
-        "channelRegistrationReady": {
-          "type": "boolean"
-        },
-        "epgPublishable": {
-          "type": "boolean"
-        },
-        "publishStateSource": {
-          "type": "string"
-        },
-        "providerDataTruncated": {
-          "type": "boolean"
-        },
-        "providerDataHardLimitBytes": {
-          "type": "integer"
-        },
-        "providerDataSoftLimitBytes": {
-          "type": "integer"
-        },
+        "providerDataTruncated": {"type": "boolean"},
+        "providerDataHardLimitBytes": {"type": "integer"},
+        "providerDataSoftLimitBytes": {"type": "integer"},
         "rawProviderDataExtensions": {
           "type": "array",
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": [
-              "key",
-              "value"
-            ],
+            "required": ["key", "value"],
             "properties": {
-              "key": {
-                "type": "string"
-              },
+              "key": {"type": "string"},
               "value": {}
             }
           }
@@ -190,11 +123,17 @@
         },
         "providerDataTruncationCode": {
           "type": "string",
-          "enum": [
-            "PROVIDER_DATA_TRUNCATED",
-            "DIAGNOSTICS_TRUNCATED"
-          ]
+          "enum": ["PROVIDER_DATA_TRUNCATED", "DIAGNOSTICS_TRUNCATED"]
         }
+      },
+      "not": {
+        "anyOf": [
+          {"required": ["channelRegistrationReady"]},
+          {"required": ["epgPublishable"]},
+          {"required": ["publishStateSource"]},
+          {"required": ["unsupportedCas"]},
+          {"required": ["clearLivePlaybackSupported"]}
+        ]
       }
     }
   },
@@ -207,21 +146,11 @@
     "serviceKey": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "originalNetworkId",
-        "transportStreamId",
-        "serviceId"
-      ],
+      "required": ["originalNetworkId", "transportStreamId", "serviceId"],
       "properties": {
-        "originalNetworkId": {
-          "$ref": "#/$defs/uint16"
-        },
-        "transportStreamId": {
-          "$ref": "#/$defs/uint16"
-        },
-        "serviceId": {
-          "$ref": "#/$defs/uint16"
-        }
+        "originalNetworkId": {"$ref": "#/$defs/uint16"},
+        "transportStreamId": {"$ref": "#/$defs/uint16"},
+        "serviceId": {"$ref": "#/$defs/uint16"}
       }
     }
   }
