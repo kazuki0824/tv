@@ -9,3 +9,38 @@ version = "0.0.0"
 [[package]]
 name = "maleicacid-tuner-hal2-control-host-ci"
 version = "0.0.0"
+dependencies = [
+ "maleicacid-tuner-hal2-common-host-ci",
+]
+
+[[package]]
+name = "maleicacid-tuner-hal2-descrambler-host-ci"
+version = "0.0.0"
+dependencies = [
+ "maleicacid-tuner-hal2-common-host-ci",
+ "maleicacid-tuner-hal2-control-host-ci",
+]
+
+[[package]]
+name = "maleicacid-tuner-hal2-device-host-ci"
+version = "0.0.0"
+dependencies = [
+ "maleicacid-tuner-hal2-common-host-ci",
+ "maleicacid-tuner-hal2-control-host-ci",
+]
+
+[[package]]
+name = "maleicacid-tuner-hal2-lnb-host-ci"
+version = "0.0.0"
+dependencies = [
+ "maleicacid-tuner-hal2-common-host-ci",
+ "maleicacid-tuner-hal2-control-host-ci",
+ "maleicacid-tuner-hal2-resource-ledger-host-ci",
+]
+
+[[package]]
+name = "maleicacid-tuner-hal2-resource-ledger-host-ci"
+version = "0.0.0"
+dependencies = [
+ "maleicacid-tuner-hal2-common-host-ci",
+]

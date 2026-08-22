@@ -1,12 +1,12 @@
 [package]
-name = "maleicacid-tuner-hal2-control-host-ci"
+name = "maleicacid-tuner-hal2-resource-ledger-host-ci"
 version = "0.0.0"
 edition = "2021"
 publish = false
 
 [lib]
-name = "maleicacid_tuner_hal2_control_core"
-path = "../../control/src/lib.rs"
+name = "maleicacid_tuner_hal2_resource_ledger"
+path = "../../resource_ledger/src/lib.rs"
 
 [dependencies]
 maleicacid_tuner_hal2_common = { package = "maleicacid-tuner-hal2-common-host-ci", path = "../common" }
