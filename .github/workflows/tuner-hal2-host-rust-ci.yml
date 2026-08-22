@@ -28,9 +28,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: tuner-hal2-host-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   rustfmt:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: tuner_hal2/host_ci
@@ -44,6 +49,7 @@ jobs:
 
   host-rust:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: tuner_hal2/host_ci
