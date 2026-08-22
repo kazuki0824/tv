@@ -26,9 +26,7 @@ impl ThreadResultFailure {
             ThreadResultFailure::ThreadPanic => "thread panicked",
             ThreadResultFailure::JoinFailure => "thread join failed",
             ThreadResultFailure::ResultLockPoison => "thread result lock poisoned",
-            ThreadResultFailure::CompletionLockPoison => {
-                "thread completion lock poisoned"
-            }
+            ThreadResultFailure::CompletionLockPoison => "thread completion lock poisoned",
             ThreadResultFailure::MissingReport => "finished without report",
             ThreadResultFailure::ResultAlreadyCollected => "thread result already collected",
         };
@@ -234,14 +232,11 @@ where
             .unwrap_or(false)
     }
 
-    pub(crate) fn wait_until_finished(
-        &self,
-        deadline: Option<Instant>,
-    ) -> Result<bool, HalError> {
+    pub(crate) fn wait_until_finished(&self, deadline: Option<Instant>) -> Result<bool, HalError> {
         let (completed, wake) = &*self.completion;
-        let mut completed = completed.lock().map_err(|_| {
-            ThreadResultFailure::CompletionLockPoison.into_hal_error(self.name)
-        })?;
+        let mut completed = completed
+            .lock()
+            .map_err(|_| ThreadResultFailure::CompletionLockPoison.into_hal_error(self.name))?;
         loop {
             if *completed {
                 return Ok(true);

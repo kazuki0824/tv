@@ -351,10 +351,7 @@ impl FrontendBackendSubmitTicket {
     ) -> Result<Self, HalError> {
         let generation = plan.generation;
         Self::start_with(generation, move || {
-            FrontendBackendSession::open_and_submit_with_previous_report(
-                &plan,
-                previous_request,
-            )
+            FrontendBackendSession::open_and_submit_with_previous_report(&plan, previous_request)
         })
     }
 
@@ -403,10 +400,7 @@ impl FrontendBackendSubmitTicket {
         })
     }
 
-    pub fn wait_until(
-        mut self,
-        deadline: Instant,
-    ) -> Result<FrontendBackendSubmitWait, HalError> {
+    pub fn wait_until(mut self, deadline: Instant) -> Result<FrontendBackendSubmitWait, HalError> {
         let wait = deadline.saturating_duration_since(Instant::now());
         match self.ready.recv_timeout(wait) {
             Ok(FrontendBackendSubmitReady::Submitted) => {
@@ -433,12 +427,12 @@ impl FrontendBackendSubmitTicket {
                     }
                 };
                 match outcome {
-                    FrontendBackendSubmitThreadOutcome::Claimed(session) => Ok(
-                        FrontendBackendSubmitWait::Completed(Ok(session)),
-                    ),
-                    FrontendBackendSubmitThreadOutcome::Failed(failure) => Ok(
-                        FrontendBackendSubmitWait::Completed(Err(failure)),
-                    ),
+                    FrontendBackendSubmitThreadOutcome::Claimed(session) => {
+                        Ok(FrontendBackendSubmitWait::Completed(Ok(session)))
+                    }
+                    FrontendBackendSubmitThreadOutcome::Failed(failure) => {
+                        Ok(FrontendBackendSubmitWait::Completed(Err(failure)))
+                    }
                     FrontendBackendSubmitThreadOutcome::Aborted(stop_result) => {
                         let error = stop_result.err().unwrap_or_else(|| {
                             HalError::internal(
@@ -469,9 +463,9 @@ impl FrontendBackendSubmitTicket {
                     }
                 };
                 match outcome {
-                    FrontendBackendSubmitThreadOutcome::Failed(failure) => Ok(
-                        FrontendBackendSubmitWait::Completed(Err(failure)),
-                    ),
+                    FrontendBackendSubmitThreadOutcome::Failed(failure) => {
+                        Ok(FrontendBackendSubmitWait::Completed(Err(failure)))
+                    }
                     FrontendBackendSubmitThreadOutcome::Claimed(session) => {
                         let stop_result = session.stop();
                         let error = stop_result.err().unwrap_or_else(|| {
@@ -523,9 +517,9 @@ impl FrontendBackendSubmitTicket {
                     }
                 };
                 match outcome {
-                    FrontendBackendSubmitThreadOutcome::Failed(failure) => Ok(
-                        FrontendBackendSubmitWait::Completed(Err(failure)),
-                    ),
+                    FrontendBackendSubmitThreadOutcome::Failed(failure) => {
+                        Ok(FrontendBackendSubmitWait::Completed(Err(failure)))
+                    }
                     FrontendBackendSubmitThreadOutcome::Claimed(session) => {
                         let stop_error = session.stop().err().unwrap_or_else(|| {
                             HalError::internal(

@@ -74,10 +74,9 @@ pub fn finish_lnb_state_apply(
         || runtime.generation() != prepared.expected_generation
         || runtime.state() != LnbRuntimeState::Applying
     {
-        return Err(runtime.record_failure(
-            LnbFailureKind::InvalidState,
-            LnbFailureStep::ValidateState,
-        ));
+        return Err(
+            runtime.record_failure(LnbFailureKind::InvalidState, LnbFailureStep::ValidateState)
+        );
     }
     match backend_result {
         LnbBackendApplyOutcome::Applied => {}
@@ -85,10 +84,9 @@ pub fn finish_lnb_state_apply(
             return Err(runtime.abort_rejected_apply(kind, LnbFailureStep::ApplyBackend));
         }
         LnbBackendApplyOutcome::Indeterminate(kind) => {
-            return Err(runtime.quarantine_indeterminate_backend(
-                kind,
-                LnbFailureStep::ApplyBackend,
-            ));
+            return Err(
+                runtime.quarantine_indeterminate_backend(kind, LnbFailureStep::ApplyBackend)
+            );
         }
     }
     runtime.commit_successful_apply(prepared.target_state, prepared.next_generation);
@@ -207,9 +205,7 @@ mod tests {
             state: LnbElectricalState,
         ) -> LnbBackendApplyOutcome {
             if self.fail {
-                return LnbBackendApplyOutcome::Indeterminate(
-                    LnbFailureKind::BackendApplyFailed,
-                );
+                return LnbBackendApplyOutcome::Indeterminate(LnbFailureKind::BackendApplyFailed);
             }
             self.applied.push(state);
             LnbBackendApplyOutcome::Applied
@@ -275,7 +271,10 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(runtime.state(), LnbRuntimeState::Open);
         assert_eq!(runtime.registry_state(), LnbElectricalState::safe());
-        assert_eq!(runtime.backend_committed_state(), LnbElectricalState::safe());
+        assert_eq!(
+            runtime.backend_committed_state(),
+            LnbElectricalState::safe()
+        );
         assert_eq!(runtime.generation(), 0);
     }
 
