@@ -1,0 +1,40 @@
+name: F02 policy boundary fix 20260822
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/f02-policy-boundary-fix-20260822.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/f02-si-policy-boundary
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Apply F-02 design correction
+        shell: bash
+        run: |
+          python3 .github/f02_apply.py
+          git diff --check
+          python3 -m json.tool arib_si_engine_rs/schema/program_provider_data_v1.schema.json >/dev/null
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tis/DESIGN_JA.md arib_si_engine_rs/DESIGN_JA.md arib_si_engine_rs/schema/program_provider_data_v1.schema.json
+          git rm .github/f02_apply.py
+          git commit -m 'design: restore TIS and SI engine policy boundary'
+          git push origin HEAD:fix/f02-si-policy-boundary
+      - name: Remove temporary workflow from main
+        shell: bash
+        run: |
+          git fetch origin main
+          git checkout -B main origin/main
+          git rm .github/workflows/f02-policy-boundary-fix-20260822.yml
+          git commit -m 'chore: remove temporary F-02 design workflow'
+          git push origin HEAD:main
