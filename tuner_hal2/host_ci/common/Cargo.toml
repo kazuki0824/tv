@@ -1,0 +1,8 @@
+[package]
+name = "maleicacid-tuner-hal2-common-host-ci"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "../../common/src/lib.rs"
