@@ -19,6 +19,19 @@ permissions:
   contents: read
 
 jobs:
+  rustfmt:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tuner_hal2/host_ci
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
   host-rust:
     runs-on: ubuntu-latest
     defaults:
