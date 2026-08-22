@@ -40,19 +40,46 @@ CAS HAL 仮実装は TIS 初回ビルド確認ゲートへ含めない。
 
 ## libaribcaption Soong / renderer 統合
 
-ARIB字幕表示の product 統合では、repoで供給される `libaribcaption-android` の product fork を Soong graph に含め、renderer 有効の `libaribcaption.so` を生成する。`libmaleicacid_arib_caption_jni` はこの `libaribcaption` に明示依存し、`MaleicacidTvInput` は `libmaleicacid_arib_caption_jni` を JNI library として同梱する。
+ARIB字幕表示のproduct統合では、repoで供給される `libaribcaption-android` の製品forkをSoong graphに含め、renderer有効の `cc_library_static { name: "libaribcaption" }` を正式経路とする。製品repo manifestの `revision` はbranchではなく検証済みcommitへ固定し、repo syncのたびにsource list・C API・renderer構成が暗黙変更される状態をrelease構成として認めない。`libaribcaption` はcore側variantを使用し、`system_ext_specific: true` の `libmaleicacid_arib_caption_jni` からSoongの静的native dependencyとして直接linkする。`libaribcaption` のFreeType依存は `libft2.nodep` を使用し、TISのsystem/system_ext dependency closure内で解決する。
+
+正式な依存関係は次とする。
+
+```text
+/system_ext/priv-app/MaleicacidTvInput
+  └─ libmaleicacid_arib_caption_jni.so
+       └─ Soong static dependency: libaribcaption
+            └─ static dependency: libft2.nodep
+```
+
+Rust JNIはlibaribcaption C APIを `extern "C"` で直接参照し、`libdl`、`dlopen()`、`dlsym()`、`dlclose()`を正式経路から除去する。Soongの静的依存指定は対象treeでRust `rust_ffi_shared` からC/C++ static moduleを正しく最終linkできる形を選ぶ。`static_libs` と `whole_static_libs` のどちらを使うかはlink graphとdead-strip要件に従う実装詳細とし、不要な全archive強制取り込みを設計目的にしない。ただしlibaribcaption C APIとtransitiveな `libft2.nodep` 依存が最終JNI `.so` で全て解決されることをbuild gateで確認する。
+
+`libaribcaption.so` は生成・配置・APK同梱を要求しない。したがって `libaribcaption.so` の存在、`libmaleicacid_arib_caption_jni.so` の `DT_NEEDED` に `libaribcaption.so` が出ること、`MaleicacidTvInput` の `jni_libs` に `libaribcaption` を追加すること、`libaribcaption.so` のexport symbolをreadelfで確認することを完了条件にしてはならない。`MaleicacidTvInput` はJNI libraryとして `libmaleicacid_arib_caption_jni` のみを取り込み、libaribcaption/FreeTypeのcodeは最終JNI `.so` へ静的に閉じる。
 
 次は字幕対応宣言条件として認めない。
 
 ```text
-- `dlopen()` で .so が開けることだけ
-- decoder API を呼べることだけ
-- Canvas 文字描画だけ
-- renderer 無効 build
-- provenance と build option が不明な out-of-graph .so
+- runtime `dlopen()` でlibaribcaptionを探索できることだけ
+- decoder APIを呼べることだけ
+- Canvas文字描画だけ
+- renderer無効build
+- provenanceとbuild optionが不明なout-of-graph prebuilt
 ```
 
-ビルド確認では `m libaribcaption libmaleicacid_arib_caption_jni MaleicacidTvInput` を確認対象に含める。実機確認では字幕 PES 入力から libaribcaption renderer 出力、TIS字幕 overlay 表示までを接続確認対象とする。
+build確認では次を必須とする。
+
+```text
+- m libaribcaption が通る。
+- m libmaleicacid_arib_caption_jni が通る。
+- m MaleicacidTvInput が通る。
+- libmaleicacid_arib_caption_jni.so のundefined native symbolに未解決の aribcc_* が残らない。
+- libmaleicacid_arib_caption_jni.so に libaribcaption.so への DT_NEEDED が存在しない。
+- runtime経路に dlopen/dlsym が残らない。
+- renderer C APIを実際に呼ぶ。
+```
+
+実機確認では字幕PES入力からlibaribcaption decoder/renderer、RGBA8888出力、TIS字幕overlay表示までを接続確認対象とする。renderer viewport、PTS/NoPTS、scheduler、decoder/renderer lifecycleのruntime意味論は `DESIGN_JA.md` を正とし、本書で独立に再定義しない。
+
+`future_work/r51/libaribcaption_android_soong_ready_plan(1).md` は、上記static-link構成とruntime契約を実装へ反映した段階で旧shared-library前提の完了条件をstatic-link前提へ同期する。`m libaribcaption libmaleicacid_arib_caption_jni MaleicacidTvInput` と実機の字幕PES→decoder→renderer→RGBA8888→overlay経路が通るまではfuture_workから削除せず、それらの実装・実機検証が完了した時点でのみfuture_workから外す。
 
 ## 権限と priv-app
 
