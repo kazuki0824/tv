@@ -1,0 +1,36 @@
+name: tuner_hal2 host Rust CI
+
+on:
+  pull_request:
+    paths:
+      - "tuner_hal2/common/**"
+      - "tuner_hal2/control/**"
+      - "tuner_hal2/host_ci/**"
+      - ".github/workflows/tuner-hal2-host-rust-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "tuner_hal2/common/**"
+      - "tuner_hal2/control/**"
+      - "tuner_hal2/host_ci/**"
+      - ".github/workflows/tuner-hal2-host-rust-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  host-rust:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tuner_hal2/host_ci
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Type-check host-compatible crates
+        run: cargo check --workspace --all-targets --locked
+
+      - name: Run host-compatible unit tests
+        run: cargo test --workspace --locked
