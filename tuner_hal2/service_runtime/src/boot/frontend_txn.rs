@@ -1,7 +1,7 @@
 use super::{
     live_reader_descriptor_for_frontend_entry, DemuxRuntimeId, DemuxRuntimeRollbackToken,
-    FrontendBackendKind, FrontendLivePumpReport, FrontendRuntimeSnapshot, FrontendSignalState,
-    FrontendTuneRequest, FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind,
+    FrontendLivePumpReport, FrontendRuntimeSnapshot, FrontendSignalState, FrontendTuneRequest,
+    FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind,
     FrontendWorkerStartError, FrontendWorkerStopOutcome, HalError, HalInternalKind,
     HalInvalidStateKind, PipelineBoundaryReason, StreamBoundaryReport, TunerServiceRuntime,
 };
@@ -286,16 +286,6 @@ impl<'a> FrontendTxn<'a> {
         request: &FrontendTuneRequest,
     ) -> Result<bool, HalError> {
         let frontend_key = crate::registry::FrontendRuntimeId(frontend_id);
-        if self
-            .runtime
-            .registry
-            .frontend(frontend_key)
-            .is_some_and(|entry| entry.backend == FrontendBackendKind::Px4CharDevice)
-        {
-            // px4のPTX_SET_CHANNEL成功は一回限りの証跡であり、
-            // 過去generationのcurrent lock継続を証明しない。
-            return Ok(false);
-        }
         let snapshot = self
             .runtime
             .registry
@@ -310,7 +300,11 @@ impl<'a> FrontendTxn<'a> {
         let generation = match snapshot.state {
             maleicacid_tuner_hal2_device::FrontendRuntimeState::Tuning { generation }
                 if snapshot.signal_state == FrontendSignalState::Locked
-                    && snapshot.active_tune_request.as_ref() == Some(request) => generation,
+                    && snapshot.tune_lock_qualified
+                    && snapshot.active_tune_request.as_ref() == Some(request) =>
+            {
+                generation
+            }
             _ => return Ok(false),
         };
         if self
@@ -458,6 +452,24 @@ impl<'a> FrontendTxn<'a> {
                 )
             })?;
         runtime.record_signal_state(generation, signal_state)
+    }
+
+    pub(crate) fn record_frontend_tune_lock_qualified(
+        &mut self,
+        frontend_id: i32,
+        generation: u64,
+    ) -> Result<(), HalError> {
+        let runtime = self
+            .runtime
+            .registry
+            .frontend_runtime_mut(crate::registry::FrontendRuntimeId(frontend_id))
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend runtime is missing for advertised frontend",
+                )
+            })?;
+        runtime.record_tune_lock_qualified(generation)
     }
 
     pub(crate) fn record_live_pump_report(

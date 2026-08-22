@@ -348,6 +348,8 @@ mod tests {
             stream_id_kind: Some(FrontendStreamIdKind::AbsoluteStreamId),
             bandwidth_hz: None,
             symbol_rate: None,
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         }
     }
 
@@ -487,6 +489,8 @@ mod tests {
             stream_id_kind: None,
             bandwidth_hz: None,
             symbol_rate: None,
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
         let mapped = map_tune_request_to_px4(&request).unwrap();
         assert_eq!(mapped.system_code, PTX_ISDB_S_SYSTEM);
@@ -504,6 +508,8 @@ mod tests {
             stream_id_kind: Some(FrontendStreamIdKind::AbsoluteStreamId),
             bandwidth_hz: None,
             symbol_rate: None,
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
         let err = map_tune_request_to_px4(&request).unwrap_err();
         assert_eq!(
@@ -522,6 +528,8 @@ mod tests {
             stream_id_kind: Some(FrontendStreamIdKind::RelativeStreamNumber),
             bandwidth_hz: None,
             symbol_rate: None,
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
         let err = map_tune_request_to_px4(&request).unwrap_err();
         assert_eq!(
@@ -540,6 +548,8 @@ mod tests {
             stream_id_kind: None,
             bandwidth_hz: Some(6_000_000),
             symbol_rate: None,
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
         let bs = FrontendTuneRequest {
             end_frequency: Some(1_049_480_000),
@@ -553,6 +563,8 @@ mod tests {
             stream_id_kind: None,
             bandwidth_hz: None,
             symbol_rate: None,
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
         assert_eq!(px4_scan_requests(&isdbt).unwrap(), vec![isdbt]);
         assert_eq!(

@@ -2,7 +2,8 @@ use crate::registry::{FrontendRegistryEntry, SatellitePowerTopology};
 use crate::TunerServiceRuntime;
 use maleicacid_tuner_hal2_common::{
     is_japan_bs_if_frequency_hz, is_japan_cs110_if_frequency_hz,
-    is_japan_isdbt_frequency_contract_hz, FrontendBackendKind, FrontendScanMode, FrontendSystem,
+    is_japan_isdbt_frequency_contract_hz, FrontendBackendKind,
+    FrontendIsdbtPartialReceptionRequirement, FrontendScanMode, FrontendSystem,
     FrontendTuneRequest, HalError, HalInternalKind, HalInvalidArgumentKind,
 };
 
@@ -23,6 +24,16 @@ fn validate_frontend_request_against_entry(
 
     match request.system {
         FrontendSystem::IsdbT => {
+            if matches!(
+                request.partial_reception,
+                FrontendIsdbtPartialReceptionRequirement::Required(_)
+            ) && entry.backend == FrontendBackendKind::LinuxDvb
+            {
+                return Err(HalError::unsupported_detail(
+                    "isdbt.partialReceptionFlag",
+                    "earth_pt1 does not expose current TMCC partial reception readback",
+                ));
+            }
             if !is_japan_isdbt_frequency_contract_hz(request.frequency) {
                 return Err(HalError::invalid_argument(
                     HalInvalidArgumentKind::UnsupportedFrequency,
@@ -37,6 +48,12 @@ fn validate_frontend_request_against_entry(
             }
         }
         FrontendSystem::IsdbS => {
+            if request.partial_reception != FrontendIsdbtPartialReceptionRequirement::Unspecified {
+                return Err(HalError::invalid_argument(
+                    HalInvalidArgumentKind::NumericRange,
+                    "ISDB-S tune must not carry an ISDB-T partial reception requirement",
+                ));
+            }
             let is_bs = is_japan_bs_if_frequency_hz(request.frequency);
             let is_cs110 = is_japan_cs110_if_frequency_hz(request.frequency);
             if !is_bs && !is_cs110 {

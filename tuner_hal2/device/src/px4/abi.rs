@@ -1,4 +1,4 @@
-//! px4_drv legacy ioctl ABI定数とC layout構造体。
+//! px4_drv ioctl ABI定数とC layout構造体。
 //!
 //! 再利用するdriver ABI断片として置く。旧backend lifecycleやworker control層は意図的に持ち込まない。
 
@@ -46,9 +46,12 @@ pub const PTX_GET_CNR: u64 = ior::<u32>(PTX_IOCTL_TYPE_BASIC, 0x04);
 pub const PTX_ENABLE_LNB_POWER: u64 = iow::<i32>(PTX_IOCTL_TYPE_BASIC, 0x05);
 pub const PTX_DISABLE_LNB_POWER: u64 = io(PTX_IOCTL_TYPE_BASIC, 0x06);
 pub const PTX_SET_SYSTEM_MODE: u64 = iow::<u32>(PTX_IOCTL_TYPE_BASIC, 0x0b);
+pub const PTX_GET_LOCK_STATUS: u64 = ior::<u32>(PTX_IOCTL_TYPE_BASIC, 0x0c);
+pub const PTX_GET_TMCC_PARTIAL_RECEPTION: u64 = ior::<u32>(PTX_IOCTL_TYPE_BASIC, 0x0d);
 pub const PTXT_SET_LNB_VOLTAGE: u64 = iow::<i32>(PTX_IOCTL_TYPE_EXT, 0x05);
 
 pub const O_NONBLOCK: i32 = 0x800;
+pub const ERRNO_EAGAIN: i32 = 11;
 pub const ERRNO_EINVAL: i32 = 22;
 pub const ERRNO_ENOTTY: i32 = 25;
 pub const ERRNO_ENOSYS: i32 = 38;
@@ -65,5 +68,12 @@ mod tests {
         assert_eq!(PTX_SET_CHANNEL, iow::<PtxFreq>(PTX_IOCTL_TYPE_BASIC, 0x01));
         assert_eq!(PTX_START_STREAMING, io(PTX_IOCTL_TYPE_BASIC, 0x02));
         assert_eq!(PTX_SET_SYSTEM_MODE, iow::<u32>(PTX_IOCTL_TYPE_BASIC, 0x0b));
+        assert_eq!(PTX_GET_LOCK_STATUS, ior::<u32>(PTX_IOCTL_TYPE_BASIC, 0x0c));
+        assert_eq!(PTX_GET_LOCK_STATUS, 0x8004_8d0c);
+        assert_eq!(
+            PTX_GET_TMCC_PARTIAL_RECEPTION,
+            ior::<u32>(PTX_IOCTL_TYPE_BASIC, 0x0d)
+        );
+        assert_eq!(PTX_GET_TMCC_PARTIAL_RECEPTION, 0x8004_8d0d);
     }
 }

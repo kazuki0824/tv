@@ -2,16 +2,15 @@ use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
-use std::sync::mpsc::{
-    self, Receiver, RecvTimeoutError, SyncSender, TrySendError,
-};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use maleicacid_tuner_hal2_common::os_abi::{ioctl, last_errno};
 use maleicacid_tuner_hal2_common::{
-    compose_primary_cleanup_failure, FrontendBackendKind, FrontendDevicePath, FrontendTuneRequest,
-    HalError, HalErrorDetail, HalInternalKind, HalInvalidArgumentKind,
+    compose_primary_cleanup_failure, FrontendBackendKind, FrontendDevicePath,
+    FrontendIsdbtPartialReceptionRequirement, FrontendTuneRequest, HalError, HalErrorDetail,
+    HalInternalKind, HalInvalidArgumentKind,
 };
 
 use super::reader::{FrontendLiveReaderDescriptor, FrontendLiveReaderDescriptorKind};
@@ -24,8 +23,9 @@ use crate::dvb::abi::{
 };
 use crate::px4;
 use crate::px4::abi::{
-    PtxFreq, ERRNO_EINVAL, ERRNO_ENOSYS, ERRNO_ENOTTY, PTXT_SET_LNB_VOLTAGE, PTX_DISABLE_LNB_POWER,
-    PTX_ENABLE_LNB_POWER, PTX_SET_CHANNEL, PTX_SET_SYSTEM_MODE, PTX_START_STREAMING,
+    PtxFreq, ERRNO_EAGAIN, ERRNO_EINVAL, ERRNO_ENOSYS, ERRNO_ENOTTY, PTXT_SET_LNB_VOLTAGE,
+    PTX_DISABLE_LNB_POWER, PTX_ENABLE_LNB_POWER, PTX_GET_LOCK_STATUS,
+    PTX_GET_TMCC_PARTIAL_RECEPTION, PTX_SET_CHANNEL, PTX_SET_SYSTEM_MODE, PTX_START_STREAMING,
     PTX_STOP_STREAMING,
 };
 use crate::runtime::{FrontendSignalState, FrontendWorkerContext};
@@ -76,10 +76,17 @@ pub enum FrontendBackendSessionKind {
     Dvb { frontend_path: FrontendDevicePath },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrontendTmccPartialReceptionObservation {
+    Pending,
+    Available(bool),
+}
+
 pub struct FrontendBackendSession {
     kind: FrontendBackendSessionKind,
     file: File,
     initial_signal_state: FrontendSignalState,
+    partial_reception: FrontendIsdbtPartialReceptionRequirement,
 }
 
 impl core::fmt::Debug for FrontendBackendSession {
@@ -88,6 +95,7 @@ impl core::fmt::Debug for FrontendBackendSession {
             .field("kind", &self.kind)
             .field("fd", &self.file.as_raw_fd())
             .field("initial_signal_state", &self.initial_signal_state)
+            .field("partial_reception", &self.partial_reception)
             .finish()
     }
 }
@@ -155,11 +163,20 @@ impl FrontendBackendSession {
         self.initial_signal_state
     }
 
+    pub fn partial_reception_requirement(&self) -> FrontendIsdbtPartialReceptionRequirement {
+        self.partial_reception
+    }
+
     pub fn observe_signal_state(&self) -> Result<FrontendSignalState, HalError> {
         match &self.kind {
-            FrontendBackendSessionKind::Px4 { .. } => Err(HalError::Unsupported(
-                "px4 current demodulator lock readback is unavailable",
-            )),
+            FrontendBackendSessionKind::Px4 { control_path } => {
+                px4_signal_state_from_readback(read_px4_boolean(
+                    control_path,
+                    self.file.as_raw_fd(),
+                    PTX_GET_LOCK_STATUS,
+                    "PTX_GET_LOCK_STATUS",
+                ))
+            }
             FrontendBackendSessionKind::Dvb { frontend_path } => {
                 let mut status: u32 = 0;
                 ioctl_ptr(
@@ -179,6 +196,22 @@ impl FrontendBackendSession {
                 }
             }
         }
+    }
+
+    pub fn observe_tmcc_partial_reception(
+        &self,
+    ) -> Result<FrontendTmccPartialReceptionObservation, HalError> {
+        let FrontendBackendSessionKind::Px4 { control_path } = &self.kind else {
+            return Err(HalError::Unsupported(
+                "TMCC partial reception readback is available only on px4",
+            ));
+        };
+        classify_tmcc_partial_reception_read(read_px4_boolean(
+            control_path,
+            self.file.as_raw_fd(),
+            PTX_GET_TMCC_PARTIAL_RECEPTION,
+            "PTX_GET_TMCC_PARTIAL_RECEPTION",
+        ))
     }
 
     pub fn open_live_reader(
@@ -959,9 +992,14 @@ impl FrontendBackendTuneExecutor {
 
     fn initial_signal_state_after_submit(&self) -> Result<FrontendSignalState, HalError> {
         match &self.kind {
-            // PTX_SET_CHANNEL成功はdriverがdemod lockを確認した一回限りの証跡である。
-            // 選局後のcurrent lock readbackとして保持しない。
-            FrontendBackendSessionKind::Px4 { .. } => Ok(FrontendSignalState::Locked),
+            FrontendBackendSessionKind::Px4 { control_path } => {
+                px4_signal_state_from_readback(read_px4_boolean(
+                    control_path,
+                    self.file_fd()?,
+                    PTX_GET_LOCK_STATUS,
+                    "PTX_GET_LOCK_STATUS",
+                ))
+            }
             FrontendBackendSessionKind::Dvb { frontend_path } => {
                 let mut status: u32 = 0;
                 ioctl_ptr(
@@ -994,6 +1032,7 @@ impl FrontendBackendTuneExecutor {
             kind: self.kind,
             file,
             initial_signal_state: self.initial_signal_state,
+            partial_reception: self.plan.request.partial_reception,
         })
     }
 }
@@ -1104,6 +1143,66 @@ fn ioctl_ptr<T>(
     Ok(())
 }
 
+fn read_px4_boolean(
+    path: &FrontendDevicePath,
+    fd: i32,
+    request: u64,
+    op: &'static str,
+) -> Result<bool, HalError> {
+    let mut value: u32 = 0;
+    ioctl_ptr(
+        "px4",
+        Some(path.as_path().to_path_buf()),
+        fd,
+        request,
+        &mut value,
+        op,
+    )?;
+    decode_px4_boolean(path, op, value)
+}
+
+fn decode_px4_boolean(
+    path: &FrontendDevicePath,
+    op: &'static str,
+    value: u32,
+) -> Result<bool, HalError> {
+    match value {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(HalError::Io {
+            backend: "px4",
+            operation: op,
+            path: Some(path.as_path().to_path_buf()),
+            errno: None,
+            detail: HalErrorDetail::new(format!("driver returned a non-boolean value: {value}")),
+        }),
+    }
+}
+
+fn classify_tmcc_partial_reception_read(
+    result: Result<bool, HalError>,
+) -> Result<FrontendTmccPartialReceptionObservation, HalError> {
+    match result {
+        Ok(value) => Ok(FrontendTmccPartialReceptionObservation::Available(value)),
+        Err(HalError::IoctlFailed { errno, .. }) if errno == ERRNO_EAGAIN => {
+            Ok(FrontendTmccPartialReceptionObservation::Pending)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn px4_signal_state_from_readback(
+    result: Result<bool, HalError>,
+) -> Result<FrontendSignalState, HalError> {
+    result.map(|locked| {
+        if locked {
+            FrontendSignalState::Locked
+        } else {
+            FrontendSignalState::NoSignal
+        }
+    })
+}
+
 fn ioctl_noarg(
     backend: &'static str,
     path: Option<PathBuf>,
@@ -1167,6 +1266,74 @@ mod tests {
     }
 
     #[test]
+    fn px4_boolean_readback_rejects_non_boolean_driver_values() {
+        let path = FrontendDevicePath::new("/dev/px4video0");
+        assert_eq!(decode_px4_boolean(&path, "TEST", 0), Ok(false));
+        assert_eq!(decode_px4_boolean(&path, "TEST", 1), Ok(true));
+        assert!(matches!(
+            decode_px4_boolean(&path, "TEST", 2),
+            Err(HalError::Io {
+                backend: "px4",
+                operation: "TEST",
+                errno: None,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn px4_demod_lock_readback_distinguishes_unlocked_from_io_failure() {
+        assert_eq!(
+            px4_signal_state_from_readback(Ok(false)),
+            Ok(FrontendSignalState::NoSignal)
+        );
+        assert_eq!(
+            px4_signal_state_from_readback(Ok(true)),
+            Ok(FrontendSignalState::Locked)
+        );
+        let failure = px4_signal_state_from_readback(Err(HalError::IoctlFailed {
+            backend: "px4",
+            path: None,
+            op: "PTX_GET_LOCK_STATUS",
+            errno: 5,
+        }));
+        assert!(matches!(
+            failure,
+            Err(HalError::IoctlFailed { errno: 5, .. })
+        ));
+    }
+
+    #[test]
+    fn tmcc_eagain_is_pending_and_other_ioctls_remain_failures() {
+        let pending = classify_tmcc_partial_reception_read(Err(HalError::IoctlFailed {
+            backend: "px4",
+            path: None,
+            op: "PTX_GET_TMCC_PARTIAL_RECEPTION",
+            errno: ERRNO_EAGAIN,
+        }));
+        assert_eq!(
+            pending,
+            Ok(FrontendTmccPartialReceptionObservation::Pending)
+        );
+
+        for errno in [5, ERRNO_ENOTTY] {
+            let failure = classify_tmcc_partial_reception_read(Err(HalError::IoctlFailed {
+                backend: "px4",
+                path: None,
+                op: "PTX_GET_TMCC_PARTIAL_RECEPTION",
+                errno,
+            }));
+            assert!(matches!(
+                failure,
+                Err(HalError::IoctlFailed {
+                    errno: observed,
+                    ..
+                }) if observed == errno
+            ));
+        }
+    }
+
+    #[test]
     fn tune_plan_keeps_backend_path_and_request() {
         let request = FrontendTuneRequest {
             system: FrontendSystem::IsdbT,
@@ -1176,6 +1343,8 @@ mod tests {
             stream_id_kind: None,
             bandwidth_hz: Some(6_000_000),
             symbol_rate: None,
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
         let plan = FrontendBackendTunePlan::new(
             7,
@@ -1201,6 +1370,8 @@ mod tests {
             stream_id_kind: Some(FrontendStreamIdKind::AbsoluteStreamId),
             bandwidth_hz: None,
             symbol_rate: None,
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
         let plan = FrontendBackendTunePlan::new(
             8,
@@ -1223,6 +1394,8 @@ mod tests {
             stream_id_kind: None,
             bandwidth_hz: Some(6_000_000),
             symbol_rate: None,
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
         let plan = FrontendBackendTunePlan::new(
             9,
@@ -1248,6 +1421,8 @@ mod tests {
             stream_id_kind: None,
             bandwidth_hz: Some(6_000_000),
             symbol_rate: None,
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
         let plan = FrontendBackendTunePlan::new(
             10,

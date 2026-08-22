@@ -288,6 +288,8 @@ mod tests {
             stream_id_kind: Some(FrontendStreamIdKind::RelativeStreamNumber),
             bandwidth_hz: None,
             symbol_rate: None,
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
         assert!(normalized_tune_request_from_common(&common).is_err());
     }
@@ -302,6 +304,8 @@ mod tests {
             stream_id_kind: None,
             bandwidth_hz: None,
             symbol_rate: None,
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
         let req = normalized_tune_request_from_common(&common).unwrap();
         assert_eq!(req.stream_id, None);
@@ -323,6 +327,8 @@ mod tests {
             stream_id_kind: None,
             bandwidth_hz: None,
             symbol_rate: None,
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
         let req = normalized_tune_request_from_common(&common).unwrap();
         assert_eq!(req.stream_id, None);

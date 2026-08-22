@@ -22,14 +22,16 @@ use crate::{
 use crate::worker_runtime::WorkerTerminalResult;
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FrontendBackendKind, FrontendDevicePath, FrontendScanMode,
-    FrontendTuneRequest, HalError, HalErrorDetail, HalInternalKind, HalInvalidStateKind,
+    FrontendIsdbtPartialReceptionRequirement, FrontendTuneRequest, HalError, HalErrorDetail,
+    HalInternalKind, HalInvalidStateKind,
 };
 use maleicacid_tuner_hal2_demux::DemuxRuntimeRollbackToken;
 use maleicacid_tuner_hal2_device::{
     FrontendBackendSession, FrontendBackendSubmitFailure, FrontendBackendSubmitTicket,
     FrontendBackendSubmitWait, FrontendBackendTunePlan, FrontendLivePumpJoinOutcome,
-    FrontendLivePumpOwner, FrontendRuntimeSnapshot, FrontendScanPhase, FrontendWorkerCancelReason,
-    FrontendWorkerContext, FrontendWorkerKind, FrontendWorkerStartError, FrontendWorkerStopOutcome,
+    FrontendLivePumpOwner, FrontendRuntimeSnapshot, FrontendScanPhase, FrontendSignalState,
+    FrontendTmccPartialReceptionObservation, FrontendWorkerCancelReason, FrontendWorkerContext,
+    FrontendWorkerKind, FrontendWorkerStartError, FrontendWorkerStopOutcome,
     FrontendWorkerStopPoll, FrontendWorkerStopTicket,
 };
 use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
@@ -43,6 +45,7 @@ pub enum FrontendScanNotification {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FrontendTuneNotification {
     Locked,
+    LostLock,
     NoSignal,
 }
 
@@ -2206,6 +2209,301 @@ pub(crate) fn request_tune_worker_replacement_stop(
     )
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FrontendLockQualification {
+    Locked,
+    Unlocked,
+    TmccPending,
+    TmccMismatch,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FrontendLockWaitOutcome {
+    Locked,
+    NoSignal,
+    Cancelled,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FrontendLockTransition {
+    None,
+    Locked,
+    LostLock,
+    NoSignal,
+}
+
+fn frontend_terminal_deadline(backend: FrontendBackendKind) -> Duration {
+    match backend {
+        FrontendBackendKind::LinuxDvb => Duration::from_millis(4_000),
+        FrontendBackendKind::Px4CharDevice => Duration::from_millis(7_000),
+    }
+}
+
+fn classify_frontend_lock_qualification(
+    signal_state: FrontendSignalState,
+    requirement: FrontendIsdbtPartialReceptionRequirement,
+    tmcc_observation: Option<FrontendTmccPartialReceptionObservation>,
+) -> Result<FrontendLockQualification, HalError> {
+    if signal_state != FrontendSignalState::Locked {
+        return Ok(FrontendLockQualification::Unlocked);
+    }
+    let FrontendIsdbtPartialReceptionRequirement::Required(expected) = requirement else {
+        return Ok(FrontendLockQualification::Locked);
+    };
+    match tmcc_observation {
+        Some(FrontendTmccPartialReceptionObservation::Available(observed))
+            if observed == expected =>
+        {
+            Ok(FrontendLockQualification::Locked)
+        }
+        Some(FrontendTmccPartialReceptionObservation::Available(_)) => {
+            Ok(FrontendLockQualification::TmccMismatch)
+        }
+        Some(FrontendTmccPartialReceptionObservation::Pending) => {
+            Ok(FrontendLockQualification::TmccPending)
+        }
+        None => Err(HalError::internal(
+            HalInternalKind::InvariantViolation,
+            "locked explicit partial reception request lacks a TMCC observation",
+        )),
+    }
+}
+
+fn frontend_lock_transition(
+    lock_announced: bool,
+    signal_state: FrontendSignalState,
+    qualification: FrontendLockQualification,
+) -> FrontendLockTransition {
+    if lock_announced {
+        return if matches!(
+            signal_state,
+            FrontendSignalState::NoSignal | FrontendSignalState::SignalDetected
+        ) {
+            FrontendLockTransition::LostLock
+        } else {
+            FrontendLockTransition::None
+        };
+    }
+    match qualification {
+        FrontendLockQualification::Locked => FrontendLockTransition::Locked,
+        FrontendLockQualification::TmccMismatch => FrontendLockTransition::NoSignal,
+        FrontendLockQualification::Unlocked | FrontendLockQualification::TmccPending => {
+            FrontendLockTransition::None
+        }
+    }
+}
+
+fn observe_frontend_lock_qualification(
+    session: &FrontendBackendSession,
+) -> Result<(FrontendSignalState, FrontendLockQualification), HalError> {
+    let signal_state = session.observe_signal_state()?;
+    let requirement = session.partial_reception_requirement();
+    let tmcc_observation = if signal_state == FrontendSignalState::Locked
+        && matches!(
+            requirement,
+            FrontendIsdbtPartialReceptionRequirement::Required(_)
+        ) {
+        Some(session.observe_tmcc_partial_reception()?)
+    } else {
+        None
+    };
+    let qualification =
+        classify_frontend_lock_qualification(signal_state, requirement, tmcc_observation)?;
+    Ok((signal_state, qualification))
+}
+
+fn record_frontend_signal_observation(
+    runtime: &SharedRuntime,
+    ctx: &FrontendWorkerContext,
+    frontend_id: i32,
+    generation: u64,
+    signal_state: FrontendSignalState,
+) -> Result<(), HalError> {
+    if ctx.cancel_requested() {
+        return Ok(());
+    }
+    let mut guard = lock_runtime(
+        runtime,
+        "service runtime lock poisoned while recording frontend signal state",
+    )?;
+    guard
+        .frontend_txn()
+        .record_frontend_signal_state(frontend_id, generation, signal_state)
+}
+
+fn record_frontend_tune_lock_qualification(
+    runtime: &SharedRuntime,
+    ctx: &FrontendWorkerContext,
+    frontend_id: i32,
+    generation: u64,
+) -> Result<bool, HalError> {
+    if ctx.cancel_requested() {
+        return Ok(false);
+    }
+    let mut guard = lock_runtime(
+        runtime,
+        "service runtime lock poisoned while recording qualified frontend tune lock",
+    )?;
+    if ctx.cancel_requested() {
+        return Ok(false);
+    }
+    guard
+        .frontend_txn()
+        .record_frontend_tune_lock_qualified(frontend_id, generation)?;
+    Ok(true)
+}
+
+fn wait_for_frontend_qualified_lock(
+    runtime: &SharedRuntime,
+    ctx: &FrontendWorkerContext,
+    session: &FrontendBackendSession,
+    backend: FrontendBackendKind,
+    frontend_id: i32,
+    generation: u64,
+) -> Result<FrontendLockWaitOutcome, HalError> {
+    let started = Instant::now();
+    let deadline = frontend_terminal_deadline(backend);
+    loop {
+        if ctx.cancel_requested() {
+            return Ok(FrontendLockWaitOutcome::Cancelled);
+        }
+        let (signal_state, qualification) = observe_frontend_lock_qualification(session)?;
+        if ctx.cancel_requested() {
+            return Ok(FrontendLockWaitOutcome::Cancelled);
+        }
+        record_frontend_signal_observation(runtime, ctx, frontend_id, generation, signal_state)?;
+        if ctx.cancel_requested() {
+            return Ok(FrontendLockWaitOutcome::Cancelled);
+        }
+        match qualification {
+            FrontendLockQualification::Locked => return Ok(FrontendLockWaitOutcome::Locked),
+            FrontendLockQualification::TmccMismatch => {
+                return Ok(FrontendLockWaitOutcome::NoSignal)
+            }
+            FrontendLockQualification::Unlocked | FrontendLockQualification::TmccPending => {}
+        }
+        if started.elapsed() >= deadline {
+            return Ok(FrontendLockWaitOutcome::NoSignal);
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn record_frontend_tune_no_signal(
+    runtime: &SharedRuntime,
+    frontend_id: i32,
+    generation: u64,
+    tune_notifier: &FrontendTuneNotifier,
+) -> Result<(), HalError> {
+    deliver_committed_tune_notification(
+        runtime,
+        tune_notifier,
+        frontend_id,
+        generation,
+        FrontendTuneNotification::NoSignal,
+    );
+    let mut guard = lock_runtime(
+        runtime,
+        "service runtime lock poisoned while recording tune no-signal",
+    )?;
+    guard
+        .frontend_txn()
+        .mark_frontend_tune_no_signal(frontend_id, generation)
+}
+
+#[cfg(test)]
+mod frontend_readback_tests {
+    use super::*;
+
+    #[test]
+    fn unspecified_partial_reception_needs_only_demod_lock() {
+        assert_eq!(
+            classify_frontend_lock_qualification(
+                FrontendSignalState::Locked,
+                FrontendIsdbtPartialReceptionRequirement::Unspecified,
+                None,
+            ),
+            Ok(FrontendLockQualification::Locked)
+        );
+        assert_eq!(
+            classify_frontend_lock_qualification(
+                FrontendSignalState::NoSignal,
+                FrontendIsdbtPartialReceptionRequirement::Unspecified,
+                None,
+            ),
+            Ok(FrontendLockQualification::Unlocked)
+        );
+    }
+
+    #[test]
+    fn explicit_partial_reception_requires_matching_fresh_tmcc() {
+        for expected in [false, true] {
+            assert_eq!(
+                classify_frontend_lock_qualification(
+                    FrontendSignalState::Locked,
+                    FrontendIsdbtPartialReceptionRequirement::Required(expected),
+                    Some(FrontendTmccPartialReceptionObservation::Available(expected)),
+                ),
+                Ok(FrontendLockQualification::Locked)
+            );
+            assert_eq!(
+                classify_frontend_lock_qualification(
+                    FrontendSignalState::Locked,
+                    FrontendIsdbtPartialReceptionRequirement::Required(expected),
+                    Some(FrontendTmccPartialReceptionObservation::Available(
+                        !expected
+                    )),
+                ),
+                Ok(FrontendLockQualification::TmccMismatch)
+            );
+        }
+        assert_eq!(
+            classify_frontend_lock_qualification(
+                FrontendSignalState::Locked,
+                FrontendIsdbtPartialReceptionRequirement::Required(true),
+                Some(FrontendTmccPartialReceptionObservation::Pending),
+            ),
+            Ok(FrontendLockQualification::TmccPending)
+        );
+    }
+
+    #[test]
+    fn lock_transition_reports_loss_once_and_relock_once() {
+        assert_eq!(
+            frontend_lock_transition(
+                true,
+                FrontendSignalState::NoSignal,
+                FrontendLockQualification::Unlocked,
+            ),
+            FrontendLockTransition::LostLock
+        );
+        assert_eq!(
+            frontend_lock_transition(
+                false,
+                FrontendSignalState::NoSignal,
+                FrontendLockQualification::Unlocked,
+            ),
+            FrontendLockTransition::None
+        );
+        assert_eq!(
+            frontend_lock_transition(
+                false,
+                FrontendSignalState::Locked,
+                FrontendLockQualification::Locked,
+            ),
+            FrontendLockTransition::Locked
+        );
+        assert_eq!(
+            frontend_lock_transition(
+                true,
+                FrontendSignalState::Locked,
+                FrontendLockQualification::Locked,
+            ),
+            FrontendLockTransition::None
+        );
+    }
+}
+
 fn run_frontend_backend_tune_session_worker(
     runtime: SharedRuntime,
     ctx: &FrontendWorkerContext,
@@ -2223,15 +2521,19 @@ fn run_frontend_backend_tune_session_worker(
     }
     let mut live_pump = None;
     let mut body_result = (|| {
-        let terminal_deadline = match backend {
-            FrontendBackendKind::LinuxDvb => Duration::from_millis(4_000),
-            FrontendBackendKind::Px4CharDevice => Duration::from_millis(7_000),
-        };
-        let started = Instant::now();
-        match backend {
-            FrontendBackendKind::Px4CharDevice => {
-                // PTX_SET_CHANNEL成功をこのgenerationの一回限りのLOCKED証跡とする。
-                // current statusとして保持せず、CNRを代替lockとしてpollしない。
+        match wait_for_frontend_qualified_lock(
+            &runtime,
+            ctx,
+            &session,
+            backend,
+            frontend_id,
+            generation,
+        )? {
+            FrontendLockWaitOutcome::Locked => {
+                if !record_frontend_tune_lock_qualification(&runtime, ctx, frontend_id, generation)?
+                {
+                    return Ok(());
+                }
                 deliver_committed_tune_notification(
                     &runtime,
                     &tune_notifier,
@@ -2240,59 +2542,46 @@ fn run_frontend_backend_tune_session_worker(
                     FrontendTuneNotification::Locked,
                 );
             }
-            FrontendBackendKind::LinuxDvb => loop {
-                if ctx.cancel_requested() {
-                    return Ok(());
-                }
-                let signal_state = match session.observe_signal_state() {
-                    Ok(signal_state) => signal_state,
-                    Err(_) => maleicacid_tuner_hal2_device::FrontendSignalState::Unknown,
+            FrontendLockWaitOutcome::NoSignal => {
+                record_frontend_tune_no_signal(&runtime, frontend_id, generation, &tune_notifier)?;
+                return Ok(());
+            }
+            FrontendLockWaitOutcome::Cancelled => return Ok(()),
+        }
+        let mut lock_announced = true;
+        while !ctx.cancel_requested() {
+            let (signal_state, qualification) = if lock_announced {
+                let signal_state = session.observe_signal_state()?;
+                let qualification = if signal_state == FrontendSignalState::Locked {
+                    FrontendLockQualification::Locked
+                } else {
+                    FrontendLockQualification::Unlocked
                 };
-                let mut guard = lock_runtime(
-                    &runtime,
-                    "service runtime lock poisoned while recording frontend signal state",
-                )?;
-                guard.frontend_txn().record_frontend_signal_state(
-                    frontend_id,
-                    generation,
-                    signal_state,
-                )?;
-                drop(guard);
-                if signal_state == maleicacid_tuner_hal2_device::FrontendSignalState::Locked {
-                    deliver_committed_tune_notification(
+                (signal_state, qualification)
+            } else {
+                observe_frontend_lock_qualification(&session)?
+            };
+            if ctx.cancel_requested() {
+                break;
+            }
+            record_frontend_signal_observation(
+                &runtime,
+                ctx,
+                frontend_id,
+                generation,
+                signal_state,
+            )?;
+            if ctx.cancel_requested() {
+                break;
+            }
+            match frontend_lock_transition(lock_announced, signal_state, qualification) {
+                FrontendLockTransition::Locked => {
+                    if !record_frontend_tune_lock_qualification(
                         &runtime,
-                        &tune_notifier,
+                        ctx,
                         frontend_id,
                         generation,
-                        FrontendTuneNotification::Locked,
-                    );
-                    break;
-                }
-                if started.elapsed() >= terminal_deadline {
-                    let final_signal_state = match session.observe_signal_state() {
-                        Ok(signal_state) => signal_state,
-                        Err(_) => maleicacid_tuner_hal2_device::FrontendSignalState::Unknown,
-                    };
-                    if final_signal_state
-                        == maleicacid_tuner_hal2_device::FrontendSignalState::Locked
-                    {
-                        let mut guard = lock_runtime(
-                            &runtime,
-                            "service runtime lock poisoned while recording deadline lock state",
-                        )?;
-                        guard.frontend_txn().record_frontend_signal_state(
-                            frontend_id,
-                            generation,
-                            final_signal_state,
-                        )?;
-                        drop(guard);
-                        deliver_committed_tune_notification(
-                            &runtime,
-                            &tune_notifier,
-                            frontend_id,
-                            generation,
-                            FrontendTuneNotification::Locked,
-                        );
+                    )? {
                         break;
                     }
                     deliver_committed_tune_notification(
@@ -2300,21 +2589,31 @@ fn run_frontend_backend_tune_session_worker(
                         &tune_notifier,
                         frontend_id,
                         generation,
-                        FrontendTuneNotification::NoSignal,
+                        FrontendTuneNotification::Locked,
                     );
-                    let mut guard = lock_runtime(
-                        &runtime,
-                        "service runtime lock poisoned while recording tune deadline",
-                    )?;
-                    guard
-                        .frontend_txn()
-                        .mark_frontend_tune_no_signal(frontend_id, generation)?;
-                    return Ok(());
+                    lock_announced = true;
                 }
-                thread::sleep(Duration::from_millis(20));
-            },
-        }
-        while !ctx.cancel_requested() {
+                FrontendLockTransition::LostLock => {
+                    deliver_committed_tune_notification(
+                        &runtime,
+                        &tune_notifier,
+                        frontend_id,
+                        generation,
+                        FrontendTuneNotification::LostLock,
+                    );
+                    lock_announced = false;
+                }
+                FrontendLockTransition::NoSignal => {
+                    record_frontend_tune_no_signal(
+                        &runtime,
+                        frontend_id,
+                        generation,
+                        &tune_notifier,
+                    )?;
+                    break;
+                }
+                FrontendLockTransition::None => {}
+            }
             if live_pump.is_none() {
                 let live_reader_descriptor = {
                     let guard = lock_runtime(
@@ -3292,41 +3591,18 @@ fn run_frontend_backend_scan_session_worker(
                 }
             },
         };
-        let mut signal_state = session.initial_signal_state();
+        let mut signal_state = FrontendSignalState::NoSignal;
         let body_result = (|| {
-            if backend == FrontendBackendKind::LinuxDvb {
-                {
-                    let mut guard = lock_runtime(
-                        &runtime,
-                        "service runtime lock poisoned while recording scan signal state",
-                    )?;
-                    guard.frontend_txn().record_frontend_signal_state(
-                        ctx.frontend_id(),
-                        ctx.generation(),
-                        signal_state,
-                    )?;
-                }
-                for _ in 0..5 {
-                    if ctx.cancel_requested() {
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-                if !ctx.cancel_requested() {
-                    signal_state = match session.observe_signal_state() {
-                        Ok(signal_state) => signal_state,
-                        Err(_) => signal_state,
-                    };
-                    let mut guard = lock_runtime(
-                        &runtime,
-                        "service runtime lock poisoned while refreshing scan signal state",
-                    )?;
-                    guard.frontend_txn().record_frontend_signal_state(
-                        ctx.frontend_id(),
-                        ctx.generation(),
-                        signal_state,
-                    )?;
-                }
+            match wait_for_frontend_qualified_lock(
+                &runtime,
+                ctx,
+                &session,
+                backend,
+                ctx.frontend_id(),
+                ctx.generation(),
+            )? {
+                FrontendLockWaitOutcome::Locked => signal_state = FrontendSignalState::Locked,
+                FrontendLockWaitOutcome::NoSignal | FrontendLockWaitOutcome::Cancelled => {}
             }
             Ok(())
         })();
@@ -3334,7 +3610,7 @@ fn run_frontend_backend_scan_session_worker(
         if ctx.cancel_requested() {
             return Ok(());
         }
-        if signal_state == maleicacid_tuner_hal2_device::FrontendSignalState::Locked {
+        if signal_state == FrontendSignalState::Locked {
             deliver_committed_scan_notification(
                 &runtime,
                 &scan_notifier,

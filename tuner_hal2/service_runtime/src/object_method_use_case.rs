@@ -157,16 +157,12 @@ fn object_frontend_status_value(
         ));
     }
     match status_type {
-        ObjectFrontendStatusType::DemodLock
-            if snapshot.backend == FrontendBackendKind::LinuxDvb => {
+        ObjectFrontendStatusType::DemodLock => {
             Ok(ObjectFrontendStatusValue::DemodLocked(matches!(
                 snapshot.signal_state,
                 FrontendSignalState::Locked
             )))
         }
-        ObjectFrontendStatusType::DemodLock => Err(HalError::Unsupported(
-            "frontend demodulator lock status is not advertised",
-        )),
         ObjectFrontendStatusType::LnbVoltage
             if lnb_profile_supports_voltage_status(snapshot.lnb_profile) =>
         {
@@ -185,11 +181,6 @@ fn object_frontend_readiness_value(
     snapshot: ObjectFrontendStatusSnapshot,
     status_type: ObjectFrontendStatusType,
 ) -> ObjectFrontendStatusReadinessValue {
-    if matches!(status_type, ObjectFrontendStatusType::DemodLock)
-        && snapshot.backend != FrontendBackendKind::LinuxDvb
-    {
-        return ObjectFrontendStatusReadinessValue::Unsupported;
-    }
     if matches!(status_type, ObjectFrontendStatusType::LnbVoltage)
         && !lnb_profile_supports_voltage_status(snapshot.lnb_profile)
     {
@@ -281,7 +272,6 @@ fn prepare_object_query_request(
                         .into_iter()
                         .filter(|status_type| {
                             matches!(status_type, ObjectFrontendStatusType::DemodLock)
-                                && snapshot.backend == FrontendBackendKind::LinuxDvb
                                 || matches!(status_type, ObjectFrontendStatusType::LnbVoltage)
                                     && lnb_profile_supports_voltage_status(snapshot.lnb_profile)
                         })
@@ -930,7 +920,7 @@ mod tests {
     }
 
     #[test]
-    fn px4_demod_lock_status_is_not_exposed_from_one_shot_lock_evidence() {
+    fn px4_demod_lock_status_is_exposed_from_current_readback_snapshot() {
         let px4 = ObjectFrontendStatusSnapshot {
             backend: FrontendBackendKind::Px4CharDevice,
             lnb_profile: None,
@@ -938,13 +928,13 @@ mod tests {
             signal_state: FrontendSignalState::Locked,
         };
 
-        assert!(matches!(
+        assert_eq!(
             object_frontend_status_value(px4, ObjectFrontendStatusType::DemodLock),
-            Err(HalError::Unsupported(_))
-        ));
+            Ok(ObjectFrontendStatusValue::DemodLocked(true))
+        );
         assert_eq!(
             object_frontend_readiness_value(px4, ObjectFrontendStatusType::DemodLock),
-            ObjectFrontendStatusReadinessValue::Unsupported
+            ObjectFrontendStatusReadinessValue::Stable
         );
     }
 }

@@ -383,6 +383,8 @@ mod tests {
             stream_id_kind: None,
             bandwidth_hz: Some(6_000_000),
             symbol_rate: None,
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         }
     }
 
@@ -439,6 +441,41 @@ mod tests {
                     })
         ));
         assert!(runtime.diagnostics().is_empty());
+    }
+
+    #[test]
+    fn explicit_isdbt_partial_reception_requires_px4_tmcc_readback() {
+        let mut request = isdbt_request(473_142_857);
+        request.partial_reception =
+            maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Required(true);
+
+        let mut px4 = TunerServiceRuntime::new();
+        px4.boot_from_probe_results([available(
+            1_000_000,
+            FrontendBackendKind::Px4CharDevice,
+            FrontendSystem::IsdbT,
+            "/dev/px4video0",
+            None,
+        )]);
+        assert!(px4
+            .validate_frontend_request_for_id(1_000_000, &request)
+            .is_ok());
+
+        let mut earth_pt1 = TunerServiceRuntime::new();
+        earth_pt1.boot_from_probe_results([available(
+            1_000_000,
+            FrontendBackendKind::LinuxDvb,
+            FrontendSystem::IsdbT,
+            "/dev/dvb/adapter0/frontend0",
+            None,
+        )]);
+        assert!(matches!(
+            earth_pt1.validate_frontend_request_for_id(1_000_000, &request),
+            Err(HalError::UnsupportedDetail {
+                feature: "isdbt.partialReceptionFlag",
+                ..
+            })
+        ));
     }
 
     #[test]

@@ -20,5 +20,5 @@ pub use runtime::{
     FrontendTerminalEventKind, FrontendTerminalEventReason, FrontendWorkerCancelReason,
     FrontendWorkerContext, FrontendWorkerDetachedJoin, FrontendWorkerKind, FrontendWorkerRegistry,
     FrontendWorkerStartError, FrontendWorkerStopOutcome, FrontendWorkerStopPoll,
-    FrontendWorkerStopTicket,
+    FrontendWorkerStopTicket, FrontendTmccPartialReceptionObservation,
 };
