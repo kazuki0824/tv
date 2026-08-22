@@ -86,7 +86,7 @@ parental_rating_descriptor:
 
 BS と CS110 の discovery completion 条件は放送方式別に扱う。BS の complete 判定では NIT actual と SDT actual / other を対象とし、NIT other の受信を必須にしない。CS110（広帯域CSデジタル放送）の complete 判定では NIT actual / other と SDT actual / other を対象とする。BAT は受信した場合に解析・意味利用するが、BAT の未受信だけを discovery incomplete の理由にしない。complete 判定は table_id だけの global 完了ではなく、table_extension と NIT/BAT transport loop から得た ONID/TSID scope を使って transport 単位で判定する。リモコンキーが得られない場合は service_id を表示番号の代替値とする。
 
-`arib_si_engine_rs` は、service / transport単位の `ServiceSemanticFacts` として、ONID / TSID / SID、ARIB `service_type`のraw 8-bit値、PMT/PCRの存在・構文状態、audio/video/subtitle/data ES一覧とcodec signaling、CA descriptor / free_CA_mode、SMD意味状態、欠落・不正理由を構造化してTISへ渡す。`ServiceSemanticFacts` は放送信号から導ける事実と構文・意味解析結果だけを持ち、Android channel登録可否、EPG公開可否、現行productのdecoder/CAS対応可否、ライブ再生可否を算出しない。Android channelを登録するか、partial snapshotをchannel insertへ使用するかはTISの責務であり、`../tis/DESIGN_JA.md`を正とする。`Channels.COLUMN_SERVICE_TYPE`への最終投影は`../ARIB_SI_EPG_TvProvider投影方針.md`を正とし、本crateはAndroid generic `TvContract.Channels.SERVICE_TYPE_*`への意味変換を行わない。
+`arib_si_engine_rs` は、service / transport単位の `ServiceSemanticFacts` として、ONID / TSID / SID、ARIB `service_type`のraw 8-bit値、PMT/PCRの存在・構文状態、audio/video/subtitle/data ES一覧とcodec signaling、CA descriptor / free_CA_mode、CA descriptor等から導出した`requiresCas`、SMD意味状態、欠落・不正理由を構造化してTISへ渡す。`ServiceSemanticFacts` は放送信号から導ける事実と構文・意味解析結果だけを持ち、Android channel登録可否、EPG公開可否、現行productのdecoder/CAS対応可否、ライブ再生可否を算出しない。Android channelを登録するか、partial snapshotをchannel insertへ使用するかはTISの責務であり、`../tis/DESIGN_JA.md`を正とする。`Channels.COLUMN_SERVICE_TYPE`への最終投影は`../ARIB_SI_EPG_TvProvider投影方針.md`を正とし、本crateはAndroid generic `TvContract.Channels.SERVICE_TYPE_*`への意味変換を行わない。
 
 ## system_management_descriptor と通常受信判定
 
@@ -136,7 +136,7 @@ ARIB descriptor は `descriptor_length`、descriptor 内部 length、loop 単位
 
 ## API 境界の固定
 
-Kotlin/JNI の通常サービス境界は、channel registrationやplayback policyを確定済みのsnapshotではなく、service / transport単位の `ServiceSemanticFacts` bulk snapshotとする。snapshotはONID / TSID / SID、ARIB `service_type`、PMT/PCRの存在・構文状態、ES/component一覧とcodec signaling、CA descriptor / free_CA_mode、SMD意味状態、欠落・不正理由を返す。`registration_ready_snapshot()`、`clear_live_playback_supported_snapshot()`、`publishability_by_service`のようにAndroid/TIS/product policyをRust側で確定する公開境界は設計しない。TISが`ServiceSemanticFacts`とcurrent product capabilityから`channelRegistrationReady`、`epgPublishable`、`clearLivePlaybackSupported`、`requiresCas`、`unsupportedCas`を算出し、その判断をchannel登録、Programs公開、視聴セッションへ一貫して使用する。
+Kotlin/JNI の通常サービス境界は、channel registrationやplayback policyを確定済みのsnapshotではなく、service / transport単位の `ServiceSemanticFacts` bulk snapshotとする。snapshotはONID / TSID / SID、ARIB `service_type`、PMT/PCRの存在・構文状態、ES/component一覧とcodec signaling、CA descriptor / free_CA_mode、CA descriptor等から導出した`requiresCas`、SMD意味状態、欠落・不正理由を返す。`registration_ready_snapshot()`、`clear_live_playback_supported_snapshot()`、`publishability_by_service`のようにAndroid/TIS/product policyをRust側で確定する公開境界は設計しない。TISは`ServiceSemanticFacts`から`requiresCas`を受け取り、current product capabilityと組み合わせて`channelRegistrationReady`、`epgPublishable`、`clearLivePlaybackSupported`、`unsupportedCas`を算出し、その判断をchannel登録、Programs公開、視聴セッションへ一貫して使用する。
 
 PAT は ONID を持たないため、`(transport_stream_id, service_id) -> pmt_pid` をそのまま公開可能サービス識別子として扱わない。SDT/NIT/BAT 等で ONID が一意に解決できた場合だけ `(original_network_id, transport_stream_id, service_id, pmt_pid)` へ昇格し、ONID が曖昧な場合は意味objectへの昇格を抑止または欠落診断に留める。
 
